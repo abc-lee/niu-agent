@@ -616,6 +616,7 @@ class NiuRunner:
         self._brain_injector = None     # BrainContextInjector
         self._cached_activation_mgr = None  # RegionActivationManager (for cache invalidation)
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
+        self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
 
         # 注入 ask_agent callback（供内部 MCP Server 调用 LLM）
         _registry = get_registry()
@@ -1710,17 +1711,39 @@ class NiuRunner:
                     if time.time() - self._last_forced_sync_fail_time < FORCED_SYNC_COOLDOWN_SECONDS:
                         logger.debug("[BrainInjector] forced sync in cooldown, skip")
                         return None
-                    try:
-                        from agent.injector.region_sync import get_region_sync
-                        logger.info("[BrainInjector] activation_mgr is None, forcing RegionSync.run_sync()")
-                        get_region_sync().run_sync()
-                        _activation_mgr = get_activation_mgr()
-                        # forced sync 成功，重置冷却
-                        self._last_forced_sync_fail_time = 0.0
-                    except Exception as e:
-                        logger.error("[BrainInjector] Forced RegionSync failed: %s", e)
-                        # 记录失败时间，启动 5 分钟冷却
-                        self._last_forced_sync_fail_time = time.time()
+                    # 防并发：已有 daemon 线程在跑，跳过避免启动多个
+                    if self._forced_sync_running.is_set():
+                        logger.debug("[BrainInjector] forced sync already running in background, skip")
+                        return None
+                    # 异步触发：启动 daemon 线程跑 run_sync，主线程立即返回 None 不阻塞
+                    # （同步调用阻塞主线程 43 秒导致程序启动卡死）
+                    self._forced_sync_running.set()
+
+                    def _run_forced_sync():
+                        try:
+                            from agent.injector.region_sync import get_region_sync
+                            logger.info("[BrainInjector] activation_mgr is None, forcing RegionSync.run_sync() (async)")
+                            get_region_sync().run_sync()
+                            _mgr = get_activation_mgr()
+                            if _mgr is not None:
+                                # 成功后刷新缓存的 activation_mgr
+                                self._cached_activation_mgr = _mgr
+                                # 重置冷却时间
+                                self._last_forced_sync_fail_time = 0.0
+                                logger.info("[BrainInjector] forced sync succeeded, activation_mgr ready")
+                            else:
+                                logger.error("[BrainInjector] forced sync completed but activation_mgr still None")
+                                self._last_forced_sync_fail_time = time.time()
+                        except Exception as e:
+                            logger.error("[BrainInjector] Forced RegionSync failed: %s", e)
+                            # 记录失败时间，启动 5 分钟冷却
+                            self._last_forced_sync_fail_time = time.time()
+                        finally:
+                            self._forced_sync_running.clear()
+
+                    threading.Thread(target=_run_forced_sync, daemon=True, name="forced-sync").start()
+                    # 主线程立即返回 None，下次调用 _get_brain_injector 时后台 sync 可能已完成
+                    return None
                 # Re-check after forced sync attempt
                 if self._brain_adapter._get_rag() is None or _activation_mgr is None:
                     if _activation_mgr is None:
