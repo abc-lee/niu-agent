@@ -1970,61 +1970,6 @@ def repair_brainregion_zombies() -> dict[str, Any]:
         "removed": len(rc_keys_to_remove),
     }
 
-    # 3.10 清理 kv_store_llm_response_cache 里的僵尸 extract entry
-    # 真实数据：cache 里有1条 extract entry 含16个僵尸脑区 extract 数据
-    # （description 含"被删除的重复脑区实体之一"），重建 GraphML 时会被命中
-    # 导致僵尸复活。必须在重建前清掉。
-    #
-    # 清理逻辑（严格匹配，避免误删正常 extract）：
-    #   - 只清 cache_type == "extract" 的 entry
-    #   - 解析 return 字段的 entity 行（格式：entity<|#|>name<|#|>type<|#|>desc）
-    #   - 只清 entity_type == "brainregion" 且 description 含"被删除"标记的 entry
-    #   - 正常文档（如"系统维护日志"含"被删除"字样但 entity_type != brainregion）不删
-    #
-    # 事务式保护：清理在内存中修改 lrc_data，写入跟其他9个文件一起在统一 try 块
-    lrc_path = storage_dir / "kv_store_llm_response_cache.json"
-    lrc_cleaned_count = 0
-    lrc_data: dict[str, Any] = {}
-    if lrc_path.exists():
-        try:
-            lrc_data = json.loads(lrc_path.read_text())
-            keys_to_remove: list[str] = []
-            for cache_key, entry in lrc_data.items():
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("cache_type") != "extract":
-                    continue
-                ret = entry.get("return", "")
-                has_zombie = False
-                for line in ret.split("\n"):
-                    if not line.startswith("entity<|#|>"):
-                        continue
-                    parts = line.split("<|#|>")
-                    if len(parts) < 4:
-                        continue
-                    entity_type = parts[2]
-                    desc = parts[3]
-                    if entity_type == "brainregion" and any(
-                        marker in desc for marker in _ZOMBIE_DESCRIPTION_MARKERS
-                    ):
-                        has_zombie = True
-                        break
-                if has_zombie:
-                    keys_to_remove.append(cache_key)
-            for k in keys_to_remove:
-                lrc_data.pop(k, None)
-            lrc_cleaned_count = len(keys_to_remove)
-            logger.info(
-                f"[LightRAGRepair] 清理 llm_response_cache: {lrc_cleaned_count} 条僵尸 extract entry（内存修改，待事务式写盘）"
-            )
-        except Exception as e:
-            logger.warning(f"[LightRAGRepair] 清理 llm_response_cache 失败（继续）: {e}")
-            lrc_data = {}
-
-    details["llm_response_cache"] = {
-        "removed_entries": lrc_cleaned_count,
-    }
-
     # 4. 统一写盘（事务式）
     try:
         graphml_tree.write(graphml_path, xml_declaration=True, encoding="utf-8")
@@ -2039,8 +1984,6 @@ def repair_brainregion_zombies() -> dict[str, Any]:
             fr_path.write_text(json.dumps(fr, ensure_ascii=False))
         if rc_path.exists() or rc:
             rc_path.write_text(json.dumps(rc, ensure_ascii=False))
-        if lrc_path.exists() or lrc_data:
-            lrc_path.write_text(json.dumps(lrc_data, ensure_ascii=False))
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"写盘失败（部分文件可能已写）: {e}"}
 
