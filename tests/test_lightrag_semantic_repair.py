@@ -210,3 +210,32 @@ def test_repair_brainregion_zombies_zombies_not_in_full_entities(tmp_path):
     fe = json.loads(fe_path.read_text())
     assert "doc-1" in fe, "其他 entity 的 doc 应保留"
     assert fe["doc-1"]["entity_name"] == "其他实体", "其他 entity 内容应保持不变"
+
+
+def test_repair_all_calls_brainregion_zombies_when_zombies_exist(tmp_path):
+    """repair_all 在检测到僵尸脑区时应调用 repair_brainregion_zombies"""
+    from niu_api.internal.lightrag_repair import repair_all
+    _make_test_storage(tmp_path, zombies=["智家脑区A"], normal_regions=["聊天历史脑区"])
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path), \
+         patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path):
+        result = repair_all()
+
+    # 应该调用了 brainregion_zombies
+    assert "brainregion_zombies" in result
+    assert result["brainregion_zombies"]["status"] == "ok"
+    assert result["brainregion_zombies"]["cleaned_count"] == 1
+    # 应该不在 _skipped 里
+    assert "brainregion_zombies" not in result.get("_skipped", [])
+
+
+def test_repair_all_skips_brainregion_zombies_when_no_zombies(tmp_path):
+    """无僵尸脑区时 repair_all 应跳过 brainregion_zombies"""
+    from niu_api.internal.lightrag_repair import repair_all
+    _make_test_storage(tmp_path, zombies=[], normal_regions=["聊天历史脑区"])
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path), \
+         patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path):
+        result = repair_all()
+
+    assert "brainregion_zombies" in result.get("_skipped", [])

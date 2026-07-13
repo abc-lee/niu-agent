@@ -1743,6 +1743,7 @@ def repair_llm_response_cache() -> dict[str, Any]:
 
 
 _REPAIR_ORDER = [
+    ("brainregion_zombies", repair_brainregion_zombies),  # 最早清理僵尸脑区
     ("text_chunks", repair_text_chunks),
     ("doc_status", repair_doc_status),
     ("graphml", repair_graphml),
@@ -1763,6 +1764,14 @@ _REPAIR_ORDER = [
 # （如 graphml_edge_dangling 发出 graphml_edge_dangling_source / _target），
 # 这些后缀变体也需要映射到同一个 repair 函数。
 _CHECK_TO_REPAIR: dict[str, str] = {
+    # 语义维度 check → brainregion_zombies（最早清理僵尸脑区）
+    "brainregion_semantic_zombie": "brainregion_zombies",
+    "entity_chunks_source_id_mismatch": "brainregion_zombies",
+    "chunk_shared_by_too_many_entities": "brainregion_zombies",
+    "brainregion_orphan_chunks": "brainregion_zombies",
+    # 反向孤儿 → vdb_entities 重建
+    "vdb_entities_orphan": "vdb_entities",
+    # 因果链 check（原有项）
     "text_chunks_doc_dangling": "text_chunks",
     "text_chunks_cache_dangling": "llm_response_cache",
     "doc_status_chunks_dangling": "doc_status",
