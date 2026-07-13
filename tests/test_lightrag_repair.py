@@ -777,8 +777,9 @@ def test_repair_all_empty_storage_ok(storage_dir, patched_embed, monkeypatch):
     # 没有 repair 被调用（check_all 全过）
     actual_repair_keys = {k for k in result.keys() if not k.startswith("_")}
     assert actual_repair_keys == set(), f"空 storage 不应调用任何 repair，实际调了: {actual_repair_keys}"
-    # _skipped 应包含全部 12 个
+    # _skipped 应包含全部 13 个（含 brainregion_zombies）
     assert set(result.get("_skipped", [])) == {
+        "brainregion_zombies",
         "text_chunks", "doc_status", "graphml", "graphml_orphan_edges",
         "vdb_chunks", "vdb_entities",
         "vdb_relationships", "entity_chunks", "relation_chunks", "full_entities",

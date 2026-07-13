@@ -1742,6 +1742,256 @@ def repair_llm_response_cache() -> dict[str, Any]:
 # =============================================================================
 
 
+
+
+def repair_brainregion_zombies() -> dict[str, Any]:
+    """语义 repair: 完整清理 8 个存储的僵尸脑区残留。
+
+    真相源：脑区 description 的语义标记（"被删除"等）——不是 GraphML，
+    因为 GraphML 本身可能被污染（含僵尸 node）。
+
+    清理范围（8 存储）：
+    1. GraphML node + cascade edge
+    2. vdb_entities 向量
+    3. vdb_relationships 向量
+    4. kv_store_entity_chunks 的脑区 key
+    5. kv_store_text_chunks 的脑区专属 chunk
+    6. vdb_chunks 的脑区专属 chunk 向量
+    7. kv_store_full_entities / full_relations 文档级索引
+    8. kv_store_relation_chunks 的僵尸关系 chunk
+
+    运维场景提示：
+        本函数清理 8 个存储的僵尸脑区残留。注意：如果用户不跑本函数而直接
+        启动 `./niu`，`dissolve_shrunk_regions` 只通过 LightRAG
+        `adelete_by_entity` 清理 GraphML node + vdb_entities + 部分 kv_store，
+        但 181 个 brain_xxx 专属 chunk 会残留。建议运维场景下定期跑
+        `repair_all()`（含本函数）做完整 8 存储清理。
+
+    Returns:
+        {"status": "ok"|"unrecoverable", "cleaned_count": int, "details": {...}}
+    """
+    import xml.etree.ElementTree as ET
+    from niu_api.internal.lightrag_integrity import (
+        _load_graphml, _ZOMBIE_DESCRIPTION_MARKERS,
+    )
+
+    storage_dir = _storage_dir()
+    details: dict[str, Any] = {}
+
+    # 1. 识别僵尸脑区
+    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    if graphml_err:
+        return {"status": "unrecoverable", "reason": "GraphML 解析失败", "error": graphml_err}
+
+    zombie_names: list[str] = []
+    for nid, meta in node_meta.items():
+        if meta.get("entity_type") != "brainregion":
+            continue
+        desc = meta.get("description", "")
+        if any(marker in desc for marker in _ZOMBIE_DESCRIPTION_MARKERS):
+            zombie_names.append(nid)
+
+    if not zombie_names:
+        return {"status": "ok", "cleaned_count": 0, "details": {"reason": "no zombies detected"}}
+
+    details["zombies"] = zombie_names
+
+    # 2. 读入所有需要修改的存储到内存（事务式保护）
+    try:
+        graphml_path = storage_dir / _GRAPHML_FILE
+        graphml_tree = ET.parse(graphml_path)
+        graphml_root = graphml_tree.getroot()
+        graphml_graph = graphml_root.find("graph")
+        if graphml_graph is None:
+            for child in graphml_root:
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if tag == "graph":
+                    graphml_graph = child
+                    break
+
+        vdb_e_path = storage_dir / "vdb_entities.json"
+        vdb_e = json.loads(vdb_e_path.read_text()) if vdb_e_path.exists() else {"data": [], "embedding_dim": 0, "matrix": ""}
+
+        vdb_r_path = storage_dir / "vdb_relationships.json"
+        vdb_r = json.loads(vdb_r_path.read_text()) if vdb_r_path.exists() else {"data": [], "embedding_dim": 0, "matrix": ""}
+
+        ec_path = storage_dir / "kv_store_entity_chunks.json"
+        ec = json.loads(ec_path.read_text()) if ec_path.exists() else {}
+
+        tc_path = storage_dir / "kv_store_text_chunks.json"
+        tc = json.loads(tc_path.read_text()) if tc_path.exists() else {}
+
+        vdb_c_path = storage_dir / "vdb_chunks.json"
+        vdb_c = json.loads(vdb_c_path.read_text()) if vdb_c_path.exists() else {"data": [], "embedding_dim": 0, "matrix": ""}
+
+        fe_path = storage_dir / "kv_store_full_entities.json"
+        fe = json.loads(fe_path.read_text()) if fe_path.exists() else {}
+
+        fr_path = storage_dir / "kv_store_full_relations.json"
+        fr = json.loads(fr_path.read_text()) if fr_path.exists() else {}
+
+        rc_path = storage_dir / "kv_store_relation_chunks.json"
+        rc = json.loads(rc_path.read_text()) if rc_path.exists() else {}
+    except Exception as e:
+        return {"status": "unrecoverable", "reason": f"读入存储失败: {e}"}
+
+    # 3. 在内存中修改（不写盘）
+    orphan_chunk_ids: list[str] = []
+
+    # 3.1 GraphML node + cascade edge
+    removed_nodes = 0
+    removed_edges = 0
+    if graphml_graph is not None:
+        edges_to_remove = []
+        for edge in list(graphml_graph):
+            tag = edge.tag.split("}")[-1] if "}" in edge.tag else edge.tag
+            if tag != "edge":
+                continue
+            src = edge.get("source", "")
+            tgt = edge.get("target", "")
+            if src in zombie_names or tgt in zombie_names:
+                edges_to_remove.append(edge)
+        for edge in edges_to_remove:
+            graphml_graph.remove(edge)
+            removed_edges += 1
+        nodes_to_remove = []
+        for node in list(graphml_graph):
+            tag = node.tag.split("}")[-1] if "}" in node.tag else node.tag
+            if tag != "node":
+                continue
+            if node.get("id") in zombie_names:
+                nodes_to_remove.append(node)
+        for node in nodes_to_remove:
+            graphml_graph.remove(node)
+            removed_nodes += 1
+    details["graphml"] = {"removed_nodes": removed_nodes, "removed_edges": removed_edges}
+
+    # 3.2 vdb_entities
+    before_e = len(vdb_e.get("data", []))
+    vdb_e["data"] = [
+        entry for entry in vdb_e.get("data", [])
+        if entry.get("entity_name") not in zombie_names
+    ]
+    _rebuild_vdb_matrix(vdb_e)
+    details["vdb_entities"] = {"before": before_e, "after": len(vdb_e["data"])}
+
+    # 3.3 vdb_relationships
+    before_r = len(vdb_r.get("data", []))
+    vdb_r["data"] = [
+        entry for entry in vdb_r.get("data", [])
+        if entry.get("src_id") not in zombie_names and entry.get("tgt_id") not in zombie_names
+    ]
+    _rebuild_vdb_matrix(vdb_r)
+    details["vdb_relationships"] = {"before": before_r, "after": len(vdb_r["data"])}
+
+    # 3.4 kv_store_entity_chunks
+    before_ec = len(ec)
+    for zname in zombie_names:
+        ec.pop(zname, None)
+    details["entity_chunks"] = {"before": before_ec, "after": len(ec)}
+
+    # 3.5 kv_store_text_chunks 的脑区专属 chunk
+    before_tc = len(tc)
+    tc_to_remove = []
+    for chunk_id, meta in tc.items():
+        if not isinstance(meta, dict):
+            continue
+        sid = meta.get("source_id", "") or meta.get("full_doc_id", "")
+        if sid.startswith("brain_"):
+            brain_name = sid[len("brain_"):]
+            if brain_name in zombie_names:
+                tc_to_remove.append(chunk_id)
+                orphan_chunk_ids.append(chunk_id)
+    for cid in tc_to_remove:
+        tc.pop(cid, None)
+    details["text_chunks"] = {"before": before_tc, "after": len(tc), "removed": len(tc_to_remove)}
+
+    # 3.6 vdb_chunks 的对应 chunk 向量
+    before_vc = len(vdb_c.get("data", []))
+    orphan_set = set(orphan_chunk_ids)
+    vdb_c["data"] = [
+        entry for entry in vdb_c.get("data", [])
+        if entry.get("__id__") not in orphan_set
+    ]
+    _rebuild_vdb_matrix(vdb_c)
+    details["vdb_chunks"] = {"before": before_vc, "after": len(vdb_c["data"])}
+
+    # 3.7 kv_store_full_entities
+    cleaned_fe = 0
+    fe_docs_to_remove = []
+    for doc_id, ent_data in fe.items():
+        if not isinstance(ent_data, dict):
+            continue
+        if "entity_names" in ent_data and isinstance(ent_data["entity_names"], list):
+            before = len(ent_data["entity_names"])
+            ent_data["entity_names"] = [
+                n for n in ent_data["entity_names"] if n not in zombie_names
+            ]
+            if "count" in ent_data:
+                ent_data["count"] = len(ent_data["entity_names"])
+            cleaned_fe += before - len(ent_data["entity_names"])
+        elif "entity_name" in ent_data and ent_data.get("entity_name") in zombie_names:
+            fe_docs_to_remove.append(doc_id)
+    for doc_id in fe_docs_to_remove:
+        fe.pop(doc_id, None)
+    details["full_entities"] = {"cleaned_count": cleaned_fe, "removed_docs": len(fe_docs_to_remove)}
+
+    # 3.8 kv_store_full_relations
+    cleaned_fr = 0
+    for doc_id, rel_data in fr.items():
+        if not isinstance(rel_data, dict):
+            continue
+        pairs = rel_data.get("relation_pairs", [])
+        if isinstance(pairs, list):
+            before = len(pairs)
+            rel_data["relation_pairs"] = [
+                p for p in pairs
+                if isinstance(p, list) and len(p) >= 2
+                and p[0] not in zombie_names and p[1] not in zombie_names
+            ]
+            if "count" in rel_data:
+                rel_data["count"] = len(rel_data["relation_pairs"])
+            cleaned_fr += before - len(rel_data["relation_pairs"])
+    details["full_relations"] = {"cleaned_count": cleaned_fr}
+
+    # 3.9 kv_store_relation_chunks (Bug #3: 第 8 个存储)
+    before_rc = len(rc)
+    rc_keys_to_remove = []
+    for key in list(rc.keys()):
+        if "<SEP>" in key:
+            parts = key.split("<SEP>")
+            if any(p in zombie_names for p in parts):
+                rc_keys_to_remove.append(key)
+    for key in rc_keys_to_remove:
+        rc.pop(key, None)
+    details["relation_chunks"] = {
+        "before": before_rc,
+        "after": len(rc),
+        "removed": len(rc_keys_to_remove),
+    }
+
+    # 4. 统一写盘（事务式）
+    try:
+        graphml_tree.write(graphml_path, xml_declaration=True, encoding="utf-8")
+        vdb_e_path.write_text(json.dumps(vdb_e, ensure_ascii=False))
+        vdb_r_path.write_text(json.dumps(vdb_r, ensure_ascii=False))
+        ec_path.write_text(json.dumps(ec, ensure_ascii=False))
+        tc_path.write_text(json.dumps(tc, ensure_ascii=False))
+        vdb_c_path.write_text(json.dumps(vdb_c, ensure_ascii=False))
+        if fe_path.exists() or fe:
+            fe_path.write_text(json.dumps(fe, ensure_ascii=False))
+        if fr_path.exists() or fr:
+            fr_path.write_text(json.dumps(fr, ensure_ascii=False))
+        if rc_path.exists() or rc:
+            rc_path.write_text(json.dumps(rc, ensure_ascii=False))
+    except Exception as e:
+        return {"status": "unrecoverable", "reason": f"写盘失败（部分文件可能已写）: {e}"}
+
+    return {
+        "status": "ok",
+        "cleaned_count": len(zombie_names),
+        "details": details,
+    }
 _REPAIR_ORDER = [
     ("brainregion_zombies", repair_brainregion_zombies),  # 最早清理僵尸脑区
     ("text_chunks", repair_text_chunks),
@@ -2044,252 +2294,3 @@ def _rebuild_vdb_matrix(vdb_data: dict) -> dict:
     vdb_data["matrix"] = base64.b64encode(matrix.tobytes()).decode("ascii")
     return vdb_data
 
-
-def repair_brainregion_zombies() -> dict[str, Any]:
-    """语义 repair: 完整清理 8 个存储的僵尸脑区残留。
-
-    真相源：脑区 description 的语义标记（"被删除"等）——不是 GraphML，
-    因为 GraphML 本身可能被污染（含僵尸 node）。
-
-    清理范围（8 存储）：
-    1. GraphML node + cascade edge
-    2. vdb_entities 向量
-    3. vdb_relationships 向量
-    4. kv_store_entity_chunks 的脑区 key
-    5. kv_store_text_chunks 的脑区专属 chunk
-    6. vdb_chunks 的脑区专属 chunk 向量
-    7. kv_store_full_entities / full_relations 文档级索引
-    8. kv_store_relation_chunks 的僵尸关系 chunk
-
-    运维场景提示：
-        本函数清理 8 个存储的僵尸脑区残留。注意：如果用户不跑本函数而直接
-        启动 `./niu`，`dissolve_shrunk_regions` 只通过 LightRAG
-        `adelete_by_entity` 清理 GraphML node + vdb_entities + 部分 kv_store，
-        但 181 个 brain_xxx 专属 chunk 会残留。建议运维场景下定期跑
-        `repair_all()`（含本函数）做完整 8 存储清理。
-
-    Returns:
-        {"status": "ok"|"unrecoverable", "cleaned_count": int, "details": {...}}
-    """
-    import xml.etree.ElementTree as ET
-    from niu_api.internal.lightrag_integrity import (
-        _load_graphml, _ZOMBIE_DESCRIPTION_MARKERS,
-    )
-
-    storage_dir = _storage_dir()
-    details: dict[str, Any] = {}
-
-    # 1. 识别僵尸脑区
-    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        return {"status": "unrecoverable", "reason": "GraphML 解析失败", "error": graphml_err}
-
-    zombie_names: list[str] = []
-    for nid, meta in node_meta.items():
-        if meta.get("entity_type") != "brainregion":
-            continue
-        desc = meta.get("description", "")
-        if any(marker in desc for marker in _ZOMBIE_DESCRIPTION_MARKERS):
-            zombie_names.append(nid)
-
-    if not zombie_names:
-        return {"status": "ok", "cleaned_count": 0, "details": {"reason": "no zombies detected"}}
-
-    details["zombies"] = zombie_names
-
-    # 2. 读入所有需要修改的存储到内存（事务式保护）
-    try:
-        graphml_path = storage_dir / _GRAPHML_FILE
-        graphml_tree = ET.parse(graphml_path)
-        graphml_root = graphml_tree.getroot()
-        graphml_graph = graphml_root.find("graph")
-        if graphml_graph is None:
-            for child in graphml_root:
-                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-                if tag == "graph":
-                    graphml_graph = child
-                    break
-
-        vdb_e_path = storage_dir / "vdb_entities.json"
-        vdb_e = json.loads(vdb_e_path.read_text()) if vdb_e_path.exists() else {"data": [], "embedding_dim": 0, "matrix": ""}
-
-        vdb_r_path = storage_dir / "vdb_relationships.json"
-        vdb_r = json.loads(vdb_r_path.read_text()) if vdb_r_path.exists() else {"data": [], "embedding_dim": 0, "matrix": ""}
-
-        ec_path = storage_dir / "kv_store_entity_chunks.json"
-        ec = json.loads(ec_path.read_text()) if ec_path.exists() else {}
-
-        tc_path = storage_dir / "kv_store_text_chunks.json"
-        tc = json.loads(tc_path.read_text()) if tc_path.exists() else {}
-
-        vdb_c_path = storage_dir / "vdb_chunks.json"
-        vdb_c = json.loads(vdb_c_path.read_text()) if vdb_c_path.exists() else {"data": [], "embedding_dim": 0, "matrix": ""}
-
-        fe_path = storage_dir / "kv_store_full_entities.json"
-        fe = json.loads(fe_path.read_text()) if fe_path.exists() else {}
-
-        fr_path = storage_dir / "kv_store_full_relations.json"
-        fr = json.loads(fr_path.read_text()) if fr_path.exists() else {}
-
-        rc_path = storage_dir / "kv_store_relation_chunks.json"
-        rc = json.loads(rc_path.read_text()) if rc_path.exists() else {}
-    except Exception as e:
-        return {"status": "unrecoverable", "reason": f"读入存储失败: {e}"}
-
-    # 3. 在内存中修改（不写盘）
-    orphan_chunk_ids: list[str] = []
-
-    # 3.1 GraphML node + cascade edge
-    removed_nodes = 0
-    removed_edges = 0
-    if graphml_graph is not None:
-        edges_to_remove = []
-        for edge in list(graphml_graph):
-            tag = edge.tag.split("}")[-1] if "}" in edge.tag else edge.tag
-            if tag != "edge":
-                continue
-            src = edge.get("source", "")
-            tgt = edge.get("target", "")
-            if src in zombie_names or tgt in zombie_names:
-                edges_to_remove.append(edge)
-        for edge in edges_to_remove:
-            graphml_graph.remove(edge)
-            removed_edges += 1
-        nodes_to_remove = []
-        for node in list(graphml_graph):
-            tag = node.tag.split("}")[-1] if "}" in node.tag else node.tag
-            if tag != "node":
-                continue
-            if node.get("id") in zombie_names:
-                nodes_to_remove.append(node)
-        for node in nodes_to_remove:
-            graphml_graph.remove(node)
-            removed_nodes += 1
-    details["graphml"] = {"removed_nodes": removed_nodes, "removed_edges": removed_edges}
-
-    # 3.2 vdb_entities
-    before_e = len(vdb_e.get("data", []))
-    vdb_e["data"] = [
-        entry for entry in vdb_e.get("data", [])
-        if entry.get("entity_name") not in zombie_names
-    ]
-    _rebuild_vdb_matrix(vdb_e)
-    details["vdb_entities"] = {"before": before_e, "after": len(vdb_e["data"])}
-
-    # 3.3 vdb_relationships
-    before_r = len(vdb_r.get("data", []))
-    vdb_r["data"] = [
-        entry for entry in vdb_r.get("data", [])
-        if entry.get("src_id") not in zombie_names and entry.get("tgt_id") not in zombie_names
-    ]
-    _rebuild_vdb_matrix(vdb_r)
-    details["vdb_relationships"] = {"before": before_r, "after": len(vdb_r["data"])}
-
-    # 3.4 kv_store_entity_chunks
-    before_ec = len(ec)
-    for zname in zombie_names:
-        ec.pop(zname, None)
-    details["entity_chunks"] = {"before": before_ec, "after": len(ec)}
-
-    # 3.5 kv_store_text_chunks 的脑区专属 chunk
-    before_tc = len(tc)
-    tc_to_remove = []
-    for chunk_id, meta in tc.items():
-        if not isinstance(meta, dict):
-            continue
-        sid = meta.get("source_id", "") or meta.get("full_doc_id", "")
-        if sid.startswith("brain_"):
-            brain_name = sid[len("brain_"):]
-            if brain_name in zombie_names:
-                tc_to_remove.append(chunk_id)
-                orphan_chunk_ids.append(chunk_id)
-    for cid in tc_to_remove:
-        tc.pop(cid, None)
-    details["text_chunks"] = {"before": before_tc, "after": len(tc), "removed": len(tc_to_remove)}
-
-    # 3.6 vdb_chunks 的对应 chunk 向量
-    before_vc = len(vdb_c.get("data", []))
-    orphan_set = set(orphan_chunk_ids)
-    vdb_c["data"] = [
-        entry for entry in vdb_c.get("data", [])
-        if entry.get("__id__") not in orphan_set
-    ]
-    _rebuild_vdb_matrix(vdb_c)
-    details["vdb_chunks"] = {"before": before_vc, "after": len(vdb_c["data"])}
-
-    # 3.7 kv_store_full_entities
-    cleaned_fe = 0
-    fe_docs_to_remove = []
-    for doc_id, ent_data in fe.items():
-        if not isinstance(ent_data, dict):
-            continue
-        if "entity_names" in ent_data and isinstance(ent_data["entity_names"], list):
-            before = len(ent_data["entity_names"])
-            ent_data["entity_names"] = [
-                n for n in ent_data["entity_names"] if n not in zombie_names
-            ]
-            if "count" in ent_data:
-                ent_data["count"] = len(ent_data["entity_names"])
-            cleaned_fe += before - len(ent_data["entity_names"])
-        elif "entity_name" in ent_data and ent_data.get("entity_name") in zombie_names:
-            fe_docs_to_remove.append(doc_id)
-    for doc_id in fe_docs_to_remove:
-        fe.pop(doc_id, None)
-    details["full_entities"] = {"cleaned_count": cleaned_fe, "removed_docs": len(fe_docs_to_remove)}
-
-    # 3.8 kv_store_full_relations
-    cleaned_fr = 0
-    for doc_id, rel_data in fr.items():
-        if not isinstance(rel_data, dict):
-            continue
-        pairs = rel_data.get("relation_pairs", [])
-        if isinstance(pairs, list):
-            before = len(pairs)
-            rel_data["relation_pairs"] = [
-                p for p in pairs
-                if isinstance(p, list) and len(p) >= 2
-                and p[0] not in zombie_names and p[1] not in zombie_names
-            ]
-            if "count" in rel_data:
-                rel_data["count"] = len(rel_data["relation_pairs"])
-            cleaned_fr += before - len(rel_data["relation_pairs"])
-    details["full_relations"] = {"cleaned_count": cleaned_fr}
-
-    # 3.9 kv_store_relation_chunks (Bug #3: 第 8 个存储)
-    before_rc = len(rc)
-    rc_keys_to_remove = []
-    for key in list(rc.keys()):
-        if "<SEP>" in key:
-            parts = key.split("<SEP>")
-            if any(p in zombie_names for p in parts):
-                rc_keys_to_remove.append(key)
-    for key in rc_keys_to_remove:
-        rc.pop(key, None)
-    details["relation_chunks"] = {
-        "before": before_rc,
-        "after": len(rc),
-        "removed": len(rc_keys_to_remove),
-    }
-
-    # 4. 统一写盘（事务式）
-    try:
-        graphml_tree.write(graphml_path, xml_declaration=True, encoding="utf-8")
-        vdb_e_path.write_text(json.dumps(vdb_e, ensure_ascii=False))
-        vdb_r_path.write_text(json.dumps(vdb_r, ensure_ascii=False))
-        ec_path.write_text(json.dumps(ec, ensure_ascii=False))
-        tc_path.write_text(json.dumps(tc, ensure_ascii=False))
-        vdb_c_path.write_text(json.dumps(vdb_c, ensure_ascii=False))
-        if fe_path.exists() or fe:
-            fe_path.write_text(json.dumps(fe, ensure_ascii=False))
-        if fr_path.exists() or fr:
-            fr_path.write_text(json.dumps(fr, ensure_ascii=False))
-        if rc_path.exists() or rc:
-            rc_path.write_text(json.dumps(rc, ensure_ascii=False))
-    except Exception as e:
-        return {"status": "unrecoverable", "reason": f"写盘失败（部分文件可能已写）: {e}"}
-
-    return {
-        "status": "ok",
-        "cleaned_count": len(zombie_names),
-        "details": details,
-    }
