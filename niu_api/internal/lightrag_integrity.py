@@ -1,183 +1,77 @@
-"""LightRAG 数据一致性外挂检测（因果链引用完整性版）
+"""LightRAG 数据一致性检查（简化版 v2）。
 
-设计原则：
-1. **空文件不是错**——新用户/刚清空时所有文件都空，因果链自洽，合法启动
-2. **不一致才是错**——引用的 key 在被引用方不存在 = 因果链断裂 = 损坏
-3. **不做假数据**——修不好让 check 仍检测到损坏，拒绝启动
-
-10 项因果链检查（每项只验证引用完整性，不检查文件是否空）：
-| #  | 检查                      | 引用方 -> 被引用方                                | severity |
-|----|---------------------------|---------------------------------------------------|----------|
-| 1  | entity_chunks 引用悬空    | kv_store_entity_chunks key -> GraphML node        | major    |
-| 2  | relation_chunks 引用悬空  | kv_store_relation_chunks key -> GraphML edge       | major    |
-| 3  | text_chunks 文档悬空      | kv_store_text_chunks full_doc_id -> full_docs     | critical |
-| 4  | text_chunks 缓存悬空      | kv_store_text_chunks llm_cache_list -> llm_cache  | minor    |
-| 5  | doc_status chunks 悬空    | kv_store_doc_status chunks_list -> text_chunks    | major    |
-| 6  | vdb_entities 向量缺失     | GraphML node -> vdb_entities.data __id__          | major    |
-| 7  | vdb_relationships 向量缺失| GraphML edge -> vdb_relationships.data __id__      | major    |
-| 8  | vdb_chunks 向量缺失       | text_chunks -> vdb_chunks.data __id__             | major    |
-| 9  | GraphML edge 端点悬空     | GraphML edge source/target -> GraphML node        | major    |
-| 10 | vdb_relationships 端点悬空| vdb_relationships src_id/tgt_id -> GraphML node   | major    |
-
-文件级 critical（JSON 解析失败 / matrix 维度不匹配）= 文件本身损坏。
-
-空文件合法：文件不存在或 JSON 解析为空 dict（`{}`）= 通过（无引用即无悬空）。
-JSON 解析为 list 或其他类型 = 文件级 critical。
+检查项：
+1. 2 真相源完整可用（full_docs + llm_response_cache）
+2. GraphML 后置验证（重建后应该有 node）
+3. vdb_*_missing 检测（GraphML 有 node 但 vdb 没对应向量 → 启动放行风险）
 """
-from __future__ import annotations
 
 import json
+import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
-from lightrag.utils import (
-    compute_mdhash_id,
-    make_relation_vdb_ids,
-    parse_relation_chunk_key,
-)
+logger = logging.getLogger(__name__)
 
 _STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
 _GRAPHML_FILE = "graph_chunk_entity_relation.graphml"
 
+_TRUTH_SOURCE_FILES = [
+    "kv_store_full_docs.json",
+    "kv_store_llm_response_cache.json",
+]
 
-# =============================================================================
-# 工具函数：文件读取 + GraphML 解析
-# =============================================================================
+# 僵尸脑区 description 语义标记（LLM 写的 description，明确告诉系统这个实体该删）
+# repair_brainregion_zombies（lightrag_repair.py:1775）import 这个常量用于：
+# 1. 识别 GraphML 里 description 含"被删除"标记的脑区 node
+# 2. 清理 llm_response_cache 里 entity_type=brainregion + description 含标记的 extract entry
+# 注意：替换 lightrag_integrity.py 时必须保留这个常量，否则 lightrag_repair.py 会 ImportError
+_ZOMBIE_DESCRIPTION_MARKERS = (
+    "被删除的重复脑区实体之一",
+    "被删除的脑区",
+    "已删除的脑区",
+    "已删除的重复脑区",
+)
 
 
 def _resolve_storage_dir() -> Path:
-    """返回 _STORAGE_DIR 的 Path 形式（兼容 monkeypatch 注入 str 的场景）。"""
-    return Path(_STORAGE_DIR)
+    return _STORAGE_DIR
 
 
-def _load_json_dict(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """加载 JSON 文件为 dict。
-
-    Returns:
-        (data, error)  二元组：
-        - 文件不存在 → ({}, None)
-        - JSON 解析为空 dict 或非空 dict → (dict, None)
-        - JSON 解析为 list 或其他类型 → (None, {"check": "json_not_dict", ...})
-        - JSON 解析失败 → (None, {"check": "json_parse", ...})
-    """
+def _load_json_dict(path: Path) -> tuple[dict, dict | None]:
+    """加载 JSON dict 文件，返回 (data, error)。"""
     if not path.exists():
         return {}, None
     try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except json.JSONDecodeError as e:
-        return None, {
-            "check": "json_parse",
-            "file": path.name,
-            "msg": str(e),
-            "line": e.lineno,
-            "col": e.colno,
-            "severity": "critical",
-        }
-    except Exception as e:  # noqa: BLE001
-        return None, {
-            "check": "json_parse",
-            "file": path.name,
-            "msg": f"{type(e).__name__}: {e}",
-            "severity": "critical",
-        }
-    if not isinstance(raw, dict):
-        return None, {
-            "check": "json_not_dict",
-            "file": path.name,
-            "type": type(raw).__name__,
-            "severity": "critical",
-        }
-    return raw, None
-
-
-def _load_vdb(path: Path) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None, dict[str, Any] | None]:
-    """加载 nano-vectordb 文件，返回 (raw_dict, data_list, error)。
-
-    Returns:
-        - 文件不存在 → ({}, [], None)（空数据，通过）
-        - matrix 维度不匹配 → (raw, data_list, {"check": "matrix_size_mismatch", ...})（critical 文件级损坏）
-        - JSON 解析失败 / 非 dict 类型 → (None, None, error)
-        - data 不是 list → (None, None, {"check": "data_not_list", ...})
-    """
-    if not path.exists():
-        return {}, [], None
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except json.JSONDecodeError as e:
-        return None, None, {
-            "check": "json_parse",
-            "file": path.name,
-            "msg": str(e),
-            "line": e.lineno,
-            "col": e.colno,
-            "severity": "critical",
-        }
-    except Exception as e:  # noqa: BLE001
-        return None, None, {
-            "check": "json_parse",
-            "file": path.name,
-            "msg": f"{type(e).__name__}: {e}",
-            "severity": "critical",
-        }
-    if not isinstance(raw, dict):
-        return None, None, {
-            "check": "json_not_dict",
-            "file": path.name,
-            "type": type(raw).__name__,
-            "severity": "critical",
-        }
-    data_list = raw.get("data", [])
-    if not isinstance(data_list, list):
-        return None, None, {
-            "check": "data_not_list",
-            "file": path.name,
-            "type": type(data_list).__name__,
-            "severity": "critical",
-        }
-    # 检查 matrix 维度（如果存在 embedding_dim 和 matrix 字段）
-    embedding_dim = raw.get("embedding_dim")
-    matrix_b64 = raw.get("matrix", "")
-    if embedding_dim is not None and matrix_b64:
-        import base64
-
-        try:
-            matrix_bytes = base64.b64decode(matrix_b64)
-            expected_bytes = 4 * embedding_dim * len(data_list)
-            if len(matrix_bytes) != expected_bytes:
-                return raw, data_list, {
-                    "check": "matrix_size_mismatch",
-                    "file": path.name,
-                    "bytes": len(matrix_bytes),
-                    "expected": expected_bytes,
-                    "severity": "critical",
-                }
-        except Exception as e:  # noqa: BLE001
-            return raw, data_list, {
-                "check": "matrix_b64_decode",
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return {}, {
+                "check": "json_type_mismatch",
                 "file": path.name,
-                "msg": f"{type(e).__name__}: {e}",
+                "msg": f"expected dict, got {type(data).__name__}",
                 "severity": "critical",
             }
-    return raw, data_list, None
+        return data, None
+    except json.JSONDecodeError as e:
+        return {}, {
+            "check": "json_parse",
+            "file": path.name,
+            "msg": str(e),
+            "severity": "critical",
+        }
+    except Exception as e:
+        return {}, {
+            "check": "json_read",
+            "file": path.name,
+            "msg": f"{type(e).__name__}: {e}",
+            "severity": "critical",
+        }
 
 
 def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str, dict[str, str]], dict[str, Any] | None]:
-    """解析 GraphML 文件，返回 (node_ids, edges, node_meta, error)。
-
-    Returns:
-        - 文件不存在 → (set(), [], {}, None)（空数据，通过）
-        - XML 解析失败 → (set(), [], {}, {"check": "xml_parse", ...})（critical）
-        - 成功 → (node_id_set, [(src, tgt), ...], {node_id: {entity_type, description, source_id}}, None)
-
-    注意：node id 和 edge source/target 都已 lower 化（LightRAG 设计），
-    这里不再额外 lower，直接使用原始值。
-    """
+    """解析 GraphML 文件，返回 (node_ids, edges, node_meta, error)。"""
     if not path.exists():
         return set(), [], {}, None
     try:
@@ -190,7 +84,7 @@ def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str
             "msg": str(e),
             "severity": "critical",
         }
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return set(), [], {}, {
             "check": "xml_parse",
             "file": path.name,
@@ -198,7 +92,6 @@ def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str
             "severity": "critical",
         }
 
-    # 找到 graph 元素（支持 namespace）
     graph = root.find("graph")
     if graph is None:
         for child in root:
@@ -240,980 +133,220 @@ def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str
     return node_ids, edges, node_meta, None
 
 
-def _parse_brain_meta(description: str | None) -> dict[str, str]:
-    """解析脑区 description 里的 brain_meta_* 字段。
+def _load_vdb(path: Path) -> tuple[list[dict], dict[str, Any] | None]:
+    """加载 vdb 文件，返回 (data_list, error)。"""
+    if not path.exists():
+        return [], None  # 文件不存在视为空 vdb
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return [], {
+                "check": "vdb_type_mismatch",
+                "file": path.name,
+                "msg": f"expected dict, got {type(data).__name__}",
+                "severity": "major",
+            }
+        return data.get("data", []) or [], None
+    except json.JSONDecodeError as e:
+        return [], {
+            "check": "vdb_parse",
+            "file": path.name,
+            "msg": str(e),
+            "severity": "major",
+        }
+    except Exception as e:
+        return [], {
+            "check": "vdb_read",
+            "file": path.name,
+            "msg": f"{type(e).__name__}: {e}",
+            "severity": "major",
+        }
 
-    description 格式：<SEP> 分隔的多字段，每段形如 `brain_meta_<key>:<value>`
 
-    Returns:
-        {field_name_without_prefix: value}，比如 {"size": "0", "shrink_count": "1", ...}
-        空字段（value 为空）也保留，便于检测 size:0 这种"故意 0"的语义。
+def _check_truth_source(fname: str, storage_dir: Path) -> dict[str, Any]:
+    """检测单个真相源文件（全新用户合法，空文件/空 dict/不存在都 ok）。
+
+    只有"文件存在但 JSON 解析失败/内容残缺（非 dict）"才算 critical。
     """
-    if not description:
+    fpath = storage_dir / fname
+    if not fpath.exists():
+        # 文件不存在 = 全新用户，ok（返回空 dict 表示无错误）
         return {}
-    result: dict[str, str] = {}
-    parts = description.split("<SEP>")
-    for part in parts:
-        if not part:
-            continue
-        if ":" in part:
-            key, _, value = part.partition(":")
-            if key.startswith("brain_meta_"):
-                result[key[len("brain_meta_"):]] = value
-    return result
-
-
-# =============================================================================
-# 10 项因果链检查 + 文件级 critical
-# =============================================================================
-
-
-def check_entity_chunks_dangling() -> dict[str, Any]:
-    """检查 #1: kv_store_entity_chunks 的 key(entity_name) 是否都在 GraphML node 里。
-
-    引用方：kv_store_entity_chunks 的 key
-    被引用方：GraphML node id 集合
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    ec_data, ec_err = _load_json_dict(storage_dir / "kv_store_entity_chunks.json")
-    if ec_err:
-        errors.append(ec_err)
-        return {"name": "entity_chunks_dangling", "errors": errors}
-    if not ec_data:
-        return {"name": "entity_chunks_dangling", "errors": []}
-
-    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "entity_chunks_dangling", "errors": errors}
-
-    for entity_name in ec_data:
-        if entity_name not in node_ids:
-            errors.append({
-                "check": "entity_chunks_dangling",
-                "severity": "major",
-                "ref_key": entity_name,
-                "ref_file": "kv_store_entity_chunks.json",
-                "target_file": _GRAPHML_FILE,
-                "msg": f"entity_chunks key '{entity_name}' 在 GraphML node 中不存在",
-            })
-    return {"name": "entity_chunks_dangling", "errors": errors}
-
-
-def check_relation_chunks_dangling() -> dict[str, Any]:
-    """检查 #2: kv_store_relation_chunks 的每个 key 拆分为 (src, tgt)，检查 GraphML 是否存在 edge (src, tgt) 或 (tgt, src)。
-
-    引用方：kv_store_relation_chunks 的 key（格式 `<SEP>` 分隔的 src/tgt）
-    被引用方：GraphML edge 集合（无向，正序+逆序都算匹配）
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    rc_data, rc_err = _load_json_dict(storage_dir / "kv_store_relation_chunks.json")
-    if rc_err:
-        errors.append(rc_err)
-        return {"name": "relation_chunks_dangling", "errors": errors}
-    if not rc_data:
-        return {"name": "relation_chunks_dangling", "errors": []}
-
-    _, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "relation_chunks_dangling", "errors": errors}
-
-    # 构造无向 edge 集合：frozenset({src, tgt}) → True
-    edge_set: set[frozenset[str]] = {frozenset((src, tgt)) for src, tgt in edges if src and tgt}
-
-    for key in rc_data:
-        try:
-            src, tgt = parse_relation_chunk_key(key)
-        except ValueError:
-            errors.append({
-                "check": "relation_chunk_key_invalid",
-                "severity": "major",
-                "ref_key": key,
-                "ref_file": "kv_store_relation_chunks.json",
-                "msg": f"relation_chunks key '{key}' 解析失败（非 <SEP> 格式）",
-            })
-            continue
-        if frozenset((src, tgt)) not in edge_set:
-            errors.append({
-                "check": "relation_chunks_dangling",
-                "severity": "major",
-                "ref_key": key,
-                "ref_src": src,
-                "ref_tgt": tgt,
-                "ref_file": "kv_store_relation_chunks.json",
-                "target_file": _GRAPHML_FILE,
-                "msg": f"relation_chunks key '{key}' 在 GraphML edges 中不存在（src={src}, tgt={tgt}）",
-            })
-    return {"name": "relation_chunks_dangling", "errors": errors}
-
-
-def check_text_chunks_doc_dangling() -> dict[str, Any]:
-    """检查 #3: kv_store_text_chunks 的 full_doc_id 是否都在 full_docs 里。
-
-    引用方：kv_store_text_chunks 的 full_doc_id 字段
-    被引用方：kv_store_full_docs 的 key
-    severity: critical（真相源断裂）
-
-    只检查普通文档 chunk（full_doc_id 以 'doc-' 或 'refined:' 开头）。
-    自定义 KG chunk（brain_*/custom_kg_*/skill://*/文件路径等）通过 ainsert_custom_kg
-    写入，不写 full_docs，跳过检查以避免误报。
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    tc_data, tc_err = _load_json_dict(storage_dir / "kv_store_text_chunks.json")
-    if tc_err:
-        errors.append(tc_err)
-        return {"name": "text_chunks_doc_dangling", "errors": errors}
-    if not tc_data:
-        return {"name": "text_chunks_doc_dangling", "errors": []}
-
-    fd_data, fd_err = _load_json_dict(storage_dir / "kv_store_full_docs.json")
-    if fd_err:
-        errors.append(fd_err)
-        return {"name": "text_chunks_doc_dangling", "errors": errors}
-    assert fd_data is not None  # fd_err is None → fd_data is not None
-
-    for chunk_id, chunk_value in tc_data.items():
-        if not isinstance(chunk_value, dict):
-            continue
-        full_doc_id = chunk_value.get("full_doc_id", "")
-        if not full_doc_id:
-            continue
-        # 自定义 KG chunk 跳过（只有普通文档 chunk 才在 full_docs 里）
-        if not full_doc_id.startswith("doc-") and not full_doc_id.startswith("refined:"):
-            continue
-        if full_doc_id not in fd_data:
-            errors.append({
-                "check": "text_chunks_doc_dangling",
+    try:
+        size = fpath.stat().st_size
+        if size == 0:
+            # 空文件 = 全新用户，ok
+            return {}
+        data = json.loads(fpath.read_text())
+        if not isinstance(data, dict):
+            return {
+                "check": "truth_source_corrupt",
                 "severity": "critical",
-                "ref_key": chunk_id,
-                "full_doc_id": full_doc_id,
-                "ref_file": "kv_store_text_chunks.json",
-                "target_file": "kv_store_full_docs.json",
-                "msg": f"text_chunks['{chunk_id}'].full_doc_id='{full_doc_id}' 在 full_docs 中不存在",
-            })
-    return {"name": "text_chunks_doc_dangling", "errors": errors}
+                "file": fname,
+                "msg": f"真相源 {fname} 内容非 dict（{type(data).__name__}）",
+            }
+        # 空 dict 或有内容都 ok（全新用户合法）
+        return {}
+    except json.JSONDecodeError as e:
+        return {
+            "check": "truth_source_corrupt",
+            "severity": "critical",
+            "file": fname,
+            "msg": f"真相源 {fname} JSON 解析失败: {e}",
+        }
+    except Exception as e:
+        return {
+            "check": "truth_source_read_fail",
+            "severity": "critical",
+            "file": fname,
+            "msg": f"真相源 {fname} 读取失败: {e}",
+        }
 
 
-def check_text_chunks_cache_dangling() -> dict[str, Any]:
-    """检查 #4: kv_store_text_chunks 的 llm_cache_list 引用的 cache_key 是否都在 llm_response_cache 里。
+def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:
+    """后置验证：GraphML 是否存在且非空。"""
+    graphml_path = storage_dir / _GRAPHML_FILE
+    if not graphml_path.exists():
+        return {
+            "check": "graphml_missing",
+            "severity": "major",
+            "file": _GRAPHML_FILE,
+            "msg": "GraphML 不存在（重建未完成或失败）",
+        }
+    try:
+        size = graphml_path.stat().st_size
+        if size == 0:
+            return {
+                "check": "graphml_empty",
+                "severity": "major",
+                "file": _GRAPHML_FILE,
+                "msg": "GraphML 为空文件",
+            }
+        node_ids, edges, _, err = _load_graphml(graphml_path)
+        if err:
+            return err
+        if not node_ids:
+            return {
+                "check": "graphml_no_nodes",
+                "severity": "major",
+                "file": _GRAPHML_FILE,
+                "msg": "GraphML 无 node（重建失败信号）",
+            }
+    except Exception as e:
+        return {
+            "check": "graphml_read_fail",
+            "severity": "major",
+            "file": _GRAPHML_FILE,
+            "msg": f"GraphML 读取失败: {e}",
+        }
+    return {}
 
-    引用方：kv_store_text_chunks 的 llm_cache_list 字段（不存在视为空列表，通过）
-    被引用方：kv_store_llm_response_cache 的 key
-    severity: minor（缓存丢失可重建）
+
+def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
+    """检测 vdb_*_missing：GraphML 有 node 但 vdb 没对应向量。
+
+    返回 errors 列表（可能为空）。
     """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    tc_data, tc_err = _load_json_dict(storage_dir / "kv_store_text_chunks.json")
-    if tc_err:
-        errors.append(tc_err)
-        return {"name": "text_chunks_cache_dangling", "errors": errors}
-    if not tc_data:
-        return {"name": "text_chunks_cache_dangling", "errors": []}
-
-    cache_data, cache_err = _load_json_dict(storage_dir / "kv_store_llm_response_cache.json")
-    if cache_err:
-        errors.append(cache_err)
-        return {"name": "text_chunks_cache_dangling", "errors": errors}
-    assert cache_data is not None  # cache_err is None → cache_data is not None
-
-    for chunk_id, chunk_value in tc_data.items():
-        if not isinstance(chunk_value, dict):
-            continue
-        cache_list = chunk_value.get("llm_cache_list", [])
-        if not cache_list:
-            # 字段不存在或空列表 → 通过
-            continue
-        if not isinstance(cache_list, list):
-            continue
-        for cache_key in cache_list:
-            if not isinstance(cache_key, str):
-                continue
-            if cache_key not in cache_data:
-                errors.append({
-                    "check": "text_chunks_cache_dangling",
-                    "severity": "minor",
-                    "ref_key": chunk_id,
-                    "cache_key": cache_key,
-                    "ref_file": "kv_store_text_chunks.json",
-                    "target_file": "kv_store_llm_response_cache.json",
-                    "msg": f"text_chunks['{chunk_id}'].llm_cache_list 引用 '{cache_key}' 在 llm_response_cache 中不存在",
-                })
-    return {"name": "text_chunks_cache_dangling", "errors": errors}
-
-
-def check_doc_status_chunks_dangling() -> dict[str, Any]:
-    """检查 #5: kv_store_doc_status 的 chunks_list 引用的 chunk_id 是否都在 text_chunks 里。
-
-    引用方：kv_store_doc_status 的 chunks_list 字段
-    被引用方：kv_store_text_chunks 的 key
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    ds_data, ds_err = _load_json_dict(storage_dir / "kv_store_doc_status.json")
-    if ds_err:
-        errors.append(ds_err)
-        return {"name": "doc_status_chunks_dangling", "errors": errors}
-    if not ds_data:
-        return {"name": "doc_status_chunks_dangling", "errors": []}
-
-    tc_data, tc_err = _load_json_dict(storage_dir / "kv_store_text_chunks.json")
-    if tc_err:
-        errors.append(tc_err)
-        return {"name": "doc_status_chunks_dangling", "errors": errors}
-    if tc_data is None:
-        return {"name": "doc_status_chunks_dangling", "errors": errors}
-    tc_keys: set[str] = set(tc_data.keys())
-
-    for doc_id, doc_value in ds_data.items():
-        if not isinstance(doc_value, dict):
-            continue
-        chunks_list = doc_value.get("chunks_list", [])
-        if not chunks_list:
-            continue
-        if not isinstance(chunks_list, list):
-            continue
-        for chunk_id in chunks_list:
-            if not isinstance(chunk_id, str):
-                continue
-            if chunk_id not in tc_keys:
-                errors.append({
-                    "check": "doc_status_chunks_dangling",
-                    "severity": "major",
-                    "ref_key": doc_id,
-                    "chunk_id": chunk_id,
-                    "ref_file": "kv_store_doc_status.json",
-                    "target_file": "kv_store_text_chunks.json",
-                    "msg": f"doc_status['{doc_id}'].chunks_list 引用 '{chunk_id}' 在 text_chunks 中不存在",
-                })
-    return {"name": "doc_status_chunks_dangling", "errors": errors}
-
-
-def check_vdb_entities_missing() -> dict[str, Any]:
-    """检查 #6: GraphML 每个 node 的 `ent-{md5(name)}` 是否都在 vdb_entities.data 里。
-
-    引用方：GraphML node（id = entity_name）
-    被引用方：vdb_entities.data 的 __id__ 字段
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
     errors: list[dict[str, Any]] = []
 
     node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "vdb_entities_missing", "errors": errors}
-    if not node_ids:
-        return {"name": "vdb_entities_missing", "errors": []}
+    if graphml_err or not node_ids:
+        return errors  # GraphML 有问题由 _check_graphml_post 报，这里不重复
 
-    _, vdb_data, vdb_err = _load_vdb(storage_dir / "vdb_entities.json")
-    if vdb_err:
-        errors.append(vdb_err)
-        return {"name": "vdb_entities_missing", "errors": errors}
-
-    vdb_ids: set[str] = set()
-    for item in vdb_data or []:
-        if isinstance(item, dict):
-            iid = item.get("__id__")
-            if iid:
-                vdb_ids.add(iid)
-
-    for name in node_ids:
-        expected_id = compute_mdhash_id(name, prefix="ent-")
-        if expected_id not in vdb_ids:
+    # vdb_entities 检测：GraphML node 应在 vdb_entities 有对应向量
+    vdb_e_path = storage_dir / "vdb_entities.json"
+    vdb_e_list, vdb_e_err = _load_vdb(vdb_e_path)
+    if vdb_e_err:
+        errors.append(vdb_e_err)
+    else:
+        # vdb_entities 的 entity_name 集合
+        vdb_e_names = {
+            entry.get("entity_name", "").lower() if isinstance(entry, dict) else ""
+            for entry in vdb_e_list
+        }
+        vdb_e_names.discard("")
+        # GraphML node id 是小写化的（LightRAG 设计），直接比对
+        missing_in_vdb = {n for n in node_ids if n.lower() not in vdb_e_names}
+        if missing_in_vdb:
             errors.append({
                 "check": "vdb_entities_missing",
                 "severity": "major",
-                "ref_node": name,
-                "expected_id": expected_id,
                 "ref_file": _GRAPHML_FILE,
                 "target_file": "vdb_entities.json",
-                "msg": f"GraphML node '{name}' 的 vdb id '{expected_id}' 在 vdb_entities 中不存在",
+                "missing_count": len(missing_in_vdb),
+                "msg": f"GraphML 有 {len(missing_in_vdb)} 个 node 在 vdb_entities 中无对应向量",
             })
-    return {"name": "vdb_entities_missing", "errors": errors}
 
-
-def check_vdb_relationships_missing() -> dict[str, Any]:
-    """检查 #7: GraphML 每个 edge 用 make_relation_vdb_ids 生成候选 ID 列表（正序+逆序），检查列表中是否至少一个 ID 在 vdb_relationships.data 里。
-
-    引用方：GraphML edge (src, tgt)
-    被引用方：vdb_relationships.data 的 __id__ 字段
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    _, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "vdb_relationships_missing", "errors": errors}
-    if not edges:
-        return {"name": "vdb_relationships_missing", "errors": []}
-
-    _, vdb_data, vdb_err = _load_vdb(storage_dir / "vdb_relationships.json")
-    if vdb_err:
-        errors.append(vdb_err)
-        return {"name": "vdb_relationships_missing", "errors": errors}
-
-    vdb_ids: set[str] = set()
-    for item in vdb_data or []:
-        if isinstance(item, dict):
-            iid = item.get("__id__")
-            if iid:
-                vdb_ids.add(iid)
-
-    for src, tgt in edges:
-        if not src or not tgt:
-            continue
-        candidate_ids = make_relation_vdb_ids(src, tgt)
-        if not any(cid in vdb_ids for cid in candidate_ids):
+    # vdb_relationships 检测：GraphML edge 应在 vdb_relationships 有对应向量
+    _, edges, _, _ = _load_graphml(storage_dir / _GRAPHML_FILE)
+    vdb_r_path = storage_dir / "vdb_relationships.json"
+    vdb_r_list, vdb_r_err = _load_vdb(vdb_r_path)
+    if vdb_r_err:
+        errors.append(vdb_r_err)
+    elif edges:
+        # vdb_relationships 的 (src, tgt) 集合
+        vdb_r_pairs = set()
+        for entry in vdb_r_list:
+            if not isinstance(entry, dict):
+                continue
+            src = entry.get("src_id", "")
+            tgt = entry.get("tgt_id", "")
+            if src and tgt:
+                vdb_r_pairs.add((src.lower(), tgt.lower()))
+        # GraphML edge 集合
+        graphml_pairs = {(s.lower(), t.lower()) for s, t in edges}
+        missing_pairs = graphml_pairs - vdb_r_pairs
+        if missing_pairs:
             errors.append({
                 "check": "vdb_relationships_missing",
                 "severity": "major",
-                "ref_edge": f"{src}->{tgt}",
-                "candidate_ids": candidate_ids,
                 "ref_file": _GRAPHML_FILE,
                 "target_file": "vdb_relationships.json",
-                "msg": f"GraphML edge '{src}->{tgt}' 的候选 vdb id {candidate_ids} 在 vdb_relationships 中均不存在",
+                "missing_count": len(missing_pairs),
+                "msg": f"GraphML 有 {len(missing_pairs)} 条 edge 在 vdb_relationships 中无对应向量",
             })
-    return {"name": "vdb_relationships_missing", "errors": errors}
 
-
-def check_vdb_chunks_missing() -> dict[str, Any]:
-    """检查 #8: text_chunks 每个 chunk 的 `chunk-{md5(content)}` 是否都在 vdb_chunks.data 里。
-
-    引用方：kv_store_text_chunks 的每个 chunk（key=chunk_id, value.content=内容）
-    被引用方：vdb_chunks.data 的 __id__ 字段
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    tc_data, tc_err = _load_json_dict(storage_dir / "kv_store_text_chunks.json")
-    if tc_err:
-        errors.append(tc_err)
-        return {"name": "vdb_chunks_missing", "errors": errors}
-    if not tc_data:
-        return {"name": "vdb_chunks_missing", "errors": []}
-
-    _, vdb_data, vdb_err = _load_vdb(storage_dir / "vdb_chunks.json")
-    if vdb_err:
-        errors.append(vdb_err)
-        return {"name": "vdb_chunks_missing", "errors": errors}
-
-    vdb_ids: set[str] = set()
-    for item in vdb_data or []:
-        if isinstance(item, dict):
-            iid = item.get("__id__")
-            if iid:
-                vdb_ids.add(iid)
-
-    for chunk_id, chunk_value in tc_data.items():
-        if not isinstance(chunk_value, dict):
-            continue
-        content = chunk_value.get("content", "")
-        if not content:
-            continue
-        expected_id = compute_mdhash_id(content, prefix="chunk-")
-        if expected_id not in vdb_ids:
-            errors.append({
-                "check": "vdb_chunks_missing",
-                "severity": "major",
-                "ref_key": chunk_id,
-                "expected_id": expected_id,
-                "ref_file": "kv_store_text_chunks.json",
-                "target_file": "vdb_chunks.json",
-                "msg": f"text_chunks['{chunk_id}'] 的 vdb id '{expected_id}' 在 vdb_chunks 中不存在",
-            })
-    return {"name": "vdb_chunks_missing", "errors": errors}
-
-
-def check_graphml_edge_dangling() -> dict[str, Any]:
-    """检查 #9: GraphML 每个 edge 的 source 和 target 是否都在 GraphML node 集合中存在。
-
-    引用方：GraphML edge source/target
-    被引用方：GraphML node id 集合
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    node_ids, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "graphml_edge_dangling", "errors": errors}
-    if not edges:
-        return {"name": "graphml_edge_dangling", "errors": []}
-
-    for src, tgt in edges:
-        if src and src not in node_ids:
-            errors.append({
-                "check": "graphml_edge_dangling_source",
-                "severity": "major",
-                "source": src,
-                "target": tgt,
-                "ref_file": _GRAPHML_FILE,
-                "msg": f"GraphML edge source '{src}' 在 node 集合中不存在（target={tgt}）",
-            })
-        if tgt and tgt not in node_ids:
-            errors.append({
-                "check": "graphml_edge_dangling_target",
-                "severity": "major",
-                "source": src,
-                "target": tgt,
-                "ref_file": _GRAPHML_FILE,
-                "msg": f"GraphML edge target '{tgt}' 在 node 集合中不存在（source={src}）",
-            })
-    return {"name": "graphml_edge_dangling", "errors": errors}
-
-
-def check_vdb_relationships_endpoint_dangling() -> dict[str, Any]:
-    """检查 #10: vdb_relationships 每条记录的 src_id / tgt_id 是否都在 GraphML node 中存在。
-
-    引用方：vdb_relationships.data 的 src_id / tgt_id 字段
-    被引用方：GraphML node id 集合
-    severity: major
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "vdb_relationships_endpoint_dangling", "errors": errors}
-    if not node_ids:
-        # GraphML 为空，但 vdb_relationships 可能有数据 → 检查 vdb 是否也空
-        _, vdb_data, vdb_err = _load_vdb(storage_dir / "vdb_relationships.json")
-        if vdb_err:
-            errors.append(vdb_err)
-            return {"name": "vdb_relationships_endpoint_dangling", "errors": errors}
-        if not vdb_data:
-            return {"name": "vdb_relationships_endpoint_dangling", "errors": []}
-        # vdb 有数据但 GraphML 空 → 每条记录的端点都悬空
-        for i, item in enumerate(vdb_data or []):
-            if not isinstance(item, dict):
-                continue
-            src_id = item.get("src_id", "")
-            tgt_id = item.get("tgt_id", "")
-            if src_id:
-                errors.append({
-                    "check": "vdb_relationships_endpoint_dangling",
-                    "severity": "major",
-                    "index": i,
-                    "src_id": src_id,
-                    "tgt_id": tgt_id,
-                    "ref_file": "vdb_relationships.json",
-                    "target_file": _GRAPHML_FILE,
-                    "msg": f"vdb_relationships[{i}].src_id='{src_id}' 在 GraphML node 中不存在（GraphML 为空）",
-                })
-        return {"name": "vdb_relationships_endpoint_dangling", "errors": errors}
-
-    _, vdb_data, vdb_err = _load_vdb(storage_dir / "vdb_relationships.json")
-    if vdb_err:
-        errors.append(vdb_err)
-        return {"name": "vdb_relationships_endpoint_dangling", "errors": errors}
-    if not vdb_data:
-        return {"name": "vdb_relationships_endpoint_dangling", "errors": []}
-
-    for i, item in enumerate(vdb_data or []):
-        if not isinstance(item, dict):
-            continue
-        src_id = item.get("src_id", "")
-        tgt_id = item.get("tgt_id", "")
-        if src_id and src_id not in node_ids:
-            errors.append({
-                "check": "vdb_relationships_endpoint_dangling",
-                "severity": "major",
-                "index": i,
-                "src_id": src_id,
-                "tgt_id": tgt_id,
-                "ref_file": "vdb_relationships.json",
-                "target_file": _GRAPHML_FILE,
-                "msg": f"vdb_relationships[{i}].src_id='{src_id}' 在 GraphML node 中不存在",
-            })
-        if tgt_id and tgt_id not in node_ids:
-            errors.append({
-                "check": "vdb_relationships_endpoint_dangling",
-                "severity": "major",
-                "index": i,
-                "src_id": src_id,
-                "tgt_id": tgt_id,
-                "ref_file": "vdb_relationships.json",
-                "target_file": _GRAPHML_FILE,
-                "msg": f"vdb_relationships[{i}].tgt_id='{tgt_id}' 在 GraphML node 中不存在",
-            })
-    return {"name": "vdb_relationships_endpoint_dangling", "errors": errors}
-
-
-# =============================================================================
-# 语义维度检查（句法自洽但语义死亡的数据）
-# =============================================================================
-
-# "被删除"语义标记（LLM 写的 description，明确告诉系统这个实体该删）
-_ZOMBIE_DESCRIPTION_MARKERS = (
-    "被删除的重复脑区实体之一",
-    "被删除的脑区",
-    "已删除的脑区",
-    "已删除的重复脑区",
-)
-
-
-def check_brainregion_semantic_zombie() -> dict[str, Any]:
-    """语义 check #1: 检测脑区 description 含'被删除'标记但 GraphML node 仍存在。
-
-    引用方：脑区 description 的语义标记
-    被引用方：GraphML node 存在性
-    severity: major（句法自洽但语义死亡，会让 dissolve 卡在中间态）
-
-    历史 Agent 用 custom_kg 写"删除日志"但没真删，description 含明确"被删除"标记。
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "brainregion_semantic_zombie", "errors": errors}
-    if not node_meta:
-        return {"name": "brainregion_semantic_zombie", "errors": []}
-
-    for nid, meta in node_meta.items():
-        # 只检测 brainregion 类型
-        if meta.get("entity_type") != "brainregion":
-            continue
-        desc = meta.get("description", "")
-        if not desc:
-            continue
-        for marker in _ZOMBIE_DESCRIPTION_MARKERS:
-            if marker in desc:
-                errors.append({
-                    "check": "brainregion_semantic_zombie",
-                    "severity": "major",
-                    "ref_key": nid,
-                    "ref_file": _GRAPHML_FILE,
-                    "target_file": _GRAPHML_FILE,
-                    "marker": marker,
-                    "msg": f"脑区 '{nid}' description 含语义标记'{marker}'但 node 仍存在（僵尸脑区）",
-                })
-                break  # 一个脑区只报一次（匹配第一个 marker 就停）
-    return {"name": "brainregion_semantic_zombie", "errors": errors}
-
-
-def check_entity_chunks_source_id_mismatch() -> dict[str, Any]:
-    """语义 check #3: 检测 entity_chunks 的 chunk_ids 跟 GraphML node d3 source_id 不一致。
-
-    引用方：kv_store_entity_chunks 的 chunk_ids
-    被引用方：GraphML node 的 d3 source_id
-    severity: major
-
-    正常情况：脑区 d3 source_id 应该是脑区专属 chunk_id（brain_xxx），
-    entity_chunks 的 chunk_ids 也应该指向同一个 chunk。
-    僵尸脑区情况：d3 = 脑区专属 chunk，但 entity_chunks 指向"删除日志"chunk——明显异常。
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    ec_data, ec_err = _load_json_dict(storage_dir / "kv_store_entity_chunks.json")
-    if ec_err:
-        errors.append(ec_err)
-        return {"name": "entity_chunks_source_id_mismatch", "errors": errors}
-    if not ec_data:
-        return {"name": "entity_chunks_source_id_mismatch", "errors": []}
-
-    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "entity_chunks_source_id_mismatch", "errors": errors}
-
-    for entity_name, ec_entry in ec_data.items():
-        if not isinstance(ec_entry, dict):
-            continue
-        ec_chunk_ids = ec_entry.get("chunk_ids", [])
-        meta = node_meta.get(entity_name)
-        if meta is None:
-            # 实体不在 GraphML，由 check_entity_chunks_dangling 报，这里不重复
-            continue
-        graphml_source_id = meta.get("source_id", "")
-        if not graphml_source_id:
-            continue  # GraphML 没记 source_id，跳过（没法比对）
-        # GraphML d3 可能含 <SEP> 分隔多个 source_id
-        graphml_ids = [s for s in graphml_source_id.split("<SEP>") if s]
-        # 检查 ec_chunk_ids 是否都在 graphml_ids 里
-        ec_ids_set = set(ec_chunk_ids)
-        graphml_ids_set = set(graphml_ids)
-        # 不一致 = ec_chunk_ids 有 graphml_ids 没有的 chunk
-        orphan_ec_ids = ec_ids_set - graphml_ids_set
-        if orphan_ec_ids:
-            errors.append({
-                "check": "entity_chunks_source_id_mismatch",
-                "severity": "major",
-                "ref_key": entity_name,
-                "ref_file": "kv_store_entity_chunks.json",
-                "target_file": _GRAPHML_FILE,
-                "graphml_source_id": graphml_source_id,
-                "entity_chunks_ids": list(ec_chunk_ids),
-                "orphan_ids": list(orphan_ec_ids),
-                "msg": f"实体 '{entity_name}' entity_chunks 指向 {list(orphan_ec_ids)} 但 GraphML d3 source_id 是 {graphml_source_id}",
-            })
-    return {"name": "entity_chunks_source_id_mismatch", "errors": errors}
-
-
-def check_chunk_shared_by_too_many_entities(threshold: int = 10) -> dict[str, Any]:
-    """语义 check #4: 检测一个 chunk 被超过阈值个 entity 共享（异常信号）。
-
-    引用方：多个 entity_chunks 的 chunk_ids 指向同一个 chunk
-    被引用方：（无具体被引用方，是反向索引的异常检测）
-    severity: major
-
-    正常情况：一个 chunk 是某个文档的某段内容，被 1-N 个 entity 引用（N 通常 < 10）。
-    异常情况：16 个脑区全指向同一个"删除日志"chunk——明显是历史 bug 留下的脏数据。
-
-    Args:
-        threshold: 共享同一 chunk 的 entity 数量阈值，默认 10
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    ec_data, ec_err = _load_json_dict(storage_dir / "kv_store_entity_chunks.json")
-    if ec_err:
-        errors.append(ec_err)
-        return {"name": "chunk_shared_by_too_many_entities", "errors": errors}
-    if not ec_data:
-        return {"name": "chunk_shared_by_too_many_entities", "errors": []}
-
-    # 反向索引：chunk_id -> [entity_name, ...]
-    chunk_to_entities: dict[str, list[str]] = {}
-    for entity_name, ec_entry in ec_data.items():
-        if not isinstance(ec_entry, dict):
-            continue
-        for chunk_id in ec_entry.get("chunk_ids", []):
-            chunk_to_entities.setdefault(chunk_id, []).append(entity_name)
-
-    for chunk_id, entities in chunk_to_entities.items():
-        if len(entities) > threshold:
-            errors.append({
-                "check": "chunk_shared_by_too_many_entities",
-                "severity": "major",
-                "ref_file": "kv_store_entity_chunks.json",
-                "chunk_id": chunk_id,
-                "entity_count": len(entities),
-                "entities": entities,
-                "threshold": threshold,
-                "msg": f"chunk '{chunk_id}' 被 {len(entities)} 个 entity 共享（阈值 {threshold}），可能是历史 bug 残留",
-            })
-    return {"name": "chunk_shared_by_too_many_entities", "errors": errors}
-
-
-def check_vdb_entities_orphan() -> dict[str, Any]:
-    """语义 check #5: 检测 vdb_entities 里有向量但 GraphML 没 node（反向孤儿）。
-
-    引用方：vdb_entities.data 的 __id__（或 entity_name）
-    被引用方：GraphML node id
-    severity: major
-
-    现有 check_vdb_entities_missing 检测"GraphML 有但 vdb 没"（正向缺失），
-    本 check 检测反向：vdb 有但 GraphML 没——这是 delete_entity 后的残留模式。
-    LightRAG adelete_by_entity 删 GraphML+vdb，但若被中断或被绕过，
-    vdb 向量可能残留。
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "vdb_entities_orphan", "errors": errors}
-
-    _, vdb_data_list, vdb_err = _load_vdb(storage_dir / "vdb_entities.json")
-    if vdb_err:
-        errors.append(vdb_err)
-        return {"name": "vdb_entities_orphan", "errors": errors}
-    if not vdb_data_list:
-        return {"name": "vdb_entities_orphan", "errors": []}
-
-    # 防御性 check：当前真实数据 vdb_entities.json 可能为空（len(data)=0），
-    # 此时反向孤儿永远 0 个。本 check 作为防御性检测，未来 vdb 有数据时能检测。
-    node_ids_lower = {n.lower() for n in node_ids}
-    for entry in vdb_data_list:
-        if not isinstance(entry, dict):
-            continue
-        entity_name = entry.get("entity_name", "")
-        if not entity_name:
-            continue
-        # GraphML node id 是原始大小写（LightRAG 设计），vdb entity_name 是 lower
-        # 检测时双向匹配：node_ids 直接匹配或 lower 后匹配
-        if entity_name in node_ids:
-            continue
-        if entity_name.lower() in node_ids_lower:
-            continue
-        # 没匹配上 → vdb 有但 GraphML 没 → 反向孤儿
-        errors.append({
-            "check": "vdb_entities_orphan",
-            "severity": "major",
-            "ref_file": "vdb_entities.json",
-            "target_file": _GRAPHML_FILE,
-            "ref_id": entry.get("__id__", ""),
-            "entity_name": entity_name,
-            "msg": f"vdb_entities 有 entity='{entity_name}' 向量但 GraphML 没 node（残留孤儿）",
-        })
-    return {"name": "vdb_entities_orphan", "errors": errors}
-
-
-def check_brainregion_orphan_chunks() -> dict[str, Any]:
-    """语义 check #6: 检测脑区孤儿 chunk（两种形式）。
-
-    引用方：kv_store_text_chunks 的 source_id 或 content
-    被引用方：GraphML node id
-    severity: major
-
-    检测两种孤儿 chunk：
-    1. text_chunks 里 source_id=brain_xxx 但 GraphML 没 brain_xxx node（脑区被删但专属 chunk 残留）
-    2. text_chunks 里 source_id=brain_xxx 的 chunk content 含"被删除"标记，
-       但 GraphML 仍有该 brain_xxx node（chunk 侧标记 node 是僵尸，配合
-       check_brainregion_semantic_zombie 交叉验证）
-
-    脑区专属 chunk 是 region_manager 创建脑区时生成的（source_id = brain_<脑区名>）。
-    如果脑区被删但专属 chunk 残留，会让向量检索继续命中僵尸脑区数据。
-    如果脑区 node 还在但专属 chunk content 含"被删除"标记，说明 chunk 侧已标记删除
-    但 node 没删——这也是僵尸信号。
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "brainregion_orphan_chunks", "errors": errors}
-
-    tc_data, tc_err = _load_json_dict(storage_dir / "kv_store_text_chunks.json")
-    if tc_err:
-        errors.append(tc_err)
-        return {"name": "brainregion_orphan_chunks", "errors": errors}
-    if not tc_data:
-        return {"name": "brainregion_orphan_chunks", "errors": []}
-
-    node_ids = set(node_meta.keys())
-    BRAIN_PREFIX = "brain_"
-    seen_orphan_chunk_ids: set[str] = set()  # 避免同一 chunk 报两次
-    for chunk_id, chunk_meta in tc_data.items():
-        if not isinstance(chunk_meta, dict):
-            continue
-        source_id = chunk_meta.get("source_id", "") or chunk_meta.get("full_doc_id", "")
-        if not source_id.startswith(BRAIN_PREFIX):
-            continue  # 不是脑区专属 chunk，跳过
-        brain_name = source_id[len(BRAIN_PREFIX):]
-        content = chunk_meta.get("content", "") or ""
-        # 检查 1：brain_name 不在 GraphML → 孤儿 chunk
-        brain_in_graph = brain_name in node_ids or brain_name.lower() in {n.lower() for n in node_ids}
-        if not brain_in_graph:
-            errors.append({
-                "check": "brainregion_orphan_chunks",
-                "severity": "major",
-                "ref_file": "kv_store_text_chunks.json",
-                "target_file": _GRAPHML_FILE,
-                "orphan_chunk_id": chunk_id,
-                "brain_name": brain_name,
-                "msg": f"text_chunks 有 source_id={source_id} 的 chunk 但 GraphML 没 brain '{brain_name}' node",
-            })
-            seen_orphan_chunk_ids.add(chunk_id)
-            continue
-        # 检查 2：brain_name 在 GraphML 但 chunk content 含"被删除"标记 → chunk 侧僵尸信号
-        # 与 check_brainregion_semantic_zombie 配合（node description + chunk content 都含标记）
-        if chunk_id in seen_orphan_chunk_ids:
-            continue
-        for marker in _ZOMBIE_DESCRIPTION_MARKERS:
-            if marker in content:
-                errors.append({
-                    "check": "brainregion_orphan_chunks",
-                    "severity": "major",
-                    "ref_file": "kv_store_text_chunks.json",
-                    "target_file": _GRAPHML_FILE,
-                    "orphan_chunk_id": chunk_id,
-                    "brain_name": brain_name,
-                    "marker": marker,
-                    "msg": f"text_chunks chunk '{chunk_id}' (brain={brain_name}) content 含语义标记'{marker}'（chunk 侧僵尸信号）",
-                })
-                seen_orphan_chunk_ids.add(chunk_id)
-                break  # 一个 chunk 只报一次
-    return {"name": "brainregion_orphan_chunks", "errors": errors}
-
-
-# =============================================================================
-# 文件级 critical 预扫描
-# =============================================================================
-
-
-_KV_STORE_FILES = [
-    "kv_store_doc_status.json",
-    "kv_store_entity_chunks.json",
-    "kv_store_full_docs.json",
-    "kv_store_full_entities.json",
-    "kv_store_full_relations.json",
-    "kv_store_relation_chunks.json",
-    "kv_store_text_chunks.json",
-    "kv_store_llm_response_cache.json",
-]
-
-_VDB_FILES = [
-    "vdb_entities.json",
-    "vdb_relationships.json",
-    "vdb_chunks.json",
-]
-
-
-def _check_file_level_critical() -> dict[str, Any]:
-    """文件级 critical 预扫描：扫所有 JSON 文件 + GraphML，确保文件本身没损坏。
-
-    文件损坏 = JSON 解析失败 / JSON 不是 dict（kv_store）/ matrix 维度不匹配（vdb）/ XML 解析失败（GraphML）。
-    空文件 = 通过（无引用即无悬空）。
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    # kv_store 文件
-    for fname in _KV_STORE_FILES:
-        _, err = _load_json_dict(storage_dir / fname)
-        if err:
-            errors.append(err)
-
-    # vdb 文件（用 _load_vdb 检查 matrix 维度）
-    for fname in _VDB_FILES:
-        _, _, err = _load_vdb(storage_dir / fname)
-        if err:
-            errors.append(err)
-
-    # GraphML 文件
-    _, _, _, err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if err:
-        errors.append(err)
-
-    return {"name": "file_level_critical", "errors": errors}
-
-
-# =============================================================================
-# check_all 聚合
-# =============================================================================
-
-
-_CHECK_FUNCTIONS = [
-    _check_file_level_critical,
-    check_entity_chunks_dangling,
-    check_relation_chunks_dangling,
-    check_text_chunks_doc_dangling,
-    check_text_chunks_cache_dangling,
-    check_doc_status_chunks_dangling,
-    check_vdb_entities_missing,
-    check_vdb_relationships_missing,
-    check_vdb_chunks_missing,
-    check_graphml_edge_dangling,
-    check_vdb_relationships_endpoint_dangling,
-    # 语义维度 check（新增）
-    check_brainregion_semantic_zombie,
-    check_entity_chunks_source_id_mismatch,
-    check_chunk_shared_by_too_many_entities,
-    check_vdb_entities_orphan,
-    check_brainregion_orphan_chunks,
-]
+    return errors
 
 
 def check_all() -> dict[str, Any]:
-    """聚合 10 项因果链检查 + 文件级 critical 检查。
-
-    Returns:
-        {
-            "ok": bool,                   # critical==0 and major==0
-            "storage_dir": str,
-            "errors": list[dict],          # 所有 errors（带 severity）
-            "critical_errors": int,
-            "major_errors": int,
-            "minor_errors": int,
-            "checks": dict[str, dict],     # 每项检查的详细 report
-        }
+    """简化版 check_all v2：检 2 真相源 + GraphML 后置 + vdb_*_missing。
     """
+    storage_dir = _resolve_storage_dir()
     all_errors: list[dict[str, Any]] = []
-    checks: dict[str, dict[str, Any]] = {}
-    for fn in _CHECK_FUNCTIONS:
-        report = fn()
-        checks[report["name"]] = report
-        all_errors.extend(report["errors"])
 
-    critical_count = sum(1 for e in all_errors if e.get("severity") == "critical")
-    major_count = sum(1 for e in all_errors if e.get("severity") == "major")
-    minor_count = sum(1 for e in all_errors if e.get("severity") == "minor")
+    # 1. 检测 2 真相源
+    truth_errors = []
+    for fname in _TRUTH_SOURCE_FILES:
+        err = _check_truth_source(fname, storage_dir)
+        if err:
+            truth_errors.append(err)
+            all_errors.append(err)
 
-    ok = (critical_count == 0 and major_count == 0)
+    # 2. 后置验证 GraphML
+    graphml_errors = []
+    graphml_err = _check_graphml_post(storage_dir)
+    if graphml_err:
+        graphml_errors.append(graphml_err)
+        all_errors.append(graphml_err)
+
+    # 3. vdb_*_missing 检测
+    vdb_errors = _check_vdb_missing(storage_dir)
+    all_errors.extend(vdb_errors)
+
+    critical = sum(1 for e in all_errors if e.get("severity") == "critical")
+    major = sum(1 for e in all_errors if e.get("severity") == "major")
+    minor = sum(1 for e in all_errors if e.get("severity") == "minor")
 
     return {
-        "ok": ok,
-        "storage_dir": str(_STORAGE_DIR),
+        "ok": len(all_errors) == 0,
+        "critical_errors": critical,
+        "major_errors": major,
+        "minor_errors": minor,
         "errors": all_errors,
-        "critical_errors": critical_count,
-        "major_errors": major_count,
-        "minor_errors": minor_count,
-        "checks": checks,
+        "checks": {
+            "truth_source": {"name": "truth_source", "errors": truth_errors},
+            "graphml_post": {"name": "graphml_post", "errors": graphml_errors},
+            "vdb_missing": {"name": "vdb_missing", "errors": vdb_errors},
+        },
     }
-
-
-def check_all_vdbs() -> dict[str, Any]:
-    """检测所有 vdb 文件（文件级 + 引用完整性子集）。
-
-    兼容旧 API：只跑 vdb 相关的检查（#6/#7/#8/#10）。
-    """
-    vdb_checks = [
-        check_vdb_entities_missing,
-        check_vdb_relationships_missing,
-        check_vdb_chunks_missing,
-        check_vdb_relationships_endpoint_dangling,
-    ]
-    all_errors: list[dict[str, Any]] = []
-    files: dict[str, dict[str, Any]] = {}
-    for fn in vdb_checks:
-        report = fn()
-        files[report["name"]] = report
-        all_errors.extend(report["errors"])
-    critical_count = sum(1 for e in all_errors if e.get("severity") == "critical")
-    major_count = sum(1 for e in all_errors if e.get("severity") == "major")
-    return {
-        "ok": (critical_count == 0 and major_count == 0),
-        "files": files,
-        "errors": all_errors,
-        "critical_errors": critical_count,
-        "major_errors": major_count,
-        "minor_errors": sum(1 for e in all_errors if e.get("severity") == "minor"),
-    }
-
-
-# 保留向后兼容的废弃函数签名（已废弃，新代码应使用 check_all）
-def check_vdb(path: str) -> dict[str, Any]:  # noqa: ARG001
-    """已废弃：用 check_all() 或 check_all_vdbs() 代替。"""
-    logger.warning("check_vdb is deprecated, use check_all() instead")
-    return {"file": path, "ok": True, "errors": [], "stats": {}, "deprecated": True}
-
-
-def check_kv_store(path: str) -> dict[str, Any]:  # noqa: ARG001
-    """已废弃：用 check_all() 代替。"""
-    logger.warning("check_kv_store is deprecated, use check_all() instead")
-    return {"file": path, "ok": True, "errors": [], "stats": {}, "deprecated": True}
-
-
-def check_graphml(path: str) -> dict[str, Any]:  # noqa: ARG001
-    """已废弃：用 check_all() 代替。"""
-    logger.warning("check_graphml is deprecated, use check_all() instead")
-    return {"file": path, "ok": True, "errors": [], "stats": {}, "deprecated": True}
-
-
-def check_entity_sync() -> dict[str, Any]:
-    """已废弃：用 check_vdb_entities_missing() + check_entity_chunks_dangling() 代替。"""
-    logger.warning("check_entity_sync is deprecated, use check_all() instead")
-    return {"ok": True, "errors": [], "stats": {}, "deprecated": True}
