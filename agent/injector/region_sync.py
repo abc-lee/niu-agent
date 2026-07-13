@@ -38,7 +38,7 @@ REGION_CONFIG_DEFAULTS: dict[str, Any] = {
     "min_community_size": 100,
     "incremental_update": True,
     "co_activation_threshold": 0.9,
-    "shrink_threshold": 100,
+    "shrink_threshold": 10,  # 成员数 < 10 才判萎缩（原 100 误判正常小脑区）
     "shrink_rounds": 3,
     "neighbor_unfreeze_depth": 2,
     "decay_factor": 0.92,
