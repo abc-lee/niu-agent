@@ -594,3 +594,43 @@ def test_repair_all_new_user_empty_dict_truth_sources_ok(tmp_path, monkeypatch):
     result = repair_all()
 
     assert not result.get("_unrecoverable"), f"空 dict 真相源应能正常 repair: {result.get('_unrecoverable_reason')}"
+
+
+def test_get_lightrag_status_total_errors_correct(tmp_path, monkeypatch):
+    """get_lightrag_status 暴露的 total_errors 应 = critical + major + minor。
+
+    用真实 check_all() 返回结构验证（顶层 critical_errors/major_errors/minor_errors 标量字段），
+    不用 fake 结构——避免掩盖 check_all 实际返回结构的 bug（违反铁律 5）。
+    """
+    from niu_api.internal import lightrag_manager
+
+    # 准备损坏现场：full_docs 缺失（critical）+ GraphML 缺失（major）+ vdb 缺失（major）
+    # 只写 llm_response_cache（让真相源检查部分通过，但 GraphML/vdb 检测会报 major）
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")  # 空 dict（全新用户合法）
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(
+        json.dumps({"x": {"return": "y", "cache_type": "extract", "chunk_id": "chunk-x"}}, ensure_ascii=False)
+    )
+    # 不写 GraphML + 不写 vdb → _check_graphml_post 报 major + _check_vdb_missing 报 major
+
+    monkeypatch.setattr(lightrag_manager, "_integrity_result", None)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    # patch lightrag_manager.STORAGE_DIR + _rag_instance（避免污染真实数据）
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
+
+    status = lightrag_manager.get_lightrag_status()
+
+    assert status["integrity"]["ok"] is False
+    # total_errors 应 = critical + major + minor（不是永远 0）
+    assert status["integrity"]["total_errors"] >= 1
+    assert status["integrity"]["total_errors"] != 0
+    # 新字段也应暴露
+    assert "critical_errors" in status["integrity"]
+    assert "major_errors" in status["integrity"]
+    assert "minor_errors" in status["integrity"]
+    # total_errors 应 = critical + major + minor
+    c = status["integrity"]["critical_errors"]
+    m = status["integrity"]["major_errors"]
+    n = status["integrity"]["minor_errors"]
+    assert status["integrity"]["total_errors"] == c + m + n, \
+        f"total_errors={status['integrity']['total_errors']} 应 = critical({c}) + major({m}) + minor({n})"
