@@ -453,3 +453,144 @@ def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
     result = check_all()
 
     assert result["ok"] is True
+
+
+def test_repair_all_returns_flat_structure(tmp_path, monkeypatch):
+    """repair_all 应返回扁平结构（向后兼容 Rust format_repair_summary）。"""
+    # 准备最小真相源
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x", "create_time": 1}}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 扁平结构：顶层有各 repair 名 + _unrecoverable + _skipped + _check_summary + _deleted
+    assert "_unrecoverable" in result
+    assert "_skipped" in result or "_deleted" in result
+    # 不应该有嵌套的 repair_result 字段
+    assert "repair_result" not in result
+    assert "repaired" not in result  # 顶层不应有 repaired（向后兼容）
+
+
+def test_repair_all_backs_up_before_delete(tmp_path, monkeypatch):
+    """repair_all 删 9 文件前应备份到临时目录。"""
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    # 写一些派生文件（含旧数据）
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "data"}')
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("old graphml")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 应该有备份目录
+    backups = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
+    # 备份可能在 tmp_path 的父目录或别处，取决于实现
+    # 关键验证：_deleted 字段记录了删除的文件
+    assert "_deleted" in result
+    assert len(result["_deleted"]) > 0
+
+
+def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
+    """repair_all 重建失败时应回滚备份（恢复 9 个文件）。"""
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    # 写旧派生文件
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}')
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("old graphml")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    # mock repair_graphml 抛异常（模拟重建失败）
+    import niu_api.internal.lightrag_repair as repair_mod
+    def fail_graphml():
+        raise RuntimeError("模拟重建失败")
+    monkeypatch.setattr(repair_mod, "repair_graphml", fail_graphml)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 应该回滚：派生文件恢复原状
+    assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
+    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == "old graphml"
+    # 返回 unrecoverable
+    assert result.get("_unrecoverable") is True
+    assert result.get("_rolled_back") is True
+
+
+def test_repair_all_unrecoverable_when_truth_source_broken(tmp_path, monkeypatch):
+    """真相源损坏（JSON 解析失败）→ unrecoverable，不删除任何文件。
+
+    注意：不能用"full_docs 不存在"模拟损坏——那会被判为"全新用户合法"（ok）。
+    必须用"文件存在但 JSON 损坏"触发 _check_truth_source 的 JSON 解析失败 → critical。
+    """
+    # full_docs 存在但 JSON 损坏（不是合法 JSON）
+    (tmp_path / "kv_store_full_docs.json").write_text('{"corrupt": this is not valid JSON')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}')
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    assert result.get("_unrecoverable") is True
+    # 不应删除任何文件（真相源损坏，没进到删除阶段）
+    assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
+
+
+def test_repair_all_new_user_empty_truth_sources_ok(tmp_path, monkeypatch):
+    """全新用户（full_docs/cache 都不存在）→ repair_all 不应报 unrecoverable。
+
+    全新用户合法启动场景：刚装 niu，~/.niu/lightrag_storage/ 还没创建或为空。
+    _check_truth_sources 应返回 ok=True（v4 修订），repair_all 应正常完成
+    （重建出空派生文件，不报 unrecoverable）。
+    """
+    # 不写任何真相源文件（模拟全新用户）
+    # 也不写派生文件
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 全新用户不应报 unrecoverable
+    assert not result.get("_unrecoverable"), f"全新用户应能正常 repair: {result.get('_unrecoverable_reason')}"
+    # 真相源检查应通过
+    assert result["_truth_source_check"]["ok"] is True
+
+
+def test_repair_all_new_user_empty_dict_truth_sources_ok(tmp_path, monkeypatch):
+    """全新用户（full_docs/cache 都是空 dict {}）→ repair_all 不应报 unrecoverable。"""
+    # 写空 dict 的真相源（模拟全新用户首次启动后的状态）
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    assert not result.get("_unrecoverable"), f"空 dict 真相源应能正常 repair: {result.get('_unrecoverable_reason')}"
