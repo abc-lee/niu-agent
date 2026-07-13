@@ -272,15 +272,26 @@ Expected: FAIL with `KeyError: 'default:extract:zombie_key' not deleted`（现�
     #   - 只清 entity_type == "brainregion" 且 description 含"被删除"标记的 entry
     #   - 正常文档（如"系统维护日志"含"被删除"字样但 entity_type != brainregion）不删
     #
-    # 事务式保护：清理在内存中修改 lrc_data，写入跟其他 9 个文件一起在统一 try 块
+    # 类型标注设计（方案 A，避免 Pyright None 警告）：
+    #   - lrc_loaded 是局部变量，类型 dict[str, Any]（非 Optional）
+    #   - 所有 .items() / .pop() 操作用 lrc_loaded，Pyright 不会报 None
+    #   - lrc_data 是外层变量，类型 dict[str, Any] | None
+    #     None 表示未修改（写盘时跳过）；dict 表示已修改（清理成功）后的内容
+    #   - 只在清理成功（keys_to_remove 非空）时才 lrc_data = lrc_loaded 触发写盘
+    #   - 失败时 lrc_data 保持 None，不写盘，保留原文件（避免清空整个 cache）
+    #
+    # 事务式保护：清理在内存中修改 lrc_loaded，写入跟其他 9 个文件一起在统一 try 块
     # （不在这里单独 write_text，避免半写盘）
     lrc_path = storage_dir / "kv_store_llm_response_cache.json"
     lrc_cleaned_count = 0
+    # None 表示未修改（写盘时跳过）；dict 表示已修改（清理成功）后的内容
+    # 关键：失败时保持 None，避免把空 dict 写回清空整个 cache
+    lrc_data: dict[str, Any] | None = None
     if lrc_path.exists():
         try:
-            lrc_data = json.loads(lrc_path.read_text())
-            keys_to_remove = []
-            for cache_key, entry in lrc_data.items():
+            lrc_loaded: dict[str, Any] = json.loads(lrc_path.read_text())
+            keys_to_remove: list[str] = []
+            for cache_key, entry in lrc_loaded.items():
                 if not isinstance(entry, dict):
                     continue
                 if entry.get("cache_type") != "extract":
@@ -306,28 +317,33 @@ Expected: FAIL with `KeyError: 'default:extract:zombie_key' not deleted`（现�
                         break
                 if has_zombie:
                     keys_to_remove.append(cache_key)
-            # 内存中修改（不写盘，写入跟其他文件一起在事务式 try 块）
-            for k in keys_to_remove:
-                lrc_data.pop(k, None)
-            lrc_cleaned_count = len(keys_to_remove)
-            logger.info(
-                f"[LightRAGRepair] 清理 llm_response_cache: {lrc_cleaned_count} 条僵尸 extract entry（内存修改，待事务式写盘）"
-            )
+            if keys_to_remove:
+                # 内存中修改 lrc_loaded（不写盘，写入跟其他文件一起在事务式 try 块）
+                for k in keys_to_remove:
+                    lrc_loaded.pop(k, None)
+                lrc_cleaned_count = len(keys_to_remove)
+                lrc_data = lrc_loaded  # 只在有清理时才赋值，触发写盘
+                logger.info(
+                    f"[LightRAGRepair] 清理 llm_response_cache: {lrc_cleaned_count} 条僵尸 extract entry（内存修改，待事务式写盘）"
+                )
+            # 没清理到僵尸时 lrc_data 保持 None，不写盘
         except Exception as e:
-            logger.warning(f"[LightRAGRepair] 清理 llm_response_cache 失败（继续）: {e}")
-            lrc_data = {}  # 失败时不写盘
-    else:
-        lrc_data = {}
-    
-    # 注意：lrc_path 的 write_text 调用要加入下面事务式 try 块（跟其他 9 个文件一起写）
-    # 在事务式 try 块的 write 部分追加：
-    #   if lrc_path.exists() or lrc_data:
-    #       lrc_path.write_text(json.dumps(lrc_data, ensure_ascii=False))
-    #
-    # 同时 details 里记录清理数：
+            logger.warning(f"[LightRAGRepair] 清理 llm_response_cache 失败（保留原文件不动）: {e}")
+            # 失败时不写盘，保留原文件（避免清空整个 cache）
+            lrc_data = None
+
+    # details 放在统一写盘 try 块之前，让 except 分支也能看到 lrc_cleaned_count
     details["llm_response_cache"] = {
         "removed_entries": lrc_cleaned_count,
     }
+```
+
+然后在事务式 try 块的 write 部分（现有 `rc_path.write_text(...)` 那行之后），加：
+
+```python
+        # 只在 lrc_data 被修改（非 None）时写盘，避免无清理时无谓 IO + 避免失败时清空
+        if lrc_data is not None:
+            lrc_path.write_text(json.dumps(lrc_data, ensure_ascii=False))
 ```
 
 注意：`_ZOMBIE_DESCRIPTION_MARKERS` 已在 `lightrag_integrity.py` 定义（现有代码），需要 import：
@@ -638,13 +654,15 @@ Expected: FAIL（`repair_graphml` 内 `get_lightrag()` 拿真实实例，修改�
 
 修改 `niu_api/internal/lightrag_repair.py:644-820` 的 `repair_graphml` 函数：
 
-找到 L683-685 附近（`rag = get_lightrag()` 那段），在调用前加 `reset_init_state()` 强制重新创建实例：
+找到 L683-685 附近（`rag = get_lightrag()` 那段），在调用前显式置 `_rag_instance = None` + 同步 `STORAGE_DIR`，强制 `get_lightrag()` 重新创建实例：
 
 ```python
     # 修复：让 _STORAGE_DIR patch 生效
     # get_lightrag() L929 的 fast path：只要 _rag_instance is not None 就直接返回旧实例
-    # （指向真实 ~/.niu/lightrag_storage）。reset_init_state() 只清 _init_failed_at，
-    # 不清 _rag_instance——所以必须显式置 _rag_instance = None 才能让 get_lightrag()
+    # （指向真实 ~/.niu/lightrag_storage）。
+    #
+    # 注意：不能用 lightrag_manager.reset_init_state()——它只清 _init_failed_at（lightrag_manager.py:1352），
+    # 不清 _rag_instance，调了也没用。必须显式置 _rag_instance = None 才能让 get_lightrag()
     # 重新创建实例。
     #
     # 关键：_create_lightrag_instance() 用的是 lightrag_manager.STORAGE_DIR（无下划线），
@@ -673,7 +691,7 @@ Expected: FAIL（`repair_graphml` 内 `get_lightrag()` 拿真实实例，修改�
         }
 ```
 
-注意：`reset_init_state` 已在 `lightrag_manager.py` 定义（现有代码），需要 import。
+注意：**不要用 `reset_init_state()`**——它（`lightrag_manager.py:1352`）只清 `_init_failed_at`，不清 `_rag_instance`，对本 Task 无效。本 Task 用直接赋值 `_rag_instance = None` + `STORAGE_DIR = _storage_dir()` 的方式。
 
 ### - [ ] Step 4: Run test to verify it passes
 
@@ -922,6 +940,9 @@ _REBUILD_ORDER = [
 def _check_truth_sources(storage_dir: Path) -> dict[str, Any]:
     """检测 2 个真相源文件是否完整可用（全新用户合法）。
     
+    包装函数：遍历 _TRUTH_SOURCE_FILES，调用 lightrag_integrity._check_truth_source（单数版）。
+    避免重复实现（v4 审查 MAJOR-4：Task 4 和 Task 5 两份检测逻辑会分叉）。
+    
     全新用户处理（参考 7-11 计划原则"空文件不是错"）：
         - 文件不存在 → ok（全新用户还没导入文档）
         - 文件存在但 size=0 → ok（全新用户空文件）
@@ -936,51 +957,40 @@ def _check_truth_sources(storage_dir: Path) -> dict[str, Any]:
             "files": {filename: {"ok": bool, "reason": str, "size": int, "doc_count": int}},
         }
     """
+    from niu_api.internal.lightrag_integrity import _check_truth_source
+    
     files_status = {}
     all_ok = True
     reasons = []
     
     for fname in _TRUTH_SOURCE_FILES:
-        fpath = storage_dir / fname
-        status = {"ok": True, "reason": "", "size": 0, "doc_count": 0}  # 默认 ok（全新用户合法）
-        if not fpath.exists():
-            # 文件不存在 = 全新用户，ok
-            status["reason"] = "文件不存在（全新用户）"
+        # _check_truth_source 返回空 dict 表示 ok，非空 dict 表示错误
+        err = _check_truth_source(fname, storage_dir)
+        status = {"ok": True, "reason": "", "size": 0, "doc_count": 0}
+        if err:
+            # 有错误
+            status["ok"] = False
+            status["reason"] = err.get("msg", "")
+            reasons.append(status["reason"])
         else:
-            try:
-                size = fpath.stat().st_size
-                status["size"] = size
-                if size == 0:
-                    # 空文件 = 全新用户，ok
-                    status["reason"] = "空文件（全新用户）"
-                else:
-                    data = json.loads(fpath.read_text())
-                    if not isinstance(data, dict):
-                        # 非 dict 类型 = 损坏
-                        status["ok"] = False
-                        status["reason"] = f"{fname} 内容非 dict（{type(data).__name__}）"
-                        reasons.append(status["reason"])
-                    elif not data:
-                        # 空 dict = 全新用户，ok
-                        status["reason"] = "空 dict（全新用户）"
-                    else:
-                        # 有内容，记录数量
-                        if fname == "kv_store_full_docs.json":
-                            status["doc_count"] = len(data)
-                        elif fname == "kv_store_llm_response_cache.json":
-                            extract_count = sum(
-                                1 for v in data.values()
-                                if isinstance(v, dict) and v.get("cache_type") == "extract"
-                            )
-                            status["doc_count"] = extract_count
-            except json.JSONDecodeError as e:
-                status["ok"] = False
-                status["reason"] = f"{fname} JSON 解析失败: {e}"
-                reasons.append(status["reason"])
-            except Exception as e:
-                status["ok"] = False
-                status["reason"] = f"{fname} 读取失败: {e}"
-                reasons.append(status["reason"])
+            # ok，记录文件信息（size + doc_count）
+            fpath = storage_dir / fname
+            if fpath.exists():
+                try:
+                    status["size"] = fpath.stat().st_size
+                    if status["size"] > 0:
+                        data = json.loads(fpath.read_text())
+                        if isinstance(data, dict) and data:
+                            if fname == "kv_store_full_docs.json":
+                                status["doc_count"] = len(data)
+                            elif fname == "kv_store_llm_response_cache.json":
+                                extract_count = sum(
+                                    1 for v in data.values()
+                                    if isinstance(v, dict) and v.get("cache_type") == "extract"
+                                )
+                                status["doc_count"] = extract_count
+                except Exception:
+                    pass  # _check_truth_source 已经判过损坏，这里只记录信息失败不影响
         if not status["ok"]:
             all_ok = False
         files_status[fname] = status
@@ -1014,6 +1024,27 @@ def repair_all() -> dict[str, Any]:
     results: dict[str, Any] = {}
     unrecoverable_detected = False
     backup_dir: Path | None = None
+    
+    # 0. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager（兼容测试 monkeypatch）
+    #    现有代码 lightrag_repair.py:2085-2090 有这段同步逻辑，重写 repair_all 时必须保留。
+    #    否则测试 monkeypatch lightrag_repair._STORAGE_DIR 后，lightrag_integrity._STORAGE_DIR
+    #    仍是真实 ~/.niu/lightrag_storage，导致 check_all 读真实路径污染数据。
+    #    同时清 lightrag_manager._rag_instance + 同步 lightrag_manager.STORAGE_DIR，
+    #    让 repair_graphml 调 get_lightrag() 时重新创建实例指向 patch 后路径（参考 Task 3）。
+    try:
+        from niu_api.internal import lightrag_integrity
+        if lightrag_integrity._STORAGE_DIR != _STORAGE_DIR:
+            lightrag_integrity._STORAGE_DIR = _STORAGE_DIR
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import niu_api.internal.lightrag_manager as lightrag_manager
+        lightrag_manager._rag_instance = None
+        lightrag_manager._init_failed_at = 0
+        lightrag_manager._init_error = None
+        lightrag_manager.STORAGE_DIR = storage_dir
+    except Exception:  # noqa: BLE001
+        pass
     
     # 1. 检测 2 真相源（含内容完整性检查）
     truth_check = _check_truth_sources(storage_dir)
@@ -1255,6 +1286,18 @@ _TRUTH_SOURCE_FILES = [
     "kv_store_full_docs.json",
     "kv_store_llm_response_cache.json",
 ]
+
+# 僵尸脑区 description 语义标记（LLM 写的 description，明确告诉系统这个实体该删）
+# repair_brainregion_zombies（lightrag_repair.py:1775）import 这个常量用于：
+# 1. 识别 GraphML 里 description 含"被删除"标记的脑区 node
+# 2. 清理 llm_response_cache 里 entity_type=brainregion + description 含标记的 extract entry
+# 注意：替换 lightrag_integrity.py 时必须保留这个常量，否则 lightrag_repair.py 会 ImportError
+_ZOMBIE_DESCRIPTION_MARKERS = (
+    "被删除的重复脑区实体之一",
+    "被删除的脑区",
+    "已删除的脑区",
+    "已删除的重复脑区",
+)
 
 
 def _resolve_storage_dir() -> Path:
@@ -2335,13 +2378,15 @@ print('major_errors:', r.get('major_errors'))
         echo "OK: region_sync 没卡 dissolve"
     fi
     
-    # 杀进程
+    # 杀进程（铁律：禁止 pkill -f niu，会损坏 LightRAG vdb 文件——参考 MEMORY.md no-pkill-subprocess / test-process-kill-corruption）
+    # 用 kill -TERM $NIU_PID 优雅退出 + 等待 timeout
     kill -TERM $NIU_PID 2>/dev/null
     for i in 1 2 3 4 5 6 7 8 9 10; do
         sleep 1
-        pgrep -f "python -m niu_api" > /dev/null || break
-        pkill -TERM -f "python -m niu_api" 2>/dev/null
+        kill -0 $NIU_PID 2>/dev/null || break  # 进程已退出
     done
+    # 超时后仍存活才用 kill -9（精确 PID，不用 pkill -f）
+    kill -0 $NIU_PID 2>/dev/null && kill -9 $NIU_PID 2>/dev/null
 done
 ```
 
