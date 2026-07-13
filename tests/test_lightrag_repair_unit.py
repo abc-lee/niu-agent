@@ -634,3 +634,119 @@ def test_get_lightrag_status_total_errors_correct(tmp_path, monkeypatch):
     n = status["integrity"]["minor_errors"]
     assert status["integrity"]["total_errors"] == c + m + n, \
         f"total_errors={status['integrity']['total_errors']} 应 = critical({c}) + major({m}) + minor({n})"
+
+
+def test_run_repair_on_user_request_repaired_based_on_unrecoverable_flag(tmp_path, monkeypatch):
+    """repaired 应基于 repair_all 的 _unrecoverable 字段，不基于 check_all 重检。
+
+    v1 用"重检 check_all 报 major=0"判定 repaired，但历史残留孤儿 chunk 永远报
+    major 导致永远 repaired=False。新设计改为基于 repair_all 返回的 _unrecoverable
+    字段：只要 repair_all 没报 _unrecoverable，repaired 应为 True（即使重检报 major）。
+    """
+    from niu_api.internal import lightrag_manager
+
+    # 准备真相源（最小合法存储，repair_all 能成功重建）
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    monkeypatch.setattr(lightrag_manager, "_integrity_result", None)
+    monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
+    monkeypatch.setattr(lightrag_manager, "_repairing", False)
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+
+    # SkillSync 首次扫描在测试环境里跑不起来，mock 成超时返回 False
+    # （函数内部会继续往下跑，二次 repair 不会被触发——post_critical/major 都 0）
+    monkeypatch.setattr(
+        "agent.injector.sync.wait_first_scan_complete",
+        lambda timeout=90.0: False,
+    )
+
+    result = lightrag_manager.run_repair_on_user_request()
+
+    assert "repaired" in result
+    assert isinstance(result["repaired"], bool)
+    # repaired 应基于 _unrecoverable 字段
+    if result.get("repair_result", {}).get("_unrecoverable"):
+        assert result["repaired"] is False
+    else:
+        assert result["repaired"] is True
+
+
+def test_run_repair_on_user_request_repaired_true_when_unrecoverable_false_but_check_major(tmp_path, monkeypatch):
+    """区分新旧逻辑的核心场景：repair_all 成功(_unrecoverable=False) 但 check_all 重检报 major>0。
+
+    v1 旧逻辑：repaired = not has_unrecoverable and critical==0 and major==0 → False（bug）
+    新逻辑：   repaired = not has_unrecoverable and not repair_result.get('_unrecoverable') → True
+
+    这就是计划提到的"历史残留孤儿 chunk 永远报 major 导致永远 repaired=False"场景——
+    重检报 major（孤儿 chunk 未清），但 repair_all 已尽力修了没报 unrecoverable，
+    用户应看到 repaired=True（修复已尽力），而不是永远卡在 False。
+    """
+    from niu_api.internal import lightrag_manager
+
+    # 准备真相源（最小合法存储）
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    monkeypatch.setattr(lightrag_manager, "_integrity_result", None)
+    monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
+    monkeypatch.setattr(lightrag_manager, "_repairing", False)
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+    # SkillSync 首次扫描 mock 成未完成（避免触发二次 repair）
+    monkeypatch.setattr(
+        "agent.injector.sync.wait_first_scan_complete",
+        lambda timeout=90.0: False,
+    )
+
+    # 关键：mock repair_all 返回 _unrecoverable=False（修复成功尽力了）
+    # 但 check_all 重检返回 major_errors=1（孤儿 chunk 残留，非致命）
+    # 旧代码 repaired=False（永远卡），新代码 repaired=True（修复尽力了）
+    import niu_api.internal.lightrag_repair as repair_mod
+    import niu_api.internal.lightrag_integrity as integrity_mod
+
+    def fake_repair_all():
+        # 扁平结构 + _unrecoverable=False（修复未触发不可恢复错误）
+        return {
+            "_unrecoverable": False,
+            "_skipped": [],
+            "_deleted": ["kv_store_text_chunks.json"],
+            "_check_summary": {"ok": True},
+            "text_chunks": {"status": "ok", "rebuilt_count": 1},
+        }
+
+    def fake_check_all():
+        # 重检发现孤儿 chunk（major=1）——这是计划提到的"历史残留孤儿 chunk"
+        return {
+            "ok": False,
+            "critical_errors": 0,
+            "major_errors": 1,
+            "minor_errors": 0,
+            "errors": [{"code": "entity_chunks_dangling", "severity": "major"}],
+        }
+
+    monkeypatch.setattr(repair_mod, "repair_all", fake_repair_all)
+    monkeypatch.setattr(integrity_mod, "check_all", fake_check_all)
+    # lightrag_manager 内部 from ... import 引用，要 patch 模块级名字
+    # 但 run_repair_on_user_request 内部用 `from niu_api.internal.lightrag_repair import repair_all`
+    # 是局部导入，每次调用都重新解析，所以 patch repair_mod.repair_all 即可生效。
+
+    result = lightrag_manager.run_repair_on_user_request()
+
+    # 新逻辑：repaired 应为 True（repair_all 没报 _unrecoverable）
+    assert result["repair_result"].get("_unrecoverable") is False
+    assert result["repaired"] is True, (
+        f"repaired 应基于 _unrecoverable=False 判定为 True，"
+        f"但实际为 {result['repaired']}（旧逻辑基于 check_all 重检 major=1 误判为 False）"
+    )
+    # check_all 的 major 错误应仍暴露给用户（不掩盖问题）
+    assert result["major_errors"] == 1
