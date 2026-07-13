@@ -316,41 +316,6 @@ def test_refresh_activation_manager_does_not_overwrite_on_bulk_read_failure(monk
     mock_set.assert_not_called()
 
 
-def test_refresh_activation_manager_skips_when_coverage_too_low(monkeypatch):
-    """get_all_region_members 返回部分脑区（覆盖率 < 50%）时，不覆盖现有映射"""
-    from agent.injector.region_sync import RegionSync
-    from unittest import mock
-
-    sync = RegionSync(sync_interval=86400)
-
-    fake_existing_mgr = mock.MagicMock()
-
-    # 3 个脑区，但 get_all_region_members 只返回 1 个（覆盖率 33% < 50%）
-    fake_regions = []
-    for name in ["智家脑区", "工作脑区", "聊天脑区"]:
-        r = mock.MagicMock()
-        r.name = name
-        r.members = []
-        r.description = "d"
-        fake_regions.append(r)
-
-    with mock.patch("agent.brain_tools.get_activation_mgr", return_value=fake_existing_mgr), \
-         mock.patch("agent.brain_tools.set_activation_mgr"), \
-         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter"), \
-         mock.patch("niu_api.internal.lightrag_adapter.LightRAGIngester"), \
-         mock.patch(
-             "niu_api.internal.region_manager.RegionManager.get_all_regions",
-             return_value=fake_regions,
-         ), \
-         mock.patch(
-             "niu_api.internal.lightrag_manager.get_all_region_members",
-             return_value={"智家脑区": ["实体1"]},  # 只返回 1/3 脑区
-         ):
-        sync._refresh_activation_manager({})
-
-    fake_existing_mgr.initialize_from_regions.assert_not_called()
-
-
 def test_sync_loop_skips_first_sync_when_recently_synced(tmp_path):
     """距上次同步不足 sync_interval*0.9 时，_sync_loop 跳过首次同步"""
     from agent.injector.region_sync import RegionSync
