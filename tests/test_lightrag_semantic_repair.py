@@ -27,7 +27,7 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
         node = ET.SubElement(graph, f"{{{ns}}}node", {"id": nname})
         ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
         ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = f"brain_meta_size:10"
-        ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = f"brain_{nname}"
+        ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = f"chunk-{nname}"
     ET.ElementTree(root).write(storage / "graph_chunk_entity_relation.graphml", xml_declaration=True, encoding="utf-8")
 
     # 2. vdb_entities
