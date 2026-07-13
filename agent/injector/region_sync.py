@@ -380,16 +380,6 @@ class RegionSync:
                 )
                 return
 
-            # 覆盖率检查：返回的脑区数 vs 总脑区数，< 50% 视为部分失败，不覆盖
-            total_regions = len(all_regions)
-            covered_regions = sum(1 for r in all_regions if r.name in region_members_map)
-            if total_regions > 0 and covered_regions / total_regions < 0.5:
-                pct = covered_regions / total_regions * 100
-                logger.warning(
-                    f"[RegionSync] get_all_region_members 覆盖率 {pct:.0f}% ({covered_regions}/{total_regions}) < 50%，跳过激活管理器刷新避免部分失败污染"
-                )
-                return
-
             # 把成员填充到 region 对象上（缺失的 region 保持空 list）
             for region in all_regions:
                 region.members = region_members_map.get(region.name, [])
