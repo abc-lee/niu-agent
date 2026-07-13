@@ -52,6 +52,12 @@ struct LightragStatus {
 struct IntegrityStatus {
     ok: bool,
     total_errors: i32,
+    #[serde(default)]
+    critical_errors: i32,
+    #[serde(default)]
+    major_errors: i32,
+    #[serde(default)]
+    minor_errors: i32,
 }
 
 /// Splash window state
