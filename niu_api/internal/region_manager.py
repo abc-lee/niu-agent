@@ -1013,7 +1013,7 @@ class RegionManager:
 
     def dissolve_shrunk_regions(
         self,
-        shrink_threshold: int = 100,  # Threshold raised from 3 to 100
+        shrink_threshold: int = 10,  # 成员数 < 10 才判萎缩（原 100 误判正常小脑区）
         shrink_rounds: int = 3,
     ) -> list[str]:
         """Dissolve regions that have been shrinking for multiple sync cycles.
@@ -1027,8 +1027,10 @@ class RegionManager:
         as ``brain_meta_shrink_count:N``.
 
         Args:
-            shrink_threshold: Minimum members before region is "shrunk" (default 100)
-                Raised from 3 to reduce noise from small region dissolution.
+            shrink_threshold: Minimum members before region is "shrunk" (default 10)
+                Lowered from 100 to 10 — 100 caused normal small regions
+                (members < 100) to be flagged as shrunk, leading to zombie
+                regions when dissolve flow was interrupted mid-way.
             shrink_rounds: Consecutive shrunk cycles before dissolution (default 3)
 
         Returns:
