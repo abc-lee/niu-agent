@@ -421,13 +421,17 @@ def test_repair_text_chunks_uses_real_config_not_hardcoded(tmp_path, monkeypatch
         config_calls.append(True)
         return {"chunk_token_size": 800, "chunk_overlap_token_size": 50}
     
+    # patch 源模块 lightrag_manager（repair_text_chunks 用局部 import 从源模块取符号）
     monkeypatch.setattr("niu_api.internal.lightrag_manager._get_lightrag_config", fake_config)
     # mock get_lightrag 返回带 tokenizer 的实例
     # 注意：repair_text_chunks 用局部 import（from niu_api.internal.lightrag_manager import get_lightrag），
     # 所以 patch 必须指向源模块 lightrag_manager，不是被测模块 lightrag_repair
+    # FakeTokenizer 必须实现 encode + decode（chunking_by_token_size 调 decode 重组 chunk 内容）
     class FakeTokenizer:
         def encode(self, text):
-            return text.split()  # 简化
+            return text.split()  # 简化：按空格切分
+        def decode(self, tokens):
+            return " ".join(tokens)  # 简化：用空格拼回
     class FakeRag:
         tokenizer = FakeTokenizer()
     monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
@@ -452,13 +456,24 @@ def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, mo
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
     (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
     
-    # 现有 text_chunks 有 100 个旧 chunk_id（都跟重建后的不一样）
+    # chunk_id 一致性检查读 kv_store_doc_status.json 的 chunks_list 字段（lightrag_repair.py:500-505）
+    # 不是 text_chunks.json。所以旧 chunk_id 必须写到 doc_status.json
     old_tc = {f"chunk-old-{i}": {"content": f"old{i}", "source_id": "doc-test"} for i in range(100)}
     (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(old_tc, ensure_ascii=False))
+    doc_status = {
+        "doc-test": {
+            "status": "processed",
+            "chunks_count": 100,
+            "chunks_list": [f"chunk-old-{i}" for i in range(100)],
+        }
+    }
+    (tmp_path / "kv_store_doc_status.json").write_text(json.dumps(doc_status, ensure_ascii=False))
     
     class FakeTokenizer:
         def encode(self, text):
             return text.split()
+        def decode(self, tokens):
+            return " ".join(tokens)
     class FakeRag:
         tokenizer = FakeTokenizer()
     monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
@@ -473,21 +488,30 @@ def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, mo
 
 
 def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
-    """repair_text_chunks 应反向重建 llm_cache_list 从 llm_response_cache。"""
+    """repair_text_chunks 应反向重建 llm_cache_list 从 llm_response_cache。
+    
+    验证：cache 里 1 条 extract entry 的 chunk_id 跟重建后的 chunk_id 一致时，
+    重建后 text_chunks 里该 chunk 的 llm_cache_list 应含对应 cache_key。
+    """
+    # 用真实 compute_mdhash_id 算 chunk_id，让 cache 的 chunk_id 跟重建后一致
+    from lightrag.utils import compute_mdhash_id
+    doc_content = "测试文档内容用于验证 llm_cache_list 反向重建"
+    expected_chunk_id = compute_mdhash_id(doc_content, prefix="chunk-")
+    
     docs = {
         "doc-test": {
-            "content": "测试文档内容用于验证 llm_cache_list 反向重建",
+            "content": doc_content,
             "file_path": "test.md",
         }
     }
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
     
-    # cache 里 1 条 extract entry，chunk_id 是占位符（测试不验证真实 chunk_id 匹配）
+    # cache 里 1 条 extract entry，chunk_id 跟重建后的 chunk_id 一致
     cache = {
         "default:extract:key1": {
             "return": "entity<|#|>test<|#|>document<|#|>desc",
             "cache_type": "extract",
-            "chunk_id": "chunk-will-match",
+            "chunk_id": expected_chunk_id,  # 跟重建后 chunk_id 一致
             "create_time": 1781930610,
         },
     }
@@ -496,6 +520,9 @@ def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
     class FakeTokenizer:
         def encode(self, text):
             return text.split()
+        def decode(self, tokens):
+            # 必须返回原始 content，让 compute_mdhash_id 算出 expected_chunk_id
+            return doc_content
     class FakeRag:
         tokenizer = FakeTokenizer()
     monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
@@ -504,9 +531,13 @@ def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
     from niu_api.internal.lightrag_repair import repair_text_chunks
     result = repair_text_chunks()
     
-    # 即使 chunk_id 不匹配（FakeTokenizer 算的 chunk_id 跟 cache 里的不一样），
-    # repair 仍应成功（status=ok），只是 llm_cache_list 为空
-    assert result["status"] in ("ok", "unrecoverable")
+    assert result["status"] == "ok", f"repair 应成功: {result.get('message', '')}"
+    
+    # 验证 llm_cache_list 反向重建：text_chunks 里 expected_chunk_id 的 llm_cache_list 应含 key1
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert expected_chunk_id in tc_after, f"重建后的 chunk_id {expected_chunk_id} 应在 text_chunks 里"
+    cache_list = tc_after[expected_chunk_id].get("llm_cache_list", [])
+    assert "default:extract:key1" in cache_list, f"llm_cache_list 应含 default:extract:key1，实际: {cache_list}"
 ```
 
 ### - [ ] Step 2: Run test to verify it fails
