@@ -13,6 +13,7 @@ import re
 import sys
 import io
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Generator, Optional
@@ -614,6 +615,7 @@ class NiuRunner:
         self._brain_region_mgr = None   # RegionManager
         self._brain_injector = None     # BrainContextInjector
         self._cached_activation_mgr = None  # RegionActivationManager (for cache invalidation)
+        self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
 
         # 注入 ask_agent callback（供内部 MCP Server 调用 LLM）
         _registry = get_registry()
@@ -1703,13 +1705,22 @@ class NiuRunner:
             if self._brain_adapter._get_rag() is None or _activation_mgr is None:
                 # If activation_mgr is None, try forcing a RegionSync once
                 if _activation_mgr is None and self._brain_adapter._get_rag() is not None:
+                    # 冷却检查：forced sync 失败后 5 分钟内不再重试，避免死循环
+                    FORCED_SYNC_COOLDOWN_SECONDS = 300
+                    if time.time() - self._last_forced_sync_fail_time < FORCED_SYNC_COOLDOWN_SECONDS:
+                        logger.debug("[BrainInjector] forced sync in cooldown, skip")
+                        return None
                     try:
                         from agent.injector.region_sync import get_region_sync
                         logger.info("[BrainInjector] activation_mgr is None, forcing RegionSync.run_sync()")
                         get_region_sync().run_sync()
                         _activation_mgr = get_activation_mgr()
+                        # forced sync 成功，重置冷却
+                        self._last_forced_sync_fail_time = 0.0
                     except Exception as e:
                         logger.error("[BrainInjector] Forced RegionSync failed: %s", e)
+                        # 记录失败时间，启动 5 分钟冷却
+                        self._last_forced_sync_fail_time = time.time()
                 # Re-check after forced sync attempt
                 if self._brain_adapter._get_rag() is None or _activation_mgr is None:
                     if _activation_mgr is None:
