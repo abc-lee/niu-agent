@@ -875,3 +875,117 @@ def test_get_lightrag_for_repair_reuses_cached_instance(monkeypatch):
 
     rag = lightrag_manager.get_lightrag_for_repair()
     assert rag is cached, "应直接返回缓存的 _rag_instance（同一对象）"
+
+
+def test_repair_all_breaks_on_unrecoverable(tmp_path, monkeypatch):
+    """repair_all 在某函数报 unrecoverable 后应立即 break，不继续后续 repair。
+
+    Bug B1：原实现只置位 unrecoverable_detected 但不 break，后续 repair 函数
+    在依赖数据缺失时写空文件覆盖原始数据。
+    """
+    import niu_api.internal.lightrag_repair as lightrag_repair
+
+    # 准备真相源
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    # 用 mock 跟踪后续 repair 函数是否被调用
+    call_log = []
+
+    def mock_repair_vdb_chunks():
+        call_log.append("vdb_chunks")
+        return {"status": "ok"}
+
+    def mock_repair_vdb_entities():
+        call_log.append("vdb_entities")
+        return {"status": "ok"}
+
+    # patch _REBUILD_ORDER：让 text_chunks 报 unrecoverable，后续用 mock
+    orig_order = lightrag_repair._REBUILD_ORDER
+    new_order = []
+    for name, fn in orig_order:
+        if name == "text_chunks":
+            new_order.append((name, lambda: {
+                "status": "error", "unrecoverable": True,
+                "message": "simulated unrecoverable"
+            }))
+        elif name == "vdb_chunks":
+            new_order.append((name, mock_repair_vdb_chunks))
+        elif name == "vdb_entities":
+            new_order.append((name, mock_repair_vdb_entities))
+        else:
+            new_order.append((name, fn))
+
+    monkeypatch.setattr(lightrag_repair, "_REBUILD_ORDER", new_order)
+
+    result = lightrag_repair.repair_all()
+
+    # 验证：text_chunks 报 unrecoverable 后，后续 vdb_chunks/vdb_entities 不应被调用
+    assert result.get("_unrecoverable") is True
+    assert "vdb_chunks" not in call_log, f"vdb_chunks 不应被调用（unrecoverable 应 break）: {call_log}"
+    assert "vdb_entities" not in call_log, f"vdb_entities 不应被调用: {call_log}"
+
+
+def test_repair_all_rollback_uses_backed_up_list(tmp_path, monkeypatch):
+    """回滚应遍历 _backed_up 列表恢复，且删除重建阶段错误写入的文件。
+
+    Bug B2：原实现遍历 _DERIVED_FILES（10 个），backup 不存在则跳过；
+    场景 1（删 vdb_*.json）下 vdb 没备份，回滚时跳过，重建阶段写的空 vdb
+    残留，原始数据永久丢失。
+    """
+    import niu_api.internal.lightrag_repair as lightrag_repair
+
+    # 准备真相源
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    # 准备派生文件 baseline（部分存在，vdb_*.json 不存在模拟场景 1）
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"baseline": "text_chunks"}')
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text('<baseline/>')
+    # vdb_*.json 故意不存在（模拟场景 1 删 vdb）
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    # patch _REBUILD_ORDER：让 text_chunks 抛 unrecoverable，并模拟重建阶段写空 vdb
+    orig_order = lightrag_repair._REBUILD_ORDER
+    new_order = []
+    wrote_empty_vdb = {"done": False}
+    for name, fn in orig_order:
+        if name == "text_chunks":
+            new_order.append((name, lambda: {
+                "status": "error", "unrecoverable": True,
+                "message": "simulated failure"
+            }))
+        elif name == "vdb_chunks":
+            # 模拟重建阶段写空 vdb（Bug B 的核心场景）
+            def boom_vdb():
+                if not wrote_empty_vdb["done"]:
+                    (tmp_path / "vdb_chunks.json").write_text('{"empty": "vdb"}')
+                    wrote_empty_vdb["done"] = True
+                return {"status": "error", "unrecoverable": True, "message": "simulated"}
+            new_order.append((name, boom_vdb))
+        else:
+            new_order.append((name, fn))
+
+    monkeypatch.setattr(lightrag_repair, "_REBUILD_ORDER", new_order)
+
+    result = lightrag_repair.repair_all()
+
+    # 验证回滚
+    assert result.get("_rolled_back") is True
+
+    # 验证已备份的文件恢复到 baseline
+    assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"baseline": "text_chunks"}'
+    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == '<baseline/>'
+
+    # 验证没备份的 vdb_*.json 被删除（不是残留空文件）
+    assert not (tmp_path / "vdb_chunks.json").exists(), \
+        "vdb_chunks.json 应被回滚删除（没备份，重建的空文件应清理）"

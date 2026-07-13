@@ -2342,8 +2342,9 @@ def repair_all() -> dict[str, Any]:
             ):
                 unrecoverable_detected = True
                 logger.warning(
-                    f"[LightRAGRepair] {name} 报 unrecoverable: {result.get('message', '')}"
+                    f"[LightRAGRepair] {name} 报 unrecoverable: {result.get('message', '')}，停止后续重建"
                 )
+                break
         except Exception as e:
             logger.error(f"[LightRAGRepair] {name} 抛异常: {e}", exc_info=True)
             results[name] = {
@@ -2356,12 +2357,28 @@ def repair_all() -> dict[str, Any]:
     # 5. 失败时回滚
     if unrecoverable_detected and backup_dir is not None:
         try:
-            for fname in _DERIVED_FILES:
+            backed_up_list = results.get("_backed_up", [])
+            restored = 0
+            # 恢复已备份的文件到 repair 前状态
+            for fname in backed_up_list:
                 backup_file = backup_dir / fname
                 if backup_file.exists():
                     shutil.copy2(backup_file, storage_dir / fname)
+                    restored += 1
+            # 删除重建阶段错误写入的文件（没备份但被重建覆盖的，如场景 1 的空 vdb）
+            # 让文件回到"不存在"状态，跟 repair 前一致
+            cleaned = 0
+            for fname in _DERIVED_FILES:
+                if fname not in backed_up_list:
+                    fpath = storage_dir / fname
+                    if fpath.exists():
+                        fpath.unlink()
+                        cleaned += 1
+                        logger.warning(f"[LightRAGRepair] 回滚：删除错误重建的 {fname}")
             results["_rolled_back"] = True
-            logger.warning(f"[LightRAGRepair] 重建失败，已回滚 {len(_DERIVED_FILES)} 个文件")
+            logger.warning(
+                f"[LightRAGRepair] 重建失败，已回滚 {restored} 个文件，清理 {cleaned} 个错误重建文件"
+            )
         except Exception as e:
             results["_rolled_back"] = False
             results["_rollback_error"] = str(e)
