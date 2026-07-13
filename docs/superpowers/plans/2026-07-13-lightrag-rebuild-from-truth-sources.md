@@ -629,61 +629,63 @@ GraphML 重建（避免 merge_nodes_and_edges 全表扫描 cache）。
 `tests/test_lightrag_repair_unit.py` 追加：
 
 ```python
-def test_repair_graphml_respects_storage_dir_patch(tmp_path, monkeypatch):
-    """repair_graphml 应使用 patch 后的 _STORAGE_DIR，不污染真实 ~/.niu/lightrag_storage。"""
-    # 准备 tmp_path 下的真相源
-    docs = {
-        "doc-test": {
-            "content": "测试文档内容",
-            "file_path": "test.md",
-        }
-    }
-    cache = {
-        "default:extract:key1": {
-            "return": "entity<|#|>测试<|#|>document<|#|>desc",
-            "cache_type": "extract",
-            "chunk_id": "chunk-test",
-            "create_time": 1781930610,
-        }
-    }
+def test_repair_graphml_clears_rag_instance_before_get_lightrag(tmp_path, monkeypatch):
+    """repair_graphml 调 get_lightrag() 前应显式置 _rag_instance=None + 同步 STORAGE_DIR。
+    
+    验证修复的必要性：如果 repair_graphml 不清 _rag_instance，get_lightrag() fast path
+    会返回旧实例（指向真实 ~/.niu/lightrag_storage），污染真实数据。
+    
+    安全设计：不直接调 repair_graphml（避免真实 pipeline 跑污染数据），而是 mock
+    get_lightrag 验证调用前的状态。
+    """
+    import niu_api.internal.lightrag_manager as lightrag_manager
+    
+    # 模拟已存在真实 _rag_instance（指向真实 storage）
+    class FakeRealRag:
+        storage_dir = Path.home() / ".niu/lightrag_storage"
+    monkeypatch.setattr(lightrag_manager, "_rag_instance", FakeRealRag())
+    monkeypatch.setattr(lightrag_manager, "_init_failed_at", 0)
+    monkeypatch.setattr(lightrag_manager, "_init_error", None)
+    
+    # patch _STORAGE_DIR 到 tmp_path（模拟测试隔离）
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    
+    # 准备最小真相源（让 repair_graphml 不在 cache 检查阶段就 return）
+    docs = {"doc-test": {"content": "test", "file_path": "test.md"}}
+    cache = {"default:extract:k1": {"return": "entity<|#|>test<|#|>document<|#|>desc",
+            "cache_type": "extract", "chunk_id": "chunk-test", "create_time": 1}}
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
     (tmp_path / "kv_store_text_chunks.json").write_text("{}")
     (tmp_path / "kv_store_doc_status.json").write_text("{}")
     
-    # 删 GraphML（让 repair_graphml 走重建路径）
-    # 注意：repair_graphml 现有实现会调 get_lightrag() 拿真实实例
-    # 这个测试验证 patch 后不会污染真实 storage
-    
-    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
-    
-    # 记录真实 storage 的 GraphML 修改时间（验证不被污染）
-    real_graphml = Path.home() / ".niu/lightrag_storage/graph_chunk_entity_relation.graphml"
-    real_mtime_before = real_graphml.stat().st_mtime if real_graphml.exists() else 0
+    # mock get_lightrag：捕获调用时的 _rag_instance 状态
+    call_state = {}
+    def mock_get_lightrag():
+        call_state["_rag_instance_at_call"] = lightrag_manager._rag_instance
+        call_state["storage_dir_at_call"] = lightrag_manager.STORAGE_DIR
+        return None  # 返回 None 让 repair_graphml 走 unrecoverable 分支，不跑真实 pipeline
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", mock_get_lightrag)
     
     from niu_api.internal.lightrag_repair import repair_graphml
-    # 这个调用可能因为 LightRAG 实例初始化失败而返回 unrecoverable
-    # 但关键是验证不污染真实 storage
-    try:
-        result = repair_graphml()
-    except Exception:
-        pass  # 测试不关心结果，只关心不污染
+    result = repair_graphml()
     
-    # 验证真实 storage 的 GraphML 没被修改
-    real_mtime_after = real_graphml.stat().st_mtime if real_graphml.exists() else 0
-    assert real_mtime_after == real_mtime_before, "真实 storage 的 GraphML 不应被测试污染"
+    # 验证 get_lightrag 被调用前，_rag_instance 已被清空（None）
+    assert call_state.get("_rag_instance_at_call") is None, \
+        "repair_graphml 调 get_lightrag() 前应清 _rag_instance=None，否则 fast path 返回旧实例污染真实数据"
+    # 验证 lightrag_manager.STORAGE_DIR 已同步到 _storage_dir()（tmp_path）
+    assert call_state.get("storage_dir_at_call") == tmp_path, \
+        "repair_graphml 调 get_lightrag() 前应同步 lightrag_manager.STORAGE_DIR 到 _storage_dir()"
 ```
 
 ### - [ ] Step 2: Run test to verify it fails
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_repair_graphml_respects_storage_dir_patch -v
+python -m pytest tests/test_lightrag_repair_unit.py::test_repair_graphml_clears_rag_instance_before_get_lightrag -v
 ```
 
-Expected: FAIL（`repair_graphml` 内 `get_lightrag()` 拿真实实例，修改时间会变）
+Expected: FAIL（现有 `repair_graphml` 不清 `_rag_instance`，`call_state["_rag_instance_at_call"]` 仍是 FakeRealRag，断言 `is None` 失败）
 
 ### - [ ] Step 3: Write minimal implementation
 
@@ -732,10 +734,10 @@ Expected: FAIL（`repair_graphml` 内 `get_lightrag()` 拿真实实例，修改�
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_repair_graphml_respects_storage_dir_patch -v
+python -m pytest tests/test_lightrag_repair_unit.py::test_repair_graphml_clears_rag_instance_before_get_lightrag -v
 ```
 
-Expected: PASS
+Expected: PASS（修复后 `repair_graphml` 调 `get_lightrag()` 前清 `_rag_instance=None` + 同步 `STORAGE_DIR`，`call_state` 捕获到 None + tmp_path）
 
 ### - [ ] Step 5: Commit
 
