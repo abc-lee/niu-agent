@@ -1052,13 +1052,17 @@ def run_resilience_phase1() -> dict:
         check_result = check_all()
     except Exception as e:
         logger.warning(f"[LightRAG] 一致性检测失败（不影响启动）: {e}")
-        check_result = {"ok": True, "total_errors": 0, "error": str(e)}
+        check_result = {"ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0, "error": str(e)}
 
     _integrity_result = check_result
 
+    critical = check_result.get("critical_errors", 0)
+    major = check_result.get("major_errors", 0)
+    minor = check_result.get("minor_errors", 0)
+    total = critical + major + minor
     logger.info(
         f"[LightRAG] Phase 1 完成: check_ok={check_result.get('ok')}, "
-        f"total_errors={check_result.get('total_errors', 0)}"
+        f"critical={critical}, major={major}, minor={minor}, total_errors={total}"
     )
     return {
         "check_ok": check_result.get("ok", True),
@@ -1383,10 +1387,34 @@ def get_lightrag_status() -> Dict[str, Any]:
         "loop_running": loop_running,
     }
     if _integrity_result:
-        result["integrity"] = {
-            "ok": _integrity_result.get("ok", True),
-            "total_errors": _integrity_result.get("total_errors", 0),
-        }
+        critical = _integrity_result.get("critical_errors", 0)
+        major = _integrity_result.get("major_errors", 0)
+        minor = _integrity_result.get("minor_errors", 0)
+        integrity_ok = _integrity_result.get("ok", False)
+        total_errors = critical + major + minor
+    else:
+        # _integrity_result 为 None（首次启动 / Phase 1 未跑过）时即时跑 check_all，
+        # 避免暴露空 integrity（ok=True）但实际数据已损坏的"假绿"——参考 v5.8 Task 7 修复
+        try:
+            from niu_api.internal.lightrag_integrity import check_all
+            fresh = check_all()
+            critical = fresh.get("critical_errors", 0)
+            major = fresh.get("major_errors", 0)
+            minor = fresh.get("minor_errors", 0)
+            integrity_ok = fresh.get("ok", False)
+            total_errors = critical + major + minor
+        except Exception as e:
+            logger.warning(f"[LightRAG] get_lightrag_status 即时 check_all 失败: {e}")
+            critical = major = minor = 0
+            integrity_ok = True
+            total_errors = 0
+    result["integrity"] = {
+        "ok": integrity_ok,
+        "total_errors": total_errors,
+        "critical_errors": critical,
+        "major_errors": major,
+        "minor_errors": minor,
+    }
     return result
 
 
