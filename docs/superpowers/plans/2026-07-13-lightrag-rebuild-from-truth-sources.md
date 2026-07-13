@@ -69,7 +69,7 @@
 
 10. **明确承认 cache miss 时会调 LLM**（v1 承诺"全程不调 LLM"，审查发现 cache 部分丢失时必调 LLM，monkeypatch 失败时也会调）。计划明确说"cache 完整时不调 LLM；cache 部分丢失时会调 LLM 重新抽取（消耗 token），用户需承担少量 LLM 调用费用"。
 
-11. **`repair_graphml` 让 `_STORAGE_DIR` patch 生效**（v1 没处理，审查发现 `repair_graphml` 内 `get_lightrag()` 拿真实实例操作真实 `~/.niu/lightrag_storage`，测试 patch 不生效）。修复：`repair_graphml` 改为先调 `reset_init_state()` + 重新创建 LightRAG 实例（指向 `_STORAGE_DIR`），让 patch 生效。
+11. **`repair_graphml` 让 `_STORAGE_DIR` patch 生效**（v1 没处理，审查发现 `repair_graphml` 内 `get_lightrag()` 拿真实实例操作真实 `~/.niu/lightrag_storage`，测试 patch 不生效）。修复：`repair_graphml` 调用前显式置 `_rag_instance=None` + 同步 `lightrag_manager.STORAGE_DIR`，让 `get_lightrag()` 重新创建实例指向 patch 后路径。注意：**不要用 `reset_init_state()`**——它（`lightrag_manager.py:1352`）只清 `_init_failed_at`，不清 `_rag_instance`，对本 Task 无效。
 
 12. **Task 8 扩展到 3 种现场 + region_sync 验证**（v1 只测 1 种，丢了 7-12 的"风扇不狂转/region_sync 不卡 dissolve"标准）。3 种现场：删 vdb / 删 GraphML / 删 9 全部。加 region_sync 启动后 1 分钟内完成验证（看日志不含 dissolve 卡死）。
 
@@ -587,7 +587,7 @@ GraphML 重建（避免 merge_nodes_and_edges 全表扫描 cache）。
 
 审查发现 `repair_graphml` 内 `get_lightrag()`（L683-685）拿真实 LightRAG 实例，实例的 `storage_dir` 指向真实 `~/.niu/lightrag_storage`。测试 patch `_STORAGE_DIR` 不生效，会污染真实用户数据。
 
-修复：`repair_graphml` 改为先调 `reset_init_state()` + 重新创建 LightRAG 实例（指向 `_STORAGE_DIR`），让 patch 生效。
+修复：`repair_graphml` 调用前显式置 `_rag_instance=None` + 同步 `lightrag_manager.STORAGE_DIR`，让 `get_lightrag()` 重新创建实例指向 patch 后路径。注意：**不要用 `reset_init_state()`**——它只清 `_init_failed_at`，不清 `_rag_instance`，对本 Task 无效。
 
 ### - [ ] Step 1: Write the failing test
 
@@ -706,11 +706,12 @@ Expected: PASS
 
 ```bash
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
-git commit -m "fix(repair): repair_graphml 调 reset_init_state 让 _STORAGE_DIR patch 生效
+git commit -m "fix(repair): repair_graphml 显式置 _rag_instance=None 让 _STORAGE_DIR patch 生效
 
 之前 repair_graphml 内 get_lightrag() 拿缓存的 _rag_instance
 （指向真实 ~/.niu/lightrag_storage），测试 patch _STORAGE_DIR 不生效，
-污染真实用户数据。修复：调用前先 reset_init_state() 强制重新创建实例。
+污染真实用户数据。修复：调用前显式置 _rag_instance=None + 同步 STORAGE_DIR，
+强制 get_lightrag() 重新创建实例。不用 reset_init_state()——它不清 _rag_instance。
 "
 ```
 
