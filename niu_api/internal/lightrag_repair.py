@@ -1984,9 +1984,7 @@ def repair_brainregion_zombies() -> dict[str, Any]:
     # 事务式保护：清理在内存中修改 lrc_data，写入跟其他9个文件一起在统一 try 块
     lrc_path = storage_dir / "kv_store_llm_response_cache.json"
     lrc_cleaned_count = 0
-    # None 表示未修改（写盘时跳过）；dict 表示已修改（清理成功）后的内容
-    # 关键：失败时保持 None，避免把空 dict 写回清空整个 cache
-    lrc_data: dict[str, Any] | None = None
+    lrc_data: dict[str, Any] = {}
     if lrc_path.exists():
         try:
             lrc_data = json.loads(lrc_path.read_text())
@@ -2013,20 +2011,15 @@ def repair_brainregion_zombies() -> dict[str, Any]:
                         break
                 if has_zombie:
                     keys_to_remove.append(cache_key)
-            if keys_to_remove:
-                for k in keys_to_remove:
-                    lrc_data.pop(k, None)
-                lrc_cleaned_count = len(keys_to_remove)
-                logger.info(
-                    f"[LightRAGRepair] 清理 llm_response_cache: {lrc_cleaned_count} 条僵尸 extract entry（内存修改，待事务式写盘）"
-                )
-            else:
-                # 没清理到僵尸，不需要写盘
-                lrc_data = None
+            for k in keys_to_remove:
+                lrc_data.pop(k, None)
+            lrc_cleaned_count = len(keys_to_remove)
+            logger.info(
+                f"[LightRAGRepair] 清理 llm_response_cache: {lrc_cleaned_count} 条僵尸 extract entry（内存修改，待事务式写盘）"
+            )
         except Exception as e:
-            logger.warning(f"[LightRAGRepair] 清理 llm_response_cache 失败（保留原文件不动）: {e}")
-            # 失败时不写盘，保留原文件（避免清空整个 cache）
-            lrc_data = None
+            logger.warning(f"[LightRAGRepair] 清理 llm_response_cache 失败（继续）: {e}")
+            lrc_data = {}
 
     details["llm_response_cache"] = {
         "removed_entries": lrc_cleaned_count,
@@ -2046,8 +2039,7 @@ def repair_brainregion_zombies() -> dict[str, Any]:
             fr_path.write_text(json.dumps(fr, ensure_ascii=False))
         if rc_path.exists() or rc:
             rc_path.write_text(json.dumps(rc, ensure_ascii=False))
-        # 只在 lrc_data 被修改（非 None）时写盘，避免无清理时无谓 IO + 避免失败时清空
-        if lrc_data is not None:
+        if lrc_path.exists() or lrc_data:
             lrc_path.write_text(json.dumps(lrc_data, ensure_ascii=False))
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"写盘失败（部分文件可能已写）: {e}"}
