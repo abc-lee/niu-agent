@@ -1,0 +1,39 @@
+{
+  "default:extract:syn-key-1": {
+    "return": "entity<|#|>张三<|#|>person<|#|>虚构人物张三的介绍。\nrelation<|#|>人际关系脑区<|#|>张三<|#|>包含<|#|>人际关系脑区包含张三。",
+    "cache_type": "extract",
+    "chunk_id": "chunk-syn-1",
+    "original_prompt": "synthetic",
+    "create_time": 1781930610
+  },
+  "default:extract:syn-key-2": {
+    "return": "entity<|#|>李四<|#|>person<|#|>虚构人物李四的介绍。",
+    "cache_type": "extract",
+    "chunk_id": "chunk-syn-2",
+    "create_time": 1781930611
+  },
+  "default:extract:syn-key-3": {
+    "return": "entity<|#|>测试公司<|#|>organization<|#|>虚构测试公司介绍。",
+    "cache_type": "extract",
+    "chunk_id": "chunk-syn-3",
+    "create_time": 1781930612
+  },
+  "default:extract:syn-key-4": {
+    "return": "entity<|#|>王五<|#|>person<|#|>虚构人物王五。",
+    "cache_type": "extract",
+    "chunk_id": "chunk-syn-1",
+    "create_time": 1781930613
+  },
+  "default:extract:syn-key-5": {
+    "return": "<|COMPLETE|>",
+    "cache_type": "extract",
+    "chunk_id": "chunk-syn-2",
+    "create_time": 1781930614
+  },
+  "default:extract:zombie-syn": {
+    "return": "entity<|#|>智家测试僵尸脑区<|#|>brainregion<|#|>被删除的重复脑区实体之一。",
+    "cache_type": "extract",
+    "chunk_id": "chunk-zombie-syn",
+    "create_time": 1781930615
+  }
+}
