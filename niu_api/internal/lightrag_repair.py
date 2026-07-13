@@ -465,6 +465,24 @@ def repair_text_chunks() -> dict[str, Any]:
 
     new_text_chunks: dict[str, dict[str, Any]] = {}
     expected_chunk_count = 0
+
+    # 反向扫描 llm_response_cache，构建 chunk_id -> [cache_key] 映射
+    lrc_path = storage_dir / "kv_store_llm_response_cache.json"
+    chunk_to_cache_keys: dict[str, list[str]] = {}
+    try:
+        if lrc_path.exists():
+            lrc = json.loads(lrc_path.read_text())
+            for cache_key, entry in lrc.items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("cache_type") != "extract":
+                    continue
+                cid = entry.get("chunk_id", "")
+                if cid:
+                    chunk_to_cache_keys.setdefault(cid, []).append(cache_key)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LightRAGRepair] llm_response_cache 读取失败（llm_cache_list 将为空）: {e}")
+
     for doc_id, doc_value in full_docs.items():
         if not isinstance(doc_value, dict):
             continue
@@ -489,7 +507,7 @@ def repair_text_chunks() -> dict[str, Any]:
                 "full_doc_id": doc_id,
                 "chunk_order_index": chunk.get("chunk_order_index", 0),
                 "tokens": chunk.get("tokens", 0),
-                "llm_cache_list": [],
+                "llm_cache_list": chunk_to_cache_keys.get(chunk_id, []),
             }
             expected_chunk_count += 1
 
