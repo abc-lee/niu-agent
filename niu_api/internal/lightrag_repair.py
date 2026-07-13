@@ -846,6 +846,78 @@ def repair_graphml() -> dict[str, Any]:
                         "— apipeline 将使用 stale namespace 尝试"
                     )
 
+                # Bug C 修复：手动从磁盘 reload doc_status + text_chunks 到实例内存 _data。
+                # 原因：LightRAG 的 get_docs_by_statuses 直接读内存 self._data（shared_dict），
+                # 不检查 storage_updated flag。set_all_update_flags 只影响写盘方向
+                # (index_done_callback)，不影响读盘。实例创建时 doc_status 文件不存在
+                # → initialize() 不加载 → _data 为空 → apipeline 看到 0 records
+                # → "No documents to process"。必须手动从磁盘读数据 update 到 _data。
+                import json as _json  # noqa: PLC0415
+
+                # reload doc_status._data
+                try:
+                    doc_status_file = doc_status_path
+                    if doc_status_file.exists():
+                        loaded = _json.loads(doc_status_file.read_text(encoding="utf-8"))
+                        if isinstance(loaded, dict):
+                            ds_storage = getattr(rag, "doc_status", None)
+                            if ds_storage is not None and hasattr(ds_storage, "_data"):
+                                async with ds_storage._storage_lock:
+                                    ds_storage._data.clear()
+                                    ds_storage._data.update(loaded)
+                                logger.info(
+                                    f"[LightRAGRepair] 手动 reload doc_status._data: "
+                                    f"{len(loaded)} records (from {doc_status_file})"
+                                )
+                            else:
+                                logger.warning(
+                                    "[LightRAGRepair] rag.doc_status 或 _data 不存在，跳过 reload"
+                                )
+                        else:
+                            logger.warning(
+                                f"[LightRAGRepair] doc_status JSON 不是 dict: {type(loaded).__name__}"
+                            )
+                    else:
+                        logger.warning(
+                            f"[LightRAGRepair] doc_status 文件不存在: {doc_status_file}"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"[LightRAGRepair] 手动 reload doc_status._data 失败: {e}"
+                    )
+
+                # reload text_chunks._data
+                try:
+                    tc_file = storage_dir / "kv_store_text_chunks.json"
+                    if tc_file.exists():
+                        loaded = _json.loads(tc_file.read_text(encoding="utf-8"))
+                        if isinstance(loaded, dict):
+                            tc_storage = getattr(rag, "text_chunks", None)
+                            if tc_storage is not None and hasattr(tc_storage, "_data"):
+                                async with tc_storage._storage_lock:
+                                    tc_storage._data.clear()
+                                    tc_storage._data.update(loaded)
+                                logger.info(
+                                    f"[LightRAGRepair] 手动 reload text_chunks._data: "
+                                    f"{len(loaded)} records (from {tc_file})"
+                                )
+                            else:
+                                logger.warning(
+                                    "[LightRAGRepair] rag.text_chunks 或 _data 不存在，跳过 reload"
+                                )
+                        else:
+                            logger.warning(
+                                f"[LightRAGRepair] text_chunks JSON 不是 dict: {type(loaded).__name__}"
+                            )
+                    else:
+                        logger.warning(
+                            f"[LightRAGRepair] text_chunks 文件不存在: {tc_file}"
+                        )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"[LightRAGRepair] 手动 reload text_chunks._data 失败: {e}"
+                    )
+
             loop.run_until_complete(_reload_namespaces())
             loop.run_until_complete(rag.apipeline_process_enqueue_documents())
         finally:
