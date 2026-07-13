@@ -1970,6 +1970,82 @@ def repair_brainregion_zombies() -> dict[str, Any]:
         "removed": len(rc_keys_to_remove),
     }
 
+    # 9. 清理 kv_store_llm_response_cache 里的僵尸 extract entry
+    # 真实数据：cache 里有 1 条 extract entry 含 16 个僵尸脑区 extract 数据
+    # （description 含"被删除的重复脑区实体之一"），重建 GraphML 时会被命中
+    # 导致僵尸复活。必须在重建前清掉。
+    #
+    # 清理逻辑（严格匹配，避免误删正常 extract）：
+    #   - 只清 cache_type == "extract" 的 entry
+    #   - 解析 return 字段的 entity 行（格式：entity<|#|>name<|#|>type<|#|>desc）
+    #   - 只清 entity_type == "brainregion" 且 description 含"被删除"标记的 entry
+    #   - 正常文档（如"系统维护日志"含"被删除"字样但 entity_type != brainregion）不删
+    #
+    # 类型标注设计（方案 A，避免 Pyright None 警告）：
+    #   - lrc_loaded 是局部变量，类型 dict[str, Any]（非 Optional）
+    #   - 所有 .items() / .pop() 操作用 lrc_loaded，Pyright 不会报 None
+    #   - lrc_data 是外层变量，类型 dict[str, Any] | None
+    #     None 表示未修改（写盘时跳过）；dict 表示已修改（清理成功）后的内容
+    #   - 只在清理成功（keys_to_remove 非空）时才 lrc_data = lrc_loaded 触发写盘
+    #   - 失败时 lrc_data 保持 None，不写盘，保留原文件（避免清空整个 cache）
+    #
+    # 事务式保护：清理在内存中修改 lrc_loaded，写入跟其他 9 个文件一起在统一 try 块
+    # （不在这里单独 write_text，避免半写盘）
+    lrc_path = storage_dir / "kv_store_llm_response_cache.json"
+    lrc_cleaned_count = 0
+    # None 表示未修改（写盘时跳过）；dict 表示已修改（清理成功）后的内容
+    # 关键：失败时保持 None，避免把空 dict 写回清空整个 cache
+    lrc_data: dict[str, Any] | None = None
+    if lrc_path.exists():
+        try:
+            lrc_loaded: dict[str, Any] = json.loads(lrc_path.read_text())
+            keys_to_remove: list[str] = []
+            for cache_key, entry in lrc_loaded.items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("cache_type") != "extract":
+                    continue
+                ret = entry.get("return", "")
+                # 解析 return 字段，逐 entity 检查
+                # 格式：entity<|#|>name<|#|>type<|#|>desc
+                # 多个 entity 用 \n 分隔
+                has_zombie = False
+                for line in ret.split("\n"):
+                    if not line.startswith("entity<|#|>"):
+                        continue
+                    parts = line.split("<|#|>")
+                    if len(parts) < 4:
+                        continue
+                    entity_type = parts[2]
+                    desc = parts[3]
+                    # 只清 brainregion 类型 + description 含"被删除"标记
+                    if entity_type == "brainregion" and any(
+                        marker in desc for marker in _ZOMBIE_DESCRIPTION_MARKERS
+                    ):
+                        has_zombie = True
+                        break
+                if has_zombie:
+                    keys_to_remove.append(cache_key)
+            if keys_to_remove:
+                # 内存中修改 lrc_loaded（不写盘，写入跟其他文件一起在事务式 try 块）
+                for k in keys_to_remove:
+                    lrc_loaded.pop(k, None)
+                lrc_cleaned_count = len(keys_to_remove)
+                lrc_data = lrc_loaded  # 只在有清理时才赋值，触发写盘
+                logger.info(
+                    f"[LightRAGRepair] 清理 llm_response_cache: {lrc_cleaned_count} 条僵尸 extract entry（内存修改，待事务式写盘）"
+                )
+            # 没清理到僵尸时 lrc_data 保持 None，不写盘
+        except Exception as e:
+            logger.warning(f"[LightRAGRepair] 清理 llm_response_cache 失败（保留原文件不动）: {e}")
+            # 失败时不写盘，保留原文件（避免清空整个 cache）
+            lrc_data = None
+
+    # details 放在统一写盘 try 块之前，让 except 分支也能看到 lrc_cleaned_count
+    details["llm_response_cache"] = {
+        "removed_entries": lrc_cleaned_count,
+    }
+
     # 4. 统一写盘（事务式）
     try:
         graphml_tree.write(graphml_path, xml_declaration=True, encoding="utf-8")
@@ -1984,6 +2060,9 @@ def repair_brainregion_zombies() -> dict[str, Any]:
             fr_path.write_text(json.dumps(fr, ensure_ascii=False))
         if rc_path.exists() or rc:
             rc_path.write_text(json.dumps(rc, ensure_ascii=False))
+        # 只在 lrc_data 被修改（非 None）时写盘，避免无清理时无谓 IO + 避免失败时清空
+        if lrc_data is not None:
+            lrc_path.write_text(json.dumps(lrc_data, ensure_ascii=False))
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"写盘失败（部分文件可能已写）: {e}"}
 
