@@ -1005,6 +1005,69 @@ def get_lightrag():
     return _rag_instance
 
 
+def get_lightrag_for_repair():
+    """repair 专用路径：绕过 _repairing 门控 + 三级门控 critical/major 检查。
+
+    repair 期间数据正在重建，critical/major 是预期状态，不应拒绝初始化。
+    但仍走 _rag_lock 双检锁 + retry cooldown，确保线程安全。
+
+    返回缓存的 _rag_instance（若已初始化），否则重新创建并缓存到全局 _rag_instance。
+    repair_all 内部会主动清 _rag_instance=None + 同步 STORAGE_DIR，
+    所以 repair 期间创建的实例天然指向 patch 后路径。
+
+    Returns None if init failed recently (cooldown not expired).
+
+    Bug A 背景：
+        run_repair_on_user_request 设 _repairing=True 后调 repair_all，
+        repair_text_chunks/repair_graphml 内部调 get_lightrag() 拿实例，
+        但 get_lightrag() 看到 _repairing=True 直接 return None → 报
+        "LightRAG 实例未初始化" → unrecoverable=True → 触发回滚。
+        本函数绕过 _repairing 门控，让 repair 期间也能拿到实例。
+    """
+    global _rag_instance, _init_failed_at
+
+    # repair 期间复用已有实例（如果存在）
+    if _rag_instance is not None:
+        return _rag_instance
+
+    # 跳过三级门控（repair 期间 critical/major 是预期状态，不应拒绝初始化）
+    # 但保留 retry cooldown（避免快速重试失败导致 CPU 浪费）
+    if _init_failed_at is not None:
+        elapsed = time.monotonic() - _init_failed_at
+        if elapsed < _INIT_RETRY_SECONDS:
+            return None
+        logger.info(
+            f"[LightRAG] repair 专用路径 cooldown expired ({elapsed:.0f}s), retrying..."
+        )
+        _init_failed_at = None
+
+    with _rag_lock:
+        # Double-check after acquiring lock
+        if _rag_instance is not None:
+            return _rag_instance
+
+        if _init_failed_at is not None:
+            elapsed = time.monotonic() - _init_failed_at
+            if elapsed < _INIT_RETRY_SECONDS:
+                return None
+            _init_failed_at = None
+
+        try:
+            logger.info("[LightRAG] repair 专用路径：初始化 LightRAG 实例...")
+            _rag_instance = _create_lightrag_instance()
+            logger.info("[LightRAG] repair 专用路径实例 ready")
+            _lightrag_ready.set()
+        except ImportError as e:
+            logger.warning(f"[LightRAG] repair 专用路径 LightRAG not available: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"[LightRAG] repair 专用路径初始化失败: {e}")
+            _init_failed_at = time.monotonic()
+            return None
+
+    return _rag_instance
+
+
 def wait_lightrag_ready(timeout: float) -> bool:
     """Block until LightRAG is initialized, or until timeout expires.
 
