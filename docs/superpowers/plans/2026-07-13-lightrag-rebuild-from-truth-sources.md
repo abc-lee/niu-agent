@@ -845,6 +845,7 @@ def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
         raise RuntimeError("模拟重建失败")
     monkeypatch.setattr(repair_mod, "repair_graphml", fail_graphml)
     
+    from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
     
     # 应该回滚：派生文件恢复原状
@@ -1125,8 +1126,32 @@ def repair_all() -> dict[str, Any]:
     results["_deleted"] = deleted
     
     # 4. 按依赖链重建
+    # 检测 full_docs 是否为空（全新用户）——空时跳过 graphml/graphml_orphan_edges
+    # 因为 repair_graphml 调 apipeline_process_enqueue_documents，empty full_docs 会
+    # 报 "No documents to process" 返回 unrecoverable。全新用户合法，不应报 unrecoverable。
+    full_docs_path = storage_dir / "kv_store_full_docs.json"
+    is_empty_user = False
+    try:
+        if full_docs_path.exists():
+            fd_data = json.loads(full_docs_path.read_text())
+            if not fd_data:  # 空 dict
+                is_empty_user = True
+        else:
+            is_empty_user = True  # 文件不存在
+    except Exception:
+        pass  # 读取失败不阻塞，让 repair_graphml 自己处理
+    
+    # 全新用户跳过的 repair 函数（依赖文档/GraphML 重建）
+    _SKIP_FOR_EMPTY_USER = {"graphml", "graphml_orphan_edges", "vdb_entities", "vdb_relationships"}
+    
     skipped: list[str] = []
     for name, fn in _REBUILD_ORDER:
+        # 全新用户跳过依赖文档的 repair
+        if is_empty_user and name in _SKIP_FOR_EMPTY_USER:
+            results[name] = {"status": "ok", "skipped": True, "reason": "empty full_docs (new user)"}
+            skipped.append(name)
+            logger.info(f"[LightRAGRepair] 跳过 {name}（全新用户，无文档）")
+            continue
         try:
             result = fn()
             results[name] = result
@@ -1144,6 +1169,7 @@ def repair_all() -> dict[str, Any]:
                 "message": f"repair 函数抛异常: {type(e).__name__}: {e}",
             }
             unrecoverable_detected = True
+    results["_skipped"] = skipped
     
     # 5. 失败时回滚
     if unrecoverable_detected and backup_dir is not None:
