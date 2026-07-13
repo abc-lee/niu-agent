@@ -700,6 +700,28 @@ def repair_graphml() -> dict[str, Any]:
     try:
         from niu_api.internal.lightrag_manager import get_lightrag
 
+        # 修复：让 _STORAGE_DIR patch 生效
+        # get_lightrag() L929 的 fast path：只要 _rag_instance is not None 就直接返回旧实例
+        # （指向真实 ~/.niu/lightrag_storage）。
+        #
+        # 注意：不能用 lightrag_manager.reset_init_state()——它只清 _init_failed_at（lightrag_manager.py:1352），
+        # 不清 _rag_instance，调了也没用。必须显式置 _rag_instance = None 才能让 get_lightrag()
+        # 重新创建实例。
+        #
+        # 关键：_create_lightrag_instance() 用的是 lightrag_manager.STORAGE_DIR（无下划线），
+        # 不是 lightrag_repair._STORAGE_DIR（带下划线，被测试 patch 的）。
+        # 所以必须同时 patch lightrag_manager.STORAGE_DIR 指向 _storage_dir()，
+        # 否则新创建的实例仍指向真实 ~/.niu/lightrag_storage。
+        try:
+            import niu_api.internal.lightrag_manager as lightrag_manager
+            lightrag_manager._rag_instance = None
+            lightrag_manager._init_failed_at = 0
+            lightrag_manager._init_error = None
+            # 同步 patch lightrag_manager.STORAGE_DIR（无下划线，_create_lightrag_instance 用这个）
+            lightrag_manager.STORAGE_DIR = _storage_dir()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LightRAGRepair] 清 _rag_instance 失败（继续用现有实例）: {e}")
+
         rag = get_lightrag()
     except Exception as e:  # noqa: BLE001
         return {
