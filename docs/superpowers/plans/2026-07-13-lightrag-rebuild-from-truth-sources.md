@@ -483,7 +483,9 @@ def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, mo
     result = repair_text_chunks()
     
     # 重建后 chunk_id 跟旧的重合率为 0 → 应返回 unrecoverable
-    assert result["status"] == "unrecoverable"
+    # 代码库约定：unrecoverable 场景用 status="error" + unrecoverable=True（lightrag_repair.py 全部 19 处一致）
+    assert result["status"] == "error"
+    assert result.get("unrecoverable") is True
     assert "chunk_id" in result.get("message", "").lower() or "重合" in result.get("message", "")
 
 
