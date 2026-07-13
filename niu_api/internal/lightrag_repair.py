@@ -811,9 +811,42 @@ def repair_graphml() -> dict[str, Any]:
     # 6. 调 apipeline_process_enqueue_documents
     try:
         import asyncio
+        from lightrag.kg.shared_storage import set_all_update_flags
 
         loop = asyncio.new_event_loop()
         try:
+            # 标记 doc_status + text_chunks namespace 需要重新从文件加载
+            # 原因：repair_text_chunks/repair_doc_status 写盘后，LightRAG 实例内存
+            # namespace 仍是 stale 的（实例创建时读的，那时这些文件不存在或为空）。
+            # apipeline 从内存读 namespace 会看到 0 records → "No documents to process"。
+            # set_all_update_flags 让 apipeline 读时重新从文件加载。
+            rag_workspace = getattr(rag, "workspace", None)
+
+            async def _reload_namespaces():
+                # doc_status: apipeline 据此判断是否有文档要处理
+                try:
+                    await set_all_update_flags("doc_status", workspace=rag_workspace)
+                    logger.info(
+                        f"[LightRAGRepair] set_all_update_flags(doc_status, workspace={rag_workspace!r}) OK"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"[LightRAGRepair] set_all_update_flags(doc_status) 失败: {e} "
+                        "— apipeline 将使用 stale namespace 尝试"
+                    )
+                # text_chunks: apipeline 读取 chunk 内容做实体抽取
+                try:
+                    await set_all_update_flags("text_chunks", workspace=rag_workspace)
+                    logger.info(
+                        f"[LightRAGRepair] set_all_update_flags(text_chunks, workspace={rag_workspace!r}) OK"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"[LightRAGRepair] set_all_update_flags(text_chunks) 失败: {e} "
+                        "— apipeline 将使用 stale namespace 尝试"
+                    )
+
+            loop.run_until_complete(_reload_namespaces())
             loop.run_until_complete(rag.apipeline_process_enqueue_documents())
         finally:
             loop.close()
