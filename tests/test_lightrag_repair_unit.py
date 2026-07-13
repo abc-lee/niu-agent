@@ -386,3 +386,70 @@ def test_repair_graphml_clears_rag_instance_before_get_lightrag(tmp_path, monkey
     # 验证 lightrag_manager.STORAGE_DIR 已同步到 _storage_dir()（tmp_path）
     assert call_state.get("storage_dir_at_call") == tmp_path, \
         "repair_graphml 调 get_lightrag() 前应同步 lightrag_manager.STORAGE_DIR 到 _storage_dir()"
+
+
+def test_check_all_vdb_missing_but_graphml_intact_returns_major(tmp_path, monkeypatch):
+    """vdb_*.json 缺失但 GraphML 完好 → check_all 应报 major（避免启动放行）。"""
+    # 2 真相源完好
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    # GraphML 完好（有 node）
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    node = ET.SubElement(graph, f"{{{ns}}}node", {"id": "test-entity"})
+    ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = "concept"
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+
+    # vdb_entities 不存在（被删了）
+    # vdb_relationships 不存在
+    # vdb_chunks 不存在
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is False
+    assert result["major_errors"] >= 1
+    err_msgs = [e.get("msg", "") for e in result.get("errors", [])]
+    assert any("vdb" in m.lower() for m in err_msgs)
+
+
+def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
+    """2 真相源 + GraphML + vdb 全部完好 → ok=True。"""
+    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
+    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    # GraphML（有 node）
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    node = ET.SubElement(graph, f"{{{ns}}}node", {"id": "test-entity"})
+    ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = "concept"
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+
+    # vdb_entities（有对应向量）
+    vdb_e = {"data": [{"__id__": "ent-test-entity", "entity_name": "test-entity", "vector": "AAAAAA=="}],
+             "file_hash": "fake", "embedding_dim": 8, "matrix": "AAAAAA=="}
+    (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e, ensure_ascii=False))
+    (tmp_path / "vdb_chunks.json").write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
+    (tmp_path / "vdb_relationships.json").write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is True
