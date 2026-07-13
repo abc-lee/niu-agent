@@ -1,0 +1,98 @@
+[
+  {
+    "id": "个人智家档案库脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796496<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-2bf1fcb620e29ae1ad3d2ea201ca4be2"
+  },
+  {
+    "id": "智家全维资料脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796497<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-897c9e8296acfa50eaa25a02163224ac"
+  },
+  {
+    "id": "智家使用运维脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796498<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-21126ad32bc5cf819940b2683e3f3432"
+  },
+  {
+    "id": "个人智家运营脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796499<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-cdfc40bad15ec89de55916feff4f2f89"
+  },
+  {
+    "id": "居家智能脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796500<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-ef06e70f322ef82fd663542bd10399f7"
+  },
+  {
+    "id": "家居智能应用脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796501<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-dc635df328048cfcefd26800fd3481dd"
+  },
+  {
+    "id": "家居智能实践脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796502<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-726e1ea5901925ab692885041484cb93"
+  },
+  {
+    "id": "家庭智能物联脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796503<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-a4438904e134621bfa0741453393b4b8"
+  },
+  {
+    "id": "智能家居实践区脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796503<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-35eb8a987ac42e40cb76414c6b70df4a"
+  },
+  {
+    "id": "个人智能库脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796504<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-a8efd6774cd0abd0e3d35f0eb1c8979a"
+  },
+  {
+    "id": "家庭智能运维脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796505<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-e3b8cb899c4b50308442c9c97b3e0f51"
+  },
+  {
+    "id": "个人智用空间脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796506<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-fac88b8ed3c07759a8fcdb3858df3fdf"
+  },
+  {
+    "id": "智家打理相关脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796507<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-9070b9b6c4ddea3ddc12be8df15e2dea"
+  },
+  {
+    "id": "智家综合事务脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796508<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-b1d9e5f406d01add250916de295f9f26"
+  },
+  {
+    "id": "智能家居内容脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796509<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-a22eac7ba9425630f1c5043009d24907"
+  },
+  {
+    "id": "智能家居管理脑区",
+    "entity_type": "brainregion",
+    "description": "被删除的重复脑区实体之一。<SEP>brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:<SEP>brain_meta_updated_at:1783796510<SEP>brain_meta_priority:medium<SEP>brain_meta_shrink_count:1",
+    "source_id": "chunk-42debc44d825dd0970e19f9ab251e927"
+  }
+]
