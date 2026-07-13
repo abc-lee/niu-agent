@@ -159,3 +159,45 @@ def test_repair_brainregion_zombies_does_not_delete_normal_doc_with_zombie_word(
     assert result["cleaned_count"] == 0
     cache_after = json.loads((tmp_path / "kv_store_llm_response_cache.json").read_text())
     assert "default:extract:doc-with-zombie-word" in cache_after
+
+
+def test_repair_brainregion_zombies_corrupt_cache_preserves_file(tmp_path):
+    """cache 文件 JSON 损坏时，repair 不应清空文件，应保留原内容。
+
+    覆盖 except 分支（lightrag_repair.py L2039-2042）：
+    - json.loads 抛 JSONDecodeError
+    - lrc_data 保持 None（不写盘）
+    - 原文件内容保留
+    """
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    nnode = ET.SubElement(graph, f"{{{ns}}}node", {"id": "聊天历史脑区"})
+    ET.SubElement(nnode, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
+    ET.SubElement(nnode, f"{{{ns}}}data", {"key": "d2"}).text = "brain_meta_size:10"
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+
+    # cache 文件 JSON 损坏（不是合法 JSON）
+    corrupt_content = '{"default:extract: this is not valid JSON'
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(corrupt_content)
+
+    for fname in ["kv_store_full_docs.json", "kv_store_text_chunks.json",
+                  "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
+                  "kv_store_full_entities.json", "kv_store_full_relations.json",
+                  "kv_store_doc_status.json"]:
+        (tmp_path / fname).write_text("{}")
+    for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
+        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
+
+    with patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path), \
+         patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        result = repair_brainregion_zombies()
+
+    # repair 仍正常完成（不报错）
+    assert result["status"] == "ok"
+    # cache 文件内容应保留原状（不被清空）
+    cache_after = (tmp_path / "kv_store_llm_response_cache.json").read_text()
+    assert cache_after == corrupt_content, "损坏的 cache 文件应保留原状不被清空"
