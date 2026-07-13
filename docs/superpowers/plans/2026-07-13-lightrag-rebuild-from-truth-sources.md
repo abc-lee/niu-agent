@@ -857,8 +857,13 @@ def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
 
 
 def test_repair_all_unrecoverable_when_truth_source_broken(tmp_path, monkeypatch):
-    """真相源损坏 → unrecoverable，不删除任何文件。"""
-    # 不写 full_docs
+    """真相源损坏（JSON 解析失败）→ unrecoverable，不删除任何文件。
+    
+    注意：不能用"full_docs 不存在"模拟损坏——那会被判为"全新用户合法"（ok）。
+    必须用"文件存在但 JSON 损坏"触发 _check_truth_source 的 JSON 解析失败 → critical。
+    """
+    # full_docs 存在但 JSON 损坏（不是合法 JSON）
+    (tmp_path / "kv_store_full_docs.json").write_text('{"corrupt": this is not valid JSON')
     (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
     (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}')
     
@@ -869,7 +874,7 @@ def test_repair_all_unrecoverable_when_truth_source_broken(tmp_path, monkeypatch
     result = repair_all()
     
     assert result.get("_unrecoverable") is True
-    # 不应删除任何文件
+    # 不应删除任何文件（真相源损坏，没进到删除阶段）
     assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
 
 
@@ -1196,7 +1201,21 @@ def repair_all() -> dict[str, Any]:
     return results
 ```
 
-**3c. 删除旧的 `_CHECK_TO_REPAIR` / `_FILE_TO_REPAIR` / `_REPAIR_ORDER`**（L1995-2056），它们不再被使用。
+**3c. 删除旧的 `_CHECK_TO_REPAIR` / `_FILE_TO_REPAIR` / `_REPAIR_ORDER` 常量定义 + 旧 `repair_all` 函数体**
+
+现有代码有以下旧结构需要删除（行号可能因前面改动偏移，以 grep 为准）：
+- `_REPAIR_ORDER` 常量定义（约 L2114，含 13 个 repair 函数元组列表）
+- `_CHECK_TO_REPAIR` 字典定义（约 L2135，check name → repair name 映射）
+- `_FILE_TO_REPAIR` 字典定义（约 L2161，file name → repair name 映射）
+- 旧 `repair_all` 函数体（约 L2206-2290，引用上述 3 个常量做"按 check 选择性 repair"）
+
+这些都被新 `repair_all`（Step 3b 定义）替代，不再被使用。删除时用 grep 确认没有其他模块引用这些常量：
+
+```bash
+grep -rn "_CHECK_TO_REPAIR\|_FILE_TO_REPAIR\|_REPAIR_ORDER" niu_api/ tests/ 2>/dev/null | grep -v ".pyc"
+```
+
+只应返回 `lightrag_repair.py` 内部的定义和旧 `repair_all` 函数体引用。删除后再次 grep 确认无遗留引用。
 
 ### - [ ] Step 4: Run test to verify it passes
 
