@@ -1285,7 +1285,13 @@ def run_repair_on_user_request() -> dict:
             )
             try:
                 second_repair = repair_all()
-                # 合并二次 repair 结果到 repair_result
+                # 二次 repair 的下划线字段跳过（避免 post_skill_sync__unrecoverable 双下划线）
+                # 但 _unrecoverable 单独合并到顶层，让 Rust format_repair_summary 能读到
+                # （Rust 遍历 repair_result.<*>.unrecoverable 检测 unrecoverable，
+                #  但顶层 _unrecoverable 让 run_repair_on_user_request 的 repaired 判定能读到）
+                if second_repair.get("_unrecoverable"):
+                    repair_result["_unrecoverable"] = True
+                    repair_result["_post_skill_sync_failed"] = True
                 for k, v in second_repair.items():
                     if k.startswith("_"):
                         continue
@@ -1300,14 +1306,18 @@ def run_repair_on_user_request() -> dict:
                 logger.warning(f"[LightRAG] 二次 repair 后重检失败: {e}")
 
         # 7. 判定 repaired
-        # - 任一 repair result status=error → False
-        # - unrecoverable 标记 → False
-        # - 重检 critical > 0 或 major > 0 → False
+        # v9: 基于 repair_all 的 _unrecoverable 字段，不再依赖 check_all 重检
+        # 原因：历史残留孤儿 chunk 永远报 major（entity_chunks_dangling），
+        # 但 repair_all 已尽力修了（_unrecoverable=False 表示修复流程没遇到
+        # 不可恢复错误）。用户应看到 repaired=True（修复已尽力），而不是永远
+        # 卡在 repaired=False（旧逻辑基于 check_all 重检 critical/major）。
+        repaired = not has_unrecoverable and not repair_result.get("_unrecoverable", False)
+
+        # critical/major/minor 仍从 check_result 取（暴露给用户，不掩盖问题）
         critical = check_result.get("critical_errors", 0)
         major = check_result.get("major_errors", 0)
         minor = check_result.get("minor_errors", 0)
 
-        repaired = True
         for vdb_name, vdb_result in repair_result.items():
             if not isinstance(vdb_result, dict):
                 continue
@@ -1317,11 +1327,9 @@ def run_repair_on_user_request() -> dict:
                     f"[LightRAG] 修复失败项: {vdb_name} - {vdb_result.get('message', '')}"
                 )
 
-        if critical > 0 or major > 0 or has_unrecoverable:
-            repaired = False
+        if has_unrecoverable:
             logger.warning(
-                f"[LightRAG] 修复后重检仍有 critical({critical})/major({major})"
-                f"/unrecoverable({has_unrecoverable})"
+                f"[LightRAG] 修复后 has_unrecoverable({has_unrecoverable})"
             )
 
         logger.info(
