@@ -421,14 +421,16 @@ def test_repair_text_chunks_uses_real_config_not_hardcoded(tmp_path, monkeypatch
         config_calls.append(True)
         return {"chunk_token_size": 800, "chunk_overlap_token_size": 50}
     
-    monkeypatch.setattr("niu_api.internal.lightrag_repair._get_lightrag_config", fake_config)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._get_lightrag_config", fake_config)
     # mock get_lightrag 返回带 tokenizer 的实例
+    # 注意：repair_text_chunks 用局部 import（from niu_api.internal.lightrag_manager import get_lightrag），
+    # 所以 patch 必须指向源模块 lightrag_manager，不是被测模块 lightrag_repair
     class FakeTokenizer:
         def encode(self, text):
             return text.split()  # 简化
     class FakeRag:
         tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_repair.get_lightrag", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
     
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
@@ -459,7 +461,7 @@ def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, mo
             return text.split()
     class FakeRag:
         tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_repair.get_lightrag", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
     from niu_api.internal.lightrag_repair import repair_text_chunks
@@ -496,7 +498,7 @@ def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
             return text.split()
     class FakeRag:
         tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_repair.get_lightrag", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
     from niu_api.internal.lightrag_repair import repair_text_chunks
