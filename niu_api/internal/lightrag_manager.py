@@ -1052,24 +1052,13 @@ def run_resilience_phase1() -> dict:
         check_result = check_all()
     except Exception as e:
         logger.warning(f"[LightRAG] 一致性检测失败（不影响启动）: {e}")
-        # 异常路径也保留 errors_by_level 结构，避免下游 .get("errors_by_level") 报 KeyError
-        check_result = {
-            "ok": True,
-            "errors_by_level": {"critical": [], "major": [], "minor": []},
-            "error": str(e),
-        }
+        check_result = {"ok": True, "total_errors": 0, "error": str(e)}
 
     _integrity_result = check_result
 
-    # 从 errors_by_level 汇总各级错误数（Task 5 后 check_all 用 errors_by_level 结构）
-    _ebl = check_result.get("errors_by_level", {}) or {}
-    _critical = len(_ebl.get("critical", []) or [])
-    _major = len(_ebl.get("major", []) or [])
-    _minor = len(_ebl.get("minor", []) or [])
-    _total = _critical + _major + _minor
     logger.info(
         f"[LightRAG] Phase 1 完成: check_ok={check_result.get('ok')}, "
-        f"critical={_critical}, major={_major}, minor={_minor}, total_errors={_total}"
+        f"total_errors={check_result.get('total_errors', 0)}"
     )
     return {
         "check_ok": check_result.get("ok", True),
@@ -1394,18 +1383,9 @@ def get_lightrag_status() -> Dict[str, Any]:
         "loop_running": loop_running,
     }
     if _integrity_result:
-        # 从 errors_by_level 结构汇总各级错误数（Task 5 后 check_all 用 errors_by_level.critical/major/minor）
-        errors_by_level = _integrity_result.get("errors_by_level", {}) or {}
-        critical_errors = len(errors_by_level.get("critical", []) or [])
-        major_errors = len(errors_by_level.get("major", []) or [])
-        minor_errors = len(errors_by_level.get("minor", []) or [])
-        total_errors = critical_errors + major_errors + minor_errors
         result["integrity"] = {
             "ok": _integrity_result.get("ok", True),
-            "critical_errors": critical_errors,
-            "major_errors": major_errors,
-            "minor_errors": minor_errors,
-            "total_errors": total_errors,
+            "total_errors": _integrity_result.get("total_errors", 0),
         }
     return result
 
