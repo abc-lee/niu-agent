@@ -337,3 +337,47 @@ def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
     assert expected_chunk_id in tc_after, f"重建后的 chunk_id {expected_chunk_id} 应在 text_chunks 里"
     cache_list = tc_after[expected_chunk_id].get("llm_cache_list", [])
     assert "default:extract:key1" in cache_list, f"llm_cache_list 应含 default:extract:key1，实际: {cache_list}"
+
+
+def test_repair_graphml_respects_storage_dir_patch(tmp_path, monkeypatch):
+    """repair_graphml 应使用 patch 后的 _STORAGE_DIR，不污染真实 ~/.niu/lightrag_storage。"""
+    # 准备 tmp_path 下的真相源
+    docs = {
+        "doc-test": {
+            "content": "测试文档内容",
+            "file_path": "test.md",
+        }
+    }
+    cache = {
+        "default:extract:key1": {
+            "return": "entity<|#|>测试<|#|>document<|#|>desc",
+            "cache_type": "extract",
+            "chunk_id": "chunk-test",
+            "create_time": 1781930610,
+        }
+    }
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    (tmp_path / "kv_store_doc_status.json").write_text("{}")
+
+    # patch lightrag_repair._STORAGE_DIR + lightrag_manager.STORAGE_DIR + _rag_instance
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
+
+    # 记录真实 storage 的 GraphML 修改时间（验证不被污染）
+    real_graphml = Path.home() / ".niu/lightrag_storage/graph_chunk_entity_relation.graphml"
+    real_mtime_before = real_graphml.stat().st_mtime if real_graphml.exists() else 0
+
+    from niu_api.internal.lightrag_repair import repair_graphml
+    # 这个调用可能因为 LightRAG 实例初始化失败而返回 unrecoverable
+    # 但关键是验证不污染真实 storage
+    try:
+        result = repair_graphml()
+    except Exception:
+        pass  # 测试不关心结果，只关心不污染
+
+    # 验证真实 storage 的 GraphML 没被修改
+    real_mtime_after = real_graphml.stat().st_mtime if real_graphml.exists() else 0
+    assert real_mtime_after == real_mtime_before, "真实 storage 的 GraphML 不应被测试污染"
