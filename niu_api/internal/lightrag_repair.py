@@ -2111,8 +2111,35 @@ def repair_brainregion_zombies() -> dict[str, Any]:
         "cleaned_count": len(zombie_names),
         "details": details,
     }
-_REPAIR_ORDER = [
-    ("brainregion_zombies", repair_brainregion_zombies),  # 最早清理僵尸脑区
+# 真相源文件（不可重建，损坏 = unrecoverable）
+_TRUTH_SOURCE_FILES = {
+    "kv_store_full_docs.json",
+    "kv_store_llm_response_cache.json",
+}
+
+# 派生数据文件（可从真相源重建，repair_all 一刀切备份+删除+重建）
+_DERIVED_FILES = [
+    "kv_store_text_chunks.json",
+    "kv_store_doc_status.json",
+    "graph_chunk_entity_relation.graphml",
+    "vdb_chunks.json",
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "kv_store_entity_chunks.json",
+    "kv_store_relation_chunks.json",
+    "kv_store_full_entities.json",
+    "kv_store_full_relations.json",
+]
+
+# 向后兼容别名
+_UNRECOVERABLE_FILES = _TRUTH_SOURCE_FILES
+
+
+# 重建依赖链顺序
+# brainregion_zombies 必须在最前面：清 cache 里僵尸 extract，防止重建 GraphML 时僵尸复活
+# graphml_orphan_edges 在 graphml 之后：清理 GraphML 重建后可能残留的孤儿边
+_REBUILD_ORDER = [
+    ("brainregion_zombies", repair_brainregion_zombies),
     ("text_chunks", repair_text_chunks),
     ("doc_status", repair_doc_status),
     ("graphml", repair_graphml),
@@ -2124,188 +2151,226 @@ _REPAIR_ORDER = [
     ("relation_chunks", repair_relation_chunks),
     ("full_entities", repair_full_entities),
     ("full_relations", repair_full_relations),
-    ("llm_response_cache", repair_llm_response_cache),
 ]
 
 
-# check name → repair 函数名（用于按需 repair 映射）
-# 注意：部分 check 会发出带后缀的具体 error.check 值
-# （如 graphml_edge_dangling 发出 graphml_edge_dangling_source / _target），
-# 这些后缀变体也需要映射到同一个 repair 函数。
-_CHECK_TO_REPAIR: dict[str, str] = {
-    # 语义维度 check → brainregion_zombies（最早清理僵尸脑区）
-    "brainregion_semantic_zombie": "brainregion_zombies",
-    "entity_chunks_source_id_mismatch": "brainregion_zombies",
-    "chunk_shared_by_too_many_entities": "brainregion_zombies",
-    "brainregion_orphan_chunks": "brainregion_zombies",
-    # 反向孤儿 → vdb_entities 重建
-    "vdb_entities_orphan": "vdb_entities",
-    # 因果链 check（原有项）
-    "text_chunks_doc_dangling": "text_chunks",
-    "text_chunks_cache_dangling": "llm_response_cache",
-    "doc_status_chunks_dangling": "doc_status",
-    "graphml_edge_dangling": "graphml_orphan_edges",
-    "graphml_edge_dangling_source": "graphml_orphan_edges",
-    "graphml_edge_dangling_target": "graphml_orphan_edges",
-    "vdb_chunks_missing": "vdb_chunks",
-    "vdb_entities_missing": "vdb_entities",
-    "vdb_relationships_missing": "vdb_relationships",
-    "vdb_relationships_endpoint_dangling": "vdb_relationships",
-    "entity_chunks_dangling": "entity_chunks",
-    "relation_chunks_dangling": "relation_chunks",
-}
+def _check_truth_sources(storage_dir: Path) -> dict[str, Any]:
+    """检测 2 个真相源文件是否完整可用（全新用户合法）。
 
+    包装函数：遍历 _TRUTH_SOURCE_FILES，调用 lightrag_integrity._check_truth_source（单数版）。
+    避免重复实现（v4 审查 MAJOR-4：Task 4 和 Task 5 两份检测逻辑会分叉）。
 
-# file_level_critical 的 error.file → repair 函数名
-# 用于文件级 critical（JSON 解析失败 / 维度不匹配）的按文件分发
-_FILE_TO_REPAIR: dict[str, str] = {
-    "kv_store_doc_status.json": "doc_status",
-    "kv_store_entity_chunks.json": "entity_chunks",
-    "kv_store_full_docs.json": "full_docs_unrecoverable",  # 真相源不可重建
-    "kv_store_full_entities.json": "full_entities",
-    "kv_store_full_relations.json": "full_relations",
-    "kv_store_relation_chunks.json": "relation_chunks",
-    "kv_store_text_chunks.json": "text_chunks",
-    "kv_store_llm_response_cache.json": "llm_response_cache",
-    "vdb_entities.json": "vdb_entities",
-    "vdb_relationships.json": "vdb_relationships",
-    "vdb_chunks.json": "vdb_chunks",
-    "graph_chunk_entity_relation.graphml": "graphml",
-}
-
-# 真相源不可重建的文件（file_level_critical 时直接标记 unrecoverable）
-_UNRECOVERABLE_FILES = {"kv_store_full_docs.json"}
-
-
-def repair_all() -> dict[str, Any]:
-    """一键修复所有 LightRAG 数据文件（按 check 结果选择性调用）。
-
-    v2 改造：先 check_all 拿 errors，按 check name 分组映射到 repair 函数，
-    只对 check 报错的文件调 repair，没报错的跳过。
-    避免对没坏的文件调 repair（导致不必要的 unrecoverable）。
-
-    顺序（按依赖链）：
-        text_chunks → doc_status → graphml → vdb_chunks → vdb_entities →
-        vdb_relationships → entity_chunks → relation_chunks →
-        full_entities → full_relations → llm_response_cache
+    全新用户处理（参考 7-11 计划原则"空文件不是错"）：
+        - 文件不存在 → ok（全新用户还没导入文档）
+        - 文件存在但 size=0 → ok（全新用户空文件）
+        - 文件存在但 data={}（空 dict）→ ok（全新用户空 dict）
+        - 文件存在但 JSON 解析失败 → critical（真相源损坏）
+        - 文件存在但内容残缺（非 dict 类型）→ critical
 
     Returns:
         {
-            "name": {status, expected, actual, lost, source, message, ...},
-            ...,
-            "_unrecoverable": True,  # 任意 repair 报 unrecoverable 时
-            "_skipped": [...],       # 跳过的 repair 名（check 没报错）
-            "_check_summary": {...},  # check_all 关键字段
+            "ok": bool,
+            "reason": str,
+            "files": {filename: {"ok": bool, "reason": str, "size": int, "doc_count": int}},
         }
     """
-    from niu_api.internal.lightrag_integrity import check_all
-    from niu_api.internal import lightrag_integrity
+    from niu_api.internal.lightrag_integrity import _check_truth_source
 
-    # 1. 同步 integrity 模块的 _STORAGE_DIR（兼容测试 monkeypatch repair._STORAGE_DIR 的场景）
-    #    生产环境两边默认值一致（都是 ~/.niu/lightrag_storage），无需显式同步。
-    #    测试场景只 monkeypatch repair._STORAGE_DIR，这里同步过去保证 check_all 用同一个目录。
+    files_status = {}
+    all_ok = True
+    reasons = []
+
+    for fname in _TRUTH_SOURCE_FILES:
+        # _check_truth_source 返回空 dict 表示 ok，非空 dict 表示错误
+        err = _check_truth_source(fname, storage_dir)
+        status = {"ok": True, "reason": "", "size": 0, "doc_count": 0}
+        if err:
+            # 有错误
+            status["ok"] = False
+            status["reason"] = err.get("msg", "")
+            reasons.append(status["reason"])
+        else:
+            # ok，记录文件信息（size + doc_count）
+            fpath = storage_dir / fname
+            if fpath.exists():
+                try:
+                    status["size"] = fpath.stat().st_size
+                    if status["size"] > 0:
+                        data = json.loads(fpath.read_text())
+                        if isinstance(data, dict) and data:
+                            if fname == "kv_store_full_docs.json":
+                                status["doc_count"] = len(data)
+                            elif fname == "kv_store_llm_response_cache.json":
+                                extract_count = sum(
+                                    1 for v in data.values()
+                                    if isinstance(v, dict) and v.get("cache_type") == "extract"
+                                )
+                                status["doc_count"] = extract_count
+                except Exception:
+                    pass  # _check_truth_source 已经判过损坏，这里只记录信息失败不影响
+        if not status["ok"]:
+            all_ok = False
+        files_status[fname] = status
+
+    return {
+        "ok": all_ok,
+        "reason": "; ".join(reasons) if reasons else "",
+        "files": files_status,
+    }
+
+
+def repair_all() -> dict[str, Any]:
+    """一键修复：检测 2 真相源 → 备份 9 派生 → 清僵尸 cache → 删 9 → 重建 → 失败回滚。
+
+    返回扁平结构（向后兼容 Rust format_repair_summary）：
+        {
+            "brainregion_zombies": {status, cleaned_count, ...},
+            "text_chunks": {status, expected, actual, ...},
+            ...
+            "_unrecoverable": bool,
+            "_skipped": [...],
+            "_check_summary": {...},
+            "_deleted": [...],
+            "_rolled_back": bool,
+        }
+    """
+    import shutil
+    import time
+
+    storage_dir = _storage_dir()
+    results: dict[str, Any] = {}
+    unrecoverable_detected = False
+    backup_dir: Path | None = None
+
+    # 0. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager（兼容测试 monkeypatch）
+    #    现有代码 lightrag_repair.py:2085-2090 有这段同步逻辑，重写 repair_all 时必须保留。
+    #    否则测试 monkeypatch lightrag_repair._STORAGE_DIR 后，lightrag_integrity._STORAGE_DIR
+    #    仍是真实 ~/.niu/lightrag_storage，导致 check_all 读真实路径污染数据。
+    #    同时清 lightrag_manager._rag_instance + 同步 lightrag_manager.STORAGE_DIR，
+    #    让 repair_graphml 调 get_lightrag() 时重新创建实例指向 patch 后路径（参考 Task 3）。
     try:
+        from niu_api.internal import lightrag_integrity
         if lightrag_integrity._STORAGE_DIR != _STORAGE_DIR:
             lightrag_integrity._STORAGE_DIR = _STORAGE_DIR
     except Exception:  # noqa: BLE001
         pass
+    try:
+        import niu_api.internal.lightrag_manager as lightrag_manager
+        lightrag_manager._rag_instance = None
+        lightrag_manager._init_failed_at = 0
+        lightrag_manager._init_error = None
+        lightrag_manager.STORAGE_DIR = storage_dir
+    except Exception:  # noqa: BLE001
+        pass
 
-    # 2. 先 check_all 拿到 errors + checks
-    check_result = check_all()
-    checks = check_result.get("checks", {})
-    all_errors = check_result.get("errors", [])
+    # 1. 检测 2 真相源（含内容完整性检查）
+    truth_check = _check_truth_sources(storage_dir)
+    results["_truth_source_check"] = truth_check
+    if not truth_check["ok"]:
+        results["_unrecoverable"] = True
+        results["_unrecoverable_reason"] = f"真相源损坏: {truth_check['reason']}"
+        results["_rolled_back"] = False  # 没删任何东西，不需要回滚
+        return results
 
-    # 3. 按 check name 分组收集报错的 check（含 file_level_critical 的 file 子项）
-    #    注意：file_level_critical 的 errors 里 check 字段是具体类型（json_parse 等），
-    #    不是 "file_level_critical"。所以用 checks["file_level_critical"]["errors"]
-    #    来识别 file_level_critical 来源。
-    needed_repairs: set[str] = set()
-    file_level_errors: list[dict[str, Any]] = checks.get("file_level_critical", {}).get("errors", [])
-    file_level_error_files: set[str] = {err.get("file", "") for err in file_level_errors}
+    # 2. 备份 9 个派生文件到临时目录
+    ts = int(time.time())
+    backup_dir = storage_dir.parent / f"lightrag_storage.prerepair_{ts}"
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backed_up: list[str] = []
+        for fname in _DERIVED_FILES:
+            src = storage_dir / fname
+            if src.exists():
+                shutil.copy2(src, backup_dir / fname)
+                backed_up.append(fname)
+        results["_backed_up"] = backed_up
+        logger.info(f"[LightRAGRepair] 备份 {len(backed_up)} 个派生文件到 {backup_dir}")
+    except Exception as e:
+        results["_unrecoverable"] = True
+        results["_unrecoverable_reason"] = f"备份失败: {e}"
+        results["_rolled_back"] = False
+        return results
 
-    # 非 file_level_critical 的 check（按 check name 映射）
-    for err in all_errors:
-        check_name = err.get("check") or err.get("name", "")
-        if not check_name:
-            continue
-        # file_level_critical 的 error 跳过（用 file 字段分发，下面单独处理）
-        if err in file_level_errors:
-            continue
-        repair_name = _CHECK_TO_REPAIR.get(check_name)
-        if repair_name:
-            needed_repairs.add(repair_name)
+    # 3. 删除 9 个派生文件
+    deleted: list[str] = []
+    for fname in _DERIVED_FILES:
+        fpath = storage_dir / fname
+        if fpath.exists():
+            try:
+                fpath.unlink()
+                deleted.append(fname)
+            except Exception as e:
+                logger.warning(f"[LightRAGRepair] 删除 {fname} 失败: {e}")
+    results["_deleted"] = deleted
 
-    # 处理 file_level_critical 的 file 字段
-    for err in file_level_errors:
-        file_name = err.get("file", "")
-        if file_name in _UNRECOVERABLE_FILES:
-            # 真相源损坏 → 直接标记 unrecoverable，不需要 repair
-            continue
-        repair_name = _FILE_TO_REPAIR.get(file_name)
-        if repair_name:
-            needed_repairs.add(repair_name)
+    # 4. 按依赖链重建
+    # 检测 full_docs 是否为空（全新用户）——空时跳过 graphml/graphml_orphan_edges
+    # 因为 repair_graphml 调 apipeline_process_enqueue_documents，empty full_docs 会
+    # 报 "No documents to process" 返回 unrecoverable。全新用户合法，不应报 unrecoverable。
+    full_docs_path = storage_dir / "kv_store_full_docs.json"
+    is_empty_user = False
+    try:
+        if full_docs_path.exists():
+            fd_data = json.loads(full_docs_path.read_text())
+            if not fd_data:  # 空 dict
+                is_empty_user = True
+        else:
+            is_empty_user = True  # 文件不存在
+    except Exception:
+        pass  # 读取失败不阻塞，让 repair_graphml 自己处理
 
-    # 4. 按依赖链顺序执行 needed_repairs 里的 repair
-    results: dict[str, Any] = {}
-    unrecoverable_detected = False
+    # 全新用户跳过的 repair 函数（依赖文档/GraphML 重建）
+    _SKIP_FOR_EMPTY_USER = {"graphml", "graphml_orphan_edges", "vdb_entities", "vdb_relationships"}
+
     skipped: list[str] = []
-
-    for name, fn in _REPAIR_ORDER:
-        if name not in needed_repairs:
+    for name, fn in _REBUILD_ORDER:
+        # 全新用户跳过依赖文档的 repair
+        if is_empty_user and name in _SKIP_FOR_EMPTY_USER:
+            results[name] = {"status": "ok", "skipped": True, "reason": "empty full_docs (new user)"}
             skipped.append(name)
-            logger.info(f"[LightRAGRepair] 跳过 {name}（check 未报错）")
+            logger.info(f"[LightRAGRepair] 跳过 {name}（全新用户，无文档）")
             continue
         try:
             result = fn()
             results[name] = result
-            # 如果 unrecoverable，后续 repair 仍继续（让用户看到全部状态）
-            # 但标记 unrecoverable_detected 供调用方决策
-            if result.get("unrecoverable"):
+            if isinstance(result, dict) and (
+                result.get("unrecoverable") or result.get("status") == "unrecoverable"
+            ):
                 unrecoverable_detected = True
                 logger.warning(
                     f"[LightRAGRepair] {name} 报 unrecoverable: {result.get('message', '')}"
                 )
-        except Exception as e:  # noqa: BLE001
-            # 单个 repair 抛异常不影响其他 repair
+        except Exception as e:
             logger.error(f"[LightRAGRepair] {name} 抛异常: {e}", exc_info=True)
             results[name] = {
                 "status": "error",
-                "expected": 0,
-                "actual": 0,
-                "lost": 0,
-                "source": "internal error",
                 "message": f"repair 函数抛异常: {type(e).__name__}: {e}",
             }
-
-    # 5. 真相源（kv_store_full_docs.json）文件级 critical → 直接标记 unrecoverable
-    #    check_all 检测到 full_docs 损坏但无对应 repair，加一条 unrecoverable 占位
-    for err in file_level_errors:
-        file_name = err.get("file", "")
-        if file_name in _UNRECOVERABLE_FILES:
             unrecoverable_detected = True
-            results["full_docs"] = {
-                "status": "error",
-                "expected": 1,
-                "actual": 0,
-                "lost": 1,
-                "source": "kv_store_full_docs",
-                "message": f"真相源 {file_name} 损坏：{err.get('msg', '未知错误')}，不可重建",
-                "unrecoverable": True,
-            }
-            logger.error(
-                f"[LightRAGRepair] 真相源 {file_name} 损坏（critical），不可重建"
-            )
+    results["_skipped"] = skipped
 
-    if unrecoverable_detected:
-        results["_unrecoverable"] = True
-    if skipped:
-        results["_skipped"] = skipped
-    results["_check_summary"] = {
-        "critical_errors": check_result.get("critical_errors", 0),
-        "major_errors": check_result.get("major_errors", 0),
-        "minor_errors": check_result.get("minor_errors", 0),
-        "ok": check_result.get("ok", False),
-    }
+    # 5. 失败时回滚
+    if unrecoverable_detected and backup_dir is not None:
+        try:
+            for fname in _DERIVED_FILES:
+                backup_file = backup_dir / fname
+                if backup_file.exists():
+                    shutil.copy2(backup_file, storage_dir / fname)
+            results["_rolled_back"] = True
+            logger.warning(f"[LightRAGRepair] 重建失败，已回滚 {len(_DERIVED_FILES)} 个文件")
+        except Exception as e:
+            results["_rolled_back"] = False
+            results["_rollback_error"] = str(e)
+            logger.error(f"[LightRAGRepair] 回滚失败: {e}", exc_info=True)
+    else:
+        results["_rolled_back"] = False
+        # 重建成功，删除备份
+        try:
+            shutil.rmtree(backup_dir)
+        except Exception:
+            pass  # 备份没删掉不影响主流程
+
+    results["_unrecoverable"] = unrecoverable_detected
     return results
 
 
