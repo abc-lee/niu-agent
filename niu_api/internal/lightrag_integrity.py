@@ -285,6 +285,8 @@ def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
         errors.append(vdb_r_err)
     elif edges:
         # vdb_relationships 的 (src, tgt) 集合
+        # 用 sorted pair 比对，跟 repair_vdb_relationships 写入逻辑一致
+        # （repair_vdb_relationships 用 sorted((src, tgt)) 存 src_id/tgt_id，见 lightrag_repair.py:1441）
         vdb_r_pairs = set()
         for entry in vdb_r_list:
             if not isinstance(entry, dict):
@@ -292,9 +294,9 @@ def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
             src = entry.get("src_id", "")
             tgt = entry.get("tgt_id", "")
             if src and tgt:
-                vdb_r_pairs.add((src.lower(), tgt.lower()))
-        # GraphML edge 集合
-        graphml_pairs = {(s.lower(), t.lower()) for s, t in edges}
+                vdb_r_pairs.add(tuple(sorted((src.lower(), tgt.lower()))))
+        # GraphML edge 集合（同样用 sorted pair，跟 vdb_r_pairs 比对一致）
+        graphml_pairs = {tuple(sorted((s.lower(), t.lower()))) for s, t in edges}
         missing_pairs = graphml_pairs - vdb_r_pairs
         if missing_pairs:
             errors.append({
