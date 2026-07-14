@@ -2484,10 +2484,21 @@ def repair_all() -> dict[str, Any]:
             logger.warning(
                 f"[LightRAGRepair] 重建失败，已回滚 {restored} 个文件，清理 {cleaned} 个错误重建文件"
             )
+            # 回滚后删除备份目录（备份是用户自己的事，程序不留垃圾）
+            try:
+                shutil.rmtree(backup_dir)
+                logger.info("[LightRAGRepair] 回滚后清理备份目录")
+            except Exception as e_clean:
+                logger.warning(f"[LightRAGRepair] 清理备份目录失败: {e_clean}")
         except Exception as e:
             results["_rolled_back"] = False
             results["_rollback_error"] = str(e)
             logger.error(f"[LightRAGRepair] 回滚失败: {e}", exc_info=True)
+            # 回滚异常时也尝试清理备份目录
+            try:
+                shutil.rmtree(backup_dir)
+            except Exception:
+                pass
     else:
         results["_rolled_back"] = False
         # 重建成功，删除备份
@@ -2498,20 +2509,18 @@ def repair_all() -> dict[str, Any]:
 
     results["_unrecoverable"] = unrecoverable_detected
 
-    # 6. 成功完成后清理本次 repair 产生的 .corrupt.*.bak 备份文件
+    # 6. 清理本次 repair 产生的 .corrupt.*.bak 备份文件
     #    _backup_corrupt 在各 repair 子函数重建前备份损坏文件，
-    #    repair 成功后这些备份没用了，清除避免堆积垃圾。
-    #    失败路径保留备份，用户能从备份恢复。
-    if not unrecoverable_detected:
-        try:
-            cleaned = 0
-            for f in storage_dir.glob("*.corrupt.*.bak"):
-                f.unlink()
-                cleaned += 1
-            if cleaned > 0:
-                logger.info(f"[LightRAGRepair] 清理 {cleaned} 个 repair 备份文件")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[LightRAGRepair] 清理备份文件失败: {e}")
+    #    不论 repair 成功还是失败，都清理这些临时文件（备份是用户自己的事）。
+    try:
+        cleaned = 0
+        for f in storage_dir.glob("*.corrupt.*.bak"):
+            f.unlink()
+            cleaned += 1
+        if cleaned > 0:
+            logger.info(f"[LightRAGRepair] 清理 {cleaned} 个 repair 备份文件")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LightRAGRepair] 清理备份文件失败: {e}")
 
     return results
 
