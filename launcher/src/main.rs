@@ -620,8 +620,6 @@ impl Splash {
                             );
                             let output = std::process::Command::new("curl")
                                 .arg("-s")
-                                .arg("--max-time")
-                                .arg("600")
                                 .arg("-X")
                                 .arg("POST")
                                 .arg(&url)
