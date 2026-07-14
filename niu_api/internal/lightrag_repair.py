@@ -2497,6 +2497,22 @@ def repair_all() -> dict[str, Any]:
             pass  # 备份没删掉不影响主流程
 
     results["_unrecoverable"] = unrecoverable_detected
+
+    # 6. 成功完成后清理本次 repair 产生的 .corrupt.*.bak 备份文件
+    #    _backup_corrupt 在各 repair 子函数重建前备份损坏文件，
+    #    repair 成功后这些备份没用了，清除避免堆积垃圾。
+    #    失败路径保留备份，用户能从备份恢复。
+    if not unrecoverable_detected:
+        try:
+            cleaned = 0
+            for f in storage_dir.glob("*.corrupt.*.bak"):
+                f.unlink()
+                cleaned += 1
+            if cleaned > 0:
+                logger.info(f"[LightRAGRepair] 清理 {cleaned} 个 repair 备份文件")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LightRAGRepair] 清理备份文件失败: {e}")
+
     return results
 
 
