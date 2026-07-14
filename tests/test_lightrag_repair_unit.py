@@ -989,3 +989,60 @@ def test_repair_all_rollback_uses_backed_up_list(tmp_path, monkeypatch):
     # 验证没备份的 vdb_*.json 被删除（不是残留空文件）
     assert not (tmp_path / "vdb_chunks.json").exists(), \
         "vdb_chunks.json 应被回滚删除（没备份，重建的空文件应清理）"
+
+
+def test_check_vdb_missing_uses_sorted_pair(tmp_path, monkeypatch):
+    """check_vdb_missing 应该用 sorted pair 比对，跟 repair 写入逻辑一致。
+
+    Bug 根因：
+    - repair_vdb_relationships 用 sorted((src, tgt)) 存 src_id/tgt_id（lightrag_repair.py:1441）
+    - _check_vdb_missing 用原始顺序 (source, target) 比对 GraphML edge
+    - 当 source > target（字母序）时 sorted 后反转，check 误报 missing
+
+    修复后：vdb_r_pairs 和 graphml_pairs 都用 sorted pair 比对。
+    """
+    from niu_api.internal import lightrag_integrity
+
+    monkeypatch.setattr(lightrag_integrity, "_STORAGE_DIR", tmp_path)
+
+    # 构造 GraphML：1 个 edge，source > target（字母序反转）
+    # 注意：必须包 <graph> 元素（跟 LightRAG 实际格式一致），否则 _load_graphml 报 no_graph_element
+    graphml_content = '''<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <graph edgedefault="undirected">
+    <node id="zebra"/>
+    <node id="apple"/>
+    <edge source="zebra" target="apple"/>
+  </graph>
+</graphml>'''
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text(graphml_content)
+
+    # 构造 vdb_relationships：1 条向量，src_id/tgt_id 用 sorted（跟 repair 一致）
+    vdb_r = {
+        "embedding_dim": 4,
+        "data": [{"__id__": "r1", "src_id": "apple", "tgt_id": "zebra", "content": "test"}],
+        "matrix": ""
+    }
+    (tmp_path / "vdb_relationships.json").write_text(json.dumps(vdb_r))
+
+    # 构造 vdb_entities：2 个向量（覆盖 2 个 node）
+    vdb_e = {
+        "embedding_dim": 4,
+        "data": [
+            {"__id__": "e1", "entity_name": "zebra"},
+            {"__id__": "e2", "entity_name": "apple"},
+        ],
+        "matrix": ""
+    }
+    (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e))
+
+    errors = lightrag_integrity._check_vdb_missing(tmp_path)
+
+    # 应该没有 vdb_relationships_missing 错误（sorted 比对匹配）
+    rel_missing = [e for e in errors if e.get("check") == "vdb_relationships_missing"]
+    assert len(rel_missing) == 0, \
+        f"不应报 vdb_relationships_missing（sorted 比对应匹配）: {rel_missing}"
+    # 同时验证 vdb_entities_missing 也不应误报
+    ent_missing = [e for e in errors if e.get("check") == "vdb_entities_missing"]
+    assert len(ent_missing) == 0, \
+        f"不应报 vdb_entities_missing（2 个 node 都有对应向量）: {ent_missing}"
