@@ -464,15 +464,16 @@ def test_repair_all_returns_flat_structure(tmp_path, monkeypatch):
 
 
 def test_repair_all_backs_up_before_delete(tmp_path, monkeypatch):
-    """repair_all 删 9 文件前应备份到临时目录。"""
+    """repair_all 删 9 派生文件前应备份到临时目录（v4：GraphML 是真相源，不能当派生文件破坏）。"""
+    # v4：GraphML 是 3 真相源之一，必须是合法的（有 graph 元素），否则会被判为 unrecoverable
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {}
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
 
-    # 写一些派生文件（含旧数据）
+    # 写一些派生文件（含旧数据）——注意 graphml 不在派生文件列表里（v4 是真相源）
     (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "data"}')
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("old graphml")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -483,38 +484,44 @@ def test_repair_all_backs_up_before_delete(tmp_path, monkeypatch):
     # 应该有备份目录
     backups = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
     # 备份可能在 tmp_path 的父目录或别处，取决于实现
-    # 关键验证：_deleted 字段记录了删除的文件
+    # 关键验证：_deleted 字段记录了删除的派生文件（不含 graphml——它是真相源不被删）
     assert "_deleted" in result
     assert len(result["_deleted"]) > 0
+    # GraphML 是真相源，不在 _deleted 里
+    assert "graph_chunk_entity_relation.graphml" not in result["_deleted"]
 
 
 def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
-    """repair_all 重建失败时应回滚备份（恢复 9 个文件）。"""
+    """repair_all 重建失败时应回滚备份（恢复派生文件，不动 3 真相源）。
+
+    v4 改动：repair_graphml 不在 _REBUILD_ORDER 里（它是真相源，不会被重建），
+    所以 mock repair_graphml 不会触发失败。改为 mock repair_vdb_entities 失败。
+    """
+    # v4：GraphML 是真相源，必须是合法的（有 graph 元素）
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {}
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
 
-    # 写旧派生文件
+    # 写旧派生文件（不含 graphml——v4 是真相源，不能被备份/删除/恢复）
     (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}')
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("old graphml")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
-    # mock repair_graphml 抛异常（模拟重建失败）
+    # mock repair_vdb_entities 抛异常（模拟重建失败；v4 的 _REBUILD_ORDER 含此函数）
     import niu_api.internal.lightrag_repair as repair_mod
-    def fail_graphml():
+    def fail_vdb_entities():
         raise RuntimeError("模拟重建失败")
-    monkeypatch.setattr(repair_mod, "repair_graphml", fail_graphml)
+    monkeypatch.setattr(repair_mod, "repair_vdb_entities", fail_vdb_entities)
 
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
 
     # 应该回滚：派生文件恢复原状
     assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
-    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == "old graphml"
-    # 返回 unrecoverable
+    # 返回 unrecoverable + 回滚
     assert result.get("_unrecoverable") is True
     assert result.get("_rolled_back") is True
 
@@ -542,11 +549,11 @@ def test_repair_all_unrecoverable_when_truth_source_broken(tmp_path, monkeypatch
 
 
 def test_repair_all_new_user_empty_truth_sources_ok(tmp_path, monkeypatch):
-    """全新用户（full_docs/cache 都不存在）→ repair_all 不应报 unrecoverable。
+    """全新用户（3 真相源都不存在）→ repair_all 不应报 unrecoverable。
 
     全新用户合法启动场景：刚装 niu，~/.niu/lightrag_storage/ 还没创建或为空。
-    _check_truth_sources 应返回 ok=True（v4 修订），repair_all 应正常完成
-    （重建出空派生文件，不报 unrecoverable）。
+    v4 的 _check_truth_sources_intact 应返回 intact=True（文件不存在 = 全新用户合法），
+    repair_all 应正常完成（重建出空派生文件，不报 unrecoverable）。
     """
     # 不写任何真相源文件（模拟全新用户）
     # 也不写派生文件
@@ -561,8 +568,8 @@ def test_repair_all_new_user_empty_truth_sources_ok(tmp_path, monkeypatch):
 
     # 全新用户不应报 unrecoverable
     assert not result.get("_unrecoverable"), f"全新用户应能正常 repair: {result.get('_unrecoverable_reason')}"
-    # 真相源检查应通过
-    assert result["_truth_source_check"]["ok"] is True
+    # 真相源检查应通过（v4 key 是 intact，不是 ok）
+    assert result["_truth_source_check"]["intact"] is True
 
 
 def test_repair_all_new_user_empty_dict_truth_sources_ok(tmp_path, monkeypatch):
@@ -864,10 +871,15 @@ def test_repair_all_breaks_on_unrecoverable(tmp_path, monkeypatch):
 
     Bug B1：原实现只置位 unrecoverable_detected 但不 break，后续 repair 函数
     在依赖数据缺失时写空文件覆盖原始数据。
+
+    v4 机制变更：repair_all 用 getattr(_self_mod, fn.__name__) 间接查找函数
+    （让 monkeypatch 能注入失败版本），所以不再 patch _REBUILD_ORDER，
+    而是 patch 模块属性 repair_text_chunks / repair_vdb_chunks / repair_vdb_entities。
     """
     import niu_api.internal.lightrag_repair as lightrag_repair
 
-    # 准备真相源
+    # 准备 3 真相源（GraphML 必须合法，否则 _check_truth_sources_intact 报 unrecoverable）
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
@@ -879,6 +891,11 @@ def test_repair_all_breaks_on_unrecoverable(tmp_path, monkeypatch):
     # 用 mock 跟踪后续 repair 函数是否被调用
     call_log = []
 
+    # 命名函数（有 __name__ 属性，让 v4 的 getattr(_self_mod, fn.__name__) 能找到）
+    def mock_text_chunks():
+        call_log.append("text_chunks")
+        return {"status": "error", "unrecoverable": True, "message": "simulated unrecoverable"}
+
     def mock_repair_vdb_chunks():
         call_log.append("vdb_chunks")
         return {"status": "ok"}
@@ -887,23 +904,10 @@ def test_repair_all_breaks_on_unrecoverable(tmp_path, monkeypatch):
         call_log.append("vdb_entities")
         return {"status": "ok"}
 
-    # patch _REBUILD_ORDER：让 text_chunks 报 unrecoverable，后续用 mock
-    orig_order = lightrag_repair._REBUILD_ORDER
-    new_order = []
-    for name, fn in orig_order:
-        if name == "text_chunks":
-            new_order.append((name, lambda: {
-                "status": "error", "unrecoverable": True,
-                "message": "simulated unrecoverable"
-            }))
-        elif name == "vdb_chunks":
-            new_order.append((name, mock_repair_vdb_chunks))
-        elif name == "vdb_entities":
-            new_order.append((name, mock_repair_vdb_entities))
-        else:
-            new_order.append((name, fn))
-
-    monkeypatch.setattr(lightrag_repair, "_REBUILD_ORDER", new_order)
+    # v4：patch 模块属性（repair_all 用 getattr 间接查找，monkeypatch 模块属性能生效）
+    monkeypatch.setattr(lightrag_repair, "repair_text_chunks", mock_text_chunks)
+    monkeypatch.setattr(lightrag_repair, "repair_vdb_chunks", mock_repair_vdb_chunks)
+    monkeypatch.setattr(lightrag_repair, "repair_vdb_entities", mock_repair_vdb_entities)
 
     result = lightrag_repair.repair_all()
 
@@ -919,10 +923,18 @@ def test_repair_all_rollback_uses_backed_up_list(tmp_path, monkeypatch):
     Bug B2：原实现遍历 _DERIVED_FILES（10 个），backup 不存在则跳过；
     场景 1（删 vdb_*.json）下 vdb 没备份，回滚时跳过，重建阶段写的空 vdb
     残留，原始数据永久丢失。
+
+    v4 机制变更：
+    - repair_all 用 getattr(_self_mod, fn.__name__) 间接查找，所以不再 patch
+      _REBUILD_ORDER，而是 patch 模块属性。
+    - v4 在 unrecoverable 时会 break，所以让 text_chunks 成功，让 vdb_chunks
+      写空 vdb 后失败（模拟重建阶段写空 vdb 的场景）。
+    - v4 GraphML 是真相源，必须合法（不能用 <baseline/>，会被判为 unrecoverable）。
     """
     import niu_api.internal.lightrag_repair as lightrag_repair
 
-    # 准备真相源
+    # 准备 3 真相源（GraphML 必须合法，否则 _check_truth_sources_intact 报 unrecoverable）
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
@@ -930,34 +942,26 @@ def test_repair_all_rollback_uses_backed_up_list(tmp_path, monkeypatch):
 
     # 准备派生文件 baseline（部分存在，vdb_*.json 不存在模拟场景 1）
     (tmp_path / "kv_store_text_chunks.json").write_text('{"baseline": "text_chunks"}')
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text('<baseline/>')
     # vdb_*.json 故意不存在（模拟场景 1 删 vdb）
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
-    # patch _REBUILD_ORDER：让 text_chunks 抛 unrecoverable，并模拟重建阶段写空 vdb
-    orig_order = lightrag_repair._REBUILD_ORDER
-    new_order = []
+    # v4：patch 模块属性（命名函数有 __name__，让 getattr 间接查找能生效）
+    # text_chunks 成功，vdb_chunks 写空 vdb 后失败（模拟重建阶段写空 vdb）
     wrote_empty_vdb = {"done": False}
-    for name, fn in orig_order:
-        if name == "text_chunks":
-            new_order.append((name, lambda: {
-                "status": "error", "unrecoverable": True,
-                "message": "simulated failure"
-            }))
-        elif name == "vdb_chunks":
-            # 模拟重建阶段写空 vdb（Bug B 的核心场景）
-            def boom_vdb():
-                if not wrote_empty_vdb["done"]:
-                    (tmp_path / "vdb_chunks.json").write_text('{"empty": "vdb"}')
-                    wrote_empty_vdb["done"] = True
-                return {"status": "error", "unrecoverable": True, "message": "simulated"}
-            new_order.append((name, boom_vdb))
-        else:
-            new_order.append((name, fn))
 
-    monkeypatch.setattr(lightrag_repair, "_REBUILD_ORDER", new_order)
+    def mock_text_chunks():
+        return {"status": "ok"}
+
+    def boom_vdb_chunks():
+        if not wrote_empty_vdb["done"]:
+            (tmp_path / "vdb_chunks.json").write_text('{"empty": "vdb"}')
+            wrote_empty_vdb["done"] = True
+        return {"status": "error", "unrecoverable": True, "message": "simulated"}
+
+    monkeypatch.setattr(lightrag_repair, "repair_text_chunks", mock_text_chunks)
+    monkeypatch.setattr(lightrag_repair, "repair_vdb_chunks", boom_vdb_chunks)
 
     result = lightrag_repair.repair_all()
 
@@ -966,7 +970,6 @@ def test_repair_all_rollback_uses_backed_up_list(tmp_path, monkeypatch):
 
     # 验证已备份的文件恢复到 baseline
     assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"baseline": "text_chunks"}'
-    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == '<baseline/>'
 
     # 验证没备份的 vdb_*.json 被删除（不是残留空文件）
     assert not (tmp_path / "vdb_chunks.json").exists(), \
@@ -1272,3 +1275,216 @@ def test_check_truth_sources_intact_cache_corrupt(tmp_path, monkeypatch):
 
     assert result["intact"] is False
     assert result["cache"]["intact"] is False
+
+
+# =============================================================================
+# Task 3: repair_all 重写为"3 真相源不可动 + 按需提取重建 9 派生文件"的测试
+# =============================================================================
+
+
+def _make_synthetic_fixture(tmp_path: Path):
+    """合成 fixture：3 文档 + 5 cache + GraphML（含衰减后 weight + 已删实体已不在）。
+
+    构造 v4 场景：
+    - GraphML：2 个实体（entity-a, entity-b）+ 1 条 edge（weight=0.5 衰减后）
+    - 已删实体 deleted-entity 不在 GraphML 里（模拟之前已正确删除）
+    - full_docs：2 个文档
+    - cache：5 条 extract entry（含 1 个已删实体的脏 entry + 1 个旧版本 chunk 的 entry）
+    - 9 个派生文件初始为空（repair_all 会重建）
+    """
+    # GraphML：2 个实体（entity-a, entity-b）+ 1 条 edge（weight=0.5 衰减后）
+    # 已删实体 deleted-entity 不在 GraphML 里
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    # key 定义（简化，真实 GraphML 有完整 key 定义）
+    for kid, attr_name, attr_type in [
+        ("d1", "entity_type", "string"), ("d2", "description", "string"),
+        ("d3", "source_id", "string"), ("d7", "weight", "double"),
+        ("d8", "description", "string"), ("d9", "keywords", "string"),
+        ("d10", "source_id", "string"),
+    ]:
+        ET.SubElement(root, f"{{{ns}}}key", {
+            "id": kid, "for": "all", "attr.name": attr_name, "attr.type": attr_type
+        })
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+
+    a = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-a"})
+    ET.SubElement(a, f"{{{ns}}}data", {"key": "d2"}).text = "desc A"
+    ET.SubElement(a, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-1"
+
+    b = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-b"})
+    ET.SubElement(b, f"{{{ns}}}data", {"key": "d2"}).text = "desc B"
+    ET.SubElement(b, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-2"
+
+    edge = ET.SubElement(graph, f"{{{ns}}}edge", {"source": "entity-a", "target": "entity-b"})
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d7"}).text = "0.5"  # 衰减后的 weight
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d8"}).text = "edge desc"
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d9"}).text = "keyword1, keyword2"
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d10"}).text = "chunk-1<SEP>chunk-2"
+
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+
+    # full_docs：2 个文档
+    docs = {
+        "doc-v1": {"content": "v1 content", "file_path": "v1.md", "create_time": 1000},
+        "doc-v2": {"content": "v2 content", "file_path": "v2.md", "create_time": 2000},
+    }
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+
+    # cache：5 条 extract entry（含 1 个已删实体的脏 entry + 1 个旧版本 chunk 的 entry）
+    cache = {
+        "default:extract:chunk1": {
+            "return": "entity<|#|>entity-a<|#|>concept<|#|>desc A",
+            "cache_type": "extract", "chunk_id": "chunk-1", "create_time": 1500,
+        },
+        "default:extract:chunk2": {
+            "return": "entity<|#|>entity-b<|#|>concept<|#|>desc B",
+            "cache_type": "extract", "chunk_id": "chunk-2", "create_time": 1500,
+        },
+        # 已删实体的脏 entry（chunk-3 不在 GraphML 活跃集合）
+        "default:extract:chunk3_deleted": {
+            "return": "entity<|#|>deleted-entity<|#|>concept<|#|>已删",
+            "cache_type": "extract", "chunk_id": "chunk-3", "create_time": 800,
+        },
+        # 旧版本 chunk 的 entry（chunk-old 不在 GraphML 活跃集合）
+        "default:extract:chunk_old": {
+            "return": "entity<|#|>old-entity<|#|>concept<|#|>旧版本",
+            "cache_type": "extract", "chunk_id": "chunk-old", "create_time": 500,
+        },
+        # 非 extract 类型 cache
+        "default:summary:some": {
+            "return": "summary", "cache_type": "summary", "chunk_id": None, "create_time": 1700,
+        },
+    }
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+    # 9 个派生文件初始为空（repair_all 会重建）
+    for fname in ["kv_store_text_chunks.json", "kv_store_doc_status.json",
+                  "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
+                  "kv_store_full_entities.json", "kv_store_full_relations.json"]:
+        (tmp_path / fname).write_text("{}")
+    for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
+        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
+
+
+def test_repair_all_unrecoverable_when_graphml_corrupt(tmp_path, monkeypatch):
+    """GraphML 损坏时 repair_all 应直接返回 unrecoverable，不备份不删除不重建。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"chunk-x": {}}')
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    assert result.get("_unrecoverable") is True
+    # 派生文件未被删除
+    assert (tmp_path / "kv_store_text_chunks.json").exists()
+    # 真相源未被修改
+    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == "corrupt xml <<<"
+
+
+def test_repair_all_unrecoverable_when_full_docs_corrupt(tmp_path, monkeypatch):
+    """full_docs 损坏时 repair_all 应返回 unrecoverable。"""
+    _make_synthetic_fixture(tmp_path)
+    # 覆盖 full_docs 为损坏
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    assert result.get("_unrecoverable") is True
+
+
+def test_repair_all_unrecoverable_when_cache_corrupt(tmp_path, monkeypatch):
+    """cache 损坏时 repair_all 应返回 unrecoverable。"""
+    _make_synthetic_fixture(tmp_path)
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    assert result.get("_unrecoverable") is True
+
+
+def test_repair_all_does_not_touch_truth_sources(tmp_path, monkeypatch):
+    """repair_all 不应修改 3 真相源（GraphML + full_docs + cache）一字节。
+
+    使用真实 embedding 模型（CLAUDE.md 铁律 5：测试必须用真实数据+真实LLM，不 mock）。
+    测试前会预加载 embedding 模型（通过 niu_api.internal.embedding.get_model）。
+    """
+    _make_synthetic_fixture(tmp_path)
+
+    # 记录 3 真相源的原始内容
+    graphml_before = (tmp_path / "graph_chunk_entity_relation.graphml").read_bytes()
+    full_docs_before = (tmp_path / "kv_store_full_docs.json").read_bytes()
+    cache_before = (tmp_path / "kv_store_llm_response_cache.json").read_bytes()
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    # 预加载真实 embedding 模型（不 mock LLM）
+    from niu_api.internal.embedding import get_model
+    assert get_model() is not None, "embedding 模型应预加载（测试前置条件）"
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 3 真相源一字节未动
+    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_bytes() == graphml_before, "GraphML 不应被修改"
+    assert (tmp_path / "kv_store_full_docs.json").read_bytes() == full_docs_before, "full_docs 不应被修改"
+    assert (tmp_path / "kv_store_llm_response_cache.json").read_bytes() == cache_before, "cache 不应被修改"
+
+
+def test_repair_all_does_not_reanimate_deleted_entities(tmp_path, monkeypatch):
+    """repair_all 重建后，已删实体（deleted-entity）不应出现在任何派生文件里。
+
+    使用真实 embedding 模型（不 mock）。
+    """
+    _make_synthetic_fixture(tmp_path)
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    from niu_api.internal.embedding import get_model
+    assert get_model() is not None, "embedding 模型应预加载"
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 检查所有派生文件不含 deleted-entity / old-entity
+    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert "chunk-3" not in tc  # 已删实体的 chunk 不重建
+    assert "chunk-old" not in tc  # 旧版本 chunk 不重建
+
+    ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text())
+    assert "deleted-entity" not in ec
+    assert "old-entity" not in ec
+
+
+def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
+    """重建失败时应回滚到备份。"""
+    _make_synthetic_fixture(tmp_path)
+
+    # 记录派生文件原始内容
+    tc_before = (tmp_path / "kv_store_text_chunks.json").read_bytes()
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    # mock 让 repair_vdb_entities 失败
+    import niu_api.internal.lightrag_repair as repair_mod
+    original_vdb_entities = repair_mod.repair_vdb_entities
+    def failing_vdb_entities():
+        raise Exception("mock failure")
+    monkeypatch.setattr(repair_mod, "repair_vdb_entities", failing_vdb_entities)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    assert result.get("_rolled_back") is True
+    # 原派生文件被恢复
+    assert (tmp_path / "kv_store_text_chunks.json").read_bytes() == tc_before
