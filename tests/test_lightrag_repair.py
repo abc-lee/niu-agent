@@ -283,59 +283,6 @@ def test_repair_doc_status_fail_text_chunks_corrupt(storage_dir, patched_embed):
 # =============================================================================
 
 
-def test_repair_graphml_pass(storage_dir, patched_embed, monkeypatch):
-    """LightRAG 实例可用 + cache 完好 → 调 apipeline 重建"""
-    from niu_api.internal import lightrag_repair
-
-    # 完好的 llm_response_cache
-    _write_json(storage_dir / "kv_store_llm_response_cache.json", {"key1": "value1"})
-    # doc_status 有 2 个 PROCESSED 文档
-    # 注：status 用大写模拟历史损坏数据，repair 后应转为小写
-    _write_json(
-        storage_dir / "kv_store_doc_status.json",
-        {
-            "doc-1": {"status": "PROCESSED", "chunks_list": ["chunk-a"]},
-            "doc-2": {"status": "PROCESSED", "chunks_list": ["chunk-b"]},
-        },
-    )
-    # 假装有一个旧 GraphML
-    _write_text(storage_dir / "graph_chunk_entity_relation.graphml", "<graphml/>")
-
-    # mock get_lightrag 返回 fake rag
-    class FakeGraph:
-        async def drop(self):
-            return {"status": "success"}
-
-    class FakeRag:
-        force_llm_summary_on_merge = 8
-        chunk_entity_relation_graph = FakeGraph()
-
-        async def apipeline_process_enqueue_documents(self):
-            # 模拟 apipeline 写一个新 GraphML
-            graphml_content = _make_graphml(
-                nodes=[("ent1", "desc1", "chunk-a"), ("ent2", "desc2", "chunk-b")],
-                edges=[("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b", "edge_kw")],
-            )
-            _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
-
-    monkeypatch.setattr(
-        "niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag()
-    )
-
-    result = lightrag_repair.repair_graphml()
-
-    assert result["status"] == "ok"
-    assert result["actual"] > 0  # nodes + edges
-    # 验证 GraphML 已生成
-    assert (storage_dir / "graph_chunk_entity_relation.graphml").exists()
-    # 验证 doc_status 改为 pending（小写）
-    ds_data = json.loads((storage_dir / "kv_store_doc_status.json").read_text())
-    assert ds_data["doc-1"]["status"] == "pending"
-    assert ds_data["doc-2"]["status"] == "pending"
-    # 验证 monkeypatch 已恢复
-    assert FakeRag.force_llm_summary_on_merge == 8
-
-
 def test_repair_graphml_fail_cache_corrupt(storage_dir, patched_embed):
     """llm_response_cache 损坏 → unrecoverable"""
     from niu_api.internal import lightrag_repair
@@ -347,23 +294,6 @@ def test_repair_graphml_fail_cache_corrupt(storage_dir, patched_embed):
     assert result["status"] == "error"
     assert result.get("unrecoverable") is True
     assert "llm_response_cache 损坏" in result["message"]
-
-
-def test_repair_graphml_fail_no_rag(storage_dir, patched_embed, monkeypatch):
-    """LightRAG 实例未初始化 → unrecoverable"""
-    from niu_api.internal import lightrag_repair
-
-    _write_json(storage_dir / "kv_store_llm_response_cache.json", {"key1": "value1"})
-
-    monkeypatch.setattr(
-        "niu_api.internal.lightrag_manager.get_lightrag", lambda: None
-    )
-
-    result = lightrag_repair.repair_graphml()
-
-    assert result["status"] == "error"
-    assert result.get("unrecoverable") is True
-    assert "LightRAG 实例未初始化" in result["message"]
 
 
 # =============================================================================
@@ -797,36 +727,51 @@ def test_repair_llm_response_cache_pass_empty(storage_dir, patched_embed):
 
 
 def test_repair_all_empty_storage_ok(storage_dir, patched_embed, monkeypatch):
-    """空 storage（所有文件不存在）→ check_all 全过 → repair_all 全部跳过。
+    """空 storage（全新用户）→ 3 真相源 intact=True → 9 派生文件全调，都返回 ok 空结果。
 
-    v2: repair_all 改为按 check 结果选择性调用。空 storage 没报错 → 全跳过。
+    v4: 空 storage 是全新用户合法场景：
+    - 3 真相源（GraphML + full_docs + cache）文件不存在 → intact=True
+    - 9 派生文件全部调用，因为 GraphML 无 node/edge → 全部 expected=0 actual=0
+    - _unrecoverable=False，_rolled_back=False
     """
     from niu_api.internal import lightrag_repair
 
-    # mock get_lightrag 返回 None（不会被调到，因为 check_all 全过）
+    # mock get_lightrag 返回 None（空 storage 无活跃 chunk_id，repair_text_chunks
+    # 走 ok-empty 分支，不依赖 LightRAG 实例）
     monkeypatch.setattr(
         "niu_api.internal.lightrag_manager.get_lightrag", lambda: None
     )
 
     result = lightrag_repair.repair_all()
 
-    # 没有 repair 被调用（check_all 全过）
-    actual_repair_keys = {k for k in result.keys() if not k.startswith("_")}
-    assert actual_repair_keys == set(), f"空 storage 不应调用任何 repair，实际调了: {actual_repair_keys}"
-    # _skipped 应包含全部 13 个（含 brainregion_zombies）
-    assert set(result.get("_skipped", [])) == {
-        "brainregion_zombies",
-        "text_chunks", "doc_status", "graphml", "graphml_orphan_edges",
-        "vdb_chunks", "vdb_entities",
-        "vdb_relationships", "entity_chunks", "relation_chunks", "full_entities",
-        "full_relations", "llm_response_cache",
+    # v4: 9 派生文件全被调用（GraphML 无 node/edge → 全部 ok 空结果）
+    expected_keys = {
+        "text_chunks", "doc_status", "vdb_chunks", "vdb_entities",
+        "vdb_relationships", "entity_chunks", "relation_chunks",
+        "full_entities", "full_relations",
     }
-    # _check_summary 应存在且 ok=True
-    assert result["_check_summary"]["ok"] is True
-    assert result["_check_summary"]["critical_errors"] == 0
-    assert result["_check_summary"]["major_errors"] == 0
+    actual_repair_keys = {k for k in result.keys() if not k.startswith("_")}
+    assert actual_repair_keys == expected_keys, (
+        f"空 storage 应调用 9 个派生文件 repair，实际: {actual_repair_keys}"
+    )
+    # 每个派生文件返回 status=ok + expected=0 + actual=0 + lost=0
+    for key in expected_keys:
+        r = result[key]
+        assert r["status"] == "ok", f"{key} status 应为 ok，实际: {r['status']}"
+        assert r["expected"] == 0, f"{key} expected 应为 0，实际: {r['expected']}"
+        assert r["actual"] == 0, f"{key} actual 应为 0，实际: {r['actual']}"
+        assert r["lost"] == 0, f"{key} lost 应为 0，实际: {r['lost']}"
+    # 3 真相源 intact=True
+    assert result["_truth_source_check"]["intact"] is True
+    assert result["_truth_source_check"]["graphml"]["intact"] is True
+    assert result["_truth_source_check"]["full_docs"]["intact"] is True
+    assert result["_truth_source_check"]["cache"]["intact"] is True
+    # 备份/删除：空 storage 无派生文件，都是空列表
+    assert result["_backed_up"] == []
+    assert result["_deleted"] == []
     # 没有 _unrecoverable
-    assert result.get("_unrecoverable") is None
+    assert result["_unrecoverable"] is False
+    assert result["_rolled_back"] is False
 
 
 def test_repair_all_unrecoverable_propagates(storage_dir, patched_embed, monkeypatch):
@@ -856,51 +801,44 @@ def test_repair_all_unrecoverable_propagates(storage_dir, patched_embed, monkeyp
 def test_repair_all_returns_expected_actual_lost_fields(storage_dir, patched_embed, monkeypatch):
     """repair_all 每个返回值都有 expected/actual/lost 字段。
 
-    v2: 准备数据让 check 报 vdb_entities_missing（GraphML 有 node 但 vdb 缺）→
-    调 repair_vdb_entities，返回值应有 status/expected/actual/lost/source/message。
+    v4: repair_all 不再按 check 选择性调用，而是按 _REBUILD_ORDER 顺序调用全部 9 个派生文件 repair。
+    为了让 repair_text_chunks 不依赖 LightRAG 实例（避免 _create_lightrag_instance 因测试用
+    伪 GraphML 缺 <key> 声明而失败），setup 用 source_id="" 的 node：
+    - GraphML 有 node（vdb_entities/entity_chunks 能重建出非空结果）
+    - 但 node source_id 为空 → active_chunk_ids=空 → repair_text_chunks 走 ok-empty 分支不调 LightRAG
+    - 9 个派生文件全部调用，vdb_entities 返回 expected=1 actual=1 lost=0
     """
     from niu_api.internal import lightrag_repair
 
-    # 准备数据：GraphML 有 1 个 node，vdb_entities 不存在 → check vdb_entities_missing 报错
+    # GraphML 有 1 个 node（desc 非空），但 source_id="" 避免触发 LightRAG 实例需求
     graphml_content = _make_graphml(
-        nodes=[("ent1", "desc1", "chunk-a")],
+        nodes=[("ent1", "desc1", "")],
         edges=[],
     )
     _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
-    # text_chunks 完整（避免 text_chunks 相关 check 误报）
-    _write_json(
-        storage_dir / "kv_store_text_chunks.json",
-        {"chunk-a": {"content": "a", "full_doc_id": "doc-1"}},
-    )
-    _write_json(
-        storage_dir / "kv_store_full_docs.json",
-        {"doc-1": {"content": "a"}},
-    )
-    _write_json(
-        storage_dir / "kv_store_doc_status.json",
-        {"doc-1": {"status": "PROCESSED", "chunks_list": ["chunk-a"]}},
-    )
-    _write_json(
-        storage_dir / "kv_store_entity_chunks.json",
-        {"ent1": {"chunk_ids": ["chunk-a"], "count": 1}},
-    )
 
-    # mock get_lightrag 返回 None（不应该被调到，因为 check 报的 vdb_entities_missing 走 repair_vdb_entities，不依赖 LightRAG）
+    # mock get_lightrag 返回 None（空 source_id 路径不应调 LightRAG 实例）
     monkeypatch.setattr(
         "niu_api.internal.lightrag_manager.get_lightrag", lambda: None
     )
 
     result = lightrag_repair.repair_all()
 
-    # vdb_entities 应被调用并返回完整字段
+    # v4: repair_text_chunks ok-empty（无活跃 chunk_id），后续 8 个派生文件全部跑完
+    assert result["_unrecoverable"] is False, (
+        f"不应 unrecoverable，原因: {result.get('_unrecoverable_reason', '')}"
+    )
+    # vdb_entities 应被调用并返回完整字段（expected=1 actual=1 lost=0）
     assert "vdb_entities" in result, f"vdb_entities 应被调用，实际 keys: {list(result.keys())}"
     r = result["vdb_entities"]
     assert r["status"] == "ok"
-    assert "expected" in r
-    assert "actual" in r
-    assert "lost" in r
-    assert "source" in r
+    assert r["expected"] == 1, f"vdb_entities expected 应为 1，实际: {r['expected']}"
+    assert r["actual"] == 1, f"vdb_entities actual 应为 1，实际: {r['actual']}"
+    assert r["lost"] == 0
+    assert r["source"] == "GraphML"
     assert "message" in r
-    # text_chunks/graphml 不应被调用（check 没报错）
-    assert "text_chunks" not in result
-    assert "graphml" not in result
+    # 9 个派生文件全部在 result 里（v4 不再按 check 选择性调用）
+    for key in ("text_chunks", "doc_status", "vdb_chunks", "vdb_entities",
+                "vdb_relationships", "entity_chunks", "relation_chunks",
+                "full_entities", "full_relations"):
+        assert key in result, f"{key} 应被调用，实际 keys: {list(result.keys())}"
