@@ -1302,6 +1302,23 @@ def run_repair_on_user_request() -> dict:
         #    返回 None 不报错——但我们要的是触发初始化，所以先临时关掉）
         # 实际上：get_lightrag 看到 _repairing=True 会返回 None，不触发初始化。
         # 这里改为先清 _repairing，让 get_lightrag 走三级门控重新初始化。
+        #
+        # 关键修复（SkillSync vdb 覆盖 bug 根因）：
+        # repair_all 内部调 get_lightrag_for_repair() 拿 tokenizer/embedding 实例，
+        # 该调用会把 _rag_instance 设为"repair 期间创建的过期实例"。这个实例的
+        # NanoVectorDB 客户端在 repair 重建 vdb 文件之前就从（空）磁盘加载了数据，
+        # 内存中的 vdb 是空的或过期的（0 条）。
+        #
+        # 必须先置 _rag_instance=None，再清 _repairing=False，否则存在竞态窗口：
+        #   _repairing=False 后、_rag_instance=None 前，SkillSync 后台线程可能
+        #   调 get_lightrag() 拿到过期实例（内存 0 条），ainsert_custom_kg 注入
+        #   6 个 skill 后 _insert_done 把磁盘覆盖成只有 6 条（repair 重建的 2211
+        #   条全丢）。这就是"vdb 2211→6"的真正根因。
+        #
+        # 顺序：先 _rag_instance=None（SkillSync 仍被 _repairing=True 挡住）→
+        #       再 _repairing=False → 最后 get_lightrag() 从 repair 后的磁盘重建
+        #       实例（内存含 2211 条）。
+        _rag_instance = None
         _repairing = False
         try:
             get_lightrag()

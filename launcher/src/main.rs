@@ -596,6 +596,12 @@ impl Splash {
                             // 弹 rfd 原生对话框（独立线程，避免阻塞 iced executor）
                             // 不设 status_check_completed=true：splash 关闭需等用户决策
                             // (UserDialogChoice / RepairResult 会推进状态机)
+                            //
+                            // 临时改动（任务 2）：跳过用户确认对话框，直接自动选"是"
+                            // 进入修复流程。原逻辑弹 rfd::MessageDialog 让用户选是/否，
+                            // 现改为直接发 UserDialogChoice(true)，不弹窗。
+                            // 恢复时把下面这段解注释 + 删除 return Task::done(...UserDialogChoice(true))。
+                            /*
                             let (tx, rx) =
                                 iced::futures::channel::oneshot::channel::<bool>();
                             std::thread::spawn(move || {
@@ -611,6 +617,11 @@ impl Splash {
                                 async move { rx.await.unwrap_or(false) },
                                 SplashMessage::UserDialogChoice,
                             );
+                            */
+                            // 自动选"是"=尝试修复，跳过对话框
+                            info!("[launcher] 检测到数据损坏，自动进入修复流程（跳过用户确认对话框）");
+                            let _ = message; // suppress unused variable warning
+                            return Task::done(SplashMessage::UserDialogChoice(true));
                         }
                         // 健康：标记检测完成，可以关 splash（如果 ready 信号也已到）
                         self.status_check_completed = true;
