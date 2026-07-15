@@ -378,6 +378,102 @@ def _build_vdb_file(
     _atomic_write_json(vdb_path, storage)
 
 
+def _check_truth_sources_intact() -> dict[str, Any]:
+    """检测 3 真相源完好性：GraphML + full_docs + cache。
+
+    任一损坏 = intact=False，repair_all 应报 unrecoverable。
+
+    全新用户合法场景（intact=True）：
+    - 文件不存在（还没导入文档）
+    - 文件 size=0（空文件）
+    - GraphML 无 node（空图）
+    - full_docs/cache 是空 dict
+
+    损坏场景（intact=False）：
+    - GraphML 文件存在但 XML 解析失败 / 无 graph 元素
+    - full_docs/cache 文件存在但 JSON 解析失败 / 非 dict
+
+    检测标准跟现有 lightrag_integrity._check_truth_source（L166-203）一致：
+    - 文件不存在 → ok（全新用户合法）
+    - size=0 → ok（全新用户合法）
+    - JSON 解析失败 / 非 dict → critical
+    """
+    import xml.etree.ElementTree as ET
+
+    storage_dir = _storage_dir()
+
+    # 1. GraphML
+    #    文件不存在 / size=0 → intact=True（全新用户合法）
+    #    XML 解析失败 / 无 graph 元素 → intact=False
+    #    无 node → intact=True（空图合法，repair 重建空集）
+    graphml_path = storage_dir / _GRAPHML_FILE
+    graphml_check: dict[str, Any] = {"intact": True, "reason": ""}
+    if not graphml_path.exists() or graphml_path.stat().st_size == 0:
+        # 全新用户合法，空 GraphML 不算损坏
+        graphml_check["reason"] = "GraphML 不存在或为空（全新用户合法）"
+    else:
+        try:
+            tree = ET.parse(graphml_path)
+            root = tree.getroot()
+            # 用现有 _load_graphml_nodes 的 fallback 模式：
+            # 先尝试带 namespace 查找，再 fallback 到无 namespace 遍历子元素
+            ns_str = "{http://graphml.graphdrawing.org/xmlns}"
+            graph_elem = root.find(f"{ns_str}graph")
+            if graph_elem is None:
+                for child in root:
+                    tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                    if tag == "graph":
+                        graph_elem = child
+                        break
+            if graph_elem is None:
+                graphml_check["intact"] = False
+                graphml_check["reason"] = "GraphML 无 graph 元素"
+            else:
+                # 有 graph 元素就算完好（无 node 是空图，全新用户合法）
+                graphml_check["intact"] = True
+        except Exception as e:
+            graphml_check["intact"] = False
+            graphml_check["reason"] = f"XML 解析失败: {e}"
+
+    # 2. full_docs
+    #    文件不存在 / size=0 / 空 dict → intact=True（全新用户合法）
+    #    JSON 解析失败 / 非 dict → intact=False
+    full_docs_path = storage_dir / "kv_store_full_docs.json"
+    full_docs_check: dict[str, Any] = {"intact": True, "reason": ""}
+    if not full_docs_path.exists() or full_docs_path.stat().st_size == 0:
+        full_docs_check["reason"] = "full_docs 不存在或为空（全新用户合法）"
+    else:
+        loaded = _load_json_dict(full_docs_path)
+        if loaded is None:
+            full_docs_check["intact"] = False
+            full_docs_check["reason"] = "full_docs JSON 解析失败或非 dict"
+        else:
+            # 空 dict 或有内容都算完好
+            full_docs_check["intact"] = True
+
+    # 3. cache
+    #    文件不存在 / size=0 / 空 dict → intact=True（全新用户合法）
+    #    JSON 解析失败 / 非 dict → intact=False
+    cache_path = storage_dir / "kv_store_llm_response_cache.json"
+    cache_check: dict[str, Any] = {"intact": True, "reason": ""}
+    if not cache_path.exists() or cache_path.stat().st_size == 0:
+        cache_check["reason"] = "cache 不存在或为空（全新用户合法）"
+    else:
+        loaded = _load_json_dict(cache_path)
+        if loaded is None:
+            cache_check["intact"] = False
+            cache_check["reason"] = "cache JSON 解析失败或非 dict"
+        else:
+            cache_check["intact"] = True
+
+    return {
+        "intact": graphml_check["intact"] and full_docs_check["intact"] and cache_check["intact"],
+        "graphml": graphml_check,
+        "full_docs": full_docs_check,
+        "cache": cache_check,
+    }
+
+
 # =============================================================================
 # 11 个 repair 函数（按依赖链顺序）
 # =============================================================================

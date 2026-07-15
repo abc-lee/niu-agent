@@ -1205,3 +1205,70 @@ def test_embed_batch_fallback_uses_get_lightrag_for_repair(monkeypatch):
     )
     assert len(result) == 1
     assert "embedding_func_called" in call_log, "应调 FakeRag.embedding_func"
+
+
+# =============================================================================
+# Task 2: _check_truth_sources_intact 检测 3 真相源完好性
+# =============================================================================
+
+
+def test_check_truth_sources_intact_all_intact(tmp_path, monkeypatch):
+    """3 真相源全部完好时返回 intact=True。"""
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}')
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
+
+    assert result["intact"] is True
+    assert result["graphml"]["intact"] is True
+    assert result["full_docs"]["intact"] is True
+    assert result["cache"]["intact"] is True
+
+
+def test_check_truth_sources_intact_graphml_corrupt(tmp_path, monkeypatch):
+    """GraphML 损坏时返回 intact=False + graphml.intact=False。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
+
+    assert result["intact"] is False
+    assert result["graphml"]["intact"] is False
+
+
+def test_check_truth_sources_intact_full_docs_corrupt(tmp_path, monkeypatch):
+    """full_docs 损坏时返回 intact=False + full_docs.intact=False。"""
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
+
+    assert result["intact"] is False
+    assert result["full_docs"]["intact"] is False
+
+
+def test_check_truth_sources_intact_cache_corrupt(tmp_path, monkeypatch):
+    """cache 损坏时返回 intact=False + cache.intact=False。"""
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
+
+    assert result["intact"] is False
+    assert result["cache"]["intact"] is False
