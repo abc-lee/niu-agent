@@ -384,177 +384,238 @@ def _build_vdb_file(
 
 
 def repair_text_chunks() -> dict[str, Any]:
-    """1. 从 full_docs 重新 chunking 重建 text_chunks。
+    """1. 从 GraphML 提活跃 chunk_id 集合 C，按需提取重建 text_chunks。
 
-    真相源：kv_store_full_docs.json
+    真相源：GraphML（提活跃 chunk_id）+ full_docs（text_chunks 没有时反查原文）+ cache（反向构建 llm_cache_list）
     派生：kv_store_text_chunks.json
 
-    用 LightRAG 的 chunking_by_token_size（需要 tokenizer）。
-    chunk_id = compute_mdhash_id(content, prefix="chunk-")
+    算法：
+    1. 解析 GraphML 提取活跃 chunk_id 集合 C（从所有 node d3 + edge d10）
+    2. 对 C 中每个 chunk_id：
+       - 优先从现有 text_chunks 按 cid 查原文（天然最后版本，json_kv_impl.py:181 dict.update 覆盖）
+       - 现有 text_chunks 没有时，从 full_docs 重新 chunking 反查（多条匹配取 create_time 最大）
+    3. llm_cache_list 从 cache 按 chunk_id 反向构建
+    4. 只重建 C 中的 chunk，旧版本 chunk 丢弃（不在 C 中的旧 chunk 不重建）
 
-    如果 chunk_size 配置变更导致 chunk_id 不一致（跟旧 doc_status.chunks_list 比对）→ unrecoverable=True。
-    如果 full_docs 损坏 → unrecoverable=True。
+    GraphML 损坏 = unrecoverable
+    full_docs 损坏且 text_chunks 损坏 = unrecoverable
     """
     storage_dir = _storage_dir()
+    tc_path = storage_dir / "kv_store_text_chunks.json"
     full_docs_path = storage_dir / "kv_store_full_docs.json"
-    text_chunks_path = storage_dir / "kv_store_text_chunks.json"
-    doc_status_path = storage_dir / "kv_store_doc_status.json"
+    cache_path = storage_dir / "kv_store_llm_response_cache.json"
 
-    # 1. 读 full_docs（真相源）
-    full_docs = _load_json_dict(full_docs_path)
-    if full_docs is None:
+    # 1. 解析 GraphML 提取活跃 chunk_id 集合 C
+    nodes, nodes_err = _load_graphml_nodes()
+    if nodes_err is not None:
         return {
             "status": "error",
             "expected": 0,
             "actual": 0,
             "lost": 0,
-            "source": "kv_store_full_docs",
-            "message": "full_docs 损坏（JSON 解析失败或非 dict）",
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {nodes_err.get('msg', '')}",
             "unrecoverable": True,
         }
-    if not full_docs:
+    node_ids_set, edges_list, edges_err = _load_graphml_nodes_edges()
+    if edges_err is not None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {edges_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+
+    active_chunk_ids: set[str] = set()
+    for node_id, (desc, src_ids) in nodes.items():
+        if src_ids:
+            active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
+    for edge_tuple in edges_list:
+        edge_src_ids = edge_tuple[2]  # (src, tgt, src_ids, desc, kw) 的 index 2
+        if edge_src_ids:
+            active_chunk_ids.update(c for c in edge_src_ids.split(GRAPH_FIELD_SEP) if c)
+
+    # 全新用户（GraphML 为空 / 无活跃 chunk）→ 返回 ok 空结果，不报 unrecoverable
+    if not active_chunk_ids:
+        logger.info("[LightRAGRepair] GraphML 无活跃 chunk_id（全新用户或空图谱），写空 text_chunks")
+        _backup_corrupt(tc_path)
+        _atomic_write_json(tc_path, {})
         return {
             "status": "ok",
             "expected": 0,
             "actual": 0,
             "lost": 0,
-            "source": "kv_store_full_docs",
-            "message": "full_docs 为空，无需重建 text_chunks",
+            "source": "GraphML + full_docs",
+            "message": "GraphML 无活跃 chunk_id，重建空 text_chunks",
         }
 
-    # 2. 获取 chunking 配置（跟 lightrag_manager 一致）
-    try:
-        from niu_api.internal.lightrag_manager import _get_lightrag_config
+    # 2. 读现有 text_chunks（按 cid 查原文，天然最后版本）
+    existing_tc: dict[str, Any] = {}
+    tc_corrupt = False
+    if tc_path.exists():
+        loaded = _load_json_dict(tc_path)
+        if isinstance(loaded, dict):
+            existing_tc = loaded
+        elif loaded is None and tc_path.exists():
+            # 文件存在但解析失败 → 损坏
+            # 不立即报错，降级到 full_docs 反查（如果 full_docs 也损坏才报 unrecoverable）
+            tc_corrupt = True
 
+    # 3. 读 full_docs（text_chunks 没有时才用）
+    full_docs: dict[str, Any] = {}
+    full_docs_corrupt = False
+    if full_docs_path.exists():
+        loaded = _load_json_dict(full_docs_path)
+        if isinstance(loaded, dict):
+            full_docs = loaded
+        elif loaded is None and full_docs_path.exists():
+            full_docs_corrupt = True
+
+    # 4. 读 cache（反向构建 llm_cache_list）
+    cache: dict[str, Any] = {}
+    if cache_path.exists():
+        loaded = _load_json_dict(cache_path)
+        if isinstance(loaded, dict):
+            cache = loaded
+
+    # 5. 判断是否需要扫 full_docs（如果 existing_tc 已覆盖所有 C，就不扫）
+    need_full_docs_scan = any(cid not in existing_tc for cid in active_chunk_ids)
+    full_docs_chunk_map: dict[str, tuple[int, str, str, str]] = {}
+    # 类型: chunk_id -> (create_time, doc_id, chunk_content, file_path)
+    if need_full_docs_scan:
+        if not full_docs:
+            # text_chunks 损坏 + full_docs 损坏/空 → unrecoverable
+            missing_count = sum(1 for cid in active_chunk_ids if cid not in existing_tc)
+            if missing_count > 0:
+                src_detail = "text_chunks 损坏且 full_docs 损坏" if (tc_corrupt and full_docs_corrupt) else "部分活跃 chunk 在 text_chunks 和 full_docs 中均缺失"
+                return {
+                    "status": "error",
+                    "expected": len(active_chunk_ids),
+                    "actual": len(existing_tc),
+                    "lost": missing_count,
+                    "source": "GraphML + full_docs",
+                    "message": f"{src_detail}，{missing_count} 个活跃 chunk 无法重建",
+                    "unrecoverable": True,
+                }
+        # 用真实 _get_lightrag_config 读 chunk_size
+        from niu_api.internal.lightrag_manager import _get_lightrag_config
         config = _get_lightrag_config()
         chunk_token_size = config.get("chunk_token_size", 1200)
-        chunk_overlap_token_size = config.get("chunk_overlap_token_size", 50)
-    except Exception:  # noqa: BLE001
-        chunk_token_size = 1200
-        chunk_overlap_token_size = 50
+        chunk_overlap = config.get("chunk_overlap_token_size", 50)
 
-    # 3. 获取 tokenizer（从 LightRAG 实例，用 repair 专用路径绕过 _repairing 门控）
-    try:
+        # 拿 tokenizer（用 get_lightrag_for_repair 绕过 _repairing 门控）
         from niu_api.internal.lightrag_manager import get_lightrag_for_repair
-
         rag = get_lightrag_for_repair()
-        if rag is None or not hasattr(rag, "tokenizer"):
+        if rag is None:
             return {
                 "status": "error",
-                "expected": len(full_docs),
+                "expected": len(active_chunk_ids),
                 "actual": 0,
-                "lost": len(full_docs),
-                "source": "kv_store_full_docs",
-                "message": "LightRAG 实例未初始化，无法获取 tokenizer 重新 chunking",
+                "lost": len(active_chunk_ids),
+                "source": "GraphML + full_docs",
+                "message": "LightRAG 实例未初始化，无法获取 tokenizer",
                 "unrecoverable": True,
             }
         tokenizer = rag.tokenizer
-    except Exception as e:  # noqa: BLE001
+
+        # chunking_by_token_size 是 LightRAG 的函数，需要局部 import
+        from lightrag.operate import chunking_by_token_size
+
+        # 按 create_time 降序排 full_docs（最后录入的优先，多 doc 匹配同 chunk_id 时取最新版本）
+        sorted_docs = sorted(
+            full_docs.items(),
+            key=lambda kv: kv[1].get("create_time", 0) if isinstance(kv[1], dict) else 0,
+            reverse=True,
+        )
+
+        for doc_id, doc_data in sorted_docs:
+            if not isinstance(doc_data, dict):
+                continue
+            content = doc_data.get("content", "")
+            if not content:
+                continue
+            file_path = doc_data.get("file_path", "")
+            create_time = doc_data.get("create_time", 0)
+
+            chunks = chunking_by_token_size(
+                tokenizer, content,
+                chunk_token_size=chunk_token_size,
+                chunk_overlap_token_size=chunk_overlap,
+            )
+            for chunk in chunks:
+                chunk_content = chunk["content"]
+                cid = compute_mdhash_id(chunk_content, prefix="chunk-")
+                # 同一 chunk_id 多 doc 匹配时，按 create_time 降序保留第一个（最新版本）
+                if cid not in full_docs_chunk_map:
+                    full_docs_chunk_map[cid] = (create_time, doc_id, chunk_content, file_path)
+
+    # 6. 预构建 cache 的 chunk_id → [cache_key] 映射（用于 llm_cache_list）
+    #    同一 chunk_id 多条 cache entry（多轮 gleaning）时全部保留
+    chunk_id_to_cache_keys: dict[str, list[str]] = {}
+    for cache_key, entry in cache.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("cache_type") != "extract":
+            continue
+        cid = entry.get("chunk_id")
+        if cid:
+            chunk_id_to_cache_keys.setdefault(cid, []).append(cache_key)
+
+    # 7. 遍历 C 构建 new_tc
+    new_tc: dict[str, Any] = {}
+    missing_chunks: list[str] = []
+
+    for cid in active_chunk_ids:
+        # 优先从 existing_tc 查
+        if cid in existing_tc and isinstance(existing_tc[cid], dict):
+            chunk_data = dict(existing_tc[cid])
+            chunk_data["llm_cache_list"] = chunk_id_to_cache_keys.get(cid, [])
+            new_tc[cid] = chunk_data
+        # 降级从 full_docs_chunk_map 查
+        elif cid in full_docs_chunk_map:
+            ct, doc_id, content, file_path = full_docs_chunk_map[cid]
+            new_tc[cid] = {
+                "content": content,
+                "full_doc_id": doc_id,
+                "file_path": file_path,
+                "llm_cache_list": chunk_id_to_cache_keys.get(cid, []),
+            }
+        else:
+            # 脑区 chunk（full_doc_id="brain"）可能不在 full_docs 里
+            # 如果 existing_tc 也没有，记为 missing（region_sync 会重新注入）
+            missing_chunks.append(cid)
+
+    # 8. 备份损坏的 text_chunks + 原子写
+    _backup_corrupt(tc_path)
+    try:
+        _atomic_write_json(tc_path, new_tc)
+    except Exception as e:
         return {
             "status": "error",
-            "expected": len(full_docs),
-            "actual": 0,
-            "lost": len(full_docs),
-            "source": "kv_store_full_docs",
-            "message": f"获取 tokenizer 失败: {e}",
+            "expected": len(active_chunk_ids),
+            "actual": len(new_tc),
+            "lost": len(active_chunk_ids) - len(new_tc),
+            "source": "GraphML + full_docs",
+            "message": f"写 text_chunks 失败: {e}",
             "unrecoverable": True,
         }
 
-    # 4. 重新 chunking
-    from lightrag.operate import chunking_by_token_size
-
-    new_text_chunks: dict[str, dict[str, Any]] = {}
-    expected_chunk_count = 0
-
-    # 反向扫描 llm_response_cache，构建 chunk_id -> [cache_key] 映射
-    lrc_path = storage_dir / "kv_store_llm_response_cache.json"
-    chunk_to_cache_keys: dict[str, list[str]] = {}
-    try:
-        if lrc_path.exists():
-            lrc = json.loads(lrc_path.read_text())
-            for cache_key, entry in lrc.items():
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("cache_type") != "extract":
-                    continue
-                cid = entry.get("chunk_id", "")
-                if cid:
-                    chunk_to_cache_keys.setdefault(cid, []).append(cache_key)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[LightRAGRepair] llm_response_cache 读取失败（llm_cache_list 将为空）: {e}")
-
-    for doc_id, doc_value in full_docs.items():
-        if not isinstance(doc_value, dict):
-            continue
-        content = doc_value.get("content", "")
-        if not content:
-            continue
-        try:
-            chunks = chunking_by_token_size(
-                tokenizer=tokenizer,
-                content=content,
-                chunk_token_size=chunk_token_size,
-                chunk_overlap_token_size=chunk_overlap_token_size,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[LightRAGRepair] 文档 {doc_id} chunking 失败: {e}，跳过")
-            continue
-        for chunk in chunks:
-            chunk_content = chunk["content"]
-            chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
-            new_text_chunks[chunk_id] = {
-                "content": chunk_content,
-                "full_doc_id": doc_id,
-                "chunk_order_index": chunk.get("chunk_order_index", 0),
-                "tokens": chunk.get("tokens", 0),
-                "llm_cache_list": chunk_to_cache_keys.get(chunk_id, []),
-            }
-            expected_chunk_count += 1
-
-    # 5. chunk_id 一致性检查（如果 doc_status 存在且记录了 chunks_list）
-    doc_status = _load_json_dict(doc_status_path)
-    if doc_status:
-        old_chunk_ids: set[str] = set()
-        for ds_value in doc_status.values():
-            if not isinstance(ds_value, dict):
-                continue
-            for cid in ds_value.get("chunks_list", []) or []:
-                if isinstance(cid, str):
-                    old_chunk_ids.add(cid)
-        # 如果旧 chunks_list 跟新 chunk_id 集合差异过大 → unrecoverable
-        # （chunk_size 配置变更会导致 chunk_id 全变，下游 entity_chunks/relation_chunks 引用全失效）
-        if old_chunk_ids:
-            new_chunk_ids = set(new_text_chunks.keys())
-            intersection = old_chunk_ids & new_chunk_ids
-            # 如果重合率 < 50%，认为是 chunk_size 变更 → unrecoverable
-            overlap_ratio = len(intersection) / len(old_chunk_ids) if old_chunk_ids else 1.0
-            if overlap_ratio < 0.5:
-                return {
-                    "status": "error",
-                    "expected": expected_chunk_count,
-                    "actual": 0,
-                    "lost": expected_chunk_count,
-                    "source": "kv_store_full_docs",
-                    "message": (
-                        f"chunk_size 配置变更导致 chunk_id 不一致"
-                        f"（重合率 {overlap_ratio:.1%} < 50%），下游引用全失效"
-                    ),
-                    "unrecoverable": True,
-                }
-
-    # 6. 备份损坏的 text_chunks 并写新文件
-    _backup_corrupt(text_chunks_path)
-    _atomic_write_json(text_chunks_path, new_text_chunks)
-
-    actual = len(new_text_chunks)
-    logger.info(f"[LightRAGRepair] 重建 text_chunks: {actual} 条 (source=full_docs)")
+    actual = len(new_tc)
+    logger.info(
+        f"[LightRAGRepair] 重建 text_chunks: {actual}/{len(active_chunk_ids)} 条 "
+        f"(source=GraphML 活跃 chunk_id + full_docs 按需提取)"
+    )
     return {
         "status": "ok",
-        "expected": expected_chunk_count,
+        "expected": len(active_chunk_ids),
         "actual": actual,
-        "lost": expected_chunk_count - actual,
-        "source": "kv_store_full_docs",
-        "message": f"从 full_docs 重新 chunking 重建 {actual} 条 text_chunks",
+        "lost": len(missing_chunks),
+        "source": "GraphML + full_docs",
+        "missing_chunks": missing_chunks[:10],
+        "message": f"重建 {actual}/{len(active_chunk_ids)} 个 chunk",
     }
 
 
