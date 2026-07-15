@@ -205,15 +205,24 @@ fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String)
                 .and_then(|m| m.as_u64())
                 .unwrap_or(0);
 
-            // 检测是否存在不可恢复项（任意 repair_result 子项有 unrecoverable: true）
-            let has_unrecoverable = result
-                .and_then(|r| r.get("repair_result"))
-                .and_then(|r| r.as_object())
-                .map(|obj| {
-                    obj.values()
-                        .any(|d| d.get("unrecoverable").and_then(|b| b.as_bool()).unwrap_or(false))
-                })
+            // 检测是否存在不可恢复项：
+            // 1) 顶层 _unrecoverable（Python 端 run_repair_on_user_request 显式提升，
+            //    覆盖 GraphML 损坏导致 repair_all 在备份/删除阶段就 return 的情况，
+            //    此时 repair_result 无重建子项，只有顶层 _unrecoverable）
+            // 2) repair_result 子项的 unrecoverable: true（向后兼容，逐项遍历）
+            let top_unrecoverable = result
+                .and_then(|r| r.get("_unrecoverable"))
+                .and_then(|b| b.as_bool())
                 .unwrap_or(false);
+            let has_unrecoverable = top_unrecoverable
+                || result
+                    .and_then(|r| r.get("repair_result"))
+                    .and_then(|r| r.as_object())
+                    .map(|obj| {
+                        obj.values()
+                            .any(|d| d.get("unrecoverable").and_then(|b| b.as_bool()).unwrap_or(false))
+                    })
+                    .unwrap_or(false);
 
             let (title, level, overall) = if has_unrecoverable {
                 (
