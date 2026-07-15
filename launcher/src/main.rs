@@ -48,6 +48,19 @@ struct LightragStatus {
 }
 
 /// LightRAG data integrity summary reported by `/api/kg/stats`.
+///
+/// 字段策略（v4）：
+/// - `total_errors`（必填，无 `#[serde(default)]`）：Python get_lightrag_status
+///   必须返回此字段（= critical + major + minor 之和），删了会 "missing field"
+///   decode 错误。StatusCheckResult 用它生成弹窗文案。
+/// - `critical_errors`/`major_errors`/`minor_errors`（可选，`#[serde(default)]`）：
+///   新版 Python 返回的三级 severity 字段。format_repair_summary 用它们
+///   区分"残留 N 个严重、M 个主要错误"。旧版 Python 缺这些字段时默认 0。
+///
+/// 注意：字段名必须是 snake_case（Python 约定），不能用
+/// `#[serde(rename_all = "camelCase")]`，否则 serde 会期望
+/// `totalErrors`/`criticalErrors` 而 API 返回 `total_errors`/`critical_errors`，
+/// 导致 "missing field" decode 错误。
 #[derive(Debug, Clone, Deserialize)]
 struct IntegrityStatus {
     ok: bool,
@@ -550,10 +563,26 @@ impl Splash {
                             // 则不发 ready 信号、不启动 assistant 窗口，直接
                             // 进入 cancelled cleanup loop。
                             self.integrity_failed.store(true, Ordering::SeqCst);
+                            // v4: 优先读 total_errors（Python 必填字段，无
+                            // #[serde(default)]），但用 critical + major + minor
+                            // 求和做 fallback——如果 Python 未来误删 total_errors
+                            // 或字段值不一致，用更细粒度的 sum 防止弹窗显示 0。
                             let total_errors = status
                                 .integrity
                                 .as_ref()
-                                .map_or(0, |i| i.total_errors);
+                                .map_or(0, |i| {
+                                    let sum =
+                                        i.critical_errors + i.major_errors + i.minor_errors;
+                                    if i.total_errors != sum && sum > 0 {
+                                        warn!(
+                                            "integrity total_errors({}) != critical+major+minor({}), using sum",
+                                            i.total_errors, sum
+                                        );
+                                        sum
+                                    } else {
+                                        i.total_errors
+                                    }
+                                });
                             let message = if status.init_failed {
                                 format!(
                                     "LightRAG 初始化失败\n\n检测到数据损坏，请选择：\n\n是 - 尝试修复（修复未必成功，可能会丢失数据）\n否 - 直接退出（请自行从备份恢复）"
