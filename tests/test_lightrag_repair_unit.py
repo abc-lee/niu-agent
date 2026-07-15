@@ -1,4 +1,4 @@
-"""repair_brainregion_zombies 扩展：清理 cache 里僵尸 extract entry。"""
+"""repair_brainregion_zombies + repair_text_chunks v4 单元测试。"""
 import json
 import pytest
 import xml.etree.ElementTree as ET
@@ -6,6 +6,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 from niu_api.internal.lightrag_repair import repair_brainregion_zombies, repair_text_chunks
+
+
+def _write_graphml(tmp_path: Path, nodes: list[tuple[str, str, str]]):
+    """写 GraphML。nodes = [(node_id, desc, source_id), ...]"""
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    for node_id, desc, src in nodes:
+        node = ET.SubElement(graph, f"{{{ns}}}node", {"id": node_id})
+        ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = desc
+        ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = src
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
 
 
 def _make_storage_with_zombie_cache(tmp_path: Path):
@@ -204,11 +219,23 @@ def test_repair_brainregion_zombies_corrupt_cache_preserves_file(tmp_path):
 
 
 def test_repair_text_chunks_uses_real_config_not_hardcoded(tmp_path, monkeypatch):
-    """repair_text_chunks 应从 _get_lightrag_config() 读真实 chunk_size，不硬编码。"""
-    # 准备 full_docs
+    """v4: 当 text_chunks 缺失活跃 chunk 需扫 full_docs 时，应调 _get_lightrag_config 读真实 chunk_size。
+
+    v4 只在 need_full_docs_scan=True（text_chunks 没覆盖所有活跃 chunk）时才调 config + chunking。
+    所以测试必须：GraphML 有活跃 chunk + text_chunks 空 → 触发 full_docs scan。
+    """
+    # 用真实 compute_mdhash_id 算 chunk_id，让 GraphML 引用的 chunk_id 跟 full_docs chunking 产出一致
+    from lightrag.utils import compute_mdhash_id
+    doc_content = "测试文档内容 用于验证配置读取"
+    expected_chunk_id = compute_mdhash_id(doc_content, prefix="chunk-")
+
+    # GraphML：1 个实体引用 expected_chunk_id（触发 full_docs scan）
+    _write_graphml(tmp_path, [("entity-cfg", "desc cfg", expected_chunk_id)])
+    # text_chunks 空（强制走 full_docs scan 路径）
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
     docs = {
         "doc-test": {
-            "content": "测试文档内容，用于验证配置读取。",
+            "content": doc_content,
             "file_path": "test.md",
         }
     }
@@ -221,83 +248,38 @@ def test_repair_text_chunks_uses_real_config_not_hardcoded(tmp_path, monkeypatch
         config_calls.append(True)
         return {"chunk_token_size": 800, "chunk_overlap_token_size": 50}
 
-    # patch 源模块 lightrag_manager（repair_text_chunks 用局部 import 从源模块取符号）
     monkeypatch.setattr("niu_api.internal.lightrag_manager._get_lightrag_config", fake_config)
-    # mock get_lightrag 返回带 tokenizer 的实例
-    # 注意：repair_text_chunks 用局部 import（from niu_api.internal.lightrag_manager import get_lightrag），
-    # 所以 patch 必须指向源模块 lightrag_manager，不是被测模块 lightrag_repair
     # FakeTokenizer 必须实现 encode + decode（chunking_by_token_size 调 decode 重组 chunk 内容）
     class FakeTokenizer:
         def encode(self, text):
-            return text.split()  # 简化：按空格切分
+            return text.split()
         def decode(self, tokens):
-            return " ".join(tokens)  # 简化：用空格拼回
+            return doc_content  # 返回原文，让 compute_mdhash_id 算出 expected_chunk_id
     class FakeRag:
         tokenizer = FakeTokenizer()
     monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag())
-
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
     result = repair_text_chunks()
 
     assert result["status"] == "ok"
-    assert len(config_calls) > 0, "应调用 _get_lightrag_config 读真实配置"
-
-
-def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, monkeypatch):
-    """chunk_id 重合率<50% 时返回 unrecoverable（保护下游引用不失效）。"""
-    docs = {
-        "doc-test": {
-            "content": "测试文档内容",
-            "file_path": "test.md",
-        }
-    }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
-
-    # chunk_id 一致性检查读 kv_store_doc_status.json 的 chunks_list 字段（lightrag_repair.py:500-505）
-    # 不是 text_chunks.json。所以旧 chunk_id 必须写到 doc_status.json
-    old_tc = {f"chunk-old-{i}": {"content": f"old{i}", "source_id": "doc-test"} for i in range(100)}
-    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(old_tc, ensure_ascii=False))
-    doc_status = {
-        "doc-test": {
-            "status": "processed",
-            "chunks_count": 100,
-            "chunks_list": [f"chunk-old-{i}" for i in range(100)],
-        }
-    }
-    (tmp_path / "kv_store_doc_status.json").write_text(json.dumps(doc_status, ensure_ascii=False))
-
-    class FakeTokenizer:
-        def encode(self, text):
-            return text.split()
-        def decode(self, tokens):
-            return " ".join(tokens)
-    class FakeRag:
-        tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag())
-    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-
-    result = repair_text_chunks()
-
-    # 重建后 chunk_id 跟旧的重合率为 0 → 应返回 unrecoverable
-    # 代码库约定：unrecoverable 场景用 status="error" + unrecoverable=True（lightrag_repair.py 全部 19 处一致）
-    assert result["status"] == "error"
-    assert result.get("unrecoverable") is True
-    assert "chunk_id" in result.get("message", "").lower() or "重合" in result.get("message", "")
+    assert len(config_calls) > 0, "应调用 _get_lightrag_config 读真实配置（full_docs scan 路径）"
 
 
 def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
-    """repair_text_chunks 应反向重建 llm_cache_list 从 llm_response_cache。
+    """v4: repair_text_chunks 应反向重建 llm_cache_list 从 llm_response_cache。
 
-    验证：cache 里 1 条 extract entry 的 chunk_id 跟重建后的 chunk_id 一致时，
+    验证：GraphML 活跃 chunk_id 在 full_docs chunking 后产出 + cache 里有对应 extract entry，
     重建后 text_chunks 里该 chunk 的 llm_cache_list 应含对应 cache_key。
     """
-    # 用真实 compute_mdhash_id 算 chunk_id，让 cache 的 chunk_id 跟重建后一致
     from lightrag.utils import compute_mdhash_id
     doc_content = "测试文档内容用于验证 llm_cache_list 反向重建"
     expected_chunk_id = compute_mdhash_id(doc_content, prefix="chunk-")
 
+    # GraphML：1 个实体引用 expected_chunk_id
+    _write_graphml(tmp_path, [("entity-cache", "desc cache", expected_chunk_id)])
+    # text_chunks 空（强制走 full_docs scan，从 chunking 产出 expected_chunk_id）
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
     docs = {
         "doc-test": {
             "content": doc_content,
@@ -311,7 +293,7 @@ def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
         "default:extract:key1": {
             "return": "entity<|#|>test<|#|>document<|#|>desc",
             "cache_type": "extract",
-            "chunk_id": expected_chunk_id,  # 跟重建后 chunk_id 一致
+            "chunk_id": expected_chunk_id,
             "create_time": 1781930610,
         },
     }
@@ -1046,3 +1028,138 @@ def test_check_vdb_missing_uses_sorted_pair(tmp_path, monkeypatch):
     ent_missing = [e for e in errors if e.get("check") == "vdb_entities_missing"]
     assert len(ent_missing) == 0, \
         f"不应报 vdb_entities_missing（2 个 node 都有对应向量）: {ent_missing}"
+
+
+# =============================================================================
+# repair_text_chunks v4：从 GraphML 提活跃 chunk_id + 按需提取重建
+# =============================================================================
+
+
+def test_repair_text_chunks_only_rebuilds_active_chunks(tmp_path, monkeypatch):
+    """repair_text_chunks 应只重建 GraphML 活跃 chunk_id 集合 C 中的 chunk。"""
+    # GraphML：1 个实体引用 chunk-active
+    _write_graphml(tmp_path, [("entity-x", "desc X", "chunk-active")])
+
+    # text_chunks 现有 2 个 chunk：chunk-active（活跃）+ chunk-old（旧版本）
+    tc = {
+        "chunk-active": {
+            "content": "活跃 chunk 原文",
+            "full_doc_id": "doc-v2",
+            "llm_cache_list": [],
+        },
+        "chunk-old": {
+            "content": "旧版本 chunk 原文",
+            "full_doc_id": "doc-v1",
+            "llm_cache_list": [],
+        },
+    }
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc, ensure_ascii=False))
+    # full_docs 含 v1 和 v2
+    docs = {
+        "doc-v1": {"content": "v1 content", "file_path": "v1.md"},
+        "doc-v2": {"content": "v2 content", "file_path": "v2.md"},
+    }
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    # cache 空
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "ok"
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    # 活跃 chunk 保留
+    assert "chunk-active" in tc_after
+    assert tc_after["chunk-active"]["content"] == "活跃 chunk 原文"
+    assert tc_after["chunk-active"]["full_doc_id"] == "doc-v2"
+    # 旧版本 chunk 丢弃
+    assert "chunk-old" not in tc_after, "旧版本 chunk 应被丢弃（不在 GraphML 活跃集合）"
+
+
+def test_repair_text_chunks_falls_back_to_full_docs_when_text_chunks_missing(tmp_path, monkeypatch):
+    """现有 text_chunks 没有该 chunk_id 时，从 full_docs 重新 chunking 反查（取 create_time 最大）。"""
+    from lightrag.utils import compute_mdhash_id
+    chunk_id = compute_mdhash_id("hello world", prefix="chunk-")
+
+    _write_graphml(tmp_path, [("entity-y", "desc Y", chunk_id)])
+    # text_chunks 为空（损坏或被删）
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    # full_docs 含 2 个版本（v1 和 v2 都切出 chunk-X content）
+    docs_with_time = {
+        "doc-v1": {"content": "hello world", "file_path": "v1.md", "create_time": 1000, "update_time": 1000},
+        "doc-v2": {"content": "hello world", "file_path": "v2.md", "create_time": 2000, "update_time": 2000},
+    }
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs_with_time, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+
+    class FakeTokenizer:
+        def encode(self, text):
+            return text.split()
+        def decode(self, tokens):
+            return " ".join(tokens)
+    class FakeRag:
+        tokenizer = FakeTokenizer()
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "ok"
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert chunk_id in tc_after
+    # 应取最后录入的 doc-v2
+    assert tc_after[chunk_id]["full_doc_id"] == "doc-v2", "多条匹配时应取 create_time 最大的 doc"
+
+
+def test_repair_text_chunks_unrecoverable_when_graphml_corrupt(tmp_path, monkeypatch):
+    """GraphML 损坏时 repair_text_chunks 应返回 unrecoverable。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "error"
+    assert result.get("unrecoverable") is True
+
+
+def test_repair_text_chunks_unrecoverable_when_full_docs_corrupt(tmp_path, monkeypatch):
+    """full_docs 损坏且 text_chunks 也损坏时 → unrecoverable。"""
+    _write_graphml(tmp_path, [("entity-z", "desc Z", "chunk-z")])
+    # text_chunks 损坏（非 dict）
+    (tmp_path / "kv_store_text_chunks.json").write_text("corrupt")
+    # full_docs 损坏
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "error"
+    assert result.get("unrecoverable") is True
+
+
+def test_embed_batch_works_during_repair(monkeypatch):
+    """_embed_batch 在 _repairing=True 时应通过 get_lightrag_for_repair 拿到实例。
+
+    使用真实 embedding 模型（不 mock）。
+    """
+    import niu_api.internal.lightrag_manager as lm
+    from niu_api.internal.embedding import get_model
+    assert get_model() is not None, "embedding 模型应预加载"
+
+    # 模拟 repair 期间 _repairing=True
+    original = lm._repairing
+    lm._repairing = True
+    try:
+        from niu_api.internal.lightrag_repair import _embed_batch
+        result = _embed_batch(["测试文本"])
+        assert result is not None
+        assert len(result) == 1
+        assert len(result[0]) > 0
+    finally:
+        lm._repairing = original

@@ -136,31 +136,48 @@ def patched_embed(monkeypatch):
 
 
 def test_repair_text_chunks_pass(storage_dir, patched_embed, monkeypatch):
-    """full_docs 完好 → 重新 chunking 重建 text_chunks"""
+    """v4: GraphML 活跃 chunk + text_chunks 缺失 → 从 full_docs 按需提取重建"""
     from niu_api.internal import lightrag_repair
+    import xml.etree.ElementTree as ET
+    from lightrag.utils import compute_mdhash_id
 
+    # full_docs 含 1 个文档
+    doc_content = "a" * 200
+    expected_chunk_id = compute_mdhash_id(doc_content, prefix="chunk-")
     full_docs = {
-        "doc-001": {"content": "a" * 200, "summary": "test doc"},
-        "doc-002": {"content": "b" * 100, "summary": "test doc 2"},
+        "doc-001": {"content": doc_content, "summary": "test doc"},
     }
     _write_json(storage_dir / "kv_store_full_docs.json", full_docs)
+    # text_chunks 空（强制走 full_docs scan）
+    _write_json(storage_dir / "kv_store_text_chunks.json", {})
+    _write_json(storage_dir / "kv_store_llm_response_cache.json", {})
 
-    # mock chunking_by_token_size 返回简单分块
+    # GraphML：1 个实体引用 expected_chunk_id
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    node = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-1"})
+    ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = "desc"
+    ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = expected_chunk_id
+    ET.ElementTree(root).write(
+        storage_dir / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+
+    # mock chunking_by_token_size 返回单块（整段不切，让 compute_mdhash_id 匹配 expected_chunk_id）
     def fake_chunking(tokenizer, content, **kwargs):
-        chunks = _vdb_text_to_chunks(content, chunk_size=50)
         return [
-            {"content": c, "tokens": len(c), "chunk_order_index": i}
-            for i, c in enumerate(chunks)
+            {"content": content, "tokens": len(content), "chunk_order_index": 0}
         ]
 
     monkeypatch.setattr("lightrag.operate.chunking_by_token_size", fake_chunking)
 
-    # mock get_lightrag 返回带 tokenizer 的对象
+    # mock get_lightrag_for_repair 返回带 tokenizer 的对象（v4 用 get_lightrag_for_repair）
     class FakeRag:
         tokenizer = "fake_tokenizer"
 
     monkeypatch.setattr(
-        "niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag()
+        "niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag()
     )
     monkeypatch.setattr(
         "niu_api.internal.lightrag_manager._get_lightrag_config",
@@ -171,28 +188,47 @@ def test_repair_text_chunks_pass(storage_dir, patched_embed, monkeypatch):
 
     assert result["status"] == "ok"
     assert result["actual"] > 0
-    assert result["source"] == "kv_store_full_docs"
+    assert result["source"] == "GraphML + full_docs"
 
     # 验证文件写入
     tc_data = json.loads((storage_dir / "kv_store_text_chunks.json").read_text())
     assert len(tc_data) == result["actual"]
+    # expected_chunk_id 应在重建结果里（从 full_docs chunking 产出）
+    assert expected_chunk_id in tc_data
     # 每条都有 full_doc_id 指向 full_docs
     for chunk_id, chunk_value in tc_data.items():
         assert chunk_value["full_doc_id"] in full_docs
 
 
-def test_repair_text_chunks_fail_full_docs_corrupt(storage_dir, patched_embed):
-    """full_docs 损坏 → unrecoverable"""
+def test_repair_text_chunks_fail_full_docs_corrupt(storage_dir, patched_embed, monkeypatch):
+    """v4: GraphML 活跃 chunk + full_docs 损坏 + text_chunks 损坏 → unrecoverable"""
     from niu_api.internal import lightrag_repair
+    import xml.etree.ElementTree as ET
 
-    # 写损坏的 full_docs（非法 JSON）
+    # GraphML：1 个实体引用 chunk-x（活跃 chunk）
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    node = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-z"})
+    ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = "desc"
+    ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-z"
+    ET.ElementTree(root).write(
+        storage_dir / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+    # text_chunks 损坏（非法 JSON）
+    _write_text(storage_dir / "kv_store_text_chunks.json", '{"truncated":')
+    # full_docs 损坏（非法 JSON）
     _write_text(storage_dir / "kv_store_full_docs.json", '{"truncated":')
+    _write_json(storage_dir / "kv_store_llm_response_cache.json", {})
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", storage_dir)
 
     result = lightrag_repair.repair_text_chunks()
 
     assert result["status"] == "error"
     assert result.get("unrecoverable") is True
-    assert "full_docs 损坏" in result["message"]
+    assert "无法重建" in result["message"] or "损坏" in result["message"]
 
 
 # =============================================================================
