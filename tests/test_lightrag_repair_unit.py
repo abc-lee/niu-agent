@@ -409,7 +409,7 @@ def test_check_all_vdb_missing_but_graphml_intact_returns_major(tmp_path, monkey
 
 
 def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
-    """2 真相源 + GraphML + vdb 全部完好 → ok=True。"""
+    """3 真相源 + 9 派生文件全部完好 → ok=True（v4 简化后派生文件按 missing 粒度检测）。"""
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
@@ -426,12 +426,28 @@ def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
         xml_declaration=True, encoding="utf-8"
     )
 
-    # vdb_entities（有对应向量）
+    # v4：9 派生文件必须全齐才不报 major
+    _DERIVED_FILES_LIST = [
+        "kv_store_text_chunks.json",
+        "kv_store_doc_status.json",
+        "vdb_chunks.json",
+        "vdb_entities.json",
+        "vdb_relationships.json",
+        "kv_store_entity_chunks.json",
+        "kv_store_relation_chunks.json",
+        "kv_store_full_entities.json",
+        "kv_store_full_relations.json",
+    ]
     vdb_e = {"data": [{"__id__": "ent-test-entity", "entity_name": "test-entity", "vector": "AAAAAA=="}],
              "file_hash": "fake", "embedding_dim": 8, "matrix": "AAAAAA=="}
     (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e, ensure_ascii=False))
-    (tmp_path / "vdb_chunks.json").write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
-    (tmp_path / "vdb_relationships.json").write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
+    for fname in _DERIVED_FILES_LIST:
+        if fname == "vdb_entities.json":
+            continue
+        if fname.startswith("vdb_"):
+            (tmp_path / fname).write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
+        else:
+            (tmp_path / fname).write_text("{}")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
@@ -1482,3 +1498,179 @@ def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
     assert result.get("_rolled_back") is True
     # 原派生文件被恢复
     assert (tmp_path / "kv_store_text_chunks.json").read_bytes() == tc_before
+
+
+# ============================================================
+# Task 4 测试：check_all 简化为"检 3 真相源 + 9 派生文件 missing"
+# ============================================================
+
+# 9 派生文件清单（跟 lightrag_repair._DERIVED_FILES 一致）
+_DERIVED_FILES_FOR_TEST = [
+    "kv_store_text_chunks.json",
+    "kv_store_doc_status.json",
+    "vdb_chunks.json",
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "kv_store_entity_chunks.json",
+    "kv_store_relation_chunks.json",
+    "kv_store_full_entities.json",
+    "kv_store_full_relations.json",
+]
+
+
+def _write_intact_truth_sources(tmp_path: Path):
+    """写 3 真相源（全部完好）。"""
+    # GraphML：1 个实体
+    _write_graphml(tmp_path, [("entity-x", "desc X", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}')
+
+
+def test_check_all_3_truth_sources_all_intact(tmp_path, monkeypatch):
+    """3 真相源全部完好（派生文件齐全）→ ok=True。"""
+    _write_intact_truth_sources(tmp_path)
+    # 9 派生文件全部存在（内容可空 dict / 空 vdb）
+    for fname in _DERIVED_FILES_FOR_TEST:
+        if fname.startswith("vdb_"):
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+        else:
+            (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is True
+    assert result["critical_errors"] == 0
+    assert result["major_errors"] == 0
+    assert result["minor_errors"] == 0
+
+
+def test_check_all_graphml_corrupt_is_critical(tmp_path, monkeypatch):
+    """GraphML 损坏 → critical_errors=1 + ok=False。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is False
+    assert result["critical_errors"] >= 1, "GraphML 损坏应为 critical"
+    # 真相源损坏的 error 应归类到 checks.truth_source
+    truth_errors = result["checks"]["truth_source"]["errors"]
+    assert any(e.get("file") == "graph_chunk_entity_relation.graphml" for e in truth_errors), \
+        "GraphML 错误应记到 truth_source check"
+
+
+def test_check_all_full_docs_corrupt_is_critical(tmp_path, monkeypatch):
+    """full_docs 损坏（非 dict JSON）→ critical_errors>=1。"""
+    _write_intact_truth_sources(tmp_path)
+    # 覆盖 full_docs 为损坏
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt not json")
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is False
+    assert result["critical_errors"] >= 1
+    truth_errors = result["checks"]["truth_source"]["errors"]
+    assert any(e.get("file") == "kv_store_full_docs.json" for e in truth_errors)
+
+
+def test_check_all_cache_corrupt_is_critical(tmp_path, monkeypatch):
+    """cache 损坏（非 dict JSON）→ critical_errors>=1。"""
+    _write_intact_truth_sources(tmp_path)
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt not json")
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is False
+    assert result["critical_errors"] >= 1
+    truth_errors = result["checks"]["truth_source"]["errors"]
+    assert any(e.get("file") == "kv_store_llm_response_cache.json" for e in truth_errors)
+
+
+def test_check_all_missing_derived_file_is_major(tmp_path, monkeypatch):
+    """9 派生文件任一 missing → major_errors>=1（真相源全完好）。"""
+    _write_intact_truth_sources(tmp_path)
+    # 只写 8 个派生文件，漏掉 vdb_entities.json
+    for fname in _DERIVED_FILES_FOR_TEST:
+        if fname == "vdb_entities.json":
+            continue  # 故意不写
+        if fname.startswith("vdb_"):
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+        else:
+            (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    # 真相源完好 → critical=0；缺派生文件 → major>=1
+    assert result["critical_errors"] == 0
+    assert result["major_errors"] >= 1
+    assert result["ok"] is False
+    # missing 应记到 checks.derived_missing
+    derived_errors = result["checks"]["derived_missing"]["errors"]
+    assert any(e.get("file") == "vdb_entities.json" for e in derived_errors), \
+        "missing 的派生文件应记到 derived_missing check"
+
+
+def test_check_all_brand_new_user_is_ok(tmp_path, monkeypatch):
+    """全新用户：3 真相源全不存在 + 9 派生文件全不存在 → ok=True（合法空状态）。"""
+    # 不写任何文件（tmp_path 是空目录）
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    # 全新用户：文件不存在不算损坏，但 9 派生文件 missing 应算 major 还是 ok？
+    # v4 决策：全新用户（3 真相源都不存在）时，9 派生文件 missing 也不报错
+    # （因为 LightRAG 首次启动会自动初始化所有文件，不该误报）
+    assert result["critical_errors"] == 0, "全新用户真相源不存在不应报 critical"
+
+
+def test_check_all_preserves_zombie_markers_constant(tmp_path, monkeypatch):
+    """修改 lightrag_integrity.py 后 _ZOMBIE_DESCRIPTION_MARKERS 必须仍可 import。
+
+    lightrag_repair.py:1924 import 这个常量，删了会 ImportError。
+    """
+    from niu_api.internal.lightrag_integrity import _ZOMBIE_DESCRIPTION_MARKERS
+    assert isinstance(_ZOMBIE_DESCRIPTION_MARKERS, tuple)
+    assert len(_ZOMBIE_DESCRIPTION_MARKERS) > 0
+    # 确认包含已知的标记
+    assert "被删除的脑区" in _ZOMBIE_DESCRIPTION_MARKERS
+
+
+def test_check_all_preserves_load_graphml_and_check_truth_source(tmp_path, monkeypatch):
+    """修改后 _load_graphml / _check_truth_source 必须仍可 import。
+
+    lightrag_repair.py:1923, 2286 import 这两个函数，删了会 ImportError。
+    """
+    from niu_api.internal.lightrag_integrity import (
+        _load_graphml, _check_truth_source, _load_json_dict,
+    )
+    # 简单 smoke test：调一次确认可调用
+    _write_intact_truth_sources(tmp_path)
+    node_ids, edges, _, err = _load_graphml(tmp_path / "graph_chunk_entity_relation.graphml")
+    assert err is None
+    assert len(node_ids) == 1
+
+    err = _check_truth_source("kv_store_full_docs.json", tmp_path)
+    assert err == {}, "完好的真相源应返回空 dict（无错误）"

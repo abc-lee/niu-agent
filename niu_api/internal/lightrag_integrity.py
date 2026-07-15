@@ -1,9 +1,10 @@
-"""LightRAG 数据一致性检查（简化版 v2）。
+"""LightRAG 数据一致性检查（v4：3 真相源不可动 + 9 派生文件 missing）。
 
 检查项：
-1. 2 真相源完整可用（full_docs + llm_response_cache）
-2. GraphML 后置验证（重建后应该有 node）
-3. vdb_*_missing 检测（GraphML 有 node 但 vdb 没对应向量 → 启动放行风险）
+1. 3 真相源完整可用（GraphML + full_docs + cache）→ critical = unrecoverable
+2. 9 派生文件 missing 检测 → major（需 repair 重建）
+
+全新用户合法：3 真相源都不存在时，9 派生文件 missing 也不报错。
 """
 
 import json
@@ -19,8 +20,22 @@ _STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 _GRAPHML_FILE = "graph_chunk_entity_relation.graphml"
 
 _TRUTH_SOURCE_FILES = [
+    "graph_chunk_entity_relation.graphml",
     "kv_store_full_docs.json",
     "kv_store_llm_response_cache.json",
+]
+
+# 9 派生文件（跟 lightrag_repair._DERIVED_FILES 一致）
+_DERIVED_FILES = [
+    "kv_store_text_chunks.json",
+    "kv_store_doc_status.json",
+    "vdb_chunks.json",
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "kv_store_entity_chunks.json",
+    "kv_store_relation_chunks.json",
+    "kv_store_full_entities.json",
+    "kv_store_full_relations.json",
 ]
 
 # 僵尸脑区 description 语义标记（LLM 写的 description，明确告诉系统这个实体该删）
@@ -311,30 +326,112 @@ def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
     return errors
 
 
+def _check_derived_missing(storage_dir: Path) -> list[dict[str, Any]]:
+    """检测 9 派生文件 missing。
+
+    全新用户场景（3 真相源都不存在）时，派生文件 missing 不报错
+    （LightRAG 首次启动会自动初始化所有文件）。
+
+    Returns:
+        errors 列表（可能为空）。每个 error 含 file/severity=major/msg。
+    """
+    errors: list[dict[str, Any]] = []
+
+    # 全新用户判定：3 真相源都不存在 → 派生文件 missing 不报错
+    truth_sources_exist = any(
+        (storage_dir / fname).exists() for fname in _TRUTH_SOURCE_FILES
+    )
+    if not truth_sources_exist:
+        return errors  # 全新用户，不报错
+
+    for fname in _DERIVED_FILES:
+        fpath = storage_dir / fname
+        if not fpath.exists():
+            errors.append({
+                "check": "derived_file_missing",
+                "severity": "major",
+                "file": fname,
+                "msg": f"派生文件 {fname} 缺失（需要 repair 重建）",
+            })
+        elif fpath.stat().st_size == 0:
+            errors.append({
+                "check": "derived_file_empty",
+                "severity": "major",
+                "file": fname,
+                "msg": f"派生文件 {fname} 为空（需要 repair 重建）",
+            })
+    return errors
+
+
+def _check_truth_source_graphml(storage_dir: Path) -> dict[str, Any]:
+    """检测 GraphML 真相源完好性（XML 解析）。
+
+    全新用户合法：文件不存在 / size=0 → ok
+    损坏：XML 解析失败 / 无 graph 元素 → critical
+    """
+    graphml_path = storage_dir / _GRAPHML_FILE
+    if not graphml_path.exists():
+        return {}  # 全新用户合法
+    try:
+        size = graphml_path.stat().st_size
+        if size == 0:
+            return {}  # 全新用户合法
+        # 用现有 _load_graphml 解析（已处理 namespace + graph 元素 fallback）
+        _, _, _, err = _load_graphml(graphml_path)
+        if err:
+            # _load_graphml 返回的 err 已含 check/severity/file/msg
+            return err
+        return {}  # 解析成功
+    except Exception as e:
+        return {
+            "check": "truth_source_read_fail",
+            "severity": "critical",
+            "file": _GRAPHML_FILE,
+            "msg": f"GraphML 读取失败: {e}",
+        }
+
+
 def check_all() -> dict[str, Any]:
-    """简化版 check_all v2：检 2 真相源 + GraphML 后置 + vdb_*_missing。
+    """v4 简化版 check_all：检 3 真相源完好性 + 9 派生文件 missing。
+
+    1. 检 3 真相源（GraphML + full_docs + cache）完好性
+       - 文件不存在 / size=0 → ok（全新用户合法）
+       - JSON/XML 解析失败 / 非 dict → critical
+    2. 检 9 派生文件 missing
+       - 全新用户（3 真相源都不存在）时不报错
+       - 否则 missing/empty 文件 → major
+
+    Returns:
+        {
+            "ok": bool,
+            "critical_errors": int,
+            "major_errors": int,
+            "minor_errors": int,
+            "errors": list[dict],
+            "checks": {
+                "truth_source": {"name": ..., "errors": list},
+                "derived_missing": {"name": ..., "errors": list},
+            },
+        }
     """
     storage_dir = _resolve_storage_dir()
     all_errors: list[dict[str, Any]] = []
 
-    # 1. 检测 2 真相源
-    truth_errors = []
+    # 1. 检测 3 真相源（GraphML + full_docs + cache）
+    #    GraphML 走 XML 专门检测（不是 JSON），其他 2 个走 _check_truth_source
+    truth_errors: list[dict[str, Any]] = []
     for fname in _TRUTH_SOURCE_FILES:
-        err = _check_truth_source(fname, storage_dir)
+        if fname == _GRAPHML_FILE:
+            err = _check_truth_source_graphml(storage_dir)
+        else:
+            err = _check_truth_source(fname, storage_dir)
         if err:
             truth_errors.append(err)
             all_errors.append(err)
 
-    # 2. 后置验证 GraphML
-    graphml_errors = []
-    graphml_err = _check_graphml_post(storage_dir)
-    if graphml_err:
-        graphml_errors.append(graphml_err)
-        all_errors.append(graphml_err)
-
-    # 3. vdb_*_missing 检测
-    vdb_errors = _check_vdb_missing(storage_dir)
-    all_errors.extend(vdb_errors)
+    # 2. 检测 9 派生文件 missing
+    derived_errors = _check_derived_missing(storage_dir)
+    all_errors.extend(derived_errors)
 
     critical = sum(1 for e in all_errors if e.get("severity") == "critical")
     major = sum(1 for e in all_errors if e.get("severity") == "major")
@@ -348,7 +445,6 @@ def check_all() -> dict[str, Any]:
         "errors": all_errors,
         "checks": {
             "truth_source": {"name": "truth_source", "errors": truth_errors},
-            "graphml_post": {"name": "graphml_post", "errors": graphml_errors},
-            "vdb_missing": {"name": "vdb_missing", "errors": vdb_errors},
+            "derived_missing": {"name": "derived_missing", "errors": derived_errors},
         },
     }
