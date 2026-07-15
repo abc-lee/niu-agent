@@ -2412,10 +2412,6 @@ _DERIVED_FILES = [
     "kv_store_full_relations.json",
 ]
 
-# 向后兼容别名
-_UNRECOVERABLE_FILES = _TRUTH_SOURCE_FILES
-
-
 # 重建依赖链顺序（v4：只含 9 个派生文件的 repair 函数）
 # 不含 repair_graphml / repair_brainregion_zombies / repair_graphml_orphan_edges /
 # repair_cache_filter——这些会动 3 真相源（GraphML + cache），违反 v4 核心原则。
@@ -2432,71 +2428,6 @@ _REBUILD_ORDER: list[tuple[str, Any]] = [
     ("full_entities", repair_full_entities),
     ("full_relations", repair_full_relations),
 ]
-
-
-def _check_truth_sources(storage_dir: Path) -> dict[str, Any]:
-    """检测 2 个真相源文件是否完整可用（全新用户合法）。
-
-    包装函数：遍历 _TRUTH_SOURCE_FILES，调用 lightrag_integrity._check_truth_source（单数版）。
-    避免重复实现（v4 审查 MAJOR-4：Task 4 和 Task 5 两份检测逻辑会分叉）。
-
-    全新用户处理（参考 7-11 计划原则"空文件不是错"）：
-        - 文件不存在 → ok（全新用户还没导入文档）
-        - 文件存在但 size=0 → ok（全新用户空文件）
-        - 文件存在但 data={}（空 dict）→ ok（全新用户空 dict）
-        - 文件存在但 JSON 解析失败 → critical（真相源损坏）
-        - 文件存在但内容残缺（非 dict 类型）→ critical
-
-    Returns:
-        {
-            "ok": bool,
-            "reason": str,
-            "files": {filename: {"ok": bool, "reason": str, "size": int, "doc_count": int}},
-        }
-    """
-    from niu_api.internal.lightrag_integrity import _check_truth_source
-
-    files_status = {}
-    all_ok = True
-    reasons = []
-
-    for fname in _TRUTH_SOURCE_FILES:
-        # _check_truth_source 返回空 dict 表示 ok，非空 dict 表示错误
-        err = _check_truth_source(fname, storage_dir)
-        status = {"ok": True, "reason": "", "size": 0, "doc_count": 0}
-        if err:
-            # 有错误
-            status["ok"] = False
-            status["reason"] = err.get("msg", "")
-            reasons.append(status["reason"])
-        else:
-            # ok，记录文件信息（size + doc_count）
-            fpath = storage_dir / fname
-            if fpath.exists():
-                try:
-                    status["size"] = fpath.stat().st_size
-                    if status["size"] > 0:
-                        data = json.loads(fpath.read_text())
-                        if isinstance(data, dict) and data:
-                            if fname == "kv_store_full_docs.json":
-                                status["doc_count"] = len(data)
-                            elif fname == "kv_store_llm_response_cache.json":
-                                extract_count = sum(
-                                    1 for v in data.values()
-                                    if isinstance(v, dict) and v.get("cache_type") == "extract"
-                                )
-                                status["doc_count"] = extract_count
-                except Exception:
-                    pass  # _check_truth_source 已经判过损坏，这里只记录信息失败不影响
-        if not status["ok"]:
-            all_ok = False
-        files_status[fname] = status
-
-    return {
-        "ok": all_ok,
-        "reason": "; ".join(reasons) if reasons else "",
-        "files": files_status,
-    }
 
 
 def repair_all() -> dict[str, Any]:
