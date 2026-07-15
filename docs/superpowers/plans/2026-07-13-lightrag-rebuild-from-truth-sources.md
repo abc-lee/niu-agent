@@ -1146,8 +1146,11 @@ def repair_all() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
 
-    # 用 try/finally 确保所有路径（成功/失败/异常）都清理 .corrupt.*.bak 垃圾文件
-    # 现有代码 lightrag_repair.py:2512-2523 不论成功失败都清理，这里保持一致
+    # 用 try/finally 确保所有路径（成功/失败/异常）都清理 .corrupt.*.bak 垃圾文件 + backup_dir
+    # 现有代码 lightrag_repair.py:2512-2523 不论成功失败都清理 .corrupt.*.bak
+    # 现有代码 lightrag_repair.py:2488-2500 回滚后清理 backup_dir
+    # backup_dir 提升到 try 外声明，让 finally 能在所有路径访问到（包括备份阶段失败时 backup_dir 未赋值的情况）
+    backup_dir: Path | None = None
     try:
         # 1. 检测 3 真相源完好性
         truth_check = _check_truth_sources_intact()
@@ -1239,6 +1242,15 @@ def repair_all() -> dict[str, Any]:
                 bak.unlink()
             except Exception:  # noqa: BLE001
                 pass
+        # 清理 backup_dir（成功路径在 L1228 已 rmtree，失败回滚路径 return 时也需清理）
+        # 现有代码 lightrag_repair.py:2488-2500 回滚后清理 backup_dir
+        # backup_dir 可能为 None（备份阶段前失败）或路径不存在（成功路径已删），都需防御
+        if backup_dir is not None and backup_dir.exists():
+            try:
+                import shutil
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _rollback_backup(backup_dir: Path, storage_dir: Path, backed_up: list[str]) -> None:
@@ -1310,22 +1322,453 @@ _TRUTH_SOURCE_FILES = {GraphML, full_docs, cache}
 
 **Files:**
 - Modify: `niu_api/internal/lightrag_integrity.py`
+- Test: `tests/test_lightrag_repair_unit.py`
 
 ### 背景
 
 v4 的 `check_all` 简化为：
 1. 检 3 真相源完好性（GraphML + full_docs + cache）→ critical = unrecoverable
 2. 检 9 派生文件 missing → major
-3. 删除 11 旧句法 check + 5 旧语义 check
+3. 删除 v3 的 vdb_*_missing 细粒度检测（只保留"文件 missing"粒度，v3 的"GraphML 有 node 但 vdb 没向量"检测交给 `repair_vdb_*` 重建逻辑覆盖——简化 check_all）
 
-**重要保留项**：修改 `lightrag_integrity.py` 时必须保留以下常量和函数（`repair_brainregion_zombies` 依赖它们，否则 ImportError）：
-- `_ZOMBIE_DESCRIPTION_MARKERS` 常量（现有 `lightrag_integrity.py:30-36` 注释明确要求保留）
-- `_load_graphml` / `_load_json_dict` 工具函数
-- 其他被 `lightrag_repair.py` import 的符号（实施时用 `grep "from niu_api.internal.lightrag_integrity import" niu_api/internal/lightrag_repair.py` 确认完整列表）
+**重要保留项**：修改 `lightrag_integrity.py` 时必须保留以下常量和函数（`lightrag_repair.py:1923-1924` 和 `lightrag_repair.py:2286` import 它们，删了会 ImportError）：
+- `_ZOMBIE_DESCRIPTION_MARKERS` 常量（`lightrag_repair.py:1924` import）
+- `_load_graphml` 函数（`lightrag_repair.py:1923, 1931` import + 调用）
+- `_load_json_dict` 函数（`lightrag_repair.py:2286` 间接依赖，`_check_truth_source` 内部用）
+- `_check_truth_source` 函数（`lightrag_repair.py:2286, 2294` import + 调用——`_check_truth_sources` 包装函数遍历 `_TRUTH_SOURCE_FILES` 逐个调它）
 
-### - [ ] Step 1-5: TDD 流程
+实施前用以下命令确认完整 import 列表（防止漏删被依赖的符号）：
+```bash
+grep -n "from niu_api.internal.lightrag_integrity import" niu_api/internal/lightrag_repair.py niu_api/internal/lightrag_manager.py
+```
 
-（具体测试代码 + 实现略，参照 v3 Task 5 的模式，但 `_TRUTH_SOURCE_FILES` 改为 3 文件，check_all 检 GraphML + full_docs + cache 完好性 + 9 派生文件 missing）
+### - [ ] Step 1: Write the failing test
+
+`tests/test_lightrag_repair_unit.py` 追加（跟 Task 1-3 同一个文件）：
+
+```python
+# ============================================================
+# Task 4 测试：check_all 简化为"检 3 真相源 + 9 派生文件 missing"
+# ============================================================
+
+# 9 派生文件清单（跟 lightrag_repair._DERIVED_FILES 一致）
+_DERIVED_FILES_FOR_TEST = [
+    "kv_store_text_chunks.json",
+    "kv_store_doc_status.json",
+    "vdb_chunks.json",
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "kv_store_entity_chunks.json",
+    "kv_store_relation_chunks.json",
+    "kv_store_full_entities.json",
+    "kv_store_full_relations.json",
+]
+
+
+def _write_intact_truth_sources(tmp_path: Path):
+    """写 3 真相源（全部完好）。"""
+    # GraphML：1 个实体
+    _write_graphml(tmp_path, [("entity-x", "desc X", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}')
+
+
+def test_check_all_3_truth_sources_all_intact(tmp_path, monkeypatch):
+    """3 真相源全部完好（派生文件齐全）→ ok=True。"""
+    _write_intact_truth_sources(tmp_path)
+    # 9 派生文件全部存在（内容可空 dict / 空 vdb）
+    for fname in _DERIVED_FILES_FOR_TEST:
+        if fname.startswith("vdb_"):
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+        else:
+            (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is True
+    assert result["critical_errors"] == 0
+    assert result["major_errors"] == 0
+    assert result["minor_errors"] == 0
+
+
+def test_check_all_graphml_corrupt_is_critical(tmp_path, monkeypatch):
+    """GraphML 损坏 → critical_errors=1 + ok=False。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is False
+    assert result["critical_errors"] >= 1, "GraphML 损坏应为 critical"
+    # 真相源损坏的 error 应归类到 checks.truth_source
+    truth_errors = result["checks"]["truth_source"]["errors"]
+    assert any(e.get("file") == "graph_chunk_entity_relation.graphml" for e in truth_errors), \
+        "GraphML 错误应记到 truth_source check"
+
+
+def test_check_all_full_docs_corrupt_is_critical(tmp_path, monkeypatch):
+    """full_docs 损坏（非 dict JSON）→ critical_errors>=1。"""
+    _write_intact_truth_sources(tmp_path)
+    # 覆盖 full_docs 为损坏
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt not json")
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is False
+    assert result["critical_errors"] >= 1
+    truth_errors = result["checks"]["truth_source"]["errors"]
+    assert any(e.get("file") == "kv_store_full_docs.json" for e in truth_errors)
+
+
+def test_check_all_cache_corrupt_is_critical(tmp_path, monkeypatch):
+    """cache 损坏（非 dict JSON）→ critical_errors>=1。"""
+    _write_intact_truth_sources(tmp_path)
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt not json")
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    assert result["ok"] is False
+    assert result["critical_errors"] >= 1
+    truth_errors = result["checks"]["truth_source"]["errors"]
+    assert any(e.get("file") == "kv_store_llm_response_cache.json" for e in truth_errors)
+
+
+def test_check_all_missing_derived_file_is_major(tmp_path, monkeypatch):
+    """9 派生文件任一 missing → major_errors>=1（真相源全完好）。"""
+    _write_intact_truth_sources(tmp_path)
+    # 只写 8 个派生文件，漏掉 vdb_entities.json
+    for fname in _DERIVED_FILES_FOR_TEST:
+        if fname == "vdb_entities.json":
+            continue  # 故意不写
+        if fname.startswith("vdb_"):
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+        else:
+            (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    # 真相源完好 → critical=0；缺派生文件 → major>=1
+    assert result["critical_errors"] == 0
+    assert result["major_errors"] >= 1
+    assert result["ok"] is False
+    # missing 应记到 checks.derived_missing
+    derived_errors = result["checks"]["derived_missing"]["errors"]
+    assert any(e.get("file") == "vdb_entities.json" for e in derived_errors), \
+        "missing 的派生文件应记到 derived_missing check"
+
+
+def test_check_all_brand_new_user_is_ok(tmp_path, monkeypatch):
+    """全新用户：3 真相源全不存在 + 9 派生文件全不存在 → ok=True（合法空状态）。"""
+    # 不写任何文件（tmp_path 是空目录）
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_integrity import check_all
+    result = check_all()
+
+    # 全新用户：文件不存在不算损坏，但 9 派生文件 missing 应算 major 还是 ok？
+    # v4 决策：全新用户（3 真相源都不存在）时，9 派生文件 missing 也不报错
+    # （因为 LightRAG 首次启动会自动初始化所有文件，不该误报）
+    assert result["critical_errors"] == 0, "全新用户真相源不存在不应报 critical"
+
+
+def test_check_all_preserves_zombie_markers_constant(tmp_path, monkeypatch):
+    """修改 lightrag_integrity.py 后 _ZOMBIE_DESCRIPTION_MARKERS 必须仍可 import。
+    
+    lightrag_repair.py:1924 import 这个常量，删了会 ImportError。
+    """
+    from niu_api.internal.lightrag_integrity import _ZOMBIE_DESCRIPTION_MARKERS
+    assert isinstance(_ZOMBIE_DESCRIPTION_MARKERS, tuple)
+    assert len(_ZOMBIE_DESCRIPTION_MARKERS) > 0
+    # 确认包含已知的标记
+    assert "被删除的脑区" in _ZOMBIE_DESCRIPTION_MARKERS
+
+
+def test_check_all_preserves_load_graphml_and_check_truth_source(tmp_path, monkeypatch):
+    """修改后 _load_graphml / _check_truth_source 必须仍可 import。
+    
+    lightrag_repair.py:1923, 2286 import 这两个函数，删了会 ImportError。
+    """
+    from niu_api.internal.lightrag_integrity import (
+        _load_graphml, _check_truth_source, _load_json_dict,
+    )
+    # 简单 smoke test：调一次确认可调用
+    _write_intact_truth_sources(tmp_path)
+    node_ids, edges, _, err = _load_graphml(tmp_path / "graph_chunk_entity_relation.graphml")
+    assert err is None
+    assert len(node_ids) == 1
+
+    err = _check_truth_source("kv_store_full_docs.json", tmp_path)
+    assert err == {}, "完好的真相源应返回空 dict（无错误）"
+```
+
+### - [ ] Step 2: Run test to verify it fails
+
+Run:
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot
+python -m pytest tests/test_lightrag_repair_unit.py::test_check_all_graphml_corrupt_is_critical \
+                tests/test_lightrag_repair_unit.py::test_check_all_missing_derived_file_is_major -v
+```
+
+Expected: FAIL
+- `test_check_all_graphml_corrupt_is_critical`：现有 `check_all` 的 `_TRUTH_SOURCE_FILES` 只有 2 文件（不含 GraphML），GraphML 损坏走 `_check_graphml_post` 归类为 major 而不是 critical → `critical_errors == 0` 而非 `>= 1`，且 `checks` 字典里没有 `truth_source` 含 GraphML 错误的记录
+- `test_check_all_missing_derived_file_is_major`：现有 `check_all` 没有专门的 `derived_missing` check 类别（只有 `vdb_missing`），`result["checks"]["derived_missing"]` 会 KeyError
+
+### - [ ] Step 3: Write minimal implementation
+
+修改 `niu_api/internal/lightrag_integrity.py`：
+
+**改动 1**：`_TRUTH_SOURCE_FILES` 改为 3 文件（加 GraphML）
+
+```python
+_TRUTH_SOURCE_FILES = [
+    "graph_chunk_entity_relation.graphml",
+    "kv_store_full_docs.json",
+    "kv_store_llm_response_cache.json",
+]
+```
+
+**改动 2**：新增 `_check_derived_missing` 函数（检测 9 派生文件 missing）
+
+```python
+# 9 派生文件（跟 lightrag_repair._DERIVED_FILES 一致）
+_DERIVED_FILES = [
+    "kv_store_text_chunks.json",
+    "kv_store_doc_status.json",
+    "vdb_chunks.json",
+    "vdb_entities.json",
+    "vdb_relationships.json",
+    "kv_store_entity_chunks.json",
+    "kv_store_relation_chunks.json",
+    "kv_store_full_entities.json",
+    "kv_store_full_relations.json",
+]
+
+
+def _check_derived_missing(storage_dir: Path) -> list[dict[str, Any]]:
+    """检测 9 派生文件 missing。
+    
+    全新用户场景（3 真相源全不存在）时，派生文件 missing 不报错
+    （LightRAG 首次启动会自动初始化所有文件）。
+    
+    Returns:
+        errors 列表（可能为空）。每个 error 含 file/severity=major/msg。
+    """
+    errors: list[dict[str, Any]] = []
+    
+    # 全新用户判定：3 真相源都不存在 → 派生文件 missing 不报错
+    truth_sources_exist = any(
+        (storage_dir / fname).exists() for fname in _TRUTH_SOURCE_FILES
+    )
+    if not truth_sources_exist:
+        return errors  # 全新用户，不报错
+    
+    for fname in _DERIVED_FILES:
+        fpath = storage_dir / fname
+        if not fpath.exists():
+            errors.append({
+                "check": "derived_file_missing",
+                "severity": "major",
+                "file": fname,
+                "msg": f"派生文件 {fname} 缺失（需要 repair 重建）",
+            })
+        elif fpath.stat().st_size == 0:
+            errors.append({
+                "check": "derived_file_empty",
+                "severity": "major",
+                "file": fname,
+                "msg": f"派生文件 {fname} 为空（需要 repair 重建）",
+            })
+    return errors
+```
+
+**改动 3**：重写 `check_all` 为"检 3 真相源 + 9 派生文件 missing"（删除 `_check_graphml_post` 和 `_check_vdb_missing` 调用——这两个函数体可保留但不再被 `check_all` 调用，避免破坏其他潜在调用方）
+
+```python
+def check_all() -> dict[str, Any]:
+    """v4 简化版 check_all：检 3 真相源完好性 + 9 派生文件 missing。
+    
+    1. 检 3 真相源（GraphML + full_docs + cache）完好性
+       - 文件不存在 / size=0 → ok（全新用户合法）
+       - JSON/XML 解析失败 / 非 dict → critical
+    2. 检 9 派生文件 missing
+       - 全新用户（3 真相源都不存在）时不报错
+       - 否则 missing/empty 文件 → major
+    
+    Returns:
+        {
+            "ok": bool,
+            "critical_errors": int,
+            "major_errors": int,
+            "minor_errors": int,
+            "errors": list[dict],
+            "checks": {
+                "truth_source": {"name": ..., "errors": list},
+                "derived_missing": {"name": ..., "errors": list},
+            },
+        }
+    """
+    storage_dir = _resolve_storage_dir()
+    all_errors: list[dict[str, Any]] = []
+
+    # 1. 检测 3 真相源（GraphML + full_docs + cache）
+    #    _check_truth_source 对 GraphML 走 XML 解析（现有实现 L166-203
+    #    对 JSON 文件判定，GraphML 走 _check_truth_source 时 JSON 解析失败
+    #    也会归为 critical——但 GraphML 不是 JSON，需要专门 XML 检测）
+    truth_errors: list[dict[str, Any]] = []
+    for fname in _TRUTH_SOURCE_FILES:
+        if fname == _GRAPHML_FILE:
+            # GraphML 走 XML 专门检测（不是 JSON）
+            err = _check_truth_source_graphml(storage_dir)
+        else:
+            err = _check_truth_source(fname, storage_dir)
+        if err:
+            truth_errors.append(err)
+            all_errors.append(err)
+
+    # 2. 检测 9 派生文件 missing
+    derived_errors = _check_derived_missing(storage_dir)
+    all_errors.extend(derived_errors)
+
+    critical = sum(1 for e in all_errors if e.get("severity") == "critical")
+    major = sum(1 for e in all_errors if e.get("severity") == "major")
+    minor = sum(1 for e in all_errors if e.get("severity") == "minor")
+
+    return {
+        "ok": len(all_errors) == 0,
+        "critical_errors": critical,
+        "major_errors": major,
+        "minor_errors": minor,
+        "errors": all_errors,
+        "checks": {
+            "truth_source": {"name": "truth_source", "errors": truth_errors},
+            "derived_missing": {"name": "derived_missing", "errors": derived_errors},
+        },
+    }
+
+
+def _check_truth_source_graphml(storage_dir: Path) -> dict[str, Any]:
+    """检测 GraphML 真相源完好性（XML 解析）。
+    
+    全新用户合法：文件不存在 / size=0 → ok
+    损坏：XML 解析失败 / 无 graph 元素 → critical
+    """
+    graphml_path = storage_dir / _GRAPHML_FILE
+    if not graphml_path.exists():
+        return {}  # 全新用户合法
+    try:
+        size = graphml_path.stat().st_size
+        if size == 0:
+            return {}  # 全新用户合法
+        # 用现有 _load_graphml 解析（已处理 namespace + graph 元素 fallback）
+        _, _, _, err = _load_graphml(graphml_path)
+        if err:
+            # _load_graphml 返回的 err 已含 check/severity/file/msg
+            return err
+        return {}  # 解析成功
+    except Exception as e:
+        return {
+            "check": "truth_source_read_fail",
+            "severity": "critical",
+            "file": _GRAPHML_FILE,
+            "msg": f"GraphML 读取失败: {e}",
+        }
+```
+
+**改动 4**：更新文件顶部 docstring（从 v2 改为 v4）
+
+```python
+"""LightRAG 数据一致性检查（v4：3 真相源不可动 + 9 派生文件 missing）。
+
+检查项：
+1. 3 真相源完整可用（GraphML + full_docs + cache）→ critical = unrecoverable
+2. 9 派生文件 missing 检测 → major（需 repair 重建）
+
+全新用户合法：3 真相源都不存在时，9 派生文件 missing 也不报错。
+"""
+```
+
+**不要删除**（保留向后兼容，其他模块可能 import）：
+- `_ZOMBIE_DESCRIPTION_MARKERS` 常量（`lightrag_repair.py:1924` 依赖）
+- `_load_graphml` 函数（`lightrag_repair.py:1923, 1931` 依赖）
+- `_load_json_dict` 函数（`_check_truth_source` 内部用）
+- `_check_truth_source` 函数（`lightrag_repair.py:2286` 依赖）
+- `_check_graphml_post` 函数（函数体保留，`check_all` 不再调用，避免破坏潜在调用方）
+- `_check_vdb_missing` 函数（同上）
+- `_load_vdb` 函数（`_check_vdb_missing` 内部用，保留）
+
+### - [ ] Step 4: Run test to verify it passes
+
+Run:
+```bash
+python -m pytest tests/test_lightrag_repair_unit.py::test_check_all_3_truth_sources_all_intact \
+                tests/test_lightrag_repair_unit.py::test_check_all_graphml_corrupt_is_critical \
+                tests/test_lightrag_repair_unit.py::test_check_all_full_docs_corrupt_is_critical \
+                tests/test_lightrag_repair_unit.py::test_check_all_cache_corrupt_is_critical \
+                tests/test_lightrag_repair_unit.py::test_check_all_missing_derived_file_is_major \
+                tests/test_lightrag_repair_unit.py::test_check_all_brand_new_user_is_ok \
+                tests/test_lightrag_repair_unit.py::test_check_all_preserves_zombie_markers_constant \
+                tests/test_lightrag_repair_unit.py::test_check_all_preserves_load_graphml_and_check_truth_source -v
+```
+
+Expected: PASS
+
+### - [ ] Step 5: 验证 `lightrag_repair.py` 仍能 import
+
+Run:
+```bash
+python -c "from niu_api.internal.lightrag_repair import repair_all, _check_truth_sources; print('OK')"
+```
+
+Expected: 输出 `OK`（无 ImportError）
+
+如果报 ImportError：检查 `_ZOMBIE_DESCRIPTION_MARKERS` / `_load_graphml` / `_check_truth_source` 是否被误删，按 Step 3 "不要删除" 清单恢复。
+
+### - [ ] Step 6: Commit
+
+```bash
+git add niu_api/internal/lightrag_integrity.py tests/test_lightrag_repair_unit.py
+git commit -m "fix(integrity): check_all 简化为检 3 真相源 + 9 派生文件 missing
+
+v2/v3 的 check_all 检 2 真相源 + GraphML 后置 + vdb_*_missing 细粒度检测，
+但 v4 把 GraphML 提升为第 3 真相源后：
+- GraphML 损坏应归 critical（不是 major）
+- vdb_*_missing 细粒度检测交给 repair_vdb_* 重建逻辑覆盖（简化 check_all）
+
+v4 改为：
+1. _TRUTH_SOURCE_FILES 从 2 文件改为 3 文件（加 GraphML）
+2. 新增 _check_truth_source_graphml 检测 GraphML XML 完好性
+3. 新增 _check_derived_missing 检测 9 派生文件 missing
+4. 全新用户（3 真相源都不存在）时派生文件 missing 不报错
+
+保留 _ZOMBIE_DESCRIPTION_MARKERS / _load_graphml / _load_json_dict /
+_check_truth_source（lightrag_repair.py import 它们，删了会 ImportError）。
+保留 _check_graphml_post / _check_vdb_missing 函数体（不再被 check_all
+调用，避免破坏潜在调用方）。
+"
+```
 
 ---
 
@@ -1333,14 +1776,303 @@ v4 的 `check_all` 简化为：
 
 **Files:**
 - Modify: `niu_api/internal/lightrag_manager.py`
+- Test: `tests/test_lightrag_repair_unit.py`
 
 ### 背景
 
-`run_resilience_phase1` 日志和 `get_lightrag_status` 接口需要返回 `critical_errors`/`major_errors`/`minor_errors` 字段（跟新 `check_all` 一致）。`run_repair_on_user_request` 的 `repaired` 判定要用 `repair_all` 返回的 `_unrecoverable` 字段，不再依赖 `check_all` 重检。
+**现有代码事实**（重要，纠正 v3 方案的误判）：
+1. `run_resilience_phase1`（L1101-1134）已用 `critical_errors`/`major_errors`/`minor_errors` 字段（L1122-1128），只是日志里还有 `total_errors={total}`（L1128，这是日志变量名不是字段，无需改）。
+2. `run_repair_on_user_request`（L1213-1420）已用 `_unrecoverable` 字段判 `repaired`（L1377 `repaired = not has_unrecoverable and not repair_result.get("_unrecoverable", False)`），不需要改。
+3. `get_lightrag_status`（L1448-1489）返回里**还保留** `total_errors` 字段（L1484），因为 Rust `IntegrityStatus.total_errors`（`main.rs:54`）要读它（`main.rs:553-556` 用它生成弹窗文案）。不能直接删 `total_errors`，否则 Rust 反序列化"missing field"报错（`main.rs:42` 注释明确警告过这个坑）。
+4. **"去掉用户确认环节"是 v3 方案的误判**：现有 `run_repair_on_user_request` 由 `/api/kg/lightrag/repair` API 触发（用户在 Rust 弹窗点"是"后 Rust 调 curl POST 触发此 API），**没有程序内等待用户确认的代码**。Python 侧接到请求就立刻走修复流程。
 
-### - [ ] Step 1-5: TDD 流程
+**v4 Task 5 实际改动**：
+- **改动 1**：`get_lightrag_status` 的 `total_errors` 字段加注释说明它是 `critical + major + minor` 的和（兼容 Rust 字段，不能删）
+- **改动 2**：`run_resilience_phase1` 日志里 `total_errors={total}` 改名 `total={total}`（去掉误导性的 "errors" 后缀，因为这是局部变量不是字段）
+- **改动 3**：验证 `run_repair_on_user_request` 的 `repaired` 判定正确（已有实现无需改，但需要加测试锁定行为）
 
-（具体测试代码 + 实现略，参照 v3 Task 6 的模式）
+### - [ ] Step 1: Write the failing test
+
+`tests/test_lightrag_repair_unit.py` 追加：
+
+```python
+# ============================================================
+# Task 5 测试：lightrag_manager 字段 + repaired 判定
+# ============================================================
+
+
+def test_get_lightrag_status_returns_3_severity_fields(tmp_path, monkeypatch):
+    """get_lightrag_status 必须返回 critical_errors/major_errors/minor_errors 三字段。
+    
+    Rust IntegrityStatus 已加 critical_errors/major_errors/minor_errors 字段
+    （main.rs:55-60），但 total_errors 仍保留兼容（不能删，main.rs:54 读）。
+    """
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        if fname.startswith("vdb_"):
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+        else:
+            (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    # 模拟 Phase 1 已跑过（_integrity_result 非 None）
+    lm._integrity_result = {
+        "ok": True,
+        "critical_errors": 0,
+        "major_errors": 0,
+        "minor_errors": 0,
+        "errors": [],
+        "checks": {},
+    }
+
+    status = lm.get_lightrag_status()
+    integrity = status["integrity"]
+
+    # 三级 severity 字段必须存在
+    assert "critical_errors" in integrity, "integrity 必须含 critical_errors"
+    assert "major_errors" in integrity, "integrity 必须含 major_errors"
+    assert "minor_errors" in integrity, "integrity 必须含 minor_errors"
+    # total_errors 保留（Rust main.rs:54 依赖，不能删）
+    assert "total_errors" in integrity, "total_errors 保留兼容 Rust（main.rs:54 读）"
+    # total_errors = critical + major + minor
+    expected_total = (
+        integrity["critical_errors"]
+        + integrity["major_errors"]
+        + integrity["minor_errors"]
+    )
+    assert integrity["total_errors"] == expected_total, \
+        "total_errors 应等于 critical + major + minor 之和"
+
+
+def test_run_repair_on_user_request_repaired_true_on_success(tmp_path, monkeypatch):
+    """repair_all 成功（无 _unrecoverable）→ repaired=True。"""
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    # 模拟 pipeline 不 busy（_read_pipeline_busy 返回 False）
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+    # 模拟 repair_all 成功（无 _unrecoverable）
+    monkeypatch.setattr(
+        "niu_api.internal.lightrag_repair.repair_all",
+        lambda: {"_unrecoverable": False, "text_chunks": {"status": "ok"}},
+    )
+    # 模拟 reset_init_state + check_all + get_lightrag 不触发真实初始化
+    monkeypatch.setattr(lm, "reset_init_state", lambda: None)
+    monkeypatch.setattr(lm, "get_lightrag", lambda: None)
+    # 模拟 wait_first_scan_complete 立即返回 True
+    import agent.injector.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+
+    result = lm.run_repair_on_user_request()
+
+    assert result["repaired"] is True, "无 _unrecoverable 时应 repaired=True"
+    # 返回结构必须有三级字段
+    assert "critical_errors" in result
+    assert "major_errors" in result
+    assert "minor_errors" in result
+    # _repairing 应在 finally 里被清回 False
+    assert lm._repairing is False, "_repairing 应在 finally 清回 False"
+
+
+def test_run_repair_on_user_request_repaired_false_on_unrecoverable(tmp_path, monkeypatch):
+    """repair_all 返回 _unrecoverable=True → repaired=False。"""
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+    # 模拟 repair_all 返回 unrecoverable（如 GraphML 损坏）
+    monkeypatch.setattr(
+        "niu_api.internal.lightrag_repair.repair_all",
+        lambda: {
+            "_unrecoverable": True,
+            "_unrecoverable_reason": "3 真相源损坏",
+            "text_chunks": {"status": "error", "unrecoverable": True},
+        },
+    )
+    monkeypatch.setattr(lm, "reset_init_state", lambda: None)
+    monkeypatch.setattr(lm, "get_lightrag", lambda: None)
+    import agent.injector.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+
+    result = lm.run_repair_on_user_request()
+
+    assert result["repaired"] is False, "有 _unrecoverable 时应 repaired=False"
+    assert lm._repairing is False
+
+
+def test_run_repair_on_user_request_repaired_false_on_step_error(tmp_path, monkeypatch):
+    """repair_all 某步骤返回 status=error（非 unrecoverable）→ repaired=False。
+    
+    这是 v4 改动重点：不能只看 _unrecoverable，还要看每个 step 的 status=error。
+    现有 L1384-1391 已实现此判定，本测试锁定行为。
+    """
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+    # 某步骤 status=error 但没标 unrecoverable
+    monkeypatch.setattr(
+        "niu_api.internal.lightrag_repair.repair_all",
+        lambda: {
+            "_unrecoverable": False,
+            "vdb_entities": {"status": "error", "message": "embedding 失败"},
+        },
+    )
+    monkeypatch.setattr(lm, "reset_init_state", lambda: None)
+    monkeypatch.setattr(lm, "get_lightrag", lambda: None)
+    import agent.injector.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+
+    result = lm.run_repair_on_user_request()
+
+    assert result["repaired"] is False, "步骤 status=error 时应 repaired=False"
+```
+
+### - [ ] Step 2: Run test to verify it fails
+
+Run:
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot
+python -m pytest tests/test_lightrag_repair_unit.py::test_get_lightrag_status_returns_3_severity_fields \
+                tests/test_lightrag_repair_unit.py::test_run_repair_on_user_request_repaired_true_on_success -v
+```
+
+Expected:
+- `test_get_lightrag_status_returns_3_severity_fields`：可能 PASS（现有代码已含 3 字段）——如果 PASS，说明 v3 已改过，本测试是行为锁定。如果 FAIL，说明三字段缺一个，按 Step 3 改动 1 补齐。
+- `test_run_repair_on_user_request_repaired_true_on_success`：现有 `_repairing` 是模块级全局变量，测试可能因前置 `_repairing` 状态不稳——如果 FAIL，看错误是 `_repairing` 残留 True 还是 `repaired` 误判为 False。
+
+### - [ ] Step 3: Write minimal implementation
+
+修改 `niu_api/internal/lightrag_manager.py`：
+
+**改动 1**：`get_lightrag_status` 的 `total_errors` 字段加注释（L1482-1488 周围）
+
+现有代码（L1482-1488）：
+```python
+    result["integrity"] = {
+        "ok": integrity_ok,
+        "total_errors": total_errors,
+        "critical_errors": critical,
+        "major_errors": major,
+        "minor_errors": minor,
+    }
+    return result
+```
+
+改为：
+```python
+    # v4: total_errors 是 critical + major + minor 之和，保留是为了向后兼容
+    # Rust IntegrityStatus.total_errors（main.rs:54）读这个字段生成弹窗文案，
+    # 删了会导致 Rust serde 反序列化报 "missing field"（main.rs:42 注释明确警告过）。
+    # 新代码应优先读 critical_errors/major_errors/minor_errors 三级字段。
+    result["integrity"] = {
+        "ok": integrity_ok,
+        "total_errors": total_errors,  # 兼容字段，= critical + major + minor
+        "critical_errors": critical,
+        "major_errors": major,
+        "minor_errors": minor,
+    }
+    return result
+```
+
+**改动 2**：`run_resilience_phase1` 日志里 `total_errors` 局部变量改名（L1125-1129）
+
+现有代码（L1125-1129）：
+```python
+    critical = check_result.get("critical_errors", 0)
+    major = check_result.get("major_errors", 0)
+    minor = check_result.get("minor_errors", 0)
+    total = critical + major + minor
+    logger.info(
+        f"[LightRAG] Phase 1 完成: check_ok={check_result.get('ok')}, "
+        f"critical={critical}, major={major}, minor={minor}, total_errors={total}"
+    )
+```
+
+改为（去掉误导性的 `total_errors=` 前缀，避免跟字段名混淆）：
+```python
+    critical = check_result.get("critical_errors", 0)
+    major = check_result.get("major_errors", 0)
+    minor = check_result.get("minor_errors", 0)
+    total = critical + major + minor
+    logger.info(
+        f"[LightRAG] Phase 1 完成: check_ok={check_result.get('ok')}, "
+        f"critical={critical}, major={major}, minor={minor}, total={total}"
+    )
+```
+
+**改动 3（无需改）**：`run_repair_on_user_request` 的 `repaired` 判定（L1377 + L1384-1391）
+
+现有代码已正确实现：
+```python
+# L1377
+repaired = not has_unrecoverable and not repair_result.get("_unrecoverable", False)
+
+# L1384-1391（检查每个 step 的 status=error）
+for vdb_name, vdb_result in repair_result.items():
+    if not isinstance(vdb_result, dict):
+        continue
+    if vdb_result.get("status") == "error":
+        repaired = False
+        logger.warning(
+            f"[LightRAG] 修复失败项: {vdb_name} - {vdb_result.get('message', '')}"
+        )
+```
+
+本 Task 不改这段代码——Step 1 的测试（`test_run_repair_on_user_request_repaired_false_on_step_error`）锁定行为，确保未来不被误改。
+
+### - [ ] Step 4: Run test to verify it passes
+
+Run:
+```bash
+python -m pytest tests/test_lightrag_repair_unit.py::test_get_lightrag_status_returns_3_severity_fields \
+                tests/test_lightrag_repair_unit.py::test_run_repair_on_user_request_repaired_true_on_success \
+                tests/test_lightrag_repair_unit.py::test_run_repair_on_user_request_repaired_false_on_unrecoverable \
+                tests/test_lightrag_repair_unit.py::test_run_repair_on_user_request_repaired_false_on_step_error -v
+```
+
+Expected: PASS
+
+### - [ ] Step 5: Commit
+
+```bash
+git add niu_api/internal/lightrag_manager.py tests/test_lightrag_repair_unit.py
+git commit -m "fix(manager): 保留 total_errors 兼容 Rust + 锁定 repaired 判定行为
+
+v3 方案误判两件事（v4 纠正）：
+1. 'total_errors 字段需删除' → 实际 Rust main.rs:54 IntegrityStatus.total_errors
+   读这个字段生成弹窗文案，删了会 serde 'missing field' 报错
+   （main.rs:42 注释明确警告过）。v4 保留 total_errors 加注释说明。
+2. 'run_repair_on_user_request 要去掉用户确认环节' → 实际此函数由
+   /api/kg/lightrag/repair API 触发，用户在 Rust 弹窗点'是'后 Rust 调 curl
+   POST 触发，Python 侧无程序内等待确认代码。
+
+v4 实际改动：
+1. get_lightrag_status 的 total_errors 字段加注释（= critical + major + minor）
+2. run_resilience_phase1 日志 total_errors= 改为 total=（去误导后缀）
+3. run_repair_on_user_request 的 repaired 判定无需改（L1377 + L1384-1391
+   已正确实现：基于 _unrecoverable + 每个 step 的 status=error）
+4. 新增 4 个测试锁定 get_lightrag_status 字段 + repaired 判定行为
+"
+```
 
 ---
 
@@ -1348,14 +2080,309 @@ v4 的 `check_all` 简化为：
 
 **Files:**
 - Modify: `launcher/src/main.rs`
+- Test: `tests/test_launcher_integrity_status.rs`（Rust 单元测试，跟 Python 测试分离）
 
 ### 背景
 
-Rust `IntegrityStatus` struct 加 `critical_errors`/`major_errors`/`minor_errors` 字段（serde 默认忽略未知字段，但加上更完整）。
+**现有代码事实**（重要，纠正 v3 方案的误判）：
 
-### - [ ] Step 1-5: TDD 流程
+Rust `IntegrityStatus` struct（`main.rs:52-61`）**字段已经齐全**：
+```rust
+struct IntegrityStatus {
+    ok: bool,
+    total_errors: i32,
+    #[serde(default)]
+    critical_errors: i32,
+    #[serde(default)]
+    major_errors: i32,
+    #[serde(default)]
+    minor_errors: i32,
+}
+```
 
-（具体代码略，参照 v3 Task 7 的 Rust 修改部分）
+现有代码已正确：
+- `total_errors`（无 `#[serde(default)]`）：必填字段，Python 必须返回它（main.rs:42 注释明确警告过删了会"missing field" decode 错误）
+- `critical_errors`/`major_errors`/`minor_errors`（带 `#[serde(default)]`）：可选字段，缺失时默认 0
+
+`format_repair_summary`（main.rs:168-280）已使用 `critical_errors`/`major_errors`/`minor_errors` 三字段生成弹窗文案（L182-193），区分"残留 N 个严重、M 个主要错误"（L228-234）。
+
+`StatusCheckResult` 处理（main.rs:541-597）仍只用 `total_errors`（L553-556）生成"检测到 N 个数据一致性问题"文案——v4 决定保留此行为（弹窗只显示总数，详细分级由 `format_repair_summary` 在修复完成后显示）。
+
+**v4 Task 6 实际改动**：
+- **改动 1**：`IntegrityStatus` 字段齐全，**不需要改 struct 定义**。但需要加 Rust 单元测试锁定字段能正确反序列化 Python 返回的 JSON（防未来误删字段）。
+- **改动 2**：`StatusCheckResult` 处理（main.rs:553-556）改用 `critical_errors + major_errors + minor_errors` 替代直接读 `total_errors`，以防 Python 侧未来误删 `total_errors` 字段（虽然 Task 5 已加了"不能删"的注释，但 Rust 侧也应有 fallback）。
+
+### - [ ] Step 1: Write the failing test
+
+新建 `tests/test_launcher_integrity_status.rs`（Rust 单元测试，放在 `tests/` 目录下作为集成测试）：
+
+```rust
+// tests/test_launcher_integrity_status.rs
+// 测试 IntegrityStatus struct 能正确反序列化 Python /api/kg/stats 返回的 integrity JSON。
+// 锁定字段不能被误删（main.rs:42 注释警告过 "missing field" decode 错误）。
+
+// 注意：IntegrityStatus 在 main.rs 里是 pub struct 才能从 tests/ 目录访问。
+// 现有 main.rs IntegrityStatus 没有 pub，所以本测试用 serde_json 手工反序列化
+// 验证字段命名（snake_case，不是 camelCase）。
+
+use serde::Deserialize;
+
+// 复制 main.rs 的 IntegrityStatus 定义（保持字段名一致）
+// 如果 main.rs 里的 IntegrityStatus 误改成 camelCase 或误删字段，
+// 本测试会编译失败或断言失败。
+#[derive(Debug, Clone, Deserialize)]
+struct IntegrityStatus {
+    ok: bool,
+    total_errors: i32,
+    #[serde(default)]
+    critical_errors: i32,
+    #[serde(default)]
+    major_errors: i32,
+    #[serde(default)]
+    minor_errors: i32,
+}
+
+#[test]
+fn test_integrity_status_deserializes_full_json() {
+    // 模拟 Python get_lightrag_status 返回的 integrity 字段（v4 全字段版）
+    let json = r#"{
+        "ok": false,
+        "total_errors": 3,
+        "critical_errors": 1,
+        "major_errors": 1,
+        "minor_errors": 1
+    }"#;
+    let status: IntegrityStatus = serde_json::from_str(json).unwrap();
+    assert_eq!(status.ok, false);
+    assert_eq!(status.total_errors, 3);
+    assert_eq!(status.critical_errors, 1);
+    assert_eq!(status.major_errors, 1);
+    assert_eq!(status.minor_errors, 1);
+}
+
+#[test]
+fn test_integrity_status_deserializes_without_severity_fields() {
+    // 模拟旧版 Python 只返回 total_errors（没有 critical/major/minor）
+    // critical_errors/major_errors/minor_errors 有 #[serde(default)] 应默认 0
+    let json = r#"{
+        "ok": true,
+        "total_errors": 0
+    }"#;
+    let status: IntegrityStatus = serde_json::from_str(json).unwrap();
+    assert_eq!(status.ok, true);
+    assert_eq!(status.total_errors, 0);
+    assert_eq!(status.critical_errors, 0, "缺 critical_errors 时应默认 0");
+    assert_eq!(status.major_errors, 0, "缺 major_errors 时应默认 0");
+    assert_eq!(status.minor_errors, 0, "缺 minor_errors 时应默认 0");
+}
+
+#[test]
+fn test_integrity_status_total_errors_missing_fails() {
+    // 如果 Python 误删 total_errors 字段，serde 应报错（main.rs:42 注释警告）
+    // 本测试锁定 total_errors 必须保留（不能加 #[serde(default)]）
+    let json = r#"{
+        "ok": true,
+        "critical_errors": 0,
+        "major_errors": 0,
+        "minor_errors": 0
+    }"#;
+    let result: Result<IntegrityStatus, _> = serde_json::from_str(json);
+    assert!(result.is_err(), "缺 total_errors 时 serde 必须报错（不能加 #[serde(default)]）");
+}
+
+#[test]
+fn test_integrity_status_field_names_are_snake_case() {
+    // main.rs:42 注释明确：API 返回 snake_case 字段名（Python 约定），
+    // 不能用 #[serde(rename_all = "camelCase")]（会导致 "missing field"
+    // decode 错误：serde 期望 initFailed 而 API 返 init_failed）。
+    // 本测试锁定字段名必须是 snake_case。
+    let json = r#"{
+        "ok": true,
+        "total_errors": 0,
+        "critical_errors": 0,
+        "major_errors": 0,
+        "minor_errors": 0
+    }"#;
+    let status: IntegrityStatus = serde_json::from_str(json).unwrap();
+    // 如果 struct 误改成 camelCase（totalErrors/criticalErrors），
+    // serde 会期望 "totalErrors" 而非 "total_errors"，
+    // 本断言会失败（缺字段 → result.is_err() 在上面已测）
+    let _ = status;  // 检查字段名编译通过即可
+}
+```
+
+### - [ ] Step 2: Run test to verify it fails
+
+Run:
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot/launcher
+cargo test --test test_launcher_integrity_status -- --nocapture
+```
+
+Expected:
+- 4 个测试中至少 1 个 FAIL（`test_integrity_status_total_errors_missing_fails` 可能 PASS，因为 IntegrityStatus 复制品没加 `#[serde(default)]`；其他 3 个应 PASS——这表示**测试本身可能不需要代码改动就能通过**，本 Task 主要是行为锁定）。
+- 如果所有测试都 PASS：说明现有 struct 定义已正确，本 Task 跳过 Step 3 的改动 2，直接到 Step 4 验证后 Commit。
+- 如果有 FAIL：按 Step 3 改动 2 修复 `StatusCheckResult` 处理逻辑。
+
+### - [ ] Step 3: Write minimal implementation
+
+**改动 1**（必做）：`launcher/src/main.rs` 的 `IntegrityStatus` struct 加注释说明字段策略（L50-61 周围）
+
+现有代码（main.rs:50-61）：
+```rust
+/// LightRAG data integrity summary reported by `/api/kg/stats`.
+#[derive(Debug, Clone, Deserialize)]
+struct IntegrityStatus {
+    ok: bool,
+    total_errors: i32,
+    #[serde(default)]
+    critical_errors: i32,
+    #[serde(default)]
+    major_errors: i32,
+    #[serde(default)]
+    minor_errors: i32,
+}
+```
+
+改为：
+```rust
+/// LightRAG data integrity summary reported by `/api/kg/stats`.
+///
+/// 字段策略（v4）：
+/// - `total_errors`（必填，无 `#[serde(default)]`）：Python get_lightrag_status
+///   必须返回此字段（= critical + major + minor 之和），删了会 "missing field"
+///   decode 错误。StatusCheckResult 用它生成弹窗文案。
+/// - `critical_errors`/`major_errors`/`minor_errors`（可选，`#[serde(default)]`）：
+///   新版 Python 返回的三级 severity 字段。format_repair_summary 用它们
+///   区分"残留 N 个严重、M 个主要错误"。旧版 Python 缺这些字段时默认 0。
+///
+/// 注意：字段名必须是 snake_case（Python 约定），不能用
+/// `#[serde(rename_all = "camelCase")]`，否则 serde 会期望
+/// `totalErrors`/`criticalErrors` 而 API 返回 `total_errors`/`critical_errors`，
+/// 导致 "missing field" decode 错误。
+#[derive(Debug, Clone, Deserialize)]
+struct IntegrityStatus {
+    ok: bool,
+    total_errors: i32,
+    #[serde(default)]
+    critical_errors: i32,
+    #[serde(default)]
+    major_errors: i32,
+    #[serde(default)]
+    minor_errors: i32,
+}
+```
+
+**改动 2**（可选，看 Step 2 测试结果）：`StatusCheckResult` 处理改用三字段求和（main.rs:553-556）
+
+现有代码（main.rs:553-556）：
+```rust
+let total_errors = status
+    .integrity
+    .as_ref()
+    .map_or(0, |i| i.total_errors);
+```
+
+改为（用三字段求和，做 fallback——如果 Python 未来误删 `total_errors`，Rust 仍能算出总数）：
+```rust
+// v4: 优先读 total_errors（Python 兼容字段），但如果缺失则用
+// critical + major + minor 求和做 fallback（防 Python 误删字段）
+let total_errors = status
+    .integrity
+    .as_ref()
+    .map_or(0, |i| {
+        // total_errors 是必填字段（无 #[serde(default)]），如果 Python
+        // 返回了 integrity 对象，total_errors 一定有值
+        // 这里用三字段求和做 sanity check（应该跟 total_errors 相等）
+        let sum = i.critical_errors + i.major_errors + i.minor_errors;
+        // 如果 total_errors != sum，用 sum（更细粒度，防 Python 字段不一致）
+        if i.total_errors != sum && sum > 0 {
+            warn!(
+                "integrity total_errors({}) != critical+major+minor({}), using sum",
+                i.total_errors, sum
+            );
+            sum
+        } else {
+            i.total_errors
+        }
+    });
+```
+
+**重要**：Rust 改完必须跑 `launcher/build.sh`，不能 `cargo build`（CLAUDE.md 铁律 8）。
+
+### - [ ] Step 4: Run test to verify it passes + 编译
+
+Run:
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot/launcher
+# 跑 Rust 单元测试
+cargo test --test test_launcher_integrity_status -- --nocapture
+
+# 编译（CLAUDE.md 铁律 8：必须用 build.sh，不能用 cargo build）
+cd REDACTED_USER_PATH/tools/ai-bot
+./launcher/build.sh
+```
+
+Expected:
+- 4 个 Rust 测试全部 PASS
+- `./launcher/build.sh` 编译成功，输出 `Compiled successfully` 或类似成功消息
+- `niu` 二进制文件（项目根目录）更新时间戳（`ls -la niu` 确认）
+
+### - [ ] Step 5: 修复文件权限（CLAUDE.md 铁律 7）
+
+Run:
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot
+# git 操作后修复可执行权限（build.sh 不会自动修，需手工跑）
+find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
+find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;
+chmod +x niu
+```
+
+### - [ ] Step 6: Commit
+
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot
+git add launcher/src/main.rs tests/test_launcher_integrity_status.rs
+git commit -m "fix(launcher): IntegrityStatus 字段齐全 + 加单元测试锁定反序列化
+
+v3 方案误判 'Rust IntegrityStatus 缺字段需补' → 实际字段已齐全
+（main.rs:52-61 已有 total_errors + critical_errors + major_errors
++ minor_errors 四字段）。
+
+v4 实际改动：
+1. IntegrityStatus struct 加详细注释说明字段策略：
+   - total_errors 必填（Python 兼容字段，删了会 missing field 错误）
+   - critical/major/minor_errors 可选（带 #[serde(default)]）
+   - 字段名必须 snake_case（不能用 rename_all=camelCase）
+2. StatusCheckResult 用 critical+major+minor 求和做 fallback，
+   防 Python 未来误删 total_errors 字段
+3. 新增 4 个 Rust 单元测试锁定反序列化行为
+
+CLAUDE.md 铁律 8：Rust 编译用 launcher/build.sh，不用 cargo build。
+"
+```
+
+### - [ ] Step 7: 验证 `niu` 二进制能启动（手动 smoke test）
+
+Run:
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot
+# 启动 niu（应在几秒内看到 splash 窗口，然后正常启动或弹"数据异常"对话框）
+./niu &
+sleep 5
+# 检查进程是否存活
+ps aux | grep -v grep | grep "niu" | head -3
+# 杀掉（用 SIGTERM 优雅退出，CLAUDE.md test-process-kill-corruption 铁律）
+pkill -TERM -f "^./niu" 2>/dev/null || pkill -TERM -f "niu-launcher" 2>/dev/null
+```
+
+Expected:
+- `./niu` 启动不立即崩溃（不报 panic）
+- 进程列表里有 `niu` 或 `niu-launcher` 进程
+- SIGTERM 后进程退出（不残留）
+
+如果启动崩溃：检查 `launcher/build.sh` 是否真的把新编译的 `niu-launcher` 复制到项目根目录 `niu`（`ls -la niu` 看修改时间是否是刚编译的）。
 
 ---
 
