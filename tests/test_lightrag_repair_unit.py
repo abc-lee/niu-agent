@@ -1674,3 +1674,153 @@ def test_check_all_preserves_load_graphml_and_check_truth_source(tmp_path, monke
 
     err = _check_truth_source("kv_store_full_docs.json", tmp_path)
     assert err == {}, "完好的真相源应返回空 dict（无错误）"
+
+
+# ============================================================
+# Task 5 测试：lightrag_manager 字段 + repaired 判定
+# ============================================================
+
+
+def test_get_lightrag_status_returns_3_severity_fields(tmp_path, monkeypatch):
+    """get_lightrag_status 必须返回 critical_errors/major_errors/minor_errors 三字段。
+
+    Rust IntegrityStatus 已加 critical_errors/major_errors/minor_errors 字段
+    （main.rs:55-60），但 total_errors 仍保留兼容（不能删，main.rs:54 读）。
+    """
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        if fname.startswith("vdb_"):
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+        else:
+            (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    # 模拟 Phase 1 已跑过（_integrity_result 非 None）
+    lm._integrity_result = {
+        "ok": True,
+        "critical_errors": 0,
+        "major_errors": 0,
+        "minor_errors": 0,
+        "errors": [],
+        "checks": {},
+    }
+
+    status = lm.get_lightrag_status()
+    integrity = status["integrity"]
+
+    # 三级 severity 字段必须存在
+    assert "critical_errors" in integrity, "integrity 必须含 critical_errors"
+    assert "major_errors" in integrity, "integrity 必须含 major_errors"
+    assert "minor_errors" in integrity, "integrity 必须含 minor_errors"
+    # total_errors 保留（Rust main.rs:54 依赖，不能删）
+    assert "total_errors" in integrity, "total_errors 保留兼容 Rust（main.rs:54 读）"
+    # total_errors = critical + major + minor
+    expected_total = (
+        integrity["critical_errors"]
+        + integrity["major_errors"]
+        + integrity["minor_errors"]
+    )
+    assert integrity["total_errors"] == expected_total, \
+        "total_errors 应等于 critical + major + minor 之和"
+
+
+def test_run_repair_on_user_request_repaired_true_on_success(tmp_path, monkeypatch):
+    """repair_all 成功（无 _unrecoverable）→ repaired=True。"""
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    # 模拟 pipeline 不 busy（_read_pipeline_busy 返回 False）
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+    # 模拟 repair_all 成功（无 _unrecoverable）
+    monkeypatch.setattr(
+        "niu_api.internal.lightrag_repair.repair_all",
+        lambda: {"_unrecoverable": False, "text_chunks": {"status": "ok"}},
+    )
+    # 模拟 reset_init_state + check_all + get_lightrag 不触发真实初始化
+    monkeypatch.setattr(lm, "reset_init_state", lambda: None)
+    monkeypatch.setattr(lm, "get_lightrag", lambda: None)
+    # 模拟 wait_first_scan_complete 立即返回 True
+    import agent.injector.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+
+    result = lm.run_repair_on_user_request()
+
+    assert result["repaired"] is True, "无 _unrecoverable 时应 repaired=True"
+    # 返回结构必须有三级字段
+    assert "critical_errors" in result
+    assert "major_errors" in result
+    assert "minor_errors" in result
+    # _repairing 应在 finally 里被清回 False
+    assert lm._repairing is False, "_repairing 应在 finally 清回 False"
+
+
+def test_run_repair_on_user_request_repaired_false_on_unrecoverable(tmp_path, monkeypatch):
+    """repair_all 返回 _unrecoverable=True → repaired=False。"""
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+    # 模拟 repair_all 返回 unrecoverable（如 GraphML 损坏）
+    monkeypatch.setattr(
+        "niu_api.internal.lightrag_repair.repair_all",
+        lambda: {
+            "_unrecoverable": True,
+            "_unrecoverable_reason": "3 真相源损坏",
+            "text_chunks": {"status": "error", "unrecoverable": True},
+        },
+    )
+    monkeypatch.setattr(lm, "reset_init_state", lambda: None)
+    monkeypatch.setattr(lm, "get_lightrag", lambda: None)
+    import agent.injector.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+
+    result = lm.run_repair_on_user_request()
+
+    assert result["repaired"] is False, "有 _unrecoverable 时应 repaired=False"
+    assert lm._repairing is False
+
+
+def test_run_repair_on_user_request_repaired_false_on_step_error(tmp_path, monkeypatch):
+    """repair_all 某步骤返回 status=error（非 unrecoverable）→ repaired=False。
+
+    这是 v4 改动重点：不能只看 _unrecoverable，还要看每个 step 的 status=error。
+    现有 L1384-1391 已实现此判定，本测试锁定行为。
+    """
+    _write_intact_truth_sources(tmp_path)
+    for fname in _DERIVED_FILES_FOR_TEST:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    import niu_api.internal.lightrag_manager as lm
+    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
+    # 某步骤 status=error 但没标 unrecoverable
+    monkeypatch.setattr(
+        "niu_api.internal.lightrag_repair.repair_all",
+        lambda: {
+            "_unrecoverable": False,
+            "vdb_entities": {"status": "error", "message": "embedding 失败"},
+        },
+    )
+    monkeypatch.setattr(lm, "reset_init_state", lambda: None)
+    monkeypatch.setattr(lm, "get_lightrag", lambda: None)
+    import agent.injector.sync as sync_mod
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+
+    result = lm.run_repair_on_user_request()
+
+    assert result["repaired"] is False, "步骤 status=error 时应 repaired=False"

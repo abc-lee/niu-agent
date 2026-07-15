@@ -1125,7 +1125,7 @@ def run_resilience_phase1() -> dict:
     total = critical + major + minor
     logger.info(
         f"[LightRAG] Phase 1 完成: check_ok={check_result.get('ok')}, "
-        f"critical={critical}, major={major}, minor={minor}, total_errors={total}"
+        f"critical={critical}, major={major}, minor={minor}, total={total}"
     )
     return {
         "check_ok": check_result.get("ok", True),
@@ -1479,9 +1479,13 @@ def get_lightrag_status() -> Dict[str, Any]:
             critical = major = minor = 0
             integrity_ok = True
             total_errors = 0
+    # v4: total_errors 是 critical + major + minor 之和，保留是为了向后兼容
+    # Rust IntegrityStatus.total_errors（main.rs:54）读这个字段生成弹窗文案，
+    # 删了会导致 Rust serde 反序列化报 "missing field"（main.rs:42 注释明确警告过）。
+    # 新代码应优先读 critical_errors/major_errors/minor_errors 三级字段。
     result["integrity"] = {
         "ok": integrity_ok,
-        "total_errors": total_errors,
+        "total_errors": total_errors,  # 兼容字段，= critical + major + minor
         "critical_errors": critical,
         "major_errors": major,
         "minor_errors": minor,
