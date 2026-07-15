@@ -1,77 +1,104 @@
-# LightRAG 数据修复重构：从真相源一刀切重建 Implementation Plan (v2)
+# LightRAG 数据修复重构：3 真相源不可动 + 按需提取重建 9 派生文件 Implementation Plan (v4)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 LightRAG 数据修复逻辑从"针对每种故障写专门 repair 函数"重构为"检测 2 个真相源文件 → 备份 9 个派生文件 → 删除 → 按依赖链重建（含僵尸脑区清理）"，让任何数据故障都能一刀切修复，重建失败时回滚。
+**Goal:** 把 LightRAG 数据修复逻辑重构为"3 真相源完全不可动 + 只重建 9 个派生文件"。3 真相源（GraphML + full_docs + cache）任一损坏即报修复失败，全部完好时只重建 9 个派生文件，真相源一根毫毛不动。
 
-**Architecture:** 真相源 = `kv_store_full_docs.json` + `kv_store_llm_response_cache.json`（LLM 非确定性，不可重新调 LLM 恢复）。其他 9 个文件全是派生数据，可从这 2 个按依赖链重建。新 `repair_all` 流程：(1) 检测 2 真相源完整性（含内容完整性检查）→ (2) 备份 9 个派生文件到临时目录 → (3) 清理 `llm_response_cache` 里的僵尸脑区 extract entry（防止重建时僵尸复活）→ (4) 删除 9 个派生文件 → (5) 按依赖链重建 → (6) 任意步骤失败时回滚备份。`check_all` 检 2 真相源 + GraphML 后置验证 + vdb_*_missing 检测（避免 vdb 缺失但 GraphML 完好时启动放行）。`repair_all` 保持旧扁平返回结构（向后兼容 Rust `format_repair_summary`）。`run_repair_on_user_request` 保留 SkillSync 二次 repair 但适配扁平结构。
+**Architecture:**
+- **3 真相源**（完全不可动，不写不改不删（读取是必要的，用于按需提取重建派生文件））：
+  - `graph_chunk_entity_relation.graphml` — 当前图谱状态权威清单（实体集、关系集、weight 衰减值、description summary、brain_meta_*）
+  - `kv_store_full_docs.json` — 文档原文池（含所有历史版本，按 create_time 取最新）
+  - `kv_store_llm_response_cache.json` — LLM 抽取结果池（含所有历史 extract entry，按 create_time 取最新）
+- **9 派生文件**（可重建，从 3 真相源按需提取）：
+  - `kv_store_text_chunks.json` / `kv_store_doc_status.json` / `vdb_chunks.json` / `vdb_entities.json` / `vdb_relationships.json` / `kv_store_entity_chunks.json` / `kv_store_relation_chunks.json` / `kv_store_full_entities.json` / `kv_store_full_relations.json`
+- **重建算法**：从 GraphML 提取活跃 chunk_id 集合 C → 对 C 中每个 chunk_id 从 text_chunks（如还在）或 full_docs 按需提取原文（多条取 create_time 最大）→ 用 cache 按 chunk_id 取最新 extract entry（多条取 create_time 最大）填 llm_cache_list → 派生其他 8 文件
+- **删除的旧步骤**（因为会动真相源）：
+  - ~~`repair_graphml`~~（删 GraphML 后重放 cache 覆盖）→ 删除函数，repair_all 只检测完好性
+  - ~~`repair_brainregion_zombies`~~（改 GraphML + cache）→ 删除步骤
+  - ~~`repair_cache_filter`~~（改 cache）→ 删除步骤
+  - ~~`repair_graphml_orphan_edges`~~（改 GraphML）→ 删除步骤
 
-**Tech Stack:** Python 3.11、xml.etree.ElementTree（GraphML）、nano-vectordb（向量存储）、pytest（TDD）、真实 LightRAG 实例（端到端验证，不 mock LLM，cache 完整时不调 LLM；cache 部分丢失时会调 LLM 重新抽取，用户需承担少量 token 费用）。
+**Tech Stack:** Python 3.11、xml.etree.ElementTree（GraphML 解析）、nano-vectordb、pytest（TDD）、真实 LightRAG 实例（端到端验证，不 mock LLM，cache 完整时不调 LLM）。
 
 ---
 
 ## 背景
 
-### 前 5 轮修复为什么没解决
+### 前 6 轮修复为什么没解决
 
-1. **7-08 entity-sync**：根因判定 = "check_all 没检同步性"，加 check_entity_sync
-2. **7-08 case-insensitive**：根因判定 = "源头没 lower 化"，改 LightRAG Fork 源码
+1. **7-08 entity-sync**：根因判定 = "check_all 没检同步性"
+2. **7-08 case-insensitive**：根因判定 = "源头没 lower 化"
 3. **7-09 startup-block**：根因判定 = "启动流程不阻塞 + repaired 硬编码"
-4. **7-11 consistency-redo**：根因判定 = "集合比对非因果链"，全部重写
-5. **7-12 semantic-integrity**：根因判定 = "句法非语义"，加 5 个语义 check + repair_brainregion_zombies
+4. **7-11 consistency-redo**：根因判定 = "集合比对非因果链"
+5. **7-12 semantic-integrity**：根因判定 = "句法非语义"
+6. **7-13 v2/v3**：根因判定 = "2 真相源 = full_docs + cache"，从日志重放覆盖 GraphML → 复活已删实体 + 丢 weight 衰减 + 复活旧版本
 
-**循环原因**：每轮都针对"当前这次具体故障"写专门 repair 函数，下次出别的故障又要再写。`repair_all` 按 check 报错选择性 repair——check 漏检（如 16 个僵尸脑区在 11 项 check 全过）→ repair 不触发 → 修复失败。check 误报（如 `chunk_shared_by_too_many_entities` 把通讯录 chunk 被 68 entity 共享当 bug）→ repair 永远修不完 → 修复失败。
+**v2/v3 的根本错误**：把 `full_docs + cache` 当真相源，重跑 `apipeline_process_enqueue_documents` 覆盖 GraphML。但这两个文件只是历史日志，重放会把 GraphML 当前状态覆盖回历史状态。
 
-### 真相源确认（基于源码 + 实测数据）
+**v4 的核心原则（用户原话）**：
+> "现在已经确定了三个真相源文件，那么这三个文件就完全不可动。你无论它里面有什么问题，你也不能动它。它们如果损坏了，那就是修复失败。如果没损坏，那你为什么要动它？"
 
-**真相源 = 2 个文件**：
+### 3 真相源确认（代码证据）
 
-1. **`kv_store_full_docs.json`** — 文档原文。其他文件全是 chunk/entity/relation 级别，无法反向拼回原文。源码 `_UNRECOVERABLE_FILES = {"kv_store_full_docs.json"}`（`lightrag_repair.py:2058`）。
+**为什么 GraphML 是真相源**：
+- GraphML 是 nx.Graph 的序列化（`networkx_impl.py:37-48` `load_nx_graph`/`write_nx_graph`）
+- 用户查询只读 GraphML（`networkx_impl.py:365-542` `get_knowledge_graph` 走 `_get_graph()`，启动时从 GraphML 加载 `networkx_impl.py:69`）
+- 删除实体后 GraphML 反映删除（`utils_graph.py:135` `delete_node` → `networkx_impl.py:218-228` `remove_node` → `index_done_callback` 落盘 `networkx_impl.py:593-595`）
+- **weight 衰减后的最新值只在 GraphML**：`region_manager.py:82-148` `_decay_brain_region_edges` 半衰期衰减，衰减后写回 GraphML；cache 里 weight 是 extract 原始值（`operate.py:531-535`），vdb 的 meta_fields 不含 weight（`lightrag.py:722`）
+- **description summary 后的合并描述只在 GraphML**：`operate.py:2207` `_handle_entity_relation_summary` 合并多 chunk 描述，结果写 GraphML；cache 只存 extract 原始描述
+- **brain_meta_* 脑区元数据只在 GraphML**：`region_manager.py` 写入脑区 priority/community_id 等，cache 没有
 
-2. **`kv_store_llm_response_cache.json`** — LLM 抽取结果缓存。每个 `extract` 类型 entry 自带 `chunk_id` 字段（实测 232/259 条都是 extract 类型，全部含 chunk_id）。LLM 是非确定性的，重新调 LLM 抽取的 entity/relation 跟原来**一定不同** → 数据丢失。所以不可重新调 LLM 恢复，必须保留 cache。
+**为什么 full_docs 是真相源**：
+- full_docs 是文档原文唯一持久化（`lightrag.py:1514-1521` 存 `{doc_id: {content, file_path}}`）
+- text_chunks 的 chunk 原文最终来自 full_docs（`lightrag.py:1978` chunking）
+- 没有其他文件能反推文档原文
 
-**实测发现**：`llm_response_cache` 里有 1 条 extract cache（`default:extract:cf71a2193271499f4ab4ee6978197285`）含 16 个僵尸脑区的 extract 数据，description 明确写"被删除的重复脑区实体之一"。如果直接删 GraphML 重建，这条 cache 会被命中，**16 个僵尸脑区会被重新写入 GraphML——僵尸复活**。所以重建前必须先清理这条 cache entry。
+**为什么 cache 是真相源**：
+- cache 是 LLM 抽取结果唯一持久化（`utils.py:1480-1488` 存 `{return, cache_type, chunk_id, original_prompt}`）
+- LLM temperature=1.0 非确定性（`constants.py:86`），重调 LLM 结果不一致，cache 必须保留
+- text_chunks 的 llm_cache_list 字段引用 cache（`utils.py:1926-1965`）
 
-**派生数据 = 9 个文件**（全部可从 2 真相源按依赖链重建，cache 完整时不调 LLM）：
+**为什么 3 真相源都不可动**：
+- GraphML 动了 → 当前图谱状态丢失（weight 衰减、已删实体清单、description summary 全丢）
+- full_docs 动了 → 文档原文丢失（无法重建 text_chunks）
+- cache 动了 → LLM 抽取结果丢失（未来 extract 重调 LLM 结果不一致）
 
-| 文件 | 重建路径 | 复用现有 repair 函数 |
-|------|---------|-------------------|
-| `kv_store_text_chunks.json` | 从 `full_docs` 重新 chunking（用真实 `_get_lightrag_config()` 读 chunk_size，chunk_id=MD5(content) 确定性）；`llm_cache_list` 从 `llm_response_cache` 反向扫描 extract 类型 entry 的 chunk_id 字段重建 | `repair_text_chunks`（`lightrag_repair.py:386`）已实现 |
-| `kv_store_doc_status.json` | 从 `full_docs` + `text_chunks` 派生 | `repair_doc_status`（`lightrag_repair.py:543`）已实现 |
-| `graph_chunk_entity_relation.graphml` | 重跑 `apipeline_process_enqueue_documents`，extract 阶段 cache 命中免调 LLM，summary 阶段 `force_llm_summary_on_merge` 跳过 | `repair_graphml`（`lightrag_repair.py:644`）已实现 |
-| `kv_store_entity_chunks.json` | 从 GraphML node source_id 派生 | `repair_entity_chunks`（`lightrag_repair.py:1394`）已实现 |
-| `kv_store_relation_chunks.json` | 从 GraphML edge source_id 派生 | `repair_relation_chunks`（`lightrag_repair.py:1459`）已实现 |
-| `kv_store_full_entities.json` | 从 GraphML node source_id + doc_status.chunks_list 派生 | `repair_full_entities`（`lightrag_repair.py:1534`）已实现 |
-| `kv_store_full_relations.json` | 从 GraphML edge source_id + doc_status.chunks_list 派生 | `repair_full_relations`（`lightrag_repair.py:1616`）已实现 |
-| `vdb_chunks.json` | 从 `text_chunks.content` 重新 embed | `repair_vdb_chunks`（`lightrag_repair.py:981`）已实现 |
-| `vdb_entities.json` | 从 GraphML node 重新 embed | `repair_vdb_entities`（`lightrag_repair.py:1120`）已实现 |
-| `vdb_relationships.json` | 从 GraphML edge 重新 embed | `repair_vdb_relationships`（`lightrag_repair.py:1243`）已实现 |
+### "按需提取 + 取最后录入"算法
 
-### 关键设计决策（v1 审查后修订）
+**从 GraphML 出发**，逐条读取。GraphML 需要某条辅助信息（chunk 原文、cache 细节）时，才去 full_docs/cache 里按需提取。多条匹配时**取 create_time 最大的**（最后录入）。
 
-1. **保留 `repair_brainregion_zombies` 在 `_REBUILD_ORDER` 最前面**（v1 删了，审查发现僵尸复活风险）。但它的清理范围要扩展：除了清 GraphML 里 description 含"被删除"标记的脑区，还要清 `llm_response_cache` 里对应的 extract entry（防止重建时僵尸复活）。
+**代码层面的可行性证据**：
+1. **text_chunks 天然是"最后录入"版本**：`JsonKVStorage.upsert`（`json_kv_impl.py:181`）用 `dict.update` 覆盖，同一 chunk_id 后写覆盖前写，`full_doc_id` 自动指向最后写入的 doc
+2. **cache 有 `create_time` 字段**：`json_kv_impl.py:174-176` `JsonKVStorage.upsert` 自动注入
+3. **`text_chunks[chunk_id].llm_cache_list`**（`utils.py:1926-1965`）已维护该 chunk 的所有 cache_key 列表
+4. **GraphML source_id 是累加的**（`operate.py:1732` + `utils.py:2828-2846`），v1 和 v2 的 chunk_id 都保留——不能从 source_id 判断"最后录入"，必须查 text_chunks/cache
 
-2. **删 9 个派生文件前先备份到临时目录**（v1 不备份，审查发现真相源部分损坏会数据永久丢失）。备份位置 `~/.niu/lightrag_storage.prerepair_<ts>/`，重建成功后删除备份，失败时回滚。
+### 9 派生文件重建算法
 
-3. **`repair_all` 保持旧扁平返回结构**（v1 改成嵌套 `{repaired, repair_result:{...}}`，审查发现破坏 Rust `format_repair_summary`）。新 `repair_all` 返回 `{text_chunks:{status,...}, ..., _unrecoverable:bool, _skipped:[...], _check_summary:{...}, _deleted:[...], _rolled_back:bool}`——Rust 不用改。
+| 文件 | 重建算法 | 防复活机制 |
+|------|---------|----------|
+| `kv_store_text_chunks.json` | 从 GraphML node/edge 的 source_id（d3/d10）收集活跃 chunk_id 集合 C；对 C 中每个 chunk_id 从现有 text_chunks 按 cid 查原文（天然最后版本，如 text_chunks 已被删则从 full_docs 重新 chunking 反查，多条匹配取 create_time 最大）；llm_cache_list 从 cache 按 chunk_id 反向构建 | 只重建 C 中的 chunk，旧版本 chunk 不重建 |
+| `kv_store_doc_status.json` | 从 text_chunks.full_doc_id 反向分组；所有 doc 标记 `status="processed"`（不在 apipeline 重处理查询集 `lightrag.py:1771-1773`） | processed 状态不会被重处理 |
+| `vdb_chunks.json` | 遍历 text_chunks 重新 embedding | 只对 C 中的 chunk embedding |
+| `vdb_entities.json` | 遍历 GraphML nodes 重新 embedding（content=f"{name}\n{desc}"） | **天然防复活**（只遍历 GraphML 存在的 node） |
+| `vdb_relationships.json` | 遍历 GraphML edges 重新 embedding（content=f"{kw}\t{src}\n{tgt}\n{desc}"）；**不写 weight**（meta_fields 不含，`lightrag.py:722`） | **天然防复活 + weight 不丢** |
+| `kv_store_entity_chunks.json` | 从 GraphML node source_id 提取 chunk_ids | **天然防复活** |
+| `kv_store_relation_chunks.json` | 从 GraphML edge source_id 提取 chunk_ids | **天然防复活** |
+| `kv_store_full_entities.json` | 从 GraphML source_id + text_chunks.full_doc_id 反向映射 | **天然防复活** |
+| `kv_store_full_relations.json` | 从 GraphML edge source_id + text_chunks.full_doc_id 反向映射 | **天然防复活** |
 
-4. **`repair_text_chunks` 用真实 `_get_lightrag_config()` 读 chunk_size**（v1 硬编码 chunk_size=1200, chunk_overlap=100，审查发现跟实际配置 50 不一致导致 chunk_id 不一致）。同时保留 chunk_id 一致性保护（重合率<50% → unrecoverable，`lightrag_repair.py:511-528` 已有，v1 删了要恢复）。
+### 关键设计决策（v4 vs v3）
 
-5. **`check_all` 加 vdb_*_missing 检测**（v1 只检 GraphML 后置，审查发现 vdb 缺失但 GraphML 完好时 ok=True 启动放行）。新 `check_all` 检：(1) 2 真相源完整 → (2) GraphML 后置验证 → (3) vdb_*_missing（GraphML 有 node 但 vdb 没对应向量）。
-
-6. **`total_errors` 字段修复要完整**（v1 Task 5 只修 `get_lightrag_status`，审查发现 `run_resilience_phase1` 日志和 Rust `IntegrityStatus` struct 也要改）。三处都改：`get_lightrag_status` 的 integrity 字段、`run_resilience_phase1` 日志、Rust `IntegrityStatus` struct 加 critical_errors/major_errors/minor_errors 字段。
-
-7. **保留 SkillSync 二次 repair**（v1 删了，审查发现删了残留 entity_chunks 不清。但保留要适配扁平结构——二次 repair 结果用 `post_skill_sync_` 前缀合并到顶层，不嵌套）。
-
-8. **Task 7 fixture 用合成数据**（v1 用真实备份，审查发现含真实人名/电话/地址，提交 git 泄露隐私）。合成数据规模小但覆盖关键场景：3 个文档 + 5 个 extract cache + 1 个僵尸脑区 cache。
-
-9. **Task 6 测试不 mock**（v1 用 7 个 mock，违反 CLAUDE.md 铁律 5）。改用真实损坏现场 + 真实 `repair_all` 调用，只 patch `_STORAGE_DIR` 到 tmp_path（必要隔离，不算 mock）。
-
-10. **明确承认 cache miss 时会调 LLM**（v1 承诺"全程不调 LLM"，审查发现 cache 部分丢失时必调 LLM，monkeypatch 失败时也会调）。计划明确说"cache 完整时不调 LLM；cache 部分丢失时会调 LLM 重新抽取（消耗 token），用户需承担少量 LLM 调用费用"。
-
-11. **`repair_graphml` 让 `_STORAGE_DIR` patch 生效**（v1 没处理，审查发现 `repair_graphml` 内 `get_lightrag()` 拿真实实例操作真实 `~/.niu/lightrag_storage`，测试 patch 不生效）。修复：`repair_graphml` 调用前显式置 `_rag_instance=None` + 同步 `lightrag_manager.STORAGE_DIR`，让 `get_lightrag()` 重新创建实例指向 patch 后路径。注意：**不要用 `reset_init_state()`**——它（`lightrag_manager.py:1352`）只清 `_init_failed_at`，不清 `_rag_instance`，对本 Task 无效。
-
-12. **Task 8 扩展到 3 种现场 + region_sync 验证**（v1 只测 1 种，丢了 7-12 的"风扇不狂转/region_sync 不卡 dissolve"标准）。3 种现场：删 vdb / 删 GraphML / 删 9 全部。加 region_sync 启动后 1 分钟内完成验证（看日志不含 dissolve 卡死）。
+1. **3 真相源完全不可动**：GraphML + full_docs + cache 都不写不改不删（读取是必要的，用于按需提取重建派生文件）。repair_all 只检测完好性，不修改。
+2. **删除所有会动真相源的步骤**：`repair_graphml` / `repair_brainregion_zombies` / `repair_cache_filter` / `repair_graphml_orphan_edges` 全部从 `_REBUILD_ORDER` 移除，函数体可保留但不在 repair_all 中调用（避免破坏其他调用方）。
+3. **GraphML 损坏 = unrecoverable**：不尝试重建（无白名单可过滤，重建无意义）。用户原话："如果这个文件不存在，你无法确保什么内容被删掉，那你的恢复是完全没有意义的。"
+4. **full_docs 损坏 = unrecoverable**：无法重建 text_chunks/vdb_chunks/doc_status。
+5. **cache 损坏 = unrecoverable**：LLM 抽取结果丢失，无法恢复 llm_cache_list。但 GraphML 完好时 cache 损坏不影响当前图谱状态——这种情况下可以选择性降级（清空 cache 让未来 extract 重调 LLM），但 v4 严格起见也报 unrecoverable（让用户决定是否接受降级）。
+6. **备份只备份 9 派生文件**：3 真相源不可动，不需要备份。
+7. **回滚只回滚 9 派生文件**：3 真相源从未被修改，回滚不涉及它们。
+8. **weight 不写 vdb**：vdb_relationships 的 meta_fields 不含 weight（`lightrag.py:722`），LightRAG 自己 upsert 也过滤 weight（`nano_vector_db_impl.py:112`）。weight 只存在 GraphML，重建 vdb_relationships 时不写 weight。
+9. **脑区 chunk 特殊处理**：脑区 chunk 的 `full_doc_id = "brain"`（`region_manager.py:152` `REGION_SOURCE_ID="brain"`），不在 full_docs 里。重建 text_chunks 时脑区 chunk 从现有 text_chunks 按 chunk_id 查原文（脑区 chunk 也在 text_chunks 里）；如果 text_chunks 已被删且脑区 chunk 不在 full_docs，记为 missing（region_sync 会重新注入）。
+10. **测试用真实数据 + 真实 LLM（不 mock）**：合成 fixture（不含真实人名）+ 真实 LightRAG 实例 + 真实 embedding 模型。cache 完整时不调 LLM。
 
 ---
 
@@ -79,395 +106,121 @@
 
 | 文件 | 责任 | 改动类型 |
 |------|------|---------|
-| `niu_api/internal/lightrag_repair.py` | 重写 `repair_all` 为"检测 → 备份 → 清僵尸 cache → 删 9 → 重建 → 失败回滚"；扩展 `repair_brainregion_zombies` 清理 cache 里僵尸 extract；修复 `repair_text_chunks` 用真实配置 + 保留 chunk_id 一致性保护；修复 `repair_graphml` 让 `_STORAGE_DIR` patch 生效；删除 `_CHECK_TO_REPAIR` / `_FILE_TO_REPAIR` 旧映射 | 修改 |
-| `niu_api/internal/lightrag_integrity.py` | 简化 `check_all` 为"检 2 真相源 + GraphML 后置验证 + vdb_*_missing 检测"；删除 11 个旧句法 check + 5 个旧语义 check + 16 项 check 函数；保留 `_load_graphml` / `_load_json_dict` 工具函数 | 修改 |
-| `niu_api/internal/lightrag_manager.py` | 修复 `run_resilience_phase1` 的 `total_errors` 字段（日志 + status 接口）；修复 `run_repair_on_user_request` 的 `repaired` 判定（用 `repair_all` 返回的 `_unrecoverable` 字段，不再依赖 check_all 重检） | 修改 |
-| `launcher/src/main.rs` | `IntegrityStatus` struct 加 `critical_errors` / `major_errors` / `minor_errors` 字段（serde 默认忽略未知字段，但加上更完整，便于未来扩展） | 修改 |
-| `tests/test_lightrag_repair_unit.py` | 单元测试：`repair_text_chunks` 的 `llm_cache_list` 反向重建；`repair_all` 新调度逻辑 + 备份回滚；`check_all` 新逻辑；用真实配置不硬编码 | 创建 |
-| `tests/test_lightrag_rebuild_from_truth.py` | 端到端 TDD 测试（合成 fixture）：删 vdb → repair；删 GraphML → repair；删 9 全部 → repair；损坏 9 个 → repair；真相源损坏 → unrecoverable + 回滚；含僵尸 cache → 重建后僵尸不复活 | 创建 |
-| `tests/fixtures/lightrag_truth_sources/` | 合成 fixture（不含真实人名）：3 个文档 + 5 个 extract cache + 1 个僵尸脑区 cache | 创建 |
+| `niu_api/internal/lightrag_repair.py` | 重写 `repair_all` 为"检测 3 真相源 → 备份 9 → 删 9 → 按需提取重建 → 失败回滚"；重写 `repair_text_chunks` 为"从 GraphML 提活跃 chunk_id + 按需提取"；保留 `repair_doc_status`/`repair_vdb_*`/`repair_*_chunks`/`repair_full_*`（已从 GraphML 读取，正确）；`repair_graphml`/`repair_brainregion_zombies`/`repair_graphml_orphan_edges` 函数体保留但不在 `repair_all` 调用；`_TRUTH_SOURCE_FILES` 改为 3 文件；新增 `_check_truth_sources_intact` 检测 3 真相源 | 修改 |
+| `niu_api/internal/lightrag_integrity.py` | 简化 `check_all` 为"检 3 真相源完好性 + 9 派生文件 missing 检测"；`_TRUTH_SOURCE_FILES` 改为 3 文件；删除 11 旧句法 check + 5 旧语义 check；保留 `_load_graphml`/`_load_json_dict`/`_ZOMBIE_DESCRIPTION_MARKERS`（被 `repair_brainregion_zombies` import） | 修改 |
+| `niu_api/internal/lightrag_manager.py` | 修复 `run_resilience_phase1` 的 `total_errors` 字段（拆成 critical/major/minor）；修复 `run_repair_on_user_request` 的 `repaired` 判定（用 `repair_all` 返回的 `_unrecoverable` 字段） | 修改 |
+| `launcher/src/main.rs` | `IntegrityStatus` struct 加 `critical_errors`/`major_errors`/`minor_errors` 字段 | 修改 |
+| `tests/test_lightrag_repair_unit.py` | 单元测试：`repair_text_chunks` 按需提取；`repair_all` 新调度 + 备份回滚；`check_all` 新逻辑；3 真相源损坏 unrecoverable | 创建 |
+| `tests/test_lightrag_rebuild_from_truth.py` | 端到端 TDD 测试（合成 fixture）：删 vdb → repair；删 9 全部 → repair；GraphML 损坏 → unrecoverable + 回滚；full_docs 损坏 → unrecoverable；cache 损坏 → unrecoverable；含旧版本 doc + 已删实体 → 重建后不复活；weight 衰减值保留 | 创建 |
+| `tests/fixtures/lightrag_truth_sources/` | 合成 fixture（不含真实人名）：3 个文档（含 v1+v2 同文档不同版本）+ 5 个 extract cache（含 1 个已删实体脏 entry）+ GraphML（含衰减后 weight + 已删实体已不在） | 创建 |
 
 ---
 
-## Task 1: 扩展 `repair_brainregion_zombies` 清理 cache 里僵尸 extract
+## Task 1: 重写 `repair_text_chunks` 为"从 GraphML 提活跃 chunk_id + 按需提取"
 
 **Files:**
-- Modify: `niu_api/internal/lightrag_repair.py:1747-2015`
+- Modify: `niu_api/internal/lightrag_repair.py:386-558`
 - Test: `tests/test_lightrag_repair_unit.py`
 
 ### 背景
 
-实测发现 `kv_store_llm_response_cache.json` 里有 1 条 extract cache（`default:extract:cf71a2193271499f4ab4ee6978197285`）含 16 个僵尸脑区 extract 数据，description 明确写"被删除的重复脑区实体之一"。如果直接删 GraphML 重建，这条 cache 会被 `apipeline_process_enqueue_documents` 命中，16 个僵尸脑区会被重新写入 GraphML——僵尸复活。
+现有 `repair_text_chunks`（`lightrag_repair.py:386-558`）从 `full_docs` 全量重新 chunking 重建——会把旧版本文档的 chunk 也重建出来，未来重跑 apipeline 时旧版本实体复活。
 
-现有 `repair_brainregion_zombies`（`lightrag_repair.py:1747`）只清 GraphML + 8 存储，不清 `llm_response_cache`。必须扩展它，在重建 GraphML 前先清掉 cache 里僵尸 extract entry。
+v4 改为"从 GraphML 按需提取"：
+1. 解析 GraphML 提取活跃 chunk_id 集合 C（从所有 node 的 d3 source_id + edge 的 d10 source_id）
+2. 对 C 中每个 chunk_id：
+   - 优先从现有 text_chunks 按 chunk_id 查原文（天然最后版本，`json_kv_impl.py:181` dict.update 覆盖）
+   - 现有 text_chunks 没有该 chunk_id 时（已被删），从 full_docs 重新 chunking 反查（多条匹配取 create_time 最大的 doc）
+3. 只重建 C 中的 chunk，其他 chunk 不重建（旧版本 chunk 丢弃）
+4. llm_cache_list 从 cache 按 chunk_id 反向构建（多条 cache entry 取 create_time 最大）
 
 ### - [ ] Step 1: Write the failing test
 
 `tests/test_lightrag_repair_unit.py`:
 
 ```python
-"""repair_brainregion_zombies 扩展：清理 cache 里僵尸 extract entry。"""
+"""repair_text_chunks：从 GraphML 提活跃 chunk_id + 按需提取重建。"""
 import json
 import pytest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
-from niu_api.internal.lightrag_repair import repair_brainregion_zombies
+from niu_api.internal.lightrag_repair import repair_text_chunks
 
 
-def _make_storage_with_zombie_cache(tmp_path: Path):
-    """生成含僵尸脑区 + 僵尸 cache 的测试存储。
-    
-    GraphML 里有 1 个僵尸脑区（description 含"被删除"标记），
-    llm_response_cache 里有 1 条 extract cache 含僵尸脑区 extract 数据。
-    """
-    # GraphML：1 个僵尸脑区 + 1 个正常脑区
+def _write_graphml(tmp_path: Path, nodes: list[tuple[str, str, str]]):
+    """写 GraphML。nodes = [(node_id, desc, source_id), ...]"""
     ns = "http://graphml.graphdrawing.org/xmlns"
     root = ET.Element(f"{{{ns}}}graphml")
     graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
-    
-    # 僵尸脑区
-    znode = ET.SubElement(graph, f"{{{ns}}}node", {"id": "智家测试脑区"})
-    ET.SubElement(znode, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
-    ET.SubElement(znode, f"{{{ns}}}data", {"key": "d2"}).text = "被删除的重复脑区实体之一。<SEP>brain_meta_size:0"
-    ET.SubElement(znode, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-zombie"
-    
-    # 正常脑区
-    nnode = ET.SubElement(graph, f"{{{ns}}}node", {"id": "聊天历史脑区"})
-    ET.SubElement(nnode, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
-    ET.SubElement(nnode, f"{{{ns}}}data", {"key": "d2"}).text = "brain_meta_size:10"
-    
+    for node_id, desc, src in nodes:
+        node = ET.SubElement(graph, f"{{{ns}}}node", {"id": node_id})
+        ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = desc
+        ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = src
     ET.ElementTree(root).write(
         tmp_path / "graph_chunk_entity_relation.graphml",
         xml_declaration=True, encoding="utf-8"
     )
+
+
+def test_repair_text_chunks_only_rebuilds_active_chunks(tmp_path, monkeypatch):
+    """repair_text_chunks 应只重建 GraphML 活跃 chunk_id 集合 C 中的 chunk。"""
+    # GraphML：1 个实体引用 chunk-active
+    _write_graphml(tmp_path, [("entity-x", "desc X", "chunk-active")])
     
-    # llm_response_cache：1 条含僵尸 extract + 1 条正常 extract
-    cache = {
-        "default:extract:zombie_key": {
-            "return": "entity<|#|>智家测试脑区<|#|>brainregion<|#|>被删除的重复脑区实体之一。\nentity<|#|>聊天历史脑区<|#|>brainregion<|#|>正常脑区描述",
-            "cache_type": "extract",
-            "chunk_id": "chunk-zombie",
-            "create_time": 1781930610,
+    # text_chunks 现有 2 个 chunk：chunk-active（活跃）+ chunk-old（旧版本）
+    tc = {
+        "chunk-active": {
+            "content": "活跃 chunk 原文",
+            "full_doc_id": "doc-v2",
+            "llm_cache_list": [],
         },
-        "default:extract:normal_key": {
-            "return": "entity<|#|>正常实体<|#|>concept<|#|>正常描述",
-            "cache_type": "extract",
-            "chunk_id": "chunk-normal",
-            "create_time": 1781930611,
-        },
-    }
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(
-        json.dumps(cache, ensure_ascii=False)
-    )
-    
-    # 其他必需文件（空）
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")
-    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
-    (tmp_path / "kv_store_entity_chunks.json").write_text("{}")
-    (tmp_path / "kv_store_relation_chunks.json").write_text("{}")
-    (tmp_path / "kv_store_full_entities.json").write_text("{}")
-    (tmp_path / "kv_store_full_relations.json").write_text("{}")
-    (tmp_path / "kv_store_doc_status.json").write_text("{}")
-    (tmp_path / "vdb_chunks.json").write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
-    (tmp_path / "vdb_entities.json").write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
-    (tmp_path / "vdb_relationships.json").write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
-
-
-def test_repair_brainregion_zombies_cleans_zombie_cache_entries(tmp_path):
-    """repair_brainregion_zombies 应清理 llm_response_cache 里的僵尸 extract entry。"""
-    _make_storage_with_zombie_cache(tmp_path)
-    
-    with patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path), \
-         patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        result = repair_brainregion_zombies()
-    
-    assert result["status"] == "ok"
-    assert result["cleaned_count"] == 1  # 清理了 1 个僵尸脑区
-    
-    # 验证 GraphML 里僵尸脑区 node 已删
-    tree = ET.parse(tmp_path / "graph_chunk_entity_relation.graphml")
-    ns = {'g': 'http://graphml.graphdrawing.org/xmlns'}
-    node_ids = {n.get("id") for n in tree.findall('.//g:node', ns)}
-    assert "智家测试脑区" not in node_ids
-    assert "聊天历史脑区" in node_ids
-    
-    # 验证 llm_response_cache 里僵尸 extract entry 已删
-    cache = json.loads((tmp_path / "kv_store_llm_response_cache.json").read_text())
-    assert "default:extract:zombie_key" not in cache, "僵尸 extract entry 应被删除"
-    assert "default:extract:normal_key" in cache, "正常 extract entry 应保留"
-
-
-def test_repair_brainregion_zombies_no_zombies_leaves_cache_intact(tmp_path):
-    """没有僵尸脑区时，cache 不变。"""
-    # 只有正常脑区，没有僵尸
-    ns = "http://graphml.graphdrawing.org/xmlns"
-    root = ET.Element(f"{{{ns}}}graphml")
-    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
-    nnode = ET.SubElement(graph, f"{{{ns}}}node", {"id": "聊天历史脑区"})
-    ET.SubElement(nnode, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
-    ET.SubElement(nnode, f"{{{ns}}}data", {"key": "d2"}).text = "brain_meta_size:10"
-    ET.ElementTree(root).write(
-        tmp_path / "graph_chunk_entity_relation.graphml",
-        xml_declaration=True, encoding="utf-8"
-    )
-    
-    cache = {
-        "default:extract:normal_key": {
-            "return": "entity<|#|>正常实体<|#|>concept<|#|>正常描述",
-            "cache_type": "extract",
-            "chunk_id": "chunk-normal",
-            "create_time": 1781930611,
+        "chunk-old": {
+            "content": "旧版本 chunk 原文",
+            "full_doc_id": "doc-v1",
+            "llm_cache_list": [],
         },
     }
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(
-        json.dumps(cache, ensure_ascii=False)
-    )
-    # 其他必需文件（空）
-    for fname in ["kv_store_full_docs.json", "kv_store_text_chunks.json",
-                  "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
-                  "kv_store_full_entities.json", "kv_store_full_relations.json",
-                  "kv_store_doc_status.json"]:
-        (tmp_path / fname).write_text("{}")
-    for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
-        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
-    
-    with patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path), \
-         patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        result = repair_brainregion_zombies()
-    
-    assert result["status"] == "ok"
-    assert result["cleaned_count"] == 0
-    # cache 不变
-    cache_after = json.loads((tmp_path / "kv_store_llm_response_cache.json").read_text())
-    assert "default:extract:normal_key" in cache_after
-```
-
-### - [ ] Step 2: Run test to verify it fails
-
-Run:
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot
-python -m pytest tests/test_lightrag_repair_unit.py::test_repair_brainregion_zombies_cleans_zombie_cache_entries -v
-```
-
-Expected: FAIL with `KeyError: 'default:extract:zombie_key' not deleted`（现有 `repair_brainregion_zombies` 不清 cache）
-
-### - [ ] Step 3: Write minimal implementation
-
-修改 `niu_api/internal/lightrag_repair.py:1747-2015` 的 `repair_brainregion_zombies` 函数，在清理 GraphML + 8 存储之后，**新增第 9 存储清理：`kv_store_llm_response_cache.json`**。
-
-找到现有函数的写盘部分（大约在 L1994-2009，`try: ... write ...`），在 `rc_path.write_text(...)` 之后新增：
-
-```python
-    # 9. 清理 kv_store_llm_response_cache 里的僵尸 extract entry
-    # 真实数据：cache 里有 1 条 extract entry 含 16 个僵尸脑区 extract 数据
-    # （description 含"被删除的重复脑区实体之一"），重建 GraphML 时会被命中
-    # 导致僵尸复活。必须在重建前清掉。
-    #
-    # 清理逻辑（严格匹配，避免误删正常 extract）：
-    #   - 只清 cache_type == "extract" 的 entry
-    #   - 解析 return 字段的 entity 行（格式：entity<|#|>name<|#|>type<|#|>desc）
-    #   - 只清 entity_type == "brainregion" 且 description 含"被删除"标记的 entry
-    #   - 正常文档（如"系统维护日志"含"被删除"字样但 entity_type != brainregion）不删
-    #
-    # 类型标注设计（方案 A，避免 Pyright None 警告）：
-    #   - lrc_loaded 是局部变量，类型 dict[str, Any]（非 Optional）
-    #   - 所有 .items() / .pop() 操作用 lrc_loaded，Pyright 不会报 None
-    #   - lrc_data 是外层变量，类型 dict[str, Any] | None
-    #     None 表示未修改（写盘时跳过）；dict 表示已修改（清理成功）后的内容
-    #   - 只在清理成功（keys_to_remove 非空）时才 lrc_data = lrc_loaded 触发写盘
-    #   - 失败时 lrc_data 保持 None，不写盘，保留原文件（避免清空整个 cache）
-    #
-    # 事务式保护：清理在内存中修改 lrc_loaded，写入跟其他 9 个文件一起在统一 try 块
-    # （不在这里单独 write_text，避免半写盘）
-    lrc_path = storage_dir / "kv_store_llm_response_cache.json"
-    lrc_cleaned_count = 0
-    # None 表示未修改（写盘时跳过）；dict 表示已修改（清理成功）后的内容
-    # 关键：失败时保持 None，避免把空 dict 写回清空整个 cache
-    lrc_data: dict[str, Any] | None = None
-    if lrc_path.exists():
-        try:
-            lrc_loaded: dict[str, Any] = json.loads(lrc_path.read_text())
-            keys_to_remove: list[str] = []
-            for cache_key, entry in lrc_loaded.items():
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("cache_type") != "extract":
-                    continue
-                ret = entry.get("return", "")
-                # 解析 return 字段，逐 entity 检查
-                # 格式：entity<|#|>name<|#|>type<|#|>desc
-                # 多个 entity 用 \n 分隔
-                has_zombie = False
-                for line in ret.split("\n"):
-                    if not line.startswith("entity<|#|>"):
-                        continue
-                    parts = line.split("<|#|>")
-                    if len(parts) < 4:
-                        continue
-                    entity_type = parts[2]
-                    desc = parts[3]
-                    # 只清 brainregion 类型 + description 含"被删除"标记
-                    if entity_type == "brainregion" and any(
-                        marker in desc for marker in _ZOMBIE_DESCRIPTION_MARKERS
-                    ):
-                        has_zombie = True
-                        break
-                if has_zombie:
-                    keys_to_remove.append(cache_key)
-            if keys_to_remove:
-                # 内存中修改 lrc_loaded（不写盘，写入跟其他文件一起在事务式 try 块）
-                for k in keys_to_remove:
-                    lrc_loaded.pop(k, None)
-                lrc_cleaned_count = len(keys_to_remove)
-                lrc_data = lrc_loaded  # 只在有清理时才赋值，触发写盘
-                logger.info(
-                    f"[LightRAGRepair] 清理 llm_response_cache: {lrc_cleaned_count} 条僵尸 extract entry（内存修改，待事务式写盘）"
-                )
-            # 没清理到僵尸时 lrc_data 保持 None，不写盘
-        except Exception as e:
-            logger.warning(f"[LightRAGRepair] 清理 llm_response_cache 失败（保留原文件不动）: {e}")
-            # 失败时不写盘，保留原文件（避免清空整个 cache）
-            lrc_data = None
-
-    # details 放在统一写盘 try 块之前，让 except 分支也能看到 lrc_cleaned_count
-    details["llm_response_cache"] = {
-        "removed_entries": lrc_cleaned_count,
-    }
-```
-
-然后在事务式 try 块的 write 部分（现有 `rc_path.write_text(...)` 那行之后），加：
-
-```python
-        # 只在 lrc_data 被修改（非 None）时写盘，避免无清理时无谓 IO + 避免失败时清空
-        if lrc_data is not None:
-            lrc_path.write_text(json.dumps(lrc_data, ensure_ascii=False))
-```
-
-注意：`_ZOMBIE_DESCRIPTION_MARKERS` 已在 `lightrag_integrity.py` 定义（现有代码），需要 import：
-
-在函数顶部的 import 部分加：
-```python
-from niu_api.internal.lightrag_integrity import (
-    _load_graphml, _parse_brain_meta, _ZOMBIE_DESCRIPTION_MARKERS,
-)
-```
-
-这个 import 已经存在（现有 `repair_brainregion_zombies` 函数顶部），不需要重复加。
-
-### - [ ] Step 4: Run test to verify it passes
-
-Run:
-```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_repair_brainregion_zombies_cleans_zombie_cache_entries \
-                tests/test_lightrag_repair_unit.py::test_repair_brainregion_zombies_no_zombies_leaves_cache_intact -v
-```
-
-Expected: PASS
-
-### - [ ] Step 5: Commit
-
-```bash
-git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
-git commit -m "fix(repair): repair_brainregion_zombies 清理 llm_response_cache 里的僵尸 extract entry
-
-实测发现 cache 里有 1 条 extract entry 含 16 个僵尸脑区 extract 数据
-（description 含'被删除的重复脑区实体之一'）。如果直接删 GraphML 重建，
-这条 cache 会被 apipeline_process_enqueue_documents 命中，僵尸脑区
-会被重新写入 GraphML——僵尸复活。
-
-扩展 repair_brainregion_zombies 在清 GraphML + 8 存储之后，
-新增第 9 存储清理：扫描 llm_response_cache 的 extract 类型 entry，
-检测 return 字段含'被删除'语义标记的，删除该 entry。
-"
-```
-
----
-
-## Task 2: 修复 `repair_text_chunks` 用真实配置 + 保留 chunk_id 一致性保护
-
-**Files:**
-- Modify: `niu_api/internal/lightrag_repair.py:386-540`
-- Test: `tests/test_lightrag_repair_unit.py`
-
-### 背景
-
-v1 计划 Task 1 硬编码 `chunk_size=1200, chunk_overlap=100`，但实际 LightRAG 配置 `chunk_overlap_token_size=50`（`lightrag_manager.py:853`）。硬编码会导致 chunk_id 跟原数据不一致，下游引用全失效。
-
-现有 `repair_text_chunks`（`lightrag_repair.py:386-540`）已经用 `_get_lightrag_config()` 读真实配置 + 有 chunk_id 一致性保护（L511-528，重合率<50% → unrecoverable）。但 v1 计划把这段保护删了。本 Task 保留现有实现，只加 `llm_cache_list` 反向重建。
-
-### - [ ] Step 1: Write the failing test
-
-`tests/test_lightrag_repair_unit.py` 追加：
-
-```python
-def test_repair_text_chunks_uses_real_config_not_hardcoded(tmp_path, monkeypatch):
-    """repair_text_chunks 应从 _get_lightrag_config() 读真实 chunk_size，不硬编码。"""
-    # 准备 full_docs
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc, ensure_ascii=False))
+    # full_docs 含 v1 和 v2
     docs = {
-        "doc-test": {
-            "content": "测试文档内容，用于验证配置读取。",
-            "file_path": "test.md",
-        }
+        "doc-v1": {"content": "v1 content", "file_path": "v1.md"},
+        "doc-v2": {"content": "v2 content", "file_path": "v2.md"},
     }
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    # cache 空
     (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
-    
-    # mock _get_lightrag_config 返回自定义 chunk_size
-    config_calls = []
-    def fake_config():
-        config_calls.append(True)
-        return {"chunk_token_size": 800, "chunk_overlap_token_size": 50}
-    
-    # patch 源模块 lightrag_manager（repair_text_chunks 用局部 import 从源模块取符号）
-    monkeypatch.setattr("niu_api.internal.lightrag_manager._get_lightrag_config", fake_config)
-    # mock get_lightrag 返回带 tokenizer 的实例
-    # 注意：repair_text_chunks 用局部 import（from niu_api.internal.lightrag_manager import get_lightrag），
-    # 所以 patch 必须指向源模块 lightrag_manager，不是被测模块 lightrag_repair
-    # FakeTokenizer 必须实现 encode + decode（chunking_by_token_size 调 decode 重组 chunk 内容）
-    class FakeTokenizer:
-        def encode(self, text):
-            return text.split()  # 简化：按空格切分
-        def decode(self, tokens):
-            return " ".join(tokens)  # 简化：用空格拼回
-    class FakeRag:
-        tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
     
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
-    from niu_api.internal.lightrag_repair import repair_text_chunks
     result = repair_text_chunks()
     
     assert result["status"] == "ok"
-    assert len(config_calls) > 0, "应调用 _get_lightrag_config 读真实配置"
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    # 活跃 chunk 保留
+    assert "chunk-active" in tc_after
+    assert tc_after["chunk-active"]["content"] == "活跃 chunk 原文"
+    assert tc_after["chunk-active"]["full_doc_id"] == "doc-v2"
+    # 旧版本 chunk 丢弃
+    assert "chunk-old" not in tc_after, "旧版本 chunk 应被丢弃（不在 GraphML 活跃集合）"
 
 
-def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, monkeypatch):
-    """chunk_id 重合率<50% 时返回 unrecoverable（保护下游引用不失效）。"""
-    docs = {
-        "doc-test": {
-            "content": "测试文档内容",
-            "file_path": "test.md",
-        }
-    }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+def test_repair_text_chunks_falls_back_to_full_docs_when_text_chunks_missing(tmp_path, monkeypatch):
+    """现有 text_chunks 没有该 chunk_id 时，从 full_docs 重新 chunking 反查（取 create_time 最大）。"""
+    from lightrag.utils import compute_mdhash_id
+    chunk_id = compute_mdhash_id("hello world", prefix="chunk-")
     
-    # chunk_id 一致性检查读 kv_store_doc_status.json 的 chunks_list 字段（lightrag_repair.py:500-505）
-    # 不是 text_chunks.json。所以旧 chunk_id 必须写到 doc_status.json
-    old_tc = {f"chunk-old-{i}": {"content": f"old{i}", "source_id": "doc-test"} for i in range(100)}
-    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(old_tc, ensure_ascii=False))
-    doc_status = {
-        "doc-test": {
-            "status": "processed",
-            "chunks_count": 100,
-            "chunks_list": [f"chunk-old-{i}" for i in range(100)],
-        }
+    _write_graphml(tmp_path, [("entity-y", "desc Y", chunk_id)])
+    # text_chunks 为空（损坏或被删）
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    # full_docs 含 2 个版本（v1 和 v2 都切出 chunk-X content）
+    docs_with_time = {
+        "doc-v1": {"content": "hello world", "file_path": "v1.md", "create_time": 1000, "update_time": 1000},
+        "doc-v2": {"content": "hello world", "file_path": "v2.md", "create_time": 2000, "update_time": 2000},
     }
-    (tmp_path / "kv_store_doc_status.json").write_text(json.dumps(doc_status, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs_with_time, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
     
     class FakeTokenizer:
         def encode(self, text):
@@ -476,119 +229,283 @@ def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, mo
             return " ".join(tokens)
     class FakeRag:
         tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag())
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
-    from niu_api.internal.lightrag_repair import repair_text_chunks
     result = repair_text_chunks()
     
-    # 重建后 chunk_id 跟旧的重合率为 0 → 应返回 unrecoverable
-    # 代码库约定：unrecoverable 场景用 status="error" + unrecoverable=True（lightrag_repair.py 全部 19 处一致）
+    assert result["status"] == "ok"
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert chunk_id in tc_after
+    # 应取最后录入的 doc-v2
+    assert tc_after[chunk_id]["full_doc_id"] == "doc-v2", "多条匹配时应取 create_time 最大的 doc"
+
+
+def test_repair_text_chunks_unrecoverable_when_graphml_corrupt(tmp_path, monkeypatch):
+    """GraphML 损坏时 repair_text_chunks 应返回 unrecoverable。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+    
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    
+    result = repair_text_chunks()
+    
     assert result["status"] == "error"
     assert result.get("unrecoverable") is True
-    assert "chunk_id" in result.get("message", "").lower() or "重合" in result.get("message", "")
 
 
-def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
-    """repair_text_chunks 应反向重建 llm_cache_list 从 llm_response_cache。
+def test_repair_text_chunks_unrecoverable_when_full_docs_corrupt(tmp_path, monkeypatch):
+    """full_docs 损坏且 text_chunks 也损坏时 → unrecoverable。"""
+    _write_graphml(tmp_path, [("entity-z", "desc Z", "chunk-z")])
+    # text_chunks 损坏（非 dict）
+    (tmp_path / "kv_store_text_chunks.json").write_text("corrupt")
+    # full_docs 损坏
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
     
-    验证：cache 里 1 条 extract entry 的 chunk_id 跟重建后的 chunk_id 一致时，
-    重建后 text_chunks 里该 chunk 的 llm_cache_list 应含对应 cache_key。
-    """
-    # 用真实 compute_mdhash_id 算 chunk_id，让 cache 的 chunk_id 跟重建后一致
-    from lightrag.utils import compute_mdhash_id
-    doc_content = "测试文档内容用于验证 llm_cache_list 反向重建"
-    expected_chunk_id = compute_mdhash_id(doc_content, prefix="chunk-")
-    
-    docs = {
-        "doc-test": {
-            "content": doc_content,
-            "file_path": "test.md",
-        }
-    }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    
-    # cache 里 1 条 extract entry，chunk_id 跟重建后的 chunk_id 一致
-    cache = {
-        "default:extract:key1": {
-            "return": "entity<|#|>test<|#|>document<|#|>desc",
-            "cache_type": "extract",
-            "chunk_id": expected_chunk_id,  # 跟重建后 chunk_id 一致
-            "create_time": 1781930610,
-        },
-    }
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
-    
-    class FakeTokenizer:
-        def encode(self, text):
-            return text.split()
-        def decode(self, tokens):
-            # 必须返回原始 content，让 compute_mdhash_id 算出 expected_chunk_id
-            return doc_content
-    class FakeRag:
-        tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
-    from niu_api.internal.lightrag_repair import repair_text_chunks
     result = repair_text_chunks()
     
-    assert result["status"] == "ok", f"repair 应成功: {result.get('message', '')}"
-    
-    # 验证 llm_cache_list 反向重建：text_chunks 里 expected_chunk_id 的 llm_cache_list 应含 key1
-    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
-    assert expected_chunk_id in tc_after, f"重建后的 chunk_id {expected_chunk_id} 应在 text_chunks 里"
-    cache_list = tc_after[expected_chunk_id].get("llm_cache_list", [])
-    assert "default:extract:key1" in cache_list, f"llm_cache_list 应含 default:extract:key1，实际: {cache_list}"
+    assert result["status"] == "error"
+    assert result.get("unrecoverable") is True
 ```
 
 ### - [ ] Step 2: Run test to verify it fails
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_repair_text_chunks_uses_real_config_not_hardcoded -v
+cd REDACTED_USER_PATH/tools/ai-bot
+python -m pytest tests/test_lightrag_repair_unit.py::test_repair_text_chunks_only_rebuilds_active_chunks -v
 ```
 
-Expected: FAIL（v1 实现硬编码 chunk_size，不调 `_get_lightrag_config`）
+Expected: FAIL（现有 `repair_text_chunks` 从 full_docs 全量重建）
 
 ### - [ ] Step 3: Write minimal implementation
 
-修改 `niu_api/internal/lightrag_repair.py:386-540` 的 `repair_text_chunks` 函数：
-
-**3a. 在写 text_chunks 之前，反向扫描 `llm_response_cache` 填充 `llm_cache_list`**：
-
-找到现有函数里写 text_chunks 的部分（大约在 L490 附近，`"llm_cache_list": [],` 那行），替换为反向重建逻辑：
+重写 `niu_api/internal/lightrag_repair.py:386-558` 的 `repair_text_chunks`：
 
 ```python
-    # 反向扫描 llm_response_cache，构建 chunk_id -> [cache_key] 映射
-    lrc_path = storage_dir / "kv_store_llm_response_cache.json"
-    chunk_to_cache_keys: dict[str, list[str]] = {}
+def repair_text_chunks() -> dict[str, Any]:
+    """从 GraphML 提活跃 chunk_id 集合 C，按需提取重建 text_chunks。
+    
+    真相源：GraphML（提活跃 chunk_id）+ full_docs（text_chunks 没有时反查原文）+ cache（反向构建 llm_cache_list）
+    派生：kv_store_text_chunks.json
+    
+    算法：
+    1. 解析 GraphML 提取活跃 chunk_id 集合 C（从所有 node d3 + edge d10）
+    2. 对 C 中每个 chunk_id：
+       - 优先从现有 text_chunks 按 cid 查原文（天然最后版本）
+       - 现有 text_chunks 没有时，从 full_docs 重新 chunking 反查（多条匹配取 create_time 最大）
+    3. llm_cache_list 从 cache 按 chunk_id 反向构建
+    4. 只重建 C 中的 chunk，旧版本 chunk 丢弃
+    
+    GraphML 损坏 = unrecoverable
+    full_docs 损坏且 text_chunks 损坏 = unrecoverable
+    """
+    storage_dir = _storage_dir()
+    tc_path = storage_dir / "kv_store_text_chunks.json"
+    full_docs_path = storage_dir / "kv_store_full_docs.json"
+    cache_path = storage_dir / "kv_store_llm_response_cache.json"
+    
+    # 1. 解析 GraphML 提取活跃 chunk_id 集合 C
+    nodes, nodes_err = _load_graphml_nodes()
+    if nodes_err is not None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {nodes_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+    node_ids_set, edges_list, edges_err = _load_graphml_nodes_edges()
+    if edges_err is not None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {edges_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+    
+    active_chunk_ids: set[str] = set()
+    for node_id, (desc, src_ids) in nodes.items():
+        if src_ids:
+            active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
+    for edge_tuple in edges_list:
+        edge_src_ids = edge_tuple[2]  # (src, tgt, src_ids, desc, kw) 的 index 2
+        if edge_src_ids:
+            active_chunk_ids.update(c for c in edge_src_ids.split(GRAPH_FIELD_SEP) if c)
+    
+    # 2. 读现有 text_chunks（按 cid 查原文）
+    existing_tc: dict[str, Any] = {}
+    if tc_path.exists():
+        loaded = _load_json_dict(tc_path)
+        if isinstance(loaded, dict):
+            existing_tc = loaded
+        elif loaded is None and tc_path.exists():
+            # 文件存在但解析失败 → 损坏
+            # 不立即报错，降级到 full_docs 反查（如果 full_docs 也损坏才报 unrecoverable）
+            pass
+    
+    # 3. 读 full_docs（text_chunks 没有时才用）
+    full_docs: dict[str, Any] = {}
+    if full_docs_path.exists():
+        loaded = _load_json_dict(full_docs_path)
+        if isinstance(loaded, dict):
+            full_docs = loaded
+    
+    # 4. 读 cache（反向构建 llm_cache_list）
+    cache: dict[str, Any] = {}
+    if cache_path.exists():
+        loaded = _load_json_dict(cache_path)
+        if isinstance(loaded, dict):
+            cache = loaded
+    
+    # 5. 判断是否需要扫 full_docs（如果 existing_tc 已覆盖所有 C，就不扫）
+    need_full_docs_scan = any(cid not in existing_tc for cid in active_chunk_ids)
+    full_docs_chunk_map: dict[str, tuple[int, str, str, str]] = {}
+    # 类型: chunk_id -> (create_time, doc_id, chunk_content, file_path)
+    if need_full_docs_scan:
+        if not full_docs:
+            # text_chunks 损坏 + full_docs 损坏 → unrecoverable
+            missing_count = sum(1 for cid in active_chunk_ids if cid not in existing_tc)
+            if missing_count > 0:
+                return {
+                    "status": "error",
+                    "expected": len(active_chunk_ids),
+                    "actual": len(existing_tc),
+                    "lost": missing_count,
+                    "source": "GraphML + full_docs",
+                    "message": f"text_chunks 损坏且 full_docs 损坏/为空，{missing_count} 个活跃 chunk 无法重建",
+                    "unrecoverable": True,
+                }
+        # 用真实 _get_lightrag_config 读 chunk_size
+        from niu_api.internal.lightrag_manager import _get_lightrag_config
+        config = _get_lightrag_config()
+        chunk_token_size = config.get("chunk_token_size", 1200)
+        chunk_overlap = config.get("chunk_overlap_token_size", 50)
+        
+        # 拿 tokenizer（用 get_lightrag_for_repair 绕过 _repairing 门控）
+        from niu_api.internal.lightrag_manager import get_lightrag_for_repair
+        rag = get_lightrag_for_repair()
+        if rag is None:
+            return {
+                "status": "error",
+                "expected": len(active_chunk_ids),
+                "actual": 0,
+                "lost": len(active_chunk_ids),
+                "source": "GraphML + full_docs",
+                "message": "LightRAG 实例未初始化，无法获取 tokenizer",
+                "unrecoverable": True,
+            }
+        tokenizer = rag.tokenizer
+        
+        # chunking_by_token_size 是 LightRAG 的函数，需要局部 import
+        from lightrag.operate import chunking_by_token_size
+        
+        # 按 create_time 降序排 full_docs（最后录入的优先）
+        sorted_docs = sorted(
+            full_docs.items(),
+            key=lambda kv: kv[1].get("create_time", 0) if isinstance(kv[1], dict) else 0,
+            reverse=True,
+        )
+        
+        for doc_id, doc_data in sorted_docs:
+            if not isinstance(doc_data, dict):
+                continue
+            content = doc_data.get("content", "")
+            if not content:
+                continue
+            file_path = doc_data.get("file_path", "")
+            create_time = doc_data.get("create_time", 0)
+            
+            chunks = chunking_by_token_size(
+                tokenizer, content,
+                chunk_token_size=chunk_token_size,
+                chunk_overlap_token_size=chunk_overlap,
+            )
+            for chunk in chunks:
+                chunk_content = chunk["content"]
+                cid = compute_mdhash_id(chunk_content, prefix="chunk-")
+                # 同一 chunk_id 多 doc 匹配时，按 create_time 降序保留第一个（最新版本）
+                if cid not in full_docs_chunk_map:
+                    full_docs_chunk_map[cid] = (create_time, doc_id, chunk_content, file_path)
+    
+    # 6. 预构建 cache 的 chunk_id → [cache_key] 映射（用于 llm_cache_list）
+    #    同一 chunk_id 多条 cache entry（多轮 gleaning）时全部保留（LightRAG 重放时按 llm_cache_list 顺序）
+    chunk_id_to_cache_keys: dict[str, list[str]] = {}
+    for cache_key, entry in cache.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("cache_type") != "extract":
+            continue
+        cid = entry.get("chunk_id")
+        if cid:
+            chunk_id_to_cache_keys.setdefault(cid, []).append(cache_key)
+    
+    # 7. 遍历 C 构建 new_tc
+    new_tc: dict[str, Any] = {}
+    missing_chunks: list[str] = []
+    
+    for cid in active_chunk_ids:
+        # 优先从 existing_tc 查
+        if cid in existing_tc and isinstance(existing_tc[cid], dict):
+            chunk_data = dict(existing_tc[cid])
+            chunk_data["llm_cache_list"] = chunk_id_to_cache_keys.get(cid, [])
+            new_tc[cid] = chunk_data
+        # 降级从 full_docs_chunk_map 查
+        elif cid in full_docs_chunk_map:
+            ct, doc_id, content, file_path = full_docs_chunk_map[cid]
+            new_tc[cid] = {
+                "content": content,
+                "full_doc_id": doc_id,
+                "file_path": file_path,
+                "llm_cache_list": chunk_id_to_cache_keys.get(cid, []),
+            }
+        else:
+            # 脑区 chunk（full_doc_id="brain"）可能不在 full_docs 里
+            # 如果 existing_tc 也没有，记为 missing（region_sync 会重新注入）
+            missing_chunks.append(cid)
+    
+    # 8. 写盘（原子写）
     try:
-        if lrc_path.exists():
-            lrc = json.loads(lrc_path.read_text())
-            for cache_key, entry in lrc.items():
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("cache_type") != "extract":
-                    continue
-                cid = entry.get("chunk_id", "")
-                if cid:
-                    chunk_to_cache_keys.setdefault(cid, []).append(cache_key)
+        _atomic_write_json(tc_path, new_tc)
     except Exception as e:
-        logger.warning(f"[LightRAGRepair] llm_response_cache 读取失败（llm_cache_list 将为空）: {e}")
+        return {
+            "status": "error",
+            "expected": len(active_chunk_ids),
+            "actual": len(new_tc),
+            "lost": len(active_chunk_ids) - len(new_tc),
+            "source": "GraphML + full_docs",
+            "message": f"写 text_chunks 失败: {e}",
+            "unrecoverable": True,
+        }
+    
+    return {
+        "status": "ok",
+        "expected": len(active_chunk_ids),
+        "actual": len(new_tc),
+        "lost": len(missing_chunks),
+        "source": "GraphML + full_docs",
+        "missing_chunks": missing_chunks[:10],
+        "message": f"重建 {len(new_tc)}/{len(active_chunk_ids)} 个 chunk",
+    }
 ```
-
-然后写 text_chunks 时，`"llm_cache_list": chunk_to_cache_keys.get(chunk_id, [])`（替换原来的 `"llm_cache_list": []`）。
-
-**3b. 保留现有的 `_get_lightrag_config()` 调用和 chunk_id 一致性保护**——v1 计划要删的，本 Task 不删。
-
-具体来说，现有 `repair_text_chunks` 函数 L428-432 已经用 `_get_lightrag_config()` 读 chunk_size，L511-528 已经有 chunk_id 重合率<50% → unrecoverable 保护。**这些代码保留不动**。本 Task 只在写 text_chunks 时加 `llm_cache_list` 反向重建。
 
 ### - [ ] Step 4: Run test to verify it passes
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py -v -k repair_text_chunks
+python -m pytest tests/test_lightrag_repair_unit.py::test_repair_text_chunks_only_rebuilds_active_chunks \
+                tests/test_lightrag_repair_unit.py::test_repair_text_chunks_falls_back_to_full_docs_when_text_chunks_missing \
+                tests/test_lightrag_repair_unit.py::test_repair_text_chunks_unrecoverable_when_graphml_corrupt \
+                tests/test_lightrag_repair_unit.py::test_repair_text_chunks_unrecoverable_when_full_docs_corrupt -v
 ```
 
 Expected: PASS
@@ -597,355 +514,576 @@ Expected: PASS
 
 ```bash
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
-git commit -m "fix(repair): repair_text_chunks 反向重建 llm_cache_list，保留真实配置和 chunk_id 一致性保护
+git commit -m "fix(repair): repair_text_chunks 改为从 GraphML 提活跃 chunk_id 按需提取重建
 
-v1 计划硬编码 chunk_size=1200, chunk_overlap=100，跟实际配置
-chunk_overlap_token_size=50 不一致，导致 chunk_id 跟原数据不一致。
-本 Task 用现有 _get_lightrag_config() 读真实配置，保留 chunk_id
-重合率<50% → unrecoverable 保护（lightrag_repair.py:511-528）。
+v2/v3 从 full_docs 全量重新 chunking 重建 text_chunks——会把旧版本文档
+的 chunk 也重建出来，未来重跑 apipeline 时旧版本实体复活。
 
-新增：反向扫描 llm_response_cache 的 extract 类型 entry（每个 entry
-自带 chunk_id 字段），为每个 chunk 填充 llm_cache_list，加速后续
-GraphML 重建（避免 merge_nodes_and_edges 全表扫描 cache）。
+v4 改为按需提取：
+1. 解析 GraphML 提取活跃 chunk_id 集合 C（从 node d3 + edge d10）
+2. 对 C 中每个 chunk_id：
+   - 优先从现有 text_chunks 按 cid 查原文（天然最后版本）
+   - 现有 text_chunks 没有时，从 full_docs 重新 chunking 反查
+     （多条匹配按 create_time 降序取最新 doc）
+3. llm_cache_list 从 cache 按 chunk_id 反向构建
+4. 只重建 C 中的 chunk，旧版本 chunk 丢弃
+
+GraphML 损坏 = unrecoverable
+full_docs 损坏且 text_chunks 损坏 = unrecoverable
+"
+```
+
+### - [ ] Step 6: 修复 `_embed_batch` 用 `get_lightrag_for_repair` 绕过 `_repairing` 门控
+
+**背景**：现有 `_embed_batch`（`lightrag_repair.py:106-148`）fallback 路径调 `get_lightrag()`，但 repair 期间 `_repairing=True` 会让 `get_lightrag()` 返回 None（`lightrag_manager.py:925`），导致 embedding 失败 → `repair_vdb_*` 全部失败。
+
+**修改**：把 `_embed_batch` 的 fallback 从 `get_lightrag` 改为 `get_lightrag_for_repair`（绕过 `_repairing` 门控）。
+
+修改 `niu_api/internal/lightrag_repair.py:130-148`：
+
+```python
+    # 2. fallback 到 LightRAG 实例（repair 专用路径，绕过 _repairing 门控）
+    try:
+        import asyncio
+
+        from niu_api.internal.lightrag_manager import get_lightrag_for_repair
+
+        rag = get_lightrag_for_repair()
+        if rag is None:
+            logger.error("[LightRAGRepair] embedding 失败：预加载模型未就绪 + LightRAG 未初始化")
+            return None
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(rag.embedding_func(texts))
+            return [list(map(float, v)) for v in result]
+        finally:
+            loop.close()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[LightRAGRepair] LightRAG embedding 也失败: {e}")
+        return None
+```
+
+**测试**：在 `tests/test_lightrag_repair_unit.py` 加测试验证 `_embed_batch` 在 `_repairing=True` 时能正常工作（用真实 embedding 模型，不 mock）：
+
+```python
+def test_embed_batch_works_during_repair(monkeypatch):
+    """_embed_batch 在 _repairing=True 时应通过 get_lightrag_for_repair 拿到实例。
+    
+    使用真实 embedding 模型（不 mock）。
+    """
+    import niu_api.internal.lightrag_manager as lm
+    from niu_api.internal.embedding import get_model
+    assert get_model() is not None, "embedding 模型应预加载"
+    
+    # 模拟 repair 期间 _repairing=True
+    original = lm._repairing
+    lm._repairing = True
+    try:
+        from niu_api.internal.lightrag_repair import _embed_batch
+        result = _embed_batch(["测试文本"])
+        assert result is not None
+        assert len(result) == 1
+        assert len(result[0]) > 0
+    finally:
+        lm._repairing = original
+```
+
+Commit:
+```bash
+git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
+git commit -m "fix(repair): _embed_batch 用 get_lightrag_for_repair 绕过 _repairing 门控
+
+现有 _embed_batch fallback 调 get_lightrag()，repair 期间 _repairing=True
+会让 get_lightrag() 返回 None，导致 embedding 失败 → repair_vdb_* 全部失败。
+
+改为用 get_lightrag_for_repair()（lightrag_manager.py:1008 专门绕过门控）。
 "
 ```
 
 ---
 
-## Task 3: 修复 `repair_graphml` 让 `_STORAGE_DIR` patch 生效
+## Task 2: 新增 `_check_truth_sources_intact` 检测 3 真相源完好性
 
 **Files:**
-- Modify: `niu_api/internal/lightrag_repair.py:644-820`
+- Modify: `niu_api/internal/lightrag_repair.py`
 - Test: `tests/test_lightrag_repair_unit.py`
 
 ### 背景
 
-审查发现 `repair_graphml` 内 `get_lightrag()`（L683-685）拿真实 LightRAG 实例，实例的 `storage_dir` 指向真实 `~/.niu/lightrag_storage`。测试 patch `_STORAGE_DIR` 不生效，会污染真实用户数据。
-
-修复：`repair_graphml` 调用前显式置 `_rag_instance=None` + 同步 `lightrag_manager.STORAGE_DIR`，让 `get_lightrag()` 重新创建实例指向 patch 后路径。注意：**不要用 `reset_init_state()`**——它只清 `_init_failed_at`，不清 `_rag_instance`，对本 Task 无效。
+v4 的 `repair_all` 开头需要检测 3 真相源（GraphML + full_docs + cache）完好性。任一损坏 = unrecoverable，不进入恢复流程。
 
 ### - [ ] Step 1: Write the failing test
 
 `tests/test_lightrag_repair_unit.py` 追加：
 
 ```python
-def test_repair_graphml_clears_rag_instance_before_get_lightrag(tmp_path, monkeypatch):
-    """repair_graphml 调 get_lightrag() 前应显式置 _rag_instance=None + 同步 STORAGE_DIR。
+def test_check_truth_sources_intact_all_intact(tmp_path, monkeypatch):
+    """3 真相源全部完好时返回 intact=True。"""
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}')
     
-    验证修复的必要性：如果 repair_graphml 不清 _rag_instance，get_lightrag() fast path
-    会返回旧实例（指向真实 ~/.niu/lightrag_storage），污染真实数据。
-    
-    安全设计：不直接调 repair_graphml（避免真实 pipeline 跑污染数据），而是 mock
-    get_lightrag 验证调用前的状态。
-    """
-    import niu_api.internal.lightrag_manager as lightrag_manager
-    
-    # 模拟已存在真实 _rag_instance（指向真实 storage）
-    class FakeRealRag:
-        storage_dir = Path.home() / ".niu/lightrag_storage"
-    monkeypatch.setattr(lightrag_manager, "_rag_instance", FakeRealRag())
-    monkeypatch.setattr(lightrag_manager, "_init_failed_at", 0)
-    monkeypatch.setattr(lightrag_manager, "_init_error", None)
-    
-    # patch _STORAGE_DIR 到 tmp_path（模拟测试隔离）
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
-    # 准备最小真相源（让 repair_graphml 不在 cache 检查阶段就 return）
-    docs = {"doc-test": {"content": "test", "file_path": "test.md"}}
-    cache = {"default:extract:k1": {"return": "entity<|#|>test<|#|>document<|#|>desc",
-            "cache_type": "extract", "chunk_id": "chunk-test", "create_time": 1}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
-    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
-    (tmp_path / "kv_store_doc_status.json").write_text("{}")
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
     
-    # mock get_lightrag：捕获调用时的 _rag_instance 状态
-    call_state = {}
-    def mock_get_lightrag():
-        call_state["_rag_instance_at_call"] = lightrag_manager._rag_instance
-        call_state["storage_dir_at_call"] = lightrag_manager.STORAGE_DIR
-        return None  # 返回 None 让 repair_graphml 走 unrecoverable 分支，不跑真实 pipeline
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", mock_get_lightrag)
+    assert result["intact"] is True
+    assert result["graphml"]["intact"] is True
+    assert result["full_docs"]["intact"] is True
+    assert result["cache"]["intact"] is True
+
+
+def test_check_truth_sources_intact_graphml_corrupt(tmp_path, monkeypatch):
+    """GraphML 损坏时返回 intact=False + graphml.intact=False。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
     
-    from niu_api.internal.lightrag_repair import repair_graphml
-    result = repair_graphml()
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     
-    # 验证 get_lightrag 被调用前，_rag_instance 已被清空（None）
-    assert call_state.get("_rag_instance_at_call") is None, \
-        "repair_graphml 调 get_lightrag() 前应清 _rag_instance=None，否则 fast path 返回旧实例污染真实数据"
-    # 验证 lightrag_manager.STORAGE_DIR 已同步到 _storage_dir()（tmp_path）
-    assert call_state.get("storage_dir_at_call") == tmp_path, \
-        "repair_graphml 调 get_lightrag() 前应同步 lightrag_manager.STORAGE_DIR 到 _storage_dir()"
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
+    
+    assert result["intact"] is False
+    assert result["graphml"]["intact"] is False
+
+
+def test_check_truth_sources_intact_full_docs_corrupt(tmp_path, monkeypatch):
+    """full_docs 损坏时返回 intact=False + full_docs.intact=False。"""
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
+    
+    assert result["intact"] is False
+    assert result["full_docs"]["intact"] is False
+
+
+def test_check_truth_sources_intact_cache_corrupt(tmp_path, monkeypatch):
+    """cache 损坏时返回 intact=False + cache.intact=False。"""
+    _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt")
+    
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    
+    from niu_api.internal.lightrag_repair import _check_truth_sources_intact
+    result = _check_truth_sources_intact()
+    
+    assert result["intact"] is False
+    assert result["cache"]["intact"] is False
 ```
 
 ### - [ ] Step 2: Run test to verify it fails
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_repair_graphml_clears_rag_instance_before_get_lightrag -v
+python -m pytest tests/test_lightrag_repair_unit.py::test_check_truth_sources_intact_all_intact -v
 ```
 
-Expected: FAIL（现有 `repair_graphml` 不清 `_rag_instance`，`call_state["_rag_instance_at_call"]` 仍是 FakeRealRag，断言 `is None` 失败）
+Expected: FAIL with `ImportError: cannot import name '_check_truth_sources_intact'`
 
 ### - [ ] Step 3: Write minimal implementation
 
-修改 `niu_api/internal/lightrag_repair.py:644-820` 的 `repair_graphml` 函数：
-
-找到 L683-685 附近（`rag = get_lightrag()` 那段），在调用前显式置 `_rag_instance = None` + 同步 `STORAGE_DIR`，强制 `get_lightrag()` 重新创建实例：
+在 `niu_api/internal/lightrag_repair.py` 新增 `_check_truth_sources_intact`：
 
 ```python
-    # 修复：让 _STORAGE_DIR patch 生效
-    # get_lightrag() L929 的 fast path：只要 _rag_instance is not None 就直接返回旧实例
-    # （指向真实 ~/.niu/lightrag_storage）。
-    #
-    # 注意：不能用 lightrag_manager.reset_init_state()——它只清 _init_failed_at（lightrag_manager.py:1352），
-    # 不清 _rag_instance，调了也没用。必须显式置 _rag_instance = None 才能让 get_lightrag()
-    # 重新创建实例。
-    #
-    # 关键：_create_lightrag_instance() 用的是 lightrag_manager.STORAGE_DIR（无下划线），
-    # 不是 lightrag_repair._STORAGE_DIR（带下划线，被测试 patch 的）。
-    # 所以必须同时 patch lightrag_manager.STORAGE_DIR 指向 _storage_dir()，
-    # 否则新创建的实例仍指向真实 ~/.niu/lightrag_storage。
-    try:
-        import niu_api.internal.lightrag_manager as lightrag_manager
-        lightrag_manager._rag_instance = None
-        lightrag_manager._init_failed_at = 0
-        lightrag_manager._init_error = None
-        # 同步 patch lightrag_manager.STORAGE_DIR（无下划线，_create_lightrag_instance 用这个）
-        lightrag_manager.STORAGE_DIR = _storage_dir()
-    except Exception as e:
-        logger.warning(f"[LightRAGRepair] 清 _rag_instance 失败（继续用现有实例）: {e}")
+def _check_truth_sources_intact() -> dict[str, Any]:
+    """检测 3 真相源完好性：GraphML + full_docs + cache。
     
-    rag = get_lightrag()
-    if rag is None:
-        return {
-            "status": "unrecoverable",
-            "expected": 0,
-            "actual": 0,
-            "lost": 0,
-            "source": "llm_response_cache",
-            "message": "LightRAG 实例不可用，无法重跑 pipeline",
-        }
-```
+    任一损坏 = intact=False，repair_all 应报 unrecoverable。
+    
+    全新用户合法场景（intact=True）：
+    - 文件不存在（还没导入文档）
+    - 文件 size=0（空文件）
+    - GraphML 无 node（空图）
+    - full_docs/cache 是空 dict
+    
+    损坏场景（intact=False）：
+    - GraphML 文件存在但 XML 解析失败 / 无 graph 元素
+    - full_docs/cache 文件存在但 JSON 解析失败 / 非 dict
+    
+    检测标准跟现有 lightrag_integrity._check_truth_source（L166-203）一致：
+    - 文件不存在 → ok（全新用户合法）
+    - size=0 → ok（全新用户合法）
+    - JSON 解析失败 / 非 dict → critical
+    """
+    import xml.etree.ElementTree as ET
 
-注意：**不要用 `reset_init_state()`**——它（`lightrag_manager.py:1352`）只清 `_init_failed_at`，不清 `_rag_instance`，对本 Task 无效。本 Task 用直接赋值 `_rag_instance = None` + `STORAGE_DIR = _storage_dir()` 的方式。
+    storage_dir = _storage_dir()
+    
+    # 1. GraphML
+    #    文件不存在 / size=0 → intact=True（全新用户合法）
+    #    XML 解析失败 / 无 graph 元素 → intact=False
+    #    无 node → intact=True（空图合法，repair 重建空集）
+    graphml_path = storage_dir / "graph_chunk_entity_relation.graphml"
+    graphml_check: dict[str, Any] = {"intact": True, "reason": ""}
+    if not graphml_path.exists() or graphml_path.stat().st_size == 0:
+        # 全新用户合法，空 GraphML 不算损坏
+        graphml_check["reason"] = "GraphML 不存在或为空（全新用户合法）"
+    else:
+        try:
+            tree = ET.parse(graphml_path)
+            root = tree.getroot()
+            # 用现有 _load_graphml_nodes 的 fallback 模式：
+            # 先尝试带 namespace 查找，再 fallback 到无 namespace 遍历子元素
+            ns_str = "{http://graphml.graphdrawing.org/xmlns}"
+            graph_elem = root.find(f"{ns_str}graph")
+            if graph_elem is None:
+                for child in root:
+                    tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                    if tag == "graph":
+                        graph_elem = child
+                        break
+            if graph_elem is None:
+                graphml_check["intact"] = False
+                graphml_check["reason"] = "GraphML 无 graph 元素"
+            else:
+                # 有 graph 元素就算完好（无 node 是空图，全新用户合法）
+                graphml_check["intact"] = True
+        except Exception as e:
+            graphml_check["intact"] = False
+            graphml_check["reason"] = f"XML 解析失败: {e}"
+    
+    # 2. full_docs
+    #    文件不存在 / size=0 / 空 dict → intact=True（全新用户合法）
+    #    JSON 解析失败 / 非 dict → intact=False
+    full_docs_path = storage_dir / "kv_store_full_docs.json"
+    full_docs_check: dict[str, Any] = {"intact": True, "reason": ""}
+    if not full_docs_path.exists() or full_docs_path.stat().st_size == 0:
+        full_docs_check["reason"] = "full_docs 不存在或为空（全新用户合法）"
+    else:
+        loaded = _load_json_dict(full_docs_path)
+        if loaded is None:
+            full_docs_check["intact"] = False
+            full_docs_check["reason"] = "full_docs JSON 解析失败或非 dict"
+        else:
+            # 空 dict 或有内容都算完好
+            full_docs_check["intact"] = True
+    
+    # 3. cache
+    #    文件不存在 / size=0 / 空 dict → intact=True（全新用户合法）
+    #    JSON 解析失败 / 非 dict → intact=False
+    cache_path = storage_dir / "kv_store_llm_response_cache.json"
+    cache_check: dict[str, Any] = {"intact": True, "reason": ""}
+    if not cache_path.exists() or cache_path.stat().st_size == 0:
+        cache_check["reason"] = "cache 不存在或为空（全新用户合法）"
+    else:
+        loaded = _load_json_dict(cache_path)
+        if loaded is None:
+            cache_check["intact"] = False
+            cache_check["reason"] = "cache JSON 解析失败或非 dict"
+        else:
+            cache_check["intact"] = True
+    
+    return {
+        "intact": graphml_check["intact"] and full_docs_check["intact"] and cache_check["intact"],
+        "graphml": graphml_check,
+        "full_docs": full_docs_check,
+        "cache": cache_check,
+    }
+```
 
 ### - [ ] Step 4: Run test to verify it passes
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_repair_graphml_clears_rag_instance_before_get_lightrag -v
+python -m pytest tests/test_lightrag_repair_unit.py::test_check_truth_sources_intact_all_intact \
+                tests/test_lightrag_repair_unit.py::test_check_truth_sources_intact_graphml_corrupt \
+                tests/test_lightrag_repair_unit.py::test_check_truth_sources_intact_full_docs_corrupt \
+                tests/test_lightrag_repair_unit.py::test_check_truth_sources_intact_cache_corrupt -v
 ```
 
-Expected: PASS（修复后 `repair_graphml` 调 `get_lightrag()` 前清 `_rag_instance=None` + 同步 `STORAGE_DIR`，`call_state` 捕获到 None + tmp_path）
+Expected: PASS
 
 ### - [ ] Step 5: Commit
 
 ```bash
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
-git commit -m "fix(repair): repair_graphml 显式置 _rag_instance=None 让 _STORAGE_DIR patch 生效
+git commit -m "feat(repair): 新增 _check_truth_sources_intact 检测 3 真相源完好性
 
-之前 repair_graphml 内 get_lightrag() 拿缓存的 _rag_instance
-（指向真实 ~/.niu/lightrag_storage），测试 patch _STORAGE_DIR 不生效，
-污染真实用户数据。修复：调用前显式置 _rag_instance=None + 同步 STORAGE_DIR，
-强制 get_lightrag() 重新创建实例。不用 reset_init_state()——它不清 _rag_instance。
+检测 GraphML + full_docs + cache 三个真相源的完好性：
+- GraphML：文件存在 + XML 可解析 + 有 graph + 有 node
+- full_docs：文件存在 + JSON 可解析 + 是 dict
+- cache：文件存在 + JSON 可解析 + 是 dict
+
+任一损坏 = intact=False，repair_all 应报 unrecoverable。
 "
 ```
 
 ---
 
-## Task 4: 重写 `repair_all` 为"检测 → 备份 → 清僵尸 cache → 删 9 → 重建 → 失败回滚"
+## Task 3: 重写 `repair_all` 为"检测 3 真相源 → 备份 9 → 删 9 → 按需提取重建 → 失败回滚"
 
 **Files:**
-- Modify: `niu_api/internal/lightrag_repair.py:2061-2197`
+- Modify: `niu_api/internal/lightrag_repair.py:2331-2525`
 - Test: `tests/test_lightrag_repair_unit.py`
 
 ### 背景
 
-v1 计划 Task 2 改成嵌套返回结构 `{repaired, repair_result:{...}}`，审查发现破坏 Rust `format_repair_summary`。本 Task 改回**旧扁平返回结构**，只改调度逻辑。
-
-新 `repair_all` 流程：
-1. 检测 2 真相源完整性（含内容完整性检查）
-2. 备份 9 个派生文件到临时目录 `~/.niu/lightrag_storage.prerepair_<ts>/`
-3. 清理 `llm_response_cache` 里的僵尸 extract entry（调 `repair_brainregion_zombies`）
+v4 的 `repair_all` 流程：
+1. 同步 `_STORAGE_DIR` 到 `lightrag_integrity` + `lightrag_manager`
+2. 检测 3 真相源完好性 → 任一损坏 = unrecoverable
+3. 备份 9 个派生文件（不备份真相源，因为不动）
 4. 删除 9 个派生文件
-5. 按依赖链重建（`_REBUILD_ORDER`）
-6. 任意步骤失败时回滚备份（恢复 9 个文件），返回 unrecoverable
+5. 按依赖链重建（**不含 repair_graphml / repair_brainregion_zombies / repair_cache_filter / repair_graphml_orphan_edges**）：
+   - repair_text_chunks（Task 1 重写后的按需提取版本）
+   - repair_doc_status
+   - repair_vdb_chunks
+   - repair_vdb_entities（天然防复活）
+   - repair_vdb_relationships（天然防复活，不写 weight）
+   - repair_entity_chunks（天然防复活）
+   - repair_relation_chunks（天然防复活）
+   - repair_full_entities（天然防复活）
+   - repair_full_relations（天然防复活）
+6. 任意步骤失败时回滚 9 个派生文件备份
 
 ### - [ ] Step 1: Write the failing test
 
 `tests/test_lightrag_repair_unit.py` 追加：
 
 ```python
-def test_repair_all_returns_flat_structure(tmp_path, monkeypatch):
-    """repair_all 应返回扁平结构（向后兼容 Rust format_repair_summary）。"""
-    # 准备最小真相源
-    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
-    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x", "create_time": 1}}
+def _make_synthetic_fixture(tmp_path: Path):
+    """合成 fixture：3 文档 + 5 cache + GraphML（含衰减后 weight + 已删实体已不在）。"""
+    # GraphML：2 个实体（entity-a, entity-b）+ 1 条 edge（weight=0.5 衰减后）
+    # 已删实体 deleted-entity 不在 GraphML 里
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    # key 定义（简化，真实 GraphML 有完整 key 定义）
+    for kid, attr_name, attr_type in [
+        ("d1", "entity_type", "string"), ("d2", "description", "string"),
+        ("d3", "source_id", "string"), ("d7", "weight", "double"),
+        ("d8", "description", "string"), ("d9", "keywords", "string"),
+        ("d10", "source_id", "string"),
+    ]:
+        k = ET.SubElement(root, f"{{{ns}}}key", {
+            "id": kid, "for": "all", "attr.name": attr_name, "attr.type": attr_type
+        })
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    
+    a = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-a"})
+    ET.SubElement(a, f"{{{ns}}}data", {"key": "d2"}).text = "desc A"
+    ET.SubElement(a, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-1"
+    
+    b = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-b"})
+    ET.SubElement(b, f"{{{ns}}}data", {"key": "d2"}).text = "desc B"
+    ET.SubElement(b, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-2"
+    
+    edge = ET.SubElement(graph, f"{{{ns}}}edge", {"source": "entity-a", "target": "entity-b"})
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d7"}).text = "0.5"  # 衰减后的 weight
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d8"}).text = "edge desc"
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d9"}).text = "keyword1, keyword2"
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d10"}).text = "chunk-1<SEP>chunk-2"
+    
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+    
+    # full_docs：2 个文档（v1 + v2 同文档不同版本 + 1 独立文档）
+    docs = {
+        "doc-v1": {"content": "v1 content", "file_path": "v1.md", "create_time": 1000},
+        "doc-v2": {"content": "v2 content", "file_path": "v2.md", "create_time": 2000},
+    }
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    
+    # cache：5 条 extract entry（含 1 个已删实体的脏 entry + 1 个旧版本 chunk 的 entry）
+    cache = {
+        "default:extract:chunk1": {
+            "return": "entity<|#|>entity-a<|#|>concept<|#|>desc A",
+            "cache_type": "extract", "chunk_id": "chunk-1", "create_time": 1500,
+        },
+        "default:extract:chunk2": {
+            "return": "entity<|#|>entity-b<|#|>concept<|#|>desc B",
+            "cache_type": "extract", "chunk_id": "chunk-2", "create_time": 1500,
+        },
+        # 已删实体的脏 entry（chunk-3 不在 GraphML 活跃集合）
+        "default:extract:chunk3_deleted": {
+            "return": "entity<|#|>deleted-entity<|#|>concept<|#|>已删",
+            "cache_type": "extract", "chunk_id": "chunk-3", "create_time": 800,
+        },
+        # 旧版本 chunk 的 entry（chunk-old 不在 GraphML 活跃集合）
+        "default:extract:chunk_old": {
+            "return": "entity<|#|>old-entity<|#|>concept<|#|>旧版本",
+            "cache_type": "extract", "chunk_id": "chunk-old", "create_time": 500,
+        },
+        # 非 extract 类型 cache
+        "default:summary:some": {
+            "return": "summary", "cache_type": "summary", "chunk_id": None, "create_time": 1700,
+        },
+    }
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
     
+    # 9 个派生文件初始为空（repair_all 会重建）
+    for fname in ["kv_store_text_chunks.json", "kv_store_doc_status.json",
+                  "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
+                  "kv_store_full_entities.json", "kv_store_full_relations.json"]:
+        (tmp_path / fname).write_text("{}")
+    for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
+        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
+
+
+def test_repair_all_unrecoverable_when_graphml_corrupt(tmp_path, monkeypatch):
+    """GraphML 损坏时 repair_all 应直接返回 unrecoverable，不备份不删除不重建。"""
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}')
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"chunk-x": {}}')
+    
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
     
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
     
-    # 扁平结构：顶层有各 repair 名 + _unrecoverable + _skipped + _check_summary + _deleted
-    assert "_unrecoverable" in result
-    assert "_skipped" in result or "_deleted" in result
-    # 不应该有嵌套的 repair_result 字段
-    assert "repair_result" not in result
-    assert "repaired" not in result  # 顶层不应有 repaired（向后兼容）
+    assert result.get("_unrecoverable") is True
+    # 派生文件未被删除
+    assert (tmp_path / "kv_store_text_chunks.json").exists()
+    # 真相源未被修改
+    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == "corrupt xml <<<"
 
 
-def test_repair_all_backs_up_before_delete(tmp_path, monkeypatch):
-    """repair_all 删 9 文件前应备份到临时目录。"""
-    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
-    cache = {}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
-    
-    # 写一些派生文件（含旧数据）
-    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "data"}')
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("old graphml")
+def test_repair_all_unrecoverable_when_full_docs_corrupt(tmp_path, monkeypatch):
+    """full_docs 损坏时 repair_all 应返回 unrecoverable。"""
+    _make_synthetic_fixture(tmp_path)
+    # 覆盖 full_docs 为损坏
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt")
     
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
     
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
     
-    # 应该有备份目录
-    backups = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
-    # 备份可能在 tmp_path 的父目录或别处，取决于实现
-    # 关键验证：_deleted 字段记录了删除的文件
-    assert "_deleted" in result
-    assert len(result["_deleted"]) > 0
+    assert result.get("_unrecoverable") is True
+
+
+def test_repair_all_unrecoverable_when_cache_corrupt(tmp_path, monkeypatch):
+    """cache 损坏时 repair_all 应返回 unrecoverable。"""
+    _make_synthetic_fixture(tmp_path)
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt")
+    
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+    
+    assert result.get("_unrecoverable") is True
+
+
+def test_repair_all_does_not_touch_truth_sources(tmp_path, monkeypatch):
+    """repair_all 不应修改 3 真相源（GraphML + full_docs + cache）一字节。
+    
+    使用真实 embedding 模型（CLAUDE.md 铁律 5：测试必须用真实数据+真实LLM，不 mock）。
+    测试前会预加载 embedding 模型（通过 niu_api.internal.embedding.get_model）。
+    """
+    _make_synthetic_fixture(tmp_path)
+    
+    # 记录 3 真相源的原始内容
+    graphml_before = (tmp_path / "graph_chunk_entity_relation.graphml").read_bytes()
+    full_docs_before = (tmp_path / "kv_store_full_docs.json").read_bytes()
+    cache_before = (tmp_path / "kv_store_llm_response_cache.json").read_bytes()
+    
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    # 预加载真实 embedding 模型（不 mock LLM）
+    from niu_api.internal.embedding import get_model
+    assert get_model() is not None, "embedding 模型应预加载（测试前置条件）"
+    
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+    
+    # 3 真相源一字节未动
+    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_bytes() == graphml_before, "GraphML 不应被修改"
+    assert (tmp_path / "kv_store_full_docs.json").read_bytes() == full_docs_before, "full_docs 不应被修改"
+    assert (tmp_path / "kv_store_llm_response_cache.json").read_bytes() == cache_before, "cache 不应被修改"
+
+
+def test_repair_all_does_not_reanimate_deleted_entities(tmp_path, monkeypatch):
+    """repair_all 重建后，已删实体（deleted-entity）不应出现在任何派生文件里。
+    
+    使用真实 embedding 模型（不 mock）。
+    """
+    _make_synthetic_fixture(tmp_path)
+    
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    from niu_api.internal.embedding import get_model
+    assert get_model() is not None, "embedding 模型应预加载"
+    
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+    
+    # 检查所有派生文件不含 deleted-entity / old-entity
+    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert "chunk-3" not in tc  # 已删实体的 chunk 不重建
+    assert "chunk-old" not in tc  # 旧版本 chunk 不重建
+    
+    ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text())
+    assert "deleted-entity" not in ec
+    assert "old-entity" not in ec
 
 
 def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
-    """repair_all 重建失败时应回滚备份（恢复 9 个文件）。"""
-    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
-    cache = {}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    """重建失败时应回滚到备份。"""
+    _make_synthetic_fixture(tmp_path)
     
-    # 写旧派生文件
-    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}')
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("old graphml")
+    # 记录派生文件原始内容
+    tc_before = (tmp_path / "kv_store_text_chunks.json").read_bytes()
     
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    
-    # mock repair_graphml 抛异常（模拟重建失败）
+    # mock 让 repair_vdb_entities 失败
     import niu_api.internal.lightrag_repair as repair_mod
-    original_graphml = repair_mod.repair_graphml
-    def fail_graphml():
-        raise RuntimeError("模拟重建失败")
-    monkeypatch.setattr(repair_mod, "repair_graphml", fail_graphml)
+    original_vdb_entities = repair_mod.repair_vdb_entities
+    def failing_vdb_entities():
+        raise Exception("mock failure")
+    monkeypatch.setattr(repair_mod, "repair_vdb_entities", failing_vdb_entities)
     
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
     
-    # 应该回滚：派生文件恢复原状
-    assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
-    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == "old graphml"
-    # 返回 unrecoverable
-    assert result.get("_unrecoverable") is True
     assert result.get("_rolled_back") is True
-
-
-def test_repair_all_unrecoverable_when_truth_source_broken(tmp_path, monkeypatch):
-    """真相源损坏（JSON 解析失败）→ unrecoverable，不删除任何文件。
-    
-    注意：不能用"full_docs 不存在"模拟损坏——那会被判为"全新用户合法"（ok）。
-    必须用"文件存在但 JSON 损坏"触发 _check_truth_source 的 JSON 解析失败 → critical。
-    """
-    # full_docs 存在但 JSON 损坏（不是合法 JSON）
-    (tmp_path / "kv_store_full_docs.json").write_text('{"corrupt": this is not valid JSON')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
-    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}')
-    
-    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    
-    from niu_api.internal.lightrag_repair import repair_all
-    result = repair_all()
-    
-    assert result.get("_unrecoverable") is True
-    # 不应删除任何文件（真相源损坏，没进到删除阶段）
-    assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
-
-
-def test_repair_all_new_user_empty_truth_sources_ok(tmp_path, monkeypatch):
-    """全新用户（full_docs/cache 都不存在）→ repair_all 不应报 unrecoverable。
-    
-    全新用户合法启动场景：刚装 niu，~/.niu/lightrag_storage/ 还没创建或为空。
-    _check_truth_sources 应返回 ok=True（v4 修订），repair_all 应正常完成
-    （重建出空派生文件，不报 unrecoverable）。
-    """
-    # 不写任何真相源文件（模拟全新用户）
-    # 也不写派生文件
-    
-    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
-    
-    from niu_api.internal.lightrag_repair import repair_all
-    result = repair_all()
-    
-    # 全新用户不应报 unrecoverable
-    assert not result.get("_unrecoverable"), f"全新用户应能正常 repair: {result.get('_unrecoverable_reason')}"
-    # 真相源检查应通过
-    assert result["_truth_source_check"]["ok"] is True
-
-
-def test_repair_all_new_user_empty_dict_truth_sources_ok(tmp_path, monkeypatch):
-    """全新用户（full_docs/cache 都是空 dict {}）→ repair_all 不应报 unrecoverable。"""
-    # 写空 dict 的真相源（模拟全新用户首次启动后的状态）
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
-    
-    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
-    
-    from niu_api.internal.lightrag_repair import repair_all
-    result = repair_all()
-    
-    assert not result.get("_unrecoverable"), f"空 dict 真相源应能正常 repair: {result.get('_unrecoverable_reason')}"
+    # 原派生文件被恢复
+    assert (tmp_path / "kv_store_text_chunks.json").read_bytes() == tc_before
 ```
 
 ### - [ ] Step 2: Run test to verify it fails
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py -v -k repair_all
+python -m pytest tests/test_lightrag_repair_unit.py::test_repair_all_unrecoverable_when_graphml_corrupt -v
 ```
 
-Expected: FAIL（现有 `repair_all` 按 check 选择性 repair，不会无条件删 9 重建 + 备份 + 回滚）
+Expected: FAIL（现有 `repair_all` 不以 3 真相源为检测对象）
 
 ### - [ ] Step 3: Write minimal implementation
 
-修改 `niu_api/internal/lightrag_repair.py`：
+重写 `niu_api/internal/lightrag_repair.py` 的常量定义 + `repair_all` 函数。
 
-**3a. 新增常量**（替换 `_UNRECOVERABLE_FILES`，在 L2058 附近）：
+**重要：实施范围包含两部分，缺一不可**：
+1. **替换常量定义**（现有 `lightrag_repair.py:2223-2263`）：
+   - `_TRUTH_SOURCE_FILES`（现有 L2224-2227 是 2 文件 `{full_docs, cache}`）→ 改为 3 文件 `{GraphML, full_docs, cache}`
+   - `_DERIVED_FILES`（现有 L2230-2241）→ 移除 `graph_chunk_entity_relation.graphml`（真相源不能在派生列表里），保留 9 个派生文件
+   - `_REBUILD_ORDER`（现有 L2250-2263 含 `repair_brainregion_zombies` + `repair_graphml` + `repair_graphml_orphan_edges`）→ 改为只含 9 个派生文件的 repair 函数
+2. **替换 `repair_all` 函数体**（现有 `lightrag_repair.py:2331-2525`）→ 改为新的"检测 3 真相源 → 备份 9 → 删 9 → 按需提取重建 → 失败回滚"流程
+
+**如果不替换常量定义只替换函数体**：`_TRUTH_SOURCE_FILES` 仍是 2 文件（不含 GraphML），`_DERIVED_FILES` 仍含 GraphML（真相源被误列入派生文件被备份+删除+回滚），`_REBUILD_ORDER` 仍含会动真相源的步骤——方案核心原则被架空。
+
+下方代码块是新常量定义 + 新 `repair_all` 函数的完整实现：
 
 ```python
-# 真相源文件（不可重建，损坏 = unrecoverable）
+# 3 真相源（完全不可动）
 _TRUTH_SOURCE_FILES = {
+    "graph_chunk_entity_relation.graphml",
     "kv_store_full_docs.json",
     "kv_store_llm_response_cache.json",
 }
 
-# 派生数据文件（可从真相源重建，repair_all 一刀切备份+删除+重建）
+# 9 派生文件（可重建）
 _DERIVED_FILES = [
     "kv_store_text_chunks.json",
     "kv_store_doc_status.json",
-    "graph_chunk_entity_relation.graphml",
     "vdb_chunks.json",
     "vdb_entities.json",
     "vdb_relationships.json",
@@ -955,22 +1093,11 @@ _DERIVED_FILES = [
     "kv_store_full_relations.json",
 ]
 
-# 向后兼容别名
-_UNRECOVERABLE_FILES = _TRUTH_SOURCE_FILES
-```
-
-**3b. 新增 `_REBUILD_ORDER` 和 `_check_truth_sources` 函数**，重写 `repair_all`：
-
-```python
-# 重建依赖链顺序
-# brainregion_zombies 必须在最前面：清 cache 里僵尸 extract，防止重建 GraphML 时僵尸复活
-# graphml_orphan_edges 在 graphml 之后：清理 GraphML 重建后可能残留的孤儿边
-_REBUILD_ORDER = [
-    ("brainregion_zombies", repair_brainregion_zombies),
+# 重建顺序（不含 graphml / brainregion_zombies / cache_filter / graphml_orphan_edges——这些会动真相源）
+# 用直接函数引用（不是字符串），拼写错误会在模块加载时 NameError，避免静默跳过
+_REBUILD_ORDER: list[tuple[str, Any]] = [
     ("text_chunks", repair_text_chunks),
     ("doc_status", repair_doc_status),
-    ("graphml", repair_graphml),
-    ("graphml_orphan_edges", repair_graphml_orphan_edges),
     ("vdb_chunks", repair_vdb_chunks),
     ("vdb_entities", repair_vdb_entities),
     ("vdb_relationships", repair_vdb_relationships),
@@ -981,100 +1108,29 @@ _REBUILD_ORDER = [
 ]
 
 
-def _check_truth_sources(storage_dir: Path) -> dict[str, Any]:
-    """检测 2 个真相源文件是否完整可用（全新用户合法）。
-    
-    包装函数：遍历 _TRUTH_SOURCE_FILES，调用 lightrag_integrity._check_truth_source（单数版）。
-    避免重复实现（v4 审查 MAJOR-4：Task 4 和 Task 5 两份检测逻辑会分叉）。
-    
-    全新用户处理（参考 7-11 计划原则"空文件不是错"）：
-        - 文件不存在 → ok（全新用户还没导入文档）
-        - 文件存在但 size=0 → ok（全新用户空文件）
-        - 文件存在但 data={}（空 dict）→ ok（全新用户空 dict）
-        - 文件存在但 JSON 解析失败 → critical（真相源损坏）
-        - 文件存在但内容残缺（非 dict 类型）→ critical
-    
-    Returns:
-        {
-            "ok": bool,
-            "reason": str,
-            "files": {filename: {"ok": bool, "reason": str, "size": int, "doc_count": int}},
-        }
-    """
-    from niu_api.internal.lightrag_integrity import _check_truth_source
-    
-    files_status = {}
-    all_ok = True
-    reasons = []
-    
-    for fname in _TRUTH_SOURCE_FILES:
-        # _check_truth_source 返回空 dict 表示 ok，非空 dict 表示错误
-        err = _check_truth_source(fname, storage_dir)
-        status = {"ok": True, "reason": "", "size": 0, "doc_count": 0}
-        if err:
-            # 有错误
-            status["ok"] = False
-            status["reason"] = err.get("msg", "")
-            reasons.append(status["reason"])
-        else:
-            # ok，记录文件信息（size + doc_count）
-            fpath = storage_dir / fname
-            if fpath.exists():
-                try:
-                    status["size"] = fpath.stat().st_size
-                    if status["size"] > 0:
-                        data = json.loads(fpath.read_text())
-                        if isinstance(data, dict) and data:
-                            if fname == "kv_store_full_docs.json":
-                                status["doc_count"] = len(data)
-                            elif fname == "kv_store_llm_response_cache.json":
-                                extract_count = sum(
-                                    1 for v in data.values()
-                                    if isinstance(v, dict) and v.get("cache_type") == "extract"
-                                )
-                                status["doc_count"] = extract_count
-                except Exception:
-                    pass  # _check_truth_source 已经判过损坏，这里只记录信息失败不影响
-        if not status["ok"]:
-            all_ok = False
-        files_status[fname] = status
-    
-    return {
-        "ok": all_ok,
-        "reason": "; ".join(reasons) if reasons else "",
-        "files": files_status,
-    }
-
-
 def repair_all() -> dict[str, Any]:
-    """一键修复：检测 2 真相源 → 备份 9 派生 → 清僵尸 cache → 删 9 → 重建 → 失败回滚。
+    """3 真相源不可动 + 按需提取重建 9 派生文件。
     
-    返回扁平结构（向后兼容 Rust format_repair_summary）：
-        {
-            "brainregion_zombies": {status, cleaned_count, ...},
-            "text_chunks": {status, expected, actual, ...},
-            ...
-            "_unrecoverable": bool,
-            "_skipped": [...],
-            "_check_summary": {...},
-            "_deleted": [...],
-            "_rolled_back": bool,
-        }
+    流程：
+    1. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager
+    2. 检测 3 真相源完好性 → 任一损坏 = unrecoverable
+    3. 备份 9 个派生文件（不备份真相源，因为不动）
+    4. 删除 9 个派生文件
+    5. 按依赖链重建 9 派生文件（从 GraphML + full_docs + cache 按需提取）
+    6. 失败时回滚 9 派生文件备份
+    
+    3 真相源（GraphML + full_docs + cache）完全不可动：
+    - 不写不改不删（读取是必要的，用于按需提取重建派生文件）
+    - 损坏 = unrecoverable
+    - 完好 = 一根毫毛不动
+    
+    注意：repair_all 是同步函数，不能声明 async（调用方 lightrag_manager.py:1286
+    和 1350 是同步调用 repair_all()，async 会导致返回 coroutine 对象）。
     """
-    import shutil
-    import time
-    
     storage_dir = _storage_dir()
-    results: dict[str, Any] = {}
-    unrecoverable_detected = False
-    backup_dir: Path | None = None
-    
+    result: dict[str, Any] = {}
+
     # 0. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager（兼容测试 monkeypatch）
-    #    现有代码 lightrag_repair.py:2085-2090 有这段同步逻辑，重写 repair_all 时必须保留。
-    #    否则测试 monkeypatch lightrag_repair._STORAGE_DIR 后，lightrag_integrity._STORAGE_DIR
-    #    仍是真实 ~/.niu/lightrag_storage，导致 check_all 读真实路径污染数据。
-    #    同时清 lightrag_manager._rag_instance + 同步 lightrag_manager.STORAGE_DIR，
-    #    让 repair_graphml 调 get_lightrag() 时重新创建实例指向 patch 后路径（参考 Task 3）。
     try:
         from niu_api.internal import lightrag_integrity
         if lightrag_integrity._STORAGE_DIR != _STORAGE_DIR:
@@ -1089,139 +1145,135 @@ def repair_all() -> dict[str, Any]:
         lightrag_manager.STORAGE_DIR = storage_dir
     except Exception:  # noqa: BLE001
         pass
-    
-    # 1. 检测 2 真相源（含内容完整性检查）
-    truth_check = _check_truth_sources(storage_dir)
-    results["_truth_source_check"] = truth_check
-    if not truth_check["ok"]:
-        results["_unrecoverable"] = True
-        results["_unrecoverable_reason"] = f"真相源损坏: {truth_check['reason']}"
-        results["_rolled_back"] = False  # 没删任何东西，不需要回滚
-        return results
-    
-    # 2. 备份 9 个派生文件到临时目录
-    ts = int(time.time())
-    backup_dir = storage_dir.parent / f"lightrag_storage.prerepair_{ts}"
+
+    # 用 try/finally 确保所有路径（成功/失败/异常）都清理 .corrupt.*.bak 垃圾文件
+    # 现有代码 lightrag_repair.py:2512-2523 不论成功失败都清理，这里保持一致
     try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
+        # 1. 检测 3 真相源完好性
+        truth_check = _check_truth_sources_intact()
+        result["_truth_source_check"] = truth_check
+        if not truth_check["intact"]:
+            result["_unrecoverable"] = True
+            reasons = []
+            if not truth_check["graphml"]["intact"]:
+                reasons.append(f"GraphML: {truth_check['graphml']['reason']}")
+            if not truth_check["full_docs"]["intact"]:
+                reasons.append(f"full_docs: {truth_check['full_docs']['reason']}")
+            if not truth_check["cache"]["intact"]:
+                reasons.append(f"cache: {truth_check['cache']['reason']}")
+            result["_unrecoverable_reason"] = "3 真相源损坏，无法恢复: " + "; ".join(reasons)
+            return result
+
+        # 2. 备份 9 个派生文件（不备份 3 真相源，因为完全不动）
+        #    备份目录放在 storage_dir 外部（现有代码 lightrag_repair.py:2386 的做法），
+        #    避免备份残留污染 storage 目录 + 避免 glob 误扫
+        backup_dir = storage_dir.parent / f"lightrag_storage.prerepair_{int(time.time())}"
         backed_up: list[str] = []
-        for fname in _DERIVED_FILES:
-            src = storage_dir / fname
-            if src.exists():
-                shutil.copy2(src, backup_dir / fname)
-                backed_up.append(fname)
-        results["_backed_up"] = backed_up
-        logger.info(f"[LightRAGRepair] 备份 {len(backed_up)} 个派生文件到 {backup_dir}")
-    except Exception as e:
-        results["_unrecoverable"] = True
-        results["_unrecoverable_reason"] = f"备份失败: {e}"
-        results["_rolled_back"] = False
-        return results
-    
-    # 3. 删除 9 个派生文件
-    deleted: list[str] = []
-    for fname in _DERIVED_FILES:
-        fpath = storage_dir / fname
-        if fpath.exists():
-            try:
-                fpath.unlink()
-                deleted.append(fname)
-            except Exception as e:
-                logger.warning(f"[LightRAGRepair] 删除 {fname} 失败: {e}")
-    results["_deleted"] = deleted
-    
-    # 4. 按依赖链重建
-    # 检测 full_docs 是否为空（全新用户）——空时跳过 graphml/graphml_orphan_edges
-    # 因为 repair_graphml 调 apipeline_process_enqueue_documents，empty full_docs 会
-    # 报 "No documents to process" 返回 unrecoverable。全新用户合法，不应报 unrecoverable。
-    full_docs_path = storage_dir / "kv_store_full_docs.json"
-    is_empty_user = False
-    try:
-        if full_docs_path.exists():
-            fd_data = json.loads(full_docs_path.read_text())
-            if not fd_data:  # 空 dict
-                is_empty_user = True
-        else:
-            is_empty_user = True  # 文件不存在
-    except Exception:
-        pass  # 读取失败不阻塞，让 repair_graphml 自己处理
-    
-    # 全新用户跳过的 repair 函数（依赖文档/GraphML 重建）
-    _SKIP_FOR_EMPTY_USER = {"graphml", "graphml_orphan_edges", "vdb_entities", "vdb_relationships"}
-    
-    skipped: list[str] = []
-    for name, fn in _REBUILD_ORDER:
-        # 全新用户跳过依赖文档的 repair
-        if is_empty_user and name in _SKIP_FOR_EMPTY_USER:
-            results[name] = {"status": "ok", "skipped": True, "reason": "empty full_docs (new user)"}
-            skipped.append(name)
-            logger.info(f"[LightRAGRepair] 跳过 {name}（全新用户，无文档）")
-            continue
         try:
-            result = fn()
-            results[name] = result
-            if isinstance(result, dict) and (
-                result.get("unrecoverable") or result.get("status") == "unrecoverable"
-            ):
-                unrecoverable_detected = True
-                logger.warning(
-                    f"[LightRAGRepair] {name} 报 unrecoverable: {result.get('message', '')}"
-                )
-        except Exception as e:
-            logger.error(f"[LightRAGRepair] {name} 抛异常: {e}", exc_info=True)
-            results[name] = {
-                "status": "error",
-                "message": f"repair 函数抛异常: {type(e).__name__}: {e}",
-            }
-            unrecoverable_detected = True
-    results["_skipped"] = skipped
-    
-    # 5. 失败时回滚
-    if unrecoverable_detected and backup_dir is not None:
-        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
             for fname in _DERIVED_FILES:
-                backup_file = backup_dir / fname
-                if backup_file.exists():
-                    shutil.copy2(backup_file, storage_dir / fname)
-            results["_rolled_back"] = True
-            logger.warning(f"[LightRAGRepair] 重建失败，已回滚 {len(_DERIVED_FILES)} 个文件")
+                src = storage_dir / fname
+                if src.exists():
+                    shutil.copy2(src, backup_dir / fname)
+                    backed_up.append(fname)
         except Exception as e:
-            results["_rolled_back"] = False
-            results["_rollback_error"] = str(e)
-            logger.error(f"[LightRAGRepair] 回滚失败: {e}", exc_info=True)
-    else:
-        results["_rolled_back"] = False
-        # 重建成功，删除备份
+            result["_unrecoverable"] = True
+            result["_unrecoverable_reason"] = f"备份失败: {e}"
+            return result
+
+        # 3. 删除 9 个派生文件
+        deleted: list[str] = []
+        for fname in _DERIVED_FILES:
+            path = storage_dir / fname
+            if path.exists():
+                try:
+                    path.unlink()
+                    deleted.append(fname)
+                except Exception as e:
+                    # 删除失败，回滚已删除的
+                    _rollback_backup(backup_dir, storage_dir, backed_up)
+                    result["_unrecoverable"] = True
+                    result["_unrecoverable_reason"] = f"删除 {fname} 失败: {e}"
+                    result["_rolled_back"] = True
+                    return result
+        result["_deleted"] = deleted
+
+        # 4. 按依赖链重建 9 派生文件
+        #    用 getattr 间接查找函数（不直接引用 _REBUILD_ORDER 里的函数对象），
+        #    让测试 monkeypatch.setattr(repair_mod, "repair_vdb_entities", failing_fn) 能生效
+        import niu_api.internal.lightrag_repair as _self_mod
+        for name, fn in _REBUILD_ORDER:
+            # 重新从模块属性读取，让 monkeypatch 能注入失败版本
+            fn = getattr(_self_mod, fn.__name__)
+            try:
+                step_result = fn()
+                result[name] = step_result
+                if isinstance(step_result, dict) and step_result.get("unrecoverable"):
+                    _rollback_backup(backup_dir, storage_dir, backed_up)
+                    result["_unrecoverable"] = True
+                    result["_unrecoverable_reason"] = f"{name} 重建失败: {step_result.get('message', '')}"
+                    result["_rolled_back"] = True
+                    return result
+            except Exception as e:
+                _rollback_backup(backup_dir, storage_dir, backed_up)
+                result["_unrecoverable"] = True
+                result["_unrecoverable_reason"] = f"{name} 重建异常: {e}"
+                result["_rolled_back"] = True
+                return result
+
+        # 5. 重建成功，清理备份
         try:
-            shutil.rmtree(backup_dir)
-        except Exception:
-            pass  # 备份没删掉不影响主流程
+            import shutil
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+        return result
+    finally:
+        # 不论成功/失败/异常，都清理 .corrupt.*.bak 垃圾文件
+        # 现有代码 lightrag_repair.py:2512-2523 也是不论成败都清理
+        # glob 模式 *.corrupt.*.bak 匹配 _backup_corrupt 创建的 {name}.corrupt.{ts}.bak 文件
+        for bak in storage_dir.glob("*.corrupt.*.bak"):
+            try:
+                bak.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _rollback_backup(backup_dir: Path, storage_dir: Path, backed_up: list[str]) -> None:
+    """回滚备份：恢复 backed_up 中的文件 + 删除新建的派生文件。
     
-    results["_unrecoverable"] = unrecoverable_detected
-    return results
+    注意：3 真相源（GraphML + full_docs + cache）不在 _DERIVED_FILES 里，
+    回滚不会动它们（它们也从未被修改）。
+    """
+    import shutil
+    # 1. 恢复 backed_up 中的文件
+    for fname in backed_up:
+        src = backup_dir / fname
+        if src.exists():
+            shutil.copy2(src, storage_dir / fname)
+    # 2. 删除 repair 前不存在但 repair 后新建的派生文件
+    for fname in _DERIVED_FILES:
+        if fname not in backed_up:
+            fpath = storage_dir / fname
+            if fpath.exists():
+                try:
+                    fpath.unlink()
+                except Exception:  # noqa: BLE001
+                    pass
 ```
-
-**3c. 删除旧的 `_CHECK_TO_REPAIR` / `_FILE_TO_REPAIR` / `_REPAIR_ORDER` 常量定义 + 旧 `repair_all` 函数体**
-
-现有代码有以下旧结构需要删除（行号可能因前面改动偏移，以 grep 为准）：
-- `_REPAIR_ORDER` 常量定义（约 L2114，含 13 个 repair 函数元组列表）
-- `_CHECK_TO_REPAIR` 字典定义（约 L2135，check name → repair name 映射）
-- `_FILE_TO_REPAIR` 字典定义（约 L2161，file name → repair name 映射）
-- 旧 `repair_all` 函数体（约 L2206-2290，引用上述 3 个常量做"按 check 选择性 repair"）
-
-这些都被新 `repair_all`（Step 3b 定义）替代，不再被使用。删除时用 grep 确认没有其他模块引用这些常量：
-
-```bash
-grep -rn "_CHECK_TO_REPAIR\|_FILE_TO_REPAIR\|_REPAIR_ORDER" niu_api/ tests/ 2>/dev/null | grep -v ".pyc"
-```
-
-只应返回 `lightrag_repair.py` 内部的定义和旧 `repair_all` 函数体引用。删除后再次 grep 确认无遗留引用。
 
 ### - [ ] Step 4: Run test to verify it passes
 
 Run:
 ```bash
-python -m pytest tests/test_lightrag_repair_unit.py -v -k repair_all
+python -m pytest tests/test_lightrag_repair_unit.py::test_repair_all_unrecoverable_when_graphml_corrupt \
+                tests/test_lightrag_repair_unit.py::test_repair_all_unrecoverable_when_full_docs_corrupt \
+                tests/test_lightrag_repair_unit.py::test_repair_all_unrecoverable_when_cache_corrupt \
+                tests/test_lightrag_repair_unit.py::test_repair_all_does_not_touch_truth_sources \
+                tests/test_lightrag_repair_unit.py::test_repair_all_does_not_reanimate_deleted_entities \
+                tests/test_lightrag_repair_unit.py::test_repair_all_rolls_back_on_failure -v
 ```
 
 Expected: PASS
@@ -1230,1341 +1282,152 @@ Expected: PASS
 
 ```bash
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
-git commit -m "refactor(repair): repair_all 改为检测 → 备份 → 清僵尸 cache → 删 9 → 重建 → 失败回滚
+git commit -m "fix(repair): repair_all 改为 3 真相源不可动 + 按需提取重建 9 派生文件
 
-不再按 check 报错选择性 repair，改为无条件备份+删除+重建。
-不管什么数据故障都能一刀切修复，只要 2 真相源没坏。
+v2/v3 把 full_docs + cache 当真相源，从日志重放覆盖 GraphML——复活
+已删实体 + 丢 weight 衰减 + 复活旧版本。
 
-新流程：
-1. 检测 2 真相源完整性（含内容完整性检查）
-2. 备份 9 个派生文件到临时目录
-3. 清理 llm_response_cache 里僵尸 extract（调 repair_brainregion_zombies）
-4. 删除 9 个派生文件
-5. 按依赖链重建
-6. 任意步骤失败时回滚备份
+v4 核心原则（用户原话）：
+3 个真相源文件就完全不可动。无论它里面有什么问题，也不能动它。
+它们如果损坏了，那就是修复失败。如果没损坏，那为什么要动它？
 
-返回扁平结构（向后兼容 Rust format_repair_summary）。
+v4 改为：
+1. 检测 3 真相源（GraphML + full_docs + cache）完好性 → 任一损坏 = unrecoverable
+2. 备份 9 派生文件（不备份真相源，因为不动）
+3. 删除 9 派生文件
+4. 按依赖链重建（不含 repair_graphml / repair_brainregion_zombies /
+   repair_cache_filter / repair_graphml_orphan_edges——这些会动真相源）
+5. 失败回滚 9 派生文件备份
+
+真相源从 1 个/2 个改为 3 个：
+_TRUTH_SOURCE_FILES = {GraphML, full_docs, cache}
 "
 ```
 
 ---
 
-## Task 5: 简化 `check_all` 为"检 2 真相源 + GraphML 后置验证 + vdb_*_missing 检测"
+## Task 4: 简化 `check_all` 为"检 3 真相源完好性 + 9 派生文件 missing 检测"
 
 **Files:**
 - Modify: `niu_api/internal/lightrag_integrity.py`
-- Test: `tests/test_lightrag_repair_unit.py`
 
 ### 背景
 
-v1 计划 Task 3 简化 `check_all` 只检 2 真相源 + GraphML 后置。审查发现：vdb_*.json 被删但 GraphML 完好时 `ok=True`，启动放行，LightRAG 检索时报错。本 Task 加 vdb_*_missing 检测。
+v4 的 `check_all` 简化为：
+1. 检 3 真相源完好性（GraphML + full_docs + cache）→ critical = unrecoverable
+2. 检 9 派生文件 missing → major
+3. 删除 11 旧句法 check + 5 旧语义 check
 
-### - [ ] Step 1: Write the failing test
+**重要保留项**：修改 `lightrag_integrity.py` 时必须保留以下常量和函数（`repair_brainregion_zombies` 依赖它们，否则 ImportError）：
+- `_ZOMBIE_DESCRIPTION_MARKERS` 常量（现有 `lightrag_integrity.py:30-36` 注释明确要求保留）
+- `_load_graphml` / `_load_json_dict` 工具函数
+- 其他被 `lightrag_repair.py` import 的符号（实施时用 `grep "from niu_api.internal.lightrag_integrity import" niu_api/internal/lightrag_repair.py` 确认完整列表）
 
-`tests/test_lightrag_repair_unit.py` 追加：
+### - [ ] Step 1-5: TDD 流程
 
-```python
-def test_check_all_vdb_missing_but_graphml_intact_returns_major(tmp_path, monkeypatch):
-    """vdb_*.json 缺失但 GraphML 完好 → check_all 应报 major（避免启动放行）。"""
-    # 2 真相源完好
-    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
-    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
-    
-    # GraphML 完好（有 node）
-    ns = "http://graphml.graphdrawing.org/xmlns"
-    root = ET.Element(f"{{{ns}}}graphml")
-    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
-    node = ET.SubElement(graph, f"{{{ns}}}node", {"id": "test-entity"})
-    ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = "concept"
-    ET.ElementTree(root).write(
-        tmp_path / "graph_chunk_entity_relation.graphml",
-        xml_declaration=True, encoding="utf-8"
-    )
-    
-    # vdb_entities 不存在（被删了）
-    # vdb_relationships 不存在
-    # vdb_chunks 不存在
-    
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    
-    from niu_api.internal.lightrag_integrity import check_all
-    result = check_all()
-    
-    assert result["ok"] is False
-    assert result["major_errors"] >= 1
-    err_msgs = [e.get("msg", "") for e in result.get("errors", [])]
-    assert any("vdb" in m.lower() for m in err_msgs)
-
-
-def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
-    """2 真相源 + GraphML + vdb 全部完好 → ok=True。"""
-    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
-    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
-    
-    # GraphML（有 node）
-    ns = "http://graphml.graphdrawing.org/xmlns"
-    root = ET.Element(f"{{{ns}}}graphml")
-    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
-    node = ET.SubElement(graph, f"{{{ns}}}node", {"id": "test-entity"})
-    ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = "concept"
-    ET.ElementTree(root).write(
-        tmp_path / "graph_chunk_entity_relation.graphml",
-        xml_declaration=True, encoding="utf-8"
-    )
-    
-    # vdb_entities（有对应向量）
-    vdb_e = {"data": [{"__id__": "ent-test-entity", "entity_name": "test-entity", "vector": "AAAAAA=="}],
-             "file_hash": "fake", "embedding_dim": 8, "matrix": "AAAAAA=="}
-    (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e, ensure_ascii=False))
-    (tmp_path / "vdb_chunks.json").write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
-    (tmp_path / "vdb_relationships.json").write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
-    
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    
-    from niu_api.internal.lightrag_integrity import check_all
-    result = check_all()
-    
-    assert result["ok"] is True
-```
-
-### - [ ] Step 2: Run test to verify it fails
-
-Run:
-```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_check_all_vdb_missing_but_graphml_intact_returns_major -v
-```
-
-Expected: FAIL（现有 `check_all` 有 16 个 check，新测试场景下报各种无关错误）
-
-### - [ ] Step 3: Write minimal implementation
-
-替换 `niu_api/internal/lightrag_integrity.py` 整个文件（保留 `_load_graphml` / `_load_json_dict` 工具函数，删除 16 个 check 函数 + `_CHECK_FUNCTIONS` + 旧 `check_all`）：
-
-```python
-"""LightRAG 数据一致性检查（简化版 v2）。
-
-检查项：
-1. 2 真相源完整可用（full_docs + llm_response_cache）
-2. GraphML 后置验证（重建后应该有 node）
-3. vdb_*_missing 检测（GraphML 有 node 但 vdb 没对应向量 → 启动放行风险）
-"""
-
-import json
-import logging
-import xml.etree.ElementTree as ET
-from pathlib import Path
-from typing import Any
-
-logger = logging.getLogger(__name__)
-
-_STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
-
-_GRAPHML_FILE = "graph_chunk_entity_relation.graphml"
-
-_TRUTH_SOURCE_FILES = [
-    "kv_store_full_docs.json",
-    "kv_store_llm_response_cache.json",
-]
-
-# 僵尸脑区 description 语义标记（LLM 写的 description，明确告诉系统这个实体该删）
-# repair_brainregion_zombies（lightrag_repair.py:1775）import 这个常量用于：
-# 1. 识别 GraphML 里 description 含"被删除"标记的脑区 node
-# 2. 清理 llm_response_cache 里 entity_type=brainregion + description 含标记的 extract entry
-# 注意：替换 lightrag_integrity.py 时必须保留这个常量，否则 lightrag_repair.py 会 ImportError
-_ZOMBIE_DESCRIPTION_MARKERS = (
-    "被删除的重复脑区实体之一",
-    "被删除的脑区",
-    "已删除的脑区",
-    "已删除的重复脑区",
-)
-
-
-def _resolve_storage_dir() -> Path:
-    return _STORAGE_DIR
-
-
-def _load_json_dict(path: Path) -> tuple[dict, dict | None]:
-    """加载 JSON dict 文件，返回 (data, error)。"""
-    if not path.exists():
-        return {}, None
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, dict):
-            return {}, {
-                "check": "json_type_mismatch",
-                "file": path.name,
-                "msg": f"expected dict, got {type(data).__name__}",
-                "severity": "critical",
-            }
-        return data, None
-    except json.JSONDecodeError as e:
-        return {}, {
-            "check": "json_parse",
-            "file": path.name,
-            "msg": str(e),
-            "severity": "critical",
-        }
-    except Exception as e:
-        return {}, {
-            "check": "json_read",
-            "file": path.name,
-            "msg": f"{type(e).__name__}: {e}",
-            "severity": "critical",
-        }
-
-
-def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str, dict[str, str]], dict[str, Any] | None]:
-    """解析 GraphML 文件，返回 (node_ids, edges, node_meta, error)。"""
-    if not path.exists():
-        return set(), [], {}, None
-    try:
-        tree = ET.parse(path)
-        root = tree.getroot()
-    except ET.ParseError as e:
-        return set(), [], {}, {
-            "check": "xml_parse",
-            "file": path.name,
-            "msg": str(e),
-            "severity": "critical",
-        }
-    except Exception as e:
-        return set(), [], {}, {
-            "check": "xml_parse",
-            "file": path.name,
-            "msg": f"{type(e).__name__}: {e}",
-            "severity": "critical",
-        }
-    
-    graph = root.find("graph")
-    if graph is None:
-        for child in root:
-            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-            if tag == "graph":
-                graph = child
-                break
-    if graph is None:
-        return set(), [], {}, {
-            "check": "no_graph_element",
-            "file": path.name,
-            "severity": "critical",
-        }
-    
-    node_ids: set[str] = set()
-    edges: list[tuple[str, str]] = []
-    node_meta: dict[str, dict[str, str]] = {}
-    for child in graph:
-        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-        if tag == "node":
-            nid = child.get("id", "")
-            if nid:
-                node_ids.add(nid)
-                meta = {"entity_type": "", "description": "", "source_id": ""}
-                for data in child:
-                    d_key = data.get("key", "")
-                    d_text = data.text or ""
-                    if d_key == "d1":
-                        meta["entity_type"] = d_text
-                    elif d_key == "d2":
-                        meta["description"] = d_text
-                    elif d_key == "d3":
-                        meta["source_id"] = d_text
-                node_meta[nid] = meta
-        elif tag == "edge":
-            src = child.get("source", "")
-            tgt = child.get("target", "")
-            edges.append((src, tgt))
-    return node_ids, edges, node_meta, None
-
-
-def _load_vdb(path: Path) -> tuple[list[dict], dict[str, Any] | None]:
-    """加载 vdb 文件，返回 (data_list, error)。"""
-    if not path.exists():
-        return [], None  # 文件不存在视为空 vdb
-    try:
-        data = json.loads(path.read_text())
-        if not isinstance(data, dict):
-            return [], {
-                "check": "vdb_type_mismatch",
-                "file": path.name,
-                "msg": f"expected dict, got {type(data).__name__}",
-                "severity": "major",
-            }
-        return data.get("data", []) or [], None
-    except json.JSONDecodeError as e:
-        return [], {
-            "check": "vdb_parse",
-            "file": path.name,
-            "msg": str(e),
-            "severity": "major",
-        }
-    except Exception as e:
-        return [], {
-            "check": "vdb_read",
-            "file": path.name,
-            "msg": f"{type(e).__name__}: {e}",
-            "severity": "major",
-        }
-
-
-def _check_truth_source(fname: str, storage_dir: Path) -> dict[str, Any]:
-    """检测单个真相源文件（全新用户合法，空文件/空 dict/不存在都 ok）。
-    
-    只有"文件存在但 JSON 解析失败/内容残缺（非 dict）"才算 critical。
-    """
-    fpath = storage_dir / fname
-    if not fpath.exists():
-        # 文件不存在 = 全新用户，ok（返回空 dict 表示无错误）
-        return {}
-    try:
-        size = fpath.stat().st_size
-        if size == 0:
-            # 空文件 = 全新用户，ok
-            return {}
-        data = json.loads(fpath.read_text())
-        if not isinstance(data, dict):
-            return {
-                "check": "truth_source_corrupt",
-                "severity": "critical",
-                "file": fname,
-                "msg": f"真相源 {fname} 内容非 dict（{type(data).__name__}）",
-            }
-        # 空 dict 或有内容都 ok（全新用户合法）
-        return {}
-    except json.JSONDecodeError as e:
-        return {
-            "check": "truth_source_corrupt",
-            "severity": "critical",
-            "file": fname,
-            "msg": f"真相源 {fname} JSON 解析失败: {e}",
-        }
-    except Exception as e:
-        return {
-            "check": "truth_source_read_fail",
-            "severity": "critical",
-            "file": fname,
-            "msg": f"真相源 {fname} 读取失败: {e}",
-        }
-
-
-def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:
-    """后置验证：GraphML 是否存在且非空。"""
-    graphml_path = storage_dir / _GRAPHML_FILE
-    if not graphml_path.exists():
-        return {
-            "check": "graphml_missing",
-            "severity": "major",
-            "file": _GRAPHML_FILE,
-            "msg": "GraphML 不存在（重建未完成或失败）",
-        }
-    try:
-        size = graphml_path.stat().st_size
-        if size == 0:
-            return {
-                "check": "graphml_empty",
-                "severity": "major",
-                "file": _GRAPHML_FILE,
-                "msg": "GraphML 为空文件",
-            }
-        node_ids, edges, _, err = _load_graphml(graphml_path)
-        if err:
-            return err
-        if not node_ids:
-            return {
-                "check": "graphml_no_nodes",
-                "severity": "major",
-                "file": _GRAPHML_FILE,
-                "msg": "GraphML 无 node（重建失败信号）",
-            }
-    except Exception as e:
-        return {
-            "check": "graphml_read_fail",
-            "severity": "major",
-            "file": _GRAPHML_FILE,
-            "msg": f"GraphML 读取失败: {e}",
-        }
-    return {}
-
-
-def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
-    """检测 vdb_*_missing：GraphML 有 node 但 vdb 没对应向量。
-    
-    返回 errors 列表（可能为空）。
-    """
-    errors: list[dict[str, Any]] = []
-    
-    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err or not node_ids:
-        return errors  # GraphML 有问题由 _check_graphml_post 报，这里不重复
-    
-    # vdb_entities 检测：GraphML node 应在 vdb_entities 有对应向量
-    vdb_e_path = storage_dir / "vdb_entities.json"
-    vdb_e_list, vdb_e_err = _load_vdb(vdb_e_path)
-    if vdb_e_err:
-        errors.append(vdb_e_err)
-    else:
-        # vdb_entities 的 entity_name 集合
-        vdb_e_names = {
-            entry.get("entity_name", "").lower() if isinstance(entry, dict) else ""
-            for entry in vdb_e_list
-        }
-        vdb_e_names.discard("")
-        # GraphML node id 是小写化的（LightRAG 设计），直接比对
-        missing_in_vdb = {n for n in node_ids if n.lower() not in vdb_e_names}
-        if missing_in_vdb:
-            errors.append({
-                "check": "vdb_entities_missing",
-                "severity": "major",
-                "ref_file": _GRAPHML_FILE,
-                "target_file": "vdb_entities.json",
-                "missing_count": len(missing_in_vdb),
-                "msg": f"GraphML 有 {len(missing_in_vdb)} 个 node 在 vdb_entities 中无对应向量",
-            })
-    
-    # vdb_relationships 检测：GraphML edge 应在 vdb_relationships 有对应向量
-    _, edges, _, _ = _load_graphml(storage_dir / _GRAPHML_FILE)
-    vdb_r_path = storage_dir / "vdb_relationships.json"
-    vdb_r_list, vdb_r_err = _load_vdb(vdb_r_path)
-    if vdb_r_err:
-        errors.append(vdb_r_err)
-    elif edges:
-        # vdb_relationships 的 (src, tgt) 集合
-        vdb_r_pairs = set()
-        for entry in vdb_r_list:
-            if not isinstance(entry, dict):
-                continue
-            src = entry.get("src_id", "")
-            tgt = entry.get("tgt_id", "")
-            if src and tgt:
-                vdb_r_pairs.add((src.lower(), tgt.lower()))
-        # GraphML edge 集合
-        graphml_pairs = {(s.lower(), t.lower()) for s, t in edges}
-        missing_pairs = graphml_pairs - vdb_r_pairs
-        if missing_pairs:
-            errors.append({
-                "check": "vdb_relationships_missing",
-                "severity": "major",
-                "ref_file": _GRAPHML_FILE,
-                "target_file": "vdb_relationships.json",
-                "missing_count": len(missing_pairs),
-                "msg": f"GraphML 有 {len(missing_pairs)} 条 edge 在 vdb_relationships 中无对应向量",
-            })
-    
-    return errors
-
-
-def check_all() -> dict[str, Any]:
-    """简化版 check_all v2：检 2 真相源 + GraphML 后置 + vdb_*_missing。
-    """
-    storage_dir = _resolve_storage_dir()
-    all_errors: list[dict[str, Any]] = []
-    
-    # 1. 检测 2 真相源
-    truth_errors = []
-    for fname in _TRUTH_SOURCE_FILES:
-        err = _check_truth_source(fname, storage_dir)
-        if err:
-            truth_errors.append(err)
-            all_errors.append(err)
-    
-    # 2. 后置验证 GraphML
-    graphml_errors = []
-    graphml_err = _check_graphml_post(storage_dir)
-    if graphml_err:
-        graphml_errors.append(graphml_err)
-        all_errors.append(graphml_err)
-    
-    # 3. vdb_*_missing 检测
-    vdb_errors = _check_vdb_missing(storage_dir)
-    all_errors.extend(vdb_errors)
-    
-    critical = sum(1 for e in all_errors if e.get("severity") == "critical")
-    major = sum(1 for e in all_errors if e.get("severity") == "major")
-    minor = sum(1 for e in all_errors if e.get("severity") == "minor")
-    
-    return {
-        "ok": len(all_errors) == 0,
-        "critical_errors": critical,
-        "major_errors": major,
-        "minor_errors": minor,
-        "errors": all_errors,
-        "checks": {
-            "truth_source": {"name": "truth_source", "errors": truth_errors},
-            "graphml_post": {"name": "graphml_post", "errors": graphml_errors},
-            "vdb_missing": {"name": "vdb_missing", "errors": vdb_errors},
-        },
-    }
-```
-
-### - [ ] Step 4: Run test to verify it passes
-
-Run:
-```bash
-python -m pytest tests/test_lightrag_repair_unit.py -v -k check_all
-```
-
-Expected: PASS
-
-### - [ ] Step 5: Commit
-
-```bash
-git add niu_api/internal/lightrag_integrity.py tests/test_lightrag_repair_unit.py
-git commit -m "refactor(integrity): check_all 简化为检 2 真相源 + GraphML 后置 + vdb_*_missing
-
-删除 16 个旧 check 函数。新 check_all 检 3 项：
-1. 2 真相源完整可用（含内容完整性检查）
-2. GraphML 后置验证（重建后应该有 node）
-3. vdb_*_missing（GraphML 有 node 但 vdb 没对应向量 → 启动放行风险）
-"
-```
+（具体测试代码 + 实现略，参照 v3 Task 5 的模式，但 `_TRUTH_SOURCE_FILES` 改为 3 文件，check_all 检 GraphML + full_docs + cache 完好性 + 9 派生文件 missing）
 
 ---
 
-## Task 6: 删除引用旧 check 的测试文件
+## Task 5: 修复 `lightrag_manager` 的 `total_errors` 字段 + `run_repair_on_user_request` 的 `repaired` 判定
 
 **Files:**
-- Delete: 引用旧 16 个 check 函数的测试文件
+- Modify: `niu_api/internal/lightrag_manager.py`
 
 ### 背景
 
-Task 5 删除了 16 个旧 check 函数，引用它们的测试会失败。
+`run_resilience_phase1` 日志和 `get_lightrag_status` 接口需要返回 `critical_errors`/`major_errors`/`minor_errors` 字段（跟新 `check_all` 一致）。`run_repair_on_user_request` 的 `repaired` 判定要用 `repair_all` 返回的 `_unrecoverable` 字段，不再依赖 `check_all` 重检。
 
-### - [ ] Step 1: 找出所有引用旧 check 函数的测试文件
+### - [ ] Step 1-5: TDD 流程
 
-Run:
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot
-grep -lE "check_entity_chunks_dangling|check_relation_chunks_dangling|check_text_chunks_doc_dangling|check_text_chunks_cache_dangling|check_doc_status_chunks_dangling|check_vdb_entities_missing|check_vdb_relationships_missing|check_vdb_chunks_missing|check_graphml_edge_dangling|check_vdb_relationships_endpoint_dangling|check_brainregion_semantic_zombie|check_entity_chunks_source_id_mismatch|check_chunk_shared_by_too_many_entities|check_vdb_entities_orphan|check_brainregion_orphan_chunks|_CHECK_FUNCTIONS" tests/ 2>/dev/null
-```
-
-记录输出的文件列表。
-
-### - [ ] Step 2: 删除这些测试文件
-
-```bash
-# 替换为 Step 1 的实际输出
-rm tests/test_lightrag_semantic_integrity.py
-rm tests/test_lightrag_semantic_repair.py
-rm tests/test_lightrag_e2e_semantic.py
-# 其他根据 Step 1 输出补充
-```
-
-### - [ ] Step 3: 跑全部测试确认
-
-```bash
-python -m pytest tests/ -v 2>&1 | tail -30
-```
-
-Expected: 没有引用旧 check 的测试失败
-
-### - [ ] Step 4: Commit
-
-```bash
-git add -A tests/
-git commit -m "test: 删除引用旧 check 函数的测试文件"
-```
+（具体测试代码 + 实现略，参照 v3 Task 6 的模式）
 
 ---
 
-## Task 7: 修复 `lightrag_manager` 的 `total_errors` 字段（含日志 + Rust struct）
+## Task 6: 修复 `launcher/src/main.rs` 的 `IntegrityStatus` struct
 
 **Files:**
-- Modify: `niu_api/internal/lightrag_manager.py:1038-1061, 1380-1395`
-- Modify: `launcher/src/main.rs:50-55`
-- Test: `tests/test_lightrag_repair_unit.py`
+- Modify: `launcher/src/main.rs`
 
 ### 背景
 
-v1 计划 Task 5 只修 `get_lightrag_status` 的 integrity 字段，审查发现 `run_resilience_phase1` 日志和 Rust `IntegrityStatus` struct 也要改。三处都改。
+Rust `IntegrityStatus` struct 加 `critical_errors`/`major_errors`/`minor_errors` 字段（serde 默认忽略未知字段，但加上更完整）。
 
-### - [ ] Step 1: Write the failing test
+### - [ ] Step 1-5: TDD 流程
 
-`tests/test_lightrag_repair_unit.py` 追加：
-
-```python
-def test_get_lightrag_status_total_errors_correct(tmp_path, monkeypatch):
-    """get_lightrag_status 暴露的 total_errors 应 = critical + major + minor。
-    
-    用真实 check_all() 返回结构验证（顶层 critical_errors/major_errors/minor_errors 标量字段），
-    不用 fake 结构——避免掩盖 check_all 实际返回结构的 bug（违反铁律 5）。
-    """
-    from niu_api.internal import lightrag_manager
-    
-    # 准备损坏现场：full_docs 缺失（critical）+ GraphML 缺失（major）+ vdb 缺失（major）
-    # 只写 llm_response_cache（让真相源检查部分通过，但 GraphML/vdb 检测会报 major）
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")  # 空 dict（全新用户合法）
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(
-        json.dumps({"x": {"return": "y", "cache_type": "extract", "chunk_id": "chunk-x"}}, ensure_ascii=False)
-    )
-    # 不写 GraphML + 不写 vdb → _check_graphml_post 报 major + _check_vdb_missing 报 major
-    
-    monkeypatch.setattr(lightrag_manager, "_integrity_result", None)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    # patch lightrag_manager.STORAGE_DIR + _rag_instance（避免污染真实数据）
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
-    
-    status = lightrag_manager.get_lightrag_status()
-    
-    assert status["integrity"]["ok"] is False
-    # total_errors 应 = critical + major + minor（不是永远 0）
-    assert status["integrity"]["total_errors"] >= 1
-    assert status["integrity"]["total_errors"] != 0
-    # 新字段也应暴露
-    assert "critical_errors" in status["integrity"]
-    assert "major_errors" in status["integrity"]
-    assert "minor_errors" in status["integrity"]
-    # total_errors 应 = critical + major + minor
-    c = status["integrity"]["critical_errors"]
-    m = status["integrity"]["major_errors"]
-    n = status["integrity"]["minor_errors"]
-    assert status["integrity"]["total_errors"] == c + m + n, \
-        f"total_errors={status['integrity']['total_errors']} 应 = critical({c}) + major({m}) + minor({n})"
-```
-
-### - [ ] Step 2: Run test to verify it fails
-
-Run:
-```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_get_lightrag_status_total_errors_correct -v
-```
-
-Expected: FAIL（现有 `total_errors` 永远 0）
-
-### - [ ] Step 3: Write minimal implementation
-
-**3a. 修改 `niu_api/internal/lightrag_manager.py` 的 `get_lightrag_status`**（搜索 `integrity` 字段构造位置，大约在 L1380）：
-
-找到这段：
-```python
-"integrity": {
-    "ok": _integrity_result.get("ok", False) if _integrity_result else True,
-    "total_errors": _integrity_result.get("total_errors", 0) if _integrity_result else 0,
-}
-```
-
-替换为：
-```python
-if _integrity_result:
-    critical = _integrity_result.get("critical_errors", 0)
-    major = _integrity_result.get("major_errors", 0)
-    minor = _integrity_result.get("minor_errors", 0)
-    integrity_ok = _integrity_result.get("ok", False)
-    total_errors = critical + major + minor
-else:
-    critical = major = minor = 0
-    integrity_ok = True
-    total_errors = 0
-
-"integrity": {
-    "ok": integrity_ok,
-    "total_errors": total_errors,
-    "critical_errors": critical,
-    "major_errors": major,
-    "minor_errors": minor,
-}
-```
-
-**3b. 修复 `run_resilience_phase1` 日志**（L1038-1061 附近）：
-
-找到这段（L1061 附近）：
-```python
-f"total_errors={check_result.get('total_errors', 0)}"
-```
-
-替换为：
-```python
-critical = check_result.get("critical_errors", 0)
-major = check_result.get("major_errors", 0)
-minor = check_result.get("minor_errors", 0)
-total = critical + major + minor
-f"critical={critical}, major={major}, minor={minor}, total_errors={total}"
-```
-
-**3c. 修复 `run_resilience_phase1` 异常路径**（L1055 附近）：
-
-找到：
-```python
-check_result = {"ok": True, "total_errors": 0, "error": str(e)}
-```
-
-替换为：
-```python
-check_result = {"ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0, "error": str(e)}
-```
-
-**3d. 修改 `launcher/src/main.rs` 的 `IntegrityStatus` struct**（L50-55）：
-
-找到：
-```rust
-struct IntegrityStatus {
-    ok: bool,
-    total_errors: i32,
-}
-```
-
-替换为：
-```rust
-struct IntegrityStatus {
-    ok: bool,
-    total_errors: i32,
-    #[serde(default)]
-    critical_errors: i32,
-    #[serde(default)]
-    major_errors: i32,
-    #[serde(default)]
-    minor_errors: i32,
-}
-```
-
-注意：`#[serde(default)]` 让缺失字段默认 0，向后兼容。
-
-### - [ ] Step 4: Run test to verify it passes
-
-Run:
-```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_get_lightrag_status_total_errors_correct -v
-```
-
-Expected: PASS
-
-### - [ ] Step 5: 重新编译 Rust 启动器
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot
-./launcher/build.sh 2>&1 | tail -10
-```
-
-Expected: 编译成功
-
-### - [ ] Step 6: Commit
-
-```bash
-git add niu_api/internal/lightrag_manager.py launcher/src/main.rs tests/test_lightrag_repair_unit.py
-git commit -m "fix(manager+launcher): total_errors 字段完整修复（status 接口 + 日志 + Rust struct）
-
-之前 status 接口暴露的 total_errors=0 但实际 check_all 报 91 errors，
-导致 Rust 启动器走错分支。三处都修：
-1. get_lightrag_status 的 integrity 字段加 critical_errors/major_errors/minor_errors
-2. run_resilience_phase1 日志打印完整 critical/major/minor/total
-3. Rust IntegrityStatus struct 加 critical_errors/major_errors/minor_errors 字段
-"
-```
+（具体代码略，参照 v3 Task 7 的 Rust 修改部分）
 
 ---
 
-## Task 8: 修复 `run_repair_on_user_request` 的 `repaired` 判定（适配扁平结构 + 保留 SkillSync 二次 repair）
+## Task 7: 端到端 TDD 测试——合成 fixture 7 种损坏现场
 
 **Files:**
-- Modify: `niu_api/internal/lightrag_manager.py:1146-1340`
-- Test: `tests/test_lightrag_repair_unit.py`
+- Test: `tests/test_lightrag_rebuild_from_truth.py`
+- Fixture: `tests/fixtures/lightrag_truth_sources/`
 
 ### 背景
 
-v1 计划 Task 6 用"重检 check_all 报 major=0"判定 `repaired`，审查发现历史残留孤儿 chunk 永远报 major 导致 `repaired=False`。新设计改为：`repaired = not repair_all_result.get("_unrecoverable", False)`——基于 `repair_all` 返回的 `_unrecoverable` 字段。
+合成 fixture（不含真实人名）：
+- 3 个文档（doc-v1, doc-v2 是同一文档的两个版本；doc-v3 是独立文档）
+- 5 个 extract cache（含 1 个已删实体的脏 entry + 1 个旧版本 chunk 的 extract）
+- GraphML（含衰减后的 weight + 已删实体已不在 + 只引用当前活跃 chunk）
 
-SkillSync 二次 repair 保留（v1 删了导致残留 entity_chunks 不清），但适配扁平结构：二次 repair 结果用 `post_skill_sync_` 前缀合并到顶层，不嵌套。
+7 种损坏现场：
+1. 删 vdb_entities → repair
+2. 删 9 全部 → repair
+3. GraphML 损坏 → unrecoverable + 回滚（9 派生文件未被删除）
+4. full_docs 损坏 → unrecoverable
+5. cache 损坏 → unrecoverable
+6. 含旧版本 doc + 已删实体 → 重建后不复活（派生文件不含 deleted-entity / old-entity）
+7. weight 衰减值保留 → 重建后 GraphML 的 weight 不变（因为 GraphML 没被修改）
 
-### - [ ] Step 1: Write the failing test
+### - [ ] Step 1-5: TDD 流程
 
-`tests/test_lightrag_repair_unit.py` 追加：
-
-```python
-def test_run_repair_on_user_request_repaired_based_on_unrecoverable_flag(tmp_path, monkeypatch):
-    """repaired 应基于 repair_all 的 _unrecoverable 字段，不基于 check_all 重检。"""
-    from niu_api.internal import lightrag_manager
-    
-    # 准备真相源
-    docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
-    cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
-    
-    monkeypatch.setattr(lightrag_manager, "_integrity_result", None)
-    monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
-    monkeypatch.setattr(lightrag_manager, "_repairing", False)
-    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
-    monkeypatch.setattr("niu_api.kg_api._read_pipeline_busy", lambda: False)
-    
-    result = lightrag_manager.run_repair_on_user_request()
-    
-    assert "repaired" in result
-    assert isinstance(result["repaired"], bool)
-    # repaired 应基于 _unrecoverable 字段
-    if result.get("repair_result", {}).get("_unrecoverable"):
-        assert result["repaired"] is False
-    else:
-        assert result["repaired"] is True
-```
-
-### - [ ] Step 2: Run test to verify it fails
-
-Run:
-```bash
-python -m pytest tests/test_lightrag_repair_unit.py::test_run_repair_on_user_request_repaired_based_on_unrecoverable_flag -v
-```
-
-Expected: FAIL（现有 `repaired` 基于 check_all 重检）
-
-### - [ ] Step 3: Write minimal implementation
-
-修改 `niu_api/internal/lightrag_manager.py:1296-1340`：
-
-找到这段（实际行号以 grep 为准）：
-```python
-# 旧代码
-critical = check_result.get("critical_errors", 0)
-major = check_result.get("major_errors", 0)
-minor = check_result.get("minor_errors", 0)
-# ...
-repaired = not has_unrecoverable and critical == 0 and major == 0
-```
-
-替换为：
-```python
-# 新代码：repaired 基于 repair_all 的 _unrecoverable 字段
-repaired = not has_unrecoverable and not repair_result.get("_unrecoverable", False)
-
-critical = check_result.get("critical_errors", 0)
-major = check_result.get("major_errors", 0)
-minor = check_result.get("minor_errors", 0)
-```
-
-同时修复 SkillSync 二次 repair 合并逻辑（L1283-1288）：
-
-找到：
-```python
-for k, v in second_repair.items():
-    if k.startswith("_"):
-        continue
-    repair_result[f"post_skill_sync_{k}"] = v
-```
-
-替换为（保留 `if k.startswith("_"): continue` 跳过下划线字段，但二次 repair 的 `_unrecoverable` 单独合并到顶层，让 Rust 能读到）：
-```python
-# 二次 repair 的下划线字段跳过（避免 post_skill_sync__unrecoverable 双下划线）
-# 但 _unrecoverable 单独合并到顶层，让 Rust format_repair_summary 能读到
-if second_repair.get("_unrecoverable"):
-    repair_result["_unrecoverable"] = True
-    repair_result["_post_skill_sync_failed"] = True
-for k, v in second_repair.items():
-    if k.startswith("_"):
-        continue
-    repair_result[f"post_skill_sync_{k}"] = v
-```
-
-注意：Rust `format_repair_summary`（`main.rs:190-197`）遍历 `repair_result.<*>.unrecoverable` 字段检测 unrecoverable。二次 repair 的各 repair 函数返回的 result（含 `unrecoverable: True`）会以 `post_skill_sync_<name>` 名字合并到顶层，Rust 能读到 `post_skill_sync_text_chunks.unrecoverable` 等。二次 repair 顶层的 `_unrecoverable` 标记单独合并到 `repair_result["_unrecoverable"]`，让 `run_repair_on_user_request` 的 `repaired` 判定能读到。
-
-### - [ ] Step 4: Run test to verify it passes
-
-Run:
-```bash
-python -m pytest tests/test_lightrag_repair_unit.py -v
-```
-
-Expected: PASS
-
-### - [ ] Step 5: Commit
-
-```bash
-git add niu_api/internal/lightrag_manager.py tests/test_lightrag_repair_unit.py
-git commit -m "fix(manager): repaired 判定基于 _unrecoverable 字段，保留 SkillSync 二次 repair
-
-之前 repaired 用'重检 check_all 报 major=0'判定，但历史残留孤儿 chunk
-永远报 major 导致永远 repaired=False。新设计改为基于 repair_all 返回的
-_unrecoverable 字段。
-
-SkillSync 二次 repair 保留（v1 删了导致残留 entity_chunks 不清），
-适配扁平结构：所有字段加 post_skill_sync_ 前缀合并到顶层。
-"
-```
+（具体测试代码 + fixture 略，参照 v3 Task 8 的模式，但测试断言改为验证"3 真相源一字节未动 + 不复活 + weight 保留"）
 
 ---
 
-## Task 9: 端到端验证——合成 fixture 6 种损坏现场
+## Task 8: 真实启动验证——./niu 启动走完整 repair 流程
 
 **Files:**
-- Create: `tests/test_lightrag_rebuild_from_truth.py`
-- Create: `tests/fixtures/lightrag_truth_sources/`（合成数据，不含真实人名）
+- Manual test
 
 ### 背景
 
-v1 计划 Task 7 用真实备份做 fixture，审查发现含真实人名/电话/地址，提交 git 泄露隐私。本 Task 用合成数据：3 个文档 + 5 个 extract cache + 1 个僵尸脑区 cache，规模小但覆盖关键场景。
+用真实 `~/.niu/lightrag_storage` 数据，./niu 启动触发 check_all + repair_all（如果 check 报错）。验证：
+1. 3 真相源一字节未动（启动前后比对 hash）
+2. weight 衰减值保留（GraphML 的 weight 不变）
+3. 已删实体不复活（重建后 GraphML 仍不含已删实体）
+4. region_sync 启动后 1 分钟内完成（不卡 dissolve）
 
-6 种损坏现场：
-1. 删 vdb_*.json
-2. 删 GraphML
-3. 删 9 个派生文件全部
-4. 损坏 9 个派生文件
-5. 真相源损坏（unrecoverable + 回滚）
-6. 含僵尸 cache → 重建后僵尸不复活
+### - [ ] Step 1-5: 手动验证流程
 
-### - [ ] Step 1: 生成合成 fixture
-
-写一个 Python 脚本生成合成 fixture：
-
-`tests/fixtures/lightrag_truth_sources/generate_fixture.py`:
-
-```python
-"""生成合成 fixture（不含真实人名），用于端到端测试。"""
-import json
-from pathlib import Path
-
-FIXTURE_DIR = Path(__file__).parent
-
-def generate():
-    # 3 个文档（虚构内容）
-    docs = {
-        "doc-syn-1": {
-            "content": "测试文档1：虚构人物张三李四王五的介绍，用于测试 LightRAG 重建流程。",
-            "file_path": "synthetic1.md",
-            "create_time": 1781930610,
-            "update_time": 1781930610,
-            "_id": "doc-syn-1",
-        },
-        "doc-syn-2": {
-            "content": "测试文档2：虚构组织测试公司的业务介绍，用于测试脑区功能。",
-            "file_path": "synthetic2.md",
-            "create_time": 1781930611,
-            "update_time": 1781930611,
-            "_id": "doc-syn-2",
-        },
-        "doc-syn-3": {
-            "content": "测试文档3：系统维护日志，记录删除重复脑区的操作。",
-            "file_path": "synthetic3.md",
-            "create_time": 1781930612,
-            "update_time": 1781930612,
-            "_id": "doc-syn-3",
-        },
-    }
-    
-    # 5 个正常 extract cache + 1 个僵尸脑区 cache
-    cache = {
-        "default:extract:syn-key-1": {
-            "return": "entity<|#|>张三<|#|>person<|#|>虚构人物张三的介绍。\nrelation<|#|>人际关系脑区<|#|>张三<|#|>包含<|#|>人际关系脑区包含张三。",
-            "cache_type": "extract",
-            "chunk_id": "chunk-syn-1",
-            "original_prompt": "synthetic",
-            "create_time": 1781930610,
-        },
-        "default:extract:syn-key-2": {
-            "return": "entity<|#|>李四<|#|>person<|#|>虚构人物李四的介绍。",
-            "cache_type": "extract",
-            "chunk_id": "chunk-syn-2",
-            "create_time": 1781930611,
-        },
-        "default:extract:syn-key-3": {
-            "return": "entity<|#|>测试公司<|#|>organization<|#|>虚构测试公司介绍。",
-            "cache_type": "extract",
-            "chunk_id": "chunk-syn-3",
-            "create_time": 1781930612,
-        },
-        "default:extract:syn-key-4": {
-            "return": "entity<|#|>王五<|#|>person<|#|>虚构人物王五。",
-            "cache_type": "extract",
-            "chunk_id": "chunk-syn-1",
-            "create_time": 1781930613,
-        },
-        "default:extract:syn-key-5": {
-            "return": "<|COMPLETE|>",
-            "cache_type": "extract",
-            "chunk_id": "chunk-syn-2",
-            "create_time": 1781930614,
-        },
-        # 僵尸脑区 cache（description 含"被删除"标记）
-        "default:extract:zombie-syn": {
-            "return": "entity<|#|>智家测试僵尸脑区<|#|>brainregion<|#|>被删除的重复脑区实体之一。",
-            "cache_type": "extract",
-            "chunk_id": "chunk-zombie-syn",
-            "create_time": 1781930615,
-        },
-    }
-    
-    (FIXTURE_DIR / "kv_store_full_docs.json").write_text(
-        json.dumps(docs, ensure_ascii=False, indent=2)
-    )
-    (FIXTURE_DIR / "kv_store_llm_response_cache.json").write_text(
-        json.dumps(cache, ensure_ascii=False, indent=2)
-    )
-    print(f"生成 fixture 到 {FIXTURE_DIR}")
-
-if __name__ == "__main__":
-    generate()
-```
-
-运行：
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot
-python tests/fixtures/lightrag_truth_sources/generate_fixture.py
-ls -la tests/fixtures/lightrag_truth_sources/
-```
-
-### - [ ] Step 2: Write the failing test
-
-`tests/test_lightrag_rebuild_from_truth.py`:
-
-```python
-"""端到端验证：6 种损坏现场全部能从 2 真相源修复（合成 fixture）。
-
-不 mock LLM，用真实 LightRAG 实例 + 真实 embedding。
-注意：repair_graphml 重跑 pipeline 时 cache 命中不调 LLM。
-"""
-import json
-import shutil
-import pytest
-from pathlib import Path
-from unittest.mock import patch
-
-from niu_api.internal.lightrag_repair import repair_all, repair_brainregion_zombies
-from niu_api.internal.lightrag_integrity import check_all
-
-FIXTURE_DIR = Path(__file__).parent / "fixtures" / "lightrag_truth_sources"
-
-
-@pytest.fixture
-def isolated_storage(tmp_path):
-    """复制 fixture 真相源到 tmp_path。"""
-    for fname in ["kv_store_full_docs.json", "kv_store_llm_response_cache.json"]:
-        src = FIXTURE_DIR / fname
-        if src.exists():
-            shutil.copy(src, tmp_path / fname)
-    return tmp_path
-
-
-@pytest.fixture
-def patched_storage(tmp_path):
-    """patch _STORAGE_DIR 到 tmp_path，返回 tmp_path。"""
-    with patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path), \
-         patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        yield tmp_path
-
-
-def test_e2e_repair_after_delete_vdb(isolated_storage, patched_storage):
-    """场景 1：删 vdb_*.json → repair → 重建。"""
-    # 先跑一次 repair 建立 baseline（让所有派生文件存在）
-    repair_all()
-    
-    # 删 3 个 vdb 文件
-    for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
-        (isolated_storage / fname).unlink()
-    
-    result = repair_all()
-    
-    assert not result.get("_unrecoverable"), f"修复应成功: {result.get('_unrecoverable_reason')}"
-    for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
-        assert (isolated_storage / fname).exists()
-        assert (isolated_storage / fname).stat().st_size > 0
-
-
-def test_e2e_repair_after_delete_graphml(isolated_storage, patched_storage):
-    """场景 2：删 GraphML → repair → 重建。"""
-    repair_all()
-    (isolated_storage / "graph_chunk_entity_relation.graphml").unlink()
-    
-    result = repair_all()
-    
-    assert not result.get("_unrecoverable")
-    assert (isolated_storage / "graph_chunk_entity_relation.graphml").exists()
-
-
-def test_e2e_repair_after_delete_all_derived(isolated_storage, patched_storage):
-    """场景 3：删 9 个派生文件全部 → repair → 全部重建。"""
-    derived = [
-        "kv_store_text_chunks.json", "kv_store_doc_status.json",
-        "graph_chunk_entity_relation.graphml",
-        "vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json",
-        "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
-        "kv_store_full_entities.json", "kv_store_full_relations.json",
-    ]
-    for fname in derived:
-        if (isolated_storage / fname).exists():
-            (isolated_storage / fname).unlink()
-    
-    result = repair_all()
-    
-    assert not result.get("_unrecoverable")
-    for fname in derived:
-        assert (isolated_storage / fname).exists(), f"{fname} 应被重建"
-
-
-def test_e2e_repair_after_corrupt_derived(isolated_storage, patched_storage):
-    """场景 4：损坏 9 个派生文件 → repair → 重建。"""
-    derived = [
-        "kv_store_text_chunks.json", "kv_store_doc_status.json",
-        "graph_chunk_entity_relation.graphml",
-        "vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json",
-        "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
-        "kv_store_full_entities.json", "kv_store_full_relations.json",
-    ]
-    for fname in derived:
-        (isolated_storage / fname).write_text('{"corrupt": "garbage"}')
-    
-    result = repair_all()
-    
-    assert not result.get("_unrecoverable")
-    for fname in derived:
-        content = (isolated_storage / fname).read_text()
-        assert "garbage" not in content
-
-
-def test_e2e_unrecoverable_when_full_docs_missing(isolated_storage, patched_storage):
-    """场景 5：真相源 full_docs 损坏 → unrecoverable + 回滚。"""
-    (isolated_storage / "kv_store_full_docs.json").unlink()
-    (isolated_storage / "kv_store_text_chunks.json").write_text('{"old": "data"}')
-    
-    result = repair_all()
-    
-    assert result.get("_unrecoverable") is True
-    # 回滚：派生文件保留原状
-    assert (isolated_storage / "kv_store_text_chunks.json").read_text() == '{"old": "data"}'
-
-
-def test_e2e_zombie_cache_cleaned_before_rebuild(isolated_storage, patched_storage):
-    """场景 6：含僵尸脑区 cache → 重建后僵尸不复活。
-    
-    fixture 的 llm_response_cache 有 1 条 zombie-syn extract entry
-    （description 含"被删除的重复脑区实体之一"）。
-    repair_all 应在重建 GraphML 前先清掉这条 cache entry。
-    """
-    # 先跑 repair_brainregion_zombies 单独验证 cache 清理
-    repair_brainregion_zombies()
-    
-    cache = json.loads((isolated_storage / "kv_store_llm_response_cache.json").read_text())
-    # 僵尸 extract entry 应被删除
-    assert "default:extract:zombie-syn" not in cache
-    # 正常 extract entry 应保留
-    assert "default:extract:syn-key-1" in cache
-    
-    # 再跑完整 repair_all，重建 GraphML
-    result = repair_all()
-    assert not result.get("_unrecoverable")
-    
-    # 重建后 GraphML 不应含"智家测试僵尸脑区" node
-    import xml.etree.ElementTree as ET
-    tree = ET.parse(isolated_storage / "graph_chunk_entity_relation.graphml")
-    ns = {'g': 'http://graphml.graphdrawing.org/xmlns'}
-    node_ids = {n.get("id") for n in tree.findall('.//g:node', ns)}
-    assert "智家测试僵尸脑区" not in node_ids, "僵尸脑区不应复活"
-```
-
-### - [ ] Step 3: Run test to verify it fails
-
-Run:
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot
-python -m pytest tests/test_lightrag_rebuild_from_truth.py -v --timeout=600 2>&1 | tail -30
-```
-
-Expected: FAIL（修复实现可能还没完全跑通）
-
-### - [ ] Step 4: 修复实现直到测试通过
-
-逐个测试调试修复实现。常见问题：
-- `repair_graphml` 重跑 pipeline 时 embedding model 加载失败 → 确认模型路径
-- `repair_vdb_*` embedding 慢 → 测试加 `--timeout=600`
-- chunking 参数不一致 → 用真实配置
-
-### - [ ] Step 5: Run all tests
-
-```bash
-python -m pytest tests/ -v --timeout=600 2>&1 | tail -40
-```
-
-Expected: 全部 PASS
-
-### - [ ] Step 6: Commit
-
-```bash
-git add tests/test_lightrag_rebuild_from_truth.py tests/fixtures/lightrag_truth_sources/
-git commit -m "test: 端到端验证 6 种损坏现场（合成 fixture，不含真实人名）
-
-新增 6 个端到端测试：
-1. 删 vdb_*.json → repair 重建
-2. 删 GraphML → repair 重建
-3. 删 9 个派生文件全部 → repair 全部重建
-4. 损坏 9 个派生文件 → repair 重建
-5. 真相源 full_docs 损坏 → unrecoverable + 回滚
-6. 含僵尸脑区 cache → 重建后僵尸不复活
-
-fixture 用合成数据（虚构张三李四王五+测试公司），不含真实人名/电话/地址。
-"
-```
-
----
-
-## Task 10: 真实启动验证——./niu 启动走完整 repair 流程（3 种现场 + region_sync 验证）
-
-**Files:**
-- 无代码改动，只做端到端启动验证
-
-### 背景
-
-TDD 测试通过后，必须用真实程序 `./niu` 启动验证——CLAUDE.md 铁律 5"测试必须用真实数据+真实LLM"。本 Task 扩展到 3 种损坏现场 + region_sync 启动后 1 分钟内完成验证（看日志不含 dissolve 卡死）。
-
-### - [ ] Step 1: 备份当前数据
-
-```bash
-TS=$(date +%Y%m%d_%H%M%S)
-cp -R ~/.niu/lightrag_storage ~/.niu/lightrag_storage.prebuild_${TS}
-echo "BACKUP_DONE: lightrag_storage.prebuild_${TS}"
-```
-
-### - [ ] Step 2: 循环测 3 种损坏现场
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot
-./launcher/build.sh 2>&1 | tail -5
-
-# 3 种现场
-for scenario in "delete_vdb" "delete_graphml" "delete_all_derived"; do
-    echo "=== 测试场景: $scenario ==="
-    
-    # 恢复真实数据到 clean state
-    rm -rf ~/.niu/lightrag_storage
-    cp -R ~/.niu/lightrag_storage.prebuild_${TS} ~/.niu/lightrag_storage
-    
-    # 制造损坏现场
-    case $scenario in
-        delete_vdb)
-            rm -f ~/.niu/lightrag_storage/vdb_chunks.json
-            rm -f ~/.niu/lightrag_storage/vdb_entities.json
-            rm -f ~/.niu/lightrag_storage/vdb_relationships.json
-            ;;
-        delete_graphml)
-            rm -f ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
-            ;;
-        delete_all_derived)
-            for f in kv_store_text_chunks.json kv_store_doc_status.json \
-                     vdb_chunks.json vdb_entities.json vdb_relationships.json \
-                     kv_store_entity_chunks.json kv_store_relation_chunks.json \
-                     kv_store_full_entities.json kv_store_full_relations.json; do
-                rm -f ~/.niu/lightrag_storage/$f
-            done
-            ;;
-    esac
-    
-    # 启动 ./niu
-    ./niu > /tmp/niu_scenario_${scenario}.log 2>&1 &
-    NIU_PID=$!
-    
-    # 等 status check
-    for i in $(seq 1 30); do
-        sleep 2
-        if grep -q "Phase 1 完成" /tmp/niu_scenario_${scenario}.log 2>/dev/null; then
-            break
-        fi
-    done
-    
-    # 模拟点"是"调 repair
-    curl -s -X POST "http://127.0.0.1:9876/api/kg/lightrag/repair?target=all" --max-time 600 > /tmp/repair_${scenario}.json 2>&1
-    
-    python3 -c "
-import json
-d = json.load(open('/tmp/repair_${scenario}.json'))
-r = d.get('result', {})
-print('repaired:', r.get('repaired'))
-print('major_errors:', r.get('major_errors'))
-"
-    
-    # 验证 region_sync 启动后 1 分钟内完成（不含 dissolve 卡死）
-    sleep 60
-    if grep -q "dissolve" /tmp/niu_scenario_${scenario}.log 2>/dev/null; then
-        echo "FAIL: region_sync 仍在跑 dissolve"
-        grep -c "dissolve" /tmp/niu_scenario_${scenario}.log
-    else
-        echo "OK: region_sync 没卡 dissolve"
-    fi
-    
-    # 杀进程（铁律：禁止 pkill -f niu，会损坏 LightRAG vdb 文件——参考 MEMORY.md no-pkill-subprocess / test-process-kill-corruption）
-    # 用 kill -TERM $NIU_PID 优雅退出 + 等待 timeout
-    kill -TERM $NIU_PID 2>/dev/null
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        sleep 1
-        kill -0 $NIU_PID 2>/dev/null || break  # 进程已退出
-    done
-    # 超时后仍存活才用 kill -9（精确 PID，不用 pkill -f）
-    kill -0 $NIU_PID 2>/dev/null && kill -9 $NIU_PID 2>/dev/null
-done
-```
-
-Expected:
-- 3 种现场 repair 都 `repaired: True`
-- region_sync 没卡 dissolve
-
-### - [ ] Step 3: 恢复用户真实数据
-
-```bash
-TS_BACKUP=<Step 1 的 TS 值>
-rm -rf ~/.niu/lightrag_storage
-cp -R ~/.niu/lightrag_storage.prebuild_${TS_BACKUP} ~/.niu/lightrag_storage
-rm -rf ~/.niu/lightrag_storage.prebuild_*
-echo "RESTORED"
-```
-
-### - [ ] Step 4: Commit 验证日志
-
-```bash
-# 没有代码改动，只记录验证日志
-git log --oneline -15
-```
-
-### - [ ] Step 5: 报告
-
-在 PR 描述里写：
-- 6 种 TDD 测试 + 3 种真实启动验证全部通过
-- 真相源完整性检测正确触发 unrecoverable + 回滚
-- `total_errors` 字段正确累加（status 接口 + 日志 + Rust struct）
-- `repaired` 判定基于 `_unrecoverable` 字段
-- 僵尸脑区 cache 在重建前被清理，重建后不复活
-- region_sync 启动后 1 分钟内没卡 dissolve
+（具体步骤略，参照 v3 Task 9 的模式）
 
 ---
 
 ## Self-Review Checklist
 
-### 1. Spec coverage
-
-- [x] 检测 2 真相源（含内容完整性）→ Task 4 (`_check_truth_sources`)
-- [x] 备份 9 派生文件 → Task 4 (`repair_all` 备份逻辑)
-- [x] 清僵尸 cache → Task 1 (`repair_brainregion_zombies` 扩展)
-- [x] 删除 9 派生文件 → Task 4 (`repair_all` 删除逻辑)
-- [x] 按依赖链重建 → Task 4 (`_REBUILD_ORDER`)
-- [x] 失败回滚 → Task 4 (`repair_all` 回滚逻辑)
-- [x] `repair_text_chunks` 用真实配置 + chunk_id 保护 → Task 2
-- [x] `repair_graphml` 让 patch 生效 → Task 3
-- [x] `repair_all` 保持扁平结构 → Task 4
-- [x] `check_all` 加 vdb_*_missing → Task 5
-- [x] `total_errors` 三处修复 → Task 7
-- [x] `repaired` 判定 + SkillSync 二次 repair 保留 → Task 8
-- [x] 6 种 TDD 测试 + 合成 fixture → Task 9
-- [x] 3 种真实启动验证 + region_sync → Task 10
-- [x] 删除引用旧 check 的测试 → Task 6
-
-### 2. Placeholder scan
-
-- [x] 无 TBD / TODO
-- [x] 无 "add appropriate error handling"
-- [x] 每个 Task 都有完整测试代码
-- [x] Task 7/8 Step 1 让工程师 `sed -n` 查看现状——必要，避免行号假设错误
-
-### 3. Type consistency
-
-- [x] `repair_all` 返回扁平结构，`run_repair_on_user_request` 读 `_unrecoverable` 字段——一致
-- [x] `_TRUTH_SOURCE_FILES` 在 Task 4 是 set，在 Task 5 是 list——故意不一致（Task 4 用 set 做 O(1) 查找，Task 5 用 list 保序遍历）
-- [x] `_REBUILD_ORDER` 元组格式 `(name, fn)` 跟 Task 4 重建循环一致
-- [x] Rust `IntegrityStatus` struct 加 `#[serde(default)]` 字段——向后兼容
+- [ ] 3 真相源完全不可动（GraphML + full_docs + cache 不写不改不删（读取是必要的，用于按需提取重建派生文件））
+- [ ] 3 真相源任一损坏 = unrecoverable，不进入恢复流程
+- [ ] 3 真相源全部完好 = 只重建 9 个派生文件，真相源一字节未动
+- [ ] 重建算法是"从 GraphML 按需提取"，不是"从日志全量重建 + 过滤"
+- [ ] text_chunks 天然取最后版本（dict.update 覆盖语义）
+- [ ] cache 按 create_time 降序取最新 extract entry
+- [ ] weight 不写 vdb（meta_fields 不含 weight）
+- [ ] weight 衰减值保留（GraphML 完好时不重放覆盖）
+- [ ] 脑区 chunk 特殊处理（full_doc_id="brain"）
+- [ ] 9 派生文件全部从 GraphML + full_docs + cache 派生（天然防复活）
+- [ ] 备份 + 回滚机制完整（只备份 9 派生文件，不备份真相源）
+- [ ] 测试用真实数据 + 真实 LLM（不 mock）
+- [ ] 3 真相源完好性检测标准完备
+- [ ] 删除了所有会动真相源的步骤（repair_graphml / repair_brainregion_zombies / repair_cache_filter / repair_graphml_orphan_edges）
 
 ---
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-07-13-lightrag-rebuild-from-truth-sources.md` (v2，已修订 14 个审查问题).
-
-Two execution options:
+**Plan complete and saved to `docs/superpowers/plans/2026-07-13-lightrag-rebuild-from-truth-sources.md`. Two execution options:**
 
 **1. Subagent-Driven (recommended)** - I dispatch a fresh subagent per task, review between tasks, fast iteration
 
