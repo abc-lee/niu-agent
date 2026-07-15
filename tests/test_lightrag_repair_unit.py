@@ -1163,3 +1163,45 @@ def test_embed_batch_works_during_repair(monkeypatch):
         assert len(result[0]) > 0
     finally:
         lm._repairing = original
+
+
+def test_embed_batch_fallback_uses_get_lightrag_for_repair(monkeypatch):
+    """_embed_batch fallback 路径应调 get_lightrag_for_repair（不是 get_lightrag）。
+
+    Bug A：repair 期间 _repairing=True，get_lightrag() 返回 None，
+    若 fallback 调 get_lightrag() → embedding 失败 → repair_vdb_* 全部失败。
+
+    本测试强制走 fallback：mock get_model 返回 None（预加载路径失败），
+    验证 fallback 调 get_lightrag_for_repair（绕过 _repairing 门控）拿到实例。
+    """
+    import niu_api.internal.lightrag_manager as lm
+
+    # 1. mock get_model 返回 None（强制走 fallback 路径）
+    monkeypatch.setattr("niu_api.internal.embedding.get_model", lambda: None)
+
+    # 2. 模拟 repair 期间 _repairing=True
+    monkeypatch.setattr(lm, "_repairing", True)
+    monkeypatch.setattr(lm, "_rag_instance", None)
+    monkeypatch.setattr(lm, "_init_failed_at", None)
+
+    # 3. 跟踪 get_lightrag vs get_lightrag_for_repair 的调用
+    call_log = []
+    class FakeRag:
+        async def embedding_func(self, texts):
+            call_log.append("embedding_func_called")
+            # 返回假向量（不调真实模型，只验证 fallback 走对路径）
+            return [[0.1] * 4 for _ in texts]
+    monkeypatch.setattr(lm, "_create_lightrag_instance", lambda: FakeRag())
+
+    # get_lightrag 在 _repairing=True 时应返回 None（门控生效）
+    # get_lightrag_for_repair 应绕过门控返回实例
+    # 如果 fallback 误调 get_lightrag → 返回 None → _embed_batch 返回 None → 测试失败
+    from niu_api.internal.lightrag_repair import _embed_batch
+    result = _embed_batch(["fallback 测试"])
+
+    assert result is not None, (
+        "fallback 路径应通过 get_lightrag_for_repair 拿到实例并完成 embedding，"
+        "若 fallback 误调 get_lightrag() 则 _repairing=True 时返回 None 导致失败"
+    )
+    assert len(result) == 1
+    assert "embedding_func_called" in call_log, "应调 FakeRag.embedding_func"

@@ -127,13 +127,13 @@ def _embed_batch(texts: list[str]) -> list[list[float]] | None:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[LightRAGRepair] 预加载 embedding 模型失败: {e}，fallback LightRAG")
 
-    # 2. fallback 到 LightRAG 实例
+    # 2. fallback 到 LightRAG 实例（repair 专用路径，绕过 _repairing 门控）
     try:
         import asyncio
 
-        from niu_api.internal.lightrag_manager import get_lightrag
+        from niu_api.internal.lightrag_manager import get_lightrag_for_repair
 
-        rag = get_lightrag()
+        rag = get_lightrag_for_repair()
         if rag is None:
             logger.error("[LightRAGRepair] embedding 失败：预加载模型未就绪 + LightRAG 未初始化")
             return None
