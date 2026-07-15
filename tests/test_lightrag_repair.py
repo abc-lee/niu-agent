@@ -830,10 +830,10 @@ def test_repair_all_empty_storage_ok(storage_dir, patched_embed, monkeypatch):
 
 
 def test_repair_all_unrecoverable_propagates(storage_dir, patched_embed, monkeypatch):
-    """full_docs 损坏 → file_level_critical 报 full_docs 损坏 → unrecoverable。
+    """full_docs 损坏 → _check_truth_sources_intact 报 full_docs 损坏 → _unrecoverable=True。
 
-    v2: full_docs 在 _UNRECOVERABLE_FILES，不会调 repair_text_chunks，
-    直接标记 results["full_docs"]["unrecoverable"]=True。
+    v4: full_docs 是 3 真相源之一，损坏 = 不可恢复。repair_all 直接返回
+    _unrecoverable=True + _truth_source_check，不调任何 repair 函数。
     """
     from niu_api.internal import lightrag_repair
 
@@ -841,14 +841,16 @@ def test_repair_all_unrecoverable_propagates(storage_dir, patched_embed, monkeyp
 
     result = lightrag_repair.repair_all()
 
-    # full_docs 应在 result 里，标记 unrecoverable（不调 repair_text_chunks）
-    assert "full_docs" in result
-    assert result["full_docs"]["status"] == "error"
-    assert result["full_docs"].get("unrecoverable") is True
-    # text_chunks 不应在 result 里（check 没报 text_chunks_doc_dangling，因为 text_chunks 不存在→check 返回空 errors）
-    assert "text_chunks" not in result
-    # _unrecoverable 标记应被设置
+    # v4: 真相源损坏 → _unrecoverable=True，不调任何 repair 函数
     assert result.get("_unrecoverable") is True
+    assert "full_docs" in result["_truth_source_check"]
+    assert result["_truth_source_check"]["full_docs"]["intact"] is False
+    assert "full_docs" in result.get("_unrecoverable_reason", "")
+    # 没有任何重建子项（9 派生文件 repair 全部跳过）
+    for key in ("text_chunks", "doc_status", "vdb_chunks", "vdb_entities",
+                "vdb_relationships", "entity_chunks", "relation_chunks",
+                "full_entities", "full_relations"):
+        assert key not in result
 
 
 def test_repair_all_returns_expected_actual_lost_fields(storage_dir, patched_embed, monkeypatch):
