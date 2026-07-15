@@ -1250,13 +1250,31 @@ def test_check_truth_sources_intact_cache_corrupt(tmp_path, monkeypatch):
 def _make_synthetic_fixture(tmp_path: Path):
     """合成 fixture：3 文档 + 5 cache + GraphML（含衰减后 weight + 已删实体已不在）。
 
+    用真实 compute_mdhash_id 生成 chunk_id，让 GraphML source_id 跟 full_docs chunking 产出一致。
+    否则 repair_text_chunks 的 full_docs 反查永远找不到匹配 chunk → text_chunks 重建为空 →
+    does_not_reanimate 测试"意外通过"（空 dict 不含已删实体）而非"正确验证"。
+
     构造 v4 场景：
     - GraphML：2 个实体（entity-a, entity-b）+ 1 条 edge（weight=0.5 衰减后）
     - 已删实体 deleted-entity 不在 GraphML 里（模拟之前已正确删除）
-    - full_docs：2 个文档
+    - full_docs：2 个文档（content 用于算真实 chunk_id）
     - cache：5 条 extract entry（含 1 个已删实体的脏 entry + 1 个旧版本 chunk 的 entry）
     - 9 个派生文件初始为空（repair_all 会重建）
     """
+    from lightrag.utils import compute_mdhash_id
+
+    # 用确定性的 full_docs 内容，算出真实 chunk_id
+    doc_v1_content = "v1 content for synthetic fixture document one"
+    doc_v2_content = "v2 content for synthetic fixture document two"
+    chunk_id_1 = compute_mdhash_id(doc_v1_content, prefix="chunk-")
+    chunk_id_2 = compute_mdhash_id(doc_v2_content, prefix="chunk-")
+
+    # 已删实体/旧版本的 chunk_id（用不同 content，确保不在活跃集合）
+    deleted_content = "deleted entity content that should not be rebuilt"
+    old_content = "old version content that should not be rebuilt"
+    chunk_id_deleted = compute_mdhash_id(deleted_content, prefix="chunk-")
+    chunk_id_old = compute_mdhash_id(old_content, prefix="chunk-")
+
     # GraphML：2 个实体（entity-a, entity-b）+ 1 条 edge（weight=0.5 衰减后）
     # 已删实体 deleted-entity 不在 GraphML 里
     ns = "http://graphml.graphdrawing.org/xmlns"
@@ -1275,27 +1293,27 @@ def _make_synthetic_fixture(tmp_path: Path):
 
     a = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-a"})
     ET.SubElement(a, f"{{{ns}}}data", {"key": "d2"}).text = "desc A"
-    ET.SubElement(a, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-1"
+    ET.SubElement(a, f"{{{ns}}}data", {"key": "d3"}).text = chunk_id_1  # 真实 hash
 
     b = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-b"})
     ET.SubElement(b, f"{{{ns}}}data", {"key": "d2"}).text = "desc B"
-    ET.SubElement(b, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-2"
+    ET.SubElement(b, f"{{{ns}}}data", {"key": "d3"}).text = chunk_id_2  # 真实 hash
 
     edge = ET.SubElement(graph, f"{{{ns}}}edge", {"source": "entity-a", "target": "entity-b"})
     ET.SubElement(edge, f"{{{ns}}}data", {"key": "d7"}).text = "0.5"  # 衰减后的 weight
     ET.SubElement(edge, f"{{{ns}}}data", {"key": "d8"}).text = "edge desc"
     ET.SubElement(edge, f"{{{ns}}}data", {"key": "d9"}).text = "keyword1, keyword2"
-    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d10"}).text = "chunk-1<SEP>chunk-2"
+    ET.SubElement(edge, f"{{{ns}}}data", {"key": "d10"}).text = f"{chunk_id_1}<SEP>{chunk_id_2}"
 
     ET.ElementTree(root).write(
         tmp_path / "graph_chunk_entity_relation.graphml",
         xml_declaration=True, encoding="utf-8"
     )
 
-    # full_docs：2 个文档
+    # full_docs：2 个文档（用上面算 hash 的 content）
     docs = {
-        "doc-v1": {"content": "v1 content", "file_path": "v1.md", "create_time": 1000},
-        "doc-v2": {"content": "v2 content", "file_path": "v2.md", "create_time": 2000},
+        "doc-v1": {"content": doc_v1_content, "file_path": "v1.md", "create_time": 1000},
+        "doc-v2": {"content": doc_v2_content, "file_path": "v2.md", "create_time": 2000},
     }
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
 
@@ -1303,21 +1321,21 @@ def _make_synthetic_fixture(tmp_path: Path):
     cache = {
         "default:extract:chunk1": {
             "return": "entity<|#|>entity-a<|#|>concept<|#|>desc A",
-            "cache_type": "extract", "chunk_id": "chunk-1", "create_time": 1500,
+            "cache_type": "extract", "chunk_id": chunk_id_1, "create_time": 1500,
         },
         "default:extract:chunk2": {
             "return": "entity<|#|>entity-b<|#|>concept<|#|>desc B",
-            "cache_type": "extract", "chunk_id": "chunk-2", "create_time": 1500,
+            "cache_type": "extract", "chunk_id": chunk_id_2, "create_time": 1500,
         },
-        # 已删实体的脏 entry（chunk-3 不在 GraphML 活跃集合）
-        "default:extract:chunk3_deleted": {
+        # 已删实体的脏 entry（chunk_id_deleted 不在 GraphML 活跃集合）
+        "default:extract:chunk_deleted": {
             "return": "entity<|#|>deleted-entity<|#|>concept<|#|>已删",
-            "cache_type": "extract", "chunk_id": "chunk-3", "create_time": 800,
+            "cache_type": "extract", "chunk_id": chunk_id_deleted, "create_time": 800,
         },
-        # 旧版本 chunk 的 entry（chunk-old 不在 GraphML 活跃集合）
+        # 旧版本 chunk 的 entry（chunk_id_old 不在 GraphML 活跃集合）
         "default:extract:chunk_old": {
             "return": "entity<|#|>old-entity<|#|>concept<|#|>旧版本",
-            "cache_type": "extract", "chunk_id": "chunk-old", "create_time": 500,
+            "cache_type": "extract", "chunk_id": chunk_id_old, "create_time": 500,
         },
         # 非 extract 类型 cache
         "default:summary:some": {
@@ -1422,10 +1440,21 @@ def test_repair_all_does_not_reanimate_deleted_entities(tmp_path, monkeypatch):
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
 
-    # 检查所有派生文件不含 deleted-entity / old-entity
+    from lightrag.utils import compute_mdhash_id
+    doc_v1_content = "v1 content for synthetic fixture document one"
+    deleted_content = "deleted entity content that should not be rebuilt"
+    old_content = "old version content that should not be rebuilt"
+    chunk_id_1 = compute_mdhash_id(doc_v1_content, prefix="chunk-")
+    chunk_id_deleted = compute_mdhash_id(deleted_content, prefix="chunk-")
+    chunk_id_old = compute_mdhash_id(old_content, prefix="chunk-")
+
+    # 验证 text_chunks 真正重建了活跃 chunk（不是空 dict 意外通过）
     tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
-    assert "chunk-3" not in tc  # 已删实体的 chunk 不重建
-    assert "chunk-old" not in tc  # 旧版本 chunk 不重建
+    assert chunk_id_1 in tc, "活跃 chunk 应被重建（证明 text_chunks 非空，不是意外通过）"
+    assert tc[chunk_id_1]["content"] == doc_v1_content
+    # 已删实体的 chunk 不重建
+    assert chunk_id_deleted not in tc, "已删实体的 chunk 不应被重建"
+    assert chunk_id_old not in tc, "旧版本 chunk 不应被重建"
 
     ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text())
     assert "deleted-entity" not in ec
