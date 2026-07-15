@@ -203,7 +203,9 @@ def _load_json_dict(path: Path) -> dict[str, Any] | None:
     try:
         with open(path, encoding="utf-8") as f:
             raw = json.load(f)
-    except (json.JSONDecodeError, Exception):
+    except json.JSONDecodeError:
+        # 只捕获 JSON 解析失败；OSError/PermissionError 等自然向上抛
+        # （调用方已有 try/except 兜底，避免静默吞掉真正的 I/O 故障）
         return None
     if not isinstance(raw, dict):
         return None
@@ -781,11 +783,14 @@ def repair_doc_status() -> dict[str, Any]:
     # 5. 构造 doc_status
     new_doc_status: dict[str, dict[str, Any]] = {}
     expected_count = len(full_docs) if full_docs else 0
+    # 循环外加载 doc_status 一次（循环内只读不改，避免每次迭代重读同一文件）
+    old_ds = _load_json_dict(doc_status_path) or {}
+    if not isinstance(old_ds, dict):
+        old_ds = {}
     for doc_id in full_docs.keys():
         chunks_list = sorted(chunks_by_doc.get(doc_id, []))  # 排序保证稳定
         # 保留原 doc_status 的 file_path 等元数据（如果存在）
-        old_ds = _load_json_dict(doc_status_path) or {}
-        old_value = old_ds.get(doc_id, {}) if isinstance(old_ds, dict) else {}
+        old_value = old_ds.get(doc_id, {})
         new_doc_status[doc_id] = {
             # DocStatus.value 是小写（"processed"/"pending"/"failed"），
             # LightRAG get_docs_by_statuses/get_status_counts 用小写字符串匹配，
@@ -2052,6 +2057,10 @@ def repair_llm_response_cache() -> dict[str, Any]:
 
 def repair_brainregion_zombies() -> dict[str, Any]:
     """语义 repair: 完整清理 8 个存储的僵尸脑区残留。
+
+    .. deprecated:: v4
+        本函数会直接修改 3 真相源（GraphML + cache），已从 _REBUILD_ORDER 移除。
+        仅保留供历史测试覆盖。禁止在生产路径调用。v4 核心原则：3 真相源完全不可动。
 
     真相源：脑区 description 的语义标记（"被删除"等）——不是 GraphML，
     因为 GraphML 本身可能被污染（含僵尸 node）。
