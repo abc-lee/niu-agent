@@ -1424,6 +1424,10 @@ def run_repair_on_user_request() -> dict:
             "major_errors": major,
             "minor_errors": minor,
             "repair_result": repair_result,
+            # 顶层 _unrecoverable 提到 result 顶层，让 Rust format_repair_summary
+            # 能直接读到（Rust 遍历 repair_result.<*>.unrecoverable 会漏检顶层
+            # _unrecoverable，此处显式提升避免漏判导致用户看到模糊弹窗）。
+            "_unrecoverable": bool(repair_result.get("_unrecoverable", False)),
             "check_result": check_result,
         }
     except Exception as e:
