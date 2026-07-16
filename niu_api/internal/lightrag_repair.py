@@ -1622,17 +1622,16 @@ _REBUILD_ORDER: list[tuple[str, Any]] = [
 
 
 def repair_all() -> dict[str, Any]:
-    """3 真相源不可动 + 按需提取重建 9 派生文件。
+    """v8：3 真相源不可动 + 删 9 派生 + 按需提取重建。
 
     流程：
     1. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager
     2. 检测 3 真相源完好性 → 任一损坏 = unrecoverable
-    3. 备份 9 个派生文件（不备份真相源，因为不动）
-    4. 删除 9 个派生文件
-    5. 按依赖链重建 9 派生文件（从 GraphML + full_docs + cache 按需提取）
-    6. 失败时回滚 9 派生文件备份
+    3. 删除 9 个派生文件（铁律 1：不备份，直接删）
+    4. 按依赖链重建 9 派生文件（从 GraphML + cache + full_docs 按需提取）
+    5. 失败时无法回滚（因为派生文件已删光，真相源从未被修改）
 
-    3 真相源（GraphML + full_docs + cache）完全不可动：
+    3 真相源完全不可动（铁律 2）：
     - 不写不改不删（读取是必要的，用于按需提取重建派生文件）
     - 损坏 = unrecoverable
     - 完好 = 一根毫毛不动
@@ -1645,9 +1644,7 @@ def repair_all() -> dict[str, Any]:
             "_unrecoverable": bool,
             "_unrecoverable_reason": str,
             "_truth_source_check": {...},
-            "_backed_up": [...],
             "_deleted": [...],
-            "_rolled_back": bool,
         }
 
     注意：repair_all 是同步函数，不能声明 async（调用方 lightrag_manager.py
@@ -1675,10 +1672,8 @@ def repair_all() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
 
-    # 用 try/finally 确保所有路径（成功/失败/异常）都清理 .corrupt.*.bak 垃圾文件 + backup_dir
-    # backup_dir 提升到 try 外声明，让 finally 能在所有路径访问到
-    # （包括备份阶段失败时 backup_dir 未赋值的情况）
-    backup_dir: Path | None = None
+    # 用 try/finally 确保所有路径（成功/失败/异常）都清理 .corrupt.*.bak 垃圾文件
+    # v8：不再有 backup_dir，finally 只需清理 .corrupt.*.bak
     try:
         # 1. 检测 3 真相源完好性
         truth_check = _check_truth_sources_intact()
@@ -1693,48 +1688,25 @@ def repair_all() -> dict[str, Any]:
             if not truth_check["cache"]["intact"]:
                 reasons.append(f"cache: {truth_check['cache']['reason']}")
             result["_unrecoverable_reason"] = "3 真相源损坏，无法恢复: " + "; ".join(reasons)
-            result["_rolled_back"] = False  # 没删任何东西，不需要回滚
+            result["_deleted"] = []  # 真相源损坏时不删派生文件，让用户看到现场
             return result
 
-        # 2. 备份 9 个派生文件（不备份 3 真相源，因为完全不动）
-        #    备份目录放在 storage_dir 外部，避免备份残留污染 storage 目录 + 避免 glob 误扫
-        ts = int(time.time())
-        backup_dir = storage_dir.parent / f"lightrag_storage.prerepair_{ts}"
-        backed_up: list[str] = []
-        try:
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            for fname in _DERIVED_FILES:
-                src = storage_dir / fname
-                if src.exists():
-                    shutil.copy2(src, backup_dir / fname)
-                    backed_up.append(fname)
-            result["_backed_up"] = backed_up
-            logger.info(f"[LightRAGRepair] 备份 {len(backed_up)} 个派生文件到 {backup_dir}")
-        except Exception as e:
-            result["_unrecoverable"] = True
-            result["_unrecoverable_reason"] = f"备份失败: {e}"
-            result["_rolled_back"] = False
-            return result
-
-        # 3. 删除 9 个派生文件
+        # 2. 删除 9 个派生文件（铁律 1：不备份，直接删）
+        #    v8：删除"备份"步骤——铁律 1 要求"其他文件全删除"。
+        #    失败时不回滚——派生文件已删光，真相源从未被修改，用户重新跑 repair_all 即可。
         deleted: list[str] = []
         for fname in _DERIVED_FILES:
-            path = storage_dir / fname
-            if path.exists():
+            fpath = storage_dir / fname
+            if fpath.exists():
                 try:
-                    path.unlink()
+                    fpath.unlink()
                     deleted.append(fname)
-                except Exception as e:
-                    # 删除失败，回滚已删除的
-                    _rollback_backup(backup_dir, storage_dir, backed_up)
-                    result["_unrecoverable"] = True
-                    result["_unrecoverable_reason"] = f"删除 {fname} 失败: {e}"
-                    result["_deleted"] = deleted
-                    result["_rolled_back"] = True
-                    return result
+                    logger.info(f"[LightRAGRepair] 删除派生文件: {fname}")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[LightRAGRepair] 删除 {fname} 失败: {e}")
         result["_deleted"] = deleted
 
-        # 4. 按依赖链重建 9 派生文件
+        # 3. 按依赖链重建 9 派生文件
         #    用 getattr 间接查找函数（不直接引用 _REBUILD_ORDER 里的函数对象），
         #    让测试 monkeypatch.setattr(repair_mod, "repair_vdb_entities", failing_fn) 能生效
         #    （如果直接用 _REBUILD_ORDER 里的 fn 对象，monkeypatch 替换模块属性不影响已绑定的 fn）
@@ -1748,34 +1720,31 @@ def repair_all() -> dict[str, Any]:
                 if isinstance(step_result, dict) and (
                     step_result.get("unrecoverable") or step_result.get("status") == "unrecoverable"
                 ):
-                    _rollback_backup(backup_dir, storage_dir, backed_up)
                     result["_unrecoverable"] = True
-                    result["_unrecoverable_reason"] = f"{name} 重建失败: {step_result.get('message', '')}"
-                    result["_rolled_back"] = True
-                    logger.warning(
-                        f"[LightRAGRepair] {name} 报 unrecoverable: {step_result.get('message', '')}，停止后续重建并回滚"
+                    result["_unrecoverable_reason"] = (
+                        result.get("_unrecoverable_reason", "")
+                        + f"; {name}: {step_result.get('message', '')}"
                     )
-                    return result
-            except Exception as e:
-                logger.error(f"[LightRAGRepair] {name} 抛异常: {e}", exc_info=True)
-                _rollback_backup(backup_dir, storage_dir, backed_up)
+                    logger.error(
+                        f"[LightRAGRepair] {name} 报 unrecoverable: {step_result.get('message', '')}，停止后续重建"
+                    )
+                    break  # 任一 unrecoverable 立即停止后续重建
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[LightRAGRepair] {name} 重建异常: {e}", exc_info=True)
                 result[name] = {
                     "status": "error",
-                    "message": f"repair 函数抛异常: {type(e).__name__}: {e}",
+                    "expected": 0,
+                    "actual": 0,
+                    "lost": 0,
+                    "message": f"{name} 重建异常: {type(e).__name__}: {e}",
+                    "unrecoverable": True,
                 }
                 result["_unrecoverable"] = True
-                result["_unrecoverable_reason"] = f"{name} 重建异常: {e}"
-                result["_rolled_back"] = True
-                return result
-
-        # 5. 重建成功，清理备份
-        result["_unrecoverable"] = False
-        result["_rolled_back"] = False
-        try:
-            shutil.rmtree(backup_dir)
-            logger.info("[LightRAGRepair] 重建成功，清理备份目录")
-        except Exception:  # noqa: BLE001
-            pass  # 备份没删掉不影响主流程
+                result["_unrecoverable_reason"] = (
+                    result.get("_unrecoverable_reason", "")
+                    + f"; {name} 重建异常: {e}"
+                )
+                break
 
         return result
     finally:
@@ -1795,46 +1764,6 @@ def repair_all() -> dict[str, Any]:
                 logger.info(f"[LightRAGRepair] 清理 {cleaned} 个 .corrupt.*.bak 备份文件")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[LightRAGRepair] 清理 .corrupt.*.bak 备份文件失败: {e}")
-        # 清理 backup_dir（成功路径已 rmtree，失败回滚路径 return 时也需清理）
-        # backup_dir 可能为 None（备份阶段前失败）或路径不存在（成功路径已删），都需防御
-        if backup_dir is not None and backup_dir.exists():
-            try:
-                shutil.rmtree(backup_dir, ignore_errors=True)
-            except Exception:  # noqa: BLE001
-                pass
-
-
-def _rollback_backup(backup_dir: Path, storage_dir: Path, backed_up: list[str]) -> None:
-    """回滚备份：恢复 backed_up 中的文件 + 删除新建的派生文件。
-
-    注意：3 真相源（GraphML + full_docs + cache）不在 _DERIVED_FILES 里，
-    回滚不会动它们（它们也从未被修改）。
-    """
-    # 1. 恢复 backed_up 中的文件
-    restored = 0
-    for fname in backed_up:
-        src = backup_dir / fname
-        if src.exists():
-            try:
-                shutil.copy2(src, storage_dir / fname)
-                restored += 1
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[LightRAGRepair] 回滚恢复 {fname} 失败: {e}")
-    # 2. 删除 repair 前不存在但 repair 后新建的派生文件
-    cleaned = 0
-    for fname in _DERIVED_FILES:
-        if fname not in backed_up:
-            fpath = storage_dir / fname
-            if fpath.exists():
-                try:
-                    fpath.unlink()
-                    cleaned += 1
-                    logger.warning(f"[LightRAGRepair] 回滚：删除错误重建的 {fname}")
-                except Exception:  # noqa: BLE001
-                    pass
-    logger.warning(
-        f"[LightRAGRepair] 重建失败，已回滚 {restored} 个文件，清理 {cleaned} 个错误重建文件"
-    )
 
 
 # =============================================================================

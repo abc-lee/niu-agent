@@ -164,16 +164,16 @@ def test_repair_all_returns_flat_structure(tmp_path, monkeypatch):
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
 
-    # 扁平结构：顶层有各 repair 名 + _unrecoverable + _skipped + _check_summary + _deleted
-    assert "_unrecoverable" in result
-    assert "_skipped" in result or "_deleted" in result
+    # 扁平结构：顶层有各 repair 名 + _deleted + 可选 _unrecoverable
+    # v8：成功路径不写 _unrecoverable 字段（调用方用 .get("_unrecoverable", False) 兼容）
+    assert "_deleted" in result
     # 不应该有嵌套的 repair_result 字段
     assert "repair_result" not in result
     assert "repaired" not in result  # 顶层不应有 repaired（向后兼容）
 
 
-def test_repair_all_backs_up_before_delete(tmp_path, monkeypatch):
-    """repair_all 删 9 派生文件前应备份到临时目录（v4：GraphML 是真相源，不能当派生文件破坏）。"""
+def test_repair_all_deletes_9_derived_no_backup(tmp_path, monkeypatch):
+    """v8：repair_all 删 9 派生文件，不备份、不回滚（铁律 1：其他文件全删除）。"""
     # v4：GraphML 是 3 真相源之一，必须是合法的（有 graph 元素），否则会被判为 unrecoverable
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
@@ -186,16 +186,22 @@ def test_repair_all_backs_up_before_delete(tmp_path, monkeypatch):
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
 
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
 
-    # 备份可能在 tmp_path 的父目录或别处，取决于实现
-    # 关键验证：_deleted 字段记录了删除的派生文件（不含 graphml——它是真相源不被删）
+    # v8：_deleted 字段记录了删除的派生文件（不含 graphml——它是真相源不被删）
     assert "_deleted" in result
     assert len(result["_deleted"]) > 0
     # GraphML 是真相源，不在 _deleted 里
     assert "graph_chunk_entity_relation.graphml" not in result["_deleted"]
+    # v8：不再备份，不再回滚
+    assert "_backed_up" not in result
+    assert "_rolled_back" not in result
+    # v8：storage_dir 父目录不应残留 lightrag_storage.prerepair_* 备份目录
+    backup_dirs = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
+    assert backup_dirs == [], f"v8 不应残留备份目录，但发现: {backup_dirs}"
 
 
 def test_repair_all_unrecoverable_when_truth_source_broken(tmp_path, monkeypatch):
@@ -259,6 +265,94 @@ def test_repair_all_new_user_empty_dict_truth_sources_ok(tmp_path, monkeypatch):
     result = repair_all()
 
     assert not result.get("_unrecoverable"), f"空 dict 真相源应能正常 repair: {result.get('_unrecoverable_reason')}"
+
+
+def test_repair_all_3_truth_sources_intact(tmp_path, monkeypatch):
+    """v8：repair_all 完成后 3 真相源 mtime + 内容完全不变。"""
+    import os
+    import hashlib
+    import shutil
+
+    # 拷贝真实 3 真相源到 tmp_path（测试用，不动真实数据）
+    src_dir = os.path.expanduser("~/.niu/lightrag_storage")
+    truth_files = [
+        "graph_chunk_entity_relation.graphml",
+        "kv_store_full_docs.json",
+        "kv_store_llm_response_cache.json",
+    ]
+    for fname in truth_files:
+        shutil.copy2(os.path.join(src_dir, fname), tmp_path / fname)
+
+    # 记录 3 真相源的 stat + 内容 hash
+    def _hash(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    truth_hashes_before = {f: _hash(tmp_path / f) for f in truth_files}
+    truth_mtimes_before = {f: (tmp_path / f).stat().st_mtime for f in truth_files}
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 3 真相源 hash + mtime 必须完全不变
+    truth_hashes_after = {f: _hash(tmp_path / f) for f in truth_files}
+    truth_mtimes_after = {f: (tmp_path / f).stat().st_mtime for f in truth_files}
+    assert truth_hashes_after == truth_hashes_before, "3 真相源内容被修改"
+    assert truth_mtimes_after == truth_mtimes_before, "3 真相源 mtime 被修改"
+
+    # repair_all 应成功（无 unrecoverable）
+    assert not result.get("_unrecoverable", False), f"repair_all 报 unrecoverable: {result.get('_unrecoverable_reason')}"
+
+
+def test_repair_all_9_derived_files_deleted_and_rebuilt(tmp_path, monkeypatch):
+    """v8：repair_all 应删除 9 派生文件后重建（铁律 1：不备份，直接删）。"""
+    import os
+    import shutil
+    src_dir = os.path.expanduser("~/.niu/lightrag_storage")
+    truth_files = [
+        "graph_chunk_entity_relation.graphml",
+        "kv_store_full_docs.json",
+        "kv_store_llm_response_cache.json",
+    ]
+    for fname in truth_files:
+        shutil.copy2(os.path.join(src_dir, fname), tmp_path / fname)
+
+    # 9 派生文件预置空 dict
+    derived_files = [
+        "kv_store_text_chunks.json", "kv_store_doc_status.json",
+        "vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json",
+        "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
+        "kv_store_full_entities.json", "kv_store_full_relations.json",
+    ]
+    for fname in derived_files:
+        (tmp_path / fname).write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
+
+    from niu_api.internal.lightrag_repair import repair_all
+    result = repair_all()
+
+    # 9 派生文件应被重建（存在 + 非空 dict 格式）
+    for fname in derived_files:
+        assert (tmp_path / fname).exists(), f"{fname} 未被重建"
+        data = json.loads((tmp_path / fname).read_text())
+        assert isinstance(data, dict), f"{fname} 不是 dict"
+
+    # text_chunks 应有活跃 chunk（来自真实 GraphML）
+    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert len(tc) > 0, "text_chunks 应非空"
+    # v8：不备份、不回滚
+    assert "_backed_up" not in result
+    assert "_rolled_back" not in result
+    # storage_dir 父目录不应残留备份目录
+    backup_dirs = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
+    assert backup_dirs == [], f"v8 不应残留备份目录，但发现: {backup_dirs}"
 
 
 def test_get_lightrag_status_total_errors_correct(tmp_path, monkeypatch):
@@ -468,19 +562,20 @@ def test_repair_all_breaks_on_unrecoverable(tmp_path, monkeypatch):
     assert "vdb_entities" not in call_log, f"vdb_entities 不应被调用: {call_log}"
 
 
-def test_repair_all_rollback_uses_backed_up_list(tmp_path, monkeypatch):
-    """回滚应遍历 _backed_up 列表恢复，且删除重建阶段错误写入的文件。
+def test_repair_all_no_rollback_on_unrecoverable(tmp_path, monkeypatch):
+    """v8：repair_all 在某函数报 unrecoverable 后不回滚（铁律 1：派生文件已删光，无法回滚）。
 
-    Bug B2：原实现遍历 _DERIVED_FILES（10 个），backup 不存在则跳过；
-    场景 1（删 vdb_*.json）下 vdb 没备份，回滚时跳过，重建阶段写的空 vdb
-    残留，原始数据永久丢失。
+    v8 设计：
+    - 9 派生文件先全删（不备份）
+    - 按依赖链重建，任一 unrecoverable 立即 break
+    - 失败时不回滚——真相源从未被修改，用户重新跑 repair_all 即可
 
-    v4 机制变更：
-    - repair_all 用 getattr(_self_mod, fn.__name__) 间接查找，所以不再 patch
-      _REBUILD_ORDER，而是 patch 模块属性。
-    - v4 在 unrecoverable 时会 break，所以让 text_chunks 成功，让 vdb_chunks
-      写空 vdb 后失败（模拟重建阶段写空 vdb 的场景）。
-    - v4 GraphML 是真相源，必须合法（不能用 <baseline/>，会被判为 unrecoverable）。
+    本测试验证 v8 行为：
+    - 不再有 _rolled_back 字段
+    - 不再有 _backed_up 字段
+    - 不残留备份目录
+    - unrecoverable 后立即 break（不调后续 repair）
+    - 已重建的派生文件保留在现场（不清理）
     """
     import niu_api.internal.lightrag_repair as lightrag_repair
 
@@ -491,40 +586,50 @@ def test_repair_all_rollback_uses_backed_up_list(tmp_path, monkeypatch):
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
 
-    # 准备派生文件 baseline（部分存在，vdb_*.json 不存在模拟场景 1）
+    # 准备派生文件 baseline（部分存在）
     (tmp_path / "kv_store_text_chunks.json").write_text('{"baseline": "text_chunks"}')
-    # vdb_*.json 故意不存在（模拟场景 1 删 vdb）
+    # vdb_*.json 故意不存在
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
 
-    # v4：patch 模块属性（命名函数有 __name__，让 getattr 间接查找能生效）
-    # text_chunks 成功，vdb_chunks 写空 vdb 后失败（模拟重建阶段写空 vdb）
-    wrote_empty_vdb = {"done": False}
+    # 跟踪后续 repair 是否被调用
+    call_log = []
 
     def mock_text_chunks():
+        call_log.append("text_chunks")
         return {"status": "ok"}
 
     def boom_vdb_chunks():
-        if not wrote_empty_vdb["done"]:
-            (tmp_path / "vdb_chunks.json").write_text('{"empty": "vdb"}')
-            wrote_empty_vdb["done"] = True
+        call_log.append("vdb_chunks")
+        # 模拟重建阶段写空 vdb 后失败
+        (tmp_path / "vdb_chunks.json").write_text('{"empty": "vdb"}')
         return {"status": "error", "unrecoverable": True, "message": "simulated"}
+
+    def mock_vdb_entities():
+        call_log.append("vdb_entities")
+        return {"status": "ok"}
 
     monkeypatch.setattr(lightrag_repair, "repair_text_chunks", mock_text_chunks)
     monkeypatch.setattr(lightrag_repair, "repair_vdb_chunks", boom_vdb_chunks)
+    monkeypatch.setattr(lightrag_repair, "repair_vdb_entities", mock_vdb_entities)
 
     result = lightrag_repair.repair_all()
 
-    # 验证回滚
-    assert result.get("_rolled_back") is True
-
-    # 验证已备份的文件恢复到 baseline
-    assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"baseline": "text_chunks"}'
-
-    # 验证没备份的 vdb_*.json 被删除（不是残留空文件）
-    assert not (tmp_path / "vdb_chunks.json").exists(), \
-        "vdb_chunks.json 应被回滚删除（没备份，重建的空文件应清理）"
+    # v8：不再有 _rolled_back / _backed_up 字段
+    assert "_rolled_back" not in result, "v8 不应有 _rolled_back 字段"
+    assert "_backed_up" not in result, "v8 不应有 _backed_up 字段"
+    # v8：unrecoverable + break
+    assert result.get("_unrecoverable") is True
+    assert "vdb_entities" not in call_log, f"vdb_entities 不应被调用（unrecoverable 应 break）: {call_log}"
+    # v8：已重建的派生文件保留在现场（不回滚、不清理）
+    assert (tmp_path / "vdb_chunks.json").exists(), "vdb_chunks.json 应保留在现场（不回滚）"
+    assert (tmp_path / "vdb_chunks.json").read_text() == '{"empty": "vdb"}'
+    # v8：不残留备份目录
+    backup_dirs = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
+    assert backup_dirs == [], f"v8 不应残留备份目录: {backup_dirs}"
 
 
 def test_check_vdb_missing_uses_sorted_pair(tmp_path, monkeypatch):
@@ -871,15 +976,23 @@ def test_repair_all_does_not_reanimate_deleted_entities(tmp_path, monkeypatch):
     assert "old-entity" not in ec
 
 
-@pytest.mark.skip(reason="v8-Task 1 将 repair_text_chunks 改为 unrecoverable stub，依赖其重建后 text_chunks 非空的回滚断言需等 Task 4 重写")
-def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
-    """重建失败时应回滚到备份。"""
+def test_repair_all_failure_no_rollback_v8(tmp_path, monkeypatch):
+    """v8：重建失败时不回滚，派生文件保持当前状态（不备份不回滚）。
+
+    v8 设计（铁律 1）：
+    - 9 派生文件先全删（不备份）
+    - 按依赖链重建，任一 unrecoverable 立即 break
+    - 失败时不回滚——派生文件已删光，真相源从未被修改，用户重跑 repair_all 即可
+
+    本测试验证 v8 不回滚行为（替代旧 v4 回滚断言）。
+    """
     _make_synthetic_fixture(tmp_path)
 
-    # 记录派生文件原始内容
-    tc_before = (tmp_path / "kv_store_text_chunks.json").read_bytes()
-
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager._rag_instance", None)
+
     # mock 让 repair_vdb_entities 失败
     import niu_api.internal.lightrag_repair as repair_mod
     def failing_vdb_entities():
@@ -889,9 +1002,16 @@ def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
 
-    assert result.get("_rolled_back") is True
-    # 原派生文件被恢复
-    assert (tmp_path / "kv_store_text_chunks.json").read_bytes() == tc_before
+    # v8：不回滚，不备份
+    assert "_rolled_back" not in result, "v8 不应有 _rolled_back 字段"
+    assert "_backed_up" not in result, "v8 不应有 _backed_up 字段"
+    assert result.get("_unrecoverable") is True
+    # v8：派生文件已被删除（不回滚恢复）
+    assert "kv_store_text_chunks.json" in result.get("_deleted", []), \
+        "派生文件应已被删除"
+    # v8：不残留备份目录
+    backup_dirs = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
+    assert backup_dirs == [], f"v8 不应残留备份目录: {backup_dirs}"
 
 
 # ============================================================
