@@ -41,7 +41,7 @@ _DERIVED_FILES = [
 # 僵尸脑区 description 语义标记（LLM 写的 description，明确告诉系统这个实体该删）
 # v8-Task 1：原使用者 repair_brainregion_zombies 已删除（违反铁律 3）。
 # 当前此常量无引用，保留供 Task 8 重写 repair_all 时脑区节点识别复用。
-_ZOMBIE_DESCRIPTION_MARKERS = (
+_ZOMBIE_DESCRIPTION_MARKERS = (  # pyright: ignore[reportUnusedVariable]
     "被删除的重复脑区实体之一",
     "被删除的脑区",
     "已删除的脑区",
@@ -53,7 +53,7 @@ def _resolve_storage_dir() -> Path:
     return _STORAGE_DIR
 
 
-def _load_json_dict(path: Path) -> tuple[dict, dict | None]:
+def _load_json_dict(path: Path) -> tuple[dict, dict | None]:  # pyright: ignore[reportUnusedFunction]
     """加载 JSON dict 文件，返回 (data, error)。"""
     if not path.exists():
         return {}, None
@@ -216,7 +216,7 @@ def _check_truth_source(fname: str, storage_dir: Path) -> dict[str, Any]:
         }
 
 
-def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:
+def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
     """后置验证：GraphML 是否存在且非空。"""
     graphml_path = storage_dir / _GRAPHML_FILE
     if not graphml_path.exists():
@@ -235,7 +235,7 @@ def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:
                 "file": _GRAPHML_FILE,
                 "msg": "GraphML 为空文件",
             }
-        node_ids, edges, _, err = _load_graphml(graphml_path)
+        node_ids, _, _, err = _load_graphml(graphml_path)
         if err:
             return err
         if not node_ids:
@@ -255,7 +255,7 @@ def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:
     return {}
 
 
-def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
+def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
     """检测 vdb_*_missing：GraphML 有 node 但 vdb 没对应向量。
 
     返回 errors 列表（可能为空）。
