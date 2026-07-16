@@ -1675,3 +1675,416 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
         assert ": " in v["content"], f"脑区 chunk content 格式错误: {v['content'][:50]}"
         # full_doc_id = "brain_{脑区名}"
         assert v["full_doc_id"].startswith("brain_"), f"脑区 full_doc_id 格式错误: {v['full_doc_id']}"
+
+
+# ==================== v8-Task 5: repair_doc_status 回归测试 ====================
+# v4 实现：从 full_docs.keys() 循环构造 doc_status，status=processed 当 GraphML 有数据。
+# chunks_list 从 text_chunks.full_doc_id 反向分组（空 full_doc_id 跳过）。
+
+
+def test_repair_doc_status_brainregion_chunks_list_attached(tmp_path, monkeypatch):
+    """脑区 chunk full_doc_id=brain_xxx 应进 chunks_by_doc（反向分组）。
+
+    v4 实现：脑区 chunk 的 full_doc_id="brain_文档库脑区" 不会写入 doc_status
+    （因为 full_docs 通常不含 brain_xxx 条目），但 chunks_by_doc 分组正确。
+
+    回归点：脑区 chunk 的 full_doc_id 不会被误判为空字符串而跳过。
+    """
+    # GraphML：脑区节点（让 graphml_has_data=True，status=processed）
+    _write_graphml_v8(tmp_path, [("文档库脑区", "brainregion", "brain_meta_size:10", "chunk-brain-1")])
+
+    # text_chunks：1 个脑区 chunk
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-brain-1": {
+            "content": "文档库脑区: 描述",
+            "full_doc_id": "brain_文档库脑区",
+            "llm_cache_list": [],
+        }
+    }))
+    # full_docs：1 个普通 doc（脑区不在 full_docs）
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
+        "doc-1": {"content": "doc content", "file_path": "x.md"},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_doc_status
+
+    result = repair_doc_status()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["expected"] == 1, f"expected 1 (full_docs 条数), got {result['expected']}"
+    assert result["actual"] == 1
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    # full_docs 只有 doc-1 → doc_status 只含 doc-1（brain_文档库脑区 不在 full_docs 不进 doc_status）
+    assert "doc-1" in ds
+    assert "brain_文档库脑区" not in ds, "脑区 full_doc_id 不应进 doc_status（不在 full_docs）"
+    # GraphML 有数据 → status=processed
+    assert ds["doc-1"]["status"] == "processed"
+    assert ds["doc-1"]["chunks_count"] == 0  # doc-1 没有 chunk
+
+
+def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
+    """cache fallback chunk 的 full_doc_id="" 应跳过（不写 doc_status 条目）。
+
+    v4 实现：line 829-830 空 full_doc_id 跳过 chunks_by_doc 分组。
+    但 doc_status 条目数 = full_docs 条目数（从 full_docs.keys() 循环）。
+    所以这个测试验证的是：空 full_doc_id 的 chunk 不会被加进任何 doc 的 chunks_list。
+    """
+    # GraphML 有 1 node（让 graphml_has_data=True）
+    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc", "chunk-active")])
+
+    tc = {
+        "chunk-active": {
+            "content": "chunk 原文",
+            "full_doc_id": "",  # 空：cache fallback
+            "llm_cache_list": [],
+        }
+    }
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc))
+    # full_docs：1 个 doc-1（应进 doc_status，但 chunks_list 为空）
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
+        "doc-1": {"content": "doc1", "file_path": "1.md"},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_doc_status
+
+    result = repair_doc_status()
+
+    assert result["status"] == "ok"
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    # doc_status 应有 doc-1 条目（来自 full_docs）
+    assert "doc-1" in ds
+    # 但 doc-1 的 chunks_list 应为空（chunk-active 的 full_doc_id 为空被跳过）
+    assert ds["doc-1"]["chunks_count"] == 0
+    assert ds["doc-1"]["chunks_list"] == []
+    # 空 full_doc_id 的 chunk 不在 chunks_list 中
+    assert "chunk-active" not in ds["doc-1"]["chunks_list"]
+
+
+def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatch):
+    """full_docs fallback chunk 的 full_doc_id=doc_id 应进对应 doc 的 chunks_list。
+
+    v4 实现：text_chunks.full_doc_id=doc_id → chunks_by_doc[doc_id].append(chunk_id)
+    → doc_status[doc_id].chunks_list = sorted(chunks_by_doc[doc_id])
+    """
+    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc", "chunk-a")])
+
+    tc = {
+        "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-c": {"content": "c", "full_doc_id": "doc-2", "llm_cache_list": []},
+    }
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
+        "doc-1": {"content": "doc1", "file_path": "1.md"},
+        "doc-2": {"content": "doc2", "file_path": "2.md"},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_doc_status
+
+    result = repair_doc_status()
+
+    assert result["status"] == "ok"
+    assert result["actual"] == 2  # doc-1 + doc-2
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    # chunks_list 按 full_doc_id 分组 + sorted
+    assert set(ds["doc-1"]["chunks_list"]) == {"chunk-a", "chunk-b"}
+    assert ds["doc-1"]["chunks_count"] == 2
+    assert set(ds["doc-2"]["chunks_list"]) == {"chunk-c"}
+    assert ds["doc-2"]["chunks_count"] == 1
+    # GraphML 有数据 → 全部 processed
+    assert ds["doc-1"]["status"] == "processed"
+    assert ds["doc-2"]["status"] == "processed"
+
+
+def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatch):
+    """GraphML 无 node → status=pending（全新用户场景）。"""
+    # GraphML 空（无 node）
+    _write_graphml_v8(tmp_path, [])
+
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
+    }))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
+        "doc-1": {"content": "doc1", "file_path": "1.md"},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_doc_status
+
+    result = repair_doc_status()
+
+    assert result["status"] == "ok"
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    # GraphML 无数据 → status=pending
+    assert ds["doc-1"]["status"] == "pending"
+
+
+# ==================== v8-Task 6: repair_vdb_chunks/entities/relationships 回归测试 ====================
+# v4 实现：
+# - repair_vdb_chunks：遍历 text_chunks 重新 embedding
+# - repair_vdb_entities：遍历 GraphML node（防复活）
+# - repair_vdb_relationships：遍历 GraphML edge，data_list 不含 weight
+
+
+def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
+    """repair_vdb_entities 应只遍历 GraphML 存在的 node（防复活）。
+
+    回归点：text_chunks 含已删实体对应的 chunk，但 GraphML 没有该实体节点
+    → vdb_entities 不应含已删实体（防复活）。
+    """
+    _write_graphml_v8(tmp_path, [
+        ("entity-active", "person", "desc active", "chunk-a"),
+        # 已删实体 entity-deleted 不在 GraphML
+    ])
+
+    # text_chunks 含 chunk-a + chunk-deleted（但 chunk-deleted 对应的实体已删）
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-a": {"content": "content a", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-deleted": {"content": "content deleted", "full_doc_id": "doc-1", "llm_cache_list": []},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_vdb_entities
+
+    result = repair_vdb_entities()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["expected"] == 1
+    assert result["actual"] == 1
+    vdb_e = json.loads((tmp_path / "vdb_entities.json").read_text())
+    # 只含 entity-active，不含已删实体（防复活）
+    assert len(vdb_e.get("data", [])) == 1
+    assert vdb_e["data"][0]["entity_name"] == "entity-active"
+
+
+def test_repair_vdb_relationships_no_weight_in_data(tmp_path, monkeypatch):
+    """repair_vdb_relationships 的 data_list item 不应含 weight 字段。
+
+    v4 实现：data_list item 只含 __id__/src_id/tgt_id/content/source_id 5 个字段。
+    weight 只在 GraphML d7 字段，vdb 不写 weight（防数据冗余 + 跟 LightRAG 一致）。
+
+    回归点：vdb_relationships.json 的任何 data item 都不应有 "weight" 字段。
+    """
+    _write_graphml_v8(
+        tmp_path,
+        [("entity-a", "person", "desc a", "chunk-a"), ("entity-b", "person", "desc b", "chunk-b")],
+        [("entity-a", "entity-b", "chunk-rel", "desc rel", "关系词")],
+    )
+
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-rel": {"content": "rel", "full_doc_id": "doc-1", "llm_cache_list": []},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_vdb_relationships
+
+    result = repair_vdb_relationships()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["actual"] == 1
+    vdb_r = json.loads((tmp_path / "vdb_relationships.json").read_text())
+    for item in vdb_r.get("data", []):
+        # 任何层级都不应有 weight 字段（v4 实现只构造 5 个字段）
+        assert "weight" not in item, f"vdb_relationships item 不应含 weight: {item}"
+        # 确认 v4 实现的 5 个字段都在
+        assert "__id__" in item
+        assert "src_id" in item
+        assert "tgt_id" in item
+        assert "content" in item
+        assert "source_id" in item
+
+
+def test_repair_vdb_chunks_only_text_chunks(tmp_path, monkeypatch):
+    """repair_vdb_chunks 只对 text_chunks 中的 chunk embedding（防孤儿 chunk）。
+
+    回归点：GraphML 引用了 chunk-orphan，但 text_chunks 没有该 chunk
+    → vdb_chunks 不应含 chunk-orphan（防孤儿）。
+    """
+    _write_graphml_v8(tmp_path, [
+        ("entity-x", "person", "desc", "chunk-active<SEP>chunk-orphan"),
+    ])
+
+    # text_chunks 只含 chunk-active（chunk-orphan 已丢失）
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-active": {"content": "active content", "full_doc_id": "doc-1", "llm_cache_list": []},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_vdb_chunks
+
+    result = repair_vdb_chunks()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["actual"] == 1  # 只 chunk-active
+    vdb_c = json.loads((tmp_path / "vdb_chunks.json").read_text())
+    chunk_ids_in_vdb = [d.get("__id__", "") for d in vdb_c.get("data", [])]
+    # 只含 chunk-active，不含 chunk-orphan（防孤儿）
+    assert any("chunk-active" == cid for cid in chunk_ids_in_vdb) or len(chunk_ids_in_vdb) == 1
+    assert not any("chunk-orphan" == cid for cid in chunk_ids_in_vdb), "孤儿 chunk 不应出现在 vdb_chunks"
+
+
+# ==================== v8-Task 7: repair_entity/relation/full_* 回归测试 ====================
+# v4 实现：
+# - repair_entity_chunks：从 GraphML node source_id 提取，value={"chunk_ids": [...], "count": int}
+# - repair_relation_chunks：从 GraphML edge source_id 提取，key=make_relation_chunk_key
+# - repair_full_entities/relations：从 GraphML source_id → doc_status.chunks_list 反向映射
+
+
+def test_repair_entity_chunks_only_graphml_source(tmp_path, monkeypatch):
+    """repair_entity_chunks 只从 GraphML node source_id 提取 chunk_ids（防复活）。
+
+    v4 实现：value = {"chunk_ids": [chunk_id, ...], "count": int}
+    回归点：已删实体（不在 GraphML）的 chunk 不应被提取到 entity_chunks。
+    """
+    _write_graphml_v8(tmp_path, [
+        ("entity-active", "person", "desc", "chunk-a<SEP>chunk-b"),
+        # 已删实体 entity-deleted 不在 GraphML
+    ])
+
+    # text_chunks 含 chunk-a, chunk-b, chunk-deleted（但 chunk-deleted 对应实体已删）
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-deleted": {"content": "deleted", "full_doc_id": "doc-1", "llm_cache_list": []},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_entity_chunks
+
+    result = repair_entity_chunks()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["actual"] == 1  # 只 entity-active
+    ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text())
+    # v4 实现：value = {"chunk_ids": [...], "count": int}
+    assert "entity-active" in ec
+    assert set(ec["entity-active"]["chunk_ids"]) == {"chunk-a", "chunk-b"}
+    assert ec["entity-active"]["count"] == 2
+    # 已删实体不在 entity_chunks（防复活）
+    assert "entity-deleted" not in ec
+
+
+def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch):
+    """repair_relation_chunks 只从 GraphML edge source_id 提取 chunk_ids（防复活）。
+
+    v4 实现：key = make_relation_chunk_key(src, tgt) = GRAPH_FIELD_SEP.join(sorted((src, tgt)))
+            value = {"chunk_ids": [...], "count": int}
+    """
+    _write_graphml_v8(
+        tmp_path,
+        [("entity-a", "person", "desc a", "chunk-a"), ("entity-b", "person", "desc b", "chunk-b")],
+        [("entity-a", "entity-b", "chunk-rel1<SEP>chunk-rel2", "desc", "kw")],
+    )
+
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-rel1": {"content": "r1", "full_doc_id": "doc-1", "llm_cache_list": []},
+        "chunk-rel2": {"content": "r2", "full_doc_id": "doc-1", "llm_cache_list": []},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_relation_chunks
+    from lightrag.constants import GRAPH_FIELD_SEP
+
+    result = repair_relation_chunks()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["actual"] == 1
+    rc = json.loads((tmp_path / "kv_store_relation_chunks.json").read_text())
+    # edge 的 key 是 sorted((src, tgt)) join GRAPH_FIELD_SEP
+    # entity-a, entity-b sorted 后还是 ("entity-a", "entity-b")
+    expected_key = GRAPH_FIELD_SEP.join(sorted(("entity-a", "entity-b")))
+    assert expected_key in rc
+    # v4 实现：value = {"chunk_ids": [...], "count": int}
+    assert set(rc[expected_key]["chunk_ids"]) == {"chunk-rel1", "chunk-rel2"}
+    assert rc[expected_key]["count"] == 2
+
+
+def test_repair_full_entities_reverse_mapping(tmp_path, monkeypatch):
+    """repair_full_entities 从 GraphML source_id → chunk→doc 反向映射。
+
+    v4 实现：key=doc_id, value=list of entity_name
+    回归点：只有 GraphML 存在的实体 + doc_status 中存在的 chunk 才会进 full_entities。
+    """
+    _write_graphml_v8(tmp_path, [
+        ("entity-x", "person", "desc x", "chunk-a<SEP>chunk-b"),
+        # 已删实体 entity-deleted 不在 GraphML
+    ])
+
+    # doc_status 提供 chunk→doc 映射（chunk-a, chunk-b → doc-1）
+    (tmp_path / "kv_store_doc_status.json").write_text(json.dumps({
+        "doc-1": {"status": "processed", "chunks_list": ["chunk-a", "chunk-b"], "chunks_count": 2},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_full_entities
+
+    result = repair_full_entities()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    fe = json.loads((tmp_path / "kv_store_full_entities.json").read_text())
+    # entity-x 的 source_id 含 chunk-a, chunk-b 都映射到 doc-1 → doc-1: [entity-x]
+    assert "doc-1" in fe
+    assert "entity-x" in fe["doc-1"]
+    # 已删实体不在 full_entities（防复活）
+    all_entities = [e for ents in fe.values() for e in ents]
+    assert "entity-deleted" not in all_entities
+
+
+def test_repair_full_relations_reverse_mapping(tmp_path, monkeypatch):
+    """repair_full_relations 从 GraphML edge source_id → chunk→doc 反向映射。
+
+    v4 实现：key=doc_id, value=list of relation_key (make_relation_chunk_key 格式)
+    """
+    _write_graphml_v8(
+        tmp_path,
+        [("entity-a", "person", "desc a", "chunk-a"), ("entity-b", "person", "desc b", "chunk-b")],
+        [("entity-a", "entity-b", "chunk-rel", "desc rel", "kw")],
+    )
+
+    # doc_status：chunk-rel → doc-1
+    (tmp_path / "kv_store_doc_status.json").write_text(json.dumps({
+        "doc-1": {"status": "processed", "chunks_list": ["chunk-rel"], "chunks_count": 1},
+    }))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_full_relations
+    from lightrag.constants import GRAPH_FIELD_SEP
+
+    result = repair_full_relations()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    fr = json.loads((tmp_path / "kv_store_full_relations.json").read_text())
+    # edge (entity-a, entity-b) source_id=chunk-rel → doc-1
+    # relation_key = make_relation_chunk_key(entity-a, entity-b) = sorted join GRAPH_FIELD_SEP
+    expected_rel_key = GRAPH_FIELD_SEP.join(sorted(("entity-a", "entity-b")))
+    assert "doc-1" in fr
+    assert expected_rel_key in fr["doc-1"]
