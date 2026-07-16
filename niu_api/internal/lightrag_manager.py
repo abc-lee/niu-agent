@@ -1144,19 +1144,25 @@ def cancel_scheduler_delayed_start_if_corrupt(phase1_result: dict) -> None:
 def run_repair_on_user_request() -> dict:
     """用户在弹窗点'尝试修复'后调用（通过 /api/kg/lightrag/repair 触发）。
 
-    v6: 不自动修复，等用户决策。用户确认后才调 repair_all。
-    v8 (redo): _repairing try/finally 保护 + pipeline busy 等待 +
-              unrecoverable 判定 + severity 判定 repaired。
+    v8：先停 RegionSync + 不调 get_lightrag/apipeline（铁律 3）。
 
     修复流程：
-        1. 先读 pipeline busy 等空闲（必须在 _repairing=True 之前，否则
-           get_lightrag 返回 None → _read_pipeline_busy 返回 None → busy 检查被绕过）
-        2. 设 _repairing=True（try/finally 保护）
-        3. 置 _rag_instance = None（避免新 ingest 请求并发写文件竞争）
-        4. 调 repair_all
-        5. reset_init_state + 重跑 check_all 更新 _integrity_result
-        6. 主动调 get_lightrag() 触发重试初始化
-        7. 判定 repaired（任一 status=error 或 unrecoverable 或 重检 critical/major>0 都算失败）
+        1. 先停 RegionSync（get_region_sync().stop_background_sync）避免后台写
+        2. 设 _repairing=True（让其他线程的 get_lightrag 返回 None，作为信号灯兜底）
+        3. 调 repair_all
+        4. reset_init_state + 重跑 check_all 更新 _integrity_result
+        5. 不调 get_lightrag/apipeline（让下次用户请求自然触发）
+        6. 判定 repaired（基于 repair_all._unrecoverable）
+
+    RegionSync 停止策略（v8 确认）：
+        - `stop_background_sync` / `start_background_sync` 是
+          `agent.injector.region_sync.RegionSync` 的实例方法（L602/L615），不是模块级函数
+        - 正确调用：`from agent.injector.region_sync import get_region_sync;
+          rs = get_region_sync(); rs.stop_background_sync()`
+        - `get_region_sync` 在 region_sync.py:690，返回 RegionSync 单例（不存在则创建）
+        - RegionSync 内部调 `get_lightrag()`，但 lightrag_manager.get_lightrag() 在
+          `_repairing=True` 时返回 None，所以即使 stop_background_sync 失败，
+          `_repairing=True` 信号灯也能让 RegionSync 的 get_lightrag 拿不到实例，不会写真相源
 
     Returns:
         {
@@ -1167,53 +1173,43 @@ def run_repair_on_user_request() -> dict:
             "minor_errors": int,
             "repair_result": dict,
             "check_result": dict,
+            "_unrecoverable": bool,
         }
     """
     global _integrity_result, _rag_instance, _repairing
     from niu_api.internal.lightrag_repair import repair_all
     from niu_api.internal.lightrag_integrity import check_all
 
-    logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all")
+    logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all（v8）")
 
-    # 1. 先检查 pipeline busy，等空闲再设 _repairing=True
-    #    原因：_repairing=True 时 get_lightrag() 返回 None →
-    #    _read_pipeline_busy() 调 get_lightrag() 拿到 None → 返回 None →
-    #    `not None` = True → 直接 break，pipeline busy 检查被绕过。
-    #    所以必须先读 busy，等空闲后再设 _repairing=True。
-    from niu_api.kg_api import _read_pipeline_busy
+    # 1. 先停 RegionSync（避免后台写）
+    #    stop_background_sync 是 RegionSync 实例方法（region_sync.py:615），不是模块级函数
+    #    正确调用：get_region_sync() 拿单例，再调实例方法
+    try:
+        from agent.injector.region_sync import get_region_sync
 
-    deadline = time.monotonic() + 300  # 超时 300s
-    waited = False
-    while time.monotonic() < deadline:
-        busy = _read_pipeline_busy()
-        if not busy:
-            break
-        waited = True
-        time.sleep(5)
-    else:
-        return {
-            "repaired": False,
-            "check_ok": False,
-            "message": "pipeline busy 超过 300s，请稍后重试",
-            "critical_errors": 0,
-            "major_errors": 0,
-            "minor_errors": 0,
-            "repair_result": {},
-            "check_result": _integrity_result,
-        }
-
-    if waited:
-        logger.info("[LightRAG] pipeline 空闲，开始 repair")
+        rs = get_region_sync()
+        if rs is not None:
+            rs.stop_background_sync()
+            logger.info(
+                "[LightRAG] RegionSync 已停止（通过 get_region_sync().stop_background_sync）"
+            )
+        else:
+            logger.info("[LightRAG] RegionSync 单例为 None（未启动），跳过停止")
+    except Exception as e:  # noqa: BLE001
+        # stop 失败不阻塞 repair：_repairing=True 信号灯会让 RegionSync 内部的
+        # get_lightrag() 返回 None（lightrag_manager.py:925/973 检查 _repairing），
+        # 自然不会写真相源
+        logger.warning(
+            f"[LightRAG] 停 RegionSync 失败（继续 repair，靠 _repairing 信号灯兜底）: {e}"
+        )
 
     _repairing = True
     try:
         # 2. repair 期间置 _rag_instance = None（避免新 ingest 请求并发写文件竞争）
-        # 注意：_repairing=True 已经让 get_lightrag 静默返回 None，
-        #       但已持有的 _rag_instance 仍可能被其他模块通过 call_async 直接调用，
-        #       这里显式置 None 强制下一次重新初始化。
         _rag_instance = None
 
-        # 3. 调 repair_all（按依赖链顺序修复所有文件）
+        # 3. 调 repair_all（v8：不备份，直接删 9 派生 + 重建）
         repair_result = repair_all()
 
         # 4. 检查 unrecoverable（顶层标记或单个 result 字段）
@@ -1225,98 +1221,18 @@ def run_repair_on_user_request() -> dict:
 
         # 5. reset + 重跑 check_all
         reset_init_state()
-        check_result = check_all()
-        _integrity_result = check_result
-
-        # 6. 主动调 get_lightrag 触发重试初始化（_repairing 仍 True，
-        #    但下面 finally 会清掉；此处先不清，让 get_lightrag 看到 _repairing
-        #    返回 None 不报错——但我们要的是触发初始化，所以先临时关掉）
-        # 实际上：get_lightrag 看到 _repairing=True 会返回 None，不触发初始化。
-        # 这里改为先清 _repairing，让 get_lightrag 走三级门控重新初始化。
-        #
-        # v8-Task 1：已删除 get_lightrag_for_repair（违反铁律 3）。
-        # 原 SkillSync vdb 覆盖 bug 的根因说明已随函数删除一并移除。
-        # 顺序仍保留：先 _rag_instance=None → 再 _repairing=False → 最后 get_lightrag()
-        # 从 repair 后的磁盘重建实例。
-        _rag_instance = None
-        _repairing = False
         try:
-            get_lightrag()
+            check_result = check_all()
+            _integrity_result = check_result
         except Exception as e:
-            logger.warning(f"[LightRAG] 修复后 get_lightrag 重试失败（不影响返回）: {e}")
+            logger.warning(f"[LightRAG] 修复后 check_all 失败: {e}")
+            check_result = _integrity_result or {}
 
-        # 6.5 等 SkillSync 首次扫描完成 + 二次 repair
-        # 原因：SkillSync 在 LightRAG ready 后会异步跑 scan_and_sync，
-        # 其中"ghost skill 清理"会调 adelete_by_entity 删除不在磁盘上的 skill 实体。
-        # 但 adelete_by_entity 在我们环境下存在部分失败：
-        # GraphML/vdb_entities/vdb_relationships 删除成功，但 entity_chunks/relation_chunks
-        # 未持久化（storage_updated flag 在 _persist_graph_updates 并发场景下漏置位）。
-        # 这会导致 check_all 报 entity_chunks_dangling / relation_chunks_dangling major 错误。
-        #
-        # 修复策略：等 SkillSync 首次扫描跑完（仅当 LightRAG 可用时 scan_and_sync 才真跑）→
-        # 重检 → 若仍有 major → 再跑一次 repair_all
-        # （repair_entity_chunks 从 GraphML 重建，会清掉残留的 entity_chunks 条目）。
-        #
-        # 超时 120s = LightRAG ready 后 SkillSync 最多 60s 触发下一轮 scan + 容错 60s。
-        try:
-            from agent.injector.sync import wait_first_scan_complete
-            scan_done = wait_first_scan_complete(timeout=120)
-            if scan_done:
-                logger.info("[LightRAG] SkillSync 首次扫描完成，重检一致性")
-            else:
-                logger.warning("[LightRAG] SkillSync 首次扫描超时（120s），继续重检")
-        except Exception as e:
-            logger.warning(f"[LightRAG] 等待 SkillSync 首次扫描失败（继续重检）: {e}")
+        # 6. v8：不调 get_lightrag/apipeline（铁律 3）
+        #    让下次用户请求自然触发 get_lightrag 初始化（从 repair 后的磁盘重建）
 
-        # 重检 + 二次 repair（仅当重检发现新 major/critical 时）
-        try:
-            post_skill_check = check_all()
-            post_critical = post_skill_check.get("critical_errors", 0)
-            post_major = post_skill_check.get("major_errors", 0)
-        except Exception as e:
-            logger.warning(f"[LightRAG] SkillSync 后重检失败: {e}")
-            post_critical, post_major = 0, 0
-            post_skill_check = check_result
-
-        if post_critical > 0 or post_major > 0:
-            logger.warning(
-                f"[LightRAG] SkillSync 后重检发现新问题（critical={post_critical}, "
-                f"major={post_major}），启动二次 repair_all"
-            )
-            try:
-                second_repair = repair_all()
-                # 二次 repair 的下划线字段跳过（避免 post_skill_sync__unrecoverable 双下划线）
-                # 但 _unrecoverable 单独合并到顶层，让 Rust format_repair_summary 能读到
-                # （Rust 遍历 repair_result.<*>.unrecoverable 检测 unrecoverable，
-                #  但顶层 _unrecoverable 让 run_repair_on_user_request 的 repaired 判定能读到）
-                if second_repair.get("_unrecoverable"):
-                    repair_result["_unrecoverable"] = True
-                    repair_result["_post_skill_sync_failed"] = True
-                for k, v in second_repair.items():
-                    if k.startswith("_"):
-                        continue
-                    repair_result[f"post_skill_sync_{k}"] = v
-            except Exception as e:
-                logger.error(f"[LightRAG] 二次 repair_all 失败: {e}")
-            # 二次 repair 后重检
-            try:
-                check_result = check_all()
-                _integrity_result = check_result
-            except Exception as e:
-                logger.warning(f"[LightRAG] 二次 repair 后重检失败: {e}")
-
-        # 7. 判定 repaired
-        # v9: 基于 repair_all 的 _unrecoverable 字段，不再依赖 check_all 重检
-        # 原因：历史残留孤儿 chunk 永远报 major（entity_chunks_dangling），
-        # 但 repair_all 已尽力修了（_unrecoverable=False 表示修复流程没遇到
-        # 不可恢复错误）。用户应看到 repaired=True（修复已尽力），而不是永远
-        # 卡在 repaired=False（旧逻辑基于 check_all 重检 critical/major）。
+        # 7. 判定 repaired（基于 repair_all._unrecoverable）
         repaired = not has_unrecoverable and not repair_result.get("_unrecoverable", False)
-
-        # critical/major/minor 仍从 check_result 取（暴露给用户，不掩盖问题）
-        critical = check_result.get("critical_errors", 0)
-        major = check_result.get("major_errors", 0)
-        minor = check_result.get("minor_errors", 0)
 
         for vdb_name, vdb_result in repair_result.items():
             if not isinstance(vdb_result, dict):
@@ -1327,10 +1243,9 @@ def run_repair_on_user_request() -> dict:
                     f"[LightRAG] 修复失败项: {vdb_name} - {vdb_result.get('message', '')}"
                 )
 
-        if has_unrecoverable:
-            logger.warning(
-                f"[LightRAG] 修复后 has_unrecoverable({has_unrecoverable})"
-            )
+        critical = check_result.get("critical_errors", 0)
+        major = check_result.get("major_errors", 0)
+        minor = check_result.get("minor_errors", 0)
 
         logger.info(
             f"[LightRAG] 修复完成: repaired={repaired}, "
@@ -1344,9 +1259,6 @@ def run_repair_on_user_request() -> dict:
             "major_errors": major,
             "minor_errors": minor,
             "repair_result": repair_result,
-            # 顶层 _unrecoverable 提到 result 顶层，让 Rust format_repair_summary
-            # 能直接读到（Rust 遍历 repair_result.<*>.unrecoverable 会漏检顶层
-            # _unrecoverable，此处显式提升避免漏判导致用户看到模糊弹窗）。
             "_unrecoverable": bool(repair_result.get("_unrecoverable", False)),
             "check_result": check_result,
         }
@@ -1363,6 +1275,19 @@ def run_repair_on_user_request() -> dict:
         }
     finally:
         _repairing = False
+        # 尝试重启 RegionSync（下次用户请求自然触发，这里不主动调 get_lightrag）
+        # start_background_sync 同样是 RegionSync 实例方法（region_sync.py:602）
+        try:
+            from agent.injector.region_sync import get_region_sync
+
+            rs = get_region_sync()
+            if rs is not None:
+                rs.start_background_sync()
+                logger.info(
+                    "[LightRAG] RegionSync 已重启（通过 get_region_sync().start_background_sync）"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LightRAG] 重启 RegionSync 失败: {e}")
 
 
 def reset_init_state() -> None:
