@@ -23,14 +23,13 @@ Usage:
 
 import asyncio
 import json
-import os
 import threading
 import time
 from collections import deque
 from datetime import datetime
-from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, AsyncGenerator, Dict, Optional, Union
+from asyncio import AbstractEventLoop
 
 from loguru import logger
 
@@ -92,7 +91,6 @@ def _build_llm_model_func():
     extraction requests.
     """
     from niu_api.llm_proxy import get_llm_config
-    from agent.generic.litellm_adapter import MockResponse
     from niu_api.internal.brain_region_prompt import (
         build_static_brain_region_prompt,
         build_dynamic_brain_region_prompt,
@@ -102,7 +100,7 @@ def _build_llm_model_func():
     async def _llm_model_func(
         prompt, system_prompt=None, history_messages=None,
         keyword_extraction=False, **kwargs,
-    ) -> str:
+    ) -> Union[str, AsyncGenerator[str, Any]]:
         # 1. Pop LightRAG internal params (concurrency control, not for LLM)
         kwargs.pop("hashing_kv", None)
         kwargs.pop("_priority", None)
@@ -238,7 +236,7 @@ def _get_embedding_dim_for_lightrag() -> int:
 # LightRAG is async. We run it in a dedicated daemon thread with its own
 # event loop, bridging sync callers (handler) to async LightRAG.
 
-_loop: Optional[asyncio.AbstractEventLoop] = None
+_loop: Optional[AbstractEventLoop] = None
 _loop_thread: Optional[threading.Thread] = None
 _loop_ready = threading.Event()
 _loop_lock = threading.Lock()
@@ -536,7 +534,7 @@ def remove_region_stale_edges(
     return removed
 
 
-def _ensure_loop() -> asyncio.AbstractEventLoop():
+def _ensure_loop() -> AbstractEventLoop:
     """Ensure the daemon event loop is running (thread-safe)."""
     global _loop, _loop_thread
 
@@ -565,6 +563,7 @@ def _ensure_loop() -> asyncio.AbstractEventLoop():
         if not _loop_ready.wait(timeout=5.0):
             raise RuntimeError("LightRAG event loop failed to start")
 
+        assert _loop is not None  # set by _run_loop after loop creation
         return _loop
 
 
@@ -826,7 +825,7 @@ def _create_lightrag_instance():
     from niu_api.internal.embedding import get_embedding_max_seq_length
     max_seq_len = get_embedding_max_seq_length()
 
-    embedding_func_config = dict(
+    embedding_func = EmbeddingFunc(
         embedding_dim=embedding_dim,
         max_token_size=max_seq_len,
         func=_make_local_embedding_func(),
@@ -858,7 +857,7 @@ def _create_lightrag_instance():
         working_dir=str(STORAGE_DIR),
         llm_model_func=llm_model_func,
         llm_model_name="proxy-model",
-        embedding_func=EmbeddingFunc(**embedding_func_config),
+        embedding_func=embedding_func,
         chunk_overlap_token_size=chunk_overlap_token_size,
         chunk_token_size=chunk_token_size,
         llm_model_max_async=llm_model_max_async,
@@ -891,15 +890,10 @@ def _create_lightrag_instance():
     return rag
 
 
-# We need EmbeddingFunc from lightrag for type annotation
-# Define a placeholder that gets replaced at runtime
-try:
-    from lightrag.lightrag import EmbeddingFunc
-except ImportError:
-    # LightRAG not installed yet - create a placeholder
-    class EmbeddingFunc:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+# We need EmbeddingFunc from lightrag for constructing the embedding function wrapper.
+# EmbeddingFunc lives in lightrag.utils in lightrag-hku 1.4.x. LightRAG is a hard
+# dependency of this project — placeholder removed so type inference matches.
+from lightrag.utils import EmbeddingFunc
 
 
 def get_lightrag():
@@ -1029,7 +1023,7 @@ async def ensure_lightrag():
 def is_lightrag_available() -> bool:
     """Check if LightRAG is available (installed and initialized)."""
     try:
-        import lightrag  # noqa: F401
+        import lightrag  # pyright: ignore[reportUnusedImport]
         return True
     except ImportError:
         return False
@@ -1387,7 +1381,8 @@ def get_lightrag_status() -> Dict[str, Any]:
         initialized = _rag_instance is not None
         init_failed = _init_failed_at is not None
         if init_failed:
-            retry_in = max(0, round(_INIT_RETRY_SECONDS - (time.monotonic() - _init_failed_at), 1))
+            failed_at = _init_failed_at or 0.0
+            retry_in = max(0, round(_INIT_RETRY_SECONDS - (time.monotonic() - failed_at), 1))
         else:
             retry_in = None
     with _loop_lock:

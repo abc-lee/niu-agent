@@ -497,7 +497,7 @@ def repair_text_chunks() -> dict[str, Any]:
             "message": f"GraphML 损坏: {nodes_err.get('msg', '')}",
             "unrecoverable": True,
         }
-    node_ids_set, edges_list, edges_err = _load_graphml_nodes_edges()
+    _, edges_list, edges_err = _load_graphml_nodes_edges()
     if edges_err is not None:
         return {
             "status": "error",
@@ -510,7 +510,7 @@ def repair_text_chunks() -> dict[str, Any]:
         }
 
     active_chunk_ids: set[str] = set()
-    for node_id, (desc, src_ids) in nodes.items():
+    for _, (_, src_ids) in nodes.items():
         if src_ids:
             active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
     for edge_tuple in edges_list:
@@ -616,7 +616,7 @@ def repair_text_chunks() -> dict[str, Any]:
             new_tc[cid] = chunk_data
         # 降级从 full_docs_chunk_map 查
         elif cid in full_docs_chunk_map:
-            ct, doc_id, content, file_path = full_docs_chunk_map[cid]
+            _, doc_id, content, file_path = full_docs_chunk_map[cid]
             new_tc[cid] = {
                 "content": content,
                 "full_doc_id": doc_id,
@@ -1217,7 +1217,7 @@ def repair_entity_chunks() -> dict[str, Any]:
     # 2. 从 source_id 提取 chunk_ids（LightRAG operate.py L1194 用 chunk_ids + count 字段）
     new_entity_chunks: dict[str, dict[str, Any]] = {}
     expected = len(nodes)
-    for node_id, (desc, src) in nodes.items():
+    for node_id, (_, src) in nodes.items():
         if not src:
             # source_id 为空 → 空 chunk_ids（合法）
             new_entity_chunks[node_id] = {"chunk_ids": [], "count": 0}
@@ -1282,7 +1282,7 @@ def repair_relation_chunks() -> dict[str, Any]:
     # 2. 从 source_id 提取 chunk_ids（LightRAG operate.py L1404 用 chunk_ids + count 字段）
     new_relation_chunks: dict[str, dict[str, Any]] = {}
     expected = 0
-    for src, tgt, edge_src_id, edge_desc, edge_keywords in edges:
+    for src, tgt, edge_src_id, _, _ in edges:
         if not src or not tgt:
             continue
         # sorted 后用 make_relation_chunk_key 生成 key
@@ -1367,7 +1367,7 @@ def repair_full_entities() -> dict[str, Any]:
 
     # 4. 从 GraphML source_id 提取 entity→docs 映射
     entity_to_docs: dict[str, set[str]] = {}
-    for node_id, (desc, src) in nodes.items():
+    for node_id, (_, src) in nodes.items():
         if not src:
             continue
         chunk_ids = [c for c in src.split(GRAPH_FIELD_SEP) if c]
@@ -1449,7 +1449,7 @@ def repair_full_relations() -> dict[str, Any]:
 
     # 4. 从 GraphML edge source_id 提取 relation→docs 映射
     relation_to_docs: dict[str, set[str]] = {}
-    for src, tgt, edge_src_id, edge_desc, edge_keywords in edges:
+    for src, tgt, edge_src_id, _, _ in edges:
         if not src or not tgt:
             continue
         if not edge_src_id:

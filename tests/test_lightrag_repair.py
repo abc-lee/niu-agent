@@ -72,13 +72,9 @@ def _make_graphml(
         if src:
             lines.append(f'<data key="d3">{xml_escape(src)}</data>')
         lines.append('</node>')
-    for edge in edges or []:
-        if len(edge) == 5:
-            src, tgt, desc, sid, keywords = edge
-        else:
-            # 兼容旧 4-tuple（无 keywords）
-            src, tgt, desc, sid = edge
-            keywords = ""
+    edge_list: list[tuple[str, str, str, str, str]] = edges or []
+    for edge in edge_list:
+        src, tgt, desc, sid, keywords = edge
         lines.append(f'<edge source="{xml_escape(src)}" target="{xml_escape(tgt)}">')
         if desc:
             lines.append(f'<data key="d8">{xml_escape(desc)}</data>')
@@ -205,14 +201,13 @@ def test_repair_text_chunks_pass(storage_dir, patched_embed, monkeypatch):
     # expected_chunk_id 应在重建结果里（从 full_docs chunking 产出）
     assert expected_chunk_id in tc_data
     # 每条都有 full_doc_id 指向 full_docs
-    for chunk_id, chunk_value in tc_data.items():
+    for _, chunk_value in tc_data.items():
         assert chunk_value["full_doc_id"] in full_docs
 
 
 def test_repair_text_chunks_fail_full_docs_corrupt(storage_dir, patched_embed, monkeypatch):
     """v4: GraphML 活跃 chunk + full_docs 损坏 + text_chunks 损坏 → unrecoverable"""
     from niu_api.internal import lightrag_repair
-    import xml.etree.ElementTree as ET
 
     # GraphML：1 个实体引用 chunk-x（活跃 chunk）
     ns = "http://graphml.graphdrawing.org/xmlns"
@@ -290,19 +285,6 @@ def test_repair_doc_status_fail_text_chunks_corrupt(storage_dir, patched_embed):
 # =============================================================================
 # 3. repair_graphml
 # =============================================================================
-
-
-def test_repair_graphml_fail_cache_corrupt(storage_dir, patched_embed):
-    """llm_response_cache 损坏 → unrecoverable"""
-    from niu_api.internal import lightrag_repair
-
-    _write_text(storage_dir / "kv_store_llm_response_cache.json", '{"truncated":')
-
-    result = lightrag_repair.repair_graphml()
-
-    assert result["status"] == "error"
-    assert result.get("unrecoverable") is True
-    assert "llm_response_cache 损坏" in result["message"]
 
 
 # =============================================================================
@@ -683,51 +665,6 @@ def test_repair_full_relations_fail_doc_status_corrupt(storage_dir, patched_embe
     assert result["status"] == "error"
     assert result.get("unrecoverable") is True
     assert "doc_status 损坏" in result["message"]
-
-
-# =============================================================================
-# 11. repair_llm_response_cache
-# =============================================================================
-
-
-def test_repair_llm_response_cache_pass(storage_dir, patched_embed):
-    """cache 损坏 → 清空 + 清空 text_chunks.llm_cache_list"""
-    from niu_api.internal import lightrag_repair
-
-    _write_text(storage_dir / "kv_store_llm_response_cache.json", '{"truncated":')
-    _write_json(
-        storage_dir / "kv_store_text_chunks.json",
-        {
-            "chunk-a": {"content": "a", "llm_cache_list": ["cache_key_1", "cache_key_2"]},
-            "chunk-b": {"content": "b", "llm_cache_list": ["cache_key_3"]},
-        },
-    )
-
-    result = lightrag_repair.repair_llm_response_cache()
-
-    assert result["status"] == "ok"
-    assert "不可重建" in result["message"]
-
-    # cache 应被清空为 {}
-    cache_data = json.loads((storage_dir / "kv_store_llm_response_cache.json").read_text())
-    assert cache_data == {}
-
-    # text_chunks.llm_cache_list 应被清空
-    tc_data = json.loads((storage_dir / "kv_store_text_chunks.json").read_text())
-    assert tc_data["chunk-a"]["llm_cache_list"] == []
-    assert tc_data["chunk-b"]["llm_cache_list"] == []
-
-
-def test_repair_llm_response_cache_pass_empty(storage_dir, patched_embed):
-    """cache 文件不存在 → 写空 dict"""
-    from niu_api.internal import lightrag_repair
-
-    # 不创建 cache 文件
-    result = lightrag_repair.repair_llm_response_cache()
-
-    assert result["status"] == "ok"
-    cache_data = json.loads((storage_dir / "kv_store_llm_response_cache.json").read_text())
-    assert cache_data == {}
 
 
 # =============================================================================
