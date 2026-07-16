@@ -1,0 +1,16 @@
+{
+  "include": ["niu_api", "tests"],
+  "exclude": ["**/__pycache__", "**/node_modules", "python", ".git"],
+  "pythonVersion": "3.11",
+  "extraPaths": [".", "REDACTED_USER_PATH/tools/LightRAG", "python/lib/python3.11/site-packages"],
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "warning",
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning",
+  "reportUnusedFunction": "warning",
+  "reportUnusedClass": "warning",
+  "reportUnusedExpression": "warning",
+  "reportDuplicateImport": "warning",
+  "reportPrivateImportUsage": "none",
+  "reportImplicitStringConcatenation": "none"
+}
