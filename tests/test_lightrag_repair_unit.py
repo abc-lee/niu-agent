@@ -1339,3 +1339,43 @@ def test_get_tokenizer_singleton_cache():
     assert t1 is not None and t2 is not None
     assert t1 is t2, "第二次调用应返回同一缓存实例"
     reset_cache()
+
+
+def test_load_graphml_nodes_returns_3_tuple_with_entity_type(tmp_path, monkeypatch):
+    """_load_graphml_nodes 应返回 {node_id: (entity_type, desc, src)} 3 元组。"""
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+
+    # 普通实体节点
+    n1 = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-x"})
+    ET.SubElement(n1, f"{{{ns}}}data", {"key": "d1"}).text = "person"
+    ET.SubElement(n1, f"{{{ns}}}data", {"key": "d2"}).text = "desc X"
+    ET.SubElement(n1, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-aaa"
+
+    # 脑区节点
+    n2 = ET.SubElement(graph, f"{{{ns}}}node", {"id": "文档库脑区"})
+    ET.SubElement(n2, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
+    ET.SubElement(n2, f"{{{ns}}}data", {"key": "d2"}).text = "文档库脑区描述<SEP>brain_meta_size:94"
+    ET.SubElement(n2, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-bbb"
+
+    # 缺 d1 的节点（entity_type 应为空字符串）
+    n3 = ET.SubElement(graph, f"{{{ns}}}node", {"id": "entity-no-d1"})
+    ET.SubElement(n3, f"{{{ns}}}data", {"key": "d2"}).text = "desc Y"
+    ET.SubElement(n3, f"{{{ns}}}data", {"key": "d3"}).text = "chunk-ccc"
+
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import _load_graphml_nodes
+
+    nodes, err = _load_graphml_nodes()
+    assert err is None
+    assert nodes["entity-x"] == ("person", "desc X", "chunk-aaa")
+    assert nodes["文档库脑区"] == ("brainregion", "文档库脑区描述<SEP>brain_meta_size:94", "chunk-bbb")
+    # 缺 d1 → entity_type=""
+    assert nodes["entity-no-d1"] == ("", "desc Y", "chunk-ccc")
