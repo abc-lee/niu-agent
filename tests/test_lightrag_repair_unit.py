@@ -1615,12 +1615,11 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     真实 cache 的 original_prompt 含 8 个 ```（4 对），只有第一对 ``` 之间是 chunk 原文。
     非贪婪正则 r"```\\s*(.+?)\\s*```" 必须正确提取第一对之间内容，不能跨多对 ```。
 
-    真实数据特征（2026-07-17 验证）：
-    - 145 个活跃 chunk_id（70 来自脑区 source_id + 75 非脑区）
-    - cache extract 覆盖 123 个 chunk_id
-    - 脑区 source_id 中有 7 个 chunk_id 在 cache/full_docs 都没（走脑区直接构造 fallback）
-    - 非脑区有 22 个 chunk_id 是孤儿（GraphML edge 引用但 cache/full_docs 都已删除）
-    - 最终恢复 123 个，22 个 missing（孤儿 chunk，3 真相源都没有原文）
+    真实数据特征（2026-07-17 验证，主对话已手工清理 GraphML 22 孤儿引用）：
+    - 123 个活跃 chunk_id（GraphML 孤儿引用已清理：node source_id 清理 9 + edge source_id 清理 1068）
+    - cache extract + full_docs + 脑区 fallback 覆盖全部 123 个 chunk_id
+    - 0 个孤儿 chunk（清理后 GraphML 不再引用已删除的 chunk）
+    - 最终恢复 123 个，0 个 missing（无孤儿 chunk）
     """
     import os, shutil
     src_dir = os.path.expanduser("~/.niu/lightrag_storage")
@@ -1642,12 +1641,12 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
 
     result = repair_text_chunks()
 
-    # 真实数据：145 个活跃 chunk，123 个能从 cache + full_docs + 脑区 fallback 恢复
-    # 22 个孤儿 chunk（GraphML edge 引用但 cache/full_docs 都已删除）= missing
+    # 真实数据：123 个活跃 chunk（GraphML 孤儿引用已清理），全部能从 cache + full_docs + 脑区 fallback 恢复
+    # 0 个孤儿 chunk（清理后无 GraphML 引用已删除 chunk）= missing
     assert result["status"] == "ok", f"repair_text_chunks 失败: {result.get('message', '')}"
-    assert result["expected"] == 145, f"活跃 chunk 数应为 145，实际 {result['expected']}"
+    assert result["expected"] == 123, f"活跃 chunk 数应为 123，实际 {result['expected']}"
     assert result["actual"] == 123, f"应恢复 123 个 chunk，实际 {result['actual']}"
-    assert result["lost"] == 22, f"孤儿 chunk 应 22 个 missing，实际 lost={result['lost']}"
+    assert result["lost"] == 0, f"清理后无孤儿 chunk，lost 应 0，实际 lost={result['lost']}"
 
     # 验证 text_chunks 内容非空（每个 chunk content 必须有真实原文，不是空串）
     tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
