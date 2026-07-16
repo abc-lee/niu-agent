@@ -130,6 +130,30 @@ def _embed_batch(texts: list[str]) -> list[list[float]] | None:
     return None
 
 
+def _get_tokenizer():
+    """独立加载 tokenizer（不调 get_lightrag_for_repair，铁律 3）。
+
+    v8-Task 2：委托给独立模块 niu_api.internal.lightrag_repair_tokenizer。
+    用 lightrag.utils.TiktokenTokenizer（model_name="gpt-4o-mini"）。
+    失败返回 None。
+    """
+    from niu_api.internal.lightrag_repair_tokenizer import get_tokenizer
+
+    return get_tokenizer()
+
+
+def _get_chunk_config() -> tuple[int, int]:
+    """读 chunk_token_size + chunk_overlap_token_size（不调 get_lightrag，铁律 3）。
+
+    v8-Task 2：委托给独立模块 niu_api.internal.lightrag_repair_tokenizer。
+    从 niu_api.internal.lightrag_manager._get_lightrag_config 读（只读 preferences.json）。
+    fallback (1200, 50)（与 lightrag_manager.py:853 真实默认值一致）。
+    """
+    from niu_api.internal.lightrag_repair_tokenizer import get_chunk_config
+
+    return get_chunk_config()
+
+
 def _embed_text(text: str) -> list[float] | None:
     """单条 embedding（内部调 _embed_batch）。
 

@@ -1218,3 +1218,124 @@ def test_run_repair_on_user_request_repaired_false_on_step_error(tmp_path, monke
     result = lm.run_repair_on_user_request()
 
     assert result["repaired"] is False, "步骤 status=error 时应 repaired=False"
+
+
+# ============== v8-Task 2 测试：独立加载 tokenizer + chunk_config ==============
+
+
+def test_get_tokenizer_independent_load():
+    """_get_tokenizer 应独立加载 TiktokenTokenizer，不调 get_lightrag_for_repair。
+
+    铁律 3：禁止调 get_lightrag/get_lightrag_for_repair/apipeline。
+    v8-Task 2：用 lightrag.utils.TiktokenTokenizer（model_name="gpt-4o-mini"）。
+    """
+    from niu_api.internal.lightrag_repair_tokenizer import reset_cache
+    from niu_api.internal.lightrag_repair import _get_tokenizer
+
+    reset_cache()  # 清缓存，确保本次测试重新加载
+    tokenizer = _get_tokenizer()
+    assert tokenizer is not None, "TiktokenTokenizer 应加载成功"
+
+    # TiktokenTokenizer 继承 Tokenizer，有 encode/decode 方法（不是 tokenize）
+    assert hasattr(tokenizer, "encode"), "tokenizer 应有 encode 方法"
+    assert hasattr(tokenizer, "decode"), "tokenizer 应有 decode 方法"
+
+    # 验证 encode 真能用（不抛异常）
+    tokens = tokenizer.encode("hello world")
+    assert isinstance(tokens, list), "encode 应返回 list[int]"
+    assert len(tokens) > 0, "encode 应返回非空 token list"
+
+    reset_cache()  # 测试完清缓存
+
+
+def test_get_tokenizer_does_not_call_get_lightrag(monkeypatch):
+    """_get_tokenizer 绝不能调 get_lightrag（铁律 3）。
+
+    patch get_lightrag，若 _get_tokenizer 误调它则 AssertionError。
+    """
+    from unittest.mock import patch
+
+    from niu_api.internal.lightrag_repair_tokenizer import reset_cache
+    from niu_api.internal.lightrag_repair import _get_tokenizer
+
+    reset_cache()
+
+    # patch lightrag_manager.get_lightrag；若 _get_tokenizer 误调则 AssertionError
+    with patch(
+        "niu_api.internal.lightrag_manager.get_lightrag",
+        side_effect=AssertionError("禁止调 get_lightrag（铁律 3）"),
+    ):
+        tokenizer = _get_tokenizer()
+        assert tokenizer is not None, "TiktokenTokenizer 应独立加载成功，不依赖 get_lightrag"
+
+    reset_cache()
+
+
+def test_get_chunk_config_no_get_lightrag(monkeypatch):
+    """_get_chunk_config 不应调 get_lightrag（铁律 3）。
+
+    Task 1 已删 get_lightrag_for_repair，所以这里 patch get_lightrag（仍存在的函数）。
+    _get_chunk_config 只应调 _get_lightrag_config（读 preferences.json，不调 apipeline），
+    不应调 get_lightrag（会触发 apipeline 写真相源）。
+    """
+    from unittest.mock import patch
+
+    from niu_api.internal.lightrag_repair import _get_chunk_config
+
+    # patch get_lightrag（Task 1 后仍存在）；若 _get_chunk_config 误调它则 AssertionError
+    with patch(
+        "niu_api.internal.lightrag_manager.get_lightrag",
+        side_effect=AssertionError("禁止调 get_lightrag（铁律 3）"),
+    ):
+        chunk_size, chunk_overlap = _get_chunk_config()
+        assert chunk_size > 0, "chunk_token_size 应 > 0"
+        assert chunk_overlap >= 0, "chunk_overlap_token_size 应 >= 0"
+
+
+def test_get_chunk_config_fallback_on_missing_preferences(monkeypatch, tmp_path):
+    """_get_chunk_config 在 preferences.json 缺失时应 fallback (1200, 50)。
+
+    对齐 lightrag_manager.py:853 真实默认值 chunk_overlap_token_size=50。
+    """
+    from unittest.mock import patch
+
+    from niu_api.internal.lightrag_repair import _get_chunk_config
+
+    # patch _get_lightrag_config 返回空 dict（模拟 preferences.json 缺 lightrag 配置）
+    with patch(
+        "niu_api.internal.lightrag_manager._get_lightrag_config",
+        return_value={},
+    ):
+        chunk_size, chunk_overlap = _get_chunk_config()
+        assert chunk_size == 1200, f"fallback chunk_token_size 应=1200，实际={chunk_size}"
+        assert chunk_overlap == 50, f"fallback chunk_overlap 应=50，实际={chunk_overlap}"
+
+
+def test_get_chunk_config_fallback_on_exception(monkeypatch):
+    """_get_chunk_config 在 _get_lightrag_config 抛异常时应 fallback (1200, 50)。"""
+    from unittest.mock import patch
+
+    from niu_api.internal.lightrag_repair import _get_chunk_config
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("simulated config read failure")
+
+    with patch(
+        "niu_api.internal.lightrag_manager._get_lightrag_config",
+        side_effect=_raise,
+    ):
+        chunk_size, chunk_overlap = _get_chunk_config()
+        assert chunk_size == 1200
+        assert chunk_overlap == 50
+
+
+def test_get_tokenizer_singleton_cache():
+    """_get_tokenizer 应单例缓存：第二次调用直接返回同一实例。"""
+    from niu_api.internal.lightrag_repair_tokenizer import reset_cache, get_tokenizer
+
+    reset_cache()
+    t1 = get_tokenizer()
+    t2 = get_tokenizer()
+    assert t1 is not None and t2 is not None
+    assert t1 is t2, "第二次调用应返回同一缓存实例"
+    reset_cache()
