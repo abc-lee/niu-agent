@@ -3,9 +3,6 @@ import json
 import pytest
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from unittest.mock import patch
-
-from niu_api.internal.lightrag_repair import repair_text_chunks
 
 
 def _write_graphml(tmp_path: Path, nodes: list[tuple[str, str, str]]):
@@ -23,7 +20,7 @@ def _write_graphml(tmp_path: Path, nodes: list[tuple[str, str, str]]):
     )
 
 
-def _make_storage_with_zombie_cache(tmp_path: Path):
+def _make_storage_with_zombie_cache(tmp_path: Path):  # pyright: ignore[reportUnusedFunction]
     """生成含僵尸脑区 + 僵尸 cache 的测试存储。"""
     ns = "http://graphml.graphdrawing.org/xmlns"
     root = ET.Element(f"{{{ns}}}graphml")
@@ -193,8 +190,6 @@ def test_repair_all_backs_up_before_delete(tmp_path, monkeypatch):
     from niu_api.internal.lightrag_repair import repair_all
     result = repair_all()
 
-    # 应该有备份目录
-    backups = list(tmp_path.parent.glob("lightrag_storage.prerepair_*"))
     # 备份可能在 tmp_path 的父目录或别处，取决于实现
     # 关键验证：_deleted 字段记录了删除的派生文件（不含 graphml——它是真相源不被删）
     assert "_deleted" in result
@@ -333,7 +328,7 @@ def test_run_repair_on_user_request_repaired_based_on_unrecoverable_flag(tmp_pat
     # （函数内部会继续往下跑，二次 repair 不会被触发——post_critical/major 都 0）
     monkeypatch.setattr(
         "agent.injector.sync.wait_first_scan_complete",
-        lambda timeout=90.0: False,
+        lambda *_args, **_kwargs: False,
     )
 
     result = lightrag_manager.run_repair_on_user_request()
@@ -375,7 +370,7 @@ def test_run_repair_on_user_request_repaired_true_when_unrecoverable_false_but_c
     # SkillSync 首次扫描 mock 成未完成（避免触发二次 repair）
     monkeypatch.setattr(
         "agent.injector.sync.wait_first_scan_complete",
-        lambda timeout=90.0: False,
+        lambda *_args, **_kwargs: False,
     )
 
     # 关键：mock repair_all 返回 _unrecoverable=False（修复成功尽力了）
@@ -832,7 +827,7 @@ def test_repair_all_does_not_touch_truth_sources(tmp_path, monkeypatch):
     assert get_model() is not None, "embedding 模型应预加载（测试前置条件）"
 
     from niu_api.internal.lightrag_repair import repair_all
-    result = repair_all()
+    repair_all()
 
     # 3 真相源一字节未动
     assert (tmp_path / "graph_chunk_entity_relation.graphml").read_bytes() == graphml_before, "GraphML 不应被修改"
@@ -853,7 +848,7 @@ def test_repair_all_does_not_reanimate_deleted_entities(tmp_path, monkeypatch):
     assert get_model() is not None, "embedding 模型应预加载"
 
     from niu_api.internal.lightrag_repair import repair_all
-    result = repair_all()
+    repair_all()
 
     from lightrag.utils import compute_mdhash_id
     doc_v1_content = "v1 content for synthetic fixture document one"
@@ -887,7 +882,6 @@ def test_repair_all_rolls_back_on_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     # mock 让 repair_vdb_entities 失败
     import niu_api.internal.lightrag_repair as repair_mod
-    original_vdb_entities = repair_mod.repair_vdb_entities
     def failing_vdb_entities():
         raise Exception("mock failure")
     monkeypatch.setattr(repair_mod, "repair_vdb_entities", failing_vdb_entities)
@@ -1046,7 +1040,7 @@ def test_check_all_brand_new_user_is_ok(tmp_path, monkeypatch):
     assert result["critical_errors"] == 0, "全新用户真相源不存在不应报 critical"
 
 
-def test_check_all_preserves_zombie_markers_constant(tmp_path, monkeypatch):
+def test_check_all_preserves_zombie_markers_constant():
     """修改 lightrag_integrity.py 后 _ZOMBIE_DESCRIPTION_MARKERS 必须仍可 import。
 
     lightrag_repair.py:1924 import 这个常量，删了会 ImportError。
@@ -1058,17 +1052,17 @@ def test_check_all_preserves_zombie_markers_constant(tmp_path, monkeypatch):
     assert "被删除的脑区" in _ZOMBIE_DESCRIPTION_MARKERS
 
 
-def test_check_all_preserves_load_graphml_and_check_truth_source(tmp_path, monkeypatch):
+def test_check_all_preserves_load_graphml_and_check_truth_source(tmp_path):
     """修改后 _load_graphml / _check_truth_source 必须仍可 import。
 
     lightrag_repair.py:1923, 2286 import 这两个函数，删了会 ImportError。
     """
     from niu_api.internal.lightrag_integrity import (
-        _load_graphml, _check_truth_source, _load_json_dict,
+        _load_graphml, _check_truth_source,
     )
     # 简单 smoke test：调一次确认可调用
     _write_intact_truth_sources(tmp_path)
-    node_ids, edges, _, err = _load_graphml(tmp_path / "graph_chunk_entity_relation.graphml")
+    node_ids, _, _, err = _load_graphml(tmp_path / "graph_chunk_entity_relation.graphml")
     assert err is None
     assert len(node_ids) == 1
 
@@ -1149,7 +1143,7 @@ def test_run_repair_on_user_request_repaired_true_on_success(tmp_path, monkeypat
     monkeypatch.setattr(lm, "get_lightrag", lambda: None)
     # 模拟 wait_first_scan_complete 立即返回 True
     import agent.injector.sync as sync_mod
-    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda *_args, **_kwargs: True)
 
     result = lm.run_repair_on_user_request()
 
@@ -1185,7 +1179,7 @@ def test_run_repair_on_user_request_repaired_false_on_unrecoverable(tmp_path, mo
     monkeypatch.setattr(lm, "reset_init_state", lambda: None)
     monkeypatch.setattr(lm, "get_lightrag", lambda: None)
     import agent.injector.sync as sync_mod
-    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda *_args, **_kwargs: True)
 
     result = lm.run_repair_on_user_request()
 
@@ -1219,7 +1213,7 @@ def test_run_repair_on_user_request_repaired_false_on_step_error(tmp_path, monke
     monkeypatch.setattr(lm, "reset_init_state", lambda: None)
     monkeypatch.setattr(lm, "get_lightrag", lambda: None)
     import agent.injector.sync as sync_mod
-    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda timeout=120: True)
+    monkeypatch.setattr(sync_mod, "wait_first_scan_complete", lambda *_args, **_kwargs: True)
 
     result = lm.run_repair_on_user_request()
 
