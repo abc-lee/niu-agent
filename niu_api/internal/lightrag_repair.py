@@ -592,6 +592,10 @@ def repair_text_chunks() -> dict[str, Any]:
             "unrecoverable": True,
         }
 
+    # 以下代码在 need_full_docs_scan=True 时不可达（上方 stub return 已退出）。
+    # need_full_docs_scan=False 路径（existing_tc 覆盖所有活跃 chunk）仍可执行。
+    # v8-Task 4 将用独立 tokenizer 重写整个函数，届时死代码会被新算法替换。
+
     # 6. 预构建 cache 的 chunk_id → [cache_key] 映射（用于 llm_cache_list）
     #    同一 chunk_id 多条 cache entry（多轮 gleaning）时全部保留
     chunk_id_to_cache_keys: dict[str, list[str]] = {}
