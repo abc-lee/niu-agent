@@ -1241,7 +1241,7 @@ def test_get_tokenizer_independent_load():
     assert hasattr(tokenizer, "decode"), "tokenizer 应有 decode 方法"
 
     # 验证 encode 真能用（不抛异常）
-    tokens = tokenizer.encode("hello world")
+    tokens = tokenizer.encode("hello world")  # type: ignore[union-attr]
     assert isinstance(tokens, list), "encode 应返回 list[int]"
     assert len(tokens) > 0, "encode 应返回非空 token list"
 
