@@ -2,6 +2,7 @@
 
 测试前提：~/.niu/lightrag_storage_backup_20260712_071242/ 存在（含 16 个僵尸脑区）。
 """
+import hashlib
 import shutil
 import subprocess
 import time
@@ -12,6 +13,31 @@ import requests
 
 BACKUP_DIR = Path.home() / ".niu/lightrag_storage_backup_20260712_071242"
 STORAGE_DIR = Path.home() / ".niu/lightrag_storage"
+
+# v8-Task 10: 3 真相源文件列表（铁律 1：repair 程序不写 3 真相源）
+_TRUTH_FILES = [
+    "graph_chunk_entity_relation.graphml",
+    "kv_store_full_docs.json",
+    "kv_store_llm_response_cache.json",
+]
+
+
+def _snapshot_truth() -> tuple[dict[str, float], dict[str, str]]:
+    """快照 3 真相源 mtime + sha256。
+
+    返回 (mtimes, hashes)，mtime 单位为秒。
+    """
+    mtimes: dict[str, float] = {}
+    hashes: dict[str, str] = {}
+    for fname in _TRUTH_FILES:
+        p = STORAGE_DIR / fname
+        if not p.exists():
+            mtimes[fname] = 0.0
+            hashes[fname] = ""
+            continue
+        mtimes[fname] = p.stat().st_mtime
+        hashes[fname] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return mtimes, hashes
 
 
 @pytest.fixture
@@ -206,3 +232,107 @@ def test_e2e_program_starts_normally(restore_real_data):
         )
     # 不应该卡在 forced sync
     assert "activation_mgr still None" not in output, "启动后 activation_mgr 仍 None"
+
+
+def test_e2e_repair_all_3_truth_sources_intact_via_http(restore_real_data):
+    """v8-Task 10 e2e：启动 ./niu 后通过 HTTP repair_all，验证 repair 前后 3 真相源不变。
+
+    关键修复点（与 niu 启动 mtime 变化区分）：
+    - niu 启动时 RegionSync 会写 GraphML（脑区管理正常行为）—— 这是启动前后 mtime 变
+    - repair 程序本身不写 3 真相源 —— 这是 repair 前后 mtime + sha256 不变
+    所以快照点必须取在 repair 调用前后（不是 niu 启动前后）。
+
+    流程：
+    1. 启动 ./niu，等 RegionSync 跑完（sleep 30，GraphML mtime 稳定）
+    2. repair 前快照 3 真相源（mtime + sha256）
+    3. curl 触发 repair_all
+    4. 等 repair 跑完（同步等 HTTP 响应）
+    5. repair 后快照 3 真相源
+    6. 断言 repair 前后 mtime + sha256 完全相同
+    """
+    # 先清理（fixture 恢复了 16 僵尸脑区，repair_all 清掉后再启动）
+    from niu_api.internal.lightrag_repair import repair_all
+    repair_all()
+
+    # 1. 启动 ./niu
+    proc = subprocess.Popen(
+        ["./niu"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd="REDACTED_USER_PATH/tools/ai-bot",
+    )
+    try:
+        # 等 API ready
+        for _ in range(60):
+            try:
+                r = requests.get("http://127.0.0.1:9876/health", timeout=2)
+                if r.status_code == 200 and r.json().get("status") == "ok":
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        else:
+            pytest.fail("API 60 秒内未 ready，启动失败")
+
+        # 等 RegionSync 跑完（GraphML mtime 稳定）
+        time.sleep(30)
+
+        # 2. repair 前快照 3 真相源（这时 RegionSync 已写完 GraphML，mtime 稳定）
+        mtimes_before, hashes_before = _snapshot_truth()
+
+        # 3. curl 触发 repair_all（同步等响应）
+        resp = requests.post(
+            "http://127.0.0.1:9876/api/kg/lightrag/repair?target=all",
+            timeout=600,
+        )
+        assert resp.status_code == 200, f"repair API 返回 {resp.status_code}: {resp.text[:200]}"
+
+        # 4. repair 跑完后快照
+        mtimes_after, hashes_after = _snapshot_truth()
+    finally:
+        # 优雅停止 niu
+        try:
+            requests.post("http://127.0.0.1:9876/api/shutdown", timeout=5)
+        except Exception:
+            pass
+        time.sleep(3)
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        # 杀残留子进程
+        import signal
+        import psutil
+        try:
+            parent = psutil.Process(proc.pid)
+            for child in parent.children(recursive=True):
+                try:
+                    child.send_signal(signal.SIGTERM)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            try:
+                parent.send_signal(signal.SIGKILL)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        except psutil.NoSuchProcess:
+            pass
+
+    # 5. 断言 repair 前后 3 真相源 mtime + sha256 不变
+    # 关键：这是 repair 前后比对，不是启动前后比对。
+    # niu 启动后 RegionSync 写 GraphML 已在 step 2 快照前完成，
+    # repair 本身不应再写 3 真相源。
+    assert hashes_after == hashes_before, (
+        f"3 真相源内容被 repair 修改:\n"
+        f"  before: {hashes_before}\n"
+        f"  after:  {hashes_after}"
+    )
+    assert mtimes_after == mtimes_before, (
+        f"3 真相源 mtime 被 repair 修改:\n"
+        f"  before: {mtimes_before}\n"
+        f"  after:  {mtimes_after}"
+    )

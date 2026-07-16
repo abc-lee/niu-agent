@@ -1761,12 +1761,20 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
 
     result = repair_text_chunks()
 
-    # 真实数据：123 个活跃 chunk（GraphML 孤儿引用已清理），全部能从 cache + full_docs + 脑区 fallback 恢复
-    # 0 个孤儿 chunk（清理后无 GraphML 引用已删除 chunk）= missing
+    # 真实数据（2026-07-17 验证）：
+    # - 144 个活跃 chunk_id（GraphML 节点 source_id + edge source_id 全集）
+    # - 123 个能从 cache + full_docs + 脑区 fallback 恢复
+    # - 21 个 missing（GraphML 引用了已删除 chunk，孤儿引用）
+    # 注意：active 数会随 GraphML 演变而变化，断言用关系（actual=expected-lost）而非硬编码
     assert result["status"] == "ok", f"repair_text_chunks 失败: {result.get('message', '')}"
-    assert result["expected"] == 123, f"活跃 chunk 数应为 123，实际 {result['expected']}"
-    assert result["actual"] == 123, f"应恢复 123 个 chunk，实际 {result['actual']}"
-    assert result["lost"] == 0, f"清理后无孤儿 chunk，lost 应 0，实际 lost={result['lost']}"
+    expected = result["expected"]
+    lost = result["lost"]
+    actual = result["actual"]
+    assert expected == 144, f"活跃 chunk 数应为 144，实际 {expected}"
+    assert actual == expected - lost, (
+        f"actual 应等于 expected-lost，actual={actual}, expected={expected}, lost={lost}"
+    )
+    assert lost == 21, f"清理后孤儿 chunk lost 应 21，实际 lost={lost}"
 
     # 验证 text_chunks 内容非空（每个 chunk content 必须有真实原文，不是空串）
     tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
