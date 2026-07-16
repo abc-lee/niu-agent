@@ -5,8 +5,15 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from niu_api.internal.lightrag_repair import repair_brainregion_zombies
-from niu_api.internal.lightrag_integrity import check_all
+# v8-Task 1：repair_brainregion_zombies 已删除（违反铁律 3，写 GraphML + cache）。
+# 整个文件依赖该函数，跳过 collection。Task 5-10 回归测试会重建等价覆盖。
+pytest.skip(
+    "v8-Task 1 删除了 repair_brainregion_zombies（违反铁律 3），本文件整体跳过",
+    allow_module_level=True,
+)
+
+from niu_api.internal.lightrag_repair import repair_brainregion_zombies  # noqa: E402
+from niu_api.internal.lightrag_integrity import check_all  # noqa: E402
 
 
 def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[str] = None):

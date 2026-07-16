@@ -1005,69 +1005,6 @@ def get_lightrag():
     return _rag_instance
 
 
-def get_lightrag_for_repair():
-    """repair 专用路径：绕过 _repairing 门控 + 三级门控 critical/major 检查。
-
-    repair 期间数据正在重建，critical/major 是预期状态，不应拒绝初始化。
-    但仍走 _rag_lock 双检锁 + retry cooldown，确保线程安全。
-
-    返回缓存的 _rag_instance（若已初始化），否则重新创建并缓存到全局 _rag_instance。
-    repair_all 内部会主动清 _rag_instance=None + 同步 STORAGE_DIR，
-    所以 repair 期间创建的实例天然指向 patch 后路径。
-
-    Returns None if init failed recently (cooldown not expired).
-
-    Bug A 背景：
-        run_repair_on_user_request 设 _repairing=True 后调 repair_all，
-        repair_text_chunks/repair_graphml 内部调 get_lightrag() 拿实例，
-        但 get_lightrag() 看到 _repairing=True 直接 return None → 报
-        "LightRAG 实例未初始化" → unrecoverable=True → 触发回滚。
-        本函数绕过 _repairing 门控，让 repair 期间也能拿到实例。
-    """
-    global _rag_instance, _init_failed_at
-
-    # repair 期间复用已有实例（如果存在）
-    if _rag_instance is not None:
-        return _rag_instance
-
-    # 跳过三级门控（repair 期间 critical/major 是预期状态，不应拒绝初始化）
-    # 但保留 retry cooldown（避免快速重试失败导致 CPU 浪费）
-    if _init_failed_at is not None:
-        elapsed = time.monotonic() - _init_failed_at
-        if elapsed < _INIT_RETRY_SECONDS:
-            return None
-        logger.info(
-            f"[LightRAG] repair 专用路径 cooldown expired ({elapsed:.0f}s), retrying..."
-        )
-        _init_failed_at = None
-
-    with _rag_lock:
-        # Double-check after acquiring lock
-        if _rag_instance is not None:
-            return _rag_instance
-
-        if _init_failed_at is not None:
-            elapsed = time.monotonic() - _init_failed_at
-            if elapsed < _INIT_RETRY_SECONDS:
-                return None
-            _init_failed_at = None
-
-        try:
-            logger.info("[LightRAG] repair 专用路径：初始化 LightRAG 实例...")
-            _rag_instance = _create_lightrag_instance()
-            logger.info("[LightRAG] repair 专用路径实例 ready")
-            _lightrag_ready.set()
-        except ImportError as e:
-            logger.warning(f"[LightRAG] repair 专用路径 LightRAG not available: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"[LightRAG] repair 专用路径初始化失败: {e}")
-            _init_failed_at = time.monotonic()
-            return None
-
-    return _rag_instance
-
-
 def wait_lightrag_ready(timeout: float) -> bool:
     """Block until LightRAG is initialized, or until timeout expires.
 
@@ -1303,21 +1240,10 @@ def run_repair_on_user_request() -> dict:
         # 实际上：get_lightrag 看到 _repairing=True 会返回 None，不触发初始化。
         # 这里改为先清 _repairing，让 get_lightrag 走三级门控重新初始化。
         #
-        # 关键修复（SkillSync vdb 覆盖 bug 根因）：
-        # repair_all 内部调 get_lightrag_for_repair() 拿 tokenizer/embedding 实例，
-        # 该调用会把 _rag_instance 设为"repair 期间创建的过期实例"。这个实例的
-        # NanoVectorDB 客户端在 repair 重建 vdb 文件之前就从（空）磁盘加载了数据，
-        # 内存中的 vdb 是空的或过期的（0 条）。
-        #
-        # 必须先置 _rag_instance=None，再清 _repairing=False，否则存在竞态窗口：
-        #   _repairing=False 后、_rag_instance=None 前，SkillSync 后台线程可能
-        #   调 get_lightrag() 拿到过期实例（内存 0 条），ainsert_custom_kg 注入
-        #   6 个 skill 后 _insert_done 把磁盘覆盖成只有 6 条（repair 重建的 2211
-        #   条全丢）。这就是"vdb 2211→6"的真正根因。
-        #
-        # 顺序：先 _rag_instance=None（SkillSync 仍被 _repairing=True 挡住）→
-        #       再 _repairing=False → 最后 get_lightrag() 从 repair 后的磁盘重建
-        #       实例（内存含 2211 条）。
+        # v8-Task 1：已删除 get_lightrag_for_repair（违反铁律 3）。
+        # 原 SkillSync vdb 覆盖 bug 的根因说明已随函数删除一并移除。
+        # 顺序仍保留：先 _rag_instance=None → 再 _repairing=False → 最后 get_lightrag()
+        # 从 repair 后的磁盘重建实例。
         _rag_instance = None
         _repairing = False
         try:

@@ -39,10 +39,8 @@ _DERIVED_FILES = [
 ]
 
 # 僵尸脑区 description 语义标记（LLM 写的 description，明确告诉系统这个实体该删）
-# repair_brainregion_zombies（lightrag_repair.py:1775）import 这个常量用于：
-# 1. 识别 GraphML 里 description 含"被删除"标记的脑区 node
-# 2. 清理 llm_response_cache 里 entity_type=brainregion + description 含标记的 extract entry
-# 注意：替换 lightrag_integrity.py 时必须保留这个常量，否则 lightrag_repair.py 会 ImportError
+# v8-Task 1：原使用者 repair_brainregion_zombies 已删除（违反铁律 3）。
+# 当前此常量无引用，保留供 Task 8 重写 repair_all 时脑区节点识别复用。
 _ZOMBIE_DESCRIPTION_MARKERS = (
     "被删除的重复脑区实体之一",
     "被删除的脑区",
