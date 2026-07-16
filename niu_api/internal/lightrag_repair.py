@@ -626,9 +626,12 @@ def repair_text_chunks() -> dict[str, Any]:
     for cid in cache_by_chunk_id:
         cache_by_chunk_id[cid].sort(key=lambda x: x[0], reverse=True)
 
-    # 5. 判断是否需要扫 full_docs（cache 没覆盖所有活跃 chunk 时扫描）
-    cache_covered = set(cid for cid in cache_by_chunk_id if cid in active_chunk_ids)
-    need_full_docs_scan = any(cid not in cache_covered for cid in active_chunk_ids)
+    # 5. 判断是否需要扫 full_docs
+    # v8-Task 10 修复：cache 覆盖也扫 full_docs（因为 cache entry 不含 full_doc_id，
+    # cache-derived chunks 需要 full_docs chunking 反查补 full_doc_id）。
+    # 这样 doc_status/full_entities/full_relations 的 chunk→doc 映射不会全空。
+    # 只有 cache 为空且无 active chunk 时才不扫（但 active_chunk_ids 非空到这就必须扫）。
+    need_full_docs_scan = bool(active_chunk_ids)
 
     # 6. full_docs chunking 反查（仅当 cache 没覆盖全部非脑区 chunk）
     full_docs_chunk_map: dict[str, tuple[int, str, str, str]] = {}
@@ -706,11 +709,15 @@ def repair_text_chunks() -> dict[str, Any]:
             m = cache_pattern.search(op)
             if m:
                 chunk_content = m.group(1)
-                # cache entry 不含 full_doc_id 字段，用空字符串占位
-                # doc_status 重建时会跳过 full_doc_id="" 的 chunk
+                # v8-Task 10 修复：cache entry 不含 full_doc_id，用 full_docs_chunk_map 反查补 doc_id。
+                # 之前留空导致 doc_status.chunks_list 为空，full_entities/full_relations actual=0。
+                # 反查用 chunk_id 直接匹配 full_docs_chunk_map 的 key（按 chunk_content hash 算的）。
+                doc_id = ""
+                if cid in full_docs_chunk_map:
+                    doc_id = full_docs_chunk_map[cid][1]  # (create_time, doc_id, content, file_path)
                 new_tc[cid] = {
                     "content": chunk_content,
-                    "full_doc_id": "",  # cache 不含 doc_id，留空
+                    "full_doc_id": doc_id,
                     "llm_cache_list": [e[2] for e in cache_by_chunk_id[cid]],
                 }
                 continue
