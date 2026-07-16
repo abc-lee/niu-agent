@@ -1379,3 +1379,300 @@ def test_load_graphml_nodes_returns_3_tuple_with_entity_type(tmp_path, monkeypat
     assert nodes["文档库脑区"] == ("brainregion", "文档库脑区描述<SEP>brain_meta_size:94", "chunk-bbb")
     # 缺 d1 → entity_type=""
     assert nodes["entity-no-d1"] == ("", "desc Y", "chunk-ccc")
+
+
+# ==================== v8-Task 4: repair_text_chunks 重写测试 ====================
+
+
+def _write_graphml_v8(tmp_path: Path, nodes_data, edges_data=None):
+    """写 GraphML v8 测试 fixture。
+    nodes_data = [(node_id, etype, desc, src), ...]
+    edges_data = [(src, tgt, src_ids, desc, kw), ...]
+    """
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
+    for node_id, etype, desc, src in nodes_data:
+        node = ET.SubElement(graph, f"{{{ns}}}node", {"id": node_id})
+        if etype:
+            ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = etype
+        if desc:
+            ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = desc
+        if src:
+            ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = src
+    if edges_data:
+        for src, tgt, src_ids, desc, kw in edges_data:
+            edge = ET.SubElement(graph, f"{{{ns}}}edge", {"source": src, "target": tgt})
+            if desc:
+                ET.SubElement(edge, f"{{{ns}}}data", {"key": "d8"}).text = desc
+            if kw:
+                ET.SubElement(edge, f"{{{ns}}}data", {"key": "d9"}).text = kw
+            if src_ids:
+                ET.SubElement(edge, f"{{{ns}}}data", {"key": "d10"}).text = src_ids
+    ET.ElementTree(root).write(
+        tmp_path / "graph_chunk_entity_relation.graphml",
+        xml_declaration=True, encoding="utf-8"
+    )
+
+
+def _build_cache_prompt(chunk_content: str) -> str:
+    """构造 cache original_prompt（含 ``` 包裹的 chunk 原文 + LLM 输出示例）。"""
+    return f"""---Task---
+Extract entities and relationships from the input text.
+
+---Data---
+```
+{chunk_content}
+```
+
+---Output---
+First, output entity list, each entity separated by new line:
+```
+("entity"<|#|>名字<|#|>类型<|#|>描述)
+```
+
+Then output relationship list:
+```
+("relationship"<|#|>src<|#|>tgt<|#|>desc<|#|>kw)
+```
+"""
+
+
+def test_repair_text_chunks_cache_original_prompt_priority(tmp_path, monkeypatch):
+    """repair_text_chunks 应优先从 cache original_prompt 提取 chunk 原文。"""
+    chunk_content = "测试 chunk 原文 cache 优先"
+    # GraphML：1 个实体引用 chunk-active
+    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", "chunk-active")])
+
+    # text_chunks 为空（强制走 cache 提取路径）
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+
+    # cache：1 个 extract entry，chunk_id=chunk-active，original_prompt 含 chunk 原文
+    cache = {
+        "cache-key-1": {
+            "return": "entity<|#|>名字<|#|>person<|#|>描述",
+            "cache_type": "extract",
+            "chunk_id": "chunk-active",
+            "original_prompt": _build_cache_prompt(chunk_content),
+            "create_time": 1781930000,
+        }
+    }
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache))
+
+    # full_docs 空（验证 cache 优先于 full_docs）
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_text_chunks
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["actual"] == 1
+    assert result["lost"] == 0
+
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert "chunk-active" in tc_after
+    assert tc_after["chunk-active"]["content"] == chunk_content
+    # llm_cache_list 应包含 cache_key
+    assert "cache-key-1" in tc_after["chunk-active"]["llm_cache_list"]
+
+
+def test_repair_text_chunks_cache_multiple_entries_take_latest_create_time(tmp_path, monkeypatch):
+    """同 chunk_id 多条 cache entry，取 create_time 最大的。"""
+    chunk_v1 = "v1 chunk 原文"
+    chunk_v2 = "v2 chunk 原文"
+    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", "chunk-active")])
+
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+
+    cache = {
+        "cache-key-old": {
+            "return": "v1 extraction",
+            "cache_type": "extract",
+            "chunk_id": "chunk-active",
+            "original_prompt": _build_cache_prompt(chunk_v1),
+            "create_time": 1781930000,
+        },
+        "cache-key-new": {
+            "return": "v2 extraction",
+            "cache_type": "extract",
+            "chunk_id": "chunk-active",
+            "original_prompt": _build_cache_prompt(chunk_v2),
+            "create_time": 1781930999,  # 更大
+        },
+    }
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_text_chunks
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "ok"
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    # 应取 create_time=1781930999 的 entry（v2）
+    assert tc_after["chunk-active"]["content"] == chunk_v2
+
+
+def test_repair_text_chunks_full_docs_fallback_when_cache_miss(tmp_path, monkeypatch):
+    """cache 找不到 chunk_id 时，从 full_docs chunking 反查。"""
+    from lightrag.utils import compute_mdhash_id
+
+    chunk_content = "这是从 full_docs 反查的 chunk 原文"
+    expected_chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
+
+    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", expected_chunk_id)])
+
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    # cache 空（强制走 full_docs fallback）
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+
+    # full_docs：1 个 doc，content 经 chunking 后产生 expected_chunk_id
+    docs = {
+        "doc-1": {
+            "content": chunk_content,
+            "file_path": "test.md",
+            "create_time": 1781930000,
+        }
+    }
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs))
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_text_chunks
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["lost"] == 0
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert expected_chunk_id in tc_after
+    assert tc_after[expected_chunk_id]["content"] == chunk_content
+    assert tc_after[expected_chunk_id]["full_doc_id"] == "doc-1"
+
+
+def test_repair_text_chunks_brainregion_direct_construction(tmp_path, monkeypatch):
+    """脑区节点（d1=brainregion）直接从 GraphML 构造，不查 full_docs/cache。"""
+    brain_desc = "文档库脑区描述<SEP>brain_meta_size:94"
+    _write_graphml_v8(tmp_path, [
+        ("文档库脑区", "brainregion", brain_desc, "chunk-brain-1"),
+    ])
+
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")  # 脑区不在 full_docs
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")  # 脑区也不在 cache
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_text_chunks
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "ok", f"expected ok, got {result}"
+    assert result["lost"] == 0
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    assert "chunk-brain-1" in tc_after
+    # content = "文档库脑区: {d2 description}"
+    assert tc_after["chunk-brain-1"]["content"] == f"文档库脑区: {brain_desc}"
+    # full_doc_id = "brain_文档库脑区"
+    assert tc_after["chunk-brain-1"]["full_doc_id"] == "brain_文档库脑区"
+
+
+def test_repair_text_chunks_missing_when_three_sources_all_miss(tmp_path, monkeypatch):
+    """cache + full_docs + 脑区都没匹配 → missing（lost>0）。"""
+    _write_graphml_v8(tmp_path, [
+        ("entity-x", "person", "desc X", "chunk-not-found-anywhere"),
+    ])
+
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_text_chunks
+
+    result = repair_text_chunks()
+
+    assert result["status"] == "ok"
+    assert result["expected"] == 1
+    assert result["actual"] == 0
+    assert result["lost"] == 1
+
+
+def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
+    """v8 核心验证（I3）：用真实 cache 数据验证正则提取 chunk 原文正确性。
+
+    真实 cache 的 original_prompt 含 8 个 ```（4 对），只有第一对 ``` 之间是 chunk 原文。
+    非贪婪正则 r"```\\s*(.+?)\\s*```" 必须正确提取第一对之间内容，不能跨多对 ```。
+
+    真实数据特征（2026-07-17 验证）：
+    - 145 个活跃 chunk_id（70 来自脑区 source_id + 75 非脑区）
+    - cache extract 覆盖 123 个 chunk_id
+    - 脑区 source_id 中有 7 个 chunk_id 在 cache/full_docs 都没（走脑区直接构造 fallback）
+    - 非脑区有 22 个 chunk_id 是孤儿（GraphML edge 引用但 cache/full_docs 都已删除）
+    - 最终恢复 123 个，22 个 missing（孤儿 chunk，3 真相源都没有原文）
+    """
+    import os, shutil
+    src_dir = os.path.expanduser("~/.niu/lightrag_storage")
+
+    # 拷贝真实 3 真相源到 tmp_path
+    truth_files = [
+        "graph_chunk_entity_relation.graphml",
+        "kv_store_full_docs.json",
+        "kv_store_llm_response_cache.json",
+    ]
+    for fname in truth_files:
+        shutil.copy2(os.path.join(src_dir, fname), tmp_path / fname)
+
+    monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
+
+    from niu_api.internal.lightrag_repair import repair_text_chunks
+
+    result = repair_text_chunks()
+
+    # 真实数据：145 个活跃 chunk，123 个能从 cache + full_docs + 脑区 fallback 恢复
+    # 22 个孤儿 chunk（GraphML edge 引用但 cache/full_docs 都已删除）= missing
+    assert result["status"] == "ok", f"repair_text_chunks 失败: {result.get('message', '')}"
+    assert result["expected"] == 145, f"活跃 chunk 数应为 145，实际 {result['expected']}"
+    assert result["actual"] == 123, f"应恢复 123 个 chunk，实际 {result['actual']}"
+    assert result["lost"] == 22, f"孤儿 chunk 应 22 个 missing，实际 lost={result['lost']}"
+
+    # 验证 text_chunks 内容非空（每个 chunk content 必须有真实原文，不是空串）
+    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    empty_content = [cid for cid, v in tc.items() if not v.get("content", "").strip()]
+    assert not empty_content, f"以下 chunk content 为空: {empty_content[:5]}"
+
+    # 验证至少有 1 个 chunk 是从 cache 提取的（非脑区 chunk 占多数）
+    non_brain = [cid for cid, v in tc.items() if not str(v.get("full_doc_id", "")).startswith("brain_")]
+    assert len(non_brain) > 0, "应有非脑区 chunk 从 cache/full_docs 提取"
+
+    # 验证正则没把 LLM 输出示例（后续 3 对 ``` 之间的内容）当 chunk 原文：
+    # 如果正则贪婪匹配跨多对 ```，chunk content 会含 "entity<|#|>" 等 LLM 输出标记
+    bad_extraction = [cid for cid, v in tc.items() if "<|#|>" in v.get("content", "")]
+    assert not bad_extraction, f"正则提取错误，含 LLM 输出标记: {bad_extraction[:5]}"
+
+    # 验证脑区 fallback chunk 的 content + full_doc_id 格式正确
+    # 7 个脑区 source_id 在 cache/full_docs 都没 → 走脑区直接构造 fallback
+    brain_fallback = [
+        cid for cid, v in tc.items()
+        if str(v.get("full_doc_id", "")).startswith("brain_")
+    ]
+    assert len(brain_fallback) == 7, f"脑区 fallback chunk 应有 7 个，实际 {len(brain_fallback)}"
+    for cid in brain_fallback:
+        v = tc[cid]
+        # content = "{脑区名}: {d2 description}"
+        assert ": " in v["content"], f"脑区 chunk content 格式错误: {v['content'][:50]}"
+        # full_doc_id = "brain_{脑区名}"
+        assert v["full_doc_id"].startswith("brain_"), f"脑区 full_doc_id 格式错误: {v['full_doc_id']}"

@@ -493,28 +493,37 @@ def _check_truth_sources_intact() -> dict[str, Any]:
 
 
 def repair_text_chunks() -> dict[str, Any]:
-    """1. 从 GraphML 提活跃 chunk_id 集合 C，按需提取重建 text_chunks。
+    """v8：从 GraphML 提活跃 chunk_id + cache original_prompt 优先 + full_docs fallback + 脑区直接构造。
 
-    真相源：GraphML（提活跃 chunk_id）+ full_docs（text_chunks 没有时反查原文）+ cache（反向构建 llm_cache_list）
+    真相源：GraphML（唯一真相源，提活跃 chunk_id + 脑区元数据）
+    辅助：cache original_prompt（主补充源，正则提取 ``` 之间 chunk 原文，多条取 create_time 最大）
+         full_docs（fallback，cache 找不到时 chunking 反查）
     派生：kv_store_text_chunks.json
 
     算法：
     1. 解析 GraphML 提取活跃 chunk_id 集合 C（从所有 node d3 + edge d10）
-    2. 对 C 中每个 chunk_id：
-       - 优先从现有 text_chunks 按 cid 查原文（天然最后版本，json_kv_impl.py:181 dict.update 覆盖）
-       - 现有 text_chunks 没有时，从 full_docs 重新 chunking 反查（多条匹配取 create_time 最大）
-    3. llm_cache_list 从 cache 按 chunk_id 反向构建
-    4. 只重建 C 中的 chunk，旧版本 chunk 丢弃（不在 C 中的旧 chunk 不重建）
+    2. 识别脑区节点（d1=brainregion），直接构造 chunk：
+       - content = "{node_id}: {d2 description}"
+       - full_doc_id = "brain_{node_id}"
+    3. 对 C 中非脑区 chunk_id：
+       a. cache original_prompt 优先：按 chunk_id 索引 cache extract entry，
+          多条取 create_time 最大，正则 r"```\\s*(.+?)\\s*```" + re.DOTALL 提取 chunk 原文
+       b. full_docs fallback：cache 找不到时，对每个 doc 用独立 tokenizer chunking，
+          算 chunk_id（compute_mdhash_id），跟活跃 chunk_id 匹配
+    4. 三处都没有 → missing
+    5. llm_cache_list 从 cache 按 chunk_id 反向构建
 
     GraphML 损坏 = unrecoverable
-    full_docs 损坏且 text_chunks 损坏 = unrecoverable
+    cache + full_docs 都损坏 = unrecoverable
     """
+    import re
+
     storage_dir = _storage_dir()
     tc_path = storage_dir / "kv_store_text_chunks.json"
     full_docs_path = storage_dir / "kv_store_full_docs.json"
     cache_path = storage_dir / "kv_store_llm_response_cache.json"
 
-    # 1. 解析 GraphML 提取活跃 chunk_id 集合 C
+    # 1. 解析 GraphML 提取活跃 chunk_id 集合 C + 识别脑区节点
     nodes, nodes_err = _load_graphml_nodes()
     if nodes_err is not None:
         return {
@@ -538,18 +547,35 @@ def repair_text_chunks() -> dict[str, Any]:
             "unrecoverable": True,
         }
 
+    # 收集活跃 chunk_id + 识别脑区 chunk 元数据
     active_chunk_ids: set[str] = set()
-    for _, (_, _, src_ids) in nodes.items():
-        if src_ids:
-            active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
+    brainregion_chunks: dict[str, tuple[str, str]] = {}
+    # brainregion_chunks: chunk_id -> (content, full_doc_id)
+    # v8 真实数据纠正：脑区节点 source_id 含 N 个 chunk_id（如"知识体系脑区"有 63 个），
+    # 这些 chunk_id 实际是脑区引用的普通文档 chunk（不是脑区自己生成的 chunk）。
+    # 脑区直接构造只作为最后 fallback：cache + full_docs 都没匹配时才用脑区元数据构造。
+    # 算法：脑区 source_id 的所有 chunk_id 优先走 cache→full_docs→脑区直接构造→missing
+
+    for node_id, (etype, desc, src_ids) in nodes.items():
+        if etype == "brainregion":
+            if src_ids:
+                brain_content = f"{node_id}: {desc}"
+                brain_full_doc_id = f"brain_{node_id}"
+                for cid in src_ids.split(GRAPH_FIELD_SEP):
+                    if cid:
+                        brainregion_chunks[cid] = (brain_content, brain_full_doc_id)
+                        active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
+        else:
+            if src_ids:
+                active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
     for edge_tuple in edges_list:
         edge_src_ids = edge_tuple[2]  # (src, tgt, src_ids, desc, kw) 的 index 2
         if edge_src_ids:
             active_chunk_ids.update(c for c in edge_src_ids.split(GRAPH_FIELD_SEP) if c)
 
-    # 全新用户（GraphML 为空 / 无活跃 chunk）→ 返回 ok 空结果，不报 unrecoverable
+    # 全新用户（GraphML 无活跃 chunk）→ 写空 text_chunks
     if not active_chunk_ids:
-        logger.info("[LightRAGRepair] GraphML 无活跃 chunk_id（全新用户或空图谱），写空 text_chunks")
+        logger.info("[LightRAGRepair] GraphML 无活跃 chunk_id（全新用户），写空 text_chunks")
         _backup_corrupt(tc_path)
         _atomic_write_json(tc_path, {})
         return {
@@ -557,23 +583,21 @@ def repair_text_chunks() -> dict[str, Any]:
             "expected": 0,
             "actual": 0,
             "lost": 0,
-            "source": "GraphML + full_docs",
+            "source": "GraphML + cache + full_docs",
             "message": "GraphML 无活跃 chunk_id，重建空 text_chunks",
         }
 
-    # 2. 读现有 text_chunks（按 cid 查原文，天然最后版本）
-    existing_tc: dict[str, Any] = {}
-    tc_corrupt = False
-    if tc_path.exists():
-        loaded = _load_json_dict(tc_path)
+    # 2. 读 cache（主补充源）
+    cache: dict[str, Any] = {}
+    cache_corrupt = False
+    if cache_path.exists():
+        loaded = _load_json_dict(cache_path)
         if isinstance(loaded, dict):
-            existing_tc = loaded
-        elif loaded is None and tc_path.exists():
-            # 文件存在但解析失败 → 损坏
-            # 不立即报错，降级到 full_docs 反查（如果 full_docs 也损坏才报 unrecoverable）
-            tc_corrupt = True
+            cache = loaded
+        elif loaded is None and cache_path.exists():
+            cache_corrupt = True
 
-    # 3. 读 full_docs（text_chunks 没有时才用）
+    # 3. 读 full_docs（fallback）
     full_docs: dict[str, Any] = {}
     full_docs_corrupt = False
     if full_docs_path.exists():
@@ -583,83 +607,133 @@ def repair_text_chunks() -> dict[str, Any]:
         elif loaded is None and full_docs_path.exists():
             full_docs_corrupt = True
 
-    # 4. 读 cache（反向构建 llm_cache_list）
-    cache: dict[str, Any] = {}
-    if cache_path.exists():
-        loaded = _load_json_dict(cache_path)
-        if isinstance(loaded, dict):
-            cache = loaded
-
-    # 5. 判断是否需要扫 full_docs（如果 existing_tc 已覆盖所有 C，就不扫）
-    need_full_docs_scan = any(cid not in existing_tc for cid in active_chunk_ids)
-    full_docs_chunk_map: dict[str, tuple[int, str, str, str]] = {}
-    # 类型: chunk_id -> (create_time, doc_id, chunk_content, file_path)
-    if need_full_docs_scan:
-        if not full_docs:
-            # text_chunks 损坏 + full_docs 损坏/空 → unrecoverable
-            missing_count = sum(1 for cid in active_chunk_ids if cid not in existing_tc)
-            if missing_count > 0:
-                src_detail = "text_chunks 损坏且 full_docs 损坏" if (tc_corrupt and full_docs_corrupt) else "部分活跃 chunk 在 text_chunks 和 full_docs 中均缺失"
-                return {
-                    "status": "error",
-                    "expected": len(active_chunk_ids),
-                    "actual": len(existing_tc),
-                    "lost": missing_count,
-                    "source": "GraphML + full_docs",
-                    "message": f"{src_detail}，{missing_count} 个活跃 chunk 无法重建",
-                    "unrecoverable": True,
-                }
-        # v8-Task 1：删除调 get_lightrag_for_repair 拿 tokenizer + chunking_by_token_size 的整段（铁律 3）。
-        # Task 4 会用独立 tokenizer 重写整段重建逻辑。当前直接返回 unrecoverable stub。
-        return {
-            "status": "error",
-            "expected": len(active_chunk_ids),
-            "actual": len(existing_tc),
-            "lost": len(active_chunk_ids) - len(existing_tc),
-            "source": "GraphML + full_docs",
-            "message": "v8-Task 1 删除了依赖 get_lightrag_for_repair 的重建路径，Task 4 将用独立 tokenizer 重写",
-            "unrecoverable": True,
-        }
-
-    # 以下代码在 need_full_docs_scan=True 时不可达（上方 stub return 已退出）。
-    # need_full_docs_scan=False 路径（existing_tc 覆盖所有活跃 chunk）仍可执行。
-    # v8-Task 4 将用独立 tokenizer 重写整个函数，届时死代码会被新算法替换。
-
-    # 6. 预构建 cache 的 chunk_id → [cache_key] 映射（用于 llm_cache_list）
-    #    同一 chunk_id 多条 cache entry（多轮 gleaning）时全部保留
-    chunk_id_to_cache_keys: dict[str, list[str]] = {}
+    # 4. 构建 cache 的 chunk_id -> [(create_time, original_prompt, cache_key)] 映射
+    cache_by_chunk_id: dict[str, list[tuple[int, str, str]]] = {}
+    cache_pattern = re.compile(r"```\s*(.+?)\s*```", re.DOTALL)
     for cache_key, entry in cache.items():
         if not isinstance(entry, dict):
             continue
         if entry.get("cache_type") != "extract":
             continue
         cid = entry.get("chunk_id")
-        if cid:
-            chunk_id_to_cache_keys.setdefault(cid, []).append(cache_key)
+        if not cid:
+            continue
+        ct = entry.get("create_time", 0)
+        op = entry.get("original_prompt", "")
+        cache_by_chunk_id.setdefault(cid, []).append((ct, op, cache_key))
+
+    # 每个 chunk_id 的 entries 按 create_time 降序排（最大在前）
+    for cid in cache_by_chunk_id:
+        cache_by_chunk_id[cid].sort(key=lambda x: x[0], reverse=True)
+
+    # 5. 判断是否需要扫 full_docs（cache 没覆盖所有活跃 chunk 时扫描）
+    cache_covered = set(cid for cid in cache_by_chunk_id if cid in active_chunk_ids)
+    need_full_docs_scan = any(cid not in cache_covered for cid in active_chunk_ids)
+
+    # 6. full_docs chunking 反查（仅当 cache 没覆盖全部非脑区 chunk）
+    full_docs_chunk_map: dict[str, tuple[int, str, str, str]] = {}
+    # 类型: chunk_id -> (create_time, doc_id, chunk_content, file_path)
+    if need_full_docs_scan:
+        if not full_docs:
+            # cache + full_docs 都损坏 → unrecoverable
+            if cache_corrupt and full_docs_corrupt:
+                return {
+                    "status": "error",
+                    "expected": len(active_chunk_ids),
+                    "actual": len(brainregion_chunks),
+                    "lost": len(active_chunk_ids) - len(brainregion_chunks),
+                    "source": "GraphML + cache + full_docs",
+                    "message": "cache 和 full_docs 都损坏，无法 fallback 重建",
+                    "unrecoverable": True,
+                }
+            # cache 损坏但 full_docs 完好但为空 → 走下面 tokenizer chunking 会发现无匹配
+        else:
+            # 独立加载 tokenizer（不调 get_lightrag_for_repair，铁律 3）
+            tokenizer = _get_tokenizer()
+            if tokenizer is None:
+                return {
+                    "status": "error",
+                    "expected": len(active_chunk_ids),
+                    "actual": len(brainregion_chunks),
+                    "lost": len(active_chunk_ids) - len(brainregion_chunks),
+                    "source": "GraphML + cache + full_docs",
+                    "message": "TiktokenTokenizer 加载失败，无法 chunking",
+                    "unrecoverable": True,
+                }
+            chunk_token_size, chunk_overlap = _get_chunk_config()
+
+            from lightrag.operate import chunking_by_token_size
+
+            # 按 create_time 降序排 full_docs（多 doc 匹配同 chunk_id 时取最新版本）
+            sorted_docs = sorted(
+                full_docs.items(),
+                key=lambda kv: kv[1].get("create_time", 0) if isinstance(kv[1], dict) else 0,
+                reverse=True,
+            )
+
+            for doc_id, doc_data in sorted_docs:
+                if not isinstance(doc_data, dict):
+                    continue
+                content = doc_data.get("content", "")
+                if not content:
+                    continue
+                file_path = doc_data.get("file_path", "")
+                create_time = doc_data.get("create_time", 0)
+
+                chunks = chunking_by_token_size(
+                    tokenizer, content,  # type: ignore[arg-type]
+                    chunk_token_size=chunk_token_size,
+                    chunk_overlap_token_size=chunk_overlap,
+                )
+                for chunk in chunks:
+                    chunk_content = chunk["content"]
+                    cid = compute_mdhash_id(chunk_content, prefix="chunk-")
+                    if cid not in full_docs_chunk_map:
+                        full_docs_chunk_map[cid] = (create_time, doc_id, chunk_content, file_path)
 
     # 7. 遍历 C 构建 new_tc
     new_tc: dict[str, Any] = {}
     missing_chunks: list[str] = []
 
+    # v8 真实数据纠正：脑区 source_id 里的 chunk_id 优先走 cache→full_docs 提取
+    # （因为这些 chunk_id 实际是脑区引用的普通文档 chunk）。
+    # 只有 cache + full_docs 都没匹配时才用脑区元数据直接构造（fallback）。
     for cid in active_chunk_ids:
-        # 优先从 existing_tc 查
-        if cid in existing_tc and isinstance(existing_tc[cid], dict):
-            chunk_data = dict(existing_tc[cid])
-            chunk_data["llm_cache_list"] = chunk_id_to_cache_keys.get(cid, [])
-            new_tc[cid] = chunk_data
-        # 降级从 full_docs_chunk_map 查
-        elif cid in full_docs_chunk_map:
-            _, doc_id, content, file_path = full_docs_chunk_map[cid]
+        if cid in cache_by_chunk_id:
+            # cache original_prompt 提取（取 create_time 最大的 entry）
+            latest_entry = cache_by_chunk_id[cid][0]  # 已降序排
+            _, op, _ = latest_entry
+            m = cache_pattern.search(op)
+            if m:
+                chunk_content = m.group(1)
+                # cache entry 不含 full_doc_id 字段，用空字符串占位
+                # doc_status 重建时会跳过 full_doc_id="" 的 chunk
+                new_tc[cid] = {
+                    "content": chunk_content,
+                    "full_doc_id": "",  # cache 不含 doc_id，留空
+                    "llm_cache_list": [e[2] for e in cache_by_chunk_id[cid]],
+                }
+                continue
+        # full_docs fallback
+        if cid in full_docs_chunk_map:
+            _, doc_id, content, _ = full_docs_chunk_map[cid]
             new_tc[cid] = {
                 "content": content,
                 "full_doc_id": doc_id,
-                "file_path": file_path,
-                "llm_cache_list": chunk_id_to_cache_keys.get(cid, []),
+                "llm_cache_list": [e[2] for e in cache_by_chunk_id.get(cid, [])],
             }
-        else:
-            # 脑区 chunk（full_doc_id="brain"）可能不在 full_docs 里
-            # 如果 existing_tc 也没有，记为 missing（region_sync 会重新注入）
-            missing_chunks.append(cid)
+            continue
+        # 脑区直接构造（fallback）：cache + full_docs 都没匹配，且 chunk_id 来自脑区节点
+        if cid in brainregion_chunks:
+            content, full_doc_id = brainregion_chunks[cid]
+            new_tc[cid] = {
+                "content": content,
+                "full_doc_id": full_doc_id,
+                "llm_cache_list": [e[2] for e in cache_by_chunk_id.get(cid, [])],
+            }
+            continue
+        # 三处都没有 → missing
+        missing_chunks.append(cid)
 
     # 8. 备份损坏的 text_chunks + 原子写
     _backup_corrupt(tc_path)
@@ -671,7 +745,7 @@ def repair_text_chunks() -> dict[str, Any]:
             "expected": len(active_chunk_ids),
             "actual": len(new_tc),
             "lost": len(active_chunk_ids) - len(new_tc),
-            "source": "GraphML + full_docs",
+            "source": "GraphML + cache + full_docs",
             "message": f"写 text_chunks 失败: {e}",
             "unrecoverable": True,
         }
@@ -679,16 +753,17 @@ def repair_text_chunks() -> dict[str, Any]:
     actual = len(new_tc)
     logger.info(
         f"[LightRAGRepair] 重建 text_chunks: {actual}/{len(active_chunk_ids)} 条 "
-        f"(source=GraphML 活跃 chunk_id + full_docs 按需提取)"
+        f"(cache original_prompt 优先 + full_docs fallback + 脑区直接构造，"
+        f"missing={len(missing_chunks)})"
     )
     return {
         "status": "ok",
         "expected": len(active_chunk_ids),
         "actual": actual,
         "lost": len(missing_chunks),
-        "source": "GraphML + full_docs",
+        "source": "GraphML + cache + full_docs",
         "missing_chunks": missing_chunks[:10],
-        "message": f"重建 {actual}/{len(active_chunk_ids)} 个 chunk",
+        "message": f"重建 {actual}/{len(active_chunk_ids)} 个 chunk，missing {len(missing_chunks)} 个",
     }
 
 
