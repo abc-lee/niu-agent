@@ -298,10 +298,12 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
     return node_ids, edges, None
 
 
-def _load_graphml_nodes() -> tuple[dict[str, tuple[str, str]], dict[str, Any] | None]:
-    """解析 GraphML nodes，返回 {node_id: (description, source_id)} + error。
+def _load_graphml_nodes() -> tuple[dict[str, tuple[str, str, str]], dict[str, Any] | None]:
+    """解析 GraphML nodes，返回 {node_id: (entity_type, description, source_id)} + error。
 
-    description = d2, source_id = d3
+    v8：返回 3 元组 (entity_type, desc, src)，识别脑区节点 d1=="brainregion"。
+
+    entity_type = d1（缺省空字符串）, description = d2, source_id = d3
     """
     import xml.etree.ElementTree as ET
 
@@ -327,7 +329,7 @@ def _load_graphml_nodes() -> tuple[dict[str, tuple[str, str]], dict[str, Any] | 
         }
 
     ns = "{http://graphml.graphdrawing.org/xmlns}"
-    nodes: dict[str, tuple[str, str]] = {}
+    nodes: dict[str, tuple[str, str, str]] = {}
 
     graph = root.find(f"{ns}graph")
     if graph is None:
@@ -349,15 +351,18 @@ def _load_graphml_nodes() -> tuple[dict[str, tuple[str, str]], dict[str, Any] | 
             nid = child.get("id", "")
             if not nid:
                 continue
+            etype = ""
             desc = ""
             src = ""
             for data in child.findall(f"{ns}data"):
                 key = data.get("key")
-                if key == "d2":
+                if key == "d1":
+                    etype = data.text or ""
+                elif key == "d2":
                     desc = data.text or ""
                 elif key == "d3":
                     src = data.text or ""
-            nodes[nid] = (desc, src)
+            nodes[nid] = (etype, desc, src)
     return nodes, None
 
 
@@ -534,7 +539,7 @@ def repair_text_chunks() -> dict[str, Any]:
         }
 
     active_chunk_ids: set[str] = set()
-    for _, (_, src_ids) in nodes.items():
+    for _, (_, _, src_ids) in nodes.items():
         if src_ids:
             active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
     for edge_tuple in edges_list:
@@ -972,7 +977,7 @@ def repair_vdb_entities() -> dict[str, Any]:
     # LightRAG operate.py L1160: entity_content = f"{entity_name}\n{final_description}"
     # embedding 输入用同样的 content（保证向量跟 LightRAG 原生写入一致）
     items: list[tuple[str, str, str]] = []  # (node_id, content, source_id)
-    for node_id, (desc, src) in nodes.items():
+    for node_id, (_, desc, src) in nodes.items():
         # desc 为空时用 node_id 作为 fallback（保证有内容可 embed）
         # 格式: f"{node_id}\n{desc}"，跟 LightRAG 一致
         content = f"{node_id}\n{desc}" if desc else f"{node_id}\n{node_id}"
@@ -1245,7 +1250,7 @@ def repair_entity_chunks() -> dict[str, Any]:
     # 2. 从 source_id 提取 chunk_ids（LightRAG operate.py L1194 用 chunk_ids + count 字段）
     new_entity_chunks: dict[str, dict[str, Any]] = {}
     expected = len(nodes)
-    for node_id, (_, src) in nodes.items():
+    for node_id, (_, _, src) in nodes.items():
         if not src:
             # source_id 为空 → 空 chunk_ids（合法）
             new_entity_chunks[node_id] = {"chunk_ids": [], "count": 0}
@@ -1395,7 +1400,7 @@ def repair_full_entities() -> dict[str, Any]:
 
     # 4. 从 GraphML source_id 提取 entity→docs 映射
     entity_to_docs: dict[str, set[str]] = {}
-    for node_id, (_, src) in nodes.items():
+    for node_id, (_, _, src) in nodes.items():
         if not src:
             continue
         chunk_ids = [c for c in src.split(GRAPH_FIELD_SEP) if c]
