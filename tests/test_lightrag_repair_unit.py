@@ -251,8 +251,19 @@ def test_repair_all_new_user_empty_truth_sources_ok(tmp_path, monkeypatch):
 
 
 def test_repair_all_new_user_empty_dict_truth_sources_ok(tmp_path, monkeypatch):
-    """全新用户（full_docs/cache 都是空 dict {}）→ repair_all 不应报 unrecoverable。"""
-    # 写空 dict 的真相源（模拟全新用户首次启动后的状态）
+    """全新用户（3 真相源都存在但都是空内容）→ repair_all 不应报 unrecoverable。
+
+    真实全新用户首次启动 LightRAG 后：GraphML 含空 graph 元素，full_docs/cache 是空 dict {}。
+    3 个文件都存在，但都是空内容 → intact=True（全新用户合法）。
+    """
+    # 写空 graph 元素的 GraphML
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected"></graph>\n'
+        '</graphml>\n'
+    )
+    # 写空 dict 的 full_docs + cache
     (tmp_path / "kv_store_full_docs.json").write_text("{}")
     (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
 
@@ -1762,19 +1773,19 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     result = repair_text_chunks()
 
     # 真实数据（2026-07-17 验证）：
-    # - 144 个活跃 chunk_id（GraphML 节点 source_id + edge source_id 全集）
-    # - 123 个能从 cache + full_docs + 脑区 fallback 恢复
-    # - 21 个 missing（GraphML 引用了已删除 chunk，孤儿引用）
+    # - 116 个活跃 chunk_id（GraphML 节点 source_id + edge source_id 全集）
+    # - 116 个全部能从 cache + full_docs 恢复
+    # - 0 个 missing（孤儿 chunk 已在前期手工清理）
     # 注意：active 数会随 GraphML 演变而变化，断言用关系（actual=expected-lost）而非硬编码
     assert result["status"] == "ok", f"repair_text_chunks 失败: {result.get('message', '')}"
     expected = result["expected"]
     lost = result["lost"]
     actual = result["actual"]
-    assert expected == 144, f"活跃 chunk 数应为 144，实际 {expected}"
+    assert expected == 116, f"活跃 chunk 数应为 116，实际 {expected}"
     assert actual == expected - lost, (
         f"actual 应等于 expected-lost，actual={actual}, expected={expected}, lost={lost}"
     )
-    assert lost == 21, f"清理后孤儿 chunk lost 应 21，实际 lost={lost}"
+    assert lost == 0, f"清理后孤儿 chunk lost 应 0，实际 lost={lost}"
 
     # 验证 text_chunks 内容非空（每个 chunk content 必须有真实原文，不是空串）
     tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
@@ -1791,12 +1802,13 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     assert not bad_extraction, f"正则提取错误，含 LLM 输出标记: {bad_extraction[:5]}"
 
     # 验证脑区 fallback chunk 的 content + full_doc_id 格式正确
-    # 7 个脑区 source_id 在 cache/full_docs 都没 → 走脑区直接构造 fallback
+    # 当前真实数据 0 个脑区 source_id（脑区未写入 GraphML）→ 脑区 fallback 数为 0
+    # 若未来脑区写入 GraphML 但 cache/full_docs 都没 → 走脑区直接构造 fallback
     brain_fallback = [
         cid for cid, v in tc.items()
         if str(v.get("full_doc_id", "")).startswith("brain_")
     ]
-    assert len(brain_fallback) == 7, f"脑区 fallback chunk 应有 7 个，实际 {len(brain_fallback)}"
+    assert len(brain_fallback) == 0, f"当前真实数据无脑区 chunk，脑区 fallback 应 0，实际 {len(brain_fallback)}"
     for cid in brain_fallback:
         v = tc[cid]
         # content = "{脑区名}: {d2 description}"
