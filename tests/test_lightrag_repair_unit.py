@@ -177,7 +177,9 @@ def test_repair_all_deletes_9_derived_no_backup(tmp_path, monkeypatch):
     # v4：GraphML 是 3 真相源之一，必须是合法的（有 graph 元素），否则会被判为 unrecoverable
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
-    cache = {}
+    # cache 必须有内容（v8: 3 真相源需要状态一致——full_docs has_content 时 cache 也必须 has_content，
+    # 否则被 _check_truth_sources_intact 判为 partial 损坏）
+    cache = {"chunk-x": {"cache_type": "extract", "chunk_id": "chunk-x", "original_prompt": "```test```", "create_time": 1}}
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
 
@@ -1506,10 +1508,10 @@ def test_load_graphml_nodes_returns_3_tuple_with_entity_type(tmp_path, monkeypat
 
     nodes, err = _load_graphml_nodes()
     assert err is None
-    assert nodes["entity-x"] == ("person", "desc X", "chunk-aaa")
-    assert nodes["文档库脑区"] == ("brainregion", "文档库脑区描述<SEP>brain_meta_size:94", "chunk-bbb")
+    assert nodes["entity-x"] == ("person", "desc X", "chunk-aaa", "")
+    assert nodes["文档库脑区"] == ("brainregion", "文档库脑区描述<SEP>brain_meta_size:94", "chunk-bbb", "")
     # 缺 d1 → entity_type=""
-    assert nodes["entity-no-d1"] == ("", "desc Y", "chunk-ccc")
+    assert nodes["entity-no-d1"] == ("", "desc Y", "chunk-ccc", "")
 
 
 # ==================== v8-Task 4: repair_text_chunks 重写测试 ====================
@@ -2189,11 +2191,13 @@ def test_repair_full_entities_reverse_mapping(tmp_path, monkeypatch):
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     fe = json.loads((tmp_path / "kv_store_full_entities.json").read_text())
+    # v8 LightRAG 原生格式：{doc_id: {"entity_names": [...], "count": N}}
     # entity-x 的 source_id 含 chunk-a, chunk-b 都映射到 doc-1 → doc-1: [entity-x]
     assert "doc-1" in fe
-    assert "entity-x" in fe["doc-1"]
+    assert "entity-x" in fe["doc-1"]["entity_names"]
+    assert fe["doc-1"]["count"] == 1
     # 已删实体不在 full_entities（防复活）
-    all_entities = [e for ents in fe.values() for e in ents]
+    all_entities = [e for v in fe.values() for e in v["entity_names"]]
     assert "entity-deleted" not in all_entities
 
 
@@ -2217,14 +2221,14 @@ def test_repair_full_relations_reverse_mapping(tmp_path, monkeypatch):
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
     from niu_api.internal.lightrag_repair import repair_full_relations
-    from lightrag.constants import GRAPH_FIELD_SEP
 
     result = repair_full_relations()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     fr = json.loads((tmp_path / "kv_store_full_relations.json").read_text())
+    # v8 LightRAG 原生格式：{doc_id: {"relation_pairs": [[src, tgt], ...], "count": N}}
     # edge (entity-a, entity-b) source_id=chunk-rel → doc-1
-    # relation_key = make_relation_chunk_key(entity-a, entity-b) = sorted join GRAPH_FIELD_SEP
-    expected_rel_key = GRAPH_FIELD_SEP.join(sorted(("entity-a", "entity-b")))
     assert "doc-1" in fr
-    assert expected_rel_key in fr["doc-1"]
+    pairs = fr["doc-1"]["relation_pairs"]
+    assert ["entity-a", "entity-b"] in pairs
+    assert fr["doc-1"]["count"] == 1
