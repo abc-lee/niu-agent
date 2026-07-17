@@ -244,7 +244,7 @@ LightRAG storage.upsert 内部对 embedding 结果做 `np.array(await embedding_
 - `kv_store_llm_response_cache.json` 的 mtime + sha256 不变
 任一变化立即终止测试并报告
 
-### 8.3 派生文件字节级 diff
+### 8.3 派生文件元数据 diff（不对比 vector/matrix/content，因假模型 + keywords 顺序差异）
 重建 9 派生文件后，必须跟 LightRAG 正常启动后的派生文件做字节级 diff：
 - 先备份正常启动后的 9 派生文件
 - 跑 v9 修复
@@ -683,8 +683,8 @@ EOF
 **新增代码**：
 ```python
 import asyncio
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import numpy as np
 
@@ -705,8 +705,9 @@ class RepairEmbeddingFunc(EmbeddingFunc):
 
     # 显式声明字段（基类已声明 embedding_dim / func / max_token_size / send_dimensions / model_name）
     # 这里不新增字段，只是确保 dataclass 继承正确
+    # func 用 Optional[Callable] 而非 Any，避免 pyright 严格模式报类型不兼容
     embedding_dim: int = 768
-    func: Any = None  # 在 __post_init__ 中设为 _embed_async
+    func: "Callable[..., Any] | None" = None  # 在 __post_init__ 中设为 _embed_async
     max_token_size: int | None = None
     send_dimensions: bool = False
     model_name: str | None = "bge-base-zh-v1.5"
@@ -801,7 +802,7 @@ class RepairEmbeddingFunc(EmbeddingFunc):
   ```
 
 **注意**：
-- `import asyncio` / `from dataclasses import dataclass, field` / `import numpy as np` / `from lightrag.utils import EmbeddingFunc` 加在文件顶部 import 区（见 Step 2）
+- `import asyncio` / `from dataclasses import dataclass` / `import numpy as np` / `from lightrag.utils import EmbeddingFunc` 加在文件顶部 import 区（见 Step 2）
 - v8 `_embed_batch` 函数保留（不删除），`RepairEmbeddingFunc._sync_embed` 复用其模型加载逻辑但自带分片
 
 ### Step 2: 更新顶部 import
@@ -832,7 +833,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1739,7 +1740,7 @@ v9 改为：
 5. cache original_prompt 优先（正则提取 ``` 之间内容，多条取 create_time 最大）
 6. cache 没有则 full_docs chunking 反查（v8 逻辑保留）
 7. await storage.upsert(new_tc) + await storage.index_done_callback()
-8. 全新用户 → write_json({}, tc_path) 写空文件（upsert({}) 会被跳过）
+8. 全新用户 → 不写派生文件（跟 LightRAG 原生首次启动一致，upsert({}) 会被跳过）
 
 字段格式严格对照 LightRAG lightrag.py:2398-2408：
 - content / full_doc_id / tokens / chunk_order_index / file_path / llm_cache_list
@@ -2135,6 +2136,11 @@ async def repair_doc_status() -> dict[str, Any]:
             "file_path": file_path,
             "track_id": track_id,
             "metadata": metadata,
+            # v9 第 3 轮审查修复 I3：补 error_msg / multimodal_processed 字段
+            # 对齐 DocProcessingStatus 数据类（base.py:791-796）完整字段集
+            # LightRAG 原生 lightrag.py:2158-2178 写入时也含这两个字段（默认 None）
+            "error_msg": None,
+            "multimodal_processed": None,
         }
 
     # 9. 调 storage.upsert（内部自动 index_done_callback 写盘）
@@ -5032,7 +5038,7 @@ v9 改为：
 - keywords / description / weight（被 meta_fields 过滤，不落盘）
 
 关键修复（v8 bug）：
-- keywords 去重从 dict.fromkeys 改为 set（跟 LightRAG 一致）
+- keywords 去重用 dict.fromkeys 保序（跟 LightRAG set 无序不同，优先跨运行稳定）
 - _load_graphml_nodes_edges 扩展 6 元组（新增 d11 file_path）
 
 异常处理：GraphML 损坏 → unrecoverable；
@@ -7001,7 +7007,7 @@ repair_full_entities:
 8. 构造 upsert data：{doc_id: {"entity_names": list[str], "count": int}}
    - entity_names 来自 set（不 sorted，跟 operate.py L2904 一致）
 9. await storage.upsert(data) + await storage.index_done_callback()
-10. 全新用户 → write_json({}, fe_path)
+10. 全新用户 → 不写派生文件（跟 LightRAG 原生首次启动一致）
 
 repair_full_relations:
 1. initialize_share_data(workers=1) + set_default_workspace("")
@@ -7016,7 +7022,7 @@ repair_full_relations:
 8. 构造 upsert data：{doc_id: {"relation_pairs": list[list[str]], "count": int}}
    - 每个 pair 是 list（来自 tuple，跟 operate.py L2914-2915 一致）
 9. await storage.upsert(data) + await storage.index_done_callback()
-10. 全新用户 → write_json({}, fr_path)
+10. 全新用户 → 不写派生文件（跟 LightRAG 原生首次启动一致）
 
 字段格式严格对照 LightRAG operate.py:2899-2920 + lightrag.py:3560-3602：
 - full_entities: {"entity_names": list[str], "count": int}（entity_names 不 sorted）
@@ -7123,7 +7129,7 @@ git log --oneline -9
 - [ ] 字段对照表：Task 7-9 各自的字段表跟 LightRAG 源码一致（行号引用见各 Task 设计依据）
 
 ### v8 bug 修复验证（Task 7-9 完成后）
-- [ ] Task 7 修复 v8 bug 1：keywords 去重从 `dict.fromkeys` 改为 `set`（跟 LightRAG operate.py L1483 一致）
+- [ ] Task 7 修复 v8 bug 1：keywords 去重保序用 `dict.fromkeys`（v9 第 2 轮审查修复 问题 7 / I5，跨运行稳定，跟 LightRAG operate.py L1483 `set` 无序不完全一致但更稳定）
 - [ ] Task 7 修复 v8 bug 2：`_load_graphml_nodes_edges` 扩展 6 元组（新增 d11 file_path）
 - [ ] Task 8 修复 v8 bug 3：relation_chunks 重复 key 合并从 `sorted(set)` 改为 `merge_source_ids`（保留插入顺序，跟 LightRAG 一致）
 - [ ] Task 9 修复 v8 bug 4：full_entities entity_names 不再 `sorted`（来自 set，跟 LightRAG operate.py L2904 一致）
@@ -7379,6 +7385,12 @@ async def _repair_all_async() -> dict[str, Any]:
         # 重新从模块属性读取，让 monkeypatch 能注入失败版本
         # _REBUILD_ORDER_ASYNC 里的 fn 都是 async def 模块级函数，有 __name__
         fn = getattr(_self_mod, fn.__name__)
+        # v9 第 3 轮审查修复 I2：防御性校验 fn 是 async 函数
+        # 如果 monkeypatch 注入了同步 mock，await fn() 会抛 TypeError 而非 unrecoverable
+        if not asyncio.iscoroutinefunction(fn):
+            raise RuntimeError(
+                f"{name} 不是 async 函数（v9 要求所有 repair_xxx 是 async）"
+            )
         try:
             step_result = await fn()  # v9 改动：await（v8 是 fn()）
             result[name] = step_result
@@ -7663,7 +7675,7 @@ python -m pyright niu_api/internal/lightrag_manager.py 2>&1 | tail -10
 | `test_repair_all_async_breaks_on_unrecoverable` | 任一 `repair_xxx` 报 unrecoverable → 立即 break，不继续后续 |
 | `test_repair_all_async_no_rollback_on_unrecoverable` | unrecoverable 时不回滚（派生文件已删光，回滚无法恢复） |
 | `test_repair_all_async_failure_no_rollback_v9` | 异常时记录 unrecoverable + break + 不回滚 |
-| `test_repair_all_async_derived_byte_level_diff` | **派生文件字节级 diff**：repair 后的派生文件跟 LightRAG 原生启动后的派生文件对比 |
+| `test_repair_all_async_derived_metadata_diff` | **派生文件元数据 diff（不对比 vector/matrix/content，因假模型 + keywords 顺序差异）**：repair 后的派生文件跟 LightRAG 原生启动后的派生文件对比 |
 | `test_repair_all_async_e2e_repair_and_query` | **e2e 测试**：repair 前后快照 + 修复后查询验证 |
 | `test_repair_all_async_startup_block_after_corrupt` | **启动阻断验证**：损坏场景 lightrag_integrity 检测后启动阻断生效 |
 | `test_repair_all_async_restart_after_repair` | **修复后重启验证**：修复完成后重启进程读派生文件，验证知识图谱查询正常 |
@@ -7680,14 +7692,7 @@ python -m pyright niu_api/internal/lightrag_manager.py 2>&1 | tail -10
 # =============================================================================
 
 
-def _sha256(path: Path) -> str:
-    """算文件 sha256（验证真相源不变）。"""
-    import hashlib
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
+# _sha256 / _copy_truth_sources 已在 Task 3 测试块（L1470/L1484）定义，此处复用，不重复定义
 
 
 # v9 第 2 轮审查修复（问题 2 / C4）：
@@ -7728,21 +7733,6 @@ def _write_graphml(tmp_path: Path, nodes: list[tuple[str, str, str]]):
         tmp_path / "graph_chunk_entity_relation.graphml",
         xml_declaration=True, encoding="utf-8",
     )
-
-
-def _copy_truth_sources(tmp_storage_dir: Path, real_storage_dir: Path) -> None:
-    """拷贝 3 真相源到 tmp 目录（其他派生文件不拷贝，让 repair 重建）。"""
-    import shutil
-    tmp_storage_dir.mkdir(parents=True, exist_ok=True)
-    truth_files = [
-        "graph_chunk_entity_relation.graphml",
-        "kv_store_full_docs.json",
-        "kv_store_llm_response_cache.json",
-    ]
-    for fname in truth_files:
-        src = real_storage_dir / fname
-        if src.exists():
-            shutil.copy2(src, tmp_storage_dir / fname)
 
 
 def _record_truth_source_hashes(storage_dir: Path) -> dict[str, str]:
@@ -8128,8 +8118,8 @@ def test_repair_all_async_unrecoverable_when_truth_source_broken(tmp_path, monke
     assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
 
 
-def test_repair_all_async_derived_byte_level_diff(tmp_path, monkeypatch):
-    """【派生文件字节级 diff】repair 后的派生文件跟 LightRAG 原生启动后的派生文件对比。
+def test_repair_all_async_derived_metadata_diff(tmp_path, monkeypatch):
+    """【派生文件元数据 diff（不对比 vector/matrix/content，因假模型 + keywords 顺序差异）】repair 后的派生文件跟 LightRAG 原生启动后的派生文件对比。
 
     v9 核心 D1 验证：走 storage.upsert 不绕过，重建产物跟 LightRAG 原生启动后字节级一致。
 
@@ -8527,7 +8517,7 @@ grep -n "^def test_repair_all_" tests/test_lightrag_repair_unit.py | head -20
 20xx:def test_repair_all_async_no_rollback_on_unrecoverable(tmp_path, monkeypatch):
 20xx:def test_repair_all_async_new_user_empty_truth_sources_ok(tmp_path, monkeypatch):
 20xx:def test_repair_all_async_unrecoverable_when_truth_source_broken(tmp_path, monkeypatch):
-21xx:def test_repair_all_async_derived_byte_level_diff(tmp_path, monkeypatch):
+21xx:def test_repair_all_async_derived_metadata_diff(tmp_path, monkeypatch):
 22xx:def test_repair_all_async_e2e_repair_and_query(tmp_path, monkeypatch):
 22xx:def test_repair_all_async_startup_block_after_corrupt(tmp_path, monkeypatch):
 23xx:def test_repair_all_async_restart_after_repair(tmp_path, monkeypatch):
@@ -8566,7 +8556,7 @@ tests/test_lightrag_repair_unit.py::test_repair_all_async_breaks_on_unrecoverabl
 tests/test_lightrag_repair_unit.py::test_repair_all_async_no_rollback_on_unrecoverable PASSED
 tests/test_lightrag_repair_unit.py::test_repair_all_async_new_user_empty_truth_sources_ok PASSED
 tests/test_lightrag_repair_unit.py::test_repair_all_async_unrecoverable_when_truth_source_broken PASSED
-tests/test_lightrag_repair_unit.py::test_repair_all_async_derived_byte_level_diff PASSED (or SKIPPED)
+tests/test_lightrag_repair_unit.py::test_repair_all_async_derived_metadata_diff PASSED (or SKIPPED)
 tests/test_lightrag_repair_unit.py::test_repair_all_async_e2e_repair_and_query PASSED
 tests/test_lightrag_repair_unit.py::test_repair_all_async_startup_block_after_corrupt PASSED
 tests/test_lightrag_repair_unit.py::test_repair_all_async_restart_after_repair PASSED (or SKIPPED)
@@ -8624,7 +8614,7 @@ grep -n "test_repair_all_returns_flat_structure\|test_repair_all_deletes_9_deriv
 
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot
-git add niu_api/internal/lightrag_repair.py niu_api/internal/lightrag_manager.py tests/test_lightrag_repair_unit.py
+git add niu_api/internal/lightrag_repair.py niu_api/internal/lightrag_manager.py tests/test_lightrag_repair_unit.py agent/injector/region_sync.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 10 重写 repair_all + 测试（整合 Task 1-9）
 
@@ -8661,7 +8651,7 @@ Part C: 测试方案
   * test_repair_all_async_no_rollback_on_unrecoverable: 不回滚（派生文件已删光）
   * test_repair_all_async_new_user_empty_truth_sources_ok: 全新用户合法
   * test_repair_all_async_unrecoverable_when_truth_source_broken: 真相源损坏报 unrecoverable
-  * test_repair_all_async_derived_byte_level_diff: 派生文件字节级 diff
+  * test_repair_all_async_derived_metadata_diff: 派生文件元数据 diff（不对比 vector/matrix/content，因假模型 + keywords 顺序差异）
     （跟 LightRAG 原生启动后对比，忽略时间戳/embedding 字段）
   * test_repair_all_async_e2e_repair_and_query: e2e 测试（repair + check_all 验证）
   * test_repair_all_async_startup_block_after_corrupt: 启动阻断验证
@@ -8676,7 +8666,7 @@ Part C: 测试方案
 - 9 个 repair_xxx 全部 async（D15 EmbeddingFunc async + np.ndarray）
 - _load_graphml_nodes_edges 扩展 6 元组（D8）
 - 真相源完全不动（铁律 2，test_repair_all_async_3_truth_sources_intact 验证）
-- 派生文件字节级跟 LightRAG 原生一致（D1，test_repair_all_async_derived_byte_level_diff 验证）
+- 派生文件字节级跟 LightRAG 原生一致（D1，test_repair_all_async_derived_metadata_diff 验证）
 - 启动阻断 + 修复后重启验证（D13/D14）
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
@@ -8715,7 +8705,7 @@ EOF
 - [ ] 新增 12 个 v9 `test_repair_all_async_*` 测试
 - [ ] 真相源保护验证（`test_repair_all_async_3_truth_sources_intact`）：sha256 + mtime 不变
 - [ ] 9 派生文件走 storage 接口验证（`test_repair_all_async_9_derived_files_rebuilt_via_storage`）：含 `_id` / `__id__` / `create_time` / `__created_at__` 自动注入字段
-- [ ] 字节级 diff（`test_repair_all_async_derived_byte_level_diff`）：跟 LightRAG 原生启动后对比（SKIPPED 如果无对照样本）
+- [ ] 字节级 diff（`test_repair_all_async_derived_metadata_diff`）：跟 LightRAG 原生启动后对比（SKIPPED 如果无对照样本）
 - [ ] e2e 测试（`test_repair_all_async_e2e_repair_and_query`）：repair + check_all 通过
 - [ ] 启动阻断验证（`test_repair_all_async_startup_block_after_corrupt`）：损坏 → check_all critical + repair_all unrecoverable
 - [ ] 修复后重启验证（`test_repair_all_async_restart_after_repair`）：reset + check_all + storage 重新加载
@@ -8763,7 +8753,7 @@ git log --oneline -10
 - [ ] D15（EmbeddingFunc async + np.ndarray）：`RepairEmbeddingFunc.__call__` 返回 `np.ndarray(shape=(N, 768), dtype=float32)`
 
 ### v8 bug 修复验证（Task 1-10 全部完成后）
-- [ ] Task 7 修复 v8 bug 1：keywords 去重从 `dict.fromkeys` 改为 `set`（跟 LightRAG operate.py L1483 一致）
+- [ ] Task 7 修复 v8 bug 1：keywords 去重保序用 `dict.fromkeys`（v9 第 2 轮审查修复 问题 7 / I5，跨运行稳定，跟 LightRAG operate.py L1483 `set` 无序不完全一致但更稳定）
 - [ ] Task 7 修复 v8 bug 2：`_load_graphml_nodes_edges` 扩展 6 元组（新增 d11 file_path）
 - [ ] Task 8 修复 v8 bug 3：relation_chunks 重复 key 合并从 `sorted(set)` 改为 `merge_source_ids`（保留插入顺序，跟 LightRAG 一致）
 - [ ] Task 9 修复 v8 bug 4：full_entities entity_names 不再 `sorted`（来自 set，跟 LightRAG operate.py L2904 一致）
@@ -8840,7 +8830,7 @@ Task 1-10 全部完成后，v9 方案实现：
 **v9 核心成果**：
 - 3 真相源完全不动（sha256 + mtime 不变，`test_repair_all_async_3_truth_sources_intact` 验证）
 - 9 派生文件全部走 storage.upsert（含 `_id` / `__id__` / `create_time` / `__created_at__` 自动注入字段，`test_repair_all_async_9_derived_files_rebuilt_via_storage` 验证）
-- 派生文件字节级跟 LightRAG 原生启动后一致（`test_repair_all_async_derived_byte_level_diff` 验证，忽略时间戳/embedding 字段）
+- 派生文件字节级跟 LightRAG 原生启动后一致（`test_repair_all_async_derived_metadata_diff` 验证，忽略时间戳/embedding 字段）
 - 修复 v8 7 个 bug（keywords 去重 / 6 元组 / merge_source_ids / entity_names 不 sorted / pair sorted / tuple 可哈希 / async 桥接）
 - 启动阻断 + 修复后重启验证（D13/D14）
 - 总计 ~58 个测试覆盖（Task 2-10 各自的单元测试 + 整合测试）
