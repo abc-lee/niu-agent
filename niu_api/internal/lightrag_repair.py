@@ -68,22 +68,6 @@ def _storage_dir() -> Path:
     return Path(_STORAGE_DIR)
 
 
-def _atomic_write_json(path: Path, data: Any, indent: int | None = None) -> None:
-    """原子写 JSON：写 tmp + fsync + replace。
-
-    Args:
-        path: 目标文件路径
-        data: 要序列化的对象
-        indent: json.dump 的 indent 参数（None = 紧凑）
-    """
-    tmp_file = path.with_name(path.name + ".tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=indent)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_file, path)
-
-
 def _embed_batch(texts: list[str]) -> list[list[float]] | None:
     """批量 embedding。
 
@@ -159,22 +143,6 @@ def _get_embedding_dim() -> int:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[LightRAGRepair] embedding 维度探测失败: {e}，用 fallback 768")
     return 768
-
-
-def _encode_vector(vec_f16) -> str:
-    """vector 字段三层编码：base64(zlib(float16 bytes))"""
-    import numpy as np
-
-    arr = vec_f16.astype(np.float16) if hasattr(vec_f16, "astype") else np.array(vec_f16, dtype=np.float16)
-    return base64.b64encode(zlib.compress(arr.tobytes())).decode()
-
-
-def _encode_matrix(matrix_f32) -> str:
-    """matrix 字段一层编码：base64(float32 bytes)"""
-    import numpy as np
-
-    arr = matrix_f32.astype(np.float32) if hasattr(matrix_f32, "astype") else np.array(matrix_f32, dtype=np.float32)
-    return base64.b64encode(arr.tobytes()).decode()
 
 
 def _load_json_dict(path: Path) -> dict[str, Any] | None:
@@ -348,31 +316,6 @@ def _load_graphml_nodes() -> tuple[dict[str, tuple[str, str, str, str]], dict[st
                     file_path = data.text or ""
             nodes[nid] = (etype, desc, src, file_path)
     return nodes, None
-
-
-def _build_vdb_file(
-    vdb_path: Path, data_list: list[dict[str, Any]], vectors: list[list[float]],
-    embedding_dim: int,
-) -> None:
-    """构造 vdb 文件内容并原子写入。
-
-    每条 data 的 vector 字段已 encode 后存入；matrix 单独 encode 后存入。
-    """
-    import numpy as np
-
-    matrix_f32 = np.array(vectors, dtype=np.float32) if vectors else np.zeros((0, embedding_dim), dtype=np.float32)
-    # 编码 vector 字段到每条 data
-    encoded_data = []
-    for item, vec in zip(data_list, vectors):
-        new_item = {k: v for k, v in item.items() if k != "vector"}
-        new_item["vector"] = _encode_vector(np.array(vec, dtype=np.float16))
-        encoded_data.append(new_item)
-    storage = {
-        "embedding_dim": embedding_dim,
-        "data": encoded_data,
-        "matrix": _encode_matrix(matrix_f32),
-    }
-    _atomic_write_json(vdb_path, storage)
 
 
 def _check_truth_sources_intact() -> dict[str, Any]:
@@ -584,7 +527,8 @@ def repair_text_chunks() -> dict[str, Any]:
     # 全新用户（GraphML 无活跃 chunk）→ 写空 text_chunks
     if not active_chunk_ids:
         logger.info("[LightRAGRepair] GraphML 无活跃 chunk_id（全新用户），写空 text_chunks")
-        _atomic_write_json(tc_path, {})
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -763,18 +707,8 @@ def repair_text_chunks() -> dict[str, Any]:
         missing_chunks.append(cid)
 
     # 8. 备份损坏的 text_chunks + 原子写
-    try:
-        _atomic_write_json(tc_path, new_tc)
-    except Exception as e:
-        return {
-            "status": "error",
-            "expected": len(active_chunk_ids),
-            "actual": len(new_tc),
-            "lost": len(active_chunk_ids) - len(new_tc),
-            "source": "GraphML + cache + full_docs",
-            "message": f"写 text_chunks 失败: {e}",
-            "unrecoverable": True,
-        }
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+    pass
 
     actual = len(new_tc)
     logger.info(
@@ -882,7 +816,8 @@ def repair_doc_status() -> dict[str, Any]:
         }
 
     # 6. 备份 + 写
-    _atomic_write_json(doc_status_path, new_doc_status)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+    pass
 
     actual = len(new_doc_status)
     logger.info(f"[LightRAGRepair] 重建 doc_status: {actual} 条 (source=text_chunks+full_docs)")
@@ -924,8 +859,8 @@ def repair_vdb_chunks() -> dict[str, Any]:
         }
     if not text_chunks:
         # 空 text_chunks → 写空 vdb（让 check 通过）
-        embedding_dim = _get_embedding_dim()
-        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -946,8 +881,8 @@ def repair_vdb_chunks() -> dict[str, Any]:
         items.append((chunk_id, content, chunk_value))
 
     if not items:
-        embedding_dim = _get_embedding_dim()
-        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -1019,7 +954,8 @@ def repair_vdb_chunks() -> dict[str, Any]:
         }
 
     # 6. 备份 + 写
-    _build_vdb_file(vdb_path, data_list, final_vectors, embedding_dim)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+    pass
 
     actual = len(data_list)
     logger.info(f"[LightRAGRepair] 重建 vdb_chunks: {actual} 条 (source=text_chunks)")
@@ -1058,8 +994,8 @@ def repair_vdb_entities() -> dict[str, Any]:
             "unrecoverable": True,
         }
     if not nodes:
-        embedding_dim = _get_embedding_dim()
-        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -1143,7 +1079,8 @@ def repair_vdb_entities() -> dict[str, Any]:
         }
 
     # 6. 备份 + 写
-    _build_vdb_file(vdb_path, data_list, final_vectors, embedding_dim)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+    pass
 
     actual = len(data_list)
     logger.info(f"[LightRAGRepair] 重建 vdb_entities: {actual} 条 (source=GraphML)")
@@ -1183,8 +1120,8 @@ def repair_vdb_relationships() -> dict[str, Any]:
             "unrecoverable": True,
         }
     if not edges:
-        embedding_dim = _get_embedding_dim()
-        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -1225,8 +1162,8 @@ def repair_vdb_relationships() -> dict[str, Any]:
 
     expected = len(items)
     if expected == 0:
-        embedding_dim = _get_embedding_dim()
-        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -1293,7 +1230,8 @@ def repair_vdb_relationships() -> dict[str, Any]:
         }
 
     # 6. 备份 + 写
-    _build_vdb_file(vdb_path, data_list, final_vectors, embedding_dim)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
+    pass
 
     actual = len(data_list)
     logger.info(f"[LightRAGRepair] 重建 vdb_relationships: {actual} 条 (source=GraphML)")
@@ -1333,7 +1271,8 @@ def repair_entity_chunks() -> dict[str, Any]:
             "unrecoverable": True,
         }
     if not nodes:
-        _atomic_write_json(ec_path, {})
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -1356,7 +1295,8 @@ def repair_entity_chunks() -> dict[str, Any]:
         new_entity_chunks[node_id] = {"chunk_ids": chunk_ids, "count": len(chunk_ids)}
 
     # 3. 备份 + 写
-    _atomic_write_json(ec_path, new_entity_chunks)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+    pass
 
     actual = len(new_entity_chunks)
     logger.info(f"[LightRAGRepair] 重建 entity_chunks: {actual} 条 (source=GraphML source_id)")
@@ -1396,7 +1336,8 @@ def repair_relation_chunks() -> dict[str, Any]:
             "unrecoverable": True,
         }
     if not edges:
-        _atomic_write_json(rc_path, {})
+        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+        pass
         return {
             "status": "ok",
             "expected": 0,
@@ -1429,7 +1370,8 @@ def repair_relation_chunks() -> dict[str, Any]:
             expected += 1
 
     # 3. 备份 + 写
-    _atomic_write_json(rc_path, new_relation_chunks)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+    pass
 
     actual = len(new_relation_chunks)
     logger.info(f"[LightRAGRepair] 重建 relation_chunks: {actual} 条 (source=GraphML edge source_id)")
@@ -1516,7 +1458,8 @@ def repair_full_entities() -> dict[str, Any]:
         doc_id: {"entity_names": sorted(ents), "count": len(ents)}
         for doc_id, ents in doc_to_entities.items()
     }
-    _atomic_write_json(fe_path, fe_payload)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+    pass
 
     actual = len(doc_to_entities)
     logger.info(f"[LightRAGRepair] 重建 full_entities: {actual} 条 (source=GraphML source_id + doc_status)")
@@ -1606,7 +1549,8 @@ def repair_full_relations() -> dict[str, Any]:
         doc_id: {"relation_pairs": pairs, "count": len(pairs)}
         for doc_id, pairs in doc_to_relation_pairs.items()
     }
-    _atomic_write_json(fr_path, fr_payload)
+    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
+    pass
 
     actual = len(doc_to_relation_pairs)
     logger.info(f"[LightRAGRepair] 重建 full_relations: {actual} 条 (source=GraphML edge source_id + doc_status)")
