@@ -899,60 +899,136 @@ async def repair_text_chunks() -> dict[str, Any]:
     }
 
 
-def repair_doc_status() -> dict[str, Any]:
-    """2. 从 text_chunks 派生 chunks_list + 从 full_docs 派生 status。
+async def repair_doc_status() -> dict[str, Any]:
+    """v9：从 text_chunks 反查 chunks_list + 从 full_docs 派生 doc_status。
 
-    真相源：kv_store_text_chunks.json + kv_store_full_docs.json
-    派生：kv_store_doc_status.json
+    真相源：kv_store_full_docs.json（doc 列表）+ kv_store_text_chunks.json（chunks_list 反查）
+    派生：kv_store_doc_status.json（通过 JsonDocStatusStorage.upsert 写）
 
-    chunks_list: 按 full_doc_id 分组 text_chunks 的 key
-    status: processed 如果 GraphML 有数据，否则 pending（DocStatus.value 小写）
+    走 storage 接口的好处：
+    - JsonDocStatusStorage.upsert 自动补 chunks_list=[]（L215-216）
+    - upsert 末尾自动调 index_done_callback（L222，无需手动）
+    - write_json 做 sanitization + 自动 reload（L184-195）
+
+    算法：
+    1. initialize_share_data(workers=1) + set_default_workspace("")
+    2. 实例化 JsonDocStatusStorage(namespace=doc_status, embedding_func=None)
+    3. await storage.initialize()
+    4. 读 full_docs（doc 列表 + content_summary + content_length + file_path）
+    5. 读 text_chunks（反查 chunks_list：chunk.full_doc_id == doc_id 的所有 chunk_id）
+    6. 判断 GraphML 是否有数据（决定 status 是 processed 还是 pending）
+    7. 构造 upsert data：每 doc 含 status/chunks_count/chunks_list/content_summary/
+       content_length/created_at/updated_at/file_path/track_id/metadata/
+       error_msg/multimodal_processed
+    8. 调 await storage.upsert(data)（内部自动 index_done_callback 写盘）
+    9. 全新用户（full_docs 为空）→ 不写派生文件
+
+    异常处理：
+    - full_docs 损坏 → unrecoverable
+    - text_chunks 损坏 → unrecoverable
+    - storage.initialize / upsert 异常 → error（不写文件）
     """
     storage_dir = _storage_dir()
-    text_chunks_path = storage_dir / "kv_store_text_chunks.json"
     full_docs_path = storage_dir / "kv_store_full_docs.json"
-    doc_status_path = storage_dir / "kv_store_doc_status.json"
+    text_chunks_path = storage_dir / "kv_store_text_chunks.json"
     graphml_path = storage_dir / _GRAPHML_FILE
 
-    # 1. 读 text_chunks（真相源）
-    text_chunks = _load_json_dict(text_chunks_path)
-    if text_chunks is None:
+    # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.shared_storage import (
+        initialize_share_data,
+        set_default_workspace,
+    )
+    from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
+    from lightrag.namespace import NameSpace
+
+    initialize_share_data(workers=1)
+    set_default_workspace("")
+
+    # 2. 实例化 JsonDocStatusStorage
+    #    global_config 必须含 working_dir（JsonDocStatusStorage.__post_init__ L35 读）
+    #    embedding_func 传 None（doc_status 不用 embedding）
+    global_config: dict[str, Any] = {"working_dir": str(storage_dir)}
+    storage = JsonDocStatusStorage(
+        namespace=NameSpace.DOC_STATUS,
+        workspace="",
+        global_config=global_config,
+        embedding_func=None,  # type: ignore[arg-type]
+    )
+
+    try:
+        await storage.initialize()
+        # 跟 Task 3 一致：清空共享 dict 防止旧数据残留影响本次重建
+        # （JsonDocStatusStorage.initialize 会从磁盘 load_json 合并到 _data，
+        #  repair 场景下我们要求从真相源完全重新派生，所以清空旧数据）
+        if storage._data is not None:
+            storage._data.clear()
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] doc_status storage.initialize 失败: {e}",
+            exc_info=True,
+        )
         return {
             "status": "error",
             "expected": 0,
             "actual": 0,
             "lost": 0,
-            "source": "kv_store_text_chunks",
-            "message": "text_chunks 损坏",
+            "source": "JsonDocStatusStorage",
+            "message": f"storage.initialize 异常: {type(e).__name__}: {e}",
             "unrecoverable": True,
         }
-    if not text_chunks:
+
+    # 3. 读 full_docs（真相源）
+    full_docs = _load_json_dict(full_docs_path)
+    if full_docs is None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_full_docs",
+            "message": "full_docs 损坏（JSON 解析失败），3 真相源之一损坏无法恢复",
+            "unrecoverable": True,
+        }
+
+    # 4. 全新用户（full_docs 为空）→ 不写派生文件
+    #    v9 第 2 轮审查修复（问题 5 / I3）：
+    #    LightRAG 全新用户首次启动 JsonDocStatusStorage.initialize 只设内存空 dict，
+    #    不主动写空文件到磁盘。v9 跟 LightRAG 原生行为一致——
+    #    全新用户场景下 doc_status.json 不存在，不要强行写空 {} 文件
+    #    （跟原生不一致，字节级 diff 会失败）。
+    #    _check_truth_sources_intact 已支持 absent/empty=合法，
+    #    所以下次启动 check_all 不会因派生文件不存在而报 critical。
+    if not full_docs:
+        logger.info(
+            "[LightRAGRepair] full_docs 为空（全新用户），不写派生文件（跟 LightRAG 原生一致）"
+        )
         return {
             "status": "ok",
             "expected": 0,
             "actual": 0,
             "lost": 0,
-            "source": "kv_store_text_chunks",
-            "message": "text_chunks 为空，无需重建 doc_status",
+            "source": "kv_store_full_docs + kv_store_text_chunks",
+            "message": "full_docs 为空，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
         }
 
-    # 2. 读 full_docs（真相源）
-    full_docs = _load_json_dict(full_docs_path)
-    if full_docs is None:
+    # 5. 读 text_chunks（真相源）
+    text_chunks = _load_json_dict(text_chunks_path)
+    if text_chunks is None:
         return {
             "status": "error",
-            "expected": len(full_docs) if isinstance(full_docs, dict) else 0,
+            "expected": len(full_docs),
             "actual": 0,
-            "lost": 0,
+            "lost": len(full_docs),
             "source": "kv_store_text_chunks",
-            "message": "full_docs 损坏",
+            "message": "text_chunks 损坏（JSON 解析失败），3 真相源之一损坏无法恢复",
             "unrecoverable": True,
         }
 
-    # 3. 判断 GraphML 是否有数据（决定 status 是 processed 还是 pending，小写匹配 DocStatus.value）
+    # 6. 判断 GraphML 是否有数据（决定 status 是 processed 还是 pending）
+    #    GraphML 文件大小 > 200 字节视为有数据（v8 逻辑保留）
     graphml_has_data = graphml_path.exists() and graphml_path.stat().st_size > 200
 
-    # 4. 按 full_doc_id 分组 chunks_list
+    # 7. 按 full_doc_id 分组 chunks_list（反查 text_chunks）
     chunks_by_doc: dict[str, list[str]] = {}
     for chunk_id, chunk_value in text_chunks.items():
         if not isinstance(chunk_value, dict):
@@ -962,44 +1038,101 @@ def repair_doc_status() -> dict[str, Any]:
             continue
         chunks_by_doc.setdefault(full_doc_id, []).append(chunk_id)
 
-    # 5. 构造 doc_status
-    new_doc_status: dict[str, dict[str, Any]] = {}
-    expected_count = len(full_docs) if full_docs else 0
-    # 循环外加载 doc_status 一次（循环内只读不改，避免每次迭代重读同一文件）
-    old_ds = _load_json_dict(doc_status_path) or {}
-    if not isinstance(old_ds, dict):
-        old_ds = {}
-    for doc_id in full_docs.keys():
+    # 8. 构造 upsert data（严格对照字段表）
+    #    created_at 用 full_docs.create_time 转 ISO 8601 UTC（无则空字符串）
+    #    updated_at 用 repair 时刻 ISO 8601 UTC（跟 LightRAG lightrag.py:2167-2169 一致）
+    from datetime import datetime, timezone
+
+    upsert_data: dict[str, dict[str, Any]] = {}
+    for doc_id, doc_data in full_docs.items():
+        if not isinstance(doc_data, dict):
+            continue
         chunks_list = sorted(chunks_by_doc.get(doc_id, []))  # 排序保证稳定
-        # 保留原 doc_status 的 file_path 等元数据（如果存在）
-        old_value = old_ds.get(doc_id, {})
-        new_doc_status[doc_id] = {
-            # DocStatus.value 是小写（"processed"/"pending"/"failed"），
-            # LightRAG get_docs_by_statuses/get_status_counts 用小写字符串匹配，
-            # 必须写小写值否则枚举查询找不到文档
-            "status": "processed" if graphml_has_data else "pending",
-            "chunks_count": len(chunks_list),
-            "content_summary": old_value.get("content_summary", "") if isinstance(old_value, dict) else "",
-            "content_length": old_value.get("content_length", 0) if isinstance(old_value, dict) else 0,
-            "created_at": old_value.get("created_at", "") if isinstance(old_value, dict) else "",
-            "updated_at": old_value.get("updated_at", "") if isinstance(old_value, dict) else "",
-            "file_path": old_value.get("file_path", "") if isinstance(old_value, dict) else "",
-            "chunks_list": chunks_list,
+        content = doc_data.get("content", "")
+        file_path = doc_data.get("file_path", "") or ""
+        track_id = doc_data.get("track_id")  # None 或 str
+        create_time_raw = doc_data.get("create_time", 0)
+
+        # created_at: full_docs.create_time 是 Unix timestamp（int），转 ISO 8601 UTC
+        # v9 走 storage 接口必须按 DocProcessingStatus 数据类要求写（base.py:781）
+        # created_at 是 str 类型，空字符串是合法 fallback
+        if isinstance(create_time_raw, (int, float)) and create_time_raw > 0:
+            created_at = datetime.fromtimestamp(
+                create_time_raw, tz=timezone.utc
+            ).isoformat()
+        else:
+            created_at = ""
+
+        # updated_at: repair 时刻 ISO 8601 UTC（跟 lightrag.py:2167-2169 一致）
+        updated_at = datetime.now(timezone.utc).isoformat()
+
+        # content_summary: content 前 100 字符（跟 base.py:774 注释一致）
+        content_summary = content[:100] if content else ""
+        # content_length: content 总长度
+        content_length = len(content) if content else 0
+
+        # metadata: 跟 lightrag.py:2172-2175 一致（processing_start/end_time）
+        # repair 场景没有真实处理时间，用 create_time 兜底
+        proc_time = (
+            int(create_time_raw)
+            if isinstance(create_time_raw, (int, float))
+            else 0
+        )
+        metadata = {
+            "processing_start_time": proc_time,
+            "processing_end_time": proc_time,
         }
 
-    # 6. 备份 + 写
-    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
-    pass
+        upsert_data[doc_id] = {
+            "status": "processed" if graphml_has_data else "pending",
+            "chunks_count": len(chunks_list),
+            "chunks_list": chunks_list,
+            "content_summary": content_summary,
+            "content_length": content_length,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "file_path": file_path,
+            "track_id": track_id,
+            "metadata": metadata,
+            # v9 第 3 轮审查修复 I3：补 error_msg / multimodal_processed 字段
+            # 对齐 DocProcessingStatus 数据类（base.py:791-796）完整字段集
+            "error_msg": None,
+            "multimodal_processed": None,
+        }
 
-    actual = len(new_doc_status)
-    logger.info(f"[LightRAGRepair] 重建 doc_status: {actual} 条 (source=text_chunks+full_docs)")
+    # 9. 调 storage.upsert（内部自动 index_done_callback 写盘）
+    try:
+        await storage.upsert(upsert_data)
+        # JsonDocStatusStorage.upsert 末尾自动调 index_done_callback（L222）
+        # 不需要手动调
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] doc_status storage.upsert 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": len(full_docs),
+            "actual": 0,
+            "lost": len(full_docs),
+            "source": "JsonDocStatusStorage",
+            "message": f"storage.upsert 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    actual = len(upsert_data)
+    logger.info(
+        f"[LightRAGRepair] 重建 doc_status: {actual} 条 "
+        f"(source=full_docs + text_chunks chunks_list 反查，"
+        f"graphml_has_data={graphml_has_data})"
+    )
     return {
         "status": "ok",
-        "expected": expected_count,
+        "expected": len(full_docs),
         "actual": actual,
-        "lost": expected_count - actual,
-        "source": "kv_store_text_chunks + kv_store_full_docs",
-        "message": f"从 text_chunks 派生 chunks_list + 从 full_docs 派生 status，重建 {actual} 条",
+        "lost": len(full_docs) - actual,
+        "source": "kv_store_full_docs + kv_store_text_chunks",
+        "message": f"从 full_docs 派生 status + text_chunks 反查 chunks_list，重建 {actual} 条",
     }
 
 
