@@ -2058,11 +2058,15 @@ def test_repair_vdb_relationships_no_weight_in_data(tmp_path, monkeypatch):
         assert "source_id" in item
 
 
-def test_repair_vdb_chunks_only_text_chunks(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_vdb_chunks_only_text_chunks(tmp_path, monkeypatch):
     """repair_vdb_chunks 只对 text_chunks 中的 chunk embedding（防孤儿 chunk）。
 
     回归点：GraphML 引用了 chunk-orphan，但 text_chunks 没有该 chunk
     → vdb_chunks 不应含 chunk-orphan（防孤儿）。
+
+    v9 Task 5 转换：repair_vdb_chunks 改为 async（走 NanoVectorDBStorage.upsert），
+    需 await + 用 _FakeEmbedModel 替代真实 bge 模型（避免 ~400MB 加载）。
     """
     _write_graphml_v8(tmp_path, [
         ("entity-x", "person", "desc", "chunk-active<SEP>chunk-orphan"),
@@ -2076,9 +2080,14 @@ def test_repair_vdb_chunks_only_text_chunks(tmp_path, monkeypatch):
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
+    # v9：用 _FakeEmbedModel 替代真实 bge 模型（避免加载 ~400MB）
+    from niu_api.internal import embedding as niu_embedding
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
     from niu_api.internal.lightrag_repair import repair_vdb_chunks
 
-    result = repair_vdb_chunks()
+    result = await repair_vdb_chunks()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1  # 只 chunk-active
@@ -2757,3 +2766,367 @@ async def test_repair_doc_status_full_docs_corrupt(monkeypatch, tmp_path):
     assert result["status"] == "error"
     assert result.get("unrecoverable") is True
     assert "full_docs 损坏" in result["message"]
+
+
+# =============================================================================
+# v9 Task 5: repair_vdb_chunks 走 NanoVectorDBStorage 单元测试
+# =============================================================================
+
+
+def _load_vdb(vdb_path: Path) -> dict:
+    """读 vdb 文件，返回 dict。"""
+    assert vdb_path.exists(), f"vdb 文件不存在: {vdb_path}"
+    with open(vdb_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _decode_matrix(matrix_b64: str, embedding_dim: int = 768):
+    """解码 vdb matrix 字段（base64(float32 bytes) → np.ndarray）。"""
+    import base64
+    import numpy as np
+
+    raw = base64.b64decode(matrix_b64)
+    arr = np.frombuffer(raw, dtype=np.float32)
+    # matrix 是 2D，行数 = len(data)，列数 = embedding_dim
+    if len(arr) % embedding_dim != 0:
+        raise ValueError(
+            f"matrix 长度 {len(arr)} 不是 embedding_dim {embedding_dim} 的整数倍"
+        )
+    return arr.reshape(-1, embedding_dim)
+
+
+def _decode_vector(vector_b64: str):
+    """解码 vdb 单条 vector 字段（base64(zlib(float16 bytes)) → np.ndarray）。"""
+    import base64
+    import zlib
+    import numpy as np
+
+    raw = base64.b64decode(vector_b64)
+    decompressed = zlib.decompress(raw)
+    return np.frombuffer(decompressed, dtype=np.float16).astype(np.float32)
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_chunks_real_data(monkeypatch, tmp_path):
+    """真实数据测试：拷贝 3 真相源到 tmp_path，先跑 repair_text_chunks，再跑 repair_vdb_chunks。
+
+    验证：
+    1. repair 不修改 3 真相源（sha256 不变）
+    2. vdb_chunks.json 生成 + 字段格式正确
+    3. 每条 chunk 含 __id__/content/full_doc_id/file_path/vector（不含 tokens/chunk_order_index）
+    4. matrix 是 L2 归一化后的单位向量（每行模长 ≈ 1）
+    5. vector 跟 matrix 对应行维度一致
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    real_storage = Path.home() / ".niu" / "lightrag_storage"
+    if not real_storage.exists():
+        pytest.skip(f"真实数据目录不存在: {real_storage}")
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    _copy_truth_sources(tmp_storage, real_storage)
+
+    # 记录真相源 sha256
+    graphml_sha = _sha256(tmp_storage / "graph_chunk_entity_relation.graphml")
+    full_docs_sha = _sha256(tmp_storage / "kv_store_full_docs.json")
+    cache_sha = _sha256(tmp_storage / "kv_store_llm_response_cache.json")
+
+    # 用假 embedding 模型（避免加载真实 ~400MB 模型）
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    # 先跑 repair_text_chunks 生成 text_chunks.json
+    tc_result = await lightrag_repair.repair_text_chunks()
+    assert tc_result["status"] == "ok", f"repair_text_chunks 失败: {tc_result.get('message')}"
+
+    # 跑 repair_vdb_chunks
+    result = await lightrag_repair.repair_vdb_chunks()
+
+    # 断言 1：repair 成功
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] > 0, f"actual=0，没重建任何 chunk: {result}"
+
+    # 断言 2：真相源 sha256 不变
+    assert _sha256(tmp_storage / "graph_chunk_entity_relation.graphml") == graphml_sha
+    assert _sha256(tmp_storage / "kv_store_full_docs.json") == full_docs_sha
+    assert _sha256(tmp_storage / "kv_store_llm_response_cache.json") == cache_sha
+
+    # 断言 3：vdb_chunks.json 字段格式
+    vdb = _load_vdb(tmp_storage / "vdb_chunks.json")
+    assert "embedding_dim" in vdb
+    assert vdb["embedding_dim"] == 768
+    assert "data" in vdb
+    assert isinstance(vdb["data"], list)
+    assert len(vdb["data"]) == result["actual"]
+    assert "matrix" in vdb
+    assert isinstance(vdb["matrix"], str)
+
+    # 断言 4：每条 chunk 字段格式
+    for item in vdb["data"]:
+        assert "__id__" in item, f"缺 __id__: {item}"
+        assert "content" in item, f"缺 content: {item}"
+        assert "full_doc_id" in item, f"缺 full_doc_id: {item}"
+        assert "file_path" in item, f"缺 file_path: {item}"
+        assert "vector" in item, f"缺 vector: {item}"
+        assert "__created_at__" in item, f"缺 __created_at__: {item}"
+        # 被过滤字段（不应落盘）
+        assert "tokens" not in item, f"tokens 不应落盘（meta_fields 过滤）: {item}"
+        assert "chunk_order_index" not in item, f"chunk_order_index 不应落盘: {item}"
+        assert "llm_cache_list" not in item, f"llm_cache_list 不应落盘: {item}"
+        # 类型校验
+        assert isinstance(item["__id__"], str)
+        assert item["__id__"].startswith("chunk-")
+        assert isinstance(item["content"], str)
+        assert isinstance(item["full_doc_id"], str)
+        assert isinstance(item["file_path"], str)
+        assert isinstance(item["vector"], str)
+        assert isinstance(item["__created_at__"], int)
+
+    # 断言 5：matrix 是 L2 归一化后的单位向量
+    matrix = _decode_matrix(vdb["matrix"], embedding_dim=768)
+    assert matrix.shape == (len(vdb["data"]), 768), (
+        f"matrix shape {matrix.shape} != ({len(vdb['data'])}, 768)"
+    )
+    # 每行模长 ≈ 1（NanoVectorDB 内部做 L2 归一化）
+    for i, row in enumerate(matrix):
+        norm = float((row ** 2).sum() ** 0.5)
+        assert 0.99 <= norm <= 1.01, (
+            f"matrix 第 {i} 行模长 {norm} 不在 [0.99, 1.01]（L2 归一化失败）"
+        )
+
+    # 断言 6：单条 vector 维度跟 matrix 列数一致
+    first_vector = _decode_vector(vdb["data"][0]["vector"])
+    assert first_vector.shape == (768,), f"vector shape {first_vector.shape} != (768,)"
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_chunks_empty_user(monkeypatch, tmp_path):
+    """全新用户测试：text_chunks 为空，不写派生文件（跟 LightRAG 原生首次启动一致）。
+
+    v9 第 2 轮审查修复（问题 5+6 / I3+I2）：全新用户场景下 vdb_chunks.json 不应被写空，
+    应保持不存在。
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+    # 全新用户合法状态：3 真相源全 absent/empty
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    # 先跑 repair_text_chunks（全新用户不写派生文件，text_chunks.json 不存在）
+    await lightrag_repair.repair_text_chunks()
+
+    # 跑 repair_vdb_chunks
+    result = await lightrag_repair.repair_vdb_chunks()
+
+    assert result["status"] == "ok"
+    assert result["expected"] == 0
+    assert result["actual"] == 0
+
+    # v9 第 2 轮审查修复（问题 5+6 / I3+I2）：
+    # 全新用户场景下 vdb_chunks.json 应保持不存在
+    # （跟 LightRAG NanoVectorDBStorage.initialize 内存空 dict 不写盘一致）
+    vdb_path = tmp_storage / "vdb_chunks.json"
+    assert not vdb_path.exists(), (
+        f"vdb_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_chunks_meta_fields_filter(monkeypatch, tmp_path):
+    """meta_fields 过滤测试：构造 text_chunks 含 tokens/chunk_order_index/llm_cache_list，
+    验证 vdb_chunks.json 落盘后这些字段被过滤掉（只保留 content/full_doc_id/file_path）。
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 手动构造 text_chunks（含 v8 旧版会落盘但 v9 meta_fields 不允许的字段）
+    # 用 compute_mdhash_id 生成 chunk_id（跟 LightRAG 原生一致）
+    from lightrag.utils import compute_mdhash_id
+
+    chunk_contents = [
+        "这是测试 chunk 1 的内容，用于验证 meta_fields 过滤。",
+        "这是测试 chunk 2 的内容，跟 chunk 1 不同。",
+        "这是测试 chunk 3 的内容，跟前面两个都不同。",
+    ]
+    text_chunks_data = {}
+    for i, content in enumerate(chunk_contents):
+        chunk_id = compute_mdhash_id(content, prefix="chunk-")
+        text_chunks_data[chunk_id] = {
+            "content": content,
+            "full_doc_id": f"doc-test-{i}",
+            "file_path": f"/tmp/test_{i}.txt",
+            # 以下字段应被 meta_fields 过滤掉
+            "tokens": 100 + i,
+            "chunk_order_index": i,
+            "llm_cache_list": [],
+            # 旧版 LightRAG 残留字段
+            "create_time": 1700000000 + i,
+            "update_time": 1700000000 + i,
+            "_id": chunk_id,
+        }
+
+    import json as _json
+
+    with open(tmp_storage / "kv_store_text_chunks.json", "w", encoding="utf-8") as f:
+        _json.dump(text_chunks_data, f, ensure_ascii=False)
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    # 跑 repair_vdb_chunks（直接读 text_chunks.json，不需要先跑 repair_text_chunks）
+    result = await lightrag_repair.repair_vdb_chunks()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 3, f"应重建 3 条，实际 {result['actual']}"
+
+    vdb = _load_vdb(tmp_storage / "vdb_chunks.json")
+    assert len(vdb["data"]) == 3
+
+    # 验证：每条只含 meta_fields 内字段 + storage 自动注入字段
+    # 落盘字段：__id__ / __created_at__ / content / full_doc_id / file_path / vector
+    # __vector__ 是 np.ndarray，不会落盘到 JSON（NanoVectorDB.save 只写 vector 编码字符串）
+    on_disk_expected = {
+        "__id__",
+        "__created_at__",
+        "content",
+        "full_doc_id",
+        "file_path",
+        "vector",
+    }
+
+    for item in vdb["data"]:
+        item_keys = set(item.keys())
+        # 被过滤字段不应出现
+        assert "tokens" not in item_keys, f"tokens 不应落盘: {item_keys}"
+        assert "chunk_order_index" not in item_keys, f"chunk_order_index 不应落盘: {item_keys}"
+        assert "llm_cache_list" not in item_keys, f"llm_cache_list 不应落盘: {item_keys}"
+        assert "create_time" not in item_keys, f"create_time 不应落盘: {item_keys}"
+        assert "update_time" not in item_keys, f"update_time 不应落盘: {item_keys}"
+        assert "_id" not in item_keys, f"_id 不应落盘（v9 用 __id__）: {item_keys}"
+        # 落盘字段集合应精确匹配（不允许多余字段）
+        assert item_keys == on_disk_expected, (
+            f"字段集合不一致: 实际={item_keys}, 期望={on_disk_expected}"
+        )
+
+    # 验证 __id__ 是 compute_mdhash_id 算出来的（跟 LightRAG 原生一致）
+    expected_ids = {compute_mdhash_id(c, prefix="chunk-") for c in chunk_contents}
+    actual_ids = {item["__id__"] for item in vdb["data"]}
+    assert actual_ids == expected_ids, (
+        f"chunk_id 集合不一致: actual={actual_ids}, expected={expected_ids}"
+    )
+
+    # 验证 content/full_doc_id/file_path 正确落盘
+    contents_in_vdb = {item["content"] for item in vdb["data"]}
+    assert contents_in_vdb == set(chunk_contents), (
+        f"content 集合不一致: actual={contents_in_vdb}, expected={set(chunk_contents)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_chunks_matrix_l2_normalized(monkeypatch, tmp_path):
+    """matrix L2 归一化测试：验证 vdb_chunks.json 的 matrix 每行是单位向量。
+
+    NanoVectorDBStorage.upsert 内部调 normalize（dbs.py L51-52 + L93-95）：
+    ```python
+    def normalize(a: np.ndarray) -> np.ndarray:
+        return a / np.linalg.norm(a, axis=-1, keepdims=True)
+    ```
+    所有 embedding 都会被归一化到单位长度，存到 matrix。
+
+    验证：
+    1. matrix shape = (N, 768)
+    2. 每行模长 ≈ 1.0（L2 归一化生效）
+    3. matrix 跟 data 数量一致
+    4. 跟 vector 字段（float16 编码）维度一致
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 用 _FakeEmbedModel（返回随机向量，模长不一定为 1，验证归一化生效）
+    # 注意：_FakeEmbedModel.encode 返回 np.random.rand，模长远大于 1
+    # 如果 NanoVectorDB 没做归一化，matrix 行模长会 >> 1
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    # 手动构造 text_chunks（10 条，触发归一化逻辑）
+    from lightrag.utils import compute_mdhash_id
+
+    chunk_contents = [f"测试内容_{i:02d} 用于验证 L2 归一化" for i in range(10)]
+    text_chunks_data = {}
+    for content in chunk_contents:
+        chunk_id = compute_mdhash_id(content, prefix="chunk-")
+        text_chunks_data[chunk_id] = {
+            "content": content,
+            "full_doc_id": "doc-test",
+            "file_path": "/tmp/test.txt",
+        }
+
+    import json as _json
+
+    with open(tmp_storage / "kv_store_text_chunks.json", "w", encoding="utf-8") as f:
+        _json.dump(text_chunks_data, f, ensure_ascii=False)
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_chunks()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 10
+
+    vdb = _load_vdb(tmp_storage / "vdb_chunks.json")
+    assert len(vdb["data"]) == 10
+
+    # 解码 matrix
+    matrix = _decode_matrix(vdb["matrix"], embedding_dim=768)
+    assert matrix.shape == (10, 768), (
+        f"matrix shape {matrix.shape} != (10, 768)"
+    )
+
+    # 每行模长应在 [0.99, 1.01]（L2 归一化生效）
+    # 使用 numpy 向量化计算（比逐行循环快）
+    import numpy as np
+
+    norms = np.linalg.norm(matrix, axis=1)
+    for i, norm in enumerate(norms):
+        assert 0.99 <= float(norm) <= 1.01, (
+            f"matrix 第 {i} 行模长 {float(norm)} 不在 [0.99, 1.01]（L2 归一化失败）"
+        )
+
+    # 验证原始 embedding（_FakeEmbedModel 返回）模长 >> 1，
+    # 确认是 NanoVectorDB 做了归一化（而不是假模型本来就返回单位向量）
+    fake_vecs = fake_model.encode(chunk_contents)
+    fake_norms = np.linalg.norm(fake_vecs, axis=1)
+    # _FakeEmbedModel 返回 np.random.rand，模长通常在 [3, 5] 之间（768 维）
+    assert float(fake_norms[0]) > 2.0, (
+        f"_FakeEmbedModel 返回的向量模长 {float(fake_norms[0])} 应 > 2.0 "
+        f"（否则无法验证归一化生效）"
+    )
+
+    # 验证 vector 字段（float16 编码）维度跟 matrix 列数一致
+    first_vector = _decode_vector(vdb["data"][0]["vector"])
+    assert first_vector.shape == (768,), (
+        f"vector shape {first_vector.shape} != (768,)"
+    )
+    # 注意：vector 字段是原始 embedding（float16 编码，未归一化）
+    # matrix 是归一化后的（float32 编码）
+    # 两者维度一致但模长不同——这是 NanoVectorDB 的设计

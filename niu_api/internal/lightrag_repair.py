@@ -1137,20 +1137,106 @@ async def repair_doc_status() -> dict[str, Any]:
 
 
 
-def repair_vdb_chunks() -> dict[str, Any]:
-    """4. 遍历 text_chunks 重新 embedding 重建 vdb_chunks。
+async def repair_vdb_chunks() -> dict[str, Any]:
+    """v9：从 text_chunks 读 content + 走 NanoVectorDBStorage.upsert 重建 vdb_chunks。
 
-    真相源：kv_store_text_chunks.json
-    派生：vdb_chunks.json
+    真相源：kv_store_text_chunks.json（chunk content + full_doc_id + file_path）
+    派生：vdb_chunks.json（通过 NanoVectorDBStorage.upsert 写）
 
-    每条 chunk 的 __id__ = compute_mdhash_id(content, prefix="chunk-")
-    embedding 失败 >10% → status=error 不写文件
+    走 storage 接口的好处：
+    - NanoVectorDBStorage.upsert 内部自动调 embedding_func 做 embed（L123-124）
+    - 自动注入 __id__ / __created_at__ / vector / __vector__（L110-134）
+    - index_done_callback 触发 NanoVectorDB.save 写 matrix（L2 归一化后的单位向量）
+    - meta_fields 过滤掉 tokens/chunk_order_index/llm_cache_list（不落盘）
+
+    算法：
+    1. initialize_share_data(workers=1) + set_default_workspace("")
+    2. 实例化 NanoVectorDBStorage(namespace=chunks, embedding_func=RepairEmbeddingFunc)
+    3. await storage.initialize()
+    4. 读 text_chunks（content + full_doc_id + file_path）
+    5. 构造 upsert data：{chunk_id: {"content": ..., "full_doc_id": ..., "file_path": ...}}
+    6. 调 await storage.upsert(data) + await storage.index_done_callback()
+    7. 全新用户（text_chunks 为空）→ 不写派生文件
+
+    关键：
+    - 只传 meta_fields 内字段（content/full_doc_id/file_path）
+    - 不要传 tokens/chunk_order_index/llm_cache_list（被过滤不落盘）
+    - 不要手写 __id__/__created_at__/vector/__vector__（storage 自动注入）
+    - 不要手写 matrix/embedding_dim（NanoVectorDB 内部管理）
+    - upsert 后必须显式调 index_done_callback 才写盘
+
+    异常处理：
+    - text_chunks 损坏 → unrecoverable
+    - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
     storage_dir = _storage_dir()
     text_chunks_path = storage_dir / "kv_store_text_chunks.json"
     vdb_path = storage_dir / "vdb_chunks.json"
 
-    # 1. 读 text_chunks（真相源）
+    # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.shared_storage import (
+        initialize_share_data,
+        set_default_workspace,
+    )
+    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
+    from lightrag.namespace import NameSpace
+
+    initialize_share_data(workers=1)
+    set_default_workspace("")
+
+    # 2. 实例化 NanoVectorDBStorage
+    #    global_config 必须含：
+    #    - working_dir（NanoVectorDBStorage.__post_init__ L43 读）
+    #    - vector_db_storage_cls_kwargs.cosine_better_than_threshold（L36-41 强制要求）
+    #    - embedding_batch_num（L59 读，控制 embedding 分批大小）
+    #    embedding_func 传 RepairEmbeddingFunc 实例（Task 2 包装好的）
+    global_config: dict[str, Any] = {
+        "working_dir": str(storage_dir),
+        "vector_db_storage_cls_kwargs": {
+            "cosine_better_than_threshold": 0.2,  # 跟 lightrag_manager 配置一致
+        },
+        "embedding_batch_num": 32,  # 跟 RepairEmbeddingFunc 内部分片大小一致
+    }
+    storage = NanoVectorDBStorage(
+        namespace=NameSpace.VECTOR_STORE_CHUNKS,
+        workspace="",
+        global_config=global_config,
+        embedding_func=RepairEmbeddingFunc(embedding_dim=768),
+        meta_fields={"full_doc_id", "content", "file_path"},
+    )
+
+    try:
+        await storage.initialize()
+        # 跟 Task 3/4 一致：清空旧数据防止残留影响本次重建
+        # （NanoVectorDBStorage.__post_init__ L61-64 已在 _client 里加载已有 vdb_chunks.json，
+        #  repair 场景下我们要求从真相源完全重新派生——如果不 clear，旧 chunk 不会被删除，
+        #  NanoVectorDB.upsert 只会按 __id__ 更新已有条目，已删除的 chunk 会残留）
+        # NanoVectorDB 把数据存在 self._client._NanoVectorDB__storage dict 里
+        # （keys: embedding_dim / data(list) / matrix(np.ndarray)）
+        client = storage._client
+        if client is not None:
+            client_storage = getattr(client, "_NanoVectorDB__storage", None)
+            if isinstance(client_storage, dict):
+                client_storage["data"] = []
+                client_storage["matrix"] = np.array(
+                    [], dtype=np.float32
+                ).reshape(0, storage.embedding_func.embedding_dim)
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_chunks storage.initialize 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "NanoVectorDBStorage",
+            "message": f"storage.initialize 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    # 3. 读 text_chunks（真相源）
     text_chunks = _load_json_dict(text_chunks_path)
     if text_chunks is None:
         return {
@@ -1159,118 +1245,138 @@ def repair_vdb_chunks() -> dict[str, Any]:
             "actual": 0,
             "lost": 0,
             "source": "kv_store_text_chunks",
-            "message": "text_chunks 损坏",
+            "message": "text_chunks 损坏（JSON 解析失败），3 真相源之一损坏无法恢复",
             "unrecoverable": True,
         }
+
+    # 4. 全新用户（text_chunks 为空）→ 不写派生文件
+    #    v9 第 2 轮审查修复（问题 5+6 / I3+I2）：
+    #    LightRAG 全新用户首次启动 NanoVectorDBStorage.initialize 内存空 dict，
+    #    不主动写空文件到磁盘（文件不存在）。v9 跟 LightRAG 原生行为一致——
+    #    全新用户场景下 vdb_chunks.json 不存在，不要强行写空 vdb 文件
+    #    （write_json 写空 vdb 跟 NanoVectorDB.save 字节级可能不一致——
+    #     write_json 可能做字段重排序或 unicode 转义，跟 NanoVectorDB.save 不一致，
+    #     字节级 diff 会失败）。
+    #    _check_truth_sources_intact 已支持 absent/empty=合法，
+    #    所以下次启动 check_all 不会因派生文件不存在而报 critical。
     if not text_chunks:
-        # 空 text_chunks → 写空 vdb（让 check 通过）
-        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-        pass
+        logger.info(
+            "[LightRAGRepair] text_chunks 为空（全新用户），不写派生文件（跟 LightRAG 原生一致）"
+        )
         return {
             "status": "ok",
             "expected": 0,
             "actual": 0,
             "lost": 0,
             "source": "kv_store_text_chunks",
-            "message": "text_chunks 为空，写空 vdb_chunks",
+            "message": "text_chunks 为空，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
         }
 
-    # 2. 收集要 embedding 的 texts
-    items: list[tuple[str, str, dict[str, Any]]] = []  # (chunk_id, content, original_chunk_value)
+    # 5. 构造 upsert data（只传 meta_fields 内字段）
+    upsert_data: dict[str, dict[str, Any]] = {}
+    skipped_count = 0
     for chunk_id, chunk_value in text_chunks.items():
         if not isinstance(chunk_value, dict):
+            skipped_count += 1
             continue
         content = chunk_value.get("content", "")
         if not content:
+            # content 为空跳过（无法 embedding）
+            skipped_count += 1
             continue
-        items.append((chunk_id, content, chunk_value))
+        full_doc_id = chunk_value.get("full_doc_id", "") or ""
+        file_path = chunk_value.get("file_path", "") or "unknown_source"
 
-    if not items:
-        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-        pass
+        upsert_data[chunk_id] = {
+            "content": content,
+            "full_doc_id": full_doc_id,
+            "file_path": file_path,
+        }
+
+    if not upsert_data:
+        # text_chunks 全是空 content → 不写派生文件（v9 第 2 轮审查修复 问题 5+6 / I3+I2）
+        # 跟全新用户分支一致——不写空 vdb 文件，让 vdb_chunks.json 不存在
+        # （write_json 写空 vdb 跟 NanoVectorDB.save 字节级可能不一致）
+        logger.warning(
+            f"[LightRAGRepair] text_chunks 有 {len(text_chunks)} 条但全部 content 为空，"
+            "不写派生文件（跟 LightRAG 原生全新用户首次启动一致）"
+        )
         return {
             "status": "ok",
-            "expected": 0,
+            "expected": len(text_chunks),
             "actual": 0,
-            "lost": 0,
+            "lost": len(text_chunks),
             "source": "kv_store_text_chunks",
-            "message": "text_chunks 无有效 content，写空 vdb_chunks",
+            "message": (
+                f"text_chunks {len(text_chunks)} 条全部 content 为空，"
+                "不写派生文件（跟 LightRAG 原生一致）"
+            ),
         }
 
-    expected = len(items)
-    texts = [t for _, t, _ in items]
-
-    # 3. 批量 embedding
-    vectors = _embed_batch(texts)
-    if vectors is None:
+    # 6. 调 storage.upsert（内部自动做 embedding + 注入 __id__/__vector__/vector）
+    try:
+        await storage.upsert(upsert_data)
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_chunks storage.upsert 失败: {e}",
+            exc_info=True,
+        )
         return {
             "status": "error",
-            "expected": expected,
+            "expected": len(upsert_data),
             "actual": 0,
-            "lost": expected,
-            "source": "kv_store_text_chunks",
-            "message": "embedding 完全失败，无法重建 vdb_chunks",
+            "lost": len(upsert_data),
+            "source": "NanoVectorDBStorage",
+            "message": (
+                f"storage.upsert 异常（embedding 可能失败）: "
+                f"{type(e).__name__}: {e}"
+            ),
+            "unrecoverable": True,
         }
-    if len(vectors) != len(texts):
-        # 部分失败，补 None 占位
-        while len(vectors) < len(texts):
-            vectors.append(None)  # type: ignore[arg-type]
 
-    # 4. 构造 data_list
-    embedding_dim = len(vectors[0]) if vectors and vectors[0] is not None else _get_embedding_dim()
-    data_list: list[dict[str, Any]] = []
-    final_vectors: list[list[float]] = []
-    failed_count = 0
-    for (chunk_id, content, chunk_value), vec in zip(items, vectors):
-        if vec is None:
-            failed_count += 1
-            continue
-        # __id__ 用 compute_mdhash_id 重新算（跟 LightRAG 写入一致）
-        expected_id = compute_mdhash_id(content, prefix="chunk-")
-        data_list.append({
-            "__id__": expected_id,
-            "content": content,
-            "full_doc_id": chunk_value.get("full_doc_id", ""),
-            "chunk_order_index": chunk_value.get("chunk_order_index", 0),
-            "tokens": chunk_value.get("tokens", 0),
-            "file_path": chunk_value.get("file_path", ""),
-        })
-        final_vectors.append(vec)
-
-    # 5. embedding 失败率检查
-    if expected > 0 and failed_count / expected > 0.1:
+    # 7. 调 index_done_callback 写盘（NanoVectorDB.save 写 embedding_dim/data/matrix）
+    try:
+        success = await storage.index_done_callback()
+        if not success:
+            return {
+                "status": "error",
+                "expected": len(upsert_data),
+                "actual": 0,
+                "lost": len(upsert_data),
+                "source": "NanoVectorDBStorage",
+                "message": "index_done_callback 返回 False（可能被其他进程更新覆盖）",
+                "unrecoverable": True,
+            }
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_chunks index_done_callback 失败: {e}",
+            exc_info=True,
+        )
         return {
             "status": "error",
-            "expected": expected,
-            "actual": len(data_list),
-            "lost": failed_count,
-            "source": "kv_store_text_chunks",
-            "message": f"embedding 失败率 {failed_count}/{expected} > 10%，不写文件",
-        }
-
-    if not data_list:
-        return {
-            "status": "error",
-            "expected": expected,
+            "expected": len(upsert_data),
             "actual": 0,
-            "lost": expected,
-            "source": "kv_store_text_chunks",
-            "message": "embedding 全部失败，无数据可重建",
+            "lost": len(upsert_data),
+            "source": "NanoVectorDBStorage",
+            "message": f"index_done_callback 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
         }
 
-    # 6. 备份 + 写
-    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-    pass
-
-    actual = len(data_list)
-    logger.info(f"[LightRAGRepair] 重建 vdb_chunks: {actual} 条 (source=text_chunks)")
+    actual = len(upsert_data)
+    logger.info(
+        f"[LightRAGRepair] 重建 vdb_chunks: {actual}/{len(text_chunks)} 条 "
+        f"(source=text_chunks，skipped={skipped_count}，"
+        f"embedding 由 RepairEmbeddingFunc 自动计算)"
+    )
+    # vdb_path 仅用于日志可读性（storage 内部已写盘）
+    _ = vdb_path
     return {
         "status": "ok",
-        "expected": expected,
+        "expected": len(text_chunks),
         "actual": actual,
-        "lost": expected - actual,
+        "lost": len(text_chunks) - actual,
         "source": "kv_store_text_chunks",
-        "message": f"从 text_chunks 重新 embedding 重建 {actual} 条 vdb_chunks",
+        "message": f"从 text_chunks 走 NanoVectorDBStorage.upsert 重建 {actual} 条 vdb_chunks",
     }
 
 
