@@ -37,14 +37,18 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+import numpy as np
 from loguru import logger
 
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
+    EmbeddingFunc,
     compute_mdhash_id,
     make_relation_chunk_key,
     make_relation_vdb_ids,
@@ -90,6 +94,95 @@ def _embed_batch(texts: list[str]) -> list[list[float]] | None:
 
     logger.error("[LightRAGRepair] embedding 模型未就绪（get_model() 返回 None）")
     return None
+
+
+@dataclass
+class RepairEmbeddingFunc(EmbeddingFunc):
+    """v9 Repair 专用 EmbeddingFunc，包装 v8 _embed_batch 模型加载逻辑。
+
+    设计：
+    - 继承 LightRAG EmbeddingFunc（自动获得维度校验 + 嵌套 unwrap）
+    - func 属性指向内部 async 函数 _embed_async
+    - _embed_async 内部调 niu_api.internal.embedding.get_model() 拿 bge-base-zh-v1.5 单例
+    - 模型单例由 niu_api.internal.embedding 自身管理（_model 全局变量 + _model_lock）
+    - 批量分片：超过 32 条文本分批 encode，避免 OOM
+    """
+
+    # 显式声明字段（基类已声明 embedding_dim / func / max_token_size / send_dimensions / model_name）
+    # 这里不新增字段，只是确保 dataclass 继承正确
+    # func 用 Optional[Callable] 而非 Any，避免 pyright 严格模式报类型不兼容
+    embedding_dim: int = 768
+    func: "Callable[..., Any] | None" = None  # 在 __post_init__ 中设为 _embed_async
+    max_token_size: int | None = None
+    send_dimensions: bool = False
+    model_name: str | None = "bge-base-zh-v1.5"
+
+    def __post_init__(self):
+        """注入 _embed_async 作为 func，然后跑基类 __post_init__ 做维度校验。"""
+        # 必须在调基类 __post_init__ 前设好 func
+        # 基类 __post_init__ 会检测嵌套 EmbeddingFunc 并 unwrap，这里 func 是普通 async 函数不会被 unwrap
+        if self.func is None:
+            self.func = self._embed_async
+        # 调基类 __post_init__（做嵌套 unwrap + 维度校验准备）
+        super().__post_init__()
+
+    async def _embed_async(self, texts: list[str], **kwargs) -> np.ndarray:
+        """批量 embedding（async 包装 v8 _embed_batch 同步逻辑）。
+
+        Args:
+            texts: 待 embedding 的文本列表
+
+        Returns:
+            np.ndarray, shape=(len(texts), 768), dtype=float32
+
+        Raises:
+            RuntimeError: 模型未就绪（get_model 返回 None）或 encode 失败
+        """
+        if not texts:
+            return np.zeros((0, self.embedding_dim), dtype=np.float32)
+
+        # 调 v8 _embed_batch（同步，内部用 niu_api.internal.embedding.get_model 单例）
+        # 跑在线程池避免阻塞 asyncio loop（模型 encode 是 CPU/GPU 密集型）
+        vectors = await asyncio.to_thread(self._sync_embed, texts)
+
+        if vectors is None:
+            raise RuntimeError(
+                "RepairEmbeddingFunc: niu_api.internal.embedding.get_model() 返回 None 或 encode 失败"
+            )
+
+        # 转 np.ndarray + 强制 float32（LightRAG NanoVectorDBStorage 期望 float32 matrix）
+        arr = np.array(vectors, dtype=np.float32)
+        return arr
+
+    def _sync_embed(self, texts: list[str]) -> list[list[float]] | None:
+        """同步批量 embedding（包装 v8 _embed_batch，加分片逻辑）。
+
+        v8 _embed_batch 一次 encode 全部 texts，超过 32 条可能 OOM。
+        这里分批 encode（每批 32 条），合并结果。
+        """
+        BATCH_SIZE = 32  # bge-base-zh-v1.5 推荐批量
+
+        if not texts:
+            return []
+
+        try:
+            from niu_api.internal.embedding import get_model
+
+            model = get_model()
+            if model is None:
+                return None
+
+            all_vectors: list[list[float]] = []
+            for i in range(0, len(texts), BATCH_SIZE):
+                batch = texts[i : i + BATCH_SIZE]
+                vecs = model.encode(batch)
+                # 转 list[list[float]]（vecs 可能是 numpy ndarray 或 Tensor）
+                all_vectors.extend(list(map(float, v)) for v in vecs)
+
+            return all_vectors
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[RepairEmbeddingFunc] embedding 模型失败: {e}")
+            return None
 
 
 def _get_tokenizer():
