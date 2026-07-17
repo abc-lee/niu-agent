@@ -1380,21 +1380,117 @@ async def repair_vdb_chunks() -> dict[str, Any]:
     }
 
 
-def repair_vdb_entities() -> dict[str, Any]:
-    """5. 遍历 GraphML node 重新 embedding 重建 vdb_entities。
+async def repair_vdb_entities() -> dict[str, Any]:
+    """v9：从 GraphML 节点读实体 + 走 NanoVectorDBStorage.upsert 重建 vdb_entities。
 
-    真相源：graph_chunk_entity_relation.graphml（node id + d2 description + d3 source_id）
-    派生：vdb_entities.json
+    真相源：graph_chunk_entity_relation.graphml（node id + d2 description + d3 source_id + d4 file_path）
+    派生：vdb_entities.json（通过 NanoVectorDBStorage.upsert 写）
 
-    每条 entity 的 __id__ = compute_mdhash_id(name, prefix="ent-")
-    embedding 失败 >10% → status=error 不写文件
+    走 storage 接口的好处：
+    - NanoVectorDBStorage.upsert 内部自动调 embedding_func 做 embed（L123-124）
+    - 自动注入 __id__ / __created_at__ / vector / __vector__（L110-134）
+    - index_done_callback 触发 NanoVectorDB.save 写 matrix（L2 归一化后的单位向量）
+    - meta_fields 过滤掉 description/entity_type（不落盘）
+
+    算法：
+    1. initialize_share_data(workers=1) + set_default_workspace("")
+    2. 实例化 NanoVectorDBStorage(namespace=entities, embedding_func=RepairEmbeddingFunc)
+    3. await storage.initialize()
+    4. 读 GraphML nodes（用 v8 _load_graphml_nodes，返回 4 元组）
+    5. 构造 upsert data（v9 第 2 轮审查修复 问题 1：dict key 用 hash ID）：
+       {compute_mdhash_id(entity_name, prefix="ent-"): {
+           "content": f"{entity_name}\n{description}",  # 跟 operate.py L1160 一致
+           "entity_name": entity_name,  # 防御性 .lower()
+           "source_id": src or "",
+           "file_path": file_path or "unknown_source",
+       }}
+       注意：dict key = hash ID（不是 entity_name），因为
+       NanoVectorDBStorage.upsert L110 把 dict key 直接作为 __id__，
+       必须跟 LightRAG operate.py L1159 compute_mdhash_id(entity_name, prefix="ent-") 一致。
+    6. 调 await storage.upsert(data) + await storage.index_done_callback()
+    7. 全新用户（GraphML 无节点）→ 不写派生文件（v9 第 2 轮审查修复 问题 5+6 / I3+I2）
+
+    关键：
+    - content 格式必须 f"{entity_name}\n{description}"（跟 operate.py L1160 一致，影响向量比对）
+    - entity_name 必须 .lower()（GraphML 已 lower，防御性再 lower）
+    - 不要传 description / entity_type（meta_fields 不含，被过滤不落盘）
+    - 不要手写 __id__/__created_at__/vector/__vector__（storage 自动注入）
+    - upsert 后必须显式调 index_done_callback 才写盘
+
+    异常处理：
+    - GraphML 损坏 → unrecoverable
+    - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
     storage_dir = _storage_dir()
-    vdb_path = storage_dir / "vdb_entities.json"
 
-    # 1. 读 GraphML nodes（真相源）
+    # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.shared_storage import (
+        initialize_share_data,
+        set_default_workspace,
+    )
+    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
+    from lightrag.namespace import NameSpace
+
+    initialize_share_data(workers=1)
+    set_default_workspace("")
+
+    # 2. 实例化 NanoVectorDBStorage
+    #    global_config 必须含：
+    #    - working_dir（NanoVectorDBStorage.__post_init__ L43 读）
+    #    - vector_db_storage_cls_kwargs.cosine_better_than_threshold（L36-41 强制要求）
+    #    - embedding_batch_num（L59 读，控制 embedding 分批大小）
+    #    embedding_func 传 RepairEmbeddingFunc 实例（Task 2 包装好的）
+    #    meta_fields 跟 LightRAG lightrag.py:716 一致
+    global_config: dict[str, Any] = {
+        "working_dir": str(storage_dir),
+        "vector_db_storage_cls_kwargs": {
+            "cosine_better_than_threshold": 0.2,
+        },
+        "embedding_batch_num": 32,
+    }
+    storage = NanoVectorDBStorage(
+        namespace=NameSpace.VECTOR_STORE_ENTITIES,
+        workspace="",
+        global_config=global_config,
+        embedding_func=RepairEmbeddingFunc(embedding_dim=768),
+        meta_fields={"entity_name", "source_id", "content", "file_path"},
+    )
+
+    try:
+        await storage.initialize()
+        # 跟 Task 5 一致：清空 NanoVectorDB client storage 防止旧数据残留影响本次重建
+        # （NanoVectorDBStorage.__post_init__ 已在 _client 里加载已有 vdb_entities.json，
+        #  repair 场景下我们要求从真相源完全重新派生——如果不 clear，旧 entity 不会被删除，
+        #  NanoVectorDB.upsert 只会按 __id__ 更新已有条目，已删除的 entity 会残留）
+        # NanoVectorDB 把数据存在 self._client._NanoVectorDB__storage dict 里
+        # （keys: embedding_dim / data(list) / matrix(np.ndarray)）
+        client = storage._client
+        if client is not None:
+            client_storage = getattr(client, "_NanoVectorDB__storage", None)
+            if isinstance(client_storage, dict):
+                client_storage["data"] = []
+                client_storage["matrix"] = np.array(
+                    [], dtype=np.float32
+                ).reshape(0, storage.embedding_func.embedding_dim)
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_entities storage.initialize 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "NanoVectorDBStorage",
+            "message": f"storage.initialize 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    # 3. 读 GraphML nodes（真相源，v8 _load_graphml_nodes 保留）
+    #    返回 {node_id: (entity_type, description, source_id, file_path)}
     nodes, graphml_err = _load_graphml_nodes()
-    if graphml_err:
+    if graphml_err is not None:
         return {
             "status": "error",
             "expected": 0,
@@ -1404,104 +1500,147 @@ def repair_vdb_entities() -> dict[str, Any]:
             "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
             "unrecoverable": True,
         }
+
+    # 4. 全新用户（GraphML 无节点）→ 不写派生文件
+    #    v9 第 2 轮审查修复（问题 5+6 / I3+I2）：
+    #    LightRAG 全新用户首次启动 NanoVectorDBStorage.initialize 内存空 dict，
+    #    不主动写空文件到磁盘。v9 跟 LightRAG 原生行为一致——
+    #    全新用户场景下 vdb_entities.json 不存在，不要强行写空 vdb 文件
+    #    （write_json 写空 vdb 跟 NanoVectorDB.save 字节级可能不一致）。
+    #    _check_truth_sources_intact 已支持 absent/empty=合法（L460）。
     if not nodes:
-        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-        pass
+        logger.info(
+            "[LightRAGRepair] GraphML 无 node（全新用户），不写派生文件（跟 LightRAG 原生一致）"
+        )
         return {
             "status": "ok",
             "expected": 0,
             "actual": 0,
             "lost": 0,
             "source": "GraphML",
-            "message": "GraphML 无 node，写空 vdb_entities",
+            "message": "GraphML 无 node，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
         }
 
-    # 2. 收集要 embedding 的 texts
-    # LightRAG operate.py L1160: entity_content = f"{entity_name}\n{final_description}"
-    # embedding 输入用同样的 content（保证向量跟 LightRAG 原生写入一致）
-    # items: (node_id, content, source_id, description, entity_type, file_path)
-    items: list[tuple[str, str, str, str, str, str]] = []
-    for node_id, (etype, desc, src, file_path) in nodes.items():
-        # desc 为空时用 node_id 作为 fallback（保证有内容可 embed）
-        # 格式: f"{node_id}\n{desc}"，跟 LightRAG 一致
-        content = f"{node_id}\n{desc}" if desc else f"{node_id}\n{node_id}"
-        items.append((node_id, content, src, desc, etype, file_path))
-
-    expected = len(items)
-    texts = [t for _, t, _, _, _, _ in items]
-
-    # 3. 批量 embedding
-    vectors = _embed_batch(texts)
-    if vectors is None:
-        return {
-            "status": "error",
-            "expected": expected,
-            "actual": 0,
-            "lost": expected,
-            "source": "GraphML",
-            "message": "embedding 完全失败，无法重建 vdb_entities",
-        }
-    if len(vectors) != len(texts):
-        while len(vectors) < len(texts):
-            vectors.append(None)  # type: ignore[arg-type]
-
-    # 4. 构造 data_list（6 字段对齐 LightRAG 原生 vdb_data，参考 operate.py L1162-1172）
-    embedding_dim = len(vectors[0]) if vectors and vectors[0] is not None else _get_embedding_dim()
-    data_list: list[dict[str, Any]] = []
-    final_vectors: list[list[float]] = []
-    failed_count = 0
-    for (node_id, content, src, desc, etype, file_path), vec in zip(items, vectors):
-        if vec is None:
-            failed_count += 1
+    # 5. 构造 upsert data（严格对照字段表）
+    #    content 格式：f"{entity_name}\n{description}"（跟 operate.py L1160 一致）
+    #    entity_name：GraphML node id（已 lower，防御性再 lower）
+    #    source_id：GraphML d3（无则空字符串）
+    #    file_path：GraphML d4（无则 "unknown_source"）
+    #    不传 description / entity_type（被 meta_fields 过滤不落盘）
+    upsert_data: dict[str, dict[str, Any]] = {}
+    skipped_count = 0
+    for node_id, (_etype, desc, src, file_path) in nodes.items():
+        if not node_id:
+            skipped_count += 1
             continue
-        # __id__ = compute_mdhash_id(node_id, prefix="ent-")
-        # node_id 已 lower（LightRAG 设计），但 compute_mdhash_id 对原始字符串算 hash
-        expected_id = compute_mdhash_id(node_id, prefix="ent-")
-        data_list.append({
-            "__id__": expected_id,
-            "entity_name": node_id,
-            "source_id": src or "",
-            "description": desc or "",
-            "entity_type": etype or "",
-            "file_path": file_path or "",
+
+        # 防御性 lower（GraphML 已 lower，但脑区节点/旧数据可能没 lower）
+        entity_name = node_id.lower()
+
+        # content 格式：跟 operate.py L1160 一致
+        # desc 为空时用 entity_name 作为 fallback（保证有内容可 embed）
+        # 跟 LightRAG 原生一致（entity_name 已 lower）
+        if desc:
+            content = f"{entity_name}\n{desc}"
+        else:
+            content = f"{entity_name}\n{entity_name}"
+
+        # v9 第 2 轮审查修复（问题 1 / C1）：
+        # dict key 必须用 compute_mdhash_id(entity_name, prefix="ent-")
+        # （跟 LightRAG operate.py L1159 一致），不能用 entity_name。
+        # NanoVectorDBStorage.upsert L110 把 dict key 直接作为 __id__，
+        # 如果用 entity_name 会导致 __id__ = entity_name（非 hash ID），
+        # 跟 LightRAG 原生不一致，删除/查询实体功能会失效。
+        entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+        upsert_data[entity_vdb_id] = {
             "content": content,
-        })
-        final_vectors.append(vec)
-
-    # 5. embedding 失败率检查
-    if expected > 0 and failed_count / expected > 0.1:
-        return {
-            "status": "error",
-            "expected": expected,
-            "actual": len(data_list),
-            "lost": failed_count,
-            "source": "GraphML",
-            "message": f"embedding 失败率 {failed_count}/{expected} > 10%，不写文件",
+            "entity_name": entity_name,
+            "source_id": src or "",
+            "file_path": file_path or "unknown_source",
         }
 
-    if not data_list:
+    if not upsert_data:
+        # GraphML 有节点但全部 node_id 为空 → 不写派生文件（v9 第 2 轮审查修复 问题 5+6 / I3+I2）
+        # 跟全新用户分支一致——不写空 vdb 文件，让 vdb_entities.json 不存在
+        # （write_json 写空 vdb 跟 NanoVectorDB.save 字节级可能不一致）
+        logger.warning(
+            f"[LightRAGRepair] GraphML 有 {len(nodes)} 节点但全部 node_id 为空，"
+            "不写派生文件（跟 LightRAG 原生一致）"
+        )
         return {
-            "status": "error",
-            "expected": expected,
+            "status": "ok",
+            "expected": len(nodes),
             "actual": 0,
-            "lost": expected,
+            "lost": len(nodes),
             "source": "GraphML",
-            "message": "embedding 全部失败，无数据可重建",
+            "message": (
+                f"GraphML {len(nodes)} 节点全部 node_id 为空，"
+                "不写派生文件（跟 LightRAG 原生一致）"
+            ),
         }
 
-    # 6. 备份 + 写
-    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-    pass
+    # 6. 调 storage.upsert（内部自动做 embedding + 注入 __id__/__vector__/vector）
+    try:
+        await storage.upsert(upsert_data)
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_entities storage.upsert 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": len(upsert_data),
+            "actual": 0,
+            "lost": len(upsert_data),
+            "source": "NanoVectorDBStorage",
+            "message": (
+                f"storage.upsert 异常（embedding 可能失败）: "
+                f"{type(e).__name__}: {e}"
+            ),
+            "unrecoverable": True,
+        }
 
-    actual = len(data_list)
-    logger.info(f"[LightRAGRepair] 重建 vdb_entities: {actual} 条 (source=GraphML)")
+    # 7. 调 index_done_callback 写盘（NanoVectorDB.save 写 embedding_dim/data/matrix）
+    try:
+        success = await storage.index_done_callback()
+        if not success:
+            return {
+                "status": "error",
+                "expected": len(upsert_data),
+                "actual": 0,
+                "lost": len(upsert_data),
+                "source": "NanoVectorDBStorage",
+                "message": "index_done_callback 返回 False（可能被其他进程更新覆盖）",
+                "unrecoverable": True,
+            }
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_entities index_done_callback 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": len(upsert_data),
+            "actual": 0,
+            "lost": len(upsert_data),
+            "source": "NanoVectorDBStorage",
+            "message": f"index_done_callback 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    actual = len(upsert_data)
+    logger.info(
+        f"[LightRAGRepair] 重建 vdb_entities: {actual}/{len(nodes)} 条 "
+        f"(source=GraphML nodes，skipped={skipped_count}，"
+        f"embedding 由 RepairEmbeddingFunc 自动计算)"
+    )
     return {
         "status": "ok",
-        "expected": expected,
+        "expected": len(nodes),
         "actual": actual,
-        "lost": expected - actual,
+        "lost": len(nodes) - actual,
         "source": "GraphML",
-        "message": f"从 GraphML nodes 重新 embedding 重建 {actual} 条 vdb_entities",
+        "message": f"从 GraphML nodes 走 NanoVectorDBStorage.upsert 重建 {actual} 条 vdb_entities",
     }
 
 
