@@ -1825,7 +1825,8 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
 # chunks_list 从 text_chunks.full_doc_id 反向分组（空 full_doc_id 跳过）。
 
 
-def test_repair_doc_status_brainregion_chunks_list_attached(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_doc_status_brainregion_chunks_list_attached(tmp_path, monkeypatch):
     """脑区 chunk full_doc_id=brain_xxx 应进 chunks_by_doc（反向分组）。
 
     v4 实现：脑区 chunk 的 full_doc_id="brain_文档库脑区" 不会写入 doc_status
@@ -1854,7 +1855,7 @@ def test_repair_doc_status_brainregion_chunks_list_attached(tmp_path, monkeypatc
 
     from niu_api.internal.lightrag_repair import repair_doc_status
 
-    result = repair_doc_status()
+    result = await repair_doc_status()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["expected"] == 1, f"expected 1 (full_docs 条数), got {result['expected']}"
@@ -1868,7 +1869,8 @@ def test_repair_doc_status_brainregion_chunks_list_attached(tmp_path, monkeypatc
     assert ds["doc-1"]["chunks_count"] == 0  # doc-1 没有 chunk
 
 
-def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
     """cache fallback chunk 的 full_doc_id="" 应跳过（不写 doc_status 条目）。
 
     v4 实现：line 829-830 空 full_doc_id 跳过 chunks_by_doc 分组。
@@ -1896,7 +1898,7 @@ def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
 
     from niu_api.internal.lightrag_repair import repair_doc_status
 
-    result = repair_doc_status()
+    result = await repair_doc_status()
 
     assert result["status"] == "ok"
     ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
@@ -1909,7 +1911,8 @@ def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
     assert "chunk-active" not in ds["doc-1"]["chunks_list"]
 
 
-def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatch):
     """full_docs fallback chunk 的 full_doc_id=doc_id 应进对应 doc 的 chunks_list。
 
     v4 实现：text_chunks.full_doc_id=doc_id → chunks_by_doc[doc_id].append(chunk_id)
@@ -1933,7 +1936,7 @@ def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatch):
 
     from niu_api.internal.lightrag_repair import repair_doc_status
 
-    result = repair_doc_status()
+    result = await repair_doc_status()
 
     assert result["status"] == "ok"
     assert result["actual"] == 2  # doc-1 + doc-2
@@ -1948,7 +1951,8 @@ def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatch):
     assert ds["doc-2"]["status"] == "processed"
 
 
-def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatch):
     """GraphML 无 node → status=pending（全新用户场景）。"""
     # GraphML 空（无 node）
     _write_graphml_v8(tmp_path, [])
@@ -1965,7 +1969,7 @@ def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatch):
 
     from niu_api.internal.lightrag_repair import repair_doc_status
 
-    result = repair_doc_status()
+    result = await repair_doc_status()
 
     assert result["status"] == "ok"
     ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
@@ -2578,3 +2582,178 @@ async def test_repair_text_chunks_format_matches_lightrag_native(monkeypatch, tm
                 f"chunk {cid} 字段 {field} 不一致: "
                 f"repair={repair_chunk.get(field)!r}, native={native_chunk.get(field)!r}"
             )
+
+
+# ====================================================================
+# v9 Task 4: repair_doc_status 单元测试
+# ====================================================================
+
+
+@pytest.mark.asyncio
+async def test_repair_doc_status_real_data(monkeypatch, tmp_path):
+    """真实数据测试：拷贝 ~/.niu/lightrag_storage 3 真相源到 tmp_path，
+    先跑 repair_text_chunks 生成 text_chunks.json，再跑 repair_doc_status。
+
+    验证：
+    1. repair 不修改 3 真相源（sha256 不变）
+    2. doc_status.json 生成 + 字段格式正确（含 track_id / metadata）
+    3. 每条 doc 含 status/chunks_count/chunks_list/content_summary/content_length/
+       created_at/updated_at/file_path/track_id/metadata/error_msg/multimodal_processed
+    4. chunks_list 跟 text_chunks 反查一致
+    """
+    from niu_api.internal import lightrag_repair
+
+    real_storage = Path.home() / ".niu" / "lightrag_storage"
+    if not real_storage.exists():
+        pytest.skip(f"真实数据目录不存在: {real_storage}")
+
+    # 拷贝 3 真相源到 tmp_path
+    tmp_storage = tmp_path / "lightrag_storage"
+    _copy_truth_sources(tmp_storage, real_storage)
+
+    # 记录真相源 sha256
+    graphml_sha = _sha256(tmp_storage / "graph_chunk_entity_relation.graphml")
+    full_docs_sha = _sha256(tmp_storage / "kv_store_full_docs.json")
+    cache_sha = _sha256(tmp_storage / "kv_store_llm_response_cache.json")
+
+    # monkeypatch _STORAGE_DIR 指向 tmp_path
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    # 先跑 repair_text_chunks 生成 text_chunks.json（doc_status 依赖）
+    tc_result = await lightrag_repair.repair_text_chunks()
+    assert tc_result["status"] == "ok", f"repair_text_chunks 失败: {tc_result.get('message')}"
+
+    # 跑 repair_doc_status
+    result = await lightrag_repair.repair_doc_status()
+
+    # 断言 1：repair 成功
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] > 0, f"actual=0，没重建任何 doc: {result}"
+
+    # 断言 2：真相源 sha256 不变
+    assert _sha256(tmp_storage / "graph_chunk_entity_relation.graphml") == graphml_sha
+    assert _sha256(tmp_storage / "kv_store_full_docs.json") == full_docs_sha
+    assert _sha256(tmp_storage / "kv_store_llm_response_cache.json") == cache_sha
+
+    # 断言 3：doc_status.json 字段格式
+    ds_path = tmp_storage / "kv_store_doc_status.json"
+    assert ds_path.exists(), "doc_status.json 未生成"
+    with open(ds_path, encoding="utf-8") as f:
+        ds = json.load(f)
+    assert isinstance(ds, dict)
+    assert len(ds) == result["actual"]
+
+    # 读 text_chunks 用于反查 chunks_list
+    tc_path = tmp_storage / "kv_store_text_chunks.json"
+    with open(tc_path, encoding="utf-8") as f:
+        tc = json.load(f)
+
+    # 按 full_doc_id 分组 chunks_list（测试侧独立算，跟 repair 函数对照）
+    expected_chunks_by_doc: dict[str, list[str]] = {}
+    for chunk_id, chunk_value in tc.items():
+        if not isinstance(chunk_value, dict):
+            continue
+        full_doc_id = chunk_value.get("full_doc_id", "")
+        if not full_doc_id:
+            continue
+        expected_chunks_by_doc.setdefault(full_doc_id, []).append(chunk_id)
+    for doc_id in expected_chunks_by_doc:
+        expected_chunks_by_doc[doc_id].sort()
+
+    for doc_id, doc_value in ds.items():
+        assert isinstance(doc_value, dict), f"doc_value 不是 dict: {doc_id}"
+        # 必须字段（DocProcessingStatus 数据类要求，base.py:769-796）
+        assert "status" in doc_value, f"缺 status: {doc_id}"
+        assert "chunks_count" in doc_value, f"缺 chunks_count: {doc_id}"
+        assert "chunks_list" in doc_value, f"缺 chunks_list: {doc_id}"
+        assert "content_summary" in doc_value, f"缺 content_summary: {doc_id}"
+        assert "content_length" in doc_value, f"缺 content_length: {doc_id}"
+        assert "created_at" in doc_value, f"缺 created_at: {doc_id}"
+        assert "updated_at" in doc_value, f"缺 updated_at: {doc_id}"
+        assert "file_path" in doc_value, f"缺 file_path: {doc_id}"
+        assert "track_id" in doc_value, f"缺 track_id: {doc_id}"
+        assert "metadata" in doc_value, f"缺 metadata: {doc_id}"
+        # v9 第 3 轮审查修复 I3：补 error_msg / multimodal_processed
+        assert "error_msg" in doc_value, f"缺 error_msg: {doc_id}"
+        assert "multimodal_processed" in doc_value, f"缺 multimodal_processed: {doc_id}"
+        # 类型校验
+        assert isinstance(doc_value["status"], str)
+        assert doc_value["status"] in (
+            "processed", "pending", "failed", "processing", "preprocessed",
+        )
+        assert isinstance(doc_value["chunks_count"], int)
+        assert isinstance(doc_value["chunks_list"], list)
+        assert isinstance(doc_value["content_summary"], str)
+        assert isinstance(doc_value["content_length"], int)
+        assert isinstance(doc_value["created_at"], str)
+        assert isinstance(doc_value["updated_at"], str)
+        assert isinstance(doc_value["file_path"], str)
+        assert isinstance(doc_value["metadata"], dict)
+        # chunks_list 跟 text_chunks 反查一致
+        expected_list = expected_chunks_by_doc.get(doc_id, [])
+        assert doc_value["chunks_list"] == expected_list, (
+            f"doc {doc_id} chunks_list 不一致: "
+            f"repair={doc_value['chunks_list'][:3]}..., expected={expected_list[:3]}..."
+        )
+        # chunks_count 跟 chunks_list 长度一致
+        assert doc_value["chunks_count"] == len(doc_value["chunks_list"]), (
+            f"doc {doc_id} chunks_count={doc_value['chunks_count']} "
+            f"!= chunks_list len={len(doc_value['chunks_list'])}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_repair_doc_status_empty_user(monkeypatch, tmp_path):
+    """全新用户测试：full_docs 为空，不写派生文件（跟 LightRAG 原生首次启动一致）。
+
+    v9 第 2 轮审查修复（问题 5 / I3）：全新用户场景下 doc_status.json 不应被写空 {}，
+    应保持不存在。
+    """
+    from niu_api.internal import lightrag_repair
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+    # 全新用户合法状态：3 真相源全 absent/empty
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_doc_status()
+
+    assert result["status"] == "ok"
+    assert result["expected"] == 0
+    assert result["actual"] == 0
+
+    # v9 第 2 轮审查修复（问题 5 / I3）：
+    # 全新用户场景下 doc_status.json 应保持不存在
+    # （跟 LightRAG JsonDocStatusStorage.initialize 内存空 dict 不写盘一致）
+    ds_path = tmp_storage / "kv_store_doc_status.json"
+    assert not ds_path.exists(), (
+        f"doc_status.json 应不存在（全新用户不写派生文件），但被生成了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_doc_status_full_docs_corrupt(monkeypatch, tmp_path):
+    """full_docs 损坏测试：3 真相源之一损坏 → unrecoverable。"""
+    from niu_api.internal import lightrag_repair
+
+    real_storage = Path.home() / ".niu" / "lightrag_storage"
+    if not real_storage.exists():
+        pytest.skip(f"真实数据目录不存在: {real_storage}")
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    _copy_truth_sources(tmp_storage, real_storage)
+
+    # 破坏 full_docs（写非法 JSON）
+    (tmp_storage / "kv_store_full_docs.json").write_text("{不是合法JSON")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_doc_status()
+
+    assert result["status"] == "error"
+    assert result.get("unrecoverable") is True
+    assert "full_docs 损坏" in result["message"]
