@@ -2125,9 +2125,11 @@ async def test_repair_vdb_chunks_only_text_chunks(tmp_path, monkeypatch):
 # - repair_full_entities/relations：从 GraphML source_id → doc_status.chunks_list 反向映射
 
 
-def test_repair_entity_chunks_only_graphml_source(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_entity_chunks_only_graphml_source(tmp_path, monkeypatch):
     """repair_entity_chunks 只从 GraphML node source_id 提取 chunk_ids（防复活）。
 
+    v9 Task 8：函数改 async + 走 JsonKVStorage.upsert（自动注入 _id/create_time/update_time）。
     v4 实现：value = {"chunk_ids": [chunk_id, ...], "count": int}
     回归点：已删实体（不在 GraphML）的 chunk 不应被提取到 entity_chunks。
     """
@@ -2148,22 +2150,28 @@ def test_repair_entity_chunks_only_graphml_source(tmp_path, monkeypatch):
 
     from niu_api.internal.lightrag_repair import repair_entity_chunks
 
-    result = repair_entity_chunks()
+    result = await repair_entity_chunks()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1  # 只 entity-active
     ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text())
-    # v4 实现：value = {"chunk_ids": [...], "count": int}
+    # v9 实现：value = {"chunk_ids": [...], "count": int, "_id": ..., "create_time": ..., "update_time": ...}
     assert "entity-active" in ec
     assert set(ec["entity-active"]["chunk_ids"]) == {"chunk-a", "chunk-b"}
     assert ec["entity-active"]["count"] == 2
+    # v9 Task 8：JsonKVStorage 自动注入 _id/create_time/update_time
+    assert ec["entity-active"]["_id"] == "entity-active"
+    assert "create_time" in ec["entity-active"]
+    assert "update_time" in ec["entity-active"]
     # 已删实体不在 entity_chunks（防复活）
     assert "entity-deleted" not in ec
 
 
-def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch):
     """repair_relation_chunks 只从 GraphML edge source_id 提取 chunk_ids（防复活）。
 
+    v9 Task 8：函数改 async + 走 JsonKVStorage.upsert（自动注入 _id/create_time/update_time）。
     v4 实现：key = make_relation_chunk_key(src, tgt) = GRAPH_FIELD_SEP.join(sorted((src, tgt)))
             value = {"chunk_ids": [...], "count": int}
     """
@@ -2186,7 +2194,7 @@ def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch):
     from niu_api.internal.lightrag_repair import repair_relation_chunks
     from lightrag.constants import GRAPH_FIELD_SEP
 
-    result = repair_relation_chunks()
+    result = await repair_relation_chunks()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1
@@ -2195,9 +2203,13 @@ def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch):
     # entity-a, entity-b sorted 后还是 ("entity-a", "entity-b")
     expected_key = GRAPH_FIELD_SEP.join(sorted(("entity-a", "entity-b")))
     assert expected_key in rc
-    # v4 实现：value = {"chunk_ids": [...], "count": int}
+    # v9 实现：value = {"chunk_ids": [...], "count": int, "_id": ..., "create_time": ..., "update_time": ...}
     assert set(rc[expected_key]["chunk_ids"]) == {"chunk-rel1", "chunk-rel2"}
     assert rc[expected_key]["count"] == 2
+    # v9 Task 8：JsonKVStorage 自动注入 _id/create_time/update_time
+    assert rc[expected_key]["_id"] == expected_key
+    assert "create_time" in rc[expected_key]
+    assert "update_time" in rc[expected_key]
 
 
 def test_repair_full_entities_reverse_mapping(tmp_path, monkeypatch):
@@ -3978,3 +3990,545 @@ async def test_repair_vdb_relationships_meta_fields_filter(monkeypatch, tmp_path
     assert "这是 entity_one 跟 entity_two 的关系描述" in item["content"], (
         f"content 应含 description 字符串: {item['content']!r}"
     )
+
+
+# =============================================================================
+# v9 Task 8: repair_entity_chunks / repair_relation_chunks 单元测试
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_repair_entity_chunks_real_data(monkeypatch, tmp_path):
+    """真实数据测试：拷贝 3 真相源到 tmp_path，跑 repair_entity_chunks。
+
+    验证：
+    1. repair 不修改 3 真相源（sha256 不变）
+    2. entity_chunks.json 生成 + 字段格式正确
+    3. 每个 entity 含 chunk_ids（list）/count/_id/create_time/update_time
+    4. chunk_ids 是 list（不是 GRAPH_FIELD_SEP 字符串）
+    5. count == len(chunk_ids)
+    """
+    from niu_api.internal import lightrag_repair
+
+    real_storage = Path.home() / ".niu" / "lightrag_storage"
+    if not real_storage.exists():
+        pytest.skip(f"真实数据目录不存在: {real_storage}")
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    _copy_truth_sources(tmp_storage, real_storage)
+
+    # 记录真相源 sha256
+    graphml_sha = _sha256(tmp_storage / "graph_chunk_entity_relation.graphml")
+    full_docs_sha = _sha256(tmp_storage / "kv_store_full_docs.json")
+    cache_sha = _sha256(tmp_storage / "kv_store_llm_response_cache.json")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_entity_chunks()
+
+    # 断言 1：repair 成功
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] > 0, f"actual=0，没重建任何 entity_chunk: {result}"
+
+    # 断言 2：真相源 sha256 不变
+    assert _sha256(tmp_storage / "graph_chunk_entity_relation.graphml") == graphml_sha
+    assert _sha256(tmp_storage / "kv_store_full_docs.json") == full_docs_sha
+    assert _sha256(tmp_storage / "kv_store_llm_response_cache.json") == cache_sha
+
+    # 断言 3：entity_chunks.json 字段格式
+    ec_path = tmp_storage / "kv_store_entity_chunks.json"
+    assert ec_path.exists(), "entity_chunks.json 未生成"
+    with open(ec_path, encoding="utf-8") as f:
+        ec = json.load(f)
+    assert isinstance(ec, dict)
+    assert len(ec) == result["actual"]
+
+    for entity_name, ec_value in ec.items():
+        assert isinstance(ec_value, dict), f"ec_value 不是 dict: {entity_name}"
+        # 必须字段
+        assert "chunk_ids" in ec_value, f"缺 chunk_ids: {entity_name}"
+        assert "count" in ec_value, f"缺 count: {entity_name}"
+        # storage 自动注入字段
+        assert "_id" in ec_value, f"缺 _id（storage 没注入）: {entity_name}"
+        assert "create_time" in ec_value, f"缺 create_time: {entity_name}"
+        assert "update_time" in ec_value, f"缺 update_time: {entity_name}"
+        # 类型校验
+        assert isinstance(ec_value["chunk_ids"], list), (
+            f"chunk_ids 不是 list: {entity_name}, type={type(ec_value['chunk_ids'])}"
+        )
+        assert isinstance(ec_value["count"], int), f"count 不是 int: {entity_name}"
+        # chunk_ids 元素必须是 str
+        for cid in ec_value["chunk_ids"]:
+            assert isinstance(cid, str), f"chunk_id 不是 str: {cid}"
+        # count == len(chunk_ids)
+        assert ec_value["count"] == len(ec_value["chunk_ids"]), (
+            f"count {ec_value['count']} != len(chunk_ids) {len(ec_value['chunk_ids'])}"
+        )
+        # _id == entity_name（storage 自动注入）
+        assert ec_value["_id"] == entity_name, (
+            f"_id {ec_value['_id']} != entity_name {entity_name}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_repair_entity_chunks_empty_user(monkeypatch, tmp_path):
+    """全新用户测试：GraphML 无 node，不写派生文件（跟 LightRAG 原生首次启动一致）。
+
+    v9 第 2 轮审查修复（问题 5 / I3）：全新用户场景下 entity_chunks.json 不应被写空 {}，
+    应保持不存在。
+    """
+    from niu_api.internal import lightrag_repair
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+    # 全新用户合法状态：3 真相源全 absent/empty
+    # 注意：GraphML 写空字符串会触发 ET.ParseError（不是"无 node"），
+    # 必须写一个有效的空 GraphML（含 graph 元素但无 node）才能模拟"全新用户无节点"。
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected"/>\n'
+        '</graphml>\n',
+        encoding="utf-8",
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_entity_chunks()
+
+    assert result["status"] == "ok"
+    assert result["expected"] == 0
+    assert result["actual"] == 0
+
+    # v9 第 2 轮审查修复（问题 5 / I3）：
+    # 全新用户场景下 entity_chunks.json 应保持不存在
+    # （跟 LightRAG JsonKVStorage.initialize 内存空 dict 不写盘一致）
+    ec_path = tmp_storage / "kv_store_entity_chunks.json"
+    assert not ec_path.exists(), (
+        f"entity_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_entity_chunks_chunk_ids_is_list(monkeypatch, tmp_path):
+    """chunk_ids 类型校验：必须是 list[str]，不是 GRAPH_FIELD_SEP 分隔的字符串。
+
+    v8 bug：直接写 src 字符串没拆分；v9 用 split 拆分返回 list。
+    """
+    from niu_api.internal import lightrag_repair
+    from lightrag.constants import GRAPH_FIELD_SEP
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：1 个 node，source_id 含多个 chunk_id（<SEP> 分隔）
+    # 注意：GRAPH_FIELD_SEP = '<SEP>'，含 < 字符，在 XML 中必须用实体编码 &lt;SEP&gt;
+    # （跟真实 LightRAG GraphML 一致）。XML 解析器解析后变回 '<SEP>' 字符串。
+    graphml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected">\n'
+        '    <node id="entity_one">\n'
+        '      <data key="d3">chunk-001&lt;SEP&gt;chunk-002&lt;SEP&gt;chunk-003</data>\n'
+        '    </node>\n'
+        '  </graph>\n'
+        '</graphml>\n'
+    )
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_entity_chunks()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 1, f"应重建 1 条，实际 {result['actual']}"
+
+    ec_path = tmp_storage / "kv_store_entity_chunks.json"
+    with open(ec_path, encoding="utf-8") as f:
+        ec = json.load(f)
+
+    assert "entity_one" in ec, f"entity_one 不在 entity_chunks: {list(ec.keys())}"
+    value = ec["entity_one"]
+
+    # 核心断言：chunk_ids 是 list（不是 GRAPH_FIELD_SEP 字符串）
+    assert isinstance(value["chunk_ids"], list), (
+        f"chunk_ids 应为 list，实际 type={type(value['chunk_ids'])}, "
+        f"value={value['chunk_ids']!r}"
+    )
+    assert not isinstance(value["chunk_ids"], str), (
+        f"chunk_ids 不应是 str（v8 bug 直接写 src 字符串）: {value['chunk_ids']!r}"
+    )
+    # 长度 3（3 个 chunk_id）
+    assert len(value["chunk_ids"]) == 3, (
+        f"chunk_ids 应有 3 个元素，实际 {len(value['chunk_ids'])}: {value['chunk_ids']}"
+    )
+    # 元素值正确
+    assert value["chunk_ids"] == ["chunk-001", "chunk-002", "chunk-003"], (
+        f"chunk_ids 元素值不对: {value['chunk_ids']}"
+    )
+    # 每个元素是 str
+    for cid in value["chunk_ids"]:
+        assert isinstance(cid, str), f"chunk_id 不是 str: {cid!r}"
+    # GRAPH_FIELD_SEP 不应出现在 chunk_ids 元素里（说明拆分正确）
+    for cid in value["chunk_ids"]:
+        assert GRAPH_FIELD_SEP not in cid, (
+            f"chunk_id {cid!r} 含 GRAPH_FIELD_SEP（拆分未生效）"
+        )
+
+
+@pytest.mark.asyncio
+async def test_repair_entity_chunks_count_field(monkeypatch, tmp_path):
+    """count 字段校验：count == len(chunk_ids)，包括 source_id 为空的边界情况。"""
+    from niu_api.internal import lightrag_repair
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：3 个 node
+    # - entity_multi: 多 chunk_id
+    # - entity_single: 单 chunk_id
+    # - entity_empty: source_id 为空
+    # 注意：GRAPH_FIELD_SEP = '<SEP>' 含 < 字符，XML 中必须用 &lt;SEP&gt;
+    graphml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected">\n'
+        '    <node id="entity_multi">\n'
+        '      <data key="d3">c1&lt;SEP&gt;c2&lt;SEP&gt;c3&lt;SEP&gt;c4</data>\n'
+        '    </node>\n'
+        '    <node id="entity_single">\n'
+        '      <data key="d3">only_one</data>\n'
+        '    </node>\n'
+        '    <node id="entity_empty">\n'
+        '      <data key="d3"></data>\n'
+        '    </node>\n'
+        '  </graph>\n'
+        '</graphml>\n'
+    )
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_entity_chunks()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 3, f"应重建 3 条，实际 {result['actual']}"
+
+    ec_path = tmp_storage / "kv_store_entity_chunks.json"
+    with open(ec_path, encoding="utf-8") as f:
+        ec = json.load(f)
+
+    # entity_multi: 4 个 chunk_id
+    assert ec["entity_multi"]["count"] == 4, (
+        f"entity_multi count 应为 4: {ec['entity_multi']}"
+    )
+    assert len(ec["entity_multi"]["chunk_ids"]) == 4
+
+    # entity_single: 1 个 chunk_id
+    assert ec["entity_single"]["count"] == 1, (
+        f"entity_single count 应为 1: {ec['entity_single']}"
+    )
+    assert len(ec["entity_single"]["chunk_ids"]) == 1
+
+    # entity_empty: 0 个 chunk_id（source_id 为空合法）
+    assert ec["entity_empty"]["count"] == 0, (
+        f"entity_empty count 应为 0: {ec['entity_empty']}"
+    )
+    assert ec["entity_empty"]["chunk_ids"] == [], (
+        f"entity_empty chunk_ids 应为空 list: {ec['entity_empty']['chunk_ids']!r}"
+    )
+
+    # 所有 entity 的 count == len(chunk_ids)
+    for name, value in ec.items():
+        assert value["count"] == len(value["chunk_ids"]), (
+            f"{name}: count {value['count']} != len(chunk_ids) {len(value['chunk_ids'])}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_repair_relation_chunks_real_data(monkeypatch, tmp_path):
+    """真实数据测试：拷贝 3 真相源到 tmp_path，跑 repair_relation_chunks。
+
+    验证：
+    1. repair 不修改 3 真相源（sha256 不变）
+    2. relation_chunks.json 生成 + 字段格式正确
+    3. 每个 relation 含 chunk_ids（list）/count/_id/create_time/update_time
+    4. chunk_ids 是 list（不是 GRAPH_FIELD_SEP 字符串）
+    5. count == len(chunk_ids)
+    6. key 格式 = make_relation_chunk_key(src, tgt) = "<SEP>".join(sorted((src, tgt)))
+    """
+    from niu_api.internal import lightrag_repair
+
+    real_storage = Path.home() / ".niu" / "lightrag_storage"
+    if not real_storage.exists():
+        pytest.skip(f"真实数据目录不存在: {real_storage}")
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    _copy_truth_sources(tmp_storage, real_storage)
+
+    # 记录真相源 sha256
+    graphml_sha = _sha256(tmp_storage / "graph_chunk_entity_relation.graphml")
+    full_docs_sha = _sha256(tmp_storage / "kv_store_full_docs.json")
+    cache_sha = _sha256(tmp_storage / "kv_store_llm_response_cache.json")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_relation_chunks()
+
+    # 断言 1：repair 成功
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] > 0, f"actual=0，没重建任何 relation_chunk: {result}"
+
+    # 断言 2：真相源 sha256 不变
+    assert _sha256(tmp_storage / "graph_chunk_entity_relation.graphml") == graphml_sha
+    assert _sha256(tmp_storage / "kv_store_full_docs.json") == full_docs_sha
+    assert _sha256(tmp_storage / "kv_store_llm_response_cache.json") == cache_sha
+
+    # 断言 3：relation_chunks.json 字段格式
+    rc_path = tmp_storage / "kv_store_relation_chunks.json"
+    assert rc_path.exists(), "relation_chunks.json 未生成"
+    with open(rc_path, encoding="utf-8") as f:
+        rc = json.load(f)
+    assert isinstance(rc, dict)
+    assert len(rc) == result["actual"]
+
+    for relation_key, rc_value in rc.items():
+        assert isinstance(rc_value, dict), f"rc_value 不是 dict: {relation_key}"
+        # 必须字段
+        assert "chunk_ids" in rc_value, f"缺 chunk_ids: {relation_key}"
+        assert "count" in rc_value, f"缺 count: {relation_key}"
+        # storage 自动注入字段
+        assert "_id" in rc_value, f"缺 _id: {relation_key}"
+        assert "create_time" in rc_value, f"缺 create_time: {relation_key}"
+        assert "update_time" in rc_value, f"缺 update_time: {relation_key}"
+        # 类型校验
+        assert isinstance(rc_value["chunk_ids"], list), (
+            f"chunk_ids 不是 list: {relation_key}, type={type(rc_value['chunk_ids'])}"
+        )
+        assert isinstance(rc_value["count"], int)
+        # count == len(chunk_ids)
+        assert rc_value["count"] == len(rc_value["chunk_ids"]), (
+            f"count {rc_value['count']} != len(chunk_ids) {len(rc_value['chunk_ids'])}"
+        )
+        # _id == relation_key
+        assert rc_value["_id"] == relation_key
+
+
+@pytest.mark.asyncio
+async def test_repair_relation_chunks_empty_user(monkeypatch, tmp_path):
+    """全新用户测试：GraphML 无 edge，不写派生文件（跟 LightRAG 原生首次启动一致）。
+
+    v9 第 2 轮审查修复（问题 5 / I3）：全新用户场景下 relation_chunks.json 不应被写空 {}，
+    应保持不存在。
+    """
+    from niu_api.internal import lightrag_repair
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+    # 全新用户合法状态：3 真相源全 absent/empty
+    # 注意：GraphML 写空字符串会触发 ET.ParseError（不是"无 edge"），
+    # 必须写一个有效的空 GraphML（含 graph 元素但无 edge）才能模拟"全新用户无边"。
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected"/>\n'
+        '</graphml>\n',
+        encoding="utf-8",
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_relation_chunks()
+
+    assert result["status"] == "ok"
+    assert result["expected"] == 0
+    assert result["actual"] == 0
+
+    # v9 第 2 轮审查修复（问题 5 / I3）：
+    # 全新用户场景下 relation_chunks.json 应保持不存在
+    rc_path = tmp_storage / "kv_store_relation_chunks.json"
+    assert not rc_path.exists(), (
+        f"relation_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_relation_chunks_key_format(monkeypatch, tmp_path):
+    """key 格式校验：relation_key = make_relation_chunk_key(src, tgt) = "<SEP>".join(sorted((src, tgt)))。
+
+    验证：
+    1. key 是 sorted 后的 src<SEP>tgt（src <= tgt）
+    2. 即使 GraphML 里 src > tgt（乱序），key 仍是 sorted 后的
+    3. key 是单个字符串（不是 tuple/list）
+    """
+    from niu_api.internal import lightrag_repair
+    from lightrag.constants import GRAPH_FIELD_SEP
+    from lightrag.utils import make_relation_chunk_key, parse_relation_chunk_key
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：2 个 edge
+    # - edge1: src=alpha, tgt=beta（alpha < beta，已 sorted）
+    # - edge2: src=zeta, tgt=gamma（zeta > gamma，需 sorted 成 gamma<SEP>zeta）
+    graphml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected">\n'
+        '    <node id="alpha"/>\n'
+        '    <node id="beta"/>\n'
+        '    <node id="gamma"/>\n'
+        '    <node id="zeta"/>\n'
+        '    <edge source="alpha" target="beta">\n'
+        '      <data key="d10">chunk-a</data>\n'
+        '    </edge>\n'
+        '    <edge source="zeta" target="gamma">\n'
+        '      <data key="d10">chunk-b</data>\n'
+        '    </edge>\n'
+        '  </graph>\n'
+        '</graphml>\n'
+    )
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_relation_chunks()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 2, f"应重建 2 条，实际 {result['actual']}"
+
+    rc_path = tmp_storage / "kv_store_relation_chunks.json"
+    with open(rc_path, encoding="utf-8") as f:
+        rc = json.load(f)
+
+    # 期望的 2 个 key
+    expected_key1 = make_relation_chunk_key("alpha", "beta")  # alpha<SEP>beta
+    expected_key2 = make_relation_chunk_key("zeta", "gamma")  # gamma<SEP>zeta（sorted）
+
+    assert expected_key1 in rc, (
+        f"key {expected_key1!r} 不在 relation_chunks: {list(rc.keys())}"
+    )
+    assert expected_key2 in rc, (
+        f"key {expected_key2!r} 不在 relation_chunks: {list(rc.keys())}"
+    )
+
+    # 验证 key 格式：sorted 后的 src<SEP>tgt（src <= tgt）
+    for relation_key in rc.keys():
+        # key 必须是 str（不是 tuple/list）
+        assert isinstance(relation_key, str), (
+            f"relation_key 应为 str，实际 type={type(relation_key)}, value={relation_key!r}"
+        )
+        # 用 parse_relation_chunk_key 反解
+        src, tgt = parse_relation_chunk_key(relation_key)
+        # 重新 make 应得同一 key（幂等性）
+        assert make_relation_chunk_key(src, tgt) == relation_key, (
+            f"key {relation_key!r} 不是 make_relation_chunk_key 生成的（不幂等）"
+        )
+        # src <= tgt（sorted 后）
+        assert src <= tgt, (
+            f"relation_key {relation_key!r} 未 sorted: src={src!r} > tgt={tgt!r}"
+        )
+
+    # 特别验证 edge2（zeta > gamma）：key 应是 gamma<SEP>zeta（不是 zeta<SEP>gamma）
+    assert "zeta" + GRAPH_FIELD_SEP + "gamma" not in rc, (
+        "edge2 的 key 应是 sorted 后的 gamma<SEP>zeta，不是 zeta<SEP>gamma"
+    )
+    assert "gamma" + GRAPH_FIELD_SEP + "zeta" in rc, (
+        "edge2 的 key 应是 gamma<SEP>zeta"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_relation_chunks_chunk_ids_is_list(monkeypatch, tmp_path):
+    """chunk_ids 类型校验：必须是 list[str]，不是 GRAPH_FIELD_SEP 分隔的字符串。
+
+    v8 bug：直接写 edge_src_id 字符串没拆分；v9 用 split 拆分返回 list。
+    同时验证：同一个 key 被多个 edge 重复时，用 merge_source_ids 合并（保留插入顺序去重）。
+    """
+    from niu_api.internal import lightrag_repair
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：2 个 edge 共享同一对 (alpha, beta)
+    # - edge1: source_id = "chunk-001<SEP>chunk-002"
+    # - edge2: source_id = "chunk-002<SEP>chunk-003"（chunk-002 重复，应去重）
+    # 注意：GRAPH_FIELD_SEP = '<SEP>' 含 < 字符，XML 中必须用 &lt;SEP&gt;
+    graphml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected">\n'
+        '    <node id="alpha"/>\n'
+        '    <node id="beta"/>\n'
+        '    <edge source="alpha" target="beta">\n'
+        '      <data key="d10">chunk-001&lt;SEP&gt;chunk-002</data>\n'
+        '    </edge>\n'
+        '    <edge source="beta" target="alpha">\n'
+        '      <data key="d10">chunk-002&lt;SEP&gt;chunk-003</data>\n'
+        '    </edge>\n'
+        '  </graph>\n'
+        '</graphml>\n'
+    )
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_relation_chunks()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    # 2 个 edge 但 key 相同（alpha<SEP>beta），合并成 1 条
+    assert result["actual"] == 1, (
+        f"应重建 1 条（2 edge 同 key 合并），实际 {result['actual']}"
+    )
+
+    rc_path = tmp_storage / "kv_store_relation_chunks.json"
+    with open(rc_path, encoding="utf-8") as f:
+        rc = json.load(f)
+
+    # 唯一的 key
+    assert len(rc) == 1, f"应只有 1 个 key，实际 {len(rc)}: {list(rc.keys())}"
+    relation_key = list(rc.keys())[0]
+    value = rc[relation_key]
+
+    # 核心断言：chunk_ids 是 list（不是 GRAPH_FIELD_SEP 字符串）
+    assert isinstance(value["chunk_ids"], list), (
+        f"chunk_ids 应为 list，实际 type={type(value['chunk_ids'])}, "
+        f"value={value['chunk_ids']!r}"
+    )
+    assert not isinstance(value["chunk_ids"], str), (
+        f"chunk_ids 不应是 str（v8 bug 直接写 edge_src_id 字符串）: {value['chunk_ids']!r}"
+    )
+
+    # merge_source_ids 合并：chunk-001 + chunk-002 + chunk-002 + chunk-003 → 去重 3 个
+    # 保留插入顺序：chunk-001, chunk-002, chunk-003
+    assert value["chunk_ids"] == ["chunk-001", "chunk-002", "chunk-003"], (
+        f"chunk_ids 合并去重后应为 [chunk-001, chunk-002, chunk-003]，"
+        f"实际 {value['chunk_ids']}"
+    )
+    assert value["count"] == 3, (
+        f"count 应为 3（去重后），实际 {value['count']}"
+    )
+
+    # 每个元素是 str
+    for cid in value["chunk_ids"]:
+        assert isinstance(cid, str), f"chunk_id 不是 str: {cid!r}"
