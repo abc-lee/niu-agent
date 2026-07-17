@@ -1984,11 +1984,15 @@ async def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatc
 # - repair_vdb_relationships：遍历 GraphML edge，data_list 不含 weight
 
 
-def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
     """repair_vdb_entities 应只遍历 GraphML 存在的 node（防复活）。
 
     回归点：text_chunks 含已删实体对应的 chunk，但 GraphML 没有该实体节点
     → vdb_entities 不应含已删实体（防复活）。
+
+    v9 Task 6 转换：repair_vdb_entities 改为 async（走 NanoVectorDBStorage.upsert），
+    需 await + 用 _FakeEmbedModel 替代真实 bge 模型（避免 ~400MB 加载）。
     """
     _write_graphml_v8(tmp_path, [
         ("entity-active", "person", "desc active", "chunk-a"),
@@ -1996,6 +2000,7 @@ def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
     ])
 
     # text_chunks 含 chunk-a + chunk-deleted（但 chunk-deleted 对应的实体已删）
+    # v9 repair_vdb_entities 不读 text_chunks，但保留 fixture 跟 v8 一致
     (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
         "chunk-a": {"content": "content a", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-deleted": {"content": "content deleted", "full_doc_id": "doc-1", "llm_cache_list": []},
@@ -2004,9 +2009,14 @@ def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
+    # v9：用 _FakeEmbedModel 替代真实 bge 模型（避免加载 ~400MB）
+    from niu_api.internal import embedding as niu_embedding
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
     from niu_api.internal.lightrag_repair import repair_vdb_entities
 
-    result = repair_vdb_entities()
+    result = await repair_vdb_entities()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["expected"] == 1
@@ -3130,3 +3140,364 @@ async def test_repair_vdb_chunks_matrix_l2_normalized(monkeypatch, tmp_path):
     # 注意：vector 字段是原始 embedding（float16 编码，未归一化）
     # matrix 是归一化后的（float32 编码）
     # 两者维度一致但模长不同——这是 NanoVectorDB 的设计
+
+
+# =============================================================================
+# v9 Task 6: repair_vdb_entities 走 NanoVectorDBStorage 单元测试
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_entities_real_data(monkeypatch, tmp_path):
+    """真实数据测试：拷贝 3 真相源到 tmp_path，跑 repair_vdb_entities。
+
+    验证：
+    1. repair 不修改 3 真相源（sha256 不变）
+    2. vdb_entities.json 生成 + 字段格式正确
+    3. 每条 entity 含 __id__/entity_name/content/source_id/file_path/vector
+       （不含 description/entity_type）
+    4. __id__ = compute_mdhash_id(entity_name, prefix="ent-")
+    5. content 格式 = f"{entity_name}\n{description}"（第一行是 entity_name）
+    6. matrix 是 L2 归一化后的单位向量（每行模长 ≈ 1）
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+    from lightrag.utils import compute_mdhash_id
+
+    real_storage = Path.home() / ".niu" / "lightrag_storage"
+    if not real_storage.exists():
+        pytest.skip(f"真实数据目录不存在: {real_storage}")
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    _copy_truth_sources(tmp_storage, real_storage)
+
+    # 记录真相源 sha256
+    graphml_sha = _sha256(tmp_storage / "graph_chunk_entity_relation.graphml")
+    full_docs_sha = _sha256(tmp_storage / "kv_store_full_docs.json")
+    cache_sha = _sha256(tmp_storage / "kv_store_llm_response_cache.json")
+
+    # 用假 embedding 模型（避免加载真实 ~400MB 模型）
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    # 跑 repair_vdb_entities（直接读 GraphML，不需要先跑 repair_text_chunks）
+    result = await lightrag_repair.repair_vdb_entities()
+
+    # 断言 1：repair 成功
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] > 0, f"actual=0，没重建任何 entity: {result}"
+
+    # 断言 2：真相源 sha256 不变
+    assert _sha256(tmp_storage / "graph_chunk_entity_relation.graphml") == graphml_sha
+    assert _sha256(tmp_storage / "kv_store_full_docs.json") == full_docs_sha
+    assert _sha256(tmp_storage / "kv_store_llm_response_cache.json") == cache_sha
+
+    # 断言 3：vdb_entities.json 字段格式
+    vdb = _load_vdb(tmp_storage / "vdb_entities.json")
+    assert "embedding_dim" in vdb
+    assert vdb["embedding_dim"] == 768
+    assert "data" in vdb
+    assert isinstance(vdb["data"], list)
+    assert len(vdb["data"]) == result["actual"]
+    assert "matrix" in vdb
+    assert isinstance(vdb["matrix"], str)
+
+    # 断言 4：每条 entity 字段格式
+    for item in vdb["data"]:
+        assert "__id__" in item, f"缺 __id__: {item}"
+        assert "entity_name" in item, f"缺 entity_name: {item}"
+        assert "content" in item, f"缺 content: {item}"
+        assert "source_id" in item, f"缺 source_id: {item}"
+        assert "file_path" in item, f"缺 file_path: {item}"
+        assert "vector" in item, f"缺 vector: {item}"
+        assert "__created_at__" in item, f"缺 __created_at__: {item}"
+        # 被过滤字段（不应落盘）
+        assert "description" not in item, f"description 不应落盘（meta_fields 过滤）: {item}"
+        assert "entity_type" not in item, f"entity_type 不应落盘: {item}"
+        # 类型校验
+        assert isinstance(item["__id__"], str)
+        assert item["__id__"].startswith("ent-")
+        assert isinstance(item["entity_name"], str)
+        # entity_name 必须 .lower()
+        assert item["entity_name"] == item["entity_name"].lower(), (
+            f"entity_name 未 lower: {item['entity_name']}"
+        )
+        assert isinstance(item["content"], str)
+        assert isinstance(item["source_id"], str)
+        assert isinstance(item["file_path"], str)
+        assert isinstance(item["vector"], str)
+        assert isinstance(item["__created_at__"], int)
+
+        # __id__ 必须 = compute_mdhash_id(entity_name, prefix="ent-")
+        expected_id = compute_mdhash_id(item["entity_name"], prefix="ent-")
+        assert item["__id__"] == expected_id, (
+            f"__id__ {item['__id__']} != compute_mdhash_id({item['entity_name']}) = {expected_id}"
+        )
+
+        # content 格式必须是 f"{entity_name}\n{description}"
+        # 即 content 第一行 == entity_name
+        first_line = item["content"].split("\n", 1)[0]
+        assert first_line == item["entity_name"], (
+            f"content 第一行 {first_line!r} != entity_name {item['entity_name']!r}"
+        )
+
+    # 断言 5：matrix 是 L2 归一化后的单位向量
+    matrix = _decode_matrix(vdb["matrix"], embedding_dim=768)
+    assert matrix.shape == (len(vdb["data"]), 768), (
+        f"matrix shape {matrix.shape} != ({len(vdb['data'])}, 768)"
+    )
+    for i, row in enumerate(matrix):
+        norm = float((row ** 2).sum() ** 0.5)
+        assert 0.99 <= norm <= 1.01, (
+            f"matrix 第 {i} 行模长 {norm} 不在 [0.99, 1.01]（L2 归一化失败）"
+        )
+
+    # 验证 vector 字段维度跟 matrix 列数一致
+    first_vector = _decode_vector(vdb["data"][0]["vector"])
+    assert first_vector.shape == (768,), (
+        f"vector shape {first_vector.shape} != (768,)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_entities_empty_user(monkeypatch, tmp_path):
+    """全新用户测试：GraphML 无 node，不写派生文件（跟 LightRAG 原生首次启动一致）。
+
+    v9 第 2 轮审查修复（问题 5+6 / I3+I2）：全新用户场景下 vdb_entities.json 不应被写空，
+    应保持不存在。
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+    # 全新用户合法状态：GraphML 合法但无 node + 其他真相源空 dict
+    # （空字符串 GraphML 会被 ET.parse 当作损坏 XML，必须写合法空 graphml）
+    empty_graphml = """<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <graph id="G" edgedefault="undirected">
+  </graph>
+</graphml>
+"""
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        empty_graphml, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    # 跑 repair_vdb_entities
+    result = await lightrag_repair.repair_vdb_entities()
+
+    assert result["status"] == "ok"
+    assert result["expected"] == 0
+    assert result["actual"] == 0
+
+    # v9 第 2 轮审查修复（问题 5+6 / I3+I2）：
+    # 全新用户场景下 vdb_entities.json 应保持不存在
+    # （跟 LightRAG NanoVectorDBStorage.initialize 内存空 dict 不写盘一致）
+    vdb_path = tmp_storage / "vdb_entities.json"
+    assert not vdb_path.exists(), (
+        f"vdb_entities.json 应不存在（全新用户不写派生文件），但被生成了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_entities_id_is_hash(monkeypatch, tmp_path):
+    """__id__ 是 hash ID 测试：验证 __id__ 是 compute_mdhash_id(entity_name, prefix="ent-")，
+    不是 entity_name 原文（v9 修复 v8 bug：v8 用 node_id 做 dict key，但 node_id 已 lower
+    所以 hash 是对的；v9 显式用 compute_mdhash_id 防 dict key 退化成 entity_name）。
+
+    构造 GraphML 含 3 个实体（含大小写混合 node id），验证：
+    1. __id__ = compute_mdhash_id(entity_name.lower(), prefix="ent-")
+    2. __id__ 跟 entity_name 原文不同（除了巧合 hash 等于 name 的极端情况）
+    3. __id__ 全部以 "ent-" 前缀开头
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+    from lightrag.utils import compute_mdhash_id
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：3 个实体（混合大小写，验证 .lower()）
+    # GraphML 字段映射：d1=entity_type, d2=description, d3=source_id, d4=file_path
+    graphml_content = """<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <graph id="G" edgedefault="undirected">
+    <node id="TestEntity">
+      <data key="d1">object</data>
+      <data key="d2">测试实体 1 描述</data>
+      <data key="d3">chunk-aaa</data>
+      <data key="d4">/tmp/test1.txt</data>
+    </node>
+    <node id="AnotherEntity">
+      <data key="d1">concept</data>
+      <data key="d2">另一个实体描述</data>
+      <data key="d3">chunk-bbb</data>
+      <data key="d4">/tmp/test2.txt</data>
+    </node>
+    <node id="LowerEntity">
+      <data key="d1">person</data>
+      <data key="d2">小写实体</data>
+      <data key="d3">chunk-ccc</data>
+      <data key="d4">/tmp/test3.txt</data>
+    </node>
+  </graph>
+</graphml>
+"""
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    # 真相源其他文件保持空（repair_vdb_entities 只依赖 GraphML）
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_entities()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 3, f"应重建 3 条，实际 {result['actual']}"
+
+    vdb = _load_vdb(tmp_storage / "vdb_entities.json")
+    assert len(vdb["data"]) == 3
+
+    # 验证 __id__ 是 compute_mdhash_id(entity_name, prefix="ent-")
+    # entity_name 必须 .lower()（GraphML 写入的是 "TestEntity" 等，repair 应 lower）
+    expected_names = {"testentity", "anotherentity", "lowerentity"}
+    actual_names = {item["entity_name"] for item in vdb["data"]}
+    assert actual_names == expected_names, (
+        f"entity_name 集合不一致（应 .lower()）: actual={actual_names}, expected={expected_names}"
+    )
+
+    for item in vdb["data"]:
+        entity_name = item["entity_name"]
+        # __id__ 必须以 "ent-" 前缀开头
+        assert item["__id__"].startswith("ent-"), (
+            f"__id__ {item['__id__']} 不以 'ent-' 开头"
+        )
+        # __id__ 必须等于 compute_mdhash_id(entity_name, prefix="ent-")
+        expected_id = compute_mdhash_id(entity_name, prefix="ent-")
+        assert item["__id__"] == expected_id, (
+            f"__id__ {item['__id__']} != compute_mdhash_id({entity_name!r}) = {expected_id}"
+        )
+        # __id__ 不应等于 entity_name 原文（hash ID 应比 entity_name 长）
+        # compute_mdhash_id 返回 "ent-" + 32 字符 md5 = 36 字符
+        assert item["__id__"] != entity_name, (
+            f"__id__ == entity_name（说明 dict key 退化成 entity_name 了）: {item['__id__']}"
+        )
+        assert len(item["__id__"]) == 36, (
+            f"__id__ 长度 {len(item['__id__'])} != 36（'ent-' + 32 字符 md5）"
+        )
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_entities_meta_fields_filter(monkeypatch, tmp_path):
+    """meta_fields 过滤测试：构造 GraphML 含 description/entity_type 字段，
+    验证 vdb_entities.json 落盘后这些字段被过滤掉（只保留 meta_fields 内字段）。
+
+    meta_fields = {"entity_name", "source_id", "content", "file_path"}（lightrag.py:716）
+    落盘字段：__id__ / __created_at__ / entity_name / source_id / content / file_path / vector
+    被过滤字段：description / entity_type（v8 旧版会落盘，v9 走 storage 接口被过滤）
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：2 个实体，含完整 d1(entity_type) / d2(description) 字段
+    graphml_content = """<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <graph id="G" edgedefault="undirected">
+    <node id="entity_one">
+      <data key="d1">object</data>
+      <data key="d2">这是 entity_one 的描述，应被 meta_fields 过滤掉不落盘</data>
+      <data key="d3">chunk-001</data>
+      <data key="d4">/tmp/file1.txt</data>
+    </node>
+    <node id="entity_two">
+      <data key="d1">concept</data>
+      <data key="d2">entity_two 的描述，应被过滤</data>
+      <data key="d3">chunk-002</data>
+      <data key="d4">/tmp/file2.txt</data>
+    </node>
+  </graph>
+</graphml>
+"""
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_entities()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 2, f"应重建 2 条，实际 {result['actual']}"
+
+    vdb = _load_vdb(tmp_storage / "vdb_entities.json")
+    assert len(vdb["data"]) == 2
+
+    # 验证：每条只含 meta_fields 内字段 + storage 自动注入字段
+    # 落盘字段：__id__ / __created_at__ / entity_name / source_id / content / file_path / vector
+    # __vector__ 是 np.ndarray，不会落盘到 JSON（NanoVectorDB.save 只写 vector 编码字符串）
+    on_disk_expected = {
+        "__id__",
+        "__created_at__",
+        "entity_name",
+        "source_id",
+        "content",
+        "file_path",
+        "vector",
+    }
+
+    for item in vdb["data"]:
+        item_keys = set(item.keys())
+        # 被过滤字段不应出现
+        assert "description" not in item_keys, (
+            f"description 不应落盘（meta_fields 过滤）: {item_keys}"
+        )
+        assert "entity_type" not in item_keys, (
+            f"entity_type 不应落盘（meta_fields 过滤）: {item_keys}"
+        )
+        # 落盘字段集合应精确匹配（不允许多余字段）
+        assert item_keys == on_disk_expected, (
+            f"字段集合不一致: 实际={item_keys}, 期望={on_disk_expected}"
+        )
+
+    # 验证 content 格式：f"{entity_name}\n{description}"
+    # 即第一行是 entity_name，后面是 description
+    for item in vdb["data"]:
+        entity_name = item["entity_name"]
+        content = item["content"]
+        # content 第一行必须是 entity_name
+        first_line = content.split("\n", 1)[0]
+        assert first_line == entity_name, (
+            f"content 第一行 {first_line!r} != entity_name {entity_name!r}"
+        )
+        # content 必须含 "\n"（因为 description 非空）
+        assert "\n" in content, f"content 缺 '\\n' 分隔符: {content!r}"
+
+    # 验证 source_id / file_path 正确落盘
+    source_ids = {item["source_id"] for item in vdb["data"]}
+    assert source_ids == {"chunk-001", "chunk-002"}, (
+        f"source_id 集合不一致: {source_ids}"
+    )
+    file_paths = {item["file_path"] for item in vdb["data"]}
+    assert file_paths == {"/tmp/file1.txt", "/tmp/file2.txt"}, (
+        f"file_path 集合不一致: {file_paths}"
+    )
