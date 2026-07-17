@@ -533,38 +533,91 @@ def _check_truth_sources_intact() -> dict[str, Any]:
 # =============================================================================
 
 
-def repair_text_chunks() -> dict[str, Any]:
-    """v8：从 GraphML 提活跃 chunk_id + cache original_prompt 优先 + full_docs fallback + 脑区直接构造。
+async def repair_text_chunks() -> dict[str, Any]:
+    """v9：从 GraphML 提活跃 chunk_id + cache original_prompt 优先 + full_docs fallback。
 
-    真相源：GraphML（唯一真相源，提活跃 chunk_id + 脑区元数据）
-    辅助：cache original_prompt（主补充源，正则提取 ``` 之间 chunk 原文，多条取 create_time 最大）
-         full_docs（fallback，cache 找不到时 chunking 反查）
-    派生：kv_store_text_chunks.json
+    真相源：GraphML（活跃 chunk_id）+ kv_store_llm_response_cache.json（chunk 原文）+ kv_store_full_docs.json（fallback）
+    派生：kv_store_text_chunks.json（通过 JsonKVStorage.upsert 写）
+
+    走 storage 接口的好处：
+    - JsonKVStorage.upsert 自动注入 _id / create_time / update_time
+    - text_chunks namespace 自动补 llm_cache_list=[]（L167-169）
+    - index_done_callback 统一写盘 + sanitization
 
     算法：
-    1. 解析 GraphML 提取活跃 chunk_id 集合 C（从所有 node d3 + edge d10）
-    2. 识别脑区节点（d1=brainregion），直接构造 chunk：
-       - content = "{node_id}: {d2 description}"
-       - full_doc_id = "brain_{node_id}"
-    3. 对 C 中非脑区 chunk_id：
-       a. cache original_prompt 优先：按 chunk_id 索引 cache extract entry，
-          多条取 create_time 最大，正则 r"```\\s*(.+?)\\s*```" + re.DOTALL 提取 chunk 原文
-       b. full_docs fallback：cache 找不到时，对每个 doc 用独立 tokenizer chunking，
-          算 chunk_id（compute_mdhash_id），跟活跃 chunk_id 匹配
-    4. 三处都没有 → missing
-    5. llm_cache_list 从 cache 按 chunk_id 反向构建
+    1. initialize_share_data(workers=1) + set_default_workspace("")
+    2. 实例化 JsonKVStorage(namespace=text_chunks, embedding_func=None)
+    3. await storage.initialize()（读已有 kv_store_text_chunks.json 到内存）
+    4. 解析 GraphML 提活跃 chunk_id + 识别脑区节点（v8 逻辑保留）
+    5. cache original_prompt 优先（正则提取 ``` 之间内容，多条取 create_time 最大）
+    6. cache 没有则 full_docs chunking 反查（v8 逻辑保留）
+    7. 调 await storage.upsert(new_tc) + await storage.index_done_callback()
+    8. 全新用户（GraphML 无活跃 chunk）→ upsert({}) 会被 storage 跳过，需手动写空文件
+       （LightRAG 正常启动全新用户时 text_chunks.json 是 {}，不是不存在）
 
-    GraphML 损坏 = unrecoverable
-    cache + full_docs 都损坏 = unrecoverable
+    异常处理：
+    - GraphML 损坏 → unrecoverable
+    - cache 损坏（JSON 解析失败）→ unrecoverable
+    - full_docs 损坏 → unrecoverable
+    - tokenizer 加载失败 → unrecoverable
+    - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
     import re
 
     storage_dir = _storage_dir()
-    tc_path = storage_dir / "kv_store_text_chunks.json"
     full_docs_path = storage_dir / "kv_store_full_docs.json"
     cache_path = storage_dir / "kv_store_llm_response_cache.json"
 
-    # 1. 解析 GraphML 提取活跃 chunk_id 集合 C + 识别脑区节点
+    # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.shared_storage import (
+        initialize_share_data,
+        set_default_workspace,
+    )
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+    from lightrag.namespace import NameSpace
+
+    initialize_share_data(workers=1)
+    set_default_workspace("")
+
+    # 2. 实例化 JsonKVStorage
+    #    global_config 必须含 working_dir（JsonKVStorage.__post_init__ L30 读）
+    #    embedding_func 传 None（text_chunks 不用 embedding，跟 LightRAG lightrag.py:670 一致）
+    #    LightRAG 原生用 # type: ignore 绕过 EmbeddingFunc 类型校验（base.py:364 不允许 None，
+    #    但 text_chunks/full_docs 等 KV 存储从不调用 embedding_func，运行时 None 安全）
+    global_config = {"working_dir": str(storage_dir)}
+    storage = JsonKVStorage(
+        namespace=NameSpace.KV_STORE_TEXT_CHUNKS,
+        workspace="",
+        global_config=global_config,
+        embedding_func=None,  # type: ignore[arg-type]
+    )
+
+    try:
+        await storage.initialize()
+    except Exception as e:
+        logger.error(f"[LightRAGRepair] text_chunks storage.initialize 失败: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "JsonKVStorage",
+            "message": f"storage.initialize 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    # v9 Task 3 修复：清空 storage._data 内存 dict
+    # 原因：JsonKVStorage 用全局 _shared_dicts["text_chunks"] 共享内存（shared_storage.py:1481），
+    # 跨进程/跨调用会保留上一次的 chunk 数据。repair 必须从空开始重建
+    # （v8 是直接覆盖写文件，相当于"清空 + 重写"）。
+    # storage.initialize() 只在首次调用时从文件加载（try_initialize_namespace 返回 True），
+    # 后续调用 try_initialize_namespace 返回 False 不会重新加载——所以即便文件不存在，
+    # _data 也可能含上次的残留数据。这里强制 clear 保证语义正确。
+    # 注意：clear 后调 upsert 时所有 key 都是新 key → create_time + update_time 都被注入。
+    if storage._data is not None:
+        storage._data.clear()
+
+    # 3. 解析 GraphML 提取活跃 chunk_id 集合 + 识别脑区节点
     nodes, nodes_err = _load_graphml_nodes()
     if nodes_err is not None:
         return {
@@ -592,10 +645,6 @@ def repair_text_chunks() -> dict[str, Any]:
     active_chunk_ids: set[str] = set()
     brainregion_chunks: dict[str, tuple[str, str]] = {}
     # brainregion_chunks: chunk_id -> (content, full_doc_id)
-    # v8 真实数据纠正：脑区节点 source_id 含 N 个 chunk_id（如"知识体系脑区"有 63 个），
-    # 这些 chunk_id 实际是脑区引用的普通文档 chunk（不是脑区自己生成的 chunk）。
-    # 脑区直接构造只作为最后 fallback：cache + full_docs 都没匹配时才用脑区元数据构造。
-    # 算法：脑区 source_id 的所有 chunk_id 优先走 cache→full_docs→脑区直接构造→missing
 
     for node_id, (etype, desc, src_ids, _file_path) in nodes.items():
         if etype == "brainregion":
@@ -610,25 +659,30 @@ def repair_text_chunks() -> dict[str, Any]:
             if src_ids:
                 active_chunk_ids.update(c for c in src_ids.split(GRAPH_FIELD_SEP) if c)
     for edge_tuple in edges_list:
-        edge_src_ids = edge_tuple[2]  # (src, tgt, src_ids, desc, kw) 的 index 2
+        edge_src_ids = edge_tuple[2]
         if edge_src_ids:
             active_chunk_ids.update(c for c in edge_src_ids.split(GRAPH_FIELD_SEP) if c)
 
-    # 全新用户（GraphML 无活跃 chunk）→ 写空 text_chunks
+    # 4. 全新用户（GraphML 无活跃 chunk）→ 不写派生文件
+    #    v9 第 2 轮审查修复（问题 5 / I3）：
+    #    LightRAG 全新用户首次启动 JsonKVStorage.initialize 只设 _data={} 内存空 dict，
+    #    不主动写空文件到磁盘（文件不存在）。v9 跟 LightRAG 原生行为一致——
+    #    全新用户场景下 text_chunks.json 不存在，不要强行写空 {} 文件
+    #    （v8 写空 {} 跟 LightRAG 全新用户首次启动不一致，字节级 diff 会失败）。
+    #    _check_truth_sources_intact 已支持 absent/empty=合法（L460 all absent/empty），
+    #    所以下次启动 check_all 不会因派生文件不存在而报 critical。
     if not active_chunk_ids:
-        logger.info("[LightRAGRepair] GraphML 无活跃 chunk_id（全新用户），写空 text_chunks")
-        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
-        pass
+        logger.info("[LightRAGRepair] GraphML 无活跃 chunk_id（全新用户），不写派生文件（跟 LightRAG 原生一致）")
         return {
             "status": "ok",
             "expected": 0,
             "actual": 0,
             "lost": 0,
             "source": "GraphML + cache + full_docs",
-            "message": "GraphML 无活跃 chunk_id，重建空 text_chunks",
+            "message": "GraphML 无活跃 chunk_id，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
         }
 
-    # 2. 读 cache（主补充源）
+    # 5. 读 cache（主补充源）
     cache: dict[str, Any] = {}
     cache_corrupt = False
     if cache_path.exists():
@@ -638,19 +692,18 @@ def repair_text_chunks() -> dict[str, Any]:
         elif loaded is None and cache_path.exists():
             cache_corrupt = True
 
-    # cache 是 3 真相源之一，损坏即 unrecoverable（方案 L5: 3 真相源任一损坏即报修复失败）
     if cache_corrupt:
         return {
             "status": "error",
             "expected": len(active_chunk_ids),
-            "actual": len(brainregion_chunks),
-            "lost": len(active_chunk_ids) - len(brainregion_chunks),
+            "actual": 0,
+            "lost": len(active_chunk_ids),
             "source": "GraphML + cache + full_docs",
             "message": "cache 损坏（JSON 解析失败），3 真相源之一损坏无法恢复",
             "unrecoverable": True,
         }
 
-    # 3. 读 full_docs（fallback）
+    # 6. 读 full_docs（fallback）
     full_docs: dict[str, Any] = {}
     full_docs_corrupt = False
     if full_docs_path.exists():
@@ -660,7 +713,7 @@ def repair_text_chunks() -> dict[str, Any]:
         elif loaded is None and full_docs_path.exists():
             full_docs_corrupt = True
 
-    # 4. 构建 cache 的 chunk_id -> [(create_time, original_prompt, cache_key)] 映射
+    # 7. 构建 cache 的 chunk_id -> [(create_time, original_prompt, cache_key)] 映射
     cache_by_chunk_id: dict[str, list[tuple[int, str, str]]] = {}
     cache_pattern = re.compile(r"```\s*(.+?)\s*```", re.DOTALL)
     for cache_key, entry in cache.items():
@@ -675,130 +728,159 @@ def repair_text_chunks() -> dict[str, Any]:
         op = entry.get("original_prompt", "")
         cache_by_chunk_id.setdefault(cid, []).append((ct, op, cache_key))
 
-    # 每个 chunk_id 的 entries 按 create_time 降序排（最大在前）
     for cid in cache_by_chunk_id:
         cache_by_chunk_id[cid].sort(key=lambda x: x[0], reverse=True)
 
-    # 5. 判断是否需要扫 full_docs
-    # v8-Task 10 修复：cache 覆盖也扫 full_docs（因为 cache entry 不含 full_doc_id，
-    # cache-derived chunks 需要 full_docs chunking 反查补 full_doc_id）。
-    # 这样 doc_status/full_entities/full_relations 的 chunk→doc 映射不会全空。
-    # 只有 cache 为空且无 active chunk 时才不扫（但 active_chunk_ids 非空到这就必须扫）。
-    need_full_docs_scan = bool(active_chunk_ids)
+    # 8. full_docs chunking 反查（补 full_doc_id / tokens / chunk_order_index / file_path）
+    full_docs_chunk_map: dict[str, tuple[int, str, str, str, int, int]] = {}
+    # 类型: chunk_id -> (create_time, doc_id, chunk_content, file_path, tokens, chunk_order_index)
 
-    # 6. full_docs chunking 反查（仅当 cache 没覆盖全部非脑区 chunk）
-    full_docs_chunk_map: dict[str, tuple[int, str, str, str]] = {}
-    # 类型: chunk_id -> (create_time, doc_id, chunk_content, file_path)
-    if need_full_docs_scan:
-        # full_docs 是 3 真相源之一，损坏即 unrecoverable（方案 L5: 3 真相源任一损坏即报修复失败）
-        if full_docs_corrupt:
+    if full_docs_corrupt:
+        return {
+            "status": "error",
+            "expected": len(active_chunk_ids),
+            "actual": 0,
+            "lost": len(active_chunk_ids),
+            "source": "GraphML + cache + full_docs",
+            "message": "full_docs 损坏（JSON 解析失败），3 真相源之一损坏无法恢复",
+            "unrecoverable": True,
+        }
+
+    # 用于脑区/cache-derived chunks 现算 tokens 时复用 tokenizer
+    tokenizer: Any = None
+    if full_docs:
+        tokenizer = _get_tokenizer()
+        if tokenizer is None:
             return {
                 "status": "error",
                 "expected": len(active_chunk_ids),
-                "actual": len(brainregion_chunks),
-                "lost": len(active_chunk_ids) - len(brainregion_chunks),
+                "actual": 0,
+                "lost": len(active_chunk_ids),
                 "source": "GraphML + cache + full_docs",
-                "message": "full_docs 损坏（JSON 解析失败），3 真相源之一损坏无法恢复",
+                "message": "TiktokenTokenizer 加载失败，无法 chunking",
                 "unrecoverable": True,
             }
-        if not full_docs:
-            # full_docs 文件不存在或为空 dict（全新用户合法），跳过 chunking
-            pass
-        else:
-            # 独立加载 tokenizer（不调 get_lightrag_for_repair，铁律 3）
-            tokenizer = _get_tokenizer()
-            if tokenizer is None:
-                return {
-                    "status": "error",
-                    "expected": len(active_chunk_ids),
-                    "actual": len(brainregion_chunks),
-                    "lost": len(active_chunk_ids) - len(brainregion_chunks),
-                    "source": "GraphML + cache + full_docs",
-                    "message": "TiktokenTokenizer 加载失败，无法 chunking",
-                    "unrecoverable": True,
-                }
-            chunk_token_size, chunk_overlap = _get_chunk_config()
+        chunk_token_size, chunk_overlap = _get_chunk_config()
 
-            from lightrag.operate import chunking_by_token_size
+        from lightrag.operate import chunking_by_token_size
 
-            # 按 create_time 降序排 full_docs（多 doc 匹配同 chunk_id 时取最新版本）
-            sorted_docs = sorted(
-                full_docs.items(),
-                key=lambda kv: kv[1].get("create_time", 0) if isinstance(kv[1], dict) else 0,
-                reverse=True,
+        sorted_docs = sorted(
+            full_docs.items(),
+            key=lambda kv: kv[1].get("create_time", 0) if isinstance(kv[1], dict) else 0,
+            reverse=True,
+        )
+
+        for doc_id, doc_data in sorted_docs:
+            if not isinstance(doc_data, dict):
+                continue
+            content = doc_data.get("content", "")
+            if not content:
+                continue
+            file_path = doc_data.get("file_path", "") or "unknown_source"
+            create_time = doc_data.get("create_time", 0)
+
+            chunks = chunking_by_token_size(
+                tokenizer, content,
+                chunk_token_size=chunk_token_size,
+                chunk_overlap_token_size=chunk_overlap,
             )
+            for chunk in chunks:
+                chunk_content = chunk["content"]
+                cid = compute_mdhash_id(chunk_content, prefix="chunk-")
+                if cid not in full_docs_chunk_map:
+                    full_docs_chunk_map[cid] = (
+                        create_time,
+                        doc_id,
+                        chunk_content,
+                        file_path,
+                        chunk.get("tokens", 0),
+                        chunk.get("chunk_order_index", 0),
+                    )
 
-            for doc_id, doc_data in sorted_docs:
-                if not isinstance(doc_data, dict):
-                    continue
-                content = doc_data.get("content", "")
-                if not content:
-                    continue
-                file_path = doc_data.get("file_path", "")
-                create_time = doc_data.get("create_time", 0)
-
-                chunks = chunking_by_token_size(
-                    tokenizer, content,  # type: ignore[arg-type]
-                    chunk_token_size=chunk_token_size,
-                    chunk_overlap_token_size=chunk_overlap,
-                )
-                for chunk in chunks:
-                    chunk_content = chunk["content"]
-                    cid = compute_mdhash_id(chunk_content, prefix="chunk-")
-                    if cid not in full_docs_chunk_map:
-                        full_docs_chunk_map[cid] = (create_time, doc_id, chunk_content, file_path)
-
-    # 7. 遍历 C 构建 new_tc
-    new_tc: dict[str, Any] = {}
+    # 9. 遍历活跃 chunk_id 构建 new_tc
+    new_tc: dict[str, dict[str, Any]] = {}
     missing_chunks: list[str] = []
 
-    # v8 真实数据纠正：脑区 source_id 里的 chunk_id 优先走 cache→full_docs 提取
-    # （因为这些 chunk_id 实际是脑区引用的普通文档 chunk）。
-    # 只有 cache + full_docs 都没匹配时才用脑区元数据直接构造（fallback）。
     for cid in active_chunk_ids:
+        # 9.1 cache original_prompt 提取（取 create_time 最大的 entry）
         if cid in cache_by_chunk_id:
-            # cache original_prompt 提取（取 create_time 最大的 entry）
-            latest_entry = cache_by_chunk_id[cid][0]  # 已降序排
+            latest_entry = cache_by_chunk_id[cid][0]
             _, op, _ = latest_entry
             m = cache_pattern.search(op)
             if m:
                 chunk_content = m.group(1)
-                # v8-Task 10 修复：cache entry 不含 full_doc_id，用 full_docs_chunk_map 反查补 doc_id。
-                # 之前留空导致 doc_status.chunks_list 为空，full_entities/full_relations actual=0。
-                # 反查用 chunk_id 直接匹配 full_docs_chunk_map 的 key（按 chunk_content hash 算的）。
+                # 反查 full_docs_chunk_map 补 full_doc_id / tokens / chunk_order_index / file_path
                 doc_id = ""
+                tokens = 0
+                chunk_order_index = 0
+                file_path = "unknown_source"
                 if cid in full_docs_chunk_map:
-                    doc_id = full_docs_chunk_map[cid][1]  # (create_time, doc_id, content, file_path)
+                    _, doc_id, _, file_path, tokens, chunk_order_index = full_docs_chunk_map[cid]
+                else:
+                    # cache 有但 full_docs 没：tokens 用 tokenizer 现算
+                    if tokenizer is not None:
+                        try:
+                            tokens = len(tokenizer.encode(chunk_content))
+                        except Exception:  # noqa: BLE001
+                            tokens = 0
                 new_tc[cid] = {
                     "content": chunk_content,
                     "full_doc_id": doc_id,
+                    "tokens": tokens,
+                    "chunk_order_index": chunk_order_index,
+                    "file_path": file_path,
                     "llm_cache_list": [e[2] for e in cache_by_chunk_id[cid]],
                 }
                 continue
-        # full_docs fallback
+        # 9.2 full_docs fallback
         if cid in full_docs_chunk_map:
-            _, doc_id, content, _ = full_docs_chunk_map[cid]
+            _, doc_id, content, file_path, tokens, chunk_order_index = full_docs_chunk_map[cid]
             new_tc[cid] = {
                 "content": content,
                 "full_doc_id": doc_id,
+                "tokens": tokens,
+                "chunk_order_index": chunk_order_index,
+                "file_path": file_path,
                 "llm_cache_list": [e[2] for e in cache_by_chunk_id.get(cid, [])],
             }
             continue
-        # 脑区直接构造（fallback）：cache + full_docs 都没匹配，且 chunk_id 来自脑区节点
+        # 9.3 脑区直接构造（fallback）
         if cid in brainregion_chunks:
             content, full_doc_id = brainregion_chunks[cid]
+            # 脑区 content 用 tokenizer 算 tokens
+            tokens = 0
+            if tokenizer is not None:
+                try:
+                    tokens = len(tokenizer.encode(content))
+                except Exception:  # noqa: BLE001
+                    tokens = 0
             new_tc[cid] = {
                 "content": content,
                 "full_doc_id": full_doc_id,
+                "tokens": tokens,
+                "chunk_order_index": 0,
+                "file_path": "unknown_source",
                 "llm_cache_list": [e[2] for e in cache_by_chunk_id.get(cid, [])],
             }
             continue
-        # 三处都没有 → missing
+        # 9.4 三处都没有 → missing
         missing_chunks.append(cid)
 
-    # 8. 备份损坏的 text_chunks + 原子写
-    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
-    pass
+    # 10. 调 storage.upsert + index_done_callback
+    try:
+        await storage.upsert(new_tc)
+        await storage.index_done_callback()
+    except Exception as e:
+        logger.error(f"[LightRAGRepair] text_chunks storage.upsert/index_done_callback 失败: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "expected": len(active_chunk_ids),
+            "actual": len(new_tc),
+            "lost": len(active_chunk_ids) - len(new_tc),
+            "source": "JsonKVStorage",
+            "message": f"storage.upsert 或 index_done_callback 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
 
     actual = len(new_tc)
     logger.info(
