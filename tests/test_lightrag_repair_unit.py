@@ -2232,3 +2232,135 @@ def test_repair_full_relations_reverse_mapping(tmp_path, monkeypatch):
     pairs = fr["doc-1"]["relation_pairs"]
     assert ["entity-a", "entity-b"] in pairs
     assert fr["doc-1"]["count"] == 1
+
+
+# =============================================================================
+# v9 Task 2: RepairEmbeddingFunc 单元测试
+# =============================================================================
+
+import numpy as np
+
+
+class _FakeEmbedModel:
+    """假 embedding 模型（替代真实 bge-base-zh-v1.5，避免测试加载 ~400MB 模型）。
+
+    encode(texts) 返回固定 shape 的随机向量（dim=768），用于验证：
+    - RepairEmbeddingFunc.__call__ 返回 np.ndarray
+    - 维度正确
+    - 批量分片后结果正确合并
+    """
+
+    def __init__(self, dim: int = 768):
+        self.dim = dim
+        self._call_count = 0
+
+    def encode(self, texts, **kwargs):
+        self._call_count += 1
+        # 返回 shape=(len(texts), dim) 的 ndarray
+        return np.random.rand(len(texts), self.dim).astype(np.float32)
+
+
+@pytest.mark.asyncio
+async def test_repair_embedding_func_basic(monkeypatch):
+    """验证 RepairEmbeddingFunc.__call__ 返回 np.ndarray + 维度 768。"""
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    # 用 monkeypatch 替换 get_model（避免加载真实模型）
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    # 实例化 RepairEmbeddingFunc
+    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768)
+
+    # 调 __call__（async）
+    texts = ["你好", "世界", "测试"]
+    result = await embed_func(texts)
+
+    # 断言：返回 np.ndarray，shape=(3, 768)，dtype=float32
+    assert isinstance(result, np.ndarray), f"期望 np.ndarray，实际 {type(result)}"
+    assert result.shape == (3, 768), f"期望 shape (3, 768)，实际 {result.shape}"
+    assert result.dtype == np.float32, f"期望 dtype float32，实际 {result.dtype}"
+
+
+@pytest.mark.asyncio
+async def test_repair_embedding_func_batches_over_32(monkeypatch):
+    """验证 texts 超过 32 条时分批 encode，结果正确合并。"""
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768)
+
+    # 100 条文本（触发分片：3 批 32 + 1 批 4 = 4 次）
+    texts = [f"测试文本_{i}" for i in range(100)]
+    result = await embed_func(texts)
+
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (100, 768)
+    # 假模型 encode 应该被调用 4 次（32+32+32+4）
+    assert fake_model._call_count == 4, f"期望 4 次 encode 调用，实际 {fake_model._call_count}"
+
+
+@pytest.mark.asyncio
+async def test_repair_embedding_func_empty_input(monkeypatch):
+    """验证空 texts 返回 shape=(0, 768) 的 ndarray。"""
+    from niu_api.internal import lightrag_repair
+
+    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768)
+
+    result = await embed_func([])
+
+    assert isinstance(result, np.ndarray)
+    assert result.shape == (0, 768)
+
+
+@pytest.mark.asyncio
+async def test_repair_embedding_func_dimension(monkeypatch):
+    """验证 embedding_dim 属性可读（NanoVectorDBStorage 会读这个属性）。"""
+    from niu_api.internal import lightrag_repair
+
+    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768)
+    assert embed_func.embedding_dim == 768
+    # 验证 model_name 字段也设置正确（BaseVectorStorage._generate_collection_suffix 会读）
+    assert embed_func.model_name == "bge-base-zh-v1.5"
+
+
+@pytest.mark.asyncio
+async def test_repair_embedding_func_model_none_raises(monkeypatch):
+    """验证模型 None 时抛 RuntimeError。"""
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    # get_model 返回 None（模拟模型未加载）
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: None)
+
+    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768)
+
+    with pytest.raises(RuntimeError, match="get_model.*None"):
+        await embed_func(["测试"])
+
+
+@pytest.mark.asyncio
+async def test_repair_embedding_func_is_async_callable(monkeypatch):
+    """验证 RepairEmbeddingFunc 实例的 __call__ 是 async callable（可 await）。"""
+    import inspect
+
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
+    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768)
+
+    # __call__ 应该是协程函数
+    assert inspect.iscoroutinefunction(embed_func.__call__), (
+        "RepairEmbeddingFunc.__call__ 应该是 async（协程函数）"
+    )
+    # 同时验证 _embed_async 是协程函数
+    assert inspect.iscoroutinefunction(embed_func._embed_async), (
+        "RepairEmbeddingFunc._embed_async 应该是 async（协程函数）"
+    )
