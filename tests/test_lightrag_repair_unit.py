@@ -2027,13 +2027,17 @@ async def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
     assert vdb_e["data"][0]["entity_name"] == "entity-active"
 
 
-def test_repair_vdb_relationships_no_weight_in_data(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_repair_vdb_relationships_no_weight_in_data(tmp_path, monkeypatch):
     """repair_vdb_relationships 的 data_list item 不应含 weight 字段。
 
     v4 实现：data_list item 只含 __id__/src_id/tgt_id/content/source_id 5 个字段。
     weight 只在 GraphML d7 字段，vdb 不写 weight（防数据冗余 + 跟 LightRAG 一致）。
 
     回归点：vdb_relationships.json 的任何 data item 都不应有 "weight" 字段。
+
+    v9 Task 7 转换：repair_vdb_relationships 改为 async（走 NanoVectorDBStorage.upsert），
+    需 await + 用 _FakeEmbedModel 替代真实 bge 模型（避免 ~400MB 加载）。
     """
     _write_graphml_v8(
         tmp_path,
@@ -2050,22 +2054,28 @@ def test_repair_vdb_relationships_no_weight_in_data(tmp_path, monkeypatch):
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
+    # v9：用 _FakeEmbedModel 替代真实 bge 模型（避免加载 ~400MB）
+    from niu_api.internal import embedding as niu_embedding
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+
     from niu_api.internal.lightrag_repair import repair_vdb_relationships
 
-    result = repair_vdb_relationships()
+    result = await repair_vdb_relationships()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1
     vdb_r = json.loads((tmp_path / "vdb_relationships.json").read_text())
     for item in vdb_r.get("data", []):
-        # 任何层级都不应有 weight 字段（v4 实现只构造 5 个字段）
+        # 任何层级都不应有 weight 字段（v9 走 storage 接口，meta_fields 不含 weight）
         assert "weight" not in item, f"vdb_relationships item 不应含 weight: {item}"
-        # 确认 v4 实现的 5 个字段都在
+        # 确认 v9 实现的字段都在（meta_fields: src_id/tgt_id/source_id/content/file_path）
         assert "__id__" in item
         assert "src_id" in item
         assert "tgt_id" in item
         assert "content" in item
         assert "source_id" in item
+        assert "file_path" in item
 
 
 @pytest.mark.asyncio
@@ -3500,4 +3510,471 @@ async def test_repair_vdb_entities_meta_fields_filter(monkeypatch, tmp_path):
     file_paths = {item["file_path"] for item in vdb["data"]}
     assert file_paths == {"/tmp/file1.txt", "/tmp/file2.txt"}, (
         f"file_path 集合不一致: {file_paths}"
+    )
+
+
+# =============================================================================
+# v9 Task 7: repair_vdb_relationships 走 NanoVectorDBStorage 单元测试
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_relationships_real_data(monkeypatch, tmp_path):
+    """真实数据测试：拷贝 3 真相源到 tmp_path，跑 repair_vdb_relationships。
+
+    验证：
+    1. repair 不修改 3 真相源（sha256 不变）
+    2. vdb_relationships.json 生成 + 字段格式正确
+    3. 每条 relationship 含 __id__/src_id/tgt_id/source_id/content/file_path/vector
+       （不含 keywords/description/weight）
+    4. src_id/tgt_id 必须 sorted（src_id <= tgt_id）
+    5. __id__ = compute_mdhash_id(sorted_src + sorted_tgt, prefix="rel-")
+    6. content 格式 = f"{keywords}\\t{src}\\n{tgt}\\n{description}"
+    7. keywords 用 `", ".join(dict.fromkeys(...))` 去重保序（跨运行稳定）
+    8. matrix 是 L2 归一化后的单位向量
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+    from lightrag.utils import compute_mdhash_id, make_relation_vdb_ids
+
+    real_storage = Path.home() / ".niu" / "lightrag_storage"
+    if not real_storage.exists():
+        pytest.skip(f"真实数据目录不存在: {real_storage}")
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    _copy_truth_sources(tmp_storage, real_storage)
+
+    # 记录真相源 sha256
+    graphml_sha = _sha256(tmp_storage / "graph_chunk_entity_relation.graphml")
+    full_docs_sha = _sha256(tmp_storage / "kv_store_full_docs.json")
+    cache_sha = _sha256(tmp_storage / "kv_store_llm_response_cache.json")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    # 跑 repair_vdb_relationships
+    result = await lightrag_repair.repair_vdb_relationships()
+
+    # 断言 1：repair 成功
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] > 0, f"actual=0，没重建任何 relationship: {result}"
+
+    # 断言 2：真相源 sha256 不变
+    assert _sha256(tmp_storage / "graph_chunk_entity_relation.graphml") == graphml_sha
+    assert _sha256(tmp_storage / "kv_store_full_docs.json") == full_docs_sha
+    assert _sha256(tmp_storage / "kv_store_llm_response_cache.json") == cache_sha
+
+    # 断言 3：vdb_relationships.json 字段格式
+    vdb = _load_vdb(tmp_storage / "vdb_relationships.json")
+    assert vdb["embedding_dim"] == 768
+    assert isinstance(vdb["data"], list)
+    assert len(vdb["data"]) == result["actual"]
+    assert isinstance(vdb["matrix"], str)
+
+    # 断言 4：每条 relationship 字段格式
+    for item in vdb["data"]:
+        assert "__id__" in item, f"缺 __id__: {item}"
+        assert "src_id" in item, f"缺 src_id: {item}"
+        assert "tgt_id" in item, f"缺 tgt_id: {item}"
+        assert "source_id" in item, f"缺 source_id: {item}"
+        assert "content" in item, f"缺 content: {item}"
+        assert "file_path" in item, f"缺 file_path: {item}"
+        assert "vector" in item, f"缺 vector: {item}"
+        assert "__created_at__" in item, f"缺 __created_at__: {item}"
+        # 被过滤字段（不应落盘）
+        assert "keywords" not in item, f"keywords 不应落盘（meta_fields 过滤）: {item}"
+        assert "description" not in item, f"description 不应落盘: {item}"
+        assert "weight" not in item, f"weight 不应落盘: {item}"
+        # 类型校验
+        assert isinstance(item["__id__"], str)
+        assert item["__id__"].startswith("rel-")
+        assert isinstance(item["src_id"], str)
+        assert isinstance(item["tgt_id"], str)
+        assert isinstance(item["source_id"], str)
+        assert isinstance(item["content"], str)
+        assert isinstance(item["file_path"], str)
+        assert isinstance(item["vector"], str)
+        assert isinstance(item["__created_at__"], int)
+
+        # 断言 5：src_id/tgt_id 必须 sorted（src_id <= tgt_id）
+        # 跟 LightRAG operate.py L1586-1587/L2515-2516 一致
+        assert item["src_id"] <= item["tgt_id"], (
+            f"src_id {item['src_id']!r} > tgt_id {item['tgt_id']!r}（未 sorted）"
+        )
+
+        # 断言 6：__id__ = compute_mdhash_id(sorted_src + sorted_tgt, prefix="rel-")
+        # 跟 LightRAG operate.py L1589/L2519 + utils.py L577-578 一致
+        # 也等于 make_relation_vdb_ids(sorted_src, sorted_tgt)[0]
+        expected_id = compute_mdhash_id(item["src_id"] + item["tgt_id"], prefix="rel-")
+        assert item["__id__"] == expected_id, (
+            f"__id__ {item['__id__']} != compute_mdhash_id({item['src_id']}+{item['tgt_id']}) = {expected_id}"
+        )
+        assert item["__id__"] == make_relation_vdb_ids(item["src_id"], item["tgt_id"])[0]
+
+        # 断言 7：content 格式 = f"{keywords}\t{src}\n{tgt}\n{description}"
+        # 跟 LightRAG operate.py L1601/L2527 一致
+        # content 第 1 段（tab 之前）= keywords
+        # content tab 之后第 1 行 = src_id
+        # content tab 之后第 2 行 = tgt_id
+        # content tab 之后第 3 行起 = description
+        parts = item["content"].split("\t", 1)
+        assert len(parts) == 2, f"content 缺 tab 分隔符: {item['content']!r}"
+        keywords_part = parts[0]
+        rest = parts[1]
+        lines = rest.split("\n")
+        assert len(lines) >= 3, f"content rest 行数 < 3: {rest!r}"
+        assert lines[0] == item["src_id"], (
+            f"content 第 1 行 {lines[0]!r} != src_id {item['src_id']!r}"
+        )
+        assert lines[1] == item["tgt_id"], (
+            f"content 第 2 行 {lines[1]!r} != tgt_id {item['tgt_id']!r}"
+        )
+        # description 是 lines[2:] 用 \n join（可能多行）
+        # 这里只验证存在性，不验证具体内容（description 来自 GraphML d8）
+
+        # 断言 8：keywords 用 ", " 分隔（如果非空）
+        # v9 用 dict.fromkeys 保序去重（跟 LightRAG set 不完全一致但跨运行稳定）
+        if keywords_part:
+            # keywords_part 应该是 "kw1, kw2, kw3" 格式（逗号+空格分隔）
+            # 不能含 <SEP>（应该已被拆分+去重+join）
+            assert "<SEP>" not in keywords_part, (
+                f"keywords 含 <SEP>（未拆分）: {keywords_part!r}"
+            )
+            # 拆分后去重检查（去重后应该跟原 list 长度一致）
+            kw_list = [k.strip() for k in keywords_part.split(",") if k.strip()]
+            assert len(kw_list) == len(set(kw_list)), (
+                f"keywords 未去重: {kw_list}"
+            )
+
+    # 断言 9：matrix 是 L2 归一化后的单位向量
+    matrix = _decode_matrix(vdb["matrix"], embedding_dim=768)
+    assert matrix.shape == (len(vdb["data"]), 768)
+    for i, row in enumerate(matrix):
+        norm = float((row ** 2).sum() ** 0.5)
+        assert 0.99 <= norm <= 1.01, f"matrix 第 {i} 行模长 {norm} 不在 [0.99, 1.01]"
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_relationships_empty_user(monkeypatch, tmp_path):
+    """全新用户测试：GraphML 无 edge，不写派生文件（跟 LightRAG 原生首次启动一致）。
+
+    v9 第 2 轮审查修复（问题 5+6 / I3+I2）：全新用户场景下 vdb_relationships.json 不应被写空，
+    应保持不存在。
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+    # 全新用户合法状态：3 真相源全 absent/empty
+    # 注意：GraphML 写空字符串会触发 ET.ParseError（不是"无 edge"），
+    # 必须写一个有效的空 GraphML（含 graph 元素但无 edge）才能模拟"全新用户无边"。
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected"/>\n'
+        '</graphml>\n',
+        encoding="utf-8",
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_relationships()
+
+    assert result["status"] == "ok"
+    assert result["expected"] == 0
+    assert result["actual"] == 0
+
+    # v9 第 2 轮审查修复（问题 5+6 / I3+I2）：
+    # 全新用户场景下 vdb_relationships.json 应保持不存在
+    # （跟 LightRAG NanoVectorDBStorage.initialize 内存空 dict 不写盘一致）
+    vdb_path = tmp_storage / "vdb_relationships.json"
+    assert not vdb_path.exists(), (
+        "vdb_relationships.json 应不存在（全新用户不写派生文件），但被生成了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_relationships_src_tgt_sorted(monkeypatch, tmp_path):
+    """src/tgt sorted 测试：构造 GraphML 含反向 src/tgt（src > tgt），
+    验证 vdb_relationships.json 落盘后 src_id <= tgt_id（已 sorted）。
+
+    跟 LightRAG operate.py L1586-1587/L2515-2516 一致：
+        if src > tgt: src, tgt = tgt, src
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：edge source="B" target="A"（src > tgt，反向）
+    # 验证 repair 后 src_id="A" / tgt_id="B"（sorted）
+    graphml_content = """<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <graph id="G" edgedefault="undirected">
+    <node id="a"/>
+    <node id="b"/>
+    <edge source="b" target="a">
+      <data key="d8">B 到 A 的关系</data>
+      <data key="d9">关系词</data>
+      <data key="d10">chunk-001</data>
+      <data key="d11">/tmp/file1.txt</data>
+    </edge>
+  </graph>
+</graphml>
+"""
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_relationships()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 1, f"应重建 1 条，实际 {result['actual']}"
+
+    vdb = _load_vdb(tmp_storage / "vdb_relationships.json")
+    assert len(vdb["data"]) == 1
+    item = vdb["data"][0]
+    # sorted 后 src_id="a" / tgt_id="b"（"a" < "b"）
+    assert item["src_id"] == "a", f"src_id 应 sorted 为 'a'，实际 {item['src_id']!r}"
+    assert item["tgt_id"] == "b", f"tgt_id 应 sorted 为 'b'，实际 {item['tgt_id']!r}"
+    # content tab 后第 1 行 = src_id（sorted 后）
+    parts = item["content"].split("\t", 1)
+    lines = parts[1].split("\n")
+    assert lines[0] == "a", f"content 第 1 行应 'a'（sorted src），实际 {lines[0]!r}"
+    assert lines[1] == "b", f"content 第 2 行应 'b'（sorted tgt），实际 {lines[1]!r}"
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_relationships_keywords_dedup(monkeypatch, tmp_path):
+    """keywords 去重保序测试：构造 GraphML d9 含 <SEP> 分隔的重复关键词，
+    验证 vdb_relationships.json 落盘后 content 的 keywords 部分用 ", " 分隔 + 已去重 + 保序。
+
+    v9 用 dict.fromkeys 保序去重（跟 LightRAG set 不完全一致但跨运行稳定）。
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：d9 含 <SEP> 分隔的重复关键词 "kw_a<SEP>kw_b<SEP>kw_a<SEP>kw_c"
+    # 期望去重保序后："kw_a, kw_b, kw_c"
+    # 注意：GRAPH_FIELD_SEP = "<SEP>"，含 "<" ">"，在 XML 内必须转义为 &lt;SEP&gt;
+    # ET.parse 会自动反转义回 "<SEP>"
+    from lightrag.constants import GRAPH_FIELD_SEP as _SEP
+    # 构造转义后的 SEP（&lt;SEP&gt;）用于 XML，data.text 会还原成 "<SEP>"
+    sep_escaped = _SEP.replace("<", "&lt;").replace(">", "&gt;")
+    graphml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected">\n'
+        '    <node id="a"/>\n'
+        '    <node id="b"/>\n'
+        '    <edge source="a" target="b">\n'
+        '      <data key="d8">关系描述</data>\n'
+        f'      <data key="d9">kw_a{sep_escaped}kw_b{sep_escaped}kw_a{sep_escaped}kw_c</data>\n'
+        '      <data key="d10">chunk-001</data>\n'
+        '      <data key="d11">/tmp/file1.txt</data>\n'
+        '    </edge>\n'
+        '  </graph>\n'
+        '</graphml>\n'
+    )
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_relationships()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 1, f"应重建 1 条，实际 {result['actual']}"
+
+    vdb = _load_vdb(tmp_storage / "vdb_relationships.json")
+    assert len(vdb["data"]) == 1
+    item = vdb["data"][0]
+    # content tab 前是 keywords 部分
+    parts = item["content"].split("\t", 1)
+    keywords_str = parts[0]
+    # 期望去重保序后 "kw_a, kw_b, kw_c"
+    assert keywords_str == "kw_a, kw_b, kw_c", (
+        f"keywords 去重保序失败: 期望 'kw_a, kw_b, kw_c'，实际 {keywords_str!r}"
+    )
+    # 不应含 <SEP>
+    assert "<SEP>" not in keywords_str
+    assert _SEP not in keywords_str
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_relationships_content_format(monkeypatch, tmp_path):
+    """content 格式测试：验证 content 严格遵循 f"{keywords}\\t{src}\\n{tgt}\\n{description}"。
+
+    跟 LightRAG operate.py L1601/L2527 一致：
+        rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
+    tab 分隔 keywords 和 src，换行分隔 src/tgt/description。
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    # 构造 GraphML：含 keywords / description 多行（验证换行分隔）
+    graphml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected">\n'
+        '    <node id="alpha"/>\n'
+        '    <node id="beta"/>\n'
+        '    <edge source="alpha" target="beta">\n'
+        '      <data key="d8">alpha 跟 beta 的关系描述</data>\n'
+        '      <data key="d9">关键词1, 关键词2</data>\n'
+        '      <data key="d10">chunk-abc</data>\n'
+        '      <data key="d11">/tmp/doc.txt</data>\n'
+        '    </edge>\n'
+        '  </graph>\n'
+        '</graphml>\n'
+    )
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_relationships()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 1, f"应重建 1 条，实际 {result['actual']}"
+
+    vdb = _load_vdb(tmp_storage / "vdb_relationships.json")
+    assert len(vdb["data"]) == 1
+    item = vdb["data"][0]
+
+    # 验证 src_id/tgt_id sorted（"alpha" < "beta"）
+    assert item["src_id"] == "alpha"
+    assert item["tgt_id"] == "beta"
+
+    # 验证 content 严格格式
+    expected_content = "关键词1, 关键词2\talpha\nbeta\nalpha 跟 beta 的关系描述"
+    assert item["content"] == expected_content, (
+        f"content 格式不对:\n"
+        f"  期望: {expected_content!r}\n"
+        f"  实际: {item['content']!r}"
+    )
+
+    # 验证 file_path 从 d11 读取
+    assert item["file_path"] == "/tmp/doc.txt", (
+        f"file_path 应从 d11 读取: 期望 '/tmp/doc.txt'，实际 {item['file_path']!r}"
+    )
+
+    # 验证 source_id 从 d10 读取
+    assert item["source_id"] == "chunk-abc", (
+        f"source_id 应从 d10 读取: 期望 'chunk-abc'，实际 {item['source_id']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_vdb_relationships_meta_fields_filter(monkeypatch, tmp_path):
+    """meta_fields 过滤测试：构造 GraphML 含 keywords/description/weight 字段（实际 weight 不在 GraphML），
+    验证 vdb_relationships.json 落盘后 keywords/description/weight 被过滤掉。
+
+    meta_fields = {"src_id", "tgt_id", "source_id", "content", "file_path"}（lightrag.py:722）
+    落盘字段：__id__ / __created_at__ / src_id / tgt_id / source_id / content / file_path / vector
+    被过滤字段：keywords / description / weight
+    """
+    from niu_api.internal import lightrag_repair
+    from niu_api.internal import embedding as niu_embedding
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    graphml_content = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <graph id="G" edgedefault="undirected">\n'
+        '    <node id="entity_one"/>\n'
+        '    <node id="entity_two"/>\n'
+        '    <edge source="entity_one" target="entity_two">\n'
+        '      <data key="d8">这是 entity_one 跟 entity_two 的关系描述，应被过滤</data>\n'
+        '      <data key="d9">这是关键词，应被过滤</data>\n'
+        '      <data key="d10">chunk-001</data>\n'
+        '      <data key="d11">/tmp/file1.txt</data>\n'
+        '    </edge>\n'
+        '  </graph>\n'
+        '</graphml>\n'
+    )
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+
+    fake_model = _FakeEmbedModel(dim=768)
+    monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_vdb_relationships()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    assert result["actual"] == 1, f"应重建 1 条，实际 {result['actual']}"
+
+    vdb = _load_vdb(tmp_storage / "vdb_relationships.json")
+    assert len(vdb["data"]) == 1
+    item = vdb["data"][0]
+
+    # 验证：每条只含 meta_fields 内字段 + storage 自动注入字段
+    # 落盘字段：__id__ / __created_at__ / src_id / tgt_id / source_id / content / file_path / vector
+    on_disk_expected = {
+        "__id__",
+        "__created_at__",
+        "src_id",
+        "tgt_id",
+        "source_id",
+        "content",
+        "file_path",
+        "vector",
+    }
+    item_keys = set(item.keys())
+    # 被过滤字段不应出现
+    assert "keywords" not in item_keys, (
+        f"keywords 不应落盘（meta_fields 过滤）: {item_keys}"
+    )
+    assert "description" not in item_keys, (
+        f"description 不应落盘（meta_fields 过滤）: {item_keys}"
+    )
+    assert "weight" not in item_keys, (
+        f"weight 不应落盘（meta_fields 过滤）: {item_keys}"
+    )
+    # 落盘字段集合应精确匹配（不允许多余字段）
+    assert item_keys == on_disk_expected, (
+        f"字段集合不一致: 实际={item_keys}, 期望={on_disk_expected}"
+    )
+
+    # 验证 content 内含 keywords/description（在 content 字符串内，但不是独立字段）
+    assert "这是关键词" in item["content"], (
+        f"content 应含 keywords 字符串: {item['content']!r}"
+    )
+    assert "这是 entity_one 跟 entity_two 的关系描述" in item["content"], (
+        f"content 应含 description 字符串: {item['content']!r}"
     )

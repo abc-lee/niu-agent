@@ -257,19 +257,24 @@ def _load_json_dict(path: Path) -> dict[str, Any] | None:
     return raw
 
 
-def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str, str]], dict[str, Any] | None]:
+def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str, str, str]], dict[str, Any] | None]:
     """解析 GraphML，返回 (node_ids, edges, error)。
 
     node_ids: set of node id
-    edges: list of (src, tgt, edge_source_id, edge_description, edge_keywords)
+    edges: list of (src, tgt, edge_source_id, edge_description, edge_keywords, edge_file_path)
            - edge_source_id: edge 的 d10 字段（<SEP> 分隔的 chunk_id 列表）
            - edge_description: edge 的 d8 字段（描述文本）
-           - edge_keywords: edge 的 d9 字段（关系关键词，逗号分隔，跟 LightRAG operate.py L2173 ",".join 一致）
+           - edge_keywords: edge 的 d9 字段（关系关键词，逗号分隔，v9 用 dict.fromkeys 去重保序）
+           - edge_file_path: edge 的 d11 字段（文件路径，v9 Task 7 新增，用于 vdb_relationships meta_fields）
     error: None 或 {"check": ..., "severity": "critical", ...}
 
     GraphML edge key 定义（参考真实 GraphML 头部）：
         d7=weight, d8=description, d9=keywords, d10=source_id,
         d11=file_path, d12=created_at, d13=truncate
+
+    v9 Task 7 改动：5 元组 → 6 元组，新增 edge_file_path（d11）。
+    理由：vdb_relationships 的 meta_fields 包含 file_path（lightrag.py L722），
+    必须从 GraphML edge 的 d11 字段读取。
     """
     import xml.etree.ElementTree as ET
 
@@ -296,7 +301,7 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
 
     ns = "{http://graphml.graphdrawing.org/xmlns}"
     node_ids: set[str] = set()
-    edges: list[tuple[str, str, str, str, str]] = []  # (src, tgt, edge_source_id, edge_description, edge_keywords)
+    edges: list[tuple[str, str, str, str, str, str]] = []  # (src, tgt, edge_source_id, edge_description, edge_keywords, edge_file_path)
 
     # 找 graph 元素
     graph = root.find(f"{ns}graph")
@@ -325,6 +330,7 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
             edge_src_id = ""
             edge_desc = ""
             edge_keywords = ""
+            edge_file_path = ""
             for data in child.findall(f"{ns}data"):
                 key = data.get("key")
                 if key == "d8":
@@ -333,7 +339,9 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
                     edge_src_id = data.text or ""
                 elif key == "d9":
                     edge_keywords = data.text or ""
-            edges.append((src, tgt, edge_src_id, edge_desc, edge_keywords))
+                elif key == "d11":
+                    edge_file_path = data.text or ""
+            edges.append((src, tgt, edge_src_id, edge_desc, edge_keywords, edge_file_path))
     return node_ids, edges, None
 
 
@@ -1644,22 +1652,119 @@ async def repair_vdb_entities() -> dict[str, Any]:
     }
 
 
-def repair_vdb_relationships() -> dict[str, Any]:
-    """6. 遍历 GraphML edge 重新 embedding 重建 vdb_relationships。
+async def repair_vdb_relationships() -> dict[str, Any]:
+    """v9：从 GraphML edge 读关系 + 走 NanoVectorDBStorage.upsert 重建 vdb_relationships。
 
-    真相源：graph_chunk_entity_relation.graphml（edge src/tgt + d2 description + d3 source_id）
-    派生：vdb_relationships.json
+    真相源：graph_chunk_entity_relation.graphml（edge src/tgt + d8 description + d9 keywords + d10 source_id + d11 file_path）
+    派生：vdb_relationships.json（通过 NanoVectorDBStorage.upsert 写）
 
-    每条 relationship 的 __id__ 用 make_relation_vdb_ids 生成正序 ID
-    src_id/tgt_id 用 sorted 后的值（跟 LightRAG 写入一致）
-    embedding 失败 >10% → status=error 不写文件
+    走 storage 接口的好处：
+    - NanoVectorDBStorage.upsert 内部自动调 embedding_func 做 embed
+    - 自动注入 __id__ / __created_at__ / vector / __vector__
+    - index_done_callback 触发 NanoVectorDB.save 写 matrix（L2 归一化后的单位向量）
+    - meta_fields 过滤掉 keywords/description/weight（不落盘）
+
+    算法：
+    1. initialize_share_data(workers=1) + set_default_workspace("")
+    2. 实例化 NanoVectorDBStorage(namespace=relationships, embedding_func=RepairEmbeddingFunc)
+    3. await storage.initialize()
+    4. 读 GraphML edges（用 v9 6 元组 _load_graphml_nodes_edges）
+    5. 构造 upsert data：
+       - src/tgt 必须 sorted（跟 LightRAG operate.py L1586-1587/L2515-2516 一致）
+       - keywords 用 `", ".join(dict.fromkeys(...))` 去重保序（v9 第 2 轮审查修复 问题 7 / I5，跨运行稳定）
+       - content 格式 f"{keywords}\\t{sorted_src}\\n{sorted_tgt}\\n{description}"（跟 operate.py L1601/L2527 一致）
+       - dict key 用 make_relation_vdb_ids(sorted_src, sorted_tgt)[0]（即 compute_mdhash_id(sorted_src + sorted_tgt, prefix="rel-")）
+       - value 只传 meta_fields 内字段（content/src_id/tgt_id/source_id/file_path）
+    6. 调 await storage.upsert(data) + await storage.index_done_callback()
+    7. 全新用户（GraphML 无 edge）→ 不写派生文件
+
+    关键：
+    - src/tgt 必须 sorted（LightRAG operate.py L1586-1587/L2515-2516）
+    - keywords 用 `", ".join(dict.fromkeys(...))` 去重保序（跨运行稳定；跟 LightRAG set 不完全一致但更稳定）
+    - content 格式 f"{keywords}\\t{src_id}\\n{tgt_id}\\n{description}"（tab 分隔 keywords 和 src，换行分隔后续）
+    - dict key 用 make_relation_vdb_ids(sorted_src, sorted_tgt)[0]（src/tgt 已 sorted）
+    - 不要传 keywords/description/weight（meta_fields 不含，被过滤不落盘）
+    - 不要手写 __id__/__created_at__/vector/__vector__（storage 自动注入）
+    - upsert 后必须显式调 index_done_callback 才写盘
+
+    v9 修复 v8 两个 bug：
+    - keywords 去重继续用 dict.fromkeys 保序，但显式拆分 GraphML d9 + 过滤空字符串
+    - v8 5 元组没读 d11 file_path → v9 扩展 6 元组读 d11
+
+    异常处理：
+    - GraphML 损坏 → unrecoverable
+    - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
     storage_dir = _storage_dir()
-    vdb_path = storage_dir / "vdb_relationships.json"
 
-    # 1. 读 GraphML edges（真相源）
+    # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.shared_storage import (
+        initialize_share_data,
+        set_default_workspace,
+    )
+    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
+    from lightrag.namespace import NameSpace
+
+    initialize_share_data(workers=1)
+    set_default_workspace("")
+
+    # 2. 实例化 NanoVectorDBStorage
+    #    global_config 必须含：
+    #    - working_dir（NanoVectorDBStorage.__post_init__ 读）
+    #    - vector_db_storage_cls_kwargs.cosine_better_than_threshold（强制要求）
+    #    - embedding_batch_num（控制 embedding 分批大小）
+    #    meta_fields 跟 LightRAG lightrag.py:722 一致
+    global_config: dict[str, Any] = {
+        "working_dir": str(storage_dir),
+        "vector_db_storage_cls_kwargs": {
+            "cosine_better_than_threshold": 0.2,
+        },
+        "embedding_batch_num": 32,
+    }
+    storage = NanoVectorDBStorage(
+        namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
+        workspace="",
+        global_config=global_config,
+        embedding_func=RepairEmbeddingFunc(embedding_dim=768),
+        meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
+    )
+
+    try:
+        await storage.initialize()
+        # 跟 Task 5/6 一致：清空 NanoVectorDB client storage 防止旧数据残留影响本次重建
+        # （NanoVectorDBStorage.__post_init__ 已在 _client 里加载已有 vdb_relationships.json，
+        #  repair 场景下我们要求从真相源完全重新派生——如果不 clear，旧 relationship 不会被删除，
+        #  NanoVectorDB.upsert 只会按 __id__ 更新已有条目，已删除的 relationship 会残留）
+        # NanoVectorDB 把数据存在 self._client._NanoVectorDB__storage dict 里
+        # （keys: embedding_dim / data(list) / matrix(np.ndarray)）
+        client = storage._client
+        if client is not None:
+            client_storage = getattr(client, "_NanoVectorDB__storage", None)
+            if isinstance(client_storage, dict):
+                client_storage["data"] = []
+                client_storage["matrix"] = np.array(
+                    [], dtype=np.float32
+                ).reshape(0, storage.embedding_func.embedding_dim)
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_relationships storage.initialize 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "NanoVectorDBStorage",
+            "message": f"storage.initialize 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    # 3. 读 GraphML edges（真相源，v9 6 元组 _load_graphml_nodes_edges）
+    #    返回 (node_ids, edges, error)
+    #    edges: list of (src, tgt, edge_source_id, edge_description, edge_keywords, edge_file_path)
     _, edges, graphml_err = _load_graphml_nodes_edges()
-    if graphml_err:
+    if graphml_err is not None:
         return {
             "status": "error",
             "expected": 0,
@@ -1669,129 +1774,174 @@ def repair_vdb_relationships() -> dict[str, Any]:
             "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
             "unrecoverable": True,
         }
+
+    # 4. 全新用户（GraphML 无 edge）→ 不写派生文件
+    #    v9 第 2 轮审查修复（问题 5+6 / I3+I2）：
+    #    LightRAG 全新用户首次启动 NanoVectorDBStorage.initialize 内存空 dict，
+    #    不主动写空文件到磁盘。v9 跟 LightRAG 原生行为一致——
+    #    全新用户场景下 vdb_relationships.json 不存在，不要强行写空 vdb 文件
+    #    （write_json 写空 vdb 跟 NanoVectorDB.save 字节级可能不一致）。
+    #    _check_truth_sources_intact 已支持 absent/empty=合法。
     if not edges:
-        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-        pass
+        logger.info(
+            "[LightRAGRepair] GraphML 无 edge（全新用户），不写派生文件（跟 LightRAG 原生一致）"
+        )
         return {
             "status": "ok",
             "expected": 0,
             "actual": 0,
             "lost": 0,
             "source": "GraphML",
-            "message": "GraphML 无 edge，写空 vdb_relationships",
+            "message": "GraphML 无 edge，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
         }
 
-    # 2. 收集要 embedding 的 texts
-    # LightRAG operate.py L1601/L2527: rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
-    # combined_keywords 是逗号分隔的多个关键词合并后的字符串（LightRAG operate.py L2173: ",".join(sorted(all_keywords))）
-    # GraphML d9 字段直接存储 combined_keywords，已经是逗号分隔的字符串
-    # 这里做防御性 normalize：若 d9 错误用 <SEP> 分隔则转成逗号分隔，保持跟 LightRAG 写入格式一致
-    items: list[tuple[str, str, str, str, str]] = []
-    # (sorted_src, sorted_tgt, content, source_id, edge_id_for_vdb)
-    for src, tgt, edge_src_id, edge_desc, edge_keywords in edges:
+    # 5. 构造 upsert data（严格对照字段表）
+    #    关键：
+    #    - src/tgt 必须 sorted（跟 LightRAG operate.py L1586-1587/L2515-2516 一致）
+    #    - keywords 用 ", ".join(dict.fromkeys(...)) 去重保序（v9 第 2 轮审查修复 问题 7 / I5，
+    #      跨运行稳定；跟 LightRAG set 不完全一致但更稳定）
+    #    - content 格式 f"{keywords}\\t{sorted_src}\\n{sorted_tgt}\\n{description}"
+    #      （跟 operate.py L1601/L2527 一致，tab 分隔 keywords 和 src，换行分隔后续）
+    #    - dict key 用 make_relation_vdb_ids(sorted_src, sorted_tgt)[0]
+    #      （= compute_mdhash_id(sorted_src + sorted_tgt, prefix="rel-")，src/tgt 已 sorted）
+    #    - value 只传 meta_fields 内字段（不传 keywords/description/weight，被过滤不落盘）
+    upsert_data: dict[str, dict[str, Any]] = {}
+    skipped_count = 0
+    for src, tgt, edge_src_id, edge_desc, edge_keywords, edge_file_path in edges:
         if not src or not tgt:
+            skipped_count += 1
             continue
-        # sorted 后存，跟 LightRAG 写入一致
+
+        # 5.1 sorted src/tgt（跟 LightRAG operate.py L1586-1587/L2515-2516 一致）
         sorted_src, sorted_tgt = sorted((src, tgt))
-        # __id__ 用 make_relation_vdb_ids 的第一个（正序）
-        candidate_ids = make_relation_vdb_ids(sorted_src, sorted_tgt)
-        vdb_id = candidate_ids[0]
-        # content 格式: f"{keywords}\t{src}\n{tgt}\n{desc}"
-        # keywords/desc 为空用空字符串（保持 LightRAG 格式一致，不破坏向量比对）
-        # normalize keywords：把 <SEP> 分隔（如有）拆成 list 再用 ", " join
-        # 跟 LightRAG operate.py L1483 ", ".join(set(keywords)) 一致——多关键词用逗号+空格分隔
-        # LightRAG 用 set 去重，这里也去重保持一致（避免 embedding 输入与原生不一致）
-        if edge_keywords and GRAPH_FIELD_SEP in edge_keywords:
-            kw_list = [k.strip() for k in edge_keywords.split(GRAPH_FIELD_SEP) if k.strip()]
-            # dict.fromkeys 保留顺序去重（与 set 等价但保持 LightRAG 写入时的顺序）
-            normalized_keywords = ", ".join(dict.fromkeys(kw_list))
+
+        # 5.2 keywords 去重（v9 第 2 轮审查修复 问题 7 / I5）
+        #     GraphML d9 字段可能用 <SEP> 分隔（多关键词合并）或逗号分隔。
+        #     先按 <SEP> 拆分（如有），再用 dict.fromkeys 去重保序，最后 ", " join。
+        #
+        #     注意：LightRAG operate.py L1482-1486 原生用 `set(keywords)` 去重（无序），
+        #     但 set 去重后顺序不稳定——跨运行结果可能不同（同一 GraphML d9 输入两次
+        #     产生不同 combined_keywords 字符串），导致字节级 diff 不稳定。
+        #
+        #     v9 改用 `dict.fromkeys(kw_list)` 去重保序（Python 3.7+ dict 保持插入顺序），
+        #     跨运行稳定。如果 GraphML d9 已是 LightRAG 写入时 `", ".join(set(...))` 后的字符串，
+        #     dict.fromkeys 拆分 + 去重 + join 后跟原字符串一致（已去重，不会改变）。
+        #
+        #     取舍：跟 LightRAG operate.py L1483 `set(keywords)` 不完全一致
+        #     （set 无序 vs dict.fromkeys 保序），但跨运行稳定，且如果 GraphML d9
+        #     已是去重后的字符串，结果跟原字符串一致——v9 选 dict.fromkeys 优先保证稳定性。
+        if edge_keywords:
+            if GRAPH_FIELD_SEP in edge_keywords:
+                kw_list = [k.strip() for k in edge_keywords.split(GRAPH_FIELD_SEP) if k.strip()]
+            else:
+                # 逗号分隔（LightRAG 写入时用 ", " join）
+                kw_list = [k.strip() for k in edge_keywords.split(",") if k.strip()]
+            # 用 dict.fromkeys 去重保序（跨运行稳定，跟 set 不同）
+            combined_keywords = ", ".join(dict.fromkeys(kw_list)) if kw_list else ""
         else:
-            normalized_keywords = edge_keywords or ""
-        content = f"{normalized_keywords}\t{sorted_src}\n{sorted_tgt}\n{edge_desc}"
-        items.append((sorted_src, sorted_tgt, content, edge_src_id, vdb_id))
+            combined_keywords = ""
 
-    expected = len(items)
-    if expected == 0:
-        # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-        pass
-        return {
-            "status": "ok",
-            "expected": 0,
-            "actual": 0,
-            "lost": 0,
-            "source": "GraphML",
-            "message": "GraphML 无有效 edge，写空 vdb_relationships",
-        }
+        # 5.3 content 格式（跟 LightRAG operate.py L1601/L2527 一致）
+        #     f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
+        #     tab 分隔 keywords 和 src，换行分隔 src/tgt/description
+        #     keywords/desc 为空用空字符串（保持 LightRAG 格式一致，不破坏向量比对）
+        content = f"{combined_keywords}\t{sorted_src}\n{sorted_tgt}\n{edge_desc}"
 
-    texts = [t for _, _, t, _, _ in items]
+        # 5.4 dict key 用 make_relation_vdb_ids[0]（= compute_mdhash_id(sorted_src + sorted_tgt, prefix="rel-")）
+        #     make_relation_vdb_ids 内部已 sorted，传入 sorted_src/sorted_tgt 跟内部行为一致
+        rel_vdb_id = make_relation_vdb_ids(sorted_src, sorted_tgt)[0]
 
-    # 3. 批量 embedding
-    vectors = _embed_batch(texts)
-    if vectors is None:
-        return {
-            "status": "error",
-            "expected": expected,
-            "actual": 0,
-            "lost": expected,
-            "source": "GraphML",
-            "message": "embedding 完全失败，无法重建 vdb_relationships",
-        }
-    if len(vectors) != len(texts):
-        while len(vectors) < len(texts):
-            vectors.append(None)  # type: ignore[arg-type]
-
-    # 4. 构造 data_list
-    embedding_dim = len(vectors[0]) if vectors and vectors[0] is not None else _get_embedding_dim()
-    data_list: list[dict[str, Any]] = []
-    final_vectors: list[list[float]] = []
-    failed_count = 0
-    for (sorted_src, sorted_tgt, content, edge_src_id, vdb_id), vec in zip(items, vectors):
-        if vec is None:
-            failed_count += 1
-            continue
-        data_list.append({
-            "__id__": vdb_id,
+        # 5.5 value 只传 meta_fields 内字段
+        upsert_data[rel_vdb_id] = {
+            "content": content,
             "src_id": sorted_src,
             "tgt_id": sorted_tgt,
-            "content": content,
             "source_id": edge_src_id or "",
-        })
-        final_vectors.append(vec)
-
-    # 5. embedding 失败率检查
-    if expected > 0 and failed_count / expected > 0.1:
-        return {
-            "status": "error",
-            "expected": expected,
-            "actual": len(data_list),
-            "lost": failed_count,
-            "source": "GraphML",
-            "message": f"embedding 失败率 {failed_count}/{expected} > 10%，不写文件",
+            "file_path": edge_file_path or "unknown_source",
         }
 
-    if not data_list:
+    if not upsert_data:
+        # edges 全是空 src/tgt → 不写派生文件（v9 第 2 轮审查修复 问题 5+6 / I3+I2）
+        # 跟全新用户分支一致——不写空 vdb 文件，让 vdb_relationships.json 不存在
+        # （write_json 写空 vdb 跟 NanoVectorDB.save 字节级可能不一致）
+        logger.warning(
+            f"[LightRAGRepair] GraphML 有 {len(edges)} edge 但全部 src/tgt 为空，"
+            "不写派生文件（跟 LightRAG 原生一致）"
+        )
         return {
-            "status": "error",
-            "expected": expected,
+            "status": "ok",
+            "expected": len(edges),
             "actual": 0,
-            "lost": expected,
+            "lost": len(edges),
             "source": "GraphML",
-            "message": "embedding 全部失败，无数据可重建",
+            "message": (
+                f"GraphML {len(edges)} edge 全部 src/tgt 为空，"
+                "不写派生文件（跟 LightRAG 原生一致）"
+            ),
         }
 
-    # 6. 备份 + 写
-    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _build_vdb_file）
-    pass
+    # 6. 调 storage.upsert（内部自动做 embedding + 注入 __id__/__vector__/vector）
+    try:
+        await storage.upsert(upsert_data)
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_relationships storage.upsert 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": len(upsert_data),
+            "actual": 0,
+            "lost": len(upsert_data),
+            "source": "NanoVectorDBStorage",
+            "message": (
+                f"storage.upsert 异常（embedding 可能失败）: "
+                f"{type(e).__name__}: {e}"
+            ),
+            "unrecoverable": True,
+        }
 
-    actual = len(data_list)
-    logger.info(f"[LightRAGRepair] 重建 vdb_relationships: {actual} 条 (source=GraphML)")
+    # 7. 调 index_done_callback 写盘（NanoVectorDB.save 写 embedding_dim/data/matrix）
+    try:
+        success = await storage.index_done_callback()
+        if not success:
+            return {
+                "status": "error",
+                "expected": len(upsert_data),
+                "actual": 0,
+                "lost": len(upsert_data),
+                "source": "NanoVectorDBStorage",
+                "message": "index_done_callback 返回 False（可能被其他进程更新覆盖）",
+                "unrecoverable": True,
+            }
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] vdb_relationships index_done_callback 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": len(upsert_data),
+            "actual": 0,
+            "lost": len(upsert_data),
+            "source": "NanoVectorDBStorage",
+            "message": f"index_done_callback 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    actual = len(upsert_data)
+    logger.info(
+        f"[LightRAGRepair] 重建 vdb_relationships: {actual}/{len(edges)} 条 "
+        f"(source=GraphML edges，skipped={skipped_count}，"
+        f"embedding 由 RepairEmbeddingFunc 自动计算)"
+    )
     return {
         "status": "ok",
-        "expected": expected,
+        "expected": len(edges),
         "actual": actual,
-        "lost": expected - actual,
+        "lost": len(edges) - actual,
         "source": "GraphML",
-        "message": f"从 GraphML edges 重新 embedding 重建 {actual} 条 vdb_relationships",
+        "message": f"从 GraphML edges 走 NanoVectorDBStorage.upsert 重建 {actual} 条 vdb_relationships",
     }
 
 
@@ -1900,7 +2050,7 @@ def repair_relation_chunks() -> dict[str, Any]:
     # 2. 从 source_id 提取 chunk_ids（LightRAG operate.py L1404 用 chunk_ids + count 字段）
     new_relation_chunks: dict[str, dict[str, Any]] = {}
     expected = 0
-    for src, tgt, edge_src_id, _, _ in edges:
+    for src, tgt, edge_src_id, _, _, _ in edges:  # v9 Task 7: 6 元组（新增 edge_file_path 未使用）
         if not src or not tgt:
             continue
         # sorted 后用 make_relation_chunk_key 生成 key
@@ -2074,7 +2224,7 @@ def repair_full_relations() -> dict[str, Any]:
     # 4. 从 GraphML edge source_id 提取 relation→docs 映射
     #    key 用 (src, tgt) 二元组（保留 src/tgt 信息，LightRAG 读取侧用 pair[0]/pair[1]）
     relation_pair_to_docs: dict[tuple[str, str], set[str]] = {}
-    for src, tgt, edge_src_id, _, _ in edges:
+    for src, tgt, edge_src_id, _, _, _ in edges:  # v9 Task 7: 6 元组（新增 edge_file_path 未使用）
         if not src or not tgt:
             continue
         if not edge_src_id:
