@@ -3150,7 +3150,7 @@ v9 改为：
    {chunk_id: {"content": ..., "full_doc_id": ..., "file_path": ...}}
 6. await storage.upsert(data)（内部自动调 embedding_func + 注入 __id__/__vector__/vector）
 7. await storage.index_done_callback()（触发 NanoVectorDB.save 写 matrix）
-8. 全新用户 → write_json 空 payload（embedding_dim/data/matrix 三字段）
+8. 全新用户 → 不写派生文件（跟 LightRAG 原生首次启动一致）
 
 字段格式严格对照 LightRAG lightrag.py:724-729 + nano_vector_db_impl.py:96-142：
 - content / full_doc_id / file_path（meta_fields 内，调用方传）
@@ -3794,7 +3794,7 @@ v9 改为：
    }}
 6. await storage.upsert(data)（内部自动调 embedding_func + 注入 __id__/__vector__/vector）
 7. await storage.index_done_callback()（触发 NanoVectorDB.save 写 matrix）
-8. 全新用户 → write_json 空 payload
+8. 全新用户 → 不写派生文件（跟 LightRAG 原生首次启动一致）
 
 字段格式严格对照 LightRAG lightrag.py:712-717 + operate.py:1158-1171：
 - content / entity_name / source_id / file_path（meta_fields 内，调用方传）
@@ -4585,7 +4585,7 @@ async def repair_vdb_relationships() -> dict[str, Any]:
 1. `def` → `async def`
 2. 删除 `_build_vdb_file(vdb_path, data_list, final_vectors, embedding_dim)` → 改为 `await storage.upsert(upsert_data)` + `await storage.index_done_callback()`
 3. 删除手动 `_embed_batch(texts)` 调用 → storage.upsert 内部自动调 `RepairEmbeddingFunc`
-4. **修复 bug 1**：keywords 去重从 `dict.fromkeys(kw_list)`（保序）→ `set(kw_list)`（无序，跟 LightRAG 一致）
+4. **修复 bug 1**：keywords 去重继续用 `dict.fromkeys(kw_list)`（保序，跟 v8 一致），但显式拆分 GraphML d9 字符串 + 过滤空字符串（防 set 去重后顺序不稳定导致字节级 diff 不稳定）
 5. **修复 bug 2**：6 元组解包新增 `edge_file_path`，upsert data 新增 `file_path` 字段（v8 没传）
 6. dict key 从 `make_relation_vdb_ids(sorted_src, sorted_tgt)[0]`（v8 已正确）→ 保持不变
 7. content 格式保持 `f"{combined_keywords}\t{sorted_src}\n{sorted_tgt}\n{edge_desc}"`（v8 已正确）
@@ -5029,7 +5029,7 @@ v9 改为：
    - value 只传 meta_fields 内字段（含 file_path，修复 v8 bug 2）
 7. await storage.upsert(data)（内部自动调 embedding_func + 注入 __id__/__vector__/vector）
 8. await storage.index_done_callback()（触发 NanoVectorDB.save 写 matrix）
-9. 全新用户 → write_json 空 payload
+9. 全新用户 → 不写派生文件（跟 LightRAG 原生首次启动一致）
 
 字段格式严格对照 LightRAG lightrag.py:718-722 + operate.py:1601-1612/2527-2538：
 - content / src_id / tgt_id / source_id / file_path（meta_fields 内，调用方传）
@@ -7387,6 +7387,7 @@ async def _repair_all_async() -> dict[str, Any]:
         fn = getattr(_self_mod, fn.__name__)
         # v9 第 3 轮审查修复 I2：防御性校验 fn 是 async 函数
         # 如果 monkeypatch 注入了同步 mock，await fn() 会抛 TypeError 而非 unrecoverable
+        # 注意：测试 mock 必须是 async def 顶层命名函数（不可用 lambda），否则 __name__ 会 AttributeError
         if not asyncio.iscoroutinefunction(fn):
             raise RuntimeError(
                 f"{name} 不是 async 函数（v9 要求所有 repair_xxx 是 async）"
