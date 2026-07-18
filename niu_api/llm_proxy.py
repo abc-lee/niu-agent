@@ -233,6 +233,12 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
                     llm["provider"] = lightrag_llm["provider"]
                 if lightrag_llm.get("litellm_kwargs"):
                     llm["litellm_kwargs"] = lightrag_llm["litellm_kwargs"]
+                # temperature 透传：仅当用户显式配置时写入，否则由 _get_litellm_session 兜底 0.2
+                # 注意：这里 llm 是临时 dict（L229 dict(llm) 复制），不会污染主 llm 配置文件
+                # 主 Agent / 子 Agent 的 temperature 来自提示词文档（0.6/0.2），走 create_litellm_client 独立路径，与本处无关
+                user_temp = lightrag_llm.get("temperature")
+                if user_temp is not None:
+                    llm["temperature"] = user_temp
 
         # 统一转换为小写键名
         config = {}
