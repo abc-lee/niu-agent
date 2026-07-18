@@ -1281,20 +1281,19 @@ def run_repair_on_user_request() -> dict:
             "check_result": _integrity_result,
         }
     finally:
+        # v9 修复：finally 块不重启 RegionSync
+        # 之前 finally 调 rs.start_background_sync() 会在 repair 刚结束时立即重启守护线程，
+        # 守护线程跑 _sync_loop → _run_sync_impl → _manage_region_nodes → create_region_nodes
+        # 会写 GraphML（创建/合并脑区节点），违反铁律 2（3 真相源不可动）。
+        # 守护线程 sync_interval=86400 但有"距上次同步超 21.6h 立即跑首次同步"逻辑，
+        # 用户上次同步是昨天 → 重启后立即触发 sync 写 GraphML。
+        # 修复方案：repair 完成后不重启 RegionSync，让用户重启程序时由正常启动流程触发。
+        # _repairing 信号灯清回 False，让下次 get_lightrag 能正常初始化。
         _repairing = False
-        # 尝试重启 RegionSync（下次用户请求自然触发，这里不主动调 get_lightrag）
-        # start_background_sync 同样是 RegionSync 实例方法（region_sync.py:602）
-        try:
-            from agent.injector.region_sync import get_region_sync
-
-            rs = get_region_sync()
-            if rs is not None:
-                rs.start_background_sync()
-                logger.info(
-                    "[LightRAG] RegionSync 已重启（通过 get_region_sync().start_background_sync）"
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[LightRAG] 重启 RegionSync 失败: {e}")
+        logger.info(
+            "[LightRAG] repair 完成，不重启 RegionSync（避免守护线程写真相源）。"
+            "用户重启程序时由正常启动流程触发 RegionSync。"
+        )
 
 
 def reset_init_state() -> None:
