@@ -149,11 +149,19 @@ class CommunityDetector:
                 len(brain_region_names),
             )
 
-        # 排除已直连脑区的实体（脑区一级成员）
-        # 这些实体已经归属到某个脑区，不应再参与社区检测
-        # 否则每次跑 Leiden 都会把同一批已归属实体重新聚成社区
+        # 筛选参与社区检测的实体：两条件 OR 关系
+        # 条件 1（原条件）：非直连脑区——实体没有任何 _region:contains 边连到脑区
+        #   这些是已归属脑区的实体，已归属则不再重复参与算法
+        # 条件 2（新增）：只剩 1 条保底归属边——实体只有 1 条 _region:contains 边
+        #   且该边权重已到保底值 0.1，被保底规则锁在原脑区无法迁移
+        #   必须重新参与算法让其归入新脑区，下轮衰减自动解除保底
+        # 实际做法：构造"应排除"集合 = (已直连脑区实体) - (保底边实体)
+        #   即保底边实体即使已直连脑区也保留参与算法（OR 关系）
         try:
-            from niu_api.internal.lightrag_manager import get_all_region_members
+            from niu_api.internal.lightrag_manager import (
+                get_all_region_members,
+                find_entities_with_single_floor_edge,
+            )
             region_members_map = get_all_region_members()
             assigned_entities: set[str] = set()
             for members in region_members_map.values():
@@ -164,17 +172,33 @@ class CommunityDetector:
             logger.warning("获取已归属实体集合失败，跳过排除步骤: %s", e)
             assigned_entities = set()
 
-        if assigned_entities:
+        # 查询保底边实体集合（条件 2）
+        floor_edge_entities: set[str] = set()
+        try:
+            floor_edge_entities = find_entities_with_single_floor_edge()
+        except Exception as e:
+            logger.warning("查询保底边实体集合失败，跳过条件 2: %s", e)
+            floor_edge_entities = set()
+
+        # 排除集 = 已直连脑区实体 - 保底边实体（OR 关系：保底边实体保留参与算法）
+        exclude_entities = assigned_entities - floor_edge_entities
+
+        if exclude_entities:
             before_count = len(nodes)
-            def _is_assigned(name) -> bool:
-                return isinstance(name, str) and name.lower() in assigned_entities
-            nodes = [n for n in nodes if not _is_assigned(n.get("name", n.get("id", "")))]
+            def _is_excluded(name) -> bool:
+                return isinstance(name, str) and name.lower() in exclude_entities
+            nodes = [n for n in nodes if not _is_excluded(n.get("name", n.get("id", "")))]
             edges = [
                 e for e in edges
-                if not _is_assigned(e.get("source", "")) and not _is_assigned(e.get("target", ""))
+                if not _is_excluded(e.get("source", "")) and not _is_excluded(e.get("target", ""))
             ]
             logger.info(
-                f"排除 {before_count - len(nodes)} 个已归属实体（直连脑区的一级成员），剩余 {len(nodes)} 个游离实体参与算法"
+                f"排除 {before_count - len(nodes)} 个已归属实体（保底边实体 {len(floor_edge_entities)} 个保留参与算法），"
+                f"剩余 {len(nodes)} 个游离实体参与算法"
+            )
+        elif floor_edge_entities:
+            logger.info(
+                f"保底边实体 {len(floor_edge_entities)} 个保留参与算法（无可排除的已归属实体）"
             )
 
         # 2. 检查图谱大小
