@@ -520,3 +520,174 @@ def test_detect_communities_excludes_entities_connected_to_regions():
     assert "游离实体A" in all_partition_members
     assert "游离实体B" in all_partition_members
     assert "游离实体C" in all_partition_members
+
+
+def test_detect_communities_includes_single_floor_edge_entity():
+    """只剩 1 条保底归属边的实体应参与社区检测，
+    即使它已直连某脑区（OR 关系覆盖原排除条件）"""
+    from unittest import mock
+    from niu_api.internal.region_detector import CommunityDetector
+
+    # 构造：1 个脑区主节点 + 1 个普通已归属实体 + 1 个保底边实体 + 3 个游离实体
+    nodes = [
+        {"name": "智家脑区", "type": "brainregion"},
+        # 普通已归属实体（weight=1.0，应被排除）
+        {"name": "NormalAssigned", "type": "technology"},
+        # 保底边实体（已归属脑区但归属边 weight=0.1，应保留参与算法）
+        {"name": "FloorEdgeEntity", "type": "concept"},
+        # 游离实体
+        {"name": "FreeA", "type": "concept"},
+        {"name": "FreeB", "type": "concept"},
+        {"name": "FreeC", "type": "concept"},
+    ]
+    edges = [
+        # 普通已归属 → 脑区（包含边，weight=1.0）
+        {"source": "智家脑区", "target": "NormalAssigned", "keywords": "包含", "weight": 1.0},
+        # 保底边实体 → 脑区（包含边，weight=0.1，保底）
+        {"source": "智家脑区", "target": "FloorEdgeEntity", "keywords": "包含", "weight": 0.1},
+        # 保底边实体 ↔ FreeA（知识边，不计数）
+        {"source": "FloorEdgeEntity", "target": "FreeA", "keywords": "相关", "weight": 0.5},
+        # 游离实体相互连接
+        {"source": "FreeA", "target": "FreeB", "keywords": "相关", "weight": 1.0},
+        {"source": "FreeB", "target": "FreeC", "keywords": "相关", "weight": 1.0},
+    ]
+
+    fake_adapter = mock.MagicMock()
+    fake_adapter.get_graph_snapshot = mock.Mock(return_value={"nodes": nodes, "edges": edges})
+
+    with mock.patch(
+        "niu_api.internal.lightrag_manager.get_all_region_members",
+        return_value={"智家脑区": ["NormalAssigned", "FloorEdgeEntity"]},
+    ), mock.patch(
+        "niu_api.internal.lightrag_manager.find_entities_with_single_floor_edge",
+        return_value={"flooredgeentity"},  # 小写
+    ):
+        detector = CommunityDetector(fake_adapter)
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
+
+    all_partition_members = []
+    for p in result.partitions:
+        all_partition_members.extend(p.entity_names)
+
+    # 普通已归属实体被排除
+    assert "NormalAssigned" not in all_partition_members, "普通已归属实体应被排除"
+    # 保底边实体保留参与算法（OR 关系覆盖排除条件）
+    assert "FloorEdgeEntity" in all_partition_members, "保底边实体应保留参与算法"
+    # 游离实体保留
+    assert "FreeA" in all_partition_members
+    assert "FreeB" in all_partition_members
+    assert "FreeC" in all_partition_members
+
+
+def test_detect_communities_floor_edge_exception_degrades_gracefully():
+    """find_entities_with_single_floor_edge 抛异常时降级为空集，
+    行为等价于原逻辑（保底边实体不被保留，全部按 assigned_entities 排除）"""
+    from unittest import mock
+    from niu_api.internal.region_detector import CommunityDetector
+
+    nodes = [
+        {"name": "智家脑区", "type": "brainregion"},
+        {"name": "FloorEdgeEntity", "type": "concept"},
+        {"name": "FreeA", "type": "concept"},
+        {"name": "FreeB", "type": "concept"},
+    ]
+    edges = [
+        {"source": "智家脑区", "target": "FloorEdgeEntity", "keywords": "包含", "weight": 0.1},
+        {"source": "FloorEdgeEntity", "target": "FreeA", "keywords": "相关", "weight": 1.0},
+        {"source": "FreeA", "target": "FreeB", "keywords": "相关", "weight": 1.0},
+    ]
+    fake_adapter = mock.MagicMock()
+    fake_adapter.get_graph_snapshot = mock.Mock(return_value={"nodes": nodes, "edges": edges})
+
+    with mock.patch(
+        "niu_api.internal.lightrag_manager.get_all_region_members",
+        return_value={"智家脑区": ["FloorEdgeEntity"]},
+    ), mock.patch(
+        "niu_api.internal.lightrag_manager.find_entities_with_single_floor_edge",
+        side_effect=RuntimeError("boom"),
+    ):
+        detector = CommunityDetector(fake_adapter)
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
+
+    all_partition_members = []
+    for p in result.partitions:
+        all_partition_members.extend(p.entity_names)
+    # 异常降级：FloorEdgeEntity 走原逻辑被排除
+    assert "FloorEdgeEntity" not in all_partition_members, "异常降级后保底边实体应被排除"
+    # 游离实体保留
+    assert "FreeA" in all_partition_members
+
+
+def test_detect_communities_floor_edge_only_no_assigned_entities():
+    """floor_edge_entities 非空但 assigned_entities 为空（实体未归属但仍是保底边——理论场景），
+    走 elif 分支只打日志不筛选"""
+    from unittest import mock
+    from niu_api.internal.region_detector import CommunityDetector
+
+    nodes = [
+        {"name": "FloorEdgeEntity", "type": "concept"},
+        {"name": "FreeA", "type": "concept"},
+        {"name": "FreeB", "type": "concept"},
+    ]
+    edges = [
+        {"source": "FloorEdgeEntity", "target": "FreeA", "keywords": "相关", "weight": 1.0},
+        {"source": "FreeA", "target": "FreeB", "keywords": "相关", "weight": 1.0},
+    ]
+    fake_adapter = mock.MagicMock()
+    fake_adapter.get_graph_snapshot = mock.Mock(return_value={"nodes": nodes, "edges": edges})
+
+    with mock.patch(
+        "niu_api.internal.lightrag_manager.get_all_region_members",
+        return_value={},  # 没有归属实体
+    ), mock.patch(
+        "niu_api.internal.lightrag_manager.find_entities_with_single_floor_edge",
+        return_value={"flooredgeentity"},
+    ):
+        detector = CommunityDetector(fake_adapter)
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
+
+    all_partition_members = []
+    for p in result.partitions:
+        all_partition_members.extend(p.entity_names)
+    # 所有实体都参与算法（assigned_entities 空，没有排除集）
+    assert "FloorEdgeEntity" in all_partition_members
+    assert "FreeA" in all_partition_members
+    assert "FreeB" in all_partition_members
+
+
+def test_detect_communities_entity_in_both_assigned_and_floor_edge():
+    """实体同时在 assigned_entities 和 floor_edge_entities（去重正确性）
+    → set 差集后该实体不在 exclude_entities，应保留参与算法"""
+    from unittest import mock
+    from niu_api.internal.region_detector import CommunityDetector
+
+    nodes = [
+        {"name": "智家脑区", "type": "brainregion"},
+        {"name": "DualEntity", "type": "concept"},
+        {"name": "FreeA", "type": "concept"},
+        {"name": "FreeB", "type": "concept"},
+    ]
+    edges = [
+        {"source": "智家脑区", "target": "DualEntity", "keywords": "包含", "weight": 0.1},
+        {"source": "DualEntity", "target": "FreeA", "keywords": "相关", "weight": 1.0},
+        {"source": "FreeA", "target": "FreeB", "keywords": "相关", "weight": 1.0},
+    ]
+    fake_adapter = mock.MagicMock()
+    fake_adapter.get_graph_snapshot = mock.Mock(return_value={"nodes": nodes, "edges": edges})
+
+    with mock.patch(
+        "niu_api.internal.lightrag_manager.get_all_region_members",
+        return_value={"智家脑区": ["DualEntity"]},  # DualEntity 已归属
+    ), mock.patch(
+        "niu_api.internal.lightrag_manager.find_entities_with_single_floor_edge",
+        return_value={"dualentity"},  # DualEntity 也是保底边实体
+    ):
+        detector = CommunityDetector(fake_adapter)
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
+
+    all_partition_members = []
+    for p in result.partitions:
+        all_partition_members.extend(p.entity_names)
+    # DualEntity 在两个集合里，差集后不在 exclude_entities，应保留参与算法
+    assert "DualEntity" in all_partition_members, "在 floor_edge_entities 里的实体应保留参与算法"
+    assert "FreeA" in all_partition_members
