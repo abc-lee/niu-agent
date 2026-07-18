@@ -1144,24 +1144,25 @@ def cancel_scheduler_delayed_start_if_corrupt(phase1_result: dict) -> None:
 def run_repair_on_user_request() -> dict:
     """用户在弹窗点'尝试修复'后调用（通过 /api/kg/lightrag/repair 触发）。
 
-    v8：先停 RegionSync + 不调 get_lightrag/apipeline（铁律 3）。
+    v9：repair_all 内部走 storage.upsert 接口（Task 3-9 重写），
+        run_repair_on_user_request 入口保持 v8 行为（停 RegionSync + 不调 get_lightrag/apipeline）。
 
     修复流程：
-        1. 先停 RegionSync（get_region_sync().stop_background_sync）避免后台写
+        1. 先停 RegionSync（get_region_sync().stop_background_sync_blocking）避免后台写
         2. 设 _repairing=True（让其他线程的 get_lightrag 返回 None，作为信号灯兜底）
         3. 调 repair_all
         4. reset_init_state + 重跑 check_all 更新 _integrity_result
         5. 不调 get_lightrag/apipeline（让下次用户请求自然触发）
         6. 判定 repaired（基于 repair_all._unrecoverable）
 
-    RegionSync 停止策略（v8 确认）：
-        - `stop_background_sync` / `start_background_sync` 是
-          `agent.injector.region_sync.RegionSync` 的实例方法（L602/L615），不是模块级函数
-        - 正确调用：`from agent.injector.region_sync import get_region_sync;
-          rs = get_region_sync(); rs.stop_background_sync()`
+    RegionSync 停止策略（v9 第 2 轮审查修复 问题 4 / I4）：
+        - 改用 `stop_background_sync_blocking`（join timeout=60，超时抛 RuntimeError）
+        - 原 `stop_background_sync` 只 join 5 秒，in-flight sync 任务可能继续写 GraphML
+          （见 lightrag-graphml-written-by-regionsync.md 根因）
+        - `start_background_sync` 仍是 RegionSync 实例方法（region_sync.py:602）
         - `get_region_sync` 在 region_sync.py:690，返回 RegionSync 单例（不存在则创建）
         - RegionSync 内部调 `get_lightrag()`，但 lightrag_manager.get_lightrag() 在
-          `_repairing=True` 时返回 None，所以即使 stop_background_sync 失败，
+          `_repairing=True` 时返回 None，所以即使 stop_background_sync_blocking 失败，
           `_repairing=True` 信号灯也能让 RegionSync 的 get_lightrag 拿不到实例，不会写真相源
 
     Returns:
@@ -1180,19 +1181,25 @@ def run_repair_on_user_request() -> dict:
     from niu_api.internal.lightrag_repair import repair_all
     from niu_api.internal.lightrag_integrity import check_all
 
-    logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all（v8）")
+    logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all（v9 storage 接口）")
 
     # 1. 先停 RegionSync（避免后台写）
-    #    stop_background_sync 是 RegionSync 实例方法（region_sync.py:615），不是模块级函数
+    #    v9：用 stop_background_sync_blocking（join timeout=60，超时抛 RuntimeError）
+    #    原 stop_background_sync 只 join 5 秒，in-flight sync 任务可能继续写 GraphML
     #    正确调用：get_region_sync() 拿单例，再调实例方法
     try:
         from agent.injector.region_sync import get_region_sync
 
         rs = get_region_sync()
         if rs is not None:
-            rs.stop_background_sync()
+            # v9 第 2 轮审查修复（问题 4 / I4）：
+            # 用 stop_background_sync_blocking 替代 stop_background_sync
+            # （join timeout=60，覆盖单次 sync 30+ 秒场景，超时抛 RuntimeError）。
+            # 原 stop_background_sync 只 join 5 秒，in-flight sync 任务可能继续写 GraphML
+            # （见 lightrag-graphml-written-by-regionsync.md 根因）。
+            rs.stop_background_sync_blocking()
             logger.info(
-                "[LightRAG] RegionSync 已停止（通过 get_region_sync().stop_background_sync）"
+                "[LightRAG] RegionSync 已停止（通过 stop_background_sync_blocking，线程已确认退出）"
             )
         else:
             logger.info("[LightRAG] RegionSync 单例为 None（未启动），跳过停止")

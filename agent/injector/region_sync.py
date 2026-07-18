@@ -618,6 +618,33 @@ class RegionSync:
         if self._thread:
             self._thread.join(timeout=5)
 
+    def stop_background_sync_blocking(self, timeout: float = 60.0) -> None:
+        """v9：硬停止 RegionSync 守护线程，等待 join 完成。
+
+        跟 stop_background_sync 的区别：
+        - stop_background_sync：join(timeout=5)，超时静默返回，线程可能仍在跑
+          （in-flight sync 继续写 GraphML）
+        - stop_background_sync_blocking：join(timeout=60)，超时抛 RuntimeError
+
+        用途：repair_all 启动前调用，确保 RegionSync 线程完全退出（覆盖 30+ 秒 sync 场景），
+              避免线程在 repair 期间写真相源（违反铁律 2，见
+              lightrag-graphml-written-by-regionsync.md）。
+
+        Args:
+            timeout: join 超时秒数（默认 60，覆盖单次 sync 30+ 秒场景）
+
+        Raises:
+            RuntimeError: join 超时后线程仍存活
+        """
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                raise RuntimeError(
+                    f"[RegionSync] stop_background_sync_blocking 超时 {timeout}s 线程仍存活，"
+                    f"repair 中止避免 GraphML 被写（铁律 2）"
+                )
+
     def _sync_loop(self) -> None:
         """Background sync loop.
 
