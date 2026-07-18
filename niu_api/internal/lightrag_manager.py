@@ -23,6 +23,7 @@ Usage:
 
 import asyncio
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -35,7 +36,12 @@ from loguru import logger
 
 # ============== Config ==============
 
-STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
+# STORAGE_DIR 支持环境变量覆盖（让 e2e 测试能用临时目录避免污染 ~/.niu/lightrag_storage）
+# 默认值 = ~/.niu/lightrag_storage（与原行为一致）
+# 注意：STORAGE_DIR 在 import 时确定值，测试需在 import 前设置环境变量或 monkeypatch.setattr 覆盖
+# 空字符串 env 视为未设置，避免 Path("") = cwd 污染项目根目录
+_raw_storage_dir = os.environ.get("NIU_STORAGE_DIR", "").strip()
+STORAGE_DIR = Path(_raw_storage_dir) if _raw_storage_dir else Path.home() / ".niu" / "lightrag_storage"
 
 # ============== LightRAG LLM Function Builder ==============
 
