@@ -157,11 +157,13 @@ class CommunityDetector:
         #   必须重新参与算法让其归入新脑区，下轮衰减自动解除保底
         # 实际做法：构造"应排除"集合 = (已直连脑区实体) - (保底边实体)
         #   即保底边实体即使已直连脑区也保留参与算法（OR 关系）
+        # 提前 import，避免下面两个 try 块各自 import 导致 Pyright possibly unbound
+        from niu_api.internal.lightrag_manager import (
+            get_all_region_members,
+            find_entities_with_single_floor_edge,
+        )
+
         try:
-            from niu_api.internal.lightrag_manager import (
-                get_all_region_members,
-                find_entities_with_single_floor_edge,
-            )
             region_members_map = get_all_region_members()
             assigned_entities: set[str] = set()
             for members in region_members_map.values():
@@ -193,12 +195,15 @@ class CommunityDetector:
                 if not _is_excluded(e.get("source", "")) and not _is_excluded(e.get("target", ""))
             ]
             logger.info(
-                f"排除 {before_count - len(nodes)} 个已归属实体（保底边实体 {len(floor_edge_entities)} 个保留参与算法），"
-                f"剩余 {len(nodes)} 个游离实体参与算法"
+                "排除 %d 个已归属实体（保底边实体 %d 个保留参与算法），剩余 %d 个游离实体参与算法",
+                before_count - len(nodes),
+                len(floor_edge_entities),
+                len(nodes),
             )
         elif floor_edge_entities:
             logger.info(
-                f"保底边实体 {len(floor_edge_entities)} 个保留参与算法（无可排除的已归属实体）"
+                "保底边实体 %d 个保留参与算法（无可排除的已归属实体）",
+                len(floor_edge_entities),
             )
 
         # 2. 检查图谱大小
