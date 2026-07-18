@@ -490,7 +490,7 @@ def find_entities_with_single_floor_edge(floor_weight: float = 0.1) -> set[str]:
         # 只用 name.endswith("脑区") 判断——系统所有脑区命名都是 "{label}脑区" 格式
         # （region_manager.py L53 REGION_SUFFIX="脑区" + L384 f"{region_label}{REGION_SUFFIX}"）
         # 不用 entity_type=="brainregion"——避免与 get_all_region_members 不一致
-        for node_id, node_data in snapshot.nodes(data=True):
+        for node_id in snapshot.nodes():
             # 跳过脑区节点本身（只用 endswith("脑区") 判断）
             if isinstance(node_id, str) and node_id.endswith("脑区"):
                 continue

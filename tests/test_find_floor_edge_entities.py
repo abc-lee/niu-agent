@@ -86,12 +86,12 @@ def test_entity_with_two_contains_edges_not_returned():
     from niu_api.internal import lightrag_manager
     g = _build_graph(
         nodes_spec=[
-            ("脑区X", "brainregion"), ("脑区Y", "brainregion"),
+            ("工作脑区", "brainregion"), ("学习脑区", "brainregion"),
             ("实体A", "concept"),
         ],
         edges_spec=[
-            ("脑区X", "实体A", "包含", 0.1),
-            ("脑区Y", "实体A", "包含", 0.1),
+            ("工作脑区", "实体A", "包含", 0.1),
+            ("学习脑区", "实体A", "包含", 0.1),
         ],
     )
     patches = _patch_graph(g)
@@ -110,7 +110,7 @@ def test_orphan_entity_not_returned():
     from niu_api.internal import lightrag_manager
     g = _build_graph(
         nodes_spec=[
-            ("脑区X", "brainregion"),
+            ("工作脑区", "brainregion"),
             ("实体A", "concept"),
             ("实体B", "concept"),
         ],
