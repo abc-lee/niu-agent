@@ -144,8 +144,8 @@ class TestDecayStructuralEdges:
         expected = 1.0 * daily_decay_rate("short")
         assert weight_b == pytest.approx(max(expected, 0.1), rel=1e-6)
 
-    def test_permanent_freeze_at_floor(self):
-        """permanent 级边权重衰减到保底值冻结"""
+    def test_permanent_isolated_entity_floor_protection(self):
+        """permanent 脑区 + 孤立实体（total_degree=1）→ 保底保护（与普通脑区一致）"""
         from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
@@ -154,7 +154,8 @@ class TestDecayStructuralEdges:
         G.add_edge("region_perm", "entity_x", weight=0.11, description="包含")
         _decay_brain_region_edges(G)
         weight = G["region_perm"]["entity_x"]["weight"]
-        assert weight >= FLOOR_WEIGHT
+        # 孤立实体保底：weight 衰减后 max(., FLOOR_WEIGHT)，仍 >= FLOOR_WEIGHT
+        assert weight >= FLOOR_WEIGHT, f"孤立实体保底后 weight 应 >= FLOOR_WEIGHT，实际 {weight}"
 
     def test_floor_protection_orphan(self):
         """总边数==1时保底保护"""
@@ -182,7 +183,7 @@ class TestDecayStructuralEdges:
         assert not G.has_edge("region_short", "entity_multi")
 
     def test_permanent_not_deleted_with_other_edges(self):
-        """permanent + 总边数>=2 + 低于保底 → 不删除，冻结在保底"""
+        """permanent + 总边数>=2 + 低于保底 → 删除（2026-07-18 修复：与普通脑区一致）"""
         from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
@@ -192,8 +193,8 @@ class TestDecayStructuralEdges:
         G.add_edge("region_perm", "entity_multi", weight=0.03, description="包含")
         G.add_edge("entity_multi", "entity_other", weight=1.0, description="擅长")
         _decay_brain_region_edges(G)
-        assert G.has_edge("region_perm", "entity_multi")
-        assert G["region_perm"]["entity_multi"]["weight"] == FLOOR_WEIGHT
+        # 永久脑区的实体归属边与普通脑区一致：weight < FLOOR_WEIGHT + total_degree >= 2 → 删除
+        assert not G.has_edge("region_perm", "entity_multi")
 
     def test_knowledge_edge_not_decayed(self):
         """知识关系边（实体→实体）不被衰减"""

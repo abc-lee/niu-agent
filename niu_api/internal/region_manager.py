@@ -120,20 +120,16 @@ def _decay_brain_region_edges(nx_graph) -> dict:
 
             total_degree = nx_graph.degree(entity_key)
 
-            if priority == "permanent":
-                # permanent 级：保底冻结，永不删除
-                new_weight = max(new_weight, FLOOR_WEIGHT)
-                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
-                decayed += 1
-                protected += 1
-            elif total_degree <= 1:
-                # 孤立实体：保底保护
+            if total_degree <= 1:
+                # 孤立实体：保底保护（避免变孤岛）
+                # 永久脑区与普通脑区一致——永久脑区只是脑区节点本身不删，
+                # 实体归属边的衰减逻辑与普通脑区完全一致
                 new_weight = max(new_weight, FLOOR_WEIGHT)
                 nx_graph.edges[region_key, entity_key]["weight"] = new_weight
                 decayed += 1
                 protected += 1
             elif new_weight < FLOOR_WEIGHT:
-                # 非 permanent + 总边数>=2 + 低于保底 → 删除
+                # 总边数>=2 + 低于保底 → 删除
                 nx_graph.remove_edge(region_key, entity_key)
                 deleted += 1
             else:
