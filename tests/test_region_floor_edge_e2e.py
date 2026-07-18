@@ -10,10 +10,8 @@
 
 **前置条件**：需要 bge-base-zh-v1.5 模型（约 390MB）。模型不存在时自动 skip。
 """
-import os
 import shutil
 import pytest
-import networkx as nx
 from pathlib import Path
 
 
@@ -54,11 +52,14 @@ def tmp_storage(tmp_path, monkeypatch):
     monkeypatch.setattr("niu_api.internal.lightrag_manager._repairing", False)
 
     # 初始化 shared_storage 单进程模式（如未初始化）
+    # LightRAG fork 路径：lightrag.kg.shared_storage（不是 lightrag.utils）
     try:
-        from lightrag.utils import shared_storage
-        shared_storage.initialize_share_data()
-    except Exception:
-        pass  # 已初始化则跳过
+        from lightrag.kg.shared_storage import initialize_share_data
+        initialize_share_data()
+    except ImportError:
+        pass  # LightRAG 未安装则跳过
+    except RuntimeError:
+        pass  # 已初始化则跳过（initialize_share_data 重复调用会抛 RuntimeError）
 
     yield storage_dir
 
@@ -66,10 +67,8 @@ def tmp_storage(tmp_path, monkeypatch):
     # 1. 停止 LightRAG 后台事件循环（避免 daemon thread 引用已删除的临时目录）
     try:
         from niu_api.internal import lightrag_manager as lm
-        if hasattr(lm, "_stop_loop"):
-            lm._stop_loop()
-        elif hasattr(lm, "shutdown_lightrag_loop"):
-            lm.shutdown_lightrag_loop(timeout=2.0)
+        # lightrag_manager 只有 shutdown_lightrag_loop（没有 _stop_loop）
+        lm.shutdown_lightrag_loop(timeout=2.0)
     except Exception:
         pass  # 测试结束清理失败不阻塞
 
@@ -78,7 +77,8 @@ def tmp_storage(tmp_path, monkeypatch):
         shutil.rmtree(storage_dir, ignore_errors=True)
 
 
-def test_floor_edge_entity_participates_in_real_detect_communities(tmp_storage):
+@pytest.mark.usefixtures("tmp_storage")
+def test_floor_edge_entity_participates_in_real_detect_communities():
     """E2E：构造真实 LightRAG 图 + 真实 detect_communities 调用，
     验证保底边实体出现在 partition 成员里"""
     # 注意：在 fixture monkeypatch.setattr 之后才 import，确保拿到的是 patched 状态
@@ -92,7 +92,9 @@ def test_floor_edge_entity_participates_in_real_detect_communities(tmp_storage):
     assert rag is not None, "LightRAG 初始化失败"
 
     # 构造测试图：1 个脑区 + 1 个保底边实体 + 3 个游离实体
-    graph = rag.chunk_entity_relation_graph._graph
+    # 跟 find_entities_with_single_floor_edge L488 一致：用 hasattr 守卫访问 _graph
+    graph_obj = rag.chunk_entity_relation_graph
+    graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
 
     # 添加脑区节点（name 以"脑区"结尾，跟 get_all_region_members 判断方式一致）
     graph.add_node("测试脑区", entity_type="brainregion",
