@@ -34,6 +34,8 @@ from asyncio import AbstractEventLoop
 
 from loguru import logger
 
+from niu_api.internal.region_manager import FLOOR_WEIGHT
+
 # ============== Config ==============
 
 # STORAGE_DIR 支持环境变量覆盖（让 e2e 测试能用临时目录避免污染 ~/.niu/lightrag_storage）
@@ -449,22 +451,27 @@ def get_all_region_members() -> dict[str, list[str]]:
         return {}
 
 
-def find_entities_with_single_floor_edge(floor_weight: float = 0.1) -> set[str]:
+def find_entities_with_single_floor_edge(floor_weight: float = FLOOR_WEIGHT) -> set[str]:
     """找出"只剩 1 条 _region:contains 归属边、且该边已到保底值"的实体集合。
 
     用途：脑区社区重算输入范围扩展。这些实体被保底规则锁在原脑区无法迁移，
     必须被纳入社区重算，让新脑区分配一条归属边后，下轮衰减自然解除保底。
 
-    判定规则（与 _decay_brain_region_edges 一致）：
-      - 统计实体的 _region:contains 归属边数量（keywords="包含"）
+    判定规则（扩展判定，比 _decay_brain_region_edges 的 total_degree<=1 更严格）：
+      - 只统计 _region:contains 归属边数量（keywords="包含"），不数知识边
       - 跳过 _session: 前缀边（keywords 字段以 "_session:" 开头）
       - 跳过脑区节点本身（name 以"脑区"结尾，与 get_all_region_members 一致）
       - 归属边数量 == 1 且 weight <= floor_weight → 命中
 
+    与 _decay_brain_region_edges 的区别：
+      - decay 用 total_degree<=1（全部边数含知识边）触发保底，会漏掉
+        "1 条归属边 + 多条知识边"的实体（这些实体被保底锁住但 total_degree>1）
+      - 本函数专门捕捉这类被保底锁住但仍有知识边的实体，让它们参与社区重算
+
     注意：知识边（实体↔实体，keywords 非 "包含" 且非 "_session:"）不参与计数。
 
     Args:
-        floor_weight: 保底权重阈值（默认 0.1，与 region_manager.FLOOR_WEIGHT 对齐）
+        floor_weight: 保底权重阈值（默认 region_manager.FLOOR_WEIGHT=0.1）
 
     Returns:
         实体名称集合（小写，与 detect_communities 中 assigned_entities 一致）
