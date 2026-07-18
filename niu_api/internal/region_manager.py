@@ -61,7 +61,7 @@ BELONGS_TO_RELATION = "包含"
 
 # 脑区边衰减优先级体系
 PRIORITY_HALFLIFE = {
-    "permanent": 360,  # 衰减但保底冻结，永不删除
+    "permanent": 360,  # 永久脑区半衰期 360 天，与 long 一致；脑区节点本身不被 dissolve 删除
     "long": 360,
     "medium": 180,
     "short": 90,
