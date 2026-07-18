@@ -55,7 +55,7 @@ def _get_litellm_session(config: dict) -> Any:
     global _cached_session, _cached_config_key
     from agent.generic.litellm_adapter import LiteLLMSession
 
-    config_key = (config.get("model"), config.get("apibase"), config.get("apikey"), config.get("type"), config.get("reasoning_effort"), config.get("provider"), tuple(sorted(config.get("litellm_kwargs", {}).items())))
+    config_key = (config.get("model"), config.get("apibase"), config.get("apikey"), config.get("type"), config.get("reasoning_effort"), config.get("provider"), config.get("temperature", 0.2), tuple(sorted(config.get("litellm_kwargs", {}).items())))
 
     if _cached_session is not None and _cached_config_key == config_key:
         return _cached_session
@@ -72,6 +72,7 @@ def _get_litellm_session(config: dict) -> Any:
             "reasoning_effort": config.get("reasoning_effort"),
             "provider": config.get("provider", ""),
             "litellm_kwargs": config.get("litellm_kwargs", {}),
+            "temperature": config.get("temperature", 0.2),
         }
 
         _cached_session = LiteLLMSession(cfg=llm_config)
