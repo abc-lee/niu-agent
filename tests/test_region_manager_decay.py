@@ -1,5 +1,4 @@
 """测试 _decay_brain_region_edges 永久脑区边与普通脑区一致衰减"""
-from unittest import mock
 import networkx as nx
 from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
 

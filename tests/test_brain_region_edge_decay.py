@@ -1,10 +1,7 @@
 """
 脑区边衰减增强机制测试
 
-真实测试：需要程序运行 + 真实 LLM。
-手动执行：python -m pytest tests/test_brain_region_edge_decay.py -v
-
-单元测试部分可直接运行：python -m pytest tests/test_brain_region_edge_decay.py -v -k "not integration"
+单元测试：python -m pytest tests/test_brain_region_edge_decay.py -v
 """
 import pytest
 
@@ -145,7 +142,13 @@ class TestDecayStructuralEdges:
         assert weight_b == pytest.approx(max(expected, 0.1), rel=1e-6)
 
     def test_permanent_isolated_entity_floor_protection(self):
-        """permanent 脑区 + 孤立实体（total_degree=1）→ 保底保护（与普通脑区一致）"""
+        """permanent 脑区 + 孤立实体（total_degree=1）→ 保底保护
+
+        注意：本测试验证的是"孤立实体保底"分支（total_degree<=1），
+        与 priority 无关——medium/short 脑区同样会保底。用 permanent
+        脑区构造场景是为了对照"修复前 permanent 走专属永久保底分支，
+        修复后走统一的孤立保底分支"。
+        """
         from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
@@ -171,7 +174,7 @@ class TestDecayStructuralEdges:
 
     def test_delete_below_floor_with_other_edges(self):
         """非 permanent + 总边数>=2 + 低于保底 → 删除边"""
-        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT, daily_decay_rate
         G = nx.Graph()
         G.add_node("region_short", entity_type="brainregion",
                    description="brain_meta_priority:short<SEP>短期脑区")
@@ -179,12 +182,14 @@ class TestDecayStructuralEdges:
         G.add_node("entity_other", entity_type="skill", description="其他技能")
         G.add_edge("region_short", "entity_multi", weight=0.03, description="包含")
         G.add_edge("entity_multi", "entity_other", weight=1.0, description="擅长")
+        # 前提：0.03 * decay_rate("short") < FLOOR_WEIGHT，确认进入删除分支
+        assert 0.03 * daily_decay_rate("short") < FLOOR_WEIGHT
         _decay_brain_region_edges(G)
         assert not G.has_edge("region_short", "entity_multi")
 
     def test_permanent_not_deleted_with_other_edges(self):
         """permanent + 总边数>=2 + 低于保底 → 删除（2026-07-18 修复：与普通脑区一致）"""
-        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT, daily_decay_rate
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
                    description="brain_meta_priority:permanent<SEP>永久脑区")
@@ -192,6 +197,8 @@ class TestDecayStructuralEdges:
         G.add_node("entity_other", entity_type="skill", description="其他技能")
         G.add_edge("region_perm", "entity_multi", weight=0.03, description="包含")
         G.add_edge("entity_multi", "entity_other", weight=1.0, description="擅长")
+        # 前提：0.03 * decay_rate("permanent") < FLOOR_WEIGHT，确认进入删除分支
+        assert 0.03 * daily_decay_rate("permanent") < FLOOR_WEIGHT
         _decay_brain_region_edges(G)
         # 永久脑区的实体归属边与普通脑区一致：weight < FLOOR_WEIGHT + total_degree >= 2 → 删除
         assert not G.has_edge("region_perm", "entity_multi")
