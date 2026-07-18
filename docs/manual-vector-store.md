@@ -447,7 +447,170 @@ LightRAG 官方明确建议不要使用带思考链的模型做入库。
 
 切换模型后需重建知识库（删除 `~/.niu/lightrag_storage/` 后重启）。
 
-## 九、与旧架构的对照
+## 九、知识图谱损坏检测与自愈修复
+
+### 9.1 真相源与派生文件
+
+LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类：
+
+**3 个真相源文件**（用户数据，禁止修复程序写/删）：
+
+| 文件 | 内容 | 说明 |
+|------|------|------|
+| `graph_chunk_entity_relation.graphml` | 知识图谱本体（实体+关系） | 唯一权威真相源，含每个实体/关系的 source_id 指向所属 chunk_id |
+| `kv_store_full_docs.json` | 原文档全文 | 辅助真相源，按 doc_id 索引 |
+| `kv_store_llm_response_cache.json` | LLM 抽取结果缓存 | 辅助真相源，每个 extract entry 含 chunk_id + original_prompt（chunk 原文） |
+
+**9 个派生文件**（从 3 真相源派生，丢失可重建）：
+
+| 文件 | 派生来源 |
+|------|---------|
+| `kv_store_text_chunks.json` | GraphML source_id 提活跃 chunk_id → cache original_prompt 提取原文（cache 没有则 full_docs chunking 反查） |
+| `kv_store_doc_status.json` | full_docs 的 doc_id + text_chunks 反查 chunks_list |
+| `vdb_chunks.json` | text_chunks 内容做 embedding |
+| `vdb_entities.json` | GraphML 节点 description 做 embedding |
+| `vdb_relationships.json` | GraphML edge 做 embedding |
+| `kv_store_entity_chunks.json` | GraphML 节点 source_id 反转（实体→chunks） |
+| `kv_store_relation_chunks.json` | GraphML 边 source_id 反转（关系→chunks） |
+| `kv_store_full_entities.json` | chunk→doc 反查 + GraphML 实体反查（doc→entities） |
+| `kv_store_full_relations.json` | chunk→doc 反查 + GraphML 关系反查（doc→relations） |
+
+**关键关系**：实体不是孤立的节点，每个实体必须挂在 1 个或多个 chunk 上才有意义。chunk 是知识图谱的最小语义单元，是实体和关系的"出处"。实体的 `source_id` 表示"这个实体从哪些 chunk 抽取出来"，关系的 `source_id` 同理。脑区节点（entity_type=brainregion）的 `source_id` 含 chunk_id 跟普通实体完全等价——脑区就是 LLM 从这些 chunk 抽取出来的实体，不是特殊节点。
+
+### 9.2 损坏检测
+
+启动时 `lightrag_integrity.check_all()` 检测 3 真相源 + 9 派生文件状态：
+
+**3 真相源完好性四态判定**（`_check_truth_sources_intact`）：
+- **absent**：文件不存在或 size=0
+- **empty**：文件存在但内容为空（空 dict `{}` / 空 GraphML）
+- **has_content**：文件存在且有内容（至少 1 个 node / 1 个 entry）
+- **corrupt**：文件存在但 JSON/XML 解析失败
+
+判定规则：
+- 3 文件全部 absent/empty → 全新用户合法（intact=True，还没导入文档）
+- 3 文件全部 has_content 且无 corrupt → 完好（intact=True）
+- 部分文件 has_content 部分 absent/empty → partial 损坏（intact=False）
+- 任一文件 corrupt → 损坏（intact=False）
+
+**9 派生文件检测**：只检测 missing（文件不存在或 size=0），不检测内容格式。
+
+**检测结果分级**：
+- **critical_errors**：3 真相源损坏（GraphML/full_docs/cache 解析失败或 partial）
+- **major_errors**：9 派生文件缺失
+- **minor_errors**：其他次要问题
+
+### 9.3 启动阻断机制
+
+检测到 critical 或 major 错误时，启动流程阻断：
+- 不初始化 LightRAG 主类（`get_lightrag()` 返回 None）
+- 不启动 SkillSync / RegionSync 守护线程
+- splash 显示损坏提示 + "尝试修复"按钮
+- 其他所有进程（API 请求、文档入库、脑区同步等）全部阻断
+
+用户点击"尝试修复"后，调 `/api/kg/lightrag/repair` → `run_repair_on_user_request` 进入修复流程。
+
+### 9.4 修复流程（run_repair_on_user_request）
+
+修复程序的核心原则（铁律）：
+1. **修复第一步只保留 3 真相源**：9 派生文件全删除（不备份、不回滚）
+2. **GraphML 是唯一真相源**：full_docs + cache 是辅助文档，从 GraphML 引用按需提取重建
+3. **修复程序不写 3 真相源**：所有写 3 真相源的代码全删光，重建只写 9 派生
+4. **所有重建从 GraphML 读取**：不从 GraphML 读取的恢复操作全部删除
+
+修复流程：
+```
+1. 停止 RegionSync 守护线程（stop_background_sync_blocking，join timeout=60）
+   - 防止 RegionSync in-flight 任务在修复期间写 GraphML
+   - 超时抛 RuntimeError 终止修复（不能让 GraphML 被写）
+2. 设 _repairing=True 信号灯
+   - 让其他线程的 get_lightrag() 返回 None（兜底防御）
+3. 调 repair_all：
+   3.1 检测 3 真相源完好性（_check_truth_sources_intact）
+       - 损坏 → unrecoverable，不删派生（保留现场让用户排查）
+   3.2 删除 9 派生文件
+   3.3 按依赖链重建 9 派生（走 LightRAG storage.upsert 接口）：
+       text_chunks → doc_status → vdb_chunks → vdb_entities → vdb_relationships
+       → entity_chunks → relation_chunks → full_entities → full_relations
+       任一 unrecoverable → 立即 break，不继续后续重建
+4. reset_init_state + 重跑 check_all 更新检测结果
+5. **不重启 RegionSync**（关键！修复后程序应退出，让用户重启时由正常启动流程触发）
+6. finally 块清 _repairing=False（让下次 get_lightrag 能初始化）
+```
+
+**为什么修复后不重启 RegionSync**：RegionSync 守护线程跑 `_sync_loop` → `_run_sync_impl` → `_manage_region_nodes` → `create_region_nodes` 会写 GraphML（创建/合并脑区节点）。守护线程有"距上次同步超 21.6h 立即跑首次同步"逻辑，修复后立即重启会触发 sync 写真相源。修复程序必须让用户重启程序，由正常启动流程在 check 通过后才启动 RegionSync。
+
+### 9.5 走 LightRAG storage.upsert 接口（v9 关键改进）
+
+9 个派生文件重建走 LightRAG 原生 storage 接口的 `upsert` 方法，**不绕过直接写 JSON 文件**：
+
+| 派生文件 | Storage 类 | 自动注入字段 |
+|---------|-----------|-------------|
+| text_chunks | JsonKVStorage | _id / create_time / update_time / llm_cache_list |
+| doc_status | JsonDocStatusStorage | chunks_list（upsert 自动调 index_done_callback 写盘） |
+| vdb_chunks | NanoVectorDBStorage | __id__ / __created_at__ / vector / matrix（L2 归一化） |
+| vdb_entities | NanoVectorDBStorage | 同上 |
+| vdb_relationships | NanoVectorDBStorage | 同上 |
+| entity_chunks | JsonKVStorage | _id / create_time / update_time |
+| relation_chunks | JsonKVStorage | 同上 |
+| full_entities | JsonKVStorage | 同上 |
+| full_relations | JsonKVStorage | 同上 |
+
+走 storage 接口的好处：
+- 字段注入、向量计算、L2 归一化、index_done_callback 触发全部由 LightRAG 自动处理
+- 重建产物跟 LightRAG 原生启动后的派生文件字节级一致
+- 不会因为字段格式不符导致后续删除文档/查询实体功能失效
+
+### 9.6 7 种损坏场景测试
+
+修复程序覆盖 7 种知识图谱损坏场景：
+
+| 场景 | 模拟操作 | 预期结果 |
+|------|---------|---------|
+| 1. vdb_entities 缺失 | 删 vdb_entities.json | repair 重建 vdb_entities，3 真相源不变 |
+| 2. 9 派生全缺失 | 删全部 9 派生文件 | repair 重建 9 派生，3 真相源不变 |
+| 3. GraphML 损坏 | 写损坏 GraphML（如 `<invalid xml`） | unrecoverable，9 派生文件未被删（保留现场） |
+| 4. full_docs 损坏 | 写损坏 full_docs JSON | unrecoverable |
+| 5. cache 损坏 | 写损坏 cache JSON | unrecoverable |
+| 6. 已删实体不复活 | GraphML 含已删实体引用 | 重建后派生文件不含已删实体 |
+| 7. weight 衰减值保留 | GraphML 含 weight=0.5 | 重建后 GraphML 的 weight 不变（GraphML 没被修改） |
+
+### 9.7 修复合格判定
+
+修复程序合格的硬性标准：
+1. 7 种损坏场景全部通过测试
+2. 修复前后 3 真相源 mtime + sha256 完全不变（铁律 2）
+3. 重建的 9 派生文件跟 LightRAG 原生启动后格式一致（字段名/类型/key/value 结构）
+4. 修复期间无其他进程写 3 真相源（RegionSync 已停 + _repairing 信号灯兜底）
+
+**重要**：合格判定必须用真实环境测试（启动 `./niu` → 删 vdb → 修复 → 退出 → 检查 sha256），不能用 tmp_path 隔离测试。tmp_path 隔离测试无法覆盖真实启动流程的 RegionSync 守护线程副作用。
+
+### 9.8 故障排查要点
+
+主 Agent 帮助用户排查修复问题时，重点检查：
+
+1. **3 真相源是否被改写**：
+   ```bash
+   # 记录修复前 sha256
+   shasum -a 256 ~/.niu/lightrag_storage/{graph_chunk_entity_relation.graphml,kv_store_full_docs.json,kv_store_llm_response_cache.json}
+   # 修复后再次记录，对比是否一致
+   ```
+   如果 sha256 变了，说明有进程在修复期间写了真相源——检查 RegionSync 是否真的停了、是否有其他守护线程。
+
+2. **修复后派生文件是否完整**：
+   ```bash
+   ls -la ~/.niu/lightrag_storage/{vdb_*.json,kv_store_*.json}
+   ```
+   9 个派生文件应该全部存在且有合理大小。如果某个文件缺失或 size=0，说明对应 repair_xxx 函数失败。
+
+3. **修复结果 unrecoverable 字段**：
+   - `_unrecoverable=True` → 3 真相源损坏，无法修复，需要从备份恢复真相源
+   - `_unrecoverable=False` 但某个 repair_xxx status=error → 该派生文件重建失败，可重跑修复
+
+4. **RegionSync 守护线程状态**：
+   修复期间 RegionSync 必须完全停止。如果日志看到"RegionSync 已停止"后又有"Sync complete"，说明守护线程没真正停。
+
+## 十、与旧架构的对照
 
 | 旧概念 | 新对应 |
 |--------|--------|
