@@ -176,9 +176,12 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 | `type` | 类型：`openai` 或 `anthropic` | `openai` |
 | `provider` | LiteLLM 路由参数，同 `llm` 段说明。火山引擎填 `"volcengine"` | `""` 或 `"volcengine"` |
 | `reasoning_effort` | **思考链深度（核心配置）** | `"none"`（禁用，见下表） |
+| `temperature` | LLM 采样温度。0.0 完全确定性，1.0 高随机度。为空时由系统兜底 0.2 | `0.2`（实体/关系抽取建议低温度避免 JSON 漂移） |
 | `litellm_kwargs` | 厂商特有参数，同 `llm` 段说明。火山引擎知识图谱需传 `thinking` 和 `allowed_openai_params` | `{}` 或见配置示例 |
 
 > **重要**：LightRAG 官方建议入库时不要使用带思考链的模型。思考链会导致实体提取超时（单次调用可达 198 秒）。`reasoning_effort` 默认 `"none"` 确保即使主 Agent 使用思考链模型，入库也不受影响。
+
+> **温度值说明**：LightRAG 调 LLM 时如果不配 `temperature` 字段，系统兜底默认 `0.2`。这是为实体抽取、关系抽取等结构化任务优化的低温度值，避免高随机度导致 JSON 格式漂移、实体名不一致。如果需要更稳定的输出可设 `0.0`，需要更多创造性可设 `0.5~0.7`，但不建议超过 `1.0`。主 Agent / 子 Agent 的温度值在提示词文档里独立配置（主 Agent 0.6、子 Agent 多数 0.2），与此处的 `lightrag_llm.temperature` 完全独立，互不影响。
 
 **reasoning_effort 参数说明**：
 
@@ -244,6 +247,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "type": "openai",
   "provider": "volcengine",
   "reasoning_effort": "low",
+  "temperature": 0.2,
   "litellm_kwargs": {
     "thinking": {"type": "disabled"},
     "allowed_openai_params": ["response_format"]
@@ -264,6 +268,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "type": "openai",
   "provider": "",
   "reasoning_effort": "low",
+  "temperature": 0.2,
   "litellm_kwargs": {}
 }
 ```
@@ -278,6 +283,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "type": "openai",
   "provider": "",
   "reasoning_effort": "none",
+  "temperature": 0.2,
   "litellm_kwargs": {}
 }
 ```

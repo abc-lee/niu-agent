@@ -406,7 +406,22 @@
         setStatus('保存配置中...', 'loading');
         const saveResult = await window.electronAPI.saveConfig({
           llm: { ...config, presetId: presetId, reasoning_effort: existingConfig.llm?.reasoning_effort || "" },
-          lightrag_llm: existingConfig.lightrag_llm || {},
+          lightrag_llm: {
+            // 默认结构（首次保存时写入，让用户能直接看到并按需修改 temperature 等字段）
+            presetId: "",
+            apiKey: "",
+            apiBase: "",
+            model: "",
+            type: "openai",
+            reasoning_effort: "high",
+            temperature: 0.2,
+            litellm_kwargs: {
+              thinking: { type: "disabled" },
+              allowed_openai_params: ["response_format"]
+            },
+            // 用户已修改的值覆盖默认（保留历史配置）
+            ...(existingConfig.lightrag_llm || {})
+          },
           context: {
             contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
             warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
