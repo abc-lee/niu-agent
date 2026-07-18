@@ -505,23 +505,23 @@
       e.stopPropagation();
       spirit.classList.remove('drag-over', 'shift-mode', 'ctrl-mode');
       dropHint.classList.remove('show');
-      
+
       const files = e.dataTransfer.files;
       if (files.length === 0) {
         return;
       }
-      
-      // 判断拖入方式（匹配 Windows 习惯）
+
+      // 判断拖入方式（Shift=移动，Ctrl或Command=引用，匹配 Windows/macOS 习惯）
       let mode = 'copy';
       if (e.shiftKey) {
         mode = 'move';
-      } else if (e.ctrlKey) {
+      } else if (e.ctrlKey || e.metaKey) {
         mode = 'reference';
       }
-      
+
       // 使用引用计数进入忙碌状态
       incrementBusy('file-drop');
-      
+
       // 发送文件到后端处理
       handleDroppedFiles(files, mode);
     });
@@ -538,11 +538,11 @@
     
     function updateDropHint(e) {
       spirit.classList.remove('shift-mode', 'ctrl-mode');
-      
+
       if (e.shiftKey) {
         dropHint.textContent = '释放以移动文件';
         spirit.classList.add('shift-mode');
-      } else if (e.ctrlKey) {
+      } else if (e.ctrlKey || e.metaKey) {
         dropHint.textContent = '释放以引用文件';
         spirit.classList.add('ctrl-mode');
       } else {
@@ -552,35 +552,49 @@
     
     // 处理拖入的文件
     async function handleDroppedFiles(files, mode) {
-      const fileList = [];
-      for (const file of files) {
-        fileList.push({
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          path: file.path
-        });
-      }
+      try {
+        const fileList = [];
+        for (const file of files) {
+          // Electron 33 后渲染进程的 file.path 被废弃，必须用 webUtils.getPathForFile
+          // preload 通过 contextBridge 暴露 window.electronAPI.getFilePath(file)
+          const filePath = window.electronAPI.getFilePath(file);
+          fileList.push({
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            path: filePath
+          });
+        }
 
-      // 构建入库指令（简洁，避免 Agent 当对话回复而不调用工具）
-      let modeHint = '';
-      if (mode === 'reference') {
-        modeHint = '（引用模式，使用原路径引用文件，不要拷贝）';
-      } else if (mode === 'move') {
-        modeHint = '（移动模式，将文件移动到存储目录）';
-      }
-      const message = `入库文件${modeHint}：${fileList.map(f => f.path.replace(/\\/g, '/')).join('、')}`;
-      
-      // 发送消息给 Agent
-      const result = await window.electronAPI.sendToAgent(message, { files: fileList, mode });
-      
-      // 收到响应后减少忙碌计数
-      decrementBusy('file-drop-response');
-      
-      // 不再显示"完成"气泡 — 入库进度由轮询自动展示
-      // 但保留错误反馈：失败时在进度环上显示红色感叹号
-      if (result && result.error) {
-        showProgressError();
+        // 构建入库指令（简洁，避免 Agent 当对话回复而不调用工具）
+        let modeHint = '';
+        if (mode === 'reference') {
+          modeHint = '（引用模式，使用原路径引用文件，不要拷贝）';
+        } else if (mode === 'move') {
+          modeHint = '（移动模式，将文件移动到存储目录）';
+        }
+        // message 构造容错：过滤掉空 path，避免 undefined.replace 抛异常
+        const paths = fileList.map(f => (f.path || '').replace(/\\/g, '/')).filter(p => p);
+        if (paths.length === 0) {
+          // 所有文件都没有 path，无法入库，提示用户并退出（同时释放 busy 计数）
+          decrementBusy('file-drop-no-path');
+          return;
+        }
+        const message = `入库文件${modeHint}：${paths.join('、')}`;
+
+        const result = await window.electronAPI.sendToAgent(message, { files: fileList, mode });
+
+        // 收到响应后减少忙碌计数
+        decrementBusy('file-drop-response');
+
+        // 不再显示"完成"气泡 — 入库进度由轮询自动展示
+        // 但保留错误反馈：失败时在进度环上显示红色感叹号
+        if (result && result.error) {
+          showProgressError();
+        }
+      } catch (err) {
+        // 防永久 busy：异常时也减少忙碌计数
+        try { decrementBusy('file-drop-error'); } catch (e) {}
       }
     }
 

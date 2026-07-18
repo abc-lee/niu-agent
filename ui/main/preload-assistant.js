@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // 同步读取睡眠触发时间配置（preload 在页面脚本前执行，零时序风险）
 let _idleTimeoutMs = 5 * 60 * 1000;  // 默认 5 分钟
@@ -46,7 +46,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 发送消息给 Agent
   sendToAgent: (message, context) => ipcRenderer.invoke('send-to-agent', { message, context }),
-  
+
+  // 获取 File 对象的真实路径（Electron 33 后 file.path 被废弃，必须用 webUtils.getPathForFile）
+  getFilePath: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch (e) {
+      console.error('[preload] getFilePath failed:', e.message);
+      return '';
+    }
+  },
+
   // 闲置整理上下文（不产生新记录）
   tidyContext: () => ipcRenderer.invoke('tidy-context'),
   

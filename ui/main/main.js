@@ -1015,7 +1015,9 @@ ipcMain.handle('send-to-agent', async (event, { message, context }) => {
         }
       });
     });
-    req.on('error', (e) => resolve({ error: e.message }));
+    req.on('error', (e) => {
+      resolve({ error: e.message });
+    });
     req.write(data);
     req.end();
   });
