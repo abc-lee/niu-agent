@@ -449,6 +449,89 @@ def get_all_region_members() -> dict[str, list[str]]:
         return {}
 
 
+def find_entities_with_single_floor_edge(floor_weight: float = 0.1) -> set[str]:
+    """找出"只剩 1 条 _region:contains 归属边、且该边已到保底值"的实体集合。
+
+    用途：脑区社区重算输入范围扩展。这些实体被保底规则锁在原脑区无法迁移，
+    必须被纳入社区重算，让新脑区分配一条归属边后，下轮衰减自然解除保底。
+
+    判定规则（与 _decay_brain_region_edges 一致）：
+      - 统计实体的 _region:contains 归属边数量（keywords="包含"）
+      - 跳过 _session: 前缀边（keywords 字段以 "_session:" 开头）
+      - 跳过脑区节点本身（name 以"脑区"结尾，与 get_all_region_members 一致）
+      - 归属边数量 == 1 且 weight <= floor_weight → 命中
+
+    注意：知识边（实体↔实体，keywords 非 "包含" 且非 "_session:"）不参与计数。
+
+    Args:
+        floor_weight: 保底权重阈值（默认 0.1，与 region_manager.FLOOR_WEIGHT 对齐）
+
+    Returns:
+        实体名称集合（小写，与 detect_communities 中 assigned_entities 一致）
+    """
+    try:
+        rag = get_lightrag()
+        if rag is None:
+            return set()
+
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return set()
+
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None or nx_graph.number_of_nodes() == 0:
+            return set()
+
+        with graph_read_lock():
+            snapshot = nx_graph.copy()
+
+        result: set[str] = set()
+        # 脑区判断方式：与 get_all_region_members L429-434 保持完全一致
+        # 只用 name.endswith("脑区") 判断——系统所有脑区命名都是 "{label}脑区" 格式
+        # （region_manager.py L53 REGION_SUFFIX="脑区" + L384 f"{region_label}{REGION_SUFFIX}"）
+        # 不用 entity_type=="brainregion"——避免与 get_all_region_members 不一致
+        for node_id, node_data in snapshot.nodes(data=True):
+            # 跳过脑区节点本身（只用 endswith("脑区") 判断）
+            if isinstance(node_id, str) and node_id.endswith("脑区"):
+                continue
+
+            # 防御性：node_id 必须是 str，否则 .lower() 会失败
+            if not isinstance(node_id, str):
+                continue
+
+            # 统计该实体的 _region:contains 归属边数
+            contains_edges = []
+            for neighbor_id, edge_data in snapshot[node_id].items():
+                kw = edge_data.get("keywords") or edge_data.get("type", "")
+                kw_lower = kw.lower() if isinstance(kw, str) else ""
+                # 跳过 _session: 前缀边
+                if kw_lower.startswith("_session:"):
+                    continue
+                # 只数 _region:contains 归属边（keywords="包含"）
+                if kw_lower != "包含":
+                    continue
+                # 防御性校验：另一端必须是脑区节点（与 get_all_region_members 一致：endswith("脑区")）
+                if not (isinstance(neighbor_id, str) and neighbor_id.endswith("脑区")):
+                    continue
+                contains_edges.append(edge_data)
+
+            # 只剩 1 条归属边 + 已到保底值
+            if len(contains_edges) == 1:
+                w = contains_edges[0].get("weight", 1.0)
+                try:
+                    w = float(w)
+                except (TypeError, ValueError):
+                    continue
+                if w <= floor_weight:
+                    result.add(node_id.lower())
+
+        return result
+
+    except Exception as e:
+        logger.debug("find_entities_with_single_floor_edge failed: %s", e)
+        return set()
+
+
 def remove_region_edges(region_name: str, edge_type: str) -> int:
     """Remove edges of a specific type from a brain region node.
 
