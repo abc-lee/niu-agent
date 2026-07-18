@@ -2747,11 +2747,23 @@ _DERIVED_FILES = [
     "kv_store_full_relations.json",
 ]
 
-# 重建依赖链顺序（v8：只含 9 个派生文件的 repair 函数）
+# v9 重建依赖链顺序（9 个派生文件的 async repair 函数）
+# 跟 v8 _REBUILD_ORDER 内容相同，但所有 repair_xxx 已改为 async def（Task 3-9），
+# 调用方必须用 await（在 repair_all 内部用 asyncio.run 桥接）。
+# 依赖链：
+#   text_chunks（独立，从 GraphML + cache + full_docs 重建）
+#   → doc_status（依赖 text_chunks：chunks_list 反查）
+#   → vdb_chunks（依赖 text_chunks：content + full_doc_id + file_path）
+#   → vdb_entities（独立，从 GraphML nodes 重建）
+#   → vdb_relationships（独立，从 GraphML edges 重建）
+#   → entity_chunks（独立，从 GraphML node source_id 重建）
+#   → relation_chunks（独立，从 GraphML edge source_id 重建）
+#   → full_entities（依赖 doc_status：chunk→doc 映射）
+#   → full_relations（依赖 doc_status：chunk→doc 映射）
 # 不含 repair_graphml / repair_brainregion_zombies / repair_graphml_orphan_edges /
 # repair_llm_response_cache——v8-Task 1 已删除这些违反铁律 3 的函数（写 3 真相源）。
 # 用直接函数引用（不是字符串），拼写错误会在模块加载时 NameError，避免静默跳过。
-_REBUILD_ORDER: list[tuple[str, Any]] = [
+_REBUILD_ORDER_ASYNC: list[tuple[str, Any]] = [
     ("text_chunks", repair_text_chunks),
     ("doc_status", repair_doc_status),
     ("vdb_chunks", repair_vdb_chunks),
@@ -2765,14 +2777,22 @@ _REBUILD_ORDER: list[tuple[str, Any]] = [
 
 
 def repair_all() -> dict[str, Any]:
-    """v8：3 真相源不可动 + 删 9 派生 + 按需提取重建。
+    """v9：3 真相源不可动 + 删 9 派生 + 按依赖链调 9 个 async repair_xxx。
 
     流程：
-    1. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager
-    2. 检测 3 真相源完好性 → 任一损坏 = unrecoverable
-    3. 删除 9 个派生文件（铁律 1：不备份，直接删）
-    4. 按依赖链重建 9 派生文件（从 GraphML + cache + full_docs 按需提取）
-    5. 失败时无法回滚（因为派生文件已删光，真相源从未被修改）
+    1. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager（v8 保留）
+    2. 检测 3 真相源完好性 → 任一损坏 = unrecoverable（v8 保留）
+    3. 删除 9 个派生文件（铁律 1：不备份，直接删；v8 保留）
+    4. 按依赖链调 9 个 async repair_xxx（v9 改动：用 asyncio.run 桥接）
+       - 任一 repair_xxx 报 unrecoverable → 立即 break
+       - 异常时记录 unrecoverable + break
+    5. 失败时无法回滚（派生文件已删光，真相源从未被修改）
+
+    v9 跟 v8 的区别：
+    - v8：9 个 repair_xxx 是同步函数，直接 for 循环调用 `fn()`
+    - v9：9 个 repair_xxx 是 async 函数（Task 3-9 重写走 storage.upsert），
+          repair_all 保持同步签名（向后兼容 run_repair_on_user_request 同步调用），
+          内部用 asyncio.run(_repair_all_async()) 桥接
 
     3 真相源完全不可动（铁律 2）：
     - 不写不改不删（读取是必要的，用于按需提取重建派生文件）
@@ -2793,11 +2813,45 @@ def repair_all() -> dict[str, Any]:
     注意：repair_all 是同步函数，不能声明 async（调用方 lightrag_manager.py
     是同步调用 repair_all()，async 会导致返回 coroutine 对象）。
     """
+    # 同步签名 + 内部 async 桥接
+    # 用 asyncio.run 创建临时 event loop 跑 _repair_all_async
+    # 已存在 event loop 时（如 pytest-asyncio 测试）抛 RuntimeError 让调用方改用 _repair_all_async
+    try:
+        return asyncio.run(_repair_all_async())
+    except RuntimeError as e:
+        if "cannot be called from a running event loop" in str(e):
+            # 已存在 running loop（如测试 @pytest.mark.asyncio 内部调用）
+            # 但 repair_all 是同步函数不能 await，无法在此场景安全桥接
+            # 抛错让调用方知道要改用 _repair_all_async
+            raise RuntimeError(
+                "repair_all() 不能在 running event loop 内调用；"
+                "请用 await _repair_all_async() 替代"
+            ) from e
+        raise
+
+
+async def _repair_all_async() -> dict[str, Any]:
+    """v9 repair_all 的 async 实现（内部函数，由 repair_all 桥接调用）。
+
+    所有 9 个 repair_xxx 都是 async 函数（Task 3-9 重写），
+    在同一 event loop 内顺序 await，共享 shared_storage 全局状态。
+
+    算法：
+    1. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager
+    2. 检测 3 真相源完好性 → 任一损坏 = unrecoverable
+    3. 删除 9 个派生文件（铁律 1：不备份，直接删）
+    4. 按依赖链 await 9 个 async repair_xxx
+       - 用 getattr 间接查找（让测试 monkeypatch 能注入失败版本）
+       - 任一报 unrecoverable → 立即 break
+       - 异常时记录 unrecoverable + break
+
+    测试可以直接 await _repair_all_async() 跑（不用 asyncio.run 桥接）。
+    """
     storage_dir = _storage_dir()
     result: dict[str, Any] = {}
 
-    # 0. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager（兼容测试 monkeypatch）
-    #    现有代码有这段同步逻辑，重写 repair_all 时必须保留。
+    # 0. 同步 _STORAGE_DIR 到 lightrag_integrity + lightrag_manager（v8 保留）
+    #    兼容测试 monkeypatch lightrag_repair._STORAGE_DIR
     #    否则测试 monkeypatch lightrag_repair._STORAGE_DIR 后，lightrag_integrity._STORAGE_DIR
     #    仍是真实 ~/.niu/lightrag_storage，导致 check_all 读真实路径污染数据。
     try:
@@ -2815,7 +2869,7 @@ def repair_all() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
 
-    # 1. 检测 3 真相源完好性
+    # 1. 检测 3 真相源完好性（v8 保留）
     truth_check = _check_truth_sources_intact()
     result["_truth_source_check"] = truth_check
     if not truth_check["intact"]:
@@ -2831,7 +2885,7 @@ def repair_all() -> dict[str, Any]:
         result["_deleted"] = []  # 真相源损坏时不删派生文件，让用户看到现场
         return result
 
-    # 2. 删除 9 个派生文件（铁律 1：不备份，直接删）
+    # 2. 删除 9 个派生文件（铁律 1：不备份，直接删；v8 保留）
     #    v8：删除"备份"步骤——铁律 1 要求"其他文件全删除"。
     #    失败时不回滚——派生文件已删光，真相源从未被修改，用户重新跑 repair_all 即可。
     deleted: list[str] = []
@@ -2846,16 +2900,23 @@ def repair_all() -> dict[str, Any]:
                 logger.warning(f"[LightRAGRepair] 删除 {fname} 失败: {e}")
     result["_deleted"] = deleted
 
-    # 3. 按依赖链重建 9 派生文件
-    #    用 getattr 间接查找函数（不直接引用 _REBUILD_ORDER 里的函数对象），
-    #    让测试 monkeypatch.setattr(repair_mod, "repair_vdb_entities", failing_fn) 能生效
-    #    （如果直接用 _REBUILD_ORDER 里的 fn 对象，monkeypatch 替换模块属性不影响已绑定的 fn）
+    # 3. 按依赖链 await 9 个 async repair_xxx（v9 改动：async 调用）
+    #    用 getattr 间接查找函数（让测试 monkeypatch.setattr(repair_mod, "repair_vdb_entities", failing_fn) 能生效）
+    #    _REBUILD_ORDER_ASYNC 里的 fn 都是 async def 模块级函数，有 __name__
     import niu_api.internal.lightrag_repair as _self_mod
-    for name, fn in _REBUILD_ORDER:
+    for name, fn in _REBUILD_ORDER_ASYNC:
         # 重新从模块属性读取，让 monkeypatch 能注入失败版本
+        # （如果直接用 _REBUILD_ORDER_ASYNC 里的 fn 对象，monkeypatch 替换模块属性不影响已绑定的 fn）
         fn = getattr(_self_mod, fn.__name__)
+        # v9 第 3 轮审查修复 I2：防御性校验 fn 是 async 函数
+        # 如果 monkeypatch 注入了同步 mock，await fn() 会抛 TypeError 而非 unrecoverable
+        # 注意：测试 mock 必须是 async def 顶层命名函数（不可用 lambda），否则 __name__ 会 AttributeError
+        if not asyncio.iscoroutinefunction(fn):
+            raise RuntimeError(
+                f"{name} 不是 async 函数（v9 要求所有 repair_xxx 是 async）"
+            )
         try:
-            step_result = fn()
+            step_result = await fn()  # v9 改动：await（v8 是 fn()）
             result[name] = step_result
             if isinstance(step_result, dict) and (
                 step_result.get("unrecoverable") or step_result.get("status") == "unrecoverable"
