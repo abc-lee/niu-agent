@@ -2281,22 +2281,94 @@ async def repair_relation_chunks() -> dict[str, Any]:
     }
 
 
-def repair_full_entities() -> dict[str, Any]:
-    """9. 从 GraphML source_id → chunk→doc 映射重建 full_entities。
+async def repair_full_entities() -> dict[str, Any]:
+    """v9：从 GraphML node source_id → chunk→doc 反查重建 full_entities，走 JsonKVStorage.upsert。
 
-    真相源：GraphML node source_id（chunk_id 列表）+ doc_status.chunks_list（chunk→doc 映射）
-    派生：kv_store_full_entities.json
+    真相源：graph_chunk_entity_relation.graphml（node id + d3 source_id 字段）
+            + kv_store_doc_status.json（chunks_list 提供 chunk→doc 映射）
+    派生：kv_store_full_entities.json（通过 JsonKVStorage.upsert 写）
 
-    key = doc_id
-    value = list of entity_name（在该 doc 的 chunks 中出现的实体）
+    走 storage 接口的好处：
+    - JsonKVStorage.upsert 自动注入 _id / create_time / update_time
+    - index_done_callback 统一写盘 + sanitization
+
+    算法：
+    1. initialize_share_data(workers=1) + set_default_workspace("")
+    2. 实例化 JsonKVStorage(namespace=full_entities, embedding_func=None)
+    3. await storage.initialize()
+    4. 读 GraphML nodes（用 v8 _load_graphml_nodes，返回 4 元组）
+    5. 读 doc_status（chunk→doc 映射，从 chunks_list 反查）
+    6. 从 GraphML source_id 提取 entity→docs 映射
+       - 每个 node 的 source_id 拆分为 chunk_id 列表
+       - 反查 chunk_to_doc 得到 doc_id 集合
+    7. 反转：doc→entities（用 set 去重，跟 LightRAG operate.py L2904 一致）
+    8. 构造 upsert data：{doc_id: {"entity_names": list[str], "count": int}}
+       - entity_names 来自 set（不 sorted，跟 LightRAG 一致）
+       - count = len(entity_names)
+    9. 调 await storage.upsert(data) + await storage.index_done_callback()
+    10. 全新用户（GraphML 无 node 或 doc_status 为空）→ 不写派生文件
+
+    关键：
+    - value 格式 {"entity_names": list[str], "count": int}（不是裸 list！）
+    - entity_names 不 sorted（由 set 转来无序，跟 LightRAG operate.py L2904 一致）
+    - _id / create_time / update_time 由 JsonKVStorage 自动注入，不要手写
+
+    异常处理：
+    - GraphML 损坏 → unrecoverable
+    - doc_status 损坏 → unrecoverable
+    - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
     storage_dir = _storage_dir()
-    fe_path = storage_dir / "kv_store_full_entities.json"
     doc_status_path = storage_dir / "kv_store_doc_status.json"
 
-    # 1. 读 GraphML nodes
+    # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.shared_storage import (
+        initialize_share_data,
+        set_default_workspace,
+    )
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+    from lightrag.namespace import NameSpace
+
+    initialize_share_data(workers=1)
+    set_default_workspace("")
+
+    # 2. 实例化 JsonKVStorage
+    #    embedding_func 传 None（full_entities 不用 embedding，跟 entity_chunks 同理）
+    #    但 full_entities KV 存储从不调用 embedding_func，运行时 None 安全
+    global_config = {"working_dir": str(storage_dir)}
+    storage = JsonKVStorage(
+        namespace=NameSpace.KV_STORE_FULL_ENTITIES,
+        workspace="",
+        global_config=global_config,
+        embedding_func=None,  # type: ignore[arg-type]
+    )
+
+    try:
+        await storage.initialize()
+        # 清空共享内存旧数据：JsonKVStorage.initialize 会从磁盘 load 旧 full_entities.json
+        # 到共享内存（_data），repair 场景下要求从真相源完全重新派生——如果不 clear，
+        # 已删除的 doc 残留不会被覆盖（upsert 按 key 更新，旧 key 残留）。
+        # 跟 Task 8 entity_chunks 清空 _data 同理。
+        if storage._data is not None:
+            storage._data.clear()
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] full_entities storage.initialize 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "JsonKVStorage",
+            "message": f"storage.initialize 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    # 3. 读 GraphML nodes（真相源）
     nodes, graphml_err = _load_graphml_nodes()
-    if graphml_err:
+    if graphml_err is not None:
         return {
             "status": "error",
             "expected": 0,
@@ -2307,7 +2379,7 @@ def repair_full_entities() -> dict[str, Any]:
             "unrecoverable": True,
         }
 
-    # 2. 读 doc_status（chunk→doc 映射）
+    # 4. 读 doc_status（真相源，chunk→doc 映射）
     doc_status = _load_json_dict(doc_status_path)
     if doc_status is None:
         return {
@@ -2316,11 +2388,30 @@ def repair_full_entities() -> dict[str, Any]:
             "actual": 0,
             "lost": 0,
             "source": "doc_status",
-            "message": "doc_status 损坏，无法构建 chunk→doc 映射",
+            "message": "doc_status 损坏（JSON 解析失败），无法构建 chunk→doc 映射",
             "unrecoverable": True,
         }
 
-    # 3. 构建 chunk→doc 映射
+    # 5. 全新用户（GraphML 无 node 或 doc_status 为空）→ 不写派生文件
+    #    v9 第 2 轮审查修复（问题 5 / I3）：
+    #    LightRAG 全新用户首次启动 JsonKVStorage.initialize 只设内存空 dict，
+    #    不主动写空文件到磁盘。v9 跟 LightRAG 原生行为一致——
+    #    全新用户场景下 full_entities.json 不存在，不要强行写空 {} 文件。
+    if not nodes or not doc_status:
+        logger.info(
+            "[LightRAGRepair] GraphML 无 node 或 doc_status 为空（全新用户），"
+            "不写派生文件（跟 LightRAG 原生一致）"
+        )
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML + doc_status",
+            "message": "GraphML 无 node 或 doc_status 为空，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
+        }
+
+    # 6. 构建 chunk→doc 映射（从 doc_status.chunks_list 反查）
     chunk_to_doc: dict[str, str] = {}
     for doc_id, ds_value in doc_status.items():
         if not isinstance(ds_value, dict):
@@ -2329,9 +2420,11 @@ def repair_full_entities() -> dict[str, Any]:
             if isinstance(cid, str):
                 chunk_to_doc[cid] = doc_id
 
-    # 4. 从 GraphML source_id 提取 entity→docs 映射
+    # 7. 从 GraphML source_id 提取 entity→docs 映射
+    #    每个 node 的 source_id（d3）拆分为 chunk_id 列表
+    #    反查 chunk_to_doc 得到 doc_id 集合
     entity_to_docs: dict[str, set[str]] = {}
-    for node_id, (_, _, src, _file_path) in nodes.items():
+    for node_id, (_etype, _desc, src, _file_path) in nodes.items():
         if not src:
             continue
         chunk_ids = [c for c in src.split(GRAPH_FIELD_SEP) if c]
@@ -2340,51 +2433,168 @@ def repair_full_entities() -> dict[str, Any]:
             if doc_id:
                 entity_to_docs.setdefault(node_id, set()).add(doc_id)
 
-    # 5. 反转：doc→entities
-    doc_to_entities: dict[str, list[str]] = {}
+    # 8. 反转：doc→entities（用 set 去重，跟 LightRAG operate.py L2904 一致）
+    doc_to_entities: dict[str, set[str]] = {}
     for entity_name, doc_set in entity_to_docs.items():
         for doc_id in doc_set:
-            doc_to_entities.setdefault(doc_id, []).append(entity_name)
+            doc_to_entities.setdefault(doc_id, set()).add(entity_name)
 
-    # 6. 写入（LightRAG 原生格式：{entity_names: [...], count: N}）
-    #    参考 REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py:2901-2908
-    #    读取侧 lightrag.py:3567 显式检查 "entity_names" in doc_entities_data
-    expected = len(doc_status) if doc_status else 0
-    fe_payload = {
-        doc_id: {"entity_names": sorted(ents), "count": len(ents)}
-        for doc_id, ents in doc_to_entities.items()
-    }
-    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
-    pass
+    # 9. 构造 upsert data（严格对照字段表）
+    #    value 格式 {"entity_names": list[str], "count": int}
+    #    entity_names 来自 set（不 sorted，跟 LightRAG operate.py L2904 一致）
+    #    count = len(entity_names)
+    upsert_data: dict[str, dict[str, Any]] = {}
+    for doc_id, entity_set in doc_to_entities.items():
+        # entity_names 不 sorted（来自 set，跟 LightRAG 一致）
+        entity_names = list(entity_set)
+        upsert_data[doc_id] = {
+            "entity_names": entity_names,
+            "count": len(entity_names),
+        }
 
-    actual = len(doc_to_entities)
-    logger.info(f"[LightRAGRepair] 重建 full_entities: {actual} 条 (source=GraphML source_id + doc_status)")
+    # 10. 调 storage.upsert + index_done_callback
+    if not upsert_data:
+        # 没有匹配的 chunk→doc 映射（GraphML source_id 跟 doc_status chunks_list 不交叉）
+        # 不写派生文件（v9 第 2 轮审查修复 问题 5 / I3，跟全新用户分支一致）
+        logger.warning(
+            f"[LightRAGRepair] GraphML 有 {len(nodes)} node 但无 chunk→doc 映射匹配，"
+            "不写派生文件（跟 LightRAG 原生一致）"
+        )
+        return {
+            "status": "ok",
+            "expected": len(doc_status),
+            "actual": 0,
+            "lost": len(doc_status),
+            "source": "GraphML + doc_status",
+            "message": f"GraphML {len(nodes)} node 但无 chunk→doc 映射匹配，不写派生文件（跟 LightRAG 原生一致）",
+        }
+
+    try:
+        await storage.upsert(upsert_data)
+        await storage.index_done_callback()
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] full_entities storage.upsert/index_done_callback 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": len(upsert_data),
+            "actual": 0,
+            "lost": len(upsert_data),
+            "source": "JsonKVStorage",
+            "message": f"storage.upsert 或 index_done_callback 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    actual = len(upsert_data)
+    logger.info(
+        f"[LightRAGRepair] 重建 full_entities: {actual} 条 "
+        "(source=GraphML source_id + doc_status chunks_list)"
+    )
     return {
         "status": "ok",
-        "expected": expected,
+        "expected": len(upsert_data),
         "actual": actual,
-        "lost": expected - actual,
-        "source": "GraphML source_id + doc_status chunks_list",
-        "message": f"从 GraphML source_id → chunk→doc 映射重建 {actual} 条 full_entities",
+        "lost": 0,
+        "source": "GraphML + doc_status",
+        "message": f"从 GraphML source_id → chunk→doc 映射走 JsonKVStorage.upsert 重建 {actual} 条 full_entities",
     }
 
 
-def repair_full_relations() -> dict[str, Any]:
-    """10. 从 GraphML edge source_id → chunk→doc 映射重建 full_relations。
+async def repair_full_relations() -> dict[str, Any]:
+    """v9：从 GraphML edge source_id → chunk→doc 反查重建 full_relations，走 JsonKVStorage.upsert。
 
-    真相源：GraphML edge source_id（chunk_id 列表）+ doc_status.chunks_list（chunk→doc 映射）
-    派生：kv_store_full_relations.json
+    真相源：graph_chunk_entity_relation.graphml（edge src/tgt + d10 source_id 字段）
+            + kv_store_doc_status.json（chunks_list 提供 chunk→doc 映射）
+    派生：kv_store_full_relations.json（通过 JsonKVStorage.upsert 写）
 
-    key = doc_id
-    value = list of relation_key (make_relation_chunk_key 格式)
+    走 storage 接口的好处：
+    - JsonKVStorage.upsert 自动注入 _id / create_time / update_time
+    - index_done_callback 统一写盘 + sanitization
+
+    算法：
+    1. initialize_share_data(workers=1) + set_default_workspace("")
+    2. 实例化 JsonKVStorage(namespace=full_relations, embedding_func=None)
+    3. await storage.initialize()
+    4. 读 GraphML edges（用 v9 6 元组 _load_graphml_nodes_edges）
+    5. 读 doc_status（chunk→doc 映射，从 chunks_list 反查）
+    6. 从 GraphML edge source_id 提取 relation→docs 映射
+       - 每个 edge 的 source_id（d10）拆分为 chunk_id 列表
+       - 用 (src, tgt) 二元组作为 key（保留 src/tgt 信息）
+       - 反查 chunk_to_doc 得到 doc_id 集合
+    7. 反转：doc→relation_pairs
+       - 每个 pair 必须 sorted([src, tgt])（跟 LightRAG operate.py L2889 一致）
+       - 用 set 去重（同一 doc 内同一 sorted pair 只出现一次）
+    8. 构造 upsert data：{doc_id: {"relation_pairs": list[list[str]], "count": int}}
+       - relation_pairs 是 list of list（每个 pair 是 sorted 的 2 元素 list [src, tgt]）
+       - count = len(relation_pairs)
+    9. 调 await storage.upsert(data) + await storage.index_done_callback()
+    10. 全新用户（GraphML 无 edge 或 doc_status 为空）→ 不写派生文件
+
+    关键：
+    - value 格式 {"relation_pairs": list[list[str]], "count": int}
+    - 每个 pair 必须 sorted([src, tgt])（跟 LightRAG operate.py L2889 一致）
+    - 每个 pair 是 list（不是 tuple，JSON 序列化会变 list，跟 LightRAG operate.py L2914-2915 一致）
+    - _id / create_time / update_time 由 JsonKVStorage 自动注入，不要手写
+
+    异常处理：
+    - GraphML 损坏 → unrecoverable
+    - doc_status 损坏 → unrecoverable
+    - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
     storage_dir = _storage_dir()
-    fr_path = storage_dir / "kv_store_full_relations.json"
     doc_status_path = storage_dir / "kv_store_doc_status.json"
 
-    # 1. 读 GraphML edges
+    # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.shared_storage import (
+        initialize_share_data,
+        set_default_workspace,
+    )
+    from lightrag.kg.json_kv_impl import JsonKVStorage
+    from lightrag.namespace import NameSpace
+
+    initialize_share_data(workers=1)
+    set_default_workspace("")
+
+    # 2. 实例化 JsonKVStorage
+    #    embedding_func 传 None（full_relations 不用 embedding，跟 entity_chunks 同理）
+    global_config = {"working_dir": str(storage_dir)}
+    storage = JsonKVStorage(
+        namespace=NameSpace.KV_STORE_FULL_RELATIONS,
+        workspace="",
+        global_config=global_config,
+        embedding_func=None,  # type: ignore[arg-type]
+    )
+
+    try:
+        await storage.initialize()
+        # 清空共享内存旧数据：JsonKVStorage.initialize 会从磁盘 load 旧 full_relations.json
+        # 到共享内存（_data），repair 场景下要求从真相源完全重新派生——如果不 clear，
+        # 已删除的 doc 残留不会被覆盖（upsert 按 key 更新，旧 key 残留）。
+        # 跟 Task 8 relation_chunks 清空 _data 同理。
+        if storage._data is not None:
+            storage._data.clear()
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] full_relations storage.initialize 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "JsonKVStorage",
+            "message": f"storage.initialize 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    # 3. 读 GraphML edges（真相源，v9 6 元组 _load_graphml_nodes_edges）
+    #    返回 (node_ids, edges, error)
+    #    edges: list of (src, tgt, edge_source_id, edge_description, edge_keywords, edge_file_path)
     _, edges, graphml_err = _load_graphml_nodes_edges()
-    if graphml_err:
+    if graphml_err is not None:
         return {
             "status": "error",
             "expected": 0,
@@ -2395,7 +2605,7 @@ def repair_full_relations() -> dict[str, Any]:
             "unrecoverable": True,
         }
 
-    # 2. 读 doc_status
+    # 4. 读 doc_status（真相源，chunk→doc 映射）
     doc_status = _load_json_dict(doc_status_path)
     if doc_status is None:
         return {
@@ -2404,11 +2614,30 @@ def repair_full_relations() -> dict[str, Any]:
             "actual": 0,
             "lost": 0,
             "source": "doc_status",
-            "message": "doc_status 损坏，无法构建 chunk→doc 映射",
+            "message": "doc_status 损坏（JSON 解析失败），无法构建 chunk→doc 映射",
             "unrecoverable": True,
         }
 
-    # 3. 构建 chunk→doc 映射
+    # 5. 全新用户（GraphML 无 edge 或 doc_status 为空）→ 不写派生文件
+    #    v9 第 2 轮审查修复（问题 5 / I3）：
+    #    LightRAG 全新用户首次启动 JsonKVStorage.initialize 只设内存空 dict，
+    #    不主动写空文件到磁盘。v9 跟 LightRAG 原生行为一致——
+    #    全新用户场景下 full_relations.json 不存在，不要强行写空 {} 文件。
+    if not edges or not doc_status:
+        logger.info(
+            "[LightRAGRepair] GraphML 无 edge 或 doc_status 为空（全新用户），"
+            "不写派生文件（跟 LightRAG 原生一致）"
+        )
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML + doc_status",
+            "message": "GraphML 无 edge 或 doc_status 为空，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
+        }
+
+    # 6. 构建 chunk→doc 映射（从 doc_status.chunks_list 反查）
     chunk_to_doc: dict[str, str] = {}
     for doc_id, ds_value in doc_status.items():
         if not isinstance(ds_value, dict):
@@ -2417,10 +2646,12 @@ def repair_full_relations() -> dict[str, Any]:
             if isinstance(cid, str):
                 chunk_to_doc[cid] = doc_id
 
-    # 4. 从 GraphML edge source_id 提取 relation→docs 映射
+    # 7. 从 GraphML edge source_id 提取 relation→docs 映射
     #    key 用 (src, tgt) 二元组（保留 src/tgt 信息，LightRAG 读取侧用 pair[0]/pair[1]）
+    #    每个 edge 的 source_id（d10）拆分为 chunk_id 列表
+    #    反查 chunk_to_doc 得到 doc_id 集合
     relation_pair_to_docs: dict[tuple[str, str], set[str]] = {}
-    for src, tgt, edge_src_id, _, _, _ in edges:  # v9 Task 7: 6 元组（新增 edge_file_path 未使用）
+    for src, tgt, edge_src_id, _edge_desc, _edge_keywords, _edge_file_path in edges:
         if not src or not tgt:
             continue
         if not edge_src_id:
@@ -2431,32 +2662,76 @@ def repair_full_relations() -> dict[str, Any]:
             if doc_id:
                 relation_pair_to_docs.setdefault((src, tgt), set()).add(doc_id)
 
-    # 5. 反转：doc→relation_pairs
-    doc_to_relation_pairs: dict[str, list[list[str]]] = {}
+    # 8. 反转：doc→relation_pairs
+    #    每个 pair 必须 sorted([src, tgt])（跟 LightRAG operate.py L2889 一致）
+    #    用 set 去重（同一 doc 内同一 sorted pair 只出现一次）
+    doc_to_relation_pairs: dict[str, set[tuple[str, str]]] = {}
     for (src, tgt), doc_set in relation_pair_to_docs.items():
+        # sorted 后用 tuple 作为 set 元素（可哈希）
+        # 显式 cast 让 pyright 推断为 tuple[str, str] 而非 tuple[str, ...]
+        sorted_pair: tuple[str, str] = (src, tgt) if src <= tgt else (tgt, src)
         for doc_id in doc_set:
-            doc_to_relation_pairs.setdefault(doc_id, []).append([src, tgt])
+            doc_to_relation_pairs.setdefault(doc_id, set()).add(sorted_pair)
 
-    # 6. 写入（LightRAG 原生格式：{relation_pairs: [[src, tgt], ...], count: N}）
-    #    参考 REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py:2911-2919
-    #    读取侧 lightrag.py:3582 显式检查 "relation_pairs" in doc_relations_data
-    expected = len(doc_status) if doc_status else 0
-    fr_payload = {
-        doc_id: {"relation_pairs": pairs, "count": len(pairs)}
-        for doc_id, pairs in doc_to_relation_pairs.items()
-    }
-    # TODO Task 3-9 用 storage.upsert 重写（v9 Task 1 已删除 _atomic_write_json）
-    pass
+    # 9. 构造 upsert data（严格对照字段表）
+    #    value 格式 {"relation_pairs": list[list[str]], "count": int}
+    #    relation_pairs 是 list of list（每个 pair 是 sorted 的 2 元素 list [src, tgt]）
+    #    跟 LightRAG operate.py L2914-2915 一致：[list(pair) for pair in final_relation_pairs]
+    upsert_data: dict[str, dict[str, Any]] = {}
+    for doc_id, pair_set in doc_to_relation_pairs.items():
+        # 每个 pair 是 sorted 的 tuple，转 list（跟 LightRAG operate.py L2914 一致）
+        relation_pairs = [list(pair) for pair in pair_set]
+        upsert_data[doc_id] = {
+            "relation_pairs": relation_pairs,
+            "count": len(relation_pairs),
+        }
 
-    actual = len(doc_to_relation_pairs)
-    logger.info(f"[LightRAGRepair] 重建 full_relations: {actual} 条 (source=GraphML edge source_id + doc_status)")
+    # 10. 调 storage.upsert + index_done_callback
+    if not upsert_data:
+        # 不写派生文件（v9 第 2 轮审查修复 问题 5 / I3，跟全新用户分支一致）
+        logger.warning(
+            f"[LightRAGRepair] GraphML 有 {len(edges)} edge 但无 chunk→doc 映射匹配，"
+            "不写派生文件（跟 LightRAG 原生一致）"
+        )
+        return {
+            "status": "ok",
+            "expected": len(doc_status),
+            "actual": 0,
+            "lost": len(doc_status),
+            "source": "GraphML + doc_status",
+            "message": f"GraphML {len(edges)} edge 但无 chunk→doc 映射匹配，不写派生文件（跟 LightRAG 原生一致）",
+        }
+
+    try:
+        await storage.upsert(upsert_data)
+        await storage.index_done_callback()
+    except Exception as e:
+        logger.error(
+            f"[LightRAGRepair] full_relations storage.upsert/index_done_callback 失败: {e}",
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "expected": len(upsert_data),
+            "actual": 0,
+            "lost": len(upsert_data),
+            "source": "JsonKVStorage",
+            "message": f"storage.upsert 或 index_done_callback 异常: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    actual = len(upsert_data)
+    logger.info(
+        f"[LightRAGRepair] 重建 full_relations: {actual} 条 "
+        "(source=GraphML edge source_id + doc_status chunks_list)"
+    )
     return {
         "status": "ok",
-        "expected": expected,
+        "expected": len(upsert_data),
         "actual": actual,
-        "lost": expected - actual,
-        "source": "GraphML edge source_id + doc_status chunks_list",
-        "message": f"从 GraphML edge source_id → chunk→doc 映射重建 {actual} 条 full_relations",
+        "lost": 0,
+        "source": "GraphML + doc_status",
+        "message": f"从 GraphML edge source_id → chunk→doc 映射走 JsonKVStorage.upsert 重建 {actual} 条 full_relations",
     }
 
 
