@@ -1402,35 +1402,36 @@ def _classify_probe_response_tier2(text: str) -> str:
 async def probe_response_format(request: Request) -> dict:
     """递进探测当前 LLM 配置对 response_format 的支持档位。
 
+    前置条件：调用方（前端 testAndSave）必须先通过 /api/test-llm 连通性
+    测试，确认 LLM 可正常对话。本端点假定连通性已验证，不再处理认证/网络
+    等基础设施类错误（那些应该在连通性测试阶段就被拦截）。
+
     3 档递进（最强→最弱）：
-    - Tier 1: json_schema strict → 200 + 合法 JSON dict + 含 ok → json_schema
-    - Tier 2: json_object → 200 + 合法 JSON dict → json_object
+    - Tier 1: json_schema strict → 响应合法 JSON dict + 含 ok → json_schema
+    - Tier 2: json_object → 响应合法 JSON dict → json_object
     - Tier 3: 都失败 → prompt_only
 
-    每档失败条件：
-    - BadRequestError/UnsupportedParamsError（模型/网关 4xx 拒绝）
-    - 200 + 非合法 JSON（网关接受但模型输出漂移，如 GLM）
+    判定原则：只看响应内容是否符合该 tier 要求，不看错误码或异常类型。
+    - 没抛异常 + 响应符合 → "supported"
+    - 没抛异常 + 响应不符合（如非合法 JSON、字段缺失）→ "gateway_blocked"
+    - 抛任何异常（4xx/5xx/超时/未知）→ "tier_failed"
+    任何"非 supported"结果都降级下一 tier，3 档都失败则 prompt_only 保底。
 
-    注意：BadRequestError 抛出时机取决于 provider 行为：
-    - 同步抛（litellm.completion 调用立即返回 4xx，如豆包网关拒绝）→
-      `_try_tier` 的 except 捕获 → 返回 "model_rejected"
-    - 流式中途抛（stream chunk 阶段返回错误）→ LiteLLMSession.chat 内部
-      `except Exception`（litellm_adapter.py:531-585）吞掉返回 MockResponse →
-      `_try_tier` 收不到异常，text 为空或部分 → 判 "gateway_blocked"
-    两种路径最终 mode 判定均为降级下一 tier，不影响 mode 结果，仅影响 reason 字段措辞。
-
-    探测本身异常（超时/网络/API Key 错）→ probe_failed，不修改配置。
+    Why 不看异常类型：不同厂商/网关返回的错误类型不一致（BadRequestError/
+    UnsupportedParamsError/AuthenticationError/RateLimitError/HTTPStatusError/
+    自定义异常等），硬编码特定异常类会漏掉其他厂商的错误。按"响应是否达到
+    要求"判定更通用——任何错误都意味着该 tier 不可用，应该降级。reason
+    字段记录异常类型+消息供诊断，但不影响 mode 判定。
 
     真实环境验证（2026-07-19）：
-    - 豆包 Coding Plan：Tier 1/2 网关 400 拒绝 → prompt_only
-    - GLM：Tier 1/2 网关 200 但输出漂移 → prompt_only
+    - 豆包 Coding Plan：Tier 1/2 网关 400 拒绝（抛 BadRequestError）→ prompt_only
+    - GLM：Tier 1/2 网关 200 但输出漂移（不抛异常但响应非合法 JSON）→ prompt_only
     - OpenAI：Tier 1 真正支持 → json_schema
 
     约束：本端点独立于 /api/test-llm（启动器复用，禁止改动响应结构）。
     """
     from typing import Optional
     from agent.generic.litellm_adapter import LiteLLMSession
-    from litellm import BadRequestError, UnsupportedParamsError
 
     try:
         body = await request.json()
@@ -1489,13 +1490,18 @@ async def probe_response_format(request: Request) -> dict:
     messages = _build_probe_messages()
 
     def _try_tier(response_format: Optional[dict]) -> tuple[str, str]:
-        """单档探测。返回 (tier_result, raw_text)。
+        """单档探测。返回 (tier_result, raw_text_or_reason)。
 
-        tier_result:
-        - "supported": 200 + 合法 JSON（Tier 1 还要求含 ok 字段）
-        - "gateway_blocked": 200 + 非合法 JSON
-        - "model_rejected": BadRequestError/UnsupportedParamsError（4xx 拒绝）
-        - "probe_error": 其他异常
+        判定逻辑：只看响应内容是否达到要求，不看错误码或异常类型。
+        - 没抛异常 + 响应合法 JSON（Tier 1 还要求含 ok 字段）→ "supported"
+        - 没抛异常 + 响应非合法 JSON → "gateway_blocked"
+        - 抛任何异常（4xx/5xx/超时/认证/限流/网络/未知）→ "tier_failed"
+          统一视为该 tier 不支持，降级下一 tier
+
+        Why 不看异常类型：不同厂商/网关返回的错误类型不一致，
+        硬编码 BadRequestError/UnsupportedParamsError 会漏掉其他厂商的
+        错误类型。按"响应是否达到要求"判定更通用——任何错误都意味着
+        该 tier 不可用，应该降级。
         """
         try:
             session = LiteLLMSession(cfg=base_llm_config)
@@ -1517,10 +1523,10 @@ async def probe_response_format(request: Request) -> dict:
                 # 无 response_format（不应进入此分支，探测必有 response_format）
                 tier = "gateway_blocked"
             return tier, text
-        except (BadRequestError, UnsupportedParamsError) as e:
-            return "model_rejected", str(e)[:200]
         except Exception as e:
-            return "probe_error", str(e)[:200]
+            # 任何异常都视为该 tier 不支持，降级下一 tier
+            # reason 字段记录异常类型+消息供诊断，但不影响 mode 判定
+            return "tier_failed", f"{type(e).__name__}: {str(e)[:150]}"
 
     # Tier 1: json_schema strict
     try:
@@ -1529,7 +1535,7 @@ async def probe_response_format(request: Request) -> dict:
             timeout=30,
         )
     except asyncio.TimeoutError:
-        return {"result": "probe_failed", "reason": "Tier 1 探测超时（30s）", "mode": None, "raw_response": ""}
+        tier1_result, tier1_text = "tier_failed", "TimeoutError: 探测超时（30s）"
 
     if tier1_result == "supported":
         return {
@@ -1538,8 +1544,6 @@ async def probe_response_format(request: Request) -> dict:
             "reason": "Tier 1 通过：模型+网关均支持 json_schema strict 模式",
             "raw_response": tier1_text[:200],
         }
-    if tier1_result == "probe_error":
-        return {"result": "probe_failed", "reason": f"Tier 1 异常: {tier1_text}", "mode": None, "raw_response": ""}
 
     # Tier 2: json_object
     try:
@@ -1548,17 +1552,25 @@ async def probe_response_format(request: Request) -> dict:
             timeout=30,
         )
     except asyncio.TimeoutError:
-        return {"result": "probe_failed", "reason": "Tier 2 探测超时（30s）", "mode": None, "raw_response": ""}
+        tier2_result, tier2_text = "tier_failed", "TimeoutError: 探测超时（30s）"
 
     if tier2_result == "supported":
         return {
             "result": "supported",
             "mode": "json_object",
-            "reason": f"Tier 1 失败（{tier1_result}），Tier 2 通过：模型支持 json_object 模式",
+            "reason": f"Tier 1 失败（{tier1_result}: {tier1_text[:80]}），Tier 2 通过：模型支持 json_object 模式",
             "raw_response": tier2_text[:200],
         }
-    if tier2_result == "probe_error":
-        return {"result": "probe_failed", "reason": f"Tier 2 异常: {tier2_text}", "mode": None, "raw_response": ""}
+
+    # Tier 3: 都失败，prompt_only 保底
+    # 任何错误（4xx/5xx/超时/认证/限流/网络/响应非合法JSON）都视为该 tier 不支持，
+    # 最终降级到 prompt_only。reason 字段记录两档失败原因供诊断。
+    return {
+        "result": "supported",
+        "mode": "prompt_only",
+        "reason": f"Tier 1（{tier1_result}: {tier1_text[:80]}) + Tier 2（{tier2_result}: {tier2_text[:80]}）均失败，降级到 prompt-only 模式",
+        "raw_response": "",
+    }
 
     # Tier 3: 都失败，prompt_only 保底
     return {

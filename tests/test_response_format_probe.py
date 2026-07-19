@@ -376,9 +376,11 @@ def test_probe_endpoint_returns_prompt_only_for_doubao_coding(api_base):
     data = resp.json()
     # 豆包 Coding Plan 网关 400 拒绝 response_format，应降级 prompt_only
     assert data["mode"] == "prompt_only", f"豆包 Coding Plan 应降级 prompt_only，实际: {data}"
-    # reason 应含 model_rejected（豆包网关返回 BadRequestError）
-    assert "model_rejected" in data.get("reason", ""), \
-        f"豆包应触发 model_rejected（网关 400），实际 reason: {data.get('reason')}"
+    # 豆包 Coding Plan 网关 400 拒绝 response_format（抛 BadRequestError），
+    # 新逻辑按"响应是否达到要求"判定，异常走 tier_failed 分支降级下一 tier，
+    # 最终 prompt_only。reason 含 BadRequestError 供诊断。
+    assert "BadRequestError" in data.get("reason", "") or "tier_failed" in data.get("reason", ""), \
+        f"豆包应触发 tier_failed（网关 400 拒绝），实际 reason: {data.get('reason')}"
 
 
 def test_probe_endpoint_returns_prompt_only_for_glm(api_base):
