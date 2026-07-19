@@ -305,6 +305,20 @@ source_id = "skill://{skill_name}"
 
 **永久脑区空壳状态**：永久脑区即使所有归属边被删除，脑区节点本身仍保留（is_default_region 跳过 dissolve）。下次有新文档入库会重新建立归属边。
 
+**脑区 dissolve 阈值**（2026-07-19 恢复 + 孤岛保护）：
+
+`dissolve_shrunk_regions` 默认 `shrink_threshold=100`——成员数 < 100 才判萎缩，连续 3 轮（`shrink_rounds=3`）后执行 dissolve。
+
+**孤岛保护**（2026-07-19 新增）：dissolve 执行前会检查所有成员的 `total_degree`：
+- 所有成员 `degree >= 2` → 安全，执行 dissolve（成员挪给最相似邻居脑区 + 删除脑区节点）
+- 有任何一个成员 `degree <= 1` → **取消本次 dissolve**，`shrink_count` 保持原值不清零，下轮重新扫
+
+这避免删除脑区后成员变孤岛（0 条边）。如果孤岛成员后来多了别的边，下轮 dissolve 就能成功；如果一直只有 1 条边，脑区永远不被删。
+
+**缺省脑区保护**：`is_default_region` 跳过 `~/.niu/preferences.json` 配置的缺省脑区，永远不会被 dissolve（即使 0 成员）。
+
+**历史**：2026-07-13 commit `4f03f10d` 曾越权把 `shrink_threshold` 从 100 改成 10，2026-07-19 恢复。
+
 **社区重算输入范围**（2026-07-18 扩展）：
 
 社区重算（每 24 小时一次）参与资格规则：

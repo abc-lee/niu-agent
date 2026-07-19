@@ -1744,6 +1744,8 @@ class TestDissolveShrunkRegionsBatchRead:
             return_value=False,
         ), patch.object(
             manager, "_find_most_similar_neighbor", return_value=target_region,
+        ), patch.object(
+            manager, "_has_isolated_member", return_value=False,  # 跳过孤岛保护，本测试不关心
         ):
             dissolved = manager.dissolve_shrunk_regions(
                 shrink_threshold=100, shrink_rounds=3
@@ -1897,6 +1899,8 @@ class TestDissolveShrunkRegionsRefreshesActivationCache:
         ), patch(
             "agent.brain_tools.get_activation_mgr",
             return_value=mock_activation_mgr,
+        ), patch.object(
+            manager, "_has_isolated_member", return_value=False,  # 跳过孤岛保护，本测试不关心
         ):
             dissolved = manager.dissolve_shrunk_regions(
                 shrink_threshold=100, shrink_rounds=3
