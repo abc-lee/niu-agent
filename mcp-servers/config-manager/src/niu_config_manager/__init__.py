@@ -506,7 +506,9 @@ def get_lightrag_llm_config() -> dict[str, Any]:
     """Get LightRAG LLM configuration (without API key for security).
 
     Returns the lightrag_llm section if configured, otherwise indicates
-    it will fall back to the llm section.
+    it will fall back to the llm section. Includes litellm_kwargs so the
+    main agent can inspect response_format_mode (probe result) and other
+    provider-specific params.
     """
     config = load_user_config()
     lightrag_llm = config.get("lightrag_llm", {})
@@ -518,6 +520,8 @@ def get_lightrag_llm_config() -> dict[str, Any]:
         "hasApiKey": bool(lightrag_llm.get("apiKey", "")),
         "configured": bool(lightrag_llm.get("model", "")),
         "reasoning_effort": lightrag_llm.get("reasoning_effort", "none"),
+        "temperature": lightrag_llm.get("temperature", 0.2),
+        "litellm_kwargs": lightrag_llm.get("litellm_kwargs", {}),
     }
 
 

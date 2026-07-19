@@ -109,9 +109,40 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
 | 端点 | 地址 | 计费 | response_format | 适用场景 |
 |------|------|------|-----------------|----------|
 | 标准端点 | `https://ark.cn-beijing.volces.com/api/v3` | 按量计费 | 支持 | 主 Agent、LightRAG |
-| Coding Plan | `https://ark.cn-beijing.volces.com/api/coding/v3` | 包月计费 | **不支持**（网关拦截） | 主 Agent |
+| Coding Plan | `https://ark.cn-beijing.volces.com/api/coding/v3` | 包月计费 | **不支持**（网关 400 拒绝） | 主 Agent |
 
-> **重要**：LightRAG 的 keyword_extraction 依赖 `response_format`，必须使用标准端点。如果误用 Coding Plan 端点，系统会自动 fallback 到纯 prompt JSON 返回（功能正常但多一次无效请求）。
+**格式化输出（response_format）能力自动探测**
+
+设置窗口"测试连接并保存"按钮在测试通过后，会自动追加一次格式化输出能力探测，按 3 档递进调用真实 LLM，找出当前配置支持的最强档位：
+
+| 档位 | response_format.type | 约束 | 典型支持厂商 |
+|------|---------------------|------|--------------|
+| Tier 1（最强） | `json_schema` strict | 输出严格匹配 schema | OpenAI 真正支持 |
+| Tier 2（中等） | `json_object` | 输出合法 JSON，不约束字段 | OpenAI、DeepSeek |
+| Tier 3（最弱） | 无 response_format | prompt + `json_repair` 客户端容错 | 所有厂商兜底 |
+
+**探测流程**：从 Tier 1 开始测，失败则降级测 Tier 2，再失败则定为 Tier 3。每档失败条件：
+- `model_rejected`：LiteLLM 抛 `BadRequestError`/`UnsupportedParamsError`（模型/网关 4xx 拒绝，如豆包 Coding Plan）
+- `gateway_blocked`：网关返回 200 但响应非合法 JSON（网关接受参数但模型输出漂移，如 GLM xopglm5）
+
+**写入配置**：
+- `lightrag_llm.litellm_kwargs.response_format_mode`：`"json_schema"` / `"json_object"` / `"prompt_only"`
+- `lightrag_llm.litellm_kwargs.allowed_openai_params`：前两档 `["response_format"]`，prompt_only 档 `[]`（双写兼容旧逻辑）
+
+**典型场景**（2026-07-19 实测）：
+- 豆包 Coding Plan 端点（`/api/coding/v3`，model=`ark-code-latest`）：网关 400 拒绝 response_format，探测结果 `prompt_only`
+- GLM 端点（`maas-coding-api.cn-huabei-1.xf-yun.com/v2`，model=`xopglm5`）：网关接受但模型输出漂移，探测结果 `prompt_only`
+- OpenAI 官方：探测结果 `json_schema`
+
+**升级后自动探测**：旧版本用户配置无 `response_format_mode` 字段。程序启动后若检测到该字段缺失，后台自动触发一次探测写入配置，不阻塞启动。
+
+**手动覆盖**：关闭程序后手动编辑 `config/user-config.json` 的 `lightrag_llm.litellm_kwargs.response_format_mode`。下次设置窗口测试保存会覆盖手动值。
+
+**注意**：
+- 探测调用会消耗约 100-200 token（最坏情况测到 Tier 2）。仅"测试连接并保存"按钮触发，不引入后台定时探测（升级后首次启动除外）。
+- 探测独立于启动时的 LLM 连通性测试（`/api/test-llm`），不影响启动速度。
+
+> **重要**：LightRAG 的 keyword_extraction 依赖 `response_format`，必须使用标准端点。如果误用 Coding Plan 端点，本次升级后的"格式化输出能力自动探测"会识别为 `prompt_only` 档位并写入配置，运行时 LightRAG 直接走 prompt-only 路径（不再每次发无效请求触发 400 后 fallback）。详见上方"格式化输出（response_format）能力自动探测"小节。
 
 **火山方舟深度思考模型 + 工具调用配置**（重要）：
 
@@ -255,7 +286,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 }
 ```
 
-> **注意**：LightRAG 必须使用标准端点（apiBase 含 /api/v3），不能用 Coding Plan 端点（/api/coding/v3），因为 Coding Plan 网关拦截 response_format。model 必须用标准端点的全名格式（带日期后缀）。
+> **注意**：LightRAG 必须使用标准端点（apiBase 含 /api/v3），不能用 Coding Plan 端点（/api/coding/v3），因为 Coding Plan 网关 400 拒绝 response_format。设置窗口"测试连接并保存"会自动探测并写入 `response_format_mode=prompt_only`（豆包 Coding Plan 场景）。model 必须用标准端点的全名格式（带日期后缀）。
 > **LiteLLM 路由**：`provider: "volcengine"` 让 LiteLLM 走 VolcEngine 适配器。`litellm_kwargs` 中的 `thinking: {"type": "disabled"}` 关闭思考链（火山要求使用 response_format 时必须关闭），`allowed_openai_params: ["response_format"]` 让 VolcEngine 适配器透传 response_format 参数。
 
 场景二：主 Agent 和 LightRAG 用同一模型，独立控制思考深度（零配置即生效）：
