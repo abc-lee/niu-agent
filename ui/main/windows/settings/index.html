@@ -421,9 +421,11 @@
           allowedOpenaiParams = responseFormatMode === 'prompt_only' ? [] : ['response_format'];
           probeReason = probeResult.reason || `格式化输出档位: ${responseFormatMode}`;
         } else {
-          // probe_failed：完全保留旧 litellm_kwargs，不破坏用户已有配置
+          // probe_failed：仅 HTTP 传输失败（连接拒绝/超时）时触发
+          // 端点逻辑失败会返回 supported+prompt_only 走上面分支
+          // 此处完全保留旧 litellm_kwargs，不破坏用户已有配置
           probeFailed = true;
-          probeReason = '探测失败，保留旧配置: ' + (probeResult.reason || '未知错误');
+          probeReason = '探测传输失败，保留旧配置: ' + (probeResult.reason || '未知错误');
         }
 
         // 第二步：保存配置

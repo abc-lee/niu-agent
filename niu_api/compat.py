@@ -1572,14 +1572,6 @@ async def probe_response_format(request: Request) -> dict:
         "raw_response": "",
     }
 
-    # Tier 3: 都失败，prompt_only 保底
-    return {
-        "result": "supported",
-        "mode": "prompt_only",
-        "reason": f"Tier 1（{tier1_result}）+ Tier 2（{tier2_result}）均失败，降级到 prompt-only 模式",
-        "raw_response": "",
-    }
-
 
 @router.get("/api/preload-status")
 async def get_preload_status():
