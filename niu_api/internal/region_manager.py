@@ -1152,10 +1152,12 @@ class RegionManager:
                         except Exception as e:
                             logger.debug("重新分配成员失败 %s -> %s: %s",
                                          region.name, target_region.name, e)
+                    # dissolve 成功后跳过下面的持久化（已 dissolve 不需要写 shrink_count）
+                    should_skip_persist = True
                 else:
                     logger.warning("解散脑区失败: %s", region.name)
-                # dissolve 成功后跳过下面的持久化（已 dissolve 不需要写 shrink_count）
-                should_skip_persist = True
+                    # dissolve 失败时脑区还在，不设 should_skip_persist，
+                    # 让下面持久化分支写 shrink_count（持续累加反映失败次数）
 
             if not should_skip_persist and (shrink_count > 0 or parsed.get("shrink_count", "0") != "0"):
                 # Persist shrink_count (incremented or reset to 0)

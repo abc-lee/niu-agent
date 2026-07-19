@@ -575,7 +575,7 @@ def test_dissolve_cancelled_when_member_has_only_one_edge():
     ]
 
     with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
-         mock.patch("niu_api.internal.region_manager.get_all_region_members",
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
                     return_value={"脑区a": ["成员x", "成员y"]}), \
          mock.patch.object(manager, "_find_most_similar_neighbor", return_value=None):
         dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
@@ -639,7 +639,7 @@ def test_dissolve_executed_when_all_members_have_multiple_edges():
     )
 
     with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
-         mock.patch("niu_api.internal.region_manager.get_all_region_members",
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
                     return_value={"脑区a": ["成员x", "成员y"]}), \
          mock.patch.object(manager, "_find_most_similar_neighbor", return_value=target_region), \
          mock.patch.object(manager, "_refresh_activation_cache_after_delete"):
@@ -683,7 +683,7 @@ def test_dissolve_cancelled_persists_shrink_count_for_next_round():
     ]
 
     with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
-         mock.patch("niu_api.internal.region_manager.get_all_region_members",
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
                     return_value={"脑区a": ["成员x"]}), \
          mock.patch.object(manager, "_find_most_similar_neighbor", return_value=None):
         dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
@@ -734,7 +734,7 @@ def test_dissolve_zero_member_region_not_blocked_by_island_check():
     )
 
     with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
-         mock.patch("niu_api.internal.region_manager.get_all_region_members",
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
                     return_value={"脑区a": []}), \
          mock.patch.object(manager, "_find_most_similar_neighbor", return_value=target_region), \
          mock.patch.object(manager, "_refresh_activation_cache_after_delete"):
@@ -778,7 +778,7 @@ def test_dissolve_default_region_skipped_no_island_check():
 
     # is_default_region 返回 True（缺省脑区）
     with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=True), \
-         mock.patch("niu_api.internal.region_manager.get_all_region_members",
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
                     return_value={"文档库脑区": ["成员x"]}):
         dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
 
@@ -844,7 +844,7 @@ def test_dissolve_multiple_regions_one_blocked_one_succeeds():
     )
 
     with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
-         mock.patch("niu_api.internal.region_manager.get_all_region_members",
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
                     return_value={"脑区a": ["成员x"], "脑区b": ["成员y"]}), \
          mock.patch.object(manager, "_find_most_similar_neighbor", return_value=target_region), \
          mock.patch.object(manager, "_refresh_activation_cache_after_delete"):
@@ -993,10 +993,12 @@ python -m pytest tests/test_region_manager_decay.py -k "dissolve_cancelled or di
                         except Exception as e:
                             logger.debug("重新分配成员失败 %s -> %s: %s",
                                          region.name, target_region.name, e)
+                    # dissolve 成功后跳过下面的持久化（已 dissolve 不需要写 shrink_count）
+                    should_skip_persist = True
                 else:
                     logger.warning("解散脑区失败: %s", region.name)
-                # dissolve 成功后跳过下面的持久化（已 dissolve 不需要写 shrink_count）
-                should_skip_persist = True
+                    # dissolve 失败时脑区还在，不设 should_skip_persist，
+                    # 让下面持久化分支写 shrink_count（持续累加反映失败次数）
 
             if not should_skip_persist and (shrink_count > 0 or parsed.get("shrink_count", "0") != "0"):
 ```
