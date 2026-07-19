@@ -202,6 +202,7 @@ photo-server/ingest_document
 - self_writing 过滤：写入后 2 秒内的修改事件被忽略
 - 状态持久化：`~/.niu/skill_sync_state.json`，进程重启后不会误判已有 skill 为"新增"
 - 注入/删除成功才更新状态文件，失败则下次扫描重试
+- 无变化不写盘（2026-07-19 修复）：`scan_and_sync` 入口快照 `_last_scan` + `_last_notes_scan`，出口对比是否变化，无变化跳过 `_save_state`。覆盖 watchdog 并发新增 + KG ghost cleanup 失败塞空值两个边界（added/updated/deleted 全 0 但状态确实变化的场景）。watchdog `_execute` 路径不受影响（文件变化触发，本身就是"有变化"）
 
 **Skill 实体格式**：
 
