@@ -429,7 +429,8 @@ def test_probe_endpoint_returns_probe_failed_for_invalid_config(api_base):
 def test_probe_endpoint_does_not_affect_test_llm_endpoint(api_base):
     """验证 /api/test-llm 响应结构未被探测逻辑污染（启动器依赖 {success, message, error}）"""
     config = {"apiKey": "fake-key", "apiBase": "https://api.openai.com/v1", "model": "gpt-4o-mini"}
-    with httpx.Client(timeout=15) as client:
+    # timeout=30：/api/test-llm 内部 asyncio.wait_for(timeout=20) + 网络往返余量
+    with httpx.Client(timeout=30) as client:
         resp = client.post(f"{api_base}/api/test-llm", json=config)
     assert resp.status_code == 200
     data = resp.json()
