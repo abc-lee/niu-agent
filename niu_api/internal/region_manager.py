@@ -1087,8 +1087,25 @@ class RegionManager:
             else:
                 shrink_count = 0
 
-            # Check dissolution threshold before writing shrink_count
-            if shrink_count >= shrink_rounds:
+            # Check dissolution threshold
+            # 注意：不能用 if/elif 结构——孤岛保护取消 dissolve 时仍需走持久化分支
+            # Python 语义下 elif 挂在外层 if 上，进入外层 if 分支后不会 fall-through 到 elif
+            # 所以用独立 if + continue 模式
+            should_dissolve = shrink_count >= shrink_rounds and not self._has_isolated_member(members)
+            should_skip_persist = False  # dissolve 成功后跳过持久化
+
+            if shrink_count >= shrink_rounds and not should_dissolve:
+                # 孤岛保护：shrink_count 达标但有成员 total_degree<=1（删脑区会变孤岛）
+                # 取消本次 dissolve，shrink_count 继续按规则累加（已经在 L1082-1085 +1 过了），
+                # 下轮重新扫。走下面的持久化分支写 shrink_count（累加后值）
+                logger.info(
+                    "脑区 %s 已萎缩 %d 轮，但有成员 total_degree<=1（删脑区会变孤岛），"
+                    "取消本次 dissolve，shrink_count 持久化为 %d 等下轮重新扫",
+                    region.name, shrink_count, shrink_count,
+                )
+                # 不设 should_skip_persist=True，让下面的持久化分支执行
+
+            if should_dissolve:
                 # Region will be dissolved — skip shrink_count write
                 target_region = self._find_most_similar_neighbor(
                     region, existing_regions, dissolved_names
@@ -1137,7 +1154,10 @@ class RegionManager:
                                          region.name, target_region.name, e)
                 else:
                     logger.warning("解散脑区失败: %s", region.name)
-            elif shrink_count > 0 or parsed.get("shrink_count", "0") != "0":
+                # dissolve 成功后跳过下面的持久化（已 dissolve 不需要写 shrink_count）
+                should_skip_persist = True
+
+            if not should_skip_persist and (shrink_count > 0 or parsed.get("shrink_count", "0") != "0"):
                 # Persist shrink_count (incremented or reset to 0)
                 # Reset-to-0 write is needed so next sync doesn't read stale count
                 now = time.time()
