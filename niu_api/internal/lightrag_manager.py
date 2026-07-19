@@ -89,6 +89,92 @@ def _get_litellm_session(config: dict) -> Any:
         return _cached_session
 
 
+def _resolve_response_format(config: dict) -> Optional[dict]:
+    """根据 litellm_kwargs.response_format_mode 决定构造哪种 response_format。
+
+    返回值：
+    - {"type": "json_schema", "json_schema": {...strict...}}: 最强档，schema 严格匹配
+    - {"type": "json_object"}: 中等档，仅约束合法 JSON
+    - None: 最弱档，prompt-only + json_repair 客户端容错
+
+    本函数无副作用，不修改 config。response_format_mode 字段在 _llm_model_func
+    内通过 _strip_response_format_mode 单独剔除，避免透传给 LiteLLM provider
+    （response_format_mode 是项目自定义字段，不是 OpenAI 标准也不是 LiteLLM
+    认识的字段）。
+
+    配置优先级：
+    1. response_format_mode 字段（探测结果，权威）
+    2. allowed_openai_params 含 "response_format"（旧版本兼容，默认 json_schema 档）
+    3. 都没有 → None（保守降级，未探测过）
+
+    Why: OpenAI response_format.type 有 3 档（json_schema/json_object/无），
+    不同厂商支持档位不同。探测端点按 json_schema → json_object → prompt_only
+    递进测试，结果写入 response_format_mode。本函数运行时读出来决定构造哪种。
+
+    真实环境验证（2026-07-19）：
+    - 豆包 Coding Plan：网关 400 拒绝 response_format → 探测后 mode=prompt_only
+    - GLM：网关接受但模型输出漂移 → 探测后 mode=prompt_only
+    - OpenAI：真正支持 → 探测后 mode=json_schema
+    """
+    litellm_kwargs = config.get("litellm_kwargs") or {}
+    mode = litellm_kwargs.get("response_format_mode")
+    if mode == "json_schema":
+        from lightrag.types import GPTKeywordExtractionFormat
+        schema = GPTKeywordExtractionFormat.model_json_schema()
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "keyword_extraction",
+                "strict": True,
+                "schema": schema,
+            },
+        }
+    if mode == "json_object":
+        return {"type": "json_object"}
+    if mode == "prompt_only":
+        return None
+    # 旧版本兼容：无 response_format_mode 但有 allowed_openai_params
+    allowed = litellm_kwargs.get("allowed_openai_params") or []
+    if "response_format" in allowed:
+        from lightrag.types import GPTKeywordExtractionFormat
+        schema = GPTKeywordExtractionFormat.model_json_schema()
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "keyword_extraction",
+                "strict": True,
+                "schema": schema,
+            },
+        }
+    return None
+
+
+def _strip_response_format_mode(config: dict) -> dict:
+    """剔除 config["litellm_kwargs"]["response_format_mode"] 字段，返回新 dict。
+
+    Why: response_format_mode 是项目自定义字段，不是 OpenAI 标准也不是
+    LiteLLM 认识的字段。如果留在 litellm_kwargs：
+    1. 会被 LiteLLMSession.chat 通过 request_params.update(self.litellm_kwargs)
+       (litellm_adapter.py:377-378) 透传给 litellm.completion，可能触发 provider
+       400 拒绝未知参数
+    2. 会进入 _get_litellm_session 的 config_key 计算（lightrag_manager.py:66
+       tuple(sorted(config.get("litellm_kwargs", {}).items()))），影响缓存键
+
+    本函数返回新 dict 不修改原 config（无副作用），调用方用返回值传给
+    _get_litellm_session。原 config 仍含 response_format_mode，下次 _resolve_response_format
+    调用仍能读到，但不再透传给 provider 也不参与 config_key。
+
+    Why 不直接 pop：v4 曾用 pop 副作用修改 config，导致 keyword_extraction=True
+    与 False 两种调用模式的 config_key 不一致，破坏 _get_litellm_session 缓存。
+    本函数返回新 dict 避免此问题。
+    """
+    litellm_kwargs = config.get("litellm_kwargs") or {}
+    if "response_format_mode" not in litellm_kwargs:
+        return config  # 无需复制
+    new_litellm_kwargs = {k: v for k, v in litellm_kwargs.items() if k != "response_format_mode"}
+    return {**config, "litellm_kwargs": new_litellm_kwargs}
+
+
 def _build_llm_model_func():
     """Build the async LLM function for LightRAG.
 
@@ -123,26 +209,21 @@ def _build_llm_model_func():
                 dynamic_part = build_dynamic_brain_region_prompt()
                 system_prompt = system_prompt + f"\n\n{static_part}\n\n{dynamic_part}"
 
-        # 3. Handle keyword_extraction: try response_format, fallback to prompt
-        # Models that support json_schema Structured Outputs (e.g. OpenAI) get the
-        # reliable response_format path. Models that don't (e.g. ark-code-latest)
-        # raise BadRequestError — we catch that, append JSON instructions to prompt,
-        # and retry without response_format. LightRAG's json_repair.loads() handles
-        # parsing the text-only output.
+        # 3. Handle keyword_extraction: 根据探测结果构造对应 response_format
+        # 探测由设置窗口"测试连接并保存"触发，按 json_schema → json_object → prompt_only
+        # 递进测试，结果写入 lightrag_llm.litellm_kwargs.response_format_mode。
+        # 真实环境验证（2026-07-19）：
+        # - 豆包 Coding Plan：网关 400 拒绝，探测后 mode=prompt_only
+        # - GLM：网关接受但模型输出漂移，探测后 mode=prompt_only
+        # BadRequestError fallback 保留兜底（偶发 400 时仍走 prompt-only 重试）。
         response_format = None
         kw_prompt_suffix = ""
         if keyword_extraction:
-            from lightrag.types import GPTKeywordExtractionFormat
-            schema = GPTKeywordExtractionFormat.model_json_schema()
-            response_format = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "keyword_extraction",
-                    "strict": True,
-                    "schema": schema,
-                },
-            }
+            config = get_llm_config(use_lightrag_config=True)
+            response_format = _resolve_response_format(config)
             kw_prompt_suffix = '\n\nReturn your response as a JSON object with "high_level_keywords" and "low_level_keywords" arrays.'
+        else:
+            config = get_llm_config(use_lightrag_config=True)
 
         # 4. Build messages list
         messages = []
@@ -154,8 +235,8 @@ def _build_llm_model_func():
                 messages.append({"role": msg.get("role", "user"), "content": content})
         messages.append({"role": "user", "content": prompt})
 
-        # 5. Get LLM config
-        config = get_llm_config(use_lightrag_config=True)
+        # 5. Get LLM config (提前到 keyword_extraction 分支内，避免重复调用)
+        # config 已在 step 3 内通过 get_llm_config(use_lightrag_config=True) 获取
 
         # 6. Handle enable_cot and stream from kwargs
         enable_cot = kwargs.pop("enable_cot", False)
@@ -177,7 +258,7 @@ def _build_llm_model_func():
 
         def sync_call():
             from litellm import BadRequestError
-            session = _get_litellm_session(config)
+            session = _get_litellm_session(_strip_response_format_mode(config))
 
             # Try with response_format first (works for models like OpenAI that support it)
             gen = session.chat(messages=messages, response_format=response_format)

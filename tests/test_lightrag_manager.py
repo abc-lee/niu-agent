@@ -258,6 +258,9 @@ class TestLlmModelFunc:
 
         from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
 
+        # 新逻辑 _resolve_response_format 按 litellm_kwargs.response_format_mode 决定
+        # 构造哪种 response_format。mock_llm_config（fixture）不含 litellm_kwargs，
+        # 这里给 patch 返回值补上 response_format_mode=json_schema，确保走 json_schema 档。
         mock_response = MockResponse(thinking=None, content='{"high_level_keywords": ["test"], "low_level_keywords": ["unit"]}', tool_calls=[], raw='{"high_level_keywords": ["test"], "low_level_keywords": ["unit"]}')
 
         captured_response_format = None
@@ -268,7 +271,11 @@ class TestLlmModelFunc:
             yield mock_response.content
             return mock_response
 
-        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+        mock_config_with_mode = {
+            **mock_llm_config,
+            "litellm_kwargs": {"response_format_mode": "json_schema"},
+        }
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_config_with_mode):
             with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
                 from niu_api.internal.lightrag_manager import _build_llm_model_func
 
