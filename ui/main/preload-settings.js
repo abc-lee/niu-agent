@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   testConnection: (params) => ipcRenderer.invoke('test-connection', params),
+  probeResponseFormat: (config) => ipcRenderer.invoke('probe-response-format', config),
   closeWindow: () => ipcRenderer.invoke('close-window'),
   minimizeWindow: () => ipcRenderer.invoke('minimize-window')
 });

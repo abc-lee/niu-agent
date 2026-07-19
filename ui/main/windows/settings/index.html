@@ -402,26 +402,57 @@
       const result = await window.electronAPI.testConnection(config);
 
       if (result.success) {
-        // 第二步：测试通过，保存配置
-        setStatus('保存配置中...', 'loading');
+        // 第一步半：测试通过后追加 response_format 探测（3 档递进）
+        setStatus('探测格式化输出能力中（可能需要 30-60 秒）...', 'loading');
+        // config 必须包含 litellm_kwargs（从 existingConfig 取），否则探测环境与运行时不一致
+        const probeConfig = {
+          ...config,
+          litellm_kwargs: existingConfig.lightrag_llm?.litellm_kwargs || existingConfig.llm?.litellm_kwargs || {},
+        };
+        const probeResult = await window.electronAPI.probeResponseFormat(probeConfig);
+
+        let responseFormatMode = 'prompt_only';
+        let allowedOpenaiParams = [];
+        let probeReason = '';
+        let probeFailed = false;
+
+        if (probeResult.result === 'supported') {
+          responseFormatMode = probeResult.mode || 'prompt_only';
+          allowedOpenaiParams = responseFormatMode === 'prompt_only' ? [] : ['response_format'];
+          probeReason = probeResult.reason || `格式化输出档位: ${responseFormatMode}`;
+        } else {
+          // probe_failed：完全保留旧 litellm_kwargs，不破坏用户已有配置
+          probeFailed = true;
+          probeReason = '探测失败，保留旧配置: ' + (probeResult.reason || '未知错误');
+        }
+
+        // 第二步：保存配置
+        setStatus('保存配置中...（' + probeReason + '）', 'loading');
+        const existingLightragLlm = existingConfig.lightrag_llm || {};
+        const existingLightragKwargs = existingLightragLlm.litellm_kwargs || {};
+        // probe_failed 时原样保留旧 litellm_kwargs；supported 时写入探测结果
+        const newLitellmKwargs = probeFailed
+          ? { ...existingLightragKwargs }
+          : {
+              ...existingLightragKwargs,
+              thinking: existingLightragKwargs.thinking || { type: "disabled" },
+              response_format_mode: responseFormatMode,
+              allowed_openai_params: allowedOpenaiParams,
+            };
+        const lightragLlmConfig = {
+          presetId: existingLightragLlm.presetId || "",
+          apiKey: existingLightragLlm.apiKey || "",
+          apiBase: existingLightragLlm.apiBase || "",
+          model: existingLightragLlm.model || "",
+          type: existingLightragLlm.type || "openai",
+          reasoning_effort: existingLightragLlm.reasoning_effort || "none",
+          temperature: existingLightragLlm.temperature ?? 0.2,
+          litellm_kwargs: newLitellmKwargs,
+        };
+
         const saveResult = await window.electronAPI.saveConfig({
           llm: { ...config, presetId: presetId, reasoning_effort: existingConfig.llm?.reasoning_effort || "" },
-          lightrag_llm: {
-            // 默认结构（首次保存时写入，让用户能直接看到并按需修改 temperature 等字段）
-            presetId: "",
-            apiKey: "",
-            apiBase: "",
-            model: "",
-            type: "openai",
-            reasoning_effort: "high",
-            temperature: 0.2,
-            litellm_kwargs: {
-              thinking: { type: "disabled" },
-              allowed_openai_params: ["response_format"]
-            },
-            // 用户已修改的值覆盖默认（保留历史配置）
-            ...(existingConfig.lightrag_llm || {})
-          },
+          lightrag_llm: lightragLlmConfig,
           context: {
             contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
             warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
@@ -432,15 +463,14 @@
           firstRun: false
         });
         if (saveResult.success) {
-          testPassedInSession = true;  // 标记本次会话已通过测试
-          setStatus('模型测试通过，配置已保存！', 'success');
+          testPassedInSession = true;
+          setStatus('模型测试通过，配置已保存！格式化输出: ' + probeReason, 'success');
           setTimeout(() => { window.electronAPI.closeWindow(); }, 1500);
         } else {
           setStatus('保存失败: ' + saveResult.error, 'error');
         }
       } else {
         setStatus('模型测试失败: ' + (result.message || '请检查配置'), 'error');
-        // 不保存，窗口保持打开
       }
       document.getElementById('testBtn').disabled = false;
     }
