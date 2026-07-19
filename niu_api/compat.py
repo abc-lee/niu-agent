@@ -1318,6 +1318,249 @@ async def test_llm(request: Request) -> dict:
         return {"success": False, "error": f"模型测试失败: {safe_msg}"}
 
 
+def _build_probe_response_format_json_schema() -> dict:
+    """构造 Tier 1 探测用 response_format：json_schema strict。
+
+    要求模型返回 {"ok": true}，schema 严格匹配。选最小 schema 降低 token 消耗。
+    """
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "probe_response_format",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"}
+                },
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _build_probe_response_format_json_object() -> dict:
+    """构造 Tier 2 探测用 response_format：json_object。
+
+    仅约束输出合法 JSON，不约束字段。
+    """
+    return {"type": "json_object"}
+
+
+def _build_probe_messages() -> list[dict]:
+    """构造探测消息。prompt 含 'json' 字样（OpenAI json_object 模式硬性要求），
+    且显式要求 {"ok": true}，即使 response_format 被网关剥离也能通过响应格式判定。"""
+    return [{
+        "role": "user",
+        "content": 'Respond with a JSON object: {"ok": true}. Do not include any other text.',
+    }]
+
+
+def _classify_probe_response_tier1(text: str) -> str:
+    """Tier 1 (json_schema strict) 判定。要求响应是合法 JSON dict 且含 "ok" 字段。
+
+    返回值：
+    - "supported": 响应合法 JSON dict + 含 "ok" 字段
+    - "gateway_blocked": 响应非合法 JSON 或无 "ok" 字段（schema 未生效）
+
+    真实环境验证（2026-07-19）：GLM json_schema 实测返回 {"oko":（字段名漂移 + 截断），
+    走 gateway_blocked 分支降级到 Tier 2。
+    """
+    try:
+        data = json.loads(text.strip())
+    except json.JSONDecodeError:
+        return "gateway_blocked"
+    if not isinstance(data, dict) or "ok" not in data:
+        return "gateway_blocked"
+    return "supported"
+
+
+def _classify_probe_response_tier2(text: str) -> str:
+    """Tier 2 (json_object) 判定。只要求响应是合法 JSON dict，不要求字段名。
+
+    返回值：
+    - "supported": 响应合法 JSON dict
+    - "gateway_blocked": 响应非合法 JSON 或非 dict
+
+    Why 不要求含 ok 字段：json_object 仅约束输出合法 JSON，不约束字段名。
+    模型可能返回 {"result": true} 或 {"status": "ok"}，都算 supported。
+
+    真实环境验证（2026-07-19）：GLM json_object 实测返回 {"ok": true}\\n}（含额外字符），
+    json.loads 失败走 gateway_blocked 分支降级到 Tier 3。
+    """
+    try:
+        data = json.loads(text.strip())
+    except json.JSONDecodeError:
+        return "gateway_blocked"
+    if not isinstance(data, dict):
+        return "gateway_blocked"
+    return "supported"
+
+
+@router.post("/api/probe-response-format")
+async def probe_response_format(request: Request) -> dict:
+    """递进探测当前 LLM 配置对 response_format 的支持档位。
+
+    3 档递进（最强→最弱）：
+    - Tier 1: json_schema strict → 200 + 合法 JSON dict + 含 ok → json_schema
+    - Tier 2: json_object → 200 + 合法 JSON dict → json_object
+    - Tier 3: 都失败 → prompt_only
+
+    每档失败条件：
+    - BadRequestError/UnsupportedParamsError（模型/网关 4xx 拒绝）
+    - 200 + 非合法 JSON（网关接受但模型输出漂移，如 GLM）
+
+    注意：BadRequestError 抛出时机取决于 provider 行为：
+    - 同步抛（litellm.completion 调用立即返回 4xx，如豆包网关拒绝）→
+      `_try_tier` 的 except 捕获 → 返回 "model_rejected"
+    - 流式中途抛（stream chunk 阶段返回错误）→ LiteLLMSession.chat 内部
+      `except Exception`（litellm_adapter.py:531-585）吞掉返回 MockResponse →
+      `_try_tier` 收不到异常，text 为空或部分 → 判 "gateway_blocked"
+    两种路径最终 mode 判定均为降级下一 tier，不影响 mode 结果，仅影响 reason 字段措辞。
+
+    探测本身异常（超时/网络/API Key 错）→ probe_failed，不修改配置。
+
+    真实环境验证（2026-07-19）：
+    - 豆包 Coding Plan：Tier 1/2 网关 400 拒绝 → prompt_only
+    - GLM：Tier 1/2 网关 200 但输出漂移 → prompt_only
+    - OpenAI：Tier 1 真正支持 → json_schema
+
+    约束：本端点独立于 /api/test-llm（启动器复用，禁止改动响应结构）。
+    """
+    from typing import Optional
+    from agent.generic.litellm_adapter import LiteLLMSession
+    from litellm import BadRequestError, UnsupportedParamsError
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = {k.lower(): v for k, v in body.items()} if body else {}
+
+    if body and body.get("apikey"):
+        config = body
+    else:
+        from niu_api.llm_proxy import get_llm_config
+        try:
+            config = get_llm_config(use_lightrag_config=True)
+        except Exception as e:
+            return {"result": "probe_failed", "reason": f"读取配置失败: {e}", "mode": None, "raw_response": ""}
+    config = {k.lower(): v for k, v in config.items()}
+
+    if not config.get("apikey"):
+        return {"result": "probe_failed", "reason": "API Key 未配置", "mode": None, "raw_response": ""}
+    if not config.get("apibase"):
+        return {"result": "probe_failed", "reason": "API 地址未配置", "mode": None, "raw_response": ""}
+    if not config.get("model"):
+        return {"result": "probe_failed", "reason": "模型名称未配置", "mode": None, "raw_response": ""}
+
+    # 探测用 LiteLLMSession：复用运行时调用路径（含 drop_params=True 自动设置、
+    # stream=True、temperature、provider_params 等），确保探测和运行时行为一致。
+    # 关键：litellm_kwargs 必须含 allowed_openai_params=["response_format"]，
+    # 否则 LiteLLM volcengine router 在客户端拒绝抛 UnsupportedParamsError，
+    # 请求不会真正发到 provider 网关。
+    probe_litellm_kwargs = {**config.get("litellm_kwargs", {})}
+    probe_litellm_kwargs["allowed_openai_params"] = ["response_format"]
+    probe_litellm_kwargs["max_tokens"] = 50
+
+    base_llm_config = {
+        "api_type": config.get("type", "openai"),
+        "apikey": config["apikey"],
+        "apibase": config["apibase"],
+        "model": config["model"],
+        "reasoning_effort": None,
+        "provider": config.get("provider", ""),
+        # temperature 与运行时 _get_litellm_session 一致（默认 0.2），
+        # 避免探测和运行时采样随机性差异
+        "temperature": config.get("temperature", 0.2),
+        "litellm_kwargs": probe_litellm_kwargs,
+        "read_timeout": 15,
+    }
+
+    messages = _build_probe_messages()
+
+    def _try_tier(response_format: Optional[dict]) -> tuple[str, str]:
+        """单档探测。返回 (tier_result, raw_text)。
+
+        tier_result:
+        - "supported": 200 + 合法 JSON（Tier 1 还要求含 ok 字段）
+        - "gateway_blocked": 200 + 非合法 JSON
+        - "model_rejected": BadRequestError/UnsupportedParamsError（4xx 拒绝）
+        - "probe_error": 其他异常
+        """
+        try:
+            session = LiteLLMSession(cfg=base_llm_config)
+            gen = session.chat(messages=messages, response_format=response_format)
+            chunks = []
+            try:
+                while True:
+                    chunk = next(gen)
+                    if isinstance(chunk, str):
+                        chunks.append(chunk)
+            except StopIteration:
+                pass
+            text = "".join(chunks)
+            if response_format is not None and response_format.get("type") == "json_schema":
+                tier = _classify_probe_response_tier1(text)
+            elif response_format is not None and response_format.get("type") == "json_object":
+                tier = _classify_probe_response_tier2(text)
+            else:
+                # 无 response_format（不应进入此分支，探测必有 response_format）
+                tier = "gateway_blocked"
+            return tier, text
+        except (BadRequestError, UnsupportedParamsError) as e:
+            return "model_rejected", str(e)[:200]
+        except Exception as e:
+            return "probe_error", str(e)[:200]
+
+    # Tier 1: json_schema strict
+    try:
+        tier1_result, tier1_text = await asyncio.wait_for(
+            asyncio.to_thread(_try_tier, _build_probe_response_format_json_schema()),
+            timeout=30,
+        )
+    except asyncio.TimeoutError:
+        return {"result": "probe_failed", "reason": "Tier 1 探测超时（30s）", "mode": None, "raw_response": ""}
+
+    if tier1_result == "supported":
+        return {
+            "result": "supported",
+            "mode": "json_schema",
+            "reason": "Tier 1 通过：模型+网关均支持 json_schema strict 模式",
+            "raw_response": tier1_text[:200],
+        }
+    if tier1_result == "probe_error":
+        return {"result": "probe_failed", "reason": f"Tier 1 异常: {tier1_text}", "mode": None, "raw_response": ""}
+
+    # Tier 2: json_object
+    try:
+        tier2_result, tier2_text = await asyncio.wait_for(
+            asyncio.to_thread(_try_tier, _build_probe_response_format_json_object()),
+            timeout=30,
+        )
+    except asyncio.TimeoutError:
+        return {"result": "probe_failed", "reason": "Tier 2 探测超时（30s）", "mode": None, "raw_response": ""}
+
+    if tier2_result == "supported":
+        return {
+            "result": "supported",
+            "mode": "json_object",
+            "reason": f"Tier 1 失败（{tier1_result}），Tier 2 通过：模型支持 json_object 模式",
+            "raw_response": tier2_text[:200],
+        }
+    if tier2_result == "probe_error":
+        return {"result": "probe_failed", "reason": f"Tier 2 异常: {tier2_text}", "mode": None, "raw_response": ""}
+
+    # Tier 3: 都失败，prompt_only 保底
+    return {
+        "result": "supported",
+        "mode": "prompt_only",
+        "reason": f"Tier 1（{tier1_result}）+ Tier 2（{tier2_result}）均失败，降级到 prompt-only 模式",
+        "raw_response": "",
+    }
+
+
 @router.get("/api/preload-status")
 async def get_preload_status():
     """Get preload status - used by Go launcher to wait before showing window"""

@@ -139,3 +139,105 @@ def test_strip_response_format_mode_handles_missing_litellm_kwargs():
     config = {}
     stripped = _strip_response_format_mode(config)
     assert stripped is config
+
+
+# 探测辅助函数单元测试：
+# _classify_probe_response_tier1/tier2 根据响应文本判定 supported/gateway_blocked。
+# _build_probe_messages 构造探测 prompt。
+# _build_probe_response_format_json_schema / json_object 构造探测 response_format。
+# 纯函数，不调真实 LLM。
+from niu_api.compat import (
+    _classify_probe_response_tier1,
+    _classify_probe_response_tier2,
+    _build_probe_messages,
+    _build_probe_response_format_json_schema,
+    _build_probe_response_format_json_object,
+)
+
+
+def test_build_probe_response_format_json_schema_structure():
+    """json_schema 档构造 OpenAI Structured Outputs 标准结构"""
+    rf = _build_probe_response_format_json_schema()
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "probe_response_format"
+    assert rf["json_schema"]["strict"] is True
+    assert "ok" in rf["json_schema"]["schema"]["properties"]
+
+
+def test_build_probe_response_format_json_object_structure():
+    """json_object 档构造 {"type": "json_object"}"""
+    rf = _build_probe_response_format_json_object()
+    assert rf == {"type": "json_object"}
+
+
+def test_build_probe_messages_returns_single_user_message_with_json_instruction():
+    """探测消息含 JSON 字样（OpenAI json_object 模式硬性要求 prompt 含 'json'）"""
+    msgs = _build_probe_messages()
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    assert "json" in msgs[0]["content"].lower()
+    assert "ok" in msgs[0]["content"]
+
+
+# Tier 1 (json_schema strict) 要求响应是合法 JSON dict + 含 ok 字段
+def test_classify_tier1_supported_when_valid_json_with_ok_field():
+    """响应是 {"ok": true} → supported"""
+    assert _classify_probe_response_tier1('{"ok": true}') == "supported"
+
+
+def test_classify_tier1_supported_when_json_with_extra_fields():
+    """响应是 {"ok": true, "extra": "ignored"} → supported（schema strict 容忍额外字段）"""
+    assert _classify_probe_response_tier1('{"ok": true, "extra": "ignored"}') == "supported"
+
+
+def test_classify_tier1_gateway_blocked_when_plain_text():
+    """响应是纯文本（如 GLM json_schema 实测输出 {"oko":）→ gateway_blocked"""
+    assert _classify_probe_response_tier1('I am doing fine.') == "gateway_blocked"
+
+
+def test_classify_tier1_gateway_blocked_when_truncated_json():
+    """响应是截断的非合法 JSON（如 GLM json_schema 实测 {"oko":）→ gateway_blocked"""
+    assert _classify_probe_response_tier1('{"oko":') == "gateway_blocked"
+
+
+def test_classify_tier1_gateway_blocked_when_empty():
+    """响应空 → gateway_blocked"""
+    assert _classify_probe_response_tier1('') == "gateway_blocked"
+
+
+def test_classify_tier1_gateway_blocked_when_markdown_wrapped():
+    """响应是 ```json ...``` 包裹 → gateway_blocked（非纯 JSON）"""
+    assert _classify_probe_response_tier1('```json\n{"ok": true}\n```') == "gateway_blocked"
+
+
+def test_classify_tier1_gateway_blocked_when_json_without_ok_field():
+    """响应是 {"foo": "bar"}（合法 JSON 但无 ok 字段）→ gateway_blocked
+    （json_schema strict 要求字段匹配，无 ok 说明 schema 未生效）"""
+    assert _classify_probe_response_tier1('{"foo": "bar"}') == "gateway_blocked"
+
+
+# Tier 2 (json_object) 不要求含 ok 字段，只要求合法 JSON dict
+def test_classify_tier2_supported_when_valid_json_dict():
+    """响应是 {"foo": "bar"}（合法 JSON dict，无 ok）→ supported
+    json_object 不约束字段名，只要合法 JSON dict 即可"""
+    assert _classify_probe_response_tier2('{"foo": "bar"}') == "supported"
+
+
+def test_classify_tier2_supported_when_json_with_ok_field():
+    """响应是 {"ok": true} → supported"""
+    assert _classify_probe_response_tier2('{"ok": true}') == "supported"
+
+
+def test_classify_tier2_gateway_blocked_when_plain_text():
+    """响应是纯文本 → gateway_blocked"""
+    assert _classify_probe_response_tier2('I am doing fine.') == "gateway_blocked"
+
+
+def test_classify_tier2_gateway_blocked_when_truncated_json():
+    """响应是 {"ok": true}\\n} （GLM json_object 实测含额外字符）→ gateway_blocked"""
+    assert _classify_probe_response_tier2('{"ok": true}\n}') == "gateway_blocked"
+
+
+def test_classify_tier2_gateway_blocked_when_empty():
+    """响应空 → gateway_blocked"""
+    assert _classify_probe_response_tier2('') == "gateway_blocked"
