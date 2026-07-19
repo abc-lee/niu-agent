@@ -91,7 +91,6 @@ L370-378 KG ghost skill 删除失败时塞空字符串：`next_scan[entity_name]
 避免每分钟无意义重写 ~/.niu/skill_sync_state.json。
 """
 import json
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -135,14 +134,14 @@ def fake_skill_sync(tmp_path):
 
 def test_scan_and_sync_no_write_when_unchanged(fake_skill_sync):
     """skills 和 notes 都无变化时，scan_and_sync 不调用 _save_state"""
-    sync, expected_hash = fake_skill_sync
+    sync, _ = fake_skill_sync
 
     # Patch get_lightrag 返回非 None，绕过 LightRAG 不可用的提前返回
     with mock.patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock.MagicMock()), \
          mock.patch.object(sync, "_save_state") as mock_save, \
          mock.patch.object(sync, "_sync_skill", return_value=True) as mock_sync, \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True), \
-         mock.patch("agent.injector.sync.LightRAGAdapter") as MockAdapter:
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
         # list_entities 返回空 list（没有 KG ghost）
         MockAdapter.return_value.list_entities.return_value = {
             "status": "ok", "data": []
@@ -155,7 +154,7 @@ def test_scan_and_sync_no_write_when_unchanged(fake_skill_sync):
     # _sync_skill 不应被调用（skill 已知且 hash 未变）
     mock_sync.assert_not_called()
     # 关键断言：_save_state 不应被调用
-    mock_save.assert_not_called(), \
+    assert not mock_save.called, \
         "skills 和 notes 都无变化时不应调 _save_state，但被调用了"
 ```
 
@@ -350,7 +349,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```python
 def test_scan_and_sync_notes_changed_writes_once(fake_skill_sync, tmp_path, monkeypatch):
     """notes 有变化时，scan_and_sync 只调用一次 _save_state（不双重写盘）"""
-    sync, expected_hash = fake_skill_sync
+    sync, _ = fake_skill_sync
 
     # _scan_notes 读 WORKSPACE_PATH/notes/notes.json（sync.py L615-618）
     # 必须设 WORKSPACE_PATH 环境变量 + 写到对应路径，否则 _scan_notes 返回 (0, 0)
@@ -368,7 +367,7 @@ def test_scan_and_sync_notes_changed_writes_once(fake_skill_sync, tmp_path, monk
          mock.patch.object(sync, "_sync_skill", return_value=True), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True), \
          mock.patch.object(sync, "_inject_note_to_lightrag", return_value=set()) as mock_inject_note, \
-         mock.patch("agent.injector.sync.LightRAGAdapter") as MockAdapter:
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
         MockAdapter.return_value.list_entities.return_value = {"status": "ok", "data": []}
         MockAdapter.return_value.delete_document.return_value = {"status": "ok"}
 
@@ -502,7 +501,7 @@ def test_scan_and_sync_watchdog_concurrent_write(tmp_path):
          mock.patch.object(sync, "_save_state") as mock_save, \
          mock.patch.object(sync, "_sync_skill", side_effect=fake_sync_skill), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True), \
-         mock.patch("agent.injector.sync.LightRAGAdapter") as MockAdapter:
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
         MockAdapter.return_value.list_entities.return_value = {"status": "ok", "data": []}
 
         added, updated, deleted = sync.scan_and_sync()
@@ -531,13 +530,13 @@ def test_scan_and_sync_ghost_cleanup_failure_writes(fake_skill_sync):
     fixture 用 fake_skill_sync（state 含 test-skill hash），scan 走 unchanged
     路径不调 _sync_skill/_delete_skill_from_lightrag，只触发 L372 ghost 路径。
     """
-    sync, expected_hash = fake_skill_sync
+    sync, _ = fake_skill_sync
 
     with mock.patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock.MagicMock()), \
          mock.patch.object(sync, "_save_state") as mock_save, \
          mock.patch.object(sync, "_sync_skill", return_value=True), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=False), \
-         mock.patch("agent.injector.sync.LightRAGAdapter") as MockAdapter:
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
         # KG 里有 1 个 ghost skill（磁盘上不存在）
         MockAdapter.return_value.list_entities.return_value = {
             "status": "ok",
