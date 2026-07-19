@@ -700,3 +700,118 @@ def test_dissolve_multiple_regions_one_blocked_one_succeeds():
         f"应只 dissolve 脑区b（脑区a 被孤岛保护挡住），实际 {dissolved}"
     adapter.delete_entity.assert_called_once_with("脑区b")
 
+
+def test_dissolve_failure_persists_accumulated_shrink_count():
+    """dissolve 失败（delete_entity 返回非 ok）时 shrink_count 持续累加（I1 修复核心场景）
+
+    验证 should_skip_persist 在 else 分支不设 True，让持久化分支写 shrink_count
+    """
+    from unittest import mock
+    import networkx as nx
+    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    # 构造图：所有成员 degree >= 2（无孤岛风险，should_dissolve=True）
+    g = nx.Graph()
+    g.add_node("脑区a", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试")
+    g.add_node("成员x", entity_type="concept")
+    g.add_node("成员y", entity_type="concept")
+    g.add_node("其他实体a", entity_type="concept")
+    g.add_node("其他实体b", entity_type="concept")
+    g.add_edge("脑区a", "成员x", keywords="包含", weight=1.0)
+    g.add_edge("脑区a", "成员y", keywords="包含", weight=1.0)
+    g.add_edge("成员x", "其他实体a", keywords="相关", weight=1.0)  # x degree=2
+    g.add_edge("成员y", "其他实体b", keywords="相关", weight=1.0)  # y degree=2
+
+    adapter = mock.MagicMock()
+    adapter._get_rag.return_value = mock.MagicMock(
+        chunk_entity_relation_graph=mock.MagicMock(_graph=g)
+    )
+    adapter.list_entities.return_value = {
+        "status": "ok",
+        "data": [{"id": "脑区a", "description": "brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试"}]
+    }
+    # 关键：delete_entity 返回非 ok（模拟失败）
+    adapter.delete_entity = mock.Mock(return_value={"status": "error", "message": "kg locked"})
+
+    ingester = mock.MagicMock()
+
+    manager = RegionManager(adapter, ingester)
+    manager.get_all_regions = lambda: [
+        BrainRegionInfo(
+            name="脑区a", label="脑区a", community_id="1",
+            description="测试", size=2, representative="成员x",
+            members=["成员x", "成员y"], updated_at=1745366400,
+        )
+    ]
+
+    target_region = BrainRegionInfo(
+        name="目标脑区", label="目标脑区", community_id="2",
+        description="目标", size=0, representative="",
+        members=[], updated_at=1745366400,
+    )
+
+    with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                    return_value={"脑区a": ["成员x", "成员y"]}), \
+         mock.patch.object(manager, "_find_most_similar_neighbor", return_value=target_region), \
+         mock.patch.object(manager, "_refresh_activation_cache_after_delete"):
+        dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
+
+    # 关键断言 1：dissolve 失败，dissolved 为空
+    assert dissolved == [], "delete_entity 失败时 dissolved 应为空"
+    # 关键断言 2：delete_entity 被调用（确实尝试过 dissolve）
+    adapter.delete_entity.assert_called_once_with("脑区a")
+    # 关键断言 3：shrink_count 持续累加（从 2 +1 到 3，未清零，未保持原值）
+    ingester.inject_custom_kg.assert_called()
+    call = ingester.inject_custom_kg.call_args
+    entities = call.kwargs.get("entities", [])
+    desc = entities[0].get("description", "") if entities else ""
+    assert "brain_meta_shrink_count:3" in desc, \
+        f"dissolve 失败时 shrink_count 应累加到 3 持久化，实际 {desc}"
+    # 关键断言 4：不应该有 brain_meta_shrink_count:0（清零）或 brain_meta_shrink_count:2（保持原值）
+    assert "brain_meta_shrink_count:0" not in desc, "dissolve 失败不应清零 shrink_count"
+    assert "brain_meta_shrink_count:2" not in desc or "brain_meta_shrink_count:2<" not in desc, \
+        "dissolve 失败不应保持原值 shrink_count:2"
+
+
+def test_has_isolated_member_rag_raises_returns_true():
+    """_get_rag() 抛异常（不是返回 None）→ try/except 兜底返回 True（保守阻止 dissolve）"""
+    from unittest import mock
+    from niu_api.internal.region_manager import RegionManager
+
+    manager = RegionManager.__new__(RegionManager)
+    manager._adapter = mock.MagicMock()
+    # 关键：_get_rag 抛 RuntimeError（不是返回 None）
+    manager._adapter._get_rag = mock.MagicMock(side_effect=RuntimeError("rag half-init"))
+
+    result = manager._has_isolated_member(["成员X"])
+    assert result is True, "_get_rag 抛异常时应保守返回 True（阻止 dissolve）"
+
+
+def test_has_isolated_member_degree_call_raises_returns_true():
+    """nx_graph.degree(node_id) 抛异常 → try/except 兜底返回 True
+
+    用 MagicMock 让 degree 调用抛异常，验证 try/except 覆盖整个 for 循环
+    """
+    from unittest import mock
+    from niu_api.internal.region_manager import RegionManager
+
+    # 构造一个会让 degree() 抛异常的 mock 图
+    fake_graph = mock.MagicMock()
+    fake_graph.__contains__ = mock.MagicMock(return_value=True)  # node_id in nx_graph 返回 True
+    fake_graph.degree = mock.MagicMock(side_effect=RuntimeError("graph corrupted"))
+
+    fake_kg = mock.MagicMock()
+    fake_kg._graph = fake_graph
+
+    fake_rag = mock.MagicMock()
+    fake_rag.chunk_entity_relation_graph = fake_kg
+
+    manager = RegionManager.__new__(RegionManager)
+    manager._adapter = mock.MagicMock()
+    manager._adapter._get_rag.return_value = fake_rag
+
+    result = manager._has_isolated_member(["成员X"])
+    assert result is True, "degree() 抛异常时应保守返回 True（阻止 dissolve）"
+

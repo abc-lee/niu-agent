@@ -1218,6 +1218,7 @@ python -c "import ast; ast.parse(open('niu_api/internal/region_manager.py').read
 - **0 成员脑区 + 孤岛保护组合**：0 成员脑区 members=[]，`_has_isolated_member([])` 返回 False（无孤岛风险）→ 正常 dissolve。这符合用户需求第 3 条"0 成员脑区该删就删"。
 - **缺省脑区保护**：L1059 `is_default_region` 跳过缺省脑区，不进孤岛检查。已有逻辑，本次不重复加。
 - **_has_isolated_member 异常返回 True**：如果 nx_graph 拿取有持续性问题（如 LightRAG 重启中），脑区永远删不掉——但这是保守策略，符合用户"避免孤岛"诉求。日志会区分"孤岛风险"和"检查失败"。
+- **dissolve 失败策略**：如果 `delete_entity` 返回非 ok（如 LightRAG 锁定/权限问题），脑区节点未被删除，`should_skip_persist` 保持 False，让持久化分支写 shrink_count 累加后值。下次 sync 继续累加，反映失败次数。
 - **shrink_count 序列化兼容性**：`_parse_description` 和 `_encode_description` 处理 `brain_meta_shrink_count` 的逻辑不变，本次修改不破坏现有序列化。
 
 ### 5. 测试覆盖度统计

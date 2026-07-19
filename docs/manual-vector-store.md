@@ -311,7 +311,7 @@ source_id = "skill://{skill_name}"
 
 **孤岛保护**（2026-07-19 新增）：dissolve 执行前会检查所有成员的 `total_degree`：
 - 所有成员 `degree >= 2` → 安全，执行 dissolve（成员挪给最相似邻居脑区 + 删除脑区节点）
-- 有任何一个成员 `degree <= 1` → **取消本次 dissolve**，`shrink_count` 保持原值不清零，下轮重新扫
+- 有任何一个成员 `degree <= 1` → **取消本次 dissolve**，`shrink_count` 继续累加（+1）后持久化，下轮重新扫
 
 这避免删除脑区后成员变孤岛（0 条边）。如果孤岛成员后来多了别的边，下轮 dissolve 就能成功；如果一直只有 1 条边，脑区永远不被删。
 
