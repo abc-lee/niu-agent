@@ -241,3 +241,61 @@ def test_classify_tier2_gateway_blocked_when_truncated_json():
 def test_classify_tier2_gateway_blocked_when_empty():
     """响应空 → gateway_blocked"""
     assert _classify_probe_response_tier2('') == "gateway_blocked"
+
+
+"""升级后自动探测决策函数测试。
+
+_should_auto_probe_after_upgrade 判断 lightrag_llm.litellm_kwargs 是否需要自动探测：
+- 无 response_format_mode 键 → True（旧版本配置，需探测）
+- 有 response_format_mode 键 → False（已探测过）
+
+v6 修正：同时检查 lightrag_llm 和 llm 两段 litellm_kwargs，因为
+lightrag_llm.model 为空时 get_llm_config 走 fallback 用 llm 段，
+response_format_mode 可能写在 llm 段（场景二/三：LightRAG 用主 Agent 同一模型）。
+"""
+from niu_api.internal.lightrag_manager import _should_auto_probe_after_upgrade
+
+
+def test_returns_true_when_no_response_format_mode():
+    """lightrag_llm.litellm_kwargs 无 response_format_mode 键 → True（旧版本）"""
+    config = {"lightrag_llm": {"litellm_kwargs": {"thinking": {"type": "disabled"}}}}
+    assert _should_auto_probe_after_upgrade(config) is True
+
+
+def test_returns_true_when_no_litellm_kwargs():
+    """lightrag_llm 无 litellm_kwargs 键 → True"""
+    config = {"lightrag_llm": {"reasoning_effort": "none"}}
+    assert _should_auto_probe_after_upgrade(config) is True
+
+
+def test_returns_true_when_no_lightrag_llm():
+    """配置无 lightrag_llm 段 → True"""
+    config = {}
+    assert _should_auto_probe_after_upgrade(config) is True
+
+
+def test_returns_false_when_response_format_mode_exists():
+    """lightrag_llm.litellm_kwargs 含 response_format_mode 键 → False（已探测过）"""
+    config = {"lightrag_llm": {"litellm_kwargs": {"response_format_mode": "prompt_only"}}}
+    assert _should_auto_probe_after_upgrade(config) is False
+
+
+def test_returns_false_when_response_format_mode_is_any_value():
+    """response_format_mode 是任意值（含 prompt_only）都算已探测过 → False"""
+    config = {"lightrag_llm": {"litellm_kwargs": {"response_format_mode": "json_schema"}}}
+    assert _should_auto_probe_after_upgrade(config) is False
+
+
+def test_returns_false_when_llm_has_response_format_mode():
+    """llm.litellm_kwargs 含 response_format_mode（lightrag_llm 为空场景）→ False
+
+    场景二/三：LightRAG 用主 Agent 同一模型，response_format_mode 写在 llm 段。
+    """
+    config = {"llm": {"litellm_kwargs": {"response_format_mode": "prompt_only"}}}
+    assert _should_auto_probe_after_upgrade(config) is False
+
+
+def test_returns_true_when_only_llm_has_litellm_kwargs_without_mode():
+    """llm.litellm_kwargs 有内容但无 response_format_mode 键 → True（需探测）"""
+    config = {"llm": {"litellm_kwargs": {"thinking": {"type": "enabled"}}}}
+    assert _should_auto_probe_after_upgrade(config) is True
