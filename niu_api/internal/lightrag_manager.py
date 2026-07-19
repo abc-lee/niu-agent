@@ -268,6 +268,34 @@ def _trigger_background_probe_if_needed() -> None:
             if mode not in ("json_schema", "json_object", "prompt_only"):
                 return
 
+            # 关键：prompt_only 降级时区分"真不支持"与"基础设施临时故障"
+            # - reason 含 gateway_blocked：网关 200 但响应非合法 JSON（如 GLM），
+            #   是真不支持，写入 prompt_only
+            # - reason 仅含 tier_failed（无 gateway_blocked）：3 档都因异常降级
+            #   （4xx/5xx/超时/认证/限流/网络），很可能是 API Key 临时失效或
+            #   网络波动，不写入避免覆盖用户原有配置导致永久降级
+            reason = data.get("reason", "")
+            if mode == "prompt_only" and "gateway_blocked" not in reason:
+                logger.warning(
+                    "Background probe: both tiers failed with tier_failed "
+                    "(likely infra issue: API Key/network/rate limit), "
+                    "keeping existing config. reason=%s", reason
+                )
+                return
+
+            # 写入前重读文件确认 response_format_mode 仍未被其他进程写入
+            # （避免与前端 saveConfig 并发竞争覆盖用户配置）
+            with open(user_config_path, encoding="utf-8") as f:
+                fresh_config = json.load(f)
+            fresh_lightrag = fresh_config.get("lightrag_llm") or {}
+            fresh_kwargs = fresh_lightrag.get("litellm_kwargs") or {}
+            if "response_format_mode" in fresh_kwargs:
+                logger.info(
+                    "Background probe: response_format_mode already written "
+                    "by another process, skipping write"
+                )
+                return
+
             # 写入配置（atomic write：先写临时文件再 os.replace，避免主进程
             # 在写入过程中读到部分 JSON 触发 JSONDecodeError）
             allowed = ["response_format"] if mode in ("json_schema", "json_object") else []
