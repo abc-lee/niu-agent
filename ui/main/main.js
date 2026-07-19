@@ -1326,6 +1326,42 @@ ipcMain.handle('test-connection', async (event, config) => {
   }
 });
 
+ipcMain.handle('probe-response-format', async (event, config) => {
+  // 通过 HTTP POST 调本机 127.0.0.1:9876/api/probe-response-format
+  // 失败时返回 probe_failed，保留旧配置（不破坏用户已有 response_format_mode）
+  try {
+    const http = require('http');
+    const payload = JSON.stringify(config);
+    const options = {
+      hostname: '127.0.0.1',
+      port: 9876,
+      path: '/api/probe-response-format',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: 70000,  // 70 秒（两档各 30s + 余量）
+    };
+    return await new Promise((resolve) => {
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)); }
+          catch { resolve({ result: 'probe_failed', reason: '响应解析失败', mode: null, raw_response: data.slice(0, 200) }); }
+        });
+      });
+      req.on('error', (e) => resolve({ result: 'probe_failed', reason: e.message, mode: null, raw_response: '' }));
+      req.on('timeout', () => { req.destroy(); resolve({ result: 'probe_failed', reason: 'HTTP 超时', mode: null, raw_response: '' }); });
+      req.write(payload);
+      req.end();
+    });
+  } catch (e) {
+    return { result: 'probe_failed', reason: String(e), mode: null, raw_response: '' };
+  }
+});
+
 ipcMain.handle('close-window', () => {
   // 优先关 settings 窗口；若 assistant 模式下也调用此 IPC（虽然原 assistant 无此 handler），
   // 退化为关闭当前焦点窗口
