@@ -271,6 +271,9 @@ class SkillSync:
         失败的 skill 保留旧 hash（或新增失败的不写入），
         下次扫描时会重试。
 
+        无变化不写盘：入口对 _last_scan + _last_notes_scan 做深拷贝快照，
+        出口对比是否变化，无变化跳过 _save_state（避免每分钟无意义重写）。
+
         Returns:
             (added, updated, deleted) 计数；若 LightRAG 不可用返回 (-1, -1, -1)
             表示"未真正扫描"，调用方据此不触发 _first_scan_complete。
@@ -278,6 +281,14 @@ class SkillSync:
         if not self.skills_dir.exists():
             logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dir}")
             return 0, 0, 0
+
+        # 入口快照：scan 之前的 _last_scan + _last_notes_scan 状态
+        # 位置：在 skills_dir 检查之后、LightRAG 可用性检查（L286-293）之前
+        # 出口对比是否变化，无变化跳过 _save_state
+        # 注意：LightRAG 不可用提前 return -1 时不做快照也无副作用（不写盘就行）
+        with self._lock:
+            skills_snapshot_before: dict[str, str] = dict(self._last_scan)
+            notes_snapshot_before: dict[str, str] = dict(self._last_notes_scan)
 
         # 0. 检查 LightRAG 是否可用——不可用则跳过本次扫描（不算"首次扫描完成"）
         # 原因：run_repair_on_user_request 等待 _first_scan_complete 触发后重检，
@@ -387,14 +398,31 @@ class SkillSync:
         except Exception as e:
             logger.error(f"[SkillSync] Notes scan failed: {e}")
 
-        # 4. 将 next_scan 写入状态文件（合并 watchdog 并发修改）
+        # 4. 合并 watchdog 并发修改 + 出口对比 + 写盘成功才更新内存
         with self._lock:
-            # 保留 scan 期间 watchdog 新增/修改的条目（不在 known_keys 快照中的）
+            # 合并 scan 期间 watchdog 新增/修改的条目
+            # 1. 不在 known_skills 快照中的 → watchdog 新增的，合并进 next_scan
+            # 2. 在 known_skills 中但 hash 跟 _last_scan 不同 → watchdog 改了已有 key 的 hash
+            #    （覆盖 next_scan 里 scan 算出的旧 hash，避免被覆盖回旧值）
             for name, hash_val in self._last_scan.items():
-                if name not in known_skills:
+                if name not in known_skills or next_scan.get(name) != hash_val:
                     next_scan[name] = hash_val
-            self._last_scan = next_scan
-        self._save_state()
+
+            # 出口对比：_last_scan 或 _last_notes_scan 跟入口快照不同才写盘
+            # 覆盖以下场景（added/updated/deleted 可能全 0 但状态确实变了）：
+            # - watchdog 并发往 _last_scan 塞新条目或改已有 key 的 hash
+            # - KG ghost cleanup 失败时往 next_scan 塞空字符串（L378）
+            # - _scan_notes 修改了 _last_notes_scan
+            skills_changed = next_scan != skills_snapshot_before
+            notes_changed = self._last_notes_scan != notes_snapshot_before
+
+        if skills_changed or notes_changed:
+            # 写盘成功后才更新内存，避免 _save_state 抛 OSError 时
+            # 内存已改但磁盘未改，下次 scan 入口快照读到新内存状态，
+            # 出口对比"无变化"不写盘，磁盘永远旧状态
+            self._save_state()
+            with self._lock:
+                self._last_scan = next_scan
 
         return added, updated, deleted
 
