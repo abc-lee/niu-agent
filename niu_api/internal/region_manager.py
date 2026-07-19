@@ -1175,6 +1175,61 @@ class RegionManager:
             logger.info("共解散 %d 个萎缩脑区", len(dissolved))
         return dissolved
 
+    def _has_isolated_member(self, members: list[str]) -> bool:
+        """检查成员列表里是否有任何一个成员 total_degree <= 1（删脑区会变孤岛）。
+
+        用于 dissolve_shrunk_regions 执行前的安全检查：
+        - 所有成员 degree >= 2 → 返回 False（安全，可解散）
+        - 有任何一个成员 degree <= 1 → 返回 True（会变孤岛，阻止解散）
+        - 成员不在图里 / RAG 拿不到 → 返回 True（保守，阻止解散）
+        - 空成员列表 → 返回 False（脑区 0 成员，无孤岛风险）
+
+        成员名小写查找：get_all_region_members 返回的成员名直接来自 nx_graph
+        边数据（lightrag_manager.py L433-445），而 LightRAG graph 节点 id 全部
+        小写（lightrag_manager.py L385 注释）。现有代码 region_manager.py L614-615
+        也是 member.lower() 直接小写查找。本函数跟现有模式一致，直接小写。
+
+        Args:
+            members: 成员实体名列表（来自 get_all_region_members）
+
+        Returns:
+            True 表示有孤岛风险，应取消 dissolve；False 表示安全可解散
+        """
+        if not members:
+            return False
+
+        # 方法内 import（跟 region_manager.py L604 模式一致，避免循环 import）
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
+        try:
+            rag = self._adapter._get_rag()
+            if rag is None:
+                return True  # RAG 拿不到，保守阻止 dissolve
+
+            kg = rag.chunk_entity_relation_graph
+            nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+            if nx_graph is None:
+                return True  # 图拿不到，保守阻止 dissolve
+
+            with graph_read_lock():
+                for member in members:
+                    if not isinstance(member, str):
+                        continue  # 防御性：跳过非字符串成员
+                    # 直接小写查找（跟现有代码 region_manager.py L614-615 模式一致）
+                    node_id = member.lower()
+                    if node_id not in nx_graph:
+                        # 成员不在图里（数据不一致），保守阻止 dissolve
+                        return True
+                    degree = nx_graph.degree(node_id)
+                    if degree <= 1:
+                        return True  # 找到孤岛风险成员
+
+            return False  # 所有成员 degree >= 2
+
+        except Exception as e:
+            logger.warning("_has_isolated_member 检查失败，保守阻止 dissolve: %s", e)
+            return True
+
     def _find_most_similar_neighbor(
         self,
         region: BrainRegionInfo,
