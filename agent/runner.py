@@ -1936,6 +1936,103 @@ class NiuRunner:
             + "\n".join(dir_lines)
         )
 
+    # ============== Skill Score Counter ==============
+
+    # 衰减算法常量
+    _SKILL_SCORE_MIN = 0          # 计数器下限
+    _SKILL_SCORE_MAX = 10         # 计数器上限（封顶）
+    _SKILL_SCORE_FIRST_HIT = 7    # 首次命中/低分命中直接置为此值
+    _SKILL_SCORE_HIT_INCREMENT = 1  # 已熟悉命中加分
+    _SKILL_SCORE_DECAY = 1        # 未命中衰减减分
+    _SKILL_SCORE_INJECT_THRESHOLD = 3  # 进入 prompt 的最低分门槛
+    _SKILL_INJECT_TOP_N = 5       # 第二阶段注入 prompt 的 skill 数量上限
+
+    @staticmethod
+    def _update_skill_counter(
+        counter: dict[str, int],
+        entity_cache: dict[str, dict],
+        candidate_entities: dict[str, dict],
+    ) -> None:
+        """按算法更新 skill 计数器 + entity dict 缓存。
+
+        算法（每轮执行顺序）：
+        1. 未命中衰减：所有计数器 > 0 且不在候选集合里的 skill，各 -1 分
+        2. 命中加分（已熟悉）：候选集合里计数器 ≥7 且 <10 的，+1 分（7 分走这条分支到 8）
+        3. 命中置位（新命中或低分）：候选集合里计数器 <7 的，直接置为 7（7 分不走这条分支）
+        4. entity dict 缓存更新：候选集合里的 skill 用本轮 entity dict 覆盖 cache
+        5. 清理 0 分项：删除 counter 字典里所有 ≤0 分的项，同时从 entity_cache 删除对应项
+
+        Args:
+            counter: 计数器 dict（会被原地修改），key=skill name, value=分数
+            entity_cache: entity dict 缓存（会被原地修改），key=skill name, value=entity dict
+            candidate_entities: 本轮向量库检索命中的 skill entity dict，key=skill name, value=entity dict
+        """
+        candidate_names = set(candidate_entities.keys())
+
+        # Step 1: 未命中衰减（counter 里已存在但不在 candidate 里的）
+        # 跳过空名 key（防御历史脏数据）
+        for name, score in list(counter.items()):
+            if not name:
+                continue
+            if name not in candidate_names and score > NiuRunner._SKILL_SCORE_MIN:
+                counter[name] = max(
+                    NiuRunner._SKILL_SCORE_MIN,
+                    score - NiuRunner._SKILL_SCORE_DECAY,
+                )
+
+        # Step 2 & 3: 命中加分或置位（跳过空名 candidate）
+        for name in candidate_names:
+            if not name:
+                continue
+            current = counter.get(name, NiuRunner._SKILL_SCORE_MIN)
+            if current < NiuRunner._SKILL_SCORE_FIRST_HIT:
+                # Step 3: 低于 7 分直接置 7（置位）
+                counter[name] = NiuRunner._SKILL_SCORE_FIRST_HIT
+            else:
+                # Step 2: ≥7 且 <10 加 +1 分（封顶 10）
+                counter[name] = min(
+                    NiuRunner._SKILL_SCORE_MAX,
+                    current + NiuRunner._SKILL_SCORE_HIT_INCREMENT,
+                )
+
+        # Step 4: entity dict 缓存更新（命中即用本轮最新 entity dict 覆盖 cache）
+        for name, entity in candidate_entities.items():
+            if name and entity:
+                entity_cache[name] = entity
+
+        # Step 5: 清理 ≤0 分项（counter 和 cache 同步清理，防止无界增长）
+        # 不能在迭代 counter.items() 时修改 dict，先收集再删
+        to_remove = [
+            name for name, score in counter.items()
+            if score <= NiuRunner._SKILL_SCORE_MIN or not name
+        ]
+        for name in to_remove:
+            counter.pop(name, None)
+            entity_cache.pop(name, None)
+
+    @staticmethod
+    def _select_top_skills(
+        counter: dict[str, int],
+        top_n: int,
+    ) -> list[tuple[str, int]]:
+        """第二阶段：从计数器筛 ≥3 分的 skill，按分数倒序取前 N 个。
+
+        分数相同时按 name 字典序兜底（保证排序稳定）。
+
+        Returns:
+            [(name, score), ...] 按分数倒序，最多 top_n 条
+        """
+        if top_n <= 0:
+            return []
+        qualified = [
+            (name, score)
+            for name, score in counter.items()
+            if name and score >= NiuRunner._SKILL_SCORE_INJECT_THRESHOLD
+        ]
+        # 排序：分数倒序，name 字典序正序兜底
+        qualified.sort(key=lambda x: (-x[1], x[0]))
+        return qualified[:top_n]
+
     # ============== Dynamic Resource Injection ==============
 
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
