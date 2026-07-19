@@ -207,14 +207,15 @@ def test_has_isolated_member_returns_true_when_any_member_degree_is_1():
     from niu_api.internal.region_manager import RegionManager
 
     # 构造图：脑区 A + 成员 X（只有归属边，degree=1）+ 成员 Y（有归属边+知识边，degree=2）
+    # 图节点 id 用小写（跟 LightRAG 实际存储一致），传入参数用大写验证 lower 查找路径
     g = nx.Graph()
     g.add_node("测试脑区", entity_type="brainregion")
-    g.add_node("成员X", entity_type="concept")
-    g.add_node("成员Y", entity_type="concept")
+    g.add_node("成员x", entity_type="concept")
+    g.add_node("成员y", entity_type="concept")
     g.add_node("其他实体", entity_type="concept")
-    g.add_edge("测试脑区", "成员X", keywords="包含", weight=1.0)  # X 只有这条边
-    g.add_edge("测试脑区", "成员Y", keywords="包含", weight=1.0)
-    g.add_edge("成员Y", "其他实体", keywords="相关", weight=1.0)  # Y 有 2 条边
+    g.add_edge("测试脑区", "成员x", keywords="包含", weight=1.0)  # x 只有这条边
+    g.add_edge("测试脑区", "成员y", keywords="包含", weight=1.0)
+    g.add_edge("成员y", "其他实体", keywords="相关", weight=1.0)  # y 有 2 条边
 
     fake_rag = mock.MagicMock()
     fake_rag.chunk_entity_relation_graph._graph = g
@@ -223,7 +224,7 @@ def test_has_isolated_member_returns_true_when_any_member_degree_is_1():
     manager._adapter = mock.MagicMock()
     manager._adapter._get_rag.return_value = fake_rag
 
-    result = manager._has_isolated_member(["成员X", "成员Y"])
+    result = manager._has_isolated_member(["成员X", "成员Y"])  # 传入大写，验证 lower 查找
     assert result is True, "成员X degree=1，应返回 True（会变孤岛）"
 
 
@@ -233,16 +234,17 @@ def test_has_isolated_member_returns_false_when_all_members_degree_ge_2():
     import networkx as nx
     from niu_api.internal.region_manager import RegionManager
 
+    # 图节点 id 用小写（跟 LightRAG 实际存储一致），传入参数用大写验证 lower 查找路径
     g = nx.Graph()
     g.add_node("测试脑区", entity_type="brainregion")
-    g.add_node("成员X", entity_type="concept")
-    g.add_node("成员Y", entity_type="concept")
+    g.add_node("成员x", entity_type="concept")
+    g.add_node("成员y", entity_type="concept")
     g.add_node("其他实体A", entity_type="concept")
     g.add_node("其他实体B", entity_type="concept")
-    g.add_edge("测试脑区", "成员X", keywords="包含", weight=1.0)
-    g.add_edge("测试脑区", "成员Y", keywords="包含", weight=1.0)
-    g.add_edge("成员X", "其他实体A", keywords="相关", weight=1.0)  # X 有 2 条边
-    g.add_edge("成员Y", "其他实体B", keywords="相关", weight=1.0)  # Y 有 2 条边
+    g.add_edge("测试脑区", "成员x", keywords="包含", weight=1.0)
+    g.add_edge("测试脑区", "成员y", keywords="包含", weight=1.0)
+    g.add_edge("成员x", "其他实体A", keywords="相关", weight=1.0)  # x 有 2 条边
+    g.add_edge("成员y", "其他实体B", keywords="相关", weight=1.0)  # y 有 2 条边
 
     fake_rag = mock.MagicMock()
     fake_rag.chunk_entity_relation_graph._graph = g
@@ -251,7 +253,7 @@ def test_has_isolated_member_returns_false_when_all_members_degree_ge_2():
     manager._adapter = mock.MagicMock()
     manager._adapter._get_rag.return_value = fake_rag
 
-    result = manager._has_isolated_member(["成员X", "成员Y"])
+    result = manager._has_isolated_member(["成员X", "成员Y"])  # 传入大写，验证 lower 查找
     assert result is False, "所有成员 degree>=2，应返回 False（安全）"
 
 
@@ -519,7 +521,7 @@ git commit -m "feat(region_manager): 新增 _has_isolated_member 辅助方法
 - 有任何成员 degree <= 1 → True（孤岛风险，阻止解散）
 - 成员不在图 / RAG 拿不到 → True（保守阻止）
 - 空成员列表 → False（无孤岛风险）
-- 大小写不敏感查找（先原始名再小写）
+- 小写查找（跟现有代码 region_manager.py L614-615 模式一致，LightRAG 节点 id 全小写）
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
