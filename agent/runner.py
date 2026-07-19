@@ -618,6 +618,13 @@ class NiuRunner:
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
 
+        # Skill 计数器（两阶段 Top_K + 衰减算法）：name → score
+        # 跨轮维持状态，重启清零（纯内存）
+        self._skill_score_counter: dict[str, int] = {}
+        # entity dict 跨轮缓存：name → entity dict
+        # 与 counter 同步维护，未命中时仍可从此处取 entity dict 注入 prompt
+        self._skill_entity_cache: dict[str, dict] = {}
+
         # 注入 ask_agent callback（供内部 MCP Server 调用 LLM）
         _registry = get_registry()
         _registry.set_ask_agent(self._make_ask_agent_callback())
@@ -2132,13 +2139,43 @@ class NiuRunner:
         except Exception as e:
             logger.warning(f"Brain region map injection failed: {e}")
 
-        # Skills (global vector search)
+        # Skills (global vector search + 计数器两阶段 Top_K)
         lightrag_skills = lightrag_results.get("skill", [])
+        region_skills = region_results.get("skill", [])
+        # 第一阶段：向量库已检索得候选集合（lightrag_skills + region_skills）
+        # 注意：region_skills 在前、lightrag_skills 在后，dict 推导式让 lightrag_skills 覆盖 region_skills
+        # （全局检索 top_k 更宽，数据更完整，优先级更高）
+        candidate_entities: dict[str, dict] = {
+            e["entity_name"]: e
+            for e in region_skills + lightrag_skills
+            if e.get("entity_name")  # 过滤缺 entity_name 的脏数据
+        }
+        # 计数器 + entity cache 同步更新
+        self._update_skill_counter(
+            self._skill_score_counter, self._skill_entity_cache, candidate_entities,
+        )
+
+        # 第二阶段：按计数器排序选 top N（从 cache 取 entity dict 注入）
+        top_skills = self._select_top_skills(
+            self._skill_score_counter, self._SKILL_INJECT_TOP_N,
+        )
+        # 从 cache 里按 top_skills 顺序挑出对应 entity dict
+        # 关键：本轮没命中的 skill 也能从 cache 取出（缓跨轮维持注入能力）
+        ordered_skill_entities = [
+            self._skill_entity_cache[name]
+            for name, _ in top_skills
+            if name in self._skill_entity_cache
+        ]
+        # _format_lightrag_entities_for_prompt 内部用 seen_names 去重
         skills_text, seen_names = self._format_lightrag_entities_for_prompt(
-            lightrag_skills, "相关技能", seen_names,
+            ordered_skill_entities, "相关技能", seen_names,
         )
         if skills_text:
             parts.append(skills_text)
+        logger.debug(
+            f"Skill injection: candidates={len(candidate_entities)}, "
+            f"top_selected={len(top_skills)}, injected={len(ordered_skill_entities)}"
+        )
 
         # Knowledge (global vector search)
         lightrag_knowledge = lightrag_results.get("knowledge", [])
@@ -2150,11 +2187,10 @@ class NiuRunner:
 
         # Region-filtered knowledge (brain region semantic search, deduped with seen_names)
         region_knowledge = region_results.get("knowledge", [])
-        region_skills = region_results.get("skill", [])
-        region_all = region_skills + region_knowledge
-        if region_all:
+        # region_skills 已被计数器合并到"相关技能"段，这里只处理 knowledge
+        if region_knowledge:
             region_text, seen_names = self._format_lightrag_entities_for_prompt(
-                region_all, "活跃脑区知识", seen_names,
+                region_knowledge, "活跃脑区知识", seen_names,
             )
             if region_text:
                 parts.append(region_text)
