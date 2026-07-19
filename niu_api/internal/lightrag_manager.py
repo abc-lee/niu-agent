@@ -277,9 +277,18 @@ def _trigger_background_probe_if_needed() -> None:
             litellm_kwargs["allowed_openai_params"] = allowed
             import os
             tmp_path = f"{user_config_path}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(user_config, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, user_config_path)
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(user_config, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, user_config_path)
+            except Exception:
+                # 写入或替换失败时清理临时文件，避免残留
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise
             logger.info("Background probe completed: response_format_mode=%s", mode)
         except Exception as e:
             logger.warning("Background probe failed: %s", e)
