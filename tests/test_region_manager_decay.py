@@ -381,3 +381,322 @@ def test_has_isolated_member_degree_zero_returns_true():
 
     result = manager._has_isolated_member(["成员X"])
     assert result is True, "degree=0 应返回 True（防御性，<=1 都算孤岛风险）"
+
+
+def test_dissolve_cancelled_when_member_has_only_one_edge():
+    """dissolve 执行前发现有成员 degree=1 → 取消 dissolve，shrink_count 持久化（+1 后值）"""
+    from unittest import mock
+    import networkx as nx
+    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    # 构造图：脑区A + 成员X（degree=1，孤岛风险）+ 成员Y（degree=2）
+    g = nx.Graph()
+    g.add_node("脑区a", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试")
+    g.add_node("成员x", entity_type="concept")
+    g.add_node("成员y", entity_type="concept")
+    g.add_node("其他实体", entity_type="concept")
+    g.add_edge("脑区a", "成员x", keywords="包含", weight=1.0)  # x 只有这条边（degree=1）
+    g.add_edge("脑区a", "成员y", keywords="包含", weight=1.0)
+    g.add_edge("成员y", "其他实体", keywords="相关", weight=1.0)  # y 有 2 条边
+
+    adapter = mock.MagicMock()
+    adapter._get_rag.return_value = mock.MagicMock(chunk_entity_relation_graph=mock.MagicMock(_graph=g))
+    adapter.list_entities.return_value = {
+        "status": "ok",
+        "data": [{"id": "脑区a", "description": "brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试"}]
+    }
+    adapter.delete_entity = mock.Mock(return_value={"status": "ok"})
+
+    ingester = mock.MagicMock()
+
+    manager = RegionManager(adapter, ingester)
+    manager.get_all_regions = lambda: [
+        BrainRegionInfo(
+            name="脑区a", label="脑区a", community_id="1",
+            description="测试", size=2, representative="成员x",
+            members=["成员x", "成员y"], updated_at=1745366400,
+        )
+    ]
+
+    with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                    return_value={"脑区a": ["成员x", "成员y"]}), \
+         mock.patch.object(manager, "_find_most_similar_neighbor", return_value=None):
+        dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
+
+    # 关键断言：dissolve 被取消（成员x degree=1 是孤岛风险）
+    assert dissolved == [], "有孤岛风险成员时应取消 dissolve，返回空列表"
+    # 脑区节点不应被删除
+    adapter.delete_entity.assert_not_called()
+    # shrink_count 应持久化（从 2 累加到 3，因为 current_size=2 < 100）
+    ingester.inject_custom_kg.assert_called()
+    call = ingester.inject_custom_kg.call_args
+    entities = call.kwargs.get("entities", [])
+    desc = entities[0].get("description", "") if entities else ""
+    assert "brain_meta_shrink_count:3" in desc, \
+        f"shrink_count 应累加到 3（从 2 +1），实际 {desc}"
+
+
+def test_dissolve_executed_when_all_members_have_multiple_edges():
+    """所有成员 degree >= 2 → 正常执行 dissolve"""
+    from unittest import mock
+    import networkx as nx
+    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    g = nx.Graph()
+    g.add_node("脑区a", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试")
+    g.add_node("成员x", entity_type="concept")
+    g.add_node("成员y", entity_type="concept")
+    g.add_node("其他实体a", entity_type="concept")
+    g.add_node("其他实体b", entity_type="concept")
+    g.add_node("目标脑区", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>目标")
+    g.add_edge("脑区a", "成员x", keywords="包含", weight=1.0)
+    g.add_edge("脑区a", "成员y", keywords="包含", weight=1.0)
+    g.add_edge("成员x", "其他实体a", keywords="相关", weight=1.0)  # x degree=2
+    g.add_edge("成员y", "其他实体b", keywords="相关", weight=1.0)  # y degree=2
+
+    adapter = mock.MagicMock()
+    adapter._get_rag.return_value = mock.MagicMock(chunk_entity_relation_graph=mock.MagicMock(_graph=g))
+    adapter.list_entities.return_value = {
+        "status": "ok",
+        "data": [{"id": "脑区a", "description": "brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试"}]
+    }
+    adapter.delete_entity = mock.Mock(return_value={"status": "ok"})
+
+    ingester = mock.MagicMock()
+
+    manager = RegionManager(adapter, ingester)
+    manager.get_all_regions = lambda: [
+        BrainRegionInfo(
+            name="脑区a", label="脑区a", community_id="1",
+            description="测试", size=2, representative="成员x",
+            members=["成员x", "成员y"], updated_at=1745366400,
+        )
+    ]
+
+    target_region = BrainRegionInfo(
+        name="目标脑区", label="目标脑区", community_id="2",
+        description="目标", size=0, representative="",
+        members=[], updated_at=1745366400,
+    )
+
+    with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                    return_value={"脑区a": ["成员x", "成员y"]}), \
+         mock.patch.object(manager, "_find_most_similar_neighbor", return_value=target_region), \
+         mock.patch.object(manager, "_refresh_activation_cache_after_delete"):
+        dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
+
+    # 关键断言：dissolve 正常执行
+    assert dissolved == ["脑区a"], "所有成员 degree>=2 时应正常 dissolve"
+    adapter.delete_entity.assert_called_once_with("脑区a")
+
+
+def test_dissolve_cancelled_persists_shrink_count_for_next_round():
+    """dissolve 被孤岛保护取消后，shrink_count 持久化（累加后值），下轮重新扫"""
+    from unittest import mock
+    import networkx as nx
+    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    # 脑区A 成员X 只有 1 条边（孤岛风险），dissolve 应被取消
+    g = nx.Graph()
+    g.add_node("脑区a", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试")
+    g.add_node("成员x", entity_type="concept")
+    g.add_edge("脑区a", "成员x", keywords="包含", weight=1.0)  # x degree=1
+
+    adapter = mock.MagicMock()
+    adapter._get_rag.return_value = mock.MagicMock(chunk_entity_relation_graph=mock.MagicMock(_graph=g))
+    adapter.list_entities.return_value = {
+        "status": "ok",
+        "data": [{"id": "脑区a", "description": "brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试"}]
+    }
+    adapter.delete_entity = mock.Mock(return_value={"status": "ok"})
+
+    ingester = mock.MagicMock()
+
+    manager = RegionManager(adapter, ingester)
+    manager.get_all_regions = lambda: [
+        BrainRegionInfo(
+            name="脑区a", label="脑区a", community_id="1",
+            description="测试", size=1, representative="成员x",
+            members=["成员x"], updated_at=1745366400,
+        )
+    ]
+
+    with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                    return_value={"脑区a": ["成员x"]}), \
+         mock.patch.object(manager, "_find_most_similar_neighbor", return_value=None):
+        dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
+
+    assert dissolved == [], "孤岛保护应取消 dissolve"
+    # shrink_count 从 2 累加到 3（current_size=1 < 100），持久化等下轮重新扫
+    ingester.inject_custom_kg.assert_called()
+    call = ingester.inject_custom_kg.call_args
+    entities = call.kwargs.get("entities", [])
+    desc = entities[0].get("description", "") if entities else ""
+    assert "brain_meta_shrink_count:3" in desc, \
+        f"shrink_count 应累加到 3 持久化，实际 {desc}"
+
+
+def test_dissolve_zero_member_region_not_blocked_by_island_check():
+    """0 成员脑区 → _has_isolated_member([]) 返回 False → 正常 dissolve（用户需求第3条）"""
+    from unittest import mock
+    import networkx as nx
+    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    g = nx.Graph()
+    g.add_node("脑区a", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试")
+
+    adapter = mock.MagicMock()
+    adapter._get_rag.return_value = mock.MagicMock(chunk_entity_relation_graph=mock.MagicMock(_graph=g))
+    adapter.list_entities.return_value = {
+        "status": "ok",
+        "data": [{"id": "脑区a", "description": "brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试"}]
+    }
+    adapter.delete_entity = mock.Mock(return_value={"status": "ok"})
+
+    ingester = mock.MagicMock()
+
+    manager = RegionManager(adapter, ingester)
+    manager.get_all_regions = lambda: [
+        BrainRegionInfo(
+            name="脑区a", label="脑区a", community_id="1",
+            description="测试", size=0, representative="",
+            members=[], updated_at=1745366400,
+        )
+    ]
+
+    target_region = BrainRegionInfo(
+        name="目标脑区", label="目标脑区", community_id="2",
+        description="目标", size=0, representative="",
+        members=[], updated_at=1745366400,
+    )
+
+    with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                    return_value={"脑区a": []}), \
+         mock.patch.object(manager, "_find_most_similar_neighbor", return_value=target_region), \
+         mock.patch.object(manager, "_refresh_activation_cache_after_delete"):
+        dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
+
+    # 0 成员脑区该删就删（孤岛保护不挡）
+    assert dissolved == ["脑区a"], "0 成员脑区应正常 dissolve（无孤岛风险）"
+    adapter.delete_entity.assert_called_once_with("脑区a")
+
+
+def test_dissolve_default_region_skipped_no_island_check():
+    """缺省脑区仍被 is_default_region 跳过，不进孤岛检查"""
+    from unittest import mock
+    import networkx as nx
+    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    g = nx.Graph()
+    g.add_node("文档库脑区", entity_type="brainregion",
+               description="brain_meta_priority:permanent<SEP>brain_meta_shrink_count:5<SEP>测试")
+    g.add_node("成员x", entity_type="concept")
+    g.add_edge("文档库脑区", "成员x", keywords="包含", weight=1.0)  # x degree=1（孤岛风险）
+
+    adapter = mock.MagicMock()
+    adapter._get_rag.return_value = mock.MagicMock(chunk_entity_relation_graph=mock.MagicMock(_graph=g))
+    adapter.list_entities.return_value = {
+        "status": "ok",
+        "data": [{"id": "文档库脑区", "description": "brain_meta_priority:permanent<SEP>brain_meta_shrink_count:5<SEP>测试"}]
+    }
+    adapter.delete_entity = mock.Mock(return_value={"status": "ok"})
+
+    ingester = mock.MagicMock()
+
+    manager = RegionManager(adapter, ingester)
+    manager.get_all_regions = lambda: [
+        BrainRegionInfo(
+            name="文档库脑区", label="文档库", community_id="1",
+            description="测试", size=1, representative="成员x",
+            members=["成员x"], updated_at=1745366400,
+        )
+    ]
+
+    # is_default_region 返回 True（缺省脑区）
+    with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=True), \
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                    return_value={"文档库脑区": ["成员x"]}):
+        dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
+
+    # 缺省脑区直接跳过，不进孤岛检查，不删
+    assert dissolved == [], "缺省脑区应被跳过，不 dissolve"
+    adapter.delete_entity.assert_not_called()
+
+
+def test_dissolve_multiple_regions_one_blocked_one_succeeds():
+    """多个脑区同时 dissolve：脑区A 被孤岛保护挡住、脑区B 正常 dissolve"""
+    from unittest import mock
+    import networkx as nx
+    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    g = nx.Graph()
+    # 脑区A：成员x degree=1（孤岛风险）
+    g.add_node("脑区a", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试")
+    g.add_node("成员x", entity_type="concept")
+    g.add_edge("脑区a", "成员x", keywords="包含", weight=1.0)
+    # 脑区B：成员y degree=2（安全）
+    g.add_node("脑区b", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试")
+    g.add_node("成员y", entity_type="concept")
+    g.add_node("其他实体", entity_type="concept")
+    g.add_edge("脑区b", "成员y", keywords="包含", weight=1.0)
+    g.add_edge("成员y", "其他实体", keywords="相关", weight=1.0)
+    # 目标脑区
+    g.add_node("目标脑区", entity_type="brainregion",
+               description="brain_meta_priority:medium<SEP>目标")
+
+    adapter = mock.MagicMock()
+    adapter._get_rag.return_value = mock.MagicMock(chunk_entity_relation_graph=mock.MagicMock(_graph=g))
+    adapter.list_entities.return_value = {
+        "status": "ok",
+        "data": [
+            {"id": "脑区a", "description": "brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试"},
+            {"id": "脑区b", "description": "brain_meta_priority:medium<SEP>brain_meta_shrink_count:2<SEP>测试"},
+        ]
+    }
+    adapter.delete_entity = mock.Mock(return_value={"status": "ok"})
+
+    ingester = mock.MagicMock()
+
+    manager = RegionManager(adapter, ingester)
+    manager.get_all_regions = lambda: [
+        BrainRegionInfo(
+            name="脑区a", label="脑区a", community_id="1",
+            description="测试", size=1, representative="成员x",
+            members=["成员x"], updated_at=1745366400,
+        ),
+        BrainRegionInfo(
+            name="脑区b", label="脑区b", community_id="2",
+            description="测试", size=1, representative="成员y",
+            members=["成员y"], updated_at=1745366400,
+        ),
+    ]
+
+    target_region = BrainRegionInfo(
+        name="目标脑区", label="目标脑区", community_id="3",
+        description="目标", size=0, representative="",
+        members=[], updated_at=1745366400,
+    )
+
+    with mock.patch("niu_api.internal.region_manager.is_default_region", return_value=False), \
+         mock.patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                    return_value={"脑区a": ["成员x"], "脑区b": ["成员y"]}), \
+         mock.patch.object(manager, "_find_most_similar_neighbor", return_value=target_region), \
+         mock.patch.object(manager, "_refresh_activation_cache_after_delete"):
+        dissolved = manager.dissolve_shrunk_regions(shrink_threshold=100, shrink_rounds=3)
+
+    # 脑区A 被孤岛保护挡住，脑区B 正常 dissolve
+    assert dissolved == ["脑区b"], \
+        f"应只 dissolve 脑区b（脑区a 被孤岛保护挡住），实际 {dissolved}"
+    adapter.delete_entity.assert_called_once_with("脑区b")
+
