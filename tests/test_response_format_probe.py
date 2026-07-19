@@ -299,3 +299,142 @@ def test_returns_true_when_only_llm_has_litellm_kwargs_without_mode():
     """llm.litellm_kwargs 有内容但无 response_format_mode 键 → True（需探测）"""
     config = {"llm": {"litellm_kwargs": {"thinking": {"type": "enabled"}}}}
     assert _should_auto_probe_after_upgrade(config) is True
+
+
+"""端到端集成测试：调用 /api/probe-response-format 端点。
+
+需启动 niu_api 服务（端口 9876）。验证三种探测档位路径 + 两个真实配置。
+"""
+import json
+import os
+import pytest
+import httpx
+
+
+@pytest.fixture
+def api_base():
+    return "http://127.0.0.1:9876"
+
+
+def test_probe_endpoint_returns_json_schema_for_openai(api_base):
+    """用 OpenAI 真实 API Key 测试（需环境变量 OPENAI_API_KEY）"""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        pytest.skip("OPENAI_API_KEY 未设置，跳过真实 OpenAI 探测测试")
+    config = {
+        "apiKey": api_key,
+        "apiBase": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+        "type": "openai",
+        "provider": "",
+    }
+    with httpx.Client(timeout=90) as client:
+        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["result"] in {"supported", "probe_failed"}
+    # OpenAI 应支持 json_schema strict
+    assert data["mode"] == "json_schema", f"OpenAI 应支持 json_schema，实际: {data}"
+
+
+def test_probe_endpoint_returns_prompt_only_for_doubao_coding(api_base):
+    """用豆包 Coding Plan 真实配置测试
+
+    用户已启动程序，config/user-config.json 即豆包 Coding Plan 配置。
+    直接读 config 文件取真实 API Key 避免环境变量依赖。
+
+    重要：litellm_kwargs 用 lightrag_llm 段（thinking={type:disabled}），
+    与运行时 get_llm_config(use_lightrag_config=True) fallback 逻辑一致。
+    如果用 llm 段 thinking={type:enabled}，豆包模型走深度思考可能输出
+    reasoning_content 无文本 chunk，被判 gateway_blocked 而非 model_rejected，
+    与真实环境验证报告结论不一致。
+    """
+    config_path = "REDACTED_USER_PATH/tools/ai-bot/config/user-config.json"
+    if not os.path.exists(config_path):
+        pytest.skip("豆包配置文件不存在")
+    with open(config_path) as f:
+        user_cfg = json.load(f)
+    llm = user_cfg.get("llm", {})
+    lightrag_llm = user_cfg.get("lightrag_llm", {})
+    if not llm.get("apiKey"):
+        pytest.skip("豆包配置文件无 apiKey")
+
+    # 用 lightrag_llm 段的 litellm_kwargs（thinking=disabled），与运行时一致
+    # lightrag_llm.model 为空时，运行时 get_llm_config 走 fallback 用 llm 段
+    # apiKey/apiBase/model，但 litellm_kwargs 用 lightrag_llm 段
+    config = {
+        "apiKey": llm["apiKey"],
+        "apiBase": llm["apiBase"],
+        "model": llm["model"],
+        "type": llm.get("type", "openai"),
+        "provider": llm.get("provider", ""),
+        "litellm_kwargs": lightrag_llm.get("litellm_kwargs", {}),
+    }
+    with httpx.Client(timeout=90) as client:
+        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
+    assert resp.status_code == 200
+    data = resp.json()
+    # 豆包 Coding Plan 网关 400 拒绝 response_format，应降级 prompt_only
+    assert data["mode"] == "prompt_only", f"豆包 Coding Plan 应降级 prompt_only，实际: {data}"
+    # reason 应含 model_rejected（豆包网关返回 BadRequestError）
+    assert "model_rejected" in data.get("reason", ""), \
+        f"豆包应触发 model_rejected（网关 400），实际 reason: {data.get('reason')}"
+
+
+def test_probe_endpoint_returns_prompt_only_for_glm(api_base):
+    """用 GLM 真实配置测试
+
+    config/user-config - glm.json 是 GLM 配置，实测网关接受 response_format
+    但模型输出漂移（含额外字符），json.loads 失败，应降级 prompt_only。
+    """
+    config_path = "REDACTED_USER_PATH/tools/ai-bot/config/user-config - glm.json"
+    if not os.path.exists(config_path):
+        pytest.skip("GLM 配置文件不存在")
+    with open(config_path) as f:
+        user_cfg = json.load(f)
+    llm = user_cfg.get("llm", {})
+    if not llm.get("apiKey"):
+        pytest.skip("GLM 配置文件无 apiKey")
+
+    config = {
+        "apiKey": llm["apiKey"],
+        "apiBase": llm["apiBase"],
+        "model": llm["model"],
+        "type": llm.get("type", "openai"),
+        "provider": llm.get("provider", ""),
+        "litellm_kwargs": {"thinking": {"type": "disabled"}},  # GLM 入库配置
+    }
+    with httpx.Client(timeout=90) as client:
+        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
+    assert resp.status_code == 200
+    data = resp.json()
+    # GLM 网关接受 response_format 但模型输出漂移，应降级 prompt_only
+    assert data["mode"] == "prompt_only", f"GLM 应降级 prompt_only（输出漂移），实际: {data}"
+    # reason 应含 gateway_blocked（GLM 网关 200 接受但输出非合法 JSON）
+    assert "gateway_blocked" in data.get("reason", ""), \
+        f"GLM 应触发 gateway_blocked（输出漂移），实际 reason: {data.get('reason')}"
+
+
+def test_probe_endpoint_returns_probe_failed_for_invalid_config(api_base):
+    """无效配置（缺 apikey）应返回 probe_failed"""
+    config = {"apiKey": "", "apiBase": "", "model": ""}
+    with httpx.Client(timeout=10) as client:
+        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["result"] == "probe_failed"
+    assert data["mode"] is None
+
+
+def test_probe_endpoint_does_not_affect_test_llm_endpoint(api_base):
+    """验证 /api/test-llm 响应结构未被探测逻辑污染（启动器依赖 {success, message, error}）"""
+    config = {"apiKey": "fake-key", "apiBase": "https://api.openai.com/v1", "model": "gpt-4o-mini"}
+    with httpx.Client(timeout=15) as client:
+        resp = client.post(f"{api_base}/api/test-llm", json=config)
+    assert resp.status_code == 200
+    data = resp.json()
+    # 必须只有 success/message/error 三字段（启动器 TestLlmResult 结构体依赖）
+    assert "success" in data
+    # 不能有 result/mode/raw_response 等探测字段
+    assert "result" not in data
+    assert "mode" not in data
