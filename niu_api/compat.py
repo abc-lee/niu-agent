@@ -1438,7 +1438,9 @@ async def probe_response_format(request: Request) -> dict:
         body = {}
     body = {k.lower(): v for k, v in body.items()} if body else {}
 
-    if body and body.get("apikey"):
+    if body:
+        # 用户传了 body（即使 apiKey 为空），用 body 测试——测试 case 传空 apiKey
+        # 期望返回 probe_failed，不应回退读文件配置掩盖问题
         config = body
     else:
         from niu_api.llm_proxy import get_llm_config
