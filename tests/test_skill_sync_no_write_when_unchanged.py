@@ -69,3 +69,39 @@ def test_scan_and_sync_no_write_when_unchanged(fake_skill_sync):
     # 关键断言：_save_state 不应被调用
     assert not mock_save.called, \
         "skills 和 notes 都无变化时不应调 _save_state，但被调用了"
+
+
+def test_scan_and_sync_notes_changed_writes_once(fake_skill_sync, tmp_path, monkeypatch):
+    """notes 有变化时，scan_and_sync 只调用一次 _save_state（不双重写盘）"""
+    sync, _ = fake_skill_sync
+
+    # _scan_notes 读 WORKSPACE_PATH/notes/notes.json（sync.py L615-618）
+    # 必须设 WORKSPACE_PATH 环境变量 + 写到对应路径，否则 _scan_notes 返回 (0, 0)
+    monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    notes_file = notes_dir / "notes.json"
+    notes_file.write_text(
+        json.dumps([{"id": "note1", "content": "test content", "tags": []}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    with mock.patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock.MagicMock()), \
+         mock.patch.object(sync, "_save_state") as mock_save, \
+         mock.patch.object(sync, "_sync_skill", return_value=True), \
+         mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True), \
+         mock.patch.object(sync, "_inject_note_to_lightrag", return_value=set()) as mock_inject_note, \
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
+        MockAdapter.return_value.list_entities.return_value = {"status": "ok", "data": []}
+        MockAdapter.return_value.delete_document.return_value = {"status": "ok"}
+
+        added, updated, deleted = sync.scan_and_sync()
+
+    # notes 新增了 1 条
+    assert added >= 1, f"应至少有 1 条 notes 新增，实际 added={added}"
+    # 关键断言：_save_state 只调用一次（L741 删除后不再双重写）
+    assert mock_save.call_count == 1, \
+        f"notes 变化时应只写一次盘，实际写了 {mock_save.call_count} 次"
+    # _inject_note_to_lightrag 被调用
+    mock_inject_note.assert_called_once()
+

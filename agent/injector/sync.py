@@ -736,10 +736,8 @@ class SkillSync:
             except Exception as e:
                 logger.warning(f"[SkillSync] LightRAG unavailable for note deletion: {e}")
 
-        # 持久化 notes 状态
-        if added > 0 or updated > 0 or deleted_ids:
-            self._save_state()
-
+        # notes 状态持久化统一在 scan_and_sync 末尾出口对比时处理
+        # （对比 _last_notes_scan 跟入口快照，无变化不写盘）
         return added, updated
 
     def _inject_note_to_lightrag(self, notes_data: list[dict], updated_ids: set[str] | None = None) -> set[str]:
