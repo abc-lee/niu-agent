@@ -470,7 +470,6 @@ def test_scan_and_sync_watchdog_concurrent_write(tmp_path):
     side_effect 才能真正触发（如果 state 含 test-skill hash，scan 走
     unchanged 路径不调 _sync_skill，side_effect 永不触发）。
     """
-    import hashlib
 
     # 准备 skills 目录（state 为空 → scan 走新增路径调 _sync_skill）
     skills_dir = tmp_path / "skills"
