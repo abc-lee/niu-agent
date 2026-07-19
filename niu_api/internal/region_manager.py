@@ -1009,7 +1009,7 @@ class RegionManager:
 
     def dissolve_shrunk_regions(
         self,
-        shrink_threshold: int = 10,  # 成员数 < 10 才判萎缩（原 100 误判正常小脑区）
+        shrink_threshold: int = 100,  # 成员数 < 100 才判萎缩（用户要求；4f03f10d 曾越权改成 10，已恢复）
         shrink_rounds: int = 3,
     ) -> list[str]:
         """Dissolve regions that have been shrinking for multiple sync cycles.
@@ -1019,14 +1019,17 @@ class RegionManager:
         the region is dissolved: members are reassigned to the most
         similar neighbor region, and the region node is deleted.
 
+        **孤岛保护**（本次新增）：dissolve 执行前会检查所有成员的 total_degree，
+        有任何一个成员 degree <= 1（删脑区会变孤岛）就取消本次 dissolve，
+        shrink_count 继续按规则累加（current_size < threshold 就 +1），下轮重新扫。
+        详见 `_has_isolated_member`。
+
         Shrink tracking is stored in the region description field
         as ``brain_meta_shrink_count:N``.
 
         Args:
-            shrink_threshold: Minimum members before region is "shrunk" (default 10)
-                Lowered from 100 to 10 — 100 caused normal small regions
-                (members < 100) to be flagged as shrunk, leading to zombie
-                regions when dissolve flow was interrupted mid-way.
+            shrink_threshold: Minimum members before region is "shrunk" (default 100)
+                用户明确要求 100（4f03f10d 曾越权改成 10 已恢复）。
             shrink_rounds: Consecutive shrunk cycles before dissolution (default 3)
 
         Returns:

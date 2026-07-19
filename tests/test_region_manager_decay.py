@@ -147,3 +147,13 @@ def test_permanent_region_node_not_dissolved_when_empty():
     # dissolve_shrunk_regions 源码应包含 is_default_region 跳过逻辑
     src = inspect.getsource(RegionManager.dissolve_shrunk_regions)
     assert "is_default_region" in src, "dissolve_shrunk_regions 应通过 is_default_region 跳过默认脑区（含 permanent）"
+
+
+def test_dissolve_shrink_threshold_default_is_100():
+    """dissolve_shrunk_regions 默认 shrink_threshold 必须是 100（用户要求，4f03f10d 越权改成 10 要恢复）"""
+    import inspect
+    from niu_api.internal.region_manager import RegionManager
+    sig = inspect.signature(RegionManager.dissolve_shrunk_regions)
+    default = sig.parameters["shrink_threshold"].default
+    assert default == 100, \
+        f"shrink_threshold 默认值必须是 100（用户要求），实际 {default}（4f03f10d 越权改成 10）"
