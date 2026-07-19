@@ -1462,7 +1462,13 @@ async def probe_response_format(request: Request) -> dict:
     # 关键：litellm_kwargs 必须含 allowed_openai_params=["response_format"]，
     # 否则 LiteLLM volcengine router 在客户端拒绝抛 UnsupportedParamsError，
     # 请求不会真正发到 provider 网关。
-    probe_litellm_kwargs = {**config.get("litellm_kwargs", {})}
+    # 同时 strip 掉 response_format_mode（项目自定义字段，非 OpenAI 标准），
+    # 避免透传给 litellm.completion 触发 provider 4xx——虽然 LiteLLMSession
+    # 在传 response_format 时强制 drop_params=True 会兜底丢弃，但不依赖隐性兜底。
+    probe_litellm_kwargs = {
+        k: v for k, v in (config.get("litellm_kwargs") or {}).items()
+        if k != "response_format_mode"
+    }
     probe_litellm_kwargs["allowed_openai_params"] = ["response_format"]
     probe_litellm_kwargs["max_tokens"] = 50
 
