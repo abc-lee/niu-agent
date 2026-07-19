@@ -89,6 +89,23 @@ def _get_litellm_session(config: dict) -> Any:
         return _cached_session
 
 
+def _build_keyword_extraction_response_format() -> dict:
+    """构造 keyword_extraction 用的 json_schema strict response_format。
+
+    抽出来复用，避免 _resolve_response_format 内两处重复构造（漂移风险）。
+    """
+    from lightrag.types import GPTKeywordExtractionFormat
+    schema = GPTKeywordExtractionFormat.model_json_schema()
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "keyword_extraction",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+
 def _resolve_response_format(config: dict) -> Optional[dict]:
     """根据 litellm_kwargs.response_format_mode 决定构造哪种 response_format。
 
@@ -119,16 +136,7 @@ def _resolve_response_format(config: dict) -> Optional[dict]:
     litellm_kwargs = config.get("litellm_kwargs") or {}
     mode = litellm_kwargs.get("response_format_mode")
     if mode == "json_schema":
-        from lightrag.types import GPTKeywordExtractionFormat
-        schema = GPTKeywordExtractionFormat.model_json_schema()
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "keyword_extraction",
-                "strict": True,
-                "schema": schema,
-            },
-        }
+        return _build_keyword_extraction_response_format()
     if mode == "json_object":
         return {"type": "json_object"}
     if mode == "prompt_only":
@@ -136,16 +144,7 @@ def _resolve_response_format(config: dict) -> Optional[dict]:
     # 旧版本兼容：无 response_format_mode 但有 allowed_openai_params
     allowed = litellm_kwargs.get("allowed_openai_params") or []
     if "response_format" in allowed:
-        from lightrag.types import GPTKeywordExtractionFormat
-        schema = GPTKeywordExtractionFormat.model_json_schema()
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "keyword_extraction",
-                "strict": True,
-                "schema": schema,
-            },
-        }
+        return _build_keyword_extraction_response_format()
     return None
 
 
@@ -216,14 +215,12 @@ def _build_llm_model_func():
         # - 豆包 Coding Plan：网关 400 拒绝，探测后 mode=prompt_only
         # - GLM：网关接受但模型输出漂移，探测后 mode=prompt_only
         # BadRequestError fallback 保留兜底（偶发 400 时仍走 prompt-only 重试）。
+        config = get_llm_config(use_lightrag_config=True)
         response_format = None
         kw_prompt_suffix = ""
         if keyword_extraction:
-            config = get_llm_config(use_lightrag_config=True)
             response_format = _resolve_response_format(config)
             kw_prompt_suffix = '\n\nReturn your response as a JSON object with "high_level_keywords" and "low_level_keywords" arrays.'
-        else:
-            config = get_llm_config(use_lightrag_config=True)
 
         # 4. Build messages list
         messages = []
@@ -235,10 +232,7 @@ def _build_llm_model_func():
                 messages.append({"role": msg.get("role", "user"), "content": content})
         messages.append({"role": "user", "content": prompt})
 
-        # 5. Get LLM config (提前到 keyword_extraction 分支内，避免重复调用)
-        # config 已在 step 3 内通过 get_llm_config(use_lightrag_config=True) 获取
-
-        # 6. Handle enable_cot and stream from kwargs
+        # 5. Handle enable_cot and stream from kwargs
         enable_cot = kwargs.pop("enable_cot", False)
         stream = kwargs.pop("stream", False)
 

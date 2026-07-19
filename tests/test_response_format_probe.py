@@ -3,7 +3,10 @@
 验证 _resolve_response_format 根据 litellm_kwargs.response_format_mode
 决定构造哪种 response_format。这是纯函数，不调 LLM，仅检查配置。
 """
-from niu_api.internal.lightrag_manager import _resolve_response_format
+from niu_api.internal.lightrag_manager import (
+    _resolve_response_format,
+    _strip_response_format_mode,
+)
 
 
 def test_json_schema_mode_returns_json_schema_response_format():
@@ -108,7 +111,6 @@ def test_resolve_does_not_modify_config_no_side_effects():
 
 def test_strip_response_format_mode_returns_new_dict_without_mode():
     """_strip_response_format_mode 返回新 dict，剔除 response_format_mode"""
-    from niu_api.internal.lightrag_manager import _strip_response_format_mode
     config = {"litellm_kwargs": {
         "response_format_mode": "json_schema",
         "thinking": {"type": "disabled"},
@@ -126,7 +128,6 @@ def test_strip_response_format_mode_returns_new_dict_without_mode():
 
 def test_strip_response_format_mode_returns_same_dict_when_no_mode():
     """无 response_format_mode 键时，_strip 返回原 config（不复制）"""
-    from niu_api.internal.lightrag_manager import _strip_response_format_mode
     config = {"litellm_kwargs": {"thinking": {"type": "disabled"}}}
     stripped = _strip_response_format_mode(config)
     # 无需复制，返回原对象
@@ -135,7 +136,6 @@ def test_strip_response_format_mode_returns_same_dict_when_no_mode():
 
 def test_strip_response_format_mode_handles_missing_litellm_kwargs():
     """config 无 litellm_kwargs 键时，_strip 返回原 config"""
-    from niu_api.internal.lightrag_manager import _strip_response_format_mode
     config = {}
     stripped = _strip_response_format_mode(config)
     assert stripped is config
