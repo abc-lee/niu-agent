@@ -258,9 +258,11 @@ class TestInjectorListResources:
         assert len(result.resources) == 1
         assert result.resources[0]["type"] == "skill"
         assert result.resources[0]["name"] == "Git"
-        # list_entities should be called with entity_type="skill"
+        # list_entities should be called with entity_type="Skill"
+        # _CATEGORY_TO_ENTITY_TYPE = {"skill": "Skill"} — title case per
+        # LightRAG's entity_types prompt convention (see niu_api/injector.py)
         mock_adapter.list_entities.assert_called_once_with(
-            list_type="entities", entity_type="skill", limit=100,
+            list_type="entities", entity_type="Skill", limit=100,
         )
 
     @pytest.mark.asyncio
@@ -337,6 +339,17 @@ class TestInjectDynamicResourcesUsesLightRAG:
              patch("agent.runner.get_tools_schema", return_value=[]), \
              patch("agent.runner.NiuHandler"):
             r = NiuRunner.__new__(NiuRunner)
+            # 补齐 _inject_dynamic_resources 访问的实例属性
+            # （NiuRunner.__new__ 绕过 __init__，属性未初始化）
+            r._skill_score_counter = {}
+            r._skill_entity_cache = {}
+            r._brain_adapter = None
+            r._brain_ingester = None
+            r._brain_region_mgr = None
+            r._brain_injector = None
+            r._cached_activation_mgr = None
+            r._last_forced_sync_fail_time = 0.0
+            r._forced_sync_running = MagicMock()
             return r
 
     def test_no_vector_search_import_in_runner(self):
@@ -344,7 +357,7 @@ class TestInjectDynamicResourcesUsesLightRAG:
         import ast
         from pathlib import Path
 
-        runner_path = Path("E:/tools/ai-bot/agent/runner.py")
+        runner_path = Path(__file__).parent.parent / "agent" / "runner.py"
         source = runner_path.read_text(encoding="utf-8")
         tree = ast.parse(source)
 
@@ -415,7 +428,9 @@ class TestInjectDynamicResourcesUsesLightRAG:
             mock_get_mgr.return_value = MagicMock()
 
             mock_injector = MagicMock()
-            mock_injector.inject_brain_context.return_value = "brain context text"
+            # 新契约：_inject_dynamic_resources 调 format_region_map_only() 而非
+            # inject_brain_context()，且不再加 "## 脑区激活上下文" 前缀（见 commit f49ffabe）
+            mock_injector.format_region_map_only.return_value = "brain region map text"
             mock_injector_cls.return_value = mock_injector
 
             injection, _ = runner._inject_dynamic_resources("test query")
@@ -430,8 +445,9 @@ class TestInjectDynamicResourcesUsesLightRAG:
             mock_rm_cls.assert_called_once()
             rm_args = mock_rm_cls.call_args.args
             assert len(rm_args) >= 1, "RegionManager must receive at least 1 positional arg (adapter)"
-            # Brain context text must appear in injection
-            assert "脑区激活上下文" in injection
+            # Brain region map text must appear in injection (current contract:
+            # _inject_dynamic_resources appends f"\n{format_region_map_only()}")
+            assert "brain region map text" in injection
 
     def test_does_not_call_vector_search(self, runner):
         """_inject_dynamic_resources must NOT use VectorSearchAdapter or vector_search."""
