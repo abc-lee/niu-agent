@@ -7,6 +7,7 @@
 > - v2：第二轮审查发现 2 个 High 问题（H1: grep 命令把 `user-input` 写成 `userInput` / H2: 主 Agent 委托验证缺真实测试文件和通过标准）+ 5 个 Medium/Low 优化项（M1/M2/M3/L1/L2）。v3 已全部修复。
 > - v3：第三轮审查发现 1 个 High 问题（H1: 含空格路径与用户补充文字的解析歧义）+ 4 个 Medium/Low（M1 空文件测试标准 / M2 空格+换行边界 / L1 可选链防御 / L2 Expected 表述）。v4 已全部修复。
 > - v4：第四轮审查发现 1 个 Medium（M1: Task 1 Step 5 Expected 与 v4 多行格式矛盾）+ 2 个 Low（L1 gitnexus detect_changes 兜底说明 / L2 Task 4 注释分支描述）。v5 已全部修复。
+> - v5：第五轮审查无 Critical/High 阻断问题，2 个 Medium 建议项（M1 纯路径无补充文字场景 / M2 isProcessing 期间拖入场景）。v6 已全部修复。
 
 **Goal:** 把主对话框拖入文件的行为从"立即触发入库"改为"插入纯绝对路径到输入框，等用户补充文字后回车发送"。
 
@@ -104,6 +105,14 @@ ls /System/Library/Desktop\ Pictures/*.jpg | head -1
 - 失败时**必须停下来和用户重新讨论方案**——可能需要在 `config/agents/niu.md` 加规则或调整设计（如路径加引号定界符），不能继续后续 Task。
 
 **注意**：v4 计划已通过 `insertTextToInput` 自动补换行让路径独占一行，所以实际拖入时路径和用户补充文字会分行，不会出现上述歧义。本步手动输入测试是模拟最坏情况（用户自己手打路径和补充文字在一行），确认主 Agent 即使面对含空格的路径也能识别。如果手动输入测试失败但拖入测试通过，方案仍可执行——因为拖入路径会自动补换行。
+
+**额外子测试（v6 修正 v5 M1）**：再发一条**纯路径**消息（无任何补充文字），如：
+```
+/System/Library/Desktop Pictures/Sonoma Horizon.jpg
+```
+观察主 Agent 行为：
+- 如果主 Agent 仍委托 file-processor，说明纯路径也能触发入库——用户拖入后直接回车也能工作。
+- 如果主 Agent 不委托（如回复"你想要我做什么？"），说明**用户拖入后必须补充文字才能入库**——这是可接受的设计约束，但需要在 Task 8 测试用例中明确：用户拖入后必须补充文字（如"请入库"）才能触发入库，直接回车发送纯路径不会入库。
 
 验证完成后**优雅杀进程**（按 CLAUDE.md 铁律 + MEMORY "Test Process Kill Corruption"）：
 ```bash
@@ -528,6 +537,11 @@ Expected: 输入框无反应（`e.dataTransfer.files` 为空或 null，新 handl
 操作：按住 Shift 或 Ctrl 拖入一个文件到主对话框
 Expected: 与不按修饰键行为一致——输入框插入纯路径+末尾换行。chat.html 新 handler 不区分修饰键模式（与精灵窗口 spirit.html 区分 copy/move/reference 模式的行为不同，但这是设计意图——主对话框改造后简化为纯插入路径）。
 
+- [ ] **Step 15: 拖入时主对话框正在处理消息（v6 修正 v5 M2 边界测试）**
+
+操作：发送一条需要较长时间处理的消息（如"帮我整理一下最近的笔记"），在主 Agent 处理期间（isProcessing=true、sendBtn 已 disabled）拖入一个文件到主对话框
+Expected: drop handler 仍会执行 `insertTextToInput` 把路径插入到输入框（这是合理行为——用户可以在等待回复时继续输入下一句话）。但此时 sendBtn 已 disabled，用户按 Enter 调 sendMessage 时，sendMessage 应该按现有逻辑处理（如果 isProcessing 期间允许发送则发送，如果阻止则不发送）——这与本次改造无关，是 chat.html 现有 sendMessage 的行为。本测试只验证 drop handler 在 isProcessing 期间不会崩溃、不会错误触发 IPC、不会破坏 isProcessing 状态机。
+
 ---
 
 ## Task 9：提交 + 清理
@@ -662,6 +676,11 @@ git checkout <Task1Step2记录的preload-chat.js的hash> -- ui/main/preload-chat
 - **M1（Task 1 Step 5 Expected 与 v4 多行格式矛盾）**：Step 5 Expected 改为"用户消息含路径和补充文字（手动输入测试时是一行，实际拖入时是多行）"，与 v4 路径末尾补换行设计一致 ✓
 - **L1（Task 9 Step 2 gitnexus detect_changes 兜底说明）**：Step 2 加"如果 gitnexus 未索引 JS 文件返回空，依赖 Step 1 的 git diff 结果验证范围即可" ✓
 - **L2（Task 4 Step 2 注释分支描述不完整）**：注释改为"已有内容为空或末尾是换行 → 直接追加路径"+"已有内容末尾不是换行 → 补换行再追加路径"，与代码分支对应 ✓
+
+### v5 审查问题修复检查
+
+- **M1（Task 1 Step 4 纯路径无补充文字场景未验证）**：Step 4 加额外子测试——发纯路径消息（无任何补充文字）观察主 Agent 行为。如果主 Agent 仍委托 file-processor，说明纯路径也能触发入库；如果不委托，说明用户必须补充文字，需在 Task 8 明确此约束 ✓
+- **M2（Task 8 缺 isProcessing 期间拖入测试）**：Step 15 加测试用例——主 Agent 处理期间拖入文件，验证 drop handler 不崩溃、不误触发 IPC、不破坏 isProcessing 状态机 ✓
 
 ### Placeholder 扫描
 
