@@ -5,6 +5,7 @@
 > **审查历史**：
 > - v1：第一轮审查发现 3 个阻断问题（C1: Electron 33 废弃 `File.path` / C2: `files` null 防御 / L2: 主 Agent 触发 file-processor 依赖未验证）+ 4 个中等问题（M4/M5/M6）+ 1 个轻微（L1 gitnexus）。v2 已全部修复。
 > - v2：第二轮审查发现 2 个 High 问题（H1: grep 命令把 `user-input` 写成 `userInput` / H2: 主 Agent 委托验证缺真实测试文件和通过标准）+ 5 个 Medium/Low 优化项（M1/M2/M3/L1/L2）。v3 已全部修复。
+> - v3：第三轮审查发现 1 个 High 问题（H1: 含空格路径与用户补充文字的解析歧义）+ 4 个 Medium/Low（M1 空文件测试标准 / M2 空格+换行边界 / L1 可选链防御 / L2 Expected 表述）。v4 已全部修复。
 
 **Goal:** 把主对话框拖入文件的行为从"立即触发入库"改为"插入纯绝对路径到输入框，等用户补充文字后回车发送"。
 
@@ -84,38 +85,30 @@ Expected: 只在 `chat.html` 的 drop handler（L1540-1568）和函数定义本�
 
 Run: `./niu`（不能用 `cargo build`，已编译好的二进制）
 
-**先准备真实测试文件**（不要用可能不存在的 `REDACTED_USER_PATH/Pictures/test.jpg`）：
+**必须用含空格的真实路径测试**（v4 修正 v3 H1）——这是关键验证点：
 
 ```bash
-# 用 macOS 自带的图片（一定存在）
+# 用 macOS 系统自带图片（路径含空格，一定能复现路径边界歧义问题）
 ls /System/Library/Desktop\ Pictures/*.jpg | head -1
-# 或创建临时测试文件
-touch /tmp/niu-drag-test.txt
 ```
 
-操作：在主对话框直接手动输入一条测试消息，用上面准备的真实文件路径，例如：
+操作：在主对话框直接手动输入一条测试消息，**必须用含空格路径**，例如：
 ```
 /System/Library/Desktop Pictures/Sonoma Horizon.jpg 请入库
 ```
-或：
-```
-/tmp/niu-drag-test.txt 请入库
-```
 
 **通过标准**：
-- ✅ 通过：后端日志（`logs/raw_http/<当天>/`）中最新一次 LLM 交互的 tool_call 字段包含 `chat-with-file-processor`，证明主 Agent 委托子 Agent 处理。
-- ❌ 失败：主 Agent 没委托而是自己尝试处理（如自己调用 `ingest` 工具），或回复"无法处理"等。失败时**必须停下来和用户重新讨论方案**——可能需要在 `config/agents/niu.md` 加规则或调整设计，不能继续后续 Task。
+- ✅ 通过：后端日志（`logs/raw_http/<当天>/`）中最新一次 LLM 交互的 tool_call 字段包含 `chat-with-file-processor`，证明主 Agent 正确委托子 Agent 处理（即使路径含空格）。
+- ❌ 失败：主 Agent 没委托而是自己尝试处理（如自己调用 `ingest` 工具），或回复"无法处理"等，或把"Desktop Pictures"当成两个东西。
+- 失败时**必须停下来和用户重新讨论方案**——可能需要在 `config/agents/niu.md` 加规则或调整设计（如路径加引号定界符），不能继续后续 Task。
+
+**注意**：v4 计划已通过 `insertTextToInput` 自动补换行让路径独占一行，所以实际拖入时路径和用户补充文字会分行，不会出现上述歧义。本步手动输入测试是模拟最坏情况（用户自己手打路径和补充文字在一行），确认主 Agent 即使面对含空格的路径也能识别。如果手动输入测试失败但拖入测试通过，方案仍可执行——因为拖入路径会自动补换行。
 
 验证完成后**优雅杀进程**（按 CLAUDE.md 铁律 + MEMORY "Test Process Kill Corruption"）：
 ```bash
 ps aux | grep -E "niu|launcher" | grep -v grep
 # 找到 PID 后用 kill -TERM 优雅退出，禁止 pkill -f niu
 kill -TERM <pid>
-```
-
-清理临时测试文件：
-```bash
-rm -f /tmp/niu-drag-test.txt
 ```
 
 - [ ] **Step 5: 检查后端日志确认消息格式**
@@ -250,23 +243,30 @@ Expected: 找到 `sendMessage` 函数定义行号或 `userInput` 引用行号，
 在 `sendMessage` 函数定义之前或之后（同一 `<script>` 作用域内），插入：
 
 ```javascript
-// 把文本插入到输入框末尾：
-// - 已有非空且末尾非换行/空格的内容 → 补换行再追加
-// - 已有但末尾是换行或空格 → 直接追加
-// - 空输入框 → 直接追加
-// 最后聚焦+光标末尾+触发 input 事件（让 textarea 自适应高度）
+// 把文本插入到输入框末尾，自动补换行让路径独占一行：
+// - 已有内容末尾不是换行 → 补换行再追加路径
+// - 已有内容末尾是换行或为空 → 直接追加路径
+// - 路径末尾自动补换行，光标停在新行行首，用户补充文字在新行输入
+// 这样主 Agent 能识别"行首是绝对路径"，避免路径含空格时与用户补充文字混淆
+// 最后聚焦+触发 input 事件让 textarea 自适应高度
 function insertTextToInput(text) {
   const current = userInput.value;
-  if (current && !current.endsWith('\n') && !current.endsWith(' ')) {
-    userInput.value = current + '\n' + text;
+  if (current && !current.endsWith('\n')) {
+    userInput.value = current + '\n' + text + '\n';
   } else {
-    userInput.value = current + text;
+    userInput.value = current + text + '\n';
   }
   userInput.focus();
+  // 光标定位到末尾（新行行首）
   userInput.setSelectionRange(userInput.value.length, userInput.value.length);
   userInput.dispatchEvent(new Event('input', { bubbles: true }));
 }
 ```
+
+**关键变更说明**（v4 修正 v3 H1）：
+- 路径末尾自动补换行，让用户补充文字在新行输入
+- 光标停在新行行首，用户直接打字
+- 主 Agent 收到的消息格式：路径独占一行，用户补充文字在下一行，避免路径含空格时的解析歧义
 
 - [ ] **Step 3: 验证函数已加入**
 
@@ -327,8 +327,9 @@ messages.addEventListener('drop', (e) => {
   if (!files || files.length === 0) return;
 
   // Electron 33 废弃 File.path，必须用 webUtils.getPathForFile 经 preload 暴露的 getFilePath
+  // 可选链防御：如果 preload 未加载（window.electronAPI 未定义），不会抛 TypeError 而是 map 出 undefined
   const paths = Array.from(files)
-    .map(f => window.electronAPI.getFilePath(f))
+    .map(f => window.electronAPI?.getFilePath?.(f))
     .filter(Boolean);
 
   if (paths.length === 0) {
@@ -346,6 +347,7 @@ messages.addEventListener('drop', (e) => {
 2. **`files` null 防御**：`e.dataTransfer && e.dataTransfer.files` + `!files || files.length === 0`（v1 审查 C2）
 3. **改用 `getFilePath`**：`window.electronAPI.getFilePath(f)` 替代 `f.path`（v1 审查 C1）
 4. **`paths.length === 0` 加 console.warn**：有文件但拿不到路径时给反馈，便于排查 preload 异常（v2 审查 M2）
+5. **可选链防御**：`window.electronAPI?.getFilePath?.(f)`，preload 未加载时不抛 TypeError（v3 审查 L1）
 
 - [ ] **Step 2: 验证新 handler 已就位**
 
@@ -389,7 +391,7 @@ Run: `grep -n "processImage\|getImageUrl\|showTyping\|notifyBusy" ui/main/window
 
 Expected（v1 审查 C3 修复——明确说明残留调用是合理的）：
 - `showTyping` / `notifyBusy` 在 sendMessage 流程（约 L890-898）仍被调用——**正常**，这是发送消息时的状态指示，与 drop 无关。
-- `processImage` / `getImageUrl` 在 chat.html 内**应无**调用点——IPC 暴露保留在 preload-chat.js 但前端不再用。这是预期行为，未来可清理。
+- `processImage` / `getImageUrl` 在 chat.html 内**删除两个函数后应无调用点**。若 grep 后仍有残留，说明 Task 6 Step 1-2 的删除不彻底，需要回去检查。IPC 暴露保留在 preload-chat.js 但前端不再用——这是预期行为，未来可清理。
 - `openWithSystemViewer` 在 chat.html 内可能仍有调用（如双击图片消息打开系统查看器）——**正常**，保留。
 
 逐一确认剩余调用点都是合理的，不是 drop 流程遗留。
@@ -442,49 +444,59 @@ Expected: 无报错。常见的潜在报错：
 - [ ] **Step 1: 拖入单张图片**
 
 操作：从 Finder 拖一张 `.jpg` 到主对话框
-Expected: 输入框出现 `/absolute/path/to/file.jpg`（纯路径），输入框聚焦，光标在末尾
+Expected: 输入框出现 `/absolute/path/to/file.jpg\n`（纯路径 + 末尾换行），输入框聚焦，光标在第二行行首
 
 - [ ] **Step 2: 拖入单个文档**
 
 操作：从 Finder 拖一个 `.pdf` 到主对话框
-Expected: 输入框出现 `/absolute/path/to/file.pdf`
+Expected: 输入框出现 `/absolute/path/to/file.pdf\n`
 
 - [ ] **Step 3: 拖入多文件**
 
 操作：从 Finder 选中 3 个文件（任意类型混合）拖入
-Expected: 输入框出现 `/path1, /path2, /path3`（逗号+空格分隔，一行）
+Expected: 输入框出现 `/path1, /path2, /path3\n`（同一行多路径 + 末尾换行）
 
 - [ ] **Step 4: 拖入到已有内容**
 
 操作：在输入框先输入 `帮我处理`，然后拖入一个文件
-Expected: 输入框变为 `帮我处理\n/absolute/path/to/file`（已有非空格非换行内容时补换行）
+Expected: 输入框变为 `帮我处理\n/absolute/path/to/file\n`（已有非换行内容补换行，路径末尾再补换行，光标在第三行行首）
 
-- [ ] **Step 5: 拖入到末尾带空格的内容**
+- [ ] **Step 5: 拖入到末尾带换行的内容**
 
-操作：在输入框输入 `帮我处理 ` （末尾带空格），然后拖入一个文件
-Expected: 输入框变为 `帮我处理 /absolute/path/to/file`（末尾是空格时直接追加，不补换行）
+操作：在输入框输入 `帮我处理` 然后按 Shift+Enter（末尾是换行），然后拖入一个文件
+Expected: 输入框变为 `帮我处理\n/absolute/path/to/file\n`（已有末尾换行则直接追加路径+换行）
 
 - [ ] **Step 6: 多次拖入叠加**
 
 操作：第一次拖入一个文件（路径为 `/p1`），第二次再拖入另一个文件
-Expected: 输入框变为 `/p1\n/p2`（第一次拖入末尾无换行无空格，第二次拖入补换行）
+Expected: 输入框变为 `/p1\n/p2\n`（每次拖入路径独占一行，末尾换行让下次拖入直接追加）
 
 - [ ] **Step 7: 拖入到只含换行的输入框（v2 审查 M1 边界测试）**
 
 操作：在输入框按 Shift+Enter 输入一个空换行（`current === '\n'`），然后拖入一个文件
-Expected: 输入框变为 `\n/path`（`current.endsWith('\n')` 为 true 走 else 分支，直接追加）。前导换行保留——这是用户主动按 Shift+Enter 输入的，不应被自动 trim。
+Expected: 输入框变为 `\n/p1\n`（已有末尾换行，直接追加路径+换行）
 
-- [ ] **Step 8: 补充文字后回车发送**
+- [ ] **Step 8: 拖入到末尾是空格的内容（v4 边界测试）**
 
-操作：拖入一个文件后，在路径后输入 `，请入库`，按回车
-Expected: 消息成功发送，主 Agent 收到完整消息如 `/absolute/path/to/file，请入库`，主 Agent 委托 file-processor 子 Agent 处理入库
+操作：在输入框输入 `帮我处理 ` （末尾带空格），然后拖入一个文件
+Expected: 输入框变为 `帮我处理 \n/absolute/path/to/file\n`（末尾是空格不是换行，走"补换行"分支，结果是空格+换行+路径+换行——空格保留是用户主动输入的）
 
-- [ ] **Step 9: 精灵窗口未受影响**
+- [ ] **Step 9: 拖入含空格路径的文件 + 补充文字后回车发送（v4 关键测试）**
+
+操作：从 Finder 拖一个路径含空格的文件（如 `/System/Library/Desktop Pictures/Sonoma Horizon.jpg`），然后在路径后输入"请入库"（在新行输入），按回车
+Expected: 消息成功发送，主 Agent 收到：
+```
+/System/Library/Desktop Pictures/Sonoma Horizon.jpg
+请入库
+```
+主 Agent 委托 file-processor 子 Agent 处理入库。**这是 v3 H1 修复后的关键验证**——路径独占一行，用户补充文字在下一行，主 Agent 能正确识别路径边界。
+
+- [ ] **Step 10: 精灵窗口未受影响**
 
 操作：打开精灵窗口，拖入一个文件
 Expected: 精灵窗口仍走原 `send-to-agent` 路径，立即触发入库流程（精灵窗口行为不变）
 
-- [ ] **Step 10: 检查后端日志确认消息格式**
+- [ ] **Step 11: 检查后端日志确认消息格式**
 
 Run:
 ```bash
@@ -494,22 +506,26 @@ ls logs/raw_http/<当天目录>/ | tail -3
 ```
 
 打开最新 `*_request.json`，检查 user message 内容。
-Expected: 用户消息为纯路径格式（如 `/path/to/file，请入库`），**不含** `入库照片：` / `入库文件：` 前缀
+Expected: 用户消息为多行格式（路径独占一行 + 用户补充文字在下一行），**不含** `入库照片：` / `入库文件：` 前缀。如：
+```
+/System/Library/Desktop Pictures/Sonoma Horizon.jpg
+请入库
+```
 
-- [ ] **Step 11: 拖入文件夹（v1 审查 M5 补充测试）**
+- [ ] **Step 12: 拖入文件夹（v1 审查 M5 补充测试）**
 
 操作：从 Finder 拖一个**文件夹**到主对话框
-Expected: 输入框出现文件夹的绝对路径（如 `REDACTED_USER_PATH/Pictures/某文件夹`）。后续由用户决定如何处理——主 Agent 收到文件夹路径后行为由 file-processor 决定（可能触发目录入库，也可能询问用户）。
+Expected: 输入框出现文件夹的绝对路径（如 `REDACTED_USER_PATH/Pictures/某文件夹\n`）。后续由用户决定如何处理——主 Agent 收到文件夹路径后行为由 file-processor 决定（可能触发目录入库，也可能询问用户）。
 
-- [ ] **Step 12: 拖入纯文本/URL（v1 审查 M5 补充测试）**
+- [ ] **Step 13: 拖入纯文本/URL（v1 审查 M5 补充测试）**
 
 操作：从浏览器地址栏拖一个 URL 到主对话框
 Expected: 输入框无反应（`e.dataTransfer.files` 为空或 null，新 handler 的 null 防御 + `files.length === 0 return` 生效）。不应抛 TypeError。
 
-- [ ] **Step 13: 拖入时按住修饰键（v1 审查 M5 补充测试）**
+- [ ] **Step 14: 拖入时按住修饰键（v1 审查 M5 补充测试）**
 
 操作：按住 Shift 或 Ctrl 拖入一个文件到主对话框
-Expected: 与不按修饰键行为一致——输入框插入纯路径。chat.html 新 handler 不区分修饰键模式（与精灵窗口 spirit.html 区分 copy/move/reference 模式的行为不同，但这是设计意图——主对话框改造后简化为纯插入路径）。
+Expected: 与不按修饰键行为一致——输入框插入纯路径+末尾换行。chat.html 新 handler 不区分修饰键模式（与精灵窗口 spirit.html 区分 copy/move/reference 模式的行为不同，但这是设计意图——主对话框改造后简化为纯插入路径）。
 
 ---
 
@@ -624,11 +640,19 @@ git checkout <Task1Step2记录的preload-chat.js的hash> -- ui/main/preload-chat
 
 - **H1（grep 命令把 `user-input` 写成 `userInput`）**：Task 2 Step 5 修正 grep 命令为 `grep -n 'id="user-input"'`，Expected 改为 `<textarea id="user-input">` ✓
 - **H2（主 Agent 委托验证缺真实测试文件和通过标准）**：Task 1 Step 4 改用 macOS 系统自带图片或 `/tmp/niu-drag-test.txt`，明确通过标准是日志中出现 `chat-with-file-processor` 工具调用 ✓
-- **M1（多次拖入只含换行边界）**：Task 8 补 Step 7 测试"拖入到只含换行的输入框"，后续步骤顺延为 Step 8-13 ✓
+- **M1（多次拖入只含换行边界）**：Task 8 补 Step 7 测试"拖入到只含换行的输入框"，后续步骤顺延（v3 又加了 Step 8 Step 9，现在总共 Step 1-14）✓
 - **M2（drop handler 静默退出难排查）**：Task 5 Step 1 在 `paths.length === 0` 分支加 `console.warn` 反馈 ✓
 - **M3（grep 残留可能误导删 main.js）**：Task 6 Step 4 显式标注"不要删 main.js 的 `ipcMain.handle('process-image')`" ✓
 - **L1（gitnexus 是否索引 HTML 内嵌 JS）**：Task 1 Step 3 加 grep 兜底验证路径，明确"返回空不等于安全" ✓
 - **L2（工作区不干净缺指引）**：Task 1 Step 1 明确"不要自动 stash，让用户先处理或确认" ✓
+
+### v3 审查问题修复检查
+
+- **H1（含空格路径与用户补充文字的解析歧义）**：`insertTextToInput` 改为路径末尾自动补换行，让路径独占一行；用户补充文字在新行输入；主 Agent 收到"路径行 + 文字行"格式，能正确识别路径边界。Task 1 Step 4 强制用含空格路径测试。Task 8 补 Step 9 关键测试用例 ✓
+- **M1（空文件测试通过标准细化）**：Task 1 Step 4 移除 `/tmp/niu-drag-test.txt` 空文件选项，统一用 macOS 系统图片（确定有内容）测试 ✓
+- **M2（空格+换行边界测试）**：Task 8 补 Step 8 测试"拖入到末尾是空格的内容"（空格不是换行，走补换行分支）✓
+- **L1（可选链防御）**：Task 5 drop handler 用 `window.electronAPI?.getFilePath?.(f)` 替代 `window.electronAPI.getFilePath(f)`，preload 未加载时不抛 TypeError ✓
+- **L2（Expected 表述）**：Task 6 Step 4 Expected 改为"删除两个函数后应无调用点。若仍有残留，说明删除不彻底"✓
 
 ### Placeholder 扫描
 
