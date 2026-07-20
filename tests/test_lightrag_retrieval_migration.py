@@ -447,16 +447,24 @@ class TestInjectDynamicResourcesUsesLightRAG:
             # The function should complete without error even though vector_search
             # module no longer exists — it must not depend on vector_search at all.
 
-    def test_on_turn_end_uses_lightrag(self, runner):
-        """_on_turn_end must call _inject_dynamic_resources (which uses LightRAG)."""
+    def test_on_before_llm_uses_lightrag(self, runner):
+        """_on_before_llm must call _inject_dynamic_resources (which uses LightRAG).
+
+        Task 2 改造后：动态注入从 _on_turn_end 移到 _on_before_llm（每轮 LLM 调用前）。
+        此测试验证新契约：_on_before_llm 必须调 _inject_dynamic_resources。
+        """
         runner.base_system_prompt = "system prompt"
+        runner.static_system_prompt = "system prompt"
+        runner.dynamic_system_prefix = ""
+        runner.default_model = "test-model"
+        runner._first_turn_extra_injection = ""
         runner._memory_dirty = MagicMock()
         runner._memory_dirty.is_set.return_value = False
 
         with patch.object(runner, "_inject_dynamic_resources", return_value=("injected text", {})) as mock_inject, \
              patch.object(runner, "_extract_context_from_messages", return_value="context"):
             messages = [{"role": "system", "content": "system prompt"}]
-            runner._on_turn_end(messages, [], 1)
+            runner._on_before_llm(messages, turn=1)
 
             mock_inject.assert_called_once_with("context")
             assert "injected text" in messages[0]["content"]
