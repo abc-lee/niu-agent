@@ -8,6 +8,7 @@
 > - v3：第三轮审查发现 1 个 High 问题（H1: 含空格路径与用户补充文字的解析歧义）+ 4 个 Medium/Low（M1 空文件测试标准 / M2 空格+换行边界 / L1 可选链防御 / L2 Expected 表述）。v4 已全部修复。
 > - v4：第四轮审查发现 1 个 Medium（M1: Task 1 Step 5 Expected 与 v4 多行格式矛盾）+ 2 个 Low（L1 gitnexus detect_changes 兜底说明 / L2 Task 4 注释分支描述）。v5 已全部修复。
 > - v5：第五轮审查无 Critical/High 阻断问题，2 个 Medium 建议项（M1 纯路径无补充文字场景 / M2 isProcessing 期间拖入场景）。v6 已全部修复。
+> - v6：第六轮审查无 Critical/High 阻断问题，连续两轮通过，可交付。2 个非阻断优化项（M1 约束传递 / L1 isProcessing Enter 盲点）已在 v7 修复。
 
 **Goal:** 把主对话框拖入文件的行为从"立即触发入库"改为"插入纯绝对路径到输入框，等用户补充文字后回车发送"。
 
@@ -501,6 +502,8 @@ Expected: 消息成功发送，主 Agent 收到：
 ```
 主 Agent 委托 file-processor 子 Agent 处理入库。**这是 v3 H1 修复后的关键验证**——路径独占一行，用户补充文字在下一行，主 Agent 能正确识别路径边界。
 
+**如果 Task 1 Step 4 子测试发现纯路径不触发入库**（即主 Agent 不委托 file-processor 处理纯路径），本 Step 必须验证"用户补充文字（如'请入库'）是触发入库的必要条件"——拖入后不补充文字直接回车不会入库，用户必须在路径后补充描述。
+
 - [ ] **Step 10: 精灵窗口未受影响**
 
 操作：打开精灵窗口，拖入一个文件
@@ -541,6 +544,8 @@ Expected: 与不按修饰键行为一致——输入框插入纯路径+末尾换
 
 操作：发送一条需要较长时间处理的消息（如"帮我整理一下最近的笔记"），在主 Agent 处理期间（isProcessing=true、sendBtn 已 disabled）拖入一个文件到主对话框
 Expected: drop handler 仍会执行 `insertTextToInput` 把路径插入到输入框（这是合理行为——用户可以在等待回复时继续输入下一句话）。但此时 sendBtn 已 disabled，用户按 Enter 调 sendMessage 时，sendMessage 应该按现有逻辑处理（如果 isProcessing 期间允许发送则发送，如果阻止则不发送）——这与本次改造无关，是 chat.html 现有 sendMessage 的行为。本测试只验证 drop handler 在 isProcessing 期间不会崩溃、不会错误触发 IPC、不会破坏 isProcessing 状态机。
+
+**注意（v7 修正 v6 L1）**：用户按 Enter 时 sendMessage 会被调用（chat.html L741-750 的 keydown 监听器不检查 isProcessing，只检查 sendBtn.disabled 状态作为 UI 守卫）。这是既有行为，不在本次改造范围内——本次只改 drop handler，不改 keydown 监听器。如果 isProcessing 期间按 Enter 重复发送消息是已知 bug，应单独立项处理，不在本次拖入改造范围内。
 
 ---
 
@@ -681,6 +686,11 @@ git checkout <Task1Step2记录的preload-chat.js的hash> -- ui/main/preload-chat
 
 - **M1（Task 1 Step 4 纯路径无补充文字场景未验证）**：Step 4 加额外子测试——发纯路径消息（无任何补充文字）观察主 Agent 行为。如果主 Agent 仍委托 file-processor，说明纯路径也能触发入库；如果不委托，说明用户必须补充文字，需在 Task 8 明确此约束 ✓
 - **M2（Task 8 缺 isProcessing 期间拖入测试）**：Step 15 加测试用例——主 Agent 处理期间拖入文件，验证 drop handler 不崩溃、不误触发 IPC、不破坏 isProcessing 状态机 ✓
+
+### v6 审查问题修复检查
+
+- **M1（v5→v6 约束未传递到 Task 8）**：Task 8 Step 9 Expected 末尾加"如果 Task 1 Step 4 子测试发现纯路径不触发入库，本 Step 必须验证补充文字是必要的"，约束传递到位 ✓
+- **L1（isProcessing 期间 Enter 键盲点说明）**：Task 8 Step 15 Expected 加"用户按 Enter 时 sendMessage 会被调用（既有行为，不在本次改造范围内）"，明确这是既有 bug 不在本次范围 ✓
 
 ### Placeholder 扫描
 
