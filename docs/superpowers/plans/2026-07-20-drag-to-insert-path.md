@@ -545,7 +545,7 @@ Expected: 与不按修饰键行为一致——输入框插入纯路径+末尾换
 操作：发送一条需要较长时间处理的消息（如"帮我整理一下最近的笔记"），在主 Agent 处理期间（isProcessing=true、sendBtn 已 disabled）拖入一个文件到主对话框
 Expected: drop handler 仍会执行 `insertTextToInput` 把路径插入到输入框（这是合理行为——用户可以在等待回复时继续输入下一句话）。但此时 sendBtn 已 disabled，用户按 Enter 调 sendMessage 时，sendMessage 应该按现有逻辑处理（如果 isProcessing 期间允许发送则发送，如果阻止则不发送）——这与本次改造无关，是 chat.html 现有 sendMessage 的行为。本测试只验证 drop handler 在 isProcessing 期间不会崩溃、不会错误触发 IPC、不会破坏 isProcessing 状态机。
 
-**注意（v7 修正 v6 L1）**：用户按 Enter 时 sendMessage 会被调用（chat.html L741-750 的 keydown 监听器不检查 isProcessing，只检查 sendBtn.disabled 状态作为 UI 守卫）。这是既有行为，不在本次改造范围内——本次只改 drop handler，不改 keydown 监听器。如果 isProcessing 期间按 Enter 重复发送消息是已知 bug，应单独立项处理，不在本次拖入改造范围内。
+**注意（v7 修正 v6 L1）**：keydown 监听器不检查 isProcessing 也不检查 sendBtn.disabled，Enter 时直接调用 sendMessage()——这是既有行为，不在本次改造范围内。本次只改 drop handler，不改 keydown 监听器。如果 isProcessing 期间按 Enter 重复发送消息是已知 bug，应单独立项处理，不在本次拖入改造范围内。
 
 ---
 
