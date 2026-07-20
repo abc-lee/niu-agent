@@ -228,7 +228,9 @@ def test_on_before_llm_exception_does_not_break_loop():
         )
         final = exhaust(gen)
 
-    # on_before_llm 抛异常被 agent_loop try/except 捕获（logger.warning），对话继续
+    # on_before_llm 抛异常被 agent_loop try/except 捕获（logger.exception），对话继续
     # client.chat 仍被调用，最终正常返回
     assert client.chat.called, "on_before_llm 抛异常后 client.chat 仍应被调用"
     assert isinstance(final, dict), f"final 应是 dict，实际: {type(final)}"
+    assert final.get("result") == "CURRENT_TASK_DONE", \
+        f"无 tool_calls 应走 CURRENT_TASK_DONE 分支，实际 result: {final.get('result')}"

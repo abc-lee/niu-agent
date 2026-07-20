@@ -608,6 +608,8 @@ class NiuRunner:
         # 用户记忆脏标记（remember/forget 工具调用后 set）
         self._memory_dirty = threading.Event()
         self._current_channel_id = ""
+        # 首轮 resources 注入（拖入文件模式要求），_on_before_llm turn==1 时合并进 injection 后清空
+        self._first_turn_extra_injection: str = ""
 
         # Brain context injector chain (lazy-cached, created once per runner)
         self._brain_adapter = None      # LightRAGAdapter
@@ -801,8 +803,41 @@ class NiuRunner:
             # 其他模型：字符串格式，静态段在开头
             messages[0]["content"] = self.static_system_prompt + dynamic_text
 
+    def _on_before_llm(self, messages: list, turn: int) -> None:
+        """每轮 LLM 调用前刷新动态注入（skill/knowledge/脑区/habits）。
+
+        关键：在 client.chat 之前调，让本轮 LLM 立即读到新 system message。
+        原地修改 messages[0]，无返回值。
+
+        Args:
+            messages: agent_runner_loop 的消息列表引用
+            turn: 当前轮次（从 1 开始）
+        """
+        # 提取最近 3 条消息作为 context（保持原样，按用户原始设计）
+        context = self._extract_context_from_messages(messages)
+        injection, _ = self._inject_dynamic_resources(context)
+
+        # C4 修复：首轮合并拖入文件的 resources 模式要求（chat() 存入实例属性）
+        # chat() 把 resources 模式文本存入 self._first_turn_extra_injection，
+        # 这里 turn==1 时合并进 injection，让首轮 LLM 能读到 mode=reference/move 指令
+        if turn == 1 and getattr(self, "_first_turn_extra_injection", ""):
+            injection += self._first_turn_extra_injection
+            self._first_turn_extra_injection = ""  # 清空，防跨对话泄漏
+
+        # 原地修改 messages[0]，本轮 LLM 立即读到
+        self._assemble_system_message(messages, injection, self.default_model)
+
     def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
-        """每轮循环结束后刷新动态注入（skills/knowledge only, no MCP schema refresh)."""
+        """每轮循环结束后的清理工作（动态注入已移到 _on_before_llm）。
+
+        保留：
+        - _refresh_user_memories：刷新用户长期记忆（dirty 检测）
+        - 脑区衰减 decay_all：每轮降低脑区激活级别
+
+        已移除（移到 _on_before_llm）：
+        - _inject_dynamic_resources + _assemble_system_message
+          原因：原在 LLM 调用后注入，注入的 system message 下一轮才被读到，滞后一轮
+        """
         # Refresh user memories if dirty
         self._refresh_user_memories(messages)
 
@@ -814,14 +849,6 @@ class NiuRunner:
                 mgr.decay_all()
         except Exception as e:
             logger.debug(f"Brain region decay failed: {e}")
-
-        # Extract context and re-inject skills/knowledge
-        context = self._extract_context_from_messages(messages)
-        injection, _ = self._inject_dynamic_resources(context)
-
-        # Update system_prompt（静态段 + 动态段，Claude 走 cache_control）
-        # messages 是 agent_loop 内部列表的引用，原地修改生效
-        self._assemble_system_message(messages, injection, self.default_model)
 
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
@@ -2281,14 +2308,15 @@ class NiuRunner:
         """
         logger.info(f"[Runner] chat() called, session_id={session_id}, input={user_input[:50]}")
         self._current_channel_id = channel_id
-        # 从消息历史中提取上下文
-        context = self._extract_context_from_history(history, user_input)
+        # 重置首轮 resources 注入，防跨对话泄漏
+        self._first_turn_extra_injection = ""
 
-        # 动态注入资源（skills/knowledge only）
-        injection, _ = self._inject_dynamic_resources(context)
+        # I1 修复：首轮动态注入由 _on_before_llm 统一负责（在 agent_runner_loop 内 turn=1 时调）
+        # 这里不调用 _inject_dynamic_resources，动态注入段留给 _on_before_llm 首轮覆盖
 
-        # 注入 resources（拖入文件的模式信息）到动态段
-        # （首轮特有，后续轮次 _on_turn_end 不会重新加，符合预期）
+        # 注入 resources（拖入文件的模式信息）到实例属性
+        # C4 修复：存 self._first_turn_extra_injection 而非 injection 变量，
+        # 让 _on_before_llm 首轮合并进 injection（否则被 _assemble_system_message 整体替换覆盖）
         if resources:
             # 防御性过滤：只处理格式正确的资源条目
             valid_resources = [r for r in resources if isinstance(r, dict) and "path" in r and "mode" in r]
@@ -2303,11 +2331,13 @@ class NiuRunner:
                         resource_lines.append(f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录")
                     # mode="copy" 不需要额外提示，这是默认行为
                 if resource_lines:
-                    injection += "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
+                    self._first_turn_extra_injection = "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
 
         # 组装 system message（首轮就按 model 决定格式，Claude 走 cache_control）
+        # injection="" 因为动态注入移到 _on_before_llm 首轮
+        # resources 文本在实例属性里，_on_before_llm 首轮会合并进 injection
         system_message = {"role": "system", "content": ""}
-        self._assemble_system_message([system_message], injection, self.default_model)
+        self._assemble_system_message([system_message], "", self.default_model)
 
         # 阶段三：每次对话开始时检查 ~/.niu/agents/ 是否有新 MD
         self._refresh_base_tools_schema_if_dirty()
@@ -2358,7 +2388,8 @@ class NiuRunner:
             verbose=False,
             initial_user_content=user_input,
             history=history,  # Pass history to agent_loop
-            on_turn_end=self._on_turn_end,  # 每轮结束后刷新动态注入
+            on_turn_end=self._on_turn_end,  # 每轮结束后清理（用户记忆 + 脑区衰减）
+            on_before_llm=self._on_before_llm,  # 每轮 LLM 调用前刷新动态注入
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
             on_context_high_usage=self._on_context_high_usage,  # 主 Agent 超阈值回调
             context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值

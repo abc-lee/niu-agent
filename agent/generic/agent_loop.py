@@ -664,8 +664,8 @@ def agent_runner_loop(
         if on_before_llm is not None:
             try:
                 on_before_llm(messages, turn)
-            except Exception as e:
-                logger.warning(f"[AgentLoop] on_before_llm callback failed: {e}")
+            except Exception:
+                logger.exception("[AgentLoop] on_before_llm callback failed")
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
