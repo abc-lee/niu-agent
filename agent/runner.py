@@ -1673,7 +1673,7 @@ class NiuRunner:
                 system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
                 if system_msg:
                     # 压缩后重建 system message（确保 Claude cache_control 不丢失）
-                    # injection 为空，下一轮 _on_turn_end 会重新注入
+                    # injection 为空，本轮 _on_before_llm 会重新注入（动态注入已从 _on_turn_end 移到 LLM 调用前）
                     self._assemble_system_message([system_msg], "", self.default_model)
                     messages[:] = [system_msg] + fresh_msgs
                 else:
