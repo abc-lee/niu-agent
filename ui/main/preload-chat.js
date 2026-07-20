@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // 移动聊天窗口
@@ -42,7 +42,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 处理拖入的图片/文件（调用 Agent）
   processImage: (filePath) => ipcRenderer.invoke('process-image', filePath),
-  
+
+  // 获取 File 对象的真实路径（Electron 33 后 file.path 被废弃，必须用 webUtils.getPathForFile）
+  getFilePath: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch (e) {
+      console.error('[preload-chat] getFilePath failed:', e.message);
+      return '';
+    }
+  },
+
   // 用系统默认查看器打开文件
   openWithSystemViewer: (filePath) => ipcRenderer.send('open-with-system-viewer', filePath),
   

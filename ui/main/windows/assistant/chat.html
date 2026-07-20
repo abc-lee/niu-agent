@@ -824,7 +824,26 @@
       }
       return null;
     }
-    
+
+    // 把文本插入到输入框末尾，自动补换行让路径独占一行：
+    // - 已有内容为空或末尾是换行 → 直接追加路径
+    // - 已有内容末尾不是换行 → 补换行再追加路径
+    // - 路径末尾自动补换行，光标停在新行行首，用户补充文字在新行输入
+    // 这样主 Agent 能识别"行首是绝对路径"，避免路径含空格时与用户补充文字混淆
+    // 最后聚焦+触发 input 事件让 textarea 自适应高度
+    function insertTextToInput(text) {
+      const current = userInput.value;
+      if (current && !current.endsWith('\n')) {
+        userInput.value = current + '\n' + text + '\n';
+      } else {
+        userInput.value = current + text + '\n';
+      }
+      userInput.focus();
+      // 光标定位到末尾（新行行首）
+      userInput.setSelectionRange(userInput.value.length, userInput.value.length);
+      userInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
     async function sendMessage() {
       const text = userInput.value.trim();
       if (!text) { userInput.style.height = 'auto'; return; }
@@ -1537,132 +1556,28 @@
       }
     });
     
-    messages.addEventListener('drop', async (e) => {
+    messages.addEventListener('drop', (e) => {
       messages.classList.remove('drag-over');
-      
-      const files = e.dataTransfer.files;
-      if (files.length === 0) return;
-      
-      // 分离图片和文件
-      const imageFiles = [];
-      const otherFiles = [];
-      Array.from(files).forEach(f => {
-        const isImageByMime = f.type.startsWith('image/');
-        const isImageByExt = /\.(jpg|jpeg|png|gif|bmp|webp|tiff?|heic|heif)$/i.test(f.name || f.path || '');
-        if (isImageByMime || isImageByExt) {
-          imageFiles.push(f);
-        } else {
-          otherFiles.push(f);
-        }
-      });
-      
-      // 处理图片
-      for (const file of imageFiles) {
-        await handleDroppedImage(file);
+
+      // e.dataTransfer.files 在某些场景（拖入纯文本/URL）可能为 null，需防御
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || files.length === 0) return;
+
+      // Electron 33 废弃 File.path，必须用 webUtils.getPathForFile 经 preload 暴露的 getFilePath
+      // 可选链防御：如果 preload 未加载（window.electronAPI 未定义），不会抛 TypeError 而是 map 出 undefined
+      const paths = Array.from(files)
+        .map(f => window.electronAPI?.getFilePath?.(f))
+        .filter(Boolean);
+
+      if (paths.length === 0) {
+        // 有文件但拿不到路径——通常是 preload 未生效或 webUtils 异常，便于排查
+        console.warn('[Chat] drop: 未获取到任何文件路径，可能 preload 未生效或 webUtils 异常');
+        return;
       }
-      
-      // 处理其他文件
-      for (const file of otherFiles) {
-        await handleDroppedFile(file);
-      }
+
+      insertTextToInput(paths.join(', '));
     });
     
-    // 处理拖入的图片
-    async function handleDroppedImage(file) {
-      sendBtn.disabled = true;
-      const filePath = file.path;
-      if (!filePath) {
-        console.error('[Chat] 无法获取文件路径');
-        return;
-      }
-
-      try {
-        console.log('[Chat] 拖入图片:', filePath);
-
-        // 铁律1：先刷新页面（显示预览）
-        const previewDiv = document.createElement('div');
-        previewDiv.className = 'image-preview uploading';
-        const isHeic = /\.(heic|heif)$/i.test(filePath);
-        if (isHeic) {
-          // HEIC 无法在浏览器中预览，显示文件名占位符
-          const placeholder = document.createElement('div');
-          placeholder.style.cssText = 'display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:#999;font-size:14px;';
-          placeholder.textContent = '📷 ' + filePath.split('/').pop();
-          previewDiv.appendChild(placeholder);
-        } else {
-          const imgEl = document.createElement('img');
-          imgEl.src = await window.electronAPI.getImageUrl(filePath);
-          imgEl.dataset.filePath = filePath;
-          previewDiv.appendChild(imgEl);
-        }
-        previewDiv.addEventListener('dblclick', () => {
-          window.electronAPI.openWithSystemViewer(filePath);
-        });
-        const overlayDiv = document.createElement('div');
-        overlayDiv.className = 'upload-overlay';
-        overlayDiv.textContent = '处理中...';
-        previewDiv.appendChild(overlayDiv);
-        const msgDiv = addMessage('user', null);
-        if (!msgDiv) {
-          // addMessage 返回 null（如 tool 消息被过滤），跳过后续
-          return;
-        }
-        msgDiv.appendChild(previewDiv);
-
-        showTyping();
-        window.electronAPI.notifyBusy(true, 'chat');
-
-        await window.electronAPI.processImage(filePath);
-        // agent回复由SSE→refreshFromDB()显示
-        previewDiv.classList.remove('uploading');
-        overlayDiv.remove();
-      } catch (e) {
-        console.error('[Chat] 图片处理失败:', e);
-        addMessage('system', '图片处理失败，请重试');
-      } finally {
-        // 兜底状态重置
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
-        stopBtn.style.display = 'none';
-        isProcessing = false;
-        sendBtn.disabled = false;
-      }
-    }
-
-    // 处理拖入的文件（非图片）
-    async function handleDroppedFile(file) {
-      sendBtn.disabled = true;
-      const filePath = file.path;
-      if (!filePath) {
-        console.error('[Chat] 无法获取文件路径');
-        return;
-      }
-
-      console.log('[Chat] 拖入文件:', filePath);
-
-      // 铁律1：先刷新页面（显示文件名）
-      const fileMsg = addMessage('user', `📄 ${file.name}`);
-      if (!fileMsg) { return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
-
-      showTyping();
-      window.electronAPI.notifyBusy(true, 'chat');
-
-      try {
-        await window.electronAPI.processImage(filePath);
-        // agent回复由SSE→refreshFromDB()显示
-      } catch (e) {
-        console.error('[Chat] 文件处理失败:', e);
-        addMessage('system', '文件处理失败，请重试');
-      } finally {
-        // 兜底状态重置
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
-        stopBtn.style.display = 'none';
-        isProcessing = false;
-        sendBtn.disabled = false;
-      }
-    }
-
     // 监听滚动，到顶部时加载更多
     messages.addEventListener('scroll', async () => {
       // 检查是否滚动到顶部
