@@ -6,6 +6,7 @@
 > - v1：第一轮审查发现 3 个阻断问题（C1: Electron 33 废弃 `File.path` / C2: `files` null 防御 / L2: 主 Agent 触发 file-processor 依赖未验证）+ 4 个中等问题（M4/M5/M6）+ 1 个轻微（L1 gitnexus）。v2 已全部修复。
 > - v2：第二轮审查发现 2 个 High 问题（H1: grep 命令把 `user-input` 写成 `userInput` / H2: 主 Agent 委托验证缺真实测试文件和通过标准）+ 5 个 Medium/Low 优化项（M1/M2/M3/L1/L2）。v3 已全部修复。
 > - v3：第三轮审查发现 1 个 High 问题（H1: 含空格路径与用户补充文字的解析歧义）+ 4 个 Medium/Low（M1 空文件测试标准 / M2 空格+换行边界 / L1 可选链防御 / L2 Expected 表述）。v4 已全部修复。
+> - v4：第四轮审查发现 1 个 Medium（M1: Task 1 Step 5 Expected 与 v4 多行格式矛盾）+ 2 个 Low（L1 gitnexus detect_changes 兜底说明 / L2 Task 4 注释分支描述）。v5 已全部修复。
 
 **Goal:** 把主对话框拖入文件的行为从"立即触发入库"改为"插入纯绝对路径到输入框，等用户补充文字后回车发送"。
 
@@ -120,7 +121,7 @@ ls logs/raw_http/ | tail -1
 ls logs/raw_http/<当天目录>/ | tail -3
 ```
 
-Expected: 用户消息为 `/path/to/test.jpg 请入库` 格式，主 Agent 工具调用日志中有 `chat-with-file-processor`。
+Expected: 用户消息含路径和补充文字（手动输入测试时是一行 `/path/to/test.jpg 请入库`，实际拖入时是多行 `/path/to/test.jpg\n请入库`），主 Agent 工具调用日志中有 `chat-with-file-processor`。
 
 ---
 
@@ -244,8 +245,8 @@ Expected: 找到 `sendMessage` 函数定义行号或 `userInput` 引用行号，
 
 ```javascript
 // 把文本插入到输入框末尾，自动补换行让路径独占一行：
+// - 已有内容为空或末尾是换行 → 直接追加路径
 // - 已有内容末尾不是换行 → 补换行再追加路径
-// - 已有内容末尾是换行或为空 → 直接追加路径
 // - 路径末尾自动补换行，光标停在新行行首，用户补充文字在新行输入
 // 这样主 Agent 能识别"行首是绝对路径"，避免路径含空格时与用户补充文字混淆
 // 最后聚焦+触发 input 事件让 textarea 自适应高度
@@ -555,6 +556,8 @@ gitnexus_detect_changes({scope: "unstaged"})
 
 Expected: 改动符号仅限 `chat.html` 和 `preload-chat.js` 内的预期函数。如果检测到其他文件符号受影响，停下来分析。
 
+**如果 gitnexus 未索引 JS 文件返回空**：依赖 Step 1 的 `git diff` 结果验证范围即可。gitnexus 主要索引 Python/Rust/TS，HTML 内嵌 JS 和 preload JS 可能未索引，返回空不等于安全。
+
 - [ ] **Step 3: 添加并提交**
 
 ```bash
@@ -653,6 +656,12 @@ git checkout <Task1Step2记录的preload-chat.js的hash> -- ui/main/preload-chat
 - **M2（空格+换行边界测试）**：Task 8 补 Step 8 测试"拖入到末尾是空格的内容"（空格不是换行，走补换行分支）✓
 - **L1（可选链防御）**：Task 5 drop handler 用 `window.electronAPI?.getFilePath?.(f)` 替代 `window.electronAPI.getFilePath(f)`，preload 未加载时不抛 TypeError ✓
 - **L2（Expected 表述）**：Task 6 Step 4 Expected 改为"删除两个函数后应无调用点。若仍有残留，说明删除不彻底"✓
+
+### v4 审查问题修复检查
+
+- **M1（Task 1 Step 5 Expected 与 v4 多行格式矛盾）**：Step 5 Expected 改为"用户消息含路径和补充文字（手动输入测试时是一行，实际拖入时是多行）"，与 v4 路径末尾补换行设计一致 ✓
+- **L1（Task 9 Step 2 gitnexus detect_changes 兜底说明）**：Step 2 加"如果 gitnexus 未索引 JS 文件返回空，依赖 Step 1 的 git diff 结果验证范围即可" ✓
+- **L2（Task 4 Step 2 注释分支描述不完整）**：注释改为"已有内容为空或末尾是换行 → 直接追加路径"+"已有内容末尾不是换行 → 补换行再追加路径"，与代码分支对应 ✓
 
 ### Placeholder 扫描
 
