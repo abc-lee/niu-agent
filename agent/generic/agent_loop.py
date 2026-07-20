@@ -507,6 +507,7 @@ def agent_runner_loop(
     supplement_drain=None,  # 子 Agent 传入自己的 drain 函数；None 时走全局 drain_supplement
     memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据，None=主 Agent 路径不更新
     resumed_messages=None,  # 阶段四新增：挂起恢复路径，传入则跳过 messages 构造直接用
+    on_before_llm=None,  # Optional: callback(messages, turn) called before each LLM call; modifies messages[0] in place
 ):
     from agent.runner import is_stop_requested, clear_stop, drain_supplement
 
@@ -658,6 +659,13 @@ def agent_runner_loop(
                 )
             except Exception:
                 pass  # 进度更新失败不影响主流程
+        # 动态注入：每轮 LLM 调用前刷新 system message（skill/knowledge/脑区/habits）
+        # 关键：必须在 client.chat 之前，让本轮 LLM 立即读到新 system message
+        if on_before_llm is not None:
+            try:
+                on_before_llm(messages, turn)
+            except Exception as e:
+                logger.warning(f"[AgentLoop] on_before_llm callback failed: {e}")
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
