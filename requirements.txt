@@ -40,6 +40,8 @@ google-genai==1.75.0
 google-auth==2.53.0
 google-api-core==2.30.3
 googleapis-common-protos==1.75.0
+pyasn1==0.6.4                     # google-auth 依赖（pyasn1_modules 的上游）
+pyasn1_modules==0.4.2             # google-auth 直接依赖（清理时被误删，已恢复）
 tiktoken==0.13.0
 tokenizers==0.21.4
 fastuuid==0.14.0
@@ -104,6 +106,7 @@ pypinyin==0.55.0               # LightRAG 中文实体拼音索引
 pipmaster==1.1.13              # LightRAG 运行时的内部安装器（lightrag-hku Requires）
 ascii_colors==0.11.21          # pipmaster 的依赖
 xlsxwriter==3.2.9              # LightRAG 导出 + python-pptx 图表写入
+configparser==7.2.0            # lightrag-hku Requires（清理时被误删，已恢复）
 
 # ============== 数据存储 ==============
 aiosqlite==0.22.1
@@ -128,6 +131,7 @@ annotated-doc==0.0.4           # fastapi 0.136 新增的 doc 注解
 
 # ============== 飞书集成 ==============
 lark-oapi==1.6.5
+pycryptodome==3.23.0           # lark-oapi 加密依赖（清理时被误删，已恢复）
 
 # ============== Web 服务器 ==============
 websockets==15.0.1
@@ -138,6 +142,7 @@ python-multipart==0.0.29
 PyJWT==2.13.0
 cffi==2.0.0
 pycparser==3.0
+bcrypt==5.0.0                  # LightRAG 用户认证密码哈希（fork 内部 import，Required-by 看不到；清理时被误删，已恢复）
 
 # ============== 工具库 ==============
 requests==2.34.2
