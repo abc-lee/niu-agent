@@ -125,12 +125,26 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
 - `model_rejected`：LiteLLM 抛 `BadRequestError`/`UnsupportedParamsError`（模型/网关 4xx 拒绝，如豆包 Coding Plan）
 - `gateway_blocked`：网关返回 200 但响应非合法 JSON（网关接受参数但模型输出漂移，如 GLM xopglm5）
 
+探测采用三次采样 + 冲突式设计：
+- 三次采样全过才升档，任何一次失败立即降级——防 flaky 网关（豆包 Coding
+  Plan 2026-07-21 实测：同一请求 5 次采样 2 次执行、3 次静默忽略）碰巧
+  命中执行窗口期误判支持
+- 冲突式设计：schema 强制要求 `{"verdict": "SCHEMA_ENFORCED"}`，prompt
+  却要求模型写普通英文句子且禁止输出 JSON——只有 schema 战胜 prompt
+  （输出被强制为 schema JSON）才判定真支持，模型跟随 prompt 输出普通
+  文本即判定网关静默忽略
+- 限流单独处理：RateLimitError 不计失败，sleep 后重试本次采样（指数
+  退避 5s→10s→20s→40s→80s，最多 5 次），直到返回非限流结果才判定
+
 **写入配置**：
 - `lightrag_llm.litellm_kwargs.response_format_mode`：`"json_schema"` / `"json_object"` / `"prompt_only"`
 - `lightrag_llm.litellm_kwargs.allowed_openai_params`：前两档 `["response_format"]`，prompt_only 档 `[]`（双写兼容旧逻辑）
 
 **典型场景**（2026-07-19 实测）：
-- 豆包 Coding Plan 端点（`/api/coding/v3`，model=`ark-code-latest`）：网关 400 拒绝 response_format，探测结果 `prompt_only`
+- 豆包 Coding Plan 端点（`/api/coding/v3`，model=`ark-code-latest`）：
+  网关行为非确定性（flaky），同一请求多次采样结果不稳定（有时执行
+  json_schema strict、有时静默忽略），三次采样必然 ≥1 次静默忽略 →
+  探测结果稳定 `prompt_only`
 - GLM 端点（`maas-coding-api.cn-huabei-1.xf-yun.com/v2`，model=`xopglm5`）：网关接受但模型输出漂移，探测结果 `prompt_only`
 - OpenAI 官方：探测结果 `json_schema`
 
