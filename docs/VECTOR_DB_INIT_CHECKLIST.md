@@ -523,7 +523,6 @@ cp data/mcp_tools_20260412.json data/mcp_tools.json
 | `scripts/register_all_mcp_tools_from_json.py` | 批量注册工具 | 低 |
 | `scripts/index_query_patterns.py` | 注册查询模式 | 中 |
 | `scripts/check_mcp_tools_in_db.py` | 验证工具状态 | 低 |
-| `scripts/patch_playwright_asyncio.py` | Playwright 补丁（见十一） | 重新安装后 |
 | `data/mcp_tools.json` | 工具定义快照（67个工具） | 每次导出更新 |
 | `scripts/query_pattern/verified_patterns.jsonl` | 验证通过的查询模式 | 每次生成更新 |
 | `agent/runner.py` | BASE_MCP_TOOLS 定义 | 低 |
@@ -532,61 +531,7 @@ cp data/mcp_tools_20260412.json data/mcp_tools.json
 
 ## 十一、Playwright 补丁说明
 
-### 11.1 问题背景
-
-**Playwright 的限制：**
-- Playwright 默认禁止在 asyncio event loop 中使用 `sync_api`
-- 在 MCP 同进程架构中，FastAPI 运行在异步模式
-- 但 `browser_navigate` 在线程池中执行，应该可以工作
-
-**解决方案：**
-- 修改 Playwright 源码，禁用 asyncio 检测
-- 已测试：在线程池中使用 `sync_playwright()` 正常工作
-
-### 11.2 补丁内容
-
-**文件位置：** `playwright/sync_api/_context_manager.py`（虚拟环境中）
-
-**修改内容：** 注释掉第 46-50 行的 asyncio 检测代码
-
-```python
-# DISABLED: Allow sync API in asyncio loop (for MCP in-process architecture)
-# if self._loop.is_running():
-#     raise Error(
-#         """It looks like you are using Playwright Sync API inside the asyncio loop.
-# Please use the Async API instead."""
-#     )
-```
-
-### 11.3 应用补丁
-
-**自动应用：**
-```bash
-python scripts/patch_playwright_asyncio.py
-```
-
-**何时需要重新应用：**
-- 重新安装 Playwright：`pip install playwright`
-- 切换虚拟环境
-- 更新 Playwright 版本
-
-**验证补丁：**
-```bash
-python scripts/patch_playwright_asyncio.py
-# 输出应包含：
-# [OK] Patch already applied, skipping
-# [OK] Test passed: Playwright works in thread pool
-```
-
-### 11.4 注意事项
-
-**风险：**
-- 修改了第三方库源码，更新版本后会丢失修改
-- 需要记录补丁脚本位置，方便重新应用
-
-**替代方案：**
-- 如果不想修改源码，可以将 browser-server 改回 MCP stdio 模式
-- 或使用其他浏览器自动化库（Selenium）
+> **已废弃（2026-07-21）**：browser-server 已迁移到 WebSocket Bridge + 系统 Chrome 启动器（见 `mcp-servers/browser-server/src/niu_browser_server/launcher.py` 和 `ws_bridge.py`），不再依赖 playwright。原补丁脚本 `scripts/patch_playwright_asyncio.py` 已删除，本节保留标题仅作历史记录。
 
 ---
 
