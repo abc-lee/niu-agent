@@ -19,7 +19,6 @@
     "dompurify": "^3.4.2",
     "eventsource": "^4.1.0",
     "marked": "^18.0.0",
-    "@antv/g6": "^5.1.0",
     "force-graph": "^1.51.3"
   },
   "devDependencies": {
