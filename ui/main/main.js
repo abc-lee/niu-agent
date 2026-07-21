@@ -1341,7 +1341,9 @@ ipcMain.handle('probe-response-format', async (event, config) => {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
       },
-      timeout: 70000,  // 70 秒（两档各 30s + 余量）
+      timeout: 300000,  // 三次采样 + 限流/超时重试最坏耗时 ~250s/档（限流主导早返 ~160s），两档 ~500s。
+                       // 正常场景 3 次采样 + 无重试约 90s/档。设 300s 覆盖正常+限流场景，病态连续
+                       // 超时场景（~335s/档）前端会先放弃，属可接受取舍。
     };
     return await new Promise((resolve) => {
       const req = http.request(options, (res) => {
