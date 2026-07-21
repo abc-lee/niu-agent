@@ -341,6 +341,112 @@ def api_base():
     return "http://127.0.0.1:9876"
 
 
+def _load_user_llm_config() -> dict | None:
+    """加载 user-config.json 的 lightrag_llm 配置（fallback 到 llm 段，近似 get_llm_config 语义）
+
+    近似运行时 get_llm_config（llm_proxy.py L209-241）语义，仅覆盖当前豆包/GLM
+    实际配置形态（Branch 2：lightrag_llm.model 为空）。Branch 1（lightrag_llm.model
+    非空）场景下的完整继承逻辑未复刻，未来如需支持需按 llm_proxy.py L213-222
+    补五个继承块。
+    """
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "user-config.json")
+    if not os.path.exists(config_path):
+        return None
+    with open(config_path) as f:
+        cfg = json.load(f)
+    lightrag_llm = cfg.get("lightrag_llm", {})
+    llm = cfg.get("llm", {})
+
+    # Branch 2：lightrag_llm.model 为空，fallback 到 llm 段
+    # apiKey/apiBase/model/type 只用 llm 段（lightrag_llm 的这些字段被忽略）
+    # provider/temperature/litellm_kwargs 优先 lightrag_llm、空则 llm
+    return {
+        "apikey": llm.get("apiKey", ""),
+        "apibase": llm.get("apiBase", ""),
+        "model": llm.get("model", ""),
+        "type": llm.get("type", "openai"),
+        "provider": lightrag_llm.get("provider") or llm.get("provider", ""),
+        "temperature": lightrag_llm["temperature"] if lightrag_llm.get("temperature") is not None else llm.get("temperature", 0.2),
+        "litellm_kwargs": lightrag_llm.get("litellm_kwargs") or llm.get("litellm_kwargs") or {},
+    }
+
+
+def _load_glm_llm_config() -> dict | None:
+    """加载 GLM 配置（从独立文件 config/user-config - glm.json，与前端发送逻辑一致）
+
+    litellm_kwargs 优先 lightrag_llm 段、空则 llm 段（与前端 settings/index.html L410
+    实际发送逻辑一致：lightrag_llm?.litellm_kwargs || llm?.litellm_kwargs || {}）
+    provider 优先 lightrag_llm 段、空则 llm 段（与 _load_user_llm_config 统一）
+    """
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "user-config - glm.json")
+    if not os.path.exists(config_path):
+        return None
+    with open(config_path) as f:
+        cfg = json.load(f)
+    lightrag_llm = cfg.get("lightrag_llm", {})
+    llm = cfg.get("llm", {})
+    return {
+        "apikey": llm.get("apiKey", ""),
+        "apibase": llm.get("apiBase", ""),
+        "model": llm.get("model", ""),
+        "type": llm.get("type", "openai"),
+        "provider": lightrag_llm.get("provider") or llm.get("provider", ""),
+        "temperature": llm.get("temperature", 0.2),
+        "litellm_kwargs": lightrag_llm.get("litellm_kwargs") or llm.get("litellm_kwargs") or {},
+    }
+
+
+@pytest.mark.timeout(600)  # 突破 pytest.ini 全局 timeout=30，新探测最坏 ~500s
+def test_probe_endpoint_returns_prompt_only_for_doubao_coding(api_base):
+    """豆包 Coding Plan 网关行为非确定性（flaky），三次采样必然 ≥1 次
+    静默忽略 → 稳定降级 prompt_only
+
+    已知抖动率：flaky 网关执行率约 2/5，P(Tier1 三样本全过)≈6.4%，Tier 2 同理。
+    本测试断言 prompt_only 有 ~6% 偶发失败率，偶发失败可重跑。
+    """
+    config = _load_user_llm_config()
+    if not config:
+        pytest.skip("无 user-config.json")
+    if "coding" not in config.get("apibase", ""):  # 全小写键，与 helper 返回一致
+        pytest.skip("非豆包 Coding Plan 端点")
+
+    # 三次采样 + 限流/超时重试最坏耗时 ~500s（两档），设 600s 余量
+    client = httpx.Client(timeout=600.0)
+    with client:
+        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
+    assert resp.status_code == 200
+    data = resp.json()
+    # flaky 网关三次采样必然 ≥1 次静默忽略 → 稳定降级 prompt_only（~94% 概率）
+    assert data["mode"] == "prompt_only", f"豆包 Coding Plan flaky 网关应稳定降级 prompt_only，实际: {data}"
+    # reason 应含 Tier 1 失败信息（gateway_blocked 或 model_rejected）
+    reason = data.get("reason", "")
+    assert "Tier 1" in reason, f"reason 应含 Tier 1 失败信息，实际: {reason}"
+
+
+@pytest.mark.timeout(600)  # 突破 pytest.ini 全局 timeout=30
+def test_probe_endpoint_returns_prompt_only_for_glm(api_base):
+    """GLM 网关接受但模型输出漂移，三次采样必然 ≥1 次漂移 → 稳定降级 prompt_only
+
+    已知抖动率：GLM 漂移率较高，P(Tier1 三样本全过) 极低，但理论上非零。
+    偶发失败可重跑。
+    """
+    config = _load_glm_llm_config()
+    if not config:
+        pytest.skip("无 GLM 配置")
+
+    # 三次采样 + 限流/超时重试最坏耗时 ~500s（两档），设 600s 余量
+    client = httpx.Client(timeout=600.0)
+    with client:
+        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
+    assert resp.status_code == 200
+    data = resp.json()
+    # GLM 输出漂移，三次采样必然 ≥1 次非合法 JSON → 稳定降级 prompt_only
+    assert data["mode"] == "prompt_only", f"GLM 应稳定降级 prompt_only（输出漂移），实际: {data}"
+    reason = data.get("reason", "")
+    assert "Tier 1" in reason, f"reason 应含 Tier 1 失败信息，实际: {reason}"
+
+
+@pytest.mark.timeout(600)  # 突破 pytest.ini 全局 timeout=30
 def test_probe_endpoint_returns_json_schema_for_openai(api_base):
     """用 OpenAI 真实 API Key 测试（需环境变量 OPENAI_API_KEY）"""
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -353,93 +459,15 @@ def test_probe_endpoint_returns_json_schema_for_openai(api_base):
         "type": "openai",
         "provider": "",
     }
-    with httpx.Client(timeout=90) as client:
+    # 三次采样最坏耗时 ~90s（3 次 × 30s 超时），设 600s 余量
+    client = httpx.Client(timeout=600.0)
+    with client:
         resp = client.post(f"{api_base}/api/probe-response-format", json=config)
     assert resp.status_code == 200
     data = resp.json()
     assert data["result"] in {"supported", "probe_failed"}
-    # OpenAI 应支持 json_schema strict
+    # OpenAI 应支持 json_schema strict（三次采样全过）
     assert data["mode"] == "json_schema", f"OpenAI 应支持 json_schema，实际: {data}"
-
-
-def test_probe_endpoint_returns_prompt_only_for_doubao_coding(api_base):
-    """用豆包 Coding Plan 真实配置测试
-
-    用户已启动程序，config/user-config.json 即豆包 Coding Plan 配置。
-    直接读 config 文件取真实 API Key 避免环境变量依赖。
-
-    重要：litellm_kwargs 用 lightrag_llm 段（thinking={type:disabled}），
-    与运行时 get_llm_config(use_lightrag_config=True) fallback 逻辑一致。
-    如果用 llm 段 thinking={type:enabled}，豆包模型走深度思考可能输出
-    reasoning_content 无文本 chunk，被判 gateway_blocked 而非 model_rejected，
-    与真实环境验证报告结论不一致。
-    """
-    config_path = "REDACTED_USER_PATH/tools/ai-bot/config/user-config.json"
-    if not os.path.exists(config_path):
-        pytest.skip("豆包配置文件不存在")
-    with open(config_path) as f:
-        user_cfg = json.load(f)
-    llm = user_cfg.get("llm", {})
-    lightrag_llm = user_cfg.get("lightrag_llm", {})
-    if not llm.get("apiKey"):
-        pytest.skip("豆包配置文件无 apiKey")
-
-    # 用 lightrag_llm 段的 litellm_kwargs（thinking=disabled），与运行时一致
-    # lightrag_llm.model 为空时，运行时 get_llm_config 走 fallback 用 llm 段
-    # apiKey/apiBase/model，但 litellm_kwargs 用 lightrag_llm 段
-    config = {
-        "apiKey": llm["apiKey"],
-        "apiBase": llm["apiBase"],
-        "model": llm["model"],
-        "type": llm.get("type", "openai"),
-        "provider": llm.get("provider", ""),
-        "litellm_kwargs": lightrag_llm.get("litellm_kwargs", {}),
-    }
-    with httpx.Client(timeout=90) as client:
-        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
-    assert resp.status_code == 200
-    data = resp.json()
-    # 豆包 Coding Plan 网关 400 拒绝 response_format，应降级 prompt_only
-    assert data["mode"] == "prompt_only", f"豆包 Coding Plan 应降级 prompt_only，实际: {data}"
-    # 豆包 Coding Plan 网关 400 拒绝 response_format（抛 BadRequestError），
-    # 新逻辑按"响应是否达到要求"判定，异常走 tier_failed 分支降级下一 tier，
-    # 最终 prompt_only。reason 应同时含 tier_failed + BadRequestError 供诊断。
-    assert "tier_failed" in data.get("reason", "") and "BadRequestError" in data.get("reason", ""), \
-        f"豆包应触发 tier_failed + BadRequestError（网关 400 拒绝），实际 reason: {data.get('reason')}"
-
-
-def test_probe_endpoint_returns_prompt_only_for_glm(api_base):
-    """用 GLM 真实配置测试
-
-    config/user-config - glm.json 是 GLM 配置，实测网关接受 response_format
-    但模型输出漂移（含额外字符），json.loads 失败，应降级 prompt_only。
-    """
-    config_path = "REDACTED_USER_PATH/tools/ai-bot/config/user-config - glm.json"
-    if not os.path.exists(config_path):
-        pytest.skip("GLM 配置文件不存在")
-    with open(config_path) as f:
-        user_cfg = json.load(f)
-    llm = user_cfg.get("llm", {})
-    if not llm.get("apiKey"):
-        pytest.skip("GLM 配置文件无 apiKey")
-
-    config = {
-        "apiKey": llm["apiKey"],
-        "apiBase": llm["apiBase"],
-        "model": llm["model"],
-        "type": llm.get("type", "openai"),
-        "provider": llm.get("provider", ""),
-        "litellm_kwargs": {"thinking": {"type": "disabled"}},  # GLM 入库配置
-    }
-    with httpx.Client(timeout=90) as client:
-        resp = client.post(f"{api_base}/api/probe-response-format", json=config)
-    assert resp.status_code == 200
-    data = resp.json()
-    # GLM 网关接受 response_format 但模型输出漂移，应降级 prompt_only
-    assert data["mode"] == "prompt_only", f"GLM 应降级 prompt_only（输出漂移），实际: {data}"
-    # reason 应含 gateway_blocked（GLM 网关 200 接受但输出非合法 JSON）
-    assert "gateway_blocked" in data.get("reason", ""), \
-        f"GLM 应触发 gateway_blocked（输出漂移），实际 reason: {data.get('reason')}"
 
 
 def test_probe_endpoint_returns_probe_failed_for_invalid_config(api_base):
@@ -675,3 +703,147 @@ async def test_probe_returns_probe_failed_when_infra_error():
     assert result["result"] == "probe_failed"
     assert "基础设施错误" in result["reason"]
     assert result["mode"] is None
+
+
+# ===== _try_tier 异常分类端点级测试 =====
+# 验证 _try_tier 捕获各类 litellm 异常时正确分类返回值。mock LiteLLMSession.chat
+# 抛异常，绕过真实 LLM 调用，端点级覆盖从异常到 result 的完整路径。
+
+@pytest.mark.asyncio
+async def test_try_tier_classifies_rate_limit_error():
+    """_try_tier 捕获 RateLimitError → rate_limited"""
+    from niu_api.compat import probe_response_format
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from fastapi import Request
+    from litellm import RateLimitError
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        # mock LiteLLMSession.chat 抛 RateLimitError（litellm 异常需要 model + llm_provider 必填 kwarg）
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = RateLimitError(
+                "429 rate limit", model="test-model", llm_provider="openai"
+            )
+            mock_session_class.return_value = mock_session
+
+            # mock _asyncio_sleep 避免真实等待
+            with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+                result = await probe_response_format(mock_request)
+
+    # 限流重试 5 次后返回 probe_failed
+    assert result["result"] == "probe_failed"
+    assert "限流" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_try_tier_classifies_litellm_timeout():
+    """_try_tier 捕获 litellm.Timeout → timeout（与 rate_limited 同等待遇）"""
+    from niu_api.compat import probe_response_format
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from fastapi import Request
+    import litellm
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = litellm.Timeout(
+                "APITimeoutError", model="test-model", llm_provider="openai"
+            )
+            mock_session_class.return_value = mock_session
+
+            with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+                result = await probe_response_format(mock_request)
+
+    # 超时重试 5 次后返回 probe_failed
+    assert result["result"] == "probe_failed"
+    assert "限流" in result["reason"] or "超时" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_try_tier_classifies_authentication_error():
+    """_try_tier 捕获 AuthenticationError → infra_error → probe_failed 不写配置"""
+    from niu_api.compat import probe_response_format
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from fastapi import Request
+    from litellm import AuthenticationError
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = AuthenticationError(
+                "401 invalid api key", model="test-model", llm_provider="openai"
+            )
+            mock_session_class.return_value = mock_session
+
+            result = await probe_response_format(mock_request)
+
+    # 基础设施错误立即返回 probe_failed（不重试）
+    assert result["result"] == "probe_failed"
+    assert "基础设施错误" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_try_tier_classifies_bad_request_error():
+    """_try_tier 捕获 BadRequestError → model_rejected → 降级 prompt_only"""
+    from niu_api.compat import probe_response_format
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from fastapi import Request
+    from litellm import BadRequestError
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = BadRequestError(
+                "400 response_format not supported", model="test-model", llm_provider="openai"
+            )
+            mock_session_class.return_value = mock_session
+
+            result = await probe_response_format(mock_request)
+
+    # model_rejected 降级 prompt_only
+    assert result["result"] == "supported"
+    assert result["mode"] == "prompt_only"
