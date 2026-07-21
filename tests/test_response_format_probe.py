@@ -156,12 +156,15 @@ from niu_api.compat import (
 
 
 def test_build_probe_response_format_json_schema_structure():
-    """json_schema 档构造 OpenAI Structured Outputs 标准结构"""
+    """json_schema 档构造冲突式 schema（verdict 枚举单值），用于区分真假支持"""
     rf = _build_probe_response_format_json_schema()
     assert rf["type"] == "json_schema"
     assert rf["json_schema"]["name"] == "probe_response_format"
     assert rf["json_schema"]["strict"] is True
-    assert "ok" in rf["json_schema"]["schema"]["properties"]
+    schema = rf["json_schema"]["schema"]
+    assert schema["properties"]["verdict"]["enum"] == ["SCHEMA_ENFORCED"]
+    assert schema["required"] == ["verdict"]
+    assert schema["additionalProperties"] is False
 
 
 def test_build_probe_response_format_json_object_structure():
@@ -170,34 +173,62 @@ def test_build_probe_response_format_json_object_structure():
     assert rf == {"type": "json_object"}
 
 
-def test_build_probe_messages_returns_single_user_message_with_json_instruction():
-    """探测消息含 JSON 字样（OpenAI json_object 模式硬性要求 prompt 含 'json'）"""
+def test_build_probe_messages_returns_single_user_message_with_json_keyword():
+    """探测消息：单条 user 消息；含 "json" 字样（OpenAI json_object 硬性要求 prompt 含 json 字符串）"""
     msgs = _build_probe_messages()
     assert len(msgs) == 1
     assert msgs[0]["role"] == "user"
     assert "json" in msgs[0]["content"].lower()
-    assert "ok" in msgs[0]["content"]
 
 
-# Tier 1 (json_schema strict) 要求响应是合法 JSON dict + 含 ok 字段
-def test_classify_tier1_supported_when_valid_json_with_ok_field():
-    """响应是 {"ok": true} → supported"""
-    assert _classify_probe_response_tier1('{"ok": true}') == "supported"
+def test_build_probe_messages_conflicts_with_schema():
+    """探测消息与 schema 故意矛盾（冲突式设计）：要求普通句子且禁止 JSON 输出"""
+    msgs = _build_probe_messages()
+    content = msgs[0]["content"].lower()
+    assert "ocean" in content
+    assert "do not output json" in content
 
 
-def test_classify_tier1_supported_when_json_with_extra_fields():
-    """响应是 {"ok": true, "extra": "ignored"} → supported（schema strict 容忍额外字段）"""
-    assert _classify_probe_response_tier1('{"ok": true, "extra": "ignored"}') == "supported"
+# Tier 1 (json_schema strict) 冲突式设计：只有 verdict == "SCHEMA_ENFORCED" 才算 supported
+def test_classify_tier1_supported_when_verdict_schema_enforced():
+    """响应是 {"verdict": "SCHEMA_ENFORCED"} → supported（schema 战胜 prompt）"""
+    assert _classify_probe_response_tier1('{"verdict": "SCHEMA_ENFORCED"}') == "supported"
+
+
+def test_classify_tier1_supported_when_verdict_with_extra_fields():
+    """响应含 verdict + 额外字段 → supported（容忍额外字段，部分厂商宽松处理 additionalProperties）"""
+    assert _classify_probe_response_tier1('{"verdict": "SCHEMA_ENFORCED", "extra": "ignored"}') == "supported"
+
+
+def test_classify_tier1_gateway_blocked_when_prompt_following_ok_json():
+    """关键回归：响应是 {"ok": true}（旧探测设计的"成功"响应）→ gateway_blocked
+
+    旧设计 prompt 与 schema 都要 {"ok": true}，模型跟随 prompt 即假阳性。
+    新设计下这只是"模型跟随 prompt 的普通 JSON"，无 verdict → gateway_blocked。
+    """
+    assert _classify_probe_response_tier1('{"ok": true}') == "gateway_blocked"
+
+
+def test_classify_tier1_gateway_blocked_when_ocean_sentence():
+    """响应是普通英文句子（flaky 网关静默忽略时模型跟随 prompt）→ gateway_blocked"""
+    assert _classify_probe_response_tier1(
+        'Beneath the sun-dappled surface of the ocean, vibrant coral reefs teem with life.'
+    ) == "gateway_blocked"
+
+
+def test_classify_tier1_gateway_blocked_when_wrong_verdict_value():
+    """响应是 {"verdict": "WRONG"}（JSON 合法但 verdict 值不匹配枚举）→ gateway_blocked"""
+    assert _classify_probe_response_tier1('{"verdict": "WRONG"}') == "gateway_blocked"
 
 
 def test_classify_tier1_gateway_blocked_when_plain_text():
-    """响应是纯文本（如 GLM json_schema 实测输出 {"oko":）→ gateway_blocked"""
+    """响应是纯文本 → gateway_blocked"""
     assert _classify_probe_response_tier1('I am doing fine.') == "gateway_blocked"
 
 
 def test_classify_tier1_gateway_blocked_when_truncated_json():
-    """响应是截断的非合法 JSON（如 GLM json_schema 实测 {"oko":）→ gateway_blocked"""
-    assert _classify_probe_response_tier1('{"oko":') == "gateway_blocked"
+    """响应是截断的非合法 JSON → gateway_blocked"""
+    assert _classify_probe_response_tier1('{"verdict":') == "gateway_blocked"
 
 
 def test_classify_tier1_gateway_blocked_when_empty():
@@ -206,14 +237,8 @@ def test_classify_tier1_gateway_blocked_when_empty():
 
 
 def test_classify_tier1_gateway_blocked_when_markdown_wrapped():
-    """响应是 ```json ...``` 包裹 → gateway_blocked（非纯 JSON）"""
-    assert _classify_probe_response_tier1('```json\n{"ok": true}\n```') == "gateway_blocked"
-
-
-def test_classify_tier1_gateway_blocked_when_json_without_ok_field():
-    """响应是 {"foo": "bar"}（合法 JSON 但无 ok 字段）→ gateway_blocked
-    （json_schema strict 要求字段匹配，无 ok 说明 schema 未生效）"""
-    assert _classify_probe_response_tier1('{"foo": "bar"}') == "gateway_blocked"
+    """响应是 ```json 包裹的 verdict JSON → gateway_blocked（非纯 JSON，schema strict 不会产 markdown）"""
+    assert _classify_probe_response_tier1('```json\n{"verdict": "SCHEMA_ENFORCED"}\n```') == "gateway_blocked"
 
 
 # Tier 2 (json_object) 不要求含 ok 字段，只要求合法 JSON dict
