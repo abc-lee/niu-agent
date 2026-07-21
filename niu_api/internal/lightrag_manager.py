@@ -250,7 +250,10 @@ def _trigger_background_probe_if_needed() -> None:
             time.sleep(10)  # 等 lifespan yield + 服务起来
             for _ in range(3):
                 try:
-                    with httpx.Client(timeout=90) as client:
+                    # 三次采样 + 限流/超时重试最坏耗时 ~250s/档（限流主导早返 ~160s），两档 ~500s。
+                    # 正常场景 3 次采样 + 无重试约 90s/档。设 300s 覆盖正常+限流场景，病态连续
+                    # 超时场景（~335s/档）后台会先放弃，属可接受取舍。
+                    with httpx.Client(timeout=300) as client:
                         resp = client.post(
                             "http://127.0.0.1:9876/api/probe-response-format",
                             json=probe_payload,
@@ -275,11 +278,12 @@ def _trigger_background_probe_if_needed() -> None:
             #   （4xx/5xx/超时/认证/限流/网络），很可能是 API Key 临时失效或
             #   网络波动，不写入避免覆盖用户原有配置导致永久降级
             reason = data.get("reason", "")
-            if mode == "prompt_only" and "gateway_blocked" not in reason:
+            # 新逻辑下 infra_error 走 probe_failed 早返（不写配置），rate_limited/timeout
+            # 走 probe_failed 早返（不写配置），prompt_only 必然是真不支持（gateway_blocked
+            # 或 model_rejected）。守卫保留但改为接受两种确定性不支持信号。
+            if mode == "prompt_only" and not ("gateway_blocked" in reason or "model_rejected" in reason):
                 logger.warning(
-                    "Background probe: both tiers failed with tier_failed "
-                    "(likely infra issue: API Key/network/rate limit), "
-                    "keeping existing config. reason=%s", reason
+                    f"探测结果 prompt_only 但 reason 不含确定性不支持信号，跳过写入: {reason[:100]}"
                 )
                 return
 
