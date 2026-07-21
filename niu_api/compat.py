@@ -1319,17 +1319,9 @@ async def test_llm(request: Request) -> dict:
 
 
 def _build_probe_response_format_json_schema() -> dict:
-    """构造 Tier 1 探测用 response_format：json_schema strict，冲突式设计。
+    """构造 Tier 1 探测用 response_format：json_schema strict。
 
-    schema 强制要求 {"verdict": "SCHEMA_ENFORCED"}，而探测 prompt（_build_probe_messages）
-    要求模型写一句普通英文句子且禁止输出 JSON——两者矛盾。只有网关真正执行
-    json_schema strict（schema 战胜 prompt）时，输出才会是 schema 约束的 JSON；
-    网关静默接受但不执行时，模型跟随 prompt 输出普通句子，被判 gateway_blocked。
-
-    Why 冲突式设计：2026-07-21 实测发现豆包 Coding Plan 网关行为从"400 拒绝
-    response_format"变为"静默接受但不执行"。原设计 prompt 与 schema 都要求
-    {"ok": true}，模型跟随 prompt 即可输出合法 JSON，无法区分"真支持"与
-    "静默忽略"，产生假阳性（误判 json_schema supported）。
+    要求模型返回 {"ok": true}，schema 严格匹配。选最小 schema 降低 token 消耗。
     """
     return {
         "type": "json_schema",
@@ -1339,9 +1331,9 @@ def _build_probe_response_format_json_schema() -> dict:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "verdict": {"type": "string", "enum": ["SCHEMA_ENFORCED"]},
+                    "ok": {"type": "boolean"}
                 },
-                "required": ["verdict"],
+                "required": ["ok"],
                 "additionalProperties": False,
             },
         },
@@ -1357,53 +1349,45 @@ def _build_probe_response_format_json_object() -> dict:
 
 
 def _build_probe_messages() -> list[dict]:
-    """构造探测消息：要求写一句普通英文句子且禁止输出 JSON。
-
-    与 Tier 1 schema（强制 {"verdict": "SCHEMA_ENFORCED"}）故意矛盾——只有网关
-    真正执行 response_format 时输出才是 JSON；网关静默忽略时模型跟随 prompt
-    输出普通句子，被分类器判 gateway_blocked。
-
-    Why 必须含 "json" 字样：OpenAI json_object 模式硬性要求 prompt 含 "json"
-    字符串，否则直接 400（会造成对真支持厂商的假阴性）。"Do not output JSON"
-    一句天然含 "JSON"，满足该检查。
-    """
+    """构造探测消息。prompt 含 'json' 字样（OpenAI json_object 模式硬性要求），
+    且显式要求 {"ok": true}，即使 response_format 被网关剥离也能通过响应格式判定。"""
     return [{
         "role": "user",
-        "content": "Write exactly one English sentence about the ocean. Do not output JSON.",
+        "content": 'Respond with a JSON object: {"ok": true}. Do not include any other text.',
     }]
 
 
 def _classify_probe_response_tier1(text: str) -> str:
-    """Tier 1 (json_schema strict) 判定：响应必须是合法 JSON dict 且
-    verdict == "SCHEMA_ENFORCED"（schema 战胜 prompt 的铁证）。
+    """Tier 1 (json_schema strict) 判定。要求响应是合法 JSON dict 且含 "ok" 字段。
 
-    容忍额外字段（部分厂商可能只严格执行 required/enum、宽松处理
-    additionalProperties），但 verdict 值必须精确匹配枚举。
+    返回值：
+    - "supported": 响应合法 JSON dict + 含 "ok" 字段
+    - "gateway_blocked": 响应非合法 JSON 或无 "ok" 字段（schema 未生效）
 
-    真实环境验证（2026-07-21）：豆包 Coding Plan 网关静默接受 response_format
-    但不执行，模型跟随 prompt 输出海洋句子 → gateway_blocked。
+    真实环境验证（2026-07-19）：GLM json_schema 实测返回 {"oko":（字段名漂移 + 截断），
+    走 gateway_blocked 分支降级到 Tier 2。
     """
-    import json
     try:
         data = json.loads(text.strip())
     except json.JSONDecodeError:
         return "gateway_blocked"
-    if not isinstance(data, dict):
-        return "gateway_blocked"
-    if data.get("verdict") != "SCHEMA_ENFORCED":
+    if not isinstance(data, dict) or "ok" not in data:
         return "gateway_blocked"
     return "supported"
 
 
 def _classify_probe_response_tier2(text: str) -> str:
-    """Tier 2 (json_object) 判定：只要求响应是合法 JSON dict。
+    """Tier 2 (json_object) 判定。只要求响应是合法 JSON dict，不要求字段名。
 
-    探测 prompt 明确要求"不要输出 JSON"，此时输出仍是合法 JSON dict 即说明
-    json_object 约束真正生效（模型被强制输出 JSON）；网关静默忽略时模型跟随
-    prompt 输出普通句子 → 非 JSON → gateway_blocked。
+    返回值：
+    - "supported": 响应合法 JSON dict
+    - "gateway_blocked": 响应非合法 JSON 或非 dict
 
-    已知边界：理论上存在"网关静默忽略 + 模型不听指令仍输出 JSON"的假阳性
-    组合，概率低且 json_object 档位误判代价小（运行时 json_repair 兜底）。
+    Why 不要求含 ok 字段：json_object 仅约束输出合法 JSON，不约束字段名。
+    模型可能返回 {"result": true} 或 {"status": "ok"}，都算 supported。
+
+    真实环境验证（2026-07-19）：GLM json_object 实测返回 {"ok": true}\\n}（含额外字符），
+    json.loads 失败走 gateway_blocked 分支降级到 Tier 3。
     """
     try:
         data = json.loads(text.strip())
@@ -1423,7 +1407,7 @@ async def probe_response_format(request: Request) -> dict:
     等基础设施类错误（那些应该在连通性测试阶段就被拦截）。
 
     3 档递进（最强→最弱）：
-    - Tier 1: json_schema strict → 响应合法 JSON dict + verdict=="SCHEMA_ENFORCED" → json_schema
+    - Tier 1: json_schema strict → 响应合法 JSON dict + 含 ok → json_schema
     - Tier 2: json_object → 响应合法 JSON dict → json_object
     - Tier 3: 都失败 → prompt_only
 
@@ -1439,11 +1423,10 @@ async def probe_response_format(request: Request) -> dict:
     要求"判定更通用——任何错误都意味着该 tier 不可用，应该降级。reason
     字段记录异常类型+消息供诊断，但不影响 mode 判定。
 
-    真实环境验证：
-    - 2026-07-19：豆包 Coding Plan 网关 400 拒绝 response_format → prompt_only
-    - 2026-07-21：豆包网关行为变更为"静默接受但不执行"（冲突测试实锤
-      schema 被无视）；GLM 同为接受但输出漂移 → 两者均 prompt_only
-    - 探测采用冲突式设计（见 _build_probe_messages），防"静默忽略"假阳性
+    真实环境验证（2026-07-19）：
+    - 豆包 Coding Plan：Tier 1/2 网关 400 拒绝（抛 BadRequestError）→ prompt_only
+    - GLM：Tier 1/2 网关 200 但输出漂移（不抛异常但响应非合法 JSON）→ prompt_only
+    - OpenAI：Tier 1 真正支持 → json_schema
 
     约束：本端点独立于 /api/test-llm（启动器复用，禁止改动响应结构）。
     """
@@ -1510,7 +1493,7 @@ async def probe_response_format(request: Request) -> dict:
         """单档探测。返回 (tier_result, raw_text_or_reason)。
 
         判定逻辑：只看响应内容是否达到要求，不看错误码或异常类型。
-        - 没抛异常 + 响应合法 JSON（Tier 1 还要求 verdict=="SCHEMA_ENFORCED"）→ "supported"
+        - 没抛异常 + 响应合法 JSON（Tier 1 还要求含 ok 字段）→ "supported"
         - 没抛异常 + 响应非合法 JSON → "gateway_blocked"
         - 抛任何异常（4xx/5xx/超时/认证/限流/网络/未知）→ "tier_failed"
           统一视为该 tier 不支持，降级下一 tier
