@@ -826,14 +826,14 @@
     }
 
     // 把文本插入到输入框末尾，自动补换行让路径独占一行：
-    // - 已有内容为空或末尾是换行 → 直接追加路径
-    // - 已有内容末尾不是换行 → 补换行再追加路径
+    // - 已有内容为空或末尾是换行/空格 → 直接追加路径
+    // - 已有内容末尾不是换行/空格 → 补换行再追加路径
     // - 路径末尾自动补换行，光标停在新行行首，用户补充文字在新行输入
     // 这样主 Agent 能识别"行首是绝对路径"，避免路径含空格时与用户补充文字混淆
     // 最后聚焦+触发 input 事件让 textarea 自适应高度
     function insertTextToInput(text) {
       const current = userInput.value;
-      if (current && !current.endsWith('\n')) {
+      if (current && !current.endsWith('\n') && !current.endsWith(' ')) {
         userInput.value = current + '\n' + text + '\n';
       } else {
         userInput.value = current + text + '\n';
@@ -1557,6 +1557,7 @@
     });
     
     messages.addEventListener('drop', (e) => {
+      e.preventDefault();
       messages.classList.remove('drag-over');
 
       // e.dataTransfer.files 在某些场景（拖入纯文本/URL）可能为 null，需防御
