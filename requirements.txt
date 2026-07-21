@@ -83,7 +83,7 @@ lazy-loader==0.5
 insightface==0.7.3
 onnxruntime==1.23.2
 onnx==1.21.0
-opencv-python-headless==4.13.0.92
+opencv-python-headless==4.11.0.86   # !! 禁止升到 4.12+：4.12 起 METADATA 声明 numpy>=2，与 numpy==1.26.4 铁律冲突（torch 2.2.2 / insightface 0.7.3 用 numpy 1.x ABI） !!
 Pillow==12.2.0
 pillow-heif==1.4.0
 easydict==1.13                 # insightface 配置对象
