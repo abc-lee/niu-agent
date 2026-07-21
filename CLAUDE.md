@@ -4,13 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-这是一个个人知识管理助手项目，采用 **Iced 前端 + Rust 启动器 + Python Agent 核心 + 多个 MCP 服务器** 的混合架构。
+这是一个个人知识管理助手项目，采用 **Electron 33 前端 + Rust 启动器 + Python Agent 核心 + 多个 MCP 服务器** 的混合架构。Iced 仅用于 Rust 启动器的 Splash 启动画面。
+
+**核心特色**：MCP 虚拟磁盘 — 把 100+ MCP 工具的 Schema 映射为 Unix 风格虚拟文件系统，Agent 用单一 `disk()` 工具以 `ls`/`cat`/路径调用的方式使用所有工具，彻底解决 MCP 工具爆炸导致的上下文占用问题（详见"配置文件架构"小节的 `config/disk/*.yaml`）。
 
 **核心架构**：
 ```
-用户界面 (Iced/GPU)
+用户界面 (Electron 33)
     ↓ HTTP/SSE
-Rust 启动器 (launcher/)
+Rust 启动器 (launcher/)  ← Iced 仅用于 Splash 启动画面
     ↓ 启动 + 监控
 Python API 服务 (niu_api/)
     ↓ 调用
@@ -26,7 +28,7 @@ MCP 服务器集群 (mcp-servers/)
 3. **修改前必须先做临时提交备份** — `git add -A && git commit`，恢复前也必须先备份当前状态，不能直接 `git checkout` 覆盖
 4. **修改前必须用 gitnexus 分析影响范围** — 评估 blast radius 后再动手
 5. **测试必须用真实数据+真实LLM** — 绕过LLM的测试是假测试
-6. **python/ 目录必须是完整的自包含 Python 安装** — 所有二进制文件、库、依赖必须真实存在于 python/ 目录内，禁止使用符号链接指向外部路径（如 /Library/Frameworks/Python.framework/）。这个目录最终要打包分发，客户不需要自己安装 Python 环境，也不需要自己安装依赖。
+6. **python/ 目录必须是完整的自包含 Python 安装** — 所有二进制文件、库、依赖必须真实存在于 python/ 目录内，禁止使用符号链接指向外部路径（如 /Library/Frameworks/Python.framework/）。这个目录最终要打包分发，客户不需要自己安装 Python 环境，也不需要自己安装依赖。当前 python/ 实际为 venv（pyvenv.cfg 指向系统 Python 标准库），违反本铁律的自包含要求，需另开会话重建。同时注意：numpy<2 和 opencv<4.12 是隐性约束（torch 2.2.2 / insightface C 扩展用 numpy 1.x ABI；opencv 4.12+ 强制 numpy>=2）。
 7. **git 操作后必须修复文件权限** — git checkout/reset 会丢失可执行权限，执行后必须运行：`find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x` 和 `find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;`
 8. **Rust 启动器编译必须用 `launcher/build.sh`，禁止直接 `cargo build`** — `cargo build` 只输出到 `launcher/target/debug/`，不会复制到项目根目录的 `niu`，导致测试用的是旧二进制。`launcher/build.sh` 编译后自动 `cp target/release/niu-launcher ../niu`。每次改 Rust 代码（`launcher/src/`）后必须跑 `./launcher/build.sh`，不能用 `cargo build` 替代。这条铁律必须传达给派出去的子 Agent。
 
@@ -48,11 +50,16 @@ MCP 服务器集群 (mcp-servers/)
 ### 前置要求
 
 - **Go**: 不再使用
-- **Rust**: 用于启动器 (launcher/)，前端已集成在 Iced GUI 中
+- **Rust**: 用于启动器 (launcher/)（含 Iced Splash 启动画面）
+- **Node.js**: 用于 Electron 前端 (ui/main/)，建议 LTS 版本
 - **Python**: 3.11+ (用于 Agent 和 MCP 服务器)
 - **SQLite**: 用于会话持久化
 
 ### 安装依赖
+
+**两种安装方式**：
+- 下方 `pip install -e .` 逐个安装是**开发模式**，修改代码立即生效
+- `pip install -r requirements.txt` 是**打包模式**，用于构建嵌入式 Python 环境（python/）
 
 ```bash
 # Python 依赖（Agent 核心）
@@ -66,6 +73,9 @@ cd mcp-servers/file-parser && pip install -e .
 cd mcp-servers/config-manager && pip install -e .
 cd mcp-servers/memory-server && pip install -e .
 cd mcp-servers/session-manager && pip install -e .
+
+# 开发/测试依赖（可选，不进入分发包）
+pip install -r requirements-dev.txt
 ```
 
 ### 运行项目
@@ -78,7 +88,9 @@ cd mcp-servers/session-manager && pip install -e .
 
 **单独启动前端**：
 ```bash
-# 前端已集成在 Rust 启动器中，无需单独启动
+# 前端是独立的 Electron 进程，由 Rust 启动器自动拉起
+# 如需单独调试前端：
+cd ui/main && npm start
 ```
 
 **单独启动 Python API**：
@@ -112,8 +124,8 @@ ruff format .
 
 **核心文件**：
 - `agent_loop.py` — 主循环 + V4逐轮persist推送 + chat_busy/chat_idle状态机
-- `handler.py` — 工具实现 + 工作记忆机制（526行）
-- `llmcore.py` — LLM 抽象层，支持多厂商（835行）
+- `handler.py` — 工具实现 + 工作记忆机制
+- `llmcore.py` — LLM 抽象层，支持多厂商
 
 **重要机制**：
 1. **工作记忆**：`tool_after_callback` + `_get_anchor_prompt` + `next_prompt_patcher`
@@ -203,7 +215,7 @@ schemas = registry.get_schemas()
 3. **配置示例**（config/mcp-servers.yaml）：
    ```yaml
    server-name:
-     command: ${PYTHON_PATH}  # 由 main.go 自动检测
+     command: ${PYTHON_PATH}  # 由 launcher/src/main.rs 的 detect_python() 自动检测
      args:
        - "-m"
        - "niu_server_name"
@@ -221,17 +233,19 @@ schemas = registry.get_schemas()
 | `config-manager` | 配置管理（读/写用户配置和记忆） | ✅ |
 | `memory-server` | 用户长期记忆和工作便签（permanent array 10 条） | ✅ |
 | `session-manager` | 会话管理（消息压缩） | ❌ |
-| `browser-server` | 浏览器自动化（Playwright async_api + 守护线程） | ✅ |
+| `browser-server` | 浏览器自动化（WebSocket Bridge + 系统 Chrome，CDP 协议） | ✅ |
 | `brain-region-server` | 脑区激活/调暗/状态管理 | ✅ |
 | `scheduler-server` | 定时任务调度（增删改查） | ❌ |
 | `feishu-server` | 飞书消息收发（可选） | ❌ |
 
 **Browser-Server 架构**：
-- `playwright.async_api` 在独立守护线程中运行（自有 asyncio loop）
-- 主进程通过 `call_async()` 桥接同步调用与异步 Playwright
-- `get_page()` 返回 `SyncPageProxy`：包装 async Page 方法为同步，code_run 代码无需改动
-- `launch_persistent_context()` 返回 BrowserContext，用 `_context` 做状态判断（非 `_browser`）
-- 不修改 pip 安装目录源码，Playwright 升级安全
+- 旧架构（已废弃）：`playwright.async_api` 守护线程模式，playwright 库已从依赖中移除
+- 新架构：WebSocket Bridge + 系统 Chrome（CDP 协议）
+- 核心文件：
+  - `mcp-servers/browser-server/src/niu_browser_server/launcher.py` — 启动系统 Chrome（带 remote-debugging-port）
+  - `mcp-servers/browser-server/src/niu_browser_server/ws_bridge.py` — WebSocket 桥接 CDP 命令
+- 浏览器扩展：`extensions/niu-browser-ext/`（基于 alibaba/page-agent 二次开发），负责页面 DOM 提取和用户交互
+- 优势：不再需要内嵌浏览器，复用用户系统 Chrome（含登录态、插件）
 
 ### 子 Agent 架构
 
@@ -283,6 +297,13 @@ schemas = registry.get_schemas()
 | `config/agents/niu.md` | 主 Agent 定义（提示词、权限、MCP服务器） |
 | `config/agents/file-processor.md` | 子 Agent 定义（文件处理专用） |
 | `config/mcp-servers.yaml` | MCP 服务器配置 |
+| `config/disk/*.yaml` | MCP 虚拟磁盘配置（把 100+ MCP 工具 Schema 映射为 Unix 风格路径，解决工具爆炸问题） |
+
+**MCP 虚拟磁盘**（项目核心特色）：
+- 所有 MCP 工具的 Schema 不直接注入 Agent 上下文（避免上下文爆炸）
+- 通过 `config/disk/*.yaml` 映射为 Unix 风格虚拟文件系统
+- Agent 用单一 `disk()` 工具以 `ls /`、`cat /memory/xxx`、`/memory/xxx(params)` 方式调用
+- 详细规范见 `docs/manual-mcp-disk.md`
 
 ### 模型目录 `models/`
 
@@ -360,9 +381,12 @@ preload_face_model()
 }
 ```
 
-### Electron 窗口管理（已迁移至 Iced）
+### Electron 窗口管理
 
-前端已从 Electron 迁移至 Iced (Rust GPU GUI)，以下内容保留供历史参考。
+前端是 Electron 33（`ui/main/`），含三套窗口：
+- `assistant/` — 主对话窗口（精灵 + 聊天）
+- `settings/` — 设置窗口
+- `graph/` — 知识图谱可视化（force-graph 渲染）
 
 **关闭流程**：
 1. 前端窗口关闭 → 触发关闭事件
@@ -370,13 +394,13 @@ preload_face_model()
 3. Python API 清理资源
 4. Rust 启动器终止所有子进程
 
-**修改文件**：Rust 启动器 + Python API
+**修改文件**：Rust 启动器 + Python API + ui/main/main.js
 
 ## 常见问题
 
 ### 照片拖入卡死
 
-**原因**：`asyncio.to_thread` + InsightFace/ONNX Runtime 在 MCP stdio 环境中存在兼容性问题。
+**原因**：历史上 MCP 走 stdio 时存在此问题。当前 MCP 已同进程化（ToolRegistry 直接调用），此问题已不存在。保留此节作为历史参考。
 
 **解决方案**：
 1. 将 MCP 工具调用改为同步
@@ -409,6 +433,10 @@ preload_face_model()
 
 ## 相关文档
 
+- `docs/SYSTEM_MANUAL.md` — 系统手册（功能列表、架构设计、分册索引）
+- `docs/manual-mcp-disk.md` — MCP 虚拟磁盘手册
+- `docs/manual-general-subagent.md` — 通用子 Agent 体系（阶段三）
+- `docs/personal-assistant-architecture-v2.md` — 产品定位与核心亮点（架构 v2）
 - `AGENTS.md` — 项目知识库（包含详细更新日志）
 - `docs/feature-photo-processing.md` — 照片处理设计
 - `docs/feature-file-management.md` — 文件管理设计
