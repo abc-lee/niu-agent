@@ -466,3 +466,212 @@ def test_probe_endpoint_does_not_affect_test_llm_endpoint(api_base):
     # 不能有 result/mode/raw_response 等探测字段
     assert "result" not in data
     assert "mode" not in data
+
+
+# ===== 三次采样逻辑测试 =====
+
+@pytest.mark.asyncio
+async def test_probe_tier_three_samples_all_pass_returns_supported():
+    """三次采样全 supported → 该档 supported"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock
+
+    mock_try = AsyncMock(return_value=("supported", '{"verdict": "SCHEMA_ENFORCED"}'))
+    result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "supported"
+    assert raw == ""
+    assert mock_try.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_probe_tier_one_gateway_blocked_returns_failed():
+    """三次采样中任何一次 gateway_blocked → 该档失败"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock
+
+    mock_try = AsyncMock(side_effect=[
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("gateway_blocked", "ocean sentence"),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+    ])
+    result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "gateway_blocked"
+    assert raw == "ocean sentence"
+    assert mock_try.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_tier_one_model_rejected_returns_failed():
+    """三次采样中任何一次 model_rejected → 该档失败"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock
+
+    mock_try = AsyncMock(side_effect=[
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("model_rejected", "BadRequestError: 400"),
+    ])
+    result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "model_rejected"
+    assert raw == "BadRequestError: 400"
+    assert mock_try.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_tier_rate_limit_retries_without_counting():
+    """限流只重试不计失败，直到返回非限流结果"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock, patch
+
+    mock_try = AsyncMock(side_effect=[
+        ("rate_limited", "RateLimitError: 429"),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+    ])
+    with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+        result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "supported"
+    assert raw == ""
+    assert mock_try.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_probe_tier_timeout_retries_without_counting():
+    """超时同限流处理：只重试不计失败（asyncio.TimeoutError + litellm.Timeout）"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock, patch
+    import asyncio
+
+    mock_try = AsyncMock(side_effect=[
+        asyncio.TimeoutError(),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+    ])
+    with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+        result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "supported"
+    assert raw == ""
+    assert mock_try.call_count == 4
+
+    mock_try2 = AsyncMock(side_effect=[
+        ("timeout", "litellm.Timeout: APITimeoutError"),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+    ])
+    with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+        result2, raw2 = await _probe_tier_three_samples_async(mock_try2, {"type": "json_schema"})
+    assert result2 == "supported"
+    assert raw2 == ""
+    assert mock_try2.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_probe_tier_rate_limit_exhausted_returns_error():
+    """限流/超时重试超过上限（整档共享 5 次）仍未成功 → 返回 rate_limited"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock, patch
+
+    mock_try = AsyncMock(return_value=("rate_limited", "RateLimitError: 429"))
+    with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+        result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "rate_limited"
+    assert raw == "RateLimitError: 429"
+    assert mock_try.call_count == 6
+
+
+@pytest.mark.asyncio
+async def test_probe_tier_transient_retries_shared_across_samples():
+    """限流/超时重试预算整档共享：采样 1 限流 3 次 + 采样 2 限流 3 次 → 第 6 次返回 rate_limited"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock, patch
+
+    mock_try = AsyncMock(side_effect=[
+        ("rate_limited", "RateLimitError: 429"),
+        ("rate_limited", "RateLimitError: 429"),
+        ("rate_limited", "RateLimitError: 429"),
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("rate_limited", "RateLimitError: 429"),
+        ("rate_limited", "RateLimitError: 429"),
+        ("rate_limited", "RateLimitError: 429"),
+    ])
+    with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+        result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "rate_limited"
+    assert raw == "RateLimitError: 429"
+    assert mock_try.call_count == 7
+
+
+@pytest.mark.asyncio
+async def test_probe_tier_infra_error_returns_immediately():
+    """任何一次基础设施错误（401/网络断/500）→ 立即返回 infra_error，不写配置"""
+    from niu_api.compat import _probe_tier_three_samples_async
+    from unittest.mock import AsyncMock
+
+    mock_try = AsyncMock(side_effect=[
+        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
+        ("infra_error", "AuthenticationError: 401"),
+    ])
+    result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
+    assert result == "infra_error"
+    assert raw == "AuthenticationError: 401"
+    assert mock_try.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_returns_probe_failed_when_rate_limited():
+    """端点探测限流/超时重试耗尽 → 返回 probe_failed + rate_limited reason"""
+    from niu_api.compat import probe_response_format
+    from unittest.mock import AsyncMock, patch
+    from fastapi import Request
+
+    with patch("niu_api.compat._probe_tier_three_samples_async", new_callable=AsyncMock) as mock_sampler:
+        mock_sampler.return_value = ("rate_limited", "RateLimitError: 429")
+
+        mock_request = AsyncMock(spec=Request)
+        mock_request.json = AsyncMock(return_value={})
+
+        with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+            mock_get_config.return_value = {
+                "apikey": "test-key",
+                "apibase": "https://test.example.com",
+                "model": "test-model",
+                "type": "openai",
+                "litellm_kwargs": {},
+            }
+
+            result = await probe_response_format(mock_request)
+
+    assert result["result"] == "probe_failed"
+    assert "限流" in result["reason"]
+    assert result["mode"] is None
+
+
+@pytest.mark.asyncio
+async def test_probe_returns_probe_failed_when_infra_error():
+    """端点探测遇基础设施错误（401/网络断/500）→ 返回 probe_failed + infra_error reason，不写配置"""
+    from niu_api.compat import probe_response_format
+    from unittest.mock import AsyncMock, patch
+    from fastapi import Request
+
+    with patch("niu_api.compat._probe_tier_three_samples_async", new_callable=AsyncMock) as mock_sampler:
+        mock_sampler.return_value = ("infra_error", "AuthenticationError: 401")
+
+        mock_request = AsyncMock(spec=Request)
+        mock_request.json = AsyncMock(return_value={})
+
+        with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+            mock_get_config.return_value = {
+                "apikey": "test-key",
+                "apibase": "https://test.example.com",
+                "model": "test-model",
+                "type": "openai",
+                "litellm_kwargs": {},
+            }
+
+            result = await probe_response_format(mock_request)
+
+    assert result["result"] == "probe_failed"
+    assert "基础设施错误" in result["reason"]
+    assert result["mode"] is None

@@ -10,6 +10,7 @@ import os
 import re
 import threading
 import time
+from asyncio import sleep as _asyncio_sleep
 from datetime import datetime
 
 from agent.session import get_message_store
@@ -1414,6 +1415,77 @@ def _classify_probe_response_tier2(text: str) -> str:
     return "supported"
 
 
+async def _probe_tier_three_samples_async(try_fn, response_format: dict) -> tuple[str, str]:
+    """单档三次采样（异步版）：全过才 supported，限流/超时只重试不计失败。
+
+    Args:
+        try_fn: 单次采样异步函数，签名 () -> await (tier_result, raw_text_or_reason)。
+                tier_result 取值: "supported" / "gateway_blocked" / "model_rejected" / "rate_limited" / "timeout" / "infra_error"
+        response_format: 本档 response_format（用于日志）
+
+    Returns:
+        (result, last_raw) 元组：
+        - result: "supported" / "gateway_blocked" / "model_rejected" / "rate_limited" / "infra_error"
+        - last_raw: 最后一次采样的 raw 摘要（含异常类名，用于诊断；三次全过时为空字符串）
+
+    Why 三次采样：2026-07-21 实测豆包 Coding Plan 网关行为非确定性（flaky），
+    同一请求 5 次采样 2 次 schema 胜、3 次 prompt 胜。单次探测碰巧命中执行
+    窗口期会误判 json_schema，碰巧命中静默忽略窗口期会误判 prompt_only。
+    三次采样全过才升档——flaky 网关必然 ≥1 次静默忽略，稳定降级 prompt_only；
+    真支持网关（OpenAI）3 次全过，稳定写入 json_schema。
+
+    Why 限流/超时只重试不计失败：RateLimitError / litellm.Timeout /
+    asyncio.TimeoutError ≠ 不支持，只是"这次请求被网关挡了"或"网关慢/抖动"。
+    限流/超时同属 transient infra 问题，sleep 后重试本次采样，直到返回非限流/
+    非超时结果（supported / model_rejected / gateway_blocked）才判定该次采样。
+
+    Why 重试预算整档共享：防止限流/超时期间无限拖延端点。3 次采样共享 5 次
+    重试预算（限流+超时累计），指数退避 5s→10s→20s→40s→80s，最多等 155s。
+    """
+    MAX_TRANSIENT_RETRIES = 5
+    transient_retries = 0
+
+    for sample_num in range(1, 4):
+        while True:
+            try:
+                result, raw = await try_fn()
+            except asyncio.TimeoutError:
+                result, raw = "timeout", "TimeoutError: 采样超时（30s）"
+
+            if result in ("rate_limited", "timeout"):
+                transient_retries += 1
+                if transient_retries > MAX_TRANSIENT_RETRIES:
+                    logger.warning(
+                        f"探测限流/超时重试 {MAX_TRANSIENT_RETRIES} 次仍未成功，放弃 "
+                        f"(最后错误: {result})"
+                    )
+                    return "rate_limited", raw
+                sleep_seconds = 5 * (2 ** (transient_retries - 1))
+                logger.info(
+                    f"探测采样 {sample_num} {result}，{sleep_seconds}s 后重试 "
+                    f"（第 {transient_retries} 次，response_format={response_format.get('type')}）"
+                )
+                await _asyncio_sleep(sleep_seconds)
+                continue
+            break
+
+        if result == "infra_error":
+            logger.warning(
+                f"探测采样 {sample_num} 基础设施错误（{raw[:80]}），"
+                f"不写配置，提示用户稍后重试"
+            )
+            return "infra_error", raw
+
+        if result != "supported":
+            logger.info(
+                f"探测采样 {sample_num} 失败（{result}, response_format={response_format.get('type')}），"
+                f"该档不通过"
+            )
+            return result, raw
+
+    return "supported", ""
+
+
 @router.post("/api/probe-response-format")
 async def probe_response_format(request: Request) -> dict:
     """递进探测当前 LLM 配置对 response_format 的支持档位。
@@ -1423,26 +1495,51 @@ async def probe_response_format(request: Request) -> dict:
     等基础设施类错误（那些应该在连通性测试阶段就被拦截）。
 
     3 档递进（最强→最弱）：
-    - Tier 1: json_schema strict → 响应合法 JSON dict + 含 ok → json_schema
-    - Tier 2: json_object → 响应合法 JSON dict → json_object
+    - Tier 1: json_schema strict → 三次采样全 verdict == "SCHEMA_ENFORCED" → json_schema
+    - Tier 2: json_object → 三次采样全合法 JSON dict → json_object
     - Tier 3: 都失败 → prompt_only
 
-    判定原则：只看响应内容是否符合该 tier 要求，不看错误码或异常类型。
-    - 没抛异常 + 响应符合 → "supported"
-    - 没抛异常 + 响应不符合（如非合法 JSON、字段缺失）→ "gateway_blocked"
-    - 抛任何异常（4xx/5xx/超时/未知）→ "tier_failed"
-    任何"非 supported"结果都降级下一 tier，3 档都失败则 prompt_only 保底。
+    判定原则：冲突式设计 + 异常分类。
+    - 冲突式设计：schema 强制要求 {"verdict": "SCHEMA_ENFORCED"}，prompt 要求
+      "写海洋句子禁止 JSON"——只有 schema 战胜 prompt（网关真执行）才判
+      supported，模型跟随 prompt 输出海洋句子即判 gateway_blocked。
+    - 异常分类：
+      * 没抛异常 + 响应符合该档要求 → "supported"
+      * 没抛异常 + 响应不符合 → "gateway_blocked"
+      * RateLimitError → "rate_limited"（限流，sleep 重试不计失败）
+      * litellm.Timeout / asyncio.TimeoutError → "timeout"（超时，sleep 重试不计失败）
+      * AuthenticationError / APIConnectionError / 5xx → "infra_error"
+        （基础设施错误，端点早返 probe_failed 不写配置）
+      * BadRequestError / UnsupportedParamsError → "model_rejected"
+        （模型/网关明确拒绝，该档失败降级）
+      * 其他异常 → "model_rejected"
 
-    Why 不看异常类型：不同厂商/网关返回的错误类型不一致（BadRequestError/
-    UnsupportedParamsError/AuthenticationError/RateLimitError/HTTPStatusError/
-    自定义异常等），硬编码特定异常类会漏掉其他厂商的错误。按"响应是否达到
-    要求"判定更通用——任何错误都意味着该 tier 不可用，应该降级。reason
-    字段记录异常类型+消息供诊断，但不影响 mode 判定。
+    Why 三次采样：2026-07-21 实测豆包 Coding Plan 网关行为非确定性（flaky），
+    同一请求 5 次采样 2 次 schema 胜、3 次 prompt 胜。单次探测碰巧命中执行
+    窗口期会误判 json_schema，碰巧命中静默忽略窗口期会误判 prompt_only。
+    三次采样全过才升档——flaky 网关必然 ≥1 次静默忽略，稳定降级 prompt_only；
+    真支持网关（OpenAI）3 次全过，稳定写入 json_schema。
 
-    真实环境验证（2026-07-19）：
-    - 豆包 Coding Plan：Tier 1/2 网关 400 拒绝（抛 BadRequestError）→ prompt_only
-    - GLM：Tier 1/2 网关 200 但输出漂移（不抛异常但响应非合法 JSON）→ prompt_only
-    - OpenAI：Tier 1 真正支持 → json_schema
+    Why 限流/超时只重试不计失败：RateLimitError / litellm.Timeout /
+    asyncio.TimeoutError ≠ 不支持，只是"这次请求被网关挡了"或"网关慢/抖动"。
+    限流/超时同属 transient infra 问题，sleep 后重试本次采样（指数退避
+    5s→10s→20s→40s→80s，最多 5 次整档共享），直到返回非限流/非超时结果
+    才判定该次采样。
+
+    Why 基础设施错误单独分类：AuthenticationError（401）/ APIConnectionError
+    （网络断）/ InternalServerError（500）/ ServiceUnavailableError（503）
+    是临时性基础设施故障，不是"模型不支持 response_format"。如果归入
+    model_rejected，两档失败 → prompt_only 写入配置 →
+    _should_auto_probe_after_upgrade 永远 False → 首次升级启动时恰好
+    API Key 失效/网关 500 的用户被永久静默降级，且永不重探。基础设施错误
+    应该端点早返 probe_failed，不写配置，用户稍后手动重试。
+
+    真实环境验证（2026-07-21）：
+    - 豆包 Coding Plan：网关行为非确定性（flaky），同一请求 5 次采样 2 次
+      schema 胜、3 次 prompt 胜。三次采样全过才升档，flaky 网关必然 ≥1 次
+      静默忽略，稳定降级 prompt_only。
+    - GLM：网关接受但模型输出漂移 → prompt_only
+    - OpenAI：真正支持 → json_schema（3 次全过）
 
     约束：本端点独立于 /api/test-llm（启动器复用，禁止改动响应结构）。
     """
@@ -1506,19 +1603,45 @@ async def probe_response_format(request: Request) -> dict:
     messages = _build_probe_messages()
 
     def _try_tier(response_format: Optional[dict]) -> tuple[str, str]:
-        """单档探测。返回 (tier_result, raw_text_or_reason)。
+        """单次采样。返回 (tier_result, raw_text_or_reason)。
 
-        判定逻辑：只看响应内容是否达到要求，不看错误码或异常类型。
-        - 没抛异常 + 响应合法 JSON（Tier 1 还要求含 ok 字段）→ "supported"
-        - 没抛异常 + 响应非合法 JSON → "gateway_blocked"
-        - 抛任何异常（4xx/5xx/超时/认证/限流/网络/未知）→ "tier_failed"
-          统一视为该 tier 不支持，降级下一 tier
+        判定逻辑：
+        - 没抛异常 + 响应符合该档要求 → "supported"
+        - 没抛异常 + 响应不符合 → "gateway_blocked"
+        - 抛 RateLimitError → "rate_limited"（限流，不计失败，上层重试）
+        - 抛 litellm.Timeout / openai.APITimeoutError → "timeout"（超时，不计失败，上层重试）
+        - 抛 AuthenticationError / APIConnectionError / InternalServerError /
+          ServiceUnavailableError → "infra_error"（基础设施错误，不写配置，端点早返 probe_failed）
+        - 抛 BadRequestError / UnsupportedParamsError → "model_rejected"
+        - 抛其他异常 → "model_rejected"（统一视为不支持，reason 记录供诊断）
 
-        Why 不看异常类型：不同厂商/网关返回的错误类型不一致，
-        硬编码 BadRequestError/UnsupportedParamsError 会漏掉其他厂商的
-        错误类型。按"响应是否达到要求"判定更通用——任何错误都意味着
-        该 tier 不可用，应该降级。
+        Why 限流/超时单独分类：RateLimitError / litellm.Timeout ≠ 不支持，只是
+        "这次请求被网关挡了"或"网关慢/抖动"。限流/超时时上层
+        _probe_tier_three_samples_async sleep 后重试本次采样，直到返回非限流/
+        非超时结果才判定。
+
+        Why 捕获 litellm.Timeout：慢厂商（本地 Ollama、DeepSeek 推理延迟）的
+        真实超时路径是 litellm 在线程内 read_timeout（15s）先抛 litellm.Timeout
+        （APITimeoutError 子类），外层 asyncio.wait_for（30s）几乎永远轮不到。
+        如果不捕获，litellm.Timeout 会被 generic except Exception 归类
+        model_rejected → 失败即停，慢但真支持的厂商被误杀。
+
+        Why 基础设施错误单独分类：AuthenticationError（401）/ APIConnectionError
+        （网络断）/ InternalServerError（500）/ ServiceUnavailableError（503）
+        是临时性基础设施故障，不是"模型不支持 response_format"。如果归入
+        model_rejected，两档失败 → prompt_only 写入配置 →
+        _should_auto_probe_after_upgrade 永远 False → 首次升级启动时恰好
+        API Key 失效/网关 500 的用户被永久静默降级，且永不重探。基础设施错误
+        应该端点早返 probe_failed，不写配置，用户稍后手动重试。
         """
+        from litellm import (
+            RateLimitError, BadRequestError, UnsupportedParamsError,
+            AuthenticationError, APIConnectionError, InternalServerError,
+            ServiceUnavailableError,
+        )
+        import litellm
+        import openai
+
         try:
             session = LiteLLMSession(cfg=base_llm_config)
             gen = session.chat(messages=messages, response_format=response_format)
@@ -1536,55 +1659,90 @@ async def probe_response_format(request: Request) -> dict:
             elif response_format is not None and response_format.get("type") == "json_object":
                 tier = _classify_probe_response_tier2(text)
             else:
-                # 无 response_format（不应进入此分支，探测必有 response_format）
                 tier = "gateway_blocked"
             return tier, text
+        except RateLimitError as e:
+            return "rate_limited", f"RateLimitError: {str(e)[:150]}"
+        except (litellm.Timeout, openai.APITimeoutError) as e:
+            return "timeout", f"{type(e).__name__}: {str(e)[:150]}"
+        except (AuthenticationError, APIConnectionError, InternalServerError, ServiceUnavailableError) as e:
+            return "infra_error", f"{type(e).__name__}: {str(e)[:150]}"
+        except (BadRequestError, UnsupportedParamsError) as e:
+            return "model_rejected", f"{type(e).__name__}: {str(e)[:150]}"
         except Exception as e:
-            # 任何异常都视为该 tier 不支持，降级下一 tier
-            # reason 字段记录异常类型+消息供诊断，但不影响 mode 判定
-            return "tier_failed", f"{type(e).__name__}: {str(e)[:150]}"
+            return "model_rejected", f"{type(e).__name__}: {str(e)[:150]}"
 
-    # Tier 1: json_schema strict
-    try:
-        tier1_result, tier1_text = await asyncio.wait_for(
+    # Tier 1: json_schema strict，三次采样
+    tier1_result, tier1_raw = await _probe_tier_three_samples_async(
+        lambda: asyncio.wait_for(
             asyncio.to_thread(_try_tier, _build_probe_response_format_json_schema()),
             timeout=30,
-        )
-    except asyncio.TimeoutError:
-        tier1_result, tier1_text = "tier_failed", "TimeoutError: 探测超时（30s）"
+        ),
+        _build_probe_response_format_json_schema(),
+    )
+
+    if tier1_result == "rate_limited":
+        return {
+            "result": "probe_failed",
+            "reason": "探测限流/超时重试 5 次仍未成功，请稍后手动重试",
+            "mode": None,
+            "raw_response": "",
+        }
+
+    if tier1_result == "infra_error":
+        return {
+            "result": "probe_failed",
+            "reason": "探测遇到基础设施错误（API Key 失效/网络断/网关 5xx），请检查配置后手动重试",
+            "mode": None,
+            "raw_response": "",
+        }
 
     if tier1_result == "supported":
         return {
             "result": "supported",
             "mode": "json_schema",
-            "reason": "Tier 1 通过：模型+网关均支持 json_schema strict 模式",
-            "raw_response": tier1_text[:200],
+            "reason": "Tier 1 三次采样全通过：模型+网关均稳定支持 json_schema strict 模式",
+            "raw_response": "",
         }
 
-    # Tier 2: json_object
-    try:
-        tier2_result, tier2_text = await asyncio.wait_for(
+    # Tier 2: json_object，三次采样
+    tier2_result, tier2_raw = await _probe_tier_three_samples_async(
+        lambda: asyncio.wait_for(
             asyncio.to_thread(_try_tier, _build_probe_response_format_json_object()),
             timeout=30,
-        )
-    except asyncio.TimeoutError:
-        tier2_result, tier2_text = "tier_failed", "TimeoutError: 探测超时（30s）"
+        ),
+        _build_probe_response_format_json_object(),
+    )
+
+    if tier2_result == "rate_limited":
+        return {
+            "result": "probe_failed",
+            "reason": "探测限流/超时重试 5 次仍未成功，请稍后手动重试",
+            "mode": None,
+            "raw_response": "",
+        }
+
+    if tier2_result == "infra_error":
+        return {
+            "result": "probe_failed",
+            "reason": "探测遇到基础设施错误（API Key 失效/网络断/网关 5xx），请检查配置后手动重试",
+            "mode": None,
+            "raw_response": "",
+        }
 
     if tier2_result == "supported":
         return {
             "result": "supported",
             "mode": "json_object",
-            "reason": f"Tier 1 失败（{tier1_result}: {tier1_text[:80]}），Tier 2 通过：模型支持 json_object 模式",
-            "raw_response": tier2_text[:200],
+            "reason": f"Tier 1 失败（{tier1_result}），Tier 2 三次采样全通过：模型支持 json_object 模式",
+            "raw_response": "",
         }
 
     # Tier 3: 都失败，prompt_only 保底
-    # 任何错误（4xx/5xx/超时/认证/限流/网络/响应非合法JSON）都视为该 tier 不支持，
-    # 最终降级到 prompt_only。reason 字段记录两档失败原因供诊断。
     return {
         "result": "supported",
         "mode": "prompt_only",
-        "reason": f"Tier 1（{tier1_result}: {tier1_text[:80]}) + Tier 2（{tier2_result}: {tier2_text[:80]}）均失败，降级到 prompt-only 模式",
+        "reason": f"Tier 1（{tier1_result}: {tier1_raw[:60] if tier1_raw else ''}）+ Tier 2（{tier2_result}: {tier2_raw[:60] if tier2_raw else ''}）均失败，降级到 prompt-only 模式",
         "raw_response": "",
     }
 
