@@ -1,3 +1,10 @@
+//! Niu Launcher - Rust 启动器
+//!
+//! Windows release build 下编译为 GUI 子系统（不弹 cmd 窗口）。
+//! debug build 保留 console 方便调试。macOS/Linux 不受影响。
+
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -1392,17 +1399,92 @@ struct Args {
 }
 
 // ---------------------------------------------------------------------------
+// Project root detection / logging gate / fatal error log
+// ---------------------------------------------------------------------------
+
+/// Detect project root directory (reused by should_enable_logging / log_fatal_error / main).
+/// Primary: executable directory. Fallback: current working directory (checks memory/ existence).
+fn detect_project_root() -> String {
+    let exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut project_root = exe_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let memory_dir = std::path::PathBuf::from(&project_root).join("memory");
+    if !memory_dir.exists() {
+        let cwd = std::env::current_dir()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        let cwd_memory_dir = std::path::PathBuf::from(&cwd).join("memory");
+        if cwd_memory_dir.exists() {
+            project_root = cwd;
+        }
+    }
+    project_root
+}
+
+/// Read config/user-config.json `logging.enabled` field.
+/// Returns false (conservative default) on any failure.
+fn should_enable_logging() -> bool {
+    let project_root = detect_project_root();
+    let config_path = std::path::PathBuf::from(&project_root)
+        .join("config")
+        .join("user-config.json");
+    match std::fs::read_to_string(&config_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(v) => v
+                .get("logging")
+                .and_then(|l| l.get("enabled"))
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
+}
+
+/// Write a fatal error message to `logs/launcher_error.log`.
+/// Independent of tracing/logging flag — guarantees diagnostic availability
+/// even when `logging.enabled=false` (Windows GUI release mode).
+fn log_fatal_error(msg: &str) {
+    let project_root = detect_project_root();
+    let log_path = std::path::PathBuf::from(&project_root)
+        .join("logs")
+        .join("launcher_error.log");
+    let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")));
+    use time::macros::format_description;
+    let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+    let timestamp = match time::OffsetDateTime::now_local() {
+        Ok(t) => t.format(format).unwrap_or_else(|_| "unknown".to_string()),
+        Err(_) => "unknown".to_string(),
+    };
+    let line = format!("[{}] FATAL: {}\n", timestamp, msg);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+}
+
+// ---------------------------------------------------------------------------
 // main — corresponds to Go's main()
 // ---------------------------------------------------------------------------
 
 fn main() {
     // Initialize tracing with local timezone (Asia/Shanghai UTC+8)
     // Default uses UTC with "Z" suffix which is confusing for Chinese users
-    tracing_subscriber::fmt()
-        .with_timer(tracing_subscriber::fmt::time::LocalTime::new(
-            time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]+08:00"),
-        ))
-        .init();
+    // Gate: respect config/user-config.json `logging.enabled` — when false,
+    // skip init so tracing calls are silently dropped (Windows GUI release mode).
+    if should_enable_logging() {
+        tracing_subscriber::fmt()
+            .with_timer(tracing_subscriber::fmt::time::LocalTime::new(
+                time::macros::format_description!(
+                    "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]+08:00"
+                ),
+            ))
+            .init();
+    }
+    // else: tracing_subscriber not initialized — tracing calls (info!/warn!/error!) silently dropped.
 
     // Parse args (replaces Go's flag)
     let args = Args::parse();
@@ -1466,6 +1548,9 @@ fn main() {
             "Error: API is not running on port {}. Please start the main program (niu) first.",
             args.port
         );
+        // Independent file diagnostic (not subject to logging flag — available
+        // even when logging.enabled=false / Windows GUI release mode).
+        log_fatal_error(&format!("API is not running on port {}", args.port));
         std::process::exit(1);
     }
 
@@ -1474,16 +1559,17 @@ fn main() {
     info!("Using Python path: {}", python_path);
 
     // Get project root (needed for template file paths and config loading)
-    // Primary: executable directory (works when running built binary from any cwd)
-    // Fallback: current working directory (supports development)
+    // Delegates to detect_project_root() (shared with should_enable_logging / log_fatal_error).
+    let project_root = detect_project_root();
+    // Preserve existing info!/warn! diagnostics for exeDir vs cwd fallback path.
+    // (detect_project_root itself stays silent to avoid double logging.)
     let exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let mut project_root = exe_path
+    let exe_dir = exe_path
         .parent()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
-    let memory_dir = PathBuf::from(&project_root).join("memory");
-    if !memory_dir.exists() {
-        // exeDir doesn't contain memory/ — likely development with temp build dir
+    let memory_dir_check = PathBuf::from(&exe_dir).join("memory");
+    if !memory_dir_check.exists() {
         let cwd = env::current_dir()
             .map(|d| d.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
@@ -1491,13 +1577,12 @@ fn main() {
         if cwd_memory_dir.exists() {
             info!(
                 "memory/ not found in exeDir, using cwd as project root: exeDir={}, cwd={}",
-                project_root, cwd
+                exe_dir, cwd
             );
-            project_root = cwd;
         } else {
             warn!(
                 "memory/ not found in exeDir or cwd, template copy will be skipped: exeDir={}, cwd={}",
-                project_root, cwd
+                exe_dir, cwd
             );
         }
     }
@@ -1868,6 +1953,8 @@ fn main() {
                     Err(e) => {
                         error!("Failed to launch assistant window: {}", e);
                         println!("\nPlease run manually: cd ui/main && NIU_WINDOW=assistant npm start");
+                        // Independent file diagnostic (not subject to logging flag).
+                        log_fatal_error(&format!("Failed to launch assistant window: {}", e));
                         None
                     }
                 };
