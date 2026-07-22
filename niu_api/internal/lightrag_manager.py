@@ -1397,7 +1397,7 @@ def run_resilience_phase1() -> dict:
 def should_signal_scheduler_ready(phase1_result: dict) -> bool:
     """Phase 1 后是否通知 scheduler 系统就绪。
 
-    损坏时不通知，让 scheduler 60s 超时强行扫描的漏洞被堵住
+    损坏时不通知，让 scheduler 180s 超时强行扫描的漏洞被堵住
     （配合 scheduler.cancel_delayed_start 让超时后 _delayed_start 线程
     直接 return，不强行 start）。
 
@@ -1448,14 +1448,14 @@ def pause_chatqueue_if_corrupt(phase1_result: dict) -> None:
 def cancel_scheduler_delayed_start_if_corrupt(phase1_result: dict) -> None:
     """Phase 1 检测到损坏时取消 scheduler 的 delayed start。
 
-    补 P1 漏洞：scheduler.start_delayed 的 _ready_event.wait(60) 60s 超时后
+    补 P1 漏洞：scheduler.start_delayed 的 _ready_event.wait(180) 180s 超时后
     会强行 start（scheduler.py L103-106），即使不调 signal_scheduler_ready，
-    scheduler 线程也会在 60s 后启动 + 阻塞 120 秒（_CALLBACK_TIMEOUT）。
+    scheduler 线程也会在 180s 后启动 + 阻塞 120 秒（_CALLBACK_TIMEOUT）。
     虽然此期间 ChatQueue 被 pause 阻塞不会触发 runner.chat，但 scheduler
-    线程跑起来后 60s+120s 才结束，期间用户决策/退出流程会被拖延。
+    线程跑起来后 180s+120s 才结束，期间用户决策/退出流程会被拖延。
 
     调 scheduler.cancel_delayed_start() 设 _delayed_start_cancelled=True，
-    _delayed_start 线程 60s 超时后检查到 flag 直接 return。
+    _delayed_start 线程 180s 超时后检查到 flag 直接 return。
 
     异常处理：cancel 失败只 log warning，不阻塞 lifespan。
     """
