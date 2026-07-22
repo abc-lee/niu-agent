@@ -1,11 +1,16 @@
-"""context-manager 绕过 @niu-agent/@end 守则注入和拦截层的单元测试。
+"""context-manager @前缀拦截层绕过开关的单元测试。
 
-背景：同步异步子 Agent 调用改造给所有子 Agent 强制注入守则 + 强制拦截无 @ 前缀的输出，
-误伤了 context-manager 的原生 keep=/update=/cursor= 输出格式。本测试验证：
-1. context-manager 系统提示词不含守则
-2. context-manager 输出 keep=/update=/cursor= 不被拦截（返回 NO_INTERCEPTION）
-3. 其他子 Agent（如 file-processor）仍该被注入守则、该被拦截
-4. context-manager 同步调用（_is_sync_subagent=True, memory_context=None）不被拦截
+背景：拦截层曾按 agent 名字（unique_name == "context-manager"）无条件绕过，误伤模式一
+（多轮工具交互）：2026-07-22 模式一压缩中 LLM 空响应被误判为压缩完成，提前退出且游标误推进。
+整改后绕过由调用方显式传 call_subagent(bypass_at_prefix=True) 开启：
+- 模式二/三（一轮出 keep=/update=/cursor= 方案）：传 True 绕过，行为与整改前一致
+- 模式一（多轮工具）：默认 False，走标准 @end/FORMAT_ERROR 结束判断
+本测试验证：
+1. context-manager 系统提示词不含 @niu-agent 守则（保持不变）
+2. bypass_at_prefix=True 时输出 keep= 方案不被拦截（模式二/三行为锁定）
+3. bypass_at_prefix=False 时空响应走 FORMAT_ERROR 追问（模式一新行为）
+4. 其他子 Agent（file-processor）仍被注入守则、仍被拦截（不受影响）
+5. call_subagent 把 bypass_at_prefix 参数透传到 handler._bypass_at_prefix
 """
 from unittest import mock
 
@@ -32,12 +37,13 @@ def test_file_processor_system_prompt_still_has_at_niu_guide():
 
 
 def test_context_manager_keep_output_not_intercepted():
-    """context-manager 输出 keep=/update=/cursor= 时，拦截层返回 NO_INTERCEPTION"""
+    """模式二/三（bypass_at_prefix=True）：输出 keep=/update=/cursor= 时，拦截层返回 NO_INTERCEPTION"""
     from agent.generic import agent_loop
 
     fake_handler = mock.MagicMock()
     fake_handler._subagent_unique_name = "context-manager"
     fake_handler._is_sync_subagent = True  # 同步路径
+    fake_handler._bypass_at_prefix = True  # 一轮出方案显式绕过（模式二/三路径）
     messages = [
         {"role": "system", "content": "你是 context-manager"},
         {"role": "user", "content": "压缩这些消息"},
@@ -57,12 +63,13 @@ def test_context_manager_keep_output_not_intercepted():
 
 
 def test_context_manager_bypass_doesnt_append_format_error():
-    """context-manager 输出无 @ 前缀时，messages 不被追加 [对话格式错误] 提示"""
+    """模式二/三（bypass_at_prefix=True）：输出无 @ 前缀时，messages 不被追加 [对话格式错误] 提示"""
     from agent.generic import agent_loop
 
     fake_handler = mock.MagicMock()
     fake_handler._subagent_unique_name = "context-manager"
     fake_handler._is_sync_subagent = True
+    fake_handler._bypass_at_prefix = True  # 一轮出方案显式绕过（模式二/三路径）
     messages = [
         {"role": "system", "content": "你是 context-manager"},
         {"role": "user", "content": "压缩"},
@@ -102,6 +109,39 @@ def test_file_processor_still_intercepted_when_no_at_prefix():
         memory_context=mock.MagicMock(),  # 异步路径
     )
     assert result == (agent_loop.FORMAT_ERROR, None)
+
+
+def test_context_manager_mode1_no_bypass_goes_format_error():
+    """模式一（_bypass_at_prefix=False）：空响应走标准 FORMAT_ERROR 追问，不再按名字绕过。
+
+    回归 2026-07-22 事故：模式一压缩第 7 轮 LLM 把 delete_messages 泄漏进 thinking
+    （正式响应 content="" + tool_calls=[]），按名字绕过使程序误判压缩完成、游标误推进。
+    """
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "context-manager"
+    fake_handler._is_sync_subagent = True
+    fake_handler._bypass_at_prefix = False  # 模式一：默认 False，走标准结束判断
+    messages = [
+        {"role": "system", "content": "你是 context-manager"},
+        {"role": "user", "content": "压缩这些消息"},
+    ]
+    content = ""  # 空响应（事故触发场景：工具调用泄漏进 thinking 后的正式响应）
+
+    result = agent_loop._intercept_at_prefix_content(
+        content=content,
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=None,
+    )
+    assert result == (agent_loop.FORMAT_ERROR, None)
+    # 验证 messages 被追加 assistant 空响应 + FORMAT_ERROR user 追问
+    assert len(messages) == 4
+    assert messages[-2] == {"role": "assistant", "content": ""}
+    assert messages[-1]["role"] == "user"
+    assert "对话格式错误" in messages[-1]["content"]
 
 
 def test_call_subagent_passes_bypass_at_prefix_to_handler(monkeypatch):

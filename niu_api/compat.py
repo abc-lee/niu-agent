@@ -2708,6 +2708,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             mcp_client=None,
                             context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
                             history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
+                            bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
                         )
 
                     compress_result = await asyncio.to_thread(run_context_manager_mode2)
@@ -3379,6 +3380,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     mcp_client=None,
                     context_fifo_threshold=0,
                     history=_force_history,  # 直接传 messages 列表，避免单条 user message 超限
+                    bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
                 )
 
             result = await asyncio.to_thread(run_context_manager_force)

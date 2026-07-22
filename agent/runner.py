@@ -1334,6 +1334,7 @@ class NiuRunner:
                     mcp_client=None,
                     context_fifo_threshold=0,
                     history=_force_history,
+                    bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
                 )
 
             try:

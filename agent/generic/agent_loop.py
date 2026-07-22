@@ -83,11 +83,15 @@ def _intercept_at_prefix_content(
     if tool_calls:
         return (NO_INTERCEPTION, None)
 
-    # context-manager 绕过：它原设计是直接输出 keep=/update=/cursor= 让程序写数据库，
-    # 不走 @niu-agent/@end 交互通道。拦截会导致正确输出被 FORMAT_ERROR，压缩失败。
+    # 一轮出方案的子 Agent（context-manager 模式二/三）绕过@前缀拦截：
+    # 它们直接输出 keep=/update=/cursor= 让程序写数据库，拦截会导致正确输出被 FORMAT_ERROR，
+    # 且追问引发的第二轮会把全量消息再发一遍，造成上下文溢出。
+    # 由调用方经 call_subagent(bypass_at_prefix=True) 显式开启；模式一（多轮工具）不开启，
+    # 走标准 @end/FORMAT_ERROR 结束判断。
     # 详见 docs/superpowers/plans/2026-07-08-context-manager-bypass-at-prefix.md
-    unique_name = getattr(handler, "_subagent_unique_name", "") or ""
-    if unique_name == "context-manager":
+    # 必须 is True 严格判断：测试常用 MagicMock handler，其同名属性是 truthy mock 对象，
+    # 宽松判断会把所有 mock handler 误判为绕过，令 test_at_prefix_interception.py 大批失败。
+    if getattr(handler, "_bypass_at_prefix", False) is True:
         return (NO_INTERCEPTION, None)
 
     stripped = (content or "").lstrip()
