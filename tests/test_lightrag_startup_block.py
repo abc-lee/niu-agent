@@ -1,7 +1,7 @@
 """LightRAG 损坏时启动流程阻塞的单元测试。
 
 背景：scheduler/ChatQueue/db_monitor 在 Phase 1 检测到损坏后仍跑，
-60s 超时强行扫描触发 journal-agent → ChatQueue → runner.chat 报错。
+180s 超时强行扫描触发 journal-agent → ChatQueue → runner.chat 报错。
 本测试验证：
 1. Phase 1 need_repair=True 时不调 signal_scheduler_ready
 2. Phase 1 need_repair=True 时 ChatQueue 被 pause
@@ -68,9 +68,9 @@ def test_pause_chatqueue_if_corrupt_swallows_exceptions():
 def test_cancel_scheduler_delayed_start_if_corrupt_calls_cancel_when_corrupt():
     """Phase 1 need_repair=True 时调 scheduler.cancel_delayed_start
 
-    补 P1 漏洞：scheduler.start_delayed 的 _ready_event.wait(60) 60s 超时后
+    补 P1 漏洞：scheduler.start_delayed 的 _ready_event.wait(180) 180s 超时后
     会强行 start（scheduler.py L103-106）。即使不调 signal_scheduler_ready，
-    scheduler 线程也会在 60s 后启动。调 cancel_delayed_start 设
+    scheduler 线程也会在 180s 后启动。调 cancel_delayed_start 设
     _delayed_start_cancelled=True，_delayed_start 线程超时后检查 flag 直接 return。
     """
     from niu_api.internal.lightrag_manager import cancel_scheduler_delayed_start_if_corrupt
