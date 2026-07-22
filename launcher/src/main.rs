@@ -1366,9 +1366,13 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
         cmd.arg("start")
             .env("NIU_WINDOW", name)
             .current_dir(&window_dir);
-        cmd.stdout(std::process::Stdio::inherit());
-        cmd.stderr(std::process::Stdio::inherit());
-        cmd.stdin(std::process::Stdio::inherit());
+        // Stdio::null() 避免 macOS .app 模式下 npm/Electron 子进程继承 Rust 的 null stdio
+        // 导致 macOS 给子进程 attach Terminal.app 作为 stdio（控制台窗口来源）。
+        // Python niu_api 的 stderr 仍由 launcher piped 接管（L1696-1697），不依赖此处 inherit。
+        // Electron console.log 输出会丢失，但前端有文件日志可替代诊断。
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::null());
         let child = cmd.spawn()?;
         Ok(child)
     }
