@@ -87,3 +87,43 @@ def test_write_log_entry_skipped_when_logging_disabled(tmp_path, monkeypatch):
     # _write_log_entry 真实签名是 (seq: int, entry: dict)
     hl_mod._write_log_entry(1, {"test": "data"})
     assert not fake_dir.exists(), "logging.enabled=false 时不应写 raw_http 日志文件"
+
+
+def test_write_raw_log_skipped_when_logging_disabled(tmp_path, monkeypatch):
+    """logging.enabled=false 时，_write_raw_log 不写 {seq}_request.json / _response.json"""
+    _setup_config(tmp_path, monkeypatch, logging_enabled=False)
+
+    import agent.generic.litellm_adapter as la_mod
+
+    # monkeypatch 新增的 _get_app_log_dir 函数（litellm_adapter 用绝对路径，chdir 无效）
+    fake_dir = tmp_path / "fake_app_logs"
+    monkeypatch.setattr(la_mod, "_get_app_log_dir", lambda: fake_dir, raising=False)
+
+    # _write_raw_log 真实签名是 (log_type, data, seq=None)
+    la_mod._write_raw_log("request", {"test": "data"}, seq=1)
+    la_mod._write_raw_log("response", {"test": "data"}, seq=1)
+
+    if fake_dir.exists():
+        files = list(fake_dir.rglob("*.json"))
+        assert files == [], f"logging.enabled=false 时不应写应用层 raw_http 日志，但找到 {files}"
+
+
+def test_write_interaction_log_skipped_when_logging_disabled(tmp_path, monkeypatch):
+    """logging.enabled=false 时，_write_interaction_log 不写 llm_interaction_*.log"""
+    _setup_config(tmp_path, monkeypatch, logging_enabled=False)
+
+    import agent.generic.litellm_adapter as la_mod
+
+    fake_dir = tmp_path / "fake_app_logs"
+    monkeypatch.setattr(la_mod, "_get_app_log_dir", lambda: fake_dir, raising=False)
+
+    # _write_interaction_log 真实签名是 (log_entry: Dict)
+    la_mod._write_interaction_log({
+        "user_input": "test input",
+        "assistant_output": "test output",
+        "model": "test-model",
+    })
+
+    if fake_dir.exists():
+        interaction_files = list(fake_dir.glob("llm_interaction_*.log"))
+        assert interaction_files == [], f"logging.enabled=false 时不应写 interaction 日志，但找到 {interaction_files}"
