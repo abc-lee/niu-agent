@@ -77,6 +77,16 @@ def _is_context_overflow_error(exc: Exception) -> bool:
 _raw_seq_counter = 0
 
 
+def _get_app_log_dir() -> Path:
+    """获取应用层日志根目录，便于测试 monkeypatch。
+
+    litellm_adapter 原用 Path(__file__).parent.parent.parent / "logs" 绝对路径
+    （见 _write_raw_log 和 _write_interaction_log），chdir 无效。
+    抽出此函数让测试可拦截。带 resolve() 与 gateway.py 的 _get_gateway_log_dir 保持一致。
+    """
+    return Path(__file__).resolve().parent.parent.parent / "logs"
+
+
 def _write_raw_log(log_type: str, data: dict, seq: Optional[int] = None) -> None:
     """写入完整无截断的原始日志到 JSON 文件。
 
@@ -91,7 +101,10 @@ def _write_raw_log(log_type: str, data: dict, seq: Optional[int] = None) -> None
     """
     global _raw_seq_counter
     try:
-        log_dir = Path(__file__).parent.parent.parent / "logs" / "raw_http" / datetime.now().strftime("%Y%m%d")
+        from niu_api.config import get_logging_config
+        if not get_logging_config().enabled:
+            return  # 静默跳过
+        log_dir = _get_app_log_dir() / "raw_http" / datetime.now().strftime("%Y%m%d")
         log_dir.mkdir(parents=True, exist_ok=True)
         if seq is None:
             seq = _raw_seq_counter
@@ -128,7 +141,10 @@ def _write_interaction_log(log_entry: Dict[str, Any]):
     <thinking>...</thinking>
     """
     try:
-        log_dir = Path(__file__).parent.parent.parent / "logs"
+        from niu_api.config import get_logging_config
+        if not get_logging_config().enabled:
+            return  # 静默跳过
+        log_dir = _get_app_log_dir()
         log_dir.mkdir(exist_ok=True)
         log_file = log_dir / f"llm_interaction_{datetime.now().strftime('%Y%m%d')}.log"
 
