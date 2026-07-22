@@ -20,6 +20,32 @@ class LLMConfig:
         self.preset_id = config.get("presetId", "")
 
 
+class LoggingConfig:
+    """Logging sub-configuration.
+
+    缺省 enabled=False：所有日志输出（loguru sink、raw_http 两层日志、
+    llm_interaction 可读日志、im_adapter_stderr、http-log 服务）应关闭。
+    只有显式 enabled=True 才按 level 输出。
+    """
+
+    def __init__(self, enabled: bool = False, level: str = "INFO"):
+        self.enabled = bool(enabled)
+        self.level = str(level).upper() if level else "INFO"
+
+
+def _parse_logging(data: dict) -> LoggingConfig:
+    """从原始 config dict 解析 logging 子节点，缺省 enabled=False。"""
+    raw = data.get("logging") or {}
+    return LoggingConfig(
+        enabled=raw.get("enabled", False),
+        level=raw.get("level", "INFO"),
+    )
+
+
+# 模块级默认 config 路径常量（让测试 monkeypatch 生效）
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "user-config.json")
+
+
 class Config:
     """Niu API configuration"""
 
@@ -27,15 +53,14 @@ class Config:
         self.llm: Optional[LLMConfig] = None
         self.storage: Dict[str, str] = {"documentRoot": "", "databasePath": ""}
         self.first_run: bool = True
+        self.logging: LoggingConfig = LoggingConfig()
 
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Config":
         """Load configuration from file"""
         if config_path is None:
             # Default: config/user-config.json
-            config_path = os.path.join(
-                os.path.dirname(__file__), "..", "config", "user-config.json"
-            )
+            config_path = CONFIG_PATH
 
         cfg = cls()
 
@@ -52,6 +77,8 @@ class Config:
 
             if "storage" in data:
                 cfg.storage = data["storage"]
+
+            cfg.logging = _parse_logging(data)
 
             logger.info(f"Config loaded from {config_path}")
             logger.info(f"LLM: provider={cfg.llm.provider}, model={cfg.llm.model}")
@@ -77,3 +104,15 @@ def get_config() -> Config:
     if _config is None:
         _config = Config.load()
     return _config
+
+
+def get_logging_config() -> LoggingConfig:
+    """获取 logging 子配置。失败时兜底返回 enabled=False（保守默认）。
+
+    agent/generic/litellm_adapter.py:38 的 install_http_logger() 在模块导入时
+    调用本函数，此时若 config 加载异常不能让 Agent 模块 import 失败。
+    """
+    try:
+        return get_config().logging
+    except Exception:
+        return LoggingConfig(enabled=False, level="INFO")
