@@ -9,6 +9,7 @@ HTTP API server for Niu Agent using FastAPI + Uvicorn
 import sys
 import os
 import asyncio
+import logging as _stdlib_logging
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -19,6 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
+from niu_api.config import get_logging_config
 from niu_api.session import router as session_router
 from niu_api.chat import router as chat_router
 from niu_api.compat import router as compat_router
@@ -31,13 +33,21 @@ from niu_api.llm_proxy import router as llm_proxy_router
 from niu_api.http_log_api import router as http_log_router
 
 
-# Configure logging
+# Configure logging — gated by config/logging.enabled (缺省 False)
+_logging_cfg = get_logging_config()
 logger.remove()
-logger.add(
-    sys.stderr,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-    level="INFO",
-)
+if _logging_cfg.enabled:
+    logger.enable("")  # 恢复 loguru 全局启用
+    logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+        level=_logging_cfg.level,
+    )
+    _stdlib_logging.disable(_stdlib_logging.NOTSET)  # 恢复 stdlib logging
+    logger.info(f"Logging enabled at level {_logging_cfg.level}")
+else:
+    logger.disable("")  # loguru 官方推荐全局禁用方式（不 add dev/null sink）
+    _stdlib_logging.disable(_stdlib_logging.CRITICAL)  # 禁用 10+ 处散落的 stdlib logger
 
 
 @asynccontextmanager
@@ -524,7 +534,11 @@ app.include_router(kg_router)  # Knowledge Graph API
 app.include_router(brain_region_router)  # Brain Region API
 app.include_router(notes_router)  # Notes API
 app.include_router(llm_proxy_router)
-app.include_router(http_log_router)  # LLM Proxy API (/llm/v1/*)
+if get_logging_config().enabled:
+    app.include_router(http_log_router)  # HTTP log viewer (/http-log/*)
+    logger.info("HTTP log viewer service enabled at /http-log/")
+else:
+    logger.info("HTTP log viewer service disabled (logging.enabled=false)")
 
 
 # Mount scheduler router
@@ -602,7 +616,8 @@ def main():
         host="127.0.0.1",
         port=port,
         reload=False,  # Disable reload for production
-        log_level="warning",  # Reduce noise from pending-alerts polling
+        log_level="warning" if get_logging_config().enabled else "critical",
+        access_log=get_logging_config().enabled,
     )
 
 
