@@ -61,7 +61,7 @@ class TestNoPromptChunking:
 
         import agent.runner as runner_mod
         monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
-        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
 
@@ -384,7 +384,7 @@ class TestOverflowResultPropagation:
         # Patch the lazy imports inside call_subagent
         import agent.runner as runner_mod
         monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
-        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         result = subagent.call_subagent(
             agent_name="test-agent",
@@ -416,7 +416,7 @@ class TestSubagentContextWindowConfig:
         # Patch the lazy imports inside call_subagent
         import agent.runner as runner_mod
         monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
-        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 128000)
 

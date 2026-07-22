@@ -715,6 +715,7 @@ def call_subagent(
     unique_name: Optional[str] = None,  # 阶段二新增：异步路径透传，跳过内部 register
     answer: Optional[str] = None,  # 阶段四新增：回复路径（第三分支）用
     answer_unique_name: Optional[str] = None,  # 阶段四新增：回复路径锁定挂起 session
+    bypass_at_prefix: bool = False,  # True=绕过@前缀拦截层（仅一轮出方案的子Agent用，如context-manager模式二/三）
 ) -> str:
     """
     调用子 Agent
@@ -779,6 +780,9 @@ def call_subagent(
     # 否则子 Agent 的工具调用会触发 brain region reinforcement（应只由主 Agent 触发）
     # 新增子 Agent 时必须遵守此约定
     handler._is_subagent = True
+    # @前缀拦截层绕过开关：仅一轮出方案的子 Agent（context-manager 模式二/三）由调用方
+    # 显式传 bypass_at_prefix=True 开启；模式一（多轮工具）保持默认 False，走标准 @end/FORMAT_ERROR 结束判断
+    handler._bypass_at_prefix = bypass_at_prefix
 
     # 5. 阶段二：tools_schema 构建提取到 helper（含 ask_main_agent 注入逻辑）
     tools_schema = _build_subagent_tools_schema(
