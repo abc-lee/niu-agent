@@ -161,11 +161,9 @@ function createChatWindow() {
     minWidth: 300,
     minHeight: 400,
     frame: false,
-    transparent: true,
     alwaysOnTop: false,  // 聊天窗口是普通窗口，不置顶
     resizable: true,
     skipTaskbar: true,
-    hasShadow: false,
     icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload-chat.js'),
@@ -175,7 +173,7 @@ function createChatWindow() {
   });
 
   chatWindow.loadFile(path.join(__dirname, 'windows', 'assistant', 'chat.html'));
-  chatWindow.setBackgroundColor('#00000000');
+  chatWindow.setBackgroundColor('#faf8f0');
 
   // F12 打开开发者工具（调试用）
   chatWindow.webContents.on('before-input-event', (event, input) => {
