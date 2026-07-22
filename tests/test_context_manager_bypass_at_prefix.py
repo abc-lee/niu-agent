@@ -102,3 +102,64 @@ def test_file_processor_still_intercepted_when_no_at_prefix():
         memory_context=mock.MagicMock(),  # 异步路径
     )
     assert result == (agent_loop.FORMAT_ERROR, None)
+
+
+def test_call_subagent_passes_bypass_at_prefix_to_handler(monkeypatch):
+    """call_subagent(bypass_at_prefix=True) 时，内部 handler._bypass_at_prefix 为 True"""
+    from agent import subagent
+
+    captured = {}
+
+    def mock_run(client, system_prompt, user_input, handler, tools_schema,
+                 max_turns=20, initial_user_content=None, context_window_tokens=0,
+                 context_fifo_threshold=0, history=None, **kwargs):
+        captured["handler"] = handler
+        return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+
+    monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+    monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+    monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+
+    import agent.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+    monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
+    monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
+
+    subagent.call_subagent(
+        agent_name="test-agent",
+        task="t",
+        llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+        bypass_at_prefix=True,
+    )
+    assert captured["handler"]._bypass_at_prefix is True
+
+
+def test_call_subagent_default_bypass_at_prefix_false(monkeypatch):
+    """不传 bypass_at_prefix 时，handler._bypass_at_prefix 为 False（走标准 @end 拦截）"""
+    from agent import subagent
+
+    captured = {}
+
+    def mock_run(client, system_prompt, user_input, handler, tools_schema,
+                 max_turns=20, initial_user_content=None, context_window_tokens=0,
+                 context_fifo_threshold=0, history=None, **kwargs):
+        captured["handler"] = handler
+        return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+
+    monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+    monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+    monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+
+    import agent.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+    monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
+    monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
+
+    subagent.call_subagent(
+        agent_name="test-agent",
+        task="t",
+        llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+    )
+    assert captured["handler"]._bypass_at_prefix is False
