@@ -84,10 +84,10 @@ def test_gateway_stderr_devnull_when_logging_disabled(tmp_path, monkeypatch):
     except Exception:
         pass  # 测试只关心 Popen 被调时的 stderr 参数
 
-    if captured_popen.called:
-        _, kwargs = captured_popen.call_args
-        assert kwargs.get("stderr") == subprocess.DEVNULL, \
-            f"logging.enabled=false 时 stderr 应该是 DEVNULL，但传了 {kwargs.get('stderr')}"
+    assert captured_popen.called, "Popen 应该被调用（mock 不全会导致静默通过）"
+    _, kwargs = captured_popen.call_args
+    assert kwargs.get("stderr") == subprocess.DEVNULL, \
+        f"logging.enabled=false 时 stderr 应该是 DEVNULL，但传了 {kwargs.get('stderr')}"
 
 
 def test_gateway_stderr_file_when_logging_enabled(tmp_path, monkeypatch):
@@ -103,10 +103,10 @@ def test_gateway_stderr_file_when_logging_enabled(tmp_path, monkeypatch):
     except Exception:
         pass
 
-    if captured_popen.called:
-        _, kwargs = captured_popen.call_args
-        assert kwargs.get("stderr") != subprocess.DEVNULL, \
-            "logging.enabled=true 时 stderr 应该重定向到文件，不应是 DEVNULL"
+    assert captured_popen.called, "Popen 应该被调用（mock 不全会导致静默通过）"
+    _, kwargs = captured_popen.call_args
+    assert kwargs.get("stderr") != subprocess.DEVNULL, \
+        "logging.enabled=true 时 stderr 应该重定向到文件，不应是 DEVNULL"
 
 
 def test_gateway_error_logged_to_file_on_launch_failure(tmp_path, monkeypatch):
