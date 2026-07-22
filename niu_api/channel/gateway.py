@@ -13,6 +13,29 @@ from loguru import logger
 from .base import ChannelAdapter
 
 
+def _get_gateway_log_dir() -> Path:
+    """获取 gateway 日志根目录，便于测试 monkeypatch。"""
+    return Path(__file__).resolve().parent.parent.parent / "logs"
+
+
+def _log_gateway_error(msg: str) -> None:
+    """记录 gateway 致命错误到 logs/gateway_error.log，不受 logging flag 控制。
+
+    飞书 adapter 启动失败是关键诊断（app_id 配错、端口占用、credentials 缺失），
+    即使 logging.enabled=false 也必须写，确保用户能诊断。
+    """
+    try:
+        log_dir = _get_gateway_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "gateway_error.log"
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] ERROR: {msg}\n")
+    except Exception:
+        pass  # 日志写入失败不影响主流程
+
+
 class IMGateway(ChannelAdapter):
     """IM 网关 — TCP Server。
 
@@ -129,6 +152,7 @@ class IMGateway(ChannelAdapter):
             adapter_workdir = Path(__file__).resolve().parent.parent.parent / "im-adapters" / adapter_type / "src"
             if not adapter_workdir.exists():
                 logger.error(f"[IMGateway] Adapter not found: {adapter_workdir}")
+                _log_gateway_error(f"Adapter not found: {adapter_workdir}")
                 return
 
             env = dict(os.environ)
@@ -142,6 +166,7 @@ class IMGateway(ChannelAdapter):
             app_secret = adapter_config.get("app_secret", "")
             if not app_id or not app_secret:
                 logger.error(f"[IMGateway] {adapter_type} credentials missing, skipping")
+                _log_gateway_error(f"{adapter_type} credentials missing, skipping")
                 return
             env[f"NIU_{adapter_type.upper()}_APP_ID"] = app_id
             env[f"NIU_{adapter_type.upper()}_APP_SECRET"] = app_secret
@@ -153,14 +178,20 @@ class IMGateway(ChannelAdapter):
             argv = [sys.executable, "-m", adapter_module]
             log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
-            adapter_stderr = open(log_dir / "im_adapter_stderr.log", "a")
+            from niu_api.config import get_logging_config
+            if get_logging_config().enabled:
+                adapter_stderr = open(log_dir / "im_adapter_stderr.log", "a")
+            else:
+                adapter_stderr = subprocess.DEVNULL  # logging 关闭时不写文件
             self._adapter_proc = subprocess.Popen(
                 argv, stdout=subprocess.DEVNULL, stderr=adapter_stderr, env=env,
             )
-            adapter_stderr.close()
+            if adapter_stderr is not subprocess.DEVNULL:
+                adapter_stderr.close()
             logger.info(f"[IMGateway] Adapter launched: {adapter_type}, PID={self._adapter_proc.pid}")
         except Exception as e:
             logger.error(f"[IMGateway] Launch failed: {e}")
+            _log_gateway_error(f"Launch failed: {e}")
 
     async def _handle_adapter(self, reader, writer):
         """处理 Adapter 连接"""
