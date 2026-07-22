@@ -198,8 +198,8 @@ async def lifespan(app: FastAPI):
     pause_chatqueue_if_corrupt(phase1_result)
 
     # 6.7.1.1 Phase 1 检测到损坏时取消 scheduler delayed start
-    #        补 P1 漏洞：scheduler 60s 超时强行 start 的漏洞（_ready_event.wait(60)）
-    #        即使不调 signal_scheduler_ready，scheduler 线程 60s 后也会强行 start
+    #        补 P1 漏洞：scheduler 180s 超时强行 start 的漏洞（_ready_event.wait(180)）
+    #        即使不调 signal_scheduler_ready，scheduler 线程 180s 后也会强行 start
     from niu_api.internal.lightrag_manager import cancel_scheduler_delayed_start_if_corrupt
     cancel_scheduler_delayed_start_if_corrupt(phase1_result)
 
@@ -213,14 +213,12 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("[LightRAG] db_monitor 跳过启动（LightRAG 损坏，等用户决策）")
 
-    # 6.7.3. Signal scheduler that system is ready（need_repair=True 时不 signal）
-    from niu_api.internal.lightrag_manager import should_signal_scheduler_ready
-    if should_signal_scheduler_ready(phase1_result):
-        from niu_api.internal.scheduler.service import signal_scheduler_ready
-        signal_scheduler_ready()
-        logger.info("Scheduler system_ready signal sent")
-    else:
-        logger.warning("[LightRAG] Scheduler system_ready signal 跳过（LightRAG 损坏）")
+    # 6.7.3. Signal scheduler 挪到 lifespan 末尾（见 L8.7），保证所有后台依赖就绪后才 signal。
+    #        原位置 L218 在 Phase 1 gate 之后但 L255 之后（LightRAG eager init /
+    #        BrainGraph / _SYSTEM_TASKS 等）之前，scheduler sleep 2s 后扫描过期任务
+    #        会撞未就绪 runner，导致 user 消息已写 DB 但 runner.chat() 抛异常、任务被标 failed。
+    #        挪到末尾后 need_repair=True 分支仍由 should_signal_scheduler_ready gate 控制
+    #        （cancel_scheduler_delayed_start_if_corrupt 在 L204 已调，flag 持久，行为一致）。
 
     # 7. (Removed) Weekly vector cleanup — vectors.db is deprecated,
     #    LightRAG manages its own storage. Cleanup is no longer needed.
@@ -399,6 +397,22 @@ async def lifespan(app: FastAPI):
 
         except Exception as e:
             logger.warning(f"Failed to ensure system tasks: {e}")
+
+    # 8.7. Signal scheduler that system is ready（need_repair=True 时不 signal）
+    #      必须在所有后台依赖（LightRAG eager init / PipelineWatcher / LightRAGSync /
+    #      BrainGraph / create_default_regions / RegionSync / _SYSTEM_TASKS）就绪后才 signal。
+    #      原位置 L218（Phase 1 gate 之后、L255 依赖项之前）会触发 race：
+    #      scheduler sleep 2s 后扫描过期任务撞未就绪 runner，user 消息已写 DB 但
+    #      runner.chat() 抛异常、任务被标 failed（见 commit 2e795521/0df739e0 历史背景）。
+    #      need_repair=True 分支由 should_signal_scheduler_ready gate 控制（返回 False 跳过），
+    #      cancel_scheduler_delayed_start_if_corrupt 在 L204 已调，flag 持久，行为一致。
+    from niu_api.internal.lightrag_manager import should_signal_scheduler_ready
+    if should_signal_scheduler_ready(phase1_result):
+        from niu_api.internal.scheduler.service import signal_scheduler_ready
+        signal_scheduler_ready()
+        logger.info("Scheduler system_ready signal sent (after all dependencies ready)")
+    else:
+        logger.warning("[LightRAG] Scheduler system_ready signal 跳过（LightRAG 损坏）")
 
     yield
 
