@@ -23,6 +23,8 @@ import httpx
 _write_lock = threading.Lock()
 _seq_counter = 0
 
+_patched = False  # 幂等守卫：防止 install_http_logger 被重复调用导致递归 patch
+
 
 def _get_log_dir() -> Path:
     """返回日志目录 logs/raw_http/{YYYYMMDD}/，自动创建。"""
@@ -90,6 +92,9 @@ def _read_streaming_body(response: httpx.Response) -> dict:
 
 def _write_log_entry(seq: int, entry: dict) -> None:
     """写入 JSON 日志文件。"""
+    from niu_api.config import get_logging_config
+    if not get_logging_config().enabled:
+        return  # flag 关闭，静默跳过
     log_dir = _get_log_dir()
     filepath = log_dir / f"{seq:06d}.json"
     with _write_lock:
@@ -170,8 +175,30 @@ class LoggingTransport(httpx.BaseTransport):
 
 
 def install_http_logger() -> None:
+    """Install HTTP client patches to capture raw HTTP traffic.
+
+    缺省 logging.enabled=false 时不 patch（不写 transport 层日志）。
+    幂等：_patched=True 时直接 return，避免重复 patch 导致 original_post 指向
+    已被 patch 的版本形成无限递归。
+
+    幂等守卫放在本函数入口（flag gate 之后、_do_patch_http 之前），这样测试可以
+    mock _do_patch_http 同时仍能验证本函数的幂等行为。
     """
-    安装 HTTP 日志拦截器，拦截两条路径：
+    global _patched
+    from niu_api.config import get_logging_config
+    if not get_logging_config().enabled:
+        return  # flag 关闭，不 patch
+    if _patched:
+        return  # 幂等守卫：已 patch 过直接 return
+    _patched = True
+    _do_patch_http()
+
+
+def _do_patch_http() -> None:
+    """实际 patch HTTP client 的逻辑（原 install_http_logger 函数体）。
+
+    幂等守卫在 install_http_logger 入口（不在本函数内），本函数只负责执行 patch。
+    拦截两条路径：
 
     1. OpenAI SDK 路径：设置 litellm.client_session
     2. HTTPHandler 路径：patch HTTPHandler.post()
