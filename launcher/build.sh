@@ -77,20 +77,13 @@ PLIST
     # 注意：lsregister 会给 bundle 加 com.apple.provenance xattr，所以必须在清 xattr 之前执行
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f ../niu.app 2>/dev/null || true
 
-    # 清除所有 xattr（含 com.apple.provenance）
+    # 清除所有 xattr（含 com.apple.provenance 和 com.apple.quarantine）
     # 必须放在所有 LaunchServices 操作之后，作为最后一步
     # 注意：Sequoia 会在后续 open/lsregister 重新加 provenance，所以这只是清除"已知的" xattr
+    # 不主动加 quarantine——让本机用户双击直接启动，不弹 Gatekeeper 对话框
     xattr -cr ../niu.app 2>/dev/null || true
 
-    # 主动加 com.apple.quarantine xattr，让 Gatekeeper 走 quarantine 路径
-    # 这是 macOS Sequoia 上 ad-hoc 签名的 .app 双击启动的标准方案：
-    #   - 无 quarantine + ad-hoc 签名 → spctl reject → 双击"一闪退出"无提示
-    #   - 有 quarantine → 首次双击弹"无法验证开发者"对话框，用户点"打开"后系统记住授权
-    # 格式： Quarantine 时间戳 | agent | bundle id | UUID
-    QUARANTINE_ATTR="$(date +%s)|0x|||com.niu.launcher|$(uuidgen 2>/dev/null || echo '00000000-0000-0000-0000-000000000000')"
-    xattr -w com.apple.quarantine "$QUARANTINE_ATTR" ../niu.app 2>/dev/null || true
-
-    echo "[build.sh] macOS .app bundle created at ../niu.app (icon + quarantine for user-approve-on-first-open)"
+    echo "[build.sh] macOS .app bundle created at ../niu.app (icon + xattr cleaned)"
 fi
 
 # 修复 node_modules/.bin/ 下的可执行权限（铁律 #7）
