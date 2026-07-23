@@ -961,25 +961,22 @@ fn detect_python() -> String {
         return abs_path.to_string_lossy().to_string();
     }
 
-    // Fallback: project root (walks up from exe path via detect_project_root).
-    // Handles Finder double-click scenario where cwd=/ but project_root can be located
-    // by walking up from the .app/Contents/MacOS/niu binary path.
-    let project_root = detect_project_root();
-    let candidate = PathBuf::from(&project_root).join(&python_rel_path);
+    // Fallback: current working directory (cargo run scenario)
+    let candidate = PathBuf::from(".").join(&python_rel_path);
     if Command::new(&candidate)
         .arg("--version")
         .output()
         .is_ok()
     {
         let abs_path = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
-        info!("Found project Python (project_root): {}", abs_path.display());
+        info!("Found project Python (cwd fallback): {}", abs_path.display());
         return abs_path.to_string_lossy().to_string();
     }
 
     error!(
-        "Project Python not found, checked_exeDir: {}, checked_project_root: {}",
+        "Project Python not found, checked_exeDir: {}, checked_cwd: {}",
         exe_dir.join(&python_rel_path).display(),
-        candidate.display()
+        python_rel_path.display()
     );
     std::process::exit(1);
 }
@@ -1410,25 +1407,24 @@ struct Args {
 // ---------------------------------------------------------------------------
 
 /// Detect project root directory (reused by should_enable_logging / log_fatal_error / main).
-/// Walks up from executable parent directory, looking for `config/user-config.json`.
-/// Handles both scenarios:
-/// - Direct run `./niu` from project root (cwd=project_root): exeDir=project_root → found
-/// - Finder double-click `niu.app` (cwd=/): exePath=niu.app/Contents/MacOS/niu, walks up MacOS/→Contents/→niu.app/→...→project_root → found
+/// Primary: executable directory. Fallback: current working directory (checks memory/ existence).
 fn detect_project_root() -> String {
     let exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut current = exe_path.parent().map(|p| p.to_path_buf());
-    while let Some(dir) = current {
-        let config_file = dir.join("config").join("user-config.json");
-        if config_file.exists() {
-            return dir.to_string_lossy().to_string();
-        }
-        current = dir.parent().map(|p| p.to_path_buf());
-    }
-    // Fallback: original exe_dir (preserves previous behavior as last resort)
-    exe_path
+    let mut project_root = exe_path
         .parent()
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let memory_dir = std::path::PathBuf::from(&project_root).join("memory");
+    if !memory_dir.exists() {
+        let cwd = std::env::current_dir()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        let cwd_memory_dir = std::path::PathBuf::from(&cwd).join("memory");
+        if cwd_memory_dir.exists() {
+            project_root = cwd;
+        }
+    }
+    project_root
 }
 
 /// Read config/user-config.json `logging.enabled` field.
