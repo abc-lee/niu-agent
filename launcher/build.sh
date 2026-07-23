@@ -68,27 +68,27 @@ PLIST
     # PkgInfo 文件（8 字节，APPL=application）
     echo -n "APPL????" > "../niu.app/Contents/PkgInfo"
 
-    # ad-hoc 签名（必须在清 xattr 之前完成，否则签名结果被 xattr 影响）
+    # ad-hoc 签名（必须先签，再 lsregister）
     codesign --force --deep --sign - ../niu.app 2>/dev/null || echo "[build.sh] WARNING: codesign failed (non-fatal)"
 
-    # 注册到 LaunchServices（刷新 Finder 缓存，让新 icon + bundle 生效）
-    # 注意：lsregister 会给 bundle 加 com.apple.provenance xattr，所以必须在清 xattr 之前执行
+    # 注册到 LaunchServices（让 Finder 识别 icon + bundle + 打 com.apple.provenance xattr）
+    # 注意：provenance xattr 是 macOS Sequoia Gatekeeper 启动 .app 的必需项，禁止清掉！
+    # 之前 `xattr -cr` 清掉 provenance 后，启动时报 "ASP: Unable to apply provenance sandbox"
+    # 被 launchd 立即 termination reported（症状：Finder 双击一闪退出）
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f ../niu.app 2>/dev/null || true
 
-    # 清除所有 xattr（含 com.apple.provenance），然后主动加 com.apple.quarantine
-    # 这是 macOS Sequoia 上 ad-hoc 签名的 .app 双击启动的标准方案：
-    #   - 无 quarantine + ad-hoc 签名 → spctl reject → 双击"一闪退出"无提示
-    #   - 有 quarantine → 首次双击弹"无法验证开发者"对话框，用户点"打开"后系统记住授权，
-    #     后续双击直接启动不弹对话框（用户接受首次授权，不能每次都弹）
-    # 必须放在所有 LaunchServices 操作之后，作为最后一步
-    xattr -cr ../niu.app 2>/dev/null || true
-
     # 主动加 com.apple.quarantine xattr
+    # 根因：syspolicyd 的 qtn_proc 跟踪机制需要 quarantine xattr 才能正确初始化（qtn_proc_init），
+    # 否则报 "Unable to initialize qtn_proc: 3" → "dispatch_mig_server returned 268435459"
+    # → launchd 立即 termination reported。
+    # ad-hoc 签名 + 无 quarantine + Rust Mach-O 二进制 → syspolicyd 拒绝启动
+    # （bash 脚本 .app 不走 qtn_proc 路径所以能启动，Rust 二进制走该路径被拒）。
+    # 带 quarantine 后首次双击弹"无法验证开发者"对话框，用户点"打开"授权后系统记住，后续直接启动。
     # 格式：Quarantine 时间戳 | agent | bundle id | UUID
     QUARANTINE_ATTR="$(date +%s)|0x|||com.niu.launcher|$(uuidgen 2>/dev/null || echo '00000000-0000-0000-0000-000000000000')"
     xattr -w com.apple.quarantine "$QUARANTINE_ATTR" ../niu.app 2>/dev/null || true
 
-    echo "[build.sh] macOS .app bundle created at ../niu.app (icon + quarantine for first-open authorization)"
+    echo "[build.sh] macOS .app bundle created at ../niu.app (icon + ad-hoc signature + LaunchServices provenance + quarantine)"
 fi
 
 # 修复 node_modules/.bin/ 下的可执行权限（铁律 #7）
