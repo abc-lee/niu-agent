@@ -199,8 +199,9 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
             用户可在 lightrag_llm 段显式设置 reasoning_effort 覆盖默认值。
     """
     from pathlib import Path
+    from niu_api.config import CONFIG_PATH
 
-    config_path = Path(__file__).parent.parent / "config" / "user-config.json"
+    config_path = Path(CONFIG_PATH)
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         llm = data.get("llm", {})

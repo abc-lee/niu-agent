@@ -4,6 +4,8 @@ Config loading for Niu API Server
 
 import json
 import os
+import shutil
+from pathlib import Path
 from typing import Optional, Dict, Any
 from loguru import logger
 
@@ -41,8 +43,42 @@ def _parse_logging(data: dict) -> LoggingConfig:
     )
 
 
+def _get_bundle_config_dir() -> Path:
+    """返回 bundle/exe 内的 config 目录（作为模板源）。
+    dev 模式: __file__=niu_api/config.py → parent.parent = 项目根 → /config
+    bundle 模式: __file__=Contents/Resources/niu_api/config.py → parent.parent = Contents/Resources → /config
+    """
+    return Path(__file__).resolve().parent.parent / "config"
+
+
+def _get_config_path() -> str:
+    """返回 ~/.niu/config/user-config.json。首次启动从 bundle 内复制模板。"""
+    home = os.path.expanduser("~")
+    niu_config_dir = Path(home) / ".niu" / "config"
+    user_config = niu_config_dir / "user-config.json"
+    if not user_config.exists():
+        bundle_config = _get_bundle_config_dir() / "user-config.json"
+        if bundle_config.exists():
+            niu_config_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundle_config, user_config)
+    return str(user_config)
+
+
+def _get_mcp_servers_path() -> str:
+    """返回 ~/.niu/config/mcp-servers.yaml。首次启动从 bundle 内复制。"""
+    home = os.path.expanduser("~")
+    niu_config_dir = Path(home) / ".niu" / "config"
+    mcp_yaml = niu_config_dir / "mcp-servers.yaml"
+    if not mcp_yaml.exists():
+        bundle_yaml = _get_bundle_config_dir() / "mcp-servers.yaml"
+        if bundle_yaml.exists():
+            niu_config_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundle_yaml, mcp_yaml)
+    return str(mcp_yaml)
+
+
 # 模块级默认 config 路径常量（让测试 monkeypatch 生效）
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "user-config.json")
+CONFIG_PATH = _get_config_path()
 
 
 class Config:
