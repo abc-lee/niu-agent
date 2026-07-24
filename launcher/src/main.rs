@@ -1406,6 +1406,44 @@ struct Args {
 // Project root detection / logging gate / fatal error log
 // ---------------------------------------------------------------------------
 
+/// Pure function: compute resources root from a given exe path.
+/// Extracted from detect_resources_root() for testability.
+fn resources_root_from_exe(exe_path: &std::path::Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let exe_str = exe_path.to_string_lossy();
+        if exe_str.contains(".app/Contents/MacOS/") {
+            let contents_dir = exe_path
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
+            return match contents_dir {
+                Some(contents) => contents.join("Resources"),
+                None => PathBuf::from("."),
+            };
+        }
+    }
+    exe_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Detect the resources root directory (where python/, ui/, config/, models/, memory/ live).
+/// macOS bundle mode: niu.app/Contents/MacOS/niu → niu.app/Contents/Resources/
+/// macOS dev mode / Windows / Linux: exe parent directory
+fn detect_resources_root() -> PathBuf {
+    let exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    resources_root_from_exe(&exe_path)
+}
+
+/// Detect user data root (~/.niu/). All writable runtime data lives here.
+fn detect_niu_home() -> Result<PathBuf, std::io::Error> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "home_dir not found"))?;
+    Ok(home.join(".niu"))
+}
+
 /// Detect project root directory (reused by should_enable_logging / log_fatal_error / main).
 /// Primary: executable directory. Fallback: current working directory (checks memory/ existence).
 fn detect_project_root() -> String {
@@ -2138,4 +2176,43 @@ fn main() {
     let _ = bg_handle.join();
 
     info!("Niu launcher shutdown complete");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resources_root_from_exe_macos_bundle() {
+        let exe = std::path::Path::new("/Applications/niu.app/Contents/MacOS/niu");
+        let result = resources_root_from_exe(exe);
+        assert_eq!(result, PathBuf::from("/Applications/niu.app/Contents/Resources"));
+    }
+
+    #[test]
+    fn test_resources_root_from_exe_macos_bundle_arbitrary() {
+        for exe in [
+            "REDACTED_USER_PATH/Desktop/niu.app/Contents/MacOS/niu",
+            "/Applications/niu.app/Contents/MacOS/niu",
+            "/Volumes/USB/niu.app/Contents/MacOS/niu",
+        ] {
+            let p = std::path::Path::new(exe);
+            let result = resources_root_from_exe(p);
+            assert!(result.to_string_lossy().ends_with("niu.app/Contents/Resources"));
+        }
+    }
+
+    #[test]
+    fn test_resources_root_from_exe_dev_mode() {
+        let exe = std::path::Path::new("REDACTED_USER_PATH/tools/ai-bot/niu");
+        let result = resources_root_from_exe(exe);
+        assert_eq!(result, PathBuf::from("REDACTED_USER_PATH/tools/ai-bot"));
+    }
+
+    #[test]
+    fn test_detect_niu_home_smoke() {
+        let result = detect_niu_home();
+        assert!(result.is_ok());
+        assert!(result.unwrap().to_string_lossy().ends_with("/.niu"));
+    }
 }
