@@ -835,100 +835,6 @@ impl Splash {
 }
 
 // ---------------------------------------------------------------------------
-// ContextConfig — corresponds to Go's ContextConfig struct
-// ---------------------------------------------------------------------------
-
-/// ContextConfig represents context window configuration
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ContextConfig {
-    warning_threshold: f64,
-    target_threshold: f64,
-    sleep_trigger_minutes: i32,
-    context_window_size: i32,
-}
-
-/// DefaultContextConfig returns default context configuration
-fn default_context_config() -> ContextConfig {
-    ContextConfig {
-        warning_threshold: 0.80,
-        target_threshold: 0.30,
-        sleep_trigger_minutes: 5,
-        context_window_size: 200_000,
-    }
-}
-
-/// Helper struct for deserializing user-config.json
-#[derive(Debug, Deserialize)]
-struct UserConfig {
-    context: Option<ContextConfigOverrides>,
-}
-
-/// Partial context config from user-config.json (all fields optional)
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ContextConfigOverrides {
-    warning_threshold: Option<f64>,
-    target_threshold: Option<f64>,
-    sleep_trigger_minutes: Option<i32>,
-    context_window_size: Option<f64>,
-}
-
-/// LoadContextConfig loads context config from config/user-config.json
-fn load_context_config(project_root: &str) -> ContextConfig {
-    let mut cfg = default_context_config();
-
-    let config_path = PathBuf::from(project_root).join("config").join("user-config.json");
-    let data = match fs::read_to_string(&config_path) {
-        Ok(d) => d,
-        Err(_) => {
-            info!("user-config.json not found at {}, using default context config", config_path.display());
-            return cfg;
-        }
-    };
-
-    let user_config: UserConfig = match serde_json::from_str(&data) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Failed to parse user-config.json: {}, using default context config", e);
-            return cfg;
-        }
-    };
-
-    if let Some(ctx) = user_config.context {
-        if let Some(v) = ctx.warning_threshold {
-            if v > 0.0 && v < 1.0 {
-                cfg.warning_threshold = v;
-            } else {
-                warn!("Invalid warningThreshold {}, must be between 0 and 1, using default {}", v, cfg.warning_threshold);
-            }
-        }
-        if let Some(v) = ctx.target_threshold {
-            if v > 0.0 && v < 1.0 {
-                cfg.target_threshold = v;
-            } else {
-                warn!("Invalid targetThreshold {}, must be between 0 and 1, using default {}", v, cfg.target_threshold);
-            }
-        }
-        if let Some(v) = ctx.sleep_trigger_minutes {
-            if v > 0 {
-                cfg.sleep_trigger_minutes = v;
-            }
-        }
-        if let Some(v) = ctx.context_window_size {
-            let vi = v as i32;
-            if v > 0.0 && vi >= 32000 && vi <= 2_000_000 {
-                cfg.context_window_size = vi;
-            } else {
-                warn!("Invalid contextWindowSize {}, using default {}", v, cfg.context_window_size);
-            }
-        }
-    }
-
-    cfg
-}
-
-// ---------------------------------------------------------------------------
 // detectPython — corresponds to Go's detectPython()
 // ---------------------------------------------------------------------------
 
@@ -1166,69 +1072,6 @@ fn load_memory() -> Option<serde_json::Value> {
     let data = fs::read_to_string(&memory_path).ok()?;
 
     serde_json::from_str(&data).ok()
-}
-
-// ---------------------------------------------------------------------------
-// formatMemoryForPrompt — corresponds to Go's formatMemoryForPrompt()
-// ---------------------------------------------------------------------------
-
-/// formatMemoryForPrompt formats memory for system prompt injection
-fn format_memory_for_prompt(memory: &Option<serde_json::Value>) -> String {
-    let memory = match memory {
-        Some(v) => v,
-        None => return String::new(),
-    };
-
-    let mut sb = String::new();
-    sb.push_str("\n\n# 我的重要记忆\n\n");
-
-    // Identity
-    if let Some(identity) = memory.get("identity").and_then(|v| v.as_object()) {
-        sb.push_str("## 我的身份\n\n");
-        if let Some(name) = identity.get("name").and_then(|v| v.as_str()) {
-            if !name.is_empty() {
-                sb.push_str(&format!("我的名字是 {}。\n", name));
-            }
-        }
-        if let Some(personality) = memory
-            .get("identity")
-            .and_then(|v| v.get("personality"))
-            .and_then(|v| v.as_array())
-        {
-            if !personality.is_empty() {
-                let traits: Vec<&str> = personality
-                    .iter()
-                    .filter_map(|t| t.as_str())
-                    .collect();
-                if !traits.is_empty() {
-                    sb.push_str(&format!("我的性格：{}。\n", traits.join("、")));
-                }
-            }
-        }
-        sb.push('\n');
-    }
-
-    // Workspace
-    if let Some(workspace) = memory.get("workspace").and_then(|v| v.as_object()) {
-        if let Some(path) = workspace.get("path").and_then(|v| v.as_str()) {
-            if !path.is_empty() && !path.starts_with("请询问") {
-                sb.push_str("## 工作目录\n\n");
-                sb.push_str(&format!("我的知识库存储在：{}\n\n", path));
-            }
-        }
-    }
-
-    // User
-    if let Some(user) = memory.get("user").and_then(|v| v.as_object()) {
-        if let Some(name) = user.get("name").and_then(|v| v.as_str()) {
-            if !name.is_empty() {
-                sb.push_str("## 用户信息\n\n");
-                sb.push_str(&format!("用户称呼：{}\n", name));
-            }
-        }
-    }
-
-    sb
 }
 
 // ---------------------------------------------------------------------------
@@ -1626,19 +1469,12 @@ fn main() {
     // Get project root (needed for template file paths and config loading)
     // Delegates to detect_project_root() (shared with should_enable_logging / log_fatal_error).
     let project_root = detect_project_root();
-    // Note: exeDir + cwd memory/ check block removed — detect_resources_root()
-    // handles both bundle mode (Contents/Resources/) and dev mode (exe parent)
-    // without cwd fallback.
-
-    // Load context configuration from config/user-config.json
-    let _context_config = load_context_config(&project_root);
 
     // Initialize ~/.niu/ directory and copy template files if needed
     init_niu_dir(&project_root);
 
     // Load memory for injection (passed to Python API via environment)
     let memory = load_memory();
-    let _ = format_memory_for_prompt(&memory); // Memory injection handled by Python API
 
     // Extract workspace.path from memory and set as WORKSPACE_PATH env var
     // so all child processes (Python API, MCP servers) use the correct workspace path
@@ -1824,7 +1660,7 @@ fn main() {
             .expect("Failed to build HTTP check client");
 
         let mut api_ready = false;
-        for i in 0..30 {
+        for _ in 0..30 {
             thread::sleep(Duration::from_secs(1));
             let url = format!("http://127.0.0.1:{}/health", port);
             match check_client.get(&url).send() {
@@ -1836,7 +1672,6 @@ fn main() {
                 }
                 Err(_) => {}
             }
-            let _ = i;
         }
 
         if !api_ready {

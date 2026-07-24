@@ -24,11 +24,6 @@ if [ ! -d "$PYTHON_DIR" ]; then
     exit 1
 fi
 
-# Step 0: 备份 + otool 留证
-echo "[relocate] Step 0: backup + otool 留证"
-cp "$PYTHON_DIR/bin/python3" "$PYTHON_DIR/bin/python3.bak"
-otool -L "$PYTHON_DIR/bin/python3" > /tmp/python3_otool_before.txt 2>&1
-
 # Step 1: 复制 stdlib 到 python/lib/python3.11/（排除 site-packages 已有）
 echo "[relocate] Step 1: copy stdlib"
 rsync -a --exclude='site-packages' "$FRAMEWORK_LIB/" "$PYTHON_DIR/lib/python3.11/"
@@ -61,18 +56,5 @@ install_name_tool -add_rpath @loader_path/../lib "$PYTHON_DIR/bin/python3" 2>/de
 echo "[relocate] Step 7: re-sign"
 codesign --force --sign - "$PYTHON_DIR/bin/python3"
 codesign --force --sign - "$PYTHON_DIR/lib/libPython3.11.dylib"
-
-# Step 8: 验证（用 PYTHONHOME 模拟启动器行为）
-echo "[relocate] Step 8: verify with PYTHONHOME"
-PYTHONHOME_ABS=$(cd "$PYTHON_DIR" && pwd)
-echo "--- otool -L python3 (should show @rpath/libPython3.11.dylib) ---"
-otool -L "$PYTHON_DIR/bin/python3" | grep -i python
-echo "--- import numpy/torch ---"
-PYTHONHOME="$PYTHONHOME_ABS" "$PYTHON_DIR/bin/python3" -c "import numpy; print('numpy', numpy.__version__)"
-PYTHONHOME="$PYTHONHOME_ABS" "$PYTHON_DIR/bin/python3" -c "import torch; print('torch', torch.__version__)"
-echo "--- encodings __file__ (should be bundle-internal) ---"
-PYTHONHOME="$PYTHONHOME_ABS" "$PYTHON_DIR/bin/python3" -c "import encodings; print(encodings.__file__)"
-echo "--- sys.prefix / base_prefix ---"
-PYTHONHOME="$PYTHONHOME_ABS" "$PYTHON_DIR/bin/python3" -c "import sys; print('prefix:', sys.prefix); print('base_prefix:', sys.base_prefix)"
 
 echo "[relocate] DONE"

@@ -16,45 +16,44 @@ if [ "$(uname)" = "Darwin" ]; then
     cp target/release/niu-launcher "$APP_DIR/niu"
 
     # --- 复制运行时资源到 Contents/Resources/ ---
-    RESOURCES_DIR_FULL="$RESOURCES_DIR"
-    PROJECT_ROOT_FULL="$(cd .. && pwd)"
+    PROJECT_ROOT="$(cd .. && pwd)"
 
     # python/ (含自包含 stdlib + dylib + Resources stub)
     echo "[build.sh] copying python/ to bundle..."
     # 不用 -X：签名完全由 Step 2 codesign --force 重新打，避免 rsync -X 带入旧 xattr（含可能的 quarantine）
     # 排除 *.bak（relocate 脚本的备份文件不进 bundle）
-    rsync -a --delete --exclude='*.bak' "$PROJECT_ROOT_FULL/python/" "$RESOURCES_DIR_FULL/python/"
+    rsync -a --delete --exclude='*.bak' "$PROJECT_ROOT/python/" "$RESOURCES_DIR/python/"
     # 对 bundle 内 python/ 跑 relocate（确保自包含）
-    "$PROJECT_ROOT_FULL/scripts/relocate_python_framework.sh" "$RESOURCES_DIR_FULL/python"
+    "$PROJECT_ROOT/scripts/relocate_python_framework.sh" "$RESOURCES_DIR/python"
 
     # ui/main/ (Electron)
     echo "[build.sh] copying ui/main/..."
     rsync -a --delete --exclude '.git' --exclude 'node_modules/.cache' \
-        "$PROJECT_ROOT_FULL/ui/main/" "$RESOURCES_DIR_FULL/ui/main/"
+        "$PROJECT_ROOT/ui/main/" "$RESOURCES_DIR/ui/main/"
 
     # config/ (模板，运行时复制到 ~/.niu/config/)
     echo "[build.sh] copying config/..."
-    rsync -a --delete "$PROJECT_ROOT_FULL/config/" "$RESOURCES_DIR_FULL/config/"
+    rsync -a --delete "$PROJECT_ROOT/config/" "$RESOURCES_DIR/config/"
 
     # models/
     echo "[build.sh] copying models/..."
-    rsync -a --delete "$PROJECT_ROOT_FULL/models/" "$RESOURCES_DIR_FULL/models/"
+    rsync -a --delete "$PROJECT_ROOT/models/" "$RESOURCES_DIR/models/"
 
     # memory/ (agent templates)
     echo "[build.sh] copying memory/..."
-    rsync -a --delete "$PROJECT_ROOT_FULL/memory/" "$RESOURCES_DIR_FULL/memory/" 2>/dev/null || true
+    rsync -a --delete "$PROJECT_ROOT/memory/" "$RESOURCES_DIR/memory/" 2>/dev/null || true
 
     # niu_api/ (Python API 模块，Python 启动时用 -m niu_api 找它)
     echo "[build.sh] copying niu_api/..."
-    rsync -a --delete "$PROJECT_ROOT_FULL/niu_api/" "$RESOURCES_DIR_FULL/niu_api/"
+    rsync -a --delete "$PROJECT_ROOT/niu_api/" "$RESOURCES_DIR/niu_api/"
 
     # agent/ (Agent 核心模块，niu_api 依赖)
     echo "[build.sh] copying agent/..."
-    rsync -a --delete "$PROJECT_ROOT_FULL/agent/" "$RESOURCES_DIR_FULL/agent/"
+    rsync -a --delete "$PROJECT_ROOT/agent/" "$RESOURCES_DIR/agent/"
 
     # mcp-servers/ (MCP 服务器 Python 模块，config/mcp-servers.yaml 用相对路径 workdir 引用)
     echo "[build.sh] copying mcp-servers/..."
-    rsync -a --delete "$PROJECT_ROOT_FULL/mcp-servers/" "$RESOURCES_DIR_FULL/mcp-servers/"
+    rsync -a --delete "$PROJECT_ROOT/mcp-servers/" "$RESOURCES_DIR/mcp-servers/"
 
     # 构造 iconset（从 ui/main/windows/assistant/icons 复制 PNG 改名 + sips 强制正方形）
     # 源 PNG 是非正方形（16x18/32x37/64x75/128x151 等），iconutil 严格校验像素必须匹配命名尺寸，
@@ -142,14 +141,9 @@ PLIST
     # 被 launchd 立即 termination reported（症状：Finder 双击一闪退出）
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f ../niu.app 2>/dev/null || true
 
-    # 主动加 com.apple.quarantine xattr
-    # 根因：syspolicyd 的 qtn_proc 跟踪机制需要 quarantine xattr 才能正确初始化（qtn_proc_init），
-    # 否则报 "Unable to initialize qtn_proc: 3" → "dispatch_mig_server returned 268435459"
-    # → launchd 立即 termination reported。
-    # ad-hoc 签名 + 无 quarantine + Rust Mach-O 二进制 → syspolicyd 拒绝启动
-    # （bash 脚本 .app 不走 qtn_proc 路径所以能启动，Rust 二进制走该路径被拒）。
-    # 带 quarantine 后首次双击弹"无法验证开发者"对话框，用户点"打开"授权后系统记住，后续直接启动。
-    # 格式：Quarantine 时间戳 | agent | bundle id | UUID
+    # 主动加 com.apple.quarantine xattr：ad-hoc 签名 + 无 quarantine + Rust Mach-O
+    # 会被 syspolicyd 拒绝启动（qtn_proc_init 失败）。带 quarantine 后首次双击弹
+    # "无法验证开发者"对话框，用户点"打开"授权后系统记住，后续直接启动。
     QUARANTINE_ATTR="$(date +%s)|0x|||com.niu.launcher|$(uuidgen 2>/dev/null || echo '00000000-0000-0000-0000-000000000000')"
     xattr -w com.apple.quarantine "$QUARANTINE_ATTR" ../niu.app 2>/dev/null || true
 
