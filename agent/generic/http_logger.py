@@ -27,9 +27,12 @@ _patched = False  # 幂等守卫：防止 install_http_logger 被重复调用导
 
 
 def _get_log_dir() -> Path:
-    """返回日志目录 logs/raw_http/{YYYYMMDD}/，自动创建。"""
+    """返回日志目录 ~/.niu/logs/raw_http/{YYYYMMDD}/，自动创建。"""
+    from datetime import datetime
+    import os
+    home = os.path.expanduser("~")
     date_str = datetime.now().strftime("%Y%m%d")
-    log_dir = Path("logs") / "raw_http" / date_str
+    log_dir = Path(home) / ".niu" / "logs" / "raw_http" / date_str
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 

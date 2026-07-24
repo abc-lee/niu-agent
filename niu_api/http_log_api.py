@@ -14,8 +14,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 router = APIRouter(prefix="/http-log", tags=["http-log"])
 
-# Root logs directory
-_LOG_DIR = Path("logs") / "raw_http"
+
+def _get_log_dir() -> Path:
+    """返回日志目录 ~/.niu/logs/raw_http/。"""
+    import os
+    home = os.path.expanduser("~")
+    return Path(home) / ".niu" / "logs" / "raw_http"
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +39,10 @@ def viewer_page():
 @router.get("/dates", response_class=JSONResponse)
 def list_dates():
     """Return a list of dates that have log entries, newest first."""
-    if not _LOG_DIR.exists():
+    if not _get_log_dir().exists():
         return []
     dates = sorted(
-        (d.name for d in _LOG_DIR.iterdir()
+        (d.name for d in _get_log_dir().iterdir()
          if d.is_dir() and d.name.isdigit() and len(d.name) == 8),
         reverse=True,
     )
@@ -53,7 +57,7 @@ def list_entries(date: str):
     - Transport layer: {seq:06d}.json (request + streaming response marker)
     - Application layer: {seq:06d}_request.json + {seq:06d}_response.json
     """
-    day_dir = _LOG_DIR / date
+    day_dir = _get_log_dir() / date
     if not day_dir.is_dir():
         return []
 
@@ -155,7 +159,7 @@ def get_entry(date: str, seq: int):
 
     Merges transport-layer and application-layer data.
     """
-    day_dir = _LOG_DIR / date
+    day_dir = _get_log_dir() / date
     transport_file = day_dir / f"{seq:06d}.json"
     request_file = day_dir / f"{seq:06d}_request.json"
     response_file = day_dir / f"{seq:06d}_response.json"

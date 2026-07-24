@@ -78,13 +78,15 @@ _raw_seq_counter = 0
 
 
 def _get_app_log_dir() -> Path:
-    """获取应用层日志根目录，便于测试 monkeypatch。
+    """获取应用层日志根目录 ~/.niu/logs/，便于测试 monkeypatch。
 
     litellm_adapter 原用 Path(__file__).parent.parent.parent / "logs" 绝对路径
     （见 _write_raw_log 和 _write_interaction_log），chdir 无效。
     抽出此函数让测试可拦截。带 resolve() 与 gateway.py 的 _get_gateway_log_dir 保持一致。
     """
-    return Path(__file__).resolve().parent.parent.parent / "logs"
+    import os
+    home = os.path.expanduser("~")
+    return Path(home) / ".niu" / "logs"
 
 
 def _write_raw_log(log_type: str, data: dict, seq: Optional[int] = None) -> None:
