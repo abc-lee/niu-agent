@@ -1219,7 +1219,7 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
         Ok(cmd.spawn()?)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         // Locate the bundled Electron binary (absolute path, no PATH lookup).
         let electron_bin = window_dir.join(
@@ -1248,6 +1248,19 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
             cmd.stdin(std::process::Stdio::null());
             Ok(cmd.spawn()?)
         }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Linux: no .app bundle, fall back to `npm start`.
+        let mut cmd = Command::new("npm");
+        cmd.arg("start")
+            .env("NIU_WINDOW", name)
+            .current_dir(&window_dir);
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::null());
+        Ok(cmd.spawn()?)
     }
 }
 
