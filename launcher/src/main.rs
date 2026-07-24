@@ -931,6 +931,17 @@ fn load_context_config(project_root: &str) -> ContextConfig {
 /// detectPython finds the project's self-contained Python executable.
 /// Primary: based on executable directory (works when running built binary from any cwd).
 /// Fallback: current working directory (supports development).
+/// Detect project's self-contained Python executable.
+/// Looks in `<resources_root>/python/bin/python3` (macOS/Linux) or
+/// `<resources_root>/python/Scripts/python.exe` (Windows).
+///
+/// Resources root from detect_resources_root():
+/// - macOS bundle: niu.app/Contents/Resources/
+/// - macOS dev / Windows / Linux: exe parent
+///
+/// cargo run fallback: current_exe() = launcher/target/debug/niu-launcher,
+/// resources root = launcher/target/debug/ — python/ not there. Fall back
+/// to cwd (only when resources_root didn't find it).
 fn detect_python() -> String {
     let python_rel_path: PathBuf = if cfg!(target_os = "windows") {
         PathBuf::from("python").join("Scripts").join("python.exe")
@@ -938,46 +949,46 @@ fn detect_python() -> String {
         PathBuf::from("python").join("bin").join("python3")
     };
 
-    // Primary: executable directory
-    let exe_path = match env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            error!("Failed to determine executable path: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let exe_dir = exe_path.parent().unwrap_or_else(|| {
-        error!("Executable path has no parent");
-        std::process::exit(1);
-    });
-    let candidate = exe_dir.join(&python_rel_path);
+    // Primary: resources root
+    let resources_root = detect_resources_root();
+    let candidate = resources_root.join(&python_rel_path);
     if Command::new(&candidate)
         .arg("--version")
         .output()
-        .is_ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
     {
         let abs_path = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
-        info!("Found project Python (exeDir): {}", abs_path.display());
+        info!("Found project Python (resources): {}", abs_path.display());
         return abs_path.to_string_lossy().to_string();
     }
 
-    // Fallback: current working directory (cargo run scenario)
-    let candidate = PathBuf::from(".").join(&python_rel_path);
-    if Command::new(&candidate)
+    // Dev fallback: cargo run scenario (cwd=project root)
+    let cwd = env::current_dir()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    let cwd_candidate = PathBuf::from(&cwd).join(&python_rel_path);
+    if Command::new(&cwd_candidate)
         .arg("--version")
         .output()
-        .is_ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
     {
-        let abs_path = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+        let abs_path = dunce::canonicalize(&cwd_candidate).unwrap_or_else(|_| cwd_candidate.clone());
         info!("Found project Python (cwd fallback): {}", abs_path.display());
         return abs_path.to_string_lossy().to_string();
     }
 
     error!(
-        "Project Python not found, checked_exeDir: {}, checked_cwd: {}",
-        exe_dir.join(&python_rel_path).display(),
-        python_rel_path.display()
+        "Project Python not found. Checked resources: {}, cwd: {}",
+        candidate.display(),
+        cwd_candidate.display()
     );
+    log_fatal_error(&format!(
+        "Project Python not found. Checked resources: {}, cwd: {}",
+        candidate.display(),
+        cwd_candidate.display()
+    ));
     std::process::exit(1);
 }
 
