@@ -1348,7 +1348,14 @@ fn kill_stale_api_process(port: u16) {
 // launchWindow — corresponds to Go's launchWindow()
 // ---------------------------------------------------------------------------
 
-/// launchWindow launches an Electron window via npm start
+/// launchWindow launches an Electron window.
+///
+/// In macOS/Linux bundle mode, we directly invoke the Electron binary
+/// located at `<window_dir>/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron`
+/// to avoid depending on PATH (Finder-launched processes inherit a minimal
+/// PATH that does not include `/usr/local/bin` where npm lives).
+/// In dev mode (no node_modules), we fall back to `npm start`.
+/// Windows always uses `cmd /C npm start` (users must install npm).
 fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::Error>> {
     let resources_root = detect_resources_root();
     let window_dir = resources_root.join("ui").join("main");
@@ -1367,14 +1374,33 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
 
     #[cfg(not(windows))]
     {
-        let mut cmd = Command::new("npm");
-        cmd.arg("start")
-            .env("NIU_WINDOW", name)
-            .current_dir(&window_dir);
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        cmd.stdin(std::process::Stdio::null());
-        Ok(cmd.spawn()?)
+        // Locate the bundled Electron binary (absolute path, no PATH lookup).
+        let electron_bin = window_dir.join(
+            "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
+        );
+
+        if electron_bin.exists() {
+            // Bundle mode: run Electron directly with the window_dir as the
+            // app entry point ("." resolves to package.json -> main field).
+            let mut cmd = Command::new(&electron_bin);
+            cmd.arg(".")
+                .env("NIU_WINDOW", name)
+                .current_dir(&window_dir);
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::null());
+            cmd.stdin(std::process::Stdio::null());
+            Ok(cmd.spawn()?)
+        } else {
+            // Dev mode fallback: no bundled Electron, rely on `npm start`.
+            let mut cmd = Command::new("npm");
+            cmd.arg("start")
+                .env("NIU_WINDOW", name)
+                .current_dir(&window_dir);
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::null());
+            cmd.stdin(std::process::Stdio::null());
+            Ok(cmd.spawn()?)
+        }
     }
 }
 
