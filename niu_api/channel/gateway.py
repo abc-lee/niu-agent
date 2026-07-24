@@ -14,8 +14,10 @@ from .base import ChannelAdapter
 
 
 def _get_gateway_log_dir() -> Path:
-    """获取 gateway 日志根目录，便于测试 monkeypatch。"""
-    return Path(__file__).resolve().parent.parent.parent / "logs"
+    """返回 ~/.niu/logs/。"""
+    import os
+    home = os.path.expanduser("~")
+    return Path(home) / ".niu" / "logs"
 
 
 def _log_gateway_error(msg: str) -> None:
@@ -176,7 +178,7 @@ class IMGateway(ChannelAdapter):
                     env[f"NIU_{adapter_type.upper()}_{key.upper()}"] = val
 
             argv = [sys.executable, "-m", adapter_module]
-            log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
+            log_dir = _get_gateway_log_dir()
             log_dir.mkdir(parents=True, exist_ok=True)
             from niu_api.config import get_logging_config
             if get_logging_config().enabled:
