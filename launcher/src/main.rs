@@ -1702,12 +1702,23 @@ fn main() {
         };
         api_server_cmd.current_dir(&api_server_cwd);
 
+        // Set environment: inherit current env first, then override with our vars
+        // IMPORTANT: env::vars() must come BEFORE PYTHONHOME, otherwise inherited
+        // PYTHONHOME (e.g. from user shell) would override our bundle-internal path.
+        for (key, value) in env::vars() {
+            api_server_cmd.env(&key, &value);
+        }
+        for (key, value) in &env_vars_bg {
+            api_server_cmd.env(key, value);
+        }
+
         // PYTHONHOME: 让 python3 找到 bundle 内 stdlib + site-packages
         // 必须传（python3 链接的 dylib 内部硬编码系统 framework stdlib 路径，
         // PYTHONHOME 覆盖让 base_prefix 指向 bundle 内）
         // 已实测验证（2026-07-24）：pyvenv.cfg 的 home 已改成 bundle 内 python/bin/，
         // 传 PYTHONHOME 后 base_prefix 正确指向 bundle 内 python/，不会泄露到系统 framework。
         // 无论 dev 还是 bundle 模式，PYTHONHOME 永远指向 <resources_root>/python/，stdlib 在 bundle 内。
+        // 放在 env::vars() 之后，确保覆盖任何继承的 PYTHONHOME。
         let python_home = PathBuf::from(&python_path_bg)
             .parent()
             .and_then(|p| p.parent())
@@ -1715,13 +1726,12 @@ fn main() {
             .unwrap_or_default();
         api_server_cmd.env("PYTHONHOME", &python_home);
 
-        // Set environment: inherit current env + add our vars
-        for (key, value) in env::vars() {
-            api_server_cmd.env(&key, &value);
-        }
-        for (key, value) in &env_vars_bg {
-            api_server_cmd.env(key, value);
-        }
+        // PYTHONPATH: 让 Python 找到 niu_api 和 agent 模块
+        // cwd 是 ~/.niu/（可写），但 niu_api/agent 模块在 bundle 内 Resources/
+        // 必须把 Resources/ 加入 PYTHONPATH，否则 "No module named niu_api"
+        let resources_root = detect_resources_root();
+        let python_path_env = resources_root.to_string_lossy().to_string();
+        api_server_cmd.env("PYTHONPATH", &python_path_env);
 
         // Capture output
         let mut api_server_child = api_server_cmd
