@@ -1450,13 +1450,18 @@ fn detect_project_root() -> String {
     detect_resources_root().to_string_lossy().to_string()
 }
 
-/// Read config/user-config.json `logging.enabled` field.
+/// Read ~/.niu/config/user-config.json `logging.enabled` field.
 /// Returns false (conservative default) on any failure.
+///
+/// IMPORTANT: config file must live in ~/.niu/config/, not bundle.
+/// Bundle files are read-only at runtime (macOS Gatekeeper enforces).
+/// Rust and Python and Electron all read the same ~/.niu/config/user-config.json
+/// so logging flag is consistent across processes.
 fn should_enable_logging() -> bool {
-    let project_root = detect_project_root();
-    let config_path = std::path::PathBuf::from(&project_root)
-        .join("config")
-        .join("user-config.json");
+    let config_path = match detect_niu_home() {
+        Ok(home) => home.join("config").join("user-config.json"),
+        Err(_) => return false,
+    };
     match std::fs::read_to_string(&config_path) {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(v) => v
@@ -1470,14 +1475,17 @@ fn should_enable_logging() -> bool {
     }
 }
 
-/// Write a fatal error message to `logs/launcher_error.log`.
-/// Independent of tracing/logging flag — guarantees diagnostic availability
-/// even when `logging.enabled=false` (Windows GUI release mode).
+/// Write a fatal error message to `~/.niu/logs/launcher_error.log`.
+/// Independent of tracing/logging flag — guarantees diagnostic availability.
+///
+/// IMPORTANT: log file must NOT live in the .app bundle — bundle files are
+/// read-only at runtime (macOS Gatekeeper enforces). Write to ~/.niu/logs/.
+/// Fallback to /tmp/ if home_dir unavailable (always writable on Unix).
 fn log_fatal_error(msg: &str) {
-    let project_root = detect_project_root();
-    let log_path = std::path::PathBuf::from(&project_root)
-        .join("logs")
-        .join("launcher_error.log");
+    let log_path = match detect_niu_home() {
+        Ok(home) => home.join("logs").join("launcher_error.log"),
+        Err(_) => PathBuf::from("/tmp/niu_launcher_error.log"),
+    };
     let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")));
     use time::macros::format_description;
     let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
