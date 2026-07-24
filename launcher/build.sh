@@ -101,6 +101,8 @@ if [ "$(uname)" = "Darwin" ]; then
     <string>Niu</string>
     <key>CFBundleIconFile</key>
     <string>niu</string>
+    <key>LSUIElement</key>
+    <true/>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
 </dict>

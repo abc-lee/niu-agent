@@ -563,6 +563,10 @@ impl Splash {
                         let app = objc_msgSend(nsapp_class, shared_sel);
                         let set_policy_sel = sel_registerName("setActivationPolicy:\0".as_ptr());
                         objc_msgSend(app, set_policy_sel, 1i64);
+                        // Accessory policy 应用不会自动成为 frontmost，必须显式
+                        // activateIgnoringOtherApps:YES 才能让窗口显示到前台。
+                        let activate_sel = sel_registerName("activateIgnoringOtherApps:\0".as_ptr());
+                        objc_msgSend(app, activate_sel, true as u8 as std::ffi::c_uint);
                     }
                 }
                 Task::none()
