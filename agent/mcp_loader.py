@@ -40,10 +40,11 @@ OPTIONAL_SERVERS: List[Tuple[str, str]] = [
 # ============================================================================
 
 def _load_mcp_config() -> dict:
-    """Load MCP server configuration from config/mcp-servers.yaml"""
+    """Load MCP server configuration from ~/.niu/config/mcp-servers.yaml"""
     import yaml
+    from niu_api.config import _get_mcp_servers_path
 
-    config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
+    config_path = Path(_get_mcp_servers_path())
 
     if not config_path.exists():
         logger.warning(f"MCP config file not found: {config_path}")

@@ -219,10 +219,8 @@ def _trigger_background_probe_if_needed() -> None:
 
     def _probe_in_background():
         try:
-            user_config_path = Path.home() / ".niu" / "user-config.json"
-            if not user_config_path.exists():
-                # 兼容项目内 config/user-config.json
-                user_config_path = Path(__file__).parent.parent.parent / "config" / "user-config.json"
+            from niu_api.config import CONFIG_PATH
+            user_config_path = Path(CONFIG_PATH)
             if not user_config_path.exists():
                 return
             with open(user_config_path, encoding="utf-8") as f:

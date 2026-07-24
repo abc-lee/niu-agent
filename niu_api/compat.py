@@ -1207,8 +1207,9 @@ async def get_llm_status() -> dict:
     """检测 LLM 是否已配置可用（直接从文件读取，不走缓存）"""
     import json
     from pathlib import Path
+    from niu_api.config import CONFIG_PATH
 
-    config_path = Path(__file__).parent.parent / "config" / "user-config.json"
+    config_path = Path(CONFIG_PATH)
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         llm = data.get("llm", {})

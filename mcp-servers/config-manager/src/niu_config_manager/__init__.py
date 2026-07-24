@@ -332,12 +332,11 @@ def get_tool_schemas() -> list[dict]:
 
 
 # Config paths
-# Find project root (4 levels up from this file, then into config)
-# __file__ = .../mcp-servers/config-manager/src/niu_config_manager/__init__.py
-# Need to go up 5 levels to reach project root, then into config
-CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "config"
+# user-config.json 读写 ~/.niu/config/（首次启动由 niu_api.config 复制模板）
+# llm-presets.json 只读，仍从 bundle 内读（load_presets 只读不写）
+CONFIG_DIR = Path(os.path.expanduser("~")) / ".niu" / "config"
 USER_CONFIG_PATH = CONFIG_DIR / "user-config.json"
-PRESETS_PATH = CONFIG_DIR / "llm-presets.json"
+PRESETS_PATH = Path(__file__).parent.parent.parent.parent.parent / "config" / "llm-presets.json"
 
 
 # Memory paths (in user home)

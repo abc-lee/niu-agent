@@ -329,8 +329,9 @@ def _load_llm_config():
     """直接从文件读取 LLM 配置，不走缓存，保留所有原始字段"""
     import json
     from pathlib import Path
+    from niu_api.config import CONFIG_PATH
 
-    config_path = Path(__file__).parent.parent / "config" / "user-config.json"
+    config_path = Path(CONFIG_PATH)
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         llm = data.get("llm", {})

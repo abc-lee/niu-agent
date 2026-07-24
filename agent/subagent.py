@@ -115,8 +115,9 @@ def count_tokens_for_text(text: str) -> int:
 
 
 def _get_user_config_path() -> Path:
-    """Locate config/user-config.json relative to project root."""
-    return Path(__file__).parent.parent / "config" / "user-config.json"
+    """Locate user-config.json under ~/.niu/config/."""
+    from niu_api.config import CONFIG_PATH
+    return Path(CONFIG_PATH)
 
 
 def _read_context_window_tokens() -> int:
