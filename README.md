@@ -203,6 +203,65 @@ copy config\user-data\skills\*.md "$env:USERPROFILE\.niu\skills\"
 
 > 仅当 `~/.niu/` 下对应文件不存在时才复制，避免覆盖用户已有的配置和记忆。
 
+## macOS .app 打包
+
+最终用户拿到的 macOS 安装包是 `niu.app`（含完整运行时：Rust 启动器 + 自包含 Python + Electron 前端 + 模型 + 配置模板）。打包流程全部由 `launcher/build.sh` 自动完成。
+
+### 前置条件
+
+1. **python/ 自包含运行时已就位**（含 stdlib + dylib + Resources stub，install_name_tool 已改）
+2. **ui/main/node_modules 已安装**（Electron 33 + 依赖）
+3. **Rust 工具链已安装**（含 cargo + rustup target，见下一节"编译 Rust 启动器"）
+
+### 打包命令
+
+````bash
+cd launcher
+./build.sh
+````
+
+`build.sh` 会自动完成：
+1. `cargo build --release` 编译 Rust 启动器
+2. 复制二进制到项目根 `niu`（开发模式裸二进制，命令行 `./niu` 用）
+3. macOS 下额外构造 `niu.app/Contents/MacOS/niu`（Finder 双击用）
+4. 复制运行时资源到 `niu.app/Contents/Resources/`：
+   - `python/`（自包含 Python 运行时）
+   - `ui/main/`（Electron 前端）
+   - `config/`（配置模板，首次启动复制到 `~/.niu/config/`）
+   - `models/`（向量模型 + 人脸识别模型）
+   - `memory/`（用户记忆模板）
+   - `niu_api/`、`agent/`、`mcp-servers/`（Python 模块，PYTHONPATH 引用）
+5. 调用 `scripts/relocate_python_framework.sh` 把 stdlib + dylib + Resources stub 复制到 `python/lib/`，并用 install_name_tool 改 dylib 引用为 `@rpath` 自包含
+6. 逐个 codesign ad-hoc 签名（不用 `--deep`，自 macOS 13.3 起废弃）：
+   - Python `.so` / `.dylib`（并行 4 进程）
+   - `python3` 二进制
+   - Electron 主二进制 + Helper + Framework + `.node`
+   - 顶层 `niu.app`
+7. `lsregister -f` 注册到 LaunchServices（打 `com.apple.provenance` xattr）
+8. `xattr -w com.apple.quarantine` 主动加 quarantine（首次双击弹"无法验证开发者"对话框，用户点"打开"授权后系统记住）
+
+### 产物
+
+| 路径 | 用途 |
+|------|------|
+| `niu` | 项目根裸二进制，命令行 `./niu` 启动（开发调试用） |
+| `niu.app/` | macOS 应用包，Finder 双击启动（最终用户用） |
+
+### 分发
+
+把整个 `niu.app/` 目录拷贝到目标 Mac（同架构：x86_64 或 ARM64）的任意位置（如 `/Applications/`），双击即可运行。目标 Mac **不需要**安装 Python / Node.js / Rust 工具链——所有运行时都已自包含在 `niu.app/Contents/Resources/` 内。
+
+首次双击会弹"无法验证开发者"对话框（因为使用 ad-hoc 签名），点"打开"授权后系统记住，后续直接启动。
+
+### Info.plist 关键配置
+
+| Key | 值 | 作用 |
+|-----|----|----|
+| `CFBundleIdentifier` | `com.niu.launcher` | bundle 唯一标识 |
+| `CFBundleExecutable` | `niu` | 指向 `Contents/MacOS/niu` |
+| `LSUIElement` | `true` | Accessory 模式：Dock 不显示图标，避免抢焦点；窗口仍可显示（启动器内部调 `activateIgnoringOtherApps:YES` 强制激活） |
+| `LSMinimumSystemVersion` | `11.0` | 最低 macOS 版本 |
+
 ## 编译 Rust 启动器
 
 Rust 启动器需要根据目标平台编译对应架构的二进制：
