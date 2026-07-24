@@ -44,6 +44,18 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "[build.sh] copying memory/..."
     rsync -a --delete "$PROJECT_ROOT_FULL/memory/" "$RESOURCES_DIR_FULL/memory/" 2>/dev/null || true
 
+    # niu_api/ (Python API 模块，Python 启动时用 -m niu_api 找它)
+    echo "[build.sh] copying niu_api/..."
+    rsync -a --delete "$PROJECT_ROOT_FULL/niu_api/" "$RESOURCES_DIR_FULL/niu_api/"
+
+    # agent/ (Agent 核心模块，niu_api 依赖)
+    echo "[build.sh] copying agent/..."
+    rsync -a --delete "$PROJECT_ROOT_FULL/agent/" "$RESOURCES_DIR_FULL/agent/"
+
+    # mcp-servers/ (MCP 服务器 Python 模块，config/mcp-servers.yaml 用相对路径 workdir 引用)
+    echo "[build.sh] copying mcp-servers/..."
+    rsync -a --delete "$PROJECT_ROOT_FULL/mcp-servers/" "$RESOURCES_DIR_FULL/mcp-servers/"
+
     # 构造 iconset（从 ui/main/windows/assistant/icons 复制 PNG 改名 + sips 强制正方形）
     # 源 PNG 是非正方形（16x18/32x37/64x75/128x151 等），iconutil 严格校验像素必须匹配命名尺寸，
     # 否则生成失败。用 sips --resampleHeightWidth 强制到正方形像素再放 iconset。
