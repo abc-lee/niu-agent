@@ -7,6 +7,7 @@
 const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const url = require('url');
 const http = require('http');
 const { exec, spawn } = require('child_process');
@@ -32,8 +33,24 @@ const SPIRIT_SIZE = {
 };
 
 // ========== 配置文件 ==========
-// 注意：window-config.json 跟随 assistant 资源迁移到 windows/assistant/ 下
-const configPath = path.join(__dirname, 'windows', 'assistant', 'window-config.json');
+// window-config.json 写到 ~/.niu/（bundle 内只读）
+const niuHome = path.join(os.homedir(), '.niu');
+if (!fs.existsSync(niuHome)) {
+  fs.mkdirSync(niuHome, { recursive: true });
+}
+const configPath = path.join(niuHome, 'window-config.json');
+
+// 迁移：首次启动若 ~/.niu/window-config.json 不存在但 bundle 内旧路径有文件，复制过去
+// 旧路径：ui/main/windows/assistant/window-config.json（升级前用户数据在这里）
+const oldConfigPath = path.join(__dirname, 'windows', 'assistant', 'window-config.json');
+if (!fs.existsSync(configPath) && fs.existsSync(oldConfigPath)) {
+  try {
+    fs.copyFileSync(oldConfigPath, configPath);
+    console.log('Migrated window-config.json from bundle to ~/.niu/');
+  } catch (e) {
+    console.error('Failed to migrate window-config.json:', e);
+  }
+}
 
 // 默认配置
 const defaultConfig = {
@@ -1105,10 +1122,20 @@ ipcMain.on('open-graph', () => {
 
 // ---------- 来自 ui/settings/main.js（6 个） ----------
 
-// Config paths（与原 ui/settings/main.js 一致：__dirname/../../config 仍是仓库根 config/）
-const settingsConfigDir = path.join(__dirname, '..', '..', 'config');
-const userConfigPath = path.join(settingsConfigDir, 'user-config.json');
-const presetsPath = path.join(settingsConfigDir, 'llm-presets.json');
+// Config paths：user-config.json 写到 ~/.niu/config/（bundle 内只读）
+// llm-presets.json 只读，仍从 bundle 内读
+const niuConfigDir = path.join(os.homedir(), '.niu', 'config');
+if (!fs.existsSync(niuConfigDir)) {
+  fs.mkdirSync(niuConfigDir, { recursive: true });
+}
+const bundleConfigDir = path.join(__dirname, '..', '..', 'config');
+const userConfigPath = path.join(niuConfigDir, 'user-config.json');
+const presetsPath = path.join(bundleConfigDir, 'llm-presets.json');  // 只读模板
+
+// 注意：user-config.json 首次启动复制由 Python 侧（niu_api.config._get_config_path）负责。
+// Python API 启动比 Electron 早，Electron 启动时 user-config.json 已存在。
+// 如果 Electron 启动时仍未存在（极端时序），get-config handler 返回默认 {llm:{}, storage:{}, firstRun:true}，
+// 用户通过设置窗口保存时 save-config 会创建文件，不会冲突。
 
 ipcMain.handle('get-presets', () => {
   try {
