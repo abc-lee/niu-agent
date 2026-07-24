@@ -1694,7 +1694,26 @@ fn main() {
         info!("Starting Python API server...");
         let mut api_server_cmd = Command::new(&python_path_bg);
         api_server_cmd.args(["-m", "niu_api"]);
-        api_server_cmd.current_dir(&project_root_bg);
+        // cwd: ~/.niu/ (writable, not bundle). Bundle is read-only at runtime
+        // (macOS Gatekeeper enforces). Python API writes session/db/logs to cwd.
+        let api_server_cwd = match detect_niu_home() {
+            Ok(home) => home.to_string_lossy().to_string(),
+            Err(_) => project_root_bg.clone(),
+        };
+        api_server_cmd.current_dir(&api_server_cwd);
+
+        // PYTHONHOME: 让 python3 找到 bundle 内 stdlib + site-packages
+        // 必须传（python3 链接的 dylib 内部硬编码系统 framework stdlib 路径，
+        // PYTHONHOME 覆盖让 base_prefix 指向 bundle 内）
+        // 已实测验证（2026-07-24）：pyvenv.cfg 的 home 已改成 bundle 内 python/bin/，
+        // 传 PYTHONHOME 后 base_prefix 正确指向 bundle 内 python/，不会泄露到系统 framework。
+        // 无论 dev 还是 bundle 模式，PYTHONHOME 永远指向 <resources_root>/python/，stdlib 在 bundle 内。
+        let python_home = PathBuf::from(&python_path_bg)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        api_server_cmd.env("PYTHONHOME", &python_home);
 
         // Set environment: inherit current env + add our vars
         for (key, value) in env::vars() {
