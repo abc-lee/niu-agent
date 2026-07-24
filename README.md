@@ -262,6 +262,101 @@ cd launcher
 | `LSUIElement` | `true` | Accessory 模式：Dock 不显示图标，避免抢焦点；窗口仍可显示（启动器内部调 `activateIgnoringOtherApps:YES` 强制激活） |
 | `LSMinimumSystemVersion` | `11.0` | 最低 macOS 版本 |
 
+### 跨架构打包（M 系列 Mac）
+
+`niu.app` 当前是**单架构**包（x86_64 或 arm64），不是 universal binary。原因：Python 扩展模块（`.so`/`.dylib`）和 Electron 二进制是 `pip install` / `npm install` 时按 host 架构自动选择的 wheel，PyPI 上 torch/insightface 等关键包没有 universal2 wheel，无法合并。
+
+**当前包在 M 系列 Mac 上的运行情况**：
+- x86_64 包在 M 系列 Mac 上**能运行**（通过 macOS 内置 Rosetta 2 转译）
+- 但不是原生：torch（PyTorch 推理）和 onnxruntime（InsightFace 人脸识别）等计算密集型任务性能损失约 20-40%
+
+**分发策略**：分别打包。Intel Mac 打 x86_64 包，M 系列 Mac 打 arm64 包。`build.sh` 和 `relocate_python_framework.sh` 都是 host-architecture-neutral 的——在哪种 Mac 上跑就打哪种架构的包，无需任何改造。
+
+#### M 系列 Mac 上打包完整步骤
+
+**核心约束**：`python/lib/python3.11/site-packages/*.so` 和 `ui/main/node_modules/electron` 必须在 M 系列 Mac 上 `pip install` / `npm install`，**不能在 Intel Mac 上 cross-compile**（pip/npm 会自动选 host 架构的 wheel，cross 会混入 x86_64 .so 导致运行时崩溃）。
+
+**1. 安装开发环境（一次性）**
+
+```bash
+# Xcode Command Line Tools（git + clang + make）
+xcode-select --install
+
+# Rust 工具链
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# Node.js LTS（建议 20.x）
+# 方式 A: brew install node@20
+# 方式 B: 从 https://nodejs.org 下载 macOS arm64 安装包
+
+# Python 3.11 universal2（必须用 python.org 的 universal2 安装包，禁止用 brew）
+# brew 装的是单架构 arm64-only，没有 /Library/Frameworks/Python.framework/ 路径，
+# scripts/relocate_python_framework.sh 会找不到 dylib 直接退出
+# 浏览器打开 https://www.python.org/downloads/release/python-3110/
+# 下载 "macOS 64-bit universal2 installer" 并安装
+```
+
+**2. 准备项目依赖**
+
+```bash
+# 克隆项目
+git clone <项目仓库地址> ai-bot
+cd ai-bot
+
+# 创建 python/ venv（--copies 必须保留，生成真实二进制）
+python3.11 -m venv --copies python
+
+# 安装 Python 依赖（pip 自动选 arm64 wheel）
+python/bin/pip install --upgrade pip
+python/bin/pip install -r requirements.txt
+
+# 安装 Electron + 前端依赖（npm 自动选 arm64 Electron）
+cd ui/main
+npm install
+cd ../..
+
+# 修复可执行权限
+find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
+find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null || true
+```
+
+**3. 打包**
+
+```bash
+./launcher/build.sh
+```
+
+`build.sh` 不需要任何参数或环境变量，自动用 host 的 arm64 架构编译 Rust + 复制资源 + 签名 + 注册 LaunchServices。
+
+**4. 验证产物是 arm64**
+
+```bash
+# Rust 启动器必须是 arm64
+file niu.app/Contents/MacOS/niu
+# 期望: Mach-O 64-bit executable arm64
+
+# 关键 Python .so 必须是 arm64（这是核心检查）
+file niu.app/Contents/Resources/python/lib/python3.11/site-packages/numpy/core/_multiarray_umath.cpython-311-darwin.so
+file niu.app/Contents/Resources/python/lib/python3.11/site-packages/torch/lib/libtorch_cpu.dylib
+file niu.app/Contents/Resources/python/lib/python3.11/site-packages/onnxruntime/capi/onnxruntime_pybind11_state.cpython-311-darwin.so
+# 期望: arm64
+
+# Electron 主二进制必须是 arm64
+file niu.app/Contents/Resources/ui/main/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
+# 期望: Mach-O 64-bit executable arm64
+
+# Python 解释器和 libPython3.11.dylib 是 universal2 双架构是正常的
+# （python.org universal2 installer 自带，不影响 arm64 原生运行）
+```
+
+#### 注意事项
+
+- **不能用 `brew install python@3.11`**：brew 装的是单架构 arm64-only，没有 `/Library/Frameworks/Python.framework/` 路径，`scripts/relocate_python_framework.sh` 第 13-15 行硬编码了这个路径，brew Python 会让脚本直接退出
+- **不能在 Intel Mac 上 cross-compile arm64 包**：虽然 `cargo build --target aarch64-apple-darwin` 能编译 Rust 部分，但 site-packages 的 .so 和 Electron 二进制必须在 arm64 host 上 `pip install` / `npm install` 才能拿到 arm64 wheel
+- **`lightrag-hku` 从 GitHub 源码编译**：`requirements.txt` 里的 `lightrag-hku @ git+https://github.com/abc-lee/LightRAG.git` 在 M 系列 Mac 上会编译 arm64 扩展，需要联网能访问 GitHub
+- **`torch==2.2.2` 有 arm64 wheel**：PyPI 上 `macosx_11_0_arm64` tag 可用，M 系列 Mac 上 pip 直接装，无需特殊处理
+
 ## 编译 Rust 启动器
 
 Rust 启动器需要根据目标平台编译对应架构的二进制：
