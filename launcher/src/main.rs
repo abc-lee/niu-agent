@@ -1444,25 +1444,10 @@ fn detect_niu_home() -> Result<PathBuf, std::io::Error> {
     Ok(home.join(".niu"))
 }
 
-/// Detect project root directory (reused by should_enable_logging / log_fatal_error / main).
-/// Primary: executable directory. Fallback: current working directory (checks memory/ existence).
+/// Detect project root directory (= resources root). All path detection
+/// now goes through detect_resources_root() — no cwd fallback.
 fn detect_project_root() -> String {
-    let exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut project_root = exe_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-    let memory_dir = std::path::PathBuf::from(&project_root).join("memory");
-    if !memory_dir.exists() {
-        let cwd = std::env::current_dir()
-            .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
-        let cwd_memory_dir = std::path::PathBuf::from(&cwd).join("memory");
-        if cwd_memory_dir.exists() {
-            project_root = cwd;
-        }
-    }
-    project_root
+    detect_resources_root().to_string_lossy().to_string()
 }
 
 /// Read config/user-config.json `logging.enabled` field.
@@ -1603,31 +1588,9 @@ fn main() {
     // Get project root (needed for template file paths and config loading)
     // Delegates to detect_project_root() (shared with should_enable_logging / log_fatal_error).
     let project_root = detect_project_root();
-    // Preserve existing info!/warn! diagnostics for exeDir vs cwd fallback path.
-    // (detect_project_root itself stays silent to avoid double logging.)
-    let exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let exe_dir = exe_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-    let memory_dir_check = PathBuf::from(&exe_dir).join("memory");
-    if !memory_dir_check.exists() {
-        let cwd = env::current_dir()
-            .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
-        let cwd_memory_dir = PathBuf::from(&cwd).join("memory");
-        if cwd_memory_dir.exists() {
-            info!(
-                "memory/ not found in exeDir, using cwd as project root: exeDir={}, cwd={}",
-                exe_dir, cwd
-            );
-        } else {
-            warn!(
-                "memory/ not found in exeDir or cwd, template copy will be skipped: exeDir={}, cwd={}",
-                exe_dir, cwd
-            );
-        }
-    }
+    // Note: exeDir + cwd memory/ check block removed — detect_resources_root()
+    // handles both bundle mode (Contents/Resources/) and dev mode (exe parent)
+    // without cwd fallback.
 
     // Load context configuration from config/user-config.json
     let _context_config = load_context_config(&project_root);
