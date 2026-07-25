@@ -570,6 +570,63 @@ A: 1. 关闭程序
       - C:\Users\用户名\.niu\
 ```
 
+### 1.9 日志配置
+
+**配置文件**：`~/.niu/config/user-config.json`（首次启动从 bundle 内 `config/user-config.json` 模板复制）
+
+**配置字段**：
+
+````json
+{
+  "logging": {
+    "enabled": false,
+    "level": "INFO"
+  }
+}
+````
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | bool | `false` | 日志总开关。`false` 时所有日志输出关闭（见下表），`true` 时按 `level` 输出 |
+| `level` | string | `"INFO"` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` |
+
+**关闭日志时（`enabled=false`，缺省）受控的日志源**：
+
+| 日志源 | 文件路径 | 控制方式 |
+|--------|----------|----------|
+| Python loguru sink | stderr | `logger.disable("")` 全局禁用 |
+| Python stdlib logging | stderr | `logging.disable(CRITICAL)` 禁用 10+ 处散落 logger |
+| uvicorn 访问日志 | stderr | `log_level="critical"` + `access_log=False` |
+| raw_http transport 层日志 | `~/.niu/logs/raw_http/YYYYMMDD/NNNNNN.json` | `install_http_logger()` 不 patch HTTP client + 幂等守卫 |
+| raw_http 应用层日志 | `~/.niu/logs/raw_http/YYYYMMDD/NNNNNN_request.json` + `_response.json` | `_write_raw_log()` 静默跳过 |
+| LLM interaction 可读日志 | `~/.niu/logs/llm_interaction_YYYYMMDD.log` | `_write_interaction_log()` 静默跳过 |
+| 飞书 adapter stderr | `~/.niu/logs/im_adapter_stderr.log` | `subprocess.DEVNULL` 代替文件重定向 |
+| /http-log/ HTTP 日志查看服务 | http://localhost:9876/http-log/ | router 不挂载（返回 404） |
+| Rust tracing | stderr | `tracing_subscriber` 不 init（tracing 调用静默丢弃） |
+
+**不受日志开关控制的诊断日志**（关键诊断必须保留）：
+
+| 日志源 | 文件路径 | 用途 |
+|--------|----------|------|
+| launcher 致命错误 | `~/.niu/logs/launcher_error.log` | 启动失败诊断（API 未运行、Electron 启动失败等），用 `time` crate 格式化时间戳 |
+| gateway 致命错误 | `~/.niu/logs/gateway_error.log` | 飞书 adapter 启动失败诊断（app_id 配错、端口占用、credentials 缺失） |
+
+**开启日志**（调试时用）：
+
+把 `~/.niu/config/user-config.json` 的 `logging.enabled` 改为 `true`，重启程序。所有受控日志源会按 `level` 字段输出到对应文件或 stderr。
+
+**日志目录**：
+
+所有运行时日志统一写入 `~/.niu/logs/`（macOS/Linux）或 `%USERPROFILE%\.niu\logs\`（Windows），不在 bundle 内（macOS Gatekeeper 禁止运行时改 bundle 内文件）。
+
+**Windows 控制台窗口**：
+
+Windows release build 下，niu.exe 编译为 GUI 子系统（`#![cfg_attr(all(target_os="windows", not(debug_assertions)), windows_subsystem="windows")]`），双击不弹 cmd 窗口。debug build 保留 console 方便调试。
+
+**macOS 控制台窗口**：
+
+macOS 下构造 `niu.app` bundle（`Info.plist` 含 `LSUIElement=true`），Finder 双击不弹 Terminal。命令行 `./niu` 裸二进制仍保留供开发调试。
+
 ---
 
 ## 验证记录

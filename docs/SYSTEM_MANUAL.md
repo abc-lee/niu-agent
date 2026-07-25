@@ -294,65 +294,6 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 **report-skill 触发条件：** 当 Agent 编写或整理用户日志、生成周报/月报等报告时，向量检索会自动匹配并注入 `report-skill.md`，Agent 按其中定义的聚合规则和模板生成报告。
 
-### 2.7 日志配置
-
-**配置文件**：`~/.niu/config/user-config.json`（首次启动从 bundle 内 `config/user-config.json` 模板复制）
-
-**配置字段**：
-
-````json
-{
-  "logging": {
-    "enabled": false,
-    "level": "INFO"
-  }
-}
-````
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `enabled` | bool | `false` | 日志总开关。`false` 时所有日志输出关闭（见下表），`true` 时按 `level` 输出 |
-| `level` | string | `"INFO"` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` |
-
-**关闭日志时（`enabled=false`，缺省）受控的日志源**：
-
-| 日志源 | 文件路径 | 控制方式 |
-|--------|----------|----------|
-| Python loguru sink | stderr | `logger.disable("")` 全局禁用 |
-| Python stdlib logging | stderr | `logging.disable(CRITICAL)` 禁用 10+ 处散落 logger |
-| uvicorn 访问日志 | stderr | `log_level="critical"` + `access_log=False` |
-| raw_http transport 层日志 | `~/.niu/logs/raw_http/YYYYMMDD/NNNNNN.json` | `install_http_logger()` 不 patch HTTP client + 幂等守卫 |
-| raw_http 应用层日志 | `~/.niu/logs/raw_http/YYYYMMDD/NNNNNN_request.json` + `_response.json` | `_write_raw_log()` 静默跳过 |
-| LLM interaction 可读日志 | `~/.niu/logs/llm_interaction_YYYYMMDD.log` | `_write_interaction_log()` 静默跳过 |
-| 飞书 adapter stderr | `~/.niu/logs/im_adapter_stderr.log` | `subprocess.DEVNULL` 代替文件重定向 |
-| /http-log/ HTTP 日志查看服务 | http://localhost:9876/http-log/ | router 不挂载（返回 404） |
-| Rust tracing | stderr | `tracing_subscriber` 不 init（tracing 调用静默丢弃） |
-
-**不受日志开关控制的诊断日志**（关键诊断必须保留）：
-
-| 日志源 | 文件路径 | 用途 |
-|--------|----------|------|
-| launcher 致命错误 | `~/.niu/logs/launcher_error.log` | 启动失败诊断（API 未运行、Electron 启动失败等），用 `time` crate 格式化时间戳 |
-| gateway 致命错误 | `~/.niu/logs/gateway_error.log` | 飞书 adapter 启动失败诊断（app_id 配错、端口占用、credentials 缺失） |
-
-**开启日志**（调试时用）：
-
-把 `~/.niu/config/user-config.json` 的 `logging.enabled` 改为 `true`，重启程序。所有受控日志源会按 `level` 字段输出到对应文件或 stderr。
-
-**日志目录**：
-
-所有运行时日志统一写入 `~/.niu/logs/`（macOS/Linux）或 `%USERPROFILE%\.niu\logs\`（Windows），不在 bundle 内（macOS Gatekeeper 禁止运行时改 bundle 内文件）。
-
-**Windows 控制台窗口**：
-
-Windows release build 下，niu.exe 编译为 GUI 子系统（`#![cfg_attr(all(target_os="windows", not(debug_assertions)), windows_subsystem="windows")]`），双击不弹 cmd 窗口。debug build 保留 console 方便调试。
-
-**macOS 控制台窗口**：
-
-macOS 下构造 `niu.app` bundle（`Info.plist` 含 `LSUIElement=true`），Finder 双击不弹 Terminal。命令行 `./niu` 裸二进制仍保留供开发调试。
-
----
-
 ## 通用子 Agent 体系（阶段三）
 
 ### 设计目标
@@ -422,18 +363,20 @@ macOS 下构造 `niu.app` bundle（`Info.plist` 含 `LSUIElement=true`），Find
 
 ## 分册索引
 
+> 主 Agent 遇到具体问题时按此表判断去哪个子文档查。每条说明该文档解决什么问题、包含哪些功能、什么时候应该去看。
+
 | 分册 | 文件 | 内容 |
 |------|------|------|
-| 知识检索运维 | [manual-vector-store.md](manual-vector-store.md) | LightRAG 知识图谱架构、实体类型、检索模式、文档管理、**3 真相源 + 9 派生文件关系、损坏检测与自愈修复机制（第九章）** |
-| 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 启动问题、人脸识别、定时任务、知识检索、数据、浏览器插件、**知识图谱损坏修复故障排查（1.7.1）** |
-| 性能优化 | [manual-performance.md](manual-performance.md) | 内存优化、启动速度、GPU 加速策略 |
-| 依赖与模型 | [manual-dependencies.md](manual-dependencies.md) | Python 依赖、GPU 支持策略、人脸识别模型、向量模型、下载镜像 |
-| 用户操作 | [manual-user-guide.md](manual-user-guide.md) | 首次启动、LLM 配置、知识图谱、记忆管理、常见问题 |
-| 开发者参考 | [manual-developer.md](manual-developer.md) | 本地开发、调试技巧、API 端点、环境变量、更新日志 |
-| 文件格式支持 | [manual-file-formats.md](manual-file-formats.md) | 文件存储/知识图谱/照片支持的格式，不支持KG的格式及原因 |
-| 飞书开通 | [manual-feishu-setup.md](manual-feishu-setup.md) | 飞书机器人开通流程、浏览器操作步骤、配置写入、故障排查 |
-| 高德开通 | [manual-amap-setup.md](manual-amap-setup.md) | 高德地图 API Key 获取流程、配置写入、故障排查，用于照片exif位置解析 |
-| 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 安装部署、长期访问令牌、设备集成、智能触发配置、故障排查 |
-| MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构、新增服务器步骤、虚拟磁盘 YAML 配置格式、校验规则 |
-| IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | Gateway+Adapter 分离架构、TCP 协议、配置格式、目录规范、开发新 Adapter 步骤 |
-| 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 阶段三通用子 Agent 体系：模板、动态加载、MCP 映射、创建流程、同步异步、与阶段一+二衔接 |
+| 知识检索运维 | [manual-vector-store.md](manual-vector-store.md) | LightRAG 统一架构（取代旧 vector-store + kg-server）的完整运维手册。包含实体类型与 keywords 规范、5 种检索模式（local/global/hybrid/mix/naive）的选用、文档入库流程与参数调优、3 真相源 + 9 派生文件的存储关系图谱、GraphML 损坏检测与 v9 自愈修复机制（第九章）。遇到知识图谱查询异常、入库失败、存储文件损坏、检索效果差等问题先查这里 |
+| 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 所有功能模块的故障排查指引。覆盖启动问题、人脸识别、定时任务、知识检索、数据存储、浏览器插件、知识图谱损坏修复（1.7.1 专项）等场景的诊断步骤和恢复方法。出现报错、功能不工作、数据异常时先查这里找对应模块的排查路径 |
+| 性能优化 | [manual-performance.md](manual-performance.md) | 系统性能调优手册。包含 InsightFace 内存优化（5 分钟空闲自动卸载）、启动速度优化策略、GPU 加速方案（CUDA / DirectML）。遇到内存占用过高、启动慢、人脸识别卡顿等性能问题时查这里 |
+| 依赖与模型 | [manual-dependencies.md](manual-dependencies.md) | Python 依赖清单与模型文件管理。包含 agent / 各 MCP 服务器 / 开发依赖的完整列表（numpy<2 + opencv<4.12 隐性约束）、GPU 支持策略（CUDA / DirectML / CPU）、InsightFace buffalo_l 与 bge-base-zh-v1.5 模型用途、国内下载镜像配置。需要重装依赖、确认版本约束、迁移模型文件时查这里 |
+| 用户操作 | [manual-user-guide.md](manual-user-guide.md) | 程序启动后用户能做的所有操作指南。包含首次启动流程、LLM 配置（含火山方舟深度思考模型 + 工具调用配置、reasoning_effort 实测指南、格式化输出能力自动探测）、上下文窗口阈值、知识图谱查询、记忆管理（长期记忆 + 语义记忆两层）、文件格式支持、常见问题（数据存储位置、离线使用、备份、GPU 加速、卸载）、日志开关与级别配置。遇到用户操作类问题先查这里 |
+| 开发者参考 | [manual-developer.md](manual-developer.md) | 面向开发者的工程参考。包含本地开发环境搭建、调试技巧（日志位置、SSE 事件追踪）、API 端点清单、环境变量、版本更新日志。需要改代码、调试 API、查看历史变更时查这里 |
+| 文件格式支持 | [manual-file-formats.md](manual-file-formats.md) | 详细说明三种入库能力（文件存储 / 知识图谱 / 照片）的格式支持矩阵。包含 PDF/Word/Excel/PPT/MD/HTML 等格式细节、不支持知识图谱入库的格式（.doc/.xls/.ppt 旧版二进制 + WPS 假 .docx）及原因、照片格式（JPEG/PNG/GIF/BMP/WebP/HEIC）的人脸识别支持。判断某文件能不能入库、为什么入库失败时查这里 |
+| 飞书开通 | [manual-feishu-setup.md](manual-feishu-setup.md) | 飞书机器人开通全流程手册（主 Agent 通过 browser-server MCP 工具操作网页）。包含飞书开放平台创建应用、配置事件订阅、获取 App ID/Secret、写入 im-adapters/feishu 配置、Gateway 启动验证、常见开通故障排查。用户要求接入飞书消息时查这里 |
+| 高德开通 | [manual-amap-setup.md](manual-amap-setup.md) | 高德地图 API Key 获取流程手册（主 Agent 通过 browser-server 操作网页）。包含注册高德开放平台、创建应用获取 Key、写入 config/user-config.json、验证照片 EXIF 位置解析功能、常见开通故障排查。用户需要照片地点识别功能时查这里 |
+| 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 完整接入手册。包含 Docker 安装部署 HA、创建长期访问令牌、设备集成方法、智能触发配置（场景/自动化/脚本）、ha-server MCP 服务器启用、所有已验证 API 行为和踩坑记录。用户要求接入 HA 智能家居控制时查这里 |
+| MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构与虚拟磁盘配置手册。包含新增 MCP 服务器完整步骤（目录结构 + TOOL_SCHEMAS + workdir 配置）、虚拟磁盘 YAML 配置格式与路径映射规则、校验规则和常见配置错误排查。需要新增 MCP 服务器、修改虚拟磁盘路径映射、排查 disk 工具调用失败时查这里 |
+| IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | 面向第三方开发者的 IM 平台接入文档。包含 Gateway + Adapter 分离架构（双进程）、TCP 协议规范、配置文件格式、目录规范、开发新 Adapter（钉钉/Telegram/企业微信等）的完整步骤。需要对接新的 IM 平台或修改 IM 通信协议时查这里 |
+| 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 阶段三通用子 Agent 体系完整说明。包含配置模板（config/agent-template.md）、动态加载机制（chat 入口扫描 ~/.niu/agents/）、MCP 工具映射（mcpServers frontmatter）、主 Agent 创建子 Agent 流程、同步/异步调用模式、与阶段一+二交互能力的衔接、同步子 Agent @niu-agent 询问通道。需要理解或调试子 Agent 创建、加载、调用机制时查这里 |
