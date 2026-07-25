@@ -108,10 +108,10 @@ async def lifespan(app: FastAPI):
     from niu_api.chat import init_runner
     init_runner(tool_registry)
 
-    # 6. Mark preload as complete
-    from niu_api.compat import set_preload_complete
-    set_preload_complete()
-    logger.info("Preload complete, ready to show window")
+    # 6. preload_complete 标志挪到 lifespan 末尾（见 signal_scheduler_ready 之后），
+    #    让"preload 完成"真实反映后端完全就绪（ChatQueue/LightRAG/BrainGraph/signal 全跑完）。
+    #    虽然 FastAPI lifespan 语义保证启动器永远在 yield 后看到 ready=true，
+    #    但放在所有依赖就绪后更符合语义清晰性原则。
 
     # 6.0. Enable SQLite WAL mode for messages.db
     import sqlite3
@@ -423,6 +423,12 @@ async def lifespan(app: FastAPI):
         logger.info("Scheduler system_ready signal sent (after all dependencies ready)")
     else:
         logger.warning("[LightRAG] Scheduler system_ready signal 跳过（LightRAG 损坏）")
+
+    # 8.8. Mark preload as complete — 所有后端依赖就绪后才标记
+    #      启动器轮询 /api/preload-status 看到这个标志后才 launch 前端
+    from niu_api.compat import set_preload_complete
+    set_preload_complete()
+    logger.info("Preload complete (after all backend dependencies ready)")
 
     yield
 
