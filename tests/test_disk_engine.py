@@ -14,12 +14,6 @@ def config_dir(tmp_path):
     d = tmp_path / "disk"
     d.mkdir()
 
-    (d / "disk.yaml").write_text(yaml.dump({
-        "version": 1,
-        "exclude_tools": ["nanobot.system/code_run"],
-        "disk_mode": True,
-    }))
-
     (d / "kg-server.yaml").write_text(yaml.dump({
         "server": "kg-server", "directory": "kg", "description": "知识图谱",
         "tools": {

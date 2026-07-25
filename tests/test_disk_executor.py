@@ -16,7 +16,6 @@ def config(tmp_path):
     """Create a valid config with detailed tool definitions."""
     config_dir = tmp_path / "disk"
     config_dir.mkdir()
-    (config_dir / "disk.yaml").write_text(yaml.dump({"version": 1}))
     (config_dir / "kg-server.yaml").write_text(yaml.dump({
         "server": "kg-server", "directory": "kg", "description": "知识图谱",
         "tools": {

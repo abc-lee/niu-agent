@@ -20,14 +20,6 @@ def tmp_config_dir(tmp_path):
     config_dir = tmp_path / "disk"
     config_dir.mkdir()
 
-    # Global config
-    (config_dir / "disk.yaml").write_text(yaml.dump({
-        "version": 1,
-        "exclude_tools": ["nanobot.system/code_run", "nanobot.system/read"],
-        "show_hidden": False,
-        "disk_mode": True,
-    }))
-
     # kg-server config
     (config_dir / "kg-server.yaml").write_text(yaml.dump({
         "server": "kg-server",
@@ -86,10 +78,11 @@ def config(tmp_config_dir):
 # ---------------------------------------------------------------------------
 
 class TestLoading:
-    def test_load_valid_config(self, config):
-        assert config.version == 1
-        assert config.exclude_tools == ["nanobot.system/code_run", "nanobot.system/read"]
-        assert config.disk_mode is True
+    def test_load_servers_basic(self, config):
+        """Sanity check: 2 servers loaded with correct names."""
+        assert len(config.servers) == 2
+        assert "kg-server" in config.servers
+        assert "memory-server" in config.servers
 
     def test_load_servers(self, config):
         assert len(config.servers) == 2
@@ -129,11 +122,11 @@ class TestLoading:
         with pytest.raises(FileNotFoundError):
             DiskConfig(str(tmp_path / "nonexist"))
 
-    def test_missing_disk_yaml(self, tmp_path):
-        """disk.yaml is optional — defaults apply."""
+    def test_no_disk_yaml_required(self, tmp_path):
+        """disk.yaml is no longer used — loaders work fine without it."""
         config_dir = tmp_path / "disk"
         config_dir.mkdir()
-        # Only server YAML, no disk.yaml
+        # Only server YAML, no disk.yaml at all
         (config_dir / "kg-server.yaml").write_text(yaml.dump({
             "server": "kg-server",
             "directory": "kg",
@@ -141,15 +134,37 @@ class TestLoading:
             "tools": {},
         }))
         cfg = DiskConfig(str(config_dir))
-        assert cfg.version == 0  # default
-        assert cfg.disk_mode is True  # default
+        assert "kg-server" in cfg.servers
+        assert "kg" in cfg.directory_map
 
-    def test_invalid_yaml_syntax(self, tmp_path):
+    def test_legacy_disk_yaml_skipped(self, tmp_path):
+        """If a user still keeps a disk.yaml around, it is skipped (warning), not an error."""
         config_dir = tmp_path / "disk"
         config_dir.mkdir()
-        (config_dir / "disk.yaml").write_text("version: [invalid")
-        with pytest.raises(ValidationError):
-            DiskConfig(str(config_dir))
+        (config_dir / "disk.yaml").write_text("version: 1\nexclude_tools: []\n")
+        (config_dir / "kg-server.yaml").write_text(yaml.dump({
+            "server": "kg-server",
+            "directory": "kg",
+            "description": "test",
+            "tools": {},
+        }))
+        cfg = DiskConfig(str(config_dir))
+        assert "kg-server" in cfg.servers
+
+    def test_invalid_yaml_skipped_not_raised(self, tmp_path):
+        """Per-yaml syntax errors are skipped (warning), no longer block startup."""
+        config_dir = tmp_path / "disk"
+        config_dir.mkdir()
+        (config_dir / "broken.yaml").write_text("server: [invalid")
+        (config_dir / "kg-server.yaml").write_text(yaml.dump({
+            "server": "kg-server",
+            "directory": "kg",
+            "description": "test",
+            "tools": {},
+        }))
+        # Should not raise — broken.yaml skipped, kg-server.yaml loaded.
+        cfg = DiskConfig(str(config_dir))
+        assert "kg-server" in cfg.servers
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +173,10 @@ class TestLoading:
 
 class TestValidation:
     def _write_config(self, config_dir, server_yaml_content, disk_yaml=None):
-        """Helper: write a single server config + optional global config."""
+        """Helper: write a single server config. disk_yaml arg is ignored (legacy)."""
         (config_dir / "kg-server.yaml").write_text(yaml.dump(server_yaml_content))
-        if disk_yaml:
-            (config_dir / "disk.yaml").write_text(yaml.dump(disk_yaml))
-        else:
-            (config_dir / "disk.yaml").write_text(yaml.dump({"version": 1}))
+        # disk.yaml is no longer used — ignored for backward compatibility with
+        # any callers that still pass disk_yaml=...
 
     def test_duplicate_directory_names(self, tmp_path):
         config_dir = tmp_path / "disk"
@@ -174,7 +187,6 @@ class TestValidation:
         (config_dir / "memory-server.yaml").write_text(yaml.dump({
             "server": "memory-server", "directory": "data", "description": "test", "tools": {},
         }))
-        (config_dir / "disk.yaml").write_text(yaml.dump({"version": 1}))
         with pytest.raises(ValidationError, match="Duplicate directory"):
             DiskConfig(str(config_dir))
 
@@ -338,3 +350,139 @@ class TestLookup:
         dirs = config.list_directories()
         assert "kg" in dirs
         assert "memory" in dirs
+
+
+# ---------------------------------------------------------------------------
+# Multi-directory scan tests (bundle + user overlay)
+# ---------------------------------------------------------------------------
+
+class TestMultiDirectoryScan:
+    """Tests for ~/.niu/disk/ user overlay support."""
+
+    def _write_bundle_server(self, bundle_dir: Path) -> None:
+        """Write a 'server-a' to the bundle dir."""
+        (bundle_dir / "server-a.yaml").write_text(yaml.dump({
+            "server": "server-a",
+            "directory": "adir",
+            "description": "bundle description",
+            "tools": {
+                "tool1": {
+                    "summary": "bundle tool1",
+                    "description": "bundle tool1 long",
+                    "args": [],
+                },
+            },
+        }))
+
+    def test_user_dir_overrides_bundle(self, tmp_path):
+        """User dir yaml with same server_name replaces bundle version."""
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        self._write_bundle_server(bundle)
+
+        user = tmp_path / "user"
+        user.mkdir()
+        (user / "server-a.yaml").write_text(yaml.dump({
+            "server": "server-a",  # same server_name
+            "directory": "adir",
+            "description": "user override description",
+            "tools": {
+                "tool1": {
+                    "summary": "user tool1",
+                    "description": "user tool1 long",
+                    "args": [],
+                },
+                "tool2": {
+                    "summary": "user tool2 added",
+                    "description": "user tool2 long",
+                    "args": [],
+                },
+            },
+        }))
+
+        cfg = DiskConfig([str(bundle), str(user)])
+        assert "server-a" in cfg.servers
+        # User description should win
+        assert cfg.servers["server-a"].description == "user override description"
+        # User tools should fully replace bundle tools (not merge)
+        server = cfg.servers["server-a"]
+        assert "tool1" in server.tools
+        assert "tool2" in server.tools
+        assert server.tools["tool1"].summary == "user tool1"
+        # directory_map rebuilt correctly
+        assert cfg.directory_map["adir"] == "server-a"
+
+    def test_user_dir_not_exist_bundle_works(self, tmp_path):
+        """Missing user dir is skipped silently; bundle still loads."""
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        self._write_bundle_server(bundle)
+
+        # User dir does NOT exist — should not raise, bundle loads alone.
+        user = tmp_path / "nonexistent-user"
+        cfg = DiskConfig([str(bundle), str(user)])
+        assert "server-a" in cfg.servers
+        assert cfg.servers["server-a"].description == "bundle description"
+
+    def test_str_compat(self, tmp_path):
+        """Passing a str (instead of list) still works — backward compat."""
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        self._write_bundle_server(bundle)
+
+        # Old call style: str only
+        cfg = DiskConfig(str(bundle))
+        assert "server-a" in cfg.servers
+        assert "adir" in cfg.directory_map
+
+    def test_all_dirs_missing_raises(self, tmp_path):
+        """If all dirs are missing, raise FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            DiskConfig([str(tmp_path / "no1"), str(tmp_path / "no2")])
+
+    def test_broken_yaml_in_user_dir_skipped(self, tmp_path):
+        """Broken yaml in user dir is warning+skip, doesn't block bundle."""
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        self._write_bundle_server(bundle)
+
+        user = tmp_path / "user"
+        user.mkdir()
+        (user / "broken.yaml").write_text("server: [invalid")
+        (user / "server-b.yaml").write_text(yaml.dump({
+            "server": "server-b",
+            "directory": "bdir",
+            "description": "user-added server b",
+            "tools": {},
+        }))
+
+        cfg = DiskConfig([str(bundle), str(user)])
+        # Both bundle server-a and user-added server-b should load
+        assert "server-a" in cfg.servers
+        assert "server-b" in cfg.servers
+        assert cfg.directory_map["bdir"] == "server-b"
+
+    def test_cross_dir_duplicate_directory_raises(self, tmp_path):
+        """Duplicate directory name across bundle+user still raises (strict)."""
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "a.yaml").write_text(yaml.dump({
+            "server": "server-a",
+            "directory": "samedir",
+            "description": "bundle a",
+            "tools": {},
+        }))
+
+        user = tmp_path / "user"
+        user.mkdir()
+        # User defines a DIFFERENT server_name but SAME directory as bundle.
+        # This is a real cross-file conflict, should still raise.
+        (user / "b.yaml").write_text(yaml.dump({
+            "server": "server-b",
+            "directory": "samedir",
+            "description": "user b",
+            "tools": {},
+        }))
+
+        with pytest.raises(ValidationError, match="Duplicate directory"):
+            DiskConfig([str(bundle), str(user)])
