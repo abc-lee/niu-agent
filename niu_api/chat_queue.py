@@ -353,8 +353,24 @@ class ChatQueue:
                 persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
                 message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
             else:
-                message_id = None
-                logger.warning(f"[ChatQueue] Skipped persist due to chat error: {chat_error}")
+                # 异常路径：写降级回复 [系统繁忙，请重试] 到 DB + SSE 推送
+                # 让前端看到 user 消息后立即跟一条 assistant 降级回复，不会卡 typing 状态
+                # 保留原 full_reply（含具体错误信息）记日志，DB 存降级回复避免污染下轮向量检索
+                # persisted_msgs 强制 None——异常路径下 _persisted_msgs 可能是上次的列表（语义陷阱）
+                # source 强制 "electron"——与正常路径一致，避免被 notify_new_message 白名单过滤
+                logger.warning(f"[ChatQueue] Chat error, writing degraded reply. original_error={chat_error}")
+                degraded_reply = "[系统繁忙，请重试]"
+                from niu_api.chat import persist_agent_reply
+                try:
+                    message_id, _ = await persist_agent_reply(
+                        store, None, history_len, degraded_reply,
+                        source="electron", persisted_msgs=None,
+                    )
+                    full_reply = degraded_reply
+                except Exception as persist_e:
+                    logger.error(f"[ChatQueue] Degraded reply persist failed: {persist_e}")
+                    message_id = None
+                    full_reply = degraded_reply
 
             # 上下文溢出检测
             await self._check_overflow(session_id, store, full_reply)
