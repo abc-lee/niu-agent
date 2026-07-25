@@ -301,11 +301,20 @@ class ChatQueue:
             history_len = len(history_for_runner)
 
             # 持久化 user 消息（每条独立持久化，在历史加载之后）
+            # 所有 source（包括 scheduler）写 DB 后都推 SSE，让前端实时显示 user 气泡
+            # 之前 source="scheduler" 被白名单排除，导致 scheduler 触发的对话前端看不到 user 消息
+            #
+            # 注意：ChatQueue _process_single 处理的所有消息都没在别处推 SSE——
+            # chat_session 路径不走 ChatQueue（直接调 _chat_lock + runner.chat + 自己推 SSE），
+            # 所有走 ChatQueue 的路径都经 _process_single，这里推 SSE 不会双推。
+            from niu_api.chat import notify_new_message
             if user_contents:
                 for uc in user_contents:
-                    await store.add_message(role="user", content=uc)
+                    user_msg_id = await store.add_message(role="user", content=uc)
+                    await notify_new_message(user_msg_id, "user", uc, source="electron")
             else:
-                await store.add_message(role="user", content=content)
+                user_msg_id = await store.add_message(role="user", content=content)
+                await notify_new_message(user_msg_id, "user", content, source="electron")
 
             # 调用 runner.chat()（在 executor 中运行，不阻塞事件循环）
             # NiuRunner.chat(session_id, user_input, stream=False, history=...)
@@ -338,9 +347,11 @@ class ChatQueue:
             rv = getattr(self._runner, "last_return_value", None)
             if chat_error is None:
                 # 持久化回复消息（使用共享函数）
+                # source 强制 "electron"——所有 source（包括 scheduler）的 assistant 回复
+                # 都走 electron SSE 通道推送给前端，避免被 notify_new_message 白名单过滤
                 from niu_api.chat import persist_agent_reply
                 persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel, persisted_msgs=persisted_msgs)
+                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
             else:
                 message_id = None
                 logger.warning(f"[ChatQueue] Skipped persist due to chat error: {chat_error}")
