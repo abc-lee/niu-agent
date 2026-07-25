@@ -25,6 +25,19 @@ router = APIRouter(tags=["chat"])
 _event_subscribers: list[asyncio.Queue] = []
 _main_loop: asyncio.AbstractEventLoop | None = None
 
+# frontend_ready 事件：前端 SSE 订阅建立后调 /api/frontend-ready 通知后端
+# scheduler 收到 signal_scheduler_ready 后等这个事件才扫描过期任务，
+# 确保扫到的 reply 推 SSE 时前端已在订阅。
+# 超时 60s 未收到强制继续（避免前端永远不起来卡死后端）。
+import threading as _threading
+frontend_ready_event = _threading.Event()
+
+
+def set_frontend_ready():
+    """前端 SSE 订阅建立后调用，通知后端可以开始扫描过期任务"""
+    frontend_ready_event.set()
+    logger.info("[FRONTEND_READY] Frontend SSE subscription established")
+
 
 def set_main_event_loop(loop: asyncio.AbstractEventLoop):
     """在 uvicorn 启动时调用，保存主事件循环引用"""
@@ -643,6 +656,11 @@ async def events_stream():
         # 每个连接拥有自己的队列
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
         _event_subscribers.append(q)
+        # 在订阅者注册之后通知 frontend_ready——保证 scheduler 扫描过期任务时
+        # _event_subscribers 非空，reply 推 SSE 不会丢
+        # （前端 main.js 仍会调 POST /api/frontend-ready 作为重连兜底，
+        #   但首次连接的可靠通知在这里）
+        set_frontend_ready()
         logger.info(f"[SSE] Client connected (total: {len(_event_subscribers)})")
         try:
             while True:
@@ -670,6 +688,18 @@ async def events_stream():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/api/frontend-ready")
+async def frontend_ready():
+    """前端 SSE 订阅建立后调用，通知后端 frontend_ready_event.set()。
+
+    注意：首次连接的可靠通知在 events_stream 的 generate() 内
+    _event_subscribers.append(q) 之后调用 set_frontend_ready()。
+    本端点作为重连场景的兜底（重连时 event 已 set，wait 立即返回）。
+    """
+    set_frontend_ready()
+    return {"ok": True}
 
 
 @router.get("/api/chat/status")
