@@ -357,7 +357,7 @@ constraints:
 
 **加载顺序与覆盖规则**：
 
-- 启动器首次创建 `~niu` 目录时（`launcher/src/main.rs` 的 `init_niu_dir`）会自动创建空的 `~/.niu/disk/` 目录
+- `~/.niu/disk/` 目录由主 Agent 自行创建（launcher 不主动创建，目录不存在时 DiskConfig 跳过该目录并 warning，不影响启动）
 - `DiskConfig` 按顺序扫描 `[bundle/config/disk/, ~/.niu/disk/]` 两个目录
 - 用户目录中的 yaml 与 bundle 中**同 `server_name`** 的 yaml → **整个 server 被用户版本替换**（不合并 tools）
 - 用户目录中的 yaml 定义新 `server_name` → 该 server 被加入虚拟磁盘

@@ -1058,21 +1058,6 @@ fn init_niu_dir(project_root: &str) {
         skipped_count,
         dst_skills_dir.display()
     );
-
-    // Create ~/.niu/disk/ directory (user-authored virtual disk yaml configs)
-    // Empty on first start; users add their own MCP server configs here.
-    // DiskEngine scans this directory after the bundle's config/disk/ dir,
-    // so user yaml files override bundle ones by server_name.
-    let dst_disk_dir = niu_dir.join("disk");
-    if let Err(e) = fs::create_dir_all(&dst_disk_dir) {
-        warn!(
-            "Failed to create disk directory: {}, error={}",
-            dst_disk_dir.display(),
-            e
-        );
-    } else {
-        debug!("Ensured disk directory exists: {}", dst_disk_dir.display());
-    }
 }
 
 // ---------------------------------------------------------------------------
