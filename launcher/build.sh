@@ -23,6 +23,14 @@ if [ "$(uname)" = "Darwin" ]; then
     # 不用 -X：签名完全由 Step 2 codesign --force 重新打，避免 rsync -X 带入旧 xattr（含可能的 quarantine）
     # 排除 *.bak（relocate 脚本的备份文件不进 bundle）
     rsync -a --delete --exclude='*.bak' "$PROJECT_ROOT/python/" "$RESOURCES_DIR/python/"
+
+    # 清理 site-packages/bin/（pip install 产生的 console_scripts，shebang 指向开发机路径，
+    # 运行时不使用——niu_api 用 python -m niu_api 走 sys.executable，不调 bin/ 脚本）
+    if [ -d "$RESOURCES_DIR/python/lib/python3.11/site-packages/bin" ]; then
+        rm -rf "$RESOURCES_DIR/python/lib/python3.11/site-packages/bin"
+        echo "[build.sh] removed site-packages/bin/ (console_scripts with dev-machine shebang)"
+    fi
+
     # 对 bundle 内 python/ 跑 relocate（确保自包含）
     "$PROJECT_ROOT/scripts/relocate_python_framework.sh" "$RESOURCES_DIR/python"
 
@@ -73,8 +81,12 @@ if [ "$(uname)" = "Darwin" ]; then
     rsync -a --delete "$PROJECT_ROOT/agent/" "$RESOURCES_DIR/agent/"
 
     # mcp-servers/ (MCP 服务器 Python 模块，config/mcp-servers.yaml 用相对路径 workdir 引用)
+    # --delete-excluded: 删除目标端已存在的 embedding-service（之前版本复制进去过）
+    # embedding-service 已废弃（由 lightrag-server 统一替代），且含 bash.exe.stackdump 垃圾
     echo "[build.sh] copying mcp-servers/..."
-    rsync -a --delete "$PROJECT_ROOT/mcp-servers/" "$RESOURCES_DIR/mcp-servers/"
+    rsync -a --delete --delete-excluded \
+        --exclude 'embedding-service' --exclude '__pycache__' --exclude '.DS_Store' \
+        "$PROJECT_ROOT/mcp-servers/" "$RESOURCES_DIR/mcp-servers/"
 
     # im-adapters/ (IM Gateway 适配器，飞书等，gateway.py 用相对路径引用)
     # gateway.py L154: Path(__file__).resolve().parent.parent.parent / "im-adapters" / adapter_type / "src"
@@ -83,6 +95,16 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "[build.sh] copying im-adapters/..."
     rsync -a --delete --exclude '.git' --exclude '__pycache__' --exclude '.DS_Store' --exclude '*.pyc' \
         "$PROJECT_ROOT/im-adapters/" "$RESOURCES_DIR/im-adapters/"
+
+    # extensions/niu-browser-ext/ (浏览器扩展，browser-server MCP 用 EXTENSION_DIR 引用)
+    # mcp-servers/browser-server/src/niu_browser_server/launcher.py:16
+    # EXTENSION_DIR = Path(__file__).parent.parent.parent.parent.parent / "extensions" / "niu-browser-ext"
+    # parent^5 从 Resources/mcp-servers/browser-server/src/niu_browser_server/launcher.py
+    # 回溯五级 = Resources/，拼 extensions/niu-browser-ext = Resources/extensions/niu-browser-ext/
+    echo "[build.sh] copying extensions/niu-browser-ext/..."
+    mkdir -p "$RESOURCES_DIR/extensions"
+    rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude '.DS_Store' \
+        "$PROJECT_ROOT/extensions/niu-browser-ext/" "$RESOURCES_DIR/extensions/niu-browser-ext/"
 
     # 构造 iconset（从 ui/main/windows/assistant/icons 复制 PNG 改名 + sips 强制正方形）
     # 源 PNG 是非正方形（16x18/32x37/64x75/128x151 等），iconutil 严格校验像素必须匹配命名尺寸，
