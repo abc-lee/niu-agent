@@ -140,8 +140,13 @@ def _parse_server(server_data: dict) -> ServerConfig:
 # Validation
 # ---------------------------------------------------------------------------
 
-def _validate_config(servers: dict[str, ServerConfig], global_cfg: dict) -> None:
-    """Run all validation checks. Raises ValidationError on failure."""
+def _validate_config(servers: dict[str, ServerConfig]) -> None:
+    """Run all validation checks. Raises ValidationError on failure.
+
+    Cross-file checks (duplicate directory names, reserved command conflicts,
+    position gaps, etc.) remain strict — errors block startup. Per-yaml
+    syntax errors are caught earlier in DiskConfig.__init__ with warning + skip.
+    """
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -255,54 +260,123 @@ def _validate_config(servers: dict[str, ServerConfig], global_cfg: dict) -> None
 # ---------------------------------------------------------------------------
 
 class DiskConfig:
-    """Load and validate virtual disk YAML configuration."""
+    """Load and validate virtual disk YAML configuration.
 
-    def __init__(self, config_dir: str, registry=None):
-        config_path = Path(config_dir)
-        if not config_path.is_dir():
-            raise FileNotFoundError(f"Disk config directory not found: {config_dir}")
+    Accepts either a single config directory (str, for backward compatibility)
+    or a list of directories. When a list is given, the first directory is the
+    "bundle" directory (must exist); subsequent directories are user overlay
+    directories (created on demand by the launcher; if missing they are skipped
+    silently). Later directories override earlier ones by ``server_name``:
+    if a user directory defines a server with the same ``server_name`` as one
+    in the bundle, the user version wins (entire server replaced, not merged).
 
-        self._config_dir = config_path
+    Per-yaml parse failures are logged as warnings and skipped (do not block
+    startup). Cross-file validation errors (duplicate directory names, builtin
+    command conflicts, position gaps, etc.) remain strict and raise
+    ``ValidationError`` to block startup.
+    """
+
+    def __init__(
+        self,
+        config_dirs: str | list[str] | os.PathLike,
+        registry=None,
+    ) -> None:
+        # Normalize str → list[str] (backward compatibility for existing tests)
+        if isinstance(config_dirs, (str, os.PathLike)):
+            config_dirs = [str(config_dirs)]
+        if not isinstance(config_dirs, (list, tuple)) or not config_dirs:
+            raise ValueError(
+                "config_dirs must be a non-empty list or str, got: "
+                f"{type(config_dirs).__name__}"
+            )
+
+        # Resolve & filter directories: keep existing ones, skip missing user dirs
+        resolved: list[Path] = []
+        for raw in config_dirs:
+            p = Path(raw)
+            if p.is_dir():
+                resolved.append(p)
+            else:
+                logger.warning(
+                    "DiskConfig: directory does not exist, skipping: %s", p
+                )
+
+        # At least one directory must exist (bundle must exist)
+        if not resolved:
+            first = config_dirs[0] if config_dirs else None
+            raise FileNotFoundError(
+                f"Disk config directory not found: {first}"
+            )
+
+        self._config_dirs = resolved
         self._servers: dict[str, ServerConfig] = {}
-        self._directory_map: dict[str, str] = {}  # dir_name → server_name
+        # dir_name → server_name; rebuilt at end so renames in user overlay
+        # don't leave stale entries pointing at old server_name keys.
+        self._directory_map: dict[str, str] = {}
 
-        # Load global config (optional)
-        global_path = config_path / "disk.yaml"
-        if global_path.exists():
-            try:
-                with open(global_path, encoding="utf-8") as f:
-                    global_data = yaml.safe_load(f) or {}
-            except yaml.YAMLError as e:
-                raise ValidationError(f"Invalid YAML in disk.yaml: {e}") from e
-        else:
-            global_data = {}
+        # Iterate directories in order; later dirs override by server_name.
+        # Per-yaml errors (YAMLError, missing 'server' key, parse failure)
+        # are logged as warnings and skipped — they do not block startup.
+        for cfg_path in resolved:
+            for yaml_file in sorted(cfg_path.glob("*.yaml")):
+                # Legacy global config file (now removed from bundle). If a
+                # user keeps one in ~/.niu/disk/, just skip it — the four
+                # fields it used to define are dead config.
+                if yaml_file.name == "disk.yaml":
+                    logger.warning(
+                        "DiskConfig: %s is no longer used (dead config), skipping.",
+                        yaml_file,
+                    )
+                    continue
+                try:
+                    with open(yaml_file, encoding="utf-8") as f:
+                        data = yaml.safe_load(f)
+                except yaml.YAMLError as e:
+                    logger.warning(
+                        "DiskConfig: invalid YAML in %s, skipping: %s",
+                        yaml_file.name, e,
+                    )
+                    continue
+                except OSError as e:
+                    logger.warning(
+                        "DiskConfig: cannot read %s, skipping: %s",
+                        yaml_file.name, e,
+                    )
+                    continue
 
-        self.version: int = global_data.get("version", 0)
-        self.exclude_tools: list[str] = global_data.get("exclude_tools", [])
-        self.show_hidden: bool = global_data.get("show_hidden", False)
-        self.disk_mode: bool = global_data.get("disk_mode", True)
+                if not data or "server" not in data:
+                    logger.warning(
+                        "DiskConfig: %s has no 'server' key, skipping.",
+                        yaml_file.name,
+                    )
+                    continue
 
-        # Load server configs
-        for yaml_file in sorted(config_path.glob("*.yaml")):
-            if yaml_file.name == "disk.yaml":
-                continue
-            try:
-                with open(yaml_file, encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-            except yaml.YAMLError as e:
-                raise ValidationError(f"Invalid YAML in {yaml_file.name}: {e}") from e
+                try:
+                    server = _parse_server(data)
+                except (KeyError, TypeError, ValueError) as e:
+                    logger.warning(
+                        "DiskConfig: failed to parse %s, skipping: %s",
+                        yaml_file.name, e,
+                    )
+                    continue
 
-            if not data or "server" not in data:
-                continue
+                # Override semantics: same server_name → later dir replaces earlier
+                if server.server_name in self._servers:
+                    logger.info(
+                        "DiskConfig: server '%s' overridden by %s",
+                        server.server_name, yaml_file,
+                    )
+                self._servers[server.server_name] = server
 
-            server = _parse_server(data)
-            self._servers[server.server_name] = server
-            self._directory_map[server.directory] = server.server_name
+        # Rebuild directory_map from final _servers so renames don't leak.
+        self._directory_map = {
+            s.directory: s.server_name for s in self._servers.values()
+        }
 
-        # Validate
-        _validate_config(self._servers, global_data)
+        # Cross-file validation (still strict — blocks startup on conflict).
+        _validate_config(self._servers)
 
-        # Cross-validate with registry (optional, warning only)
+        # Cross-validate with registry (optional, warning only).
         if registry is not None:
             self._cross_validate_registry(registry)
 
@@ -340,37 +414,25 @@ class DiskConfig:
             return None
         return self._servers.get(server_name)
 
-    def _is_excluded(self, dir_name: str, tool_name: str) -> bool:
-        """Check if a tool is in the exclude_tools list."""
-        server = self.get_server_by_dir(dir_name)
-        if server is None:
-            return False
-        full_name = f"{server.server_name}/{tool_name}"
-        return full_name in self.exclude_tools
-
     def get_tool_config(self, dir_name: str, tool_name: str) -> ToolConfig | None:
         server = self.get_server_by_dir(dir_name)
         if server is None:
             return None
-        if self._is_excluded(dir_name, tool_name):
-            return None
         return server.tools.get(tool_name)
 
     def list_visible_tools(self, dir_name: str) -> list[ToolConfig]:
-        """List non-hidden, non-excluded tools in a directory."""
+        """List non-hidden tools in a directory."""
         server = self.get_server_by_dir(dir_name)
         if server is None:
             return []
-        return [t for t in server.tools.values()
-                if not t.hidden and not self._is_excluded(dir_name, t.name)]
+        return [t for t in server.tools.values() if not t.hidden]
 
     def list_all_tools(self, dir_name: str) -> list[ToolConfig]:
-        """List all non-excluded tools (including hidden) in a directory."""
+        """List all tools (including hidden) in a directory."""
         server = self.get_server_by_dir(dir_name)
         if server is None:
             return []
-        return [t for t in server.tools.values()
-                if not self._is_excluded(dir_name, t.name)]
+        return list(server.tools.values())
 
     def list_directories(self) -> list[str]:
         """List all directory names."""

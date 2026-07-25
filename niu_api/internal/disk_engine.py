@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,8 +31,12 @@ class DiskEngine:
     a sync generator.
     """
 
-    def __init__(self, config_dir: str, registry=None):
-        self.config = DiskConfig(config_dir, registry=registry)
+    def __init__(
+        self,
+        config_dirs: str | list[str] | os.PathLike,
+        registry=None,
+    ) -> None:
+        self.config = DiskConfig(config_dirs, registry=registry)
         self.parser = DiskParser()
         self.navigator = DiskNavigator(self.config)
         self.executor = DiskExecutor(self.config, registry)

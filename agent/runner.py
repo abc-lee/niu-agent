@@ -590,8 +590,9 @@ class NiuRunner:
 
         # DiskEngine（虚拟磁盘命令引擎）
         from niu_api.internal.disk_engine import DiskEngine
-        disk_config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "disk")
-        self.disk_engine = DiskEngine(disk_config_dir, registry=None)
+        bundle_disk_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "disk")
+        user_disk_dir = os.path.expanduser("~/.niu/disk")
+        self.disk_engine = DiskEngine([bundle_disk_dir, user_disk_dir], registry=None)
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client, disk_engine=self.disk_engine)
 
         # 动态前缀段：Current Time + disk_desc（启动时固定，不每轮更新）

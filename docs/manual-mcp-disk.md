@@ -188,28 +188,7 @@ disk("/mydir/my_tool value1") → 应执行工具并返回结果
 
 ## 三、虚拟磁盘配置详解
 
-### 3.1 全局配置
-
-文件：`config/disk/disk.yaml`
-
-```yaml
-version: 1
-exclude_tools:
-  - nanobot.system/code_run    # 历史遗留死配置：当前无对应注册工具，保留不影响运行
-  - nanobot.system/read
-  - nanobot.system/edit
-  - nanobot.system/write
-show_hidden: false              # false = ls 不显示隐藏工具；true = ls 显示所有工具
-disk_mode: true                 # true = 启用虚拟磁盘模式
-```
-
-| 字段 | 说明 |
-|------|------|
-| `exclude_tools` | 排除的工具全名列表（server/tool 格式），这些工具不在 disk 中出现。注：`exclude_tools` 机制本身有效（启动时按字符串匹配隐藏对应工具），但当前列表中的 `nanobot.system/*` 条目是历史遗留死配置——代码中无任何工具以 `nanobot.system/` 前缀注册到 ToolRegistry，故这些条目实际不匹配任何工具，保留不影响运行。 |
-| `show_hidden` | 是否在 ls 中显示 hidden=true 的工具 |
-| `disk_mode` | 是否启用磁盘模式。关闭后回退到旧 static/dynamic 注入方式 |
-
-### 3.2 服务器配置格式
+### 3.1 服务器配置格式
 
 文件：`config/disk/<server-name>.yaml`
 
@@ -262,7 +241,7 @@ tools:
 
 两种格式等效。当前项目中 `ha-server.yaml`、`memory-server.yaml` 等使用 list 格式；设计文档推荐 dict 格式。新增配置建议使用 dict 格式，但两种均可正常工作。
 
-### 3.3 参数字段说明
+### 3.2 参数字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -291,7 +270,7 @@ tools:
   - 例：`/ha/ha_subscribe sensor.xxx_temp above --value 30` — entity_id 和 condition 是位置参数，value 是 flag 参数
   - flag 默认等于 name，可用 `flag` 字段指定 kebab-case 名称（如 `from_state` → `from-state`）
 
-### 3.4 category 分类
+### 3.3 category 分类
 
 | category | 含义 | ls 时的显示分组 |
 |----------|------|----------------|
@@ -306,7 +285,7 @@ tools:
 - write 类工具：LLM 知道会改变状态，谨慎调用
 - admin 类工具：LLM 知道是管理操作，需用户确认
 
-### 3.5 hidden 工具
+### 3.4 hidden 工具
 
 设 `hidden: true` 的工具：
 - `ls /dir` 不显示
@@ -316,7 +295,7 @@ tools:
 
 用途：低频工具（如 `list_supported_formats`、`lightrag_document_status`）设 hidden，避免 ls 列表过长干扰 LLM，但仍可按需调用。
 
-### 3.6 mutually_exclusive 互斥参数组
+### 3.5 mutually_exclusive 互斥参数组
 
 同一组内的参数不能同时传入：
 
@@ -327,11 +306,11 @@ mutually_exclusive:
 
 互斥参数组中引用的参数名必须在 args/parameters 中存在。
 
-### 3.7 sensitive 参数
+### 3.6 sensitive 参数
 
 设 `sensitive: true` 的参数（如 ha_token、密码），LLM 在日志和响应中不会完整显示参数值。
 
-### 3.8 约束条件（constraints）
+### 3.7 约束条件（constraints）
 
 ```yaml
 constraints:
@@ -341,7 +320,7 @@ constraints:
   max_length: 200       # 字符串最大长度
 ```
 
-### 3.9 启动校验规则
+### 3.8 启动校验规则
 
 `disk_config.py` 在启动时自动校验所有 YAML 配置。以下校验失败会阻止启动（抛出 ValidationError）：
 
@@ -362,7 +341,7 @@ constraints:
 | 7 | enum 仅限 string/integer 类型 | 其他类型用 enum 可能无意义 |
 | 8 | default 值类型必须与 type 匹配 | 如 string 参数配 integer 默认值 |
 
-### 3.10 交叉验证
+### 3.9 交叉验证
 
 启动时 `disk_config.py` 自动对比 YAML 配置与 ToolRegistry 中的 `input_schema`：
 
@@ -371,6 +350,56 @@ constraints:
 - ToolRegistry 中有但 YAML 里没有的工具 → warning: `not found in ToolRegistry`
 
 交叉验证仅输出 warning，不阻止运行。但这意味着参数漂移，应尽快修正。
+
+### 3.10 用户自建 MCP server 配置（`~/.niu/disk/`）
+
+主 Agent 可以在用户家目录 `~/.niu/disk/` 下自建 yaml 文件，覆盖 bundle 内置的 server 配置或添加全新的 server。这是用户在不修改 bundle 的情况下扩展虚拟磁盘的主要途径。
+
+**加载顺序与覆盖规则**：
+
+- 启动器首次创建 `~niu` 目录时（`launcher/src/main.rs` 的 `init_niu_dir`）会自动创建空的 `~/.niu/disk/` 目录
+- `DiskConfig` 按顺序扫描 `[bundle/config/disk/, ~/.niu/disk/]` 两个目录
+- 用户目录中的 yaml 与 bundle 中**同 `server_name`** 的 yaml → **整个 server 被用户版本替换**（不合并 tools）
+- 用户目录中的 yaml 定义新 `server_name` → 该 server 被加入虚拟磁盘
+- `directory` 字段在跨目录间必须唯一（两个目录中不能出现同名 directory，否则启动报错）
+
+**yaml 格式示例**（最简结构，参考 `memory-server.yaml`）：
+
+```yaml
+# ~/.niu/disk/my-custom-server.yaml
+server: my-custom-server
+directory: custom
+description: "我的自建 server — 用于 X 场景"
+
+tools:
+  - name: do_something
+    category: write
+    short: "做某事"
+    long: "完整描述：用于 X 场景的某个操作"
+    parameters:
+      - name: input
+        position: 1
+        type: string
+        required: true
+```
+
+**白名单设计**：用户必须在 `~/.niu/disk/` 中显式配置 yaml 才能让 MCP 工具出现在虚拟磁盘。仅注册到 `config/mcp-servers.yaml` 但没有 disk yaml 的 server，其工具不会出现在 `ls /` 中。
+
+**容错规则**：
+
+| 场景 | 行为 |
+|------|------|
+| 用户目录不存在 | 跳过（warning 日志），不阻塞启动 |
+| 用户目录存在但为空 | 正常加载，仅使用 bundle 配置 |
+| 用户目录中的单个 yaml 语法错误 | warning + skip 该文件，其他 yaml 正常加载 |
+| 用户目录中的 yaml 缺少 `server` key | warning + skip 该文件 |
+| 跨文件冲突（directory 重名、与内建命令冲突等） | 启动报错阻塞（设计意图，需用户修复） |
+
+**典型用途**：
+
+1. **覆盖内置 server**：用户想改 `memory-server` 的工具描述、隐藏某些工具 → 在 `~/.niu/disk/memory-server.yaml` 写完整的新配置，整个替换 bundle 版本
+2. **添加自建 server**：用户写了自己的 MCP server 模块（注册到 ToolRegistry），在 `~/.niu/disk/my-server.yaml` 添加虚拟磁盘配置，让 Agent 能 `ls /my-server` 发现
+3. **本地实验**：临时调试新工具的 yaml 配置，不想污染 bundle 仓库
 
 ## 四、LLM 交互方式
 
@@ -398,9 +427,8 @@ LLM 通过 `disk()` 工具与虚拟磁盘交互，使用 Unix 命令风格：
 **原因排查顺序**：
 
 1. 检查 YAML 中 `hidden: true` — `ls` 不显示 hidden 工具，需用 `ls --all`
-2. 检查 `disk.yaml` 中 `exclude_tools` — 工具被排除则完全不出现
-3. 检查服务器是否加载成功 — 日志中搜索 `Optional server loaded` 或 `All .* servers loaded`
-4. 检查 `mcp_loader.py` 中是否注册 — REQUIRED_SERVERS 或 OPTIONAL_SERVERS 是否包含该服务器
+2. 检查服务器是否加载成功 — 日志中搜索 `Optional server loaded` 或 `All .* servers loaded`
+3. 检查 `mcp_loader.py` 中是否注册 — REQUIRED_SERVERS 或 OPTIONAL_SERVERS 是否包含该服务器
 
 ### 5.2 启动报 ValidationError
 
