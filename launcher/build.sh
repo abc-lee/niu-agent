@@ -43,6 +43,27 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "[build.sh] copying memory/..."
     rsync -a --delete "$PROJECT_ROOT/memory/" "$RESOURCES_DIR/memory/" 2>/dev/null || true
 
+    # docs/ (系统手册 + 子文档 + 图片，只复制保留清单内的)
+    echo "[build.sh] copying docs/..."
+    mkdir -p "$RESOURCES_DIR/docs"
+    for f in SYSTEM_MANUAL.md \
+             manual-amap-setup.md manual-dependencies.md manual-developer.md \
+             manual-feishu-setup.md manual-file-formats.md manual-general-subagent.md \
+             manual-ha-setup.md manual-im-gateway.md manual-mcp-disk.md \
+             manual-performance.md manual-troubleshooting.md manual-user-guide.md \
+             manual-vector-store.md \
+             kg-dev-dictionary.md; do
+        if [ -f "$PROJECT_ROOT/docs/$f" ]; then
+            cp "$PROJECT_ROOT/docs/$f" "$RESOURCES_DIR/docs/$f"
+        fi
+    done
+    # 复制图片
+    for f in "CHAT页面.png" "知识图谱.png"; do
+        if [ -f "$PROJECT_ROOT/docs/$f" ]; then
+            cp "$PROJECT_ROOT/docs/$f" "$RESOURCES_DIR/docs/$f"
+        fi
+    done
+
     # niu_api/ (Python API 模块，Python 启动时用 -m niu_api 找它)
     echo "[build.sh] copying niu_api/..."
     rsync -a --delete "$PROJECT_ROOT/niu_api/" "$RESOURCES_DIR/niu_api/"
