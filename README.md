@@ -107,7 +107,7 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 | 前端 | Electron 33 |
 | 启动器 | Rust |
 | 后端 | Python + FastAPI |
-| Agent 核心 | 自研 GenericAgent + MCP 同进程架构 |
+| Agent 核心 | 自研 Agent + MCP 同进程架构 |
 | LLM 调用 | litellm（统一 OpenAI/Claude/DeepSeek/Qwen/Ollama） |
 | 知识图谱 | LightRAG + 向量检索（local/global/hybrid/mix/naive） |
 | 人脸识别 | InsightFace + ONNX Runtime |
