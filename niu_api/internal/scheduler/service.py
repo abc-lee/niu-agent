@@ -69,7 +69,8 @@ def trigger_callback(task: dict) -> Optional[str]:
 
     注意：本函数内部重试 1 次 = 2 次真实 ChatQueue.enqueue_and_wait 尝试。
     scheduler 的失败计数器阈值 3 = trigger_callback 被调 3 次 = 6 次真实尝试。
-    循环任务 reschedule 到下次 cron 时间重试，一次性任务 reschedule 10 分钟后重试。
+    循环任务 reschedule 到下次 cron 时间重试，一次性任务失败直接标 failed
+    （由 retry_failed_tasks 5 分钟后重置，见 scheduler.py _check_and_trigger_impl）。
     """
     import asyncio
 
