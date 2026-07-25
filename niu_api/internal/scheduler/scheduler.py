@@ -7,6 +7,8 @@ simultaneous execution on startup.
 """
 
 import threading
+
+from niu_api.chat import frontend_ready_event
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
@@ -99,17 +101,27 @@ class Scheduler:
         self._delayed_start_cancelled = False
 
         def _delayed_start():
-            # Phase 1: Wait for system ready signal (with timeout fallback)
+            # Phase 1: Wait for system ready signal (180s 超时不再强行 start)
+            #   原行为：超时后 warning + 继续 self.start()，会撞未就绪 runner
+            #   新行为：超时后 return，scheduler 不启动，等下次程序启动重试
             timeout_seconds = 180
             signaled = self._ready_event.wait(timeout=timeout_seconds)
             if not signaled:
-                logger.warning("[SCHEDULER] Ready signal not received within 180s, forcing start")
+                logger.warning("[SCHEDULER] Ready signal not received within 180s, aborting start (will retry on next launch)")
+                return
 
             if self._delayed_start_cancelled:
                 logger.info("[SCHEDULER] Delayed start cancelled")
                 return
 
-            # Phase 2: Minimum safety delay after signal received
+            # Phase 2: Wait for frontend SSE subscription established
+            #   前端 launch 后调 POST /api/frontend-ready 通知后端
+            #   scheduler 等此事件才扫描过期任务，确保 reply 推 SSE 时前端已订阅
+            #   60s 超时未收到强制继续（前端可能崩溃或未启动，不能让 scheduler 永远不工作）
+            if not frontend_ready_event.wait(timeout=60):
+                logger.warning("[SCHEDULER] Frontend not ready within 60s, proceeding anyway")
+
+            # Phase 3: Minimum safety delay
             time.sleep(2)
 
             with self._lock:
