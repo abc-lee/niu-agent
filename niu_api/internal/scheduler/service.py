@@ -62,7 +62,8 @@ def trigger_callback(task: dict) -> Optional[str]:
     从调度器工作线程调用，通过 run_coroutine_threadsafe 桥接到主事件循环。
     ChatQueue 串行处理消息，自动持久化到数据库并 SSE 推送。
 
-    失败重试：5 分钟超时或异常时，10s 后重试 1 次。仍失败返回 None，
+    失败重试：ChatQueue.enqueue_and_wait 内置 2 分钟超时（asyncio.wait_for timeout=120），
+    返回空字符串或异常时，10s 后重试 1 次。仍失败返回 None，
     scheduler 收到 None 后会 reschedule（recurring）或标 failed（one-time）。
     连续 3 次失败的 task 由 scheduler.py 内的失败计数器标记 status='failed'
     （不引入 DLQ 表，复用现有 status 字段）。
@@ -71,6 +72,8 @@ def trigger_callback(task: dict) -> Optional[str]:
     scheduler 的失败计数器阈值 3 = trigger_callback 被调 3 次 = 6 次真实尝试。
     循环任务 reschedule 到下次 cron 时间重试，一次性任务失败直接标 failed
     （由 retry_failed_tasks 5 分钟后重置，见 scheduler.py _check_and_trigger_impl）。
+
+    IM 推送失败只 log warning，不影响 task 状态（避免重复触发 Agent 生成重复回复）。
     """
     import asyncio
 
