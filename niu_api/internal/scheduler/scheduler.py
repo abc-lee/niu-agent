@@ -60,6 +60,10 @@ class Scheduler:
         # Track whether delayed start has been cancelled
         self._delayed_start_cancelled = False
         self._ready_event = threading.Event()
+        # task 失败计数器：连续失败 N 次后标记 status='failed' 不再自动重试
+        # 不持久化（重启清零，意味着重新尝试）
+        self._task_fail_count: dict[str, int] = {}
+        self._TASK_FAIL_THRESHOLD = 3
 
         # Recover orphaned in_progress tasks from crashes
         self._recover_orphaned_tasks()
@@ -314,14 +318,30 @@ class Scheduler:
                 next_time = self._calc_next_trigger(datetime.now().isoformat(), cron_expr)
 
                 if result is None:
-                    # 循环任务失败后直接 reschedule 到下次 cron 时间，不标记 failed 避免无限重试
+                    # 失败计数器累加，达阈值才标 failed 不再自动重试
+                    # 注意：pop 必须在 else（成功）分支，不能在 if 之前——
+                    # 否则失败时先 pop 再 +=1，计数器永远 = 1，永远达不到阈值 3
+                    self._task_fail_count[task_id] = self._task_fail_count.get(task_id, 0) + 1
+                    fail_n = self._task_fail_count[task_id]
+
+                    if fail_n >= self._TASK_FAIL_THRESHOLD:
+                        logger.error(f"[SCHEDULER] Recurring task {task_id} failed {fail_n} times, marking as failed (DLQ)")
+                        self.store.update_task(task_id, status="failed", expected_status="in_progress")
+                        self._task_fail_count.pop(task_id, None)
+                        continue
+
+                    # 未达阈值：reschedule 到下次 cron 时间继续重试
                     if next_time:
-                        logger.warning(f"[SCHEDULER] Recurring task {task_id} failed, rescheduling to {next_time}")
+                        logger.warning(f"[SCHEDULER] Recurring task {task_id} failed (attempt {fail_n}/{self._TASK_FAIL_THRESHOLD}), rescheduling to {next_time}")
                         self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
                     else:
+                        # cron_expr 解析失败，标 failed 并清零计数器（避免内存泄漏）
                         self.store.update_task(task_id, status="failed", expected_status="in_progress")
+                        self._task_fail_count.pop(task_id, None)
                     continue
 
+                # 成功：清零失败计数器（在 if result is None 之后，确保失败时不会先 pop 再 +=1）
+                self._task_fail_count.pop(task_id, None)
                 self.store.update_last_executed_date(task_id, today)
                 if next_time:
                     self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
@@ -332,9 +352,16 @@ class Scheduler:
                 # 一次性任务：执行后删除
                 logger.info(f"[SCHEDULER] Executing one-time task ({i+1}/{len(due_tasks)}): {task['content'][:50]}")
                 result = self._call_trigger_callback(task)
+
                 if result is None:
+                    # 一次性任务失败直接标 failed，由 retry_failed_tasks 5 分钟后重置（原行为）
+                    # 不用失败计数器——retry_failed_tasks 会绕过计数器导致死循环
+                    # trigger_callback 内部已重试 1 次（Task 7），所以这里失败 = 2 次真实尝试都失败
+                    logger.warning(f"[SCHEDULER] One-time task {task_id} failed (trigger_callback retried already), marking as failed")
                     self.store.update_task(task_id, status="failed", expected_status="in_progress")
                     continue
+
+                # 成功：删除任务（原行为）
                 if not self.store.delete_task_permanent(task_id):
                     # 删除失败时标记为 completed，防止恢复后重复执行
                     self.store.update_task(task_id, status="completed", expected_status="in_progress")
