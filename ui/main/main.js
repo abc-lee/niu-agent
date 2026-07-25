@@ -1731,6 +1731,19 @@ function startMessageEventStream() {
     res.setEncoding('utf8');  // 正确处理多字节字符跨 TCP 块分割
     console.log('[SSE] Connected to message event stream');
 
+    // 通知后端 frontend_ready（首次连接才通知，重连不重复通知）
+    // scheduler _delayed_start 等此通知才扫描过期任务
+    if (!sseConnectedBefore) {
+      const readyReq = http.request({
+        hostname: '127.0.0.1',
+        port: 9876,
+        path: '/api/frontend-ready',
+        method: 'POST',
+      }, () => {});
+      readyReq.on('error', (e) => console.warn('[FRONTEND_READY] notify failed:', e.message));
+      readyReq.end();
+    }
+
     // 重连时通知 chat 刷新（chat 的 onNewMessage 会触发 refreshFromDB）
     if (sseConnectedBefore && chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.webContents.send('new-message');
