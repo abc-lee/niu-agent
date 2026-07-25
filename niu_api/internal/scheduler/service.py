@@ -7,6 +7,7 @@ Scheduler Service Lifecycle Management
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -60,6 +61,15 @@ def trigger_callback(task: dict) -> Optional[str]:
 
     从调度器工作线程调用，通过 run_coroutine_threadsafe 桥接到主事件循环。
     ChatQueue 串行处理消息，自动持久化到数据库并 SSE 推送。
+
+    失败重试：5 分钟超时或异常时，10s 后重试 1 次。仍失败返回 None，
+    scheduler 收到 None 后会 reschedule（recurring）或标 failed（one-time）。
+    连续 3 次失败的 task 由 scheduler.py 内的失败计数器标记 status='failed'
+    （不引入 DLQ 表，复用现有 status 字段）。
+
+    注意：本函数内部重试 1 次 = 2 次真实 ChatQueue.enqueue_and_wait 尝试。
+    scheduler 的失败计数器阈值 3 = trigger_callback 被调 3 次 = 6 次真实尝试。
+    循环任务 reschedule 到下次 cron 时间重试，一次性任务 reschedule 10 分钟后重试。
     """
     import asyncio
 
@@ -77,47 +87,61 @@ def trigger_callback(task: dict) -> Optional[str]:
         logger.error("[INTERNAL SCHEDULER] Main event loop not available, cannot trigger task")
         return None
 
-    # 通过 ChatQueue 入队并等待回复
-    try:
-        q = get_chat_queue()
-        future = asyncio.run_coroutine_threadsafe(
-            q.enqueue_and_wait(
-                content=prompt,
-                source="scheduler",
-                session_id="default",
-            ),
-            loop,
-        )
-        agent_reply = future.result(timeout=300)  # 5 分钟超时
+    # 单次尝试函数：通过 ChatQueue 入队并等待回复
+    def _try_once() -> Optional[str]:
+        try:
+            q = get_chat_queue()
+            future = asyncio.run_coroutine_threadsafe(
+                q.enqueue_and_wait(
+                    content=prompt,
+                    source="scheduler",
+                    session_id="default",
+                ),
+                loop,
+            )
+            agent_reply = future.result(timeout=300)  # 5 分钟超时
 
-        if agent_reply:
-            logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100]}")
-        else:
-            logger.warning("[INTERNAL SCHEDULER] Agent returned empty reply")
+            if agent_reply:
+                logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100]}")
+                return agent_reply
+            else:
+                logger.warning("[INTERNAL SCHEDULER] Agent returned empty reply")
+                return None
+        except Exception as e:
+            logger.error(f"[INTERNAL SCHEDULER] ChatQueue call failed: {e}")
             return None
 
-        # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
-        add_pending_alert("⏰")
+    # 第一次尝试
+    agent_reply = _try_once()
 
-        # IM 通道推送：有推送目标时才推送
-        try:
-            from niu_api.channel import get_channel_router
-            router = get_channel_router()
-            if router.has_channel("im"):
-                push_chat_id = task.get("chat_id") or ""
-                push_future = asyncio.run_coroutine_threadsafe(
-                    router.push(agent_reply, "im", push_chat_id),
-                    loop,
-                )
-                push_future.result(timeout=30)
-        except Exception as e:
-            logger.warning(f"[SCHEDULER] IM push failed: {e}")
+    # 失败重试 1 次（10s 间隔）
+    if agent_reply is None:
+        logger.warning(f"[INTERNAL SCHEDULER] First attempt failed, retrying in 10s (task_id={task.get('id')})")
+        time.sleep(10)
+        agent_reply = _try_once()
 
-        return agent_reply
-
-    except Exception as e:
-        logger.error(f"[INTERNAL SCHEDULER] ChatQueue call failed: {e}")
+    if agent_reply is None:
+        logger.error(f"[INTERNAL SCHEDULER] Both attempts failed (task_id={task.get('id')})")
         return None
+
+    # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
+    add_pending_alert("⏰")
+
+    # IM 通道推送：有推送目标时才推送
+    try:
+        from niu_api.channel import get_channel_router
+        router = get_channel_router()
+        if router.has_channel("im"):
+            push_chat_id = task.get("chat_id") or ""
+            push_future = asyncio.run_coroutine_threadsafe(
+                router.push(agent_reply, "im", push_chat_id),
+                loop,
+            )
+            push_future.result(timeout=30)
+    except Exception as e:
+        logger.warning(f"[SCHEDULER] IM push failed: {e}")
+
+    return agent_reply
 
 
 # ============== 生命周期管理 ==============
