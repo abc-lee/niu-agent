@@ -76,6 +76,14 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "[build.sh] copying mcp-servers/..."
     rsync -a --delete "$PROJECT_ROOT/mcp-servers/" "$RESOURCES_DIR/mcp-servers/"
 
+    # im-adapters/ (IM Gateway 适配器，飞书等，gateway.py 用相对路径引用)
+    # gateway.py L154: Path(__file__).resolve().parent.parent.parent / "im-adapters" / adapter_type / "src"
+    # bundle 模式下 __file__ 是 niu.app/Contents/Resources/niu_api/channel/gateway.py，
+    # parent.parent.parent 是 niu.app/Contents/Resources/，所以 bundle 内应有 im-adapters/feishu/src/
+    echo "[build.sh] copying im-adapters/..."
+    rsync -a --delete --exclude '.git' --exclude '__pycache__' --exclude '.DS_Store' --exclude '*.pyc' \
+        "$PROJECT_ROOT/im-adapters/" "$RESOURCES_DIR/im-adapters/"
+
     # 构造 iconset（从 ui/main/windows/assistant/icons 复制 PNG 改名 + sips 强制正方形）
     # 源 PNG 是非正方形（16x18/32x37/64x75/128x151 等），iconutil 严格校验像素必须匹配命名尺寸，
     # 否则生成失败。用 sips --resampleHeightWidth 强制到正方形像素再放 iconset。
