@@ -126,14 +126,10 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 git clone <repo-url>
 cd ai-bot
 
-# 2. 安装 Python 依赖（Agent 核心 + 各 MCP 服务器）
-cd agent && pip install -e . && cd ..
-cd mcp-servers/photo-server && pip install -e . && cd ../..
-cd mcp-servers/lightrag-server && pip install -e . && cd ../..
-cd mcp-servers/file-parser && pip install -e . && cd ../..
-cd mcp-servers/config-manager && pip install -e . && cd ../..
-cd mcp-servers/memory-server && pip install -e . && cd ../..
-cd mcp-servers/session-manager && pip install -e . && cd ../..
+# 2. 创建自包含 Python 运行时（venv + 全量依赖）
+python3.11 -m venv --copies python
+python/bin/pip install --upgrade pip
+python/bin/pip install -r requirements.txt
 
 # 3. 初始化用户数据目录（见下文"用户数据目录"）
 
@@ -143,20 +139,17 @@ cd launcher && cargo run --release
 
 启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。支持的模型预设见 `config/llm-presets.json`，本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
 
-### 两种安装方式的区别
+### 安装说明
 
-| 方式 | 命令 | 用途 | 受众 |
-|------|------|------|------|
-| **开发模式** | 上述 `pip install -e .` 逐个安装 | 修改代码立即生效，便于调试 | 贡献者、开发者 |
-| **打包模式** | `python3.11 -m venv --copies python && python/bin/pip install -r requirements.txt` | 构建嵌入式 Python 环境，产出可分发的最终安装包 | 打包发布者 |
+上述命令创建 `python/` 自包含 Python 运行时（venv + 全量依赖），开发模式和打包模式共用同一套依赖。`--copies` 确保二进制是真实拷贝（非符号链接），便于打包分发。`requirements.txt` 含 Agent 核心 + 所有 MCP 服务器 + lightrag-hku（从 Fork git+https 安装）的完整依赖。
 
-最终用户**不需要**执行上述任何命令——他们拿到的安装包已经包含 `python/` 嵌入式运行时（含全部依赖），开箱即用。Niu 的目标用户是非 IT 人员，不能要求他们自己装 Python。
-
-开发模式的测试依赖（pytest 等）单独维护在 `requirements-dev.txt`，**不会**进入分发包：
+测试依赖（pytest 等）单独维护在 `requirements-dev.txt`，不进入 `python/` 自包含运行时：
 
 ```bash
 python/bin/pip install -r requirements-dev.txt  # 仅开发时安装
 ```
+
+最终用户**不需要**执行上述命令——他们拿到的 `niu.app` 已含完整 `python/` 运行时，开箱即用。
 
 ## 项目结构
 
