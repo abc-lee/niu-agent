@@ -20,6 +20,12 @@ def _make_scheduler(db_path, callback, mock_store):
     scheduler._check_lock = __import__("threading").Lock()
     scheduler._executor = __import__("concurrent.futures").futures.ThreadPoolExecutor(max_workers=2)
     scheduler._delayed_start_cancelled = False
+    # Task 8 新增字段：失败计数器（必须同步 fixture，否则 result is None 分支会 AttributeError）
+    scheduler._task_fail_count = {}
+    scheduler._TASK_FAIL_THRESHOLD = 3
+    scheduler._ready_event = __import__("threading").Event()
+    # _store_factory 是 commit ff04843f 引入的字段，fixture 之前漏了
+    scheduler._store_factory = None
     return scheduler, _CALLBACK_TIMEOUT
 
 
@@ -218,7 +224,7 @@ class TestCheckAndTriggerSequential:
         mock_store.delete_task_permanent.assert_called_once_with("task-1")
 
     def test_callback_failure_marks_task_failed(self, mock_scheduler):
-        """回调失败时任务标记为 failed"""
+        """回调失败时循环任务 reschedule 到下次 cron（Task 8 行为变更：失败 3 次才标 failed）"""
         scheduler, callback, mock_store, _ = mock_scheduler
 
         callback.return_value = None
@@ -241,9 +247,13 @@ class TestCheckAndTriggerSequential:
         }
 
         scheduler.check_and_trigger()
-        failed_calls = [c for c in mock_store.update_task.call_args_list
-                        if "failed" in str(c)]
-        assert len(failed_calls) >= 1
+        # Task 8 改动：循环任务失败 1 次不标 failed，而是 reschedule 到下次 cron
+        # 失败计数器累加到 _task_fail_count，达阈值 3 才标 failed
+        reschedule_calls = [c for c in mock_store.update_task.call_args_list
+                            if "pending" in str(c)]
+        assert len(reschedule_calls) >= 1, "失败 1 次应 reschedule 而非标 failed"
+        # 验证失败计数器已累加
+        assert scheduler._task_fail_count.get("task-1") == 1
 
     def test_start_and_stop_with_lock_protection(self, tmp_path):
         """start() 和 stop() 使用锁保护 running 标志"""
