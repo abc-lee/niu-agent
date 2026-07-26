@@ -32,7 +32,7 @@
 
 **Files:**
 - Modify: `~/.niu/preferences.json` — 增加 brain_regions 段
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py` — 增加 `get_default_regions_config()` 函数
+- Modify: `<repo_root>/niu_api/internal/region_manager.py` — 增加 `get_default_regions_config()` 函数
 
 - [ ] **Step 1: 在 preferences.json 增加 brain_regions 配置段**
 
@@ -84,8 +84,8 @@
 Go 启动器在 `~/.niu/preferences.json` 不存在时，从 `memory/preferences.json` 复制初始模板（见 `main.go:135`）。另外 `config/user-data/preferences.json` 是手动安装用户的参考模板。两个文件都需要同步添加 `brain_regions` 段。
 
 在以下两个文件的顶级增加同样的 `brain_regions` 键（内容与 Step 1 完全相同）：
-- `REDACTED_USER_PATH/tools/ai-bot/memory/preferences.json`
-- `REDACTED_USER_PATH/tools/ai-bot/config/user-data/preferences.json`
+- `<repo_root>/memory/preferences.json`
+- `<repo_root>/config/user-data/preferences.json`
 
 - [ ] **Step 2: 添加 `json` 和 `os` 导入**
 
@@ -148,13 +148,13 @@ def is_default_region(region_name: str) -> bool:
 
 - [ ] **Step 4: 语法检查**
 
-Run: `python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py`
+Run: `python -m py_compile <repo_root>/niu_api/internal/region_manager.py`
 Expected: 无输出
 
 - [ ] **Step 5: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/region_manager.py
 git commit -m "feat: add brain_regions config to preferences.json and reader functions"
 ```
@@ -164,7 +164,7 @@ git commit -m "feat: add brain_regions config to preferences.json and reader fun
 ### Task 2: create_default_regions 改为读配置 + 删除 DEFAULT_REGIONS 硬编码
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py` — create_default_regions() 改用 get_default_regions_config()
+- Modify: `<repo_root>/niu_api/internal/region_manager.py` — create_default_regions() 改用 get_default_regions_config()
 
 - [ ] **Step 1: 修改 create_default_regions() 使用配置**
 
@@ -320,13 +320,13 @@ FALLBACK_REGIONS = _get_fallback_regions_text()
 
 - [ ] **Step 5: 语法检查**
 
-Run: `python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py && python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/brain_region_prompt.py`
+Run: `python -m py_compile <repo_root>/niu_api/internal/region_manager.py && python -m py_compile <repo_root>/niu_api/internal/brain_region_prompt.py`
 Expected: 无输出
 
 - [ ] **Step 6: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/region_manager.py niu_api/internal/brain_region_prompt.py tests/test_default_regions.py
 git commit -m "refactor: create_default_regions reads from preferences.json, remove DEFAULT_REGIONS hardcode"
 ```
@@ -336,8 +336,8 @@ git commit -m "refactor: create_default_regions reads from preferences.json, rem
 ### Task 3: 保护机制改为查配置 + 删除 community_id 判断
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py` — cleanup_stale_regions, dissolve_shrunk_regions, _find_most_similar_neighbor
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py` — _merge_and_dissolve
+- Modify: `<repo_root>/niu_api/internal/region_manager.py` — cleanup_stale_regions, dissolve_shrunk_regions, _find_most_similar_neighbor
+- Modify: `<repo_root>/agent/injector/region_sync.py` — _merge_and_dissolve
 
 - [ ] **Step 1: cleanup_stale_regions() 保护改为 is_default_region()**
 
@@ -421,13 +421,13 @@ from niu_api.internal.region_manager import is_default_region
 
 - [ ] **Step 5: 语法检查**
 
-Run: `python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py && python -m py_compile REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py`
+Run: `python -m py_compile <repo_root>/niu_api/internal/region_manager.py && python -m py_compile <repo_root>/agent/injector/region_sync.py`
 Expected: 无输出
 
 - [ ] **Step 6: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/region_manager.py agent/injector/region_sync.py
 git commit -m "refactor: protect default regions by config lookup, not community_id check"
 ```

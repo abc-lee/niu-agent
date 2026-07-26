@@ -87,7 +87,7 @@ question = stripped[len(_AT_NIU_PREFIX):].lstrip()
 - [ ] **Step 2: 跑现有测试确认改名无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_at_prefix_interception.py -v 2>&1 | tail -20
+cd <repo_root>/agent && python -m pytest tests/test_at_prefix_interception.py -v 2>&1 | tail -20
 ```
 
 Expected: 多数测试 FAIL（因为测试输入还是 `@niu`，下一步改测试输入）。
@@ -140,7 +140,7 @@ Expected: PASS。
 - [ ] **Step 10: 验证 db_monitor 路由不误伤**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && grep -n "at_message_parser\|_AT_PATTERN" agent/at_message_parser.py | head -5
+cd <repo_root> && grep -n "at_message_parser\|_AT_PATTERN" agent/at_message_parser.py | head -5
 ```
 
 确认 `at_message_parser.py:12` 正则 `@([a-z]+(?:-[a-z]+)*-[0-9a-f]{4})\s+` 要求 4 位 hex 后缀，`@niu-agent` 不匹配。
@@ -148,7 +148,7 @@ cd REDACTED_USER_PATH/tools/ai-bot && grep -n "at_message_parser\|_AT_PATTERN" a
 - [ ] **Step 11: grep niu_api/ 确认无旧 @niu**
 
 ```bash
-grep -rn "@niu[^-]" REDACTED_USER_PATH/tools/ai-bot/niu_api/ 2>/dev/null | head
+grep -rn "@niu[^-]" <repo_root>/niu_api/ 2>/dev/null | head
 ```
 
 Expected: 无输出（或仅 logs/ 历史产物）。
@@ -156,7 +156,7 @@ Expected: 无输出（或仅 logs/ 历史产物）。
 - [ ] **Step 12: 跑全量测试确认改名无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/ -v 2>&1 | tail -30
+cd <repo_root>/agent && python -m pytest tests/ -v 2>&1 | tail -30
 ```
 
 Expected: 所有测试 PASS。
@@ -164,7 +164,7 @@ Expected: 所有测试 PASS。
 - [ ] **Step 13: 启动程序确认无 import 错误**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && ./niu 2>&1 | head -20 &
+cd <repo_root> && ./niu 2>&1 | head -20 &
 sleep 5 && ps aux | grep -i niu | head -5 && kill %1 2>/dev/null
 ```
 
@@ -211,7 +211,7 @@ def test_running_subagent_default_fields():
 - [ ] **Step 2: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_subagent_registry.py::test_running_subagent_default_fields -v 2>&1 | tail -10
+cd <repo_root>/agent && python -m pytest tests/test_subagent_registry.py::test_running_subagent_default_fields -v 2>&1 | tail -10
 ```
 
 Expected: FAIL with `AttributeError: ... has no attribute 'state'` 或类似。
@@ -316,7 +316,7 @@ def test_build_subagent_system_segments_injects_guide_for_all_subagents(tmp_path
 - [ ] **Step 2: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_general_subagent.py::test_build_subagent_system_segments_injects_guide_for_all_subagents -v 2>&1 | tail -10
+cd <repo_root>/agent && python -m pytest tests/test_general_subagent.py::test_build_subagent_system_segments_injects_guide_for_all_subagents -v 2>&1 | tail -10
 ```
 
 Expected: FAIL with `AssertionError: assert '<!-- NIU_SUBAGENT_GUIDE_v1 -->' in ...`（守则未注入）。
@@ -481,7 +481,7 @@ def test_ask_main_agent_impl_sync_sanitizes_question():
 - [ ] **Step 2: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_sync_subagent_interaction.py -v 2>&1 | tail -10
+cd <repo_root>/agent && python -m pytest tests/test_sync_subagent_interaction.py -v 2>&1 | tail -10
 ```
 
 Expected: FAIL with `AttributeError: module 'agent.subagent' has no attribute '_ask_main_agent_impl_sync'`。
@@ -572,7 +572,7 @@ def test_sync_subagent_at_niu_returns_intercepted_sync(monkeypatch):
 - [ ] **Step 8: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_at_prefix_interception.py::test_sync_subagent_at_niu_returns_intercepted_sync -v 2>&1 | tail -10
+cd <repo_root>/agent && python -m pytest tests/test_at_prefix_interception.py::test_sync_subagent_at_niu_returns_intercepted_sync -v 2>&1 | tail -10
 ```
 
 Expected: FAIL（拦截层当前 `memory_context is None` 直接返回 NO_INTERCEPTION）。
@@ -877,7 +877,7 @@ def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):
 - [ ] **Step 2: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_sync_subagent_interaction.py::test_agent_runner_loop_resumed_messages_skips_construction -v 2>&1 | tail -10
+cd <repo_root>/agent && python -m pytest tests/test_sync_subagent_interaction.py::test_agent_runner_loop_resumed_messages_skips_construction -v 2>&1 | tail -10
 ```
 
 Expected: FAIL（`agent_runner_loop` 没有 `resumed_messages` 参数）。
@@ -1051,7 +1051,7 @@ gen = agent_runner_loop(
 - [ ] **Step 2: 跑全量测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/ -v 2>&1 | tail -20
+cd <repo_root>/agent && python -m pytest tests/ -v 2>&1 | tail -20
 ```
 
 Expected: 所有测试 PASS。
@@ -1091,7 +1091,7 @@ def test_call_subagent_top_validation_no_task_no_answer():
 - [ ] **Step 2: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_sync_subagent_interaction.py::test_call_subagent_top_validation_no_task_no_answer -v 2>&1 | tail -10
+cd <repo_root>/agent && python -m pytest tests/test_sync_subagent_interaction.py::test_call_subagent_top_validation_no_task_no_answer -v 2>&1 | tail -10
 ```
 
 Expected: FAIL（顶部校验未加）。
@@ -1443,7 +1443,7 @@ result = call_subagent(
 - [ ] **Step 3: 跑全量测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/ -v 2>&1 | tail -20
+cd <repo_root>/agent && python -m pytest tests/ -v 2>&1 | tail -20
 ```
 
 Expected: 所有测试 PASS。
@@ -1522,7 +1522,7 @@ def test_helper_does_not_misidentify_normal_result():
 - [ ] **Step 2: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_call_subagent_with_auto_answer.py -v 2>&1 | tail -10
+cd <repo_root>/agent && python -m pytest tests/test_call_subagent_with_auto_answer.py -v 2>&1 | tail -10
 ```
 
 Expected: FAIL with `AttributeError: module 'agent.subagent' has no attribute 'call_subagent_with_auto_answer'`。
@@ -1601,7 +1601,7 @@ unique_name 格式，避免误判正常结果。"
 - [ ] **Step 4: 跑全量测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/ -v 2>&1 | tail -20
+cd <repo_root>/agent && python -m pytest tests/ -v 2>&1 | tail -20
 ```
 
 Expected: 所有测试 PASS。
@@ -1671,7 +1671,7 @@ finally:
 - [ ] **Step 4: 跑全量测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/ -v 2>&1 | tail -20
+cd <repo_root>/agent && python -m pytest tests/ -v 2>&1 | tail -20
 ```
 
 Expected: 所有测试 PASS。
@@ -1771,7 +1771,7 @@ git commit -m "docs: 同步子 Agent 交互通道文档更新"
 - [ ] **Step 1: 启动程序**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && ./niu &
+cd <repo_root> && ./niu &
 sleep 10 && ps aux | grep -i niu | head -5
 ```
 
@@ -1787,7 +1787,7 @@ Expected: 进程启动无错误。
 
 验证日志：
 ```bash
-grep -E "chat-with-|@niu-agent|INTERCEPTED_SYNC" REDACTED_USER_PATH/tools/ai-bot/logs/*.log | tail -30
+grep -E "chat-with-|@niu-agent|INTERCEPTED_SYNC" <repo_root>/logs/*.log | tail -30
 ```
 
 Expected: 日志显示两次 chat-with-xxx 调用 + INTERCEPTED_SYNC 拦截。

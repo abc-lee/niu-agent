@@ -162,7 +162,7 @@ def test_mockresponse_usage_parameter():
 - [ ] **Step 2: 运行验证测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_proactive_fifo.py::test_agent_loop_basic_no_tool_calls -v
+cd <repo_root> && python -m pytest tests/test_proactive_fifo.py::test_agent_loop_basic_no_tool_calls -v
 ```
 
 必须先通过这个测试，才能继续。如果失败，修复 mock 方式直到通过。
@@ -619,7 +619,7 @@ def test_is_context_overflow_error_all_patterns():
 - [ ] **Step 2: 运行全部测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_proactive_fifo.py -v
+cd <repo_root> && python -m pytest tests/test_proactive_fifo.py -v
 ```
 
 必须全部通过。如果失败，修复直到通过。
@@ -638,7 +638,7 @@ git commit -m "test: full TDD tests for callback-driven compress + sub-agent FIF
 - [ ] **Step 1: 临时提交备份**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add -A && git commit -m "backup: before proactive compress integration test"
+cd <repo_root> && git add -A && git commit -m "backup: before proactive compress integration test"
 ```
 
 - [ ] **Step 2: 启动程序，验证场景**

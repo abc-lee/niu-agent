@@ -149,7 +149,7 @@ def test_stop_flag_is_thread_safe():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_stop_flag.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_stop_flag.py -v`
 Expected: FAIL — `ImportError: cannot import name 'request_stop' from 'agent.runner'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -180,7 +180,7 @@ def is_stop_requested() -> bool:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_stop_flag.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_stop_flag.py -v`
 Expected: PASS（4 tests）
 
 - [ ] **Step 5: Commit**
@@ -272,7 +272,7 @@ def test_stop_flag_checked_in_loop():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_stop_flag.py::test_stop_flag_checked_in_loop -v`
+Run: `cd <repo_root> && python -m pytest tests/test_stop_flag.py::test_stop_flag_checked_in_loop -v`
 Expected: FAIL or TIMEOUT — loop doesn't check stop flag, may run all turns
 
 - [ ] **Step 3: Write minimal implementation**
@@ -316,7 +316,7 @@ Expected: FAIL or TIMEOUT — loop doesn't check stop flag, may run all turns
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_stop_flag.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_stop_flag.py -v`
 Expected: PASS（5 tests）
 
 - [ ] **Step 5: Commit**
@@ -383,7 +383,7 @@ async def clear_chat() -> dict:
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import niu_api.compat; print('OK')"`
+Run: `cd <repo_root> && python -c "import niu_api.compat; print('OK')"`
 Expected: OK
 
 - [ ] **Step 4: Commit**
@@ -441,7 +441,7 @@ git commit -m "feat: intercept /stop directive in chat_session, clear_stop on ne
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import niu_api.chat_queue; print('OK')"`
+Run: `cd <repo_root> && python -c "import niu_api.chat_queue; print('OK')"`
 Expected: OK
 
 - [ ] **Step 4: Commit**
@@ -678,7 +678,7 @@ git commit -m "feat: add /stop and /clear directives, stop button in chat UI"
 
 - [ ] **Step 2: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import agent.handler; print('OK')"`
+Run: `cd <repo_root> && python -c "import agent.handler; print('OK')"`
 Expected: OK
 
 - [ ] **Step 3: Commit**
@@ -703,7 +703,7 @@ git commit -m "feat: handler.dispatch checks stop flag before executing tools"
 
 - [ ] **Step 2: 运行完整测试套件**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_stop_flag.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_stop_flag.py -v`
 Expected: PASS
 
 - [ ] **Step 3: Commit**

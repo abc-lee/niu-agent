@@ -87,7 +87,7 @@ if not domain_services:
 
 - [ ] **Step 5: 验证语法和功能**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='select'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='select'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
 
 Expected: 能看到 select 域的设备（如微波炉工作模式选择器）
 
@@ -168,13 +168,13 @@ if props:
 
 - [ ] **Step 5: 验证 select 域的属性提取**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='select'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='select'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
 
 Expected: select 设备的 properties 中包含 `options` 属性（不含 `option`，因当前选中值已作为 state 返回）
 
 - [ ] **Step 6: 验证现有域不受影响**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='light'); for d in status.get('devices', []): print(d.get('entity_id'), d.get('properties', {})); break"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='light'); for d in status.get('devices', []): print(d.get('entity_id'), d.get('properties', {})); break"`
 
 Expected: light 域的 properties 仍然只包含白名单中的属性（brightness_pct, color_mode, supported_color_modes, color_temp_kelvin）
 
@@ -271,7 +271,7 @@ def _get_writable_attrs(domain: str, services_cache: dict = None) -> tuple:
 
 - [ ] **Step 3: 验证 snapshot 功能**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_scene; import json; ha_setup(); result = ha_scene(action='snapshot', name='测试动态', entity_ids=['light.yeelink_bslamp2_b1ce_light']); print(json.dumps(result, ensure_ascii=False)); ha_scene(action='delete', name='测试动态', confirm=True) if result.get('success') else None"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_scene; import json; ha_setup(); result = ha_scene(action='snapshot', name='测试动态', entity_ids=['light.yeelink_bslamp2_b1ce_light']); print(json.dumps(result, ensure_ascii=False)); ha_scene(action='delete', name='测试动态', confirm=True) if result.get('success') else None"`
 
 - [ ] **Step 4: 临时提交**
 
@@ -331,7 +331,7 @@ if opts_key and attrs.get(opts_key):
 
 - [ ] **Step 3: 验证功能**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='climate'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='climate'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
 
 Expected: climate 设备的 services 中 hvac_mode 的 fields 仍包含 options 列表
 
@@ -379,7 +379,7 @@ EXCLUDED_DOMAINS = {
 
 - [ ] **Step 2: 验证新增排除域不影响现有设备**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; ha_setup(); status = ha_status(); print('devices:', len(status.get('devices', []))); print('scenes:', len(status.get('scenes', []))); print('automations:', len(status.get('automations', [])))"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; ha_setup(); status = ha_status(); print('devices:', len(status.get('devices', []))); print('scenes:', len(status.get('scenes', []))); print('automations:', len(status.get('automations', [])))"`
 
 - [ ] **Step 3: 临时提交**
 
@@ -407,7 +407,7 @@ git commit -m "refactor(ha): extend EXCLUDED_DOMAINS with system/internal domain
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_control; print('OK')"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_control; print('OK')"`
 
 - [ ] **Step 4: 临时提交**
 
@@ -425,19 +425,19 @@ git commit -m "chore(ha): remove dead code ACTION_SERVICE_MAP"
 
 - [ ] **Step 1: 验证 select 域设备可见**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='select'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status; import json; ha_setup(); status = ha_status(domain='select'); print(json.dumps(status, ensure_ascii=False, indent=2))"`
 
 - [ ] **Step 2: 验证 ha_control 能控制 select 域**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status, ha_control; import json; ha_setup(); status = ha_status(domain='select'); for d in status.get('devices', []): print(d.get('entity_id'), d.get('properties', {})); if d.get('properties', {}).get('options'): first_opt = d['properties']['options'][0]; result = ha_control(entity_id=d['entity_id'], service='select_option', service_data={'option': first_opt}); print('Control:', result.get('success')); break"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status, ha_control; import json; ha_setup(); status = ha_status(domain='select'); for d in status.get('devices', []): print(d.get('entity_id'), d.get('properties', {})); if d.get('properties', {}).get('options'): first_opt = d['properties']['options'][0]; result = ha_control(entity_id=d['entity_id'], service='select_option', service_data={'option': first_opt}); print('Control:', result.get('success')); break"`
 
 - [ ] **Step 3: 验证 light 域不受影响**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status, ha_scene; import json; ha_setup(); status = ha_status(domain='light'); for d in status.get('devices', []): print(d.get('entity_id'), d.get('properties', {})); break"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_status, ha_scene; import json; ha_setup(); status = ha_status(domain='light'); for d in status.get('devices', []): print(d.get('entity_id'), d.get('properties', {})); break"`
 
 - [ ] **Step 4: 验证场景流程仍正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_scene; import json; ha_setup(); ha_scene(action='create', name='e2e通用', config={'entities': {'light.yeelink_bslamp2_b1ce_light': {'state': 'on', 'brightness_pct': 50}}}); result = ha_scene(action='activate', name='e2e通用'); print('Activate:', result.get('success')); result = ha_scene(action='get', name='e2e通用'); entities = result.get('config', {}).get('entities', {}); light_cfg = entities.get('light.yeelink_bslamp2_b1ce_light', {}); print('Get brightness_pct:', light_cfg.get('brightness_pct')); ha_scene(action='delete', name='e2e通用', confirm=True)"`
+Run: `cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "from niu_ha_server import ha_setup, ha_scene; import json; ha_setup(); ha_scene(action='create', name='e2e通用', config={'entities': {'light.yeelink_bslamp2_b1ce_light': {'state': 'on', 'brightness_pct': 50}}}); result = ha_scene(action='activate', name='e2e通用'); print('Activate:', result.get('success')); result = ha_scene(action='get', name='e2e通用'); entities = result.get('config', {}).get('entities', {}); light_cfg = entities.get('light.yeelink_bslamp2_b1ce_light', {}); print('Get brightness_pct:', light_cfg.get('brightness_pct')); ha_scene(action='delete', name='e2e通用', confirm=True)"`
 
 ---
 

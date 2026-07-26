@@ -126,7 +126,7 @@
 ### Step 1.4：语法检查
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m py_compile niu_api/internal/scheduler/scheduler.py && echo "OK"
+cd <repo_root> && python -m py_compile niu_api/internal/scheduler/scheduler.py && echo "OK"
 ```
 Expected: `OK`（无输出）
 
@@ -135,7 +135,7 @@ Expected: `OK`（无输出）
 ### Step 1.5：commit
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/scheduler/scheduler.py && git commit -m "fix(scheduler): start_delayed 超时 60s→180s，给 lifespan 完整初始化留余量
+cd <repo_root> && git add niu_api/internal/scheduler/scheduler.py && git commit -m "fix(scheduler): start_delayed 超时 60s→180s，给 lifespan 完整初始化留余量
 
 为配合 signal_scheduler_ready 挪到 lifespan 末尾（见下个 commit），
 把 _ready_event.wait 超时从 60s 调到 180s，避免 lifespan L67→末尾
@@ -333,7 +333,7 @@ cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/scheduler/schedul
 ### Step 2.4：语法检查
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m py_compile niu_api/__main__.py && echo "OK"
+cd <repo_root> && python -m py_compile niu_api/__main__.py && echo "OK"
 ```
 Expected: `OK`（无输出）
 
@@ -342,7 +342,7 @@ Expected: `OK`（无输出）
 ### Step 2.5：跑现有启动阻断测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_startup_block.py -v
+cd <repo_root> && python -m pytest tests/test_lightrag_startup_block.py -v
 ```
 Expected: 全部通过（测试断言 gate 逻辑和 flag 设置，不断言 signal 位置或 60s 数值）
 
@@ -351,7 +351,7 @@ Expected: 全部通过（测试断言 gate 逻辑和 flag 设置，不断言 sig
 ### Step 2.6：commit
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/__main__.py && git commit -m "fix(__main__): signal_scheduler_ready 挪到 lifespan 末尾
+cd <repo_root> && git add niu_api/__main__.py && git commit -m "fix(__main__): signal_scheduler_ready 挪到 lifespan 末尾
 
 根治启动时处理过期定时任务的 race condition：原位置 L218（Phase 1 gate 之后、
 L255 依赖项之前）会触发 scheduler sleep 2s 后扫描过期任务撞未就绪 runner，
@@ -471,7 +471,7 @@ user 消息已写 DB 前端可见但 runner.chat() 抛异常、任务被标 fail
 ### Step 3.5：语法检查
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m py_compile niu_api/internal/lightrag_manager.py && python -m py_compile tests/test_lightrag_startup_block.py && echo "OK"
+cd <repo_root> && python -m py_compile niu_api/internal/lightrag_manager.py && python -m py_compile tests/test_lightrag_startup_block.py && echo "OK"
 ```
 Expected: `OK`（无输出）
 
@@ -480,7 +480,7 @@ Expected: `OK`（无输出）
 ### Step 3.6：跑测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_startup_block.py -v
+cd <repo_root> && python -m pytest tests/test_lightrag_startup_block.py -v
 ```
 Expected: 全部通过（docstring 修改不影响测试断言）
 
@@ -489,7 +489,7 @@ Expected: 全部通过（docstring 修改不影响测试断言）
 ### Step 3.7：commit
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/lightrag_manager.py tests/test_lightrag_startup_block.py && git commit -m "docs: 同步 lightrag_manager 和 test docstring 的 60s→180s 文案
+cd <repo_root> && git add niu_api/internal/lightrag_manager.py tests/test_lightrag_startup_block.py && git commit -m "docs: 同步 lightrag_manager 和 test docstring 的 60s→180s 文案
 
 配合 scheduler.py 超时调大，同步更新 lightrag_manager.py（should_signal_scheduler_ready
 和 cancel_scheduler_delayed_start_if_corrupt docstring）以及

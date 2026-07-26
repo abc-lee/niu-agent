@@ -192,7 +192,7 @@ async def test_persist_agent_reply_filters_working_memory(mock_store):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py::test_persist_agent_reply_simple -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py::test_persist_agent_reply_simple -v`
 Expected: FAIL — `ImportError: cannot import name 'persist_agent_reply' from 'niu_api.chat'`
 
 - [ ] **Step 3: 从 chat.py 中提取 persist_agent_reply**
@@ -278,7 +278,7 @@ async def persist_agent_reply(store, runner, full_reply: str, history_len: int) 
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -505,7 +505,7 @@ async def test_enqueue_sync_from_other_thread(mock_runner, mock_store):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py -v -k "enqueue or merging"`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py -v -k "enqueue or merging"`
 Expected: FAIL — `ModuleNotFoundError: No module named 'niu_api.chat_queue'`
 
 - [ ] **Step 3: 实现 ChatQueue 核心代码**
@@ -840,7 +840,7 @@ async def stop_chat_queue():
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -1020,7 +1020,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
 - [ ] **Step 6: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py -v`
 Expected: PASS
 
 - [ ] **Step 7: 提交**
@@ -1158,7 +1158,7 @@ def get_channel_router() -> ChannelRouter:
 
 - [ ] **Step 3: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py -v`
 Expected: PASS
 
 - [ ] **Step 4: 提交**
@@ -1208,7 +1208,7 @@ def test_scheduler_uses_chat_queue(mock_runner, mock_store):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py::test_scheduler_uses_chat_queue -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py::test_scheduler_uses_chat_queue -v`
 Expected: FAIL — trigger_callback 当前通过 HTTP 调用 /chat/sync，未使用 ChatQueue
 
 - [ ] **Step 3: 改造 trigger_callback — 使用 ChatQueue.enqueue_and_wait 替代 HTTP 调用**
@@ -1274,7 +1274,7 @@ def trigger_callback(task: dict) -> str:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py::test_scheduler_uses_chat_queue -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py::test_scheduler_uses_chat_queue -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -1383,7 +1383,7 @@ def test_has_push_target(adapter):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_channel_robustness.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_channel_robustness.py -v`
 Expected: FAIL — push() 当前优先用 chat_id，has_push_target 属性不存在
 
 - [ ] **Step 3: 改造 feishu_channel.py**
@@ -1448,7 +1448,7 @@ def has_push_target(self) -> bool:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_channel_robustness.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_channel_robustness.py -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -1583,7 +1583,7 @@ def test_feishu_on_message_p2p_updates_ids():
 
 - [ ] **Step 3: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py::test_feishu_on_message_enqueues_directly tests/test_chat_queue.py::test_feishu_on_message_p2p_updates_ids -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py::test_feishu_on_message_enqueues_directly tests/test_chat_queue.py::test_feishu_on_message_p2p_updates_ids -v`
 Expected: PASS
 
 - [ ] **Step 4: 提交**
@@ -1711,7 +1711,7 @@ async def test_chat_queue_lifecycle():
 
 - [ ] **Step 3: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py::test_chat_queue_lifecycle -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py::test_chat_queue_lifecycle -v`
 Expected: PASS
 
 - [ ] **Step 4: 提交**
@@ -1752,7 +1752,7 @@ async def test_clear_uses_drain():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py::test_clear_uses_drain -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py::test_clear_uses_drain -v`
 Expected: FAIL — clear 端点当前不使用 ChatQueue.drain()
 
 - [ ] **Step 3: 改造 /api/chat/clear 端点**
@@ -1781,7 +1781,7 @@ async def clear_chat() -> dict:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_chat_queue.py::test_clear_uses_drain -v`
+Run: `cd <repo_root> && python -m pytest tests/test_chat_queue.py::test_clear_uses_drain -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -1801,14 +1801,14 @@ git commit -m "feat: /api/chat/clear 使用 ChatQueue.drain()"
 
 - [ ] **Step 1: 确认 _chat_lock 的所有引用已删除**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -rn "_chat_lock" niu_api/`
+Run: `cd <repo_root> && grep -rn "_chat_lock" niu_api/`
 Expected: 无结果
 
 - [ ] **Step 2: 删除 ChannelRouter 中废弃的 _chat_sync 方法**
 
 - [ ] **Step 3: 运行全量测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v`
+Run: `cd <repo_root> && python -m pytest tests/ -v`
 Expected: PASS
 
 - [ ] **Step 4: 提交**

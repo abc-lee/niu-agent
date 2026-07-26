@@ -112,7 +112,7 @@ def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
 
 - [ ] **Step 4: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/compat.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/compat.py').read()); print('OK')"`
 
 - [ ] **Step 5: 提交**
 
@@ -161,7 +161,7 @@ git commit -m "refactor: extract _build_journal_task() — deduplicate journal p
 
 - [ ] **Step 3: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/runner.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/runner.py').read()); print('OK')"`
 
 - [ ] **Step 4: 提交**
 
@@ -377,7 +377,7 @@ git commit -m "refactor: reuse _build_journal_task() in runner.py — deduplicat
 
 - [ ] **Step 4: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/handler.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/handler.py').read()); print('OK')"`
 
 - [ ] **Step 5: 提交**
 
@@ -532,7 +532,7 @@ def _write_cursor_with_lock(cursor_path: Path, data: dict) -> None:
 
 - [ ] **Step 7: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/compat.py').read()); print('OK')" && python -c "import ast; ast.parse(open('agent/runner.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/compat.py').read()); print('OK')" && python -c "import ast; ast.parse(open('agent/runner.py').read()); print('OK')"`
 
 - [ ] **Step 8: 提交**
 
@@ -793,7 +793,7 @@ git commit -m "test: add journal-agent unified paths integration test"
 - [ ] **Step 1: 先做临时备份提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add -A && git commit -m "backup: pre-journal-unified-test"
+cd <repo_root> && git add -A && git commit -m "backup: pre-journal-unified-test"
 ```
 
 - [ ] **Step 2: 清理旧游标和日志数据**
@@ -807,14 +807,14 @@ if [ -f ~/.niu/journal.md ]; then cp ~/.niu/journal.md ~/.niu/journal.md.bak; fi
 - [ ] **Step 3: 启动程序**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && go run main.go
+cd <repo_root> && go run main.go
 ```
 
 - [ ] **Step 4: 运行集成测试**
 
 在另一个终端：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python tests/test_journal_unified_paths.py
+cd <repo_root> && python tests/test_journal_unified_paths.py
 ```
 
 - [ ] **Step 5: 手动验证路径1**

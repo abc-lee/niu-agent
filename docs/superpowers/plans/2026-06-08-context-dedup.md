@@ -133,7 +133,7 @@ file-processor 从 39 个工具精简到约 18 个，只保留职责所需的工
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.runner import NiuRunner; r = NiuRunner.__new__(NiuRunner); r.base_system_prompt = ''; print('OK')"` 
+Run: `cd <repo_root> && python -c "from agent.runner import NiuRunner; r = NiuRunner.__new__(NiuRunner); r.base_system_prompt = ''; print('OK')"` 
 
 - [ ] **Step 4: Commit**
 
@@ -268,7 +268,7 @@ mcpServers: []
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.runner import NiuRunner; r = NiuRunner.__new__(NiuRunner); r.base_system_prompt = ''; r._sub_agents = ['file-processor', 'event-manager', 'journal-agent']; tools = r.get_tools_schema(); [print(f'{t[\"function\"][\"name\"]}: task={t[\"function\"][\"parameters\"][\"properties\"][\"task\"][\"description\"]}') for t in tools if 'chat-with' in t['function']['name']]"`
+Run: `cd <repo_root> && python -c "from agent.runner import NiuRunner; r = NiuRunner.__new__(NiuRunner); r.base_system_prompt = ''; r._sub_agents = ['file-processor', 'event-manager', 'journal-agent']; tools = r.get_tools_schema(); [print(f'{t[\"function\"][\"name\"]}: task={t[\"function\"][\"parameters\"][\"properties\"][\"task\"][\"description\"]}') for t in tools if 'chat-with' in t['function']['name']]"`
 
 预期：三个子Agent的 task description 各不相同。
 
@@ -537,7 +537,7 @@ git commit -m "refactor: remove redundant '(来源: 知识图谱)' suffix from i
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.runner import NiuRunner; print('runner OK')"`
+Run: `cd <repo_root> && python -c "from agent.runner import NiuRunner; print('runner OK')"`
 
 - [ ] **Step 4: Commit**
 
@@ -713,13 +713,13 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.subagent import get_subagent_mcp_tools_schema; schema = get_subagent_mcp_tools_schema('file-processor'); print(f'file-processor tools: {len(schema)}'); [print(f'  {t[\"function\"][\"name\"]}') for t in schema]"`
+Run: `cd <repo_root> && python -c "from agent.subagent import get_subagent_mcp_tools_schema; schema = get_subagent_mcp_tools_schema('file-processor'); print(f'file-processor tools: {len(schema)}'); [print(f'  {t[\"function\"][\"name\"]}') for t in schema]"`
 
 预期：约 17 个工具（6基础 + 8photo-server + 9lightrag白名单），不再是 39 个。
 
 - [ ] **Step 4: 验证其他子Agent不受影响**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.subagent import get_subagent_mcp_tools_schema; print('event-manager:', len(get_subagent_mcp_tools_schema('event-manager'))); print('journal-agent:', len(get_subagent_mcp_tools_schema('journal-agent')))"`
+Run: `cd <repo_root> && python -c "from agent.subagent import get_subagent_mcp_tools_schema; print('event-manager:', len(get_subagent_mcp_tools_schema('event-manager'))); print('journal-agent:', len(get_subagent_mcp_tools_schema('journal-agent')))"`
 
 预期：event-manager 和 journal-agent 没有 mcpToolFilter，工具数量不变。
 
@@ -771,7 +771,7 @@ git commit -m "refactor: add mcpToolFilter whitelist for file-processor — redu
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.subagent import _build_user_info_section; section = _build_user_info_section(); print(section[:200] if section else 'empty')"`
+Run: `cd <repo_root> && python -c "from agent.subagent import _build_user_info_section; section = _build_user_info_section(); print(section[:200] if section else 'empty')"`
 
 - [ ] **Step 4: Commit**
 
@@ -786,7 +786,7 @@ git commit -m "refactor: slim user info in sub-agent prompts — keep workspace 
 
 - [ ] **Step 1: 运行见缝插针测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_supplement_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_supplement_queue.py -v`
 
 确认见缝插针功能不受影响。
 

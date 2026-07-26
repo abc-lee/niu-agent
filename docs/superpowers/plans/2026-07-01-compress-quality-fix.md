@@ -110,7 +110,7 @@ def test_read_max_output_tokens_dynamic_calc():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py -v`
 Expected: FAIL with `AssertionError`（`_read_max_output_tokens` 当前读配置返回 16384，不等于动态算的 32000）
 
 - [ ] **Step 3: 修改 config/user-config.json（删除 maxOutputTokens）**
@@ -177,18 +177,18 @@ def _read_max_output_tokens() -> int:
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py -v`
 Expected: 3 个测试 PASS（`test_read_compress_target_tokens_default` / `test_read_compress_target_tokens_custom` / `test_read_max_output_tokens_dynamic_calc`）
 
 - [ ] **Step 6: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/subagent.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/subagent.py').read())"`
 Expected: 无输出（语法 OK）
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add config/user-config.json agent/subagent.py tests/test_compress_quality.py
 git commit -m "refactor(config): maxOutputTokens 改为动态算，删除硬编码配置
 
@@ -271,7 +271,7 @@ cursor=30"""
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_strip_analysis_closed -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_strip_analysis_closed -v`
 Expected: FAIL with `ImportError: cannot import name '_strip_analysis'`
 
 - [ ] **Step 3: 在 niu_api/compat.py 新增 `_strip_analysis`**
@@ -299,18 +299,18 @@ def _strip_analysis(response: str) -> str:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v -k strip_analysis`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py -v -k strip_analysis`
 Expected: 5 个 strip_analysis 测试 PASS
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 6: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_compress_quality.py
 git commit -m "feat(compat): add _strip_analysis to剥离 <analysis> 草稿块
 
@@ -354,7 +354,7 @@ def test_mock_response_has_finish_reason_set():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mock_response_has_finish_reason_default -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_mock_response_has_finish_reason_default -v`
 Expected: FAIL with `TypeError: __init__() got an unexpected keyword argument 'finish_reason'`
 
 - [ ] **Step 3: 修改 MockResponse.__init__ 加 finish_reason 参数**
@@ -390,18 +390,18 @@ class MockResponse:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v -k mock_response`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py -v -k mock_response`
 Expected: 2 个 mock_response 测试 PASS
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/llmcore.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/llmcore.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 6: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/llmcore.py tests/test_compress_quality.py
 git commit -m "feat(llmcore): MockResponse 加 finish_reason 字段
 
@@ -539,30 +539,30 @@ def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
 
 - [ ] **Step 6: 运行行为测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_litellm_adapter_finish_reason_from_stream -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_litellm_adapter_finish_reason_from_stream -v`
 Expected: PASS（finish_reason='length' 被正确捕获）
 
 如果测试因 `chat` 方法内部读了其他 cfg 字段而失败，读 `agent/generic/litellm_adapter.py:329` 的 `LiteLLMSession.__init__` 和 `chat` 方法确认需要的字段，补全 cfg dict。
 
 - [ ] **Step 7: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/litellm_adapter.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/litellm_adapter.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 8: 验证 MockResponse 构造不报错**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.generic.litellm_adapter import LiteLLMSession; print('OK')"`
+Run: `cd <repo_root> && python -c "from agent.generic.litellm_adapter import LiteLLMSession; print('OK')"`
 Expected: 输出 `OK`（import 不报错）
 
 - [ ] **Step 9: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
 Expected: 无新增 FAIL
 
 - [ ] **Step 10: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/litellm_adapter.py
 git commit -m "feat(litellm_adapter): 流式循环捕获 finish_reason 传入 MockResponse
 
@@ -697,30 +697,30 @@ def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
 
 - [ ] **Step 5: 运行行为测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_agent_loop_return_value_contains_finish_reason -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_agent_loop_return_value_contains_finish_reason -v`
 Expected: PASS（return_value 含 finish_reason='length'）
 
 如果测试因 agent_runner_loop 签名复杂而难以构造，可以简化：直接 mock `_run_agent_loop` 内部的 LLM 调用，或读现有测试文件找 agent_runner_loop 的测试模式参考。
 
 - [ ] **Step 6: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 7: 验证 import 不报错**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.generic.agent_loop import agent_runner_loop; print('OK')"`
+Run: `cd <repo_root> && python -c "from agent.generic.agent_loop import agent_runner_loop; print('OK')"`
 Expected: 输出 `OK`
 
 - [ ] **Step 6: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
 Expected: 无新增 FAIL
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py
 git commit -m "feat(agent_loop): return_value 加 finish_reason 字段
 
@@ -813,7 +813,7 @@ def test_call_subagent_normal_return(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_call_subagent_detects_truncation -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_call_subagent_detects_truncation -v`
 Expected: FAIL（call_subagent 当前不检测 finish_reason，返回的是 result_text 而非 "COMPACT_TRUNCATED"）
 
 - [ ] **Step 3: 在 call_subagent 加截断检测**
@@ -863,23 +863,23 @@ Expected: FAIL（call_subagent 当前不检测 finish_reason，返回的是 resu
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v -k call_subagent`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py -v -k call_subagent`
 Expected: 2 个 call_subagent 测试 PASS
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/subagent.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/subagent.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 6: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
 Expected: 无新增 FAIL
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent.py tests/test_compress_quality.py
 git commit -m "feat(subagent): call_subagent 检测 finish_reason=='length' 返回 COMPACT_TRUNCATED
 
@@ -1207,7 +1207,7 @@ Step 3 的代码里：截断时直接 return（走 `_emergency_clear`），正�
 
 - [ ] **Step 6: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 7: 写集成测试 — 模式二 prompt 含方法论 + 单次调用**
@@ -1283,18 +1283,18 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
 
 - [ ] **Step 8: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mode2_prompt_contains_methodology -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_mode2_prompt_contains_methodology -v`
 Expected: PASS
 
 - [ ] **Step 9: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
 Expected: 无新增 FAIL
 
 - [ ] **Step 10: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_compress_quality.py
 git commit -m "refactor(compat): 模式二回退降级循环改为单次调用 + 应急清空
 
@@ -1566,7 +1566,7 @@ Step 3 的代码里：截断时直接 return（走 `_emergency_clear`），正�
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 6: 写集成测试 — 模式三 prompt 含方法论 + cursor + dream 边界**
@@ -1640,18 +1640,18 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
 
 - [ ] **Step 7: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mode3_prompt_contains_methodology -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_mode3_prompt_contains_methodology -v`
 Expected: PASS
 
 - [ ] **Step 8: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
 Expected: 无新增 FAIL
 
 - [ ] **Step 9: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_compress_quality.py
 git commit -m "feat(compat): 模式三 task prompt 写回完整方法论 + 应急清空
 
@@ -1763,7 +1763,7 @@ git commit -m "feat(compat): 模式三 task prompt 写回完整方法论 + 应�
 
 - [ ] **Step 7: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 8: 写测试 — 校验兜底已删除**
@@ -2029,18 +2029,18 @@ def test_strip_analysis_missing_then_parse():
 
 - [ ] **Step 9: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mode2_no_auto_keep_fixup tests/test_compress_quality.py::test_mode2_truncate_triggers_emergency_clear tests/test_compress_quality.py::test_mode2_truncate_too_few_no_clear tests/test_compress_quality.py::test_strip_analysis_missing_then_parse -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py::test_mode2_no_auto_keep_fixup tests/test_compress_quality.py::test_mode2_truncate_triggers_emergency_clear tests/test_compress_quality.py::test_mode2_truncate_too_few_no_clear tests/test_compress_quality.py::test_strip_analysis_missing_then_parse -v`
 Expected: 4 个测试 PASS
 
 - [ ] **Step 10: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
 Expected: 无新增 FAIL
 
 - [ ] **Step 11: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_compress_quality.py
 git commit -m "refactor(compat): 删除压缩校验兜底逻辑，避免削弱 prompt 约束
 
@@ -2068,7 +2068,7 @@ git commit -m "refactor(compat): 删除压缩校验兜底逻辑，避免削弱 p
 
 - [ ] **Step 1: grep 全项目找 L0/L1/L2 残留**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -rn "L0\|L1\|L2" config/agents/context-manager.md docs/feature-context-management.md docs/SYSTEM_MANUAL.md AGENTS.md 2>/dev/null | grep -i "摘要\|原文\|压缩\|存储" | head -30`
+Run: `cd <repo_root> && grep -rn "L0\|L1\|L2" config/agents/context-manager.md docs/feature-context-management.md docs/SYSTEM_MANUAL.md AGENTS.md 2>/dev/null | grep -i "摘要\|原文\|压缩\|存储" | head -30`
 
 记录所有命中位置。
 
@@ -2100,18 +2100,18 @@ grep `AGENTS.md` 和 `docs/SYSTEM_MANUAL.md` 及子文档的 L0/L1/L2 残留，�
 
 - [ ] **Step 5: 验证术语统一**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -rn "L0 摘要\|L1 摘要\|L2 原文\|事务块\|远端.*中端.*近端" config/agents/ docs/ 2>/dev/null | head -20`
+Run: `cd <repo_root> && grep -rn "L0 摘要\|L1 摘要\|L2 原文\|事务块\|远端.*中端.*近端" config/agents/ docs/ 2>/dev/null | head -20`
 Expected: 无命中（或只剩 LightRAG 的 l1/l2 标签，那不是压缩相关）
 
 - [ ] **Step 6: 验证程序启动不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.compat import _tidy_context_impl; print('OK')"`
+Run: `cd <repo_root> && python -c "from niu_api.compat import _tidy_context_impl; print('OK')"`
 Expected: 输出 `OK`
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add config/agents/context-manager.md docs/feature-context-management.md AGENTS.md docs/SYSTEM_MANUAL.md
 git commit -m "docs(cleanup): 术语清理 - L0/L1/L2 废弃 + 事务→会话单元 + 远端中端近端→三份
 
@@ -2356,12 +2356,12 @@ from niu_api.compat import (
 
 - [ ] **Step 11: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/runner.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/runner.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 12: 验证 import 不报错**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.runner import GenericAgentRunner; print('OK')"`
+Run: `cd <repo_root> && python -c "from agent.runner import GenericAgentRunner; print('OK')"`
 Expected: 输出 `OK`
 
 - [ ] **Step 13: 写集成测试 — runner.py 模式三路径 prompt 含方法论 + 截断应急清空**
@@ -2452,18 +2452,18 @@ def test_runner_force_truncate_triggers_emergency_clear(monkeypatch):
 
 - [ ] **Step 14: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v -k runner_mode3`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py -v -k runner_mode3`
 Expected: 2 个测试 PASS
 
 - [ ] **Step 15: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
 Expected: 无新增 FAIL
 
 - [ ] **Step 16: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_compress_quality.py
 git commit -m "refactor(runner): _on_context_high_usage 改造对齐 compat.py 模式三
 
@@ -2501,7 +2501,7 @@ git commit -m "refactor(runner): _on_context_high_usage 改造对齐 compat.py �
 
 - [ ] **Step 2: 检查压缩请求日志结构**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+Run: `cd <repo_root> && python3 -c "
 import json, glob, os, datetime
 files = sorted(glob.glob('logs/raw_http/' + datetime.date.today().strftime('%Y%m%d') + '/*_request.json'))
 for f in reversed(files[-20:]):
@@ -2538,7 +2538,7 @@ Expected:
 
 - [ ] **Step 3: 检查 LLM 回复含 analysis 块**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+Run: `cd <repo_root> && python3 -c "
 import json, glob, datetime
 files = sorted(glob.glob('logs/raw_http/' + datetime.date.today().strftime('%Y%m%d') + '/*_response.json'))
 for f in reversed(files[-20:]):
@@ -2567,18 +2567,18 @@ Expected:
 - update 摘要是否按会话单元组织（不是 1 条塞 290 条）
 - 摘要格式是否含 `[摘要]` 前缀
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "Mode-2.*Parsed\|Force.*Parsed\|keep.*update" logs/api_stderr.log 2>/dev/null | tail -10`
+Run: `cd <repo_root> && grep "Mode-2.*Parsed\|Force.*Parsed\|keep.*update" logs/api_stderr.log 2>/dev/null | tail -10`
 Expected: 看到 keep/update 计数合理（如 keep 20+ 条、update 10+ 条摘要）
 
 - [ ] **Step 5: 验证无单消息超限错误**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "exceed max message tokens\|finish_reason.*length" logs/api_stderr.log 2>/dev/null | tail -5 || echo "无超限错误"`
+Run: `cd <repo_root> && grep "exceed max message tokens\|finish_reason.*length" logs/api_stderr.log 2>/dev/null | tail -5 || echo "无超限错误"`
 Expected: 不再出现 `Total tokens of image and text exceed max message tokens`。如果有 `finish_reason=length`，验证应急清空是否触发（日志应有 `triggering emergency clear` + `Emergency cleared`）。
 
 - [ ] **Step 6: 最终提交（清理调试代码，如有）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 # 如有调试代码清理后
 git add -A

@@ -141,7 +141,7 @@ def test_mode3_passes_history_to_call_subagent(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_history.py::test_mode3_passes_history_to_call_subagent -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_history.py::test_mode3_passes_history_to_call_subagent -v`
 Expected: FAIL（当前 `run_context_manager_force` 不传 history 参数，task 含 `[id:` 序列化文本）
 
 - [ ] **Step 3: 改造 force 分支数据构建（L2490-2496）**
@@ -266,18 +266,18 @@ Read `niu_api/compat.py:2556-2563` 确认。
 
 - [ ] **Step 7: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_history.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_history.py -v`
 Expected: 全部 PASS（7 个已有测试 + 1 个新模式三集成测试 = 8 个）
 
 - [ ] **Step 8: 验证现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/ 2>&1 | tail -20`
 Expected: 无新增 FAIL（预存的 17 个 FAIL 与基线一致）
 
 - [ ] **Step 9: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_compress_history.py
 git commit -m "feat(compat): mode-3 force compression uses history list instead of serialized text
 
@@ -307,7 +307,7 @@ run_context_manager_force 通过 call_subagent 的 history 参数传入。
 
 - [ ] **Step 2: 检查压缩请求日志结构**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+Run: `cd <repo_root> && python3 -c "
 import json, glob, os, datetime
 files = sorted(glob.glob('logs/raw_http/' + datetime.date.today().strftime('%Y%m%d') + '/*_request.json'))
 for f in reversed(files[-20:]):
@@ -353,20 +353,20 @@ Expected:
 
 - [ ] **Step 3: 验证压缩成功执行**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "Force.*Parsed\|Force.*Deleted\|Force.*Compression plan" logs/api_stderr.log 2>/dev/null | tail -5 || echo "检查 niu_api stderr 日志"`
+Run: `cd <repo_root> && grep "Force.*Parsed\|Force.*Deleted\|Force.*Compression plan" logs/api_stderr.log 2>/dev/null | tail -5 || echo "检查 niu_api stderr 日志"`
 
 Expected: 看到 `[Tidy] Force: ...` 相关的解析和执行日志（keep/delete/update/cursor 计数正常）。
 
 - [ ] **Step 4: 验证无单消息超限错误**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "exceed max message tokens" logs/api_stderr.log 2>/dev/null | tail -3 || echo "无单消息超限错误"`
+Run: `cd <repo_root> && grep "exceed max message tokens" logs/api_stderr.log 2>/dev/null | tail -3 || echo "无单消息超限错误"`
 
 Expected: 不再出现 `Total tokens of image and text exceed max message tokens`。
 
 - [ ] **Step 5: 最终提交（清理调试代码，如有）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git add -A
 git commit -m "feat(compress): context-manager mode-3 force uses message list

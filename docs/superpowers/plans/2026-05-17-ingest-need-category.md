@@ -60,7 +60,7 @@ default 值从 `"其他"` 改为 `""`。
 - [ ] **Step 1: 启动应用**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && go run main.go
+cd <repo_root> && go run main.go
 ```
 
 - [ ] **Step 2: 拖入一个文档文件**

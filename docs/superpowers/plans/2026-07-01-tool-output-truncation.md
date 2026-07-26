@@ -91,7 +91,7 @@ def test_truncate_dict_result_non_serializable():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v`
 Expected: FAIL with `ImportError: cannot import name '_truncate_dict_result'`
 
 - [ ] **Step 3: 在 agent_loop.py 新增 `_truncate_dict_result` 函数**
@@ -135,18 +135,18 @@ def _truncate_dict_result(result, tool_name: str = ""):
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v`
 Expected: 5 个测试 PASS
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 6: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py tests/test_tool_truncation.py
 git commit -m "feat(agent_loop): add _truncate_dict_result for dict tool output truncation
 
@@ -258,7 +258,7 @@ def test_disk_large_str_result_gets_truncated(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py::test_disk_large_result_gets_truncated -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py::test_disk_large_result_gets_truncated -v`
 Expected: FAIL（disk 结果未截断，长度超限）
 
 - [ ] **Step 3: 在 handler.py disk 分支加截断**
@@ -317,25 +317,25 @@ Expected: FAIL（disk 结果未截断，长度超限）
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py::test_disk_large_result_gets_truncated -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py::test_disk_large_result_gets_truncated -v`
 Expected: PASS
 
 如果测试因 `_dispatch_tool_name` 是私有方法或签名不匹配而失败，读 `agent/handler.py` 确认 disk 分支的实际方法名和调用方式，调整测试。
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/handler.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/handler.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 6: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py tests/test_compress_quality.py -v 2>&1 | tail -15`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py tests/test_compress_quality.py -v 2>&1 | tail -15`
 Expected: 无新增 FAIL
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/handler.py tests/test_tool_truncation.py
 git commit -m "fix(handler): disk 路径补保底截断，防止超大 tool 结果进 messages
 
@@ -426,7 +426,7 @@ def test_explore_node_small_result_not_truncated(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py::test_explore_node_large_result_truncated -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py::test_explore_node_large_result_truncated -v`
 Expected: FAIL（`explore_node` 无截断，返回超大 dict；或 `LIGHTRAG_GRAPH_MAX_CHARS` 未定义）
 
 - [ ] **Step 3: 在 lightrag_adapter.py 加截断常量 + explore_node 截断**
@@ -579,23 +579,23 @@ def _truncate_graph_result(self, result: Dict[str, Any], tool_name: str = "light
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py::test_explore_node_large_result_truncated -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py::test_explore_node_large_result_truncated -v`
 Expected: PASS
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/internal/lightrag_adapter.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/internal/lightrag_adapter.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 6: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -15`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -15`
 Expected: 无新增 FAIL
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_adapter.py tests/test_tool_truncation.py
 git commit -m "feat(lightrag): explore_node 工具层截断到 20K 字符
 
@@ -677,7 +677,7 @@ def test_enforce_message_budget_no_tool_messages():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v -k enforce_message_budget`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v -k enforce_message_budget`
 Expected: FAIL（`_enforce_message_budget` 未定义）
 
 - [ ] **Step 3: 在 agent_loop.py 新增常量 + `_enforce_message_budget` 函数**
@@ -749,28 +749,28 @@ def _enforce_message_budget(messages: list) -> list:
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v -k enforce_message_budget`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v -k enforce_message_budget`
 Expected: 3 个测试 PASS
 
 - [ ] **Step 6: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read())"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read())"`
 Expected: 无输出
 
 - [ ] **Step 7: 验证 import 不报错**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.generic.agent_loop import _enforce_message_budget, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS; print('OK')"`
+Run: `cd <repo_root> && python -c "from agent.generic.agent_loop import _enforce_message_budget, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS; print('OK')"`
 Expected: 输出 `OK`
 
 - [ ] **Step 8: 运行现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
 Expected: 无新增 FAIL
 
 - [ ] **Step 9: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py tests/test_tool_truncation.py
 git commit -m "feat(agent_loop): add _enforce_message_budget 单消息聚合上限 200K
 
@@ -802,12 +802,12 @@ git commit -m "feat(agent_loop): add _enforce_message_budget 单消息聚合上�
 
 - [ ] **Step 2: 验证 lightrag 工具层截断生效**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "explore_node result.*truncating\|截断" logs/api_stderr.log 2>/dev/null | tail -5`
+Run: `cd <repo_root> && grep "explore_node result.*truncating\|截断" logs/api_stderr.log 2>/dev/null | tail -5`
 Expected: 看到 `explore_node result N chars > 20000, truncating`
 
 - [ ] **Step 3: 验证无单消息超限错误**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "Total tokens of image and text exceed max message tokens" logs/api_stderr.log 2>/dev/null | tail -5 || echo "无超限错误"`
+Run: `cd <repo_root> && grep "Total tokens of image and text exceed max message tokens" logs/api_stderr.log 2>/dev/null | tail -5 || echo "无超限错误"`
 Expected: 不再出现 `exceed max message tokens` 错误
 
 - [ ] **Step 4: 验证压缩后下一轮正常**
@@ -817,7 +817,7 @@ Expected: 不再出现 `exceed max message tokens` 错误
 - [ ] **Step 5: 最终提交（清理调试代码，如有）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 # 如有调试代码清理后
 git add -A

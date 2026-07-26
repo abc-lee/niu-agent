@@ -4,7 +4,7 @@
 
 **Goal:** 彻底解决 LightRAG 知识图谱大小写敏感问题——无论 LLM 提取的实体名是大写还是小写，写入 vdb 和 GraphML 时统一小写，查询时大小写不敏感。根因是 `sanitize_and_normalize_extracted_text` 用于 entity_name/source/target 时不做 lower 化。**两条写入路径都要修**：LLM 提取走 operate.py L401/L490/L493，脑区注入走 lightrag.py `ainsert_custom_kg` L2465/L2466（在 sort 之前 lower，否则 sort 用大写、vdb 存小写又造成不一致）。
 
-**Architecture:** 在 LightRAG fork 源码（`REDACTED_USER_PATH/tools/LightRAG/`）改两条路径：(1) operate.py L401/L490/L493 调完 `sanitize_and_normalize_extracted_text` 后追加 `.lower()`；(2) lightrag.py `ainsert_custom_kg` 的 entity_name/src_id/tgt_id 加 `.lower()`（src/tgt 在 L2465/L2466 处 lower，让后续 sort/dedup/has_nodes_batch 都用 lower 值）。改完清理 site-packages 旧物理副本 + 重装 Fork。存量数据迁移用 `repair_entity_sync`（entities）+ 新增 `repair_relationship_sync`（relationships，**重算 __id__ 时必须 sorted(src, tgt) 后拼接**，跟 operate.py L1586-1589 一致），且 `repair_entity_sync` 修正 `__id__` 重算为 `compute_mdhash_id(lower_name, prefix="ent-")`。niu_api region 字典构建时 key lower 化 + 查询时入参 lower 化（双重保险）。
+**Architecture:** 在 LightRAG fork 源码（`<lightrag_fork_path>/`）改两条路径：(1) operate.py L401/L490/L493 调完 `sanitize_and_normalize_extracted_text` 后追加 `.lower()`；(2) lightrag.py `ainsert_custom_kg` 的 entity_name/src_id/tgt_id 加 `.lower()`（src/tgt 在 L2465/L2466 处 lower，让后续 sort/dedup/has_nodes_batch 都用 lower 值）。改完清理 site-packages 旧物理副本 + 重装 Fork。存量数据迁移用 `repair_entity_sync`（entities）+ 新增 `repair_relationship_sync`（relationships，**重算 __id__ 时必须 sorted(src, tgt) 后拼接**，跟 operate.py L1586-1589 一致），且 `repair_entity_sync` 修正 `__id__` 重算为 `compute_mdhash_id(lower_name, prefix="ent-")`。niu_api region 字典构建时 key lower 化 + 查询时入参 lower 化（双重保险）。
 
 **Tech Stack:** Python 3.11+，LightRAG fork（networkx + nano-vectordb），pytest
 
@@ -55,7 +55,7 @@
 
 ### 关键约束（用户铁律）
 
-- **Fork 源码可以改**——改 `REDACTED_USER_PATH/tools/LightRAG/` 本地源码，推送到 Fork 仓库，重新 `pip install`。**禁止直接改安装后的代码**（`python/lib/python3.11/site-packages/lightrag/`）
+- **Fork 源码可以改**——改 `<lightrag_fork_path>/` 本地源码，推送到 Fork 仓库，重新 `pip install`。**禁止直接改安装后的代码**（`python/lib/python3.11/site-packages/lightrag/`）
 - **修改前必须先做临时提交备份**（铁律 #3）
 - **测试必须用真实数据**（铁律 #5）
 - **python/ 目录必须是完整自包含 Python 安装**（铁律 #6）
@@ -66,16 +66,16 @@
 
 | 文件 | 行号 | 内容 | 改动 |
 |------|------|------|------|
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L401-403 | `entity_name = sanitize_and_normalize_extracted_text(...)` | **加 .lower()** |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L490-492 | `source = sanitize_and_normalize_extracted_text(...)` | **加 .lower()** |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L493-495 | `target = sanitize_and_normalize_extracted_text(...)` | **加 .lower()** |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L413-415 | `entity_type = sanitize_and_normalize_extracted_text(...)` | 不改（L441 已 lower） |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L444 | `entity_description = sanitize_and_normalize_extracted_text(...)` | 不改（description 不能 lower） |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L517-520 | `edge_keywords = sanitize_and_normalize_extracted_text(...)` | 不改（L520 已 lower） |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L523 | `edge_description = sanitize_and_normalize_extracted_text(...)` | 不改（description 不能 lower） |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | L1586-1589 | `if src > tgt: src, tgt = tgt, src; rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")` | 不改（参考实现，repair_relationship_sync 要对齐） |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py` | L2422-2453 | `ainsert_custom_kg` entity_data["entity_name"] 直接写入 | **加 .lower()** |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py` | L2465-2466 | `src_id = relationship_data["src_id"]; tgt_id = relationship_data["tgt_id"]` | **加 .lower()（在 sort 之前）** |
+| `<lightrag_fork_path>/lightrag/operate.py` | L401-403 | `entity_name = sanitize_and_normalize_extracted_text(...)` | **加 .lower()** |
+| `<lightrag_fork_path>/lightrag/operate.py` | L490-492 | `source = sanitize_and_normalize_extracted_text(...)` | **加 .lower()** |
+| `<lightrag_fork_path>/lightrag/operate.py` | L493-495 | `target = sanitize_and_normalize_extracted_text(...)` | **加 .lower()** |
+| `<lightrag_fork_path>/lightrag/operate.py` | L413-415 | `entity_type = sanitize_and_normalize_extracted_text(...)` | 不改（L441 已 lower） |
+| `<lightrag_fork_path>/lightrag/operate.py` | L444 | `entity_description = sanitize_and_normalize_extracted_text(...)` | 不改（description 不能 lower） |
+| `<lightrag_fork_path>/lightrag/operate.py` | L517-520 | `edge_keywords = sanitize_and_normalize_extracted_text(...)` | 不改（L520 已 lower） |
+| `<lightrag_fork_path>/lightrag/operate.py` | L523 | `edge_description = sanitize_and_normalize_extracted_text(...)` | 不改（description 不能 lower） |
+| `<lightrag_fork_path>/lightrag/operate.py` | L1586-1589 | `if src > tgt: src, tgt = tgt, src; rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")` | 不改（参考实现，repair_relationship_sync 要对齐） |
+| `<lightrag_fork_path>/lightrag/lightrag.py` | L2422-2453 | `ainsert_custom_kg` entity_data["entity_name"] 直接写入 | **加 .lower()** |
+| `<lightrag_fork_path>/lightrag/lightrag.py` | L2465-2466 | `src_id = relationship_data["src_id"]; tgt_id = relationship_data["tgt_id"]` | **加 .lower()（在 sort 之前）** |
 
 ### vdb id 格式（关键）
 
@@ -102,8 +102,8 @@
 
 ### 修改文件（Fork 源码）
 
-- `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` — L401/L490/L493 三处加 `.lower()`
-- `REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py` — `ainsert_custom_kg` entity_name/src_id/tgt_id 加 `.lower()`（src/tgt 在 L2465/L2466 处 lower，让后续 sort/dedup 都用 lower）
+- `<lightrag_fork_path>/lightrag/operate.py` — L401/L490/L493 三处加 `.lower()`
+- `<lightrag_fork_path>/lightrag/lightrag.py` — `ainsert_custom_kg` entity_name/src_id/tgt_id 加 `.lower()`（src/tgt 在 L2465/L2466 处 lower，让后续 sort/dedup 都用 lower）
 
 ### 修改文件（niu_api 层）
 
@@ -114,7 +114,7 @@
 
 ### 新建文件
 
-- `REDACTED_USER_PATH/tools/LightRAG/tests/test_case_insensitive.py` — Fork 源码的 lower 化测试
+- `<lightrag_fork_path>/tests/test_case_insensitive.py` — Fork 源码的 lower 化测试
 - `tests/test_region_case_insensitive.py` — niu_api region 字典 lower 化测试
 - `tests/test_lightrag_relationship_sync.py` — `repair_relationship_sync` 测试（含 src>tgt 顺序用例 + 自环用例）
 
@@ -128,17 +128,17 @@
 
 ## Task 1: Fork 源码加 .lower()（LLM 提取路径 + 脑区注入路径）
 
-**目标：** 在 `REDACTED_USER_PATH/tools/LightRAG/` 改两条路径：(1) operate.py L401/L490/L493 加 .lower()；(2) lightrag.py `ainsert_custom_kg` 的 entity_name/src_id/tgt_id 加 .lower()（src/tgt 在 L2465/L2466 处 lower，让后续 sort/dedup/has_nodes_batch 都用 lower）。
+**目标：** 在 `<lightrag_fork_path>/` 改两条路径：(1) operate.py L401/L490/L493 加 .lower()；(2) lightrag.py `ainsert_custom_kg` 的 entity_name/src_id/tgt_id 加 .lower()（src/tgt 在 L2465/L2466 处 lower，让后续 sort/dedup/has_nodes_batch 都用 lower）。
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py`（L401/L490/L493）
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py`（L2422-2453/L2465-2466）
-- Test: `REDACTED_USER_PATH/tools/LightRAG/tests/test_case_insensitive.py`（新建）
+- Modify: `<lightrag_fork_path>/lightrag/operate.py`（L401/L490/L493）
+- Modify: `<lightrag_fork_path>/lightrag/lightrag.py`（L2422-2453/L2465-2466）
+- Test: `<lightrag_fork_path>/tests/test_case_insensitive.py`（新建）
 
 - [ ] **Step 1: 临时备份 Fork 源码**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add -A && git commit -m "backup: 加 .lower() 前临时备份
 
 待改：operate.py L401/L490/L493 + lightrag.py ainsert_custom_kg
@@ -147,7 +147,7 @@ git add -A && git commit -m "backup: 加 .lower() 前临时备份
 
 - [ ] **Step 2: 写失败测试 — LLM 提取路径 entity_name lower**
 
-创建 `REDACTED_USER_PATH/tools/LightRAG/tests/test_case_insensitive.py`：
+创建 `<lightrag_fork_path>/tests/test_case_insensitive.py`：
 
 ```python
 """测试 entity_name/source/target 提取后统一 lower 化。"""
@@ -210,7 +210,7 @@ def test_ainsert_custom_kg_entity_name_lowered():
 - [ ] **Step 3: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 python -m pytest tests/test_case_insensitive.py -v
 ```
 
@@ -218,7 +218,7 @@ Expected: FAIL — `entity_name` 是 "Apple"（大写），断言 `== "apple"` �
 
 - [ ] **Step 4: 改 L401 entity_name 加 .lower()**
 
-用 Edit 工具改 `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` L401-403：
+用 Edit 工具改 `<lightrag_fork_path>/lightrag/operate.py` L401-403：
 
 改前：
 ```python
@@ -268,7 +268,7 @@ Expected: FAIL — `entity_name` 是 "Apple"（大写），断言 `== "apple"` �
 
 - [ ] **Step 7: 改 lightrag.py ainsert_custom_kg — entity_name 在 dedup 循环开头加 .lower()**
 
-读 `REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py` L2422-2453。**关键**：必须在 L2423 dedup 循环开头就 lower，让后续 dedup key、`entity_nodes`、`all_entities_data`、`compute_mdhash_id` 全部用 lower 值。如果只在 `entity_nodes.append` 那一行 lower，会漏掉 dedup key（"Apple" 和 "apple" 会被当两个不同 entity 各自保留，vdb 产生两条记录）。
+读 `<lightrag_fork_path>/lightrag/lightrag.py` L2422-2453。**关键**：必须在 L2423 dedup 循环开头就 lower，让后续 dedup key、`entity_nodes`、`all_entities_data`、`compute_mdhash_id` 全部用 lower 值。如果只在 `entity_nodes.append` 那一行 lower，会漏掉 dedup key（"Apple" 和 "apple" 会被当两个不同 entity 各自保留，vdb 产生两条记录）。
 
 改前（L2422-2425）：
 ```python
@@ -320,7 +320,7 @@ tgt_id = relationship_data["tgt_id"].lower()
 - [ ] **Step 10: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 python -m pytest tests/test_case_insensitive.py -v
 ```
 
@@ -329,7 +329,7 @@ Expected: PASS（5 个测试全过，含自环丢弃测试）
 - [ ] **Step 11: 跑 Fork 已有测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 python -m pytest tests/ -v 2>&1 | tail -30
 ```
 
@@ -338,7 +338,7 @@ Expected: 全部 PASS。如果有测试因 entity_name 大小写变化失败，�
 - [ ] **Step 12: 提交 Fork 改动**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add lightrag/operate.py lightrag/lightrag.py tests/test_case_insensitive.py
 git commit -m "fix: entity_name/source/target 写入时统一 lower 化（两条路径）
 
@@ -366,7 +366,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 13: 推送 Fork 到远端**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git push origin main
 ```
 
@@ -382,7 +382,7 @@ git push origin main
 - [ ] **Step 1: 临时备份主仓库**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 清理重装 LightRAG Fork 前临时备份" || echo "nothing to commit"
 ```
 
@@ -390,22 +390,22 @@ git add -A && git commit -m "backup: 清理重装 LightRAG Fork 前临时备份"
 
 ```bash
 # 先看当前 site-packages 里 lightrag 相关文件
-ls REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/ | grep -i lightrag
+ls <repo_root>/python/lib/python3.11/site-packages/ | grep -i lightrag
 
 # 清理物理目录（如果有，editable 模式下不应该有，但历史上可能残留）
-rm -rf REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/lightrag/
+rm -rf <repo_root>/python/lib/python3.11/site-packages/lightrag/
 
 # 清理 editable .pth 文件
-rm -f REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/__editable__.lightrag_hku*.pth
+rm -f <repo_root>/python/lib/python3.11/site-packages/__editable__.lightrag_hku*.pth
 
 # 清理 editable finder
-rm -f REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/__editable___lightrag_hku*_finder.py
+rm -f <repo_root>/python/lib/python3.11/site-packages/__editable___lightrag_hku*_finder.py
 
 # 清理 lightrag_hku*.dist-info（非 editable 安装残留）
-rm -rf REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/lightrag_hku*.dist-info
+rm -rf <repo_root>/python/lib/python3.11/site-packages/lightrag_hku*.dist-info
 
 # 验证清理干净
-ls REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/ | grep -i lightrag
+ls <repo_root>/python/lib/python3.11/site-packages/ | grep -i lightrag
 ```
 
 Expected: 最后一条 grep 无输出（清理干净）
@@ -413,12 +413,12 @@ Expected: 最后一条 grep 无输出（清理干净）
 - [ ] **Step 3: 用项目 python 重装 Fork（editable 模式）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
-REDACTED_USER_PATH/tools/ai-bot/python/bin/python -m pip install -e . --no-deps
+cd <lightrag_fork_path>
+<repo_root>/python/bin/python -m pip install -e . --no-deps
 ```
 
 **注意**：
-- 用 `REDACTED_USER_PATH/tools/ai-bot/python/bin/python`（项目自带 python，铁律 #6）
+- 用 `<repo_root>/python/bin/python`（项目自带 python，铁律 #6）
 - `-e` editable 模式（链接到 Fork 源码，后续 Fork 改动自动生效）
 - `--no-deps` 不装依赖（只装 lightrag 本身）
 - 不用 `--force-reinstall`（Step 2 已清理干净，不需要强制）
@@ -427,24 +427,24 @@ REDACTED_USER_PATH/tools/ai-bot/python/bin/python -m pip install -e . --no-deps
 
 ```bash
 # 验证 operate.py L401/L490/L493 附近有 .lower()
-grep -n "\.lower()" REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py | grep -E "sanitize_and_normalize" | head -5
+grep -n "\.lower()" <lightrag_fork_path>/lightrag/operate.py | grep -E "sanitize_and_normalize" | head -5
 
 # 验证 lightrag.py L2465/L2466 附近有 .lower()
-grep -n "src_id = relationship_data" REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py | head -3
+grep -n "src_id = relationship_data" <lightrag_fork_path>/lightrag/lightrag.py | head -3
 
 # 验证 import 走 Fork 源码（editable 模式）
-REDACTED_USER_PATH/tools/ai-bot/python/bin/python -c "import lightrag; print(lightrag.__file__)"
+<repo_root>/python/bin/python -c "import lightrag; print(lightrag.__file__)"
 ```
 
 Expected:
 - grep operate.py 看到 3 处 `.lower()`（L401/L490/L493 附近）
 - grep lightrag.py 看到 `src_id = relationship_data["src_id"].lower()` 和 `tgt_id = relationship_data["tgt_id"].lower()`
-- `lightrag.__file__` 指向 `REDACTED_USER_PATH/tools/LightRAG/lightrag/__init__.py`（editable 模式，指向 Fork 源码）
+- `lightrag.__file__` 指向 `<lightrag_fork_path>/lightrag/__init__.py`（editable 模式，指向 Fork 源码）
 
 - [ ] **Step 5: 跑主仓库的 LightRAG 相关测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_entity_sync.py tests/test_lightrag_integrity*.py tests/test_lightrag_resilience*.py -v 2>&1 | tail -30
 ```
 
@@ -453,7 +453,7 @@ Expected: 全部 PASS
 - [ ] **Step 6: 权限修复（铁律 #7）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x 2>/dev/null || true
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null || true
 ```
@@ -474,7 +474,7 @@ find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/nu
 - [ ] **Step 1: 临时备份**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 修正 repair_entity_sync + 新增 repair_relationship_sync 前临时备份" || echo "nothing to commit"
 ```
 
@@ -953,7 +953,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: region 字典 lower 化前临时备份" || echo "nothing to commit"
 ```
 
@@ -1048,7 +1048,7 @@ Expected: 全部 PASS。如果有 region 相关测试因大小写变化失败，
 - [ ] **Step 9: 权限修复（铁律 #7）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x 2>/dev/null || true
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null || true
 ```
@@ -1090,7 +1090,7 @@ cp ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml ~/.niu/lightrag_s
 - [ ] **Step 2: 跑 check_all 看当前状态**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python3 -c "
 from niu_api.internal.lightrag_integrity import check_all
 r = check_all()

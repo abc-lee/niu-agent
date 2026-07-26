@@ -36,7 +36,7 @@
 
 - [ ] **Step 1: 写验证脚本**
 
-创建 `REDACTED_USER_PATH/tools/ai-bot/tests/verify_llm_at_prefix.py`：
+创建 `<repo_root>/tests/verify_llm_at_prefix.py`：
 
 ```python
 """验证 LLM 在给定 @前缀守则的系统提示词下，是否会输出 @niu-agent/@end 前缀。
@@ -139,7 +139,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: 运行验证脚本**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python tests/verify_llm_at_prefix.py`
+Run: `cd <repo_root> && python/bin/python tests/verify_llm_at_prefix.py`
 
 Expected: 输出 `✅ 验证通过：LLM 输出了 @niu-agent 前缀`。如果输出 ❌，需要调整系统提示词措辞或重新评估方案。
 
@@ -169,7 +169,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 删除 `_ASYNC_ASK_GUIDE_TEMPLATE` 和 `_ASYNC_ASK_GUIDE_MARKER` 常量**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/agent/subagent.py` L69-85，删除这两个常量定义（约 15 行）。
+Read `<repo_root>/agent/subagent.py` L69-85，删除这两个常量定义（约 15 行）。
 
 - [ ] **Step 2: 改 `build_subagent_system_segments` 签名回单参数**
 
@@ -200,7 +200,7 @@ Read L639-644 附近，删除：
 
 - [ ] **Step 5: 删除 test_general_subagent.py 里 4 个守则注入测试**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_general_subagent.py`，删除以下测试函数（约 L425-513）：
+Read `<repo_root>/tests/test_general_subagent.py`，删除以下测试函数（约 L425-513）：
 
 - `test_build_subagent_system_segments_injects_async_guide`
 - `test_build_subagent_system_segments_no_inject_for_sync`
@@ -210,7 +210,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_general_subagent.py`，删除�
 
 - [ ] **Step 6: 运行测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v`
 
 Expected: 全过（原 31 个 - 5 个 = 26 个）。
 
@@ -241,7 +241,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 删除 `ASK_MAIN_AGENT_TOOL_SCHEMA` 定义**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/agent/subagent.py` L790-810 附近，找 `ASK_MAIN_AGENT_TOOL_SCHEMA` 定义，整段删除。
+Read `<repo_root>/agent/subagent.py` L790-810 附近，找 `ASK_MAIN_AGENT_TOOL_SCHEMA` 定义，整段删除。
 
 - [ ] **Step 2: 删除 `_build_subagent_tools_schema` 里的注入逻辑**
 
@@ -255,21 +255,21 @@ Read L590-596 附近，删除：
 
 - [ ] **Step 3: 删除 `handler.py` 的 ask_main_agent 派发分支**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/agent/handler.py` L1113-1130 附近，找 `if tool_name == "ask_main_agent":` 分支，整段删除。
+Read `<repo_root>/agent/handler.py` L1113-1130 附近，找 `if tool_name == "ask_main_agent":` 分支，整段删除。
 
 - [ ] **Step 4: 删除 test_ask_main_agent_injection.py**
 
 ```bash
-rm REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent_injection.py
+rm <repo_root>/tests/test_ask_main_agent_injection.py
 ```
 
 - [ ] **Step 5: 验证 `_ask_main_agent_impl` 函数体保留**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/agent/subagent.py` L813-899 附近，确认 `_ask_main_agent_impl` 函数完整保留（content 拦截要复用）。
+Read `<repo_root>/agent/subagent.py` L813-899 附近，确认 `_ask_main_agent_impl` 函数完整保留（content 拦截要复用）。
 
 - [ ] **Step 6: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/ -v -k "ask_main_agent or subagent" --ignore=tests/test_ask_main_agent_stop_deadlock.py`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/ -v -k "ask_main_agent or subagent" --ignore=tests/test_ask_main_agent_stop_deadlock.py`
 
 Expected: 除 stop_deadlock 测试外全过（stop_deadlock 下个 Task 改造）。
 
@@ -298,7 +298,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `REDACTED_USER_PATH/tools/ai-bot/tests/test_at_prefix_interception.py`：
+创建 `<repo_root>/tests/test_at_prefix_interception.py`：
 
 ```python
 """@前缀子Agent意图识别单元测试"""
@@ -357,7 +357,7 @@ def test_ask_main_agent_impl_returns_terminated_when_cancelled(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
 
 Expected: PASS。`_ask_main_agent_impl` 现有签名 `(question, unique_name) -> str` 已兼容 content 拦截层直调，无需改造函数本身。
 
@@ -384,7 +384,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 写失败测试**
 
-在 `REDACTED_USER_PATH/tools/ai-bot/tests/test_at_prefix_interception.py` 追加：
+在 `<repo_root>/tests/test_at_prefix_interception.py` 追加：
 
 ```python
 def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
@@ -579,13 +579,13 @@ def test_at_niu_without_unique_name_returns_format_error(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
 
 Expected: 8 个测试 FAIL（`_intercept_at_prefix_content` 函数不存在）。
 
 - [ ] **Step 3: 在 agent_loop.py 模块级加常量 + 函数**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L1-30 附近（模块级常量区），加：
+Read `<repo_root>/agent/generic/agent_loop.py` L1-30 附近（模块级常量区），加：
 
 ```python
 # @前缀子Agent意图识别返回值
@@ -679,7 +679,7 @@ def _intercept_at_prefix_content(
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
 
 Expected: 8 个测试全过（含 Task 4 的 2 个 + Task 5 的 8 个 = 10 个）。
 
@@ -710,7 +710,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 写失败测试**
 
-在 `REDACTED_USER_PATH/tools/ai-bot/tests/test_at_prefix_interception.py` 追加：
+在 `<repo_root>/tests/test_at_prefix_interception.py` 追加：
 
 ```python
 def test_agent_runner_loop_intercepts_at_niu(monkeypatch):
@@ -755,13 +755,13 @@ def test_agent_runner_loop_intercepts_at_niu(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py::test_agent_runner_loop_intercepts_at_niu -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_prefix_interception.py::test_agent_runner_loop_intercepts_at_niu -v`
 
 Expected: PASS
 
 - [ ] **Step 3: 改 agent_loop.py L473-483 集成拦截**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L470-490 附近。当前代码：
+Read `<repo_root>/agent/generic/agent_loop.py` L470-490 附近。当前代码：
 
 ```python
             content = response.content or ""
@@ -840,13 +840,13 @@ Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L470-490 附�
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
 
 Expected: 6 个测试全过。
 
 - [ ] **Step 5: 运行全量回归测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py tests/test_main_agent_request_queue_drain.py tests/test_at_prefix_interception.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py tests/test_main_agent_request_queue_drain.py tests/test_at_prefix_interception.py -v`
 
 Expected: 全过。
 
@@ -877,7 +877,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 改造 test_ask_main_agent.py**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent.py`。原有测试通过 MCP 工具派发调用 `_ask_main_agent_impl`，现在 MCP 工具已移除，改为直接调 `_ask_main_agent_impl`。
+Read `<repo_root>/tests/test_ask_main_agent.py`。原有测试通过 MCP 工具派发调用 `_ask_main_agent_impl`，现在 MCP 工具已移除，改为直接调 `_ask_main_agent_impl`。
 
 每个测试改为：
 - 不再构造 MCP 工具调用参数
@@ -888,7 +888,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent.py`。原有测�
 
 - [ ] **Step 2: 改造 test_ask_main_agent_stop_deadlock.py**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent_stop_deadlock.py`。原有测试通过 MCP 工具触发 ask_main_agent，现在改为通过 `@niu-agent` content 拦截触发。
+Read `<repo_root>/tests/test_ask_main_agent_stop_deadlock.py`。原有测试通过 MCP 工具触发 ask_main_agent，现在改为通过 `@niu-agent` content 拦截触发。
 
 每个测试改为：
 - 不再构造 MCP 工具调用
@@ -897,7 +897,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent_stop_deadlock.py
 
 - [ ] **Step 3: 检查并改造 test_request_stop_all_subagents.py**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_request_stop_all_subagents.py`。grep 该文件是否含 `ask_main_agent` 引用。
+Read `<repo_root>/tests/test_request_stop_all_subagents.py`。grep 该文件是否含 `ask_main_agent` 引用。
 
 如果有引用：
 - 改为通过 `@niu-agent` content 拦截路径触发
@@ -907,7 +907,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_request_stop_all_subagents.py`�
 
 - [ ] **Step 4: 检查并改造 test_db_monitor.py**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_db_monitor.py`。grep 该文件是否含 `ask_main_agent` 引用（如 L39 附近）。
+Read `<repo_root>/tests/test_db_monitor.py`。grep 该文件是否含 `ask_main_agent` 引用（如 L39 附近）。
 
 如果有引用：
 - 改为通过 `@niu-agent` content 拦截路径触发
@@ -917,7 +917,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_db_monitor.py`。grep 该文件
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent.py tests/test_ask_main_agent_stop_deadlock.py tests/test_request_stop_all_subagents.py tests/test_db_monitor.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent.py tests/test_ask_main_agent_stop_deadlock.py tests/test_request_stop_all_subagents.py tests/test_db_monitor.py -v`
 
 Expected: 全过。
 
@@ -945,7 +945,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 改 config/agent-template.md**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/config/agent-template.md`。
+Read `<repo_root>/config/agent-template.md`。
 
 把"提示词正文"段的"何时主动询问主 Agent"那条改为：
 
@@ -961,12 +961,12 @@ Read `REDACTED_USER_PATH/tools/ai-bot/config/agent-template.md`。
 
 - [ ] **Step 2: 改 config/agents/niu.md**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/config/agents/niu.md` 完整内容。
+Read `<repo_root>/config/agents/niu.md` 完整内容。
 
 先 grep 全文找所有 ask_main_agent 引用：
 
 ```bash
-grep -n "ask_main_agent" REDACTED_USER_PATH/tools/ai-bot/config/agents/niu.md
+grep -n "ask_main_agent" <repo_root>/config/agents/niu.md
 ```
 
 Expected: 列出所有引用行（如 L255/L283/L291 等）。
@@ -991,7 +991,7 @@ Expected: 列出所有引用行（如 L255/L283/L291 等）。
 
 - [ ] **Step 3: 验证 niu.md 解析正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "from agent.subagent import get_subagent_config; c = get_subagent_config('niu'); print('sub agents' in c)"`
+Run: `cd <repo_root> && python/bin/python -c "from agent.subagent import get_subagent_config; c = get_subagent_config('niu'); print('sub agents' in c)"`
 
 Expected: 打印 `True`。
 
@@ -1017,10 +1017,10 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 改 docs/SYSTEM_MANUAL.md**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/docs/SYSTEM_MANUAL.md`。grep 找所有 ask_main_agent 引用：
+Read `<repo_root>/docs/SYSTEM_MANUAL.md`。grep 找所有 ask_main_agent 引用：
 
 ```bash
-grep -n "ask_main_agent" REDACTED_USER_PATH/tools/ai-bot/docs/SYSTEM_MANUAL.md
+grep -n "ask_main_agent" <repo_root>/docs/SYSTEM_MANUAL.md
 ```
 
 Expected: 列出引用行（如 L347 附近）。
@@ -1032,10 +1032,10 @@ Expected: 列出引用行（如 L347 附近）。
 
 - [ ] **Step 2: 改 docs/manual-general-subagent.md**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/docs/manual-general-subagent.md`。grep 找所有 ask_main_agent 引用：
+Read `<repo_root>/docs/manual-general-subagent.md`。grep 找所有 ask_main_agent 引用：
 
 ```bash
-grep -n "ask_main_agent" REDACTED_USER_PATH/tools/ai-bot/docs/manual-general-subagent.md
+grep -n "ask_main_agent" <repo_root>/docs/manual-general-subagent.md
 ```
 
 Expected: 列出引用行（如 L17/L86/L117 附近）。
@@ -1075,7 +1075,7 @@ fi
 
 - [ ] **Step 2: 启动程序**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu`
+Run: `cd <repo_root> && ./niu`
 
 Expected: 程序正常启动。
 
@@ -1104,7 +1104,7 @@ Expected:
 
 格式错误回退的验证在单元测试层完成（不依赖 LLM 行为，更可靠）：
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py::test_no_at_prefix_no_tool_calls_returns_format_error -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_prefix_interception.py::test_no_at_prefix_no_tool_calls_returns_format_error -v`
 
 Expected: PASS。该测试用 mock 强制返回无 `@` 前缀 content，断言 FORMAT_ERROR 分支被触发 + 格式错误提示被追加。
 

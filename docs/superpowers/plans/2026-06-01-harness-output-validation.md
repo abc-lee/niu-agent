@@ -173,7 +173,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_output_validator.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_output_validator.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'agent.output_validator'`
 
 - [ ] **Step 3: Write implementation**
@@ -301,7 +301,7 @@ def validate_references(content: str) -> ValidationResult:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_output_validator.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_output_validator.py -v`
 Expected: All 10 tests PASS
 
 - [ ] **Step 5: Commit**
@@ -398,7 +398,7 @@ Run: `python -m py_compile agent/generic/agent_loop.py`
 
 - [ ] **Step 4: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_output_validator.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_output_validator.py -v`
 Expected: All tests PASS
 
 - [ ] **Step 5: Commit**

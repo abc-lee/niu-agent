@@ -144,7 +144,7 @@ def _read_target_threshold() -> float:
 
 - [ ] **Step 3: 验证修改不影响现有功能**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.subagent import _read_context_window_tokens, _read_warning_threshold, _read_target_threshold; print(_read_context_window_tokens(), _read_warning_threshold(), _read_target_threshold())"`
+Run: `cd <repo_root> && python -c "from agent.subagent import _read_context_window_tokens, _read_warning_threshold, _read_target_threshold; print(_read_context_window_tokens(), _read_warning_threshold(), _read_target_threshold())"`
 Expected: `200000 0.8 0.5`
 
 - [ ] **Step 4: Commit**
@@ -205,7 +205,7 @@ target_tokens = int(estimated_tokens * _read_target_threshold())
 
 - [ ] **Step 3: 验证修改不影响 tidy 功能**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.compat import _tidy_context_impl; print('import ok')"`
+Run: `cd <repo_root> && python -c "from niu_api.compat import _tidy_context_impl; print('import ok')"`
 Expected: `import ok`
 
 - [ ] **Step 4: Commit**
@@ -250,7 +250,7 @@ if tokens > self.max_tokens * self._warning_threshold:
 
 - [ ] **Step 2: 验证无循环导入**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.context_manager import ContextManager; cm = ContextManager(); print(cm.max_tokens)"`
+Run: `cd <repo_root> && python -c "from agent.context_manager import ContextManager; cm = ContextManager(); print(cm.max_tokens)"`
 Expected: `200000`
 
 - [ ] **Step 3: Commit**
@@ -287,7 +287,7 @@ if usage_ratio > warning_threshold:
 
 - [ ] **Step 2: 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.generic.agent_loop import agent_runner_loop; print('import ok')"`
+Run: `cd <repo_root> && python -c "from agent.generic.agent_loop import agent_runner_loop; print('import ok')"`
 Expected: `import ok`
 
 - [ ] **Step 3: Commit**
@@ -320,7 +320,7 @@ if full_tokens > context_window:
 
 - [ ] **Step 2: 验证测试可导入**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.subagent import _read_context_window_tokens; print(_read_context_window_tokens())"`
+Run: `cd <repo_root> && python -c "from agent.subagent import _read_context_window_tokens; print(_read_context_window_tokens())"`
 Expected: `200000`
 
 - [ ] **Step 3: Commit**
@@ -357,7 +357,7 @@ if v >= 32000 && v <= 2_000_000 {
 
 - [ ] **Step 2: 验证 Rust 编译**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/launcher && cargo build --release 2>&1 | tail -3`
+Run: `cd <repo_root>/launcher && cargo build --release 2>&1 | tail -3`
 Expected: `Finished release profile`
 
 - [ ] **Step 3: Commit**

@@ -1,4 +1,0 @@
-Result: Error: timed out
-
-Time elapsed: 120.1s
-❌ SLOW: May have tried multiple search engines

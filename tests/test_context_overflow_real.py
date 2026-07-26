@@ -13,6 +13,9 @@ import os
 import signal
 import socket
 
+# 项目根目录（tests/ 的上一级）
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # 使用非默认端口，避免与用户正在运行的程序冲突
 TEST_PORT = 19876
 API_URL = f"http://localhost:{TEST_PORT}"

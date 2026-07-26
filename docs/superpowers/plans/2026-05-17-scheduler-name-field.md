@@ -145,7 +145,7 @@ def test_name_migration_from_old_db():
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest niu_api/internal/scheduler/test_task_store_name.py -v`
+Run: `cd <repo_root> && python -m pytest niu_api/internal/scheduler/test_task_store_name.py -v`
 Expected: FAIL（name 参数和 find_task_by_name 方法不存在）
 
 - [ ] **Step 3: 实现 task_store.py 的 name 字段**
@@ -160,7 +160,7 @@ Expected: FAIL（name 参数和 find_task_by_name 方法不存在）
 
 - [ ] **Step 4: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest niu_api/internal/scheduler/test_task_store_name.py -v`
+Run: `cd <repo_root> && python -m pytest niu_api/internal/scheduler/test_task_store_name.py -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -247,7 +247,7 @@ def test_inject_creates_task_when_not_exists():
 
 - [ ] **Step 2: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest niu_api/test_auto_inject_tasks.py -v`
+Run: `cd <repo_root> && python -m pytest niu_api/test_auto_inject_tasks.py -v`
 Expected: PASS（依赖 Task 1 的 find_task_by_name）
 
 - [ ] **Step 3: 修改 __main__.py 注入逻辑**
@@ -340,7 +340,7 @@ except Exception as e:
 
 - [ ] **Step 4: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest niu_api/test_auto_inject_tasks.py -v`
+Run: `cd <repo_root> && python -m pytest niu_api/test_auto_inject_tasks.py -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -381,7 +381,7 @@ git commit -m "feat: 定时任务 API + MCP 工具加 name 参数（可选）"
 
 - [ ] **Step 1: 运行所有测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest niu_api/internal/scheduler/test_task_store_name.py niu_api/test_auto_inject_tasks.py -v`
+Run: `cd <repo_root> && python -m pytest niu_api/internal/scheduler/test_task_store_name.py niu_api/test_auto_inject_tasks.py -v`
 Expected: ALL PASS
 
 - [ ] **Step 2: 启动应用验证**

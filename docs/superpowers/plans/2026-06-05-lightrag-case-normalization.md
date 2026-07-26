@@ -33,10 +33,10 @@
 ### Task 1: LightRAG fork — 写入侧 entity_type 统一 .lower()
 
 **Files:**
-- `REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py` — ainsert_custom_kg 入口
-- `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` — Counter 投票、_rebuild、UNKNOWN 默认值
-- `REDACTED_USER_PATH/tools/LightRAG/lightrag/utils_graph.py` — acreate_entity 默认值
-- `REDACTED_USER_PATH/tools/LightRAG/lightrag/utils.py` — 实体格式化默认值
+- `<lightrag_fork_path>/lightrag/lightrag.py` — ainsert_custom_kg 入口
+- `<lightrag_fork_path>/lightrag/operate.py` — Counter 投票、_rebuild、UNKNOWN 默认值
+- `<lightrag_fork_path>/lightrag/utils_graph.py` — acreate_entity 默认值
+- `<lightrag_fork_path>/lightrag/utils.py` — 实体格式化默认值
 
 - [ ] **Step 1: ainsert_custom_kg 入口加 .lower()**
 
@@ -236,13 +236,13 @@ k.strip().lower() for k in edge["keywords"].split(",") if k.strip()
 
 - [ ] **Step 9: 语法检查**
 
-Run: `python -m py_compile REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py && python -m py_compile REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py && python -m py_compile REDACTED_USER_PATH/tools/LightRAG/lightrag/utils_graph.py && python -m py_compile REDACTED_USER_PATH/tools/LightRAG/lightrag/utils.py`
+Run: `python -m py_compile <lightrag_fork_path>/lightrag/lightrag.py && python -m py_compile <lightrag_fork_path>/lightrag/operate.py && python -m py_compile <lightrag_fork_path>/lightrag/utils_graph.py && python -m py_compile <lightrag_fork_path>/lightrag/utils.py`
 Expected: 无输出（编译通过）
 
 - [ ] **Step 10: 提交**
 
 ```bash
-git add REDACTED_USER_PATH/tools/LightRAG/lightrag/lightrag.py REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py REDACTED_USER_PATH/tools/LightRAG/lightrag/utils_graph.py REDACTED_USER_PATH/tools/LightRAG/lightrag/utils.py
+git add <lightrag_fork_path>/lightrag/lightrag.py <lightrag_fork_path>/lightrag/operate.py <lightrag_fork_path>/lightrag/utils_graph.py <lightrag_fork_path>/lightrag/utils.py
 git commit -m "fix(lightrag): normalize entity_type and keywords to lowercase in all write paths"
 ```
 
@@ -253,9 +253,9 @@ git commit -m "fix(lightrag): normalize entity_type and keywords to lowercase in
 **原则：** 不硬编码具体 entity_type 字符串去逐个匹配，而是统一用 .lower() 比较。
 
 **Files:**
-- `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_manager.py:187-189` — get_brain_regions()
-- `REDACTED_USER_PATH/tools/ai-bot/niu_api/kg_api.py:177` — node_type == "Document"
-- `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_adapter.py:1082` — "Other" 默认值
+- `<repo_root>/niu_api/internal/lightrag_manager.py:187-189` — get_brain_regions()
+- `<repo_root>/niu_api/kg_api.py:177` — node_type == "Document"
+- `<repo_root>/niu_api/internal/lightrag_adapter.py:1082` — "Other" 默认值
 
 - [ ] **Step 1: get_brain_regions() 改为 .lower() 比较**
 
@@ -335,12 +335,12 @@ git commit -m "fix: use .lower() comparison for entity_type in all query paths"
 ### Task 3: dict 查找键 + LLM 提示词 — 查找时 .lower() 或键改为小写
 
 **Files:**
-- `REDACTED_USER_PATH/tools/ai-bot/agent/injector/dream_writer.py:46-52,268`
-- `REDACTED_USER_PATH/tools/ai-bot/mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py:1175-1181,1182`
-- `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/brain_region_prompt.py:39,71`
-- `REDACTED_USER_PATH/tools/ai-bot/mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py:400,611`
-- `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_adapter.py:1324`
-- `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_manager.py:601-606`
+- `<repo_root>/agent/injector/dream_writer.py:46-52,268`
+- `<repo_root>/mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py:1175-1181,1182`
+- `<repo_root>/niu_api/internal/brain_region_prompt.py:39,71`
+- `<repo_root>/mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py:400,611`
+- `<repo_root>/niu_api/internal/lightrag_adapter.py:1324`
+- `<repo_root>/niu_api/internal/lightrag_manager.py:601-606`
 
 - [ ] **Step 1: _NIU_RELATION_MAP 键改为小写 + 查找时 .lower()**
 
@@ -487,7 +487,7 @@ git commit -m "fix: use .lower() for dict lookups, lowercase in LLM prompts and 
 ### Task 4: 系统内部常量改为小写 + 0实体脑区修复
 
 **Files:**
-- `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py` — REGION_ENTITY_TYPE, MIN_COMMUNITY_SIZE, create_region_nodes()
+- `<repo_root>/niu_api/internal/region_manager.py` — REGION_ENTITY_TYPE, MIN_COMMUNITY_SIZE, create_region_nodes()
 
 - [ ] **Step 1: REGION_ENTITY_TYPE 改为小写**
 

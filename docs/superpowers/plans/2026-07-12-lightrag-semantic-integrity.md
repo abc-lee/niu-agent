@@ -200,7 +200,7 @@ def test_load_graphml_backward_compat_node_ids(tmp_path):
 ### - [ ] Step 2: Run test to verify it fails
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_semantic_integrity.py::test_load_graphml_returns_node_metadata -v
 ```
 
@@ -329,7 +329,7 @@ Expected: PASS
 
 ```bash
 # 找出所有调用点
-grep -n "_load_graphml" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_integrity.py
+grep -n "_load_graphml" <repo_root>/niu_api/internal/lightrag_integrity.py
 ```
 
 每处改为：
@@ -1277,7 +1277,7 @@ TDD 测试用合成数据验证逻辑，但真正能证明 check 工具有效的
 # 当前 graphml 应该有 16 个僵尸脑区（如果之前从 071242 备份恢复的话）
 python3 -c "
 import xml.etree.ElementTree as ET
-p = 'REDACTED_USER_PATH/.niu/lightrag_storage/graph_chunk_entity_relation.graphml'
+p = '~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml'
 tree = ET.parse(p)
 root = tree.getroot()
 ns = {'g': 'http://graphml.graphdrawing.org/xmlns'}
@@ -1310,7 +1310,7 @@ cp ~/.niu/lightrag_storage_backup_20260712_071242/kv_store_text_chunks.json ~/.n
 ### - [ ] Step 2: 跑 check_all
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python3 -c "
 from niu_api.internal.lightrag_integrity import check_all
 import json
@@ -1351,7 +1351,7 @@ for name in ['brainregion_semantic_zombie',
 把真实数据的 16 个僵尸脑区导出为测试 fixture（供后续测试用）：
 
 ```bash
-mkdir -p REDACTED_USER_PATH/tools/ai-bot/tests/fixtures/lightrag_zombie_regions/
+mkdir -p <repo_root>/tests/fixtures/lightrag_zombie_regions/
 python3 -c "
 import xml.etree.ElementTree as ET
 import json
@@ -1379,7 +1379,7 @@ for node in root.findall('.//g:node', ns):
         zombies.append({'id': nid, 'entity_type': etype, 'description': desc, 'source_id': source_id})
 
 # 导出最小 fixture（只含僵尸脑区 + 必要的辅助 node）
-out = Path('REDACTED_USER_PATH/tools/ai-bot/tests/fixtures/lightrag_zombie_regions/zombies.json')
+out = Path('<repo_root>/tests/fixtures/lightrag_zombie_regions/zombies.json')
 out.write_text(json.dumps(zombies, ensure_ascii=False, indent=2))
 print(f'导出 {len(zombies)} 个僵尸脑区到 {out}')
 "
@@ -2272,7 +2272,7 @@ def test_e2e_program_starts_normally(restore_real_data):
         ["./niu"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        cwd="REDACTED_USER_PATH/tools/ai-bot",
+        cwd="<repo_root>",
     )
     try:
         # 等 API ready
@@ -2366,7 +2366,7 @@ def test_e2e_program_starts_normally(restore_real_data):
 ### - [ ] Step 2: Run test
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_e2e_semantic.py -v 2>&1 | tail -30
 ```
 
@@ -2420,7 +2420,7 @@ git commit -m "test: 端到端验证——真实数据 16 个僵尸脑区 check+
 ### - [ ] Step 2: 读取现有代码
 
 ```bash
-sed -n '370,400p' REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py
+sed -n '370,400p' <repo_root>/agent/injector/region_sync.py
 ```
 
 确认 L383-391 是覆盖率检查代码（类似 `if coverage < 0.5: return`）。
@@ -2524,7 +2524,7 @@ P0 修复：region_sync 死循环根因之一。
 ### - [ ] Step 2: 读取现有代码
 
 ```bash
-sed -n '1690,1730p' REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+sed -n '1690,1730p' <repo_root>/agent/runner.py
 ```
 
 确认 L1695-1723 是 forced sync 调用 + 失败后清空 cache 的逻辑。
@@ -2591,7 +2591,7 @@ def _get_brain_injector(self, ...):
 > runner.py 顶部不 import time，但 Task 14 用 `time.time()`。
 > 实施者必须先检查：
 > ```bash
-> grep "^import time" REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+> grep "^import time" <repo_root>/agent/runner.py
 > ```
 > 如果没有输出，在 runner.py 顶部加 `import time`（与现有 `import threading` 等并列）。
 
@@ -2650,8 +2650,8 @@ P0 修复：region_sync 死循环根因之二。
 ### - [ ] Step 2: 读取现有代码
 
 ```bash
-sed -n '1010,1020p' REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py
-sed -n '38,46p' REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py
+sed -n '1010,1020p' <repo_root>/niu_api/internal/region_manager.py
+sed -n '38,46p' <repo_root>/agent/injector/region_sync.py
 ```
 
 确认：
@@ -2725,7 +2725,7 @@ P0 修复：僵尸脑区形成根因。
 ### - [ ] Step 2: 读取现有代码
 
 ```bash
-sed -n '1705,1725p' REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+sed -n '1705,1725p' <repo_root>/agent/runner.py
 ```
 
 确认 L1709 是同步 `run_sync()` 调用。

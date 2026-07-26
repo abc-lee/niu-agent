@@ -140,12 +140,12 @@ ai-bot/                              # 项目根
 
 - [ ] **Step 0.1**：检查工作区干净（除本次新计划文件外）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 ```
 - [ ] **Step 0.2**：临时备份提交（标注问题名+节点类型+基线 hash）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "backup: context-manager 绕过 @niu-agent/@end 守则改造前临时备份 (baseline 27b287f4)
 
@@ -275,7 +275,7 @@ def test_file_processor_still_intercepted_when_no_at_prefix():
 
 - [ ] **Step 1.2**：跑测试确认失败（context-manager 当前会被注入守则、会被拦截）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_context_manager_bypass_at_prefix.py -v 2>&1 | tail -40
 ```
 **预期失败**：
@@ -309,13 +309,13 @@ python -m pytest tests/test_context_manager_bypass_at_prefix.py -v 2>&1 | tail -
 
 - [ ] **Step 2.2**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import agent.subagent; print('OK')"
 ```
 
 - [ ] **Step 2.3**：跑 Task 1 的测试，验证注入侧两个测试通过
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_context_manager_bypass_at_prefix.py::test_context_manager_system_prompt_has_no_at_niu_guide tests/test_context_manager_bypass_at_prefix.py::test_file_processor_system_prompt_still_has_at_niu_guide -v
 ```
 **预期**：两个测试通过。其他三个测试仍失败（拦截点还没改）。
@@ -381,13 +381,13 @@ python -m pytest tests/test_context_manager_bypass_at_prefix.py::test_context_ma
 
 - [ ] **Step 3.2**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "from agent.generic import agent_loop; print('OK')"
 ```
 
 - [ ] **Step 3.3**：跑 Task 1 全部测试，验证 5 个测试全部通过
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_context_manager_bypass_at_prefix.py -v
 ```
 **预期**：5 个测试全部通过。
@@ -400,7 +400,7 @@ python -m pytest tests/test_context_manager_bypass_at_prefix.py -v
 
 - [ ] **Step 4.1**：跑 at-prefix 拦截层测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_at_prefix_interception.py -v 2>&1 | tail -40
 ```
 **预期**：全部通过。重点验证：
@@ -410,21 +410,21 @@ python -m pytest tests/test_at_prefix_interception.py -v 2>&1 | tail -40
 
 - [ ] **Step 4.2**：跑通用子 Agent 测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_general_subagent.py tests/test_call_subagent_with_auto_answer.py -v 2>&1 | tail -40
 ```
 **预期**：全部通过。
 
 - [ ] **Step 4.3**：跑 subagent 相关全套测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_subagent_registry.py tests/test_subagent_supplement.py tests/test_subagent_supplement_integration.py tests/test_subagent_msg_role.py tests/test_call_subagent_memory_hook.py -v 2>&1 | tail -40
 ```
 **预期**：全部通过。
 
 - [ ] **Step 4.4**：如果任何测试失败，立即撤销改动恢复原状（铁律 #5 调试无效马上撤销）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 不用 git checkout（铁律 #8），用 Edit 工具精确回退两个改动点
 ```
 
@@ -438,7 +438,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 
 - [ ] **Step 5.1**：清理测试环境
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 杀掉所有 niu 进程（铁律 #7 必须优雅退出，不能 pkill -f niu）
 ps aux | grep -E "niu|launcher" | grep -v grep
 # 用 kill -TERM <pid> 逐个优雅退出
@@ -501,7 +501,7 @@ ls -la ~/.niu/compress_plan.json 2>/dev/null  # 应不存在或为空
 
 - [ ] **Step 5.4**：启动程序
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu &
 # 等待启动完成，看到 "LightRAG initialized" 和 API ready 日志
 ```
@@ -540,7 +540,7 @@ ps aux | grep -E "niu|launcher" | grep -v grep  # 应为空
 
 - [ ] **Step 6.1**：检查改动范围
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git diff agent/subagent.py agent/generic/agent_loop.py
 ```
@@ -548,7 +548,7 @@ git diff agent/subagent.py agent/generic/agent_loop.py
 
 - [ ] **Step 6.2**：提交修复
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent.py agent/generic/agent_loop.py tests/test_context_manager_bypass_at_prefix.py docs/superpowers/plans/2026-07-08-context-manager-bypass-at-prefix.md
 git commit -m "$(cat <<'EOF'
 fix(context-manager): 绕过 @niu-agent/@end 守则注入和拦截层
@@ -581,14 +581,14 @@ EOF
 
 - [ ] **Step 6.3**：git 操作后修复文件权限（铁律 #7）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null
 ```
 
 - [ ] **Step 6.4**：验证提交成功
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -3
 git status
 ```

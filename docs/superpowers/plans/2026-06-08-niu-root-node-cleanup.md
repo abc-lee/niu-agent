@@ -138,7 +138,7 @@ new_string:
 
 - [ ] **Step 4: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_lightrag_server import lightrag_insert_entity; print('OK')"`
+Run: `cd <repo_root> && python -c "from niu_lightrag_server import lightrag_insert_entity; print('OK')"`
 
 - [ ] **Step 5: Commit**
 
@@ -388,7 +388,7 @@ Core concepts:
 
 - [ ] **Step 7: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.internal.brain_graph import BrainGraph; print('OK')"`
+Run: `cd <repo_root> && python -c "from niu_api.internal.brain_graph import BrainGraph; print('OK')"`
 
 - [ ] **Step 8: Commit**
 
@@ -422,7 +422,7 @@ git commit -m "fix: store_memory no longer creates niu→entity relations — re
 
 - [ ] **Step 2: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.internal.lightrag_adapter import LightRAGAdapter; print('OK')"`
+Run: `cd <repo_root> && python -c "from niu_api.internal.lightrag_adapter import LightRAGAdapter; print('OK')"`
 
 - [ ] **Step 3: Commit**
 
@@ -558,7 +558,7 @@ new_string:
 
 - [ ] **Step 4: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.injector.dream_writer import DreamWriter; print('OK')"`
+Run: `cd <repo_root> && python -c "from agent.injector.dream_writer import DreamWriter; print('OK')"`
 
 - [ ] **Step 5: Commit**
 
@@ -701,7 +701,7 @@ def test_write_semantic_entity_default_relation(
 
 - [ ] **Step 6: 运行测试验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_dream_writer.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_dream_writer.py -v 2>&1 | tail -20`
 
 - [ ] **Step 7: Commit**
 
@@ -1176,7 +1176,7 @@ lightrag_insert_relation(src_id="知识体系脑区", tgt_id="FastAPI", relation
 
 检查文件中不再有 `Niu --[` 或 `src_id="Niu"` 或 `Niu` 作为连接起点的示例：
 
-Run: `grep -n 'Niu.*--\[\|src_id="Niu"' REDACTED_USER_PATH/tools/ai-bot/config/agents/dream-evolver.md || echo "No Niu connection patterns found - OK"`
+Run: `grep -n 'Niu.*--\[\|src_id="Niu"' <repo_root>/config/agents/dream-evolver.md || echo "No Niu connection patterns found - OK"`
 
 - [ ] **Step 9: Commit**
 
@@ -1236,7 +1236,7 @@ git commit -m "fix: entity-extractor removes unnecessary niu references — sub-
 - [ ] **Step 1: 搜索残留的 niu 连接模式**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && grep -rn 'src_id="Niu"\|"Niu".*tgt_id\|Niu.*--\[' config/agents/ agent/injector/ mcp-servers/lightrag-server/src/ niu_api/internal/brain_graph.py niu_api/internal/lightrag_adapter.py docs/kg-dev-dictionary.md 2>/dev/null | grep -v '脑区\|brain_region\|region_anchor' || echo "No Niu connection violations found"
+cd <repo_root> && grep -rn 'src_id="Niu"\|"Niu".*tgt_id\|Niu.*--\[' config/agents/ agent/injector/ mcp-servers/lightrag-server/src/ niu_api/internal/brain_graph.py niu_api/internal/lightrag_adapter.py docs/kg-dev-dictionary.md 2>/dev/null | grep -v '脑区\|brain_region\|region_anchor' || echo "No Niu connection violations found"
 ```
 
 预期：无输出（或只有 Niu 与脑区连接的正常模式）。
@@ -1244,7 +1244,7 @@ cd REDACTED_USER_PATH/tools/ai-bot && grep -rn 'src_id="Niu"\|"Niu".*tgt_id\|Niu
 - [ ] **Step 2: 运行相关测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v -k "lightrag or brain" 2>&1 | tail -30
+cd <repo_root> && python -m pytest tests/ -v -k "lightrag or brain" 2>&1 | tail -30
 ```
 
 - [ ] **Step 3: 更新 SYSTEM_MANUAL.md**

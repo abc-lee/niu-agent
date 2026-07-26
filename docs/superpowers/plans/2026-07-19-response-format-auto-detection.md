@@ -302,7 +302,7 @@ def test_strip_response_format_mode_handles_missing_litellm_kwargs():
 - [ ] **Step 2：跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pytest tests/test_response_format_probe.py -v
 ```
 Expected: 9 个测试全 FAIL（`ImportError: cannot import name '_resolve_response_format'`）
@@ -1383,8 +1383,8 @@ def get_lightrag_llm_config() -> dict[str, Any]:
 - [ ] **Step 2：语法检查**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/config-manager/src
-REDACTED_USER_PATH/tools/ai-bot/python/bin/python -c "from niu_config_manager import get_lightrag_llm_config; print('OK')"
+cd <repo_root>/mcp-servers/config-manager/src
+<repo_root>/python/bin/python -c "from niu_config_manager import get_lightrag_llm_config; print('OK')"
 ```
 Expected: 输出 `OK`
 
@@ -1505,7 +1505,7 @@ def test_probe_endpoint_returns_prompt_only_for_doubao_coding(api_base):
     reasoning_content 无文本 chunk，被判 gateway_blocked 而非 model_rejected，
     与真实环境验证报告结论不一致。
     """
-    config_path = "REDACTED_USER_PATH/tools/ai-bot/config/user-config.json"
+    config_path = "<repo_root>/config/user-config.json"
     if not os.path.exists(config_path):
         pytest.skip("豆包配置文件不存在")
     with open(config_path) as f:
@@ -1543,7 +1543,7 @@ def test_probe_endpoint_returns_prompt_only_for_glm(api_base):
     config/user-config - glm.json 是 GLM 配置，实测网关接受 response_format
     但模型输出漂移（含额外字符），json.loads 失败，应降级 prompt_only。
     """
-    config_path = "REDACTED_USER_PATH/tools/ai-bot/config/user-config - glm.json"
+    config_path = "<repo_root>/config/user-config - glm.json"
     if not os.path.exists(config_path):
         pytest.skip("GLM 配置文件不存在")
     with open(config_path) as f:

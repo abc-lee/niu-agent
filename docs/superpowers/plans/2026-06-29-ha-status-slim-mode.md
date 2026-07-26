@@ -169,7 +169,7 @@ def ha_status(area: str = "", domain: str = "", entity_id: str = "") -> dict:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 import json
 ha_setup()
@@ -194,7 +194,7 @@ Expected:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 import json
 ha_setup()
@@ -229,7 +229,7 @@ Expected: climate 单设备条目包含 services 和 properties 字段。
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 import json
 ha_setup()
@@ -253,7 +253,7 @@ Expected: 扫地机器人可见，总输出 < 30000 字符。
 - [ ] **Step 8: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add mcp-servers/ha-server/src/niu_ha_server/__init__.py
 git commit -m "feat(ha): ha_status entity_id param - slim list by default, full detail on entity_id"
 ```
@@ -308,7 +308,7 @@ git commit -m "feat(ha): ha_status entity_id param - slim list by default, full 
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import get_tool_schemas
 import json
 schemas = get_tool_schemas()
@@ -327,7 +327,7 @@ Expected: schema 包含 entity_id 参数。
 - [ ] **Step 3: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add mcp-servers/ha-server/src/niu_ha_server/__init__.py
 git commit -m "docs(ha): update ha_status TOOL_SCHEMAS with entity_id param and slim/full mode description"
 ```
@@ -345,7 +345,7 @@ git commit -m "docs(ha): update ha_status TOOL_SCHEMAS with entity_id param and 
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && sed -n '15,35p' config/disk/ha-server.yaml
+cd <repo_root> && sed -n '15,35p' config/disk/ha-server.yaml
 ```
 
 查看 ha_status 当前的 short/long 描述和参数定义。
@@ -396,7 +396,7 @@ cd REDACTED_USER_PATH/tools/ai-bot && sed -n '15,35p' config/disk/ha-server.yaml
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import yaml; yaml.safe_load(open('config/disk/ha-server.yaml')); print('YAML OK')"
+cd <repo_root> && python3 -c "import yaml; yaml.safe_load(open('config/disk/ha-server.yaml')); print('YAML OK')"
 ```
 
 Expected: `YAML OK`
@@ -404,7 +404,7 @@ Expected: `YAML OK`
 - [ ] **Step 4: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add config/disk/ha-server.yaml
 git commit -m "docs(ha): update disk config ha_status description with entity_id param"
 ```
@@ -420,7 +420,7 @@ git commit -m "docs(ha): update disk config ha_status description with entity_id
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 import json
 ha_setup()
@@ -436,7 +436,7 @@ print('OK')
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 import json
 ha_setup()
@@ -454,7 +454,7 @@ print('OK')
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 import json
 ha_setup()
@@ -480,7 +480,7 @@ print('OK: 全量模式正常')
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 import json
 ha_setup()
@@ -497,7 +497,7 @@ print('OK: domain 过滤正常')
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status, ha_control
 import json
 ha_setup()
@@ -519,7 +519,7 @@ print('OK: ha_control 正常')
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
+cd <repo_root>/mcp-servers/ha-server/src && PYTHONPATH=src python3 -c "
 from niu_ha_server import ha_setup, ha_status
 ha_setup()
 result = ha_status(entity_id='vacuum.nonexistent_xyz')

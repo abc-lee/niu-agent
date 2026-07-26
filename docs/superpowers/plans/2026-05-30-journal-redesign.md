@@ -170,7 +170,7 @@ class TestJournalCursorReset:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `PYTHONPATH=REDACTED_USER_PATH/tools/ai-bot python -m pytest tests/test_journal_agent.py::TestJournalCursorReset -v`
+Run: `PYTHONPATH=<repo_root> python -m pytest tests/test_journal_agent.py::TestJournalCursorReset -v`
 Expected: FAIL (last_journal.json not yet in cursor list)
 
 - [ ] **Step 3: 在 clear_chat 游标重置列表中添加 last_journal.json**
@@ -183,7 +183,7 @@ for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `PYTHONPATH=REDACTED_USER_PATH/tools/ai-bot python -m pytest tests/test_journal_agent.py::TestJournalCursorReset -v`
+Run: `PYTHONPATH=<repo_root> python -m pytest tests/test_journal_agent.py::TestJournalCursorReset -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -227,7 +227,7 @@ def niu_api_compat_path():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `PYTHONPATH=REDACTED_USER_PATH/tools/ai-bot python -m pytest tests/test_journal_agent.py::TestJournalAgentSleepMode -v`
+Run: `PYTHONPATH=<repo_root> python -m pytest tests/test_journal_agent.py::TestJournalAgentSleepMode -v`
 Expected: FAIL
 
 - [ ] **Step 3: 在 sleep 模式中插入 journal-agent 调用**
@@ -321,7 +321,7 @@ Expected: FAIL
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `PYTHONPATH=REDACTED_USER_PATH/tools/ai-bot python -m pytest tests/test_journal_agent.py::TestJournalAgentSleepMode -v`
+Run: `PYTHONPATH=<repo_root> python -m pytest tests/test_journal_agent.py::TestJournalAgentSleepMode -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -648,7 +648,7 @@ class TestJournalAgentIntegration:
 
 - [ ] **Step 2: 运行测试**
 
-Run: `PYTHONPATH=REDACTED_USER_PATH/tools/ai-bot python -m pytest tests/test_journal_agent.py -v`
+Run: `PYTHONPATH=<repo_root> python -m pytest tests/test_journal_agent.py -v`
 Expected: ALL PASS
 
 - [ ] **Step 3: Commit**
@@ -665,7 +665,7 @@ git commit -m "test: add journal-agent integration tests"
 - [ ] **Step 1: 启动 Python API**
 
 ```bash
-PYTHONPATH=REDACTED_USER_PATH/tools/ai-bot python -m niu_api &
+PYTHONPATH=<repo_root> python -m niu_api &
 ```
 
 - [ ] **Step 2: 验证 journal-agent 可被主 Agent 调用**

@@ -68,14 +68,14 @@ def notify_compact_status_sync(status: str, mode: str = "") -> None:
 
 - [ ] **Step 3: 验证 import 无报错**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "from niu_api.chat import notify_compact_status_sync; print('OK')"`
+Run: `cd <repo_root> && python/bin/python -c "from niu_api.chat import notify_compact_status_sync; print('OK')"`
 
 预期：输出 `OK`
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/chat.py
 git commit -m "feat(compact): 新增 notify_compact_status_sync 跨线程广播压缩状态事件"
 ```
@@ -241,7 +241,7 @@ def test_runner_on_context_high_usage_emits_compact_status():
 
 - [ ] **Step 2: 运行测试，确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_compact_status_events.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_compact_status_events.py -v`
 
 预期：FAIL（事件列表为空，因为还没加推送代码）
 
@@ -402,7 +402,7 @@ def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
 
 - [ ] **Step 6: 运行测试，确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_compact_status_events.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_compact_status_events.py -v`
 
 预期：4 个测试全 PASS（如果 runner 测试因依赖跑不通，至少前 3 个 compat 测试 PASS）
 
@@ -414,14 +414,14 @@ Read: `niu_api/chat.py:445-455`
 
 确认前端无订阅：
 ```bash
-grep -rn "force_compression_done" REDACTED_USER_PATH/tools/ai-bot/ui/
+grep -rn "force_compression_done" <repo_root>/ui/
 ```
 预期：无输出（审查已确认）。
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py niu_api/chat_queue.py agent/runner.py niu_api/chat.py tests/test_compact_status_events.py
 git commit -m "feat(compact): 三触发点统一广播 compact_status 事件，try/finally 保证 done 必发"
 ```
@@ -498,9 +498,9 @@ onCompactStatus: (cb) => ipcRenderer.on('compact-status', (_e, data) => cb(data)
 
 启动程序确认 main.js / preload-chat.js 无语法错误：
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
+Run: `cd <repo_root> && ./niu &`
 等待 3 秒后检查日志：
-Run: `sleep 3 && tail -50 REDACTED_USER_PATH/tools/ai-bot/logs/*.log | grep -i "error\|compact"`
+Run: `sleep 3 && tail -50 <repo_root>/logs/*.log | grep -i "error\|compact"`
 
 预期：无 compact 相关报错。
 
@@ -512,7 +512,7 @@ pkill -f niu_api; pkill -f "niu"
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add ui/assistant/main.js ui/assistant/preload-chat.js
 git commit -m "feat(ui): main.js 转发 compact_status 事件到 chat.html IPC"
 ```
@@ -667,7 +667,7 @@ if (window.electronAPI && window.electronAPI.onCompactStatus) {
 
 - [ ] **Step 5: 手动测试 — 模式2（手动 force）**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
+Run: `cd <repo_root> && ./niu &`
 
 在 chat 窗口发几条消息让上下文变长，然后调 force 压缩（点按钮或 POST `/api/context/tidy` body `{mode:'force'}`）。观察：
 1. 圆环是否开始旋转
@@ -716,7 +716,7 @@ pkill -f niu_api; pkill -f "niu"
 - [ ] **Step 9: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add ui/assistant/chat.html
 git commit -m "feat(ui): 压缩时圆环 SVG 旋转动画 + tooltip 显示正在压缩 + 文本变红"
 ```
@@ -730,7 +730,7 @@ git commit -m "feat(ui): 压缩时圆环 SVG 旋转动画 + tooltip 显示正在
 
 - [ ] **Step 1: 启动程序，发普通消息，确认圆环和 SSE 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
+Run: `cd <repo_root> && ./niu &`
 
 在 chat 窗口发几条普通消息，观察：
 1. 圆环按 context_usage 正常更新（绿/橙/红分段）
@@ -750,7 +750,7 @@ Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
 
 - [ ] **Step 3: 检查日志无报错**
 
-Run: `tail -100 REDACTED_USER_PATH/tools/ai-bot/logs/api_stderr.log | grep -i "error\|exception\|compact"`
+Run: `tail -100 <repo_root>/logs/api_stderr.log | grep -i "error\|exception\|compact"`
 
 预期：无 Task 1-4 引入的新报错。compact 相关日志只有正常的事件推送日志。
 
@@ -758,7 +758,7 @@ Run: `tail -100 REDACTED_USER_PATH/tools/ai-bot/logs/api_stderr.log | grep -i "e
 
 ```bash
 pkill -f niu_api; pkill -f "niu"
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git log --oneline -5
 ```

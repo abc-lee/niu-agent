@@ -105,7 +105,7 @@ def _filter_result_fields(result: dict, fields: list) -> dict:
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('niu_api/internal/lightrag_adapter.py', doraise=True); print('OK')"`
+Run: `cd <repo_root> && python3 -c "import py_compile; py_compile.compile('niu_api/internal/lightrag_adapter.py', doraise=True); print('OK')"`
 
 Expected: OK
 
@@ -165,7 +165,7 @@ git commit -m "feat: add fields parameter to lightrag_adapter.query_data"
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('niu_api/internal/lightrag_adapter.py', doraise=True); print('OK')"`
+Run: `cd <repo_root> && python3 -c "import py_compile; py_compile.compile('niu_api/internal/lightrag_adapter.py', doraise=True); print('OK')"`
 
 Expected: OK
 
@@ -254,7 +254,7 @@ def lightrag_search_entities(
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py', doraise=True); print('OK')"`
+Run: `cd <repo_root> && python3 -c "import py_compile; py_compile.compile('mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py', doraise=True); print('OK')"`
 
 Expected: OK
 
@@ -324,7 +324,7 @@ git commit -m "feat: remove entity_type from search_entities, add fields + trunc
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('tests/test_lightrag_server.py', doraise=True); print('OK')" && python3 -c "import py_compile; py_compile.compile('config/disk/lightrag-server.yaml', doraise=True)" || echo "YAML 不需要 py_compile，手动检查格式"`
+Run: `cd <repo_root> && python3 -c "import py_compile; py_compile.compile('tests/test_lightrag_server.py', doraise=True); print('OK')" && python3 -c "import py_compile; py_compile.compile('config/disk/lightrag-server.yaml', doraise=True)" || echo "YAML 不需要 py_compile，手动检查格式"`
 
 Expected: OK
 

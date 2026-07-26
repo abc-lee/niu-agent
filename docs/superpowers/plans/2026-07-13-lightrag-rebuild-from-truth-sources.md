@@ -276,7 +276,7 @@ def test_repair_text_chunks_unrecoverable_when_full_docs_corrupt(tmp_path, monke
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py::test_repair_text_chunks_only_rebuilds_active_chunks -v
 ```
 
@@ -1527,7 +1527,7 @@ def test_check_all_preserves_load_graphml_and_check_truth_source(tmp_path, monke
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py::test_check_all_graphml_corrupt_is_critical \
                 tests/test_lightrag_repair_unit.py::test_check_all_missing_derived_file_is_major -v
 ```
@@ -1950,7 +1950,7 @@ def test_run_repair_on_user_request_repaired_false_on_step_error(tmp_path, monke
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py::test_get_lightrag_status_returns_3_severity_fields \
                 tests/test_lightrag_repair_unit.py::test_run_repair_on_user_request_repaired_true_on_success -v
 ```
@@ -2215,7 +2215,7 @@ fn test_integrity_status_field_names_are_snake_case() {
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/launcher
+cd <repo_root>/launcher
 cargo test --test test_launcher_integrity_status -- --nocapture
 ```
 
@@ -2314,12 +2314,12 @@ let total_errors = status
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/launcher
+cd <repo_root>/launcher
 # 跑 Rust 单元测试
 cargo test --test test_launcher_integrity_status -- --nocapture
 
 # 编译（CLAUDE.md 铁律 8：必须用 build.sh，不能用 cargo build）
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./launcher/build.sh
 ```
 
@@ -2332,7 +2332,7 @@ Expected:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # git 操作后修复可执行权限（build.sh 不会自动修，需手工跑）
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;
@@ -2342,7 +2342,7 @@ chmod +x niu
 ### - [ ] Step 6: Commit
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add launcher/src/main.rs tests/test_launcher_integrity_status.rs
 git commit -m "fix(launcher): IntegrityStatus 字段齐全 + 加单元测试锁定反序列化
 
@@ -2367,7 +2367,7 @@ CLAUDE.md 铁律 8：Rust 编译用 launcher/build.sh，不用 cargo build。
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 启动 niu（应在几秒内看到 splash 窗口，然后正常启动或弹"数据异常"对话框）
 ./niu &
 sleep 5

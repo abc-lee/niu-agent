@@ -58,7 +58,7 @@ Before any code changes, we must record the current test baseline.
 - [ ] **Step 1: Run existing tests and record baseline**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_tidy_cursor.py -v 2>&1 | tee /tmp/baseline_tidy_cursor.txt
 ```
 
@@ -407,7 +407,7 @@ class TestAnchorPromptNoLongerInjected:
 - [ ] **Step 2: Run tests to verify they fail (pre-implementation)**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_working_memory_removal.py -v 2>&1 | tee /tmp/pre_impl_test_results.txt
 ```
 
@@ -594,7 +594,7 @@ No change needed to FIFO logic — it already handles both cases.
 - [ ] **Step 5: Run tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_working_memory_removal.py::TestExitLogicAfterWmRemoval -v
 python -m pytest tests/test_working_memory_removal.py::TestNoWorkingMemoryInjection -v
 python -m pytest tests/test_working_memory_removal.py::TestWarningInjectionAsUserMessages -v
@@ -698,7 +698,7 @@ To:
 - [ ] **Step 5: Run tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_working_memory_removal.py -v
 ```
 
@@ -759,7 +759,7 @@ Change to:
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_working_memory_removal.py -v
 ```
 
@@ -807,7 +807,7 @@ Delete lines 202-207:
 - [ ] **Step 2: Run tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_working_memory_removal.py -v
 ```
 
@@ -859,7 +859,7 @@ _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, ms
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_working_memory_removal.py -v
 python -m pytest tests/test_tidy_cursor.py -v 2>&1 | tee /tmp/post_compat_test.txt
 ```
@@ -904,7 +904,7 @@ Also `test_protect_recent_with_filter_wm` (line 294-313) — rewrite to test pro
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_tidy_cursor.py -v 2>&1 | tee /tmp/post_tidy_cursor_test.txt
 ```
 
@@ -937,7 +937,7 @@ _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, ms
 - [ ] **Step 2: Run tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_journal_agent_tidy.py -v 2>&1 | tee /tmp/post_journal_tidy_test.txt
 ```
 
@@ -960,7 +960,7 @@ SubAgents (file-processor, event-manager, journal-agent) create their own `Gener
 - [ ] **Step 1: Verify subagent.py has no working_memory references**
 
 ```bash
-grep -n "working_memory\|filter_wm\|wm_\|_get_anchor_prompt\|history_info" REDACTED_USER_PATH/tools/ai-bot/agent/subagent.py
+grep -n "working_memory\|filter_wm\|wm_\|_get_anchor_prompt\|history_info" <repo_root>/agent/subagent.py
 ```
 
 Expected: No matches (subagent.py creates handlers but doesn't reference WM-specific fields).
@@ -982,7 +982,7 @@ Run the complete test suite and compare with baseline.
 - [ ] **Step 1: Run all tests**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_tidy_cursor.py tests/test_working_memory_removal.py -v 2>&1 | tee /tmp/post_all_tests.txt
 ```
 

@@ -91,18 +91,18 @@
 
 - [ ] **Step 2: 运行现有测试确认不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -20`
 Expected: 现有测试仍 PASS（统一关口在 dispatch 外，不影响 dispatch 内部截断测试——这些测试会在 Task 5 重写）
 
 - [ ] **Step 3: 运行 import 检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import agent.generic.agent_loop; print('IMPORT OK')"`
+Run: `cd <repo_root> && python -c "import agent.generic.agent_loop; print('IMPORT OK')"`
 Expected: 输出 `IMPORT OK`
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py
 git commit -m "feat(agent_loop): 加统一截断关口在 dispatch 调用后
 
@@ -255,18 +255,18 @@ chat-with-*）。处理 dict/list/str 三种类型，None 安全跳过。
 
 - [ ] **Step 4: 运行 import 检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import agent.handler; print('IMPORT OK')"`
+Run: `cd <repo_root> && python -c "import agent.handler; print('IMPORT OK')"`
 Expected: 输出 `IMPORT OK`
 
 - [ ] **Step 5: 运行现有测试（部分会失败，Task 5 会重写）**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -20`
 Expected: `test_disk_large_dict_result_gets_truncated` 和 `test_direct_mcp_large_dict_result_gets_truncated` 会 FAIL（这两测试断言 dispatch 内截断，Task 5 重写）。其他测试 PASS。
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/handler.py
 git commit -m "refactor(handler): 移除三处分散截断和 result_summary 死代码，统一由 agent_loop 关口处理
 
@@ -394,18 +394,18 @@ result_summary 在 status ok/success 分支里 json.dumps(result)[:500]
 
 - [ ] **Step 3: 运行 import 检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import niu_api.internal.lightrag_adapter; print('IMPORT OK')"`
+Run: `cd <repo_root> && python -c "import niu_api.internal.lightrag_adapter; print('IMPORT OK')"`
 Expected: 输出 `IMPORT OK`
 
 - [ ] **Step 4: 运行测试（部分会失败，Task 5 会重写）**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -20`
 Expected: `test_explore_node_large_result_truncated` 和 `test_explore_node_center_huge_description_truncated` 会 FAIL（这两测试断言 adapter 内截断，Task 5 重写）。
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_adapter.py
 git commit -m "fix(lightrag): 移除 explore_node/get_graph_snapshot 内部截断
 
@@ -483,13 +483,13 @@ LIGHTRAG_GRAPH_MAX_CHARS 常量保留（测试仍引用）。"
 
 - [ ] **Step 3: 运行 import 检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import agent.generic.agent_loop; print('IMPORT OK')"`
+Run: `cd <repo_root> && python -c "import agent.generic.agent_loop; print('IMPORT OK')"`
 Expected: 输出 `IMPORT OK`
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py
 git commit -m "docs(agent_loop): 标注 should_exit/normal 路径的冗余截断
 
@@ -962,7 +962,7 @@ def test_unified_gate_truncates_should_exit_path(monkeypatch):
 
 - [ ] **Step 8: 运行全部测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -25`
+Run: `cd <repo_root> && python -m pytest tests/test_tool_truncation.py -v 2>&1 | tail -25`
 Expected: 所有测试 PASS（重写的 4 个 + 新增 list 测试 + 新增小 dict 测试 + 新增 should_exit 测试 + 其他原有测试）
 
 如果 mock 构造失败，执行者可调整 mock 策略（如直接调用 `_truncate_dict_result` / `_truncate_tool_content` 函数测试截断逻辑，不构造完整 agent_runner_loop）。
@@ -970,7 +970,7 @@ Expected: 所有测试 PASS（重写的 4 个 + 新增 list 测试 + 新增小 d
 - [ ] **Step 9: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_tool_truncation.py
 git commit -m "test(truncation): 重写测试覆盖统一关口 + 新增 list/小 dict/should_exit 测试
 
@@ -998,7 +998,7 @@ FakeResponse.tool_calls 用 SimpleNamespace（代码用 tc.function.name
 
 - [ ] **Step 1: 启动程序**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
+Run: `cd <repo_root> && ./niu &`
 然后: `sleep 8 && ps aux | grep niu | grep -v grep | head -3`
 Expected: niu 进程正常启动
 
@@ -1032,7 +1032,7 @@ Expected: 所有 niu 进程被杀
 - [ ] **Step 6: 最终 Commit（如有验证修复）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "test: 端到端验证截断关口统一化
 

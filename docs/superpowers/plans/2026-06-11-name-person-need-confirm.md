@@ -120,7 +120,7 @@
 - [ ] **Step 2: 验证代码语法正确**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('mcp-servers/photo-server/src/niu_photo_server/__init__.py').read()); print('Syntax OK')"
+cd <repo_root> && python -c "import ast; ast.parse(open('mcp-servers/photo-server/src/niu_photo_server/__init__.py').read()); print('Syntax OK')"
 ```
 
 - [ ] **Step 3: 同步更新 Skill 文档场景4的 JSON 示例**

@@ -180,7 +180,7 @@ def test_concurrent_update_and_snapshot_thread_safe():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_memory.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_memory.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agent.subagent_memory'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -237,7 +237,7 @@ class SubagentMemoryContext:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_memory.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_memory.py -v`
 Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
@@ -333,7 +333,7 @@ def test_registry_cancel_missing_unique_name_no_error():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agent.ask_main_agent'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -462,7 +462,7 @@ def get_pending_ask_registry() -> PendingAskRegistry:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent.py -v`
 Expected: PASS (6 tests)
 
 - [ ] **Step 5: Commit**
@@ -556,7 +556,7 @@ def test_peek_does_not_remove():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_main_agent_request_queue.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_main_agent_request_queue.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'agent.main_agent_request_queue'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -629,7 +629,7 @@ def get_main_agent_request_queue() -> MainAgentRequestQueue:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_main_agent_request_queue.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_main_agent_request_queue.py -v`
 Expected: PASS (5 tests)
 
 - [ ] **Step 5: Commit**
@@ -719,7 +719,7 @@ def test_list_running_filters_by_is_sync():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_registry_async.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_registry_async.py -v`
 Expected: FAIL with `TypeError: register() got an unexpected keyword argument 'task'`
 
 - [ ] **Step 3: Modify SubagentRegistry to add task field**
@@ -820,7 +820,7 @@ class SubagentRegistry:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_registry_async.py tests/test_subagent_registry.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_registry_async.py tests/test_subagent_registry.py -v 2>&1 | tail -20`
 Expected: PASS（新测试 3 个 + 阶段一已有测试不破坏）
 
 - [ ] **Step 5: Commit**
@@ -914,7 +914,7 @@ def test_call_subagent_without_memory_context_unchanged(llm_config):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_call_subagent_memory_hook.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_call_subagent_memory_hook.py -v`
 Expected: FAIL with `TypeError: call_subagent() got an unexpected keyword argument 'memory_context'`
 
 - [ ] **Step 3: Modify _run_agent_loop to accept and update memory_context**
@@ -1111,7 +1111,7 @@ def agent_runner_loop(
 在工具调度时更新 `last_tool_name`（在 `agent/generic/agent_loop.py` 的工具调度 for 循环体开头，约 L562 `for ii, tc in enumerate(tool_calls):` 之后、`handler.dispatch` 调用前）。先 Read 确认 L562 附近代码：
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && sed -n '555,580p' agent/generic/agent_loop.py
+cd <repo_root> && sed -n '555,580p' agent/generic/agent_loop.py
 ```
 
 确认 `for ii, tc in enumerate(tool_calls):` 循环位置后，在循环体开头（dispatch 调用前）加：
@@ -1130,12 +1130,12 @@ cd REDACTED_USER_PATH/tools/ai-bot && sed -n '555,580p' agent/generic/agent_loop
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_call_subagent_memory_hook.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_call_subagent_memory_hook.py -v`
 Expected: PASS (2 tests，真实 LLM 调用，可能需要 30-60 秒)
 
 - [ ] **Step 7: Run阶段一已有测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/ -v 2>&1 | tail -30`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/ -v 2>&1 | tail -30`
 Expected: 阶段一已有测试全部 PASS（同步子 Agent 路径 memory_context=None 不影响）
 
 - [ ] **Step 8: Commit**
@@ -1274,7 +1274,7 @@ def test_route_message_normal_supplement_to_subagent():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_db_monitor_ask_routing.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_db_monitor_ask_routing.py -v`
 Expected: FAIL — 现有 route_message 把所有 @子名 消息都推 supplement queue，没有 set_answer 路径
 
 - [ ] **Step 3: Modify route_message to route answers and cancel on /stop**
@@ -1366,12 +1366,12 @@ def route_message(target: str, sender: str, content: str) -> None:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_db_monitor_ask_routing.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_db_monitor_ask_routing.py -v`
 Expected: PASS (4 tests)
 
 - [ ] **Step 5: Run 阶段一已有 db_monitor 测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_db_monitor.py tests/test_at_message_parser.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_db_monitor.py tests/test_at_message_parser.py -v 2>&1 | tail -20`
 Expected: 阶段一已有测试全部 PASS（普通补充和 /stop 路径行为不变，只是多了 set_answer/cancel 路径）
 
 - [ ] **Step 6: 修复 request_stop_all_subagents 双击停止死锁**
@@ -1447,7 +1447,7 @@ def test_request_stop_all_subagents_cancels_pending_ask():
 
 - [ ] **Step 8: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_db_monitor_ask_routing.py::test_request_stop_all_subagents_cancels_pending_ask -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_db_monitor_ask_routing.py::test_request_stop_all_subagents_cancels_pending_ask -v`
 Expected: PASS
 
 - [ ] **Step 9: 链路 A — db_monitor 主 Agent 闲置检测 + MainAgentRequestQueue 消费 + 推 SSE**
@@ -1613,7 +1613,7 @@ def test_drain_skipped_when_queue_empty():
 
 - [ ] **Step 12: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_main_agent_request_queue_drain.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_main_agent_request_queue_drain.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 13: Commit**
@@ -1741,7 +1741,7 @@ def test_ask_main_agent_after_cancel_does_not_deadlock():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent.py::test_ask_main_agent_tool_returns_answer tests/test_ask_main_agent.py::test_ask_main_agent_tool_terminated_returns_terminated_status -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent.py::test_ask_main_agent_tool_returns_answer tests/test_ask_main_agent.py::test_ask_main_agent_tool_terminated_returns_terminated_status -v`
 Expected: FAIL with `ImportError: cannot import name '_ask_main_agent_impl' from 'agent.subagent'`
 
 - [ ] **Step 3: Implement _ask_main_agent_impl in agent/subagent.py**
@@ -1862,7 +1862,7 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent.py -v`
 Expected: PASS (8 tests = Task 2 的 6 个 + Task 6 新增 2 个集成测试)
 
 - [ ] **Step 6: Commit**
@@ -1914,7 +1914,7 @@ def test_sync_subagent_excludes_ask_main_agent():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent_injection.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent_injection.py -v`
 Expected: FAIL with `ImportError: cannot import name '_build_subagent_tools_schema'`
 
 - [ ] **Step 3: Extract _build_subagent_tools_schema helper and inject ask_main_agent for async**
@@ -2148,7 +2148,7 @@ Task 8 `_run_subagent_async` 调 call_subagent 时传 `unique_name=unique_name`�
 
 - [ ] **Step 7: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent_injection.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent_injection.py -v`
 Expected: PASS (2 tests)
 
 - [ ] **Step 8: Commit**
@@ -2323,7 +2323,7 @@ def test_run_subagent_async_pushes_completion_to_db(llm_config, tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_async_subagent_dispatch.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_async_subagent_dispatch.py -v`
 Expected: FAIL with `ImportError: cannot import name '_dispatch_async_subagent'`
 
 - [ ] **Step 3: Implement _dispatch_async_subagent + _run_subagent_async in agent/subagent.py**
@@ -2606,7 +2606,7 @@ async def _run_subagent_async(
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_async_subagent_dispatch.py -v -x --timeout=120`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_async_subagent_dispatch.py -v -x --timeout=120`
 Expected: PASS (2 tests，真实 LLM 调用，可能需要 30-60 秒)
 
 - [ ] **Step 6: Commit**
@@ -2708,7 +2708,7 @@ def test_check_subagent_progress_sync_subagent_no_memory():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_check_subagent_progress.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_check_subagent_progress.py -v`
 Expected: FAIL — `check_subagent_progress` 工具不存在，dispatch 走到"Unknown tool"
 
 - [ ] **Step 3: Add do_check_subagent_progress method in handler.py**
@@ -2796,7 +2796,7 @@ Expected: FAIL — `check_subagent_progress` 工具不存在，dispatch 走到"U
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_check_subagent_progress.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_check_subagent_progress.py -v`
 Expected: PASS (3 tests)
 
 - [ ] **Step 6: Commit**
@@ -2872,7 +2872,7 @@ def test_schema_excludes_async_mode_for_sync_only_subagent():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_chat_with_schema_async_mode.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_chat_with_schema_async_mode.py -v`
 Expected: FAIL — `async_mode` 参数不在 schema 里（现有 schema 只有 task 参数）
 
 - [ ] **Step 3: Modify get_tools_schema to add async_mode conditionally**
@@ -2963,7 +2963,7 @@ allowAsync: true
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_chat_with_schema_async_mode.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_chat_with_schema_async_mode.py -v`
 Expected: PASS (2 tests)
 
 - [ ] **Step 6: Commit**
@@ -3066,7 +3066,7 @@ def test_inject_caps_at_5_subagents():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_inject_running_subagents.py::test_inject_lists_running_async_subagents -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_inject_running_subagents.py::test_inject_lists_running_async_subagents -v`
 Expected: FAIL — 注入文本不含"后台子 Agent"段
 
 - [ ] **Step 3: Modify _inject_dynamic_resources to add subagent listing**
@@ -3127,7 +3127,7 @@ Expected: FAIL — 注入文本不含"后台子 Agent"段
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_inject_running_subagents.py::test_inject_lists_running_async_subagents -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_inject_running_subagents.py::test_inject_lists_running_async_subagents -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -3146,13 +3146,13 @@ git commit -m "feat(inject): 动态注入区列出后台异步子 Agent 清单�
 
 - [ ] **Step 1: Read current niu.md 确认阶段一段位置**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -n "主↔子\|对话规则\|@消息\|逐条回复" config/agents/niu.md`
+Run: `cd <repo_root> && grep -n "主↔子\|对话规则\|@消息\|逐条回复" config/agents/niu.md`
 
 预期输出含 L204 附近的 `## 主↔子 Agent 对话规则` 段（阶段一加的）。如果 grep 没匹配到，说明阶段一段名不同或已改动，必须 Read 整个 niu.md 找到对话规则段位置后再 Edit，不要盲目追加。
 
 - [ ] **Step 2: Read 阶段一段上下文确认追加位置**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "
+Run: `cd <repo_root> && python/bin/python -c "
 from agent.subagent import get_subagent_prompt
 p = get_subagent_prompt('niu')
 # 找对话规则段
@@ -3205,7 +3205,7 @@ else:
 
 - [ ] **Step 4: 验证 niu.md 改动不破坏启动**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "from agent.subagent import get_subagent_prompt; p = get_subagent_prompt('niu'); print('niu.md body length:', len(p)); print('contains 异步:', '异步' in p)"`
+Run: `cd <repo_root> && python/bin/python -c "from agent.subagent import get_subagent_prompt; p = get_subagent_prompt('niu'); print('niu.md body length:', len(p)); print('contains 异步:', '异步' in p)"`
 Expected: 输出 `niu.md body length: <某数>` 和 `contains 异步: True`，不报错
 
 - [ ] **Step 5: Commit**
@@ -3337,7 +3337,7 @@ def test_async_dispatch_and_completion_notification(llm_config, tmp_path):
 
 - [ ] **Step 2: Run test**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_integration_async_complete.py -v -x --timeout=120`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_integration_async_complete.py -v -x --timeout=120`
 Expected: PASS（真实 LLM 调用，约 30-60 秒）
 
 - [ ] **Step 3: Commit**
@@ -3528,7 +3528,7 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
 
 - [ ] **Step 2: Run test**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_ask_main_agent_stop_deadlock.py -v -x --timeout=180`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_ask_main_agent_stop_deadlock.py -v -x --timeout=180`
 Expected: PASS（真实 LLM 调用，约 30-120 秒）
 
 如果测试不稳定（LLM 不一定调 ask_main_agent），可加 `@pytest.mark.flaky(reruns=3)` 或在任务描述里更强约束让 LLM 一定调 ask_main_agent。
@@ -3549,7 +3549,7 @@ git commit -m "test(integration): ask_main_agent 阻塞期间收 /stop 不死锁
 
 - [ ] **Step 1: 跑全量单元测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/ -v 2>&1 | tail -50`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/ -v 2>&1 | tail -50`
 Expected: 所有测试 PASS（阶段一 63 个 + 阶段二新增约 20 个）
 
 - [ ] **Step 2: 杀所有 niu 进程**
@@ -3559,7 +3559,7 @@ Expected: 无残留进程
 
 - [ ] **Step 3: 启动真实程序**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
+Run: `cd <repo_root> && ./niu &`
 Expected: 程序启动，日志 `logs/api_stderr.log` 无 import 错误，db_monitor 启动日志出现
 
 - [ ] **Step 4: 验证 db_monitor 基线初始化**
@@ -3638,7 +3638,7 @@ git commit -m "test(stage2): 全量回归 + 真实程序验证通过"
 
 - [ ] **Step 1: Read current onNewMessage 实现**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -n "onNewMessage\|role ===" ui/assistant/chat.html | head -20`
+Run: `cd <repo_root> && grep -n "onNewMessage\|role ===" ui/assistant/chat.html | head -20`
 
 找到 `onNewMessage` 回调（约 L1426-1453），确认现有分支：
 - `role === "chat_idle"` → 重置状态机
@@ -3684,7 +3684,7 @@ if (data.role === 'chat_busy') { ... }
 
 - [ ] **Step 3: 验证前端改动不破坏现有逻辑**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
+Run: `cd <repo_root> && ./niu &`
 启动后：
 - 用户正常发消息 → 走现有 sendMessage 路径（不受影响）
 - 主 Agent 回复 → SSE 推 role=assistant → refreshFromDB（不受影响）

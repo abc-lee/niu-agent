@@ -534,7 +534,7 @@ JSON 不支持注释，所以用空字符串作为占位符，用户一看就知
 {
   "llm": {
     "presetId": "ark-code-latest",
-    "apiKey": "REDACTED_VOLCES_API_KEY",
+    "apiKey": "<YOUR_ARK_API_KEY>",
     "apiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
     "model": "ark-code-latest",
     "type": "openai"

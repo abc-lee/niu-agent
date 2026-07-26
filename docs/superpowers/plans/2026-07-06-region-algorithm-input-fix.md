@@ -105,7 +105,7 @@ def test_detect_communities_excludes_entities_connected_to_regions():
 - [ ] **Step 2: 跑测试验证失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_detector.py::test_detect_communities_excludes_entities_connected_to_regions -v
+cd <repo_root> && python -m pytest tests/test_region_detector.py::test_detect_communities_excludes_entities_connected_to_regions -v
 ```
 
 Expected: FAIL（已归属实体出现在分区里）
@@ -148,7 +148,7 @@ Expected: FAIL（已归属实体出现在分区里）
 - [ ] **Step 4: 跑测试验证通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_detector.py::test_detect_communities_excludes_entities_connected_to_regions -v
+cd <repo_root> && python -m pytest tests/test_region_detector.py::test_detect_communities_excludes_entities_connected_to_regions -v
 ```
 
 Expected: PASS
@@ -178,7 +178,7 @@ def _mock_get_all_region_members(request):
 - [ ] **Step 6: 跑全量 region_detector 测试，确保没回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_detector.py -v
+cd <repo_root> && python -m pytest tests/test_region_detector.py -v
 ```
 
 Expected: 全部 PASS
@@ -186,7 +186,7 @@ Expected: 全部 PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/region_detector.py tests/test_region_detector.py
+cd <repo_root> && git add niu_api/internal/region_detector.py tests/test_region_detector.py
 git commit -m "fix(region_detector): 排除已直连脑区的实体，避免重复发现同一社区
 
 每次跑 Leiden 前排除已通过'包含'边直连脑区的实体（脑区一级成员），
@@ -264,7 +264,7 @@ def test_cleanup_stale_regions_skips_delete_when_region_has_members_but_no_overl
 - [ ] **Step 2: 跑测试验证失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_manager.py::test_cleanup_stale_regions_skips_delete_when_region_has_members_but_no_overlap -v
+cd <repo_root> && python -m pytest tests/test_region_manager.py::test_cleanup_stale_regions_skips_delete_when_region_has_members_but_no_overlap -v
 ```
 
 Expected: FAIL（当前代码 L817 `best_jaccard == 0` 会删除）
@@ -442,7 +442,7 @@ v2 新逻辑：有成员但无交集 → 全部跳过。
 - [ ] **Step 5: 跑测试验证通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_manager.py::test_cleanup_stale_regions_skips_delete_when_region_has_members_but_no_overlap tests/test_region_manager.py::TestCleanupStaleRegions -v
+cd <repo_root> && python -m pytest tests/test_region_manager.py::test_cleanup_stale_regions_skips_delete_when_region_has_members_but_no_overlap tests/test_region_manager.py::TestCleanupStaleRegions -v
 ```
 
 Expected: 全部 PASS（新测试 + 更新的两个现有测试都通过）
@@ -450,7 +450,7 @@ Expected: 全部 PASS（新测试 + 更新的两个现有测试都通过）
 - [ ] **Step 6: 跑现有 region_manager 全量测试，确保没回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_manager.py -v
+cd <repo_root> && python -m pytest tests/test_region_manager.py -v
 ```
 
 Expected: 全部 PASS
@@ -458,7 +458,7 @@ Expected: 全部 PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/region_manager.py tests/test_region_manager.py
+cd <repo_root> && git add niu_api/internal/region_manager.py tests/test_region_manager.py
 git commit -m "fix(region_manager): cleanup_stale_regions 不因 Task 1 排除导致误删脑区
 
 Task 1 排除已归属实体后，cleanup_stale_regions 的 Jaccard 比对失效：
@@ -573,7 +573,7 @@ def test_refresh_activation_manager_skips_when_coverage_too_low(monkeypatch):
 - [ ] **Step 3: 跑测试验证失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py::test_refresh_activation_manager_does_not_overwrite_on_bulk_read_failure tests/test_region_sync.py::test_refresh_activation_manager_skips_when_coverage_too_low -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py::test_refresh_activation_manager_does_not_overwrite_on_bulk_read_failure tests/test_region_sync.py::test_refresh_activation_manager_skips_when_coverage_too_low -v
 ```
 
 Expected: FAIL
@@ -621,7 +621,7 @@ Expected: FAIL
 - [ ] **Step 5: 跑测试验证通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py::test_refresh_activation_manager_does_not_overwrite_on_bulk_read_failure tests/test_region_sync.py::test_refresh_activation_manager_skips_when_coverage_too_low -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py::test_refresh_activation_manager_does_not_overwrite_on_bulk_read_failure tests/test_region_sync.py::test_refresh_activation_manager_skips_when_coverage_too_low -v
 ```
 
 Expected: PASS
@@ -629,7 +629,7 @@ Expected: PASS
 - [ ] **Step 6: 跑现有 region_sync 全量测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py -v
 ```
 
 Expected: 全部 PASS。如果有测试 mock 了 `get_region_members`（单数），更新为 `get_all_region_members`（复数）。
@@ -637,7 +637,7 @@ Expected: 全部 PASS。如果有测试 mock 了 `get_region_members`（单数�
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add agent/injector/region_sync.py tests/test_region_sync.py
+cd <repo_root> && git add agent/injector/region_sync.py tests/test_region_sync.py
 git commit -m "fix(region_sync): 批量读取脑区成员 + 覆盖率检查，读取失败不污染 _entity_to_region
 
 _refresh_activation_manager 从循环逐个调 get_region_members 改为一次性调
@@ -739,7 +739,7 @@ def test_sync_loop_handles_future_last_sync(tmp_path):
 - [ ] **Step 3: 跑测试验证失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py::test_sync_loop_skips_first_sync_when_recently_synced tests/test_region_sync.py::test_sync_loop_handles_future_last_sync -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py::test_sync_loop_skips_first_sync_when_recently_synced tests/test_region_sync.py::test_sync_loop_handles_future_last_sync -v
 ```
 
 Expected: FAIL
@@ -800,7 +800,7 @@ Expected: FAIL
 - [ ] **Step 5: 跑测试验证通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py::test_sync_loop_skips_first_sync_when_recently_synced tests/test_region_sync.py::test_sync_loop_handles_future_last_sync -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py::test_sync_loop_skips_first_sync_when_recently_synced tests/test_region_sync.py::test_sync_loop_handles_future_last_sync -v
 ```
 
 Expected: PASS
@@ -808,7 +808,7 @@ Expected: PASS
 - [ ] **Step 6: 跑现有 region_sync 全量测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py -v
 ```
 
 Expected: 全部 PASS
@@ -816,7 +816,7 @@ Expected: 全部 PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add agent/injector/region_sync.py tests/test_region_sync.py
+cd <repo_root> && git add agent/injector/region_sync.py tests/test_region_sync.py
 git commit -m "fix(region_sync): _sync_loop 读 status file 跳过首次同步 + 时间回拨保护
 
 _load_status 之前定义了但无调用点（死代码），导致每次重启都触发首次同步。
@@ -884,7 +884,7 @@ def test_merge_and_dissolve_logs_warning_on_dissolve_exception(monkeypatch):
 - [ ] **Step 2: 跑测试验证失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py::test_merge_and_dissolve_logs_warning_on_dissolve_exception -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py::test_merge_and_dissolve_logs_warning_on_dissolve_exception -v
 ```
 
 Expected: FAIL（当前代码用 `logger.debug`，caplog 在 WARNING 级别抓不到）
@@ -918,7 +918,7 @@ Expected: FAIL（当前代码用 `logger.debug`，caplog 在 WARNING 级别抓�
 - [ ] **Step 4: 跑测试验证通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py::test_merge_and_dissolve_logs_warning_on_dissolve_exception -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py::test_merge_and_dissolve_logs_warning_on_dissolve_exception -v
 ```
 
 Expected: PASS
@@ -926,7 +926,7 @@ Expected: PASS
 - [ ] **Step 5: 跑现有 region_sync 全量测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_sync.py -v
+cd <repo_root> && python -m pytest tests/test_region_sync.py -v
 ```
 
 Expected: 全部 PASS
@@ -934,7 +934,7 @@ Expected: 全部 PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add agent/injector/region_sync.py tests/test_region_sync.py
+cd <repo_root> && git add agent/injector/region_sync.py tests/test_region_sync.py
 git commit -m "fix(region_sync): merge/dissolve 异常从 debug 升级到 warning
 
 dissolve 异常被 logger.debug 静默吞掉，导致 dissolve 失败时无可见日志。
@@ -958,7 +958,7 @@ dissolve 异常被 logger.debug 静默吞掉，导致 dissolve 失败时无可�
 - [ ] **Step 1: 确认 Task 1-5 都已 commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git log --oneline -6
+cd <repo_root> && git log --oneline -6
 ```
 
 Expected: 看到 5 个 fix commit
@@ -966,9 +966,9 @@ Expected: 看到 5 个 fix commit
 - [ ] **Step 2: 启动程序，观察日志**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && ./niu &
+cd <repo_root> && ./niu &
 sleep 90
-grep -E "排除.*已归属实体|覆盖率|跳过激活管理器刷新|create_region_nodes|过滤.*小社区|距上次同步|立即首次同步" REDACTED_USER_PATH/tools/ai-bot/logs/llm_interaction_$(date +%Y%m%d).log | tail -30
+grep -E "排除.*已归属实体|覆盖率|跳过激活管理器刷新|create_region_nodes|过滤.*小社区|距上次同步|立即首次同步" <repo_root>/logs/llm_interaction_$(date +%Y%m%d).log | tail -30
 ```
 
 Expected:
@@ -991,9 +991,9 @@ Expected: 之前显示 0 实体的脑区现在显示 100+ 实体；非默认脑�
 # 用 pgrep + kill -TERM 优雅退出（禁止 pkill -f niu）
 pgrep -f "niu_api" | xargs kill -TERM
 sleep 3
-cd REDACTED_USER_PATH/tools/ai-bot && ./niu &
+cd <repo_root> && ./niu &
 sleep 90
-grep -E "距上次同步|立即首次同步|regions_created|排除.*已归属实体" REDACTED_USER_PATH/tools/ai-bot/logs/llm_interaction_$(date +%Y%m%d).log | tail -10
+grep -E "距上次同步|立即首次同步|regions_created|排除.*已归属实体" <repo_root>/logs/llm_interaction_$(date +%Y%m%d).log | tail -10
 ```
 
 Expected:

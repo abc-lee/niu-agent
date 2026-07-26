@@ -153,7 +153,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: 运行基准测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python scripts/test_llm_baseline.py`
+Run: `cd <repo_root> && python scripts/test_llm_baseline.py`
 Expected: 显示各层级耗时
 
 - [ ] **Step 3: 分析结果，确定下一步方向**

@@ -197,7 +197,7 @@ def test_drain_supplement_multiple_joins_with_prefix():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_supplement_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_supplement_queue.py -v`
 Expected: FAIL — `ImportError: cannot import name 'enqueue_supplement' from 'agent.runner'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -247,7 +247,7 @@ def drain_supplement() -> str | None:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_supplement_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_supplement_queue.py -v`
 Expected: PASS（8 tests）
 
 - [ ] **Step 5: Commit**
@@ -341,7 +341,7 @@ def test_supplement_inserted_before_next_prompt():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_supplement_queue.py::test_supplement_inserted_before_next_prompt -v`
+Run: `cd <repo_root> && python -m pytest tests/test_supplement_queue.py::test_supplement_inserted_before_next_prompt -v`
 Expected: FAIL — supplement message not found
 
 - [ ] **Step 3: Write minimal implementation**
@@ -390,7 +390,7 @@ from agent.runner import is_stop_requested, clear_stop, drain_supplement
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_supplement_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_supplement_queue.py -v`
 Expected: PASS（9 tests）
 
 - [ ] **Step 5: 在 `_run_agent_loop` 中传递 `enable_supplement=False`**
@@ -434,11 +434,11 @@ Expected: PASS（9 tests）
 
 - [ ] **Step 6: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.generic.agent_loop import agent_runner_loop; print('agent_loop OK')" && python -c "from agent.subagent import call_subagent; print('subagent OK')"`
+Run: `cd <repo_root> && python -c "from agent.generic.agent_loop import agent_runner_loop; print('agent_loop OK')" && python -c "from agent.subagent import call_subagent; print('subagent OK')"`
 
 - [ ] **Step 7: Run all tests**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_supplement_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_supplement_queue.py -v`
 Expected: PASS（9 tests）
 
 - [ ] **Step 8: Commit**
@@ -509,7 +509,7 @@ git commit -m "feat: agent_runner_loop reads supplement messages before next_pro
 
 - [ ] **Step 2: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import niu_api.compat; print('OK')"`
+Run: `cd <repo_root> && python -c "import niu_api.compat; print('OK')"`
 
 - [ ] **Step 3: Commit**
 
@@ -686,7 +686,7 @@ git commit -m "fix: remove isProcessing guard and busyTimeout, UI state driven b
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import niu_api.compat; print('compat OK')"`
+Run: `cd <repo_root> && python -c "import niu_api.compat; print('compat OK')"`
 
 - [ ] **Step 4: Commit**
 
@@ -889,7 +889,7 @@ def test_subagent_does_not_drain_supplement():
 
 - [ ] **Step 2: 运行全部测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_supplement_queue.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_supplement_queue.py -v`
 Expected: PASS（12 tests）
 
 - [ ] **Step 3: 更新 SYSTEM_MANUAL.md**

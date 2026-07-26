@@ -82,7 +82,7 @@ def test_dissolve_shrink_threshold_default_is_100():
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py::test_dissolve_shrink_threshold_default_is_100 -v
 ```
 
@@ -158,7 +158,7 @@ python -m pytest tests/test_region_manager_decay.py::test_dissolve_shrink_thresh
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py::test_dissolve_shrink_threshold_default_is_100 -v
 ```
 
@@ -167,7 +167,7 @@ python -m pytest tests/test_region_manager_decay.py::test_dissolve_shrink_thresh
 - [ ] **Step 5: 跑回归测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py tests/test_region_manager.py -v 2>&1 | tail -20
 ```
 
@@ -176,7 +176,7 @@ python -m pytest tests/test_region_manager_decay.py tests/test_region_manager.py
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_manager_decay.py niu_api/internal/region_manager.py
 git commit -m "fix(region_manager): 恢复 dissolve_shrunk_regions shrink_threshold 默认值到 100
 
@@ -427,7 +427,7 @@ def test_has_isolated_member_degree_zero_returns_true():
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py -k "has_isolated_member" -v 2>&1 | tail -20
 ```
 
@@ -501,7 +501,7 @@ python -m pytest tests/test_region_manager_decay.py -k "has_isolated_member" -v 
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py -k "has_isolated_member" -v 2>&1 | tail -15
 ```
 
@@ -510,7 +510,7 @@ python -m pytest tests/test_region_manager_decay.py -k "has_isolated_member" -v 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_manager_decay.py niu_api/internal/region_manager.py
 git commit -m "feat(region_manager): 新增 _has_isolated_member 辅助方法
 
@@ -859,7 +859,7 @@ def test_dissolve_multiple_regions_one_blocked_one_succeeds():
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py -k "dissolve_cancelled or dissolve_executed" -v 2>&1 | tail -20
 ```
 
@@ -1012,7 +1012,7 @@ python -m pytest tests/test_region_manager_decay.py -k "dissolve_cancelled or di
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py -k "dissolve_cancelled or dissolve_executed" -v 2>&1 | tail -20
 ```
 
@@ -1021,7 +1021,7 @@ python -m pytest tests/test_region_manager_decay.py -k "dissolve_cancelled or di
 - [ ] **Step 5: 跑回归测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py tests/test_region_manager.py -v 2>&1 | tail -30
 ```
 
@@ -1030,7 +1030,7 @@ python -m pytest tests/test_region_manager_decay.py tests/test_region_manager.py
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_manager_decay.py niu_api/internal/region_manager.py
 git commit -m "feat(region_manager): dissolve 执行前加孤岛保护
 
@@ -1112,7 +1112,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 2: 检查现有测试是否依赖 10 阈值**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -rn "shrink_threshold" tests/ 2>&1 | head -20
 ```
 
@@ -1123,7 +1123,7 @@ grep -rn "shrink_threshold" tests/ 2>&1 | head -20
 - [ ] **Step 3: 跑全量 region 测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/ -k "region or decay or dissolve" -v 2>&1 | tail -30
 ```
 
@@ -1134,7 +1134,7 @@ python -m pytest tests/ -k "region or decay or dissolve" -v 2>&1 | tail -30
 读 `docs/manual-vector-store.md` 找脑区 dissolve 章节。先用 grep 确认插入点：
 
 ```bash
-grep -n "dissolve\|萎缩\|shrink" REDACTED_USER_PATH/tools/ai-bot/docs/manual-vector-store.md | head -10
+grep -n "dissolve\|萎缩\|shrink" <repo_root>/docs/manual-vector-store.md | head -10
 ```
 
 找到 dissolve 算法说明段落后，补充：
@@ -1160,7 +1160,7 @@ grep -n "dissolve\|萎缩\|shrink" REDACTED_USER_PATH/tools/ai-bot/docs/manual-v
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_manager.py docs/manual-vector-store.md
 git commit -m "docs+test: 更新 dissolve 测试 + 文档补充阈值恢复和孤岛保护说明
 
@@ -1175,7 +1175,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ## 验证清单（所有 Task 完成后跑）
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 
 # 1. 所有新增测试通过
 python -m pytest tests/test_region_manager_decay.py -v

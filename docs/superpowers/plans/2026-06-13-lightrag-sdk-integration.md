@@ -167,7 +167,7 @@ def test_drop_params_set_when_both_response_format_and_reasoning_effort():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_litellm_adapter_drop_params.py::test_drop_params_set_when_response_format_present -v`
+Run: `cd <repo_root> && python -m pytest tests/test_litellm_adapter_drop_params.py::test_drop_params_set_when_response_format_present -v`
 Expected: FAIL — `drop_params` is not yet set when `response_format` is present
 
 - [ ] **Step 3: Write minimal implementation**
@@ -181,12 +181,12 @@ In `agent/generic/litellm_adapter.py`, after line 354 (`if provider_params.get("
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_litellm_adapter_drop_params.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_litellm_adapter_drop_params.py -v`
 Expected: All 4 tests PASS
 
 - [ ] **Step 5: Verify existing tests still pass**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_litellm_adapter_drop_params.py -v && python -m pytest agent/tests/ -v -k "litellm" 2>/dev/null || true`
+Run: `cd <repo_root> && python -m pytest tests/test_litellm_adapter_drop_params.py -v && python -m pytest agent/tests/ -v -k "litellm" 2>/dev/null || true`
 Expected: New tests PASS, existing tests unaffected
 
 - [ ] **Step 6: Commit**
@@ -275,7 +275,7 @@ class TestLlmModelFunc:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc::test_basic_text_call_returns_string -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc::test_basic_text_call_returns_string -v`
 Expected: FAIL — `_build_llm_model_func` does not exist yet
 
 - [ ] **Step 3: Write `_build_llm_model_func` and the new `_llm_model_func` implementation**
@@ -461,7 +461,7 @@ Also remove the `from lightrag.llm.openai import openai_complete_if_cache` impor
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc::test_basic_text_call_returns_string -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc::test_basic_text_call_returns_string -v`
 Expected: PASS
 
 - [ ] **Step 5: Write failing test for keyword_extraction response_format**
@@ -504,7 +504,7 @@ Add to `tests/test_lightrag_manager.py` in `TestLlmModelFunc` class:
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc::test_keyword_extraction_builds_response_format -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc::test_keyword_extraction_builds_response_format -v`
 Expected: PASS
 
 - [ ] **Step 7: Write failing test for brain region injection**
@@ -608,7 +608,7 @@ Add to `tests/test_lightrag_manager.py` in `TestLlmModelFunc` class:
 
 - [ ] **Step 8: Run tests to verify they pass**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
 Expected: All tests PASS
 
 - [ ] **Step 9: Write failing test for enable_cot handling**
@@ -693,7 +693,7 @@ Add to `tests/test_lightrag_manager.py` in `TestLlmModelFunc` class:
 
 - [ ] **Step 10: Run tests to verify they pass**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
 Expected: All tests PASS
 
 - [ ] **Step 11: Write test for LightRAG internal params being popped**
@@ -741,7 +741,7 @@ Add to `tests/test_lightrag_manager.py` in `TestLlmModelFunc` class:
 
 - [ ] **Step 12: Run tests to verify they pass**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
 Expected: PASS
 
 - [ ] **Step 13: Write test for history_messages with content=None**
@@ -785,12 +785,12 @@ Add to `tests/test_lightrag_manager.py` in `TestLlmModelFunc` class:
 
 - [ ] **Step 14: Run tests to verify they pass**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestLlmModelFunc -v`
 Expected: PASS
 
 - [ ] **Step 15: Run all lightrag_manager tests together**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py -v`
 Expected: All tests PASS (old + new)
 
 - [ ] **Step 16: Commit**
@@ -834,7 +834,7 @@ Add to `tests/test_lightrag_manager.py`:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestConfig::test_no_proxy_base_url_constant -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestConfig::test_no_proxy_base_url_constant -v`
 Expected: FAIL — `PROXY_BASE_URL` still exists
 
 - [ ] **Step 3: Delete the old code**
@@ -852,7 +852,7 @@ In `get_lightrag_status()` function (line 775):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestConfig::test_no_proxy_base_url_constant tests/test_lightrag_manager.py::TestConfig::test_no_proxy_api_key_constant tests/test_lightrag_manager.py::TestConfig::test_no_shared_openai_client -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestConfig::test_no_proxy_base_url_constant tests/test_lightrag_manager.py::TestConfig::test_no_proxy_api_key_constant tests/test_lightrag_manager.py::TestConfig::test_no_shared_openai_client -v`
 Expected: All PASS
 
 - [ ] **Step 5: Write failing test — verify proxy_base_url removed from status**
@@ -869,7 +869,7 @@ Add to `tests/test_lightrag_manager.py`:
 
 - [ ] **Step 6: Run test to verify it passes (already fixed in Step 3)**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py::TestStatus::test_status_dict_no_proxy_base_url_key -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py::TestStatus::test_status_dict_no_proxy_base_url_key -v`
 Expected: PASS
 
 - [ ] **Step 7: Delete old `test_proxy_base_url` test**
@@ -880,7 +880,7 @@ In `tests/test_lightrag_manager.py`, delete:
 
 - [ ] **Step 8: Run all lightrag_manager tests**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py -v`
 Expected: All tests PASS
 
 - [ ] **Step 9: Commit**
@@ -933,7 +933,7 @@ class TestEndpointRemoval:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_llm_proxy.py::TestEndpointRemoval -v`
+Run: `cd <repo_root> && python -m pytest tests/test_llm_proxy.py::TestEndpointRemoval -v`
 Expected: FAIL — `/chat/completions` and `/embeddings` still exist in routes
 
 - [ ] **Step 3: Delete the unused code in llm_proxy.py**
@@ -964,7 +964,7 @@ Remaining HTTP endpoints:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_llm_proxy.py::TestEndpointRemoval -v`
+Run: `cd <repo_root> && python -m pytest tests/test_llm_proxy.py::TestEndpointRemoval -v`
 Expected: All 3 tests PASS
 
 - [ ] **Step 5: Delete old test classes that test removed endpoints**
@@ -985,12 +985,12 @@ rm tests/test_llm_proxy_injection.py
 
 - [ ] **Step 7: Run remaining proxy tests**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_llm_proxy.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_llm_proxy.py -v`
 Expected: Only `TestHealthEndpoint`, `TestModelsEndpoint`, `TestStatusEndpoint`, `TestFormatConversion`, and `TestEndpointRemoval` tests remain — all PASS
 
 - [ ] **Step 8: Verify MCP client still works**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.llm_proxy import get_llm_config, call_llm_via_litellm; print('MCP imports OK')"`
+Run: `cd <repo_root> && python -c "from niu_api.llm_proxy import get_llm_config, call_llm_via_litellm; print('MCP imports OK')"`
 Expected: `MCP imports OK` — no import errors
 
 - [ ] **Step 9: Commit**
@@ -1014,12 +1014,12 @@ git commit -m "refactor: delete unused proxy endpoints and brain region intercep
 
 - [ ] **Step 1: Syntax check all modified files**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m py_compile niu_api/internal/lightrag_manager.py && python -m py_compile niu_api/llm_proxy.py && python -m py_compile agent/generic/litellm_adapter.py && echo "All files compile OK"`
+Run: `cd <repo_root> && python -m py_compile niu_api/internal/lightrag_manager.py && python -m py_compile niu_api/llm_proxy.py && python -m py_compile agent/generic/litellm_adapter.py && echo "All files compile OK"`
 Expected: All files compile without errors
 
 - [ ] **Step 2: Import chain validation**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "
+Run: `cd <repo_root> && python -c "
 from niu_api.internal.lightrag_manager import _build_llm_model_func, get_lightrag_status, get_brain_regions
 from niu_api.llm_proxy import get_llm_config, call_llm_via_litellm, router
 from niu_api.internal.brain_region_prompt import build_static_brain_region_prompt, build_dynamic_brain_region_prompt
@@ -1033,12 +1033,12 @@ Expected: `All imports OK` and `Status dict has no proxy_base_url: OK`
 
 - [ ] **Step 3: Verify __main__.py router registration is intact**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.__main__ import app; routes = [r.path for r in app.routes]; llm_routes = [r for r in routes if '/llm/v1' in r]; print(f'LLM routes: {llm_routes}')"`
+Run: `cd <repo_root> && python -c "from niu_api.__main__ import app; routes = [r.path for r in app.routes]; llm_routes = [r for r in routes if '/llm/v1' in r]; print(f'LLM routes: {llm_routes}')"`
 Expected: LLM routes still include `/llm/v1/models`, `/llm/v1/health`, `/llm/v1/status` but NOT `/llm/v1/chat/completions` or `/llm/v1/embeddings`
 
 - [ ] **Step 4: Run full test suite**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py tests/test_llm_proxy.py tests/test_litellm_adapter_drop_params.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py tests/test_llm_proxy.py tests/test_litellm_adapter_drop_params.py -v`
 Expected: All tests PASS
 
 - [ ] **Step 5: Commit (final verification commit)**
