@@ -100,7 +100,7 @@ implementer 在 Task 0 阶段应：
 - [ ] **Step 2: 临时备份**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before skill counter integration (baseline)"
 ```
 
@@ -407,7 +407,7 @@ def test_default_inject_threshold_is_3():
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_skill_score_counter.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_skill_score_counter.py -v`
 Expected: FAIL with "AttributeError: type object 'NiuRunner' has no attribute '_update_skill_counter'"
 
 - [ ] **Step 3: 实现核心算法**
@@ -513,13 +513,13 @@ Expected: FAIL with "AttributeError: type object 'NiuRunner' has no attribute '_
 
 - [ ] **Step 4: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_skill_score_counter.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_skill_score_counter.py -v`
 Expected: 26 个测试全 PASS
 
 - [ ] **Step 5: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_skill_score_counter.py
 git commit -m "feat(skill-inject): 新增 skill 计数器核心算法（衰减-加分-置位）"
 ```
@@ -697,7 +697,7 @@ def test_inject_uses_cache_when_not_hit_this_round(runner):
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_skill_inject_integration.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_skill_inject_integration.py -v`
 Expected: FAIL（计数器没初始化、_inject_dynamic_resources 没调 _update_skill_counter）
 
 - [ ] **Step 3: 在 `__init__` 初始化计数器 + entity cache**
@@ -714,7 +714,7 @@ self._skill_entity_cache: dict[str, dict] = {}  # entity dict 跨轮缓存
 **实施前置**：本步骤修改 `agent/runner.py` 前必须先备份当前状态（CLAUDE.md 铁律第 3 条）：
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before skill counter __init__ integration"
 ```
 
@@ -831,18 +831,18 @@ if region_knowledge:
 
 - [ ] **Step 5: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_skill_inject_integration.py tests/test_skill_score_counter.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_skill_inject_integration.py tests/test_skill_score_counter.py -v`
 Expected: 全 PASS
 
 - [ ] **Step 6: 运行现有 lightrag 相关测试确保没回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_manager.py tests/test_tool_lifecycle.py -v 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/test_lightrag_manager.py tests/test_tool_lifecycle.py -v 2>&1 | tail -30`
 Expected: 现有测试全 PASS（`test_tool_lifecycle.py` 本来就断言 tool_lifecycle 模块不存在，应继续 PASS）
 
 - [ ] **Step 7: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_skill_inject_integration.py
 git commit -m "feat(skill-inject): _inject_dynamic_resources 接入计数器两阶段 Top_K"
 ```
@@ -858,7 +858,7 @@ git commit -m "feat(skill-inject): _inject_dynamic_resources 接入计数器两�
 - [ ] **Step 1: 启动程序并触发 skill 检索**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu &
 ```
 
@@ -901,7 +901,7 @@ kill -TERM $(pgrep -f "niu")
 - [ ] **Step 6: 撤销临时日志**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git diff HEAD agent/runner.py tests/  # 确认无临时日志残留
 grep -rn "SkillCounter update\|Lightrag results sample" agent/ tests/  # 兜底检查临时日志字符串
 ```

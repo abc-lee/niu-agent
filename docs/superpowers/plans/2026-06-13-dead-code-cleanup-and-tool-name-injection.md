@@ -174,13 +174,13 @@ L1177-1182，将：
 
 - [ ] **Step 9: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True); py_compile.compile('agent/runner.py', doraise=True); print('OK')"`
+Run: `cd <repo_root> && python3 -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True); py_compile.compile('agent/runner.py', doraise=True); print('OK')"`
 
 Expected: OK
 
 - [ ] **Step 10: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && PYTHONPATH=. python -m pytest tests/test_journal_agent_tidy.py tests/test_subagent_overflow.py -v -k "tidy or auto_tidy"`
+Run: `cd <repo_root> && PYTHONPATH=. python -m pytest tests/test_journal_agent_tidy.py tests/test_subagent_overflow.py -v -k "tidy or auto_tidy"`
 
 Expected: all passed
 
@@ -287,19 +287,19 @@ def test_truncate_tool_content_without_name():
 
 - [ ] **Step 3: 运行新测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && PYTHONPATH=. python -m pytest tests/test_proactive_fifo.py -v -k "truncate_tool_content"`
+Run: `cd <repo_root> && PYTHONPATH=. python -m pytest tests/test_proactive_fifo.py -v -k "truncate_tool_content"`
 
 Expected: 2 passed
 
 - [ ] **Step 4: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('agent/generic/agent_loop.py', doraise=True); print('OK')"`
+Run: `cd <repo_root> && python3 -c "import py_compile; py_compile.compile('agent/generic/agent_loop.py', doraise=True); print('OK')"`
 
 Expected: OK
 
 - [ ] **Step 5: 运行全部测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && PYTHONPATH=. python -m pytest tests/test_proactive_fifo.py -v`
+Run: `cd <repo_root> && PYTHONPATH=. python -m pytest tests/test_proactive_fifo.py -v`
 
 Expected: 13 passed
 

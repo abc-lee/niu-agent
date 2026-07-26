@@ -183,13 +183,13 @@ ai-bot/                                # 项目根
 
 - [ ] **Step 0.1**：检查工作区干净（除本次新计划文件外）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 ```
 
 - [ ] **Step 0.2**：临时备份提交（标注问题名+节点类型+基线 hash）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "backup: 启动阻塞+repair结果展示+截断修复 改造前临时备份 (baseline 27b287f4)
 
@@ -328,7 +328,7 @@ def test_scheduler_delayed_start_cancelled_when_lightrag_corrupt():
 
 - [ ] **Step 1.2**：跑测试确认失败（当前代码没有 should_signal_scheduler_ready / pause_chatqueue_if_corrupt / should_start_db_monitor / cancel_scheduler_delayed_start_if_corrupt，且 Scheduler 无 cancel_delayed_start 方法）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_startup_block.py -v 2>&1 | tail -40
 ```
 **预期失败**：ImportError（找不到 `should_signal_scheduler_ready` / `pause_chatqueue_if_corrupt` / `should_start_db_monitor` / `cancel_scheduler_delayed_start_if_corrupt`）+ AttributeError（`Scheduler` 无 `cancel_delayed_start`）。
@@ -427,13 +427,13 @@ def cancel_scheduler_delayed_start_if_corrupt(phase1_result: dict) -> None:
 
 - [ ] **Step 2.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "from niu_api.internal.scheduler.scheduler import Scheduler; assert hasattr(Scheduler, 'cancel_delayed_start'); from niu_api.internal.lightrag_manager import should_signal_scheduler_ready, should_start_db_monitor, pause_chatqueue_if_corrupt, cancel_scheduler_delayed_start_if_corrupt; print('OK')"
 ```
 
 - [ ] **Step 2.4**：跑 Task 1 的测试，验证四个测试通过
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_startup_block.py -v
 ```
 **预期**：4 个测试全部通过。
@@ -571,13 +571,13 @@ python -m pytest tests/test_lightrag_startup_block.py -v
 
 - [ ] **Step 2.8**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "from niu_api.__main__ import lifespan; print('OK')"
 ```
 
 - [ ] **Step 2.9**：跑 Task 1 全部测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_startup_block.py -v
 ```
 **预期**：4 个测试全部通过。
@@ -664,7 +664,7 @@ def test_run_repair_sync_error_returns_repaired_false():
 
 - [ ] **Step 3.2**：跑测试确认失败（当前 `repaired=True` 硬编码，第一个测试通过，后两个失败）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_result_display.py -v 2>&1 | tail -40
 ```
 **预期失败**：
@@ -768,13 +768,13 @@ async def repair_lightrag_storage(target: str = "all") -> dict:
 
 - [ ] **Step 4.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "from niu_api.kg_api import repair_lightrag_storage; import inspect; assert inspect.iscoroutinefunction(repair_lightrag_storage); from niu_api.internal.lightrag_manager import run_repair_on_user_request; print('OK')"
 ```
 
 - [ ] **Step 4.4**：跑 Task 3 全部测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_result_display.py -v
 ```
 **预期**：3 个测试全部通过。
@@ -962,14 +962,14 @@ fn format_repair_summary(resp_text: &str) -> String {
 
 - [ ] **Step 5.3**：用 launcher/build.sh 编译（铁律 #8）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./launcher/build.sh 2>&1 | tail -20
 ```
 **预期**：编译成功，`niu` 二进制更新到项目根目录。
 
 - [ ] **Step 5.4**：如果编译失败，检查 serde_json 依赖
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep "serde_json" launcher/Cargo.toml
 ```
 **预期**：`serde_json` 已在依赖里（main.rs 顶部 `use serde::Deserialize` 表明 serde 已引入，serde_json 通常一起引入）。如未引入，加 `serde_json = "1"` 到 `[dependencies]`。
@@ -1150,7 +1150,7 @@ def test_repair_vdb_uses_truncate_repair_when_json_load_fails(tmp_path):
 
 - [ ] **Step 6.2**：跑测试确认失败（当前没有 `_try_truncate_repair` 函数，repair_vdb 不调用截断修复）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_truncate_repair.py -v 2>&1 | tail -40
 ```
 **预期失败**：ImportError（找不到 `_try_truncate_repair`）。
@@ -1308,20 +1308,20 @@ def _try_truncate_repair(vdb_filename: str) -> list[dict] | None:
 
 - [ ] **Step 7.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "from niu_api.internal.lightrag_repair import _try_truncate_repair, repair_vdb; print('OK')"
 ```
 
 - [ ] **Step 7.4**：跑 Task 6 全部测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_truncate_repair.py -v
 ```
 **预期**：4 个测试全部通过。
 
 - [ ] **Step 7.5**：跑现有 lightrag_repair 测试做回归
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair.py -v 2>&1 | tail -40
 ```
 **预期**：全部通过（截断修复是新增逻辑，不改原有 repair_vdb 行为，只在新 fallback 路径调用）。
@@ -1334,21 +1334,21 @@ python -m pytest tests/test_lightrag_repair.py -v 2>&1 | tail -40
 
 - [ ] **Step 8.1**：跑 lightrag 相关全套测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair.py tests/test_lightrag_integrity.py tests/test_lightrag_truncate_repair.py tests/test_lightrag_repair_result_display.py tests/test_lightrag_startup_block.py -v 2>&1 | tail -60
 ```
 **预期**：全部通过。
 
 - [ ] **Step 8.2**：跑 chat_queue 和 scheduler 回归测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_chat_queue.py tests/test_scheduler*.py -v 2>&1 | tail -40
 ```
 **预期**：全部通过（pause 机制已有，不动；scheduler 不动）。
 
 - [ ] **Step 8.3**：如果任何测试失败，立即撤销改动恢复原状（铁律 #5）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 不用 git checkout（铁律 #8），用 Edit 工具精确回退改动点
 # 如有需要，从 Task 0 的备份 commit 恢复
 git log --oneline -5  # 找到 Task 0 的 backup commit hash
@@ -1453,7 +1453,7 @@ print(truncate_at)
         echo "TRUNCATED: ${VDB_FILE} (${ORIG_SIZE} bytes -> ${NEW_SIZE} bytes, cut at ${TRUNCATE_POS})"
         echo ""
         echo "现在可以启动程序测试："
-        echo "  cd REDACTED_USER_PATH/tools/ai-bot && ./niu"
+        echo "  cd <repo_root> && ./niu"
         echo ""
         echo "预期："
         echo "  1. splash 启动 → 检测到 vdb 损坏 → 弹'LightRAG 数据异常'对话框"
@@ -1499,7 +1499,7 @@ esac
 
 - [ ] **Step 9.2**：给脚本可执行权限
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 chmod +x scripts/make_vdb_corrupt_test_env.sh
 ```
 
@@ -1513,7 +1513,7 @@ chmod +x scripts/make_vdb_corrupt_test_env.sh
 
 - [ ] **Step 10.1**：清理测试环境（杀掉所有 niu 进程）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ps aux | grep -E "niu|launcher" | grep -v grep
 # 用 kill -TERM <pid> 逐个优雅退出（铁律 #7 不能 pkill -f niu）
 ```
@@ -1527,14 +1527,14 @@ ls -la ~/.niu/lightrag_storage/vdb_entities.json
 
 - [ ] **Step 10.3**：制造损坏现场
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./scripts/make_vdb_corrupt_test_env.sh create
 ```
 **预期输出**：BACKED UP + TRUNCATED + 测试说明。
 
 - [ ] **Step 10.4**：启动程序
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu &
 # 等待 splash 显示
 ```
@@ -1587,7 +1587,7 @@ grep -E "截断修复|vdb_truncate_repair|repair_vdb" logs/api_stderr.log | tail
 
 **额外验证——vdb_entities.json 完整性（json.load 可解析）**：
 ```bash
-python -c "import json; d=json.load(open('REDACTED_USER_PATH/.niu/lightrag/vdb_entities.json')); print('OK, entries=', len(d))"
+python -c "import json; d=json.load(open('~/.niu/lightrag/vdb_entities.json')); print('OK, entries=', len(d))"
 ```
 **预期**：
 - 退出码 0，输出 `OK, entries= N`（N>0）
@@ -1596,7 +1596,7 @@ python -c "import json; d=json.load(open('REDACTED_USER_PATH/.niu/lightrag/vdb_e
 
 - [ ] **Step 10.8**：恢复真实 vdb
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./scripts/make_vdb_corrupt_test_env.sh restore
 ```
 **预期输出**：RESTORED。
@@ -1610,7 +1610,7 @@ ps aux | grep -E "niu|launcher" | grep -v grep  # 应为空
 
 - [ ] **Step 10.10**：可选——再做一次正常启动验证（确认恢复后程序能正常启动）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu &
 # 等待启动完成，看到 "LightRAG instance initialized (eager)" 和 API ready
 # 看到 splash 消失，主窗口打开
@@ -1623,7 +1623,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 
 - [ ] **Step 11.1**：检查改动范围
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git diff --stat
 ```
@@ -1642,7 +1642,7 @@ git diff --stat
 
 - [ ] **Step 11.2**：提交修复
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/__main__.py niu_api/internal/lightrag_manager.py niu_api/internal/lightrag_repair.py niu_api/internal/scheduler/scheduler.py niu_api/kg_api.py launcher/src/main.rs tests/test_lightrag_startup_block.py tests/test_lightrag_repair_result_display.py tests/test_lightrag_truncate_repair.py scripts/make_vdb_corrupt_test_env.sh docs/superpowers/plans/2026-07-09-startup-block-and-repair.md
 git commit -m "$(cat <<'EOF'
 fix(lightrag): 启动阻塞+repair结果展示+截断修复
@@ -1685,14 +1685,14 @@ EOF
 
 - [ ] **Step 11.3**：git 操作后修复文件权限（铁律 #7）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null
 ```
 
 - [ ] **Step 11.4**：验证提交成功
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -3
 git status
 ```

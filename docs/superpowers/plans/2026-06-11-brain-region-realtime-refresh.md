@@ -163,7 +163,7 @@
 
 - [ ] **Step 5: 验证 Python import 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.internal.region_activation import RegionActivationManager; print('import ok')"`
+Run: `cd <repo_root> && python -c "from niu_api.internal.region_activation import RegionActivationManager; print('import ok')"`
 
 Expected: `import ok`
 
@@ -254,13 +254,13 @@ git commit -m "feat: add refresh_entity_mapping() and _entity_type_counts to Reg
 
 - [ ] **Step 4: 在 `region_sync.py` 顶部确认已有 `get_region_sync` 导出**
 
-Run: `grep -n "get_region_sync\|def get_region_sync" REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py`
+Run: `grep -n "get_region_sync\|def get_region_sync" <repo_root>/agent/injector/region_sync.py`
 
 确认存在 `get_region_sync()` 单例获取方法。如果不存在，需要添加。
 
 - [ ] **Step 4: 验证 import 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.injector.region_sync import RegionSync; print('import ok')"`
+Run: `cd <repo_root> && python -c "from agent.injector.region_sync import RegionSync; print('import ok')"`
 
 Expected: `import ok`
 
@@ -338,7 +338,7 @@ def _notify_ingest_completed() -> None:
 
 - [ ] **Step 2: 验证 import 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.kg_api import _notify_ingest_completed; print('import ok')"`
+Run: `cd <repo_root> && python -c "from niu_api.kg_api import _notify_ingest_completed; print('import ok')"`
 
 Expected: `import ok`
 
@@ -379,7 +379,7 @@ git commit -m "feat: trigger entity mapping refresh on ingest completion"
 
 - [ ] **Step 2: 验证 import 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.injector.region_sync import RegionSync; print('import ok')"`
+Run: `cd <repo_root> && python -c "from agent.injector.region_sync import RegionSync; print('import ok')"`
 
 Expected: `import ok`
 
@@ -483,7 +483,7 @@ def _count_entities_from_graph(adapter) -> tuple[int, int]:
 
 - [ ] **Step 3: 验证 import 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.compat import get_stats; print('import ok')"`
+Run: `cd <repo_root> && python -c "from niu_api.compat import get_stats; print('import ok')"`
 
 Expected: `import ok`
 
@@ -559,7 +559,7 @@ git commit -m "feat: event-driven stats refresh on ingest-completed, remove 60s 
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "
+cd <repo_root> && python -c "
 from niu_api.internal.region_activation import RegionActivationManager
 mgr = RegionActivationManager()
 mgr.refresh_entity_mapping()
@@ -575,7 +575,7 @@ Expected: 无异常，输出映射数量和类型计数
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "
+cd <repo_root> && python -c "
 from agent.injector.region_sync import RegionSync
 print('RegionSync import ok — cache warmup code path exists')
 "
@@ -587,7 +587,7 @@ Expected: `RegionSync import ok — cache warmup code path exists`
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "
+cd <repo_root> && python -c "
 from niu_api.compat import _count_entities_from_graph
 from niu_api.internal.lightrag_adapter import LightRAGAdapter
 adapter = LightRAGAdapter()
@@ -602,7 +602,7 @@ Expected: 无异常，输出计数
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "
+cd <repo_root> && python -c "
 from niu_api.kg_api import _notify_ingest_completed
 # 不实际调用（需要 SSE loop），只验证 import
 print('import ok')
@@ -613,13 +613,13 @@ Expected: `import ok`
 
 - [ ] **Step 4: 验证 chat.html 不再有 setInterval 盲轮询**
 
-Run: `grep -n "setInterval.*loadStats" REDACTED_USER_PATH/tools/ai-bot/ui/assistant/chat.html`
+Run: `grep -n "setInterval.*loadStats" <repo_root>/ui/assistant/chat.html`
 
 Expected: 无匹配（盲轮询已移除）
 
 - [ ] **Step 5: 验证 chat.html 在 ingest-completed 回调中有 loadStats**
 
-Run: `grep -A3 "onIngestCompleted" REDACTED_USER_PATH/tools/ai-bot/ui/assistant/chat.html`
+Run: `grep -A3 "onIngestCompleted" <repo_root>/ui/assistant/chat.html`
 
 Expected: 回调中包含 `loadStats()` 调用
 

@@ -14,18 +14,18 @@
 
 | 文件 | 职责 |
 |------|------|
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | LightRAG 核心操作：合并、重建。加 brainregion description 保护 |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/utils_graph.py` | LightRAG 图工具：编辑、合并实体。加 brainregion description 保护 |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/_version.py` | 版本号，从 1.4.16 升到 1.4.17 |
-| `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py` | 新脑区创建：扩展 LLM prompt 返回 label+description，`_generate_region_summary` 使用 LLM 描述 |
-| `REDACTED_USER_PATH/tools/ai-bot/tests/test_brain_region_description_protection.py` | 新增测试文件 |
+| `<lightrag_fork_path>/lightrag/operate.py` | LightRAG 核心操作：合并、重建。加 brainregion description 保护 |
+| `<lightrag_fork_path>/lightrag/utils_graph.py` | LightRAG 图工具：编辑、合并实体。加 brainregion description 保护 |
+| `<lightrag_fork_path>/lightrag/_version.py` | 版本号，从 1.4.16 升到 1.4.17 |
+| `<repo_root>/niu_api/internal/region_manager.py` | 新脑区创建：扩展 LLM prompt 返回 label+description，`_generate_region_summary` 使用 LLM 描述 |
+| `<repo_root>/tests/test_brain_region_description_protection.py` | 新增测试文件 |
 
 ---
 
 ### Task 1: LightRAG — `_merge_nodes_then_upsert` 保护脑区 description
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py:1643-1918`
+- Modify: `<lightrag_fork_path>/lightrag/operate.py:1643-1918`
 
 **背景：** 当 LLM 提取出与脑区同名的实体时，`_merge_nodes_then_upsert` 会把脑区的 `brain_meta_*` 编码描述拆成片段混入普通描述，然后 LLM 摘要时丢弃。需要在检测到 `already_node.entity_type=="brainregion"` 时跳过 description 合并，保留原始 description。
 
@@ -84,7 +84,7 @@
 - [ ] **Step 3: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add lightrag/operate.py
 git commit -m "feat: protect brainregion node description in _merge_nodes_then_upsert"
 ```
@@ -94,7 +94,7 @@ git commit -m "feat: protect brainregion node description in _merge_nodes_then_u
 ### Task 2: LightRAG — `_rebuild_single_entity` 保护脑区 description
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py:1101-1330`
+- Modify: `<lightrag_fork_path>/lightrag/operate.py:1101-1330`
 
 **背景：** chunk 删除后 `_rebuild_single_entity` 从 chunk 缓存重建实体描述，会覆盖脑区的 `brain_meta_*` 元数据。需要在检测到 `current_entity.entity_type=="brainregion"` 时跳过 description 重建。
 
@@ -182,7 +182,7 @@ git commit -m "feat: protect brainregion node description in _merge_nodes_then_u
 - [ ] **Step 2: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add lightrag/operate.py
 git commit -m "feat: skip _rebuild_single_entity for brainregion nodes"
 ```
@@ -192,7 +192,7 @@ git commit -m "feat: skip _rebuild_single_entity for brainregion nodes"
 ### Task 3: LightRAG — `_edit_entity_impl` 保护脑区 description
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/utils_graph.py:258-387`
+- Modify: `<lightrag_fork_path>/lightrag/utils_graph.py:258-387`
 
 **背景：** MCP 工具 `lightrag_edit_entity` 通过 `_edit_entity_impl` 修改实体属性，如果传入 `description` 键会直接覆盖脑区的结构化描述。需要在检测到 brainregion 时拒绝修改 description 字段。
 
@@ -221,7 +221,7 @@ git commit -m "feat: skip _rebuild_single_entity for brainregion nodes"
 - [ ] **Step 2: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add lightrag/utils_graph.py
 git commit -m "feat: protect brainregion description and entity_type in _edit_entity_impl"
 ```
@@ -231,7 +231,7 @@ git commit -m "feat: protect brainregion description and entity_type in _edit_en
 ### Task 4: LightRAG — `_merge_entities_impl` 保护脑区 description
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/utils_graph.py:1193-1302`
+- Modify: `<lightrag_fork_path>/lightrag/utils_graph.py:1193-1302`
 
 **背景：** `amerge_entities` 通过 `_merge_entities_impl` 合并实体，description 使用 "concatenate" 策略拼接，会破坏脑区的 `brain_meta_*` 结构化格式。需要在合并结果中检测 brainregion 并恢复原始 description。
 
@@ -276,7 +276,7 @@ git commit -m "feat: protect brainregion description and entity_type in _edit_en
 - [ ] **Step 2: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add lightrag/utils_graph.py
 git commit -m "feat: protect brainregion description and entity_type in _merge_entities_impl"
 ```
@@ -286,13 +286,13 @@ git commit -m "feat: protect brainregion description and entity_type in _merge_e
 ### Task 5: LightRAG — 升级版本号 + 推送 + 重新安装
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/_version.py`
+- Modify: `<lightrag_fork_path>/lightrag/_version.py`
 
 **背景：** 修改 fork 后需要升级版本号（1.4.16 → 1.4.17），推送到 GitHub fork，然后在 ai-bot 项目中重新安装。
 
 - [ ] **Step 1: 升级版本号**
 
-修改 `REDACTED_USER_PATH/tools/LightRAG/lightrag/_version.py`：
+修改 `<lightrag_fork_path>/lightrag/_version.py`：
 
 ```python
 __version__ = "1.4.17"
@@ -301,7 +301,7 @@ __version__ = "1.4.17"
 - [ ] **Step 2: Commit + Push**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add lightrag/_version.py
 git commit -m "chore: bump version to 1.4.17 — brainregion description protection"
 git push origin main
@@ -310,8 +310,8 @@ git push origin main
 - [ ] **Step 3: 在 ai-bot 项目中重新安装**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
-pip install REDACTED_USER_PATH/tools/LightRAG --target python/lib/python3.11/site-packages --upgrade
+cd <repo_root>
+pip install <lightrag_fork_path> --target python/lib/python3.11/site-packages --upgrade
 # 清理 __pycache__ 避免旧 .pyc 被执行
 find python/lib/python3.11/site-packages/lightrag/ -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
 ```
@@ -326,16 +326,16 @@ python -c "import lightrag; print(lightrag.__version__)"
 - [ ] **Step 5: 验证之前的 fork 修改仍存在**
 
 ```bash
-grep "filter_lambda" REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/lightrag/base.py | head -2
+grep "filter_lambda" <repo_root>/python/lib/python3.11/site-packages/lightrag/base.py | head -2
 # 应该能找到 filter_lambda 相关代码（之前 fork 的修改）
-grep "__api_version__" REDACTED_USER_PATH/tools/ai-bot/python/lib/python3.11/site-packages/lightrag/_version.py
+grep "__api_version__" <repo_root>/python/lib/python3.11/site-packages/lightrag/_version.py
 # 应该能找到 __api_version__（之前 fork 的修改）
 ```
 
 - [ ] **Step 6: 在 ai-bot 项目中 commit 安装变更**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A python/lib/python3.11/site-packages/
 # 检查变更文件数量是否合理
 git diff --cached --stat
@@ -347,7 +347,7 @@ git commit -m "deps: upgrade lightrag-hku to 1.4.17 (brainregion description pro
 ### Task 6: region_manager — `_generate_region_label` 同时返回 label + description
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py:1259-1348`
+- Modify: `<repo_root>/niu_api/internal/region_manager.py:1259-1348`
 
 **背景：** 当前 `_generate_region_label` 只让 LLM 返回 `{"label": "标签名"}`，新脑区的 summary 只是程序拼接实体名（`_generate_region_summary`）。应该让 LLM 同时返回一句话描述，用于脑区的 summary 字段，提升语义质量。
 
@@ -480,7 +480,7 @@ git commit -m "deps: upgrade lightrag-hku to 1.4.17 (brainregion description pro
 - [ ] **Step 4: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/region_manager.py
 git commit -m "feat: _generate_region_label returns label + description from LLM"
 ```
@@ -490,7 +490,7 @@ git commit -m "feat: _generate_region_label returns label + description from LLM
 ### Task 7: region_manager — `_generate_region_labels_batch` 同时返回 label + description
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py:1506-1588`
+- Modify: `<repo_root>/niu_api/internal/region_manager.py:1506-1588`
 
 **背景：** 批量命名函数也需要同步修改，返回 dict 从 `{index: label}` 改为 `{index: (label, description)}`。
 
@@ -565,7 +565,7 @@ git commit -m "feat: _generate_region_label returns label + description from LLM
 - [ ] **Step 2: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/region_manager.py
 git commit -m "feat: _generate_region_labels_batch returns label + description"
 ```
@@ -575,7 +575,7 @@ git commit -m "feat: _generate_region_labels_batch returns label + description"
 ### Task 8: region_manager — `_generate_labels` 适配新返回类型
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py:1436-1504`
+- Modify: `<repo_root>/niu_api/internal/region_manager.py:1436-1504`
 
 **背景：** `_generate_labels` 是批量/逐个调用的入口，需要适配新的 `tuple[str, str]` 返回类型，并改为返回 `list[tuple[str, str]]`。
 
@@ -671,7 +671,7 @@ git commit -m "feat: _generate_region_labels_batch returns label + description"
 - [ ] **Step 3: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/region_manager.py
 git commit -m "feat: _generate_labels returns (label, description) tuples, create_region_nodes uses LLM description"
 ```
@@ -681,7 +681,7 @@ git commit -m "feat: _generate_labels returns (label, description) tuples, creat
 ### Task 8.5: 更新现有测试适配新的返回类型
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/tests/test_region_manager.py`
+- Modify: `<repo_root>/tests/test_region_manager.py`
 
 **背景：** Task 6-8 将三个函数的返回类型从 `str` 改为 `tuple[str, str]`，现有测试需要适配。
 
@@ -723,14 +723,14 @@ git commit -m "feat: _generate_labels returns (label, description) tuples, creat
 - [ ] **Step 4: 运行测试确认全部通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager.py -v -k "GenerateRegionLabel or CreateRegionNodesWithLLMLabel or BatchLabelGeneration"
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_manager.py
 git commit -m "test: adapt existing tests for (label, description) tuple return type"
 ```
@@ -740,7 +740,7 @@ git commit -m "test: adapt existing tests for (label, description) tuple return 
 ### Task 9: 编写测试
 
 **Files:**
-- Create: `REDACTED_USER_PATH/tools/ai-bot/tests/test_brain_region_description_protection.py`
+- Create: `<repo_root>/tests/test_brain_region_description_protection.py`
 
 **背景：** 测试分两部分：LightRAG 层的 brainregion 保护（使用内存 NetworkX 图模拟），和 region_manager 层的 LLM 描述返回。
 
@@ -959,7 +959,7 @@ class TestRegionLabelWithDescription:
 - [ ] **Step 2: 运行测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_brain_region_description_protection.py -v
 ```
 
@@ -968,7 +968,7 @@ Expected: 所有测试通过
 - [ ] **Step 3: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_brain_region_description_protection.py
 git commit -m "test: add brainregion description protection tests"
 ```

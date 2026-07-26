@@ -130,7 +130,7 @@ def _filter_base_tools(agent_config: dict, tools_schema: list) -> tuple:
 
 - [ ] **Step 3: 运行现有测试确认不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_subagent_overflow.py tests/test_subagent_migration.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_subagent_overflow.py tests/test_subagent_migration.py -v 2>&1 | tail -20`
 Expected: 现有测试 PASS（现有测试都 mock 掉了 get_tools_schema，不受过滤逻辑改动影响）
 
 - [ ] **Step 4: 添加 logger.warning 提示未配置 disableBaseTools 的子 Agent**
@@ -150,7 +150,7 @@ Expected: 现有测试 PASS（现有测试都 mock 掉了 get_tools_schema，不
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent.py
 git commit -m "feat(subagent): 加默认黑名单 bash/grep + allowBaseTools 解禁机制
 
@@ -276,13 +276,13 @@ def test_default_blacklist_constant_exists():
 
 - [ ] **Step 2: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_subagent_tool_filter.py -v 2>&1 | tail -15`
+Run: `cd <repo_root> && python -m pytest tests/test_subagent_tool_filter.py -v 2>&1 | tail -15`
 Expected: 7 个测试全部 PASS
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_subagent_tool_filter.py
 git commit -m "test(subagent): 新增基础工具过滤逻辑测试覆盖 7 种场景
 
@@ -407,18 +407,18 @@ def test_build_subagent_system_segments_injects_for_dream_evolver_existing_secti
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_subagent_tool_filter.py -v 2>&1 | tail -15`
+Run: `cd <repo_root> && python -m pytest tests/test_subagent_tool_filter.py -v 2>&1 | tail -15`
 Expected: 11 个测试全部 PASS（7 个原 Task 2 + 4 个新追加）
 
 - [ ] **Step 5: 运行 import 检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import agent.subagent; print('IMPORT OK')"`
+Run: `cd <repo_root> && python -c "import agent.subagent; print('IMPORT OK')"`
 Expected: 输出 `IMPORT OK`
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent.py tests/test_subagent_tool_filter.py
 git commit -m "feat(subagent): 自动注入职责边界段到未含退出语义的子 Agent
 
@@ -688,7 +688,7 @@ allowBaseTools:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "
 from agent.subagent import get_subagent_config
 for name in ['event-manager', 'file-processor', 'journal-agent', 'context-manager', 'entity-extractor', 'dream-evolver']:
@@ -709,7 +709,7 @@ Expected:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "
 from agent.subagent import get_subagent_config, DEFAULT_DISABLED_BASE_TOOLS
 for name in ['event-manager', 'file-processor', 'journal-agent', 'context-manager', 'entity-extractor', 'dream-evolver']:
@@ -738,7 +738,7 @@ Expected:
 - [ ] **Step 9: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add config/agents/event-manager.md config/agents/file-processor.md config/agents/journal-agent.md config/agents/context-manager.md config/agents/entity-extractor.md config/agents/dream-evolver.md
 git commit -m "feat(agents): 6 个子 Agent 显式配置 disableBaseTools/allowBaseTools + 3 个手动调用子 Agent 加'子 Agent —'前缀
 
@@ -779,13 +779,13 @@ git commit -m "feat(agents): 6 个子 Agent 显式配置 disableBaseTools/allowB
 
 - [ ] **Step 2: 运行 import 验证主 Agent 配置无语法错误**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.subagent import get_subagent_config; cfg = get_subagent_config('niu'); print('OK' if cfg else 'FAIL')"`
+Run: `cd <repo_root> && python -c "from agent.subagent import get_subagent_config; cfg = get_subagent_config('niu'); print('OK' if cfg else 'FAIL')"`
 Expected: 输出 `OK`（验证 niu.md frontmatter 解析正常）
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add config/agents/niu.md
 git commit -m "feat(niu): 主 Agent 加委托约束 - 不在子 Agent 能力范围内禁止委托
 
@@ -804,7 +804,7 @@ description 判断能力范围，不凭名字猜测。规则只做禁止，不�
 
 - [ ] **Step 1: 启动程序确认子 Agent 工具列表正确加载**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu &`
+Run: `cd <repo_root> && ./niu &`
 然后: `sleep 5 && ps aux | grep niu | grep -v grep | head -3`
 Expected: niu 进程正常启动，无 import 错误
 
@@ -839,7 +839,7 @@ Expected: 所有 niu 进程被杀
 - [ ] **Step 7: 最终 Commit（如果有验证中发现的修复）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "test: 端到端验证子 Agent 工具管理与职责边界改造
 

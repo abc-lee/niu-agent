@@ -522,10 +522,12 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+# Electron 前端通过 loadFile 加载本地 HTML，origin 可能为 file:// 或 null；
+# 开发调试时可能从 localhost 访问
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to specific origins
-    allow_credentials=True,
+    allow_origins=["file://", "null", "http://localhost:9876", "http://127.0.0.1:9876"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

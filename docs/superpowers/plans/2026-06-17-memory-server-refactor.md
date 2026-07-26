@@ -865,7 +865,7 @@ Run: `grep -n "do_save_memory" agent/handler.py && echo "FAIL: do_save_memory st
 
 - [ ] **Step 9: pytest 通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_graph.py tests/test_user_memory.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_graph.py tests/test_user_memory.py -v 2>&1 | tail -20`
 Expected: 所有保留的测试通过
 
 - [ ] **Step 10: 最终提交（如有验证修复）**

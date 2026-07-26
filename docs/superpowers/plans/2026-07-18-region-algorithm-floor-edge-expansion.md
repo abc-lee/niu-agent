@@ -125,7 +125,7 @@ STORAGE_DIR = Path(os.environ.get("NIU_STORAGE_DIR", str(Path.home() / ".niu" / 
 - [ ] **Step 2: 验证语法**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import ast; ast.parse(open('niu_api/internal/lightrag_manager.py').read())"
 ```
 
@@ -134,14 +134,14 @@ python -c "import ast; ast.parse(open('niu_api/internal/lightrag_manager.py').re
 - [ ] **Step 3: 验证 STORAGE_DIR 仍能正常解析**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "from niu_api.internal.lightrag_manager import STORAGE_DIR; print(STORAGE_DIR)"
 ```
 
-预期输出：`REDACTED_USER_PATH/.niu/lightrag_storage`（默认值不变）
+预期输出：`~/.niu/lightrag_storage`（默认值不变）
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 NIU_STORAGE_DIR=/tmp/test_storage python -c "from niu_api.internal.lightrag_manager import STORAGE_DIR; print(STORAGE_DIR)"
 ```
 
@@ -150,7 +150,7 @@ NIU_STORAGE_DIR=/tmp/test_storage python -c "from niu_api.internal.lightrag_mana
 - [ ] **Step 4: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_manager.py
 git commit -m "refactor(lightrag_manager): STORAGE_DIR 支持环境变量覆盖
 
@@ -453,7 +453,7 @@ def test_exception_returns_empty_set():
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_find_floor_edge_entities.py -v
 ```
 
@@ -552,7 +552,7 @@ def find_entities_with_single_floor_edge(floor_weight: float = 0.1) -> set[str]:
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_find_floor_edge_entities.py -v
 ```
 
@@ -561,7 +561,7 @@ python -m pytest tests/test_find_floor_edge_entities.py -v
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_find_floor_edge_entities.py niu_api/internal/lightrag_manager.py
 git commit -m "feat(lightrag_manager): 新增 find_entities_with_single_floor_edge 函数
 
@@ -644,7 +644,7 @@ def test_detect_communities_includes_single_floor_edge_entity():
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_detector.py::test_detect_communities_includes_single_floor_edge_entity -v
 ```
 
@@ -745,7 +745,7 @@ python -m pytest tests/test_region_detector.py::test_detect_communities_includes
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_detector.py::test_detect_communities_includes_single_floor_edge_entity -v
 ```
 
@@ -873,7 +873,7 @@ def test_detect_communities_entity_in_both_assigned_and_floor_edge():
 - [ ] **Step 6: 跑回归测试确认 Task 1 原测试仍通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_detector.py -v
 ```
 
@@ -882,7 +882,7 @@ python -m pytest tests/test_region_detector.py -v
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_detector.py niu_api/internal/region_detector.py
 git commit -m "feat(region_detector): detect_communities 筛选改 OR 关系，保底边实体参与算法
 
@@ -998,7 +998,7 @@ def test_statistics_no_permanent_specific_counter():
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py -v
 ```
 
@@ -1244,7 +1244,7 @@ def test_permanent_region_node_not_dissolved_when_empty():
 - [ ] **Step 6: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_manager_decay.py tests/test_brain_region_edge_decay.py -v
 ```
 
@@ -1255,7 +1255,7 @@ python -m pytest tests/test_region_manager_decay.py tests/test_brain_region_edge
 - [ ] **Step 7: 跑现有 region_manager 相关测试确认无其他回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/ -k "region or decay" -v
 ```
 
@@ -1264,7 +1264,7 @@ python -m pytest tests/ -k "region or decay" -v
 - [ ] **Step 8: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_manager_decay.py tests/test_brain_region_edge_decay.py niu_api/internal/region_manager.py
 git commit -m "fix(region_manager): 删除永久脑区归属边的"永久保底"分支
 
@@ -1443,7 +1443,7 @@ def test_floor_edge_entity_participates_in_real_detect_communities(tmp_storage):
 ### Step 2: 跑 e2e 测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_region_floor_edge_e2e.py -v
 ```
 
@@ -1456,7 +1456,7 @@ python -m pytest tests/test_region_floor_edge_e2e.py -v
 ```bash
 # 清空数据（保留 skills/memory.json/preferences.json）
 cd ~/.niu && rm -rf lightrag_storage/ messages.db notes/ work/ scheduled_tasks.db last_*.json skill_sync_state.json .DS_Store
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu
 ```
 
@@ -1465,7 +1465,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 观察日志：
 
 ```bash
-tail -f REDACTED_USER_PATH/tools/ai-bot/logs/llm_interaction_$(date +%Y%m%d).log | grep -E "排除|保底边|free"
+tail -f <repo_root>/logs/llm_interaction_$(date +%Y%m%d).log | grep -E "排除|保底边|free"
 ```
 
 预期看到：`排除 N 个已归属实体（保底边实体 M 个保留参与算法），剩余 K 个游离实体参与算法`
@@ -1477,7 +1477,7 @@ tail -f REDACTED_USER_PATH/tools/ai-bot/logs/llm_interaction_$(date +%Y%m%d).log
 24 小时后再次触发同步，检查日志：
 
 ```bash
-grep -E "Decay.*brain region" REDACTED_USER_PATH/tools/ai-bot/logs/llm_interaction_$(date +%Y%m%d).log | tail -20
+grep -E "Decay.*brain region" <repo_root>/logs/llm_interaction_$(date +%Y%m%d).log | tail -20
 ```
 
 预期：`decayed=N, deleted=M, protected=K, skipped_anchor=L`
@@ -1489,7 +1489,7 @@ grep -E "Decay.*brain region" REDACTED_USER_PATH/tools/ai-bot/logs/llm_interacti
 读 `docs/manual-vector-store.md` 找脑区章节。先用 grep 确认插入点：
 
 ```bash
-grep -n "衰减\|decay\|保底" REDACTED_USER_PATH/tools/ai-bot/docs/manual-vector-store.md | head -10
+grep -n "衰减\|decay\|保底" <repo_root>/docs/manual-vector-store.md | head -10
 ```
 
 找到脑区衰减算法说明段落后，补充：
@@ -1524,7 +1524,7 @@ grep -n "衰减\|decay\|保底" REDACTED_USER_PATH/tools/ai-bot/docs/manual-vect
 ### Step 6: Commit
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_region_floor_edge_e2e.py docs/manual-vector-store.md
 git commit -m "docs+test: 补充脑区边衰减规则和社区重算输入范围说明 + e2e 测试
 
@@ -1538,7 +1538,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ## 验证清单（所有 Task 完成后跑）
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 
 # 1. 所有新增测试通过
 python -m pytest tests/test_find_floor_edge_entities.py tests/test_region_detector.py::test_detect_communities_includes_single_floor_edge_entity tests/test_region_manager_decay.py -v

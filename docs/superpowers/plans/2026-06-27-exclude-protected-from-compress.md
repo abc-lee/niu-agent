@@ -486,7 +486,7 @@ def test_exclude_protected_with_tool_messages():
 
 - [ ] **Step 2: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::test_exclude_protected_removes_protected_messages tests/test_tidy_cursor.py::test_exclude_protected_false_keeps_protected_messages tests/test_tidy_cursor.py::test_exclude_protected_without_protect_recent_is_noop tests/test_tidy_cursor.py::test_exclude_protected_with_tool_messages -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::test_exclude_protected_removes_protected_messages tests/test_tidy_cursor.py::test_exclude_protected_false_keeps_protected_messages tests/test_tidy_cursor.py::test_exclude_protected_without_protect_recent_is_noop tests/test_tidy_cursor.py::test_exclude_protected_with_tool_messages -v`
 Expected: 4 passed
 
 - [ ] **Step 3: Commit**

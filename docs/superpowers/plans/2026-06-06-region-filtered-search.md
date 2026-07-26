@@ -33,21 +33,21 @@
 
 | 文件 | 职责 | 操作 |
 |------|------|------|
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/base.py` | 向量存储抽象基类 | 修改：query() 签名加 filter_lambda |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/kg/nano_vector_db_impl.py` | NanoVectorDB 存储实现 | 修改：query() 透传 filter_lambda |
-| `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py` | LightRAG 检索核心 | 修改：_get_node_data() 透传 filter_lambda |
-| `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_adapter.py` | LightRAG 检索适配器 | 修改：新增 search_within_region() |
-| `REDACTED_USER_PATH/tools/ai-bot/agent/runner.py` | 动态注入主流程 | 修改：_inject_dynamic_resources() 重构 |
-| `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_injector.py` | 脑区上下文注入器 | 修改：删除 apply_activation_weight，format_region_map 加软控制 |
+| `<lightrag_fork_path>/lightrag/base.py` | 向量存储抽象基类 | 修改：query() 签名加 filter_lambda |
+| `<lightrag_fork_path>/lightrag/kg/nano_vector_db_impl.py` | NanoVectorDB 存储实现 | 修改：query() 透传 filter_lambda |
+| `<lightrag_fork_path>/lightrag/operate.py` | LightRAG 检索核心 | 修改：_get_node_data() 透传 filter_lambda |
+| `<repo_root>/niu_api/internal/lightrag_adapter.py` | LightRAG 检索适配器 | 修改：新增 search_within_region() |
+| `<repo_root>/agent/runner.py` | 动态注入主流程 | 修改：_inject_dynamic_resources() 重构 |
+| `<repo_root>/niu_api/internal/region_injector.py` | 脑区上下文注入器 | 修改：删除 apply_activation_weight，format_region_map 加软控制 |
 
 ---
 
 ### Task 1: LightRAG Fork 暴露 filter_lambda 参数
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/base.py:261-272` — BaseVectorStorage.query() 抽象方法
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/kg/nano_vector_db_impl.py:144-162` — NanoVectorDBStorage.query() 实现
-- Modify: `REDACTED_USER_PATH/tools/LightRAG/lightrag/operate.py:4361-4374` — _get_node_data() 调用
+- Modify: `<lightrag_fork_path>/lightrag/base.py:261-272` — BaseVectorStorage.query() 抽象方法
+- Modify: `<lightrag_fork_path>/lightrag/kg/nano_vector_db_impl.py:144-162` — NanoVectorDBStorage.query() 实现
+- Modify: `<lightrag_fork_path>/lightrag/operate.py:4361-4374` — _get_node_data() 调用
 
 - [ ] **Step 1: 修改 BaseVectorStorage.query() 抽象方法签名**
 
@@ -217,7 +217,7 @@ data_param = QueryParam(
 - [ ] **Step 7: 推送 Fork + 重新安装到 Python 环境**
 
 ```bash
-cd REDACTED_USER_PATH/tools/LightRAG
+cd <lightrag_fork_path>
 git add lightrag/base.py lightrag/kg/nano_vector_db_impl.py lightrag/operate.py
 git commit -m "feat: expose filter_lambda in vector storage query API"
 git push origin main
@@ -225,7 +225,7 @@ git push origin main
 
 然后重新安装到运行环境：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pip install git+https://github.com/abc-lee/LightRAG.git@main --target python/lib/python3.11/site-packages --upgrade --no-deps 2>&1 | tail -5
 ```
 
@@ -256,13 +256,13 @@ filtered_entities = filtered_result.get("data", {}).get("entities", [])
 
 保留全局检索对比不变，重新运行测试。
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python scripts/test_brain_region_filtered_search.py 2>&1 | grep -E "(过滤检索|全局检索|FAIL|OK|验证)"`
+Run: `cd <repo_root> && python scripts/test_brain_region_filtered_search.py 2>&1 | grep -E "(过滤检索|全局检索|FAIL|OK|验证)"`
 Expected: 过滤检索返回的实体名都在脑区成员范围内
 
 - [ ] **Step 9: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add scripts/test_brain_region_filtered_search.py
 git commit -m "test: update filtered search test to use LightRAG query_data API"
 ```
@@ -274,8 +274,8 @@ git commit -m "test: update filtered search test to use LightRAG query_data API"
 **前置条件**: Task 1 Step 7 必须已完成（Fork 已推送并安装到 Python 环境）
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_adapter.py` — 新增 search_within_region() 方法
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/agent/runner.py:726-864` — _inject_dynamic_resources() 重构
+- Modify: `<repo_root>/niu_api/internal/lightrag_adapter.py` — 新增 search_within_region() 方法
+- Modify: `<repo_root>/agent/runner.py:726-864` — _inject_dynamic_resources() 重构
 
 - [ ] **Step 0: 前置条件验证（必须在 Task 1 Step 7 完成后执行）**
 
@@ -594,7 +594,7 @@ def get_members_of_region(self, region_id: str) -> list[str]:
 
 - [ ] **Step 6: 语法检查**
 
-Run: `python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_adapter.py && python -m py_compile REDACTED_USER_PATH/tools/ai-bot/agent/runner.py && python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_injector.py`
+Run: `python -m py_compile <repo_root>/niu_api/internal/lightrag_adapter.py && python -m py_compile <repo_root>/agent/runner.py && python -m py_compile <repo_root>/niu_api/internal/region_injector.py`
 Expected: 无输出
 
 - [ ] **Step 7: 集成测试 — 启动应用验证注入内容**
@@ -612,7 +612,7 @@ Expected: 无输出
 - [ ] **Step 8: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_adapter.py agent/runner.py niu_api/internal/region_injector.py
 git commit -m "feat: add region-filtered semantic search and restructure dynamic injection"
 ```
@@ -622,8 +622,8 @@ git commit -m "feat: add region-filtered semantic search and restructure dynamic
 ### Task 3: 删除 apply_activation_weight + 脑区点亮数量软控制
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_injector.py` — 删除 apply_activation_weight，format_region_map 加软控制
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/tests/test_region_injector.py` — 更新测试
+- Modify: `<repo_root>/niu_api/internal/region_injector.py` — 删除 apply_activation_weight，format_region_map 加软控制
+- Modify: `<repo_root>/tests/test_region_injector.py` — 更新测试
 
 - [ ] **Step 1: 删除 apply_activation_weight() 方法**
 
@@ -631,7 +631,7 @@ git commit -m "feat: add region-filtered semantic search and restructure dynamic
 
 同时删除 `runner.py` 中已不存在的调用（Task 2 的重构已移除，此步确认无残留引用）。
 
-Run: `grep -rn "apply_activation_weight" REDACTED_USER_PATH/tools/ai-bot/niu_api/ REDACTED_USER_PATH/tools/ai-bot/agent/`
+Run: `grep -rn "apply_activation_weight" <repo_root>/niu_api/ <repo_root>/agent/`
 Expected: 无输出（确认无残留引用）
 
 - [ ] **Step 2: 在 format_region_map() 添加脑区点亮数量软控制**
@@ -737,13 +737,13 @@ def test_format_region_map_no_warn_within_limit():
 
 - [ ] **Step 6: 语法检查**
 
-Run: `python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_injector.py && python -m py_compile REDACTED_USER_PATH/tools/ai-bot/tests/test_region_injector.py`
+Run: `python -m py_compile <repo_root>/niu_api/internal/region_injector.py && python -m py_compile <repo_root>/tests/test_region_injector.py`
 Expected: 无输出
 
 - [ ] **Step 7: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/region_injector.py tests/test_region_injector.py
 git commit -m "refactor: remove apply_activation_weight and old layered injection, add region count soft limit"
 ```
@@ -753,8 +753,8 @@ git commit -m "refactor: remove apply_activation_weight and old layered injectio
 ### Task 4: 验证 + 文档更新
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/docs/SYSTEM_MANUAL.md` — 工具注入机制描述
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/docs/manual-vector-store.md` — 脑区同步章节
+- Modify: `<repo_root>/docs/SYSTEM_MANUAL.md` — 工具注入机制描述
+- Modify: `<repo_root>/docs/manual-vector-store.md` — 脑区同步章节
 
 - [ ] **Step 1: 派审查Agent检查所有修改**
 
@@ -802,7 +802,7 @@ git commit -m "refactor: remove apply_activation_weight and old layered injectio
 - [ ] **Step 5: 最终提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add docs/SYSTEM_MANUAL.md docs/manual-vector-store.md
 git commit -m "docs: update manuals for region-filtered semantic search architecture"
 ```

@@ -160,7 +160,7 @@ def test_register_without_force_unique_name_uses_random_hex():
 - [ ] **Step 2: 跑测试确认 FAIL**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_subagent_registry_async.py::test_register_with_force_unique_name tests/test_subagent_registry_async.py::test_register_force_unique_name_conflict tests/test_subagent_registry_async.py::test_register_without_force_unique_name_uses_random_hex -v 2>&1 | tail -20
+cd <repo_root> && python -m pytest tests/test_subagent_registry_async.py::test_register_with_force_unique_name tests/test_subagent_registry_async.py::test_register_force_unique_name_conflict tests/test_subagent_registry_async.py::test_register_without_force_unique_name_uses_random_hex -v 2>&1 | tail -20
 ```
 
 Expected: 三个测试 FAIL（`force_unique_name` 参数不存在，TypeError）。
@@ -1316,7 +1316,7 @@ EOF
 - [ ] **Step 1: 跑全量测试套件确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v 2>&1 | tail -40
+cd <repo_root> && python -m pytest tests/ -v 2>&1 | tail -40
 ```
 
 Expected: 所有测试 PASS。如有 FAIL，逐个排查。
@@ -1383,7 +1383,7 @@ ps aux | grep -E "niu|python.*niu" | grep -v grep
 
 - [ ] **Step 7: 更新记忆文件**
 
-更新 `REDACTED_USER_PATH/.claude/projects/-Users-lilei-tools-ai-bot/memory/stage4-sync-subagent-interaction.md`：
+更新 `<claude_memory_dir>/stage4-sync-subagent-interaction.md`：
 - 标注"同步 @niu-agent 询问路径失败已修复（方案 B + 方案 C v2 重构）"
 - 更新实施进度：加本次修复的 commit hash
 - 移除"待修复问题"段，改为"已修复"

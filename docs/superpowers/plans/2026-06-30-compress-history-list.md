@@ -254,7 +254,7 @@ def test_build_compress_history_no_tokens():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_history.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_history.py -v`
 Expected: FAIL with `ImportError: cannot import name '_build_compress_history'`
 
 - [ ] **Step 3: 实现 `_build_compress_history` 函数（含孤立 tool 同步排除）**
@@ -372,13 +372,13 @@ def _build_compress_history(
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_history.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_history.py -v`
 Expected: 6 个测试全部 PASS
 
 - [ ] **Step 5: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_compress_history.py
 git commit -m "feat(compat): add _build_compress_history for message-list compression
 
@@ -475,7 +475,7 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_history.py::test_mode2_passes_history_to_call_subagent -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_history.py::test_mode2_passes_history_to_call_subagent -v`
 Expected: FAIL（当前 `run_context_manager_mode2` 不传 history 参数）
 
 - [ ] **Step 3: 改造 L1669 为分支 + 模式二构造 history**
@@ -585,18 +585,18 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_history.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_compress_history.py -v`
 Expected: 全部 PASS
 
 - [ ] **Step 5: 验证现有测试不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/ -v 2>&1 | tail -20`
 Expected: 无新增 FAIL（预存的 FAIL 与基线一致）
 
 - [ ] **Step 6: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_compress_history.py
 git commit -m "feat(compat): mode-2 passes history list instead of serialized text
 
@@ -615,11 +615,11 @@ user message。避免单条 message 超火山方舟单消息 token 上限。"
 
 - [ ] **Step 1: Read 当前提示词全文**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/config/agents/context-manager.md`。
+Read `<repo_root>/config/agents/context-manager.md`。
 
 - [ ] **Step 2: grep 找所有引用旧格式的地方**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -n '\[id:UUID\]\|\[id:\|消息列表（每条带' config/agents/context-manager.md`
+Run: `cd <repo_root> && grep -n '\[id:UUID\]\|\[id:\|消息列表（每条带' config/agents/context-manager.md`
 
 确认所有需要改的位置（预期 L23 和 L267 附近）。
 
@@ -670,7 +670,7 @@ grep `keep=` / `update=` 确认输出格式说明仍用 idx（语义不变）。
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add config/agents/context-manager.md
 git commit -m "docs(context-manager): update input format to messages list with idx prefix
 
@@ -694,7 +694,7 @@ L23 和 L267 输入格式说明改为 messages 列表 + idx 前缀，UUID 不再
 
 - [ ] **Step 2: 检查压缩请求日志结构**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+Run: `cd <repo_root> && python3 -c "
 import json, glob, os, datetime
 files = sorted(glob.glob('logs/raw_http/' + datetime.date.today().strftime('%Y%m%d') + '/*_request.json'))
 for f in reversed(files[-10:]):
@@ -727,20 +727,20 @@ Expected:
 
 - [ ] **Step 3: 验证压缩成功执行**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "Mode-2.*Plan parsed" logs/api_stderr.log 2>/dev/null | tail -3 || echo "检查 niu_api stderr 日志"`
+Run: `cd <repo_root> && grep "Mode-2.*Plan parsed" logs/api_stderr.log 2>/dev/null | tail -3 || echo "检查 niu_api stderr 日志"`
 
 Expected: `[Tidy] Mode-2: Plan parsed: N deletes, M updates (keep=K)`
 
 - [ ] **Step 4: 验证无单消息超限错误**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "exceed max message tokens" logs/api_stderr.log 2>/dev/null | tail -3 || echo "无单消息超限错误"`
+Run: `cd <repo_root> && grep "exceed max message tokens" logs/api_stderr.log 2>/dev/null | tail -3 || echo "无单消息超限错误"`
 
 Expected: 不再出现 `Total tokens of image and text exceed max message tokens`。
 
 - [ ] **Step 5: 最终提交（清理调试代码，如有）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git add -A
 git commit -m "feat(compress): context-manager mode-2 uses message list instead of serialized text

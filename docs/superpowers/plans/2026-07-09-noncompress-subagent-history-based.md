@@ -351,12 +351,12 @@ ai-bot/                              # 项目根
 
 - [ ] **Step 0.1**：检查工作区干净（除本次新计划文件外）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 ```
 - [ ] **Step 0.2**：临时备份提交（标注问题名+节点类型+基线 hash）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "backup: 非压缩子 Agent 改用 history 逐条传消息改造前临时备份 (baseline 27b287f4)
 
@@ -519,7 +519,7 @@ def test_build_plain_history_out_msg_ids_default_none():
 
 - [ ] **Step 1.2**：跑测试确认全部失败（`_build_plain_history` / `_parse_processed_up_to` 还不存在）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_noncompress_subagent_history.py -v 2>&1 | tail -30
 ```
 **预期**：8 个测试全失败，错误是 `ImportError: cannot import name '_build_plain_history'` / `'_parse_processed_up_to'`
@@ -635,14 +635,14 @@ def _strip_analysis(response: str) -> str:
 
 - [ ] **Step 2.2**：跑测试确认 Task 1 的 8 个测试全通过
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_noncompress_subagent_history.py -v 2>&1 | tail -30
 ```
 **预期**：8 个测试全通过
 
 - [ ] **Step 2.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import niu_api.compat; print('OK')"
 ```
 **预期**：输出 `OK`，无异常
@@ -803,7 +803,7 @@ new_string:
 
 - [ ] **Step 3.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import niu_api.compat; print('OK')"
 ```
 **预期**：输出 `OK`
@@ -935,7 +935,7 @@ new_string:
 
 - [ ] **Step 4.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import niu_api.compat; print('OK')"
 ```
 
@@ -1112,7 +1112,7 @@ new_string:
 
 - [ ] **Step 5.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import niu_api.compat; print('OK')"
 ```
 
@@ -1289,7 +1289,7 @@ new_string:
 
 - [ ] **Step 6.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import niu_api.compat; print('OK')"
 ```
 
@@ -1420,7 +1420,7 @@ new_string:
 
 - [ ] **Step 7.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import niu_api.compat; print('OK')"
 ```
 
@@ -1542,13 +1542,13 @@ new_string:
 
 - [ ] **Step 8.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import niu_api.compat; print('OK')"
 ```
 
 - [ ] **Step 8.4**：跑 Task 1 的测试确认仍通过
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_noncompress_subagent_history.py -v 2>&1 | tail -20
 ```
 
@@ -1824,7 +1824,7 @@ new_string:
 
 - [ ] **Step 9.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import agent.handler; print('OK')"
 ```
 **预期**：输出 `OK`
@@ -2149,7 +2149,7 @@ new_string:
 
 - [ ] **Step 10.6**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import agent.runner; print('OK')"
 ```
 **预期**：输出 `OK`
@@ -2362,7 +2362,7 @@ new_string:
 
 - [ ] **Step 12.1**：跑 compat 相关测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_compress_history.py tests/test_journal_agent_tidy.py tests/test_one_turn_compress.py tests/test_noncompress_subagent_history.py tests/test_compress_quality.py -v 2>&1 | tail -40
 ```
 **预期**：所有测试通过（如果 `test_journal_agent_tidy.py` 有依赖旧 `_build_journal_task` 签名的测试，需要同步改测试）
@@ -2371,7 +2371,7 @@ python -m pytest tests/test_compress_history.py tests/test_journal_agent_tidy.py
 
 先 grep 看有没有遗漏的调用点（**范围扩大到 `tests/ agent/ niu_api/`**，避免再次遗漏 `handler.py` / `runner.py` 这种非 tests 目录的调用点）：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 检查 _build_journal_task 调用点（应全部无参）
 grep -rn "_build_journal_task" tests/ agent/ niu_api/
 # 检查 _build_plain_history / _parse_processed_up_to import 是否齐全（compat.py / runner.py / handler.py 都应 import）
@@ -2395,14 +2395,14 @@ grep -rn "_update_journal_cursor" tests/ agent/ niu_api/
 
 - [ ] **Step 12.3**：跑 subagent 相关测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_call_subagent_with_auto_answer.py tests/test_general_subagent.py tests/test_subagent_overflow.py -v 2>&1 | tail -30
 ```
 **预期**：所有测试通过
 
 - [ ] **Step 12.4**：跑全量测试套件
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/ -x --ignore=tests/test_async_subagent_dispatch.py 2>&1 | tail -50
 ```
 **预期**：所有测试通过（忽略异步子 Agent 测试，它们通常需要特殊环境）
@@ -2415,7 +2415,7 @@ python -m pytest tests/ -x --ignore=tests/test_async_subagent_dispatch.py 2>&1 |
 
 - [ ] **Step 13.1**：清理测试环境
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 杀掉所有 niu 进程（优雅退出，不能用 pkill -f niu）
 ps aux | grep -i niu | grep -v grep | awk '{print $2}'
 # 手动检查后用 kill -TERM 优雅退出
@@ -2423,7 +2423,7 @@ ps aux | grep -i niu | grep -v grep | awk '{print $2}'
 
 - [ ] **Step 13.2**：清空数据库 + 游标文件（真实测试铁律）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 备份当前数据库（如果有）
 cp ~/.niu/messages.db ~/.niu/messages.db.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
 # 清空游标文件
@@ -2435,7 +2435,7 @@ mkdir -p logs/raw_http/20260709/
 
 - [ ] **Step 13.3**：启动 ./niu，制造超阈值上下文触发 force 压缩
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu &
 # 在 UI 中持续对话，直到上下文超 80% 触发 force 压缩
 # 或直接调 /api/tidy?mode=force 强制触发
@@ -2443,7 +2443,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 
 - [ ] **Step 13.4**：检查 raw_http 日志，验证三个子 Agent 的 request.json 是 history 逐条
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 找最新的 entity-extractor request
 ls -t logs/raw_http/20260709/*.json | head -20
 # 用 grep 检查：request.json 的 messages 字段应含多条 role: user/assistant/tool
@@ -2463,7 +2463,7 @@ grep -l "entity-extractor" logs/raw_http/20260709/*_request.json 2>/dev/null | h
 
 - [ ] **Step 13.5**：验证游标正常推进
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 cat ~/.niu/last_entity_extract.json
 cat ~/.niu/last_dream_evolve.json
 cat ~/.niu/last_journal.json
@@ -2472,7 +2472,7 @@ cat ~/.niu/last_journal.json
 
 - [ ] **Step 13.6**：验证子 Agent 实际工作（提取/精加工/日志）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 检查 journal.md 是否有新条目
 tail -20 ~/.niu/journal.md
 # 检查 LightRAG 是否有新实体（entity-extractor 的产出）
@@ -2481,7 +2481,7 @@ tail -20 ~/.niu/journal.md
 
 - [ ] **Step 13.7**：测试完成后彻底杀进程
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 优雅退出（铁律：不能用 pkill -f niu）
 ps aux | grep -i niu | grep -v grep | awk '{print $2}' | xargs kill -TERM
 # 等待 5 秒后检查是否还有残留
@@ -2495,21 +2495,21 @@ ps aux | grep -i niu | grep -v grep
 
 - [ ] **Step 14.1**：检查工作区状态
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git diff --stat
 ```
 
 - [ ] **Step 14.2**：修复文件权限（铁律 #7）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x 2>/dev/null || true
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null || true
 ```
 
 - [ ] **Step 14.3**：提交修复
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py agent/handler.py agent/runner.py config/agents/entity-extractor.md config/agents/dream-evolver.md config/agents/journal-agent.md tests/test_noncompress_subagent_history.py
 git commit -m "$(cat <<'EOF'
 fix(subagent): 非压缩子 Agent 改用 history 逐条传消息 + 指令与内容彻底分离
@@ -2550,7 +2550,7 @@ EOF
 
 - [ ] **Step 14.4**：验证提交成功
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -3
 git status
 ```

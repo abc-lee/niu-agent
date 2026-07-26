@@ -103,3 +103,34 @@ kv_end.txt
 /.claude/skills/gitnexus/gitnexus-cli
 niu-launcher
 niu.app/
+
+# User config files with API keys
+mcp-servers/config/user-config.json
+
+# Python venv / IDE / dev tooling artifacts
+bin/
+scripts_test/
+pyvenv.cfg
+pyrightconfig.json
+.envrc
+.coverage
+.python-version
+
+# Rust build artifacts
+launcher/target/
+target/
+
+# Local debug / diagnostic artifacts
+baidu.html
+lightrag.log
+out_brain.txt
+tasks_check.json
+tasks_status.json
+scheduler_diagnostic.txt
+tests/status_monitor.log
+sessions/
+
+# Root-level scratch test files
+/test_*.py
+/test_*.txt
+/test_result.json

@@ -100,7 +100,7 @@ class TestPriorityConstants:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestPriorityConstants" 2>&1 | head -30`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestPriorityConstants" 2>&1 | head -30`
 Expected: FAIL — `ImportError: cannot import name 'PRIORITY_HALFLIFE'`
 
 - [ ] **Step 3: 实现常量和函数**
@@ -130,7 +130,7 @@ def daily_decay_rate(priority: str) -> float:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestPriorityConstants" 2>&1 | tail -10`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestPriorityConstants" 2>&1 | tail -10`
 Expected: 7 passed
 
 - [ ] **Step 5: 提交**
@@ -209,7 +209,7 @@ class TestEncodeDescriptionPriority:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestEncodeDescriptionPriority" 2>&1 | head -20`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestEncodeDescriptionPriority" 2>&1 | head -20`
 Expected: FAIL — `_encode_description()` 接受5个位置参数，给了6个
 
 - [ ] **Step 3: 实现 — 修改 `_encode_description()` 和新增 `parse_priority_from_description()`**
@@ -375,7 +375,7 @@ STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at",
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestEncodeDescriptionPriority" 2>&1 | tail -10`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestEncodeDescriptionPriority" 2>&1 | tail -10`
 Expected: 5 passed
 
 - [ ] **Step 6: 提交**
@@ -762,7 +762,7 @@ def decay_structural_edges(self) -> dict:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestDecayStructuralEdges" 2>&1 | tail -15`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestDecayStructuralEdges" 2>&1 | tail -15`
 Expected: 9 passed
 
 - [ ] **Step 5: 提交**
@@ -879,7 +879,7 @@ class TestReinforceEdgeWeight:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestReinforceEdgeWeight" 2>&1 | head -20`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestReinforceEdgeWeight" 2>&1 | head -20`
 Expected: FAIL — 当前 `_reinforce_edge_weight` 使用增量式增强
 
 - [ ] **Step 3: 实现 — 改造 `_reinforce_edge_weight()`**
@@ -981,7 +981,7 @@ from niu_api.internal.region_manager import STRUCTURAL_EDGE_TYPES_LOWER
 
 搜索 `handler.py` 中调用 `reinforce_on_tool_use` 的位置，确认没有传递 `reinforce_delta` 参数。如果传递了，删除该参数。
 
-Run: `grep -n "reinforce_on_tool_use" REDACTED_USER_PATH/tools/ai-bot/agent/handler.py`
+Run: `grep -n "reinforce_on_tool_use" <repo_root>/agent/handler.py`
 
 - [ ] **Step 4b: 更新旧测试文件 `tests/test_subagent_migration.py`**
 
@@ -1001,7 +1001,7 @@ def test_region_manager_has_decay_structural_edges(self):
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestReinforceEdgeWeight" 2>&1 | tail -10`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestReinforceEdgeWeight" 2>&1 | tail -10`
 Expected: 4 passed
 
 - [ ] **Step 6: 提交**
@@ -1045,7 +1045,7 @@ git commit -m "feat: rewrite _reinforce_edge_weight to restore INITIAL_WEIGHT, r
 
 在 `agent/injector/region_sync.py` 约322-331行，取消注释 `decay_structural_edges()` 调用。具体行号需 grep 确认：
 
-Run: `grep -n "decay_structural_edges\|Step 6" REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py`
+Run: `grep -n "decay_structural_edges\|Step 6" <repo_root>/agent/injector/region_sync.py`
 
 旧代码通过 `manager.decay_structural_edges(all_regions_for_decay)` 调用。新签名 `decay_structural_edges(self)` 不再需要 `regions` 参数，返回值从 `int` 改为 `dict`。恢复为：
 
@@ -1062,7 +1062,7 @@ Run: `grep -n "decay_structural_edges\|Step 6" REDACTED_USER_PATH/tools/ai-bot/a
 
 - [ ] **Step 2: 恢复 brain_region_api.py 中的衰减调用**
 
-Run: `grep -n "decay_structural_edges\|Step 8" REDACTED_USER_PATH/tools/ai-bot/niu_api/brain_region_api.py`
+Run: `grep -n "decay_structural_edges\|Step 8" <repo_root>/niu_api/brain_region_api.py`
 
 旧代码通过 `region_mgr.decay_structural_edges(all_regions_for_decay)` 调用。恢复为：
 
@@ -1078,7 +1078,7 @@ Run: `grep -n "decay_structural_edges\|Step 8" REDACTED_USER_PATH/tools/ai-bot/n
 
 - [ ] **Step 3: 恢复 region_manager.py incremental_update 中的衰减调用**
 
-Run: `grep -n "decay_structural_edges" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py`
+Run: `grep -n "decay_structural_edges" <repo_root>/niu_api/internal/region_manager.py`
 
 在 `incremental_update()` 函数中，恢复被注释的衰减调用。旧代码是 `disconnected = self.decay_structural_edges(all_regions)`，新签名不需要参数：
 
@@ -1090,7 +1090,7 @@ Run: `grep -n "decay_structural_edges" REDACTED_USER_PATH/tools/ai-bot/niu_api/i
 
 - [ ] **Step 4: 恢复 brain_tools.py 中的增强调用**
 
-Run: `grep -n "_reinforce_edge_weight\|reinforce_on_tool_use" REDACTED_USER_PATH/tools/ai-bot/agent/brain_tools.py`
+Run: `grep -n "_reinforce_edge_weight\|reinforce_on_tool_use" <repo_root>/agent/brain_tools.py`
 
 恢复被注释的增强调用。
 
@@ -1118,7 +1118,7 @@ git commit -m "feat: re-enable decay and reinforce calls (uncomment)"
 
 - [ ] **Step 1: 搜索所有 weight=0.5 的结构边**
 
-Run: `grep -n 'weight.*0\.5\|"weight": 0\.5' REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py`
+Run: `grep -n 'weight.*0\.5\|"weight": 0\.5' <repo_root>/niu_api/internal/region_manager.py`
 
 应找到约7处：
 - 行311附近：`create_region_nodes()` 新增成员边
@@ -1166,7 +1166,7 @@ if priority in ("short", "medium") and not include_category:
 
 `get_default_regions_config()` 在 `preferences.json` 缺少 `brain_regions` 段时返回硬编码回退值。当前回退值中 `priority` 仍为旧值 `"core"`/`"category"`，必须更新为新优先级。
 
-Run: `grep -n "get_default_regions_config" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py`
+Run: `grep -n "get_default_regions_config" <repo_root>/niu_api/internal/region_manager.py`
 
 将回退值中的 `priority` 更新为与 `preferences.json` 一致的新值：
 - `"core"` → 对应脑区的新优先级（如人际关系→`"permanent"`，知识体系→`"long"`）
@@ -1178,7 +1178,7 @@ Run: `grep -n "get_default_regions_config" REDACTED_USER_PATH/tools/ai-bot/niu_a
 
 检查 `STRUCTURAL_EDGE_TYPES_LOWER` 是否还有其他调用方：
 
-Run: `grep -rn "STRUCTURAL_EDGE_TYPES_LOWER" REDACTED_USER_PATH/tools/ai-bot/niu_api/ REDACTED_USER_PATH/tools/ai-bot/agent/`
+Run: `grep -rn "STRUCTURAL_EDGE_TYPES_LOWER" <repo_root>/niu_api/ <repo_root>/agent/`
 
 - 如果无其他调用方：删除常量定义
 - 如果有其他调用方：保留定义但加注释说明衰减/增强不再依赖此常量
@@ -1304,7 +1304,7 @@ if __name__ == "__main__":
 pkill -f "niu" || true
 
 # 启动程序
-cd REDACTED_USER_PATH/tools/ai-bot && ./niu &
+cd <repo_root> && ./niu &
 
 # 等待启动
 sleep 15
@@ -1375,7 +1375,7 @@ git commit -m "test: add integration tests for brain region edge decay/reinforce
 
 - [ ] **Step 2: 运行全部单元测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_brain_region_edge_decay.py -v`
 Expected: 全部通过
 
 - [ ] **Step 3: 运行集成测试**
@@ -1387,7 +1387,7 @@ Expected: 全部通过
 
 ```bash
 # 启动程序
-cd REDACTED_USER_PATH/tools/ai-bot && ./niu &
+cd <repo_root> && ./niu &
 sleep 15
 
 # 检查脑区状态

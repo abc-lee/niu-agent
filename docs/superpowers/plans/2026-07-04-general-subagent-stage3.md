@@ -86,7 +86,7 @@ temperature: null      # 可选：覆盖 LLM 温度
 
 - [ ] **Step 2: 验证文件创建**
 
-Run: `cat REDACTED_USER_PATH/tools/ai-bot/config/agent-template.md | head -5`
+Run: `cat <repo_root>/config/agent-template.md | head -5`
 Expected: 显示 frontmatter 开头 `---`
 
 - [ ] **Step 3: Commit**
@@ -176,7 +176,7 @@ def test_resolve_agent_md_path_not_found(tmp_path, monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v`
 Expected: FAIL with `_resolve_agent_md_path not found` 或 `AttributeError`
 
 - [ ] **Step 3: 实现 `_resolve_agent_md_path`**
@@ -218,7 +218,7 @@ def _resolve_agent_md_path(agent_name: str) -> Optional[str]:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v`
 Expected: PASS（3 个测试全过）
 
 - [ ] **Step 5: Commit**
@@ -301,7 +301,7 @@ def test_get_subagent_config_missing_returns_empty(tmp_path, monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v`
 Expected: 3 个新测试 FAIL（因为现有 `get_subagent_config` 硬编码 `config/agents/`）
 
 - [ ] **Step 3: 改造 `get_subagent_config`**
@@ -362,12 +362,12 @@ def get_subagent_prompt(agent_name: str) -> str:
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v`
 Expected: PASS（所有测试全过）
 
 - [ ] **Step 6: 验证现有功能未回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "from agent.subagent import get_subagent_config, get_subagent_prompt; print(get_subagent_config('file-processor').get('description')); print(get_subagent_prompt('file-processor')[:50])"`
+Run: `cd <repo_root> && python/bin/python -c "from agent.subagent import get_subagent_config, get_subagent_prompt; print(get_subagent_config('file-processor').get('description')); print(get_subagent_prompt('file-processor')[:50])"`
 Expected: 打印 file-processor 的 description 和提示词前 50 字符，不报错
 
 - [ ] **Step 7: Commit**
@@ -537,7 +537,7 @@ def test_get_tools_schema_dedup(tmp_path, monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v`
 Expected: 5 个新测试 FAIL（现有 `get_tools_schema` 不扫 `~/.niu/agents/`）
 
 - [ ] **Step 3: 改造 `get_tools_schema`**
@@ -545,7 +545,7 @@ Expected: 5 个新测试 FAIL（现有 `get_tools_schema` 不扫 `~/.niu/agents/
 **前置检查**：grep 确认 runner.py 模块级无同名 `_KEBAB_CASE_RE`：
 
 ```bash
-grep -n "_KEBAB_CASE_RE" REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+grep -n "_KEBAB_CASE_RE" <repo_root>/agent/runner.py
 ```
 
 Expected: 无输出（无同名常量）。如有冲突，重命名常量。
@@ -731,12 +731,12 @@ def get_tools_schema() -> list:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v`
 Expected: PASS（所有测试全过）
 
 - [ ] **Step 5: 验证现有功能未回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "from agent.runner import get_tools_schema; tools = get_tools_schema(); names = [t['function']['name'] for t in tools]; print('chat-with-file-processor' in names); print('check_subagent_progress' in names)"`
+Run: `cd <repo_root> && python/bin/python -c "from agent.runner import get_tools_schema; tools = get_tools_schema(); names = [t['function']['name'] for t in tools]; print('chat-with-file-processor' in names); print('check_subagent_progress' in names)"`
 Expected: 打印两行 `True`（现有子 Agent 工具和 check_subagent_progress 都在）
 
 - [ ] **Step 6: Commit**
@@ -816,7 +816,7 @@ def test_niu_runner_init_known_user_subagents_no_dir(tmp_path, monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v -k "niu_runner_init"`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v -k "niu_runner_init"`
 Expected: 2 个测试 FAIL with `AttributeError: _known_user_subagents`
 
 - [ ] **Step 3: 在 `NiuRunner.__init__` 加初始化**
@@ -838,7 +838,7 @@ Expected: 2 个测试 FAIL with `AttributeError: _known_user_subagents`
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v -k "niu_runner_init"`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v -k "niu_runner_init"`
 Expected: PASS（2 个测试全过）
 
 - [ ] **Step 5: Commit**
@@ -954,7 +954,7 @@ def test_refresh_base_tools_schema_if_dirty_no_dir(tmp_path, monkeypatch):
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v -k refresh`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v -k refresh`
 Expected: 3 个测试 FAIL（`_refresh_base_tools_schema_if_dirty` 方法不存在）
 
 - [ ] **Step 3: 实现 `_refresh_base_tools_schema_if_dirty` 方法**
@@ -1000,12 +1000,12 @@ Expected: 3 个测试 FAIL（`_refresh_base_tools_schema_if_dirty` 方法不存�
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v -k refresh`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_general_subagent.py -v -k refresh`
 Expected: PASS（3 个测试全过）
 
 - [ ] **Step 6: 验证模块导入正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "from agent.runner import NiuRunner; print(hasattr(NiuRunner, '_refresh_base_tools_schema_if_dirty'))"`
+Run: `cd <repo_root> && python/bin/python -c "from agent.runner import NiuRunner; print(hasattr(NiuRunner, '_refresh_base_tools_schema_if_dirty'))"`
 Expected: 打印 `True`
 
 - [ ] **Step 7: Commit**
@@ -1029,7 +1029,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 读现有 niu.md 找插入位置**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "
+Run: `cd <repo_root> && python/bin/python -c "
 with open('config/agents/niu.md') as f:
     content = f.read()
 # 找现有子 Agent 相关段落
@@ -1088,7 +1088,7 @@ allowAsync: true 的子 Agent 支持异步调用：
 
 - [ ] **Step 3: 验证 niu.md 解析正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -c "from agent.subagent import get_subagent_config; c = get_subagent_config('niu'); print('sub agents' in c); print(len(c.get('sub agents', [])))"`
+Run: `cd <repo_root> && python/bin/python -c "from agent.subagent import get_subagent_config; c = get_subagent_config('niu'); print('sub agents' in c); print(len(c.get('sub agents', [])))"`
 Expected: 打印 `True` 和现有子 Agent 数量，不报错
 
 - [ ] **Step 4: Commit**
@@ -1111,7 +1111,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 读现有 AGENTS.md 找插入位置**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -n "^## " AGENTS.md | head -30`
+Run: `cd <repo_root> && grep -n "^## " AGENTS.md | head -30`
 Expected: 列出所有章节标题
 
 - [ ] **Step 2: 在 AGENTS.md 加"通用子 Agent 体系"章节**
@@ -1211,7 +1211,7 @@ mkdir -p ~/.niu/agents
 
 - [ ] **Step 2: 启动程序**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu`
+Run: `cd <repo_root> && ./niu`
 Expected: 程序正常启动，无 import 错误，Adapter 子进程存在
 
 - [ ] **Step 3: 验证阶段三能力——主 Agent 创建子 Agent**

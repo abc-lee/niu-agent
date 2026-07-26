@@ -30,7 +30,7 @@
 ### Task 1: lightrag_manager 双向边匹配修复
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_manager.py:233-237,275-282`
+- Modify: `<repo_root>/niu_api/internal/lightrag_manager.py:233-237,275-282`
 
 当前 `get_region_members()` 只检查 `src == region_name`，在无向图中 `src/tgt` 顺序不确定，会遗漏成员。`get_all_region_members()` 同样假设 `src` 总是脑区，也有此问题。
 
@@ -97,7 +97,7 @@
 
 - [ ] **Step 3: 语法检查**
 
-Run: `python -m py_compile REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_manager.py`
+Run: `python -m py_compile <repo_root>/niu_api/internal/lightrag_manager.py`
 Expected: 无输出
 
 - [ ] **Step 4: 提交**
@@ -162,7 +162,7 @@ git commit -m "fix: add bidirectional edge matching in get_region_members and ge
 
 - [ ] **Step 3: 修改 brain_region_api.py 的 get_region_members 调用**
 
-读取 `REDACTED_USER_PATH/tools/ai-bot/niu_api/brain_region_api.py`，找到 `region.members = region_mgr.get_region_members(region.name)` 的调用，改为：
+读取 `<repo_root>/niu_api/brain_region_api.py`，找到 `region.members = region_mgr.get_region_members(region.name)` 的调用，改为：
 
 ```python
 # 修改前:
@@ -180,7 +180,7 @@ Expected: 无输出
 
 - [ ] **Step 5: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_injector.py tests/test_region_sync.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_region_injector.py tests/test_region_sync.py -v`
 Expected: 所有测试通过
 
 - [ ] **Step 6: 提交**

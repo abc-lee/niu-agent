@@ -353,7 +353,7 @@ class TestFullSystemPromptInjection:
 
 - [ ] **Step 2: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_spirit_drag_mode.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_spirit_drag_mode.py -v`
 Expected: 9 tests PASS (7 in TestResourcesInjection + 2 in TestFullSystemPromptInjection)
 
 - [ ] **Step 3: 提交**
@@ -380,7 +380,7 @@ git commit -m "test: add spirit drag mode fix tests — resources injection into
 
 - [ ] **Step 3: 运行现有测试套件确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v --timeout=60 -x -q 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/ -v --timeout=60 -x -q 2>&1 | tail -30`
 Expected: 所有现有测试通过
 
 - [ ] **Step 4: 最终端到端验证**

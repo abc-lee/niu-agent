@@ -159,14 +159,14 @@ ai-bot/                              # 项目根
 
 - [ ] **Step 0.1**：检查工作区干净（除本次新计划文件外）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 ```
 **预期**：只有 `docs/superpowers/plans/2026-07-09-startup-template-restore.md` 是新文件（或工作区干净）。
 
 - [ ] **Step 0.2**：临时备份提交（标注问题名 + 节点类型 + 基线 hash）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "backup: 启动模板恢复 skills 目录改造前临时备份 (baseline 27b287f4)
 
@@ -191,7 +191,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step 1.1**：读 `launcher/src/main.rs` L650-705 当前实现
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 用 Read 工具读 launcher/src/main.rs offset=649 limit=60
 ```
 **确认点**：
@@ -378,7 +378,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 
 - [ ] **Step 2.3**：Rust 语法检查（cargo check）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/launcher
+cd <repo_root>/launcher
 cargo check 2>&1 | tail -20
 ```
 **预期**：无错误无警告（warning 可能因为 unused import 等，但不应有跟新代码相关的错误）。
@@ -394,7 +394,7 @@ cargo check 2>&1 | tail -20
 
 - [ ] **Step 3.1**：跑 build.sh
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./launcher/build.sh 2>&1 | tail -20
 ```
 **预期输出**：
@@ -405,17 +405,17 @@ Built and copied to ../niu
 ```
 **关键检查**：
 - `Built and copied to ../niu` 这行必须出现（说明 `cp target/release/niu-launcher ../niu` 执行了）
-- 项目根目录的 `niu` 二进制时间戳更新（用 `ls -la REDACTED_USER_PATH/tools/ai-bot/niu` 确认）
+- 项目根目录的 `niu` 二进制时间戳更新（用 `ls -la <repo_root>/niu` 确认）
 
 - [ ] **Step 3.2**：确认新二进制时间戳
 ```bash
-ls -la REDACTED_USER_PATH/tools/ai-bot/niu
+ls -la <repo_root>/niu
 ```
 **预期**：时间戳是刚才编译的时间。
 
 - [ ] **Step 3.3**：git 操作后修复文件权限（铁律 #7）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x 2>/dev/null
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null || true
 ```
@@ -459,7 +459,7 @@ ls -la ~/.niu/skills 2>/dev/null  # 应提示 No such file or directory
 
 - [ ] **Step 4.4**：启动程序，观察启动日志
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu > /tmp/niu_startup.log 2>&1 &
 NIU_PID=$!
 echo "Niu PID: $NIU_PID"
@@ -473,13 +473,13 @@ grep -E "Copied skill|Skills directory sync|skills directory" /tmp/niu_startup.l
 ```
 **预期输出**（6 条 Copied + 1 条汇总）：
 ```
-... Copied skill file: brain-region-management.md -> REDACTED_USER_PATH/.niu/skills/brain-region-management.md
-... Copied skill file: browser-automation.md -> REDACTED_USER_PATH/.niu/skills/browser-automation.md
-... Copied skill file: note-management.md -> REDACTED_USER_PATH/.niu/skills/note-management.md
-... Copied skill file: office-docs.md -> REDACTED_USER_PATH/.niu/skills/office-docs.md
-... Copied skill file: photo-face-display.md -> REDACTED_USER_PATH/.niu/skills/photo-face-display.md
-... Copied skill file: report-skill.md -> REDACTED_USER_PATH/.niu/skills/report-skill.md
-... Skills directory sync: copied=6, skipped(existing)=0, dst=REDACTED_USER_PATH/.niu/skills
+... Copied skill file: brain-region-management.md -> ~/.niu/skills/brain-region-management.md
+... Copied skill file: browser-automation.md -> ~/.niu/skills/browser-automation.md
+... Copied skill file: note-management.md -> ~/.niu/skills/note-management.md
+... Copied skill file: office-docs.md -> ~/.niu/skills/office-docs.md
+... Copied skill file: photo-face-display.md -> ~/.niu/skills/photo-face-display.md
+... Copied skill file: report-skill.md -> ~/.niu/skills/report-skill.md
+... Skills directory sync: copied=6, skipped(existing)=0, dst=~/.niu/skills
 ```
 
 - [ ] **Step 4.6**：确认 `~/.niu/skills/` 被填充
@@ -495,7 +495,7 @@ ls -la ~/.niu/skills/
 ```bash
 # 验证内容一致
 for f in brain-region-management browser-automation note-management office-docs photo-face-display report-skill; do
-    diff ~/.niu/skills/$f.md REDACTED_USER_PATH/tools/ai-bot/memory/skills/$f.md > /dev/null
+    diff ~/.niu/skills/$f.md <repo_root>/memory/skills/$f.md > /dev/null
     if [ $? -eq 0 ]; then
         echo "OK: $f.md content matches"
     else
@@ -517,7 +517,7 @@ kill -TERM $NIU_PID 2>/dev/null
 sleep 3
 
 # 重新启动
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu > /tmp/niu_startup2.log 2>&1 &
 NIU_PID2=$!
 sleep 5
@@ -528,8 +528,8 @@ md5 ~/.niu/skills/report-skill.md
 ```
 **预期日志**（`/tmp/niu_startup2.log`）：
 ```
-... Skill file already exists, skipping: REDACTED_USER_PATH/.niu/skills/report-skill.md  (debug 级别，可能不输出)
-... Skills directory sync: copied=0, skipped(existing)=6, dst=REDACTED_USER_PATH/.niu/skills
+... Skill file already exists, skipping: ~/.niu/skills/report-skill.md  (debug 级别，可能不输出)
+... Skills directory sync: copied=0, skipped(existing)=6, dst=~/.niu/skills
 ```
 **关键检查**：
 - `copied=0, skipped(existing)=6`（全部 6 个都已存在，全部跳过）
@@ -546,7 +546,7 @@ rm -rf ~/.niu/skills/*
 ls -la ~/.niu/skills/  # 应为空目录
 
 # 启动
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu > /tmp/niu_startup3.log 2>&1 &
 NIU_PID3=$!
 sleep 5
@@ -585,7 +585,7 @@ ps aux | grep -E "niu|launcher" | grep -v grep  # 应为空
 
 - [ ] **Step 5.1**：检查改动范围
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git diff launcher/src/main.rs
 ```
@@ -593,7 +593,7 @@ git diff launcher/src/main.rs
 
 - [ ] **Step 5.2**：提交修复
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add launcher/src/main.rs docs/superpowers/plans/2026-07-09-startup-template-restore.md
 git commit -m "$(cat <<'EOF'
 fix(launcher): init_niu_dir 补回 skills 目录模板复制
@@ -625,14 +625,14 @@ EOF
 
 - [ ] **Step 5.3**：git 操作后修复文件权限（铁律 #7）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x 2>/dev/null
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null || true
 ```
 
 - [ ] **Step 5.4**：验证提交成功
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -3
 git status
 ```

@@ -528,7 +528,7 @@ Expected: 用户消息为多行格式（路径独占一行 + 用户补充文字�
 - [ ] **Step 12: 拖入文件夹（v1 审查 M5 补充测试）**
 
 操作：从 Finder 拖一个**文件夹**到主对话框
-Expected: 输入框出现文件夹的绝对路径（如 `REDACTED_USER_PATH/Pictures/某文件夹\n`）。后续由用户决定如何处理——主 Agent 收到文件夹路径后行为由 file-processor 决定（可能触发目录入库，也可能询问用户）。
+Expected: 输入框出现文件夹的绝对路径（如 `~/Pictures/某文件夹\n`）。后续由用户决定如何处理——主 Agent 收到文件夹路径后行为由 file-processor 决定（可能触发目录入库，也可能询问用户）。
 
 - [ ] **Step 13: 拖入纯文本/URL（v1 审查 M5 补充测试）**
 

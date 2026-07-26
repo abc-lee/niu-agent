@@ -121,7 +121,7 @@ def _read_protect_recent_count() -> int:
 
 - [ ] **Step 5: 验证 Python 读取正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.subagent import _read_context_window_tokens, _read_warning_threshold, _read_target_threshold, _read_protect_recent_count; print(_read_context_window_tokens(), _read_warning_threshold(), _read_target_threshold(), _read_protect_recent_count())"`
+Run: `cd <repo_root> && python -c "from agent.subagent import _read_context_window_tokens, _read_warning_threshold, _read_target_threshold, _read_protect_recent_count; print(_read_context_window_tokens(), _read_warning_threshold(), _read_target_threshold(), _read_protect_recent_count())"`
 Expected: `200000 0.8 0.5 10`
 
 - [ ] **Step 6: Commit**
@@ -183,7 +183,7 @@ protect_recent_count = _read_protect_recent_count()
 
 - [ ] **Step 4: 验证 import 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.compat import _tidy_context_impl; print('import ok')"`
+Run: `cd <repo_root> && python -c "from niu_api.compat import _tidy_context_impl; print('import ok')"`
 Expected: `import ok`
 
 - [ ] **Step 5: Commit**
@@ -306,7 +306,7 @@ init_niu_dir(&project_root);
 
 - [ ] **Step 4: 验证 Rust 编译**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/launcher && cargo build --release 2>&1 | tail -3`
+Run: `cd <repo_root>/launcher && cargo build --release 2>&1 | tail -3`
 Expected: `Finished release profile`
 
 - [ ] **Step 5: Commit**
@@ -523,7 +523,7 @@ if "context" not in config:
 
 - [ ] **Step 3: 验证 import 正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_config_manager import load_user_config; print(load_user_config())"`
+Run: `cd <repo_root> && python -c "from niu_config_manager import load_user_config; print(load_user_config())"`
 Expected: 返回包含 `context` 段的默认结构
 
 - [ ] **Step 4: Commit**
@@ -612,7 +612,7 @@ git commit -m "docs: add context configuration section to user guide"
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "
+cd <repo_root> && python -c "
 from agent.subagent import _read_context_window_tokens, _read_warning_threshold, _read_target_threshold, _read_protect_recent_count
 print(f'contextWindowSize: {_read_context_window_tokens()} (expect 200000)')
 print(f'warningThreshold: {_read_warning_threshold()} (expect 0.8)')
@@ -635,7 +635,7 @@ Expected: 所有值与配置一致
 
 - [ ] **Step 4: 验证 Rust 编译**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot/launcher && cargo build --release 2>&1 | tail -3`
+Run: `cd <repo_root>/launcher && cargo build --release 2>&1 | tail -3`
 Expected: `Finished release profile`
 
 - [ ] **Step 5: 验证 compat.py 不再读取 preferences.json 的 context 段**

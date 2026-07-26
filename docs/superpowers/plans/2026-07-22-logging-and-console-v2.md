@@ -202,7 +202,7 @@ def test_config_file_not_found_defaults_disabled(tmp_path, monkeypatch):
 
 - [ ] **Step 4: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_logging_config.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_logging_config.py -v`
 Expected: FAIL with AttributeError: 'Config' object has no attribute 'logging' 或 ModuleNotFoundError
 
 - [ ] **Step 5: 修改 niu_api/config.py 增加 LoggingConfig 类、CONFIG_PATH 常量、Config.logging 字段、get_logging_config 兜底**
@@ -291,7 +291,7 @@ def get_logging_config() -> LoggingConfig:
 
 - [ ] **Step 6: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_logging_config.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_logging_config.py -v`
 Expected: PASS, 6 tests
 
 - [ ] **Step 7: 同步更新 config/user-config.json 增加 logging 字段示例**
@@ -301,7 +301,7 @@ Expected: PASS, 6 tests
 - [ ] **Step 8: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/config.py tests/test_logging_config.py config/user-config.json
 git commit -m "feat(config): add logging.enabled/level subnode + CONFIG_PATH constant
 
@@ -390,7 +390,7 @@ def test_http_log_router_included_when_logging_enabled(tmp_path, monkeypatch):
 
 - [ ] **Step 4: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_http_log_router_conditional.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_http_log_router_conditional.py -v`
 Expected: FAIL（现状是无条件 include）
 
 - [ ] **Step 5: 修改 niu_api/__main__.py L35-40 loguru sink + stdlib logging gate**
@@ -459,13 +459,13 @@ uvicorn.run(
 
 - [ ] **Step 8: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_http_log_router_conditional.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_http_log_router_conditional.py -v`
 Expected: PASS, 2 tests
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/__main__.py tests/test_http_log_router_conditional.py
 git commit -m "feat(api): gate loguru + stdlib logging + uvicorn + http-log router behind logging.enabled
 
@@ -601,7 +601,7 @@ def test_write_log_entry_skipped_when_logging_disabled(tmp_path, monkeypatch):
 
 - [ ] **Step 4: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
 Expected: FAIL（现状是无条件 patch，无幂等守卫，无 flag gate，无 _do_patch_http 函数）
 
 - [ ] **Step 5: 重构 http_logger.py**
@@ -677,13 +677,13 @@ def _write_log_entry(seq: int, entry: dict) -> None:
 
 - [ ] **Step 6: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
 Expected: PASS, 4 tests
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/http_logger.py tests/test_http_logger_flag.py
 git commit -m "feat(agent): gate raw_http transport logger behind logging.enabled
 
@@ -765,7 +765,7 @@ def test_write_interaction_log_skipped_when_logging_disabled(tmp_path, monkeypat
 
 - [ ] **Step 4: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
 Expected: 新增 2 个测试 FAIL
 
 - [ ] **Step 5: 给 litellm_adapter.py 增加 _get_app_log_dir 函数 + _write_raw_log / _write_interaction_log 加 flag gate**
@@ -816,13 +816,13 @@ def _write_interaction_log(log_entry: Dict[str, Any]):
 
 - [ ] **Step 6: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_http_logger_flag.py -v`
 Expected: PASS, 6 tests（4 旧 + 2 新）
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/litellm_adapter.py tests/test_http_logger_flag.py
 git commit -m "feat(agent): gate raw_http app-layer and interaction logs behind logging.enabled
 
@@ -996,7 +996,7 @@ def test_gateway_error_logged_to_file_on_launch_failure(tmp_path, monkeypatch):
 
 - [ ] **Step 4: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_gateway_stderr_flag.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_gateway_stderr_flag.py -v`
 Expected: FAIL（现状是无条件文件重定向，无 _log_gateway_error 函数）
 
 - [ ] **Step 5: 修改 gateway.py：增加 _log_gateway_error + _get_gateway_log_dir + stderr 按 flag gate**
@@ -1072,13 +1072,13 @@ _log_gateway_error(f"Launch failed: {e}")
 
 - [ ] **Step 6: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_gateway_stderr_flag.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_gateway_stderr_flag.py -v`
 Expected: PASS, 3 tests
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/channel/gateway.py tests/test_gateway_stderr_flag.py
 git commit -m "feat(channel): gate feishu adapter stderr + preserve launch failure diagnostics
 
@@ -1143,7 +1143,7 @@ use std::env;
 
 - [ ] **Step 4: 用 launcher/build.sh 编译 + 验证 ./niu mtime 更新**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ls -la niu | awk '{print $6,$7,$8,$9}' && ./launcher/build.sh 2>&1 | tail -5 && ls -la niu | awk '{print $6,$7,$8,$9}'`
+Run: `cd <repo_root> && ls -la niu | awk '{print $6,$7,$8,$9}' && ./launcher/build.sh 2>&1 | tail -5 && ls -la niu | awk '{print $6,$7,$8,$9}'`
 Expected: 编译成功；第二次 `ls -la niu` mtime 应比第一次新
 
 注意 CLAUDE.md 铁律 8：Rust 启动器编译必须用 `launcher/build.sh`，禁止直接 `cargo build`。
@@ -1325,7 +1325,7 @@ log_fatal_error(&format!("Failed to launch assistant window: {}", e));
 
 - [ ] **Step 7: 用 launcher/build.sh 编译 + 验证 ./niu mtime 更新**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ls -la niu | awk '{print $6,$7,$8,$9}' && ./launcher/build.sh 2>&1 | tail -5 && ls -la niu | awk '{print $6,$7,$8,$9}'`
+Run: `cd <repo_root> && ls -la niu | awk '{print $6,$7,$8,$9}' && ./launcher/build.sh 2>&1 | tail -5 && ls -la niu | awk '{print $6,$7,$8,$9}'`
 Expected: 编译成功无 warning，mtime 更新
 
 注意：`log_fatal_error` 用 `time` crate（Cargo.toml 已有）。如果 implementer 检查发现 Cargo.toml 没有 `time` 依赖（`grep "^time" launcher/Cargo.toml`），需要改用 `std::time::SystemTime`（格式为 Unix 秒数，不友好但可工作）。
@@ -1333,7 +1333,7 @@ Expected: 编译成功无 warning，mtime 更新
 - [ ] **Step 8: Commit（包含 Task 6 的 windows_subsystem 改动）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add launcher/src/main.rs
 git commit -m "feat(launcher): windows_subsystem=windows + gate Rust tracing + fatal error log
 
@@ -1413,12 +1413,12 @@ fi
 
 - [ ] **Step 3: 运行 build.sh 验证 .app 构造成功**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./launcher/build.sh 2>&1 | tail -10 && ls -la niu.app/Contents/ && cat niu.app/Contents/Info.plist`
+Run: `cd <repo_root> && ./launcher/build.sh 2>&1 | tail -10 && ls -la niu.app/Contents/ && cat niu.app/Contents/Info.plist`
 Expected: 编译成功 + `niu.app/Contents/MacOS/niu` 存在 + Info.plist 内容正确
 
 - [ ] **Step 3b: 验证 .app 能启动（用 open 命令）**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && open niu.app && sleep 3 && pgrep -f "niu.app/Contents/MacOS/niu" && pkill -f "niu.app/Contents/MacOS/niu" 2>/dev/null; echo "open test done"`
+Run: `cd <repo_root> && open niu.app && sleep 3 && pgrep -f "niu.app/Contents/MacOS/niu" && pkill -f "niu.app/Contents/MacOS/niu" 2>/dev/null; echo "open test done"`
 Expected: `pgrep` 找到进程（.app 能启动），不弹 Terminal 窗口
 
 注意：如果 `open niu.app` 失败或弹 Terminal，说明 Info.plist 配置有问题。implementer 需要检查 Info.plist 的 CFBundleExecutable / CFBundleIdentifier 是否正确。
@@ -1430,7 +1430,7 @@ Expected: `pgrep` 找到进程（.app 能启动），不弹 Terminal 窗口
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add launcher/build.sh
 git commit -m "feat(launcher): build macOS .app bundle to stop Finder from spawning Terminal
 
@@ -1457,7 +1457,7 @@ LSUIElement=true 等价于 main.rs:542-560 的 objc setActivationPolicy:1 hack�
 
 - [ ] **Step 1: 运行所有新增测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_logging_config.py tests/test_http_logger_flag.py tests/test_http_log_router_conditional.py tests/test_gateway_stderr_flag.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_logging_config.py tests/test_http_logger_flag.py tests/test_http_log_router_conditional.py tests/test_gateway_stderr_flag.py -v`
 Expected: PASS, 共 17 tests（6+6+2+3）
 
 **注意**：禁止跑 `pytest tests/` 全量测试——会触发 LightRAG 修复测试损坏 ~/.niu 数据。
@@ -1466,7 +1466,7 @@ Expected: PASS, 共 17 tests（6+6+2+3）
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 备份现有日志（不直接 rm -rf）
 if [ -d logs ]; then mv logs logs.bak.$(date +%s); fi
 mkdir -p logs
@@ -1497,7 +1497,7 @@ Expected: niu.app/Contents/MacOS/niu 存在 + Info.plist 含 LSUIElement=true
 - [ ] **Step 6: Commit 最终状态（如果有变化）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 # 如果 config/user-config.json 有变化（应该没有，因为 .gitignore 不入库）：
 git add config/user-config.json 2>/dev/null

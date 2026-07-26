@@ -53,7 +53,7 @@
 
 ### 改动文件
 
-只改一个文件：`REDACTED_USER_PATH/tools/ai-bot/ui/main/windows/assistant/chat.html`
+只改一个文件：`<repo_root>/ui/main/windows/assistant/chat.html`
 
 ### 改动位置
 

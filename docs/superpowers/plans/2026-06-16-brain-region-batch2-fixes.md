@@ -390,7 +390,7 @@ git commit -m "fix(brain-region): consolidate_brain_regions adds merge/dissolve/
 ## Task 4: 更新已知 Bug 清单
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/.claude/projects/-Users-lilei-tools-ai-bot/memory/brain-region-known-bugs.md`
+- Modify: `<claude_memory_dir>/brain-region-known-bugs.md`
 
 - [ ] **Step 1: 标记 D-11 和 D-7 扩展为已修复，添加 _decay no-op 修复记录，添加 _reinforce_edge_weight no-op 为新已知问题**
 

@@ -167,7 +167,7 @@ implementer 在 Task 0 阶段应：
 - [ ] **Step 2: 临时备份**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before dynamic injection timing refactor (baseline)"
 ```
 
@@ -435,7 +435,7 @@ def test_on_before_llm_exception_does_not_break_loop():
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_on_before_llm_callback.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_on_before_llm_callback.py -v`
 Expected: FAIL with "TypeError: agent_runner_loop() got an unexpected keyword argument 'on_before_llm'"
 
 - [ ] **Step 3: 在 `agent_runner_loop` 函数签名加参数**
@@ -501,18 +501,18 @@ Modify `agent/generic/agent_loop.py:655-665`（在 `response_gen = client.chat(.
 
 - [ ] **Step 5: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_on_before_llm_callback.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_on_before_llm_callback.py -v`
 Expected: 4 个测试全 PASS
 
 - [ ] **Step 6: 运行既有 agent_loop 相关测试确保无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_dynamic_injection_per_turn.py tests/test_lightrag_retrieval_migration.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_dynamic_injection_per_turn.py tests/test_lightrag_retrieval_migration.py -v 2>&1 | tail -20`
 Expected: 既有测试全 PASS（向后兼容，不传 on_before_llm 时行为不变）
 
 - [ ] **Step 7: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py tests/test_on_before_llm_callback.py
 git commit -m "feat(agent-loop): 新增 on_before_llm 回调（每轮 LLM 调用前触发）"
 ```
@@ -680,13 +680,13 @@ def test_on_before_llm_second_turn_no_resources_merge(runner):
 
 - [ ] **Step 2: 运行测试验证失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_on_before_llm_method.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_on_before_llm_method.py -v`
 Expected: FAIL（`NiuRunner` 没有 `_on_before_llm` 方法）
 
 - [ ] **Step 3: 临时备份**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before _on_before_llm method integration"
 ```
 
@@ -927,18 +927,18 @@ Modify `agent/runner.py:2350-2365` `gen = agent_runner_loop(...)` 调用：
 
 - [ ] **Step 7: 运行测试验证通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_on_before_llm_method.py tests/test_on_before_llm_callback.py tests/test_skill_inject_integration.py tests/test_skill_score_counter.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_on_before_llm_method.py tests/test_on_before_llm_callback.py tests/test_skill_inject_integration.py tests/test_skill_score_counter.py -v`
 Expected: 全 PASS
 
 - [ ] **Step 8: 运行现有相关测试确保无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_dynamic_injection_per_turn.py tests/test_lightrag_retrieval_migration.py tests/test_lightrag_manager.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_dynamic_injection_per_turn.py tests/test_lightrag_retrieval_migration.py tests/test_lightrag_manager.py -v 2>&1 | tail -20`
 Expected: 现有测试全 PASS（如有失败需分析是否本方案引入的回归）
 
 - [ ] **Step 9: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_on_before_llm_method.py
 git commit -m "refactor(inject): 动态注入从 _on_turn_end 移到 _on_before_llm（每轮 LLM 调用前）"
 ```
@@ -954,7 +954,7 @@ git commit -m "refactor(inject): 动态注入从 _on_turn_end 移到 _on_before_
 - [ ] **Step 1: 启动程序**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu &
 ```
 
@@ -991,7 +991,7 @@ kill -TERM $(pgrep -f "niu")
 - [ ] **Step 6: 撤销临时日志**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git diff HEAD agent/runner.py tests/  # 确认无临时日志残留
 grep -rn "BeforeLLM" agent/ tests/  # 兜底检查临时日志字符串
 ```

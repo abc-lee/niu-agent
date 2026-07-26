@@ -232,12 +232,12 @@ YAML 中设置 `hidden: true` 的工具:
 
 ```bash
 # 1. 同步新增文件（如果尚未同步）
-cp REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/disk_*.py REDACTED_USER_PATH/tools/niu-agent/niu_api/internal/
-cp -r REDACTED_USER_PATH/tools/ai-bot/config/disk/ REDACTED_USER_PATH/tools/niu-agent/config/disk/
-cp REDACTED_USER_PATH/tools/ai-bot/tests/test_disk_*.py REDACTED_USER_PATH/tools/niu-agent/tests/
+cp <repo_root>/niu_api/internal/disk_*.py <repo_root>/niu_api/internal/
+cp -r <repo_root>/config/disk/ <repo_root>/config/disk/
+cp <repo_root>/tests/test_disk_*.py <repo_root>/tests/
 
 # 2. 验证测试
-cd REDACTED_USER_PATH/tools/niu-agent
+cd <repo_root>
 python -m pytest tests/test_disk_*.py -v
 
 # 3. 检查 runner.py 和 handler.py 的修改是否冲突

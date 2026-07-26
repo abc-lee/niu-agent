@@ -161,7 +161,7 @@ def test_scan_and_sync_no_write_when_unchanged(fake_skill_sync):
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and_sync_no_write_when_unchanged -v 2>&1 | tail -15
 ```
 
@@ -290,7 +290,7 @@ python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and
 - [ ] **Step 5: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and_sync_no_write_when_unchanged -v 2>&1 | tail -15
 ```
 
@@ -299,7 +299,7 @@ python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and
 - [ ] **Step 6: 跑语法检查**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import ast; ast.parse(open('agent/injector/sync.py').read()); print('SYNTAX_OK')"
 ```
 
@@ -308,7 +308,7 @@ python -c "import ast; ast.parse(open('agent/injector/sync.py').read()); print('
 - [ ] **Step 7: 跑回归测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_notes_json.py tests/test_lightrag_unified.py tests/test_lightrag_skillsync_vdb_preservation.py tests/test_lightrag_repair_e2e_skillsync.py -v 2>&1 | tail -30
 ```
 
@@ -317,7 +317,7 @@ python -m pytest tests/test_notes_json.py tests/test_lightrag_unified.py tests/t
 - [ ] **Step 8: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_skill_sync_no_write_when_unchanged.py agent/injector/sync.py
 git commit -m "fix(skill_sync): 无变化不写盘，避免每分钟无意义重写 state 文件
 
@@ -385,7 +385,7 @@ def test_scan_and_sync_notes_changed_writes_once(fake_skill_sync, tmp_path, monk
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and_sync_notes_changed_writes_once -v 2>&1 | tail -15
 ```
 
@@ -416,7 +416,7 @@ python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and_sync_notes_changed_writes_once -v 2>&1 | tail -15
 ```
 
@@ -425,7 +425,7 @@ python -m pytest tests/test_skill_sync_no_write_when_unchanged.py::test_scan_and
 - [ ] **Step 5: 跑回归测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_notes_json.py tests/test_lightrag_unified.py tests/test_lightrag_skillsync_vdb_preservation.py tests/test_lightrag_repair_e2e_skillsync.py tests/test_skill_sync_no_write_when_unchanged.py -v 2>&1 | tail -30
 ```
 
@@ -434,7 +434,7 @@ python -m pytest tests/test_notes_json.py tests/test_lightrag_unified.py tests/t
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_skill_sync_no_write_when_unchanged.py agent/injector/sync.py
 git commit -m "fix(skill_sync): 删除 _scan_notes 末尾的 _save_state，避免双重写盘
 
@@ -557,7 +557,7 @@ def test_scan_and_sync_ghost_cleanup_failure_writes(fake_skill_sync):
 - [ ] **Step 3: 跑测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_skill_sync_no_write_when_unchanged.py -v 2>&1 | tail -20
 ```
 
@@ -566,7 +566,7 @@ python -m pytest tests/test_skill_sync_no_write_when_unchanged.py -v 2>&1 | tail
 - [ ] **Step 4: 跑全量 SkillSync 相关回归测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_notes_json.py tests/test_lightrag_unified.py tests/test_lightrag_skillsync_vdb_preservation.py tests/test_lightrag_repair_e2e_skillsync.py tests/test_skill_sync_no_write_when_unchanged.py -v 2>&1 | tail -30
 ```
 
@@ -575,7 +575,7 @@ python -m pytest tests/test_notes_json.py tests/test_lightrag_unified.py tests/t
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_skill_sync_no_write_when_unchanged.py
 git commit -m "test(skill_sync): 补 watchdog 并发和 ghost 失败写盘测试
 
@@ -598,7 +598,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 真实程序验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 
 # 备份当前 state 文件 mtime
 stat -f "before: %Sm" ~/.niu/skill_sync_state.json
@@ -617,7 +617,7 @@ stat -f "after: %Sm" ~/.niu/skill_sync_state.json
 - [ ] **Step 2: 文档更新（可选）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "skill_sync_state\|SkillSync\|skill.*sync" docs/manual-vector-store.md | head -10
 ```
 
@@ -640,7 +640,7 @@ grep -n "skill_sync_state\|SkillSync\|skill.*sync" docs/manual-vector-store.md |
 - [ ] **Step 3: Commit（如有文档改动）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add docs/manual-vector-store.md
 git commit -m "docs: 补充 SkillSync 写盘策略说明
 
@@ -652,7 +652,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ## 验证清单（所有 Task 完成后跑）
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 
 # 1. 新增测试全部通过
 python -m pytest tests/test_skill_sync_no_write_when_unchanged.py -v

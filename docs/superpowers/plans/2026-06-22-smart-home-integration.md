@@ -1105,7 +1105,7 @@ class _HAWatcher:
 - [ ] **Step 3: 验证模块可导入**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && PYTHONPATH=niu_api python -c "
+cd <repo_root> && PYTHONPATH=niu_api python -c "
 from niu_api.internal.ha_watcher import check_and_start, start_watcher, stop_watcher
 print('OK: HAWatcher module loaded')
 "
@@ -1191,7 +1191,7 @@ except Exception as e:
 - [ ] **Step 4: 验证注册成功**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && PYTHONPATH=mcp-servers/ha-server/src python -c "
+cd <repo_root> && PYTHONPATH=mcp-servers/ha-server/src python -c "
 from niu_ha_server import get_tool_schemas
 schemas = get_tool_schemas()
 print(f'已注册 {len(schemas)} 个工具:')
@@ -1226,7 +1226,7 @@ git commit -m "feat: register ha-server in mcp_loader and add HAWatcher to niu_a
 - [ ] **Step 1: 启动程序，验证 ha-server 加载**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && ./niu
+cd <repo_root> && ./niu
 ```
 
 确认日志中 ha-server 加载成功，5 个工具注册成功。

@@ -103,7 +103,7 @@ def test_build_static_system_prompt_excludes_current_time():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_build_static_system_prompt_excludes_current_time -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_build_static_system_prompt_excludes_current_time -v`
 Expected: FAIL with `AttributeError: type object 'NiuRunner' has no attribute '_build_static_system_prompt'`
 
 - [ ] **Step 3: 新增 `_build_static_system_prompt` 静态方法**
@@ -206,13 +206,13 @@ Read `agent/runner.py:365-390` 确认当前 `base_system_prompt` 初始化逻辑
 
 - [ ] **Step 6: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_build_static_system_prompt_excludes_current_time -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_build_static_system_prompt_excludes_current_time -v`
 Expected: PASS
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_prompt_cache.py
 git commit -m "refactor(runner): split system prompt into static + dynamic segments
 
@@ -311,7 +311,7 @@ def test_assemble_system_message_non_system_first_msg():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py -v -k assemble`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py -v -k assemble`
 Expected: FAIL with `AttributeError: 'NiuRunner' object has no attribute '_assemble_system_message'`
 
 - [ ] **Step 3: 实现 `_assemble_system_message` 方法**
@@ -369,13 +369,13 @@ def _assemble_system_message(
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py -v -k assemble`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py -v -k assemble`
 Expected: 4 个 assemble 测试全部 PASS
 
 - [ ] **Step 5: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_prompt_cache.py
 git commit -m "feat(runner): add _assemble_system_message for cache-aware system content
 
@@ -428,7 +428,7 @@ def test_count_messages_tokens_handles_list_content():
 
 - [ ] **Step 2: 运行测试确认通过（主路径已支持）**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_count_messages_tokens_handles_list_content -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_count_messages_tokens_handles_list_content -v`
 Expected: PASS（`TokenCalculator.count_messages` 已原生处理 list content，主路径直接成功）
 
 - [ ] **Step 3: 加固 except 兜底分支兼容 list content**
@@ -466,7 +466,7 @@ def count_messages_tokens(messages: list) -> int:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_count_messages_tokens_handles_list_content -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_count_messages_tokens_handles_list_content -v`
 Expected: PASS
 
 - [ ] **Step 5: 写失败测试 — agent_runner_loop 接收 system_message 参数**
@@ -492,7 +492,7 @@ def test_agent_runner_loop_accepts_system_message_param():
 
 - [ ] **Step 6: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_agent_runner_loop_accepts_system_message_param -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_agent_runner_loop_accepts_system_message_param -v`
 Expected: FAIL（当前无 `system_message` 参数）
 
 - [ ] **Step 7: 改造 `agent_runner_loop` 签名和 messages 创建**
@@ -521,12 +521,12 @@ Read `agent/generic/agent_loop.py:186-210` 确认完整签名和 messages 创建
 
 - [ ] **Step 8: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_agent_runner_loop_accepts_system_message_param -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_agent_runner_loop_accepts_system_message_param -v`
 Expected: PASS
 
 - [ ] **Step 9: 验证现有测试不被破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_agent_loop_return_messages.py tests/test_agent_loop_assistant_msg.py tests/test_agent_loop_stream_events.py tests/test_supplement_queue.py -v 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_agent_loop_return_messages.py tests/test_agent_loop_assistant_msg.py tests/test_agent_loop_stream_events.py tests/test_supplement_queue.py -v 2>&1 | tail -20`
 Expected: 全部 PASS（现有测试用 `system_prompt=` 关键字，回退逻辑保持兼容）
 
 - [ ] **Step 10: 改造 `NiuRunner.chat` 传 `system_message`**
@@ -599,18 +599,18 @@ Read `agent/runner.py:1315-1320` 确认上下文。
 
 - [ ] **Step 13: 运行全部 prompt cache 测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py -v`
 Expected: 全部 PASS
 
 - [ ] **Step 14: 运行现有测试确认不破坏**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_agent_loop_return_messages.py tests/test_agent_loop_assistant_msg.py tests/test_agent_loop_stream_events.py tests/test_supplement_queue.py tests/test_stop_flag.py tests/test_integration_tool_flow.py tests/test_subagent_overflow.py tests/test_multi_turn_persist.py tests/test_e2e_message_persist.py tests/test_dynamic_injection_per_turn.py tests/test_agent_loop_tool_results.py tests/test_context_overflow.py tests/test_chat_sse_persist.py 2>&1 | tail -20`
+Run: `cd <repo_root> && python -m pytest tests/test_agent_loop_return_messages.py tests/test_agent_loop_assistant_msg.py tests/test_agent_loop_stream_events.py tests/test_supplement_queue.py tests/test_stop_flag.py tests/test_integration_tool_flow.py tests/test_subagent_overflow.py tests/test_multi_turn_persist.py tests/test_e2e_message_persist.py tests/test_dynamic_injection_per_turn.py tests/test_agent_loop_tool_results.py tests/test_context_overflow.py tests/test_chat_sse_persist.py 2>&1 | tail -20`
 Expected: 全部 PASS（或与改造前状态一致，无新增 FAIL）
 
 - [ ] **Step 15: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py agent/runner.py tests/test_prompt_cache.py
 git commit -m "feat(agent_loop): add optional system_message param for first-turn cache
 
@@ -683,7 +683,7 @@ def test_refresh_user_memories_updates_static_and_recomputes_base():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_refresh_user_memories_updates_static_and_recomputes_base -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_refresh_user_memories_updates_static_and_recomputes_base -v`
 Expected: FAIL（当前 `_refresh_user_memories` 只更新 `base_system_prompt`，不更新 `static_system_prompt`，也不重算 base）
 
 - [ ] **Step 3: 改造 `_refresh_user_memories`**
@@ -710,13 +710,13 @@ Read `agent/runner.py:1403-1436` 确认完整逻辑。
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_refresh_user_memories_updates_static_and_recomputes_base -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_refresh_user_memories_updates_static_and_recomputes_base -v`
 Expected: PASS
 
 - [ ] **Step 5: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_prompt_cache.py
 git commit -m "fix(runner): sync static_system_prompt and recompute base on memory refresh
 
@@ -763,7 +763,7 @@ def test_run_agent_loop_accepts_system_message_param():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py::test_subagent_builds_static_and_dynamic_segments tests/test_prompt_cache.py::test_run_agent_loop_accepts_system_message_param -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py::test_subagent_builds_static_and_dynamic_segments tests/test_prompt_cache.py::test_run_agent_loop_accepts_system_message_param -v`
 Expected: FAIL with `ImportError: cannot import name 'build_subagent_system_segments'` 和 `system_message not in params`
 
 - [ ] **Step 3: 新增 `build_subagent_system_segments` 函数**
@@ -866,13 +866,13 @@ Read `agent/subagent.py:464-470` 确认调用点。
 
 - [ ] **Step 7: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py -v`
 Expected: 全部 PASS
 
 - [ ] **Step 8: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent.py tests/test_prompt_cache.py
 git commit -m "feat(subagent): split static/dynamic system segments for cache
 
@@ -941,7 +941,7 @@ def test_convert_tools_schema_backward_compatible():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py -v -k tools`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py -v -k tools`
 Expected: FAIL with `TypeError: _convert_tools_schema() takes 1 positional argument but 2 were given`
 
 - [ ] **Step 3: 改造 `_convert_tools_schema` 接收 model 参数**
@@ -1012,18 +1012,18 @@ Read `agent/generic/litellm_adapter.py:339` 确认当前调用。
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py -v -k tools`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py -v -k tools`
 Expected: 3 个 tools 测试 PASS
 
 - [ ] **Step 6: 运行全部测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_prompt_cache.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_prompt_cache.py -v`
 Expected: 全部 PASS
 
 - [ ] **Step 7: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/litellm_adapter.py tests/test_prompt_cache.py
 git commit -m "feat(adapter): add cache_control to Claude tools
 
@@ -1048,7 +1048,7 @@ Claude 模型的 tools_schema 末尾打 cache_control breakpoint。tools_schema
 
 - [ ] **Step 2: 检查最新请求日志的结构**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+Run: `cd <repo_root> && python3 -c "
 import json, glob, datetime
 files = sorted(glob.glob('logs/raw_http/' + datetime.date.today().strftime('%Y%m%d') + '/*_request.json'))
 if not files:
@@ -1101,7 +1101,7 @@ Expected（切到 Claude 后）：
 用户执行：在聊天窗口再发一条消息（如"现在几点"），等回复完成。运行：
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+cd <repo_root> && python3 -c "
 import json, glob, datetime
 files = sorted(glob.glob('logs/raw_http/' + datetime.date.today().strftime('%Y%m%d') + '/*_request.json'))
 if len(files) < 2:
@@ -1136,7 +1136,7 @@ Expected: `静态段字节相同: True`
 如果用户切到 Claude 模型，发两条消息后检查 response 日志的 usage：
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+cd <repo_root> && python3 -c "
 import json, glob, datetime
 files = sorted(glob.glob('logs/raw_http/' + datetime.date.today().strftime('%Y%m%d') + '/*_response.json'))
 for f in files[-2:]:
@@ -1157,7 +1157,7 @@ Expected（第二条消息起）：
 - [ ] **Step 5: 最终提交（清理调试代码，如有）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git add -A
 git commit -m "feat(cache): prompt cache for static system prompt and tools

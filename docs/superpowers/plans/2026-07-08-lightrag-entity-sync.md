@@ -42,7 +42,7 @@
 
 ### LightRAG 大小写设计（已查证）
 
-`REDACTED_USER_PATH/tools/LightRAG/lightrag/kg/networkx_impl.py` L30-35：
+`<lightrag_fork_path>/lightrag/kg/networkx_impl.py` L30-35：
 
 ```python
 @staticmethod
@@ -151,7 +151,7 @@ GraphML 的 node id 在写入时被 `_normalize_node_id` lower 化。vdb 的 ent
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 新增 check_entity_sync 前临时备份" || echo "nothing to commit"
 ```
 
@@ -276,7 +276,7 @@ def test_check_entity_sync_duplicate_lower_name():
 - [ ] **Step 3: 跑测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_entity_sync.py::test_check_entity_sync_case_mismatch_is_error tests/test_lightrag_entity_sync.py::test_check_entity_sync_duplicate_lower_name -v
 ```
 
@@ -552,7 +552,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 新增 repair_entity_sync 前临时备份" || echo "nothing to commit"
 ```
 
@@ -1037,7 +1037,7 @@ cp ~/.niu/lightrag_storage/vdb_entities.json ~/.niu/lightrag_storage/vdb_entitie
 - [ ] **Step 2: 跑 check_all 看是否检出同步性问题**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python3 -c "
 from niu_api.internal.lightrag_integrity import check_all
 import json

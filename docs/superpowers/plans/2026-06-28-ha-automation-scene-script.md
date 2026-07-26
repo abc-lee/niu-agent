@@ -321,7 +321,7 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
 
 - [ ] **Step 3: 运行 list 测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && HA_TOKEN=$(cat ~/.niu/ha-config.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('ha_token',''))") python -m pytest tests/test_ha_automation.py::TestHaAutomation::test_list -v`
+Run: `cd <repo_root> && HA_TOKEN=$(cat ~/.niu/ha-config.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('ha_token',''))") python -m pytest tests/test_ha_automation.py::TestHaAutomation::test_list -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**
@@ -512,7 +512,7 @@ git commit -m "feat: implement ha_automation list + get"
 
 - [ ] **Step 3: 运行全部自动化测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_ha_automation.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_ha_automation.py -v`
 Expected: 6 passed
 
 - [ ] **Step 4: Commit**
@@ -968,7 +968,7 @@ class TestHaScript:
 
 - [ ] **Step 5: 运行全部测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_ha_automation.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_ha_automation.py -v`
 Expected: 11 passed
 
 - [ ] **Step 6: Commit**

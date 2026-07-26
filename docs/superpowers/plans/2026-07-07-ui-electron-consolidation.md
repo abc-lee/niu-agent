@@ -142,7 +142,7 @@ ui/main/
 - [ ] **Step 1: 临时备份提交（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: UI 三套 electron 合并前临时备份
 
 基线：8df40b47（LLM 检测阻塞+权限修复已就位）
@@ -227,7 +227,7 @@ find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/nu
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 创建 ui/main 骨架前临时备份" || echo "nothing to commit"
 ```
 
@@ -350,14 +350,14 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 移动前端资源前临时备份" || echo "nothing to commit"
 ```
 
 - [ ] **Step 2: 清理 icons 目录的脏文件（核对发现 .DS_Store/.mnemo/.ruff_cache）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 # 清理 Python 工具误生成的缓存和系统脏文件，避免 mv 带到 ui/main/
 rm -rf assistant/icons/.mnemo assistant/icons/.ruff_cache assistant/icons/.DS_Store
 rm -rf settings/.DS_Store graph/.DS_Store 2>/dev/null || true
@@ -367,7 +367,7 @@ ls assistant/icons/  # 应该只剩 9 PNG + 1 ico
 - [ ] **Step 3: 移动 assistant 前端资源**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 
 # HTML
 mv assistant/spirit.html assistant/chat.html assistant/sticky.html main/windows/assistant/
@@ -388,14 +388,14 @@ mv assistant/window-config.json main/windows/assistant/
 - [ ] **Step 4: 移动 settings 前端资源**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 mv settings/index.html main/windows/settings/
 ```
 
 - [ ] **Step 5: 移动 graph 前端资源**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 mv graph/index.html graph/renderer.js graph/styles.css graph/demo.html graph/test-api.html main/windows/graph/
 ```
 
@@ -404,7 +404,7 @@ mv graph/index.html graph/renderer.js graph/styles.css graph/demo.html graph/tes
 - [ ] **Step 6: 移动 preload 脚本（重命名）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 mv assistant/preload.js main/preload-assistant.js
 mv assistant/preload-chat.js main/preload-chat.js
 mv assistant/preload-sticky.js main/preload-sticky.js
@@ -464,7 +464,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 写 ui/main/main.js 前临时备份" || echo "nothing to commit"
 ```
 
@@ -686,7 +686,7 @@ app.on('activate', () => {
 - [ ] **Step 12: 验证 main.js 语法**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui/main
+cd <repo_root>/ui/main
 node -c main.js && echo "Syntax OK"
 ```
 
@@ -695,7 +695,7 @@ Expected: `Syntax OK`
 - [ ] **Step 13: 静态路径检查（防运行时断链）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui/main
+cd <repo_root>/ui/main
 # grep 所有 path.join(__dirname, ...) 和 loadFile(...)
 grep -n "path\.join(__dirname\|loadFile(" main.js | head -40
 ```
@@ -733,14 +733,14 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 修正引用路径前临时备份" || echo "nothing to commit"
 ```
 
 - [ ] **Step 2: 修 graph/index.html 的 force-graph 引用**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 当前 L91: <script src="./node_modules/force-graph/dist/force-graph.min.js"></script>
 # 移动后路径: ui/main/windows/graph/index.html
 # 真安装位置: ui/main/node_modules/force-graph/dist/force-graph.min.js
@@ -760,7 +760,7 @@ Expected: `../../node_modules/force-graph/dist/force-graph.min.js`
 - [ ] **Step 3: 检查 ui/main/main.js 里的所有路径引用**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "path\.join(__dirname\|loadFile(\|\.gif\|\.png\|\.ttf\|icons/\|fonts/" ui/main/main.js | head -40
 ```
 
@@ -801,7 +801,7 @@ preload 脚本内 `__dirname` 从 `ui/assistant/` 变为 `ui/main/`，相对路�
 - [ ] **Step 7: 验证 main.js 语法**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui/main
+cd <repo_root>/ui/main
 node -c main.js && echo "Syntax OK"
 ```
 
@@ -831,7 +831,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 改 launch_window 前临时备份" || echo "nothing to commit"
 ```
 
@@ -932,7 +932,7 @@ sed -n '1312,1350p' launcher/src/main.rs
 - [ ] **Step 7: 编译验证（铁律 #8）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./launcher/build.sh
 ```
 
@@ -974,7 +974,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 清理旧目录前临时备份" || echo "nothing to commit"
 ```
 
@@ -989,7 +989,7 @@ Expected: 三个目录里应该只剩 `node_modules/` 和（可能残留的）`p
 - [ ] **Step 3: 删除三个原目录的 main.js/preload/package.json**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 rm -f assistant/main.js assistant/preload.js assistant/preload-chat.js assistant/preload-sticky.js assistant/package.json assistant/package-lock.json
 rm -f settings/main.js settings/preload.js settings/package.json settings/package-lock.json
 rm -f graph/main.js graph/preload.js graph/package.json graph/package-lock.json
@@ -1000,7 +1000,7 @@ rm -f graph/main.js graph/preload.js graph/package.json graph/package-lock.json
 - [ ] **Step 4: 备份 assistant/node_modules（fallback 用）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 # 先 mv 备份，Task 8 npm install 成功后再删
 mv assistant/node_modules assistant_node_modules_backup
 ```
@@ -1010,7 +1010,7 @@ mv assistant/node_modules assistant_node_modules_backup
 - [ ] **Step 5: 删除 settings/graph 的 node_modules（本地文件系统）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 rm -rf settings/node_modules graph/node_modules
 ```
 
@@ -1019,7 +1019,7 @@ settings/graph 的 node_modules 是 Windows 版（跑不起来），且 Task 1 �
 - [ ] **Step 6: 安全删除空的三个原目录（避免扫雷式删除）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 # 先列出残留文件，人工核对确认都是可删的（.DS_Store 等）
 echo "=== assistant 残留 ==="
 find assistant -maxdepth 1 -type f 2>/dev/null
@@ -1034,7 +1034,7 @@ find graph -maxdepth 1 -type f 2>/dev/null
 确认只有脏文件后，逐个清理：
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 find assistant settings graph -maxdepth 1 -name ".DS_Store" -delete 2>/dev/null || true
 rmdir assistant settings graph 2>/dev/null || ls -la assistant settings graph
 ```
@@ -1053,7 +1053,7 @@ Expected: 规则 `ui/*/node_modules/` 已覆盖 `ui/main/node_modules/`，不需
 - [ ] **Step 8: 提交清理**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "chore(ui): 删除三个原目录，所有 UI 资源已合并到 ui/main/
 
@@ -1077,7 +1077,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 临时备份（铁律 #3）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: 安装依赖+验证+全局路径更新前临时备份" || echo "nothing to commit"
 ```
 
@@ -1108,7 +1108,7 @@ curl -X POST http://127.0.0.1:9876/api/test-llm -H "Content-Type: application/js
 - [ ] **Step 3: 安装依赖**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui/main
+cd <repo_root>/ui/main
 npm install
 ```
 
@@ -1125,7 +1125,7 @@ Expected: 看到 `Electron.app`（不是 `electron.exe`）。
 - [ ] **Step 5: 修复文件权限（铁律 #7）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x 2>/dev/null || true
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null || true
 ```
@@ -1133,7 +1133,7 @@ find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/nu
 - [ ] **Step 6: 全局更新旧路径引用（208 处）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 全局 grep 找出所有引用
 grep -rln "ui/assistant\|ui/settings\|ui/graph" --include="*.md" --include="*.rs" --include="*.py" --include="*.yaml" --include="*.json" --include="*.js" --include="*.html" . 2>/dev/null | grep -v node_modules | grep -v ".git/" > /tmp/old_path_refs.txt
 wc -l /tmp/old_path_refs.txt
@@ -1158,7 +1158,7 @@ Expected: 0（除历史归档计划外，全部更新）
 - [ ] **Step 7: 端到端验证 — assistant 模式**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu
 ```
 
@@ -1212,7 +1212,7 @@ Expected: 第二个 `niu` 进程启动，spawn `ui/main/npm start` with `NIU_WIN
 Task 7 Step 4 的 `ui/assistant_node_modules_backup`，在 Task 8 Step 7-10 全部验证通过后删除：
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui
+cd <repo_root>/ui
 rm -rf assistant_node_modules_backup
 ```
 
@@ -1236,7 +1236,7 @@ rm -rf assistant_node_modules_backup
 - [ ] **Step 12: 提交最终状态**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A
 git commit -m "test(ui): 端到端验证三窗口在 ui/main 单一应用下正常启动
 

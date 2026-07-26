@@ -144,7 +144,7 @@ class TestF1BotFilter:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py::TestF1BotFilter -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py::TestF1BotFilter -v`
 Expected: FAIL — 群聊消息目前不检查 mentioned_bot，所有消息都触发 Agent
 
 - [ ] **Step 3: Implement F1 — 在 `_on_message` 中添加群聊 @bot 过滤**
@@ -164,7 +164,7 @@ if not is_p2p and not getattr(msg, 'mentioned_bot', False):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py::TestF1BotFilter -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py::TestF1BotFilter -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -257,7 +257,7 @@ class TestF2GroupMessageMeta:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py::TestF2GroupMessageMeta -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py::TestF2GroupMessageMeta -v`
 Expected: FAIL — 当前群聊消息不注入发送者前缀
 
 - [ ] **Step 3: Implement F2 — 群聊消息元信息注入 + @bot 文本清理**
@@ -301,7 +301,7 @@ if not is_p2p:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py::TestF2GroupMessageMeta -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py::TestF2GroupMessageMeta -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -417,7 +417,7 @@ class TestF3GroupReply:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py::TestF3GroupReply -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py::TestF3GroupReply -v`
 Expected: FAIL — 当前没有 `_stream_reply_to_id` 属性，也没有 reply 逻辑
 
 - [ ] **Step 3: Implement F3 — reply API 支持**
@@ -502,7 +502,7 @@ if not is_p2p:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py::TestF3GroupReply -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py::TestF3GroupReply -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -599,7 +599,7 @@ class TestF4TaskStoreChatId:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_scheduler_group_push.py::TestF4TaskStoreChatId -v`
+Run: `cd <repo_root> && python -m pytest tests/test_scheduler_group_push.py::TestF4TaskStoreChatId -v`
 Expected: FAIL — `create_task` 不接受 `chat_id` 参数
 
 - [ ] **Step 3: Implement — task_store 增加 chat_id 列**
@@ -659,7 +659,7 @@ def create_task(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_scheduler_group_push.py::TestF4TaskStoreChatId -v`
+Run: `cd <repo_root> && python -m pytest tests/test_scheduler_group_push.py::TestF4TaskStoreChatId -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -778,7 +778,7 @@ class TestF4ServiceChatIdPass:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_scheduler_group_push.py::TestF4ServiceChatIdPass -v`
+Run: `cd <repo_root> && python -m pytest tests/test_scheduler_group_push.py::TestF4ServiceChatIdPass -v`
 Expected: FAIL — 当前 `router.push(agent_reply, "feishu", "")` 硬编码空串
 
 - [ ] **Step 3: Implement — service 传递 chat_id**
@@ -864,7 +864,7 @@ if name == "schedule_task":
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_scheduler_group_push.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_scheduler_group_push.py -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
@@ -995,17 +995,17 @@ class TestRegressionP2PUntouched:
 
 - [ ] **Step 2: Run all tests**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py tests/test_scheduler_group_push.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py tests/test_scheduler_group_push.py -v`
 Expected: ALL PASS
 
 - [ ] **Step 3: Run existing feishu tests to verify no regression**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_channel.py tests/test_feishu_channel_tdd.py tests/test_feishu_sync.py -v --timeout=30`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_channel.py tests/test_feishu_channel_tdd.py tests/test_feishu_sync.py -v --timeout=30`
 Expected: ALL PASS（现有测试不受影响）
 
 - [ ] **Step 4: Run existing scheduler tests to verify no regression**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_scheduler_service.py tests/test_scheduler_overdue.py -v --timeout=30`
+Run: `cd <repo_root> && python -m pytest tests/test_scheduler_service.py tests/test_scheduler_overdue.py -v --timeout=30`
 Expected: ALL PASS
 
 - [ ] **Step 5: Commit**
@@ -1068,7 +1068,7 @@ self._stream_reply_to_id = None
 
 - [ ] **Step 3: Run all tests**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py -v`
 Expected: PASS
 
 - [ ] **Step 4: Commit**

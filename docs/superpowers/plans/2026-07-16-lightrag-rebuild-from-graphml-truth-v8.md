@@ -225,7 +225,7 @@
 
 4. 必须真实跑 Pyright + pytest，附真实输出，不能撒谎：
    ```bash
-   cd REDACTED_USER_PATH/tools/ai-bot
+   cd <repo_root>
    ./python/bin/python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -30
    ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs 2>&1 | tail -40
    ```
@@ -296,7 +296,7 @@ v4 实现保留了违规函数（`repair_graphml` / `repair_brainregion_zombies`
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task1 delete 6 v4 violation functions"
 ```
 
@@ -361,7 +361,7 @@ Edit `tests/test_lightrag_repair_unit.py`：
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -30
 ./python/bin/python -m pyright niu_api/internal/lightrag_manager.py 2>&1 | tail -30
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs 2>&1 | tail -40
@@ -375,7 +375,7 @@ Expected:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_full_docs.json
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
@@ -391,7 +391,7 @@ Expected:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "refactor(repair): v8-Task1 delete 6 v4 violation functions (repair_graphml/repair_graphml_orphan_edges/repair_llm_response_cache/repair_brainregion_zombies/get_lightrag_for_repair/_rebuild_vdb_matrix) + remove _embed_batch fallback"
 ```
@@ -414,7 +414,7 @@ v4 的 `repair_text_chunks` fallback 分支调 `get_lightrag_for_repair()` 拿 t
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task2 independent tokenizer embedding"
 ```
 
@@ -495,7 +495,7 @@ def test_get_chunk_config_no_get_lightrag():
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -20
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py::test_get_tokenizer_independent_load tests/test_lightrag_repair_unit.py::test_get_chunk_config_no_get_lightrag -xvs 2>&1 | tail -30
 ```
@@ -504,7 +504,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_full_docs.json
@@ -516,7 +516,7 @@ Expected: 3 真相源 mtime + hash 跟 Task 2 开始前一致。
 ### - [ ] Step 6: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "refactor(repair): v8-Task2 independent tokenizer (TiktokenTokenizer) + chunk_config reader (no get_lightrag_for_repair)"
 ```
@@ -538,7 +538,7 @@ git add -A && git commit -m "refactor(repair): v8-Task2 independent tokenizer (T
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task3 extend _load_graphml_nodes 3-tuple"
 ```
 
@@ -711,7 +711,7 @@ for node_id, (etype, desc, src) in nodes.items():
 ### - [ ] Step 5: Pyright + pytest 真实验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -20
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs 2>&1 | tail -40
 ```
@@ -719,7 +719,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 ### - [ ] Step 6: 3 真相源 stat + shasum 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_full_docs.json
@@ -731,7 +731,7 @@ Expected: 3 真相源 mtime + hash 跟 Task 3 开始前一致（Task 3 不动数
 ### - [ ] Step 7: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "refactor(repair): v8-Task3 extend _load_graphml_nodes 3-tuple (etype, desc, src) + fix 4 destructure sites"
 ```
@@ -762,7 +762,7 @@ v4 的 `repair_text_chunks` fallback 链是 `existing_tc → full_docs`，没有
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task4 rewrite repair_text_chunks cache original_prompt priority"
 ```
 
@@ -1324,7 +1324,7 @@ def repair_text_chunks() -> dict[str, Any]:
 ### - [ ] Step 4: Pyright + pytest 真实验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -30
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs -k "repair_text_chunks" 2>&1 | tail -60
 ```
@@ -1334,7 +1334,7 @@ Expected: 6 个新测试全通过（5 个合成 fixture + 1 个真实 cache 数�
 ### - [ ] Step 5: 3 真相源 stat + shasum 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_full_docs.json
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
@@ -1348,7 +1348,7 @@ Expected: 3 真相源 mtime + hash 跟 Task 4 开始前一致。
 ### - [ ] Step 6: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "refactor(repair): v8-Task4 rewrite repair_text_chunks (cache original_prompt priority + full_docs fallback + brainregion direct construction)"
 ```
@@ -1370,7 +1370,7 @@ git add -A && git commit -m "refactor(repair): v8-Task4 rewrite repair_text_chun
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task5 repair_doc_status regression test"
 ```
 
@@ -1432,7 +1432,7 @@ def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
 ### - [ ] Step 3: Pyright + pytest 真实验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs -k "repair_doc_status" 2>&1 | tail -40
 ```
 
@@ -1441,7 +1441,7 @@ Expected: 2 个新测试通过。
 ### - [ ] Step 4: 3 真相源 stat + shasum 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_full_docs.json
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
@@ -1450,7 +1450,7 @@ shasum -a 256 ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
 ### - [ ] Step 5: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "test(repair): v8-Task5 repair_doc_status regression tests (brainregion + empty full_doc_id)"
 ```
@@ -1472,7 +1472,7 @@ v4 的 `repair_vdb_chunks`/`repair_vdb_entities`/`repair_vdb_relationships` 已�
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task6 repair_vdb regression tests"
 ```
 
@@ -1539,14 +1539,14 @@ def test_repair_vdb_relationships_no_weight(tmp_path, monkeypatch):
 ### - [ ] Step 3: Pyright + pytest 真实验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs -k "repair_vdb" 2>&1 | tail -50
 ```
 
 ### - [ ] Step 4: 3 真相源 stat + shasum 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_full_docs.json
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
@@ -1555,7 +1555,7 @@ shasum -a 256 ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
 ### - [ ] Step 5: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "test(repair): v8-Task6 repair_vdb regression tests (entities防复活 + relationships无weight)"
 ```
@@ -1577,7 +1577,7 @@ v4 的 `repair_entity_chunks`/`repair_relation_chunks`/`repair_full_entities`/`r
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task7 repair_entity_relation_full regression tests"
 ```
 
@@ -1644,14 +1644,14 @@ def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch):
 ### - [ ] Step 3: Pyright + pytest 真实验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs -k "repair_entity_chunks or repair_relation_chunks or repair_full" 2>&1 | tail -50
 ```
 
 ### - [ ] Step 4: 3 真相源 stat + shasum 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_full_docs.json
 shasum -a 256 ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
@@ -1660,7 +1660,7 @@ shasum -a 256 ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
 ### - [ ] Step 5: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "test(repair): v8-Task7 repair_entity/relation/full regression tests (防复活)"
 ```
@@ -1683,7 +1683,7 @@ v4 的 `repair_all` 已实现"3 真相源不可动 + 备份 9 派生 + 重建"�
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task8 rewrite repair_all"
 ```
 
@@ -1961,7 +1961,7 @@ def _check_truth_sources_intact() -> dict[str, Any]:
 ### - [ ] Step 6: Pyright + pytest 真实验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -20
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs -k "repair_all" 2>&1 | tail -40
 ```
@@ -1969,7 +1969,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 ### - [ ] Step 7: 3 真相源 stat + shasum 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_full_docs.json
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
@@ -1983,7 +1983,7 @@ Expected: 3 真相源 mtime + hash 跟 Task 8 开始前一致（repair_all 不�
 ### - [ ] Step 8: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "refactor(repair): v8-Task8 rewrite repair_all (delete 9 derived no backup + rebuild + no rollback) + simplify _check_truth_sources_intact"
 ```
@@ -2014,7 +2014,7 @@ v8 改为：
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task9 rewrite run_repair_on_user_request"
 ```
 
@@ -2218,7 +2218,7 @@ def run_repair_on_user_request() -> dict:
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "def stop_background_sync\|def start_background_sync\|def get_region_sync\|class RegionSync" agent/injector/region_sync.py 2>&1
 ```
 
@@ -2233,7 +2233,7 @@ Expected（v8 已确认）：
 ### - [ ] Step 5: Pyright + pytest 真实验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./python/bin/python -m pyright niu_api/internal/lightrag_manager.py 2>&1 | tail -20
 ./python/bin/python -m pytest tests/test_lightrag_repair_unit.py -xvs -k "run_repair_on_user_request" 2>&1 | tail -40
 ```
@@ -2241,7 +2241,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 ### - [ ] Step 6: 3 真相源 stat + shasum 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_full_docs.json
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
@@ -2253,7 +2253,7 @@ shasum -a 256 ~/.niu/lightrag_storage/kv_store_llm_response_cache.json
 ### - [ ] Step 7: 修复权限 + 临时提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 git add -A && git commit -m "refactor(repair): v8-Task9 rewrite run_repair_on_user_request (stop RegionSync + no get_lightrag/apipeline + no二次repair)"
 ```
@@ -2278,7 +2278,7 @@ Task 10 是最终验收。用真实 `./niu` 启动走完整 repair 流程，验�
 ### - [ ] Step 1: 临时提交备份
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add -A && git commit -m "backup: before v8-Task10 e2e real data test"
 ```
 
@@ -2286,7 +2286,7 @@ git add -A && git commit -m "backup: before v8-Task10 e2e real data test"
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 echo "=== 测试前 3 真相源基线 ==="
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_full_docs.json
@@ -2302,7 +2302,7 @@ stat -f "%Sm %z %N" ~/.niu/lightrag_storage/vdb_entities.json 2>/dev/null || ech
 echo "=== GraphML 活跃 chunk 数 ==="
 ./python/bin/python -c "
 import xml.etree.ElementTree as ET
-tree = ET.parse('REDACTED_USER_PATH/.niu/lightrag_storage/graph_chunk_entity_relation.graphml')
+tree = ET.parse('~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml')
 root = tree.getroot()
 ns = '{http://graphml.graphdrawing.org/xmlns}'
 graph = root.find(f'{ns}graph')
@@ -2331,7 +2331,7 @@ print(f'brainregion nodes: {brainregion}')
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 编译最新 Rust 启动器（CLAUDE.md 铁律 8：用 launcher/build.sh，不用 cargo build）
 ./launcher/build.sh 2>&1 | tail -5
 
@@ -2366,7 +2366,7 @@ ps -p $NIU_PID > /dev/null 2>&1 && echo "niu 进程仍存活，等 SIGKILL" && k
 
 Run:
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 echo "=== 测试后 3 真相源（必须 mtime + hash 不变）==="
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml
 stat -f "%Sm %z %N" ~/.niu/lightrag_storage/kv_store_full_docs.json
@@ -2383,7 +2383,7 @@ done
 echo "=== text_chunks 活跃 chunk 恢复数（应 145，lost=0）==="
 ./python/bin/python -c "
 import json
-tc = json.load(open('REDACTED_USER_PATH/.niu/lightrag_storage/kv_store_text_chunks.json'))
+tc = json.load(open('~/.niu/lightrag_storage/kv_store_text_chunks.json'))
 print(f'text_chunks 条数: {len(tc)}')
 # 统计脑区 chunk
 brain_count = sum(1 for v in tc.values() if isinstance(v, dict) and str(v.get('full_doc_id','')).startswith('brain_'))
@@ -2393,14 +2393,14 @@ print(f'脑区 chunk 数: {brain_count}')
 echo "=== vdb_entities 条数（应 2201 = GraphML nodes 数）==="
 ./python/bin/python -c "
 import json
-vdb_e = json.load(open('REDACTED_USER_PATH/.niu/lightrag_storage/vdb_entities.json'))
+vdb_e = json.load(open('~/.niu/lightrag_storage/vdb_entities.json'))
 print(f'vdb_entities 条数: {len(vdb_e.get(\"data\", []))}')
 "
 
 echo "=== vdb_relationships 条数（应 3725 = GraphML edges 数）==="
 ./python/bin/python -c "
 import json
-vdb_r = json.load(open('REDACTED_USER_PATH/.niu/lightrag_storage/vdb_relationships.json'))
+vdb_r = json.load(open('~/.niu/lightrag_storage/vdb_relationships.json'))
 print(f'vdb_relationships 条数: {len(vdb_r.get(\"data\", []))}')
 "
 ```
@@ -2416,7 +2416,7 @@ Expected:
 ### - [ ] Step 5: 修复权限 + 最终提交
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;
 git add -A && git commit -m "test(repair): v8-Task10 e2e real data test passed (3 truth sources intact + 145 active chunks recovered + 8 brainregion chunks constructed + 2201 entities + 3725 relationships)"

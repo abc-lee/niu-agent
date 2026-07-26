@@ -103,7 +103,7 @@ def test_expand_path_args_called_in_dispatch():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tilde_expansion.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tilde_expansion.py -v`
 Expected: FAIL — `ImportError: cannot import name 'expand_path_args'`
 
 - [ ] **Step 3: 在 `agent/handler.py` 中实现 `expand_path_args()` 函数**
@@ -141,11 +141,11 @@ expand_path_args(args)
 
 - [ ] **Step 5: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/handler.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/handler.py').read()); print('OK')"`
 
 - [ ] **Step 6: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tilde_expansion.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tilde_expansion.py -v`
 Expected: 6 passed
 
 - [ ] **Step 7: 提交**
@@ -175,7 +175,7 @@ expand_path_args(kwargs)
 
 - [ ] **Step 2: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/internal/disk_executor.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('niu_api/internal/disk_executor.py').read()); print('OK')"`
 
 - [ ] **Step 3: 提交**
 
@@ -213,7 +213,7 @@ file_path = str(Path(os.path.expanduser(file_path)).resolve())
 
 - [ ] **Step 3: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/handler.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('agent/handler.py').read()); print('OK')"`
 
 - [ ] **Step 4: 提交**
 
@@ -243,7 +243,7 @@ path = Path(os.path.expanduser(file_path))
 
 - [ ] **Step 2: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('mcp-servers/file-parser/src/niu_file_parser/__init__.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('mcp-servers/file-parser/src/niu_file_parser/__init__.py').read()); print('OK')"`
 
 - [ ] **Step 3: 提交**
 
@@ -287,7 +287,7 @@ dest_path = os.path.expanduser(dest_path) if dest_path else dest_path
 
 - [ ] **Step 2: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('mcp-servers/config-manager/src/niu_config_manager/__init__.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('mcp-servers/config-manager/src/niu_config_manager/__init__.py').read()); print('OK')"`
 
 - [ ] **Step 3: 提交**
 
@@ -320,7 +320,7 @@ file = _Path(os.path.expanduser(file_path))
 
 - [ ] **Step 2: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py').read()); print('OK')"`
 
 - [ ] **Step 3: 提交**
 
@@ -360,7 +360,7 @@ Path(os.path.expanduser(file_path))
 
 - [ ] **Step 3: 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('mcp-servers/photo-server/src/niu_photo_server/__init__.py').read()); print('OK')"`
+Run: `cd <repo_root> && python -c "import ast; ast.parse(open('mcp-servers/photo-server/src/niu_photo_server/__init__.py').read()); print('OK')"`
 
 - [ ] **Step 4: 提交**
 

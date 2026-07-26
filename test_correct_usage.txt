@@ -1,4 +1,0 @@
-Result: Error: Hub is busy with another task
-
-Time: 0.0s
-✅ FAST: Interactive mode working

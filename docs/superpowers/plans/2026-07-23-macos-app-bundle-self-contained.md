@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_detect_resources_root_macos_bundle_arbitrary() {
         for exe in [
-            "REDACTED_USER_PATH/Desktop/niu.app/Contents/MacOS/niu",
+            "~/Desktop/niu.app/Contents/MacOS/niu",
             "/Applications/niu.app/Contents/MacOS/niu",
             "/Volumes/USB/niu.app/Contents/MacOS/niu",
         ] {
@@ -143,10 +143,10 @@ mod tests {
     #[test]
     fn test_detect_resources_root_dev_mode_no_app() {
         // Dev mode: ./niu bare binary, no .app/Contents/MacOS/
-        let exe = PathBuf::from("REDACTED_USER_PATH/tools/ai-bot/niu");
+        let exe = PathBuf::from("<repo_root>/niu");
         assert!(!exe.to_string_lossy().contains(".app/Contents/MacOS/"));
         let parent = exe.parent().unwrap();
-        assert_eq!(parent, PathBuf::from("REDACTED_USER_PATH/tools/ai-bot"));
+        assert_eq!(parent, PathBuf::from("<repo_root>"));
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
 - [ ] **Step 3: 编译验证 + 跑测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/launcher
+cd <repo_root>/launcher
 cargo test --release 2>&1 | tail -20
 ```
 
@@ -170,7 +170,7 @@ Expected: 所有测试 PASS。
 - [ ] **Step 4: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add launcher/src/main.rs
 git commit -m "feat(launcher): add detect_resources_root + detect_niu_home (Rust #[test])
 
@@ -191,7 +191,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: grep 验证 main 函数后续不引用 exe_path / exe_dir / cwd**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 awk 'NR>=1598' launcher/src/main.rs | grep -nE "\bexe_dir\b|\bexe_path\b|\bcwd\b" | head -20
 ```
 
@@ -557,7 +557,7 @@ def _get_app_log_dir() -> Path:
 - [ ] **Step 5: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/http_log_api.py niu_api/channel/gateway.py agent/generic/http_logger.py agent/generic/litellm_adapter.py
 git commit -m "refactor: all Python logs write to ~/.niu/logs/
 
@@ -720,7 +720,7 @@ PRESETS_PATH = Path(__file__).parent.parent.parent.parent.parent / "config" / "l
 - [ ] **Step 8: grep 验证全仓无残留硬编码（含 mcp-servers/）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -rn 'Path(__file__).parent.*"config"\|os.path.*config.*user-config' niu_api/ agent/ mcp-servers/ 2>&1 | grep -v "config.py\|_get_bundle" | head -10
 ```
 
@@ -729,7 +729,7 @@ Expected: 无输出（或只有 config.py 内 `_get_bundle_config_dir` 的定义
 - [ ] **Step 9: 验证 config 复制逻辑**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 清空 ~/.niu/config 测试首次复制
 rm -rf ~/.niu/config
 python/bin/python3 -c "from niu_api.config import CONFIG_PATH; print('CONFIG_PATH:', CONFIG_PATH)"
@@ -875,7 +875,7 @@ const presetsPath = path.join(bundleConfigDir, 'llm-presets.json');  // 只读�
 - [ ] **Step 3: 验证 Electron 侧路径解析**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 语法检查
 node -c ui/main/main.js 2>&1
 # 路径逻辑测试
@@ -1007,7 +1007,7 @@ chmod +x scripts/relocate_python_framework.sh
 - [ ] **Step 2: 备份整个 python/bin 和 pyvenv.cfg 后跑脚本**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 cp -R python/bin python/bin.backup
 cp python/pyvenv.cfg python/pyvenv.cfg.backup 2>/dev/null || true
 
@@ -1019,7 +1019,7 @@ Expected: Step 7 输出 numpy/torch 版本，python3 prefix = PYTHONHOME。
 - [ ] **Step 3: 如果失败，完整恢复**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 rm -rf python/bin
 mv python/bin.backup python/bin
 if [ -f python/pyvenv.cfg.backup ]; then
@@ -1032,7 +1032,7 @@ echo "restored"
 - [ ] **Step 4: 清理备份（验证成功后）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 rm -rf python/bin.backup
 # 保留 .bak 文件供 rollback（relocate 脚本管理）
 echo "cleaned"
@@ -1151,7 +1151,7 @@ cat launcher/build.sh
 - [ ] **Step 4: 跑 build.sh 验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./launcher/build.sh 2>&1 | tail -30
 ```
 
@@ -1160,7 +1160,7 @@ Expected: 输出 `copying python/... relocate Python framework... signing Python
 - [ ] **Step 5: 验证 bundle 内容 + python3 自包含**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 echo "---bundle 大小---"
 du -sh niu.app
 echo "---Contents/Resources/ 内容---"
@@ -1168,7 +1168,7 @@ ls niu.app/Contents/Resources/
 echo "---bundle 内 python3 otool -L (不应有 /Library/Frameworks)---"
 otool -L niu.app/Contents/Resources/python/bin/python3 | grep -i python
 echo "---bundle 内 python3 用 PYTHONHOME 测试 import---"
-PYTHONHOME=REDACTED_USER_PATH/tools/ai-bot/niu.app/Contents/Resources/python \
+PYTHONHOME=<repo_root>/niu.app/Contents/Resources/python \
     niu.app/Contents/Resources/python/bin/python3 -c "import numpy; print('numpy', numpy.__version__)"
 echo "---bundle 内无 pyvenv.cfg---"
 ls niu.app/Contents/Resources/python/pyvenv.cfg 2>&1
@@ -1205,7 +1205,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 - [ ] **Step 1: 杀干净旧进程**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 pkill -TERM -f "niu.app/Contents/MacOS/niu" 2>/dev/null
 pkill -TERM -f "Python -m niu" 2>/dev/null
 pkill -TERM -f "electron\|Electron\|ui/main" 2>/dev/null
@@ -1216,7 +1216,7 @@ ps aux | grep -iE "niu|electron" | grep -v grep
 - [ ] **Step 2: 去 quarantine（开发验证时避免 Gatekeeper dialog 阻塞）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 xattr -d com.apple.quarantine niu.app 2>/dev/null || true
 xattr -l niu.app 2>&1
 ```
@@ -1226,7 +1226,7 @@ Expected: 无 com.apple.quarantine（开发验证时去掉；分发场景 build.
 - [ ] **Step 3: 用 `open` 模拟 Finder 双击**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 open niu.app
 sleep 15
 ```
@@ -1271,7 +1271,7 @@ sleep 2
 - [ ] **Step 1: 复制 niu.app 到 /Applications/ + 去 quarantine + 重签 + lsregister**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 pkill -TERM -f "niu.app/Contents/MacOS/niu" 2>/dev/null
 pkill -TERM -f "Python -m niu" 2>/dev/null
 pkill -TERM -f "electron\|Electron" 2>/dev/null
@@ -1340,7 +1340,7 @@ rm -rf /Applications/niu.app
 - [ ] **Step 1: 验证 macOS 开发模式 `./niu` 仍能跑**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 pkill -TERM -f "niu.app/Contents/MacOS/niu" 2>/dev/null
 pkill -TERM -f "Python -m niu" 2>/dev/null
 pkill -TERM -f "electron\|Electron" 2>/dev/null
@@ -1363,7 +1363,7 @@ pkill -TERM -f "electron\|Electron" 2>/dev/null
 - [ ] **Step 2: 验证 cargo run 仍能跑**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/launcher
+cd <repo_root>/launcher
 cargo run --release 2>&1 &
 PID=$!
 sleep 15

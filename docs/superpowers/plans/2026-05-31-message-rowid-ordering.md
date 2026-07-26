@@ -55,7 +55,7 @@ def test_message_has_rowid_field():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py::test_message_has_rowid_field -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py::test_message_has_rowid_field -v`
 Expected: FAIL with `TypeError: Message.__init__() got an unexpected keyword argument 'rowid'`
 
 - [ ] **Step 3: Add rowid field to Message dataclass**
@@ -80,7 +80,7 @@ class Message:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py::test_message_has_rowid_field -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py::test_message_has_rowid_field -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -168,7 +168,7 @@ def test_messages_ordered_by_rowid_not_created_at(db_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py::test_messages_ordered_by_rowid_not_created_at -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py::test_messages_ordered_by_rowid_not_created_at -v`
 Expected: FAIL — messages returned in created_at order (C, A, B) instead of rowid order (C, B, A)
 
 - [ ] **Step 3: Modify get_messages() SQL queries**
@@ -279,12 +279,12 @@ async def get_messages(self, limit: Optional[int] = None, before_id: Optional[st
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py::test_messages_ordered_by_rowid_not_created_at -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py::test_messages_ordered_by_rowid_not_created_at -v`
 Expected: PASS
 
 - [ ] **Step 5: Run existing tests to verify no regression**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py -v`
 Expected: All existing tests still pass
 
 - [ ] **Step 6: Commit**
@@ -349,7 +349,7 @@ def test_pagination_cursor_uses_rowid(db_path):
 
 This test should pass if Task 2 was implemented correctly. If it fails, the cursor pagination is still using created_at.
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py::test_pagination_cursor_uses_rowid -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py::test_pagination_cursor_uses_rowid -v`
 Expected: PASS (if Task 2 is correct) or FAIL (if cursor still uses created_at)
 
 - [ ] **Step 3: If test fails, fix cursor logic**
@@ -406,7 +406,7 @@ def test_rowid_ordering_with_deleted_messages(db_path):
 
 - [ ] **Step 2: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py::test_rowid_ordering_with_deleted_messages -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py::test_rowid_ordering_with_deleted_messages -v`
 Expected: PASS (SQLite rowid gaps don't affect ORDER BY)
 
 - [ ] **Step 3: Commit**
@@ -453,7 +453,7 @@ def test_same_second_messages_maintain_write_order(db_path):
 
 - [ ] **Step 2: Run test to verify it passes**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py::test_same_second_messages_maintain_write_order -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py::test_same_second_messages_maintain_write_order -v`
 Expected: PASS
 
 - [ ] **Step 3: Commit**
@@ -474,7 +474,7 @@ After Tasks 1-5, the main `get_messages()` is fixed. This task audits ALL remain
 
 - [ ] **Step 1: Search for remaining created_at ORDER BY**
 
-Run: `grep -n "created_at" REDACTED_USER_PATH/tools/ai-bot/agent/session.py`
+Run: `grep -n "created_at" <repo_root>/agent/session.py`
 
 Expected results and actions:
 - Any `ORDER BY created_at` → change to `ORDER BY rowid`
@@ -506,7 +506,7 @@ For each remaining `ORDER BY created_at` or `WHERE created_at` found:
 
 - [ ] **Step 3: Run all session tests**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_session.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_session.py -v`
 Expected: All tests pass
 
 - [ ] **Step 4: Commit**
@@ -527,7 +527,7 @@ git commit -m "fix: replace all remaining created_at ORDER BY with rowid in sess
 
 Run:
 ```bash
-grep -rn "ORDER BY.*created_at\|created_at.*DESC\|created_at.*ASC" REDACTED_USER_PATH/tools/ai-bot/niu_api/ REDACTED_USER_PATH/tools/ai-bot/mcp-servers/session-manager/
+grep -rn "ORDER BY.*created_at\|created_at.*DESC\|created_at.*ASC" <repo_root>/niu_api/ <repo_root>/mcp-servers/session-manager/
 ```
 
 - [ ] **Step 2: Fix any occurrences found**
@@ -536,7 +536,7 @@ If any other file has `ORDER BY created_at`, it must also be changed to `ORDER B
 
 - [ ] **Step 3: Run all tests**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v -k "session"`
+Run: `cd <repo_root> && python -m pytest tests/ -v -k "session"`
 Expected: All session-related tests pass
 
 - [ ] **Step 5: Commit**
@@ -555,7 +555,7 @@ git commit -m "fix: replace created_at ORDER BY with rowid in all files"
 
 - [ ] **Step 1: Start the application**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && go run main.go`
+Run: `cd <repo_root> && go run main.go`
 
 - [ ] **Step 2: Verify message ordering in the UI**
 

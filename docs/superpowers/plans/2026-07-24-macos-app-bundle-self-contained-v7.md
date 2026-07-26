@@ -91,9 +91,9 @@ mod tests {
 
     #[test]
     fn test_resources_root_from_exe_dev_mode() {
-        let exe = std::path::Path::new("REDACTED_USER_PATH/tools/ai-bot/niu");
+        let exe = std::path::Path::new("<repo_root>/niu");
         let result = resources_root_from_exe(exe);
-        assert_eq!(result, PathBuf::from("REDACTED_USER_PATH/tools/ai-bot"));
+        assert_eq!(result, PathBuf::from("<repo_root>"));
     }
 
     #[test]
@@ -123,7 +123,7 @@ git commit -m "feat(launcher): add detect_resources_root + detect_niu_home (Rust
 ### Step 1: grep 验证 main 函数后续无 exe_path/exe_dir/cwd 引用
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "fn detect_project_root\|memory_dir_check" launcher/src/main.rs
 # 找到 memory_dir_check 块后，看块后是否还有 exe_dir/exe_path/cwd 引用
 ```
@@ -588,7 +588,7 @@ echo "[relocate] DONE"
 ### Step 2: python/ 已是 POC 状态（relocate 已跑过），脚本写完直接跑验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 先恢复 python/ 到 POC 前状态测试脚本（可选，POC 已验证过）
 # 或者直接在当前 POC 状态上再跑一次脚本验证幂等性
 ./scripts/relocate_python_framework.sh python
@@ -672,7 +672,7 @@ git commit -m "feat(python): relocate_python_framework.sh (stdlib + dylib + Reso
 ### Step 4: 验证 bundle 内 python3 自包含
 
 ```bash
-PYTHONHOME=REDACTED_USER_PATH/tools/ai-bot/niu.app/Contents/Resources/python \
+PYTHONHOME=<repo_root>/niu.app/Contents/Resources/python \
     niu.app/Contents/Resources/python/bin/python3 -c "import encodings; print(encodings.__file__)"
 # 必须输出 niu.app/Contents/Resources/python/lib/python3.11/encodings/__init__.py
 ```

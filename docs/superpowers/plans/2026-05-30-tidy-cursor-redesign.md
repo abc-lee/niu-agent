@@ -134,7 +134,7 @@ class TestBuildIncrementalMsgTextEndCursor:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextEndCursor -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextEndCursor -v`
 Expected: FAIL — `_build_incremental_msg_text()` 不接受 `end_cursor_id` 参数
 
 - [ ] **Step 3: 实现 end_cursor_id 参数**
@@ -206,7 +206,7 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextEndCursor -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextEndCursor -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -363,7 +363,7 @@ class TestBuildIncrementalMsgTextFilterWm:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextFilterWm -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextFilterWm -v`
 Expected: FAIL — `_build_incremental_msg_text()` 不接受 `filter_wm` 参数
 
 - [ ] **Step 3: 实现 filter_wm 参数**
@@ -496,7 +496,7 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextFilterWm -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextFilterWm -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -630,7 +630,7 @@ class TestBuildIncrementalMsgTextProtectRecent:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextProtectRecent -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextProtectRecent -v`
 Expected: FAIL — `_build_incremental_msg_text()` 不接受 `protect_recent` 参数
 
 - [ ] **Step 3: 实现 protect_recent 参数**
@@ -658,7 +658,7 @@ Expected: FAIL — `_build_incremental_msg_text()` 不接受 `protect_recent` �
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextProtectRecent -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestBuildIncrementalMsgTextProtectRecent -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -718,7 +718,7 @@ class TestBuildEntityHistoryReplacement:
 
 - [ ] **Step 2: 运行测试确认通过（Task 2/3 已实现 filter_wm）**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestBuildEntityHistoryReplacement -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestBuildEntityHistoryReplacement -v`
 Expected: PASS — filter_wm 已在 Task 2 中实现
 
 - [ ] **Step 3: 删除 `_build_entity_history()` 函数**
@@ -733,7 +733,7 @@ Expected: PASS — filter_wm 已在 Task 2 中实现
 
 - [ ] **Step 4: 运行全量测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -811,7 +811,7 @@ class TestExtractCursorIdNull:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestExtractCursorIdNull -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestExtractCursorIdNull -v`
 Expected: FAIL — `_extract_cursor_id()` 当前对 null 返回 None
 
 - [ ] **Step 3: 实现 null 检测**
@@ -853,7 +853,7 @@ def _extract_cursor_id(text: str, field_name: str, valid_ids: set) -> str | None
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestExtractCursorIdNull -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestExtractCursorIdNull -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -890,7 +890,7 @@ class TestDispatchBlocking:
 
 - [ ] **Step 2: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py::TestDispatchBlocking -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py::TestDispatchBlocking -v`
 Expected: PASS
 
 - [ ] **Step 3: 删除 handler.py 中 entity-extractor history 特殊分支**
@@ -955,7 +955,7 @@ if agent_name == "entity-extractor" and result:
 
 - [ ] **Step 4: Python 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import py_compile; py_compile.compile('agent/handler.py', doraise=True)"`
+Run: `cd <repo_root> && python -c "import py_compile; py_compile.compile('agent/handler.py', doraise=True)"`
 Expected: 无输出（编译通过）
 
 - [ ] **Step 5: 提交**
@@ -1096,7 +1096,7 @@ git commit -m "refactor: niu.md 移除 context-manager 和 entity-extractor — 
 
 - [ ] **Step 2: Python 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
+Run: `cd <repo_root> && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
 Expected: 无输出（编译通过）
 
 - [ ] **Step 3: 提交**
@@ -1174,7 +1174,7 @@ git commit -m "refactor: Entity Extractor sleep模式改为 task方式 — 程�
 
 - [ ] **Step 2: Python 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
+Run: `cd <repo_root> && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
 Expected: 无输出
 
 - [ ] **Step 3: 提交**
@@ -1332,7 +1332,7 @@ git commit -m "refactor: Entity Extractor force模式改为 task方式 — 全�
 
 - [ ] **Step 3: Python 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
+Run: `cd <repo_root> && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
 Expected: 无输出
 
 - [ ] **Step 4: 提交**
@@ -1469,7 +1469,7 @@ git commit -m "refactor: Dream Evolver 改增量task方式 — sleep/force统一
 
 - [ ] **Step 2: Python 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
+Run: `cd <repo_root> && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
 Expected: 无输出
 
 - [ ] **Step 3: 提交**
@@ -1514,7 +1514,7 @@ git commit -m "refactor: Context Manager sleep模式 — 增量范围+保护标�
 
 - [ ] **Step 2: Python 语法检查**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
+Run: `cd <repo_root> && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True)"`
 Expected: 无输出
 
 - [ ] **Step 3: 提交**
@@ -1787,12 +1787,12 @@ class TestTidyContextImplIntegration:
 
 - [ ] **Step 2: 运行全量测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tidy_cursor.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_tidy_cursor.py -v`
 Expected: PASS
 
 - [ ] **Step 3: Python 语法检查所有修改文件**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True); py_compile.compile('agent/handler.py', doraise=True); print('OK')"`
+Run: `cd <repo_root> && python -c "import py_compile; py_compile.compile('niu_api/compat.py', doraise=True); py_compile.compile('agent/handler.py', doraise=True); print('OK')"`
 Expected: OK
 
 - [ ] **Step 4: 提交**
@@ -1812,7 +1812,7 @@ git commit -m "test: 全量集成测试 — 增量范围计算+游标fallback+�
 - [ ] **Step 1: 启动程序验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && go run main.go
+cd <repo_root> && go run main.go
 ```
 
 等待程序启动完成，确认无启动报错。

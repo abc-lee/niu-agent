@@ -93,7 +93,7 @@ class TestVisibilityValues:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestVisibilityValues -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestVisibilityValues -v`
 Expected: FAIL — `get_dynamic_tools` 和 `get_visibility` 仍存在，默认 visibility 仍是 `"dynamic"`
 
 - [ ] **Step 3: 删除 `get_dynamic_tools()` 方法**
@@ -134,12 +134,12 @@ tool_vis = normalized_schema.get("visibility", "hidden")
 
 - [ ] **Step 6: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestVisibilityValues -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestVisibilityValues -v`
 Expected: PASS — 6 个测试全部通过
 
 - [ ] **Step 7: 运行现有测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v --timeout=30 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/ -v --timeout=30 2>&1 | tail -30`
 Expected: 所有现有测试通过（`get_dynamic_tools` 和 `get_visibility` 无调用者）
 
 - [ ] **Step 8: 提交**
@@ -218,7 +218,7 @@ class TestAskAgent:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgent -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgent -v`
 Expected: FAIL — `set_ask_agent` 和 `ask_agent` 方法不存在
 
 - [ ] **Step 3: 在 ToolRegistry 中实现 ask_agent**
@@ -246,7 +246,7 @@ def ask_agent(self, prompt: str, system_prompt: str = "", max_tokens: int = 500)
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgent -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgent -v`
 Expected: PASS — 4 个测试全部通过
 
 - [ ] **Step 5: 提交**
@@ -302,7 +302,7 @@ class TestAskAgentCallback:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgentCallback -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgentCallback -v`
 Expected: FAIL — `_make_ask_agent_callback` 方法不存在
 
 - [ ] **Step 3: 在 runner.py 中实现 `_make_ask_agent_callback()`**
@@ -346,12 +346,12 @@ registry.set_ask_agent(self._make_ask_agent_callback())
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgentCallback -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestAskAgentCallback -v`
 Expected: PASS
 
 - [ ] **Step 6: 运行全部 ToolRegistry 测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py -v`
 Expected: PASS — 所有测试通过
 
 - [ ] **Step 7: 提交**
@@ -449,7 +449,7 @@ class TestMCPClientManagerListTools:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py -v`
 Expected: FAIL — `agent.mcp_client` 模块不存在或不包含 `MCPClientManager`
 
 - [ ] **Step 3: 重写 `agent/mcp_client.py`**
@@ -574,7 +574,7 @@ class MCPClientManager:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py -v`
 Expected: PASS — 5 个测试通过
 
 - [ ] **Step 5: 写 Sampling callback 测试**
@@ -599,7 +599,7 @@ class TestMCPSamplingCallback:
 
 - [ ] **Step 6: 运行 Sampling 测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py::TestMCPSamplingCallback -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py::TestMCPSamplingCallback -v`
 Expected: PASS
 
 - [ ] **Step 7: 提交**
@@ -683,7 +683,7 @@ class TestSamplingCallback:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py::TestSamplingCallback -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py::TestSamplingCallback -v`
 Expected: FAIL — `make_sampling_callback` 不存在
 
 - [ ] **Step 3: 在 `agent/mcp_client.py` 中实现 `make_sampling_callback()`**
@@ -731,12 +731,12 @@ def make_sampling_callback():
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py::TestSamplingCallback -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py::TestSamplingCallback -v`
 Expected: PASS — 3 个测试通过
 
 - [ ] **Step 5: 运行全部 MCP Client 测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py -v`
 Expected: PASS
 
 - [ ] **Step 6: 提交**
@@ -861,7 +861,7 @@ class TestExternalToolRegistration:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestExternalToolRegistration -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestExternalToolRegistration -v`
 Expected: FAIL — `_external_tools` 属性不存在
 
 - [ ] **Step 3: 修改 ToolRegistry 支持外部工具**
@@ -897,12 +897,12 @@ def set_mcp_client(self, client):
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py::TestExternalToolRegistration -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py::TestExternalToolRegistration -v`
 Expected: PASS
 
 - [ ] **Step 5: 运行全部 ToolRegistry 测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_tool_registry.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_tool_registry.py -v`
 Expected: PASS
 
 - [ ] **Step 6: 提交**
@@ -1005,7 +1005,7 @@ photo-server:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py::TestExternalServerConfig -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py::TestExternalServerConfig -v`
 Expected: FAIL — `is_external_server` 不存在
 
 - [ ] **Step 3: 在 mcp_loader.py 中新增 `is_external_server()`**
@@ -1019,7 +1019,7 @@ def is_external_server(server_config: dict) -> bool:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py::TestExternalServerConfig -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py::TestExternalServerConfig -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -1109,7 +1109,7 @@ class TestLoadExternalServers:
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py::TestLoadExternalServers -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py::TestLoadExternalServers -v`
 Expected: FAIL — `load_external_servers` 不存在
 
 - [ ] **Step 3: 在 mcp_loader.py 中实现 `load_external_servers()`**
@@ -1170,7 +1170,7 @@ async def load_external_servers(config: dict, mcp_client):
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/test_mcp_client.py::TestLoadExternalServers -v`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/test_mcp_client.py::TestLoadExternalServers -v`
 Expected: PASS
 
 - [ ] **Step 5: 在 runner.py 中初始化外部服务器连接**
@@ -1214,7 +1214,7 @@ def _connect_external_servers(self):
 
 - [ ] **Step 6: 运行全部测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_p0/ -v --timeout=30 2>&1 | tail -30`
+Run: `cd <repo_root> && python -m pytest tests/test_p0/ -v --timeout=30 2>&1 | tail -30`
 Expected: PASS
 
 - [ ] **Step 7: 提交**
@@ -1240,12 +1240,12 @@ git commit -m "feat: 外部 MCP 服务器加载流程
 
 - [ ] **Step 1: 运行全部现有测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v --timeout=30 2>&1 | tail -50`
+Run: `cd <repo_root> && python -m pytest tests/ -v --timeout=30 2>&1 | tail -50`
 Expected: PASS — 所有现有测试通过
 
 - [ ] **Step 2: 启动应用，验证内部 MCP 工具正常**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m niu_api`
+Run: `cd <repo_root> && python -m niu_api`
 验证：
 - 日志中 9 个内部 MCP 服务器正常加载
 - ToolRegistry 中 85 个工具正常注册

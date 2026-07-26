@@ -107,7 +107,7 @@ def test_unique_name():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_supplement.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_supplement.py -v`
 Expected: FAIL（`ModuleNotFoundError: No module named 'agent.subagent_supplement'`）
 
 - [ ] **Step 3: 实现 SubagentSupplementQueue**
@@ -159,13 +159,13 @@ class SubagentSupplementQueue:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_supplement.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_supplement.py -v`
 Expected: 5 个测试全 PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent_supplement.py tests/test_subagent_supplement.py
 git commit -m "feat(subagent): 新建 SubagentSupplementQueue 子 Agent 独立 supplement 通道"
 ```
@@ -273,7 +273,7 @@ def test_concurrent_register():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_registry.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_registry.py -v`
 Expected: FAIL（`ModuleNotFoundError`）
 
 - [ ] **Step 3: 实现 SubagentRegistry**
@@ -350,13 +350,13 @@ class SubagentRegistry:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_registry.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_registry.py -v`
 Expected: 7 个测试全 PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent_registry.py tests/test_subagent_registry.py
 git commit -m "feat(subagent): 新建 SubagentRegistry 阶段一简化版（含同步子 Agent）"
 ```
@@ -411,7 +411,7 @@ def test_supplement_drain_custom_called():
 
 - [ ] **Step 3: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_agent_loop_supplement_drain.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_agent_loop_supplement_drain.py -v`
 Expected: FAIL（`supplement_drain` 参数还不存在）
 
 - [ ] **Step 4: 修改 agent_runner_loop 签名加 supplement_drain 参数**
@@ -464,18 +464,18 @@ else:
 
 - [ ] **Step 6: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_agent_loop_supplement_drain.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_agent_loop_supplement_drain.py -v`
 Expected: PASS
 
 - [ ] **Step 7: py_compile 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m py_compile agent/generic/agent_loop.py`
+Run: `cd <repo_root> && python/bin/python -m py_compile agent/generic/agent_loop.py`
 Expected: 无输出（语法正确）
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py tests/test_agent_loop_supplement_drain.py
 git commit -m "feat(agent_loop): agent_runner_loop 加 supplement_drain 参数支持子 Agent 独立 queue"
 ```
@@ -533,7 +533,7 @@ def test_run_agent_loop_enable_supplement_true():
 
 - [ ] **Step 3: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_supplement_integration.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_supplement_integration.py -v`
 Expected: FAIL（`supplement_queue` 参数不存在、`is_stop_requested` 仍在）
 
 - [ ] **Step 4: 修改 call_subagent 签名加 supplement_queue 参数**
@@ -615,18 +615,18 @@ finally:
 
 - [ ] **Step 7: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_supplement_integration.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_supplement_integration.py -v`
 Expected: 3 个测试全 PASS
 
 - [ ] **Step 8: py_compile 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m py_compile agent/subagent.py`
+Run: `cd <repo_root> && python/bin/python -m py_compile agent/subagent.py`
 Expected: 无输出
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent.py tests/test_subagent_supplement_integration.py
 git commit -m "feat(subagent): 子 Agent 用独立 supplement queue + 移除 is_stop_requested 检查"
 ```
@@ -692,7 +692,7 @@ def test_get_messages_includes_subagent_msg():
 
 - [ ] **Step 3: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_msg_role.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_msg_role.py -v`
 
 **预期**：可能 PASS（现有 `add_message` 不限制 role 值，`get_messages` 不过滤 role）。如果 PASS 说明 db 层已支持，只需改 history 重建。如果 FAIL，需改 Message dataclass 注释。
 
@@ -750,18 +750,18 @@ def test_history_reconstruction_skips_subagent_msg():
 
 - [ ] **Step 7: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_msg_role.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_msg_role.py -v`
 Expected: 3 个测试全 PASS
 
 - [ ] **Step 8: py_compile 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m py_compile agent/session.py agent/generic/agent_loop.py`
+Run: `cd <repo_root> && python/bin/python -m py_compile agent/session.py agent/generic/agent_loop.py`
 Expected: 无输出
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/session.py agent/generic/agent_loop.py tests/test_subagent_msg_role.py
 git commit -m "feat(session): messages db 支持 role=subagent_msg + history 重建过滤"
 ```
@@ -865,7 +865,7 @@ def test_route_target_not_found():
 
 - [ ] **Step 3: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_db_monitor.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_db_monitor.py -v`
 Expected: FAIL（`ModuleNotFoundError`）
 
 - [ ] **Step 4: 实现 db_monitor.py**
@@ -1013,7 +1013,7 @@ async def run_db_monitor(interval: float = 0.2) -> None:
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_db_monitor.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_db_monitor.py -v`
 Expected: 7 个测试全 PASS
 
 - [ ] **Step 6: 在 lifespan startup 启动 db 监测 task**
@@ -1049,13 +1049,13 @@ except asyncio.CancelledError:
 
 - [ ] **Step 8: py_compile 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m py_compile niu_api/db_monitor.py niu_api/__main__.py`
+Run: `cd <repo_root> && python/bin/python -m py_compile niu_api/db_monitor.py niu_api/__main__.py`
 Expected: 无输出
 
 - [ ] **Step 9: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/db_monitor.py niu_api/__main__.py tests/test_db_monitor.py
 git commit -m "feat(db_monitor): 新建 db 监测程序轮询路由 @ 消息"
 ```
@@ -1116,13 +1116,13 @@ Edit `config/agents/niu.md`，在核心规则段（`:194` 附近）加：
 
 - [ ] **Step 3: 验证 niu.md 格式**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && head -220 config/agents/niu.md | tail -30`
+Run: `cd <repo_root> && head -220 config/agents/niu.md | tail -30`
 Expected: 看到新加的"主↔子 Agent 对话规则"段
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add config/agents/niu.md
 git commit -m "docs(niu): 主 Agent 提示词加主子对话逐条回复约束"
 ```
@@ -1217,13 +1217,13 @@ function escapeHtml(str) {
 
 - [ ] **Step 4: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -n "subagent-msg\|addSubagentMessage" ui/assistant/chat.html | head -10`
+Run: `cd <repo_root> && grep -n "subagent-msg\|addSubagentMessage" ui/assistant/chat.html | head -10`
 Expected: 多处匹配（CSS + JS + HTML）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add ui/assistant/chat.html
 git commit -m "feat(ui): chat.html 渲染 role=subagent_msg 消息为侧边小卡片"
 ```
@@ -1312,13 +1312,13 @@ Read `ui/assistant/chat.html:1382-1385`。Escape 现有逻辑是等效 `/stop`�
 
 - [ ] **Step 5: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -n "stopClickTimer\|stopClickFired\|STOP_DOUBLE_CLICK_WINDOW" ui/assistant/chat.html`
+Run: `cd <repo_root> && grep -n "stopClickTimer\|stopClickFired\|STOP_DOUBLE_CLICK_WINDOW" ui/assistant/chat.html`
 Expected: 多处匹配
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add ui/assistant/chat.html niu_api/chat.py
 git commit -m "feat(ui): 双击停止按钮触发批量 /stop_all + 单击只停主 Agent + 连点3次防护"
 ```
@@ -1382,7 +1382,7 @@ def test_request_stop_still_works():
 
 - [ ] **Step 3: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_stop_signal.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_stop_signal.py -v`
 Expected: FAIL（`request_stop_all_subagents` 不存在）
 
 - [ ] **Step 4: 实现 request_stop_all_subagents**
@@ -1408,18 +1408,18 @@ def request_stop_all_subagents() -> None:
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_stop_signal.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_stop_signal.py -v`
 Expected: 3 个测试全 PASS
 
 - [ ] **Step 6: py_compile 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m py_compile agent/runner.py`
+Run: `cd <repo_root> && python/bin/python -m py_compile agent/runner.py`
 Expected: 无输出
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/runner.py tests/test_stop_signal.py
 git commit -m "feat(runner): 新增 request_stop_all_subagents 批量停止子 Agent"
 ```
@@ -1480,7 +1480,7 @@ def test_format_supplement_for_insert_terminate():
 
 - [ ] **Step 3: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_supplement_consumption.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_supplement_consumption.py -v`
 Expected: FAIL（`format_subagent_supplement` 不存在）
 
 - [ ] **Step 4: 实现 format_subagent_supplement**
@@ -1594,18 +1594,18 @@ if supplement_terminate:
 
 - [ ] **Step 6: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_supplement_consumption.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_supplement_consumption.py -v`
 Expected: 3 个测试全 PASS
 
 - [ ] **Step 7: py_compile 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m py_compile agent/generic/agent_loop.py`
+Run: `cd <repo_root> && python/bin/python -m py_compile agent/generic/agent_loop.py`
 Expected: 无输出
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/generic/agent_loop.py tests/test_supplement_consumption.py
 git commit -m "feat(agent_loop): 子 Agent supplement 消费 普通补充次末 /stop 最末"
 ```
@@ -1696,7 +1696,7 @@ def test_format_for_db():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_message_parser.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_message_parser.py -v`
 Expected: FAIL（`ModuleNotFoundError`）
 
 - [ ] **Step 3: 实现 at_message_parser.py**
@@ -1744,7 +1744,7 @@ def format_for_db(msg: dict) -> str:
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_message_parser.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_at_message_parser.py -v`
 Expected: 6 个测试全 PASS
 
 - [ ] **Step 5: 在 persist_agent_reply 内调解析器（async 函数，可 await）**
@@ -1789,13 +1789,13 @@ async def persist_agent_reply(store, rv, history_len, full_reply, source="electr
 
 - [ ] **Step 6: py_compile 验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m py_compile agent/at_message_parser.py agent/generic/agent_loop.py`
+Run: `cd <repo_root> && python/bin/python -m py_compile agent/at_message_parser.py agent/generic/agent_loop.py`
 Expected: 无输出
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/at_message_parser.py agent/generic/agent_loop.py tests/test_at_message_parser.py
 git commit -m "feat(parser): 后端解析主 Agent 回复提取 @ 消息存 subagent_msg role"
 ```
@@ -1851,7 +1851,7 @@ def test_running_endpoint_with_subagents():
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagents_running_endpoint.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagents_running_endpoint.py -v`
 Expected: FAIL（端点不存在）
 
 - [ ] **Step 3: 加 /api/subagents/running 端点**
@@ -1900,13 +1900,13 @@ async function checkRunningSubagents() {
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagents_running_endpoint.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagents_running_endpoint.py -v`
 Expected: 2 个测试全 PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/chat.py ui/assistant/chat.html tests/test_subagents_running_endpoint.py
 git commit -m "feat(api): /api/subagents/running 端点 + 前端单击停止 UX 提示"
 ```
@@ -1990,13 +1990,13 @@ def test_subagent_msg_not_in_llm_history():
 
 - [ ] **Step 2: 运行集成测试确认 skip**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_subagent_interaction_integration.py -v`
+Run: `cd <repo_root> && python/bin/python -m pytest tests/test_subagent_interaction_integration.py -v`
 Expected: 3 个测试 SKIPPED
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_subagent_interaction_integration.py
 git commit -m "test(integration): 阶段一集成测试骨架（手动执行）"
 ```
@@ -2015,7 +2015,7 @@ Expected: `0`
 
 - [ ] **Step 2: 启动程序**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu > /tmp/niu_stage1.log 2>&1 &`
+Run: `cd <repo_root> && ./niu > /tmp/niu_stage1.log 2>&1 &`
 等 10 秒启动。
 
 - [ ] **Step 3: 验证 db 监测程序启动**
@@ -2058,7 +2058,7 @@ Expected: 无新引入的报错
 - [ ] **Step 9: 杀进程，最终确认**
 
 Run: `pkill -9 -f niu_api; pkill -9 -f "niu"; pkill -9 -f "Electron"; sleep 2`
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && git status && git log --oneline -15`
+Run: `cd <repo_root> && git status && git log --oneline -15`
 
 Expected: 工作区干净，13 个 commit（Task 1-12 各一个 + 可能的修复）
 

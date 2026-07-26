@@ -31,8 +31,8 @@
 ## Task 1: 改造探测 helper 函数（schema/prompt/分类器）
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/compat.py:1321-1398`
-- Test: `REDACTED_USER_PATH/tools/ai-bot/tests/test_response_format_probe.py`
+- Modify: `<repo_root>/niu_api/compat.py:1321-1398`
+- Test: `<repo_root>/tests/test_response_format_probe.py`
 
 - [ ] **Step 1: 写失败测试——冲突式 schema 结构**
 
@@ -53,7 +53,7 @@ def test_build_probe_response_format_json_schema_structure():
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_response_format_json_schema_structure -v`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_response_format_json_schema_structure -v`
 Expected: FAIL（当前 schema 是 `ok: boolean`，无 verdict）
 
 - [ ] **Step 3: 改造 `_build_probe_response_format_json_schema`**
@@ -93,7 +93,7 @@ def _build_probe_response_format_json_schema() -> dict:
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_response_format_json_schema_structure -v`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_response_format_json_schema_structure -v`
 Expected: PASS
 
 - [ ] **Step 5: 写失败测试——冲突式 prompt**
@@ -119,7 +119,7 @@ def test_build_probe_messages_conflicts_with_schema():
 
 - [ ] **Step 6: 跑测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_messages_conflicts_with_schema -v`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_messages_conflicts_with_schema -v`
 Expected: FAIL（当前 prompt 是 `Respond with a JSON object: {"ok": true}`，无 ocean / do not output json）
 
 - [ ] **Step 7: 改造 `_build_probe_messages`**
@@ -146,7 +146,7 @@ def _build_probe_messages() -> list[dict]:
 
 - [ ] **Step 8: 跑测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_messages_conflicts_with_schema -v`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_build_probe_messages_conflicts_with_schema -v`
 Expected: PASS
 
 - [ ] **Step 9: 写失败测试——Tier 1 分类器 verdict 判定（整体替换测试区域）**
@@ -210,7 +210,7 @@ def test_classify_tier1_gateway_blocked_when_markdown_wrapped():
 
 - [ ] **Step 10: 跑测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_classify_tier1_supported_when_verdict_schema_enforced -v`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_classify_tier1_supported_when_verdict_schema_enforced -v`
 Expected: FAIL（当前分类器判定"含 ok 字段"，不是 verdict）
 
 - [ ] **Step 11: 改造 `_classify_probe_response_tier1`**
@@ -243,7 +243,7 @@ def _classify_probe_response_tier1(text: str) -> str:
 
 - [ ] **Step 12: 跑测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "classify_tier1"`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "classify_tier1"`
 Expected: 9 个测试全 PASS
 
 - [ ] **Step 13: 更新 `_classify_probe_response_tier2` docstring（逻辑不变）**
@@ -265,13 +265,13 @@ def _classify_probe_response_tier2(text: str) -> str:
 
 - [ ] **Step 14: 全量跑测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "not endpoint"`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "not endpoint"`
 Expected: 全 PASS（除 endpoint 集成测试外的所有单元测试）
 
 - [ ] **Step 15: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_response_format_probe.py
 git commit -m "$(cat <<'EOF'
 feat(api): 探测 helper 改冲突式设计，消除 flaky 网关假阳性
@@ -301,8 +301,8 @@ EOF
 ## Task 2: 探测端点改三次采样 + 限流重试 + 错误码分类
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/compat.py:1401-1573`
-- Test: `REDACTED_USER_PATH/tools/ai-bot/tests/test_response_format_probe.py`
+- Modify: `<repo_root>/niu_api/compat.py:1401-1573`
+- Test: `<repo_root>/tests/test_response_format_probe.py`
 
 - [ ] **Step 1: 写失败测试——三次采样全过才 supported**
 
@@ -470,7 +470,7 @@ async def test_probe_tier_infra_error_returns_immediately():
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_probe_tier_three_samples_all_pass_returns_supported -v`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py::test_probe_tier_three_samples_all_pass_returns_supported -v`
 Expected: FAIL（`_probe_tier_three_samples_async` 不存在）
 
 - [ ] **Step 3: 新增 `_probe_tier_three_samples_async` 异步函数**
@@ -566,7 +566,7 @@ async def _probe_tier_three_samples_async(try_fn, response_format: dict) -> tupl
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "probe_tier"`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "probe_tier"`
 Expected: 8 个测试全 PASS（all_pass / gateway_blocked / model_rejected / rate_limit / timeout / exhausted / shared / infra_error）
 
 - [ ] **Step 5: 写失败测试——端点 rate_limited / infra_error 返回 probe_failed**
@@ -815,7 +815,7 @@ async def test_probe_returns_probe_failed_when_infra_error():
 
 - [ ] **Step 8: 全量跑测试确认无回归**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "not endpoint"`
+Run: `cd <repo_root> && ./python/bin/python -m pytest tests/test_response_format_probe.py -v -k "not endpoint"`
 Expected: 全 PASS（8 个 probe_tier 测试 + 2 个端点 probe_failed 测试 + 其他单元测试；集成测试 `test_probe_endpoint_returns_*` 名字含 "endpoint" 会被 `-k "not endpoint"` 取消选择，需单独跑不带过滤器）
 
 - [ ] **Step 9: 更新端点 docstring（整段重写，删除与新代码矛盾的旧描述）**
@@ -885,7 +885,7 @@ async def probe_response_format(request: Request) -> dict:
 - [ ] **Step 10: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py tests/test_response_format_probe.py
 git commit -m "$(cat <<'EOF'
 feat(api): 探测端点改三次采样 + 限流重试 + 错误码分类
@@ -917,8 +917,8 @@ EOF
 ## Task 3: 前端 main.js + 后台探测超时同步加大
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/ui/main/main.js:1343`
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_manager.py:255`
+- Modify: `<repo_root>/ui/main/main.js:1343`
+- Modify: `<repo_root>/niu_api/internal/lightrag_manager.py:255`
 
 - [ ] **Step 1: 前端 main.js 探测超时从 70s 提到 300s**
 
@@ -961,7 +961,7 @@ if mode == "prompt_only" and not ("gateway_blocked" in reason or "model_rejected
 - [ ] **Step 3: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add ui/main/main.js niu_api/internal/lightrag_manager.py
 git commit -m "$(cat <<'EOF'
 fix(api): 探测调用方超时同步加大到 300s
@@ -982,21 +982,21 @@ EOF
 ## Task 4: 集成测试断言更新（豆包/GLM/OpenAI）+ 超时加大 + helper 函数抽取
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/tests/test_response_format_probe.py:374-446`
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/requirements-dev.txt`
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/pytest.ini`
+- Modify: `<repo_root>/tests/test_response_format_probe.py:374-446`
+- Modify: `<repo_root>/requirements-dev.txt`
+- Modify: `<repo_root>/pytest.ini`
 
 - [ ] **Step 0: 安装 pytest-timeout + 注册 timeout marker**
 
-a. 在 `REDACTED_USER_PATH/tools/ai-bot/requirements-dev.txt` 末尾追加：
+a. 在 `<repo_root>/requirements-dev.txt` 末尾追加：
 
 ```
 pytest-timeout==2.3.1            # 测试超时保护（pytest.ini timeout=30 + @pytest.mark.timeout(600) 集成测试突破）
 ```
 
-b. 安装：`cd REDACTED_USER_PATH/tools/ai-bot && ./python/bin/pip install pytest-timeout==2.3.1`
+b. 安装：`cd <repo_root> && ./python/bin/pip install pytest-timeout==2.3.1`
 
-c. 在 `REDACTED_USER_PATH/tools/ai-bot/pytest.ini` 的 `markers` 列表追加 `timeout`（避免 `--strict-markers` 拒绝）：
+c. 在 `<repo_root>/pytest.ini` 的 `markers` 列表追加 `timeout`（避免 `--strict-markers` 拒绝）：
 
 ```ini
 markers =
@@ -1321,7 +1321,7 @@ async def test_try_tier_classifies_bad_request_error():
 - [ ] **Step 6: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add tests/test_response_format_probe.py
 git commit -m "$(cat <<'EOF'
 test(api): 集成测试断言更新为三次采样语义
@@ -1344,7 +1344,7 @@ EOF
 ## Task 5: 用户手册 + 前端文案更新
 
 **Files:**
-- Modify: `REDACTED_USER_PATH/tools/ai-bot/docs/manual-user-guide.md:114-145`
+- Modify: `<repo_root>/docs/manual-user-guide.md:114-145`
 
 - [ ] **Step 1: 更新探测流程描述**
 
@@ -1387,7 +1387,7 @@ c. probe_failed 注释块（约 L424-426）："probe_failed：仅 HTTP 传输失
 - [ ] **Step 4: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add docs/manual-user-guide.md ui/main/windows/settings/index.html
 git commit -m "$(cat <<'EOF'
 docs: 用户手册 + 前端文案更新三次采样 + flaky 网关描述

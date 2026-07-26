@@ -55,7 +55,7 @@ await storage.index_done_callback()  ← 触发写盘
 
 ## 3. Tech Stack
 
-- **LightRAG 版本**：fork 版本（`REDACTED_USER_PATH/tools/LightRAG/`），禁止升级官方 PyPI
+- **LightRAG 版本**：fork 版本（`<lightrag_fork_path>/`），禁止升级官方 PyPI
 - **Tokenizer**：TiktokenTokenizer（保留 v8 tokenizer 加载器）
 - **Embedding 模型**：BAAI/bge-base-zh-v1.5（768d），从 `models/bge-base-zh-v1.5/` 加载
 - **运行环境**：独立进程（不嵌入 LightRAG 主类，避免 RegionSync 干扰）
@@ -300,7 +300,7 @@ LightRAG storage.upsert 内部对 embedding 结果做 `np.array(await embedding_
 
 ## 10. 不在 v9 范围
 
-- 不改 LightRAG fork 源码（`REDACTED_USER_PATH/tools/LightRAG/`）
+- 不改 LightRAG fork 源码（`<lightrag_fork_path>/`）
 - 不改 `lightrag_integrity.py` 检测逻辑
 - 不改 `lightrag_manager.py` 入口签名
 - 不改 `lightrag_repair_tokenizer.py`
@@ -328,7 +328,7 @@ LightRAG storage.upsert 内部对 embedding 结果做 `np.array(await embedding_
 ## 12. Task 1-3 可执行代码细节
 
 > 以下代码基于 v8 实际代码（`niu_api/internal/lightrag_repair.py` 共 1832 行）+ LightRAG fork 源码
-> （`REDACTED_USER_PATH/tools/LightRAG/`）编写。行号引用以 v8 当前 HEAD 为准。
+> （`<lightrag_fork_path>/`）编写。行号引用以 v8 当前 HEAD 为准。
 
 ### 字段对照表（Task 3-9 共用）
 
@@ -379,7 +379,7 @@ LightRAG storage.upsert 内部对 embedding 结果做 `np.array(await embedding_
 ### Step 1: 备份当前代码
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py
 git commit -m "backup(lightrag_repair): before v9 Task 1 delete v8 violations (baseline @ v8 HEAD)"
 ```
@@ -582,7 +582,7 @@ import json
 ### Step 7: grep 验证无残留调用
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_atomic_write_json\|_build_vdb_file\|_encode_vector\|_encode_matrix" niu_api/internal/lightrag_repair.py
 ```
 
@@ -595,7 +595,7 @@ grep -n "_atomic_write_json\|_build_vdb_file\|_encode_vector\|_encode_matrix" ni
 ### Step 8: pyright 验证 0 errors
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -20
 ```
 
@@ -613,7 +613,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -20
 ### Step 9: 跑现有测试，确认无 import 时崩溃
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -x --tb=short 2>&1 | tail -30
 ```
 
@@ -628,7 +628,7 @@ python -m pytest tests/test_lightrag_repair_unit.py -x --tb=short 2>&1 | tail -3
 ### Step 10: 提交 Task 1
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 1 删除 v8 违规写派生函数
@@ -665,7 +665,7 @@ EOF
 
 ### 设计依据
 
-**LightRAG `EmbeddingFunc` 基类**（`REDACTED_USER_PATH/tools/LightRAG/lightrag/utils.py:421-537`）：
+**LightRAG `EmbeddingFunc` 基类**（`<lightrag_fork_path>/lightrag/utils.py:421-537`）：
 - `@dataclass` 类，属性：`embedding_dim: int` / `func: callable` / `max_token_size` / `send_dimensions` / `model_name`
 - `__post_init__` 会自动 unwrap 嵌套的 `EmbeddingFunc`（用 `self.func = self.func.func`）
 - `async __call__(self, *args, **kwargs)` → `await self.func(*args, **kwargs)` → 返回 `np.ndarray`
@@ -974,7 +974,7 @@ def test_repair_embedding_func_model_name_attribute():
 ### Step 4: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -987,7 +987,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 5: 跑单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_embedding_func" -v 2>&1 | tail -30
 ```
 
@@ -1006,7 +1006,7 @@ tests/test_lightrag_repair_unit.py::test_repair_embedding_func_model_name_attrib
 ### Step 6: 提交 Task 2
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 feat(lightrag_repair): v9 Task 2 包装 RepairEmbeddingFunc 类
@@ -1042,7 +1042,7 @@ EOF
 
 ### 设计依据
 
-**LightRAG JsonKVStorage.upsert 行为**（`REDACTED_USER_PATH/tools/LightRAG/lightrag/kg/json_kv_impl.py:141-182`）：
+**LightRAG JsonKVStorage.upsert 行为**（`<lightrag_fork_path>/lightrag/kg/json_kv_impl.py:141-182`）：
 1. `data: dict[str, dict[str, Any]]` 入参（key=chunk_id，value=字段 dict）
 2. 空 dict 直接 return（不写盘）
 3. 自动注入 `_id`（L178）、`create_time` / `update_time`（L172-176）
@@ -1676,7 +1676,7 @@ async def test_repair_text_chunks_format_matches_lightrag_native(monkeypatch, tm
 ### Step 3: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -1690,7 +1690,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 4: 跑真实数据单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_text_chunks" -v 2>&1 | tail -30
 ```
 
@@ -1713,7 +1713,7 @@ tests/test_lightrag_repair_unit.py::test_repair_text_chunks_format_matches_light
 ### Step 5: grep 验证 v9 走 storage 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_atomic_write_json\|json.dump.*text_chunks\|_build_vdb_file" niu_api/internal/lightrag_repair.py | head -10
 ```
 
@@ -1724,7 +1724,7 @@ grep -n "_atomic_write_json\|json.dump.*text_chunks\|_build_vdb_file" niu_api/in
 ### Step 6: 提交 Task 3
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 3 重写 repair_text_chunks 走 JsonKVStorage
@@ -1791,7 +1791,7 @@ EOF
 
 ### 整体验收（Task 1-3 完成后）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -5
 ```
 
@@ -1909,7 +1909,7 @@ git log --oneline -5
 
 ### 设计依据
 
-**LightRAG JsonDocStatusStorage.upsert 行为**（`REDACTED_USER_PATH/tools/LightRAG/lightrag/kg/json_doc_status_impl.py:199-222`）：
+**LightRAG JsonDocStatusStorage.upsert 行为**（`<lightrag_fork_path>/lightrag/kg/json_doc_status_impl.py:199-222`）：
 1. `data: dict[str, dict[str, Any]]` 入参（key=doc_id，value=字段 dict）
 2. 空 dict 直接 return（L205-206）—— 全新用户必须手动写空文件
 3. 自动补 `chunks_list=[]`（L215-216）—— 唯一自动注入字段
@@ -2445,7 +2445,7 @@ async def test_repair_doc_status_format_matches_lightrag_native(monkeypatch, tmp
 ### Step 3: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -2459,7 +2459,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 4: 跑真实数据单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_doc_status" -v 2>&1 | tail -30
 ```
 
@@ -2483,7 +2483,7 @@ tests/test_lightrag_repair_unit.py::test_repair_doc_status_format_matches_lightr
 ### Step 5: grep 验证 v9 走 storage 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_atomic_write_json.*doc_status\|json.dump.*doc_status" niu_api/internal/lightrag_repair.py | head -5
 ```
 
@@ -2492,7 +2492,7 @@ grep -n "_atomic_write_json.*doc_status\|json.dump.*doc_status" niu_api/internal
 ### Step 6: 提交 Task 4
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 4 重写 repair_doc_status 走 JsonDocStatusStorage
@@ -2554,7 +2554,7 @@ EOF
 
 ### 设计依据
 
-**LightRAG NanoVectorDBStorage.upsert 行为**（`REDACTED_USER_PATH/tools/LightRAG/lightrag/kg/nano_vector_db_impl.py:96-142`）：
+**LightRAG NanoVectorDBStorage.upsert 行为**（`<lightrag_fork_path>/lightrag/kg/nano_vector_db_impl.py:96-142`）：
 1. `data: dict[str, dict[str, Any]]` 入参（key=chunk_id，value=字段 dict）
 2. 空 dict 直接 return（L104-105）—— 全新用户必须手动写空 vdb
 3. 只保留 `meta_fields` 内字段（L112：`{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields}`）
@@ -3083,7 +3083,7 @@ async def test_repair_vdb_chunks_format_matches_lightrag_native(monkeypatch, tmp
 ### Step 3: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -3097,7 +3097,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 4: 跑真实数据单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_vdb_chunks" -v 2>&1 | tail -30
 ```
 
@@ -3120,7 +3120,7 @@ tests/test_lightrag_repair_unit.py::test_repair_vdb_chunks_format_matches_lightr
 ### Step 5: grep 验证 v9 走 storage 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_build_vdb_file.*vdb_chunks\|_atomic_write_json.*vdb_chunks\|json.dump.*vdb_chunks" niu_api/internal/lightrag_repair.py | head -5
 ```
 
@@ -3129,7 +3129,7 @@ grep -n "_build_vdb_file.*vdb_chunks\|_atomic_write_json.*vdb_chunks\|json.dump.
 ### Step 6: 提交 Task 5
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 5 重写 repair_vdb_chunks 走 NanoVectorDBStorage
@@ -3726,7 +3726,7 @@ async def test_repair_vdb_entities_format_matches_lightrag_native(monkeypatch, t
 ### Step 3: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -3735,7 +3735,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 4: 跑真实数据单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_vdb_entities" -v 2>&1 | tail -30
 ```
 
@@ -3759,7 +3759,7 @@ tests/test_lightrag_repair_unit.py::test_repair_vdb_entities_format_matches_ligh
 ### Step 5: grep 验证 v9 走 storage 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_build_vdb_file.*vdb_entities\|_atomic_write_json.*vdb_entities\|json.dump.*vdb_entities" niu_api/internal/lightrag_repair.py | head -5
 ```
 
@@ -3768,7 +3768,7 @@ grep -n "_build_vdb_file.*vdb_entities\|_atomic_write_json.*vdb_entities\|json.d
 ### Step 6: 提交 Task 6
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 6 重写 repair_vdb_entities 走 NanoVectorDBStorage
@@ -3862,7 +3862,7 @@ EOF
 
 ### 整体验收（Task 4-6 完成后）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -6
 ```
 
@@ -4302,7 +4302,7 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
 
 **grep 验证调用点**：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_load_graphml_nodes_edges" niu_api/internal/lightrag_repair.py
 ```
 
@@ -4947,7 +4947,7 @@ def test_load_graphml_nodes_edges_d11_missing_defaults_empty(monkeypatch, tmp_pa
 ### Step 5: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -4961,7 +4961,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 6: 跑真实数据单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_vdb_relationships or load_graphml_nodes_edges" -v 2>&1 | tail -30
 ```
 
@@ -4990,7 +4990,7 @@ tests/test_lightrag_repair_unit.py::test_load_graphml_nodes_edges_d11_missing_de
 ### Step 7: grep 验证 v9 走 storage 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_build_vdb_file.*vdb_relationships\|_atomic_write_json.*vdb_relationships\|json.dump.*vdb_relationships" niu_api/internal/lightrag_repair.py | head -5
 ```
 
@@ -4999,7 +4999,7 @@ grep -n "_build_vdb_file.*vdb_relationships\|_atomic_write_json.*vdb_relationshi
 ### Step 8: 提交 Task 7
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 7 重写 repair_vdb_relationships 走 NanoVectorDBStorage
@@ -5850,7 +5850,7 @@ async def test_repair_relation_chunks_format_matches_lightrag_native(monkeypatch
 ### Step 4: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -5859,7 +5859,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 5: 跑真实数据单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_entity_chunks or repair_relation_chunks" -v 2>&1 | tail -30
 ```
 
@@ -5886,7 +5886,7 @@ tests/test_lightrag_repair_unit.py::test_repair_relation_chunks_format_matches_l
 ### Step 6: grep 验证 v9 走 storage 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_atomic_write_json.*entity_chunks\|_atomic_write_json.*relation_chunks\|json.dump.*entity_chunks\|json.dump.*relation_chunks" niu_api/internal/lightrag_repair.py | head -5
 ```
 
@@ -5895,7 +5895,7 @@ grep -n "_atomic_write_json.*entity_chunks\|_atomic_write_json.*relation_chunks\
 ### Step 7: 提交 Task 8
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 8 重写 repair_entity_chunks/repair_relation_chunks 走 JsonKVStorage
@@ -6934,7 +6934,7 @@ async def test_repair_full_relations_pair_always_sorted(monkeypatch, tmp_path):
 ### Step 4: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -6943,7 +6943,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ### Step 5: 跑真实数据单元测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_full_entities or repair_full_relations" -v 2>&1 | tail -30
 ```
 
@@ -6973,7 +6973,7 @@ tests/test_lightrag_repair_unit.py::test_repair_full_relations_pair_always_sorte
 ### Step 6: grep 验证 v9 走 storage 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_atomic_write_json.*full_entities\|_atomic_write_json.*full_relations\|json.dump.*full_entities\|json.dump.*full_relations" niu_api/internal/lightrag_repair.py | head -5
 ```
 
@@ -6982,7 +6982,7 @@ grep -n "_atomic_write_json.*full_entities\|_atomic_write_json.*full_relations\|
 ### Step 7: 提交 Task 9
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair_unit.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 9 重写 repair_full_entities/repair_full_relations 走 JsonKVStorage
@@ -7103,7 +7103,7 @@ EOF
 
 ### 整体验收（Task 7-9 完成后）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -9
 ```
 
@@ -7165,7 +7165,7 @@ git log --oneline -9
 - 任一 `repair_xxx` 报 `unrecoverable` → 立即 `break`，不继续后续重建（保留 v8 行为）
 - 异常处理：每个 `repair_xxx` try/except，异常时记录 `unrecoverable` + `break`
 
-**LightRAG shared_storage 单进程模式**（`REDACTED_USER_PATH/tools/LightRAG/lightrag/kg/shared_storage.py:1176-1264` `initialize_share_data`）：
+**LightRAG shared_storage 单进程模式**（`<lightrag_fork_path>/lightrag/kg/shared_storage.py:1176-1264` `initialize_share_data`）：
 - `workers=1` → 单进程模式（`_is_multiprocess=False`，用 thread locks + local dicts，L1247-L1257）
 - `workers>1` → 多进程模式（用 `Manager()` 共享字典，L1222-L1246）
 - 已初始化时直接 return（L1214-L1218），**所以 `repair_all` 内部每个 `repair_xxx` 调 `initialize_share_data(workers=1)` 是幂等的**——首次调用初始化，后续调用 no-op
@@ -7443,7 +7443,7 @@ async def _repair_all_async() -> dict[str, Any]:
 #### Step 3: pyright 验证
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 ```
 
@@ -7457,7 +7457,7 @@ python -m pyright niu_api/internal/lightrag_repair.py 2>&1 | tail -10
 #### Step 4: grep 验证 v9 走 async 接口
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_REBUILD_ORDER\b\|_REBUILD_ORDER_ASYNC\|await fn()\|asyncio.run(_repair_all_async" niu_api/internal/lightrag_repair.py | head -10
 ```
 
@@ -7606,7 +7606,7 @@ grep -n "_REBUILD_ORDER\b\|_REBUILD_ORDER_ASYNC\|await fn()\|asyncio.run(_repair
 #### Step 5: pyright 验证 lightrag_manager.py
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright niu_api/internal/lightrag_manager.py 2>&1 | tail -10
 ```
 
@@ -8505,7 +8505,7 @@ async def test_repair_all_async_internal_function_directly(tmp_path, monkeypatch
 
 **验证**：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "^def test_repair_all_" tests/test_lightrag_repair_unit.py | head -20
 ```
 
@@ -8530,7 +8530,7 @@ grep -n "^def test_repair_all_" tests/test_lightrag_repair_unit.py | head -20
 #### Step 8: pyright 验证测试文件
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pyright tests/test_lightrag_repair_unit.py 2>&1 | tail -10
 ```
 
@@ -8544,7 +8544,7 @@ python -m pyright tests/test_lightrag_repair_unit.py 2>&1 | tail -10
 #### Step 9: 跑 v9 repair_all 测试
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -k "repair_all_async" -v 2>&1 | tail -40
 ```
 
@@ -8577,7 +8577,7 @@ tests/test_lightrag_repair_unit.py::test_repair_all_async_internal_function_dire
 #### Step 10: 跑全部 repair 测试（Task 3-10 整合验证）
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_lightrag_repair_unit.py -v 2>&1 | tail -50
 ```
 
@@ -8600,7 +8600,7 @@ python -m pytest tests/test_lightrag_repair_unit.py -v 2>&1 | tail -50
 #### Step 11: grep 验证 v8 残留清除
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "_REBUILD_ORDER\b" niu_api/internal/lightrag_repair.py
 grep -n "test_repair_all_returns_flat_structure\|test_repair_all_deletes_9_derived_no_backup\|test_repair_all_breaks_on_unrecoverable\|test_repair_all_no_rollback_on_unrecoverable" tests/test_lightrag_repair_unit.py
 ```
@@ -8614,7 +8614,7 @@ grep -n "test_repair_all_returns_flat_structure\|test_repair_all_deletes_9_deriv
 #### Step 12: 提交 Task 10
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/internal/lightrag_repair.py niu_api/internal/lightrag_manager.py tests/test_lightrag_repair_unit.py agent/injector/region_sync.py
 git commit -m "$(cat <<'EOF'
 refactor(lightrag_repair): v9 Task 10 重写 repair_all + 测试（整合 Task 1-9）
@@ -8718,7 +8718,7 @@ EOF
 
 ### 整体验收（Task 1-10 全部完成后）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -10
 ```
 
@@ -8765,7 +8765,7 @@ git log --oneline -10
 ### 最终验收命令（Task 1-10 全部完成后）
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 
 # 1. grep 验证 v8 违规代码全部清除
 grep -n "_atomic_write_json\|_build_vdb_file\|_encode_vector\|_encode_matrix\|_REBUILD_ORDER\b" niu_api/internal/lightrag_repair.py

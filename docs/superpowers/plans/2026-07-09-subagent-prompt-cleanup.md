@@ -181,14 +181,14 @@ ai-bot/                              # 项目根
 
 - [ ] **Step 0.1**：检查工作区干净（除本次新计划文件外）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 ```
 **预期**：只有 `docs/superpowers/plans/2026-07-09-subagent-prompt-cleanup.md` 是新文件，其他干净。如果有其他未提交改动，**停下来报告用户**，不要盲目备份。
 
 - [ ] **Step 0.2**：临时备份提交（标注问题名+节点类型+基线 hash）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add docs/superpowers/plans/2026-07-09-subagent-prompt-cleanup.md
 git commit -m "backup: 子 Agent 提示词清理改造前临时备份 (baseline c5cab64a)
 
@@ -212,7 +212,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 - [ ] **Step A.1**：Read `agent/subagent.py` L69-85 确认当前守则内容（Edit 前必须 Read）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 用 Read 工具读 agent/subagent.py L69-85
 ```
 
@@ -238,21 +238,21 @@ new_string（删掉补丁句，保留三引号闭合）：
 
 - [ ] **Step A.3**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import agent.subagent; print('OK')"
 ```
 **预期**：输出 `OK`。如果报错，立即用 Edit 撤销（把删掉的那行加回去），**不要继续**。
 
 - [ ] **Step A.4**：跑现有守则注入测试，确认不破坏
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_general_subagent.py::test_build_subagent_system_segments_injects_guide_for_all_subagents tests/test_general_subagent.py::test_build_subagent_system_segments_no_duplicate_injection -v 2>&1 | tail -20
 ```
 **预期**：两个测试通过（它们断言 marker + `@niu-agent` + `@end` 在 static_system 里，删补丁句不影响这些断言）。
 
 - [ ] **Step A.5**：跑 at_prefix 拦截层测试，确认不破坏
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_at_prefix_interception.py tests/test_context_manager_bypass_at_prefix.py -v 2>&1 | tail -30
 ```
 **预期**：全部通过。
@@ -366,7 +366,7 @@ def test_other_subagents_still_injected_with_new_guide(tmp_path, monkeypatch):
 
 - [ ] **Step B.2**：跑测试确认失败（守则还没改）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_subagent_prompt_cleanup.py -v 2>&1 | tail -30
 ```
 **预期失败**：
@@ -441,21 +441,21 @@ _SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v2 -->"
 
 - [ ] **Step B.5**：Python 语法检查
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -c "import agent.subagent; print('OK')"
 ```
 **预期**：输出 `OK`。
 
 - [ ] **Step B.6**：跑 Task B 的测试，确认全部通过
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_subagent_prompt_cleanup.py -v 2>&1 | tail -20
 ```
 **预期**：6 个测试全部通过。
 
 - [ ] **Step B.7**：跑现有守则注入测试，确认哪些破坏
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_general_subagent.py::test_build_subagent_system_segments_injects_guide_for_all_subagents tests/test_general_subagent.py::test_build_subagent_system_segments_no_duplicate_injection -v 2>&1 | tail -20
 ```
 **预期**：两个测试都会**失败**，因为它们都硬编码了 v1 marker 字符串，而 Task B 把 marker 升级成了 v2：
@@ -472,7 +472,7 @@ Step B.7 的两个测试都会失败，必须更新。**推荐方案**：把硬�
 
 先 Read 确认（Step B.8.a）：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 用 Read 工具读 tests/test_general_subagent.py L425-442
 ```
 
@@ -498,7 +498,7 @@ new_string（改用 `_SUBAGENT_ASK_GUIDE_MARKER` 常量，与 marker 升级解�
 
 先 Read 确认（Step B.8.c）：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 用 Read 工具读 tests/test_general_subagent.py L444-462
 ```
 
@@ -535,7 +535,7 @@ new_string（用 `_SUBAGENT_ASK_GUIDE_MARKER` 常量计数）：
 
 Step B.8.f：重跑两个测试确认通过
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_general_subagent.py::test_build_subagent_system_segments_injects_guide_for_all_subagents tests/test_general_subagent.py::test_build_subagent_system_segments_no_duplicate_injection -v 2>&1 | tail -20
 ```
 **预期**：两个测试都通过。
@@ -546,7 +546,7 @@ python -m pytest tests/test_general_subagent.py::test_build_subagent_system_segm
 
 - [ ] **Step B.9**：跑 at_prefix 拦截层测试，确认不破坏
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_at_prefix_interception.py tests/test_context_manager_bypass_at_prefix.py tests/test_call_subagent_with_auto_answer.py -v 2>&1 | tail -40
 ```
 **预期**：全部通过。拦截器的 FORMAT_ERROR 提示词里含 `@niu-agent` 和 `@end`（来自 `_intercept_at_prefix_content` 内部，不是守则模板），改守则不影响。
@@ -592,7 +592,7 @@ new_string（删实现细节 + 补丁句，保留必要信息）：
 
 - [ ] **Step C1.3**：grep 确认改动生效
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "查映射找到对应 UUID\|你无需报告游标位置" config/agents/entity-extractor.md
 ```
 **预期**：无输出（两处都已删除）。
@@ -663,7 +663,7 @@ new_string（从子 Agent 视角重写，删"游标之后"开发者视角措辞�
 
 - [ ] **Step C2.7**：grep 确认三处改动都生效
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "SkillSync\|watchdog\|FileMovedEvent\|scan_and_sync\|_delete_skill_from_lightrag" config/agents/dream-evolver.md
 grep -n "通常不需要调用" config/agents/dream-evolver.md
 grep -n "游标之后的新消息" config/agents/dream-evolver.md
@@ -778,7 +778,7 @@ new_string（删文件名细节 + 重复句）：
 
 - [ ] **Step C3.6**：grep 确认 journal-agent.md 三处改动都生效
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 grep -n "last_journal.json" config/agents/journal-agent.md
 grep -n "不要重复提取同一消息中的内容" config/agents/journal-agent.md
 grep -n "## 游标机制" config/agents/journal-agent.md
@@ -788,7 +788,7 @@ grep -n "## 游标机制" config/agents/journal-agent.md
 
 - [ ] **Step C3.7**：通读 journal-agent.md 全文，确认双重身份场景都通顺
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 用 Read 工具读 config/agents/journal-agent.md 全文
 ```
 **检查点**（双重身份）：
@@ -809,7 +809,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 
 - [ ] **Step D.1**：跑 subagent 相关全套测试
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_general_subagent.py tests/test_at_prefix_interception.py tests/test_context_manager_bypass_at_prefix.py tests/test_call_subagent_with_auto_answer.py tests/test_subagent_prompt_cleanup.py tests/test_subagent_overflow.py tests/test_subagent_registry.py tests/test_subagent_supplement.py tests/test_subagent_supplement_integration.py tests/test_subagent_msg_role.py tests/test_call_subagent_memory_hook.py tests/test_sync_subagent_interaction.py tests/test_async_subagent_dispatch.py tests/test_subagent_interaction_integration.py -v 2>&1 | tail -60
 ```
 **预期**：全部通过。
@@ -819,14 +819,14 @@ python -m pytest tests/test_general_subagent.py tests/test_at_prefix_interceptio
 
 - [ ] **Step D.2**：跑 journal-agent 相关测试（验证 .md 清理不破坏）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 python -m pytest tests/test_journal_agent_tidy.py tests/test_journal_unified_paths.py -v 2>&1 | tail -30
 ```
 **预期**：全部通过。这两个测试如果断言了被删的措辞（如"游标机制"标题、"last_journal.json"字样），需要更新测试断言——**这是允许的小改动**，因为测试断言的是实现细节而非行为。
 
 - [ ] **Step D.3**：如果 Step D.2 失败，检查失败原因
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 用 Read 工具读失败的测试文件，看断言了什么
 # 如果断言的是被删的措辞（如"游标机制"标题），用 Edit 更新测试断言
 # 如果断言的是行为（如 processed_up_to 解析），不要改测试，撤销 .md 改动
@@ -842,7 +842,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 
 - [ ] **Step E.1**：清理测试环境
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 # 杀掉所有 niu 进程（铁律 #7 必须优雅退出，禁止 pkill -f niu）
 ps aux | grep -E "niu|launcher" | grep -v grep
 # 用 kill -TERM <pid> 逐个优雅退出
@@ -856,7 +856,7 @@ sqlite3 ~/.niu/messages.db "SELECT role, COUNT(*) FROM messages GROUP BY role"
 
 - [ ] **Step E.3**：启动程序
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 ./niu &
 # 等待启动完成，看到 "LightRAG initialized" 和 API ready 日志
 ```
@@ -900,7 +900,7 @@ ps aux | grep -E "niu|launcher" | grep -v grep  # 应为空
 
 - [ ] **Step F.1**：检查改动范围
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git status
 git diff agent/subagent.py config/agents/entity-extractor.md config/agents/dream-evolver.md config/agents/journal-agent.md
 ```
@@ -908,7 +908,7 @@ git diff agent/subagent.py config/agents/entity-extractor.md config/agents/dream
 
 - [ ] **Step F.2**：提交修复
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add agent/subagent.py config/agents/entity-extractor.md config/agents/dream-evolver.md config/agents/journal-agent.md tests/test_subagent_prompt_cleanup.py tests/test_general_subagent.py docs/superpowers/plans/2026-07-09-subagent-prompt-cleanup.md
 git commit -m "$(cat <<'EOF'
 refactor(subagent): 清理子 Agent 提示词三部分
@@ -943,14 +943,14 @@ EOF
 
 - [ ] **Step F.3**：git 操作后修复文件权限（铁律 #7）
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
 find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \; 2>/dev/null
 ```
 
 - [ ] **Step F.4**：验证提交成功
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git log --oneline -3
 git status
 ```

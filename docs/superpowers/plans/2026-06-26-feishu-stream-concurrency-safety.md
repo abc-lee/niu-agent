@@ -335,7 +335,7 @@ class TestStreamStateAtomicSwap:
 
 - [ ] **Step 5: 运行测试验证**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_stream_state.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_stream_state.py -v`
 Expected: 6 passed
 
 - [ ] **Step 6: 提交**
@@ -441,7 +441,7 @@ git commit -m "feat: add StreamState dataclass for atomic snapshot + generation 
 
 搜索命令：
 ```bash
-grep -n 'self\._feishu_waiting\|self\._stream_card_id\|self\._stream_card_created\|self\._stream_target\|self\._stream_reply_to_id\|self\._stream_seq\|self\._stream_fallback_used\|self\._stream_message_id\|self\._stream_sent_media_paths\|self\._stream_pending_images\|self\._stream_pending_files\|self\._accumulated_text\|self\._last_pushed_rowid' REDACTED_USER_PATH/tools/ai-bot/niu_api/channel/feishu_channel.py
+grep -n 'self\._feishu_waiting\|self\._stream_card_id\|self\._stream_card_created\|self\._stream_target\|self\._stream_reply_to_id\|self\._stream_seq\|self\._stream_fallback_used\|self\._stream_message_id\|self\._stream_sent_media_paths\|self\._stream_pending_images\|self\._stream_pending_files\|self\._accumulated_text\|self\._last_pushed_rowid' <repo_root>/niu_api/channel/feishu_channel.py
 ```
 
 每个匹配项的替换规则：
@@ -924,7 +924,7 @@ grep -rn '_feishu_waiting\|_stream_card_id\|_stream_card_created\|_stream_target
 
 - [ ] **Step 3: 运行迁移后的测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_group_chat.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_group_chat.py -v`
 Expected: all passed
 
 - [ ] **Step 4: 提交**
@@ -944,7 +944,7 @@ git commit -m "test: migrate feishu group chat tests to StreamState access"
 - [ ] **Step 1: 全文搜索所有旧变量名的直接访问**
 
 ```bash
-grep -n 'self\._feishu_waiting\|self\._stream_card_id\|self\._stream_card_created\|self\._stream_target\|self\._stream_reply_to_id\|self\._stream_seq\|self\._stream_fallback_used\|self\._stream_message_id\|self\._stream_sent_media_paths\|self\._stream_pending_images\|self\._stream_pending_files\|self\._accumulated_text\|self\._last_pushed_rowid' REDACTED_USER_PATH/tools/ai-bot/niu_api/channel/feishu_channel.py
+grep -n 'self\._feishu_waiting\|self\._stream_card_id\|self\._stream_card_created\|self\._stream_target\|self\._stream_reply_to_id\|self\._stream_seq\|self\._stream_fallback_used\|self\._stream_message_id\|self\._stream_sent_media_paths\|self\._stream_pending_images\|self\._stream_pending_files\|self\._accumulated_text\|self\._last_pushed_rowid' <repo_root>/niu_api/channel/feishu_channel.py
 ```
 
 预期结果：**0 个匹配**。所有旧变量名应已全部迁移到 `StreamState` 访问方式。
@@ -961,7 +961,7 @@ grep -n 'self\._feishu_waiting\|self\._stream_card_id\|self\._stream_card_create
 
 - [ ] **Step 3: 运行完整测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_stream_state.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_stream_state.py -v`
 Expected: all passed
 
 Run: `python3 -c "import ast; ast.parse(open('niu_api/channel/feishu_channel.py').read()); print('OK')"`
@@ -1137,7 +1137,7 @@ class TestConcurrentNewGeneration:
 
 - [ ] **Step 2: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_feishu_concurrency.py -v`
+Run: `cd <repo_root> && python -m pytest tests/test_feishu_concurrency.py -v`
 Expected: all passed
 
 - [ ] **Step 3: 提交**

@@ -130,7 +130,7 @@ def test_no_proactive_exit_after_fix():
 - [ ] **Step 2: 运行测试确认 test_overflow_at_80_percent_exits 通过（验证当前 bug 行为）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py::test_overflow_at_80_percent_exits_with_context_overflow -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py::test_overflow_at_80_percent_exits_with_context_overflow -v
 ```
 
 Expected: PASS（确认当前 80% 退出行为存在）
@@ -138,7 +138,7 @@ Expected: PASS（确认当前 80% 退出行为存在）
 - [ ] **Step 3: 运行测试确认 test_no_proactive_exit_after_fix 失败（验证修复目标）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py::test_no_proactive_exit_after_fix -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py::test_no_proactive_exit_after_fix -v
 ```
 
 Expected: FAIL（因为当前代码在 80% 就退出了，不会调用 LLM）
@@ -185,7 +185,7 @@ Expected: FAIL（因为当前代码在 80% 就退出了，不会调用 LLM）
 - [ ] **Step 5: 运行测试确认两个测试都通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py -v
 ```
 
 Expected: test_overflow_at_80_percent_exits 可能需要调整（因为行为变了），test_no_proactive_exit_after_fix PASS
@@ -193,7 +193,7 @@ Expected: test_overflow_at_80_percent_exits 可能需要调整（因为行为变
 - [ ] **Step 6: 语法验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read()); print('Syntax OK')"
+cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read()); print('Syntax OK')"
 ```
 
 - [ ] **Step 7: 提交**
@@ -249,7 +249,7 @@ def test_context_length_exceeded_triggers_overflow():
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py::test_context_length_exceeded_triggers_overflow -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py::test_context_length_exceeded_triggers_overflow -v
 ```
 
 Expected: FAIL（MockResponse 还没有 context_overflow 属性）
@@ -364,13 +364,13 @@ class MockResponse:
 - [ ] **Step 6: 运行测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py -v
 ```
 
 - [ ] **Step 7: 语法验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read()); ast.parse(open('agent/generic/litellm_adapter.py').read()); ast.parse(open('agent/generic/llmcore.py').read()); print('All Syntax OK')"
+cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read()); ast.parse(open('agent/generic/litellm_adapter.py').read()); ast.parse(open('agent/generic/llmcore.py').read()); print('All Syntax OK')"
 ```
 
 - [ ] **Step 8: 提交**
@@ -431,7 +431,7 @@ def test_fifo_truncates_before_overflow_check():
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py::test_fifo_truncates_before_overflow_check -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py::test_fifo_truncates_before_overflow_check -v
 ```
 
 Expected: FAIL（当前 FIFO 在每轮结束后才执行）
@@ -484,13 +484,13 @@ Expected: FAIL（当前 FIFO 在每轮结束后才执行）
 - [ ] **Step 4: 运行测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py -v
 ```
 
 - [ ] **Step 5: 语法验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read()); print('Syntax OK')"
+cd <repo_root> && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read()); print('Syntax OK')"
 ```
 
 - [ ] **Step 6: 提交**
@@ -627,13 +627,13 @@ def call_subagent(
 - [ ] **Step 5: 运行测试确认通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py -v
 ```
 
 - [ ] **Step 6: 语法验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/subagent.py').read()); ast.parse(open('niu_api/compat.py').read()); print('All Syntax OK')"
+cd <repo_root> && python -c "import ast; ast.parse(open('agent/subagent.py').read()); ast.parse(open('niu_api/compat.py').read()); print('All Syntax OK')"
 ```
 
 - [ ] **Step 7: 提交**
@@ -728,13 +728,13 @@ def test_integration_force_compress_without_fifo():
 - [ ] **Step 2: 运行全部测试**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_context_overflow.py -v
+cd <repo_root> && python -m pytest tests/test_context_overflow.py -v
 ```
 
 - [ ] **Step 3: 运行已有测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/ -v --timeout=60
+cd <repo_root> && python -m pytest tests/ -v --timeout=60
 ```
 
 - [ ] **Step 4: 提交**

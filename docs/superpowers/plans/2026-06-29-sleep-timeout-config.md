@@ -44,7 +44,7 @@ preload 方案的优势：
 
 - [ ] **Step 1: 读取当前 preload.js 结构**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && cat ui/assistant/preload.js | head -70`
+Run: `cd <repo_root> && cat ui/assistant/preload.js | head -70`
 
 确认 preload.js 的结构：
 - 顶部 require（fs、path、contextBridge、ipcRenderer）
@@ -104,13 +104,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
 - [ ] **Step 4: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && node -c ui/assistant/preload.js && echo "syntax OK"`
+Run: `cd <repo_root> && node -c ui/assistant/preload.js && echo "syntax OK"`
 
 Expected: `syntax OK`
 
 - [ ] **Step 5: 验证配置读取**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && node -e "
+Run: `cd <repo_root> && node -e "
 const fs = require('fs');
 const path = require('path');
 let _idleTimeoutMs = 5 * 60 * 1000;
@@ -132,7 +132,7 @@ Expected: `IDLE_TIMEOUT ms: 1800000 ( 30 minutes )`（用户当前配置30分钟
 - [ ] **Step 6: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add ui/assistant/preload.js
 git commit -m "feat(ui): preload.js reads sleepTriggerMinutes and exposes IDLE_TIMEOUT via contextBridge"
 ```
@@ -146,7 +146,7 @@ git commit -m "feat(ui): preload.js reads sleepTriggerMinutes and exposes IDLE_T
 
 - [ ] **Step 1: 确认当前 IDLE_TIMEOUT 定义**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep -n "IDLE_TIMEOUT" ui/assistant/spirit.html`
+Run: `cd <repo_root> && grep -n "IDLE_TIMEOUT" ui/assistant/spirit.html`
 
 确认第 165 行的硬编码定义。
 
@@ -171,7 +171,7 @@ const IDLE_TIMEOUT = (window.electronAPI && window.electronAPI.IDLE_TIMEOUT) || 
 - [ ] **Step 3: 临时提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add ui/assistant/spirit.html
 git commit -m "feat(ui): spirit.html reads IDLE_TIMEOUT from electronAPI (injected by preload)"
 ```
@@ -187,7 +187,7 @@ git commit -m "feat(ui): spirit.html reads IDLE_TIMEOUT from electronAPI (inject
 
 临时修改 `config/user-config.json` 的 `sleepTriggerMinutes` 为 1：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+cd <repo_root> && python3 -c "
 import json
 with open('config/user-config.json') as f:
     cfg = json.load(f)
@@ -210,7 +210,7 @@ print('临时改为1分钟')
 
 验证成功后恢复原配置：
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "
+cd <repo_root> && python3 -c "
 import json
 with open('config/user-config.json') as f:
     cfg = json.load(f)

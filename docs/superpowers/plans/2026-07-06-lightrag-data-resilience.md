@@ -87,7 +87,7 @@ v6 修正：
 - [ ] **Step 1: 确认 lightrag_backup.py 当前内容**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && wc -l niu_api/internal/lightrag_backup.py tests/test_lightrag_backup.py
+cd <repo_root> && wc -l niu_api/internal/lightrag_backup.py tests/test_lightrag_backup.py
 ```
 
 Expected: 两个文件都存在，行数 > 0
@@ -95,7 +95,7 @@ Expected: 两个文件都存在，行数 > 0
 - [ ] **Step 2: grep 确认 lightrag_backup 的调用点**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && grep -rn "lightrag_backup\|full_backup\|backup_all_vdbs\|cleanup_corrupt_bak" --include="*.py" niu_api/ agent/ tests/
+cd <repo_root> && grep -rn "lightrag_backup\|full_backup\|backup_all_vdbs\|cleanup_corrupt_bak" --include="*.py" niu_api/ agent/ tests/
 ```
 
 Expected: 只在 `lightrag_manager.py`（Task 4 集成点）和 `lightrag_backup.py` 自身有匹配。Task 4 会改 `lightrag_manager.py` 删掉这些调用，所以这里先确认调用点。
@@ -103,7 +103,7 @@ Expected: 只在 `lightrag_manager.py`（Task 4 集成点）和 `lightrag_backup
 - [ ] **Step 3: 删除两个文件**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && rm niu_api/internal/lightrag_backup.py tests/test_lightrag_backup.py
+cd <repo_root> && rm niu_api/internal/lightrag_backup.py tests/test_lightrag_backup.py
 ```
 
 - [ ] **Step 4: 同时改 `lightrag_manager.py` 删掉 cleanup/full_backup 调用（避免 NameError 中间状态）**
@@ -197,7 +197,7 @@ def run_repair_on_user_request() -> dict:
 - [ ] **Step 5: 跑剩余韧性测试确认无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_integrity.py tests/test_lightrag_repair.py tests/test_lightrag_resilience_integration.py tests/test_lightrag_repair_api.py -v 2>&1 | tail -20
+cd <repo_root> && python -m pytest tests/test_lightrag_integrity.py tests/test_lightrag_repair.py tests/test_lightrag_resilience_integration.py tests/test_lightrag_repair_api.py -v 2>&1 | tail -20
 ```
 
 Expected: 备份测试已删除不跑；集成测试 `test_phase1_runs_cleanup_backup_check` 会 FAIL（因为 Phase 1 已不调 cleanup/full_backup，测试期望已过时）；其他测试 PASS。Task 4 会更新集成测试。
@@ -205,7 +205,7 @@ Expected: 备份测试已删除不跑；集成测试 `test_phase1_runs_cleanup_b
 - [ ] **Step 6: 确认程序启动不崩（验证无 NameError 中间状态）**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.internal.lightrag_manager import run_resilience_phase1, run_repair_on_user_request; print('import ok')"
+cd <repo_root> && python -c "from niu_api.internal.lightrag_manager import run_resilience_phase1, run_repair_on_user_request; print('import ok')"
 ```
 
 Expected: `import ok`（无 NameError，程序启动不会崩）
@@ -213,7 +213,7 @@ Expected: `import ok`（无 NameError，程序启动不会崩）
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add -A
+cd <repo_root> && git add -A
 git commit -m "refactor(lightrag): 删除备份模块 + Phase 1 只检测 + 加 run_repair_on_user_request
 
 v4 的 full_backup/backup_all_vdbs/cleanup_corrupt_bak 有两个问题：
@@ -316,7 +316,7 @@ def test_run_repair_on_user_request_repairs_and_resets(monkeypatch):
 - [ ] **Step 3: 跑测试验证失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_resilience_integration.py -v
+cd <repo_root> && python -m pytest tests/test_lightrag_resilience_integration.py -v
 ```
 
 Expected: 部分 FAIL（`__main__.py` 还没改 Phase 2 调用——但 `__main__.py` 改动不影响测试，测试直接调 `lightrag_manager` 函数。实际上 Task 3 已让这些测试能过，Step 3 可能直接 PASS）
@@ -349,7 +349,7 @@ Expected: 部分 FAIL（`__main__.py` 还没改 Phase 2 调用——但 `__main_
 - [ ] **Step 5: 跑测试验证通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_resilience_integration.py -v
+cd <repo_root> && python -m pytest tests/test_lightrag_resilience_integration.py -v
 ```
 
 Expected: 5 PASS
@@ -357,7 +357,7 @@ Expected: 5 PASS
 - [ ] **Step 6: 跑全部韧性测试无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_integrity.py tests/test_lightrag_repair.py tests/test_lightrag_resilience_integration.py tests/test_lightrag_repair_api.py -v 2>&1 | tail -20
+cd <repo_root> && python -m pytest tests/test_lightrag_integrity.py tests/test_lightrag_repair.py tests/test_lightrag_resilience_integration.py tests/test_lightrag_repair_api.py -v 2>&1 | tail -20
 ```
 
 Expected: 全部 PASS（注意：test_lightrag_repair_api.py 的测试在 Task 5 会改，这里可能 FAIL，Task 5 会修）
@@ -365,7 +365,7 @@ Expected: 全部 PASS（注意：test_lightrag_repair_api.py 的测试在 Task 5
 - [ ] **Step 7: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/__main__.py tests/test_lightrag_resilience_integration.py
+cd <repo_root> && git add niu_api/__main__.py tests/test_lightrag_resilience_integration.py
 git commit -m "refactor(__main__): v6 删 Phase 2 自动修复调用
 
 Task 3 已改 lightrag_manager（run_resilience_phase1 只检测，删 run_resilience_phase2，
@@ -431,7 +431,7 @@ def test_repair_endpoint_all_targets(monkeypatch):
 - [ ] **Step 2: 跑测试验证失败**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_repair_api.py -v
+cd <repo_root> && python -m pytest tests/test_lightrag_repair_api.py -v
 ```
 
 Expected: FAIL（端点还调 `repair_all`，没调 `run_repair_on_user_request`）
@@ -466,7 +466,7 @@ def repair_lightrag_storage(target: str = "all") -> dict:
 - [ ] **Step 4: 跑测试验证通过**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_repair_api.py -v
+cd <repo_root> && python -m pytest tests/test_lightrag_repair_api.py -v
 ```
 
 Expected: 3 PASS
@@ -474,7 +474,7 @@ Expected: 3 PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/kg_api.py tests/test_lightrag_repair_api.py
+cd <repo_root> && git add niu_api/kg_api.py tests/test_lightrag_repair_api.py
 git commit -m "refactor(kg_api): /api/kg/lightrag/repair 改调 run_repair_on_user_request
 
 v4 端点直接调 repair_all + 手动重跑 check_all
@@ -562,7 +562,7 @@ SplashMessage::StatusCheckResult(Ok(status)) => {
 **关键（v6 改进 3）**：同时删掉 v4 在 `StatusCheckResult` 分支里的 `window::resize(id, iced::Size::new(400.0, 160.0))` 调用（如果存在）。v6 用 rfd 原生弹窗（独立窗口），不需要扩大 iced splash 窗口。grep 确认：
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && grep -n "window::resize" launcher/src/main.rs
+cd <repo_root> && grep -n "window::resize" launcher/src/main.rs
 ```
 
 把所有 `window::resize(id, iced::Size::new(400.0, 160.0))` 和对应的缩回 `window::resize(id, iced::Size::new(280.0, 80.0))` 调用删掉（v6 不再用 iced 窗口尺寸变化显示告警）。
@@ -654,7 +654,7 @@ fn view(&self) -> Element<'_, SplashMessage> {
 - [ ] **Step 8: 编译验证**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/launcher && cargo build 2>&1 | tail -10
+cd <repo_root>/launcher && cargo build 2>&1 | tail -10
 ```
 
 Expected: 编译成功（rfd 0.14 + iced 0.13 兼容）
@@ -666,7 +666,7 @@ Expected: 编译成功（rfd 0.14 + iced 0.13 兼容）
 - [ ] **Step 10: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add launcher/Cargo.toml launcher/src/main.rs
+cd <repo_root> && git add launcher/Cargo.toml launcher/src/main.rs
 git commit -m "feat(launcher): v6 用 rfd 原生弹窗显示'退出'+'尝试修复'两按钮
 
 v5 用 iced splash 扩大窗口自绘告警 UI 太复杂
@@ -696,15 +696,15 @@ v6 改用 rfd (Rust File Dialog) 的 MessageDialog——跨平台原生对话框
 - [ ] **Step 1: 模拟 vdb 损坏**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 cp ~/.niu/lightrag_storage/vdb_entities.json /tmp/vdb_entities.json.backup
 
 python3 -c "
 import json
-with open('REDACTED_USER_PATH/.niu/lightrag_storage/vdb_entities.json') as f:
+with open('~/.niu/lightrag_storage/vdb_entities.json') as f:
     raw = json.load(f)
 raw['matrix'] = raw['matrix'][:1000]  # 截断 matrix
-with open('REDACTED_USER_PATH/.niu/lightrag_storage/vdb_entities.json', 'w') as f:
+with open('~/.niu/lightrag_storage/vdb_entities.json', 'w') as f:
     json.dump(raw, f)
 "
 # 注意：不要删 ~/.niu/last_region_sync.json——那是 region_sync 的状态文件，删了会触发全量重同步

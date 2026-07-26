@@ -49,7 +49,7 @@ logger.info(f"[Tidy] Compress cursor auto-advanced to: {new_compress_id}")
 
 - [ ] **Step 1: 读取当前代码确认**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && sed -n '2008,2026p' niu_api/compat.py`
+Run: `cd <repo_root> && sed -n '2008,2026p' niu_api/compat.py`
 
 确认当前代码：
 ```python
@@ -135,14 +135,14 @@ new_string：
 
 - [ ] **Step 3: 验证语法**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "from niu_api import compat; print('OK')"`
+Run: `cd <repo_root> && python3 -c "from niu_api import compat; print('OK')"`
 
 Expected: `OK`
 
 - [ ] **Step 4: 提交**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot
+cd <repo_root>
 git add niu_api/compat.py
 git commit -m "fix(tidy): compress cursor picks last surviving message instead of blind tail
 
