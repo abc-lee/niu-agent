@@ -176,18 +176,18 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
     user_msgs = [m for m in messages if m.role == "user"]
     assistant_msgs = [m for m in messages if m.role == "assistant"]
 
-    assert len(user_msgs) >= 1, (
-        f"DB 应至少有 1 条 user 消息，实际: {len(user_msgs)}，"
+    # /chat SSE 端点设计上不持久化 user 消息：
+    # - persist_agent_reply（chat.py 行 279-280）显式 `if role == "user": continue` 跳过
+    # - /chat SSE 端点（chat.py 行 413-549）不调 store.add_message(role="user", ...)
+    # - 只有 /chat/sync 端点（chat.py 行 577-580）才写 user 消息
+    # 因此 DB 中 user 消息数应为 0。
+    assert len(user_msgs) == 0, (
+        f"/chat SSE 端点不应持久化 user 消息，实际: {len(user_msgs)} 条，"
         f"所有消息: {[(m.role, m.content) for m in messages]}"
     )
     assert len(assistant_msgs) >= 1, (
         f"DB 应至少有 1 条 assistant 消息，实际: {len(assistant_msgs)}，"
         f"所有消息: {[(m.role, m.content) for m in messages]}"
-    )
-
-    # 验证 user 消息内容
-    assert user_msgs[0].content == user_input, (
-        f"user 消息 content 应为 '{user_input}'，实际: '{user_msgs[0].content}'"
     )
 
     # 验证 assistant 消息内容
@@ -217,6 +217,12 @@ def test_plain_text_return_value_structure():
     resp = Mock()
     resp.content = "你好！我是妞妞"
     resp.tool_calls = []
+    # Mock 对象 hasattr 永远返回 True 且属性值 truthy。
+    # agent_loop 行 769 检测 `response.context_overflow` 触发 CONTEXT_OVERFLOW 退出，
+    # 行 741 检测 `response.usage` 提取 prompt_tokens，需明确设 None 跳过上下文检测。
+    resp.context_overflow = False
+    resp.usage = None
+    resp.finish_reason = "stop"
 
     client = Mock()
     client.last_tools = ""
@@ -233,6 +239,13 @@ def test_plain_text_return_value_structure():
     handler._done_hooks = []
     handler.max_turns = 40
     handler.current_turn = 1
+    # 显式设 _is_sync_subagent=False：MagicMock 默认返回 truthy mock 对象，
+    # 会让 _intercept_at_prefix_content 行 102 主 Agent 分支条件
+    # (memory_context is None and not is_sync_subagent) 不成立，
+    # 导致纯文本回复被走到行 152-155 FORMAT_ERROR 路径，
+    # 循环 continue 40 轮后返回 MAX_TURNS_EXCEEDED。
+    # 必须明确赋 False 让拦截层走主 Agent 分支返回 NO_INTERCEPTION。
+    handler._is_sync_subagent = False
 
     def dispatch_no_tool(tool_name, args, response, index=0):
         yield
@@ -265,17 +278,33 @@ def test_plain_text_return_value_structure():
     assert "messages" in return_value
 
     messages = return_value["messages"]
-    # 应包含 system + user + assistant
-    assert len(messages) == 3, f"Expected 3 messages, got {len(messages)}: {messages}"
+    # 纯文本回复（无 tool_calls）时 agent_loop 行 818 `if response.tool_calls:`
+    # 为 False，不 append assistant_msg 到 messages。
+    # assistant content 通过 StreamEvent("persist", pure_text_msg) 单独推送（行 980-981），
+    # 不进入 return value 的 messages 列表。
+    # 因此 messages 只含 system + user，长度为 2。
+    assert len(messages) == 2, f"Expected 2 messages (system+user), got {len(messages)}: {messages}"
 
     assert messages[0]["role"] == "system"
     assert messages[1]["role"] == "user"
     assert messages[1]["content"] == "你好"
-    assert messages[2]["role"] == "assistant"
-    assert messages[2]["content"] == "你好！我是妞妞"
+
+    # 验证 assistant 回复通过 StreamEvent("persist") 推送（纯文本回复路径）
+    persist_events = [
+        json.loads(e.content) for e in events
+        if e.type == "persist"
+    ]
+    assistant_persist = [m for m in persist_events if m.get("role") == "assistant"]
+    assert len(assistant_persist) == 1, (
+        f"纯文本回复应通过 1 个 persist 事件推送 assistant 消息，实际: {len(assistant_persist)}"
+    )
+    assert assistant_persist[0]["content"] == "你好！我是妞妞", (
+        f"persist 推送的 assistant content 应为 '你好！我是妞妞'，"
+        f"实际: '{assistant_persist[0].get('content')}'"
+    )
     # 纯文本回复不应有 tool_calls
-    assert "tool_calls" not in messages[2] or not messages[2].get("tool_calls"), (
-        f"纯文本回复的 assistant 消息不应有 tool_calls，实际: {messages[2]}"
+    assert "tool_calls" not in assistant_persist[0] or not assistant_persist[0].get("tool_calls"), (
+        f"纯文本回复的 assistant 消息不应有 tool_calls，实际: {assistant_persist[0]}"
     )
 
 
