@@ -4,6 +4,7 @@ Scheduler Service Lifecycle Management
 管理内部调度器的启动、停止和状态。
 """
 
+import asyncio
 import json
 import os
 import threading
@@ -73,10 +74,11 @@ def trigger_callback(task: dict) -> Optional[str]:
     循环任务 reschedule 到下次 cron 时间重试，一次性任务失败直接标 failed
     （由 retry_failed_tasks 5 分钟后重置，见 scheduler.py _check_and_trigger_impl）。
 
+    外层 future.result(timeout=300) 兜底 5 分钟总超时，最坏情况（两次尝试都卡满
+    5 分钟）总耗时约 10 分钟。实践中内层 120s 超时会先返回空串触发重试。
+
     IM 推送失败只 log warning，不影响 task 状态（避免重复触发 Agent 生成重复回复）。
     """
-    import asyncio
-
     from niu_api.alerts import add_pending_alert
     from niu_api.chat import _main_loop
     from niu_api.chat_queue import get_chat_queue

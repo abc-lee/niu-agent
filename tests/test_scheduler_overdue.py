@@ -35,7 +35,9 @@ def mock_scheduler(tmp_path):
     callback = MagicMock(return_value="ok")
     mock_store = MagicMock()
     scheduler, timeout = _make_scheduler(db_path, callback, mock_store)
-    return scheduler, callback, mock_store, timeout
+    yield scheduler, callback, mock_store, timeout
+    # teardown：shutdown executor 避免线程池泄漏
+    scheduler._executor.shutdown(wait=False)
 
 
 class TestCheckAndTriggerSequential:
