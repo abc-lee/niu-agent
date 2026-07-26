@@ -3,7 +3,7 @@
 Journal-Agent 三路径统一集成测试
 
 真实测试：需要程序运行 + 真实 LLM。
-手动执行：python tests/test_journal_unified_paths.py
+手动执行：RUN_INTEGRATION_TESTS=1 python tests/test_journal_unified_paths.py
 
 验证点：
 1. 路径2/3（API触发）— journal.md 格式一致
@@ -12,7 +12,16 @@ Journal-Agent 三路径统一集成测试
 """
 
 import json
+import os
 import time
+
+import pytest
+
+# 集成测试：需要程序运行 + 真实 LLM，pytest 自动发现时跳过
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("RUN_INTEGRATION_TESTS"),
+    reason="集成测试需要程序运行+真实LLM，设置 RUN_INTEGRATION_TESTS=1 启用",
+)
 import requests
 from pathlib import Path
 

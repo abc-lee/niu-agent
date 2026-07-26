@@ -11,7 +11,7 @@ class TestTriggerCallback:
 
         task = {"content": "test task"}
 
-        with patch("niu_api.internal.scheduler.service._main_loop", None):
+        with patch("niu_api.chat._main_loop", None):
             result = trigger_callback(task)
             assert result is None
 
@@ -23,7 +23,7 @@ class TestTriggerCallback:
         mock_loop = MagicMock()
         mock_loop.is_closed.return_value = True
 
-        with patch("niu_api.internal.scheduler.service._main_loop", mock_loop):
+        with patch("niu_api.chat._main_loop", mock_loop):
             result = trigger_callback(task)
             assert result is None
 
@@ -40,8 +40,8 @@ class TestTriggerCallback:
         mock_future.result.return_value = "Agent replied"
         mock_future.timeout = 300
 
-        with patch("niu_api.internal.scheduler.service._main_loop", mock_loop), \
-             patch("niu_api.internal.scheduler.service.get_chat_queue", return_value=mock_queue), \
+        with patch("niu_api.chat._main_loop", mock_loop), \
+             patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
              patch("niu_api.internal.scheduler.service.asyncio") as mock_asyncio, \
              patch("niu_api.alerts.add_pending_alert"):
 
@@ -61,8 +61,8 @@ class TestTriggerCallback:
         mock_future = MagicMock()
         mock_future.result.return_value = ""
 
-        with patch("niu_api.internal.scheduler.service._main_loop", mock_loop), \
-             patch("niu_api.internal.scheduler.service.get_chat_queue", return_value=mock_queue), \
+        with patch("niu_api.chat._main_loop", mock_loop), \
+             patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
              patch("niu_api.internal.scheduler.service.asyncio") as mock_asyncio, \
              patch("niu_api.alerts.add_pending_alert"):
 
@@ -78,8 +78,8 @@ class TestTriggerCallback:
         mock_loop = MagicMock()
         mock_loop.is_closed.return_value = False
 
-        with patch("niu_api.internal.scheduler.service._main_loop", mock_loop), \
-             patch("niu_api.internal.scheduler.service.get_chat_queue", side_effect=Exception("queue error")):
+        with patch("niu_api.chat._main_loop", mock_loop), \
+             patch("niu_api.chat_queue.get_chat_queue", side_effect=Exception("queue error")):
 
             result = trigger_callback(task)
             assert result is None

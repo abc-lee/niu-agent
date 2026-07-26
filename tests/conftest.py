@@ -4,9 +4,10 @@ import sys
 import asyncio
 import tempfile
 import os
+from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, "E:/tools/ai-bot")
+# Add project root to path（跨平台，不硬编码绝对路径）
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 @pytest.fixture
