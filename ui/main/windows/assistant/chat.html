@@ -924,11 +924,9 @@
       try {
         const result = await sendMessageWithRetry(text);
       } finally {
-        // 兜底状态重置（SSE chat_idle 为主驱动，此处为防御兜底）
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
-        stopBtn.style.display = 'none';
-        isProcessing = false;
+        // UI 状态（hideTyping/notifyBusy/stopBtn/isProcessing）由 SSE chat_idle 驱动
+        // 见缝插针场景下 HTTP 立即返回但 Agent 仍在跑，此处不能重置状态
+        // 否则会把停止按钮误隐藏、Escape 失效、/clear 误走空闲分支
         sendBtn.disabled = false;
         loadStats();
         userInput.focus();
