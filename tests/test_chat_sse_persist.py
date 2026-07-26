@@ -79,6 +79,7 @@ def _make_mock_runner_for_plain_text(reply_text: str, user_input: str):
 
     runner.chat = chat_generator
     runner.last_return_value = None
+    runner._persisted_msgs = None  # 显式设 None，避免 Mock 属性访问返回 Mock 破坏 getattr 默认值
     runner.llm_config = {"apikey": "test-key", "model": "test-model"}
 
     return runner, return_value
@@ -235,7 +236,9 @@ def test_plain_text_return_value_structure():
 
     def dispatch_no_tool(tool_name, args, response, index=0):
         yield
-        return StepOutcome(data=None, next_prompt=None, should_exit=False)
+        # next_prompt 必须是空字符串而非 None——agent_loop 用 len(next_prompts)==0 判断退出
+        # None 会被 add 进 set 破坏判断（set 里有 None，len=1 永远不退出）
+        return StepOutcome(data=None, next_prompt="", should_exit=False)
 
     handler.dispatch = dispatch_no_tool
 
