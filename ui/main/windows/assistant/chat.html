@@ -382,6 +382,17 @@
       font-size: 14px;
       -webkit-text-stroke: 0.2px rgba(0,0,0,0.3);
     }
+    .status-bar .status-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .status-bar .version-label {
+      color: #999;
+      font-size: 11px;
+      padding: 4px 8px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
     .status-bar .graph-btn:hover {
       background: #8de0a8;
     }
@@ -576,7 +587,10 @@
         <span class="stat">👤 <span id="person-count">0</span></span>
         <span class="stat">📝 <span id="note-count">0</span></span>
       </div>
-      <button class="graph-btn" id="graph-btn">图谱 →</button>
+      <div class="status-actions">
+        <span class="version-label">v0.1.0</span>
+        <button class="graph-btn" id="graph-btn">图谱 →</button>
+      </div>
     </div>
     <div class="resize-handle" id="resize-handle"></div>
   </div>

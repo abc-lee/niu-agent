@@ -43,6 +43,7 @@ MCP 服务器集群 (mcp-servers/)
 5、代码调试过程中验证无效后，必须马上撤销调试代码，恢复原始干净代码，再增加新的调试代码
 6、目前项目代码量比较大，为了保护自己的上下文窗口，无需长期记忆或大代码量的遍历工作交给子Agent完成
 7、代码质量优先，用户不在乎token消耗
+8、版本号变更必须同步两处：根目录 `VERSION` 文件（单一真相源，对外发布用）、`ui/main/windows/assistant/chat.html` 中 `version-label` span 的文本（UI 展示用）。其他文件（Cargo.toml、package.json、Python `__version__`、pyproject.toml 等）的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
 ```
 
 ## 开发环境设置
