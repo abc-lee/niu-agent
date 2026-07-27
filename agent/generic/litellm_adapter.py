@@ -393,6 +393,9 @@ class LiteLLMSession(BaseSession):
         # 通用性：从 apiBase 推导 provider 是标准做法（curl/httpx 都这么做），
         # volcengine/openai/anthropic 是 LiteLLM 内置 provider 名，不是豆包特定 hack。
         # 用户传的 self.provider 字段已废弃（页面下拉框将删除），保留兼容但优先用 apiBase 推导。
+        # custom_llm_provider 不再传——model 前缀已决定路由，同时传会冲突
+        # （实测 model='volcengine/ark-code-latest' + custom_llm_provider='openai' 会被
+        # custom_llm_provider 覆盖走 openai 路由，豆包网关报 NotFoundError）。
         custom_provider = self.provider or ("anthropic" if self.api_type == "anthropic" else "openai")
         model_with_prefix = _derive_provider_prefix(self.api_base, self.default_model)
         provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
@@ -403,7 +406,6 @@ class LiteLLMSession(BaseSession):
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
-            "custom_llm_provider": custom_provider,
             "api_base": self.api_base or None,
             "api_key": self.api_key or None,
             "timeout": self.read_timeout,
