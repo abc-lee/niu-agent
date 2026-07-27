@@ -5,7 +5,7 @@ let _idleTimeoutMs = 5 * 60 * 1000;  // 默认 5 分钟
 try {
   const fs = require('fs');
   const path = require('path');
-  const userConfigPath = path.join(__dirname, '..', '..', 'config', 'user-config.json');
+  const userConfigPath = path.join(require('os').homedir(), '.niu', 'config', 'user-config.json');
   const raw = fs.readFileSync(userConfigPath, 'utf-8');
   const cfg = JSON.parse(raw);
   const minutes = cfg?.context?.sleepTriggerMinutes;
