@@ -597,7 +597,7 @@ async def test_probe_tier_timeout_retries_without_counting():
 
 @pytest.mark.asyncio
 async def test_probe_tier_rate_limit_exhausted_returns_error():
-    """限流/超时重试超过上限（整档共享 5 次）仍未成功 → 返回 rate_limited"""
+    """限流/超时重试超过上限（整档共享 2 次）仍未成功 → 返回 rate_limited"""
     from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock, patch
 
@@ -606,20 +606,17 @@ async def test_probe_tier_rate_limit_exhausted_returns_error():
         result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
     assert result == "rate_limited"
     assert raw == "RateLimitError: 429"
-    assert mock_try.call_count == 6
+    # MAX_TRANSIENT_RETRIES=2：第 1 次采样 rate_limited → 重试 2 次 → 第 3 次仍 rate_limited → 放弃
+    assert mock_try.call_count == 3
 
 
 @pytest.mark.asyncio
 async def test_probe_tier_transient_retries_shared_across_samples():
-    """限流/超时重试预算整档共享：采样 1 限流 3 次 + 采样 2 限流 3 次 → 第 6 次返回 rate_limited"""
+    """限流/超时重试预算整档共享（2 次）：采样 1 限流 2 次后放弃 → 返回 rate_limited"""
     from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock, patch
 
     mock_try = AsyncMock(side_effect=[
-        ("rate_limited", "RateLimitError: 429"),
-        ("rate_limited", "RateLimitError: 429"),
-        ("rate_limited", "RateLimitError: 429"),
-        ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
         ("rate_limited", "RateLimitError: 429"),
         ("rate_limited", "RateLimitError: 429"),
         ("rate_limited", "RateLimitError: 429"),
@@ -628,7 +625,9 @@ async def test_probe_tier_transient_retries_shared_across_samples():
         result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
     assert result == "rate_limited"
     assert raw == "RateLimitError: 429"
-    assert mock_try.call_count == 7
+    # MAX_TRANSIENT_RETRIES=2：采样 1 第 1 次 rate_limited → 重试第 1 次 → 重试第 2 次 →
+    # 第 3 次仍 rate_limited → transient_retries > 2 → 放弃，不进采样 2
+    assert mock_try.call_count == 3
 
 
 @pytest.mark.asyncio
