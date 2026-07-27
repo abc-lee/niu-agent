@@ -48,7 +48,7 @@ TOOL_SCHEMAS = {
                 },
                 "reasoning_effort": {
                     "type": "string",
-                    "description": "Thinking chain depth: 'none' (disable), 'low', 'medium', 'high', 'xhigh'. Affects how deeply the model reasons before responding.",
+                    "description": "Reasoning depth: 'none', 'low', 'medium', 'high' (model-dependent). Affects how deeply the model reasons before responding. Controls reasoning depth only, NOT thinking-chain output (thinking-chain return is controlled by litellm_kwargs.thinking).",
                 },
             },
         },
@@ -79,7 +79,7 @@ TOOL_SCHEMAS = {
     },
     "set_lightrag_llm_config": {
         "name": "set_lightrag_llm_config",
-        "description": "Set LightRAG LLM configuration. If model is set to empty string, removes the lightrag_llm section so that LightRAG falls back to the main LLM configuration. Default reasoning_effort is 'none' (disables thinking chain).",
+        "description": "Set LightRAG LLM configuration. If model is set to empty string, removes the lightrag_llm section so that LightRAG falls back to the main LLM configuration.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -96,7 +96,7 @@ TOOL_SCHEMAS = {
                 },
                 "reasoning_effort": {
                     "type": "string",
-                    "description": "Thinking chain depth: 'none' (default for LightRAG), 'low', 'medium', 'high'. LightRAG officially recommends 'none' to avoid timeouts.",
+                    "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Standard default config uses 'high'.",
                 },
             },
         },
@@ -1022,7 +1022,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "reasoning_effort": {
                         "type": "string",
-                        "description": "Thinking chain depth: 'none' (disable), 'low', 'medium', 'high', 'xhigh'. Affects how deeply the model reasons before responding.",
+                        "description": "Reasoning depth: 'none', 'low', 'medium', 'high' (model-dependent). Affects how deeply the model reasons before responding. Controls reasoning depth only, NOT thinking-chain output (thinking-chain return is controlled by litellm_kwargs.thinking).",
                     },
                 },
             },
@@ -1044,7 +1044,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="set_lightrag_llm_config",
-            description="Set LightRAG LLM configuration. If model='', clears the section (falls back to main llm). Default reasoning_effort='none' disables thinking chain.",
+            description="Set LightRAG LLM configuration. If model='', clears the section (falls back to main llm).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1061,7 +1061,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "reasoning_effort": {
                         "type": "string",
-                        "description": "Thinking chain depth: 'none', 'low', 'medium', 'high'. Default 'none'.",
+                        "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Standard default config uses 'high'.",
                     },
                 },
             },

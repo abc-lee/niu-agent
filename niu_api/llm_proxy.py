@@ -195,7 +195,9 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
         use_lightrag_config: If True, read from 'lightrag_llm' section.
             model 为空时使用主 llm 同一模型（正常默认行为）。
             apiKey/apiBase/type 为空时从 llm 段继承。
-            reasoning_effort 默认 "none"（独立于模型配置，强制禁用思考链）。
+            reasoning_effort 默认 "none"（思维深度关闭；仅控制推理深度，
+            不控制思考链返回——思考链返回由 litellm_kwargs.thinking 独立控制，
+            两者是不同参数，不可混淆）。
             用户可在 lightrag_llm 段显式设置 reasoning_effort 覆盖默认值。
     """
     from pathlib import Path
