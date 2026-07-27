@@ -362,12 +362,13 @@ def _load_llm_config():
         config.setdefault("apikey", "")
         config.setdefault("apibase", "")
         config.setdefault("model", "")
-        config.setdefault("provider", "")
         config.setdefault("litellm_kwargs", {})
 
         return config
     except Exception:
-        return {"type": "openai", "apikey": "", "apibase": "", "model": "", "reasoning_effort": "", "provider": "", "litellm_kwargs": {}}
+        # 异常兜底与三处标准缺省一致（config-manager/main.js/settings）：无 provider 字段，
+        # 主聊天模型 reasoning_effort 缺省为空串（思维深度由模型自己决定，R11/R15）
+        return {"type": "openai", "apikey": "", "apibase": "", "model": "", "reasoning_effort": "", "litellm_kwargs": {}}
 
 
 def init_runner(tool_registry):
@@ -398,7 +399,7 @@ def get_or_create_runner() -> Optional["NiuRunner"]:
     if existing is not None and current["apikey"] and current["model"]:
         # Runner 已存在，检查配置是否变更
         runner_llm = getattr(existing, "llm_config", {})
-        if runner_llm.get("apikey") != current["apikey"] or runner_llm.get("model") != current["model"] or runner_llm.get("reasoning_effort") != current.get("reasoning_effort") or runner_llm.get("provider") != current.get("provider") or runner_llm.get("litellm_kwargs") != current.get("litellm_kwargs"):
+        if runner_llm.get("apikey") != current["apikey"] or runner_llm.get("model") != current["model"] or runner_llm.get("reasoning_effort") != current.get("reasoning_effort") or runner_llm.get("litellm_kwargs") != current.get("litellm_kwargs"):
             # 配置已变更，重新初始化
             with runner_module._runner_lock:
                 runner_module._runner = None

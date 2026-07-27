@@ -1274,7 +1274,8 @@ async def test_llm(request: Request) -> dict:
             "reasoning_effort": None,
             "provider": config.get("provider", ""),
             "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": 5},
-            "read_timeout": 10,
+            # 推理模型（deepseek-reasoner/o1/o3）首响应 20-120s，10s 必然超时
+            "read_timeout": 60,
         }
         session = LiteLLMSession(cfg=llm_config)
 
@@ -1297,7 +1298,8 @@ async def test_llm(request: Request) -> dict:
             )
             return text, has_content
 
-        result, has_content = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=20)
+        # 外层超时给 read_timeout(60s) + 重试留余量（推理模型首响应慢）
+        result, has_content = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=90)
         if not has_content:
             return {"success": False, "error": "模型返回空响应"}
 
@@ -1565,7 +1567,10 @@ async def probe_response_format(request: Request) -> dict:
             return {"result": "probe_failed", "reason": f"读取配置失败: {e}", "mode": None, "raw_response": ""}
     config = {k.lower(): v for k, v in config.items()}
 
-    if not config.get("apikey"):
+    # Ollama 等本地模型无需 API Key（apiBase 为 localhost/127.0.0.1 时豁免）
+    apibase = config.get("apibase", "")
+    is_local = apibase.startswith("http://localhost") or apibase.startswith("http://127.0.0.1") or apibase.startswith("https://localhost") or apibase.startswith("https://127.0.0.1")
+    if not config.get("apikey") and not is_local:
         return {"result": "probe_failed", "reason": "API Key 未配置", "mode": None, "raw_response": ""}
     if not config.get("apibase"):
         return {"result": "probe_failed", "reason": "API 地址未配置", "mode": None, "raw_response": ""}
@@ -1598,7 +1603,8 @@ async def probe_response_format(request: Request) -> dict:
         # 避免探测和运行时采样随机性差异
         "temperature": config.get("temperature", 0.2),
         "litellm_kwargs": probe_litellm_kwargs,
-        "read_timeout": 15,
+        # 推理模型（deepseek-reasoner/o1/o3）首响应 20-120s，15s 必然超时
+        "read_timeout": 60,
     }
 
     messages = _build_probe_messages()
@@ -1622,8 +1628,9 @@ async def probe_response_format(request: Request) -> dict:
         非超时结果才判定。
 
         Why 捕获 litellm.Timeout：慢厂商（本地 Ollama、DeepSeek 推理延迟）的
-        真实超时路径是 litellm 在线程内 read_timeout（15s）先抛 litellm.Timeout
-        （APITimeoutError 子类），外层 asyncio.wait_for（30s）几乎永远轮不到。
+        真实超时路径是 litellm 在线程内 read_timeout（60s，覆盖推理模型
+        首响应 20-120s 场景）先抛 litellm.Timeout（APITimeoutError 子类），
+        外层 asyncio.wait_for（90s）几乎永远轮不到。
         如果不捕获，litellm.Timeout 会被 generic except Exception 归类
         model_rejected → 失败即停，慢但真支持的厂商被误杀。
 
@@ -1677,7 +1684,7 @@ async def probe_response_format(request: Request) -> dict:
     tier1_result, tier1_raw = await _probe_tier_three_samples_async(
         lambda: asyncio.wait_for(
             asyncio.to_thread(_try_tier, _build_probe_response_format_json_schema()),
-            timeout=30,
+            timeout=90,
         ),
         _build_probe_response_format_json_schema(),
     )
@@ -1710,7 +1717,7 @@ async def probe_response_format(request: Request) -> dict:
     tier2_result, tier2_raw = await _probe_tier_three_samples_async(
         lambda: asyncio.wait_for(
             asyncio.to_thread(_try_tier, _build_probe_response_format_json_object()),
-            timeout=30,
+            timeout=90,
         ),
         _build_probe_response_format_json_object(),
     )

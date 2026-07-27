@@ -393,9 +393,11 @@
       const type = document.getElementById('apiType').value;
       const provider = document.getElementById('provider').value;
 
-      if (!apiKey) { setStatus('请输入 API Key', 'error'); return; }
       if (!apiBase) { setStatus('请选择预设或填写 API 地址', 'error'); return; }
       if (!model) { setStatus('请输入模型名称', 'error'); return; }
+      // Ollama 等本地模型无需 API Key（apiBase 为 localhost/127.0.0.1 时豁免）
+      const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(apiBase);
+      if (!apiKey && !isLocal) { setStatus('请输入 API Key', 'error'); return; }
 
       setStatus('测试模型连接中...', 'loading');
       document.getElementById('testBtn').disabled = true;
