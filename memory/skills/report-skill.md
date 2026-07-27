@@ -39,8 +39,9 @@ last_tested: 2026-06-17
    - 标注进展状态
    - 提取关键成果
    - 识别问题和风险
-5. 生成 Markdown 格式报告并追加写入 `journal.md`，禁止默认另建分散报告文件
-6. 仅在用户明确要求 Word/PPT 时，才用 office-docs Skill 另行输出副本
+5. ⚠️ **CRITICAL WARNING**：生成 Markdown 格式报告后，必须使用 `mode="append"` 追加写入 `journal.md`，**绝对禁止使用 overwrite 模式**，否则会覆盖整个文件丢失所有历史数据！
+6. 禁止默认另建分散报告文件
+7. 仅在用户明确要求 Word/PPT 时，才用 office-docs Skill 另行输出副本
 
 ## 周报模板
 
@@ -109,6 +110,7 @@ last_tested: 2026-06-17
 
 ## 报告写入规则
 
+- ⚠️ **CRITICAL WARNING**：所有报告写入必须使用 `mode="append"` 模式，**绝对禁止使用 overwrite 模式**！使用 overwrite 会覆盖整个日志文件，导致所有历史数据永久丢失！
 - **所有报告（周报/月报/季报/年报）均追加写入 journal.md 文件**，不单独建文件
 - 报告按日期顺序写在 journal.md 末尾，格式如下：
 
