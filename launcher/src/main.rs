@@ -1695,7 +1695,11 @@ fn main() {
         // Wait for preload to complete (embedding-service, MCP tools)
         info!("Waiting for preload to complete...");
         let mut preload_ready = false;
-        for i in 0..120 {
+        // 180s 超时（原 60s）：脑区启动就绪 gate 让 lifespan 在 signal_scheduler_ready
+        // 前同步跑 run_sync_once_for_startup（~40s）+ wait_first_sync_done(90)，
+        // 最坏情况 90s + 启动开销（embedding 9s + MCP 5s + LightRAG 1s + ...）= 100s+。
+        // 180s 留足余量，避免 Rust 误判启动完成、前端启动后无法连接 API。
+        for i in 0..360 {
             thread::sleep(Duration::from_millis(500));
             let url = format!("http://127.0.0.1:{}/api/preload-status", port);
             match check_client.get(&url).send() {
