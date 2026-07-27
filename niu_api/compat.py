@@ -1258,7 +1258,11 @@ async def test_llm(request: Request) -> dict:
     # body 已归一化，config 也需要确保小写
     config = {k.lower(): v for k, v in config.items()}
 
-    if not config.get("apikey"):
+    # Ollama 等本地模型无需 API Key（apiBase 为 localhost/127.0.0.1 时豁免）
+    # 与 probe 端点 :1572 的豁免判定保持一致
+    apibase = config.get("apibase", "")
+    is_local = apibase.startswith("http://localhost") or apibase.startswith("http://127.0.0.1") or apibase.startswith("https://localhost") or apibase.startswith("https://127.0.0.1")
+    if not config.get("apikey") and not is_local:
         return {"success": False, "error": "API Key 未配置"}
     if not config.get("apibase"):
         return {"success": False, "error": "API 地址未配置"}
