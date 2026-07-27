@@ -259,18 +259,6 @@
         <label class="pencil-text">模型名称</label>
         <input type="text" id="model" placeholder="gpt-4o-mini">
       </div>
-      <div class="form-group" style="margin-top: 12px;">
-        <label class="pencil-text">Provider (LiteLLM 路由)</label>
-        <select id="provider">
-          <option value="">自动 (跟随 API 类型)</option>
-          <option value="openai">openai</option>
-          <option value="anthropic">anthropic</option>
-          <option value="volcengine">volcengine (豆包)</option>
-        </select>
-        <div style="font-size: 12px; color: #666; margin-top: 4px;">
-          LiteLLM provider 路由，通常选"自动"即可。选错会导致 LLM 调用失败。
-        </div>
-      </div>
 
       <div class="note-card mint" style="margin-top: 15px;">
         <div class="form-group">
@@ -338,7 +326,6 @@
         document.getElementById('apiBase').value = config.llm.apiBase || '';
         document.getElementById('model').value = config.llm.model || '';
         document.getElementById('apiType').value = config.llm.type || 'openai';
-        document.getElementById('provider').value = config.llm.provider || '';
       }
 
       if (config.context) {
@@ -363,11 +350,10 @@
         document.getElementById('apiBase').value = preset.apiBase;
         document.getElementById('model').value = preset.model;
         document.getElementById('apiType').value = preset.type || 'openai';
-        document.getElementById('provider').value = preset.provider || '';
       }
     });
 
-    ['apiKey', 'apiBase', 'model', 'apiType', 'provider'].forEach(id => {
+    ['apiKey', 'apiBase', 'model', 'apiType'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', () => {
         testPassedInSession = false;
@@ -391,7 +377,6 @@
       const apiBase = document.getElementById('apiBase').value;
       const model = document.getElementById('model').value;
       const type = document.getElementById('apiType').value;
-      const provider = document.getElementById('provider').value;
 
       if (!apiBase) { setStatus('请选择预设或填写 API 地址', 'error'); return; }
       if (!model) { setStatus('请输入模型名称', 'error'); return; }
@@ -405,7 +390,6 @@
       // 第一步：测试（传表单值到请求体，不保存文件）
       const config = {
         apiKey, apiBase, model, type,
-        provider: provider,
         litellm_kwargs: { ...DEFAULT_LLM_KWARGS, ...(existingConfig.llm?.litellm_kwargs || {}) }
       };
       const result = await window.electronAPI.testConnection(config);
