@@ -741,7 +741,7 @@ async def test_try_tier_classifies_rate_limit_error():
             with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
                 result = await probe_response_format(mock_request)
 
-    # 限流重试 5 次后返回 probe_failed
+    # 限流重试 2 次后返回 probe_failed（MAX_TRANSIENT_RETRIES=2）
     assert result["result"] == "probe_failed"
     assert "限流" in result["reason"]
 
@@ -776,7 +776,7 @@ async def test_try_tier_classifies_litellm_timeout():
             with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
                 result = await probe_response_format(mock_request)
 
-    # 超时重试 5 次后返回 probe_failed
+    # 超时重试 2 次后返回 probe_failed（MAX_TRANSIENT_RETRIES=2）
     assert result["result"] == "probe_failed"
     assert "限流" in result["reason"] or "超时" in result["reason"]
 

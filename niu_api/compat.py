@@ -1533,7 +1533,7 @@ async def probe_response_format(request: Request) -> dict:
     Why 限流/超时只重试不计失败：RateLimitError / litellm.Timeout /
     asyncio.TimeoutError ≠ 不支持，只是"这次请求被网关挡了"或"网关慢/抖动"。
     限流/超时同属 transient infra 问题，sleep 后重试本次采样（指数退避
-    5s→10s→20s→40s→80s，最多 5 次整档共享），直到返回非限流/非超时结果
+    5s→10s，最多 2 次整档共享，累计最多等 15s），直到返回非限流/非超时结果
     才判定该次采样。
 
     Why 基础设施错误单独分类：AuthenticationError（401）/ APIConnectionError
@@ -1700,7 +1700,7 @@ async def probe_response_format(request: Request) -> dict:
     if tier1_result == "rate_limited":
         return {
             "result": "probe_failed",
-            "reason": "探测限流/超时重试 5 次仍未成功，请稍后手动重试",
+            "reason": "探测限流/超时重试 2 次仍未成功，请稍后手动重试",
             "mode": None,
             "raw_response": "",
         }
@@ -1733,7 +1733,7 @@ async def probe_response_format(request: Request) -> dict:
     if tier2_result == "rate_limited":
         return {
             "result": "probe_failed",
-            "reason": "探测限流/超时重试 5 次仍未成功，请稍后手动重试",
+            "reason": "探测限流/超时重试 2 次仍未成功，请稍后手动重试",
             "mode": None,
             "raw_response": "",
         }
