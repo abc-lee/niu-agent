@@ -1203,7 +1203,7 @@ fn kill_stale_api_process(port: u16) {
 /// PATH that does not include `/usr/local/bin` where npm lives).
 /// In dev mode (no node_modules), we fall back to `npm start`.
 /// Windows always uses `cmd /C npm start` (users must install npm).
-fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::Error>> {
+fn launch_window(name: &str, port: u16) -> Result<std::process::Child, Box<dyn std::error::Error>> {
     let resources_root = detect_resources_root();
     let window_dir = resources_root.join("ui").join("main");
 
@@ -1212,6 +1212,7 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
         let mut cmd = Command::new("cmd");
         cmd.args(["/C", "npm", "start"])
             .env("NIU_WINDOW", name)
+            .env("NIU_API_PORT", port.to_string())
             .current_dir(&window_dir);
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
@@ -1232,6 +1233,7 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
             let mut cmd = Command::new(&electron_bin);
             cmd.arg(".")
                 .env("NIU_WINDOW", name)
+                .env("NIU_API_PORT", port.to_string())
                 .current_dir(&window_dir);
             cmd.stdout(std::process::Stdio::null());
             cmd.stderr(std::process::Stdio::null());
@@ -1242,6 +1244,7 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
             let mut cmd = Command::new("npm");
             cmd.arg("start")
                 .env("NIU_WINDOW", name)
+                .env("NIU_API_PORT", port.to_string())
                 .current_dir(&window_dir);
             cmd.stdout(std::process::Stdio::null());
             cmd.stderr(std::process::Stdio::null());
@@ -1256,6 +1259,7 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
         let mut cmd = Command::new("npm");
         cmd.arg("start")
             .env("NIU_WINDOW", name)
+            .env("NIU_API_PORT", port.to_string())
             .current_dir(&window_dir);
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
@@ -1455,7 +1459,7 @@ fn main() {
                 "API already running, launching window: window={}, port={}",
                 window_name, args.port
             );
-            if let Err(e) = launch_window(window_name) {
+            if let Err(e) = launch_window(window_name, args.port) {
                 error!("Failed to launch window: window={}, error={}", window_name, e);
                 std::process::exit(1);
             }
@@ -1830,7 +1834,7 @@ fn main() {
                 // splash 需要继续显示 "正在关闭所有进程..." 提示，直到 cleanup
                 // 完成由 phase_tx 通知 splash 退出。这里启动 settings 窗口，
                 // splash 仍留在屏幕底层作为遮罩。
-                let settings_result = launch_window("settings");
+                let settings_result = launch_window("settings", port);
                 if let Ok(mut settings_child) = settings_result {
                     let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
                     let poll_client = reqwest::blocking::Client::builder()
@@ -1872,7 +1876,7 @@ fn main() {
                 let _ = splash_tx.send(());
 
                 // Launch assistant window
-                let mut electron_child = match launch_window("assistant") {
+                let mut electron_child = match launch_window("assistant", port) {
                     Ok(child) => Some(child),
                     Err(e) => {
                         error!("Failed to launch assistant window: {}", e);
