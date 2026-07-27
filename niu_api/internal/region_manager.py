@@ -33,12 +33,13 @@ def _read_context_window_size() -> int:
     Returns 200000 as default if config is missing or unreadable.
     """
     try:
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "config", "user-config.json",
-        )
-        if os.path.exists(config_path):
-            with open(config_path, encoding="utf-8") as f:
+        # 真实配置在 ~/.niu/config/user-config.json（niu_api.config.CONFIG_PATH），
+        # 与 agent/subagent.py:117-120 的正确读法一致。旧路径 <项目根>/config/
+        # user-config.json 被 .gitignore 排除、不存在，永远 fallback 200000——
+        # 用户改的 contextWindowSize 对脑区逻辑从不生效（与 preload-assistant.js:8 同类 bug）。
+        from niu_api.config import CONFIG_PATH
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, encoding="utf-8") as f:
                 data = json.load(f)
             return data.get("context", {}).get("contextWindowSize", 200000)
     except Exception:
