@@ -1585,12 +1585,9 @@ async def probe_response_format(request: Request) -> dict:
 
     # 探测用 LiteLLMSession：复用运行时调用路径（含 drop_params=True 自动设置、
     # stream=True、temperature、provider_params 等），确保探测和运行时行为一致。
-    # 关键：litellm_kwargs 必须含 allowed_openai_params=["response_format", "thinking"]，
+    # 关键：litellm_kwargs 必须含 allowed_openai_params=["response_format"]，
     # 否则 LiteLLM volcengine router 在客户端拒绝抛 UnsupportedParamsError，
     # 请求不会真正发到 provider 网关。
-    # thinking 加入白名单：保证"知识图谱必须关思维链"的项目硬性要求在任何路由下
-    # 都强制透传（不被 drop_params 丢弃）。对不支持 thinking 的网关（如标准 OpenAI），
-    # 网关返回 400 → probe 分类为 model_rejected → 降级到下一档，不卡死。
     # 同时 strip 掉 response_format_mode（项目自定义字段，非 OpenAI 标准），
     # 避免透传给 litellm.completion 触发 provider 4xx——虽然 LiteLLMSession
     # 在传 response_format 时强制 drop_params=True 会兜底丢弃，但不依赖隐性兜底。
@@ -1598,7 +1595,7 @@ async def probe_response_format(request: Request) -> dict:
         k: v for k, v in (config.get("litellm_kwargs") or {}).items()
         if k != "response_format_mode"
     }
-    probe_litellm_kwargs["allowed_openai_params"] = ["response_format", "thinking"]
+    probe_litellm_kwargs["allowed_openai_params"] = ["response_format"]
     probe_litellm_kwargs["max_tokens"] = 50
 
     base_llm_config = {
