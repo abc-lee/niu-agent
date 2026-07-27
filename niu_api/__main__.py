@@ -259,6 +259,11 @@ async def lifespan(app: FastAPI):
     #     （LightRAG eager init / PipelineWatcher / LightRAGSync / BrainGraph /
     #      vectors.db cleanup / create_default_regions / RegionSync / _SYSTEM_TASKS）
     #     need_repair=False 时逻辑跟原来一致
+    #
+    # 预初始化 region_sync = None，确保 LightRAG 损坏分支（_lightrag_corrupt_skip_init=True）
+    # 跳过整个 if 块时，变量在 lifespan 末尾 run_brain_region_startup_gate 调用处仍可见，
+    # 避免 NameError。run_brain_region_startup_gate helper 内部处理 None 跳过 gate。
+    region_sync = None
     if not _lightrag_corrupt_skip_init:
         # 7.5. Eagerly initialize LightRAG (triggers lazy init before background threads start)
         # This ensures _lightrag_ready Event is set quickly, so SkillSync/LightRAGSync/RegionSync
@@ -339,13 +344,12 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Failed to signal brain regions ready: {e}")
 
-        # 8.1. Start brain region periodic sync (background thread starts here)
-        if region_sync is not None:
-            try:
-                region_sync.start_background_sync()
-                logger.info("Brain region sync started (interval: 24h)")
-            except Exception as e:
-                logger.warning(f"Brain region sync start failed: {e}")
+        # 8.1. (已推迟) Start brain region periodic sync
+        #      v3 关键改动：start_background_sync() 不在此处调用，推迟到 lifespan 末尾
+        #      run_brain_region_startup_gate 之后（见 8.7 节）。这样 gate 运行期间
+        #      _sync_loop daemon 不存在，run_sync_once_for_startup 必拿 _sync_lock、
+        #      必跑完 _refresh_activation_manager，从结构上消除首次启动场景 daemon
+        #      与 lifespan 抢锁的竞态（第二轮审查严重问题）。
 
         # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
         _SYSTEM_TASKS = [
@@ -408,21 +412,45 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to ensure system tasks: {e}")
 
-    # 8.7. Signal scheduler that system is ready（need_repair=True 时不 signal）
-    #      必须在所有后台依赖（LightRAG eager init / PipelineWatcher / LightRAGSync /
-    #      BrainGraph / create_default_regions / RegionSync / _SYSTEM_TASKS）就绪后才 signal。
-    #      原位置 L218（Phase 1 gate 之后、L255 依赖项之前）会触发 race：
-    #      scheduler sleep 2s 后扫描过期任务撞未就绪 runner，user 消息已写 DB 但
-    #      runner.chat() 抛异常、任务被标 failed（见 commit 2e795521/0df739e0 历史背景）。
-    #      need_repair=True 分支由 should_signal_scheduler_ready gate 控制（返回 False 跳过），
-    #      cancel_scheduler_delayed_start_if_corrupt 在 L204 已调，flag 持久，行为一致。
+    # 8.7. Brain region startup gate + Signal scheduler + start_background_sync（推迟）
+    #      必须在所有后台依赖就绪后才 signal。
+    #      脑区就绪 gate（run_sync_once_for_startup）：在 signal_scheduler_ready 之前同步跑首次
+    #      run_sync()，确保 activation_mgr 已 set。否则日常重启场景下 _sync_loop 因 24h
+    #      间隔保护不跑首次，activation_mgr 永远 None，scheduler 触发的过期任务和用户第一轮
+    #      请求都撞 None，脑区动态注入缺失。90s 超时兜底：超时后 warning 但仍 signal，
+    #      靠 _get_brain_injector 的 forced sync daemon 兜底（5 分钟冷却 + 防并发）。
+    #      region_sync is None（LightRAG 损坏分支）时 helper 跳过 gate。
+    #      start_background_sync 推迟到 gate 之后调用（v3）：gate 运行期间 _sync_loop
+    #      daemon 不存在，run_sync_once_for_startup 必拿锁必跑完，消除首次启动竞态。
     from niu_api.internal.lightrag_manager import should_signal_scheduler_ready
-    if should_signal_scheduler_ready(phase1_result):
-        from niu_api.internal.scheduler.service import signal_scheduler_ready
-        signal_scheduler_ready()
-        logger.info("Scheduler system_ready signal sent (after all dependencies ready)")
+    from niu_api.startup_gate import run_brain_region_startup_gate
+    from niu_api.internal.scheduler.service import signal_scheduler_ready
+    gate_result = run_brain_region_startup_gate(
+        region_sync=region_sync,
+        signal_scheduler_ready_fn=signal_scheduler_ready,
+        should_signal=should_signal_scheduler_ready(phase1_result),
+        timeout=90.0,
+    )
+    if gate_result is True:
+        logger.info("Scheduler system_ready signal sent (brain region ready)")
+    elif gate_result is False:
+        logger.warning(
+            "Scheduler system_ready signal sent (brain region degraded, "
+            "forced sync daemon will retry on first request)"
+        )
     else:
-        logger.warning("[LightRAG] Scheduler system_ready signal 跳过（LightRAG 损坏）")
+        logger.warning("[LightRAG] Scheduler system_ready signal 跳过（LightRAG 损坏或 region_sync 未创建）")
+
+    # 8.7.5. Start brain region periodic sync（v3：从 8.1 推迟到 gate 之后，含 None 守卫）
+    #      必须在 run_brain_region_startup_gate 之后调用，确保 gate 先抢锁跑完首次同步。
+    #      保留 if region_sync is not None 守卫：LightRAG 损坏分支 region_sync=None，
+    #      裸调用会 AttributeError。整块从原 8.1 平移而来。
+    if region_sync is not None:
+        try:
+            region_sync.start_background_sync()
+            logger.info("Brain region sync started (interval: 24h, after startup gate)")
+        except Exception as e:
+            logger.warning(f"Brain region sync start failed: {e}")
 
     # 8.8. Mark preload as complete — 所有后端依赖就绪后才标记
     #      启动器轮询 /api/preload-status 看到这个标志后才 launch 前端
