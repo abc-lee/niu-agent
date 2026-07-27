@@ -1390,9 +1390,8 @@ ipcMain.handle('probe-response-format', async (event, config) => {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
       },
-      timeout: 600000,  // read_timeout 提升 60s 后（推理模型首响应 20-120s），单档最坏耗时
-                       // = 6 次采样×60s + 退避 155s ≈ 515s。Tier1 失败早返不进 Tier2，
-                       // 实际最坏 ~520s。设 600s 覆盖单档最坏场景。
+      timeout: 120000,  // probe read_timeout 10s + 重试 2 次，单档最坏 3×10s+退避 15s=45s，
+                       // 两档 90s。豆包网关挂起场景快速失败，用户最多等 2 分钟。
     };
     return await new Promise((resolve) => {
       const req = http.request(options, (res) => {
