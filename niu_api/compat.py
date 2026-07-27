@@ -1610,8 +1610,9 @@ async def probe_response_format(request: Request) -> dict:
         # 避免探测和运行时采样随机性差异
         "temperature": config.get("temperature", 0.2),
         "litellm_kwargs": probe_litellm_kwargs,
-        # 推理模型（deepseek-reasoner/o1/o3）首响应 20-120s，15s 必然超时
-        "read_timeout": 60,
+        # probe read_timeout 10s：豆包网关对 response_format 请求挂起时，10s 不响应基本就是挂起，
+        # 快速失败降级，不等 60s。推理模型首响应慢的场景由外层 wait_for(90s) 兜底。
+        "read_timeout": 10,
     }
 
     messages = _build_probe_messages()
