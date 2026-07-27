@@ -33,7 +33,8 @@ def test_fallback_llm_fields(fallback):
     assert llm["reasoning_effort"] == ""
     # 主聊天模型 litellm_kwargs 空（通用；思维链由模型自己决定，OpenAI 路由下避免 UnsupportedParamsError）
     assert llm["litellm_kwargs"] == {}
-    # provider 字段已删（type 已决定协议，LiteLLM 从 apiBase 自动推导路由）
+    # provider 字段已删（type 已决定协议，LiteLLM 由 custom_llm_provider 决定路由，
+    # 不从 apiBase 推导——litellm_adapter.py:367 硬编码 custom_llm_provider = provider or api_type）
     assert "provider" not in llm
     # 主模型不需要温度字段（温度在提示词文档里，R14）
     assert "temperature" not in llm

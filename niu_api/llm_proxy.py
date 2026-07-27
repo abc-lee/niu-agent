@@ -195,9 +195,9 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
         use_lightrag_config: If True, read from 'lightrag_llm' section.
             model 为空时使用主 llm 同一模型（正常默认行为）。
             apiKey/apiBase/type 为空时从 llm 段继承。
-            reasoning_effort 默认 "none"（思维深度关闭；仅控制推理深度，
-            不控制思考链返回——思考链返回由 litellm_kwargs.thinking 独立控制，
-            两者是不同参数，不可混淆）。
+            reasoning_effort 默认 "high"（知识图谱基础配置，思维深度 High；
+            仅控制推理深度，不控制思考链返回——思考链返回由 litellm_kwargs.thinking
+            独立控制，两者是不同参数，不可混淆）。
             用户可在 lightrag_llm 段显式设置 reasoning_effort 覆盖默认值。
     """
     from pathlib import Path
@@ -223,15 +223,15 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
                     lightrag_llm["provider"] = llm.get("provider", "")
                 if not lightrag_llm.get("litellm_kwargs"):
                     lightrag_llm["litellm_kwargs"] = llm.get("litellm_kwargs", {})
-                # Default reasoning_effort to "none" if not explicitly set
+                # Default reasoning_effort to "high" if not explicitly set（知识图谱基础配置）
                 if not lightrag_llm.get("reasoning_effort"):
-                    lightrag_llm["reasoning_effort"] = "none"
+                    lightrag_llm["reasoning_effort"] = "high"
                 llm = lightrag_llm
             else:
                 # Use main llm model, but independently apply lightrag-specific overrides
                 llm = dict(llm)
                 user_effort = lightrag_llm.get("reasoning_effort")
-                llm["reasoning_effort"] = user_effort if user_effort else "none"
+                llm["reasoning_effort"] = user_effort if user_effort else "high"
                 if lightrag_llm.get("provider"):
                     llm["provider"] = lightrag_llm["provider"]
                 if lightrag_llm.get("litellm_kwargs"):
@@ -257,7 +257,7 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
 
         return config
     except Exception:
-        return {"type": "openai", "apikey": "", "apibase": "", "model": "", "reasoning_effort": "none"}
+        return {"type": "openai", "apikey": "", "apibase": "", "model": "", "reasoning_effort": "high"}
 
 
 async def call_llm_via_litellm(
