@@ -366,7 +366,13 @@ MEMORY_PATH = NIU_DIR / "memory.json"
 
 
 def load_user_config() -> dict[str, Any]:
-    """Load user configuration."""
+    """Load user configuration.
+
+    文件不存在时返回代码内联标准缺省（user-config.json 无模板文件设计）。
+    本缺省 = Python 侧真相源，前端两处缺省（main.js get-config 兜底 /
+    settings testAndSave 常量）内容必须与本处一致（tests/test_config_defaults.py
+    锁定本处，E2E 验证整体一致性）。
+    """
     if USER_CONFIG_PATH.exists():
         return json.loads(USER_CONFIG_PATH.read_text(encoding="utf-8"))
     return {
@@ -376,7 +382,9 @@ def load_user_config() -> dict[str, Any]:
             "apiBase": "",
             "model": "",
             "type": "openai",
+            "provider": "",
             "reasoning_effort": "",
+            "litellm_kwargs": {"thinking": {"type": "enabled"}},
         },
         "lightrag_llm": {
             "presetId": "",
@@ -384,16 +392,23 @@ def load_user_config() -> dict[str, Any]:
             "apiBase": "",
             "model": "",
             "type": "openai",
-            "reasoning_effort": "xhigh",
+            "reasoning_effort": "high",
+            "temperature": 0.2,
+            "litellm_kwargs": {
+                "thinking": {"type": "disabled"},
+                "allowed_openai_params": [],
+            },
         },
         "context": {
             "contextWindowSize": 200000,
             "warningThreshold": 0.8,
             "targetThreshold": 0.5,
+            "compressTargetTokens": 60000,
             "sleepTriggerMinutes": 5,
         },
         "storage": {"documentRoot": "", "databasePath": ""},
         "firstRun": True,
+        "logging": {"enabled": False, "level": "INFO"},
     }
 
 
