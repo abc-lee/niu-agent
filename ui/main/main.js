@@ -1160,8 +1160,8 @@ ipcMain.handle('get-config', () => {
   return {
     llm: {
       presetId: "", apiKey: "", apiBase: "", model: "", type: "openai",
-      provider: "", reasoning_effort: "",
-      litellm_kwargs: { thinking: { type: "enabled" } }
+      reasoning_effort: "",
+      litellm_kwargs: {}
     },
     lightrag_llm: {
       presetId: "", apiKey: "", apiBase: "", model: "", type: "openai",

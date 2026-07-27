@@ -382,9 +382,8 @@ def load_user_config() -> dict[str, Any]:
             "apiBase": "",
             "model": "",
             "type": "openai",
-            "provider": "",
             "reasoning_effort": "",
-            "litellm_kwargs": {"thinking": {"type": "enabled"}},
+            "litellm_kwargs": {},
         },
         "lightrag_llm": {
             "presetId": "",

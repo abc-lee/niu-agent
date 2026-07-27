@@ -386,6 +386,11 @@ class LiteLLMSession(BaseSession):
         if response_format is not None:
             request_params["response_format"] = response_format
             request_params["drop_params"] = True
+        # 用户自定义 litellm_kwargs（如 thinking 等模型特定参数）非空时也启用 drop_params，
+        # 让 LiteLLM 自动丢弃不支持的参数（如 OpenAI 路由下的 thinking），避免 UnsupportedParamsError。
+        # 通用修复：不针对任何特定模型，未来任何模型特定参数都能自动适配。
+        if self.litellm_kwargs:
+            request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
         if self.proxies:
