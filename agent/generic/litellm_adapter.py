@@ -269,6 +269,28 @@ def _format_response_log(f, log_entry: Dict[str, Any]):
     f.write("\n")
 
 
+def _derive_provider_prefix(api_base: Optional[str], model: str) -> str:
+    """根据 apiBase 自动推导 LiteLLM provider 前缀，加到 model 名上。
+
+    Why: 豆包网关对 openai 路由的 response_format 请求挂起不响应（json_schema/json_object
+    都挂起），必须走 volcengine 路由才正常。custom_llm_provider 参数对豆包无效（实测卡死），
+    只有 model 前缀 'volcengine/...' 才能让 LiteLLM 走对路由。
+
+    通用性：从 apiBase 推导 provider 是标准做法（curl/httpx 都这么做），
+    volcengine/openai/anthropic 是 LiteLLM 内置 provider 名，不是豆包特定 hack。
+
+    Returns:
+        带 provider 前缀的 model 名（如 'volcengine/ark-code-latest'）
+    """
+    api_base_lower = (api_base or "").lower()
+    if "volces.com" in api_base_lower:
+        return f"volcengine/{model}"
+    if "api.anthropic.com" in api_base_lower:
+        return f"anthropic/{model}"
+    # 其他网关（api.openai.com、xf-yun、自定义网关、localhost Ollama）默认 openai 兼容路由
+    return f"openai/{model}"
+
+
 def get_provider_params(model: str, reasoning_effort: Optional[str] = None) -> Dict[str, Any]:
     """获取提供商特定参数"""
     params: Dict[str, Any] = {}
@@ -364,12 +386,20 @@ class LiteLLMSession(BaseSession):
         Returns:
             MockResponse（通过 StopIteration）
         """
+        # 从 apiBase 自动推导 LiteLLM provider 前缀，加到 model 名上。
+        # Why: 豆包网关对 openai 路由的 response_format 请求挂起不响应（json_schema/json_object 都挂起），
+        # 必须走 volcengine 路由才正常。custom_llm_provider 参数对豆包无效（实测卡死），
+        # 只有 model 前缀 'volcengine/...' 才能让 LiteLLM 走对路由。
+        # 通用性：从 apiBase 推导 provider 是标准做法（curl/httpx 都这么做），
+        # volcengine/openai/anthropic 是 LiteLLM 内置 provider 名，不是豆包特定 hack。
+        # 用户传的 self.provider 字段已废弃（页面下拉框将删除），保留兼容但优先用 apiBase 推导。
         custom_provider = self.provider or ("anthropic" if self.api_type == "anthropic" else "openai")
+        model_with_prefix = _derive_provider_prefix(self.api_base, self.default_model)
         provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
         litellm_tools = _convert_tools_schema(tools, self.default_model)
 
         request_params: Dict[str, Any] = {
-            "model": self.default_model,
+            "model": model_with_prefix,
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},

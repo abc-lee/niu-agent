@@ -116,7 +116,7 @@ async def _call_probe_direct(config: dict) -> dict:
         "provider": config_lower.get("provider", ""),
         "temperature": config_lower.get("temperature", 0.2),
         "litellm_kwargs": probe_litellm_kwargs,
-        "read_timeout": 15,  # 当前代码值
+        "read_timeout": 60,  # 与实际 compat.py probe 端点一致（推理模型首响应 20-120s）
     }
 
     messages = _build_probe_messages()

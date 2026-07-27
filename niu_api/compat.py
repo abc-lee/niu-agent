@@ -1448,10 +1448,11 @@ async def _probe_tier_three_samples_async(try_fn, response_format: dict) -> tupl
     限流/超时同属 transient infra 问题，sleep 后重试本次采样，直到返回非限流/
     非超时结果（supported / model_rejected / gateway_blocked）才判定该次采样。
 
-    Why 重试预算整档共享：防止限流/超时期间无限拖延端点。3 次采样共享 5 次
-    重试预算（限流+超时累计），指数退避 5s→10s→20s→40s→80s，最多等 155s。
+    Why 重试预算整档共享：防止限流/超时期间无限拖延端点。3 次采样共享 2 次
+    重试预算（限流+超时累计），指数退避 5s→10s，最多等 15s。
+    原 5 次预算（退避 155s）在思考链慢响应场景导致 probe 卡死 10+ 分钟，2 次足够覆盖瞬时抖动。
     """
-    MAX_TRANSIENT_RETRIES = 5
+    MAX_TRANSIENT_RETRIES = 2
     transient_retries = 0
 
     for sample_num in range(1, 4):
