@@ -377,6 +377,13 @@
       });
     });
 
+    // 标准基础配置缺省（三处一致：本处 / main.js get-config 兜底 / config-manager 兜底）。
+    // Why: 首次启动 existingConfig 是空骨架，probe/save 的缺省必须自带这些
+    // 基础运行字段，保证 probe 探测环境 = 运行时环境（2026-07-27 首次启动
+    // probe 失败根因：缺 thinking:disabled，探测请求与运行时实际调用不一致）。
+    const DEFAULT_LLM_KWARGS = { thinking: { type: "enabled" } };
+    const DEFAULT_LIGHTRAG_KWARGS = { thinking: { type: "disabled" }, allowed_openai_params: [] };
+
     async function testAndSave() {
       const existingConfig = await window.electronAPI.getConfig();
       const presetId = document.getElementById('preset').value;
@@ -397,57 +404,54 @@
       const config = {
         apiKey, apiBase, model, type,
         provider: provider,
-        litellm_kwargs: existingConfig.llm?.litellm_kwargs || {}
+        litellm_kwargs: { ...DEFAULT_LLM_KWARGS, ...(existingConfig.llm?.litellm_kwargs || {}) }
       };
       const result = await window.electronAPI.testConnection(config);
 
       if (result.success) {
         // 第一步半：测试通过后追加 response_format 探测（3 档递进）
         setStatus('探测格式化输出能力中（可能需要 1-5 分钟（三次采样 + 限流/超时重试））...', 'loading');
-        // config 必须包含 litellm_kwargs（从 existingConfig 取），否则探测环境与运行时不一致
+        // probe 必须用知识图谱模型的运行时基础配置（含 thinking:disabled），
+        // 保证探测环境 = 运行时环境，探测档位结果对运行时才有效
         const probeConfig = {
           ...config,
-          litellm_kwargs: existingConfig.lightrag_llm?.litellm_kwargs || existingConfig.llm?.litellm_kwargs || {},
+          litellm_kwargs: { ...DEFAULT_LIGHTRAG_KWARGS, ...(existingConfig.lightrag_llm?.litellm_kwargs || {}) },
         };
         const probeResult = await window.electronAPI.probeResponseFormat(probeConfig);
 
-        let responseFormatMode = 'prompt_only';
-        let allowedOpenaiParams = [];
-        let probeReason = '';
-        let probeFailed = false;
-
-        if (probeResult.result === 'supported') {
-          responseFormatMode = probeResult.mode || 'prompt_only';
-          allowedOpenaiParams = responseFormatMode === 'prompt_only' ? [] : ['response_format'];
-          probeReason = probeResult.reason || `格式化输出档位: ${responseFormatMode}`;
-        } else {
-          // probe_failed：HTTP 传输失败（连接拒绝/超时）或端点逻辑失败（限流/超时/基础设施错误）时触发
-          // 端点正常探测失败会返回 supported+prompt_only 走上面分支
-          // 此处完全保留旧 litellm_kwargs，不破坏用户已有配置
-          probeFailed = true;
-          probeReason = '探测失败（限流/超时/基础设施错误），请稍后重试: ' + (probeResult.reason || '未知错误');
+        // probe_failed（限流/超时/基础设施错误）：不写文件，提示重试。
+        // Why（用户核心原则）：测试失败不写文件，测试成功才写。失败时写文件会
+        // 产生缺 response_format_mode 的不完整配置，知识图谱运行时拿不到
+        // Response 格式档位。不自动关窗，让用户决定重试或放弃。
+        if (probeResult.result !== 'supported') {
+          setStatus('格式化输出探测失败（' + (probeResult.reason || '未知错误') + '），配置未保存。请稍后点击按钮重试。', 'error');
+          document.getElementById('testBtn').disabled = false;
+          return;
         }
 
-        // 第二步：保存配置
+        const responseFormatMode = probeResult.mode || 'prompt_only';
+        const allowedOpenaiParams = responseFormatMode === 'prompt_only' ? [] : ['response_format'];
+        const probeReason = probeResult.reason || `格式化输出档位: ${responseFormatMode}`;
+
+        // 第二步：保存配置（仅连通性测试 + probe 探测都成功才执行到这里）
         setStatus('保存配置中...（' + probeReason + '）', 'loading');
         const existingLightragLlm = existingConfig.lightrag_llm || {};
         const existingLightragKwargs = existingLightragLlm.litellm_kwargs || {};
-        // probe_failed 时原样保留旧 litellm_kwargs；supported 时写入探测结果
-        const newLitellmKwargs = probeFailed
-          ? { ...existingLightragKwargs }
-          : {
-              ...existingLightragKwargs,
-              thinking: existingLightragKwargs.thinking || { type: "disabled" },
-              response_format_mode: responseFormatMode,
-              allowed_openai_params: allowedOpenaiParams,
-            };
+        // 基础配置（thinking:disabled 等）无条件写入 + 探测结果覆盖
+        const newLitellmKwargs = {
+          ...DEFAULT_LIGHTRAG_KWARGS,
+          ...existingLightragKwargs,
+          response_format_mode: responseFormatMode,
+          allowed_openai_params: allowedOpenaiParams,
+        };
         const lightragLlmConfig = {
           presetId: existingLightragLlm.presetId || "",
           apiKey: existingLightragLlm.apiKey || "",
           apiBase: existingLightragLlm.apiBase || "",
           model: existingLightragLlm.model || "",
           type: existingLightragLlm.type || "openai",
-          reasoning_effort: existingLightragLlm.reasoning_effort || "none",
+          // 思维深度 High 是知识图谱基础配置（用户确认），缺省不是 "none"
+          reasoning_effort: existingLightragLlm.reasoning_effort || "high",
           temperature: existingLightragLlm.temperature ?? 0.2,
           litellm_kwargs: newLitellmKwargs,
         };
@@ -462,6 +466,8 @@
             sleepTriggerMinutes: parseInt(document.getElementById('sleepTriggerMinutes').value) || 5
           },
           storage: existingConfig.storage || {},
+          // 保留用户已有 logging 设置；首次启动用设计缺省（关日志）
+          logging: existingConfig.logging || { enabled: false, level: "INFO" },
           firstRun: false
         });
         if (saveResult.success) {
