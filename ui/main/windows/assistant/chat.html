@@ -924,9 +924,18 @@
       try {
         const result = await sendMessageWithRetry(text);
       } finally {
-        // UI 状态（hideTyping/notifyBusy/stopBtn/isProcessing）由 SSE chat_idle 驱动
-        // 见缝插针场景下 HTTP 立即返回但 Agent 仍在跑，此处不能重置状态
+        // chat 窗口 UI 状态（hideTyping/stopBtn/isProcessing）由 SSE chat_idle 驱动
+        // 见缝插针场景下 HTTP 立即返回但 Agent 仍在跑，此处不能重置 chat UI 状态
         // 否则会把停止按钮误隐藏、Escape 失效、/clear 误走空闲分支
+        //
+        // 但 notifyBusy(false, 'chat') 必须在此处调用——它配对的是
+        // chat.html:922 sendMessage 入口的 notifyBusy(true, 'chat')，属于
+        // spirit 窗口 busyCount 引用计数层（非 chat UI 状态层）。
+        // 见缝插针 N 次回车 = N 次 sendMessage +1，必须 N 次 finally -1 配对，
+        // 否则 spirit busyCount 永远 +N 不归零，小女孩卡 busy.gif。
+        // spirit 是引用计数模型（spirit.html:190 busyCount），-1 受 >0 守卫保护，
+        // 重复调用不会减到负数，安全。
+        window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
         loadStats();
         userInput.focus();
