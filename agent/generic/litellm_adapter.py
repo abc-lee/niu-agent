@@ -269,25 +269,40 @@ def _format_response_log(f, log_entry: Dict[str, Any]):
     f.write("\n")
 
 
-def _derive_provider_prefix(api_base: Optional[str], model: str) -> str:
-    """根据 apiBase 自动推导 LiteLLM provider 前缀，加到 model 名上。
+def _derive_provider_prefix(api_base: Optional[str], model: str, api_type: Optional[str] = None) -> str:
+    """根据 apiBase + api_type 自动推导 LiteLLM provider 前缀，加到 model 名上。
 
     Why: 豆包网关对 openai 路由的 response_format 请求挂起不响应（json_schema/json_object
     都挂起），必须走 volcengine 路由才正常。custom_llm_provider 参数对豆包无效（实测卡死），
     只有 model 前缀 'volcengine/...' 才能让 LiteLLM 走对路由。
 
+    推导优先级：
+    1. volces.com 域名 → volcengine/（豆包专属，最高优先级，域名是火山引擎官方）
+    2. api.anthropic.com 域名 → anthropic/（Anthropic 官方）
+    3. api_type="anthropic" → anthropic/（第三方网关走 anthropic 协议，如 minimax-anthropic）
+    4. 默认 → openai/（OpenAI 兼容路由，含 api.openai.com/xf-yun/自定义网关/localhost Ollama）
+
     通用性：从 apiBase 推导 provider 是标准做法（curl/httpx 都这么做），
     volcengine/openai/anthropic 是 LiteLLM 内置 provider 名，不是豆包特定 hack。
+
+    Args:
+        api_base: 用户配置的 apiBase URL
+        model: 用户配置的 model 名（不带前缀）
+        api_type: 可选，用户配置的 type（"openai"/"anthropic"），用于第三方网关走 anthropic 协议
 
     Returns:
         带 provider 前缀的 model 名（如 'volcengine/ark-code-latest'）
     """
     api_base_lower = (api_base or "").lower()
+    # 1. 域名匹配优先（volces.com 是火山引擎官方域名，必须走 volcengine 路由）
     if "volces.com" in api_base_lower:
         return f"volcengine/{model}"
     if "api.anthropic.com" in api_base_lower:
         return f"anthropic/{model}"
-    # 其他网关（api.openai.com、xf-yun、自定义网关、localhost Ollama）默认 openai 兼容路由
+    # 2. api_type=anthropic 覆盖（第三方网关走 anthropic 协议，如 minimax-anthropic 预设）
+    if api_type == "anthropic":
+        return f"anthropic/{model}"
+    # 3. 默认 openai 兼容路由（api.openai.com、xf-yun、自定义网关、localhost Ollama）
     return f"openai/{model}"
 
 
@@ -397,7 +412,7 @@ class LiteLLMSession(BaseSession):
         # （实测 model='volcengine/ark-code-latest' + custom_llm_provider='openai' 会被
         # custom_llm_provider 覆盖走 openai 路由，豆包网关报 NotFoundError）。
         custom_provider = self.provider or ("anthropic" if self.api_type == "anthropic" else "openai")
-        model_with_prefix = _derive_provider_prefix(self.api_base, self.default_model)
+        model_with_prefix = _derive_provider_prefix(self.api_base, self.default_model, self.api_type)
         provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
         litellm_tools = _convert_tools_schema(tools, self.default_model)
 
