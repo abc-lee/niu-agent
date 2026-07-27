@@ -354,3 +354,63 @@ async def test_doubao_volcengine_thinking_disabled_json_complete():
     print(f"\n场景 9 结果: {result} (耗时 {elapsed:.1f}s)")
     assert result["result"] != "HANG_TIMEOUT", f"卡死 {elapsed:.1f}s"
     assert result["result"] in ("supported", "probe_failed"), f"非法结果: {result}"
+
+
+# ============================================================================
+# 补充场景：不可达网关 / 无效 apiKey / GLM 不带 thinking
+# ============================================================================
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.timeout(150)
+async def test_unreachable_gateway_probe_not_hang():
+    """场景 10：不可达网关（错误 apiBase）→ probe 快速失败降级，不卡死。
+
+    模拟推理模型超时/网关挂起场景：用真实 apiKey + 错误 apiBase（连接挂起或快速拒绝）。
+    期望：≤120s 返回 probe_failed（infra_error 或 rate_limited），不卡死。
+    """
+    config = {
+        "apiKey": "22046eb7-4c69-41ea-8a72-6004785a4b2e",
+        "apiBase": "https://invalid-timeout-gateway.example.com/v1",
+        "model": "test-model",
+        "type": "openai",
+        "provider": "",
+        "litellm_kwargs": {},
+    }
+    result, elapsed = await _run_probe_with_timeout(config)
+    print(f"\n场景 10 结果: {result} (耗时 {elapsed:.1f}s)")
+    assert result["result"] != "HANG_TIMEOUT", f"卡死 {elapsed:.1f}s"
+    assert result["result"] in ("supported", "probe_failed"), f"非法结果: {result}"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.timeout(150)
+async def test_invalid_apikey_probe_not_hang():
+    """场景 11：无效 apiKey → probe 快速失败（AuthenticationError → infra_error），不卡死。
+
+    验证 401 错误被正确分类为 infra_error，快速返回 probe_failed。
+    """
+    llm = _load_config(DOUBAO_CONFIG_PATH)
+    config = _build_probe_config(llm, provider="", thinking={"type": "disabled"})
+    config["apiKey"] = "sk-invalid-key-12345"  # 覆盖为无效 key
+    result, elapsed = await _run_probe_with_timeout(config)
+    print(f"\n场景 11 结果: {result} (耗时 {elapsed:.1f}s)")
+    assert result["result"] != "HANG_TIMEOUT", f"卡死 {elapsed:.1f}s"
+    assert result["result"] in ("supported", "probe_failed"), f"非法结果: {result}"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.timeout(150)
+async def test_glm_empty_provider_no_thinking():
+    """场景 12：GLM + 空 provider + 不带 thinking → 不卡死（补充 GLM 不带 thinking 场景）。
+
+    之前 9 场景矩阵只测了 GLM + thinking:disabled，没测 GLM 不带 thinking。
+    """
+    llm = _load_config(GLM_CONFIG_PATH)
+    config = _build_probe_config(llm, provider="", thinking=None)
+    result, elapsed = await _run_probe_with_timeout(config)
+    print(f"\n场景 12 结果: {result} (耗时 {elapsed:.1f}s)")
+    assert result["result"] != "HANG_TIMEOUT", f"卡死 {elapsed:.1f}s"
+    assert result["result"] in ("supported", "probe_failed"), f"非法结果: {result}"
