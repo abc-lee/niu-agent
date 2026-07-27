@@ -381,7 +381,7 @@
     // Why: 首次启动 existingConfig 是空骨架，probe/save 的缺省必须自带这些
     // 基础运行字段，保证 probe 探测环境 = 运行时环境（2026-07-27 首次启动
     // probe 失败根因：缺 thinking:disabled，探测请求与运行时实际调用不一致）。
-    const DEFAULT_LLM_KWARGS = { thinking: { type: "enabled" } };
+    const DEFAULT_LLM_KWARGS = {};
     const DEFAULT_LIGHTRAG_KWARGS = { thinking: { type: "disabled" }, allowed_openai_params: [] };
 
     async function testAndSave() {
