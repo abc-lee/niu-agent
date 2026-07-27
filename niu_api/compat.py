@@ -1245,8 +1245,10 @@ async def test_llm(request: Request) -> dict:
     # 统一键名为小写（前端传 apiKey/apiBase，get_llm_config 返回小写，需统一）
     body = {k.lower(): v for k, v in body.items()} if body else {}
 
-    if body and body.get("apikey"):
-        # 配置页面传入的表单值（预保存测试）
+    if body:
+        # 用 body 测试（预保存测试）——body 非空即测 body（即使 apiKey 为空），
+        # 与 probe 端点 :1562 闸门语义对齐。回退读文件会掩盖被测问题
+        # （如 Ollama 空 apiKey 表单场景，回退读到空配置导致 is_local 豁免不可达）。
         config = body
     else:
         # 启动器调用：从文件读取
