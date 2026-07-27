@@ -611,9 +611,6 @@ A: 1. 关闭程序
 | launcher 致命错误 | `~/.niu/logs/launcher_error.log` | 启动失败诊断（API 未运行、Electron 启动失败等），用 `time` crate 格式化时间戳 |
 | gateway 致命错误 | `~/.niu/logs/gateway_error.log` | 飞书 adapter 启动失败诊断（app_id 配错、端口占用、credentials 缺失） |
 
-**开启日志**（调试时用）：
-
-把 `~/.niu/config/user-config.json` 的 `logging.enabled` 改为 `true`，重启程序。所有受控日志源会按 `level` 字段输出到对应文件或 stderr。
 
 **日志目录**：
 
