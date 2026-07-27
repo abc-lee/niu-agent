@@ -482,9 +482,14 @@ def test_probe_endpoint_returns_probe_failed_for_invalid_config(api_base):
 
 
 def test_probe_endpoint_does_not_affect_test_llm_endpoint(api_base):
-    """验证 /api/test-llm 响应结构未被探测逻辑污染（启动器依赖 {success, message, error}）"""
-    config = {"apiKey": "fake-key", "apiBase": "https://api.openai.com/v1", "model": "gpt-4o-mini"}
-    # timeout=30：/api/test-llm 内部 asyncio.wait_for(timeout=20) + 网络往返余量
+    """验证 /api/test-llm 响应结构未被探测逻辑污染（启动器依赖 {success, message, error}）。
+
+    用 localhost 不可达端口（127.0.0.1:1）替代真实 OpenAI，避免依赖外部网络
+    和 OpenAI 响应时间（原 api.openai.com + fake-key 30s 超时不够，预存 flaky）。
+    test-llm 会快速返回 infra_error（连接拒绝），结构含 success/error 即可验证。
+    """
+    config = {"apiKey": "fake-key", "apiBase": "http://127.0.0.1:1/v1", "model": "gpt-4o-mini"}
+    # timeout=30：test-llm 内部 read_timeout=60s + asyncio.wait_for(90s)，但连接拒绝会快速失败
     with httpx.Client(timeout=30) as client:
         resp = client.post(f"{api_base}/api/test-llm", json=config)
     assert resp.status_code == 200
