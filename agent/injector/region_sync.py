@@ -77,6 +77,10 @@ class RegionSync:
         self._brain_ready = threading.Event()
         self._status_file = Path.home() / ".niu" / "last_region_sync.json"
         self._sync_lock = threading.Lock()
+        # Startup gate: set after first run_sync() completes (success/failure/skip).
+        # lifespan waits on this before signal_scheduler_ready() so scheduler-triggered
+        # tasks and first user request don't hit activation_mgr=None race.
+        self._first_sync_done = threading.Event()
 
     def try_acquire_sync(self) -> bool:
         """Try to acquire the sync lock (non-blocking). Prevents concurrent sync."""
@@ -96,13 +100,23 @@ class RegionSync:
         Returns:
             Stats dict with counts of regions created/removed/updated.
         """
-        if not self.try_acquire_sync():
-            logger.warning("[RegionSync] 另一个同步正在运行，跳过本次")
-            return {"regions_created": 0, "regions_removed": 0, "errors": ["skipped: concurrent sync"]}
         try:
-            return self._run_sync_impl()
+            if not self.try_acquire_sync():
+                logger.warning("[RegionSync] 另一个同步正在运行，跳过本次")
+                return {"regions_created": 0, "regions_removed": 0, "errors": ["skipped: concurrent sync"]}
+            try:
+                return self._run_sync_impl()
+            finally:
+                self.release_sync()
         finally:
-            self.release_sync()
+            # Mark first sync as done regardless of outcome (success/skip/exception).
+            # lifespan waits on this Event before signal_scheduler_ready().
+            # Idempotent: set() on already-set Event is a no-op.
+            # NOTE: _first_sync_done being set does NOT guarantee activation_mgr is set
+            # —_refresh_activation_manager may have failed or been skipped.
+            # Caller (run_brain_region_startup_gate) must check get_activation_mgr()
+            # separately if it needs the stronger guarantee.
+            self._first_sync_done.set()
 
     def _run_sync_impl(self) -> dict:
         """Actual sync logic — original run_sync body.
@@ -598,6 +612,41 @@ class RegionSync:
         """
         self._brain_ready.set()
         logger.info("[RegionSync] Brain regions ready signal received")
+
+    def wait_first_sync_done(self, timeout: float) -> bool:
+        """Wait for the first run_sync() to complete.
+
+        Used by lifespan startup to gate signal_scheduler_ready() until
+        first sync is done. Returns True if event was set within timeout,
+        False otherwise.
+
+        Note: _first_sync_done being set does NOT guarantee activation_mgr
+        is set. Caller must check get_activation_mgr() separately.
+
+        Args:
+            timeout: Max seconds to wait. None means wait forever (avoid).
+
+        Returns:
+            True if first sync completed (or was attempted) within timeout.
+        """
+        return self._first_sync_done.wait(timeout=timeout)
+
+    def run_sync_once_for_startup(self) -> dict:
+        """Synchronously run run_sync() once for startup gate.
+
+        Called from lifespan startup to ensure first run_sync runs before
+        signal_scheduler_ready(). Idempotent — if _first_sync_done is already
+        set (e.g. _sync_loop already ran first sync), returns immediately.
+
+        Returns:
+            Stats dict from run_sync(), or {"skipped": "first_sync_already_done"}
+            if first sync was already completed previously.
+        """
+        if self._first_sync_done.is_set():
+            logger.info("[RegionSync] run_sync_once_for_startup skipped — first sync already done")
+            return {"skipped": "first_sync_already_done"}
+        logger.info("[RegionSync] run_sync_once_for_startup starting (blocks lifespan until done)")
+        return self.run_sync()
 
     def start_background_sync(self) -> None:
         """Start the background sync thread."""
