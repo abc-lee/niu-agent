@@ -1132,10 +1132,11 @@ const bundleConfigDir = path.join(__dirname, '..', '..', 'config');
 const userConfigPath = path.join(niuConfigDir, 'user-config.json');
 const presetsPath = path.join(bundleConfigDir, 'llm-presets.json');  // 只读模板
 
-// 注意：user-config.json 首次启动复制由 Python 侧（niu_api.config._get_config_path）负责。
-// Python API 启动比 Electron 早，Electron 启动时 user-config.json 已存在。
-// 如果 Electron 启动时仍未存在（极端时序），get-config handler 返回默认 {llm:{}, storage:{}, firstRun:true}，
-// 用户通过设置窗口保存时 save-config 会创建文件，不会冲突。
+// 注意：user-config.json 无模板文件设计——文件由设置窗口 save-config 创建。
+// 文件不存在时（首次启动），get-config 返回代码内联标准缺省（与 config-manager
+// load_user_config 兜底、settings testAndSave 缺省常量三处一致）——
+// 保证表单初始值和 probe 探测都拿到完整基础配置（thinking/reasoning_effort 等），
+// 而不是空骨架 {llm:{}}（2026-07-27 首次启动 probe 失败根因）。
 
 ipcMain.handle('get-presets', () => {
   try {
@@ -1155,7 +1156,26 @@ ipcMain.handle('get-config', () => {
   } catch (e) {
     console.error('Failed to read config:', e);
   }
-  return { llm: {}, storage: {}, firstRun: true };
+  // 首次启动兜底：完整标准缺省（三处一致：本处 / testAndSave 常量 / config-manager 兜底）
+  return {
+    llm: {
+      presetId: "", apiKey: "", apiBase: "", model: "", type: "openai",
+      provider: "", reasoning_effort: "",
+      litellm_kwargs: { thinking: { type: "enabled" } }
+    },
+    lightrag_llm: {
+      presetId: "", apiKey: "", apiBase: "", model: "", type: "openai",
+      reasoning_effort: "high", temperature: 0.2,
+      litellm_kwargs: { thinking: { type: "disabled" }, allowed_openai_params: [] }
+    },
+    context: {
+      contextWindowSize: 200000, warningThreshold: 0.8,
+      compressTargetTokens: 60000, sleepTriggerMinutes: 5
+    },
+    storage: {},
+    firstRun: true,
+    logging: { enabled: false, level: "INFO" }
+  };
 });
 
 ipcMain.handle('save-config', (event, config) => {
@@ -1359,7 +1379,7 @@ ipcMain.handle('probe-response-format', async (event, config) => {
     const payload = JSON.stringify(config);
     const options = {
       hostname: '127.0.0.1',
-      port: 9876,
+      port: parseInt(process.env.NIU_API_PORT || '9876', 10),  // 与 test-connection :1180 一致，支持 launcher --port 自定义
       path: '/api/probe-response-format',
       method: 'POST',
       headers: {
