@@ -5,14 +5,14 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const DEFAULT_FONT_FAMILY = "'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif";
+const DEFAULT_FONT_FAMILY = "";
 
 /**
  * 读取 ~/.niu/preferences.json 的 font 段，校验字体文件存在性，
  * 返回 { fontFaceCss, fontFamily }。
  *
- * 无配置 / 配置不完整 / 字体文件缺失 / JSON 损坏 → 返回空 fontFaceCss + 仿宋兜底 fontFamily。
- * 配置完整且文件存在 → 返回 @font-face CSS（base64 data URI 内联，绕开 file:// CORS）+ "自定义字体, 仿宋兜底" 的 fontFamily。
+ * 无配置 / 配置不完整 / 字体文件缺失 / JSON 损坏 → 返回空 fontFaceCss + 空 fontFamily（用浏览器系统默认字体）。
+ * 配置完整且文件存在 → 返回 @font-face CSS（base64 data URI 内联，绕开 file:// CORS）+ "自定义字体, serif 终极兜底" 的 fontFamily。
  *
  * 用 base64 内联而非 file:// URL，原因：Electron webSecurity 默认 true，
  * 跨目录 file:// 字体加载可能被 CORS 拦截。base64 完全在渲染进程内，无网络/文件协议问题。
@@ -47,7 +47,7 @@ function loadFontConfig(niuDirOverride) {
       '  font-display: swap;',
       '}'
     ].join('\n');
-    const fontFamily = `'${fontCfg.name}', 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif`;
+    const fontFamily = `'${fontCfg.name}', serif`;
     return { fontFaceCss, fontFamily };
   } catch (e) {
     // JSON 损坏或其他异常 → 兜底
