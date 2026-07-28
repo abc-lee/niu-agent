@@ -516,7 +516,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 
 ### 9.2 损坏检测
 
-启动时 `lightrag_integrity.check_all()` 检测 3 真相源 + 9 派生文件状态：
+启动时 `lightrag_integrity.check_all()` 检测 3 真相源 + vdb 数据一致性：
 
 **3 真相源完好性四态判定**（`_check_truth_sources_intact`）：
 - **absent**：文件不存在或 size=0
@@ -524,17 +524,27 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 - **has_content**：文件存在且有内容（至少 1 个 node / 1 个 entry）
 - **corrupt**：文件存在但 JSON/XML 解析失败
 
-判定规则：
+判定规则（v2 修复 2026-07-28）：
 - 3 文件全部 absent/empty → 全新用户合法（intact=True，还没导入文档）
 - 3 文件全部 has_content 且无 corrupt → 完好（intact=True）
-- 部分文件 has_content 部分 absent/empty → partial 损坏（intact=False）
-- 任一文件 corrupt → 损坏（intact=False）
+- 部分文件 has_content 部分 absent/empty → **合法中间状态**（intact=True）
+  - 脑区/Skills 注入路径只写 GraphML + 3 vdb + 可选 text_chunks，不写 full_docs/cache
+  - GraphML 有内容 + full_docs/cache absent 是正常状态（用户未入库文档）
+- 任一文件 corrupt → 损坏（intact=False，unrecoverable）
 
-**9 派生文件检测**：只检测 missing（文件不存在或 size=0），不检测内容格式。
+**vdb 数据一致性检测**（`_check_vdb_missing`，v2 启用）：
+- GraphML 有 node 但 `vdb_entities` 无对应向量 → major（数据不一致，真损坏）
+- GraphML 有 edge 但 `vdb_relationships` 无对应向量 → major
+- 这是 v2 的核心改进：真损坏判定从"文件存在性"改为"数据一致性"
+
+**派生 kv_store 文件缺失**（`_check_derived_missing`，v2 改为不报错）：
+- `kv_store_doc_status` / `entity_chunks` / `relation_chunks` / `full_entities` / `full_relations` 缺失不是损坏
+- LightRAG `JsonKVStorage.initialize` 把缺失文件当空 dict，运行时按需 upsert
+- 缺失时记 INFO 日志保留知情权，不阻断启动，不主动重建，不写空文件
 
 **检测结果分级**：
-- **critical_errors**：3 真相源损坏（GraphML/full_docs/cache 解析失败或 partial）
-- **major_errors**：9 派生文件缺失
+- **critical_errors**：3 真相源 corrupt（GraphML/full_docs/cache JSON/XML 解析失败）
+- **major_errors**：vdb 与 GraphML 数据不一致（node/edge 缺对应向量）
 - **minor_errors**：其他次要问题
 
 ### 9.3 启动阻断机制
@@ -564,12 +574,16 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
    - 让其他线程的 get_lightrag() 返回 None（兜底防御）
 3. 调 repair_all：
    3.1 检测 3 真相源完好性（_check_truth_sources_intact）
-       - 损坏 → unrecoverable，不删派生（保留现场让用户排查）
+       - v2 修复：partial 状态（GraphML 有 + full_docs/cache 缺）不再判 unrecoverable
+       - 只有 corrupt（JSON/XML 解析失败）才 unrecoverable
+       - corrupt → 不删派生（保留现场让用户排查）
    3.2 删除 9 派生文件
    3.3 按依赖链重建 9 派生（走 LightRAG storage.upsert 接口）：
        text_chunks → doc_status → vdb_chunks → vdb_entities → vdb_relationships
        → entity_chunks → relation_chunks → full_entities → full_relations
        任一 unrecoverable → 立即 break，不继续后续重建
+       注意：脑区/Skills 路径下 full_docs 缺失时，doc_status/full_entities/full_relations
+       走"full_docs 为空 → 不写派生"分支（LightRAG 原生行为，符合"不重建空文件"要求）
 4. reset_init_state + 重跑 check_all 更新检测结果
 5. **不重启 RegionSync**（关键！修复后程序应退出，让用户重启时由正常启动流程触发）
 6. finally 块清 _repairing=False（让下次 get_lightrag 能初始化）
@@ -604,13 +618,16 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 
 | 场景 | 模拟操作 | 预期结果 |
 |------|---------|---------|
-| 1. vdb_entities 缺失 | 删 vdb_entities.json | repair 重建 vdb_entities，3 真相源不变 |
-| 2. 9 派生全缺失 | 删全部 9 派生文件 | repair 重建 9 派生，3 真相源不变 |
+| 1. vdb_entities 缺失 | 删 vdb_entities.json | v2：检测报 major（数据不一致），repair 重建 vdb_entities，3 真相源不变 |
+| 2. 9 派生全缺失 | 删全部 9 派生文件 | v2：派生 kv_store 缺失不报 major（合法状态）；vdb 缺向量报 major 触发 repair；repair 重建 vdb + 必要派生，3 真相源不变 |
 | 3. GraphML 损坏 | 写损坏 GraphML（如 `<invalid xml`） | unrecoverable，9 派生文件未被删（保留现场） |
 | 4. full_docs 损坏 | 写损坏 full_docs JSON | unrecoverable |
 | 5. cache 损坏 | 写损坏 cache JSON | unrecoverable |
 | 6. 已删实体不复活 | GraphML 含已删实体引用 | 重建后派生文件不含已删实体 |
 | 7. weight 衰减值保留 | GraphML 含 weight=0.5 | 重建后 GraphML 的 weight 不变（GraphML 没被修改） |
+
+**v2 新增场景**（脑区/Skills 路径合法状态）：
+- GraphML 有 node + full_docs/cache absent + 5 派生 kv_store 缺失 → 检测 ok=True（合法中间状态，不弹窗不修复）
 
 ### 9.7 修复合格判定
 
@@ -646,6 +663,46 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 
 4. **RegionSync 守护线程状态**：
    修复期间 RegionSync 必须完全停止。如果日志看到"RegionSync 已停止"后又有"Sync complete"，说明守护线程没真正停。
+
+### 9.9 用户简易修复指引（删 vdb 触发修复）
+
+**当用户怀疑知识图谱数据有问题时**（查询结果异常、实体缺失、关系丢失等），最简单的修复方法是**删除 3 个 vdb 文件后重启程序**，系统会自动触发修复流程重建向量索引：
+
+```bash
+# 1. 退出程序（确保没有 niu 进程在运行）
+ps aux | grep -E "niu|python.*niu_api" | grep -v grep
+# 如有残留进程，用 kill -TERM 优雅退出（禁止 pkill -f niu，会损坏 vdb 文件）
+
+# 2. 删除 3 个 vdb 文件（向量索引，可安全删除）
+rm ~/.niu/lightrag_storage/vdb_chunks.json
+rm ~/.niu/lightrag_storage/vdb_entities.json
+rm ~/.niu/lightrag_storage/vdb_relationships.json
+
+# 3. 重新启动程序
+./niu
+```
+
+**原理**：
+- vdb 文件是从 GraphML 派生的向量索引，删除后 `check_all` 会检测到"GraphML 有 node/edge 但 vdb 缺对应向量"（数据不一致，major 损坏）
+- splash 显示损坏提示 + "尝试修复"按钮
+- 用户点"尝试修复"后，`run_repair_on_user_request` 从 GraphML 重新构建 vdb 向量索引
+- **3 真相源（GraphML + full_docs + cache）不会被改写**，只是向量索引重建
+
+**适用场景**：
+- 查询知识图谱报错或结果异常
+- 实体/关系丢失但 GraphML 应该有
+- 切换 embedding 模型后需要重建向量索引
+- vdb 文件损坏（JSON 解析失败）
+
+**不适用场景**（需要从备份恢复真相源）：
+- GraphML 文件损坏（critical，unrecoverable）
+- full_docs / cache 文件损坏（critical，unrecoverable）
+- 这类情况删 vdb 无效，需要从备份恢复真相源
+
+**注意事项**：
+- 删 vdb 后必须重启程序，不能在程序运行时删（会触发文件锁冲突）
+- 修复期间程序会阻断所有依赖 LightRAG 的功能（查询、入库、脑区同步等）
+- 修复完成后程序会自动退出，用户需再次启动程序进入正常使用
 
 ## 十、与旧架构的对照
 

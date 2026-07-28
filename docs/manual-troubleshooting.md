@@ -451,18 +451,39 @@ typeof NiuDomTree !== 'undefined'
 
 #### 1.7.1 知识图谱损坏修复故障排查
 
-启动时检测到 3 真相源损坏或 9 派生文件缺失，splash 会显示损坏提示 + "尝试修复"按钮。用户点修复后触发 `run_repair_on_user_request`。
+启动时检测到知识图谱损坏（v2：仅 3 真相源 corrupt 或 vdb 与 GraphML 数据不一致），splash 会显示损坏提示 + "尝试修复"按钮。用户点修复后触发 `run_repair_on_user_request`。
+
+**v2 检测逻辑变更**（2026-07-28）：
+- 派生 kv_store 文件缺失**不再判为损坏**（脑区/Skills 路径下本来就不写这些文件）
+- partial 真相源状态（GraphML 有 + full_docs/cache 缺）**不再判为 unrecoverable**
+- 真损坏判定改为**数据一致性检查**：GraphML node/edge 在 vdb 缺对应向量 → major
 
 **修复失败的常见症状与排查**：
 
 | 症状 | 可能原因 | 排查方法 |
 |------|---------|---------|
 | 修复后 3 真相源 sha256 变了 | RegionSync 守护线程没真正停 / 其他守护线程写真相源 | 1. 查日志 "RegionSync 已停止" 是否出现；2. 查日志是否还有 "Sync complete"（说明守护线程没停）；3. 检查 `lightrag_manager.py` finally 块是否还在调 `start_background_sync()`（v9 已删除该调用） |
-| 修复报 unrecoverable | 3 真相源之一损坏（GraphML XML 解析失败 / full_docs 或 cache JSON 解析失败 / partial 状态） | 1. 查 repair_result 里 `_unrecoverable_reason` 字段，看哪个真相源损坏；2. 手工验证对应文件是否能解析；3. 如果是 GraphML 损坏，需要从备份恢复真相源（无法自动修复） |
-| 修复后某派生文件仍缺失 | 对应 repair_xxx 函数失败 | 1. 查 repair_result 里对应函数的 status 字段（ok/error）；2. 查 message 字段看失败原因；3. 重新触发修复 |
+| 修复报 unrecoverable | 3 真相源之一 corrupt（GraphML XML 解析失败 / full_docs 或 cache JSON 解析失败） | 1. 查 repair_result 里 `_unrecoverable_reason` 字段，看哪个真相源损坏；2. 手工验证对应文件是否能解析；3. 真相源 corrupt 无法自动修复，需从备份恢复 |
+| 修复后 vdb 仍缺向量 | repair_vdb_entities / repair_vdb_relationships 失败 | 1. 查 repair_result 里对应函数的 status 字段（ok/error）；2. 查 message 字段看失败原因；3. 重新触发修复 |
 | 修复后查询知识图谱报错 | 派生文件格式跟 LightRAG 原生不一致 | 1. 对比重建的派生文件跟 LightRAG 原生格式（字段名/类型）；2. 确认修复走的是 storage.upsert 接口（不是直接写 JSON）；3. 检查 vdb_* 文件的 matrix 是否 L2 归一化 |
 | 修复期间程序卡死 | RegionSync stop_background_sync_blocking join 超时 | 1. 查日志是否有 "RegionSync 守护线程在 60s 后仍在运行"；2. 检查 RegionSync _run_sync_impl 是否有死循环；3. 强制 kill 进程后重启 |
 | 修复后脑区节点消失 | GraphML 被改写（脑区节点被删） | 1. 对比修复前后 GraphML 的 node 数量；2. 查 RegionSync 是否在修复期间跑了 sync；3. 从备份恢复 GraphML |
+| 启动时弹修复窗但用户认为数据正常 | 脑区+Skills 注入后 partial 状态（v2 已修复）| v2 之前 partial 误判为损坏，v2 后合法状态不弹窗。如仍弹窗，检查 vdb 是否真缺向量（`check_all` 输出的 major_errors 应为 0） |
+
+**用户简易修复指引**（推荐主 Agent 告知用户）：
+
+当用户怀疑知识图谱数据有问题时，最简单的修复方法是**删除 3 个 vdb 文件后重启程序**，系统会自动触发修复流程重建向量索引：
+
+```bash
+# 1. 退出程序
+# 2. 删除 3 个 vdb 文件
+rm ~/.niu/lightrag_storage/vdb_chunks.json
+rm ~/.niu/lightrag_storage/vdb_entities.json
+rm ~/.niu/lightrag_storage/vdb_relationships.json
+# 3. 重启程序 ./niu，splash 会显示损坏提示，点"尝试修复"
+```
+
+原理：vdb 是从 GraphML 派生的向量索引，删除后检测到"GraphML 有 node/edge 但 vdb 缺对应向量"（数据不一致，major），触发修复重建。3 真相源不会被改写。详见 [manual-vector-store.md 9.9 节](manual-vector-store.md#99-用户简易修复指引删-vdb-触发修复)。
 
 **真相源保护验证**（修复前后必须执行）：
 ```bash
@@ -476,16 +497,17 @@ shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml \
 
 如果 sha256 不一致，说明真相源被改写，必须从备份恢复。
 
-**3 真相源损坏的恢复路径**（修复程序无法自动恢复）：
+**3 真相源 corrupt 的恢复路径**（修复程序无法自动恢复）：
 1. GraphML 损坏：从最近备份恢复（如果有），否则只能接受数据丢失，重新入库文档重建图谱
 2. full_docs 损坏：从备份恢复，否则文档原文丢失（但 GraphML 还在，实体关系不会丢）
 3. cache 损坏：从备份恢复，否则需要重新跑 LLM 抽取（消耗 token + 时间）
 
 **修复程序不会做的事**（用户需了解）：
 - 不会自动备份 3 真相源（用户应自己定期备份）
-- 不会修复 3 真相源内容（真相源损坏只能从备份恢复）
+- 不会修复 3 真相源内容（真相源 corrupt 只能从备份恢复）
 - 不会重启 RegionSync（修复后必须重启程序让正常启动流程触发）
 - 不会增量修复（v9 只做全量重建，删 9 派生全部重建）
+- 不会重建空派生文件（脑区/Skills 路径下 full_docs 缺失时，doc_status 等派生走"不写空文件"分支，符合 LightRAG 原生行为）
 
 详细机制见 [manual-vector-store.md 第九章](manual-vector-store.md#九知识图谱损坏检测与自愈修复)。
 
