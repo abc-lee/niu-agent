@@ -25,13 +25,13 @@ _TRUTH_SOURCE_FILES = [
     "kv_store_llm_response_cache.json",
 ]
 
-# 9 派生文件（跟 lightrag_repair._DERIVED_FILES 一致）
-_DERIVED_FILES = [
+# 6 派生 kv_store 文件（仅用于文档入库 pipeline，脑区/Skills 路径不写）
+# 注意：lightrag_repair._DERIVED_FILES 仍含 9 个文件（含 3 vdb）用于 repair_all 删除派生，
+# 本清单只列 kv_store 派生用于检测（vdb 由 _check_vdb_missing 数据一致性检查负责）。
+# 派生 kv_store 缺失不是损坏——LightRAG JsonKVStorage.initialize 把缺失文件当空 dict。
+_DERIVED_FILES_KVSTORE = [
     "kv_store_text_chunks.json",
     "kv_store_doc_status.json",
-    "vdb_chunks.json",
-    "vdb_entities.json",
-    "vdb_relationships.json",
     "kv_store_entity_chunks.json",
     "kv_store_relation_chunks.json",
     "kv_store_full_entities.json",
@@ -255,7 +255,7 @@ def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:  # pyright: ignore
     return {}
 
 
-def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:  # pyright: ignore[reportUnusedFunction]
+def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
     """检测 vdb_*_missing：GraphML 有 node 但 vdb 没对应向量。
 
     返回 errors 列表（可能为空）。
@@ -325,40 +325,31 @@ def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:  # pyright: i
 
 
 def _check_derived_missing(storage_dir: Path) -> list[dict[str, Any]]:
-    """检测 9 派生文件 missing。
+    """检测派生 kv_store 文件缺失。
 
-    全新用户场景（3 真相源都不存在）时，派生文件 missing 不报错
-    （LightRAG 首次启动会自动初始化所有文件）。
+    v2 修复（2026-07-28）：派生 kv_store 文件缺失不是损坏。
+    LightRAG fork 版的脑区/Skills 注入路径只写 GraphML + 3 vdb + 可选 text_chunks，
+    不写 doc_status / entity_chunks / relation_chunks / full_entities / full_relations。
+    LightRAG `JsonKVStorage.initialize`（json_kv_impl.py:62）`load_json() or {}` 把
+    缺失文件当空 dict，运行时按需 upsert——**本方案不主动调用任何重建，不写空文件**。
+
+    真损坏由 `_check_vdb_missing`（vdb 与 GraphML 数据一致性）和
+    `_check_truth_source`（3 真相源 corrupt）负责。
+
+    派生缺失记录 INFO 日志（不进 errors 列表，不阻断启动）——保留知情权，
+    让用户在日志里能看到"派生文件 X 缺失（正常状态，未入库文档）"。
 
     Returns:
-        errors 列表（可能为空）。每个 error 含 file/severity=major/msg。
+        空列表（保留函数签名兼容 `check_all` 调用方）。
     """
-    errors: list[dict[str, Any]] = []
-
-    # 全新用户判定：3 真相源都不存在 → 派生文件 missing 不报错
-    truth_sources_exist = any(
-        (storage_dir / fname).exists() for fname in _TRUTH_SOURCE_FILES
-    )
-    if not truth_sources_exist:
-        return errors  # 全新用户，不报错
-
-    for fname in _DERIVED_FILES:
+    for fname in _DERIVED_FILES_KVSTORE:
         fpath = storage_dir / fname
         if not fpath.exists():
-            errors.append({
-                "check": "derived_file_missing",
-                "severity": "major",
-                "file": fname,
-                "msg": f"派生文件 {fname} 缺失（需要 repair 重建）",
-            })
-        elif fpath.stat().st_size == 0:
-            errors.append({
-                "check": "derived_file_empty",
-                "severity": "major",
-                "file": fname,
-                "msg": f"派生文件 {fname} 为空（需要 repair 重建）",
-            })
-    return errors
+            logger.info(
+                "派生文件 %s 缺失（正常状态，未入库文档，LightRAG 按需 lazy 加载为空 dict）",
+                fname,
+            )
+    return []
 
 
 def _check_truth_source_graphml(storage_dir: Path) -> dict[str, Any]:
@@ -427,9 +418,14 @@ def check_all() -> dict[str, Any]:
             truth_errors.append(err)
             all_errors.append(err)
 
-    # 2. 检测 9 派生文件 missing
+    # 2. 检测派生 kv_store 文件缺失（v2：不再报 major，派生缺失不是损坏）
     derived_errors = _check_derived_missing(storage_dir)
     all_errors.extend(derived_errors)
+
+    # 3. 检测 vdb 与 GraphML 数据一致性（真损坏：node/edge 缺对应向量）
+    #    v2 启用：原为死代码（标 pyright: ignore），现 check_all 主动调用
+    vdb_errors = _check_vdb_missing(storage_dir)
+    all_errors.extend(vdb_errors)
 
     critical = sum(1 for e in all_errors if e.get("severity") == "critical")
     major = sum(1 for e in all_errors if e.get("severity") == "major")
@@ -444,5 +440,6 @@ def check_all() -> dict[str, Any]:
         "checks": {
             "truth_source": {"name": "truth_source", "errors": truth_errors},
             "derived_missing": {"name": "derived_missing", "errors": derived_errors},
+            "vdb_missing": {"name": "vdb_missing", "errors": vdb_errors},
         },
     }
