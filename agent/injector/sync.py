@@ -379,10 +379,15 @@ class SkillSync:
                 for entity in kg_skills:
                     entity_name = entity.get("entity_name", "")
                     entity_source_id = entity.get("source_id", "")
-                    # 只清理 SkillSync 自己注入的 skill 实体（source_id 以 skill:// 开头）
+                    # 只清理 SkillSync 自己注入的 skill 实体（source_id 含 skill:// 段）
                     # 不碰从其他路径（文档入库/手动创建/MCP 工具）入库的 skill 实体
                     # 否则会误删用户知识图谱中合法记录的技能实体
-                    is_skill_sync_owned = entity_source_id.startswith("skill://")
+                    # 注意：source_id 可能是 "external<SEP>skill://foo" 合并形式（预删失败 + upsert），
+                    # startswith 会误判，必须按 <SEP> 拆分逐段判断
+                    is_skill_sync_owned = any(
+                        seg.strip().startswith("skill://")
+                        for seg in entity_source_id.split("<SEP>")
+                    )
                     if (entity_name
                             and is_skill_sync_owned
                             and entity_name.lower() not in current_hashes_lower
@@ -596,7 +601,7 @@ class SkillSync:
                 source_id=source_id,
             )
             if isinstance(result, dict) and result.get("status") == "ok":
-                logger.info("[SkillSync] Injected skill '%s' into KG via inject_custom_kg", skill_name)
+                logger.info(f"[SkillSync] Injected skill '{skill_name}' into KG via inject_custom_kg")
                 return True
             else:
                 logger.warning(
@@ -606,7 +611,7 @@ class SkillSync:
                 )
                 return False
         except Exception as e:
-            logger.warning("[SkillSync] LightRAG skill inject failed for '%s': %s", skill_name, e)
+            logger.warning(f"[SkillSync] LightRAG skill inject failed for '{skill_name}': {e}")
             return False
 
     def _delete_skill_from_lightrag(self, skill_name: str) -> bool:
@@ -768,9 +773,9 @@ class SkillSync:
                     doc_id = f"note:{note_id}"
                     del_result = adapter.delete_document(doc_id)
                     if isinstance(del_result, dict) and del_result.get("status") != "ok":
-                        logger.warning("[SkillSync] Failed to delete old note doc %s: %s", doc_id, del_result.get("message", ""))
+                        logger.warning(f"[SkillSync] Failed to delete old note doc {doc_id}: {del_result.get('message', '')}")
             except Exception as e:
-                logger.warning("[SkillSync] Failed to delete old note documents: %s", e)
+                logger.warning(f"[SkillSync] Failed to delete old note documents: {e}")
 
         try:
             import json
@@ -794,7 +799,7 @@ class SkillSync:
                 if isinstance(result, dict) and result.get("status") == "ok":
                     logger.debug(f"[SkillSync] Injected note '{note_id}' with doc_id={doc_id}")
                 else:
-                    logger.warning("[SkillSync] lightrag_insert returned non-ok for note '%s': %s", note_id, result)
+                    logger.warning(f"[SkillSync] lightrag_insert returned non-ok for note '{note_id}': {result}")
                     failed_ids.add(note_id)
 
             return failed_ids
