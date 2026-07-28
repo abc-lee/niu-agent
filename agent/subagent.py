@@ -960,7 +960,7 @@ def call_subagent(
 def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     """程序触发子 Agent 专用：自动回复 @niu-agent，遇到 @end 或正常文本才返回。
 
-    与主 Agent 调用 call_subagent 不同：程序触发（auto_tidy / force 压缩 / 手动 tidy API）
+    与主 Agent 调用 call_subagent 不同：程序触发（force 压缩 / 手动 tidy API）
     时没有主 Agent 在工具循环里等子 Agent 回答。子 Agent 输出 [unique_name] question
     格式时，由本 helper 自动回复固定文案，让子 Agent 自行决策继续或 @end 结束。
 
