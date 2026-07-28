@@ -4,18 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>妞妞</title>
-  <!-- 英文手写字体 fallback -->
-  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&display=swap" rel="stylesheet">
   <style>
-    /* 本地中文字体 - 阿朱泡泡体 */
-    @font-face {
-      font-family: 'AZhuPaoPaoTi';
-      src: url('fonts/AZhuPaoPaoTi.ttf') format('truetype');
-      font-weight: normal;
-      font-style: normal;
-      font-display: swap;
-    }
-    
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { 
       background: transparent; 
@@ -106,7 +95,7 @@
       padding: 8px 12px;
       border-radius: 8px;
       font-size: 12px;
-      font-family: 'AZhuPaoPaoTi', cursive;
+      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       display: none;
       pointer-events: none;
       z-index: 100;
@@ -125,7 +114,7 @@
       padding: 8px 16px;
       border-radius: 12px;
       font-size: 12px;
-      font-family: 'AZhuPaoPaoTi', cursive;
+      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       display: none;
       pointer-events: none;
       z-index: 100;
@@ -139,6 +128,21 @@
       to { transform: translateX(-50%) translateY(-5px); }
     }
   </style>
+    <!-- 字体配置动态注入：无配置时不注入（用 CSS 兜底仿宋），有配置时注入 @font-face + 覆盖 font-family -->
+    <script>
+      (function() {
+        if (window.electronAPI && window.electronAPI.FONT_FACE_CSS) {
+          var style = document.createElement('style');
+          style.textContent = window.electronAPI.FONT_FACE_CSS;
+          document.head.appendChild(style);
+        }
+        if (window.electronAPI && window.electronAPI.FONT_FAMILY) {
+          var style2 = document.createElement('style');
+          style2.textContent = 'html, body, * { font-family: ' + window.electronAPI.FONT_FAMILY + ' !important; }';
+          document.head.appendChild(style2);
+        }
+      })();
+    </script>
 </head>
 <body>
   <div id="spirit">
