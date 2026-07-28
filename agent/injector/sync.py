@@ -490,8 +490,7 @@ class SkillSync:
                 adapter = LightRAGAdapter()
                 if adapter.has_entity(skill_name):
                     logger.info(
-                        "[SkillSync] Entity '%s' already exists before injection, deleting first",
-                        skill_name,
+                        f"[SkillSync] Entity '{skill_name}' already exists before injection, deleting first"
                     )
                     try:
                         from agent.tool_registry import get_registry
@@ -501,14 +500,12 @@ class SkillSync:
                             del_result = delete_fn(entity_name=skill_name)
                             if isinstance(del_result, dict) and del_result.get("status") == "ok":
                                 logger.info(
-                                    "[SkillSync] Pre-inject delete succeeded for '%s'",
-                                    skill_name,
+                                    f"[SkillSync] Pre-inject delete succeeded for '{skill_name}'"
                                 )
                             else:
                                 logger.warning(
-                                    "[SkillSync] Pre-inject delete returned non-ok for '%s': %s",
-                                    skill_name,
-                                    del_result.get("message", "") if isinstance(del_result, dict) else del_result,
+                                    f"[SkillSync] Pre-inject delete returned non-ok for '{skill_name}': "
+                                    f"{del_result.get('message', '') if isinstance(del_result, dict) else del_result}"
                                 )
                         else:
                             # ToolRegistry 不可用时降级到 adapter 直接删除
@@ -518,23 +515,18 @@ class SkillSync:
                             del_result = adapter.delete_entity(skill_name)
                             if isinstance(del_result, dict) and del_result.get("status") != "ok":
                                 logger.warning(
-                                    "[SkillSync] Fallback adapter delete returned non-ok for '%s': %s",
-                                    skill_name,
-                                    del_result.get("message", ""),
+                                    f"[SkillSync] Fallback adapter delete returned non-ok for '{skill_name}': "
+                                    f"{del_result.get('message', '')}"
                                 )
                     except Exception as del_err:
                         # 删除失败不阻断注入，inject_custom_kg 本身是 upsert 语义
                         logger.warning(
-                            "[SkillSync] Pre-inject delete failed for '%s' (will try inject anyway): %s",
-                            skill_name,
-                            del_err,
+                            f"[SkillSync] Pre-inject delete failed for '{skill_name}' (will try inject anyway): {del_err}"
                         )
             except Exception as check_err:
                 # has_entity 检查失败不阻断注入，继续走正常注入流程
                 logger.debug(
-                    "[SkillSync] has_entity check failed for '%s' (proceeding with inject): %s",
-                    skill_name,
-                    check_err,
+                    f"[SkillSync] has_entity check failed for '{skill_name}' (proceeding with inject): {check_err}"
                 )
 
             ingester = self._get_ingester()
@@ -548,8 +540,7 @@ class SkillSync:
 
             if not description:
                 logger.warning(
-                    "[SkillSync] Skill '%s' has no description, skipping injection",
-                    skill_name,
+                    f"[SkillSync] Skill '{skill_name}' has no description, skipping injection"
                 )
                 return False
 
@@ -605,9 +596,8 @@ class SkillSync:
                 return True
             else:
                 logger.warning(
-                    "[SkillSync] inject_custom_kg returned non-ok for '%s': %s",
-                    skill_name,
-                    result.get("message", "") if isinstance(result, dict) else result,
+                    f"[SkillSync] inject_custom_kg returned non-ok for '{skill_name}': "
+                    f"{result.get('message', '') if isinstance(result, dict) else result}"
                 )
                 return False
         except Exception as e:
