@@ -1,10 +1,13 @@
-"""LightRAG 数据一致性检查（v4：3 真相源不可动 + 9 派生文件 missing）。
+"""LightRAG 数据一致性检查 v2（3 真相源 corrupt + vdb 数据一致性）。
 
 检查项：
-1. 3 真相源完整可用（GraphML + full_docs + cache）→ critical = unrecoverable
-2. 9 派生文件 missing 检测 → major（需 repair 重建）
+1. 3 真相源 corrupt 检测（GraphML XML 解析失败 / full_docs/cache JSON 解析失败）→ critical
+2. vdb 与 GraphML 数据一致性检测（node/edge 在 vdb 有对应向量）→ major = 真损坏
 
-全新用户合法：3 真相源都不存在时，9 派生文件 missing 也不报错。
+派生 kv_store 文件缺失不是损坏：脑区/Skills 注入路径只写 GraphML + 3 vdb +
+可选 text_chunks，其他派生 kv_store 由 LightRAG 内部 JsonKVStorage.initialize
+按需 lazy 加载为空 dict（load_json() or {}），运行时按需 upsert。
+本方案不主动调用任何重建，不写空文件。
 """
 
 import json
