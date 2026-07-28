@@ -273,3 +273,64 @@ def test_build_user_info_prompt_no_memory_file(tmp_path, monkeypatch):
     from niu_api.internal.brain_region_prompt import build_user_info_prompt
 
     assert build_user_info_prompt() == ""
+
+
+def test_user_info_null_field(tmp_path, monkeypatch):
+    """memory.json 的 user 字段为 null 时返回空串（验证 isinstance(user, dict) 守卫）。"""
+    import json as _json
+
+    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu" / "memory.json").write_text(
+        _json.dumps({"user": None}, ensure_ascii=False), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from niu_api.internal.brain_region_prompt import build_user_info_prompt
+
+    assert build_user_info_prompt() == ""
+
+
+def test_user_info_partial_placeholder(tmp_path, monkeypatch):
+    """name 真实值、其余三字段为占位符 → 只返回含 name 一行的字符串。"""
+    import json as _json
+
+    memory = {
+        "user": {
+            "name": "李磊",
+            "nickname": "请询问称呼",
+            "occupation": "请询问职业",
+            "organization": "请询问工作单位",
+        }
+    }
+    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu" / "memory.json").write_text(
+        _json.dumps(memory, ensure_ascii=False), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from niu_api.internal.brain_region_prompt import build_user_info_prompt
+
+    result = build_user_info_prompt()
+
+    assert "## 知识图谱所属用户" in result
+    assert "真实姓名：李磊" in result
+    # 占位符字段被跳过
+    assert "称呼" not in result
+    assert "职业" not in result
+    assert "工作单位" not in result
+
+
+def test_user_info_corrupted_json(tmp_path, monkeypatch):
+    """memory.json 内容非 JSON 时返回空串（验证 try/except 兜底）。"""
+    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu" / "memory.json").write_text(
+        "这不是合法的 JSON {{{}}}", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from niu_api.internal.brain_region_prompt import build_user_info_prompt
+
+    assert build_user_info_prompt() == ""

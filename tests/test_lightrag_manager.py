@@ -506,8 +506,12 @@ class TestLlmModelFunc:
         system_msg = captured_messages[0]
         # 幂等：用户信息只出现一次
         assert system_msg["content"].count("知识图谱所属用户") == 1
+        # 用户信息幂等短路不影响脑区注入
+        assert "大脑区域架构" in system_msg["content"]
         # 幂等 guard 在检测到已存在时根本不调用 build_user_info_prompt
         mock_user_info.assert_not_called()
+
+    async def test_enable_cot_with_thinking_and_no_content(self, mock_llm_config):
         """When enable_cot=True and thinking exists but content is empty, wrap thinking in tags."""
         from unittest.mock import patch
 
