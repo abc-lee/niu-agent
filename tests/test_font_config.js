@@ -32,7 +32,7 @@ describe('loadFontConfig', () => {
     if (_tmpDir) fs.rmSync(_tmpDir, { recursive: true, force: true });
   });
 
-  test('无 font 配置时返回空 fontFaceCss + 仿宋兜底 fontFamily', () => {
+  test('无 font 配置时返回空 fontFaceCss + 空 fontFamily（系统默认）', () => {
     const niuDir = _tmpDir;
     writePrefs(niuDir, { context: { sleepTriggerMinutes: 5 } });  // 有 preferences 但无 font 段
     const result = loadFontConfig(niuDir);
@@ -40,7 +40,7 @@ describe('loadFontConfig', () => {
     assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 
-  test('preferences.json 不存在时返回空 fontFaceCss + 仿宋兜底', () => {
+  test('preferences.json 不存在时返回空 fontFaceCss + 空 fontFamily（系统默认）', () => {
     const niuDir = _tmpDir;  // 不写 preferences
     const result = loadFontConfig(niuDir);
     assert.equal(result.fontFaceCss, '');
@@ -56,7 +56,7 @@ describe('loadFontConfig', () => {
     assert.ok(result.fontFaceCss.includes("font-family: 'MyHand'"), '应含自定义字体名');
     assert.ok(result.fontFaceCss.includes('data:font/truetype;base64,'), '应用 base64 data URI');
     assert.ok(result.fontFaceCss.includes('font-display: swap'), '应含 font-display: swap');
-    assert.equal(result.fontFamily, "'MyHand', 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif");
+    assert.equal(result.fontFamily, "'MyHand', serif");
   });
 
   test('有 font 配置但字体文件不存在时降级为兜底（不注入 @font-face）', () => {

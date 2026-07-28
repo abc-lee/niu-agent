@@ -12,7 +12,6 @@
       width: 100%;
       height: 100%;
       /* 兜底仿宋（无配置时）；有配置时由动态注入脚本覆盖 */
-      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
     }
     
     /* 小女孩容器 */
@@ -97,7 +96,6 @@
       padding: 8px 12px;
       border-radius: 8px;
       font-size: 12px;
-      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       display: none;
       pointer-events: none;
       z-index: 100;
@@ -116,7 +114,6 @@
       padding: 8px 16px;
       border-radius: 12px;
       font-size: 12px;
-      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       display: none;
       pointer-events: none;
       z-index: 100;
@@ -130,7 +127,7 @@
       to { transform: translateX(-50%) translateY(-5px); }
     }
   </style>
-    <!-- 字体配置动态注入：无配置时不注入（用 CSS 兜底仿宋），有配置时注入 @font-face + 覆盖 font-family -->
+    <!-- 字体配置动态注入：无配置时不注入（用浏览器系统默认字体），有配置时注入 @font-face + 覆盖 font-family -->
     <script>
       (function() {
         if (window.electronAPI && window.electronAPI.FONT_FACE_CSS) {
