@@ -1,5 +1,9 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// 读取字体配置（同步，preload 在页面脚本前执行）
+const { loadFontConfig } = require('./lib/font-config.js');
+const _fontConfig = loadFontConfig();
+
 // 同步读取睡眠触发时间配置（preload 在页面脚本前执行，零时序风险）
 let _idleTimeoutMs = 5 * 60 * 1000;  // 默认 5 分钟
 try {
@@ -18,6 +22,8 @@ try {
 
 contextBridge.exposeInMainWorld('electronAPI', {
   IDLE_TIMEOUT: _idleTimeoutMs,  // 睡眠触发时间（毫秒），从 user-config.json 读取
+  FONT_FACE_CSS: _fontConfig.fontFaceCss,  // @font-face CSS（无配置时为空串）
+  FONT_FAMILY: _fontConfig.fontFamily,     // font-family 值（无配置时为仿宋兜底）
   // 移动小女孩窗口
   setPosition: (x, y) => ipcRenderer.send('set-spirit-position', { x, y }),
   

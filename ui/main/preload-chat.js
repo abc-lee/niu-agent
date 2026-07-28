@@ -1,6 +1,12 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// 读取字体配置（同步，preload 在页面脚本前执行）
+const { loadFontConfig } = require('./lib/font-config.js');
+const _fontConfig = loadFontConfig();
+
 contextBridge.exposeInMainWorld('electronAPI', {
+  FONT_FACE_CSS: _fontConfig.fontFaceCss,  // @font-face CSS（无配置时为空串）
+  FONT_FAMILY: _fontConfig.fontFamily,     // font-family 值（无配置时为仿宋兜底）
   // 移动聊天窗口
   setPosition: (x, y) => ipcRenderer.send('set-chat-position', { x, y }),
   

@@ -185,7 +185,8 @@ function createChatWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload-chat.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false  // 让 preload 能 require 自定义模块（font-config.js），与 spirit 一致
     }
   });
 
@@ -319,7 +320,8 @@ function createStickyWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload-sticky.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: false  // 让 preload 能 require 自定义模块（font-config.js），与 spirit 一致
     }
   });
 

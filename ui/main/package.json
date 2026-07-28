@@ -42,6 +42,7 @@
     "files": [
       "main.js",
       "preload-*.js",
+      "lib/**/*",
       "windows/**/*"
     ]
   }
