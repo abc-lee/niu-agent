@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - **铁律**：主 Agent 是项目经理不改代码，所有改动委托子 Agent；改前 git 备份 + gitnexus 影响分析；git 操作后修文件权限（`find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;`）
-- **不配字体时的兜底**：`font-family: 'STFangsong', 'FangSong', 'SimSun', serif;`（macOS 华文仿宋 → Windows 仿宋 → Windows 宋体 → serif 终极兜底）
+- **不配字体时的兜底**：`font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;`（macOS 华文仿宋 → macOS 宋体 → Windows 仿宋 → Windows 宋体 → serif 终极兜底）
 - **配置驱动**：`~/.niu/preferences.json` 有 `font` 段才注入 `@font-face`，没有就不注入（用兜底）
 - **字体文件目录**：`~/.niu/fonts/`（用户放 ttf 的固定目录，配置只填文件名不填路径）
 - **不改后端**：字体配置由前端 preload 直读文件，不走 niu_api HTTP API（与现有 `sleepTriggerMinutes` 读取模式一致）
@@ -32,13 +32,13 @@
 | `ui/main/preload-assistant.js` | spirit.html 的 preload。调用 `font-config.js`，注入 `FONT_FACE_CSS` + `FONT_FAMILY`。 | Modify |
 | `ui/main/preload-chat.js` | chat.html 的 preload。同上。 | Modify |
 | `ui/main/preload-sticky.js` | sticky.html 的 preload。同上。 | Modify |
-| `ui/main/preload-settings.js` | settings/index.html 的 preload。同上（**scout 盘点补上的第 4 个 preload**）。 | Modify |
+| `ui/main/main.js` | 给 chat/sticky 两个窗口的 webPreferences 加 `sandbox: false`（spirit 已是 false），让 preload 能 `require('./lib/font-config.js')` 自定义模块。 | Modify |
+| `ui/main/package.json` | `build.files` 加 `"lib/**/*"`，打包时包含 font-config.js（scout 审查发现默认不含 lib/）。 | Modify |
 | `ui/main/windows/assistant/chat.html` | 删 `@font-face` + Caveat link + 硬编码 `font-family`；加兜底 `font-family` + 内联 JS 注入配置字体。 | Modify |
 | `ui/main/windows/assistant/spirit.html` | 同 chat.html。 | Modify |
 | `ui/main/windows/assistant/sticky.html` | 同 chat.html。 | Modify |
-| `ui/main/windows/settings/index.html` | 删 Ma Shan Zheng Google Font link + 硬编码 `font-family`（5 处）；加兜底 `font-family` + 内联 JS 注入配置字体。**settings 原来无 @font-face（纯 Google Font），所以只删 link 不删 @font-face。** | Modify |
 | `docs/SYSTEM_MANUAL.md` | 加"字体配置"章节，说明配置位置、格式、字体文件目录。 | Modify |
-| `tests/test_font_config.js` | 新建。单元测试 `font-config.js` 的读取/校验逻辑（用 Node 直接跑，不依赖 Electron）。 | Create |
+| `tests/test_font_config.js` | 新建。单元测试 `font-config.js` 的读取/校验逻辑（用 `node:test` 原生 API，不依赖 jest）。 | Create |
 
 ---
 
@@ -51,7 +51,7 @@
 **Interfaces:**
 - Produces: `loadFontConfig()` → `{ fontFaceCss: string, fontFamily: string }`
   - `fontFaceCss`：完整 `@font-face { ... }` CSS 字符串（无配置时为空串 `""`）
-  - `fontFamily`：CSS `font-family` 值（无配置时为 `"'STFangsong', 'FangSong', 'SimSun', serif"`）
+  - `fontFamily`：CSS `font-family` 值（无配置时为 `"'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif"`）
   - 配置示例（`~/.niu/preferences.json`）：
     ```json
     {
@@ -63,102 +63,108 @@
     ```
   - 有配置时返回：
     - `fontFaceCss`: `@font-face { font-family: 'MyHandwriting'; src: url('file:///Users/xxx/.niu/fonts/my-font.ttf') format('truetype'); font-display: swap; }`
-    - `fontFamily`: `"'MyHandwriting', 'STFangsong', 'FangSong', 'SimSun', serif"`（自定义字体在前，仿宋兜底在后）
+    - `fontFamily`: `"'MyHandwriting', 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif"`（自定义字体在前，仿宋兜底在后）
 
 - [ ] **Step 1: 写失败测试**
 
 创建 `tests/test_font_config.js`：
 
 ```javascript
-// 测试不依赖 Electron，直接 require font-config.js
-// font-config.js 用 require('os').homedir() 和 require('fs')，Node 原生模块
+// 测试用 node:test 原生 API（不依赖 jest），断言用 node:assert/strict
+// 测试用临时目录，不碰真实 ~/.niu/preferences.json
+const { test, describe, beforeEach, after } = require('node:test');
+const assert = require('node:assert/strict');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-// 让 font-config.js 能被 require（它内部用相对路径 require electron 会有问题，所以 font-config.js 不应该 require electron）
-const { loadFontConfig } = require('../ui/main/lib/font-config.js');
+const { loadFontConfig, DEFAULT_FONT_FAMILY } = require('../ui/main/lib/font-config.js');
 
-function writePrefs(prefs) {
-  const prefsPath = path.join(os.homedir(), '.niu', 'preferences.json');
+let _tmpDir;
+function freshTmpNiu() {
+  _tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'niu-font-test-'));
+  return _tmpDir;
+}
+
+function writePrefs(niuDir, prefs) {
+  const prefsPath = path.join(niuDir, 'preferences.json');
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
   fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf-8');
 }
 
-function writeFontFile(filename) {
-  const fontsDir = path.join(os.homedir(), '.niu', 'fonts');
+function writeFontFile(niuDir, filename) {
+  const fontsDir = path.join(niuDir, 'fonts');
   fs.mkdirSync(fontsDir, { recursive: true });
   fs.writeFileSync(path.join(fontsDir, filename), 'fake-ttf-content', 'utf-8');
 }
 
-function cleanup() {
-  const niuDir = path.join(os.homedir(), '.niu');
-  try { fs.unlinkSync(path.join(niuDir, 'preferences.json')); } catch {}
-  try { fs.rmSync(path.join(niuDir, 'fonts'), { recursive: true, force: true }); } catch {}
-}
-
-const DEFAULT_FAMILY = "'STFangsong', 'FangSong', 'SimSun', serif";
-
 describe('loadFontConfig', () => {
-  beforeEach(() => cleanup());
-  afterAll(() => cleanup());
+  beforeEach(() => { _tmpDir = freshTmpNiu(); });
+  after(() => {
+    if (_tmpDir) fs.rmSync(_tmpDir, { recursive: true, force: true });
+  });
 
   test('无 font 配置时返回空 fontFaceCss + 仿宋兜底 fontFamily', () => {
-    writePrefs({ context: { sleepTriggerMinutes: 5 } });  // 有 preferences 但无 font 段
-    const result = loadFontConfig();
-    expect(result.fontFaceCss).toBe('');
-    expect(result.fontFamily).toBe(DEFAULT_FAMILY);
+    const niuDir = _tmpDir;
+    writePrefs(niuDir, { context: { sleepTriggerMinutes: 5 } });  // 有 preferences 但无 font 段
+    const result = loadFontConfig(niuDir);
+    assert.equal(result.fontFaceCss, '');
+    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 
   test('preferences.json 不存在时返回空 fontFaceCss + 仿宋兜底', () => {
-    cleanup();  // 确保文件不存在
-    const result = loadFontConfig();
-    expect(result.fontFaceCss).toBe('');
-    expect(result.fontFamily).toBe(DEFAULT_FAMILY);
+    const niuDir = _tmpDir;  // 不写 preferences
+    const result = loadFontConfig(niuDir);
+    assert.equal(result.fontFaceCss, '');
+    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 
   test('有 font 配置且字体文件存在时返回 @font-face + 自定义 fontFamily', () => {
-    writePrefs({ font: { name: 'MyHand', file: 'my.ttf' } });
-    writeFontFile('my.ttf');
-    const result = loadFontConfig();
-    expect(result.fontFaceCss).toContain("@font-face");
-    expect(result.fontFaceCss).toContain("font-family: 'MyHand'");
-    expect(result.fontFaceCss).toContain("file://");
-    expect(result.fontFaceCss).toContain("my.ttf");
-    expect(result.fontFaceCss).toContain("font-display: swap");
-    expect(result.fontFamily).toBe("'MyHand', 'STFangsong', 'FangSong', 'SimSun', serif");
+    const niuDir = _tmpDir;
+    writePrefs(niuDir, { font: { name: 'MyHand', file: 'my.ttf' } });
+    writeFontFile(niuDir, 'my.ttf');
+    const result = loadFontConfig(niuDir);
+    assert.ok(result.fontFaceCss.includes('@font-face'), '应含 @font-face');
+    assert.ok(result.fontFaceCss.includes("font-family: 'MyHand'"), '应含自定义字体名');
+    assert.ok(result.fontFaceCss.includes('data:font/truetype;base64,'), '应用 base64 data URI');
+    assert.ok(result.fontFaceCss.includes('font-display: swap'), '应含 font-display: swap');
+    assert.equal(result.fontFamily, "'MyHand', 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif");
   });
 
   test('有 font 配置但字体文件不存在时降级为兜底（不注入 @font-face）', () => {
-    writePrefs({ font: { name: 'MyHand', file: 'missing.ttf' } });
+    const niuDir = _tmpDir;
+    writePrefs(niuDir, { font: { name: 'MyHand', file: 'missing.ttf' } });
     // 不写字体文件
-    const result = loadFontConfig();
-    expect(result.fontFaceCss).toBe('');
-    expect(result.fontFamily).toBe(DEFAULT_FAMILY);
+    const result = loadFontConfig(niuDir);
+    assert.equal(result.fontFaceCss, '');
+    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 
   test('font 配置缺 name 字段时降级为兜底', () => {
-    writePrefs({ font: { file: 'my.ttf' } });
-    writeFontFile('my.ttf');
-    const result = loadFontConfig();
-    expect(result.fontFaceCss).toBe('');
-    expect(result.fontFamily).toBe(DEFAULT_FAMILY);
+    const niuDir = _tmpDir;
+    writePrefs(niuDir, { font: { file: 'my.ttf' } });
+    writeFontFile(niuDir, 'my.ttf');
+    const result = loadFontConfig(niuDir);
+    assert.equal(result.fontFaceCss, '');
+    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 
   test('font 配置缺 file 字段时降级为兜底', () => {
-    writePrefs({ font: { name: 'MyHand' } });
-    const result = loadFontConfig();
-    expect(result.fontFaceCss).toBe('');
-    expect(result.fontFamily).toBe(DEFAULT_FAMILY);
+    const niuDir = _tmpDir;
+    writePrefs(niuDir, { font: { name: 'MyHand' } });
+    const result = loadFontConfig(niuDir);
+    assert.equal(result.fontFaceCss, '');
+    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 
   test('preferences.json 是损坏 JSON 时降级为兜底', () => {
-    const prefsPath = path.join(os.homedir(), '.niu', 'preferences.json');
+    const niuDir = _tmpDir;
+    const prefsPath = path.join(niuDir, 'preferences.json');
     fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
     fs.writeFileSync(prefsPath, '{ broken json }}}', 'utf-8');
-    const result = loadFontConfig();
-    expect(result.fontFaceCss).toBe('');
-    expect(result.fontFamily).toBe(DEFAULT_FAMILY);
+    const result = loadFontConfig(niuDir);
+    assert.equal(result.fontFaceCss, '');
+    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 });
 ```
@@ -176,24 +182,29 @@ Expected: FAIL — `Cannot find module '../ui/main/lib/font-config.js'`
 // 字体配置读取模块（不依赖 Electron，纯 Node.js fs/path）
 // 被 preload-assistant.js / preload-chat.js / preload-sticky.js 共享调用
 
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 const os = require('os');
 
-const DEFAULT_FONT_FAMILY = "'STFangsong', 'FangSong', 'SimSun', serif";
+const DEFAULT_FONT_FAMILY = "'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif";
 
 /**
  * 读取 ~/.niu/preferences.json 的 font 段，校验字体文件存在性，
  * 返回 { fontFaceCss, fontFamily }。
  *
  * 无配置 / 配置不完整 / 字体文件缺失 / JSON 损坏 → 返回空 fontFaceCss + 仿宋兜底 fontFamily。
- * 配置完整且文件存在 → 返回 @font-face CSS + "自定义字体, 仿宋兜底" 的 fontFamily。
+ * 配置完整且文件存在 → 返回 @font-face CSS（base64 data URI 内联，绕开 file:// CORS）+ "自定义字体, 仿宋兜底" 的 fontFamily。
  *
+ * 用 base64 内联而非 file:// URL，原因：Electron webSecurity 默认 true，
+ * 跨目录 file:// 字体加载可能被 CORS 拦截。base64 完全在渲染进程内，无网络/文件协议问题。
+ *
+ * @param {string} [niuDirOverride] 可选，测试用：覆盖 ~/.niu 目录路径（默认读 os.homedir()/.niu）
  * @returns {{ fontFaceCss: string, fontFamily: string }}
  */
-function loadFontConfig() {
+function loadFontConfig(niuDirOverride) {
   try {
-    const prefsPath = path.join(os.homedir(), '.niu', 'preferences.json');
+    const niuDir = niuDirOverride || path.join(os.homedir(), '.niu');
+    const prefsPath = path.join(niuDir, 'preferences.json');
     if (!fs.existsSync(prefsPath)) {
       return { fontFaceCss: '', fontFamily: DEFAULT_FONT_FAMILY };
     }
@@ -203,19 +214,21 @@ function loadFontConfig() {
     if (!fontCfg || !fontCfg.name || !fontCfg.file) {
       return { fontFaceCss: '', fontFamily: DEFAULT_FONT_FAMILY };
     }
-    const fontFile = path.join(os.homedir(), '.niu', 'fonts', fontCfg.file);
+    const fontFile = path.join(niuDir, 'fonts', fontCfg.file);
     if (!fs.existsSync(fontFile)) {
       return { fontFaceCss: '', fontFamily: DEFAULT_FONT_FAMILY };
     }
-    // 文件存在，生成 @font-face
+    // 文件存在，读为 base64 生成 @font-face（data URI 内联，绕开 file:// CORS）
+    const fontBytes = fs.readFileSync(fontFile);
+    const base64 = fontBytes.toString('base64');
     const fontFaceCss = [
       '@font-face {',
       `  font-family: '${fontCfg.name}';`,
-      `  src: url('file://${fontFile}') format('truetype');`,
+      `  src: url(data:font/truetype;base64,${base64}) format('truetype');`,
       '  font-display: swap;',
       '}'
     ].join('\n');
-    const fontFamily = `'${fontCfg.name}', 'STFangsong', 'FangSong', 'SimSun', serif`;
+    const fontFamily = `'${fontCfg.name}', 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif`;
     return { fontFaceCss, fontFamily };
   } catch (e) {
     // JSON 损坏或其他异常 → 兜底
@@ -295,11 +308,38 @@ const _fontConfig = loadFontConfig();
 
 同 Step 2（preload-sticky.js 和 preload-chat.js 结构一样，顶部加 require + 内部加两行）。
 
-- [ ] **Step 4: 改 `preload-settings.js`**
+- [ ] **Step 4: 改 `main.js` 三个窗口的 webPreferences 加 `sandbox: false`**
 
-同 Step 2（preload-settings.js 结构相同，顶部加 require + 内部加两行）。
+读 `ui/main/main.js`，找到三个窗口的 `webPreferences` 块（spirit 约 L113-121、chat 约 L185-189、sticky 约 L319-323）。spirit 已是 `sandbox: false`（不用改）。给 chat 和 sticky 的 webPreferences 加 `sandbox: false`：
 
-- [ ] **Step 5: 语法验证**
+```javascript
+// 改前（chat/sticky）
+webPreferences: {
+  preload: path.join(__dirname, 'preload-chat.js'),  // 或 preload-sticky.js
+  contextIsolation: true,
+  nodeIntegration: false
+}
+// 改后
+webPreferences: {
+  preload: path.join(__dirname, 'preload-chat.js'),  // 或 preload-sticky.js
+  contextIsolation: true,
+  nodeIntegration: false,
+  sandbox: false  // 让 preload 能 require 自定义模块（font-config.js），与 spirit 一致
+}
+```
+
+- [ ] **Step 5: 改 `package.json` 的 `build.files` 加 `lib/`**
+
+读 `ui/main/package.json`，找到 `build.files` 数组：
+```json
+"files": ["main.js", "preload-*.js", "windows/**/*"]
+```
+改成（加 `"lib/**/*"`）：
+```json
+"files": ["main.js", "preload-*.js", "lib/**/*", "windows/**/*"]
+```
+
+- [ ] **Step 6: 语法验证**
 
 Run:
 ```bash
@@ -307,15 +347,19 @@ node -e "require('./ui/main/lib/font-config.js'); console.log('font-config OK')"
 node --check ui/main/preload-assistant.js && echo "assistant OK"
 node --check ui/main/preload-chat.js && echo "chat OK"
 node --check ui/main/preload-sticky.js && echo "sticky OK"
-node --check ui/main/preload-settings.js && echo "settings OK"
+node --check ui/main/main.js && echo "main OK"
 ```
 Expected: 5 行 OK
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
-git add ui/main/preload-assistant.js ui/main/preload-chat.js ui/main/preload-sticky.js ui/main/preload-settings.js
-git commit -m "feat(font): 4 个 preload 注入 FONT_FACE_CSS + FONT_FAMILY"
+git add ui/main/preload-assistant.js ui/main/preload-chat.js ui/main/preload-sticky.js ui/main/main.js ui/main/package.json
+git commit -m "feat(font): 3 个 preload 注入字体配置 + sandbox/build.files 配套
+
+- preload-assistant/chat/sticky 顶部 require font-config.js
+- chat/sticky 窗口加 sandbox: false（让 preload 能 require 自定义模块）
+- package.json build.files 加 lib/**/*（打包含 font-config.js）"
 ```
 
 ---
@@ -348,7 +392,7 @@ git commit -m "feat(font): 4 个 preload 注入 FONT_FACE_CSS + FONT_FAMILY"
 /* 改前 */
 font-family: 'AZhuPaoPaoTi', 'Caveat', system-ui, sans-serif;
 /* 改后（兜底，会被动态注入覆盖） */
-font-family: 'STFangsong', 'FangSong', 'SimSun', serif;
+font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
 ```
 
 **1d. 改其他 `'AZhuPaoPaoTi', cursive` 引用**（第 116/290/310/381 行）：
@@ -356,7 +400,7 @@ font-family: 'STFangsong', 'FangSong', 'SimSun', serif;
 /* 改前 */
 font-family: 'AZhuPaoPaoTi', cursive;
 /* 改后 */
-font-family: 'STFangsong', 'FangSong', 'SimSun', serif;
+font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
 ```
 
 **1e. 在 `<head>` 末尾（`</head>` 之前）加动态注入脚本**：
@@ -434,7 +478,7 @@ git commit -m "refactor(font): 3 个窗口删硬编码字体，改用仿宋兜�
 
 - [ ] **Step 1: 找到插入位置**
 
-读 `docs/SYSTEM_MANUAL.md`，找到"## 二、架构设计"或"## 三、用户目录"相关章节。在用户目录 `~/.niu/` 说明附近加"### 字体配置"小节。如果没有合适的章节，加在文档末尾"## 分册索引"之前，作为新的顶级章节"## X. 字体配置"。
+读 `docs/SYSTEM_MANUAL.md`，确认章节结构（实际有：`## 一、系统概述`、`## 二、架构设计`、英文 Skill 模板段、`## 通用子 Agent 体系（阶段三）`、`## 分册索引`）。**没有"用户目录"章节**。直接加在 `## 分册索引` 之前，作为新的顶级章节 `## 字体配置`。
 
 - [ ] **Step 2: 插入字体配置章节**
 
@@ -464,9 +508,9 @@ git commit -m "refactor(font): 3 个窗口删硬编码字体，改用仿宋兜�
 
 不配置 `font` 段时，所有窗口使用跨平台仿宋兜底链：
 ```
-'STFangsong', 'FangSong', 'SimSun', serif
+'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif
 ```
-- macOS：华文仿宋（STFangsong）
+- macOS：华文仿宋（STFangsong）→ 宋体（Songti SC，macOS 自带）兜底
 - Windows：仿宋（FangSong）→ 宋体（SimSun）兜底
 - 其他：serif 终极兜底
 
@@ -488,7 +532,7 @@ git commit -m "refactor(font): 3 个窗口删硬编码字体，改用仿宋兜�
 
 ### 配置生效时机
 
-字体配置在窗口启动时由 preload 脚本读取（同步），修改配置后需重启 Niu 生效。
+字体配置在窗口创建时由 preload 脚本读取（同步），修改配置后**重开对应窗口**即可生效（不必整个应用重启）。例如改了 chat 字体配置，关掉聊天窗口再打开就生效。
 
 ### 容错
 
@@ -522,7 +566,7 @@ git commit -m "docs: 系统手册加字体配置章节（位置/格式/缺省/�
 - ✅ "字体文件放 ~/.niu/fonts/" → Task 1 `loadFontConfig` 从该目录找文件
 - ✅ "preferences.json 配置" → Task 1 读 `font` 段
 - ✅ "系统手册说明配置" → Task 4
-- ✅ "跨平台兼容" → 兜底链 `STFangsong`(macOS) + `FangSong`(Win) + `SimSun`(Win) + `serif`
+- ✅ "跨平台兼容" → 兜底链 `STFangsong`(macOS) + `Songti SC`(macOS 宋体兑底) + `FangSong`(Win) + `SimSun`(Win) + `serif`
 - ✅ "用户提醒的设置页 + 知识图谱页" → scout 盘点 + 用户确认：settings 是一次性首启页不改，graph 纯 system-ui 不改，只改 chat+spirit+sticky 三窗口
 
 **2. Placeholder scan:** 无 TODO/TBD，所有步骤都有完整代码。
@@ -530,7 +574,7 @@ git commit -m "docs: 系统手册加字体配置章节（位置/格式/缺省/�
 **3. Type consistency:**
 - `loadFontConfig()` 返回 `{ fontFaceCss: string, fontFamily: string }` — Task 1 定义，Task 2 使用，一致 ✓
 - `window.electronAPI.FONT_FACE_CSS` + `FONT_FAMILY` — Task 2 注入，Task 3 使用，一致 ✓
-- 兜底值 `"'STFangsong', 'FangSong', 'SimSun', serif"` — Task 1 的 `DEFAULT_FONT_FAMILY` 与 Task 3 的 CSS 兜底字面量一致 ✓
+- 兜底值 `"'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif"` — Task 1 的 `DEFAULT_FONT_FAMILY` 与 Task 3 的 CSS 兜底字面量一致 ✓
 
 **4. 风险点：**
 - **铁律遵守**：本计划所有代码改动由子 Agent 执行（SDD 方式），主 Agent 只 review。改前 git 备份 + gitnexus 影响分析由子 Agent 在各自 Task 内执行。
