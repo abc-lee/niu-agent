@@ -430,19 +430,29 @@ async def test_scenario_2_delete_all_9_derived_repair(tmp_path, monkeypatch):
         graphml_path.exists() and graphml_path.stat().st_size > 200
     )
     if graphml_has_data:
-        # 真实 GraphML 有 node → 核心派生文件应被重建
-        for fname in [
+        # 必重建清单：这些派生文件在 GraphML 有数据时一定被重建
+        # （不依赖 full_docs，从 GraphML 直接派生）
+        must_rebuild = [
             "kv_store_text_chunks.json",
-            "kv_store_doc_status.json",
             "vdb_chunks.json",
             "vdb_entities.json",
             "vdb_relationships.json",
             "kv_store_entity_chunks.json",
             "kv_store_relation_chunks.json",
-        ]:
+        ]
+        for fname in must_rebuild:
             path = tmp_storage / fname
             assert path.exists(), f"{fname} 应被重建（GraphML 有数据）"
             assert path.stat().st_size > 0, f"{fname} 不应为空文件"
+
+        # 条件重建：doc_status 依赖 full_docs
+        # - full_docs 存在（文档入库路径）→ 期望被重建
+        # - full_docs 不存在（脑区/Skills 路径）→ LightRAG 原生行为不写空文件（符合用户"不重建空文件"要求）
+        full_docs_path = tmp_storage / "kv_store_full_docs.json"
+        if full_docs_path.exists() and full_docs_path.stat().st_size > 0:
+            doc_status_path = tmp_storage / "kv_store_doc_status.json"
+            assert doc_status_path.exists(), "doc_status 应被重建（full_docs 有数据）"
+            assert doc_status_path.stat().st_size > 0, "doc_status 不应为空文件"
     # full_entities / full_relations 可能因 GraphML source_id 跟 doc_status chunks_list
     # 不交叉而不写盘（v9 跟 LightRAG 一致），不强断言
 
