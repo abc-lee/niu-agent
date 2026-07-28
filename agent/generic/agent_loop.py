@@ -143,9 +143,11 @@ def _intercept_at_prefix_content(
         return (NO_INTERCEPTION, None)
 
     # 子 Agent 拦截（原逻辑）：@niu-agent / @end / 格式错误
-    if stripped.startswith(_AT_NIU_PREFIX):
-        # 剥除 "@niu-agent" 前缀 + 可选空格
-        question = stripped[len(_AT_NIU_PREFIX):].lstrip()
+    # 识别规则：content 里找未转义的 @niu-agent（前字符是 \\ 不识别，其他位置都识别）
+    at_niu_idx = _find_unescaped_marker(stripped, _AT_NIU_PREFIX)
+    if at_niu_idx >= 0:
+        # 剥除 "@niu-agent" 前缀 + 可选空格（question 是 @niu-agent 之后的内容）
+        question = stripped[at_niu_idx + len(_AT_NIU_PREFIX):].lstrip()
         if not question:
             logger.error(f"[AtPrefix] {_AT_NIU_PREFIX} 后无问题内容")
             messages.append({"role": "assistant", "content": content})
@@ -183,8 +185,8 @@ def _intercept_at_prefix_content(
             messages.append({"role": "user", "content": f"[主 Agent 回答] {answer}"})
             return (INTERCEPTED, None)
 
-    # @end 允许退出（用 startswith("@end") 兼容 @end无空格）
-    if stripped.startswith("@end"):
+    # @end 允许退出（content 里找未转义的 @end，前字符是 \\ 不识别，其他位置都识别）
+    if _find_unescaped_marker(stripped, "@end") >= 0:
         return (EXIT, None)
 
     # 格式错误
@@ -738,8 +740,9 @@ def agent_runner_loop(
                 if interception_status == EXIT:
                     # @end 允许退出，剥除 "@end" 前缀 + 可选空格后推前端
                     stripped_content = content.lstrip()
-                    if stripped_content.startswith("@end"):
-                        exit_content = stripped_content[4:].lstrip()
+                    at_end_idx = _find_unescaped_marker(stripped_content, "@end")
+                    if at_end_idx >= 0:
+                        exit_content = stripped_content[at_end_idx + 4:].lstrip()
                         # 边界：@end 恰好 4 字符时剥前缀后为空，用原始 content 避免前端收到空回复
                         if not exit_content:
                             exit_content = content
