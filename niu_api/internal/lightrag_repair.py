@@ -512,6 +512,10 @@ def _check_truth_sources_intact() -> dict[str, Any]:
     # 是合法中间状态（用户未入库文档），不应阻断修复流程。
     # 真损坏判定已由 _check_truth_source（corrupt）和 _check_vdb_missing（数据不一致）负责。
     # 此分支覆盖所有非 corrupt、非全新用户场景（partial + 全部 has_content），统一返回 intact=True。
+    #
+    # I2 修复：reason 文案用中性表述"absent/empty，LightRAG 按需加载"，
+    # 不假定"脑区/Skills 路径合法"——普通文档实体 + full_docs 被误删也走这个分支，
+    # 但 _check_vdb_missing 会检测出 vdb 与 GraphML 不一致并报 major（真损坏由数据一致性检查兜底）。
     return {
         "intact": True,
         "graphml": {
@@ -520,11 +524,11 @@ def _check_truth_sources_intact() -> dict[str, Any]:
         },
         "full_docs": {
             "intact": True,
-            "reason": "有 entries" if full_docs_state == "has_content" else "full_docs 不存在或为空（脑区/Skills 路径合法）",
+            "reason": "有 entries" if full_docs_state == "has_content" else "absent/empty（LightRAG 按需加载，未入库文档时正常）",
         },
         "cache": {
             "intact": True,
-            "reason": "有 entries" if cache_state == "has_content" else "cache 不存在或为空（脑区/Skills 路径合法）",
+            "reason": "有 entries" if cache_state == "has_content" else "absent/empty（LightRAG 按需加载，未入库文档时正常）",
         },
     }
 
