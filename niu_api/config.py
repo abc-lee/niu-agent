@@ -65,7 +65,11 @@ def _get_config_path() -> str:
 
 
 def _get_mcp_servers_path() -> str:
-    """返回 ~/.niu/config/mcp-servers.yaml。首次启动从 bundle 内复制。"""
+    """返回 ~/.niu/config/mcp-servers.yaml。首次启动从 bundle 内复制。
+
+    主路径：Rust 启动器 init_niu_dir 在拉起 Python 之前已复制（启动即保证）。
+    本函数的惰性复制是兜底：纯 Python 启动场景（不经 launcher）或 launcher 复制失败时生效。
+    """
     home = os.path.expanduser("~")
     niu_config_dir = Path(home) / ".niu" / "config"
     mcp_yaml = niu_config_dir / "mcp-servers.yaml"
