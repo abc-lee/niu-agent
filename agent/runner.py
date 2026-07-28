@@ -212,7 +212,17 @@ def _load_memory_for_prompt() -> str:
         return ""
 
     try:
-        memory = json.loads(memory_path.read_text(encoding="utf-8"))
+        # 加锁读，避免与 memory-server 写并发时拿到半写文件
+        # memory-server 可能未加载（如单元测试环境），失败则降级为 nullcontext
+        try:
+            from niu_memory_server import _memory_file_lock
+            lock_ctx = _memory_file_lock
+        except ImportError:
+            import contextlib
+            lock_ctx = contextlib.nullcontext()
+
+        with lock_ctx:
+            memory = json.loads(memory_path.read_text(encoding="utf-8"))
     except Exception:
         return ""
 
