@@ -531,3 +531,172 @@ def test_intercept_main_agent_content_with_chinese_punctuation():
         assert len(messages) == 2
     finally:
         SubagentRegistry.unregister("browser-operator")
+
+
+def test_at_end_with_backtick_wrapper_allows_exit(monkeypatch):
+    """@end 被反引号包装时也允许退出（识别范围放宽）"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="`@end 任务完成`",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    assert result == (agent_loop.EXIT, None)
+    assert len(messages) == 1  # messages 不被追加
+
+
+def test_at_end_with_double_quote_wrapper_allows_exit(monkeypatch):
+    """@end 被双引号包装时也允许退出"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content='"@end 任务完成"',
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    assert result == (agent_loop.EXIT, None)
+    assert len(messages) == 1
+
+
+def test_at_end_in_middle_allows_exit(monkeypatch):
+    """@end 在 content 中间位置时也允许退出"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="blah blah @end 任务完成",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    assert result == (agent_loop.EXIT, None)
+    assert len(messages) == 1
+
+
+def test_at_end_with_escape_prefix_not_recognized(monkeypatch):
+    r"""@end 前字符是 \\ 时不识别为指令（转义）"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content=r"\@end 任务完成",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    # 转义后 @end 不被识别为退出指令，落入格式错误分支
+    assert result == (agent_loop.FORMAT_ERROR, None)
+    assert messages[-1]["role"] == "user"
+    assert "对话格式错误" in messages[-1]["content"]
+
+
+def test_at_end_double_backslash_not_recognized(monkeypatch):
+    r"""@end 前两个字符是 \\\\ 时按简单规则仍不识别（紧邻前字符是 \\）"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content=r"\\@end 任务完成",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    # 简单规则：紧邻前一个字符是 \\ 就不识别（不判断是否为转义后的 \\）
+    assert result == (agent_loop.FORMAT_ERROR, None)
+    assert messages[-1]["role"] == "user"
+    assert "对话格式错误" in messages[-1]["content"]
+
+
+def test_at_niu_with_backtick_wrapper_triggers_intercept(monkeypatch):
+    """@niu-agent 被反引号包装时也触发询问"""
+    from agent.generic import agent_loop
+    from agent import subagent
+
+    # mock _ask_main_agent_impl 返回固定回答
+    monkeypatch.setattr(
+        subagent, "_ask_main_agent_impl",
+        mock.Mock(return_value="主 Agent 的回答")
+    )
+
+    messages = [
+        {"role": "system", "content": "你是子 Agent"},
+        {"role": "user", "content": "开始测试"},
+    ]
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "test-agent-abc1"
+    fake_handler._is_sync_subagent = False  # 显式设为 False，走异步路径
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="`@niu-agent 我该选哪个？`",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),  # 非 None（异步子 Agent）
+    )
+
+    # 断言：_ask_main_agent_impl 被调用
+    subagent._ask_main_agent_impl.assert_called_once()
+    call_kwargs = subagent._ask_main_agent_impl.call_args
+    assert call_kwargs.kwargs["unique_name"] == "test-agent-abc1"
+
+    # 断言：返回 (INTERCEPTED, None)
+    assert result == (agent_loop.INTERCEPTED, None)
+
+
+def test_at_niu_priority_over_at_end(monkeypatch):
+    """@niu-agent 和 @end 同时出现时，@niu-agent 优先（代码顺序保证）"""
+    from agent.generic import agent_loop
+    from agent import subagent
+
+    # mock _ask_main_agent_impl 返回固定回答
+    monkeypatch.setattr(
+        subagent, "_ask_main_agent_impl",
+        mock.Mock(return_value="主 Agent 的回答")
+    )
+
+    messages = [
+        {"role": "system", "content": "你是子 Agent"},
+        {"role": "user", "content": "开始测试"},
+    ]
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "test-agent-abc1"
+    fake_handler._is_sync_subagent = False  # 显式设为 False，走异步路径
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="@niu-agent 问个问题 @end 顺便退出",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    # 断言：走 @niu-agent 分支（不是 @end EXIT）
+    assert result == (agent_loop.INTERCEPTED, None)
+    subagent._ask_main_agent_impl.assert_called_once()
