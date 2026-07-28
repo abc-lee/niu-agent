@@ -1079,64 +1079,7 @@ def _estimate_total_tokens(messages) -> int:
         return count_tokens_for_text(total_content)
 
 
-def _should_auto_tidy(current_tokens: int, context_window_tokens: int = 0) -> bool:
-    """已禁用：压缩只在 agent_loop 工具循环中同步触发，不在对话后异步触发。"""
-    return False
-
-
-async def _check_and_trigger_auto_tidy(store):
-    # DEPRECATED: no callers — compress only triggers in agent_loop tool loop
-    """
-    检查是否需要自动增量整理，如需要则异步触发。
-
-    在每次 assistant 消息写入后调用。
-    整理以 sleep 模式异步执行，不阻塞 chat 响应。
-    不做 locked() 前置检查 — _run_auto_tidy 内部的锁机制处理重入保护。
-    """
-    try:
-        messages = await store.get_messages()
-        if not messages:
-            return
-
-        current_tokens = _estimate_total_tokens(messages)
-        context_window_tokens = _read_context_window_tokens()
-
-        if not _should_auto_tidy(current_tokens, context_window_tokens=context_window_tokens):
-            return
-
-        usage_pct = f"{current_tokens/context_window_tokens:.1%}" if context_window_tokens > 0 else "N/A"
-        logger.info(f"[AutoTidy] Triggering sleep tidy: tokens={current_tokens}, usage={usage_pct}")
-
-        # 异步触发 sleep 模式整理（_run_auto_tidy 内部有 _tidy_lock 防重入）
-        asyncio.create_task(_run_auto_tidy())
-    except Exception as e:
-        logger.warning(f"[AutoTidy] Check failed: {e}")
-
-
 _tidy_lock = asyncio.Lock()
-
-
-async def _run_auto_tidy():
-    # DEPRECATED: no callers — compress only triggers in agent_loop tool loop
-    """自动整理：非阻塞获取锁，避免与手动触发竞争或无限阻塞。"""
-    try:
-        # 非阻塞获取锁：如果锁已被占用（force tidy 或手动触发），直接跳过
-        try:
-            await asyncio.wait_for(_tidy_lock.acquire(), timeout=0.01)
-        except TimeoutError:
-            logger.info("[AutoTidy] Tidy already running, skipping")
-            return
-
-        try:
-            result = await _tidy_context_impl(request={"session_id": "default", "mode": "sleep"})
-            if result.get("status") == "error":
-                logger.warning(f"[AutoTidy] tidy_context returned error: {result}")
-            else:
-                logger.info(f"[AutoTidy] Completed successfully")
-        finally:
-            _tidy_lock.release()
-    except Exception as e:
-        logger.warning(f"[AutoTidy] Failed: {e}")
 
 
 router = APIRouter(tags=["compat"])

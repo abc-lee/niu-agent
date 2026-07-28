@@ -599,14 +599,3 @@ class TestBuildTruncatedMsgListText:
         result = build_truncated_msg_list_text([msg], truncate=False)
         assert "完整内容" in result
 
-
-class TestAutoTidyTrigger:
-    """Test _should_auto_tidy usage-ratio-only trigger mechanism."""
-
-    def test_should_auto_tidy_always_returns_false(self):
-        from niu_api.compat import _should_auto_tidy
-        # _should_auto_tidy 已禁用：压缩只在 agent_loop 工具循环中同步触发
-        assert _should_auto_tidy(current_tokens=170000, context_window_tokens=200000) is False
-        assert _should_auto_tidy(current_tokens=150000, context_window_tokens=200000) is False
-        assert _should_auto_tidy(current_tokens=100000, context_window_tokens=0) is False
-        assert _should_auto_tidy(current_tokens=0, context_window_tokens=200000) is False
