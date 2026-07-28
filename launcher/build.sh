@@ -54,7 +54,7 @@ if [ "$(uname)" = "Darwin" ]; then
     # models/
     echo "[build.sh] copying models/..."
     # 排除 buffalo_l/*.onnx（InsightFace 非商业许可，用户首次用人脸识别时自动下载到 ~/.insightface/）
-    rsync -a --delete --exclude='models/buffalo_l/*.onnx' \
+    rsync -a --delete --exclude='buffalo_l/*.onnx' \
         "$PROJECT_ROOT/models/" "$RESOURCES_DIR/models/"
 
     # memory/ (agent templates)
