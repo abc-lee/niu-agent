@@ -772,6 +772,7 @@ class NiuRunner:
     def _assemble_system_message(
         self,
         messages: list,
+        memory_section: str,
         injection: str,
         model: str,
     ) -> None:
@@ -780,21 +781,25 @@ class NiuRunner:
         原地修改 messages[0]["content"]。
 
         - Claude 模型：content 改为 list 格式，静态段末尾打 cache_control breakpoint。
-          静态段（niu.md + memory）被 cache，命中后 input token 计费降至 10%。
-          动态段（Current Time + disk_desc + injection）每轮重新发送。
+          静态段（仅 niu.md）被 cache，命中后 input token 计费降至 10%。
+          动态段（memory + Current Time + disk_desc + injection）每轮重新发送。
         - 其他模型（火山方舟/DeepSeek/Qwen 等）：content 保持字符串格式。
           静态段在开头且字节稳定，靠服务端自动 prefix cache 命中。
 
         Args:
             messages: 消息列表，messages[0] 必须是 role=system
+            memory_section: 本轮从 memory.json 重读的 memory 段（identity/workspace/user/permanent/firstRun）
             injection: 动态注入内容（skills/knowledge/brain region）
             model: 当前模型名，用于判断是否 Claude
         """
         if not messages or messages[0].get("role") != "system":
             return
 
-        # 动态段 = Current Time + disk_desc + injection
-        dynamic_text = self.dynamic_system_prefix
+        # 动态段 = memory_section + Current Time + disk_desc + injection
+        dynamic_text = ""
+        if memory_section:
+            dynamic_text += "\n\n" + memory_section
+        dynamic_text += self.dynamic_system_prefix
         if injection:
             dynamic_text += injection
 
@@ -817,8 +822,10 @@ class NiuRunner:
             messages[0]["content"] = self.static_system_prompt + dynamic_text
 
     def _on_before_llm(self, messages: list, turn: int) -> None:
-        """每轮 LLM 调用前刷新动态注入（skill/knowledge/脑区/habits）。
+        """每轮 LLM 调用前重读 memory.json + 刷新动态注入。
 
+        每轮从 memory.json 重新构建 memory_section（identity/workspace/user/permanent/firstRun），
+        保证 Agent 写入 memory.json 后下一轮 system prompt 立即感知。
         关键：在 client.chat 之前调，让本轮 LLM 立即读到新 system message。
         原地修改 messages[0]，无返回值。
 
@@ -826,7 +833,10 @@ class NiuRunner:
             messages: agent_runner_loop 的消息列表引用
             turn: 当前轮次（从 1 开始）
         """
-        # 提取最近 3 条消息作为 context（保持原样，按用户原始设计）
+        # 1. 每轮重读 memory.json（关键：解决 Agent 写入后下轮 system prompt 不更新的 bug）
+        memory_section = _load_memory_for_prompt()
+
+        # 2. 提取最近 3 条消息作为 context（保持原样，按用户原始设计）
         context = self._extract_context_from_messages(messages)
         injection, _ = self._inject_dynamic_resources(context)
 
@@ -837,8 +847,8 @@ class NiuRunner:
             injection += self._first_turn_extra_injection
             self._first_turn_extra_injection = ""  # 清空，防跨对话泄漏
 
-        # 原地修改 messages[0]，本轮 LLM 立即读到
-        self._assemble_system_message(messages, injection, self.default_model)
+        # 3. 原地修改 messages[0]，本轮 LLM 立即读到
+        self._assemble_system_message(messages, memory_section, injection, self.default_model)
 
     def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
         """每轮循环结束后的清理工作（动态注入已移到 _on_before_llm）。
@@ -1687,8 +1697,9 @@ class NiuRunner:
                 system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
                 if system_msg:
                     # 压缩后重建 system message（确保 Claude cache_control 不丢失）
-                    # injection 为空，本轮 _on_before_llm 会重新注入（动态注入已从 _on_turn_end 移到 LLM 调用前）
-                    self._assemble_system_message([system_msg], "", self.default_model)
+                    # injection="" 和 memory_section=""：本轮 _on_before_llm 会重新读 memory + 重新注入
+                    # （动态注入已从 _on_turn_end 移到 LLM 调用前，memory 也已每轮重读）
+                    self._assemble_system_message([system_msg], "", "", self.default_model)
                     messages[:] = [system_msg] + fresh_msgs
                 else:
                     messages[:] = fresh_msgs
@@ -2349,9 +2360,10 @@ class NiuRunner:
 
         # 组装 system message（首轮就按 model 决定格式，Claude 走 cache_control）
         # injection="" 因为动态注入移到 _on_before_llm 首轮
+        # memory_section="" 因为 _on_before_llm 首轮会重读 memory.json 覆盖（入口先放空骨架）
         # resources 文本在实例属性里，_on_before_llm 首轮会合并进 injection
         system_message = {"role": "system", "content": ""}
-        self._assemble_system_message([system_message], "", self.default_model)
+        self._assemble_system_message([system_message], "", "", self.default_model)
 
         # 阶段三：每次对话开始时检查 ~/.niu/agents/ 是否有新 MD
         self._refresh_base_tools_schema_if_dirty()
