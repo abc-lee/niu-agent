@@ -396,50 +396,29 @@ font-family: 'STFangsong', 'FangSong', 'SimSun', serif;
 - 3d. 改第 75 行 `'AZhuPaoPaoTi', cursive` 为兜底
 - 3e. 在 `</head>` 前加同样的动态注入脚本
 
-- [ ] **Step 4: 改 `settings/index.html`**
-
-**注意：settings 原来用的是 Google Font `Ma Shan Zheng`（马善政体），不是阿朱泡泡体，也没有本地 `@font-face`（纯 Google Font link）。**
-
-- 4a. 删 Google Font link（第 6 行）：
-```html
-<!-- 删掉这行（含 Ma Shan Zheng + Caveat） -->
-<link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Caveat:wght@400;600&display=swap" rel="stylesheet">
-```
-- 4b. **settings 无 @font-face，跳过这步**
-- 4c. 改所有 `'Ma Shan Zheng', 'Caveat', cursive` 引用（第 10/110 行）为兜底：
-```css
-/* 改前 */
-font-family: 'Ma Shan Zheng', 'Caveat', cursive;
-/* 改后 */
-font-family: 'STFangsong', 'FangSong', 'SimSun', serif;
-```
-- 4d. 改所有 `'Ma Shan Zheng', cursive` 引用（第 46/128/155 行）为兜底
-- 4e. 在 `</head>` 前加同样的动态注入脚本（与 chat.html Step 1e 相同）
-
-- [ ] **Step 5: 验证无残留字体引用**
+- [ ] **Step 4: 验证无残留字体引用**
 
 Run:
 ```bash
-grep -rn "AZhuPaoPaoTi\|Caveat\|Ma Shan Zheng\|googleapis.*font\|googleapis.*Caveat" ui/main/windows/assistant/*.html ui/main/windows/settings/*.html
+grep -rn "AZhuPaoPaoTi\|Caveat\|googleapis.*font\|googleapis.*Caveat" ui/main/windows/assistant/*.html
 ```
 Expected: 无输出（全部清理干净）
 
-- [ ] **Step 6: 验证兜底 font-family 都在**
+- [ ] **Step 5: 验证兜底 font-family 都在**
 
 Run:
 ```bash
-grep -n "STFangsong\|FangSong\|SimSun" ui/main/windows/assistant/*.html ui/main/windows/settings/*.html | wc -l
+grep -n "STFangsong\|FangSong\|SimSun" ui/main/windows/assistant/*.html | wc -l
 ```
-Expected: ≥ 8（4 个文件 × 至少 2 处：CSS 兜底 html,body + 其他 cursive 改的）
+Expected: ≥ 6（3 个文件 × 至少 2 处：CSS 兜底 html,body + 其他 cursive 改的）
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-git add ui/main/windows/assistant/chat.html ui/main/windows/assistant/spirit.html ui/main/windows/assistant/sticky.html ui/main/windows/settings/index.html
-git commit -m "refactor(font): 4 个窗口删硬编码字体，改用仿宋兜底 + 配置动态注入
+git add ui/main/windows/assistant/chat.html ui/main/windows/assistant/spirit.html ui/main/windows/assistant/sticky.html
+git commit -m "refactor(font): 3 个窗口删硬编码字体，改用仿宋兜底 + 配置动态注入
 
-- assistant 三窗口：删 @font-face 阿朱泡泡体 + Caveat Google Font link
-- settings 窗口：删 Ma Shan Zheng + Caveat Google Font link（无 @font-face）
+- 删 @font-face 阿朱泡泡体 + Caveat Google Font link
 - CSS font-family 兜底改仿宋（STFangsong/FangSong/SimSun/serif）
 - <head> 加内联 JS：有 FONT_FACE_CSS 时注入 @font-face，有 FONT_FAMILY 时覆盖 font-family"
 ```
@@ -544,7 +523,7 @@ git commit -m "docs: 系统手册加字体配置章节（位置/格式/缺省/�
 - ✅ "preferences.json 配置" → Task 1 读 `font` 段
 - ✅ "系统手册说明配置" → Task 4
 - ✅ "跨平台兼容" → 兜底链 `STFangsong`(macOS) + `FangSong`(Win) + `SimSun`(Win) + `serif`
-- ✅ "用户提醒的设置页 + 知识图谱页" → scout 盘点确认：settings/index.html 需改（Ma Shan Zheng），graph/index.html 纯 system-ui 无需改，已纳入 Task 2/3
+- ✅ "用户提醒的设置页 + 知识图谱页" → scout 盘点 + 用户确认：settings 是一次性首启页不改，graph 纯 system-ui 不改，只改 chat+spirit+sticky 三窗口
 
 **2. Placeholder scan:** 无 TODO/TBD，所有步骤都有完整代码。
 
@@ -555,7 +534,9 @@ git commit -m "docs: 系统手册加字体配置章节（位置/格式/缺省/�
 
 **4. 风险点：**
 - **铁律遵守**：本计划所有代码改动由子 Agent 执行（SDD 方式），主 Agent 只 review。改前 git 备份 + gitnexus 影响分析由子 Agent 在各自 Task 内执行。
-- **settings 页特殊性**：settings 原来用 Google Font `Ma Shan Zheng`（马善政体），不是阿朱泡泡体，也没有本地 @font-face。Task 3 Step 4 单独处理：只删 Google Font link，不删 @font-face（本来就没有）。改完后 settings 在离线环境也能正常显示（之前依赖 Google Font CDN，离线会降级到 cursive，现在用仿宋兜底更好）。
+- **settings 页不动**：settings 是一次性首启页（首次运行或模型故障才弹），用系统缺省字体就行，不纳入字体配置化范围。Task 3 不含 settings 改动。
+- **graph 页不动**：scout 确认 graph/index.html 纯 system-ui，无任何自定义字体引用，不在改造范围。
+- **3 个窗口一致性**：chat + spirit（精灵页/小女孩）+ sticky（便签）是“精灵体系”的三个窗口，三者保持一致字体（都走同一套仿宋兜底 + 配置注入）。
 - **`!important` 覆盖**：Task 3 的动态注入用 `font-family: ... !important` 确保覆盖 CSS 兜底。这是必要的——CSS 兜底写在 `<style>` 里先执行，动态注入后追加的 `<style>` 不带 `!important` 会被源序覆盖。但 `!important` 会让所有元素都用配置字体，包括代码块等——这是预期行为（用户配了字体就是要全用）。
 - **测试环境**：Task 1 的测试用 `node --test`，需要 Node.js 18+（内置 test runner）。项目用 Electron 33，Node 版本足够。测试直接读写 `~/.niu/`，会污染开发者的真实配置——`beforeEach`/`afterAll` 有 cleanup，但若测试中途崩溃可能残留。可接受（开发者环境）。
 - **4 个 preload 重复代码**：4 个 preload 都 require `font-config.js` + 注入两个常量，有重复但可接受（preload 之间无法共享，各自独立注入）。如果未来要加更多共享配置，可抽公共 preload 模块，不在本计划范围。
