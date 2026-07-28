@@ -510,11 +510,15 @@ class TestStaggerWaitBackendIdle:
             scheduler.running = False
         threading.Thread(target=stop_after_delay, daemon=True).start()
 
+        start = time.time()
         with patch.object(scheduler, '_is_backend_busy', return_value=False):
             scheduler.check_and_trigger()
+        elapsed = time.time() - start
 
         # 只执行第一个任务（i=0），第二个在二次确认 sleep 期间被中断
         assert callback.call_count == 1
+        # 中断响应应快（远小于 _double_confirm_delay=3 全程），CI 防抖
+        assert elapsed < 2
 
     def test_fallback_timeout_forces_next(self, mock_scheduler):
         """后端一直忙超过总超时上限，强制执行下一条"""
