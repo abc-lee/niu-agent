@@ -408,7 +408,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 }
 ```
 
-3. 重启 Niu，所有窗口字体生效
+3. 重开对应窗口（或重启 Niu），字体生效
 
 ### 配置生效时机
 
