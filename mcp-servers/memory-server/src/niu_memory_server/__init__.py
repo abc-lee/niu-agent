@@ -223,6 +223,9 @@ def _write_permanent_only(permanent: list):
     """Read-modify-write: update only the permanent field, preserve all others.
     Thread-safe via module-level lock.
     """
+    import os
+    import tempfile
+
     with _memory_file_lock:
         path = _get_memory_json_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -238,7 +241,22 @@ def _write_permanent_only(permanent: list):
                 existing = {}
 
         existing["permanent"] = permanent
-        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 原子写：先写 tmp，再 replace（保证 reader 永远看到完整文件）
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=path.name + ".",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 def user_memory_remember_handler(content: str, type: str = "memory") -> dict:

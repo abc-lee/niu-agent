@@ -7,6 +7,7 @@ Allows the assistant to read and write user configuration, identity settings, an
 import asyncio
 import json
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -443,9 +444,23 @@ def save_memory(memory: dict[str, Any]) -> None:
     """Save memory to ~/.niu/memory.json."""
     NIU_DIR.mkdir(parents=True, exist_ok=True)
     memory["lastActiveAt"] = datetime.now().isoformat()
-    MEMORY_PATH.write_text(
-        json.dumps(memory, indent=2, ensure_ascii=False), encoding="utf-8"
+    # 原子写：先写 tmp，再 replace（保证 reader 永远看到完整文件）
+    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(MEMORY_PATH.parent),
+        prefix=MEMORY_PATH.name + ".",
+        suffix=".tmp",
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(memory, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, MEMORY_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def load_presets() -> list[dict[str, Any]]:
