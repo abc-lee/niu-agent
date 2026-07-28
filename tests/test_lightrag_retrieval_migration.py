@@ -477,7 +477,9 @@ class TestInjectDynamicResourcesUsesLightRAG:
         runner._memory_dirty = MagicMock()
         runner._memory_dirty.is_set.return_value = False
 
-        with patch.object(runner, "_inject_dynamic_resources", return_value=("injected text", {})) as mock_inject, \
+        # patch _load_memory_for_prompt 返回空，避免读真实 ~/.niu/memory.json
+        with patch("agent.runner._load_memory_for_prompt", return_value=""), \
+             patch.object(runner, "_inject_dynamic_resources", return_value=("injected text", {})) as mock_inject, \
              patch.object(runner, "_extract_context_from_messages", return_value="context"):
             messages = [{"role": "system", "content": "system prompt"}]
             runner._on_before_llm(messages, turn=1)

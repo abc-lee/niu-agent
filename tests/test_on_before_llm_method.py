@@ -13,7 +13,7 @@ from agent.runner import NiuRunner
 
 
 @pytest.fixture
-def runner():
+def runner(monkeypatch):
     """构造一个最小化 NiuRunner 实例（C2 + M1 修复：补齐 _inject_dynamic_resources 访问的所有属性）
 
     故意跳过 __init__，已预填 _inject_dynamic_resources 当前实际访问的所有实例属性；
@@ -30,6 +30,8 @@ def runner():
     # _format_lightrag_entities_for_prompt 访问的两个黑名单（类属性，L1859-1860 定义）
     runner._INJECT_ENTITY_TYPE_BLACKLIST = set()
     runner._INJECT_ENTITY_NAME_BLACKLIST = set()
+    # 每轮重读 memory.json 后，patch 掉避免读真实 ~/.niu/memory.json（hermetic）
+    monkeypatch.setattr("agent.runner._load_memory_for_prompt", lambda: "")
     return runner
 
 
@@ -47,7 +49,7 @@ def test_on_before_llm_calls_inject_and_assemble(runner):
     runner._assemble_system_message.assert_called_once()
     # _assemble_system_message 的第 2 个参数应是 injection 文本
     args = runner._assemble_system_message.call_args
-    assert args[0][1] == "INJECTION TEXT" or args.kwargs.get("injection") == "INJECTION TEXT"
+    assert args[0][2] == "INJECTION TEXT" or args.kwargs.get("injection") == "INJECTION TEXT"
 
 
 def test_on_before_llm_modifies_messages_zero(runner):
@@ -113,7 +115,7 @@ def test_on_before_llm_first_turn_merges_resources(runner):
 
     # _assemble_system_message 收到的 injection 应含 resources 文本
     args = runner._assemble_system_message.call_args
-    injection_arg = args[0][1]
+    injection_arg = args[0][2]
     assert "DYNAMIC_INJECTION" in injection_arg, "应含动态注入文本"
     assert "文件操作模式要求" in injection_arg, "应含 resources 模式要求文本"
     assert "mode=reference" in injection_arg, "应含具体 mode 指令"
@@ -134,5 +136,5 @@ def test_on_before_llm_second_turn_no_resources_merge(runner):
 
     # 第二轮不合并 resources（实例属性已空）
     args = runner._assemble_system_message.call_args
-    injection_arg = args[0][1]
+    injection_arg = args[0][2]
     assert injection_arg == "DYNAMIC_INJECTION", "第二轮应只含动态注入，不含 resources"
