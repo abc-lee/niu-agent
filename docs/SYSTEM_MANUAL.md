@@ -361,6 +361,67 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 详细分册见 [manual-general-subagent.md](manual-general-subagent.md)。
 
+## 字体配置
+
+### 配置位置
+
+字体配置在 `~/.niu/preferences.json` 的 `font` 段：
+
+```json
+{
+  "font": {
+    "name": "字体显示名（CSS font-family 名，自定义）",
+    "file": "字体文件名（放在 ~/.niu/fonts/ 目录下）"
+  }
+}
+```
+
+### 字体文件目录
+
+用户自定义字体文件（.ttf/.otf）放在 `~/.niu/fonts/` 目录下。配置里 `file` 字段只填文件名，不填完整路径。
+
+### 不配置时的缺省字体
+
+不配置 `font` 段时，所有窗口使用跨平台仿宋兜底链：
+
+```
+'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif
+```
+
+- macOS：华文仿宋（STFangsong）→ 宋体（Songti SC，macOS 自带）兜底
+- Windows：仿宋（FangSong）→ 宋体（SimSun）兜底
+- 其他：serif 终极兜底
+
+### 配置示例
+
+假设用户想用“方正楷体”：
+
+1. 把 `FZKai-Z03.ttf` 放到 `~/.niu/fonts/`
+2. 编辑 `~/.niu/preferences.json`：
+
+```json
+{
+  "font": {
+    "name": "FZKaiTi",
+    "file": "FZKai-Z03.ttf"
+  }
+}
+```
+
+3. 重启 Niu，所有窗口字体生效
+
+### 配置生效时机
+
+字体配置在窗口创建时由 preload 脚本读取（同步），修改配置后**重开对应窗口**即可生效（不必整个应用重启）。例如改了 chat 字体配置，关掉聊天窗口再打开就生效。
+
+### 容错
+
+以下情况自动降级为仿宋兜底，不影响使用：
+- `preferences.json` 不存在或无 `font` 段
+- `font` 段缺 `name` 或 `file` 字段
+- 字体文件不存在（`~/.niu/fonts/` 下找不到）
+- `preferences.json` JSON 格式损坏
+
 ## 分册索引
 
 > 主 Agent 遇到具体问题时按此表判断去哪个子文档查。每条说明该文档解决什么问题、包含哪些功能、什么时候应该去看。
