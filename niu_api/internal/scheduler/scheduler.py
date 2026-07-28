@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from niu_api.internal.scheduler.task_store import TaskStore
 
 
-_CALLBACK_TIMEOUT = 120  # 2 minutes
+_CALLBACK_TIMEOUT = 300  # 覆盖 service 最坏 2×120s+10s=250s + 余量；原 120s 小于 service 最坏耗时会导致外层先超时但 _chat_lock 仍被持有
 
 
 class Scheduler:
@@ -36,8 +36,10 @@ class Scheduler:
         self.trigger_callback = trigger_callback
         self.running = False
         self.thread: Optional[threading.Thread] = None
-        # 过期任务顺序执行间隔（秒），防止启动时多个过期任务同时触发
-        self._overdue_stagger_interval = 600  # 10 分钟
+        # 改造：错峰等待改为轮询后端非忙 + 二次确认防抖（持锁）
+        self._busy_poll_interval = 2  # 轮询后端忙碌状态的间隔（秒）
+        self._double_confirm_delay = 3  # 二次确认间隔：查到非忙→等3s→再查，仍非忙才执行
+        self._stagger_max_wait = 600  # 错峰等待总超时上限（秒），防止后端一直忙导致永远等不到
         # 保护 running 标志和任务查询/标记操作
         self._lock = threading.RLock()
         # 防止 check_and_trigger 并发执行
@@ -270,28 +272,58 @@ class Scheduler:
             is_recurring = task["is_recurring"]
 
             # 间隔等待（第一个任务不等待）
-            # 释放 _check_lock 让新任务可以被触发
+            # 持锁（不 release _check_lock）：新逻辑轮询非忙快速推进，
+            # 持锁避免多批次并发轮询破坏串行性（原 release 设计是为让
+            # 准时任务不被固定 600s sleep 阻塞，新逻辑无需此妥协）
             if i > 0:
-                self._check_lock.release()
                 stopped = False
-                try:
-                    logger.info(
-                        f"[SCHEDULER] Waiting {self._overdue_stagger_interval}s "
-                        f"before next due task ({i+1}/{len(due_tasks)})"
-                    )
-                    remaining = self._overdue_stagger_interval
-                    while remaining > 0:
-                        with self._lock:
-                            if not self.running:
-                                logger.info("[SCHEDULER] Stopped during stagger wait")
-                                stopped = True
-                                break
-                        chunk = min(remaining, 10)
-                        time.sleep(chunk)
-                        remaining -= chunk
-                finally:
-                    # 重新获取 _check_lock（阻塞等待，因为可能有其他调用正在执行）
-                    self._check_lock.acquire()
+                logger.info(
+                    f"[SCHEDULER] Waiting for backend idle before next due task "
+                    f"({i+1}/{len(due_tasks)})"
+                )
+                wait_start = time.time()
+                while True:
+                    with self._lock:
+                        if not self.running:
+                            logger.info("[SCHEDULER] Stopped during stagger wait")
+                            stopped = True
+                            break
+
+                    # 总超时兜底：后端一直忙或 loop 异常时，强制执行下一条
+                    if time.time() - wait_start >= self._stagger_max_wait:
+                        logger.warning(
+                            f"[SCHEDULER] Stagger wait exceeded {self._stagger_max_wait}s "
+                            f"timeout, forcing next task"
+                        )
+                        break
+
+                    # 二次确认防抖：查非忙→分块等3s（可中断）→再查，仍非忙才执行
+                    # 原因：异步子 Agent 也会查这个状态抢着执行，
+                    # 二次确认让两者动作错开（谁先拿到非忙谁先动，
+                    # 另一个的二次确认会失败、退回等待）
+                    if not self._is_backend_busy():
+                        # 分块等待二次确认间隔，每秒检查 running
+                        confirm_remaining = self._double_confirm_delay
+                        while confirm_remaining > 0:
+                            with self._lock:
+                                if not self.running:
+                                    logger.info("[SCHEDULER] Stopped during double-confirm")
+                                    stopped = True
+                                    break
+                            chunk = min(confirm_remaining, 1)
+                            time.sleep(chunk)
+                            confirm_remaining -= chunk
+                        if stopped:
+                            break
+                        # 再次查后端状态
+                        if not self._is_backend_busy():
+                            break  # 二次确认成功，执行下一条
+                        logger.debug("[SCHEDULER] Backend became busy during double-confirm, rewaiting")
+                        time.sleep(self._busy_poll_interval)  # rewait 也退避，避免紧循环
+                        continue
+
+                    # 后端忙，轮询等待
+                    time.sleep(self._busy_poll_interval)
                 if stopped:
                     return
 

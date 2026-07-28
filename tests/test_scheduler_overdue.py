@@ -2,7 +2,7 @@
 import asyncio
 import time
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,7 +16,6 @@ def _make_scheduler(db_path, callback, mock_store):
     scheduler.store = mock_store
     scheduler.running = True
     scheduler.thread = None
-    scheduler._overdue_stagger_interval = 2  # 2s for fast tests
     scheduler._lock = __import__("threading").RLock()
     scheduler._check_lock = __import__("threading").Lock()
     scheduler._executor = __import__("concurrent.futures").futures.ThreadPoolExecutor(max_workers=2)
@@ -27,6 +26,10 @@ def _make_scheduler(db_path, callback, mock_store):
     scheduler._ready_event = __import__("threading").Event()
     # _store_factory 是 commit ff04843f 引入的字段，fixture 之前漏了
     scheduler._store_factory = None
+    # Task 2 新增属性：错峰等待轮询非忙 + 二次确认防抖
+    scheduler._busy_poll_interval = 2
+    scheduler._double_confirm_delay = 3
+    scheduler._stagger_max_wait = 600
     return scheduler, _CALLBACK_TIMEOUT
 
 
@@ -373,3 +376,167 @@ class TestIsBackendBusy:
         with patch('niu_api.chat._main_loop', fake_loop), \
              patch('asyncio.run_coroutine_threadsafe', return_value=fake_future):
             assert scheduler._is_backend_busy() is False
+
+
+class TestStaggerWaitBackendIdle:
+    """测试错峰等待改为等后端非忙+二次确认（持锁）"""
+
+    def test_executes_next_after_double_confirm_idle(self, mock_scheduler):
+        """后端空闲→等3s→仍空闲→执行下一条；验证 _is_backend_busy 调用次数"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 1
+        scheduler._busy_poll_interval = 1
+
+        due_tasks = [
+            {"id": "t0", "content": "t0", "is_recurring": True,
+             "cron_expr": "0 3 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat()},
+            {"id": "t1", "content": "t1", "is_recurring": True,
+             "cron_expr": "0 4 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=4)).isoformat()},
+        ]
+        mock_store.get_overdue_tasks.return_value = due_tasks
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "t0", "status": "in_progress",
+            "scheduled_at": due_tasks[0]["scheduled_at"],
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        with patch.object(scheduler, '_is_backend_busy', return_value=False) as mock_busy:
+            scheduler.check_and_trigger()
+
+        # i=1 错峰等待：首次查询(False) + 二次确认查询(False) = 2 次
+        assert callback.call_count == 2
+        assert mock_busy.call_count == 2
+
+    def test_rechecks_when_subagent_takes_lock_during_confirm(self, mock_scheduler):
+        """二次确认时若后端又忙（子Agent抢占）→ 继续等；验证调用序列"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 1
+        scheduler._busy_poll_interval = 1
+
+        due_tasks = [
+            {"id": "t0", "content": "t0", "is_recurring": True,
+             "cron_expr": "0 3 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat()},
+            {"id": "t1", "content": "t1", "is_recurring": True,
+             "cron_expr": "0 4 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=4)).isoformat()},
+        ]
+        mock_store.get_overdue_tasks.return_value = due_tasks
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "t0", "status": "in_progress",
+            "scheduled_at": due_tasks[0]["scheduled_at"],
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        # 首次 False→二次确认 True（被抢占）→轮询 False→二次确认 False
+        busy_sequence = [False, True, False, False]
+        with patch.object(scheduler, '_is_backend_busy', side_effect=busy_sequence) as mock_busy:
+            scheduler.check_and_trigger()
+
+        assert callback.call_count == 2
+        assert mock_busy.call_count == 4  # 首次+确认(失败) + 轮询 + 首次+确认(成功)
+
+    def test_waits_while_backend_busy(self, mock_scheduler):
+        """后端忙碌时轮询等待，变空闲后二次确认执行"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 1
+        scheduler._busy_poll_interval = 1
+
+        due_tasks = [
+            {"id": "t0", "content": "t0", "is_recurring": True,
+             "cron_expr": "0 3 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat()},
+            {"id": "t1", "content": "t1", "is_recurring": True,
+             "cron_expr": "0 4 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=4)).isoformat()},
+        ]
+        mock_store.get_overdue_tasks.return_value = due_tasks
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "t0", "status": "in_progress",
+            "scheduled_at": due_tasks[0]["scheduled_at"],
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        # 2次忙→False→二次确认False
+        busy_sequence = [True, True, False, False]
+        with patch.object(scheduler, '_is_backend_busy', side_effect=busy_sequence) as mock_busy:
+            scheduler.check_and_trigger()
+
+        assert callback.call_count == 2
+        assert mock_busy.call_count == 4
+
+    def test_stagger_wait_interruptible_during_double_confirm(self, mock_scheduler):
+        """二次确认 sleep 期间 stop() 能快速中断（<2s）"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 3  # 生产值，测试中断响应
+        scheduler._busy_poll_interval = 1
+
+        due_tasks = [
+            {"id": "t0", "content": "t0", "is_recurring": True,
+             "cron_expr": "0 3 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat()},
+            {"id": "t1", "content": "t1", "is_recurring": True,
+             "cron_expr": "0 4 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=4)).isoformat()},
+        ]
+        mock_store.get_overdue_tasks.return_value = due_tasks
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "t0", "status": "in_progress",
+            "scheduled_at": due_tasks[0]["scheduled_at"],
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        # 后端空闲（进入二次确认），0.5s 后 stop
+        import threading
+        def stop_after_delay():
+            time.sleep(0.5)
+            scheduler.running = False
+        threading.Thread(target=stop_after_delay, daemon=True).start()
+
+        with patch.object(scheduler, '_is_backend_busy', return_value=False):
+            scheduler.check_and_trigger()
+
+        # 只执行第一个任务（i=0），第二个在二次确认 sleep 期间被中断
+        assert callback.call_count == 1
+
+    def test_fallback_timeout_forces_next(self, mock_scheduler):
+        """后端一直忙超过总超时上限，强制执行下一条"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 1
+        scheduler._busy_poll_interval = 1
+        scheduler._stagger_max_wait = 2
+
+        due_tasks = [
+            {"id": "t0", "content": "t0", "is_recurring": True,
+             "cron_expr": "0 3 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat()},
+            {"id": "t1", "content": "t1", "is_recurring": True,
+             "cron_expr": "0 4 * * *",
+             "scheduled_at": (datetime.now() - timedelta(hours=4)).isoformat()},
+        ]
+        mock_store.get_overdue_tasks.return_value = due_tasks
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "t0", "status": "in_progress",
+            "scheduled_at": due_tasks[0]["scheduled_at"],
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        with patch.object(scheduler, '_is_backend_busy', return_value=True):
+            start = time.time()
+            scheduler.check_and_trigger()
+            elapsed = time.time() - start
+
+        assert callback.call_count == 2
+        assert elapsed >= 2  # 至少等了总超时
