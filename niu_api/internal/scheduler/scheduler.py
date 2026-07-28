@@ -2,8 +2,10 @@
 Task Scheduler - Single-loop architecture
 
 Periodically scans for due tasks and executes them via trigger_callback.
-Overdue tasks are handled by the same loop with stagger intervals to prevent
-simultaneous execution on startup.
+Overdue tasks are handled by the same loop: each waits for the backend idle
+signal (_chat_lock.locked() polled via run_coroutine_threadsafe) with
+double-confirm debounce, bounded by a max-wait timeout to prevent indefinite
+blocking when the backend stays busy.
 """
 
 import asyncio
@@ -202,8 +204,7 @@ class Scheduler:
         simultaneous execution on startup.
 
         Protected by _check_lock to prevent concurrent invocations from _run_loop.
-        The lock is released during stagger waits so new on-time tasks can be
-        triggered without waiting for the entire stagger queue to complete.
+        The lock is held during stagger waits; concurrent invocations are skipped.
         """
         if not self._check_lock.acquire(blocking=False):
             logger.debug("[SCHEDULER] check_and_trigger already running, skipping")
@@ -245,8 +246,8 @@ class Scheduler:
     def _check_and_trigger_impl(self):
         """Implementation of check_and_trigger, called under _check_lock
 
-        Releases _check_lock during stagger waits so new check_and_trigger
-        calls can process newly-arrived on-time tasks.
+        Holds _check_lock during stagger waits; concurrent check_and_trigger
+        calls are skipped via acquire(blocking=False).
         """
         # Reset failed tasks older than 5 minutes to pending for retry
         self.store.retry_failed_tasks(retry_interval_seconds=300)
