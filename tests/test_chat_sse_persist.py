@@ -129,7 +129,6 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
                 "model": "test-model",
             }),
             patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
-            patch("niu_api.compat._check_and_trigger_auto_tidy", new_callable=AsyncMock),
         ):
             client = TestClient(app)
 
