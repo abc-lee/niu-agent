@@ -489,8 +489,6 @@ class NiuHandler(BaseHandler):
                 notify_tool_status_sync(short_name, "end")
             except Exception:
                 pass
-        # Note: memory dirty flag is set in MCP dispatch path (see dispatch() method)
-
         # 跳过同一轮内的多个工具调用（只记录第一个）
         if args.get("_index", 0) > 0:
             return
@@ -1162,7 +1160,7 @@ class NiuHandler(BaseHandler):
             from niu_api.internal.disk_engine import DiskResult
             disk_result = self.disk_engine.execute(command)
             if disk_result.action == "EXECUTE":
-                # 返回原始 MCP 结果，保留 status 检查和 memory dirty flag
+                # 返回原始 MCP 结果，保留 status 检查
                 result = disk_result.raw_result
                 # Map /dir/tool → server-name/tool using DiskConfig
                 real_tool_name = tool_name
@@ -1189,15 +1187,6 @@ class NiuHandler(BaseHandler):
                     isinstance(result, dict) and result.get("status") not in ("error", None)
                 ) or not isinstance(result, dict)
                 if is_success:
-                    # Set memory dirty flag for user memory tools on success
-                    if real_tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
-                        try:
-                            from agent.runner import get_runner
-                            runner = get_runner()
-                            if runner and hasattr(runner, '_memory_dirty'):
-                                runner._memory_dirty.set()
-                        except Exception as e:
-                            logger.debug(f"Memory dirty flag set failed: {e}")
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
                     if isinstance(result, dict) and result.get("status") in ("ok", "success"):
                         return StepOutcome(result, next_prompt="")
@@ -1265,15 +1254,6 @@ class NiuHandler(BaseHandler):
                     isinstance(result, dict) and result.get("status") not in ("error", None)
                 ) or not isinstance(result, dict)
                 if is_success:
-                    # Set memory dirty flag for user memory tools on success
-                    if tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
-                        try:
-                            from agent.runner import get_runner
-                            runner = get_runner()
-                            if runner and hasattr(runner, '_memory_dirty'):
-                                runner._memory_dirty.set()
-                        except Exception as e:
-                            logger.debug(f"Memory dirty flag set failed: {e}")
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
                     if isinstance(result, dict) and result.get("status") in ("ok", "success"):
                         return StepOutcome(result, next_prompt="")

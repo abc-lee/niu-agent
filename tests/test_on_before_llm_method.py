@@ -82,7 +82,6 @@ def test_on_turn_end_no_longer_calls_inject(runner):
     """_on_turn_end 不再调 _inject_dynamic_resources（注入已移到 _on_before_llm）"""
     runner._inject_dynamic_resources = MagicMock(return_value=("INJECTION", {}))
     runner._assemble_system_message = MagicMock()
-    runner._refresh_user_memories = MagicMock()
     runner._extract_context_from_messages = MagicMock(return_value="CONTEXT")
 
     # patch 脑区衰减
@@ -94,8 +93,6 @@ def test_on_turn_end_no_longer_calls_inject(runner):
     runner._inject_dynamic_resources.assert_not_called()
     # _assemble_system_message 也不应被调用
     runner._assemble_system_message.assert_not_called()
-    # 但 _refresh_user_memories 应被调用（保留）
-    runner._refresh_user_memories.assert_called_once()
 
 
 def test_on_before_llm_first_turn_merges_resources(runner):
