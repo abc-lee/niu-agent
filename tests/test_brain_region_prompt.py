@@ -1,4 +1,6 @@
 """Tests for brain region prompt injection into LightRAG LLM requests."""
+from pathlib import Path
+
 import pytest
 from niu_api.internal.brain_region_prompt import is_lightrag_extraction_request
 
@@ -202,3 +204,72 @@ def test_inject_brain_region_context_returns_new_list():
     assert result is not messages
     # Original system message should NOT contain brain region info
     assert "大脑区域架构" not in messages[0]["content"]
+
+
+# ============== build_user_info_prompt Tests ==============
+
+
+def test_build_user_info_prompt_all_fields_present(tmp_path, monkeypatch):
+    """四字段全有真实值时，全部注入。"""
+    import json as _json
+
+    memory = {
+        "user": {
+            "name": "李磊",
+            "nickname": "老板",
+            "occupation": "IT工程师",
+            "organization": "中国农业银行河北省分行科技部",
+            "skills": ["CCIE认证"],  # 不应被注入（只取4字段）
+        }
+    }
+    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu" / "memory.json").write_text(
+        _json.dumps(memory, ensure_ascii=False), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from niu_api.internal.brain_region_prompt import build_user_info_prompt
+
+    result = build_user_info_prompt()
+
+    assert "## 知识图谱所属用户" in result
+    assert "真实姓名：李磊" in result
+    assert "称呼：老板" in result
+    assert "职业：IT工程师" in result
+    assert "工作单位：中国农业银行河北省分行科技部" in result
+    # skills 不在4字段内，不应出现
+    assert "CCIE认证" not in result
+
+
+def test_build_user_info_prompt_all_placeholders(tmp_path, monkeypatch):
+    """四字段全是"请询问"占位符时返回空串。"""
+    import json as _json
+
+    memory = {
+        "user": {
+            "name": "请询问用户姓名",
+            "nickname": "请询问称呼",
+            "occupation": "请询问职业",
+            "organization": "请询问工作单位",
+        }
+    }
+    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu" / "memory.json").write_text(
+        _json.dumps(memory, ensure_ascii=False), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from niu_api.internal.brain_region_prompt import build_user_info_prompt
+
+    assert build_user_info_prompt() == ""
+
+
+def test_build_user_info_prompt_no_memory_file(tmp_path, monkeypatch):
+    """memory.json 不存在时返回空串（不报错）。"""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from niu_api.internal.brain_region_prompt import build_user_info_prompt
+
+    assert build_user_info_prompt() == ""

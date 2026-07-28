@@ -379,7 +379,135 @@ class TestLlmModelFunc:
         system_msg = captured_messages[0]
         assert system_msg["content"].count("大脑区域架构") == 1
 
-    async def test_enable_cot_with_thinking_and_no_content(self, mock_llm_config):
+    async def test_user_info_injected_for_extraction_request(self, mock_llm_config):
+        """提取请求 + 用户信息非空 → system_prompt 同时含用户信息和脑区架构。"""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(
+            thinking=None, content="Entity extraction result",
+            tool_calls=[], raw="Entity extraction result",
+        )
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield mock_response.content
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                with patch(
+                    "niu_api.internal.brain_region_prompt.build_dynamic_brain_region_prompt",
+                    return_value="当前图谱中的脑区：测试脑区、文档库脑区",
+                ):
+                    with patch(
+                        "niu_api.internal.brain_region_prompt.build_user_info_prompt",
+                        return_value="## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：李磊",
+                    ):
+                        from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                        func = _build_llm_model_func()
+                        await func(
+                            "extract entities from this text",
+                            system_prompt="---Role---\nYou are a Knowledge Graph Specialist...",
+                        )
+
+        system_msg = captured_messages[0]
+        assert "知识图谱所属用户" in system_msg["content"]
+        assert "真实姓名：李磊" in system_msg["content"]
+        # 脑区架构与用户信息共存
+        assert "大脑区域架构" in system_msg["content"]
+
+    async def test_user_info_not_injected_when_empty(self, mock_llm_config):
+        """提取请求 + 用户信息为空串 → 不注入用户信息，但脑区架构仍注入。"""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(
+            thinking=None, content="Entity extraction result",
+            tool_calls=[], raw="Entity extraction result",
+        )
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield mock_response.content
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                with patch(
+                    "niu_api.internal.brain_region_prompt.build_dynamic_brain_region_prompt",
+                    return_value="当前图谱中的脑区：测试脑区",
+                ):
+                    with patch(
+                        "niu_api.internal.brain_region_prompt.build_user_info_prompt",
+                        return_value="",
+                    ):
+                        from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                        func = _build_llm_model_func()
+                        await func(
+                            "extract entities",
+                            system_prompt="---Role---\nYou are a Knowledge Graph Specialist...",
+                        )
+
+        system_msg = captured_messages[0]
+        assert "知识图谱所属用户" not in system_msg["content"]
+        assert "大脑区域架构" in system_msg["content"]
+
+    async def test_user_info_injection_idempotent(self, mock_llm_config):
+        """system_prompt 已含用户信息 → 不重复注入用户信息。"""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(
+            thinking=None, content="Result", tool_calls=[], raw="Result",
+        )
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield mock_response.content
+            return mock_response
+
+        # build_user_info_prompt 仍应被调用但返回内容不应被注入（幂等 guard 拦截）
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                with patch(
+                    "niu_api.internal.brain_region_prompt.build_dynamic_brain_region_prompt",
+                    return_value="当前图谱中的脑区：测试脑区",
+                ):
+                    with patch(
+                        "niu_api.internal.brain_region_prompt.build_user_info_prompt",
+                        return_value="## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：李磊",
+                    ) as mock_user_info:
+                        from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                        func = _build_llm_model_func()
+                        await func(
+                            "extract entities",
+                            system_prompt=(
+                                "---Role---\nYou are a Knowledge Graph Specialist...\n\n"
+                                "## 知识图谱所属用户\n\n本知识图谱属于以下用户：\n- 真实姓名：李磊"
+                            ),
+                        )
+
+        system_msg = captured_messages[0]
+        # 幂等：用户信息只出现一次
+        assert system_msg["content"].count("知识图谱所属用户") == 1
+        # 幂等 guard 在检测到已存在时根本不调用 build_user_info_prompt
+        mock_user_info.assert_not_called()
         """When enable_cot=True and thinking exists but content is empty, wrap thinking in tags."""
         from unittest.mock import patch
 
