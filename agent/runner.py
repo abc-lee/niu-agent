@@ -533,10 +533,9 @@ class NiuRunner:
     def _build_static_system_prompt() -> str:
         """构建静态系统提示词段（cache 友好）。
 
-        只包含 niu.md 正文 + memory_section（身份/工作目录/用户长期记忆）。
-        不包含 Current Time、disk_desc、injection——这些是动态段。
-        静态段字节稳定，是 prompt cache 的前缀。
-        memory.json 变化时由 _refresh_user_memories 同步更新。
+        只包含 niu.md 正文，是 prompt cache 的前缀，字节稳定。
+        memory 派生段（identity/workspace/user/permanent/firstRun）由
+        _on_before_llm 每轮从 memory.json 重读生成，作为动态段拼接。
         """
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -562,11 +561,6 @@ class NiuRunner:
 
         if not sys_prompt:
             sys_prompt = "# Role: Niu Agent\nYou are a helpful assistant with file and code access."
-
-        # 2. 注入 memory.json 中的身份设定和用户偏好
-        memory_section = _load_memory_for_prompt()
-        if memory_section:
-            sys_prompt += "\n\n" + memory_section
 
         return sys_prompt
 
