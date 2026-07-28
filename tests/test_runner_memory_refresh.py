@@ -145,3 +145,53 @@ def test_workspace_real_path_shown(memory_file):
     section = _load_memory_for_prompt()
     assert "## 工作目录" in section
     assert "/Users/li/knowledge" in section
+
+
+def test_integration_second_turn_reflects_write(memory_file, monkeypatch):
+    """集成：第1轮写入 memory.json，第2轮 _on_before_llm 生成的 system prompt 已反映"""
+    from agent.runner import NiuRunner
+
+    # 初始：firstRun=true
+    memory_file.write_text(json.dumps({
+        "identity": {"name": "妞妞"},
+        "firstRun": True,
+    }))
+
+    # 用 __new__ 绕过 __init__（避免真实 ~/.niu 副作用 + LightRAG 初始化）
+    runner = NiuRunner.__new__(NiuRunner)
+    runner.default_model = "test-model"
+    runner.static_system_prompt = "# niu.md content"
+    runner.dynamic_system_prefix = ""
+    runner._first_turn_extra_injection = ""
+
+    # Mock 两个方法
+    monkeypatch.setattr(runner, "_inject_dynamic_resources", lambda ctx: ("", []))
+    monkeypatch.setattr(runner, "_extract_context_from_messages", lambda msgs: "")
+
+    # 第 1 轮：firstRun=true，memory_section 应包含"## 首次使用"
+    messages = [{"role": "system", "content": ""}, {"role": "user", "content": "hi"}]
+    runner._on_before_llm(messages, turn=1)
+    system_content_1 = messages[0]["content"]
+    if isinstance(system_content_1, list):
+        text_1 = system_content_1[0]["text"] + system_content_1[1]["text"]
+    else:
+        text_1 = system_content_1
+    assert "## 首次使用" in text_1
+
+    # 模拟 Agent 在第 1 轮写入 memory.json：firstRun=false + workspace
+    memory_file.write_text(json.dumps({
+        "identity": {"name": "妞妞"},
+        "workspace": {"path": "/Users/li/work"},
+        "firstRun": False,
+    }))
+
+    # 第 2 轮：firstRun=false，memory_section 不应包含"## 首次使用"
+    messages2 = [{"role": "system", "content": ""}, {"role": "user", "content": "next"}]
+    runner._on_before_llm(messages2, turn=2)
+    system_content_2 = messages2[0]["content"]
+    if isinstance(system_content_2, list):
+        text_2 = system_content_2[0]["text"] + system_content_2[1]["text"]
+    else:
+        text_2 = system_content_2
+    assert "## 首次使用" not in text_2
+    assert "/Users/li/work" in text_2  # 工作目录段出现
