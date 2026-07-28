@@ -474,8 +474,6 @@ class TestInjectDynamicResourcesUsesLightRAG:
         runner.dynamic_system_prefix = ""
         runner.default_model = "test-model"
         runner._first_turn_extra_injection = ""
-        runner._memory_dirty = MagicMock()
-        runner._memory_dirty.is_set.return_value = False
 
         # patch _load_memory_for_prompt 返回空，避免读真实 ~/.niu/memory.json
         with patch("agent.runner._load_memory_for_prompt", return_value=""), \

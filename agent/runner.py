@@ -154,7 +154,7 @@ def _sanitize_memory_content(content: str) -> str:
 
 def _render_permanent_section(permanent: list) -> str:
     """Render permanent memory items into a system prompt section.
-    Shared by _load_memory_for_prompt and _refresh_user_memories."""
+    Shared by _load_memory_for_prompt."""
     if not permanent:
         return ""
     lines = ["### [用户长期记忆]"]
@@ -579,7 +579,7 @@ class NiuRunner:
         project_root = os.path.dirname(os.path.dirname(__file__))
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client)
         # 静态段：niu.md + memory（cache 友好，字节稳定）
-        # memory 变化时由 _refresh_user_memories 同步更新此属性
+        # memory 段由 _on_before_llm 每轮重读，不在此缓存
         self.static_system_prompt = self._build_static_system_prompt()
         # base_system_prompt 将在 disk_desc 拼接完成后组装（向后兼容）
         # 阶段三：跟踪 ~/.niu/agents/ 已知子 Agent 文件集合
@@ -615,11 +615,9 @@ class NiuRunner:
             dynamic_prefix += disk_desc
         self.dynamic_system_prefix = dynamic_prefix
 
-        # 向后兼容：base_system_prompt = 静态段 + 动态前缀段（不含 injection）
+        # 向后兼容：base_system_prompt = 静态段 + 动态前缀段（不含 injection，不含 memory 段）
         self.base_system_prompt = self.static_system_prompt + self.dynamic_system_prefix
 
-        # 用户记忆脏标记（remember/forget 工具调用后 set）
-        self._memory_dirty = threading.Event()
         self._current_channel_id = ""
         # 首轮 resources 注入（拖入文件模式要求），_on_before_llm turn==1 时合并进 injection 后清空
         self._first_turn_extra_injection: str = ""
@@ -854,16 +852,12 @@ class NiuRunner:
         """每轮循环结束后的清理工作（动态注入已移到 _on_before_llm）。
 
         保留：
-        - _refresh_user_memories：刷新用户长期记忆（dirty 检测）
         - 脑区衰减 decay_all：每轮降低脑区激活级别
 
         已移除（移到 _on_before_llm）：
         - _inject_dynamic_resources + _assemble_system_message
           原因：原在 LLM 调用后注入，注入的 system message 下一轮才被读到，滞后一轮
         """
-        # Refresh user memories if dirty
-        self._refresh_user_memories(messages)
-
         # Decay brain region activation levels
         try:
             from agent.brain_tools import get_activation_mgr
@@ -1822,45 +1816,6 @@ class NiuRunner:
                 region_mgr=self._brain_region_mgr,
             )
         return self._brain_injector
-
-    def _refresh_user_memories(self, messages: list):
-        """Refresh the ### [用户长期记忆] section in system prompt if dirty"""
-        if not self._memory_dirty.is_set():
-            return
-        self._memory_dirty.clear()
-
-        # Read current permanent memories (use lock to avoid reading partial write)
-        memory_path = Path.home() / ".niu" / "memory.json"
-        try:
-            from niu_memory_server import _memory_file_lock
-            with _memory_file_lock:
-                data = json.loads(memory_path.read_text(encoding="utf-8"))
-                permanent = data.get("permanent", [])
-                if not isinstance(permanent, list):
-                    permanent = []
-        except Exception:
-            return
-
-        # Use shared renderer (handles normalization, sanitization, empty task skip)
-        new_section = _render_permanent_section(permanent)
-
-        SECTION_START = "<!--USER_MEMORY_START-->"
-        SECTION_END = "<!--USER_MEMORY_END-->"
-        pattern = re.escape(SECTION_START) + r".*?" + re.escape(SECTION_END)
-
-        # Update static_system_prompt（cache 前缀，必须同步）
-        # 然后重算 base_system_prompt = static + dynamic_system_prefix（保持不变量）
-        base = self.static_system_prompt
-        if re.search(pattern, base, re.DOTALL):
-            if new_section:
-                self.static_system_prompt = re.sub(pattern, new_section, base, flags=re.DOTALL)
-            else:
-                self.static_system_prompt = re.sub(r'\n*' + pattern + r'\n*', '', base, flags=re.DOTALL)
-        elif new_section:
-            self.static_system_prompt = base + "\n\n" + new_section
-
-        # 重算 base_system_prompt（保持 base = static + dynamic 不变量）
-        self.base_system_prompt = self.static_system_prompt + self.dynamic_system_prefix
 
     def _extract_context_from_history(self, history: Optional[list], user_input: str) -> str:
         """
