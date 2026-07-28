@@ -954,6 +954,59 @@ fn init_niu_dir(project_root: &str) {
         info!("Copied template file: {} -> {}", filename, dst_path.display());
     }
 
+    // Copy config/mcp-servers.yaml (file-level, don't overwrite existing)
+    // 与 skills/ 同范式：dst.exists() 跳过，保护用户修改
+    // 源是 project_root/config/mcp-servers.yaml，目标是 ~/.niu/config/mcp-servers.yaml
+    // 必须放在 skills 块之前：skills 块内部有多处提前 return，
+    // 放它之后会被跳过，违背"启动即保证"目标
+    let src_mcp_yaml = PathBuf::from(project_root).join("config").join("mcp-servers.yaml");
+    let dst_config_dir = niu_dir.join("config");
+    let dst_mcp_yaml = dst_config_dir.join("mcp-servers.yaml");
+
+    if dst_mcp_yaml.exists() {
+        info!(
+            "mcp-servers.yaml already exists, skipping: {}",
+            dst_mcp_yaml.display()
+        );
+    } else if !src_mcp_yaml.exists() {
+        warn!(
+            "Template mcp-servers.yaml not found, skipping: {}",
+            src_mcp_yaml.display()
+        );
+    } else if let Err(e) = fs::create_dir_all(&dst_config_dir) {
+        error!(
+            "Failed to create config directory: {}, error={}",
+            dst_config_dir.display(),
+            e
+        );
+    } else {
+        match fs::read(&src_mcp_yaml) {
+            Ok(data) => {
+                if let Err(e) = fs::write(&dst_mcp_yaml, &data) {
+                    error!(
+                        "Failed to copy mcp-servers.yaml: src={}, dst={}, error={}",
+                        src_mcp_yaml.display(),
+                        dst_mcp_yaml.display(),
+                        e
+                    );
+                } else {
+                    info!(
+                        "Copied mcp-servers.yaml: {} -> {}",
+                        src_mcp_yaml.display(),
+                        dst_mcp_yaml.display()
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to read mcp-servers.yaml: {}, error={}",
+                    src_mcp_yaml.display(),
+                    e
+                );
+            }
+        }
+    }
+
     // Copy skills/ directory (individual .md files, don't overwrite existing)
     // Triggered when: dir missing / dir exists but empty / specific .md missing
     // Protects user modifications by skipping existing files
