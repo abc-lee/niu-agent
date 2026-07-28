@@ -48,6 +48,8 @@ class TestCheckAndTriggerSequential:
     def test_multiple_due_tasks_execute_sequentially(self, mock_scheduler):
         """多个到期任务顺序执行，不是同时触发"""
         scheduler, callback, mock_store, _ = mock_scheduler
+        # 走非忙路径立即执行：跳过二次确认等待 + mock 后端空闲
+        scheduler._double_confirm_delay = 0
 
         due_tasks = [
             {
@@ -70,17 +72,17 @@ class TestCheckAndTriggerSequential:
         }
         mock_store.update_last_executed_date.return_value = True
 
-        start_time = time.time()
-        scheduler.check_and_trigger()
-        elapsed = time.time() - start_time
+        with patch.object(scheduler, '_is_backend_busy', return_value=False):
+            scheduler.check_and_trigger()
 
-        # 4 tasks with 2s stagger = ~6s minimum (3 intervals)
-        assert elapsed >= scheduler._overdue_stagger_interval * 3 - 1
+        # 4 个任务顺序执行（不再依赖固定时间断言）
         assert callback.call_count == 4
 
     def test_single_due_task_no_stagger_wait(self, mock_scheduler):
         """单个到期任务不需要间隔等待"""
         scheduler, callback, mock_store, _ = mock_scheduler
+        # 走非忙路径立即执行：跳过二次确认等待 + mock 后端空闲
+        scheduler._double_confirm_delay = 0
 
         mock_store.get_overdue_tasks.return_value = [
             {
@@ -100,11 +102,13 @@ class TestCheckAndTriggerSequential:
         }
         mock_store.update_last_executed_date.return_value = True
 
-        start_time = time.time()
-        scheduler.check_and_trigger()
-        elapsed = time.time() - start_time
+        with patch.object(scheduler, '_is_backend_busy', return_value=False):
+            start_time = time.time()
+            scheduler.check_and_trigger()
+            elapsed = time.time() - start_time
 
-        assert elapsed < scheduler._overdue_stagger_interval
+        # 单个任务无需错峰等待，应几乎立即执行（不再依赖 _overdue_stagger_interval）
+        assert elapsed < 5
         assert callback.call_count == 1
 
     def test_no_due_tasks_returns_immediately(self, mock_scheduler):
@@ -115,8 +119,10 @@ class TestCheckAndTriggerSequential:
         assert callback.call_count == 0
 
     def test_stagger_wait_interruptible_by_stop(self, mock_scheduler):
-        """间隔等待可被 stop() 中断"""
+        """后端持续忙时，错峰等待期间 stop() 能中断，只执行第一个任务"""
         scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 0
+        scheduler._busy_poll_interval = 1
 
         mock_store.get_overdue_tasks.return_value = [
             {
@@ -150,9 +156,11 @@ class TestCheckAndTriggerSequential:
 
         mock_store.update_task.side_effect = stop_after_first
 
-        start_time = time.time()
-        scheduler.check_and_trigger()
-        elapsed = time.time() - start_time
+        # 后端始终忙，i=1 进入轮询等待，被 running=False 中断
+        with patch.object(scheduler, '_is_backend_busy', return_value=True):
+            start_time = time.time()
+            scheduler.check_and_trigger()
+            elapsed = time.time() - start_time
 
         assert elapsed < 15
         assert callback.call_count <= 1
@@ -201,10 +209,10 @@ class TestCheckAndTriggerSequential:
         assert callback.call_count == 0
         mock_store.update_task.assert_called()
 
-    def test_callback_timeout_is_120s(self, mock_scheduler):
-        """回调超时为120秒"""
+    def test_callback_timeout_is_300s(self, mock_scheduler):
+        """回调超时为300秒（覆盖 service 最坏 250s + 余量）"""
         _, _, _, timeout = mock_scheduler
-        assert timeout == 120
+        assert timeout == 300
 
     def test_one_time_task_executed_and_deleted(self, mock_scheduler):
         """一次性任务执行后删除"""
@@ -270,7 +278,6 @@ class TestCheckAndTriggerSequential:
         # Create real DB so _cleanup_old_tasks doesn't crash
         real_store = TaskStore(db_path)
         scheduler = Scheduler(db_path=db_path, trigger_callback=lambda t: "ok", store=real_store)
-        scheduler._overdue_stagger_interval = 600
 
         # start() should set running = True under lock
         scheduler.start()
