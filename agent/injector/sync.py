@@ -378,10 +378,18 @@ class SkillSync:
                 current_hashes_lower = {k.lower() for k in current_hashes}
                 for entity in kg_skills:
                     entity_name = entity.get("entity_name", "")
-                    if entity_name and entity_name.lower() not in current_hashes_lower and entity_name not in step3_deleted:
+                    entity_source_id = entity.get("source_id", "")
+                    # 只清理 SkillSync 自己注入的 skill 实体（source_id 以 skill:// 开头）
+                    # 不碰从其他路径（文档入库/手动创建/MCP 工具）入库的 skill 实体
+                    # 否则会误删用户知识图谱中合法记录的技能实体
+                    is_skill_sync_owned = entity_source_id.startswith("skill://")
+                    if (entity_name
+                            and is_skill_sync_owned
+                            and entity_name.lower() not in current_hashes_lower
+                            and entity_name not in step3_deleted):
                         # 向量库中有但磁盘上不存在 → 幽灵 skill，删除
                         if self._delete_skill_from_lightrag(entity_name):
-                            logger.info(f"[SkillSync] Cleaned ghost skill '{entity_name}' from KG (not on disk)")
+                            logger.info(f"[SkillSync] Cleaned ghost skill '{entity_name}' from KG (not on disk, source_id={entity_source_id})")
                             next_scan.pop(entity_name, None)
                             deleted += 1
                         else:
@@ -618,24 +626,22 @@ class SkillSync:
 
             adapter = LightRAGAdapter()
         except Exception as e:
-            logger.warning("[SkillSync] LightRAG adapter construction failed for '%s': %s", skill_name, e)
+            logger.warning(f"[SkillSync] LightRAG adapter construction failed for '{skill_name}': {e}")
             return False
 
         entity_name = skill_name
         try:
             result = adapter.delete_entity(entity_name)
             if isinstance(result, dict) and result.get("status") == "ok":
-                logger.info("[SkillSync] Deleted skill '%s' from KG (entity: %s)", skill_name, entity_name)
+                logger.info(f"[SkillSync] Deleted skill '{skill_name}' from KG (entity: {entity_name})")
                 return True
             else:
                 logger.warning(
-                    "[SkillSync] delete_entity returned non-ok for '%s': %s",
-                    skill_name,
-                    result.get("message", "") if isinstance(result, dict) else result,
+                    f"[SkillSync] delete_entity returned non-ok for '{skill_name}': {result.get('message', '') if isinstance(result, dict) else result}",
                 )
                 return False
         except Exception as e:
-            logger.warning("[SkillSync] LightRAG skill delete failed for '%s': %s", skill_name, e)
+            logger.warning(f"[SkillSync] LightRAG skill delete failed for '{skill_name}': {e}")
             return False
 
     def _scan_notes(self) -> tuple[int, int]:
