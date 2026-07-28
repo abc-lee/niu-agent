@@ -259,15 +259,19 @@ def _check_graphml_post(storage_dir: Path) -> dict[str, Any]:  # pyright: ignore
 
 
 def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
-    """检测 vdb_*_missing：GraphML 有 node 但 vdb 没对应向量。
+    """检测 vdb_*_missing：GraphML 有 node/edge 但 vdb 没对应向量。
 
+    数据一致性检查（v2 真损坏判定）：GraphML node/edge ⊆ vdb 向量集合。
     返回 errors 列表（可能为空）。
     """
     errors: list[dict[str, Any]] = []
 
-    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    # 一次解析 GraphML 拿 node_ids + edges（避免重复解析数十 MB 文件）
+    node_ids, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err or not node_ids:
-        return errors  # GraphML 有问题由 _check_graphml_post 报，这里不重复
+        # GraphML 解析失败或无 node：critical 由 _check_truth_source_graphml 报，
+        # 这里不重复报；无 node 时也无 edge，vdb 一致性检查无意义
+        return errors
 
     # vdb_entities 检测：GraphML node 应在 vdb_entities 有对应向量
     vdb_e_path = storage_dir / "vdb_entities.json"
@@ -294,7 +298,7 @@ def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
             })
 
     # vdb_relationships 检测：GraphML edge 应在 vdb_relationships 有对应向量
-    _, edges, _, _ = _load_graphml(storage_dir / _GRAPHML_FILE)
+    # 复用 L282 已解析的 edges（避免重复解析 GraphML）
     vdb_r_path = storage_dir / "vdb_relationships.json"
     vdb_r_list, vdb_r_err = _load_vdb(vdb_r_path)
     if vdb_r_err:
