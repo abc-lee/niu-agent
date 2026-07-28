@@ -8,9 +8,9 @@
 
 **Tech Stack:** Electron 33 preload（Node.js fs/path）、HTML/CSS、Python（config-manager MCP server 已有读写 preferences.json 的能力，无需新增后端代码）
 
-**改造范围（scout 盘点确认）：**
-- ✅ 改：`assistant/chat.html`（阿朱泡泡体 + Caveat）、`assistant/spirit.html`（同）、`assistant/sticky.html`（同）、`settings/index.html`（马善政体 Ma Shan Zheng + Caveat，**之前漏盘点，本计划补上**）
-- ❌ 不改：`graph/index.html`（纯 system-ui，干净）、`graph/demo.html` + `graph/test-api.html`（开发测试页，未注册为窗口）
+**改造范围（scout 盘点 + 用户确认）：**
+- ✅ 改：`assistant/chat.html`（聊天页）、`assistant/spirit.html`（精灵页/小女孩）、`assistant/sticky.html`（便签页）——这三个是“精灵体系”的三个窗口，要保持一致字体
+- ❌ 不改：`settings/index.html`（一次性首启页，用系统缺省字体就行）、`graph/index.html`（纯 system-ui 干净）、`graph/demo.html` + `graph/test-api.html`（开发测试页，未注册为窗口）
 
 ## Global Constraints
 
@@ -62,7 +62,7 @@
     }
     ```
   - 有配置时返回：
-    - `fontFaceCss`: `@font-face { font-family: 'MyHandwriting'; src: url('file:///Users/xxx/.niu/fonts/my-font.ttf') format('truetype'); font-display: swap; }`
+    - `fontFaceCss`: `@font-face { font-family: 'MyHandwriting'; src: url(data:font/truetype;base64,<base64-of-my-font.ttf>) format('truetype'); font-display: swap; }`（base64 内联，绕开 file:// CORS）
     - `fontFamily`: `"'MyHandwriting', 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif"`（自定义字体在前，仿宋兜底在后）
 
 - [ ] **Step 1: 写失败测试**
@@ -171,7 +171,7 @@ describe('loadFontConfig', () => {
 
 - [ ] **Step 2: 运行测试验证它失败**
 
-Run: `cd ui/main && npx jest --config '{}' ../../tests/test_font_config.js` 或 `node --test tests/test_font_config.js`
+Run: `node --test tests/test_font_config.js`
 Expected: FAIL — `Cannot find module '../ui/main/lib/font-config.js'`
 
 - [ ] **Step 3: 实现 `font-config.js`**
