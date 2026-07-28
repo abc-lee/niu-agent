@@ -239,8 +239,12 @@ class Scheduler:
         try:
             future = asyncio.run_coroutine_threadsafe(_check(), loop)
             return future.result(timeout=3)
-        except Exception as e:
-            logger.warning(f"[SCHEDULER] _is_backend_busy query failed: {e}, assuming idle")
+        except FuturesTimeoutError:
+            logger.warning("[SCHEDULER] _is_backend_busy query timed out, assuming idle")
+            return False
+        except RuntimeError as e:
+            # loop 已关闭等运行时异常，降级为不忙不阻塞调度
+            logger.warning(f"[SCHEDULER] _is_backend_busy runtime error: {e}, assuming idle")
             return False
 
     def _check_and_trigger_impl(self):
@@ -320,7 +324,19 @@ class Scheduler:
                         if not self._is_backend_busy():
                             break  # 二次确认成功，执行下一条
                         logger.debug("[SCHEDULER] Backend became busy during double-confirm, rewaiting")
-                        time.sleep(self._busy_poll_interval)  # rewait 也退避，避免紧循环
+                        # 分块等待，每秒检查 running（与二次确认一致的可中断性）
+                        rewait_remaining = self._busy_poll_interval
+                        while rewait_remaining > 0:
+                            with self._lock:
+                                if not self.running:
+                                    logger.info("[SCHEDULER] Stopped during rewait")
+                                    stopped = True
+                                    break
+                            chunk = min(rewait_remaining, 1)
+                            time.sleep(chunk)
+                            rewait_remaining -= chunk
+                        if stopped:
+                            break
                         continue
 
                     # 后端忙，轮询等待
