@@ -506,33 +506,26 @@ def _check_truth_sources_intact() -> dict[str, Any]:
             "cache": {"intact": True, "reason": "cache 不存在或为空（全新用户合法）"},
         }
 
-    # partial 状态：部分 has_content + 部分 absent/empty → 损坏
-    graphml_has = graphml_state == "has_content"
-    full_docs_has = full_docs_state == "has_content"
-    cache_has = cache_state == "has_content"
-    if graphml_has != full_docs_has or graphml_has != cache_has:
-        return {
-            "intact": False,
-            "graphml": {
-                "intact": graphml_has,
-                "reason": "partial 状态损坏" if not graphml_has else "有内容",
-            },
-            "full_docs": {
-                "intact": full_docs_has,
-                "reason": "partial 状态损坏" if not full_docs_has else "有内容",
-            },
-            "cache": {
-                "intact": cache_has,
-                "reason": "partial 状态损坏" if not cache_has else "有内容",
-            },
-        }
-
-    # 3 文件都有内容且无 corrupt → intact=True
+    # v2 修复（2026-07-28）：partial 状态不再判为 intact=False
+    # 脑区/Skills 注入路径（ainsert_custom_kg）只写 GraphML + 3 vdb + 可选 text_chunks，
+    # 不写 full_docs / llm_response_cache。GraphML 有内容但 full_docs/cache absent
+    # 是合法中间状态（用户未入库文档），不应阻断修复流程。
+    # 真损坏判定已由 _check_truth_source（corrupt）和 _check_vdb_missing（数据不一致）负责。
+    # 此分支覆盖所有非 corrupt、非全新用户场景（partial + 全部 has_content），统一返回 intact=True。
     return {
         "intact": True,
-        "graphml": {"intact": True, "reason": "有 node"},
-        "full_docs": {"intact": True, "reason": "有 entries"},
-        "cache": {"intact": True, "reason": "有 entries"},
+        "graphml": {
+            "intact": True,
+            "reason": "有 node" if graphml_state == "has_content" else "GraphML 不存在或为空（合法）",
+        },
+        "full_docs": {
+            "intact": True,
+            "reason": "有 entries" if full_docs_state == "has_content" else "full_docs 不存在或为空（脑区/Skills 路径合法）",
+        },
+        "cache": {
+            "intact": True,
+            "reason": "有 entries" if cache_state == "has_content" else "cache 不存在或为空（脑区/Skills 路径合法）",
+        },
     }
 
 
