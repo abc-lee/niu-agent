@@ -6,6 +6,7 @@ Overdue tasks are handled by the same loop with stagger intervals to prevent
 simultaneous execution on startup.
 """
 
+import asyncio
 import threading
 
 from niu_api.chat import frontend_ready_event
@@ -210,6 +211,34 @@ class Scheduler:
             self._check_and_trigger_impl()
         finally:
             self._check_lock.release()
+
+    def _is_backend_busy(self) -> bool:
+        """通过 run_coroutine_threadsafe 桥接读取后端 _chat_lock.locked()。
+
+        复用项目既有桥接模式（service.py:100 等），不绕道 HTTP 自请求。
+        - True：后端正在处理 chat 请求或 scheduler 任务，应等待
+        - False：后端空闲，可执行下一条错过的任务
+        - 主 loop 不可用或查询超时：返回 False（不阻塞调度，记 warning）
+
+        从 scheduler 工作线程调用，桥接到主事件循环读取 asyncio.Lock 状态。
+        """
+        from niu_api.chat import _main_loop
+        from niu_api.compat import _chat_lock
+
+        loop = _main_loop
+        if loop is None or loop.is_closed():
+            logger.warning("[SCHEDULER] Main loop not available, _is_backend_busy assuming idle")
+            return False
+
+        async def _check():
+            return _chat_lock.locked()
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_check(), loop)
+            return future.result(timeout=3)
+        except Exception as e:
+            logger.warning(f"[SCHEDULER] _is_backend_busy query failed: {e}, assuming idle")
+            return False
 
     def _check_and_trigger_impl(self):
         """Implementation of check_and_trigger, called under _check_lock
