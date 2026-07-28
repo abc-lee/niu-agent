@@ -139,6 +139,25 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 
 > 关于安全提示：本应用采用 ad-hoc 本地签名（无 Apple 开发者证书），首次启动的验证进度条和“无法验证开发者”提示是正常现象，点“打开”授权后系统会记住，后续直接启动。
 
+### 可选：启用脑区功能（脑区社区检测）
+
+Niu 的脑区功能（自动发现知识图谱中的社区结构、按脑区差异化检索）依赖 `igraph` + `leidenalg` 两个社区检测库。这两个库是 GPL 许可证，**默认不含在 DMG 安装包里**——不装也能正常使用 Niu 的所有其他功能，只是脑区检测不工作。
+
+如果你需要脑区功能，安装后用**程序自带的 Python**（不是系统 Python）手动安装这两个包：
+
+```bash
+# 用 DMG 安装后的自包含 Python（路径以 /Applications/niu.app 为例）
+/Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install igraph==1.0.0 leidenalg==0.11.0
+```
+
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
+
+> 📋 许可证说明：`igraph` 是 GNU GPL 许可证。你自行安装=你与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这个包，不构成 GPL 传染。详见 [igraph 许可证](https://github.com/igraph/python-igraph/blob/master/LICENSE)。`leidenalg` 依赖 igraph，会自动安装。
+
+> ⚠️ **关于重新弹授权提示**：安装 igraph/leidenalg 会修改 `niu.app` 内部文件，可能触发 macOS 重新弹一次“无法验证开发者”提示。点“打开”即可，不影响使用。
+
+安装后重启 Niu，脑区检测会自动启用（`region_detector.py` 的 `try/except ImportError` 会检测到这两个包可用）。
+
 ### 方式二：从源码构建（适合开发者）
 
 见下文“快速开始”。
