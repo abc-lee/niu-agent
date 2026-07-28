@@ -1,4 +1,5 @@
 """Tests for Scheduler.check_and_trigger with sequential execution"""
+import asyncio
 import time
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
@@ -316,3 +317,59 @@ class TestCheckAndTriggerSequential:
         scheduler._check_lock.release()
         scheduler.check_and_trigger()
         assert callback.call_count == 1
+
+
+class TestIsBackendBusy:
+    """测试 _is_backend_busy 通过 run_coroutine_threadsafe 桥接读取"""
+
+    def test_returns_false_when_chat_lock_free(self, mock_scheduler):
+        """_chat_lock 空闲时返回 False"""
+        scheduler, _, _, _ = mock_scheduler
+        import asyncio
+        from unittest.mock import patch, MagicMock
+
+        fake_loop = MagicMock()
+        fake_loop.is_closed.return_value = False
+        fake_future = MagicMock()
+        fake_future.result.return_value = False  # _chat_lock.locked() = False
+
+        with patch('niu_api.chat._main_loop', fake_loop), \
+             patch('asyncio.run_coroutine_threadsafe', return_value=fake_future):
+            assert scheduler._is_backend_busy() is False
+
+    def test_returns_true_when_chat_lock_held(self, mock_scheduler):
+        """_chat_lock 被持有时返回 True"""
+        scheduler, _, _, _ = mock_scheduler
+        from unittest.mock import patch, MagicMock
+
+        fake_loop = MagicMock()
+        fake_loop.is_closed.return_value = False
+        fake_future = MagicMock()
+        fake_future.result.return_value = True
+
+        with patch('niu_api.chat._main_loop', fake_loop), \
+             patch('asyncio.run_coroutine_threadsafe', return_value=fake_future):
+            assert scheduler._is_backend_busy() is True
+
+    def test_returns_false_when_loop_unavailable(self, mock_scheduler):
+        """主 loop 为 None 时返回 False（不阻塞调度）"""
+        scheduler, _, _, _ = mock_scheduler
+        from unittest.mock import patch
+
+        with patch('niu_api.chat._main_loop', None):
+            assert scheduler._is_backend_busy() is False
+
+    def test_returns_false_on_query_timeout(self, mock_scheduler):
+        """桥接 future.result 超时返回 False（不阻塞调度）"""
+        scheduler, _, _, _ = mock_scheduler
+        from unittest.mock import patch, MagicMock
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+        fake_loop = MagicMock()
+        fake_loop.is_closed.return_value = False
+        fake_future = MagicMock()
+        fake_future.result.side_effect = FuturesTimeoutError()
+
+        with patch('niu_api.chat._main_loop', fake_loop), \
+             patch('asyncio.run_coroutine_threadsafe', return_value=fake_future):
+            assert scheduler._is_backend_busy() is False
