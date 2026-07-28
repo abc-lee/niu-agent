@@ -639,7 +639,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                 finally:
                     _tidy_lock.release()
                 logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")
-            # 压缩完成后不触发 auto_tidy（force 已包含完整3步整理）
+            # 压缩完成后不再触发额外异步整理（force 已包含完整3步，压缩已在 agent_loop 轮内同步完成）
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
         _chat_lock.release()
