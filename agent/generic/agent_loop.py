@@ -28,6 +28,44 @@ FORMAT_ERROR = "format_error"        # 无 @ 前缀无 tool_calls，已追加格
 NO_INTERCEPTION = "no_intercept"     # 不拦截（主 Agent 或有 tool_calls）
 
 
+def _find_unescaped_marker(content: str, marker: str) -> int:
+    """在 content 里查找未转义标记的位置。
+
+    规则（简单转义判断）：
+    - 标记前一个紧邻字符是 `\\` → 不识别（转义），继续向后找
+    - 其他位置（开头、中间、被反引号/引号包装等）→ 识别
+
+    Args:
+        content: 待搜索的文本（已 lstrip 或原始均可）
+        marker: 要查找的标记（如 "@end" / "@niu-agent"）
+
+    Returns:
+        标记在 content 里的起始 index；未找到返回 -1。
+
+    Examples:
+        >>> _find_unescaped_marker("@end 任务完成", "@end")
+        0
+        >>> _find_unescaped_marker("`@end 任务完成`", "@end")
+        1
+        >>> _find_unescaped_marker("blah @end blah", "@end")
+        5
+        >>> _find_unescaped_marker(r"\\@end 任务完成", "@end")
+        -1
+        >>> _find_unescaped_marker("没有标记", "@end")
+        -1
+    """
+    start = 0
+    while True:
+        idx = content.find(marker, start)
+        if idx == -1:
+            return -1
+        # 前一个紧邻字符是 \\ → 转义，跳过本次匹配，从 idx+1 继续找
+        if idx > 0 and content[idx - 1] == "\\":
+            start = idx + 1
+            continue
+        return idx
+
+
 @dataclass
 class StreamEvent:
     type: str
