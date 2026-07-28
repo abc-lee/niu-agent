@@ -17,6 +17,9 @@ graph (rag.chunk_entity_relation_graph._graph). This is a pure synchronous
 read that does NOT enter the asyncio event loop, so no deadlock can occur.
 """
 
+import json
+from pathlib import Path
+
 from loguru import logger
 
 from niu_api.internal.lightrag_manager import get_brain_regions
@@ -168,3 +171,46 @@ def inject_brain_region_context(
             result.append(msg)
 
     return result
+
+
+def build_user_info_prompt() -> str:
+    """读取 ~/.niu/memory.json 的 user 字段，构建"知识图谱所属用户"提示词。
+
+    供 LightRAG 实体提取请求注入，让 LLM 提取实体时知道知识库属于谁。
+    只读 user.{name,nickname,occupation,organization} 四字段，
+    值以"请询问"开头的占位符跳过，全跳过则返回空串。
+
+    并发安全：memory.json 的所有写入都用原子写（tempfile + os.replace），
+    读取方永远看到完整文件，无需加锁（参考 agent/subagent.py 的同类实现）。
+    """
+    memory_path = Path.home() / ".niu" / "memory.json"
+    if not memory_path.exists():
+        return ""
+
+    try:
+        memory = json.loads(memory_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    user = memory.get("user", {})
+    if not isinstance(user, dict):
+        return ""
+
+    user_lines = []
+    if user.get("name") and not str(user["name"]).startswith("请询问"):
+        user_lines.append(f"- 真实姓名：{user['name']}")
+    if user.get("nickname") and not str(user["nickname"]).startswith("请询问"):
+        user_lines.append(f"- 称呼：{user['nickname']}")
+    if user.get("occupation") and not str(user["occupation"]).startswith("请询问"):
+        user_lines.append(f"- 职业：{user['occupation']}")
+    if user.get("organization") and not str(user["organization"]).startswith("请询问"):
+        user_lines.append(f"- 工作单位：{user['organization']}")
+
+    if not user_lines:
+        return ""
+
+    return (
+        "## 知识图谱所属用户\n\n"
+        "本知识图谱属于以下用户：\n"
+        + "\n".join(user_lines)
+    )

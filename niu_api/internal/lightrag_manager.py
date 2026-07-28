@@ -340,6 +340,7 @@ def _build_llm_model_func():
     from niu_api.internal.brain_region_prompt import (
         build_static_brain_region_prompt,
         build_dynamic_brain_region_prompt,
+        build_user_info_prompt,
         BRAIN_REGION_MARKER,
     )
 
@@ -353,8 +354,14 @@ def _build_llm_model_func():
         kwargs.pop("_timeout", None)
         kwargs.pop("_queue_timeout", None)
 
-        # 2. Brain region injection for entity extraction requests
+        # 2. Brain region + user info injection for entity extraction requests
         if system_prompt and BRAIN_REGION_MARKER in system_prompt:
+            # 用户信息（紧贴原始提取指令，作为背景上下文）
+            if "知识图谱所属用户" not in system_prompt:
+                user_part = build_user_info_prompt()
+                if user_part:
+                    system_prompt = system_prompt + f"\n\n{user_part}"
+            # 脑区架构
             if "大脑区域架构" not in system_prompt:  # idempotent guard
                 static_part = build_static_brain_region_prompt()
                 dynamic_part = build_dynamic_brain_region_prompt()
