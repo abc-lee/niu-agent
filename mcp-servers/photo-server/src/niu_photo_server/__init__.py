@@ -968,8 +968,10 @@ def get_face_model():
             )
             logger.info(f"[GET_FACE_MODEL] Models dir: {models_dir}")
 
-            # 检查本地是否存在
-            local_model_path = models_dir / "models" / "buffalo_l"
+            # 模型现在下载到 ~/.insightface/，检查用户家目录
+            from pathlib import Path as _Path
+            user_model_path = _Path.home() / ".insightface" / "models" / "buffalo_l"
+            local_model_path = user_model_path
 
             if local_model_path.exists():
                 print(
@@ -1022,7 +1024,6 @@ def get_face_model():
             with suppress_stdout():
                 _face_model = FaceAnalysis(
                     name="buffalo_l",
-                    root=str(models_dir),
                     providers=providers,
                 )
                 # ctx_id: 0 = GPU, -1 = CPU
