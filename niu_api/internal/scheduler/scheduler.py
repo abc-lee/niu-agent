@@ -247,6 +247,18 @@ class Scheduler:
             logger.warning(f"[SCHEDULER] _is_backend_busy runtime error: {e}, assuming idle")
             return False
 
+    def _interruptible_sleep(self, seconds: float) -> bool:
+        """分块 sleep，每秒检查 running 标志。返回 True 表示被 stop 中断。"""
+        remaining = seconds
+        while remaining > 0:
+            with self._lock:
+                if not self.running:
+                    return True
+            chunk = min(remaining, 1)
+            time.sleep(chunk)
+            remaining -= chunk
+        return False
+
     def _check_and_trigger_impl(self):
         """Implementation of check_and_trigger, called under _check_lock
 
@@ -308,39 +320,26 @@ class Scheduler:
                     # 另一个的二次确认会失败、退回等待）
                     if not self._is_backend_busy():
                         # 分块等待二次确认间隔，每秒检查 running
-                        confirm_remaining = self._double_confirm_delay
-                        while confirm_remaining > 0:
-                            with self._lock:
-                                if not self.running:
-                                    logger.info("[SCHEDULER] Stopped during double-confirm")
-                                    stopped = True
-                                    break
-                            chunk = min(confirm_remaining, 1)
-                            time.sleep(chunk)
-                            confirm_remaining -= chunk
-                        if stopped:
+                        if self._interruptible_sleep(self._double_confirm_delay):
+                            logger.info("[SCHEDULER] Stopped during double-confirm")
+                            stopped = True
                             break
                         # 再次查后端状态
                         if not self._is_backend_busy():
                             break  # 二次确认成功，执行下一条
                         logger.debug("[SCHEDULER] Backend became busy during double-confirm, rewaiting")
                         # 分块等待，每秒检查 running（与二次确认一致的可中断性）
-                        rewait_remaining = self._busy_poll_interval
-                        while rewait_remaining > 0:
-                            with self._lock:
-                                if not self.running:
-                                    logger.info("[SCHEDULER] Stopped during rewait")
-                                    stopped = True
-                                    break
-                            chunk = min(rewait_remaining, 1)
-                            time.sleep(chunk)
-                            rewait_remaining -= chunk
-                        if stopped:
+                        if self._interruptible_sleep(self._busy_poll_interval):
+                            logger.info("[SCHEDULER] Stopped during rewait")
+                            stopped = True
                             break
                         continue
 
                     # 后端忙，轮询等待
-                    time.sleep(self._busy_poll_interval)
+                    if self._interruptible_sleep(self._busy_poll_interval):
+                        logger.info("[SCHEDULER] Stopped during busy poll")
+                        stopped = True
+                        break
                 if stopped:
                     return
 
