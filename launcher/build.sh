@@ -22,7 +22,14 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "[build.sh] copying python/ to bundle..."
     # 不用 -X：签名完全由 Step 2 codesign --force 重新打，避免 rsync -X 带入旧 xattr（含可能的 quarantine）
     # 排除 *.bak（relocate 脚本的备份文件不进 bundle）
-    rsync -a --delete --exclude='*.bak' "$PROJECT_ROOT/python/" "$RESOURCES_DIR/python/"
+    # 排除 igraph + leidenalg（GPL，用户按 README 用自包含 Python 手动安装）
+    # 注意：igraph 在 PyPI 包名是 python-igraph，dist-info 目录用下划线 python_igraph-*
+    # texttable 是 igraph 的依赖，也一并排除
+    rsync -a --delete --exclude='*.bak' \
+        --exclude='igraph' --exclude='igraph-*.dist-info' --exclude='python_igraph-*.dist-info' \
+        --exclude='leidenalg' --exclude='leidenalg-*.dist-info' \
+        --exclude='texttable.py' --exclude='texttable-*.dist-info' \
+        "$PROJECT_ROOT/python/" "$RESOURCES_DIR/python/"
 
     # 清理 site-packages/bin/（pip install 产生的 console_scripts，shebang 指向开发机路径，
     # 运行时不使用——niu_api 用 python -m niu_api 走 sys.executable，不调 bin/ 脚本）
@@ -37,6 +44,7 @@ if [ "$(uname)" = "Darwin" ]; then
     # ui/main/ (Electron)
     echo "[build.sh] copying ui/main/..."
     rsync -a --delete --exclude '.git' --exclude 'node_modules/.cache' \
+        --exclude 'windows/assistant/fonts/AZhuPaoPaoTi.ttf' \
         "$PROJECT_ROOT/ui/main/" "$RESOURCES_DIR/ui/main/"
 
     # config/ (模板，运行时复制到 ~/.niu/config/)
@@ -45,7 +53,9 @@ if [ "$(uname)" = "Darwin" ]; then
 
     # models/
     echo "[build.sh] copying models/..."
-    rsync -a --delete "$PROJECT_ROOT/models/" "$RESOURCES_DIR/models/"
+    # 排除 buffalo_l/*.onnx（InsightFace 非商业许可，用户首次用人脸识别时自动下载到 ~/.insightface/）
+    rsync -a --delete --exclude='models/buffalo_l/*.onnx' \
+        "$PROJECT_ROOT/models/" "$RESOURCES_DIR/models/"
 
     # memory/ (agent templates)
     echo "[build.sh] copying memory/..."
