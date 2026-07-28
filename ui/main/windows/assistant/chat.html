@@ -538,7 +538,7 @@
         }
         if (window.electronAPI && window.electronAPI.FONT_FAMILY) {
           var style2 = document.createElement('style');
-          style2.textContent = 'html, body, * { font-family: ' + window.electronAPI.FONT_FAMILY + ' !important; }';
+          style2.textContent = 'html, body { font-family: ' + window.electronAPI.FONT_FAMILY + '; }';
           document.head.appendChild(style2);
         }
       })();
