@@ -14,26 +14,15 @@
       marked.setOptions({ breaks: true, gfm: true });
     }
   </script>
-  <!-- 英文手写字体 fallback -->
-  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&display=swap" rel="stylesheet">
   <style>
-    /* 本地中文字体 - 阿朱泡泡体 */
-    @font-face {
-      font-family: 'AZhuPaoPaoTi';
-      src: url('fonts/AZhuPaoPaoTi.ttf') format('truetype');
-      font-weight: normal;
-      font-style: normal;
-      font-display: swap;
-    }
-    
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       background: #faf8f0;
       overflow: hidden;
       width: 100%;
       height: 100%;
-      /* fallback 链：阿朱泡泡体 -> Caveat(英文) -> 系统默认 */
-      font-family: 'AZhuPaoPaoTi', 'Caveat', system-ui, sans-serif;
+      /* 兜底仿宋（无配置时）；有配置时由动态注入脚本覆盖 */
+      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       /* 铅笔笔迹效果 */
       color: #000;
       -webkit-font-smoothing: antialiased;
@@ -113,7 +102,7 @@
       border-radius: 50%;
       cursor: pointer;
       font-size: 16px;
-      font-family: 'AZhuPaoPaoTi', cursive;
+      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
       -webkit-app-region: no-drag;
     }
@@ -287,7 +276,7 @@
       border: 2px dashed rgba(0,0,0,0.15);
       border-radius: 4px;
       font-size: 16px;
-      font-family: 'AZhuPaoPaoTi', cursive;
+      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       background: rgba(255,255,255,0.8);
       color: #000;
       outline: none;
@@ -307,7 +296,7 @@
       border-radius: 4px;
       cursor: pointer;
       font-size: 16px;
-      font-family: 'AZhuPaoPaoTi', cursive;
+      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
       -webkit-text-stroke: 0.2px rgba(0,0,0,0.3);
     }
@@ -378,7 +367,7 @@
       padding: 4px 12px;
       border-radius: 4px;
       cursor: pointer;
-      font-family: 'AZhuPaoPaoTi', cursive;
+      font-family: 'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif;
       font-size: 14px;
       -webkit-text-stroke: 0.2px rgba(0,0,0,0.3);
     }
@@ -539,6 +528,21 @@
       50% { opacity: 1; }
     }
   </style>
+    <!-- 字体配置动态注入：无配置时不注入（用 CSS 兜底仿宋），有配置时注入 @font-face + 覆盖 font-family -->
+    <script>
+      (function() {
+        if (window.electronAPI && window.electronAPI.FONT_FACE_CSS) {
+          var style = document.createElement('style');
+          style.textContent = window.electronAPI.FONT_FACE_CSS;
+          document.head.appendChild(style);
+        }
+        if (window.electronAPI && window.electronAPI.FONT_FAMILY) {
+          var style2 = document.createElement('style');
+          style2.textContent = 'html, body, * { font-family: ' + window.electronAPI.FONT_FAMILY + ' !important; }';
+          document.head.appendChild(style2);
+        }
+      })();
+    </script>
 </head>
 <body>
   <div class="container">
