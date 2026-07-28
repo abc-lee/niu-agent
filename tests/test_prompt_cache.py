@@ -45,7 +45,10 @@ def test_convert_tools_schema_backward_compatible():
 
 
 def test_build_static_system_prompt_excludes_current_time():
-    """静态段不含 Current Time/disk_desc，含 niu.md 正文 + memory 段。"""
+    """静态段不含 Current Time/disk_desc/memory 段，仅含 niu.md 正文。
+
+    memory 段由 _on_before_llm 每轮从 memory.json 重读，不在 static_system_prompt 里。
+    """
     from agent.runner import NiuRunner
 
     static = NiuRunner._build_static_system_prompt()
@@ -74,7 +77,7 @@ def test_assemble_system_message_non_claude():
     injection = "\n\n### [相关技能]\n- skill1"
     messages = [{"role": "system", "content": ""}]
 
-    runner._assemble_system_message(messages, injection, model="ark-code-latest")
+    runner._assemble_system_message(messages, "", injection, model="ark-code-latest")
 
     content = messages[0]["content"]
     assert isinstance(content, str), "非 Claude 模型 content 应为字符串"
@@ -95,7 +98,7 @@ def test_assemble_system_message_claude():
     injection = "\n\n### [相关技能]\n- skill1"
     messages = [{"role": "system", "content": ""}]
 
-    runner._assemble_system_message(messages, injection, model="claude-sonnet-4-6")
+    runner._assemble_system_message(messages, "", injection, model="claude-sonnet-4-6")
 
     content = messages[0]["content"]
     assert isinstance(content, list), "Claude 模型 content 应为 list"
@@ -124,7 +127,7 @@ def test_assemble_system_message_empty_injection():
     runner.default_model = "ark-code-latest"
 
     messages = [{"role": "system", "content": ""}]
-    runner._assemble_system_message(messages, "", model="ark-code-latest")
+    runner._assemble_system_message(messages, "", "", model="ark-code-latest")
 
     content = messages[0]["content"]
     assert content == "STATIC\n\nCurrent Time: 2026-06-30 10:51:00"
@@ -140,7 +143,7 @@ def test_assemble_system_message_non_system_first_msg():
     runner.default_model = "ark-code-latest"
 
     messages = [{"role": "user", "content": "hello"}]
-    runner._assemble_system_message(messages, "inj", model="ark-code-latest")
+    runner._assemble_system_message(messages, "", "inj", model="ark-code-latest")
 
     assert messages[0]["content"] == "hello"
 
