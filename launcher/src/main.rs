@@ -1797,18 +1797,18 @@ fn main() {
         }
 
         // PYTHONHOME: 让 python3 找到 bundle 内 stdlib + site-packages
-        // 必须传（python3 链接的 dylib 内部硬编码系统 framework stdlib 路径，
-        // PYTHONHOME 覆盖让 base_prefix 指向 bundle 内）
-        // 已实测验证（2026-07-24）：pyvenv.cfg 的 home 已改成 bundle 内 python/bin/，
-        // 传 PYTHONHOME 后 base_prefix 正确指向 bundle 内 python/，不会泄露到系统 framework。
-        // 无论 dev 还是 bundle 模式，PYTHONHOME 永远指向 <resources_root>/python/，stdlib 在 bundle 内。
-        // 放在 env::vars() 之后，确保覆盖任何继承的 PYTHONHOME。
-        let python_home = PathBuf::from(&python_path_bg)
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        api_server_cmd.env("PYTHONHOME", &python_home);
+        // macOS 必须：python3 链接的 dylib 内部硬编码系统 framework stdlib 路径，
+        // PYTHONHOME 覆盖让 base_prefix 指向 bundle 内。
+        // Windows 不能设：venv 的 stdlib 在系统 Python（C:\Python311\Lib）里，
+        // 设 PYTHONHOME 会导致 "No module named encodings" 致命错误。
+        if !cfg!(target_os = "windows") {
+            let python_home = PathBuf::from(&python_path_bg)
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            api_server_cmd.env("PYTHONHOME", &python_home);
+        }
 
         // PYTHONPATH: 让 Python 找到 niu_api 和 agent 模块
         // cwd 是 ~/.niu/（可写），但 niu_api/agent 模块在 bundle 内 Resources/
