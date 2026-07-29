@@ -122,7 +122,7 @@ def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
     )
 
     # v4：9 派生文件必须全齐才不报 major
-    _DERIVED_FILES_LIST = [
+    _derived_files_list = [
         "kv_store_text_chunks.json",
         "kv_store_doc_status.json",
         "vdb_chunks.json",
@@ -136,7 +136,7 @@ def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
     vdb_e = {"data": [{"__id__": "ent-test-entity", "entity_name": "test-entity", "vector": "AAAAAA=="}],
              "file_hash": "fake", "embedding_dim": 8, "matrix": "AAAAAA=="}
     (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e, ensure_ascii=False))
-    for fname in _DERIVED_FILES_LIST:
+    for fname in _derived_files_list:
         if fname == "vdb_entities.json":
             continue
         if fname.startswith("vdb_"):

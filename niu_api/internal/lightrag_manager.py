@@ -1175,7 +1175,7 @@ def _create_lightrag_instance():
     # Custom entity_types: constrain LLM extraction to these categories.
     # If none match, LLM classifies as "Other" (LightRAG prompt convention).
     # This ensures frontend category buttons match actual graph data.
-    CUSTOM_ENTITY_TYPES = [
+    custom_entity_types = [
         "person", "organization", "technology", "concept",
         "location", "event", "document", "photo", "video",
         "note", "chat", "skill", "tool", "knowledge",
@@ -1198,7 +1198,7 @@ def _create_lightrag_instance():
         "chunk_token_size": chunk_token_size,
         "llm_model_max_async": llm_model_max_async,
         "addon_params": {
-            "entity_types": CUSTOM_ENTITY_TYPES,
+            "entity_types": custom_entity_types,
             "language": "Chinese",
             "entity_extract_max_gleaning": entity_extract_max_gleaning,
         },

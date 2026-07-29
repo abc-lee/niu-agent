@@ -639,7 +639,7 @@ def agent_runner_loop(
     yield StreamEvent("system", "chat_busy")
 
     _harness_fail_count = 0
-    _MAX_HARNESS_RETRIES = 3
+    _max_harness_retries = 3
     warning_threshold = _read_warning_threshold()
 
     while turn < handler.max_turns:
@@ -761,7 +761,7 @@ def agent_runner_loop(
             # 条件 not response.tool_calls 精确区分最终回复 vs 中间工具调用
             if not response.tool_calls:
                 validation = validate_references(content)
-                if not validation.is_valid and _harness_fail_count < _MAX_HARNESS_RETRIES:
+                if not validation.is_valid and _harness_fail_count < _max_harness_retries:
                     _harness_fail_count += 1
                     feedback = validation.format_feedback()
                     messages.append({"role": "assistant", "content": content})

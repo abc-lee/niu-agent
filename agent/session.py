@@ -136,7 +136,7 @@ class MessageStore:
         Pagination uses rowid (write order), not created_at timestamp.
         before_id is resolved to its rowid for cursor-based pagination.
         """
-        _COLUMNS = "id, role, content, tool_calls, tool_results, tool_call_id, created_at, rowid"
+        _columns = "id, role, content, tool_calls, tool_results, tool_call_id, created_at, rowid"
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -152,7 +152,7 @@ class MessageStore:
                     before_rowid = before_row[0]
                     if limit is not None:
                         cursor = await db.execute(
-                            f"""SELECT {_COLUMNS} FROM messages
+                            f"""SELECT {_columns} FROM messages
                                WHERE rowid < ?
                                ORDER BY rowid DESC
                                LIMIT ?""",
@@ -160,7 +160,7 @@ class MessageStore:
                         )
                     else:
                         cursor = await db.execute(
-                            f"""SELECT {_COLUMNS} FROM messages
+                            f"""SELECT {_columns} FROM messages
                                WHERE rowid < ?
                                ORDER BY rowid DESC""",
                             (before_rowid,),
@@ -169,27 +169,27 @@ class MessageStore:
                     # before_id not found, fall back to no cursor
                     if limit is not None:
                         cursor = await db.execute(
-                            f"""SELECT {_COLUMNS} FROM messages
+                            f"""SELECT {_columns} FROM messages
                                ORDER BY rowid DESC
                                LIMIT ?""",
                             (limit,),
                         )
                     else:
                         cursor = await db.execute(
-                            f"""SELECT {_COLUMNS} FROM messages
+                            f"""SELECT {_columns} FROM messages
                                ORDER BY rowid DESC"""
                         )
             else:
                 if limit is not None:
                     cursor = await db.execute(
-                        f"""SELECT {_COLUMNS} FROM messages
+                        f"""SELECT {_columns} FROM messages
                            ORDER BY rowid DESC
                            LIMIT ?""",
                         (limit,),
                     )
                 else:
                     cursor = await db.execute(
-                        f"""SELECT {_COLUMNS} FROM messages
+                        f"""SELECT {_columns} FROM messages
                            ORDER BY rowid DESC"""
                     )
 

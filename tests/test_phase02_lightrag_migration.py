@@ -22,13 +22,13 @@ class TestKGSyncDelegation:
         from agent.injector.kg_sync import KGSync
 
         ks = KGSync()
-        with patch("agent.injector.lightrag_sync.LightRAGSync") as MockSync:
+        with patch("agent.injector.lightrag_sync.LightRAGSync") as mock_sync:
             mock_instance = MagicMock()
             mock_instance.run_sync.return_value = {"photos_synced": 5}
-            MockSync.return_value = mock_instance
+            mock_sync.return_value = mock_instance
 
             result = ks.run_full_sync()
-            MockSync.assert_called_once()
+            mock_sync.assert_called_once()
             mock_instance.run_sync.assert_called_once()
             assert result == {"photos_synced": 5}
 
@@ -241,10 +241,10 @@ class TestLightRAGSync:
 
         with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock_rag):
             with patch("niu_api.internal.lightrag_manager.call_async", return_value=None):
-                with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as MockIngester:
+                with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_ingester:
                     mock_ingester = MagicMock()
                     mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
-                    MockIngester.return_value = mock_ingester
+                    mock_ingester.return_value = mock_ingester
 
                     # Mock the photo server module import inside _sync_photos_db
                     mock_ps = MagicMock()

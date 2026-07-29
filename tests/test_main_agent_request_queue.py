@@ -39,22 +39,22 @@ def test_thread_safe_push_pop_data_integrity():
     """
     q = MainAgentRequestQueue()
     errors = []
-    NUM_ITEMS = 100
-    expected = {f"[子名-{i:04d}] 内容 {i}" for i in range(NUM_ITEMS)}
+    num_items = 100
+    expected = {f"[子名-{i:04d}] 内容 {i}" for i in range(num_items)}
 
     collected = []
     collected_lock = threading.Lock()
 
     def producer():
         try:
-            for i in range(NUM_ITEMS):
+            for i in range(num_items):
                 q.push(f"[子名-{i:04d}] 内容 {i}")
         except Exception as e:
             errors.append(e)
 
     def consumer():
         try:
-            for _ in range(NUM_ITEMS):
+            for _ in range(num_items):
                 item = q.pop()
                 if item is not None:
                     with collected_lock:
@@ -67,14 +67,14 @@ def test_thread_safe_push_pop_data_integrity():
     t1.start(); t2.start()
     t1.join(); t2.join()
 
-    # consumer 可能比 producer 快，collected 不足 NUM_ITEMS 时补 pop 剩余
+    # consumer 可能比 producer 快，collected 不足 num_items 时补 pop 剩余
     while not q.is_empty():
         item = q.pop()
         if item is not None:
             collected.append(item)
 
     assert errors == [], f"并发测试发现错误：{errors}"
-    assert len(collected) == NUM_ITEMS, f"丢失消息：collected {len(collected)}/{NUM_ITEMS}"
+    assert len(collected) == num_items, f"丢失消息：collected {len(collected)}/{num_items}"
     assert set(collected) == expected, f"消息内容不一致（可能有重复或错乱）：{set(collected) ^ expected}"
 
 

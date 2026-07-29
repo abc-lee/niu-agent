@@ -55,13 +55,13 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
     """读取文件内容（支持 offset/limit 分页，limit 最大 500）"""
     import itertools
 
-    MAX_LIMIT = 500
+    max_limit = 500
     if offset < 1:
         offset = 1
     if limit < 1:
-        limit = MAX_LIMIT
-    if limit > MAX_LIMIT:
-        limit = MAX_LIMIT
+        limit = max_limit
+    if limit > max_limit:
+        limit = max_limit
 
     try:
         if os.path.isdir(file_path):
@@ -79,10 +79,10 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
                 return f"[FILE] No content to display (offset={offset}, total={total_lines} lines)"
 
             realcnt = len(res)
-            L_MAX = min(10000, max(100, 500000 // max(realcnt, 1)))
-            TAG = " ... [TRUNCATED]"
+            l_max = min(10000, max(100, 500000 // max(realcnt, 1)))
+            tag = " ... [TRUNCATED]"
 
-            res = [(i, line if len(line) <= L_MAX else line[:L_MAX] + TAG) for i, line in res]
+            res = [(i, line if len(line) <= l_max else line[:l_max] + tag) for i, line in res]
             result = "\n".join(f"{i}|{line}" for i, line in res)
 
             header = f"[FILE] Showing {len(res)} lines from line {offset} (total {total_lines} lines)"
@@ -156,7 +156,7 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
     import glob as glob_mod
     import re as re_mod
 
-    MAX_LINES = 50
+    max_lines = 50
 
     if not pattern:
         return "[GREP] Error: pattern is required"
@@ -194,19 +194,19 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
                 for line_no, line in enumerate(f, 1):
                     if regex.search(line):
                         matches.append(f"{filepath}:{line_no}:{line.rstrip()}")
-                        if len(matches) >= MAX_LINES:
+                        if len(matches) >= max_lines:
                             break
         except (OSError, UnicodeDecodeError):
             continue
-        if len(matches) >= MAX_LINES:
+        if len(matches) >= max_lines:
             break
 
     if not matches:
         return f"[GREP] No matches for '{pattern}' in {path} (searched {searched_count} files)"
 
     result = "\n".join(matches)
-    if len(matches) >= MAX_LINES:
-        result += f"\n... (showing first {MAX_LINES} matches)"
+    if len(matches) >= max_lines:
+        result += f"\n... (showing first {max_lines} matches)"
     return result
 
 
@@ -242,10 +242,10 @@ def file_read(
                 res = list(itertools.islice(stream, count))
 
             realcnt = len(res)
-            L_MAX = max(100, 512000 // realcnt) if realcnt > 0 else 100
-            TAG = " ... [TRUNCATED]"
+            l_max = max(100, 512000 // realcnt) if realcnt > 0 else 100
+            tag = " ... [TRUNCATED]"
 
-            res = [(i, line if len(line) <= L_MAX else line[:L_MAX] + TAG) for i, line in res]
+            res = [(i, line if len(line) <= l_max else line[:l_max] + tag) for i, line in res]
             result = "\n".join(f"{i}|{line}" if show_linenos else line for i, line in res)
 
             if show_linenos:

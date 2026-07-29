@@ -226,7 +226,7 @@ async def lifespan(app: FastAPI):
 
     # 6.7.3. Signal scheduler 挪到 lifespan 末尾（见 L8.7），保证所有后台依赖就绪后才 signal。
     #        原位置 L218 在 Phase 1 gate 之后但 L255 之后（LightRAG eager init /
-    #        BrainGraph / _SYSTEM_TASKS 等）之前，scheduler sleep 2s 后扫描过期任务
+    #        BrainGraph / _system_tasks 等）之前，scheduler sleep 2s 后扫描过期任务
     #        会撞未就绪 runner，导致 user 消息已写 DB 但 runner.chat() 抛异常、任务被标 failed。
     #        挪到末尾后 need_repair=True 分支仍由 should_signal_scheduler_ready gate 控制
     #        （cancel_scheduler_delayed_start_if_corrupt 在 L204 已调，flag 持久，行为一致）。
@@ -247,7 +247,7 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "[LightRAG] 检测到损坏，跳过 Phase 1 之后的初始化"
             "（LightRAG eager init / PipelineWatcher / LightRAGSync / "
-            "BrainGraph / create_default_regions / RegionSync / _SYSTEM_TASKS）"
+            "BrainGraph / create_default_regions / RegionSync / _system_tasks）"
         )
 
     # v6: Phase 2 不自动修复，等用户在 rfd 弹窗点'尝试修复'
@@ -258,7 +258,7 @@ async def lifespan(app: FastAPI):
 
     # v7: Phase 1 need_repair=True 时跳过所有依赖 LightRAG 实例的初始化
     #     （LightRAG eager init / PipelineWatcher / LightRAGSync / BrainGraph /
-    #      vectors.db cleanup / create_default_regions / RegionSync / _SYSTEM_TASKS）
+    #      vectors.db cleanup / create_default_regions / RegionSync / _system_tasks）
     #     need_repair=False 时逻辑跟原来一致
     #
     # 预初始化 region_sync = None，确保 LightRAG 损坏分支（_lightrag_corrupt_skip_init=True）
@@ -353,7 +353,7 @@ async def lifespan(app: FastAPI):
         #      与 lifespan 抢锁的竞态（第二轮审查严重问题）。
 
         # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
-        _SYSTEM_TASKS = [
+        _system_tasks = [
             {
                 "name": "daily-journal-check",
                 "content": "请调用 journal-agent 记录今天的日志，整理后展示给用户确认是否需要修改",
@@ -375,7 +375,7 @@ async def lifespan(app: FastAPI):
             ts = get_store()
 
             # Ensure each system task exists (by name, not cron_expr)
-            for task_def in _SYSTEM_TASKS:
+            for task_def in _system_tasks:
                 existing = ts.find_task_by_name(task_def["name"])
 
                 if existing is None:

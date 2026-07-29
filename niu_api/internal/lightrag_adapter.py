@@ -753,7 +753,7 @@ class LightRAGAdapter:
         Returns:
             按时间戳排序的时间线结果列表。
         """
-        TIMELINE_EDGE_TYPES = {"followed_by", "corrected_by", "led_to", "resolved_by"}
+        timeline_edge_types = {"followed_by", "corrected_by", "led_to", "resolved_by"}
 
         # Step 1: Determine starting entities
         if start_entities:
@@ -819,7 +819,7 @@ class LightRAGAdapter:
             sub_edges = node_data.get("edges", []) if isinstance(node_data, dict) else []
             for edge in sub_edges:
                 relation = edge.get("relation", "")
-                if relation not in TIMELINE_EDGE_TYPES:
+                if relation not in timeline_edge_types:
                     continue
                 edge_desc = edge.get("description", "")
                 edge_timestamp = self._extract_timestamp(edge_desc)

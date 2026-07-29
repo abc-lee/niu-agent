@@ -1395,7 +1395,7 @@ async def _probe_tier_three_samples_async(try_fn, response_format: dict) -> tupl
     重试预算（限流+超时累计），指数退避 5s→10s，最多等 15s。
     原 5 次预算（退避 155s）在思考链慢响应场景导致 probe 卡死 10+ 分钟，2 次足够覆盖瞬时抖动。
     """
-    MAX_TRANSIENT_RETRIES = 2
+    max_transient_retries = 2
     transient_retries = 0
 
     for sample_num in range(1, 4):
@@ -1407,9 +1407,9 @@ async def _probe_tier_three_samples_async(try_fn, response_format: dict) -> tupl
 
             if result in ("rate_limited", "timeout"):
                 transient_retries += 1
-                if transient_retries > MAX_TRANSIENT_RETRIES:
+                if transient_retries > max_transient_retries:
                     logger.warning(
-                        f"探测限流/超时重试 {MAX_TRANSIENT_RETRIES} 次仍未成功，放弃 "
+                        f"探测限流/超时重试 {max_transient_retries} 次仍未成功，放弃 "
                         f"(最后错误: {result})"
                     )
                     return "rate_limited", raw
