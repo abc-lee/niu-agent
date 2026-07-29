@@ -345,10 +345,13 @@ Splash 结构体加 missing_deps 字段，main() 调用后传入。
                     let new_height = 80.0 + extra;
                     return window::resize(id, iced::Size::new(320.0, new_height));
                 }
+                Task::none()
             }
 ```
 
-注意：窗口宽度也从 280 加到 320（提示文案较长，280 会截断）。
+注意：
+- 窗口宽度也从 280 加到 320（提示文案较长，280 会截断）
+- **if 块后必须补 `Task::none()`**：原代码 arm 末尾是 `Task::none()`，改成 if 块后如果漏补，arm 块末尾是 if 语句（求值类型 `()`），与 `update` 返回类型 `Task<SplashMessage>` 不匹配会编译错误。if 块内有 `return` 提前返回，if 不进入时走 `Task::none()` 兜底。
 
 - [ ] **Step 2: 改 `Splash::view` 显示缺失依赖列表**
 
