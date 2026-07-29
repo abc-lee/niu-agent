@@ -142,7 +142,7 @@ def get_brain_regions(
 
 @router.post("/regions/consolidate")
 def consolidate_brain_regions(
-    req: ConsolidateRequest = ConsolidateRequest(),
+    req: ConsolidateRequest,
 ) -> dict[str, Any]:
     """Trigger community detection and create/update region nodes.
 

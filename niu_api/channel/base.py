@@ -68,4 +68,4 @@ class ChannelAdapter(ABC):
 
     async def send_media(self, channel_id: str, msg: ResolvedMessage) -> None:
         """发送媒体消息（图片/文件）— 默认实现不做任何事"""
-        pass
+        return None
