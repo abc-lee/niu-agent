@@ -382,15 +382,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 ### 不配置时的缺省字体
 
-不配置 `font` 段时，所有窗口使用跨平台仿宋兜底链：
-
-```
-'STFangsong', 'Songti SC', 'FangSong', 'SimSun', serif
-```
-
-- macOS：华文仿宋（STFangsong）→ 宋体（Songti SC，macOS 自带）兜底
-- Windows：仿宋（FangSong）→ 宋体（SimSun）兜底
-- 其他：serif 终极兜底
+不配置 `font` 段时，不注入任何 `@font-face` 与 `font-family` 覆盖，窗口使用**浏览器系统默认字体**（即 CSS 未指定 `font-family` 时的兜底，通常是系统 sans-serif）。
 
 ### 配置示例
 
@@ -416,7 +408,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 ### 容错
 
-以下情况自动降级为仿宋兜底，不影响使用：
+以下情况自动降级为系统默认字体（不注入 `@font-face`、不覆盖 `font-family`），不影响使用：
 - `preferences.json` 不存在或无 `font` 段
 - `font` 段缺 `name` 或 `file` 字段
 - 字体文件不存在（`~/.niu/fonts/` 下找不到）

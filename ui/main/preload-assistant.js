@@ -23,7 +23,7 @@ try {
 contextBridge.exposeInMainWorld('electronAPI', {
   IDLE_TIMEOUT: _idleTimeoutMs,  // 睡眠触发时间（毫秒），从 user-config.json 读取
   FONT_FACE_CSS: _fontConfig.fontFaceCss,  // @font-face CSS（无配置时为空串）
-  FONT_FAMILY: _fontConfig.fontFamily,     // font-family 值（无配置时为仿宋兜底）
+  FONT_FAMILY: _fontConfig.fontFamily,     // font-family 值（无配置时为空串，用系统默认）
   // 移动小女孩窗口
   setPosition: (x, y) => ipcRenderer.send('set-spirit-position', { x, y }),
   
