@@ -55,7 +55,7 @@ def cleanup_process(proc: subprocess.Popen, timeout: int = 10) -> None:
         # 先尝试优雅关闭
         try:
             requests.post(SHUTDOWN_URL, timeout=5)
-        except:
+        except Exception:
             pass
         proc.terminate()
         try:
