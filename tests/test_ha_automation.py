@@ -61,7 +61,7 @@ class TestHaAutomation:
         })
         assert result.get("success"), f"创建失败: {result}"
         try:
-            import time; time.sleep(3)
+            import time; time.sleep(3)  # noqa: I001
             get_result = ha_automation(action="get", name="测试自动删除")
             assert get_result.get("config"), f"获取配置失败: {get_result}"
         finally:
@@ -76,7 +76,7 @@ class TestHaAutomation:
             "actions": [{"action": "persistent_notification.create", "data": {"message": "test"}}],
             "mode": "single",
         })
-        import time; time.sleep(3)
+        import time; time.sleep(3)  # noqa: I001
         try:
             result = ha_automation(action="delete", name="测试删除预览")
             assert result.get("preview"), f"应返回预览: {result}"
@@ -92,7 +92,7 @@ class TestHaAutomation:
             "actions": [{"action": "persistent_notification.create", "data": {"message": "test"}}],
             "mode": "single",
         })
-        import time; time.sleep(3)
+        import time; time.sleep(3)  # noqa: I001
         try:
             # 禁用
             result = ha_automation(action="disable", name="测试开关")
@@ -134,7 +134,7 @@ class TestHaScene:
         })
         assert result.get("success"), f"创建失败: {result}"
         try:
-            import time; time.sleep(1)
+            import time; time.sleep(1)  # noqa: I001
             result = ha_scene(action="activate", name="测试场景删除")
             assert result.get("success"), f"激活失败: {result}"
         finally:
@@ -174,7 +174,7 @@ class TestHaScript:
         })
         assert result.get("success"), f"创建失败: {result}"
         try:
-            import time; time.sleep(3)
+            import time; time.sleep(3)  # noqa: I001
             result = ha_script(action="run", name="测试脚本删除")
             assert result.get("success"), f"运行失败: {result}"
         finally:

@@ -458,7 +458,7 @@ class TestConfigFilesKgServerHidden:
         # Parse frontmatter
         if "---" in content:
             fm = content.split("---")[1]
-            assert "kg-server" not in fm, f"kg-server should be removed from entity-extractor's mcpServers after LightRAG migration"
+            assert "kg-server" not in fm, "kg-server should be removed from entity-extractor's mcpServers after LightRAG migration"
 
     def test_kg_enricher_no_kg_server_mcp(self):
         """kg-enricher should not exist or should not list kg-server in mcpServers."""

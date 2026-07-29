@@ -160,7 +160,7 @@ class TestExperienceSummarizerIntegration:
     def test_experience_summarizer_import_in_handler(self):
         """测试 handler.py 中已导入 ExperienceSummarizer"""
         try:
-            from agent.handler import NiuHandler
+            from agent.handler import NiuHandler  # noqa: F401
             # 验证 NiuHandler 有 _experience_summarizer 属性
             # 这需要 mock mcp_client，简化测试只验证导入成功
             assert True
