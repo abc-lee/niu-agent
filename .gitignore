@@ -79,6 +79,8 @@ ui/assistant_node_modules_backup/
 config/user-config.json
 
 # Large model files (> 100 MB, use Git LFS or download separately)
+# bge-base-zh-v1.5 向量模型（~390MB）和 buffalo_l 人脸识别模型（~326MB）不进 git
+models/bge-base-zh-v1.5/
 models/models/buffalo_l/*.onnx
 models/all-MiniLM-L6-v2/model.safetensors
 models/paraphrase-multilingual-MiniLM-L12-v2/model.safetensors
