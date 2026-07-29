@@ -69,6 +69,9 @@ class Scheduler:
         # 不持久化（重启清零，意味着重新尝试）
         self._task_fail_count: dict[str, int] = {}
         self._TASK_FAIL_THRESHOLD = 3
+        # in_progress 任务超时阈值（小时）：超过则重置为 pending
+        # 防止任务执行中崩溃或跨进程竞态导致状态卡死
+        self._stale_timeout_hours = 8
 
         # Recover orphaned in_progress tasks from crashes
         self._recover_orphaned_tasks()
@@ -267,6 +270,13 @@ class Scheduler:
         """
         # Reset failed tasks older than 5 minutes to pending for retry
         self.store.retry_failed_tasks(retry_interval_seconds=300)
+        # Reset in_progress tasks stuck longer than stale_timeout_hours (crash/cross-process safety)
+        reset_count = self.store.reset_stale_in_progress(timeout_hours=self._stale_timeout_hours)
+        if reset_count > 0:
+            logger.warning(
+                f"[SCHEDULER] Reset {reset_count} stale in_progress tasks "
+                f"(exceeded {self._stale_timeout_hours}h timeout) to pending"
+            )
 
         # 动态刷新 store（如果使用 factory，确保 db_path 与 workspace 一致）
         if self._store_factory is not None:
