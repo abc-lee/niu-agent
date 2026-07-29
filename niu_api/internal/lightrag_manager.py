@@ -1229,7 +1229,7 @@ def _create_lightrag_instance():
 # We need EmbeddingFunc from lightrag for constructing the embedding function wrapper.
 # EmbeddingFunc lives in lightrag.utils in lightrag-hku 1.4.x. LightRAG is a hard
 # dependency of this project — placeholder removed so type inference matches.
-from lightrag.utils import EmbeddingFunc
+from lightrag.utils import EmbeddingFunc  # noqa: E402
 
 
 def get_lightrag():

@@ -33,8 +33,8 @@ def _register_model_cost(model: str):
     if model and model.lower() not in litellm.model_cost:
         litellm.model_cost[model.lower()] = {"input_cost_per_token": 0, "output_cost_per_token": 0}
 
-from .http_logger import install_http_logger
-from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
+from .http_logger import install_http_logger  # noqa: E402
+from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient  # noqa: E402
 
 install_http_logger()
 

@@ -184,11 +184,11 @@ if sys.platform == 'win32':
     if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-from agent.tool_registry import get_registry
+from agent.tool_registry import get_registry  # noqa: E402
 
-from .generic.agent_loop import StreamEvent, agent_runner_loop
-from .handler import NiuHandler
-from .injector.sync import get_skill_sync
+from .generic.agent_loop import StreamEvent, agent_runner_loop  # noqa: E402
+from .handler import NiuHandler  # noqa: E402
+from .injector.sync import get_skill_sync  # noqa: E402
 
 
 def get_system_prompt() -> str:

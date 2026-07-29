@@ -146,7 +146,7 @@ def test_strip_response_format_mode_handles_missing_litellm_kwargs():
 # _build_probe_messages 构造探测 prompt。
 # _build_probe_response_format_json_schema / json_object 构造探测 response_format。
 # 纯函数，不调真实 LLM。
-from niu_api.compat import (
+from niu_api.compat import (  # noqa: E402
     _build_probe_messages,
     _build_probe_response_format_json_object,
     _build_probe_response_format_json_schema,
@@ -278,7 +278,7 @@ v6 修正：同时检查 lightrag_llm 和 llm 两段 litellm_kwargs，因为
 lightrag_llm.model 为空时 get_llm_config 走 fallback 用 llm 段，
 response_format_mode 可能写在 llm 段（场景二/三：LightRAG 用主 Agent 同一模型）。
 """
-from niu_api.internal.lightrag_manager import _should_auto_probe_after_upgrade
+from niu_api.internal.lightrag_manager import _should_auto_probe_after_upgrade  # noqa: E402
 
 
 def test_returns_true_when_no_response_format_mode():
@@ -330,11 +330,11 @@ def test_returns_true_when_only_llm_has_litellm_kwargs_without_mode():
 
 需启动 niu_api 服务（端口 9876）。验证三种探测档位路径 + 两个真实配置。
 """
-import json
-import os
+import json  # noqa: E402
+import os  # noqa: E402
 
-import httpx
-import pytest
+import httpx  # noqa: E402
+import pytest  # noqa: E402
 
 
 @pytest.fixture

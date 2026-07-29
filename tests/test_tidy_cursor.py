@@ -28,10 +28,10 @@ def make_messages(n: int, start_idx: int = 0) -> list[FakeMessage]:
 
 
 # --- 导入被测函数 ---
-import sys
+import sys  # noqa: E402
 
 sys.path.insert(0, ".")
-from niu_api.compat import _build_incremental_msg_text
+from niu_api.compat import _build_incremental_msg_text  # noqa: E402
 
 
 class TestBuildIncrementalMsgTextEndCursor:

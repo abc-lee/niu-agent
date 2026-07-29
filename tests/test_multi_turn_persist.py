@@ -34,14 +34,14 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from agent.generic.agent_loop import (
+from agent.generic.agent_loop import (  # noqa: E402
     BaseHandler,
     StepOutcome,
     StreamEvent,
     agent_runner_loop,
 )
-from agent.generic.litellm_adapter import create_litellm_client
-from agent.session import MessageStore
+from agent.generic.litellm_adapter import create_litellm_client  # noqa: E402
+from agent.session import MessageStore  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 配置加载

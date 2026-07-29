@@ -7,14 +7,14 @@ import pytest
 
 pytest.skip("v8-Task 1 将 repair_text_chunks 改为 unrecoverable stub，依赖 repair_all 成功的 e2e probe 需等 Task 4/9 重写", allow_module_level=True)
 
-import json
-import sys
-from pathlib import Path
+import json  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_lightrag_rebuild_from_truth import _make_synthetic_fixture
+from test_lightrag_rebuild_from_truth import _make_synthetic_fixture  # noqa: E402
 
 
 def test_probe_e2e_run_repair_with_real_skills(tmp_path, monkeypatch):

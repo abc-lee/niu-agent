@@ -19,16 +19,16 @@ import pytest
 
 pytest.skip("v8-Task 1 删除 get_lightrag_for_repair + repair_text_chunks 改 stub，依赖 stale instance 的 probe 需等 Task 4/9 重写", allow_module_level=True)
 
-import json
-import sys
-from pathlib import Path
+import json  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
-from niu_api.internal.lightrag_repair import repair_all
+from niu_api.internal.lightrag_repair import repair_all  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_lightrag_rebuild_from_truth import _make_synthetic_fixture
+from test_lightrag_rebuild_from_truth import _make_synthetic_fixture  # noqa: E402
 
 
 def test_probe_full_run_repair_preserves_vdb(tmp_path, monkeypatch):

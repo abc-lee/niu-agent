@@ -579,7 +579,7 @@ else:
 
 
 # Mount scheduler router
-from niu_api.internal.scheduler import scheduler_router
+from niu_api.internal.scheduler import scheduler_router  # noqa: E402
 
 app.include_router(scheduler_router)
 
