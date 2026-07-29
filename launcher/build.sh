@@ -35,10 +35,16 @@ if [ "$(uname)" = "Darwin" ]; then
     # 排除 igraph + leidenalg（GPL，用户按 README 用自包含 Python 手动安装）
     # 注意：igraph 在 PyPI 包名是 python-igraph，dist-info 目录用下划线 python_igraph-*
     # texttable 是 igraph 的依赖，也一并排除
+    # cv2/insightface/easydict/pillow_heif：人脸识别 + HEIC，cv2 捆绑 GPL 版 FFmpeg（x264/x265），
+    # pillow-heif 链接 libx265（GPLv2），用户需照片处理时按 README 自装
     rsync -a --delete --exclude='*.bak' \
         --exclude='igraph' --exclude='igraph-*.dist-info' --exclude='python_igraph-*.dist-info' \
         --exclude='leidenalg' --exclude='leidenalg-*.dist-info' \
         --exclude='texttable.py' --exclude='texttable-*.dist-info' \
+        --exclude='cv2' --exclude='opencv_python_headless-*.dist-info' \
+        --exclude='insightface' --exclude='insightface-*.dist-info' \
+        --exclude='easydict' --exclude='easydict-*.dist-info' \
+        --exclude='pillow_heif' --exclude='pillow_heif-*.dist-info' --exclude='_pillow_heif*.so' \
         "$PROJECT_ROOT/python/" "$RESOURCES_DIR/python/"
 
     # 清理 site-packages/bin/（pip install 产生的 console_scripts，shebang 指向开发机路径，
