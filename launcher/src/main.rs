@@ -541,6 +541,13 @@ impl Splash {
             SplashMessage::WindowOpened(id) => {
                 // Capture the window ID when the window opens
                 self.window_id = Some(id);
+                // 窗口打开后，如有缺失依赖提示，动态加大窗口高度容纳列表
+                if !self.missing_deps.is_empty() {
+                    // 每条缺失项约 20px 高度 + 标题 20px + 内边距，基础 80px
+                    let extra = (self.missing_deps.len() as f32 + 1.0) * 22.0;
+                    let new_height = 80.0 + extra;
+                    return window::resize(id, iced::Size::new(320.0, new_height));
+                }
                 Task::none()
             }
             SplashMessage::ApiReady => {
@@ -820,15 +827,53 @@ impl Splash {
             .font(Font::MONOSPACE)
             .color([1.0, 1.0, 1.0, 1.0]);
         let dots_container = container(dots_text).width(Length::Fixed(36.0));
-        container(
-            iced::widget::row![label, dots_container]
-                .align_y(iced::alignment::Vertical::Center),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
+        let top_row = iced::widget::row![label, dots_container]
+            .align_y(iced::alignment::Vertical::Center);
+
+        // 缺失依赖提示（如有）
+        if self.missing_deps.is_empty() || self.closing {
+            // 无缺失 / closing 状态（重启/关闭中）：保持原布局，不显示缺失提示
+            // closing 时用户要重启了，提示已无意义
+            container(top_row)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .into()
+        } else {
+            // 有缺失：顶部 label 行 + 分隔 + 提示标题 + 缺失项列表
+            let hint_title = iced::widget::text("以下功能因依赖缺失暂不可用，请读 README 安装说明：")
+                .size(11)
+                .font(CJK_FONT)
+                .color([1.0, 0.85, 0.4, 1.0]); // 暖黄色提示
+            let items: Vec<Element<SplashMessage>> = self
+                .missing_deps
+                .iter()
+                .map(|s| {
+                    iced::widget::text(format!("• {}", s))
+                        .size(11)
+                        .font(CJK_FONT)
+                        .color([0.9, 0.9, 0.9, 1.0])
+                        .into()
+                })
+                .collect();
+            let items_column = iced::widget::column![hint_title]
+                .push(iced::widget::Space::new(Length::Fixed(2.0), Length::Fixed(2.0)))
+                .extend(items)
+                .spacing(2);
+            container(
+                iced::widget::column![top_row]
+                    .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(8.0)))
+                    .push(items_column)
+                    .align_x(iced::alignment::Horizontal::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(8)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Top)
+            .into()
+        }
     }
 
     fn subscription(&self) -> Subscription<SplashMessage> {
