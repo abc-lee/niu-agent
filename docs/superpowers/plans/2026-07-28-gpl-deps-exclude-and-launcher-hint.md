@@ -124,7 +124,16 @@ gitnexus impact 分析 `Splash::new` 和 `Splash::view`（预期 LOW，只加字
 
 - [ ] **Step 2: 加 `check_missing_deps` 函数**
 
-在 `launcher/src/main.rs` 的 `detect_resources_root()` 函数（约第 1378 行）之后，加一个新函数：
+先在 `launcher/src/main.rs` 顶部 use 区（第 11 行 `use std::path::PathBuf;` 旁）加一行导入 `Path`：
+
+```rust
+use std::path::Path;
+use std::path::PathBuf;
+```
+
+（`check_missing_deps` 函数签名用 `&Path`，当前只导入了 `PathBuf`，不导入 `Path` 会编译错误 `cannot find type Path`）
+
+然后在 `detect_resources_root()` 函数（约第 1378 行）之后，加一个新函数：
 
 ```rust
 /// Check for optional dependencies excluded from the DMG for license compliance.
