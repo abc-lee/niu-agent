@@ -1,7 +1,6 @@
-# AGENTS.md — AI-Bot 项目知识库
+# AGENTS.md — Niu (niu-agent) 权威项目指南
 
-> **权威项目指南是 `CLAUDE.md`。本文件是其知识库补充，记录架构、开发规范与历史更新日志。**
-> 若本文件与 `CLAUDE.md` 冲突，以 `CLAUDE.md` 为准。
+> **本文件是项目的权威指南，每次会话必读。** 记录架构、开发规范与历史更新日志。
 
 核心架构：**Electron 33 前端 + Rust 启动器 + Python Agent 核心 + 多个 MCP 服务器** 的混合架构。
 
@@ -66,25 +65,32 @@ MCP 服务器集群 (mcp-servers/)
 
 ### 安装依赖
 
-两种方式：
-- `pip install -e .` 逐个安装是**开发模式**，修改代码立即生效。
-- `pip install -r requirements.txt` 是**打包模式**，用于构建嵌入式 Python 环境（`python/`）。
+两套依赖必须都装：
+1. **Python 依赖**（Agent 核心 + MCP 服务器）→ `python/` 自包含环境
+2. **Electron 前端依赖**（`ui/main/node_modules`）→ `npm install`
 
 ```bash
-# Python 依赖（Agent 核心）
-cd agent && pip install -e .
+# 1. 创建自包含 Python 运行时（venv + 全量依赖）
+# macOS
+python3.11 -m venv --copies python
+python/bin/pip install --upgrade pip
+python/bin/pip install -r requirements.txt
 
-# Python 依赖（各 MCP 服务器）
-cd mcp-servers/photo-server && pip install -e .
-cd mcp-servers/lightrag-server && pip install -e .
-cd mcp-servers/file-parser && pip install -e .
-cd mcp-servers/config-manager && pip install -e .
-cd mcp-servers/memory-server && pip install -e .
-cd mcp-servers/session-manager && pip install -e .
+# Windows（用完整路径指定 Python 3.11）
+C:\Python311\python.exe -m venv --copies python
+python\Scripts\pip.exe install --upgrade pip
+python\Scripts\pip.exe install -r requirements.txt
 
-# 开发/测试依赖（可选，不进入分发包）
-pip install -r requirements-dev.txt
+# 2. 安装 Electron 前端依赖
+cd ui/main && npm install && cd ../..
+
+# 3. 开发/测试依赖（可选，不进入分发包）
+# macOS: python/bin/pip install -r requirements-dev.txt
+# Windows: python\Scripts\pip.exe install -r requirements-dev.txt
 ```
+
+MCP 服务器不需要 `pip install`，通过 `config/mcp-servers.yaml` 的 `workdir` 配置即可加载模块。
+Rust 启动器在 Windows 上通过 `cmd /C npm start` 拉起 Electron，`node_modules` 不存在会导致设置窗口无法弹出、启动器直接退出。
 
 ### 运行项目
 
@@ -472,7 +478,6 @@ preload_face_model()
 - `docs/manual-mcp-disk.md` — MCP 虚拟磁盘手册
 - `docs/manual-general-subagent.md` — 通用子 Agent 体系（阶段三）
 - `docs/personal-assistant-architecture-v2.md` — 产品定位与核心亮点（架构 v2）
-- `CLAUDE.md` — 权威项目指南
 - `docs/feature-photo-processing.md` — 照片处理设计
 - `docs/feature-file-management.md` — 文件管理设计
 - `docs/feature-document-processing.md` — 文档处理设计
@@ -486,8 +491,7 @@ preload_face_model()
 ---
 
 ## 历史更新日志
-
-> 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件正文为准。
+> 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
 ### 2026-04-15
 

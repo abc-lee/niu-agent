@@ -363,24 +363,27 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 ## 可选组件安装
 
-出于许可证合规，DMG 安装包默认不含以下两个组件。不装也不影响 Niu 主体功能，只是对应子功能不工作。用户按需手动安装。
+出于许可证合规，安装包默认不含以下两个组件。不装也不影响 Niu 主体功能，只是对应子功能不工作。用户按需手动安装。启动器启动时会检测缺失依赖并在 splash 窗口提示用户读 README。
 
 ### 脑区社区检测（igraph + leidenalg）
 
-脑区的**社区检测**子功能（自动发现知识图谱中的社区结构、把实体聚类成脑区）依赖 `igraph` + `leidenalg` 两个库。这两个库是 GNU GPL 许可证，**默认不含在 DMG 里**——不装也能正常使用 Niu 所有其他功能（包括脑区激活/调暗/状态管理），只是脑区社区检测不工作（`region_detector.py` 的 `try/except ImportError` 会优雅降级，不报错）。
+脑区的**社区检测**子功能（自动发现知识图谱中的社区结构、把实体聚类成脑区）依赖 `igraph` + `leidenalg` 两个库。这两个库是 GNU GPL 许可证，**默认不含在安装包里**——不装也能正常使用 Niu 所有其他功能（包括脑区激活/调暗/状态管理），只是脑区社区检测不工作（`region_detector.py` 的 `try/except ImportError` 会优雅降级，不报错）。
 
 如果需要脑区社区检测，用**程序自带的 Python**（不是系统 Python）手动安装：
 
 ```bash
-# 用 DMG 安装后的自包含 Python（路径以 /Applications/niu.app 为例）
+# macOS（路径以 /Applications/niu.app 为例）
 /Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install igraph==1.0.0 leidenalg==0.11.0
+
+# Windows（路径以解压目录为例，如 D:\Niu）
+.\python\Scripts\pip.exe install igraph==1.0.0 leidenalg==0.11.0
 ```
 
-> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是自包含环境（macOS: `niu.app/Contents/Resources/python/`，Windows: 解压目录下的 `python/`），装到系统 Python 里 Niu 看不到。
 
 > 📋 许可证说明：`igraph` 和 `leidenalg` 都是 GNU GPL 许可证。用户自行安装=用户与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这两个包，不构成 GPL 传染。`leidenalg` 依赖 `igraph`，pip 会自动安装。
 
-> ⚠️ **装完必须重签名**：向 `niu.app` 内部装包会写入新的 `.so`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝（dlopen 失败）。执行（ad-hoc 签名，inside-out 逐个签 `.so`/`.dylib` 再签 bundle 顶层——`codesign --deep` 自 macOS 13.3 起已废弃，不会签新增的 `.so`）：
+> ⚠️ **macOS 装完必须重签名**：向 `niu.app` 内部装包会写入新的 `.so`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝（dlopen 失败）。**Windows 无需此步骤。** 执行（ad-hoc 签名，inside-out 逐个签 `.so`/`.dylib` 再签 bundle 顶层——`codesign --deep` 自 macOS 13.3 起已废弃，不会签新增的 `.so`）：
 >
 > ```bash
 > find /Applications/niu.app/Contents/Resources/python -type f \
@@ -393,45 +396,55 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 ### 照片处理（人脸识别 + HEIC 支持）
 
-照片处理功能（拖入照片入库、人脸识别、人物管理）依赖 `opencv-python-headless` + `insightface` + `easydict` + `pillow-heif` 四个包。其中 `opencv-python-headless` 捆绑的 FFmpeg 含 GPL 编解码器（libx264/libx265），`pillow-heif` 链接 libx265（GPLv2），出于许可证合规**默认不含在 DMG 里**——不装也能正常使用 Niu 所有其他功能，只是照片处理不可用。
+照片处理功能（拖入照片入库、人脸识别、人物管理）依赖 `opencv-python-headless` + `insightface` + `easydict` + `pillow-heif` 四个包。其中 `opencv-python-headless` 捆绑的 FFmpeg 含 GPL 编解码器（libx264/libx265），`pillow-heif` 链接 libx265（GPLv2），出于许可证合规**默认不含在安装包里**——不装也能正常使用 Niu 所有其他功能，只是照片处理不可用。
 
-如果需要照片处理，分三步：装依赖 + 下模型 + 重签名。
+**macOS**：分三步（装依赖 + 下模型 + 重签名）。**Windows**：分两步（装依赖 + 下模型，无需重签名）。
 
-**第一步：装依赖到 niu.app 的 Python 里**
+**第一步：装依赖**
 
 ```bash
-# 必须用 niu 自带的 python3，包装到 niu.app 内的 site-packages，装到系统 Python 里 Niu 看不到
+# macOS（路径以 /Applications/niu.app 为例）
 /Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install \
+    opencv-python-headless==4.11.0.86 \
+    insightface==0.7.3 \
+    easydict==1.13 \
+    pillow-heif==1.4.0
+
+# Windows（路径以解压目录为例，如 D:\Niu）
+.\python\Scripts\pip.exe install \
     opencv-python-headless==4.11.0.86 \
     insightface==0.7.3 \
     easydict==1.13 \
     pillow-heif==1.4.0
 ```
 
-> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是自包含环境（macOS: `niu.app/Contents/Resources/python/`，Windows: 解压目录下的 `python/`），装到系统 Python 里 Niu 看不到。
 
 > 📋 许可证说明：`opencv-python-headless` 捆绑 GPL 版 FFmpeg，`pillow-heif` 链接 libx265（GPLv2）。用户自行安装=用户与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这些包，不构成 GPL 传染。`insightface` 和 `easydict` 是人脸识别库依赖，一并安装。
 
-**第二步：下载 buffalo_l 模型放到 niu.app 内**
+**第二步：下载 buffalo_l 模型**
 
 详见下面「人脸识别模型（buffalo_l）」子节。
 
-**第三步：重签名**
+**第三步（仅 macOS）：重签名**
 
-详见下面「重签名」子节。
+详见下面「重签名」子节。Windows 无需重签名。
 
 安装后重启 Niu，照片处理功能会自动启用（`__init__.py` 的 `try/except ImportError` 会检测到包可用）。
 
 #### 人脸识别模型（buffalo_l）
 
-照片处理的人脸识别功能依赖 InsightFace 的 `buffalo_l` 模型（~326MB）。出于非商业许可证限制，**模型文件默认不含在 DMG 里**。
+照片处理的人脸识别功能依赖 InsightFace 的 `buffalo_l` 模型（~326MB）。出于非商业许可证限制，**模型文件默认不含在安装包里**。
 
 Niu **不会自动下载**模型（避免下载卡死用户以为程序坏了），本地没有模型时人脸识别直接报错，需手动下载安装：
 
 1. 从 InsightFace 官方下载 `buffalo_l.zip`：
    - 地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3
-2. 解压后把 5 个 `.onnx` 文件放到 `/Applications/niu.app/Contents/Resources/models/models/buffalo_l/`（5 个文件直接在该目录下，不要多套一层）
+2. 解压后把 5 个 `.onnx` 文件放到：
+   - **macOS**：`/Applications/niu.app/Contents/Resources/models/models/buffalo_l/`
+   - **Windows**：`<解压目录>/models/models/buffalo_l/`
    - 5 个文件：`1k3d68.onnx` / `2d106det.onnx` / `det_10g.onnx` / `genderage.onnx` / `w600k_r50.onnx`
+   - 文件直接放在该目录下，不要多套一层子目录
 
 > 📋 许可证说明：InsightFace buffalo_l 模型是非商业许可证。用户自行下载=用户与 InsightFace 许可方建立许可关系，Niu 本身不分发这个模型，不承担非商业许可的责任。仅限非商业用途。
 
@@ -455,10 +468,14 @@ codesign --force --sign - /Applications/niu.app
 
 人脸识别不工作（拖入照片不响应或报错）时，Agent 应：
 
-1. **判断是否依赖缺失**：检查 `niu.app/Contents/Resources/python/lib/python3.11/site-packages/` 下是否有 `cv2` / `insightface` / `easydict` / `pillow_heif` 目录（任一缺失=依赖没装或装错位置，见上面「第一步」）。
-2. **判断是否模型缺失**：检查 `niu.app/Contents/Resources/models/models/buffalo_l/` 目录是否含 5 个 `.onnx` 文件。目录不存在或文件不全=模型没装（见上面「人脸识别模型」子节）。
-3. **判断是否没重签名**：若依赖和模型都在但加载报 `dlopen`/`code object is not signed` 错误，是装完没重签（见上面「重签名」子节）。启动器启动时会检测缺失依赖并提示，但不会检测签名状态，需用户手动重签。
-3. **重启 Niu**：放好后重启，下次用人脸识别会直接从本地加载，不再下载。
+1. **判断是否依赖缺失**：检查 site-packages 下是否有 `cv2` / `insightface` / `easydict` / `pillow_heif` 目录（任一缺失=依赖没装或装错位置，见上面「第一步」）。路径：
+   - **macOS**：`niu.app/Contents/Resources/python/lib/python3.11/site-packages/`
+   - **Windows**：`<解压目录>/python/Lib/site-packages/`
+2. **判断是否模型缺失**：检查 `models/models/buffalo_l/` 目录是否含 5 个 `.onnx` 文件。目录不存在或文件不全=模型没装（见上面「人脸识别模型」子节）。路径：
+   - **macOS**：`niu.app/Contents/Resources/models/models/buffalo_l/`
+   - **Windows**：`<解压目录>/models/models/buffalo_l/`
+3. **判断是否没重签名（仅 macOS）**：若依赖和模型都在但加载报 `dlopen`/`code object is not signed` 错误，是装完没重签（见上面「重签名」子节）。Windows 无此问题。启动器启动时会检测缺失依赖并提示，但不会检测签名状态，需用户手动重签。
+4. **重启 Niu**：放好后重启，下次用人脸识别会直接从本地加载，不再下载。
 
 ## 字体配置
 
