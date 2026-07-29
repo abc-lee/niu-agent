@@ -344,7 +344,7 @@ def test_context_overflow_still_works():
         client=mock_client, system_prompt="test", user_input="test",
         handler=handler, tools_schema=[], max_turns=1, verbose=False,
         context_window_tokens=200000, context_fifo_threshold=0,
-        context_target_threshold=100000, on_context_high_usage=lambda m, t, l: None,
+        context_target_threshold=100000, on_context_high_usage=lambda m, t, limit: None,
     )
     events = _collect_events(gen)
 

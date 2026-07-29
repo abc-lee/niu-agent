@@ -456,10 +456,10 @@ def test_render_permanent_section_missing_type():
     assert "no type field" in result
     assert "has type" in result
     # "has type" should appear as task (📋 prefix), "no type field" as memory (numbered)
-    task_line = [l for l in result.split("\n") if "📋" in l]
-    assert any("has type" in l for l in task_line)
-    memory_line = [l for l in result.split("\n") if "no type field" in l]
-    assert any(l.strip().startswith("1.") for l in memory_line)
+    task_line = [line for line in result.split("\n") if "📋" in line]
+    assert any("has type" in line for line in task_line)
+    memory_line = [line for line in result.split("\n") if "no type field" in line]
+    assert any(line.strip().startswith("1.") for line in memory_line)
 
     print("PASS: test_render_permanent_section_missing_type")
 

@@ -280,8 +280,8 @@ class TestJournalCursorFallback:
         # 在 journal 相关行中应有回退逻辑
         lines = source.split("\n")
         journal_revert_lines = [
-            l for l in lines
-            if "Journal cursor" in l and "reverting" in l
+            line for line in lines
+            if "Journal cursor" in line and "reverting" in line
         ]
         assert len(journal_revert_lines) >= 1
 

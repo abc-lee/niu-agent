@@ -161,9 +161,9 @@ class TestFormatRegionMap:
 
         # First line is header, rest are region lines
         # Lit regions should come before dimming, dimming before off
-        lit_indices = [i for i, l in enumerate(lines) if STATUS_LIT in l]
-        dimming_indices = [i for i, l in enumerate(lines) if STATUS_DIMMING in l]
-        off_indices = [i for i, l in enumerate(lines) if STATUS_OFF in l]
+        lit_indices = [i for i, line in enumerate(lines) if STATUS_LIT in line]
+        dimming_indices = [i for i, line in enumerate(lines) if STATUS_DIMMING in line]
+        off_indices = [i for i, line in enumerate(lines) if STATUS_OFF in line]
 
         if lit_indices and dimming_indices:
             assert max(lit_indices) < min(dimming_indices)

@@ -515,7 +515,7 @@ def test_strip_analysis_missing_then_parse():
     assert result == raw
     # 解析 keep/update 仍可用
     lines = result.strip().splitlines()
-    keep_line = [l for l in lines if l.lower().startswith("keep=")]
+    keep_line = [line for line in lines if line.lower().startswith("keep=")]
     assert len(keep_line) == 1
     assert "1,2,3" in keep_line[0]
 

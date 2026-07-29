@@ -1771,8 +1771,8 @@ class NiuRunner:
                 # If activation_mgr is None, try forcing a RegionSync once
                 if _activation_mgr is None and self._brain_adapter._get_rag() is not None:
                     # 冷却检查：forced sync 失败后 5 分钟内不再重试，避免死循环
-                    FORCED_SYNC_COOLDOWN_SECONDS = 300
-                    if time.time() - self._last_forced_sync_fail_time < FORCED_SYNC_COOLDOWN_SECONDS:
+                    forced_sync_cooldown_seconds = 300
+                    if time.time() - self._last_forced_sync_fail_time < forced_sync_cooldown_seconds:
                         logger.debug("[BrainInjector] forced sync in cooldown, skip")
                         return None
                     # 防并发：已有 daemon 线程在跑，跳过避免启动多个
