@@ -384,19 +384,41 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 安装后重启 Niu，脑区社区检测会自动启用（`region_detector.py` 的 `try/except ImportError` 会检测到这两个包可用）。
 
-### 人脸识别模型（InsightFace buffalo_l）
+### 照片处理（人脸识别 + HEIC 支持）
 
-照片处理的人脸识别功能依赖 InsightFace 的 `buffalo_l` 模型（~326MB）。出于非商业许可证限制，**模型文件默认不含在 DMG 里**——DMG 只含 InsightFace 库代码，不含模型权重。
+照片处理功能（拖入照片入库、人脸识别、人物管理）依赖 `opencv-python-headless` + `insightface` + `easydict` + `pillow-heif` 四个包。其中 `opencv-python-headless` 捆绑的 FFmpeg 含 GPL 编解码器（libx264/libx265），`pillow-heif` 链接 libx265（GPLv2），出于许可证合规**默认不含在 DMG 里**——不装也能正常使用 Niu 所有其他功能，只是照片处理不可用。
 
-首次使用人脸识别功能（拖入照片入库）时，InsightFace 会**自动下载** `buffalo_l` 模型到用户家目录：
+如果需要照片处理，用**程序自带的 Python**手动安装：
 
+```bash
+# 用 DMG 安装后的自包含 Python（路径以 /Applications/niu.app 为例）
+/Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install \
+    opencv-python-headless==4.11.0.86 \
+    insightface==0.7.3 \
+    easydict==1.13 \
+    pillow-heif==1.4.0
 ```
-~/.insightface/models/buffalo_l/
-```
 
-下载需要网络，首次较慢（~326MB）。下载完成后缓存在 `~/.insightface/`，后续不再下载。
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
 
-> 📋 许可证说明：InsightFace buffalo_l 模型是非商业许可证。用户首次使用时自动下载=用户与 InsightFace 许可方建立许可关系，Niu 本身不分发这个模型，不承担非商业许可的责任。仅限非商业用途。
+> 📋 许可证说明：`opencv-python-headless` 捆绑 GPL 版 FFmpeg，`pillow-heif` 链接 libx265（GPLv2）。用户自行安装=用户与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这些包，不构成 GPL 传染。`insightface` 和 `easydict` 是人脸识别库依赖，一并安装。
+
+> ⚠️ 安装后会修改 `niu.app` 内部文件，可能触发 macOS 重新弹一次"无法验证开发者"提示。点"打开"即可，不影响使用。
+
+安装后重启 Niu，照片处理功能会自动启用（`__init__.py` 的 `try/except ImportError` 会检测到包可用）。
+
+#### 人脸识别模型（buffalo_l）
+
+照片处理的人脸识别功能依赖 InsightFace 的 `buffalo_l` 模型（~326MB）。出于非商业许可证限制，**模型文件默认不含在 DMG 里**。
+
+首次使用人脸识别功能（拖入照片入库）时，InsightFace 会**尝试自动下载** `buffalo_l` 模型到 `~/.insightface/models/buffalo_l/`，但**国内网络常下载失败**，建议手动下载：
+
+1. 从 InsightFace 官方下载 `buffalo_l.zip`：
+   - 地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3
+2. 解压后把 5 个 `.onnx` 文件放到 `~/.insightface/models/buffalo_l/`（5 个文件直接在该目录下，不要多套一层）
+3. 重启 Niu，下次用人脸识别会直接从本地加载
+
+> 📋 许可证说明：InsightFace buffalo_l 模型是非商业许可证。用户自行下载=用户与 InsightFace 许可方建立许可关系，Niu 本身不分发这个模型，不承担非商业许可的责任。仅限非商业用途。
 
 > 💡 模型加载后占用 ~326MB 内存，空闲 5 分钟自动卸载（`MODEL_IDLE_TIMEOUT_SECONDS = 300`）。
 
@@ -405,10 +427,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 模型文件 ~326MB，弱网环境或下载源不稳定时可能超时失败，表现为人脸识别不工作（拖入照片不响应或报错）。此时 Agent 应：
 
 1. **判断是否模型缺失**：检查 `~/.insightface/models/buffalo_l/` 目录是否存在且含 5 个 `.onnx` 文件（`1k3d68.onnx` / `2d106det.onnx` / `det_10g.onnx` / `genderage.onnx` / `w600k_r50.onnx`）。目录不存在或文件不全=模型没下载成功。
-2. **建议用户手动下载**：让用户从 InsightFace 官方下载模型压缩包 `buffalo_l.zip`，解压后放到 `~/.insightface/models/buffalo_l/`：
-   - 官方下载地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3 （找 `buffalo_l.zip`）
-   - 解压后目录结构应为 `~/.insightface/models/buffalo_l/*.onnx`（5 个 onnx 文件直接在该目录下，不要多套一层）
-   - 国内访问慢可用代理或镜像
+2. **建议用户手动下载**：让用户从 InsightFace 官方下载 `buffalo_l.zip`，解压后放到 `~/.insightface/models/buffalo_l/`（见上"人脸识别模型"子节）。
 3. **重启 Niu**：放好后重启，下次用人脸识别会直接从本地加载，不再下载。
 
 ## 字体配置
