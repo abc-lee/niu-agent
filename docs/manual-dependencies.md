@@ -289,7 +289,7 @@ python scripts/package_all_dependencies.py
 # - 向量模型 → models/bge-base-zh-v1.5/（默认）
 ```
 
-> ⚠️ `scripts/package_all_dependencies.py` 尚未更新，仍下载旧默认模型（minilm-l12）且 buffalo_l 路径不正确。建议直接手动下载模型，或首次启动时自动下载。
+> ⚠️ `scripts/package_all_dependencies.py` 尚未更新，仍下载旧默认模型（minilm-l12）。buffalo_l 现在禁止程序内下载，用户需手动下载放到 `models/models/buffalo_l/`（开发环境）或 `niu.app/Contents/Resources/models/models/buffalo_l/`（打包后），见 README「可选：启用照片处理」。
 
 **手动下载（备选）：**
 

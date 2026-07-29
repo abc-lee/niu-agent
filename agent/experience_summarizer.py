@@ -178,7 +178,6 @@ class ExperienceSummarizer:
 
         # 提取关键信息
         tools_used = list({t.tool_name for t in successful})
-        " → ".join(t.tool_name for t in context.tool_executions)
 
         # 生成标题
         title = self._generate_title(context.user_input, tools_used)

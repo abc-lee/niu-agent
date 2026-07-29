@@ -380,7 +380,14 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 > 📋 许可证说明：`igraph` 和 `leidenalg` 都是 GNU GPL 许可证。用户自行安装=用户与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这两个包，不构成 GPL 传染。`leidenalg` 依赖 `igraph`，pip 会自动安装。
 
-> ⚠️ 安装后会修改 `niu.app` 内部文件，可能触发 macOS 重新弹一次"无法验证开发者"提示。点"打开"即可，不影响使用。
+> ⚠️ **装完必须重签名**：向 `niu.app` 内部装包会写入新的 `.so`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝（dlopen 失败）。执行（ad-hoc 签名，inside-out 逐个签 `.so`/`.dylib` 再签 bundle 顶层——`codesign --deep` 自 macOS 13.3 起已废弃，不会签新增的 `.so`）：
+>
+> ```bash
+> find /Applications/niu.app/Contents/Resources/python -type f \
+>     \( -name "*.so" -o -name "*.dylib" \) -print0 \
+>     | xargs -0 -n 1 -P 4 codesign --force --sign -
+> codesign --force --sign - /Applications/niu.app
+> ```
 
 安装后重启 Niu，脑区社区检测会自动启用（`region_detector.py` 的 `try/except ImportError` 会检测到这两个包可用）。
 
@@ -388,10 +395,12 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 照片处理功能（拖入照片入库、人脸识别、人物管理）依赖 `opencv-python-headless` + `insightface` + `easydict` + `pillow-heif` 四个包。其中 `opencv-python-headless` 捆绑的 FFmpeg 含 GPL 编解码器（libx264/libx265），`pillow-heif` 链接 libx265（GPLv2），出于许可证合规**默认不含在 DMG 里**——不装也能正常使用 Niu 所有其他功能，只是照片处理不可用。
 
-如果需要照片处理，用**程序自带的 Python**手动安装：
+如果需要照片处理，分三步：装依赖 + 下模型 + 重签名。
+
+**第一步：装依赖到 niu.app 的 Python 里**
 
 ```bash
-# 用 DMG 安装后的自包含 Python（路径以 /Applications/niu.app 为例）
+# 必须用 niu 自带的 python3，包装到 niu.app 内的 site-packages，装到系统 Python 里 Niu 看不到
 /Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install \
     opencv-python-headless==4.11.0.86 \
     insightface==0.7.3 \
@@ -403,7 +412,13 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 > 📋 许可证说明：`opencv-python-headless` 捆绑 GPL 版 FFmpeg，`pillow-heif` 链接 libx265（GPLv2）。用户自行安装=用户与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这些包，不构成 GPL 传染。`insightface` 和 `easydict` 是人脸识别库依赖，一并安装。
 
-> ⚠️ 安装后会修改 `niu.app` 内部文件，可能触发 macOS 重新弹一次"无法验证开发者"提示。点"打开"即可，不影响使用。
+**第二步：下载 buffalo_l 模型放到 niu.app 内**
+
+详见下面「人脸识别模型（buffalo_l）」子节。
+
+**第三步：重签名**
+
+详见下面「重签名」子节。
 
 安装后重启 Niu，照片处理功能会自动启用（`__init__.py` 的 `try/except ImportError` 会检测到包可用）。
 
@@ -411,23 +426,38 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 照片处理的人脸识别功能依赖 InsightFace 的 `buffalo_l` 模型（~326MB）。出于非商业许可证限制，**模型文件默认不含在 DMG 里**。
 
-首次使用人脸识别功能（拖入照片入库）时，InsightFace 会**尝试自动下载** `buffalo_l` 模型到 `~/.insightface/models/buffalo_l/`，但**国内网络常下载失败**，建议手动下载：
+Niu **不会自动下载**模型（避免下载卡死用户以为程序坏了），本地没有模型时人脸识别直接报错，需手动下载安装：
 
 1. 从 InsightFace 官方下载 `buffalo_l.zip`：
    - 地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3
-2. 解压后把 5 个 `.onnx` 文件放到 `~/.insightface/models/buffalo_l/`（5 个文件直接在该目录下，不要多套一层）
-3. 重启 Niu，下次用人脸识别会直接从本地加载
+2. 解压后把 5 个 `.onnx` 文件放到 `/Applications/niu.app/Contents/Resources/models/models/buffalo_l/`（5 个文件直接在该目录下，不要多套一层）
+   - 5 个文件：`1k3d68.onnx` / `2d106det.onnx` / `det_10g.onnx` / `genderage.onnx` / `w600k_r50.onnx`
 
 > 📋 许可证说明：InsightFace buffalo_l 模型是非商业许可证。用户自行下载=用户与 InsightFace 许可方建立许可关系，Niu 本身不分发这个模型，不承担非商业许可的责任。仅限非商业用途。
 
 > 💡 模型加载后占用 ~326MB 内存，空闲 5 分钟自动卸载（`MODEL_IDLE_TIMEOUT_SECONDS = 300`）。
 
-#### 首次下载超时失败怎么办
+#### 重签名
 
-模型文件 ~326MB，弱网环境或下载源不稳定时可能超时失败，表现为人脸识别不工作（拖入照片不响应或报错）。此时 Agent 应：
+向 `niu.app` 内部装包/放模型会写入新的 `.so`/`.onnx`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝（dlopen 失败）。执行（ad-hoc 签名，inside-out 逐个签 `.so`/`.dylib` 再签 bundle 顶层——`codesign --deep` 自 macOS 13.3 起已废弃，不会签新增的 `.so`）：
 
-1. **判断是否模型缺失**：检查 `~/.insightface/models/buffalo_l/` 目录是否存在且含 5 个 `.onnx` 文件（`1k3d68.onnx` / `2d106det.onnx` / `det_10g.onnx` / `genderage.onnx` / `w600k_r50.onnx`）。目录不存在或文件不全=模型没下载成功。
-2. **建议用户手动下载**：让用户从 InsightFace 官方下载 `buffalo_l.zip`，解压后放到 `~/.insightface/models/buffalo_l/`（见上"人脸识别模型"子节）。
+```bash
+# 1. 逐个签 site-packages 里的 .so/.dylib（并行 4 进程）
+find /Applications/niu.app/Contents/Resources/python -type f \
+    \( -name "*.so" -o -name "*.dylib" \) -print0 \
+    | xargs -0 -n 1 -P 4 codesign --force --sign -
+
+# 2. 签 bundle 顶层（不 --deep）
+codesign --force --sign - /Applications/niu.app
+```
+
+#### 人脸识别不工作怎么排查
+
+人脸识别不工作（拖入照片不响应或报错）时，Agent 应：
+
+1. **判断是否依赖缺失**：检查 `niu.app/Contents/Resources/python/lib/python3.11/site-packages/` 下是否有 `cv2` / `insightface` / `easydict` / `pillow_heif` 目录（任一缺失=依赖没装或装错位置，见上面「第一步」）。
+2. **判断是否模型缺失**：检查 `niu.app/Contents/Resources/models/models/buffalo_l/` 目录是否含 5 个 `.onnx` 文件。目录不存在或文件不全=模型没装（见上面「人脸识别模型」子节）。
+3. **判断是否没重签名**：若依赖和模型都在但加载报 `dlopen`/`code object is not signed` 错误，是装完没重签（见上面「重签名」子节）。启动器启动时会检测缺失依赖并提示，但不会检测签名状态，需用户手动重签。
 3. **重启 Niu**：放好后重启，下次用人脸识别会直接从本地加载，不再下载。
 
 ## 字体配置
