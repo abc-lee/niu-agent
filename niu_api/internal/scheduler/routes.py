@@ -4,13 +4,12 @@ Scheduler FastAPI Router
 HTTP 接口用于 MCP 适配器和其他程序化调用。
 """
 
-from typing import Optional
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from loguru import logger
+from pydantic import BaseModel
 
 from .service import get_store
-
 
 # ============== 路由器 ==============
 
@@ -24,14 +23,14 @@ class CreateTaskRequest(BaseModel):
     scheduled_at: str
     event_type: str = "reminder"
     is_recurring: bool = False
-    cron_expr: Optional[str] = None
-    name: Optional[str] = None
+    cron_expr: str | None = None
+    name: str | None = None
 
 
 class UpdateTaskRequest(BaseModel):
-    content: Optional[str] = None
-    scheduled_at: Optional[str] = None
-    cron_expr: Optional[str] = None
+    content: str | None = None
+    scheduled_at: str | None = None
+    cron_expr: str | None = None
 
 
 # ============== HTTP 接口 ==============
@@ -65,11 +64,11 @@ async def create_task(request: CreateTaskRequest):
         }
     except Exception as e:
         logger.error(f"[SCHEDULER] Create task error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/tasks")
-async def list_tasks(status: Optional[str] = None):
+async def list_tasks(status: str | None = None):
     """查询任务列表"""
     try:
         store = get_store()
@@ -81,7 +80,7 @@ async def list_tasks(status: Optional[str] = None):
         }
     except Exception as e:
         logger.error(f"[SCHEDULER] List tasks error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/tasks/{task_id}")
@@ -97,7 +96,7 @@ async def get_task(task_id: str):
         raise
     except Exception as e:
         logger.error(f"[SCHEDULER] Get task error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.delete("/tasks/{task_id}")
@@ -112,7 +111,7 @@ async def cancel_task(task_id: str):
         }
     except Exception as e:
         logger.error(f"[SCHEDULER] Cancel task error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.put("/tasks/{task_id}")
@@ -132,4 +131,4 @@ async def update_task(task_id: str, request: UpdateTaskRequest):
         }
     except Exception as e:
         logger.error(f"[SCHEDULER] Update task error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
