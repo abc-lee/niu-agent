@@ -242,11 +242,13 @@ python3.11 -m venv --copies python
 python/bin/pip install --upgrade pip
 python/bin/pip install -r requirements.txt
 
-# 3. 初始化用户数据目录（见下文"用户数据目录"）
+# 3. 安装 Electron 前端依赖
+cd ui/main && npm install && cd ../..
 
-# 4. 编译并启动 Rust 启动器
+# 4. 初始化用户数据目录（见下文"用户数据目录"）
+
+# 5. 编译并启动 Rust 启动器
 cd launcher && cargo run --release
-```
 
 启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。支持的模型预设见 `config/llm-presets.json`，本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
 
