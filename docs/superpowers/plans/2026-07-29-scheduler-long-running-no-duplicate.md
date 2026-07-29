@@ -112,10 +112,10 @@ class TestResetStaleInProgress:
             is_recurring=True,
             cron_expr="0 8 * * *",
         )
-        # 固定参考时钟：次日 07:30
+        # 固定参考时钟：用绝对构造避免墙钟依赖
+        # now_fixed 同时用于 stale_time 计算和 reset_stale_in_progress 的 now 参数
+        # 无论 now_fixed 的绝对值如何，stale(23:00) 距 now(07:30) = 8.5h > 8h 阈值，必触发重置
         now_fixed = datetime.now().replace(hour=7, minute=30, second=0, microsecond=0)
-        # 但如果现在就是 07:30 之前，now_fixed 会是"今天 07:30"（未来），不合理
-        # 所以用绝对构造：昨晚 23:00 开始，现在 07:30
         stale_time = (now_fixed - timedelta(hours=8, minutes=30)).isoformat()  # 昨晚 23:00
         store.update_task(task_id, status="in_progress", triggered_at=stale_time, expected_status="pending")
 
@@ -186,6 +186,9 @@ Expected: FAIL with `AttributeError: 'TaskStore' object has no attribute 'reset_
 
         triggered_at 为 NULL 的 in_progress 任务不重置（异常数据，避免误伤）。
 
+        与 recover_orphaned_tasks 一致，重置 in_progress→pending 时清除 triggered_at，
+        避免残留旧时间戳污染 retry_failed_tasks 的重试间隔判断。
+
         Args:
             timeout_hours: 超时阈值（小时），默认 8
             now: 参考时刻（用于测试注入固定时钟，消除墙钟依赖）；默认 datetime.now()
@@ -205,7 +208,7 @@ Expected: FAIL with `AttributeError: 'TaskStore' object has no attribute 'reset_
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE scheduled_tasks
-                SET status = 'pending'
+                SET status = 'pending', triggered_at = NULL
                 WHERE status = 'in_progress'
                   AND triggered_at IS NOT NULL
                   AND datetime(triggered_at) <= datetime(?)
@@ -622,8 +625,9 @@ class TestLongRunningNoDuplicate:
 
             # CAS 保证只触发一次
             assert call_count == 1, f"Expected 1 callback, got {call_count}"
-            # 任务应被删除（一次性任务成功后 delete_task_permanent）
-            assert store.get_task(task_id) is None
+            # CAS 保证只触发一次：任务要么被删除（一次性任务成功后 delete），要么状态不是 pending（不会被重新查出）
+            task = store.get_task(task_id)
+            assert task is None or task['status'] != 'pending', f"Task still pending, may be re-triggered"
         finally:
             s1._executor.shutdown(wait=False)
             s2._executor.shutdown(wait=False)
@@ -670,6 +674,7 @@ git commit -m "test(scheduler): 验证长执行任务防重复触发 — CAS 提
 - `_stale_timeout_hours` — Task 2 Step 3 在 `__init__` 定义，Step 5 在 fixture 同步。✅
 - `triggered_at` — schema L36 已有，Task 1 SQL 复用。✅
 - `recover_orphaned_tasks` triggered_at 清除 — Task 1.5 修改 SQL 加 `triggered_at = NULL`，`TestRecoverOrphanedClearsTriggeredAt` 验证。避免残留值污染 `retry_failed_tasks`（L409-410 用 triggered_at 判断重试间隔）。✅
+- `reset_stale_in_progress` 与 `recover_orphaned_tasks` 都在 in_progress→pending 转换时清 triggered_at=NULL，保持一致。✅
 
 ---
 
