@@ -261,7 +261,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, triggered_at
                 FROM scheduled_tasks
                 WHERE id = ?
             """, (task_id,))
@@ -283,7 +283,8 @@ class TaskStore:
             "created_at": row[7],
             "last_executed_date": row[8],
             "name": row[9],
-            "chat_id": row[10]
+            "chat_id": row[10],
+            "triggered_at": row[11]
         }
 
     def delete_task_permanent(self, task_id: str) -> bool:
@@ -360,7 +361,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                UPDATE scheduled_tasks SET status = 'pending'
+                UPDATE scheduled_tasks SET status = 'pending', triggered_at = NULL
                 WHERE status = 'in_progress'
             """)
             recovered = cursor.rowcount
