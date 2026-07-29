@@ -2,7 +2,7 @@
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -74,9 +74,9 @@ class TaskStore:
         scheduled_at: str,
         event_type: str = "reminder",
         is_recurring: bool = False,
-        cron_expr: Optional[str] = None,
-        name: Optional[str] = None,
-        chat_id: Optional[str] = None
+        cron_expr: str | None = None,
+        name: str | None = None,
+        chat_id: str | None = None
     ) -> str:
         """创建任务"""
         task_id = str(uuid.uuid4())
@@ -95,7 +95,7 @@ class TaskStore:
 
         return task_id
 
-    def list_tasks(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_tasks(self, status: str | None = None) -> list[dict[str, Any]]:
         """查询任务列表"""
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         try:
@@ -154,7 +154,7 @@ class TaskStore:
             conn.close()
         return affected > 0
 
-    def find_task_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+    def find_task_by_name(self, name: str) -> dict[str, Any] | None:
         """按 name 查找非取消状态的任务"""
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         try:
@@ -190,13 +190,13 @@ class TaskStore:
     def update_task(
         self,
         task_id: str,
-        content: Optional[str] = None,
-        scheduled_at: Optional[str] = None,
-        cron_expr: Optional[str] = None,
-        status: Optional[str] = None,
-        expected_status: Optional[str] = None,
-        name: Optional[str] = None,
-        triggered_at: Optional[str] = None
+        content: str | None = None,
+        scheduled_at: str | None = None,
+        cron_expr: str | None = None,
+        status: str | None = None,
+        expected_status: str | None = None,
+        name: str | None = None,
+        triggered_at: str | None = None
     ) -> bool:
         """更新任务
 
@@ -254,7 +254,7 @@ class TaskStore:
             conn.close()
         return affected > 0
 
-    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+    def get_task(self, task_id: str) -> dict[str, Any] | None:
         """获取单个任务"""
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         try:
@@ -317,7 +317,7 @@ class TaskStore:
             conn.close()
         return affected > 0
 
-    def get_overdue_tasks(self) -> List[Dict[str, Any]]:
+    def get_overdue_tasks(self) -> list[dict[str, Any]]:
         """获取所有到期和过期的待执行任务（scheduled_at <= now）"""
         from datetime import datetime
 
@@ -370,7 +370,7 @@ class TaskStore:
             conn.close()
         return recovered
 
-    def reset_stale_in_progress(self, timeout_hours: int = 8, now: Optional[datetime] = None) -> int:
+    def reset_stale_in_progress(self, timeout_hours: int = 8, now: datetime | None = None) -> int:
         """将 triggered_at 超过 timeout_hours 的 in_progress 任务重置为 pending
 
         用于防止任务执行时间过长或崩溃后状态卡死。跨日期计算由 datetime 差值

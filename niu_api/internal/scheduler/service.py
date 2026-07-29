@@ -10,17 +10,15 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
 from .scheduler import Scheduler
 from .task_store import TaskStore
 
-
 # ============== 全局状态 ==============
 
-_scheduler: Optional[Scheduler] = None
+_scheduler: Scheduler | None = None
 _init_lock = threading.Lock()
 
 
@@ -37,7 +35,7 @@ def get_db_path() -> str:
     memory_path = Path.home() / ".niu" / "memory.json"
     if memory_path.exists():
         try:
-            with open(memory_path, "r", encoding="utf-8") as f:
+            with open(memory_path, encoding="utf-8") as f:
                 memory = json.load(f)
                 workspace = memory.get("workspace", {}).get("path")
                 if workspace and Path(workspace).exists():
@@ -56,7 +54,7 @@ def get_db_path() -> str:
 
 # ============== 触发回调 ==============
 
-def trigger_callback(task: dict) -> Optional[str]:
+def trigger_callback(task: dict) -> str | None:
     """
     任务触发回调：通过 ChatQueue 入队并等待 Agent 回复
 
@@ -94,7 +92,7 @@ def trigger_callback(task: dict) -> Optional[str]:
         return None
 
     # 单次尝试函数：通过 ChatQueue 入队并等待回复
-    def _try_once() -> Optional[str]:
+    def _try_once() -> str | None:
         try:
             q = get_chat_queue()
             future = asyncio.run_coroutine_threadsafe(
