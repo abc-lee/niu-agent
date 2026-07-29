@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use clap::Parser;
 use iced::widget::container;
 use iced::window;
@@ -1311,7 +1314,6 @@ fn kill_stale_api_process(port: u16) {
 fn launch_window(name: &str, port: u16) -> Result<std::process::Child, Box<dyn std::error::Error>> {
     let resources_root = detect_resources_root();
     let window_dir = resources_root.join("ui").join("main");
-
     #[cfg(windows)]
     {
         let mut cmd = Command::new("cmd");
@@ -1319,9 +1321,11 @@ fn launch_window(name: &str, port: u16) -> Result<std::process::Child, Box<dyn s
             .env("NIU_WINDOW", name)
             .env("NIU_API_PORT", port.to_string())
             .current_dir(&window_dir);
-        cmd.stdout(std::process::Stdio::inherit());
-        cmd.stderr(std::process::Stdio::inherit());
-        cmd.stdin(std::process::Stdio::inherit());
+        // Windows: CREATE_NO_WINDOW 避免弹 cmd 控制台窗口
+        cmd.creation_flags(0x08000000);
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::null());
         Ok(cmd.spawn()?)
     }
 
@@ -1785,6 +1789,9 @@ fn main() {
             Err(_) => project_root_bg.clone(),
         };
         api_server_cmd.current_dir(&api_server_cwd);
+        // Windows: CREATE_NO_WINDOW 避免 Python 进程弹控制台窗口
+        #[cfg(windows)]
+        api_server_cmd.creation_flags(0x08000000);
 
         // Set environment: inherit current env first, then override with our vars
         // IMPORTANT: env::vars() must come BEFORE PYTHONHOME, otherwise inherited
