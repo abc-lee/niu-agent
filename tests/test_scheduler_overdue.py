@@ -551,3 +551,121 @@ class TestStaggerWaitBackendIdle:
 
         assert callback.call_count == 2
         assert elapsed >= 2  # 至少等了总超时
+
+
+class TestResetStaleInProgress:
+    """测试超时的 in_progress 任务被重置为 pending"""
+
+    def test_stale_in_progress_reset_to_pending(self, tmp_path):
+        """triggered_at 超过 8 小时的 in_progress 任务重置为 pending"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from datetime import datetime, timedelta
+
+        now_fixed = datetime(2026, 7, 29, 12, 0, 0)  # 固定时刻，消除墙钟依赖
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
+            content="测试任务",
+            scheduled_at=now_fixed.isoformat(),
+            is_recurring=True,
+            cron_expr="0 8 * * *",
+        )
+        # 标记为 in_progress，triggered_at 设为 9 小时前
+        stale_time = (now_fixed - timedelta(hours=9)).isoformat()
+        assert store.update_task(task_id, status="in_progress", triggered_at=stale_time, expected_status="pending")
+
+        # 超时重置（注入固定 now，距 stale_time = 9h > 8h）
+        reset_count = store.reset_stale_in_progress(timeout_hours=8, now=now_fixed)
+        assert reset_count == 1
+
+        task = store.get_task(task_id)
+        assert task["status"] == "pending"
+
+    def test_fresh_in_progress_not_reset(self, tmp_path):
+        """triggered_at 未超 8 小时的 in_progress 任务保持不变"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from datetime import datetime, timedelta
+
+        now_fixed = datetime(2026, 7, 29, 12, 0, 0)
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
+            content="测试任务",
+            scheduled_at=now_fixed.isoformat(),
+            is_recurring=True,
+            cron_expr="0 8 * * *",
+        )
+        # triggered_at 设为 1 小时前
+        fresh_time = (now_fixed - timedelta(hours=1)).isoformat()
+        store.update_task(task_id, status="in_progress", triggered_at=fresh_time, expected_status="pending")
+
+        reset_count = store.reset_stale_in_progress(timeout_hours=8, now=now_fixed)
+        assert reset_count == 0
+
+        task = store.get_task(task_id)
+        assert task["status"] == "in_progress"
+
+    def test_cross_midnight_timeout(self, tmp_path):
+        """跨日期超时：23 点开始，次日 7:30 应超时（8.5 小时 > 8 小时）"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from datetime import datetime, timedelta
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
+            content="跨夜任务",
+            scheduled_at=datetime.now().isoformat(),
+            is_recurring=True,
+            cron_expr="0 8 * * *",
+        )
+        # 固定参考时钟：用绝对构造避免墙钟依赖
+        # now_fixed 同时用于 stale_time 计算和 reset_stale_in_progress 的 now 参数
+        # 无论 now_fixed 的绝对值如何，stale(23:00) 距 now(07:30) = 8.5h > 8h 阈值，必触发重置
+        now_fixed = datetime.now().replace(hour=7, minute=30, second=0, microsecond=0)
+        stale_time = (now_fixed - timedelta(hours=8, minutes=30)).isoformat()  # 昨晚 23:00
+        store.update_task(task_id, status="in_progress", triggered_at=stale_time, expected_status="pending")
+
+        # 注入固定 now，距 stale_time = 8.5h > 8h，应重置
+        reset_count = store.reset_stale_in_progress(timeout_hours=8, now=now_fixed)
+        assert reset_count == 1
+
+        task = store.get_task(task_id)
+        assert task["status"] == "pending"
+
+    def test_pending_task_not_affected(self, tmp_path):
+        """pending 状态的任务不受超时重置影响"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from datetime import datetime
+
+        now_fixed = datetime(2026, 7, 29, 12, 0, 0)
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
+            content="待执行",
+            scheduled_at=now_fixed.isoformat(),
+            is_recurring=False,
+        )
+        # 任务保持 pending（无 triggered_at）
+        reset_count = store.reset_stale_in_progress(timeout_hours=8, now=now_fixed)
+        assert reset_count == 0
+        task = store.get_task(task_id)
+        assert task["status"] == "pending"
+
+    def test_null_triggered_at_not_reset(self, tmp_path):
+        """in_progress 但 triggered_at 为 NULL 的任务不重置（异常数据保护）"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from datetime import datetime
+
+        now_fixed = datetime(2026, 7, 29, 12, 0, 0)
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
+            content="异常任务",
+            scheduled_at=now_fixed.isoformat(),
+            is_recurring=True,
+            cron_expr="0 8 * * *",
+        )
+        # 直接用 SQL 写入 in_progress 但不设 triggered_at（模拟异常数据）
+        import sqlite3
+        conn = sqlite3.connect(str(tmp_path / "test.db"))
+        conn.execute("UPDATE scheduled_tasks SET status='in_progress' WHERE id=?", (task_id,))
+        conn.commit()
+        conn.close()
+
+        reset_count = store.reset_stale_in_progress(timeout_hours=8, now=now_fixed)
+        assert reset_count == 0
