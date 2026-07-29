@@ -15,6 +15,8 @@
 """
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.skip(reason="阶段一集成测试需手动执行：启动 ./niu，发消息触发子 Agent，观察日志验证")
 def test_main_agent_supplement_to_subagent():

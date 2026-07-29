@@ -6,6 +6,8 @@ import yaml
 
 from niu_api.internal.disk_config import DiskConfig
 
+pytestmark = pytest.mark.integration
+
 
 def test_no_static_or_dynamic_tools():
     """All MCP tools must be visibility: hidden (not static or dynamic)."""

@@ -40,6 +40,8 @@ from agent.generic.agent_loop import (  # noqa: E402
 from agent.generic.litellm_adapter import create_litellm_client  # noqa: E402
 from agent.session import MessageStore  # noqa: E402
 
+pytestmark = pytest.mark.e2e
+
 # ---------------------------------------------------------------------------
 # 配置加载
 # ---------------------------------------------------------------------------

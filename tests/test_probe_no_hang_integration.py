@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 # 测试用的两个真实配置
 DOUBAO_CONFIG_PATH = Path("/Users/lilei/.niuu/config/user-config.json")
 GLM_CONFIG_PATH = Path("/Users/lilei/.niuu/config/user-config - glm.json")

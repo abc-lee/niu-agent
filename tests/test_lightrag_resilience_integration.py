@@ -1,5 +1,8 @@
 """LightRAG 韧性集成测试——v6 用户决策驱动启动流程"""
 
+import pytest
+
+pytestmark = pytest.mark.integration
 
 
 def test_phase1_only_checks_no_backup_or_cleanup(monkeypatch):

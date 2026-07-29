@@ -21,6 +21,8 @@ sys.path.insert(0, "E:/tools/ai-bot")
 from agent.generic.agent_loop import StepOutcome, agent_runner_loop
 from agent.tool_registry import ToolRegistry, reset_registry
 
+pytestmark = pytest.mark.integration
+
 
 class TestFullToolCallFlow:
     """测试完整的工具调用流程。"""

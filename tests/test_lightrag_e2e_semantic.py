@@ -13,6 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 import pytest  # noqa: E402
 import requests  # noqa: E402
 
+pytestmark = pytest.mark.e2e
+
 BACKUP_DIR = Path.home() / ".niu/lightrag_storage_backup_20260712_071242"
 STORAGE_DIR = Path.home() / ".niu/lightrag_storage"
 

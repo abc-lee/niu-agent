@@ -38,3 +38,29 @@ def mock_config():
         "context_win": 200000,
         "max_retries": 3
     }
+
+# ============================================================================
+# E2E / Integration 测试保护
+# ============================================================================
+# 默认不收集 e2e/integration 测试（会操作真实用户数据 ~/.niu/）
+# 只有显式加 --run-e2e 参数才收集
+
+def pytest_addoption(parser):
+    """添加 --run-e2e 命令行参数"""
+    parser.addoption(
+        "--run-e2e",
+        action="store_true",
+        default=False,
+        help="收集并运行 e2e/integration 测试（会操作真实用户数据 ~/.niu/）"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """默认跳过标记为 e2e 的测试"""
+    if config.getoption("--run-e2e"):
+        return  # 显式要求跑 e2e，不跳过
+
+    skip_e2e = pytest.mark.skip(reason="需要 --run-e2e 参数才运行（会操作真实用户数据）")
+    for item in items:
+        if "e2e" in item.keywords or "integration" in item.keywords:
+            item.add_marker(skip_e2e)

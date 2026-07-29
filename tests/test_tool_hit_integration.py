@@ -12,6 +12,8 @@ from agent.generic.agent_loop import StepOutcome
 from agent.handler import NiuHandler
 from agent.runner import NiuRunner
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def clean_runner():

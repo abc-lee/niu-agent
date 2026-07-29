@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 # Add mcp-servers to sys.path so we can import modules
 # This simulates the workdir configuration in mcp-servers.yaml
 PHOTO_SERVER_SRC = Path(__file__).parent.parent.parent / "mcp-servers" / "photo-server" / "src"

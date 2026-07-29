@@ -11,6 +11,8 @@ import pytest
 
 from agent.runner import NiuRunner
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def runner(monkeypatch):
