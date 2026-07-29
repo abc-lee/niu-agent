@@ -1440,12 +1440,30 @@ fn detect_resources_root() -> PathBuf {
 /// Checks two locations:
 /// 1. site-packages/ under bundle (cv2/insightface/easydict/pillow_heif/igraph/leidenalg)
 /// 2. ~/.insightface/models/buffalo_l/ (user-downloaded face model)
+///
+/// 注意：本列表只查主包目录（cv2/insightface/easydict/pillow_heif/igraph/leidenalg），
+/// 不需要与 build.sh 的 rsync --exclude 完全一致——exclude 还含 texttable（igraph 依赖）、
+/// _pillow_heif*.so（松散 .so）、*-*.dist-info（元数据）等，此处不查。
+/// 两处列表不同步是 by design（打包侧 vs 运行时侧职责不同）。
 fn check_missing_deps(resources_root: &Path) -> Vec<String> {
-    let site_packages = resources_root
-        .join("python")
-        .join("lib")
-        .join("python3.11")
-        .join("site-packages");
+    // 动态找 python/lib/python3.x 目录（不硬编码版本号，Python 升级时无需改此处）
+    let python_lib = resources_root.join("python").join("lib");
+    let python_dir = fs::read_dir(&python_lib)
+        .ok()
+        .and_then(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name())
+                .filter(|name| {
+                    name.to_str().map(|s| s.starts_with("python3.")).unwrap_or(false)
+                })
+                .next()
+        })
+        .map(|name| python_lib.join(name));
+    let site_packages = match python_dir {
+        Some(dir) => dir.join("site-packages"),
+        None => return Vec::new(),  // 找不到 python3.x 目录，无缺失可查
+    };
     let mut missing: Vec<String> = Vec::new();
 
     // 人脸识别全套（cv2 + insightface + easydict 一起检查，任一缺失=人脸识别不可用）
@@ -2211,7 +2229,7 @@ fn main() {
         missing_deps,
     );
     let window_settings = window::Settings {
-        size: iced::Size::new(280.0, 80.0),
+        size: iced::Size::new(320.0, 80.0),
         position: window::Position::Centered,
         decorations: false,
         transparent: true,
