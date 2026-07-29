@@ -49,10 +49,13 @@ if [ "$(uname)" = "Darwin" ]; then
 
     # 清理 site-packages/bin/（pip install 产生的 console_scripts，shebang 指向开发机路径，
     # 运行时不使用——niu_api 用 python -m niu_api 走 sys.executable，不调 bin/ 脚本）
-    if [ -d "$RESOURCES_DIR/python/lib/python3.11/site-packages/bin" ]; then
-        rm -rf "$RESOURCES_DIR/python/lib/python3.11/site-packages/bin"
-        echo "[build.sh] removed site-packages/bin/ (console_scripts with dev-machine shebang)"
-    fi
+    # 通配 python3.* 避免版本号硬编码
+    for bin_dir in "$RESOURCES_DIR"/python/lib/python3.*/site-packages/bin; do
+        if [ -d "$bin_dir" ]; then
+            rm -rf "$bin_dir"
+            echo "[build.sh] removed $bin_dir (console_scripts with dev-machine shebang)"
+        fi
+    done
 
     # 对 bundle 内 python/ 跑 relocate（确保自包含）
     "$PROJECT_ROOT/scripts/relocate_python_framework.sh" "$RESOURCES_DIR/python"
