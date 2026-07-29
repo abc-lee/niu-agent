@@ -2,9 +2,10 @@
 
 TDD for dual-pipeline architecture Phase 3.
 """
-import pytest
 import os
 import tempfile
+
+import pytest
 
 
 @pytest.fixture
@@ -25,7 +26,7 @@ async def store():
 @pytest.mark.asyncio
 async def test_add_tool_message(store):
     """Can store a message with role='tool'."""
-    msg_id = await store.add_message(
+    await store.add_message(
         role="tool",
         content="tool result content",
         tool_call_id="call_abc123",
@@ -40,7 +41,7 @@ async def test_add_tool_message(store):
 @pytest.mark.asyncio
 async def test_add_assistant_with_tool_calls(store):
     """An assistant message can carry tool_calls."""
-    msg_id = await store.add_message(
+    await store.add_message(
         role="assistant",
         content="",
         tool_calls=[
@@ -93,7 +94,7 @@ async def test_message_sequence(store):
 @pytest.mark.asyncio
 async def test_backward_compat_no_tool_call_id(store):
     """When tool_call_id is not provided, it defaults to empty string (backward compat)."""
-    msg_id = await store.add_message(role="user", content="hello")
+    await store.add_message(role="user", content="hello")
     messages = await store.get_messages()
     assert messages[0].tool_call_id == ""
 
@@ -103,7 +104,7 @@ async def test_migration_existing_db(store):
     """An existing database should auto-migrate to add the tool_call_id column."""
     # init_db already called in fixture (which runs migration logic)
     # Verify we can write a message with tool_call_id
-    msg_id = await store.add_message(
+    await store.add_message(
         role="tool",
         content="result",
         tool_call_id="call_test",

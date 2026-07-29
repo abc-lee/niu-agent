@@ -14,13 +14,13 @@ A: rv["messages"] 中有 assistant 消息（有 tool_calls）→ 正常持久化
 B: rv["messages"] 中没有 assistant 消息，但 rv["data"] 有内容（纯文本回复）→ 从 rv["data"] 构造 assistant 消息并持久化
 C: rv["messages"] 中没有 assistant 消息，rv["data"] 为 None → 不持久化 assistant 消息
 """
-import pytest
 import json
-import tempfile
 import os
+import tempfile
+
+import pytest
 
 from agent.session import MessageStore
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -391,7 +391,6 @@ async def _do_persist_current(store, rv, reply_chunks=None):
         return
 
     user_persisted = False
-    last_assistant_id = None
 
     for msg in rv["messages"]:
         role = msg.get("role", "")
@@ -409,8 +408,7 @@ async def _do_persist_current(store, rv, reply_chunks=None):
         elif role == "tool" and tool_call_id:
             await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
         elif role == "assistant":
-            pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
-            last_assistant_id = pid
+            await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
 
     # 当前代码：没有从 rv["data"] 构造 assistant 消息的逻辑
     # 如果 rv["messages"] 中没有 assistant 消息，last_assistant_id 为 None

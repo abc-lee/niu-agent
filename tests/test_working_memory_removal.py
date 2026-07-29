@@ -10,12 +10,10 @@ Tests written BEFORE implementation to verify:
 7. 3x repeat detection preserved
 8. do_no_tool next_prompt never worked (confirmed by code review)
 """
-import pytest
-import json
 import inspect
+import os
 import subprocess
 import sys
-import os
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HANDLER_PATH = os.path.join(PROJECT_ROOT, HANDLER_PATH)
@@ -53,7 +51,6 @@ class TestExitLogicAfterWmRemoval:
     def test_continue_when_tool_calls_with_warning(self):
         """LLM has tool_calls AND warning text → continue"""
         has_tool_calls = True
-        next_prompt = "⚠️ **警告：检测到重复工具调用**"
         assert has_tool_calls
 
 
@@ -109,13 +106,11 @@ class TestThirtyFiveRoundForcedInquiryRemoved:
     """35-round forced inquiry must be removed."""
 
     def test_no_forced_inquiry_at_turn_35(self):
-        turn = 35
         next_prompt = ""
         new_next_prompt = next_prompt
         assert "[DANGER]" not in new_next_prompt
 
     def test_no_forced_inquiry_at_turn_70(self):
-        turn = 70
         next_prompt = ""
         new_next_prompt = next_prompt
         assert "[DANGER]" not in new_next_prompt

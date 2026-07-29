@@ -7,16 +7,16 @@ Any failure to load critical MCP servers will terminate the application.
 
 import sys
 from pathlib import Path
-from typing import List, Tuple, Optional
-from loguru import logger
-from agent.tool_registry import ToolRegistry, set_registry
 
+from loguru import logger
+
+from agent.tool_registry import ToolRegistry, set_registry
 
 # ============================================================================
 # Required MCP Servers
 # ============================================================================
 
-REQUIRED_SERVERS: List[Tuple[str, str]] = [
+REQUIRED_SERVERS: list[tuple[str, str]] = [
     ("photo-server", "niu_photo_server"),
     ("config-manager", "niu_config_manager"),
     ("memory-server", "niu_memory_server"),
@@ -30,7 +30,7 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("brain-region-server", "niu_brain_region_server"),
 ]
 
-OPTIONAL_SERVERS: List[Tuple[str, str]] = [
+OPTIONAL_SERVERS: list[tuple[str, str]] = [
     ("ha-server", "niu_ha_server"),
 ]
 
@@ -51,7 +51,7 @@ def _load_mcp_config() -> dict:
         return {}
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
         logger.warning(f"Failed to load MCP config: {e}")
@@ -62,7 +62,7 @@ def _add_server_workdirs_to_sys_path(config: dict) -> None:
     """Add server workdirs to sys.path for module imports"""
     project_root = Path(__file__).parent.parent
 
-    for server_name, server_config in config.items():
+    for _server_name, server_config in config.items():
         if not isinstance(server_config, dict):
             continue
 
@@ -82,7 +82,7 @@ def _add_server_workdirs_to_sys_path(config: dict) -> None:
 # Built-in Tool Registration
 # ============================================================================
 
-def _inject_tools_to_lightrag(registry: ToolRegistry, servers: List[Tuple[str, str]]) -> None:
+def _inject_tools_to_lightrag(registry: ToolRegistry, servers: list[tuple[str, str]]) -> None:
     """No-op in disk mode — tools discovered via disk YAML, not LightRAG."""
     logger.debug("[MCP Loader] Tool injection to LightRAG skipped (disk mode)")
 
@@ -91,7 +91,7 @@ def _inject_tools_to_lightrag(registry: ToolRegistry, servers: List[Tuple[str, s
 # Loader Function
 # ============================================================================
 
-def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> ToolRegistry:
+def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> ToolRegistry:
     """
     Load all required MCP modules and register their tools.
 
@@ -140,7 +140,7 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
 
     # Strict validation: any failure terminates startup
     if failed_servers:
-        error_msg = f"Critical MCP servers failed to load:\n" + "\n".join(
+        error_msg = "Critical MCP servers failed to load:\n" + "\n".join(
             f"  - {s}" for s in failed_servers
         )
         raise RuntimeError(error_msg)

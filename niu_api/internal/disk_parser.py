@@ -6,7 +6,6 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
-
 # ---------------------------------------------------------------------------
 # Shell special syntax patterns (checked before tokenization)
 # ---------------------------------------------------------------------------

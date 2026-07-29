@@ -121,8 +121,8 @@ def test_e2e_zombies_cleaned_after_repair(restore_real_data):
     83 个 chunk_shared）是历史残留，待后续单独清理，不在本次修复范围
     （见 Task 8 Step 2 Expected 注释）。
     """
-    from niu_api.internal.lightrag_repair import repair_all
     from niu_api.internal.lightrag_integrity import check_all
+    from niu_api.internal.lightrag_repair import repair_all
 
     repair_all()
     result = check_all()
@@ -188,6 +188,7 @@ def test_e2e_program_starts_normally(restore_real_data):
         # 额外清理：杀残留子进程（Electron / niu-api / mcp 等）
         # 用 psutil 杀进程树（psutil 是项目硬依赖，测试环境必有）
         import signal
+
         import psutil
         try:
             parent = psutil.Process(proc.pid)
@@ -309,6 +310,7 @@ def test_e2e_repair_all_3_truth_sources_intact_via_http(restore_real_data):
                 pass
         # 杀残留子进程
         import signal
+
         import psutil
         try:
             parent = psutil.Process(proc.pid)

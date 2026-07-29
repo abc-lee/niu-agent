@@ -6,32 +6,33 @@ HTTP API server for Niu Agent using FastAPI + Uvicorn
 单进程架构：Embedding 和 Scheduler 作为内部模块运行。
 """
 
-import sys
-import os
 import asyncio
 import logging as _stdlib_logging
-from pathlib import Path
+import os
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
-from niu_api.config import get_logging_config
-from niu_api.session import router as session_router
+
+from niu_api.alerts_api import router as alerts_router
+from niu_api.brain_region_api import router as brain_region_router
 from niu_api.chat import router as chat_router
 from niu_api.compat import router as compat_router
-from niu_api.injector import router as injector_router
-from niu_api.alerts_api import router as alerts_router
-from niu_api.kg_api import router as kg_router
-from niu_api.brain_region_api import router as brain_region_router
-from niu_api.notes_api import router as notes_router
-from niu_api.llm_proxy import router as llm_proxy_router
+from niu_api.config import get_logging_config
 from niu_api.http_log_api import router as http_log_router
-
+from niu_api.injector import router as injector_router
+from niu_api.kg_api import router as kg_router
+from niu_api.llm_proxy import router as llm_proxy_router
+from niu_api.notes_api import router as notes_router
+from niu_api.session import router as session_router
 
 # Configure logging — gated by config/logging.enabled (缺省 False)
 _logging_cfg = get_logging_config()
@@ -59,7 +60,7 @@ async def lifespan(app: FastAPI):
 
     # 1. Initialize session store
     from agent.session import get_session_store
-    store = await get_session_store()
+    await get_session_store()
     logger.info("Session store initialized")
 
     # 1.5. Notes use JSON storage (no DB init needed)
@@ -316,8 +317,8 @@ async def lifespan(app: FastAPI):
 
         # 8.02. Create default brain regions (must be before RegionSync so activation_mgr finds them)
         try:
-            from niu_api.internal.region_manager import create_default_regions
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+            from niu_api.internal.region_manager import create_default_regions
             region_result = create_default_regions(
                 adapter=LightRAGAdapter(),
                 ingester=LightRAGIngester(),
@@ -423,8 +424,8 @@ async def lifespan(app: FastAPI):
     #      start_background_sync 推迟到 gate 之后调用（v3）：gate 运行期间 _sync_loop
     #      daemon 不存在，run_sync_once_for_startup 必拿锁必跑完，消除首次启动竞态。
     from niu_api.internal.lightrag_manager import should_signal_scheduler_ready
-    from niu_api.startup_gate import run_brain_region_startup_gate
     from niu_api.internal.scheduler.service import signal_scheduler_ready
+    from niu_api.startup_gate import run_brain_region_startup_gate
     gate_result = run_brain_region_startup_gate(
         region_sync=region_sync,
         signal_scheduler_ready_fn=signal_scheduler_ready,
@@ -514,7 +515,7 @@ async def lifespan(app: FastAPI):
         from niu_api.chat_queue import stop_chat_queue
         await asyncio.wait_for(stop_chat_queue(), timeout=10.0)
         logger.info("ChatQueue stopped")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("ChatQueue stop timed out after 10s")
     except Exception as e:
         logger.warning(f"Failed to stop ChatQueue: {e}")
@@ -579,6 +580,7 @@ else:
 
 # Mount scheduler router
 from niu_api.internal.scheduler import scheduler_router
+
 app.include_router(scheduler_router)
 
 
@@ -621,8 +623,9 @@ async def root():
 
 def main():
     """Main entry point - run with: python -m niu_api"""
-    import uvicorn
     import atexit
+
+    import uvicorn
 
     logger.info(f"[PROCESS-START-MAIN] PID={os.getpid()} PPID={os.getppid()} entered main()")
 

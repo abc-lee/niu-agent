@@ -1,7 +1,5 @@
 """Tests for service.py trigger_callback — ChatQueue-based implementation"""
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 class TestTriggerCallback:

@@ -8,14 +8,10 @@ Journal-Agent Auto-Tidy 集成测试
 - 游标读取和写入
 - clear_chat 游标重置
 """
-import pytest
-import json
-from unittest.mock import AsyncMock, patch, MagicMock
-from dataclasses import dataclass, field
-from pathlib import Path
-import tempfile
 import os
+from dataclasses import dataclass, field
 
+import pytest
 
 # --- 消息对象模拟（与 MessageStore 返回的对象兼容） ---
 
@@ -40,9 +36,9 @@ def make_messages(n: int, start_idx: int = 0) -> list[FakeMessage]:
 
 # --- 导入被测函数 ---
 import sys
+
 sys.path.insert(0, ".")
 from niu_api.compat import _build_incremental_msg_text
-
 
 # --- 源码读取辅助 ---
 SOURCE_PATH = os.path.join(os.path.dirname(__file__), "..", "niu_api", "compat.py")
@@ -107,7 +103,7 @@ class TestJournalAgentSleepMode:
         """sleep 模式 journal-agent 使用增量消息范围"""
         messages = make_messages(20)
         journal_msg_ids = []
-        result = _build_incremental_msg_text(
+        _build_incremental_msg_text(
             messages, "uuid-9", journal_msg_ids
         )
         # 从 uuid-9 之后开始，应有 uuid-10 ~ uuid-19
@@ -133,7 +129,6 @@ class TestJournalAgentForceMode:
         lines = source.split("\n")
         in_force_branch = False
         journal_found_in_force = False
-        usage_guard_before_journal = False
         for line in lines:
             if 'elif mode == "force"' in line:
                 in_force_branch = True
@@ -141,7 +136,6 @@ class TestJournalAgentForceMode:
                 journal_found_in_force = True
             # 在 force 分支的 journal-agent 之前不应有独立的 usage_percent 判断
             if journal_found_in_force and "if usage_percent" in line:
-                usage_guard_before_journal = True
                 break
         assert journal_found_in_force, "journal-agent not found in force branch"
 
@@ -149,7 +143,7 @@ class TestJournalAgentForceMode:
         """force 模式 journal-agent 使用增量消息范围（非全量）"""
         messages = make_messages(20)
         journal_force_msg_ids = []
-        result = _build_incremental_msg_text(
+        _build_incremental_msg_text(
             messages, "uuid-14", journal_force_msg_ids
         )
         # 从 uuid-14 之后开始，应有 uuid-15 ~ uuid-19

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING
 
 from niu_api.internal.region_activation import RegionActivationManager
 

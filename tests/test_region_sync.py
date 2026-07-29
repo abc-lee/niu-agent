@@ -15,14 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from agent.injector.region_sync import (
     REGION_CONFIG_DEFAULTS,
     RegionSync,
     get_region_sync,
 )
-
 
 # ============== Test 1: run_sync with LightRAG unavailable ==============
 
@@ -280,8 +277,9 @@ class TestRegionConfigDefaults:
 
 def test_refresh_activation_manager_does_not_overwrite_on_bulk_read_failure(monkeypatch):
     """get_all_region_members 返回空（读取失败）时，不应覆盖现有 _entity_to_region 映射"""
-    from agent.injector.region_sync import RegionSync
     from unittest import mock
+
+    from agent.injector.region_sync import RegionSync
 
     sync = RegionSync(sync_interval=86400)
 
@@ -318,10 +316,11 @@ def test_refresh_activation_manager_does_not_overwrite_on_bulk_read_failure(monk
 
 def test_sync_loop_skips_first_sync_when_recently_synced(tmp_path):
     """距上次同步不足 sync_interval*0.9 时，_sync_loop 跳过首次同步"""
-    from agent.injector.region_sync import RegionSync
-    from unittest import mock
-    from datetime import datetime, timedelta
     import json
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from agent.injector.region_sync import RegionSync
 
     sync = RegionSync(sync_interval=86400)
     sync._status_file = tmp_path / "last_region_sync.json"
@@ -352,10 +351,11 @@ def test_sync_loop_skips_first_sync_when_recently_synced(tmp_path):
 
 def test_sync_loop_handles_future_last_sync(tmp_path):
     """last_sync 是未来时间（系统回拨）时，不卡住等待"""
-    from agent.injector.region_sync import RegionSync
-    from unittest import mock
-    from datetime import datetime, timedelta
     import json
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from agent.injector.region_sync import RegionSync
 
     sync = RegionSync(sync_interval=86400)
     sync._status_file = tmp_path / "last_region_sync.json"
@@ -384,8 +384,9 @@ def test_sync_loop_handles_future_last_sync(tmp_path):
 
 def test_merge_and_dissolve_logs_warning_on_dissolve_exception(monkeypatch):
     """dissolve 异常应被 logger.warning 记录，不是 logger.debug"""
-    from agent.injector import region_sync
     from unittest import mock
+
+    from agent.injector import region_sync
 
     # 拦截 loguru logger 的 warning/debug 调用
     warning_calls = []
@@ -426,8 +427,9 @@ def test_merge_and_dissolve_logs_warning_on_merge_exception(monkeypatch):
     与 dissolve 异常升级到 warning 对称——merge 路径的 except 也应记 warning。
     mock activation_mgr.get_merge_candidates 抛异常，断言 warning 里包含 "Merge"。
     """
-    from agent.injector import region_sync
     from unittest import mock
+
+    from agent.injector import region_sync
 
     # 拦截 loguru logger 的 warning/debug 调用
     warning_calls = []

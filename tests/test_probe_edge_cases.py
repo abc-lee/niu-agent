@@ -12,8 +12,6 @@
 import asyncio
 import json
 import signal
-import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -106,7 +104,7 @@ async def test_test_llm_empty_apikey_non_local_returns_error():
         assert "API Key" in result.get("error", "") or "Key" in result.get("error", ""), f"错误消息应含 API Key: {result}"
     except aiohttp.ClientConnectorError:
         pytest.skip("Python API 未运行（跳过 HTTP 端点测试）")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail("test-llm 卡死 30s 未返回")
 
 
@@ -129,7 +127,7 @@ async def test_test_llm_invalid_apibase_returns_error():
         assert result.get("success") is False, f"错误 apiBase 应该失败: {result}"
     except aiohttp.ClientConnectorError:
         pytest.skip("Python API 未运行")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail("test-llm 卡死 30s 未返回")
 
 
@@ -153,7 +151,7 @@ async def test_test_llm_empty_model_returns_error():
         assert "模型" in result.get("error", "") or "model" in result.get("error", "").lower(), f"错误消息应含 model: {result}"
     except aiohttp.ClientConnectorError:
         pytest.skip("Python API 未运行")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail("test-llm 卡死 30s 未返回")
 
 

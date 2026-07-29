@@ -169,8 +169,9 @@ def test_count_messages_tokens_handles_list_content():
 
 def test_agent_runner_loop_accepts_system_message_param():
     """agent_runner_loop 应支持可选 system_message 参数。"""
-    from agent.generic.agent_loop import agent_runner_loop
     import inspect
+
+    from agent.generic.agent_loop import agent_runner_loop
 
     sig = inspect.signature(agent_runner_loop)
     params = sig.parameters
@@ -191,8 +192,9 @@ def test_subagent_builds_static_and_dynamic_segments():
 
 def test_run_agent_loop_accepts_system_message_param():
     """_run_agent_loop 应支持可选 system_message 参数。"""
-    from agent.subagent import _run_agent_loop
     import inspect
+
+    from agent.subagent import _run_agent_loop
 
     sig = inspect.signature(_run_agent_loop)
     params = sig.parameters

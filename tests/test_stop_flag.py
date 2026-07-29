@@ -1,7 +1,8 @@
 """Tests for stop flag mechanism."""
 import threading
 import time
-from agent.runner import request_stop, clear_stop, is_stop_requested
+
+from agent.runner import clear_stop, is_stop_requested, request_stop
 
 
 def test_initial_state_is_not_stopped():
@@ -46,9 +47,10 @@ def test_stop_flag_is_thread_safe():
 
 def test_stop_flag_checked_in_loop():
     """agent_runner_loop should exit when stop flag is set."""
-    from agent.runner import request_stop, clear_stop
-    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
     from unittest.mock import MagicMock
+
+    from agent.generic.agent_loop import StreamEvent, agent_runner_loop
+    from agent.runner import clear_stop, request_stop
 
     clear_stop()
 

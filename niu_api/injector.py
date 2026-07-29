@@ -5,9 +5,9 @@ Disk mode: MCP tools are discovered via disk YAML configs, not injected into Lig
 List/delete still query LightRAG for skill entities.
 """
 
-from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from loguru import logger
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/inject", tags=["injector"])
 

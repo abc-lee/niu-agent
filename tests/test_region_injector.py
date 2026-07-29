@@ -6,20 +6,18 @@ Brain Context Injector 测试 — 验证 BrainContextInjector 的
 和主入口返回格式化文本。
 """
 
-import pytest
 
 from unittest.mock import MagicMock
 
 from niu_api.internal.region_activation import (
-    BrainRegionState,
-    RegionActivationManager,
     STATUS_DIMMING,
     STATUS_LIT,
     STATUS_OFF,
+    BrainRegionState,
+    RegionActivationManager,
 )
 from niu_api.internal.region_injector import BrainContextInjector
 from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
-
 
 # ============== 辅助函数 ==============
 

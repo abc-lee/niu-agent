@@ -1,12 +1,9 @@
 """Tests for message deletion with temp file cleanup"""
 import os
-import asyncio
-import tempfile
-from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
-import pytest
 import aiosqlite
+import pytest
 
 
 @pytest.fixture
@@ -43,8 +40,8 @@ def tmp_dir_fixture(tmp_path):
 class TestClearMessagesCleansTmp:
     async def test_clear_removes_tmp_files_referenced_in_content(self, test_db, tmp_dir_fixture):
         """clear_messages should delete temp files referenced in message content"""
-        from agent.tmp_dir import save_to_tmp
         from agent.session import MessageStore
+        from agent.tmp_dir import save_to_tmp
 
         # Create a temp file (simulating a face-boxed photo)
         boxed_path = save_to_tmp("person1_photo1_boxed.jpg", b"fake image data")
@@ -79,8 +76,8 @@ class TestClearMessagesCleansTmp:
 class TestDeleteMessagesByIdsCleansTmp:
     async def test_delete_by_ids_removes_tmp_files(self, test_db, tmp_dir_fixture):
         """delete_messages_by_ids should delete temp files in deleted messages"""
-        from agent.tmp_dir import save_to_tmp
         from agent.session import MessageStore
+        from agent.tmp_dir import save_to_tmp
 
         # Create two temp files
         boxed1 = save_to_tmp("boxed1.jpg", b"data1")
@@ -90,7 +87,7 @@ class TestDeleteMessagesByIdsCleansTmp:
         await store.init_db()
         msg_id1 = await store.add_message(role="assistant", content=f"photo: {boxed1}")
         msg_id2 = await store.add_message(role="assistant", content=f"photo: {boxed2}")
-        msg_id3 = await store.add_message(role="user", content="hello")
+        await store.add_message(role="user", content="hello")
 
         # Delete only the first two messages — should clean their temp files
         result = await store.delete_messages_by_ids([msg_id1, msg_id2])

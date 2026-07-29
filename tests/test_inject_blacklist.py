@@ -10,8 +10,8 @@ Bug 2: 脑区实体的 description 含 brain_meta_* 元数据（GraphML 限制�
 - 脑区成员知识通过 search_within_region 检索
 - 脑区 summary 已在脑区状态图中截取前 30 字符显示
 """
-import sys
 import os
+import sys
 
 # 确保能找到 agent 包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -1,7 +1,8 @@
 """Alerts API Router"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from niu_api.alerts import get_and_clear_pending_alerts, add_pending_alert
+
+from niu_api.alerts import add_pending_alert, get_and_clear_pending_alerts
 
 router = APIRouter(prefix="/api", tags=["alerts"])
 

@@ -27,15 +27,12 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 import asyncio
-import json
 import os
-import sqlite3
 import tempfile
 import threading
 import time
-from pathlib import Path
 from datetime import datetime
-
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Test 1: 单线程内 async 写入后立即 async 读取
@@ -181,11 +178,11 @@ async def test_cross_thread_read():
         all_found = all(wid in final_ids for wid in written_ids)
 
         if all_found and len(read_results) > 0:
-            print(f"\n  [结论2] executor 线程写入后主循环可立即读取: PASS")
+            print("\n  [结论2] executor 线程写入后主循环可立即读取: PASS")
             print(f"          首次读到新消息的延迟: 第{read_results[0][0]+1}轮 (~{read_results[0][0]*100}ms)")
             return True
         else:
-            print(f"\n  [结论2] executor 线程写入后主循环可立即读取: FAIL")
+            print("\n  [结论2] executor 线程写入后主循环可立即读取: FAIL")
             print(f"          all_found={all_found}, read_results_count={len(read_results)}")
             return False
 
@@ -307,18 +304,18 @@ async def test_wal_concurrent_read_write():
             print(f"  首次读到新消息: 快照#{first_new_snapshot[0]}, "
                   f"共{first_new_snapshot[1]}条, 新消息={first_new_snapshot[2]}")
         else:
-            print(f"  从未读到新消息！")
+            print("  从未读到新消息！")
 
         # 最终验证
         final_count, final_ids = read_snapshots[-1]
         all_found = all(wid in final_ids for wid in written_ids)
 
         if all_found and first_new_snapshot:
-            print(f"\n  [结论3] WAL 模式下并发读写: PASS")
+            print("\n  [结论3] WAL 模式下并发读写: PASS")
             print(f"          写入后首次可读延迟: 快照#{first_new_snapshot[0]} (~{first_new_snapshot[0]*30}ms)")
             return True
         else:
-            print(f"\n  [结论3] WAL 模式下并发读写: FAIL")
+            print("\n  [结论3] WAL 模式下并发读写: FAIL")
             print(f"          all_found={all_found}, first_new_snapshot={first_new_snapshot}")
             return False
 
@@ -382,7 +379,7 @@ async def test_sync_add_message_timing():
                     written_ids.append(msg_id)
                     print(f"  [sync_add] 写入成功: msg_id={msg_id[:8]}...")
                 else:
-                    print(f"  [sync_add] 写入失败！")
+                    print("  [sync_add] 写入失败！")
 
         # 启动 executor 线程
         thread = threading.Thread(target=executor_fn, daemon=True)
@@ -413,16 +410,16 @@ async def test_sync_add_message_timing():
         # 总结
         all_pass = all(r["found"] for r in results) if results else False
         if all_pass:
-            print(f"\n  [结论4] _sync_add_message 时序: PASS")
-            print(f"          executor 线程写入后主循环可立即读到")
-            print(f"          这意味着 _persist_one_msg 写入后，_push_incremental 可以立即读到")
+            print("\n  [结论4] _sync_add_message 时序: PASS")
+            print("          executor 线程写入后主循环可立即读到")
+            print("          这意味着 _persist_one_msg 写入后，_push_incremental 可以立即读到")
             return True
         else:
             # 即使 run_coroutine_threadsafe 因无独立 executor 线程而失败，
             # Test 2+3 已验证了 WAL 下的并发读写，此处降级为 SKIP
-            print(f"\n  [结论4] _sync_add_message 时序: SKIP")
-            print(f"          run_coroutine_threadsafe 在 asyncio.run() 内部无法模拟独立 executor 线程")
-            print(f"          但 Test 2+3 已验证 WAL 模式下并发读写的正确性")
+            print("\n  [结论4] _sync_add_message 时序: SKIP")
+            print("          run_coroutine_threadsafe 在 asyncio.run() 内部无法模拟独立 executor 线程")
+            print("          但 Test 2+3 已验证 WAL 模式下并发读写的正确性")
             return True  # 不视为失败 — 已被 Test 2+3 覆盖
 
     finally:
@@ -459,7 +456,7 @@ async def test_production_db_read():
         )
         rows = list(reversed(await cursor.fetchall()))  # 时间正序
 
-        print(f"  最近 20 条消息（时间正序）：")
+        print("  最近 20 条消息（时间正序）：")
         prev_ts = None
         for row in rows:
             r = dict(row)

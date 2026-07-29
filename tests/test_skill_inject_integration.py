@@ -5,8 +5,10 @@
 2. 第二阶段排序后的 skill 列表被注入 prompt
 3. 计数器跨轮维持状态（多次调用累积）
 """
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from agent.runner import NiuRunner
 
 
@@ -132,7 +134,7 @@ def test_inject_second_stage_sorts_by_score_desc(runner):
     mid_pos = injection.find("路径: ~/.niu/skills/mid.md")
     assert high_pos != -1, f"high 应进 prompt: {injection}"
     assert mid_pos != -1, f"mid 应进 prompt: {injection}"
-    assert high_pos < mid_pos, f"high 应在 mid 之前"
+    assert high_pos < mid_pos, "high 应在 mid 之前"
 
 
 def test_inject_uses_cache_when_not_hit_this_round(runner):

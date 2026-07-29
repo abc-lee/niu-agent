@@ -1,6 +1,7 @@
 """测试启动时自动注入定时任务的逻辑（按 name 匹配）"""
-import tempfile
 import os
+import tempfile
+
 from niu_api.internal.scheduler.task_store import TaskStore
 
 

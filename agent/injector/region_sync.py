@@ -22,10 +22,9 @@ import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
-
 from niu_api.internal.lightrag_manager import get_lightrag, wait_lightrag_ready
 
 # ============== Configuration Defaults ==============
@@ -72,7 +71,7 @@ class RegionSync:
             sync_interval: Seconds between sync runs (default 24 hours).
         """
         self.sync_interval = sync_interval
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._brain_ready = threading.Event()
         self._status_file = Path.home() / ".niu" / "last_region_sync.json"
@@ -275,7 +274,7 @@ class RegionSync:
                 )
             except Exception as e:
                 logger.warning(f"[RegionSync] cleanup detection failed: {e}")
-                removed, drifted, drifted_cids = [], [], set()
+                _removed, _drifted, drifted_cids = [], [], set()
                 cleanup_ok = False
 
             # Step 4: Create region nodes (skip drifted community partitions)
@@ -357,10 +356,11 @@ class RegionSync:
             stats: Stats dict (updated in place with activation stats).
         """
         try:
-            from agent.brain_tools import get_activation_mgr, set_activation_mgr
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
             from niu_api.internal.region_activation import RegionActivationManager
             from niu_api.internal.region_manager import RegionManager
+
+            from agent.brain_tools import get_activation_mgr, set_activation_mgr
 
             adapter = LightRAGAdapter()
             ingester = LightRAGIngester()
@@ -376,7 +376,9 @@ class RegionSync:
 
             # 批量读取所有脑区的成员（一次性调 get_all_region_members）
             # 避免循环逐个调用时单 region 异常污染整个 _entity_to_region
-            from niu_api.internal.lightrag_manager import get_all_region_members as lightrag_get_all_region_members
+            from niu_api.internal.lightrag_manager import (
+                get_all_region_members as lightrag_get_all_region_members,
+            )
             try:
                 region_members_map = lightrag_get_all_region_members()
             except Exception as e:
@@ -468,9 +470,10 @@ class RegionSync:
         """
         # Step 7a: Merge co-activated regions
         try:
-            from agent.brain_tools import get_activation_mgr
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             from niu_api.internal.region_manager import is_default_region
+
+            from agent.brain_tools import get_activation_mgr
 
             activation_mgr = get_activation_mgr()
             if activation_mgr is not None:
@@ -759,7 +762,7 @@ class RegionSync:
 
 
 # Global instance + thread-safe lock
-_region_sync: Optional[RegionSync] = None
+_region_sync: RegionSync | None = None
 _region_sync_lock = threading.Lock()
 
 

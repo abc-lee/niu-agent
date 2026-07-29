@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ def _empty_result() -> CommunityDetectionResult:
         total_edges=0,
         total_regions=0,
         modularity=0.0,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
     )
 
 
@@ -159,8 +159,8 @@ class CommunityDetector:
         #   即保底边实体即使已直连脑区也保留参与算法（OR 关系）
         # 提前 import，避免下面两个 try 块各自 import 导致 Pyright possibly unbound
         from niu_api.internal.lightrag_manager import (
-            get_all_region_members,
             find_entities_with_single_floor_edge,
+            get_all_region_members,
         )
 
         try:
@@ -258,7 +258,7 @@ class CommunityDetector:
             total_edges=graph.ecount(),
             total_regions=len(partitions),
             modularity=partition.q,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
         )
 
     # ------------------------------------------------------------------
@@ -267,7 +267,7 @@ class CommunityDetector:
 
     def _build_igraph(
         self, nodes: list[dict], edges: list[dict]
-    ) -> "igraph.Graph":
+    ) -> igraph.Graph:
         """将 LightRAG 快照转换为 igraph Graph，保留属性
 
         - 顶点属性: name (实体名称), entity_type
@@ -319,7 +319,7 @@ class CommunityDetector:
             edge_descriptions.append(edge.get("description", ""))
             edge_weights.append(float(edge.get("weight", 1.0)))
 
-        g.add_edges(zip(edge_srcs, edge_dsts))
+        g.add_edges(zip(edge_srcs, edge_dsts, strict=False))
         if g.ecount() > 0:
             g.es["relation"] = edge_relations
             g.es["description"] = edge_descriptions
@@ -328,7 +328,7 @@ class CommunityDetector:
         return g
 
     def _build_partitions(
-        self, graph: "igraph.Graph", partition: Any,
+        self, graph: igraph.Graph, partition: Any,
         min_community_size: int = 100,
     ) -> list[RegionPartition]:
         """将 Leiden 分区结果转换为 RegionPartition 列表
@@ -360,7 +360,7 @@ class CommunityDetector:
             subgraph = graph.subgraph(member_indices)
             degrees = subgraph.degree()
             sorted_pairs = sorted(
-                zip(member_indices, degrees), key=lambda x: x[1], reverse=True
+                zip(member_indices, degrees, strict=False), key=lambda x: x[1], reverse=True
             )
 
             # 收集实体名称和类型（按度数降序）
@@ -413,7 +413,7 @@ class CommunityDetector:
         return result
 
     def _count_internal_edges(
-        self, graph: "igraph.Graph", member_indices: list[int]
+        self, graph: igraph.Graph, member_indices: list[int]
     ) -> int:
         """计算社区内部边数（两端均在社区内的边）
 
@@ -432,7 +432,7 @@ class CommunityDetector:
         self, nodes: list[dict], _edges: list[dict]
     ) -> CommunityDetectionResult:
         """处理节点数 < 2 的情况：单节点为一个社区，空图返回空结果"""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         if not nodes:
             return _empty_result()

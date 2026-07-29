@@ -5,13 +5,11 @@ Validates that all KuzuDB/kg-server references have been replaced
 with LightRAG adapter/pipeline calls across the codebase.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock, call
 import json
 import sqlite3
 import tempfile
 from pathlib import Path
-
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # ============== 1. KGSync → LightRAGSync delegation ==============
 
@@ -125,7 +123,7 @@ class TestKgApiUsesLightRAG:
 
     def test_kg_api_explore_uses_adapter(self):
         """explore_node should use LightRAGAdapter.explore_node()."""
-        from niu_api.kg_api import explore_node, ExploreRequest
+        from niu_api.kg_api import ExploreRequest, explore_node
 
         mock_adapter = MagicMock()
         mock_adapter.explore_node.return_value = {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0}}
@@ -242,7 +240,7 @@ class TestLightRAGSync:
         mock_rag.ainsert = AsyncMock(return_value=None)
 
         with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock_rag):
-            with patch("niu_api.internal.lightrag_manager.call_async", return_value=None) as mock_call:
+            with patch("niu_api.internal.lightrag_manager.call_async", return_value=None):
                 with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as MockIngester:
                     mock_ingester = MagicMock()
                     mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
@@ -252,7 +250,6 @@ class TestLightRAGSync:
                     mock_ps = MagicMock()
                     mock_ps.get_db_path.return_value = db_path
                     with patch.dict("sys.modules", {"niu_photo_server": mock_ps}):
-                        import sys
                         photos, persons, _, _, _ = sync._sync_photos_db(set(), set(), set())
                         # Should have synced at least 1 photo and 1 person
                         assert photos >= 1
@@ -276,8 +273,8 @@ class TestLightRAGSync:
 
     def test_get_lightrag_sync_singleton(self):
         """get_lightrag_sync should return singleton instance."""
-        from agent.injector.lightrag_sync import get_lightrag_sync, _lightrag_sync_lock
         import agent.injector.lightrag_sync as mod
+        from agent.injector.lightrag_sync import get_lightrag_sync
 
         # Reset global for clean test
         original = mod._lightrag_sync
@@ -423,7 +420,7 @@ class TestConfigFilesKgServerHidden:
         """kg-server should not be in mcp-servers.yaml at all (deleted)."""
         import yaml
         config_path = Path("config/mcp-servers.yaml")
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         # Handle empty YAML (None)
@@ -437,7 +434,7 @@ class TestConfigFilesKgServerHidden:
         """kg-server entry should not exist in mcp-servers.yaml (deleted)."""
         import yaml
         config_path = Path("config/mcp-servers.yaml")
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
         # Handle empty YAML (None)
@@ -449,7 +446,7 @@ class TestConfigFilesKgServerHidden:
 
     def test_mcp_tools_json_kg_tools_hidden(self):
         """All kg-server tools should be hidden in mcp_tools.json."""
-        with open("data/mcp_tools.json", "r", encoding="utf-8") as f:
+        with open("data/mcp_tools.json", encoding="utf-8") as f:
             data = json.load(f)
 
         for tool in data.get("kg-server", []):

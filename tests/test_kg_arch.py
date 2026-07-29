@@ -9,9 +9,9 @@
 P0 单元测试：直接操作 NetworkX 图，不需要 LLM proxy
 """
 
+import json
 import sys
 import time
-import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -86,7 +86,7 @@ def test_p0_1_person_entity_structure():
         return False
 
     data = dict(nx.nodes[entity_name])
-    print(f"\n实体数据:")
+    print("\n实体数据:")
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
     # 检查关键字段
@@ -121,7 +121,7 @@ def test_p0_1_person_entity_structure():
 
     # 4. 不应有 "detected in photo" 等照片信息
     if "detected in photo" not in desc:
-        print(f"✅ description 不含照片信息")
+        print("✅ description 不含照片信息")
         checks.append(True)
     else:
         print(f"❌ description 含照片信息: {desc}")
@@ -195,16 +195,16 @@ def test_p0_2_photo_depicts_edge():
         print(f"  file_path: {fp}")
 
         if person_name in desc:
-            print(f"  ✅ description 包含名字")
+            print("  ✅ description 包含名字")
         else:
-            print(f"  ❌ description 不包含名字")
+            print("  ❌ description 不包含名字")
 
         if not fp or fp == "UNKNOWN":
-            print(f"  ✅ 人物实体无 file_path")
+            print("  ✅ 人物实体无 file_path")
         else:
             print(f"  ⚠️ 人物实体有 file_path: {fp}")
     else:
-        print(f"❌ 人物实体不存在")
+        print("❌ 人物实体不存在")
         return False
 
     # 2. 照片实体存在且有 file_path
@@ -215,11 +215,11 @@ def test_p0_2_photo_depicts_edge():
         print(f"  file_path: {fp}")
 
         if photo_path in fp:
-            print(f"  ✅ 照片实体有 file_path")
+            print("  ✅ 照片实体有 file_path")
         else:
             print(f"  ⚠️ 照片实体 file_path 异常: {fp}")
     else:
-        print(f"❌ 照片实体不存在")
+        print("❌ 照片实体不存在")
         return False
 
     # 3. depicts 边存在
@@ -236,7 +236,7 @@ def test_p0_2_photo_depicts_edge():
                 break
 
     if not depicts_found:
-        print(f"\n❌ depicts 边不存在")
+        print("\n❌ depicts 边不存在")
         # 列出相关边
         for src, tgt, data in nx.edges(data=True):
             if src in (photo_path, person_entity) or tgt in (photo_path, person_entity):
@@ -296,13 +296,13 @@ def test_p0_3_reinject_description_behavior():
         # description 包含新内容
         if desc1 in desc2 and desc2 != desc1:
             # 旧内容也在，是合并
-            print(f"\n⚠️ description 合并模式 — 新旧内容都保留")
-            print(f"  注意: 这会导致 description 累积，不是期望行为")
+            print("\n⚠️ description 合并模式 — 新旧内容都保留")
+            print("  注意: 这会导致 description 累积，不是期望行为")
             return "MERGE"
         else:
             # 只有新内容，是覆盖但新内容包含名字
-            print(f"\n✅ description 覆盖模式 — 只保留最新内容")
-            print(f"  这是正确行为：人物 description 只存当前名字")
+            print("\n✅ description 覆盖模式 — 只保留最新内容")
+            print("  这是正确行为：人物 description 只存当前名字")
             return True
     else:
         print(f"\n❌ description 异常: {desc2}")
@@ -416,7 +416,7 @@ def test_p0_5_merge_persons_delete_b():
     nx = get_nx()
 
     # 验证合并前状态
-    print(f"\n合并前:")
+    print("\n合并前:")
     print(f"  {entity_a} 存在: {entity_a in nx.nodes()}")
     print(f"  {entity_b} 存在: {entity_b in nx.nodes()}")
 
@@ -451,7 +451,7 @@ def test_p0_5_merge_persons_delete_b():
 
     # 验证合并后状态
     nx = get_nx()
-    print(f"\n合并后:")
+    print("\n合并后:")
     print(f"  {entity_a} 存在: {entity_a in nx.nodes()}")
     print(f"  {entity_b} 存在: {entity_b in nx.nodes()}")
 
@@ -476,10 +476,10 @@ def test_p0_5_merge_persons_delete_b():
     checks.append(len(a_depicts) >= 1)  # person_a 有 depicts 边
 
     if all(checks):
-        print(f"\n✅ 合并成功 — person_a 存在，person_b 已删除，depicts 边已迁移")
+        print("\n✅ 合并成功 — person_a 存在，person_b 已删除，depicts 边已迁移")
         return True
     else:
-        print(f"\n❌ 合并失败")
+        print("\n❌ 合并失败")
         return False
 
 
@@ -532,7 +532,7 @@ def test_p0_6_co_appears_with():
                 break
 
     if not co_appears_found:
-        print(f"\n❌ co_appears_with 边不存在")
+        print("\n❌ co_appears_with 边不存在")
         return False
 
     return True
@@ -585,13 +585,13 @@ def test_p0_7_multiple_inject_same_entity():
 
     # 分析
     if desc3 == "郑十（已确认）":
-        print(f"\n✅ 覆盖模式 — description 被最新值替换")
-        print(f"  结论: name_person 可以直接写新 description，无需先读")
+        print("\n✅ 覆盖模式 — description 被最新值替换")
+        print("  结论: name_person 可以直接写新 description，无需先读")
         return True  # 覆盖是正确行为：人物 description 只存当前名字
     elif "郑十" in desc3 and "已确认" in desc3 and len(desc3) > len("郑十（已确认）"):
-        print(f"\n⚠️ 合并模式 — description 追加合并")
-        print(f"  结论: name_person 需要写完整 description（包含旧信息）")
-        print(f"  注意: 这会导致 description 累积历史名字，不是期望行为")
+        print("\n⚠️ 合并模式 — description 追加合并")
+        print("  结论: name_person 需要写完整 description（包含旧信息）")
+        print("  注意: 这会导致 description 累积历史名字，不是期望行为")
         return "MERGE"
     else:
         print(f"\n❓ 行为不确定: {desc3}")

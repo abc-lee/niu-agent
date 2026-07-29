@@ -1,6 +1,4 @@
 """测试 subagent.py 的基础工具过滤逻辑（disableBaseTools + allowBaseTools + 默认黑名单）。"""
-import pytest
-from unittest.mock import patch
 from agent import subagent
 
 

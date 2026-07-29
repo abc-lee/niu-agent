@@ -6,18 +6,13 @@
 3. 多轮对话：先有 tool_calls，工具执行后 LLM 返回纯文本回复，
    两轮的 assistant 消息都应该在 messages 中
 """
-import pytest
 import json
 from unittest.mock import Mock
 
 from agent.generic.agent_loop import (
-    agent_runner_loop,
-    StreamEvent,
     StepOutcome,
-    BaseHandler,
-    exhaust,
+    agent_runner_loop,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -171,7 +166,7 @@ def test_tool_call_reply_appends_assistant_message_with_tool_calls():
     # 第一条 assistant 消息应包含 tool_calls
     first_assistant = assistant_msgs[0]
     assert "tool_calls" in first_assistant, (
-        f"带 tool_calls 的回复，assistant 消息应包含 tool_calls 字段"
+        "带 tool_calls 的回复，assistant 消息应包含 tool_calls 字段"
     )
 
     # 验证 tool_calls 结构
@@ -259,10 +254,10 @@ def test_multi_turn_both_assistant_messages_in_messages():
     # 第一条 assistant 消息：带 tool_calls
     first_assistant = assistant_msgs[0]
     assert "tool_calls" in first_assistant, (
-        f"第一轮 assistant 消息应包含 tool_calls 字段"
+        "第一轮 assistant 消息应包含 tool_calls 字段"
     )
     assert first_assistant["tool_calls"][0]["function"]["name"] == "search", (
-        f"第一轮 tool_call name 应为 'search'"
+        "第一轮 tool_call name 应为 'search'"
     )
 
     # 第二条 assistant 消息：纯文本
@@ -272,7 +267,7 @@ def test_multi_turn_both_assistant_messages_in_messages():
         f"实际为 {second_assistant['content']!r}"
     )
     assert "tool_calls" not in second_assistant, (
-        f"第二轮纯文本回复不应包含 tool_calls 字段"
+        "第二轮纯文本回复不应包含 tool_calls 字段"
     )
 
     # 验证完整消息顺序

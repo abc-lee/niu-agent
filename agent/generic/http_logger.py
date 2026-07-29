@@ -11,9 +11,9 @@ HTTP 日志拦截器 -- SDK 层面的原始 HTTP 请求/响应记录
 import json as _json
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import httpx
 
@@ -28,8 +28,8 @@ _patched = False  # 幂等守卫：防止 install_http_logger 被重复调用导
 
 def _get_log_dir() -> Path:
     """返回日志目录 ~/.niu/logs/raw_http/{YYYYMMDD}/，自动创建。"""
-    from datetime import datetime
     import os
+    from datetime import datetime
     home = os.path.expanduser("~")
     date_str = datetime.now().strftime("%Y%m%d")
     log_dir = Path(home) / ".niu" / "logs" / "raw_http" / date_str
@@ -52,7 +52,7 @@ def _mask_api_key(value: str) -> str:
     return value[:4] + "..." + value[-3:]
 
 
-def _sanitize_headers(headers: Dict[str, str]) -> Dict[str, str]:
+def _sanitize_headers(headers: dict[str, str]) -> dict[str, str]:
     """脱敏敏感 header（authorization, api-key 等）。"""
     sensitive_keys = {"authorization", "api-key", "x-api-key", "cookie"}
     sanitized = {}
@@ -115,14 +115,14 @@ def _write_log_entry(seq: int, entry: dict) -> None:
 class LoggingTransport(httpx.BaseTransport):
     """组合模式：包装 httpx.HTTPTransport，在 handle_request 中记录日志。"""
 
-    def __init__(self, real_transport: Optional[httpx.HTTPTransport] = None, **kwargs: Any) -> None:
+    def __init__(self, real_transport: httpx.HTTPTransport | None = None, **kwargs: Any) -> None:
         if real_transport is not None:
             self._transport = real_transport
         else:
             self._transport = httpx.HTTPTransport(**kwargs)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         seq = _next_seq()
 
         # 调用底层 transport
@@ -130,7 +130,7 @@ class LoggingTransport(httpx.BaseTransport):
 
         # 记录日志（不修改任何数据）
         try:
-            elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+            elapsed_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
             # 读取 request body
             req_body = _decode_body(request.content) if request.content else None
@@ -224,17 +224,17 @@ def _do_patch_http() -> None:
     def patched_post(
         self,
         url: str,
-        data: Union[dict, str, bytes, None] = None,
-        json: Union[dict, str, List, None] = None,
-        params: Optional[dict] = None,
-        headers: Optional[dict] = None,
+        data: dict | str | bytes | None = None,
+        json: dict | str | list | None = None,
+        params: dict | None = None,
+        headers: dict | None = None,
         stream: bool = False,
-        timeout: Union[float, Any, None] = None,
+        timeout: float | Any | None = None,
         files: Any = None,
         content: Any = None,
-        logging_obj: Optional[Any] = None,
+        logging_obj: Any | None = None,
     ) -> httpx.Response:
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         seq = _next_seq()
 
         # 调用原始 post（可能抛异常）
@@ -255,7 +255,7 @@ def _do_patch_http() -> None:
         except Exception as exc:
             # 异常时也记录日志
             try:
-                elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+                elapsed_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
                 # 从传入参数推断 request body
                 req_body = json if json is not None else data
                 if isinstance(req_body, str):
@@ -289,7 +289,7 @@ def _do_patch_http() -> None:
 
         # 正常响应，记录日志
         try:
-            elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
+            elapsed_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
             # 从传入参数推断 request body
             req_body = json if json is not None else data

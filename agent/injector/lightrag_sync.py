@@ -15,10 +15,8 @@ import json
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
-
 from niu_api.internal.lightrag_manager import wait_lightrag_ready
 
 
@@ -32,7 +30,7 @@ class LightRAGSync:
 
     def __init__(self, sync_interval: int = 21600):
         self.sync_interval = sync_interval  # default 6 hours
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._status_file = Path.home() / ".niu" / "last_lightrag_sync.json"
 
@@ -207,7 +205,7 @@ class LightRAGSync:
 
 
 # Global instance + thread-safe lock
-_lightrag_sync: Optional[LightRAGSync] = None
+_lightrag_sync: LightRAGSync | None = None
 _lightrag_sync_lock = threading.Lock()
 
 

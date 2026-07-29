@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestMCPClientManagerInit:
@@ -35,7 +36,7 @@ class TestMCPClientManagerCallToolSync:
         manager = MCPClientManager(sampling_callback=None)
         with patch.object(manager, 'call_tool', new_callable=AsyncMock) as mock_call:
             mock_call.return_value = {"content": [{"type": "text", "text": "ok"}]}
-            result = manager.call_tool_sync("test-server", "test-tool", {"arg": "val"})
+            manager.call_tool_sync("test-server", "test-tool", {"arg": "val"})
             mock_call.assert_called_once_with("test-server", "test-tool", {"arg": "val"})
 
     def test_call_tool_sync_returns_result(self):
@@ -107,8 +108,9 @@ class TestSamplingCallback:
     @pytest.mark.asyncio
     async def test_sampling_callback_calls_llm(self):
         """Sampling callback 调用 LLM 并返回结果"""
+        from mcp.types import CreateMessageRequestParams, SamplingMessage, TextContent
+
         from agent.mcp_client import make_sampling_callback
-        from mcp.types import CreateMessageRequestParams, TextContent, SamplingMessage
         callback = make_sampling_callback()
 
         with patch("niu_api.llm_proxy.get_llm_config", return_value={"model": "test-model"}), \
@@ -126,8 +128,9 @@ class TestSamplingCallback:
     @pytest.mark.asyncio
     async def test_sampling_callback_returns_error_on_failure(self):
         """LLM 调用失败时返回错误提示"""
+        from mcp.types import CreateMessageRequestParams, SamplingMessage, TextContent
+
         from agent.mcp_client import make_sampling_callback
-        from mcp.types import CreateMessageRequestParams, TextContent, SamplingMessage
         callback = make_sampling_callback()
 
         with patch("niu_api.llm_proxy.get_llm_config", side_effect=RuntimeError("LLM unavailable")):
@@ -146,8 +149,9 @@ class TestCallToolResultConversion:
     @pytest.mark.asyncio
     async def test_call_tool_returns_dict_on_success(self):
         """成功调用返回标准 dict 格式"""
-        from agent.mcp_client import MCPClientManager
         from mcp.types import TextContent
+
+        from agent.mcp_client import MCPClientManager
 
         manager = MCPClientManager(sampling_callback=None)
         mock_session = AsyncMock()
@@ -166,8 +170,9 @@ class TestCallToolResultConversion:
     @pytest.mark.asyncio
     async def test_call_tool_returns_dict_on_error(self):
         """错误调用返回 error 状态的 dict"""
-        from agent.mcp_client import MCPClientManager
         from mcp.types import TextContent
+
+        from agent.mcp_client import MCPClientManager
 
         manager = MCPClientManager(sampling_callback=None)
         mock_session = AsyncMock()

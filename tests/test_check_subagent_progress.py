@@ -1,9 +1,8 @@
 """验证 check_subagent_progress 工具读 SubagentMemoryContext.snapshot() 返回进度。"""
-import pytest
-from agent.subagent_registry import SubagentRegistry
-from agent.subagent_memory import SubagentMemoryContext
-from agent.subagent_supplement import SubagentSupplementQueue
 from agent.handler import NiuHandler
+from agent.subagent_memory import SubagentMemoryContext
+from agent.subagent_registry import SubagentRegistry
+from agent.subagent_supplement import SubagentSupplementQueue
 
 
 def _consume_generator(gen):

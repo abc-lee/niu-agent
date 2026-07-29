@@ -14,7 +14,6 @@ KG Sync — LightRAG 版本
 """
 
 import threading
-from typing import Optional
 
 from loguru import logger
 
@@ -52,7 +51,7 @@ class KGSync:
 
 
 # Global instance + thread-safe lock
-_kg_sync: Optional[KGSync] = None
+_kg_sync: KGSync | None = None
 _kg_sync_lock = threading.Lock()
 
 

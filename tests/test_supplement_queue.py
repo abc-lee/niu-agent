@@ -10,7 +10,7 @@ def test_supplement_queue_initially_empty():
 
 def test_enqueue_supplement_adds_message():
     """enqueue_supplement adds a message to the queue."""
-    from agent.runner import enqueue_supplement, drain_supplements
+    from agent.runner import drain_supplements, enqueue_supplement
     enqueue_supplement("用户补充的信息")
     result = drain_supplements()
     assert len(result) == 1
@@ -19,7 +19,7 @@ def test_enqueue_supplement_adds_message():
 
 def test_drain_supplements_empties_queue():
     """drain_supplements removes all messages from the queue."""
-    from agent.runner import enqueue_supplement, drain_supplements
+    from agent.runner import drain_supplements, enqueue_supplement
     enqueue_supplement("消息1")
     enqueue_supplement("消息2")
     assert len(drain_supplements()) == 2
@@ -28,7 +28,7 @@ def test_drain_supplements_empties_queue():
 
 def test_supplement_queue_thread_safe():
     """enqueue_supplement and drain_supplements are thread-safe."""
-    from agent.runner import enqueue_supplement, drain_supplements
+    from agent.runner import drain_supplements, enqueue_supplement
     errors = []
 
     def enqueue_many():
@@ -58,7 +58,7 @@ def test_supplement_queue_thread_safe():
 
 def test_drain_supplements_no_race_condition():
     """drain_supplements uses get_nowait() without empty() check — no race."""
-    from agent.runner import enqueue_supplement, drain_supplements
+    from agent.runner import drain_supplements, enqueue_supplement
     for i in range(50):
         enqueue_supplement(f"race-{i}")
     result = drain_supplements()
@@ -74,14 +74,14 @@ def test_drain_supplement_empty_returns_none():
 
 def test_drain_supplement_single_returns_raw():
     """Single pending message returned as-is."""
-    from agent.runner import enqueue_supplement, drain_supplement
+    from agent.runner import drain_supplement, enqueue_supplement
     enqueue_supplement("只有一条补充")
     assert drain_supplement() == "只有一条补充"
 
 
 def test_drain_supplement_multiple_joins_with_prefix():
     """Multiple pending messages joined with [补充] prefix."""
-    from agent.runner import enqueue_supplement, drain_supplement
+    from agent.runner import drain_supplement, enqueue_supplement
     enqueue_supplement("第一个补充")
     enqueue_supplement("第二个补充")
     result = drain_supplement()
@@ -91,9 +91,10 @@ def test_drain_supplement_multiple_joins_with_prefix():
 
 def test_supplement_inserted_before_next_prompt():
     """Supplement messages appear before next_prompt in messages sent to LLM."""
-    from agent.runner import enqueue_supplement, drain_supplements
-    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
     from unittest.mock import MagicMock
+
+    from agent.generic.agent_loop import StreamEvent, agent_runner_loop
+    from agent.runner import drain_supplements, enqueue_supplement
 
     drain_supplements()
 
@@ -160,9 +161,10 @@ def test_supplement_inserted_before_next_prompt():
 
 def test_supplement_order_before_next_prompt():
     """Supplement message appears BEFORE next_prompt in the combined user message."""
-    from agent.runner import enqueue_supplement, drain_supplements
-    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
     from unittest.mock import MagicMock
+
+    from agent.generic.agent_loop import StreamEvent, agent_runner_loop
+    from agent.runner import drain_supplements, enqueue_supplement
 
     drain_supplements()
 
@@ -231,9 +233,10 @@ def test_supplement_order_before_next_prompt():
 
 def test_supplement_without_next_prompt():
     """Supplement message is injected even when next_prompt is empty."""
-    from agent.runner import enqueue_supplement, drain_supplements
-    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
     from unittest.mock import MagicMock
+
+    from agent.generic.agent_loop import StreamEvent, agent_runner_loop
+    from agent.runner import drain_supplements, enqueue_supplement
 
     drain_supplements()
 
@@ -296,9 +299,10 @@ def test_supplement_without_next_prompt():
 
 def test_subagent_does_not_drain_supplement():
     """Sub-agent with enable_supplement=False does not read supplement queue."""
-    from agent.runner import enqueue_supplement, drain_supplements
-    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
     from unittest.mock import MagicMock
+
+    from agent.generic.agent_loop import agent_runner_loop
+    from agent.runner import drain_supplements, enqueue_supplement
 
     drain_supplements()
     enqueue_supplement("主Agent的补充消息")

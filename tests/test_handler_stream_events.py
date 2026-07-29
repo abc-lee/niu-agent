@@ -2,12 +2,10 @@
 
 TDD: 先写测试，确认失败，再改代码。
 """
-import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
 
-from agent.generic.agent_loop import StreamEvent, StepOutcome
+from agent.generic.agent_loop import StreamEvent
 from agent.handler import NiuHandler
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -122,7 +120,8 @@ class TestCallSubagentGen:
         mock_runner = Mock()
         mock_runner.llm_config = {"model": "test"}
 
-        import tempfile, sqlite3 as real_sqlite3
+        import sqlite3 as real_sqlite3
+        import tempfile
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -165,7 +164,8 @@ class TestCallSubagentGen:
         mock_runner = Mock()
         mock_runner.llm_config = {"model": "test"}
 
-        import tempfile, sqlite3
+        import sqlite3
+        import tempfile
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmpdir:

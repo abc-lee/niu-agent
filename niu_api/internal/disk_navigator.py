@@ -100,7 +100,7 @@ class DiskNavigator:
                     lines.append(f"    {tool.name:<22s} {tool.summary}")
 
         lines.append("")
-        lines.append("Usage: cat /{0}/readme.txt for overview, /{0}/<tool> [args] to execute".format(dir_name))
+        lines.append(f"Usage: cat /{dir_name}/readme.txt for overview, /{dir_name}/<tool> [args] to execute")
         return "\n".join(lines)
 
     # -------------------------------------------------------------------
@@ -145,8 +145,8 @@ class DiskNavigator:
         can use tools without needing a separate cat /<dir>/<tool> call.
         """
         from niu_api.internal.disk_errors import (
-            _format_usage_line, _format_args_section,
-            _format_options_section, _format_examples_section,
+            _format_examples_section,
+            _format_usage_line,
         )
 
         server = self.config.get_server_by_dir(dir_name)
@@ -206,8 +206,10 @@ class DiskNavigator:
     def _format_readme(self, dir_name: str, tool: ToolConfig) -> str:
         """Format a tool README."""
         from niu_api.internal.disk_errors import (
-            _format_usage_line, _format_args_section,
-            _format_options_section, _format_examples_section,
+            _format_args_section,
+            _format_examples_section,
+            _format_options_section,
+            _format_usage_line,
         )
 
         title = f"/{dir_name}/{tool.name}"

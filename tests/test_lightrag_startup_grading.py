@@ -14,7 +14,6 @@ Tests for niu_api/internal/lightrag_manager.py 三级启动门控 + _repairing �
 用 monkeypatch + 直接操作模块全局变量，不碰用户真实数据。
 """
 
-import time
 from unittest.mock import patch
 
 import pytest

@@ -85,7 +85,7 @@ def test_p1_1_person_entity_structure():
     # Step 2: 验证实体结构
     nx = get_nx()
     if entity_name not in nx.nodes():
-        print(f"  ❌ 实体不存在")
+        print("  ❌ 实体不存在")
         return False
 
     data = dict(nx.nodes[entity_name])
@@ -93,7 +93,7 @@ def test_p1_1_person_entity_structure():
     fp = data.get("file_path", "")
     et = data.get("entity_type", "")
 
-    print(f"\nStep 2: 验证实体结构")
+    print("\nStep 2: 验证实体结构")
     print(f"  description: {desc[:100]}")
     print(f"  entity_type: {et}")
     print(f"  file_path: {fp}")
@@ -101,21 +101,21 @@ def test_p1_1_person_entity_structure():
     ok = True
     # description 应该是纯名字
     if person_name in desc and "detected" not in desc and "photo" not in desc.lower():
-        print(f"  ✅ description 是纯名字")
+        print("  ✅ description 是纯名字")
     else:
-        print(f"  ❌ description 不是纯名字（包含多余信息）")
+        print("  ❌ description 不是纯名字（包含多余信息）")
         ok = False
 
     # entity_type 应该是 Person
     if et == "Person":
-        print(f"  ✅ entity_type = 'Person'")
+        print("  ✅ entity_type = 'Person'")
     else:
         print(f"  ❌ entity_type = '{et}'（应为 'Person'）")
         ok = False
 
     # file_path 应该为空
     if not fp or fp == "custom_kg":
-        print(f"  ✅ file_path 为空或默认值")
+        print("  ✅ file_path 为空或默认值")
     else:
         print(f"  ❌ file_path = '{fp}'（应为空）")
         ok = False
@@ -166,7 +166,7 @@ def test_p1_2_document_entity_independence():
         data = dict(nx.nodes[entity_name])
         print(f"  ✅ 实体存在: description={data.get('description', '')}")
     else:
-        print(f"  ❌ 实体不存在")
+        print("  ❌ 实体不存在")
         return False
 
     # Step 2: ainsert 文档
@@ -190,13 +190,13 @@ def test_p1_2_document_entity_independence():
     print(f"  ainsert 返回: {track_id}")
 
     # 等待 LLM 处理完成
-    print(f"  等待 LLM 处理（35秒）...")
+    print("  等待 LLM 处理（35秒）...")
     time.sleep(35)
 
     # Step 3: 检查 KG 中的实体
     uuid_entities, plain_persons = find_person_entities()
 
-    print(f"\nStep 3: 检查 KG 实体")
+    print("\nStep 3: 检查 KG 实体")
     print(f"  person:{{uuid}} 实体数: {len(uuid_entities)}")
     print(f"  普通名字人物实体数: {len(plain_persons)}")
 
@@ -209,7 +209,7 @@ def test_p1_2_document_entity_independence():
 
         # description 应该仍然是纯名字（不被文档内容污染）
         if person_name in desc and len(desc) < 200:
-            print(f"  ✅ description 仍然是纯名字（未被文档内容污染）")
+            print("  ✅ description 仍然是纯名字（未被文档内容污染）")
         else:
             print(f"  ⚠️ description 可能被 LLM 扩展了（长度={len(desc)}）")
     else:
@@ -222,11 +222,11 @@ def test_p1_2_document_entity_independence():
         data = plain_persons[person_name]
         print(f"\n  ℹ️ 发现独立实体 '{person_name}'（与 {entity_name} 共存）")
         print(f"    description: {data.get('description', 'N/A')[:120]}")
-        print(f"  ✅ 两个实体独立共存 — 这是新架构的正常行为")
+        print("  ✅ 两个实体独立共存 — 这是新架构的正常行为")
     else:
         print(f"\n  ℹ️ 没有发现独立实体 '{person_name}'")
         print(f"  LLM 可能没有提取 '{person_name}' 为独立实体")
-        print(f"  这也是正常的 — LLM 可能通过 ainsert_custom_kg 路径合并了")
+        print("  这也是正常的 — LLM 可能通过 ainsert_custom_kg 路径合并了")
 
     return True
 
@@ -254,7 +254,7 @@ if __name__ == "__main__":
     import urllib.request
     try:
         resp = urllib.request.urlopen("http://localhost:9876/health", timeout=3)
-        print(f"✅ API 服务可用")
+        print("✅ API 服务可用")
     except Exception:
         print("⚠️ API 服务不可用，LLM 调用可能失败")
 

@@ -2,8 +2,8 @@
 
 import pytest
 
+from niu_api.internal.disk_config import ArgConfig, ToolConfig
 from niu_api.internal.disk_errors import DiskErrors, FuzzyMatcher
-from niu_api.internal.disk_config import ToolConfig, ArgConfig
 
 
 @pytest.fixture

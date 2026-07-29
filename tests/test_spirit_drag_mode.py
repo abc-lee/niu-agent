@@ -1,5 +1,4 @@
 """Test: spirit drag mode fix — resources injection into system_prompt"""
-import pytest
 
 
 def _build_resource_lines(resources):

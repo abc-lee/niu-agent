@@ -8,12 +8,11 @@
 - 用 _last_seen_rowid 游标只查 rowid > last_seen 的新消息，避免重复路由
 - 不再用内存 set _routed_msg_ids（避免长期累积增长）
 """
+import asyncio
+import logging
 import os
 import re
 import sqlite3
-import asyncio
-import logging
-from typing import Tuple
 
 from agent.runner import enqueue_supplement
 from agent.subagent_registry import SubagentRegistry
@@ -59,7 +58,7 @@ async def _init_routed_baseline() -> None:
         logger.error(f"db_monitor 基线初始化失败：{e}")
 
 
-def parse_at_message(content: str) -> Tuple[str, str, str]:
+def parse_at_message(content: str) -> tuple[str, str, str]:
     """解析 @消息格式，返回 (target, sender, content)。
 
     格式：@目标 [发送者名] 内容  或  @目标 内容
@@ -189,6 +188,7 @@ async def _drain_main_agent_request_queue() -> None:
     db_monitor 不做类型区分，一视同仁推 SSE 给主 Agent。
     """
     from agent.main_agent_request_queue import get_main_agent_request_queue
+
     from niu_api.compat import _chat_lock
 
     if _chat_lock.locked():

@@ -73,7 +73,7 @@ class TestEncodeDescriptionPriority:
         assert "brain_meta_priority:permanent" in desc
 
     def test_encode_description_default_priority(self):
-        from niu_api.internal.region_manager import _encode_description, DEFAULT_PRIORITY
+        from niu_api.internal.region_manager import DEFAULT_PRIORITY, _encode_description
         desc = _encode_description(
             summary="测试摘要",
             region_id="community_1",
@@ -90,17 +90,26 @@ class TestEncodeDescriptionPriority:
         assert parse_priority_from_description(desc) == "long"
 
     def test_parse_priority_missing(self):
-        from niu_api.internal.region_manager import parse_priority_from_description, DEFAULT_PRIORITY
+        from niu_api.internal.region_manager import (
+            DEFAULT_PRIORITY,
+            parse_priority_from_description,
+        )
         desc = "brain_meta_source:default<SEP>some other content"
         assert parse_priority_from_description(desc) == DEFAULT_PRIORITY
 
     def test_parse_priority_empty(self):
-        from niu_api.internal.region_manager import parse_priority_from_description, DEFAULT_PRIORITY
+        from niu_api.internal.region_manager import (
+            DEFAULT_PRIORITY,
+            parse_priority_from_description,
+        )
         assert parse_priority_from_description("") == DEFAULT_PRIORITY
 
     def test_parse_priority_old_core_value_warning(self):
         """旧优先级值 core/category 应回退到 DEFAULT_PRIORITY"""
-        from niu_api.internal.region_manager import parse_priority_from_description, DEFAULT_PRIORITY
+        from niu_api.internal.region_manager import (
+            DEFAULT_PRIORITY,
+            parse_priority_from_description,
+        )
         desc = "brain_meta_priority:core<SEP>brain_meta_source:default"
         assert parse_priority_from_description(desc) == DEFAULT_PRIORITY
 
@@ -149,7 +158,7 @@ class TestDecayStructuralEdges:
         脑区构造场景是为了对照"修复前 permanent 走专属永久保底分支，
         修复后走统一的孤立保底分支"。
         """
-        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import FLOOR_WEIGHT, _decay_brain_region_edges
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
                    description="brain_meta_priority:permanent<SEP>永久脑区")
@@ -162,7 +171,7 @@ class TestDecayStructuralEdges:
 
     def test_floor_protection_orphan(self):
         """总边数==1时保底保护"""
-        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import FLOOR_WEIGHT, _decay_brain_region_edges
         G = nx.Graph()
         G.add_node("region_short", entity_type="brainregion",
                    description="brain_meta_priority:short<SEP>短期脑区")
@@ -174,7 +183,11 @@ class TestDecayStructuralEdges:
 
     def test_delete_below_floor_with_other_edges(self):
         """非 permanent + 总边数>=2 + 低于保底 → 删除边"""
-        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT, daily_decay_rate
+        from niu_api.internal.region_manager import (
+            FLOOR_WEIGHT,
+            _decay_brain_region_edges,
+            daily_decay_rate,
+        )
         G = nx.Graph()
         G.add_node("region_short", entity_type="brainregion",
                    description="brain_meta_priority:short<SEP>短期脑区")
@@ -189,7 +202,11 @@ class TestDecayStructuralEdges:
 
     def test_permanent_not_deleted_with_other_edges(self):
         """permanent + 总边数>=2 + 低于保底 → 删除（2026-07-18 修复：与普通脑区一致）"""
-        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT, daily_decay_rate
+        from niu_api.internal.region_manager import (
+            FLOOR_WEIGHT,
+            _decay_brain_region_edges,
+            daily_decay_rate,
+        )
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
                    description="brain_meta_priority:permanent<SEP>永久脑区")
@@ -225,7 +242,11 @@ class TestDecayStructuralEdges:
 
     def test_missing_priority_fallback(self):
         """description 中缺少 brain_meta_priority 时回退到 medium"""
-        from niu_api.internal.region_manager import _decay_brain_region_edges, daily_decay_rate, DEFAULT_PRIORITY
+        from niu_api.internal.region_manager import (
+            DEFAULT_PRIORITY,
+            _decay_brain_region_edges,
+            daily_decay_rate,
+        )
         G = nx.Graph()
         G.add_node("region_no_priority", entity_type="brainregion",
                    description="brain_meta_source:leiden<SEP>无优先级脑区")

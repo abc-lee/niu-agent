@@ -12,7 +12,6 @@ import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from loguru import logger
@@ -85,7 +84,7 @@ def get_embedding_max_seq_length() -> int:
 # ============== Model Loading ==============
 
 _model = None
-_model_name: Optional[str] = None  # Track which model is loaded
+_model_name: str | None = None  # Track which model is loaded
 _model_lock = threading.Lock()  # Protect _model / _model_name access
 
 

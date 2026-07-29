@@ -7,7 +7,7 @@ Covers 4 branches:
 - region_sync is None (LightRAG corrupt branch): → no signal, return None
 - activation_mgr still None after sync (run_sync failed): → still signal, return False
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def test_normal_path_activation_mgr_ready():

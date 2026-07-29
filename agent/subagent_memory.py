@@ -5,7 +5,6 @@
 内存对象不进 db，子 Agent 结束后随注册表移除而消失。
 """
 import threading
-from typing import Optional
 
 
 class SubagentMemoryContext:
@@ -22,10 +21,10 @@ class SubagentMemoryContext:
     """
 
     def __init__(self):
-        self.last_llm_request: Optional[str] = None
-        self.last_llm_response: Optional[str] = None
+        self.last_llm_request: str | None = None
+        self.last_llm_response: str | None = None
         self.current_turn: int = 0
-        self.last_tool_name: Optional[str] = None
+        self.last_tool_name: str | None = None
         self._lock = threading.Lock()
 
     def snapshot(self) -> dict:

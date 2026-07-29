@@ -2,8 +2,10 @@
 用 AsyncMock 让 enqueue_and_wait 表现为 async 函数返回 str（类型正确）。
 """
 import asyncio
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+
 from niu_api.internal.scheduler.service import trigger_callback
 
 

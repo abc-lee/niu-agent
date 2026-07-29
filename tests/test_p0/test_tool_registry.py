@@ -1,6 +1,6 @@
-import pytest
 from unittest.mock import MagicMock
-from agent.tool_registry import ToolRegistry, get_registry
+
+from agent.tool_registry import ToolRegistry
 
 
 class TestVisibilityValues:
@@ -151,7 +151,7 @@ class TestExternalToolRegistration:
         self.registry._mcp_client = mock_client
 
         func = self.registry.get("ext-srv/read_file")
-        result = func(path="/tmp/test.txt")
+        func(path="/tmp/test.txt")
         mock_client.call_tool_sync.assert_called_once_with("ext-srv", "read_file", {"path": "/tmp/test.txt"})
 
     def test_get_external_tool_returns_none_without_mcp_client(self):
@@ -171,7 +171,7 @@ class TestExternalToolRegistration:
             "visibility": "hidden",
         }
         static = self.registry.get_static_tools()
-        names = [s for s in static]
+        names = list(static)
         assert "ext-srv/read_file" not in names
 
     def test_external_tool_default_visibility_hidden(self):

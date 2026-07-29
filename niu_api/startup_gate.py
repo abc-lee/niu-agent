@@ -6,7 +6,7 @@ startup gate testable without spinning up the full FastAPI app.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ def run_brain_region_startup_gate(
     signal_scheduler_ready_fn: Callable[[], None],
     should_signal: bool,
     timeout: float = 90.0,
-) -> Optional[bool]:
+) -> bool | None:
     """Run the brain region startup gate before signal_scheduler_ready.
 
     Branches:

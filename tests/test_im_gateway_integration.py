@@ -30,7 +30,7 @@ async def read_one(reader, timeout=120.0):
         length = int.from_bytes(header, "big")
         data = await asyncio.wait_for(reader.readexactly(length), timeout=timeout)
         return json.loads(data.decode("utf-8"))
-    except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+    except (TimeoutError, asyncio.IncompleteReadError):
         return None
 
 
@@ -99,7 +99,7 @@ async def test_inbound_image():
 
     reply = await wait_for_send(reader)
     if reply:
-        print(f"[测试] PASS 收到回复")
+        print("[测试] PASS 收到回复")
         assert reply["type"] == "SEND"
     else:
         raise AssertionError("Agent 未回复图片消息")
@@ -122,7 +122,7 @@ async def test_inbound_file():
 
     reply = await wait_for_send(reader)
     if reply:
-        print(f"[测试] PASS 收到回复")
+        print("[测试] PASS 收到回复")
         assert reply["type"] == "SEND"
     else:
         raise AssertionError("Agent 未回复文件消息")

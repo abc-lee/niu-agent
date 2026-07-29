@@ -12,9 +12,8 @@ import sys
 # 让脚本能 import 顶层 agent 包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.runner import create_client
 from agent.generic.agent_loop import exhaust
-
+from agent.runner import create_client
 
 SYSTEM_PROMPT = """你是一个异步子 Agent。每轮输出必须遵循以下格式：
 

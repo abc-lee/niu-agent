@@ -1,7 +1,8 @@
 """SubagentRegistry 单元测试（阶段一简化版）。"""
 import threading
 from unittest.mock import MagicMock
-from agent.subagent_registry import SubagentRegistry, RunningSubagent
+
+from agent.subagent_registry import RunningSubagent, SubagentRegistry
 
 
 def setup_function():

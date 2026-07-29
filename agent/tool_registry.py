@@ -22,7 +22,9 @@ ToolRegistry - MCP工具注册中心
     schemas = registry.get_schemas()
 """
 
-from typing import Dict, Any, List, Optional, Callable
+from collections.abc import Callable
+from typing import Any
+
 from loguru import logger
 
 
@@ -36,19 +38,19 @@ class ToolRegistry:
     def __init__(self):
         """初始化工具注册表"""
         # 工具函数映射: "server/tool" -> callable
-        self._tools: Dict[str, Callable] = {}
+        self._tools: dict[str, Callable] = {}
 
         # 工具schema映射: "server/tool" -> schema dict
-        self._schemas: Dict[str, Dict[str, Any]] = {}
+        self._schemas: dict[str, dict[str, Any]] = {}
 
         # 服务器注册追踪: server_name -> list of tool names
-        self._server_tools: Dict[str, List[str]] = {}
+        self._server_tools: dict[str, list[str]] = {}
 
         # Agent LLM 回调函数，供内部 MCP Server 调用
         self._ask_agent = None  # callable(prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str
 
         # 外部 MCP 工具映射: full_name -> (server_name, tool_name)
-        self._external_tools: Dict[str, tuple[str, str]] = {}
+        self._external_tools: dict[str, tuple[str, str]] = {}
 
         # MCPClientManager 实例，供外部工具调用
         self._mcp_client = None
@@ -57,7 +59,7 @@ class ToolRegistry:
         self,
         name: str,
         func: Callable,
-        schema: Dict[str, Any],
+        schema: dict[str, Any],
         visibility: str = "static",
     ) -> None:
         """Register a single tool directly (not from an MCP server module).
@@ -85,7 +87,7 @@ class ToolRegistry:
             self._server_tools["__builtin__"].append(name)
         logger.info(f"Registered built-in tool: {name}")
 
-    def register_server(self, server_name: str, module, visibility_map: Optional[dict] = None) -> bool:
+    def register_server(self, server_name: str, module, visibility_map: dict | None = None) -> bool:
         """
         注册MCP服务器的所有工具
 
@@ -208,7 +210,7 @@ class ToolRegistry:
             logger.error(f"Failed to register server {server_name}: {e}")
             return False
 
-    def get(self, tool_name: str) -> Optional[Callable]:
+    def get(self, tool_name: str) -> Callable | None:
         """获取工具函数——内部返回函数引用，外部返回 Client 调用包装器
 
         Args:
@@ -230,7 +232,7 @@ class ToolRegistry:
             return wrapper
         return None
 
-    def get_schemas(self) -> List[Dict[str, Any]]:
+    def get_schemas(self) -> list[dict[str, Any]]:
         """
         返回工具schema列表（用于LLM）
 
@@ -239,7 +241,7 @@ class ToolRegistry:
         """
         return list(self._schemas.values())
 
-    def get_all_schemas(self) -> Dict[str, Dict[str, Any]]:
+    def get_all_schemas(self) -> dict[str, dict[str, Any]]:
         """Return dict of all tool schemas keyed by full tool name.
 
         Useful when callers need both the tool name and its schema,
@@ -250,7 +252,7 @@ class ToolRegistry:
         """
         return dict(self._schemas)
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         """列出所有已注册的工具名称（内部 + 外部）
 
         Returns:
@@ -269,7 +271,7 @@ class ToolRegistry:
         """
         return tool_name in self._tools or tool_name in self._external_tools
 
-    def get_static_tools(self) -> List[str]:
+    def get_static_tools(self) -> list[str]:
         """
         返回所有 visibility=static 的工具名列表
 
@@ -316,7 +318,7 @@ class ToolRegistry:
 # 全局registry实例管理
 # ============================================================================
 
-_registry: Optional[ToolRegistry] = None
+_registry: ToolRegistry | None = None
 
 
 def get_registry() -> ToolRegistry:

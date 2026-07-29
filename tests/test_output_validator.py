@@ -1,4 +1,5 @@
 import pytest
+
 from agent.output_validator import validate_references
 
 

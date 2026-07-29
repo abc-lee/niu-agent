@@ -1,9 +1,10 @@
 """语义修复的 TDD 测试。"""
 import json
 import xml.etree.ElementTree as ET
-import pytest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 # v8-Task 1：repair_brainregion_zombies 已删除（违反铁律 3，写 GraphML + cache）。
 # 整个文件依赖该函数，跳过 collection。Task 5-10 回归测试会重建等价覆盖。
@@ -12,8 +13,8 @@ pytest.skip(
     allow_module_level=True,
 )
 
-from niu_api.internal.lightrag_repair import repair_brainregion_zombies  # noqa: E402
 from niu_api.internal.lightrag_integrity import check_all  # noqa: E402
+from niu_api.internal.lightrag_repair import repair_brainregion_zombies  # noqa: E402
 
 
 def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[str] = None):
@@ -28,12 +29,12 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
     for zname in zombies:
         node = ET.SubElement(graph, f"{{{ns}}}node", {"id": zname})
         ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
-        ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = f"被删除的重复脑区实体之一。<SEP>brain_meta_size:0<SEP>brain_meta_shrink_count:1"
+        ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = "被删除的重复脑区实体之一。<SEP>brain_meta_size:0<SEP>brain_meta_shrink_count:1"
         ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = f"brain_{zname}"
     for nname in normal_regions:
         node = ET.SubElement(graph, f"{{{ns}}}node", {"id": nname})
         ET.SubElement(node, f"{{{ns}}}data", {"key": "d1"}).text = "brainregion"
-        ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = f"brain_meta_size:10"
+        ET.SubElement(node, f"{{{ns}}}data", {"key": "d2"}).text = "brain_meta_size:10"
         ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = f"chunk-{nname}"
     ET.ElementTree(root).write(storage / "graph_chunk_entity_relation.graphml", xml_declaration=True, encoding="utf-8")
 

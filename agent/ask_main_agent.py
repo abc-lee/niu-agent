@@ -18,9 +18,8 @@ db_monitor 链路 B 轮询到主 Agent 回答消息（@子名 role=subagent_msg�
   - db_monitor 链路 B 推 /stop 到子 Agent supplement queue（is_terminate=True）
   - 同时 PendingAskRegistry.cancel_pending_ask(子名) — 解除 ask_main_agent 阻塞（避免死锁）
 """
-import threading
 import logging
-from typing import Optional
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +37,14 @@ class AskMainAgentFuture:
 
     def __init__(self):
         self._event = threading.Event()
-        self._answer: Optional[str] = None
+        self._answer: str | None = None
 
     def set_answer(self, answer: str) -> None:
         """主 Agent 回答路由来时调，解除阻塞。"""
         self._answer = answer
         self._event.set()
 
-    def wait(self, timeout: Optional[float] = None) -> Optional[str]:
+    def wait(self, timeout: float | None = None) -> str | None:
         """阻塞等待回答。超时返回 None；被 cancel 返回 TERMINATED_SIGNAL。"""
         self._event.wait(timeout=timeout)
         return self._answer

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from niu_api.internal.disk_config import ToolConfig, ArgConfig
-
+from niu_api.internal.disk_config import ArgConfig, ToolConfig
 
 # ---------------------------------------------------------------------------
 # Fuzzy matching for flag suggestions

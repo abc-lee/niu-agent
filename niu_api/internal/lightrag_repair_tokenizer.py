@@ -16,16 +16,14 @@ API：
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from loguru import logger
 
 # 单例缓存（避免每次调用都重新加载 tiktoken encoding）
-_tokenizer_cache: Optional[object] = None
+_tokenizer_cache: object | None = None
 _tokenizer_failed: bool = False  # 标记加载失败过，避免重复打日志
 
 
-def get_tokenizer() -> Optional[object]:
+def get_tokenizer() -> object | None:
     """独立加载 TiktokenTokenizer（不调 get_lightrag_for_repair，铁律 3）。
 
     用 lightrag.utils.TiktokenTokenizer（model_name="gpt-4o-mini"）。

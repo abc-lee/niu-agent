@@ -7,9 +7,10 @@ The current context_manager.py:
 2. load_history() drops tool_calls and tool_call_id fields (discards tool metadata)
 3. compress_messages() does not preserve assistant(tool_calls)+tool pairs
 """
-import pytest
 import os
 import tempfile
+
+import pytest
 
 
 @pytest.fixture

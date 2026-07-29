@@ -1,7 +1,6 @@
 """Tests for brain region prompt injection into LightRAG LLM requests."""
 from pathlib import Path
 
-import pytest
 from niu_api.internal.brain_region_prompt import is_lightrag_extraction_request
 
 
@@ -187,7 +186,7 @@ def test_inject_brain_region_context_non_extraction_request_unchanged():
 
     # Same content, returned as a shallow copy
     assert len(result) == len(messages)
-    assert all(m["role"] == r["role"] and m["content"] == r["content"] for m, r in zip(messages, result))
+    assert all(m["role"] == r["role"] and m["content"] == r["content"] for m, r in zip(messages, result, strict=False))
 
 
 def test_inject_brain_region_context_returns_new_list():

@@ -4,14 +4,13 @@ Message API endpoints - 简化版（无 Session 概念）
 所有消息属于用户，不区分 session。
 """
 
-from typing import Optional, List
-from pydantic import BaseModel
-from fastapi import APIRouter
-
 import sys
 
+from fastapi import APIRouter
+from pydantic import BaseModel
+
 sys.path.insert(0, "..")
-from agent.session import MessageStore, Message, get_message_store
+from agent.session import get_message_store
 
 router = APIRouter(tags=["session"])
 
@@ -28,14 +27,14 @@ class MessageResponse(BaseModel):
 class MessagesResponse(BaseModel):
     """Messages list response"""
 
-    messages: List[MessageResponse]
+    messages: list[MessageResponse]
     total_count: int
     total_in_db: int
 
 
 @router.get("/{session_id}/messages")
 async def get_messages(
-    session_id: str, limit: int = 50, before_id: Optional[str] = None
+    session_id: str, limit: int = 50, before_id: str | None = None
 ) -> MessagesResponse:
     """Get messages (session_id is ignored - all messages belong to user)"""
     store = await get_message_store()
@@ -73,7 +72,7 @@ async def create_session() -> dict:
 
 
 @router.get("/")
-async def list_sessions(limit: int = 20) -> List[dict]:
+async def list_sessions(limit: int = 20) -> list[dict]:
     """List recent sessions (deprecated - returns single default)"""
     return [{"session_id": "default", "message_count": 0}]
 

@@ -11,10 +11,10 @@ TDD 测试：照片入库和文档入库后知识图谱实体验证。
 """
 
 import json
-import os
 import sys
-import pytest
 from pathlib import Path
+
+import pytest
 
 # 确保项目路径可用
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -43,6 +43,7 @@ class TestSyncPhotoToKgEntityFormat:
         """验证 sync_photo_to_kg 中人物实体的 entity_type 是 'Person'。"""
         # 读取源码验证
         import inspect
+
         from niu_photo_server import sync_photo_to_kg
         source = inspect.getsource(sync_photo_to_kg)
         # 验证 entity_type 使用了 "Person"
@@ -51,6 +52,7 @@ class TestSyncPhotoToKgEntityFormat:
     def test_depicts_relation_keywords(self):
         """验证 depicts 关系的 keywords 字段。"""
         import inspect
+
         from niu_photo_server import sync_photo_to_kg
         source = inspect.getsource(sync_photo_to_kg)
         assert '"depicts"' in source, "sync_photo_to_kg 应该创建 depicts 关系"
@@ -58,6 +60,7 @@ class TestSyncPhotoToKgEntityFormat:
     def test_co_appears_with_relation_keywords(self):
         """验证同框关系的 keywords 字段。"""
         import inspect
+
         from niu_photo_server import sync_photo_to_kg
         source = inspect.getsource(sync_photo_to_kg)
         assert '"co_appears_with"' in source, "sync_photo_to_kg 应该创建 co_appears_with 关系"
@@ -69,6 +72,7 @@ class TestNamePersonKgSync:
     def test_name_person_calls_inject_entity(self):
         """验证 name_person 调用了 inject_entity。"""
         import inspect
+
         from niu_photo_server import name_person
         source = inspect.getsource(name_person)
         assert "inject_entity" in source, "name_person 应该调用 inject_entity 同步 KG"
@@ -80,6 +84,7 @@ class TestNamePersonKgSync:
         前端 mapNodeType 做 .toLowerCase() 兼容，但后端应该统一。
         """
         import inspect
+
         from niu_photo_server import name_person
         source = inspect.getsource(name_person)
         # 记录当前状态（小写 'person'），后续需要修复为 'Person'
@@ -95,6 +100,7 @@ class TestMergePersonsKgSync:
     def test_merge_persons_calls_inject_entity(self):
         """验证 merge_persons 调用了 inject_entity。"""
         import inspect
+
         from niu_photo_server import merge_persons
         source = inspect.getsource(merge_persons)
         assert "inject_entity" in source, "merge_persons 应该调用 inject_entity"
@@ -102,6 +108,7 @@ class TestMergePersonsKgSync:
     def test_merge_persons_creates_merged_into_relation(self):
         """验证 merge_persons 创建了 merged_into 关系。"""
         import inspect
+
         from niu_photo_server import merge_persons
         source = inspect.getsource(merge_persons)
         assert "merged_into" in source, "merge_persons 应该创建 merged_into 关系"
@@ -205,7 +212,7 @@ class TestIntegrationDocumentPersonMerge:
                     plain_name_entities[key] = value.get("description", "")
 
         # 报告发现
-        print(f"\n=== KG 人物实体统计 ===")
+        print("\n=== KG 人物实体统计 ===")
         print(f"person:{{uuid}} 格式: {len(person_uuid_entities)} 个")
         for k, v in person_uuid_entities.items():
             print(f"  {k}: {v[:50]}...")

@@ -7,7 +7,7 @@
 import logging
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class TokenCalculator:
         except Exception:
             return _cjk_aware_estimate(text)
 
-    def count_messages(self, messages: List[Dict]) -> int:
+    def count_messages(self, messages: list[dict]) -> int:
         """计算消息列表的 token 数，逐条计算并包含结构开销。
 
         采用逐条计算而非一次性计算，与 compat.py 和 runner.py 中

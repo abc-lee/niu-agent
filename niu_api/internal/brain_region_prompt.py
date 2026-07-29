@@ -94,7 +94,7 @@ def is_lightrag_extraction_request(messages: list[dict]) -> bool:
 
 
 def _get_fallback_regions_text() -> str:
-    from niu_api.internal.region_manager import get_default_regions_config, REGION_SUFFIX
+    from niu_api.internal.region_manager import REGION_SUFFIX, get_default_regions_config
     defaults = get_default_regions_config()
     names = [f"{d['label']}{REGION_SUFFIX}" for d in defaults]
     return "、".join(names)

@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from niu_api.internal.disk_config import DiskConfig, ToolConfig, ArgConfig
+from niu_api.internal.disk_config import ArgConfig, DiskConfig, ToolConfig
 from niu_api.internal.disk_errors import DiskErrors
 from niu_api.internal.disk_parser import ParsedCommand
 

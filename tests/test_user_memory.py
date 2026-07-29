@@ -9,10 +9,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "mcp-servers" / "memory-server" / "src"))
 
-import niu_memory_server as mod
-
 # Inline sanitize/render for testing (same logic as runner.py)
 import re as _re
+
+import niu_memory_server as mod
+
+
 def _sanitize_memory_content(content):
     if content is None:
         return ""

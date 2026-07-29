@@ -1,5 +1,5 @@
 """验证 @ 消息解析器。"""
-from agent.at_message_parser import extract_at_messages, strip_at_messages, format_for_db
+from agent.at_message_parser import extract_at_messages, format_for_db, strip_at_messages
 
 
 def test_extract_single_at_message():
@@ -70,6 +70,7 @@ def test_extract_non_hex_suffix_rejected():
 def test_persist_agent_reply_strips_assistant_content_in_rv_path():
     """rv 路径下 assistant content 也 strip @ 消息，避免重复入库。"""
     import inspect
+
     from niu_api import chat
     source = inspect.getsource(chat.persist_agent_reply)
     # persist_agent_reply 应在 rv 路径遍历也调 strip_at_messages（≥2 次：

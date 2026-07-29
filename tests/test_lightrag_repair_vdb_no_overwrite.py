@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from niu_api.internal.lightrag_repair import repair_all
+
 sys.path.insert(0, str(Path(__file__).parent))
 from test_lightrag_rebuild_from_truth import _make_synthetic_fixture
 

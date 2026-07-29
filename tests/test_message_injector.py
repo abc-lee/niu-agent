@@ -1,8 +1,8 @@
 # tests/test_message_injector.py
 from niu_api.internal.message_injector import (
+    format_refined_document,
     generate_doc_id,
     get_next_segment_number,
-    format_refined_document,
     split_into_segments,
 )
 

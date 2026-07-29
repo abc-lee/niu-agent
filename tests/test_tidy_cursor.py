@@ -4,10 +4,7 @@ Auto-Tidy 双游标机制重构 — 集成测试
 测试方式：使用内存 SQLite 构造真实消息，验证 _build_incremental_msg_text 的行为。
 不需要 mock LLM，只测试程序层面的消息生成和游标逻辑。
 """
-import pytest
-import uuid
 from dataclasses import dataclass, field
-
 
 # --- 消息对象模拟（与 MessageStore 返回的对象兼容） ---
 
@@ -32,6 +29,7 @@ def make_messages(n: int, start_idx: int = 0) -> list[FakeMessage]:
 
 # --- 导入被测函数 ---
 import sys
+
 sys.path.insert(0, ".")
 from niu_api.compat import _build_incremental_msg_text
 
@@ -59,7 +57,7 @@ class TestBuildIncrementalMsgTextEndCursor:
         """end_cursor_id 为 None 时，返回 start_cursor 之后的所有消息"""
         messages = make_messages(10)
         out_ids = []
-        result = _build_incremental_msg_text(
+        _build_incremental_msg_text(
             messages,
             last_cursor_id="uuid-5",
             out_msg_ids=out_ids,
@@ -71,7 +69,7 @@ class TestBuildIncrementalMsgTextEndCursor:
         """end_cursor_id 在消息列表中不存在时，退化到返回 start 之后的所有消息"""
         messages = make_messages(10)
         out_ids = []
-        result = _build_incremental_msg_text(
+        _build_incremental_msg_text(
             messages,
             last_cursor_id="uuid-2",
             out_msg_ids=out_ids,
@@ -84,7 +82,7 @@ class TestBuildIncrementalMsgTextEndCursor:
         """end_cursor 在 start_cursor 之前时，返回空"""
         messages = make_messages(10)
         out_ids = []
-        result = _build_incremental_msg_text(
+        _build_incremental_msg_text(
             messages,
             last_cursor_id="uuid-7",
             out_msg_ids=out_ids,
@@ -218,7 +216,7 @@ class TestTidyContextImplIntegration:
         messages = make_messages(10)
         # uuid-99 不在列表中
         entity_ids = []
-        result = _build_incremental_msg_text(messages, "uuid-99", entity_ids)
+        _build_incremental_msg_text(messages, "uuid-99", entity_ids)
         # 退化到全量
         assert len(entity_ids) == 10
 
@@ -363,7 +361,7 @@ def test_exclude_protected_with_tool_messages():
         FakeMessage(id="uuid-4", role="assistant", content="助手消息 4"),
     ]
     out_ids = []
-    text = _build_incremental_msg_text(
+    _build_incremental_msg_text(
         messages, "", out_ids,
         protect_recent=1,  # 保护最后 1 条 user/assistant = uuid-4
         exclude_protected=True
@@ -395,7 +393,7 @@ def test_exclude_protected_with_end_cursor():
     """end_cursor_id + exclude_protected 组合：排除 PROTECTED 后仍尊重上界"""
     messages = make_messages(10)  # uuid-0 ~ uuid-9
     out_ids = []
-    text = _build_incremental_msg_text(
+    _build_incremental_msg_text(
         messages, "uuid-2", out_ids,
         end_cursor_id="uuid-7", protect_recent=2,
         exclude_protected=True

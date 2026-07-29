@@ -17,8 +17,7 @@ from unittest import mock
 
 def test_context_manager_system_prompt_has_no_at_niu_guide():
     """context-manager 的系统提示词里不包含 @niu-agent/@end 守则段"""
-    from agent.subagent import build_subagent_system_segments
-    from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER
+    from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER, build_subagent_system_segments
 
     static_system, _ = build_subagent_system_segments("context-manager")
     assert _SUBAGENT_ASK_GUIDE_MARKER not in static_system
@@ -28,8 +27,7 @@ def test_context_manager_system_prompt_has_no_at_niu_guide():
 
 def test_file_processor_system_prompt_still_has_at_niu_guide():
     """file-processor 的系统提示词里仍包含守则段（验证绕过只针对 context-manager）"""
-    from agent.subagent import build_subagent_system_segments
-    from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER
+    from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER, build_subagent_system_segments
 
     static_system, _ = build_subagent_system_segments("file-processor")
     assert _SUBAGENT_ASK_GUIDE_MARKER in static_system

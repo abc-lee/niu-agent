@@ -26,11 +26,12 @@ import json
 import os
 import threading
 import time
+from asyncio import AbstractEventLoop
 from collections import deque
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional, Union
-from asyncio import AbstractEventLoop
+from typing import Any
 
 from loguru import logger
 
@@ -49,8 +50,8 @@ STORAGE_DIR = Path(_raw_storage_dir) if _raw_storage_dir else Path.home() / ".ni
 
 # Cache a shared LiteLLMSession instance keyed by config tuple.
 # Avoids connection init overhead for high-frequency entity extraction calls.
-_cached_session: Optional[Any] = None
-_cached_config_key: Optional[tuple] = None
+_cached_session: Any | None = None
+_cached_config_key: tuple | None = None
 _session_lock = threading.Lock()
 
 
@@ -106,7 +107,7 @@ def _build_keyword_extraction_response_format() -> dict:
     }
 
 
-def _resolve_response_format(config: dict) -> Optional[dict]:
+def _resolve_response_format(config: dict) -> dict | None:
     """根据 litellm_kwargs.response_format_mode 决定构造哪种 response_format。
 
     返回值：
@@ -215,6 +216,7 @@ def _trigger_background_probe_if_needed() -> None:
     import json
     import threading
     from pathlib import Path
+
     from niu_api.llm_proxy import get_llm_config
 
     def _probe_in_background():
@@ -336,18 +338,18 @@ def _build_llm_model_func():
     Brain region injection is done here (not in proxy layer) for entity
     extraction requests.
     """
-    from niu_api.llm_proxy import get_llm_config
     from niu_api.internal.brain_region_prompt import (
-        build_static_brain_region_prompt,
-        build_dynamic_brain_region_prompt,
-        build_user_info_prompt,
         BRAIN_REGION_MARKER,
+        build_dynamic_brain_region_prompt,
+        build_static_brain_region_prompt,
+        build_user_info_prompt,
     )
+    from niu_api.llm_proxy import get_llm_config
 
     async def _llm_model_func(
         prompt, system_prompt=None, history_messages=None,
         keyword_extraction=False, **kwargs,
-    ) -> Union[str, AsyncGenerator[str, Any]]:
+    ) -> str | AsyncGenerator[str, Any]:
         # 1. Pop LightRAG internal params (concurrency control, not for LLM)
         kwargs.pop("hashing_kv", None)
         kwargs.pop("_priority", None)
@@ -456,7 +458,7 @@ def _build_llm_model_func():
     return _llm_model_func
 
 
-def _get_lightrag_config() -> Dict[str, Any]:
+def _get_lightrag_config() -> dict[str, Any]:
     """Read LightRAG config from preferences.json."""
     try:
         prefs_path = Path.home() / ".niu" / "preferences.json"
@@ -479,8 +481,8 @@ def _get_embedding_dim_for_lightrag() -> int:
 # LightRAG is async. We run it in a dedicated daemon thread with its own
 # event loop, bridging sync callers (handler) to async LightRAG.
 
-_loop: Optional[AbstractEventLoop] = None
-_loop_thread: Optional[threading.Thread] = None
+_loop: AbstractEventLoop | None = None
+_loop_thread: threading.Thread | None = None
 _loop_ready = threading.Event()
 _loop_lock = threading.Lock()
 
@@ -1056,7 +1058,7 @@ _rag_lock = threading.Lock()
 # Init failure tracking: timestamp-based retry gate instead of permanent sentinel.
 # After init fails, _init_failed_at records the time. get_lightrag() will
 # return None until _INIT_RETRY_SECONDS have elapsed, then retry.
-_init_failed_at: Optional[float] = None
+_init_failed_at: float | None = None
 _init_error: dict | None = None
 _integrity_result: dict | None = None  # Phase 1 一致性检测结果，供 get_lightrag_status 暴露
 _INIT_RETRY_SECONDS: float = 60.0
@@ -1187,20 +1189,20 @@ def _create_lightrag_instance():
     llm_model_max_async = config.get("llm_model_max_async", 4)
     entity_extract_max_gleaning = config.get("max_gleaning", 1)
 
-    rag_params = dict(
-        working_dir=str(STORAGE_DIR),
-        llm_model_func=llm_model_func,
-        llm_model_name="proxy-model",
-        embedding_func=embedding_func,
-        chunk_overlap_token_size=chunk_overlap_token_size,
-        chunk_token_size=chunk_token_size,
-        llm_model_max_async=llm_model_max_async,
-        addon_params={
+    rag_params = {
+        "working_dir": str(STORAGE_DIR),
+        "llm_model_func": llm_model_func,
+        "llm_model_name": "proxy-model",
+        "embedding_func": embedding_func,
+        "chunk_overlap_token_size": chunk_overlap_token_size,
+        "chunk_token_size": chunk_token_size,
+        "llm_model_max_async": llm_model_max_async,
+        "addon_params": {
             "entity_types": CUSTOM_ENTITY_TYPES,
             "language": "Chinese",
             "entity_extract_max_gleaning": entity_extract_max_gleaning,
         },
-    )
+    }
 
     logger.info(
         "LightRAG params: chunk_size=%d, chunk_overlap=%d, max_async=%d, max_gleaning=%d",
@@ -1512,8 +1514,8 @@ def run_repair_on_user_request() -> dict:
         }
     """
     global _integrity_result, _rag_instance, _repairing
-    from niu_api.internal.lightrag_repair import repair_all
     from niu_api.internal.lightrag_integrity import check_all
+    from niu_api.internal.lightrag_repair import repair_all
 
     logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all（v9 storage 接口）")
 
@@ -1637,7 +1639,7 @@ def reset_init_state() -> None:
     _init_error = None
 
 
-def get_lightrag_status() -> Dict[str, Any]:
+def get_lightrag_status() -> dict[str, Any]:
     """Get LightRAG status info for diagnostics."""
     from niu_api.internal.embedding import get_current_model_info
     from niu_api.internal.reranker import get_current_reranker_info

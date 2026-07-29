@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ============== Module Import Helper ==============
 
 # Add the lightrag-server src directory to sys.path
@@ -35,6 +34,7 @@ def _import_module():
             sys.path.insert(0, _LIGHTRAG_SERVER_SRC)
 
         import importlib
+
         import niu_lightrag_server
         importlib.reload(niu_lightrag_server)
         return niu_lightrag_server
@@ -113,7 +113,7 @@ class TestLightragQuery:
         mock_adapter.query.assert_called_once_with(
             query="test query", mode="mix",
             only_need_context=True, top_k=5,
-            response_type="%s" % "Multiple Paragraphs",
+            response_type="{}".format("Multiple Paragraphs"),
         )
         assert result == "test result"
 
@@ -147,7 +147,7 @@ class TestLightragQueryData:
         mock_adapter.query_data.return_value = {"data": {"entities": []}}
         mod._adapter = mock_adapter
 
-        result = mod.lightrag_query_data(query="test", mode="local", top_k=10)
+        mod.lightrag_query_data(query="test", mode="local", top_k=10)
 
         mock_adapter.query_data.assert_called_once_with(
             query="test", mode="local", top_k=10, keywords=None, fields=None,
@@ -212,7 +212,7 @@ class TestLightragGetGraph:
         mock_adapter.explore_node.return_value = {"nodes": [], "edges": []}
         mod._adapter = mock_adapter
 
-        result = mod.lightrag_get_graph(action="explore", entity_name="Python", depth=2)
+        mod.lightrag_get_graph(action="explore", entity_name="Python", depth=2)
 
         mock_adapter.explore_node.assert_called_once_with(entity_name="Python", depth=2, edge_types=None)
 
@@ -223,7 +223,7 @@ class TestLightragGetGraph:
         mock_adapter.get_graph_snapshot.return_value = {"nodes": [], "edges": []}
         mod._adapter = mock_adapter
 
-        result = mod.lightrag_get_graph(action="snapshot", limit=100)
+        mod.lightrag_get_graph(action="snapshot", limit=100)
 
         mock_adapter.get_graph_snapshot.assert_called_once_with(limit=100)
 
@@ -260,7 +260,7 @@ class TestLightragInsert:
         mock_ingester.inject_document.return_value = {"status": "ok"}
         mod._ingester = mock_ingester
 
-        result = mod.lightrag_insert(content="test content", doc_id="doc1")
+        mod.lightrag_insert(content="test content", doc_id="doc1")
 
         mock_ingester.inject_document.assert_called_once_with(
             content="test content", doc_id="doc1", file_path=None,
@@ -280,7 +280,7 @@ class TestLightragInsertCustomKg:
         entities = [{"entity_name": "Python", "entity_type": "skill"}]
         rels = [{"src_id": "A", "tgt_id": "B", "keywords": "uses"}]
 
-        result = mod.lightrag_insert_custom_kg(entities=entities, relationships=rels)
+        mod.lightrag_insert_custom_kg(entities=entities, relationships=rels)
 
         mock_ingester.inject_custom_kg.assert_called_once_with(
             entities=entities, relationships=rels, chunks=[], source_id="custom_kg",
@@ -293,7 +293,7 @@ class TestLightragInsertCustomKg:
         mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
         mod._ingester = mock_ingester
 
-        result = mod.lightrag_insert_custom_kg()
+        mod.lightrag_insert_custom_kg()
 
         mock_ingester.inject_custom_kg.assert_called_once_with(
             entities=[], relationships=[], chunks=[], source_id="custom_kg",
@@ -310,7 +310,7 @@ class TestLightragInsertEntity:
         mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
         mod._ingester = mock_ingester
 
-        result = mod.lightrag_insert_entity(name="Python", entity_type="skill")
+        mod.lightrag_insert_entity(name="Python", entity_type="skill")
 
         mock_ingester.inject_custom_kg.assert_called_once_with(
             entities=[{
@@ -332,7 +332,7 @@ class TestLightragInsertRelation:
         mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
         mod._ingester = mock_ingester
 
-        result = mod.lightrag_insert_relation(
+        mod.lightrag_insert_relation(
             src_id="Python", tgt_id="Django", relation="has_framework",
         )
 
@@ -491,7 +491,7 @@ class TestCallTool:
         mock_adapter.query.return_value = "result"
         mod._adapter = mock_adapter
 
-        result = mod.call_tool("lightrag_query", {"query": "test"})
+        mod.call_tool("lightrag_query", {"query": "test"})
 
         mock_adapter.query.assert_called_once()
 
@@ -510,7 +510,7 @@ class TestCallTool:
         mod._adapter = mock_adapter
 
         # Pass an extra argument that lightrag_query doesn't accept
-        result = mod.call_tool("lightrag_query", {
+        mod.call_tool("lightrag_query", {
             "query": "test",
             "nonexistent_param": "should_be_filtered",
         })
@@ -518,7 +518,7 @@ class TestCallTool:
         mock_adapter.query.assert_called_once_with(
             query="test", mode="mix",
             only_need_context=True, top_k=5,
-            response_type="%s" % "Multiple Paragraphs",
+            response_type="{}".format("Multiple Paragraphs"),
         )
 
     def test_all_tools_dispatchable(self):

@@ -4,10 +4,9 @@ Tests for niu_api/internal/lightrag_manager.py
 LightRAG instance lifecycle, async/sync bridge, status reporting.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 
 # ============== Config Tests ==============
 
@@ -61,8 +60,8 @@ class TestAvailability:
         # But we don't assert False because it might be installed
 
     def test_get_lightrag_returns_none_when_not_installed(self):
-        from niu_api.internal.lightrag_manager import get_lightrag
         import niu_api.internal.lightrag_manager as mgr
+        from niu_api.internal.lightrag_manager import get_lightrag
         with mgr._rag_lock:
             old_instance = mgr._rag_instance
             mgr._rag_instance = None
@@ -94,8 +93,8 @@ class TestStatus:
         assert "loop_running" in status
 
     def test_status_shows_not_initialized(self):
-        from niu_api.internal.lightrag_manager import get_lightrag_status
         import niu_api.internal.lightrag_manager as mgr
+        from niu_api.internal.lightrag_manager import get_lightrag_status
         with mgr._rag_lock:
             old_instance = mgr._rag_instance
             mgr._rag_instance = None
@@ -131,8 +130,8 @@ class TestAsyncSyncBridge:
     """Test the daemon event loop bridge."""
 
     def test_ensure_loop_creates_loop(self):
-        from niu_api.internal.lightrag_manager import _ensure_loop
         import niu_api.internal.lightrag_manager as mgr
+        from niu_api.internal.lightrag_manager import _ensure_loop
 
         # Reset loop state
         mgr._loop = None
@@ -143,8 +142,8 @@ class TestAsyncSyncBridge:
         assert loop.is_running()
 
     def test_call_async_runs_coroutine(self):
+
         from niu_api.internal.lightrag_manager import call_async
-        import asyncio
 
         async def sample_coro():
             return 42
@@ -189,8 +188,8 @@ class TestEnsureLightRAG:
 
     @pytest.mark.asyncio
     async def test_returns_none_when_not_available(self):
-        from niu_api.internal.lightrag_manager import ensure_lightrag
         import niu_api.internal.lightrag_manager as mgr
+        from niu_api.internal.lightrag_manager import ensure_lightrag
         with mgr._rag_lock:
             old_instance = mgr._rag_instance
             mgr._rag_instance = None
@@ -280,7 +279,7 @@ class TestLlmModelFunc:
                 from niu_api.internal.lightrag_manager import _build_llm_model_func
 
                 func = _build_llm_model_func()
-                result = await func("test keywords", keyword_extraction=True)
+                await func("test keywords", keyword_extraction=True)
 
         assert captured_response_format is not None
         assert captured_response_format["type"] == "json_schema"
@@ -311,7 +310,7 @@ class TestLlmModelFunc:
                     from niu_api.internal.lightrag_manager import _build_llm_model_func
 
                     func = _build_llm_model_func()
-                    result = await func(
+                    await func(
                         "extract entities from this text",
                         system_prompt="---Role---\nYou are a Knowledge Graph Specialist...",
                     )
@@ -342,7 +341,7 @@ class TestLlmModelFunc:
                 from niu_api.internal.lightrag_manager import _build_llm_model_func
 
                 func = _build_llm_model_func()
-                result = await func(
+                await func(
                     "What is Python?",
                     system_prompt="You are a helpful assistant.",
                 )
@@ -371,7 +370,7 @@ class TestLlmModelFunc:
                 from niu_api.internal.lightrag_manager import _build_llm_model_func
 
                 func = _build_llm_model_func()
-                result = await func(
+                await func(
                     "extract entities",
                     system_prompt="---Role---\nYou are a Knowledge Graph Specialist...\n\n大脑区域架构\nexisting content",
                 )
@@ -558,8 +557,8 @@ class TestLlmModelFunc:
 
     async def test_stream_returns_async_iterator(self, mock_llm_config):
         """When stream=True, _llm_model_func should return an async generator (AsyncIterator)."""
-        from unittest.mock import patch
         from collections.abc import AsyncIterator
+        from unittest.mock import patch
 
         from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
 
@@ -605,7 +604,7 @@ class TestLlmModelFunc:
                 from niu_api.internal.lightrag_manager import _build_llm_model_func
 
                 func = _build_llm_model_func()
-                result = await func(
+                await func(
                     "test",
                     hashing_kv="some_cache",
                     _priority=1,
@@ -638,7 +637,7 @@ class TestLlmModelFunc:
                 from niu_api.internal.lightrag_manager import _build_llm_model_func
 
                 func = _build_llm_model_func()
-                result = await func(
+                await func(
                     "test",
                     history_messages=[
                         {"role": "user", "content": None},

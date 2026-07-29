@@ -9,8 +9,7 @@ to match the frontend force-graph renderer expectations.
 
 import re
 import threading
-import time
-from typing import Dict, List, Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Query
 from loguru import logger
@@ -19,7 +18,7 @@ from pydantic import BaseModel, Field
 router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
 
 
-def _cleanup_failed_docs(rag) -> Dict[str, int]:
+def _cleanup_failed_docs(rag) -> dict[str, int]:
     """Remove unrecoverable FAILED entries from doc_status.
 
     Two categories are deleted:
@@ -51,8 +50,8 @@ def _cleanup_failed_docs(rag) -> Dict[str, int]:
     if not failed_docs:
         return counts
 
-    dup_ids: List[str] = []
-    empty_ids: List[str] = []
+    dup_ids: list[str] = []
+    empty_ids: list[str] = []
 
     for doc_id, doc in failed_docs.items():
         if doc_id.startswith("dup-"):
@@ -166,7 +165,7 @@ def _format_description(entity_type: str, description: str) -> str:
     formats the human-readable summary.
     """
     if entity_type.lower() == "brainregion" and "<SEP>" in description:
-        from niu_api.internal.region_manager import _parse_description, _format_summary_for_display
+        from niu_api.internal.region_manager import _format_summary_for_display, _parse_description
         parsed = _parse_description(description)
         return _format_summary_for_display(parsed)
     return description
@@ -433,8 +432,9 @@ def _notify_ingest_completed() -> None:
     # This updates _entity_to_region (brain region counts) and
     # _entity_type_counts (/api/stats) without a full run_sync().
     try:
-        from agent.injector.region_sync import get_region_sync
         import threading
+
+        from agent.injector.region_sync import get_region_sync
 
         sync = get_region_sync()
         if sync is not None:
@@ -712,7 +712,10 @@ def explore_node(request: ExploreRequest):
         center_type = c.get("type", "other")
         center_desc = c.get("description", "")
         if center_type.lower() == "brainregion" and "<SEP>" in center_desc:
-            from niu_api.internal.region_manager import _parse_description, _format_summary_for_display
+            from niu_api.internal.region_manager import (
+                _format_summary_for_display,
+                _parse_description,
+            )
             parsed = _parse_description(center_desc)
             center_desc = _format_summary_for_display(parsed)
         result["center"] = {
@@ -811,7 +814,7 @@ def find_path(request: FindPathRequest):
 @router.get("/entities")
 def list_entities(
     limit: int = Query(default=100, ge=1, le=500),
-    entity_type: Optional[str] = Query(default=None),
+    entity_type: str | None = Query(default=None),
 ):
     """List all entities.
 
@@ -956,9 +959,9 @@ def surprising_connections(
 
         # Build adjacency sets only for the requested number of entities (not the full graph)
         candidate_nodes = list(snapshot.nodes())[:max_entities]
-        adj: Dict[str, set] = {n: set(snapshot.neighbors(n)) for n in candidate_nodes}
+        adj: dict[str, set] = {n: set(snapshot.neighbors(n)) for n in candidate_nodes}
 
-        surprising_pairs: List[tuple] = []  # (u, v, shared_count)
+        surprising_pairs: list[tuple] = []  # (u, v, shared_count)
         node_set = set()
 
         for u in candidate_nodes:
@@ -1017,7 +1020,7 @@ def surprising_connections(
 @router.get("/changelog")
 def graph_changelog(
     limit: int = Query(default=200, ge=1, le=500),
-    since: Optional[str] = Query(default=None),
+    since: str | None = Query(default=None),
 ):
     """Get recent graph changes for incremental frontend updates.
 
@@ -1054,7 +1057,7 @@ def test_ingest(dir_path: str = "/tmp/niu_test_ingest3"):
 
     for fname in files:
         fpath = os.path.join(dir_path, fname)
-        with open(fpath, "r") as f:
+        with open(fpath) as f:
             content = f.read()
         call_async(rag.apipeline_enqueue_documents(content, file_paths=fpath), timeout=60)
 
@@ -1100,7 +1103,9 @@ async def repair_lightrag_storage(target: str = "all") -> dict:
         {"status": "ok", "result": {"repaired": bool, "check_ok": bool, ...}}
     """
     import asyncio
+
     from fastapi import HTTPException
+
     from niu_api.internal.lightrag_manager import run_repair_on_user_request
 
     if target != "all":

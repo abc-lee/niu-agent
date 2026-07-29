@@ -147,11 +147,11 @@ def test_strip_response_format_mode_handles_missing_litellm_kwargs():
 # _build_probe_response_format_json_schema / json_object 构造探测 response_format。
 # 纯函数，不调真实 LLM。
 from niu_api.compat import (
+    _build_probe_messages,
+    _build_probe_response_format_json_object,
+    _build_probe_response_format_json_schema,
     _classify_probe_response_tier1,
     _classify_probe_response_tier2,
-    _build_probe_messages,
-    _build_probe_response_format_json_schema,
-    _build_probe_response_format_json_object,
 )
 
 
@@ -332,8 +332,9 @@ def test_returns_true_when_only_llm_has_litellm_kwargs_without_mode():
 """
 import json
 import os
-import pytest
+
 import httpx
+import pytest
 
 
 @pytest.fixture
@@ -506,8 +507,9 @@ def test_probe_endpoint_does_not_affect_test_llm_endpoint(api_base):
 @pytest.mark.asyncio
 async def test_probe_tier_three_samples_all_pass_returns_supported():
     """三次采样全 supported → 该档 supported"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(return_value=("supported", '{"verdict": "SCHEMA_ENFORCED"}'))
     result, raw = await _probe_tier_three_samples_async(mock_try, {"type": "json_schema"})
@@ -519,8 +521,9 @@ async def test_probe_tier_three_samples_all_pass_returns_supported():
 @pytest.mark.asyncio
 async def test_probe_tier_one_gateway_blocked_returns_failed():
     """三次采样中任何一次 gateway_blocked → 该档失败"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(side_effect=[
         ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
@@ -536,8 +539,9 @@ async def test_probe_tier_one_gateway_blocked_returns_failed():
 @pytest.mark.asyncio
 async def test_probe_tier_one_model_rejected_returns_failed():
     """三次采样中任何一次 model_rejected → 该档失败"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(side_effect=[
         ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
@@ -552,8 +556,9 @@ async def test_probe_tier_one_model_rejected_returns_failed():
 @pytest.mark.asyncio
 async def test_probe_tier_rate_limit_retries_without_counting():
     """限流只重试不计失败，直到返回非限流结果"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock, patch
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(side_effect=[
         ("rate_limited", "RateLimitError: 429"),
@@ -571,12 +576,12 @@ async def test_probe_tier_rate_limit_retries_without_counting():
 @pytest.mark.asyncio
 async def test_probe_tier_timeout_retries_without_counting():
     """超时同限流处理：只重试不计失败（asyncio.TimeoutError + litellm.Timeout）"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock, patch
-    import asyncio
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(side_effect=[
-        asyncio.TimeoutError(),
+        TimeoutError(),
         ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
         ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
         ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
@@ -603,8 +608,9 @@ async def test_probe_tier_timeout_retries_without_counting():
 @pytest.mark.asyncio
 async def test_probe_tier_rate_limit_exhausted_returns_error():
     """限流/超时重试超过上限（整档共享 2 次）仍未成功 → 返回 rate_limited"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock, patch
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(return_value=("rate_limited", "RateLimitError: 429"))
     with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
@@ -618,8 +624,9 @@ async def test_probe_tier_rate_limit_exhausted_returns_error():
 @pytest.mark.asyncio
 async def test_probe_tier_transient_retries_shared_across_samples():
     """限流/超时重试预算整档共享（2 次）：采样 1 限流 2 次后放弃 → 返回 rate_limited"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock, patch
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(side_effect=[
         ("rate_limited", "RateLimitError: 429"),
@@ -638,8 +645,9 @@ async def test_probe_tier_transient_retries_shared_across_samples():
 @pytest.mark.asyncio
 async def test_probe_tier_infra_error_returns_immediately():
     """任何一次基础设施错误（401/网络断/500）→ 立即返回 infra_error，不写配置"""
-    from niu_api.compat import _probe_tier_three_samples_async
     from unittest.mock import AsyncMock
+
+    from niu_api.compat import _probe_tier_three_samples_async
 
     mock_try = AsyncMock(side_effect=[
         ("supported", '{"verdict": "SCHEMA_ENFORCED"}'),
@@ -654,9 +662,11 @@ async def test_probe_tier_infra_error_returns_immediately():
 @pytest.mark.asyncio
 async def test_probe_returns_probe_failed_when_rate_limited():
     """端点探测限流/超时重试耗尽 → 返回 probe_failed + rate_limited reason"""
-    from niu_api.compat import probe_response_format
     from unittest.mock import AsyncMock, patch
+
     from fastapi import Request
+
+    from niu_api.compat import probe_response_format
 
     with patch("niu_api.compat._probe_tier_three_samples_async", new_callable=AsyncMock) as mock_sampler:
         mock_sampler.return_value = ("rate_limited", "RateLimitError: 429")
@@ -683,9 +693,11 @@ async def test_probe_returns_probe_failed_when_rate_limited():
 @pytest.mark.asyncio
 async def test_probe_returns_probe_failed_when_infra_error():
     """端点探测遇基础设施错误（401/网络断/500）→ 返回 probe_failed + infra_error reason，不写配置"""
-    from niu_api.compat import probe_response_format
     from unittest.mock import AsyncMock, patch
+
     from fastapi import Request
+
+    from niu_api.compat import probe_response_format
 
     with patch("niu_api.compat._probe_tier_three_samples_async", new_callable=AsyncMock) as mock_sampler:
         mock_sampler.return_value = ("infra_error", "AuthenticationError: 401")
@@ -716,10 +728,12 @@ async def test_probe_returns_probe_failed_when_infra_error():
 @pytest.mark.asyncio
 async def test_try_tier_classifies_rate_limit_error():
     """_try_tier 捕获 RateLimitError → rate_limited"""
-    from niu_api.compat import probe_response_format
-    from unittest.mock import AsyncMock, patch, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
+
     from fastapi import Request
     from litellm import RateLimitError
+
+    from niu_api.compat import probe_response_format
 
     mock_request = AsyncMock(spec=Request)
     mock_request.json = AsyncMock(return_value={})
@@ -753,10 +767,12 @@ async def test_try_tier_classifies_rate_limit_error():
 @pytest.mark.asyncio
 async def test_try_tier_classifies_litellm_timeout():
     """_try_tier 捕获 litellm.Timeout → timeout（与 rate_limited 同等待遇）"""
-    from niu_api.compat import probe_response_format
-    from unittest.mock import AsyncMock, patch, MagicMock
-    from fastapi import Request
+    from unittest.mock import AsyncMock, MagicMock, patch
+
     import litellm
+    from fastapi import Request
+
+    from niu_api.compat import probe_response_format
 
     mock_request = AsyncMock(spec=Request)
     mock_request.json = AsyncMock(return_value={})
@@ -788,10 +804,12 @@ async def test_try_tier_classifies_litellm_timeout():
 @pytest.mark.asyncio
 async def test_try_tier_classifies_authentication_error():
     """_try_tier 捕获 AuthenticationError → infra_error → probe_failed 不写配置"""
-    from niu_api.compat import probe_response_format
-    from unittest.mock import AsyncMock, patch, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
+
     from fastapi import Request
     from litellm import AuthenticationError
+
+    from niu_api.compat import probe_response_format
 
     mock_request = AsyncMock(spec=Request)
     mock_request.json = AsyncMock(return_value={})
@@ -822,10 +840,12 @@ async def test_try_tier_classifies_authentication_error():
 @pytest.mark.asyncio
 async def test_try_tier_classifies_bad_request_error():
     """_try_tier 捕获 BadRequestError → model_rejected → 降级 prompt_only"""
-    from niu_api.compat import probe_response_format
-    from unittest.mock import AsyncMock, patch, MagicMock
+    from unittest.mock import AsyncMock, MagicMock, patch
+
     from fastapi import Request
     from litellm import BadRequestError
+
+    from niu_api.compat import probe_response_format
 
     mock_request = AsyncMock(spec=Request)
     mock_request.json = AsyncMock(return_value={})

@@ -75,7 +75,6 @@ def test_extract_unique_name_no_match_returns_none():
 def test_call_subagent_with_auto_answer_sync_path_auto_replies(monkeypatch):
     """同步路径 [browser-operator] 问题 → call_subagent_with_auto_answer 自动回复"""
     from agent import subagent
-    from agent.subagent_registry import SubagentRegistry
 
     call_count = {"value": 0}
     call_args_log = []

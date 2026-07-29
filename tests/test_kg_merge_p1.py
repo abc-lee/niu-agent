@@ -11,7 +11,6 @@ P1 集成测试：验证 LLM 实体提取与 KG 合并行为。
 5. 检查 LLM 是否提取出 person:{uuid} 格式实体
 """
 
-import json
 import sys
 import time
 from pathlib import Path
@@ -101,13 +100,13 @@ def test_p1_1_raw_document():
     print(f"  ainsert 返回: {track_id}")
 
     # 等待 LLM 处理完成
-    print(f"  等待 LLM 处理...")
+    print("  等待 LLM 处理...")
     time.sleep(30)
 
     # Step 3: 检查 KG 中的实体
     uuid_entities, plain_persons = find_person_entities()
 
-    print(f"\nStep 3: 检查 KG 实体")
+    print("\nStep 3: 检查 KG 实体")
     print(f"  person:{{uuid}} 实体数: {len(uuid_entities)}")
     print(f"  普通名字人物实体数: {len(plain_persons)}")
 
@@ -194,13 +193,13 @@ def test_p1_2_replaced_document():
     print(f"  ainsert 返回: {track_id}")
 
     # 等待 LLM 处理完成
-    print(f"  等待 LLM 处理...")
+    print("  等待 LLM 处理...")
     time.sleep(30)
 
     # Step 3: 检查 KG 中的实体
     uuid_entities, plain_persons = find_person_entities()
 
-    print(f"\nStep 3: 检查 KG 实体")
+    print("\nStep 3: 检查 KG 实体")
     print(f"  person:{{uuid}} 实体数: {len(uuid_entities)}")
     print(f"  普通名字人物实体数: {len(plain_persons)}")
 
@@ -239,7 +238,7 @@ def test_p1_2_replaced_document():
     # 检查是否有新的 person: 开头实体
     new_uuid_entities = {k: v for k, v in uuid_entities.items() if "p1-test" not in k}
     if new_uuid_entities:
-        print(f"\n  ℹ️ 发现新的 person:{{uuid}} 实体:")
+        print("\n  ℹ️ 发现新的 person:{uuid} 实体:")
         for nid, data in new_uuid_entities.items():
             print(f"    {nid}: desc={data.get('description', 'N/A')[:80]}")
 
@@ -276,11 +275,11 @@ def test_p1_3_name_person_kg_sync():
         data = dict(nx.nodes[entity_name])
         print(f"  原始 description: {data.get('description', 'N/A')[:100]}")
     else:
-        print(f"  ❌ 注入失败")
+        print("  ❌ 注入失败")
         return False
 
     # Step 2: 改名（当前代码的行为）
-    print(f"\nStep 2: 改名为 '陈志远'（当前代码行为）")
+    print("\nStep 2: 改名为 '陈志远'（当前代码行为）")
     ingester.inject_entity(
         name=entity_name,
         entity_type="person",
@@ -297,18 +296,18 @@ def test_p1_3_name_person_kg_sync():
         print(f"  改名后 entity_type: {data.get('entity_type', 'N/A')}")
 
         if "detected in photo" in desc:
-            print(f"\n  ✅ 照片信息保留 — description 包含 'detected in photo'")
+            print("\n  ✅ 照片信息保留 — description 包含 'detected in photo'")
         else:
-            print(f"\n  ❌ 照片信息丢失 — description 不包含 'detected in photo'")
-            print(f"     当前代码写 description='Renamed to: 陈志远'，覆盖了原始信息")
+            print("\n  ❌ 照片信息丢失 — description 不包含 'detected in photo'")
+            print("     当前代码写 description='Renamed to: 陈志远'，覆盖了原始信息")
 
         if "陈志远" in desc:
-            print(f"  ✅ 新名字存在 — description 包含 '陈志远'")
+            print("  ✅ 新名字存在 — description 包含 '陈志远'")
         else:
-            print(f"  ❌ 新名字丢失")
+            print("  ❌ 新名字丢失")
 
     # Step 3: 改名（修复后的行为）
-    print(f"\nStep 3: 改名为 '陈志远'（修复后行为 — 保留照片信息）")
+    print("\nStep 3: 改名为 '陈志远'（修复后行为 — 保留照片信息）")
     new_desc = "陈志远, detected in photo: DSC_3272"
     ingester.inject_entity(
         name=entity_name,
@@ -326,13 +325,13 @@ def test_p1_3_name_person_kg_sync():
         print(f"  修复后 entity_type: {data.get('entity_type', 'N/A')}")
 
         if "陈志远" in desc and "detected in photo" in desc:
-            print(f"\n  ✅ 修复成功 — 名字和照片信息都保留")
+            print("\n  ✅ 修复成功 — 名字和照片信息都保留")
             return True
         else:
-            print(f"\n  ❌ 修复失败")
+            print("\n  ❌ 修复失败")
             return False
     else:
-        print(f"  ❌ 实体不存在")
+        print("  ❌ 实体不存在")
         return False
 
 
@@ -359,7 +358,7 @@ if __name__ == "__main__":
     import urllib.request
     try:
         resp = urllib.request.urlopen("http://localhost:9876/health", timeout=3)
-        print(f"✅ API 服务可用")
+        print("✅ API 服务可用")
     except Exception:
         print("⚠️ API 服务不可用，LLM 调用可能失败")
 

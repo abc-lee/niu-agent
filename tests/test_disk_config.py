@@ -1,14 +1,11 @@
 """Tests for disk_config.py — YAML configuration loading and validation."""
 
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
 import yaml
 
 from niu_api.internal.disk_config import DiskConfig, ValidationError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

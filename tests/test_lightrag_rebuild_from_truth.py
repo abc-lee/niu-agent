@@ -27,7 +27,6 @@ import pytest
 
 from niu_api.internal.lightrag_repair import repair_all
 
-
 # 9 个派生文件清单（跟 lightrag_repair._DERIVED_FILES 一致；GraphML 是真相源不在内）
 _DERIVED_FILES = [
     "kv_store_text_chunks.json",

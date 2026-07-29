@@ -13,6 +13,7 @@ KG 工具集成测试
 """
 
 import pytest
+
 from agent.mcp_loader import load_mcp_tools
 from agent.tool_registry import get_registry
 

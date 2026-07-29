@@ -2,9 +2,9 @@
 import asyncio
 import unittest.mock as mock
 
-from niu_api import db_monitor
 from agent.main_agent_request_queue import get_main_agent_request_queue
 from agent.subagent_registry import SubagentRegistry
+from niu_api import db_monitor
 from niu_api.compat import _chat_lock
 
 

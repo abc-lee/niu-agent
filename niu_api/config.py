@@ -6,14 +6,15 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any
+
 from loguru import logger
 
 
 class LLMConfig:
     """LLM configuration"""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.provider = config.get("type", "openai")  # minimax, openai, anthropic, etc.
         self.api_key = config.get("apiKey", "")
         self.api_base = config.get("apiBase", "")
@@ -89,13 +90,13 @@ class Config:
     """Niu API configuration"""
 
     def __init__(self):
-        self.llm: Optional[LLMConfig] = None
-        self.storage: Dict[str, str] = {"documentRoot": "", "databasePath": ""}
+        self.llm: LLMConfig | None = None
+        self.storage: dict[str, str] = {"documentRoot": "", "databasePath": ""}
         self.first_run: bool = True
         self.logging: LoggingConfig = LoggingConfig()
 
     @classmethod
-    def load(cls, config_path: Optional[str] = None) -> "Config":
+    def load(cls, config_path: str | None = None) -> "Config":
         """Load configuration from file"""
         if config_path is None:
             # Default: config/user-config.json
@@ -104,7 +105,7 @@ class Config:
         cfg = cls()
 
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             if "llm" in data and data["llm"]:
@@ -134,7 +135,7 @@ class Config:
 
 
 # Global config instance
-_config: Optional[Config] = None
+_config: Config | None = None
 
 
 def get_config() -> Config:

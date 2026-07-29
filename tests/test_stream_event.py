@@ -1,5 +1,5 @@
+
 import pytest
-from dataclasses import dataclass
 
 
 def test_stream_event_creation():

@@ -1,8 +1,8 @@
 """工具输出截断测试。"""
 from agent.generic.agent_loop import (
     MAX_TOOL_RESULT_CHARS,
-    _truncate_tool_content,
     _truncate_dict_result,
+    _truncate_tool_content,
 )
 
 
@@ -62,7 +62,8 @@ def test_unified_gate_truncates_large_dict_from_dispatch(monkeypatch):
     验证 messages 里的 tool 结果被截断到 ≤ MAX_TOOL_RESULT_CHARS。
     """
     from types import SimpleNamespace
-    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, agent_runner_loop
     from agent.handler import StepOutcome
 
     # 构造超大 dict 结果
@@ -144,7 +145,8 @@ def test_disk_large_str_result_gets_truncated(monkeypatch):
     Task 2 移除了 handler 内部 str 截断，str 路径也走 agent_loop 统一关口。
     """
     from types import SimpleNamespace
-    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, agent_runner_loop
     from agent.handler import StepOutcome
 
     big_str = "x" * (MAX_TOOL_RESULT_CHARS + 5000)
@@ -220,7 +222,8 @@ def test_explore_node_returns_full_result_no_internal_truncation(monkeypatch):
     前端 API 和内部业务调 explore_node 拿完整结果。
     """
     import json
-    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
+
+    from niu_api.internal.lightrag_adapter import LIGHTRAG_GRAPH_MAX_CHARS, LightRAGAdapter
 
     # mock _get_rag 返回 FakeRag（有 get_knowledge_graph 方法）
     class FakeRag:
@@ -257,7 +260,8 @@ def test_explore_node_returns_full_result_no_internal_truncation(monkeypatch):
 def test_explore_node_small_result_not_truncated(monkeypatch):
     """explore_node 小图原样返回（不截断）。"""
     import json
-    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
+
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
     class FakeRag:
         def get_knowledge_graph(self, entity_name, max_depth=2):
@@ -284,7 +288,7 @@ def test_explore_node_small_result_not_truncated(monkeypatch):
 
 def test_enforce_message_budget_under_limit():
     """单消息 tool 内容合计 < 200K 原样返回。"""
-    from agent.generic.agent_loop import _enforce_message_budget, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
+    from agent.generic.agent_loop import _enforce_message_budget
     messages = [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
@@ -301,7 +305,7 @@ def test_enforce_message_budget_over_limit():
     策略：按 tool content 大小降序，依次截断最大的到 MAX_TOOL_RESULT_CHARS，
     直到合计 <= 200K。本例 call_3 (100K) 最大，截断后释放 70K，合计 170K <= 200K 停止。
     """
-    from agent.generic.agent_loop import _enforce_message_budget, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
+    from agent.generic.agent_loop import MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, _enforce_message_budget
     # 3 个 tool 结果，合计 240K > 200K
     messages = [
         {"role": "user", "content": "hello"},
@@ -340,8 +344,7 @@ def test_explore_node_center_huge_description_not_truncated_internally(monkeypat
 
     截断由 agent_loop 统一关口处理。
     """
-    import json
-    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
     class FakeRag:
         def get_knowledge_graph(self, entity_name, max_depth=2):
@@ -379,7 +382,8 @@ def test_unified_gate_truncates_large_dict_from_mcp_path(monkeypatch):
     但 tool_name 含 '/'（MCP 路径），覆盖 MCP / 分支的统一关口。
     """
     from types import SimpleNamespace
-    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, agent_runner_loop
     from agent.handler import StepOutcome
 
     large_result = {"nodes": [{"id": i, "data": "x" * 1000} for i in range(1000)]}
@@ -457,7 +461,8 @@ def test_unified_gate_truncates_large_list_result(monkeypatch):
     """
     import json
     from types import SimpleNamespace
-    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, agent_runner_loop
     from agent.handler import StepOutcome
 
     large_list = [{"id": i, "data": "x" * 1000} for i in range(1000)]
@@ -534,7 +539,8 @@ def test_unified_gate_truncates_large_list_result(monkeypatch):
 def test_unified_gate_preserves_small_dict(monkeypatch):
     """小 dict 不被截断，原样返回。"""
     from types import SimpleNamespace
-    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+
+    from agent.generic.agent_loop import agent_runner_loop
     from agent.handler import StepOutcome
 
     small_result = {"status": "success", "data": "small"}  # 远小于 30K
@@ -606,7 +612,8 @@ def test_unified_gate_preserves_small_dict(monkeypatch):
 def test_unified_gate_truncates_should_exit_path(monkeypatch):
     """should_exit 路径的 data 也被统一关口截断。"""
     from types import SimpleNamespace
-    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, agent_runner_loop
     from agent.handler import StepOutcome
 
     large_result = {"nodes": [{"id": i, "data": "x" * 1000} for i in range(1000)]}

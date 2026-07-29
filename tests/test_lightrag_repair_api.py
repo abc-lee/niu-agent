@@ -1,7 +1,5 @@
 """LightRAG 修复 API 测试"""
-from unittest import mock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

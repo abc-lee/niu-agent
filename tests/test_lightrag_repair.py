@@ -142,9 +142,11 @@ def patched_embed(monkeypatch):
 
 def test_repair_text_chunks_pass(storage_dir, patched_embed, monkeypatch):
     """v4: GraphML 活跃 chunk + text_chunks 缺失 → 从 full_docs 按需提取重建"""
-    from niu_api.internal import lightrag_repair
     import xml.etree.ElementTree as ET
+
     from lightrag.utils import compute_mdhash_id
+
+    from niu_api.internal import lightrag_repair
 
     # full_docs 含 1 个文档
     doc_content = "a" * 200

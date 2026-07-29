@@ -7,12 +7,12 @@ Simplified architecture:
 - Sub-agents are independent, no session needed
 """
 
-import os
 import json
-import asyncio
-import aiosqlite
+import os
 from datetime import datetime
 from uuid import uuid4
+
+import aiosqlite
 
 
 def _safe_json(raw, default=None):
@@ -25,8 +25,8 @@ def _safe_json(raw, default=None):
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError, ValueError):
         return default
-from typing import Optional, List, Dict
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
+
 from loguru import logger
 
 
@@ -37,8 +37,8 @@ class Message:
     id: str
     role: str  # 'user' | 'assistant' | 'system' | 'tool' | 'subagent_msg'
     content: str
-    tool_calls: List[Dict] = field(default_factory=list)
-    tool_results: List[Dict] = field(default_factory=list)
+    tool_calls: list[dict] = field(default_factory=list)
+    tool_results: list[dict] = field(default_factory=list)
     tool_call_id: str = ""  # Links tool result to assistant's tool_calls[].id
     created_at: str = ""
     rowid: int = 0  # SQLite rowid, 0 = sentinel for "not loaded from DB" (real rowid starts at 1)
@@ -50,7 +50,7 @@ class Message:
 class MessageStore:
     """
     SQLite-based message store
-    
+
     Simplified design:
     - No session concept
     - All messages belong to user
@@ -108,8 +108,8 @@ class MessageStore:
         self,
         role: str,
         content: str,
-        tool_calls: List[Dict] = None,
-        tool_results: List[Dict] = None,
+        tool_calls: list[dict] = None,
+        tool_results: list[dict] = None,
         tool_call_id: str = "",
     ) -> str:
         """Add a message"""
@@ -130,7 +130,7 @@ class MessageStore:
         logger.debug(f"Added message: {msg_id}")
         return msg_id
 
-    async def get_messages(self, limit: Optional[int] = None, before_id: Optional[str] = None) -> List[Message]:
+    async def get_messages(self, limit: int | None = None, before_id: str | None = None) -> list[Message]:
         """Get messages (chronological order by write sequence). If limit is None, return all messages.
 
         Pagination uses rowid (write order), not created_at timestamp.
@@ -308,7 +308,7 @@ class MessageStore:
             logger.debug(f"Updated message: {message_id}")
         return updated > 0
 
-    async def delete_messages_by_ids(self, message_ids: List[str]) -> dict:
+    async def delete_messages_by_ids(self, message_ids: list[str]) -> dict:
         """Delete messages by IDs and cleanup referenced temp files.
         Returns dict with deleted_count and freed_tokens."""
         if not message_ids:
@@ -362,6 +362,7 @@ def _extract_tmp_paths(contents: list[str]) -> list[str]:
     Looks for paths that contain /.niu/tmp/ or \\.niu\\tmp\\
     """
     import re
+
     from agent.tmp_dir import is_tmp_file
 
     paths = []
@@ -381,7 +382,7 @@ def _extract_tmp_paths(contents: list[str]) -> list[str]:
 
 
 # Global instance
-_message_store: Optional[MessageStore] = None
+_message_store: MessageStore | None = None
 
 
 async def get_message_store() -> MessageStore:

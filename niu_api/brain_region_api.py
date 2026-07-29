@@ -20,17 +20,17 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
 
+from niu_api.internal.brain_graph import get_brain_graph
 from niu_api.internal.region_activation import (
-    RegionActivationManager,
     STATUS_OFF,
     BrainRegionState,
+    RegionActivationManager,
 )
-from niu_api.internal.brain_graph import get_brain_graph
-from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
 
 router = APIRouter(prefix="/api/brain", tags=["brain-regions"])
 
@@ -57,8 +57,8 @@ def _get_region_mgr():
     with _region_mgr_lock:
         if _region_mgr is not None:
             return _region_mgr
-        from niu_api.internal.region_manager import RegionManager
         from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+        from niu_api.internal.region_manager import RegionManager
 
         adapter = LightRAGAdapter()
         ingester = LightRAGIngester()
@@ -159,8 +159,8 @@ def consolidate_brain_regions(
                 detail="Another brain region sync is in progress. Please try again later.",
             )
         try:
-            from niu_api.internal.region_detector import CommunityDetector
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            from niu_api.internal.region_detector import CommunityDetector
 
             adapter = LightRAGAdapter()
             detector = CommunityDetector(adapter)
@@ -241,7 +241,9 @@ def consolidate_brain_regions(
                 if not regions:
                     logger.warning("[Consolidate] get_all_regions returned empty, skipping activation init")
                 else:
-                    from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+                    from niu_api.internal.lightrag_manager import (
+                        get_region_members as lightrag_get_region_members,
+                    )
                     for region in regions:
                         try:
                             region.members = lightrag_get_region_members(region.name)
@@ -364,7 +366,9 @@ def get_region_members(name: str) -> dict[str, Any]:
             region_name = name
 
         # Get members via lightrag_manager (reads 包含 edges from graph)
-        from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+        from niu_api.internal.lightrag_manager import (
+            get_region_members as lightrag_get_region_members,
+        )
         members = lightrag_get_region_members(region_name)
 
         return {

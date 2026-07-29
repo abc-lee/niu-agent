@@ -2,7 +2,7 @@
 import os
 import sqlite3
 import tempfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import niu_api.db_monitor as db_monitor_mod
 
@@ -39,8 +39,8 @@ def test_route_to_main_agent():
     旧机制走 enqueue_supplement；新机制 @niu-agent 拦截和完成通知改走内存队列，
     target==主Agent 的 db 消息（兼容残留）也推入 MainAgentRequestQueue 由链路 A 消费。
     """
-    from niu_api.db_monitor import route_message
     from agent.main_agent_request_queue import get_main_agent_request_queue
+    from niu_api.db_monitor import route_message
 
     q = get_main_agent_request_queue()
     while q.pop() is not None:

@@ -14,10 +14,11 @@ TDD测试：验证 Agent 多轮处理期间 DB 中是否有增量 assistant 消�
 """
 
 import asyncio
-import time
-import httpx
 import sqlite3
+import time
 from pathlib import Path
+
+import httpx
 
 DB_PATH = Path.home() / ".niu" / "messages.db"
 API_BASE = "http://localhost:9876"
@@ -134,7 +135,7 @@ async def main():
 
     # 等两个都完成
     chat_result = await chat_task
-    poll_events = await poll_task
+    await poll_task
 
     print()
     print("=" * 60)

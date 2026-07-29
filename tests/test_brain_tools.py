@@ -9,28 +9,22 @@ Verifies:
 5. set_get_activation_mgr — singleton accessor round-trip
 """
 
-from unittest.mock import MagicMock, patch
-
-from niu_api.internal.region_activation import (
-    RegionActivationManager,
-    BrainRegionState,
-    STATUS_LIT,
-    STATUS_DIMMING,
-    STATUS_OFF,
-)
-from niu_api.internal.region_manager import BrainRegionInfo
+from unittest.mock import patch
 
 from agent.brain_tools import (
+    get_activation_mgr,
     handle_brain_region_activate,
     handle_brain_region_dim,
     handle_brain_region_status,
-    set_activation_mgr,
-    get_activation_mgr,
-    set_tool_to_region,
-    get_tool_to_region,
     reinforce_on_tool_use,
+    set_activation_mgr,
+    set_tool_to_region,
 )
-
+from niu_api.internal.region_activation import (
+    BrainRegionState,
+    RegionActivationManager,
+)
+from niu_api.internal.region_manager import BrainRegionInfo
 
 # ============== Helpers ==============
 
@@ -79,7 +73,7 @@ class TestHandleBrainRegionActivate:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_activate(regions=["Python"])
+        handle_brain_region_activate(regions=["Python"])
 
         # Activation should be set to 1.0
         state = mgr._regions["Python脑区"]
@@ -148,7 +142,7 @@ class TestHandleBrainRegionDim:
         mgr.manual_activate(["Python"])
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_dim(regions=["Python"])
+        handle_brain_region_dim(regions=["Python"])
 
         state = mgr._regions["Python脑区"]
         assert state.activation == 0.0
@@ -310,7 +304,7 @@ class TestReinforceOnToolUse:
         """Returns None when activation manager is not set."""
         set_activation_mgr(None)
 
-        result = reinforce_on_tool_use("kg-server/query")
+        reinforce_on_tool_use("kg-server/query")
 
 
 # ============== Bug 1: brain_region_status 差集过滤已删脑区 ==============
@@ -327,11 +321,9 @@ class TestHandleBrainRegionStatusFiltersStaleCache:
 
     def test_brain_region_status_filters_stale_cache(self):
         """缓存有 B 但图没有 B 时，返回结果不含 B 且主动 remove_region(B)"""
-        from unittest.mock import patch
 
         mgr = _make_activation_mgr()
         # 添加一个"幽灵脑区"（缓存有，图已删）
-        from niu_api.internal.region_activation import BrainRegionState
         mgr._regions["Ghost脑区"] = BrainRegionState(
             region_id="Ghost脑区",
             community_id="community_ghost",

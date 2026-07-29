@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """统一入库工具测试"""
 
 import sys
@@ -8,7 +7,7 @@ from pathlib import Path
 # 添加 scripts 目录到 sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from ingest_unified import classify_path, ingest, PathType, ContentType
+from ingest_unified import ContentType, PathType, classify_path, ingest
 
 
 class TestClassifyPath:

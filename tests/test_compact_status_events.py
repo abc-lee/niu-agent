@@ -6,7 +6,7 @@ mock call_subagent 让它立即返回，避免真实 LLM 调用。
 注意：_tidy_context_impl 是 async def，测试用 asyncio.run 调用。
 """
 import asyncio
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _make_mock_loop(events):

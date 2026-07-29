@@ -9,8 +9,9 @@
 """
 
 import json
-import pytest
 from pathlib import Path
+
+import pytest
 
 from agent.runner import _load_memory_for_prompt
 

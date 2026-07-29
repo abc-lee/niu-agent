@@ -7,14 +7,13 @@ Brain Region Activation Manager 测试 — 验证 RegionActivationManager 的
 
 import time
 
-from niu_api.internal.region_manager import BrainRegionInfo
 from niu_api.internal.region_activation import (
-    RegionActivationManager,
-    STATUS_LIT,
     STATUS_DIMMING,
+    STATUS_LIT,
     STATUS_OFF,
+    RegionActivationManager,
 )
-
+from niu_api.internal.region_manager import BrainRegionInfo
 
 # ============== 辅助函数 ==============
 

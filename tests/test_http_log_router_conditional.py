@@ -7,6 +7,7 @@
 断言用 != 200 表达"HTTP log viewer 不暴露"，能正确处理 404 情况。
 """
 import json
+
 from fastapi.testclient import TestClient
 
 
@@ -25,6 +26,7 @@ def _build_app_with_logging(tmp_path, monkeypatch, logging_enabled: bool):
     cfg_mod.get_config()  # 预热单例（防 get_logging_config 兜底吞异常导致 false pass）
 
     import importlib
+
     import niu_api.__main__ as main_mod
     importlib.reload(main_mod)
     return main_mod.app

@@ -21,23 +21,23 @@ def _write_graphml(path: Path, nodes: list[tuple[str, str]] | None = None,
     """写一个最小合法 GraphML 文件。"""
     nsmap = {"g": "http://graphml.graphdrawing.org/xmlns"}
     ET.register_namespace("", nsmap["g"])
-    root = ET.Element("{%s}graphml" % nsmap["g"])
-    key = ET.SubElement(root, "{%s}key" % nsmap["g"])
+    root = ET.Element("{{{}}}graphml".format(nsmap["g"]))
+    key = ET.SubElement(root, "{{{}}}key".format(nsmap["g"]))
     key.set("id", "d1")
     key.set("for", "node")
     key.set("attr.name", "entity_type")
     key.set("attr.type", "string")
-    graph = ET.SubElement(root, "{%s}graph" % nsmap["g"])
+    graph = ET.SubElement(root, "{{{}}}graph".format(nsmap["g"]))
     graph.set("id", "G")
     graph.set("edgedefault", "undirected")
     for node_id, entity_type in (nodes or []):
-        node = ET.SubElement(graph, "{%s}node" % nsmap["g"])
+        node = ET.SubElement(graph, "{{{}}}node".format(nsmap["g"]))
         node.set("id", node_id)
-        data = ET.SubElement(node, "{%s}data" % nsmap["g"])
+        data = ET.SubElement(node, "{{{}}}data".format(nsmap["g"]))
         data.set("key", "d1")
         data.text = entity_type
     for src, tgt in (edges or []):
-        edge = ET.SubElement(graph, "{%s}edge" % nsmap["g"])
+        edge = ET.SubElement(graph, "{{{}}}edge".format(nsmap["g"]))
         edge.set("source", src)
         edge.set("target", tgt)
     path.write_text(ET.tostring(root, encoding="unicode"))
@@ -133,11 +133,11 @@ def test_scenario_3_full_document_ingested(storage_dir):
     _write_json(storage_dir / "kv_store_entity_chunks.json",
                 {"entity_1": ["chunk_1"]})
     _write_json(storage_dir / "kv_store_relation_chunks.json",
-                {f"entity_1##entity_2": ["chunk_1"]})
+                {"entity_1##entity_2": ["chunk_1"]})
     _write_json(storage_dir / "kv_store_full_entities.json",
                 {"entity_1": {"entity_name": "entity_1"}})
     _write_json(storage_dir / "kv_store_full_relations.json",
-                {f"entity_1##entity_2": {"src_id": "entity_1", "tgt_id": "entity_2"}})
+                {"entity_1##entity_2": {"src_id": "entity_1", "tgt_id": "entity_2"}})
     _write_vdb(storage_dir / "vdb_chunks.json", [_make_vdb_entity("chunk_1")])
     _write_vdb(storage_dir / "vdb_entities.json",
                [_make_vdb_entity("entity_1"), _make_vdb_entity("entity_2")])

@@ -4,12 +4,13 @@ SubAgent Module
 子 Agent 调用机制。
 """
 
+import json
 import os
 import re
-import json
-import yaml
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any
+
+import yaml
 from loguru import logger
 
 DEFAULT_CONTEXT_WINDOW_SIZE = 200000
@@ -124,7 +125,7 @@ def _read_context_window_tokens() -> int:
     """Read context window size from config/user-config.json."""
     try:
         config_path = _get_user_config_path()
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
         size = config.get("context", {}).get("contextWindowSize", DEFAULT_CONTEXT_WINDOW_SIZE)
         if isinstance(size, (int, float)) and MIN_CONTEXT_WINDOW_SIZE <= size <= MAX_CONTEXT_WINDOW_SIZE:
@@ -144,7 +145,7 @@ def _read_context_threshold(key: str, default: float) -> float:
     """
     try:
         config_path = _get_user_config_path()
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
         val = config.get("context", {}).get(key, default)
         if isinstance(val, (int, float)) and 0.0 < val < 1.0:
@@ -171,7 +172,7 @@ def _read_protect_recent_count() -> int:
     """Read protectRecentCount from config/user-config.json. Default 10."""
     try:
         config_path = _get_user_config_path()
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
         val = config.get("context", {}).get("protectRecentCount", DEFAULT_PROTECT_RECENT_COUNT)
         if isinstance(val, int) and val >= 0:
@@ -190,7 +191,7 @@ def _read_compress_target_tokens() -> int:
     """Read compressTargetTokens from config/user-config.json. Default 60000."""
     try:
         config_path = _get_user_config_path()
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
         val = config.get("context", {}).get("compressTargetTokens", DEFAULT_COMPRESS_TARGET_TOKENS)
         if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
@@ -216,20 +217,20 @@ def _read_max_output_tokens() -> int:
 def _run_agent_loop(
     client,
     system_prompt: str = "",  # 向后兼容（system_message 非 None 时优先）
-    system_message: Optional[dict] = None,  # 已组装好的 system message（首轮即带 cache_control）
+    system_message: dict | None = None,  # 已组装好的 system message（首轮即带 cache_control）
     user_input: str = "",
     handler=None,
     tools_schema: list = None,
     max_turns: int = 20,
-    initial_user_content: Optional[str] = None,
+    initial_user_content: str | None = None,
     context_window_tokens: int = 0,
     context_fifo_threshold: int = 0,
     context_target_threshold: int = 0,
-    history: Optional[list] = None,
-    supplement_queue: Optional[Any] = None,  # 子 Agent 独立 supplement queue
-    memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据
-    resumed_messages: Optional[list] = None,  # 阶段四新增：断点续传消息列表
-) -> Tuple[str, Any]:
+    history: list | None = None,
+    supplement_queue: Any | None = None,  # 子 Agent 独立 supplement queue
+    memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据
+    resumed_messages: list | None = None,  # 阶段四新增：断点续传消息列表
+) -> tuple[str, Any]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
 
@@ -248,7 +249,7 @@ def _run_agent_loop(
     Returns:
         (result_text, return_value) 元组
     """
-    from .generic.agent_loop import agent_runner_loop, StreamEvent
+    from .generic.agent_loop import StreamEvent, agent_runner_loop
 
     if initial_user_content is None:
         initial_user_content = user_input
@@ -330,7 +331,7 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
             return
         msgs = return_value.get("messages", [])
         if not msgs or not isinstance(msgs[0], dict) or msgs[0].get("role") != "system":
-            logger.error(f"[MaybeSuspend] return_value messages 异常（空或首条非 system），不挂起")
+            logger.error("[MaybeSuspend] return_value messages 异常（空或首条非 system），不挂起")
             return
         instance.state = "waiting_for_answer"
         instance.suspended_messages = msgs
@@ -361,7 +362,7 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
             raise RuntimeError(f"_maybe_suspend_session fallback 失败: {fallback_err}") from fallback_err
 
 
-def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
+def _extract_result_from_return_value(return_value: Any) -> str | None:
     """
     从 agent_runner_loop 的 return 值中提取结构化结果文本
 
@@ -403,7 +404,7 @@ _PROJECT_AGENTS_DIR = os.path.join(
 _USER_AGENTS_DIR = os.path.join(os.path.expanduser("~/.niu/agents"))
 
 
-def _resolve_agent_md_path(agent_name: str) -> Optional[str]:
+def _resolve_agent_md_path(agent_name: str) -> str | None:
     """查找子 Agent MD 文件路径。
 
     先查项目目录 config/agents/{name}.md（专用子 Agent 优先），
@@ -433,7 +434,7 @@ def _resolve_agent_md_path(agent_name: str) -> Optional[str]:
     return None
 
 
-def get_subagent_config(agent_name: str) -> Dict[str, Any]:
+def get_subagent_config(agent_name: str) -> dict[str, Any]:
     """
     获取子 Agent 配置
 
@@ -446,7 +447,7 @@ def get_subagent_config(agent_name: str) -> Dict[str, Any]:
     prompt_path = _resolve_agent_md_path(agent_name)
 
     if prompt_path and os.path.exists(prompt_path):
-        with open(prompt_path, "r", encoding="utf-8") as f:
+        with open(prompt_path, encoding="utf-8") as f:
             content = f.read()
             # 解析 YAML front matter
             if content.startswith("---"):
@@ -467,7 +468,7 @@ def get_subagent_prompt(agent_name: str) -> str:
     prompt_path = _resolve_agent_md_path(agent_name)
 
     if prompt_path and os.path.exists(prompt_path):
-        with open(prompt_path, "r", encoding="utf-8") as f:
+        with open(prompt_path, encoding="utf-8") as f:
             content = f.read()
             # 提取 body（--- 后面的内容）
             if "---" in content:
@@ -519,7 +520,7 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     return static_system, dynamic_system
 
 
-def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
+def get_subagent_mcp_tools_schema(agent_name: str) -> list[dict]:
     """
     获取子 Agent 的 MCP 工具 schema
 
@@ -641,8 +642,8 @@ def _build_user_info_section() -> str:
 
 def _build_subagent_tools_schema(
     agent_name: str,
-    agent_config: Optional[dict] = None,
-    memory_context: Optional[Any] = None,
+    agent_config: dict | None = None,
+    memory_context: Any | None = None,
     no_tools: bool = False,
 ) -> list:
     """构建子 Agent 的 tools_schema。
@@ -706,16 +707,16 @@ def _build_subagent_tools_schema(
 def call_subagent(
     agent_name: str,
     task: str,
-    llm_config: Dict[str, Any],
+    llm_config: dict[str, Any],
     mcp_client=None,
-    history: Optional[list] = None,
+    history: list | None = None,
     context_fifo_threshold: int = -1,
     no_tools: bool = False,
-    supplement_queue: Optional[Any] = None,
-    memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据
-    unique_name: Optional[str] = None,  # 阶段二新增：异步路径透传，跳过内部 register
-    answer: Optional[str] = None,  # 阶段四新增：回复路径（第三分支）用
-    answer_unique_name: Optional[str] = None,  # 阶段四新增：回复路径锁定挂起 session
+    supplement_queue: Any | None = None,
+    memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据
+    unique_name: str | None = None,  # 阶段二新增：异步路径透传，跳过内部 register
+    answer: str | None = None,  # 阶段四新增：回复路径（第三分支）用
+    answer_unique_name: str | None = None,  # 阶段四新增：回复路径锁定挂起 session
     bypass_at_prefix: bool = False,  # True=绕过@前缀拦截层（仅一轮出方案的子Agent用，如context-manager模式二/三）
 ) -> str:
     """
@@ -808,8 +809,8 @@ def call_subagent(
     context_target_threshold_val = int(context_window_tokens * target_threshold) if context_window_tokens > 0 else 0
 
     # === 创建 supplement queue + 注册到 SubagentRegistry ===
-    from .subagent_supplement import SubagentSupplementQueue
     from .subagent_registry import SubagentRegistry
+    from .subagent_supplement import SubagentSupplementQueue
 
     if answer is not None and answer_unique_name is not None:
         # 阶段四第三分支：回复路径——从 registry 拿回挂起 session 继续跑
@@ -1034,7 +1035,7 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     Returns:
         主 Agent 的回答文本，或 terminated 状态提示
     """
-    from .ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
+    from .ask_main_agent import TERMINATED_SIGNAL, get_pending_ask_registry
     from .main_agent_request_queue import get_main_agent_request_queue
     from .subagent_registry import SubagentRegistry
 
@@ -1142,7 +1143,7 @@ def _ask_main_agent_impl_sync(
 def _dispatch_async_subagent(
     agent_name: str,
     task: str,
-    llm_config: Dict[str, Any],
+    llm_config: dict[str, Any],
     mcp_client=None,
 ) -> str:
     """异步派子 Agent：立即返回派单确认，子 Agent 在后台 asyncio 协程跑（跨线程用 run_coroutine_threadsafe 提交到主 loop）。
@@ -1157,9 +1158,10 @@ def _dispatch_async_subagent(
         派单确认文本（含唯一名 + 使用说明）
     """
     import asyncio
-    from .subagent_supplement import SubagentSupplementQueue
+
     from .subagent_memory import SubagentMemoryContext
     from .subagent_registry import SubagentRegistry
+    from .subagent_supplement import SubagentSupplementQueue
 
     # 创建 supplement_queue + memory_context
     sq = SubagentSupplementQueue(unique_name="")  # unique_name 注册后回填
@@ -1221,7 +1223,7 @@ async def _run_subagent_async(
     unique_name: str,
     agent_name: str,
     task: str,
-    llm_config: Dict[str, Any],
+    llm_config: dict[str, Any],
     memory_context,
     supplement_queue,
     mcp_client=None,
@@ -1234,6 +1236,7 @@ async def _run_subagent_async(
     最后从 SubagentRegistry 注销 + 清理 PendingAskRegistry。
     """
     import asyncio
+
     from .ask_main_agent import get_pending_ask_registry
     from .main_agent_request_queue import get_main_agent_request_queue
     from .subagent_registry import SubagentRegistry

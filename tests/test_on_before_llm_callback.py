@@ -17,9 +17,10 @@
 - tool_calls 用 Mock 而非 MagicMock（MagicMock(name=...) 的 name 是构造参数不是属性）
 - 所有测试统一 patch _intercept_at_prefix_content（M2 修复，verbose=False 路径必调）
 """
-from unittest.mock import MagicMock, Mock, patch
 from contextlib import ExitStack
-from agent.generic.agent_loop import agent_runner_loop, StepOutcome, exhaust
+from unittest.mock import MagicMock, Mock, patch
+
+from agent.generic.agent_loop import StepOutcome, agent_runner_loop, exhaust
 
 
 def _common_patches(stack: ExitStack):
@@ -109,7 +110,7 @@ def test_on_before_llm_called_before_first_llm_call():
             verbose=False,
             on_before_llm=on_before_llm,
         )
-        final = exhaust(gen)  # 用 exhaust 取 return value，不用 list(gen)
+        exhaust(gen)  # 用 exhaust 取 return value，不用 list(gen)
 
     assert len(call_log) >= 1, "on_before_llm 应被调用至少一次"
     assert call_log[0] == ("before_llm", 1, 2), f"首次调用应是 turn=1, messages含system+user=2条，实际: {call_log[0]}"
@@ -160,7 +161,7 @@ def test_on_before_llm_called_every_turn():
             on_before_llm=on_before_llm,
             on_turn_end=lambda m, t, n: t,  # no-op：原样返回 tools_schema（契约 (messages, tools_schema, turn) -> tools_schema）
         )
-        final = exhaust(gen)
+        exhaust(gen)
 
     assert len(call_log) == 2, f"应被调用 2 次（每轮 LLM 调用前），实际: {len(call_log)}"
     assert call_log == [1, 2], f"应按 turn 顺序调用，实际: {call_log}"

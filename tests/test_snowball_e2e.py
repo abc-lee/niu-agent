@@ -7,15 +7,19 @@
 """
 
 import asyncio
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 async def main():
     from agent.session import get_message_store
-    from agent.subagent import count_tokens_for_text, _read_context_window_tokens, _read_warning_threshold
+    from agent.subagent import (
+        _read_context_window_tokens,
+        _read_warning_threshold,
+        count_tokens_for_text,
+    )
 
     # 读取上下文窗口大小
     context_window = _read_context_window_tokens()
@@ -78,7 +82,7 @@ async def main():
         print(f"  ✓  prompt tokens 在 {context_window // 1000}K 窗口内，子 Agent 不会溢出")
 
     # 5. 加载 MCP 工具
-    print(f"[4/7] 加载 MCP 工具...")
+    print("[4/7] 加载 MCP 工具...")
     from agent.mcp_loader import load_mcp_tools
     from agent.tool_registry import get_registry
     load_result = load_mcp_tools()
@@ -88,7 +92,7 @@ async def main():
     print(f"  MCP 工具加载: {load_result}, 总工具数: {len(all_schemas)}, session工具: {len(session_tools)}")
 
     # 6. 调用 tidy_context force 模式
-    print(f"[5/7] 调用 tidy_context force 模式（真实 LLM）...")
+    print("[5/7] 调用 tidy_context force 模式（真实 LLM）...")
 
     from niu_api.chat import get_or_create_runner
     runner = get_or_create_runner()
@@ -122,7 +126,7 @@ async def main():
     print(f"压缩前: {tokens_before:>12,} tokens ({len(messages)} 条消息)")
     print(f"压缩后: {tokens_after:>12,} tokens ({len(messages_after)} 条消息)")
     print(f"减少:   {reduction:>12,} tokens ({reduction_pct:.1f}%)")
-    print(f"方案:   一轮 JSON write（全量内容，不截断）")
+    print("方案:   一轮 JSON write（全量内容，不截断）")
     print(f"{'='*60}")
 
     if tokens_after < tokens_before:
@@ -136,7 +140,7 @@ async def main():
     if os.path.exists(plan_path):
         print(f"⚠️  compress_plan.json 残留：{plan_path}")
     else:
-        print(f"✓  compress_plan.json 已清理")
+        print("✓  compress_plan.json 已清理")
 
     await cleanup(store, added_ids)
 
@@ -151,7 +155,7 @@ async def cleanup(store, added_ids):
             await store.delete_messages_by_ids(to_delete)
             print(f"\n清理：删除 {len(to_delete)} 条测试消息")
         else:
-            print(f"\n清理：测试消息已被压缩删除，无需额外清理")
+            print("\n清理：测试消息已被压缩删除，无需额外清理")
     except Exception as e:
         print(f"\n清理失败: {e}")
 

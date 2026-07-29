@@ -5,25 +5,25 @@ Brain Region Node Management 测试 — 验证 RegionManager 对脑区主节点�
 创建、查询、更新和清理操作。
 """
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, call
 
 from niu_api.internal.region_detector import (
     CommunityDetectionResult,
     RegionPartition,
 )
 from niu_api.internal.region_manager import (
-    BrainRegionInfo,
-    RegionManager,
-    _encode_description,
-    _parse_description,
     ANCHOR_RELATION,
     BELONGS_TO_RELATION,
     INITIAL_WEIGHT,
     REGION_ENTITY_TYPE,
     REGION_SUFFIX,
+    BrainRegionInfo,
+    RegionManager,
+    _encode_description,
+    _parse_description,
 )
-
 
 # ============== 辅助函数 ==============
 
@@ -1790,7 +1790,7 @@ class TestCleanupStaleRegionsRefreshesActivationCache:
     @pytest.mark.asyncio
     async def test_cleanup_stale_regions_calls_remove_region_after_delete(self):
         """删除空成员脑区成功后，应调 activation_mgr.remove_region(region_name)"""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
@@ -1845,7 +1845,7 @@ class TestDissolveShrunkRegionsRefreshesActivationCache:
     @pytest.mark.asyncio
     async def test_dissolve_shrunk_regions_calls_remove_region_after_delete(self):
         """解散萎缩脑区成功后，应调 activation_mgr.remove_region(region_name)"""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)

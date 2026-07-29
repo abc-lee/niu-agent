@@ -9,9 +9,10 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any
 
 # 在导入 litellm 之前设置环境变量，避免远程获取 model cost map 和 aiohttp 初始化开销
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
@@ -32,8 +33,8 @@ def _register_model_cost(model: str):
     if model and model.lower() not in litellm.model_cost:
         litellm.model_cost[model.lower()] = {"input_cost_per_token": 0, "output_cost_per_token": 0}
 
-from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 from .http_logger import install_http_logger
+from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 
 install_http_logger()
 
@@ -89,7 +90,7 @@ def _get_app_log_dir() -> Path:
     return Path(home) / ".niu" / "logs"
 
 
-def _write_raw_log(log_type: str, data: dict, seq: Optional[int] = None) -> None:
+def _write_raw_log(log_type: str, data: dict, seq: int | None = None) -> None:
     """写入完整无截断的原始日志到 JSON 文件。
 
     与 _write_interaction_log（人类可读、有截断）互补，
@@ -120,7 +121,7 @@ def _write_raw_log(log_type: str, data: dict, seq: Optional[int] = None) -> None
         print(f"[LiteLLM] Failed to write raw log: {e}", file=sys.stderr, flush=True)
 
 
-def _write_interaction_log(log_entry: Dict[str, Any]):
+def _write_interaction_log(log_entry: dict[str, Any]):
     """
     写入 LLM 交互日志（人类可读格式）
 
@@ -159,7 +160,7 @@ def _write_interaction_log(log_entry: Dict[str, Any]):
         print(f"[LiteLLM] Failed to write log: {e}", file=sys.stderr, flush=True)
 
 
-def _format_request_log(f, log_entry: Dict[str, Any]):
+def _format_request_log(f, log_entry: dict[str, Any]):
     """格式化请求日志（简练但不缺内容）"""
     ts = log_entry.get("timestamp", "")
     model = log_entry.get("model", "")
@@ -222,13 +223,13 @@ def _format_request_log(f, log_entry: Dict[str, Any]):
             else:
                 name = str(t)[:40]
             tool_names.append(name)
-        f.write(f"[可用工具]\n")
+        f.write("[可用工具]\n")
         for name in tool_names:
             f.write(f"  - {name}\n")
         f.write("\n")
 
 
-def _format_response_log(f, log_entry: Dict[str, Any]):
+def _format_response_log(f, log_entry: dict[str, Any]):
     """格式化响应日志"""
     content = log_entry.get("content", "")
     tool_calls = log_entry.get("tool_calls", [])
@@ -248,7 +249,7 @@ def _format_response_log(f, log_entry: Dict[str, Any]):
 
     # 工具调用
     if tool_calls:
-        f.write(f"[工具调用]\n")
+        f.write("[工具调用]\n")
         for tc in tool_calls:
             name = tc.get("name", "?")
             args = tc.get("arguments", {})
@@ -269,7 +270,7 @@ def _format_response_log(f, log_entry: Dict[str, Any]):
     f.write("\n")
 
 
-def _derive_provider_prefix(api_base: Optional[str], model: str, api_type: Optional[str] = None) -> str:
+def _derive_provider_prefix(api_base: str | None, model: str, api_type: str | None = None) -> str:
     """根据 apiBase + api_type 自动推导 LiteLLM provider 前缀，加到 model 名上。
 
     Why: 豆包网关对 openai 路由的 response_format 请求挂起不响应（json_schema/json_object
@@ -306,9 +307,9 @@ def _derive_provider_prefix(api_base: Optional[str], model: str, api_type: Optio
     return f"openai/{model}"
 
 
-def get_provider_params(model: str, reasoning_effort: Optional[str] = None) -> Dict[str, Any]:
+def get_provider_params(model: str, reasoning_effort: str | None = None) -> dict[str, Any]:
     """获取提供商特定参数"""
-    params: Dict[str, Any] = {}
+    params: dict[str, Any] = {}
     model_lower = model.lower()
 
     # Claude: 启用prompt caching
@@ -323,7 +324,7 @@ def get_provider_params(model: str, reasoning_effort: Optional[str] = None) -> D
     return params
 
 
-def _convert_tools_schema(tools: Optional[List], model: str = "") -> Optional[List]:
+def _convert_tools_schema(tools: list | None, model: str = "") -> list | None:
     """
     将工具schema转换为LiteLLM格式（OpenAI格式）。
 
@@ -388,9 +389,9 @@ class LiteLLMSession(BaseSession):
 
     def chat(
         self,
-        messages: List,
-        tools: Optional[List] = None,
-        response_format: Optional[Dict[str, Any]] = None,
+        messages: list,
+        tools: list | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> Generator[str, None, MockResponse]:
         """
         原生 LiteLLM 调用（Generator版本）。
@@ -416,7 +417,7 @@ class LiteLLMSession(BaseSession):
         provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
         litellm_tools = _convert_tools_schema(tools, self.default_model)
 
-        request_params: Dict[str, Any] = {
+        request_params: dict[str, Any] = {
             "model": model_with_prefix,
             "messages": messages,
             "stream": True,
@@ -493,14 +494,14 @@ class LiteLLMSession(BaseSession):
 
         full_content = ""
         reasoning_content = ""
-        tool_calls: List[MockToolCall] = []
+        tool_calls: list[MockToolCall] = []
         usage = None
         last_finish_reason = None  # 捕获流式最后一个非空 finish_reason
 
         try:
             chunk_count = 0
             # 用于累积tool_calls的增量数据（按index分组）
-            tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
+            tool_calls_accumulator: dict[int, dict[str, Any]] = {}
 
             for chunk in response:
                 chunk_count += 1
@@ -702,7 +703,7 @@ class LiteLLMSession(BaseSession):
         return mock_resp
 
 
-def create_litellm_client(config: Dict[str, Any]) -> ToolClient:
+def create_litellm_client(config: dict[str, Any]) -> ToolClient:
     """
     创建LiteLLM客户端的便捷函数
 

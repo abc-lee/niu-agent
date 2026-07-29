@@ -12,12 +12,12 @@ MessageStore (持久化) → ContextManager (管理) → agent_loop (使用)
 """
 
 import sys
-from typing import List, Dict, Any, Optional
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent.session import MessageStore, Message
+from agent.session import MessageStore
 from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 
 
@@ -40,7 +40,7 @@ class ContextManager:
         self.max_tokens = max_tokens
         self._warning_threshold = _read_warning_threshold()
 
-    async def load_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def load_history(self, limit: int | None = None) -> list[dict[str, Any]]:
         """
         加载历史消息并转换为 agent_loop 格式
 
@@ -80,7 +80,7 @@ class ContextManager:
 
         return history
 
-    def count_tokens_simple(self, messages: List[Dict[str, Any]]) -> int:
+    def count_tokens_simple(self, messages: list[dict[str, Any]]) -> int:
         """
         使用 TokenCalculator 计算 token 数量
 
@@ -103,11 +103,11 @@ class ContextManager:
                 total_tokens += max(1, len(content) // 2) + 4
             return total_tokens
 
-    def should_compress(self, messages: List[Dict[str, Any]]) -> bool:
+    def should_compress(self, messages: list[dict[str, Any]]) -> bool:
         """已禁用：压缩只在 agent_loop 工具循环中同步触发。"""
         return False
 
-    def compress_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def compress_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         压缩消息列表（保留最近消息）
 
@@ -202,7 +202,7 @@ class ContextManager:
 
         return compressed
 
-    def estimate_context_usage(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def estimate_context_usage(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         """
         估算上下文使用情况
 
@@ -231,7 +231,7 @@ class ContextManager:
             "max_tokens": self.max_tokens
         }
 
-    async def get_context_for_chat(self, exclude_last: bool = True) -> List[Dict[str, Any]]:
+    async def get_context_for_chat(self, exclude_last: bool = True) -> list[dict[str, Any]]:
         """
         获取用于聊天的上下文（主入口）
 
@@ -262,10 +262,10 @@ class ContextManager:
 
 
 # 全局实例管理
-_context_manager: Optional[ContextManager] = None
+_context_manager: ContextManager | None = None
 
 
-async def get_context_manager(message_store: Optional[MessageStore] = None) -> ContextManager:
+async def get_context_manager(message_store: MessageStore | None = None) -> ContextManager:
     """
     获取全局 ContextManager 实例
 

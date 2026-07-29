@@ -19,13 +19,11 @@ agent_runner_loop 中，纯文本回复（无 tool_calls）不会将 assistant �
   纯文本 assistant 回复从 reply_chunks 拼接后单独 add_message
 """
 
-import asyncio
 import json
 import os
 import sys
 import tempfile
 
-import aiosqlite
 import pytest
 
 # 确保项目根目录在 sys.path 中
@@ -34,15 +32,13 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from agent.generic.agent_loop import (
-    agent_runner_loop,
     BaseHandler,
     StepOutcome,
     StreamEvent,
-    exhaust,
+    agent_runner_loop,
 )
 from agent.generic.litellm_adapter import create_litellm_client
 from agent.session import MessageStore
-
 
 # ---------------------------------------------------------------------------
 # 配置加载
@@ -51,7 +47,7 @@ from agent.session import MessageStore
 def _load_llm_config():
     """从 user-config.json 加载真实 LLM 配置"""
     config_path = os.path.join(PROJECT_ROOT, "config", "user-config.json")
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         data = json.load(f)
     llm = data.get("llm", {})
     # 统一键名为小写
@@ -254,7 +250,7 @@ def test_scenario2_tool_calls_reply():
 
     assert rv is not None, "agent_runner_loop returned None"
     assert isinstance(rv, dict), f"Expected dict, got {type(rv)}"
-    assert "messages" in rv, f"Missing 'messages' in return value"
+    assert "messages" in rv, "Missing 'messages' in return value"
 
     messages = rv["messages"]
 

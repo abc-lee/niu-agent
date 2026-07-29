@@ -1,6 +1,7 @@
 """IM Gateway 单元测试"""
 import asyncio
 import json
+
 import pytest
 
 
@@ -15,7 +16,7 @@ async def _read_one(reader: asyncio.StreamReader, timeout: float = 5.0) -> dict 
         length = int.from_bytes(header, "big")
         data = await asyncio.wait_for(reader.readexactly(length), timeout=timeout)
         return json.loads(data.decode("utf-8"))
-    except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+    except (TimeoutError, asyncio.IncompleteReadError):
         return None
 
 

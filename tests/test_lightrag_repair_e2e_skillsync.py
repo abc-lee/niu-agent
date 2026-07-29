@@ -9,7 +9,6 @@ pytest.skip("v8-Task 1 将 repair_text_chunks 改为 unrecoverable stub，依赖
 
 import json
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -74,7 +73,7 @@ A test skill.
     # = tmp_path/.niu/skill_sync_state.json (which we created as {}).
 
     # Pre-start SkillSync so it's already waiting for LightRAG ready
-    from agent.injector.sync import get_skill_sync, wait_first_scan_complete
+    from agent.injector.sync import get_skill_sync
     skill_sync = get_skill_sync(auto_start=True)
     print(f"[PROBE3] SkillSync started, skills_dir={skill_sync.skills_dir}")
 

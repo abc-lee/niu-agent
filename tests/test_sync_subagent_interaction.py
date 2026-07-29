@@ -56,8 +56,9 @@ def test_ask_main_agent_impl_sync_sanitizes_question():
 
 def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):
     """agent_runner_loop 收到 resumed_messages → 跳过 system_message + history + user_input 构造"""
-    from agent.generic import agent_loop
     from unittest import mock
+
+    from agent.generic import agent_loop
 
     # mock LLM client——必须返回生成器（agent_loop.py 用 exhaust(response_gen) 调 next()）
     # MagicMock 不是迭代器，next() 会抛 TypeError，用 fake_chat_gen 模拟
@@ -105,7 +106,7 @@ def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):
         resumed_messages=resumed,
     )
 
-    events = list(gen)
+    list(gen)
     # 验证：LLM 调用时 messages 是 resumed，不含"不应被用"的 user_input
     call_kwargs = fake_client.chat.call_args
     messages_passed = call_kwargs.kwargs.get("messages", call_kwargs.args[0] if call_kwargs.args else None)
@@ -128,7 +129,7 @@ def test_call_subagent_top_validation_no_task_no_answer():
 def test_call_subagent_third_branch_agent_type_mismatch(monkeypatch):
     """第三分支 agent_type 不匹配 → 返回错误文本"""
     from agent import subagent
-    from agent.subagent_registry import SubagentRegistry, RunningSubagent
+    from agent.subagent_registry import SubagentRegistry
     from agent.subagent_supplement import SubagentSupplementQueue
 
     # 注册一个 agent_type="A" 的 session
@@ -274,7 +275,8 @@ def test_call_subagent_sync_second_call_same_agent_name_conflict(monkeypatch):
 
 def test_call_subagent_gen_fallback_unique_name_to_agent_name(monkeypatch):
     """LLM 调 chat-with-browser-operator 传 answer 不传 unique_name → fallback 到 agent_name"""
-    from agent import handler, subagent, runner as runner_mod
+    from agent import runner as runner_mod
+    from agent import subagent
     from agent.handler import NiuHandler
 
     call_subagent_calls = []
@@ -313,7 +315,8 @@ def test_call_subagent_gen_fallback_unique_name_to_agent_name(monkeypatch):
 
 def test_call_subagent_gen_explicit_unique_name_overrides_fallback(monkeypatch):
     """LLM 显式传 unique_name 时不用 fallback"""
-    from agent import handler, subagent, runner as runner_mod
+    from agent import runner as runner_mod
+    from agent import subagent
     from agent.handler import NiuHandler
 
     call_subagent_calls = []
@@ -349,7 +352,7 @@ def test_e2e_main_agent_content_reply_intercepted_before_yield(monkeypatch):
     - messages 应含 assistant content + user 错误提示
     - LLM 下一轮应看到错误提示并改用工具回复
     """
-    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR, NO_INTERCEPTION
+    from agent.generic.agent_loop import FORMAT_ERROR, NO_INTERCEPTION, _intercept_at_prefix_content
     from agent.subagent_registry import SubagentRegistry
     from agent.subagent_supplement import SubagentSupplementQueue
 

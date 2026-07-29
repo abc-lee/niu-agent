@@ -4,13 +4,13 @@ Integration test for disk mode tool dispatch.
 Tests that handler dispatch works correctly in disk mode (no tool_lifecycle).
 """
 
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock
 
 import pytest
 
-from agent.runner import NiuRunner, get_runner
-from agent.handler import NiuHandler
 from agent.generic.agent_loop import StepOutcome
+from agent.handler import NiuHandler
+from agent.runner import NiuRunner
 
 
 @pytest.fixture

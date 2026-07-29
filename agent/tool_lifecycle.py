@@ -8,7 +8,6 @@
 import json
 import sys
 from pathlib import Path
-from typing import Dict, List
 
 
 class ToolLifecycleManager:
@@ -23,11 +22,11 @@ class ToolLifecycleManager:
         self.scores_path = Path.home() / ".niu" / "tool_scores.json"
         self.decay_rate = decay_rate
         self.min_score = min_score
-        self.active_tools: Dict[str, int] = self._load_scores()
+        self.active_tools: dict[str, int] = self._load_scores()
         # 临时存储：工具命中后激活的Skills（不持久化，不衰减）
-        self._pending_skills: List[str] = []
+        self._pending_skills: list[str] = []
 
-    def _load_scores(self) -> Dict[str, int]:
+    def _load_scores(self) -> dict[str, int]:
         """从 JSON 文件加载工具分数"""
         if not self.scores_path.exists():
             return {}
@@ -165,11 +164,11 @@ class ToolLifecycleManager:
             print(f"[ToolLifecycle] After decay: {dict(sorted(self.active_tools.items(), key=lambda x: -x[1]))}",
                   file=sys.stderr, flush=True)
         else:
-            print(f"[ToolLifecycle] After decay: (empty)", file=sys.stderr, flush=True)
+            print("[ToolLifecycle] After decay: (empty)", file=sys.stderr, flush=True)
 
         self._save_scores()
 
-    def get_active_tools(self) -> List[str]:
+    def get_active_tools(self) -> list[str]:
         """
         获取当前应该注入的工具列表
 
@@ -178,7 +177,7 @@ class ToolLifecycleManager:
         """
         return list(self.active_tools.keys())
 
-    def get_pending_skills(self) -> List[str]:
+    def get_pending_skills(self) -> list[str]:
         """
         获取待注入的Skills列表（临时，不持久化）
 

@@ -5,7 +5,6 @@ prompt building -> injection -> LLM receives enhanced messages.
 
 All tests use mocks — no running LightRAG instance required.
 """
-import pytest
 from unittest.mock import patch
 
 
@@ -15,10 +14,10 @@ class TestE2EBrainRegionInjection:
     def test_full_pipeline_extraction_request(self):
         """Complete pipeline: detection -> static -> dynamic -> injection."""
         from niu_api.internal.brain_region_prompt import (
-            is_lightrag_extraction_request,
-            build_static_brain_region_prompt,
             build_dynamic_brain_region_prompt,
+            build_static_brain_region_prompt,
             inject_brain_region_context,
+            is_lightrag_extraction_request,
         )
 
         # Step 1: Simulate LightRAG extraction messages
@@ -61,7 +60,7 @@ class TestE2EBrainRegionInjection:
         result = inject_brain_region_context(messages)
 
         # Same list content (no injection)
-        assert all(m["role"] == r["role"] and m["content"] == r["content"] for m, r in zip(messages, result))
+        assert all(m["role"] == r["role"] and m["content"] == r["content"] for m, r in zip(messages, result, strict=False))
 
     def test_full_pipeline_adapter_failure_graceful(self):
         """When adapter fails, injection still works with fallback."""

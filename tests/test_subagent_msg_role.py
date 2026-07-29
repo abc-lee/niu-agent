@@ -1,7 +1,7 @@
 """验证 role=subagent_msg 消息能存入 db 且 history 重建时被过滤。"""
-import tempfile
-import os
 import asyncio
+import os
+import tempfile
 
 
 def test_add_subagent_msg_message():
@@ -55,6 +55,7 @@ def test_get_messages_includes_subagent_msg():
 def test_history_reconstruction_skips_subagent_msg():
     """history 重建时 subagent_msg 消息被过滤，不进 LLM 上下文。"""
     import inspect
+
     from agent.generic import agent_loop
     source = inspect.getsource(agent_loop)
     assert 'subagent_msg' in source, "agent_loop.py 未处理 subagent_msg role"
@@ -66,6 +67,7 @@ def test_history_reconstruction_skips_subagent_msg():
 def test_history_uses_dict_access():
     """history 重建用 dict 访问（msg.get），不是属性访问（msg.role）。"""
     import inspect
+
     from agent.generic import agent_loop
     source = inspect.getsource(agent_loop)
     # 确认有 msg.get("role") 调用，不是 msg.role
