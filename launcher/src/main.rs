@@ -1437,9 +1437,11 @@ fn detect_resources_root() -> PathBuf {
 /// Each hint names the affected feature and points the user to README.
 /// Empty Vec = all optional deps present (developer build).
 ///
-/// Checks two locations:
-/// 1. site-packages/ under bundle (cv2/insightface/easydict/pillow_heif/igraph/leidenalg)
-/// 2. ~/.insightface/models/buffalo_l/ (user-downloaded face model)
+/// 检查位置：bundle 内 resources_root 下
+///   - site-packages/ 下 cv2/insightface/easydict/pillow_heif/igraph/leidenalg
+///   - models/models/buffalo_l/ 下是否有 .onnx
+/// 不查用户家目录（~/.insightface/）——程序内禁止下载，本地没有直接报错，
+/// 用户按 README 把包和模型装到 bundle 内 + 重签名。
 ///
 /// 注意：本列表只查主包目录（cv2/insightface/easydict/pillow_heif/igraph/leidenalg），
 /// 不需要与 build.sh 的 rsync --exclude 完全一致——exclude 还含 texttable（igraph 依赖）、
