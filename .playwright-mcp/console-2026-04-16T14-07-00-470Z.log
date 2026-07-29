@@ -1,9 +1,0 @@
-[     125ms] TypeError: ForceGraph(...)(...).backgroundColor(...).nodeId(...).nodeVal(...).nodeColor(...).nodeOpacity is not a function
-    at http://localhost:8765/demo.html:56:8
-[     128ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8765/favicon.ico:0
-[    6473ms] ReferenceError: Cannot access 'graph' before initialization
-    at addNodes (http://localhost:8765/demo.html:107:7)
-    at HTMLButtonElement.onclick (http://localhost:8765/demo.html:16:34)
-[    6801ms] ReferenceError: Cannot access 'graph' before initialization
-    at addNodes (http://localhost:8765/demo.html:107:7)
-    at HTMLButtonElement.onclick (http://localhost:8765/demo.html:16:34)
