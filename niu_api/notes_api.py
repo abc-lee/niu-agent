@@ -20,14 +20,14 @@ class NoteCreateRequest(BaseModel):
     id: str
     content: str
     tags: list[str] = []
-    createdAt: float  # 前端传 ms 时间戳
+    createdAt: float  # noqa: N815 — 前端 API 契约
 
 
 class NoteUpdateRequest(BaseModel):
     id: str
     content: str
     tags: list[str] = []
-    updatedAt: float  # 前端传 ms 时间戳
+    updatedAt: float  # noqa: N815 — 前端 API 契约
 
 
 @router.post("/notes")

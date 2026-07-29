@@ -54,7 +54,8 @@ def test_compat_tidy_impl_emits_compact_status_force():
     events = []
     loop = _make_mock_loop(events)
     patches = _patch_compat_deps()
-    for p in patches: p.start()
+    for p in patches:
+        p.start()
     try:
         with patch("niu_api.chat._main_loop", loop), \
              patch("agent.subagent.call_subagent", return_value="压缩摘要"):
@@ -65,7 +66,8 @@ def test_compat_tidy_impl_emits_compact_status_force():
         # 流程中后续可能因 mock 不全抛异常，但事件应已广播
         pass
     finally:
-        for p in patches: p.stop()
+        for p in patches:
+            p.stop()
     statuses = [e["status"] for e in events if e.get("type") == "compact_status"]
     assert "started" in statuses, f"force 模式未广播 started，实际: {statuses}"
     assert "done" in statuses, f"force 模式未广播 done，实际: {statuses}"
@@ -77,7 +79,8 @@ def test_compat_tidy_impl_emits_compact_status_sleep():
     events = []
     loop = _make_mock_loop(events)
     patches = _patch_compat_deps()
-    for p in patches: p.start()
+    for p in patches:
+        p.start()
     try:
         with patch("niu_api.chat._main_loop", loop), \
              patch("agent.subagent.call_subagent", return_value="压缩摘要"):
@@ -86,7 +89,8 @@ def test_compat_tidy_impl_emits_compact_status_sleep():
     except (Exception, SystemExit):
         pass
     finally:
-        for p in patches: p.stop()
+        for p in patches:
+            p.stop()
     statuses = [e["status"] for e in events if e.get("type") == "compact_status"]
     assert "started" in statuses, f"sleep 模式未广播 started，实际: {statuses}"
     assert "done" in statuses, f"sleep 模式未广播 done，实际: {statuses}"
@@ -97,7 +101,8 @@ def test_compat_tidy_impl_emits_done_on_exception():
     events = []
     loop = _make_mock_loop(events)
     patches = _patch_compat_deps()
-    for p in patches: p.start()
+    for p in patches:
+        p.start()
     try:
         with patch("niu_api.chat._main_loop", loop), \
              patch("agent.subagent.call_subagent", side_effect=RuntimeError("LLM 失败")):
@@ -109,7 +114,8 @@ def test_compat_tidy_impl_emits_done_on_exception():
     except (Exception, SystemExit):
         pass
     finally:
-        for p in patches: p.stop()
+        for p in patches:
+            p.stop()
     statuses = [e["status"] for e in events if e.get("type") == "compact_status"]
     assert "done" in statuses, f"异常路径未广播 done，前端会卡死，实际: {statuses}"
 

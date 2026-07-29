@@ -64,8 +64,10 @@ def test_thread_safe_push_pop_data_integrity():
 
     t1 = threading.Thread(target=producer)
     t2 = threading.Thread(target=consumer)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
     # consumer 可能比 producer 快，collected 不足 num_items 时补 pop 剩余
     while not q.is_empty():
