@@ -25,7 +25,7 @@ MCP 服务器集群 (mcp-servers/)
 
 1. **你是项目经理** - 不要自己遍历代码，你要把控全局，减少任何无价值上下文占用
 2. **禁止自己改代码** — 所有代码修改必须委托给子Agent执行，主对话只做分析和决策
-3. **修改前必须先做临时提交备份** — `git add -A && git commit`，恢复前也必须先备份当前状态，不能直接 `git checkout` 覆盖
+3. **修改前必须先做临时提交备份** — `git add -A && git commit`，恢复前也必须先备份当前状态，不能直接 `git checkout` 覆盖，需要完整回退到过去的某一个点，必须经过用户同意
 4. **修改前必须用 gitnexus 分析影响范围** — 评估 blast radius 后再动手
 5. **测试必须用真实数据+真实LLM** — 绕过LLM的测试是假测试
 6. **python/ 目录必须是完整的自包含 Python 安装** — 所有二进制文件、库、依赖必须真实存在于 python/ 目录内，禁止使用符号链接指向外部路径（如 /Library/Frameworks/Python.framework/）。这个目录最终要打包分发，客户不需要自己安装 Python 环境，也不需要自己安装依赖。当前 python/ 实际为 venv（pyvenv.cfg 指向系统 Python 标准库），违反本铁律的自包含要求，需另开会话重建。同时注意：numpy<2 和 opencv<4.12 是隐性约束（torch 2.2.2 / insightface C 扩展用 numpy 1.x ABI；opencv 4.12+ 强制 numpy>=2）。
