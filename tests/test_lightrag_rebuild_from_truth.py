@@ -19,13 +19,13 @@ import pytest
 
 pytest.skip("v8-Task 1 将 repair_text_chunks 改为 unrecoverable stub，依赖 repair_all 成功的 E2E 测试需等 Task 4 重写", allow_module_level=True)
 
-import json
-import xml.etree.ElementTree as ET
-from pathlib import Path
+import json  # noqa: E402
+import xml.etree.ElementTree as ET  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
-from niu_api.internal.lightrag_repair import repair_all
+from niu_api.internal.lightrag_repair import repair_all  # noqa: E402
 
 # 9 个派生文件清单（跟 lightrag_repair._DERIVED_FILES 一致；GraphML 是真相源不在内）
 _DERIVED_FILES = [

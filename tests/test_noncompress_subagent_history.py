@@ -20,7 +20,7 @@ _root = Path(__file__).parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from niu_api.compat import _build_plain_history, _parse_processed_up_to
+from niu_api.compat import _build_plain_history, _parse_processed_up_to  # noqa: E402
 
 
 class FakeMsg:

@@ -23,9 +23,9 @@ _niu_api = _PROJECT_ROOT
 if _niu_api not in sys.path:
     sys.path.insert(0, _niu_api)
 
-from lightrag.utils_graph import _edit_entity_impl, _merge_entities_impl
+from lightrag.utils_graph import _edit_entity_impl, _merge_entities_impl  # noqa: E402
 
-from niu_api.internal.region_manager import RegionManager
+from niu_api.internal.region_manager import RegionManager  # noqa: E402
 
 # ===========================================================================
 # Helpers — mock graph / vdb storages

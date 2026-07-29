@@ -26,13 +26,13 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-import asyncio
-import os
-import tempfile
-import threading
-import time
-from datetime import datetime
-from pathlib import Path
+import asyncio  # noqa: E402
+import os  # noqa: E402
+import tempfile  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from datetime import datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Test 1: 单线程内 async 写入后立即 async 读取

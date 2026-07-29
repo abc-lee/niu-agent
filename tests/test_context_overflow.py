@@ -122,7 +122,7 @@ _AGENT_LOOP_MOD = "agent.generic.agent_loop"
 # ---------------------------------------------------------------------------
 # Context manager for patching all runner imports
 # ---------------------------------------------------------------------------
-from contextlib import contextmanager
+from contextlib import contextmanager  # noqa: E402
 
 
 @contextmanager

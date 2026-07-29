@@ -30,7 +30,7 @@ _main_loop: asyncio.AbstractEventLoop | None = None
 # scheduler 收到 signal_scheduler_ready 后等这个事件才扫描过期任务，
 # 确保扫到的 reply 推 SSE 时前端已在订阅。
 # 超时 60s 未收到强制继续（避免前端永远不起来卡死后端）。
-import threading as _threading
+import threading as _threading  # noqa: E402
 
 frontend_ready_event = _threading.Event()
 

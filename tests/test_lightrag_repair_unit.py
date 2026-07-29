@@ -1835,7 +1835,7 @@ async def test_repair_full_relations_reverse_mapping(tmp_path, monkeypatch):
 # v9 Task 2: RepairEmbeddingFunc 单元测试
 # =============================================================================
 
-import numpy as np
+import numpy as np  # noqa: E402
 
 
 class _FakeEmbedModel:

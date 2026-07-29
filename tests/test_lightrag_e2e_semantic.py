@@ -10,8 +10,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-import pytest
-import requests
+import pytest  # noqa: E402
+import requests  # noqa: E402
 
 BACKUP_DIR = Path.home() / ".niu/lightrag_storage_backup_20260712_071242"
 STORAGE_DIR = Path.home() / ".niu/lightrag_storage"

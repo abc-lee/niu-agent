@@ -82,7 +82,7 @@ def test_build_static_brain_region_prompt_consistent():
     assert result1 == result2
 
 
-from unittest.mock import patch
+from unittest.mock import patch  # noqa: E402
 
 
 def test_build_dynamic_brain_region_prompt_with_regions():

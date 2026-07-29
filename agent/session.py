@@ -25,9 +25,9 @@ def _safe_json(raw, default=None):
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError, ValueError):
         return default
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field  # noqa: E402
 
-from loguru import logger
+from loguru import logger  # noqa: E402
 
 
 @dataclass

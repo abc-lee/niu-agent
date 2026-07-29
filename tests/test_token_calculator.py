@@ -14,7 +14,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from agent.token_calculator import (
+from agent.token_calculator import (  # noqa: E402
     _MSG_OVERHEAD,
     _TOOL_CALL_ID_OVERHEAD,
     _TOOL_CALL_OVERHEAD,

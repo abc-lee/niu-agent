@@ -7,10 +7,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import pytest
-import yaml
+import pytest  # noqa: E402
+import yaml  # noqa: E402
 
-from agent.runner import get_tools_schema
+from agent.runner import get_tools_schema  # noqa: E402
 
 
 def test_schema_includes_async_mode_for_allow_async_subagent():

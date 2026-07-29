@@ -9,7 +9,7 @@ pytestmark = pytest.mark.skip(reason="ExperienceSummarizer disabled — skill wr
 
 sys.path.insert(0, "E:/tools/ai-bot")
 
-from agent.experience_summarizer import ExperienceContext, ExperienceSummarizer, ToolExecution
+from agent.experience_summarizer import ExperienceContext, ExperienceSummarizer, ToolExecution  # noqa: E402
 
 
 @pytest.mark.p1

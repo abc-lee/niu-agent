@@ -114,7 +114,7 @@ class TestEncodeDescriptionPriority:
         assert parse_priority_from_description(desc) == DEFAULT_PRIORITY
 
 
-import networkx as nx
+import networkx as nx  # noqa: E402
 
 
 class TestDecayStructuralEdges:

@@ -22,9 +22,9 @@ pytestmark = pytest.mark.skipif(
     not os.environ.get("RUN_INTEGRATION_TESTS"),
     reason="集成测试需要程序运行+真实LLM，设置 RUN_INTEGRATION_TESTS=1 启用",
 )
-from pathlib import Path
+from pathlib import Path  # noqa: E402
 
-import requests
+import requests  # noqa: E402
 
 API_BASE = "http://localhost:9876"
 NIU_DIR = Path.home() / ".niu"
