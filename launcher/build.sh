@@ -2,7 +2,17 @@
 # 构建 niu 启动器并复制到项目根目录
 set -e
 cd "$(dirname "$0")"
-cargo build --release "$@"
+
+# 解析 --dmg 开关（生成 DMG 安装包），并从传给 cargo 的参数里过滤掉 --dmg
+BUILD_DMG=false
+CARGO_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --dmg) BUILD_DMG=true ;;
+    *) CARGO_ARGS+=("$arg") ;;
+  esac
+done
+cargo build --release "${CARGO_ARGS[@]}"
 cp target/release/niu-launcher ../niu
 echo "Built and copied to ../niu"
 
@@ -209,6 +219,24 @@ PLIST
     xattr -w com.apple.quarantine "$QUARANTINE_ATTR" ../niu.app 2>/dev/null || true
 
     echo "[build.sh] macOS .app bundle created at ../niu.app (icon + ad-hoc signature + LaunchServices provenance + quarantine)"
+
+    # 可选：生成 DMG 安装包（用 --dmg 开关启用）
+    if [ "$BUILD_DMG" = "true" ]; then
+        VERSION="$(cat "$PROJECT_ROOT/VERSION")"
+        DIST_DIR="$PROJECT_ROOT/dist"
+        DMG_NAME="Niu-${VERSION}-mac-intel.dmg"
+        STAGE="/tmp/niu_dmg_stage_$$"
+        echo "[build.sh] generating DMG: $DMG_NAME"
+        rm -rf "$STAGE"
+        mkdir -p "$STAGE"
+        ln -sf /Applications "$STAGE/Applications"
+        cp -R ../niu.app "$STAGE/niu.app"
+        mkdir -p "$DIST_DIR"
+        rm -f "$DIST_DIR/$DMG_NAME"
+        hdiutil create -volname "Niu" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 "$DIST_DIR/$DMG_NAME"
+        rm -rf "$STAGE"
+        echo "[build.sh] DMG created at $DIST_DIR/$DMG_NAME"
+    fi
 fi
 
 # 修复 node_modules/.bin/ 下的可执行权限（铁律 #7）
