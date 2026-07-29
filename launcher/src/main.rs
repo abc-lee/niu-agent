@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use clap::Parser;
 use iced::widget::container;
 use iced::window;
@@ -1311,7 +1314,6 @@ fn kill_stale_api_process(port: u16) {
 fn launch_window(name: &str, port: u16) -> Result<std::process::Child, Box<dyn std::error::Error>> {
     let resources_root = detect_resources_root();
     let window_dir = resources_root.join("ui").join("main");
-
     #[cfg(windows)]
     {
         let mut cmd = Command::new("cmd");
@@ -1319,9 +1321,11 @@ fn launch_window(name: &str, port: u16) -> Result<std::process::Child, Box<dyn s
             .env("NIU_WINDOW", name)
             .env("NIU_API_PORT", port.to_string())
             .current_dir(&window_dir);
-        cmd.stdout(std::process::Stdio::inherit());
-        cmd.stderr(std::process::Stdio::inherit());
-        cmd.stdin(std::process::Stdio::inherit());
+        // Windows: CREATE_NO_WINDOW 避免弹 cmd 控制台窗口
+        cmd.creation_flags(0x08000000);
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.stdin(std::process::Stdio::null());
         Ok(cmd.spawn()?)
     }
 
@@ -1448,7 +1452,9 @@ fn detect_resources_root() -> PathBuf {
 /// _pillow_heif*.so（松散 .so）、*-*.dist-info（元数据）等，此处不查。
 /// 两处列表不同步是 by design（打包侧 vs 运行时侧职责不同）。
 fn check_missing_deps(resources_root: &Path) -> Vec<String> {
-    // 动态找 python/lib/python3.x 目录（不硬编码版本号，Python 升级时无需改此处）
+    // 动态找 site-packages 目录（不硬编码版本号，Python 升级时无需改此处）
+    // macOS bundle: python/lib/python3.x/site-packages/
+    // Windows venv: python/Lib/site-packages/（大写 Lib，无 python3.x 子目录）
     let python_lib = resources_root.join("python").join("lib");
     let python_dir = fs::read_dir(&python_lib)
         .ok()
@@ -1464,7 +1470,15 @@ fn check_missing_deps(resources_root: &Path) -> Vec<String> {
         .map(|name| python_lib.join(name));
     let site_packages = match python_dir {
         Some(dir) => dir.join("site-packages"),
-        None => return Vec::new(),  // 找不到 python3.x 目录，无缺失可查
+        None => {
+            // Windows venv fallback: python/Lib/site-packages/
+            let win_path = resources_root.join("python").join("Lib").join("site-packages");
+            if win_path.exists() {
+                win_path
+            } else {
+                return Vec::new();  // 找不到 site-packages，无缺失可查
+            }
+        }
     };
     let mut missing: Vec<String> = Vec::new();
 
@@ -1785,6 +1799,9 @@ fn main() {
             Err(_) => project_root_bg.clone(),
         };
         api_server_cmd.current_dir(&api_server_cwd);
+        // Windows: CREATE_NO_WINDOW 避免 Python 进程弹控制台窗口
+        #[cfg(windows)]
+        api_server_cmd.creation_flags(0x08000000);
 
         // Set environment: inherit current env first, then override with our vars
         // IMPORTANT: env::vars() must come BEFORE PYTHONHOME, otherwise inherited
@@ -1797,18 +1814,18 @@ fn main() {
         }
 
         // PYTHONHOME: 让 python3 找到 bundle 内 stdlib + site-packages
-        // 必须传（python3 链接的 dylib 内部硬编码系统 framework stdlib 路径，
-        // PYTHONHOME 覆盖让 base_prefix 指向 bundle 内）
-        // 已实测验证（2026-07-24）：pyvenv.cfg 的 home 已改成 bundle 内 python/bin/，
-        // 传 PYTHONHOME 后 base_prefix 正确指向 bundle 内 python/，不会泄露到系统 framework。
-        // 无论 dev 还是 bundle 模式，PYTHONHOME 永远指向 <resources_root>/python/，stdlib 在 bundle 内。
-        // 放在 env::vars() 之后，确保覆盖任何继承的 PYTHONHOME。
-        let python_home = PathBuf::from(&python_path_bg)
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        api_server_cmd.env("PYTHONHOME", &python_home);
+        // macOS 必须：python3 链接的 dylib 内部硬编码系统 framework stdlib 路径，
+        // PYTHONHOME 覆盖让 base_prefix 指向 bundle 内。
+        // Windows 不能设：venv 的 stdlib 在系统 Python（C:\Python311\Lib）里，
+        // 设 PYTHONHOME 会导致 "No module named encodings" 致命错误。
+        if !cfg!(target_os = "windows") {
+            let python_home = PathBuf::from(&python_path_bg)
+                .parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            api_server_cmd.env("PYTHONHOME", &python_home);
+        }
 
         // PYTHONPATH: 让 Python 找到 niu_api 和 agent 模块
         // cwd 是 ~/.niu/（可写），但 niu_api/agent 模块在 bundle 内 Resources/

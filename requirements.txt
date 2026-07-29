@@ -63,6 +63,7 @@ fsspec==2026.4.0
 sympy==1.14.0
 networkx==3.6.1
 Jinja2==3.1.6
+accelerate==0.34.2             # sentence-transformers 加载模型需要 init_empty_weights（macOS 间接装了，Windows 缺失）
 
 # ============== 科学计算（insightface 依赖链） ==============
 scipy==1.17.1
@@ -110,6 +111,7 @@ configparser==7.2.0            # lightrag-hku Requires（清理时被误删，�
 
 # ============== 数据存储 ==============
 aiosqlite==0.22.1
+aiofiles==25.1.0               # lightrag-server 异步文件操作需要（macOS 间接装了，Windows 缺失）
 aiohttp==3.13.5
 aiohappyeyeballs==2.6.2
 aiosignal==1.4.0

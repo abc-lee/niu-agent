@@ -61,7 +61,7 @@ def _load_json_dict(path: Path) -> tuple[dict, dict | None]:  # pyright: ignore[
     if not path.exists():
         return {}, None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return {}, {
                 "check": "json_type_mismatch",
@@ -154,7 +154,7 @@ def _load_vdb(path: Path) -> tuple[list[dict], dict[str, Any] | None]:
     if not path.exists():
         return [], None  # 文件不存在视为空 vdb
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return [], {
                 "check": "vdb_type_mismatch",
@@ -193,7 +193,7 @@ def _check_truth_source(fname: str, storage_dir: Path) -> dict[str, Any]:
         if size == 0:
             # 空文件 = 全新用户，ok
             return {}
-        data = json.loads(fpath.read_text())
+        data = json.loads(fpath.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return {
                 "check": "truth_source_corrupt",
