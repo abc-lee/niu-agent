@@ -30,6 +30,8 @@ def _make_scheduler(db_path, callback, mock_store):
     scheduler._busy_poll_interval = 2
     scheduler._double_confirm_delay = 3
     scheduler._stagger_max_wait = 600
+    # Task 2 新增：超时重置阈值
+    scheduler._stale_timeout_hours = 8
     return scheduler, _CALLBACK_TIMEOUT
 
 
@@ -38,6 +40,7 @@ def mock_scheduler(tmp_path):
     db_path = str(tmp_path / "scheduler.db")
     callback = MagicMock(return_value="ok")
     mock_store = MagicMock()
+    mock_store.reset_stale_in_progress.return_value = 0
     scheduler, timeout = _make_scheduler(db_path, callback, mock_store)
     yield scheduler, callback, mock_store, timeout
     # teardown：shutdown executor 避免线程池泄漏
@@ -695,3 +698,36 @@ class TestRecoverOrphanedClearsTriggeredAt:
         task = store.get_task(task_id)
         assert task["status"] == "pending"
         assert task["triggered_at"] is None  # 必须清除
+
+
+class TestSchedulerCallsResetStale:
+    """测试 Scheduler 每轮 check_and_trigger 开头调用 reset_stale_in_progress"""
+
+    def test_reset_stale_called_before_due_check(self, mock_scheduler):
+        """check_and_trigger 开头调用 store.reset_stale_in_progress"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 0
+        # mock_store.get_overdue_tasks 返回空，确保只验证 reset 调用
+        mock_store.get_overdue_tasks.return_value = []
+        mock_store.reset_stale_in_progress = MagicMock(return_value=0)
+        mock_store.retry_failed_tasks.return_value = 0
+        # _store_factory 为 None 时不刷新 store
+        scheduler._store_factory = None
+
+        scheduler.check_and_trigger()
+
+        mock_store.reset_stale_in_progress.assert_called_once_with(timeout_hours=8)
+
+    def test_reset_stale_with_custom_timeout(self, mock_scheduler):
+        """可配置超时阈值"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._stale_timeout_hours = 12
+        scheduler._double_confirm_delay = 0
+        mock_store.get_overdue_tasks.return_value = []
+        mock_store.reset_stale_in_progress = MagicMock(return_value=0)
+        mock_store.retry_failed_tasks.return_value = 0
+        scheduler._store_factory = None
+
+        scheduler.check_and_trigger()
+
+        mock_store.reset_stale_in_progress.assert_called_once_with(timeout_hours=12)
