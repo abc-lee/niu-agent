@@ -71,15 +71,22 @@ MCP 服务器集群 (mcp-servers/)
 
 ```bash
 # 1. 创建自包含 Python 运行时（venv + 全量依赖）
+# macOS
 python3.11 -m venv --copies python
 python/bin/pip install --upgrade pip
 python/bin/pip install -r requirements.txt
+
+# Windows（用完整路径指定 Python 3.11）
+C:\Python311\python.exe -m venv --copies python
+python\Scripts\pip.exe install --upgrade pip
+python\Scripts\pip.exe install -r requirements.txt
 
 # 2. 安装 Electron 前端依赖
 cd ui/main && npm install && cd ../..
 
 # 3. 开发/测试依赖（可选，不进入分发包）
-python/bin/pip install -r requirements-dev.txt
+# macOS: python/bin/pip install -r requirements-dev.txt
+# Windows: python\Scripts\pip.exe install -r requirements-dev.txt
 ```
 
 MCP 服务器不需要 `pip install`，通过 `config/mcp-servers.yaml` 的 `workdir` 配置即可加载模块。

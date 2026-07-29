@@ -123,19 +123,26 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 
 ### 方式一：直接下载（推荐普通用户）
 
-从 GitHub Release 下载最新的 `.dmg` 安装包：
+从 GitHub Release 下载最新的安装包：
 
 | 平台 | 下载链接 | 说明 |
 |------|---------|------|
 | macOS（Intel CPU） | [Niu-0.1.0-mac-intel.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.1.0/Niu-0.1.0-mac-intel.dmg) | 适用于 Intel 芯片的 Mac（约 1.2 GB） |
 | macOS（Apple M 系列） | _稍后提供_ | 后续发布 |
+| Windows x64 | [Niu-0.1.0-win-x64.zip](https://github.com/abc-lee/niu-agent/releases/download/v0.1.0/Niu-0.1.0-win-x64.zip) | 绿色安装，解压即用（约 350 MB） |
 
-**安装步骤**：
+**macOS 安装步骤**：
 
 1. 双击下载的 `.dmg` 文件挂载
 2. 把挂载出来的 `niu.app` 拖到 `Applications` 文件夹
-3. 首次启动时 macOS 会提示“无法验证开发者”——点“打开”授权一次即可（后续不再提示）
+3. 首次启动时 macOS 会提示"无法验证开发者"——点"打开"授权一次即可（后续不再提示）
 4. 启动后在设置中配置你的 LLM API Key
+
+**Windows 安装步骤**：
+
+1. 解压下载的 `.zip` 文件到任意目录（如 `D:\Niu`）
+2. 双击 `niu.exe` 启动
+3. 启动后在设置中配置你的 LLM API Key
 
 > **关于安全提示（必读）**：本应用采用 **ad-hoc 本地签名**（无 Apple Developer ID 证书），不是经过 Apple 公证的应用。这在大多数 Mac 上能正常使用，但首次启动行为如下：
 >
@@ -148,27 +155,24 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 
 > 💡 **最简单的方式：直接让 Niu 帮你装**。启动 Niu 后，告诉它“脑区检测不能用，帮我装一下”——Niu 会读本说明，自动执行安装和重签名步骤，你不用碰终端。
 
-Niu 的脑区**社区检测**功能（自动发现知识图谱中的社区结构、把实体聚类成脑区）依赖 `igraph` + `leidenalg` 两个社区检测库。这两个库是 GPL 许可证，**默认不含在 DMG 安装包里**——不装也能正常使用 Niu 的所有其他功能，只是脑区检测不工作。
+Niu 的脑区**社区检测**功能（自动发现知识图谱中的社区结构、把实体聚类成脑区）依赖 `igraph` + `leidenalg` 两个社区检测库。这两个库是 GPL 许可证，**默认不含在安装包里**——不装也能正常使用 Niu 的所有其他功能，只是脑区检测不工作。
 
 如果你需要脑区功能，安装后用**程序自带的 Python**（不是系统 Python）手动安装这两个包：
 
 ```bash
-# 用 DMG 安装后的自包含 Python（路径以 /Applications/niu.app 为例）
+# macOS（路径以 /Applications/niu.app 为例）
 /Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install igraph==1.0.0 leidenalg==0.11.0
+
+# Windows（路径以解压目录为例，如 D:\Niu）
+.\python\Scripts\pip.exe install igraph==1.0.0 leidenalg==0.11.0
 ```
 
-> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是自包含环境（macOS: `niu.app/Contents/Resources/python/`，Windows: 解压目录下的 `python/`），装到系统 Python 里 Niu 看不到。
 
 > 📋 许可证说明：`igraph` 和 `leidenalg` 都是 GNU GPL 许可证。你自行安装=你与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这两个包，不构成 GPL 传染。详见 [igraph 许可证](https://github.com/igraph/python-igraph/blob/main/LICENSE) 与 [leidenalg 许可证](https://github.com/vtraag/leidenalg/blob/main/LICENSE)。`leidenalg` 依赖 `igraph`，pip 会自动安装。
 
-> ⚠️ **装完必须重签名**：向 `niu.app` 内部装包会写入新的 `.so`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝（dlopen 失败）。执行（ad-hoc 签名，inside-out 逐个签 `.so`/`.dylib` 再签 bundle 顶层——`codesign --deep` 自 macOS 13.3 起已废弃，不会签新增的 `.so`）：
->
-> ```bash
-> find /Applications/niu.app/Contents/Resources/python -type f \
->     \( -name "*.so" -o -name "*.dylib" \) -print0 \
->     | xargs -0 -n 1 -P 4 codesign --force --sign -
-> codesign --force --sign - /Applications/niu.app
-> ```
+> ⚠️ **macOS 装完必须重签名**：向 `niu.app` 内部装包会写入新的 `.so`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝（dlopen 失败）。Windows 无需此步骤。执行（ad-hoc 签名，inside-out 逐个签 `.so`/`.dylib` 再签 bundle 顶层——`codesign --deep` 自 macOS 13.3 起已废弃，不会签新增的 `.so`）：
+
 
 安装后重启 Niu，脑区检测会自动启用（`region_detector.py` 的 `try/except ImportError` 会检测到这两个包可用）。
 
@@ -176,43 +180,49 @@ Niu 的脑区**社区检测**功能（自动发现知识图谱中的社区结构
 
 > 💡 **最简单的方式：直接让 Niu 帮你装**。启动 Niu 后，告诉它“照片识别不能用，帮我装一下”——Niu 会读本说明，自动执行下面的安装和重签名步骤，你不用碰终端。
 
-Niu 的照片处理功能（拖入照片自动入库、人脸识别、人物管理）依赖以下组件，出于许可证合规**默认不含在 DMG 安装包里**——不装也能正常使用 Niu 的所有其他功能（聊天、知识图谱、文件管理等），只是照片处理不可用。
+Niu 的照片处理功能（拖入照片自动入库、人脸识别、人物管理）依赖以下组件，出于许可证合规**默认不含在安装包里**——不装也能正常使用 Niu 的所有其他功能（聊天、知识图谱、文件管理等），只是照片处理不可用。
 
-需要照片处理时，分三步：装依赖 + 下模型 + 重签名。
+**macOS**：分三步（装依赖 + 下模型 + 重签名）。**Windows**：分两步（装依赖 + 下模型，无需重签名）。
 
-**第一步：装依赖到 niu.app 的 Python 里**
+**第一步：装依赖**
 
 ```bash
-# 必须用 niu 自带的 python3，包装到 niu.app 内的 site-packages，装到系统 Python 里 Niu 看不到
+# macOS（路径以 /Applications/niu.app 为例）
 /Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install \
+    opencv-python-headless==4.11.0.86 \
+    insightface==0.7.3 \
+    easydict==1.13 \
+    pillow-heif==1.4.0
+
+# Windows（路径以解压目录为例，如 D:\Niu）
+.\python\Scripts\pip.exe install \
     opencv-python-headless==4.11.0.86 \
     insightface==0.7.3 \
     easydict==1.13 \
     pillow-heif==1.4.0
 ```
 
-> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是自包含环境（macOS: `niu.app/Contents/Resources/python/`，Windows: 解压目录下的 `python/`），装到系统 Python 里 Niu 看不到。
 
 > 📋 **许可证说明**：`opencv-python-headless` 捆绑的 FFmpeg 含 GPL 编解码器（libx264/libx265），`pillow-heif` 链接 libx265（GPLv2）。你自行安装=你与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这些包，不构成 GPL 传染。`insightface` 和 `easydict` 是人脸识别库依赖，一并安装。
 
-**第二步：下载 buffalo_l 模型放到 niu.app 内**
+**第二步：下载 buffalo_l 模型**
 
-InsightFace 的 `buffalo_l` 模型（~326MB）是非商业许可证，**默认不含在 DMG 里**。Niu **不会自动下载**（避免下载卡死），本地没有模型时人脸识别直接报错，需手动下载安装：
+InsightFace 的 `buffalo_l` 模型（~326MB）是非商业许可证，**默认不含在安装包里**。Niu **不会自动下载**（避免下载卡死），本地没有模型时人脸识别直接报错，需手动下载安装：
 
 1. 从 InsightFace 官方 GitHub 下载 `buffalo_l.zip`：
    - 地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3
    - 找 `buffalo_l.zip` 下载（国内访问慢可用代理）
 2. 解压后把 5 个 `.onnx` 文件放到：
-   ```
-   /Applications/niu.app/Contents/Resources/models/models/buffalo_l/
-   ```
+   - **macOS**：`/Applications/niu.app/Contents/Resources/models/models/buffalo_l/`
+   - **Windows**：`<解压目录>/models/models/buffalo_l/`
    - 解压后目录结构应为该目录下直接是 `1k3d68.onnx` / `2d106det.onnx` / `det_10g.onnx` / `genderage.onnx` / `w600k_r50.onnx` 5 个文件，不要多套一层目录
 
 > 📋 **许可证说明**：InsightFace buffalo_l 模型是非商业许可证。你自行下载=你与 InsightFace 许可方建立许可关系，Niu 本身不分发这个模型，不承担非商业许可的责任。仅限非商业用途。
 
-**第三步：重签名**
+**第三步（仅 macOS）：重签名**
 
-向 `niu.app` 内部装包/放模型会写入新的 `.so`/`.onnx`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝。请执行下面的「重签名」命令（ad-hoc 签名，inside-out 逐个签 `.so`/`.dylib` 再签 bundle 顶层——注意 `codesign --deep` 自 macOS 13.3 起已废弃，不会签新增的 `.so`，必须用 find 逐个签）：
+> ⚠️ Windows 无需此步骤。macOS 需重签名是因为向 `niu.app` 内部装包/放模型会写入新的 `.so`/`.onnx`，这些新文件没有签名，不重签会在加载时被 macOS 拒绝。
 
 ```bash
 # 1. 逐个签 site-packages 里的 .so/.dylib（并行 4 进程）
@@ -224,7 +234,7 @@ find /Applications/niu.app/Contents/Resources/python -type f \
 codesign --force --sign - /Applications/niu.app
 ```
 
-> ⚠️ 装完依赖、放完模型、跑完重签名后，重启 Niu，拖入照片入库即可加载本地模型。
+> ⚠️ 装完依赖、放完模型（macOS 还需跑完重签名）后，重启 Niu，拖入照片入库即可加载本地模型。
 
 ### 方式二：从源码构建（适合开发者）
 
