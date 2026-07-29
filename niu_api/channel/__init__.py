@@ -1,7 +1,5 @@
 """通道抽象层 — ChannelRouter + 全局单例"""
 
-from typing import Dict, Optional
-
 from loguru import logger
 
 from .base import ChannelAdapter, LocalResource, ResolvedMessage, UnifiedMessage

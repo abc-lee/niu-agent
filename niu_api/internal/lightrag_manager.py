@@ -1359,7 +1359,7 @@ async def ensure_lightrag():
 def is_lightrag_available() -> bool:
     """Check if LightRAG is available (installed and initialized)."""
     try:
-        import lightrag  # pyright: ignore[reportUnusedImport]
+        import lightrag  # pyright: ignore[reportUnusedImport]  # noqa: F401
         return True
     except ImportError:
         return False
