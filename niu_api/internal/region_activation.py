@@ -717,7 +717,7 @@ class RegionActivationManager:
             # Deduplicate: each region appears in at most one pair
             used: set[str] = set()
             result: list[tuple[str, str]] = []
-            for a, b, ratio in candidates:
+            for a, b, _ratio in candidates:
                 if a in used or b in used:
                     continue
                 result.append((a, b))

@@ -33,4 +33,4 @@ async def add_alert(request: AddAlertRequest):
         add_pending_alert(request.content)
         return {"status": "ok", "message": "Alert added"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

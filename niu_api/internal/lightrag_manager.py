@@ -1141,7 +1141,7 @@ def _create_lightrag_instance():
     except ImportError:
         raise ImportError(
             "LightRAG is not installed. Run: pip install lightrag-hku"
-        )
+        ) from None
 
     config = _get_lightrag_config()
     embedding_dim = _get_embedding_dim_for_lightrag()
