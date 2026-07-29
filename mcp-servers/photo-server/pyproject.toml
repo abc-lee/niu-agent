@@ -7,11 +7,11 @@ requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0",
     "loguru>=0.7.0",
-    "numpy>=1.24.0",
+    "numpy>=1.24.0,<2",
     # 人脸识别依赖
     "insightface>=0.7.3",
     "onnxruntime>=1.15.0",  # CPU 版本（默认，所有用户可用）
-    "opencv-python-headless>=4.8.0",
+    "opencv-python-headless>=4.8.0,<4.12",
     "Pillow>=10.0.0",
     "pillow-heif>=0.16.0",  # HEIC/HEIF 格式支持（wheel 自带 libheif，无需系统依赖）
 ]
