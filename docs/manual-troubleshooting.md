@@ -46,7 +46,7 @@ python -c "from sentence_transformers import SentenceTransformer; SentenceTransf
 # 4. 禁用 GPU（如果驱动有问题）
 export CUDA_VISIBLE_DEVICES=-1   # macOS/Linux
 set CUDA_VISIBLE_DEVICES=-1       # Windows
-./niu                             # macOS/Linux（Windows 用 niu-assistant.exe）
+./niu                             # macOS/Linux（Windows 用 niu.exe）
 ```
 
 #### 问题：启动时卡在 "Importing InsightFace..."（超过 30 秒）
@@ -89,11 +89,11 @@ export NIU_API_PORT=9877
 ./niu
 # Windows
 set NIU_API_PORT=9877
-niu-assistant.exe
+niu.exe
 
 # 3. 检查防火墙
 # macOS：系统设置 → 网络 → 防火墙 → 允许 ./niu 入站
-# Windows：Windows Defender → 允许应用通过防火墙 → 添加 niu-assistant.exe
+# Windows：Windows Defender → 允许应用通过防火墙 → 添加 niu.exe
 ```
 
 ### 1.2 人脸识别问题
@@ -530,7 +530,7 @@ shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml \
 | 11 | 浏览器故障提到 "Playwright 选择器失效"、检查 "playwright\|browser" 日志 | 改为 WSBridge + Chrome Extension 架构，NiuDomTree 通过 content.js 注入 | browser-server 从 Playwright 迁移到 WSBridge + Extension 架构 |
 | 12 | 工具数量 73 个，按旧服务器分类（kg-server:14, vector-store:7, photo-server:16） | 约 70 个，按新服务器分类（lightrag-server:15, photo-server:15, brain-region-server:3, browser-server:3） | kg-server + vector-store 合并为 lightrag-server，各服务器工具数量随版本变化 |
 | 13 | MCP 加载故障提到手动启动各 MCP 服务器进程测试 | 改为同进程架构下直接测试模块导入（python -c "from niu_xxx import get_tool_schemas"） | MCP 同进程架构无需启动独立进程 |
-| 14 | 1.1 节仅用 Windows 命令（netstat/findstr、niu-assistant.exe） | 补充 macOS 命令（lsof -i :9876、./niu），并补充进程结构（Rust 启动器 + Python API + Electron 前端）和日志路径（llm_interaction_YYYYMMDD.log + raw_http 两层架构 + api_stderr.log + im_adapter_stderr.log） | 项目实际部署在 macOS，CLAUDE.md 记录从 Electron 迁移至 Iced/Rust 启动器 |
+| 14 | 1.1 节仅用 Windows 命令（netstat/findstr、niu.exe） | 补充 macOS 命令（lsof -i :9876、./niu），并补充进程结构（Rust 启动器 + Python API + Electron 前端）和日志路径（llm_interaction_YYYYMMDD.log + raw_http 两层架构 + api_stderr.log + im_adapter_stderr.log） | 项目实际部署在 macOS，CLAUDE.md 记录从 Electron 迁移至 Iced/Rust 启动器 |
 | 15 | 1.2 节检查 ls models/buffalo_l/det_10g.onnx | 改为 ls models/models/buffalo_l/det_10g.onnx（双层目录） | photo-server __init__.py:972 加载路径为 get_models_dir()/"models"/"buffalo_l"，实际为 models/models/buffalo_l/ |
 | 16 | 1.2 节未提预加载机制 | 补充 preload_face_model() 说明（只导入 cv2/InsightFace 模块代码，不加载模型本身） | __init__.py:4163 preload_face_model 注释明确"只导入模块，不加载模型" |
 | 17 | 1.5 节恢复命令 cp -r backup/data/* data/ | 改为 cp -r backup/niu/* ~/.niu/ | 项目无 data/ 目录，数据在 ~/.niu/ 和 ~/.niu/work/ |
