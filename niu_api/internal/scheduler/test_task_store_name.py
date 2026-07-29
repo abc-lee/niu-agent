@@ -1,7 +1,8 @@
 """测试 TaskStore name 字段"""
-import tempfile
 import os
 import sqlite3
+import tempfile
+
 from niu_api.internal.scheduler.task_store import TaskStore
 
 

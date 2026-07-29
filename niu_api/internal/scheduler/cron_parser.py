@@ -1,6 +1,5 @@
 """Cron 表达式解析器"""
 from datetime import datetime, timedelta
-from typing import List, Optional
 
 
 class CronParser:
@@ -21,13 +20,13 @@ class CronParser:
         self.month = self._parse_field(parts[3], 1, 12)
         # 标准 cron 中 7 等同于 0（周日），映射后再过滤
         dow_raw = self._parse_field(parts[4], 0, 7)
-        self.day_of_week = sorted(set(0 if d == 7 else d for d in dow_raw))
+        self.day_of_week = sorted({0 if d == 7 else d for d in dow_raw})
 
         # 记录原始字段是否为通配符 *（用于 _matches OR 逻辑判断）
         self._dom_wildcard = parts[2] == "*"
         self._dow_wildcard = parts[4] == "*"
 
-    def _parse_field(self, field: str, min_val: int, max_val: int) -> List[int]:
+    def _parse_field(self, field: str, min_val: int, max_val: int) -> list[int]:
         """解析单个 cron 字段（支持 *, */N, N, N-M, N-M/S 格式）"""
         values = set()
 
@@ -57,7 +56,7 @@ class CronParser:
 
         return sorted(v for v in values if min_val <= v <= max_val)
 
-    def get_next(self, current: datetime) -> Optional[datetime]:
+    def get_next(self, current: datetime) -> datetime | None:
         """
         获取下次触发时间
 

@@ -1,5 +1,4 @@
 """Tests for Scheduler.check_and_trigger with sequential execution"""
-import asyncio
 import time
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -9,7 +8,7 @@ import pytest
 
 def _make_scheduler(db_path, callback, mock_store):
     """Construct a Scheduler bypassing __init__ to avoid DB/TaskStore dependency"""
-    from niu_api.internal.scheduler.scheduler import Scheduler, _CALLBACK_TIMEOUT
+    from niu_api.internal.scheduler.scheduler import _CALLBACK_TIMEOUT, Scheduler
     scheduler = Scheduler.__new__(Scheduler)
     scheduler.db_path = db_path
     scheduler.trigger_callback = callback
@@ -313,7 +312,6 @@ class TestCheckAndTriggerSequential:
         mock_store.update_last_executed_date.return_value = True
 
         # First call acquires _check_lock
-        import threading
         results = []
 
         def call_in_thread():
@@ -338,8 +336,7 @@ class TestIsBackendBusy:
     def test_returns_false_when_chat_lock_free(self, mock_scheduler):
         """_chat_lock 空闲时返回 False"""
         scheduler, _, _, _ = mock_scheduler
-        import asyncio
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         fake_loop = MagicMock()
         fake_loop.is_closed.return_value = False
@@ -353,7 +350,7 @@ class TestIsBackendBusy:
     def test_returns_true_when_chat_lock_held(self, mock_scheduler):
         """_chat_lock 被持有时返回 True"""
         scheduler, _, _, _ = mock_scheduler
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         fake_loop = MagicMock()
         fake_loop.is_closed.return_value = False
@@ -375,8 +372,8 @@ class TestIsBackendBusy:
     def test_returns_false_on_query_timeout(self, mock_scheduler):
         """桥接 future.result 超时返回 False（不阻塞调度）"""
         scheduler, _, _, _ = mock_scheduler
-        from unittest.mock import patch, MagicMock
         from concurrent.futures import TimeoutError as FuturesTimeoutError
+        from unittest.mock import MagicMock, patch
 
         fake_loop = MagicMock()
         fake_loop.is_closed.return_value = False
@@ -561,8 +558,9 @@ class TestResetStaleInProgress:
 
     def test_stale_in_progress_reset_to_pending(self, tmp_path):
         """triggered_at 超过 8 小时的 in_progress 任务重置为 pending"""
-        from niu_api.internal.scheduler.task_store import TaskStore
         from datetime import datetime, timedelta
+
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         now_fixed = datetime(2026, 7, 29, 12, 0, 0)  # 固定时刻，消除墙钟依赖
         store = TaskStore(str(tmp_path / "test.db"))
@@ -585,8 +583,9 @@ class TestResetStaleInProgress:
 
     def test_fresh_in_progress_not_reset(self, tmp_path):
         """triggered_at 未超 8 小时的 in_progress 任务保持不变"""
-        from niu_api.internal.scheduler.task_store import TaskStore
         from datetime import datetime, timedelta
+
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         now_fixed = datetime(2026, 7, 29, 12, 0, 0)
         store = TaskStore(str(tmp_path / "test.db"))
@@ -608,8 +607,9 @@ class TestResetStaleInProgress:
 
     def test_cross_midnight_timeout(self, tmp_path):
         """跨日期超时：23 点开始，次日 7:30 应超时（8.5 小时 > 8 小时）"""
-        from niu_api.internal.scheduler.task_store import TaskStore
         from datetime import datetime, timedelta
+
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         store = TaskStore(str(tmp_path / "test.db"))
         task_id = store.create_task(
@@ -634,8 +634,9 @@ class TestResetStaleInProgress:
 
     def test_pending_task_not_affected(self, tmp_path):
         """pending 状态的任务不受超时重置影响"""
-        from niu_api.internal.scheduler.task_store import TaskStore
         from datetime import datetime
+
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         now_fixed = datetime(2026, 7, 29, 12, 0, 0)
         store = TaskStore(str(tmp_path / "test.db"))
@@ -652,8 +653,9 @@ class TestResetStaleInProgress:
 
     def test_null_triggered_at_not_reset(self, tmp_path):
         """in_progress 但 triggered_at 为 NULL 的任务不重置（异常数据保护）"""
-        from niu_api.internal.scheduler.task_store import TaskStore
         from datetime import datetime
+
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         now_fixed = datetime(2026, 7, 29, 12, 0, 0)
         store = TaskStore(str(tmp_path / "test.db"))
@@ -678,8 +680,9 @@ class TestRecoverOrphanedClearsTriggeredAt:
     """崩溃恢复重置 status 时必须清 triggered_at，避免污染 retry_failed_tasks"""
 
     def test_recover_clears_triggered_at(self, tmp_path):
-        from niu_api.internal.scheduler.task_store import TaskStore
         from datetime import datetime, timedelta
+
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         store = TaskStore(str(tmp_path / "test.db"))
         task_id = store.create_task(
@@ -705,7 +708,7 @@ class TestSchedulerCallsResetStale:
 
     def test_reset_stale_called_before_due_check(self, mock_scheduler):
         """check_and_trigger 开头调用 store.reset_stale_in_progress"""
-        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler, _callback, mock_store, _ = mock_scheduler
         scheduler._double_confirm_delay = 0
         # mock_store.get_overdue_tasks 返回空，确保只验证 reset 调用
         mock_store.get_overdue_tasks.return_value = []
@@ -720,7 +723,7 @@ class TestSchedulerCallsResetStale:
 
     def test_reset_stale_with_custom_timeout(self, mock_scheduler):
         """可配置超时阈值"""
-        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler, _callback, mock_store, _ = mock_scheduler
         scheduler._stale_timeout_hours = 12
         scheduler._double_confirm_delay = 0
         mock_store.get_overdue_tasks.return_value = []
@@ -738,14 +741,15 @@ class TestLongRunningNoDuplicate:
 
     def test_status_in_progress_during_callback(self, mock_scheduler):
         """callback 执行期间任务状态为 in_progress，不会被 get_overdue_tasks 重新查出"""
-        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler, _callback, _mock_store, _ = mock_scheduler
         scheduler._double_confirm_delay = 0
         scheduler._store_factory = None
 
         # 用真实 TaskStore 验证 SQL 语义
-        from niu_api.internal.scheduler.task_store import TaskStore
-        from niu_api.internal.scheduler.scheduler import Scheduler
         from datetime import datetime
+
+        from niu_api.internal.scheduler.scheduler import Scheduler
+        from niu_api.internal.scheduler.task_store import TaskStore
         real_store = TaskStore(scheduler.db_path)
         task_id = real_store.create_task(
             content="长任务",
@@ -777,10 +781,11 @@ class TestLongRunningNoDuplicate:
 
     def test_second_check_during_execution_skips_in_progress(self, tmp_path):
         """【进程内回归测试】第一轮 callback 阻塞期间，第二轮 check_and_trigger 被进程内 _check_lock 阻止：callback 只触发 1 次，第二个 pending due 任务在阻塞期间不被偷跑（仍 pending）。释放后第一轮串行处理第二个任务（一次性任务执行后删除）。注意：此测试验证进程内 _check_lock 互斥（回归保护），跨进程安全由 test_cross_process_cas_prevents_duplicate 验证（CAS pending→in_progress 是数据库层互斥，不依赖进程内锁）。"""
-        from niu_api.internal.scheduler.task_store import TaskStore
-        from niu_api.internal.scheduler.scheduler import Scheduler
-        from datetime import datetime
         import threading
+        from datetime import datetime
+
+        from niu_api.internal.scheduler.scheduler import Scheduler
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         db_path = str(tmp_path / "test.db")
         store = TaskStore(db_path)
@@ -879,11 +884,12 @@ class TestLongRunningNoDuplicate:
 
     def test_cross_process_cas_prevents_duplicate(self, tmp_path):
         """两 Scheduler 实例共享 SQLite，CAS 防止重复触发（模拟跨进程）"""
-        from niu_api.internal.scheduler.task_store import TaskStore
-        from niu_api.internal.scheduler.scheduler import Scheduler
-        from datetime import datetime
-        from concurrent.futures import ThreadPoolExecutor
         import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from datetime import datetime
+
+        from niu_api.internal.scheduler.scheduler import Scheduler
+        from niu_api.internal.scheduler.task_store import TaskStore
 
         db_path = str(tmp_path / "test.db")
         store = TaskStore(db_path)
@@ -937,7 +943,7 @@ class TestLongRunningNoDuplicate:
             assert call_count == 1, f"Expected 1 callback, got {call_count}"
             # CAS 保证只触发一次：任务要么被删除（一次性任务成功后 delete），要么状态不是 pending（不会被重新查出）
             task = store.get_task(task_id)
-            assert task is None or task['status'] != 'pending', f"Task still pending, may be re-triggered"
+            assert task is None or task['status'] != 'pending', "Task still pending, may be re-triggered"
         finally:
             s1._executor.shutdown(wait=False)
             s2._executor.shutdown(wait=False)

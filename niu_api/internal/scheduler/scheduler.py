@@ -10,14 +10,16 @@ blocking when the backend stays busy.
 
 import asyncio
 import threading
-
-from niu_api.chat import frontend_ready_event
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from loguru import logger
+
+from niu_api.chat import frontend_ready_event
 
 if TYPE_CHECKING:
     from niu_api.internal.scheduler.task_store import TaskStore
@@ -32,12 +34,12 @@ class Scheduler:
         db_path: str,
         trigger_callback: Callable,
         store: Optional["TaskStore"] = None,
-        store_factory: Optional[Callable[[], "TaskStore"]] = None,
+        store_factory: Callable[[], "TaskStore"] | None = None,
     ):
         self.db_path = db_path
         self.trigger_callback = trigger_callback
         self.running = False
-        self.thread: Optional[threading.Thread] = None
+        self.thread: threading.Thread | None = None
         # 改造：错峰等待改为轮询后端非忙 + 二次确认防抖（持锁）
         self._busy_poll_interval = 2  # 轮询后端忙碌状态的间隔（秒）
         self._double_confirm_delay = 3  # 二次确认间隔：查到非忙→等3s→再查，仍非忙才执行
@@ -453,7 +455,7 @@ class Scheduler:
                     # 删除失败时标记为 completed，防止恢复后重复执行
                     self.store.update_task(task_id, status="completed", expected_status="in_progress")
 
-    def _call_trigger_callback(self, task: dict) -> Optional[str]:
+    def _call_trigger_callback(self, task: dict) -> str | None:
         """Call the trigger callback in thread pool, return result or None on failure"""
         try:
             future = self._executor.submit(self.trigger_callback, task)
@@ -467,7 +469,7 @@ class Scheduler:
             return None
 
     @staticmethod
-    def _calc_next_trigger(scheduled_at: str, cron_expr: str) -> Optional[datetime]:
+    def _calc_next_trigger(scheduled_at: str, cron_expr: str) -> datetime | None:
         """Calculate the next trigger time based on cron expression"""
         from .cron_parser import CronParser
 
@@ -487,7 +489,7 @@ class Scheduler:
     def list_tasks(self) -> list:
         return self.store.list_tasks()
 
-    def get_task(self, task_id: str) -> Optional[dict]:
+    def get_task(self, task_id: str) -> dict | None:
         return self.store.get_task(task_id)
 
     def update_task(self, task_id: str, **kwargs) -> bool:
