@@ -17,6 +17,8 @@ import pytest
 from agent.mcp_loader import load_mcp_tools
 from agent.tool_registry import get_registry
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(scope="session", autouse=True)
 def init_mcp():

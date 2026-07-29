@@ -16,6 +16,8 @@ import pytest  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent))
 from test_lightrag_rebuild_from_truth import _make_synthetic_fixture  # noqa: E402
 
+pytestmark = pytest.mark.e2e
+
 
 def test_probe_e2e_run_repair_with_real_skills(tmp_path, monkeypatch):
     """E2E: run_repair_on_user_request with real skills dir + real SkillSync.

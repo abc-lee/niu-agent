@@ -34,6 +34,8 @@ from niu_api.internal.region_activation import (
 from niu_api.internal.region_injector import BrainContextInjector
 from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
+pytestmark = pytest.mark.integration
+
 # ============== Helpers ==============
 
 

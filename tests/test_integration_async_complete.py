@@ -9,6 +9,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def llm_config():

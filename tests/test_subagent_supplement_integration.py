@@ -1,6 +1,10 @@
 """验证子 Agent 用独立 supplement queue + 不检查全局 stop 信号灯。"""
 import inspect
 
+import pytest
+
+pytestmark = pytest.mark.integration
+
 
 def test_call_subagent_accepts_supplement_queue():
     """call_subagent 签名应接受 supplement_queue 参数。"""

@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.e2e
+
 # 前置条件检查：bge-base-zh-v1.5 模型必须存在，否则 skip 整个模块
 _MODELS_DIR = Path(__file__).parent.parent / "models" / "bge-base-zh-v1.5"
 if not _MODELS_DIR.exists():

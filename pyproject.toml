@@ -16,3 +16,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["DTZ", "N802"]  # N802: 测试函数名 camelCase 是有意对应被测 API 参数名
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "e2e: 端到端测试（会操作真实用户数据 ~/.niu/，需要 --run-e2e）",
+    "integration: 集成测试（会操作真实用户数据 ~/.niu/，需要 --run-e2e）",
+]

@@ -7,6 +7,10 @@ All tests use mocks — no running LightRAG instance required.
 """
 from unittest.mock import patch
 
+import pytest
+
+pytestmark = pytest.mark.e2e
+
 
 class TestE2EBrainRegionInjection:
     """E2E tests for the complete brain region injection pipeline."""
