@@ -594,7 +594,7 @@ async def health_check():
     try:
         get_scheduler()
         scheduler_running = True
-    except:
+    except Exception:
         pass
 
     return {
