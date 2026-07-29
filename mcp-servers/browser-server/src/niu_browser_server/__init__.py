@@ -88,7 +88,7 @@ def _ensure_connection() -> WSBridge:
 
     # Wait for Extension to connect
     logger.info("Waiting for Extension to connect...")
-    for i in range(30):  # 15 seconds
+    for i in range(60):  # 30 seconds
         if bridge.connected:
             logger.info(f"Extension connected after {(i+1)*0.5:.1f}s")
             return bridge
@@ -96,7 +96,7 @@ def _ensure_connection() -> WSBridge:
 
     # Still not connected
     raise RuntimeError(
-        "Extension not connected after 15 seconds.\n"
+        "Extension not connected after 30 seconds.\n"
         "The browser may be using a locked profile (already running).\n"
         "Please manually load the extension in your browser:\n"
         "1. Open edge://extensions/ (or chrome://extensions/)\n"
