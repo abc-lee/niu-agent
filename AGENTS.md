@@ -65,19 +65,25 @@ MCP 服务器集群 (mcp-servers/)
 
 ### 安装依赖
 
-唯一安装方式：用 `requirements.txt` 构建自包含 Python 环境（`python/`）。
+两套依赖必须都装：
+1. **Python 依赖**（Agent 核心 + MCP 服务器）→ `python/` 自包含环境
+2. **Electron 前端依赖**（`ui/main/node_modules`）→ `npm install`
 
 ```bash
-# 创建自包含 Python 运行时（venv + 全量依赖）
+# 1. 创建自包含 Python 运行时（venv + 全量依赖）
 python3.11 -m venv --copies python
 python/bin/pip install --upgrade pip
 python/bin/pip install -r requirements.txt
 
-# 开发/测试依赖（可选，不进入分发包）
+# 2. 安装 Electron 前端依赖
+cd ui/main && npm install && cd ../..
+
+# 3. 开发/测试依赖（可选，不进入分发包）
 python/bin/pip install -r requirements-dev.txt
 ```
 
 MCP 服务器不需要 `pip install`，通过 `config/mcp-servers.yaml` 的 `workdir` 配置即可加载模块。
+Rust 启动器在 Windows 上通过 `cmd /C npm start` 拉起 Electron，`node_modules` 不存在会导致设置窗口无法弹出、启动器直接退出。
 
 ### 运行项目
 
