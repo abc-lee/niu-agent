@@ -400,6 +400,17 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 > 💡 模型加载后占用 ~326MB 内存，空闲 5 分钟自动卸载（`MODEL_IDLE_TIMEOUT_SECONDS = 300`）。
 
+#### 首次下载超时失败怎么办
+
+模型文件 ~326MB，弱网环境或下载源不稳定时可能超时失败，表现为人脸识别不工作（拖入照片不响应或报错）。此时 Agent 应：
+
+1. **判断是否模型缺失**：检查 `~/.insightface/models/buffalo_l/` 目录是否存在且含 5 个 `.onnx` 文件（`1k3d68.onnx` / `2d106det.onnx` / `det_10g.onnx` / `genderage.onnx` / `w600k_r50.onnx`）。目录不存在或文件不全=模型没下载成功。
+2. **建议用户手动下载**：让用户从 InsightFace 官方下载模型压缩包 `buffalo_l.zip`，解压后放到 `~/.insightface/models/buffalo_l/`：
+   - 官方下载地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3 （找 `buffalo_l.zip`）
+   - 解压后目录结构应为 `~/.insightface/models/buffalo_l/*.onnx`（5 个 onnx 文件直接在该目录下，不要多套一层）
+   - 国内访问慢可用代理或镜像
+3. **重启 Niu**：放好后重启，下次用人脸识别会直接从本地加载，不再下载。
+
 ## 字体配置
 
 ### 配置位置
@@ -459,6 +470,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 | 分册 | 文件 | 内容 |
 |------|------|------|
+| 安装部署 | [manual-installation.md](manual-installation.md) | 从零到能运行的 Niu 全流程。覆盖下载安装（DMG 直装）、可选组件（脑区 igraph/leidenalg、人脸 buffalo_l 模型——交叉引用主手册）、源码构建（venv --copies + requirements.txt）、macOS .app 打包（build.sh 8 步流程 + DMG 生成 + Info.plist）、跨架构打包（M 系列 Mac 完整步骤）、Rust 启动器编译（含交叉编译 4 目标）。README 的安装/打包信息已纳入本手册，用户问"怎么装""怎么打包""为什么某个组件不工作"时查这里 |
 | 知识检索运维 | [manual-vector-store.md](manual-vector-store.md) | LightRAG 统一架构（取代旧 vector-store + kg-server）的完整运维手册。包含实体类型与 keywords 规范、5 种检索模式（local/global/hybrid/mix/naive）的选用、文档入库流程与参数调优、3 真相源 + 9 派生文件的存储关系图谱、GraphML 损坏检测与 v9 自愈修复机制（第九章）。v2 检测逻辑（2026-07-28）：派生缺失不是损坏，真损坏判定靠 vdb 与 GraphML 数据一致性。用户怀疑知识图谱有问题时，删除 3 个 vdb 文件重启即可触发自动修复（9.9 节）。遇到知识图谱查询异常、入库失败、存储文件损坏、检索效果差等问题先查这里 |
 | 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 所有功能模块的故障排查指引。覆盖启动问题、人脸识别、定时任务、知识检索、数据存储、浏览器插件、知识图谱损坏修复（1.7.1 专项，含"删 3 个 vdb 文件重启触发修复"简易指引）等场景的诊断步骤和恢复方法。出现报错、功能不工作、数据异常时先查这里找对应模块的排查路径 |
 | 性能优化 | [manual-performance.md](manual-performance.md) | 系统性能调优手册。包含 InsightFace 内存优化（5 分钟空闲自动卸载）、启动速度优化策略、GPU 加速方案（CUDA / DirectML）。遇到内存占用过高、启动慢、人脸识别卡顿等性能问题时查这里 |
