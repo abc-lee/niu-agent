@@ -69,7 +69,7 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
         with open(file_path, encoding="utf-8", errors="replace") as f:
             total_lines = sum(1 for _ in f)
             f.seek(0)
-            stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
+            stream = ((i, line.rstrip("\r\n")) for i, line in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < offset, stream)
             res = list(itertools.islice(stream, limit))
 
@@ -82,8 +82,8 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
             L_MAX = min(10000, max(100, 500000 // max(realcnt, 1)))
             TAG = " ... [TRUNCATED]"
 
-            res = [(i, l if len(l) <= L_MAX else l[:L_MAX] + TAG) for i, l in res]
-            result = "\n".join(f"{i}|{l}" for i, l in res)
+            res = [(i, line if len(line) <= L_MAX else line[:L_MAX] + TAG) for i, line in res]
+            result = "\n".join(f"{i}|{line}" for i, line in res)
 
             header = f"[FILE] Showing {len(res)} lines from line {offset} (total {total_lines} lines)"
             if offset + limit - 1 < total_lines:
@@ -222,20 +222,20 @@ def file_read(
         if os.path.isdir(path):
             return f"Error: '{path}' is a directory, not a file. Please provide a file path, e.g. '~/.niu/skills/photo-face-display.md'"
         with open(path, encoding="utf-8", errors="replace") as f:
-            stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
+            stream = ((i, line.rstrip("\r\n")) for i, line in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < start, stream)
 
             if keyword:
                 before = collections.deque(maxlen=count // 3)
-                for i, l in stream:
-                    if keyword.lower() in l.lower():
+                for i, line in stream:
+                    if keyword.lower() in line.lower():
                         res = (
                             list(before)
-                            + [(i, l)]
+                            + [(i, line)]
                             + list(itertools.islice(stream, count - len(before) - 1))
                         )
                         break
-                    before.append((i, l))
+                    before.append((i, line))
                 else:
                     return f"Keyword '{keyword}' not found after line {start}.\n"
             else:
@@ -245,8 +245,8 @@ def file_read(
             L_MAX = max(100, 512000 // realcnt) if realcnt > 0 else 100
             TAG = " ... [TRUNCATED]"
 
-            res = [(i, l if len(l) <= L_MAX else l[:L_MAX] + TAG) for i, l in res]
-            result = "\n".join(f"{i}|{l}" if show_linenos else l for i, l in res)
+            res = [(i, line if len(line) <= L_MAX else line[:L_MAX] + TAG) for i, line in res]
+            result = "\n".join(f"{i}|{line}" if show_linenos else line for i, line in res)
 
             if show_linenos:
                 result = f"[FILE] Showing {len(res)} lines from line {start}\n" + result
@@ -1127,8 +1127,8 @@ class NiuHandler(BaseHandler):
         if tool_name.startswith("chat-with-"):
             agent_name = tool_name[len("chat-with-"):]
             # 系统自动管理的子Agent，禁止手动调用
-            BLOCKED_SUBAGENTS = {"context-manager", "entity-extractor", "dream-evolver"}  # 由 auto-tidy 管道自动调用，禁止主Agent手动触发
-            if agent_name in BLOCKED_SUBAGENTS:
+            blocked_subagents = {"context-manager", "entity-extractor", "dream-evolver"}  # 由 auto-tidy 管道自动调用，禁止主Agent手动触发
+            if agent_name in blocked_subagents:
                 return StepOutcome(
                     {"status": "error", "message": f"子Agent {agent_name} 已由系统自动管理，不可手动调用"},
                     next_prompt=""

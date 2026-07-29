@@ -973,7 +973,7 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     Returns:
         子 Agent 最终非 @niu-agent 输出（正常结果 / @end 汇报）
     """
-    AUTO_ANSWER = "无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作"
+    auto_answer = "无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作"
 
     result = call_subagent(agent_name=agent_name, task=task, **kwargs)
     while True:
@@ -983,7 +983,7 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
         result = call_subagent(
             agent_name=agent_name,
             task="",
-            answer=AUTO_ANSWER,
+            answer=auto_answer,
             answer_unique_name=unique_name,
             **kwargs,
         )

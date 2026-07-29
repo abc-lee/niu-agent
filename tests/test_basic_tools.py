@@ -32,7 +32,7 @@ class TestReadFile:
         # Each line should have format "N|content"
         lines = result.strip().split("\n")
         # Find lines that contain actual file content (skip header lines like [FILE]...)
-        content_lines = [l for l in lines if "|" in l and not l.startswith("[")]
+        content_lines = [line for line in lines if "|" in line and not line.startswith("[")]
         assert len(content_lines) == 3
         # Check format: number|text
         for line in content_lines:
@@ -63,7 +63,7 @@ class TestReadFile:
         result = read_file(str(f), limit=5)
 
         # Count content lines (those with | separator)
-        content_lines = [l for l in result.split("\n") if "|" in l and not l.startswith("[")]
+        content_lines = [line for line in result.split("\n") if "|" in line and not line.startswith("[")]
         assert len(content_lines) <= 5
 
     def test_limit_hard_cap_at_500(self, tmp_path):
@@ -75,7 +75,7 @@ class TestReadFile:
         # Request 99999 lines, but hard cap is 500
         result = read_file(str(f), limit=99999)
 
-        content_lines = [l for l in result.split("\n") if "|" in l and not l.startswith("[")]
+        content_lines = [line for line in result.split("\n") if "|" in line and not line.startswith("[")]
         assert len(content_lines) <= 500, f"Expected at most 500 lines, got {len(content_lines)}"
 
     def test_file_not_found(self):
@@ -331,7 +331,7 @@ class TestGrepSearch:
         assert "code.py" in result
         # Format should be filepath:lineno:content
         lines = result.strip().split("\n")
-        match_lines = [l for l in lines if ":" in l and "code.py" in l]
+        match_lines = [line for line in lines if ":" in line and "code.py" in line]
         if match_lines:
             parts = match_lines[0].split(":")
             assert len(parts) >= 3, f"Expected 'file:line:content' format, got: {match_lines[0]}"
@@ -385,7 +385,7 @@ class TestGrepSearch:
         result = grep_search("match_line", str(tmp_path))
 
         # Count result lines (skip header/summary lines)
-        result_lines = [l for l in result.strip().split("\n") if l.strip() and ":" in l]
+        result_lines = [line for line in result.strip().split("\n") if line.strip() and ":" in line]
         assert len(result_lines) <= 50, f"Expected at most 50 results, got {len(result_lines)}"
 
     def test_nonexistent_path_returns_error(self):

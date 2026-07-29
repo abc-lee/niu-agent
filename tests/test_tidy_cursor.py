@@ -106,7 +106,7 @@ class TestBuildIncrementalMsgTextProtectRecent:
             protect_recent=3,
         )
         lines = result.split("\n")
-        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        protected_lines = [line for line in lines if "[PROTECTED]" in line]
         # 最后 3 条（uuid-7, uuid-8, uuid-9）应有 [PROTECTED]
         assert len(protected_lines) == 3
         assert "uuid-7" in protected_lines[0]
@@ -137,7 +137,7 @@ class TestBuildIncrementalMsgTextProtectRecent:
             protect_recent=2,
         )
         lines = result.split("\n")
-        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        protected_lines = [line for line in lines if "[PROTECTED]" in line]
         # 范围内 uuid-3~uuid-7，最后 2 条是 uuid-6, uuid-7
         assert len(protected_lines) == 2
         assert "uuid-6" in protected_lines[0]
@@ -154,7 +154,7 @@ class TestBuildIncrementalMsgTextProtectRecent:
             protect_recent=10,
         )
         lines = result.split("\n")
-        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        protected_lines = [line for line in lines if "[PROTECTED]" in line]
         assert len(protected_lines) == 3  # 全部 3 条
 
 
@@ -300,7 +300,7 @@ class TestTidyContextImplIntegration:
         assert len(compress_ids) == 20
         # 最后 5 条应有 [PROTECTED] 标签
         lines = result.split("\n")
-        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        protected_lines = [line for line in lines if "[PROTECTED]" in line]
         assert len(protected_lines) == 5
 
 

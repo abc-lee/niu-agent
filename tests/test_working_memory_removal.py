@@ -196,5 +196,5 @@ class TestAllNextPromptsEmptyAfterRemoval:
             capture_output=True, text=True
         )
         lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
-        non_dispatch_lines = [l for l in lines if 'bad_json' not in l and '未知工具' not in l and 'Unknown tool' not in l]
+        non_dispatch_lines = [line for line in lines if 'bad_json' not in line and '未知工具' not in line and 'Unknown tool' not in line]
         assert len(non_dispatch_lines) == 0, f"Found non-empty next_prompt: {non_dispatch_lines}"
