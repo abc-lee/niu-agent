@@ -100,6 +100,38 @@ python -m niu_api
 # API 端口默认 9876，可通过环境变量 NIU_API_PORT 修改
 ```
 
+### 打包发布
+
+**macOS .app + DMG 打包**（由 `launcher/build.sh` 自动完成）：
+
+```bash
+# 只打 .app bundle（开发调试用）
+./launcher/build.sh
+
+# 打 .app bundle + DMG 安装包（发布用，加 --dmg 开关）
+./launcher/build.sh --dmg
+```
+
+`build.sh` 会：cargo build → 构造 `niu.app/`（复制资源 + 签名 + LaunchServices 注册 + quarantine）→ 可选生成 DMG（`dist/Niu-${VERSION}-mac-intel.dmg`）。
+
+**关键约束**：
+- **必须用 `launcher/build.sh`，禁止直接 `cargo build`**（铁律 8）——build.sh 会复制二进制到项目根 `niu` 并构造 .app
+- **重打 DMG 前必须先 `rm -rf niu.app`**——rsync `--delete --exclude` 会保护被 exclude 的旧文件不删除（许可证合规排除的 igraph/buffalo_l onnx/字体 ttf 等），删掉重打才干净
+- **DMG 产物在 `dist/Niu-<VERSION>-mac-intel.dmg`**，VERSION 从根目录 `VERSION` 文件读
+- **M 系列 Mac 打包**：必须在 arm64 host 上 `pip install` / `npm install`（不能 cross-compile），详见 `docs/manual-installation.md` 第三章 3.7
+
+**DMG 生成流程**（build.sh 内部）：
+1. 准备临时目录 `/tmp/niu_dmg_stage_<pid>/`
+2. 软链 `Applications`（支持拖拽安装）
+3. 复制 `niu.app` 到临时目录
+4. `hdiutil create -format UDZO -imagekey zlib-level=9` 生成 DMG（zlib 压缩，~3.3G bundle → ~1.2G DMG）
+5. 清理临时目录
+
+**许可证合规排除**（build.sh 的 rsync exclude）：
+- `python/` 排除 igraph/leidenalg/texttable（GPL）
+- `models/` 排除 `buffalo_l/*.onnx`（非商业许可，首次用自动下载到 `~/.insightface/`）
+- `ui/main/` 排除阿朱泡泡体 ttf（许可证存疑）
+
 ### 测试
 
 ```bash
