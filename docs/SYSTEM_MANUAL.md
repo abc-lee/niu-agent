@@ -361,6 +361,45 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 详细分册见 [manual-general-subagent.md](manual-general-subagent.md)。
 
+## 可选组件安装
+
+出于许可证合规，DMG 安装包默认不含以下两个组件。不装也不影响 Niu 主体功能，只是对应子功能不工作。用户按需手动安装。
+
+### 脑区社区检测（igraph + leidenalg）
+
+脑区的**社区检测**子功能（自动发现知识图谱中的社区结构、把实体聚类成脑区）依赖 `igraph` + `leidenalg` 两个库。这两个库是 GNU GPL 许可证，**默认不含在 DMG 里**——不装也能正常使用 Niu 所有其他功能（包括脑区激活/调暗/状态管理），只是脑区社区检测不工作（`region_detector.py` 的 `try/except ImportError` 会优雅降级，不报错）。
+
+如果需要脑区社区检测，用**程序自带的 Python**（不是系统 Python）手动安装：
+
+```bash
+# 用 DMG 安装后的自包含 Python（路径以 /Applications/niu.app 为例）
+/Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install igraph==1.0.0 leidenalg==0.11.0
+```
+
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
+
+> 📋 许可证说明：`igraph` 和 `leidenalg` 都是 GNU GPL 许可证。用户自行安装=用户与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这两个包，不构成 GPL 传染。`leidenalg` 依赖 `igraph`，pip 会自动安装。
+
+> ⚠️ 安装后会修改 `niu.app` 内部文件，可能触发 macOS 重新弹一次"无法验证开发者"提示。点"打开"即可，不影响使用。
+
+安装后重启 Niu，脑区社区检测会自动启用（`region_detector.py` 的 `try/except ImportError` 会检测到这两个包可用）。
+
+### 人脸识别模型（InsightFace buffalo_l）
+
+照片处理的人脸识别功能依赖 InsightFace 的 `buffalo_l` 模型（~326MB）。出于非商业许可证限制，**模型文件默认不含在 DMG 里**——DMG 只含 InsightFace 库代码，不含模型权重。
+
+首次使用人脸识别功能（拖入照片入库）时，InsightFace 会**自动下载** `buffalo_l` 模型到用户家目录：
+
+```
+~/.insightface/models/buffalo_l/
+```
+
+下载需要网络，首次较慢（~326MB）。下载完成后缓存在 `~/.insightface/`，后续不再下载。
+
+> 📋 许可证说明：InsightFace buffalo_l 模型是非商业许可证。用户首次使用时自动下载=用户与 InsightFace 许可方建立许可关系，Niu 本身不分发这个模型，不承担非商业许可的责任。仅限非商业用途。
+
+> 💡 模型加载后占用 ~326MB 内存，空闲 5 分钟自动卸载（`MODEL_IDLE_TIMEOUT_SECONDS = 300`）。
+
 ## 字体配置
 
 ### 配置位置
