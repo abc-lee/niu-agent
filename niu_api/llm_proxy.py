@@ -378,10 +378,10 @@ async def call_llm_via_litellm(
 
     except TimeoutError:
         logger.error("[LLM Proxy] LLM call timed out after 180s")
-        raise HTTPException(status_code=504, detail="LLM call timed out")
+        raise HTTPException(status_code=504, detail="LLM call timed out") from None
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
-        raise HTTPException(status_code=500, detail=f"LLM call failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"LLM call failed: {str(e)}") from e
 
 
 # ============================================================================

@@ -137,7 +137,7 @@ def get_brain_regions(
 
     except Exception as e:
         logger.error(f"[Brain Region API] get_brain_regions failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/regions/consolidate")
@@ -346,7 +346,7 @@ def consolidate_brain_regions(
 
     except Exception as e:
         logger.error(f"[Brain Region API] consolidate failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/regions/{name}/members")
@@ -380,7 +380,7 @@ def get_region_members(name: str) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"[Brain Region API] get_region_members failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/status")

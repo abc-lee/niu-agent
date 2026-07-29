@@ -2765,7 +2765,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                                 if _chat_lock_acquired:
                                     _chat_lock.release()
                                 _q.resume()
-                                raise RuntimeError("ChatQueue processing timeout")
+                                raise RuntimeError("ChatQueue processing timeout") from None
 
                         try:
                             fresh_messages = await store.get_messages()
@@ -3459,7 +3459,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             if _f_chat_lock_acquired:
                                 _chat_lock.release()
                             _fq.resume()
-                            raise RuntimeError("Force: ChatQueue processing timeout")
+                            raise RuntimeError("Force: ChatQueue processing timeout") from None
 
                 try:
                     # 重新获取消息列表

@@ -51,7 +51,7 @@ async def api_create_note(request: NoteCreateRequest):
         raise
     except Exception as e:
         logger.error(f"[Notes] Create failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal error")
+        raise HTTPException(status_code=500, detail="Internal error") from e
 
 
 @router.get("/notes")
@@ -62,7 +62,7 @@ async def api_list_notes():
         return {"status": "ok", "notes": notes}
     except Exception as e:
         logger.error(f"[Notes] List failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal error")
+        raise HTTPException(status_code=500, detail="Internal error") from e
 
 
 @router.get("/notes/{note_id}")
@@ -90,7 +90,7 @@ async def api_update_note(note_id: str, request: NoteUpdateRequest):
         raise
     except Exception as e:
         logger.error(f"[Notes] Update failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal error")
+        raise HTTPException(status_code=500, detail="Internal error") from e
 
 
 @router.delete("/notes/{note_id}")
@@ -109,4 +109,4 @@ async def api_delete_note(note_id: str):
         raise
     except Exception as e:
         logger.error(f"[Notes] Delete failed: {e}")
-        raise HTTPException(status_code=500, detail="Internal error")
+        raise HTTPException(status_code=500, detail="Internal error") from e

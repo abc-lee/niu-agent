@@ -574,7 +574,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         logger.warning("[/chat/sync] _chat_lock 600s timeout, request rejected")
         raise HTTPException(
             status_code=503, detail="Another request is in progress, please try again later."
-        )
+        ) from None
 
     try:
         # Persist user message to database

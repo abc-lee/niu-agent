@@ -87,7 +87,7 @@ async def delete_resource(resource_id: str):
         raise
     except Exception as e:
         logger.error(f"Failed to delete resource from LightRAG: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/skills/sync")
