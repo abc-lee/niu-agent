@@ -54,9 +54,9 @@ def test_scan_and_sync_no_write_when_unchanged(fake_skill_sync):
          mock.patch.object(sync, "_save_state") as mock_save, \
          mock.patch.object(sync, "_sync_skill", return_value=True) as mock_sync, \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True), \
-         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
         # list_entities 返回空 list（没有 KG ghost）
-        MockAdapter.return_value.list_entities.return_value = {
+        mock_adapter.return_value.list_entities.return_value = {
             "status": "ok", "data": []
         }
 
@@ -91,9 +91,9 @@ def test_scan_and_sync_notes_changed_writes_once(fake_skill_sync, tmp_path, monk
          mock.patch.object(sync, "_sync_skill", return_value=True), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True), \
          mock.patch.object(sync, "_inject_note_to_lightrag", return_value=set()) as mock_inject_note, \
-         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
-        MockAdapter.return_value.list_entities.return_value = {"status": "ok", "data": []}
-        MockAdapter.return_value.delete_document.return_value = {"status": "ok"}
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
+        mock_adapter.return_value.list_entities.return_value = {"status": "ok", "data": []}
+        mock_adapter.return_value.delete_document.return_value = {"status": "ok"}
 
         added, updated, deleted = sync.scan_and_sync()
 
@@ -146,8 +146,8 @@ def test_scan_and_sync_watchdog_concurrent_write(tmp_path):
          mock.patch.object(sync, "_save_state") as mock_save, \
          mock.patch.object(sync, "_sync_skill", side_effect=fake_sync_skill), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True), \
-         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
-        MockAdapter.return_value.list_entities.return_value = {"status": "ok", "data": []}
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
+        mock_adapter.return_value.list_entities.return_value = {"status": "ok", "data": []}
 
         added, updated, deleted = sync.scan_and_sync()
 
@@ -176,11 +176,11 @@ def test_scan_and_sync_ghost_cleanup_failure_writes(fake_skill_sync):
          mock.patch.object(sync, "_save_state") as mock_save, \
          mock.patch.object(sync, "_sync_skill", return_value=True), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=False), \
-         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
         # KG 里有 1 个 ghost skill（磁盘上不存在）
         # source_id 必须含 skill:// 段才会被 SkillSync ghost 清理识别为自身注入实体
         # （is_skill_sync_owned 按 <SEP> 拆分逐段判断 startswith("skill://")）
-        MockAdapter.return_value.list_entities.return_value = {
+        mock_adapter.return_value.list_entities.return_value = {
             "status": "ok",
             "data": [{"entity_name": "ghost-skill", "source_id": "skill://ghost-skill"}]
         }
@@ -212,12 +212,12 @@ def test_scan_and_sync_external_entity_not_cleaned(fake_skill_sync):
          mock.patch.object(sync, "_save_state"), \
          mock.patch.object(sync, "_sync_skill", return_value=True), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True) as mock_delete, \
-         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
+         mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
         # KG 里有 2 个外部入库的 skill 实体（磁盘上无同名 .md，但 source_id 非 skill:// 前缀）
         # 1. file_path 形式（文档解析入库）
         # 2. manual_creation 形式（用户/MCP 工具手动建）
         # 3. 合并形式但无 skill:// 段（external<SEP>other_path）
-        MockAdapter.return_value.list_entities.return_value = {
+        mock_adapter.return_value.list_entities.return_value = {
             "status": "ok",
             "data": [
                 {"entity_name": "external-doc-skill", "source_id": "/path/to/docs/skill.md"},

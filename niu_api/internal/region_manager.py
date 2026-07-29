@@ -594,10 +594,10 @@ class RegionManager:
 
             # Preserve dynamic metadata keys (e.g. shrink_count) that
             # _encode_description does not include in its standard 5 fields
-            STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "priority"}
+            standard_keys = {"summary", "region_id", "size", "representative", "updated_at", "priority"}
             extra_meta = {
                 k: v for k, v in parsed.items()
-                if k not in STANDARD_KEYS and v
+                if k not in standard_keys and v
             }
 
             # Build entity summaries with type labels from graph
@@ -1177,9 +1177,9 @@ class RegionManager:
                 )
                 # Append shrink_count + preserve other dynamic metadata
                 updated_desc += f"<SEP>brain_meta_shrink_count:{shrink_count}"
-                STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "shrink_count", "priority"}
+                standard_keys = {"summary", "region_id", "size", "representative", "updated_at", "shrink_count", "priority"}
                 for key, value in parsed.items():
-                    if key not in STANDARD_KEYS and value:
+                    if key not in standard_keys and value:
                         updated_desc += f"<SEP>brain_meta_{key}:{value}"
 
                 try:
@@ -2023,8 +2023,8 @@ def assign_entities_to_default_regions(
     if kg is None:
         return {"assigned": 0, "regions": 0}
 
-    # Dynamic keyword mapping from config (replaces hardcoded REGION_KEYWORDS)
-    _DEFAULT_KEYWORDS_FALLBACK: dict[str, list[str]] = {
+    # Dynamic keyword mapping from config (replaces hardcoded region_keywords)
+    _default_keywords_fallback: dict[str, list[str]] = {
         "聊天历史脑区": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"],
         "文档库脑区": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"],
         "知识体系脑区": ["概念", "理论", "方法", "原理", "定义", "技术"],
@@ -2033,14 +2033,14 @@ def assign_entities_to_default_regions(
         "生活事务脑区": ["日程", "健康", "财务", "旅行", "生活", "日常"],
         "组织机构脑区": ["公司", "部门", "机构", "组织", "团队", "单位"],
     }
-    REGION_KEYWORDS: dict[str, list[str]] = {}
+    region_keywords: dict[str, list[str]] = {}
     for region_def in get_default_regions_config():
         region_name = f"{region_def['label']}{REGION_SUFFIX}"
         keywords = region_def.get("keywords", [])
         if not keywords:
-            keywords = _DEFAULT_KEYWORDS_FALLBACK.get(region_name, [])
+            keywords = _default_keywords_fallback.get(region_name, [])
         if keywords:
-            REGION_KEYWORDS[region_name] = keywords
+            region_keywords[region_name] = keywords
 
     assigned_counts: dict[str, int] = {}
     all_relationships: list[dict] = []
@@ -2065,7 +2065,7 @@ def assign_entities_to_default_regions(
         best_region = None
         best_score = 0.0
 
-        for region_name, keywords in REGION_KEYWORDS.items():
+        for region_name, keywords in region_keywords.items():
             if region_name not in existing_regions:
                 continue
 

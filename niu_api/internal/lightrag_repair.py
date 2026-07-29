@@ -161,7 +161,7 @@ class RepairEmbeddingFunc(EmbeddingFunc):
         v8 _embed_batch 一次 encode 全部 texts，超过 32 条可能 OOM。
         这里分批 encode（每批 32 条），合并结果。
         """
-        BATCH_SIZE = 32  # bge-base-zh-v1.5 推荐批量
+        batch_size = 32  # bge-base-zh-v1.5 推荐批量
 
         if not texts:
             return []
@@ -174,8 +174,8 @@ class RepairEmbeddingFunc(EmbeddingFunc):
                 return None
 
             all_vectors: list[list[float]] = []
-            for i in range(0, len(texts), BATCH_SIZE):
-                batch = texts[i : i + BATCH_SIZE]
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
                 vecs = model.encode(batch)
                 # 转 list[list[float]]（vecs 可能是 numpy ndarray 或 Tensor）
                 all_vectors.extend(list(map(float, v)) for v in vecs)

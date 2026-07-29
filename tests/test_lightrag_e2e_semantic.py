@@ -79,7 +79,7 @@ def test_e2e_check_reports_zombies(restore_real_data):
     assert len(zombie_errors) >= 16, f"应该报告至少 16 个僵尸脑区，实际 {len(zombie_errors)}"
 
     # 验证僵尸脑区名都是预期的 16 个之一（用集合断言避免关键词覆盖不全）
-    EXPECTED_ZOMBIE_NAMES = {
+    expected_zombie_names = {
         "智家全维资料脑区",
         "智家使用运维脑区",
         "智家打理相关脑区",
@@ -98,7 +98,7 @@ def test_e2e_check_reports_zombies(restore_real_data):
         "居家智能脑区",
     }
     for err in zombie_errors:
-        assert err["ref_key"] in EXPECTED_ZOMBIE_NAMES, (
+        assert err["ref_key"] in expected_zombie_names, (
             f"僵尸脑区名不在预期的 16 个之内: {err['ref_key']}"
         )
 
@@ -210,7 +210,7 @@ def test_e2e_program_starts_normally(restore_real_data):
 
     # 16 个僵尸脑区的特征标记（来自真实数据——description 含"被删除"且脑区名含"智家/家居/居家"）
     # 必须全部检查，避免只查"智家"漏掉"家居智能应用脑区"等
-    ZOMBIE_MARKERS = [
+    zombie_markers = [
         "被删除的重复脑区实体之一",
         "智家全维资料脑区",
         "智家使用运维脑区",
@@ -229,7 +229,7 @@ def test_e2e_program_starts_normally(restore_real_data):
         "智能家居管理脑区",
         "居家智能脑区",
     ]
-    for marker in ZOMBIE_MARKERS:
+    for marker in zombie_markers:
         assert marker not in output, (
             f"启动日志里仍出现僵尸脑区标记: {marker}\n日志末尾:\n{output[-2000:]}"
         )

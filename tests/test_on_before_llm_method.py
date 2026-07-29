@@ -66,11 +66,11 @@ def test_on_before_llm_modifies_messages_zero(runner):
     # M1 修复：mock 子 Agent 清单段，避免真实 SubagentRegistry.list_running() 副作用
     runner._format_running_subagents_section = MagicMock(return_value="")
 
-    with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:
-        MockAdapter.return_value.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
-        MockAdapter.return_value.search_within_region.return_value = {"skill": [], "knowledge": [], "other": []}
-        MockAdapter.return_value.search_interaction_habits.return_value = []
-        runner._brain_adapter = MockAdapter.return_value
+    with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
+        mock_adapter.return_value.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
+        mock_adapter.return_value.search_within_region.return_value = {"skill": [], "knowledge": [], "other": []}
+        mock_adapter.return_value.search_interaction_habits.return_value = []
+        runner._brain_adapter = mock_adapter.return_value
 
         messages = [{"role": "system", "content": "old content"}, {"role": "user", "content": "hello"}]
         runner._on_before_llm(messages, turn=1)
