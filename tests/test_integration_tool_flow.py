@@ -70,7 +70,6 @@ class TestFullToolCallFlow:
             当工具不存在时，返回带有错误信息的 StepOutcome。
             """
             # 检查是否是内置工具
-            f"do_{tool_name.replace('-', '_').replace('/', '_')}"
             if False:  # 模拟内置工具不存在
                 pass
 
