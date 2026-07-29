@@ -1,0 +1,18 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "DTZ"]
+ignore = [
+    "E501",   # Line too long (we handle it ourselves)
+    "DTZ001", # call-datetime-without-tzinfo — 本项目有意使用 naive datetime（本地时间）
+    "DTZ005", # call-datetime-now-without-tzinfo — 同上
+    "DTZ006", # call-datetime-fromtimestamp — 同上
+    "DTZ007", # call-datetime-strptime-without-zone — 同上
+    "DTZ011", # call-date-today — 同上
+    "DTZ012", # call-date-fromtimestamp — 同上
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["DTZ"]
