@@ -669,3 +669,29 @@ class TestResetStaleInProgress:
 
         reset_count = store.reset_stale_in_progress(timeout_hours=8, now=now_fixed)
         assert reset_count == 0
+
+
+class TestRecoverOrphanedClearsTriggeredAt:
+    """崩溃恢复重置 status 时必须清 triggered_at，避免污染 retry_failed_tasks"""
+
+    def test_recover_clears_triggered_at(self, tmp_path):
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from datetime import datetime, timedelta
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
+            content="崩溃任务",
+            scheduled_at=datetime.now().isoformat(),
+            is_recurring=False,
+        )
+        # 模拟崩溃：in_progress + 旧 triggered_at
+        old_time = (datetime.now() - timedelta(hours=2)).isoformat()
+        store.update_task(task_id, status="in_progress", triggered_at=old_time, expected_status="pending")
+
+        # 恢复
+        recovered = store.recover_orphaned_tasks()
+        assert recovered == 1
+
+        task = store.get_task(task_id)
+        assert task["status"] == "pending"
+        assert task["triggered_at"] is None  # 必须清除
