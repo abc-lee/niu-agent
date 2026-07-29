@@ -375,8 +375,9 @@ Splash 结构体加 missing_deps 字段，main() 调用后传入。
             .align_y(iced::alignment::Vertical::Center);
 
         // 缺失依赖提示（如有）
-        if self.missing_deps.is_empty() {
-            // 无缺失：保持原布局
+        if self.missing_deps.is_empty() || self.closing {
+            // 无缺失 / closing 状态（重启/关闭中）：保持原布局，不显示缺失提示
+            // closing 时用户要重启了，提示已无意义
             container(top_row)
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -542,11 +543,11 @@ DMG 默认不含，用户需照片处理时按 README 用自包含 Python 自装
 
 读 `docs/SYSTEM_MANUAL.md`，找"## 可选组件安装"章节。当前应有两个子节：脑区社区检测 + 人脸识别模型。确认结构。
 
-- [ ] **Step 2: 改"人脸识别模型"子节 + 加"照片处理"子节**
+- [ ] **Step 2: 删除原“人脸识别模型”子节 + 新增“照片处理”大子节（完全替换）**
 
-当前"人脸识别模型（InsightFace buffalo_l）"子节只讲模型下载，要扩展成"照片处理（人脸识别 + HEIC）"完整子节，和脑区社区检测子节对齐。
+当前“人脸识别模型（InsightFace buffalo_l）”子节只讲模型下载，要扩展成“照片处理（人脸识别 + HEIC）”完整子节，和脑区社区检测子节对齐。
 
-把"### 人脸识别模型（InsightFace buffalo_l）"子节改成（或在其前面加一个"照片处理"子节）：
+**删除**原“### 人脸识别模型（InsightFace buffalo_l）”子节和“#### 首次下载超时失败怎么办”子节（旧子节里“DMG 只含 InsightFace 库代码”的描述已过时——本计划把 insightface 库也排除了），用下面的“### 照片处理”大子节**完全替换**：
 
 ```markdown
 ### 照片处理（人脸识别 + HEIC 支持）
