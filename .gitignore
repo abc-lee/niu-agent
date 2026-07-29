@@ -98,6 +98,7 @@ config/user-config*.json
 /.plans/
 /.playwright-mcp/
 /.gstack/
+/.omp/
 
 # Temporary data files
 kv_end.txt
