@@ -163,6 +163,41 @@ Niu 的脑区**社区检测**功能（自动发现知识图谱中的社区结构
 
 安装后重启 Niu，脑区检测会自动启用（`region_detector.py` 的 `try/except ImportError` 会检测到这两个包可用）。
 
+### 可选：启用照片处理（人脸识别 + HEIC 支持）
+
+Niu 的照片处理功能（拖入照片自动入库、人脸识别、人物管理）依赖以下组件，出于许可证合规**默认不含在 DMG 安装包里**——不装也能正常使用 Niu 的所有其他功能（聊天、知识图谱、文件管理等），只是照片处理不可用。
+
+需要照片处理时，安装后用**程序自带的 Python**（不是系统 Python）手动安装：
+
+```bash
+# 用 DMG 安装后的自包含 Python（路径以 /Applications/niu.app 为例）
+/Applications/niu.app/Contents/Resources/python/bin/python3 -m pip install \
+    opencv-python-headless==4.11.0.86 \
+    insightface==0.7.3 \
+    easydict==1.13 \
+    pillow-heif==1.4.0
+```
+
+> ⚠️ **必须用程序自带的 Python**，不能用系统 `pip install`——Niu 运行时用的是 `niu.app/Contents/Resources/python/` 这个自包含环境，装到系统 Python 里 Niu 看不到。
+
+> 📋 **许可证说明**：`opencv-python-headless` 捆绑的 FFmpeg 含 GPL 编解码器（libx264/libx265），`pillow-heif` 链接 libx265（GPLv2）。你自行安装=你与 GPL 许可方建立许可关系，Niu 本身（MIT 许可证）不分发这些包，不构成 GPL 传染。`insightface` 和 `easydict` 是人脸识别库依赖，一并安装。
+
+#### 人脸识别模型（buffalo_l）
+
+InsightFace 的 `buffalo_l` 模型（~326MB）也是非商业许可证，**默认不含在 DMG 里**。首次用人脸识别时程序会自动下载，但**国内网络常下载失败**，建议手动下载安装：
+
+1. 从 InsightFace 官方 GitHub 下载 `buffalo_l.zip`：
+   - 地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3
+   - 找 `buffalo_l.zip` 下载（国内访问慢可用代理）
+2. 解压后把 5 个 `.onnx` 文件放到：
+   ```
+   ~/.insightface/models/buffalo_l/
+   ```
+   - 解压后目录结构应为该目录下直接是 `1k3d68.onnx` / `2d106det.onnx` / `det_10g.onnx` / `genderage.onnx` / `w600k_r50.onnx` 5 个文件，不要多套一层目录
+3. 重启 Niu，下次拖入照片入库会直接从本地加载模型，不再下载
+
+> ⚠️ **关于重新弹授权提示**：安装上述包会修改 `niu.app` 内部文件，可能触发 macOS 重新弹一次"无法验证开发者"提示。点"打开"即可，不影响使用。
+
 ### 方式二：从源码构建（适合开发者）
 
 见下文“快速开始”。
