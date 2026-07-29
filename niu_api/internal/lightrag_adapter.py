@@ -76,7 +76,7 @@ class LightRAGAdapter:
     LightRAG retrieval supporting multiple modes.
     """
 
-    # Supported entity types for filtered search (must match CUSTOM_ENTITY_TYPES in lightrag_manager.py)
+# Supported entity types for filtered search (must match custom_entity_types in lightrag_manager.py)
     ENTITY_TYPES = {
         "Person", "Organization", "Technology", "Concept",
         "Location", "Event", "Document", "Photo", "Video",

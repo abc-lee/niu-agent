@@ -33,7 +33,7 @@
 出于许可证合规，DMG 安装包默认不含以下两个组件，不影响 Niu 主体功能，只是对应子功能不工作。详见**系统手册**的"## 可选组件安装"章节：
 
 - **脑区社区检测**（igraph + leidenalg，GPL）：缺包优雅降级，手动安装命令见主手册
-- **人脸识别模型**（InsightFace buffalo_l，非商业）：首次用人脸识别时自动下载到 `~/.insightface/`
+- **人脸识别模型**（InsightFace buffalo_l，非商业）：默认不含在 DMG 里，用户手动下载安装到 bundle 内（程序内禁止下载，避免卡死）
 
 ---
 
@@ -127,7 +127,7 @@ cd launcher
    - `python/`（自包含 Python 运行时，**排除 igraph/leidenalg/texttable**——GPL 依赖，用户按需手动安装）
    - `ui/main/`（Electron 前端，**排除阿朱泡泡体 ttf**——许可证存疑）
    - `config/`（配置模板，首次启动复制到 `~/.niu/config/`）
-   - `models/`（向量模型 + 人脸识别模型，**排除 buffalo_l/*.onnx**——非商业许可，首次用自动下载到 `~/.insightface/`）
+   - `models/`（向量模型 + 人脸识别模型，**排除 buffalo_l/*.onnx**——非商业许可，用户手动下载安装到 bundle 内）
    - `memory/`（用户记忆模板）
    - `niu_api/`、`agent/`、`mcp-servers/`（Python 模块，PYTHONPATH 引用）
 5. 调用 `scripts/relocate_python_framework.sh` 把 stdlib + dylib + Resources stub 复制到 `python/lib/`，并用 install_name_tool 改 dylib 引用为 `@rpath` 自包含

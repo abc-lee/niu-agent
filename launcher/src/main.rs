@@ -1493,14 +1493,10 @@ fn check_missing_deps(resources_root: &Path) -> Vec<String> {
         );
     }
 
-    // 人脸模型（bundle 内空目录 + 用户家目录自动下载位置，两个都没 onnx 才提示）
+    // 人脸模型（只查 bundle 内 models/models/buffalo_l/，与 get_face_model 读取路径一致；
+    // 不查 ~/.insightface/——程序内禁止下载，本地没有直接报错，让用户按 README 装到 bundle 内）
     let bundle_model = resources_root
         .join("models")
-        .join("models")
-        .join("buffalo_l");
-    let user_model = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".insightface")
         .join("models")
         .join("buffalo_l");
     let has_onnx = |dir: &Path| -> bool {
@@ -1513,7 +1509,7 @@ fn check_missing_deps(resources_root: &Path) -> Vec<String> {
             }))
             .unwrap_or(false)
     };
-    if !has_onnx(&bundle_model) && !has_onnx(&user_model) {
+    if !has_onnx(&bundle_model) {
         missing.push(
             "人脸识别模型（缺 buffalo_l 模型，见 README\"可选：启用照片处理\"）".to_string(),
         );

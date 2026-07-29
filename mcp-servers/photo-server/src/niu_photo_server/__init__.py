@@ -968,31 +968,32 @@ def get_face_model():
             )
             logger.info(f"[GET_FACE_MODEL] Models dir: {models_dir}")
 
-            # 模型现在下载到 ~/.insightface/，检查用户家目录
-            from pathlib import Path as _Path
-            user_model_path = _Path.home() / ".insightface" / "models" / "buffalo_l"
-            local_model_path = user_model_path
-
-            if local_model_path.exists():
+            # 模型读 bundle 内：models_dir/models/buffalo_l/
+            # （开发环境 = 项目根/models/models/buffalo_l/，
+            #   bundle 模式 = Resources/models/models/buffalo_l/）
+            # 禁止程序内下载：本地没有直接报错，让用户按 README 手动安装，
+            # 避免下载卡死用户以为程序坏了。启动器 check_missing_deps 已检测提示。
+            local_model_path = models_dir / "models" / "buffalo_l"
+            if not local_model_path.exists() or not any(local_model_path.glob("*.onnx")):
                 print(
-                    f"[GET_FACE_MODEL] Local model exists: {local_model_path}",
+                    f"[GET_FACE_MODEL] Model not installed at {local_model_path}, "
+                    f"see README \"可选：启用照片处理\" for install instructions.",
                     file=sys.stderr,
                     flush=True,
                 )
-                logger.info(
-                    f"[GET_FACE_MODEL] Loading face model from local: {local_model_path}"
+                logger.warning(
+                    f"[GET_FACE_MODEL] Face model not installed at {local_model_path}, "
+                    f"see README for install instructions."
                 )
-            else:
-                # 本地没有，需要下载
-                print(
-                    f"[GET_FACE_MODEL] Local model not found, will download...",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                logger.info(
-                    f"[GET_FACE_MODEL] Local face model not found, will download..."
-                )
-                logger.info(f"[GET_FACE_MODEL] Expected path: {local_model_path}")
+                return None
+            print(
+                f"[GET_FACE_MODEL] Loading face model from bundle: {local_model_path}",
+                file=sys.stderr,
+                flush=True,
+            )
+            logger.info(
+                f"[GET_FACE_MODEL] Loading face model from bundle: {local_model_path}"
+            )
 
             print(
                 "[GET_FACE_MODEL] Creating FaceAnalysis instance...",
@@ -1022,8 +1023,11 @@ def get_face_model():
                     os.close(old_stdout)
 
             with suppress_stdout():
+                # root=str(models_dir) 让 InsightFace 读 bundle 内 models/models/buffalo_l/，
+                # 不走默认 ~/.insightface/ 下载逻辑
                 _face_model = FaceAnalysis(
                     name="buffalo_l",
+                    root=str(models_dir),
                     providers=providers,
                 )
                 # ctx_id: 0 = GPU, -1 = CPU
