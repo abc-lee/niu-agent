@@ -731,3 +731,213 @@ class TestSchedulerCallsResetStale:
         scheduler.check_and_trigger()
 
         mock_store.reset_stale_in_progress.assert_called_once_with(timeout_hours=12)
+
+
+class TestLongRunningNoDuplicate:
+    """验证长执行任务期间状态正确，不会重复触发"""
+
+    def test_status_in_progress_during_callback(self, mock_scheduler):
+        """callback 执行期间任务状态为 in_progress，不会被 get_overdue_tasks 重新查出"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 0
+        scheduler._store_factory = None
+
+        # 用真实 TaskStore 验证 SQL 语义
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from niu_api.internal.scheduler.scheduler import Scheduler
+        from datetime import datetime
+        real_store = TaskStore(scheduler.db_path)
+        task_id = real_store.create_task(
+            content="长任务",
+            scheduled_at=datetime.now().isoformat(),
+            is_recurring=True,
+            cron_expr="0 8 * * *",
+        )
+        scheduler.store = real_store
+
+        # callback 内检查任务状态应为 in_progress（不是 pending）
+        states_during_callback = []
+        def slow_callback(task):
+            states_during_callback.append(real_store.get_task(task["id"])["status"])
+            return "ok"
+        scheduler.trigger_callback = slow_callback
+
+        scheduler.check_and_trigger()
+
+        # callback 执行时任务状态应为 in_progress
+        assert states_during_callback == ["in_progress"]
+
+        # callback 完成后，recurring 任务应 reschedule 到 pending
+        final_task = real_store.get_task(task_id)
+        assert final_task["status"] == "pending"
+        # scheduled_at 应已推进到下次 cron 时间（0 8 * * * 的下一个 08:00）
+        expected_next = Scheduler._calc_next_trigger(datetime.now().isoformat(), "0 8 * * *")
+        assert expected_next is not None
+        assert final_task["scheduled_at"] == expected_next.isoformat()
+
+    def test_second_check_during_execution_skips_in_progress(self, tmp_path):
+        """【进程内回归测试】第一轮 callback 阻塞期间，第二轮 check_and_trigger 被进程内 _check_lock 阻止：callback 只触发 1 次，第二个 pending due 任务在阻塞期间不被偷跑（仍 pending）。释放后第一轮串行处理第二个任务（一次性任务执行后删除）。注意：此测试验证进程内 _check_lock 互斥（回归保护），跨进程安全由 test_cross_process_cas_prevents_duplicate 验证（CAS pending→in_progress 是数据库层互斥，不依赖进程内锁）。"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from niu_api.internal.scheduler.scheduler import Scheduler
+        from datetime import datetime
+        import threading
+
+        db_path = str(tmp_path / "test.db")
+        store = TaskStore(db_path)
+        task_id = store.create_task(
+            content="长任务",
+            scheduled_at=datetime.now().isoformat(),
+            is_recurring=True,
+            cron_expr="0 8 * * *",
+        )
+        # 第二个 pending due 任务：第一轮执行时它也在 due 列表里，但因串行 + callback 阻塞
+        # 而未被处理；第二轮被 _check_lock 阻止后，它必须仍处于 pending（未被偷跑）
+        second_task_id = store.create_task(
+            content="第二个到期任务",
+            scheduled_at=datetime.now().isoformat(),
+            is_recurring=False,
+        )
+
+        # callback 计数器：验证只被调用 1 次（未重复触发）
+        call_count = 0
+        count_lock = threading.Lock()
+        # callback 阻塞，模拟长执行
+        callback_done = threading.Event()
+        callback_started = threading.Event()
+        def blocking_callback(task):
+            nonlocal call_count
+            with count_lock:
+                call_count += 1
+            callback_started.set()
+            callback_done.wait(timeout=5)
+            return "ok"
+
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.db_path = db_path
+        scheduler.trigger_callback = blocking_callback
+        scheduler.store = store
+        scheduler.running = True
+        scheduler.thread = None
+        import threading as _t
+        scheduler._lock = _t.RLock()
+        scheduler._check_lock = _t.Lock()
+        from concurrent.futures import ThreadPoolExecutor
+        # max_workers>=2 要求：第一轮 check_and_trigger 占用 1 个 worker 并在 callback 内阻塞，
+        # 第二轮需另一个 worker 立即提交（虽实际由独立 Thread 跑，但 executor 须有余量避免死锁）
+        scheduler._executor = ThreadPoolExecutor(max_workers=2)
+        scheduler._delayed_start_cancelled = False
+        scheduler._task_fail_count = {}
+        scheduler._TASK_FAIL_THRESHOLD = 3
+        import threading as _te
+        scheduler._ready_event = _te.Event()
+        scheduler._store_factory = None
+        scheduler._busy_poll_interval = 0
+        scheduler._double_confirm_delay = 0
+        scheduler._stagger_max_wait = 600
+        scheduler._stale_timeout_hours = 8
+
+        try:
+            # 第一轮：启动（在 executor 里异步跑，因为 callback 会阻塞）
+            future = scheduler._executor.submit(scheduler.check_and_trigger)
+            assert callback_started.wait(timeout=2)
+
+            # 此时第一个任务应为 in_progress
+            task_during = store.get_task(task_id)
+            assert task_during["status"] == "in_progress"
+
+            # 第二轮 check_and_trigger 应被 _check_lock 阻止（acquire blocking=False 失败）
+            # 用独立 Thread 尝试，应立即返回
+            second_done = _t.Event()
+            def run_second():
+                scheduler.check_and_trigger()
+                second_done.set()
+            t = _t.Thread(target=run_second)
+            t.start()
+            # 第二轮必须立即返回（_check_lock 阻止），2s 内完成
+            assert second_done.wait(timeout=2), "第二轮 check_and_trigger 未被 _check_lock 立即阻止"
+            # 第二轮立即返回后，此时第一轮 callback 仍在阻塞中。
+            # 关键验证：阻塞期间第二轮被 _check_lock 阻止——
+            # callback 只被调用 1 次（第一个任务），第二个 due 任务未被偷跑
+            assert call_count == 1, f"阻塞期间 callback 应只触发 1 次，实际 {call_count}"
+            second_during = store.get_task(second_task_id)
+            assert second_during is not None, "第二个任务不应被删除（尚未执行）"
+            assert second_during["status"] == "pending", "第二个任务在第一轮 callback 阻塞期间不应被处理"
+
+            # 释放第一轮 callback，让第一轮继续完成（它会串行处理第二个 due 任务）
+            callback_done.set()
+            future.result(timeout=10)
+
+            # 第一轮完成后：第二个任务被同一轮串行处理（一次性任务执行后删除）
+            second_final = store.get_task(second_task_id)
+            assert second_final is None, "第二个一次性任务应在第一轮串行执行后被删除"
+
+            # 最终第一个 recurring 任务 reschedule 为 pending
+            final_task = store.get_task(task_id)
+            assert final_task["status"] == "pending"
+        finally:
+            scheduler._executor.shutdown(wait=False)
+
+    def test_cross_process_cas_prevents_duplicate(self, tmp_path):
+        """两 Scheduler 实例共享 SQLite，CAS 防止重复触发（模拟跨进程）"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+        from niu_api.internal.scheduler.scheduler import Scheduler
+        from datetime import datetime
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        db_path = str(tmp_path / "test.db")
+        store = TaskStore(db_path)
+        task_id = store.create_task(
+            content="跨进程测试",
+            scheduled_at=datetime.now().isoformat(),
+            is_recurring=False,
+        )
+
+        call_count = 0
+        count_lock = threading.Lock()
+        def callback(task):
+            nonlocal call_count
+            with count_lock:
+                call_count += 1
+            return "ok"
+
+        # 两个 Scheduler 实例，共享 db_path，模拟跨进程
+        def make_scheduler():
+            s = Scheduler.__new__(Scheduler)
+            s.db_path = db_path
+            s.trigger_callback = callback
+            s.store = TaskStore(db_path)
+            s.running = True
+            s.thread = None
+            s._lock = threading.RLock()
+            s._check_lock = threading.Lock()  # 各自独立的进程内锁
+            s._executor = ThreadPoolExecutor(max_workers=2)
+            s._delayed_start_cancelled = False
+            s._task_fail_count = {}
+            s._TASK_FAIL_THRESHOLD = 3
+            s._ready_event = threading.Event()
+            s._store_factory = None
+            s._busy_poll_interval = 0
+            s._double_confirm_delay = 0
+            s._stagger_max_wait = 600
+            s._stale_timeout_hours = 8
+            return s
+
+        s1 = make_scheduler()
+        s2 = make_scheduler()
+        try:
+            # 并发执行
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f1 = pool.submit(s1.check_and_trigger)
+                f2 = pool.submit(s2.check_and_trigger)
+                f1.result(timeout=10)
+                f2.result(timeout=10)
+
+            # CAS 保证只触发一次
+            assert call_count == 1, f"Expected 1 callback, got {call_count}"
+            # CAS 保证只触发一次：任务要么被删除（一次性任务成功后 delete），要么状态不是 pending（不会被重新查出）
+            task = store.get_task(task_id)
+            assert task is None or task['status'] != 'pending', f"Task still pending, may be re-triggered"
+        finally:
+            s1._executor.shutdown(wait=False)
+            s2._executor.shutdown(wait=False)
