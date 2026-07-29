@@ -71,6 +71,8 @@ def test_concurrent_update_and_snapshot_thread_safe():
 
     t1 = threading.Thread(target=updater)
     t2 = threading.Thread(target=snapshotter)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
     assert errors == [], f"并发测试发现错误：{errors}"
