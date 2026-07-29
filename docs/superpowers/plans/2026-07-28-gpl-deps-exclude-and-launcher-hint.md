@@ -68,7 +68,7 @@
         --exclude='cv2' --exclude='opencv_python_headless-*.dist-info' \
         --exclude='insightface' --exclude='insightface-*.dist-info' \
         --exclude='easydict' --exclude='easydict-*.dist-info' \
-        --exclude='pillow_heif' --exclude='pillow_heif-*.dist-info' \
+        --exclude='pillow_heif' --exclude='pillow_heif-*.dist-info' --exclude='_pillow_heif*.so' \
         "$PROJECT_ROOT/python/" "$RESOURCES_DIR/python/"
 ```
 
@@ -644,7 +644,7 @@ Run: `rm -rf niu.app`
 Run: `chmod +x launcher/build.sh && ./launcher/build.sh 2>&1 | tail -15`
 Expected: `[build.sh] macOS .app bundle created at ../niu.app ...`
 
-- [ ] **Step 3: 验证 6 项排除项都不在 bundle**
+- [ ] **Step 3: 验证 7 项排除项都不在 bundle**
 
 Run:
 ```bash
@@ -660,8 +660,10 @@ echo "=== 5. 不含 cv2/insightface/easydict/pillow_heif 包 ==="
 ls -d niu.app/Contents/Resources/python/lib/python3.11/site-packages/cv2 niu.app/Contents/Resources/python/lib/python3.11/site-packages/insightface niu.app/Contents/Resources/python/lib/python3.11/site-packages/easydict niu.app/Contents/Resources/python/lib/python3.11/site-packages/pillow_heif 2>&1
 echo "=== 6. 不含对应 dist-info ==="
 ls -d niu.app/Contents/Resources/python/lib/python3.11/site-packages/opencv_python_headless-*.dist-info niu.app/Contents/Resources/python/lib/python3.11/site-packages/insightface-*.dist-info niu.app/Contents/Resources/python/lib/python3.11/site-packages/easydict-*.dist-info niu.app/Contents/Resources/python/lib/python3.11/site-packages/pillow_heif-*.dist-info 2>&1
+echo "=== 7. 不含 pillow-heif 松散 .so（根目录 _pillow_heif*.so）==="
+ls niu.app/Contents/Resources/python/lib/python3.11/site-packages/_pillow_heif*.so 2>&1
 ```
-Expected: 第 1-6 项都报 "No such file or directory"
+Expected: 第 1-7 项都报 "No such file or directory"
 
 - [ ] **Step 4: 启动器验证缺失依赖检查**
 
