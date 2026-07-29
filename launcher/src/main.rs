@@ -8,6 +8,7 @@
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -141,6 +142,10 @@ struct Splash {
     /// - `SplashPhase::CleanupDone` -> all processes reaped, call iced::exit()
     /// Wrapped in Mutex for Sync compatibility with iced's runtime.
     phase_rx: Mutex<Receiver<SplashPhase>>,
+    /// Missing optional dependencies detected at startup (license-excluded
+    /// packages like cv2/insightface/pillow_heif/igraph/leidenalg + buffalo_l
+    /// model). Empty = all present. Shown on splash as a hint to read README.
+    missing_deps: Vec<String>,
 }
 
 /// Lifecycle signals sent from the launcher background thread to the splash
@@ -371,6 +376,7 @@ impl Splash {
         cancelled: Arc<AtomicBool>,
         integrity_failed: Arc<AtomicBool>,
         phase_rx: Receiver<SplashPhase>,
+        missing_deps: Vec<String>,
     ) -> Self {
         Self {
             ready_rx: Mutex::new(ready_rx),
@@ -387,6 +393,7 @@ impl Splash {
             repairing: false,
             closing: false,
             phase_rx: Mutex::new(phase_rx),
+            missing_deps,
         }
     }
 
@@ -1380,6 +1387,78 @@ fn detect_resources_root() -> PathBuf {
     resources_root_from_exe(&exe_path)
 }
 
+/// Check for optional dependencies excluded from the DMG for license compliance.
+/// Returns a list of human-readable hint strings for missing components.
+/// Each hint names the affected feature and points the user to README.
+/// Empty Vec = all optional deps present (developer build).
+///
+/// Checks two locations:
+/// 1. site-packages/ under bundle (cv2/insightface/easydict/pillow_heif/igraph/leidenalg)
+/// 2. ~/.insightface/models/buffalo_l/ (user-downloaded face model)
+fn check_missing_deps(resources_root: &Path) -> Vec<String> {
+    let site_packages = resources_root
+        .join("python")
+        .join("lib")
+        .join("python3.11")
+        .join("site-packages");
+    let mut missing: Vec<String> = Vec::new();
+
+    // 人脸识别全套（cv2 + insightface + easydict 一起检查，任一缺失=人脸识别不可用）
+    let has_cv2 = site_packages.join("cv2").exists();
+    let has_insightface = site_packages.join("insightface").exists();
+    let has_easydict = site_packages.join("easydict").exists();
+    if !has_cv2 || !has_insightface || !has_easydict {
+        missing.push(
+            "照片处理 / 人脸识别（缺 cv2 + insightface + easydict，见 README\"可选：启用照片处理\"）"
+                .to_string(),
+        );
+    }
+
+    // HEIC 照片支持
+    if !site_packages.join("pillow_heif").exists() {
+        missing.push(
+            "iPhone HEIC 照片（缺 pillow-heif，见 README\"可选：启用照片处理\"）".to_string(),
+        );
+    }
+
+    // 脑区社区检测
+    let has_igraph = site_packages.join("igraph").exists();
+    let has_leidenalg = site_packages.join("leidenalg").exists();
+    if !has_igraph || !has_leidenalg {
+        missing.push(
+            "脑区社区检测（缺 igraph + leidenalg，见 README\"可选：启用脑区功能\"）".to_string(),
+        );
+    }
+
+    // 人脸模型（bundle 内空目录 + 用户家目录自动下载位置，两个都没 onnx 才提示）
+    let bundle_model = resources_root
+        .join("models")
+        .join("models")
+        .join("buffalo_l");
+    let user_model = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".insightface")
+        .join("models")
+        .join("buffalo_l");
+    let has_onnx = |dir: &Path| -> bool {
+        fs::read_dir(dir)
+            .map(|entries| entries.filter_map(|e| e.ok()).any(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "onnx")
+                    .unwrap_or(false)
+            }))
+            .unwrap_or(false)
+    };
+    if !has_onnx(&bundle_model) && !has_onnx(&user_model) {
+        missing.push(
+            "人脸识别模型（缺 buffalo_l 模型，见 README\"可选：启用照片处理\"）".to_string(),
+        );
+    }
+
+    missing
+}
+
 /// Detect user data root (~/.niu/). All writable runtime data lives here.
 fn detect_niu_home() -> Result<PathBuf, std::io::Error> {
     let home = dirs::home_dir()
@@ -1535,6 +1614,14 @@ fn main() {
     // Detect Python
     let python_path = detect_python();
     info!("Using Python path: {}", python_path);
+
+    // Check for missing optional dependencies (license-excluded packages).
+    // Non-blocking: just shown on splash as a hint to read README.
+    let resources_root = detect_resources_root();
+    let missing_deps = check_missing_deps(&resources_root);
+    if !missing_deps.is_empty() {
+        info!("Missing optional dependencies: {:?}", missing_deps);
+    }
 
     // Get project root (needed for template file paths and config loading)
     // Delegates to detect_project_root() (shared with should_enable_logging / log_fatal_error).
@@ -2076,6 +2163,7 @@ fn main() {
         cancelled.clone(),
         integrity_failed.clone(),
         phase_rx,
+        missing_deps,
     );
     let window_settings = window::Settings {
         size: iced::Size::new(280.0, 80.0),
