@@ -243,8 +243,9 @@ def test_get_tools_schema_dedup(tmp_path, monkeypatch):
 
 def test_niu_runner_init_known_user_subagents(tmp_path, monkeypatch):
     """NiuRunner.__init__ 初始化 _known_user_subagents 集合"""
-    from agent import runner, subagent
     from unittest import mock
+
+    from agent import runner, subagent
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
@@ -274,8 +275,9 @@ def test_niu_runner_init_known_user_subagents(tmp_path, monkeypatch):
 
 def test_niu_runner_init_known_user_subagents_no_dir(tmp_path, monkeypatch):
     """~/.niu/agents/ 不存在时初始化为空集合"""
-    from agent import runner, subagent
     from unittest import mock
+
+    from agent import runner, subagent
 
     project_agents = tmp_path / "project" / "config" / "agents"
     project_agents.mkdir(parents=True)
@@ -297,8 +299,9 @@ def test_niu_runner_init_known_user_subagents_no_dir(tmp_path, monkeypatch):
 
 def test_refresh_base_tools_schema_if_dirty_no_change(tmp_path, monkeypatch):
     """无新文件时不重算 base_tools_schema"""
-    from agent import runner, subagent
     from unittest import mock
+
+    from agent import runner, subagent
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
@@ -326,8 +329,9 @@ def test_refresh_base_tools_schema_if_dirty_no_change(tmp_path, monkeypatch):
 
 def test_refresh_base_tools_schema_if_dirty_new_file(tmp_path, monkeypatch):
     """有新 MD 文件时重算 base_tools_schema，且返回完整 base 集（含 check_subagent_progress）"""
-    from agent import runner, subagent
     from unittest import mock
+
+    from agent import runner, subagent
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
@@ -362,8 +366,9 @@ def test_refresh_base_tools_schema_if_dirty_new_file(tmp_path, monkeypatch):
 
 def test_refresh_base_tools_schema_if_dirty_no_dir(tmp_path, monkeypatch):
     """~/.niu/agents/ 不存在时跳过"""
-    from agent import runner, subagent
     from unittest import mock
+
+    from agent import runner, subagent
 
     project_agents = tmp_path / "project" / "config" / "agents"
     project_agents.mkdir(parents=True)

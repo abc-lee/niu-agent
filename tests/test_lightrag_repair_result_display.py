@@ -238,6 +238,7 @@ def test_run_repair_sync_error_returns_repaired_false():
 def test_kg_api_repair_endpoint_is_async():
     """/api/kg/lightrag/repair 端点必须是 async def（asyncio.to_thread 避免阻塞 event loop）"""
     import inspect
+
     from niu_api.kg_api import repair_lightrag_storage
 
     assert inspect.iscoroutinefunction(repair_lightrag_storage), (

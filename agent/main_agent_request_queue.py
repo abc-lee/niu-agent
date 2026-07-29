@@ -9,7 +9,6 @@ db_monitor 检测主 Agent 闲置时 pop 一条，推 SSE 触发前端调 /api/c
 线程安全：queue.Queue 实现，多线程 push/pop 安全。
 """
 import queue as _queue
-from typing import Optional
 
 
 class MainAgentRequestQueue:
@@ -24,20 +23,20 @@ class MainAgentRequestQueue:
     """
 
     def __init__(self):
-        self._q: "_queue.Queue[str]" = _queue.Queue()
+        self._q: _queue.Queue[str] = _queue.Queue()
 
     def push(self, content: str) -> None:
         """推入一条请求。线程安全（queue.Queue.put_nowait）。"""
         self._q.put_nowait(content)
 
-    def pop(self) -> Optional[str]:
+    def pop(self) -> str | None:
         """取出并移除队首。空队列返回 None，不阻塞。"""
         try:
             return self._q.get_nowait()
         except _queue.Empty:
             return None
 
-    def peek(self) -> Optional[str]:
+    def peek(self) -> str | None:
         """查看队首但不移除。空队列返回 None。
 
         db_monitor 检测主 Agent 闲时先 peek 决定是否推 SSE，

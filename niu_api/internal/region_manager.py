@@ -372,7 +372,7 @@ class RegionManager:
         label_desc_pairs = self._generate_labels(entity_summaries_list, existing_labels)
 
         # Pass 3: Build entities, relationships, chunks using generated labels
-        for (partition, members, entity_summaries), (region_label, region_llm_desc) in zip(valid_communities, label_desc_pairs):
+        for (partition, members, entity_summaries), (region_label, region_llm_desc) in zip(valid_communities, label_desc_pairs, strict=False):
             # Use LLM description if available, otherwise fall back to entity name concatenation
             region_summary = region_llm_desc if region_llm_desc else self._generate_region_summary(entity_summaries)
             representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
@@ -739,7 +739,9 @@ class RegionManager:
         Delegates to lightrag_manager.get_region_members() which directly
         reads the in-memory graph — more reliable than explore_node.
         """
-        from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+        from niu_api.internal.lightrag_manager import (
+            get_region_members as lightrag_get_region_members,
+        )
         return lightrag_get_region_members(region_name)
 
     def cleanup_stale_regions(
@@ -1745,9 +1747,9 @@ class RegionManager:
             dict with keys: regions_created, regions_removed, regions_drifted, regions_updated, edges_disconnected
         """
         try:
-            from niu_api.internal.region_detector import CommunityDetector
-
             from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
+
+            from niu_api.internal.region_detector import CommunityDetector
 
             detector = CommunityDetector(self._adapter)
             partition = detector.detect_communities(
@@ -1765,7 +1767,7 @@ class RegionManager:
                 removed, drifted, drifted_cids = self.cleanup_stale_regions(partition, dry_run=True)
             except Exception as e:
                 logger.warning("incremental_update cleanup detection failed: %s", e)
-                removed, drifted, drifted_cids = [], [], set()
+                _removed, _drifted, drifted_cids = [], [], set()
                 cleanup_ok = False
 
             # Create new regions (skip drifted community partitions)
@@ -1864,7 +1866,7 @@ def get_default_regions_config() -> list[dict]:
     """
     try:
         prefs_path = os.path.expanduser("~/.niu/preferences.json")
-        with open(prefs_path, "r", encoding="utf-8") as f:
+        with open(prefs_path, encoding="utf-8") as f:
             prefs = json.load(f)
         # Respect explicit configuration — even empty defaults list
         if "brain_regions" in prefs:
@@ -2126,7 +2128,9 @@ def assign_entities_to_default_regions(
                         desc = entity.get("description", "")
                         parsed = _parse_description(desc)
                         # D-15 fix: Use actual member count instead of cumulative size
-                        from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+                        from niu_api.internal.lightrag_manager import (
+                            get_region_members as lightrag_get_region_members,
+                        )
                         actual_members = lightrag_get_region_members(name)
                         priority = parse_priority_from_description(desc)
                         updated_desc = _encode_description(

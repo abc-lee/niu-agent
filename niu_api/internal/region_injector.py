@@ -15,11 +15,11 @@ from typing import Any
 
 from niu_api.internal.lightrag_manager import get_all_region_members
 from niu_api.internal.region_activation import (
-    BrainRegionState,
-    RegionActivationManager,
     STATUS_DIMMING,
     STATUS_LIT,
     STATUS_OFF,
+    BrainRegionState,
+    RegionActivationManager,
 )
 from niu_api.internal.region_manager import RegionManager
 

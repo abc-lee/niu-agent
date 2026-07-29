@@ -9,13 +9,13 @@ db_monitor 路由 @子名 消息时从此注册表拿 supplement_queue。
 
 线程安全：register/unregister 用 threading.Lock 保护（read-modify-write 非原子）。
 """
-import threading
-import secrets
 import asyncio
+import secrets
+import threading
 import time
 from concurrent.futures import Future as ConcurrentFuture
 from dataclasses import dataclass, field
-from typing import Optional, Any, Union
+from typing import Any
 
 
 @dataclass
@@ -23,20 +23,20 @@ class RunningSubagent:
     unique_name: str
     agent_type: str
     supplement_queue: Any  # SubagentSupplementQueue
-    memory_context: Optional[Any] = None  # 异步子 Agent 才有，同步为 None
+    memory_context: Any | None = None  # 异步子 Agent 才有，同步为 None
     is_sync: bool = True
     # task 字段：异步子 Agent 的可取消句柄
     # 用 run_coroutine_threadsafe 跨线程调度时返回 concurrent.futures.Future（不是 asyncio.Task）
     # 两者都有 cancel() 方法，类型用 Union 兼容
-    task: Optional[Union[asyncio.Task, ConcurrentFuture]] = None  # 异步子 Agent 才有，同步为 None
+    task: asyncio.Task | ConcurrentFuture | None = None  # 异步子 Agent 才有，同步为 None
     started_at: float = field(default_factory=time.time)  # 启动时间，用于动态注入区排序
     # 新增字段（同步 @niu-agent 挂起状态）
     state: str = "running"  # "running" / "waiting_for_answer"
-    suspended_messages: Optional[list] = None
-    suspended_handler: Optional[Any] = None
-    suspended_client: Optional[Any] = None
-    suspended_tools_schema: Optional[list] = None
-    suspended_system_message: Optional[dict] = None
+    suspended_messages: list | None = None
+    suspended_handler: Any | None = None
+    suspended_client: Any | None = None
+    suspended_tools_schema: list | None = None
+    suspended_system_message: dict | None = None
 
 
 class SubagentRegistry:
@@ -57,10 +57,10 @@ class SubagentRegistry:
         cls,
         agent_type: str,
         supplement_queue: Any,
-        memory_context: Optional[Any] = None,
+        memory_context: Any | None = None,
         is_sync: bool = True,
-        task: Optional[Union[asyncio.Task, ConcurrentFuture]] = None,
-        force_unique_name: Optional[str] = None,
+        task: asyncio.Task | ConcurrentFuture | None = None,
+        force_unique_name: str | None = None,
     ) -> str:
         """注册一个子 Agent，返回唯一名。
 
@@ -98,7 +98,7 @@ class SubagentRegistry:
             cls._instances.pop(unique_name, None)
 
     @classmethod
-    def get(cls, unique_name: str) -> Optional[RunningSubagent]:
+    def get(cls, unique_name: str) -> RunningSubagent | None:
         with cls._lock:
             return cls._instances.get(unique_name)
 

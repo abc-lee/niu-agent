@@ -5,7 +5,6 @@ tool_lifecycle.py has been deleted. MCP tools are now discovered via
 the virtual disk (DiskEngine), not through decay/override scoring.
 """
 
-import pytest
 
 
 def test_tool_lifecycle_removed():

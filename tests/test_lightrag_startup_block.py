@@ -10,7 +10,6 @@
 5. Phase 1 need_repair=True 时 _lightrag_corrupt_skip_init 局部变量为 True（跳过后续 init）
 6. Phase 1 need_repair=False（正常启动）时逻辑不变（signal/db_monitor/cancel 都正常）
 """
-import asyncio
 from unittest import mock
 
 
@@ -37,8 +36,8 @@ def test_should_start_db_monitor_gate():
 
 def test_pause_chatqueue_if_corrupt_calls_pause_when_corrupt():
     """Phase 1 need_repair=True 时，ChatQueue 被 pause（worker 不消费消息）"""
-    from niu_api.internal.lightrag_manager import pause_chatqueue_if_corrupt
     from niu_api.chat_queue import ChatQueue
+    from niu_api.internal.lightrag_manager import pause_chatqueue_if_corrupt
 
     # 模拟一个 ChatQueue 实例
     with mock.patch("niu_api.chat_queue.get_chat_queue") as mock_get:

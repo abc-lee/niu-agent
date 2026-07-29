@@ -13,7 +13,6 @@
 5. _parse_processed_up_to 未找到返回 None
 6. entity/dream/journal 三个子 Agent 的 force 调用用 history=... 而非 task=巨型字符串
 """
-from unittest import mock
 import sys
 from pathlib import Path
 

@@ -1,6 +1,5 @@
 """测试 mcp_loader.py 的外部服务器功能"""
 
-import pytest
 from agent.mcp_loader import is_external_server
 
 

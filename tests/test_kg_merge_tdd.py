@@ -13,7 +13,6 @@ TDD 测试：照片/文档入库后知识图谱实体合并验证。
 4. 前端分类兼容性验证
 """
 
-import json
 import sys
 import time
 from pathlib import Path
@@ -145,7 +144,7 @@ def test_p0_1_custom_kg_entity_merge():
         print(f"❌ 首次注入后实体不存在: {entity_name}")
         return False
 
-    first_desc = data.get("description", "")
+    data.get("description", "")
 
     # Step 2: 再次注入（模拟改名）
     result2 = ingester.inject_entity(
@@ -170,11 +169,11 @@ def test_p0_1_custom_kg_entity_merge():
 
         # 关键验证：description 是否包含两次注入的内容
         if "张三, detected in photo" in merged_desc and "Renamed to" in merged_desc:
-            print(f"\n✅ description 包含两次注入的内容 — 合并成功！")
+            print("\n✅ description 包含两次注入的内容 — 合并成功！")
             return True
         elif "Renamed to" in merged_desc and "张三, detected in photo" not in merged_desc:
-            print(f"\n⚠️ description 只包含第二次注入的内容 — 被覆盖而非合并！")
-            print(f"  这意味着 ainsert_custom_kg 对同名实体是 upsert（覆盖），不是 merge")
+            print("\n⚠️ description 只包含第二次注入的内容 — 被覆盖而非合并！")
+            print("  这意味着 ainsert_custom_kg 对同名实体是 upsert（覆盖），不是 merge")
             return "OVERWRITE"
         else:
             print(f"\n❌ description 内容异常: {merged_desc[:200]}")
@@ -244,7 +243,7 @@ def test_p0_2_entity_type_case():
             print(f"❌ entity_type 不兼容: {final_type}")
             return False
     else:
-        print(f"❌ 实体不存在")
+        print("❌ 实体不存在")
         return False
 
 
@@ -272,7 +271,7 @@ def test_p0_3_depicts_relation():
         relationships=[
             {"src_id": photo_path, "tgt_id": f"person:{person_uuid}",
              "keywords": "depicts",
-             "description": f"Photo test depicts 王五",
+             "description": "Photo test depicts 王五",
              "source_id": "test_p0_3", "weight": 0.8},
         ],
         chunks=[],
@@ -293,7 +292,7 @@ def test_p0_3_depicts_relation():
             print(f"  description: {e['data'].get('description', 'N/A')[:80]}")
         return True
     else:
-        print(f"❌ 未找到 depicts 关系")
+        print("❌ 未找到 depicts 关系")
         # 检查所有边
         rag = get_rag()
         nx_graph = rag.chunk_entity_relation_graph._graph
@@ -369,9 +368,9 @@ def test_p0_4_frontend_classification():
             all_pass = False
 
     if all_pass:
-        print(f"\n✅ 所有前端分类测试通过 — Person/person 都能正确分类")
+        print("\n✅ 所有前端分类测试通过 — Person/person 都能正确分类")
     else:
-        print(f"\n❌ 有分类不兼容的情况")
+        print("\n❌ 有分类不兼容的情况")
 
     return all_pass
 
@@ -416,7 +415,7 @@ def test_p0_5_description_behavior():
 
     nodes = read_kg_graph_nodes()
     if entity_name not in nodes:
-        print(f"❌ Step 1 注入失败")
+        print("❌ Step 1 注入失败")
         return False
     after_step1 = nodes[entity_name].get("description", "")
     print(f"\nStep 1 后 description: {after_step1}")
@@ -434,23 +433,23 @@ def test_p0_5_description_behavior():
 
     nodes = read_kg_graph_nodes()
     if entity_name not in nodes:
-        print(f"❌ Step 2 注入失败")
+        print("❌ Step 2 注入失败")
         return False
     after_step2 = nodes[entity_name].get("description", "")
     print(f"\nStep 2 后 description: {after_step2}")
 
     # 分析结果
     if desc1 in after_step2 and desc2 in after_step2:
-        print(f"\n✅ description 合并模式 — 两次内容都保留")
-        print(f"  这意味着 name_person 应写完整 description（包含名字和照片信息）")
+        print("\n✅ description 合并模式 — 两次内容都保留")
+        print("  这意味着 name_person 应写完整 description（包含名字和照片信息）")
         return "MERGE"
     elif desc2 in after_step2 and desc1 not in after_step2:
-        print(f"\n⚠️ description 覆盖模式 — 只保留最新内容")
-        print(f"  这意味着 name_person 的 description 会覆盖原始信息")
-        print(f"  建议: name_person 应写完整 description（名字 + 所有照片信息）")
+        print("\n⚠️ description 覆盖模式 — 只保留最新内容")
+        print("  这意味着 name_person 的 description 会覆盖原始信息")
+        print("  建议: name_person 应写完整 description（名字 + 所有照片信息）")
         return "OVERWRITE"
     else:
-        print(f"\n❌ description 行为异常")
+        print("\n❌ description 行为异常")
         return "UNKNOWN"
 
 
@@ -501,10 +500,10 @@ def test_p0_6_source_id_merge():
     print(f"\nStep 2 后 source_id: {source2}")
 
     if "photo_A" in source2 and "photo_B" in source2:
-        print(f"✅ source_id 合并 — 两个来源都保留")
+        print("✅ source_id 合并 — 两个来源都保留")
         return True
     elif "photo_B" in source2 and "photo_A" not in source2:
-        print(f"⚠️ source_id 覆盖 — 只保留最新来源")
+        print("⚠️ source_id 覆盖 — 只保留最新来源")
         return False
     else:
         print(f"❌ source_id 异常: {source2}")

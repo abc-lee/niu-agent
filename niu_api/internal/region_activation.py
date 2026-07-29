@@ -196,7 +196,7 @@ class RegionActivationManager:
                 del self._co_activation_counts[key]
 
             # Clean _neighbors: remove deleted region keys and references
-            stale_ids = set(rid for rid in self._neighbors if rid not in valid_ids)
+            stale_ids = {rid for rid in self._neighbors if rid not in valid_ids}
             for rid in stale_ids:
                 del self._neighbors[rid]
             for neighbor_set in self._neighbors.values():
@@ -221,7 +221,7 @@ class RegionActivationManager:
         without requiring a separate refresh_entity_mapping() call.
         """
         try:
-            from niu_api.internal.lightrag_manager import graph_read_lock, get_lightrag
+            from niu_api.internal.lightrag_manager import get_lightrag, graph_read_lock
 
             counts: dict[str, int] = {}
             rag = get_lightrag()
@@ -258,8 +258,8 @@ class RegionActivationManager:
         """
         from niu_api.internal.lightrag_manager import (
             get_all_region_members,
-            graph_read_lock,
             get_lightrag,
+            graph_read_lock,
         )
 
         try:

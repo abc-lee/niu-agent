@@ -4,10 +4,12 @@
 """
 import asyncio
 import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from niu_api.chat_queue import ChatQueue
+
 from niu_api.chat import _event_subscribers
+from niu_api.chat_queue import ChatQueue
 
 
 class _FakeStore:
@@ -43,7 +45,7 @@ async def test_scheduler_user_message_pushes_sse():
             with patch("agent.context_manager.get_context_manager", new=AsyncMock()) as mock_cm:
                 mock_cm.return_value.get_context_for_chat = AsyncMock(return_value=[])
 
-                result = await asyncio.wait_for(
+                await asyncio.wait_for(
                     q.enqueue_and_wait(content="[定时任务] 吃药", source="scheduler", session_id="default"),
                     timeout=5
                 )

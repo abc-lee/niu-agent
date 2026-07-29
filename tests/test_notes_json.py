@@ -115,7 +115,7 @@ class TestNotesJsonStorage:
         create_note(note_id="n1", content="Delete me")
         create_note(note_id="n2", content="Keep me")
 
-        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls:
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter"):
             result = delete_note(note_id="n1")
 
         assert result == {"id": "n1", "status": "deleted"}

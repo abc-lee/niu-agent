@@ -1,6 +1,5 @@
 """Tests for explore_node edge_types filtering."""
 from unittest.mock import MagicMock, patch
-import pytest
 
 
 class TestEdgeTypeFilter:

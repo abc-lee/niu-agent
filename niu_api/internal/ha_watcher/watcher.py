@@ -34,7 +34,7 @@ def check_and_start():
     if not os.path.exists(CONFIG_PATH):
         return
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(CONFIG_PATH) as f:
             config = json.load(f)
         if config.get("ha_url") and config.get("ha_token"):
             start_watcher()
@@ -151,7 +151,7 @@ class _HAWatcher:
                     msg = json.loads(raw)
                     if msg.get("type") == "event":
                         self._handle_trigger_event(msg, triggers)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
 
     def _build_trigger_config(self, trigger: dict) -> dict:
@@ -198,6 +198,7 @@ class _HAWatcher:
     def _push_to_chat(self, description: str):
         try:
             import asyncio
+
             from niu_api.chat import _main_loop
             from niu_api.chat_queue import get_chat_queue
 
@@ -242,7 +243,7 @@ class _HAWatcher:
         try:
             if not os.path.exists(CONFIG_PATH):
                 return {}
-            with open(CONFIG_PATH, "r") as f:
+            with open(CONFIG_PATH) as f:
                 return json.load(f)
         except Exception:
             return {}

@@ -16,7 +16,6 @@ TDD：先写覆盖所有可能性的失败测试，再改代码修复。
 """
 import asyncio
 import json
-import os
 import time
 from pathlib import Path
 
@@ -80,15 +79,15 @@ async def _call_probe_direct(config: dict) -> dict:
 
     避免依赖 Python API 进程运行状态。模拟 probe_response_format 端点核心逻辑。
     """
+    from agent.generic.litellm_adapter import LiteLLMSession
     from niu_api.compat import (
         _build_probe_messages,
-        _build_probe_response_format_json_schema,
         _build_probe_response_format_json_object,
+        _build_probe_response_format_json_schema,
         _classify_probe_response_tier1,
         _classify_probe_response_tier2,
         _probe_tier_three_samples_async,
     )
-    from agent.generic.litellm_adapter import LiteLLMSession
 
     # 复制 probe_response_format 端点的核心逻辑（compat.py:1490-1748）
     config_lower = {k.lower(): v for k, v in config.items()}
@@ -122,13 +121,17 @@ async def _call_probe_direct(config: dict) -> dict:
     messages = _build_probe_messages()
 
     def _try_tier(response_format):
-        from litellm import (
-            RateLimitError, BadRequestError, UnsupportedParamsError,
-            AuthenticationError, APIConnectionError, InternalServerError,
-            ServiceUnavailableError,
-        )
         import litellm
         import openai
+        from litellm import (
+            APIConnectionError,
+            AuthenticationError,
+            BadRequestError,
+            InternalServerError,
+            RateLimitError,
+            ServiceUnavailableError,
+            UnsupportedParamsError,
+        )
 
         try:
             session = LiteLLMSession(cfg=base_llm_config)
@@ -201,7 +204,7 @@ async def _run_probe_with_timeout(config: dict) -> tuple[dict, float]:
             _call_probe_direct(config),
             timeout=PROBE_TIMEOUT_SECONDS,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         result = {"result": "HANG_TIMEOUT", "reason": f"卡死 {PROBE_TIMEOUT_SECONDS}s 未返回", "mode": None}
     elapsed = time.time() - start
     return result, elapsed

@@ -2,10 +2,11 @@
 
 用真实 LLM + 真实 db_monitor（部分 mock 前端触发，因为完整前端链路在 Task 15 手动验证）。
 """
-import os
 import asyncio
-import time
+import os
 import threading
+import time
+
 import pytest
 
 
@@ -30,10 +31,10 @@ def test_async_dispatch_and_completion_notification(llm_config, tmp_path):
         pytest.skip("LLM API key not configured")
 
     # 阶段二关键：需要设置 _main_loop（_dispatch_async_subagent 用 run_coroutine_threadsafe）
-    from niu_api.chat import set_main_event_loop
+    from agent.main_agent_request_queue import get_main_agent_request_queue
     from agent.subagent import _dispatch_async_subagent
     from agent.subagent_registry import SubagentRegistry
-    from agent.main_agent_request_queue import get_main_agent_request_queue
+    from niu_api.chat import set_main_event_loop
 
     # 清空队列
     q = get_main_agent_request_queue()

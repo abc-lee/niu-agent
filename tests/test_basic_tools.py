@@ -8,15 +8,12 @@ Testing the new function signatures and behaviors:
 - new: grep_search(pattern, path=".", include="")
 """
 
-import os
-import pytest
 
 # ---------------------------------------------------------------------------
 # Import: use new names only
 # ---------------------------------------------------------------------------
 
-from agent.handler import read_file, write_file, edit_file, grep_search
-
+from agent.handler import edit_file, grep_search, read_file, write_file
 
 # ===================================================================
 # read_file tests

@@ -7,12 +7,10 @@ ChatWorker 串行处理，补充消息在下一轮合并到上下文中。
 import asyncio
 import itertools
 from dataclasses import dataclass, field
-from typing import Optional
-
-from loguru import logger
 
 from agent.runner import NiuRunner
 from agent.session import get_message_store
+from loguru import logger
 
 
 @dataclass
@@ -24,7 +22,7 @@ class ChatRequest:
     channel_id: str = ""
     sender_id: str = ""
     session_id: str = "default"
-    reply_future: Optional[asyncio.Future] = field(default=None, init=True, repr=False)
+    reply_future: asyncio.Future | None = field(default=None, init=True, repr=False)
 
 
 @dataclass
@@ -46,7 +44,7 @@ class ChatQueue:
     def __init__(self, runner: NiuRunner):
         self._queue: asyncio.Queue[ChatRequest] = asyncio.Queue()
         self._runner = runner
-        self._worker_task: Optional[asyncio.Task] = None
+        self._worker_task: asyncio.Task | None = None
         self._running = False
         self._paused = False
         self._processing = False
@@ -149,7 +147,7 @@ class ChatQueue:
 
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if not future.done():
                 future.cancel()
             logger.warning(f"[ChatQueue] Wait timeout for: {content[:50]}...")
@@ -171,7 +169,7 @@ class ChatQueue:
             try:
                 await asyncio.wait_for(self._processing_done.wait(), timeout=timeout)
                 return True
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[ChatQueue] Drain timeout")
                 return False
         return True
@@ -279,7 +277,7 @@ class ChatQueue:
                               user_contents: list[str] | None = None, channel: str = "electron",
                               channel_id: str = "") -> str:
         """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
-        from agent.runner import is_stop_requested, clear_stop
+        from agent.runner import clear_stop, is_stop_requested
 
         # 如果停止标志仍被设置，说明前一个 Agent 还未退出或标志残留
         # 残留标志：清除并继续；用户新设置的：不应该处理新消息
@@ -331,7 +329,7 @@ class ChatQueue:
                 if not acquired:
                     raise TimeoutError("Timeout waiting for chat lock")
                 full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error("[ChatQueue] Timeout waiting for chat lock")
                 chat_error = "timeout"
                 full_reply = "处理消息超时，请稍后重试"
@@ -369,7 +367,6 @@ class ChatQueue:
                     full_reply = degraded_reply
                 except Exception as persist_e:
                     logger.error(f"[ChatQueue] Degraded reply persist failed: {persist_e}")
-                    message_id = None
                     full_reply = degraded_reply
 
             # 上下文溢出检测
@@ -414,7 +411,7 @@ class ChatQueue:
 
             try:
                 await asyncio.wait_for(_tidy_lock.acquire(), timeout=30.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(f"[ChatQueue] Force compression retry {attempt+1}/{max_retries}: tidy lock still busy")
                 continue
 

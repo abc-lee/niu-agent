@@ -8,12 +8,10 @@ TDD: 先写测试，确认失败，再改代码。
 3. 向后兼容普通 str chunk
 4. _clean_stream_output 已被删除
 """
-import pytest
 import pathlib
-from unittest.mock import MagicMock, patch, Mock
+from unittest.mock import Mock, patch
 
 from agent.generic.agent_loop import StreamEvent
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -25,7 +23,7 @@ def _make_runner():
          patch("agent.runner.get_system_prompt", return_value="sys"), \
          patch("agent.runner.get_tools_schema", return_value=[]), \
          patch("agent.runner.get_skill_sync"), \
-         patch("agent.runner.NiuHandler") as mock_handler_cls, \
+         patch("agent.runner.NiuHandler"), \
          patch("niu_api.internal.disk_engine.DiskEngine") as mock_disk_cls:
         mock_create_client.return_value = Mock()
         mock_disk_instance = Mock()

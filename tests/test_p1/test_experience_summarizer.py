@@ -1,19 +1,15 @@
 """P1-2: 测试 ExperienceSummarizer 集成"""
-import pytest
 import sys
 import tempfile
-import os
 from pathlib import Path
+
+import pytest
 
 pytestmark = pytest.mark.skip(reason="ExperienceSummarizer disabled — skill writing now handled by dream-evolver")
 
 sys.path.insert(0, "E:/tools/ai-bot")
 
-from agent.experience_summarizer import (
-    ExperienceSummarizer,
-    ExperienceContext,
-    ToolExecution
-)
+from agent.experience_summarizer import ExperienceContext, ExperienceSummarizer, ToolExecution
 
 
 @pytest.mark.p1

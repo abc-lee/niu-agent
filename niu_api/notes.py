@@ -10,7 +10,6 @@ import re
 import tempfile
 import threading
 from datetime import datetime
-from typing import Dict, List, Optional
 
 from loguru import logger
 
@@ -58,7 +57,7 @@ def _atomic_write(data: list) -> None:
         raise
 
 
-def read_notes() -> List[Dict]:
+def read_notes() -> list[dict]:
     """Read all notes from JSON file.
 
     Return [] if file missing or corrupt.
@@ -67,7 +66,7 @@ def read_notes() -> List[Dict]:
     if not os.path.exists(notes_path):
         return []
     try:
-        with open(notes_path, "r", encoding="utf-8") as f:
+        with open(notes_path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             return data
@@ -78,12 +77,12 @@ def read_notes() -> List[Dict]:
         return []
 
 
-def write_notes(notes: List[Dict]) -> None:
+def write_notes(notes: list[dict]) -> None:
     """Atomic write all notes."""
     _atomic_write(notes)
 
 
-def create_note(note_id: str, content: str, tags: Optional[List[str]] = None, created_at: Optional[str] = None) -> Dict:
+def create_note(note_id: str, content: str, tags: list[str] | None = None, created_at: str | None = None) -> dict:
     """Append a note. Auto-generate created_at if None.
 
     Return {"id": note_id, "status": "created"} or {"id": note_id, "status": "invalid_id"}.
@@ -113,7 +112,7 @@ def create_note(note_id: str, content: str, tags: Optional[List[str]] = None, cr
     return {"id": note_id, "status": "created"}
 
 
-def update_note(note_id: str, content: Optional[str] = None, tags: Optional[List[str]] = None) -> Dict:
+def update_note(note_id: str, content: str | None = None, tags: list[str] | None = None) -> dict:
     """Update note content/tags + set updated_at.
 
     Return {"id": note_id, "status": "updated|not_found|invalid_id"}.
@@ -138,7 +137,7 @@ def update_note(note_id: str, content: Optional[str] = None, tags: Optional[List
     return {"id": note_id, "status": "not_found"}
 
 
-def delete_note(note_id: str) -> Dict:
+def delete_note(note_id: str) -> dict:
     """Remove note from JSON + call LightRAGAdapter().delete_document().
 
     Return {"id": note_id, "status": "deleted|not_found|invalid_id"}.
@@ -171,13 +170,13 @@ def delete_note(note_id: str) -> Dict:
     return {"id": note_id, "status": "deleted"}
 
 
-def list_notes() -> List[Dict]:
+def list_notes() -> list[dict]:
     """Return all notes sorted by created_at DESC."""
     notes = read_notes()
     return sorted([dict(n) for n in notes], key=lambda n: n.get("created_at", ""), reverse=True)
 
 
-def get_note(note_id: str) -> Optional[Dict]:
+def get_note(note_id: str) -> dict | None:
     """Return single note dict or None."""
     notes = read_notes()
     for note in notes:

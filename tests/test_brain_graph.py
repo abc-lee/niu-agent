@@ -6,7 +6,6 @@ TDD GREEN phase: Tests define the BrainGraph API contract.
 
 from unittest.mock import MagicMock
 
-
 # ============== normalize_name ==============
 
 

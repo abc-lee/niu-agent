@@ -6,7 +6,6 @@ Unified processing for thinking chain formats from different LLM providers.
 
 import re
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
 
 
 @dataclass
@@ -15,7 +14,7 @@ class ThinkingChain:
 
     content: str
     provider: str
-    signature: Optional[str] = None
+    signature: str | None = None
 
 
 # Thinking patterns for different providers
@@ -42,7 +41,7 @@ THINKING_PATTERNS = {
 
 def extract_thinking(
     text: str, provider: str = "auto", strip: bool = True
-) -> Tuple[Optional[ThinkingChain], str]:
+) -> tuple[ThinkingChain | None, str]:
     """
     Extract thinking chain content from text.
 
@@ -83,8 +82,8 @@ def extract_thinking(
 
 
 def extract_thinking_from_content_blocks(
-    content_blocks: List[dict],
-) -> Tuple[Optional[ThinkingChain], List[dict]]:
+    content_blocks: list[dict],
+) -> tuple[ThinkingChain | None, list[dict]]:
     """
     Extract thinking chain from API content blocks.
 

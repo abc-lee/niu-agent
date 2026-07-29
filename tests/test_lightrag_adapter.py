@@ -8,11 +8,11 @@ LightRAGIngester: dual-path injection (structured via ainsert_custom_kg,
 TDD RED phase — these tests define the expected interface.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-
 
 # ============== LightRAGAdapter Tests ==============
 
@@ -78,7 +78,7 @@ class TestAdapterQueryModes:
         mock_rag.aquery = AsyncMock(return_value="Mix answer")
 
         with patch.object(adapter, "_get_rag", return_value=mock_rag):
-            result = adapter.query("What is X?")
+            adapter.query("What is X?")
             # Default mode should be "mix"
             call_args = mock_rag.aquery.call_args
             assert call_args[1]["param"].mode == "mix"
@@ -92,7 +92,7 @@ class TestAdapterQueryModes:
         mock_rag.aquery = AsyncMock(return_value="Retrieved context only")
 
         with patch.object(adapter, "_get_rag", return_value=mock_rag):
-            result = adapter.query("What is X?", only_need_context=True)
+            adapter.query("What is X?", only_need_context=True)
             call_args = mock_rag.aquery.call_args
             assert call_args[1]["param"].only_need_context is True
 
@@ -105,7 +105,7 @@ class TestAdapterQueryModes:
         mock_rag.aquery = AsyncMock(return_value="Answer")
 
         with patch.object(adapter, "_get_rag", return_value=mock_rag):
-            result = adapter.query("What is X?", top_k=10)
+            adapter.query("What is X?", top_k=10)
             call_args = mock_rag.aquery.call_args
             assert call_args[1]["param"].top_k == 10
 
@@ -153,7 +153,6 @@ class TestIngesterStructuredData:
 
     def test_inject_entity(self):
         """J1: Inject a single entity into the brain graph."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -177,7 +176,6 @@ class TestIngesterStructuredData:
 
     def test_inject_relation(self):
         """J1: Inject a relation between two entities."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -207,7 +205,6 @@ class TestIngesterStructuredData:
 
     def test_inject_entity_with_chunk(self):
         """J1: Inject entity with associated chunk for vector retrieval."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -230,7 +227,6 @@ class TestIngesterStructuredData:
 
     def test_inject_batch_entities(self):
         """J4: Batch inject multiple entities (kg-server migration)."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -256,7 +252,6 @@ class TestIngesterStructuredData:
 
     def test_inject_custom_kg_full(self):
         """J4: Full custom_kg with entities, relations, and chunks."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -288,7 +283,6 @@ class TestIngesterStructuredData:
 
     def test_inject_relation_keywords_from_relation(self):
         """J1: 'relation' key maps to 'keywords' for backward compat."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -310,7 +304,6 @@ class TestIngesterStructuredData:
 
     def test_inject_entity_name_key_compat(self):
         """J4: Entity dict accepts both 'name' and 'entity_name' keys."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -334,7 +327,6 @@ class TestIngesterUnstructuredData:
 
     def test_inject_document_string(self):
         """J2: Inject a single document string."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -351,7 +343,6 @@ class TestIngesterUnstructuredData:
 
     def test_inject_document_with_id(self):
         """J2: Inject document with explicit ID for dedup."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -369,7 +360,6 @@ class TestIngesterUnstructuredData:
 
     def test_inject_document_with_file_path(self):
         """J2: Inject document with file path for citation."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -384,7 +374,6 @@ class TestIngesterUnstructuredData:
 
     def test_inject_batch_documents(self):
         """J2: Batch inject multiple documents."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -407,7 +396,6 @@ class TestIngesterErrorHandling:
     """J5: Graceful error handling for ingestion."""
 
     def test_inject_entity_returns_error_when_no_lightrag(self):
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         with patch.object(ingester, "_get_rag", return_value=None):
@@ -417,7 +405,6 @@ class TestIngesterErrorHandling:
             assert result["status"] == "error"
 
     def test_inject_document_returns_error_when_no_lightrag(self):
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         with patch.object(ingester, "_get_rag", return_value=None):
@@ -425,7 +412,6 @@ class TestIngesterErrorHandling:
             assert result["status"] == "error"
 
     def test_inject_entity_handles_exception(self):
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -438,7 +424,6 @@ class TestIngesterErrorHandling:
             assert result["status"] == "error"
 
     def test_inject_document_handles_exception(self):
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         ingester = LightRAGIngester()
         mock_rag = MagicMock()
@@ -467,7 +452,6 @@ class TestAdapterIngesterIntegration:
 
     def test_ingester_delegates_to_lightrag_manager(self):
         """Ingester._get_rag should call lightrag_manager.get_lightrag()."""
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
         mock_rag = MagicMock()
         with patch("niu_api.internal.lightrag_adapter.get_lightrag", return_value=mock_rag):
@@ -503,7 +487,7 @@ class TestQueryResultFormat:
         mock_rag.aquery = AsyncMock(return_value="- Point 1\n- Point 2")
 
         with patch.object(adapter, "_get_rag", return_value=mock_rag):
-            result = adapter.query("List features", response_type="Bullet Points")
+            adapter.query("List features", response_type="Bullet Points")
             call_args = mock_rag.aquery.call_args
             assert call_args[1]["param"].response_type == "Bullet Points"
 

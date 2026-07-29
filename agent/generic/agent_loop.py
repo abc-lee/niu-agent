@@ -1,6 +1,7 @@
-import json, re, sys
+import json
+import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -312,7 +313,7 @@ def count_messages_tokens(messages: list) -> int:
 @dataclass
 class StepOutcome:
     data: Any
-    next_prompt: Optional[str] = None
+    next_prompt: str | None = None
     should_exit: bool = False
 
 
@@ -337,7 +338,7 @@ class BaseHandler:
         method_name = f"do_{tool_name}"
         if hasattr(self, method_name):
             args["_index"] = index
-            prer = yield from try_call_generator(
+            yield from try_call_generator(
                 self.tool_before_callback, tool_name, args, response
             )
             ret = yield from try_call_generator(getattr(self, method_name), args, response)
@@ -547,13 +548,13 @@ def agent_runner_loop(
     context_target_threshold=0,  # FIFO 裁剪目标 token 量
     on_context_high_usage=None,  # 主Agent超阈值回调；None=子Agent走FIFO
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
-    system_message: Optional[dict] = None,  # 已组装好的 system message（首轮即带 cache_control）
+    system_message: dict | None = None,  # 已组装好的 system message（首轮即带 cache_control）
     supplement_drain=None,  # 子 Agent 传入自己的 drain 函数；None 时走全局 drain_supplement
-    memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据，None=主 Agent 路径不更新
+    memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据，None=主 Agent 路径不更新
     resumed_messages=None,  # 阶段四新增：挂起恢复路径，传入则跳过 messages 构造直接用
     on_before_llm=None,  # Optional: callback(messages, turn) called before each LLM call; modifies messages[0] in place
 ):
-    from agent.runner import is_stop_requested, clear_stop, drain_supplement
+    from agent.runner import clear_stop, drain_supplement, is_stop_requested
 
     if resumed_messages is not None:
         # 回复路径：直接用挂起的 messages，跳过 system_message + history + user_input 构造
@@ -808,7 +809,7 @@ def agent_runner_loop(
 
         # 检测 LLM 返回的 context_length_exceeded 标记（覆盖 verbose=True 和 verbose=False）
         if hasattr(response, 'context_overflow') and response.context_overflow:
-            logger.warning(f"[Overflow] LLM API returned context_length_exceeded, triggering CONTEXT_OVERFLOW")
+            logger.warning("[Overflow] LLM API returned context_length_exceeded, triggering CONTEXT_OVERFLOW")
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
             clear_stop()
@@ -1074,7 +1075,6 @@ def agent_runner_loop(
                     summary_text = summary_response.content
                 # 3. persist 总结（复用现有纯文本 persist 模式）
                 if summary_text:
-                    result_text = summary_text
                     yield StreamEvent("reply", summary_text)
                     yield StreamEvent("persist", json.dumps({
                         "role": "assistant",

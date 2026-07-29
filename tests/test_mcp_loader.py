@@ -4,10 +4,10 @@ Test MCP Loader - P0 Tests
 MCP Loader loads all required MCP modules at startup with strict validation.
 """
 
-import pytest
 import sys
-import os
-from typing import Dict, Any, List
+from typing import Any
+
+import pytest
 
 sys.path.insert(0, "E:/tools/ai-bot")
 
@@ -20,7 +20,7 @@ class MockMCPModule:
     """Mock MCP server module for testing"""
 
     @staticmethod
-    def get_tool_schemas() -> List[Dict[str, Any]]:
+    def get_tool_schemas() -> list[dict[str, Any]]:
         """Return tool schemas in the expected format"""
         return [
             {
@@ -37,7 +37,7 @@ class MockMCPModule:
         ]
 
     @staticmethod
-    def mock_tool(param: str) -> Dict[str, Any]:
+    def mock_tool(param: str) -> dict[str, Any]:
         """Mock tool implementation"""
         return {"status": "success", "param": param}
 

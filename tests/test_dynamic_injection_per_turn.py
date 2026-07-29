@@ -4,14 +4,15 @@
 在每轮循环末尾（组装好 next_prompt 之后）调用，
 允许调用方动态更新 system_prompt 和 tools_schema。
 """
-import pytest
-import sys
 import copy
+import sys
 from unittest.mock import Mock
+
+import pytest
 
 sys.path.insert(0, "E:/tools/ai-bot")
 
-from agent.generic.agent_loop import agent_runner_loop, StepOutcome
+from agent.generic.agent_loop import StepOutcome, agent_runner_loop
 
 
 def _make_client(responses):

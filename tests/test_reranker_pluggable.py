@@ -6,11 +6,9 @@ LightRAG callable creation, and runtime switching.
 """
 
 import json
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 import tempfile
-
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # ============== SUPPORTED_RERANKERS Tests ==============
 
@@ -85,8 +83,8 @@ class TestGetReranker:
     """Test get_reranker() lazy loading behavior."""
 
     def test_returns_none_when_disabled(self):
-        from niu_api.internal.reranker import get_reranker
         import niu_api.internal.reranker as reranker_module
+        from niu_api.internal.reranker import get_reranker
         reranker_module._reranker_model = None
         reranker_module._reranker_name = None
 
@@ -95,8 +93,8 @@ class TestGetReranker:
             assert result is None
 
     def test_returns_none_when_config_is_none(self):
-        from niu_api.internal.reranker import get_reranker
         import niu_api.internal.reranker as reranker_module
+        from niu_api.internal.reranker import get_reranker
         reranker_module._reranker_model = None
         reranker_module._reranker_name = None
 
@@ -105,8 +103,8 @@ class TestGetReranker:
             assert result is None
 
     def test_returns_cached_model_when_same(self):
-        from niu_api.internal.reranker import get_reranker
         import niu_api.internal.reranker as reranker_module
+        from niu_api.internal.reranker import get_reranker
         mock_model = MagicMock()
         reranker_module._reranker_model = mock_model
         reranker_module._reranker_name = "bge-reranker-v2-m3"
@@ -287,8 +285,8 @@ class TestSwitchReranker:
                 assert updated_prefs["lightrag"]["reranker_model"] == "bge-reranker-v2-m3"
 
     def test_forces_model_unload(self):
-        from niu_api.internal.reranker import switch_reranker
         import niu_api.internal.reranker as reranker_module
+        from niu_api.internal.reranker import switch_reranker
 
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"

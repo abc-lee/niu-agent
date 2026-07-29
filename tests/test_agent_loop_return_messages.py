@@ -5,19 +5,13 @@
 
 TDD: 先写测试，确认失败，再改代码。
 """
-import pytest
 import json
-import copy
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
 from agent.generic.agent_loop import (
-    agent_runner_loop,
-    StreamEvent,
     StepOutcome,
-    BaseHandler,
-    exhaust,
+    agent_runner_loop,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers (same pattern as test_agent_loop_stream_events.py)

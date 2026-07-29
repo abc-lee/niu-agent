@@ -4,9 +4,10 @@ Test ToolRegistry - P0 Tests
 ToolRegistry is the foundation for in-process MCP tool management.
 """
 
-import pytest
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Any
+
+import pytest
 
 sys.path.insert(0, "E:/tools/ai-bot")
 
@@ -17,7 +18,7 @@ sys.path.insert(0, "E:/tools/ai-bot")
 
 class MockTool:
     """Mock Tool object mimicking mcp.types.Tool"""
-    def __init__(self, name: str, description: str, input_schema: Dict[str, Any]):
+    def __init__(self, name: str, description: str, input_schema: dict[str, Any]):
         self.name = name
         self.description = description
         self.inputSchema = input_schema  # Note: MCP uses inputSchema (camelCase)
@@ -27,7 +28,7 @@ class MockMCPModule:
     """Mock MCP server module for testing"""
 
     @staticmethod
-    def get_tool_schemas() -> List[Dict[str, Any]]:
+    def get_tool_schemas() -> list[dict[str, Any]]:
         """Return tool schemas in the expected format"""
         return [
             {
@@ -54,12 +55,12 @@ class MockMCPModule:
         ]
 
     @staticmethod
-    def test_tool(param1: str) -> Dict[str, Any]:
+    def test_tool(param1: str) -> dict[str, Any]:
         """Test tool implementation"""
         return {"status": "success", "param1": param1}
 
     @staticmethod
-    def another_tool(value: int = 0) -> Dict[str, Any]:
+    def another_tool(value: int = 0) -> dict[str, Any]:
         """Another test tool implementation"""
         return {"status": "success", "value": value}
 
@@ -68,7 +69,7 @@ class MockMCPModuleWithTools:
     """Mock module that provides tool functions via tools dict"""
 
     @staticmethod
-    def get_tool_schemas() -> List[Dict[str, Any]]:
+    def get_tool_schemas() -> list[dict[str, Any]]:
         return [
             {
                 "name": "calc_add",
@@ -85,7 +86,7 @@ class MockMCPModuleWithTools:
         ]
 
     @staticmethod
-    def calc_add(a: float, b: float) -> Dict[str, Any]:
+    def calc_add(a: float, b: float) -> dict[str, Any]:
         """Calculate addition"""
         return {"result": a + b}
 
@@ -218,7 +219,7 @@ class TestGlobalRegistry:
 
     def test_set_registry_replaces_instance(self):
         """Test that set_registry replaces the global instance"""
-        from agent.tool_registry import get_registry, set_registry, ToolRegistry
+        from agent.tool_registry import ToolRegistry, get_registry, set_registry
 
         # Create new instance
         new_registry = ToolRegistry()

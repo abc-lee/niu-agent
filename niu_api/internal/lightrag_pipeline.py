@@ -18,14 +18,12 @@ The pipeline wraps LightRAG's ainsert() with:
 
 import random
 import threading
-import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
 from niu_api.internal.lightrag_manager import call_async, get_lightrag
-
 
 # ============== IngestTask ==============
 
@@ -47,7 +45,7 @@ class IngestTask:
     source_id: str
     source_type: str
     status: str = "queued"
-    error: Optional[str] = None
+    error: str | None = None
     attempt: int = 0
 
 
@@ -114,11 +112,11 @@ class LightRAGPipeline:
 
     MAX_TRACKED_TASKS = 1000  # Evict oldest completed tasks beyond this limit
 
-    def __init__(self, max_concurrent: int = 3, retry_policy: Optional[IngestRetryPolicy] = None):
+    def __init__(self, max_concurrent: int = 3, retry_policy: IngestRetryPolicy | None = None):
         self.max_concurrent = max_concurrent
         self._semaphore = threading.Semaphore(max_concurrent)
         self.retry_policy = retry_policy or IngestRetryPolicy()
-        self._tracked_tasks: Dict[str, IngestTask] = {}
+        self._tracked_tasks: dict[str, IngestTask] = {}
 
     def _evict_completed_tasks(self) -> None:
         """Evict oldest completed/failed tasks when _tracked_tasks exceeds MAX_TRACKED_TASKS."""
@@ -185,12 +183,12 @@ class LightRAGPipeline:
 
     # ============== Status Tracking ==============
 
-    def get_status(self, source_id: str) -> Optional[str]:
+    def get_status(self, source_id: str) -> str | None:
         """Get the status of a tracked task."""
         task = self._tracked_tasks.get(source_id)
         return task.status if task else None
 
-    def get_all_statuses(self) -> List[Dict[str, Any]]:
+    def get_all_statuses(self) -> list[dict[str, Any]]:
         """Get status of all tracked tasks."""
         return [
             {
@@ -203,7 +201,7 @@ class LightRAGPipeline:
             for task in self._tracked_tasks.values()
         ]
 
-    def get_failed_tasks(self) -> List[IngestTask]:
+    def get_failed_tasks(self) -> list[IngestTask]:
         """Get all tasks with status 'failed'."""
         return [t for t in self._tracked_tasks.values() if t.status == "failed"]
 
@@ -233,7 +231,7 @@ class LightRAGPipeline:
         new_content: str,
         source_id: str,
         source_type: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update a document by deleting old version and reinserting.
 
         Uses LightRAG's adelete_by_doc_id to remove the old document,

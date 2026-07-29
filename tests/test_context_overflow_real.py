@@ -5,13 +5,13 @@
 
 注意：使用端口 19876 避免与用户正在使用的 9876 端口冲突。
 """
-import subprocess
-import time
-import requests
-import sys
 import os
-import signal
 import socket
+import subprocess
+import sys
+import time
+
+import requests
 
 # 项目根目录（tests/ 的上一级）
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -141,7 +141,7 @@ def test_fifo_threshold_configured():
     """
     # 检查 runner.py 中是否传入了 context_fifo_threshold
     runner_path = "REDACTED_USER_PATH/tools/ai-bot/agent/runner.py"
-    with open(runner_path, "r") as f:
+    with open(runner_path) as f:
         content = f.read()
 
     # 检查是否有 context_fifo_threshold 参数传入

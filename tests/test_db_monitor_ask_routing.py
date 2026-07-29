@@ -5,10 +5,10 @@
 4. 孤儿回答（子 Agent 已退出）丢弃不推回主 Agent
 5. 普通补充消息（其他 sender）推 supplement queue
 """
-from niu_api import db_monitor
-from agent.ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
+from agent.ask_main_agent import TERMINATED_SIGNAL, get_pending_ask_registry
 from agent.subagent_registry import SubagentRegistry
 from agent.subagent_supplement import SubagentSupplementQueue
+from niu_api import db_monitor
 
 
 def test_route_message_main_answer_to_pending_ask():

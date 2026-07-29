@@ -126,7 +126,7 @@ def validate_references(content: str) -> ValidationResult:
     result = ValidationResult()
     seen_paths = set()
 
-    for alt_text, raw_path, full_match, is_image, _start in _extract_md_refs(content):
+    for _alt_text, raw_path, _full_match, is_image, _start in _extract_md_refs(content):
         path = _normalize_path(raw_path)
 
         if path in seen_paths:

@@ -3,10 +3,10 @@
 bundle 签名后不可写，root 指向 bundle 会导致首次下载失败。
 应让 InsightFace 用默认 ~/.insightface/。
 """
+import inspect
 import os
 import sys
-import inspect
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 # 让 niu_photo_server 模块可导入（其源码在 mcp-servers/photo-server/src 下）
 _SRC = os.path.join(os.path.dirname(__file__), "..", "mcp-servers", "photo-server", "src")
@@ -27,7 +27,7 @@ def test_face_analysis_not_passed_bundle_root():
 
 def test_face_analysis_construction_uses_default_root():
     """FaceAnalysis 构造调用应不含 root 参数（或 root=None）"""
-    source = inspect.getsource(__import__("niu_photo_server", fromlist=["get_face_model"]).get_face_model)
+    inspect.getsource(__import__("niu_photo_server", fromlist=["get_face_model"]).get_face_model)
     # 找到 FaceAnalysis(...) 构造调用，确认没有 root=
     # 用 mock 实际拦截一次调用更可靠
     # 注意：get_face_model 内是 `from insightface.app import FaceAnalysis` 函数内 import，

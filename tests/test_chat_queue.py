@@ -1,8 +1,9 @@
 """ChatQueue 单元测试 — 消息队列 + 串行处理 + 上下文合并"""
 import asyncio
-import pytest
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture(autouse=True)

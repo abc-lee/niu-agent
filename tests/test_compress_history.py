@@ -182,6 +182,7 @@ def test_build_compress_history_no_tokens():
 def test_mode2_passes_history_to_call_subagent(monkeypatch):
     """模式二应构造 history 列表传给 call_subagent，而非序列化文本塞进 task。"""
     import asyncio
+
     import niu_api.compat as compat
 
     messages = [
@@ -199,8 +200,8 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
     # mock runner 控制 usage_percent（>50 触发模式二）
     # 注意：compat.py 是函数内 import `from niu_api.chat import get_or_create_runner`
     # 必须 patch 源模块 niu_api.chat.get_or_create_runner，patch compat.get_or_create_runner 无效
-    import niu_api.chat as chat_module
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 120000})()  # 120K tokens
         llm_config = {}  # compat.py L1385 runner.llm_config 需要
@@ -260,6 +261,7 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
 def test_mode3_passes_history_to_call_subagent(monkeypatch):
     """模式三（force）应构造 history 列表传给 call_subagent，而非序列化文本塞进 task。"""
     import asyncio
+
     import niu_api.compat as compat
 
     messages = [
@@ -275,8 +277,8 @@ def test_mode3_passes_history_to_call_subagent(monkeypatch):
         return FakeStore()
 
     # mock runner 控制 usage_percent（force 模式不依赖 usage，但 _tidy_context_impl 仍会读取）
-    import niu_api.chat as chat_module
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 180000})()  # 180K tokens，模拟溢出
         llm_config = {}

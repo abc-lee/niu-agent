@@ -41,6 +41,7 @@ def test_format_supplement_mixed_only_normal():
 def test_terminate_force_exit_logic_exists():
     """agent_runner_loop 应含终止强制退出逻辑。"""
     import inspect
+
     from agent.generic import agent_loop
     source = inspect.getsource(agent_loop)
     assert "supplement_terminate" in source, "agent_loop.py 未实现 supplement_terminate"

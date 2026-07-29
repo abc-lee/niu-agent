@@ -1,14 +1,13 @@
 """Tests for disk_executor.py — Tool execution and argument validation."""
 
-import json
 from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
 from niu_api.internal.disk_config import DiskConfig
-from niu_api.internal.disk_executor import DiskExecutor, ExecutorResult
-from niu_api.internal.disk_parser import ParsedCommand, DiskParser
+from niu_api.internal.disk_executor import DiskExecutor
+from niu_api.internal.disk_parser import DiskParser
 
 
 @pytest.fixture

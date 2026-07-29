@@ -6,9 +6,7 @@
 5. File path passed to LightRAG, not text content
 """
 
-import os
 import sys
-import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -100,7 +98,7 @@ class TestLightragInsertCall:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text(content, encoding="utf-8")
 
-        result = ingest_document(str(doc), category="其他", mode="copy")
+        ingest_document(str(doc), category="其他", mode="copy")
 
         # lightrag_insert_file should have been called (not lightrag_insert)
         mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
@@ -120,7 +118,7 @@ class TestLightragInsertCall:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Some content.", encoding="utf-8")
 
-        result = ingest_document(str(doc), category="其他", mode="copy")
+        ingest_document(str(doc), category="其他", mode="copy")
 
         mock_insert.assert_called_once()
         call_kwargs = mock_insert.call_args.kwargs
@@ -155,7 +153,7 @@ class TestLightragInsertCall:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_bytes(b"\x00\x01\x02\x03\xff\xfe")
 
-        result = ingest_document(str(doc), category="其他", mode="copy")
+        ingest_document(str(doc), category="其他", mode="copy")
 
         # insert_file should be called even for binary files
         mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
@@ -177,7 +175,7 @@ class TestNoVectorStoreOrKgServer:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Content for no vector-store test.", encoding="utf-8")
 
-        result = ingest_document(str(doc), category="其他", mode="copy")
+        ingest_document(str(doc), category="其他", mode="copy")
 
         # Check that registry.get was never called with vector-store or kg-server
         mock_reg, _ = mock_registry
@@ -196,7 +194,7 @@ class TestNoVectorStoreOrKgServer:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Content for no L1 test.", encoding="utf-8")
 
-        result = ingest_document(str(doc), category="其他", mode="copy")
+        ingest_document(str(doc), category="其他", mode="copy")
         # Verify the old lightrag_insert tool was NOT called
         mock_reg, mock_insert = mock_registry
         for call in mock_reg.get.call_args_list:
@@ -223,7 +221,7 @@ class TestFileTypeDetection:
 
         with patch("niu_photo_server.ingest_photos_batch") as mock_batch:
             mock_batch.return_value = {"status": "success", "total": 2}
-            result = ingest_document(str(photo_dir), category="其他", mode="copy")
+            ingest_document(str(photo_dir), category="其他", mode="copy")
             mock_batch.assert_called_once_with(str(photo_dir), "其他")
 
     def test_directory_without_photos_returns_error(self, mock_registry, mock_preferences, tmp_path):
@@ -245,7 +243,7 @@ class TestFileTypeDetection:
 
         with patch("niu_photo_server.ingest_photo") as mock_photo:
             mock_photo.return_value = {"status": "success", "action": "created"}
-            result = ingest_document(str(photo), category="其他", mode="copy")
+            ingest_document(str(photo), category="其他", mode="copy")
             # ingest_photo is called with (path, category) — mode is not passed
             mock_photo.assert_called_once_with(str(photo), "其他")
 
@@ -283,7 +281,7 @@ class TestNoTruncation:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text(long_content, encoding="utf-8")
 
-        result = ingest_document(str(doc), category="其他", mode="copy")
+        ingest_document(str(doc), category="其他", mode="copy")
 
         mock_insert.assert_called_once()
         call_kwargs = mock_insert.call_args.kwargs

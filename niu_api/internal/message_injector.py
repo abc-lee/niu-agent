@@ -5,7 +5,6 @@ entity-extractor 提炼的精炼文档按时间段增量注入 LightRAG，
 每段独立 doc_id，不删除重注入。
 """
 
-from typing import List, Optional
 
 
 def generate_doc_id(date: str, seq: int) -> str:
@@ -18,8 +17,8 @@ def generate_doc_id(date: str, seq: int) -> str:
 
 
 def get_next_segment_number(
-    existing_doc_ids: List[str],
-    date: Optional[str] = None,
+    existing_doc_ids: list[str],
+    date: str | None = None,
 ) -> int:
     """根据已有 doc_id 列表，返回下一个段号。
 
@@ -49,7 +48,7 @@ def get_next_segment_number(
 
 
 def format_refined_document(
-    items: List[dict],
+    items: list[dict],
     date: str,
     segment: int,
 ) -> str:
@@ -80,9 +79,9 @@ def format_refined_document(
 
 
 def split_into_segments(
-    items: List[dict],
+    items: list[dict],
     max_items_per_segment: int = 20,
-) -> List[List[dict]]:
+) -> list[list[dict]]:
     """将提炼内容按条数拆分为多段。
 
     Args:

@@ -1,5 +1,4 @@
 """Tests for sub-agent context overflow protection."""
-import pytest
 
 
 class TestCountTokensForText:
@@ -67,7 +66,7 @@ class TestNoPromptChunking:
 
         # Very long task that would have been chunked before
         long_task = "消息内容 " * 50000  # ~100K chars, would exceed old 50K limit
-        result = subagent.call_subagent(
+        subagent.call_subagent(
             agent_name="test-agent",
             task=long_task,
             llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
@@ -420,7 +419,7 @@ class TestSubagentContextWindowConfig:
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 128000)
 
-        result = subagent.call_subagent(
+        subagent.call_subagent(
             agent_name="test-agent",
             task="test",
             llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
@@ -490,10 +489,10 @@ class TestTidyFlowOrder:
 
     def test_sleep_mode_calls_three_agents_in_order(self):
         """Sleep mode should call entity-extractor, then dream-evolver, then context-manager."""
-        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info
         # This is a structural test: verify the code path exists
         # by checking the source code contains entity-extractor calls
         import inspect
+
         from niu_api import compat
         source = inspect.getsource(compat._tidy_context_impl)
         # entity-extractor must appear before dream-evolver in sleep mode

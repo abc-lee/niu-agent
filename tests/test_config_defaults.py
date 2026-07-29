@@ -10,7 +10,6 @@ testAndSave 常量）与本处的**核心字段**一致（thinking / reasoning_e
 temperature / context 四项 / logging）；targetThreshold、storage 内部结构为
 Python 兜底特有的历史字段（向后兼容保留，JS 两处不含，已验证无害）。
 """
-import json
 
 import pytest
 

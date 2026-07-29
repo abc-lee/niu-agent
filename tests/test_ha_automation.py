@@ -1,6 +1,7 @@
 """HA 自动化/场景/脚本集成测试 — 使用真实 HA 环境"""
 import os
 import sys
+
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mcp-servers", "ha-server", "src"))

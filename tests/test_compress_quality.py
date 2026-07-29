@@ -123,8 +123,9 @@ def test_mock_response_has_finish_reason_set():
 
 def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
     """litellm_adapter 流式循环应捕获最后一个 chunk 的 finish_reason 传入 MockResponse。"""
-    from agent.generic.litellm_adapter import LiteLLMSession
     from types import SimpleNamespace
+
+    from agent.generic.litellm_adapter import LiteLLMSession
 
     # 构造 fake chunk 流：3 个 chunk，最后一个 finish_reason='length'
     def make_chunk(content=None, finish_reason=None):
@@ -170,13 +171,12 @@ def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
 
 def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
     """agent_runner_loop 正常完成（无工具调用）时 return_value 应含 response 的 finish_reason。"""
-    from agent.generic import agent_loop
-    from agent.generic.llmcore import MockResponse
-
     # mock 停止标志，避免真实初始化 agent.runner
     # 注意：is_stop_requested/clear_stop/drain_supplement 在 agent_runner_loop 函数内部
     # 通过 `from agent.runner import ...` 导入，需 patch agent.runner 模块
     from agent import runner as _runner_mod
+    from agent.generic import agent_loop
+    from agent.generic.llmcore import MockResponse
     monkeypatch.setattr(_runner_mod, "is_stop_requested", lambda: False)
     monkeypatch.setattr(_runner_mod, "clear_stop", lambda: None)
     monkeypatch.setattr(_runner_mod, "drain_supplement", lambda: None)
@@ -317,9 +317,10 @@ class FakeMsg:
 def test_mode2_prompt_contains_methodology(monkeypatch):
     """模式二 task prompt 应含压缩方法论（三份/会话单元/硬约束）+ llm_config 注入 max_tokens。"""
     import asyncio
-    import niu_api.compat as compat
-    import niu_api.chat as chat_module
+
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
+    import niu_api.compat as compat
 
     messages = [
         FakeMsg(id="msg-1", role="user", content="你好"),
@@ -378,9 +379,10 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
 def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
     """模式二 LLM 输出截断时触发应急清空（保留最近 10 条，上面全删，最旧改摘要）。"""
     import asyncio
-    import niu_api.compat as compat
-    import niu_api.chat as chat_module
+
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
+    import niu_api.compat as compat
 
     # 15 条消息，截断时应保留最近 10 条，删前 5 条，第 6 条改摘要
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
@@ -444,9 +446,10 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
 def test_mode2_truncate_too_few_no_clear(monkeypatch):
     """模式二截断但历史不足 10 条时，不删不改，返回 skipped no clear needed。"""
     import asyncio
-    import niu_api.compat as compat
-    import niu_api.chat as chat_module
+
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
+    import niu_api.compat as compat
 
     # 只有 3 条消息，不足 10 条，不应删任何消息
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 4)]
@@ -520,9 +523,10 @@ def test_strip_analysis_missing_then_parse():
 def test_mode3_prompt_contains_methodology(monkeypatch):
     """模式三 task prompt 应含压缩方法论 + cursor + dream 安全边界。"""
     import asyncio
-    import niu_api.compat as compat
-    import niu_api.chat as chat_module
+
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
+    import niu_api.compat as compat
 
     messages = [
         FakeMsg(id="msg-1", role="user", content="你好"),
@@ -578,9 +582,10 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
 def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
     """模式三 LLM 输出截断时触发应急清空（mode='force'）。"""
     import asyncio
-    import niu_api.compat as compat
-    import niu_api.chat as chat_module
+
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
+    import niu_api.compat as compat
 
     # 15 条消息，截断时应保留最近 10 条，删前 5 条，第 6 条改摘要
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
@@ -649,9 +654,10 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     避免 cursor_ids_set 保护机制把 msg-3 的 update 误丢（与 auto-fixup 无关）。
     """
     import asyncio
-    import niu_api.compat as compat
-    import niu_api.chat as chat_module
+
     import agent.subagent as subagent_module
+    import niu_api.chat as chat_module
+    import niu_api.compat as compat
 
     messages = [
         FakeMsg(id="msg-1", role="user", content="你好"),

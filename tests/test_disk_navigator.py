@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-from niu_api.internal.disk_config import DiskConfig, ToolConfig
+from niu_api.internal.disk_config import DiskConfig
 from niu_api.internal.disk_navigator import DiskNavigator
 from niu_api.internal.disk_parser import ParsedCommand
 

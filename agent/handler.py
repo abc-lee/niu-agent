@@ -4,18 +4,17 @@ Niu Agent Handler
 继承 GenericAgent 的 BaseHandler，实现自定义工具处理。
 """
 
-import os
-import sys
 import json
+import os
 import re
 import signal
-import tempfile
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Optional
 
 from loguru import logger
 
@@ -67,7 +66,7 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
     try:
         if os.path.isdir(file_path):
             return f"Error: '{file_path}' is a directory, not a file."
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
             total_lines = sum(1 for _ in f)
             f.seek(0)
             stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
@@ -123,7 +122,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         if not os.path.exists(file_path):
             return {"status": "error", "msg": "File not found"}
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             full_text = f.read()
 
         if not old_string:
@@ -154,8 +153,8 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
 
 def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
     """搜索文件内容（支持正则，最多返回50个匹配）"""
-    import re as re_mod
     import glob as glob_mod
+    import re as re_mod
 
     MAX_LINES = 50
 
@@ -191,7 +190,7 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
     for filepath in files[:200]:
         searched_count += 1
         try:
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
                 for line_no, line in enumerate(f, 1):
                     if regex.search(line):
                         matches.append(f"{filepath}:{line_no}:{line.rstrip()}")
@@ -215,14 +214,14 @@ def file_read(
     path: str, start: int = 1, keyword: str = None, count: int = 200, show_linenos: bool = True
 ) -> str:
     """读取文件内容"""
-    import itertools
     import collections
+    import itertools
     import os
 
     try:
         if os.path.isdir(path):
             return f"Error: '{path}' is a directory, not a file. Please provide a file path, e.g. '~/.niu/skills/photo-face-display.md'"
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < start, stream)
 
@@ -284,7 +283,7 @@ def file_patch(path: str, old_content: str, new_content: str) -> dict:
         if not os.path.exists(path):
             return {"status": "error", "msg": "File not found"}
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             full_text = f.read()
 
         if not old_content:
@@ -803,9 +802,9 @@ class NiuHandler(BaseHandler):
             f"类型: {instance.agent_type}",
             f"当前轮次: {snap['current_turn']}",
             f"最近工具调用: {snap['last_tool_name'] or '（无）'}",
-            f"最近一轮 LLM 请求（摘要）:",
+            "最近一轮 LLM 请求（摘要）:",
             f"  {snap['last_llm_request'] or '（无）'}",
-            f"最近一轮 LLM 回复:",
+            "最近一轮 LLM 回复:",
             f"  {snap['last_llm_response'] or '（无）'}",
         ]
 
@@ -821,8 +820,11 @@ class NiuHandler(BaseHandler):
 
     def _build_journal_task_for_handler(self, original_task: str) -> tuple:
         """为主Agent调用 journal-agent 构建增量消息 task。"""
-        import json
-        from niu_api.compat import _build_journal_task, _build_incremental_msg_text, _build_plain_history
+        from niu_api.compat import (
+            _build_incremental_msg_text,
+            _build_journal_task,
+            _build_plain_history,
+        )
 
         # 报告生成指令不替换为增量消息 task — journal-agent 自己读 journal.md 聚合
         # 返回四元组 (task, history=[], idx_to_id={}, msg_ids=[])，与主返回路径结构一致
@@ -889,10 +891,14 @@ class NiuHandler(BaseHandler):
         仿 context-manager 简易 ID 映射：解析子 Agent 输出的 processed_up_to=N，
         查 journal_idx_to_id[N] 得到真实 UUID 更新游标；未找到则回退到 msg_ids[-1]（兜底）。
         """
-        import json
         import fcntl
         from datetime import datetime
-        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info, _parse_processed_up_to
+
+        from niu_api.compat import (
+            _extract_overflow_info,
+            _is_subagent_overflow,
+            _parse_processed_up_to,
+        )
 
         # 在获取文件锁之前读取消息列表 — 避免在锁内调用 _sync_get_messages() 导致死锁
         messages = self._sync_get_messages()
@@ -951,7 +957,7 @@ class NiuHandler(BaseHandler):
 
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）— 同步/异步分流"""
-        from .subagent import call_subagent, _dispatch_async_subagent, get_subagent_config
+        from .subagent import _dispatch_async_subagent, call_subagent, get_subagent_config
 
         task = args.get("task", "")
         async_mode = args.get("async_mode", False)
@@ -1037,9 +1043,9 @@ class NiuHandler(BaseHandler):
             # 验证结果：检查 event-manager 是否真正创建了任务
             if agent_name == "event-manager" and ("提醒" in task or "定时" in task or "提醒我" in task):
                 try:
-                    from pathlib import Path
                     import json
                     import sqlite3
+                    from pathlib import Path
 
                     # 读取数据库路径
                     memory_path = Path.home() / ".niu" / "memory.json"
@@ -1068,7 +1074,7 @@ class NiuHandler(BaseHandler):
                                 if latest_task:
                                     yield StreamEvent("tool_marker", f"[SubAgent] ✓ Verified task in database: {latest_task[1]} at {latest_task[3]}\n")
                                 else:
-                                    yield StreamEvent("system", f"[SubAgent] ⚠ Warning: No task found in database\n")
+                                    yield StreamEvent("system", "[SubAgent] ⚠ Warning: No task found in database\n")
                 except Exception as e:
                     yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
 
@@ -1128,7 +1134,7 @@ class NiuHandler(BaseHandler):
                     next_prompt=""
                 )
             args = {**args, "_index": index}
-            prer = yield from try_call_generator(
+            yield from try_call_generator(
                 self.tool_before_callback, tool_name, args, response
             )
             ret = yield from try_call_generator(self._call_subagent_gen, agent_name, args)
@@ -1142,7 +1148,7 @@ class NiuHandler(BaseHandler):
         if hasattr(self, method_name):
             # 直接调用方法，不委托给 super（因为 super 会用原始 tool_name 查找）
             args = {**args, "_index": index}
-            prer = yield from try_call_generator(
+            yield from try_call_generator(
                 self.tool_before_callback, tool_name, args, response
             )
             ret = yield from try_call_generator(getattr(self, method_name), args, response)
@@ -1154,10 +1160,9 @@ class NiuHandler(BaseHandler):
         # 检查 disk 虚拟磁盘命令
         if tool_name == "disk" and self.disk_engine is not None:
             command = args.get("command", "")
-            prer = yield from try_call_generator(
+            yield from try_call_generator(
                 self.tool_before_callback, tool_name, args, response
             )
-            from niu_api.internal.disk_engine import DiskResult
             disk_result = self.disk_engine.execute(command)
             if disk_result.action == "EXECUTE":
                 # 返回原始 MCP 结果，保留 status 检查

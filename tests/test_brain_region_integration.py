@@ -22,21 +22,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from niu_api.internal.region_activation import (
-    BrainRegionState,
-    RegionActivationManager,
-    STATUS_LIT,
-)
-from niu_api.internal.region_injector import BrainContextInjector
-from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 from agent.injector.dream_writer import (
     CHAIN_RELATION_CORRECTED,
     CHAIN_RELATION_FOLLOWED,
-    EPISODIC_ENTITY_TYPE,
-    EVENT_PREFIX,
     DreamWriter,
 )
-
+from niu_api.internal.region_activation import (
+    STATUS_LIT,
+    RegionActivationManager,
+)
+from niu_api.internal.region_injector import BrainContextInjector
+from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
 # ============== Helpers ==============
 

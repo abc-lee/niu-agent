@@ -7,14 +7,15 @@
 - 当前 bug：agent_loop.py:190-196 当 outcome.data is None 时不添加 tool_result
 - 导致错误：LiteLLM API Error 2013 - 每个工具调用必须有工具结果
 """
-import pytest
-import sys
 import copy
+import sys
 from unittest.mock import Mock
+
+import pytest
 
 sys.path.insert(0, "E:/tools/ai-bot")
 
-from agent.generic.agent_loop import agent_runner_loop, StepOutcome
+from agent.generic.agent_loop import StepOutcome, agent_runner_loop
 
 
 def test_tool_result_for_none_data():

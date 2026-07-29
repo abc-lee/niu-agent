@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """ingest 目录分页式返回测试
 
 TDD 测试文件 — 验证 ingest 收到目录时返回分页式结果。

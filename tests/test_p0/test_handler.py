@@ -1,10 +1,11 @@
 """P0-7: 测试数据库连接管理"""
-import pytest
-import sys
-import sqlite3
-import tempfile
 import os
-from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+
+import pytest
+
 sys.path.insert(0, "E:/tools/ai-bot")
 
 

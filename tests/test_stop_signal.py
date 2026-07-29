@@ -1,5 +1,5 @@
 """信号灯重设计测试。"""
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def test_request_stop_all_subagents():
@@ -27,7 +27,7 @@ def test_request_stop_all_subagents_empty():
 
 def test_request_stop_still_works():
     """现有 request_stop 仍有效（只对主 Agent）。"""
-    from agent.runner import request_stop, is_stop_requested, clear_stop
+    from agent.runner import clear_stop, is_stop_requested, request_stop
     clear_stop()
     assert not is_stop_requested()
     request_stop()

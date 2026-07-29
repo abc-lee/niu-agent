@@ -7,11 +7,9 @@
 3. 游标的更新
 """
 
-import asyncio
 import json
 import os
 import sys
-import tempfile
 
 import pytest
 
@@ -126,10 +124,10 @@ async def test_session_manager_direct_calls():
     # session-manager 需要添加 src 路径
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp-servers", "session-manager", "src"))
     from niu_session_manager import (
-        get_messages,
         add_message,
-        update_message,
         delete_messages,
+        get_messages,
+        update_message,
     )
 
     session_id = "test-session"
@@ -175,7 +173,7 @@ async def test_force_prompt_tokens_within_window():
     # 构建消息列表（与 compat.py 中相同格式）
     messages = await store.get_messages()
     # 只取测试添加的消息
-    test_messages = [m for m in messages if getattr(m, "id", "") in set(msg_ids)]
+    [m for m in messages if getattr(m, "id", "") in set(msg_ids)]
 
     msg_lines = []
     for idx, msg in enumerate(messages, 1):

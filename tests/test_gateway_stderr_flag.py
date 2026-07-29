@@ -39,8 +39,9 @@ def _make_gateway(tmp_path, monkeypatch):
     所以为让 Popen 真被调，必须 mock Path.home() 返回 tmp_path，
     并在 tmp_path/.niu/preferences.json 写入飞书配置。
     """
-    import niu_api.channel.gateway as gw_mod
     from unittest.mock import MagicMock
+
+    import niu_api.channel.gateway as gw_mod
 
     # mock Path.home() 返回 tmp_path（让 preferences.json 读到 tmp_path/.niu/）
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)

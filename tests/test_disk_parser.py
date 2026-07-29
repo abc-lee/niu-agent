@@ -2,7 +2,7 @@
 
 import pytest
 
-from niu_api.internal.disk_parser import DiskParser, ParsedCommand
+from niu_api.internal.disk_parser import DiskParser
 
 
 @pytest.fixture

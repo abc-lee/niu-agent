@@ -1,5 +1,6 @@
 """验证终止模式下生成总结（方案 B'）。"""
 import inspect
+
 from agent.generic import agent_loop
 
 
@@ -45,6 +46,7 @@ def test_terminate_branch_does_not_clear_stop():
     子 Agent 提前调会误清主 Agent 的停止信号。
     """
     import inspect
+
     from agent.generic import agent_loop
     source = inspect.getsource(agent_loop)
     # 找终止分支起点

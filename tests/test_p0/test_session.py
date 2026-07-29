@@ -1,10 +1,12 @@
 """P0-2: 测试 MessageStore 排序逻辑"""
-import pytest
 import asyncio
-import aiosqlite
+import os
 import sys
 import tempfile
-import os
+
+import aiosqlite
+import pytest
+
 sys.path.insert(0, "E:/tools/ai-bot")
 
 from agent.session import MessageStore

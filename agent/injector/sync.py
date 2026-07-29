@@ -12,10 +12,8 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
-
 from niu_api.internal.lightrag_manager import wait_lightrag_ready
 from niu_api.internal.region_manager import BELONGS_TO_RELATION
 
@@ -27,8 +25,13 @@ except ImportError:
 
 # watchdog 相关导入
 try:
+    from watchdog.events import (
+        FileCreatedEvent,
+        FileDeletedEvent,
+        FileModifiedEvent,
+        FileSystemEventHandler,
+    )
     from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent, FileDeletedEvent
     WATCHDOG_AVAILABLE = True
 except ImportError:
     WATCHDOG_AVAILABLE = False
@@ -142,7 +145,7 @@ class SkillSync:
     进程重启后不会误判已有 skill 为"新增"。mtime 变但内容不变则跳过。
     """
 
-    def __init__(self, skills_dir: Optional[str] = None, scan_interval: int = 60, use_watchdog: bool = True):
+    def __init__(self, skills_dir: str | None = None, scan_interval: int = 60, use_watchdog: bool = True):
         self.skills_dir = Path(skills_dir or self._default_skills_dir())
         self.scan_interval = scan_interval
         self.use_watchdog = use_watchdog and WATCHDOG_AVAILABLE
@@ -157,7 +160,7 @@ class SkillSync:
         self._lock = threading.Lock()  # 线程锁
 
         # 后台线程
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
         # 首次扫描完成事件（供 run_repair_on_user_request 等待）
@@ -168,7 +171,7 @@ class SkillSync:
         # watchdog 相关
         if WATCHDOG_AVAILABLE:
             from watchdog.observers import Observer as _ObserverType
-            self._observer: Optional[_ObserverType] = None  # type: ignore[unused-ignore]
+            self._observer: _ObserverType | None = None  # type: ignore[unused-ignore]
         else:
             self._observer = None  # type: ignore[assignment]
 
@@ -651,7 +654,7 @@ class SkillSync:
         try:
             notes = json.loads(notes_path.read_text(encoding="utf-8"))
             if not isinstance(notes, list):
-                logger.warning(f"[SkillSync] notes.json is not a list")
+                logger.warning("[SkillSync] notes.json is not a list")
                 return 0, 0
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[SkillSync] Failed to read notes.json: {e}")
@@ -662,7 +665,7 @@ class SkillSync:
 
         # Collect changed notes for full-file injection
         changed_notes: list[dict] = []
-        old_hashes: dict[str, Optional[str]] = {}  # note_id -> old_hash for rollback
+        old_hashes: dict[str, str | None] = {}  # note_id -> old_hash for rollback
         updated_note_ids: set[str] = set()  # note_ids that were modified (not new)
 
         for note in notes:
@@ -894,11 +897,11 @@ class SkillSync:
 
 
 # 全局实例
-_skill_sync: Optional[SkillSync] = None
+_skill_sync: SkillSync | None = None
 _skill_sync_lock = threading.Lock()
 
 
-def get_skill_sync(skills_dir: Optional[str] = None, auto_start: bool = True) -> SkillSync:
+def get_skill_sync(skills_dir: str | None = None, auto_start: bool = True) -> SkillSync:
     """获取全局 SkillSync 实例（线程安全）"""
     global _skill_sync
     if _skill_sync is None:

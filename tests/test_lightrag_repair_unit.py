@@ -1,9 +1,10 @@
 """repair_text_chunks v4 单元测试（v8-Task 1 删除了 brainregion_zombies/graphml/cache 测试）。"""
 import asyncio
 import json
-import pytest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import pytest
 
 
 def _write_graphml(tmp_path: Path, nodes: list[tuple[str, str, str]]):
@@ -268,8 +269,8 @@ def test_run_repair_on_user_request_repaired_true_when_unrecoverable_false_but_c
     # 关键：mock repair_all 返回 _unrecoverable=False（修复成功尽力了）
     # 但 check_all 重检返回 major_errors=1（孤儿 chunk 残留，非致命）
     # 旧代码 repaired=False（永远卡），新代码 repaired=True（修复尽力了）
-    import niu_api.internal.lightrag_repair as repair_mod
     import niu_api.internal.lightrag_integrity as integrity_mod
+    import niu_api.internal.lightrag_repair as repair_mod
 
     def fake_repair_all():
         # 扁平结构 + _unrecoverable=False（修复未触发不可恢复错误）
@@ -730,7 +731,8 @@ def test_check_all_preserves_load_graphml_and_check_truth_source(tmp_path):
     lightrag_repair.py:1923, 2286 import 这两个函数，删了会 ImportError。
     """
     from niu_api.internal.lightrag_integrity import (
-        _load_graphml, _check_truth_source,
+        _check_truth_source,
+        _load_graphml,
     )
     # 简单 smoke test：调一次确认可调用
     _write_intact_truth_sources(tmp_path)
@@ -901,8 +903,8 @@ def test_get_tokenizer_independent_load():
     铁律 3：禁止调 get_lightrag/get_lightrag_for_repair/apipeline。
     v8-Task 2：用 lightrag.utils.TiktokenTokenizer（model_name="gpt-4o-mini"）。
     """
-    from niu_api.internal.lightrag_repair_tokenizer import reset_cache
     from niu_api.internal.lightrag_repair import _get_tokenizer
+    from niu_api.internal.lightrag_repair_tokenizer import reset_cache
 
     reset_cache()  # 清缓存，确保本次测试重新加载
     tokenizer = _get_tokenizer()
@@ -927,8 +929,8 @@ def test_get_tokenizer_does_not_call_get_lightrag(monkeypatch):
     """
     from unittest.mock import patch
 
-    from niu_api.internal.lightrag_repair_tokenizer import reset_cache
     from niu_api.internal.lightrag_repair import _get_tokenizer
+    from niu_api.internal.lightrag_repair_tokenizer import reset_cache
 
     reset_cache()
 
@@ -1003,7 +1005,7 @@ def test_get_chunk_config_fallback_on_exception(monkeypatch):
 
 def test_get_tokenizer_singleton_cache():
     """_get_tokenizer 应单例缓存：第二次调用直接返回同一实例。"""
-    from niu_api.internal.lightrag_repair_tokenizer import reset_cache, get_tokenizer
+    from niu_api.internal.lightrag_repair_tokenizer import get_tokenizer, reset_cache
 
     reset_cache()
     t1 = get_tokenizer()
@@ -1293,7 +1295,8 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     - 0 个孤儿 chunk（清理后 GraphML 不再引用已删除的 chunk）
     - 最终恢复 123 个，0 个 missing（无孤儿 chunk）
     """
-    import os, shutil
+    import os
+    import shutil
     src_dir = os.path.expanduser("~/.niu/lightrag_storage")
 
     # 拷贝真实 3 真相源到 tmp_path
@@ -1733,8 +1736,9 @@ async def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch)
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
-    from niu_api.internal.lightrag_repair import repair_relation_chunks
     from lightrag.constants import GRAPH_FIELD_SEP
+
+    from niu_api.internal.lightrag_repair import repair_relation_chunks
 
     result = await repair_relation_chunks()
 
@@ -1856,8 +1860,8 @@ class _FakeEmbedModel:
 @pytest.mark.asyncio
 async def test_repair_embedding_func_basic(monkeypatch):
     """验证 RepairEmbeddingFunc.__call__ 返回 np.ndarray + 维度 768。"""
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     # 用 monkeypatch 替换 get_model（避免加载真实模型）
     fake_model = _FakeEmbedModel(dim=768)
@@ -1879,8 +1883,8 @@ async def test_repair_embedding_func_basic(monkeypatch):
 @pytest.mark.asyncio
 async def test_repair_embedding_func_batches_over_32(monkeypatch):
     """验证 texts 超过 32 条时分批 encode，结果正确合并。"""
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -1924,8 +1928,8 @@ async def test_repair_embedding_func_dimension(monkeypatch):
 @pytest.mark.asyncio
 async def test_repair_embedding_func_model_none_raises(monkeypatch):
     """验证模型 None 时抛 RuntimeError。"""
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     # get_model 返回 None（模拟模型未加载）
     monkeypatch.setattr(niu_embedding, "get_model", lambda: None)
@@ -1941,8 +1945,8 @@ async def test_repair_embedding_func_is_async_callable(monkeypatch):
     """验证 RepairEmbeddingFunc 实例的 __call__ 是 async callable（可 await）。"""
     import inspect
 
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -2102,7 +2106,7 @@ async def test_repair_text_chunks_empty_user(monkeypatch, tmp_path):
     # （跟 LightRAG JsonKVStorage.initialize 内存空 dict 不写盘一致）
     tc_path = tmp_storage / "kv_store_text_chunks.json"
     assert not tc_path.exists(), (
-        f"text_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
+        "text_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -2324,7 +2328,7 @@ async def test_repair_doc_status_empty_user(monkeypatch, tmp_path):
     # （跟 LightRAG JsonDocStatusStorage.initialize 内存空 dict 不写盘一致）
     ds_path = tmp_storage / "kv_store_doc_status.json"
     assert not ds_path.exists(), (
-        f"doc_status.json 应不存在（全新用户不写派生文件），但被生成了"
+        "doc_status.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -2367,6 +2371,7 @@ def _load_vdb(vdb_path: Path) -> dict:
 def _decode_matrix(matrix_b64: str, embedding_dim: int = 768):
     """解码 vdb matrix 字段（base64(float32 bytes) → np.ndarray）。"""
     import base64
+
     import numpy as np
 
     raw = base64.b64decode(matrix_b64)
@@ -2383,6 +2388,7 @@ def _decode_vector(vector_b64: str):
     """解码 vdb 单条 vector 字段（base64(zlib(float16 bytes)) → np.ndarray）。"""
     import base64
     import zlib
+
     import numpy as np
 
     raw = base64.b64decode(vector_b64)
@@ -2401,8 +2407,8 @@ async def test_repair_vdb_chunks_real_data(monkeypatch, tmp_path):
     4. matrix 是 L2 归一化后的单位向量（每行模长 ≈ 1）
     5. vector 跟 matrix 对应行维度一致
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     real_storage = Path.home() / ".niu" / "lightrag_storage"
     if not real_storage.exists():
@@ -2493,8 +2499,8 @@ async def test_repair_vdb_chunks_empty_user(monkeypatch, tmp_path):
     v9 第 2 轮审查修复（问题 5+6 / I3+I2）：全新用户场景下 vdb_chunks.json 不应被写空，
     应保持不存在。
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -2523,7 +2529,7 @@ async def test_repair_vdb_chunks_empty_user(monkeypatch, tmp_path):
     # （跟 LightRAG NanoVectorDBStorage.initialize 内存空 dict 不写盘一致）
     vdb_path = tmp_storage / "vdb_chunks.json"
     assert not vdb_path.exists(), (
-        f"vdb_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
+        "vdb_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -2532,8 +2538,8 @@ async def test_repair_vdb_chunks_meta_fields_filter(monkeypatch, tmp_path):
     """meta_fields 过滤测试：构造 text_chunks 含 tokens/chunk_order_index/llm_cache_list，
     验证 vdb_chunks.json 落盘后这些字段被过滤掉（只保留 content/full_doc_id/file_path）。
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -2640,8 +2646,8 @@ async def test_repair_vdb_chunks_matrix_l2_normalized(monkeypatch, tmp_path):
     3. matrix 跟 data 数量一致
     4. 跟 vector 字段（float16 编码）维度一致
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -2734,9 +2740,10 @@ async def test_repair_vdb_entities_real_data(monkeypatch, tmp_path):
     5. content 格式 = f"{entity_name}\n{description}"（第一行是 entity_name）
     6. matrix 是 L2 归一化后的单位向量（每行模长 ≈ 1）
     """
-    from niu_api.internal import lightrag_repair
-    from niu_api.internal import embedding as niu_embedding
     from lightrag.utils import compute_mdhash_id
+
+    from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     real_storage = Path.home() / ".niu" / "lightrag_storage"
     if not real_storage.exists():
@@ -2842,8 +2849,8 @@ async def test_repair_vdb_entities_empty_user(monkeypatch, tmp_path):
     v9 第 2 轮审查修复（问题 5+6 / I3+I2）：全新用户场景下 vdb_entities.json 不应被写空，
     应保持不存在。
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -2878,7 +2885,7 @@ async def test_repair_vdb_entities_empty_user(monkeypatch, tmp_path):
     # （跟 LightRAG NanoVectorDBStorage.initialize 内存空 dict 不写盘一致）
     vdb_path = tmp_storage / "vdb_entities.json"
     assert not vdb_path.exists(), (
-        f"vdb_entities.json 应不存在（全新用户不写派生文件），但被生成了"
+        "vdb_entities.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -2893,9 +2900,10 @@ async def test_repair_vdb_entities_id_is_hash(monkeypatch, tmp_path):
     2. __id__ 跟 entity_name 原文不同（除了巧合 hash 等于 name 的极端情况）
     3. __id__ 全部以 "ent-" 前缀开头
     """
-    from niu_api.internal import lightrag_repair
-    from niu_api.internal import embedding as niu_embedding
     from lightrag.utils import compute_mdhash_id
+
+    from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -2983,8 +2991,8 @@ async def test_repair_vdb_entities_meta_fields_filter(monkeypatch, tmp_path):
     落盘字段：__id__ / __created_at__ / entity_name / source_id / content / file_path / vector
     被过滤字段：description / entity_type（v8 旧版会落盘，v9 走 storage 接口被过滤）
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -3097,9 +3105,10 @@ async def test_repair_vdb_relationships_real_data(monkeypatch, tmp_path):
     7. keywords 用 `", ".join(dict.fromkeys(...))` 去重保序（跨运行稳定）
     8. matrix 是 L2 归一化后的单位向量
     """
-    from niu_api.internal import lightrag_repair
-    from niu_api.internal import embedding as niu_embedding
     from lightrag.utils import compute_mdhash_id, make_relation_vdb_ids
+
+    from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     real_storage = Path.home() / ".niu" / "lightrag_storage"
     if not real_storage.exists():
@@ -3226,8 +3235,8 @@ async def test_repair_vdb_relationships_empty_user(monkeypatch, tmp_path):
     v9 第 2 轮审查修复（问题 5+6 / I3+I2）：全新用户场景下 vdb_relationships.json 不应被写空，
     应保持不存在。
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -3271,8 +3280,8 @@ async def test_repair_vdb_relationships_src_tgt_sorted(monkeypatch, tmp_path):
     跟 LightRAG operate.py L1586-1587/L2515-2516 一致：
         if src > tgt: src, tgt = tgt, src
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -3328,8 +3337,8 @@ async def test_repair_vdb_relationships_keywords_dedup(monkeypatch, tmp_path):
 
     v9 用 dict.fromkeys 保序去重（跟 LightRAG set 不完全一致但跨运行稳定）。
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -3394,8 +3403,8 @@ async def test_repair_vdb_relationships_content_format(monkeypatch, tmp_path):
         rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
     tab 分隔 keywords 和 src，换行分隔 src/tgt/description。
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -3467,8 +3476,8 @@ async def test_repair_vdb_relationships_meta_fields_filter(monkeypatch, tmp_path
     落盘字段：__id__ / __created_at__ / src_id / tgt_id / source_id / content / file_path / vector
     被过滤字段：keywords / description / weight
     """
-    from niu_api.internal import lightrag_repair
     from niu_api.internal import embedding as niu_embedding
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -3659,7 +3668,7 @@ async def test_repair_entity_chunks_empty_user(monkeypatch, tmp_path):
     # （跟 LightRAG JsonKVStorage.initialize 内存空 dict 不写盘一致）
     ec_path = tmp_storage / "kv_store_entity_chunks.json"
     assert not ec_path.exists(), (
-        f"entity_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
+        "entity_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -3669,8 +3678,9 @@ async def test_repair_entity_chunks_chunk_ids_is_list(monkeypatch, tmp_path):
 
     v8 bug：直接写 src 字符串没拆分；v9 用 split 拆分返回 list。
     """
-    from niu_api.internal import lightrag_repair
     from lightrag.constants import GRAPH_FIELD_SEP
+
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -3912,7 +3922,7 @@ async def test_repair_relation_chunks_empty_user(monkeypatch, tmp_path):
     # 全新用户场景下 relation_chunks.json 应保持不存在
     rc_path = tmp_storage / "kv_store_relation_chunks.json"
     assert not rc_path.exists(), (
-        f"relation_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
+        "relation_chunks.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -3925,9 +3935,10 @@ async def test_repair_relation_chunks_key_format(monkeypatch, tmp_path):
     2. 即使 GraphML 里 src > tgt（乱序），key 仍是 sorted 后的
     3. key 是单个字符串（不是 tuple/list）
     """
-    from niu_api.internal import lightrag_repair
     from lightrag.constants import GRAPH_FIELD_SEP
     from lightrag.utils import make_relation_chunk_key, parse_relation_chunk_key
+
+    from niu_api.internal import lightrag_repair
 
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
@@ -4208,7 +4219,7 @@ async def test_repair_full_entities_empty_user(monkeypatch, tmp_path):
     # （跟 LightRAG JsonKVStorage.initialize 内存空 dict 不写盘一致）
     fe_path = tmp_storage / "kv_store_full_entities.json"
     assert not fe_path.exists(), (
-        f"full_entities.json 应不存在（全新用户不写派生文件），但被生成了"
+        "full_entities.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -4242,7 +4253,7 @@ async def test_repair_full_entities_value_is_dict_not_list(monkeypatch, tmp_path
     with open(fe_path, encoding="utf-8") as f:
         fe = json.load(f)
 
-    for doc_id, fe_value in fe.items():
+    for _doc_id, fe_value in fe.items():
         # 核心断言：value 是 dict，不是 list（v8 bug 是直接写 list）
         assert isinstance(fe_value, dict), (
             f"fe_value 应是 dict（含 entity_names/count/_id/...），"
@@ -4290,7 +4301,7 @@ async def test_repair_full_entities_entity_names_not_sorted(monkeypatch, tmp_pat
     with open(fe_path, encoding="utf-8") as f:
         fe = json.load(f)
 
-    for doc_id, fe_value in fe.items():
+    for _doc_id, fe_value in fe.items():
         entity_names = fe_value["entity_names"]
         # 是 list
         assert isinstance(entity_names, list)
@@ -4333,7 +4344,7 @@ async def test_repair_full_entities_count_field(monkeypatch, tmp_path):
     with open(fe_path, encoding="utf-8") as f:
         fe = json.load(f)
 
-    for doc_id, fe_value in fe.items():
+    for _doc_id, fe_value in fe.items():
         # count 是 int
         assert isinstance(fe_value["count"], int), (
             f"count 应是 int，实际 type={type(fe_value['count'])}, value={fe_value['count']!r}"
@@ -4473,7 +4484,7 @@ async def test_repair_full_relations_empty_user(monkeypatch, tmp_path):
     # （跟 LightRAG JsonKVStorage.initialize 内存空 dict 不写盘一致）
     fr_path = tmp_storage / "kv_store_full_relations.json"
     assert not fr_path.exists(), (
-        f"full_relations.json 应不存在（全新用户不写派生文件），但被生成了"
+        "full_relations.json 应不存在（全新用户不写派生文件），但被生成了"
     )
 
 
@@ -4508,7 +4519,7 @@ async def test_repair_full_relations_value_is_dict_not_list(monkeypatch, tmp_pat
     with open(fr_path, encoding="utf-8") as f:
         fr = json.load(f)
 
-    for doc_id, fr_value in fr.items():
+    for _doc_id, fr_value in fr.items():
         # 核心断言：value 是 dict，不是 list
         assert isinstance(fr_value, dict), (
             f"fr_value 应是 dict（含 relation_pairs/count/_id/...），"
@@ -5304,11 +5315,12 @@ def test_repair_all_async_restart_after_repair(tmp_path, monkeypatch):
     )
 
     # 4. 验证派生文件可被 LightRAG storage 重新加载（模拟重启后 LightRAG 启动）
-    from niu_api.internal import lightrag_repair as repair_module
-    from lightrag.kg.shared_storage import initialize_share_data, set_default_workspace
     from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
+    from lightrag.kg.shared_storage import initialize_share_data, set_default_workspace
     from lightrag.namespace import NameSpace
+
+    from niu_api.internal import lightrag_repair as repair_module
 
     async def _verify_storage_reload():
         """验证 9 派生文件能被 storage 重新加载（模拟 LightRAG 启动）。"""

@@ -21,8 +21,8 @@ if str(PHOTO_SERVER_SRC) not in sys.path:
 
 def test_prerequisites():
     """Verify that all required components exist."""
-    from agent.tool_registry import ToolRegistry, get_registry, reset_registry
     from agent.mcp_loader import load_mcp_tools
+    from agent.tool_registry import ToolRegistry, get_registry, reset_registry
 
     # Test ToolRegistry
     registry = ToolRegistry()
@@ -39,8 +39,8 @@ def test_prerequisites():
 
 def test_load_mcp_tools():
     """Test loading MCP tools into ToolRegistry."""
-    from agent.tool_registry import reset_registry
     from agent.mcp_loader import load_mcp_tools
+    from agent.tool_registry import reset_registry
 
     # Reset registry to ensure clean state
     reset_registry()
@@ -115,8 +115,8 @@ def test_performance_benchmark(tmp_path):
     Args:
         tmp_path: Pytest fixture providing a temporary directory
     """
-    from agent.tool_registry import get_registry, reset_registry
     from agent.mcp_loader import load_mcp_tools
+    from agent.tool_registry import reset_registry
 
     # Setup: Load tools
     reset_registry()

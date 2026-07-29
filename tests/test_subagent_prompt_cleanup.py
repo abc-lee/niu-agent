@@ -73,7 +73,7 @@ def test_guide_marker_upgraded_to_v2():
 
 def test_context_manager_still_not_injected():
     """context-manager 仍不被注入守则（回归保护）"""
-    from agent.subagent import build_subagent_system_segments, _SUBAGENT_ASK_GUIDE_MARKER
+    from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER, build_subagent_system_segments
 
     static_system, _ = build_subagent_system_segments("context-manager")
     assert _SUBAGENT_ASK_GUIDE_MARKER not in static_system

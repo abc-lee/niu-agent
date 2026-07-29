@@ -1,10 +1,11 @@
 """P2-1: 测试工具重复调用检测"""
-import pytest
 import sys
+
+import pytest
+
 sys.path.insert(0, "E:/tools/ai-bot")
 
 from agent.handler import NiuHandler
-from agent.generic.agent_loop import StepOutcome
 
 
 @pytest.mark.p2
@@ -48,7 +49,7 @@ class TestToolDuplicateDetection:
     def test_detect_repeated_calls(self, handler):
         """测试检测重复调用"""
         # 添加 3 次相同的工具调用
-        for i in range(3):
+        for _i in range(3):
             handler.tool_after_callback("same_tool", {"arg": "same_value"}, None, {"status": "error"})
 
         # 更新轮数
@@ -80,7 +81,7 @@ class TestToolDuplicateDetection:
     def test_no_warning_for_low_turns(self, handler):
         """测试低轮次不触发检测"""
         # 添加重复调用
-        for i in range(3):
+        for _i in range(3):
             handler.tool_after_callback("same_tool", {"arg": "value"}, None, {"status": "error"})
 
         # 低轮次（turn <= 3）

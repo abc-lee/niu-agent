@@ -12,6 +12,7 @@ import threading
 import time
 from asyncio import sleep as _asyncio_sleep
 from datetime import datetime
+from typing import NamedTuple
 
 from agent.session import get_message_store
 from agent.subagent import (
@@ -19,14 +20,11 @@ from agent.subagent import (
     _read_context_window_tokens,
     _read_max_output_tokens,
     _read_protect_recent_count,
-    _read_target_threshold,
     _read_warning_threshold,
-    call_subagent_with_auto_answer,
 )
 from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
-from typing import NamedTuple
 
 
 class CascadeDeleteResult(NamedTuple):
@@ -1150,6 +1148,7 @@ async def get_llm_status() -> dict:
     """检测 LLM 是否已配置可用（直接从文件读取，不走缓存）"""
     import json
     from pathlib import Path
+
     from niu_api.config import CONFIG_PATH
 
     config_path = Path(CONFIG_PATH)
@@ -1176,8 +1175,9 @@ async def test_llm(request: Request) -> dict:
     请求体可选：传入 config 字典则用它测试（配置页面预保存测试）；
     不传或为空则从 user-config.json 读取（启动器验证）。
     """
-    from niu_api.llm_proxy import get_llm_config
     from agent.generic.litellm_adapter import LiteLLMSession
+
+    from niu_api.llm_proxy import get_llm_config
 
     # 读取配置：优先用请求体，否则从文件读取
     try:
@@ -1254,7 +1254,7 @@ async def test_llm(request: Request) -> dict:
 
         provider = config.get("provider", "") or config.get("type", "openai")
         return {"success": True, "message": f"模型测试通过 (model={config.get('model')}, provider={provider})"}
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {"success": False, "error": "连接超时，请检查网络和 API 地址"}
     except Exception as e:
         error_msg = str(e)
@@ -1402,7 +1402,7 @@ async def _probe_tier_three_samples_async(try_fn, response_format: dict) -> tupl
         while True:
             try:
                 result, raw = await try_fn()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 result, raw = "timeout", "TimeoutError: 采样超时（30s）"
 
             if result in ("rate_limited", "timeout"):
@@ -1496,7 +1496,7 @@ async def probe_response_format(request: Request) -> dict:
 
     约束：本端点独立于 /api/test-llm（启动器复用，禁止改动响应结构）。
     """
-    from typing import Optional
+
     from agent.generic.litellm_adapter import LiteLLMSession
 
     try:
@@ -1560,7 +1560,7 @@ async def probe_response_format(request: Request) -> dict:
 
     messages = _build_probe_messages()
 
-    def _try_tier(response_format: Optional[dict]) -> tuple[str, str]:
+    def _try_tier(response_format: dict | None) -> tuple[str, str]:
         """单次采样。返回 (tier_result, raw_text_or_reason)。
 
         判定逻辑：
@@ -1593,13 +1593,17 @@ async def probe_response_format(request: Request) -> dict:
         API Key 失效/网关 500 的用户被永久静默降级，且永不重探。基础设施错误
         应该端点早返 probe_failed，不写配置，用户稍后手动重试。
         """
-        from litellm import (
-            RateLimitError, BadRequestError, UnsupportedParamsError,
-            AuthenticationError, APIConnectionError, InternalServerError,
-            ServiceUnavailableError,
-        )
         import litellm
         import openai
+        from litellm import (
+            APIConnectionError,
+            AuthenticationError,
+            BadRequestError,
+            InternalServerError,
+            RateLimitError,
+            ServiceUnavailableError,
+            UnsupportedParamsError,
+        )
 
         try:
             session = LiteLLMSession(cfg=base_llm_config)
@@ -1949,7 +1953,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             )
             try:
                 await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[Chat Session] Force compression skipped: tidy lock held by another operation")
                 tidy_result = {"status": "skipped", "reason": "lock_busy"}
             else:
@@ -2085,7 +2089,7 @@ async def add_context_message(request: dict) -> dict:
 async def clear_chat() -> dict:
     """Clear all messages (for /new and /clear commands)"""
     # 先请求停止当前 Agent 工作
-    from agent.runner import request_stop, clear_stop
+    from agent.runner import clear_stop, request_stop
     request_stop()
 
     # 获取锁，防止与正在进行的 chat 冲突
@@ -2166,7 +2170,7 @@ async def tidy_context(request: dict):
     # 加锁防止并发：手动触发和自动触发互斥，超时10秒避免死锁
     try:
         await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("[Tidy] tidy_context skipped: tidy lock held by another operation")
         return {"status": "skipped", "reason": "lock_busy"}
     try:
@@ -2240,8 +2244,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             display_tokens = estimated_tokens
             logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
+        from agent.runner import clear_stop, is_stop_requested
         from agent.subagent import call_subagent_with_auto_answer
-        from agent.runner import is_stop_requested, clear_stop
 
         from niu_api.chat import get_or_create_runner
 
@@ -2603,7 +2607,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 suggest_release = max(display_tokens - target_tokens, 0)
                 if suggest_release == 0:
                     # 当前已在目标范围内，不需要压缩
-                    logger.info(f"[Tidy] Mode-2: already at target, skipping compression")
+                    logger.info("[Tidy] Mode-2: already at target, skipping compression")
                     _skip_compress = True
                 elif suggest_release < int(display_tokens * 0.05):
                     # 释放量太小（<5%），不值得压缩一轮，跳过
@@ -2744,7 +2748,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         try:
                             await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
                             _chat_lock_acquired = True
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             logger.warning("[Tidy] Mode-2: chat_lock 60s timeout, aborting execution")
 
                         if not _chat_lock_acquired:
@@ -2756,7 +2760,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         elif _q._processing:
                             try:
                                 await asyncio.wait_for(_q._processing_done.wait(), timeout=30.0)
-                            except asyncio.TimeoutError:
+                            except TimeoutError:
                                 logger.warning("[Tidy] Mode-2: ChatQueue processing timeout, aborting execution")
                                 if _chat_lock_acquired:
                                     _chat_lock.release()
@@ -2838,7 +2842,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                                     dangling_ids = cleanup["dangling_tc_ids"]
                                     m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
                                     if m and getattr(m, "tool_calls", None):
-                                        tcs = getattr(m, "tool_calls")
+                                        tcs = m.tool_calls
                                         if isinstance(tcs, str):
                                             tcs = json.loads(tcs)
                                         valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
@@ -3438,7 +3442,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     try:
                         await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
                         _f_chat_lock_acquired = True
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.warning("[Tidy] Force: chat_lock 60s timeout, aborting execution")
 
                     if not _f_chat_lock_acquired:
@@ -3450,7 +3454,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     elif _fq._processing:
                         try:
                             await asyncio.wait_for(_fq._processing_done.wait(), timeout=30.0)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             logger.warning("[Tidy] Force: ChatQueue processing timeout, aborting execution")
                             if _f_chat_lock_acquired:
                                 _chat_lock.release()
@@ -3556,7 +3560,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             dangling_ids = cleanup["dangling_tc_ids"]
                             m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
                             if m and getattr(m, "tool_calls", None):
-                                tcs = getattr(m, "tool_calls")
+                                tcs = m.tool_calls
                                 if isinstance(tcs, str):
                                     tcs = json.loads(tcs)
                                 valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]

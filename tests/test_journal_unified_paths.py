@@ -22,8 +22,9 @@ pytestmark = pytest.mark.skipif(
     not os.environ.get("RUN_INTEGRATION_TESTS"),
     reason="集成测试需要程序运行+真实LLM，设置 RUN_INTEGRATION_TESTS=1 启用",
 )
-import requests
 from pathlib import Path
+
+import requests
 
 API_BASE = "http://localhost:9876"
 NIU_DIR = Path.home() / ".niu"
@@ -81,8 +82,8 @@ def test_force_tidy_triggers_journal():
     content = JOURNAL_PATH.read_text(encoding="utf-8")
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
-    assert f"# {today}" in content, f"Today's date header not found in journal.md"
-    print(f"[PASS] Force tidy: journal.md contains today's entries")
+    assert f"# {today}" in content, "Today's date header not found in journal.md"
+    print("[PASS] Force tidy: journal.md contains today's entries")
 
 
 def test_chat_triggers_journal_via_handler():
@@ -103,7 +104,7 @@ def test_chat_triggers_journal_via_handler():
         if new_cursor != old_cursor:
             print(f"[PASS] Path-1: cursor updated {old_cursor[:8]}... -> {new_cursor[:8]}...")
         else:
-            print(f"[WARN] Path-1: cursor not updated (may be no new messages)")
+            print("[WARN] Path-1: cursor not updated (may be no new messages)")
     else:
         print("[WARN] Path-1: cursor file missing")
 
@@ -119,8 +120,8 @@ def test_journal_format_consistency():
     entries = re.findall(r'^- \d{2}:\d{2} .+ \| .+ \| .+ \| .+', content, re.MULTILINE)
     print(f"[INFO] Found {len(entries)} journal entries")
 
-    assert len(date_headers) == len(set(date_headers)), f"Duplicate date headers found"
-    print(f"[PASS] No duplicate date headers")
+    assert len(date_headers) == len(set(date_headers)), "Duplicate date headers found"
+    print("[PASS] No duplicate date headers")
 
 
 if __name__ == "__main__":

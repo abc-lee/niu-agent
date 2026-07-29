@@ -6,11 +6,9 @@ model switching, and backward compatibility.
 """
 
 import json
-import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
+from unittest.mock import MagicMock, patch
 
 # ============== SUPPORTED_MODELS Tests ==============
 
@@ -54,7 +52,7 @@ class TestConfigReading:
     """Test _get_embedding_model_name() reading from preferences.json."""
 
     def test_default_when_no_prefs(self):
-        from niu_api.internal.embedding import _get_embedding_model_name, DEFAULT_MODEL
+        from niu_api.internal.embedding import DEFAULT_MODEL, _get_embedding_model_name
         with patch("pathlib.Path.home", return_value=Path("/nonexistent")):
             result = _get_embedding_model_name()
             assert result == DEFAULT_MODEL
@@ -90,7 +88,7 @@ class TestConfigReading:
                 assert result == "bge-base-zh-v1.5"
 
     def test_falls_back_on_unknown_model(self):
-        from niu_api.internal.embedding import _get_embedding_model_name, DEFAULT_MODEL
+        from niu_api.internal.embedding import DEFAULT_MODEL, _get_embedding_model_name
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"
             prefs_path.parent.mkdir(parents=True)
@@ -103,7 +101,7 @@ class TestConfigReading:
                 assert result == DEFAULT_MODEL
 
     def test_falls_back_on_empty_model(self):
-        from niu_api.internal.embedding import _get_embedding_model_name, DEFAULT_MODEL
+        from niu_api.internal.embedding import DEFAULT_MODEL, _get_embedding_model_name
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"
             prefs_path.parent.mkdir(parents=True)
@@ -158,7 +156,7 @@ class TestGetCurrentModelInfo:
         assert isinstance(info["loaded"], bool)
 
     def test_loaded_status_after_model_load(self):
-        from niu_api.internal.embedding import get_current_model_info, _model
+        from niu_api.internal.embedding import get_current_model_info
         # Simulate model loaded
         with patch("niu_api.internal.embedding._model", MagicMock()):
             with patch("niu_api.internal.embedding._model_name", "minilm-l12"):
@@ -231,8 +229,8 @@ class TestSwitchModel:
                 assert updated_prefs["lightrag"]["embedding_model"] == "minilm-l12"
 
     def test_forces_model_unload(self):
-        from niu_api.internal.embedding import switch_model, _model, _model_name
         import niu_api.internal.embedding as emb_module
+        from niu_api.internal.embedding import switch_model
 
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"
@@ -244,7 +242,7 @@ class TestSwitchModel:
                 mock_path.side_effect = lambda x: Path(x)
 
                 # After switch, model should be unloaded
-                result = switch_model("minilm-l12")
+                switch_model("minilm-l12")
                 with emb_module._model_lock:
                     assert emb_module._model is None
                     assert emb_module._model_name is None

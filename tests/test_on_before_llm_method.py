@@ -7,8 +7,10 @@
 4. 首轮（turn=1）合并 _first_turn_extra_injection（C4：拖入文件 resources 模式要求）
 5. 第二轮（turn=2）不再合并（C4：实例属性已清空）
 """
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from agent.runner import NiuRunner
 
 

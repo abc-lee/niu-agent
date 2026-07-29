@@ -1,8 +1,5 @@
 """Tests for channel abstraction layer: UnifiedMessage + ChannelRouter."""
-import asyncio
-from unittest.mock import AsyncMock, patch
-
-import pytest
+from unittest.mock import AsyncMock
 
 from niu_api.channel import ChannelRouter, get_channel_router
 from niu_api.channel.base import ChannelAdapter, UnifiedMessage

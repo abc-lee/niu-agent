@@ -11,13 +11,14 @@ Remaining HTTP endpoints:
 - GET /llm/v1/status — LightRAG and model status
 """
 
-import json
 import asyncio
+import json
 import time
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from loguru import logger
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 
@@ -46,29 +47,29 @@ class OpenAIMessage(BaseModel):
     """OpenAI message format"""
 
     role: str
-    content: Optional[str] = None  # Can be None when tool_calls present
-    name: Optional[str] = None
-    tool_calls: Optional[List[OpenAIToolCall]] = None
+    content: str | None = None  # Can be None when tool_calls present
+    name: str | None = None
+    tool_calls: list[OpenAIToolCall] | None = None
 
 
 class OpenAITool(BaseModel):
     """OpenAI tool definition"""
 
     type: str = "function"
-    function: Dict[str, Any]
+    function: dict[str, Any]
 
 
 class OpenAIChatRequest(BaseModel):
     """OpenAI chat completions request"""
 
     model: str
-    messages: List[OpenAIMessage]
-    temperature: Optional[float] = 1.0
-    tools: Optional[List[OpenAITool]] = None
-    tool_choice: Optional[Any] = None
-    parallel_tool_calls: Optional[bool] = False
-    response_format: Optional[Dict[str, Any]] = None  # {"type":"json_object"} or structured schema
-    stream: Optional[bool] = False
+    messages: list[OpenAIMessage]
+    temperature: float | None = 1.0
+    tools: list[OpenAITool] | None = None
+    tool_choice: Any | None = None
+    parallel_tool_calls: bool | None = False
+    response_format: dict[str, Any] | None = None  # {"type":"json_object"} or structured schema
+    stream: bool | None = False
 
 
 class OpenAIChatResponseChoice(BaseModel):
@@ -94,7 +95,7 @@ class OpenAIChatResponse(BaseModel):
     object: str = "chat.completion"
     created: int
     model: str
-    choices: List[OpenAIChatResponseChoice]
+    choices: list[OpenAIChatResponseChoice]
     usage: OpenAIUsage
 
 
@@ -103,7 +104,7 @@ class OpenAIChatResponse(BaseModel):
 # ============================================================================
 
 
-def openai_to_litellm_messages(openai_messages: List[OpenAIMessage]) -> List[Dict[str, Any]]:
+def openai_to_litellm_messages(openai_messages: list[OpenAIMessage]) -> list[dict[str, Any]]:
     """Convert OpenAI messages to LiteLLM format"""
     litellm_messages = []
     for msg in openai_messages:
@@ -117,7 +118,7 @@ def openai_to_litellm_messages(openai_messages: List[OpenAIMessage]) -> List[Dic
     return litellm_messages
 
 
-def openai_to_litellm_tools(openai_tools: Optional[List[OpenAITool]]) -> Optional[List[Dict[str, Any]]]:
+def openai_to_litellm_tools(openai_tools: list[OpenAITool] | None) -> list[dict[str, Any]] | None:
     """Convert OpenAI tools to LiteLLM format"""
     if not openai_tools:
         return None
@@ -130,10 +131,9 @@ def openai_to_litellm_tools(openai_tools: Optional[List[OpenAITool]]) -> Optiona
 
 
 def litellm_to_openai_response(
-    litellm_response: Dict[str, Any], model: str
+    litellm_response: dict[str, Any], model: str
 ) -> OpenAIChatResponse:
     """Convert LiteLLM response to OpenAI format"""
-    import time
     import uuid
 
     choices = []
@@ -188,7 +188,7 @@ def litellm_to_openai_response(
 # ============================================================================
 
 
-def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
+def get_llm_config(use_lightrag_config: bool = False) -> dict[str, str]:
     """Read LLM config from file.
 
     Args:
@@ -201,6 +201,7 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
             用户可在 lightrag_llm 段显式设置 reasoning_effort 覆盖默认值。
     """
     from pathlib import Path
+
     from niu_api.config import CONFIG_PATH
 
     config_path = Path(CONFIG_PATH)
@@ -261,19 +262,18 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
 
 
 async def call_llm_via_litellm(
-    messages: List[Dict[str, Any]],
-    tools: Optional[List[Dict[str, Any]]] = None,
-    response_format: Optional[Dict[str, Any]] = None,
-    config: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
+    config: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """
     Call LLM using LiteLLM (through GenericAgent's LiteLLMSession)
 
     This ensures full SDK path is used.
     """
-    import time
     start_time = time.time()
-    logger.info(f"[LLM Proxy] call_llm_via_litellm started")
+    logger.info("[LLM Proxy] call_llm_via_litellm started")
 
     if config is None:
         config = get_llm_config()
@@ -376,7 +376,7 @@ async def call_llm_via_litellm(
         logger.info(f"[LLM Proxy] call_llm_via_litellm completed in {elapsed:.2f}s")
         return response
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("[LLM Proxy] LLM call timed out after 180s")
         raise HTTPException(status_code=504, detail="LLM call timed out")
     except Exception as e:

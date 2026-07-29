@@ -2,13 +2,15 @@
 
 用真实 LLM 调一个简短任务（"直接回复 OK"）。
 """
-import os
 import asyncio
+import os
 import threading
 import time
+
 import pytest
-from agent.subagent_registry import SubagentRegistry
+
 from agent.main_agent_request_queue import get_main_agent_request_queue
+from agent.subagent_registry import SubagentRegistry
 
 
 @pytest.fixture
@@ -33,8 +35,8 @@ def test_dispatch_async_subagent_returns_immediately_with_unique_name(llm_config
 
     # 阶段二关键：_dispatch_async_subagent 依赖 niu_api.chat._main_loop（主 asyncio loop）
     # 测试必须设置 _main_loop，否则 _dispatch_async_subagent 返回错误
-    from niu_api.chat import set_main_event_loop
     from agent.subagent import _dispatch_async_subagent
+    from niu_api.chat import set_main_event_loop
 
     # 清空 MainAgentRequestQueue
     q = get_main_agent_request_queue()
@@ -81,10 +83,10 @@ def test_run_subagent_async_pushes_completion_to_queue(llm_config):
     if not llm_config["apikey"]:
         pytest.skip("LLM API key not configured")
 
-    from niu_api.chat import set_main_event_loop
     from agent.subagent import _run_subagent_async
     from agent.subagent_memory import SubagentMemoryContext
     from agent.subagent_supplement import SubagentSupplementQueue
+    from niu_api.chat import set_main_event_loop
 
     # 清空队列
     q = get_main_agent_request_queue()

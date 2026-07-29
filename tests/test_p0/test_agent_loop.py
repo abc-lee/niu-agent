@@ -1,7 +1,9 @@
 """P0-6: 测试 JSON 解析异常处理"""
-import pytest
-import sys
 import json
+import sys
+
+import pytest
+
 sys.path.insert(0, "E:/tools/ai-bot")
 
 from agent.generic.llmcore import MockResponse, MockToolCall

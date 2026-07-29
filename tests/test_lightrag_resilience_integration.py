@@ -1,7 +1,5 @@
 """LightRAG 韧性集成测试——v6 用户决策驱动启动流程"""
-from unittest import mock
 
-import pytest
 
 
 def test_phase1_only_checks_no_backup_or_cleanup(monkeypatch):
@@ -15,7 +13,7 @@ def test_phase1_only_checks_no_backup_or_cleanup(monkeypatch):
     # 验证 lightrag_backup 模块不存在（已删除）
     try:
         import niu_api.internal.lightrag_backup  # noqa: F401
-        assert False, "lightrag_backup 模块应已删除"
+        raise AssertionError("lightrag_backup 模块应已删除")
     except ImportError:
         pass  # 预期：模块已删除
 

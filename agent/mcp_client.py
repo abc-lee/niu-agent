@@ -1,7 +1,7 @@
 """MCP Client Manager — 管理外部 MCP 服务器连接（stdio + HTTP + Sampling）"""
 import asyncio
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class MCPClientManager:
     """管理所有 MCP Client 连接（stdio + HTTP）"""
 
-    def __init__(self, sampling_callback: Optional[Callable] = None):
+    def __init__(self, sampling_callback: Callable | None = None):
         self._connections: dict = {}  # server_name -> ClientSession
         self._connection_contexts: dict = {}  # server_name -> (transport_cm, session_cm) 用于清理
         self._sampling_callback = sampling_callback
@@ -128,7 +128,7 @@ def make_sampling_callback():
 
     async def sampling_callback(context, params) -> CreateMessageResult:
         try:
-            from niu_api.llm_proxy import get_llm_config, call_llm_via_litellm
+            from niu_api.llm_proxy import call_llm_via_litellm, get_llm_config
             config = get_llm_config()
 
             messages = []

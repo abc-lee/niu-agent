@@ -14,8 +14,9 @@ class ElectronChannelAdapter(ChannelAdapter):
 
     async def push(self, channel_id: str, content: str) -> None:
         """主动推送 — 通过 SSE 事件总线推送"""
-        from niu_api.chat import notify_new_message_sync
         import uuid
+
+        from niu_api.chat import notify_new_message_sync
 
         msg_id = str(uuid.uuid4())
         notify_new_message_sync(msg_id, "assistant", content, source="electron")

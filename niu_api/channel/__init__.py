@@ -1,9 +1,10 @@
 """通道抽象层 — ChannelRouter + 全局单例"""
 
 from typing import Dict, Optional
+
 from loguru import logger
 
-from .base import UnifiedMessage, ChannelAdapter, ResolvedMessage, LocalResource
+from .base import ChannelAdapter, LocalResource, ResolvedMessage, UnifiedMessage
 
 __all__ = ["ChannelRouter", "get_channel_router", "UnifiedMessage", "ChannelAdapter", "ResolvedMessage", "LocalResource"]
 
@@ -12,7 +13,7 @@ class ChannelRouter:
     """统一消息路由器 — 所有通道的消息统一交给 ChatQueue 处理"""
 
     def __init__(self):
-        self.channels: Dict[str, ChannelAdapter] = {}
+        self.channels: dict[str, ChannelAdapter] = {}
 
     async def route_in(self, message: UnifiedMessage) -> str:
         """所有通道的消息统一交给 ChatQueue 处理（异步入队）
@@ -97,7 +98,7 @@ class ChannelRouter:
 
 
 # 全局单例
-_router: Optional[ChannelRouter] = None
+_router: ChannelRouter | None = None
 
 
 def get_channel_router() -> ChannelRouter:

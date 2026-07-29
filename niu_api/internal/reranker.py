@@ -13,7 +13,6 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import List, Optional
 
 from loguru import logger
 
@@ -55,7 +54,7 @@ def _get_reranker_model_name() -> str:
 # ============== Model Loading ==============
 
 _reranker_model = None
-_reranker_name: Optional[str] = None
+_reranker_name: str | None = None
 
 
 def get_models_dir() -> Path:
@@ -118,7 +117,7 @@ def get_reranker():
     return _reranker_model
 
 
-def rerank(query: str, documents: List[str], top_k: int = 5) -> List[dict]:
+def rerank(query: str, documents: list[str], top_k: int = 5) -> list[dict]:
     """Rerank documents against a query.
 
     Returns list of dicts with 'index', 'text', 'score' keys,
@@ -156,7 +155,7 @@ def make_lightrag_reranker_callable():
     if _get_reranker_model_name() == "none":
         return None
 
-    def lightrag_reranker(query: str, documents: List[str]) -> List[tuple]:
+    def lightrag_reranker(query: str, documents: list[str]) -> list[tuple]:
         """LightRAG-compatible reranker callable.
 
         Args:

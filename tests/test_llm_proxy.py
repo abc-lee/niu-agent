@@ -6,9 +6,9 @@ direct LLM call functions, and remaining HTTP endpoints
 (/llm/v1/models, /llm/v1/health, /llm/v1/status).
 """
 
-import json
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -116,7 +116,7 @@ class TestFormatConversion:
     """Test OpenAI ↔ LiteLLM format conversion utilities."""
 
     def test_openai_to_litellm_messages(self):
-        from niu_api.llm_proxy import openai_to_litellm_messages, OpenAIMessage
+        from niu_api.llm_proxy import OpenAIMessage, openai_to_litellm_messages
         messages = [
             OpenAIMessage(role="system", content="You are helpful"),
             OpenAIMessage(role="user", content="Hello"),
@@ -127,7 +127,7 @@ class TestFormatConversion:
         assert result[1]["role"] == "user"
 
     def test_openai_to_litellm_messages_with_name(self):
-        from niu_api.llm_proxy import openai_to_litellm_messages, OpenAIMessage
+        from niu_api.llm_proxy import OpenAIMessage, openai_to_litellm_messages
         messages = [
             OpenAIMessage(role="tool", content="result", name="tool_name"),
         ]

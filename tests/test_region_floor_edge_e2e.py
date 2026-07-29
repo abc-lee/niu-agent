@@ -11,9 +11,9 @@
 **前置条件**：需要 bge-base-zh-v1.5 模型（约 390MB）。模型不存在时自动 skip。
 """
 import shutil
-import pytest
 from pathlib import Path
 
+import pytest
 
 # 前置条件检查：bge-base-zh-v1.5 模型必须存在，否则 skip 整个模块
 _MODELS_DIR = Path(__file__).parent.parent / "models" / "bge-base-zh-v1.5"
@@ -83,10 +83,10 @@ def test_floor_edge_entity_participates_in_real_detect_communities():
     验证保底边实体出现在 partition 成员里"""
     # 注意：在 fixture monkeypatch.setattr 之后才 import，确保拿到的是 patched 状态
     from niu_api.internal import lightrag_manager as lm
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter
     from niu_api.internal.lightrag_manager import find_entities_with_single_floor_edge
     from niu_api.internal.region_detector import CommunityDetector
-    from niu_api.internal.lightrag_adapter import LightRAGAdapter
-    from niu_api.internal.region_manager import FLOOR_WEIGHT, INITIAL_WEIGHT, BELONGS_TO_RELATION
+    from niu_api.internal.region_manager import BELONGS_TO_RELATION, FLOOR_WEIGHT, INITIAL_WEIGHT
 
     rag = lm.get_lightrag()
     assert rag is not None, "LightRAG 初始化失败"

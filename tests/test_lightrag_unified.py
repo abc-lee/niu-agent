@@ -8,8 +8,6 @@ Verifies that sync_photo_to_kg constructs Person entities correctly:
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 # Add photo-server source to path
 sys.path.insert(0, "E:/tools/ai-bot/mcp-servers/photo-server/src")
 
@@ -566,8 +564,6 @@ class TestMergePersonsKGSync:
 
         # We need different return values for different execute calls.
         # Use side_effect to return appropriate cursors for each call.
-        call_count = [0]
-        cursors_for_calls = {}
 
         def mock_execute(sql, params=None):
             sql_upper = sql.upper().strip()
@@ -743,7 +739,7 @@ class TestNoDirectNetworkXOrLightRAGIngesterInPhotoServer:
 
     def test_no_lightrag_ingester_import(self):
         """photo-server must NOT import LightRAGIngester."""
-        with open(self.PHOTO_SERVER_FILE, "r", encoding="utf-8") as f:
+        with open(self.PHOTO_SERVER_FILE, encoding="utf-8") as f:
             source = f.read()
         assert "LightRAGIngester" not in source, (
             "photo-server still imports LightRAGIngester. "
@@ -752,7 +748,7 @@ class TestNoDirectNetworkXOrLightRAGIngesterInPhotoServer:
 
     def test_no_lightrag_adapter_import(self):
         """photo-server must NOT import from lightrag_adapter."""
-        with open(self.PHOTO_SERVER_FILE, "r", encoding="utf-8") as f:
+        with open(self.PHOTO_SERVER_FILE, encoding="utf-8") as f:
             source = f.read()
         assert "lightrag_adapter" not in source, (
             "photo-server still imports from lightrag_adapter. "
@@ -761,7 +757,7 @@ class TestNoDirectNetworkXOrLightRAGIngesterInPhotoServer:
 
     def test_no_inject_entity_call(self):
         """photo-server must NOT call inject_entity (removed method)."""
-        with open(self.PHOTO_SERVER_FILE, "r", encoding="utf-8") as f:
+        with open(self.PHOTO_SERVER_FILE, encoding="utf-8") as f:
             source = f.read()
         assert ".inject_entity(" not in source, (
             "photo-server still calls inject_entity. "
@@ -770,7 +766,7 @@ class TestNoDirectNetworkXOrLightRAGIngesterInPhotoServer:
 
     def test_no_inject_relation_call(self):
         """photo-server must NOT call inject_relation (removed method)."""
-        with open(self.PHOTO_SERVER_FILE, "r", encoding="utf-8") as f:
+        with open(self.PHOTO_SERVER_FILE, encoding="utf-8") as f:
             source = f.read()
         assert ".inject_relation(" not in source, (
             "photo-server still calls inject_relation. "
@@ -779,7 +775,7 @@ class TestNoDirectNetworkXOrLightRAGIngesterInPhotoServer:
 
     def test_no_direct_networkx_operations(self):
         """photo-server must NOT use direct NetworkX graph operations."""
-        with open(self.PHOTO_SERVER_FILE, "r", encoding="utf-8") as f:
+        with open(self.PHOTO_SERVER_FILE, encoding="utf-8") as f:
             source = f.read()
         nx_patterns = [
             "_graph.add_node",
@@ -796,7 +792,7 @@ class TestNoDirectNetworkXOrLightRAGIngesterInPhotoServer:
 
     def test_no_lightrag_manager_direct_usage_in_sync_photo_to_kg(self):
         """sync_photo_to_kg must NOT call get_lightrag or call_async directly."""
-        with open(self.PHOTO_SERVER_FILE, "r", encoding="utf-8") as f:
+        with open(self.PHOTO_SERVER_FILE, encoding="utf-8") as f:
             source = f.read()
         # Find the sync_photo_to_kg function boundaries
         start = source.find("def sync_photo_to_kg(")
@@ -823,7 +819,7 @@ class TestNoInjectEntityOrInjectRelationInLightragAdapter:
 
     def test_no_inject_entity_method(self):
         """LightRAGIngester must NOT have inject_entity method."""
-        with open(self.ADAPTER_FILE, "r", encoding="utf-8") as f:
+        with open(self.ADAPTER_FILE, encoding="utf-8") as f:
             source = f.read()
         # Find the class boundaries
         start = source.find("class LightRAGIngester:")
@@ -840,7 +836,7 @@ class TestNoInjectEntityOrInjectRelationInLightragAdapter:
 
     def test_no_inject_relation_method(self):
         """LightRAGIngester must NOT have inject_relation method."""
-        with open(self.ADAPTER_FILE, "r", encoding="utf-8") as f:
+        with open(self.ADAPTER_FILE, encoding="utf-8") as f:
             source = f.read()
         start = source.find("class LightRAGIngester:")
         if start == -1:
@@ -926,7 +922,7 @@ class TestDeletedVectorStoreAndKGServer:
                         continue
                     fpath = os.path.join(root, fname)
                     try:
-                        with open(fpath, "r", encoding="utf-8") as f:
+                        with open(fpath, encoding="utf-8") as f:
                             source = f.read()
                     except Exception:
                         continue
@@ -936,7 +932,7 @@ class TestDeletedVectorStoreAndKGServer:
                             violations.append(f"{rel}: matches '{pattern}'")
 
         assert violations == [], (
-            f"Found Python files still importing from vector_search:\n"
+            "Found Python files still importing from vector_search:\n"
             + "\n".join(violations)
             + "\nAll vector_search references should be removed."
         )
@@ -960,7 +956,7 @@ class TestDeletedVectorStoreAndKGServer:
                         continue
                     fpath = os.path.join(root, fname)
                     try:
-                        with open(fpath, "r", encoding="utf-8") as f:
+                        with open(fpath, encoding="utf-8") as f:
                             source = f.read()
                     except Exception:
                         continue
@@ -969,7 +965,7 @@ class TestDeletedVectorStoreAndKGServer:
                         violations.append(rel)
 
         assert violations == [], (
-            f"Found Python files still referencing VectorSearchAdapter:\n"
+            "Found Python files still referencing VectorSearchAdapter:\n"
             + "\n".join(violations)
             + "\nAll VectorSearchAdapter references should be removed."
         )
@@ -982,7 +978,7 @@ class TestDeletedVectorStoreAndKGServer:
         if not os.path.isfile(yaml_path):
             return  # File removed entirely, that's fine
 
-        with open(yaml_path, "r", encoding="utf-8") as f:
+        with open(yaml_path, encoding="utf-8") as f:
             content = f.read()
 
         # Check that neither server name appears as a YAML key

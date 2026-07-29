@@ -1,8 +1,9 @@
 """SubagentRegistry 异步子 Agent 扩展单元测试（阶段二 Task 3）。"""
 import asyncio
-from agent.subagent_registry import SubagentRegistry, RunningSubagent
-from agent.subagent_supplement import SubagentSupplementQueue
+
 from agent.subagent_memory import SubagentMemoryContext
+from agent.subagent_registry import SubagentRegistry
+from agent.subagent_supplement import SubagentSupplementQueue
 
 
 def setup_function():
@@ -120,7 +121,7 @@ def test_register_force_unique_name_conflict():
             supplement_queue=sq2,
             force_unique_name="browser-operator",
         )
-        assert False, "应抛 ValueError（同名冲突）"
+        raise AssertionError("应抛 ValueError（同名冲突）")
     except ValueError as e:
         assert "browser-operator" in str(e)
         assert "已在运行" in str(e) or "已存在" in str(e)

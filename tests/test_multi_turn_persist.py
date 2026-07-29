@@ -22,7 +22,6 @@
 6. 验证修复后的逻辑能正确持久化两条 assistant 消息
 """
 
-import asyncio
 import json
 import os
 import sys
@@ -36,15 +35,13 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from agent.generic.agent_loop import (
-    agent_runner_loop,
     BaseHandler,
     StepOutcome,
     StreamEvent,
-    exhaust,
+    agent_runner_loop,
 )
 from agent.generic.litellm_adapter import create_litellm_client
 from agent.session import MessageStore
-
 
 # ---------------------------------------------------------------------------
 # 配置加载
@@ -53,7 +50,7 @@ from agent.session import MessageStore
 def _load_llm_config():
     """从 user-config.json 加载真实 LLM 配置"""
     config_path = os.path.join(PROJECT_ROOT, "config", "user-config.json")
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         data = json.load(f)
     llm = data.get("llm", {})
     # 统一键名为小写
@@ -351,7 +348,7 @@ def test_multi_turn_messages_structure():
         f"Event types: {[e.type if isinstance(e, StreamEvent) else type(e).__name__ for e in events]}"
     )
 
-    print(f"\n[Test1] PASSED: rv['messages'] structure verified")
+    print("\n[Test1] PASSED: rv['messages'] structure verified")
     print(f"  Total messages: {len(messages)}")
     print(f"  Message roles: {[m.get('role') for m in messages]}")
     print(f"  Assistant messages: {len(assistant_msgs)} (all with tool_calls)")
@@ -406,7 +403,7 @@ def test_reply_chunks_contains_plain_text():
     # assistant(tool_calls) 的 content 通常是空的或很短的
     tc_content = assistant_tc_msgs[0].get("content", "") or ""
 
-    print(f"\n[Test2] PASSED: reply_chunks contains plain text reply")
+    print("\n[Test2] PASSED: reply_chunks contains plain text reply")
     print(f"  Reply content (from StreamEvents): '{reply_content[:100]}'")
     print(f"  Assistant(tool_calls) content: '{tc_content[:100]}'")
     print(f"  Reply is different from tool_calls content: {reply_content.strip() != tc_content.strip()}")
@@ -489,7 +486,7 @@ async def test_current_persist_loses_plain_text():
             f"All assistant records: {[(bool(m.tool_calls), m.content[:50]) for m in assistant_msgs]}"
         )
 
-        print(f"\n[Test3] PASSED: Bug confirmed — plain-text reply lost in current logic")
+        print("\n[Test3] PASSED: Bug confirmed — plain-text reply lost in current logic")
         print(f"  Total DB records: {len(all_messages)}")
         print(f"  Assistant with tool_calls: {len(assistant_with_tc)}")
         print(f"  Assistant plain text: {len(assistant_plain)} (should be 0 — bug!)")
@@ -583,7 +580,7 @@ async def test_fixed_persist_saves_both_assistant_messages():
         # 验证纯文本 assistant 记录的 content 不为空
         plain_record = assistant_plain[0]
         assert plain_record.content.strip(), (
-            f"Plain-text assistant record has empty content"
+            "Plain-text assistant record has empty content"
         )
 
         # 验证纯文本 assistant 的 content 包含 reply_chunks 的内容
@@ -605,14 +602,14 @@ async def test_fixed_persist_saves_both_assistant_messages():
                 plain_index = i
 
         assert tc_index is not None and plain_index is not None, (
-            f"Both assistant records should exist in DB"
+            "Both assistant records should exist in DB"
         )
         assert tc_index < plain_index, (
             f"assistant(tool_calls) should come before plain-text assistant. "
             f"tc_index={tc_index}, plain_index={plain_index}"
         )
 
-        print(f"\n[Test4] PASSED: Fixed logic correctly persists both assistant messages")
+        print("\n[Test4] PASSED: Fixed logic correctly persists both assistant messages")
         print(f"  Total DB records: {len(all_messages)}")
         print(f"  Assistant with tool_calls: {len(assistant_with_tc)}")
         print(f"  Assistant plain text: {len(assistant_plain)}")
@@ -699,7 +696,7 @@ async def test_fixed_persist_plain_text_only():
             f"Reply: '{reply_content[:100]}'"
         )
 
-        print(f"\n[Test5] PASSED: Fixed logic works correctly for plain-text-only replies")
+        print("\n[Test5] PASSED: Fixed logic works correctly for plain-text-only replies")
         print(f"  Assistant records: {len(assistant_msgs)}")
         print(f"  Content: '{plain_record.content[:100]}'")
     finally:
@@ -885,7 +882,6 @@ async def test_compat_persist_logic_with_simulated_data():
         ],
     }
 
-    reply_chunks = ["echo 工具返回了：compat-test"]
 
     # 模拟 compat.py 的持久化逻辑
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
@@ -940,7 +936,7 @@ async def test_compat_persist_logic_with_simulated_data():
             f"Got {len(assistant_plain)} plain-text assistant records."
         )
 
-        print(f"\n[Test7] PASSED: compat.py has the same bug")
+        print("\n[Test7] PASSED: compat.py has the same bug")
         print(f"  last_assistant_id: {last_assistant_id}")
         print(f"  Plain-text assistant in DB: {len(assistant_plain)} (bug: should be 0)")
     finally:

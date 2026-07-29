@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from niu_api.internal.disk_engine import DiskEngine, DiskResult
+from niu_api.internal.disk_engine import DiskEngine
 
 
 @pytest.fixture

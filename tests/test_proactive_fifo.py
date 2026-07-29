@@ -1,8 +1,8 @@
 """最小验证测试：确保 agent_runner_loop 的 mock 方式正确"""
 import json
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
-from agent.generic.agent_loop import agent_runner_loop, StreamEvent, StepOutcome
+from agent.generic.agent_loop import StepOutcome, StreamEvent, agent_runner_loop
 from agent.generic.llmcore import MockResponse
 
 
@@ -263,7 +263,7 @@ def test_main_agent_calls_callback_on_high_usage():
         context_window_tokens=200000, context_fifo_threshold=0,
         context_target_threshold=100000, on_context_high_usage=my_callback,
     )
-    events = _collect_events(gen)
+    _collect_events(gen)
 
     # 回调应该被调用（第二轮开始时检测到第一轮的 170K prompt_tokens）
     assert callback_called["count"] >= 1, f"Callback should be called at least once, got {callback_called['count']}"
@@ -300,7 +300,7 @@ def test_sub_agent_fifo_pruning():
         context_target_threshold=100000, on_context_high_usage=None,
         history=big_history,
     )
-    events = _collect_events(gen)
+    _collect_events(gen)
 
     # 子Agent不调回调（on_context_high_usage=None）
     # 第二轮调用应该发生（循环没退出）
@@ -326,7 +326,7 @@ def test_no_pruning_when_below_warning():
         context_window_tokens=200000, context_fifo_threshold=0,
         context_target_threshold=100000, on_context_high_usage=my_callback,
     )
-    events = _collect_events(gen)
+    _collect_events(gen)
 
     # 回调不应该被调用（因为 50% < 80%）
     assert callback_called["count"] == 0, f"Callback should not be called, got {callback_called['count']}"
@@ -381,7 +381,7 @@ def test_callback_receives_correct_messages():
         context_window_tokens=200000, context_fifo_threshold=0,
         context_target_threshold=100000, on_context_high_usage=my_callback,
     )
-    events = _collect_events(gen)
+    _collect_events(gen)
 
     # 回调应该被调用
     assert received_messages["msgs"] is not None, "Callback should have been called"
@@ -395,7 +395,7 @@ def test_callback_receives_correct_messages():
 
 def test_truncate_tool_content_with_name():
     """截断标记应包含工具名"""
-    from agent.generic.agent_loop import _truncate_tool_content, MAX_TOOL_RESULT_CHARS
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, _truncate_tool_content
     long_content = "x" * (MAX_TOOL_RESULT_CHARS + 1000)
     result = _truncate_tool_content(long_content, "memory-server/user_memory_remember")
     assert "memory-server/user_memory_remember" in result
@@ -405,7 +405,7 @@ def test_truncate_tool_content_with_name():
 
 def test_truncate_tool_content_without_name():
     """无工具名时截断标记显示通用标签"""
-    from agent.generic.agent_loop import _truncate_tool_content, MAX_TOOL_RESULT_CHARS
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, _truncate_tool_content
     long_content = "x" * (MAX_TOOL_RESULT_CHARS + 1000)
     result = _truncate_tool_content(long_content)
     assert "工具" in result

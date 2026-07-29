@@ -11,7 +11,7 @@ Key changes:
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -39,6 +39,7 @@ def _import_lightrag_module():
             sys.path.insert(0, _LIGHTRAG_SERVER_SRC)
 
         import importlib
+
         import niu_lightrag_server
         importlib.reload(niu_lightrag_server)
         return niu_lightrag_server
@@ -162,7 +163,7 @@ class TestPipelineEnqueueFileImportAndNoFileMove:
         txt.write_text("Test content for LightRAG", encoding="utf-8")
 
         mock_rag = MagicMock()
-        mock_pipeline = AsyncMock(return_value=(True, "track-123"))
+        AsyncMock(return_value=(True, "track-123"))
 
         key = "niu_api.internal.lightrag_manager"
         saved = {}
@@ -176,7 +177,7 @@ class TestPipelineEnqueueFileImportAndNoFileMove:
             else:
                 sys.modules.setdefault(mod_key, MagicMock())
         try:
-            result = mod.lightrag_insert_file(file_path=str(txt))
+            mod.lightrag_insert_file(file_path=str(txt))
             # File must still exist at original location
             assert txt.is_file(), "Original file must NOT be moved"
             # No __enqueued__ directory should be created in original location
@@ -290,7 +291,7 @@ class TestIngestDocumentUsesInsertFile:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_bytes(b"PK\x03\x04fake docx")  # minimal DOCX-like bytes
 
-        result = ingest_document(str(doc), category="文档", mode="copy")
+        ingest_document(str(doc), category="文档", mode="copy")
 
         # Should call lightrag_insert_file, NOT lightrag_insert
         mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
@@ -306,7 +307,7 @@ class TestIngestDocumentUsesInsertFile:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_bytes(b"PK\x03\x04fake xlsx")
 
-        result = ingest_document(str(doc), category="数据", mode="copy")
+        ingest_document(str(doc), category="数据", mode="copy")
 
         call_kwargs = mock_insert_file.call_args.kwargs
         # Must pass file_path
@@ -329,7 +330,7 @@ class TestIngestDocumentUsesInsertFile:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_bytes(b"PK\x03\x04fake docx with content")
 
-        result = ingest_document(str(doc), category="其他", mode="copy")
+        ingest_document(str(doc), category="其他", mode="copy")
 
         # The key fix: file_path is passed, not the filename string
         call_kwargs = mock_insert_file.call_args.kwargs
@@ -353,7 +354,7 @@ class TestIngestDocumentUsesInsertFile:
 
         with patch("niu_photo_server.ingest_photo") as mock_photo:
             mock_photo.return_value = {"status": "success", "action": "created"}
-            result = ingest_document(str(photo), category="其他", mode="copy")
+            ingest_document(str(photo), category="其他", mode="copy")
 
         # lightrag_insert_file should NOT be called for photos
         mock_insert_file.assert_not_called()
@@ -386,7 +387,7 @@ class TestIngestDocumentUsesInsertFile:
         doc.write_bytes(b"PK\x03\x04fake docx")
 
         with patch("niu_photo_server.handle_conflict", return_value=(str(doc), "skipped")):
-            result = ingest_document(str(doc), category="其他", mode="copy")
+            ingest_document(str(doc), category="其他", mode="copy")
 
         # Should call lightrag_insert_file even for skipped files
         mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
@@ -402,9 +403,9 @@ class TestShutdownPendingFutures:
     def test_no_pending_futures(self):
         """shutdown_pending_futures should return immediately when no futures."""
         from niu_api.internal.lightrag_manager import (
-            shutdown_pending_futures,
             _pending_futures,
             _pending_lock,
+            shutdown_pending_futures,
         )
         with _pending_lock:
             _pending_futures.clear()
@@ -413,12 +414,13 @@ class TestShutdownPendingFutures:
 
     def test_cancels_timed_out_futures(self):
         """shutdown_pending_futures should cancel futures that don't complete in time."""
+        import concurrent.futures
+
         from niu_api.internal.lightrag_manager import (
-            shutdown_pending_futures,
             _pending_futures,
             _pending_lock,
+            shutdown_pending_futures,
         )
-        import concurrent.futures
 
         # Create a future that will never complete
         fake_future = concurrent.futures.Future()
@@ -435,12 +437,13 @@ class TestShutdownPendingFutures:
 
     def test_clears_pending_list(self):
         """shutdown_pending_futures should clear _pending_futures."""
+        import concurrent.futures
+
         from niu_api.internal.lightrag_manager import (
-            shutdown_pending_futures,
             _pending_futures,
             _pending_lock,
+            shutdown_pending_futures,
         )
-        import concurrent.futures
 
         done_future = concurrent.futures.Future()
         done_future.set_result("done")
@@ -462,7 +465,11 @@ class TestFireAndForgetCancellation:
 
     def test_wrapped_catches_exception(self):
         """_wrapped should catch Exception and log it, not let it propagate."""
-        from niu_api.internal.lightrag_manager import fire_and_forget, _pending_futures, _pending_lock
+        from niu_api.internal.lightrag_manager import (
+            _pending_futures,
+            _pending_lock,
+            fire_and_forget,
+        )
 
         async def failing_coro():
             raise RuntimeError("test error")
@@ -483,7 +490,11 @@ class TestFireAndForgetCancellation:
 
     def test_future_removed_after_completion(self):
         """_pending_futures should be cleaned up after coroutine completes."""
-        from niu_api.internal.lightrag_manager import fire_and_forget, _pending_futures, _pending_lock
+        from niu_api.internal.lightrag_manager import (
+            _pending_futures,
+            _pending_lock,
+            fire_and_forget,
+        )
 
         async def quick_coro():
             pass

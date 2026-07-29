@@ -24,7 +24,6 @@ from niu_api.internal import region_injector
 from niu_api.internal.lightrag_adapter import LightRAGAdapter
 from niu_api.internal.region_activation import RegionActivationManager
 
-
 # ---------------------------------------------------------------------
 # 1. region_injector: 字典构建 + 查询大小写不敏感
 # ---------------------------------------------------------------------

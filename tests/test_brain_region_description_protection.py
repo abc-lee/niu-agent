@@ -7,9 +7,9 @@ will fail (rather than silently passing).
 """
 import os
 import sys
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock
 
 # ---------------------------------------------------------------------------
 # Ensure lightrag package is importable from the bundled python/ directory
@@ -24,8 +24,8 @@ if _niu_api not in sys.path:
     sys.path.insert(0, _niu_api)
 
 from lightrag.utils_graph import _edit_entity_impl, _merge_entities_impl
-from niu_api.internal.region_manager import RegionManager
 
+from niu_api.internal.region_manager import RegionManager
 
 # ===========================================================================
 # Helpers — mock graph / vdb storages

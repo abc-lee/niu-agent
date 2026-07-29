@@ -39,13 +39,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
-from loguru import logger
-
 from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
     EmbeddingFunc,
@@ -53,6 +53,7 @@ from lightrag.utils import (
     make_relation_chunk_key,
     make_relation_vdb_ids,
 )
+from loguru import logger
 
 _STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
@@ -112,7 +113,7 @@ class RepairEmbeddingFunc(EmbeddingFunc):
     # 这里不新增字段，只是确保 dataclass 继承正确
     # func 用 Optional[Callable] 而非 Any，避免 pyright 严格模式报类型不兼容
     embedding_dim: int = 768
-    func: "Callable[..., Any] | None" = None  # 在 __post_init__ 中设为 _embed_async
+    func: Callable[..., Any] | None = None  # 在 __post_init__ 中设为 _embed_async
     max_token_size: int | None = None
     send_dimensions: bool = False
     model_name: str | None = "bge-base-zh-v1.5"
@@ -574,11 +575,11 @@ async def repair_text_chunks() -> dict[str, Any]:
     cache_path = storage_dir / "kv_store_llm_response_cache.json"
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -939,11 +940,11 @@ async def repair_doc_status() -> dict[str, Any]:
     graphml_path = storage_dir / _GRAPHML_FILE
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -1046,7 +1047,7 @@ async def repair_doc_status() -> dict[str, Any]:
     # 8. 构造 upsert data（严格对照字段表）
     #    created_at 用 full_docs.create_time 转 ISO 8601 UTC（无则空字符串）
     #    updated_at 用 repair 时刻 ISO 8601 UTC（跟 LightRAG lightrag.py:2167-2169 一致）
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     upsert_data: dict[str, dict[str, Any]] = {}
     for doc_id, doc_data in full_docs.items():
@@ -1063,13 +1064,13 @@ async def repair_doc_status() -> dict[str, Any]:
         # created_at 是 str 类型，空字符串是合法 fallback
         if isinstance(create_time_raw, (int, float)) and create_time_raw > 0:
             created_at = datetime.fromtimestamp(
-                create_time_raw, tz=timezone.utc
+                create_time_raw, tz=UTC
             ).isoformat()
         else:
             created_at = ""
 
         # updated_at: repair 时刻 ISO 8601 UTC（跟 lightrag.py:2167-2169 一致）
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at = datetime.now(UTC).isoformat()
 
         # content_summary: content 前 100 字符（跟 base.py:774 注释一致）
         content_summary = content[:100] if content else ""
@@ -1179,11 +1180,11 @@ async def repair_vdb_chunks() -> dict[str, Any]:
     vdb_path = storage_dir / "vdb_chunks.json"
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -1429,11 +1430,11 @@ async def repair_vdb_entities() -> dict[str, Any]:
     storage_dir = _storage_dir()
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -1695,11 +1696,11 @@ async def repair_vdb_relationships() -> dict[str, Any]:
     storage_dir = _storage_dir()
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -1977,11 +1978,11 @@ async def repair_entity_chunks() -> dict[str, Any]:
     storage_dir = _storage_dir()
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -2145,11 +2146,11 @@ async def repair_relation_chunks() -> dict[str, Any]:
     storage_dir = _storage_dir()
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -2319,11 +2320,11 @@ async def repair_full_entities() -> dict[str, Any]:
     doc_status_path = storage_dir / "kv_store_doc_status.json"
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)
@@ -2544,11 +2545,11 @@ async def repair_full_relations() -> dict[str, Any]:
     doc_status_path = storage_dir / "kv_store_doc_status.json"
 
     # 1. 初始化 shared_storage（单进程模式，D4）
+    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.kg.shared_storage import (
         initialize_share_data,
         set_default_workspace,
     )
-    from lightrag.kg.json_kv_impl import JsonKVStorage
     from lightrag.namespace import NameSpace
 
     initialize_share_data(workers=1)

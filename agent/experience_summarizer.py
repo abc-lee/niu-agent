@@ -14,13 +14,12 @@ Experience Summarizer - 经验总结器
 - 自动被 SkillSync 索引，无需手动同步
 """
 
-import json
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-from dataclasses import dataclass, field
+
 from loguru import logger
 
 
@@ -104,7 +103,7 @@ class ExperienceSummarizer:
         self,
         context: ExperienceContext,
         category: str = "general"
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """
         总结经验并写入 Skill 文件
 
@@ -144,7 +143,7 @@ class ExperienceSummarizer:
         self,
         context: ExperienceContext,
         category: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         生成 Skill 文件内容
 
@@ -178,8 +177,8 @@ class ExperienceSummarizer:
             return None
 
         # 提取关键信息
-        tools_used = list(set(t.tool_name for t in successful))
-        tool_sequence = " → ".join(t.tool_name for t in context.tool_executions)
+        tools_used = list({t.tool_name for t in successful})
+        " → ".join(t.tool_name for t in context.tool_executions)
 
         # 生成标题
         title = self._generate_title(context.user_input, tools_used)
@@ -208,7 +207,7 @@ class ExperienceSummarizer:
             content += f"{i}. **{tool.tool_name}**: {self._truncate(tool.result, 100)}\n"
 
         if pitfalls:
-            content += f"\n## 坑点提示\n"
+            content += "\n## 坑点提示\n"
             for pitfall in pitfalls:
                 content += f"- {pitfall}\n"
 
@@ -307,7 +306,7 @@ class ExperienceSummarizer:
 
 
 # 全局实例
-_summarizer: Optional[ExperienceSummarizer] = None
+_summarizer: ExperienceSummarizer | None = None
 
 
 def get_experience_summarizer() -> ExperienceSummarizer:

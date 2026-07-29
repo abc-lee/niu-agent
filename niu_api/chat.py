@@ -4,16 +4,17 @@ Chat API endpoints
 使用 NiuRunner 作为后端
 """
 
-import json
 import asyncio
+import json
 from typing import Optional
-from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
-from loguru import logger
 
 from agent.runner import NiuRunner, get_runner
 from agent.session import get_message_store
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from loguru import logger
+from pydantic import BaseModel
+
 from niu_api.compat import _chat_lock
 
 router = APIRouter(tags=["chat"])
@@ -30,6 +31,7 @@ _main_loop: asyncio.AbstractEventLoop | None = None
 # 确保扫到的 reply 推 SSE 时前端已在订阅。
 # 超时 60s 未收到强制继续（避免前端永远不起来卡死后端）。
 import threading as _threading
+
 frontend_ready_event = _threading.Event()
 
 
@@ -233,7 +235,7 @@ async def persist_agent_reply(
     """
     # 通道一：解析 full_reply 里的 @ 消息，strip 后存纯净回复为 assistant，
     # @ 消息以 role=subagent_msg 存 db（db_monitor 会路由到子 Agent queue）
-    from agent.at_message_parser import extract_at_messages, strip_at_messages, format_for_db
+    from agent.at_message_parser import extract_at_messages, format_for_db, strip_at_messages
 
     at_msgs = extract_at_messages(full_reply)
     if at_msgs:
@@ -324,9 +326,9 @@ async def persist_agent_reply(
 class ChatRequest(BaseModel):
     """Chat request model"""
 
-    session_id: Optional[str] = None
+    session_id: str | None = None
     message: str
-    system_prompt: Optional[str] = ""
+    system_prompt: str | None = ""
     resources: list = []
 
 
@@ -334,14 +336,15 @@ class ChatResponse(BaseModel):
     """Chat response model"""
 
     reply: str
-    session_id: Optional[str] = None
-    message_id: Optional[str] = None
+    session_id: str | None = None
+    message_id: str | None = None
 
 
 def _load_llm_config():
     """直接从文件读取 LLM 配置，不走缓存，保留所有原始字段"""
     import json
     from pathlib import Path
+
     from niu_api.config import CONFIG_PATH
 
     config_path = Path(CONFIG_PATH)
@@ -433,7 +436,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
         # 排队等待锁：压缩管道可能执行数分钟，必须等够
         try:
             await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("[/chat] _chat_lock 600s timeout, request rejected")
             yield f"data: {json.dumps({'error': 'Another request is in progress, please wait'})}\n\n"
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
@@ -515,7 +518,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 try:
                     await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
                     _tidy_acquired = True
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("[Chat SSE] Tidy lock busy, skipping force compression")
                 if _tidy_acquired:
                     try:
@@ -534,7 +537,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 if sf and not sf.done():
                     try:
                         await asyncio.wait_for(sf, timeout=30.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    except (TimeoutError, asyncio.CancelledError, Exception):
                         logger.warning("[/chat] Executor thread did not finish after client disconnect")
             finally:
                 _chat_lock.release()
@@ -567,7 +570,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
     # 锁获取后立即进入 try/finally，确保 CancelledError 不会导致锁泄漏
     try:
         await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("[/chat/sync] _chat_lock 600s timeout, request rejected")
         raise HTTPException(
             status_code=503, detail="Another request is in progress, please try again later."
@@ -631,7 +634,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             try:
                 await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
                 _tidy_acquired = True
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[Chat] Tidy lock busy, skipping force compression")
             if _tidy_acquired:
                 try:
@@ -668,7 +671,7 @@ async def events_stream():
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30)
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # 心跳，保持连接
                     yield ": keepalive\n\n"
         except asyncio.CancelledError:

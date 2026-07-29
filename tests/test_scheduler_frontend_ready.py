@@ -1,8 +1,9 @@
 """scheduler _delayed_start 等 frontend_ready_event 测试"""
-import threading
 import time
-import pytest
 from unittest.mock import patch
+
+import pytest
+
 from niu_api.internal.scheduler.scheduler import Scheduler
 
 

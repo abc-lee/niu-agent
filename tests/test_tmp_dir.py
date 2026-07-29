@@ -1,7 +1,5 @@
 """Tests for agent/tmp_dir.py — temporary file directory management"""
 import os
-import shutil
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,7 +44,7 @@ class TestSaveToTmp:
             assert f.read() == data
 
     def test_path_is_under_tmp_dir(self, tmp_dir_fixture):
-        from agent.tmp_dir import save_to_tmp, get_tmp_dir
+        from agent.tmp_dir import get_tmp_dir, save_to_tmp
         path = save_to_tmp("test.jpg", b"data")
         tmp_dir = str(get_tmp_dir())
         assert path.startswith(tmp_dir)
@@ -61,7 +59,7 @@ class TestSaveToTmp:
 
 class TestIsTmpFile:
     def test_returns_true_for_tmp_file(self, tmp_dir_fixture):
-        from agent.tmp_dir import save_to_tmp, is_tmp_file
+        from agent.tmp_dir import is_tmp_file, save_to_tmp
         path = save_to_tmp("test.jpg", b"data")
         assert is_tmp_file(path) is True
 
@@ -73,7 +71,7 @@ class TestIsTmpFile:
 
 class TestCleanupTmpFiles:
     def test_deletes_specified_tmp_files(self, tmp_dir_fixture):
-        from agent.tmp_dir import save_to_tmp, cleanup_tmp_files
+        from agent.tmp_dir import cleanup_tmp_files, save_to_tmp
         path1 = save_to_tmp("a.jpg", b"data1")
         path2 = save_to_tmp("b.jpg", b"data2")
         assert os.path.exists(path1)
@@ -91,13 +89,13 @@ class TestCleanupTmpFiles:
         assert deleted == 0
 
     def test_skips_nonexistent_files(self, tmp_dir_fixture):
-        from agent.tmp_dir import get_tmp_dir, cleanup_tmp_files
+        from agent.tmp_dir import cleanup_tmp_files, get_tmp_dir
         fake_path = str(get_tmp_dir() / "nonexistent.jpg")
         deleted = cleanup_tmp_files([fake_path])
         assert deleted == 0
 
     def test_mixed_files(self, tmp_dir_fixture):
-        from agent.tmp_dir import save_to_tmp, cleanup_tmp_files
+        from agent.tmp_dir import cleanup_tmp_files, save_to_tmp
         path = save_to_tmp("a.jpg", b"data")
         deleted = cleanup_tmp_files([path, "C:/non-tmp.jpg", "/tmp/fake.jpg"])
         assert deleted == 1
@@ -106,7 +104,7 @@ class TestCleanupTmpFiles:
 
 class TestCleanupAllTmp:
     def test_removes_all_files_in_tmp_dir(self, tmp_dir_fixture):
-        from agent.tmp_dir import save_to_tmp, cleanup_all_tmp, get_tmp_dir
+        from agent.tmp_dir import cleanup_all_tmp, get_tmp_dir, save_to_tmp
         save_to_tmp("a.jpg", b"data1")
         save_to_tmp("b.jpg", b"data2")
 

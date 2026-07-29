@@ -10,13 +10,12 @@ Covers:
 6. MockResponse.context_overflow field defaults and explicit True
 7. call_subagent context_fifo_threshold parameter (-1, 0, custom)
 """
-import json
-import pytest
-from unittest.mock import patch, MagicMock
+import os
 
 # Ensure project root is importable
 import sys
-import os
+from unittest.mock import patch
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -93,18 +92,18 @@ def _make_loop_args(client=None, handler=None, **overrides):
     if handler is None:
         handler = FakeHandler()
 
-    defaults = dict(
-        client=client,
-        system_prompt="system",
-        user_input="hello",
-        handler=handler,
-        tools_schema=[],
-        max_turns=5,
-        verbose=False,
-        context_window_tokens=0,
-        context_fifo_threshold=0,
-        enable_supplement=False,
-    )
+    defaults = {
+        "client": client,
+        "system_prompt": "system",
+        "user_input": "hello",
+        "handler": handler,
+        "tools_schema": [],
+        "max_turns": 5,
+        "verbose": False,
+        "context_window_tokens": 0,
+        "context_fifo_threshold": 0,
+        "enable_supplement": False,
+    }
     defaults.update(overrides)
     return defaults
 
@@ -264,10 +263,10 @@ class TestLiteLLMAdapterContextOverflow:
 
     def test_detects_context_length_exceeded(self):
         """litellm_adapter should detect 'context_length_exceeded' in error."""
-        from agent.generic.litellm_adapter import LiteLLMSession
-
         # We test the detection logic by checking the pattern exists in source
         import inspect
+
+        from agent.generic.litellm_adapter import LiteLLMSession
         source = inspect.getsource(LiteLLMSession.chat)
         assert "context_length_exceeded" in source
         assert "context_overflow=True" in source
@@ -275,6 +274,7 @@ class TestLiteLLMAdapterContextOverflow:
     def test_detects_context_window_error(self):
         """Pattern 'context window' should also be detected."""
         import inspect
+
         from agent.generic.litellm_adapter import LiteLLMSession
         source = inspect.getsource(LiteLLMSession.chat)
         assert "context window" in source.lower()
@@ -282,6 +282,7 @@ class TestLiteLLMAdapterContextOverflow:
     def test_detects_prompt_too_long(self):
         """Pattern 'prompt is too long' should also be detected."""
         import inspect
+
         from agent.generic.litellm_adapter import LiteLLMSession
         source = inspect.getsource(LiteLLMSession.chat)
         assert "prompt is too long" in source
@@ -289,6 +290,7 @@ class TestLiteLLMAdapterContextOverflow:
     def test_detects_maximum_context_length(self):
         """Pattern 'maximum context length' should also be detected."""
         import inspect
+
         from agent.generic.litellm_adapter import LiteLLMSession
         source = inspect.getsource(LiteLLMSession.chat)
         assert "maximum context length" in source
@@ -730,8 +732,9 @@ class TestSubagentFIFOThreshold:
 
     def test_default_parameter_is_negative_one(self, monkeypatch):
         """The default value of context_fifo_threshold in call_subagent should be -1."""
-        from agent import subagent
         import inspect
+
+        from agent import subagent
         sig = inspect.signature(subagent.call_subagent)
         param = sig.parameters["context_fifo_threshold"]
         assert param.default == -1

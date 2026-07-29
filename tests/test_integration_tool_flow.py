@@ -10,15 +10,15 @@
 - 之前：当工具执行返回 None 时不添加 tool_result，导致 API 错误
 - 现在：即使返回 None 也添加空 tool_result，确保 API 兼容性
 """
-import pytest
-import sys
 import copy
+import sys
 from unittest.mock import Mock
-from typing import Dict, Any, List
+
+import pytest
 
 sys.path.insert(0, "E:/tools/ai-bot")
 
-from agent.generic.agent_loop import agent_runner_loop, StepOutcome
+from agent.generic.agent_loop import StepOutcome, agent_runner_loop
 from agent.tool_registry import ToolRegistry, reset_registry
 
 
@@ -68,7 +68,7 @@ class TestFullToolCallFlow:
             当工具不存在时，返回带有错误信息的 StepOutcome。
             """
             # 检查是否是内置工具
-            method_name = f"do_{tool_name.replace('-', '_').replace('/', '_')}"
+            f"do_{tool_name.replace('-', '_').replace('/', '_')}"
             if False:  # 模拟内置工具不存在
                 pass
 

@@ -1,13 +1,14 @@
 """P1-1: 测试 ContextManager 统一历史管理"""
-import pytest
-import asyncio
+import os
 import sys
 import tempfile
-import os
+
+import pytest
+
 sys.path.insert(0, "E:/tools/ai-bot")
 
-from agent.session import MessageStore
 from agent.context_manager import ContextManager, get_context_manager, reset_context_manager
+from agent.session import MessageStore
 
 
 @pytest.mark.p1

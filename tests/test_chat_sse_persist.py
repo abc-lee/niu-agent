@@ -11,16 +11,13 @@
 - 使用临时 SQLite 数据库验证持久化结果
 - 通过 patch agent.session._message_store 全局变量注入临时 store
 """
-import pytest
 import json
-import asyncio
-import tempfile
 import os
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
-from pathlib import Path
+import tempfile
+from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from fastapi.testclient import TestClient
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -109,8 +106,9 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
 
     # ---- 构造 FastAPI app ----
     from fastapi import FastAPI
-    from niu_api.chat import router as chat_router
+
     import agent.session as session_module
+    from niu_api.chat import router as chat_router
 
     app = FastAPI()
     app.include_router(chat_router)
@@ -208,9 +206,8 @@ def test_plain_text_return_value_structure():
     - result 为 CURRENT_TASK_DONE
     """
     from agent.generic.agent_loop import (
-        agent_runner_loop,
-        StreamEvent,
         StepOutcome,
+        agent_runner_loop,
     )
 
     resp = Mock()
@@ -345,7 +342,7 @@ async def test_chat_db_pipeline_persist_assistant_from_return_value(temp_db_path
             continue
         if role == "user":
             if not user_persisted:
-                user_msg_id = await store.add_message(role="user", content=content)
+                await store.add_message(role="user", content=content)
                 user_persisted = True
             continue
         elif role == "tool" and tool_call_id:

@@ -8,10 +8,7 @@ IngestRetryPolicy: exponential backoff retry configuration.
 TDD RED phase — these tests define the expected interface.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from dataclasses import FrozenInstanceError
-
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # ============== IngestTask Tests ==============
 
@@ -104,7 +101,7 @@ class TestPipelineSubmit:
     """J1, J2: Submit tasks and track status."""
 
     def test_submit_returns_task(self):
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         task = IngestTask(
@@ -119,7 +116,7 @@ class TestPipelineSubmit:
 
     def test_get_status_returns_queued(self):
         """J2: After submit, status should be 'queued'."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         task = IngestTask(
@@ -139,7 +136,7 @@ class TestPipelineSubmit:
         assert pipeline.get_status("nonexistent") is None
 
     def test_submit_multiple_tasks(self):
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         with patch.object(pipeline, "_get_rag", return_value=MagicMock()):
@@ -160,7 +157,7 @@ class TestPipelineProcess:
 
     def test_process_updates_status_to_completed(self):
         """J2: After processing, status should be 'completed'."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -180,7 +177,7 @@ class TestPipelineProcess:
 
     def test_process_updates_status_to_failed_on_error(self):
         """J2: On exception, status should be 'failed'."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -198,7 +195,7 @@ class TestPipelineProcess:
             assert pipeline.get_status("photo:1") == "failed"
 
     def test_failed_task_records_error(self):
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -221,7 +218,7 @@ class TestPipelineRetry:
     """J3: Retry failed ingestions."""
 
     def test_retry_failed_tasks(self):
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -252,7 +249,7 @@ class TestPipelineRetry:
 
     def test_max_retries_exhausted(self):
         """J3: After max retries, task stays failed."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -278,7 +275,7 @@ class TestPipelineRetry:
             assert task.status == "failed"
 
     def test_retry_resets_error(self):
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -377,7 +374,7 @@ class TestPipelineSourceSpecific:
 
     def test_ingest_photo_adds_prefix(self):
         """J6: Photo content gets [Photo: id] prefix."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -399,7 +396,7 @@ class TestPipelineSourceSpecific:
 
     def test_ingest_note_adds_prefix(self):
         """J6: Note content gets [Note: title] prefix."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -420,7 +417,7 @@ class TestPipelineSourceSpecific:
 
     def test_ingest_document_adds_prefix(self):
         """J6: Document content gets [Document: path] prefix."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -441,7 +438,7 @@ class TestPipelineSourceSpecific:
 
     def test_ingest_file_no_prefix(self):
         """J6: File content passes through without prefix (raw)."""
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()
@@ -466,7 +463,7 @@ class TestPipelineStatus:
     """J2: Comprehensive status tracking."""
 
     def test_get_all_statuses(self):
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         with patch.object(pipeline, "_get_rag", return_value=MagicMock()):
@@ -483,7 +480,7 @@ class TestPipelineStatus:
             assert all(s["status"] == "queued" for s in statuses)
 
     def test_get_failed_tasks(self):
-        from niu_api.internal.lightrag_pipeline import LightRAGPipeline, IngestTask
+        from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
         mock_rag = MagicMock()

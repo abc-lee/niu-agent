@@ -8,7 +8,7 @@ Core concepts:
 
 import re
 import threading
-from typing import Any, Dict, Optional
+from typing import Any
 
 from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
 
@@ -85,7 +85,7 @@ class BrainGraph:
 
     # ============== Entity Initialization ==============
 
-    def ensure_niu_entity(self) -> Dict[str, Any]:
+    def ensure_niu_entity(self) -> dict[str, Any]:
         """Ensure the Niu self entity exists in the graph.
 
         Idempotent — safe to call on every startup.
@@ -106,7 +106,7 @@ class BrainGraph:
 
 # ============== Singleton ==============
 
-_brain_graph_instance: Optional[BrainGraph] = None
+_brain_graph_instance: BrainGraph | None = None
 _brain_graph_lock = threading.Lock()
 
 

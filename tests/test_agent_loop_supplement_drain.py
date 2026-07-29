@@ -12,8 +12,9 @@ def test_agent_runner_loop_has_supplement_drain_param():
 
 def test_agent_runner_loop_is_sync_generator():
     """agent_runner_loop 是同步生成器（def，不是 async def）。"""
-    from agent.generic.agent_loop import agent_runner_loop
     import inspect
+
+    from agent.generic.agent_loop import agent_runner_loop
     # 同步生成器：isfunction True，iscoroutinefunction False
     assert inspect.isfunction(agent_runner_loop), "agent_runner_loop 应是普通函数"
     assert not inspect.iscoroutinefunction(agent_runner_loop), "agent_runner_loop 不应是 async 函数"

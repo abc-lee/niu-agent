@@ -7,10 +7,10 @@ def test_ask_main_agent_impl_callable_directly(monkeypatch):
 
     现有签名是 (question, unique_name) -> str，content 拦截层直接调即可。
     """
+    import agent.main_agent_request_queue as maq_module
+    import agent.subagent_registry as sr_module
     from agent import subagent
     from agent.ask_main_agent import AskMainAgentFuture
-    import agent.subagent_registry as sr_module
-    import agent.main_agent_request_queue as maq_module
 
     # mock registry（SubagentRegistry 在 subagent_registry 模块，函数内 import）
     fake_instance = mock.MagicMock()
@@ -39,8 +39,8 @@ def test_ask_main_agent_impl_callable_directly(monkeypatch):
 
 def test_ask_main_agent_impl_returns_terminated_when_cancelled(monkeypatch):
     """子 Agent 被 cancel 后（_ask_terminated=True），_ask_main_agent_impl 返回终止状态文本"""
-    from agent import subagent
     import agent.subagent_registry as sr_module
+    from agent import subagent
 
     fake_instance = mock.MagicMock()
     fake_instance._ask_terminated = True  # 已被 cancel
@@ -58,8 +58,8 @@ def test_ask_main_agent_impl_returns_terminated_when_cancelled(monkeypatch):
 
 def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
     """子 Agent content 以 @niu-agent 开头时，拦截层调 _ask_main_agent_impl 并把回答注入 messages"""
-    from agent.generic import agent_loop
     from agent import subagent
+    from agent.generic import agent_loop
 
     # mock _ask_main_agent_impl 返回固定回答
     monkeypatch.setattr(
@@ -263,8 +263,8 @@ def test_agent_runner_loop_intercepts_at_niu(monkeypatch):
 
 def test_main_agent_not_intercepted(monkeypatch):
     """主 Agent 路径（memory_context=None）不被拦截，返回 NO_INTERCEPTION"""
-    from agent.generic import agent_loop
     from agent import subagent
+    from agent.generic import agent_loop
 
     # mock _ask_main_agent_impl 确保不被调用
     mock_ask = mock.Mock()
@@ -290,9 +290,10 @@ def test_main_agent_not_intercepted(monkeypatch):
 
 def test_sync_subagent_at_niu_returns_intercepted_sync(monkeypatch):
     """同步子 Agent（_is_sync_subagent=True, memory_context=None）输出 @niu-agent → 返回 (INTERCEPTED_SYNC, wrapped)"""
-    from agent.generic import agent_loop
-    from agent import subagent
     from unittest import mock
+
+    from agent import subagent
+    from agent.generic import agent_loop
 
     monkeypatch.setattr(subagent, "_ask_main_agent_impl_sync", mock.Mock(return_value="[test] 问题"))
 
@@ -316,8 +317,9 @@ def test_sync_subagent_at_niu_returns_intercepted_sync(monkeypatch):
 
 def test_main_agent_not_intercepted_after_change(monkeypatch):
     """主 Agent 路径（_is_sync_subagent=False, memory_context=None）仍返回 (NO_INTERCEPTION, None)"""
-    from agent.generic import agent_loop
     from unittest import mock
+
+    from agent.generic import agent_loop
     fake_handler = mock.MagicMock()
     fake_handler._is_sync_subagent = False  # 主 Agent
     messages = [{"role": "user", "content": "开始"}]
@@ -336,7 +338,7 @@ def test_main_agent_not_intercepted_after_change(monkeypatch):
 
 def test_intercept_main_agent_content_reply_to_sync_suspended_session():
     """主 Agent content @<同步挂起子名> 但无 tool_calls → 返回 FORMAT_ERROR（复用现有常量）"""
-    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR
+    from agent.generic.agent_loop import FORMAT_ERROR, _intercept_at_prefix_content
     from agent.subagent_registry import SubagentRegistry
     from agent.subagent_supplement import SubagentSupplementQueue
 
@@ -377,7 +379,7 @@ def test_intercept_main_agent_content_reply_to_sync_suspended_session():
 
 def test_intercept_main_agent_no_suspended_session_no_interception():
     """主 Agent content @子名 但子名不在注册表 → NO_INTERCEPTION（不拦截）"""
-    from agent.generic.agent_loop import _intercept_at_prefix_content, NO_INTERCEPTION
+    from agent.generic.agent_loop import NO_INTERCEPTION, _intercept_at_prefix_content
 
     class FakeHandler:
         _is_sync_subagent = False
@@ -399,7 +401,7 @@ def test_intercept_main_agent_no_suspended_session_no_interception():
 
 def test_intercept_main_agent_with_tool_calls_no_interception():
     """主 Agent 调 chat-with-browser-operator 工具 → NO_INTERCEPTION（不拦截，正常工具调用）"""
-    from agent.generic.agent_loop import _intercept_at_prefix_content, NO_INTERCEPTION
+    from agent.generic.agent_loop import NO_INTERCEPTION, _intercept_at_prefix_content
     from agent.subagent_registry import SubagentRegistry
     from agent.subagent_supplement import SubagentSupplementQueue
 
@@ -433,7 +435,7 @@ def test_intercept_main_agent_with_tool_calls_no_interception():
 
 def test_intercept_main_agent_async_running_session_no_interception():
     """主 Agent content @<异步 running 子名> → NO_INTERCEPTION（异步路径不拦截，保持 db_monitor 原逻辑）"""
-    from agent.generic.agent_loop import _intercept_at_prefix_content, NO_INTERCEPTION
+    from agent.generic.agent_loop import NO_INTERCEPTION, _intercept_at_prefix_content
     from agent.subagent_registry import SubagentRegistry
     from agent.subagent_supplement import SubagentSupplementQueue
 
@@ -466,7 +468,7 @@ def test_intercept_main_agent_async_running_session_no_interception():
 
 def test_intercept_main_agent_content_with_hex_suffix_old_format():
     """主 Agent content @browser-operator-708b（hex 后缀旧格式）→ 仍能拦截（兼容 LLM 复读历史日志）"""
-    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR
+    from agent.generic.agent_loop import FORMAT_ERROR, _intercept_at_prefix_content
     from agent.subagent_registry import SubagentRegistry
     from agent.subagent_supplement import SubagentSupplementQueue
 
@@ -501,7 +503,7 @@ def test_intercept_main_agent_content_with_hex_suffix_old_format():
 
 def test_intercept_main_agent_content_with_chinese_punctuation():
     """主 Agent content @browser-operator。我选择 2（无空格中文句号）→ 仍能提取子名并拦截"""
-    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR
+    from agent.generic.agent_loop import FORMAT_ERROR, _intercept_at_prefix_content
     from agent.subagent_registry import SubagentRegistry
     from agent.subagent_supplement import SubagentSupplementQueue
 
@@ -634,8 +636,8 @@ def test_at_end_double_backslash_not_recognized(monkeypatch):
 
 def test_at_niu_with_backtick_wrapper_triggers_intercept(monkeypatch):
     """@niu-agent 被反引号包装时也触发询问"""
-    from agent.generic import agent_loop
     from agent import subagent
+    from agent.generic import agent_loop
 
     # mock _ask_main_agent_impl 返回固定回答
     monkeypatch.setattr(
@@ -671,8 +673,8 @@ def test_at_niu_with_backtick_wrapper_triggers_intercept(monkeypatch):
 
 def test_at_niu_priority_over_at_end(monkeypatch):
     """@niu-agent 和 @end 同时出现时，@niu-agent 优先（代码顺序保证）"""
-    from agent.generic import agent_loop
     from agent import subagent
+    from agent.generic import agent_loop
 
     # mock _ask_main_agent_impl 返回固定回答
     monkeypatch.setattr(

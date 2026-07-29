@@ -1,7 +1,7 @@
 """通道抽象层 — UnifiedMessage 数据类 + ChannelAdapter 接口"""
 
-from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
 
 @dataclass

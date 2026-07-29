@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """子Agent决策循环测试
 
 TDD 测试文件 — 模拟子Agent的决策逻辑，循环调用ingest工具验证整个循环能正确完成目录入库。
@@ -117,7 +116,7 @@ class TestAgentToolLoop:
         # 当前实现不支持 _offset 参数，测试会 TypeError
         # 这是预期的 TDD 行为
         try:
-            for i in range(max_iterations):
+            for _i in range(max_iterations):
                 result = ingest(
                     path=str(self.test_dir),
                     category=category,

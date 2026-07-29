@@ -10,10 +10,11 @@
 
 用真实 LLM + 真实 route_message（同步路由，绕过 db 写入）。
 """
-import os
 import asyncio
+import os
 import threading
 import time
+
 import pytest
 
 
@@ -38,12 +39,12 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
         pytest.skip("LLM API key not configured")
 
     # 阶段二关键：需要设置 _main_loop（_dispatch_async_subagent 用 run_coroutine_threadsafe）
-    from niu_api.chat import set_main_event_loop
-    from niu_api import db_monitor
-    from agent.subagent import _dispatch_async_subagent
-    from agent.subagent_registry import SubagentRegistry
     from agent.ask_main_agent import get_pending_ask_registry
     from agent.main_agent_request_queue import get_main_agent_request_queue
+    from agent.subagent import _dispatch_async_subagent
+    from agent.subagent_registry import SubagentRegistry
+    from niu_api import db_monitor
+    from niu_api.chat import set_main_event_loop
 
     # 清空队列
     q = get_main_agent_request_queue()
@@ -64,7 +65,7 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
         # 所以 test_loop 必须 run_forever 中，否则提交会失败
         # 子 Agent LLM 输出 "@niu-agent ..." content → agent_loop._intercept_at_prefix_content 拦截
         # → 调 _ask_main_agent_impl 阻塞等主 Agent 回答
-        confirmation = _dispatch_async_subagent(
+        _dispatch_async_subagent(
             agent_name="file-processor",
             task=(
                 "你需要处理一个文件，但不确定是否需要 OCR。"

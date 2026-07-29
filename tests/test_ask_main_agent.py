@@ -1,6 +1,7 @@
 import threading
 import time
-from agent.ask_main_agent import AskMainAgentFuture, PendingAskRegistry, TERMINATED_SIGNAL
+
+from agent.ask_main_agent import TERMINATED_SIGNAL, AskMainAgentFuture, PendingAskRegistry
 
 
 def test_future_wait_blocks_until_set_answer():
@@ -95,13 +96,14 @@ def test_ask_main_agent_tool_returns_answer():
     @niu-agent content 拦截路径下，agent_loop._intercept_at_prefix_content 检测到 @niu-agent 前缀后
     直接调本函数（同步，无 MCP 工具派发）。
     """
-    from agent.subagent import _ask_main_agent_impl
-    from agent.ask_main_agent import get_pending_ask_registry
-    from agent.subagent_registry import SubagentRegistry
-    from agent.subagent_supplement import SubagentSupplementQueue
-    from agent.main_agent_request_queue import get_main_agent_request_queue
     import threading
     import time
+
+    from agent.ask_main_agent import get_pending_ask_registry
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+    from agent.subagent import _ask_main_agent_impl
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
 
     # 清空队列
     q = get_main_agent_request_queue()
@@ -138,13 +140,14 @@ def test_ask_main_agent_tool_returns_answer():
 
 def test_ask_main_agent_tool_terminated_returns_terminated_status():
     """_ask_main_agent_impl 被 cancel 时返回 terminated 状态 + 设置 _ask_terminated 标记。"""
-    from agent.subagent import _ask_main_agent_impl
-    from agent.ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
-    from agent.subagent_registry import SubagentRegistry
-    from agent.subagent_supplement import SubagentSupplementQueue
-    from agent.main_agent_request_queue import get_main_agent_request_queue
     import threading
     import time
+
+    from agent.ask_main_agent import get_pending_ask_registry
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+    from agent.subagent import _ask_main_agent_impl
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
 
     q = get_main_agent_request_queue()
     while q.pop() is not None:
@@ -184,13 +187,14 @@ def test_ask_main_agent_after_cancel_does_not_deadlock():
     → 应直接返回 terminated 不阻塞（否则 /stop 在 queue 但子 Agent 阻塞在
     _ask_main_agent_impl 不会 drain → 死锁）
     """
-    from agent.subagent import _ask_main_agent_impl
-    from agent.ask_main_agent import get_pending_ask_registry
-    from agent.subagent_registry import SubagentRegistry
-    from agent.subagent_supplement import SubagentSupplementQueue
-    from agent.main_agent_request_queue import get_main_agent_request_queue
     import threading
     import time
+
+    from agent.ask_main_agent import get_pending_ask_registry
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+    from agent.subagent import _ask_main_agent_impl
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
 
     q = get_main_agent_request_queue()
     while q.pop() is not None:

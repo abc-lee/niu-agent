@@ -209,7 +209,7 @@ def test_scan_and_sync_external_entity_not_cleaned(fake_skill_sync):
     sync, _ = fake_skill_sync
 
     with mock.patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock.MagicMock()), \
-         mock.patch.object(sync, "_save_state") as mock_save, \
+         mock.patch.object(sync, "_save_state"), \
          mock.patch.object(sync, "_sync_skill", return_value=True), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True) as mock_delete, \
          mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as MockAdapter:

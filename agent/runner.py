@@ -6,23 +6,22 @@ Disk mode: MCP 工具通过虚拟磁盘 disk() 发现和调用，
 Skills/知识通过 LightRAG 动态注入提示词。
 """
 
+import io
 import json
 import os
 import queue as _queue_module
 import re
 import sys
-import io
 import threading
 import time
+from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Generator, Optional
+from typing import Any
 
 from loguru import logger
 
 from agent.subagent_registry import SubagentRegistry
-
-
 
 # kebab-case 校验正则（小写字母/数字/连字符，且不以连字符开头/结尾）
 # runner.py 顶部已有 `import re`，直接复用
@@ -185,11 +184,11 @@ if sys.platform == 'win32':
     if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-from .generic.agent_loop import agent_runner_loop, StreamEvent
-from .generic.llmcore import ToolClient
+from agent.tool_registry import get_registry
+
+from .generic.agent_loop import StreamEvent, agent_runner_loop
 from .handler import NiuHandler
 from .injector.sync import get_skill_sync
-from agent.tool_registry import get_registry
 
 
 def get_system_prompt() -> str:
@@ -313,7 +312,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
         include_main_only: 是否包含主 Agent 专用工具（如 check_subagent_progress）。
             主 Agent 路径传 True（默认），子 Agent 路径传 False。
     """
-    from .subagent import get_subagent_config, _resolve_agent_md_path, _USER_AGENTS_DIR
+    from .subagent import _USER_AGENTS_DIR, _resolve_agent_md_path, get_subagent_config
     from .tool_registry import get_registry
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -321,7 +320,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
 
     tools = []
     if os.path.exists(schema_path):
-        with open(schema_path, "r", encoding="utf-8") as f:
+        with open(schema_path, encoding="utf-8") as f:
             tools = json.load(f)
 
     # 1. 从 niu.md 读专用子 Agent 名单
@@ -470,7 +469,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
     return tools
 
 
-def create_client(config: Dict[str, Any]):
+def create_client(config: dict[str, Any]):
     """创建 LLM 客户端（统一使用LiteLLM）"""
     cfg = {
         "apikey": config.get("apikey") or config.get("api_key", ""),
@@ -543,7 +542,7 @@ class NiuRunner:
         sys_prompt = ""
         niu_md_path = os.path.join(script_dir, "..", "config", "agents", "niu.md")
         if os.path.exists(niu_md_path):
-            with open(niu_md_path, "r", encoding="utf-8") as f:
+            with open(niu_md_path, encoding="utf-8") as f:
                 content = f.read()
                 if content.startswith("---"):
                     parts = content.split("---", 2)
@@ -564,7 +563,7 @@ class NiuRunner:
 
         return sys_prompt
 
-    def __init__(self, llm_config: Dict[str, Any], mcp_client=None):
+    def __init__(self, llm_config: dict[str, Any], mcp_client=None):
         # 从 niu.md front matter 读取 temperature，覆盖到 llm_config
         from .subagent import get_subagent_config
         niu_config = get_subagent_config("niu")
@@ -876,9 +875,11 @@ class NiuRunner:
         Returns:
             Message 对象列表，或空列表（读取失败）
         """
-        from niu_api.chat import _main_loop
-        from agent.session import get_message_store
         import asyncio
+
+        from niu_api.chat import _main_loop
+
+        from agent.session import get_message_store
 
         loop = _main_loop
         if loop is None or loop.is_closed():
@@ -905,9 +906,11 @@ class NiuRunner:
         Returns:
             删除结果 dict，或 None（失败）
         """
-        from niu_api.chat import _main_loop
-        from agent.session import get_message_store
         import asyncio
+
+        from niu_api.chat import _main_loop
+
+        from agent.session import get_message_store
 
         loop = _main_loop
         if loop is None or loop.is_closed():
@@ -936,9 +939,11 @@ class NiuRunner:
         Returns:
             bool 更新是否成功
         """
-        from niu_api.chat import _main_loop
-        from agent.session import get_message_store
         import asyncio
+
+        from niu_api.chat import _main_loop
+
+        from agent.session import get_message_store
 
         loop = _main_loop
         if loop is None or loop.is_closed():
@@ -1028,12 +1033,18 @@ class NiuRunner:
             new_cursor_id is the validated cursor after the step.
         """
         import concurrent.futures as _cf
-        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info, _write_cursor_with_lock
+
+        from niu_api.compat import (
+            _extract_overflow_info,
+            _is_subagent_overflow,
+            _write_cursor_with_lock,
+        )
+
         from agent.subagent import call_subagent_with_auto_answer
 
         # --- call sub-agent ---
         with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-            _kwargs = dict(llm_config=llm_config, mcp_client=None)
+            _kwargs = {"llm_config": llm_config, "mcp_client": None}
             if history is not None:
                 _kwargs["history"] = history
             if context_fifo_threshold is not None:
@@ -1099,24 +1110,24 @@ class NiuRunner:
         子 Agent 调用用 concurrent.futures.ThreadPoolExecutor，无总超时限制。
         """
         from pathlib import Path as _Path
+
         from niu_api.compat import (
+            _build_compress_history,
+            _build_force_prompt,
             _build_incremental_msg_text,
-            _truncate_task_for_subagent,
             _build_journal_task,
             _build_plain_history,
-            _write_cursor_with_lock,
             _parse_idx_list,
-            _build_force_prompt,
             _strip_analysis,
-            _build_compress_history,
+            _write_cursor_with_lock,
         )
+
         from agent.subagent import (
-            call_subagent,
-            call_subagent_with_auto_answer,
-            _read_context_window_tokens,
-            _read_protect_recent_count,
             _read_compress_target_tokens,
+            _read_context_window_tokens,
             _read_max_output_tokens,
+            _read_protect_recent_count,
+            call_subagent_with_auto_answer,
         )
 
         logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
@@ -1552,7 +1563,7 @@ class NiuRunner:
                         dangling_ids = cleanup["dangling_tc_ids"]
                         m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
                         if m and getattr(m, "tool_calls", None):
-                            tcs = getattr(m, "tool_calls")
+                            tcs = m.tool_calls
                             if isinstance(tcs, str):
                                 tcs = json.loads(tcs)
                             valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
@@ -1750,8 +1761,8 @@ class NiuRunner:
 
         if self._brain_injector is None:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-            from niu_api.internal.region_manager import RegionManager
             from niu_api.internal.region_injector import BrainContextInjector
+            from niu_api.internal.region_manager import RegionManager
 
             self._brain_adapter = LightRAGAdapter()
             self._brain_ingester = LightRAGIngester()
@@ -1817,7 +1828,7 @@ class NiuRunner:
             )
         return self._brain_injector
 
-    def _extract_context_from_history(self, history: Optional[list], user_input: str) -> str:
+    def _extract_context_from_history(self, history: list | None, user_input: str) -> str:
         """
         从消息历史中提取上下文用于工具检索
 
@@ -1911,9 +1922,9 @@ class NiuRunner:
             if is_skill_section:
                 lines.append(f"   路径: ~/.niu/skills/{display_name}.md")
                 if description.startswith("[草稿]"):
-                    lines.append(f"   ⚠️ 草稿skill — 使用后反馈效果")
+                    lines.append("   ⚠️ 草稿skill — 使用后反馈效果")
                 elif description.startswith("[待观察]"):
-                    lines.append(f"   ⚠️ 待观察skill — 此skill有历史问题，使用后必须反馈效果（成功或失败）")
+                    lines.append("   ⚠️ 待观察skill — 此skill有历史问题，使用后必须反馈效果（成功或失败）")
             added += 1
 
         if added == 0:
@@ -2514,7 +2525,7 @@ class NiuRunner:
             消息 ID，或 None（写入失败或消息被过滤）
         """
         from niu_api.chat import notify_new_message_sync
-        from agent.session import get_message_store
+
 
         role = msg_dict.get("role", "")
         content = msg_dict.get("content", "") or ""
@@ -2549,9 +2560,11 @@ class NiuRunner:
         Returns:
             消息 ID，或 None（写入失败）
         """
-        from niu_api.chat import _main_loop
-        from agent.session import get_message_store
         import asyncio
+
+        from niu_api.chat import _main_loop
+
+        from agent.session import get_message_store
 
         loop = _main_loop
         if loop is None or loop.is_closed():
@@ -2575,11 +2588,11 @@ class NiuRunner:
 
 
 # 全局实例
-_runner: Optional[NiuRunner] = None
+_runner: NiuRunner | None = None
 _runner_lock = threading.Lock()
 
 
-def get_runner(llm_config: Optional[Dict[str, Any]] = None, mcp_client=None) -> Optional[NiuRunner]:
+def get_runner(llm_config: dict[str, Any] | None = None, mcp_client=None) -> NiuRunner | None:
     """获取全局 Runner 实例（线程安全）"""
     global _runner
     if _runner is None and llm_config:

@@ -1,6 +1,7 @@
 """测试 _decay_brain_region_edges 永久脑区边与普通脑区一致衰减"""
 import networkx as nx
-from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+
+from niu_api.internal.region_manager import FLOOR_WEIGHT, _decay_brain_region_edges
 
 
 def _build_graph_with_permanent_region():
@@ -68,7 +69,7 @@ def test_statistics_no_permanent_specific_counter():
 
 def test_permanent_region_edge_decayed_when_weight_above_floor():
     """永久脑区边 weight 衰减后 > FLOOR_WEIGHT + total_degree >= 2 → 正常衰减"""
-    from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+    from niu_api.internal.region_manager import FLOOR_WEIGHT, _decay_brain_region_edges
     g = nx.Graph()
     g.add_node("文档库脑区", entity_type="brainregion",
                description="brain_meta_priority:permanent<SEP>文档库")
@@ -86,8 +87,11 @@ def test_permanent_region_edge_decayed_when_weight_above_floor():
 
 def test_permanent_region_edge_at_boundary_floor_value_decayed():
     """永久脑区边 weight 衰减后正好略大于 FLOOR_WEIGHT → 走 else 正常衰减分支"""
-    from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
-    from niu_api.internal.region_manager import daily_decay_rate
+    from niu_api.internal.region_manager import (
+        FLOOR_WEIGHT,
+        _decay_brain_region_edges,
+        daily_decay_rate,
+    )
     decay_rate = daily_decay_rate("permanent")
     initial_weight = (FLOOR_WEIGHT + 0.001) / decay_rate
     g = nx.Graph()
@@ -109,7 +113,7 @@ def test_permanent_region_edge_at_boundary_floor_value_decayed():
 
 def test_permanent_decay_rate_still_uses_permanent_halflife():
     """永久脑区 decay_rate 仍用 PRIORITY_HALFLIFE['permanent']=360"""
-    from niu_api.internal.region_manager import daily_decay_rate, PRIORITY_HALFLIFE
+    from niu_api.internal.region_manager import PRIORITY_HALFLIFE, daily_decay_rate
     assert PRIORITY_HALFLIFE["permanent"] == 360
     rate = daily_decay_rate("permanent")
     expected = 0.5 ** (1.0 / 360)
@@ -132,11 +136,14 @@ def test_normal_region_edge_delete_contrast():
 
 def test_permanent_region_node_not_dissolved_when_empty():
     """永久脑区即使所有归属边删除，脑区节点本身不删除（dissolve 跳过 is_default_region）"""
-    from niu_api.internal.region_manager import (
-        is_default_region, get_default_regions_config, REGION_SUFFIX,
-        RegionManager,
-    )
     import inspect
+
+    from niu_api.internal.region_manager import (
+        REGION_SUFFIX,
+        RegionManager,
+        get_default_regions_config,
+        is_default_region,
+    )
     # 默认脑区（含 permanent 永久脑区）都被 is_default_region 识别 → dissolve 跳过
     defaults = get_default_regions_config()
     assert len(defaults) > 0, "默认脑区配置不应为空"
@@ -152,6 +159,7 @@ def test_permanent_region_node_not_dissolved_when_empty():
 def test_dissolve_shrink_threshold_default_is_100():
     """dissolve_shrunk_regions 默认 shrink_threshold 必须是 100（用户要求，4f03f10d 越权改成 10 要恢复）"""
     import inspect
+
     from niu_api.internal.region_manager import RegionManager
     sig = inspect.signature(RegionManager.dissolve_shrunk_regions)
     default = sig.parameters["shrink_threshold"].default
@@ -162,7 +170,9 @@ def test_dissolve_shrink_threshold_default_is_100():
 def test_has_isolated_member_returns_true_when_any_member_degree_is_1():
     """有任何一个成员 total_degree=1 → 返回 True（会变孤岛）"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     # 构造图：脑区 A + 成员 X（只有归属边，degree=1）+ 成员 Y（有归属边+知识边，degree=2）
@@ -190,7 +200,9 @@ def test_has_isolated_member_returns_true_when_any_member_degree_is_1():
 def test_has_isolated_member_returns_false_when_all_members_degree_ge_2():
     """所有成员 total_degree >= 2 → 返回 False（安全可解散）"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     # 图节点 id 用小写（跟 LightRAG 实际存储一致），传入参数用大写验证 lower 查找路径
@@ -219,7 +231,9 @@ def test_has_isolated_member_returns_false_when_all_members_degree_ge_2():
 def test_has_isolated_member_returns_true_when_member_not_in_graph():
     """成员不在图里（数据不一致）→ 返回 True（保守，阻止 dissolve）"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     g = nx.Graph()
@@ -240,7 +254,9 @@ def test_has_isolated_member_returns_true_when_member_not_in_graph():
 def test_has_isolated_member_empty_members_returns_false():
     """空成员列表 → 返回 False（脑区 0 成员，无孤岛风险）"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     g = nx.Graph()
@@ -258,6 +274,7 @@ def test_has_isolated_member_empty_members_returns_false():
 def test_has_isolated_member_rag_none_returns_true():
     """RAG 实例拿不到 → 返回 True（保守，阻止 dissolve）"""
     from unittest import mock
+
     from niu_api.internal.region_manager import RegionManager
 
     manager = RegionManager.__new__(RegionManager)
@@ -271,7 +288,9 @@ def test_has_isolated_member_rag_none_returns_true():
 def test_has_isolated_member_lowercase_lookup():
     """成员名小写查找（跟现有代码 region_manager.py L614-615 模式一致）"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     g = nx.Graph()
@@ -296,7 +315,9 @@ def test_has_isolated_member_lowercase_lookup():
 def test_has_isolated_member_non_string_member_skipped():
     """成员名是 int 类型 → 跳过该成员，不影响其他成员检查"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     g = nx.Graph()
@@ -321,6 +342,7 @@ def test_has_isolated_member_non_string_member_skipped():
 def test_has_isolated_member_nx_graph_none_returns_true():
     """nx_graph 是 None → 返回 True（保守阻止 dissolve）"""
     from unittest import mock
+
     from niu_api.internal.region_manager import RegionManager
 
     fake_rag = mock.MagicMock()
@@ -338,7 +360,9 @@ def test_has_isolated_member_nx_graph_none_returns_true():
 def test_has_isolated_member_second_member_isolated_returns_true():
     """第一个成员安全，第二个成员 degree=1 → 仍返回 True（遍历所有成员）"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     g = nx.Graph()
@@ -365,7 +389,9 @@ def test_has_isolated_member_second_member_isolated_returns_true():
 def test_has_isolated_member_degree_zero_returns_true():
     """成员 degree=0（理论上不可能但防御性）→ 返回 True"""
     from unittest import mock
+
     import networkx as nx
+
     from niu_api.internal.region_manager import RegionManager
 
     g = nx.Graph()
@@ -386,8 +412,10 @@ def test_has_isolated_member_degree_zero_returns_true():
 def test_dissolve_cancelled_when_member_has_only_one_edge():
     """dissolve 执行前发现有成员 degree=1 → 取消 dissolve，shrink_count 持久化（+1 后值）"""
     from unittest import mock
+
     import networkx as nx
-    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
     # 构造图：脑区A + 成员X（degree=1，孤岛风险）+ 成员Y（degree=2）
     g = nx.Graph()
@@ -441,8 +469,10 @@ def test_dissolve_cancelled_when_member_has_only_one_edge():
 def test_dissolve_executed_when_all_members_have_multiple_edges():
     """所有成员 degree >= 2 → 正常执行 dissolve"""
     from unittest import mock
+
     import networkx as nx
-    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
     g = nx.Graph()
     g.add_node("脑区a", entity_type="brainregion",
@@ -498,8 +528,10 @@ def test_dissolve_executed_when_all_members_have_multiple_edges():
 def test_dissolve_cancelled_persists_shrink_count_for_next_round():
     """dissolve 被孤岛保护取消后，shrink_count 持久化（累加后值），下轮重新扫"""
     from unittest import mock
+
     import networkx as nx
-    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
     # 脑区A 成员X 只有 1 条边（孤岛风险），dissolve 应被取消
     g = nx.Graph()
@@ -546,8 +578,10 @@ def test_dissolve_cancelled_persists_shrink_count_for_next_round():
 def test_dissolve_zero_member_region_not_blocked_by_island_check():
     """0 成员脑区 → _has_isolated_member([]) 返回 False → 正常 dissolve（用户需求第3条）"""
     from unittest import mock
+
     import networkx as nx
-    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
     g = nx.Graph()
     g.add_node("脑区a", entity_type="brainregion",
@@ -593,8 +627,10 @@ def test_dissolve_zero_member_region_not_blocked_by_island_check():
 def test_dissolve_default_region_skipped_no_island_check():
     """缺省脑区仍被 is_default_region 跳过，不进孤岛检查"""
     from unittest import mock
+
     import networkx as nx
-    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
     g = nx.Graph()
     g.add_node("文档库脑区", entity_type="brainregion",
@@ -635,8 +671,10 @@ def test_dissolve_default_region_skipped_no_island_check():
 def test_dissolve_multiple_regions_one_blocked_one_succeeds():
     """多个脑区同时 dissolve：脑区A 被孤岛保护挡住、脑区B 正常 dissolve"""
     from unittest import mock
+
     import networkx as nx
-    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
     g = nx.Graph()
     # 脑区A：成员x degree=1（孤岛风险）
@@ -707,8 +745,10 @@ def test_dissolve_failure_persists_accumulated_shrink_count():
     验证 should_skip_persist 在 else 分支不设 True，让持久化分支写 shrink_count
     """
     from unittest import mock
+
     import networkx as nx
-    from niu_api.internal.region_manager import RegionManager, BrainRegionInfo
+
+    from niu_api.internal.region_manager import BrainRegionInfo, RegionManager
 
     # 构造图：所有成员 degree >= 2（无孤岛风险，should_dissolve=True）
     g = nx.Graph()
@@ -778,6 +818,7 @@ def test_dissolve_failure_persists_accumulated_shrink_count():
 def test_has_isolated_member_rag_raises_returns_true():
     """_get_rag() 抛异常（不是返回 None）→ try/except 兜底返回 True（保守阻止 dissolve）"""
     from unittest import mock
+
     from niu_api.internal.region_manager import RegionManager
 
     manager = RegionManager.__new__(RegionManager)
@@ -795,6 +836,7 @@ def test_has_isolated_member_degree_call_raises_returns_true():
     用 MagicMock 让 degree 调用抛异常，验证 try/except 覆盖整个 for 循环
     """
     from unittest import mock
+
     from niu_api.internal.region_manager import RegionManager
 
     # 构造一个会让 degree() 抛异常的 mock 图

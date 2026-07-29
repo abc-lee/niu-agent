@@ -11,8 +11,7 @@ call_async() for the async/sync bridge.
 """
 
 import time
-
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -86,7 +85,7 @@ class LightRAGAdapter:
     }
 
     @staticmethod
-    def _is_no_result(result: Optional[Dict[str, Any]]) -> bool:
+    def _is_no_result(result: dict[str, Any] | None) -> bool:
         """Check whether a LightRAG query_data result is effectively empty.
 
         Detects all documented "no result" scenarios from aquery_data:
@@ -136,7 +135,7 @@ class LightRAGAdapter:
         return False
 
     @staticmethod
-    def _is_error_text(text: Optional[str]) -> bool:
+    def _is_error_text(text: str | None) -> bool:
         """Check whether a text result is a LightRAG canned error message.
 
         Detects the fail_response constant that LightRAG returns via the
@@ -166,11 +165,11 @@ class LightRAGAdapter:
         query: str,
         mode: str = "mix",
         only_need_context: bool = True,
-        top_k: Optional[int] = None,
-        response_type: Optional[str] = None,
-        keywords: Optional[List[str]] = None,
+        top_k: int | None = None,
+        response_type: str | None = None,
+        keywords: list[str] | None = None,
         timeout: int = 120,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Query the brain graph / knowledge base.
 
         Args:
@@ -232,11 +231,11 @@ class LightRAGAdapter:
         self,
         query: str,
         mode: str = "local",
-        top_k: Optional[int] = None,
-        keywords: Optional[List[str]] = None,
+        top_k: int | None = None,
+        keywords: list[str] | None = None,
         filter_lambda=None,
-        fields: Optional[List[str]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        fields: list[str] | None = None,
+    ) -> dict[str, Any] | None:
         """Query LightRAG returning structured data (entities + relationships).
 
         Uses aquery_data() instead of aquery() to get structured results with
@@ -296,9 +295,9 @@ class LightRAGAdapter:
 
     def filter_by_entity_type(
         self,
-        query_result: Optional[Dict[str, Any]],
+        query_result: dict[str, Any] | None,
         entity_type: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Filter LightRAG query results by entity_type.
 
         LightRAG's aquery_data() returns structured results containing entities
@@ -389,8 +388,8 @@ class LightRAGAdapter:
         query: str,
         mode: str = "local",
         top_k: int = 20,
-        keywords: Optional[List[str]] = None,
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        keywords: list[str] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
         """Single-query multi-category search via LightRAG.
 
         Performs one query_data() call and groups entities by entity_type
@@ -416,7 +415,7 @@ class LightRAGAdapter:
             each mapping to a list of entity dicts. Empty lists on error or no results.
         """
         # Initialize result dict with all category buckets from the mapping
-        result: Dict[str, List[Dict[str, Any]]] = {
+        result: dict[str, list[dict[str, Any]]] = {
             cat: [] for cat in self._ENTITY_TYPE_TO_CATEGORY.values()
         }
 
@@ -457,7 +456,8 @@ class LightRAGAdapter:
             return {"skill": [], "knowledge": [], "other": []}
 
         member_set = {name.lower() for name in region_member_names}
-        filter_fn = lambda data: (data.get("entity_name") or "").lower() in member_set
+        def filter_fn(data):
+            return (data.get("entity_name") or "").lower() in member_set
 
         result = self.query_data(
             query, mode=mode, top_k=top_k, keywords=keywords,
@@ -474,8 +474,8 @@ class LightRAGAdapter:
         self,
         query: str,
         top_k: int = 10,
-        keywords: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        keywords: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search for skill entities in the knowledge graph.
 
         Uses local mode (entity-focused) and filters by entity_type="skill".
@@ -495,8 +495,8 @@ class LightRAGAdapter:
         self,
         query: str,
         top_k: int = 10,
-        keywords: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        keywords: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search for tool entities in the knowledge graph.
 
         Uses local mode (entity-focused) and filters by entity_type="tool".
@@ -516,8 +516,8 @@ class LightRAGAdapter:
         self,
         query: str,
         top_k: int = 10,
-        keywords: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        keywords: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search for knowledge and concept entities in the knowledge graph.
 
         Uses local mode (entity-focused) and filters by entity_type="knowledge"
@@ -540,8 +540,8 @@ class LightRAGAdapter:
         self,
         query: str,
         top_k: int = 10,
-        keywords: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        keywords: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Search for interaction_habit entities in the knowledge graph.
 
         Interaction habits store tool usage patterns (e.g. dialect preferences,
@@ -566,7 +566,7 @@ class LightRAGAdapter:
     # ============== Graph Traversal Methods ==============
 
     # DEPRECATED: 截断已移至 agent_loop 统一关口，本函数保留供参考但无调用方
-    def _truncate_graph_result(self, result: Dict[str, Any], tool_name: str = "lightrag_get_graph") -> Dict[str, Any]:
+    def _truncate_graph_result(self, result: dict[str, Any], tool_name: str = "lightrag_get_graph") -> dict[str, Any]:
         """图查询结果保底截断到 LIGHTRAG_GRAPH_MAX_CHARS。
 
         explore_node 和 get_graph_snapshot 共用。用 while 循环逐步缩减 nodes
@@ -631,7 +631,7 @@ class LightRAGAdapter:
             keep_count = max(0, int(len(truncated_nodes) * 0.7))
             truncated_nodes = truncated_nodes[:keep_count]
 
-    def explore_node(self, entity_name: str, depth: int = 2, edge_types: Optional[List[str]] = None) -> Dict[str, Any]:
+    def explore_node(self, entity_name: str, depth: int = 2, edge_types: list[str] | None = None) -> dict[str, Any]:
         """Get neighbors of an entity in the knowledge graph.
 
         Uses LightRAG's built-in get_knowledge_graph() method which performs
@@ -730,12 +730,12 @@ class LightRAGAdapter:
     def timeline_query(
         self,
         query: str,
-        start_entities: Optional[List[str]] = None,
+        start_entities: list[str] | None = None,
         direction: str = "backward",
         max_depth: int = 2,
         top_k: int = 5,
         max_results: int = 10,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """时间线查询：向量匹配内容 → 遍历时间链 → 按时间戳排序。
 
         Uses query_data() for vector search to find matching entities,
@@ -780,7 +780,7 @@ class LightRAGAdapter:
             ]
 
         # Step 2: Traverse time-chain relations from matched entities
-        timeline_items: List[Dict[str, Any]] = []
+        timeline_items: list[dict[str, Any]] = []
         seen_entities: set = set()
 
         for entity_name in entity_names:
@@ -905,7 +905,7 @@ class LightRAGAdapter:
             edge_data = nx_graph.get_edge_data(src, tgt)
             return edge_data.get("keywords", "").lower() == (keywords or "").lower()
 
-    def get_graph_snapshot(self, limit: int = 2000) -> Dict[str, Any]:
+    def get_graph_snapshot(self, limit: int = 2000) -> dict[str, Any]:
         """Return all nodes and edges from LightRAG knowledge graph.
 
         Reads the NetworkX graph directly (same pattern as hub_entities,
@@ -1016,7 +1016,7 @@ class LightRAGAdapter:
 
     # ============== Management Methods ==============
 
-    def delete_document(self, doc_id: str) -> Dict[str, Any]:
+    def delete_document(self, doc_id: str) -> dict[str, Any]:
         """Delete a document and all its related entities/relations by doc_id.
 
         Uses LightRAG's adelete_by_doc_id for cascading deletion: removes the
@@ -1069,7 +1069,7 @@ class LightRAGAdapter:
             logger.error(f"LightRAG delete_document failed: {e}")
             return {"status": "error", "message": str(e)}
 
-    def delete_entity(self, entity_name: str) -> Dict[str, Any]:
+    def delete_entity(self, entity_name: str) -> dict[str, Any]:
         """Delete an entity and all its relations from the knowledge graph.
 
         Args:
@@ -1290,7 +1290,7 @@ class LightRAGAdapter:
             logger.error(f"LightRAG create_relation failed: {e}")
             return {"status": "error", "message": str(e)}
 
-    def document_status(self) -> Dict[str, Any]:
+    def document_status(self) -> dict[str, Any]:
         """Get document processing status counts.
 
         Returns:
@@ -1310,7 +1310,7 @@ class LightRAGAdapter:
         list_type: str = "entities",
         entity_type: str = "",
         limit: int = 50,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """List entities or documents in the knowledge base.
 
         Args:
@@ -1385,7 +1385,7 @@ class LightRAGAdapter:
 
     def _resolve_entity_name_case_insensitive(
         self, entity_name: str, nx_graph
-    ) -> Optional[str]:
+    ) -> str | None:
         """Resolve entity name with case-insensitive fallback.
 
         Tries exact match first. If that fails, searches all graph nodes
@@ -1424,11 +1424,11 @@ class LightRAGAdapter:
 
     def merge_entities(
         self,
-        source_entities: List[str],
+        source_entities: list[str],
         target_entity: str,
         merge_strategy: dict | None = None,
         target_entity_data: dict | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Merge multiple entities into one, consolidating all relations.
 
         Args:
@@ -1453,8 +1453,8 @@ class LightRAGAdapter:
         with graph_read_lock():
             nx_graph = (graph_obj._graph.copy() if hasattr(graph_obj, "_graph") else graph_obj.copy())
 
-        resolved_sources: List[str] = []
-        unresolved_sources: List[str] = []
+        resolved_sources: list[str] = []
+        unresolved_sources: list[str] = []
         for src in source_entities:
             resolved = self._resolve_entity_name_case_insensitive(src, nx_graph)
             if resolved is None:
@@ -1561,9 +1561,9 @@ class LightRAGIngester:
         habit_type: str,
         content: str,
         target_tool: str,
-        confidence: Optional[Dict[str, Any]] = None,
+        confidence: dict[str, Any] | None = None,
         source_id: str = "custom_kg",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Upsert an interaction habit entity into the knowledge graph.
 
         Uses lightrag_insert (ainsert) for automatic entity extraction,
@@ -1598,7 +1598,7 @@ class LightRAGIngester:
         self,
         entity_name: str,
         result: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update confidence for an interaction habit entity.
 
         Reads the current entity, updates success/fail counts, and re-injects
@@ -1708,11 +1708,11 @@ class LightRAGIngester:
 
     def inject_custom_kg(
         self,
-        entities: List[Dict[str, Any]],
-        relationships: List[Dict[str, Any]],
-        chunks: List[Dict[str, Any]],
+        entities: list[dict[str, Any]],
+        relationships: list[dict[str, Any]],
+        chunks: list[dict[str, Any]],
         source_id: str = "custom_kg",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Inject structured knowledge via ainsert_custom_kg().
 
         This is the primary structured injection method. It builds the
@@ -1742,7 +1742,7 @@ class LightRAGIngester:
 
         try:
             # Build custom_kg dict matching LightRAG's expected structure
-            custom_kg: Dict[str, Any] = {
+            custom_kg: dict[str, Any] = {
                 "chunks": [],
                 "entities": [],
                 "relationships": [],
@@ -1788,7 +1788,7 @@ class LightRAGIngester:
             # is "Niu" (case-insensitive) and whose other end is not a
             # brain-region entity, preventing future code paths from
             # reintroducing the 24-rule-violating edges.
-            filtered_relationships: List[Dict[str, Any]] = []
+            filtered_relationships: list[dict[str, Any]] = []
             for rel in relationships:
                 src = (rel.get("src_id") or "").strip()
                 tgt = (rel.get("tgt_id") or "").strip()
@@ -1891,7 +1891,7 @@ class LightRAGIngester:
             logger.error(f"LightRAG custom_kg injection failed: {err_msg}", exc_info=True)
             return {"status": "error", "message": err_msg}
 
-    def lightrag_insert(self, content: str, file_paths: Optional[str] = None) -> Dict[str, Any]:
+    def lightrag_insert(self, content: str, file_paths: str | None = None) -> dict[str, Any]:
         """通过 ainsert 入库结构化文本（LightRAG 自动提取实体/关系）。
 
         与 inject_custom_kg 互补：lightrag_insert 适用于自然语言内容，LightRAG
@@ -1941,9 +1941,9 @@ class LightRAGIngester:
     def inject_document(
         self,
         content: str,
-        doc_id: Optional[str] = None,
-        file_path: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        doc_id: str | None = None,
+        file_path: str | None = None,
+    ) -> dict[str, Any]:
         """Inject an unstructured document for LLM-driven entity extraction.
 
         Args:
@@ -1990,10 +1990,10 @@ class LightRAGIngester:
 
     def inject_documents(
         self,
-        documents: List[str],
-        ids: Optional[List[str]] = None,
-        file_paths: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        documents: list[str],
+        ids: list[str] | None = None,
+        file_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Batch inject multiple unstructured documents.
 
         Args:

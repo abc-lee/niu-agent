@@ -8,9 +8,9 @@ Validates:
 - _search_tool_signal_skills_lightrag() searches by tool names
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ============== search_multi_lightrag tests ==============
 
@@ -516,8 +516,9 @@ class TestInjectorDeleteResource:
     @pytest.mark.asyncio
     async def test_delete_lightrag_error_raises_500(self, mock_adapter):
         """LightRAG deletion failure raises HTTP 500."""
-        from niu_api.injector import delete_resource
         from fastapi import HTTPException
+
+        from niu_api.injector import delete_resource
 
         mock_adapter.delete_entity.return_value = {
             "status": "error",
@@ -532,8 +533,9 @@ class TestInjectorDeleteResource:
     @pytest.mark.asyncio
     async def test_delete_exception_raises_500(self, mock_adapter):
         """Unexpected exception raises HTTP 500."""
-        from niu_api.injector import delete_resource
         from fastapi import HTTPException
+
+        from niu_api.injector import delete_resource
 
         mock_adapter.delete_entity.side_effect = RuntimeError("boom")
 

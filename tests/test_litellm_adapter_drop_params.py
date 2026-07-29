@@ -1,6 +1,6 @@
 """Test that drop_params=True is set when response_format is passed to LiteLLMSession.chat()."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 def test_drop_params_set_when_response_format_present():

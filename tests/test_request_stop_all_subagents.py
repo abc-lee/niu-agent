@@ -1,9 +1,9 @@
 """验证 request_stop_all_subagents 同时 cancel @niu-agent 拦截阻塞，避免双击停止死锁。"""
+from agent.ask_main_agent import TERMINATED_SIGNAL, get_pending_ask_registry
 from agent.runner import request_stop_all_subagents
-from agent.ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
+from agent.subagent_memory import SubagentMemoryContext
 from agent.subagent_registry import SubagentRegistry
 from agent.subagent_supplement import SubagentSupplementQueue
-from agent.subagent_memory import SubagentMemoryContext
 
 
 def test_request_stop_all_subagents_cancels_pending_ask():

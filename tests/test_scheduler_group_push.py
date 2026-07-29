@@ -1,7 +1,9 @@
 """F4: 定时推送群目标 TDD 测试"""
 import os
 import tempfile
+
 import pytest
+
 from niu_api.internal.scheduler.task_store import TaskStore
 
 
@@ -87,7 +89,8 @@ class TestF4ServiceChatIdPass:
 
     def test_trigger_callback_with_chat_id(self):
         """trigger_callback 应从 task 读取 chat_id 并传给 router.push"""
-        from unittest.mock import patch, MagicMock, AsyncMock
+        from unittest.mock import AsyncMock, MagicMock, patch
+
         from niu_api.internal.scheduler.service import trigger_callback
 
         task = {
@@ -124,7 +127,7 @@ class TestF4ServiceChatIdPass:
 
         # mock_rc 第二次调用是 router.push，coroutine 由 mock_push("Agent 回复", "im", "oc_group123") 产生
         # 获取第二次 run_coroutine_threadsafe 调用传入的 coroutine
-        push_coro = mock_rc.call_args_list[1][0][0]
+        mock_rc.call_args_list[1][0][0]
         # coroutine 的 cr_frame 包含局部变量，但更可靠的是检查 cr_frame 的 f_locals
         # 实际上，由于 mock_push 是 AsyncMock，调用它返回 coroutine
         # 我们直接检查 mock_push 的调用参数即可
@@ -132,7 +135,8 @@ class TestF4ServiceChatIdPass:
 
     def test_trigger_callback_without_chat_id(self):
         """私聊任务 chat_id 为空时，push 传空串"""
-        from unittest.mock import patch, MagicMock, AsyncMock
+        from unittest.mock import AsyncMock, MagicMock, patch
+
         from niu_api.internal.scheduler.service import trigger_callback
 
         task = {

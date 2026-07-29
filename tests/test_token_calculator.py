@@ -15,13 +15,12 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.token_calculator import (
-    TokenCalculator,
     _MSG_OVERHEAD,
-    _TOOL_CALL_OVERHEAD,
     _TOOL_CALL_ID_OVERHEAD,
+    _TOOL_CALL_OVERHEAD,
+    TokenCalculator,
     _cjk_aware_estimate,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -122,7 +121,7 @@ class TestO200kComparison:
     @pytest.fixture
     def litellm_counter(self):
         """如果 litellm 可用，返回 token_counter 函数；否则 skip。"""
-        litellm = pytest.importorskip("litellm")
+        pytest.importorskip("litellm")
         from litellm import token_counter
         return token_counter
 

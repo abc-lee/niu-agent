@@ -8,9 +8,8 @@ Key concepts:
   from agent_runner_loop's return value and persist to database
 """
 
+
 import pytest
-import json
-from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 
 
 def _make_return_value(messages):
@@ -50,8 +49,10 @@ async def test_compat_persists_tool_messages():
     list including tool_calls and tool results. compat.py must iterate these
     and persist each one to the message store.
     """
+    import os
+    import tempfile
+
     from agent.session import MessageStore
-    import tempfile, os
 
     tmp_dir = tempfile.mkdtemp()
     db_path = os.path.join(tmp_dir, "test.db")
@@ -68,7 +69,7 @@ async def test_compat_persists_tool_messages():
     from niu_api.compat import _persist_messages_from_return_value
 
     # Persist all messages (skip user which was already persisted by the endpoint)
-    persisted_ids = await _persist_messages_from_return_value(
+    await _persist_messages_from_return_value(
         store, return_value
     )
 
@@ -103,8 +104,10 @@ async def test_compat_persists_tool_messages():
 @pytest.mark.asyncio
 async def test_compat_persist_skips_user_messages():
     """User messages are always skipped (already persisted by the endpoint)."""
+    import os
+    import tempfile
+
     from agent.session import MessageStore
-    import tempfile, os
 
     tmp_dir = tempfile.mkdtemp()
     db_path = os.path.join(tmp_dir, "test.db")
@@ -119,7 +122,7 @@ async def test_compat_persist_skips_user_messages():
 
     from niu_api.compat import _persist_messages_from_return_value
 
-    persisted_ids = await _persist_messages_from_return_value(
+    await _persist_messages_from_return_value(
         store, return_value
     )
 
@@ -137,8 +140,10 @@ async def test_compat_persist_skips_user_messages():
 @pytest.mark.asyncio
 async def test_compat_persist_no_messages_in_return_value():
     """When return_value has no messages key, persistence should be a no-op."""
+    import os
+    import tempfile
+
     from agent.session import MessageStore
-    import tempfile, os
 
     tmp_dir = tempfile.mkdtemp()
     db_path = os.path.join(tmp_dir, "test.db")
@@ -150,7 +155,7 @@ async def test_compat_persist_no_messages_in_return_value():
 
     from niu_api.compat import _persist_messages_from_return_value
 
-    persisted_ids = await _persist_messages_from_return_value(
+    await _persist_messages_from_return_value(
         store, return_value
     )
 
@@ -166,8 +171,10 @@ async def test_compat_persist_no_messages_in_return_value():
 @pytest.mark.asyncio
 async def test_compat_persist_context_overflow():
     """When return_value is CONTEXT_OVERFLOW, messages should still be persisted."""
+    import os
+    import tempfile
+
     from agent.session import MessageStore
-    import tempfile, os
 
     tmp_dir = tempfile.mkdtemp()
     db_path = os.path.join(tmp_dir, "test.db")
@@ -183,7 +190,7 @@ async def test_compat_persist_context_overflow():
 
     from niu_api.compat import _persist_messages_from_return_value
 
-    persisted_ids = await _persist_messages_from_return_value(
+    await _persist_messages_from_return_value(
         store, return_value
     )
 
@@ -200,8 +207,10 @@ async def test_compat_persist_context_overflow():
 @pytest.mark.asyncio
 async def test_compat_persist_multiple_tool_calls():
     """Multiple tool_calls in a single assistant message should all be persisted."""
+    import os
+    import tempfile
+
     from agent.session import MessageStore
-    import tempfile, os
 
     tmp_dir = tempfile.mkdtemp()
     db_path = os.path.join(tmp_dir, "test.db")
@@ -234,7 +243,7 @@ async def test_compat_persist_multiple_tool_calls():
 
     from niu_api.compat import _persist_messages_from_return_value
 
-    persisted_ids = await _persist_messages_from_return_value(
+    await _persist_messages_from_return_value(
         store, return_value
     )
 
@@ -259,8 +268,10 @@ async def test_compat_persist_multiple_tool_calls():
 @pytest.mark.asyncio
 async def test_compat_persist_skips_system_messages():
     """System messages from agent_runner_loop should not be persisted to DB."""
+    import os
+    import tempfile
+
     from agent.session import MessageStore
-    import tempfile, os
 
     tmp_dir = tempfile.mkdtemp()
     db_path = os.path.join(tmp_dir, "test.db")
@@ -276,7 +287,7 @@ async def test_compat_persist_skips_system_messages():
 
     from niu_api.compat import _persist_messages_from_return_value
 
-    persisted_ids = await _persist_messages_from_return_value(
+    await _persist_messages_from_return_value(
         store, return_value
     )
 

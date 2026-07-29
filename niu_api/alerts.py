@@ -1,9 +1,8 @@
 """提醒队列"""
 import threading
-from typing import List, Dict
 from datetime import datetime
 
-_pending_alerts: List[Dict] = []
+_pending_alerts: list[dict] = []
 _alerts_lock = threading.Lock()
 
 
@@ -16,7 +15,7 @@ def add_pending_alert(content: str):
         })
 
 
-def get_and_clear_pending_alerts() -> List[Dict]:
+def get_and_clear_pending_alerts() -> list[dict]:
     """获取并清空待推送提醒"""
     with _alerts_lock:
         alerts = _pending_alerts.copy()

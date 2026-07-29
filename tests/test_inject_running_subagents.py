@@ -1,9 +1,8 @@
 """验证 _inject_dynamic_resources 返回的注入文本含后台子 Agent 清单。"""
-import pytest
-from agent.subagent_registry import SubagentRegistry
-from agent.subagent_memory import SubagentMemoryContext
-from agent.subagent_supplement import SubagentSupplementQueue
 from agent.runner import NiuRunner
+from agent.subagent_memory import SubagentMemoryContext
+from agent.subagent_registry import SubagentRegistry
+from agent.subagent_supplement import SubagentSupplementQueue
 
 
 def test_inject_lists_running_async_subagents(monkeypatch):

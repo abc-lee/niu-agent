@@ -1,7 +1,8 @@
 """Tests for virtual disk integration."""
+from pathlib import Path
+
 import pytest
 import yaml
-from pathlib import Path
 
 from niu_api.internal.disk_config import DiskConfig
 
@@ -80,9 +81,9 @@ class TestDiskDescription:
 
     def test_disk_description_contains_directory_listing(self):
         """_build_disk_description() should list all disk directories."""
-        from unittest.mock import patch, MagicMock
-        from niu_api.internal.disk_engine import DiskEngine
         import os
+
+        from niu_api.internal.disk_engine import DiskEngine
 
         disk_config_dir = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "config", "disk"
@@ -103,8 +104,9 @@ class TestDiskDescription:
 
     def test_disk_description_format(self):
         """Description should follow the expected format."""
-        from niu_api.internal.disk_engine import DiskEngine
         import os
+
+        from niu_api.internal.disk_engine import DiskEngine
 
         disk_config_dir = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "config", "disk"

@@ -1,6 +1,7 @@
 """SubagentSupplementQueue 单元测试。"""
 import threading
-from agent.subagent_supplement import SubagentSupplementQueue, SubagentSupplementItem
+
+from agent.subagent_supplement import SubagentSupplementQueue
 
 
 def test_push_and_drain():

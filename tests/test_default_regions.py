@@ -1,6 +1,5 @@
 """Tests for default brain region creation."""
 from unittest.mock import MagicMock, patch
-import pytest
 
 
 class TestDefaultRegions:

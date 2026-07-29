@@ -13,10 +13,11 @@ MCP 标准：
 - 所有工具调用都通过这一个函数路由
 - 这是 MCP stdio 架构的标准模式
 """
-import pytest
 from unittest.mock import Mock
 
-from agent.tool_registry import ToolRegistry, get_registry, reset_registry
+import pytest
+
+from agent.tool_registry import ToolRegistry, reset_registry
 
 
 class TestCallToolWrapper:

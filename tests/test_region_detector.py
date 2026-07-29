@@ -4,16 +4,16 @@ Tests for niu_api/internal/region_detector.py
 社区检测引擎测试 — 验证 Leiden 社区检测在 LightRAG 知识图谱上的正确性。
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from niu_api.internal.region_detector import (
+    _HAS_LEIDEN,
     CommunityDetectionResult,
     CommunityDetector,
     RegionPartition,
-    _HAS_LEIDEN,
 )
-
 
 # ============== autouse fixture ==============
 
@@ -469,6 +469,7 @@ class TestBrainRegionFiltering:
 def test_detect_communities_excludes_entities_connected_to_regions():
     """直连脑区的实体（一级成员）应被排除出 Leiden 算法输入"""
     from unittest import mock
+
     from niu_api.internal.region_detector import CommunityDetector
 
     # 构造图快照：3 个脑区主节点 + 5 个已归属实体 + 5 个游离实体
@@ -526,6 +527,7 @@ def test_detect_communities_includes_single_floor_edge_entity():
     """只剩 1 条保底归属边的实体应参与社区检测，
     即使它已直连某脑区（OR 关系覆盖原排除条件）"""
     from unittest import mock
+
     from niu_api.internal.region_detector import CommunityDetector
 
     # 构造：1 个脑区主节点 + 1 个普通已归属实体 + 1 个保底边实体 + 3 个游离实体
@@ -583,6 +585,7 @@ def test_detect_communities_floor_edge_exception_degrades_gracefully():
     """find_entities_with_single_floor_edge 抛异常时降级为空集，
     行为等价于原逻辑（保底边实体不被保留，全部按 assigned_entities 排除）"""
     from unittest import mock
+
     from niu_api.internal.region_detector import CommunityDetector
 
     nodes = [
@@ -622,6 +625,7 @@ def test_detect_communities_floor_edge_only_no_assigned_entities():
     """floor_edge_entities 非空但 assigned_entities 为空（实体未归属但仍是保底边——理论场景），
     走 elif 分支只打日志不筛选"""
     from unittest import mock
+
     from niu_api.internal.region_detector import CommunityDetector
 
     nodes = [
@@ -659,6 +663,7 @@ def test_detect_communities_entity_in_both_assigned_and_floor_edge():
     """实体同时在 assigned_entities 和 floor_edge_entities（去重正确性）
     → set 差集后该实体不在 exclude_entities，应保留参与算法"""
     from unittest import mock
+
     from niu_api.internal.region_detector import CommunityDetector
 
     nodes = [
