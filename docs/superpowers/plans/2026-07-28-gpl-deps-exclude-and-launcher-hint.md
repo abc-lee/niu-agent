@@ -635,7 +635,7 @@ Run: `rm -rf niu.app`
 Run: `chmod +x launcher/build.sh && ./launcher/build.sh 2>&1 | tail -15`
 Expected: `[build.sh] macOS .app bundle created at ../niu.app ...`
 
-- [ ] **Step 3: 验证 8 项风险项都不在 bundle**
+- [ ] **Step 3: 验证 6 项排除项都不在 bundle**
 
 Run:
 ```bash
