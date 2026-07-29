@@ -369,6 +369,47 @@ class TaskStore:
             conn.close()
         return recovered
 
+    def reset_stale_in_progress(self, timeout_hours: int = 8, now: Optional[datetime] = None) -> int:
+        """将 triggered_at 超过 timeout_hours 的 in_progress 任务重置为 pending
+
+        用于防止任务执行时间过长或崩溃后状态卡死。跨日期计算由 datetime 差值
+        自然处理（如 23:00 开始 → 次日 07:00 超时 8 小时）。
+
+        triggered_at 为 NULL 的 in_progress 任务不重置（异常数据，避免误伤）。
+
+        与 recover_orphaned_tasks 一致，重置 in_progress→pending 时清除 triggered_at，
+        避免残留旧时间戳污染 retry_failed_tasks 的重试间隔判断。
+
+        Args:
+            timeout_hours: 超时阈值（小时），默认 8
+            now: 参考时刻（用于测试注入固定时钟，消除墙钟依赖）；默认 datetime.now()
+
+        Returns:
+            被重置的任务数
+        """
+        from datetime import datetime, timedelta
+
+        if now is None:
+            now = datetime.now()
+        cutoff = (now - timedelta(hours=timeout_hours)).isoformat()
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        reset = 0
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE scheduled_tasks
+                SET status = 'pending', triggered_at = NULL
+                WHERE status = 'in_progress'
+                  AND triggered_at IS NOT NULL
+                  AND datetime(triggered_at) <= datetime(?)
+            """, (cutoff,))
+            reset = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return reset
+
     def cleanup_old_tasks(self, days: int = 100) -> int:
         """删除超过指定天数的已完成/取消/失败任务"""
         from datetime import datetime, timedelta
