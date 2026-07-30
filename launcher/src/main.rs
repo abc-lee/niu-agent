@@ -687,32 +687,29 @@ impl Splash {
                         // 不设超时 —— embedding 重算几千个向量需要数分钟，
                         // 数据量大了更久。靠"正在修复..."动画让用户知道在干活，
                         // 不由程序自动断开。如真卡死，用户可强杀进程。
-                        //
-                        // 用 curl 子进程替代 reqwest::blocking：
-                        // reqwest::blocking 内部 tokio 运行时在长连接 HTTP
-                        // 响应（3+ 分钟）下会卡在 kevent 不返回（macOS hyper
-                        // 已知问题）。改用 std::process::Command 调 curl 子进程，
-                        // 完全绕开 tokio 运行时，curl 原生处理长连接稳定。
+                        // 用 reqwest::blocking 替代 curl 子进程：
+                        // curl 是 Unix 工具，Windows 10 1803 之前可能未预装，
+                        // 用 reqwest 跨平台，不依赖外部命令。项目已依赖 reqwest。
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                             let url = format!(
                                 "http://127.0.0.1:{}/api/kg/lightrag/repair?target=all",
                                 port
                             );
-                            let output = std::process::Command::new("curl")
-                                .arg("-s")
-                                .arg("-X")
-                                .arg("POST")
-                                .arg(&url)
-                                .output()
-                                .map_err(|e| format!("curl 启动失败: {}", e))?;
-                            if !output.status.success() {
-                                return Err(format!(
-                                    "curl 退出码 {:?}: {}",
-                                    output.status.code(),
-                                    String::from_utf8_lossy(&output.stderr)
-                                ));
+                            // 不设超时 —— embedding 重算几千个向量需要数分钟，
+                            // 数据量大了更久。靠"正在修复..."动画让用户知道在干活，
+                            // 不由程序自动断开。如真卡死，用户可强杀进程。
+                            let client = reqwest::blocking::Client::builder()
+                                .build()
+                                .map_err(|e| format!("reqwest client 构建失败: {}", e))?;
+                            let resp = client
+                                .post(&url)
+                                .send()
+                                .map_err(|e| format!("修复请求发送失败: {}", e))?;
+                            let status = resp.status();
+                            let body = resp.text().map_err(|e| format!("读取响应失败: {}", e))?;
+                            if !status.is_success() {
+                                return Err(format!("HTTP {}: {}", status.as_u16(), body));
                             }
-                            let body = String::from_utf8_lossy(&output.stdout).to_string();
                             Ok(body)
                         }));
                         let result = match result {
@@ -1591,11 +1588,11 @@ fn should_enable_logging() -> bool {
 ///
 /// IMPORTANT: log file must NOT live in the .app bundle — bundle files are
 /// read-only at runtime (macOS Gatekeeper enforces). Write to ~/.niu/logs/.
-/// Fallback to /tmp/ if home_dir unavailable (always writable on Unix).
+/// Fallback to std::env::temp_dir() if home_dir unavailable (cross-platform writable temp).
 fn log_fatal_error(msg: &str) {
     let log_path = match detect_niu_home() {
         Ok(home) => home.join("logs").join("launcher_error.log"),
-        Err(_) => PathBuf::from("/tmp/niu_launcher_error.log"),
+        Err(_) => std::env::temp_dir().join("niu_launcher_error.log"),
     };
     let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new(".")));
     use time::macros::format_description;

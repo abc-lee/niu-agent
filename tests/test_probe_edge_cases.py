@@ -12,6 +12,7 @@
 import asyncio
 import json
 import signal
+import sys
 from pathlib import Path
 
 import pytest
@@ -159,6 +160,7 @@ async def test_test_llm_empty_model_returns_error():
 # 3. 运行时 lightrag session.chat 调用（验证 provider 前缀推导在运行时生效）
 # ============================================================================
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGALRM not supported on Windows")
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.timeout(60)
@@ -217,6 +219,7 @@ async def test_runtime_lightrag_session_doubao_returns_pure_json():
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGALRM not supported on Windows")
 @pytest.mark.slow
 @pytest.mark.timeout(60)
 async def test_runtime_lightrag_session_glm_returns_pure_json():
