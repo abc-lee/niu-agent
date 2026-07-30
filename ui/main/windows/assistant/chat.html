@@ -584,6 +584,14 @@
     
     <div class="messages" id="messages"></div>
     
+    <!-- 脑区状态侧滑面板（F002: 放在 .messages 外部避免 innerHTML 清空销毁） -->
+    <div class="brain-trigger-zone" id="brainTriggerZone"></div>
+    <div class="brain-overlay" id="brainOverlay"></div>
+    <div class="brain-panel" id="brainPanel">
+      <div class="brain-title">脑区状态</div>
+      <div id="brainList"></div>
+    </div>
+    
     <!-- 简洁进度条 -->
     <div class="progress-bar" id="progress-bar">
       <span id="progress-text">处理中...</span>
