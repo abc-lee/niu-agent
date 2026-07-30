@@ -311,6 +311,8 @@ git commit -m "feat(brain): POST /api/brain/regions/update 批量更新脑区 ac
       bottom: 0;
       width: 12px;
       z-index: 5;
+      /* F2-001 修复：默认不可交互，由 JS 初始化时定位到 .messages 区域 */
+      pointer-events: none;
     }
     .brain-overlay {
       position: absolute;
@@ -481,8 +483,14 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
 在上述变量之后，添加：
 
 ```javascript
+    // F2-003 修复：HTML 转义函数，防止 label 中特殊字符破坏 DOM
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
     function renderBrainList() {
-      if (!_brainRegions || _brainRegions.length === 0) {
         brainList.innerHTML = '<div class="brain-empty">暂无脑区数据</div>';
         return;
       }
@@ -516,9 +524,10 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
           lastGroup = s.group;
         }
         const cls = s.group === 2 ? 'brain-item off' : 'brain-item';
-        html += `<div class="${cls}" data-label="${item.label}">
+        const escapedLabel = escapeHtml(item.label);
+        html += `<div class="${cls}" data-label="${escapedLabel}">
           <span class="dot">${s.dot}</span>
-          <span class="name">${item.label}</span>
+          <span class="name">${escapedLabel}</span>
         </div>`;
       }
       brainList.innerHTML = html;
@@ -545,20 +554,33 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
 面板 DOM 在 `.container` 内但不在 `.messages` 内（F002 修复），需要动态设置 `top`/`height` 匹配 `.messages` 边界，确保只覆盖消息区：
 
 ```javascript
-    function showBrainPanel() {
-      // 动态定位：面板/触发区/遮罩只覆盖 .messages 区域，不污染 header/input-area
+    // F2-001 修复：页面初始化时定位触发区到 .messages 区域，并启用 pointer-events
+    function positionBrainElements() {
       const msgEl = document.getElementById('messages');
+      if (!msgEl) return;
       const rect = msgEl.getBoundingClientRect();
       const containerRect = msgEl.parentElement.getBoundingClientRect();
       const top = rect.top - containerRect.top;
       const height = rect.height;
-      brainPanel.style.top = top + 'px';
-      brainPanel.style.height = height + 'px';
-      brainOverlay.style.top = top + 'px';
-      brainOverlay.style.height = height + 'px';
       brainTriggerZone.style.top = top + 'px';
       brainTriggerZone.style.height = height + 'px';
+      brainTriggerZone.style.bottom = 'auto';
+      brainTriggerZone.style.pointerEvents = 'auto';
+      brainOverlay.style.top = top + 'px';
+      brainOverlay.style.height = height + 'px';
+      brainOverlay.style.bottom = 'auto';
+      brainPanel.style.top = top + 'px';
+      brainPanel.style.height = height + 'px';
+      brainPanel.style.bottom = 'auto';
+    }
+    // 页面加载后立即定位（不等 showBrainPanel）
+    positionBrainElements();
+    // 窗口 resize 时重新定位
+    window.addEventListener('resize', positionBrainElements);
 
+    function showBrainPanel() {
+      // 每次显示时重新定位（.messages 高度可能因内容变化而改变）
+      positionBrainElements();
       brainPanel.classList.add('visible');
       brainOverlay.classList.add('visible');
       renderBrainList();
@@ -646,18 +668,24 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
         activation: BRAIN_STATES[_pendingBrainChanges[label]].activation,
       }));
 
+      // F2-002 修复：5 秒超时，避免后端 hang 时阻塞消息发送
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       try {
         const resp = await fetch('/api/brain/regions/update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ regions }),
+          signal: controller.signal,
         });
+        clearTimeout(timeoutId);
         if (resp.ok) {
           _pendingBrainChanges = {};
         } else {
           console.error('提交脑区状态失败:', resp.status);
         }
       } catch (e) {
+        clearTimeout(timeoutId);
         console.error('提交脑区状态失败:', e);
       }
     }
@@ -768,3 +796,11 @@ git commit -m "test: 脑区侧滑面板验收通过"
 | F005 | medium | z-index:10 < resize-handle:100 | 提高到 z-index:200 |
 | F006 | medium | `_pendingBrainChanges` 保留过期数据 | fetchBrainRegions 成功后清理无效 label |
 | F007 | low | 硬编码端口 9876 | 改为相对路径 `fetch('/api/...')` |
+
+**Round 2 审查修复记录（3 个新问题全部修复）：**
+
+| ID | 严重度 | 问题 | 修复 |
+|----|--------|------|------|
+| F2-001 | high | 触发区 CSS top:0;bottom:0 首次交互前覆盖整个 .container 右侧 | CSS 默认 `pointer-events: none` + JS `positionBrainElements()` 初始化时定位到 .messages 区域并启用 |
+| F2-002 | medium | submitBrainChanges 无超时保护 | 加 `AbortController` 5 秒超时 |
+| F2-003 | medium | renderBrainList 直接将 label 插入 innerHTML 未转义 | 加 `escapeHtml()` 函数 |
