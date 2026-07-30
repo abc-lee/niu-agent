@@ -83,6 +83,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收上下文压缩状态通知（SSE 推送，显示压缩进度/模式）
   onCompactStatus: (callback) => ipcRenderer.on('compact-status', (_event, data) => callback(data)),
 
+  // 接收脑区状态变更通知（SSE 推送，刷新脑区面板）
+  onBrainRegionsChanged: (callback) => ipcRenderer.on('brain-regions-changed', (_event, data) => callback(data)),
+
   // 接收入库开始通知（SSE推送）
   onIngestStarted: (callback) => ipcRenderer.on('ingest-started', callback),
 
