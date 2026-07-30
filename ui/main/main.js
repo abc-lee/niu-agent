@@ -841,13 +841,6 @@ ipcMain.on('notify-busy', (event, { isBusy, reason }) => {
   }
 });
 
-// 接收聊天窗口的忙碌状态重置通知，转发给小女孩窗口（SSE 断连修复）
-ipcMain.on('reset-busy', () => {
-  if (spiritWindow && !spiritWindow.isDestroyed()) {
-    spiritWindow.webContents.send('reset-busy');
-  }
-});
-
 // 接收聊天窗口的用户活动通知，转发给小女孩窗口（重置空闲计时器）
 ipcMain.on('notify-activity', () => {
   if (spiritWindow && !spiritWindow.isDestroyed()) {
@@ -1776,10 +1769,9 @@ function startMessageEventStream() {
       readyReq.end();
     }
 
-    // 重连时通知 chat 刷新 + 同步忙碌状态（chat_idle 可能因断连丢失）
+    // 重连时通知 chat 刷新（chat 的 onNewMessage 会触发 refreshFromDB）
     if (sseConnectedBefore && chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.webContents.send('new-message');
-      chatWindow.webContents.send('sync-state');
     }
     sseConnectedBefore = true;
 

@@ -75,9 +75,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收忙碌状态通知
   onBusyState: (callback) => ipcRenderer.on('busy-state', (event, isBusy, reason) => callback(isBusy, reason)),
   
-  // 接收忙碌状态重置通知（SSE 断连修复：强制 busyCount 归零）
-  onResetBusy: (callback) => ipcRenderer.on('reset-busy', () => callback()),
-  
   // 接收提醒消息
   onReminder: (callback) => ipcRenderer.on('reminder', (event, message) => callback(message)),
   
