@@ -209,3 +209,15 @@ tools:
         type: boolean
         flag: detail
         description: "list 时返回完整配置"
+
+
+  - name: ha_get_image
+    category: write
+    short: "下载图片到本地（地图）"
+    long: "下载 HA image 域图片实体到本地文件，返回路径供展示。仅支持 image 域（扫地机地图等），不支持 camera 域。entity_id 从 ha_status(domain='image') 获取。返回路径可用 Markdown ![](路径) 展示"
+    parameters:
+      - name: entity_id
+        position: 1
+        type: string
+        required: true
+        description: "image 域实体 ID，如 image.xxx_map"
