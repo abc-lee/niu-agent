@@ -989,10 +989,10 @@
               let src = img.getAttribute('src');
               // 兼容模型输出 file:/// 前缀：去掉后统一由下面的逻辑处理
               if (src && src.startsWith('file:///')) {
-                src = decodeURIComponent(src.replace('file:///', ''));
+                try { src = decodeURIComponent(src.replace('file:///', '')); } catch { /* malformed %，保持原样 */ }
                 img.setAttribute('src', src);
               } else if (src && src.startsWith('file://')) {
-                src = decodeURIComponent(src.replace('file://', ''));
+                try { src = decodeURIComponent(src.replace('file://', '')); } catch { /* 同上 */ }
                 img.setAttribute('src', src);
               }
               if (src && /^[A-Za-z]:[\/]/.test(src)) {
@@ -1015,7 +1015,7 @@
                 // 从 file:/// URL 还原本地路径，或直接使用原始路径
                 let localPath = src || '';
                 if (localPath.startsWith('file:///')) {
-                  localPath = decodeURIComponent(localPath.replace('file:///', ''));
+                  try { localPath = decodeURIComponent(localPath.replace('file:///', '')); } catch { /* malformed % */ }
                 }
                 if (localPath && /^[A-Za-z]:/.test(localPath)) {
                   img.dataset.filePath = localPath;
