@@ -17,8 +17,8 @@
 
 | 行为 | 触发条件 |
 |------|---------|
-| 滑出 | 鼠标进入消息区（`.messages`）右侧 12px 边缘热区 |
-| 收起 | 鼠标离开消息区；或点击半透明遮罩 |
+| 滑出 | 鼠标进入消息区（`.messages`）右侧 24px 边缘热区 |
+| 收起 | 鼠标离开面板+触发区（200ms 延迟）；或点击半透明遮罩 |
 | 滑出动画 | `transform: translateX(100%) → translateX(0)`，0.3s ease |
 | 收起动画 | 反向，同样 0.3s ease |
 
@@ -27,12 +27,13 @@
 ### 2.2 面板布局
 
 - 宽度：175px
-- 定位：`position: absolute; right: 0; top: 0; bottom: 0`（相对于 `.messages` 容器）
+- 定位：DOM 在 `.container` 内 `.messages` 之后（不在 `.messages` 内，避免 `innerHTML=''` 销毁），JS 动态计算 `top`/`height` 匹配 `.messages` 边界
 - 背景：`#fff8e1` 暖黄底 + 棉纸纹理 SVG（与 chat.html 便签风格一致）
 - 边框：左侧 2px 虚线 `rgba(180,150,50,0.3)`
 - 字号：11px（比对话文字 13px 小）
 - 字体：继承页面 `FONT_FAMILY` 变量（由 preload-chat.js 动态注入，不硬编码）
 - 滚动：`overflow-y: auto`
+- z-index：200（高于 resize-handle 的 100）
 
 ### 2.3 脑区列表渲染
 
@@ -44,6 +45,7 @@
 - 每个脑区项：状态圆点（emoji）+ 脑区名称，名称超长用 `text-overflow: ellipsis` 截断
 - 关闭组项 `opacity: 0.45` 降低视觉权重
 - hover 高亮：`rgba(231,202,74,0.15)`
+- 脑区名称通过 `escapeHtml()` 转义（复用 chat.html 已有函数）
 
 ### 2.4 遮罩
 
@@ -65,33 +67,58 @@
 
 ## 3. 数据流
 
+### 3.1 总体架构
+
+复用现有 SSE 通道实现脑区状态实时同步，不新增通信端口。数据流分两条路径：
+
+**初次拉取 + 手动提交**（IPC → main.js → HTTP loopback → FastAPI）：
+
+chat.html 通过 `file://` 协议加载，不能直接 `fetch('/api/...')`（相对路径无 host，会 `ERR_FILE_NOT_FOUND`）。所有前端到 Python 的调用走 IPC → main.js `apiRequest` → HTTP loopback → FastAPI，与 `getStats`/`sendMessage`/`getHistory` 等 ~15 个现有 handler 完全一致。
+
 ```
-① 鼠标进入消息区右侧边缘 → 面板滑出
-② 前端调 GET /api/brain/regions → 渲染排序后的脑区列表
-③ 用户单击脑区 → 前端本地循环切换状态（即时视觉反馈，缓存改动）
-④ 用户点"发送" → POST /api/brain/regions/update 批量提交改动
-⑤ 后端 RegionActivationManager.set_activation() 更新值（永久覆盖）
-⑥ Agent 本轮 _inject_dynamic_resources() 使用更新后的脑区状态做向量检索
-⑦ 后续轮次：手动设的值受自然衰减（×0.92/轮）影响，与其他脑区一致
+chat.html → electronAPI.getBrainRegions() → ipcRenderer.invoke('brain-regions')
+→ main.js apiRequest('GET', '/api/brain/regions?include_dark=true')
+→ FastAPI brain_region_api.get_brain_regions()
+→ RegionActivationManager.get_region_map()（进程内单例）
 ```
 
-### 3.1 脑区状态刷新时机
+**实时更新**（SSE 推送，复用现有 `_sync_broadcast` + `/api/events/stream`）：
 
-脑区状态数据通过现有 `loadStats()` 拉取链获取，**不新增 SSE 事件类型**：
+```
+RegionActivationManager 状态变更（activate_regions/decay_all/set_activation 等）
+→ notify_brain_region_sync('auto'|'manual', [changed_labels])
+→ _sync_broadcast(event) → SSE /api/events/stream
+→ main.js startMessageEventStream 解析 brain_region_updated 事件
+→ chatWindow.webContents.send('brain-regions-changed')
+→ preload onBrainRegionsChanged 回调
+→ chat.html fetchBrainRegions()（仅面板打开时刷新 DOM）
+```
 
-- `loadStats()` 在以下时机触发：
-  - Agent 空闲时（`chat_idle` → `onSpiritState('idle')` → `loadStats()`）
-  - 每次工具调用后（`onToolStatus` → `loadStats()`）
-- 在 `loadStats()` 中**并行追加** `GET /api/brain/regions` 调用
-  - 不合并到 `/api/stats` 响应中——统计数据和脑区数据解耦
-  - 面板关闭时仍拉取但开销可控（脑区数量有限，JSON 响应小）
-  - 缓存到前端变量，面板打开时直接渲染，无需等待网络
+### 3.2 脑区状态刷新时机
 
-### 3.2 手动改动提交
+**SSE 实时推送**（新增）：RegionActivationManager 的 6 个状态变更方法末尾调用 `notify_brain_region_sync()`：
+- `activate_regions()` — 向量检索命中实体时（auto）
+- `reinforce_by_tool_use()` — 工具调用强化时（auto）
+- `decay_all()` — 每轮对话结束衰减时（auto，全量刷新）
+- `manual_activate()` — Agent 调 brain_region_activate 工具时（manual）
+- `manual_dim()` — Agent 调 brain_region_dim 工具时（manual）
+- `set_activation()` — UI 面板手动提交时（manual）
+
+事件格式：`{"type": "brain_region_updated", "source": "auto|manual", "changed_labels": [...]}`
+
+轻量通知事件（不携带完整数据），与 `ingest-completed` 事件模式一致——前端收到后自行拉取完整快照。
+
+**前端拉取**（复用现有）：
+- `loadStats()` 中的 `fetchBrainRegions()` 仍保留（通过 IPC 走 `brain-regions` handler），作为兜底
+- `showBrainPanel()` 中新增 `fetchBrainRegions()` 调用，确保面板打开时拉取最新快照
+- SSE 事件触发的 `fetchBrainRegions()` 有防并发守卫（`_fetchingBrainRegions`）和面板可见性守卫（`brainPanel.classList.contains('visible')`）
+
+### 3.3 手动改动提交
 
 - 用户在面板中的状态改动缓存到前端 `pendingBrainChanges` 对象
-- 点击"发送"时，在 `sendMessage()` 流程中先调 `POST /api/brain/regions/update` 提交改动
+- 点击"发送"时，在 `sendMessage()` 流程中先调 `electronAPI.updateBrainRegions(regions)` 提交改动（走 IPC → main.js → POST /api/brain/regions/update）
 - 提交成功后清空 `pendingBrainChanges`
+- `set_activation()` 末尾推 SSE 事件，实现"提交后自动刷新"闭环
 - 如果提交失败，前端不阻塞消息发送，记录 console.error
 
 ## 4. 后端接口
@@ -127,38 +154,72 @@
 
 - 调用 `RegionActivationManager.set_activation(label, value)` 逐个更新
 - `manually_dimmed` 标记：activation=0.0 时设为 True，其他设为 False
-- 更新 `updated_at` 时间戳
+- activation 字段有 `Field(ge=0.0, le=1.0)` 范围验证
 
 ### 4.3 RegionActivationManager 新增方法
 
 ```python
-def set_activation(self, region_label: str, activation: float) -> None:
+def set_activation(self, region_label: str, activation: float) -> bool:
     """Set region activation to an arbitrary value.
     
     Unlike manual_activate (1.0) and manual_dim (0.0), this supports
     the 'dimming' state (0.5) for the three-state UI toggle.
     """
     with self._lock:
-        if region_label in self._regions:
-            state = self._regions[region_label]
-            state.activation = activation
-            state.manually_dimmed = (activation == 0.0)
-            state.updated_at = datetime.now()
+        state = self.find_region_by_label(region_label)
+        if state is None:
+            logger.warning("set_activation: 未找到区域 '%s'", region_label)
+            return False
+        state.activation = activation
+        state.manually_dimmed = (activation == 0.0)
+        if activation > 0:
+            state.last_activated_at = time.time()
+            state.activation_count += 1
+        logger.info("手动设置脑区 activation: %s = %.2f", region_label, activation)
+    # 推送 SSE 事件
+    try:
+        from niu_api.chat import notify_brain_region_sync
+        notify_brain_region_sync('manual', [region_label])
+    except Exception:
+        pass
+    return True
+```
+
+### 4.4 SSE 推送函数（新增）
+
+```python
+# niu_api/chat.py — 复用 _sync_broadcast + _main_loop.call_soon_threadsafe 模式
+def notify_brain_region_sync(source: str = 'auto', changed_labels: list[str] | None = None) -> None:
+    """广播脑区状态变更事件到 /api/events/stream。"""
+    if _main_loop is None:
+        return
+    event = {
+        "type": "brain_region_updated",
+        "source": source,
+        "changed_labels": changed_labels or [],
+    }
+    try:
+        _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass
 ```
 
 ## 5. 前端实现
 
-### 5.1 chat.html — CSS（内联 `<style>` 块内追加）
+### 5.1 chat.html — CSS
 
 新增样式类：
-- `.brain-trigger-zone` — 右侧 12px 不可见热区
+- `.brain-trigger-zone` — 右侧 24px 不可见热区（默认 `pointer-events: none`，JS 启用）
 - `.brain-overlay` — 半透明遮罩
-- `.brain-panel` — 侧滑面板容器
+- `.brain-panel` — 侧滑面板容器（z-index: 200）
 - `.brain-title` — 面板标题
 - `.brain-group-label` — 分组标签
 - `.brain-item` — 脑区列表项
+- `.brain-empty` — 空状态提示
 
-### 5.2 chat.html — DOM（`.messages` 容器内追加）
+### 5.2 chat.html — DOM
+
+DOM 节点放在 `.container` 内 `.messages` 之后（不在 `.messages` 内，避免 `innerHTML=''` 销毁）：
 
 ```html
 <div class="brain-trigger-zone" id="brainTriggerZone"></div>
@@ -169,21 +230,41 @@ def set_activation(self, region_label: str, activation: float) -> None:
 </div>
 ```
 
-### 5.3 chat.html — JS（内联 `<script>` 块内追加）
+### 5.3 chat.html — JS
 
 核心函数：
-- `renderBrainList(regions)` — 排序 + 渲染脑区列表
-- `showBrainPanel()` / `hideBrainPanel()` — 滑出/收起
-- `cycleBrainState(label)` — 单击循环切换，更新 `pendingBrainChanges`
-- `submitBrainChanges()` — 发送时提交改动到后端
+- `renderBrainList()` — 排序 + 渲染脑区列表（复用已有 `escapeHtml()`）
+- `positionBrainElements()` — 动态计算 `.messages` 边界设置面板定位
+- `showBrainPanel()` / `hideBrainPanel()` — 滑出/收起（含 `fetchBrainRegions()` 拉取最新）
+- `fetchBrainRegions()` — 通过 `electronAPI.getBrainRegions()` IPC 拉取（防并发守卫）
+- `submitBrainChanges()` — 通过 `electronAPI.updateBrainRegions()` IPC 提交
 
 集成点：
-- `loadStats()` 末尾追加 `fetch('/api/brain/regions?include_dark=true')` → 缓存到 `window._brainRegions`
-- `sendMessage()` 开头追加 `await submitBrainChanges()`
+- `loadStats()` 末尾追加 `fetchBrainRegions()`（兜底）
+- `sendMessage()` 中 `sendMessageWithRetry` 之前追加 `await submitBrainChanges()`
+- 注册 `onBrainRegionsChanged` 回调，收到 SSE 事件后调 `fetchBrainRegions()`
 
 ### 5.4 preload-chat.js
 
-不需要新增 IPC 桥接——脑区数据通过 `fetch('/api/brain/regions')` 直接调用（与 chat.html 中已有的 `fetch('/api/stop_all')` 等模式一致）。
+新增 IPC 桥接：
+- `getBrainRegions` → `ipcRenderer.invoke('brain-regions')`
+- `updateBrainRegions` → `ipcRenderer.invoke('brain-update', regions)`
+- `onBrainRegionsChanged` → `ipcRenderer.on('brain-regions-changed', callback)`
+
+### 5.5 main.js
+
+新增 IPC handler（复用 `apiRequest` 模式）：
+- `brain-regions` → `apiRequest('GET', '/api/brain/regions?include_dark=true')`
+- `brain-update` → `apiRequest('POST', '/api/brain/regions/update', { regions })`
+
+SSE 解析器新增 `brain_region_updated` 事件分支（与 `tool_status`/`compact_status` 并列）：
+```javascript
+} else if (event.type === 'brain_region_updated') {
+  if (chatWindow && !chatWindow.isDestroyed()) {
+    chatWindow.webContents.send('brain-regions-changed', event);
+  }
+}
+```
 
 ## 6. 状态映射
 
@@ -199,17 +280,18 @@ def set_activation(self, region_label: str, activation: float) -> None:
 
 | 场景 | 处理 |
 |------|------|
-| 面板打开时 Agent 正在运行 | 仍可查看和修改，改动在下次发送时提交 |
+| 面板打开时 Agent 正在运行 | SSE 推送实时刷新面板 |
 | 用户修改后不发送直接关闭面板 | 改动丢失（`pendingBrainChanges` 不持久化），下次打开显示后端真实状态 |
 | 脑区列表为空 | 显示"暂无脑区数据" |
-| `GET /api/brain/regions` 失败 | 面板显示"加载失败"，不阻塞聊天功能 |
+| `GET /api/brain/regions` 失败 | 面板显示"暂无脑区数据"，不阻塞聊天功能 |
 | `POST /api/brain/regions/update` 失败 | console.error 记录，不阻塞消息发送 |
-| 鼠标快速进出触发区 | CSS transition 自然处理，不做防抖 |
+| SSE 事件丢失 | `loadStats()` 兜底拉取，`showBrainPanel()` 打开时拉取最新 |
+| 鼠标快速进出触发区 | mouseleave 200ms 延迟 + 取消机制 |
 
 ## 8. 不涉及的范围
 
 - 不修改脑区 MCP 工具（`brain_region_activate` / `brain_region_dim` / `brain_region_status`）——这些是给 LLM Agent 用的
 - 不修改脑区 activation 的衰减逻辑（`decay_factor=0.92`）——手动设的值与自动激活的值一样受衰减
 - 不修改向量检索逻辑——脑区状态通过现有的 `search_within_region()` 机制影响检索，本功能只改变 activation 值
-- 不新增 SSE 事件类型——复用 `loadStats()` 拉取链
+- 不新增 SSE 端点——复用现有 `/api/events/stream` + `_sync_broadcast`
 - 不修改图谱窗口的脑区显示
