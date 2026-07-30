@@ -180,6 +180,28 @@ def notify_compact_status_sync(status: str, mode: str = "") -> None:
         pass
 
 
+def notify_brain_region_sync(source: str = 'auto', changed_labels: list[str] | None = None) -> None:
+    """广播脑区状态变更事件到 /api/events/stream。
+
+    跨线程安全：可在 agent_loop 线程、brain_tools 工具处理线程、
+    HTTP 请求线程中调用。
+
+    Args:
+        source: "auto"（自动激活/衰减/强化）或 "manual"（手动修改）
+        changed_labels: 变更的区域 label 列表（可选，auto 衰减路径可省略表示全量刷新）
+    """
+    if _main_loop is None:
+        return
+    event = {
+        "type": "brain_region_updated",
+        "source": source,
+        "changed_labels": changed_labels or [],
+    }
+    try:
+        _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass
+
 def _sync_broadcast(event: dict):
     """在 FastAPI 事件循环中执行广播"""
     for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改
