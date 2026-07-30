@@ -10,6 +10,12 @@
 
 ---
 
+## 前置条件（实现前必须验证）
+
+- [ ] **工作树干净**：`git status --short` 无输出（无未提交改动、无合并冲突）。如有冲突先解决再开始。
+- [ ] **无未完成的 stash pop**：`git stash list` 中的 stash 不会在实现过程中被意外 pop。
+- [ ] **HA 运行中**：`curl -s -o /dev/null -w "%{http_code}" http://localhost:8123/api/` 返回 200。
+
 ## 已验证的关键事实
 
 1. **HA `image_proxy` API 可用**：`GET http://localhost:8123/api/image_proxy/image.18603118098_map` 返回 200, content-type `image/svg+xml`, 43293 bytes
