@@ -1148,12 +1148,21 @@ def set_preload_complete():
 def set_preload_stage(stage: str):
     """Set current preload stage text — called from lifespan at each phase.
 
-    Displayed on the Rust splash window via /api/preload-status.
+    Writes to both a global variable (for /api/preload-status) and a file
+    (~/.niu/.startup_stage) so the Rust launcher can read it BEFORE uvicorn
+    starts accepting HTTP connections (lifespan runs before HTTP serve).
     Does NOT depend on logging config — always set regardless of log level.
     """
     global _preload_stage
     _preload_stage = stage
     logger.info(f"[STAGE] {stage}")
+    # Write to file for Rust launcher to read during lifespan (pre-HTTP)
+    try:
+        from pathlib import Path
+        stage_file = Path.home() / ".niu" / ".startup_stage"
+        stage_file.write_text(stage, encoding="utf-8")
+    except Exception:
+        pass  # Non-blocking: HTTP fallback still works post-startup
 
 
 @router.get("/api/llm-status")

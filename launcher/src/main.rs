@@ -1912,6 +1912,18 @@ fn main() {
         let mut api_ready = false;
         for _ in 0..30 {
             thread::sleep(Duration::from_secs(1));
+
+            // Read startup stage from file (works before HTTP is available —
+            // uvicorn doesn't accept connections until lifespan completes).
+            if let Ok(stage) = std::fs::read_to_string(
+                dirs::home_dir().unwrap_or_default().join(".niu").join(".startup_stage"),
+            ) {
+                let stage = stage.trim().to_string();
+                if !stage.is_empty() {
+                    let _ = stage_tx.send(stage);
+                }
+            }
+
             let url = format!("http://127.0.0.1:{}/health", port);
             match check_client.get(&url).send() {
                 Ok(resp) => {
