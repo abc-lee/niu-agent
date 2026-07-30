@@ -1402,6 +1402,10 @@
               delete _pendingBrainChanges[label];
             }
           }
+          // 面板打开时刷新显示
+          if (brainPanel.classList.contains('visible')) {
+            renderBrainList();
+          }
         }
       } catch (e) {
         console.error('加载脑区状态失败:', e);
