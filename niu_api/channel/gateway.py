@@ -356,6 +356,7 @@ class IMGateway(ChannelAdapter):
             return
         with self._lock:
             reply_to_id = self._reply_to_ids.get(channel_id, "")
+        content = self._rewrite_unsupported_images(content)
         await self._async_send({"type": "SEND", "channel_id": channel_id, "content": content, "reply_to_id": reply_to_id})
         with self._lock:
             self._reply_to_ids.pop(channel_id, None)
@@ -367,12 +368,14 @@ class IMGateway(ChannelAdapter):
         if not connected:
             logger.debug("[IMGateway] Adapter not connected, cannot push")
             return
+        content = self._rewrite_unsupported_images(content)
         await self._async_send({"type": "PUSH", "channel_id": target, "content": content})
 
     def notify_stream(self, content: str, channel_id: str = "", is_final: bool = False):
         """通知 Adapter 有新增量内容"""
         with self._lock:
             reply_to_id = self._reply_to_ids.get(channel_id, "")
+        content = self._rewrite_unsupported_images(content)
         self._send_command({
             "type": "STREAM",
             "channel_id": channel_id,
@@ -385,6 +388,80 @@ class IMGateway(ChannelAdapter):
         """IM 通道统一 Markdown 透传，不拆分媒体。如果 route_out 调用了 send_media，
         说明 resolve_outbound_content 返回了非 text kind — 记录但不发送。"""
         logger.debug(f"[IMGateway] send_media called with kind={getattr(msg, 'kind', '?')}, IM channel uses Markdown passthrough")
+
+
+    # 飞书等 IM 图片 API 支持的格式
+    _SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+    @classmethod
+    def _rewrite_unsupported_images(cls, content: str) -> str:
+        """把不支持图片格式的 ![alt](path) 改写为 [文件名](path)。
+
+        IM adapter 用 ![] 语法判断图片上传、[] 语法判断文件上传。
+        SVG 等不支持格式如果走图片路径，飞书 API 会拒绝。
+        改写为文件链接语法后，adapter 自然走文件上传。
+
+        使用括号平衡解析（与飞书 adapter 的 extract_md_refs 一致），
+        正确处理路径中含括号的情况。仅改写本地文件路径，不影响 URL 和 data URI。
+        """
+        import os
+        result = []
+        last_end = 0
+        i = 0
+        while i < len(content):
+            # 检测 ![
+            if content[i] == '!' and i + 1 < len(content) and content[i + 1] == '[':
+                start = i
+                i += 2
+            else:
+                i += 1
+                continue
+
+            # 找 alt_text（到第一个 ]）
+            alt_start = i
+            while i < len(content) and content[i] != ']':
+                i += 1
+            if i >= len(content):
+                continue
+            alt_text = content[alt_start:i]
+            i += 1  # 跳过 ]
+
+            # 必须紧跟 (
+            if i >= len(content) or content[i] != '(':
+                continue
+            i += 1  # 跳过 (
+
+            # 括号平衡找 path
+            path_start = i
+            depth = 1
+            while i < len(content) and depth > 0:
+                if content[i] == '(':
+                    depth += 1
+                elif content[i] == ')':
+                    depth -= 1
+                i += 1
+            if depth != 0:
+                continue
+            path = content[path_start:i - 1]
+
+            # URL / data URI 不改写
+            if path.startswith(("http://", "https://", "ftp://", "data:", "mailto:")):
+                continue
+
+            # 检查扩展名
+            ext = os.path.splitext(path)[1].lower()
+            if ext in cls._SUPPORTED_IMAGE_EXTS:
+                continue  # 支持的格式，不改写
+
+            # 不支持的格式，改写为文件链接
+            filename = os.path.basename(path) or alt_text or "文件"
+            # 追加改写前的内容
+            result.append(content[last_end:start])
+            result.append(f"[{filename}]({path})")
+            last_end = i
+
+        result.append(content[last_end:])
+        return "".join(result)
 
     @property
     def is_connected(self) -> bool:
