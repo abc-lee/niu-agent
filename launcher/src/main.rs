@@ -149,6 +149,12 @@ struct Splash {
     /// packages like cv2/insightface/pillow_heif/igraph/leidenalg + buffalo_l
     /// model). Empty = all present. Shown on splash as a hint to read README.
     missing_deps: Vec<String>,
+    /// Receiver for startup stage text from the preload-status polling thread.
+    /// Wrapped in Mutex for Sync compatibility with iced's runtime.
+    stage_rx: Mutex<Receiver<String>>,
+    /// Current startup stage text, updated from preload-status polling.
+    /// Displayed instead of the static "正在启动" label.
+    stage: String,
 }
 
 /// Lifecycle signals sent from the launcher background thread to the splash
@@ -380,6 +386,7 @@ impl Splash {
         integrity_failed: Arc<AtomicBool>,
         phase_rx: Receiver<SplashPhase>,
         missing_deps: Vec<String>,
+        stage_rx: Receiver<String>,
     ) -> Self {
         Self {
             ready_rx: Mutex::new(ready_rx),
@@ -397,6 +404,8 @@ impl Splash {
             closing: false,
             phase_rx: Mutex::new(phase_rx),
             missing_deps,
+            stage_rx: Mutex::new(stage_rx),
+            stage: "正在启动服务".to_string(),
         }
     }
 
@@ -503,6 +512,11 @@ impl Splash {
                             break;
                         }
                     }
+                }
+                // Drain any pending stage updates from the preload-status polling
+                // thread. Keeps the latest stage text; empties the channel each tick.
+                while let Ok(stage) = self.stage_rx.lock().unwrap().try_recv() {
+                    self.stage = stage;
                 }
 
                 // Non-blocking check: if the launcher thread sent the ready signal,
@@ -811,12 +825,12 @@ impl Splash {
         // Two separate text elements: CJK label + fixed-width container for dots
         // The dots container has a fixed width so the row's total width never changes,
         // preventing layout shift when the number of dots changes.
-        let label_text = if self.closing {
+        let label_text: &str = if self.closing {
             "正在关闭所有进程，关闭后请重新启动程序"
         } else if self.repairing {
             "正在修复"
         } else {
-            "正在启动"
+            &self.stage
         };
         // Closing message is long (~18 CJK glyphs); shrink font so it fits in
         // the 280px-wide splash without being truncated.
@@ -1735,6 +1749,7 @@ fn main() {
     // showing the shutdown message, and (2) trigger iced::exit() once all
     // child processes have been reaped. See SplashPhase enum for details.
     let (phase_tx, phase_rx) = std::sync::mpsc::channel::<SplashPhase>();
+    let (stage_tx, stage_rx) = std::sync::mpsc::channel::<String>();
     let cancelled_bg = cancelled.clone();
     let port = args.port;
 
@@ -1936,6 +1951,8 @@ fn main() {
                     struct PreloadStatus {
                         ready: bool,
                         uptime: String,
+                        #[serde(default)]
+                        stage: Option<String>,
                     }
                     let status: PreloadStatus = match serde_json::from_str(&body) {
                         Ok(s) => s,
@@ -1944,12 +1961,16 @@ fn main() {
                             continue;
                         }
                     };
+                    // Forward stage text to the splash window for live display
+                    if let Some(stage) = &status.stage {
+                        let _ = stage_tx.send(stage.clone());
+                    }
 
                     // Log first response or when ready
                     if i == 0 || status.ready {
                         info!(
-                            "Preload status check: ready={}, uptime={}, attempt={}",
-                            status.ready, status.uptime, i + 1
+                            "Preload status check: ready={}, uptime={}, stage={:?}, attempt={}",
+                            status.ready, status.uptime, status.stage, i + 1
                         );
                     }
 
@@ -2242,6 +2263,7 @@ fn main() {
         integrity_failed.clone(),
         phase_rx,
         missing_deps,
+        stage_rx,
     );
     let window_settings = window::Settings {
         size: iced::Size::new(320.0, 80.0),
