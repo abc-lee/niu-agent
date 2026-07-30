@@ -175,6 +175,77 @@ pip install insightface>=0.7.3
 # 如果是打包版本，重新下载完整安装包
 ```
 
+
+#### 问题：人脸识别数据排查（误合并 / 数据异常 / 人工拆分）
+
+当主 Agent 需要排查人脸识别底层数据（如误合并人物需拆分、确认某人脸归属、检查向量数据完整性）时，可以直接查询照片数据库。Agent 入库时知道每张照片对应谁，通过数据库可以建立照片与人脸向量的对应关系。
+
+**数据库位置：** `~/.niu/work/photos.db`（SQLite，若 workspace 已自定义则替换为 `{workspace}/photos.db`）
+
+**表结构：**
+
+| 表 | 用途 | 关键字段 |
+|----|------|---------|
+| `persons` | 人物记录 | `id`（UUID）、`name`（真名，未命名时为 NULL）、`auto_label`（如 `未命名人物_1`）、`center_embedding`（人脸中心向量 BLOB）、`photo_count` |
+| `faces` | 人脸向量 | `id`（UUID）、`photo_id`（关联 photos 表）、`person_id`（关联 persons 表）、`embedding`（512 维 float32，2048 字节 BLOB）、`bounding_box`（JSON）、`confidence` |
+| `photos` | 照片记录 | `id`（UUID）、`file_path`（完整路径）、`taken_at`（拍摄时间）、`location`、`abstract` |
+| `co_occurrences` | 人物共现统计 | `person_a_id`、`person_b_id`、`count` |
+
+**常用查询：**
+
+```bash
+# 1. 查看某个人物名下的所有人脸向量（关键：确认误合并）
+sqlite3 ~/.niu/work/photos.db "
+SELECT f.id, p.file_path, f.confidence, length(f.embedding) as emb_len
+FROM faces f
+JOIN photos p ON f.photo_id = p.id
+WHERE f.person_id = (
+  SELECT id FROM persons WHERE name = '人物名'
+);"
+
+# 2. 查看所有人物概况（含未命名）
+sqlite3 ~/.niu/work/photos.db "
+SELECT id, name, auto_label, photo_count
+FROM persons ORDER BY photo_count DESC;"
+
+# 3. 查看某个 person 的完整信息（含向量大小）
+sqlite3 ~/.niu/work/photos.db "
+SELECT id, name, auto_label, photo_count,
+       length(center_embedding) as center_emb_len,
+       length(name_embedding) as name_emb_len
+FROM persons WHERE name = '人物名';"
+
+# 4. 查看所有未命名人物
+sqlite3 ~/.niu/work/photos.db "
+SELECT id, auto_label, photo_count FROM persons
+WHERE name IS NULL OR name = auto_label OR name LIKE '未命名人物%'
+ORDER BY auto_label;"
+
+# 5. 查看某张照片对应的人脸记录
+sqlite3 ~/.niu/work/photos.db "
+SELECT f.id, f.person_id, p.name, p.auto_label, f.confidence
+FROM faces f
+JOIN persons p ON f.person_id = p.id
+WHERE f.photo_id = (
+  SELECT id FROM photos WHERE file_path LIKE '%照片文件名%'
+);"
+```
+
+**误合并拆分流程：**
+
+当用户报告两个人物被错误合并（如"吕英"名下混入了另一个人的照片）：
+
+1. 用查询 1 查出该人物名下所有人脸向量及其对应照片路径
+2. Agent 根据入库记忆判断哪张照片属于错误合并的人
+3. 创建新 person 记录（或用已有正确记录），将误合并的 face 的 `person_id` 更新到正确人物
+4. 重新计算原人物的 `center_embedding`（从剩余 face embedding 取均值）
+
+**注意事项：**
+- 向量是 512 维 float32 的 BLOB（2048 字节），`length(embedding)` 应为 2048
+- `confidence` 低于 0.6 的人脸向量可能是误检测，需特别关注
+- 直接修改数据库后需重启程序使缓存失效
+- `auto_label` 编号由 `get_next_auto_label()` 分配，已修复字符串排序 bug（2026-07-30），现在 `_10` 以后会正常递增到 `_11`、`_12`…
+
 ### 1.3 定时任务问题
 
 #### 问题：创建提醒后没有收到通知
