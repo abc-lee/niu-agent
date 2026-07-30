@@ -138,6 +138,20 @@ python -m niu_api
 - `models/` 排除 `buffalo_l/*.onnx`（非商业许可，首次用自动下载到 `~/.insightface/`）
 - `ui/main/` 排除阿朱泡泡体 ttf（许可证存疑）
 
+**Windows 绿色包打包**（由 `pack.bat` 完成）：
+```cmd
+pack.bat
+```
+Windows 是绿色安装，用户解压 zip 即用，无需安装程序。打包前需已完成：Rust 编译（`launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建。
+
+`pack.bat` 会：
+1. 自动清理 `launcher/target/`、`__pycache__/`、`*.pyc`（不进 zip，也不需要保留）
+2. 用 robocopy 复制文件到临时目录，排除 `.git/`、`backup/`、缓存目录等
+3. 用 PowerShell `Compress-Archive` 压缩成 zip
+4. 产物在 `dist/Niu-<VERSION>-win-x64.zip`，VERSION 从根目录 `VERSION` 文件读
+
+**Windows 许可证合规**：有版权争议的包（igraph/leidenalg/texttable/cv2/insightface/easydict/pillow_heif + buffalo_l/*.onnx）已在打包前从 `python/` 和 `models/` 中删除。用户按 README 可选安装章节自行补装。启动器 `check_missing_deps` 会检测缺失并在 splash 窗口提示。
+
 ### 测试
 
 ```bash
