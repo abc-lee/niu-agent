@@ -700,8 +700,10 @@ impl Splash {
                             );
                             if cfg!(target_os = "windows") {
                                 // Windows: PowerShell Invoke-WebRequest
+                                // -TimeoutSec 0 = 无超时（embedding 重算需数分钟）
+                                // HTTP 4xx/5xx 会抛异常，进 catch 分支返回错误
                                 let ps_script = format!(
-                                    "try {{ $r = Invoke-WebRequest -Uri '{}' -Method POST -UseBasicParsing -TimeoutSec 0; $r.Content }} catch {{ $_.Exception.Message }}",
+                                    "try {{ $r = Invoke-WebRequest -Uri '{}' -Method POST -UseBasicParsing -TimeoutSec 0; if ($r.StatusCode -ge 400) {{ Write-Error \"HTTP $($r.StatusCode)\"; exit 1 }} else {{ $r.Content }} }} catch {{ if ($_.Exception.Response) {{ \"HTTP $([int]$_.Exception.Response.StatusCode)\" }} else {{ $_.Exception.Message }} }}",
                                     url
                                 );
                                 let output = std::process::Command::new("powershell")
@@ -710,27 +712,36 @@ impl Splash {
                                     .arg(&ps_script)
                                     .output()
                                     .map_err(|e| format!("PowerShell 启动失败: {}", e))?;
-                                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                                if !output.status.success() && !stderr.is_empty() {
-                                    return Err(format!("PowerShell 错误: {}", stderr));
+                                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                                if !output.status.success() {
+                                    return Err(if stderr.is_empty() { stdout.clone() } else { stderr });
                                 }
                                 Ok(stdout)
                             } else {
                                 // macOS/Linux: curl 子进程（避免 reqwest kevent 卡死）
+                                // -s 静默进度条，--max-time 600 安全网（10 分钟兜底，
+                                // 正常 3-4 分钟，防真死循环）
                                 let output = std::process::Command::new("curl")
                                     .arg("-s")
+                                    .arg("--max-time")
+                                    .arg("600")
                                     .arg("-X")
                                     .arg("POST")
                                     .arg(&url)
                                     .output()
                                     .map_err(|e| format!("curl 启动失败: {}", e))?;
-                                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                                if !output.status.success() && !stderr.is_empty() {
-                                    return Err(format!("curl 错误: {}", stderr));
+                                // curl 连接失败时 exit code 非 0 且 stderr 可能为空，
+                                // 用 exit code 判断而非 stderr
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                                    return Err(if stderr.is_empty() {
+                                        format!("curl 退出码 {}", output.status.code().unwrap_or(-1))
+                                    } else {
+                                        stderr
+                                    });
                                 }
-                                Ok(stdout)
+                                Ok(String::from_utf8_lossy(&output.stdout).to_string())
                             }
                         }));
                         let result = match result {
