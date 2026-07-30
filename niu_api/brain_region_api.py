@@ -23,7 +23,7 @@ from typing import Any
 from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from niu_api.internal.brain_graph import get_brain_graph
 from niu_api.internal.region_activation import (
@@ -41,6 +41,17 @@ router = APIRouter(prefix="/api/brain", tags=["brain-regions"])
 class ConsolidateRequest(BaseModel):
     """Request body for community detection consolidation."""
     resolution: float = 1.0
+
+
+class RegionActivationUpdate(BaseModel):
+    """Request body for batch updating region activation values."""
+    label: str
+    activation: float = Field(ge=0.0, le=1.0, description="Activation value 0.0-1.0")
+
+
+class RegionUpdateRequest(BaseModel):
+    """Request body for POST /api/brain/regions/update."""
+    regions: list[RegionActivationUpdate]
 
 
 # ============== Singleton Accessors ==============
@@ -137,6 +148,38 @@ def get_brain_regions(
 
     except Exception as e:
         logger.error(f"[Brain Region API] get_brain_regions failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/regions/update")
+def update_region_activations(req: RegionUpdateRequest) -> dict[str, Any]:
+    """Batch update brain region activation values.
+
+    Called by the Chat UI brain panel when user manually toggles region states
+    and sends a message. Values permanently overwrite the backend-computed
+    activation (subject to subsequent natural decay).
+    """
+    try:
+        activation_mgr = _get_activation_mgr()
+        if activation_mgr is None:
+            raise HTTPException(status_code=503, detail="Activation manager not initialized")
+
+        updated = 0
+        for item in req.regions:
+            if activation_mgr.set_activation(item.label, item.activation):
+                updated += 1
+
+        logger.info("[Brain Region API] Updated %d region activations", updated)
+
+        return {
+            "status": "ok",
+            "updated": updated,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[Brain Region API] update_region_activations failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
