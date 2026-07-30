@@ -801,3 +801,42 @@ git commit -m "test: 脑区侧滑面板验收通过"
 | F2-001 | high | 触发区 CSS top:0;bottom:0 首次交互前覆盖整个 .container 右侧 | CSS 默认 `pointer-events: none` + JS `positionBrainElements()` 初始化时定位到 .messages 区域并启用 |
 | F2-002 | medium | submitBrainChanges 无超时保护 | 加 `AbortController` 5 秒超时 |
 | F2-003 | medium | renderBrainList 直接将 label 插入 innerHTML 未转义 | 加 `escapeHtml()` 函数 |
+
+---
+
+## SSE 实时推送补丁（2026-07-30）
+
+> 本计划中的 Task 1-5 已实现（提交 443cf48f..31abdd9f），但前端数据获取在 `file://` 协议下失败（`fetch('/api/...')` → `ERR_FILE_NOT_FOUND`）。
+> 已修复为 IPC 桥接（提交 31abdd9f），但面板只能显示快照，无实时更新。
+> 以下补丁新增 SSE 实时推送，复用现有 `/api/events/stream` 通道。
+>
+> **注意：计划中的 `fetch('/api/brain/regions')` 和 `fetch('/api/brain/regions/update')` 已废弃，**已被 IPC 替代（`electronAPI.getBrainRegions()` / `electronAPI.updateBrainRegions()`）。** 不要使用计划中的 fetch 代码。**
+>
+> 详细设计参见：`docs/superpowers/specs/2026-07-29-brain-region-panel-design.md` §3.1-3.3、§4.4-4.5、§5.3-5.5
+
+### Patch Task A: 后端 SSE 推送函数 + 6 个方法推送调用
+
+**Files:**
+- Modify: `niu_api/chat.py`（新增 `notify_brain_region_sync()` 函数）
+- Modify: `niu_api/internal/region_activation.py`（6 个方法末尾加推送）
+
+参见设计文档 §4.4-4.5。所有推送在锁外调用，延迟导入 `from niu_api.chat import notify_brain_region_sync` 避免循环依赖。
+
+### Patch Task B: main.js SSE 解析器 + preload 回调
+
+**Files:**
+- Modify: `ui/main/main.js`（`startMessageEventStream` 加 `brain_region_updated` 事件分支）
+- Modify: `ui/main/preload-chat.js`（暴露 `onBrainRegionsChanged` 回调）
+
+### Patch Task C: chat.html 注册回调 + showBrainPanel 拉取
+
+**Files:**
+- Modify: `ui/main/windows/assistant/chat.html`（注册 `onBrainRegionsChanged` 回调 + `showBrainPanel` 中加 `fetchBrainRegions()`）
+
+### Patch Task D: 运行环境验证
+
+**必须在实际运行环境中验证：**
+1. 启动应用，打开 chat 窗口
+2. 鼠标移到消息区右侧 → 面板滑出，显示脑区列表（不是空的）
+3. 发送一条消息 → Agent 回复后，脑区状态应通过 SSE 实时更新（面板关闭时不刷新 DOM，打开时刷新）
+4. DevTools Console 无 `ERR_FILE_NOT_FOUND` 或 `加载脑区状态失败` 错误
