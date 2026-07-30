@@ -475,6 +475,35 @@ class RegionActivationManager:
                 logger.info("手动激活脑区: %s (%s)", label, state.region_id)
             return activated
 
+    def set_activation(self, region_label: str, activation: float) -> bool:
+        """Set region activation to an arbitrary value.
+
+        Unlike manual_activate (1.0) and manual_dim (0.0), this supports
+        the 'dimming' state (0.5) for the three-state UI toggle.
+
+        Args:
+            region_label: Human-readable region label.
+            activation: Target activation value (0.0-1.0).
+
+        Returns:
+            True if the region was found and updated, False otherwise.
+        """
+        with self._lock:
+            state = self.find_region_by_label(region_label)
+            if state is None:
+                logger.warning("set_activation: 未找到区域 '%s'", region_label)
+                return False
+
+            state.activation = activation
+            state.manually_dimmed = (activation == 0.0)
+            # Only count as activation if value > 0 (consistent with manual_dim)
+            if activation > 0:
+                state.last_activated_at = time.time()
+                state.activation_count += 1
+
+            logger.info("手动设置脑区 activation: %s = %.2f", region_label, activation)
+            return True
+
     def manual_dim(self, region_labels: list[str], reason: str = "") -> None:
         """Manual dim via brain_region_dim tool.
 
