@@ -129,7 +129,7 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 |------|---------|------|
 | macOS（Intel CPU） | [Niu-0.1.0-mac-intel.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.1.0/Niu-0.1.0-mac-intel.dmg) | 适用于 Intel 芯片的 Mac（约 1.2 GB） |
 | macOS（Apple M 系列） | _稍后提供_ | 后续发布 |
-| Windows x64 | [Niu-0.1.0-win-x64.zip](https://github.com/abc-lee/niu-agent/releases/download/v0.1.0/Niu-0.1.0-win-x64.zip) | 绿色安装，解压即用（约 350 MB） |
+| Windows x64 | [Niu-0.1.0-win-x64.7z](https://github.com/abc-lee/niu-agent/releases/download/v0.1.0/Niu-0.1.0-win-x64.7z) | 绿色安装，解压即用（约 950 MB） |
 
 **macOS 安装步骤**：
 
@@ -140,7 +140,7 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 
 **Windows 安装步骤**：
 
-1. 解压下载的 `.zip` 文件到任意目录（如 `D:\Niu`）
+1. 用 7-Zip 或 Bandizip 解压下载的 `.7z` 文件到任意目录（如 `D:\Niu`）
 2. 双击 `niu.exe` 启动
 3. 启动后在设置中配置你的 LLM API Key
 
