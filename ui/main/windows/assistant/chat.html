@@ -962,6 +962,8 @@
       window.electronAPI.notifyBusy(true, 'chat');
 
       try {
+        // 提交用户手动修改的脑区状态（在发送消息前）
+        await submitBrainChanges();
         const result = await sendMessageWithRetry(text);
       } finally {
         // chat 窗口 UI 状态（hideTyping/stopBtn/isProcessing）由 SSE chat_idle 驱动
@@ -1244,6 +1246,201 @@
     // showProgress('处理中...', 45);
     // setTimeout(() => hideProgress(), 2000);
     
+    // ========== 脑区状态侧滑面板 ==========
+    const BRAIN_STATES = [
+      { activation: 0.0, dot: '⚫', group: 2 },
+      { activation: 1.0, dot: '🟢', group: 0 },
+      { activation: 0.5, dot: '🟡', group: 1 },
+    ];
+    let _brainRegions = [];           // 缓存后端返回的脑区状态
+    let _pendingBrainChanges = {};   // { label: stateIdx } 用户待提交的改动
+
+    const brainPanel = document.getElementById('brainPanel');
+    const brainOverlay = document.getElementById('brainOverlay');
+    const brainTriggerZone = document.getElementById('brainTriggerZone');
+    const brainList = document.getElementById('brainList');
+
+    // F2-003 修复：HTML 转义防止 label 中特殊字符破坏 DOM
+    // 复用 chat.html:1106 已有的 escapeHtml() 函数，不重复定义
+
+    function renderBrainList() {
+      if (!_brainRegions || _brainRegions.length === 0) {
+        brainList.innerHTML = '<div class="brain-empty">暂无脑区数据</div>';
+        return;
+      }
+
+      // Build display list: use pending changes if any, else use cached state
+      const displayList = _brainRegions.map(r => {
+        const label = r.label || r.name;
+        let stateIdx;
+        if (label in _pendingBrainChanges) {
+          stateIdx = _pendingBrainChanges[label];
+        } else {
+          // Map activation to state index
+          if (r.activation > 0.7) stateIdx = 1;       // green
+          else if (r.activation > 0.3) stateIdx = 2;   // yellow
+          else stateIdx = 0;                            // black
+        }
+        return { label, stateIdx };
+      });
+
+      // Sort by group: green(0) → yellow(1) → black(2)
+      displayList.sort((a, b) => BRAIN_STATES[a.stateIdx].group - BRAIN_STATES[b.stateIdx].group);
+
+      // Render
+      let html = '';
+      let lastGroup = -1;
+      const groupLabels = ['🟢 点亮', '🟡 调暗', '⚫ 关闭'];
+      for (const item of displayList) {
+        const s = BRAIN_STATES[item.stateIdx];
+        if (s.group !== lastGroup) {
+          html += `<div class="brain-group-label">${groupLabels[s.group]}</div>`;
+          lastGroup = s.group;
+        }
+        const cls = s.group === 2 ? 'brain-item off' : 'brain-item';
+        const escapedLabel = escapeHtml(item.label);
+        html += `<div class="${cls}" data-label="${escapedLabel}">
+          <span class="dot">${s.dot}</span>
+          <span class="name">${escapedLabel}</span>
+        </div>`;
+      }
+      brainList.innerHTML = html;
+
+      // Attach click handlers
+      brainList.querySelectorAll('.brain-item').forEach(el => {
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const label = el.dataset.label;
+          // Find current state in displayList
+          const item = displayList.find(d => d.label === label);
+          if (!item) return;
+          // Cycle: 0(black) → 1(green) → 2(yellow) → 0(black)
+          const nextIdx = (item.stateIdx + 1) % 3;
+          _pendingBrainChanges[label] = nextIdx;
+          renderBrainList();
+        });
+      });
+    }
+
+    // F2-001 修复：页面初始化时定位触发区到 .messages 区域，并启用 pointer-events
+    function positionBrainElements() {
+      const msgEl = document.getElementById('messages');
+      if (!msgEl) return;
+      const rect = msgEl.getBoundingClientRect();
+      const containerRect = msgEl.parentElement.getBoundingClientRect();
+      const top = rect.top - containerRect.top;
+      const height = rect.height;
+      brainTriggerZone.style.top = top + 'px';
+      brainTriggerZone.style.height = height + 'px';
+      brainTriggerZone.style.bottom = 'auto';
+      brainTriggerZone.style.pointerEvents = 'auto';
+      brainOverlay.style.top = top + 'px';
+      brainOverlay.style.height = height + 'px';
+      brainOverlay.style.bottom = 'auto';
+      brainPanel.style.top = top + 'px';
+      brainPanel.style.height = height + 'px';
+      brainPanel.style.bottom = 'auto';
+    }
+    // 页面加载后立即定位（不等 showBrainPanel）
+    positionBrainElements();
+    // 窗口 resize 时重新定位
+    window.addEventListener('resize', positionBrainElements);
+
+    function showBrainPanel() {
+      // 每次显示时重新定位（.messages 高度可能因内容变化而改变）
+      positionBrainElements();
+      brainPanel.classList.add('visible');
+      brainOverlay.classList.add('visible');
+      renderBrainList();
+    }
+
+    function hideBrainPanel() {
+      brainPanel.classList.remove('visible');
+      brainOverlay.classList.remove('visible');
+    }
+
+    // Trigger: mouse enters right edge of messages area
+    brainTriggerZone.addEventListener('mouseenter', showBrainPanel);
+    // Hide: mouse leaves the panel+trigger zone area
+    // F004 修复：不监听 messages mouseleave（面板在 messages 外部，移到面板会触发 mouseleave）
+    // 改为监听面板和触发区的 mouseleave，但给一个短暂延迟避免误触
+    let _brainHideTimer = null;
+    function scheduleHideBrainPanel() {
+      _brainHideTimer = setTimeout(() => {
+        hideBrainPanel();
+        _brainHideTimer = null;
+      }, 200);
+    }
+    function cancelHideBrainPanel() {
+      if (_brainHideTimer) {
+        clearTimeout(_brainHideTimer);
+        _brainHideTimer = null;
+      }
+    }
+    brainTriggerZone.addEventListener('mouseleave', scheduleHideBrainPanel);
+    brainPanel.addEventListener('mouseleave', scheduleHideBrainPanel);
+    brainPanel.addEventListener('mouseenter', cancelHideBrainPanel);
+    brainTriggerZone.addEventListener('mouseenter', cancelHideBrainPanel);
+    // Click overlay to hide
+    brainOverlay.addEventListener('click', hideBrainPanel);
+
+    let _fetchingBrainRegions = false;
+    async function fetchBrainRegions() {
+      // F003 修复：防并发，避免每次工具调用都触发请求
+      if (_fetchingBrainRegions) return;
+      _fetchingBrainRegions = true;
+      try {
+        const resp = await fetch('/api/brain/regions?include_dark=true');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.status === 'ok' && data.regions) {
+          _brainRegions = data.regions;
+          // F006 修复：清理 _pendingBrainChanges 中已不存在的脑区 label
+          const validLabels = new Set(data.regions.map(r => r.label || r.name));
+          for (const label of Object.keys(_pendingBrainChanges)) {
+            if (!validLabels.has(label)) {
+              delete _pendingBrainChanges[label];
+            }
+          }
+        }
+      } catch (e) {
+        console.error('加载脑区状态失败:', e);
+      } finally {
+        _fetchingBrainRegions = false;
+      }
+    }
+
+    async function submitBrainChanges() {
+      const labels = Object.keys(_pendingBrainChanges);
+      if (labels.length === 0) return;
+
+      const regions = labels.map(label => ({
+        label,
+        activation: BRAIN_STATES[_pendingBrainChanges[label]].activation,
+      }));
+
+      // F2-002 修复：5 秒超时，避免后端 hang 时阻塞消息发送
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      try {
+        const resp = await fetch('/api/brain/regions/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ regions }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (resp.ok) {
+          _pendingBrainChanges = {};
+        } else {
+          console.error('提交脑区状态失败:', resp.status);
+        }
+      } catch (e) {
+        clearTimeout(timeoutId);
+        console.error('提交脑区状态失败:', e);
+      }
+    }
+
     // ========== 加载统计数据 ==========
     async function loadStats() {
       try {
@@ -1276,6 +1473,8 @@
             }
           }
         }
+        // 并行拉取脑区状态（F003: 有防并发保护，不阻塞 stats 渲染）
+        fetchBrainRegions();
       } catch (e) {
         console.error('加载统计失败:', e);
       }
