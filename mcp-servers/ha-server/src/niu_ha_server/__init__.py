@@ -2122,8 +2122,8 @@ def ha_get_image(entity_id: str = "", **kwargs) -> dict:
          "content_type": "image/svg+xml", "size": 43293}
         或 {"success": False, "error": "..."}
     """
-    if not entity_id:
-        return {"success": False, "error": "entity_id 不能为空"}
+    if not entity_id or "." not in entity_id or "/" in entity_id or ".." in entity_id:
+        return {"success": False, "error": f"无效的 entity_id: '{entity_id}'，格式应为 'domain.name'"}
 
     config = _read_config()
     url, headers, err = _get_ha_client(config)
