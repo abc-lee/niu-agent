@@ -204,6 +204,37 @@ def notify_brain_region_sync(source: str = 'auto', changed_labels: list[str] | N
         pass
 ```
 
+### 4.5 状态变更方法的锁外推送模式
+
+所有 6 个方法中 SSE 推送必须在 `with self._lock` 块**外部**调用，避免在持有锁时执行 I/O。对于在锁内 return 的方法，需重构为先用局部变量捕获返回值、退出锁块后再推送。统一模式：
+
+```python
+# 通用模式：锁内修改状态 → 锁外推送 SSE
+def some_method(self, ...) -> ReturnType:
+    with self._lock:
+        # ... 修改状态 ...
+        result = ...  # 捕获返回值
+    # 锁外推送（不在 with self._lock 块内）
+    try:
+        from niu_api.chat import notify_brain_region_sync
+        notify_brain_region_sync('auto' or 'manual', [labels])
+    except Exception:
+        pass  # SSE 推送失败不影响核心逻辑
+    return result
+```
+
+**需重构的 3 个方法**（当前在锁内 return，需改为先捕获返回值再锁外推送）：
+
+- `activate_regions()` — `return activated_regions` 在锁内 → 改为 `result = activated_regions`，锁外推送 `('auto', [labels])`，return result
+- `reinforce_by_tool_use()` — `return region_id` 在锁内 → 改为 `result = region_id`，锁外推送 `('auto', [state.label])`（仅 region_id 非 None 时），return result
+- `manual_activate()` — `return activated` 在锁内 → 改为 `result = activated`，锁外推送 `('manual', region_labels)`，return result
+
+**不需重构的 3 个方法**（锁块后已有自然出口）：
+
+- `set_activation()` — 参见 §4.3 代码示例，锁外推送+return True
+- `manual_dim()` — `with self._lock` 块结束后推送 `('manual', region_labels)`
+- `decay_all()` — `with self._lock` 块结束后推送 `('auto')`（不传 labels，全量刷新）
+
 ## 5. 前端实现
 
 ### 5.1 chat.html — CSS
@@ -235,11 +266,12 @@ DOM 节点放在 `.container` 内 `.messages` 之后（不在 `.messages` 内，
 核心函数：
 - `renderBrainList()` — 排序 + 渲染脑区列表（复用已有 `escapeHtml()`）
 - `positionBrainElements()` — 动态计算 `.messages` 边界设置面板定位
-- `showBrainPanel()` / `hideBrainPanel()` — 滑出/收起（含 `fetchBrainRegions()` 拉取最新）
+- `showBrainPanel()` / `hideBrainPanel()` — 滑出/收起
 - `fetchBrainRegions()` — 通过 `electronAPI.getBrainRegions()` IPC 拉取（防并发守卫）
 - `submitBrainChanges()` — 通过 `electronAPI.updateBrainRegions()` IPC 提交
 
-集成点：
+集成点（每个都是独立修改步骤，不可遗漏）：
+- `showBrainPanel()` 函数体中 `renderBrainList()` 之前加 `fetchBrainRegions()` 调用，确保面板打开时拉取最新快照
 - `loadStats()` 末尾追加 `fetchBrainRegions()`（兜底）
 - `sendMessage()` 中 `sendMessageWithRetry` 之前追加 `await submitBrainChanges()`
 - 注册 `onBrainRegionsChanged` 回调，收到 SSE 事件后调 `fetchBrainRegions()`
