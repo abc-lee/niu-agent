@@ -237,8 +237,51 @@ WHERE f.photo_id = (
 
 1. 用查询 1 查出该人物名下所有人脸向量及其对应照片路径
 2. Agent 根据入库记忆判断哪张照片属于错误合并的人
-3. 创建新 person 记录（或用已有正确记录），将误合并的 face 的 `person_id` 更新到正确人物
-4. 重新计算原人物的 `center_embedding`（从剩余 face embedding 取均值）
+3. 将误合并的 face 的 `person_id` 更新到正确人物（或创建新 person）
+4. **关键步骤**：重新计算原人物的 `center_embedding`
+
+**为什么必须重算 `center_embedding`：**
+
+`center_embedding` 是人脸匹配的基准向量，采用增量加权平均计算：
+`新中心 = (旧中心 × photo_count + 新向量) / (photo_count + 1)`
+删除 face 记录时，系统不会自动重算 `center_embedding`。如果不手动重算，旧的双人混合向量还在，后续新照片入库仍会错误匹配到该人物（相似度可能更高，因为混合向量"两头靠"）。
+
+**重算 `center_embedding` 的 Python 脚本：**
+
+```python
+import sqlite3
+import numpy as np
+
+DB_PATH = "~/.niu/work/photos.db"  # 若 workspace 已自定义则替换
+PERSON_ID = "替换为目标人物的 id"
+
+conn = sqlite3.connect(DB_PATH)
+
+# 取剩余所有 face embedding
+rows = conn.execute(
+    "SELECT embedding FROM faces WHERE person_id = ?", (PERSON_ID,)
+).fetchall()
+
+if rows:
+    embeddings = [np.frombuffer(r[0], dtype=np.float32) for r in rows]
+    new_center = np.mean(embeddings, axis=0)
+    conn.execute(
+        "UPDATE persons SET center_embedding = ?, photo_count = ? WHERE id = ?",
+        (new_center.tobytes(), len(rows), PERSON_ID),
+    )
+    conn.commit()
+    print(f"已重新计算 center_embedding，基于 {len(rows)} 个人脸向量")
+else:
+    # 没有剩余 face，清空 center
+    conn.execute(
+        "UPDATE persons SET center_embedding = NULL, photo_count = 0 WHERE id = ?",
+        (PERSON_ID,),
+    )
+    conn.commit()
+    print("该人物没有剩余人脸向量，已清空 center_embedding")
+
+conn.close()
+```
 
 **注意事项：**
 - 向量是 512 维 float32 的 BLOB（2048 字节），`length(embedding)` 应为 2048
