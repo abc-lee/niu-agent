@@ -1438,6 +1438,9 @@
           stopBtn.style.display = 'none';
           isProcessing = false;
           sendBtn.disabled = false;
+          // SSE 断连修复：后端报告空闲，但 spirit busyCount 可能因 chat_idle 丢失而卡 >0
+          // 强制重置 spirit 引用计数，让小女孩回到 IDLE
+          window.electronAPI.resetBusy();
         }
       } catch (e) {
         console.error('Failed to sync chat status:', e);

@@ -31,6 +31,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 通知小女孩进入/退出忙碌状态
   notifyBusy: (isBusy, reason) => ipcRenderer.send('notify-busy', { isBusy, reason }),
   
+  // 强制重置小女孩忙碌计数（SSE 断连后 chat_idle 丢失的修复）
+  resetBusy: () => ipcRenderer.send('reset-busy'),
+  
   // 通知小女孩用户正在活动（重置空闲计时器）
   notifyActivity: () => ipcRenderer.send('notify-activity'),
   
