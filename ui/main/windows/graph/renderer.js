@@ -60,6 +60,15 @@ function getMediaType(uri) {
   return IMAGE_EXTENSIONS.includes(ext) ? 'image' : 'video';
 }
 
+// Build a file:/// URL from a local filesystem path.
+// encodeURIComponent each path segment (encodes #, ?, space, CJK, etc.)
+// while preserving the / separators — mirrors chat.html's convention.
+// escapeHtml is applied by callers for safe use in HTML attribute values.
+function toFileUrl(p) {
+  const normalized = String(p).replace(/\\/g, '/');
+  return 'file:///' + normalized.split('/').map(encodeURIComponent).join('/');
+}
+
 // ===== Local File Path Detection =====
 function isLocalFilePath(uri) {
   if (!uri || typeof uri !== 'string') return false;
@@ -721,9 +730,9 @@ const showDetail = (nodeId) => {
   if (orig.uri) {
     const mediaType = getMediaType(orig.uri);
     if (mediaType === 'image') {
-      html += `<div class="detail-media"><img src="file:///${escapeHtml(orig.uri.replace(/\\/g, '/'))}" alt="preview"></div>`;
+      html += `<div class="detail-media"><img src="${escapeHtml(toFileUrl(orig.uri))}" alt="preview"></div>`;
     } else if (mediaType === 'video') {
-      html += `<div class="detail-media"><video src="file:///${escapeHtml(orig.uri.replace(/\\/g, '/'))}" controls style="max-width:100%;border-radius:8px;"></video></div>`;
+      html += `<div class="detail-media"><video src="${escapeHtml(toFileUrl(orig.uri))}" controls style="max-width:100%;border-radius:8px;"></video></div>`;
     }
   }
 

@@ -413,12 +413,6 @@
     }
     
     /* ========== 图片显示 ========== */
-    .message-images {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 8px;
-    }
     .chat-image {
       max-width: 200px;
       max-height: 200px;
@@ -443,69 +437,11 @@
       content: '📎 ';
     }
 
-    /* ========== 人脸框显示 ========== */
-    .image-container {
-      position: relative;
-      display: inline-block;
-    }
-    .face-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      pointer-events: none;
-    }
-    .face-box {
-      position: absolute;
-      border: 2px solid #f8a7c8;
-      border-radius: 4px;
-      box-sizing: border-box;
-    }
-    .face-label {
-      position: absolute;
-      bottom: -18px;
-      left: 0;
-      background: #f8a7c8;
-      color: white;
-      font-size: 11px;
-      padding: 1px 6px;
-      border-radius: 3px;
-      white-space: nowrap;
-    }
-    
     /* ========== 拖放上传 ========== */
     .messages.drag-over {
       background: rgba(120, 178, 190, 0.1);
       outline: 2px dashed #78b2be;
     }
-    .image-preview {
-      position: relative;
-      display: inline-block;
-    }
-    .image-preview img {
-      max-width: 300px;
-      max-height: 300px;
-      border-radius: 8px;
-    }
-    .upload-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0,0,0,0.5);
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 8px;
-      font-size: 14px;
-    }
-    .image-preview.error .upload-overlay {
-      background: rgba(200, 50, 50, 0.7);
-    }
-
     /* ========== 状态气泡（工具调用实时显示） ========== */
     .status-bubble {
       background: white;
@@ -1129,30 +1065,6 @@
           textDiv.textContent = text;
         }
         div.appendChild(textDiv);
-      }
-      
-      // 额外图片（拖入等）
-      if (images && images.length > 0) {
-        const imagesDiv = document.createElement('div');
-        imagesDiv.className = 'message-images';
-        images.forEach(img => {
-          const imgEl = document.createElement('img');
-          imgEl.src = img.src;
-          imgEl.className = 'chat-image';
-          if (img.alt) imgEl.alt = img.alt;
-          if (img.photoId) imgEl.dataset.photoId = img.photoId;
-          if (img.filePath) imgEl.dataset.filePath = img.filePath;
-          
-          // 双击用系统查看器打开
-          if (img.filePath) {
-            imgEl.addEventListener('dblclick', () => {
-              window.electronAPI.openWithSystemViewer(img.filePath);
-            });
-          }
-          
-          imagesDiv.appendChild(imgEl);
-        });
-        div.appendChild(imagesDiv);
       }
       
       if (!skipAppend) {
