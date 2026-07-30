@@ -1351,6 +1351,7 @@
       positionBrainElements();
       brainPanel.classList.add('visible');
       brainOverlay.classList.add('visible');
+      fetchBrainRegions();  // 面板打开时拉取最新快照
       renderBrainList();
     }
 
@@ -1576,6 +1577,14 @@
       stopIngestPolling();
       loadStats();
     });
+
+    // 脑区状态变更通知：收到 SSE 事件后拉取最新数据
+    // fetchBrainRegions 内部有防并发守卫和面板可见性守卫
+    if (window.electronAPI && window.electronAPI.onBrainRegionsChanged) {
+      window.electronAPI.onBrainRegionsChanged(() => {
+        fetchBrainRegions();
+      });
+    }
 
     // ========== 数据库$视图刷新 ==========
     let _refreshFromDBRunning = false;  // 防止并发调用
