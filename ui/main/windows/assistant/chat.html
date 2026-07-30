@@ -1064,7 +1064,7 @@
                 img.setAttribute('src', 'file:///' + encodedPath);
               } else if (src && /^\//.test(src)) {
                 const encodedPath = src.split('/').map(encodeURIComponent).join('/');
-                img.setAttribute('src', 'file:///' + encodedPath);
+                img.setAttribute('src', 'file://' + encodedPath);
               }
               // 给本地路径图片添加 chat-image class（自适应缩放）
               if (src && (/^[A-Za-z]:[\/]/.test(src) || /^\//.test(src) || src.startsWith('file://'))) {
