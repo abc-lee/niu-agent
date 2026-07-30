@@ -1822,6 +1822,11 @@ function startMessageEventStream() {
               if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('compact-status', event);
               }
+            } else if (event.type === 'brain_region_updated') {
+              // 转发脑区状态变更到聊天窗口（脑区面板在 chat.html 中）
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('brain-regions-changed', event);
+              }
             } else if (event.type === 'ingest-started' || event.type === 'ingest-completed') {
               // 转发入库进度事件到 spirit 和 chat 窗口
               if (spiritWindow && !spiritWindow.isDestroyed()) {
