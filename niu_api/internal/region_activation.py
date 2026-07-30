@@ -384,7 +384,16 @@ class RegionActivationManager:
                     [self._regions[rid].label for rid in activated_regions if rid in self._regions],
                 )
 
-            return activated_regions
+            result = activated_regions
+
+        # 锁外推送 SSE
+        if result:
+            try:
+                from niu_api.chat import notify_brain_region_sync
+                notify_brain_region_sync('auto', [self._regions[rid].label for rid in result if rid in self._regions])
+            except Exception:
+                pass
+        return result
 
     # ------------------------------------------------------------------
     # Reinforce (tool use)
@@ -438,7 +447,17 @@ class RegionActivationManager:
                 state.activation,
             )
 
-            return region_id
+            result = region_id
+            result_label = state.label
+
+        # 锁外推送 SSE
+        if result:
+            try:
+                from niu_api.chat import notify_brain_region_sync
+                notify_brain_region_sync('auto', [result_label])
+            except Exception:
+                pass
+        return result
 
     # ------------------------------------------------------------------
     # Manual control
@@ -473,7 +492,16 @@ class RegionActivationManager:
                 self._spillover_to_neighbors(state.region_id)
 
                 logger.info("手动激活脑区: %s (%s)", label, state.region_id)
-            return activated
+            result = activated
+
+        # 锁外推送 SSE
+        if result:
+            try:
+                from niu_api.chat import notify_brain_region_sync
+                notify_brain_region_sync('manual', region_labels)
+            except Exception:
+                pass
+        return result
 
     def set_activation(self, region_label: str, activation: float) -> bool:
         """Set region activation to an arbitrary value.
@@ -502,7 +530,14 @@ class RegionActivationManager:
                 state.activation_count += 1
 
             logger.info("手动设置脑区 activation: %s = %.2f", region_label, activation)
-            return True
+
+        # 锁外推送 SSE
+        try:
+            from niu_api.chat import notify_brain_region_sync
+            notify_brain_region_sync('manual', [region_label])
+        except Exception:
+            pass
+        return True
 
     def manual_dim(self, region_labels: list[str], reason: str = "") -> None:
         """Manual dim via brain_region_dim tool.
@@ -528,6 +563,13 @@ class RegionActivationManager:
                 else:
                     logger.info("手动调暗脑区: %s (%s)", label, state.region_id)
 
+        # 锁外推送 SSE
+        try:
+            from niu_api.chat import notify_brain_region_sync
+            notify_brain_region_sync('manual', region_labels)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Decay
     # ------------------------------------------------------------------
@@ -546,6 +588,13 @@ class RegionActivationManager:
                     state.activation = 0.0
                 # Clear manually_dimmed flag for next turn
                 state.manually_dimmed = False
+
+        # 锁外推送 SSE（全量刷新，不传 changed_labels）
+        try:
+            from niu_api.chat import notify_brain_region_sync
+            notify_brain_region_sync('auto')
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Query
