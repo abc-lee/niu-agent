@@ -39,7 +39,7 @@ def _write_config(config: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
         os.chmod(tmp_path, 0o600)
-        os.rename(tmp_path, CONFIG_PATH)
+        os.replace(tmp_path, CONFIG_PATH)
     except Exception:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -65,7 +65,7 @@ def _write_services_cache(services: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(services, f, ensure_ascii=False, indent=2)
         os.chmod(tmp_path, 0o600)
-        os.rename(tmp_path, SERVICES_CACHE_PATH)
+        os.replace(tmp_path, SERVICES_CACHE_PATH)
     except Exception:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)

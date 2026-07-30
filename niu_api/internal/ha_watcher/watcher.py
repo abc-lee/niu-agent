@@ -34,7 +34,7 @@ def check_and_start():
     if not os.path.exists(CONFIG_PATH):
         return
     try:
-        with open(CONFIG_PATH) as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             config = json.load(f)
         if config.get("ha_url") and config.get("ha_token"):
             start_watcher()
@@ -243,7 +243,7 @@ class _HAWatcher:
         try:
             if not os.path.exists(CONFIG_PATH):
                 return {}
-            with open(CONFIG_PATH) as f:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}

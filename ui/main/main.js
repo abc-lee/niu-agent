@@ -10,7 +10,6 @@ const fs = require('fs');
 const os = require('os');
 const url = require('url');
 const http = require('http');
-const { exec, spawn } = require('child_process');
 
 const WINDOW_MODE = process.env.NIU_WINDOW || 'assistant';
 

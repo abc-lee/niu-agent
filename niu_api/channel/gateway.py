@@ -162,7 +162,7 @@ class IMGateway(ChannelAdapter):
             env["NIU_IM_ADAPTER"] = adapter_type
             env["NIU_GATEWAY_PORT"] = str(self._port)
             python_path = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = f"{adapter_workdir}:{python_path}" if python_path else str(adapter_workdir)
+            env["PYTHONPATH"] = f"{adapter_workdir}{os.pathsep}{python_path}" if python_path else str(adapter_workdir)
 
             adapter_config = prefs.get(adapter_type, {})
             app_id = adapter_config.get("app_id", "")
@@ -183,12 +183,14 @@ class IMGateway(ChannelAdapter):
             log_dir.mkdir(parents=True, exist_ok=True)
             from niu_api.config import get_logging_config
             if get_logging_config().enabled:
-                adapter_stderr = open(log_dir / "im_adapter_stderr.log", "a")
+                adapter_stderr = open(log_dir / "im_adapter_stderr.log", "a", encoding="utf-8")
             else:
                 adapter_stderr = subprocess.DEVNULL  # logging 关闭时不写文件
-            self._adapter_proc = subprocess.Popen(
-                argv, stdout=subprocess.DEVNULL, stderr=adapter_stderr, env=env,
-            )
+            # Windows: 避免子进程弹控制台窗口
+            popen_kwargs = {"stdout": subprocess.DEVNULL, "stderr": adapter_stderr, "env": env}
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+            self._adapter_proc = subprocess.Popen(argv, **popen_kwargs)
             if adapter_stderr is not subprocess.DEVNULL:
                 adapter_stderr.close()
             logger.info(f"[IMGateway] Adapter launched: {adapter_type}, PID={self._adapter_proc.pid}")

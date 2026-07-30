@@ -9,6 +9,7 @@ to match the frontend force-graph renderer expectations.
 
 import re
 import threading
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Query
@@ -1038,8 +1039,11 @@ def graph_changelog(
 
 
 @router.post("/test_ingest")
-def test_ingest(dir_path: str = "/tmp/niu_test_ingest3"):
+def test_ingest(dir_path: str = None):
     """Test endpoint: trigger directory ingestion for pipeline status testing."""
+    if dir_path is None:
+        import tempfile
+        dir_path = str(Path(tempfile.gettempdir()) / "niu_test_ingest3")
     import os
 
     from niu_api.internal.lightrag_manager import call_async, fire_and_forget, get_lightrag
@@ -1057,7 +1061,7 @@ def test_ingest(dir_path: str = "/tmp/niu_test_ingest3"):
 
     for fname in files:
         fpath = os.path.join(dir_path, fname)
-        with open(fpath) as f:
+        with open(fpath, encoding="utf-8") as f:
             content = f.read()
         call_async(rag.apipeline_enqueue_documents(content, file_paths=fpath), timeout=60)
 
