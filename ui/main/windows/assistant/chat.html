@@ -468,7 +468,7 @@
       right: 0;
       top: 0;
       bottom: 0;
-      width: 12px;
+      width: 24px;
       z-index: 5;
       /* F2-001 修复：默认不可交互，由 JS 初始化时定位到 .messages 区域 */
       pointer-events: none;
@@ -1390,10 +1390,9 @@
       if (_fetchingBrainRegions) return;
       _fetchingBrainRegions = true;
       try {
-        const resp = await fetch('/api/brain/regions?include_dark=true');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data.status === 'ok' && data.regions) {
+        // 通过 IPC 调后端（file:// 协议下不能直接 fetch 相对路径）
+        const data = await window.electronAPI.getBrainRegions();
+        if (data && data.status === 'ok' && data.regions) {
           _brainRegions = data.regions;
           // F006 修复：清理 _pendingBrainChanges 中已不存在的脑区 label
           const validLabels = new Set(data.regions.map(r => r.label || r.name));
@@ -1423,24 +1422,16 @@
         activation: BRAIN_STATES[_pendingBrainChanges[label]].activation,
       }));
 
-      // F2-002 修复：5 秒超时，避免后端 hang 时阻塞消息发送
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      // 通过 IPC 提交（file:// 协议下不能直接 fetch）
+      // F2-002: main.js apiRequest 已有 30s 超时保护
       try {
-        const resp = await fetch('/api/brain/regions/update', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ regions }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        if (resp.ok) {
+        const result = await window.electronAPI.updateBrainRegions(regions);
+        if (result && result.status === 'ok') {
           _pendingBrainChanges = {};
         } else {
-          console.error('提交脑区状态失败:', resp.status);
+          console.error('提交脑区状态失败:', result);
         }
       } catch (e) {
-        clearTimeout(timeoutId);
         console.error('提交脑区状态失败:', e);
       }
     }

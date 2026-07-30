@@ -92,6 +92,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 获取当前 Agent 是否忙碌（窗口恢复时同步停止按钮状态）
   getChatStatus: () => ipcRenderer.invoke('get-chat-status'),
 
+  // 脑区状态面板
+  getBrainRegions: () => ipcRenderer.invoke('brain-regions'),
+  updateBrainRegions: (regions) => ipcRenderer.invoke('brain-update', regions),
+
   // 窗口显示/获得焦点时通知前端同步状态
   onSyncState: (callback) => ipcRenderer.on('sync-state', () => callback()),
 

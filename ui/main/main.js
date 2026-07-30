@@ -1524,6 +1524,15 @@ ipcMain.handle('kg-changelog', async (event, since) => {
   return apiRequest('GET', `/api/kg/changelog?${params}`);
 });
 
+// Brain region panel IPC handlers
+ipcMain.handle('brain-regions', async () => {
+  return apiRequest('GET', '/api/brain/regions?include_dark=true');
+});
+
+ipcMain.handle('brain-update', async (event, regions) => {
+  return apiRequest('POST', '/api/brain/regions/update', { regions });
+});
+
 // File operations (with same security checks as chat window)
 ipcMain.handle('open-path', async (event, filePath) => {
   if (!filePath) return;
