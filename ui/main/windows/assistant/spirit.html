@@ -226,6 +226,16 @@
       }
     }
     
+    function resetBusy() {
+      // 强制归零：用于 SSE 断连后 chat_idle 丢失、busyCount 无法配对归零的修复场景
+      // 由 chat.html onSyncState（查后端 getChatStatus 返回 !busy）触发
+      if (busyCount > 0) {
+        console.log(`[BusyCount] reset ${busyCount} → 0 (sync from backend)`);
+        busyCount = 0;
+        setState(State.IDLE);
+      }
+    }
+    
     // ========== 待处理事务 ==========
     function updatePendingCount() {
       // TODO: 从后端获取真实数据
@@ -537,6 +547,11 @@
       } else {
         decrementBusy(reason || 'backend');
       }
+    });
+    
+    // SSE 断连修复：收到 reset-busy 时强制归零
+    window.electronAPI.onResetBusy(() => {
+      resetBusy();
     });
     
     function updateDropHint(e) {
