@@ -701,9 +701,10 @@ impl Splash {
                             if cfg!(target_os = "windows") {
                                 // Windows: PowerShell Invoke-WebRequest
                                 // -TimeoutSec 0 = 无超时（embedding 重算需数分钟）
-                                // HTTP 4xx/5xx 会抛异常，进 catch 分支返回错误
+                                // Invoke-WebRequest 在 HTTP 4xx/5xx 时抛异常进 catch，
+                                // catch 中 exit 1 让 Rust 侧判定为失败
                                 let ps_script = format!(
-                                    "try {{ $r = Invoke-WebRequest -Uri '{}' -Method POST -UseBasicParsing -TimeoutSec 0; if ($r.StatusCode -ge 400) {{ Write-Error \"HTTP $($r.StatusCode)\"; exit 1 }} else {{ $r.Content }} }} catch {{ if ($_.Exception.Response) {{ \"HTTP $([int]$_.Exception.Response.StatusCode)\" }} else {{ $_.Exception.Message }} }}",
+                                    "try {{ $r = Invoke-WebRequest -Uri '{}' -Method POST -UseBasicParsing -TimeoutSec 0; $r.Content }} catch {{ if ($_.Exception.Response) {{ \"HTTP $([int]$_.Exception.Response.StatusCode)\" }} else {{ $_.Exception.Message }}; exit 1 }}",
                                     url
                                 );
                                 let output = std::process::Command::new("powershell")
@@ -720,10 +721,11 @@ impl Splash {
                                 Ok(stdout)
                             } else {
                                 // macOS/Linux: curl 子进程（避免 reqwest kevent 卡死）
-                                // -s 静默进度条，--max-time 600 安全网（10 分钟兜底，
-                                // 正常 3-4 分钟，防真死循环）
+                                // -s 静默进度条，-f HTTP 4xx/5xx 返回非 0 exit code，
+                                // --max-time 600 安全网（10 分钟兜底，正常 3-4 分钟）
                                 let output = std::process::Command::new("curl")
                                     .arg("-s")
+                                    .arg("-f")
                                     .arg("--max-time")
                                     .arg("600")
                                     .arg("-X")
@@ -731,8 +733,8 @@ impl Splash {
                                     .arg(&url)
                                     .output()
                                     .map_err(|e| format!("curl 启动失败: {}", e))?;
-                                // curl 连接失败时 exit code 非 0 且 stderr 可能为空，
-                                // 用 exit code 判断而非 stderr
+                                // curl 连接失败或 HTTP 错误时 exit code 非 0，
+                                // stderr 可能为空（-s 模式），用 exit code 判断
                                 if !output.status.success() {
                                     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                                     return Err(if stderr.is_empty() {
