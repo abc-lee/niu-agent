@@ -945,15 +945,14 @@ def _build_journal_task() -> str:
 
 def _write_cursor_with_lock(cursor_path, data: dict) -> None:
     """带文件锁保护的游标写入 — 防止 handler/compat/runner 并发竞争。"""
-    import fcntl
     lock_path = cursor_path.with_suffix(".lock")
     cursor_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, 'w') as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        _flock(lock_f)
         try:
             cursor_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+            _funlock(lock_f)
 
 
 
@@ -976,6 +975,26 @@ def truncate_message_content(content: str, max_chars: int = 500) -> str:
     if len(content) <= max_chars:
         return content
     return content[:max_chars] + f"...[截断，原内容{len(content)}字符，可用get_messages查看]"
+
+def _flock(lock_f) -> None:
+    """跨平台文件锁。Unix 用 fcntl.flock，Windows 用 msvcrt.locking。"""
+    import sys
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(lock_f.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+
+def _funlock(lock_f) -> None:
+    """跨平台文件解锁。"""
+    import sys
+    if sys.platform == "win32":
+        import msvcrt
+        msvcrt.locking(lock_f.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(lock_f, fcntl.LOCK_UN)
 
 
 def build_truncated_msg_list_text(

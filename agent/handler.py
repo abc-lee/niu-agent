@@ -891,11 +891,12 @@ class NiuHandler(BaseHandler):
         仿 context-manager 简易 ID 映射：解析子 Agent 输出的 processed_up_to=N，
         查 journal_idx_to_id[N] 得到真实 UUID 更新游标；未找到则回退到 msg_ids[-1]（兜底）。
         """
-        import fcntl
         from datetime import datetime
 
         from niu_api.compat import (
             _extract_overflow_info,
+            _flock,
+            _funlock,
             _is_subagent_overflow,
             _parse_processed_up_to,
         )
@@ -906,10 +907,9 @@ class NiuHandler(BaseHandler):
 
         journal_cursor_path = Path.home() / ".niu" / "last_journal.json"
         lock_path = journal_cursor_path.with_suffix(".lock")
-
         # 文件锁保护 — 防止与 tidy 管道并发读写
         with open(lock_path, 'w') as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            _flock(lock_f)
             try:
                 # 读取当前游标（在锁内读取，保证原子性）
                 last_journal_id = ""
@@ -953,7 +953,7 @@ class NiuHandler(BaseHandler):
                         "last_journal_at": datetime.now().isoformat(),
                     }, ensure_ascii=False, indent=2), encoding="utf-8")
             finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
+                _funlock(lock_f)
 
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）— 同步/异步分流"""
