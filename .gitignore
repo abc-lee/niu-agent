@@ -140,3 +140,4 @@ sessions/
 /test_*.py
 /test_*.txt
 /test_result.json
+.superpowers/
