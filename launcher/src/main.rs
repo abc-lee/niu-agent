@@ -687,30 +687,51 @@ impl Splash {
                         // 不设超时 —— embedding 重算几千个向量需要数分钟，
                         // 数据量大了更久。靠"正在修复..."动画让用户知道在干活，
                         // 不由程序自动断开。如真卡死，用户可强杀进程。
-                        // 用 reqwest::blocking 替代 curl 子进程：
-                        // curl 是 Unix 工具，Windows 10 1803 之前可能未预装，
-                        // 用 reqwest 跨平台，不依赖外部命令。项目已依赖 reqwest。
+                        //
+                        // macOS 用 curl 子进程：reqwest::blocking 在长 HTTP 请求
+                        // 上会卡死在 kevent（tokio IO driver 永久阻塞），
+                        // 详见 802b9d71 提交的 9 场景实测试记录。
+                        // Windows 用 PowerShell Invoke-WebRequest：curl.exe 在
+                        // Win10 1803 之前可能未预装，PowerShell 跨版本可用。
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                             let url = format!(
                                 "http://127.0.0.1:{}/api/kg/lightrag/repair?target=all",
                                 port
                             );
-                            // 不设超时 —— embedding 重算几千个向量需要数分钟，
-                            // 数据量大了更久。靠"正在修复..."动画让用户知道在干活，
-                            // 不由程序自动断开。如真卡死，用户可强杀进程。
-                            let client = reqwest::blocking::Client::builder()
-                                .build()
-                                .map_err(|e| format!("reqwest client 构建失败: {}", e))?;
-                            let resp = client
-                                .post(&url)
-                                .send()
-                                .map_err(|e| format!("修复请求发送失败: {}", e))?;
-                            let status = resp.status();
-                            let body = resp.text().map_err(|e| format!("读取响应失败: {}", e))?;
-                            if !status.is_success() {
-                                return Err(format!("HTTP {}: {}", status.as_u16(), body));
+                            if cfg!(target_os = "windows") {
+                                // Windows: PowerShell Invoke-WebRequest
+                                let ps_script = format!(
+                                    "try {{ $r = Invoke-WebRequest -Uri '{}' -Method POST -UseBasicParsing -TimeoutSec 0; $r.Content }} catch {{ $_.Exception.Message }}",
+                                    url
+                                );
+                                let output = std::process::Command::new("powershell")
+                                    .arg("-NoProfile")
+                                    .arg("-Command")
+                                    .arg(&ps_script)
+                                    .output()
+                                    .map_err(|e| format!("PowerShell 启动失败: {}", e))?;
+                                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                                if !output.status.success() && !stderr.is_empty() {
+                                    return Err(format!("PowerShell 错误: {}", stderr));
+                                }
+                                Ok(stdout)
+                            } else {
+                                // macOS/Linux: curl 子进程（避免 reqwest kevent 卡死）
+                                let output = std::process::Command::new("curl")
+                                    .arg("-s")
+                                    .arg("-X")
+                                    .arg("POST")
+                                    .arg(&url)
+                                    .output()
+                                    .map_err(|e| format!("curl 启动失败: {}", e))?;
+                                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                                if !output.status.success() && !stderr.is_empty() {
+                                    return Err(format!("curl 错误: {}", stderr));
+                                }
+                                Ok(stdout)
                             }
-                            Ok(body)
                         }));
                         let result = match result {
                             Ok(r) => r,
