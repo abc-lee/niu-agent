@@ -458,6 +458,103 @@
       0%, 100% { opacity: 0.6; }
       50% { opacity: 1; }
     }
+    /* ===== 脑区状态侧滑面板 ===== */
+    /* F001 修复：确保面板和触发区相对于 .messages 定位，而非 .container */
+    .messages {
+      position: relative;
+    }
+    .brain-trigger-zone {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 12px;
+      z-index: 5;
+      /* F2-001 修复：默认不可交互，由 JS 初始化时定位到 .messages 区域 */
+      pointer-events: none;
+    }
+    .brain-overlay {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      right: 175px;
+      background: rgba(120, 80, 20, 0);
+      transition: background 0.3s;
+      z-index: 8;
+      pointer-events: none;
+    }
+    .brain-overlay.visible {
+      background: rgba(120, 80, 20, 0.15);
+      pointer-events: auto;
+    }
+    .brain-panel {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 175px;
+      background: #fff8e1;
+      overflow-y: auto;
+      transform: translateX(100%);
+      transition: transform 0.3s ease;
+      z-index: 200;
+      box-shadow: -3px 0 10px rgba(180, 150, 50, 0.2);
+      border-left: 2px dashed rgba(180, 150, 50, 0.3);
+      font-size: 11px;
+      color: #000;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseB'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseB)' opacity='0.06'/%3E%3C/svg%3E");
+    }
+    .brain-panel.visible {
+      transform: translateX(0);
+    }
+    .brain-title {
+      padding: 10px 12px 6px;
+      border-bottom: 1px dashed rgba(180, 150, 50, 0.3);
+      font-weight: bold;
+      font-size: 11px;
+      color: #8B6914;
+      position: sticky;
+      top: 0;
+      background: #fff8e1;
+      z-index: 1;
+    }
+    .brain-group-label {
+      padding: 6px 12px 3px;
+      font-size: 9px;
+      color: #999;
+      letter-spacing: 0.5px;
+    }
+    .brain-item {
+      padding: 5px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s;
+    }
+    .brain-item:hover {
+      background: rgba(231, 202, 74, 0.15);
+    }
+    .brain-item .dot {
+      font-size: 13px;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .brain-item .name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .brain-item.off {
+      opacity: 0.45;
+    }
+    .brain-empty {
+      padding: 20px 12px;
+      text-align: center;
+      color: #999;
+      font-size: 11px;
+    }
   </style>
     <!-- 字体配置动态注入：无配置时不注入（用浏览器系统默认字体），有配置时注入 @font-face + 覆盖 font-family -->
     <script>
