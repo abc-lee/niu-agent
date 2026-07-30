@@ -549,6 +549,7 @@ class RegionActivationManager:
             reason: Optional reason for dimming (for memory logging).
         """
         with self._lock:
+            changed = False
             for label in region_labels:
                 state = self.find_region_by_label(label)
                 if state is None:
@@ -557,18 +558,20 @@ class RegionActivationManager:
 
                 state.activation = 0.0
                 state.manually_dimmed = True
+                changed = True
 
                 if reason:
                     logger.info("手动调暗脑区: %s (%s), reason: %s", label, state.region_id, reason)
                 else:
                     logger.info("手动调暗脑区: %s (%s)", label, state.region_id)
 
-        # 锁外推送 SSE
-        try:
-            from niu_api.chat import notify_brain_region_sync
-            notify_brain_region_sync('manual', region_labels)
-        except Exception:
-            pass
+        # 锁外推送 SSE（仅在有实际变更时）
+        if changed:
+            try:
+                from niu_api.chat import notify_brain_region_sync
+                notify_brain_region_sync('manual', region_labels)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Decay
