@@ -103,7 +103,7 @@ Expected: FAIL with `AttributeError: 'RegionActivationManager' object has no att
 在 `niu_api/internal/region_activation.py` 的 `manual_activate` 方法之后（约 L476 之后），`manual_dim` 方法之前，插入：
 
 ```python
-    def set_activation(self, region_label: str, activation: float) -> None:
+    def set_activation(self, region_label: str, activation: float) -> bool:
         """Set region activation to an arbitrary value.
 
         Unlike manual_activate (1.0) and manual_dim (0.0), this supports
@@ -112,20 +112,25 @@ Expected: FAIL with `AttributeError: 'RegionActivationManager' object has no att
         Args:
             region_label: Human-readable region label.
             activation: Target activation value (0.0-1.0).
+
+        Returns:
+            True if the region was found and updated, False otherwise.
         """
         with self._lock:
             state = self.find_region_by_label(region_label)
             if state is None:
                 logger.warning("set_activation: 未找到区域 '%s'", region_label)
-                return
+                return False
 
             state.activation = activation
             state.manually_dimmed = (activation == 0.0)
-            state.last_activated_at = time.time()
-            state.activation_count += 1
+            # Only count as activation if value > 0 (consistent with manual_dim)
+            if activation > 0:
+                state.last_activated_at = time.time()
+                state.activation_count += 1
 
             logger.info("手动设置脑区 activation: %s = %.2f", region_label, activation)
-```
+            return True
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -167,9 +172,9 @@ def client():
         mock_act_mgr = MagicMock()
         mock_act_mgr.get_region_map.return_value = []
         mock_act_mgr.get_status_light.return_value = "⚫"
-        mock_act_mgr.set_activation = MagicMock()
+        mock_act_mgr.set_activation = MagicMock(return_value=True)
         mock_act.return_value = mock_act_mgr
-        from niu_api.app import app
+        from niu_api.__main__ import app
         yield TestClient(app)
 
 
@@ -201,7 +206,7 @@ def test_update_regions_calls_set_activation(client):
     """Verify set_activation is called with correct args."""
     with patch("niu_api.brain_region_api._get_activation_mgr") as mock_act:
         mock_act_mgr = MagicMock()
-        mock_act_mgr.set_activation = MagicMock()
+        mock_act_mgr.set_activation = MagicMock(return_value=True)
         mock_act.return_value = mock_act_mgr
         response = client.post("/api/brain/regions/update", json={
             "regions": [{"label": "聊天历史", "activation": 0.5}]
@@ -217,13 +222,14 @@ Expected: FAIL with 404 or `AttributeError`
 
 - [ ] **Step 3: Add Request Model**
 
-在 `niu_api/brain_region_api.py` 的 `ConsolidateRequest` 类之后（约 L43），添加：
+在 `niu_api/brain_region_api.py` 的 `ConsolidateRequest` 类之后（约 L43），添加。
+注意：需在文件顶部 import 中确保 `Field` 已从 `pydantic` 导入（`from pydantic import BaseModel, Field`）：
 
 ```python
 class RegionActivationUpdate(BaseModel):
     """Request body for batch updating region activation values."""
     label: str
-    activation: float
+    activation: float = Field(ge=0.0, le=1.0, description="Activation value 0.0-1.0")
 
 
 class RegionUpdateRequest(BaseModel):
@@ -251,8 +257,8 @@ def update_region_activations(req: RegionUpdateRequest) -> dict[str, Any]:
 
         updated = 0
         for item in req.regions:
-            activation_mgr.set_activation(item.label, item.activation)
-            updated += 1
+            if activation_mgr.set_activation(item.label, item.activation):
+                updated += 1
 
         logger.info("[Brain Region API] Updated %d region activations", updated)
 
@@ -294,6 +300,10 @@ git commit -m "feat(brain): POST /api/brain/regions/update 批量更新脑区 ac
 
 ```css
     /* ===== 脑区状态侧滑面板 ===== */
+    /* F001 修复：确保面板和触发区相对于 .messages 定位，而非 .container */
+    .messages {
+      position: relative;
+    }
     .brain-trigger-zone {
       position: absolute;
       right: 0;
@@ -327,7 +337,7 @@ git commit -m "feat(brain): POST /api/brain/regions/update 批量更新脑区 ac
       overflow-y: auto;
       transform: translateX(100%);
       transition: transform 0.3s ease;
-      z-index: 10;
+      z-index: 200;
       box-shadow: -3px 0 10px rgba(180, 150, 50, 0.2);
       border-left: 2px dashed rgba(180, 150, 50, 0.3);
       font-size: 11px;
@@ -404,18 +414,20 @@ git commit -m "style(chat): 脑区侧滑面板 CSS 样式（便签风格）"
 ### Task 4: 前端 — chat.html DOM 节点
 
 **Files:**
-- Modify: `ui/main/windows/assistant/chat.html`（`.messages` 容器内，约 L528 附近）
+- Modify: `ui/main/windows/assistant/chat.html`（`.container` 内，`.messages` 之后、`.progress-bar` 之前）
 
-- [ ] **Step 1: Locate the messages container end**
+- [ ] **Step 1: Locate the insertion point**
 
-找到 `.messages` 容器的闭合 `</div>`。搜索 chat.html 中 `id="messages"` 的 div，在其闭合标签之前插入脑区面板 DOM。
+找到 `.messages` 容器的闭合 `</div>`。面板 DOM 节点插入到 `.messages` **之后**（作为 `.messages` 的兄弟节点，在 `.container` 内）。
+
+**F002 修复说明**：不能放在 `.messages` 内部，因为 `loadHistory()`(L1561)、`clearChat()`(L885)、`refreshFromDB()`(L1304) 三处执行 `messages.innerHTML = ''` 会销毁 `.messages` 内的所有子节点。放在 `.messages` 之后作为兄弟节点不受影响。
 
 - [ ] **Step 2: Add DOM nodes**
 
-在 `.messages` 容器内部末尾（在所有消息 div 之后、闭合 `</div>` 之前），插入：
+在 `.messages` 容器闭合 `</div>` 之后、`.progress-bar` 之前，插入：
 
 ```html
-      <!-- 脑区状态侧滑面板 -->
+      <!-- 脑区状态侧滑面板（F002: 放在 .messages 外部避免 innerHTML 清空销毁） -->
       <div class="brain-trigger-zone" id="brainTriggerZone"></div>
       <div class="brain-overlay" id="brainOverlay"></div>
       <div class="brain-panel" id="brainPanel">
@@ -528,10 +540,25 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
     }
 ```
 
-- [ ] **Step 3: Add show/hide panel functions**
+- [ ] **Step 3: Add show/hide panel functions + dynamic positioning**
+
+面板 DOM 在 `.container` 内但不在 `.messages` 内（F002 修复），需要动态设置 `top`/`height` 匹配 `.messages` 边界，确保只覆盖消息区：
 
 ```javascript
     function showBrainPanel() {
+      // 动态定位：面板/触发区/遮罩只覆盖 .messages 区域，不污染 header/input-area
+      const msgEl = document.getElementById('messages');
+      const rect = msgEl.getBoundingClientRect();
+      const containerRect = msgEl.parentElement.getBoundingClientRect();
+      const top = rect.top - containerRect.top;
+      const height = rect.height;
+      brainPanel.style.top = top + 'px';
+      brainPanel.style.height = height + 'px';
+      brainOverlay.style.top = top + 'px';
+      brainOverlay.style.height = height + 'px';
+      brainTriggerZone.style.top = top + 'px';
+      brainTriggerZone.style.height = height + 'px';
+
       brainPanel.classList.add('visible');
       brainOverlay.classList.add('visible');
       renderBrainList();
@@ -544,39 +571,68 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
 
     // Trigger: mouse enters right edge of messages area
     brainTriggerZone.addEventListener('mouseenter', showBrainPanel);
-    // Hide: mouse leaves messages area
-    document.getElementById('messages').addEventListener('mouseleave', hideBrainPanel);
+    // Hide: mouse leaves the panel+trigger zone area
+    // F004 修复：不监听 messages mouseleave（面板在 messages 外部，移到面板会触发 mouseleave）
+    // 改为监听面板和触发区的 mouseleave，但给一个短暂延迟避免误触
+    let _brainHideTimer = null;
+    function scheduleHideBrainPanel() {
+      _brainHideTimer = setTimeout(() => {
+        hideBrainPanel();
+        _brainHideTimer = null;
+      }, 200);
+    }
+    function cancelHideBrainPanel() {
+      if (_brainHideTimer) {
+        clearTimeout(_brainHideTimer);
+        _brainHideTimer = null;
+      }
+    }
+    brainTriggerZone.addEventListener('mouseleave', scheduleHideBrainPanel);
+    brainPanel.addEventListener('mouseleave', scheduleHideBrainPanel);
+    brainPanel.addEventListener('mouseenter', cancelHideBrainPanel);
+    brainTriggerZone.addEventListener('mouseenter', cancelHideBrainPanel);
     // Click overlay to hide
     brainOverlay.addEventListener('click', hideBrainPanel);
 ```
 
-- [ ] **Step 4: Add fetchBrainRegions() function**
+- [ ] **Step 4: Add fetchBrainRegions() function with concurrency guard**
 
 ```javascript
+    let _fetchingBrainRegions = false;
     async function fetchBrainRegions() {
+      // F003 修复：防并发，避免每次工具调用都触发请求
+      if (_fetchingBrainRegions) return;
+      _fetchingBrainRegions = true;
       try {
-        const resp = await fetch('http://127.0.0.1:9876/api/brain/regions?include_dark=true');
+        const resp = await fetch('/api/brain/regions?include_dark=true');
         if (!resp.ok) return;
         const data = await resp.json();
         if (data.status === 'ok' && data.regions) {
           _brainRegions = data.regions;
+          // F006 修复：清理 _pendingBrainChanges 中已不存在的脑区 label
+          const validLabels = new Set(data.regions.map(r => r.label || r.name));
+          for (const label of Object.keys(_pendingBrainChanges)) {
+            if (!validLabels.has(label)) {
+              delete _pendingBrainChanges[label];
+            }
+          }
         }
       } catch (e) {
         console.error('加载脑区状态失败:', e);
+      } finally {
+        _fetchingBrainRegions = false;
       }
     }
 ```
 
 - [ ] **Step 5: Integrate fetchBrainRegions into loadStats()**
 
-在 `loadStats()` 函数末尾（`catch` 块之前），追加脑区数据拉取：
+在 `loadStats()` 函数末尾（`if (result)` 块结束后、`} catch (e)` 之前），追加：
 
 ```javascript
-      // 并行拉取脑区状态（不阻塞 stats 渲染）
+      // 并行拉取脑区状态（F003: 有防并发保护，不阻塞 stats 渲染）
       fetchBrainRegions();
 ```
-
-精确位置：在 `loadStats()` 的 `if (result)` 块结束后、`} catch (e)` 之前。
 
 - [ ] **Step 6: Add submitBrainChanges() function**
 
@@ -591,7 +647,7 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
       }));
 
       try {
-        const resp = await fetch('http://127.0.0.1:9876/api/brain/regions/update', {
+        const resp = await fetch('/api/brain/regions/update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ regions }),
@@ -606,6 +662,8 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
       }
     }
 ```
+
+注意：F007 修复——使用相对路径 `fetch('/api/...')` 而非硬编码 `http://127.0.0.1:9876`，与 chat.html 中已有的 `fetch('/api/stop_all')` 模式一致，避免 NIU_API_PORT 自定义时出错。
 
 - [ ] **Step 7: Integrate submitBrainChanges into sendMessage()**
 
@@ -694,3 +752,19 @@ git commit -m "test: 脑区侧滑面板验收通过"
 **Placeholder scan:** 无 TBD/TODO，所有步骤都有完整代码。
 
 **Type consistency:** `set_activation(region_label, activation)` 签名在 Task 1 定义、Task 2 调用、Task 5 Step 6 通过 HTTP 间接触发，一致。`BRAIN_STATES` 数组在 Task 5 定义并使用，索引映射一致。
+
+**Round 1 审查修复记录（11 个问题全部修复）：**
+
+| ID | 严重度 | 问题 | 修复 |
+|----|--------|------|------|
+| B001 | critical | `from niu_api.app import app` 不存在 | 改为 `from niu_api.__main__ import app` |
+| B002 | medium | `updated` 计数虚高 | `set_activation` 返回 bool，端点只在 True 时递增 |
+| B003 | medium | activation 缺范围验证 | 加 `Field(ge=0.0, le=1.0)` |
+| B004 | low | 对 0.0 也递增 activation_count | 只在 activation > 0 时递增 |
+| F001 | critical | `.messages` 缺 `position: relative` | CSS 加 `.messages { position: relative }` + JS 动态定位 |
+| F002 | critical | `innerHTML=''` 销毁面板 DOM | DOM 节点移到 `.messages` 外部（`.container` 内兄弟节点） |
+| F003 | high | fetchBrainRegions 无防并发 | 加 `_fetchingBrainRegions` 防并发锁 |
+| F004 | medium | mouseleave 误触发面板收起 | 改为面板/触发区 mouseleave + 200ms 延迟 + 取消机制 |
+| F005 | medium | z-index:10 < resize-handle:100 | 提高到 z-index:200 |
+| F006 | medium | `_pendingBrainChanges` 保留过期数据 | fetchBrainRegions 成功后清理无效 label |
+| F007 | low | 硬编码端口 9876 | 改为相对路径 `fetch('/api/...')` |
