@@ -1328,17 +1328,15 @@ def get_next_auto_label() -> str:
     """Get next auto label for unnamed person."""
     conn = get_connection()
     cursor = conn.execute(
-        "SELECT auto_label FROM persons WHERE auto_label LIKE '未命名人物_%' ORDER BY auto_label DESC LIMIT 1"
+        "SELECT auto_label FROM persons WHERE auto_label LIKE '未命名人物_%'"
     )
-    row = cursor.fetchone()
-    if row:
-        # Extract number and increment
+    max_num = 0
+    for (label,) in cursor.fetchall():
         try:
-            num = int(row[0].split("_")[-1])
-            return f"未命名人物_{num + 1}"
-        except (ValueError, IndexError, AttributeError):
+            max_num = max(max_num, int(label.split("_")[-1]))
+        except (ValueError, IndexError):
             pass
-    return "未命名人物_1"
+    return f"未命名人物_{max_num + 1}"
 
 
 def search_persons(query: str, limit: int = 10) -> list[dict]:
