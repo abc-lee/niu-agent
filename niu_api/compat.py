@@ -1134,13 +1134,26 @@ _startup_time = datetime.now()
 
 # Preload status
 _preload_complete = False
+_preload_stage = "正在启动服务"
 
 
 def set_preload_complete():
     """Mark preload as complete"""
-    global _preload_complete
+    global _preload_complete, _preload_stage
     _preload_complete = True
+    _preload_stage = "启动完成"
     logger.info("Preload marked as complete")
+
+
+def set_preload_stage(stage: str):
+    """Set current preload stage text — called from lifespan at each phase.
+
+    Displayed on the Rust splash window via /api/preload-status.
+    Does NOT depend on logging config — always set regardless of log level.
+    """
+    global _preload_stage
+    _preload_stage = stage
+    logger.info(f"[STAGE] {stage}")
 
 
 @router.get("/api/llm-status")
@@ -1712,8 +1725,12 @@ async def probe_response_format(request: Request) -> dict:
 
 @router.get("/api/preload-status")
 async def get_preload_status():
-    """Get preload status - used by Go launcher to wait before showing window"""
-    return {"ready": _preload_complete, "uptime": str(datetime.now() - _startup_time).split(".")[0]}
+    """Get preload status - used by launcher to wait before showing window"""
+    return {
+        "ready": _preload_complete,
+        "uptime": str(datetime.now() - _startup_time).split(".")[0],
+        "stage": _preload_stage,
+    }
 
 
 def _count_entities_from_graph(adapter) -> tuple[int, int]:

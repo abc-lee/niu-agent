@@ -26,6 +26,7 @@ from niu_api.alerts_api import router as alerts_router
 from niu_api.brain_region_api import router as brain_region_router
 from niu_api.chat import router as chat_router
 from niu_api.compat import router as compat_router
+from niu_api.compat import set_preload_stage
 from niu_api.config import get_logging_config
 from niu_api.http_log_api import router as http_log_router
 from niu_api.injector import router as injector_router
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"[PROCESS-START] PID={os.getpid()} PPID={os.getppid()} started")
 
     # 1. Initialize session store
+    set_preload_stage("正在初始化会话")
     from agent.session import get_session_store
     await get_session_store()
     logger.info("Session store initialized")
@@ -68,12 +70,14 @@ async def lifespan(app: FastAPI):
     await notes_init_db()  # Creates notes directory if missing
 
     # 2. Preload embedding model
+    set_preload_stage("正在加载向量模型")
     from niu_api.internal.embedding import preload as preload_embedding
     logger.info("Preloading embedding model...")
     preload_embedding()
     logger.info("Embedding model ready")
 
     # 3. Start internal scheduler
+    set_preload_stage("正在启动调度器")
     from niu_api.internal.scheduler import start_scheduler
     start_scheduler()
     logger.info("Internal scheduler started")
@@ -94,6 +98,7 @@ async def lifespan(app: FastAPI):
     # Skipping auto-start to avoid EADDRINUSE errors.
 
     # 4. Load MCP tools using ToolRegistry
+    set_preload_stage("正在加载工具")
     logger.info("Loading MCP tools...")
     from agent.mcp_loader import load_mcp_tools
 
@@ -105,6 +110,7 @@ async def lifespan(app: FastAPI):
         raise
 
     # 5. Initialize runner with ToolRegistry
+    set_preload_stage("正在初始化 Agent")
     logger.info("Initializing NiuRunner...")
     from niu_api.chat import init_runner
     init_runner(tool_registry)
@@ -115,6 +121,7 @@ async def lifespan(app: FastAPI):
     #    但放在所有依赖就绪后更符合语义清晰性原则。
 
     # 6.0. Enable SQLite WAL mode for messages.db
+    set_preload_stage("正在初始化通信通道")
     import sqlite3
     db_path = Path.home() / ".niu" / "messages.db"
     if db_path.exists():
@@ -187,10 +194,12 @@ async def lifespan(app: FastAPI):
     _cleanup_task = asyncio.create_task(_daily_tmp_cleanup())
 
     # 6.6. Start ChatQueue (serial message processing)
+    set_preload_stage("正在启动消息队列")
     from niu_api.chat_queue import start_chat_queue
     await start_chat_queue()
     logger.info("ChatQueue started")
 
+    set_preload_stage("正在检查知识图谱")
     # 6.7. Phase 1 先跑一致性检测，再根据结果决定是否 signal scheduler / 启动 db_monitor
     # v7: 修复 LightRAG 损坏时 scheduler/ChatQueue/db_monitor 不阻塞的 bug
     #     原顺序：L67 start_scheduler → L180 ChatQueue → L185 db_monitor → L189 signal_ready → L199 Phase 1
@@ -267,6 +276,7 @@ async def lifespan(app: FastAPI):
     region_sync = None
     if not _lightrag_corrupt_skip_init:
         # 7.5. Eagerly initialize LightRAG (triggers lazy init before background threads start)
+        set_preload_stage("正在初始化知识图谱")
         # This ensures _lightrag_ready Event is set quickly, so SkillSync/LightRAGSync/RegionSync
         # don't have to wait for their timeout. If init fails, threads will handle it gracefully.
         try:
@@ -298,6 +308,7 @@ async def lifespan(app: FastAPI):
             logger.warning(f"LightRAG background sync start failed: {e}")
 
         # 8.01. Initialize Niu self entity (must be before RegionSync so brain regions exist)
+        set_preload_stage("正在初始化脑区")
         try:
             from niu_api.internal.brain_graph import get_brain_graph
             brain = get_brain_graph()
@@ -353,6 +364,7 @@ async def lifespan(app: FastAPI):
         #      与 lifespan 抢锁的竞态（第二轮审查严重问题）。
 
         # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
+        set_preload_stage("正在加载系统任务")
         _system_tasks = [
             {
                 "name": "daily-journal-check",
@@ -414,6 +426,7 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Failed to ensure system tasks: {e}")
 
     # 8.7. Brain region startup gate + Signal scheduler + start_background_sync（推迟）
+    set_preload_stage("正在同步脑区状态")
     #      必须在所有后台依赖就绪后才 signal。
     #      脑区就绪 gate（run_sync_once_for_startup）：在 signal_scheduler_ready 之前同步跑首次
     #      run_sync()，确保 activation_mgr 已 set。否则日常重启场景下 _sync_loop 因 24h
