@@ -2104,6 +2104,81 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
 
     return {"error": f"未知操作: {action}"}
 
+# --- ha_get_image ---
+
+
+def ha_get_image(entity_id: str = "", **kwargs) -> dict:
+    """下载 HA image 域图片实体到本地（扫地机地图等）。
+
+    通过 HA REST API GET /api/image_proxy/{entity_id} 获取图片二进制，
+    保存到 ~/.niu/tmp/ 目录，返回本地路径供 Agent 用 Markdown 展示。
+    仅支持 image 域实体。camera 域需用 /api/camera_proxy 端点，暂不支持。
+
+    Args:
+        entity_id: HA image 域实体 ID，如 image.xxx_map
+
+    Returns:
+        {"success": True, "path": "/Users/.../.niu/tmp/xxx_map.svg",
+         "content_type": "image/svg+xml", "size": 43293}
+        或 {"success": False, "error": "..."}
+    """
+    if not entity_id:
+        return {"success": False, "error": "entity_id 不能为空"}
+
+    config = _read_config()
+    url, headers, err = _get_ha_client(config)
+    if err:
+        return {"success": False, "error": "未配置 Home Assistant，请先使用 ha_setup 工具连接"}
+
+    try:
+        img_headers = {"Authorization": headers["Authorization"]}
+        resp = _requests.get(
+            f"{url}/api/image_proxy/{entity_id}",
+            headers=img_headers,
+            timeout=30,
+            allow_redirects=True,
+        )
+        if resp.status_code == 404:
+            return {"success": False, "error": f"实体 {entity_id} 不存在或非 image 域图片类型"}
+        if resp.status_code == 401:
+            return {"success": False, "error": "HA 认证失败（HTTP 401），请使用 ha_setup 重新配置 token"}
+        if resp.status_code != 200:
+            return {"success": False, "error": f"下载失败: HTTP {resp.status_code}"}
+
+        content_type = resp.headers.get("content-type", "image/png").split(";")[0].strip()
+        ext_map = {
+            "image/svg+xml": ".svg",
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+        }
+        ext = ext_map.get(content_type, ".png")
+
+        safe_name = entity_id.replace(".", "_")
+        filename = f"{safe_name}_{int(time.time() * 1000)}{ext}"
+
+        try:
+            from agent.tmp_dir import save_to_tmp
+            filepath = save_to_tmp(filename, resp.content)
+        except ImportError:
+            tmp_dir = os.path.join(os.path.expanduser("~"), ".niu", "tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+            filepath = os.path.join(tmp_dir, filename)
+            with open(filepath, "wb") as f:
+                f.write(resp.content)
+
+        print(f"[HA] 下载图片: {entity_id} -> {filepath} ({len(resp.content)} bytes, {content_type})")
+
+        return {
+            "success": True,
+            "path": filepath,
+            "content_type": content_type,
+            "size": len(resp.content),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"下载图片失败: {e}"}
+
 
 def run_server():
     """MCP stdio server entry point (backup, same-process mode is primary)."""
@@ -2285,6 +2360,17 @@ TOOL_SCHEMAS = {
                 "detail": {"type": "boolean", "description": "list 时是否返回完整配置"},
             },
             "required": ["action"],
+        },
+    },
+    "ha_get_image": {
+        "name": "ha_get_image",
+        "description": "下载 HA image 域图片实体到本地（扫地机地图等），返回本地文件路径。Agent 可用 Markdown ![描述](路径) 在聊天中展示图片。entity_id 从 ha_status(domain='image') 获取。图片保存到 ~/.niu/tmp/ 目录。仅支持 image 域，不支持 camera 域。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "image 域实体 ID，如 image.xxx_map"},
+            },
+            "required": ["entity_id"],
         },
     },
 }
