@@ -483,14 +483,11 @@ git commit -m "feat(chat): 脑区侧滑面板 DOM 节点"
 在上述变量之后，添加：
 
 ```javascript
-    // F2-003 修复：HTML 转义函数，防止 label 中特殊字符破坏 DOM
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
+    // F2-003 修复：HTML 转义防止 label 中特殊字符破坏 DOM
+    // 复用 chat.html:1106 已有的 escapeHtml() 函数，不重复定义
 
     function renderBrainList() {
+      if (!_brainRegions || _brainRegions.length === 0) {
         brainList.innerHTML = '<div class="brain-empty">暂无脑区数据</div>';
         return;
       }
