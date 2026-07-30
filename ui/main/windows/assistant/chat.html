@@ -1060,10 +1060,13 @@
                 img.setAttribute('src', src);
               }
               if (src && /^[A-Za-z]:[\/]/.test(src)) {
-                const encodedPath = src.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+                const decoded = (() => { try { return decodeURIComponent(src); } catch { return src; } })();
+                const encodedPath = decoded.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
                 img.setAttribute('src', 'file:///' + encodedPath);
               } else if (src && /^\//.test(src)) {
-                const encodedPath = src.split('/').map(encodeURIComponent).join('/');
+                // decodeURIComponent 还原 marked 已编码的中文，避免 encodeURIComponent 双重编码
+                const decoded = (() => { try { return decodeURIComponent(src); } catch { return src; } })();
+                const encodedPath = decoded.split('/').map(encodeURIComponent).join('/');
                 img.setAttribute('src', 'file://' + encodedPath);
               }
               // 给本地路径图片添加 chat-image class（自适应缩放）
