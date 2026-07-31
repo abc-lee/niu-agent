@@ -10,7 +10,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 REM 检查 7-Zip
-set SEVENZIP=C:\Program Files\7-Zip\7z.exe
+set SEVENZIP=E:\Program Files\7-Zip\7z.exe
 if not exist "!SEVENZIP!" (
     echo [pack.bat] ERROR: 7-Zip not found at !SEVENZIP!
     echo [pack.bat] Please install 7-Zip from https://7-zip.org/
@@ -26,8 +26,7 @@ set STAGE=temp_pack_stage
 echo [pack.bat] Packaging Niu !VERSION! for Windows x64
 
 REM === 清理不需要的文件（不进 7z，也不需要保留）===
-echo [pack.bat] Cleaning launcher/target/...
-if exist "launcher\target" rmdir /s /q "launcher\target"
+echo [pack.bat] Skipping launcher/target/ (excluded from 7z via robocopy /xd)
 echo [pack.bat] Cleaning __pycache__...
 for /d /r . %%d in (__pycache__) do @if exist "%%d" rmdir /s /q "%%d" 2>nul
 del /s /q "*.pyc" 2>nul
@@ -64,3 +63,4 @@ rmdir /s /q "!STAGE!"
 
 echo [pack.bat] Done: !DIST_DIR!\!ARCHIVE_NAME!
 endlocal
+pause
