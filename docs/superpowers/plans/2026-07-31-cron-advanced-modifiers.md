@@ -130,6 +130,8 @@ Expected: `TestRegression` 5 个全 PASS；`TestQuestionMark` 2 个 FAIL（`?` �
 
 修改 `niu_api/internal/scheduler/cron_parser.py` 的 `__init__`，在解析 day-of-month 和 day-of-week 前把 `?` 转成 `*`。
 
+> **实现位置说明**：Spec §1 规定「`_parse_field` 入口处处理 `?`」，本计划在 `__init__` 用 `parts = [p.replace("?", "*") ...]` 全局替换。两者功能完全等价（`_parse_field` 收到的都是已替换值），选 `__init__` 是因为替换一次比每个 `_parse_field` 调用都判断更简洁。
+
 当前 `__init__`（cron_parser.py:8-27）开头 parts 解析后，改为：
 
 ```python
@@ -204,8 +206,7 @@ class TestNthWeekday:
     def test_fifth_skips_month_without_fifth(self):
         """#5 在没有第 5 个该周几的月份跳到下月"""
         p = CronParser("0 9 ? * 1#5")
-        # 2026-08 只有 4 个周一（3/10/17/24/31→31 是第 5 个周一！）
-        # 实际 8/3,10,17,24,31 → 31 是第 5 个周一。换 2026-02：
+        # 2026-08 有 5 个周一（3/10/17/24/31），所以用 2026-02 测试跳月：
         # 2026-02 周一：2/2,9,16,23 → 只有 4 个，无第 5 个
         nxt = p.get_next(datetime(2026, 2, 1, 0, 0))
         # 下一个有第 5 个周一的月份：2026-03 周一=3/2,9,16,23,30 → 30 是第 5 个
@@ -236,16 +237,45 @@ class TestNthWeekday:
         # 2026-08 第 1 个周日=8/2
         assert p0.get_next(base) == datetime(2026, 8, 2, 9, 0)
         assert p7.get_next(base) == datetime(2026, 8, 2, 9, 0)
+
+class TestAdvancedModifierSmoke:
+    """L/LW 冒烟测试：确保 Task 2 实现后 L/LW 不崩溃（详细测试在 Task 3/4）"""
+
+    def test_L_dom_not_crash(self):
+        """0 0 L * * 能构造且 get_next 返回月末"""
+        p = CronParser("0 0 L * *")
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 31, 0, 0)
+
+    def test_LW_not_crash(self):
+        """0 0 LW * * 能构造且 get_next 返回最后工作日"""
+        p = CronParser("0 0 LW * *")
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 31, 0, 0)  # 8/31 周一
+
+    def test_L_dow_not_crash(self):
+        """0 17 ? * 5L 能构造且 get_next 返回最后周五"""
+        p = CronParser("0 17 ? * 5L")
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 28, 17, 0)
 ```
 
 - [ ] **Step 2: 运行测试，确认失败**
 
-Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py::TestNthWeekday -v`
-Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2")` 报错，或 day-of-week 含 `#` 触发 `ValueError`）
+Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py::TestNthWeekday tests/test_cron_parser.py::TestAdvancedModifierSmoke -v`
+Expected: 9 个全 FAIL（`#`/`L`/`LW` 未实现，构造 CronParser 时 `int("1#2")`/`int("L")` 报错）
 
 - [ ] **Step 3: 实现 `#` 修饰符解析与匹配**
 
 修改 `niu_api/internal/scheduler/cron_parser.py`：
+
+**先在文件顶部加 import**：当前 cron_parser.py:2 是 `from datetime import datetime, timedelta`，在其上方加：
+
+```python
+import calendar
+```
+
+（`_matches` 的 L/LW 分支会用到 `calendar.monthrange`，提至模块顶部，避免方法内重复 import。）
 
 **(a) `__init__` 中初始化新属性 + 调用 day-of-week 专用解析**
 
@@ -254,8 +284,8 @@ Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2
 ```python
         self.minute = self._parse_field(parts[0], 0, 59)
         self.hour = self._parse_field(parts[1], 0, 23)
-        self.day_of_month = self._parse_field(parts[2], 1, 31)
         self.month = self._parse_field(parts[3], 1, 12)
+        # 注意：day_of_month 在下方 L/LW 检测块中统一赋值，此处不先解析
 
         # 高级修饰符属性初始化
         self.nth_weekdays: list[tuple[int, int]] = []  # # 修饰符: (cron_D, N)
@@ -271,6 +301,8 @@ Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2
         elif dom_raw == "LW":
             self.last_workday = True
             self.day_of_month = list(range(1, 32))
+        elif "#" in dom_raw:
+            raise ValueError(f"# 修饰符不能出现在 day-of-month 字段: {dom_raw}")
         else:
             self.day_of_month = self._parse_field(dom_raw, 1, 31)
 
@@ -287,7 +319,9 @@ Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2
                 if not (1 <= n <= 5):
                     raise ValueError(f"Invalid N in #: {token}")
                 self.nth_weekdays.append((d, n))
-            elif token.endswith("L") and token != "L":
+            elif token == "L":
+                raise ValueError("day-of-week 的 L 修饰符需要前缀数字，如 5L")
+            elif token.endswith("L"):
                 d = int(token[:-1])
                 if d == 7:
                     d = 0
@@ -300,8 +334,8 @@ Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2
         self.day_of_week = sorted({0 if d == 7 else d for d in self.day_of_week})
 
         # 记录原始字段是否为通配符 *（用于 _matches OR 逻辑判断）
-        self._dom_wildcard = parts[2] in ("*", "?")
-        self._dow_wildcard = parts[4] in ("*", "?")
+        self._dom_wildcard = parts[2] == "*"
+        self._dow_wildcard = parts[4] == "*"
 
         # 互斥强制校验
         dow_has_modifier = bool(self.nth_weekdays or self.last_weekdays)
@@ -318,7 +352,7 @@ Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2
             )
 ```
 
-注意：因为 Step 3(a) 已把 `?`→`*` 替换（Task 1），这里 `parts[2]`/`parts[4]` 不会出现 `?`，`in ("*","?")` 是防御性写法。
+注意：因为 Step 3(a) 已把 `?`→`*` 替换（Task 1），`parts[2]`/`parts[4]` 不会出现 `?`，wildcard 判定用 `== "*"` 即可。
 
 **(b) `_matches` 增加 `#` 匹配分支**
 
@@ -337,27 +371,21 @@ Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2
         cron_dow = (dt.weekday() + 1) % 7  # Python weekday() → cron Sunday=0
 
         # --- 高级修饰符分支（互斥校验保证另一侧通配，独立判断不做 OR）---
-        if self.nth_weekdays:
-            # # 修饰符：本月第 N 个周 D
+        if self.nth_weekdays or self.last_weekdays:
+            # # 和 L 修饰符（均在 day-of-week）：OR 合并（支持 5L,1#2 组合）
             nth = (dt.day - 1) // 7 + 1
-            dow_match = any(d == cron_dow and nth == n for d, n in self.nth_weekdays)
-            return time_match and dow_match
-
-        if self.last_weekdays:
-            # L 修饰符（dow）：本月最后一个周 D → d+7 天跨月
+            nth_match = any(d == cron_dow and nth == n for d, n in self.nth_weekdays)
             is_last = (dt + timedelta(days=7)).month != dt.month
-            dow_match = any(d == cron_dow for d in self.last_weekdays) and is_last
-            return time_match and dow_match
+            last_match = any(d == cron_dow for d in self.last_weekdays) and is_last
+            return time_match and (nth_match or last_match)
 
         if self.last_day_of_month:
             # L（dom）：本月最后一天
-            import calendar
             last_day = calendar.monthrange(dt.year, dt.month)[1]
             return time_match and dt.day == last_day
 
         if self.last_workday:
             # LW：本月最后一个工作日
-            import calendar
             last_day = calendar.monthrange(dt.year, dt.month)[1]
             last_date = datetime(dt.year, dt.month, last_day)
             wd = last_date.weekday()  # 0=周一...6=周日
@@ -382,13 +410,13 @@ Expected: 6 个全 FAIL（`#` 未实现，`_parse_field` 把 `1#2` 当 `int("1#2
 
 - [ ] **Step 4: 运行 `#` 测试，确认通过**
 
-Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py::TestNthWeekday -v`
-Expected: 6 个全 PASS
+Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py::TestNthWeekday tests/test_cron_parser.py::TestAdvancedModifierSmoke -v`
+Expected: 9 个全 PASS（`#` 6 + L/LW 冒烟 3）
 
 - [ ] **Step 5: 运行全部测试，确认无回归**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py -v`
-Expected: 13 个全 PASS（回归 5 + `?` 2 + `#` 6）
+Expected: 16 个全 PASS（回归 5 + `?` 2 + `#` 6 + L/LW 冒烟 3）
 
 - [ ] **Step 6: 提交**
 
@@ -486,7 +514,7 @@ Expected: 8 个全 PASS（解析+匹配已在 Task 2 实现）
 - [ ] **Step 3: 运行全部测试**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py -v`
-Expected: 21 个全 PASS
+Expected: 24 个全 PASS
 
 - [ ] **Step 4: 提交**
 
@@ -538,7 +566,7 @@ class TestLastWorkday:
         """2026 年每月最后一个工作日（覆盖性测试）"""
         p = CronParser("0 0 LW * *")
         expected = [
-            (1, 29),   # 1/31 周六 → 29 周四
+            (1, 30),   # 1/31 周六 → 30 周五
             (2, 27),   # 2/28 周六 → 27 周五
             (3, 31),   # 3/31 周二
             (4, 30),   # 4/30 周四
@@ -569,7 +597,7 @@ Expected: 4 个全 PASS
 - [ ] **Step 3: 运行全部测试**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py -v`
-Expected: 25 个全 PASS
+Expected: 28 个全 PASS
 
 - [ ] **Step 4: 提交**
 
@@ -647,12 +675,12 @@ class TestBoundaries:
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py::TestBoundaries -v`
 Expected: 9 个全 PASS
 
-> 注意 `test_hash_in_dom_raises`：`1#2` 在 day-of-month 字段，`_parse_field` 不认 `#`，会尝试 `int("1#2")` 抛 `ValueError`——符合预期。若报错信息不匹配 `match`，调整 match 或确认行为。
+> 注意 `test_hash_in_dom_raises`：`1#2` 在 day-of-month 字段，现在由 `__init__` 的 `elif "#" in dom_raw` 分支显式抛 `ValueError("# 修饰符不能出现在 day-of-month 字段")`，测试用 `pytest.raises(ValueError)` 无 `match` 即可通过。
 
 - [ ] **Step 3: 运行全部测试**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py -v`
-Expected: 34 个全 PASS
+Expected: 37 个全 PASS
 
 - [ ] **Step 4: 提交**
 
