@@ -226,7 +226,7 @@ class TestNthWeekday:
         p = CronParser("0 9 ? * 1#2")
         # 2026-08 第 2 个周一=8/10，触发后应到 2026-09 第 2 个周一=9/14
         nxt = p.get_next(datetime(2026, 8, 10, 9, 1))
-        # 2026-09 周一：9/7,14 → 第 2 个=9/14
+        # 2026-09 周一：9/7,14,21,28 → 第 2 个=9/14
         assert nxt == datetime(2026, 9, 14, 9, 0)
 
     def test_sunday_zero_and_seven(self):
@@ -680,6 +680,7 @@ class TestBoundaries:
             CronParser("0 9 ? * 1,5L")
 ```
 
+- [ ] **Step 2: 运行测试，确认通过**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py::TestBoundaries -v`
 Expected: 10 个全 PASS
