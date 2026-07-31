@@ -189,3 +189,50 @@ class TestLastWeekday:
         assert nxt == datetime(2026, 8, 10, 9, 0)
         nxt2 = p.get_next(datetime(2026, 8, 10, 9, 1))
         assert nxt2 == datetime(2026, 8, 28, 9, 0)
+
+
+class TestLastWorkday:
+    """LW 修饰符：每月最后一个工作日"""
+
+    def test_month_end_is_weekday(self):
+        """月末是工作日 → 就是月末那天"""
+        p = CronParser("0 0 LW * *")
+        # 2026-08-31 是周一(工作日) → 31
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 31, 0, 0)
+
+    def test_month_end_is_saturday(self):
+        """月末是周六 → 前移到周五"""
+        p = CronParser("0 0 LW * *")
+        # 2026-10-31 是周六 → 前移到 10/30(周五)
+        nxt = p.get_next(datetime(2026, 10, 1, 0, 0))
+        assert nxt == datetime(2026, 10, 30, 0, 0)
+
+    def test_month_end_is_sunday(self):
+        """月末是周日 → 前移到周五"""
+        p = CronParser("0 0 LW * *")
+        # 2026-05-31 是周日 → 前移到 5/29(周五)
+        nxt = p.get_next(datetime(2026, 5, 1, 0, 0))
+        assert nxt == datetime(2026, 5, 29, 0, 0)
+
+    def test_all_months_2026(self):
+        """2026 年每月最后一个工作日（覆盖性测试）"""
+        p = CronParser("0 0 LW * *")
+        expected = [
+            (1, 30),   # 1/31 周六 → 30 周五
+            (2, 27),   # 2/28 周六 → 27 周五
+            (3, 31),   # 3/31 周二
+            (4, 30),   # 4/30 周四
+            (5, 29),   # 5/31 周日 → 29 周五
+            (6, 30),   # 6/30 周二
+            (7, 31),   # 7/31 周五
+            (8, 31),   # 8/31 周一
+            (9, 30),   # 9/30 周三
+            (10, 30),  # 10/31 周六 → 30 周五
+            (11, 30),  # 11/30 周一
+            (12, 31),  # 12/31 周四
+        ]
+        for month, day in expected:
+            nxt = p.get_next(datetime(2026, month, 1, 0, 0))
+            assert nxt == datetime(2026, month, day, 0, 0), \
+                f"2026-{month}: expected {day}, got {nxt.day}"
