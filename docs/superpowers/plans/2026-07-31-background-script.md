@@ -138,7 +138,7 @@ LIMIT 50
         ]
 ```
 
-**注意**：`recover_orphaned_tasks`、`reset_stale_in_progress`、`retry_failed_tasks` 等方法若也有 SELECT + dict 映射，同样检查并加列（grep `SELECT id, content` 全文件，所有 SELECT 都要加 task_kind, script_file 以保持一致，避免 dict 缺键）。
+**注意**：`find_task_by_name`（task_store.py L157-188，SELECT + 手动 dict 映射 11 列）**必须**同步加 task_kind/script_file 到 SELECT 与 dict（row[11]/row[12]）——它是除 get_overdue_tasks/list_tasks/get_task 外唯一返回完整 task dict 的查询，缺列会导致未来调用方走 trigger_callback 时 task_kind 为 None。`recover_orphaned_tasks`、`reset_stale_in_progress`、`retry_failed_tasks` 等方法若也有 SELECT + dict 映射，同样检查并加列（grep `SELECT id, content` 全文件，所有返回 task dict 的 SELECT 都要加 task_kind, script_file 以保持一致）。
 
 - [ ] **Step 5: 改 update_task（若 update 支持改 task_kind/script_file）**
 
@@ -323,9 +323,10 @@ class TestTriggerCallbackBackgroundScript:
              patch("niu_api.channel.get_channel_router") as mock_cr:
             mock_cr.return_value.has_channel.return_value = False
             mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda: "Agent处理", timeout=300)
-            service.trigger_callback(self._make_bg_task())
+            result = service.trigger_callback(self._make_bg_task())
 
         assert "Traceback" in captured["content"]
+        assert result is None  # 报错走失败路径（spec：报错=失败+通知，调度器走失败计数器）
 
     def test_missing_script_file_returns_none_no_enqueue(self, tmp_path, monkeypatch):
         """脚本文件不存在 → 永久删除任务 + 返回 None，不调 code_run/enqueue"""
@@ -524,7 +525,9 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
         except Exception as e:
             logger.warning(f"[BG_SCRIPT] IM push failed: {e}")
 
-        return agent_reply
+        # 报错（is_error）走失败路径：返回 None 让调度器走失败计数器/retry（spec：报错=失败+通知）
+        # 有输出但非报错（status=success+exit_code 0+stdout 非空）走成功路径：返回 agent_reply
+        return None if is_error else agent_reply
     except Exception as e:
         logger.error(f"[BG_SCRIPT] ChatQueue call failed: {e}")
         return None
@@ -730,7 +733,7 @@ last_tested: 2026-07-31
 - **`print()` 输出 = 通知主 Agent（含 IM）**；不 print 且退出码 0 = 静默。用 `print()` 精确控制是否通知。
 - **异常 / 非零退出 / 超时 = 报错通知**：报错文本（含 traceback，stderr 合并进 stdout）会随通知发给主 Agent。recurring 任务连续 3 次失败标 failed；one-time 任务脚本文件丢失等永久性失败直接标 failed 不重试。
 - **stdout 注入主 Agent 时截断 2000 字符**，长输出请自行截断或写文件后 print 文件路径。
-- **cwd = `{workspace}/scripts/`**，脚本可用相对路径访问同目录文件。
+- **cwd = `{workspace}/scripts/`**，脚本可用相对路径读写同目录文件（如 `open('data.json')`）。但 **不能直接 `import` 同目录其他 .py 文件**——code_run 把代码写到临时文件执行，`sys.path[0]` 是临时目录而非 cwd。多文件脚本需用 `exec(open('helper.py').read())` 或合并成单文件。
 - **超时 60 秒**（code_run 默认），超时进程被杀、stdout 追加 `[Timeout Error]` 后作为报错通知。长任务请拆分。
 - **运行环境**：项目自带的 Python 解释器与已装依赖（numpy/opencv/requests 等均可直接 import）。
 
@@ -894,7 +897,7 @@ cat > "$WORKSPACE/scripts/bg_test_silent.py" <<'EOF'
 raise Exception("故意报错")
 EOF
 ```
-等待 ~70 秒。确认主 Agent 收到含 Traceback 的 `[定时任务]` 消息。
+等待 ~70 秒。确认主 Agent 收到含 Traceback 的 `[定时任务]` 消息。此任务是 recurring（Step 3 is_recurring:true），报错返回 None 触发失败计数器——**连续触发 3 次**（等约 3 分钟，每次 cron `* * * * *`）后，`curl -s http://localhost:9876/scheduler/tasks` 确认该任务 `status` 变为 `failed`（不再 reschedule），验证失败计数器语义生效。
 
 - [ ] **Step 7: 清理测试任务**
 
