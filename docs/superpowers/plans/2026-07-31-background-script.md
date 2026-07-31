@@ -35,6 +35,7 @@
 - Modify: `niu_api/internal/scheduler/task_store.py:71-96`（create_task）
 - Modify: `niu_api/internal/scheduler/task_store.py:98-138`（list_tasks SELECT 与 row_to_dict）
 - Modify: `niu_api/internal/scheduler/task_store.py:190-260`（update_task，若涉及字段）
+- Modify: `niu_api/internal/scheduler/task_store.py:320-354`（**get_overdue_tasks——调度器喂给 trigger_callback 的唯一查询，必须改，否则 task_kind 永远 None**）
 - Test: `tests/test_scheduler_service.py`（先验证迁移，再加业务测试）
 
 - [ ] **Step 1: 加迁移语句（_init_db 内，仿照现有 name/chat_id 迁移模式）**
@@ -102,6 +103,42 @@ row_to_dict 的 keys 列表加 `"task_kind"`, `"script_file"`（注意保持与 
 - [ ] **Step 4: 改 get_task（同样加两列到 SELECT + dict 映射）**
 
 get_task 约 L260-300，同样加 `task_kind, script_file` 到 SELECT 与返回 dict。
+- [ ] **Step 4b: 改 get_overdue_tasks 的 SELECT 与 dict 映射（关键！调度器生产路径）**
+
+`get_overdue_tasks`（L320-354）是调度器 `_check_and_trigger_impl` 取待触发任务的唯一方法，它的 SELECT 与返回 dict **必须**加 `task_kind, script_file`，否则 trigger_callback 里 `task.get("task_kind")` 永远 None，background_script 分支永不触发。
+
+SELECT 改为（L330）：
+```sql
+SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
+FROM scheduled_tasks
+WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?)
+ORDER BY scheduled_at
+LIMIT 50
+```
+
+返回 dict（L339-353）加两个字段（紧跟 chat_id 之后，与 SELECT 列顺序一致）：
+```python
+        return [
+            {
+                "id": row[0],
+                "content": row[1],
+                "scheduled_at": row[2],
+                "is_recurring": bool(row[3]),
+                "cron_expr": row[4],
+                "event_type": row[5],
+                "status": row[6],
+                "created_at": row[7],
+                "last_executed_date": row[8],
+                "name": row[9],
+                "chat_id": row[10],
+                "task_kind": row[11],
+                "script_file": row[12]
+            }
+            for row in rows
+        ]
+```
+
+**注意**：`recover_orphaned_tasks`、`reset_stale_in_progress`、`retry_failed_tasks` 等方法若也有 SELECT + dict 映射，同样检查并加列（grep `SELECT id, content` 全文件，所有 SELECT 都要加 task_kind, script_file 以保持一致，避免 dict 缺键）。
 
 - [ ] **Step 5: 改 update_task（若 update 支持改 task_kind/script_file）**
 
@@ -253,7 +290,9 @@ class TestTriggerCallbackBackgroundScript:
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
              patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
-             patch("niu_api.alerts.add_pending_alert"):
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False  # 无 IM 通道，跳过推送
             mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda: "Agent处理", timeout=300)
             result = service.trigger_callback(self._make_bg_task())
 
@@ -277,17 +316,18 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
             "enqueue_and_wait": lambda self, **kw: captured.update(kw) or "Agent处理"
         }()))
-
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
              patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
-             patch("niu_api.alerts.add_pending_alert"):
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False
             mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda: "Agent处理", timeout=300)
             service.trigger_callback(self._make_bg_task())
 
         assert "Traceback" in captured["content"]
 
     def test_missing_script_file_returns_none_no_enqueue(self, tmp_path, monkeypatch):
-        """脚本文件不存在 → 返回 None，不 enqueue（永久性失败由 scheduler 标 failed）"""
+        """脚本文件不存在 → 永久删除任务 + 返回 None，不调 code_run/enqueue"""
         from niu_api.internal.scheduler import service
 
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
@@ -302,10 +342,16 @@ class TestTriggerCallbackBackgroundScript:
             "enqueue_and_wait": lambda self, **kw: enqueue_called.append(kw) or "x"
         }()))
 
+        deleted = []
+        monkeypatch.setattr(service, "get_store", lambda: type("S", (), {
+            "delete_task_permanent": lambda self, tid: deleted.append(tid)
+        }()))
+
         result = service.trigger_callback(self._make_bg_task(script_file="nonexistent.py"))
         assert result is None
         assert code_run_called == []  # 文件不存在不调 code_run
         assert enqueue_called == []
+        assert deleted == ["bg1"]  # 任务被永久删除
 
     def test_stdout_truncated_to_2000(self, tmp_path, monkeypatch):
         """stdout 超 2000 字符 → 截断"""
@@ -325,7 +371,9 @@ class TestTriggerCallbackBackgroundScript:
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
              patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
-             patch("niu_api.alerts.add_pending_alert"):
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False
             mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda: "ok", timeout=300)
             service.trigger_callback(self._make_bg_task())
 
@@ -342,10 +390,12 @@ Expected: 5 failed（trigger_callback 还没分支，reminder 路径会把 conte
 
 在 `service.py` trigger_callback 函数体开头（`logger.info(...)` 之前或之后，`prompt = ...` 之前）加分支。完整改法：
 
-在文件顶部 import 区加（若未有）：
+在文件顶部 import 区（service.py L7-17）加模块级 import（**关键：必须模块级，测试才能 monkeypatch service.code_run 等**）：
 ```python
-from pathlib import Path
+from agent.handler import code_run
+from niu_api.chat_queue import get_chat_queue
 ```
+（`from pathlib import Path` 已存在于 L12，勿重复加。`add_pending_alert`/`get_channel_router`/`_main_loop` 仍在函数内局部 import，与现有 reminder 分支一致。）
 
 在 trigger_callback 内，把现有的 `prompt = f"[定时任务] {task['content']}"` 这行**之前**插入 background_script 分支。改后 trigger_callback 开头结构：
 
@@ -355,29 +405,34 @@ def trigger_callback(task: dict) -> str | None:
     
     background_script 任务：读 {workspace}/scripts/{script_file} → code_run →
     stdout 空 + 成功 = 静默返回 None；有 stdout 或 status=error = stdout 注入主 Agent。
-    脚本文件不存在 = 永久性失败，返回 None（scheduler 标 failed，不进 retry）。
+    脚本文件不存在 = 永久删除任务（recurring 亦然，避免无限重试；用户恢复脚本需重建任务）。
     """
     from niu_api.alerts import add_pending_alert
     from niu_api.chat import _main_loop
-    from niu_api.chat_queue import get_chat_queue
-    from agent.handler import code_run
 
     logger.info(f"[INTERNAL SCHEDULER] Triggering task: {task['content']}")
 
     # ===== background_script 分支 =====
     if task.get("task_kind") == "background_script":
-        return _trigger_background_script(task, code_run, get_chat_queue, _main_loop, add_pending_alert)
+        return _trigger_background_script(task, _main_loop, add_pending_alert)
 
     # ===== reminder 原逻辑（不动） =====
+    from niu_api.chat_queue import get_chat_queue  # reminder 局部 import 保持原样
     prompt = f"[定时任务] {task['content']}"
     # ... 原有代码全部保留 ...
 ```
 
+**注意**：reminder 分支的 `from niu_api.chat_queue import get_chat_queue` 若原本就在函数顶部，保持原位不动；background_script 分支用模块级的 `get_chat_queue`（已 import）。若现有 reminder 也是局部 import，不要挪动它（避免行为变化）。
+
 然后在 service.py 内 trigger_callback 之外新增辅助函数 `_trigger_background_script`：
 
 ```python
-def _trigger_background_script(task: dict, code_run_fn, get_chat_queue_fn, main_loop, add_alert_fn) -> str | None:
-    """background_script 触发：跑脚本，有输出才通知主 Agent。"""
+def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | None:
+    """background_script 触发：跑脚本，有输出才通知主 Agent。
+    
+    复用模块级 code_run / get_chat_queue（service.py 顶部已 import）。
+    IM 推送与 reminder 分支保持一致（enqueue 后调 add_pending_alert + channel_router.push）。
+    """
     script_file = task.get("script_file")
     if not script_file:
         logger.error(f"[BG_SCRIPT] task {task.get('id')} 无 script_file")
@@ -389,13 +444,19 @@ def _trigger_background_script(task: dict, code_run_fn, get_chat_queue_fn, main_
     script_path = scripts_dir / script_file
 
     if not script_path.exists():
-        logger.error(f"[BG_SCRIPT] 脚本不存在: {script_path}（永久性失败，不重试）")
+        # 永久性失败：删除任务（recurring 亦然），避免 retry_failed_tasks 无限重试
+        logger.error(f"[BG_SCRIPT] 脚本不存在: {script_path}，永久删除任务 {task.get('id')}")
+        try:
+            store = get_store()
+            store.delete_task_permanent(task["id"])
+        except Exception as e:
+            logger.error(f"[BG_SCRIPT] 删除任务失败: {e}")
         return None
 
     code = script_path.read_text(encoding="utf-8")
     logger.info(f"[BG_SCRIPT] 执行 {script_file} (cwd={scripts_dir})")
 
-    result = code_run_fn(code=code, code_type="python", timeout=60, cwd=str(scripts_dir))
+    result = code_run(code=code, code_type="python", timeout=60, cwd=str(scripts_dir))
 
     # 取 stdout（进程启动失败时 dict 无 stdout 键）
     if result.get("status") == "error" and "stdout" not in result:
@@ -426,28 +487,55 @@ def _trigger_background_script(task: dict, code_run_fn, get_chat_queue_fn, main_
         return None
 
     try:
-        q = get_chat_queue_fn()
+        q = get_chat_queue()
         future = asyncio.run_coroutine_threadsafe(
             q.enqueue_and_wait(content=prompt, source="scheduler", session_id="default"),
             loop,
         )
         agent_reply = future.result(timeout=300)
-        if agent_reply:
-            logger.info(f"[BG_SCRIPT] Agent replied: {agent_reply[:100]}")
-            try:
-                add_alert_fn()
-            except Exception as e:
-                logger.warning(f"[BG_SCRIPT] add_pending_alert failed: {e}")
-            return agent_reply
-        else:
+        if not agent_reply:
             logger.warning("[BG_SCRIPT] Agent returned empty reply")
             return None
+
+        logger.info(f"[BG_SCRIPT] Agent replied: {agent_reply[:100]}")
+
+        # ===== 与 reminder 分支对齐：蹦高 + IM 推送（复制 service.py L131-148 逻辑） =====
+        task_content = task.get("content", "⏰")
+        alert_text = (task_content[:47] + "...") if len(task_content) > 50 else task_content
+        try:
+            add_alert_fn(alert_text)
+        except Exception as e:
+            logger.warning(f"[BG_SCRIPT] add_pending_alert failed: {e}")
+
+        # IM 通道推送
+        try:
+            from niu_api.channel import get_channel_router
+            router = get_channel_router()
+            if router.has_channel("im"):
+                push_chat_id = task.get("chat_id") or ""
+                push_future = asyncio.run_coroutine_threadsafe(
+                    router.push(agent_reply, "im", push_chat_id),
+                    loop,
+                )
+                push_future.result(timeout=30)
+        except Exception as e:
+            logger.warning(f"[BG_SCRIPT] IM push failed: {e}")
+
+        return agent_reply
     except Exception as e:
         logger.error(f"[BG_SCRIPT] ChatQueue call failed: {e}")
         return None
 ```
 
-**注意**：现有 reminder 分支末尾的 `add_pending_alert` 调用保持原样不动。background_script 分支自带 add_alert_fn 调用（有输出才蹦高）。若现有 reminder 的 add_pending_alert 调用方式不同（如传 content 参数），核对后对齐——读 service.py L120-160 确认。
+**关键修复说明（对照 Round 1 审查）**：
+1. `code_run`/`get_chat_queue` 改为**模块级 import**（service.py 顶部），测试 `monkeypatch.setattr(service, "code_run", ...)` 才能生效（P1#3）
+2. `add_alert_fn(alert_text)` **传 content 摘要参数**（P1#4，对齐 service.py L134）
+3. **补 IM 推送块**（P2#8，复制 L136-148，含 channel_router.push）
+4. `get_store()` **直接调用**（get_store 在 service.py 本模块，L189，无需 import；P0#2）
+5. recurring 文件不存在也永久删除（P2#7，设计取舍：脚本丢失=配置错误，永久删除避免无限重试，用户恢复脚本需重建任务——这是 spec 已确认的设计）
+
+**注意**：现有 reminder 分支末尾的 `add_pending_alert` 与 IM 推送调用保持原样不动。background_script 分支自带的蹦高+IM 与 reminder 对齐。
+
 
 - [ ] **Step 5: 跑测试验证通过**
 
@@ -505,9 +593,18 @@ Read: `mcp-servers/scheduler-server/src/niu_scheduler_server/__init__.py:30-200`
         return {"error": "background_script 任务必须提供 script_file"}
 ```
 
-- [ ] **Step 4: 手动验证 MCP 工具可调（同进程注册后）**
+- [ ] **Step 4: 改 routes.py 请求模型与 POST 端点（必须，否则 /scheduler API 拒绝 task_kind/script_file 参数）**
 
-启动 niu_api（`python/bin/python -m niu_api`），在 Python REPL 或通过 /scheduler API 创建一个 background_script 任务，确认入库 task_kind/script_file 正确：
+读 `niu_api/internal/scheduler/routes.py`，CreateTaskRequest（Pydantic model）加两字段：
+```python
+    task_kind: str = "reminder"
+    script_file: str | None = None
+```
+POST `/scheduler/tasks` 端点的 create_task 调用透传 `task_kind=req.task_kind, script_file=req.script_file`。
+
+- [ ] **Step 5: 手动验证 MCP 工具 + /scheduler API 可调**
+
+启动 niu_api（`python/bin/python -m niu_api`），通过 /scheduler API 创建一个 background_script 任务，确认入库 task_kind/script_file 正确：
 
 ```bash
 curl -s -X POST http://localhost:9876/scheduler/tasks -H "Content-Type: application/json" -d '{"content":"测试","scheduled_at":"2026-12-31 23:59:00","task_kind":"background_script","script_file":"test.py","is_recurring":true,"cron_expr":"0 3 * * *"}'
@@ -515,9 +612,7 @@ curl -s -X POST http://localhost:9876/scheduler/tasks -H "Content-Type: applicat
 
 确认返回 task_id，再 `curl -s http://localhost:9876/scheduler/tasks` 确认 task_kind=background_script。
 
-**注意**：routes.py 的请求模型（`niu_api/internal/scheduler/routes.py:40-80`）需同步加 task_kind/script_file 字段，否则 /scheduler API 不接受这两个参数。检查并补上（Pydantic model 加两个 Optional 字段，POST 端点透传 create_task）。
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add mcp-servers/scheduler-server/src/niu_scheduler_server/__init__.py niu_api/internal/scheduler/routes.py
@@ -537,24 +632,22 @@ Read: `config/disk/scheduler-server.yaml`，确认现有参数（如 cron_expr/i
 
 - [ ] **Step 2: 加 task_kind（enum）与 script_file 参数映射**
 
-按现有格式，在 schedule_task 的 parameters 下加：
+现有 schedule_task 的 positional 参数只有 content(pos1)/scheduled_at(pos2)，其余参数（event_type/is_recurring/cron_expr）用 `flag` 不用 `position`（disk_config.py 校验 position 必须从 1 连续无间隔，加 position 3/4 会导致 gap 报错——这些是可选 flag 参数，不应占用 position）。**task_kind/script_file 也用 flag，不用 position**（对齐 event_type 写法）。
+
+在 schedule_task 的 parameters 下、name 之前加（list 风格，与现有参数对齐）：
 
 ```yaml
-        task_kind:
-          position: 7
-          flag: "--kind"
-          type: string
-          enum: [reminder, background_script]
-          default: reminder
-          help: "任务类型"
-        script_file:
-          position: 8
-          flag: "--script"
-          type: string
-          help: "脚本文件名（background_script 用）"
+      - name: task_kind
+        flag: kind
+        type: string
+        enum: [reminder, background_script]
+        default: reminder
+      - name: script_file
+        flag: script
+        type: string
 ```
 
-（position 序号接现有最大值 +1/+2，读文件后按实际调整）
+（参考 event_type 的 `flag: type` 写法，flag 值是短名不带 `--`，disk_config 内部处理前缀）
 
 - [ ] **Step 3: 验证 niu_api 启动不报 disk 解析错误**
 
@@ -844,58 +937,3 @@ curl -s -X POST http://localhost:9876/scheduler/tasks -H "Content-Type: applicat
 
 **类型一致性**：task_kind/script_file 字段名在 Task 1-4 一致；`_trigger_background_script` 签名在 Task 2 内一致。
 
----
-
-## Task 2 补充：文件不存在时永久删除任务（修订）
-
-**Files:** 同 Task 2
-
-- [ ] **Step 4a: 在 _trigger_background_script 文件不存在分支加永久删除**
-
-把 Task 2 Step 4 中文件不存在的分支从：
-
-```python
-    if not script_path.exists():
-        logger.error(f"[BG_SCRIPT] 脚本不存在: {script_path}（永久性失败，不重试）")
-        return None
-```
-
-改为：
-
-```python
-    if not script_path.exists():
-        logger.error(f"[BG_SCRIPT] 脚本不存在: {script_path}，永久删除任务 {task.get('id')}")
-        try:
-            from niu_api.internal.scheduler.task_store import get_store
-            store = get_store()
-            store.delete_task_permanent(task["id"])
-        except Exception as e:
-            logger.error(f"[BG_SCRIPT] 删除任务失败: {e}")
-        return None
-```
-
-（`get_store` 与 `delete_task_permanent` 已存在于 task_store.py，核实 get_store 在 service.py 可达——若 get_store 在 scheduler 包导出则 `from niu_api.internal.scheduler import get_store`）
-
-- [ ] **Step 4b: 加测试——文件不存在时任务被永久删除**
-
-在 TestTriggerCallbackBackgroundScript 加：
-
-```python
-    def test_missing_script_deletes_task(self, tmp_path, monkeypatch):
-        """脚本文件不存在 → 永久删除任务，返回 None"""
-        from niu_api.internal.scheduler import service
-
-        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
-        (tmp_path / "scripts").mkdir()  # 目录在但文件不在
-
-        deleted = []
-        monkeypatch.setattr(service, "get_store", lambda: type("S", (), {
-            "delete_task_permanent": lambda self, tid: deleted.append(tid)
-        }()))
-
-        result = service.trigger_callback(self._make_bg_task(script_file="nope.py"))
-        assert result is None
-        assert deleted == ["bg1"]  # 任务被删
-```
-
-（若 service.py 用 `from niu_api.internal.scheduler import get_store` 则 monkeypatch service.get_store；若用 `from niu_api.internal.scheduler.task_store import get_store` 则 patch 对应路径——以实际 import 为准）
