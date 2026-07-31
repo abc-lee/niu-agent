@@ -236,6 +236,12 @@ class TaskStore:
         Args:
             expected_status: CAS 条件，仅当当前状态匹配时才更新（防止竞态）
         """
+        # --- cron_expr 预校验（仅当传入新值时）---
+        if cron_expr is not None:
+            cron_expr = cron_expr.strip() or None  # 归一化空串
+        if cron_expr is not None:
+            from .cron_parser import CronParser
+            CronParser(cron_expr)  # 非法表达式构造时抛 ValueError
         updates = []
         params = []
 
