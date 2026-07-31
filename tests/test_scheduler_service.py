@@ -225,6 +225,41 @@ class TestTriggerCallbackBackgroundScript:
         assert "Traceback" in captured["content"]
         assert result is None  # 报错走失败路径（spec：报错=失败+通知，调度器走失败计数器）
 
+    def test_one_time_error_deletes_task(self, tmp_path, monkeypatch):
+        """one-time 报错 → 永久删除任务（避免 retry_failed_tasks 无限重置），返回 None"""
+        from niu_api.internal.scheduler import service
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "clean.py").write_text("raise Exception('boom')\n")
+
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "error", "stdout": "Traceback", "exit_code": 1})
+
+        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
+            "enqueue_and_wait": lambda self, **kw: "Agent处理"
+        })())
+
+        deleted = []
+        monkeypatch.setattr(service, "get_store", lambda: type("S", (), {
+            "delete_task_permanent": lambda self, tid: deleted.append(tid)
+        })())
+
+        # one-time 任务（is_recurring=false）
+        task = self._make_bg_task()
+        task["is_recurring"] = False
+
+        with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
+             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False
+            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "Agent处理", timeout=300)
+            result = service.trigger_callback(task)
+
+        assert result is None
+        assert deleted == ["bg1"]  # one-time 报错永久删除
+
     def test_missing_script_file_returns_none_no_enqueue(self, tmp_path, monkeypatch):
         """脚本文件不存在 → 永久删除任务 + 返回 None，不调 code_run/enqueue"""
         from niu_api.internal.scheduler import service
