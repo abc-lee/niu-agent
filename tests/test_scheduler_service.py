@@ -81,3 +81,56 @@ class TestTriggerCallback:
 
             result = trigger_callback(task)
             assert result is None
+
+
+class TestTaskStoreMigration:
+    def test_new_db_has_task_kind_and_script_file_columns(self, tmp_path):
+        """新建库自动含 task_kind/script_file 列，task_kind 默认 reminder"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        store.create_task(content="t", scheduled_at="2026-01-01 00:00:00")
+        tasks = store.list_tasks()
+        assert len(tasks) == 1
+        assert tasks[0]["task_kind"] == "reminder"
+        assert tasks[0]["script_file"] is None
+
+    def test_old_db_migrates_adds_columns(self, tmp_path):
+        """模拟老库（无 task_kind/script_file 列）迁移后可正常读写"""
+        import sqlite3
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        db_path = str(tmp_path / "old.db")
+        conn = sqlite3.connect(db_path)
+        # 建一个不含新列的老表
+        conn.execute("""
+            CREATE TABLE scheduled_tasks (
+                id TEXT PRIMARY KEY, content TEXT NOT NULL,
+                scheduled_at DATETIME NOT NULL, is_recurring INTEGER DEFAULT 0,
+                cron_expr TEXT, event_type TEXT, status TEXT DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("INSERT INTO scheduled_tasks (id, content, scheduled_at) VALUES ('old1', 'old', '2026-01-01 00:00:00')")
+        conn.commit()
+        conn.close()
+        # 重新初始化触发迁移
+        store = TaskStore(db_path)
+        tasks = store.list_tasks()
+        assert len(tasks) == 1
+        assert tasks[0]["task_kind"] == "reminder"  # 迁移后默认值
+        assert tasks[0]["script_file"] is None
+
+    def test_create_background_script_task(self, tmp_path):
+        """创建 background_script 任务存入 task_kind/script_file"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        store.create_task(
+            content="清理临时文件", scheduled_at="2026-01-01 00:00:00",
+            task_kind="background_script", script_file="clean_tmp.py",
+            is_recurring=True, cron_expr="0 3 * * *",
+        )
+        tasks = store.list_tasks()
+        assert tasks[0]["task_kind"] == "background_script"
+        assert tasks[0]["script_file"] == "clean_tmp.py"
