@@ -257,9 +257,18 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
         except Exception as e:
             logger.warning(f"[BG_SCRIPT] IM push failed: {e}")
 
-        # 报错（is_error）走失败路径：返回 None 让调度器走失败计数器/retry（spec：报错=失败+通知）
-        # 有输出但非报错（status=success+exit_code 0+stdout 非空）走成功路径：返回 agent_reply
-        return None if is_error else agent_reply
+        # 报错（is_error）走失败路径；有输出非报错走成功路径
+        if is_error:
+            # one-time 报错：永久删除任务（retry_failed_tasks 会重置 is_recurring=0 的 failed，无限循环）
+            # recurring 报错：返回 None 走失败计数器（3次后标 failed，retry 不重置 recurring failed，不循环）
+            if not task.get("is_recurring"):
+                logger.warning(f"[BG_SCRIPT] one-time 任务报错，永久删除 {task.get('id')}")
+                try:
+                    get_store().delete_task_permanent(task["id"])
+                except Exception as e:
+                    logger.error(f"[BG_SCRIPT] 删除失败任务出错: {e}")
+            return None
+        return agent_reply
     except Exception as e:
         logger.error(f"[BG_SCRIPT] ChatQueue call failed: {e}")
         return None
