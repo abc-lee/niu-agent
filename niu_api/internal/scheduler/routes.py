@@ -25,6 +25,8 @@ class CreateTaskRequest(BaseModel):
     is_recurring: bool = False
     cron_expr: str | None = None
     name: str | None = None
+    task_kind: str = "reminder"
+    script_file: str | None = None
 
 
 class UpdateTaskRequest(BaseModel):
@@ -41,10 +43,13 @@ async def health():
     return {"status": "ok", "service": "scheduler-internal"}
 
 
-@router.post("/tasks")
 async def create_task(request: CreateTaskRequest):
     """创建定时任务"""
     try:
+        if request.task_kind == "background_script" and not request.script_file:
+            raise HTTPException(status_code=400, detail="background_script 任务必须提供 script_file")
+        if request.script_file and ("/" in request.script_file or ".." in request.script_file or "\\" in request.script_file):
+            raise HTTPException(status_code=400, detail="script_file 不能含路径分隔符或 ..")
         store = get_store()
         task_id = store.create_task(
             content=request.content,
@@ -52,7 +57,9 @@ async def create_task(request: CreateTaskRequest):
             event_type=request.event_type,
             is_recurring=request.is_recurring,
             cron_expr=request.cron_expr,
-            name=request.name
+            name=request.name,
+            task_kind=request.task_kind,
+            script_file=request.script_file
         )
 
         logger.info(f"[SCHEDULER] Task created: {task_id} - {request.content}")
