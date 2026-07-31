@@ -40,7 +40,7 @@ scheduler _run_loop (10s 轮询，不变)
   └─ trigger_callback(task)
        └─ if task_kind == 'background_script':
             ├─ 读 {workspace}/scripts/{task.script_file}
-            ├─ script_file 不存在 → 标 failed（不进 retry_failed_tasks，永久性失败）
+            ├─ script_file 不存在 → delete_task_permanent 永久删除 + 返回 None（不走 retry，避免无限重试）
             ├─ from agent.handler import code_run  # 模块级纯函数，scheduler 线程直接同步调用
             ├─ result = code_run(code, cwd=str(scripts_dir))  # 返回 dict
             ├─ result['status']=='error' 且无 'stdout' 键（进程启动失败）→ output = result.get('msg','启动失败')
@@ -80,7 +80,7 @@ scheduler _run_loop (10s 轮询，不变)
 
 - `{workspace}/scripts/` 目录由主 Agent 写脚本时自行创建（大模型会自己判断，不在代码里替它 mkdir）
 - `script_file` 存相对路径，触发时拼接 `{workspace}/scripts/{script_file}`
-- 文件不存在 = 触发失败（走失败计数器，stderr 注入"脚本文件不存在"）
+- 文件不存在 = 永久性失败：`_trigger_background_script` 内调 `delete_task_permanent` 永久删除该任务 + 日志告警 + 返回 None（一次性任务删后即结束，recurring 任务删后不再触发；属"配置错误"非"瞬时失败"，不走 retry_failed_tasks，避免无限重试。用户恢复脚本需重新创建任务）
 
 ### TaskStore 改动
 
