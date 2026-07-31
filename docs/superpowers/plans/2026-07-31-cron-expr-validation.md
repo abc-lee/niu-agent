@@ -304,6 +304,7 @@ class TestUpdateTaskCronValidation:
         assert task["content"] == "updated content"
         # cron_expr 保持不变
         assert task["cron_expr"] == "0 9 * * *"
+```
 
 - [ ] **Step 2: 运行测试，确认失败**
 
