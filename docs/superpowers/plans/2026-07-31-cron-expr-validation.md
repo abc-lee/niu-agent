@@ -16,6 +16,8 @@
 
 MCP 工具和 API 路由是两条独立路径，都汇入 `TaskStore.create_task`。在数据层加单点校验能覆盖所有入口。
 
+错误传播路径：MCP 工具的 `except Exception` 会捕获 `ValueError` 返回 `{"status": "error", "message": str(e)}`，Agent 可读取错误信息重试。API 路径单独映射为 HTTP 400。调度器内部所有 `update_task` 调用均不传 `cron_expr`（仅传 `scheduled_at`/`status`），不受新校验影响。上线前已有的非法 `cron_expr` 任务在触发时仍会被 `_calc_next_trigger` 标 `failed`（现有行为不变）。
+
 ## 文件结构
 
 | 文件 | 操作 | 职责 |
@@ -52,94 +54,98 @@ from niu_api.internal.scheduler.task_store import TaskStore
 class TestCreateTaskCronValidation:
     """create_task 的 cron_expr 校验"""
 
-    def setup_method(self, method):
-        """每个测试用临时内存数据库"""
-        self.store = TaskStore(":memory:")
-
-    def test_invalid_cron_8L_rejected(self):
+    def test_invalid_cron_8L_rejected(self, tmp_path):
         """非法 cron_expr（8L）创建时被拒"""
+        store = TaskStore(str(tmp_path / "test.db"))
         with pytest.raises(ValueError, match="Invalid weekday"):
-            self.store.create_task(
+            store.create_task(
                 content="test",
                 scheduled_at="2026-08-01T09:00:00",
                 is_recurring=True,
                 cron_expr="0 9 ? * 8L"
             )
 
-    def test_invalid_cron_1_hash_6_rejected(self):
+    def test_invalid_cron_1_hash_6_rejected(self, tmp_path):
         """非法 cron_expr（1#6）创建时被拒"""
+        store = TaskStore(str(tmp_path / "test.db"))
         with pytest.raises(ValueError, match="Invalid N"):
-            self.store.create_task(
+            store.create_task(
                 content="test",
                 scheduled_at="2026-08-01T09:00:00",
                 is_recurring=True,
                 cron_expr="0 9 ? * 1#6"
             )
 
-    def test_invalid_cron_mutex_rejected(self):
+    def test_invalid_cron_mutex_rejected(self, tmp_path):
         """互斥校验失败（# + 具体 dom）创建时被拒"""
+        store = TaskStore(str(tmp_path / "test.db"))
         with pytest.raises(ValueError, match="day-of-month 必须是"):
-            self.store.create_task(
+            store.create_task(
                 content="test",
                 scheduled_at="2026-08-01T09:00:00",
                 is_recurring=True,
                 cron_expr="0 9 15 * 1#2"
             )
 
-    def test_recurring_without_cron_rejected(self):
+    def test_recurring_without_cron_rejected(self, tmp_path):
         """is_recurring=True 但无 cron_expr 被拒"""
+        store = TaskStore(str(tmp_path / "test.db"))
         with pytest.raises(ValueError, match="循环任务必须提供 cron_expr"):
-            self.store.create_task(
+            store.create_task(
                 content="test",
                 scheduled_at="2026-08-01T09:00:00",
                 is_recurring=True,
                 cron_expr=None
             )
 
-    def test_onetime_with_cron_rejected(self):
+    def test_onetime_with_cron_rejected(self, tmp_path):
         """is_recurring=False 但传了 cron_expr 被拒"""
+        store = TaskStore(str(tmp_path / "test.db"))
         with pytest.raises(ValueError, match="一次性任务不应提供 cron_expr"):
-            self.store.create_task(
+            store.create_task(
                 content="test",
                 scheduled_at="2026-08-01T09:00:00",
                 is_recurring=False,
                 cron_expr="0 9 * * *"
             )
 
-    def test_valid_recurring_accepted(self):
+    def test_valid_recurring_accepted(self, tmp_path):
         """合法循环任务正常创建"""
-        task_id = self.store.create_task(
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
             content="test",
             scheduled_at="2026-08-01T09:00:00",
             is_recurring=True,
             cron_expr="0 9 ? * 1#2"
         )
         assert task_id is not None
-        task = self.store.get_task(task_id)
+        task = store.get_task(task_id)
         assert task["cron_expr"] == "0 9 ? * 1#2"
 
-    def test_valid_onetime_without_cron_accepted(self):
+    def test_valid_onetime_without_cron_accepted(self, tmp_path):
         """合法一次性任务（无 cron）正常创建"""
-        task_id = self.store.create_task(
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
             content="test",
             scheduled_at="2026-08-01T09:00:00",
             is_recurring=False,
             cron_expr=None
         )
         assert task_id is not None
-        task = self.store.get_task(task_id)
+        task = store.get_task(task_id)
         assert task["cron_expr"] is None
 
-    def test_valid_advanced_modifier_accepted(self):
+    def test_valid_advanced_modifier_accepted(self, tmp_path):
         """合法高级修饰符（LW）正常创建"""
-        task_id = self.store.create_task(
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
             content="test",
             scheduled_at="2026-08-01T09:00:00",
             is_recurring=True,
             cron_expr="0 0 LW * *"
         )
         assert task_id is not None
-        task = self.store.get_task(task_id)
+        task = store.get_task(task_id)
         assert task["cron_expr"] == "0 0 LW * *"
 ```
 
@@ -150,7 +156,7 @@ Expected: 5 个 FAIL（非法 cron 未被拒、交叉校验未实现），3 个 
 
 - [ ] **Step 3: 实现 create_task 校验**
 
-修改 `niu_api/internal/scheduler/task_store.py` 的 `create_task` 方法（当前 L85-112），在 `task_id = str(uuid.uuid4())` 之后、`conn = sqlite3.connect(...)` 之前插入校验：
+修改 `niu_api/internal/scheduler/task_store.py` 的 `create_task` 方法（当前 L85-112），在 `task_id = str(uuid.uuid4())` 之前插入校验（校验失败不消耗 UUID）：
 
 ```python
     def create_task(
@@ -167,6 +173,9 @@ Expected: 5 个 FAIL（非法 cron 未被拒、交叉校验未实现），3 个 
     ) -> str:
         """创建任务"""
         # --- cron_expr 预校验 ---
+        # 归一化：空串/纯空格视为 None，避免脏数据
+        if cron_expr is not None:
+            cron_expr = cron_expr.strip() or None
         if is_recurring and not cron_expr:
             raise ValueError("循环任务必须提供 cron_expr")
         if not is_recurring and cron_expr:
@@ -192,7 +201,7 @@ Expected: 5 个 FAIL（非法 cron 未被拒、交叉校验未实现），3 个 
         return task_id
 ```
 
-注意：`from .cron_parser import CronParser` 放在方法内惰性导入（与 scheduler.py:474 的现有模式一致），避免模块级循环导入风险。
+注意：`from .cron_parser import CronParser` 放在方法内惰性导入，与 scheduler.py:474 现有模式保持一致。`cron_expr.strip() or None` 归一化使空串/纯空格统一当 None 处理，避免 `is_recurring=False` 时空串被静默存库。
 
 - [ ] **Step 4: 运行测试，确认通过**
 
@@ -232,64 +241,69 @@ git commit -m "feat(scheduler): create_task 加 cron_expr 预校验
 class TestUpdateTaskCronValidation:
     """update_task 的 cron_expr 校验"""
 
-    def setup_method(self, method):
-        """每个测试用临时内存数据库，预置一个合法任务"""
-        self.store = TaskStore(":memory:")
-        self.task_id = self.store.create_task(
+    def _create_store_with_task(self, tmp_path):
+        """辅助：建临时文件库并预置一个合法循环任务"""
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
             content="test",
             scheduled_at="2026-08-01T09:00:00",
             is_recurring=True,
             cron_expr="0 9 * * *"
         )
+        return store, task_id
 
-    def test_update_to_invalid_cron_rejected(self):
+    def test_update_to_invalid_cron_rejected(self, tmp_path):
         """更新为非法 cron_expr 被拒"""
+        store, task_id = self._create_store_with_task(tmp_path)
         with pytest.raises(ValueError, match="Invalid weekday"):
-            self.store.update_task(
-                task_id=self.task_id,
+            store.update_task(
+                task_id=task_id,
                 cron_expr="0 9 ? * 8L"
             )
 
-    def test_update_to_invalid_mutex_rejected(self):
+    def test_update_to_invalid_mutex_rejected(self, tmp_path):
         """更新为互斥违规被拒"""
+        store, task_id = self._create_store_with_task(tmp_path)
         with pytest.raises(ValueError, match="day-of-month 必须是"):
-            self.store.update_task(
-                task_id=self.task_id,
+            store.update_task(
+                task_id=task_id,
                 cron_expr="0 9 15 * 1#2"
             )
 
-    def test_update_to_valid_cron_accepted(self):
+    def test_update_to_valid_cron_accepted(self, tmp_path):
         """更新为合法 cron_expr 成功"""
-        success = self.store.update_task(
-            task_id=self.task_id,
+        store, task_id = self._create_store_with_task(tmp_path)
+        success = store.update_task(
+            task_id=task_id,
             cron_expr="0 9 ? * 1#2"
         )
         assert success is True
-        task = self.store.get_task(self.task_id)
+        task = store.get_task(task_id)
         assert task["cron_expr"] == "0 9 ? * 1#2"
 
-    def test_update_to_valid_L_accepted(self):
+    def test_update_to_valid_L_accepted(self, tmp_path):
         """更新为合法 L 修饰符成功"""
-        success = self.store.update_task(
-            task_id=self.task_id,
+        store, task_id = self._create_store_with_task(tmp_path)
+        success = store.update_task(
+            task_id=task_id,
             cron_expr="0 17 ? * 5L"
         )
         assert success is True
-        task = self.store.get_task(self.task_id)
+        task = store.get_task(task_id)
         assert task["cron_expr"] == "0 17 ? * 5L"
 
-    def test_update_without_cron_not_validated(self):
+    def test_update_without_cron_not_validated(self, tmp_path):
         """不传 cron_expr 时不触发校验（其他字段更新正常）"""
-        success = self.store.update_task(
-            task_id=self.task_id,
+        store, task_id = self._create_store_with_task(tmp_path)
+        success = store.update_task(
+            task_id=task_id,
             content="updated content"
         )
         assert success is True
-        task = self.store.get_task(self.task_id)
+        task = store.get_task(task_id)
         assert task["content"] == "updated content"
         # cron_expr 保持不变
         assert task["cron_expr"] == "0 9 * * *"
-```
 
 - [ ] **Step 2: 运行测试，确认失败**
 
@@ -321,6 +335,8 @@ Expected: 2 个 FAIL（非法 cron 未被拒），3 个 PASS（合法更新当�
         """
         # --- cron_expr 预校验（仅当传入新值时）---
         if cron_expr is not None:
+            cron_expr = cron_expr.strip() or None  # 归一化空串
+        if cron_expr is not None:
             from .cron_parser import CronParser
             CronParser(cron_expr)  # 非法表达式构造时抛 ValueError
 
@@ -329,7 +345,7 @@ Expected: 2 个 FAIL（非法 cron 未被拒），3 个 PASS（合法更新当�
         # ...（以下原有逻辑不变）
 ```
 
-注意：`update_task` 的 `cron_expr=None` 表示"不更新此字段"（现有逻辑 L239: `if cron_expr is not None`），不是"清空"。所以校验只在 `cron_expr is not None` 时触发。不校验 is_recurring 交叉关系，因为 update_task 不改 is_recurring 字段。
+注意：`update_task` 的 `cron_expr=None` 表示"不更新此字段"（现有逻辑 L239: `if cron_expr is not None`），不是"清空"。所以校验只在 `cron_expr is not None` 时触发。不校验 is_recurring 交叉关系，因为 update_task 不改 is_recurring 字段。update_task 无法清空 cron_expr（None=不更新，空串会被归一化为 None 也不触发更新），如需"取消循环"功能需另行设计。
 
 - [ ] **Step 4: 运行测试，确认通过**
 
@@ -367,9 +383,9 @@ git commit -m "feat(scheduler): update_task 加 cron_expr 预校验
 class TestApiValidationErrorMapping:
     """API 路由把 ValueError 映射为 HTTP 400"""
 
-    def test_create_task_invalid_cron_returns_400(self):
+    def test_create_task_invalid_cron_returns_400(self, tmp_path):
         """非法 cron_expr 创建任务返回 400 而非 500"""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
         from fastapi.testclient import TestClient
         from niu_api.internal.scheduler.routes import router
 
@@ -378,8 +394,8 @@ class TestApiValidationErrorMapping:
         app = FastAPI()
         app.include_router(router)
 
-        # mock get_store 返回真实 TaskStore（内存）
-        store = TaskStore(":memory:")
+        # mock get_store 返回真实 TaskStore（文件库）
+        store = TaskStore(str(tmp_path / "test.db"))
         with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
             client = TestClient(app)
             response = client.post("/tasks", json={
@@ -391,7 +407,7 @@ class TestApiValidationErrorMapping:
         assert response.status_code == 400
         assert "Invalid weekday" in response.json()["detail"]
 
-    def test_create_task_recurring_without_cron_returns_400(self):
+    def test_create_task_recurring_without_cron_returns_400(self, tmp_path):
         """循环任务无 cron_expr 返回 400"""
         from unittest.mock import patch
         from fastapi.testclient import TestClient
@@ -401,7 +417,7 @@ class TestApiValidationErrorMapping:
         app = FastAPI()
         app.include_router(router)
 
-        store = TaskStore(":memory:")
+        store = TaskStore(str(tmp_path / "test.db"))
         with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
             client = TestClient(app)
             response = client.post("/tasks", json={
@@ -413,7 +429,7 @@ class TestApiValidationErrorMapping:
         assert response.status_code == 400
         assert "循环任务必须提供" in response.json()["detail"]
 
-    def test_create_task_valid_returns_200(self):
+    def test_create_task_valid_returns_200(self, tmp_path):
         """合法任务返回 200"""
         from unittest.mock import patch
         from fastapi.testclient import TestClient
@@ -423,7 +439,7 @@ class TestApiValidationErrorMapping:
         app = FastAPI()
         app.include_router(router)
 
-        store = TaskStore(":memory:")
+        store = TaskStore(str(tmp_path / "test.db"))
         with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
             client = TestClient(app)
             response = client.post("/tasks", json={
@@ -463,6 +479,8 @@ Expected: 前两个 FAIL（返回 500 而非 400），第三个 PASS（合法任
         logger.error(f"[SCHEDULER] Create task error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
 ```
+
+> **顺带修复**：`except HTTPException: raise` 放最前，确保 routes.py L50-53 的 script_file 校验 HTTPException（status_code=400）不再被 `except Exception` 吞为 500。这是现有 bug 的正向修复。
 
 - [ ] **Step 4: 修改 update_task 路由异常处理**
 
