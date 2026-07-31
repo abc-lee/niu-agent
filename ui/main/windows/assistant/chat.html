@@ -1127,15 +1127,23 @@
     }
 
     // ========== 消息显示 ==========
-    function addMessage(role, text, images = [], skipAppend = false) {
+    function addMessage(role, text, images = [], skipAppend = false, createdAt = null) {
       // 双管道分离：tool 消息只走 DB 管道，不渲染到对话框
       if (role === 'tool') return null;
       // === 新增：subagent_msg 特殊渲染（主↔子 Agent 对话，区别于用户↔主 Agent） ===
       if (role === 'subagent_msg') {
-        return addSubagentMessage(text, skipAppend);
+        return addSubagentMessage(text, skipAppend, createdAt);
       }
       const div = document.createElement('div');
       div.className = `message ${role}`;
+      // 时间戳气泡：仅有 createdAt 的消息显示（DB 版本消息）
+      if (createdAt) {
+        div.dataset.timestamp = createdAt;
+        const bubble = document.createElement('span');
+        bubble.className = 'timestamp-bubble';
+        bubble.textContent = formatRelativeTime(createdAt) || '';
+        div.appendChild(bubble);
+      }
       
       // 所有消息统一走 Markdown 渲染（包括含图片的消息）
       // Markdown 图片 ![描述](路径) 由 marked.js 渲染，然后后处理添加交互
@@ -1245,12 +1253,11 @@
     }
 
     // ========== subagent_msg 渲染（主↔子 Agent 对话侧边卡片） ==========
-    function addSubagentMessage(text, skipAppend = false) {
+    function addSubagentMessage(text, skipAppend = false, createdAt = null) {
       // 解析格式：@目标 [发送者名] 内容
       const match = text.match(/^@(\S+)(?:\s+\[([^\]]+)\])?\s*(.*)$/s);
       if (!match) {
-        // 解析失败，按普通 assistant 消息渲染降级
-        return addMessage('assistant', text, [], skipAppend);
+        return addMessage('assistant', text, [], skipAppend, createdAt);
       }
       const target = match[1];
       const sender = match[2] || '';
@@ -1265,6 +1272,14 @@
         <div class="subagent-direction">${escapeHtml(direction)}</div>
         <div class="subagent-content">${escapeHtml(content)}</div>
       `;
+      // 时间戳气泡：subagent_msg 也是 DB 消息，需要显示时间戳
+      if (createdAt) {
+        div.dataset.timestamp = createdAt;
+        const bubble = document.createElement('span');
+        bubble.className = 'timestamp-bubble';
+        bubble.textContent = formatRelativeTime(createdAt) || '';
+        div.appendChild(bubble);
+      }
       if (!skipAppend) {
         messages.appendChild(div);
         messages.scrollTop = messages.scrollHeight;
