@@ -128,8 +128,10 @@ def trigger_callback(task: dict) -> str | None:
         logger.error(f"[INTERNAL SCHEDULER] Both attempts failed (task_id={task.get('id')})")
         return None
 
-    # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
-    add_pending_alert("⏰")
+    # 触发小女孩蹦高提醒，传递任务内容摘要让用户知道是什么事
+    task_content = task.get("content", "⏰")
+    alert_text = (task_content[:47] + "...") if len(task_content) > 50 else task_content
+    add_pending_alert(alert_text)
 
     # IM 通道推送：有推送目标时才推送
     try:
