@@ -129,3 +129,63 @@ class TestAdvancedModifierSmoke:
         p = CronParser("0 17 ? * 5L")
         nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
         assert nxt == datetime(2026, 8, 28, 17, 0)
+
+
+class TestLastWeekday:
+    """L 修饰符：每月最后一个周几 / 最后一天"""
+
+    def test_last_friday(self):
+        """0 17 ? * 5L → 每月最后一个周五 17:00"""
+        p = CronParser("0 17 ? * 5L")
+        # 2026-08 最后一个周五：8/28(周五)? 8月周五:7,14,21,28 → 28
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 28, 17, 0)
+
+    def test_last_friday_feb_28_days(self):
+        """28 天月份的最后一个周五"""
+        p = CronParser("0 17 ? * 5L")
+        # 2026-02 周五: 6,13,20,27 → 27
+        nxt = p.get_next(datetime(2026, 2, 1, 0, 0))
+        assert nxt == datetime(2026, 2, 27, 17, 0)
+
+    def test_last_friday_feb_leap_29_days(self):
+        """闰年 29 天月份"""
+        p = CronParser("0 17 ? * 5L")
+        # 2024-02 周五: 2,9,16,23 → 23
+        nxt = p.get_next(datetime(2024, 2, 1, 0, 0))
+        assert nxt == datetime(2024, 2, 23, 17, 0)
+
+    def test_last_day_of_month(self):
+        """0 0 L * * → 每月最后一天 0:00"""
+        p = CronParser("0 0 L * *")
+        # 2026-08 最后一天=31
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 31, 0, 0)
+
+    def test_last_day_feb_leap(self):
+        """2 月闰年 29 天"""
+        p = CronParser("0 0 L * *")
+        nxt = p.get_next(datetime(2024, 2, 1, 0, 0))
+        assert nxt == datetime(2024, 2, 29, 0, 0)
+
+    def test_last_day_feb_nonleap(self):
+        """2 月平年 28 天"""
+        p = CronParser("0 0 L * *")
+        nxt = p.get_next(datetime(2026, 2, 1, 0, 0))
+        assert nxt == datetime(2026, 2, 28, 0, 0)
+
+    def test_last_sunday_zero(self):
+        """0L → 每月最后一个周日"""
+        p = CronParser("0 9 ? * 0L")
+        # 2026-08 周日: 2,9,16,23,30 → 30
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 30, 9, 0)
+
+    def test_mixed_hash_and_L(self):
+        """5L,1#2 → 最后一个周五 或 第 2 个周一"""
+        p = CronParser("0 9 ? * 5L,1#2")
+        # 2026-08: 第 2 个周一=8/10, 最后一个周五=8/28 → 先到 8/10
+        nxt = p.get_next(datetime(2026, 8, 1, 0, 0))
+        assert nxt == datetime(2026, 8, 10, 9, 0)
+        nxt2 = p.get_next(datetime(2026, 8, 10, 9, 1))
+        assert nxt2 == datetime(2026, 8, 28, 9, 0)
