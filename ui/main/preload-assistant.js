@@ -83,6 +83,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 接收蹦高通知（有新消息但窗口不在焦点）
   onAlert: (callback) => ipcRenderer.on('alert', (event, message) => callback(message)),
+
+  // 接收取消报警通知（用户发消息时触发）
+  onCancelAlert: (callback) => ipcRenderer.on('cancel-alert', () => callback()),
   
   // 接收用户活动通知（重置空闲计时器）
   onUserActivity: (callback) => ipcRenderer.on('user-activity', callback),
