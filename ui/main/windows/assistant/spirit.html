@@ -228,11 +228,14 @@
     
     function resetBusy() {
       // 强制归零：用于 SSE 断连后 chat_idle 丢失、busyCount 无法配对归零的修复场景
-      // 由 chat.html onSyncState（查后端 getChatStatus 返回 !busy）触发
       if (busyCount > 0) {
         console.log(`[BusyCount] reset ${busyCount} → 0 (sync from backend)`);
         busyCount = 0;
-        setState(State.IDLE);
+        // ALERT 期间不调 setState，避免打断报警动画
+        // endAlert 恢复时会根据 busyCount 正确反映状态
+        if (currentState !== State.ALERT) {
+          setState(State.IDLE);
+        }
       }
     }
     
@@ -322,13 +325,13 @@
     // 结束 ALERT 状态，恢复之前状态
     function endAlert() {
       if (currentState !== State.ALERT) return;
-      
+
       console.log('[State] 结束 ALERT，恢复到:', previousStateBeforeAlert);
-      
-      if (previousStateBeforeAlert) {
-        setState(previousStateBeforeAlert);
+
+      // 根据 busyCount 决定恢复状态，避免 ALERT 期间 busyCount 变化导致状态不一致
+      if (busyCount > 0) {
+        setState(State.BUSY);
       } else {
-        // 默认恢复到 IDLE
         setState(State.IDLE);
       }
       previousStateBeforeAlert = null;
@@ -542,6 +545,19 @@
     // ========== 接收后端忙碌状态通知 ==========
     // 后端可以通知前端进入/退出忙碌状态
     window.electronAPI.onBusyState((isBusy, reason) => {
+      if (currentState === State.ALERT) {
+        // ALERT 期间只更新 busyCount，不调 setState 避免打断报警动画
+        // endAlert 恢复后会根据 busyCount 正确反映状态
+        if (isBusy) {
+          busyCount++;
+          console.log(`[BusyCount] +1 (${reason || 'backend'}) → ${busyCount} [ALERT期间]`);
+        } else if (busyCount > 0) {
+          busyCount--;
+          console.log(`[BusyCount] -1 (${reason || 'backend'}) → ${busyCount} [ALERT期间]`);
+        }
+        console.log('[Spirit] ALERT 期间仅更新 busyCount，不切换状态:', isBusy, reason);
+        return;
+      }
       if (isBusy) {
         incrementBusy(reason || 'backend');
       } else {
@@ -706,6 +722,13 @@
       alertMessage = message;
       setState(State.ALERT);
     });
+    // 监听取消报警通知（用户发消息时触发，代表已看到报警内容）
+    window.electronAPI.onCancelAlert(() => {
+      if (currentState === State.ALERT) {
+        console.log('[Spirit] 用户发消息，取消 ALERT');
+        endAlert();
+      }
+    });
     
     // 监听提醒消息（旧接口，保留兼容）
     window.electronAPI.onReminder((message) => {
@@ -717,7 +740,8 @@
     window.electronAPI.onUserActivity(() => {
       if (currentState === State.SLEEP) {
         console.log('[Spirit] 用户活动，从睡眠中唤醒');
-        transitionTo(State.IDLE);
+        // 用户活动唤醒直接到 IDLE，不走 WAKE 过渡（与鼠标 hover 不同）
+        setState(State.IDLE);
       } else if (currentState === State.IDLE) {
         console.log('[Spirit] 用户活动，重置空闲计时器');
         startIdleTimer();
