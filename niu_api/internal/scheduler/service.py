@@ -15,6 +15,8 @@ from loguru import logger
 
 from .scheduler import Scheduler
 from .task_store import TaskStore
+from agent.handler import code_run
+from niu_api.chat_queue import get_chat_queue
 
 # ============== 全局状态 ==============
 
@@ -76,6 +78,10 @@ def trigger_callback(task: dict) -> str | None:
     5 分钟）总耗时约 10 分钟。实践中内层 120s 超时会先返回空串触发重试。
 
     IM 推送失败只 log warning，不影响 task 状态（避免重复触发 Agent 生成重复回复）。
+
+    background_script 任务：读 {workspace}/scripts/{script_file} → code_run →
+    stdout 空+成功=静默返回 '(silent)'；有 stdout 或 status=error=stdout 注入主 Agent。
+    脚本文件不存在=永久删除任务（避免无限重试）。
     """
     from niu_api.alerts import add_pending_alert
     from niu_api.chat import _main_loop
@@ -83,7 +89,12 @@ def trigger_callback(task: dict) -> str | None:
 
     logger.info(f"[INTERNAL SCHEDULER] Triggering task: {task['content']}")
 
-    # 构建提示词（[定时任务] 前缀标识系统触发，前端据此用灰色样式展示）
+    # ===== background_script 分支 =====
+    if task.get("task_kind") == "background_script":
+        return _trigger_background_script(task, _main_loop, add_pending_alert)
+
+    # ===== reminder 原逻辑（不动） =====
+    from niu_api.chat_queue import get_chat_queue  # reminder 局部 import 保持原样
     prompt = f"[定时任务] {task['content']}"
 
     loop = _main_loop
@@ -148,6 +159,110 @@ def trigger_callback(task: dict) -> str | None:
         logger.warning(f"[SCHEDULER] IM push failed: {e}")
 
     return agent_reply
+
+
+def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | None:
+    """background_script 触发：跑脚本，有输出才通知主 Agent。
+
+    复用模块级 code_run / get_chat_queue（service.py 顶部已 import）。
+    IM 推送与 reminder 分支保持一致（enqueue 后调 add_pending_alert + channel_router.push）。
+    """
+    script_file = task.get("script_file")
+    if not script_file:
+        logger.error(f"[BG_SCRIPT] task {task.get('id')} 无 script_file")
+        return None
+
+    # workspace = get_db_path 父目录，scripts_dir = workspace/scripts
+    db_path = get_db_path()
+    scripts_dir = Path(db_path).parent / "scripts"
+    script_path = scripts_dir / script_file
+
+    if not script_path.exists():
+        # 永久性失败：删除任务（recurring 亦然），避免 retry_failed_tasks 无限重试
+        logger.error(f"[BG_SCRIPT] 脚本不存在: {script_path}，永久删除任务 {task.get('id')}")
+        try:
+            store = get_store()
+            store.delete_task_permanent(task["id"])
+        except Exception as e:
+            logger.error(f"[BG_SCRIPT] 删除任务失败: {e}")
+        return None
+
+    code = script_path.read_text(encoding="utf-8")
+    logger.info(f"[BG_SCRIPT] 执行 {script_file} (cwd={scripts_dir})")
+
+    result = code_run(code=code, code_type="python", timeout=60, cwd=str(scripts_dir))
+
+    # 取 stdout（进程启动失败时 dict 无 stdout 键）
+    if result.get("status") == "error" and "stdout" not in result:
+        output = result.get("msg", "进程启动失败")
+        is_error = True
+    else:
+        output = (result.get("stdout") or "").strip()
+        is_error = result.get("status") != "success" or result.get("exit_code") != 0
+
+    # 静默：成功 + 无输出 → 返回 truthy（非 None），让调度器走成功路径
+    # （调度器用 `result is None` 判失败：None→标failed/retry；非None→one-time硬删除/recurring reschedule）
+    # 若返回 None：one-time 静默成功会进 retry_failed_tasks 无限重试、recurring 静默3次后标 failed 卡死
+    if not is_error and not output:
+        logger.info(f"[BG_SCRIPT] {script_file} 静默完成（无输出）")
+        return "(silent)"  # truthy 占位，调度器据此走成功路径
+
+    # 有输出或报错 → 注入主 Agent
+    if not output:
+        output = "(无 stdout，但执行失败)" if is_error else ""
+
+    # 截断 2000 字符
+    if len(output) > 2000:
+        output = output[:2000] + "…[截断]"
+
+    prompt = f"[定时任务] {output}"
+
+    loop = main_loop
+    if loop is None or loop.is_closed():
+        logger.error("[BG_SCRIPT] Main event loop not available")
+        return None
+
+    try:
+        q = get_chat_queue()
+        future = asyncio.run_coroutine_threadsafe(
+            q.enqueue_and_wait(content=prompt, source="scheduler", session_id="default"),
+            loop,
+        )
+        agent_reply = future.result(timeout=300)
+        if not agent_reply:
+            logger.warning("[BG_SCRIPT] Agent returned empty reply")
+            return None
+
+        logger.info(f"[BG_SCRIPT] Agent replied: {agent_reply[:100]}")
+
+        # ===== 与 reminder 分支对齐：蹦高 + IM 推送（复制 service.py L131-148 逻辑） =====
+        task_content = task.get("content", "⏰")
+        alert_text = (task_content[:47] + "...") if len(task_content) > 50 else task_content
+        try:
+            add_alert_fn(alert_text)
+        except Exception as e:
+            logger.warning(f"[BG_SCRIPT] add_pending_alert failed: {e}")
+
+        # IM 通道推送
+        try:
+            from niu_api.channel import get_channel_router
+            router = get_channel_router()
+            if router.has_channel("im"):
+                push_chat_id = task.get("chat_id") or ""
+                push_future = asyncio.run_coroutine_threadsafe(
+                    router.push(agent_reply, "im", push_chat_id),
+                    loop,
+                )
+                push_future.result(timeout=30)
+        except Exception as e:
+            logger.warning(f"[BG_SCRIPT] IM push failed: {e}")
+
+        # 报错（is_error）走失败路径：返回 None 让调度器走失败计数器/retry（spec：报错=失败+通知）
+        # 有输出但非报错（status=success+exit_code 0+stdout 非空）走成功路径：返回 agent_reply
+        return None if is_error else agent_reply
+    except Exception as e:
+        logger.error(f"[BG_SCRIPT] ChatQueue call failed: {e}")
+        return None
 
 
 # ============== 生命周期管理 ==============

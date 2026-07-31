@@ -134,3 +134,148 @@ class TestTaskStoreMigration:
         tasks = store.list_tasks()
         assert tasks[0]["task_kind"] == "background_script"
         assert tasks[0]["script_file"] == "clean_tmp.py"
+
+
+
+class TestTriggerCallbackBackgroundScript:
+    """background_script 分支测试"""
+
+    def _make_bg_task(self, script_file="clean.py"):
+        return {
+            "id": "bg1", "content": "清理", "task_kind": "background_script",
+            "script_file": script_file, "is_recurring": True, "cron_expr": "0 3 * * *",
+        }
+
+    def test_silent_success_no_enqueue(self, tmp_path, monkeypatch):
+        """脚本 stdout 空 + exit 0 → 静默，不调 enqueue_and_wait"""
+        from niu_api.internal.scheduler import service
+
+        # workspace = tmp_path, scripts/clean.py 存在
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "clean.py").write_text("import os\nprint('', end='')\n")
+
+        # get_db_path 返回 tmp_path 下，使 workspace=tmp_path
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+        # code_run 返回静默成功
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "", "exit_code": 0})
+
+        enqueue_called = []
+        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
+            "enqueue_and_wait": lambda self, **kw: enqueue_called.append(kw) or "repl"
+        })())
+
+        result = service.trigger_callback(self._make_bg_task())
+        assert result is not None  # 静默成功返回 truthy（调度器据此走成功路径，非 None=成功）
+        assert result == "(silent)"
+        assert enqueue_called == []  # 未通知
+
+    def test_has_output_enqueues(self, tmp_path, monkeypatch):
+        """脚本 stdout 非空 → enqueue_and_wait 注入主 Agent"""
+        from niu_api.internal.scheduler import service
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "clean.py").write_text("print('有垃圾')\n")
+
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "有垃圾", "exit_code": 0})
+
+        captured = {}
+        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
+            "enqueue_and_wait": lambda self, **kw: captured.update(kw) or "Agent处理"
+        })())
+
+        with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
+             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False  # 无 IM 通道，跳过推送
+            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "Agent处理", timeout=300)
+            result = service.trigger_callback(self._make_bg_task())
+
+        assert result == "Agent处理"
+        assert captured["content"].startswith("[定时任务]")
+        assert "有垃圾" in captured["content"]
+        assert captured["source"] == "scheduler"
+
+    def test_error_enqueues_with_stderr(self, tmp_path, monkeypatch):
+        """脚本异常 → code_run status=error，stdout(含traceback) 注入主 Agent"""
+        from niu_api.internal.scheduler import service
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "clean.py").write_text("raise Exception('boom')\n")
+
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "error", "stdout": "Traceback...boom", "exit_code": 1})
+
+        captured = {}
+        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
+            "enqueue_and_wait": lambda self, **kw: captured.update(kw) or "Agent处理"
+        })())
+        with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
+             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False
+            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "Agent处理", timeout=300)
+            result = service.trigger_callback(self._make_bg_task())
+
+        assert "Traceback" in captured["content"]
+        assert result is None  # 报错走失败路径（spec：报错=失败+通知，调度器走失败计数器）
+
+    def test_missing_script_file_returns_none_no_enqueue(self, tmp_path, monkeypatch):
+        """脚本文件不存在 → 永久删除任务 + 返回 None，不调 code_run/enqueue"""
+        from niu_api.internal.scheduler import service
+
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+        # scripts 目录存在但文件不存在
+        (tmp_path / "scripts").mkdir()
+
+        code_run_called = []
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: code_run_called.append(1) or {"status": "success", "stdout": "", "exit_code": 0})
+
+        enqueue_called = []
+        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
+            "enqueue_and_wait": lambda self, **kw: enqueue_called.append(kw) or "x"
+        })())
+
+        deleted = []
+        monkeypatch.setattr(service, "get_store", lambda: type("S", (), {
+            "delete_task_permanent": lambda self, tid: deleted.append(tid)
+        })())
+
+        result = service.trigger_callback(self._make_bg_task(script_file="nonexistent.py"))
+        assert result is None
+        assert code_run_called == []  # 文件不存在不调 code_run
+        assert enqueue_called == []
+        assert deleted == ["bg1"]  # 任务被永久删除
+
+    def test_stdout_truncated_to_2000(self, tmp_path, monkeypatch):
+        """stdout 超 2000 字符 → 截断"""
+        from niu_api.internal.scheduler import service
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "clean.py").write_text("print('x'*5000)\n")
+
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "x"*5000, "exit_code": 0})
+
+        captured = {}
+        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
+            "enqueue_and_wait": lambda self, **kw: captured.update(kw) or "ok"
+        })())
+
+        with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
+             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False
+            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "ok", timeout=300)
+            service.trigger_callback(self._make_bg_task())
+
+        # [定时任务] 前缀 + 截断提示 + ≤2000 字符正文
+        assert len(captured["content"]) < 2200
+        assert "…[截断]" in captured["content"]  # 截断标记必须存在（spec：超出加提示）
