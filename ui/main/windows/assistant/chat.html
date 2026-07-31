@@ -127,6 +127,33 @@
       /* 保留换行符 */
       white-space: pre-wrap;
     }
+    /* 时间戳气泡：hover 消息时显示 */
+    .message[data-timestamp] {
+      position: relative;
+    }
+    .timestamp-bubble {
+      position: absolute;
+      top: 4px;
+      right: 8px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      opacity: 0;
+      transition: opacity 0.15s;
+      pointer-events: none;
+      white-space: nowrap;
+      z-index: 5;
+    }
+    .message:hover .timestamp-bubble {
+      opacity: 1;
+    }
+    /* assistant 消息气泡放左上角（避免遮挡右侧操作） */
+    .message.assistant .timestamp-bubble {
+      right: auto;
+      left: 8px;
+    }
     .message.user {
       background: #78b2be;
       color: white;
@@ -1061,6 +1088,42 @@
         i++;
       }
       return result;
+    }
+
+    // ========== 时间戳格式化 ==========
+    function formatRelativeTime(isoString) {
+      if (!isoString) return null;
+      const now = new Date();
+      const t = new Date(isoString);
+      if (isNaN(t.getTime())) return null;
+
+      const diffMs = now - t;
+      const diffMin = Math.floor(diffMs / 60000);
+
+      if (diffMin < 1) return '刚刚';
+      if (diffMin < 60) return `${diffMin}分钟前`;
+
+      const sameDay = now.toDateString() === t.toDateString();
+      if (sameDay) {
+        return t.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+      }
+
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const isYesterday = yesterday.toDateString() === t.toDateString();
+      if (isYesterday) {
+        return '昨天 ' + t.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+      }
+
+      const sameYear = now.getFullYear() === t.getFullYear();
+      const mm = String(t.getMonth() + 1).padStart(2, '0');
+      const dd = String(t.getDate()).padStart(2, '0');
+      const hh = String(t.getHours()).padStart(2, '0');
+      const mi = String(t.getMinutes()).padStart(2, '0');
+      if (sameYear) {
+        return `${mm}-${dd} ${hh}:${mi}`;
+      }
+      return `${t.getFullYear()}-${mm}-${dd} ${hh}:${mi}`;
     }
 
     // ========== 消息显示 ==========
