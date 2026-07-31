@@ -43,6 +43,12 @@ const CJK_FONT: Font = Font::with_name("Microsoft YaHei");
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const CJK_FONT: Font = Font::with_name("Noto Sans CJK SC");
 
+// Splash 卡片视觉常量：暖米白圆角卡片 + 柔和投影 + 真透明窗口。
+// 窗口实际尺寸 = 卡片 + 四边 SHADOW_MARGIN 留白（容纳 blur 24 + offset 8 的阴影）。
+const CARD_WIDTH: f32 = 340.0;
+const CARD_HEIGHT: f32 = 96.0;
+const SHADOW_MARGIN: f32 = 20.0;
+
 /// LightRAG status reported by `/api/kg/stats`.
 /// Only the fields the launcher needs for alerting are decoded.
 /// NOTE: API returns snake_case field names (Python convention), so we do NOT
@@ -560,10 +566,10 @@ impl Splash {
                 self.window_id = Some(id);
                 // 窗口打开后，如有缺失依赖提示，动态加大窗口高度容纳列表
                 if !self.missing_deps.is_empty() {
-                    // 每条缺失项约 20px 高度 + 标题 20px + 内边距，基础 80px
+                    // 每条缺失项约 20px 高度 + 标题 20px + 内边距，加在卡片高度上再补四边阴影留白
                     let extra = (self.missing_deps.len() as f32 + 1.0) * 22.0;
-                    let new_height = 80.0 + extra;
-                    return window::resize(id, iced::Size::new(320.0, new_height));
+                    let new_height = CARD_HEIGHT + extra + 2.0 * SHADOW_MARGIN;
+                    return window::resize(id, iced::Size::new(CARD_WIDTH + 2.0 * SHADOW_MARGIN, new_height));
                 }
                 Task::none()
             }
@@ -865,35 +871,60 @@ impl Splash {
         };
         // Closing message is long (~18 CJK glyphs); shrink font so it fits in
         // the 280px-wide splash without being truncated.
-        let label_size = if self.closing { 13 } else { 18 };
+        let label_size = if self.closing { 13 } else { 16 };
         let label = iced::widget::text(label_text)
             .size(label_size)
             .font(CJK_FONT)
-            .color([1.0, 1.0, 1.0, 1.0]);
+            .color(iced::Color::from_rgb(0.24, 0.22, 0.20)); // #3d3833 暖深灰
         let dots_text = iced::widget::text(dots)
-            .size(18)
+            .size(16)
             .font(Font::MONOSPACE)
-            .color([1.0, 1.0, 1.0, 1.0]);
+            .color(iced::Color::from_rgb(0.83, 0.33, 0.0)); // #d35400 暖橙
         let dots_container = container(dots_text).width(Length::Fixed(36.0));
         let top_row = iced::widget::row![label, dots_container]
             .align_y(iced::alignment::Vertical::Center);
+
+        // 卡片样式（两分支共用）：暖米白竖向微渐变 + 圆角 16 + 柔和投影。
+        let card_style = |_theme: &Theme| container::Style {
+            background: Some(iced::Background::from(
+                iced::gradient::Linear::new(std::f32::consts::FRAC_PI_2)
+                    .add_stop(0.0, iced::Color::from_rgb(1.0, 0.992, 0.969)) // #fffdf7
+                    .add_stop(1.0, iced::Color::from_rgb(0.957, 0.937, 0.886)), // #f4efe2
+            )),
+            border: iced::Border {
+                radius: 16.0.into(),
+                ..iced::Border::default()
+            },
+            shadow: iced::Shadow {
+                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.22),
+                offset: iced::Vector::new(0.0, 8.0),
+                blur_radius: 24.0,
+            },
+            ..container::Style::default()
+        };
 
         // 缺失依赖提示（如有）
         if self.missing_deps.is_empty() || self.closing {
             // 无缺失 / closing 状态（重启/关闭中）：保持原布局，不显示缺失提示
             // closing 时用户要重启了，提示已无意义
-            container(top_row)
+            let card = container(top_row)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Center)
                 .align_y(iced::alignment::Vertical::Center)
+                .style(card_style);
+            // 外层透明 container：Fill 全窗口，四边留白给阴影
+            container(card)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(SHADOW_MARGIN)
                 .into()
         } else {
             // 有缺失：顶部 label 行 + 分隔 + 提示标题 + 缺失项列表
             let hint_title = iced::widget::text("以下功能因依赖缺失暂不可用，请读 README 安装说明：")
                 .size(11)
                 .font(CJK_FONT)
-                .color([1.0, 0.85, 0.4, 1.0]); // 暖黄色提示
+                .color(iced::Color::from_rgb(0.60, 0.42, 0.04)); // #9a6a0a 深琥珀
             let items: Vec<Element<SplashMessage>> = self
                 .missing_deps
                 .iter()
@@ -901,7 +932,7 @@ impl Splash {
                     iced::widget::text(format!("• {}", s))
                         .size(11)
                         .font(CJK_FONT)
-                        .color([0.9, 0.9, 0.9, 1.0])
+                        .color(iced::Color::from_rgb(0.42, 0.39, 0.34)) // #6b6357 暖中灰
                         .into()
                 })
                 .collect();
@@ -909,7 +940,7 @@ impl Splash {
                 .push(iced::widget::Space::new(Length::Fixed(2.0), Length::Fixed(2.0)))
                 .extend(items)
                 .spacing(2);
-            container(
+            let card = container(
                 iced::widget::column![top_row]
                     .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(8.0)))
                     .push(items_column)
@@ -920,7 +951,13 @@ impl Splash {
             .padding(8)
             .align_x(iced::alignment::Horizontal::Center)
             .align_y(iced::alignment::Vertical::Top)
-            .into()
+            .style(card_style);
+            // 外层透明 container：Fill 全窗口，四边留白给阴影
+            container(card)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(SHADOW_MARGIN)
+                .into()
         }
     }
 
@@ -2309,7 +2346,7 @@ fn main() {
         stage_rx,
     );
     let window_settings = window::Settings {
-        size: iced::Size::new(320.0, 80.0),
+        size: iced::Size::new(CARD_WIDTH + 2.0 * SHADOW_MARGIN, CARD_HEIGHT + 2.0 * SHADOW_MARGIN),
         position: window::Position::Centered,
         decorations: false,
         transparent: true,
@@ -2326,6 +2363,12 @@ fn main() {
     .window(window_settings)
     .default_font(CJK_FONT)
     .theme(|_| Theme::Dark)
+    // 真透明窗口：iced_winit 用 Appearance.background_color 做表面清除色，
+    // 深色主题默认是 opaque 黑底；设为 TRANSPARENT 后由系统合成器实现真透明。
+    .style(|_state, _theme| iced::daemon::Appearance {
+        background_color: iced::Color::TRANSPARENT,
+        text_color: iced::Color::from_rgb(0.24, 0.22, 0.20),
+    })
     .subscription(|splash: &Splash| splash.subscription())
     .run_with(|| (splash, Task::none()))
     {
