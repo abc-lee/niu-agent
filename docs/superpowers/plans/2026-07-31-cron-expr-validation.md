@@ -398,7 +398,7 @@ class TestApiValidationErrorMapping:
         store = TaskStore(str(tmp_path / "test.db"))
         with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
             client = TestClient(app)
-            response = client.post("/tasks", json={
+            response = client.post("/scheduler/tasks", json={
                 "content": "test",
                 "scheduled_at": "2026-08-01T09:00:00",
                 "is_recurring": True,
@@ -420,7 +420,7 @@ class TestApiValidationErrorMapping:
         store = TaskStore(str(tmp_path / "test.db"))
         with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
             client = TestClient(app)
-            response = client.post("/tasks", json={
+            response = client.post("/scheduler/tasks", json={
                 "content": "test",
                 "scheduled_at": "2026-08-01T09:00:00",
                 "is_recurring": True,
@@ -442,7 +442,7 @@ class TestApiValidationErrorMapping:
         store = TaskStore(str(tmp_path / "test.db"))
         with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
             client = TestClient(app)
-            response = client.post("/tasks", json={
+            response = client.post("/scheduler/tasks", json={
                 "content": "test",
                 "scheduled_at": "2026-08-01T09:00:00",
                 "is_recurring": True,
