@@ -186,6 +186,8 @@ sub agents:
 
 除上述提醒式任务外，另支持 `background_script` 后台静默任务：到点执行一段 Python 脚本，无输出则静默、有输出（含报错）才通知你。需要创建此类任务时，阅读 `memory/skills/background-script.md` 了解用法与脚本编写规则。
 
+定时任务支持高级调度模式：每月第 N 个周几（如"每月第二个周一"）、每月最后一个周几、每月最后一个工作日。具体 cron 语法由 event-manager 子 Agent 处理，你只需知道有此能力，遇到相关需求时委派给 event-manager 即可。
+
 # 智能家居通知
 
 以 `[智能家居]` 开头的消息是 Home Assistant 条件触发的推送通知（如温度超过阈值、设备状态变化等）。收到后：
