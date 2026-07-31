@@ -95,6 +95,17 @@ class TaskStore:
         script_file: str | None = None
     ) -> str:
         """创建任务"""
+        # --- cron_expr 预校验 ---
+        # 归一化：空串/纯空格视为 None，避免脏数据
+        if cron_expr is not None:
+            cron_expr = cron_expr.strip() or None
+        if is_recurring and not cron_expr:
+            raise ValueError("循环任务必须提供 cron_expr")
+        if not is_recurring and cron_expr:
+            raise ValueError("一次性任务不应提供 cron_expr")
+        if cron_expr:
+            from .cron_parser import CronParser
+            CronParser(cron_expr)  # 非法表达式构造时抛 ValueError
         task_id = str(uuid.uuid4())
 
         conn = sqlite3.connect(self.db_path, timeout=10.0)
