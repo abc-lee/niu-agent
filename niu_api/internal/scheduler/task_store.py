@@ -64,6 +64,20 @@ class TaskStore:
                 """)
             except sqlite3.OperationalError:
                 pass  # 列已存在
+            # 迁移：老数据库可能没有 task_kind 列
+            try:
+                conn.execute("""
+                    ALTER TABLE scheduled_tasks ADD COLUMN task_kind TEXT DEFAULT 'reminder'
+                """)
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+            # 迁移：老数据库可能没有 script_file 列
+            try:
+                conn.execute("""
+                    ALTER TABLE scheduled_tasks ADD COLUMN script_file TEXT
+                """)
+            except sqlite3.OperationalError:
+                pass  # 列已存在
             conn.commit()
         finally:
             conn.close()
@@ -76,7 +90,9 @@ class TaskStore:
         is_recurring: bool = False,
         cron_expr: str | None = None,
         name: str | None = None,
-        chat_id: str | None = None
+        chat_id: str | None = None,
+        task_kind: str = "reminder",
+        script_file: str | None = None
     ) -> str:
         """创建任务"""
         task_id = str(uuid.uuid4())
@@ -86,9 +102,9 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 INSERT INTO scheduled_tasks
-                (id, content, scheduled_at, is_recurring, cron_expr, event_type, status, name, chat_id)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-            """, (task_id, content, scheduled_at, int(is_recurring), cron_expr, event_type, name, chat_id))
+                (id, content, scheduled_at, is_recurring, cron_expr, event_type, status, name, chat_id, task_kind, script_file)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+            """, (task_id, content, scheduled_at, int(is_recurring), cron_expr, event_type, name, chat_id, task_kind, script_file))
             conn.commit()
         finally:
             conn.close()
@@ -104,14 +120,14 @@ class TaskStore:
 
             if status:
                 cursor.execute("""
-                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id
+                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
                     FROM scheduled_tasks
                     WHERE status = ?
                     ORDER BY scheduled_at
                 """, (status,))
             else:
                 cursor.execute("""
-                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id
+                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
                     FROM scheduled_tasks
                     ORDER BY scheduled_at
                 """)
@@ -132,7 +148,9 @@ class TaskStore:
                 "created_at": row[7],
                 "last_executed_date": row[8],
                 "name": row[9],
-                "chat_id": row[10]
+                "chat_id": row[10],
+                "task_kind": row[11],
+                "script_file": row[12]
             }
             for row in rows
         ]
@@ -161,7 +179,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
                 FROM scheduled_tasks
                 WHERE name = ? AND status != 'cancelled'
                 LIMIT 1
@@ -184,7 +202,9 @@ class TaskStore:
             "created_at": row[7],
             "last_executed_date": row[8],
             "name": row[9],
-            "chat_id": row[10]
+            "chat_id": row[10],
+            "task_kind": row[11],
+            "script_file": row[12]
         }
 
     def update_task(
@@ -196,7 +216,9 @@ class TaskStore:
         status: str | None = None,
         expected_status: str | None = None,
         name: str | None = None,
-        triggered_at: str | None = None
+        triggered_at: str | None = None,
+        task_kind: str | None = None,
+        script_file: str | None = None
     ) -> bool:
         """更新任务
 
@@ -230,6 +252,14 @@ class TaskStore:
             updates.append("triggered_at = ?")
             params.append(triggered_at)
 
+        if task_kind is not None:
+            updates.append("task_kind = ?")
+            params.append(task_kind)
+
+        if script_file is not None:
+            updates.append("script_file = ?")
+            params.append(script_file)
+
         if not updates:
             return False
 
@@ -261,7 +291,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, triggered_at
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, triggered_at, task_kind, script_file
                 FROM scheduled_tasks
                 WHERE id = ?
             """, (task_id,))
@@ -284,7 +314,9 @@ class TaskStore:
             "last_executed_date": row[8],
             "name": row[9],
             "chat_id": row[10],
-            "triggered_at": row[11]
+            "triggered_at": row[11],
+            "task_kind": row[12],
+            "script_file": row[13]
         }
 
     def delete_task_permanent(self, task_id: str) -> bool:
@@ -327,7 +359,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
                 FROM scheduled_tasks
                 WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?)
                 ORDER BY scheduled_at
@@ -348,7 +380,9 @@ class TaskStore:
                 "created_at": row[7],
                 "last_executed_date": row[8],
                 "name": row[9],
-                "chat_id": row[10]
+                "chat_id": row[10],
+                "task_kind": row[11],
+                "script_file": row[12]
             }
             for row in rows
         ]
