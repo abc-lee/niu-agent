@@ -1683,9 +1683,12 @@ function startPendingAlertsPolling() {
     try {
       const alerts = await fetchPendingAlerts();
       if (alerts && alerts.length > 0) {
-        // 直接触发小女孩蹦高，不判断任何条件
         if (spiritWindow && !spiritWindow.isDestroyed()) {
-          spiritWindow.webContents.send('alert', '⏰');
+          // 每条 alert 都发送，spirit 端 setState 有守卫（已 ALERT 不重复）
+          alerts.forEach(a => {
+            const content = (a && a.content) ? a.content : '⏰';
+            spiritWindow.webContents.send('alert', content);
+          });
         }
       }
     } catch (e) {
@@ -1810,6 +1813,11 @@ function startMessageEventStream() {
                   content: event.content,
                   source: event.source
                 });
+              }
+              // 用户发消息时取消 spirit 的 ALERT 状态
+              // 用户发消息代表已看到报警内容，无论本地还是飞书都应取消
+              if (event.role === 'user' && spiritWindow && !spiritWindow.isDestroyed()) {
+                spiritWindow.webContents.send('cancel-alert');
               }
             } else if (event.type === 'tool_status') {
               // 转发工具调用状态到聊天窗口
