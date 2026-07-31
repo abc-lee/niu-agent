@@ -1294,15 +1294,14 @@
       return div.innerHTML;
     }
 
-    function addMessageWithId(role, text, id, images = []) {
+    function addMessageWithId(role, text, id, images = [], createdAt = null) {
       // 检查是否已存在相同ID的消息，避免重复
       const existing = document.querySelector(`.message[data-id="${id}"]`);
       if (existing) {
         console.log('[Chat] 消息已存在，跳过重复:', id);
         return existing;
       }
-
-      const div = addMessage(role, text, images);
+      const div = addMessage(role, text, images, false, createdAt);
       if (!div) return null;
       div.dataset.id = id;
       return div;
@@ -1962,13 +1961,13 @@
     }
     
     // 在顶部插入消息（用于加载更多历史）
-    function prependMessage(role, content, id, refNode = null) {
+    function prependMessage(role, content, id, refNode = null, createdAt = null) {
       // 去重：检查是否已存在相同ID的消息
       const existing = document.querySelector(`.message[data-id="${id}"]`);
       if (existing) return;
 
       // 复用 addMessage 的渲染逻辑（Markdown 图片由 marked.js 渲染）
-      const div = addMessage(role, content, [], true);  // skipAppend=true: 不做appendChild/scrollTop
+      const div = addMessage(role, content, [], true, createdAt);  // skipAppend=true: 不做appendChild/scrollTop
       if (!div) return;
       div.dataset.id = id;
       messages.insertBefore(div, refNode || messages.firstChild);
