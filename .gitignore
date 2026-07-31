@@ -141,3 +141,8 @@ sessions/
 /test_*.txt
 /test_result.json
 .superpowers/
+
+# Internal working docs — not for public release
+/docs/kg-dev-dictionary.md
+/docs/lightrag-plans/
+/docs/superpowers/
