@@ -75,13 +75,25 @@ Quartz 约定：当 day-of-week 用 `#`/`L` 时，day-of-month 应填 `?`。代�
 - 逗号组合：`1#1,1#3` → 拆出两个 token，各自解析，都进 `nth_weekdays`
 
 **匹配**（`_matches` 扩展）：
-对候选日期 `d`，判断是否为"本月的第 N 个周 D"：
+对候选日期 `d`，判断是否为"本月的第 N 个周 D"。
+
+**周几编号转换**（关键，避免与 Python `weekday()` 混淆）：
 ```
-weekday_matches = d 对应的周几 == D
+# cron 约定: 0=周日, 1=周一, ..., 6=周六, 7=周日
+# Python weekday(): 0=周一, 1=周二, ..., 6=周日
+# 转换公式: py_weekday = (cron_D - 1) % 7
+#   cron 0/7 → 6(周日), 1 → 0(周一), 2 → 1(周二), ..., 6 → 5(周六)
+```
+现有代码 cron_parser.py:90 已有反向转换 `(weekday()+1)%7`（Python→cron），本次统一用上述正向公式。
+
+匹配逻辑：
+```
+py_wd = (D - 1) % 7
+weekday_matches = d.weekday() == py_wd
 nth_matches = (d.day - 1) // 7 + 1 == N
 命中 ⟺ weekday_matches 且 nth_matches
 ```
-例：15 号是周一 → `(15-1)//7+1 = 2` → 第 2 个周一。
+例：D=1(周一), 15 号 → `(15-1)//7+1 = 2` → 第 2 个周一。
 
 `#5` 在没有第 5 个该周几的月份自然不命中，`get_next` 扫到下个月继续，行为正确。
 
@@ -90,13 +102,12 @@ nth_matches = (d.day - 1) // 7 + 1 == N
 **语法**：
 - `DL`（day-of-week 字段）= 每月最后一个周 D。如 `5L` = 每月最后一个周五。
 - `L`（day-of-month 字段）= 每月最后一天。
-
 **解析**：
 - day-of-week token 以 `L` 结尾 → 取前缀数字为 weekday，存入 `self.last_weekdays: list[int]`
 - day-of-month 值为 `L` → 存 `self.last_day_of_month = True`
 
 **匹配**：
-- 最后一个周 D：`d.weekday() 对应周几 == D` 且 `d + timedelta(days=7)` 的月份 ≠ `d` 的月份（即本月最后一个该周几）
+- 最后一个周 D：`py_wd = (D-1)%7`（转换同 §2），`d.weekday() == py_wd` 且 `d + timedelta(days=7)` 的月份 ≠ `d` 的月份（即本月最后一个该周几）
 - 最后一天：`d.day == calendar.monthrange(d.year, d.month)[1]`
 
 #### 4. `LW` 修饰符（最后一个工作日）
@@ -120,14 +131,18 @@ else:
 命中 ⟺ d.day == last_workday
 ```
 
-#### 5. OR 语义调整
+#### 5. 互斥校验与 OR 语义
 
 现有 `_matches`（cron_parser.py:96-98）：当 day-of-month 和 day-of-week 都非 `*` 时走 OR 逻辑（任一命中即触发）。
 
-扩展后规则：
-- 若 day-of-week 用了 `#`/`L`（即 `nth_weekdays` 或 `last_weekdays` 非空），则 day-of-month 必须是 `?`/`*`，匹配时 day-of-week 的 nth/last 逻辑独立判断，**不与 day-of-month 做 OR**（避免歧义）。
-- 若 day-of-month 用了 `L`/`LW`，则 day-of-week 必须是 `?`/`*`，同理独立判断。
-- 其余情况（双方都是普通数值/范围/步进）保留现有 OR 语义。
+**互斥强制校验**（解析期，消除歧义）：
+- 若 day-of-week 用了 `#`/`L`（`nth_weekdays` 或 `last_weekdays` 非空），day-of-month 必须是 `?`/`*`，否则 `CronParser.__init__` 抛 `ValueError`。
+- 若 day-of-month 用了 `L`/`LW`，day-of-week 必须是 `?`/`*`，否则抛 `ValueError`。
+- 违反时错误信息明确指出哪侧用了高级修饰符、另一侧应填 `?`。
+
+**匹配规则**：
+- 上述高级修饰符场景：相应侧独立判断，**不做 OR**。
+- 其余情况（双方都是普通数值/范围/步进）：保留现有 OR 语义。
 
 ### 测试：`tests/test_cron_parser.py`（新建）
 
@@ -161,6 +176,7 @@ else:
 **边界：**
 - `1#6`（N>5）、`8L`（D>7）→ 解析报错或 `get_next` 返回 None
 - `#` 出现在 day-of-month 字段 → 报错
+- **互斥校验**：`0 9 15 * 1#2`（day-of-month 非 `?`/`*` 且 day-of-week 用 `#`）→ `ValueError`；`0 0 L * 1`（day-of-month 用 `L` 且 day-of-week 非 `?`/`*`）→ `ValueError`
 
 ### Agent 提示词
 
