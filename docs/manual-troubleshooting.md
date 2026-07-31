@@ -337,6 +337,36 @@ sqlite3 ~/.niu/work/scheduled_tasks.db "SELECT * FROM scheduled_tasks WHERE stat
 # 在对话中问："查看 ID 为 xxx 的任务详情"
 ```
 
+#### 问题：background_script 任务不触发或不静默
+
+background_script 是后台静默脚本任务（到点执行 Python 脚本，无输出静默、有输出/报错才通知主 Agent）。
+
+**脚本无输出但不静默（收到空通知）/ 有输出却没通知：**
+- 日志查 `[BG_SCRIPT]`，应看到"静默完成（无输出）"或"Agent replied"
+- 检查脚本 stdout：`print()` 输出=通知，不 print 且退出码 0=静默。用 `print()` 精确控制
+- 静默成功返回 `"(silent)"`（非 None），调度器据此走成功路径（one-time 硬删除/recurring reschedule）
+
+**任务被静默删除（没触发就消失）：**
+- 脚本文件不存在 → 任务被永久删除（`[BG_SCRIPT] 脚本不存在...永久删除`）。检查 `{workspace}/scripts/{script_file}` 是否存在
+- one-time 任务报错 → 永久删除（避免 retry_failed_tasks 无限重置，`[BG_SCRIPT] one-time 任务报错，永久删除`）。修复脚本后需重新创建任务
+- recurring 任务报错 → 走失败计数器（连续 3 次标 failed，不再 reschedule）。查 `status` 字段
+
+**脚本执行报错：**
+- code_run 合并 stderr 进 stdout，报错文本（含 traceback）随通知发给主 Agent
+- 超时 60s：stdout 追加 `[Timeout Error]`，status=error，作为报错通知
+- 查日志 `[BG_SCRIPT]` 看执行详情
+
+**脚本 import 同目录模块失败：**
+- code_run 把代码写到临时文件执行，`sys.path[0]` 是临时目录而非 cwd。脚本内 `import helper`（helper.py 在 scripts 目录）会 ModuleNotFoundError
+- 解决：用 `exec(open('helper.py').read())` 或合并成单文件（cwd 是 scripts 目录，相对路径读写文件正常）
+
+**数据库直查：**
+```bash
+# background_script 任务的 task_kind/script_file 字段
+sqlite3 {workspace}/scheduled_tasks.db \
+  "SELECT id, task_kind, script_file, status, content FROM scheduled_tasks WHERE task_kind='background_script';"
+```
+
 ### 1.4 LightRAG / 知识检索问题
 
 #### 问题：LightRAG 知识检索无结果
