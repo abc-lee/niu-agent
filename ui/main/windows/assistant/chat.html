@@ -1688,7 +1688,7 @@
           // 清空DOM，用数据库消息重建（类似loadHistory的初始化逻辑）
           messages.innerHTML = '';
           msgs.forEach(msg => {
-            addMessageWithId(msg.role, msg.content, msg.id);
+            addMessageWithId(msg.role, msg.content, msg.id, [], msg.created_at);
           });
           if (msgs.length > 0) {
             oldestMessageId = msgs[0].id;
@@ -1716,7 +1716,7 @@
         for (let i = startIdx; i < msgs.length; i++) {
           const msg = msgs[i];
           if (!existingIds.has(msg.id)) {
-            addMessageWithId(msg.role, msg.content, msg.id);
+            addMessageWithId(msg.role, msg.content, msg.id, [], msg.created_at);
             hasNew = true;
           }
         }
@@ -1915,7 +1915,7 @@
             // 保存插入参考节点：所有新消息插入到这个节点之前，保持正序
             const refNode = messages.firstChild;
             history.forEach(msg => {
-              prependMessage(msg.role, msg.content, msg.id, refNode);
+              prependMessage(msg.role, msg.content, msg.id, refNode, msg.created_at);
             });
             // 更新最旧消息ID为刚加载的第一条（最旧的）
             oldestMessageId = history[0].id;
@@ -1950,7 +1950,7 @@
         const history = result.messages || result;
         if (history && history.length > 0) {
           history.forEach(msg => {
-            addMessageWithId(msg.role, msg.content, msg.id);
+            addMessageWithId(msg.role, msg.content, msg.id, [], msg.created_at);
           });
           oldestMessageId = history[0].id;
         }
