@@ -21,12 +21,12 @@
 | 任务类型名 | `background_script`（与现有 `reminder` 并列） |
 | 通知方式 | 有输出走现有 `enqueue_and_wait`（自动获得 SSE + 蹦高 + IM 三件套） |
 | 代码执行 | 复用 `handler.code_run`，`cwd` 设为 `{workspace}/scripts/` |
-| 失败处理 | 报错 = 失败 + 通知（stderr 注入主 Agent + 失败计数器，连续 3 次标 failed） |
+| 失败处理 | 报错 = 失败 + 通知（code_run `status='error'` 或 `exit_code!=0` → stdout 全文注入主 Agent + 失败计数器；recurring 连续 3 次标 failed，one-time 永久性失败直接标 failed 不重试） |
 | 触发器 | 复用现有 cron 5 字段（interval/复杂计划任务放下个工程） |
 | 创建者 | 主 Agent 写脚本代码；event-manager 子 Agent 调 `schedule_task` 创建任务（创建流程不变） |
 | 代码传递 | 代码以文件存 `{workspace}/scripts/`，schedule_task 只存文件名 `script_file` |
-| 输出判定 | stdout 非空 = 有输出 → 通知；stdout 空 = 静默 |
-| Skill 落地 | PM 编写系统级 skill `memory/skills/background-script.md`（非 dream-evolver 自动沉淀） |
+| 输出判定 | code_run 返回 dict：`status='success'` 且 `exit_code==0` 且 stdout 空 → 静默；否则（有 stdout 或 status='error'）→ stdout 全文注入主 Agent通知。stdout 含合并的 stderr（code_run 用 `stderr=STDOUT`） |
+| Skill 落地 | PM 编写系统级 skill `memory/skills/background-script.md`。niu.md L180 规定主 Agent 不得自发创建 skill（dream-evolver 统一负责），但有例外条款"如果用户明确要求你自己创建一个 skill，你可以创建"。本次由 PM（非主 Agent 运行时自发）按用户明确要求编写，属该例外范畴，豁免成立 |
 
 ## 架构（方案 A：trigger_callback 内联分支）
 
@@ -40,11 +40,15 @@ scheduler _run_loop (10s 轮询，不变)
   └─ trigger_callback(task)
        └─ if task_kind == 'background_script':
             ├─ 读 {workspace}/scripts/{task.script_file}
-            ├─ code_run(code, cwd={workspace}/scripts/)   # 复用 handler.code_run
-            ├─ stdout 非空?
-            │   ├─ 是 → enqueue_and_wait("[定时任务] {stdout}")  # 走现有链路 → SSE + 蹦高 + IM
-            │   └─ 否 → 静默返回成功（不 enqueue、不 SSE、不蹦高、不 IM）
-            └─ 代码异常/非零退出 → stderr 作为输出 enqueue（报错通知）+ 失败计数器
+            ├─ script_file 不存在 → 标 failed（不进 retry_failed_tasks，永久性失败）
+            ├─ from agent.handler import code_run  # 模块级纯函数，scheduler 线程直接同步调用
+            ├─ result = code_run(code, cwd=str(scripts_dir))  # 返回 dict
+            ├─ result['status']=='error' 且无 'stdout' 键（进程启动失败）→ output = result.get('msg','启动失败')
+            │  否则 output = result.get('stdout','').strip()
+            ├─ status=='success' 且 exit_code==0 且 output 为空?
+            │   ├─ 是 → 静默返回成功（不 enqueue、不 SSE、不蹦高、不 IM）
+            │   └─ 否 → enqueue_and_wait("[定时任务] {output[:2000]}", source='scheduler')  # 走现有链路 → SSE + 蹦高 + IM
+            └─ status=='error' 或 exit_code!=0 → 同样走 enqueue（output 含报错/超时文本）+ 失败计数器（recurring 3 次阈值；one-time 永久性失败见上）
        └─ else (reminder):
             └─ 原逻辑不变
 ```
@@ -53,9 +57,13 @@ scheduler _run_loop (10s 轮询，不变)
 
 - 调度器 `scheduler.py` **完全不感知** task_kind（分支在 `trigger_callback`，不在调度循环）
 - 静默分支不调 `enqueue_and_wait` → 天然不推 SSE、不蹦高、不 IM
-- `code_run` 复用现有实现，只多传 `cwd` 参数（签名已有 `cwd=None`）
-- 失败计数器、CAS、recurring/one-time、崩溃恢复机制全部复用
-- 有输出 = 走 `enqueue_and_wait` = 自动获得 SSE + 蹦高 + IM（三件套绑定，不可拆）
+- `code_run` 复用现有实现，只多传 `cwd` 参数（签名已有 `cwd=None`）；返回 dict `{status, stdout, exit_code}`，stderr 合并进 stdout（`stderr=STDOUT`），不拆分管道、不改 code_run
+- `code_run` 在 `service.py` 内 `from agent.handler import code_run` 直接同步调用（纯函数，subprocess 阻塞，适合 scheduler 线程池；niu_api 已加载 agent.handler 无循环依赖）
+- stdout 注入主 Agent 时截断 2000 字符（code_run 内部已有 10000 截断，定时注入再收窄到 2000 防撑爆上下文，超出加 `…[截断]` 提示）
+- enqueue_and_wait 传 `source='scheduler'`（与 reminder 一致；chat_queue 内部强制将 assistant 回复 source 改写为 'electron' 推 SSE，故 source 值不影响三件套）
+- background_script 分支 prompt 仅含 stdout 文本，`content` 字段不参与 prompt 构建（仅用于 add_pending_alert 蹦高摘要与人类可读描述）
+- workspace 路径获取：`workspace = Path(get_db_path()).parent`，`scripts_dir = workspace / 'scripts'`（get_db_path 已在 service.py 内，读 ~/.niu/memory.json 的 workspace.path，db_path 父目录即 workspace）
+- recurring background_script 静默成功后与 reminder 一样算下次 cron 回 pending；one-time background_script 静默成功后与 reminder 一样硬删除
 
 ## 数据模型变更
 
@@ -106,10 +114,11 @@ last_tested: 2026-07-31
    - 写 Python 脚本存到 `{workspace}/scripts/`（**先 ls 检查已有文件，避免覆盖同名**）
    - 调 `chat-with-event-manager`，让它调 `schedule_task(task_kind='background_script', script_file='xxx.py', content='任务描述', cron_expr=..., is_recurring=true)`
 4. **Script writing rules** — 脚本编写规则：
-   - stdout 非空 = 通知主 Agent（含 IM）；stdout 空 = 静默。用 `print()` 控制
-   - 异常/非零退出 = 报错通知（stderr 注入 + 失败计数器，连续 3 次标 failed）
+   - `print()` 输出 = 通知主 Agent（含 IM）；不 print 且退出码 0 = 静默
+   - 异常/非零退出/超时 = 报错通知（code_run 合并 stderr 进 stdout，报错文本随 stdout 注入主 Agent；recurring 连续 3 次标 failed，one-time 永久性失败如脚本文件丢失直接标 failed 不重试）
+   - stdout 注入主 Agent 时截断 2000 字符，长输出自行截断或写文件
    - cwd = `{workspace}/scripts/`，可用相对路径访问同目录文件
-   - 超时 60s（code_run 默认）
+   - 超时 60s（code_run 默认），超时进程被杀、stdout 追加 `[Timeout Error]` 后作为报错通知
    - 可用项目 `python/` 的解释器与已装依赖
 5. **Examples** — 两个完整示例：
    - 清理临时文件（静默）：不 print，除非清理失败
@@ -147,7 +156,7 @@ last_tested: 2026-07-31
 
 1. 造一个 background_script 任务（cron `* * * * *`）+ 不 print 的清理脚本 → 等触发 → 确认无 SSE/无蹦高/无 IM/前端无新消息
 2. 改脚本加 `print("测试输出")` → 等触发 → 确认主 Agent 收到 `[定时任务] 测试输出` + SSE + IM
-3. 改脚本 `raise Exception` → 等触发 → 确认 stderr 注入主 Agent + 失败计数
+3. 改脚本 `raise Exception` → 等触发 → 确认报错文本（含 traceback，经 stdout 合并）注入主 Agent + 失败计数
 4. event-manager 创建链路：主 Agent 调 chat-with-event-manager 传 script_file → 确认任务入库 task_kind=background_script
 5. 现有 reminder 回归：造一个 reminder 任务 → 确认行为不变
 
