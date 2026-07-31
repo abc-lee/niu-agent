@@ -269,7 +269,8 @@ class TestTriggerCallbackBackgroundScript:
         }()))
 
         result = service.trigger_callback(self._make_bg_task())
-        assert result is None  # 静默返回 None（不 enqueue）
+        assert result is not None  # 静默成功返回 truthy（调度器据此走成功路径，非 None=成功）
+        assert result == "(silent)"
         assert enqueue_called == []  # 未通知
 
     def test_has_output_enqueues(self, tmp_path, monkeypatch):
@@ -466,10 +467,12 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
         output = (result.get("stdout") or "").strip()
         is_error = result.get("status") != "success" or result.get("exit_code") != 0
 
-    # 静默：成功 + 无输出
+    # 静默：成功 + 无输出 → 返回 truthy（非 None），让调度器走成功路径
+    # （调度器用 `result is None` 判失败：None→标failed/retry；非None→one-time硬删除/recurring reschedule）
+    # 若返回 None：one-time 静默成功会进 retry_failed_tasks 无限重试、recurring 静默3次后标 failed 卡死
     if not is_error and not output:
         logger.info(f"[BG_SCRIPT] {script_file} 静默完成（无输出）")
-        return None
+        return "(silent)"  # truthy 占位，调度器据此走成功路径
 
     # 有输出或报错 → 注入主 Agent
     if not output:
@@ -581,6 +584,7 @@ Read: `mcp-servers/scheduler-server/src/niu_scheduler_server/__init__.py:30-200`
                     "description": "脚本文件名（仅 background_script 用，如 clean_tmp.py）。脚本须存于 {workspace}/scripts/ 下"
                 },
 ```
+**注意（一致性）**：`__init__.py` 的 `run_server()` 内 `@server.list_tools()` 有内联的 schedule_task schema 副本（stdio MCP 模式用），`call_tool` handler 内也有 `store.create_task(...)` 调用。虽然主路径走同进程 ToolRegistry（用 TOOL_SCHEMAS + 顶层函数），但为保持一致，`run_server()` 内的内联 schema 与 create_task 调用也同步加 task_kind/script_file。
 
 - [ ] **Step 3: schedule_task 函数签名加参数并透传 create_task**
 
