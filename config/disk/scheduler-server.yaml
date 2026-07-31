@@ -27,6 +27,14 @@ tools:
       - name: cron_expr
         flag: cron
         type: string
+      - name: task_kind
+        flag: kind
+        type: string
+        enum: [reminder, background_script]
+        default: reminder
+      - name: script_file
+        flag: script
+        type: string
       - name: name
         type: string
 
