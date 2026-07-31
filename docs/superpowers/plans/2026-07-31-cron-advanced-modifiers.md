@@ -756,7 +756,7 @@ Expected: 全部 PASS（cron_parser 测试 38 个 + 其余原有测试不破坏�
 语法：`D#N`（写在 day-of-week 字段，即第 5 字段）
 - D = 周几（0=周日, 1=周一, ..., 6=周六, 7=周日）
 - N = 第几个（1-5）
-- day-of-month 字段必须填 `?`
+- day-of-month 字段必须填 `?` 或 `*`
 
 示例：
 - `0 9 ? * 1#2` = 每月第 2 个周一 9:00
@@ -796,7 +796,7 @@ Expected: 全部 PASS（cron_parser 测试 38 个 + 其余原有测试不破坏�
 
 ### 注意事项
 
-- 使用 `#`/`L`（day-of-week）时，day-of-month 必须 `?`；使用 `L`/`LW`（day-of-month）时，day-of-week 必须 `?`。违反会报错。
+- 使用 `#`/`L`（day-of-week）时，day-of-month 必须 `?` 或 `*`；使用 `L`/`LW`（day-of-month）时，day-of-week 必须 `?` 或 `*`。违反会报错。
 - `?` 等同于 `*`，表示"不限制"。
 - 这些修饰符可与逗号组合（如 `5L,1#2`）。
 ```
