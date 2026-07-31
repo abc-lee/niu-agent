@@ -89,7 +89,7 @@ if [ "$(uname)" = "Darwin" ]; then
              manual-ha-setup.md manual-im-gateway.md manual-mcp-disk.md \
              manual-performance.md manual-troubleshooting.md manual-user-guide.md \
              manual-vector-store.md \
-             kg-dev-dictionary.md; do
+             ; do
         if [ -f "$PROJECT_ROOT/docs/$f" ]; then
             cp "$PROJECT_ROOT/docs/$f" "$RESOURCES_DIR/docs/$f"
         fi
