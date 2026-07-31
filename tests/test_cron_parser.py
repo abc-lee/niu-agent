@@ -236,3 +236,57 @@ class TestLastWorkday:
             nxt = p.get_next(datetime(2026, month, 1, 0, 0))
             assert nxt == datetime(2026, month, day, 0, 0), \
                 f"2026-{month}: expected {day}, got {nxt.day}"
+
+
+class TestBoundaries:
+    """边界：无效修饰符 + 互斥校验"""
+
+    def test_n_gt_5_raises(self):
+        """N > 5 报错"""
+        with pytest.raises(ValueError, match="Invalid N"):
+            CronParser("0 9 ? * 1#6")
+
+    def test_n_zero_raises(self):
+        """N = 0 报错"""
+        with pytest.raises(ValueError, match="Invalid N"):
+            CronParser("0 9 ? * 1#0")
+
+    def test_weekday_gt_7_raises(self):
+        """D > 7 报错"""
+        with pytest.raises(ValueError, match="Invalid weekday"):
+            CronParser("0 9 ? * 8L")
+
+    def test_hash_in_dom_raises(self):
+        """# 出现在 day-of-month 报错"""
+        with pytest.raises(ValueError):
+            CronParser("0 9 1#2 * *")
+
+    def test_mutex_hash_with_specific_dom_raises(self):
+        """day-of-week 用 # 且 day-of-month 非 ?/* → ValueError"""
+        with pytest.raises(ValueError, match="day-of-month 必须是"):
+            CronParser("0 9 15 * 1#2")
+
+    def test_mutex_L_with_specific_dow_raises(self):
+        """day-of-month 用 L 且 day-of-week 非 ?/* → ValueError"""
+        with pytest.raises(ValueError, match="day-of-week 必须是"):
+            CronParser("0 0 L * 1")
+
+    def test_mutex_LW_with_specific_dow_raises(self):
+        """day-of-month 用 LW 且 day-of-week 非 ?/* → ValueError"""
+        with pytest.raises(ValueError, match="day-of-week 必须是"):
+            CronParser("0 0 LW * 1")
+
+    def test_hash_with_star_dom_ok(self):
+        """day-of-week 用 # 且 day-of-month 是 * → 合法"""
+        p = CronParser("0 9 * * 1#2")
+        assert p.get_next(datetime(2026, 8, 1, 0, 0)) == datetime(2026, 8, 10, 9, 0)
+
+    def test_L_with_star_dow_ok(self):
+        """day-of-month 用 L 且 day-of-week 是 * → 合法"""
+        p = CronParser("0 0 L * *")
+        assert p.get_next(datetime(2026, 8, 1, 0, 0)) == datetime(2026, 8, 31, 0, 0)
+
+    def test_dow_mixed_standard_and_modifier_raises(self):
+        """day-of-week 标准值与 #/L 修饰符混用 → ValueError（避免静默丢弃标准值）"""
+        with pytest.raises(ValueError, match="不支持标准值与 #/L 修饰符混用"):
+            CronParser("0 9 ? * 1,5L")
