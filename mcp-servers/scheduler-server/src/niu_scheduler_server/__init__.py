@@ -44,7 +44,17 @@ TOOL_SCHEMAS = {
                 "is_recurring": {"type": "boolean", "description": "是否循环任务"},
                 "cron_expr": {"type": "string", "description": "cron 表达式"},
                 "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"},
-                "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"}
+                "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"},
+                "task_kind": {
+                    "type": "string",
+                    "enum": ["reminder", "background_script"],
+                    "default": "reminder",
+                    "description": "任务类型：reminder=提醒式；background_script=后台静默脚本"
+                },
+                "script_file": {
+                    "type": "string",
+                    "description": "脚本文件名（仅 background_script 用，如 clean_tmp.py）。脚本须存于 {workspace}/scripts/ 下"
+                }
             },
             "required": ["content", "scheduled_at"]
         },
@@ -161,8 +171,14 @@ def schedule_task(
     cron_expr: str = None,
     name: str = None,
     chat_id: str = None,
+    task_kind: str = "reminder",
+    script_file: str = None,
 ) -> dict:
     """创建定时任务，支持单次和循环任务。"""
+    if task_kind == "background_script" and not script_file:
+        return {"error": "background_script 任务必须提供 script_file"}
+    if script_file and ("/" in script_file or ".." in script_file or "\\" in script_file):
+        return {"error": "script_file 不能含路径分隔符或 .."}
     try:
         store = _get_store()
         task_id = store.create_task(
@@ -173,6 +189,8 @@ def schedule_task(
             cron_expr=cron_expr,
             name=name,
             chat_id=chat_id,
+            task_kind=task_kind,
+            script_file=script_file,
         )
         return {"status": "success", "task_id": task_id, "message": f"已创建定时任务：{content}"}
     except Exception as e:
@@ -260,7 +278,17 @@ async def run_server():
                         "is_recurring": {"type": "boolean", "description": "是否循环任务"},
                         "cron_expr": {"type": "string", "description": "cron 表达式"},
                         "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"},
-                        "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"}
+                        "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"},
+                        "task_kind": {
+                            "type": "string",
+                            "enum": ["reminder", "background_script"],
+                            "default": "reminder",
+                            "description": "任务类型：reminder=提醒式；background_script=后台静默脚本"
+                        },
+                        "script_file": {
+                            "type": "string",
+                            "description": "脚本文件名（仅 background_script 用，如 clean_tmp.py）。脚本须存于 {workspace}/scripts/ 下"
+                        }
                     },
                     "required": ["content", "scheduled_at"]
                 }
@@ -324,6 +352,14 @@ async def run_server():
     async def call_tool(name: str, arguments: dict):
         try:
             if name == "schedule_task":
+                task_kind = arguments.get("task_kind", "reminder")
+                script_file = arguments.get("script_file")
+                if task_kind == "background_script" and not script_file:
+                    return [TextContent(type="text", text=json.dumps(
+                        {"error": "background_script 任务必须提供 script_file"}, ensure_ascii=False))]
+                if script_file and ("/" in script_file or ".." in script_file or "\\" in script_file):
+                    return [TextContent(type="text", text=json.dumps(
+                        {"error": "script_file 不能含路径分隔符或 .."}, ensure_ascii=False))]
                 task_id = store.create_task(
                     content=arguments["content"],
                     scheduled_at=arguments["scheduled_at"],
@@ -331,7 +367,9 @@ async def run_server():
                     is_recurring=arguments.get("is_recurring", False),
                     cron_expr=arguments.get("cron_expr"),
                     name=arguments.get("name"),
-                    chat_id=arguments.get("chat_id")
+                    chat_id=arguments.get("chat_id"),
+                    task_kind=task_kind,
+                    script_file=script_file
                 )
 
                 return [TextContent(
