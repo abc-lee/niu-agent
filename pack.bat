@@ -42,7 +42,8 @@ REM 排除: 编译产物、.git、缓存、备份、开发工具配置
 echo [pack.bat] Copying files...
 robocopy . "!STAGE!" /E ^
     /xd launcher\target .git backup temp_pack_stage dist .pytest_cache .ruff_cache .gitnexus .sisyphus .playwright-mcp .claude ^
-    /xf *.pyc niu.exe~ *.bak .DS_Store
+        docs\lightrag-plans docs\superpowers ^
+    /xf *.pyc niu.exe~ *.bak .DS_Store docs\kg-dev-dictionary.md
 
 REM 确保 niu.exe 在根目录
 if not exist "!STAGE!\niu.exe" (
