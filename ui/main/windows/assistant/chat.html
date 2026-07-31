@@ -1959,6 +1959,18 @@
         addMessage('system', '妞妞已就绪！有什么可以帮你的？');
       }
     }
+    // ========== 时间戳气泡定时刷新 ==========
+    // 每 30 秒刷新已渲染消息的相对时间（刚刚 → X分钟前）
+    setInterval(() => {
+      document.querySelectorAll('.message[data-timestamp] .timestamp-bubble').forEach(bubble => {
+        const msgDiv = bubble.parentElement;
+        const ts = msgDiv.dataset.timestamp;
+        if (ts) {
+          const text = formatRelativeTime(ts);
+          if (text) bubble.textContent = text;
+        }
+      });
+    }, 30000);
     
     // 在顶部插入消息（用于加载更多历史）
     function prependMessage(role, content, id, refNode = null, createdAt = null) {
