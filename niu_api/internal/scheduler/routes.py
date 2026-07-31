@@ -43,6 +43,7 @@ async def health():
     return {"status": "ok", "service": "scheduler-internal"}
 
 
+@router.post("/tasks")
 async def create_task(request: CreateTaskRequest):
     """创建定时任务"""
     try:
