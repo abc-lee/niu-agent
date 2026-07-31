@@ -24,7 +24,7 @@
 | `memory/skills/background-script.md` | 系统级 skill | 新建 |
 | `config/agents/niu.md` | 主 Agent 提示词 | 改：定时任务段落加两句 |
 
-**不动的**：`scheduler.py`、`cron_parser.py`、`chat_queue.py`、`handler.py`、`routes.py`（请求模型可选改，见 Task 4 备注）。
+**不动的**：`scheduler.py`（调度循环）、`cron_parser.py`（触发器，留给下个工程）、`chat_queue.py`（静默分支不 enqueue 即天然不触发）、`handler.py` 的 code_run（只复用不改）。`routes.py` 需改（Task 3 Step 4，必须，否则 /scheduler API 拒绝 task_kind/script_file 参数）。
 
 ---
 
@@ -381,6 +381,7 @@ class TestTriggerCallbackBackgroundScript:
 
         # [定时任务] 前缀 + 截断提示 + ≤2000 字符正文
         assert len(captured["content"]) < 2200
+        assert "…[截断]" in captured["content"]  # 截断标记必须存在（spec：超出加提示）
 ```
 
 - [ ] **Step 3: 跑测试验证全部失败（函数未改）**
@@ -915,32 +916,15 @@ curl -s -X POST http://localhost:9876/scheduler/tasks -H "Content-Type: applicat
 
 ---
 
-## Self-Review
+## Self-Review（经 4 轮审查修订后最终版）
 
-**Spec 覆盖检查**：
-- ✅ task_kind/script_file 列与迁移 → Task 1
-- ✅ trigger_callback background_script 分支（含 stdout 判定/截断/静默/报错/文件不存在）→ Task 2
-- ✅ code_run 复用不改、import 路径、返回 dict 取值 → Task 2 Step 4
-- ✅ workspace 路径获取 → Task 2 Step 4（`Path(get_db_path()).parent / "scripts"`）
-- ✅ one-time 永久性失败不重试 → Task 2（文件不存在返回 None，scheduler 标 failed；retry_failed_tasks 只重置 is_recurring=0，但脚本文件不存在的 one-time 会无限重试——**需在 Task 2 补：one-time background_script 文件不存在时直接把 status 改 failed 并跳过 retry**）
-- ✅ MCP schedule_task 加参数 → Task 3
-- ✅ /scheduler API 同步 → Task 3 Step 4 备注
-- ✅ disk 映射 → Task 4
-- ✅ skill 文件 → Task 5
-- ✅ niu.md 概览 → Task 6
-- ✅ 运行环境实测 → Task 7
+**Spec 覆盖**：task_kind/script_file 列+迁移+所有 SELECT 方法（含 get_overdue_tasks/find_task_by_name）→ Task 1；trigger_callback background_script 分支（静默返回 "(silent)"/报错返回 None/有输出返回 agent_reply/文件不存在永久删除）→ Task 2；code_run 模块级 import+返回 dict 取值+IM 推送+add_alert 传参 → Task 2；MCP+routes → Task 3；disk flag → Task 4；skill+import 警告 → Task 5；niu.md → Task 6；运行实测含失败终态验证 → Task 7。
 
-**发现一个遗漏（已在上文标注）**：Task 2 的"文件不存在返回 None"对 one-time 任务会触发 retry_failed_tasks 无限重试（spec P1#3）。修订：Task 2 Step 4 的 `_trigger_background_script` 在文件不存在时，**直接调 TaskStore 把该任务 status 改为 failed**（而非只返回 None），并在 retry_failed_tasks 里排除 background_script 的永久性失败——或更简单：文件不存在时返回特殊标记让 scheduler 不重试。
+**审查修订历程**：
+- Round 1（8 条）：get_overdue_tasks 漏列/模块级 import/add_alert 参数/IM 推送/get_store 路径/routes 必须/position flag/recurring 永久删除
+- Round 2（1 P0）：静默成功返回 None 被调度器误判失败 → 返回 "(silent)"
+- Round 3（1 P1+3 P2）：报错返回 agent_reply 被当成功 → 报错返回 None 走失败路径；find_task_by_name 漏列；import 警告；Task 7 失败终态验证
 
-**最简方案**（补进 Task 2 Step 4）：文件不存在时，直接 `store.update_task(task_id, status='failed')` 标 failed，retry_failed_tasks 重置后下次触发仍文件不存在→再标 failed，不会无限循环（每次都直接 failed，不会 pending 重试堆积）。但 retry_failed_tasks 5min 会重置 pending 再触发——这仍是循环。
+**Placeholder 扫描**：无 TBD/TODO，代码块完整。
 
-**真正干净的方案**：文件不存在时返回 None，但在 `scheduler.py` 的 retry_failed_tasks 调用前，让 TaskStore 加一个方法 `skip_retry_for_missing_script()` 跳过 background_script 且脚本不存在的 failed 任务。**但这改了 scheduler.py，违反"调度器不感知 task_kind"。**
-
-**最终决策（补进 spec 与 Task 2）**：文件不存在属于"配置错误"而非"瞬时失败"，在 `_trigger_background_script` 内文件不存在时直接 `delete_task_permanent`（永久删除该任务）+ 日志告警 + 返回 None。一次性任务被删即结束；recurring 任务被删也不再触发。用户若恢复脚本需重新创建任务。这最干净，不碰 scheduler.py、不无限重试。**Task 2 Step 4 需补这个删除逻辑 + 对应测试。**
-
-→ 下方 Task 2 补充 Step 已并入。
-
-**Placeholder 扫描**：无 TBD/TODO，所有代码块完整。
-
-**类型一致性**：task_kind/script_file 字段名在 Task 1-4 一致；`_trigger_background_script` 签名在 Task 2 内一致。
-
+**类型一致性**：task_kind/script_file 字段名跨 Task 一致；_trigger_background_script 返回语义三态明确（"(silent)"=静默成功/agent_reply=有输出成功/None=失败）。
