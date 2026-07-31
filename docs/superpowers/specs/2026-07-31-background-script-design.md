@@ -21,7 +21,7 @@
 | 任务类型名 | `background_script`（与现有 `reminder` 并列） |
 | 通知方式 | 有输出走现有 `enqueue_and_wait`（自动获得 SSE + 蹦高 + IM 三件套） |
 | 代码执行 | 复用 `handler.code_run`，`cwd` 设为 `{workspace}/scripts/` |
-| 失败处理 | 报错 = 失败 + 通知（code_run `status='error'` 或 `exit_code!=0` → stdout 全文注入主 Agent + 失败计数器；recurring 连续 3 次标 failed，one-time 永久性失败直接标 failed 不重试） |
+| 失败处理 | 报错 = 失败 + 通知（code_run `status='error'` 或 `exit_code!=0` → stdout 全文注入主 Agent；recurring 返回 None 走失败计数器，连续 3 次标 failed；one-time 报错永久删除任务避免 retry_failed_tasks 无限重置，用户修复脚本后需重建任务） |
 | 触发器 | 复用现有 cron 5 字段（interval/复杂计划任务放下个工程） |
 | 创建者 | 主 Agent 写脚本代码；event-manager 子 Agent 调 `schedule_task` 创建任务（创建流程不变） |
 | 代码传递 | 代码以文件存 `{workspace}/scripts/`，schedule_task 只存文件名 `script_file` |
@@ -48,7 +48,7 @@ scheduler _run_loop (10s 轮询，不变)
             ├─ status=='success' 且 exit_code==0 且 output 为空?
             │   ├─ 是 → 静默返回成功（不 enqueue、不 SSE、不蹦高、不 IM）
             │   └─ 否 → enqueue_and_wait("[定时任务] {output[:2000]}", source='scheduler')  # 走现有链路 → SSE + 蹦高 + IM
-            └─ status=='error' 或 exit_code!=0 → 同样走 enqueue（output 含报错/超时文本）+ 失败计数器（recurring 3 次阈值；one-time 永久性失败见上）
+            └─ status=='error' 或 exit_code!=0 → 同样走 enqueue（output 含报错/超时文本）；recurring 返回 None 走失败计数器（3 次阈值）；one-time 报错永久删除任务（delete_task_permanent，避免 retry_failed_tasks 无限重置）
        └─ else (reminder):
             └─ 原逻辑不变
 ```
