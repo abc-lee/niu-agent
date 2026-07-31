@@ -350,6 +350,11 @@ import calendar
                 f"day-of-month 使用了 L/LW 修饰符，day-of-week 必须是 ? 或 *，"
                 f"实际为: {parts[4]}"
             )
+        # day-of-week 不支持标准值与 #/L 修饰符混用（如 1,5L 会被静默丢弃标准值）
+        if dow_has_modifier and self.day_of_week:
+            raise ValueError(
+                f"day-of-week 不支持标准值与 #/L 修饰符混用: {parts[4]}"
+            )
 ```
 
 注意：因为 Step 3(a) 已把 `?`→`*` 替换（Task 1），`parts[2]`/`parts[4]` 不会出现 `?`，wildcard 判定用 `== "*"` 即可。
@@ -668,19 +673,23 @@ class TestBoundaries:
         """day-of-month 用 L 且 day-of-week 是 * → 合法"""
         p = CronParser("0 0 L * *")
         assert p.get_next(datetime(2026, 8, 1, 0, 0)) == datetime(2026, 8, 31, 0, 0)
+
+    def test_dow_mixed_standard_and_modifier_raises(self):
+        """day-of-week 标准值与 #/L 修饰符混用 → ValueError（避免静默丢弃标准值）"""
+        with pytest.raises(ValueError, match="不支持标准值与 #/L 修饰符混用"):
+            CronParser("0 9 ? * 1,5L")
 ```
 
-- [ ] **Step 2: 运行测试，确认通过**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py::TestBoundaries -v`
-Expected: 9 个全 PASS
+Expected: 10 个全 PASS
 
 > 注意 `test_hash_in_dom_raises`：`1#2` 在 day-of-month 字段，现在由 `__init__` 的 `elif "#" in dom_raw` 分支显式抛 `ValueError("# 修饰符不能出现在 day-of-month 字段")`，测试用 `pytest.raises(ValueError)` 无 `match` 即可通过。
 
 - [ ] **Step 3: 运行全部测试**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py -v`
-Expected: 37 个全 PASS
+Expected: 38 个全 PASS
 
 - [ ] **Step 4: 提交**
 
@@ -702,7 +711,7 @@ git commit -m "test(cron): 边界与互斥校验测试（无效修饰符/互斥�
 - [ ] **Step 1: 运行 scheduler 相关全部测试**
 
 Run: `cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_cron_parser.py tests/test_scheduler_service.py tests/test_scheduler_overdue.py tests/test_scheduler_group_push.py tests/test_scheduler_frontend_ready.py tests/test_scheduler_message_sse.py -v`
-Expected: 全部 PASS（cron_parser 测试 34 个 + 其余原有测试不破坏）
+Expected: 全部 PASS（cron_parser 测试 38 个 + 其余原有测试不破坏）
 
 - [ ] **Step 2: 如有失败，定位修复**
 
