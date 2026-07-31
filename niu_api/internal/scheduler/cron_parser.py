@@ -13,6 +13,8 @@ class CronParser:
         parts = cron_expr.strip().split()
         if len(parts) != 5:
             raise ValueError(f"Invalid cron expression: {cron_expr}")
+        # ? 等同于 *（Quartz 兼容）
+        parts = [p.replace("?", "*") for p in parts]
 
         self.minute = self._parse_field(parts[0], 0, 59)
         self.hour = self._parse_field(parts[1], 0, 23)
