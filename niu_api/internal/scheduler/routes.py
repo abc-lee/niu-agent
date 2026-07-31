@@ -70,6 +70,11 @@ async def create_task(request: CreateTaskRequest):
             "task_id": task_id,
             "message": f"✅ 已创建定时任务：{request.content}"
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.warning(f"[SCHEDULER] Create task validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error(f"[SCHEDULER] Create task error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -137,6 +142,11 @@ async def update_task(task_id: str, request: UpdateTaskRequest):
             "status": "success" if success else "error",
             "message": "✅ 任务已更新" if success else "❌ 任务不存在或已完成"
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.warning(f"[SCHEDULER] Update task validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error(f"[SCHEDULER] Update task error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e

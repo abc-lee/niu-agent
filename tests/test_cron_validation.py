@@ -167,3 +167,75 @@ class TestUpdateTaskCronValidation:
         assert task["content"] == "updated content"
         # cron_expr 保持不变
         assert task["cron_expr"] == "0 9 * * *"
+
+
+class TestApiValidationErrorMapping:
+    """API 路由把 ValueError 映射为 HTTP 400"""
+
+    def test_create_task_invalid_cron_returns_400(self, tmp_path):
+        """非法 cron_expr 创建任务返回 400 而非 500"""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from niu_api.internal.scheduler.routes import router
+
+        # 用 TestClient 直接测 router
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.include_router(router)
+
+        # mock get_store 返回真实 TaskStore（文件库）
+        store = TaskStore(str(tmp_path / "test.db"))
+        with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
+            client = TestClient(app)
+            response = client.post("/scheduler/tasks", json={
+                "content": "test",
+                "scheduled_at": "2026-08-01T09:00:00",
+                "is_recurring": True,
+                "cron_expr": "0 9 ? * 8L"
+            })
+        assert response.status_code == 400
+        assert "Invalid weekday" in response.json()["detail"]
+
+    def test_create_task_recurring_without_cron_returns_400(self, tmp_path):
+        """循环任务无 cron_expr 返回 400"""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+        from niu_api.internal.scheduler.routes import router
+
+        app = FastAPI()
+        app.include_router(router)
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
+            client = TestClient(app)
+            response = client.post("/scheduler/tasks", json={
+                "content": "test",
+                "scheduled_at": "2026-08-01T09:00:00",
+                "is_recurring": True,
+                "cron_expr": None
+            })
+        assert response.status_code == 400
+        assert "循环任务必须提供" in response.json()["detail"]
+
+    def test_create_task_valid_returns_200(self, tmp_path):
+        """合法任务返回 200"""
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from fastapi import FastAPI
+        from niu_api.internal.scheduler.routes import router
+
+        app = FastAPI()
+        app.include_router(router)
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
+            client = TestClient(app)
+            response = client.post("/scheduler/tasks", json={
+                "content": "test",
+                "scheduled_at": "2026-08-01T09:00:00",
+                "is_recurring": True,
+                "cron_expr": "0 9 ? * 1#2"
+            })
+        assert response.status_code == 200
+        assert response.json()["status"] == "success"
