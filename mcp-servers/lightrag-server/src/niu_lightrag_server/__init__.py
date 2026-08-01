@@ -1237,7 +1237,7 @@ def lightrag_insert_entity(
             if info.get("status") == "ok":
                 data = info.get("data")
                 if isinstance(data, dict):
-                    current_desc = str(data.get("graph_data", {}).get("description", ""))[:100]
+                    current_desc = str(data.get("graph_data", {}).get("description", "")).replace("<SEP>", " ")[:100]
             return {
                 "status": "ok",
                 "message": f"实体'{name}'已存在（当前描述：{current_desc}）。可选操作：\n"
