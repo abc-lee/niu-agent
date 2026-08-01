@@ -723,46 +723,33 @@ class NiuRunner:
         logger.info(f"Loaded {len(tools)} MCP tools (all hidden, accessed via disk)")
 
     def _extract_context_from_messages(self, messages: list) -> str:
-        """
-        从 agent_runner_loop 的 messages 列表提取上下文。
+        """从 messages 列表提取上下文用于向量检索。
 
-        和 _extract_context_from_history 保持一致：
-        - 只取 user/assistant 角色的 content（短截断）
-        - 不取 tool 角色内容（工具返回太长，干扰向量检索）
-        - 从 assistant 的 tool_calls 提取工具名（关键：让向量检索匹配同组工具）
-
-        Args:
-            messages: agent_runner_loop 的消息列表
-
-        Returns:
-            提取的上下文字符串
+        策略：最近2条消息，按行取第一行（完整语义单元），assistant 附带最多5个工具名。
         """
         context_parts = []
-
-        # 取最近3条消息（严格3条，不区分轮次）
-        recent = messages[-3:] if len(messages) > 3 else messages
+        recent = messages[-2:] if len(messages) > 2 else messages
 
         for msg in recent:
             role = msg.get("role", "")
             content = msg.get("content", "")
 
             if role == "user" and content:
-                # next_prompt（"工具调用成功。请向用户简洁汇报结果：{...}"）是 user 角色
-                # 包含大量工具返回 JSON，只取前 50 字符
                 if content.startswith("工具调用成功") or content.startswith("Tool call succeeded"):
-                    context_parts.append(f"{role}: {content[:50]}" + ("..." if len(content) > 50 else ""))
+                    line = content.split("\n")[0]
+                    if len(line) > 80:
+                        line = line[:80] + "..."
+                    context_parts.append(f"{role}: {line}")
                 else:
-                    context_parts.append(f"{role}: {content[:80]}" + ("..." if len(content) > 80 else ""))
+                    context_parts.append(f"{role}: {content.split(chr(10))[0]}")
             elif role == "assistant" and content:
-                context_parts.append(f"{role}: {content[:80]}" + ("..." if len(content) > 80 else ""))
+                context_parts.append(f"{role}: {content.split(chr(10))[0]}")
 
             if role == "assistant":
-                for tc in msg.get("tool_calls", [])[:3]:
-                    fn = tc.get("function", {})
-                    name = fn.get("name", "")
+                for tc in msg.get("tool_calls", [])[:5]:
+                    name = tc.get("function", {}).get("name", "")
                     if name:
-                        call_str = f"{name}({fn.get('arguments', '')})"[:300]
-                        context_parts.append(call_str)
+                        context_parts.append(f"tool: {name}")
 
         return "\n".join(context_parts) if context_parts else ""
 
@@ -1828,49 +1815,6 @@ class NiuRunner:
             )
         return self._brain_injector
 
-    def _extract_context_from_history(self, history: list | None, user_input: str) -> str:
-        """
-        从消息历史中提取上下文用于工具检索
-
-        Args:
-            history: 消息历史 [{"role": "user/assistant", "content": str}, ...]
-            user_input: 当前用户输入
-
-        Returns:
-            提取的上下文字符串
-        """
-        if not history:
-            return user_input
-
-        # 提取最近3条消息（严格3条，不区分轮次）
-        recent_messages = history[-3:] if len(history) > 3 else history
-
-        # 拼接内容
-        context_parts = []
-        for msg in recent_messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if content and role in ("user", "assistant"):
-                # "工具调用成功"类消息包含大量工具返回 JSON，只取前 50 字符
-                if role == "user" and (content.startswith("工具调用成功") or content.startswith("Tool call succeeded")):
-                    content = content[:50] + ("..." if len(content) > 50 else "")
-                elif len(content) > 80:
-                    content = content[:80] + "..."
-                context_parts.append(f"{role}: {content}")
-
-            if role == "assistant":
-                for tc in msg.get("tool_calls", [])[:3]:
-                    fn = tc.get("function", {})
-                    name = fn.get("name", "")
-                    if name:
-                        call_str = f"{name}({fn.get('arguments', '')})"[:300]
-                        context_parts.append(call_str)
-
-        # 添加当前用户输入
-        context_parts.append(f"user: {user_input}")
-
-        return "\n".join(context_parts)
-
     # ============== LightRAG Helper Methods ==============
 
     # 黑名单：这些实体类型/名称不应注入到主Agent system prompt
@@ -2059,6 +2003,71 @@ class NiuRunner:
         return qualified[:top_n]
 
     # ============== Dynamic Resource Injection ==============
+
+    def _traverse_from_hits(self, hits: list[str]) -> dict[str, dict]:
+        """从 hit entities 沿知识边1跳图遍历，收集邻居实体。
+
+        Args:
+            hits: 向量检索命中的 entity_name 列表
+
+        Returns:
+            {entity_name_lower: {description, entity_type, source, ...}}
+            source 为 "hit" 或 "neighbor:{关系关键词}"
+        """
+        from niu_api.internal.lightrag_manager import get_lightrag, graph_read_lock
+
+        rag = get_lightrag()
+        if rag is None:
+            return {}
+
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return {}
+
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None or nx_graph.number_of_nodes() == 0:
+            return {}
+
+        result: dict[str, dict] = {}
+
+        with graph_read_lock():
+            snapshot = nx_graph.copy()
+
+        for hit in hits:
+            hit_lower = hit.lower() if isinstance(hit, str) else hit
+            if hit_lower not in snapshot:
+                continue
+
+            node = snapshot.nodes.get(hit_lower, {})
+            if hit_lower not in result:
+                result[hit_lower] = {**node, "entity_name": hit_lower, "source": "hit"}
+
+            for neighbor in snapshot.neighbors(hit_lower):
+                if neighbor.endswith("脑区"):
+                    continue
+
+                edge_data = snapshot.get_edge_data(hit_lower, neighbor)
+                if not edge_data:
+                    continue
+
+                if isinstance(list(edge_data.values())[0], dict):
+                    edge_list = list(edge_data.values())
+                else:
+                    edge_list = [edge_data]
+
+                for ed in edge_list:
+                    kw = ed.get("keywords", "") if isinstance(ed, dict) else ""
+                    if kw and kw != "包含" and not kw.startswith("_session"):
+                        node2 = snapshot.nodes.get(neighbor, {})
+                        neighbor_lower = neighbor.lower()
+                        if neighbor_lower not in result:
+                            result[neighbor_lower] = {
+                                **node2,
+                                "entity_name": neighbor_lower,
+                                "source": f"neighbor:{kw}",
+                            }
+
+        return result
 
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
         """动态注入相关资源 — 向量检索 + 脑区过滤检索。
