@@ -381,23 +381,28 @@ class SkillSync:
                 current_hashes_lower = {k.lower() for k in current_hashes}
                 for entity in kg_skills:
                     entity_name = entity.get("entity_name", "")
-                    entity_source_id = entity.get("source_id", "")
-                    # 只清理 SkillSync 自己注入的 skill 实体（source_id 含 skill:// 段）
+                    entity_file_path = entity.get("file_path", "")
+                    # 只清理 SkillSync 自己注入的 skill 实体（file_path 含 "skill_sync" 段）
                     # 不碰从其他路径（文档入库/手动创建/MCP 工具）入库的 skill 实体
                     # 否则会误删用户知识图谱中合法记录的技能实体
-                    # 注意：source_id 可能是 "external<SEP>skill://foo" 合并形式（预删失败 + upsert），
-                    # startswith 会误判，必须按 <SEP> 拆分逐段判断
+                    # file_path 在 ainsert_custom_kg 路径中是覆盖写入，不会 <SEP> 合并
+                    # <SEP> 合并只发生在文档提取路径（_merge_nodes_then_upsert），
+                    # 当文档提取创建同名实体时 file_path 可能变为 "skill_sync<SEP>some_doc.md"
+                    # 行为变更：旧代码用 source_id 判断（失效，永不为 True），合并实体不会被清理。
+                    # 新代码用 any() 判断 file_path，合并形式含 skill_sync 段会被识别为 SkillSync owned。
+                    # 如果 skill 文件从磁盘删除，ghost 清理会删除整个实体节点。chunk 数据保留在 chunks_vdb
+                    # 不受影响。此场景罕见（skill 名与文档提取实体同名 + skill 被删除），设计上可接受。
                     is_skill_sync_owned = any(
-                        seg.strip().startswith("skill://")
-                        for seg in entity_source_id.split("<SEP>")
+                        seg.strip() == "skill_sync"
+                        for seg in entity_file_path.split("<SEP>")
                     )
                     if (entity_name
                             and is_skill_sync_owned
                             and entity_name.lower() not in current_hashes_lower
                             and entity_name not in step3_deleted):
-                        # 向量库中有但磁盘上不存在 → 幽灵 skill，删除
+                        # SkillSync 注入但磁盘上不存在 → 幽灵 skill，删除
                         if self._delete_skill_from_lightrag(entity_name):
-                            logger.info(f"[SkillSync] Cleaned ghost skill '{entity_name}' from KG (not on disk, source_id={entity_source_id})")
+                            logger.info(f"[SkillSync] Cleaned ghost skill '{entity_name}' from KG (not on disk, file_path=skill_sync)")
                             next_scan.pop(entity_name, None)
                             deleted += 1
                         else:
