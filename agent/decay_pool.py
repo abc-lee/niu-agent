@@ -61,7 +61,7 @@ class DecayPool:
         source: str,
         vector_score: float,
     ) -> None:
-        """注入新命中：score = vector_score（覆盖同名旧条目）。
+        """注入新命中：保留高分（不降分），低分时仅更新 entity_dict。
 
         如果实体已在池中且新分数低于现有分数，不覆盖（保留高分）。
         """
