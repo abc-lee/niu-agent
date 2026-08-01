@@ -739,6 +739,102 @@
     const personCount = document.getElementById('person-count');
     const noteCount = document.getElementById('note-count');
     const graphBtn = document.getElementById('graph-btn');
+    // ========== 斜杠命令下拉框 ==========
+    const slashDropdown = document.getElementById('slash-dropdown');
+    const slashItems = slashDropdown.querySelectorAll('.slash-dropdown-item');
+    let slashSelectedIndex = -1;  // 当前高亮项（-1 = 无）
+    let slashJustSelected = false;  // 哨兵：刚选中填入，防止 input 事件重新弹出
+
+    function showSlashDropdown() {
+      const value = userInput.value;
+      // 仅行首 / 时显示
+      if (!value.startsWith('/')) {
+        hideSlashDropdown();
+        return;
+      }
+      // 刚选中填入的命令，不重新弹出
+      if (slashJustSelected) {
+        slashJustSelected = false;
+        hideSlashDropdown();
+        return;
+      }
+      // 过滤匹配项
+      const query = value.split(/\s/)[0]; // 取第一个词（如 /c）
+      let matchCount = 0;
+      let firstMatchIndex = -1;
+      slashItems.forEach((item, i) => {
+        const cmd = item.dataset.cmd;
+        if (cmd.startsWith(query)) {
+          item.style.display = 'flex';
+          matchCount++;
+          if (firstMatchIndex === -1) firstMatchIndex = i;
+        } else {
+          item.style.display = 'none';
+        }
+      });
+      if (matchCount === 0) {
+        hideSlashDropdown();
+        return;
+      }
+      // 重置高亮到第一个匹配项
+      slashSelectedIndex = firstMatchIndex;
+      updateSlashSelection();
+      slashDropdown.classList.add('visible');
+    }
+
+    function hideSlashDropdown() {
+      slashDropdown.classList.remove('visible');
+      slashSelectedIndex = -1;
+    }
+
+    function updateSlashSelection() {
+      slashItems.forEach((item, i) => {
+        if (i === slashSelectedIndex) {
+          item.classList.add('selected');
+        } else {
+          item.classList.remove('selected');
+        }
+      });
+      // 滚动选中项到可见区域
+      const selected = slashItems[slashSelectedIndex];
+      if (selected && selected.style.display !== 'none') {
+        selected.scrollIntoView({ block: 'nearest' });
+      }
+    }
+    // 鼠标点击选择命令
+    slashItems.forEach(item => {
+      item.addEventListener('click', () => {
+        const cmd = item.dataset.cmd;
+        userInput.value = cmd;
+        userInput.setSelectionRange(cmd.length, cmd.length);
+        userInput.style.height = 'auto';
+        userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
+        slashJustSelected = true;
+        hideSlashDropdown();
+        userInput.focus();
+      });
+
+      // 鼠标悬停时更新高亮
+      item.addEventListener('mouseenter', () => {
+        const visibleItems = Array.from(slashItems).filter(
+          it => it.style.display !== 'none'
+        );
+        const idx = visibleItems.indexOf(item);
+        if (idx >= 0) {
+          slashSelectedIndex = Array.from(slashItems).indexOf(item);
+          updateSlashSelection();
+        }
+      });
+    });
+
+    // 点击外部关闭下拉框
+    document.addEventListener('click', (e) => {
+      if (slashDropdown.classList.contains('visible') &&
+          !slashDropdown.contains(e.target) &&
+          e.target !== userInput) {
+        hideSlashDropdown();
+      }
+    });
     let isProcessing = false;
 
     // ========== 拖拽窗口 ==========
@@ -872,11 +968,73 @@
     userInput.addEventListener('input', () => {
       userInput.style.height = 'auto';
       userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
+      showSlashDropdown();
     });
 
     userInput.addEventListener('keydown', (e) => {
       // 通知 spirit 用户正在活动（重置空闲计时器）
       window.electronAPI.notifyActivity();
+
+      // 下拉框可见时优先处理导航
+      if (slashDropdown.classList.contains('visible')) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          // 找下一个可见项
+          for (let i = slashSelectedIndex + 1; i < slashItems.length; i++) {
+            if (slashItems[i].style.display !== 'none') {
+              slashSelectedIndex = i;
+              updateSlashSelection();
+              break;
+            }
+          }
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          // 找上一个可见项
+          for (let i = slashSelectedIndex - 1; i >= 0; i--) {
+            if (slashItems[i].style.display !== 'none') {
+              slashSelectedIndex = i;
+              updateSlashSelection();
+              break;
+            }
+          }
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey && slashSelectedIndex >= 0) {
+          e.preventDefault();
+          // 选中项：填入输入框，关闭下拉框
+          const cmd = slashItems[slashSelectedIndex].dataset.cmd;
+          userInput.value = cmd;
+          userInput.setSelectionRange(cmd.length, cmd.length);
+          // 触发 input 事件调整高度
+          userInput.style.height = 'auto';
+          userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
+          slashJustSelected = true;
+          hideSlashDropdown();
+          userInput.focus();
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();  // 阻止冒泡到 document 的 ESC 监听器，避免同时触发 /stop
+          hideSlashDropdown();
+          return;
+        }
+        if (e.key === 'Tab' && slashSelectedIndex >= 0) {
+          e.preventDefault();
+          // Tab 也能选中
+          const cmd = slashItems[slashSelectedIndex].dataset.cmd;
+          userInput.value = cmd;
+          userInput.setSelectionRange(cmd.length, cmd.length);
+          userInput.style.height = 'auto';
+          userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
+          slashJustSelected = true;
+          hideSlashDropdown();
+          userInput.focus();
+          return;
+        }
+      }
 
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -981,6 +1139,7 @@
     }
 
     async function sendMessage() {
+      slashJustSelected = false;  // 重置哨兵：选中后回车执行，防止下次输入 / 时不弹出
       const text = userInput.value.trim();
       if (!text) { userInput.style.height = 'auto'; return; }
       sendBtn.disabled = true;
@@ -1889,11 +2048,18 @@
       }
     });
 
-    // Escape 键停止当前 Agent 工作（只在正在处理且停止按钮可见时响应）
+    // Escape 键：下拉框可见时优先关闭下拉框，否则停止当前 Agent 工作
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && isProcessing && stopBtn.style.display === 'flex') {
-        e.preventDefault();
-        window.electronAPI.sendMessage('/stop');
+      if (e.key === 'Escape') {
+        if (slashDropdown.classList.contains('visible')) {
+          e.preventDefault();
+          hideSlashDropdown();
+          return;
+        }
+        if (isProcessing && stopBtn.style.display === 'flex') {
+          e.preventDefault();
+          window.electronAPI.sendMessage('/stop');
+        }
       }
     });
 
