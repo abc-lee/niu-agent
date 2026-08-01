@@ -264,6 +264,10 @@ class DecayPool:
         qualified.sort(key=lambda e: e.score, reverse=True)
         return qualified[:top_n]
 
+    def get_entry(self, entity_name: str) -> DecayEntry | None:
+        """获取实体的衰减池条目（不存在返回 None）。"""
+        return self._entries.get(entity_name.lower())
+
     def clear(self) -> None:
         """清空衰减池（新会话时调用）。"""
         self._entries.clear()
@@ -517,42 +521,43 @@ git commit -m "refactor: context 提取改为2条消息按行+工具名，删除
 
         with graph_read_lock():
             snapshot = nx_graph.copy()
-            for hit in hits:
-                hit_lower = hit.lower() if isinstance(hit, str) else hit
-                if hit_lower not in snapshot:
+
+        for hit in hits:
+            hit_lower = hit.lower() if isinstance(hit, str) else hit
+            if hit_lower not in snapshot:
+                continue
+
+            # hit 实体本身
+            node = snapshot.nodes.get(hit_lower, {})
+            if hit_lower not in result:
+                result[hit_lower] = {**node, "entity_name": hit_lower, "source": "hit"}
+
+            # 沿知识边找邻居
+            for neighbor in snapshot.neighbors(hit_lower):
+                if neighbor.endswith("脑区"):
                     continue
 
-                # hit 实体本身
-                node = snapshot.nodes.get(hit_lower, {})
-                if hit_lower not in result:
-                    result[hit_lower] = {**node, "entity_name": hit_lower, "source": "hit"}
+                edge_data = snapshot.get_edge_data(hit_lower, neighbor)
+                if not edge_data:
+                    continue
 
-                # 沿知识边找邻居
-                for neighbor in snapshot.neighbors(hit_lower):
-                    if neighbor.endswith("脑区"):
-                        continue
+                # NetworkX: get_edge_data 返回 {key: attrs} (multigraph) 或 attrs (普通 graph)
+                if isinstance(list(edge_data.values())[0], dict):
+                    edge_list = list(edge_data.values())
+                else:
+                    edge_list = [edge_data]
 
-                    edge_data = snapshot.get_edge_data(hit_lower, neighbor)
-                    if not edge_data:
-                        continue
-
-                    # NetworkX: get_edge_data 返回 {key: attrs} (multigraph) 或 attrs (普通 graph)
-                    if isinstance(list(edge_data.values())[0], dict):
-                        edge_list = list(edge_data.values())
-                    else:
-                        edge_list = [edge_data]
-
-                    for ed in edge_list:
-                        kw = ed.get("keywords", "") if isinstance(ed, dict) else ""
-                        if kw and kw != "包含" and not kw.startswith("_session"):
-                            node2 = snapshot.nodes.get(neighbor, {})
-                            neighbor_lower = neighbor.lower()
-                            if neighbor_lower not in result:
-                                result[neighbor_lower] = {
-                                    **node2,
-                                    "entity_name": neighbor_lower,
-                                    "source": f"neighbor:{kw}",
-                                }
+                for ed in edge_list:
+                    kw = ed.get("keywords", "") if isinstance(ed, dict) else ""
+                    if kw and kw != "包含" and not kw.startswith("_session"):
+                        node2 = snapshot.nodes.get(neighbor, {})
+                        neighbor_lower = neighbor.lower()
+                        if neighbor_lower not in result:
+                            result[neighbor_lower] = {
+                                **node2,
+                                "entity_name": neighbor_lower,
+                                "source": f"neighbor:{kw}",
+                            }
 
         return result
 ```
@@ -732,7 +737,7 @@ from .decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD
                 # hit 实体已在 step 3 注入，跳过
                 continue
             # 如果实体已通过向量检索注入（source="vector"），不覆盖（避免 source 被改为 graph_traversal）
-            existing_entry = self._decay_pool._entries.get(entity_name)
+            existing_entry = self._decay_pool.get_entry(entity_name)
             if existing_entry is not None and existing_entry.source == "vector":
                 continue
             # 邻居实体：用 hit 分数 × 0.8
@@ -803,12 +808,12 @@ from .decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD
                 name = entry.entity_dict.get("entity_name", entry.entity_name)
                 if name in seen_names:
                     continue
-                # 黑名单过滤（与 _format_lightrag_entities_for_prompt 一致）
+                # 黑名单过滤（与 _format_lightrag_entities_for_prompt 一致，case-sensitive）
                 entity_type = (entry.entity_dict.get("entity_type") or "").lower()
                 if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
                     continue
-                name_lower = name.lower()
-                if name_lower in {n.lower() for n in self._INJECT_ENTITY_NAME_BLACKLIST}:
+                name = entry.entity_dict.get("entity_name", entry.entity_name)
+                if name in self._INJECT_ENTITY_NAME_BLACKLIST:
                     continue
                 seen_names.add(name)
                 desc = entry.entity_dict.get("description", "")
