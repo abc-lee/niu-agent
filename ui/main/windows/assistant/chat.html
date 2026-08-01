@@ -465,8 +465,8 @@
     }
 
     /* ========== 拖放上传 ========== */
-    .messages.drag-over {
-      background: rgba(120, 178, 190, 0.1);
+    .container.drag-over {
+      background-color: rgba(120, 178, 190, 0.1);
       outline: 2px dashed #78b2be;
     }
     /* ========== 状态气泡（工具调用实时显示） ========== */
@@ -1857,29 +1857,32 @@
     });
     
     // ========== 拖放文件/图片处理 ==========
+    // 绑定到整个 container：拖入窗口任意位置都生效
+    const container = document.querySelector('.container');
+
     // 阻止默认拖放行为
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-      messages.addEventListener(eventName, (e) => {
+      container.addEventListener(eventName, (e) => {
         e.preventDefault();
         e.stopPropagation();
       });
     });
-    
+
     // 拖入时添加视觉反馈
-    messages.addEventListener('dragenter', () => {
-      messages.classList.add('drag-over');
+    container.addEventListener('dragenter', () => {
+      container.classList.add('drag-over');
     });
-    
-    messages.addEventListener('dragleave', (e) => {
-      // 只有离开 messages 区域时才移除高亮
-      if (e.target === messages || !messages.contains(e.relatedTarget)) {
-        messages.classList.remove('drag-over');
+
+    container.addEventListener('dragleave', (e) => {
+      // 只有离开 container 区域时才移除高亮
+      if (e.target === container || !container.contains(e.relatedTarget)) {
+        container.classList.remove('drag-over');
       }
     });
-    
-    messages.addEventListener('drop', (e) => {
+
+    container.addEventListener('drop', (e) => {
       e.preventDefault();
-      messages.classList.remove('drag-over');
+      container.classList.remove('drag-over');
 
       // e.dataTransfer.files 在某些场景（拖入纯文本/URL）可能为 null，需防御
       const files = e.dataTransfer && e.dataTransfer.files;
