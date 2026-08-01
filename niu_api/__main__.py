@@ -52,12 +52,36 @@ else:
     _stdlib_logging.disable(_stdlib_logging.CRITICAL)  # 禁用 10+ 处散落的 stdlib logger
 
 
+def check_critical_versions() -> list[str]:
+    """检查强制依赖的版本号，返回不匹配的警告列表。"""
+    warnings = []
+
+    # lightrag-hku 必须是 1.4.19+（含 distance 字段返回）
+    try:
+        import lightrag
+        from packaging.version import Version
+        version = Version(getattr(lightrag, "__version__", "0"))
+        if version < Version("1.4.19"):
+            warnings.append(
+                f"lightrag-hku 版本过低 ({version})，需要 1.4.19+。"
+                f"动态知识注入功能可能降级。"
+            )
+    except ImportError:
+        warnings.append("lightrag-hku 未安装")
+    except Exception:
+        pass  # packaging 不可用时跳过版本检查（不阻止启动）
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler"""
     # Startup
     logger.info("Niu API Server starting...")
     logger.info(f"[PROCESS-START] PID={os.getpid()} PPID={os.getppid()} started")
+    # 0. 版本检查（不阻止启动，仅警告）
+    version_warnings = check_critical_versions()
+    for w in version_warnings:
+        logger.warning(f"[Version Check] {w}")
 
     # 1. Initialize session store
     set_preload_stage("正在初始化会话")
