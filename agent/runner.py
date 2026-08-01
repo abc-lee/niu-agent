@@ -1890,7 +1890,9 @@ class NiuRunner:
             if display_name in seen_names:
                 continue
             seen_names.add(display_name)
-            description = entity.get("description", "").replace("<SEP>", "\n")
+            description = (entity.get("description") or "").replace("<SEP>", "\n")
+            if len(description) > 500:
+                description = description[:500] + "..."
             if description:
                 lines.append(f"{added + 1}. **{display_name}**")
                 lines.append(f"   {description}")
@@ -2050,6 +2052,12 @@ class NiuRunner:
                 name = entity.get("entity_name", "")
                 if not name:
                     continue
+                # 黑名单预过滤：不在注入后才过滤，节省衰减池 slot
+                entity_type = (entity.get("entity_type") or "").lower()
+                if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
+                    continue
+                if name in self._INJECT_ENTITY_NAME_BLACKLIST:
+                    continue
                 # distance fallback: 旧版 lightrag-hku 没有 distance 字段
                 distance = entity.get("distance")
                 if distance is None:
@@ -2103,13 +2111,18 @@ class NiuRunner:
             existing_entry = self._decay_pool.get_entry(entity_name)
             if existing_entry is not None and existing_entry.source == "vector":
                 continue
+            # 黑名单预过滤（与向量路径一致）
+            entity_type = (node_data.get("entity_type") or "").lower()
+            if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
+                continue
+            if entity_name in self._INJECT_ENTITY_NAME_BLACKLIST:
+                continue
             # 邻居实体：用平均 hit 分数 × 0.8
             neighbor_score = 0.8 * (
                 sum(hit_distance_map.values()) / max(len(hit_distance_map), 1)
                 if hit_distance_map else 0.5
             )
 
-            entity_type = (node_data.get("entity_type") or "").lower()
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             category = LightRAGAdapter._ENTITY_TYPE_TO_CATEGORY.get(entity_type, "knowledge")
 
