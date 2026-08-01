@@ -123,7 +123,7 @@ def _clean_sep_in_query_result(result):
     """
     if not isinstance(result, dict):
         return result
-    data = result.get("data", result) if isinstance(result, dict) else result
+    data = result.get("data", result)
     if isinstance(data, dict):
         for key in ("entities", "relationships"):
             items = data.get(key, [])
@@ -136,6 +136,7 @@ def _clean_sep_in_query_result(result):
             if isinstance(item, dict) and "description" in item:
                 item["description"] = _clean_sep(item.get("description", ""))
     return result
+
 
 class LightRAGAdapter:
     """Query interface for LightRAG.
@@ -1442,7 +1443,7 @@ class LightRAGAdapter:
                             nodes.append({
                                 "entity_name": node_id,
                                 "entity_type": nt,
-                                "description": _clean_sep(node_data.get("description", "")),
+                                "description": _clean_description(node_data.get("description", ""), nt),
                                 "source_id": node_data.get("source_id", ""),
                                 "file_path": node_data.get("file_path", ""),
                             })
@@ -1466,7 +1467,7 @@ class LightRAGAdapter:
                         nodes.append({
                             "entity_name": node.id,
                             "entity_type": node.properties.get("entity_type", "other"),
-                            "description": _clean_sep(node.properties.get("description", "")),
+                            "description": _clean_description(node.properties.get("description", ""), node.properties.get("entity_type", "other")),
                             "source_id": node.properties.get("source_id", ""),
                             "file_path": node.properties.get("file_path", ""),
                         })
