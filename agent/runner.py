@@ -2062,16 +2062,12 @@ class NiuRunner:
                 distance = entity.get("distance")
                 if distance is None:
                     distance = 1.0 - (i / max(len(entities), 1)) * 0.5
-                # 真实 skill 的 source_id 含 "skill://" 段（由 sync.py 同步）
-                # 非真实 skill（文档入库时 LLM 提取的 entity_type=skill）降级为 knowledge
+                # 真实 skill 检查：~/.niu/skills/{name}.md 文件存在
+                # 非文件入库的 skill（文档入库时 LLM 提取的 entity_type=skill）降级为 knowledge
                 inject_category = category
                 if category == "skill":
-                    raw_sid = entity.get("source_id", "")
-                    is_real_skill = any(
-                        seg.strip().startswith("skill://")
-                        for seg in raw_sid.split("<SEP>")
-                    )
-                    if not is_real_skill:
+                    skill_path = Path.home() / ".niu" / "skills" / f"{name}.md"
+                    if not skill_path.exists():
                         inject_category = "knowledge"
                 self._decay_pool.inject(
                     entity_name=name,
@@ -2126,14 +2122,10 @@ class NiuRunner:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             category = LightRAGAdapter._ENTITY_TYPE_TO_CATEGORY.get(entity_type, "knowledge")
 
-            # 真实 skill 的 source_id 含 "skill://" 段（与向量检索路径一致校验）
+            # 真实 skill 检查：~/.niu/skills/{name}.md 文件存在（与向量检索路径一致）
             if category == "skill":
-                raw_sid = node_data.get("source_id", "")
-                is_real_skill = any(
-                    seg.strip().startswith("skill://")
-                    for seg in raw_sid.split("<SEP>")
-                )
-                if not is_real_skill:
+                skill_path = Path.home() / ".niu" / "skills" / f"{entity_name}.md"
+                if not skill_path.exists():
                     category = "knowledge"
 
             self._decay_pool.inject(
