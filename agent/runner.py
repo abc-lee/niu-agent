@@ -78,7 +78,9 @@ def _smart_truncate(content: str, min_len: int = 80, max_len: int = 200) -> str:
         return content[:para_break_pos]
     if comma_pos > 0:
         return content[:comma_pos]
-    return content[:search_end]
+    # 硬截断：截断到 max_len，加省略号标记
+    truncated = content[:search_end]
+    return truncated + "..." if search_end < len(content) else truncated
 
 def is_stop_requested() -> bool:
     """Check if stop has been requested."""
@@ -768,10 +770,9 @@ class NiuRunner:
 
             if role == "user" and content:
                 if content.startswith("工具调用成功") or content.startswith("Tool call succeeded"):
+                    # 取首行（摘要行），再用 _smart_truncate 断点截断
                     line = content.split("\n")[0]
-                    if len(line) > 80:
-                        line = line[:80] + "..."
-                    context_parts.append(f"{role}: {line}")
+                    context_parts.append(f"{role}: {_smart_truncate(line)}")
                 else:
                     context_parts.append(f"{role}: {_smart_truncate(content)}")
             elif role == "assistant" and content:
