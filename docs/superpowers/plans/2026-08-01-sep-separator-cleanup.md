@@ -52,7 +52,7 @@ LightRAG 的 `_merge_nodes_then_upsert` 方法在合并同一实体的多个来�
 > **R1 审查纠正**：原计划第 10 项声称 `get_entity_info`（L1655）已用 regex 清理。二次核对确认 L1655 实际在 `update_habit_confidence` 方法内，而非 `get_entity_info`（L1198）。`get_entity_info` 是纯透传，完全没处理 `<SEP>`。
 
 ### 替换策略
-- **brainregion 在 adapter 层跳过清理**：adapter 层的 `explore_node` 和 `get_graph_snapshot` 对 brainregion 类型的实体跳过 `_clean_sep`，保留 `<SEP>` 给 kg_api 层的 `_format_description` 解析 brain_meta 元数据。非 brainregion 类型和所有边的 description 在 adapter 层清理。这避免了双层清理导致的 brainregion 解析回归（R3 审查发现）。
+- **brainregion 感知格式化**：adapter 层新增 `_clean_description(desc, entity_type)` 函数，对 brainregion 实体做 `_parse_description` + `_format_summary_for_display` 完整解析（提取 brain_meta 元数据、格式化摘要），对非 brainregion 做 `<SEP>` → 空格替换。adapter 层统一返回干净描述，kg_api 和 MCP 两个消费者路径都受益（R3+R4 审查修复）。
 
 - **后端出口（API/adapter/MCP 返回前端或 LLM）**：`<SEP>` → 空格（`" "`）。用户明确要求"转换成一个空格"。空格在 JSON 序列化和前端 HTML 渲染中最安全，不会引入换行符导致的布局问题。
 - **Agent prompt 注入（runner.py）**：`<SEP>` → 换行（`\n`）。prompt 场景中换行更利于 LLM 分段阅读。已有的 `_format_lightrag_entities_for_prompt`（L1893）已用 `\n`，保持一致。
@@ -193,9 +193,9 @@ git commit -m "test: add <SEP> cleanup tests (red phase)"
 **Files:**
 - Modify: `niu_api/internal/lightrag_adapter.py` (模块顶部新增函数 + 10 处出口调用)
 
-- [ ] **Step 1: 在模块顶部（class LightRAGAdapter 定义之前）新增 `_clean_sep` 函数**
+- [ ] **Step 1: 在模块顶部新增 `_clean_sep` 和 `_clean_description` 函数**
 
-在 `class LightRAGAdapter:` 定义之前插入：
+在 `class LightRAGAdapter:` 定义之前插入两个函数：
 
 ```python
 def _clean_sep(desc: str | None) -> str:
@@ -214,22 +214,50 @@ def _clean_sep(desc: str | None) -> str:
     if not desc:
         return ""
     return desc.replace("<SEP>", " ")
+
+
+def _clean_description(desc: str | None, entity_type: str | None = None) -> str:
+    """Clean description for output, with brainregion-aware formatting.
+
+    For brainregion entities, the raw description contains brain_meta_*
+    metadata separated by <SEP>. This function parses and formats the
+    human-readable summary (same logic as kg_api._format_description),
+    so both API and MCP consumers receive clean descriptions.
+
+    For all other entity types (and edges), <SEP> is replaced with spaces.
+
+    Args:
+        desc: Raw description string that may contain <SEP>.
+        entity_type: Entity type string. If "brainregion", applies
+            brain_meta parsing before returning.
+
+    Returns:
+        Cleaned description string. None → empty string.
+    """
+    if not desc:
+        return ""
+    if entity_type and entity_type.lower() == "brainregion" and "<SEP>" in desc:
+        from niu_api.internal.region_manager import _format_summary_for_display, _parse_description
+        parsed = _parse_description(desc)
+        return _format_summary_for_display(parsed)
+    return desc.replace("<SEP>", " ")
 ```
 
-- [ ] **Step 2: `explore_node` — center、nodes、edges description 调用 `_clean_sep`（brainregion 跳过）**
+说明：`_clean_sep` 用于边描述（无 entity_type）和不需要 brainregion 解析的场景。`_clean_description` 用于实体节点描述，对 brainregion 做完整解析+格式化（提取 brain_meta 元数据、格式化摘要），对非 brainregion 做 `<SEP>` → 空格替换。这样 adapter 层统一返回干净描述，kg_api 和 MCP 两个消费者路径都能得到正确结果。
+```
 
-在 `explore_node` 方法中（约 L675-703），修改 3 处。
+- [ ] **Step 2: `explore_node` — center、nodes、edges description 调用 `_clean_description`**
 
-**重要**：brainregion 实体的 `<SEP>` 不能在 adapter 层清理——kg_api 层的 `_format_description` 依赖 `"<SEP>" in description` 来触发 `_parse_description` 解析 brain_meta 元数据。如果 adapter 层先清理了 `<SEP>`，brainregion 解析会静默失败。因此 brainregion 类型跳过 `_clean_sep`，由 kg_api 层的 `_format_description` 统一处理。
+在 `explore_node` 方法中（约 L675-703），修改 3 处。实体节点用 `_clean_description`（brainregion 感知），边用 `_clean_sep`。
 
 L679（center description）:
 ```python
-                    "description": _clean_sep(first_node.properties.get("description", "")) if first_node.properties.get("entity_type", "").lower() != "brainregion" else first_node.properties.get("description", ""),
+                    "description": _clean_description(first_node.properties.get("description", ""), first_node.properties.get("entity_type", "other")),
 ```
 
 L691（nodes description）:
 ```python
-                    "description": _clean_sep(node.properties.get("description", "")) if node.properties.get("entity_type", "").lower() != "brainregion" else node.properties.get("description", ""),
+                    "description": _clean_description(node.properties.get("description", ""), node.properties.get("entity_type", "other")),
 ```
 
 L703（edges description）:
@@ -237,15 +265,13 @@ L703（edges description）:
                     "description": _clean_sep(edge.properties.get("description", "")),
 ```
 
-说明：边的 description 总是清理（边没有 brainregion 类型）。只有 brainregion 实体节点的 description 跳过清理。
+- [ ] **Step 3: `get_graph_snapshot` — nodes 和 edges description 调用 `_clean_description`**
 
-- [ ] **Step 3: `get_graph_snapshot` — nodes 和 edges description 调用 `_clean_sep`（brainregion 跳过）**
-
-在 `get_graph_snapshot` 方法中（约 L977-994），同样对 brainregion 节点跳过清理：
+在 `get_graph_snapshot` 方法中（约 L977-994）：
 
 L981（nodes description）:
 ```python
-                    "description": _clean_sep(attrs.get("description", "")) if attrs.get("entity_type", "").lower() != "brainregion" else attrs.get("description", ""),
+                    "description": _clean_description(attrs.get("description", ""), attrs.get("entity_type", "other")),
 ```
 
 L994（edges description）:
@@ -686,6 +712,7 @@ git commit -m "test: verify <SEP> cleanup complete, no regressions"
 
 - `_clean_sep(desc: str | None) -> str` — 签名一致
 - `_clean_sep_in_query_result(result) -> result` — 递归清理 dict/list 中的 description
+- `_clean_description(desc: str | None, entity_type: str | None) -> str` — brainregion 感知格式化
 - `replace("<SEP>", " ")` — 后端 API/MCP 用空格
 - `replace("<SEP>", "\n")` — Agent prompt 注入用换行
 - `replace(/<SEP>/g, ' ')` — 前端 JS 用空格
@@ -716,10 +743,16 @@ git commit -m "test: verify <SEP> cleanup complete, no regressions"
 
 | R3 发现 | 严重程度 | 处理 | Task |
 |---------|---------|------|------|
-| adapter 层清理 `<SEP>` 导致 kg_api 层 brainregion 解析回归 | P1 | Task 2 Step 2/3 brainregion 跳过 `_clean_sep` | ✅ |
-| `test_brainregion_still_parsed` 未模拟 adapter 先清理的集成场景 | P2 | 保留单元测试（测的是 _format_description 本身），brainregion 跳过保证了运行时正确性 | ✅ |
+| adapter 层清理 `<SEP>` 导致 kg_api 层 brainregion 解析回归 | P1 | Task 2 Step 1 新增 `_clean_description` 函数（brainregion 感知格式化），Step 2/3 改用 `_clean_description` | ✅ |
+| `test_brainregion_still_parsed` 未模拟 adapter 先清理的集成场景 | P2 | 保留单元测试（测的是 _format_description 本身），adapter 层 _clean_description 保证运行时正确性 | ✅ |
 | R2 新增点（query/edit_entity/edit_relation）缺乏专门测试 | P3 | 机械式 replace，_clean_sep 已有 7 个测试覆盖 | ✅ |
 
-### 7. 单向清理原则
+### 7. R4 审查闭环
+
+| R4 发现 | 严重程度 | 处理 | Task |
+|---------|---------|------|------|
+| R3 brainregion 跳过导致 MCP lightrag_get_graph 路径泄漏 `<SEP>` | P1 | 改为 `_clean_description` 统一格式化，adapter 层返回干净描述，MCP 和 kg_api 路径都受益 | ✅ |
+
+### 8. 单向清理原则
 
 `<SEP>` 是 LightRAG 内部合并多来源实体描述的标准分隔符。本计划的所有修改都是**单向读取清理**——只在从知识图谱读取展示给用户/LLM 时清理 `<SEP>`，写入知识图谱时遵守 LightRAG 的 `<SEP>` 规矩。计划中没有任何修改入库写入路径（`ainsert_custom_kg`、`aedit_entity` 的 `updated_data` 参数、`create_entity`、`create_relation` 等）的代码。
