@@ -97,7 +97,7 @@ coloredlogs==15.0.1            # onnxruntime 日志彩色化
 humanfriendly==10.0            # coloredlogs 依赖
 
 # ============== 知识图谱（LightRAG） ==============
-lightrag-hku @ git+https://github.com/abc-lee/LightRAG.git
+lightrag-hku @ git+https://github.com/abc-lee/LightRAG.git@2dcbb31c8cff6385f8b7f0643a5a0ac5811b6c7b
 igraph==1.0.0
 leidenalg==0.11.0
 nano-vectordb==0.0.4.3
