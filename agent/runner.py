@@ -2113,6 +2113,16 @@ class NiuRunner:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             category = LightRAGAdapter._ENTITY_TYPE_TO_CATEGORY.get(entity_type, "knowledge")
 
+            # 真实 skill 的 source_id 含 "skill://" 段（与向量检索路径一致校验）
+            if category == "skill":
+                raw_sid = node_data.get("source_id", "")
+                is_real_skill = any(
+                    seg.strip().startswith("skill://")
+                    for seg in raw_sid.split("<SEP>")
+                )
+                if not is_real_skill:
+                    category = "knowledge"
+
             self._decay_pool.inject(
                 entity_name=entity_name,
                 entity_dict=node_data,
