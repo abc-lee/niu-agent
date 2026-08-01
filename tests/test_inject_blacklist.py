@@ -7,7 +7,7 @@ Bug 2: 脑区实体的 description 含 brain_meta_* 元数据（GraphML 限制�
 
 脑区信息不会丢失：
 - 脑区状态（激活/调暗/成员数）通过 format_region_map_only 独立注入
-- 脑区成员知识通过 search_within_region 检索
+- 脑区成员知识通过图遍历检索
 - 脑区 summary 已在脑区状态图中截取前 30 字符显示
 """
 import os
