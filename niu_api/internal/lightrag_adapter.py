@@ -1352,6 +1352,7 @@ class LightRAGAdapter:
                                 "entity_type": nt,
                                 "description": node_data.get("description", ""),
                                 "source_id": node_data.get("source_id", ""),
+                                "file_path": node_data.get("file_path", ""),
                             })
                             if len(nodes) >= limit:
                                 break
@@ -1375,6 +1376,7 @@ class LightRAGAdapter:
                             "entity_type": node.properties.get("entity_type", "other"),
                             "description": node.properties.get("description", ""),
                             "source_id": node.properties.get("source_id", ""),
+                            "file_path": node.properties.get("file_path", ""),
                         })
                     return {"status": "ok", "data": nodes}
             else:
