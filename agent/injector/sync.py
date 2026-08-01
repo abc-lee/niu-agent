@@ -572,6 +572,7 @@ class SkillSync:
                 "entity_type": "Skill",
                 "description": full_description,
                 "source_id": source_id,
+                "file_path": "skill_sync",
             }]
 
             relationships = [{
