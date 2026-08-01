@@ -2062,13 +2062,19 @@ class NiuRunner:
                 distance = entity.get("distance")
                 if distance is None:
                     distance = 1.0 - (i / max(len(entities), 1)) * 0.5
-                # 真实 skill 检查：~/.niu/skills/{name}.md 文件存在
-                # 非文件入库的 skill（文档入库时 LLM 提取的 entity_type=skill）降级为 knowledge
+                # 真实 skill 检查：file_path 含 "skill_sync" 段（由 sync.py 标记）
+                # 非 SkillSync 来源的 skill（文档入库 LLM 提取）降级为 knowledge
+                # fallback: file_path 不含 skill_sync 时，检查磁盘文件是否存在（兼容旧 skill）
                 inject_category = category
                 if category == "skill":
-                    skill_path = Path.home() / ".niu" / "skills" / f"{name}.md"
-                    if not skill_path.exists():
-                        inject_category = "knowledge"
+                    entity_file_path = entity.get("file_path", "")
+                    is_real_skill = any(
+                        seg.strip() == "skill_sync"
+                        for seg in entity_file_path.split("<SEP>")
+                    )
+                    if not is_real_skill:
+                        skill_path = Path.home() / ".niu" / "skills" / f"{name}.md"
+                        inject_category = "knowledge" if not skill_path.exists() else "skill"
                 self._decay_pool.inject(
                     entity_name=name,
                     entity_dict=entity,
@@ -2122,11 +2128,16 @@ class NiuRunner:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             category = LightRAGAdapter._ENTITY_TYPE_TO_CATEGORY.get(entity_type, "knowledge")
 
-            # 真实 skill 检查：~/.niu/skills/{name}.md 文件存在（与向量检索路径一致）
+            # 真实 skill 检查：file_path 含 "skill_sync" 段（与向量检索路径一致）
             if category == "skill":
-                skill_path = Path.home() / ".niu" / "skills" / f"{entity_name}.md"
-                if not skill_path.exists():
-                    category = "knowledge"
+                entity_file_path = node_data.get("file_path", "")
+                is_real_skill = any(
+                    seg.strip() == "skill_sync"
+                    for seg in entity_file_path.split("<SEP>")
+                )
+                if not is_real_skill:
+                    skill_path = Path.home() / ".niu" / "skills" / f"{entity_name}.md"
+                    category = "knowledge" if not skill_path.exists() else "skill"
 
             self._decay_pool.inject(
                 entity_name=entity_name,
