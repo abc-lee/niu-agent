@@ -722,8 +722,7 @@ class NiuRunner:
     def _extract_context_from_messages(self, messages: list) -> str:
         """从 messages 列表提取上下文用于向量检索。
 
-        策略：最近2条消息，内容 ≤80 字符全量放入，>80 字符只取第一行（按 \n 分割的第一段），
-        assistant 附带最多5个工具名。
+        策略：最近2条消息，按行取第一行（完整语义单元），assistant 附带最多5个工具名。
         """
         context_parts = []
         recent = messages[-2:] if len(messages) > 2 else messages
@@ -739,15 +738,9 @@ class NiuRunner:
                         line = line[:80] + "..."
                     context_parts.append(f"{role}: {line}")
                 else:
-                    if len(content) <= 80:
-                        context_parts.append(f"{role}: {content}")
-                    else:
-                        context_parts.append(f"{role}: {content.split(chr(10))[0]}")
-            elif role == "assistant" and content:
-                if len(content) <= 80:
-                    context_parts.append(f"{role}: {content}")
-                else:
                     context_parts.append(f"{role}: {content.split(chr(10))[0]}")
+            elif role == "assistant" and content:
+                context_parts.append(f"{role}: {content.split(chr(10))[0]}")
 
             if role == "assistant":
                 for tc in msg.get("tool_calls", [])[:5]:
