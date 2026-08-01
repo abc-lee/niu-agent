@@ -127,9 +127,9 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 
 | 平台 | 下载链接 | 说明 |
 |------|---------|------|
-| macOS（Intel CPU） | [Niu-0.1.2-mac-intel.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.1.2/Niu-0.1.2-mac-intel.dmg) | 适用于 Intel 芯片的 Mac（约 933 MB） |
+| macOS（Intel CPU） | [Niu-0.1.3-mac-intel.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.1.3/Niu-0.1.3-mac-intel.dmg) | 适用于 Intel 芯片的 Mac（约 934 MB） |
 | macOS（Apple M 系列） | _稍后提供_ | 后续发布 |
-| Windows x64 | [Niu-0.1.2-win-x64.7z](https://github.com/abc-lee/niu-agent/releases/download/v0.1.2/Niu-0.1.2-win-x64.7z) | 绿色安装，解压即用（约 570 MB） |
+| Windows x64 | [Niu-0.1.3-win-x64.7z](https://github.com/abc-lee/niu-agent/releases/download/v0.1.3/Niu-0.1.3-win-x64.7z) | 绿色安装，解压即用（约 570 MB） |
 
 **macOS 安装步骤**：
 
