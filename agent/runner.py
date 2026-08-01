@@ -189,7 +189,7 @@ from agent.tool_registry import get_registry  # noqa: E402
 from .generic.agent_loop import StreamEvent, agent_runner_loop  # noqa: E402
 from .handler import NiuHandler  # noqa: E402
 from .injector.sync import get_skill_sync  # noqa: E402
-from .decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD  # noqa: E402
+from .decay_pool import DecayPool  # noqa: E402
 
 
 def get_system_prompt() -> str:
@@ -817,7 +817,7 @@ class NiuRunner:
         # 1. 每轮重读 memory.json（关键：解决 Agent 写入后下轮 system prompt 不更新的 bug）
         memory_section = _load_memory_for_prompt()
 
-        # 2. 提取最近 3 条消息作为 context（保持原样，按用户原始设计）
+        # 2. 提取最近 2 条消息作为 context（保持原样，按用户原始设计）
         context = self._extract_context_from_messages(messages)
         injection, _ = self._inject_dynamic_resources(context)
 
@@ -2056,15 +2056,11 @@ class NiuRunner:
             existing_entry = self._decay_pool.get_entry(entity_name)
             if existing_entry is not None and existing_entry.source == "vector":
                 continue
-            # 邻居实体：用 hit 分数 × 0.8
-            own_distance = hit_distance_map.get(entity_name)
-            if own_distance is not None:
-                neighbor_score = own_distance
-            else:
-                neighbor_score = 0.8 * (
-                    sum(hit_distance_map.values()) / max(len(hit_distance_map), 1)
-                    if hit_distance_map else 0.5
-                )
+            # 邻居实体：用平均 hit 分数 × 0.8
+            neighbor_score = 0.8 * (
+                sum(hit_distance_map.values()) / max(len(hit_distance_map), 1)
+                if hit_distance_map else 0.5
+            )
 
             entity_type = (node_data.get("entity_type") or "").lower()
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
