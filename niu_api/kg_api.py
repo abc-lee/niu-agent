@@ -164,12 +164,18 @@ def _format_description(entity_type: str, description: str) -> str:
     For brainregion entities, the raw description contains brain_meta_*
     metadata that is meaningless to users. This function extracts and
     formats the human-readable summary.
+
+    For all other entity types, <SEP> separators (from LightRAG multi-source
+    merging) are replaced with spaces for clean display.
     """
+    if not description:
+        return ""
     if entity_type.lower() == "brainregion" and "<SEP>" in description:
         from niu_api.internal.region_manager import _format_summary_for_display, _parse_description
         parsed = _parse_description(description)
         return _format_summary_for_display(parsed)
-    return description
+    # Non-brainregion: clean <SEP> separators for display
+    return description.replace("<SEP>", " ")
 
 
 def _normalize_nodes(nodes: list) -> list:
@@ -712,13 +718,7 @@ def explore_node(request: ExploreRequest):
         c = result["center"]
         center_type = c.get("type", "other")
         center_desc = c.get("description", "")
-        if center_type.lower() == "brainregion" and "<SEP>" in center_desc:
-            from niu_api.internal.region_manager import (
-                _format_summary_for_display,
-                _parse_description,
-            )
-            parsed = _parse_description(center_desc)
-            center_desc = _format_summary_for_display(parsed)
+        center_desc = _format_description(center_type, center_desc)
         result["center"] = {
             "id": c.get("id", ""),
             "label": c.get("name", c.get("id", "")),
@@ -1149,7 +1149,7 @@ def search_entities(query: str = Query(default=""), top_k: int = Query(default=2
                     "id": name,
                     "name": name,
                     "entityType": ent.get("entity_type", ""),
-                    "description": (ent.get("description", "") or "")[:120],
+                    "description": ((ent.get("description", "") or "").replace("<SEP>", " "))[:120],
                 })
 
         return {"entities": entities[:top_k]}
