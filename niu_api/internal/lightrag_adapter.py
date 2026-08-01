@@ -69,6 +69,74 @@ def _filter_result_fields(result: dict, fields: list) -> dict:
     return result
 
 
+def _clean_sep(desc: str | None) -> str:
+    """Clean LightRAG <SEP> separator from entity/edge descriptions.
+
+    LightRAG merges multi-source descriptions using <SEP> as separator.
+    This replaces <SEP> with a space for clean display in API responses
+    and MCP tool results returned to the LLM.
+
+    Args:
+        desc: Raw description string that may contain <SEP>.
+
+    Returns:
+        Description with all <SEP> replaced by spaces. None → empty string.
+    """
+    if not desc:
+        return ""
+    return desc.replace("<SEP>", " ")
+
+
+def _clean_description(desc: str | None, entity_type: str | None = None) -> str:
+    """Clean description for output, with brainregion-aware formatting.
+
+    For brainregion entities, the raw description contains brain_meta_*
+    metadata separated by <SEP>. This function parses and formats the
+    human-readable summary (same logic as kg_api._format_description),
+    so both API and MCP consumers receive clean descriptions.
+
+    For all other entity types (and edges), <SEP> is replaced with spaces.
+
+    Args:
+        desc: Raw description string that may contain <SEP>.
+        entity_type: Entity type string. If "brainregion", applies
+            brain_meta parsing before returning.
+
+    Returns:
+        Cleaned description string. None → empty string.
+    """
+    if not desc:
+        return ""
+    if entity_type and entity_type.lower() == "brainregion" and "<SEP>" in desc:
+        from niu_api.internal.region_manager import _format_summary_for_display, _parse_description
+        parsed = _parse_description(desc)
+        return _format_summary_for_display(parsed)
+    return desc.replace("<SEP>", " ")
+
+
+def _clean_sep_in_query_result(result):
+    """Recursively clean <SEP> from description fields in query_data results.
+
+    LightRAG's aquery_data() returns structured results with entities,
+    relationships, and chunks — each potentially containing description
+    fields with <SEP> separators from multi-source merging.
+    """
+    if not isinstance(result, dict):
+        return result
+    data = result.get("data", result) if isinstance(result, dict) else result
+    if isinstance(data, dict):
+        for key in ("entities", "relationships"):
+            items = data.get(key, [])
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and "description" in item:
+                        item["description"] = _clean_sep(item.get("description", ""))
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and "description" in item:
+                item["description"] = _clean_sep(item.get("description", ""))
+    return result
+
 class LightRAGAdapter:
     """Query interface for LightRAG.
 
@@ -221,6 +289,9 @@ class LightRAGAdapter:
             if self._is_error_text(result):
                 logger.debug("LightRAG query() returned fail_response, filtering out")
                 return ""
+            # Clean <SEP> from context string (entity descriptions embedded by LightRAG)
+            if isinstance(result, str):
+                result = result.replace("<SEP>", " ")
             return result
 
         except Exception as e:
@@ -287,6 +358,7 @@ class LightRAGAdapter:
             result = call_async(rag.aquery_data(query, param=param), timeout=120)
             if fields:
                 result = _filter_result_fields(result, fields)
+            result = _clean_sep_in_query_result(result)
             return result
 
         except Exception as e:
@@ -676,7 +748,7 @@ class LightRAGAdapter:
                     "id": first_node.id,
                     "name": first_node.id,
                     "type": first_node.properties.get("entity_type", "other"),
-                    "description": first_node.properties.get("description", ""),
+                    "description": _clean_description(first_node.properties.get("description", ""), first_node.properties.get("entity_type", "other")),
                     "file_path": first_node.properties.get("file_path", ""),
                     "source_id": first_node.properties.get("source_id", ""),
                 }
@@ -688,7 +760,7 @@ class LightRAGAdapter:
                     "id": node.id,
                     "name": node.id,
                     "type": node.properties.get("entity_type", "other"),
-                    "description": node.properties.get("description", ""),
+                    "description": _clean_description(node.properties.get("description", ""), node.properties.get("entity_type", "other")),
                     "file_path": node.properties.get("file_path", ""),
                     "source_id": node.properties.get("source_id", ""),
                 })
@@ -700,7 +772,7 @@ class LightRAGAdapter:
                     "source": edge.source,
                     "target": edge.target,
                     "relation": edge.properties.get("keywords", ""),
-                    "description": edge.properties.get("description", ""),
+                    "description": _clean_sep(edge.properties.get("description", "")),
                     "weight": edge.properties.get("weight", 1.0),
                 })
 
@@ -795,7 +867,7 @@ class LightRAGAdapter:
                 node_data = self.explore_node(entity_name, depth=0)
                 for node in node_data.get("nodes", []):
                     if node.get("id") == entity_name or node.get("name") == entity_name:
-                        entity_desc = node.get("description", "")
+                        entity_desc = _clean_sep(node.get("description", ""))
                         break
             except Exception as e:
                 logger.debug(f"timeline_query: explore_node({entity_name}, depth=0) failed: {e}")
@@ -821,7 +893,7 @@ class LightRAGAdapter:
                 relation = edge.get("relation", "")
                 if relation not in timeline_edge_types:
                     continue
-                edge_desc = edge.get("description", "")
+                edge_desc = _clean_sep(edge.get("description", ""))
                 edge_timestamp = self._extract_timestamp(edge_desc)
                 target_name = edge.get("target", "")
                 if target_name and target_name not in seen_entities:
@@ -978,7 +1050,7 @@ class LightRAGAdapter:
                     "id": node_name,
                     "name": node_name,
                     "type": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _clean_description(attrs.get("description", ""), attrs.get("entity_type", "other")),
                     "file_path": attrs.get("file_path", ""),
                     "source_id": attrs.get("source_id", ""),
                 })
@@ -991,7 +1063,7 @@ class LightRAGAdapter:
                             "source": u,
                             "target": v,
                             "relation": data.get("keywords", ""),
-                            "description": data.get("description", ""),
+                            "description": _clean_sep(data.get("description", "")),
                             "weight": data.get("weight", 1.0),
                         })
             except RuntimeError:
@@ -1147,6 +1219,11 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
         try:
             result = call_async(rag.aedit_entity(entity_name, updated_data, allow_rename=allow_rename, allow_merge=allow_merge), timeout)
+            # Clean <SEP> from description in returned data
+            if isinstance(result, dict):
+                graph_data = result.get("graph_data", {})
+                if isinstance(graph_data, dict) and "description" in graph_data:
+                    graph_data["description"] = _clean_sep(graph_data.get("description", ""))
             return {"status": "ok", "data": result}
         except Exception as e:
             logger.error(f"LightRAG edit_entity failed: {e}")
@@ -1169,6 +1246,11 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
         try:
             result = call_async(rag.aedit_relation(source_entity, target_entity, updated_data), timeout)
+            # Clean <SEP> from description in returned data
+            if isinstance(result, dict):
+                graph_data = result.get("graph_data", {})
+                if isinstance(graph_data, dict) and "description" in graph_data:
+                    graph_data["description"] = _clean_sep(graph_data.get("description", ""))
             return {"status": "ok", "data": result}
         except Exception as e:
             logger.error(f"LightRAG edit_relation failed: {e}")
@@ -1211,6 +1293,11 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
         try:
             result = call_async(rag.get_entity_info(entity_name, include_vector_data), timeout)
+            # Clean <SEP> from description in result
+            if isinstance(result, dict):
+                graph_data = result.get("graph_data", {})
+                if isinstance(graph_data, dict) and "description" in graph_data:
+                    graph_data["description"] = _clean_sep(graph_data.get("description", ""))
             return {"status": "ok", "data": result}
         except Exception as e:
             logger.error(f"LightRAG get_entity_info failed: {e}")
@@ -1233,6 +1320,11 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
         try:
             result = call_async(rag.get_relation_info(source_entity, target_entity, include_vector_data), timeout)
+            # Clean <SEP> from description in result
+            if isinstance(result, dict):
+                graph_data = result.get("graph_data", {})
+                if isinstance(graph_data, dict) and "description" in graph_data:
+                    graph_data["description"] = _clean_sep(graph_data.get("description", ""))
             return {"status": "ok", "data": result}
         except Exception as e:
             logger.error(f"LightRAG get_relation_info failed: {e}")
@@ -1350,7 +1442,7 @@ class LightRAGAdapter:
                             nodes.append({
                                 "entity_name": node_id,
                                 "entity_type": nt,
-                                "description": node_data.get("description", ""),
+                                "description": _clean_sep(node_data.get("description", "")),
                                 "source_id": node_data.get("source_id", ""),
                                 "file_path": node_data.get("file_path", ""),
                             })
@@ -1374,7 +1466,7 @@ class LightRAGAdapter:
                         nodes.append({
                             "entity_name": node.id,
                             "entity_type": node.properties.get("entity_type", "other"),
-                            "description": node.properties.get("description", ""),
+                            "description": _clean_sep(node.properties.get("description", "")),
                             "source_id": node.properties.get("source_id", ""),
                             "file_path": node.properties.get("file_path", ""),
                         })
@@ -1522,7 +1614,7 @@ class LightRAGAdapter:
                         if nx_graph.has_node(resolved_target):
                             attrs = nx_graph.nodes[resolved_target]
                             target_type = attrs.get("entity_type", "other")
-                            target_desc = attrs.get("description", "")
+                            target_desc = _clean_sep(attrs.get("description", ""))
 
                 get_change_log().record_change("entity_merged", {
                     "source_ids": resolved_sources,
