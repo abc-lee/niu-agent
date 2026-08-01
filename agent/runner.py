@@ -2195,7 +2195,7 @@ class NiuRunner:
                 if name in self._INJECT_ENTITY_NAME_BLACKLIST:
                     continue
                 seen_names.add(name)
-                desc = entry.entity_dict.get("description", "")
+                desc = (entry.entity_dict.get("description") or "").replace("<SEP>", "\n")
                 source = entry.entity_dict.get("source", "")
                 if source == "hit":
                     source_label = "(hit)"
