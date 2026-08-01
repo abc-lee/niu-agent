@@ -71,6 +71,8 @@ def check_critical_versions() -> list[str]:
     except Exception:
         pass  # packaging 不可用时跳过版本检查（不阻止启动）
 
+    return warnings
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
