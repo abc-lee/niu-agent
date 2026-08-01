@@ -2163,6 +2163,8 @@ async def clear_chat() -> dict:
             if runner.handler:
                 runner.handler.reset_working_memory()
                 runner.handler._last_prompt_tokens = 0
+            # 清空衰减池（新会话开始）
+            runner._decay_pool.clear()
 
             # Note: LLM session history is managed by ContextManager,
             # which reloads from message store each call.

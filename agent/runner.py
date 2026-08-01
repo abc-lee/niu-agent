@@ -189,6 +189,7 @@ from agent.tool_registry import get_registry  # noqa: E402
 from .generic.agent_loop import StreamEvent, agent_runner_loop  # noqa: E402
 from .handler import NiuHandler  # noqa: E402
 from .injector.sync import get_skill_sync  # noqa: E402
+from .decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD  # noqa: E402
 
 
 def get_system_prompt() -> str:
@@ -630,12 +631,8 @@ class NiuRunner:
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
 
-        # Skill 计数器（两阶段 Top_K + 衰减算法）：name → score
-        # 跨轮维持状态，重启清零（纯内存）
-        self._skill_score_counter: dict[str, int] = {}
-        # entity dict 跨轮缓存：name → entity dict
-        # 与 counter 同步维护，未命中时仍可从此处取 entity dict 注入 prompt
-        self._skill_entity_cache: dict[str, dict] = {}
+        # Decay pool (Ebbinghaus forgetting curve)
+        self._decay_pool = DecayPool()
 
         # 注入 ask_agent callback（供内部 MCP Server 调用 LLM）
         _registry = get_registry()
@@ -1905,103 +1902,6 @@ class NiuRunner:
             + "\n".join(dir_lines)
         )
 
-    # ============== Skill Score Counter ==============
-
-    # 衰减算法常量
-    _SKILL_SCORE_MIN = 0          # 计数器下限
-    _SKILL_SCORE_MAX = 10         # 计数器上限（封顶）
-    _SKILL_SCORE_FIRST_HIT = 7    # 首次命中/低分命中直接置为此值
-    _SKILL_SCORE_HIT_INCREMENT = 1  # 已熟悉命中加分
-    _SKILL_SCORE_DECAY = 1        # 未命中衰减减分
-    _SKILL_SCORE_INJECT_THRESHOLD = 3  # 进入 prompt 的最低分门槛
-    _SKILL_INJECT_TOP_N = 5       # 第二阶段注入 prompt 的 skill 数量上限
-
-    @staticmethod
-    def _update_skill_counter(
-        counter: dict[str, int],
-        entity_cache: dict[str, dict],
-        candidate_entities: dict[str, dict],
-    ) -> None:
-        """按算法更新 skill 计数器 + entity dict 缓存。
-
-        算法（每轮执行顺序）：
-        1. 未命中衰减：所有计数器 > 0 且不在候选集合里的 skill，各 -1 分
-        2. 命中加分（已熟悉）：候选集合里计数器 ≥7 且 <10 的，+1 分（7 分走这条分支到 8）
-        3. 命中置位（新命中或低分）：候选集合里计数器 <7 的，直接置为 7（7 分不走这条分支）
-        4. entity dict 缓存更新：候选集合里的 skill 用本轮 entity dict 覆盖 cache
-        5. 清理 0 分项：删除 counter 字典里所有 ≤0 分的项，同时从 entity_cache 删除对应项
-
-        Args:
-            counter: 计数器 dict（会被原地修改），key=skill name, value=分数
-            entity_cache: entity dict 缓存（会被原地修改），key=skill name, value=entity dict
-            candidate_entities: 本轮向量库检索命中的 skill entity dict，key=skill name, value=entity dict
-        """
-        candidate_names = set(candidate_entities.keys())
-
-        # Step 1: 未命中衰减（counter 里已存在但不在 candidate 里的）
-        # 跳过空名 key（防御历史脏数据）
-        for name, score in list(counter.items()):
-            if not name:
-                continue
-            if name not in candidate_names and score > NiuRunner._SKILL_SCORE_MIN:
-                counter[name] = max(
-                    NiuRunner._SKILL_SCORE_MIN,
-                    score - NiuRunner._SKILL_SCORE_DECAY,
-                )
-
-        # Step 2 & 3: 命中加分或置位（跳过空名 candidate）
-        for name in candidate_names:
-            if not name:
-                continue
-            current = counter.get(name, NiuRunner._SKILL_SCORE_MIN)
-            if current < NiuRunner._SKILL_SCORE_FIRST_HIT:
-                # Step 3: 低于 7 分直接置 7（置位）
-                counter[name] = NiuRunner._SKILL_SCORE_FIRST_HIT
-            else:
-                # Step 2: ≥7 且 <10 加 +1 分（封顶 10）
-                counter[name] = min(
-                    NiuRunner._SKILL_SCORE_MAX,
-                    current + NiuRunner._SKILL_SCORE_HIT_INCREMENT,
-                )
-
-        # Step 4: entity dict 缓存更新（命中即用本轮最新 entity dict 覆盖 cache）
-        for name, entity in candidate_entities.items():
-            if name and entity:
-                entity_cache[name] = entity
-
-        # Step 5: 清理 ≤0 分项（counter 和 cache 同步清理，防止无界增长）
-        # 不能在迭代 counter.items() 时修改 dict，先收集再删
-        to_remove = [
-            name for name, score in counter.items()
-            if score <= NiuRunner._SKILL_SCORE_MIN or not name
-        ]
-        for name in to_remove:
-            counter.pop(name, None)
-            entity_cache.pop(name, None)
-
-    @staticmethod
-    def _select_top_skills(
-        counter: dict[str, int],
-        top_n: int,
-    ) -> list[tuple[str, int]]:
-        """第二阶段：从计数器筛 ≥3 分的 skill，按分数倒序取前 N 个。
-
-        分数相同时按 name 字典序兜底（保证排序稳定）。
-
-        Returns:
-            [(name, score), ...] 按分数倒序，最多 top_n 条
-        """
-        if top_n <= 0:
-            return []
-        qualified = [
-            (name, score)
-            for name, score in counter.items()
-            if name and score >= NiuRunner._SKILL_SCORE_INJECT_THRESHOLD
-        ]
-        # 排序：分数倒序，name 字典序正序兜底
-        qualified.sort(key=lambda x: (-x[1], x[0]))
-        return qualified[:top_n]
-
     # ============== Dynamic Resource Injection ==============
 
     def _traverse_from_hits(self, hits: list[str]) -> dict[str, dict]:
@@ -2070,18 +1970,17 @@ class NiuRunner:
         return result
 
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
-        """动态注入相关资源 — 向量检索 + 脑区过滤检索。
+        """动态注入相关资源 — 向量检索 + 图遍历 + Ebbinghaus 衰减池。
 
-        两条检索路径并行:
-        1. 全局向量检索 (search_multi_lightrag) — 语义最相关的 top_k 实体
-        2. 脑区内过滤检索 (search_within_region) — 激活脑区成员中语义最匹配的实体
-
-        Args:
-            context: 3条对话上下文
+        流程:
+        1. 脑区激活 (不变)
+        2. 全局向量检索
+        3. 衰减池维护 (先衰减旧实体，再注入新命中)
+        4. 衰减池注入：全局检索命中 (score=distance)
+        5. 图遍历 (从 hit entities 沿知识边1跳) → 衰减池注入 (score=hit×0.8)
+        6. 格式化注入 (脑区状态图 + skill + knowledge + 活跃脑区知识 + 习惯)
         """
-        # 0. Brain region activation
-        effective_query = context
-        keywords = [effective_query]
+        # 0. Brain region activation (不变)
         _brain_injector = None
         try:
             _brain_injector = self._get_brain_injector()
@@ -2090,7 +1989,7 @@ class NiuRunner:
         except Exception as e:
             logger.warning(f"Brain activation failed: {e}")
 
-        # 1. LightRAG 全局检索 — local + keywords = 0 LLM calls
+        # 1. LightRAG 全局检索
         lightrag_results: dict[str, list[dict]] = {}
         adapter = None
         try:
@@ -2100,64 +1999,90 @@ class NiuRunner:
                 from niu_api.internal.lightrag_adapter import LightRAGAdapter
                 adapter = LightRAGAdapter()
             lightrag_results = adapter.search_multi_lightrag(
-                effective_query, mode="local", top_k=10, keywords=keywords,
+                context, mode="local", top_k=10, keywords=[context],
             )
         except Exception as e:
             logger.warning(f"LightRAG retrieval failed: {e}")
 
-        # 2. 脑区内过滤检索 — 激活脑区成员范围内语义搜索
-        region_results: dict[str, list[dict]] = {"skill": [], "knowledge": [], "other": []}
-        try:
-            if _brain_injector is not None:
-                active_regions = _brain_injector.get_active_regions()
-                if active_regions:
-                    all_region_members = set()
-                    for region in active_regions:
-                        members = _brain_injector.get_members_of_region(region.region_id)
-                        all_region_members.update(members)
-                    if all_region_members:
-                        region_adapter = adapter
-                        if region_adapter is None:
-                            from niu_api.internal.lightrag_adapter import LightRAGAdapter
-                            region_adapter = LightRAGAdapter()
-                        region_results = region_adapter.search_within_region(
-                            effective_query,
-                            region_member_names=all_region_members,
-                            mode="local",
-                            top_k=10,
-                            keywords=keywords,
-                        )
-        except Exception as e:
-            logger.warning(f"Region-filtered search failed: {e}")
+        # 2. 衰减池维护（先衰减旧实体，再注入新命中）
+        self._decay_pool.decay()
 
-        # 3. interaction_habits（LightRAG + keywords）
-        interaction_habits: list[dict] = []
+        # 3. 衰减池注入：全局检索命中的实体
+        all_hits = []  # 用于图遍历
+        for category, entities in lightrag_results.items():
+            for i, entity in enumerate(entities):
+                name = entity.get("entity_name", "")
+                if not name:
+                    continue
+                # distance fallback: 旧版 lightrag-hku 没有 distance 字段
+                distance = entity.get("distance")
+                if distance is None:
+                    distance = 1.0 - (i / max(len(entities), 1)) * 0.5
+                self._decay_pool.inject(
+                    entity_name=name,
+                    entity_dict=entity,
+                    category=category,
+                    source="vector",
+                    vector_score=distance,
+                )
+                all_hits.append(name)
+
+        # 4. 图遍历：从 hit entities 沿知识边1跳
+        traversed: dict[str, dict] = {}
         try:
-            if self._brain_adapter is not None:
-                habit_adapter = self._brain_adapter
-            else:
-                from niu_api.internal.lightrag_adapter import LightRAGAdapter
-                habit_adapter = LightRAGAdapter()
-            interaction_habits = habit_adapter.search_interaction_habits(
-                query=effective_query, top_k=3, keywords=keywords,
-            )
+            if all_hits:
+                traversed = self._traverse_from_hits(all_hits)
         except Exception as e:
-            logger.debug(f"Interaction habits search failed (non-blocking): {e}")
+            logger.warning(f"Graph traversal failed: {e}")
+
+        # 图遍历结果注入衰减池
+        # 建立 entity_name -> distance 映射（从全局检索结果）
+        hit_distance_map: dict[str, float] = {}
+        for category, entities in lightrag_results.items():
+            for i, entity in enumerate(entities):
+                name = entity.get("entity_name", "")
+                if name:
+                    distance = entity.get("distance")
+                    if distance is None:
+                        distance = 1.0 - (i / max(len(entities), 1)) * 0.5
+                    hit_distance_map[name.lower()] = distance
+
+        for entity_name, node_data in traversed.items():
+            source = node_data.get("source", "")
+            if source == "hit":
+                # hit 实体已在 step 3 注入，跳过
+                continue
+            # 如果实体已通过向量检索注入（source="vector"），不覆盖
+            existing_entry = self._decay_pool.get_entry(entity_name)
+            if existing_entry is not None and existing_entry.source == "vector":
+                continue
+            # 邻居实体：用 hit 分数 × 0.8
+            own_distance = hit_distance_map.get(entity_name)
+            if own_distance is not None:
+                neighbor_score = own_distance
+            else:
+                neighbor_score = 0.8 * (
+                    sum(hit_distance_map.values()) / max(len(hit_distance_map), 1)
+                    if hit_distance_map else 0.5
+                )
+
+            entity_type = (node_data.get("entity_type") or "").lower()
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            category = LightRAGAdapter._ENTITY_TYPE_TO_CATEGORY.get(entity_type, "knowledge")
+
+            self._decay_pool.inject(
+                entity_name=entity_name,
+                entity_dict=node_data,
+                category=category,
+                source="graph_traversal",
+                vector_score=neighbor_score,
+            )
 
         # ============== Format & Inject ==============
-        parts = []
+        parts: list[str] = []
         seen_names: set[str] = set()
 
-        logger.debug(
-            f"Dynamic injection | "
-            f"Skills: {len(lightrag_results.get('skill', []))}, "
-            f"Knowledge: {len(lightrag_results.get('knowledge', []))}, "
-            f"Region skills: {len(region_results.get('skill', []))}, "
-            f"Region knowledge: {len(region_results.get('knowledge', []))}, "
-            f"Habits: {len(interaction_habits)}"
-        )
-
-        # Brain region status map (always inject)
+        # Brain region status map (不变)
         try:
             if _brain_injector is not None:
                 brain_context = _brain_injector.format_region_map_only()
@@ -2166,73 +2091,74 @@ class NiuRunner:
         except Exception as e:
             logger.warning(f"Brain region map injection failed: {e}")
 
-        # Skills (global vector search + 计数器两阶段 Top_K)
-        lightrag_skills = lightrag_results.get("skill", [])
-        region_skills = region_results.get("skill", [])
-        # 第一阶段：向量库已检索得候选集合（lightrag_skills + region_skills）
-        # 注意：region_skills 在前、lightrag_skills 在后，dict 推导式让 lightrag_skills 覆盖 region_skills
-        # （全局检索 top_k 更宽，数据更完整，优先级更高）
-        candidate_entities: dict[str, dict] = {
-            e["entity_name"]: e
-            for e in region_skills + lightrag_skills
-            if e.get("entity_name")  # 过滤缺 entity_name 的脏数据
-        }
-        # 计数器 + entity cache 同步更新
-        self._update_skill_counter(
-            self._skill_score_counter, self._skill_entity_cache, candidate_entities,
-        )
-
-        # 第二阶段：按计数器排序选 top N（从 cache 取 entity dict 注入）
-        top_skills = self._select_top_skills(
-            self._skill_score_counter, self._SKILL_INJECT_TOP_N,
-        )
-        # 从 cache 里按 top_skills 顺序挑出对应 entity dict
-        # 关键：本轮没命中的 skill 也能从 cache 取出（缓跨轮维持注入能力）
-        ordered_skill_entities = [
-            self._skill_entity_cache[name]
-            for name, _ in top_skills
-            if name in self._skill_entity_cache
-        ]
-        # _format_lightrag_entities_for_prompt 内部用 seen_names 去重
-        skills_text, seen_names = self._format_lightrag_entities_for_prompt(
-            ordered_skill_entities, "相关技能", seen_names,
-        )
-        if skills_text:
-            parts.append(skills_text)
-        logger.debug(
-            f"Skill injection: candidates={len(candidate_entities)}, "
-            f"top_selected={len(top_skills)}, injected={len(ordered_skill_entities)}"
-        )
-
-        # Knowledge (global vector search)
-        lightrag_knowledge = lightrag_results.get("knowledge", [])
-        knowledge_text, seen_names = self._format_lightrag_entities_for_prompt(
-            lightrag_knowledge, "参考知识", seen_names,
-        )
-        if knowledge_text:
-            parts.append(knowledge_text)
-
-        # Region-filtered knowledge (brain region semantic search, deduped with seen_names)
-        region_knowledge = region_results.get("knowledge", [])
-        # region_skills 已被计数器合并到"相关技能"段，这里只处理 knowledge
-        if region_knowledge:
-            region_text, seen_names = self._format_lightrag_entities_for_prompt(
-                region_knowledge, "活跃脑区知识", seen_names,
+        # Skills (从衰减池取 category=skill)
+        skill_entries = self._decay_pool.get_top_by_category("skill", 5)
+        if skill_entries:
+            skill_entities = [e.entity_dict for e in skill_entries]
+            skills_text, seen_names = self._format_lightrag_entities_for_prompt(
+                skill_entities, "相关技能", seen_names,
             )
-            if region_text:
-                parts.append(region_text)
+            if skills_text:
+                parts.append(skills_text)
+
+        # Knowledge (从衰减池取 category=knowledge)
+        knowledge_entries = self._decay_pool.get_top_by_category("knowledge", 10)
+        if knowledge_entries:
+            knowledge_entities = [e.entity_dict for e in knowledge_entries]
+            knowledge_text, seen_names = self._format_lightrag_entities_for_prompt(
+                knowledge_entities, "参考知识", seen_names,
+            )
+            if knowledge_text:
+                parts.append(knowledge_text)
+
+        # 活跃脑区知识 (从衰减池取 source=graph_traversal)
+        region_entries = self._decay_pool.get_top_by_source("graph_traversal", 5)
+        if region_entries:
+            region_lines: list[str] = []
+            for entry in region_entries:
+                name = entry.entity_dict.get("entity_name", entry.entity_name)
+                if name in seen_names:
+                    continue
+                # 黑名单过滤（与 _format_lightrag_entities_for_prompt 一致，case-sensitive）
+                entity_type = (entry.entity_dict.get("entity_type") or "").lower()
+                if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
+                    continue
+                if name in self._INJECT_ENTITY_NAME_BLACKLIST:
+                    continue
+                seen_names.add(name)
+                desc = entry.entity_dict.get("description", "")
+                source = entry.entity_dict.get("source", "")
+                if source == "hit":
+                    source_label = "(hit)"
+                elif source.startswith("neighbor:"):
+                    relation = source.split(":", 1)[1]
+                    source_label = f"(邻居: {relation})"
+                else:
+                    source_label = ""
+                desc_line = f"   {desc[:200]}" if desc else ""
+                region_lines.append(f"{len(region_lines)+1}. **{name}** {source_label}\n{desc_line}")
+            if region_lines:
+                parts.append("### [活跃脑区知识]\n" + "\n".join(region_lines))
                 parts.append(
                     "\n\n### [知识探索指引]\n"
                     "优先参考上述活跃脑区知识回答用户问题，脑区内容与你当前关注领域最相关。"
                 )
 
-        # Interaction habits (LightRAG)
-        if interaction_habits:
+        # Interaction habits (从衰减池取 category=interactionhabit)
+        habit_entries = self._decay_pool.get_top_by_category("interactionhabit", 3)
+        if habit_entries:
+            habit_entities = [e.entity_dict for e in habit_entries]
             habits_text, seen_names = self._format_lightrag_entities_for_prompt(
-                interaction_habits, "交互习惯", seen_names,
+                habit_entities, "交互习惯", seen_names,
             )
             if habits_text:
                 parts.append(habits_text)
+
+        logger.debug(
+            f"Dynamic injection | pool_size={len(self._decay_pool)}, "
+            f"skills={len(skill_entries)}, knowledge={len(knowledge_entries)}, "
+            f"region={len(region_entries)}, habits={len(habit_entries)}"
+        )
 
         injection = "\n".join(parts)
         if injection:
