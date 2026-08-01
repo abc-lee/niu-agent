@@ -308,6 +308,51 @@
       overflow-y: auto;
     }
     .input-area textarea:focus { border-color: #78b2be; }
+    .input-area { position: relative; }
+    /* ========== 斜杠命令下拉框 ========== */
+    .slash-dropdown {
+      display: none;
+      position: absolute;
+      bottom: 100%;
+      left: 12px;
+      right: 12px;
+      background: #faf8f0;
+      border: 2px dashed rgba(0,0,0,0.15);
+      border-radius: 4px;
+      box-shadow: 2px 2px 6px rgba(0,0,0,0.1);
+      z-index: 50;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: inherit;
+      font-size: 14px;
+    }
+    .slash-dropdown.visible { display: block; }
+    .slash-dropdown-item {
+      padding: 8px 14px;
+      cursor: pointer;
+      color: #000;
+      border-bottom: 1px dashed rgba(0,0,0,0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .slash-dropdown-item:last-child { border-bottom: none; }
+    .slash-dropdown-item.selected {
+      background: rgba(120, 178, 190, 0.2);
+    }
+    .slash-dropdown-item:hover {
+      background: rgba(120, 178, 190, 0.15);
+    }
+    .slash-dropdown-item .cmd-name {
+      font-weight: bold;
+      white-space: nowrap;
+    }
+    .slash-dropdown-item .cmd-desc {
+      color: #999;
+      font-size: 12px;
+      text-align: right;
+    }
     .input-area button {
       background: #a3f0c2;
       color: #000;
@@ -630,6 +675,20 @@
       <textarea id="user-input" placeholder="说点什么..." rows="1"></textarea>
       <button id="send-btn">发送</button>
       <button class="stop-btn" id="stop-btn" style="display:none;" title="停止生成 (/stop)">■</button>
+      <div class="slash-dropdown" id="slash-dropdown">
+        <div class="slash-dropdown-item" data-cmd="/clear">
+          <span class="cmd-name">/clear</span>
+          <span class="cmd-desc">清空当前会话，并停止所有正在进行的任务</span>
+        </div>
+        <div class="slash-dropdown-item" data-cmd="/new">
+          <span class="cmd-name">/new</span>
+          <span class="cmd-desc">新会话</span>
+        </div>
+        <div class="slash-dropdown-item" data-cmd="/stop">
+          <span class="cmd-name">/stop</span>
+          <span class="cmd-desc">停止任务（也可按 ESC）</span>
+        </div>
+      </div>
     </div>
     
     <div class="status-bar" id="status-bar">
