@@ -46,6 +46,40 @@ def clear_stop():
     _stop_requested.clear()
 
 
+
+# 截断断点字符集（按优先级）
+_SENTENCE_END_CHARS = set("。！？!?")
+_PARA_BREAK_CHARS = set("\n\r")
+_COMMA_CHARS = set("，,")
+
+
+def _smart_truncate(content: str, min_len: int = 80, max_len: int = 200) -> str:
+    """智能截断：≤min_len 全量返回，>min_len 从 min_len 往后找自然断点。
+
+    优先级：句末标点 > 段落换行 > 逗号 > 硬截断到 max_len。
+    """
+    if len(content) <= min_len:
+        return content
+
+    para_break_pos = -1
+    comma_pos = -1
+    search_end = min(len(content), max_len)
+
+    for i in range(min_len, search_end):
+        ch = content[i]
+        if ch in _SENTENCE_END_CHARS:
+            return content[: i + 1]
+        if para_break_pos < 0 and ch in _PARA_BREAK_CHARS:
+            para_break_pos = i + 1
+        if comma_pos < 0 and ch in _COMMA_CHARS:
+            comma_pos = i + 1
+
+    if para_break_pos > 0:
+        return content[:para_break_pos]
+    if comma_pos > 0:
+        return content[:comma_pos]
+    return content[:search_end]
+
 def is_stop_requested() -> bool:
     """Check if stop has been requested."""
     return _stop_requested.is_set()
@@ -722,7 +756,8 @@ class NiuRunner:
     def _extract_context_from_messages(self, messages: list) -> str:
         """从 messages 列表提取上下文用于向量检索。
 
-        策略：最近2条消息，按行取第一行（完整语义单元），assistant 附带最多5个工具名。
+        策略：最近2条消息，≤80字符全量放入，>80字符从80位置往后找自然断点
+        （优先句末标点→段落换行→逗号），最大200字符。assistant 附带最多5个工具名。
         """
         context_parts = []
         recent = messages[-2:] if len(messages) > 2 else messages
@@ -738,9 +773,9 @@ class NiuRunner:
                         line = line[:80] + "..."
                     context_parts.append(f"{role}: {line}")
                 else:
-                    context_parts.append(f"{role}: {content.split(chr(10))[0]}")
+                    context_parts.append(f"{role}: {_smart_truncate(content)}")
             elif role == "assistant" and content:
-                context_parts.append(f"{role}: {content.split(chr(10))[0]}")
+                context_parts.append(f"{role}: {_smart_truncate(content)}")
 
             if role == "assistant":
                 for tc in msg.get("tool_calls", [])[:5]:
