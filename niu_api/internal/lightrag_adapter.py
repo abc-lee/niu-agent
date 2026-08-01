@@ -344,7 +344,7 @@ class LightRAGAdapter:
         "tool": "knowledge",
         "knowledge": "knowledge",
         "concept": "knowledge",
-        "interactionhabit": "knowledge",
+        "interactionhabit": "interactionhabit",
         "person": "knowledge",
         "photo": "knowledge",
         "organization": "knowledge",
