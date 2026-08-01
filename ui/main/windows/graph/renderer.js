@@ -428,7 +428,7 @@ async function pollChangelog() {
             name: change.data.name || id,
             nodeType: 'Entity',
             entityType: change.data.type || 'other',
-            description: change.data.description || '',
+            description: (change.data.description || '').replace(/<SEP>/g, ' '),
             uri: change.data.file_path || '',
             source: change.data.source_id || '',
           });
@@ -504,7 +504,7 @@ async function pollChangelog() {
             existing.label = change.data.name || existing.label;
             existing.name = change.data.name || existing.name;
             existing.entityType = change.data.type || existing.entityType;
-            existing.description = change.data.description || existing.description;
+            existing.description = (change.data.description || existing.description || '').replace(/<SEP>/g, ' ');
           } else {
             currentData.nodes.push({
               id: targetId,
@@ -512,7 +512,7 @@ async function pollChangelog() {
               name: change.data.name || targetId,
               nodeType: 'Entity',
               entityType: change.data.type || 'other',
-              description: change.data.description || '',
+              description: (change.data.description || '').replace(/<SEP>/g, ' '),
             });
             existingIds.add(targetId);
           }
@@ -720,7 +720,8 @@ const showDetail = (nodeId) => {
     html += `<div class="detail-row"><span class="detail-label">实体类型：</span>${escapeHtml(orig.entityType)}</div>`;
   }
   if (orig.description) {
-    html += `<div class="detail-row"><span class="detail-label">描述：</span>${escapeHtml(orig.description)}</div>`;
+    const cleanDesc = orig.description.replace(/<SEP>/g, ' ');
+    html += `<div class="detail-row"><span class="detail-label">描述：</span>${escapeHtml(cleanDesc)}</div>`;
   }
   if (orig.source) {
     html += `<div class="detail-row"><span class="detail-label">来源：</span>${escapeHtml(orig.source)}</div>`;
