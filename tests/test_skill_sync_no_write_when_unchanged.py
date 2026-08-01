@@ -178,11 +178,10 @@ def test_scan_and_sync_ghost_cleanup_failure_writes(fake_skill_sync):
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=False), \
          mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
         # KG 里有 1 个 ghost skill（磁盘上不存在）
-        # source_id 必须含 skill:// 段才会被 SkillSync ghost 清理识别为自身注入实体
-        # （is_skill_sync_owned 按 <SEP> 拆分逐段判断 startswith("skill://")）
+        # file_path 含 "skill_sync" 段才会被 SkillSync ghost 清理识别为自身注入实体
         mock_adapter.return_value.list_entities.return_value = {
             "status": "ok",
-            "data": [{"entity_name": "ghost-skill", "source_id": "skill://ghost-skill"}]
+            "data": [{"entity_name": "ghost-skill", "entity_type": "Skill", "description": "test ghost", "file_path": "skill_sync", "source_id": "chunk-abc123"}]
         }
 
         added, updated, deleted = sync.scan_and_sync()
@@ -198,12 +197,12 @@ def test_scan_and_sync_ghost_cleanup_failure_writes(fake_skill_sync):
 
 
 def test_scan_and_sync_external_entity_not_cleaned(fake_skill_sync):
-    """核心修复目标：外部入库的 skill 实体（source_id 非 skill:// 前缀）不应被 ghost 清理误删
+    """核心修复目标：外部入库的 skill 实体（file_path 不含 skill_sync 段）不应被 ghost 清理误删
 
-    覆盖 SkillSync ghost 清理的 source_id 守卫逻辑（sync.py L387-390）：
-    is_skill_sync_owned = any(seg.strip().startswith("skill://") for seg in entity_source_id.split("<SEP>"))
-    只有 source_id 含 skill:// 段的实体才会被当 ghost 候选清理。
-    外部入库（文件路径 / 手动创建 / MCP 工具）的 skill 实体 source_id 不含 skill:// 段，
+    覆盖 SkillSync ghost 清理的 file_path 守卫逻辑（sync.py ghost 清理段）：
+    is_skill_sync_owned = any(seg.strip() == "skill_sync" for seg in entity_file_path.split("<SEP>"))
+    只有 file_path 含 skill_sync 段的实体才会被当 ghost 候选清理。
+    外部入库（文档解析 / 手动创建 / MCP 工具）的 skill 实体 file_path 不含 skill_sync 段，
     即使磁盘上无同名 .md，也不应被 SkillSync 误删。
     """
     sync, _ = fake_skill_sync
@@ -213,16 +212,18 @@ def test_scan_and_sync_external_entity_not_cleaned(fake_skill_sync):
          mock.patch.object(sync, "_sync_skill", return_value=True), \
          mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True) as mock_delete, \
          mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
-        # KG 里有 2 个外部入库的 skill 实体（磁盘上无同名 .md，但 source_id 非 skill:// 前缀）
-        # 1. file_path 形式（文档解析入库）
-        # 2. manual_creation 形式（用户/MCP 工具手动建）
-        # 3. 合并形式但无 skill:// 段（external<SEP>other_path）
+        # KG 里有 4 个外部入库的 skill 实体（磁盘上无同名 .md，但 file_path 不含 skill_sync 段）
+        # 1. file_path 形式（文档解析入库，file_path=custom_kg）
+        # 2. 手动创建形式（file_path=manual_creation）
+        # 3. file_path 为空（旧版本入库，无标记）
+        # 4. 合并形式（file_path=custom_kg<SEP>some_doc.md，不含 skill_sync 段）
         mock_adapter.return_value.list_entities.return_value = {
             "status": "ok",
             "data": [
-                {"entity_name": "external-doc-skill", "source_id": "/path/to/docs/skill.md"},
-                {"entity_name": "manual-skill", "source_id": "manual_creation"},
-                {"entity_name": "merged-external-skill", "source_id": "external<SEP>/other/path.md"},
+                {"entity_name": "external-doc-skill", "entity_type": "Skill", "description": "external", "file_path": "custom_kg", "source_id": "chunk-def456"},
+                {"entity_name": "manual-skill", "entity_type": "Skill", "description": "manual", "file_path": "manual_creation", "source_id": "chunk-ghi789"},
+                {"entity_name": "legacy-skill", "entity_type": "Skill", "description": "legacy", "file_path": "", "source_id": "chunk-jkl012"},
+                {"entity_name": "merged-external-skill", "entity_type": "Skill", "description": "merged", "file_path": "custom_kg<SEP>some_doc.md", "source_id": "chunk-mno345"},
             ]
         }
 
@@ -234,7 +235,7 @@ def test_scan_and_sync_external_entity_not_cleaned(fake_skill_sync):
     assert deleted == 0, \
         f"外部实体不应被算作 deleted，实际 deleted={deleted}"
     # 关键断言 3：外部实体名不被塞进 _last_scan（只有 SkillSync 自身注入的 ghost 失败才塞空值）
-    for name in ("external-doc-skill", "manual-skill", "merged-external-skill"):
+    for name in ("external-doc-skill", "manual-skill", "legacy-skill", "merged-external-skill"):
         assert name not in sync._last_scan, \
             f"外部实体 {name} 不应被塞进 _last_scan，实际 _last_scan={sync._last_scan!r}"
 
