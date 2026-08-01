@@ -16,6 +16,7 @@
     - niu_api.internal.lightrag_adapter.LightRAGAdapter.search_within_region
       member_set 构建 + filter_lambda 的 entity_name 查询
 """
+# NOTE: search_within_region 测试已废弃（该方法不再被 _inject_dynamic_resources 调用）。
 from unittest.mock import MagicMock
 
 import pytest
@@ -225,6 +226,7 @@ def test_region_activation_external_dict_query_case_insensitive():
 # ---------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="search_within_region 已废弃，_inject_dynamic_resources 改用图遍历")
 def test_search_within_region_member_set_is_lower():
     """search_within_region 的 member_set 应 lower 化，filter_lambda 查询也 lower，
     vdb 返回的 entity_name（已是 lower）能命中，大写也能命中。"""
@@ -259,6 +261,7 @@ def test_search_within_region_member_set_is_lower():
     assert "python" in entity_names
 
 
+@pytest.mark.skip(reason="search_within_region 已废弃，_inject_dynamic_resources 改用图遍历")
 def test_search_within_region_handles_none_entity_name():
     """filter_lambda 中 data.get('entity_name') 可能返回 None，不应 crash。"""
     adapter = LightRAGAdapter()

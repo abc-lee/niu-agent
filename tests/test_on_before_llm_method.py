@@ -22,9 +22,9 @@ def runner(monkeypatch):
     若未来 _inject_dynamic_resources 新增实例属性访问，需同步更新此 fixture。
     """
     runner = NiuRunner.__new__(NiuRunner)
-    # skill 计数器相关（_inject_dynamic_resources L2154-2167 访问）
-    runner._skill_score_counter = {}
-    runner._skill_entity_cache = {}
+    # Decay pool (Ebbinghaus forgetting curve) — _inject_dynamic_resources 访问
+    from agent.decay_pool import DecayPool
+    runner._decay_pool = DecayPool()
     # _assemble_system_message 访问（C2 修复：缺 dynamic_system_prefix 必跑 AttributeError）
     runner.default_model = "test-model"
     runner.static_system_prompt = "STATIC SYSTEM PROMPT"
@@ -68,8 +68,6 @@ def test_on_before_llm_modifies_messages_zero(runner):
 
     with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter:
         mock_adapter.return_value.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
-        mock_adapter.return_value.search_within_region.return_value = {"skill": [], "knowledge": [], "other": []}
-        mock_adapter.return_value.search_interaction_habits.return_value = []
         runner._brain_adapter = mock_adapter.return_value
 
         messages = [{"role": "system", "content": "old content"}, {"role": "user", "content": "hello"}]

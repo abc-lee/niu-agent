@@ -1,4 +1,7 @@
 # tests/test_skill_score_counter.py
+import pytest
+
+pytestmark = pytest.mark.skip(reason="Skill 计数器已废弃，改用 DecayPool")
 """Skill 计数器衰减注入单元测试。
 
 流程分三个阶段：前置 → _update_skill_counter（函数内 5 步）→ 后置。

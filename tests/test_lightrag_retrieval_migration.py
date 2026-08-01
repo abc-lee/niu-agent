@@ -341,8 +341,8 @@ class TestInjectDynamicResourcesUsesLightRAG:
             r = NiuRunner.__new__(NiuRunner)
             # 补齐 _inject_dynamic_resources 访问的实例属性
             # （NiuRunner.__new__ 绕过 __init__，属性未初始化）
-            r._skill_score_counter = {}
-            r._skill_entity_cache = {}
+            from agent.decay_pool import DecayPool
+            r._decay_pool = DecayPool()
             r._brain_adapter = None
             r._brain_ingester = None
             r._brain_region_mgr = None
@@ -386,7 +386,6 @@ class TestInjectDynamicResourcesUsesLightRAG:
              patch("niu_api.internal.region_injector.BrainContextInjector", side_effect=Exception("no region")):
             mock_adapter = MagicMock()
             mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
-            mock_adapter.search_interaction_habits.return_value = []
             mock_adapter_cls.return_value = mock_adapter
 
             runner._inject_dynamic_resources("test query")
@@ -394,20 +393,6 @@ class TestInjectDynamicResourcesUsesLightRAG:
             mock_adapter.search_multi_lightrag.assert_called_once()
             call_kwargs = mock_adapter.search_multi_lightrag.call_args
             assert call_kwargs[0][0] == "test query" or call_kwargs.kwargs.get("query") == "test query"
-
-    def test_calls_search_interaction_habits(self, runner):
-        """_inject_dynamic_resources must call LightRAGAdapter.search_interaction_habits."""
-        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls, \
-             patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")), \
-             patch("niu_api.internal.region_injector.BrainContextInjector", side_effect=Exception("no region")):
-            mock_adapter = MagicMock()
-            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
-            mock_adapter.search_interaction_habits.return_value = []
-            mock_adapter_cls.return_value = mock_adapter
-
-            runner._inject_dynamic_resources("test query")
-
-            mock_adapter.search_interaction_habits.assert_called_once()
 
     def test_brain_region_uses_lightrag_adapter(self, runner):
         """Brain region activation must use LightRAGAdapter (not vector_search)."""
@@ -419,7 +404,6 @@ class TestInjectDynamicResourcesUsesLightRAG:
              patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")):
             mock_adapter = MagicMock()
             mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
-            mock_adapter.search_interaction_habits.return_value = []
             mock_adapter_cls.return_value = mock_adapter
 
             mock_ingester = MagicMock()
@@ -455,7 +439,6 @@ class TestInjectDynamicResourcesUsesLightRAG:
              patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")):
             mock_adapter = MagicMock()
             mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
-            mock_adapter.search_interaction_habits.return_value = []
             mock_adapter_cls.return_value = mock_adapter
 
             runner._inject_dynamic_resources("test query")

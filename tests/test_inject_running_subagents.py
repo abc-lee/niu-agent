@@ -22,12 +22,9 @@ def test_inject_lists_running_async_subagents(monkeypatch):
         class _FakeAdapter:
             def search_multi_lightrag(self, *args, **kwargs):
                 return {}
-            def search_within_region(self, *args, **kwargs):
-                return {"skill": [], "knowledge": [], "other": []}
-            def search_interaction_habits(self, *args, **kwargs):
-                return []
         monkeypatch.setattr(lightrag_adapter_mod, "LightRAGAdapter", _FakeAdapter)
-
+        from agent.decay_pool import DecayPool
+        runner._decay_pool = DecayPool()
         injection, _ = runner._inject_dynamic_resources("测试上下文")
 
         assert "后台" in injection or "子 Agent" in injection
