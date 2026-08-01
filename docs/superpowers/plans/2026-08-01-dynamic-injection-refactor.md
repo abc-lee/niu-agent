@@ -22,6 +22,7 @@
 | `agent/runner.py` | 核心改造: DecayPool + context + 图遍历 + 废弃旧代码 |
 | `niu_api/internal/lightrag_adapter.py` | `_ENTITY_TYPE_TO_CATEGORY` 中 interactionhabit 改独立类别 |
 | `niu_api/__main__.py` | 新增 `check_critical_versions()` |
+| `niu_api/compat.py` | `/new` 命令处理中清空衰减池 |
 | `requirements.txt` | lightrag-hku 行锁 commit hash |
 | `tests/test_*.py` | 7个测试文件更新 |
 
@@ -171,7 +172,7 @@ Expected: 每个 entity 有 distance 数值（0~1），不再是 None。
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -189,7 +190,6 @@ class DecayEntry:
     category: str                  # skill / knowledge / interactionhabit
     source: str                    # "vector" / "graph_traversal"
     score: float                   # 当前 R 值
-    hit_turn: int                  # 最后一次命中的轮次
 
 
 class DecayPool:
@@ -197,18 +197,13 @@ class DecayPool:
 
     使用方法:
         pool = DecayPool()
-        pool.inject("定时任务", entity_dict, "knowledge", "vector", 0.65, turn=1)
+        pool.inject("定时任务", entity_dict, "knowledge", "vector", 0.65)
         pool.decay()  # 每轮调用
         top = pool.get_top_by_category("knowledge", top_n=10)
     """
 
     def __init__(self) -> None:
         self._entries: dict[str, DecayEntry] = {}  # key = entity_name (lowercase)
-        self._current_turn: int = 0
-
-    def set_turn(self, turn: int) -> None:
-        """设置当前轮次（由 _inject_dynamic_resources 调用）。"""
-        self._current_turn = turn
 
     def decay(self) -> None:
         """每轮衰减：所有 entry score *= DECAY_FACTOR，清理低于阈值的。"""
@@ -242,7 +237,6 @@ class DecayPool:
         if existing is not None and vector_score < existing.score:
             # 更新 entity_dict（内容可能变化）但不降分
             existing.entity_dict = entity_dict
-            existing.hit_turn = self._current_turn
             return
         self._entries[key] = DecayEntry(
             entity_name=entity_name,
@@ -250,7 +244,6 @@ class DecayPool:
             category=category,
             source=source,
             score=vector_score,
-            hit_turn=self._current_turn,
         )
 
     def get_top_by_category(self, category: str, top_n: int) -> list[DecayEntry]:
@@ -274,7 +267,6 @@ class DecayPool:
     def clear(self) -> None:
         """清空衰减池（新会话时调用）。"""
         self._entries.clear()
-        self._current_turn = 0
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -290,7 +282,6 @@ from agent.decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD
 import math
 
 pool = DecayPool()
-pool.set_turn(1)
 # 模拟命中：高分0.9, 中分0.65, 低分0.3
 pool.inject('high', {}, 'knowledge', 'vector', 0.9)
 pool.inject('mid', {}, 'knowledge', 'vector', 0.65)
@@ -525,22 +516,23 @@ git commit -m "refactor: context 提取改为2条消息按行+工具名，删除
         result: dict[str, dict] = {}
 
         with graph_read_lock():
+            snapshot = nx_graph.copy()
             for hit in hits:
                 hit_lower = hit.lower() if isinstance(hit, str) else hit
-                if hit_lower not in nx_graph:
+                if hit_lower not in snapshot:
                     continue
 
                 # hit 实体本身
-                node = nx_graph.nodes.get(hit_lower, {})
+                node = snapshot.nodes.get(hit_lower, {})
                 if hit_lower not in result:
                     result[hit_lower] = {**node, "entity_name": hit_lower, "source": "hit"}
 
                 # 沿知识边找邻居
-                for neighbor in nx_graph.neighbors(hit_lower):
+                for neighbor in snapshot.neighbors(hit_lower):
                     if neighbor.endswith("脑区"):
                         continue
 
-                    edge_data = nx_graph.get_edge_data(hit_lower, neighbor)
+                    edge_data = snapshot.get_edge_data(hit_lower, neighbor)
                     if not edge_data:
                         continue
 
@@ -553,7 +545,7 @@ git commit -m "refactor: context 提取改为2条消息按行+工具名，删除
                     for ed in edge_list:
                         kw = ed.get("keywords", "") if isinstance(ed, dict) else ""
                         if kw and kw != "包含" and not kw.startswith("_session"):
-                            node2 = nx_graph.nodes.get(neighbor, {})
+                            node2 = snapshot.nodes.get(neighbor, {})
                             neighbor_lower = neighbor.lower()
                             if neighbor_lower not in result:
                                 result[neighbor_lower] = {
@@ -623,6 +615,7 @@ git commit -m "feat: 新增 _traverse_from_hits 图遍历方法（1跳知识边�
 - Modify: `agent/runner.py:2063-2239`（`_inject_dynamic_resources`）
 - Modify: `agent/runner.py:620-630`（初始化 DecayPool 实例属性）
 - Modify: `agent/runner.py:1966-2059`（删除 Skill 计数器代码）
+- Modify: `niu_api/compat.py:2164`（`/new` 命令处理中清空衰减池）
 
 这是最大的 Task。分为几个子步骤。
 
@@ -738,6 +731,10 @@ from .decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD
             if source == "hit":
                 # hit 实体已在 step 3 注入，跳过
                 continue
+            # 如果实体已通过向量检索注入（source="vector"），不覆盖（避免 source 被改为 graph_traversal）
+            existing_entry = self._decay_pool._entries.get(entity_name)
+            if existing_entry is not None and existing_entry.source == "vector":
+                continue
             # 邻居实体：用 hit 分数 × 0.8
             # 如果邻居自己也有 distance（在全局检索结果中），用真实分数
             own_distance = hit_distance_map.get(entity_name)
@@ -806,6 +803,13 @@ from .decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD
                 name = entry.entity_dict.get("entity_name", entry.entity_name)
                 if name in seen_names:
                     continue
+                # 黑名单过滤（与 _format_lightrag_entities_for_prompt 一致）
+                entity_type = (entry.entity_dict.get("entity_type") or "").lower()
+                if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
+                    continue
+                name_lower = name.lower()
+                if name_lower in {n.lower() for n in self._INJECT_ENTITY_NAME_BLACKLIST}:
+                    continue
                 seen_names.add(name)
                 desc = entry.entity_dict.get("description", "")
                 source = entry.entity_dict.get("source", "")
@@ -855,15 +859,25 @@ from .decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD
         return injection, {}
 ```
 
-- [ ] **Step 4: 在 `reset_working_memory` / `/new` 命令时清空衰减池**
+- [ ] **Step 4: 在 `/new` 命令时清空衰减池**
 
-在 `agent/runner.py` 中搜索 `reset_working_memory` 方法（或 `/new` 命令处理），在其中添加：
+`reset_working_memory` 在 `agent/handler.py:620` 的 `NiuHandler` 上（不在 `runner.py`），由 `niu_api/compat.py:2164` 的 `/new` 命令处理逻辑调用。在该调用之后清空衰减池。
+
+在 `niu_api/compat.py` 约第 2164 行，`runner.handler.reset_working_memory()` 调用之后，添加 `runner._decay_pool.clear()`：
 
 ```python
-        self._decay_pool.clear()
+        runner = get_or_create_runner()
+        if runner:
+            # 重置 handler 的工作记忆
+            if runner.handler:
+                runner.handler.reset_working_memory()
+                runner.handler._last_prompt_tokens = 0
+
+            # 清空衰减池（新会话开始）
+            runner._decay_pool.clear()
 ```
 
-如果没有 `reset_working_memory` 方法，在 `chat` 方法的开头（新会话开始时）添加清空逻辑。
+**注意：** `runner` 是 `NiuRunner` 实例，`_decay_pool` 在 Task 6 Step 1 的 `__init__` 中初始化，此处直接访问即可。
 
 - [ ] **Step 5: 验证方法能被调用**
 
@@ -977,7 +991,21 @@ git commit -m "feat: 版本兼容 — 锁 commit hash + 启动时版本验证 + 
         mock_adapter.return_value.search_within_region.return_value = {"skill": [], "knowledge": [], "other": []}
 ```
 
-删除此行。同时确保 runner 的 `_decay_pool` 在测试中被正确 mock 或初始化。
+删除此行。同时在 fixture（第 24-27 行附近）中，删除 `_skill_score_counter` 和 `_skill_entity_cache` 的初始化，改为初始化 DecayPool：
+
+```python
+from agent.decay_pool import DecayPool
+
+runner = NiuRunner.__new__(NiuRunner)
+runner._decay_pool = DecayPool()  # 替代旧的 _skill_score_counter / _skill_entity_cache
+```
+
+即删除 fixture 中的以下两行：
+
+```python
+runner._skill_score_counter = {}
+runner._skill_entity_cache = {}
+```
 
 - [ ] **Step 2: 更新 test_inject_running_subagents.py**
 
@@ -1020,19 +1048,75 @@ runner._decay_pool = DecayPool()  # __new__ 不调 __init__，需手动初始化
 
 - [ ] **Step 5: 更新 test_skill_inject_integration.py**
 
-将第 42 行的 `search_within_region` mock 改为 DecayPool mock。Skill 计数器已废弃，测试改为验证 DecayPool 中 skill 类型的注入和 top_n。
+将第 42 行的 `search_within_region` mock 改为 DecayPool mock。Skill 计数器已废弃，测试改为验证 DecayPool 中 skill 类型的注入和 top_n。删除所有引用 `runner._skill_score_counter` 和 `runner._skill_entity_cache` 的旧测试函数（`test_inject_updates_counter_on_first_hit`、`test_inject_accumulates_counter_across_rounds`、`test_inject_decays_non_hit_skills`、`test_inject_second_stage_filters_below_3`、`test_inject_second_stage_sorts_by_score_desc`、`test_inject_uses_cache_when_not_hit_this_round`），替换为以下基于 DecayPool 的新测试。
 
-**重要：** 本文件同样使用 `NiuRunner.__new__(NiuRunner)` 绕过 `__init__`，必须手动初始化 `_decay_pool`：
+**重要：** 本文件同样使用 `NiuRunner.__new__(NiuRunner)` 绕过 `__init__`，必须手动初始化 `_decay_pool`。在 fixture（`runner`）中删除 `_skill_score_counter` 和 `_skill_entity_cache` 的初始化，改为：
 
 ```python
 from agent.decay_pool import DecayPool
 
-# ... 在创建 runner 的地方 ...
+# ... 在 fixture 中 ...
 runner = NiuRunner.__new__(NiuRunner)
-runner._decay_pool = DecayPool()  # __new__ 不调 __init__，需手动初始化
+runner._decay_pool = DecayPool()  # 替代旧的 _skill_score_counter / _skill_entity_cache
 ```
 
-否则 `_inject_dynamic_resources` 调用 `self._decay_pool.inject(...)` 时会抛 `AttributeError`。
+同时将 `_make_mock_adapter` 中的 `search_within_region` mock 删除（该方法不再被调用），保留 `search_multi_lightrag` mock。
+
+新增以下测试函数（替换旧的计数器测试）：
+
+```python
+def test_skill_injected_into_decay_pool_retrievable(runner):
+    """skill 实体被注入衰减池后能通过 get_top_by_category("skill") 检索到。"""
+    from agent.decay_pool import DecayPool
+
+    # 直接通过 DecayPool 注入 skill 实体
+    skill_entity = _make_skill_entity("定时任务管理", "管理定时任务的创建和查询")
+    skill_entity["distance"] = 0.85
+    runner._decay_pool.inject(
+        entity_name="定时任务管理",
+        entity_dict=skill_entity,
+        category="skill",
+        source="vector",
+        vector_score=0.85,
+    )
+
+    # 通过 get_top_by_category 检索
+    top_skills = runner._decay_pool.get_top_by_category("skill", 5)
+    assert len(top_skills) == 1, f"应有1个 skill，实际 {len(top_skills)}"
+    assert top_skills[0].entity_name == "定时任务管理"
+    assert top_skills[0].category == "skill"
+    assert top_skills[0].source == "vector"
+    assert abs(top_skills[0].score - 0.85) < 0.01
+
+
+def test_low_score_skill_evicted_after_decay(runner):
+    """衰减后低分 skill 被淘汰（低于 DECAY_THRESHOLD=0.35）。"""
+    from agent.decay_pool import DecayPool, DECAY_FACTOR, DECAY_THRESHOLD
+
+    # 注入一个中等分数的 skill（0.5），衰减几轮后应低于阈值被淘汰
+    skill_entity = _make_skill_entity("临时技能", "临时技能描述")
+    runner._decay_pool.inject(
+        entity_name="临时技能",
+        entity_dict=skill_entity,
+        category="skill",
+        source="vector",
+        vector_score=0.5,
+    )
+
+    # 验证初始在池中
+    assert len(runner._decay_pool.get_top_by_category("skill", 5)) == 1
+
+    # 衰减直到低于阈值
+    # 0.5 * 0.819^n < 0.35  =>  n >= 3 (0.5*0.819^3 = 0.275 < 0.35)
+    runner._decay_pool.decay()  # 0.5*0.819 = 0.410 >= 0.35, 仍在
+    assert len(runner._decay_pool.get_top_by_category("skill", 5)) == 1, "轮1后应仍在"
+
+    runner._decay_pool.decay()  # 0.5*0.819^2 = 0.336 < 0.35, 淘汰
+    top = runner._decay_pool.get_top_by_category("skill", 5)
+    assert len(top) == 0, f"轮2后应被淘汰，实际还有 {len(top)}"
+```
+
+**注意：** 如果 `_make_skill_entity` 的签名或返回格式与上述测试不匹配，按实际代码调整。关键是验证 DecayPool 的注入和检索行为，而非具体的 entity dict 结构。
 
 - [ ] **Step 6: 废弃 test_skill_score_counter.py**
 
@@ -1057,7 +1141,7 @@ from agent.decay_pool import DecayPool
 runner._decay_pool = DecayPool()  # 替代旧的 _skill_score_counter / _skill_entity_cache
 ```
 
-2. **移除 `search_interaction_habits` 断言**：`search_interaction_habits` 不再被 `_inject_dynamic_resources` 调用（改用 `search_multi_lightrag` + 图遍历）。删除所有对 `search_interaction_habits` 的 mock 和返回值断言。
+2. **删除 `test_calls_search_interaction_habits` 测试方法**：该测试的全部目的就是断言 `search_interaction_habits` 被调用，新代码不再调用它。**删除整个 `test_calls_search_interaction_habits` 方法**（约第 398-410 行）。同时删除其余测试中对 `search_interaction_habits` 的 mock 设置（`mock_adapter.search_interaction_habits.return_value = []`）和返回值断言。
 
 3. **更新 `_inject_dynamic_resources` 测试逻辑**：将原来验证 `search_within_region` / skill 计数器的断言改为验证 DecayPool 注入结果。例如：
 
