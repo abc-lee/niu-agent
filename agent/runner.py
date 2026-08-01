@@ -2054,10 +2054,21 @@ class NiuRunner:
                 distance = entity.get("distance")
                 if distance is None:
                     distance = 1.0 - (i / max(len(entities), 1)) * 0.5
+                # 真实 skill 的 source_id 含 "skill://" 段（由 sync.py 同步）
+                # 非真实 skill（文档入库时 LLM 提取的 entity_type=skill）降级为 knowledge
+                inject_category = category
+                if category == "skill":
+                    raw_sid = entity.get("source_id", "")
+                    is_real_skill = any(
+                        seg.strip().startswith("skill://")
+                        for seg in raw_sid.split("<SEP>")
+                    )
+                    if not is_real_skill:
+                        inject_category = "knowledge"
                 self._decay_pool.inject(
                     entity_name=name,
                     entity_dict=entity,
-                    category=category,
+                    category=inject_category,
                     source="vector",
                     vector_score=distance,
                 )
