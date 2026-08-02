@@ -43,11 +43,13 @@ dream-evolver 的工作流程是多任务串行：
 
 ### Part 1：全部子 Agent 开启 FIFO 保底
 
-将 `niu_api/compat.py` 中所有 9 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
+将 `niu_api/compat.py`（9 处）和 `agent/runner.py`（4 处）中所有 13 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
 
 `-1` 的含义（`agent/subagent.py` L800-801）：`fifo_threshold = int(context_window_tokens * 0.75)`，即首轮裁剪到 75%。
 
-涉及调用点（9 处）：
+涉及调用点：
+
+**compat.py 9 处**：
 
 | # | 行号 | 子 Agent | 模式 | history 传入 |
 |---|------|---------|------|-------------|
@@ -61,7 +63,16 @@ dream-evolver 的工作流程是多任务串行：
 | 8 | L3307 | journal-agent | force | 增量 history |
 | 9 | L3419 | context-manager | force | _force_history |
 
-注：L2971（context-manager 模式一）不传 history，FIFO 对它无实际效果，但统一改为 `-1` 保持一致性。
+**runner.py 4 处**（`_on_context_high_usage` 回调中的 force 压缩路径，R3 审查发现）：
+
+| # | 行号 | 子 Agent | 模式 | history 传入 |
+|---|------|---------|------|-------------|
+| 10 | L1238 | entity-extractor | force | 全量 history（排除 PROTECTED） |
+| 11 | L1277 | dream-evolver | force | 增量 history |
+| 12 | L1313 | journal-agent | force | 增量 history |
+| 13 | L1384 | context-manager | force | _force_history |
+
+注：L2971（context-manager 模式一）不传 history，FIFO 对它无实际效果，但统一改为 `-1` 保持一致性。runner.py 的 `_on_context_high_usage` 是主 Agent 上下文超 80% 时自动触发的 force 压缩路径，与 compat.py 的 `_tidy_context_impl(mode="force")` 是并行实现。
 
 ### Part 2：dream-evolver 拆分调用
 
@@ -128,8 +139,9 @@ for batch_idx, batch_msg_ids in enumerate(batches):
 
 #### 适用范围
 
-- sleep 路径 dream-evolver（L2477-2538）
-- force 路径 dream-evolver（L3203-3252）
+- sleep 路径 dream-evolver（compat.py L2477-2538）
+- force 路径 dream-evolver（compat.py L3203-3252）
+- force 路径 dream-evolver（runner.py L1264-1285，R3 审查发现）
 
 #### 不修改 dream-evolver 提示词
 
@@ -138,8 +150,8 @@ for batch_idx, batch_msg_ids in enumerate(batches):
 ## 修改文件
 
 | 文件 | 修改内容 |
-|------|---------|
 | `niu_api/compat.py` | 9 处 `context_fifo_threshold=0` → `-1`；新增 `_split_dream_batches` 函数；dream-evolver sleep/force 路径增加拆分逻辑 |
+| `agent/runner.py` | 4 处 `context_fifo_threshold=0` → `-1`；dream-evolver force 路径增加拆分逻辑 |
 | `tests/test_dream_split.py` | 新建，测试 `_split_dream_batches` 拆分算法 |
 
 ## 风险

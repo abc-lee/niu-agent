@@ -15,6 +15,7 @@
 | 文件 | 责任 | 操作 |
 |------|------|------|
 | `niu_api/compat.py` | 主 tidy 管线，子 Agent 调用编排 | 修改 |
+| `agent/runner.py` | 主 Agent 上下文超阈值回调中的 force 压缩路径 | 修改 |
 | `tests/test_dream_split.py` | 测试 `_split_dream_batches` 拆分算法 | 新建 |
 
 ---
@@ -292,12 +293,11 @@ git commit -m "feat: add _split_dream_batches function for dream-evolver message
 
 **Files:**
 - Modify: `niu_api/compat.py` (9 处)
+- Modify: `agent/runner.py` (4 处)
 
-这是纯机械替换，9 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
+这是纯机械替换，共 13 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
 
-- [ ] **Step 1: 替换所有 9 处 `context_fifo_threshold=0`**
-
-使用 `ast_edit` 或手动替换。9 处位置：
+**compat.py 9 处**：
 
 1. L2418: `context_fifo_threshold=0,  # 关闭 FIFO，保留完整上下文` → `context_fifo_threshold=-1,  # FIFO 保底：首轮裁剪到 75%，防止溢出死循环`
 2. L2499: `context_fifo_threshold=0,` → `context_fifo_threshold=-1,  # FIFO 保底`
@@ -311,6 +311,13 @@ git commit -m "feat: add _split_dream_batches function for dream-evolver message
 
 注意：有些行有注释 `# 关闭 FIFO，保留完整上下文` 或 `# 关闭FIFO，保留完整上下文`，需要一起替换。
 
+**runner.py 4 处**（R3 审查发现，_on_context_high_usage 回调中的 force 压缩路径）：
+
+10. L1238: `context_fifo_threshold=0,` → `context_fifo_threshold=-1,  # FIFO 保底`
+11. L1277: `context_fifo_threshold=0,` → `context_fifo_threshold=-1,  # FIFO 保底`
+12. L1313: `context_fifo_threshold=0,` → `context_fifo_threshold=-1,  # FIFO 保底`
+13. L1384: `context_fifo_threshold=0,` → `context_fifo_threshold=-1,  # FIFO 保底`
+
 - [ ] **Step 2: 验证替换数量**
 
 Run: `grep -c "context_fifo_threshold=0" niu_api/compat.py`
@@ -318,6 +325,12 @@ Expected: 0
 
 Run: `grep -c "context_fifo_threshold=-1" niu_api/compat.py`
 Expected: 9
+
+Run: `grep -c "context_fifo_threshold=0" agent/runner.py`
+Expected: 0
+
+Run: `grep -c "context_fifo_threshold=-1" agent/runner.py`
+Expected: 4
 
 - [ ] **Step 3: 运行已有测试确认无回归**
 
@@ -327,12 +340,13 @@ Expected: PASS (all tests)
 - [ ] **Step 4: 提交**
 
 ```bash
-git add niu_api/compat.py
+git add niu_api/compat.py agent/runner.py
 git commit -m "feat: enable FIFO fallback for all sub-agents (context_fifo_threshold 0→-1)
 
 Prevents overflow death-loop: if history exceeds context window on
 first turn, fallback truncation prunes to 75% before first LLM call.
-Proactive pruning (80% threshold) continues to protect subsequent turns."
+Proactive pruning (80% threshold) continues to protect subsequent turns.
+Covers both compat.py (9 sites) and runner.py (4 sites)."
 ```
 
 ---
@@ -604,19 +618,115 @@ of context window, split at user message boundary. Overflow on first
 batch breaks out of loop, cursor stays at last successful position."
 ```
 
----
+### Task 4b: runner.py dream-evolver force 路径增加拆分逻辑
 
+**Files:**
+- Modify: `agent/runner.py:1264-1285` (dream-evolver force 块)
+
+R3 审查发现 `agent/runner.py` 的 `_on_context_high_usage` 回调中有另一条 force 压缩路径，其中 dream-evolver 调用（L1264-1285）没有拆分逻辑。
+
+runner.py 的 dream-evolver force 路径使用 `_run_subagent_step` 封装（而非 compat.py 直接调用 `call_subagent_with_auto_answer`）。`_run_subagent_step` 内部处理了游标推进、校验、写入，支持多次调用。
+
+- [ ] **Step 1: 读取当前代码确认行号**
+
+确认 runner.py dream-evolver force 块从 L1264 开始。
+
+- [ ] **Step 2: 替换 dream-evolver force 块**
+
+将 L1264-1285（`if dream_force_msg_ids:` 块）替换为按批次循环调用的逻辑。
+
+**替换后**：
+```python
+            if dream_force_msg_ids:
+                dream_force_prompt = """对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+
+                # 拆分批次：增量消息 token 量过大时在 user 消息边界处拆成两批
+                _dream_context_window = _read_context_window_tokens()
+                _dream_batches = _split_dream_batches(
+                    db_messages, dream_force_msg_ids, msg_tokens, _dream_context_window
+                )
+                if len(_dream_batches) > 1:
+                    logger.info(f"[Runner] Force: dream-evolver splitting into {len(_dream_batches)} batches "
+                                f"(incremental tokens exceed 50% of {_dream_context_window})")
+
+                for _batch_idx, _batch_msg_ids in enumerate(_dream_batches):
+                    _batch_label = f"batch {_batch_idx+1}/{len(_dream_batches)}"
+                    # 构造本批 history
+                    _batch_id_set = set(_batch_msg_ids)
+                    _batch_incremental_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _batch_id_set]
+                    _batch_history, _batch_idx_to_id = _build_plain_history(_batch_incremental_msgs)
+
+                    logger.info(f"[Runner] Force: dream-evolver {_batch_label}: {len(_batch_msg_ids)} messages")
+                    _, new_dream_id = self._run_subagent_step(
+                        "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
+                        dream_force_prompt, llm_config, last_dream_evolve_id,
+                        _batch_msg_ids, "last_evolve_at",
+                        history=_batch_history, context_fifo_threshold=-1,
+                        idx_to_id=_batch_idx_to_id,
+                    )
+
+                    if is_stop_requested():
+                        logger.warning("[Runner] Stop requested, aborting force compress")
+                        return
+
+                    # _run_subagent_step 已处理 overflow（游标不动）和正常完成（游标推进）
+                    # 更新 last_dream_evolve_id 基准，使下一批回退到此游标
+                    last_dream_evolve_id = new_dream_id
+            else:
+                logger.info("[Runner] Force: dream-evolver no incremental messages")
+```
+
+**关键差异**：runner.py 用 `_run_subagent_step` 封装调用，它内部已处理 overflow（游标不动）和游标校验/写入。每批调用后更新 `last_dream_evolve_id = new_dream_id`（同 R1 P1 修复逻辑）。overflow 时 `_run_subagent_step` 返回 `last_cursor_id`（即传入的旧游标），`new_dream_id` 不变，下一批仍从旧游标开始——但 overflow 后应该 break 跳过后续批次。
+
+**注意**：`_run_subagent_step` 不返回 overflow 标志，需要从 result 文本判断。但 `_run_subagent_step` 内部已经处理了 overflow（游标不动），所以即使不 break，下一批也会从旧游标重新开始——这会导致重复处理。因此需要在循环内检测 overflow 并 break。
+
+修正：在 `_run_subagent_step` 调用后检查返回的 result 是否是 overflow：
+
+```python
+                    _batch_result, new_dream_id = self._run_subagent_step(
+                        "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
+                        dream_force_prompt, llm_config, last_dream_evolve_id,
+                        _batch_msg_ids, "last_evolve_at",
+                        history=_batch_history, context_fifo_threshold=-1,
+                        idx_to_id=_batch_idx_to_id,
+                    )
+                    if _is_subagent_overflow(_batch_result):
+                        logger.warning(f"[Runner] Force: dream-evolver {_batch_label} overflow, skipping remaining batches")
+                        break
+```
+
+需要在 runner.py 顶部确保 `_is_subagent_overflow` 和 `_split_dream_batches` 已导入（runner.py 已从 niu_api.compat 导入了 `_is_subagent_overflow`，需新增 `_split_dream_batches`）。
+
+- [ ] **Step 3: 运行已有测试确认无回归**
+
+Run: `python/bin/python -m pytest tests/test_protect_range.py tests/test_sep_cleanup.py tests/test_dream_split.py -v`
+Expected: PASS (all tests)
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add agent/runner.py
+git commit -m "feat: runner.py dream-evolver force path — split large incremental range into batches
+
+R3 review found runner.py _on_context_high_usage has a parallel force compress
+path missing dream-evolver split logic. Now uses _split_dream_batches same as
+compat.py. Overflow on first batch breaks out of loop."
+```
+
+---
 ### Task 5: 验证与清理
 
 - [ ] **Step 1: 确认没有遗漏的 `context_fifo_threshold=0`**
 
-Run: `grep -n "context_fifo_threshold=0" niu_api/compat.py`
+Run: `grep -rn "context_fifo_threshold=0" niu_api/compat.py agent/runner.py`
 Expected: 无输出（0 结果）
 
 - [ ] **Step 2: 确认 `_split_dream_batches` 被正确调用**
 
-Run: `grep -n "_split_dream_batches" niu_api/compat.py`
-Expected: 3 处（1 个定义 + sleep 调用 + force 调用）
+Run: `grep -rn "_split_dream_batches" niu_api/compat.py agent/runner.py`
+Expected: compat.py 3 处（1 个定义 + sleep 调用 + force 调用）+ runner.py 1 处（force 调用）= 4 处
 
 - [ ] **Step 3: 运行全部测试**
 
