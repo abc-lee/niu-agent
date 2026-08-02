@@ -1399,7 +1399,7 @@ class NiuRunner:
             # 同步实现：用 self._sync_delete_messages / self._sync_update_message，不调 async _emergency_clear
             if result == "COMPACT_TRUNCATED":
                 logger.warning("[Compact] runner.py force output truncated, triggering emergency clear")
-                from niu_api.compat import _find_protected_range, _read_protect_recent_count
+                from niu_api.compat import _find_protected_range
                 _force_id_set = set(_force_msg_ids)
                 _force_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _force_id_set]
                 _protect_n = _read_protect_recent_count()
@@ -1420,7 +1420,7 @@ class NiuRunner:
                     content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
                 )
 
-                logger.warning(f"[Compact] Runner emergency cleared: deleted {len(delete_ids)} msgs, kept recent 10")
+                logger.warning(f"[Compact] Runner emergency cleared: deleted {len(delete_ids)} msgs, kept recent {len(_force_msg_ids) - _protect_start}")
                 return {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
 
             # 正常返回，剥离 <analysis> 草稿块（在解析前）

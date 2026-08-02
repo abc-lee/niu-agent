@@ -354,10 +354,6 @@ def _find_protected_range(messages, min_protect_count: int) -> int:
             break
         # if not found_user and role != "user", continue scanning (skip assistant/tool)
 
-    if not found_user:
-        # No user message found at or above idx_N -> fall back to idx_N
-        return idx_N
-
     return idx_user
 
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
@@ -894,8 +890,7 @@ async def _emergency_clear(
     await store.delete_messages_by_ids(delete_ids)
 
     logger.warning(
-        f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, "
-        f"kept recent {protect_recent_count}, marked oldest ({oldest_kept_id}) as lost-summary"
+        f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, kept recent {len(msg_ids) - _protect_start}, marked oldest ({oldest_kept_id}) as lost-summary"
     )
     return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
 
@@ -2708,7 +2703,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
             new_compress_id = last_compress_id
             if compress_msg_ids and not _skip_compress:
-                # 构建保护消息 UUID 列表（只含 user/assistant 消息，不含 tool 输出）
+                # 构建保护消息 UUID 列表（含所有消息类型：user/assistant/tool，从 protect_start 到末尾）
                 # 直接从完整 messages 列表计算，不依赖截断后的 compress_msg_ids
                 # 这样即使截断移除了第三份（近期）消息，受保护消息的 ID 仍然完整
                 _protect_start = _find_protected_range(messages, protect_recent_count)
