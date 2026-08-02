@@ -43,11 +43,11 @@ dream-evolver 的工作流程是多任务串行：
 
 ### Part 1：全部子 Agent 开启 FIFO 保底
 
-将 `niu_api/compat.py` 中所有 10 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
+将 `niu_api/compat.py` 中所有 9 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
 
 `-1` 的含义（`agent/subagent.py` L800-801）：`fifo_threshold = int(context_window_tokens * 0.75)`，即首轮裁剪到 75%。
 
-涉及调用点（10 处）：
+涉及调用点（9 处）：
 
 | # | 行号 | 子 Agent | 模式 | history 传入 |
 |---|------|---------|------|-------------|
@@ -139,7 +139,7 @@ for batch_idx, batch_msg_ids in enumerate(batches):
 
 | 文件 | 修改内容 |
 |------|---------|
-| `niu_api/compat.py` | 10 处 `context_fifo_threshold=0` → `-1`；新增 `_split_dream_batches` 函数；dream-evolver sleep/force 路径增加拆分逻辑 |
+| `niu_api/compat.py` | 9 处 `context_fifo_threshold=0` → `-1`；新增 `_split_dream_batches` 函数；dream-evolver sleep/force 路径增加拆分逻辑 |
 | `tests/test_dream_split.py` | 新建，测试 `_split_dream_batches` 拆分算法 |
 
 ## 风险

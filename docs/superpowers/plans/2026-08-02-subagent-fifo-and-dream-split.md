@@ -4,7 +4,7 @@
 
 **Goal:** 为所有子 Agent 开启 FIFO 保底防止溢出死循环，并在 dream-evolver 增量消息 token 量过大时拆分成两批调用。
 
-**Architecture:** Part 1 将 10 处 `context_fifo_threshold=0` 改为 `-1`（开启 FIFO fallback truncation）。Part 2 新增 `_split_dream_batches` 函数在 user 消息边界处拆分 dream-evolver 的增量消息，将 dream-evolver 的 sleep/force 路径从单次调用改为按批次循环调用。
+**Architecture:** Part 1 将 9 处 `context_fifo_threshold=0` 改为 `-1`（开启 FIFO fallback truncation）。Part 2 新增 `_split_dream_batches` 函数在 user 消息边界处拆分 dream-evolver 的增量消息，将 dream-evolver 的 sleep/force 路径从单次调用改为按批次循环调用。
 
 **Tech Stack:** Python 3.11+, pytest, niu_api/compat.py, agent/generic/agent_loop.py
 
@@ -291,13 +291,13 @@ git commit -m "feat: add _split_dream_batches function for dream-evolver message
 ### Task 2: 全部子 Agent 开启 FIFO（`context_fifo_threshold=0` → `-1`）
 
 **Files:**
-- Modify: `niu_api/compat.py` (10 处)
+- Modify: `niu_api/compat.py` (9 处)
 
-这是纯机械替换，10 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
+这是纯机械替换，9 处 `context_fifo_threshold=0` 改为 `context_fifo_threshold=-1`。
 
-- [ ] **Step 1: 替换所有 10 处 `context_fifo_threshold=0`**
+- [ ] **Step 1: 替换所有 9 处 `context_fifo_threshold=0`**
 
-使用 `ast_edit` 或手动替换。10 处位置：
+使用 `ast_edit` 或手动替换。9 处位置：
 
 1. L2418: `context_fifo_threshold=0,  # 关闭 FIFO，保留完整上下文` → `context_fifo_threshold=-1,  # FIFO 保底：首轮裁剪到 75%，防止溢出死循环`
 2. L2499: `context_fifo_threshold=0,` → `context_fifo_threshold=-1,  # FIFO 保底`
@@ -463,6 +463,7 @@ Run: `grep -n "dream-evolver" niu_api/compat.py | head -20`
                             "last_evolve_at": datetime.now().isoformat(),
                         })
                         logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+                        last_dream_evolve_id = new_dream_id  # 更新基准，使下一批回退到此游标而非循环前旧值
             else:
                 logger.info("[Tidy] dream-evolver: no new messages since cursor")
                 new_dream_id = last_dream_evolve_id
@@ -512,6 +513,7 @@ batch skips remaining batches."
 **替换后**：
 ```python
             if dream_force_msg_ids:
+                new_dream_id = last_dream_evolve_id  # 初始化，防止 overflow break 时未定义
                 dream_force_prompt = """对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
 消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
@@ -578,11 +580,11 @@ batch skips remaining batches."
 
 **重要差异**：force 路径的游标校验（`fresh_msgs` 检查 + `new_dream_id` 重置）在 L3254-3262 是在 `if/else` 块之外执行的，不像 sleep 路径那样在循环内部。因此 force 路径的游标校验和写入**不在循环内执行**——每批结束后只更新 `new_dream_id` 变量，循环结束后统一校验和写入。
 
-但这有问题：如果第一批推进了游标，第二批 overflow 了，`new_dream_id` 会被重置吗？不会——overflow 时 `break` 跳出循环，`new_dream_id` 保持第一批的值。然后 L3254 的校验正常执行。
+`new_dream_id` 在 `if dream_force_msg_ids:` 块开头初始化为 `last_dream_evolve_id`（R1 P0 修复）。各种场景：
 
-但如果第一批正常完成、第二批也正常完成，`new_dream_id` 会是第二批的值——正确。
-
-如果第一批 overflow，`break`，`new_dream_id` 保持 `last_dream_evolve_id`（初始值）——正确。
+- 第一批 overflow → break，`new_dream_id` 保持初始值 `last_dream_evolve_id` → 循环外校验通过
+- 第一批成功、第二批 overflow → break，`new_dream_id` 保持第一批的值 → 循环外校验通过
+- 两批都正常完成 → `new_dream_id` 是第二批的值 → 正确
 
 所以 force 路径不需要在循环内写游标，只需在循环结束后统一校验和写入。
 
