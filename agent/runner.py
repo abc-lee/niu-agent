@@ -1316,6 +1316,14 @@ class NiuRunner:
                     if not _is_subagent_overflow(_batch_result):
                         last_dream_evolve_id = new_dream_id  # 更新基准，使第二批回退到此游标
 
+                        # Clamp: ensure cursor is at least at first_batch end
+                        # to prevent batch2 from re-processing batch1 messages
+                        if new_dream_id in _first_batch_ids:
+                            _first_batch_last = _first_batch_ids[-1]
+                            if _first_batch_ids.index(new_dream_id) < len(_first_batch_ids) - 1:
+                                new_dream_id = _first_batch_last
+                                logger.info(f"[Runner] Force: Dream cursor clamped to first batch end: {new_dream_id}")
+
                         # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
                         _second_batch_ids = []
                         _found_cursor = False

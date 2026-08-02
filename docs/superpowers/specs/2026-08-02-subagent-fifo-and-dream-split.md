@@ -150,10 +150,13 @@ else:
 - sleep 路径 dream-evolver（compat.py L2477-2538）
 - force 路径 dream-evolver（compat.py L3203-3252）
 - force 路径 dream-evolver（runner.py L1264-1285，R3 审查发现）
+#### 修改 dream-evolver 提示词
 
-#### 不修改 dream-evolver 提示词
+task prompt 做了两处修改：
+1. 方向词修正：「对以下消息」→「对以上消息」（消息以 history 形式传入，大模型看到的是以上内容）
+2. 增加对话单元完整性指导：如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。
 
-现有提示词说"处理收到的全部消息"——拆分后每批只看到部分消息，但提示词不需要改。dream-evolver 对每批消息独立执行阶段A→B→C，语义正确。大模型自己判断处理到哪条，输出 `processed_up_to=N`，程序据此推进游标并计算第二批范围。
+dream-evolver 对每批消息独立执行阶段A→B→C，语义正确。大模型自己判断处理到哪条，输出 `processed_up_to=N`，程序据此推进游标并计算第二批范围。
 
 ## 修改文件
 
