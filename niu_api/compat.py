@@ -356,6 +356,80 @@ def _find_protected_range(messages, min_protect_count: int) -> int:
 
     return idx_user
 
+def _split_dream_first_batch(
+    messages: list,
+    dream_msg_ids: list[str],
+    msg_tokens: list[int],
+    context_window_tokens: int,
+    threshold: float = 0.50,
+) -> list[str] | None:
+    """计算 dream-evolver 第一批的消息 ID 列表。
+
+    当增量消息的 token 总量 >= 上下文窗口的 threshold 时，
+    在中间位置向两端查找最近的 role=user 消息作为分割点，
+    返回第一批的消息 ID 列表（split_pos 之前，不含 user 消息）。
+    无需拆分时返回 None。
+
+    Args:
+        messages: 全量消息列表（Message 对象，含 id/role/content）
+        dream_msg_ids: 增量消息 UUID 列表（按顺序）
+        msg_tokens: 每条消息的 token 数（与 messages 等长同顺序）
+        context_window_tokens: 子 Agent 上下文窗口大小
+        threshold: 拆分阈值（默认 0.50 = 50%）
+
+    Returns:
+        第一批消息 ID 列表，或 None（无需拆分）。
+    """
+    if len(dream_msg_ids) < 4 or context_window_tokens <= 0:
+        return None
+
+    # 计算增量消息 token 总量
+    _id_set = set(dream_msg_ids)
+    incremental_tokens = 0
+    for i, msg in enumerate(messages):
+        if (getattr(msg, "id", "") or "") in _id_set and i < len(msg_tokens):
+            incremental_tokens += msg_tokens[i]
+
+    if incremental_tokens < context_window_tokens * threshold:
+        return None
+
+    # 构建增量消息子列表（保持原序）
+    dream_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+
+    mid = len(dream_incremental_msgs) // 2
+
+    # 从 mid 向两端查找最近的 role=user 消息
+    right_user = None
+    for i in range(mid, len(dream_incremental_msgs)):
+        if getattr(dream_incremental_msgs[i], "role", "") == "user":
+            right_user = i
+            break
+
+    left_user = None
+    for i in range(mid - 1, -1, -1):
+        if getattr(dream_incremental_msgs[i], "role", "") == "user":
+            left_user = i
+            break
+
+    # 确定分割点
+    if left_user is not None and right_user is not None:
+        if (mid - left_user) <= (right_user - mid):
+            split_pos = left_user
+        else:
+            split_pos = right_user
+    elif left_user is not None:
+        split_pos = left_user
+    elif right_user is not None:
+        split_pos = right_user
+    else:
+        return None
+
+    first_batch = dream_msg_ids[:split_pos]
+
+    if not first_batch:
+        return None
+
+    return first_batch
 
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
     """
