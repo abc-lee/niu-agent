@@ -2661,88 +2661,96 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             logger.info(f"[Tidy] Dream cursor fallback to batch end: {new_dream_id}")
                         else:
                             new_dream_id = last_dream_evolve_id
-                    # 校验游标
-                    if new_dream_id:
-                        fresh_msgs = await store.get_messages()
-                        fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                        if new_dream_id not in fresh_ids:
-                            logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                            new_dream_id = last_dream_evolve_id
-                            if new_dream_id and new_dream_id not in fresh_ids:
-                                new_dream_id = ""
-                    if new_dream_id:
-                        _write_cursor_with_lock(dream_cursor_path, {
-                            "last_dream_evolve_id": new_dream_id,
-                            "last_evolve_at": datetime.now().isoformat(),
-                        })
-                        logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
-                        last_dream_evolve_id = new_dream_id  # 更新基准，使第二批回退到此游标而非循环前旧值
+                        # Clamp: ensure cursor is at least at first batch end
+                        # to prevent batch2 from re-processing batch1 messages
+                        if new_dream_id in _first_batch_ids:
+                            _first_batch_last = _first_batch_ids[-1]
+                            if _first_batch_ids.index(new_dream_id) < len(_first_batch_ids) - 1:
+                                new_dream_id = _first_batch_last
+                                logger.info(f"[Tidy] Dream cursor clamped to first batch end: {new_dream_id}")
+                        # 校验游标
+                        if new_dream_id:
+                            fresh_msgs = await store.get_messages()
+                            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                            if new_dream_id not in fresh_ids:
+                                logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                                new_dream_id = last_dream_evolve_id
+                                if new_dream_id and new_dream_id not in fresh_ids:
+                                    new_dream_id = ""
+                        if new_dream_id:
+                            _write_cursor_with_lock(dream_cursor_path, {
+                                "last_dream_evolve_id": new_dream_id,
+                                "last_evolve_at": datetime.now().isoformat(),
+                            })
+                            logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+                            last_dream_evolve_id = new_dream_id  # 更新基准，使第二批回退到此游标而非循环前旧值
 
-                        # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
-                        _second_batch_ids = []
-                        _found_cursor = False
-                        for mid in dream_msg_ids:
-                            if mid == new_dream_id:
-                                _found_cursor = True
-                                continue
-                            if _found_cursor:
-                                _second_batch_ids.append(mid)
+                            # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
+                            _second_batch_ids = []
+                            _found_cursor = False
+                            for mid in dream_msg_ids:
+                                if mid == new_dream_id:
+                                    _found_cursor = True
+                                    continue
+                                if _found_cursor:
+                                    _second_batch_ids.append(mid)
 
-                        if _second_batch_ids:
-                            _second_id_set = set(_second_batch_ids)
-                            _second_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _second_id_set]
-                            _second_history, _second_idx_to_id = _build_plain_history(_second_msgs)
+                            if _second_batch_ids:
+                                _second_id_set = set(_second_batch_ids)
+                                _second_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _second_id_set]
+                                _second_history, _second_idx_to_id = _build_plain_history(_second_msgs)
 
-                            def _run_dream_evolver_batch2():
-                                return call_subagent_with_auto_answer(
-                                    agent_name="dream-evolver",
-                                    task=dream_task_prompt,
-                                    llm_config=llm_config,
-                                    mcp_client=None,
-                                    history=_second_history,
-                                    context_fifo_threshold=-1,
-                                )
+                                def _run_dream_evolver_batch2():
+                                    return call_subagent_with_auto_answer(
+                                        agent_name="dream-evolver",
+                                        task=dream_task_prompt,
+                                        llm_config=llm_config,
+                                        mcp_client=None,
+                                        history=_second_history,
+                                        context_fifo_threshold=-1,
+                                    )
 
-                            logger.info(f"[Tidy] dream-evolver batch 2/2: {len(_second_batch_ids)} messages")
-                            dream_result = await asyncio.to_thread(_run_dream_evolver_batch2)
-                            if is_stop_requested():
-                                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                                clear_stop()
-                                return {"status": "aborted", "message": "Stopped by user"}
-                            logger.info(f"[Tidy] dream-evolver batch 2/2 result: {dream_result[:200]}")
+                                logger.info(f"[Tidy] dream-evolver batch 2/2: {len(_second_batch_ids)} messages")
+                                dream_result = await asyncio.to_thread(_run_dream_evolver_batch2)
+                                logger.info(f"[Tidy] dream-evolver batch 2/2 result: {dream_result[:200]}")
 
-                            # 游标推进：overflow→不动；否则解析 processed_up_to=N
-                            if _is_subagent_overflow(dream_result):
-                                overflow_info = _extract_overflow_info(dream_result)
-                                logger.warning(f"[Tidy] dream-evolver batch 2/2 overflow: "
-                                               f"{overflow_info.get('turns_completed', 0)} turns, "
-                                               f"{overflow_info.get('tokens_used', 0)} tokens")
-                            else:
-                                _processed_idx = _parse_processed_up_to(dream_result)
-                                if _processed_idx is not None and _processed_idx in _second_idx_to_id:
-                                    new_dream_id = _second_idx_to_id[_processed_idx]
-                                    logger.info(f"[Tidy] Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
-                                elif _second_batch_ids:
-                                    new_dream_id = _second_batch_ids[-1]  # 兜底
-                                    logger.info(f"[Tidy] Dream cursor fallback to batch end: {new_dream_id}")
+                                # 游标推进：overflow→不动；否则解析 processed_up_to=N
+                                if _is_subagent_overflow(dream_result):
+                                    overflow_info = _extract_overflow_info(dream_result)
+                                    logger.warning(f"[Tidy] dream-evolver batch 2/2 overflow: "
+                                                   f"{overflow_info.get('turns_completed', 0)} turns, "
+                                                   f"{overflow_info.get('tokens_used', 0)} tokens")
                                 else:
-                                    new_dream_id = last_dream_evolve_id
-                            # 校验游标 + 写入游标
-                            if new_dream_id:
-                                fresh_msgs = await store.get_messages()
-                                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                                if new_dream_id not in fresh_ids:
-                                    logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                                    new_dream_id = last_dream_evolve_id
-                                    if new_dream_id and new_dream_id not in fresh_ids:
-                                        new_dream_id = ""
-                            if new_dream_id:
-                                _write_cursor_with_lock(dream_cursor_path, {
-                                    "last_dream_evolve_id": new_dream_id,
-                                    "last_evolve_at": datetime.now().isoformat(),
-                                })
-                                logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
-                                last_dream_evolve_id = new_dream_id
+                                    _processed_idx = _parse_processed_up_to(dream_result)
+                                    if _processed_idx is not None and _processed_idx in _second_idx_to_id:
+                                        new_dream_id = _second_idx_to_id[_processed_idx]
+                                        logger.info(f"[Tidy] Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
+                                    elif _second_batch_ids:
+                                        new_dream_id = _second_batch_ids[-1]  # 兜底
+                                        logger.info(f"[Tidy] Dream cursor fallback to batch end: {new_dream_id}")
+                                    else:
+                                        new_dream_id = last_dream_evolve_id
+                                # 校验游标 + 写入游标（必须在 stop 检查之前，确保 batch2 游标持久化）
+                                if new_dream_id:
+                                    fresh_msgs = await store.get_messages()
+                                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                                    if new_dream_id not in fresh_ids:
+                                        logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                                        new_dream_id = last_dream_evolve_id
+                                        if new_dream_id and new_dream_id not in fresh_ids:
+                                            new_dream_id = ""
+                                if new_dream_id:
+                                    _write_cursor_with_lock(dream_cursor_path, {
+                                        "last_dream_evolve_id": new_dream_id,
+                                        "last_evolve_at": datetime.now().isoformat(),
+                                    })
+                                    logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+                                    last_dream_evolve_id = new_dream_id
+                                # 游标写入之后再检查 stop
+                                if is_stop_requested():
+                                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                                    clear_stop()
+                                    return {"status": "aborted", "message": "Stopped by user"}
             else:
                 logger.info("[Tidy] dream-evolver: no new messages since cursor")
                 new_dream_id = last_dream_evolve_id
@@ -3505,6 +3513,13 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             logger.info(f"[Tidy] Force: Dream cursor fallback to batch end: {new_dream_id}")
                         else:
                             new_dream_id = last_dream_evolve_id
+                        # Clamp: ensure cursor is at least at first batch end
+                        # to prevent batch2 from re-processing batch1 messages
+                        if new_dream_id in _first_batch_ids:
+                            _first_batch_last = _first_batch_ids[-1]
+                            if _first_batch_ids.index(new_dream_id) < len(_first_batch_ids) - 1:
+                                new_dream_id = _first_batch_last
+                                logger.info(f"[Tidy] Force: Dream cursor clamped to first batch end: {new_dream_id}")
                         # 先校验 new_dream_id 有效性，再更新 last_dream_evolve_id（R6 P2 修复）
                         # 如果先更新再校验，校验失败时 last_dream_evolve_id 已被污染
                         try:
@@ -3549,10 +3564,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
                             logger.info(f"[Tidy] Force: dream-evolver batch 2/2: {len(_second_batch_ids)} messages")
                             dream_result = await asyncio.to_thread(_run_dream_evolver_force_batch2)
-                            if is_stop_requested():
-                                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                                clear_stop()
-                                return {"status": "aborted", "message": "Stopped by user"}
                             logger.info(f"[Tidy] Force: dream-evolver batch 2/2 result: {dream_result[:200]}")
 
                             # 游标推进：overflow→不动；否则解析 processed_up_to=N
@@ -3571,6 +3582,27 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                                     logger.info(f"[Tidy] Force: Dream cursor fallback to batch end: {new_dream_id}")
                                 else:
                                     new_dream_id = last_dream_evolve_id
+                            # 校验游标 + 写入游标（必须在 stop 检查之前，确保 batch2 游标持久化）
+                            if new_dream_id:
+                                fresh_msgs = await store.get_messages()
+                                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                                if new_dream_id not in fresh_ids:
+                                    logger.warning(f"[Tidy] Force: Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                                    new_dream_id = last_dream_evolve_id
+                                    if new_dream_id and new_dream_id not in fresh_ids:
+                                        new_dream_id = ""
+                            if new_dream_id:
+                                _write_cursor_with_lock(dream_cursor_path, {
+                                    "last_dream_evolve_id": new_dream_id,
+                                    "last_evolve_at": datetime.now().isoformat(),
+                                })
+                                logger.info(f"[Tidy] Force: Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+                                last_dream_evolve_id = new_dream_id
+                            # 游标写入之后再检查 stop
+                            if is_stop_requested():
+                                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                                clear_stop()
+                                return {"status": "aborted", "message": "Stopped by user"}
             else:
                 logger.info("[Tidy] Force: dream-evolver no incremental messages")
                 new_dream_id = last_dream_evolve_id  # 无增量时保留旧游标，避免 UnboundLocalError
