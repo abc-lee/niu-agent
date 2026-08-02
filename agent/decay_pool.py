@@ -69,6 +69,8 @@ class DecayPool:
         existing = self._entries.get(key)
         if existing is not None and vector_score < existing.score:
             existing.entity_dict = entity_dict
+            existing.category = category
+            existing.source = source
             return
         self._entries[key] = DecayEntry(
             entity_name=entity_name,
