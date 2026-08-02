@@ -2279,7 +2279,7 @@ class NiuRunner:
                     source_label = f"(邻居: {relation})"
                 else:
                     source_label = ""
-                desc_line = f"   {desc[:200]}" if desc else ""
+                desc_line = f"   {desc[:500]}" if desc else ""
                 region_lines.append(f"{len(region_lines)+1}. **{name}** {source_label}\n{desc_line}")
             if region_lines:
                 parts.append("### [活跃脑区知识]\n" + "\n".join(region_lines))
