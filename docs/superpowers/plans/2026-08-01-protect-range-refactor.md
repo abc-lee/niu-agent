@@ -178,25 +178,33 @@ With:
 
 **Note:** This changes protected_ids from user/assistant-only to all-messages-in-range. This is correct — tool messages between protected user/assistant must also be protected to avoid orphaned tool outputs.
 
-### Task 5: Apply to sleep path protected_set (compat.py L2849-2857)
+### Task 5: Apply to sleep path protected_set (compat.py L2849-2858)
 **File:** `niu_api/compat.py`
 
-Replace L2849-2857:
+Replace the entire `if` block (L2849-2858):
 ```python
-                            _pids = []
-                            for m in reversed(fresh_messages):
-                                if getattr(m, "role", "") in ("user", "assistant"):
-                                    _pids.append(getattr(m, "id", ""))
-                                if len(_pids) >= protect_recent_count:
-                                    break
-                            protected_set = set(_pids)
+                            if protect_recent_count > 0:
+                                _pids = []
+                                for m in reversed(fresh_messages):
+                                    if getattr(m, "role", "") in ("user", "assistant"):
+                                        _pids.append(getattr(m, "id", ""))
+                                    if len(_pids) >= protect_recent_count:
+                                        break
+                                protected_set = set(_pids)
+                                valid_deletes = [mid for mid in valid_deletes if mid not in protected_set]
+                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_set]
 ```
 
-With:
+With (preserve `if` guard + downstream filtering, replace only the protection loop):
 ```python
-                            _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
-                            protected_set = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
+                            if protect_recent_count > 0:
+                                _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
+                                protected_set = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
+                                valid_deletes = [mid for mid in valid_deletes if mid not in protected_set]
+                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_set]
 ```
+
+**Key:** The `if protect_recent_count > 0:` guard and the `valid_deletes`/`valid_updates` filtering lines must be preserved. Only the `_pids` loop and `protected_set = set(_pids)` are replaced with the `_find_protected_range` call. Indentation must be 32 spaces (inside the `if` block).
 
 ### Task 6: Apply to compat.py force path _force_protected_ids (compat.py L3086-3090)
 **File:** `niu_api/compat.py`
