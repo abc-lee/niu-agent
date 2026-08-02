@@ -2130,7 +2130,11 @@ class NiuRunner:
             skill_names = {e.get("entity_name", "") for e in lightrag_results["skill"]}
             for cat, entities in knowledge_results.items():
                 if cat == "skill":
-                    continue  # skill 已由 search_by_file_path 独立检索，不用 search_multi_lightrag 的结果覆盖
+                    # 非 SkillSync 来源的 skill（文档提取）降级为 knowledge，不丢弃
+                    for e in entities:
+                        if e.get("entity_name", "") not in skill_names:
+                            lightrag_results["knowledge"].append(e)
+                    continue
                 lightrag_results[cat] = [e for e in entities if e.get("entity_name", "") not in skill_names]
         except Exception as e:
             logger.warning(f"LightRAG knowledge retrieval failed: {e}")
