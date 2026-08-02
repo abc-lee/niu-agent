@@ -415,7 +415,7 @@ With:
 
 ## Review Checklist
 
-- [ ] All 10 code points use `_find_protected_range` (compat.py ×6, runner.py ×3, chat_queue.py degrade ×1)
+- [ ] All 10 code points use `_find_protected_range` (compat.py ×7, runner.py ×3) + Task 9b fixes 2 call sites
 - [ ] Algorithm Step 2 correctly scans past assistant to find user (the P0 fix)
 - [ ] Protected range includes tool messages between protected user/assistant
 - [ ] Consecutive user messages protect to the earliest
