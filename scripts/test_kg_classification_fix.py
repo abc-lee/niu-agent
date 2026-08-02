@@ -70,14 +70,14 @@ if match:
     types = [t.strip().strip('"').strip("'") for t in types_str.split(',') if t.strip()]
     print(f"CUSTOM_ENTITY_TYPES ({len(types)}): {types}")
 
-    expected = 18
+    expected = 17
     if len(types) == expected:
         print(f"  PASS: {expected} types found")
     else:
         print(f"  FAIL: expected {expected}, got {len(types)}")
 
     # 检查关键类型
-    required_types = ["BrainRegion", "InteractionHabit", "EpisodicEvent", "Other"]
+    required_types = ["BrainRegion", "EpisodicEvent", "Other"]
     for rt in required_types:
         if rt in types:
             print(f"  PASS: '{rt}' present")
@@ -95,10 +95,10 @@ adapter = LightRAGAdapter()
 entity_types = adapter.ENTITY_TYPES
 print(f"ENTITY_TYPES ({len(entity_types)}): {sorted(entity_types)}")
 
-if len(entity_types) == 18:
-    print("  PASS: 18 types")
+if len(entity_types) == 17:
+    print("  PASS: 17 types")
 else:
-    print(f"  FAIL: expected 18, got {len(entity_types)}")
+    print(f"  FAIL: expected 17, got {len(entity_types)}")
 
 # ============== 4. _ENTITY_TYPE_TO_CATEGORY 验证 ==============
 print("\n" + "=" * 60)
@@ -110,10 +110,10 @@ print(f"Mapping entries: {len(mapping)}")
 for k, v in sorted(mapping.items()):
     print(f"  {k} -> {v}")
 
-if len(mapping) == 18:
-    print("  PASS: 18 mappings")
+if len(mapping) == 17:
+    print("  PASS: 17 mappings")
 else:
-    print(f"  FAIL: expected 18, got {len(mapping)}")
+    print(f"  FAIL: expected 17, got {len(mapping)}")
 
 # 检查关键映射
 critical_mappings = {
@@ -188,10 +188,10 @@ if tc_match:
     tc_str = tc_match.group(1)
     tc_keys = [k.strip() for k in re.findall(r"(\w+)\s*:", tc_str)]
     print(f"typeColors keys ({len(tc_keys)}): {tc_keys}")
-    if len(tc_keys) == 18:
-        print("  PASS: 18 type colors")
+    if len(tc_keys) == 17:
+        print("  PASS: 17 type colors")
     else:
-        print(f"  FAIL: expected 18, got {len(tc_keys)}")
+        print(f"  FAIL: expected 17, got {len(tc_keys)}")
 
 # 检查 brainregion 颜色
 if 'brainregion: \'#6C5CE7\'' in renderer_content:
@@ -264,7 +264,7 @@ else:
     print(f"  FAIL: expected 17, got {len(active_color_types)}")
 
 # 检查新增类型是否有颜色
-new_types = ['skill', 'tool', 'knowledge', 'interactionhabit', 'episodicevent', 'brainregion']
+new_types = ['skill', 'tool', 'knowledge', 'episodicevent', 'brainregion']
 for nt in new_types:
     if nt in text_color_types:
         print(f"  PASS: '{nt}' has text color")
