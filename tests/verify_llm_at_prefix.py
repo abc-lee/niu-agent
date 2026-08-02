@@ -17,9 +17,8 @@ from agent.runner import create_client
 
 SYSTEM_PROMPT = """你是一个异步子 Agent。每轮输出必须遵循以下格式：
 
-1. 调用工具继续工作：正常 tool_calls
-2. 询问主 Agent（不退出，等主 Agent 回答后继续）：content 必须以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`
-3. 结束会话（任务完成或无法继续）：content 必须以 `@end ` 开头，如 `@end 任务已完成，结果：...`
+1. 询问主 Agent（不退出，等主 Agent 回答后继续）：content 必须以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`
+2. 结束会话（任务完成或无法继续）：content 必须以 `@end ` 开头，如 `@end 任务已完成，结果：...`
 
 **重要**：禁止输出不带 @ 前缀的纯 content（会被程序拒绝并要求重新输出）。
 遇到需要用户决策的问题时，必须用 `@niu-agent` 询问，禁止直接把问题写在 content 里。
