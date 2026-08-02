@@ -356,6 +356,7 @@ def _find_protected_range(messages, min_protect_count: int) -> int:
 
     return idx_user
 
+
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
@@ -850,11 +851,11 @@ async def _emergency_clear(
     session_id: str,
     mode: str,
 ) -> dict:
-    """截断时的应急清空：保留最近 N 条，上面全删，最旧那条改为"压缩失败"摘要。
+    """截断时的应急清空：保留最近完整用户会话段落，上面全删，最旧那条改为"压缩失败"摘要。
 
     - history: 压缩历史消息列表（受保护消息已排除），按 idx 顺序排列（list[dict]，无 id 字段）
     - msg_ids: 与 history 等长、同顺序的真实 message_id 列表（来自 out_msg_ids）
-    - protect_recent_count: 保留最近条数（默认 10）
+    - protect_recent_count: 最少保护的 user/assistant 消息对数（来自配置）
     - store: MessageStore，用于 delete_messages_by_ids / update_message
     - session_id: 会话 ID（仅用于日志，delete_messages_by_ids 不需要）
     - mode: "sleep" 或 "force"（用于返回值）
@@ -866,7 +867,7 @@ async def _emergency_clear(
     _protect_start = _find_protected_range(history, protect_recent_count)
     if _protect_start <= 0 or _protect_start >= len(msg_ids):
         logger.warning(
-            f"[Compact] history len {total}, all protected, no clear needed"
+            f"[Compact] history len {len(msg_ids)}, all protected, no clear needed"
         )
         return {
             "status": "skipped",
@@ -2760,8 +2761,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         clear_stop()
                         return {"status": "aborted", "message": "Stopped by user"}
 
-                    # 截断时触发应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+                    # 截断时触发应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
                     if compress_result == "COMPACT_TRUNCATED":
+                        logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
                         return await _emergency_clear(
                             history=compress_history,
                             msg_ids=compress_msg_ids,
