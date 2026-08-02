@@ -161,9 +161,9 @@ dream-evolver 对每批消息独立执行阶段A→B→C，语义正确。大模
 ## 修改文件
 
 | 文件 | 修改内容 |
-| `niu_api/compat.py` | 9 处 `context_fifo_threshold=0` → `-1`；新增 `_split_dream_batches` 函数；dream-evolver sleep/force 路径增加拆分逻辑 |
-| `agent/runner.py` | 4 处 `context_fifo_threshold=0` → `-1`；dream-evolver force 路径增加拆分逻辑 |
-| `tests/test_dream_split.py` | 新建，测试 `_split_dream_batches` 拆分算法 |
+| `niu_api/compat.py` | 9 处 `context_fifo_threshold=0` → `-1`；新增 `_split_dream_first_batch` 函数；dream-evolver sleep/force 路径增加拆分逻辑；entity-extractor/journal-agent prompt 方向词修正 |
+| `agent/runner.py` | 4 处 `context_fifo_threshold=0` → `-1`；dream-evolver force 路径增加拆分逻辑；entity-extractor prompt 方向词修正 |
+| `tests/test_dream_split.py` | 新建，测试 `_split_dream_first_batch` 拆分算法 |
 
 ## 风险
 

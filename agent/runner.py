@@ -1221,7 +1221,7 @@ class NiuRunner:
                 db_messages, "", entity_force_msg_ids, msg_tokens
             )
             if entity_force_msg_ids:
-                entity_force_prompt = """以下是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+                entity_force_prompt = """以上是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
@@ -1323,6 +1323,11 @@ class NiuRunner:
                             if _first_batch_ids.index(new_dream_id) < len(_first_batch_ids) - 1:
                                 new_dream_id = _first_batch_last
                                 logger.info(f"[Runner] Force: Dream cursor clamped to first batch end: {new_dream_id}")
+                                # _run_subagent_step 已写入未 clamp 的游标，需重新写 clamp 后的值
+                                _write_cursor_with_lock(dream_cursor_path, {
+                                    "last_dream_evolve_id": new_dream_id,
+                                    "last_evolve_at": datetime.now().isoformat(),
+                                })
 
                         # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
                         _second_batch_ids = []
