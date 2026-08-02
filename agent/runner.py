@@ -1206,8 +1206,9 @@ class NiuRunner:
             _force_protect_recent_count = _read_protect_recent_count()
             _force_protected_ids: set[str] = set()
             if _force_protect_recent_count > 0 and db_messages:
-                _ua_msgs = [m for m in db_messages if getattr(m, "role", "") in ("user", "assistant")]
-                _force_protected_ids = {getattr(m, "id", "") or "" for m in _ua_msgs[-_force_protect_recent_count:]}
+                from niu_api.compat import _find_protected_range
+                _protect_start = _find_protected_range(db_messages, _force_protect_recent_count)
+                _force_protected_ids = {getattr(db_messages[i], "id", "") or "" for i in range(_protect_start, len(db_messages))}
 
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
@@ -1394,17 +1395,21 @@ class NiuRunner:
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
-
-            # 截断时触发内联应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+            # 截断时触发内联应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
             # 同步实现：用 self._sync_delete_messages / self._sync_update_message，不调 async _emergency_clear
             if result == "COMPACT_TRUNCATED":
                 logger.warning("[Compact] runner.py force output truncated, triggering emergency clear")
-                if len(_force_msg_ids) <= 10:
-                    logger.warning(f"[Compact] Runner history len {len(_force_msg_ids)} <= 10, no clear needed")
-                    return {"status": "skipped", "mode": "force", "reason": "truncated, no clear needed (too few)"}
+                from niu_api.compat import _find_protected_range, _read_protect_recent_count
+                _force_id_set = set(_force_msg_ids)
+                _force_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _force_id_set]
+                _protect_n = _read_protect_recent_count()
+                _protect_start = _find_protected_range(_force_msgs, _protect_n)
+                if _protect_start <= 0 or _protect_start >= len(_force_msg_ids):
+                    logger.warning(f"[Compact] Runner history all protected ({len(_force_msg_ids)} msgs), no clear needed")
+                    return {"status": "skipped", "mode": "force", "reason": "truncated, no clear needed (all protected)"}
 
-                delete_ids = _force_msg_ids[:-10]
-                oldest_kept_id = _force_msg_ids[-10]
+                delete_ids = _force_msg_ids[:_protect_start]
+                oldest_kept_id = _force_msg_ids[_protect_start]
 
                 # _sync_delete_messages 只接收 msg_ids（不接收 session_id）
                 self._sync_delete_messages(delete_ids)
@@ -1520,17 +1525,13 @@ class NiuRunner:
                             logger.warning(f"[Runner] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
                             valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
 
-                # 保护最近 N 条 user/assistant 消息
+                # 保护最近完整用户会话段落（从最近 user 消息开始）
                 protect_recent_count = _read_protect_recent_count()
                 protected_force_ids: set[str] = set()
                 if protect_recent_count > 0:
-                    _pids = []
-                    for m in reversed(fresh_messages):
-                        if getattr(m, "role", "") in ("user", "assistant"):
-                            _pids.append(getattr(m, "id", ""))
-                        if len(_pids) >= protect_recent_count:
-                            break
-                    protected_force_ids = set(_pids)
+                    from niu_api.compat import _find_protected_range
+                    _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
+                    protected_force_ids = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
                     removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
                     if removed_deletes:
                         logger.warning(f"[Runner] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")

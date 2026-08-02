@@ -307,6 +307,59 @@ def _parse_idx_list(s: str) -> set[int]:
     return result
 
 
+def _find_protected_range(messages, min_protect_count: int) -> int:
+    """Find the protection start index using user-turn-aware logic.
+
+    1. From tail, count min_protect_count user/assistant messages -> idx_N
+    2. From idx_N, scan upward (toward index 0) for the nearest role=user message:
+       - First, skip any non-user messages (assistant/tool) going upward from idx_N
+       - When a user message is found, keep scanning upward for consecutive user messages
+       - Protect to the earliest user in the consecutive group
+    3. Return idx_user (or idx_N if no user found above, or len(messages) if min_protect_count=0)
+
+    All messages[index >= return_value] should be protected, including tool messages.
+    """
+    if min_protect_count <= 0 or not messages:
+        return len(messages)  # no protection
+
+    total = len(messages)
+
+    # Step 1: from tail, count N user/assistant messages
+    idx_N = total  # exclusive upper bound (one past last counted)
+    count = 0
+    for i in range(total - 1, -1, -1):
+        role = getattr(messages[i], "role", "") if hasattr(messages[i], "role") else messages[i].get("role", "")
+        if role in ("user", "assistant"):
+            count += 1
+            if count >= min_protect_count:
+                idx_N = i
+                break
+    else:
+        # Fewer than N user/assistant messages -> protect everything
+        return 0
+
+    # Step 2: from idx_N, scan upward (toward index 0) for nearest role=user message
+    # Phase A: skip non-user messages (assistant, tool) going upward
+    # Phase B: once user found, keep going up for consecutive user messages
+    idx_user = idx_N
+    found_user = False
+    for i in range(idx_N, -1, -1):
+        role = getattr(messages[i], "role", "") if hasattr(messages[i], "role") else messages[i].get("role", "")
+        if role == "user":
+            idx_user = i
+            found_user = True
+            # keep scanning upward for consecutive user messages
+        elif found_user:
+            # we found user(s) but hit a non-user -> stop
+            break
+        # if not found_user and role != "user", continue scanning (skip assistant/tool)
+
+    if not found_user:
+        # No user message found at or above idx_N -> fall back to idx_N
+        return idx_N
+
+    return idx_user
+
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
@@ -361,15 +414,10 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     # 预计算保护位置：从尾部向前找 N 条 user/assistant 消息的相对位置
     _protected_positions = None
     if protect_recent > 0:
-        _protected_positions = set()
-        _count = 0
-        for rp in range(total_count - 1, -1, -1):
-            _, m = range_messages_with_pos[rp]
-            if getattr(m, "role", "") in ("user", "assistant"):
-                _protected_positions.add(rp)
-                _count += 1
-                if _count >= protect_recent:
-                    break
+        # User-turn-aware protection: protect from nearest user message at/below the N-th user/assistant from tail
+        _range_msgs = [m for _, m in range_messages_with_pos]
+        _protect_start = _find_protected_range(_range_msgs, protect_recent)
+        _protected_positions = set(range(_protect_start, total_count))
     display_idx = 0
     for rel_pos, (orig_pos, msg) in enumerate(range_messages_with_pos):
         msg_id = getattr(msg, "id", "") or ""
@@ -425,17 +473,10 @@ def _build_compress_history(
         out_msg_ids = []
 
     total_count = len(messages)
-    # 预计算保护位置：从尾部向前找 N 条 user/assistant 消息的相对位置
     _protected_positions: set[int] = set()
     if protect_recent > 0:
-        _count = 0
-        for rp in range(total_count - 1, -1, -1):
-            m = messages[rp]
-            if getattr(m, "role", "") in ("user", "assistant"):
-                _protected_positions.add(rp)
-                _count += 1
-                if _count >= protect_recent:
-                    break
+        _protect_start = _find_protected_range(messages, protect_recent)
+        _protected_positions = set(range(_protect_start, total_count))
 
     # 第一遍：确定哪些位置被排除（PROTECTED 排除 + 孤立 tool 同步排除）
     excluded_positions: set[int] = set()
@@ -825,19 +866,20 @@ async def _emergency_clear(
     返回 {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
     """
     total = len(history)
-    if total <= protect_recent_count:
+    # Use user-turn-aware protection to find the keep boundary
+    _protect_start = _find_protected_range(history, protect_recent_count)
+    if _protect_start <= 0 or _protect_start >= len(msg_ids):
         logger.warning(
-            f"[Compact] history len {total} <= {protect_recent_count}, no clear needed"
+            f"[Compact] history len {total}, all protected, no clear needed"
         )
         return {
             "status": "skipped",
             "mode": mode,
-            "reason": "truncated, no clear needed (too few)",
+            "reason": "truncated, no clear needed (all protected)",
         }
 
-    # history 与 msg_ids 等长同顺序；保留末尾 N 条，删前面的
-    delete_ids = list(msg_ids[:-protect_recent_count])
-    oldest_kept_id = msg_ids[-protect_recent_count]
+    delete_ids = list(msg_ids[:_protect_start])
+    oldest_kept_id = msg_ids[_protect_start]
 
     # 最旧保留条改为"压缩失败"摘要
     await store.update_message(
@@ -2669,14 +2711,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # 构建保护消息 UUID 列表（只含 user/assistant 消息，不含 tool 输出）
                 # 直接从完整 messages 列表计算，不依赖截断后的 compress_msg_ids
                 # 这样即使截断移除了第三份（近期）消息，受保护消息的 ID 仍然完整
-                _pids = []
-                for i in range(len(messages) - 1, -1, -1):
-                    _m = messages[i]
-                    if getattr(_m, "role", "") in ("user", "assistant"):
-                        _pids.insert(0, getattr(_m, "id", "") or "")
-                    if len(_pids) >= protect_recent_count:
-                        break
-                protected_ids = _pids  # No fallback: tool output is never protected
+                _protect_start = _find_protected_range(messages, protect_recent_count)
+                # Protect all messages (including tool) from protect_start to end
+                protected_ids = [getattr(messages[i], "id", "") or "" for i in range(_protect_start, len(messages))]
 
                 if _is_mode2:
                     compress_plan_path = os.path.expanduser("~/.niu/compress_plan_mode2.json")
@@ -2730,11 +2767,10 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
                     # 截断时触发应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
                     if compress_result == "COMPACT_TRUNCATED":
-                        logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
                         return await _emergency_clear(
                             history=compress_history,
                             msg_ids=compress_msg_ids,
-                            protect_recent_count=10,
+                            protect_recent_count=_read_protect_recent_count(),
                             store=store,
                             session_id=session_id,
                             mode="sleep",
@@ -2847,13 +2883,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
                             protected_set: set[str] = set()
                             if protect_recent_count > 0:
-                                _pids = []
-                                for m in reversed(fresh_messages):
-                                    if getattr(m, "role", "") in ("user", "assistant"):
-                                        _pids.append(getattr(m, "id", ""))
-                                    if len(_pids) >= protect_recent_count:
-                                        break
-                                protected_set = set(_pids)
+                                _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
+                                protected_set = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
                                 valid_deletes = [mid for mid in valid_deletes if mid not in protected_set]
                                 valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_set]
 
@@ -3086,8 +3117,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             _force_protect_recent_count = _read_protect_recent_count()
             _force_protected_ids: set[str] = set()
             if _force_protect_recent_count > 0 and messages:
-                _ua_msgs = [m for m in messages if getattr(m, "role", "") in ("user", "assistant")]
-                _force_protected_ids = {getattr(m, "id", "") or "" for m in _ua_msgs[-_force_protect_recent_count:]}
+                _protect_start = _find_protected_range(messages, _force_protect_recent_count)
+                _force_protected_ids = {getattr(messages[i], "id", "") or "" for i in range(_protect_start, len(messages))}
 
             # 1/3. entity-extractor（全量 history 逐条 + task 独立指令，cursor 传空 = 全量）
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
@@ -3399,13 +3430,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 clear_stop()
                 return {"status": "aborted", "message": "Stopped by user"}
 
-            # 截断时触发应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
             if result == "COMPACT_TRUNCATED":
                 logger.warning("[Compact] Force output truncated, triggering emergency clear")
                 return await _emergency_clear(
                     history=_force_history,
                     msg_ids=_force_msg_ids,
-                    protect_recent_count=10,
+                    protect_recent_count=protect_recent_count,
                     store=store,
                     session_id=session_id,
                     mode="force",
@@ -3554,13 +3584,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
                     protected_force_ids: set[str] = set()
                     if protect_recent_count > 0:
-                        _pids = []
-                        for m in reversed(fresh_messages):
-                            if getattr(m, "role", "") in ("user", "assistant"):
-                                _pids.append(getattr(m, "id", ""))
-                            if len(_pids) >= protect_recent_count:
-                                break
-                        protected_force_ids = set(_pids)
+                        _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
+                        protected_force_ids = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
                         removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
                         if removed_deletes:
                             logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
