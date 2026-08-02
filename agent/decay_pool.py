@@ -68,9 +68,11 @@ class DecayPool:
         key = entity_name.lower()
         existing = self._entries.get(key)
         if existing is not None and vector_score < existing.score:
+            # 保留高分，但更新 entity_dict 和 category（纠正分类错误）
+            # 不更新 source：source 标识发现路径（vector/graph_traversal），
+            # 跨轮低分注入不应改变显示分类（参考知识 vs 活跃脑区知识）
             existing.entity_dict = entity_dict
             existing.category = category
-            existing.source = source
             return
         self._entries[key] = DecayEntry(
             entity_name=entity_name,
