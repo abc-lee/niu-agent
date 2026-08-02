@@ -1050,7 +1050,7 @@ def _build_journal_task() -> str:
     Returns:
         纯指令 task prompt 字符串（含 processed_up_to=N 说明，程序据此推进游标）
     """
-    return """以下是对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
+    return """以上是对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
 
 处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
 
@@ -2470,7 +2470,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 messages, last_entity_extract_id, entity_msg_ids, msg_tokens
             )
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
-            entity_task_prompt = """以下是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，N 是 1-based 序号）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            entity_task_prompt = """以上是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，N 是 1-based 序号）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
@@ -3338,7 +3338,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             _ = _build_incremental_msg_text(
                 messages, "", entity_force_msg_ids, msg_tokens
             )
-            entity_force_prompt = """以下是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            entity_force_prompt = """以上是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
