@@ -116,7 +116,7 @@ async def run_ingest_test(mode: str, storage_dir: Path) -> dict:
         "person", "organization", "technology", "concept",
         "location", "event", "document", "photo", "video",
         "note", "chat", "skill", "tool", "knowledge",
-        "interactionhabit", "episodicevent", "brainregion", "other",
+        "episodicevent", "brainregion", "other",
     ]
 
     rag = LightRAG(
