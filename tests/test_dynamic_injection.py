@@ -101,7 +101,7 @@ class TestInjectDynamicResourcesSkillRetrieval:
 
         def mock_search_multi(query, mode="local", top_k=20, keywords=None):
             call_log.append(("search_multi_lightrag", query, top_k))
-            return {"skill": [], "knowledge": [], "interactionhabit": [], "other": []}
+            return {"skill": [], "knowledge": [], "other": []}
 
         def mock_search_by_fp(query, file_path_contains, top_k=10, keywords=None):
             call_log.append(("search_by_file_path", query, file_path_contains, top_k))
@@ -109,7 +109,6 @@ class TestInjectDynamicResourcesSkillRetrieval:
 
         runner._brain_adapter.search_multi_lightrag = mock_search_multi
         runner._brain_adapter.search_by_file_path = mock_search_by_fp
-        runner._brain_adapter.search_interaction_habits = MagicMock(return_value=[])
 
         runner._inject_dynamic_resources("test context")
 

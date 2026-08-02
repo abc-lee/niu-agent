@@ -2104,7 +2104,7 @@ class NiuRunner:
 
         # 1. LightRAG 检索 — 按类型独立检索，避免 skill 被 knowledge 淹没
         lightrag_results: dict[str, list[dict]] = {
-            "skill": [], "knowledge": [], "interactionhabit": [], "other": [],
+            "skill": [], "knowledge": [], "other": [],
         }
         adapter = None
         if self._brain_adapter is not None:
@@ -2121,7 +2121,7 @@ class NiuRunner:
             lightrag_results["skill"] = skill_results
         except Exception as e:
             logger.warning(f"LightRAG skill retrieval failed: {e}")
-        # 1b. Knowledge 全量检索（interactionhabit 也从这里分桶）
+        # 1b. Knowledge 全量检索
         try:
             knowledge_results = adapter.search_multi_lightrag(
                 context, mode="local", top_k=10, keywords=[context],
@@ -2311,20 +2311,10 @@ class NiuRunner:
                     "优先参考上述活跃脑区知识回答用户问题，脑区内容与你当前关注领域最相关。"
                 )
 
-        # Interaction habits (从衰减池取 category=interactionhabit)
-        habit_entries = self._decay_pool.get_top_by_category("interactionhabit", 3)
-        if habit_entries:
-            habit_entities = [e.entity_dict for e in habit_entries]
-            habits_text, seen_names = self._format_lightrag_entities_for_prompt(
-                habit_entities, "交互习惯", seen_names,
-            )
-            if habits_text:
-                parts.append(habits_text)
-
         logger.debug(
             f"Dynamic injection | pool_size={len(self._decay_pool)}, "
             f"skills={len(skill_entries)}, knowledge={len(knowledge_entries)}, "
-            f"region={len(region_entries)}, habits={len(habit_entries)}"
+            f"region={len(region_entries)}"
         )
 
         injection = "\n".join(parts)

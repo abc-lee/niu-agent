@@ -1179,7 +1179,7 @@ def _create_lightrag_instance():
         "person", "organization", "technology", "concept",
         "location", "event", "document", "photo", "video",
         "note", "chat", "skill", "tool", "knowledge",
-        "interactionhabit", "episodicevent", "brainregion", "other",
+        "episodicevent", "brainregion", "other",
     ]
 
     # Read tunable params from preferences.json (lightrag section)

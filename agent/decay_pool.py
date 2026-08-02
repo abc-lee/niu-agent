@@ -1,6 +1,6 @@
 """Ebbinghaus 遗忘曲线衰减池。
 
-统一管理 Skill/Knowledge/InteractionHabit 的注入与衰减。
+统一管理 Skill/Knowledge 的注入与衰减。
 公式: R_i(t) = s_i × e^(-t/S)
   - s_i: 命中时的向量余弦相似度（0~1）
   - t: 经过轮数
@@ -26,7 +26,7 @@ class DecayEntry:
     """衰减池中的单个实体条目。"""
     entity_name: str
     entity_dict: dict[str, Any]   # LightRAG entity dict（description, entity_type 等）
-    category: str                  # skill / knowledge / interactionhabit
+    category: str                  # skill / knowledge
     source: str                    # "vector" / "graph_traversal"
     score: float                   # 当前 R 值
 
