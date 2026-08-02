@@ -2489,7 +2489,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         llm_config=llm_config,
                         mcp_client=None,
                         history=entity_history,
-                        context_fifo_threshold=0,  # 关闭 FIFO，保留完整上下文
+                        context_fifo_threshold=-1,  # FIFO 保底：首轮裁剪到 75%，防止溢出死循环
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
@@ -2570,7 +2570,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         llm_config=llm_config,
                         mcp_client=None,
                         history=dream_history,
-                        context_fifo_threshold=0,
+                        context_fifo_threshold=-1,  # FIFO 保底
                     )
 
                 dream_result = await asyncio.to_thread(run_dream_evolver)
@@ -2652,7 +2652,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             llm_config=llm_config,
                             mcp_client=None,
                             history=journal_history,
-                            context_fifo_threshold=0,
+                            context_fifo_threshold=-1,  # FIFO 保底
                         )
 
                     journal_result = await asyncio.to_thread(run_journal_agent)
@@ -2823,7 +2823,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             task=prompt,
                             llm_config=llm_config_with_max,
                             mcp_client=None,
-                            context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
+                            context_fifo_threshold=-1,  # FIFO 保底
                             history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
                             bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
                         )
@@ -3042,7 +3042,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             task=truncated_prompt,
                             llm_config=llm_config,
                             mcp_client=None,
-                            context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
+                            context_fifo_threshold=-1,  # FIFO 保底
                         )
 
                     cm_result = await asyncio.to_thread(run_context_manager)
@@ -3217,7 +3217,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     llm_config=llm_config,
                     mcp_client=None,
                     history=entity_force_history,
-                    context_fifo_threshold=0,
+                    context_fifo_threshold=-1,  # FIFO 保底
                 )
 
             if entity_force_msg_ids:
@@ -3296,7 +3296,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         llm_config=llm_config,
                         mcp_client=None,
                         history=dream_force_history,
-                        context_fifo_threshold=0,
+                        context_fifo_threshold=-1,  # FIFO 保底
                     )
 
                 dream_result = await asyncio.to_thread(run_dream_evolver_force)
@@ -3378,7 +3378,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         llm_config=llm_config,
                         mcp_client=None,
                         history=journal_force_history,
-                        context_fifo_threshold=0,
+                        context_fifo_threshold=-1,  # FIFO 保底
                     )
 
                 journal_result = await asyncio.to_thread(run_journal_agent_force)
@@ -3490,7 +3490,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     task=prompt,
                     llm_config=llm_config_with_max,
                     mcp_client=None,
-                    context_fifo_threshold=0,
+                    context_fifo_threshold=-1,  # FIFO 保底
                     history=_force_history,  # 直接传 messages 列表，避免单条 user message 超限
                     bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
                 )
