@@ -4,7 +4,6 @@ LightRAG merges multi-source entity descriptions using <SEP> as separator.
 All display/injection endpoints must clean <SEP> so it never appears raw
 in prompts or frontend UI.
 """
-import pytest
 
 
 class TestCleanSep:
@@ -76,16 +75,6 @@ class TestKgApiFormatDescription:
         result = _format_description("brainregion", desc)
         # Should not contain raw <SEP> either
         assert "<SEP>" not in result
+        assert "brain_meta_" not in result  # brain_meta metadata should be stripped
+        assert "summary内容" in result  # summary content should be preserved
 
-
-class TestRunnerRegionKnowledgeSep:
-    """Test that runner's active brain region knowledge section cleans <SEP>."""
-
-    def test_sep_replaced_with_newline_in_region_knowledge(self):
-        """The region knowledge injection should replace <SEP> with \\n (prompt context)."""
-        # Verify the replacement logic: <SEP> → \n for prompt injection
-        desc = "描述A<SEP>描述B<SEP>描述C"
-        # This mirrors what runner.py should do (same as _format_lightrag_entities_for_prompt)
-        cleaned = desc.replace("<SEP>", "\n")
-        assert "<SEP>" not in cleaned
-        assert "描述A\n描述B\n描述C" == cleaned

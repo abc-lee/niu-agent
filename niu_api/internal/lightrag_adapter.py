@@ -115,7 +115,7 @@ def _clean_description(desc: str | None, entity_type: str | None = None) -> str:
 
 
 def _clean_sep_in_query_result(result):
-    """Recursively clean <SEP> from description fields in query_data results.
+    """Clean <SEP> from description fields in query_data results.
 
     LightRAG's aquery_data() returns structured results with entities,
     relationships, and chunks — each potentially containing description
@@ -291,8 +291,7 @@ class LightRAGAdapter:
                 logger.debug("LightRAG query() returned fail_response, filtering out")
                 return ""
             # Clean <SEP> from context string (entity descriptions embedded by LightRAG)
-            if isinstance(result, str):
-                result = result.replace("<SEP>", " ")
+            result = result.replace("<SEP>", " ")
             return result
 
         except Exception as e:
@@ -1615,7 +1614,7 @@ class LightRAGAdapter:
                         if nx_graph.has_node(resolved_target):
                             attrs = nx_graph.nodes[resolved_target]
                             target_type = attrs.get("entity_type", "other")
-                            target_desc = _clean_sep(attrs.get("description", ""))
+                            target_desc = _clean_description(attrs.get("description", ""), target_type)
 
                 get_change_log().record_change("entity_merged", {
                     "source_ids": resolved_sources,
