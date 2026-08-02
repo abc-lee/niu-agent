@@ -631,11 +631,31 @@ runner.py 的 dream-evolver force 路径使用 `_run_subagent_step` 封装（而
 
 确认 runner.py dream-evolver force 块从 L1264 开始。
 
-- [ ] **Step 2: 替换 dream-evolver force 块**
+- [ ] **Step 2: 添加导入**
+
+在 `agent/runner.py` 的 `_on_context_high_usage` 方法导入块（L1134-1143）中添加 `_is_subagent_overflow` 和 `_split_dream_batches`：
+
+```python
+        from niu_api.compat import (
+            _build_compress_history,
+            _build_force_prompt,
+            _build_incremental_msg_text,
+            _build_journal_task,
+            _build_plain_history,
+            _is_subagent_overflow,      # 新增：检测 overflow
+            _parse_idx_list,
+            _split_dream_batches,       # 新增：dream-evolver 拆分
+            _strip_analysis,
+            _write_cursor_with_lock,
+        )
+```
+
+注意：`_is_subagent_overflow` 在 `_run_subagent_step` 方法内部也有局部导入（L1058），但那是方法级作用域，在 `_on_context_high_usage` 中不可用。必须在此处导入块中添加。
+
+- [ ] **Step 3: 替换 dream-evolver force 块**
 
 将 L1264-1285（`if dream_force_msg_ids:` 块）替换为按批次循环调用的逻辑。
 
-**替换后**：
 ```python
             if dream_force_msg_ids:
                 dream_force_prompt = """对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
@@ -659,7 +679,7 @@ runner.py 的 dream-evolver force 路径使用 `_run_subagent_step` 封装（而
                     _batch_history, _batch_idx_to_id = _build_plain_history(_batch_incremental_msgs)
 
                     logger.info(f"[Runner] Force: dream-evolver {_batch_label}: {len(_batch_msg_ids)} messages")
-                    _, new_dream_id = self._run_subagent_step(
+                    _batch_result, new_dream_id = self._run_subagent_step(
                         "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
                         dream_force_prompt, llm_config, last_dream_evolve_id,
                         _batch_msg_ids, "last_evolve_at",
@@ -671,40 +691,28 @@ runner.py 的 dream-evolver force 路径使用 `_run_subagent_step` 封装（而
                         logger.warning("[Runner] Stop requested, aborting force compress")
                         return
 
-                    # _run_subagent_step 已处理 overflow（游标不动）和正常完成（游标推进）
-                    # 更新 last_dream_evolve_id 基准，使下一批回退到此游标
+                    # overflow 检测：break 跳过后续批次（游标不动，_run_subagent_step 已处理）
+                    if _is_subagent_overflow(_batch_result):
+                        logger.warning(f"[Runner] Force: dream-evolver {_batch_label} overflow, skipping remaining batches")
+                        break
+
+                    # 更新 last_dream_evolve_id 基准，使下一批回退到此游标而非循环前旧值
                     last_dream_evolve_id = new_dream_id
             else:
                 logger.info("[Runner] Force: dream-evolver no incremental messages")
 ```
 
-**关键差异**：runner.py 用 `_run_subagent_step` 封装调用，它内部已处理 overflow（游标不动）和游标校验/写入。每批调用后更新 `last_dream_evolve_id = new_dream_id`（同 R1 P1 修复逻辑）。overflow 时 `_run_subagent_step` 返回 `last_cursor_id`（即传入的旧游标），`new_dream_id` 不变，下一批仍从旧游标开始——但 overflow 后应该 break 跳过后续批次。
+**关键说明**：
+- `_run_subagent_step` 返回 `(result, new_cursor_id)`。`result` 可用 `_is_subagent_overflow` 检测 overflow。
+- overflow 时 `_run_subagent_step` 内部已处理游标不动（返回 `last_cursor_id`），但必须 `break` 跳过后续批次——否则下一批会从旧游标重新开始导致重复处理。
+- `last_dream_evolve_id = new_dream_id` 必须在 overflow 检测之后、break 之前更新，使下一批的 `_run_subagent_step` 调用使用上一批的游标作为 `last_cursor_id` 参数。
 
-**注意**：`_run_subagent_step` 不返回 overflow 标志，需要从 result 文本判断。但 `_run_subagent_step` 内部已经处理了 overflow（游标不动），所以即使不 break，下一批也会从旧游标重新开始——这会导致重复处理。因此需要在循环内检测 overflow 并 break。
-
-修正：在 `_run_subagent_step` 调用后检查返回的 result 是否是 overflow：
-
-```python
-                    _batch_result, new_dream_id = self._run_subagent_step(
-                        "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                        dream_force_prompt, llm_config, last_dream_evolve_id,
-                        _batch_msg_ids, "last_evolve_at",
-                        history=_batch_history, context_fifo_threshold=-1,
-                        idx_to_id=_batch_idx_to_id,
-                    )
-                    if _is_subagent_overflow(_batch_result):
-                        logger.warning(f"[Runner] Force: dream-evolver {_batch_label} overflow, skipping remaining batches")
-                        break
-```
-
-需要在 runner.py 顶部确保 `_is_subagent_overflow` 和 `_split_dream_batches` 已导入（runner.py 已从 niu_api.compat 导入了 `_is_subagent_overflow`，需新增 `_split_dream_batches`）。
-
-- [ ] **Step 3: 运行已有测试确认无回归**
+- [ ] **Step 4: 运行已有测试确认无回归**
 
 Run: `python/bin/python -m pytest tests/test_protect_range.py tests/test_sep_cleanup.py tests/test_dream_split.py -v`
 Expected: PASS (all tests)
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
 git add agent/runner.py
