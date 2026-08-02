@@ -44,3 +44,32 @@ class TestSearchByFilePath:
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["entity_name"] == "report-skill"
+
+
+class TestDecayPoolCategoryCorrection:
+    """Test that inject() updates category when entity is re-injected with correct category."""
+
+    def test_category_updated_when_lower_score(self):
+        """Even with lower score, category must be updated if different."""
+        from agent.decay_pool import DecayPool
+
+        pool = DecayPool()
+        # First inject as "knowledge" (wrong category)
+        pool.inject(
+            entity_name="report-skill",
+            entity_dict={"entity_name": "report-skill", "entity_type": "Skill", "description": "test"},
+            category="knowledge",
+            source="vector",
+            vector_score=0.8,
+        )
+        # Re-inject with correct category "skill" but lower score
+        pool.inject(
+            entity_name="report-skill",
+            entity_dict={"entity_name": "report-skill", "entity_type": "Skill", "description": "test"},
+            category="skill",
+            source="vector",
+            vector_score=0.5,
+        )
+        # Category should be "skill" now
+        entry = pool._entries["report-skill"]
+        assert entry.category == "skill"
