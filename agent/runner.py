@@ -2130,10 +2130,11 @@ class NiuRunner:
             skill_names = {e.get("entity_name", "") for e in lightrag_results["skill"]}
             for cat, entities in knowledge_results.items():
                 if cat == "skill":
-                    # 非 SkillSync 来源的 skill（文档提取）降级为 knowledge，不丢弃
+                    # search_multi_lightrag 的 skill 桶含非 SkillSync 来源的 skill（文档提取）
+                    # 合并到 lightrag_results["skill"]，由衰减池注入阶段的降级逻辑统一处理
                     for e in entities:
                         if e.get("entity_name", "") not in skill_names:
-                            lightrag_results["knowledge"].append(e)
+                            lightrag_results["skill"].append(e)
                     continue
                 lightrag_results[cat] = [e for e in entities if e.get("entity_name", "") not in skill_names]
         except Exception as e:
