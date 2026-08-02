@@ -34,14 +34,6 @@ class TestFindProtectedRange:
         msgs = _msgs("user", "assistant", "user")
         assert _find_protected_range(msgs, 0) == 3
 
-    def test_basic_user_turn_protection(self):
-        """[user, assistant, user, assistant, user, assistant], min=3.
-
-        idx_N=3 (assistant at index 3), scan up finds user at idx 2, protect from 2.
-        """
-        msgs = _msgs("user", "assistant", "user", "assistant", "user", "assistant")
-        assert _find_protected_range(msgs, 3) == 2
-
     def test_consecutive_user_messages(self):
         """[user, user, assistant, user, assistant], min=2.
 
@@ -58,6 +50,13 @@ class TestFindProtectedRange:
         """
         msgs = _msgs("assistant", "user", "user", "assistant", "user", "assistant")
         assert _find_protected_range(msgs, 2) == 4
+
+    def test_consecutive_user_at_idx_n_phase_b(self):
+        """When idx_N is user and consecutive users exist above, scan up to earliest."""
+        msgs = _msgs('assistant', 'user', 'user', 'assistant')
+        # min=2: Step 1 counts assistant(3)→count=1, user(2)→count=2, idx_N=2(user)
+        # Step 2: i=2=user→found, i=1=user→continue, i=0=assistant→stop. Return 1.
+        assert _find_protected_range(msgs, 2) == 1
 
     def test_idx_n_is_assistant_finds_user_above(self):
         """[user, assistant, user, assistant, user, assistant], min=3.
