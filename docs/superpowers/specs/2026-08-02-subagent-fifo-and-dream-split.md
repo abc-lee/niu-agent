@@ -4,7 +4,7 @@
 
 ### 问题 1：FIFO 被关闭导致溢出死循环
 
-`niu_api/compat.py` 中所有 10 个子 Agent 调用点都显式传 `context_fifo_threshold=0`，关闭了 FIFO 的 fallback truncation 路径。
+`niu_api/compat.py` 中所有 9 个子 Agent 调用点都显式传 `context_fifo_threshold=0`，关闭了 FIFO 的 fallback truncation 路径。
 
 FIFO 机制有两条触发路径（`agent/generic/agent_loop.py`）：
 
