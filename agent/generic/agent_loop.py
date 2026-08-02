@@ -15,9 +15,8 @@ _AT_NIU_PREFIX = "@niu-agent"  # 子 Agent 询问主 Agent 的 content 前缀（
 # 格式错误提示文本（用 f-string 插值 _AT_NIU_PREFIX，未来改名只改常量）
 _FORMAT_ERROR_PROMPT = (
     "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
-    "1. 调用工具继续工作（正常 tool_calls）\n"
-    f"2. 询问主 Agent：content 以 `{_AT_NIU_PREFIX} ` 开头，如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`\n"
-    "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
+    f"1. 询问主 Agent：content 以 `{_AT_NIU_PREFIX} ` 开头，如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`\n"
+    "2. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
     "禁止输出不带 @ 前缀的纯 content。请重新输出。"
 )
 
