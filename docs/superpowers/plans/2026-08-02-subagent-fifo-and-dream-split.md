@@ -733,7 +733,17 @@ batch skips remaining batches."
                             logger.info(f"[Tidy] Force: Dream cursor fallback to batch end: {new_dream_id}")
                         else:
                             new_dream_id = last_dream_evolve_id
-                        last_dream_evolve_id = new_dream_id  # 更新基准，使第二批回退到此游标
+                        # 先校验 new_dream_id 有效性，再更新 last_dream_evolve_id（R6 P2 修复）
+                        # 如果先更新再校验，校验失败时 last_dream_evolve_id 已被污染
+                        try:
+                            fresh_msgs = await store.get_messages()
+                            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                            if new_dream_id not in fresh_ids:
+                                logger.warning(f"[Tidy] Force: Dream cursor {new_dream_id} deleted, reverting to {last_dream_evolve_id}")
+                                new_dream_id = last_dream_evolve_id
+                        except Exception:
+                            logger.warning("[Tidy] Force: Could not verify dream cursor, keeping current value")
+                        last_dream_evolve_id = new_dream_id  # 校验后更新基准
 
                         # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
                         _second_batch_ids = []
