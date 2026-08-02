@@ -1235,7 +1235,7 @@ class NiuRunner:
                     "entity-extractor", entity_cursor_path, "last_entity_extract_id",
                     entity_force_prompt, llm_config, last_entity_extract_id,
                     entity_force_msg_ids, "last_entity_extract_at",
-                    history=entity_force_history, context_fifo_threshold=0,
+                    history=entity_force_history, context_fifo_threshold=-1,  # FIFO 保底
                     idx_to_id=entity_force_idx_to_id,
                 )
 
@@ -1274,7 +1274,7 @@ class NiuRunner:
                     "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
                     dream_force_prompt, llm_config, last_dream_evolve_id,
                     dream_force_msg_ids, "last_evolve_at",
-                    history=dream_force_history, context_fifo_threshold=0,
+                    history=dream_force_history, context_fifo_threshold=-1,  # FIFO 保底
                     idx_to_id=dream_force_idx_to_id,
                 )
 
@@ -1310,7 +1310,7 @@ class NiuRunner:
                     "journal-agent", journal_cursor_path, "last_journal_id",
                     journal_force_prompt, llm_config, last_journal_id,
                     journal_force_msg_ids, "last_journal_at",
-                    history=journal_force_history, context_fifo_threshold=0,
+                    history=journal_force_history, context_fifo_threshold=-1,  # FIFO 保底
                     idx_to_id=journal_force_idx_to_id,
                 )
                 logger.info(f"[Runner] Force: Journal cursor updated: {new_journal_id}")
@@ -1381,7 +1381,7 @@ class NiuRunner:
                     task=prompt,
                     llm_config=llm_config_with_max,
                     mcp_client=None,
-                    context_fifo_threshold=0,
+                    context_fifo_threshold=-1,  # FIFO 保底
                     history=_force_history,
                     bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
                 )
