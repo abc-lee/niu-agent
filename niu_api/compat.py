@@ -1048,11 +1048,11 @@ def _build_journal_task() -> str:
     """构建 journal-agent 的 task prompt（纯指令，消息以 history 形式逐条传入）。
 
     Returns:
-        纯指令 task prompt 字符串（含 processed_up_to=N 说明，程序据此推进游标）
+        纯指令 task prompt 字符串（含 @end processed_up_to=N 说明，程序据此推进游标）
     """
     return """以上是对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
 
-处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+处理完成后，以 `@end` 开头输出最终回复，后接报告内容，最后一行包含 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
 
 
 def _write_cursor_with_lock(cursor_path, data: dict) -> None:
@@ -2474,7 +2474,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+处理完成后，以 `@end` 开头输出最终回复，后接报告内容，最后一行包含 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
                 # 构造增量 history：只含游标之后的消息（按 entity_msg_ids 过滤）
@@ -2557,7 +2557,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.info(f"[Tidy] dream-evolver: {len(dream_msg_ids)} new messages since cursor")
                 dream_task_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，以 `@end` 开头输出最终回复，后接报告内容，最后一行包含 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
 
                 # 计算第一批：增量消息 token 量过大时在 user 消息边界处拆分
                 _dream_context_window = _read_context_window_tokens()
@@ -3342,7 +3342,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+处理完成后，以 `@end` 开头输出最终回复，后接报告内容，最后一行包含 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
             # 构造全量 history + idx_to_id 映射（force 模式 cursor 为空 = 全量）
             # 方案 A：排除 PROTECTED 消息（最近 N 条 user/assistant）防止 overflow 死循环（详见 Architecture §6）
             # _force_protected_ids 已在 Step 6.0 force 块顶部计算（与 context-manager protect_recent_count 对齐）
@@ -3425,7 +3425,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 new_dream_id = last_dream_evolve_id  # 初始化，防止 overflow break 时未定义
                 dream_force_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，以 `@end` 开头输出最终回复，后接报告内容，最后一行包含 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
 
                 # 计算第一批：增量消息 token 量过大时在 user 消息边界处拆分
                 _dream_context_window = _read_context_window_tokens()
