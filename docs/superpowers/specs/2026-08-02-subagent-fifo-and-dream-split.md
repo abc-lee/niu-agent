@@ -76,38 +76,33 @@ dream-evolver 的工作流程是多任务串行：
 
 ### Part 2：dream-evolver 拆分调用
 
-当 dream-evolver 增量消息的 token 总量占子 Agent 上下文窗口的 50% 以上时，将增量消息范围在 user 消息边界处拆成两批。
+当 dream-evolver 增量消息的 token 总量占子 Agent 上下文窗口的 50% 以上时，将增量消息拆成两批调用。程序只负责"砍一半"生成第一批的范围，第二批的范围由大模型输出的 `processed_up_to` 动态决定。
 
 #### 拆分算法
 
-新增辅助函数 `_split_dream_batches`：
+新增辅助函数 `_split_dream_first_batch`：
 
 ```python
-def _split_dream_batches(
+def _split_dream_first_batch(
     messages: list,
     dream_msg_ids: list[str],
     msg_tokens: list[int],
     context_window_tokens: int,
     threshold: float = 0.50,
-) -> list[list[str]]:
-    """将 dream-evolver 的增量消息范围在 user 消息边界处拆成两批。
+) -> list[str] | None:
+    """计算 dream-evolver 第一批的消息 ID 列表。
 
-    Args:
-        messages: 全量消息列表（Message 对象）
-        dream_msg_ids: 增量消息 UUID 列表（按顺序）
-        msg_tokens: 每条消息的 token 数（与 messages 等长同顺序）
-        context_window_tokens: 子 Agent 上下文窗口大小
-        threshold: 拆分阈值（默认 0.50 = 50%）
-
-    Returns:
-        拆分后的批次列表。无需拆分时返回 [dream_msg_ids]。
+    当增量消息的 token 总量 >= 上下文窗口的 threshold 时，
+    在中间位置向两端查找最近的 role=user 消息作为分割点，
+    返回第一批的消息 ID 列表（split_pos 之前，不含 user 消息）。
+    无需拆分时返回 None。
     """
 ```
 
 算法步骤：
 
 1. 计算增量消息 token 总量：遍历 `messages`，对 `msg.id in dream_msg_ids` 的消息累加 `msg_tokens[i]`
-2. 如果 `incremental_tokens < context_window_tokens * threshold` 或 `len(dream_msg_ids) < 4`，返回 `[dream_msg_ids]`（不拆分）
+2. 如果 `incremental_tokens < context_window_tokens * threshold` 或 `len(dream_msg_ids) < 4`，返回 `None`（不拆分）
 3. 构建增量消息子列表 `dream_incremental_msgs`（保持原序）
 4. 取中间位置 `mid = len(dream_incremental_msgs) // 2`
 5. 从 `mid` 向两端查找最近的 `role=user` 消息：
@@ -115,27 +110,40 @@ def _split_dream_batches(
    - 向左找：从 `mid` 到开头，找第一个 `role=user` 的位置 `left_user`
    - 选择更接近 `mid` 的作为分割点 `split_pos`
    - 如果只找到一侧有 user，用那个位置
-   - 如果都没有 user（纯 tool/assistant 消息），不拆分
-6. `first_batch = dream_msg_ids[0:split_pos]`，`second_batch = dream_msg_ids[split_pos:]`
-7. 返回 `[first_batch, second_batch]`
+   - 如果都没有 user（纯 tool/assistant 消息），返回 `None`（不拆分）
+6. 返回 `dream_msg_ids[0:split_pos]`（第一批，不含 user 消息）
 
-**分割点在 user 消息处**：`split_pos` 指向 user 消息，`first_batch` 包含 user 消息之前的所有消息（不含该 user），`second_batch` 从该 user 消息开始（含该 user）。这样第二批以完整的用户会话开头，对话单元不被截断。
+**分割点在 user 消息处**：`split_pos` 指向 user 消息，第一批包含 user 消息之前的所有消息（不含该 user）。第二批从该 user 消息开始（含该 user）——但第二批的确切范围由第一批处理后的 `processed_up_to` 动态决定。
 
 #### 调用流程
 
-将 dream-evolver 的调用逻辑从"单次调用"改为"按批次循环调用"：
+将 dream-evolver 的调用逻辑从"单次调用"改为"两批调用"：
 
 ```
-batches = _split_dream_batches(messages, dream_msg_ids, msg_tokens, context_window_tokens)
-for batch_idx, batch_msg_ids in enumerate(batches):
-    1. 用 batch_msg_ids 过滤出 batch_incremental_msgs
-    2. _build_plain_history(batch_incremental_msgs) 构造 history + idx_to_id
-    3. call_subagent_with_auto_answer(history=batch_history, context_fifo_threshold=-1)
-    4. 处理 overflow：overflow 时游标不动，跳过后续 batch（break）
-    5. 正常完成：解析 processed_up_to=N，推进游标
-    6. 写入游标文件
-    7. 如果是第一批且成功，第二批从新游标开始（batch_msg_ids 已预计算，无需重新获取）
+first_batch_ids = _split_dream_first_batch(messages, dream_msg_ids, msg_tokens, context_window_tokens)
+if first_batch_ids is None:
+    # 不拆分，正常单次调用
+    call dream-evolver with all dream_msg_ids
+else:
+    # 第一批
+    first_msgs = filter messages by first_batch_ids
+    first_history, first_idx_to_id = _build_plain_history(first_msgs)
+    call dream-evolver with first_history
+    if overflow: break (游标不动)
+    parse processed_up_to=N → new_dream_id = first_idx_to_id[N]
+    write cursor
+    last_dream_evolve_id = new_dream_id
+
+    # 第二批：从游标之后到末尾，动态计算
+    second_batch_ids = [mid for mid in dream_msg_ids if mid is after new_dream_id in messages order]
+    if second_batch_ids:
+        second_msgs = filter messages by second_batch_ids
+        second_history, second_idx_to_id = _build_plain_history(second_msgs)
+        call dream-evolver with second_history
+        parse processed_up_to → write cursor
 ```
+
+**关键设计**：第二批的范围不固定——如果大模型在第一批中只处理了 90/110 条（输出 `processed_up_to=90`），第二批从第 91 条开始到末尾，包含第一批未处理的 20 条 + 原计划后半段。大模型自己判断哪些处理了，程序据此动态计算第二批。
 
 #### 适用范围
 
@@ -145,7 +153,7 @@ for batch_idx, batch_msg_ids in enumerate(batches):
 
 #### 不修改 dream-evolver 提示词
 
-现有提示词说"处理收到的全部消息"——拆分后每批只看到部分消息，但提示词不需要改。dream-evolver 对每批消息独立执行阶段A→B→C，语义正确。
+现有提示词说"处理收到的全部消息"——拆分后每批只看到部分消息，但提示词不需要改。dream-evolver 对每批消息独立执行阶段A→B→C，语义正确。大模型自己判断处理到哪条，输出 `processed_up_to=N`，程序据此推进游标并计算第二批范围。
 
 ## 修改文件
 
