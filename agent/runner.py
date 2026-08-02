@@ -2102,20 +2102,38 @@ class NiuRunner:
         except Exception as e:
             logger.warning(f"Brain activation failed: {e}")
 
-        # 1. LightRAG 全局检索
-        lightrag_results: dict[str, list[dict]] = {}
+        # 1. LightRAG 检索 — 按类型独立检索，避免 skill 被 knowledge 淹没
+        lightrag_results: dict[str, list[dict]] = {
+            "skill": [], "knowledge": [], "interactionhabit": [], "other": [],
+        }
         adapter = None
+        if self._brain_adapter is not None:
+            adapter = self._brain_adapter
+        else:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            adapter = LightRAGAdapter()
+        # 1a. Skill 专属检索：用 filter_lambda 按 file_path 预过滤，确保 skill 不被 knowledge 淹没
+        #     独立 try 块：skill 检索失败不影响 knowledge 检索
         try:
-            if self._brain_adapter is not None:
-                adapter = self._brain_adapter
-            else:
-                from niu_api.internal.lightrag_adapter import LightRAGAdapter
-                adapter = LightRAGAdapter()
-            lightrag_results = adapter.search_multi_lightrag(
+            skill_results = adapter.search_by_file_path(
+                context, file_path_contains="skill_sync", top_k=10, keywords=[context],
+            )
+            lightrag_results["skill"] = skill_results
+        except Exception as e:
+            logger.warning(f"LightRAG skill retrieval failed: {e}")
+        # 1b. Knowledge 全量检索（interactionhabit 也从这里分桶）
+        try:
+            knowledge_results = adapter.search_multi_lightrag(
                 context, mode="local", top_k=10, keywords=[context],
             )
+            # 从 knowledge 结果中移除已由 skill 检索获取的实体（按 entity_name 去重）
+            skill_names = {e.get("entity_name", "") for e in lightrag_results["skill"]}
+            for cat, entities in knowledge_results.items():
+                if cat == "skill":
+                    continue  # skill 已由 search_by_file_path 独立检索，不用 search_multi_lightrag 的结果覆盖
+                lightrag_results[cat] = [e for e in entities if e.get("entity_name", "") not in skill_names]
         except Exception as e:
-            logger.warning(f"LightRAG retrieval failed: {e}")
+            logger.warning(f"LightRAG knowledge retrieval failed: {e}")
 
         # 2. 衰减池维护（先衰减旧实体，再注入新命中）
         self._decay_pool.decay()
