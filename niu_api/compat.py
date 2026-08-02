@@ -3516,6 +3516,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         except Exception:
                             logger.warning("[Tidy] Force: Could not verify dream cursor, keeping current value")
                         last_dream_evolve_id = new_dream_id  # 校验后更新基准
+                        _write_cursor_with_lock(dream_cursor_path, {
+                            "last_dream_evolve_id": new_dream_id,
+                            "last_evolve_at": datetime.now().isoformat(),
+                        })
+                        logger.info(f"[Tidy] Force: Dream cursor persisted after batch 1: {new_dream_id}")
 
                         # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
                         _second_batch_ids = []
