@@ -1314,8 +1314,6 @@ class NiuRunner:
 
                     # overflow 检测：跳过第二批（游标不动，_run_subagent_step 已处理）
                     if not _is_subagent_overflow(_batch_result):
-                        last_dream_evolve_id = new_dream_id  # 更新基准，使第二批回退到此游标
-
                         # Clamp: ensure cursor is at least at first_batch end
                         # to prevent batch2 from re-processing batch1 messages
                         if new_dream_id in _first_batch_ids:
@@ -1328,6 +1326,7 @@ class NiuRunner:
                                     "last_dream_evolve_id": new_dream_id,
                                     "last_evolve_at": datetime.now().isoformat(),
                                 })
+                        last_dream_evolve_id = new_dream_id  # 更新基准（clamp 后），使第二批回退到此游标
 
                         # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
                         _second_batch_ids = []
