@@ -563,6 +563,48 @@ class LightRAGAdapter:
         result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
         return self.filter_by_entity_type(result, "Skill")
 
+    def search_by_file_path(
+        self,
+        query: str,
+        file_path_contains: str,
+        top_k: int = 10,
+        keywords: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search entities with pre-filter on file_path via filter_lambda.
+
+        Unlike search_skills (which post-filters), this method uses
+        filter_lambda to filter at the vector search stage — achieving
+        true 'filter-then-top-k' semantics.
+
+        Used for skill retrieval where file_path contains 'skill_sync'
+        (SkillSync-injected skills), ensuring skills are not drowned out
+        by knowledge entities in global top-k.
+
+        Args:
+            query: Search query string.
+            file_path_contains: Substring to match in entity's file_path field.
+            top_k: Number of top results to retrieve (after filtering).
+            keywords: Pre-provided keywords to skip LLM extraction.
+
+        Returns:
+            List of entity dicts matching the file_path filter.
+        """
+        def filter_fn(data: dict) -> bool:
+            fp = data.get("file_path", "")
+            return bool(fp) and file_path_contains in fp
+
+        result = self.query_data(
+            query, mode="local", top_k=top_k,
+            keywords=keywords, filter_lambda=filter_fn,
+        )
+        if not result:
+            return []
+
+        data = result.get("data", {})
+        if not data:
+            data = result
+        return data.get("entities", [])
+
     def search_tools(
         self,
         query: str,
