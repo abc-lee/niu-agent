@@ -73,3 +73,53 @@ class TestDecayPoolCategoryCorrection:
         # Category should be "skill" now
         entry = pool._entries["report-skill"]
         assert entry.category == "skill"
+
+
+class TestInjectDynamicResourcesSkillRetrieval:
+    """Test that _inject_dynamic_resources retrieves skills independently."""
+
+    def test_skill_retrieval_uses_search_by_file_path(self):
+        """Skill retrieval must use search_by_file_path, not search_multi_lightrag."""
+        from agent.runner import NiuRunner
+
+        runner = NiuRunner.__new__(NiuRunner)
+        runner._decay_pool = MagicMock()
+        runner._decay_pool.decay = MagicMock()
+        runner._decay_pool.inject = MagicMock()
+        runner._decay_pool.get_top_by_category = MagicMock(return_value=[])
+        runner._decay_pool.get_top_by_source = MagicMock(return_value=[])
+        runner._brain_adapter = MagicMock()
+        runner._brain_adapter.activate_for_query = MagicMock()
+        runner._brain_adapter.format_region_map_only = MagicMock(return_value="")
+        runner._format_running_subagents_section = MagicMock(return_value="")
+        runner._get_brain_injector = MagicMock(return_value=None)
+        runner._format_lightrag_entities_for_prompt = MagicMock(return_value=("", set()))
+        runner._INJECT_ENTITY_TYPE_BLACKLIST = set()
+        runner._INJECT_ENTITY_NAME_BLACKLIST = set()
+
+        call_log = []
+
+        def mock_search_multi(query, mode="local", top_k=20, keywords=None):
+            call_log.append(("search_multi_lightrag", query, top_k))
+            return {"skill": [], "knowledge": [], "interactionhabit": [], "other": []}
+
+        def mock_search_by_fp(query, file_path_contains, top_k=10, keywords=None):
+            call_log.append(("search_by_file_path", query, file_path_contains, top_k))
+            return [{"entity_name": "report-skill", "entity_type": "Skill", "file_path": "skill_sync", "description": "test", "distance": 0.55}]
+
+        runner._brain_adapter.search_multi_lightrag = mock_search_multi
+        runner._brain_adapter.search_by_file_path = mock_search_by_fp
+        runner._brain_adapter.search_interaction_habits = MagicMock(return_value=[])
+
+        runner._inject_dynamic_resources("test context")
+
+        # Verify search_by_file_path was called for skills
+        skill_calls = [c for c in call_log if c[0] == "search_by_file_path"]
+        assert len(skill_calls) == 1
+        assert "skill_sync" in skill_calls[0][2]
+
+        # Verify search_multi_lightrag was NOT called with the old all-in-one approach
+        # (it should only be used for knowledge, not skills)
+        multi_calls = [c for c in call_log if c[0] == "search_multi_lightrag"]
+        # knowledge still uses search_multi_lightrag
+        assert len(multi_calls) >= 1
