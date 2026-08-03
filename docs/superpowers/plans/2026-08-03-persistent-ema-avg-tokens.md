@@ -545,6 +545,7 @@ Expected: PASS — 6 tests
 cd /Users/lilei/tools/ai-bot
 python/bin/python -c "import ast; ast.parse(open('agent/runner.py').read()); ast.parse(open('tests/test_dream_trigger.py').read()); print('syntax OK')"
 git add agent/runner.py tests/test_dream_trigger.py
+git commit -m "feat: integrate EMA update into _maybe_trigger_nap with dedup and _compute_ema_update"
 ```
 
 ---
