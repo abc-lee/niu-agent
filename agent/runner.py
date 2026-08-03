@@ -557,6 +557,33 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
 
 
 
+def _calc_dream_trigger_threshold(context_window_tokens: int) -> int:
+    """根据上下文窗口大小计算 dream-evolver 触发阈值（增量对话轮数）。
+
+    算法：
+    - 可用预算 = context_window * 0.5（目标实际上下文使用不超过 50%）
+    - 减去 system prompt 开销 ≈ 8000 tokens
+    - 每轮对话平均开销 ≈ 12000 tokens（消息本身 3-5K + 工具返回累积 5-10K）
+    - 阈值 = max(10, 预算 / 每轮开销)
+    - 保底 10 轮，无上限
+
+    200K 窗口 → (100K - 8K) / 12K = 7.7 → max(10, 7) = 10
+    2M 窗口 → (1M - 8K) / 12K = 82.7 → 82
+    """
+    SYSTEM_PROMPT_TOKENS = 8000
+    AVG_TURN_TOKENS = 12000
+    SAFETY_RATIO = 0.5
+    MIN_TURNS = 10  # 保底 10 轮，保证对话单元完整性
+
+    if context_window_tokens <= 0:
+        return MIN_TURNS  # 默认值
+
+    budget = context_window_tokens * SAFETY_RATIO - SYSTEM_PROMPT_TOKENS
+    raw_threshold = int(budget / AVG_TURN_TOKENS)
+
+    return max(MIN_TURNS, raw_threshold)
+
+
 class NiuRunner:
     """
     Niu Agent Runner
