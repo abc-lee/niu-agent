@@ -79,9 +79,8 @@
 
 ### 4.4 子 Agent 启动通知
 
-主 Agent 调用子 Agent 时，需要通知前端创建 tab：
-- 主 Agent SSE 流中新增一个 `subagent_started` 事件（或复用 tool_status，带子 Agent 名称 + unique_name）。
-- 前端收到后动态创建 tab 并建立独立 SSE 连接。
+- 主 Agent SSE 流（`/api/events/stream`）中新增一个 `subagent_started` 事件类型，携带子 Agent 名称 + unique_name。这是新增事件类型，不修改现有事件的处理逻辑。
+- 前端收到 `subagent_started` 后动态创建 tab，并向 `/api/subagents/{unique_name}/stream` 建立独立 SSE 连接。
 
 ## 5. 前端设计（需求边界）
 
