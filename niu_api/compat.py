@@ -3106,7 +3106,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 
         elif mode == "force":
-            # Force mode: entity-extractor 全量 → context-manager 强制压缩
+            # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
             # 计算 PROTECTED 消息 ID 集合（最近 N 条 user/assistant，与 context-manager 对齐）
             # 用于 entity force 方案 A：排除最近 PROTECTED 条防止 overflow 死循环（详见 Architecture §6）
@@ -3184,8 +3184,88 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 logger.info("[Tidy] Force mode: entity-extractor skipped, no messages")
 
-            # dream-evolver 已移至 _on_turn_end 主动触发，此处保留游标基准
-            new_dream_id = last_dream_evolve_id
+            # 2/3. dream-evolver（增量 task 方式，force 模式也是增量）
+            # 串行执行：重新获取消息列表
+            messages = await store.get_messages()
+            msg_tokens = []
+            try:
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
+                for msg in messages:
+                    try:
+                        t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            dream_force_msg_ids = []
+            _ = _build_incremental_msg_text(
+                messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens
+            )
+            logger.info(f"[Tidy] Force mode: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
+
+            new_dream_id = last_dream_evolve_id  # 默认保留旧游标，防止 overflow 时未定义
+            if dream_force_msg_ids:
+                dream_force_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+                # 构造增量 history
+                _id_set = set(dream_force_msg_ids)
+                dream_force_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+                dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
+
+                def run_dream_evolver_force():
+                    return call_subagent_with_auto_answer(
+                        agent_name="dream-evolver",
+                        task=dream_force_prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                        history=dream_force_history,
+                        context_fifo_threshold=-1,  # FIFO 保底
+                    )
+
+                dream_result = await asyncio.to_thread(run_dream_evolver_force)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
+                    return {"status": "aborted", "message": "Stopped by user"}
+                logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
+
+                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow 时游标不动
+                else:
+                    _processed_idx = _parse_processed_up_to(dream_result)
+                    if _processed_idx is not None and _processed_idx in dream_force_idx_to_id:
+                        new_dream_id = dream_force_idx_to_id[_processed_idx]
+                        logger.info(f"[Tidy] Force: Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
+                    elif dream_force_msg_ids:
+                        new_dream_id = dream_force_msg_ids[-1]  # 兜底
+                        logger.info(f"[Tidy] Force: Dream cursor fallback to range end: {new_dream_id}")
+                    else:
+                        new_dream_id = last_dream_evolve_id
+            else:
+                logger.info("[Tidy] Force: dream-evolver no incremental messages")
+                new_dream_id = last_dream_evolve_id  # 无增量时保留旧游标，避免 UnboundLocalError
+
+            # 校验游标
+            if new_dream_id:
+                fresh_msgs = await store.get_messages()
+                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                if new_dream_id not in fresh_ids:
+                    logger.warning(f"[Tidy] Force: Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                    new_dream_id = last_dream_evolve_id
+                    if new_dream_id and new_dream_id not in fresh_ids:
+                        new_dream_id = ""
+
+            if new_dream_id:
+                _write_cursor_with_lock(dream_cursor_path, {
+                    "last_dream_evolve_id": new_dream_id,
+                    "last_evolve_at": datetime.now().isoformat(),
+                })
 
             # 2.5/3. journal-agent（force 模式，始终调用）
             # 重新获取消息列表
