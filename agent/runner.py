@@ -1139,7 +1139,6 @@ class NiuRunner:
             _build_plain_history,
             _is_subagent_overflow,      # 新增：检测 overflow
             _parse_idx_list,
-            _split_dream_first_batch,   # 新增：dream-evolver 第一批拆分
             _strip_analysis,
             _write_cursor_with_lock,
         )
@@ -1266,95 +1265,23 @@ class NiuRunner:
             if dream_force_msg_ids:
                 dream_force_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+                # 构造增量 history + idx_to_id 映射
+                _id_set = set(dream_force_msg_ids)
+                dream_force_incremental_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
+                dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
 
-                # 计算第一批：增量消息 token 量过大时在 user 消息边界处拆分
-                _dream_context_window = _read_context_window_tokens()
-                _first_batch_ids = _split_dream_first_batch(
-                    db_messages, dream_force_msg_ids, msg_tokens, _dream_context_window
+                _, new_dream_id = self._run_subagent_step(
+                    "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
+                    dream_force_prompt, llm_config, last_dream_evolve_id,
+                    dream_force_msg_ids, "last_evolve_at",
+                    history=dream_force_history, context_fifo_threshold=-1,  # FIFO 保底
+                    idx_to_id=dream_force_idx_to_id,
                 )
 
-                if _first_batch_ids is None:
-                    # 不拆分，正常单次调用（保持原有逻辑）
-                    _id_set = set(dream_force_msg_ids)
-                    dream_force_incremental_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
-                    dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
-
-                    _, new_dream_id = self._run_subagent_step(
-                        "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                        dream_force_prompt, llm_config, last_dream_evolve_id,
-                        dream_force_msg_ids, "last_evolve_at",
-                        history=dream_force_history, context_fifo_threshold=-1,
-                        idx_to_id=dream_force_idx_to_id,
-                    )
-
-                    if is_stop_requested():
-                        logger.warning("[Runner] Stop requested, aborting force compress")
-                        return
-                else:
-                    # ===== 第一批 =====
-                    logger.info(f"[Runner] Force: dream-evolver splitting into 2 batches "
-                                f"(incremental tokens exceed 50% of {_dream_context_window})")
-                    _first_id_set = set(_first_batch_ids)
-                    _first_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _first_id_set]
-                    _first_history, _first_idx_to_id = _build_plain_history(_first_msgs)
-
-                    logger.info(f"[Runner] Force: dream-evolver batch 1/2: {len(_first_batch_ids)} messages")
-                    _batch_result, new_dream_id = self._run_subagent_step(
-                        "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                        dream_force_prompt, llm_config, last_dream_evolve_id,
-                        _first_batch_ids, "last_evolve_at",
-                        history=_first_history, context_fifo_threshold=-1,
-                        idx_to_id=_first_idx_to_id,
-                    )
-
-                    if is_stop_requested():
-                        logger.warning("[Runner] Stop requested, aborting force compress")
-                        return
-
-                    # overflow 检测：跳过第二批（游标不动，_run_subagent_step 已处理）
-                    if not _is_subagent_overflow(_batch_result):
-                        # Clamp: ensure cursor is at least at first_batch end
-                        # to prevent batch2 from re-processing batch1 messages
-                        if new_dream_id in _first_batch_ids:
-                            _first_batch_last = _first_batch_ids[-1]
-                            if _first_batch_ids.index(new_dream_id) < len(_first_batch_ids) - 1:
-                                new_dream_id = _first_batch_last
-                                logger.info(f"[Runner] Force: Dream cursor clamped to first batch end: {new_dream_id}")
-                                # _run_subagent_step 已写入未 clamp 的游标，需重新写 clamp 后的值
-                                _write_cursor_with_lock(dream_cursor_path, {
-                                    "last_dream_evolve_id": new_dream_id,
-                                    "last_evolve_at": datetime.now().isoformat(),
-                                })
-                        last_dream_evolve_id = new_dream_id  # 更新基准（clamp 后），使第二批回退到此游标
-
-                        # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
-                        _second_batch_ids = []
-                        _found_cursor = False
-                        for mid in dream_force_msg_ids:
-                            if mid == new_dream_id:
-                                _found_cursor = True
-                                continue
-                            if _found_cursor:
-                                _second_batch_ids.append(mid)
-
-                        if _second_batch_ids:
-                            _second_id_set = set(_second_batch_ids)
-                            _second_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _second_id_set]
-                            _second_history, _second_idx_to_id = _build_plain_history(_second_msgs)
-
-                            logger.info(f"[Runner] Force: dream-evolver batch 2/2: {len(_second_batch_ids)} messages")
-                            _batch_result, new_dream_id = self._run_subagent_step(
-                                "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                                dream_force_prompt, llm_config, last_dream_evolve_id,
-                                _second_batch_ids, "last_evolve_at",
-                                history=_second_history, context_fifo_threshold=-1,
-                                idx_to_id=_second_idx_to_id,
-                            )
-
-                            if is_stop_requested():
-                                logger.warning("[Runner] Stop requested, aborting force compress")
-                                return
+                if is_stop_requested():
+                    logger.warning("[Runner] Stop requested, aborting force compress")
+                    return
             else:
                 logger.info("[Runner] Force: dream-evolver no incremental messages")
 
