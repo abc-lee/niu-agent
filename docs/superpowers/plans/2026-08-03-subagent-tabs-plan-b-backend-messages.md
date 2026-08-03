@@ -358,8 +358,8 @@ _FORMAT_ERROR_PROMPT = (
 at_user_idx = _find_unescaped_marker(stripped, _AT_USER_PREFIX)
 if at_user_idx >= 0:
     after_marker = at_user_idx + len(_AT_USER_PREFIX)
-    # 检查 @user 后面是空白或字符串结尾（词边界）
-    if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n'):
+    # 检查 @user 后面是空白、常见标点或字符串结尾（词边界）
+    if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';'):
         question = stripped[after_marker:].strip()
         if not question:
             return (FORMAT_ERROR, '@user 后面必须跟问题内容')
@@ -427,7 +427,7 @@ def _ask_user_impl(question: str, unique_name: str) -> str | None:
     registry = get_user_ask_registry()
     future = registry.register(unique_name)
     try:
-        answer = future.wait(timeout=600)
+        answer = future.wait()  # 用 AskUserFuture 默认 _ASK_TIMEOUT=600
         if answer == TERMINATED_SIGNAL:
             return '[ask_user 已终止] 用户或系统已发出停止指令，请总结本轮工作后终止。'
         return answer
