@@ -593,6 +593,25 @@ def _calc_dream_trigger_threshold_dynamic(
 
     return max(MIN_TURNS, min(MAX_TURNS, threshold))
 
+def _compute_ema_update(ema_old: float, sample_count: int, current_avg: float) -> tuple[float, int]:
+    """计算非对称 EMA 更新。返回 (new_ema, new_sample_count)。
+
+    冷启动（sample_count < 5 或 ema_old=0）直接用 current_avg 初始化；
+    否则用非对称张力模型：上升 α=0.2（慢），下降 α=0.5（快）。
+    """
+    ALPHA_UP = 0.2
+    ALPHA_DOWN = 0.5
+    MIN_SAMPLES = 5
+
+    if sample_count < MIN_SAMPLES or ema_old == 0:
+        new_ema = current_avg
+    elif current_avg > ema_old:
+        new_ema = ALPHA_UP * current_avg + (1 - ALPHA_UP) * ema_old
+    else:
+        new_ema = ALPHA_DOWN * current_avg + (1 - ALPHA_DOWN) * ema_old
+
+    return new_ema, sample_count + 1
+
 
 def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
     """截取游标之后的消息。游标为空或找不到时返回全量消息。"""
@@ -716,6 +735,7 @@ class NiuRunner:
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
         self._nap_running = threading.Event()  # 小憩模式后台运行标志，避免并发启动
+        self._last_ema_turns = 0  # 去重：记录上次更新 EMA 时的 post_compress_turns
 
         # Decay pool (Ebbinghaus forgetting curve)
         self._decay_pool = DecayPool()
@@ -965,16 +985,46 @@ class NiuRunner:
             # 计算轮数：每遇到一条 role=user 消息算一轮开始
             turn_count = sum(1 for msg in incremental_msgs if getattr(msg, "role", "") == "user")
 
-            # 截取压缩游标后的消息（用于阈值计算，反映真实每轮开销）
+            # 截取压缩游标后的消息（用于 EMA 更新）
             post_compress_msgs = _slice_after_cursor(db_messages, last_compress_id)
+            post_compress_turns = sum(1 for m in post_compress_msgs if getattr(m, "role", "") == "user")
 
-            # 估算压缩游标后消息的 token 开销
-            post_compress_tokens = self._recalc_msg_stats(post_compress_msgs)
+            # 压缩后游标前移导致 post_compress_turns 变小，重置去重计数器
+            if post_compress_turns < self._last_ema_turns:
+                self._last_ema_turns = 0
+
+            ema_path = niu_dir / "avg_tokens_per_turn.json"
+
+            # 去重 + 更新 EMA：post_compress_turns >= 1 即可（冷启动保护在 threshold 函数中）
+            if post_compress_turns > self._last_ema_turns and post_compress_turns >= 1:
+                self._last_ema_turns = post_compress_turns
+
+                # 用 TokenCalculator 精确计算 token（包含 tool_calls 结构开销）
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
+                post_compress_dicts = [
+                    {
+                        "role": getattr(m, "role", ""),
+                        "content": getattr(m, "content", "") or "",
+                        "tool_calls": getattr(m, "tool_calls", []) or [],
+                    }
+                    for m in post_compress_msgs
+                ]
+                post_compress_token_total = calc.count_messages(post_compress_dicts)
+                current_avg = post_compress_token_total / post_compress_turns
+
+                ema_old, sample_count = self._read_ema(ema_path)
+                new_ema, new_sample_count = _compute_ema_update(ema_old, sample_count, current_avg)
+
+                if current_avg > 0:
+                    self._write_ema(ema_path, new_ema, new_sample_count)
 
             # 计算阈值
             from agent.subagent import _read_context_window_tokens
             context_window = _read_context_window_tokens()
-            threshold = _calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)
+            threshold = _calc_dream_trigger_threshold_dynamic(context_window, ema_path)
+
+            logger.info(f"[Nap] turn_count={turn_count}, threshold={threshold}, post_compress_turns={post_compress_turns}")
 
             if turn_count < threshold:
                 return
