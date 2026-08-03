@@ -515,16 +515,18 @@ class NiuHandler(BaseHandler):
 
 
     def _track_tool_call_for_repeat_detection(self, tool_name: str, args: dict):
-        """追踪工具调用用于重复检测"""
+        """追踪工具调用用于重复检测。
+
+        存储格式：(tool_name, args_hash) 元组。
+        args_hash 是参数的完整哈希，不受截断影响。
+        只有工具名和参数完全相同才算重复调用。
+        """
         if not hasattr(self, '_recent_tool_calls'):
             self._recent_tool_calls = []
 
-        # 构建工具调用字符串表示
         clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
-        args_preview = str(clean_args)[:50]
-        tool_call_str = f"{tool_name}({args_preview})"
-
-        self._recent_tool_calls.append(tool_call_str)
+        args_hash = hash(str(sorted(clean_args.items())))
+        self._recent_tool_calls.append((tool_name, args_hash))
 
         # 保留最近 10 次
         if len(self._recent_tool_calls) > 10:
@@ -586,16 +588,16 @@ class NiuHandler(BaseHandler):
             args_preview = str(clean_args)[:50]
             return f"调用工具: {tool_name}({args_preview})"
 
-
     def next_prompt_patcher(self, next_prompt, outcome, turn):
         """周期性警告、全局记忆注入和重复调用检测"""
         # P2-1: 工具重复调用检测
+        # 只检测连续 3 次完全相同的调用（工具名 + 参数都相同）
         if turn > 3 and hasattr(self, '_recent_tool_calls'):
             recent_tools = self._recent_tool_calls[-3:]
             if len(recent_tools) == 3:
-                # 检查是否连续 3 次调用相同工具
+                # 检查是否连续 3 次调用相同工具且参数完全相同
                 if (recent_tools[0] == recent_tools[1] == recent_tools[2]):
-                    tool_name = recent_tools[0].split('(')[0]  # 提取工具名
+                    tool_name = recent_tools[0][0]  # 元组第一个元素是工具名
                     import sys
                     print(
                         f"[P2-1] Detected repeated tool calls: {recent_tools}",
@@ -604,7 +606,7 @@ class NiuHandler(BaseHandler):
                     )
                     next_prompt = (
                         f"⚠️ **警告：检测到重复工具调用**\n\n"
-                        f"你已连续 3 次调用相同工具（{tool_name}）。这通常表示：\n"
+                        f"你已连续 3 次以相同参数调用相同工具（{tool_name}）。这通常表示：\n"
                         f"1. 参数可能不正确，工具无法正常执行\n"
                         f"2. 当前方法可能无法解决问题\n"
                         f"3. 需要用户澄清需求\n\n"
