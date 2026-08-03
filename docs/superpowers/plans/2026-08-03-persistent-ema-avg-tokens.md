@@ -459,6 +459,77 @@ if turn_count < threshold:
 - 保留 `incremental_msgs` 和 `turn_count` 的现有逻辑（dream 游标，用于触发判断）
 - `post_compress_turns >= 1` 即可更新 EMA（冷启动保护在 `_calc_dream_trigger_threshold_dynamic` 中通过 `sample_count < 5` 返回 10 实现）
 
+- [ ] **Step 3b: 写 EMA 更新逻辑测试**
+
+在 `tests/test_dream_trigger.py` 中新增测试类，验证非对称 EMA 更新逻辑。将 EMA 更新核心逻辑提取为可测试的独立函数 `_compute_ema_update(ema_old, sample_count, current_avg)`：
+
+```python
+class TestEMAUpdateLogic:
+    """测试非对称 EMA 更新逻辑。"""
+
+    def test_cold_start_overwrite(self):
+        """冷启动期（sample_count < 5）：直接用 current_avg 覆盖。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=0.0, sample_count=0, current_avg=3000.0)
+        assert new_ema == 3000.0
+        assert new_count == 1
+
+    def test_cold_start_overwrite_at_4(self):
+        """sample_count=4 仍走冷启动。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=2500.0, sample_count=4, current_avg=4000.0)
+        assert new_ema == 4000.0  # 覆盖，不是 EMA 公式
+        assert new_count == 5
+
+    def test_ema_old_zero_overwrite(self):
+        """ema_old=0 时直接初始化（即使 sample_count >= 5）。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=0.0, sample_count=10, current_avg=3000.0)
+        assert new_ema == 3000.0
+        assert new_count == 11
+
+    def test_rising_branch(self):
+        """上升分支：current_avg > ema_old → α_up=0.2。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=3000.0, sample_count=10, current_avg=5000.0)
+        assert new_ema == 0.2 * 5000.0 + 0.8 * 3000.0  # 3400.0
+        assert new_count == 11
+
+    def test_falling_branch(self):
+        """下降分支：current_avg <= ema_old → α_down=0.5。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=5000.0, sample_count=10, current_avg=3000.0)
+        assert new_ema == 0.5 * 3000.0 + 0.5 * 5000.0  # 4000.0
+        assert new_count == 11
+```
+
+同时需在 `agent/runner.py` 中提取 `_compute_ema_update` 模块级函数：
+
+```python
+def _compute_ema_update(ema_old: float, sample_count: int, current_avg: float) -> tuple[float, int]:
+    """计算非对称 EMA 更新。返回 (new_ema, new_sample_count)。"""
+    ALPHA_UP = 0.2
+    ALPHA_DOWN = 0.5
+    MIN_SAMPLES = 5
+
+    if sample_count < MIN_SAMPLES or ema_old == 0:
+        new_ema = current_avg
+    elif current_avg > ema_old:
+        new_ema = ALPHA_UP * current_avg + (1 - ALPHA_UP) * ema_old
+    else:
+        new_ema = ALPHA_DOWN * current_avg + (1 - ALPHA_DOWN) * ema_old
+
+    return new_ema, sample_count + 1
+```
+
+在 `_maybe_trigger_nap` 中调用 `_compute_ema_update` 替代内联逻辑。
+
+运行测试：
+```bash
+cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_dream_trigger.py::TestEMAUpdateLogic -v
+```
+Expected: PASS — 5 tests
+
 - [ ] **Step 4: 语法检查 + Commit**
 
 ```bash
