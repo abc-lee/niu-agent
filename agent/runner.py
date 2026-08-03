@@ -557,31 +557,55 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
 
 
 
-def _calc_dream_trigger_threshold(context_window_tokens: int) -> int:
-    """根据上下文窗口大小计算 dream-evolver 触发阈值（增量对话轮数）。
+def _calc_dream_trigger_threshold_dynamic(
+    context_window: int,
+    post_compress_msgs: list,
+    post_compress_tokens: list[int],
+) -> int:
+    """根据上下文窗口和压缩游标后消息动态计算 dream-evolver 触发阈值。
 
     算法：
-    - 可用预算 = context_window * 0.5（目标实际上下文使用不超过 50%）
-    - 减去 system prompt 开销 ≈ 8000 tokens
-    - 每轮对话平均开销 ≈ 12000 tokens（消息本身 3-5K + 工具返回累积 5-10K）
-    - 阈值 = max(10, 预算 / 每轮开销)
-    - 保底 10 轮，无上限
+    - 仅用压缩游标后的消息估算每轮 token 开销（压缩消息 token 含量失真）
+    - avg_tokens_per_turn = total_tokens / turn_count（turn_count = user 消息数）
+    - 增量预算 = context_window × 30%
+    - 阈值 = 增量预算 / avg_tokens_per_turn
+    - 下限 10 轮，上限 50 轮
+    - 轮数 < 3 时样本不足，直接返回保底 10
 
-    200K 窗口 → (100K - 8K) / 12K = 7.7 → max(10, 7) = 10
-    2M 窗口 → (1M - 8K) / 12K = 82.7 → 82
+    200K 窗口 + avg≈3000 → 60000 / 3000 = 20
+    200K 窗口 + avg≈6000 → 60000 / 6000 = 10（下限兜底）
     """
-    SYSTEM_PROMPT_TOKENS = 8000
-    AVG_TURN_TOKENS = 12000
-    SAFETY_RATIO = 0.5
-    MIN_TURNS = 10  # 保底 10 轮，保证对话单元完整性
+    MIN_TURNS = 10
+    MAX_TURNS = 50
+    MIN_AVG_TOKENS = 1000
+    BUDGET_RATIO = 0.30
 
-    if context_window_tokens <= 0:
-        return MIN_TURNS  # 默认值
+    if context_window <= 0:
+        return MIN_TURNS
 
-    budget = context_window_tokens * SAFETY_RATIO - SYSTEM_PROMPT_TOKENS
-    raw_threshold = int(budget / AVG_TURN_TOKENS)
+    # 1. 数轮数（user 消息数）—— 只数压缩游标后的
+    turn_count = sum(1 for m in post_compress_msgs if getattr(m, "role", "") == "user")
 
-    return max(MIN_TURNS, raw_threshold)
+    # 2. 算总消息 token —— 只算压缩游标后的
+    total_msg_tokens = sum(post_compress_tokens)
+
+    # 3. 算平均每轮 token；样本不足直接返回保底值
+    if turn_count < 3:
+        return MIN_TURNS
+
+    avg_tokens_per_turn = total_msg_tokens / turn_count
+
+    # 4. 安全下限：avg 至少 1000 tokens
+    avg_tokens_per_turn = max(MIN_AVG_TOKENS, avg_tokens_per_turn)
+
+    # 5. 增量预算 = 窗口 × 30%
+    incremental_budget = context_window * BUDGET_RATIO
+
+    # 6. 阈值 = 增量预算 / 每轮开销
+    threshold = int(incremental_budget / avg_tokens_per_turn)
+
+    # 7. 下限 10 轮，上限 50 轮
+    return max(MIN_TURNS, min(MAX_TURNS, threshold))
 
 
 class NiuRunner:
