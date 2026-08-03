@@ -514,8 +514,8 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
             if brain_regions:
                 region_list = "、".join(brain_regions)
                 _brain_region_section = f"\n\n## 当前脑区列表（预注入，无需搜索）\n\n{region_list}\n\n创建实体时直接参考以上脑区列表选择归属，不要调用 lightrag_search_entities 查询脑区。"
-        except Exception:
-            pass  # 获取失败不影响主流程
+        except Exception as e:
+            logger.debug(f'[SubAgent] Failed to get brain regions for {agent_name}: {e}')
 
     # 4. 强制注入 @niu-agent/@end 守则
     # context-manager 例外：它原设计是直接输出 keep=/update=/cursor= 让程序写数据库，
