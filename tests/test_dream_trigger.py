@@ -4,7 +4,7 @@ Tests the dynamic threshold algorithm `_calc_dream_trigger_threshold_dynamic`,
 which reads a persistent asymmetric EMA (exponential moving average) of
 per-turn token cost and derives the trigger threshold from the context
 window's 30% incremental budget. Also tests EMA persistence helpers and
-the non-asymmetric EMA update logic.
+the asymmetric EMA update logic.
 """
 
 
@@ -53,6 +53,37 @@ class TestEMAReadWrite:
         assert path.exists()
         ema, count = NiuRunner._read_ema(path)
         assert ema == 3500.0
+
+    def test_read_ema_negative_value(self, tmp_path):
+        """CQ-12: ema 为负值时应归零。"""
+        import json
+        from agent.runner import NiuRunner
+        path = tmp_path / "avg.json"
+        path.write_text(json.dumps({"ema": -100.0, "sample_count": 5}))
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 0.0
+        assert count == 5
+
+    def test_read_ema_nan(self, tmp_path):
+        """CQ-12: ema 为 NaN 时应归零。"""
+        import json
+        import math
+        from agent.runner import NiuRunner
+        path = tmp_path / "avg.json"
+        path.write_text(json.dumps({"ema": float("nan"), "sample_count": 5}))
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 0.0  # NaN != NaN → 归零
+        assert count == 5
+
+    def test_read_ema_negative_sample_count(self, tmp_path):
+        """CQ-12: sample_count 为负值时应归零。"""
+        import json
+        from agent.runner import NiuRunner
+        path = tmp_path / "avg.json"
+        path.write_text(json.dumps({"ema": 3000.0, "sample_count": -5}))
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 3000.0
+        assert count == 0
 
 
 class TestCalcDreamTriggerThresholdEMA:
@@ -127,6 +158,24 @@ class TestCalcDreamTriggerThresholdEMA:
         threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
         assert threshold == 50  # int(60000 / 1000) = 60, min(50, 60) = 50
 
+    def test_large_context_window(self, tmp_path):
+        """CQ-14: 极大 context_window=2000000, EMA=1000 → threshold=50（上限兜底）。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=1000.0, sample_count=10)
+        threshold = _calc_dream_trigger_threshold_dynamic(2000000, ema_path)
+        # int(2000000*0.30 / 1000) = 600, min(50, 600) = 50
+        assert threshold == 50
+
+    def test_large_ema(self, tmp_path):
+        """CQ-14: 极大 EMA=100000 → threshold=10（下限兜底）。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=100000.0, sample_count=10)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        # int(60000 / 100000) = 0, max(10, min(50, 0)) = 10
+        assert threshold == 10
+
 
 class TestEMAUpdateLogic:
     """测试非对称 EMA 更新逻辑。"""
@@ -171,4 +220,12 @@ class TestEMAUpdateLogic:
         from agent.runner import _compute_ema_update
         new_ema, new_count = _compute_ema_update(ema_old=3000.0, sample_count=10, current_avg=3000.0)
         assert new_ema == 3000.0  # 0.5*3000 + 0.5*3000 = 3000
+        assert new_count == 11
+
+    def test_current_avg_zero(self):
+        """CQ-13: current_avg=0, ema_old=3000, sample_count=10 → 下降分支 → ema_old/2。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=3000.0, sample_count=10, current_avg=0.0)
+        # 0 <= 3000 → 下降分支: 0.5*0 + 0.5*3000 = 1500
+        assert new_ema == 1500.0
         assert new_count == 11

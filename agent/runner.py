@@ -557,6 +557,16 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
 
 
 
+# --- EMA 动态阈值常量（CQ-08: 提取为模块级，避免重复定义）---
+_EMA_MIN_TURNS = 10
+_EMA_MAX_TURNS = 50
+_EMA_MIN_AVG_TOKENS = 1000
+_EMA_BUDGET_RATIO = 0.30
+_EMA_MIN_SAMPLES = 5
+_EMA_ALPHA_UP = 0.2
+_EMA_ALPHA_DOWN = 0.5
+
+
 def _calc_dream_trigger_threshold_dynamic(
     context_window: int,
     ema_path,
@@ -573,25 +583,19 @@ def _calc_dream_trigger_threshold_dynamic(
     200K + EMA=3700 → 60000/3700 = 16
     200K + EMA=6000 → 60000/6000 = 10（下限兜底）
     """
-    MIN_TURNS = 10
-    MAX_TURNS = 50
-    MIN_AVG_TOKENS = 1000
-    BUDGET_RATIO = 0.30
-    MIN_SAMPLES = 5
-
     if context_window <= 0:
-        return MIN_TURNS
+        return _EMA_MIN_TURNS
 
     ema, sample_count = NiuRunner._read_ema(ema_path)
 
-    if sample_count < MIN_SAMPLES:
-        return MIN_TURNS
+    if sample_count < _EMA_MIN_SAMPLES:
+        return _EMA_MIN_TURNS
 
-    avg_tokens_per_turn = max(MIN_AVG_TOKENS, ema)
-    incremental_budget = context_window * BUDGET_RATIO
+    avg_tokens_per_turn = max(_EMA_MIN_AVG_TOKENS, ema)
+    incremental_budget = context_window * _EMA_BUDGET_RATIO
     threshold = int(incremental_budget / avg_tokens_per_turn)
 
-    return max(MIN_TURNS, min(MAX_TURNS, threshold))
+    return max(_EMA_MIN_TURNS, min(_EMA_MAX_TURNS, threshold))
 
 def _compute_ema_update(ema_old: float, sample_count: int, current_avg: float) -> tuple[float, int]:
     """计算非对称 EMA 更新。返回 (new_ema, new_sample_count)。
@@ -599,16 +603,12 @@ def _compute_ema_update(ema_old: float, sample_count: int, current_avg: float) -
     冷启动（sample_count < 5 或 ema_old=0）直接用 current_avg 初始化；
     否则用非对称张力模型：上升 α=0.2（慢），下降 α=0.5（快）。
     """
-    ALPHA_UP = 0.2
-    ALPHA_DOWN = 0.5
-    MIN_SAMPLES = 5
-
-    if sample_count < MIN_SAMPLES or ema_old == 0:
+    if sample_count < _EMA_MIN_SAMPLES or ema_old <= 0:
         new_ema = current_avg
     elif current_avg > ema_old:
-        new_ema = ALPHA_UP * current_avg + (1 - ALPHA_UP) * ema_old
+        new_ema = _EMA_ALPHA_UP * current_avg + (1 - _EMA_ALPHA_UP) * ema_old
     else:
-        new_ema = ALPHA_DOWN * current_avg + (1 - ALPHA_DOWN) * ema_old
+        new_ema = _EMA_ALPHA_DOWN * current_avg + (1 - _EMA_ALPHA_DOWN) * ema_old
 
     return new_ema, sample_count + 1
 
@@ -1005,7 +1005,12 @@ class NiuRunner:
                 post_compress_dicts = [
                     {
                         "role": getattr(m, "role", ""),
-                        "content": getattr(m, "content", "") or "",
+                        # CQ-05: 统一 content 为字符串，与 count_message_single 一致
+                        "content": (lambda c: (
+                            " ".join(p.get("text", "") for p in c
+                                     if isinstance(p, dict) and p.get("type") == "text")
+                            if isinstance(c, list) else c
+                        ))(getattr(m, "content", "") or ""),
                         "tool_calls": getattr(m, "tool_calls", []) or [],
                     }
                     for m in post_compress_msgs
@@ -1013,11 +1018,25 @@ class NiuRunner:
                 post_compress_token_total = calc.count_messages(post_compress_dicts)
                 current_avg = post_compress_token_total / post_compress_turns
 
-                ema_old, sample_count = self._read_ema(ema_path)
-                new_ema, new_sample_count = _compute_ema_update(ema_old, sample_count, current_avg)
+                # CQ-01: 统一文件锁包裹 read-compute-write，保证原子性
+                from niu_api.compat import _flock, _funlock
+                lock_path = ema_path.with_suffix(".lock")
+                ema_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(lock_path, "w") as lock_f:
+                    _flock(lock_f)
+                    try:
+                        ema_old, sample_count = self._read_ema(ema_path)
+                        new_ema, new_sample_count = _compute_ema_update(ema_old, sample_count, current_avg)
 
-                if current_avg > 0:
-                    self._write_ema(ema_path, new_ema, new_sample_count)
+                        if current_avg > 0:
+                            self._write_ema(ema_path, new_ema, new_sample_count)
+                            # CQ-10: EMA 更新日志
+                            logger.debug(f"[Nap] EMA update: old={ema_old:.0f}, new={new_ema:.0f}, samples={new_sample_count}, avg={current_avg:.0f}, tokens={post_compress_token_total}")
+                        else:
+                            # CQ-06: 有意设计——空对话（current_avg=0）不更新 EMA，避免用 0 拉低历史均值
+                            logger.debug(f"[Nap] Skipping EMA write: current_avg={current_avg} <= 0")
+                    finally:
+                        _funlock(lock_f)
 
             # 计算阈值
             from agent.subagent import _read_context_window_tokens
@@ -1371,6 +1390,7 @@ class NiuRunner:
         Returns:
             (ema: float, sample_count: int)，文件不存在或损坏时返回 (0.0, 0)
         """
+        # CQ-04: exists() 短路保证后续 open(lock_path) 时父目录已存在（ema_path 与 lock_path 同目录）
         if not ema_path.exists():
             return 0.0, 0
         try:
@@ -1381,10 +1401,18 @@ class NiuRunner:
                 _flock(lock_f)
                 try:
                     data = json.loads(ema_path.read_text(encoding="utf-8"))
-                    return float(data.get("ema", 0.0)), int(data.get("sample_count", 0))
+                    ema = float(data.get("ema", 0.0))
+                    sc = int(data.get("sample_count", 0))
+                    # CQ-02: NaN/Infinity/负值校验
+                    if ema != ema or ema < 0:  # NaN check: NaN != NaN
+                        ema = 0.0
+                    if sc < 0:
+                        sc = 0
+                    return ema, sc
                 finally:
                     _funlock(lock_f)
-        except Exception as e:
+        # CQ-03: 收窄异常范围
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError) as e:
             logger.warning(f"[Nap] Failed to read EMA {ema_path.name}: {e}")
             return 0.0, 0
 
@@ -1407,7 +1435,7 @@ class NiuRunner:
                     }, ensure_ascii=False), encoding="utf-8")
                 finally:
                     _funlock(lock_f)
-        except Exception as e:
+        except (OSError, TypeError) as e:
             logger.warning(f"[Nap] Failed to write EMA {ema_path.name}: {e}")
 
     @staticmethod
