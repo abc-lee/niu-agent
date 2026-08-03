@@ -155,7 +155,7 @@ call_subagent 层保护覆盖所有构建步骤（static + dynamic），build_su
 2. `tests/test_dream_trigger.py` 全部通过
 3. 200K 窗口 + 19 轮用户消息（用 `_recalc_msg_stats` 口径计算 token），算出 threshold 在 10-50 区间
 4. `build_subagent_system_segments` 和 `call_subagent` 都有 fallback
-5. 旧函数 `_calc_dream_trigger_threshold` 完全删除，无残留引用（`grep -rn '_calc_dream_trigger_threshold' agent/ niu_api/ tests/ docs/SYSTEM_MANUAL.md` 无结果，历史计划文档除外）
+5. 旧函数 `_calc_dream_trigger_threshold` 完全删除，无残留引用（`grep -rw '_calc_dream_trigger_threshold' agent/ niu_api/ tests/ docs/SYSTEM_MANUAL.md` 无结果，历史计划文档除外；-w 词边界确保不误匹配 `_calc_dream_trigger_threshold_dynamic`）
 6. 阈值计算用 compress 游标算 avg，触发判断用 dream 游标防重复触发，各司其职
 
 ## 不在范围内
