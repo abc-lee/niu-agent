@@ -2463,7 +2463,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
             # 2.5/3. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
             if usage_percent >= 50:
-                # 重新获取消息列表（Dream 可能已修改 DB）
+                # 重新获取消息列表（Entity 可能已修改 DB）
                 messages = await store.get_messages()
                 msg_tokens = []
                 try:
@@ -2547,7 +2547,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.info(f"[Tidy] journal-agent: skipped (usage {usage_percent:.1f}% < 50%)")
 
             # 3/3. context-manager（增量 task 方式，保护范围 [compress_cursor, dream_cursor_new]）
-            # 串行执行：重新获取消息列表（Dream 可能已修改 DB）
+            # 串行执行：重新获取消息列表（Entity 可能已修改 DB）
             messages = await store.get_messages()
             msg_tokens = []
             try:

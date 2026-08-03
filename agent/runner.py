@@ -1319,7 +1319,7 @@ class NiuRunner:
             _f_id_to_idx = {mid: idx for idx, mid in _f_idx_to_id.items()}
 
             # 计算 dream 安全边界 idx（参考 compat.py 模式三）
-            # new_dream_id 在 runner.py 前面 dream-evolver 阶段已算出
+            # new_dream_id = last_dream_evolve_id（游标基准，dream-evolver 已移至 _on_turn_end）
             # 当 dream 不在 force history 里时，用 len(_force_msg_ids)（越界值，由 _build_force_prompt 内部判断"无 dream 约束"）
             if not new_dream_id:
                 _dream_idx_in_force = 0
