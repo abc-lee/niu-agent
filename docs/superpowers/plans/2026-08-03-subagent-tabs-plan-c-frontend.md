@@ -36,7 +36,7 @@
 ```html
 <!-- ========== 子 Agent 标签栏 ========== -->
 <div class="tab-bar" id="tab-bar">
-  <div class="tab active" data-tab="main" id="tab-main">主对话</div>
+  <div class="tab active" data-tab="main" id="tab-main" onclick="switchTab('main')">主对话</div>
 </div>
 ```
 
@@ -204,7 +204,7 @@ function markSubagentError(unique_name) {
 
 - [ ] **Step 4: 修改 sendMessage — 子 Agent tab 下调 POST API**
 
-`chat.html` L1255-1343 的 `sendMessage()` 函数，在 `/stop` 指令分支中增加子 Agent tab 判断:
+**注意**：以下代码片段是增量修改指南，不是完整替换。在每个指令分支的现有代码中**插入** `_activeTab !== 'main'` 判断，保留原有的 UI 状态管理（`userInput.value=''`、`userInput.style.height='auto'`、`sendBtn.disabled=false` 等）。具体：在 /stop 分支的 `window.electronAPI.sendMessage('/stop')` 之前插入子 Agent tab 判断；在普通消息的 `sendMessageWithRetry(text)` 之前插入判断。
 
 ```javascript
 // /stop 指令处理
@@ -287,22 +287,22 @@ git commit -m "feat: subagent tab bar DOM + CSS + switch logic + sendMessage rou
 ```javascript
 // ========== 子 Agent SSE 连接管理 ==========
 const SubagentSSEManager = {
-  connections: new Map(), // unique_name → {req, reconnectTimer}
+  connections: new Map(), // unique_name → {req, reconnectTimer, cancelled}
 
   connect(unique_name) {
     if (this.connections.has(unique_name)) return;
     const port = process.env.NIU_API_PORT || 9876;
     const url = `http://127.0.0.1:${port}/api/subagents/${unique_name}/stream`;
-    const connection = { req: null, reconnectTimer: null };
+    const connection = { req: null, reconnectTimer: null, cancelled: false };
 
     const doConnect = () => {
+      if (connection.cancelled) return;  // disconnect 后不再重连
       const req = http.request(url, (res) => {
-        // 404：子 Agent 不存在，不重连
         if (res.statusCode === 404) {
           this.connections.delete(unique_name);
           return;
         }
-        res.setEncoding('utf8');  // 关键：多字节字符跨 TCP 块安全
+        res.setEncoding('utf8');
         let buffer = '';
         res.on('data', (chunk) => {
           buffer += chunk;
@@ -320,11 +320,15 @@ const SubagentSSEManager = {
           }
         });
         res.on('end', () => {
-          connection.reconnectTimer = setTimeout(doConnect, 3000);
+          if (!connection.cancelled) {
+            connection.reconnectTimer = setTimeout(doConnect, 3000);
+          }
         });
       });
       req.on('error', () => {
-        connection.reconnectTimer = setTimeout(doConnect, 3000);
+        if (!connection.cancelled) {
+          connection.reconnectTimer = setTimeout(doConnect, 3000);
+        }
       });
       req.end();
       connection.req = req;
@@ -337,6 +341,7 @@ const SubagentSSEManager = {
   disconnect(unique_name) {
     const conn = this.connections.get(unique_name);
     if (!conn) return;
+    conn.cancelled = true;  // 标记取消，防止 req.destroy() 触发的 error/end 回调重连
     if (conn.reconnectTimer) clearTimeout(conn.reconnectTimer);
     if (conn.req) conn.req.destroy();
     this.connections.delete(unique_name);
@@ -480,21 +485,9 @@ window.electronAPI.onSubagentEvent(({ unique_name, event }) => {
     case 'subagent_suspended':
       addSubagentMessageToTab(unique_name, 'system', '子 Agent 等待主 Agent 回答中...');
       break;
-
     case 'subagent_closed':
-      // 检查是否带 reason 字段（区分正常结束 vs 异常）
-      if (event.reason === 'error') {
-        markSubagentError(unique_name);
-        addSubagentMessageToTab(unique_name, 'system', '子 Agent 异常终止');
-      } else {
-        closeSubagentTab(unique_name);
-        addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
-      }
-      break;
-
-    case 'error':
-      markSubagentError(unique_name);
-      addSubagentMessageToTab(unique_name, 'system', `子 Agent 异常终止: ${event.message || ''}`);
+      closeSubagentTab(unique_name);
+      addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
       break;
   }
 });
@@ -545,11 +538,11 @@ async function restoreSubagentTabs() {
   }
 }
 
-// 在 onSyncState 回调中调用
-window.electronAPI.onSyncState(() => {
-  getChatStatus();
-  restoreSubagentTabs();
-});
+// 在现有 onSyncState 回调（L2247-2268）中追加 restoreSubagentTabs() 调用。
+// 不要注册新的 onSyncState 监听器——修改现有回调，在其末尾追加一行：
+//   restoreSubagentTabs();
+// 注意：现有 onSyncState 回调中调用的同步函数不是 getChatStatus()（不存在的函数），
+// 而是内联的状态同步逻辑。只需在现有回调末尾加 restoreSubagentTabs() 即可。
 ```
 
 注意：`/api/subagents/running` 只返回运行中的子 Agent，能出现在列表里就说明还在运行，不需要检查 state 字段。
