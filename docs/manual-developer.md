@@ -250,7 +250,7 @@ Copyright (c) 2026
 - LightRAG 替代向量库作为主要知识检索引擎
 - 脑图系统（Brain Graph）：记忆存取（store/recall via LightRAG）
 - 脑区（Brain Region）：社区检测 + 区域节点刷新
-- 上下文整理管道升级：entity-extractor + context-manager 两游标机制 + dream-evolver 主动触发
+- 上下文整理管道升级：entity-extractor + dream-evolver + context-manager + journal-agent 四游标机制 + 小憩模式主动触发（entity-extractor → dream-evolver）
 - 子 Agent 新增：entity-extractor、dream-evolver
 
 ### v0.4.0 (2026-04-09)
