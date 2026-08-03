@@ -46,7 +46,7 @@ else:
 ### 冷启动保护
 
 - 样本数 < 5 时：`_calc_dream_trigger_threshold_dynamic` 直接返回保底 10
-- 冷启动期（sample_count < 5 或 ema_old=0）：每次更新都用 current_avg 覆盖 EMA（非累积均值，有意设计——冷启动期样本少不可靠，第 5 个样本开始用 EMA 公式累积）
+- 冷启动期（sample_count < 5 或 ema_old=0）：每次更新都用 current_avg 覆盖 EMA（非累积均值，有意设计——冷启动期样本少不可靠，sample_count 达到 5 后开始用 EMA 公式累积）
 - 样本数 >= 5 时：开始用非对称 EMA 公式更新
 - 防御：ema_old=0 时（异常状态），直接用 current_avg 初始化
 
@@ -133,6 +133,15 @@ class TestEMAReadWrite:
         ema, count = NiuRunner._read_ema(path)
         assert ema == 0.0
         assert count == 0
+
+    def test_write_ema_creates_parent_dir(self, tmp_path):
+        """_write_ema 应创建不存在的父目录。"""
+        from agent.runner import NiuRunner
+        path = tmp_path / "subdir" / "avg.json"
+        NiuRunner._write_ema(path, ema=3500.0, sample_count=10)
+        assert path.exists()
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 3500.0
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -257,6 +266,37 @@ class TestCalcDreamTriggerThresholdEMA:
         ema_path = tmp_path / "avg.json"
         threshold = _calc_dream_trigger_threshold_dynamic(0, ema_path)
         assert threshold == 10
+
+    def test_negative_context_window(self, tmp_path):
+        """context_window=-1 → 返回 10。"""
+        from agent.runner import _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        threshold = _calc_dream_trigger_threshold_dynamic(-1, ema_path)
+        assert threshold == 10
+
+    def test_sample_count_5_boundary(self, tmp_path):
+        """sample_count=5（边界值）→ 使用 EMA 公式。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=3000.0, sample_count=5)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 20  # int(60000 / 3000) = 20
+
+    def test_sample_count_4_cold_start(self, tmp_path):
+        """sample_count=4（边界值）→ 冷启动返回 10。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=3000.0, sample_count=4)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 10
+
+    def test_ema_zero_with_samples(self, tmp_path):
+        """ema=0 且 sample_count>=5 → max(1000, 0)=1000 → threshold=50。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=0.0, sample_count=10)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 50  # int(60000 / 1000) = 60, min(50, 60) = 50
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -306,7 +346,7 @@ def _calc_dream_trigger_threshold_dynamic(
 
 - [ ] **Step 4: 删除旧的 TestCalcDreamTriggerThresholdDynamic 测试类和死代码**
 
-删除 `tests/test_dream_trigger.py` 中旧的 `TestCalcDreamTriggerThresholdDynamic` 类。同时删除模块级 `from agent.runner import _calc_dream_trigger_threshold_dynamic` 导入（新测试类已用局部导入）和 `_make_msgs` 辅助函数（仅旧测试类使用）。
+删除 `tests/test_dream_trigger.py` 中旧的 `TestCalcDreamTriggerThresholdDynamic` 类。同时删除模块级 `from agent.runner import _calc_dream_trigger_threshold_dynamic` 导入、`_make_msgs` 辅助函数和 `from types import SimpleNamespace` 导入（新测试类均不使用）。
 
 - [ ] **Step 5: 运行全部测试 + 语法检查 + Commit**
 
