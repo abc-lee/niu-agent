@@ -693,6 +693,7 @@ class NiuRunner:
         self._cached_activation_mgr = None  # RegionActivationManager (for cache invalidation)
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
+        self._dream_running = threading.Event()  # dream-evolver 后台运行标志，避免并发启动
 
         # Decay pool (Ebbinghaus forgetting curve)
         self._decay_pool = DecayPool()
@@ -899,10 +900,7 @@ class NiuRunner:
 
         保留：
         - 脑区衰减 decay_all：每轮降低脑区激活级别
-
-        已移除（移到 _on_before_llm）：
-        - _inject_dynamic_resources + _assemble_system_message
-          原因：原在 LLM 调用后注入，注入的 system message 下一轮才被读到，滞后一轮
+        - dream-evolver 触发检查：增量消息达阈值则后台启动
         """
         # Decay brain region activation levels
         try:
@@ -913,8 +911,186 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Brain region decay failed: {e}")
 
+        # dream-evolver 触发检查：增量消息达阈值则后台启动
+        self._maybe_trigger_dream_evolver()
+
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
+
+    def _maybe_trigger_dream_evolver(self):
+        """检查 dream 游标后的增量对话轮数，达阈值则后台启动 dream-evolver。"""
+        # 防止并发启动
+        if self._dream_running.is_set():
+            return
+
+        try:
+            from pathlib import Path
+            niu_dir = Path.home() / ".niu"
+            dream_cursor_path = niu_dir / "last_dream_evolve.json"
+            last_dream_evolve_id = ""
+            if dream_cursor_path.exists():
+                import json
+                try:
+                    # 用与 _write_cursor_with_lock 一致的 .lock 文件加锁，防止读写竞态
+                    lock_path = dream_cursor_path.with_suffix(".lock")
+                    with open(lock_path, "w") as lock_f:
+                        from niu_api.compat import _flock, _funlock
+                        _flock(lock_f)
+                        try:
+                            cursor_data = json.loads(dream_cursor_path.read_text(encoding="utf-8"))
+                            last_dream_evolve_id = cursor_data.get("last_dream_evolve_id", "")
+                        finally:
+                            _funlock(lock_f)
+                except Exception:
+                    last_dream_evolve_id = ""
+
+            # 从 DB 获取消息
+            db_messages = self._sync_get_messages()
+            if not db_messages:
+                return
+
+            # 数游标后的增量对话轮数（一轮 = 两条 user 消息之间的所有消息）
+            if last_dream_evolve_id:
+                cursor_idx = -1
+                for i, msg in enumerate(db_messages):
+                    if (getattr(msg, "id", "") or "") == last_dream_evolve_id:
+                        cursor_idx = i
+                        break
+                incremental_msgs = db_messages[cursor_idx + 1:] if cursor_idx >= 0 else db_messages
+            else:
+                incremental_msgs = db_messages
+
+            # 计算轮数：每遇到一条 role=user 消息算一轮开始
+            turn_count = sum(1 for msg in incremental_msgs if getattr(msg, "role", "") == "user")
+
+            # 计算阈值
+            from agent.subagent import _read_context_window_tokens
+            context_window = _read_context_window_tokens()
+            threshold = _calc_dream_trigger_threshold(context_window)
+
+            if turn_count < threshold:
+                return
+
+            logger.info(f"[Dream] Triggering dream-evolver: {turn_count} turns >= threshold {threshold}")
+
+            # 后台启动 dream-evolver
+            self._dream_running.set()
+            threading.Thread(
+                target=self._run_dream_evolver_background,
+                daemon=True,
+                name="dream-evolver-bg"
+            ).start()
+        except Exception as e:
+            logger.warning(f"[Dream] Trigger check failed: {e}")
+
+    def _run_dream_evolver_background(self):
+        """后台运行 dream-evolver，处理游标后的增量消息。"""
+        try:
+            from pathlib import Path
+            import json
+            from agent.subagent import call_subagent_with_auto_answer
+            from niu_api.compat import (
+                _build_plain_history,
+                _build_incremental_msg_text,
+                _parse_processed_up_to,
+                _write_cursor_with_lock,
+                _is_subagent_overflow,
+            )
+
+            niu_dir = Path.home() / ".niu"
+            dream_cursor_path = niu_dir / "last_dream_evolve.json"
+            last_dream_evolve_id = ""
+            if dream_cursor_path.exists():
+                try:
+                    lock_path = dream_cursor_path.with_suffix(".lock")
+                    with open(lock_path, "w") as lock_f:
+                        from niu_api.compat import _flock, _funlock
+                        _flock(lock_f)
+                        try:
+                            cursor_data = json.loads(dream_cursor_path.read_text(encoding="utf-8"))
+                            last_dream_evolve_id = cursor_data.get("last_dream_evolve_id", "")
+                        finally:
+                            _funlock(lock_f)
+                except Exception:
+                    last_dream_evolve_id = ""
+
+            db_messages = self._sync_get_messages()
+            msg_tokens = self._recalc_msg_stats(db_messages)
+
+            dream_msg_ids = []
+            _ = _build_incremental_msg_text(
+                db_messages, last_dream_evolve_id, dream_msg_ids, msg_tokens
+            )
+
+            if not dream_msg_ids:
+                return
+
+            # 构造增量 history
+            _id_set = set(dream_msg_ids)
+            dream_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
+            dream_history, dream_idx_to_id = _build_plain_history(dream_msgs)
+
+            dream_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+
+            llm_config = self.llm_config
+
+            dream_result = call_subagent_with_auto_answer(
+                agent_name="dream-evolver",
+                task=dream_prompt,
+                llm_config=llm_config,
+                mcp_client=None,
+                history=dream_history,
+                context_fifo_threshold=-1,  # FIFO 保底
+            )
+
+            # 检查停止请求（is_stop_requested/clear_stop 是 agent.runner 模块级函数，直接调用）
+            if is_stop_requested():
+                logger.info("[Dream] Stop requested, aborting background dream-evolver")
+                clear_stop()
+                return
+
+            # 游标推进
+            new_dream_id = last_dream_evolve_id
+            if _is_subagent_overflow(dream_result):
+                logger.warning(f"[Dream] Background dream-evolver overflow")
+                # overflow 兜底：推进游标到增量消息的前 1/3 位置，避免全量重跑死循环
+                # （首次部署积压大量消息时，overflow 不推进会导致无限循环）
+                if len(dream_msg_ids) > 10:
+                    _fallback_idx = len(dream_msg_ids) // 3
+                    new_dream_id = dream_msg_ids[_fallback_idx]
+                    logger.info(f"[Dream] Overflow fallback: advancing cursor to 1/3 ({_fallback_idx}/{len(dream_msg_ids)})")
+            else:
+                _processed_idx = _parse_processed_up_to(dream_result)
+                if _processed_idx is not None and _processed_idx in dream_idx_to_id:
+                    new_dream_id = dream_idx_to_id[_processed_idx]
+                    logger.info(f"[Dream] Cursor advanced: {new_dream_id}")
+                elif dream_msg_ids:
+                    new_dream_id = dream_msg_ids[-1]
+                    logger.info(f"[Dream] Cursor fallback to range end: {new_dream_id}")
+
+            # 游标校验（双重检查，与 compat.py tidy 管道一致）
+            if new_dream_id:
+                fresh_msgs = self._sync_get_messages()
+                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                if new_dream_id not in fresh_ids:
+                    new_dream_id = last_dream_evolve_id
+                    if new_dream_id and new_dream_id not in fresh_ids:
+                        new_dream_id = ""
+
+            if new_dream_id:
+                from datetime import datetime
+                _write_cursor_with_lock(dream_cursor_path, {
+                    "last_dream_evolve_id": new_dream_id,
+                    "last_evolve_at": datetime.now().isoformat(),
+                })
+                logger.info(f"[Dream] Cursor written: {new_dream_id}")
+
+        except Exception as e:
+            logger.error(f"[Dream] Background dream-evolver failed: {e}")
+        finally:
+            self._dream_running.clear()
 
     def _sync_get_messages(self, limit=None):
         """同步从 DB 读取消息（桥接 async MessageStore）
