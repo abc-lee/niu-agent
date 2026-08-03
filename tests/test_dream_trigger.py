@@ -93,3 +93,43 @@ class TestCalcDreamTriggerThresholdDynamic:
         msgs, tokens = _make_msgs(10, tokens_per_msg=8000)
         result = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
         assert result == 10
+
+    def test_empty_msgs(self):
+        """空消息列表 → turn_count=0 < 3 → 返回 10"""
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, [], [])
+        assert threshold == 10
+
+    def test_zero_context_window(self):
+        """context_window=0 → 防御性返回 10"""
+        msgs, tokens = _make_msgs(5)
+        threshold = _calc_dream_trigger_threshold_dynamic(0, msgs, tokens)
+        assert threshold == 10
+
+    def test_no_user_messages(self):
+        """全 assistant 消息 → turn_count=0 < 3 → 返回 10"""
+        msgs = [SimpleNamespace(role='assistant', content='x')] * 10
+        tokens = [3000] * 10
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
+        assert threshold == 10
+
+    def test_negative_context_window(self):
+        """context_window=-1 → 防御性返回 10"""
+        msgs, tokens = _make_msgs(5)
+        threshold = _calc_dream_trigger_threshold_dynamic(-1, msgs, tokens)
+        assert threshold == 10
+
+    def test_dynamic_threshold_asymmetric_tokens(self):
+        """非均匀 token 分布：user 短 + assistant 长
+        10 轮：每轮 user=100 tokens + assistant=5000 tokens
+        avg = (100+5000)*10 / 10 = 5100
+        threshold = int(60000 / 5100) = 11
+        """
+        msgs = []
+        tokens = []
+        for i in range(10):
+            msgs.append(SimpleNamespace(role='user', content=f'q{i}'))
+            msgs.append(SimpleNamespace(role='assistant', content=f'a{i}' * 2500))
+            tokens.append(100)
+            tokens.append(5000)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
+        assert threshold == 11

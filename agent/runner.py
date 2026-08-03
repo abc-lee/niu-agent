@@ -608,6 +608,18 @@ def _calc_dream_trigger_threshold_dynamic(
     return max(MIN_TURNS, min(MAX_TURNS, threshold))
 
 
+def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
+    """截取游标之后的消息。游标为空或找不到时返回全量消息。"""
+    if not cursor_id:
+        return db_messages
+    cursor_idx = -1
+    for i, msg in enumerate(db_messages):
+        if (getattr(msg, "id", "") or "") == cursor_id:
+            cursor_idx = i
+            break
+    return db_messages[cursor_idx + 1:] if cursor_idx >= 0 else db_messages
+
+
 class NiuRunner:
     """
     Niu Agent Runner
@@ -962,29 +974,13 @@ class NiuRunner:
                 return
 
             # 数游标后的增量对话轮数（一轮 = 两条 user 消息之间的所有消息）
-            if last_dream_evolve_id:
-                cursor_idx = -1
-                for i, msg in enumerate(db_messages):
-                    if (getattr(msg, "id", "") or "") == last_dream_evolve_id:
-                        cursor_idx = i
-                        break
-                incremental_msgs = db_messages[cursor_idx + 1:] if cursor_idx >= 0 else db_messages
-            else:
-                incremental_msgs = db_messages
+            incremental_msgs = _slice_after_cursor(db_messages, last_dream_evolve_id)
 
             # 计算轮数：每遇到一条 role=user 消息算一轮开始
             turn_count = sum(1 for msg in incremental_msgs if getattr(msg, "role", "") == "user")
 
             # 截取压缩游标后的消息（用于阈值计算，反映真实每轮开销）
-            if last_compress_id:
-                compress_idx = -1
-                for i, msg in enumerate(db_messages):
-                    if (getattr(msg, "id", "") or "") == last_compress_id:
-                        compress_idx = i
-                        break
-                post_compress_msgs = db_messages[compress_idx + 1:] if compress_idx >= 0 else db_messages
-            else:
-                post_compress_msgs = db_messages
+            post_compress_msgs = _slice_after_cursor(db_messages, last_compress_id)
 
             # 估算压缩游标后消息的 token 开销
             post_compress_tokens = self._recalc_msg_stats(post_compress_msgs)
