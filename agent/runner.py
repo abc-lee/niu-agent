@@ -1329,6 +1329,52 @@ class NiuRunner:
             return ""
 
     @staticmethod
+    def _read_ema(ema_path):
+        """读取持久化的 EMA 值和样本数。
+
+        Returns:
+            (ema: float, sample_count: int)，文件不存在或损坏时返回 (0.0, 0)
+        """
+        if not ema_path.exists():
+            return 0.0, 0
+        try:
+            import json
+            from niu_api.compat import _flock, _funlock
+            lock_path = ema_path.with_suffix(".lock")
+            with open(lock_path, "w") as lock_f:
+                _flock(lock_f)
+                try:
+                    data = json.loads(ema_path.read_text(encoding="utf-8"))
+                    return float(data.get("ema", 0.0)), int(data.get("sample_count", 0))
+                finally:
+                    _funlock(lock_f)
+        except Exception as e:
+            logger.warning(f"[Nap] Failed to read EMA {ema_path.name}: {e}")
+            return 0.0, 0
+
+    @staticmethod
+    def _write_ema(ema_path, ema: float, sample_count: int):
+        """写入持久化的 EMA 值和样本数（加文件锁）。"""
+        try:
+            import json
+            from datetime import datetime
+            from niu_api.compat import _flock, _funlock
+            ema_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path = ema_path.with_suffix(".lock")
+            with open(lock_path, "w") as lock_f:
+                _flock(lock_f)
+                try:
+                    ema_path.write_text(json.dumps({
+                        "ema": ema,
+                        "sample_count": sample_count,
+                        "last_updated_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False), encoding="utf-8")
+                finally:
+                    _funlock(lock_f)
+        except Exception as e:
+            logger.warning(f"[Nap] Failed to write EMA {ema_path.name}: {e}")
+
+    @staticmethod
     def _recalc_msg_stats(db_messages):
         """Recalculate per-message token counts.
 
