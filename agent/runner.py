@@ -952,6 +952,8 @@ class NiuRunner:
             niu_dir = Path.home() / ".niu"
             dream_cursor_path = niu_dir / "last_dream_evolve.json"
             last_dream_evolve_id = self._read_cursor_locked(dream_cursor_path, "last_dream_evolve_id")
+            compress_cursor_path = niu_dir / "last_compress.json"
+            last_compress_id = self._read_cursor_locked(compress_cursor_path, "last_compress_id")
 
             # 从 DB 获取消息
             db_messages = self._sync_get_messages()
@@ -972,15 +974,29 @@ class NiuRunner:
             # 计算轮数：每遇到一条 role=user 消息算一轮开始
             turn_count = sum(1 for msg in incremental_msgs if getattr(msg, "role", "") == "user")
 
+            # 截取压缩游标后的消息（用于阈值计算，反映真实每轮开销）
+            if last_compress_id:
+                compress_idx = -1
+                for i, msg in enumerate(db_messages):
+                    if (getattr(msg, "id", "") or "") == last_compress_id:
+                        compress_idx = i
+                        break
+                post_compress_msgs = db_messages[compress_idx + 1:] if compress_idx >= 0 else db_messages
+            else:
+                post_compress_msgs = db_messages
+
+            # 估算压缩游标后消息的 token 开销
+            post_compress_tokens = self._recalc_msg_stats(post_compress_msgs)
+
             # 计算阈值
             from agent.subagent import _read_context_window_tokens
             context_window = _read_context_window_tokens()
-            threshold = _calc_dream_trigger_threshold(context_window)
+            threshold = _calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)
 
             if turn_count < threshold:
                 return
 
-            logger.info(f"[Nap] Triggering nap: {turn_count} turns >= threshold {threshold}")
+            logger.info(f"[Nap] Triggering nap: {turn_count} turns >= threshold {threshold} (post_compress={len(post_compress_msgs)} msgs)")
 
             # 后台启动小憩模式
             self._nap_running.set()
