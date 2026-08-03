@@ -74,7 +74,7 @@ else:
 
 ### current_avg 计算口径
 
-在 `_maybe_trigger_nap` 中一次性算 compress 游标后所有消息的 token（用 `TokenCalculator.count_messages()`），除以 user 消息数。注意：转换 db_messages 为 dict 时必须包含 `tool_calls` 字段，否则工具调用的结构开销会丢失。
+在 `_maybe_trigger_nap` 中一次性算 compress 游标后所有消息的 token（用 `TokenCalculator.count_messages()`），除以 user 消息数。注意：(1) 转换 db_messages 为 dict 时必须包含 `tool_calls` 字段；(2) current_avg 是 compress 游标后的累积平均（总 token / 总轮数），不是单轮增量。EMA 跟踪的是这个累积平均的变化趋势——随着轮数增加 current_avg 趋于稳定，EMA 的非对称张力模型主要在跨 compress 周期间起作用（压缩后 current_avg 重新开始计算）。
 
 ---
 
@@ -364,8 +364,8 @@ if post_compress_turns < self._last_ema_turns:
 
 ema_path = niu_dir / "avg_tokens_per_turn.json"
 
-# 去重 + 更新 EMA：只在 post_compress_turns 增加时才计算 token 和更新 EMA
-if post_compress_turns > self._last_ema_turns and post_compress_turns >= 3:
+# 去重 + 更新 EMA：post_compress_turns >= 1 即可（冷启动保护在 threshold 函数中）
+if post_compress_turns > self._last_ema_turns and post_compress_turns >= 1:
     self._last_ema_turns = post_compress_turns
 
     # 用 TokenCalculator 精确计算 token（包含 tool_calls 结构开销）
@@ -414,10 +414,10 @@ if turn_count < threshold:
 ```
 
 注意：
-- 删除旧的 `post_compress_tokens = self._recalc_msg_stats(post_compress_msgs)` 调用
+- 删除旧的 `post_compress_tokens = self._recalc_msg_stats(post_compress_msgs)` 调用（仅删除 _maybe_trigger_nap 中的调用，_recalc_msg_stats 方法本身保留，_run_nap_background 和 force 路径仍使用）
 - 删除旧的 `threshold = _calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)` 调用
 - 保留 `incremental_msgs` 和 `turn_count` 的现有逻辑（dream 游标，用于触发判断）
-- `post_compress_turns >= 3` 保护：样本不足时不更新 EMA（与旧函数 `turn_count < 3` 一致）
+- `post_compress_turns >= 1` 即可更新 EMA（冷启动保护在 `_calc_dream_trigger_threshold_dynamic` 中通过 `sample_count < 5` 返回 10 实现）
 
 - [ ] **Step 4: 语法检查 + Commit**
 
