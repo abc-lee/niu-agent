@@ -505,14 +505,15 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     if "直接退出" not in static_system:
         static_system += "\n\n" + _BOUNDARY_SECTION_TEMPLATE
 
-    # 3.5 为 dream-evolver 预注入当前脑区列表（避免每轮 lightrag_search_entities 查脑区）
+    # 3.5 为 dream-evolver 预注入当前脑区列表（注入 dynamic_system，因为脑区列表会变化，不适合放在 cache 前缀的 static_system 中）
+    _brain_region_section = ""
     if agent_name == "dream-evolver":
         try:
             from niu_api.internal.lightrag_manager import get_brain_regions
             brain_regions = get_brain_regions()
             if brain_regions:
                 region_list = "、".join(brain_regions)
-                static_system += f"\n\n## 当前脑区列表（预注入，无需搜索）\n\n{region_list}\n\n创建实体时直接参考以上脑区列表选择归属，不要调用 lightrag_search_entities 查询脑区。"
+                _brain_region_section = f"\n\n## 当前脑区列表（预注入，无需搜索）\n\n{region_list}\n\n创建实体时直接参考以上脑区列表选择归属，不要调用 lightrag_search_entities 查询脑区。"
         except Exception:
             pass  # 获取失败不影响主流程
 
@@ -525,8 +526,7 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
 
     # 5. 动态段：Current Time
     from datetime import datetime
-    now = datetime.now()
-    dynamic_system = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    dynamic_system = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}" + _brain_region_section
 
     return static_system, dynamic_system
 
