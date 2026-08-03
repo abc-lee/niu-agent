@@ -559,52 +559,38 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
 
 def _calc_dream_trigger_threshold_dynamic(
     context_window: int,
-    post_compress_msgs: list,
-    post_compress_tokens: list[int],
+    ema_path,
 ) -> int:
-    """根据上下文窗口和压缩游标后消息动态计算 dream-evolver 触发阈值。
+    """根据持久化 EMA 值动态计算 dream-evolver 触发阈值。
 
     算法：
-    - 仅用压缩游标后的消息估算每轮 token 开销（压缩消息 token 含量失真）
-    - avg_tokens_per_turn = total_tokens / turn_count（turn_count = user 消息数）
-    - 增量预算 = context_window × 30%
-    - 阈值 = 增量预算 / avg_tokens_per_turn
-    - 下限 10 轮，上限 50 轮
-    - 轮数 < 3 时样本不足，直接返回保底 10
+    - 读持久化的 EMA（非对称指数移动平均每轮 token 开销）
+    - 冷启动（样本 < 5）直接返回保底 10
+    - avg = max(1000, EMA)
+    - threshold = (context_window × 0.30) / avg
+    - 下限 10，上限 50
 
-    200K 窗口 + avg≈3000 → 60000 / 3000 = 20
-    200K 窗口 + avg≈6000 → 60000 / 6000 = 10（下限兜底）
+    200K + EMA=3700 → 60000/3700 = 16
+    200K + EMA=6000 → 60000/6000 = 10（下限兜底）
     """
     MIN_TURNS = 10
     MAX_TURNS = 50
     MIN_AVG_TOKENS = 1000
     BUDGET_RATIO = 0.30
+    MIN_SAMPLES = 5
 
     if context_window <= 0:
         return MIN_TURNS
 
-    # 1. 数轮数（user 消息数）—— 只数压缩游标后的
-    turn_count = sum(1 for m in post_compress_msgs if getattr(m, "role", "") == "user")
+    ema, sample_count = NiuRunner._read_ema(ema_path)
 
-    # 2. 算总消息 token —— 只算压缩游标后的
-    total_msg_tokens = sum(post_compress_tokens)
-
-    # 3. 算平均每轮 token；样本不足直接返回保底值
-    if turn_count < 3:
+    if sample_count < MIN_SAMPLES:
         return MIN_TURNS
 
-    avg_tokens_per_turn = total_msg_tokens / turn_count
-
-    # 4. 安全下限：avg 至少 1000 tokens
-    avg_tokens_per_turn = max(MIN_AVG_TOKENS, avg_tokens_per_turn)
-
-    # 5. 增量预算 = 窗口 × 30%
+    avg_tokens_per_turn = max(MIN_AVG_TOKENS, ema)
     incremental_budget = context_window * BUDGET_RATIO
-
-    # 6. 阈值 = 增量预算 / 每轮开销
     threshold = int(incremental_budget / avg_tokens_per_turn)
 
-    # 7. 下限 10 轮，上限 50 轮
     return max(MIN_TURNS, min(MAX_TURNS, threshold))
 
 
