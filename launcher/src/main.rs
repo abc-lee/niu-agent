@@ -728,12 +728,12 @@ impl Splash {
                             } else {
                                 // macOS/Linux: curl 子进程（避免 reqwest kevent 卡死）
                                 // -s 静默进度条，-f HTTP 4xx/5xx 返回非 0 exit code，
-                                // --max-time 600 安全网（10 分钟兜底，正常 3-4 分钟）
+                                // --max-time 3600 安全网（1 小时兜底，数据量大修复时间长）
                                 let output = std::process::Command::new("curl")
                                     .arg("-s")
                                     .arg("-f")
                                     .arg("--max-time")
-                                    .arg("600")
+                                    .arg("3600")
                                     .arg("-X")
                                     .arg("POST")
                                     .arg(&url)
@@ -743,8 +743,13 @@ impl Splash {
                                 // stderr 可能为空（-s 模式），用 exit code 判断
                                 if !output.status.success() {
                                     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                                    let exit_code = output.status.code().unwrap_or(-1);
                                     return Err(if stderr.is_empty() {
-                                        format!("curl 退出码 {}", output.status.code().unwrap_or(-1))
+                                        if exit_code == 28 {
+                                            "修复超时（超过 1 小时），可能是数据量过大。请重试或从备份恢复。".to_string()
+                                        } else {
+                                            format!("curl 退出码 {}", exit_code)
+                                        }
                                     } else {
                                         stderr
                                     });
