@@ -347,6 +347,7 @@ def _calc_dream_trigger_threshold_dynamic(
 - [ ] **Step 4: 删除旧的 TestCalcDreamTriggerThresholdDynamic 测试类和死代码**
 
 删除 `tests/test_dream_trigger.py` 中旧的 `TestCalcDreamTriggerThresholdDynamic` 类。同时删除模块级 `from agent.runner import _calc_dream_trigger_threshold_dynamic` 导入、`_make_msgs` 辅助函数和 `from types import SimpleNamespace` 导入（新测试类均不使用）。
+同时更新文件顶部的模块 docstring，反映新的 EMA 持久化算法（替代旧的"post-compress messages"描述）。
 
 - [ ] **Step 5: 运行全部测试 + 语法检查 + Commit**
 
@@ -542,9 +543,8 @@ Expected: PASS — 6 tests
 
 ```bash
 cd /Users/lilei/tools/ai-bot
-python/bin/python -c "import ast; ast.parse(open('agent/runner.py').read()); print('syntax OK')"
-git add agent/runner.py
-git commit -m "feat: _maybe_trigger_nap updates persistent EMA with asymmetric tension model"
+python/bin/python -c "import ast; ast.parse(open('agent/runner.py').read()); ast.parse(open('tests/test_dream_trigger.py').read()); print('syntax OK')"
+git add agent/runner.py tests/test_dream_trigger.py
 ```
 
 ---
