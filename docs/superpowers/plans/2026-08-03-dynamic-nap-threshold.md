@@ -23,7 +23,7 @@ def _calc_dream_trigger_threshold_dynamic(
 ) -> int:
 ```
 
-**关键设计：阈值计算和触发判断统一使用压缩游标**
+**关键设计：仅用压缩游标后的消息估算每轮开销**
 
 压缩后的消息被裁剪/替换过，token 含量与正常对话完全不同，不能用来估算每轮开销。
 只取 `last_compress_id` 游标之后的消息（即上次压缩后新产生的、未经压缩的真实对话）来算平均值。
@@ -153,6 +153,7 @@ call_subagent 层保护覆盖所有构建步骤（static + dynamic），build_su
 2. `tests/test_dream_trigger.py` 全部通过
 3. 200K 窗口 + 19 轮用户消息（用 `_recalc_msg_stats` 口径计算 token），算出 threshold 在 10-50 区间
 4. `build_subagent_system_segments` 和 `call_subagent` 都有 fallback
+5. 旧函数 `_calc_dream_trigger_threshold` 完全删除，无残留引用（`grep -rn '_calc_dream_trigger_threshold' agent/ niu_api/ tests/ docs/` 无结果）
 6. 阈值计算用 compress 游标算 avg，触发判断用 dream 游标防重复触发，各司其职
 
 ## 不在范围内
