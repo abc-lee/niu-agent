@@ -5,14 +5,14 @@
 
 ## 1. 目标
 
-主 Agent 调用子 Agent 时，Chat 页面动态生成新标签页。用户可以在子 Agent tab 中看到子 Agent 的工作过程（工具调用、进度、输出），并可以向子 Agent 补充任务信息。
+主 Agent 调用子 Agent 时，Chat 页面动态生成新标签页。用户可以在子 Agent tab 中看到子 Agent 的工作过程（工具调用、进度、thinking chain、输出），并可以向子 Agent 补充任务信息。子 Agent 遇到问题时可通过 `@user` 向用户提问，形成双向交流。
 
 ## 2. 约束与原则
 
 - **通道隔离**：子 Agent 的所有通讯通道与主 Agent 完全分离，主 Agent 现有代码路径零改动。
 - **复用现有机制**：用户→子 Agent 消息复用 `SubagentSupplementQueue.push()`，不引入新交互模式。
-- **现有子 Agent 都是工作型**：用户发消息是补充任务信息（次末信息 / supplement），不是让子 Agent 回答。对话型子 Agent 是后续课题。
-- **关闭逻辑不变**：tab 不可手动关闭。唯一关闭方式是子 Agent 输出 `/end`。`/stop` 走末尾信息终止子 Agent 运行但 tab 不关闭。所有原有逻辑保持不变。
+- **工作型子 Agent 具备对话能力**：现有子 Agent 都是工作型，用户发消息是补充任务信息（次末信息 / supplement）。但子 Agent 遇到问题可主动 `@user` 向用户提问，用户回答通过 supplement_queue 传入。无需单独开发"对话型子 Agent"。
+- **关闭逻辑不变**：tab 不可手动关闭。唯一关闭方式是子 Agent 输出 `@end`（子 Agent 语法，非 `/end`）。用户发 `/stop` 走末尾信息终止子 Agent 运行但 tab 不关闭。所有原有逻辑保持不变。
 - **前端框架不变**：现有 header、messages、输入区、状态栏、脑区面板等全部保持不变，只新增 tab 栏。
 
 ## 3. 架构概览
@@ -51,26 +51,27 @@
 - 新增独立推送函数 `notify_subagent_event(unique_name, event_type, data)`，子 Agent 的工具状态、文本输出、系统消息通过此函数推送到独立通道。
 - 子 Agent handler 中，在现有 `_is_subagent` 跳过逻辑之后（或并行），调用独立推送函数。不修改主 Agent 的推送路径。
 
-**推送内容**（与主 Agent 体验对齐）：
+**推送内容**（比主 Agent 多一项 thinking chain）：
 - 工具调用状态（tool_status：工具名 + 状态 + 摘要）
 - 文本输出（子 Agent 回复文本）
 - 系统消息（persist、错误等）
+- **thinking chain**（子 Agent 的思考过程）——主 Agent 不推送 thinking chain 是因为主对话高频交互太乱，但子 Agent tab 是工作观察场景，用户需要看到子 Agent 怎么思考的，好及时纠偏。
 
-**不推送**：子 Agent 内部 thinking chain、完整工具结果（与主 Agent 一致，只推摘要）。
+**不推送**：完整工具结果（与主 Agent 一致，只推摘要）。
 
 ### 4.2 独立 SSE 端点
 
 新增 `GET /api/subagents/{unique_name}/stream`：
 - 前端为每个打开的子 Agent tab 建立独立 SSE 连接。
 - 与主 `/api/events/stream` 完全隔离。
-- 子 Agent 结束后（`/end`），端点推送关闭事件并断开连接。
+- 子 Agent 结束后（输出 `@end`），端点推送关闭事件并断开连接。
 
 ### 4.3 用户 → 子 Agent 消息 API
 
 新增 `POST /api/subagents/{unique_name}/message`：
-- Body：`{ "content": "用户消息" }`
-- 后端调 `supplement_queue.push(content, sender="用户")`——复用现有 supplement 机制。
+- 后端调 `supplement_queue.push(content, sender="user")`——复用现有 supplement 机制。
 - 用户消息作为**次末信息**插入子 Agent 上下文（见缝插针），补充任务信息。
+- 消息前缀约定：用户消息以 `user:` 开头，主 Agent 消息以 `niu-agent:` 开头。子 Agent 看到这些前缀知道谁在说话，有问题时用 `@user` 向用户提问（与现有 `@niu-agent` 向主 Agent 提问的机制对称）。
 - `/stop` 命令走同一 API，后端识别后调 `push("/stop", is_terminate=True)`——与现有 `request_stop_all_subagents` 逻辑一致。
 
 **边界处理**：
@@ -103,16 +104,17 @@
 ### 5.3 Tab 关闭规则
 
 - tab 上**无 × 按钮**，用户不可手动关闭。
-- 唯一关闭方式：子 Agent 输出 `/end`，tab 自动关闭。
-- 用户可发 `/stop` 终止子 Agent 运行，但 tab 保留直到子 Agent 输出 `/end`。
-- 所有原有 `/stop`、`/end` 逻辑保持不变。
+- 唯一关闭方式：子 Agent 输出 `@end`，tab 自动关闭。
+- 用户可发 `/stop` 终止子 Agent 运行，但 tab 保留直到子 Agent 输出 `@end`。
 
 ### 5.4 子 Agent tab 消息内容
 
 - 工具调用进度（工具名 + 状态 + 摘要）
 - 工作步骤
+- **thinking chain**（子 Agent 思考过程，帮助用户及时纠偏）
 - 子 Agent 回复文本
-- 体验与主 Agent 对话一致（粗略进度推送）
+- 子 Agent `@user` 提问消息（高亮提示用户需要回应）
+- 体验以工作观察为主，比主对话更详细
 
 ## 6. 隔离性分析
 
@@ -123,11 +125,12 @@
 | 消息发送 | `/api/chat/stream` | `/api/subagents/{id}/message` | 独立 API |
 | 前端消息容器 | `#messages` | `#messages-{unique_name}` | 独立 DOM |
 | supplement_queue | 主 Agent `_supplement_queue` | 子 Agent `SubagentSupplementQueue` | 已有隔离 |
+| thinking chain | 不推送 | 推送 | 推送内容差异 |
 
 主 Agent 代码路径零改动，子 Agent 通道出 bug 不影响主对话。
 
 ## 7. 后续课题（不在本次范围）
 
-- **对话型子 Agent**：专门用于对话而非工作型任务，具体实现待定。
+- **`@user` 机制实现细节**：子 Agent 提示词需要加入 `@user` 语法支持，具体提示词改造在实现阶段细化。
 - **同步子 Agent tab 体验**：同步子 Agent 阻塞主 Agent 线程，tab 能展示工作过程但主对话处于等待状态。需验证体验。
 - **多子 Agent 并发**：多个 tab 同时活跃时的 UI 交互细节。
