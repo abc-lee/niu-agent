@@ -736,6 +736,7 @@ class NiuRunner:
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
         self._nap_running = threading.Event()  # 小憩模式后台运行标志，避免并发启动
         self._last_ema_turns = 0  # 去重：记录上次更新 EMA 时的 post_compress_turns
+        self._ema_lock = threading.Lock()  # EMA read-modify-write 进程内原子性（不与 _read_ema/_write_ema 的文件锁嵌套）
 
         # Decay pool (Ebbinghaus forgetting curve)
         self._decay_pool = DecayPool()
@@ -1017,26 +1018,19 @@ class NiuRunner:
                 ]
                 post_compress_token_total = calc.count_messages(post_compress_dicts)
                 current_avg = post_compress_token_total / post_compress_turns
+                # CQ-01 修复：用 threading.Lock 保证 read-modify-write 原子性
+                # 不能用外层文件锁——_read_ema/_write_ema 内部已有 flock，同进程不同 fd 的 flock 互斥会导致自死锁
+                with self._ema_lock:
+                    ema_old, sample_count = self._read_ema(ema_path)
+                    new_ema, new_sample_count = _compute_ema_update(ema_old, sample_count, current_avg)
 
-                # CQ-01: 统一文件锁包裹 read-compute-write，保证原子性
-                from niu_api.compat import _flock, _funlock
-                lock_path = ema_path.with_suffix(".lock")
-                ema_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(lock_path, "w") as lock_f:
-                    _flock(lock_f)
-                    try:
-                        ema_old, sample_count = self._read_ema(ema_path)
-                        new_ema, new_sample_count = _compute_ema_update(ema_old, sample_count, current_avg)
-
-                        if current_avg > 0:
-                            self._write_ema(ema_path, new_ema, new_sample_count)
-                            # CQ-10: EMA 更新日志
-                            logger.debug(f"[Nap] EMA update: old={ema_old:.0f}, new={new_ema:.0f}, samples={new_sample_count}, avg={current_avg:.0f}, tokens={post_compress_token_total}")
-                        else:
-                            # CQ-06: 有意设计——空对话（current_avg=0）不更新 EMA，避免用 0 拉低历史均值
-                            logger.debug(f"[Nap] Skipping EMA write: current_avg={current_avg} <= 0")
-                    finally:
-                        _funlock(lock_f)
+                    if current_avg > 0:
+                        self._write_ema(ema_path, new_ema, new_sample_count)
+                        # CQ-10: EMA 更新日志
+                        logger.debug(f"[Nap] EMA update: old={ema_old:.0f}, new={new_ema:.0f}, samples={new_sample_count}, avg={current_avg:.0f}, tokens={post_compress_token_total}")
+                    else:
+                        # CQ-06: 有意设计——空对话（current_avg=0）不更新 EMA，避免用 0 拉低历史均值
+                        logger.debug(f"[Nap] Skipping EMA write: current_avg={current_avg} <= 0")
 
             # 计算阈值
             from agent.subagent import _read_context_window_tokens
