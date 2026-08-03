@@ -46,15 +46,13 @@ else:
 ### 冷启动保护
 
 - 样本数 < 5 时：`_calc_dream_trigger_threshold_dynamic` 直接返回保底 10
-- 冷启动期 EMA 用 current_avg 直接初始化（不走 EMA 公式）
-- 样本数 >= 5 时：开始用 EMA 公式更新
+- 冷启动期（sample_count < 5 或 ema_old=0）：每次更新都用 current_avg 覆盖 EMA（非累积均值，有意设计——冷启动期样本少不可靠，第 5 个样本开始用 EMA 公式累积）
+- 样本数 >= 5 时：开始用非对称 EMA 公式更新
 - 防御：ema_old=0 时（异常状态），直接用 current_avg 初始化
 
 ### 去重机制（关键设计）
 
-`_maybe_trigger_nap` 在 agent_loop 每轮工具调用后都会被调用。一次用户消息可能触发多次工具调用，但 DB 中的消息不变（还没持久化），current_avg 不变。
-
-解决：记录上次调用时的 `post_compress_turns`（compress 游标后的 user 消息数），只在它增加时才更新 EMA。这样一次 agent_loop 会话中只更新一次 EMA。
+解决：记录上次调用时的 `post_compress_turns`（compress 游标后的 user 消息数），只在它增加时才更新 EMA。这样一次 agent_loop 会话中只更新一次 EMA。压缩发生后 post_compress_turns 会变小（游标前移），此时重置 `_last_ema_turns = 0` 让 EMA 从新的 post_compress_turns 重新开始去重计数。
 
 ### 持久化格式
 
@@ -306,9 +304,9 @@ def _calc_dream_trigger_threshold_dynamic(
     return max(MIN_TURNS, min(MAX_TURNS, threshold))
 ```
 
-- [ ] **Step 4: 删除旧的 TestCalcDreamTriggerThresholdDynamic 测试类**
+- [ ] **Step 4: 删除旧的 TestCalcDreamTriggerThresholdDynamic 测试类和死代码**
 
-删除 `tests/test_dream_trigger.py` 中旧的 `TestCalcDreamTriggerThresholdDynamic` 类。
+删除 `tests/test_dream_trigger.py` 中旧的 `TestCalcDreamTriggerThresholdDynamic` 类。同时删除模块级 `from agent.runner import _calc_dream_trigger_threshold_dynamic` 导入（新测试类已用局部导入）和 `_make_msgs` 辅助函数（仅旧测试类使用）。
 
 - [ ] **Step 5: 运行全部测试 + 语法检查 + Commit**
 
@@ -358,29 +356,32 @@ self._last_ema_turns = 0  # 去重：记录上次更新 EMA 时的 post_compress
 
 # 截取压缩游标后的消息（用于 EMA 更新）
 post_compress_msgs = _slice_after_cursor(db_messages, last_compress_id)
-
-# 用 TokenCalculator 精确计算 token（包含 tool_calls 结构开销）
-from agent.token_calculator import TokenCalculator
-calc = TokenCalculator.get()
-post_compress_dicts = [
-    {
-        "role": getattr(m, "role", ""),
-        "content": getattr(m, "content", "") or "",
-        "tool_calls": getattr(m, "tool_calls", []) or [],
-    }
-    for m in post_compress_msgs
-]
-post_compress_token_total = calc.count_messages(post_compress_dicts)
-
-# 算 avg
 post_compress_turns = sum(1 for m in post_compress_msgs if getattr(m, "role", "") == "user")
 
-# 去重 + 更新 EMA：只在 post_compress_turns 增加时更新
+# 压缩后游标前移导致 post_compress_turns 变小，重置去重计数器
+if post_compress_turns < self._last_ema_turns:
+    self._last_ema_turns = 0
+
+ema_path = niu_dir / "avg_tokens_per_turn.json"
+
+# 去重 + 更新 EMA：只在 post_compress_turns 增加时才计算 token 和更新 EMA
 if post_compress_turns > self._last_ema_turns and post_compress_turns >= 3:
     self._last_ema_turns = post_compress_turns
+
+    # 用 TokenCalculator 精确计算 token（包含 tool_calls 结构开销）
+    from agent.token_calculator import TokenCalculator
+    calc = TokenCalculator.get()
+    post_compress_dicts = [
+        {
+            "role": getattr(m, "role", ""),
+            "content": getattr(m, "content", "") or "",
+            "tool_calls": getattr(m, "tool_calls", []) or [],
+        }
+        for m in post_compress_msgs
+    ]
+    post_compress_token_total = calc.count_messages(post_compress_dicts)
     current_avg = post_compress_token_total / post_compress_turns
 
-    ema_path = niu_dir / "avg_tokens_per_turn.json"
     ema_old, sample_count = self._read_ema(ema_path)
     ALPHA_UP = 0.2    # 上升慢（拉紧费力）
     ALPHA_DOWN = 0.5  # 下降快（松手弹回）
@@ -399,8 +400,6 @@ if post_compress_turns > self._last_ema_turns and post_compress_turns >= 3:
 
     if current_avg > 0:
         self._write_ema(ema_path, new_ema, new_sample_count)
-else:
-    ema_path = niu_dir / "avg_tokens_per_turn.json"
 
 # 计算阈值
 from agent.subagent import _read_context_window_tokens
