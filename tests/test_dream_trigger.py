@@ -1,135 +1,174 @@
 """Tests for dream-evolver proactive trigger threshold calculation.
 
 Tests the dynamic threshold algorithm `_calc_dream_trigger_threshold_dynamic`,
-which estimates per-turn token cost from post-compress messages and derives
-the trigger threshold from the context window's 30% incremental budget.
+which reads a persistent asymmetric EMA (exponential moving average) of
+per-turn token cost and derives the trigger threshold from the context
+window's 30% incremental budget. Also tests EMA persistence helpers and
+the non-asymmetric EMA update logic.
 """
 
-from types import SimpleNamespace
 
-from agent.runner import _calc_dream_trigger_threshold_dynamic
+class TestEMAReadWrite:
+    """测试 EMA 读写持久化方法。"""
+
+    def test_read_ema_no_file(self, tmp_path):
+        """文件不存在时返回 (0.0, 0)。"""
+        from agent.runner import NiuRunner
+        ema, count = NiuRunner._read_ema(tmp_path / "nonexistent.json")
+        assert ema == 0.0
+        assert count == 0
+
+    def test_write_then_read_ema(self, tmp_path):
+        """写入后读取应一致。"""
+        from agent.runner import NiuRunner
+        path = tmp_path / "avg.json"
+        NiuRunner._write_ema(path, ema=3500.0, sample_count=10)
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 3500.0
+        assert count == 10
+
+    def test_read_ema_corrupt_file(self, tmp_path):
+        """文件损坏时返回 (0.0, 0)。"""
+        from agent.runner import NiuRunner
+        path = tmp_path / "avg.json"
+        path.write_text("corrupt json")
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 0.0
+        assert count == 0
+
+    def test_read_ema_missing_fields(self, tmp_path):
+        """文件存在但 ema/sample_count 字段缺失时返回默认值。"""
+        from agent.runner import NiuRunner
+        path = tmp_path / "avg.json"
+        path.write_text('{"other": "data"}')
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 0.0
+        assert count == 0
+
+    def test_write_ema_creates_parent_dir(self, tmp_path):
+        """_write_ema 应创建不存在的父目录。"""
+        from agent.runner import NiuRunner
+        path = tmp_path / "subdir" / "avg.json"
+        NiuRunner._write_ema(path, ema=3500.0, sample_count=10)
+        assert path.exists()
+        ema, count = NiuRunner._read_ema(path)
+        assert ema == 3500.0
 
 
-def _make_msgs(n_turns, tokens_per_msg=3000):
-    """构造 n_turns 轮对话（每轮 1 条 user + 1 条 assistant = 2 条消息）。
+class TestCalcDreamTriggerThresholdEMA:
+    """测试改造后的动态阈值函数（读持久化 EMA）。"""
 
-    返回 (msgs, tokens) 二元组：
-    - msgs: SimpleNamespace 列表，每条有 role 和 content
-    - tokens: 与 msgs 等长的 token 估算列表，每条 tokens_per_msg
-    """
-    msgs = []
-    for i in range(n_turns):
-        msgs.append(SimpleNamespace(role='user', content=f'user message {i}'))
-        msgs.append(SimpleNamespace(role='assistant', content=f'assistant reply {i}'))
-    tokens = [tokens_per_msg] * len(msgs)
-    return msgs, tokens
-
-
-class TestCalcDreamTriggerThresholdDynamic:
-    """Tests for _calc_dream_trigger_threshold_dynamic."""
-
-    def test_dynamic_threshold_200k(self):
-        """200K 窗口 + 19 轮（38 条消息）+ 每条 3000 tokens。
-
-        avg = (38 * 3000) / 19 = 6000
-        threshold = int(60000 / 6000) = 10  → 下限兜底 10
-        """
-        msgs, tokens = _make_msgs(19, tokens_per_msg=3000)
-        result = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
-        assert result == 10
-
-    def test_dynamic_threshold_200k_lower_avg(self):
-        """200K 窗口 + 19 轮 + 每条 1500 tokens。
-
-        avg = (38 * 1500) / 19 = 3000
-        threshold = int(60000 / 3000) = 20
-        """
-        msgs, tokens = _make_msgs(19, tokens_per_msg=1500)
-        result = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
-        assert result == 20
-
-    def test_dynamic_threshold_small_window(self):
-        """32K 窗口 + 19 轮 + 每条 1500 tokens。
-
-        avg = 3000
-        threshold = int(9600 / 3000) = 3  → max(10, 3) = 10
-        """
-        msgs, tokens = _make_msgs(19, tokens_per_msg=1500)
-        result = _calc_dream_trigger_threshold_dynamic(32000, msgs, tokens)
-        assert result == 10
-
-    def test_dynamic_threshold_min_samples(self):
-        """2 轮（4 条消息）→ turn_count < 3 → 直接返回保底 10。"""
-        msgs, tokens = _make_msgs(2, tokens_per_msg=3000)
-        result = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
-        assert result == 10
-
-    def test_dynamic_threshold_floor_ceiling(self):
-        """avg 极高→下限 10；avg 极低→上限 50。
-
-        极高：每条 100000 tokens，19 轮
-            avg = (38 * 100000) / 19 = 200000
-            threshold = int(60000 / 200000) = 0  → max(10, 0) = 10
-        极低：每条 1 token，19 轮（avg 兜底到 1000）
-            avg = max(1000, (38 * 1) / 19) = max(1000, 2) = 1000
-            threshold = int(60000 / 1000) = 60  → min(50, 60) = 50
-        """
-        # 极高 avg → 下限 10
-        msgs_high, tokens_high = _make_msgs(19, tokens_per_msg=100000)
-        result_high = _calc_dream_trigger_threshold_dynamic(200000, msgs_high, tokens_high)
-        assert result_high == 10
-
-        # 极低 avg → 上限 50
-        msgs_low, tokens_low = _make_msgs(19, tokens_per_msg=1)
-        result_low = _calc_dream_trigger_threshold_dynamic(200000, msgs_low, tokens_low)
-        assert result_low == 50
-
-    def test_dynamic_threshold_tool_heavy(self):
-        """200K 窗口 + 10 轮 + 每条 8000 tokens（工具密集型）。
-
-        avg = (20 * 8000) / 10 = 16000
-        threshold = int(60000 / 16000) = 3  → max(10, 3) = 10
-        """
-        msgs, tokens = _make_msgs(10, tokens_per_msg=8000)
-        result = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
-        assert result == 10
-
-    def test_empty_msgs(self):
-        """空消息列表 → turn_count=0 < 3 → 返回 10"""
-        threshold = _calc_dream_trigger_threshold_dynamic(200000, [], [])
+    def test_cold_start_sample_below_5(self, tmp_path):
+        """样本数 < 5 时返回保底 10。"""
+        from agent.runner import _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
         assert threshold == 10
 
-    def test_zero_context_window(self):
-        """context_window=0 → 防御性返回 10"""
-        msgs, tokens = _make_msgs(5)
-        threshold = _calc_dream_trigger_threshold_dynamic(0, msgs, tokens)
+    def test_ema_3700_200k(self, tmp_path):
+        """EMA=3700, 200K 窗口 → threshold=16。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=3700.0, sample_count=10)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 16
+
+    def test_ema_6000_200k_floor(self, tmp_path):
+        """EMA=6000, 200K 窗口 → threshold=10（下限兜底）。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=6000.0, sample_count=20)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
         assert threshold == 10
 
-    def test_no_user_messages(self):
-        """全 assistant 消息 → turn_count=0 < 3 → 返回 10"""
-        msgs = [SimpleNamespace(role='assistant', content='x')] * 10
-        tokens = [3000] * 10
-        threshold = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
+    def test_ema_1500_200k_threshold_40(self, tmp_path):
+        """EMA=1500, 200K 窗口 → threshold=40。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=1500.0, sample_count=15)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 40
+
+    def test_zero_context_window(self, tmp_path):
+        """context_window=0 → 返回 10。"""
+        from agent.runner import _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        threshold = _calc_dream_trigger_threshold_dynamic(0, ema_path)
         assert threshold == 10
 
-    def test_negative_context_window(self):
-        """context_window=-1 → 防御性返回 10"""
-        msgs, tokens = _make_msgs(5)
-        threshold = _calc_dream_trigger_threshold_dynamic(-1, msgs, tokens)
+    def test_negative_context_window(self, tmp_path):
+        """context_window=-1 → 返回 10。"""
+        from agent.runner import _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        threshold = _calc_dream_trigger_threshold_dynamic(-1, ema_path)
         assert threshold == 10
 
-    def test_dynamic_threshold_asymmetric_tokens(self):
-        """非均匀 token 分布：user 短 + assistant 长
-        10 轮：每轮 user=100 tokens + assistant=5000 tokens
-        avg = (100+5000)*10 / 10 = 5100
-        threshold = int(60000 / 5100) = 11
-        """
-        msgs = []
-        tokens = []
-        for i in range(10):
-            msgs.append(SimpleNamespace(role='user', content=f'q{i}'))
-            msgs.append(SimpleNamespace(role='assistant', content=f'a{i}' * 2500))
-            tokens.append(100)
-            tokens.append(5000)
-        threshold = _calc_dream_trigger_threshold_dynamic(200000, msgs, tokens)
-        assert threshold == 11
+    def test_sample_count_5_boundary(self, tmp_path):
+        """sample_count=5（边界值）→ 使用 EMA 公式。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=3000.0, sample_count=5)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 20  # int(60000 / 3000) = 20
+
+    def test_sample_count_4_cold_start(self, tmp_path):
+        """sample_count=4（边界值）→ 冷启动返回 10。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=3000.0, sample_count=4)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 10
+
+    def test_ema_zero_with_samples(self, tmp_path):
+        """ema=0 且 sample_count>=5 → max(1000, 0)=1000 → threshold=50。"""
+        from agent.runner import NiuRunner, _calc_dream_trigger_threshold_dynamic
+        ema_path = tmp_path / "avg.json"
+        NiuRunner._write_ema(ema_path, ema=0.0, sample_count=10)
+        threshold = _calc_dream_trigger_threshold_dynamic(200000, ema_path)
+        assert threshold == 50  # int(60000 / 1000) = 60, min(50, 60) = 50
+
+
+class TestEMAUpdateLogic:
+    """测试非对称 EMA 更新逻辑。"""
+
+    def test_cold_start_overwrite(self):
+        """冷启动期（sample_count < 5）：直接用 current_avg 覆盖。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=0.0, sample_count=0, current_avg=3000.0)
+        assert new_ema == 3000.0
+        assert new_count == 1
+
+    def test_cold_start_overwrite_at_4(self):
+        """sample_count=4 仍走冷启动。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=2500.0, sample_count=4, current_avg=4000.0)
+        assert new_ema == 4000.0  # 覆盖，不是 EMA 公式
+        assert new_count == 5
+
+    def test_ema_old_zero_overwrite(self):
+        """ema_old=0 时直接初始化（即使 sample_count >= 5）。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=0.0, sample_count=10, current_avg=3000.0)
+        assert new_ema == 3000.0
+        assert new_count == 11
+
+    def test_rising_branch(self):
+        """上升分支：current_avg > ema_old → α_up=0.2。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=3000.0, sample_count=10, current_avg=5000.0)
+        assert new_ema == 0.2 * 5000.0 + 0.8 * 3000.0  # 3400.0
+        assert new_count == 11
+
+    def test_falling_branch(self):
+        """下降分支：current_avg <= ema_old → α_down=0.5。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=5000.0, sample_count=10, current_avg=3000.0)
+        assert new_ema == 0.5 * 3000.0 + 0.5 * 5000.0  # 4000.0
+        assert new_count == 11
+
+    def test_equal_branch(self):
+        """current_avg == ema_old → 下降分支（α_down=0.5），结果不变。"""
+        from agent.runner import _compute_ema_update
+        new_ema, new_count = _compute_ema_update(ema_old=3000.0, sample_count=10, current_avg=3000.0)
+        assert new_ema == 3000.0  # 0.5*3000 + 0.5*3000 = 3000
+        assert new_count == 11
