@@ -204,7 +204,7 @@ function markSubagentError(unique_name) {
 
 - [ ] **Step 4: 修改 sendMessage — 子 Agent tab 下调 POST API**
 
-**注意**：以下代码片段是增量修改指南，不是完整替换。在每个指令分支的现有代码中**插入** `_activeTab !== 'main'` 判断，保留原有的 UI 状态管理（`userInput.value=''`、`userInput.style.height='auto'`、`sendBtn.disabled=false` 等）。具体：在 /stop 分支的 `window.electronAPI.sendMessage('/stop')` 之前插入子 Agent tab 判断；在普通消息的 `sendMessageWithRetry(text)` 之前插入判断。
+**注意**：以下代码片段是增量修改指南，不是完整替换。在每个指令分支的现有代码中**插入** `_activeTab !== 'main'` 判断，保留原有的 UI 状态管理（`userInput.value=''`、`userInput.style.height='auto'`、`sendBtn.disabled=false` 等）。**关键**：子 Agent tab 分支必须插入在 `addMessage('user', text)` 和 `showTyping()` **之前**（这两个调用在 sendMessage 函数早期执行），否则用户消息会同时渲染到主 #messages 容器（隐藏状态）和子 Agent 容器，导致消息重复。具体：在 sendMessage 函数开头、`addMessage('user', text)` 之前，加 `if (_activeTab !== 'main') { /* 子 Agent tab 消息发送逻辑（含 /stop 分支） */ return; }`，让子 Agent 分支在 addMessage 之前 early return。
 
 ```javascript
 // /stop 指令处理
