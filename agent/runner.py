@@ -1246,44 +1246,8 @@ class NiuRunner:
             else:
                 logger.info("[Runner] Force: entity-extractor skipped, no messages")
 
-            # === 步骤 2/4: dream-evolver（增量 task 方式）===
-            if is_stop_requested():
-                logger.warning("[Runner] Stop requested, aborting force compress")
-                return
-
-            # 重新获取消息列表（entity 可能已修改 DB）
-            db_messages = self._sync_get_messages()
-            msg_tokens = self._recalc_msg_stats(db_messages)
-
+            # dream-evolver 已移至 _on_turn_end 主动触发 ===
             new_dream_id = last_dream_evolve_id
-            dream_force_msg_ids = []
-            _ = _build_incremental_msg_text(
-                db_messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens
-            )
-            logger.info(f"[Runner] Force: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
-
-            if dream_force_msg_ids:
-                dream_force_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
-
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-                # 构造增量 history + idx_to_id 映射
-                _id_set = set(dream_force_msg_ids)
-                dream_force_incremental_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
-                dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
-
-                _, new_dream_id = self._run_subagent_step(
-                    "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                    dream_force_prompt, llm_config, last_dream_evolve_id,
-                    dream_force_msg_ids, "last_evolve_at",
-                    history=dream_force_history, context_fifo_threshold=-1,  # FIFO 保底
-                    idx_to_id=dream_force_idx_to_id,
-                )
-
-                if is_stop_requested():
-                    logger.warning("[Runner] Stop requested, aborting force compress")
-                    return
-            else:
-                logger.info("[Runner] Force: dream-evolver no incremental messages")
 
             # === 步骤 2.5/4: journal-agent（force 模式，始终调用）===
             if is_stop_requested():
