@@ -958,6 +958,7 @@ class NiuRunner:
             # 从 DB 获取消息
             db_messages = self._sync_get_messages()
             if not db_messages:
+                logger.debug('[Nap] No messages in DB, skipping trigger check')
                 return
 
             # 数游标后的增量对话轮数（一轮 = 两条 user 消息之间的所有消息）
@@ -1010,7 +1011,7 @@ class NiuRunner:
                 self._nap_running.clear()
                 raise
         except Exception as e:
-            logger.warning(f"[Nap] Trigger check failed: {e}")
+            logger.warning(f'[Nap] Trigger check failed: {e}', exc_info=True)
 
     def _run_nap_background(self):
         """小憩模式：后台串行执行 entity-extractor → dream-evolver。
