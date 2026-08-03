@@ -1826,6 +1826,44 @@
         _fetchingBrainRegions = false;
       }
     }
+    // ========== 脑区鬼火动画控制 ==========
+    /**
+     * 点亮一个脑区——创建鬼火元素追加到点亮区。
+     * 动画结束后 remove 元素（与 showExtinguish 保持一致，防止长会话累积不可见元素）。
+     * @param {string} label — 脑区名称
+     */
+    function showLight(label) {
+      const zone = document.getElementById('sparkLightZone');
+      if (!zone) return;
+      const spark = document.createElement('div');
+      spark.className = 'brain-spark spark-light';
+      spark.innerHTML = '<div class="spark-core"></div><div class="spark-label">' + escapeHtml(label) + '</div>';
+      zone.appendChild(spark);
+      setTimeout(function() { spark.remove(); }, 2600);
+    }
+
+    /**
+     * 熄灭一个脑区——创建鬼火元素追加到熄灭区。
+     * 动画结束后 remove 元素（不留占位）。
+     * @param {string} label — 脑区名称
+     */
+    function showExtinguish(label) {
+      const zone = document.getElementById('sparkExtinguishZone');
+      if (!zone) return;
+      const spark = document.createElement('div');
+      spark.className = 'brain-spark spark-extinguish';
+      spark.innerHTML = '<div class="spark-core"></div><div class="spark-label">' + escapeHtml(label) + '</div>';
+      zone.appendChild(spark);
+      setTimeout(function() { spark.remove(); }, 2600);
+    }
+
+    /** 清空所有鬼火元素（聊天清空时调用） */
+    function clearSparks() {
+      const lz = document.getElementById('sparkLightZone');
+      const ez = document.getElementById('sparkExtinguishZone');
+      if (lz) lz.innerHTML = '';
+      if (ez) ez.innerHTML = '';
+    }
 
     async function submitBrainChanges() {
       const labels = Object.keys(_pendingBrainChanges);
