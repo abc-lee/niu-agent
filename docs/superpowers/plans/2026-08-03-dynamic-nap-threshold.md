@@ -66,26 +66,28 @@ return max(10, min(50, threshold))
 
 **删除旧函数** `_calc_dream_trigger_threshold`（L560-584）。
 
-### Task 2：改造 `_maybe_trigger_nap` 统一使用压缩游标
+### Task 2：改造 `_maybe_trigger_nap` — 阈值用 compress 游标，触发判断保持 dream 游标
 
 **文件**：`agent/runner.py` L920-977
 
-**关键改动：触发判断从 dream 游标改为 compress 游标**
+**关键设计：阈值计算和触发判断各司其职**
 
-当前代码用 dream 游标后的增量消息数轮数做触发判断。改为用 compress 游标后的增量消息数轮数，与阈值计算使用同一个游标，消除游标不同步问题。
+- **阈值计算**用 compress 游标后的消息算 avg（反映真实每轮开销，不受压缩消息干扰）
+- **触发判断**保持用 dream 游标后的增量轮数（nap 完成后 dream 游标推进，防止重复触发）
+
+这两个游标各司其职：compress 游标保证 avg 样本质量，dream 游标保证触发去重。两者不需要同步。
 
 **具体改动**：
-1. 读取压缩游标 `~/.niu/last_compress.json` 的 `last_compress_id`（用 `_read_cursor_locked`）
-2. 从 `db_messages` 中截取压缩游标之后的消息 `post_compress_msgs`（复用现有 dream 游标截取模式：for 循环找 cursor_idx，`db_messages[cursor_idx + 1:]`；游标找不到时 fallback 到全量 `db_messages`）
-3. `turn_count = sum(1 for m in post_compress_msgs if role == 'user')`（压缩游标后的 user 消息数）
-4. 调 `self._recalc_msg_stats(post_compress_msgs)` 获取 `post_compress_tokens`
-5. `threshold = _calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)`
-6. 触发判断：`if turn_count < threshold: return`
-7. 日志：`[Nap] Triggering nap: {turn_count} turns >= threshold {threshold} (avg={avg:.0f} tokens/turn, budget={budget:.0f}, post_compress={len(post_compress_msgs)} msgs)`
-8. 删除旧调用 `threshold = _calc_dream_trigger_threshold(context_window)`（L954）
-9. `_read_context_window_tokens` 的 import 保留（仍需要读取 context_window）
-
-**注意**：`_maybe_trigger_nap` 中原有的 dream 游标读取逻辑（L929-930）可以删除——触发判断不再需要 dream 游标。dream 游标只在 `_run_nap_background` 中使用（后台执行时读 dream 游标确定增量范围）。
+1. 保留原有 dream 游标读取逻辑（L929-930），用于触发判断的增量轮数计数
+2. 新增：读取压缩游标 `~/.niu/last_compress.json` 的 `last_compress_id`（用 `_read_cursor_locked`）
+3. 新增：从 `db_messages` 中截取压缩游标之后的消息 `post_compress_msgs`（复用现有 dream 游标截取模式：for 循环找 cursor_idx，`db_messages[cursor_idx + 1:]`；游标找不到时 fallback 到全量 `db_messages`）
+4. `turn_count = sum(1 for msg in incremental_msgs if getattr(msg, 'role', '') == 'user')`（dream 游标后的 user 消息数，保持原有逻辑不变）
+5. 新增：`post_compress_tokens = self._recalc_msg_stats(post_compress_msgs)`
+6. 替换：`threshold = _calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)`（替代旧 `threshold = _calc_dream_trigger_threshold(context_window)`）
+7. 触发判断不变：`if turn_count < threshold: return`
+8. 日志：`[Nap] Triggering nap: {turn_count} turns >= threshold {threshold} (post_compress={len(post_compress_msgs)} msgs)`
+9. 删除旧调用 `threshold = _calc_dream_trigger_threshold(context_window)`（L954）
+10. `_read_context_window_tokens` 的 import 保留（仍需要读取 context_window）
 
 **游标失效处理**：compress 游标指向的消息不在 DB 中时（被压缩删除），fallback 到全量 `db_messages`，与现有 dream 游标截取行为一致（L944）。此时 avg 会包含压缩摘要消息，但这是边界情况，且摘要消息通常只有 1 条，对 avg 影响有限。
 
@@ -102,7 +104,7 @@ return max(10, min(50, threshold))
 try:
     static_system, dynamic_system = build_subagent_system_segments(agent_name)
 except Exception:
-    static_system = get_subagent_prompt(agent_name) or "You are a helpful assistant."
+    static_system = get_subagent_prompt(agent_name)  # 该函数总返回非空字符串
     dynamic_system = ""
 ```
 
@@ -133,11 +135,17 @@ call_subagent 层保护覆盖所有构建步骤（static + dynamic），build_su
 
 ### Task 5：更新文档
 
-**文件**：`docs/SYSTEM_MANUAL.md` L189-190
+**文件**：`docs/SYSTEM_MANUAL.md`
 
-更新小憩模式触发条件描述：
+更新位置 1（L189-190）——小憩模式触发条件描述：
 - 旧：`entity-extractor：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按对话轮数）双重触发`
 - 新：`entity-extractor：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按压缩后增量对话轮数动态阈值）双重触发`
+
+更新位置 2（L382-383）——触发阈值和算法描述：
+- 旧：`触发阈值 | _calc_dream_trigger_threshold(context_window)，保底 10 轮，无上限`
+- 新：`触发阈值 | _calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)，下限 10 轮，上限 50 轮`
+- 旧：`阈值算法 | max(10, int((context_window × 0.5 - 8000) / 12000))，200K 窗口→10 轮`
+- 新：`阈值算法 | max(10, min(50, int(context_window × 0.30 / max(1000, avg_tokens_per_turn))))，avg 基于压缩游标后消息动态计算`
 
 ## 验收标准
 
@@ -145,8 +153,7 @@ call_subagent 层保护覆盖所有构建步骤（static + dynamic），build_su
 2. `tests/test_dream_trigger.py` 全部通过
 3. 200K 窗口 + 19 轮用户消息（用 `_recalc_msg_stats` 口径计算 token），算出 threshold 在 10-50 区间
 4. `build_subagent_system_segments` 和 `call_subagent` 都有 fallback
-5. 旧函数 `_calc_dream_trigger_threshold` 完全删除，无残留引用（`grep -rn '_calc_dream_trigger_threshold' agent/ niu_api/ tests/` 无结果）
-6. 阈值计算和触发判断统一使用 compress 游标，无游标不同步问题
+6. 阈值计算用 compress 游标算 avg，触发判断用 dream 游标防重复触发，各司其职
 
 ## 不在范围内
 
