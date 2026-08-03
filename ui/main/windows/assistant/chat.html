@@ -625,6 +625,114 @@
       color: #999;
       font-size: 11px;
     }
+    /* ========== 脑区鬼火动画（点亮/熄灭） ========== */
+    .brain-spark-container {
+      position: absolute;
+      /* top 由 JS positionBrainElements() 动态设置 */
+      right: 12px;
+      z-index: 250;  /* 高于 brain-panel z-index:200，防止面板打开时遮挡动画 */
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+    }
+    .spark-light-zone {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+    }
+    .spark-extinguish-zone {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+    }
+    .brain-spark {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px 5px 8px;
+      background: rgba(10, 30, 40, 0.75);
+      border: 1px solid rgba(64, 224, 208, 0.35);
+      border-radius: 16px;
+      box-shadow: 0 0 6px 1px rgba(64, 224, 208, 0.2), 1px 1px 4px rgba(0,0,0,0.15);
+      transform: translateZ(0);
+    }
+    .brain-spark .spark-core {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, #e0fffe, #40e0d0 40%, #1a9b8a);
+      box-shadow: 0 0 4px 1px rgba(64, 224, 208, 0.5);
+      transform: translateZ(0);
+    }
+    .brain-spark .spark-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #7ff0e0;
+      text-shadow: 0 0 4px rgba(64, 224, 208, 0.3);
+    }
+    /* 点亮动画：从右侧弹出（过冲回弹）→ 停留 → 上飘淡出 */
+    .spark-light {
+      animation: spark-light-rise 2.5s linear forwards;
+    }
+    .spark-light::before {
+      content: '';
+      position: absolute;
+      top: 50%; left: 7px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(64, 224, 208, 0.25), transparent 70%);
+      transform: translateZ(0);
+      animation: spark-light-halo 2.5s linear forwards;
+    }
+    @keyframes spark-light-rise {
+      0%   { opacity: 0; transform: translateZ(0) translateX(60px) scale(0.7); }
+      8%   { opacity: 0.5; transform: translateZ(0) translateX(30px) scale(0.85); }
+      16%  { opacity: 1; transform: translateZ(0) translateX(-4px) scale(1.05); }
+      24%  { transform: translateZ(0) translateX(0) scale(1); }
+      68%  { opacity: 1; transform: translateZ(0) translateX(0) scale(1); }
+      80%  { opacity: 0.5; transform: translateZ(0) translateY(-3px) scale(0.97); }
+      100% { opacity: 0; transform: translateZ(0) translateY(-10px) scale(0.9); }
+    }
+    @keyframes spark-light-halo {
+      0%   { opacity: 0; transform: translateZ(0) translate(0, -50%) scale(0.5); }
+      15%  { opacity: 0.5; transform: translateZ(0) translate(0, -50%) scale(1.5); }
+      40%  { opacity: 0.2; transform: translateZ(0) translate(0, -50%) scale(2.5); }
+      100% { opacity: 0; transform: translateZ(0) translate(0, -50%) scale(3.5); }
+    }
+    /* 熄灭动画：从右侧弹出（过冲回弹）→ 下坠消散 */
+    .spark-extinguish {
+      animation: spark-extinguish-fall 2.5s linear forwards;
+    }
+    .spark-extinguish::before {
+      content: '';
+      position: absolute;
+      top: 50%; left: 7px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(64, 224, 208, 0.25), transparent 70%);
+      transform: translateZ(0);
+      animation: spark-extinguish-halo 2.5s linear forwards;
+    }
+    @keyframes spark-extinguish-fall {
+      0%   { opacity: 0; transform: translateZ(0) translateX(60px) scale(0.7); }
+      8%   { opacity: 0.5; transform: translateZ(0) translateX(30px) scale(0.85); }
+      16%  { opacity: 1; transform: translateZ(0) translateX(-4px) scale(1.05); }
+      24%  { transform: translateZ(0) translateX(0) scale(1); }
+      30%  { opacity: 0.8; transform: translateZ(0) translateY(5px) scale(0.98); }
+      50%  { opacity: 0.35; transform: translateZ(0) translateY(22px) scale(0.92); }
+      70%  { opacity: 0.15; transform: translateZ(0) translateY(36px) scale(0.87); }
+      100% { opacity: 0; transform: translateZ(0) translateY(60px) scale(0.8); }
+    }
+    @keyframes spark-extinguish-halo {
+      0%   { opacity: 0.5; transform: translateZ(0) translate(0, -50%) scale(1); }
+      30%  { opacity: 0.2; transform: translateZ(0) translate(0, -50%) scale(0.5); }
+      100% { opacity: 0; transform: translateZ(0) translate(0, -50%) scale(0); }
+    }
   </style>
     <!-- 字体配置动态注入：无配置时不注入（用浏览器系统默认字体），有配置时注入 @font-face + 覆盖 font-family -->
     <script>
