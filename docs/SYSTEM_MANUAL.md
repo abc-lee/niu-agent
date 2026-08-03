@@ -180,14 +180,15 @@ ai-bot/
 | `event-manager` | 事件管理：创建/查询/删除事件 | 主 Agent 委托 | 0.2 |
 | `context-manager` | 上下文管理：内容压缩 | auto-tidy 管线自动调度 | 0.2 |
 | `journal-agent` | 工作日志：从对话提取工作内容写入日志 | 主 Agent 委托或 auto-tidy | 0.3 |
-| `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | auto-tidy 管线自动调度 | 0.3 |
-| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | 按对话轮数主动触发（_on_turn_end） | 0.3 |
+| `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | auto-tidy 管线 + 小憩模式主动触发 | 0.3 |
+| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | auto-tidy 管线 + 小憩模式主动触发（_on_turn_end） | 0.3 |
 
 **BLOCKED_SUBAGENTS 机制：**
 
 `context-manager`、`entity-extractor`、`dream-evolver` 三个子 Agent 在 `agent/handler.py` 中被列入 `BLOCKED_SUBAGENTS` 集合，禁止主 Agent 手动调用。它们的触发方式各不相同：
-- `entity-extractor` + `context-manager`：由 auto-tidy 管线（睡眠/强制压缩时）自动调度
-- `dream-evolver`：由 `_on_turn_end` 按对话轮数主动触发（不再在 tidy 管线中运行）
+- `entity-extractor`：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按对话轮数）双重触发
+- `dream-evolver`：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按对话轮数）双重触发；小憩模式中在 entity-extractor 之后串行执行
+- `context-manager`：由睡眠模式（auto-tidy 管线）自动调度
 
 这确保：
 - 避免主 Agent 误触发导致重复执行
@@ -357,25 +358,42 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 程序触发子 Agent（force 压缩 / 手动 tidy API）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案“无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作”。
 
-### dream-evolver 主动触发机制
+### 两种模式：睡眠模式与小憩模式
 
-dream-evolver 不再在 auto-tidy 管道中运行，改为按对话轮数主动触发：
+系统有两种后台处理模式，都包含 entity-extractor → dream-evolver：
+
+**睡眠模式**（sleep/force）：完整管道，由闲置 5 分钟或上下文超阈值触发。
+
+| 步骤 | 子 Agent | 说明 |
+|------|----------|------|
+| 1 | entity-extractor | 内容提炼，`lightrag_insert` 入库 |
+| 2 | dream-evolver | 梦境进化，精加工实体 + 维护 skill |
+| 3 | journal-agent | 日志提取（仅模式2及以上：sleep usage≥50% 或 force） |
+| 4 | context-manager | 上下文压缩 |
+
+压缩前必须保证 entity-extractor + dream-evolver 都跑完，否则压缩删除原始消息后，实体提取和图谱精加工的机会就丢失了。模式2及以上压缩前还必须跑 journal-agent，否则日志内容随压缩丢失。
+
+**小憩模式**（`_on_turn_end`）：简化版，每 N 轮对话后台触发。
 
 | 机制 | 说明 |
 |------|------|
-| 触发位置 | `_on_turn_end`（每轮对话结束后） |
+| 触发位置 | `_on_turn_end`（每轮对话结束后）→ `_maybe_trigger_nap` |
 | 计数单位 | 对话轮数（一轮 = 一条 role=user 消息开始到下一条 user 消息之前） |
 | 触发阈值 | `_calc_dream_trigger_threshold(context_window)`，保底 10 轮，无上限 |
 | 阈值算法 | `max(10, int((context_window × 0.5 - 8000) / 12000))`，200K 窗口→10 轮 |
-| 执行方式 | 后台 daemon thread（`_run_dream_evolver_background`），不阻塞主 Agent |
-| 并发防护 | `threading.Event`（`_dream_running`），运行中不重复触发 |
-| 游标读写 | `.lock` 文件锁（与 `_write_cursor_with_lock` 一致），防止读写竞态 |
-| overflow 兜底 | 推进游标到增量消息前 1/3 位置，避免全量重跑死循环 |
+| 执行方式 | 后台 daemon thread（`_run_nap_background`），不阻塞主 Agent |
+| 执行内容 | 串行：entity-extractor（内容提炼）→ dream-evolver（梦境进化） |
+| 并发防护 | `threading.Event`（`_nap_running`），运行中不重复触发 |
+| 游标读取 | `_read_cursor_locked`（加文件锁，与 `_write_cursor_with_lock` 一致），防止读写竞态 |
+| 游标写入 | `_write_cursor_with_lock`（加文件锁） |
+| overflow 兜底 | dream-evolver overflow 时推进游标到增量消息前 1/3 位置，避免全量重跑死循环 |
 | 脑区预注入 | `build_subagent_system_segments` 在 `dynamic_system` 中注入当前脑区列表，避免每次 `lightrag_search_entities` 查脑区 |
 
-**设计原因**：dream-evolver 的工作单元是对话轮（用户提问+模型解答），不是单条消息。按轮数触发保证对话单元完整性。高频小批量触发比睡眠时一次性处理大量消息更安全——工具返回累积可控，上下文不会溢出。
+不压缩、不提取日志。高频小批量触发比睡眠时一次性处理大量消息更安全——工具返回累积可控，上下文不会溢出。
 
-tidy 管道（sleep/force）保留 entity-extractor + context-manager + journal-agent，不再包含 dream-evolver。
+**entity-extractor → dream-evolver 的顺序依赖**：entity-extractor 先用 `lightrag_insert` 入库精炼文档，LightRAG LLM 自动从中提取实体。dream-evolver 再搜索这些已入库的实体做精加工。如果 dream-evolver 先跑，它自己创建的实体名可能与 entity-extractor 入库后 LLM 提取的实体名不一致——同一概念变成两个独立节点，永远无法合并（实体碎片化）。
+
+**游标去重**：entity-extractor 和 dream-evolver 在两种模式中都会跑，但各自有独立的游标文件（`last_entity_extract.json` / `last_dream_evolve.json`），处理完推进自己的游标，保证不重复处理同一段消息。如果睡眠模式先跑了，小憩模式触发时游标已推进，不会再处理同一批消息。
 
 ### 维护注意事项
 
