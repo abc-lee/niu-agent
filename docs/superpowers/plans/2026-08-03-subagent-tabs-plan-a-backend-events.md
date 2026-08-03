@@ -339,10 +339,20 @@ if getattr(self, '_is_subagent', False):
 ```
 注意：`_auto_generate_summary`（handler.py L535）是 NiuHandler 的实例方法，直接调 `self._auto_generate_summary(...)`，不需要 hasattr 检查。
 
-- [ ] **Step 4: _run_agent_loop StreamEvent 消费循环 — 转发非 reply 类型**
+- [ ] **Step 4: _run_agent_loop StreamEvent 消费循环 — 转发所有类型（含 reply）**
 
-`agent/subagent.py` L280-294，在 `if chunk.type == 'reply':` 分支之后、else 之前插入 elif:
+`agent/subagent.py` L280-294，在 `if chunk.type == 'reply':` 分支中 `result += chunk.content` 之后追加 reply 推送，然后在其后插入 elif 处理其他类型:
 ```python
+if chunk.type == 'reply':
+    result += chunk.content
+    # 子 Agent 回复文本推送到 SubagentEventBus（前端 tab 展示）
+    unique_name = getattr(handler, '_subagent_unique_name', None)
+    if unique_name:
+        try:
+            from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+            notify_subagent_event_sync(unique_name, 'reply', {'content': chunk.content})
+        except ImportError:
+            pass
 elif chunk.type in ('persist', 'system', 'tool_marker'):
     unique_name = getattr(handler, '_subagent_unique_name', None)
     if unique_name:
@@ -352,7 +362,7 @@ elif chunk.type in ('persist', 'system', 'tool_marker'):
         except ImportError:
             pass
 ```
-注意：用 `getattr(handler, '_subagent_unique_name', None)` 做防御性检查。
+注意：用 `getattr(handler, '_subagent_unique_name', None)` 做防御性检查。reply 事件也推送，让前端 tab 能展示子 Agent 回复文本。
 
 - [ ] **Step 5: 语法检查**
 

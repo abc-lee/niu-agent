@@ -12,20 +12,22 @@
 
 **依赖:** 计划 A（后端事件通道）+ 计划 B（后端消息通道）已完成
 
+**重要：** Plan A 推送 `subagent_started` 作为顶级 `event.type='subagent_started'`（不是 new_message 的 role 字段），前端必须在 main.js 事件路由中新增 `else if (event.type === 'subagent_started')` 顶级分支。Plan A 的 `_run_agent_loop` StreamEvent 消费循环转发所有类型（含 reply）到 SubagentEventBus。
+
 ---
 
 ### Task 1: Tab 栏 DOM + CSS + 切换逻辑
 
 **Files:**
-- Modify: `ui/main/windows/assistant/chat.html` L753-763 (header 和 messages 之间插入 tab 栏)
-- Modify: `ui/main/windows/assistant/chat.html` `<style>` 区域 (新增 tab CSS)
+- Modify: `ui/main/windows/assistant/chat.html` (header 和 messages 之间插入 tab 栏 + CSS + JS)
 
 **参考代码位置:**
 - `chat.html` L753-833: DOM 结构 `.container > .header > .messages > .input-area > .status-bar`
 - `chat.html` L837-843: 全局变量 `messages = document.getElementById('messages')`
-- `chat.html` L1463-1598: `addMessage(role, text)` — 消息渲染核心函数
-- `chat.html` L1255-1343: `sendMessage()` — 消息发送函数
-- `chat.html` L1345-1361: `clearChat()` — 清空聊天
+- `chat.html` L1463-1598: `addMessage(role, text)` — 消息渲染核心函数（用 DOMPurify.sanitize(marked.parse(...))）
+- `chat.html` L1255-1343: `sendMessage()` — 消息发送函数（含 /stop /clear /new 指令分支）
+- `chat.html` L1345-1361: `clearChat()` — 清空聊天（调 `window.electronAPI.clearChat()` + `messages.innerHTML=''`）
+- `chat.html` L113-117: `.messages` CSS（`position: relative`）
 
 - [ ] **Step 1: 新增 tab 栏 DOM**
 
@@ -40,7 +42,7 @@
 
 - [ ] **Step 2: 新增 tab CSS**
 
-在 `chat.html` 的 `<style>` 区域新增:
+在 `chat.html` 的 `<style>` 区域，`.messages` CSS 规则（L113）**之前**插入:
 
 ```css
 /* ========== 子 Agent 标签栏 ========== */
@@ -65,9 +67,7 @@
   position: relative;
   user-select: none;
 }
-.tab:hover {
-  background: rgba(0, 0, 0, 0.04);
-}
+.tab:hover { background: rgba(0, 0, 0, 0.04); }
 .tab.active {
   color: #333;
   font-weight: 600;
@@ -84,15 +84,9 @@
   background: #ff6b6b;
   display: none;
 }
-.tab.has-update .tab-badge {
-  display: block;
-}
-.tab.completed {
-  opacity: 0.5;
-}
-.tab.error {
-  color: #ff6b6b;
-}
+.tab.has-update .tab-badge { display: block; }
+.tab.completed { opacity: 0.5; }
+.tab.error { color: #ff6b6b; }
 ```
 
 - [ ] **Step 3: 新增 tab 管理全局变量和函数**
@@ -101,14 +95,12 @@
 
 ```javascript
 // ========== 子 Agent Tab 管理 ==========
-let _activeTab = 'main';  // 当前激活的 tab id（'main' 或 unique_name）
-let _subagentTabs = {};   // {unique_name: {messagesDiv, title, isSync, completed}}
+let _activeTab = 'main';
+let _subagentTabs = {};  // {unique_name: {tabEl, messagesDiv, title, isSync, completed}}
 
-function createSubagentTab(unique_name, agent_name, is_sync) {
-  // 如果 tab 已存在，不重复创建
+function createSubagentTab(unique_name, agent_name, is_sync, autoSwitch = true) {
   if (_subagentTabs[unique_name]) return;
 
-  // 创建 tab 按钮
   const tabBar = document.getElementById('tab-bar');
   const tab = document.createElement('div');
   tab.className = 'tab';
@@ -117,16 +109,14 @@ function createSubagentTab(unique_name, agent_name, is_sync) {
   tab.addEventListener('click', () => switchTab(unique_name));
   tabBar.appendChild(tab);
 
-  // 创建独立 messages 容器（隐藏）
-  const messagesContainer = document.getElementById('messages');
+  // 创建独立 messages 容器（与 #messages 同级，flex:1）
+  const container = document.querySelector('.container');
+  const mainMessages = document.getElementById('messages');
   const subMessages = document.createElement('div');
   subMessages.className = 'messages';
   subMessages.id = `messages-${unique_name}`;
-  subMessages.style.display = 'none';
-  subMessages.style.flex = '1';
-  subMessages.style.overflowY = 'auto';
-  subMessages.style.padding = '16px';
-  messagesContainer.parentNode.insertBefore(subMessages, messagesContainer.nextSibling);
+  subMessages.style.cssText = 'display:none; flex:1; overflow-y:auto; padding:16px;';
+  container.insertBefore(subMessages, mainMessages.nextSibling);
 
   _subagentTabs[unique_name] = {
     tabEl: tab,
@@ -136,32 +126,31 @@ function createSubagentTab(unique_name, agent_name, is_sync) {
     completed: false,
   };
 
-  // 自动切换到新 tab
-  switchTab(unique_name);
-
-  // 同步子 Agent：主对话 tab 显示"子 Agent 工作中"
-  if (is_sync) {
-    addSystemMessage(`子 Agent ${agent_name} 工作中...`);
+  if (autoSwitch) {
+    switchTab(unique_name);
+    if (is_sync) addSystemMessage(`子 Agent ${agent_name} 工作中...`);
   }
 }
 
 function switchTab(tabId) {
   _activeTab = tabId;
-  // 更新 tab 按钮状态
   document.querySelectorAll('.tab').forEach(t => {
     t.classList.toggle('active', t.dataset.tab === tabId);
     if (t.dataset.tab === tabId) t.classList.remove('has-update');
   });
-  // 切换 messages 容器
   const mainMessages = document.getElementById('messages');
+  // 隐藏脑区面板（子 Agent tab 下脑区不适用）
+  const brainElements = document.querySelectorAll('.brain-trigger-zone, .brain-overlay, .brain-panel, .brain-spark-container');
   if (tabId === 'main') {
     mainMessages.style.display = '';
     Object.values(_subagentTabs).forEach(t => t.messagesDiv.style.display = 'none');
+    brainElements.forEach(el => el.style.display = '');
   } else {
     mainMessages.style.display = 'none';
     Object.values(_subagentTabs).forEach(t => {
       t.messagesDiv.style.display = (t.messagesDiv.id === `messages-${tabId}`) ? '' : 'none';
     });
+    brainElements.forEach(el => el.style.display = 'none');
   }
 }
 
@@ -178,13 +167,14 @@ function addSubagentMessageToTab(unique_name, role, text) {
   const div = document.createElement('div');
   div.className = `message ${role}`;
   if (role === 'assistant') {
-    div.innerHTML = marked.parse(text);
+    // XSS 防护：与 addMessage L1492 一致，用 DOMPurify 净化
+    const html = marked.parse(text);
+    div.innerHTML = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
   } else {
     div.textContent = text;
   }
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
-  // 如果不是当前 tab，加红点
   if (_activeTab !== unique_name) {
     tab.tabEl.classList.add('has-update');
   }
@@ -195,7 +185,10 @@ function closeSubagentTab(unique_name) {
   if (!tab) return;
   tab.tabEl.classList.add('completed');
   tab.completed = true;
-  // 如果是当前 tab，切回主对话
+  // 断开 SSE 连接
+  if (window.electronAPI.disconnectSubagentSSE) {
+    window.electronAPI.disconnectSubagentSSE(unique_name);
+  }
   if (_activeTab === unique_name) {
     switchTab('main');
   }
@@ -211,10 +204,28 @@ function markSubagentError(unique_name) {
 
 - [ ] **Step 4: 修改 sendMessage — 子 Agent tab 下调 POST API**
 
-`chat.html` L1255-1343 的 `sendMessage()` 函数，在发送逻辑中判断当前 tab:
+`chat.html` L1255-1343 的 `sendMessage()` 函数，在 `/stop` 指令分支中增加子 Agent tab 判断:
 
 ```javascript
-// 在 sendMessage 函数中，原有 sendMessageWithRetry(text) 调用改为：
+// /stop 指令处理
+if (text.trim() === '/stop') {
+  if (_activeTab !== 'main') {
+    // 子 Agent tab：/stop 发给子 Agent
+    fetch(`/api/subagents/${_activeTab}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '/stop' })
+    }).catch(e => console.error('发送 /stop 到子 Agent 失败:', e));
+    return;
+  }
+  // 主 Agent tab：原有逻辑
+  window.electronAPI.sendMessage('/stop');
+  return;
+}
+```
+
+普通消息发送也增加判断:
+```javascript
 if (_activeTab === 'main') {
   sendMessageWithRetry(text);
 } else {
@@ -235,11 +246,21 @@ if (_activeTab === 'main') {
 }
 ```
 
+`/clear` 和 `/new` 在子 Agent tab 下忽略（提示用户切回主对话）:
+```javascript
+if (text.trim() === '/clear' || text.trim() === '/new') {
+  if (_activeTab !== 'main') {
+    addSubagentMessageToTab(_activeTab, 'system', '请切回主对话使用此命令');
+    return;
+  }
+}
+```
+
 - [ ] **Step 5: 提交**
 
 ```bash
 git add ui/main/windows/assistant/chat.html
-git commit -m "feat: subagent tab bar DOM + CSS + switch logic + sendMessage routing"
+git commit -m "feat: subagent tab bar DOM + CSS + switch logic + sendMessage routing + DOMPurify + brain panel hiding"
 ```
 
 ---
@@ -247,20 +268,21 @@ git commit -m "feat: subagent tab bar DOM + CSS + switch logic + sendMessage rou
 ### Task 2: main.js SubagentSSEManager + IPC 转发
 
 **Files:**
-- Modify: `ui/main/main.js` (新增 SubagentSSEManager 类 + subagent-event IPC)
-- Modify: `ui/main/preload-chat.js` (新增 onSubagentEvent 接口)
+- Modify: `ui/main/main.js` (新增 SubagentSSEManager + subagent-event IPC + subagent_started 顶级分支)
+- Modify: `ui/main/preload-chat.js` (新增 onSubagentEvent/onSubagentStarted/connectSubagentSSE/disconnectSubagentSSE)
 
 **参考代码位置:**
-- `main.js` L1758-1865: `startMessageEventStream()` — SSE 单连接实现（参考模板）
+- `main.js` L1758-1865: `startMessageEventStream()` — SSE 单连接实现（参考模板，含 `res.setEncoding('utf8')` L1780）
 - `main.js` L1754-1756: `sseReconnectTimer` / `sseConnectedBefore` 全局变量
 - `main.js` L1853-1864: SSE 重连机制（3s 重连）
 - `main.js` L274-279: `chatWindow.on('closed')` — 窗口关闭清理
-- `main.js` L1791-1844: `chatWindow.webContents.send` 事件转发模式
-- `preload-chat.js` L60-61: `onNewMessage` 接口 — `ipcRenderer.on('new-message', ...)`
+- `main.js` L1791-1844: 事件路由 if/else if 链（按 `event.type` 分发）
+- `main.js` 端口用法：`process.env.NIU_API_PORT || '9876'`（L1208, L1737）
+- `preload-chat.js` L60-61: `onNewMessage` 接口 — `ipcRenderer.on(channel, callback)` 模式
 
-- [ ] **Step 1: main.js 新增 SubagentSSEManager**
+- [ ] **Step 1: main.js 新增 SubagentSSEManager（含 setEncoding + 404 处理）**
 
-在 `main.js` 的 `startMessageEventStream()` 函数之后新增:
+在 `main.js` 中 `startMessageEventStream()` 函数**之前**（模块级变量区域）新增:
 
 ```javascript
 // ========== 子 Agent SSE 连接管理 ==========
@@ -269,17 +291,21 @@ const SubagentSSEManager = {
 
   connect(unique_name) {
     if (this.connections.has(unique_name)) return;
-
-    const port = NIU_API_PORT || 9876;
+    const port = process.env.NIU_API_PORT || 9876;
     const url = `http://127.0.0.1:${port}/api/subagents/${unique_name}/stream`;
-
     const connection = { req: null, reconnectTimer: null };
 
     const doConnect = () => {
       const req = http.request(url, (res) => {
+        // 404：子 Agent 不存在，不重连
+        if (res.statusCode === 404) {
+          this.connections.delete(unique_name);
+          return;
+        }
+        res.setEncoding('utf8');  // 关键：多字节字符跨 TCP 块安全
         let buffer = '';
         res.on('data', (chunk) => {
-          buffer += chunk.toString();
+          buffer += chunk;
           const lines = buffer.split('\n');
           buffer = lines.pop();
           for (const line of lines) {
@@ -294,11 +320,10 @@ const SubagentSSEManager = {
           }
         });
         res.on('end', () => {
-          // 重连（3s）
           connection.reconnectTimer = setTimeout(doConnect, 3000);
         });
       });
-      req.on('error', (e) => {
+      req.on('error', () => {
         connection.reconnectTimer = setTimeout(doConnect, 3000);
       });
       req.end();
@@ -325,24 +350,21 @@ const SubagentSSEManager = {
 };
 ```
 
-- [ ] **Step 2: 主 SSE 流新增 subagent_started 事件处理**
+- [ ] **Step 2: main.js 事件路由新增 subagent_started 顶级分支**
 
-在 `main.js` 的 `startMessageEventStream()` 函数中，事件类型路由（L1791-1844 区域）新增:
+在 `main.js` 的 `startMessageEventStream()` 函数中，事件路由 if/else if 链（L1791-1844 区域）**末尾新增**:
 
 ```javascript
-// 在 new_message 分支中检测 subagent_started role
-if (data.role === 'subagent_started') {
-  try {
-    const info = JSON.parse(data.content);
-    // 创建 tab
-    if (chatWindow && !chatWindow.isDestroyed()) {
-      chatWindow.webContents.send('subagent-started', info);
-      // 建立子 Agent SSE 连接
-      SubagentSSEManager.connect(info.unique_name);
-    }
-  } catch (e) { /* ignore */ }
+// subagent_started 是顶级 event.type（不是 new_message 的 role 字段）
+else if (event.type === 'subagent_started') {
+  if (chatWindow && !chatWindow.isDestroyed()) {
+    chatWindow.webContents.send('subagent-started', event);
+    SubagentSSEManager.connect(event.unique_name);
+  }
 }
 ```
+
+**关键**：不用 `JSON.parse(data.content)`，event 本身就携带 `unique_name`/`agent_name`/`is_sync` 字段。此分支放在所有现有 `else if` 之后。
 
 - [ ] **Step 3: chatWindow.on('closed') 断开所有子 Agent SSE**
 
@@ -351,27 +373,42 @@ if (data.role === 'subagent_started') {
 ```javascript
 chatWindow.on('closed', () => {
   chatWindow = null;
-  SubagentSSEManager.disconnectAll();
+  if (typeof SubagentSSEManager !== 'undefined') {
+    SubagentSSEManager.disconnectAll();
+  }
   if (spiritWindow && !spiritWindow.isDestroyed()) {
     spiritWindow.webContents.send('chat-closed');
   }
 });
 ```
 
-- [ ] **Step 4: preload-chat.js 新增 onSubagentEvent + onSubagentStarted 接口**
+- [ ] **Step 4: preload-chat.js 新增接口**
 
 `preload-chat.js`，在 `electronAPI` 对象中新增:
 
 ```javascript
 onSubagentEvent: (callback) => ipcRenderer.on('subagent-event', (_event, data) => callback(data)),
 onSubagentStarted: (callback) => ipcRenderer.on('subagent-started', (_event, info) => callback(info)),
+connectSubagentSSE: (unique_name) => ipcRenderer.send('connect-subagent-sse', unique_name),
+disconnectSubagentSSE: (unique_name) => ipcRenderer.send('disconnect-subagent-sse', unique_name),
 ```
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: main.js 新增 connect/disconnect IPC handler**
+
+```javascript
+ipcMain.on('connect-subagent-sse', (_event, unique_name) => {
+  SubagentSSEManager.connect(unique_name);
+});
+ipcMain.on('disconnect-subagent-sse', (_event, unique_name) => {
+  SubagentSSEManager.disconnect(unique_name);
+});
+```
+
+- [ ] **Step 6: 提交**
 
 ```bash
 git add ui/main/main.js ui/main/preload-chat.js
-git commit -m "feat: SubagentSSEManager + subagent-event IPC + onSubagentEvent preload API"
+git commit -m "feat: SubagentSSEManager (setEncoding + 404 handling) + subagent_started top-level branch + connect/disconnect IPC"
 ```
 
 ---
@@ -382,11 +419,11 @@ git commit -m "feat: SubagentSSEManager + subagent-event IPC + onSubagentEvent p
 - Modify: `ui/main/windows/assistant/chat.html` (新增事件回调)
 
 **参考代码位置:**
-- `chat.html` L2001-2006: `onToolStatus` 回调 — `window.electronAPI.onToolStatus((data) => {...})`
+- `chat.html` L2001-2006: `onToolStatus` 回调
 - `chat.html` L2195-2244: `onNewMessage` 回调 — 主 Agent SSE 事件入口
-- `chat.html` L1463-1598: `addMessage(role, text)` — 消息渲染
+- `chat.html` L1463-1598: `addMessage(role, text)`
 
-- [ ] **Step 1: 注册 onSubagentStarted 回调 — 创建 tab**
+- [ ] **Step 1: 注册 onSubagentStarted + onSubagentEvent 回调**
 
 在 `chat.html` 的 `onNewMessage` 回调之后新增:
 
@@ -402,17 +439,15 @@ window.electronAPI.onSubagentEvent(({ unique_name, event }) => {
 
   switch (event.type) {
     case 'tool_status':
-      // 工具调用进度
       const status = event.status === 'start' ? '🔧' : '✅';
       addSubagentMessageToTab(unique_name, 'system', `${status} ${event.tool_name}${event.summary ? ' — ' + event.summary : ''}`);
       break;
 
     case 'thinking_chain':
-      // thinking chain（折叠显示）
       const thinkDiv = document.createElement('div');
       thinkDiv.className = 'message thinking';
       thinkDiv.style.cssText = 'font-size:12px;color:#888;border-left:2px solid #ccc;padding-left:8px;margin:4px 0;white-space:pre-wrap;';
-      thinkDiv.textContent = event.content;
+      thinkDiv.textContent = event.content;  // textContent 安全，无 XSS 风险
       tab.messagesDiv.appendChild(thinkDiv);
       tab.messagesDiv.scrollTop = tab.messagesDiv.scrollHeight;
       break;
@@ -426,10 +461,11 @@ window.electronAPI.onSubagentEvent(({ unique_name, event }) => {
       const qDiv = document.createElement('div');
       qDiv.className = 'message question';
       qDiv.style.cssText = 'background:rgba(255,193,7,0.15);border:1px solid rgba(255,193,7,0.4);border-radius:8px;padding:8px 12px;margin:4px 0;';
-      qDiv.innerHTML = `<strong>🤔 子 Agent 提问：</strong>${marked.parse(event.content)}`;
+      // XSS 防护：用 DOMPurify 净化
+      const questionHtml = marked.parse(event.content);
+      qDiv.innerHTML = `<strong>🤔 子 Agent 提问：</strong>${typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(questionHtml) : questionHtml}`;
       tab.messagesDiv.appendChild(qDiv);
       tab.messagesDiv.scrollTop = tab.messagesDiv.scrollHeight;
-      // 如果不是当前 tab，加红点
       if (_activeTab !== unique_name) {
         tab.tabEl.classList.add('has-update');
       }
@@ -437,12 +473,23 @@ window.electronAPI.onSubagentEvent(({ unique_name, event }) => {
 
     case 'persist':
     case 'system':
-      addSubagentMessageToTab(unique_name, 'system', event.content);
+    case 'tool_marker':
+      addSubagentMessageToTab(unique_name, 'system', event.content || '');
+      break;
+
+    case 'subagent_suspended':
+      addSubagentMessageToTab(unique_name, 'system', '子 Agent 等待主 Agent 回答中...');
       break;
 
     case 'subagent_closed':
-      closeSubagentTab(unique_name);
-      addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
+      // 检查是否带 reason 字段（区分正常结束 vs 异常）
+      if (event.reason === 'error') {
+        markSubagentError(unique_name);
+        addSubagentMessageToTab(unique_name, 'system', '子 Agent 异常终止');
+      } else {
+        closeSubagentTab(unique_name);
+        addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
+      }
       break;
 
     case 'error':
@@ -457,7 +504,7 @@ window.electronAPI.onSubagentEvent(({ unique_name, event }) => {
 
 ```bash
 git add ui/main/windows/assistant/chat.html
-git commit -m "feat: chat.html subagent event rendering — tool status, thinking chain, question, close"
+git commit -m "feat: chat.html subagent event rendering — tool_status, thinking_chain, reply, question, subagent_suspended, subagent_closed, error, DOMPurify"
 ```
 
 ---
@@ -471,11 +518,11 @@ git commit -m "feat: chat.html subagent event rendering — tool status, thinkin
 **参考代码位置:**
 - `chat.html` L2247-2268: `onSyncState` 回调 — 窗口恢复时同步状态
 - `chat.html` L1068-1080: `checkRunningSubagents()` — 调 `/api/subagents/running`
-- `main.js` L262-272: `chatWindow.on('show'/'focus')` — 发送 sync-state
+- `chat.html` L1345-1361: `clearChat()` — 调 `window.electronAPI.clearChat()` + `messages.innerHTML=''`
 
-- [ ] **Step 1: 窗口恢复时重建子 Agent tab**
+- [ ] **Step 1: 窗口恢复时重建子 Agent tab（不自动切换）**
 
-在 `chat.html` 的 `onSyncState` 回调中，或新增独立的恢复函数:
+在 `chat.html` 中新增:
 
 ```javascript
 async function restoreSubagentTabs() {
@@ -485,20 +532,13 @@ async function restoreSubagentTabs() {
     if (data.count === 0) return;
 
     for (const sub of data.subagents) {
-      // tab 已存在则跳过
       if (_subagentTabs[sub.unique_name]) continue;
-
-      // 创建 tab（不自动切换）
-      createSubagentTab(sub.unique_name, sub.agent_type, sub.is_sync);
-
-      // 如果 state 是已结束（不在 running 列表里但 ring buffer 还在），标记完成
-      if (sub.state === 'completed' || sub.state === 'error') {
-        closeSubagentTab(sub.unique_name);
+      // 恢复时不自动切换（autoSwitch=false），不显示"工作中"消息
+      createSubagentTab(sub.unique_name, sub.agent_type, sub.is_sync, false);
+      // 重新建立 SSE 连接
+      if (window.electronAPI.connectSubagentSSE) {
+        window.electronAPI.connectSubagentSSE(sub.unique_name);
       }
-
-      // 重新建立 SSE 连接（main.js 负责）
-      // 通过 IPC 通知 main.js 连接
-      window.electronAPI.sendMessage && window.electronAPI.connectSubagentSSE(sub.unique_name);
     }
   } catch (e) {
     console.error('恢复子 Agent tab 失败:', e);
@@ -512,36 +552,15 @@ window.electronAPI.onSyncState(() => {
 });
 ```
 
-- [ ] **Step 2: main.js 新增 connectSubagentSSE IPC**
+注意：`/api/subagents/running` 只返回运行中的子 Agent，能出现在列表里就说明还在运行，不需要检查 state 字段。
 
-`main.js` 新增 IPC handler:
+- [ ] **Step 2: clearChat 不修改原有逻辑**
 
-```javascript
-ipcMain.on('connect-subagent-sse', (_event, unique_name) => {
-  SubagentSSEManager.connect(unique_name);
-});
-```
+**不修改 clearChat 函数**。原有的 `clearChat()` 调用 `window.electronAPI.clearChat()` 清空数据库 + `messages.innerHTML=''` 清空主 #messages。子 Agent tab 的 messages 容器不在 #messages 内部，不会被清空——这是正确行为。计划不做任何修改。
 
-`preload-chat.js` 新增:
-```javascript
-connectSubagentSSE: (unique_name) => ipcRenderer.send('connect-subagent-sse', unique_name),
-```
-
-- [ ] **Step 3: clearChat 不清空子 Agent tab 消息**
-
-`chat.html` L1345-1361 的 `clearChat()` 函数，确保只清空主 #messages:
-
-```javascript
-function clearChat() {
-  window.electronAPI.clearChat();
-  // 只清空主对话 messages，不清空子 Agent tab
-  document.getElementById('messages').innerHTML = '';
-}
-```
-
-- [ ] **Step 4: 提交**
+- [ ] **Step 3: 提交**
 
 ```bash
 git add ui/main/windows/assistant/chat.html ui/main/main.js ui/main/preload-chat.js
-git commit -m "feat: window restore subagent tabs + connectSubagentSSE IPC + clearChat isolation"
+git commit -m "feat: window restore subagent tabs (no auto-switch) + connectSubagentSSE on restore + clearChat untouched"
 ```
