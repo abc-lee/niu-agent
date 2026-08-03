@@ -55,6 +55,8 @@ _close_epochs: dict[str, int] = {}
 _epoch_lock = threading.Lock()
 _epoch_counter = 0
 
+_MAX_RING_BUFFER = 100
+
 
 def _get_main_loop():
     """复用 niu_api.chat._main_loop 全局引用。"""
