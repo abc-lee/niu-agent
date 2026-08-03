@@ -765,8 +765,12 @@ def call_subagent(
     # 2. 构建静态/动态段（cache 友好）
     try:
         static_system, dynamic_system = build_subagent_system_segments(agent_name)
-    except Exception:
-        static_system = get_subagent_prompt(agent_name)  # 该函数总返回非空字符串
+    except Exception as e:
+        logger.warning(f'[SubAgent] build_subagent_system_segments failed for {agent_name}, falling back to bare prompt: {e}')
+        try:
+            static_system = get_subagent_prompt(agent_name)
+        except Exception:
+            static_system = f'You are {agent_name} sub-agent. Complete the task efficiently.'
         dynamic_system = ""
 
     # 3. 组装 system message（按 model 决定格式：Claude list / 其他 str）
