@@ -401,6 +401,7 @@ post_compress_turns = sum(1 for m in post_compress_msgs if getattr(m, "role", ""
 # 压缩后游标前移导致 post_compress_turns 变小，重置去重计数器
 if post_compress_turns < self._last_ema_turns:
     self._last_ema_turns = 0
+# 已知边界：post_compress_turns == _last_ema_turns 时两个条件均为 False，跳过一次更新。自愈（下次 turn 恢复），概率极低（压缩通常显著减少 turns）。
 
 ema_path = niu_dir / "avg_tokens_per_turn.json"
 
@@ -535,7 +536,7 @@ def _compute_ema_update(ema_old: float, sample_count: int, current_avg: float) -
 ```bash
 cd /Users/lilei/tools/ai-bot && python/bin/python -m pytest tests/test_dream_trigger.py::TestEMAUpdateLogic -v
 ```
-Expected: PASS — 5 tests
+Expected: PASS — 6 tests
 
 - [ ] **Step 4: 语法检查 + Commit**
 
