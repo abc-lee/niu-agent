@@ -463,7 +463,6 @@ context-manager in _on_context_high_usage."
         """
         try:
             from pathlib import Path
-            import json
             from agent.subagent import call_subagent_with_auto_answer
             from niu_api.compat import (
                 _build_plain_history,
