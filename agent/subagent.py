@@ -505,6 +505,17 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     if "直接退出" not in static_system:
         static_system += "\n\n" + _BOUNDARY_SECTION_TEMPLATE
 
+    # 3.5 为 dream-evolver 预注入当前脑区列表（避免每轮 lightrag_search_entities 查脑区）
+    if agent_name == "dream-evolver":
+        try:
+            from niu_api.internal.lightrag_manager import get_brain_regions
+            brain_regions = get_brain_regions()
+            if brain_regions:
+                region_list = "、".join(brain_regions)
+                static_system += f"\n\n## 当前脑区列表（预注入，无需搜索）\n\n{region_list}\n\n创建实体时直接参考以上脑区列表选择归属，不要调用 lightrag_search_entities 查询脑区。"
+        except Exception:
+            pass  # 获取失败不影响主流程
+
     # 4. 强制注入 @niu-agent/@end 守则
     # context-manager 例外：它原设计是直接输出 keep=/update=/cursor= 让程序写数据库，
     # 不走 @niu-agent/@end 交互通道。注入守则会污染它的输出格式，导致压缩失败。
