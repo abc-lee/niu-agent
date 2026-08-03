@@ -181,11 +181,15 @@ ai-bot/
 | `context-manager` | 上下文管理：内容压缩 | auto-tidy 管线自动调度 | 0.2 |
 | `journal-agent` | 工作日志：从对话提取工作内容写入日志 | 主 Agent 委托或 auto-tidy | 0.3 |
 | `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | auto-tidy 管线自动调度 | 0.3 |
-| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | auto-tidy 管线自动调度 | 0.3 |
+| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | 按对话轮数主动触发（_on_turn_end） | 0.3 |
 
 **BLOCKED_SUBAGENTS 机制：**
 
-`context-manager`、`entity-extractor`、`dream-evolver` 三个子 Agent 在 `agent/handler.py` 中被列入 `BLOCKED_SUBAGENTS` 集合，禁止主 Agent 手动调用。它们由 `auto-tidy` 管线按特定时机自动调度，确保：
+`context-manager`、`entity-extractor`、`dream-evolver` 三个子 Agent 在 `agent/handler.py` 中被列入 `BLOCKED_SUBAGENTS` 集合，禁止主 Agent 手动调用。它们的触发方式各不相同：
+- `entity-extractor` + `context-manager`：由 auto-tidy 管线（睡眠/强制压缩时）自动调度
+- `dream-evolver`：由 `_on_turn_end` 按对话轮数主动触发（不再在 tidy 管线中运行）
+
+这确保：
 - 避免主 Agent 误触发导致重复执行
 - 保证执行顺序和时机符合系统设计
 - 防止用户对话被不必要的后台任务打断
@@ -352,6 +356,26 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 同步子 Agent 调用时，主 Agent 在工具循环里阻塞等待。子 Agent 输出 `@niu-agent 问题` 时，程序拦截层识别后挂起 session，把问题包装成 `[子名] 问题` 作为工具返回值送给主 Agent。主 Agent LLM 看到 JSON 工具结果 `{"status":"success","result":"[子名] 问题"}` 后，调同一 chat-with-xxx 工具回复（task="" + answer="@子名 回答" + unique_name="子名"）。程序从 registry 拿回挂起 session，注入回答后继续跑。
 
 程序触发子 Agent（force 压缩 / 手动 tidy API）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案“无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作”。
+
+### dream-evolver 主动触发机制
+
+dream-evolver 不再在 auto-tidy 管道中运行，改为按对话轮数主动触发：
+
+| 机制 | 说明 |
+|------|------|
+| 触发位置 | `_on_turn_end`（每轮对话结束后） |
+| 计数单位 | 对话轮数（一轮 = 一条 role=user 消息开始到下一条 user 消息之前） |
+| 触发阈值 | `_calc_dream_trigger_threshold(context_window)`，保底 10 轮，无上限 |
+| 阈值算法 | `max(10, int((context_window × 0.5 - 8000) / 12000))`，200K 窗口→10 轮 |
+| 执行方式 | 后台 daemon thread（`_run_dream_evolver_background`），不阻塞主 Agent |
+| 并发防护 | `threading.Event`（`_dream_running`），运行中不重复触发 |
+| 游标读写 | `.lock` 文件锁（与 `_write_cursor_with_lock` 一致），防止读写竞态 |
+| overflow 兜底 | 推进游标到增量消息前 1/3 位置，避免全量重跑死循环 |
+| 脑区预注入 | `build_subagent_system_segments` 在 `dynamic_system` 中注入当前脑区列表，避免每次 `lightrag_search_entities` 查脑区 |
+
+**设计原因**：dream-evolver 的工作单元是对话轮（用户提问+模型解答），不是单条消息。按轮数触发保证对话单元完整性。高频小批量触发比睡眠时一次性处理大量消息更安全——工具返回累积可控，上下文不会溢出。
+
+tidy 管道（sleep/force）保留 entity-extractor + context-manager + journal-agent，不再包含 dream-evolver。
 
 ### 维护注意事项
 
