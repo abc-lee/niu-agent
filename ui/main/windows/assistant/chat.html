@@ -769,6 +769,12 @@
       <div class="brain-title">脑区状态</div>
       <div id="brainList"></div>
     </div>
+
+    <!-- 脑区鬼火动画容器（在 .messages 外部，避免 innerHTML 清空和滚动影响） -->
+    <div class="brain-spark-container" id="brainSparkContainer">
+      <div class="spark-light-zone" id="sparkLightZone"></div>
+      <div class="spark-extinguish-zone" id="sparkExtinguishZone"></div>
+    </div>
     
     <!-- 简洁进度条 -->
     <div class="progress-bar" id="progress-bar">
@@ -1741,6 +1747,12 @@
       brainPanel.style.top = top + 'px';
       brainPanel.style.height = height + 'px';
       brainPanel.style.bottom = 'auto';
+      // 鬼火动画容器：对齐 .messages 顶部，偏移 16px
+      const sparkContainer = document.getElementById('brainSparkContainer');
+      if (sparkContainer) {
+        sparkContainer.style.top = (top + 16) + 'px';
+        sparkContainer.style.bottom = 'auto';
+      }
     }
     // 页面加载后立即定位（不等 showBrainPanel）
     positionBrainElements();
