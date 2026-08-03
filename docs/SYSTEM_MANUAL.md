@@ -379,8 +379,8 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 |------|------|
 | 触发位置 | `_on_turn_end`（每轮对话结束后）→ `_maybe_trigger_nap` |
 | 计数单位 | 对话轮数（一轮 = 一条 role=user 消息开始到下一条 user 消息之前） |
-| 触发阈值 | `_calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)`，下限 10 轮，上限 50 轮 |
-| 阈值算法 | 轮数<3时直接返回10；否则 `max(10, min(50, int(context_window × 0.30 / max(1000, avg_tokens_per_turn))))`，avg 基于压缩游标后消息动态计算 |
+| 触发阈值 | `_calc_dream_trigger_threshold_dynamic(context_window, ema_path)`，下限 10 轮，上限 50 轮 |
+| 阈值算法 | 冷启动(样本<5)返回10；否则 `max(10, min(50, int(context_window × 0.30 / max(1000, EMA))))`，EMA 为持久化的非对称指数移动平均每轮 token 开销（上升α=0.2慢、下降α=0.5快，张力模型），用 TokenCalculator 精确计算 |
 | 执行方式 | 后台 daemon thread（`_run_nap_background`），不阻塞主 Agent |
 | 执行内容 | 串行：entity-extractor（内容提炼）→ dream-evolver（梦境进化） |
 | 并发防护 | `threading.Event`（`_nap_running`），运行中不重复触发 |
