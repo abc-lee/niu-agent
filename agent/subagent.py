@@ -525,8 +525,11 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
         static_system += "\n\n" + _SUBAGENT_ASK_GUIDE_TEMPLATE
 
     # 5. 动态段：Current Time
-    from datetime import datetime
-    dynamic_system = f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}" + _brain_region_section
+    try:
+        from datetime import datetime
+        dynamic_system = f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}" + _brain_region_section
+    except Exception:
+        dynamic_system = _brain_region_section
 
     return static_system, dynamic_system
 
