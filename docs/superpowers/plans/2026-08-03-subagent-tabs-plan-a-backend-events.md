@@ -42,6 +42,7 @@ per-unique_name 事件队列路由，与主 Agent SSE 流（_event_subscribers �
 - 不需要 asyncio.Lock（主 loop 单线程不会并发）。
 - close() 的清理通过 call_soon_threadsafe 调度到主 loop 执行，避免跨线程竞争。
 """
+import threading
 from collections import deque
 from loguru import logger
 
@@ -51,9 +52,8 @@ _subscribers: dict[str, list] = {}  # asyncio.Queue 运行时动态创建
 _ring_buffers: dict[str, deque] = {}
 # 每个 unique_name → close epoch（防止 Timer 误删重新启动的同名子 Agent）
 _close_epochs: dict[str, int] = {}
+_epoch_lock = threading.Lock()
 _epoch_counter = 0
-
-_MAX_RING_BUFFER = 100
 
 
 def _get_main_loop():
@@ -136,17 +136,19 @@ def close(unique_name: str):
 
     清理通过 call_soon_threadsafe 调度到主 loop 执行，避免跨线程竞争。
     用 epoch 防止 5 分钟内同名子 Agent 重新启动时误删新数据。
+    _do_cleanup 接收 epoch 参数，在主 loop 中再次检查，消除 TOCTOU 竞态。
     """
     global _epoch_counter
-    _epoch_counter += 1
-    _close_epochs[unique_name] = _epoch_counter
-    my_epoch = _epoch_counter
+    import threading
+    with _epoch_lock:
+        _epoch_counter += 1
+        _close_epochs[unique_name] = _epoch_counter
+        my_epoch = _epoch_counter
 
     # 推送关闭事件
     notify_subagent_event_sync(unique_name, "subagent_closed", {"unique_name": unique_name})
 
     # 延迟清理（5 分钟后，等窗口重开恢复）
-    import threading
     def _cleanup():
         # 检查 epoch 是否变化（同名子 Agent 重新启动会更新 epoch）
         if _close_epochs.get(unique_name) != my_epoch:
@@ -154,19 +156,22 @@ def close(unique_name: str):
         # 调度到主 loop 执行清理（避免跨线程操作 dict）
         loop = _get_main_loop()
         if loop is None or loop.is_closed():
+            # loop 已关闭，没有 async 操作在进行，直接清理安全
             _subscribers.pop(unique_name, None)
             _ring_buffers.pop(unique_name, None)
             _close_epochs.pop(unique_name, None)
             return
-        loop.call_soon_threadsafe(_do_cleanup, unique_name)
+        loop.call_soon_threadsafe(_do_cleanup, unique_name, my_epoch)
 
     timer = threading.Timer(300.0, _cleanup)
     timer.daemon = True
     timer.start()
 
 
-def _do_cleanup(unique_name: str):
-    """在主 loop 中执行清理。"""
+def _do_cleanup(unique_name: str, my_epoch: int):
+    """在主 loop 中执行清理。再次检查 epoch 防止 TOCTOU 竞态。"""
+    if _close_epochs.get(unique_name) != my_epoch:
+        return  # 在 Timer 检查和主 loop 执行之间，同名子 Agent 已重新启动
     _subscribers.pop(unique_name, None)
     _ring_buffers.pop(unique_name, None)
     _close_epochs.pop(unique_name, None)
@@ -414,6 +419,7 @@ git commit -m "feat: extract and push thinking chain for subagents via handler p
 - Modify: `agent/handler.py` L1008-1016 (_call_subagent_gen 异步路径) + L1019 (同步路径)
 - Modify: `tests/test_async_subagent_dispatch.py` L55 (适配元组返回值)
 - Modify: `tests/test_integration_async_complete.py` L56 (适配元组返回值)
+- Note: `tests/test_ask_main_agent_stop_deadlock.py` L68 也调了 _dispatch_async_subagent 但不接收返回值（丢弃），无需修改。
 
 **参考代码位置:**
 - `agent/subagent.py` L1206: `return '[错误] 主 asyncio loop 不可用...'`（错误路径 1）
@@ -424,6 +430,7 @@ git commit -m "feat: extract and push thinking chain for subagents via handler p
 
 - [ ] **Step 1: _dispatch_async_subagent 所有 return 路径统一返回元组**
 
+同时更新函数签名类型注解：`-> str` 改为 `-> tuple[str | None, str]`。
 `agent/subagent.py` 三个 return 路径改为:
 ```python
 # L1206 错误路径 1：
@@ -440,7 +447,6 @@ return (unique_name, confirmation)
 
 `agent/handler.py` L1008 附近，改为:
 ```python
-import json as _json
 unique_name, confirmation = _dispatch_async_subagent(
     agent_name=agent_name,
     task=task,
