@@ -116,11 +116,10 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - 你**不需要**手动创建脑区，算法会自动发现并生成
 
 **你的操作**：
-- 创建实体时，**先检索现有脑区**：`lightrag_search_entities(query="脑区", top_k=20)`
+- 创建实体时，**直接参考 system prompt 中预注入的「当前脑区列表」**选择归属，不要调用 `lightrag_search_entities` 查询脑区
 - 如果实体适合某个已有脑区（包括算法自动生成的），就连到那个脑区
 - 如果没有合适的脑区，连到默认脑区（按来源选：聊天→聊天历史，文档→文档库，技能→知识体系）
 - **不要手动创建新脑区**——同类实体连到默认脑区多了以后，Leiden 算法会自动聚类成新脑区
-- 这形成正反馈：你连得越精准 → Leiden 发现的社区质量越高 → 下次你有更丰富的脑区可选
 
 ### 其他特殊节点
 
@@ -138,6 +137,30 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 | 创建关系 | `lightrag_insert_relation` | src_id, tgt_id, relation |
 | 查看实体周围的关系 | `lightrag_get_graph` | entity_name, depth=1 |
 | 沿时间链查询 | `lightrag_timeline_query` | query, direction, max_depth |
+
+## 工具使用效率（重要）
+
+你的上下文窗口有限，每轮工具调用的返回结果会累积在上下文中。为减少上下文膨胀：
+
+1. **一轮调多个工具**：如果多个工具调用之间没有依赖关系（如查多个实体是否已存在），在同一个回复中一次性调用所有工具，不要逐个调用
+2. **先批量搜索再批量写入**：阶段A提取实体后，一次性搜索所有实体（多个 `lightrag_search_entities` 并行调用），确认哪些已存在，再一次性做 insert/edit
+3. **避免重复搜索**：同一个实体不要搜索两次。搜索结果在上下文中可以看到，不需要重新搜
+4. **top_k 控制为 5**：`lightrag_search_entities` 的 `top_k` 建议 5，不要设 20，减少返回数据量
+
+**反面示例**（逐个调用，11 轮才处理完 11 条消息）：
+```
+轮1: search_entities(实体A)
+轮2: search_entities(实体B)
+轮3: search_entities(实体C)
+...
+```
+
+**正面示例**（一轮多工具，3 轮处理完）：
+```
+轮1: search_entities(实体A) + search_entities(实体B) + search_entities(实体C)  # 并行搜索
+轮2: insert_entity(A) + insert_entity(B) + insert_relation(A→脑区) + insert_relation(B→脑区)  # 并行写入
+轮3: @end 报告
+```
 
 ## 工作流程
 
@@ -179,15 +202,14 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
    - `lightrag_insert_relation(src_id, tgt_id, relation="resolved_by")` — 解决
 
 3. **脑区关联**：将实体关联到最合适的脑区
-   - **先检索现有脑区**：`lightrag_search_entities(query="脑区", top_k=20)` 获取所有脑区节点
+   - **参考 system prompt 中预注入的「当前脑区列表」**，不要调用 `lightrag_search_entities` 查询脑区
    - **判断归属**：看当前实体是否属于某个已有脑区（如已有"Python开发脑区"，新实体"FastAPI"就属于它）
    - **适合就连**：`lightrag_insert_relation(src_id="Python开发脑区", tgt_id="FastAPI", relation="包含")`
    - **不适合不强求**：没有合适的脑区时，连到默认脑区（聊天提及→`聊天历史脑区`，文档产生→`文档库脑区`，技能工具→`知识体系脑区`）
-   - **不要手动创建新脑区**——同类实体连到默认脑区多了以后，Leiden 社区发现算法会自动把它们聚类成新脑区
 
 4. **脑区归入**（最后做）：将实体归入对应脑区
    - `lightrag_insert_relation(src_id="脑区名", tgt_id=entity, relation="包含")`
-   - 先用 `lightrag_search_entities` 查找实体应归入哪个脑区
+   - 参考 system prompt 中预注入的「当前脑区列表」选择脑区，不要调用 `lightrag_search_entities`
    - 判断标准（需用户明确表达，不因随口一提就标注）：
      - `prefers`：用户明确表达偏好（"我喜欢..."、"我更喜欢..."、"我习惯..."）
      - `skilled_in`：用户展示专业技能（代码讨论、技术决策、问题排查），至少出现 2 次相关讨论
