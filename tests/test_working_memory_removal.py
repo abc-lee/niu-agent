@@ -135,18 +135,33 @@ class TestThreeRepeatDetectionPreserved:
 
     def test_repeat_detection_still_works(self):
         _recent_tool_calls = [
-            "read(file_path=/tmp/a.txt)",
-            "read(file_path=/tmp/a.txt)",
-            "read(file_path=/tmp/a.txt)",
+            ("read", 123),
+            ("read", 123),
+            ("read", 123),
         ]
         recent_tools = _recent_tool_calls[-3:]
         assert len(recent_tools) == 3 and recent_tools[0] == recent_tools[1] == recent_tools[2]
 
     def test_no_repeat_with_different_tools(self):
         _recent_tool_calls = [
-            "read(file_path=/tmp/a.txt)",
-            "write(file_path=/tmp/b.txt)",
-            "read(file_path=/tmp/a.txt)",
+            ("read", 123),
+            ("write", 456),
+            ("read", 123),
+        ]
+        recent_tools = _recent_tool_calls[-3:]
+        assert not (len(recent_tools) == 3 and recent_tools[0] == recent_tools[1] == recent_tools[2])
+
+    def test_no_repeat_with_same_tool_different_args(self):
+        """相同工具名但不同参数（不同 hash）不触发重复检测——本次修复的核心场景。
+
+        修复前：args_preview 截断到 50 字符，同文件不同位置的 edit
+        会因预览字符串相同而被误判为重复。
+        修复后：使用完整参数哈希，只有参数完全相同才算重复。
+        """
+        _recent_tool_calls = [
+            ("edit", hash(str(sorted({"file_path": "/tmp/a.py", "old": "x"}.items())))),
+            ("edit", hash(str(sorted({"file_path": "/tmp/a.py", "old": "y"}.items())))),
+            ("edit", hash(str(sorted({"file_path": "/tmp/a.py", "old": "z"}.items())))),
         ]
         recent_tools = _recent_tool_calls[-3:]
         assert not (len(recent_tools) == 3 and recent_tools[0] == recent_tools[1] == recent_tools[2])

@@ -461,7 +461,7 @@ class NiuHandler(BaseHandler):
         # self._experience_summarizer = ExperienceSummarizer()
 
         # P2-1: 工具调用历史追踪（用于重复检测）
-        self._recent_tool_calls: list[str] = []
+        self._recent_tool_calls: list[tuple] = []
         self._last_prompt_tokens = 0
 
     # ========== 工具回调机制 ==========
