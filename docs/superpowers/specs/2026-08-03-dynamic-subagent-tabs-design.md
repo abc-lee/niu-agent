@@ -54,10 +54,10 @@
 
 **方案**：新建 `SubagentEventBus` 类，维护 `dict[str, list[asyncio.Queue]]`（unique_name → 订阅者队列列表）。
 
-- `notify_subagent_event(unique_name, event_type, data)`：通过 `call_soon_threadsafe` 注入事件到对应 unique_name 的队列。
+- `notify_subagent_event(unique_name, event_type, data)`：通过 `call_soon_threadsafe` 注入事件到对应 unique_name 的队列。复用 `niu_api.chat._main_loop` 全局引用（与现有 `_sync_broadcast` 相同模式）。
 - `subscribe(unique_name)` → `asyncio.Queue`：SSE 端点调用，返回该子 Agent 的事件队列。
 - `close(unique_name)`：推送关闭事件并标记断开。所有结束路径调用。
-- 事件环形缓冲区：每个 unique_name 维护最近 100 条事件缓存，SSE 断线重连时补发。
+- 事件环形缓冲区：每个 unique_name 维护独立的 `deque(maxlen=100)` 环形缓冲区（与 Queue 是两个独立数据结构），SSE 断线重连时从缓冲区补发最近 100 条事件。
 
 **结束通知覆盖所有路径**（在 `SubagentRegistry.unregister` 中统一注入 `bus.close()` 回调）：
 - `@end`（EXITED）
@@ -98,7 +98,7 @@
 
 新增 `POST /api/subagents/{unique_name}/message`：
 - Body：`{ "content": "用户消息" }`
-- **不直接调 `supplement_queue.push()`**——提取 `db_monitor.route_message` 核心逻辑为公共函数 `route_to_subagent(target, sender, content)`，POST API 和 db_monitor 都调用它。避免绕过路由逻辑。
+- **不直接调 `supplement_queue.push()`**——提取 `db_monitor.route_message` 核心逻辑为公共函数 `route_to_subagent(target, sender, content, source='db_monitor')`，POST API 和 db_monitor 都调用它。避免绕过路由逻辑。POST API 场景（`source='post_api'`）：target 必须是子 Agent unique_name（不存在 target==主Agent 场景），孤儿回答返回 404 而非推回主 Agent，不执行降级逻辑。db_monitor 场景（`source='db_monitor'`）：保留原有全部行为。
 - 用户消息 `sender="user"`，作为**次末信息**插入子 Agent 上下文（见缝插针），补充任务信息。不用前缀，靠 `sender` 字段区分。
 - **`/stop` 处理**：必须同时调 `cancel_pending_ask(unique_name)` + `push("/stop", is_terminate=True)`，与 `runner.py:112-113` 保持一致。只 push 不 cancel 会导致 ask_main_agent 挂起的子 Agent 死锁 300s。
 - **`@user` 回答处理**：检测子 Agent 处于 `waiting_for_user` 状态时，调 `AskUserFuture.set_answer(content)` 唤醒（见 4.6）。
@@ -110,9 +110,8 @@
 
 ### 4.5 子 Agent 启动通知
 
-- 主 Agent SSE 流（`/api/events/stream`）中新增 `subagent_started` 事件类型，携带子 Agent 名称 + unique_name。新增事件类型，不修改现有事件处理逻辑。
 - `_dispatch_async_subagent` 返回 `(unique_name, confirmation_text)` 元组（目前返回纯文本），`_call_subagent_gen` 从中拿到 unique_name 推送事件。
-- 同步路径直接用 `agent_name` 作为 unique_name。
+- 主 Agent SSE 流（`/api/events/stream`）中新增 `subagent_started` 事件类型，携带子 Agent 名称 + unique_name + `is_sync` 标识（同步/异步）。前端收到同步子 Agent 的 `subagent_started` 后主动设置主对话 tab 状态为"子 Agent 工作中"，不依赖后端推送。新增事件类型，不修改现有事件处理逻辑。
 - 前端收到 `subagent_started` 后动态创建 tab，并向 `/api/subagents/{unique_name}/stream` 建立独立 SSE 连接。
 
 ### 4.6 @user 机制 — 子 Agent 向用户提问
@@ -127,6 +126,8 @@
 - 阻塞超时：600s（比 @niu-agent 的 300s 更长，因为用户响应可能较慢），超时后子 Agent 自行决策继续或退出。
 
 **子 Agent 状态扩展**：`SubagentRegistry` 的 `RunningSubagent.state` 新增 `waiting_for_user` 值（现有：`running` / `waiting_for_answer`）。
+
+**共存约束**：同一子 Agent 同一时刻只能有一个 Future 挂起（`AskUserFuture` 或 `AskMainAgentFuture`）。因为 ask 阻塞子 Agent 执行循环，阻塞期间不会执行下一条 LLM 输出，不会同时发起第二个 ask。
 
 ## 5. 前端设计（需求边界）
 
@@ -172,13 +173,8 @@
 - `preload-chat.js` 新增 `onSubagentEvent(callback)` 接口。
 - `chat.html` 按 `unique_name` 路由事件到对应 tab 的 messages 容器。
 - `chatWindow.on('closed')` 时断开所有子 Agent SSE 连接。
-- 重新打开 chatWindow 时，从 `GET /api/subagents/running` 获取运行中的子 Agent 列表，重建 tab 和 SSE 连接。
-
-### 5.6 异常与恢复
-
-- 子 Agent 异常崩溃：SubagentEventBus 推送 `error` 事件，前端 tab 展示"子 Agent 异常终止"。
-- 网络断开重连：SubagentEventBus 的 100 条环形缓冲区补发最近事件，tab 标注"连接已恢复"。
-- 窗口关闭重开：从 `/api/subagents/running` 恢复 tab 和 SSE 连接。
+- 重新打开 chatWindow 时，从 `GET /api/subagents/running` 获取运行中的子 Agent 列表，重建 tab 和 SSE 连接。该 API 需扩展返回 `state` 和 `started_at` 字段（现有只返回 `unique_name`/`agent_type`/`is_sync`）。
+- 窗口重开恢复策略：tab 标题和状态可恢复，历史消息仅限 ring buffer 内的最近 100 条。完整历史持久化到 db 是已知限制，一期不做。
 
 ## 6. 隔离性分析
 
@@ -206,16 +202,18 @@
 | 2 | handler 改造：_subagent_unique_name 统一 + StreamEvent 转发 + notify_subagent_event | 步骤 1 |
 | 3 | thinking chain 提取与推送 | 步骤 2 |
 | 4 | 用户→子Agent 消息 API + route_to_subagent 公共函数 | 步骤 1 |
-| 5 | @user 机制：AskUserFuture + UserAskRegistry + ask_user 工具 + 提示词改造 | 步骤 4 |
+| 5 | @user 机制：AskUserFuture + UserAskRegistry + ask_user 工具 + 提示词改造 | 步骤 1（基础部分）；@user 回答处理（set_answer）需在步骤 4 完成后补充 |
 | 6 | subagent_started 事件 + _dispatch_async_subagent 返回值改造 | 步骤 2 |
 | 7 | 前端 Tab 栏 + 消息区切换 + 输入框切换 | 步骤 6 |
 | 8 | 前端 SubagentSSEManager + IPC 改造 | 步骤 7 |
 | 9 | 异常处理 + 窗口恢复 + 断线重连 | 步骤 8 |
 
+> 步骤 4（route_to_subagent + POST API 基础消息推送）和步骤 5（AskUserFuture）有部分交叉依赖：步骤 4 的 @user 回答处理（set_answer）依赖步骤 5 的组件。可在步骤 4 中先实现基础消息推送，@user 回答处理留到步骤 5 完成后补充。
+
 ## 8. 同步子 Agent tab 体验
 
 同步子 Agent 阻塞主 Agent 线程期间：
-- 主对话 tab 显示"子 Agent 工作中"状态（而非通用"处理中"）。
+- 主对话 tab 显示"子 Agent 工作中"状态（而非通用"处理中"）。前端收到同步子 Agent 的 `subagent_started` 事件（携带 `is_sync=true`）后主动设置此状态。
 - 子 Agent tab 正常展示工作过程（`_run_agent_loop` 的 StreamEvent 转发到 SubagentEventBus，轻量级 `call_soon_threadsafe`，性能影响可接受）。
 - 主 Agent 工具循环被阻塞等待 `call_subagent` 返回，主 Agent SSE 流不推送 `chat_idle`。
-- 需验证大量工具调用时推送频率是否过高。
+- 需验证大量工具调用时推送频率是否过高。若发现问题，实现时可引入批量/限流（如 100ms 内合并 tool_marker/system 事件）。
