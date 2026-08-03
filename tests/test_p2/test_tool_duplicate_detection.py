@@ -28,7 +28,7 @@ class TestToolDuplicateDetection:
         # 模拟工具调用
         handler.tool_after_callback("tool1", {"arg": "value1"}, None, {"status": "success"})
         assert len(handler._recent_tool_calls) == 1
-        assert "tool1" in handler._recent_tool_calls[0]
+        assert handler._recent_tool_calls[0][0] == "tool1"
 
         # 再次调用
         handler.tool_after_callback("tool2", {"arg": "value2"}, None, {"status": "success"})
@@ -43,8 +43,8 @@ class TestToolDuplicateDetection:
         # 验证只保留 10 条
         assert len(handler._recent_tool_calls) == 10
         # 验证保留的是最近的 10 条
-        assert "tool5" in handler._recent_tool_calls[0]  # 第 6 次调用
-        assert "tool14" in handler._recent_tool_calls[-1]  # 第 15 次调用
+        assert handler._recent_tool_calls[0][0] == "tool5"  # 第 6 次调用
+        assert handler._recent_tool_calls[-1][0] == "tool14"  # 第 15 次调用
 
     def test_detect_repeated_calls(self, handler):
         """测试检测重复调用"""
@@ -76,6 +76,25 @@ class TestToolDuplicateDetection:
         result = handler.next_prompt_patcher(next_prompt, None, turn=4)
 
         # 验证没有警告
+        assert "重复工具调用" not in result
+
+    def test_no_warning_for_same_tool_different_args(self, handler):
+        """测试相同工具名但不同参数不触发警告（本次修复的核心场景）
+
+        修复前：args_preview 截断到 50 字符，同文件不同位置的 edit
+        会因预览字符串相同而被误判为重复。
+        修复后：使用完整参数哈希，只有参数完全相同才算重复。
+        """
+        # 3 次相同工具名但不同参数
+        handler.tool_after_callback("edit", {"file_path": "/tmp/a.py", "old": "x"}, None, {"status": "success"})
+        handler.tool_after_callback("edit", {"file_path": "/tmp/a.py", "old": "y"}, None, {"status": "success"})
+        handler.tool_after_callback("edit", {"file_path": "/tmp/a.py", "old": "z"}, None, {"status": "success"})
+
+        # 调用 next_prompt_patcher
+        next_prompt = "Continue with next step"
+        result = handler.next_prompt_patcher(next_prompt, None, turn=4)
+
+        # 验证没有警告（参数不同，不算重复）
         assert "重复工具调用" not in result
 
     def test_no_warning_for_low_turns(self, handler):
