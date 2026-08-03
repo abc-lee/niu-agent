@@ -1863,6 +1863,11 @@
         console.error('加载脑区状态失败:', e);
       } finally {
         _fetchingBrainRegions = false;
+        // 如果 fetch 期间有新的 SSE 事件到达，重跑一次确保最终状态被检测
+        if (_brainRegionFetchPending) {
+          _brainRegionFetchPending = false;
+          setTimeout(() => fetchBrainRegions(), 0);
+        }
       }
     }
     // ========== 脑区鬼火动画控制 ==========
@@ -2071,8 +2076,22 @@
     // 脑区状态变更通知：收到 SSE 事件后拉取最新数据
     // fetchBrainRegions 内部有防并发守卫和面板可见性守卫
     if (window.electronAPI && window.electronAPI.onBrainRegionsChanged) {
+      let _brainRegionChangeTimer = null;
+      // 注意：_brainRegionFetchPending 在 Task 4 Step 1 中顶层声明（与 _fetchingBrainRegions 同级），
+      // 不能在此 if 块内用 let 声明——fetchBrainRegions 的 finally 块在 if 块外部，无法访问块级作用域变量
       window.electronAPI.onBrainRegionsChanged(() => {
-        fetchBrainRegions();
+        // debounce 100ms：多个快速 SSE 事件合并为一次 fetch
+        // 确保最后一次事件一定触发 fetch，不被防并发守卫丢弃
+        if (_brainRegionChangeTimer) clearTimeout(_brainRegionChangeTimer);
+        _brainRegionChangeTimer = setTimeout(() => {
+          _brainRegionChangeTimer = null;
+          if (_fetchingBrainRegions) {
+            // 上一次 fetch 还在进行中，标记 pending，fetch 完成后会重跑
+            _brainRegionFetchPending = true;
+          } else {
+            fetchBrainRegions();
+          }
+        }, 100);
       });
     }
 
