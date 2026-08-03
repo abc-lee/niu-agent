@@ -186,8 +186,8 @@ ai-bot/
 **BLOCKED_SUBAGENTS 机制：**
 
 `context-manager`、`entity-extractor`、`dream-evolver` 三个子 Agent 在 `agent/handler.py` 中被列入 `BLOCKED_SUBAGENTS` 集合，禁止主 Agent 手动调用。它们的触发方式各不相同：
-- `entity-extractor`：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按对话轮数）双重触发
-- `dream-evolver`：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按对话轮数）双重触发；小憩模式中在 entity-extractor 之后串行执行
+- `entity-extractor`：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按压缩后增量对话轮数动态阈值）双重触发
+- `dream-evolver`：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按压缩后增量对话轮数动态阈值）双重触发；小憩模式中在 entity-extractor 之后串行执行
 - `context-manager`：由睡眠模式（auto-tidy 管线）自动调度
 
 这确保：
@@ -379,8 +379,8 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 |------|------|
 | 触发位置 | `_on_turn_end`（每轮对话结束后）→ `_maybe_trigger_nap` |
 | 计数单位 | 对话轮数（一轮 = 一条 role=user 消息开始到下一条 user 消息之前） |
-| 触发阈值 | `_calc_dream_trigger_threshold(context_window)`，保底 10 轮，无上限 |
-| 阈值算法 | `max(10, int((context_window × 0.5 - 8000) / 12000))`，200K 窗口→10 轮 |
+| 触发阈值 | `_calc_dream_trigger_threshold_dynamic(context_window, post_compress_msgs, post_compress_tokens)`，下限 10 轮，上限 50 轮 |
+| 阈值算法 | `max(10, min(50, int(context_window × 0.30 / max(1000, avg_tokens_per_turn))))`，avg 基于压缩游标后消息动态计算 |
 | 执行方式 | 后台 daemon thread（`_run_nap_background`），不阻塞主 Agent |
 | 执行内容 | 串行：entity-extractor（内容提炼）→ dream-evolver（梦境进化） |
 | 并发防护 | `threading.Event`（`_nap_running`），运行中不重复触发 |
