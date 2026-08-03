@@ -1347,6 +1347,9 @@
         const result = await window.electronAPI.clearChat();
         if (result.success) {
           messages.innerHTML = '';
+          clearSparks();
+          _prevBrainState.clear();
+          _brainStateInitialized = false;
           oldestMessageId = null;
           addMessage('system', '✅ 聊天记录已清空');
         } else {
@@ -1661,6 +1664,9 @@
     ];
     let _brainRegions = [];           // 缓存后端返回的脑区状态
     let _pendingBrainChanges = {};   // { label: stateIdx } 用户待提交的改动
+    let _prevBrainState = new Map();  // label → 'light'|'dim'|'off'，用于变化检测
+    let _brainStateInitialized = false;  // 首次加载标志，true 后才触发动画
+    let _brainRegionFetchPending = false;  // SSE 事件 pending 标志（Task 5 使用，必须在顶层声明供 fetchBrainRegions finally 块访问）
 
     const brainPanel = document.getElementById('brainPanel');
     const brainOverlay = document.getElementById('brainOverlay');
@@ -1807,9 +1813,42 @@
         // 通过 IPC 调后端（file:// 协议下不能直接 fetch 相对路径）
         const data = await window.electronAPI.getBrainRegions();
         if (data && data.status === 'ok' && data.regions) {
-          _brainRegions = data.regions;
+          // 变化检测：对比新旧状态，触发鬼火动画
+          const newRegions = data.regions;
+          for (const r of newRegions) {
+            const label = r.label || r.name;
+            // 计算新状态：light(>0.7) / dim(>0.3) / off(≤0.3)
+            let newState;
+            if (r.activation > 0.7) newState = 'light';
+            else if (r.activation > 0.3) newState = 'dim';
+            else newState = 'off';
+
+            const oldState = _prevBrainState.get(label);
+
+            // 首次加载只记录状态，不触发动画
+            if (_brainStateInitialized) {
+              // off→light：点亮动画
+              if ((!oldState || oldState === 'off') && newState === 'light') {
+                showLight(label);
+              }
+              // light→off 或 dim→off：熄灭动画
+              // （dim 是 light 衰减的中间态，从 dim 到 off 用户看到的也是"熄灭"）
+              else if ((oldState === 'light' || oldState === 'dim') && newState === 'off') {
+                showExtinguish(label);
+              }
+              // light→dim、dim→light、off→dim：不播动画（用户要求绿→黄不需要动画）
+            }
+
+            // 更新状态记录
+            _prevBrainState.set(label, newState);
+          }
+
+          // 首次加载完成，标记已初始化
+          _brainStateInitialized = true;
+
+          _brainRegions = newRegions;
           // F006 修复：清理 _pendingBrainChanges 中已不存在的脑区 label
-          const validLabels = new Set(data.regions.map(r => r.label || r.name));
+          const validLabels = new Set(newRegions.map(r => r.label || r.name));
           for (const label of Object.keys(_pendingBrainChanges)) {
             if (!validLabels.has(label)) {
               delete _pendingBrainChanges[label];
