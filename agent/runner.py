@@ -975,11 +975,15 @@ class NiuRunner:
 
             # 后台启动 dream-evolver
             self._dream_running.set()
-            threading.Thread(
-                target=self._run_dream_evolver_background,
-                daemon=True,
-                name="dream-evolver-bg"
-            ).start()
+            try:
+                threading.Thread(
+                    target=self._run_dream_evolver_background,
+                    daemon=True,
+                    name="dream-evolver-bg"
+                ).start()
+            except Exception:
+                self._dream_running.clear()
+                raise
         except Exception as e:
             logger.warning(f"[Dream] Trigger check failed: {e}")
 
