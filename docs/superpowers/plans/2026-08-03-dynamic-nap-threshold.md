@@ -140,6 +140,8 @@ call_subagent 层保护覆盖所有构建步骤（static + dynamic），build_su
 更新位置 1（L189-190）——小憩模式触发条件描述：
 - 旧：`entity-extractor：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按对话轮数）双重触发`
 - 新：`entity-extractor：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按压缩后增量对话轮数动态阈值）双重触发`
+- 旧：`dream-evolver：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按对话轮数）双重触发；小憩模式中在 entity-extractor 之后串行执行`
+- 新：`dream-evolver：由睡眠模式（auto-tidy 管线）+ 小憩模式（`_on_turn_end` 按压缩后增量对话轮数动态阈值）双重触发；小憩模式中在 entity-extractor 之后串行执行`
 
 更新位置 2（L382-383）——触发阈值和算法描述：
 - 旧：`触发阈值 | _calc_dream_trigger_threshold(context_window)，保底 10 轮，无上限`
@@ -153,7 +155,7 @@ call_subagent 层保护覆盖所有构建步骤（static + dynamic），build_su
 2. `tests/test_dream_trigger.py` 全部通过
 3. 200K 窗口 + 19 轮用户消息（用 `_recalc_msg_stats` 口径计算 token），算出 threshold 在 10-50 区间
 4. `build_subagent_system_segments` 和 `call_subagent` 都有 fallback
-5. 旧函数 `_calc_dream_trigger_threshold` 完全删除，无残留引用（`grep -rn '_calc_dream_trigger_threshold' agent/ niu_api/ tests/ docs/` 无结果）
+5. 旧函数 `_calc_dream_trigger_threshold` 完全删除，无残留引用（`grep -rn '_calc_dream_trigger_threshold' agent/ niu_api/ tests/ docs/SYSTEM_MANUAL.md` 无结果，历史计划文档除外）
 6. 阈值计算用 compress 游标算 avg，触发判断用 dream 游标防重复触发，各司其职
 
 ## 不在范围内
