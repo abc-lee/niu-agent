@@ -164,9 +164,11 @@ entity-extractor 先用 `lightrag_insert` 入库精炼文档，LightRAG LLM 自�
 
 - [ ] **Step 3: 恢复 `6bdd769e` 修改的注释**
 
-在 sleep 路径 dream-evolver 之后的 journal-agent / context-manager 块中，`6bdd769e` 把 `# 重新获取消息列表（Dream 可能已修改 DB）` 改成了 `# 重新获取消息列表（Entity 可能已修改 DB）`。恢复 dream-evolver 后，dream 确实可能修改 DB，改回：
+`6bdd769e` 修改了两处注释，都需要恢复：
 
-将（dream-evolver 之后的那些注释）：
+**(1) journal-agent 块前（compat.py L2466 附近）**：
+
+将：
 ```python
             # 重新获取消息列表（Entity 可能已修改 DB）
 ```
@@ -175,7 +177,18 @@ entity-extractor 先用 `lightrag_insert` 入库精炼文档，LightRAG LLM 自�
             # 重新获取消息列表（Dream 可能已修改 DB）
 ```
 
-**注意**：entity-extractor 之后、dream-evolver 之前的注释保持 `（Entity 可能已修改 DB）`，只有 dream-evolver 之后的注释改为 `（Dream 可能已修改 DB）`。
+**(2) context-manager 块前（compat.py L2550 附近）**：
+
+将：
+```python
+            # 串行执行：重新获取消息列表（Entity 可能已修改 DB）
+```
+改回：
+```python
+            # 串行执行：重新获取消息列表（Dream 可能已修改 DB）
+```
+
+**注意**：entity-extractor 之后、dream-evolver 之前的注释保持 `（Entity 可能已修改 DB）`（L84），只有 dream-evolver 之后的注释改为 `（Dream 可能已修改 DB）`。
 
 - [ ] **Step 4: 语法检查**
 
@@ -422,18 +435,19 @@ context-manager in _on_context_high_usage."
 ## Task 4: 小憩模式 — `_run_dream_evolver_background` 改为 `_run_nap_background`，前置 entity-extractor
 
 **Files:**
-- Modify: `agent/runner.py`（`_on_turn_end` + `_maybe_trigger_dream_evolver` + `_run_dream_evolver_background` + `__init__`）
-
-### 设计
-
-将 dream-evolver 后台方法重命名为小憩模式，在 dream-evolver 调用之前新增 entity-extractor 调用。小憩模式是简化版的睡眠模式——只做内容提炼和梦境进化，不压缩、不提取日志。
-
-**关键点**：
-- entity-extractor 用自己的游标 `last_entity_extract.json`，dream-evolver 用 `last_dream_evolve.json`
-- entity-extractor 先跑，推进自己的游标
-- dream-evolver 后跑，推进自己的游标
-- entity-extractor 失败不阻断 dream-evolver
-- 游标机制保证不会与 tidy 管道重复处理同一段消息
+- Modify: `agent/runner.py`（`_on_turn_end` + `_maybe_trigger_dream_evolver` + `_run_dream_evolver_background` + `__init__` + 新增 `_read_cursor_locked`）
+ 
+ ### 设计
+ 
+ 将 dream-evolver 后台方法重命名为小憩模式，在 dream-evolver 调用之前新增 entity-extractor 调用。小憩模式是简化版的睡眠模式——只做内容提炼和梦境进化，不压缩、不提取日志。
+ 
+ **关键点**：
+ - entity-extractor 用自己的游标 `last_entity_extract.json`，dream-evolver 用 `last_dream_evolve.json`
+ - entity-extractor 先跑，推进自己的游标
+ - dream-evolver 后跑，推进自己的游标
+ - entity-extractor 失败不阻断 dream-evolver
+ - 游标机制保证不会与 tidy 管道重复处理同一段消息
+- **游标读取统一加锁**：`_run_nap_background` 中读 entity 和 dream 游标都用新增的 `_read_cursor_locked` 方法（加文件锁），与 `_maybe_trigger_nap` 中读 dream 游标的方式一致，防止后台线程与主线程读写竞态
 
 - [ ] **Step 1: 在 `_run_nap_background` 中新增 entity-extractor 调用**
 
@@ -471,7 +485,7 @@ context-manager in _on_context_high_usage."
             # Step 1: entity-extractor（内容提炼）
             # ============================================================
             entity_cursor_path = niu_dir / "last_entity_extract.json"
-            last_entity_id = self._read_cursor(entity_cursor_path, "last_entity_extract_id")
+            last_entity_id = self._read_cursor_locked(entity_cursor_path, "last_entity_extract_id")
 
             entity_msg_ids = []
             _ = _build_incremental_msg_text(
@@ -505,7 +519,7 @@ context-manager in _on_context_high_usage."
                     new_entity_id = last_entity_id
                     if _is_subagent_overflow(entity_result):
                         overflow_info = _extract_overflow_info(entity_result)
-                        logger.warning(f"[Nap] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns")
+                        logger.warning(f"[Nap] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
                         # overflow 时游标不动
                     else:
                         _processed_idx = _parse_processed_up_to(entity_result)
@@ -548,9 +562,9 @@ context-manager in _on_context_high_usage."
             # Step 2: dream-evolver（梦境进化）
             # ============================================================
             dream_cursor_path = niu_dir / "last_dream_evolve.json"
-            last_dream_id = self._read_cursor(dream_cursor_path, "last_dream_evolve_id")
+            last_dream_id = self._read_cursor_locked(dream_cursor_path, "last_dream_evolve_id")
 
-            # 重新获取消息（entity-extractor 可能已修改 DB）
+            # 重新获取消息（entity-extractor 可能已修改 LightRAG 知识图谱，重新读取确保 DB 一致）
             db_messages = self._sync_get_messages()
             if not db_messages:
                 return
@@ -678,6 +692,45 @@ context-manager in _on_context_high_usage."
             logger.warning(f"[Nap] Trigger check failed: {e}")
 ```
 
+**新增 `_read_cursor_locked` 方法**（在 `_read_cursor` 附近，`@staticmethod` 后）：
+
+```python
+    @staticmethod
+    def _read_cursor_locked(cursor_path, cursor_field):
+        """Read a cursor ID from a JSON file with file locking.
+
+        Uses _flock/_funlock (same as _write_cursor_with_lock) to prevent
+        read-write races between the main thread and background daemon thread.
+        """
+        if not cursor_path.exists():
+            return ""
+        try:
+            import json
+            from niu_api.compat import _flock, _funlock
+            lock_path = cursor_path.with_suffix(".lock")
+            with open(lock_path, "w") as lock_f:
+                _flock(lock_f)
+                try:
+                    data = json.loads(cursor_path.read_text(encoding="utf-8"))
+                    return data.get(cursor_field, "")
+                finally:
+                    _funlock(lock_f)
+        except Exception as e:
+            logger.warning(f"[Runner] Failed to read cursor {cursor_path.name}: {e}")
+            return ""
+```
+
+**`_on_turn_end` docstring 更新**：
+
+将当前 docstring（`runner.py` L898-904）中：
+```python
+        - dream-evolver 触发检查：增量消息达阈值则后台启动
+```
+改为：
+```python
+        - 小憩模式触发检查：增量消息达阈值则后台启动 entity-extractor → dream-evolver
+```
+
 - [ ] **Step 3: 语法检查**
 
 ```bash
@@ -771,16 +824,25 @@ dream-evolver 触发方式改为 `auto-tidy 管线 + 小憩模式主动触发（
 
 **小憩模式**（`_on_turn_end`）：简化版，每 N 轮对话后台触发。
 
-| 步骤 | 子 Agent | 说明 |
-|------|----------|------|
-| 1 | entity-extractor | 内容提炼，`lightrag_insert` 入库 |
-| 2 | dream-evolver | 梦境进化，精加工实体 + 维护 skill |
+| 机制 | 说明 |
+|------|------|
+| 触发位置 | `_on_turn_end`（每轮对话结束后）→ `_maybe_trigger_nap` |
+| 计数单位 | 对话轮数（一轮 = 一条 role=user 消息开始到下一条 user 消息之前） |
+| 触发阈值 | `_calc_dream_trigger_threshold(context_window)`，保底 10 轮，无上限 |
+| 阈值算法 | `max(10, int((context_window × 0.5 - 8000) / 12000))`，200K 窗口→10 轮 |
+| 执行方式 | 后台 daemon thread（`_run_nap_background`），不阻塞主 Agent |
+| 执行内容 | 串行：entity-extractor（内容提炼）→ dream-evolver（梦境进化） |
+| 并发防护 | `threading.Event`（`_nap_running`），运行中不重复触发 |
+| 游标读取 | `_read_cursor_locked`（加文件锁，与 `_write_cursor_with_lock` 一致），防止读写竞态 |
+| 游标写入 | `_write_cursor_with_lock`（加文件锁） |
+| overflow 兜底 | dream-evolver overflow 时推进游标到增量消息前 1/3 位置，避免全量重跑死循环 |
+| 脑区预注入 | `build_subagent_system_segments` 在 `dynamic_system` 中注入当前脑区列表，避免每次 `lightrag_search_entities` 查脑区 |
 
 不压缩、不提取日志。高频小批量触发比睡眠时一次性处理大量消息更安全——工具返回累积可控，上下文不会溢出。
 
 **entity-extractor → dream-evolver 的顺序依赖**：entity-extractor 先用 `lightrag_insert` 入库精炼文档，LightRAG LLM 自动从中提取实体。dream-evolver 再搜索这些已入库的实体做精加工。如果 dream-evolver 先跑，它自己创建的实体名可能与 entity-extractor 入库后 LLM 提取的实体名不一致——同一概念变成两个独立节点，永远无法合并（实体碎片化）。
 
-**游标去重**：entity-extractor 和 dream-evolver 在两种模式中都会跑，但各自有独立的游标文件（`last_entity_extract.json` / `last_dream_evolve.json`），处理完推进自己的游标，保证不重复处理同一段消息。
+**游标去重**：entity-extractor 和 dream-evolver 在两种模式中都会跑，但各自有独立的游标文件（`last_entity_extract.json` / `last_dream_evolve.json`），处理完推进自己的游标，保证不重复处理同一段消息。如果睡眠模式先跑了，小憩模式触发时游标已推进，不会再处理同一批消息。
 ```
 
 - [ ] **Step 4: 更新 manual-developer.md**
@@ -830,6 +892,7 @@ cd /Users/lilei/tools/ai-bot && git add docs/SYSTEM_MANUAL.md docs/manual-develo
 | `_calc_dream_trigger_threshold` | 已存在（不改名） | Task 4 Step 2 (_maybe_trigger_nap) | ✅ |
 | `entity_cursor_path` | Task 4 Step 1 | Task 4 Step 1 (read + write) | ✅ |
 | `dream_cursor_path` | Task 4 Step 1 | Task 4 Step 1 (read + write) | ✅ |
+| `_read_cursor_locked` | Task 4 Step 2 (新增方法) | Task 4 Step 1 (entity + dream 游标读取) | ✅ |
 
 ### 关键设计验证
 
@@ -840,3 +903,6 @@ cd /Users/lilei/tools/ai-bot && git add docs/SYSTEM_MANUAL.md docs/manual-develo
 5. **dream 安全边界**：恢复后 `new_dream_id` 由 dream-evolver 实际推进。✅
 6. **entity-extractor 失败不阻断 dream-evolver**：Task 4 Step 1 中 try/except。✅
 7. **游标去重**：两种模式都跑 entity-extractor + dream-evolver，游标保证不重复。✅
+8. **游标读取统一加锁**：`_run_nap_background` 中 entity 和 dream 游标都用 `_read_cursor_locked`（加文件锁），与 `_maybe_trigger_nap` 中读 dream 游标的方式一致。✅
+9. **`_on_turn_end` docstring 更新**：Task 4 Step 2 中明确要求将 docstring 从 "dream-evolver 触发检查" 改为 "小憩模式触发检查"。✅
+10. **Task 5 保留技术细节**：替换内容中保留了阈值算法、overflow 兜底、脑区预注入、并发防护、游标锁等技术细节。✅
