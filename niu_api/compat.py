@@ -356,81 +356,6 @@ def _find_protected_range(messages, min_protect_count: int) -> int:
 
     return idx_user
 
-def _split_dream_first_batch(
-    messages: list,
-    dream_msg_ids: list[str],
-    msg_tokens: list[int],
-    context_window_tokens: int,
-    threshold: float = 0.50,
-) -> list[str] | None:
-    """计算 dream-evolver 第一批的消息 ID 列表。
-
-    当增量消息的 token 总量 >= 上下文窗口的 threshold 时，
-    在中间位置向两端查找最近的 role=user 消息作为分割点，
-    返回第一批的消息 ID 列表（split_pos 之前，不含 user 消息）。
-    无需拆分时返回 None。
-
-    Args:
-        messages: 全量消息列表（Message 对象，含 id/role/content）
-        dream_msg_ids: 增量消息 UUID 列表（按顺序）
-        msg_tokens: 每条消息的 token 数（与 messages 等长同顺序）
-        context_window_tokens: 子 Agent 上下文窗口大小
-        threshold: 拆分阈值（默认 0.50 = 50%）
-
-    Returns:
-        第一批消息 ID 列表，或 None（无需拆分）。
-    """
-    if len(dream_msg_ids) < 4 or context_window_tokens <= 0:
-        return None
-
-    # 计算增量消息 token 总量
-    _id_set = set(dream_msg_ids)
-    incremental_tokens = 0
-    for i, msg in enumerate(messages):
-        if (getattr(msg, "id", "") or "") in _id_set and i < len(msg_tokens):
-            incremental_tokens += msg_tokens[i]
-
-    if incremental_tokens < context_window_tokens * threshold:
-        return None
-
-    # 构建增量消息子列表（保持原序）
-    dream_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
-
-    mid = len(dream_incremental_msgs) // 2
-
-    # 从 mid 向两端查找最近的 role=user 消息
-    right_user = None
-    for i in range(mid, len(dream_incremental_msgs)):
-        if getattr(dream_incremental_msgs[i], "role", "") == "user":
-            right_user = i
-            break
-
-    left_user = None
-    for i in range(mid - 1, -1, -1):
-        if getattr(dream_incremental_msgs[i], "role", "") == "user":
-            left_user = i
-            break
-
-    # 确定分割点
-    if left_user is not None and right_user is not None:
-        if (mid - left_user) <= (right_user - mid):
-            split_pos = left_user
-        else:
-            split_pos = right_user
-    elif left_user is not None:
-        split_pos = left_user
-    elif right_user is not None:
-        split_pos = right_user
-    else:
-        return None
-
-    first_batch = dream_msg_ids[:split_pos]
-
-    if not first_batch:
-        return None
-
-    return first_batch
-
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
@@ -2557,200 +2482,59 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.info(f"[Tidy] dream-evolver: {len(dream_msg_ids)} new messages since cursor")
                 dream_task_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+                # 构造增量 history
+                _id_set = set(dream_msg_ids)
+                dream_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+                dream_history, dream_idx_to_id = _build_plain_history(dream_incremental_msgs)
 
-                # 计算第一批：增量消息 token 量过大时在 user 消息边界处拆分
-                _dream_context_window = _read_context_window_tokens()
-                _first_batch_ids = _split_dream_first_batch(
-                    messages, dream_msg_ids, msg_tokens, _dream_context_window
-                )
+                def run_dream_evolver():
+                    return call_subagent_with_auto_answer(
+                        agent_name="dream-evolver",
+                        task=dream_task_prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                        history=dream_history,
+                        context_fifo_threshold=-1,  # FIFO 保底
+                    )
 
-                if _first_batch_ids is None:
-                    # 不拆分，正常单次调用（保持原有逻辑）
-                    _id_set = set(dream_msg_ids)
-                    dream_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
-                    dream_history, dream_idx_to_id = _build_plain_history(dream_incremental_msgs)
+                dream_result = await asyncio.to_thread(run_dream_evolver)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
+                    return {"status": "aborted", "message": "Stopped by user"}
+                logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
-                    def run_dream_evolver():
-                        return call_subagent_with_auto_answer(
-                            agent_name="dream-evolver",
-                            task=dream_task_prompt,
-                            llm_config=llm_config,
-                            mcp_client=None,
-                            history=dream_history,
-                            context_fifo_threshold=-1,
-                        )
-
-                    dream_result = await asyncio.to_thread(run_dream_evolver)
-                    if is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
-                    logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
-
-                    # 游标推进：overflow→不动；否则解析 processed_up_to=N
-                    if _is_subagent_overflow(dream_result):
-                        overflow_info = _extract_overflow_info(dream_result)
-                        logger.warning(f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    else:
-                        _processed_idx = _parse_processed_up_to(dream_result)
-                        if _processed_idx is not None and _processed_idx in dream_idx_to_id:
-                            new_dream_id = dream_idx_to_id[_processed_idx]
-                            logger.info(f"[Tidy] Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
-                        elif dream_msg_ids:
-                            new_dream_id = dream_msg_ids[-1]  # 兜底
-                            logger.info(f"[Tidy] Dream cursor fallback to range end: {new_dream_id}")
-                        else:
-                            new_dream_id = last_dream_evolve_id
-                    # 校验游标 + 写入游标
-                    if new_dream_id:
-                        fresh_msgs = await store.get_messages()
-                        fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                        if new_dream_id not in fresh_ids:
-                            logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                            new_dream_id = last_dream_evolve_id
-                            if new_dream_id and new_dream_id not in fresh_ids:
-                                new_dream_id = ""
-                    if new_dream_id:
-                        _write_cursor_with_lock(dream_cursor_path, {
-                            "last_dream_evolve_id": new_dream_id,
-                            "last_evolve_at": datetime.now().isoformat(),
-                        })
-                        logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
-                        last_dream_evolve_id = new_dream_id
+                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow 时游标不动，下次重跑相同范围
                 else:
-                    # ===== 第一批 =====
-                    logger.info(f"[Tidy] dream-evolver: splitting into 2 batches "
-                                f"(incremental tokens exceed 50% of {_dream_context_window})")
-                    _first_id_set = set(_first_batch_ids)
-                    _first_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _first_id_set]
-                    _first_history, _first_idx_to_id = _build_plain_history(_first_msgs)
-
-                    def _run_dream_evolver_batch1():
-                        return call_subagent_with_auto_answer(
-                            agent_name="dream-evolver",
-                            task=dream_task_prompt,
-                            llm_config=llm_config,
-                            mcp_client=None,
-                            history=_first_history,
-                            context_fifo_threshold=-1,
-                        )
-
-                    logger.info(f"[Tidy] dream-evolver batch 1/2: {len(_first_batch_ids)} messages")
-                    dream_result = await asyncio.to_thread(_run_dream_evolver_batch1)
-                    if is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
-                    logger.info(f"[Tidy] dream-evolver batch 1/2 result: {dream_result[:200]}")
-
-                    # 游标推进：overflow→不动并跳过第二批；否则解析 processed_up_to=N
-                    if _is_subagent_overflow(dream_result):
-                        overflow_info = _extract_overflow_info(dream_result)
-                        logger.warning(f"[Tidy] dream-evolver batch 1/2 overflow: "
-                                       f"{overflow_info.get('turns_completed', 0)} turns, "
-                                       f"{overflow_info.get('tokens_used', 0)} tokens")
-                        # overflow 时游标不动，跳过第二批
+                    _processed_idx = _parse_processed_up_to(dream_result)
+                    if _processed_idx is not None and _processed_idx in dream_idx_to_id:
+                        new_dream_id = dream_idx_to_id[_processed_idx]
+                        logger.info(f"[Tidy] Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
+                    elif dream_msg_ids:
+                        new_dream_id = dream_msg_ids[-1]  # 兜底
+                        logger.info(f"[Tidy] Dream cursor fallback to range end: {new_dream_id}")
                     else:
-                        _processed_idx = _parse_processed_up_to(dream_result)
-                        if _processed_idx is not None and _processed_idx in _first_idx_to_id:
-                            new_dream_id = _first_idx_to_id[_processed_idx]
-                            logger.info(f"[Tidy] Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
-                        elif _first_batch_ids:
-                            new_dream_id = _first_batch_ids[-1]  # 兜底
-                            logger.info(f"[Tidy] Dream cursor fallback to batch end: {new_dream_id}")
-                        else:
-                            new_dream_id = last_dream_evolve_id
-                        # Clamp: ensure cursor is at least at first batch end
-                        # to prevent batch2 from re-processing batch1 messages
-                        if new_dream_id in _first_batch_ids:
-                            _first_batch_last = _first_batch_ids[-1]
-                            if _first_batch_ids.index(new_dream_id) < len(_first_batch_ids) - 1:
-                                new_dream_id = _first_batch_last
-                                logger.info(f"[Tidy] Dream cursor clamped to first batch end: {new_dream_id}")
-                        # 校验游标
-                        if new_dream_id:
-                            fresh_msgs = await store.get_messages()
-                            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                            if new_dream_id not in fresh_ids:
-                                logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                                new_dream_id = last_dream_evolve_id
-                                if new_dream_id and new_dream_id not in fresh_ids:
-                                    new_dream_id = ""
-                        if new_dream_id:
-                            _write_cursor_with_lock(dream_cursor_path, {
-                                "last_dream_evolve_id": new_dream_id,
-                                "last_evolve_at": datetime.now().isoformat(),
-                            })
-                            logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
-                            last_dream_evolve_id = new_dream_id  # 更新基准，使第二批回退到此游标而非循环前旧值
-
-                            # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
-                            _second_batch_ids = []
-                            _found_cursor = False
-                            for mid in dream_msg_ids:
-                                if mid == new_dream_id:
-                                    _found_cursor = True
-                                    continue
-                                if _found_cursor:
-                                    _second_batch_ids.append(mid)
-
-                            if _second_batch_ids:
-                                _second_id_set = set(_second_batch_ids)
-                                _second_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _second_id_set]
-                                _second_history, _second_idx_to_id = _build_plain_history(_second_msgs)
-
-                                def _run_dream_evolver_batch2():
-                                    return call_subagent_with_auto_answer(
-                                        agent_name="dream-evolver",
-                                        task=dream_task_prompt,
-                                        llm_config=llm_config,
-                                        mcp_client=None,
-                                        history=_second_history,
-                                        context_fifo_threshold=-1,
-                                    )
-
-                                logger.info(f"[Tidy] dream-evolver batch 2/2: {len(_second_batch_ids)} messages")
-                                dream_result = await asyncio.to_thread(_run_dream_evolver_batch2)
-                                logger.info(f"[Tidy] dream-evolver batch 2/2 result: {dream_result[:200]}")
-
-                                # 游标推进：overflow→不动；否则解析 processed_up_to=N
-                                if _is_subagent_overflow(dream_result):
-                                    overflow_info = _extract_overflow_info(dream_result)
-                                    logger.warning(f"[Tidy] dream-evolver batch 2/2 overflow: "
-                                                   f"{overflow_info.get('turns_completed', 0)} turns, "
-                                                   f"{overflow_info.get('tokens_used', 0)} tokens")
-                                else:
-                                    _processed_idx = _parse_processed_up_to(dream_result)
-                                    if _processed_idx is not None and _processed_idx in _second_idx_to_id:
-                                        new_dream_id = _second_idx_to_id[_processed_idx]
-                                        logger.info(f"[Tidy] Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
-                                    elif _second_batch_ids:
-                                        new_dream_id = _second_batch_ids[-1]  # 兜底
-                                        logger.info(f"[Tidy] Dream cursor fallback to batch end: {new_dream_id}")
-                                    else:
-                                        new_dream_id = last_dream_evolve_id
-                                # 校验游标 + 写入游标（必须在 stop 检查之前，确保 batch2 游标持久化）
-                                if new_dream_id:
-                                    fresh_msgs = await store.get_messages()
-                                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                                    if new_dream_id not in fresh_ids:
-                                        logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                                        new_dream_id = last_dream_evolve_id
-                                        if new_dream_id and new_dream_id not in fresh_ids:
-                                            new_dream_id = ""
-                                if new_dream_id:
-                                    _write_cursor_with_lock(dream_cursor_path, {
-                                        "last_dream_evolve_id": new_dream_id,
-                                        "last_evolve_at": datetime.now().isoformat(),
-                                    })
-                                    logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
-                                    last_dream_evolve_id = new_dream_id
-                                # 游标写入之后再检查 stop
-                                if is_stop_requested():
-                                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                                    clear_stop()
-                                    return {"status": "aborted", "message": "Stopped by user"}
+                        new_dream_id = last_dream_evolve_id
+                # 校验游标
+                if new_dream_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_dream_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                        new_dream_id = last_dream_evolve_id
+                        if new_dream_id and new_dream_id not in fresh_ids:
+                            new_dream_id = ""
+                if new_dream_id:
+                    _write_cursor_with_lock(dream_cursor_path, {
+                        "last_dream_evolve_id": new_dream_id,
+                        "last_evolve_at": datetime.now().isoformat(),
+                    })
+                    logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
             else:
                 logger.info("[Tidy] dream-evolver: no new messages since cursor")
                 new_dream_id = last_dream_evolve_id
@@ -3421,188 +3205,48 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             )
             logger.info(f"[Tidy] Force mode: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
 
+            new_dream_id = last_dream_evolve_id  # 默认保留旧游标，防止 overflow 时未定义
             if dream_force_msg_ids:
-                new_dream_id = last_dream_evolve_id  # 初始化，防止 overflow break 时未定义
                 dream_force_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+                # 构造增量 history
+                _id_set = set(dream_force_msg_ids)
+                dream_force_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+                dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
 
-                # 计算第一批：增量消息 token 量过大时在 user 消息边界处拆分
-                _dream_context_window = _read_context_window_tokens()
-                _first_batch_ids = _split_dream_first_batch(
-                    messages, dream_force_msg_ids, msg_tokens, _dream_context_window
-                )
+                def run_dream_evolver_force():
+                    return call_subagent_with_auto_answer(
+                        agent_name="dream-evolver",
+                        task=dream_force_prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                        history=dream_force_history,
+                        context_fifo_threshold=-1,  # FIFO 保底
+                    )
 
-                if _first_batch_ids is None:
-                    # 不拆分，正常单次调用（保持原有逻辑）
-                    _id_set = set(dream_force_msg_ids)
-                    dream_force_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
-                    dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
+                dream_result = await asyncio.to_thread(run_dream_evolver_force)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
+                    return {"status": "aborted", "message": "Stopped by user"}
+                logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
 
-                    def run_dream_evolver_force():
-                        return call_subagent_with_auto_answer(
-                            agent_name="dream-evolver",
-                            task=dream_force_prompt,
-                            llm_config=llm_config,
-                            mcp_client=None,
-                            history=dream_force_history,
-                            context_fifo_threshold=-1,
-                        )
-
-                    dream_result = await asyncio.to_thread(run_dream_evolver_force)
-                    if is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
-                    logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
-
-                    # 游标推进：overflow→不动；否则解析 processed_up_to=N
-                    if _is_subagent_overflow(dream_result):
-                        overflow_info = _extract_overflow_info(dream_result)
-                        logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    else:
-                        _processed_idx = _parse_processed_up_to(dream_result)
-                        if _processed_idx is not None and _processed_idx in dream_force_idx_to_id:
-                            new_dream_id = dream_force_idx_to_id[_processed_idx]
-                            logger.info(f"[Tidy] Force: Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
-                        elif dream_force_msg_ids:
-                            new_dream_id = dream_force_msg_ids[-1]  # 兜底
-                            logger.info(f"[Tidy] Force: Dream cursor fallback to range end: {new_dream_id}")
-                        else:
-                            new_dream_id = last_dream_evolve_id
+                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow 时游标不动
                 else:
-                    # ===== 第一批 =====
-                    logger.info(f"[Tidy] Force: dream-evolver splitting into 2 batches "
-                                f"(incremental tokens exceed 50% of {_dream_context_window})")
-                    _first_id_set = set(_first_batch_ids)
-                    _first_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _first_id_set]
-                    _first_history, _first_idx_to_id = _build_plain_history(_first_msgs)
-
-                    def _run_dream_evolver_force_batch1():
-                        return call_subagent_with_auto_answer(
-                            agent_name="dream-evolver",
-                            task=dream_force_prompt,
-                            llm_config=llm_config,
-                            mcp_client=None,
-                            history=_first_history,
-                            context_fifo_threshold=-1,
-                        )
-
-                    logger.info(f"[Tidy] Force: dream-evolver batch 1/2: {len(_first_batch_ids)} messages")
-                    dream_result = await asyncio.to_thread(_run_dream_evolver_force_batch1)
-                    if is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
-                    logger.info(f"[Tidy] Force: dream-evolver batch 1/2 result: {dream_result[:200]}")
-
-                    # 游标推进：overflow→不动并跳过第二批；否则解析 processed_up_to=N
-                    if _is_subagent_overflow(dream_result):
-                        overflow_info = _extract_overflow_info(dream_result)
-                        logger.warning(f"[Tidy] Force: dream-evolver batch 1/2 overflow: "
-                                       f"{overflow_info.get('turns_completed', 0)} turns, "
-                                       f"{overflow_info.get('tokens_used', 0)} tokens")
-                        # overflow 时游标不动，跳过第二批
+                    _processed_idx = _parse_processed_up_to(dream_result)
+                    if _processed_idx is not None and _processed_idx in dream_force_idx_to_id:
+                        new_dream_id = dream_force_idx_to_id[_processed_idx]
+                        logger.info(f"[Tidy] Force: Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
+                    elif dream_force_msg_ids:
+                        new_dream_id = dream_force_msg_ids[-1]  # 兜底
+                        logger.info(f"[Tidy] Force: Dream cursor fallback to range end: {new_dream_id}")
                     else:
-                        _processed_idx = _parse_processed_up_to(dream_result)
-                        if _processed_idx is not None and _processed_idx in _first_idx_to_id:
-                            new_dream_id = _first_idx_to_id[_processed_idx]
-                            logger.info(f"[Tidy] Force: Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
-                        elif _first_batch_ids:
-                            new_dream_id = _first_batch_ids[-1]  # 兜底
-                            logger.info(f"[Tidy] Force: Dream cursor fallback to batch end: {new_dream_id}")
-                        else:
-                            new_dream_id = last_dream_evolve_id
-                        # Clamp: ensure cursor is at least at first batch end
-                        # to prevent batch2 from re-processing batch1 messages
-                        if new_dream_id in _first_batch_ids:
-                            _first_batch_last = _first_batch_ids[-1]
-                            if _first_batch_ids.index(new_dream_id) < len(_first_batch_ids) - 1:
-                                new_dream_id = _first_batch_last
-                                logger.info(f"[Tidy] Force: Dream cursor clamped to first batch end: {new_dream_id}")
-                        # 先校验 new_dream_id 有效性，再更新 last_dream_evolve_id（R6 P2 修复）
-                        # 如果先更新再校验，校验失败时 last_dream_evolve_id 已被污染
-                        try:
-                            fresh_msgs = await store.get_messages()
-                            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                            if new_dream_id not in fresh_ids:
-                                logger.warning(f"[Tidy] Force: Dream cursor {new_dream_id} deleted, reverting to {last_dream_evolve_id}")
-                                new_dream_id = last_dream_evolve_id
-                        except Exception:
-                            logger.warning("[Tidy] Force: Could not verify dream cursor, keeping current value")
-                        last_dream_evolve_id = new_dream_id  # 校验后更新基准
-                        _write_cursor_with_lock(dream_cursor_path, {
-                            "last_dream_evolve_id": new_dream_id,
-                            "last_evolve_at": datetime.now().isoformat(),
-                        })
-                        logger.info(f"[Tidy] Force: Dream cursor persisted after batch 1: {new_dream_id}")
-
-                        # ===== 第二批：从 new_dream_id 之后到末尾，动态计算 =====
-                        _second_batch_ids = []
-                        _found_cursor = False
-                        for mid in dream_force_msg_ids:
-                            if mid == new_dream_id:
-                                _found_cursor = True
-                                continue
-                            if _found_cursor:
-                                _second_batch_ids.append(mid)
-
-                        if _second_batch_ids:
-                            _second_id_set = set(_second_batch_ids)
-                            _second_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _second_id_set]
-                            _second_history, _second_idx_to_id = _build_plain_history(_second_msgs)
-
-                            def _run_dream_evolver_force_batch2():
-                                return call_subagent_with_auto_answer(
-                                    agent_name="dream-evolver",
-                                    task=dream_force_prompt,
-                                    llm_config=llm_config,
-                                    mcp_client=None,
-                                    history=_second_history,
-                                    context_fifo_threshold=-1,
-                                )
-
-                            logger.info(f"[Tidy] Force: dream-evolver batch 2/2: {len(_second_batch_ids)} messages")
-                            dream_result = await asyncio.to_thread(_run_dream_evolver_force_batch2)
-                            logger.info(f"[Tidy] Force: dream-evolver batch 2/2 result: {dream_result[:200]}")
-
-                            # 游标推进：overflow→不动；否则解析 processed_up_to=N
-                            if _is_subagent_overflow(dream_result):
-                                overflow_info = _extract_overflow_info(dream_result)
-                                logger.warning(f"[Tidy] Force: dream-evolver batch 2/2 overflow: "
-                                               f"{overflow_info.get('turns_completed', 0)} turns, "
-                                               f"{overflow_info.get('tokens_used', 0)} tokens")
-                            else:
-                                _processed_idx = _parse_processed_up_to(dream_result)
-                                if _processed_idx is not None and _processed_idx in _second_idx_to_id:
-                                    new_dream_id = _second_idx_to_id[_processed_idx]
-                                    logger.info(f"[Tidy] Force: Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
-                                elif _second_batch_ids:
-                                    new_dream_id = _second_batch_ids[-1]  # 兜底
-                                    logger.info(f"[Tidy] Force: Dream cursor fallback to batch end: {new_dream_id}")
-                                else:
-                                    new_dream_id = last_dream_evolve_id
-                            # 校验游标 + 写入游标（必须在 stop 检查之前，确保 batch2 游标持久化）
-                            if new_dream_id:
-                                fresh_msgs = await store.get_messages()
-                                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                                if new_dream_id not in fresh_ids:
-                                    logger.warning(f"[Tidy] Force: Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                                    new_dream_id = last_dream_evolve_id
-                                    if new_dream_id and new_dream_id not in fresh_ids:
-                                        new_dream_id = ""
-                            if new_dream_id:
-                                _write_cursor_with_lock(dream_cursor_path, {
-                                    "last_dream_evolve_id": new_dream_id,
-                                    "last_evolve_at": datetime.now().isoformat(),
-                                })
-                                logger.info(f"[Tidy] Force: Dream cursor updated: last_dream_evolve_id={new_dream_id}")
-                                last_dream_evolve_id = new_dream_id
-                            # 游标写入之后再检查 stop
-                            if is_stop_requested():
-                                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                                clear_stop()
-                                return {"status": "aborted", "message": "Stopped by user"}
+                        new_dream_id = last_dream_evolve_id
             else:
                 logger.info("[Tidy] Force: dream-evolver no incremental messages")
                 new_dream_id = last_dream_evolve_id  # 无增量时保留旧游标，避免 UnboundLocalError
