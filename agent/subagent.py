@@ -763,7 +763,11 @@ def call_subagent(
         llm_config = {**llm_config, "temperature": agent_config["temperature"]}
 
     # 2. 构建静态/动态段（cache 友好）
-    static_system, dynamic_system = build_subagent_system_segments(agent_name)
+    try:
+        static_system, dynamic_system = build_subagent_system_segments(agent_name)
+    except Exception:
+        static_system = get_subagent_prompt(agent_name)  # 该函数总返回非空字符串
+        dynamic_system = ""
 
     # 3. 组装 system message（按 model 决定格式：Claude list / 其他 str）
     model_lower = (llm_config.get("model", "") or "").lower()
