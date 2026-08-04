@@ -671,12 +671,12 @@ def test_at_niu_with_backtick_wrapper_triggers_intercept(monkeypatch):
     assert result == (agent_loop.INTERCEPTED, None)
 
 
-def test_at_niu_priority_over_at_end(monkeypatch):
-    """@niu-agent 和 @end 同时出现时，@niu-agent 优先（代码顺序保证）"""
+def test_at_end_priority_over_at_niu(monkeypatch):
+    """@end 和 @niu-agent 同时出现时，@end 优先（子 Agent 已结束，处理提问无意义）"""
     from agent import subagent
     from agent.generic import agent_loop
 
-    # mock _ask_main_agent_impl 返回固定回答
+    # mock _ask_main_agent_impl 返回固定回答（不应被调用）
     monkeypatch.setattr(
         subagent, "_ask_main_agent_impl",
         mock.Mock(return_value="主 Agent 的回答")
@@ -689,7 +689,7 @@ def test_at_niu_priority_over_at_end(monkeypatch):
 
     fake_handler = mock.MagicMock()
     fake_handler._subagent_unique_name = "test-agent-abc1"
-    fake_handler._is_sync_subagent = False  # 显式设为 False，走异步路径
+    fake_handler._is_sync_subagent = False
 
     result = agent_loop._intercept_at_prefix_content(
         content="@niu-agent 问个问题 @end 顺便退出",
@@ -699,6 +699,6 @@ def test_at_niu_priority_over_at_end(monkeypatch):
         memory_context=mock.MagicMock(),
     )
 
-    # 断言：走 @niu-agent 分支（不是 @end EXIT）
-    assert result == (agent_loop.INTERCEPTED, None)
-    subagent._ask_main_agent_impl.assert_called_once()
+    # 断言：走 @end 分支（EXIT），不走 @niu-agent 阻塞
+    assert result == (agent_loop.EXIT, None)
+    subagent._ask_main_agent_impl.assert_not_called()
