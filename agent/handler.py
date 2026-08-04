@@ -436,6 +436,22 @@ def expand_path_args(args: dict) -> None:
             args[key] = os.path.expanduser(val)
 
 
+def _push_subagent_event(unique_name: str, event_type: str, data: dict):
+    """推送子 Agent 事件到 SubagentEventBus，安全降级。
+
+    import 失败（niu_api 未启动）或推送异常均静默降级，
+    不影响子 Agent 的工具调用循环。
+    """
+    try:
+        from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+    except ImportError:
+        return
+    try:
+        notify_subagent_event_sync(unique_name, event_type, data)
+    except Exception:
+        pass
+
+
 class NiuHandler(BaseHandler):
     """
     Niu Agent 工具处理器
@@ -472,12 +488,8 @@ class NiuHandler(BaseHandler):
         if getattr(self, '_is_subagent', False):
             unique_name = getattr(self, '_subagent_unique_name', None)
             if unique_name:
-                try:
-                    from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
-                    short_name = tool_name.replace('chat-with-', '') if tool_name.startswith('chat-with-') else tool_name
-                    notify_subagent_event_sync(unique_name, 'tool_status', {'tool_name': short_name, 'status': 'start'})
-                except ImportError:
-                    pass  # niu_api 未启动
+                short_name = tool_name.split('/')[-1] if '/' in tool_name else tool_name
+                _push_subagent_event(unique_name, 'tool_status', {'tool_name': short_name, 'status': 'start'})
             return
         try:
             from niu_api.chat import notify_tool_status_sync
@@ -492,13 +504,14 @@ class NiuHandler(BaseHandler):
         if getattr(self, '_is_subagent', False):
             unique_name = getattr(self, '_subagent_unique_name', None)
             if unique_name:
+                short_name = tool_name.split('/')[-1] if '/' in tool_name else tool_name
                 try:
-                    from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
-                    short_name = tool_name.replace('chat-with-', '') if tool_name.startswith('chat-with-') else tool_name
                     summary = self._auto_generate_summary(tool_name, args, ret)
-                    notify_subagent_event_sync(unique_name, 'tool_status', {'tool_name': short_name, 'status': 'end', 'summary': summary})
-                except ImportError:
-                    pass
+                except Exception:
+                    summary = ''
+                _push_subagent_event(unique_name, 'tool_status', {'tool_name': short_name, 'status': 'end', 'summary': summary})
+            # 保留重复调用检测（子 Agent 也有死循环风险）
+            self._track_tool_call_for_repeat_detection(tool_name, args)
             return
         # 主 Agent：推送工具完成状态到前端
         try:
