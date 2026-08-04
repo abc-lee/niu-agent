@@ -272,6 +272,7 @@ function createChatWindow() {
   });
 
   chatWindow.on('closed', () => {
+    SubagentSSEManager.disconnectAll();  // 用户关闭窗口：断开所有子 Agent SSE 连接
     chatWindow = null;
     if (spiritWindow && !spiritWindow.isDestroyed()) {
       spiritWindow.webContents.send('chat-closed');
@@ -1751,9 +1752,132 @@ ipcMain.handle('get-chat-status', async () => {
   });
 });
 
+// ===== 子 Agent IPC handlers =====
+// 子 Agent SSE 连接管理（窗口恢复时前端主动请求建立连接）
+ipcMain.on('connect-subagent-sse', (_event, uniqueName) => {
+  SubagentSSEManager.connect(uniqueName);
+});
+ipcMain.on('disconnect-subagent-sse', (_event, uniqueName) => {
+  SubagentSSEManager.disconnect(uniqueName);
+});
+
+// 发送消息到子 Agent（用户补充信息 / /stop）
+ipcMain.handle('send-subagent-message', async (_event, { uniqueName, message }) => {
+  const apiPort = parseInt(process.env.NIU_API_PORT || '9876', 10);
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({ message });
+    const req = http.request({
+      hostname: '127.0.0.1', port: apiPort,
+      path: `/api/subagents/${uniqueName}/message`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (e) {
+          resolve({ status: res.statusCode, raw: body });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+});
+
 // ========== SSE 消息事件流（来自原 ui/assistant/main.js） ==========
 let sseReconnectTimer = null;
 let sseConnectedBefore = false;
+
+// ===== 子 Agent SSE 管理器 =====
+// 每个运行中的子 Agent 一条独立 SSE 连接（/api/subagents/{unique_name}/stream）
+// 模块级定义（startMessageEventStream 之前），确保 chatWindow.on('closed') 能引用
+const SubagentSSEManager = {
+  connections: {},  // { unique_name: { req, cancelled } }
+
+  connect(uniqueName) {
+    if (this.connections[uniqueName]) return;  // 已连接
+    const conn = { req: null, cancelled: false };
+    this.connections[uniqueName] = conn;
+    this._connect(uniqueName, conn);
+  },
+
+  _connect(uniqueName, conn) {
+    const apiPort = parseInt(process.env.NIU_API_PORT || '9876', 10);
+    const req = http.get(`http://127.0.0.1:${apiPort}/api/subagents/${uniqueName}/stream`, (res) => {
+      if (res.statusCode === 404) {
+        // 子 Agent 不存在，不重连
+        delete this.connections[uniqueName];
+        if (chatWindow && !chatWindow.isDestroyed()) {
+          chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'subagent_closed' } });
+        }
+        return;
+      }
+      res.setEncoding('utf8');  // 正确处理中文多字节字符跨 TCP 块分割
+      let buffer = '';
+      res.on('data', (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split('\n');
+        buffer = lines.pop();  // 保留不完整的行
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6);
+            if (!jsonStr) continue;
+            try {
+              const event = JSON.parse(jsonStr);
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event });
+              }
+              if (event.type === 'subagent_closed') {
+                this.disconnect(uniqueName);
+              }
+            } catch (e) {}
+          }
+        }
+      });
+      res.on('end', () => {
+        // cancelled 标志：req.destroy() 触发的 end/error 回调不重连
+        if (!conn.cancelled) {
+          setTimeout(() => this._reconnect(uniqueName, conn), 3000);
+        }
+      });
+    });
+    req.on('error', () => {
+      if (!conn.cancelled) {
+        setTimeout(() => this._reconnect(uniqueName, conn), 3000);
+      }
+    });
+    conn.req = req;
+  },
+
+  _reconnect(uniqueName, conn) {
+    if (conn.cancelled) return;
+    if (conn.req) { conn.req.destroy(); conn.req = null; }
+    this._connect(uniqueName, conn);
+    // 通知前端连接已恢复（ring buffer 会补发历史事件）
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'reconnected' } });
+    }
+  },
+
+  disconnect(uniqueName) {
+    const conn = this.connections[uniqueName];
+    if (!conn) return;
+    conn.cancelled = true;
+    if (conn.req) { conn.req.destroy(); conn.req = null; }
+    delete this.connections[uniqueName];
+  },
+
+  disconnectAll() {
+    for (const name of Object.keys(this.connections)) {
+      this.disconnect(name);
+    }
+  }
+};
 
 function startMessageEventStream() {
   if (sseReconnectTimer) {
@@ -1829,6 +1953,13 @@ function startMessageEventStream() {
               if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('compact-status', event);
               }
+            } else if (event.type === 'subagent_started') {
+              // 子 Agent 启动通知（顶级事件类型，非 new_message 的 role 字段）
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('subagent-started', event);
+              }
+              // 建立该子 Agent 的独立 SSE 连接
+              SubagentSSEManager.connect(event.unique_name);
             } else if (event.type === 'brain_region_updated') {
               // 转发脑区状态变更到聊天窗口（脑区面板在 chat.html 中）
               if (chatWindow && !chatWindow.isDestroyed()) {
