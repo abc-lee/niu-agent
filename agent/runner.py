@@ -604,7 +604,7 @@ def _compute_threshold_update(
 
     # 累积平均（含本轮）
     new_sample_count = sample_count + 1
-    cumulative_avg = cumulative_tokens / new_sample_count if new_sample_count > 0 else 0
+    cumulative_avg = cumulative_tokens / new_sample_count
 
     if current_turn_tokens <= cumulative_avg:
         # 轻量 → 上升（对数渐近，越接近 50 越慢）
@@ -1401,6 +1401,11 @@ class NiuRunner:
         """
         # CQ-04: exists() 短路保证后续 open(lock_path) 时父目录已存在
         if not ema_path.exists():
+            # 检测旧版 avg_tokens_per_turn.json 是否存在，提醒用户数据不会自动迁移
+            old_path = ema_path.parent / "avg_tokens_per_turn.json"
+            if old_path.exists():
+                logger.warning(f"[Nap] Old EMA file {old_path.name} found but no longer used; "
+                               f"threshold EMA starts fresh from {_THRESHOLD_MIN}")
             return _THRESHOLD_MIN, 0, 0
         try:
             import json
