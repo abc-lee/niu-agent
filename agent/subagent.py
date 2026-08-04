@@ -287,7 +287,22 @@ def _run_agent_loop(
             elif isinstance(chunk, StreamEvent):
                 if chunk.type == "reply":
                     result += chunk.content
-                # 忽略 persist/system/tool_marker — 这些是子Agent内部过程，不应返回给主Agent
+                    # 子 Agent 回复文本推送到 SubagentEventBus（前端 tab 展示）
+                    unique_name = getattr(handler, '_subagent_unique_name', None)
+                    if unique_name:
+                        try:
+                            from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+                            notify_subagent_event_sync(unique_name, 'reply', {'content': chunk.content})
+                        except ImportError:
+                            pass
+                elif chunk.type in ('persist', 'system', 'tool_marker'):
+                    unique_name = getattr(handler, '_subagent_unique_name', None)
+                    if unique_name:
+                        try:
+                            from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+                            notify_subagent_event_sync(unique_name, chunk.type, {'content': chunk.content})
+                        except ImportError:
+                            pass
             else:
                 logger.warning(f"[SubAgent] Non-string chunk from agent_runner_loop: {type(chunk).__name__}")
         except StopIteration as e:
@@ -856,6 +871,7 @@ def call_subagent(
         # 注释：不预检查 supplement_queue 是否已有 /stop，依赖 agent_runner_loop 内部 drain 检测
 
         try:
+            instance.suspended_handler._subagent_unique_name = answer_unique_name
             result_text, return_value = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）

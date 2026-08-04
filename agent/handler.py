@@ -468,8 +468,16 @@ class NiuHandler(BaseHandler):
 
     def tool_before_callback(self, tool_name, args, response):
         """工具调用前：推送状态到前端"""
-        # 子 Agent 的工具调用不推送前端状态
+        # 子 Agent 的工具调用不推送前端状态，走 SubagentEventBus
         if getattr(self, '_is_subagent', False):
+            unique_name = getattr(self, '_subagent_unique_name', None)
+            if unique_name:
+                try:
+                    from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+                    short_name = tool_name.replace('chat-with-', '') if tool_name.startswith('chat-with-') else tool_name
+                    notify_subagent_event_sync(unique_name, 'tool_status', {'tool_name': short_name, 'status': 'start'})
+                except ImportError:
+                    pass  # niu_api 未启动
             return
         try:
             from niu_api.chat import notify_tool_status_sync
@@ -480,14 +488,25 @@ class NiuHandler(BaseHandler):
 
     def tool_after_callback(self, tool_name, args, response, ret):
         """工具调用后记录摘要到 history_info"""
-        # 推送工具完成状态到前端（子 Agent 除外）
-        if not getattr(self, '_is_subagent', False):
-            try:
-                from niu_api.chat import notify_tool_status_sync
-                short_name = tool_name.split("/")[-1] if "/" in tool_name else tool_name
-                notify_tool_status_sync(short_name, "end")
-            except Exception:
-                pass
+        # 子 Agent：推送工具状态到 SubagentEventBus，然后 return（不走主 Agent history tracking）
+        if getattr(self, '_is_subagent', False):
+            unique_name = getattr(self, '_subagent_unique_name', None)
+            if unique_name:
+                try:
+                    from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+                    short_name = tool_name.replace('chat-with-', '') if tool_name.startswith('chat-with-') else tool_name
+                    summary = self._auto_generate_summary(tool_name, args, ret)
+                    notify_subagent_event_sync(unique_name, 'tool_status', {'tool_name': short_name, 'status': 'end', 'summary': summary})
+                except ImportError:
+                    pass
+            return
+        # 主 Agent：推送工具完成状态到前端
+        try:
+            from niu_api.chat import notify_tool_status_sync
+            short_name = tool_name.split("/")[-1] if "/" in tool_name else tool_name
+            notify_tool_status_sync(short_name, "end")
+        except Exception:
+            pass
         # 跳过同一轮内的多个工具调用（只记录第一个）
         if args.get("_index", 0) > 0:
             return
