@@ -13,7 +13,7 @@ from agent.session import get_message_store
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from niu_api.internal.subagent_event_bus import subscribe, unsubscribe, has_subagent
 from niu_api.compat import _chat_lock
@@ -790,11 +790,31 @@ async def list_running_subagents():
                 "unique_name": inst.unique_name,
                 "agent_type": inst.agent_type,
                 "is_sync": inst.is_sync,
+                "state": getattr(inst, 'state', 'running'),
+                "started_at": getattr(inst, 'started_at', None),
             }
             for inst in running
         ],
     }
 
+
+class SubagentMessage(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
+@router.post("/api/subagents/{unique_name}/message")
+async def send_subagent_message(unique_name: str, msg: SubagentMessage):
+    """用户向子 Agent 发送消息（补充信息或回答 @user 提问）。"""
+    from agent.route_to_subagent import route_to_subagent
+
+    content = msg.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+
+    result = route_to_subagent(unique_name, sender='user', content=content, source='post_api')
+    if result['status'] == 'not_found':
+        raise HTTPException(status_code=404, detail=result['message'])
+    return {"status": result['status'], "message": result['message']}
 
 @router.post("/chat/session")
 async def get_or_create_session(request: ChatRequest) -> dict:
