@@ -274,6 +274,12 @@ python/bin/pip install -r requirements-dev.txt  # 仅开发时安装
 
 最终用户**不需要**执行上述命令——他们拿到的 `niu.app` 已含完整 `python/` 运行时，开箱即用。
 
+> ⚠️ **从源码更新的开发者注意**：每次 `git pull` 拉取新版本后，**必须重新安装依赖**：
+> ```bash
+> python/bin/pip install -r requirements.txt
+> ```
+> 特别注意：LightRAG（lightrag-hku）使用的是本项目 Fork 的版本（`git+https://github.com/abc-lee/LightRAG.git`），版本通过 `requirements.txt` 中的 commit hash 锁定。Fork 版本会随项目迭代更新（如修复知识图谱数据一致性问题等），**不重新安装依赖会使用旧版本的 LightRAG**，可能导致数据不一致、检测报错等问题。
+
 ## 项目结构
 
 ```
