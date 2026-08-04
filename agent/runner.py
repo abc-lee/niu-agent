@@ -557,60 +557,66 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
 
 
 
-# --- EMA 动态阈值常量（CQ-08: 提取为模块级，避免重复定义）---
-_EMA_MIN_TURNS = 10
-_EMA_MAX_TURNS = 50
-_EMA_MIN_AVG_TOKENS = 1000
-_EMA_BUDGET_RATIO = 0.30
-_EMA_MIN_SAMPLES = 5
-_EMA_ALPHA_UP = 0.2
-_EMA_ALPHA_DOWN = 0.5
+# --- Threshold EMA 张力模型常量 ---
+_THRESHOLD_MIN = 10.0
+_THRESHOLD_MAX = 50.0
+_THRESHOLD_ALPHA_UP = 0.1    # 上升慢：threshold += (50 - threshold) * 0.1
+_THRESHOLD_ALPHA_DOWN = 0.4  # 下降快：threshold -= (threshold - 10) * 0.4
+_THRESHOLD_MIN_SAMPLES = 5   # 冷启动保护：sample_count < 5 时保持 10
 
 
 def _calc_dream_trigger_threshold_dynamic(
     context_window: int,
-    ema_path,
+    ema_path: Path,
 ) -> int:
-    """根据持久化 EMA 值动态计算 dream-evolver 触发阈值。
+    """根据持久化 threshold EMA 值返回触发阈值。
 
-    算法：
-    - 读持久化的 EMA（非对称指数移动平均每轮 token 开销）
-    - 冷启动（样本 < 5）直接返回保底 10
-    - avg = max(1000, EMA)
-    - threshold = (context_window × 0.30) / avg
-    - 下限 10，上限 50
+    threshold 自身做 EMA（对数渐近张力模型）：
+    - 冷启动（sample_count < 5）：返回 10
+    - 否则返回持久化的 threshold 值（int 截断）
 
-    200K + EMA=3700 → 60000/3700 = 16
-    200K + EMA=6000 → 60000/6000 = 10（下限兜底）
+    context_window 参数保留（调用方传入），但新模型不依赖它。
     """
-    if context_window <= 0:
-        return _EMA_MIN_TURNS
+    threshold, sample_count, _cumulative = NiuRunner._read_ema(ema_path)
 
-    ema, sample_count = NiuRunner._read_ema(ema_path)
+    if sample_count < _THRESHOLD_MIN_SAMPLES:
+        return int(_THRESHOLD_MIN)
 
-    if sample_count < _EMA_MIN_SAMPLES:
-        return _EMA_MIN_TURNS
+    return max(int(_THRESHOLD_MIN), min(int(_THRESHOLD_MAX), int(threshold)))
 
-    avg_tokens_per_turn = max(_EMA_MIN_AVG_TOKENS, ema)
-    incremental_budget = context_window * _EMA_BUDGET_RATIO
-    threshold = int(incremental_budget / avg_tokens_per_turn)
+def _compute_threshold_update(
+    threshold_old: float,
+    sample_count: int,
+    current_turn_tokens: int,
+    cumulative_tokens: int,
+) -> tuple[float, int]:
+    """计算 threshold EMA 更新。返回 (new_threshold, new_sample_count)。
 
-    return max(_EMA_MIN_TURNS, min(_EMA_MAX_TURNS, threshold))
-
-def _compute_ema_update(ema_old: float, sample_count: int, current_avg: float) -> tuple[float, int]:
-    """计算非对称 EMA 更新。返回 (new_ema, new_sample_count)。
-
-    冷启动（sample_count < 5 或 ema_old=0）直接用 current_avg 初始化；
-    否则用非对称张力模型：上升 α=0.2（慢），下降 α=0.5（快）。
+    对数渐近张力模型：
+    - 冷启动（sample_count < 5）：threshold 不变，保持 10
+    - 轻量（本轮 token <= 累积平均）：threshold 上升
+      threshold += (THRESHOLD_MAX - threshold) * ALPHA_UP
+    - 重量（本轮 token > 累积平均）：threshold 下降
+      threshold -= (threshold - THRESHOLD_MIN) * ALPHA_DOWN
     """
-    if sample_count < _EMA_MIN_SAMPLES or ema_old <= 0:
-        new_ema = current_avg
-    elif current_avg > ema_old:
-        new_ema = _EMA_ALPHA_UP * current_avg + (1 - _EMA_ALPHA_UP) * ema_old
+    if sample_count < _THRESHOLD_MIN_SAMPLES:
+        return threshold_old, sample_count + 1
+
+    # 累积平均（含本轮）
+    new_sample_count = sample_count + 1
+    cumulative_avg = cumulative_tokens / new_sample_count if new_sample_count > 0 else 0
+
+    if current_turn_tokens <= cumulative_avg:
+        # 轻量 → 上升（对数渐近，越接近 50 越慢）
+        new_threshold = threshold_old + (_THRESHOLD_MAX - threshold_old) * _THRESHOLD_ALPHA_UP
     else:
-        new_ema = _EMA_ALPHA_DOWN * current_avg + (1 - _EMA_ALPHA_DOWN) * ema_old
+        # 重量 → 下降（快速回 10）
+        new_threshold = threshold_old - (threshold_old - _THRESHOLD_MIN) * _THRESHOLD_ALPHA_DOWN
 
-    return new_ema, sample_count + 1
+    # clamp
+    new_threshold = max(_THRESHOLD_MIN, min(_THRESHOLD_MAX, new_threshold))
+
+    return new_threshold, new_sample_count
 
 
 def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
@@ -994,43 +1000,51 @@ class NiuRunner:
             if post_compress_turns < self._last_ema_turns:
                 self._last_ema_turns = 0
 
-            ema_path = niu_dir / "avg_tokens_per_turn.json"
+            ema_path = niu_dir / "threshold_ema.json"
 
-            # 去重 + 更新 EMA：post_compress_turns >= 1 即可（冷启动保护在 threshold 函数中）
+            # 去重 + 更新 threshold EMA
             if post_compress_turns > self._last_ema_turns and post_compress_turns >= 1:
                 self._last_ema_turns = post_compress_turns
 
-                # 用 TokenCalculator 精确计算 token（包含 tool_calls 结构开销）
-                from agent.token_calculator import TokenCalculator
-                calc = TokenCalculator.get()
-                post_compress_dicts = [
-                    {
-                        "role": getattr(m, "role", ""),
-                        # CQ-05: 统一 content 为字符串，与 count_message_single 一致
-                        "content": (lambda c: (
-                            " ".join(p.get("text", "") for p in c
-                                     if isinstance(p, dict) and p.get("type") == "text")
-                            if isinstance(c, list) else c
-                        ))(getattr(m, "content", "") or ""),
-                        "tool_calls": getattr(m, "tool_calls", []) or [],
-                    }
-                    for m in post_compress_msgs
-                ]
-                post_compress_token_total = calc.count_messages(post_compress_dicts)
-                current_avg = post_compress_token_total / post_compress_turns
-                # CQ-01 修复：用 threading.Lock 保证 read-modify-write 原子性
-                # 不能用外层文件锁——_read_ema/_write_ema 内部已有 flock，同进程不同 fd 的 flock 互斥会导致自死锁
-                with self._ema_lock:
-                    ema_old, sample_count = self._read_ema(ema_path)
-                    new_ema, new_sample_count = _compute_ema_update(ema_old, sample_count, current_avg)
+                # 算本轮增量 token（最新一轮的消息）
+                # 本轮 = 最后一条 user 消息及其后的所有消息
+                last_user_idx = -1
+                for idx in range(len(post_compress_msgs) - 1, -1, -1):
+                    if getattr(post_compress_msgs[idx], "role", "") == "user":
+                        last_user_idx = idx
+                        break
 
-                    if current_avg > 0:
-                        self._write_ema(ema_path, new_ema, new_sample_count)
-                        # CQ-10: EMA 更新日志
-                        logger.debug(f"[Nap] EMA update: old={ema_old:.0f}, new={new_ema:.0f}, samples={new_sample_count}, avg={current_avg:.0f}, tokens={post_compress_token_total}")
-                    else:
-                        # CQ-06: 有意设计——空对话（current_avg=0）不更新 EMA，避免用 0 拉低历史均值
-                        logger.debug(f"[Nap] Skipping EMA write: current_avg={current_avg} <= 0")
+                if last_user_idx >= 0:
+                    current_turn_msgs = post_compress_msgs[last_user_idx:]
+                    from agent.token_calculator import TokenCalculator
+                    calc = TokenCalculator.get()
+                    current_turn_dicts = [
+                        {
+                            "role": getattr(m, "role", ""),
+                            # CQ-05: 统一 content 为字符串，与 count_message_single 一致
+                            "content": (lambda c: (
+                                " ".join(p.get("text", "") for p in c
+                                         if isinstance(p, dict) and p.get("type") == "text")
+                                if isinstance(c, list) else c
+                            ))(getattr(m, "content", "") or ""),
+                            "tool_calls": getattr(m, "tool_calls", []) or [],
+                        }
+                        for m in current_turn_msgs
+                    ]
+                    current_turn_tokens = calc.count_messages(current_turn_dicts)
+
+                    # CQ-01 修复：用 threading.Lock 保证 read-modify-write 原子性
+                    with self._ema_lock:
+                        threshold_old, sample_count, cumulative_tokens = self._read_ema(ema_path)
+                        new_cumulative = cumulative_tokens + current_turn_tokens
+                        new_threshold, new_sample_count = _compute_threshold_update(
+                            threshold_old, sample_count, current_turn_tokens, new_cumulative
+                        )
+
+                        self._write_ema(ema_path, new_threshold, new_sample_count, new_cumulative)
+                        logger.debug(f"[Nap] threshold EMA: old={threshold_old:.1f}, new={new_threshold:.1f}, "
+                                    f"samples={new_sample_count}, turn_tokens={current_turn_tokens}, "
+                                    f"cumulative={new_cumulative}")
 
             # 计算阈值
             from agent.subagent import _read_context_window_tokens
@@ -1379,14 +1393,15 @@ class NiuRunner:
 
     @staticmethod
     def _read_ema(ema_path):
-        """读取持久化的 EMA 值和样本数。
+        """读取持久化的 threshold EMA 值、样本数和累积 token。
 
         Returns:
-            (ema: float, sample_count: int)，文件不存在或损坏时返回 (0.0, 0)
+            (threshold: float, sample_count: int, cumulative_tokens: int)
+            文件不存在或损坏时返回 (10.0, 0, 0)
         """
-        # CQ-04: exists() 短路保证后续 open(lock_path) 时父目录已存在（ema_path 与 lock_path 同目录）
+        # CQ-04: exists() 短路保证后续 open(lock_path) 时父目录已存在
         if not ema_path.exists():
-            return 0.0, 0
+            return _THRESHOLD_MIN, 0, 0
         try:
             import json
             from niu_api.compat import _flock, _funlock
@@ -1395,24 +1410,27 @@ class NiuRunner:
                 _flock(lock_f)
                 try:
                     data = json.loads(ema_path.read_text(encoding="utf-8"))
-                    ema = float(data.get("ema", 0.0))
+                    threshold = float(data.get("threshold", _THRESHOLD_MIN))
                     sc = int(data.get("sample_count", 0))
-                    # CQ-02: NaN/Infinity/负值校验
-                    if ema != ema or ema < 0:  # NaN check: NaN != NaN
-                        ema = 0.0
+                    ct = int(data.get("cumulative_tokens", 0))
+                    # CQ-02: NaN/负值校验
+                    if threshold != threshold or threshold < 0:  # NaN check: NaN != NaN
+                        threshold = _THRESHOLD_MIN
                     if sc < 0:
                         sc = 0
-                    return ema, sc
+                    if ct < 0:
+                        ct = 0
+                    return threshold, sc, ct
                 finally:
                     _funlock(lock_f)
         # CQ-03: 收窄异常范围
         except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError) as e:
-            logger.warning(f"[Nap] Failed to read EMA {ema_path.name}: {e}")
-            return 0.0, 0
+            logger.warning(f"[Nap] Failed to read threshold EMA {ema_path.name}: {e}")
+            return _THRESHOLD_MIN, 0, 0
 
     @staticmethod
-    def _write_ema(ema_path, ema: float, sample_count: int):
-        """写入持久化的 EMA 值和样本数（加文件锁）。"""
+    def _write_ema(ema_path, threshold: float, sample_count: int, cumulative_tokens: int):
+        """写入持久化的 threshold EMA 值（加文件锁）。"""
         try:
             import json
             from datetime import datetime
@@ -1423,14 +1441,15 @@ class NiuRunner:
                 _flock(lock_f)
                 try:
                     ema_path.write_text(json.dumps({
-                        "ema": ema,
+                        "threshold": threshold,
                         "sample_count": sample_count,
+                        "cumulative_tokens": cumulative_tokens,
                         "last_updated_at": datetime.now().isoformat(),
                     }, ensure_ascii=False), encoding="utf-8")
                 finally:
                     _funlock(lock_f)
         except (OSError, TypeError) as e:
-            logger.warning(f"[Nap] Failed to write EMA {ema_path.name}: {e}")
+            logger.warning(f"[Nap] Failed to write threshold EMA {ema_path.name}: {e}")
 
     @staticmethod
     def _recalc_msg_stats(db_messages):
