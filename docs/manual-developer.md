@@ -200,6 +200,10 @@ niu [选项]
 | `/llm/v1/status` | GET | LightRAG 和模型状态 |
 | `/scheduler/tasks` | GET/POST/PUT/DELETE | 定时任务管理 |
 | `/health` | GET | 健康检查 |
+| `/api/subagents/{unique_name}/stream` | GET | 子 Agent 独立 SSE 端点 |
+| `/api/subagents/running` | GET | 在跑子 Agent 列表（窗口恢复时用） |
+| `/api/subagents/{unique_name}/message` | POST | 用户向子 Agent 发消息/回答 @user 提问 |
+| `/api/stop_all` | POST | 停止所有子 Agent |
 
 **SSE 事件类型清单**（`/api/events/stream` 推送，定义于 `niu_api/chat.py` 与 `agent/generic/agent_loop.py`）：
 
@@ -211,6 +215,7 @@ niu [选项]
 | `chat_busy` | `agent_loop.py` StreamEvent("system", "chat_busy") | Agent 开始处理，进入忙碌状态 |
 | `chat_idle` | `agent_loop.py` StreamEvent("system", "chat_idle") | Agent 处理完成，进入空闲状态 |
 | `persist` | `agent_loop.py` StreamEvent("persist", ...) | V4 逐轮持久化推送（assistant/tool 消息逐条 yield） |
+| `subagent_started` | `handler.py` subagent_started 推送 | 子 Agent 启动通知（unique_name/agent_name/agent_type），前端创建 tab + 建立独立 SSE。子 Agent 详细事件（reply/tool_status/thinking_chain/question/subagent_suspended/subagent_error/subagent_closed）走独立 SSE 端点 `/api/subagents/{unique_name}/stream`，详见子 Agent 分册 |
 
 ### 2.4 许可证
 
