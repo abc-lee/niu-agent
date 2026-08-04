@@ -67,30 +67,14 @@ _BOUNDARY_SECTION_TEMPLATE = """## 职责边界
 不要猜测含义，无法完全确认属于自己的职责范围的，就要直接退出，回复主 Agent。"""
 
 
-_SUBAGENT_ASK_GUIDE_TEMPLATE = """<!-- NIU_SUBAGENT_GUIDE_v2 -->
-## 子 Agent 与主 Agent 对话规则
-
-任务完成时必须用 `@end ` 前缀输出最终结果，否则会被程序拦截重跑浪费 token。
-
-### 退出（默认行为，任务做完就走）
-
-以下两种情况都用 `@end ` 前缀返回：
-1. 任务已完成——返回最终结果。
-2. 任务确实无法继续（如缺权限、缺资源）——汇报情况让主 Agent 决策。
-
-### 询问（少数情况，必须澄清才能继续）
-
-工作未完成时遇到必须澄清的问题，必须用 `@niu-agent ` 前缀的 content 询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。
-
-### 格式示例
-
-- 退出：`@end 任务已完成，结果：...`
-- 询问：`@niu-agent 我应该选择哪个选项？`
-
-记住：完成用 `@end`，提问用 `@niu-agent`，二选一。
+_SUBAGENT_ASK_GUIDE_TEMPLATE = """<!-- NIU_SUBAGENT_GUIDE_v3 -->
+## 通讯语法
+- `@niu-agent 问题内容` — 向主 Agent 提问，阻塞等待回答（5 分钟超时）
+- `@user 问题内容` — 向用户提问，阻塞等待回答（10 分钟超时）
+- `@end` — 任务完成，退出
 """
 
-_SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v2 -->"
+_SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v3 -->"
 
 
 def count_tokens_for_text(text: str) -> int:
@@ -1142,6 +1126,50 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
         )
 
     return answer
+
+def _ask_user_impl(question: str, unique_name: str) -> str | None:
+    """子 Agent 向用户提问，阻塞等待用户回答。
+
+    1. 推送 question 事件到 SubagentEventBus（前端 tab 高亮显示问题）
+    2. 设 state=waiting_for_user
+    3. 注册 AskUserFuture，阻塞等待
+    4. 设置 state=running（仅在子 Agent 仍存活时）
+    5. 返回用户回答
+    """
+    from agent.ask_user import get_user_ask_registry, TERMINATED_SIGNAL
+    from agent.subagent_registry import SubagentRegistry
+
+    instance = SubagentRegistry.get(unique_name)
+    if instance is None:
+        return '[ask_user 错误] 子 Agent 已不在注册表'
+
+    # 检查 _ask_user_terminated 标志（/stop 在 register 之前到达）
+    if getattr(instance, '_ask_user_terminated', False):
+        return '[ask_user 已终止] 用户或系统已发出停止指令，请总结本轮工作后终止。'
+
+    # 推送问题到前端
+    try:
+        from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+        notify_subagent_event_sync(unique_name, 'question', {'content': question[:2000]})
+    except ImportError:
+        logger.warning('[ask_user] SubagentEventBus not available, question event not pushed to frontend')
+
+    # 设 state
+    instance.state = 'waiting_for_user'
+
+    # 注册 future 并阻塞
+    registry = get_user_ask_registry()
+    future = registry.register(unique_name)
+    try:
+        answer = future.wait()  # 用 AskUserFuture 默认 _ASK_TIMEOUT=600
+        if answer == TERMINATED_SIGNAL:
+            return '[ask_user 已终止] 用户或系统已发出停止指令，请总结本轮工作后终止。'
+        return answer
+    finally:
+        # 仅在子 Agent 仍存活时恢复 state
+        if SubagentRegistry.get(unique_name) is instance:
+            instance.state = 'running'
+        registry.unregister(unique_name)
 
 
 def _ask_main_agent_impl_sync(

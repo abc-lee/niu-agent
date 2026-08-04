@@ -11,12 +11,14 @@ from agent.subagent import _read_warning_threshold
 _VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
 _AT_NIU_PREFIX = "@niu-agent"  # 子 Agent 询问主 Agent 的 content 前缀（10 字符）
+_AT_USER_PREFIX = "@user"  # 子 Agent 询问用户的 content 前缀（5 字符）
 
 # 格式错误提示文本（用 f-string 插值 _AT_NIU_PREFIX，未来改名只改常量）
 _FORMAT_ERROR_PROMPT = (
     "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
     f"1. 询问主 Agent：content 中包含 `{_AT_NIU_PREFIX}`，如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`\n"
-    "2. 结束会话：content 中包含 `@end`，如 `@end 任务已完成，结果：...`\n"
+    "2. 询问用户：content 中包含 `@user`，如 `@user 你需要哪个文件？`\n"
+    "3. 结束会话：content 中包含 `@end`，如 `@end 任务已完成，结果：...`\n"
     "禁止输出不带 @ 前缀的纯 content。请重新输出。"
 )
 
@@ -26,6 +28,7 @@ INTERCEPTED_SYNC = "intercepted_sync"  # 同步 @niu-agent 拦截成功
 EXIT = "exit"                        # @end 允许退出
 FORMAT_ERROR = "format_error"        # 无 @ 前缀无 tool_calls，已追加格式错误提示
 NO_INTERCEPTION = "no_intercept"     # 不拦截（主 Agent 或有 tool_calls）
+INTERCEPTED_ASK_USER = "intercepted_ask_user"  # @user 拦截成功
 
 
 def _find_unescaped_marker(content: str, marker: str) -> int:
@@ -184,6 +187,20 @@ def _intercept_at_prefix_content(
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": f"[主 Agent 回答] {answer}"})
             return (INTERCEPTED, None)
+
+    # @user 检测（词边界检查，避免 @username 误匹配）
+    at_user_idx = _find_unescaped_marker(stripped, _AT_USER_PREFIX)
+    if at_user_idx >= 0:
+        after_marker = at_user_idx + len(_AT_USER_PREFIX)
+        # 检查 @user 后面是空白、常见标点或字符串结尾（词边界）
+        if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';'):
+            question = stripped[after_marker:].strip()
+            if not question:
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
+                return (FORMAT_ERROR, None)
+            return (INTERCEPTED_ASK_USER, question)
+        # @user 后面紧跟非空白字符（如 @username），不拦截，继续检测 @end
 
     # @end 允许退出（content 里找未转义的 @end，前字符是 \\ 不识别，其他位置都识别）
     if _find_unescaped_marker(stripped, "@end") >= 0:
@@ -731,6 +748,18 @@ def agent_runner_loop(
                 )
                 if interception_status == INTERCEPTED:
                     continue  # 异步路径：LLM 重跑（messages 已 append assistant + user）
+                if interception_status == INTERCEPTED_ASK_USER:
+                    question = interception_payload
+                    unique_name = getattr(handler, '_subagent_unique_name', '')
+                    if not unique_name:
+                        continue  # 无 unique_name，跳过（不应发生）
+                    from agent.subagent import _ask_user_impl
+                    answer = _ask_user_impl(question, unique_name)
+                    if answer and answer != '__TERMINATED__':
+                        messages.append({"role": "user", "content": f"[user 回答] {answer}"})
+                    else:
+                        messages.append({"role": "user", "content": "[user 未回答] 你的提问超时或被终止，请基于现有信息继续或用 @end 退出。"})
+                    continue
                 if interception_status == INTERCEPTED_SYNC:
                     # 同步路径：yield wrapped_text + 显式 return
                     # 子 Agent 路径不调全局 clear_stop()（避免清主 Agent stop 标志）
