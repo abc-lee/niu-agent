@@ -146,13 +146,13 @@ def _intercept_at_prefix_content(
         return (NO_INTERCEPTION, None)
 
     # 子 Agent 拦截（原逻辑）：@niu-agent / @end / 格式错误
-    # 识别规则：content 里找未转义的 @niu-agent（前字符是 \\ 不识别，其他位置都识别）
-    at_niu_idx = _find_unescaped_marker(stripped, _AT_NIU_PREFIX)
-    # 边界：content 同时包含 @niu-agent 和 @end 时，优先走 @end 退出
-    # 子 Agent 输出 "汇报内容 @niu-agent 任务完成 @end" 的意图是汇报+结束，
-    # 如果走 @niu-agent 阻塞等待，@end 永远不会被执行，子 Agent 卡死
-    if at_niu_idx >= 0 and _find_unescaped_marker(stripped, "@end") >= 0:
+    # @end 优先级最高：子 Agent 输出 @end 表示工作结束，无论是否同时包含
+    # @niu-agent 或 @user，都直接退出。已经结束的子 Agent 再处理提问无意义。
+    if _find_unescaped_marker(stripped, "@end") >= 0:
         return (EXIT, None)
+
+    # @niu-agent 检测（子 Agent 向主 Agent 提问，阻塞等待回答）
+    at_niu_idx = _find_unescaped_marker(stripped, _AT_NIU_PREFIX)
     if at_niu_idx >= 0:
         # 剥除 "@niu-agent" 前缀 + 可选空格（question 是 @niu-agent 之后的内容）
         question = stripped[at_niu_idx + len(_AT_NIU_PREFIX):].lstrip()
@@ -193,11 +193,8 @@ def _intercept_at_prefix_content(
             messages.append({"role": "user", "content": f"[主 Agent 回答] {answer}"})
             return (INTERCEPTED, None)
 
-    # @user 检测（词边界检查，避免 @username 误匹配）
+    # @user 检测（子 Agent 向用户提问，阻塞等待回答）
     at_user_idx = _find_unescaped_marker(stripped, _AT_USER_PREFIX)
-    # 边界：content 同时包含 @user 和 @end 时，优先走 @end 退出（同 @niu-agent 逻辑）
-    if at_user_idx >= 0 and _find_unescaped_marker(stripped, "@end") >= 0:
-        return (EXIT, None)
     if at_user_idx >= 0:
         after_marker = at_user_idx + len(_AT_USER_PREFIX)
         # 检查 @user 后面是空白、常见标点或字符串结尾（词边界）
@@ -208,11 +205,7 @@ def _intercept_at_prefix_content(
                 messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
                 return (FORMAT_ERROR, None)
             return (INTERCEPTED_ASK_USER, question)
-        # @user 后面紧跟非空白字符（如 @username），不拦截，继续检测 @end
-
-    # @end 允许退出（content 里找未转义的 @end，前字符是 \\ 不识别，其他位置都识别）
-    if _find_unescaped_marker(stripped, "@end") >= 0:
-        return (EXIT, None)
+        # @user 后面紧跟非空白字符（如 @username），不拦截，继续走到格式错误
 
     # 格式错误
     messages.append({"role": "assistant", "content": content})
