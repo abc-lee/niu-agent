@@ -2957,10 +2957,8 @@
             // 用户自己的补充信息回声，已在本地渲染过，跳过
             break;
           default:
-            // persist / system / tool_marker 及其他未知类型 → 系统消息样式
-            if (event.content) {
-              addSubagentMessageToTab(unique_name, 'system', event.content);
-            }
+            // persist / system / tool_marker 是内部事件，不展示给用户
+            break;
         }
         // 非 user 事件到达：恢复发送后输入等待态（§22，仅当等待的正是这个 tab）
         if (event.type !== 'user' && _subagentWaitingTab === unique_name) {
