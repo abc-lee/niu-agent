@@ -277,13 +277,8 @@ chat-with-browser-operator(
 
 ### 如何创建子 Agent
 
-1. 读 `config/agent-template.md` 了解字段和可用 MCP 服务器
-2. 用基础工具（读写文档）写新 MD 到 `~/.niu/agents/{name}.md`：
-   - name 用 kebab-case（如 `photo-organizer`、`doc-summarizer`，仅小写字母/数字/连字符）
-   - frontmatter 填 description / mcpServers / allowAsync 等（description 必填，否则会被跳过）
-   - `mcpServers` 填 **MCP 服务器名**（如 `browser-server`、`photo-server`），不是虚拟磁盘工具前缀（如 `browser`、`photo`）——两者不同，混淆会导致子 Agent 工具缺失
-   - 正文写系统提示词（@niu-agent/@end/@user 交互守则由程序自动注入，正文无需写）
-   - 子 Agent 可以用 `@user` 向用户提问（如需要澄清需求、选择方案）。如果你建的子 Agent 需要与用户多轮交互，在正文提示词中说明交互流程即可——前端会自动为子 Agent 创建独立标签页，用户可在其中看到子 Agent 的工作过程并与它交流
+1. 读 `config/agent-template.md` 了解字段说明、可用 MCP 服务器、交互守则（@niu-agent/@end/@user 由程序自动注入，正文无需写）
+2. 用基础工具（读写文档）写新 MD 到 `~/.niu/agents/{name}.md`
 3. 当前任务结束。下一轮对话开始时，`chat-with-{name}` 工具自动出现
 4. 调用 `chat-with-{name}`（同步或异步）执行任务
 
