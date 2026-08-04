@@ -769,6 +769,15 @@ def agent_runner_loop(
                 _harness_fail_count = 0
 
             yield StreamEvent("reply", content)
+            # 子 Agent thinking chain 推送（仅在非 verbose 分支内，verbose 分支不经过 reply yield）
+            if getattr(handler, '_is_subagent', False):
+                unique_name = getattr(handler, '_subagent_unique_name', None)
+                if unique_name and hasattr(response, 'thinking') and response.thinking:
+                    try:
+                        from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+                        notify_subagent_event_sync(unique_name, 'thinking_chain', {'content': response.thinking})
+                    except ImportError:
+                        pass
 
             # 阶段二：异步子 Agent 进度数据 — LLM 响应组装完后更新 last_llm_response
             # 位置：yield StreamEvent("reply", content) 之后（else/非 verbose 分支内，content 已在 L447 定义）
