@@ -4,11 +4,12 @@ per-unique_name 事件队列路由，与主 Agent SSE 流（_event_subscribers �
 复用 niu_api.chat._main_loop 引用做 call_soon_threadsafe 跨线程注入。
 
 线程安全设计：
-- _subscribers / _ring_buffers 只在主 asyncio loop 线程中操作（_subagent_broadcast 由
-  call_soon_threadsafe 调度到主 loop 执行，subscribe/unsubscribe 是 async 函数也在主 loop 执行）。
+- _subscribers / _ring_buffers 的广播读写由 call_soon_threadsafe 调度到主 loop 串行执行；
+  pre_register 在 loop 不可用时直接写入（GIL 保护 dict 单次操作安全）。
 - 不需要 asyncio.Lock（主 loop 单线程不会并发）。
 - close() 的清理通过 call_soon_threadsafe 调度到主 loop 执行，避免跨线程竞争。
 """
+import asyncio
 import threading
 from collections import deque
 
@@ -61,8 +62,10 @@ def _subagent_broadcast(unique_name: str, event: dict):
     for q in subs[:]:
         try:
             q.put_nowait(event)
+        except asyncio.QueueFull:
+            logger.warning(f"[SubagentEventBus] {unique_name} subscriber queue full, skipping")
         except Exception:
-            pass
+            logger.exception(f"[SubagentEventBus] {unique_name} broadcast error")
 
 
 def pre_register(unique_name: str):
@@ -70,14 +73,26 @@ def pre_register(unique_name: str):
 
     确保 has_subagent() 在 subagent_started 事件推送后立即返回 True，
     避免 SSE 端点 404 竞态。
+
+    线程安全：与 notify_subagent_event_sync 一致，用 call_soon_threadsafe
+    调度到主 loop 执行。loop 不可用时直接写入（GIL 保护 dict 单次操作安全）。
     """
+    loop = _get_main_loop()
+    if loop is None or loop.is_closed():
+        if unique_name not in _ring_buffers:
+            _ring_buffers[unique_name] = deque(maxlen=_MAX_RING_BUFFER)
+        return
+    loop.call_soon_threadsafe(_do_pre_register, unique_name)
+
+
+def _do_pre_register(unique_name: str):
+    """在主 loop 中执行预注册。"""
     if unique_name not in _ring_buffers:
         _ring_buffers[unique_name] = deque(maxlen=_MAX_RING_BUFFER)
 
 
 async def subscribe(unique_name: str):
     """SSE 端点调用，返回该子 Agent 的事件队列。"""
-    import asyncio
     if unique_name not in _subscribers:
         _subscribers[unique_name] = []
     if unique_name not in _ring_buffers:
@@ -109,7 +124,6 @@ def close(unique_name: str):
     _do_cleanup 接收 epoch 参数，在主 loop 中再次检查，消除 TOCTOU 竞态。
     """
     global _epoch_counter
-    import threading
     with _epoch_lock:
         _epoch_counter += 1
         _close_epochs[unique_name] = _epoch_counter
@@ -127,9 +141,13 @@ def close(unique_name: str):
         loop = _get_main_loop()
         if loop is None or loop.is_closed():
             # loop 已关闭，没有 async 操作在进行，直接清理安全
-            _subscribers.pop(unique_name, None)
-            _ring_buffers.pop(unique_name, None)
-            _close_epochs.pop(unique_name, None)
+            # 用 _epoch_lock 保护 fallback 路径的 dict pop（跑在 Timer 线程）
+            with _epoch_lock:
+                if _close_epochs.get(unique_name) != my_epoch:
+                    return
+                _subscribers.pop(unique_name, None)
+                _ring_buffers.pop(unique_name, None)
+                _close_epochs.pop(unique_name, None)
             return
         loop.call_soon_threadsafe(_do_cleanup, unique_name, my_epoch)
 
