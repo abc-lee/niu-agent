@@ -10,6 +10,49 @@
 
 ## 2. 现有框架（不变）
 
+### 2.0 禁止修改清单
+
+以下内容是现有 Chat 页面的核心功能，**任何修改都不允许破坏这些功能的正常运行**：
+
+**禁止重写/替换的函数：**
+- `addMessage(role, text, images, skipAppend, createdAt)` — 主对话消息渲染核心函数。可以为子 Agent tab 新增独立渲染函数（如 `addSubagentMessageToTab`），但**不得修改 addMessage 本身的签名和行为**。
+- `sendMessage()` — 主对话消息发送函数。子 Agent tab 的分支必须在 `addMessage('user', text)` 和 `showTyping()` **之前 early return**，不走到主对话的逻辑。
+- `clearChat()` — 清空主对话。**不得修改**，子 Agent tab 的消息容器不在 `#messages` 内部，天然不受影响。
+- `clearSparks()` — 脑区鬼火动画清理。子 Agent tab 下脑区面板隐藏，不需要调用。
+- `loadHistory()` / `refreshFromDB()` — 历史加载。只操作主 `#messages`，子 Agent tab 不走 DB 消息。
+- `startMessageEventStream()`（main.js）— 主 Agent SSE 连接。**不得修改**，子 Agent SSE 走独立的 `SubagentSSEManager`。
+
+**禁止修改的 DOM 元素：**
+- `#messages`（主消息容器）— 只追加 `.messages-{unique_name}` 作为兄弟元素（同级），**不得在 `#messages` 内部插入子 Agent 元素**。
+- `.header`（头像 + 标题 + 关闭按钮）— **不动**。
+- `.progress-bar` — **不动**。
+- `.input-area`（textarea + 发送 + 停止 + 斜杠命令）— 位置和结构**不动**，只改 sendMessage 的发送目标路由逻辑。
+- `.status-bar` — **不动**。
+- `.resize-handle` — **不动**。
+- 脑区面板（`.brain-trigger-zone` / `.brain-overlay` / `.brain-panel` / `.brain-spark-container`）— **不动**，子 Agent tab 下用 `display:none` 隐藏。
+
+**禁止修改的 CSS 规则：**
+- `.message` / `.message.user` / `.message.assistant` / `.message.system` — 现有消息样式**不动**，子 Agent tab 复用这些 class。
+- `.container` flex 布局 — **不动**，tab 栏作为新子元素插入，不改变 flex 方向。
+- `.messages` 的 `position: relative` — **不动**（脑区面板依赖此定位）。
+
+**禁止修改的 IPC 接口（preload-chat.js）：**
+- `onNewMessage` / `onToolStatus` / `onCompactStatus` / `onBrainRegionsChanged` / `onSyncState` / `onAlert` — **不动**，子 Agent 事件走新增的独立接口。
+- `sendMessage` / `clearChat` / `getChatStatus` / `getStats` — **不动**。
+
+**允许的修改范围（增量式）：**
+- 在 `.header` 和 `.messages` 之间插入 `.tab-bar`（新元素）
+- 在 `#messages` 之后插入 `.messages-{unique_name}`（新元素，兄弟节点）
+- 新增 CSS class（`.tab` / `.tab-bar` / `.message.thinking` / `.message.question` 等）
+- `sendMessage()` 函数内增量插入 `_activeTab` 判断分支（在 `addMessage` 之前 early return）
+- `showTyping()` 函数增加可选文案参数
+- 停止按钮事件中增量插入子 Agent tab 判断
+- main.js 新增 `SubagentSSEManager` 对象 + `subagent_started` 事件分支 + `connect/disconnect` IPC handler
+- preload-chat.js 新增 4 个接口（`onSubagentEvent` / `onSubagentStarted` / `connectSubagentSSE` / `disconnectSubagentSSE`）
+- 现有 `onSyncState` 回调末尾追加 `restoreSubagentTabs()` 调用
+
+### 2.1 现有 DOM 结构
+
 ```
 .container（flex column）
   .header（头像 + 标题 + 关闭按钮）
