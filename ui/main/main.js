@@ -1764,11 +1764,11 @@ ipcMain.on('disconnect-subagent-sse', (_event, uniqueName) => {
 // 发送消息到子 Agent（用户补充信息 / /stop）
 ipcMain.handle('send-subagent-message', async (_event, { uniqueName, message }) => {
   const apiPort = parseInt(process.env.NIU_API_PORT || '9876', 10);
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const data = JSON.stringify({ message });
     const req = http.request({
       hostname: '127.0.0.1', port: apiPort,
-      path: `/api/subagents/${uniqueName}/message`,
+      path: `/api/subagents/${encodeURIComponent(uniqueName)}/message`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
     }, (res) => {
@@ -1783,7 +1783,7 @@ ipcMain.handle('send-subagent-message', async (_event, { uniqueName, message }) 
         }
       });
     });
-    req.on('error', reject);
+    req.on('error', (e) => resolve({ error: e.message }));
     req.write(data);
     req.end();
   });
@@ -1801,19 +1801,19 @@ const SubagentSSEManager = {
 
   connect(uniqueName) {
     if (this.connections[uniqueName]) return;  // 已连接
-    const conn = { req: null, cancelled: false };
+    const conn = { req: null, cancelled: false, reconnectTimer: null };
     this.connections[uniqueName] = conn;
     this._connect(uniqueName, conn);
   },
 
   _connect(uniqueName, conn) {
     const apiPort = parseInt(process.env.NIU_API_PORT || '9876', 10);
-    const req = http.get(`http://127.0.0.1:${apiPort}/api/subagents/${uniqueName}/stream`, (res) => {
+    const req = http.get(`http://127.0.0.1:${apiPort}/api/subagents/${encodeURIComponent(uniqueName)}/stream`, (res) => {
       if (res.statusCode === 404) {
         // 子 Agent 不存在，不重连
         delete this.connections[uniqueName];
         if (chatWindow && !chatWindow.isDestroyed()) {
-          chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'subagent_closed' } });
+          chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'subagent_error', content: '子 Agent 不存在' } });
         }
         return;
       }
@@ -1842,13 +1842,13 @@ const SubagentSSEManager = {
       res.on('end', () => {
         // cancelled 标志：req.destroy() 触发的 end/error 回调不重连
         if (!conn.cancelled) {
-          setTimeout(() => this._reconnect(uniqueName, conn), 3000);
+          conn.reconnectTimer = setTimeout(() => this._reconnect(uniqueName, conn), 3000);
         }
       });
     });
     req.on('error', () => {
       if (!conn.cancelled) {
-        setTimeout(() => this._reconnect(uniqueName, conn), 3000);
+        conn.reconnectTimer = setTimeout(() => this._reconnect(uniqueName, conn), 3000);
       }
     });
     conn.req = req;
@@ -1868,6 +1868,7 @@ const SubagentSSEManager = {
     const conn = this.connections[uniqueName];
     if (!conn) return;
     conn.cancelled = true;
+    if (conn.reconnectTimer) { clearTimeout(conn.reconnectTimer); conn.reconnectTimer = null; }
     if (conn.req) { conn.req.destroy(); conn.req = null; }
     delete this.connections[uniqueName];
   },

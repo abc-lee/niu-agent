@@ -780,9 +780,10 @@
     .tab.error {
       color: #e53935;
     }
-    /* 未读红点 badge：右上角 6px 圆形，默认隐藏 */
+    /* 未读红点 badge：右上角 6px 圆形，opacity+transition 实现淡入淡出 */
     .tab .badge {
-      display: none;
+      opacity: 0;
+      transition: opacity 200ms ease;
       position: absolute;
       top: 4px;
       right: 4px;
@@ -796,7 +797,7 @@
       animation: tab-pulse 1s infinite;
     }
     .tab.waiting .badge {
-      display: block;
+      opacity: 1;
     }
     @keyframes tab-pulse {
       0%, 100% { opacity: 1; }
@@ -2667,12 +2668,29 @@
     const _pendingCloseTabs = new Set();
 
     function _setSubagentInputWaiting(waiting) {
-      _subagentInputWaiting = waiting;
       if (waiting) {
+        _subagentInputWaiting = true;
         _subagentWaitingTab = _activeTab;
         userInput.placeholder = '子 Agent 处理补充信息中...';
         sendBtn.disabled = true;
+        // 子 Agent 容器内创建 typing 气泡（复用 .message.typing + .typing-dots 样式）
+        const container = document.getElementById('messages-' + _activeTab);
+        if (container) {
+          const bubble = document.createElement('div');
+          bubble.className = 'message typing';
+          bubble.id = 'subagent-typing-' + _activeTab;
+          bubble.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+          container.appendChild(bubble);
+          container.scrollTop = container.scrollHeight;
+        }
       } else {
+        // 先移除 typing 气泡（此时 _subagentWaitingTab 尚未清空）
+        const bubbleTab = _subagentWaitingTab;
+        if (bubbleTab) {
+          const bubble = document.getElementById('subagent-typing-' + bubbleTab);
+          if (bubble) bubble.remove();
+        }
+        _subagentInputWaiting = false;
         _subagentWaitingTab = null;
         _syncInputPlaceholder();
         sendBtn.disabled = false;
@@ -2740,12 +2758,12 @@
     }
 
     // 创建子 Agent tab + 独立消息容器，并自动切换过去
-    function createSubagentTab(uniqueName, displayName) {
+    function createSubagentTab(uniqueName, displayName, isSync) {
       if (document.getElementById('tab-' + uniqueName)) return;  // 已存在则不重复创建
 
       // tab 元素（无 × 按钮，不可手动关闭）
       const tab = document.createElement('div');
-      tab.className = 'tab new-tab';  // new-tab 触发从右滑入动画
+      tab.className = 'tab new-tab loading';  // new-tab 触发从右滑入动画；loading 首条消息到达后移除
       tab.id = 'tab-' + uniqueName;
       tab.title = displayName;        // hover tooltip 显示全名
       tab.textContent = displayName;
@@ -2766,9 +2784,10 @@
       messages.parentNode.insertBefore(container, messages.nextSibling);
 
       // 空状态占位：首条事件到达后由 addSubagentMessageToTab 移除
+      // 同步子 Agent 显示"工作中..."，异步子 Agent 显示"正在启动..."
       const empty = document.createElement('div');
       empty.className = 'tab-empty-state';
-      empty.textContent = `⏳ 子 Agent ${displayName} 正在启动...`;
+      empty.textContent = isSync ? `⏳ 子 Agent ${displayName} 工作中...` : `⏳ 子 Agent ${displayName} 正在启动...`;
       container.appendChild(empty);
 
       // 新 tab 创建后不自动切换，用户停留在主对话 tab
@@ -2782,9 +2801,13 @@
     function addSubagentMessageToTab(uniqueName, cssClass, text) {
       const container = document.getElementById('messages-' + uniqueName);
       if (!container) return null;
-      // 首条事件到达后移除空状态占位
+      // 首条事件到达后移除空状态占位 + tab loading spinner
       const empty = container.querySelector('.tab-empty-state');
-      if (empty) empty.remove();
+      if (empty) {
+        empty.remove();
+        const tabEl = document.getElementById('tab-' + uniqueName);
+        if (tabEl) tabEl.classList.remove('loading');
+      }
 
       // 追加前判断用户是否在底部附近（§4.3：用户上翻查看历史时不自动滚动）
       const nearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 50;
@@ -2806,6 +2829,17 @@
         div.textContent = text;
       }
       container.appendChild(div);
+      // thinking chain：创建展开/收起按钮（CSS 已有 .thinking-expand-btn + .expanded 样式）
+      if (cssClass === 'thinking') {
+        const expandBtn = document.createElement('button');
+        expandBtn.className = 'thinking-expand-btn';
+        expandBtn.textContent = '展开全部';
+        expandBtn.addEventListener('click', () => {
+          const expanded = div.classList.toggle('expanded');
+          expandBtn.textContent = expanded ? '收起' : '展开全部';
+        });
+        div.appendChild(expandBtn);
+      }
       if (nearBottom) container.scrollTop = container.scrollHeight;
 
       // 下一条事件到达 → 解除发送后等待态（§22）
@@ -2867,7 +2901,7 @@
     function setTabBadge(uniqueName, show) {
       const tab = document.getElementById('tab-' + uniqueName);
       const badge = tab && tab.querySelector('.badge');
-      if (badge) badge.style.display = show ? 'block' : 'none';
+      if (badge) badge.style.opacity = show ? '1' : '0';
     }
 
     // 关闭子 Agent tab：移除 tab 元素 + 消息容器 + 断开 SSE
@@ -2894,7 +2928,7 @@
       window.electronAPI.onSubagentStarted((event) => {
         const uniqueName = event.unique_name;
         const displayName = event.display_name || uniqueName;
-        createSubagentTab(uniqueName, displayName);
+        createSubagentTab(uniqueName, displayName, event.is_sync);
         // 同步子 Agent：主对话 tab 显示工作中状态（§11）
         if (event.is_sync) {
           showTyping('子 Agent 工作中...');
@@ -2962,6 +2996,11 @@
               addSubagentMessageToTab(unique_name, 'system', event.content);
             }
         }
+        // P0: 收到非 question / 非 user 事件时停止 tab 闪烁（用户已回答，子 Agent 继续工作）
+        // subagent_error / subagent_closed 已各自调用 clearTabWaiting，重复调用无害
+        if (event.type !== 'question' && event.type !== 'user') {
+          clearTabWaiting(unique_name);
+        }
         // 非 user 事件到达：恢复发送后输入等待态（§22，仅当等待的正是这个 tab）
         if (event.type !== 'user' && _subagentWaitingTab === unique_name) {
           _setSubagentInputWaiting(false);
@@ -2972,6 +3011,8 @@
     // 窗口恢复：从 /api/subagents/running 重建子 Agent tabs + SSE 连接（§8）
     function restoreSubagentTabs() {
       if (!window.electronAPI) return;
+      // TODO: 后续应通过 IPC (preload-chat.js getRunningSubagents) 获取端口，避免硬编码 9876
+      // 当前与 INGEST_PROGRESS_API 保持一致，均使用硬编码端口
       fetch('http://127.0.0.1:9876/api/subagents/running')
         .then(r => r.json())
         .then(data => {
@@ -2980,14 +3021,15 @@
             const uniqueName = agent.unique_name;
             if (!uniqueName) return;
             if (!document.getElementById('tab-' + uniqueName)) {
-              createSubagentTab(uniqueName, agent.display_name || uniqueName);
-              switchTab('main');  // 恢复时不自动切换，用户停留在主对话 tab
+              createSubagentTab(uniqueName, agent.display_name || uniqueName, agent.is_sync);
             }
             // 建立 SSE 连接（已连接的由 SubagentSSEManager 去重忽略）
             if (window.electronAPI.connectSubagentSSE) {
               window.electronAPI.connectSubagentSSE(uniqueName);
             }
           });
+          // 恢复时不自动切换，用户停留在主对话 tab（只需调一次，移到 forEach 之后）
+          switchTab('main');
         })
         .catch(() => {});  // 后端未启动时静默失败
     }
