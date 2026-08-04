@@ -339,6 +339,11 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
         instance.suspended_client = client
         instance.suspended_tools_schema = tools_schema
         instance.suspended_system_message = system_message
+        try:
+            from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+            notify_subagent_event_sync(unique_name, 'subagent_suspended', {})
+        except ImportError:
+            pass
     except Exception as e:
         logger.error(f"[MaybeSuspend] helper 异常，强制设 state=waiting_for_answer: {e}")
         try:
