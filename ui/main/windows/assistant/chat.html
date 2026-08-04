@@ -2699,14 +2699,26 @@
       }
     }
 
-    // 输入栏 placeholder 跟随 tab 状态：主对话 / 子 Agent 默认 / @user 等待回答（§5.4）
+    // 输入栏 placeholder 跟随 tab 状态：主对话 / 子 Agent 默认 / @user 等待回答 / 发送后等待
     function _syncInputPlaceholder() {
-      if (_subagentInputWaiting) return;  // 发送后等待态期间由 _setSubagentInputWaiting 管理
       const activeTabEl = document.getElementById('tab-' + _activeTab);
       const tabWaiting = !!(activeTabEl && activeTabEl.classList.contains('waiting'));
-      if (_activeTab === 'main') userInput.placeholder = '说点什么...';
-      else if (tabWaiting) userInput.placeholder = '子 Agent 正在等待你的回答...';
-      else userInput.placeholder = '发送补充信息...';
+      // 发送后等待态：仅当切到等待中的 tab 时显示等待文案+禁用，切到其他 tab 时恢复
+      if (_subagentInputWaiting && _subagentWaitingTab === _activeTab) {
+        userInput.placeholder = '子 Agent 处理补充信息中...';
+        sendBtn.disabled = true;
+      } else if (_subagentInputWaiting && _subagentWaitingTab !== _activeTab) {
+        // 等待的是另一个 tab，当前 tab 正常可用
+        if (_activeTab === 'main') userInput.placeholder = '说点什么...';
+        else if (tabWaiting) userInput.placeholder = '子 Agent 正在等待你的回答...';
+        else userInput.placeholder = '发送补充信息...';
+        sendBtn.disabled = false;
+      } else {
+        if (_activeTab === 'main') userInput.placeholder = '说点什么...';
+        else if (tabWaiting) userInput.placeholder = '子 Agent 正在等待你的回答...';
+        else userInput.placeholder = '发送补充信息...';
+        sendBtn.disabled = false;
+      }
     }
 
     // 切换 tab：高亮切换 + 消息容器 display 切换 + 脑区面板显隐
@@ -2773,7 +2785,7 @@
       tab.title = displayName;        // hover tooltip 显示全名
       tab.textContent = displayName;
       tab.addEventListener('click', () => switchTab(uniqueName));
-      tab.addEventListener('animationend', () => tab.classList.remove('new-tab'), { once: true });
+      tab.dataset.sync = isSync ? 'true' : 'false';  // subagent_closed 时据此判断是否 hideTyping
 
       // 未读红点 badge
       const badge = document.createElement('span');
@@ -2978,8 +2990,9 @@
             addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
             markTabCompleted(unique_name);
             clearTabWaiting(unique_name);
-            // 同步子 Agent @end 时清理主对话"工作中"气泡（§11）
-            hideTyping();
+            // 同步子 Agent @end 时清理主对话"工作中"气泡（§11，仅同步子 Agent）
+            const _tabEl = document.getElementById('tab-' + unique_name);
+            if (_tabEl && _tabEl.dataset.sync === 'true') hideTyping();
             // @end 关闭逻辑：用户不在该 tab 时 3 秒后关闭；用户在该 tab 时等切走后关闭
             if (_activeTab === unique_name) {
               // 用户正在该 tab：标记待关闭，等用户切走后关闭
