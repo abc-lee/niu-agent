@@ -733,7 +733,8 @@ async def subagent_event_stream(unique_name: str):
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         except asyncio.CancelledError:
-            pass
+            logger.info(f"[SubagentSSE] {unique_name} client disconnected")
+            raise
         finally:
             await unsubscribe(unique_name, q)
 

@@ -90,12 +90,13 @@ class SubagentRegistry:
                 is_sync=is_sync,
                 task=task,
             )
-            try:
-                from niu_api.internal.subagent_event_bus import pre_register
-                pre_register(name)
-            except ImportError:
-                pass  # niu_api 未启动时跳过
-            return name
+        # pre_register 调用移到锁外（与 unregister 的 close() 模式对齐）
+        try:
+            from niu_api.internal.subagent_event_bus import pre_register
+            pre_register(name)
+        except ImportError:
+            pass  # niu_api 未启动时跳过
+        return name
 
     @classmethod
     def unregister(cls, unique_name: str) -> None:
