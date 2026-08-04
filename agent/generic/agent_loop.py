@@ -148,6 +148,11 @@ def _intercept_at_prefix_content(
     # 子 Agent 拦截（原逻辑）：@niu-agent / @end / 格式错误
     # 识别规则：content 里找未转义的 @niu-agent（前字符是 \\ 不识别，其他位置都识别）
     at_niu_idx = _find_unescaped_marker(stripped, _AT_NIU_PREFIX)
+    # 边界：content 同时包含 @niu-agent 和 @end 时，优先走 @end 退出
+    # 子 Agent 输出 "汇报内容 @niu-agent 任务完成 @end" 的意图是汇报+结束，
+    # 如果走 @niu-agent 阻塞等待，@end 永远不会被执行，子 Agent 卡死
+    if at_niu_idx >= 0 and _find_unescaped_marker(stripped, "@end") >= 0:
+        return (EXIT, None)
     if at_niu_idx >= 0:
         # 剥除 "@niu-agent" 前缀 + 可选空格（question 是 @niu-agent 之后的内容）
         question = stripped[at_niu_idx + len(_AT_NIU_PREFIX):].lstrip()
@@ -190,8 +195,10 @@ def _intercept_at_prefix_content(
 
     # @user 检测（词边界检查，避免 @username 误匹配）
     at_user_idx = _find_unescaped_marker(stripped, _AT_USER_PREFIX)
+    # 边界：content 同时包含 @user 和 @end 时，优先走 @end 退出（同 @niu-agent 逻辑）
+    if at_user_idx >= 0 and _find_unescaped_marker(stripped, "@end") >= 0:
+        return (EXIT, None)
     if at_user_idx >= 0:
-        after_marker = at_user_idx + len(_AT_USER_PREFIX)
         # 检查 @user 后面是空白、常见标点或字符串结尾（词边界）
         if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';', '.', '。', '?', '？', '!', '！', '-', '/'):
             question = stripped[after_marker:].strip()
