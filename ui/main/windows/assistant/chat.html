@@ -2893,7 +2893,7 @@
     if (window.electronAPI && window.electronAPI.onSubagentStarted) {
       window.electronAPI.onSubagentStarted((event) => {
         const uniqueName = event.unique_name;
-        const displayName = event.display_name || uniqueName;
+        const displayName = event.agent_name || uniqueName;
         createSubagentTab(uniqueName, displayName);
         // 同步子 Agent：主对话 tab 显示工作中状态（§11）
         if (event.is_sync) {
@@ -2980,7 +2980,7 @@
             const uniqueName = agent.unique_name;
             if (!uniqueName) return;
             if (!document.getElementById('tab-' + uniqueName)) {
-              createSubagentTab(uniqueName, agent.display_name || uniqueName);
+              createSubagentTab(uniqueName, agent.agent_type || uniqueName);
               switchTab('main');  // 恢复时不自动切换，用户停留在主对话 tab
             }
             // 建立 SSE 连接（已连接的由 SubagentSSEManager 去重忽略）
