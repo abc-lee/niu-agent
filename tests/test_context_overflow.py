@@ -641,7 +641,7 @@ class TestSubagentFIFOThreshold:
                       context_window_tokens=0, context_fifo_threshold=0,
                       history=None):
             captured["context_fifo_threshold"] = context_fifo_threshold
-            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
         monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
         monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
@@ -675,7 +675,7 @@ class TestSubagentFIFOThreshold:
                       context_window_tokens=0, context_fifo_threshold=0,
                       history=None):
             captured["context_fifo_threshold"] = context_fifo_threshold
-            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
         monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
         monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
@@ -708,7 +708,7 @@ class TestSubagentFIFOThreshold:
                       context_window_tokens=0, context_fifo_threshold=0,
                       history=None):
             captured["context_fifo_threshold"] = context_fifo_threshold
-            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
         monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
         monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")

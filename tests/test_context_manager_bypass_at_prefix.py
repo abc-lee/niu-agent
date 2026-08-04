@@ -152,7 +152,7 @@ def test_call_subagent_passes_bypass_at_prefix_to_handler(monkeypatch):
                  max_turns=20, initial_user_content=None, context_window_tokens=0,
                  context_fifo_threshold=0, history=None, **kwargs):
         captured["handler"] = handler
-        return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+        return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
     monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
     monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
@@ -183,7 +183,7 @@ def test_call_subagent_default_bypass_at_prefix_false(monkeypatch):
                  max_turns=20, initial_user_content=None, context_window_tokens=0,
                  context_fifo_threshold=0, history=None, **kwargs):
         captured["handler"] = handler
-        return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+        return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
     monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
     monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")

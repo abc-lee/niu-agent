@@ -51,7 +51,7 @@ class TestNoPromptChunking:
                       context_fifo_threshold=0, history=None, **kwargs):
             nonlocal call_count
             call_count += 1
-            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
         monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
         monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
@@ -373,6 +373,7 @@ class TestOverflowResultPropagation:
                         "tokens_limit": 200000,
                     },
                 },
+                "",
             )
 
         monkeypatch.setattr(subagent, "_run_agent_loop", mock_run_agent_loop)
@@ -405,7 +406,7 @@ class TestSubagentContextWindowConfig:
 
         def mock_run(client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0, context_fifo_threshold=0, history=None, **kwargs):
             captured_kwargs["context_window_tokens"] = context_window_tokens
-            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
         monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
         monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
