@@ -168,3 +168,12 @@ def _do_cleanup(unique_name: str, my_epoch: int):
 def has_subagent(unique_name: str) -> bool:
     """检查 unique_name 是否在 EventBus 中（有订阅者或有 ring buffer）。"""
     return unique_name in _subscribers or unique_name in _ring_buffers
+
+def is_closing(unique_name: str) -> bool:
+    """检查 unique_name 是否已在 close 延迟清理窗口内（_close_epochs 有记录）。
+
+    用于 handler finally 的 else 分支区分两种 instance is None 的场景：
+    - 场景 2（register 前异常）：未 close 过，is_closing=False → 需要 close
+    - 场景 1/8（call_subagent 完成后已 close）：is_closing=True → 不需要再 close
+    """
+    return unique_name in _close_epochs

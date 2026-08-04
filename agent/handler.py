@@ -1064,26 +1064,35 @@ class NiuHandler(BaseHandler):
                 yield StreamEvent("system", confirmation)
                 return StepOutcome({"status": "error", "msg": confirmation}, next_prompt="")
 
-        # 同步子 Agent：unique_name = agent_name，推送 subagent_started 事件到主 Agent SSE 流
-        try:
-            from niu_api.chat import _main_loop, _sync_broadcast
-            if _main_loop and not _main_loop.is_closed():
-                event = {
-                    'type': 'subagent_started',
-                    'unique_name': agent_name,
-                    'agent_name': agent_name,
-                    'is_sync': True,
-                }
-                _main_loop.call_soon_threadsafe(_sync_broadcast, event)
-        except ImportError:
-            pass
+        # 同步子 Agent：先 pre_register 创建 ring buffer，再推送 subagent_started
+        # 仅首次调用（新任务）执行；恢复路径（answer is not None）跳过：ring buffer 已存在、tab 已创建
+        if not answer:
+            # 【问题一修复】Early pre_register: creates ring buffer BEFORE subagent_started is queued,
+            # so has_subagent() returns True when frontend connects SSE.
+            # register() inside call_subagent will call pre_register again (no-op, idempotency guard).
+            try:
+                from niu_api.internal.subagent_event_bus import pre_register
+                pre_register(agent_name)
+            except ImportError:
+                pass
+            # 推送 subagent_started 事件到主 Agent SSE 流
+            try:
+                from niu_api.chat import _main_loop, _sync_broadcast
+                if _main_loop and not _main_loop.is_closed():
+                    event = {
+                        'type': 'subagent_started',
+                        'unique_name': agent_name,
+                        'agent_name': agent_name,
+                        'is_sync': True,
+                    }
+                    _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+            except ImportError:
+                pass
 
-        # 同步路径（现有逻辑不变）
+        # 同步路径
         try:
             yield StreamEvent("tool_marker", f"[SubAgent] Calling {agent_name}...\n")
-            # 子Agent保持独立上下文，不传递主Agent历史
             _history = None
-            # journal-agent 的 history 来自 _build_journal_task_for_handler，覆盖默认 _history
             if agent_name == "journal-agent" and _journal_history:
                 _history = _journal_history
 
@@ -1093,16 +1102,12 @@ class NiuHandler(BaseHandler):
                 llm_config=llm_config,
                 mcp_client=self.mcp_client,
                 history=_history,
-                # journal-agent 改 history 逐条传消息后，禁用子 Agent 内部 FIFO 截断（防止砍末尾最新内容）
-                # 非 journal-agent 走默认 -1（75%）
                 **({"context_fifo_threshold": 0} if (agent_name == "journal-agent" and _journal_history) else {}),
                 answer=answer,
-                # 阶段四修复 B2：LLM 不传 unique_name 时 fallback 到 agent_name
-                # 同步路径 unique_name=agent_name（方案 B），主 Agent 不需要记随机后缀
                 answer_unique_name=(unique_name_arg or agent_name) if answer else None,
             )
 
-            # journal-agent 特殊处理：更新游标（仅当有增量消息时才更新，透传 idx_to_id 映射）
+            # journal-agent 特殊处理：更新游标
             if agent_name == "journal-agent" and journal_msg_ids_for_cursor:
                 self._update_journal_cursor(result, journal_msg_ids_for_cursor, _journal_idx_to_id)
 
@@ -1113,7 +1118,6 @@ class NiuHandler(BaseHandler):
                     import sqlite3
                     from pathlib import Path
 
-                    # 读取数据库路径
                     memory_path = Path.home() / ".niu" / "memory.json"
                     if memory_path.exists():
                         memory = json.loads(memory_path.read_text(encoding="utf-8"))
@@ -1121,8 +1125,6 @@ class NiuHandler(BaseHandler):
                         if workspace:
                             db_path = str(Path(workspace) / "scheduled_tasks.db")
                             if Path(db_path).exists():
-                                # 检查最新的任务
-                                # P0-7: 使用 with 管理数据库连接
                                 try:
                                     with sqlite3.connect(db_path) as conn:
                                         cursor = conn.cursor()
@@ -1144,18 +1146,50 @@ class NiuHandler(BaseHandler):
                 except Exception as e:
                     yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
 
-
             yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {result[:200] if len(result) > 200 else result}\n")
-            # 返回结果给 LLM，让它向用户汇报
             return StepOutcome(
                 {"status": "success", "result": result},
                 next_prompt=""
             )
         except Exception as e:
             yield StreamEvent("system", f"[SubAgent] Error: {e}\n")
+            # 【问题 2d 修复】推送 subagent_error 事件到 SubagentEventBus（前端 tab 显示错误状态）
+            try:
+                from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+                notify_subagent_event_sync(agent_name, 'subagent_error', {'content': str(e)[:2000]})
+            except Exception:
+                pass
             return StepOutcome(
                 {"status": "error", "msg": str(e)}, next_prompt=""
             )
+        finally:
+            # 【问题 2a/2b/2c 修复】仅首次调用时清理 pre_register 创建的 ring buffer
+            # 恢复路径（answer is not None）的清理由 call_subagent 内部 finally 负责
+            if not answer:
+                from .subagent_registry import SubagentRegistry
+                instance = SubagentRegistry.get(agent_name)
+                if instance is not None:
+                    # 【问题 2a 修复】挂起时不清理（ring buffer 保留供恢复使用）
+                    state = getattr(instance, 'state', None)
+                    if state != 'waiting_for_answer':
+                        try:
+                            from niu_api.internal.subagent_event_bus import close
+                            close(agent_name)
+                        except ImportError:
+                            pass
+                else:
+                    # 【问题 2c 修复】instance is None：call_subagent 未 register 或在 register 前异常
+                    # 但 pre_register 可能已创建 ring buffer + subagent_started 已广播
+                    # 必须清理，否则 ring buffer 泄漏 + 前端 tab 卡死
+                    # 【问题 2e 修复】但场景 1/8（正常完成/@end 退出）call_subagent 内部已 unregister→close,
+                    # ring buffer 在 5 分钟延迟清理窗口内仍存在，has_subagent 返回 True 但不需要再 close。
+                    # 用 is_closing 检查是否已在 close 窗口内（_close_epochs 有记录表示已 close 过）
+                    try:
+                        from niu_api.internal.subagent_event_bus import has_subagent, is_closing, close
+                        if has_subagent(agent_name) and not is_closing(agent_name):
+                            close(agent_name)
+                    except ImportError:
+                        pass
 
     # ========== MCP 工具（动态） ==========
 
