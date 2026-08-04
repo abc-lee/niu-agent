@@ -35,8 +35,8 @@ class RunningSubagent:
     suspended_messages: list | None = None
     suspended_handler: Any | None = None
     suspended_client: Any | None = None
-    suspended_tools_schema: list | None = None
     suspended_system_message: dict | None = None
+    last_reply: str = ""  # 最后一次 reply 内容（完成通知用）
 
 
 class SubagentRegistry:

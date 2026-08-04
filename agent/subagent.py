@@ -214,7 +214,7 @@ def _run_agent_loop(
     supplement_queue: Any | None = None,  # 子 Agent 独立 supplement queue
     memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据
     resumed_messages: list | None = None,  # 阶段四新增：断点续传消息列表
-) -> tuple[str, Any]:
+) -> tuple[str, Any, str]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
 
@@ -231,7 +231,10 @@ def _run_agent_loop(
         context_window_tokens: 上下文窗口 token 数（0 表示不检查）
 
     Returns:
-        (result_text, return_value) 元组
+        (result, return_value, last_reply) 三元组
+        - result: 所有轮次 reply 累加（保留向后兼容）
+        - return_value: agent_runner_loop 的返回值 dict
+        - last_reply: 最后一次 reply 的内容（完成通知用）
     """
     from .generic.agent_loop import StreamEvent, agent_runner_loop
 
@@ -258,8 +261,8 @@ def _run_agent_loop(
         memory_context=memory_context,  # 阶段二新增：透传给 agent_runner_loop
         resumed_messages=resumed_messages,  # 阶段四新增：透传给 agent_runner_loop
     )
-
     result = ""
+    last_reply = ""  # 只记录最后一次 reply 的内容（完成通知用）
     return_value = None
 
     while True:
@@ -271,6 +274,7 @@ def _run_agent_loop(
             elif isinstance(chunk, StreamEvent):
                 if chunk.type == "reply":
                     result += chunk.content
+                    last_reply = chunk.content  # 只保留最后一次 reply
                     # 子 Agent 回复文本推送到 SubagentEventBus（前端 tab 展示）
                     unique_name = getattr(handler, '_subagent_unique_name', None)
                     if unique_name:
@@ -293,7 +297,7 @@ def _run_agent_loop(
             return_value = e.value
             break
 
-    return result, return_value
+    return result, return_value, last_reply
 
 
 def _strip_at_prefix(answer: str, unique_name: str) -> str:
@@ -856,7 +860,7 @@ def call_subagent(
 
         try:
             instance.suspended_handler._subagent_unique_name = answer_unique_name
-            result_text, return_value = _run_agent_loop(
+            result_text, return_value, _last_reply = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
                 system_message=instance.suspended_system_message,
@@ -891,7 +895,7 @@ def call_subagent(
         handler._is_sync_subagent = False
         # supplement_queue 也由调用方传入，不重新创建
         try:
-            result_text, return_value = _run_agent_loop(
+            result_text, return_value, last_reply = _run_agent_loop(
                 client=client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
                 system_message=system_message,
@@ -910,6 +914,10 @@ def call_subagent(
         finally:
             # 异步路径不在这里 unregister（_run_subagent_async 的 finally 负责）
             pass
+        # 异步路径：把 last_reply 存到 registry instance 供 _run_subagent_async 使用
+        instance = SubagentRegistry.get(unique_name)
+        if instance is not None:
+            instance.last_reply = last_reply
     else:
         # 同步路径：用 agent_name 作 unique_name（避免 LLM 记随机 hex 后缀）
         if supplement_queue is None:
@@ -924,7 +932,7 @@ def call_subagent(
         handler._subagent_unique_name = unique_name
         handler._is_sync_subagent = True
         try:
-            result_text, return_value = _run_agent_loop(
+            result_text, return_value, _last_reply = _run_agent_loop(
                 client=client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
                 system_message=system_message,
@@ -1330,8 +1338,11 @@ async def _run_subagent_async(
         )
 
         # 推完成通知到 MainAgentRequestQueue 内存队列（不写 db）
-        # content 格式 "[子名] 已完成，结果：..."——db_monitor 检测主 Agent 闲置时推 SSE 触发前端
-        completion_msg = f"[{unique_name}] 已完成，结果：{result[:2000]}"
+        # 用 last_reply（最后一轮输出）而非 result（所有轮次累加），避免中间过程挤占最终报告
+        _inst = SubagentRegistry.get(unique_name)
+        _last_reply = getattr(_inst, 'last_reply', '') if _inst else ''
+        _result_for_notify = _last_reply[:8000] if _last_reply else result[:2000]  # fallback + 截断保护
+        completion_msg = f"[{unique_name}] 已完成，结果：{_result_for_notify}"
         try:
             get_main_agent_request_queue().push(completion_msg)
         except Exception as e:
