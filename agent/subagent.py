@@ -1145,7 +1145,7 @@ def _ask_user_impl(question: str, unique_name: str) -> str | None:
 
     # 检查 _ask_user_terminated 标志（/stop 在 register 之前到达）
     if getattr(instance, '_ask_user_terminated', False):
-        return '[ask_user 已终止] 用户或系统已发出停止指令，请总结本轮工作后终止。'
+        return TERMINATED_SIGNAL
 
     # 推送问题到前端
     try:
@@ -1163,7 +1163,7 @@ def _ask_user_impl(question: str, unique_name: str) -> str | None:
     try:
         answer = future.wait()  # 用 AskUserFuture 默认 _ASK_TIMEOUT=600
         if answer == TERMINATED_SIGNAL:
-            return '[ask_user 已终止] 用户或系统已发出停止指令，请总结本轮工作后终止。'
+            return TERMINATED_SIGNAL
         return answer
     finally:
         # 仅在子 Agent 仍存活时恢复 state

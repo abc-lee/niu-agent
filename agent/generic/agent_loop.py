@@ -193,7 +193,7 @@ def _intercept_at_prefix_content(
     if at_user_idx >= 0:
         after_marker = at_user_idx + len(_AT_USER_PREFIX)
         # 检查 @user 后面是空白、常见标点或字符串结尾（词边界）
-        if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';'):
+        if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';', '.', '。', '?', '？', '!', '！', '-', '/'):
             question = stripped[after_marker:].strip()
             if not question:
                 messages.append({"role": "assistant", "content": content})
@@ -754,6 +754,7 @@ def agent_runner_loop(
                     if not unique_name:
                         continue  # 无 unique_name，跳过（不应发生）
                     from agent.subagent import _ask_user_impl
+                    messages.append({"role": "assistant", "content": content})
                     answer = _ask_user_impl(question, unique_name)
                     if answer and answer != '__TERMINATED__':
                         messages.append({"role": "user", "content": f"[user 回答] {answer}"})
