@@ -789,9 +789,10 @@
     .tab.error {
       color: #e53935;
     }
-    /* 未读红点 badge：右上角 6px 圆形，默认隐藏 */
+    /* 未读红点 badge：右上角 6px 圆形，opacity+transition 实现淡入淡出 */
     .tab .badge {
-      display: none;
+      opacity: 0;
+      transition: opacity 200ms ease;
       position: absolute;
       top: 4px;
       right: 4px;
@@ -805,7 +806,7 @@
       animation: tab-pulse 1s infinite;
     }
     .tab.waiting .badge {
-      display: block;
+      opacity: 1;
     }
     @keyframes tab-pulse {
       0%, 100% { opacity: 1; }
@@ -2651,6 +2652,10 @@
     let _activeTab = 'main';
     const tabBar = document.getElementById('tabBar');
 
+    // 待关闭的子 Agent tab（用户正在查看时等切走后关闭）
+    const _pendingCloseTabs = new Set();
+    // @end 延迟关闭的 timer（uniqueName → timerId），用于 _closeSubagentTab 时清理
+    const _endCloseTimers = new Map();
     // 子 Agent tab 下需隐藏的脑区面板元素
     const _BRAIN_ELEMENT_IDS = ['brainTriggerZone', 'brainOverlay', 'brainPanel', 'brainSparkContainer'];
 
@@ -2672,30 +2677,62 @@
     // 下一条事件到达时由 addSubagentMessageToTab 调 _setSubagentInputWaiting(false) 恢复
     let _subagentInputWaiting = false;
     let _subagentWaitingTab = null;
-    // 待关闭的子 Agent tab（用户正在查看时等切走后关闭）
-    const _pendingCloseTabs = new Set();
 
     function _setSubagentInputWaiting(waiting) {
-      _subagentInputWaiting = waiting;
       if (waiting) {
+        // 清理上一个等待 tab 的 typing 气泡（防止跨 tab 等待冲突时孤儿气泡）
+        if (_subagentInputWaiting && _subagentWaitingTab && _subagentWaitingTab !== _activeTab) {
+          const oldBubble = document.getElementById('subagent-typing-' + _subagentWaitingTab);
+          if (oldBubble) oldBubble.remove();
+        }
+        _subagentInputWaiting = true;
         _subagentWaitingTab = _activeTab;
         userInput.placeholder = '子 Agent 处理补充信息中...';
         sendBtn.disabled = true;
+        // 子 Agent 容器内创建 typing 气泡（复用 .message.typing + .typing-dots 样式）
+        const container = document.getElementById('messages-' + _activeTab);
+        if (container) {
+          const bubble = document.createElement('div');
+          bubble.className = 'message typing';
+          bubble.id = 'subagent-typing-' + _activeTab;
+          bubble.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+          container.appendChild(bubble);
+          container.scrollTop = container.scrollHeight;
+        }
       } else {
+        // 先移除 typing 气泡（此时 _subagentWaitingTab 尚未清空）
+        const bubbleTab = _subagentWaitingTab;
+        if (bubbleTab) {
+          const bubble = document.getElementById('subagent-typing-' + bubbleTab);
+          if (bubble) bubble.remove();
+        }
+        _subagentInputWaiting = false;
         _subagentWaitingTab = null;
         _syncInputPlaceholder();
         sendBtn.disabled = false;
       }
     }
 
-    // 输入栏 placeholder 跟随 tab 状态：主对话 / 子 Agent 默认 / @user 等待回答（§5.4）
+    // 输入栏 placeholder 跟随 tab 状态：主对话 / 子 Agent 默认 / @user 等待回答 / 发送后等待
     function _syncInputPlaceholder() {
-      if (_subagentInputWaiting) return;  // 发送后等待态期间由 _setSubagentInputWaiting 管理
       const activeTabEl = document.getElementById('tab-' + _activeTab);
       const tabWaiting = !!(activeTabEl && activeTabEl.classList.contains('waiting'));
-      if (_activeTab === 'main') userInput.placeholder = '说点什么...';
-      else if (tabWaiting) userInput.placeholder = '子 Agent 正在等待你的回答...';
-      else userInput.placeholder = '发送补充信息...';
+      // 发送后等待态：仅当切到等待中的 tab 时显示等待文案+禁用，切到其他 tab 时恢复
+      if (_subagentInputWaiting && _subagentWaitingTab === _activeTab) {
+        userInput.placeholder = '子 Agent 处理补充信息中...';
+        sendBtn.disabled = true;
+      } else if (_subagentInputWaiting && _subagentWaitingTab !== _activeTab) {
+        // 等待的是另一个 tab，当前 tab 正常可用
+        if (_activeTab === 'main') userInput.placeholder = '说点什么...';
+        else if (tabWaiting) userInput.placeholder = '子 Agent 正在等待你的回答...';
+        else userInput.placeholder = '发送补充信息...';
+        sendBtn.disabled = false;
+      } else {
+        if (_activeTab === 'main') userInput.placeholder = '说点什么...';
+        else if (tabWaiting) userInput.placeholder = '子 Agent 正在等待你的回答...';
+        else userInput.placeholder = '发送补充信息...';
+        sendBtn.disabled = false;
+      }
     }
 
     // 切换 tab：高亮切换 + 消息容器 display 切换 + 脑区面板显隐
@@ -2707,7 +2744,10 @@
 
       // 用户切走一个 tab 时，如果它在待关闭列表里，延迟关闭
       if (prevTab !== name && _pendingCloseTabs.has(prevTab)) {
-        setTimeout(() => _closeSubagentTab(prevTab), 500);
+        setTimeout(() => {
+          // 回调时再次检查用户是否又切回来了
+          if (_activeTab !== prevTab) _closeSubagentTab(prevTab);
+        }, 500);
       }
 
       // tab 高亮切换
@@ -2749,16 +2789,17 @@
     }
 
     // 创建子 Agent tab + 独立消息容器，并自动切换过去
-    function createSubagentTab(uniqueName, displayName) {
+    function createSubagentTab(uniqueName, displayName, isSync, skipLoading) {
       if (document.getElementById('tab-' + uniqueName)) return;  // 已存在则不重复创建
 
       // tab 元素（无 × 按钮，不可手动关闭）
       const tab = document.createElement('div');
-      tab.className = 'tab new-tab';  // new-tab 触发从右滑入动画
+      tab.className = 'tab new-tab' + (skipLoading ? '' : ' loading');  // loading 首条消息到达后移除（窗口恢复时跳过）
       tab.id = 'tab-' + uniqueName;
       tab.title = displayName;        // hover tooltip 显示全名
       tab.textContent = displayName;
       tab.addEventListener('click', () => switchTab(uniqueName));
+      tab.dataset.sync = isSync ? 'true' : 'false';  // subagent_closed 时据此判断是否 hideTyping
       tab.addEventListener('animationend', () => tab.classList.remove('new-tab'), { once: true });
 
       // 未读红点 badge
@@ -2775,9 +2816,10 @@
       messages.parentNode.insertBefore(container, messages.nextSibling);
 
       // 空状态占位：首条事件到达后由 addSubagentMessageToTab 移除
+      // 同步子 Agent 显示"工作中..."，异步子 Agent 显示"正在启动..."
       const empty = document.createElement('div');
       empty.className = 'tab-empty-state';
-      empty.textContent = `⏳ 子 Agent ${displayName} 正在启动...`;
+      empty.textContent = isSync ? `⏳ 子 Agent ${displayName} 工作中...` : `⏳ 子 Agent ${displayName} 正在启动...`;
       container.appendChild(empty);
 
       // 新 tab 创建后不自动切换，用户停留在主对话 tab
@@ -2791,9 +2833,13 @@
     function addSubagentMessageToTab(uniqueName, cssClass, text) {
       const container = document.getElementById('messages-' + uniqueName);
       if (!container) return null;
-      // 首条事件到达后移除空状态占位
+      // 首条事件到达后移除空状态占位 + tab loading spinner
       const empty = container.querySelector('.tab-empty-state');
-      if (empty) empty.remove();
+      if (empty) {
+        empty.remove();
+        const tabEl = document.getElementById('tab-' + uniqueName);
+        if (tabEl) tabEl.classList.remove('loading');
+      }
 
       // 追加前判断用户是否在底部附近（§4.3：用户上翻查看历史时不自动滚动）
       const nearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 50;
@@ -2815,6 +2861,17 @@
         div.textContent = text;
       }
       container.appendChild(div);
+      // thinking chain：创建展开/收起按钮（CSS 已有 .thinking-expand-btn + .expanded 样式）
+      if (cssClass === 'thinking') {
+        const expandBtn = document.createElement('button');
+        expandBtn.className = 'thinking-expand-btn';
+        expandBtn.textContent = '展开全部';
+        expandBtn.addEventListener('click', () => {
+          const expanded = div.classList.toggle('expanded');
+          expandBtn.textContent = expanded ? '收起' : '展开全部';
+        });
+        div.appendChild(expandBtn);
+      }
       if (nearBottom) container.scrollTop = container.scrollHeight;
 
       // 下一条事件到达 → 解除发送后等待态（§22）
@@ -2876,12 +2933,16 @@
     function setTabBadge(uniqueName, show) {
       const tab = document.getElementById('tab-' + uniqueName);
       const badge = tab && tab.querySelector('.badge');
-      if (badge) badge.style.display = show ? 'block' : 'none';
+      if (badge) badge.style.opacity = show ? '1' : '0';
     }
 
     // 关闭子 Agent tab：移除 tab 元素 + 消息容器 + 断开 SSE
     function _closeSubagentTab(uniqueName) {
       _pendingCloseTabs.delete(uniqueName);
+      // 清理 @end 延迟关闭的 timer
+      const timer = _endCloseTimers.get(uniqueName);
+      if (timer) { clearTimeout(timer); _endCloseTimers.delete(uniqueName); }
+      if (_subagentWaitingTab === uniqueName) _setSubagentInputWaiting(false);
       const tab = document.getElementById('tab-' + uniqueName);
       if (tab) tab.remove();
       const container = document.getElementById('messages-' + uniqueName);
@@ -2903,7 +2964,7 @@
       window.electronAPI.onSubagentStarted((event) => {
         const uniqueName = event.unique_name;
         const displayName = event.agent_name || uniqueName;
-        createSubagentTab(uniqueName, displayName);
+        createSubagentTab(uniqueName, displayName, event.is_sync);
         // 同步子 Agent：主对话 tab 显示工作中状态（§11）
         if (event.is_sync) {
           showTyping('子 Agent 工作中...');
@@ -2944,19 +3005,24 @@
             addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
             markTabCompleted(unique_name);
             clearTabWaiting(unique_name);
+            // 同步子 Agent @end 时清理主对话"工作中"气泡（§11，仅同步子 Agent）
+            const _tabEl = document.getElementById('tab-' + unique_name);
+            if (_tabEl && _tabEl.dataset.sync === 'true') hideTyping();
             // @end 关闭逻辑：用户不在该 tab 时 3 秒后关闭；用户在该 tab 时等切走后关闭
             if (_activeTab === unique_name) {
               // 用户正在该 tab：标记待关闭，等用户切走后关闭
               _pendingCloseTabs.add(unique_name);
             } else {
               // 用户不在该 tab：3 秒后关闭（但如果用户又切回来了，改为等切走后关闭）
-              setTimeout(() => {
+              const timer = setTimeout(() => {
+                _endCloseTimers.delete(unique_name);
                 if (_activeTab === unique_name) {
                   _pendingCloseTabs.add(unique_name);
                 } else {
                   _closeSubagentTab(unique_name);
                 }
               }, 3000);
+              _endCloseTimers.set(unique_name, timer);
             }
             break;
           case 'reconnected':
@@ -2969,8 +3035,16 @@
             // persist / system / tool_marker 是内部事件，不展示给用户
             break;
         }
+        // P0: 收到非 question / 非 user 事件时停止 tab 闪烁（用户已回答，子 Agent 继续工作）
+        // subagent_error / subagent_closed 已在各自 case 中调用，这里排除避免重复
+        if (event.type !== 'question' && event.type !== 'user' &&
+            event.type !== 'subagent_error' && event.type !== 'subagent_closed') {
+          clearTabWaiting(unique_name);
+        }
         // 非 user 事件到达：恢复发送后输入等待态（§22，仅当等待的正是这个 tab）
-        if (event.type !== 'user' && _subagentWaitingTab === unique_name) {
+        // addSubagentMessageToTab 中已对非 user 事件处理，这里仅兜底未被渲染的事件类型
+        if (event.type !== 'user' && _subagentWaitingTab === unique_name &&
+            !['tool_status', 'thinking_chain', 'reply', 'question', 'user'].includes(event.type)) {
           _setSubagentInputWaiting(false);
         }
       });
@@ -2979,6 +3053,8 @@
     // 窗口恢复：从 /api/subagents/running 重建子 Agent tabs + SSE 连接（§8）
     function restoreSubagentTabs() {
       if (!window.electronAPI) return;
+      // TODO: 后续应通过 IPC (preload-chat.js getRunningSubagents) 获取端口，避免硬编码 9876
+      // 当前与 INGEST_PROGRESS_API 保持一致，均使用硬编码端口
       fetch('http://127.0.0.1:9876/api/subagents/running')
         .then(r => r.json())
         .then(data => {
@@ -2987,14 +3063,15 @@
             const uniqueName = agent.unique_name;
             if (!uniqueName) return;
             if (!document.getElementById('tab-' + uniqueName)) {
-              createSubagentTab(uniqueName, agent.agent_type || uniqueName);
-              switchTab('main');  // 恢复时不自动切换，用户停留在主对话 tab
+              createSubagentTab(uniqueName, agent.agent_type || uniqueName, agent.is_sync, true);  // skipLoading: 恢复的子 Agent 可能已完成，不会有新事件移除 loading
             }
             // 建立 SSE 连接（已连接的由 SubagentSSEManager 去重忽略）
             if (window.electronAPI.connectSubagentSSE) {
               window.electronAPI.connectSubagentSSE(uniqueName);
             }
           });
+          // 恢复时不自动切换，用户停留在主对话 tab（只需调一次，移到 forEach 之后）
+          switchTab('main');
         })
         .catch(() => {});  // 后端未启动时静默失败
     }
