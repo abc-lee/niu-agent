@@ -199,8 +199,9 @@ def _intercept_at_prefix_content(
     if at_user_idx >= 0 and _find_unescaped_marker(stripped, "@end") >= 0:
         return (EXIT, None)
     if at_user_idx >= 0:
+        after_marker = at_user_idx + len(_AT_USER_PREFIX)
         # 检查 @user 后面是空白、常见标点或字符串结尾（词边界）
-        if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';', '.', '。', '?', '？', '!', '！', '-', '/'):
+        if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';', '.', '。', '?', '？', '!', '！', '-', '/', ')', ']'):
             question = stripped[after_marker:].strip()
             if not question:
                 messages.append({"role": "assistant", "content": content})
