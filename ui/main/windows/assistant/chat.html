@@ -860,21 +860,21 @@
     .message.thinking.expanded {
       max-height: none;
     }
-    /* 渐变遮罩 + 展开按钮（默认折叠且内容超高时可见，展开后隐藏） */
-    .message.thinking .thinking-expand-btn {
-      position: sticky;
-      bottom: 0;
+    /* 展开按钮：作为 thinking div 的兄弟元素，不受 overflow-y:auto 裁剪 */
+    .thinking-expand-btn {
       display: block;
       width: 100%;
-      padding: 16px 0 4px 0;
+      padding: 4px 0;
       border: none;
       cursor: pointer;
       font-size: 12px;
       color: #40a0a0;
       text-align: center;
       background: linear-gradient(transparent, #faf8f0 70%);
+      margin-top: -4px;
     }
-    .message.thinking.expanded .thinking-expand-btn {
+    /* 展开后按钮去掉渐变遮罩 */
+    .message.thinking.expanded + .thinking-expand-btn {
       background: none;
     }
     /* @user 提问高亮卡片：黄色 */
@@ -2861,8 +2861,8 @@
         div.textContent = text;
       }
       container.appendChild(div);
-      // thinking chain：创建展开/收起按钮（CSS 已有 .thinking-expand-btn + .expanded 样式）
-      if (cssClass === 'thinking') {
+      // thinking chain：内容超过 200px（max-height 限制）时显示展开按钮
+      if (cssClass === 'thinking' && div.scrollHeight > div.clientHeight) {
         const expandBtn = document.createElement('button');
         expandBtn.className = 'thinking-expand-btn';
         expandBtn.textContent = '展开全部';
@@ -2870,7 +2870,7 @@
           const expanded = div.classList.toggle('expanded');
           expandBtn.textContent = expanded ? '收起' : '展开全部';
         });
-        div.appendChild(expandBtn);
+        container.appendChild(expandBtn);  // 兄弟元素，不在 overflow-y:auto 的 div 内
       }
       if (nearBottom) container.scrollTop = container.scrollHeight;
 
