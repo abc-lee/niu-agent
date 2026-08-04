@@ -208,3 +208,123 @@ SSE 连接必须 `res.setEncoding('utf8')`，防止中文多字节字符跨 TCP 
 | 新消息未读 | 红点淡入（200ms） |
 
 以上动效用 CSS @keyframes 实现，不用 JS 动画。
+
+## 11. 同步子 Agent 主对话 tab 状态
+
+收到 `is_sync=true` 的 `subagent_started` 事件时，主对话 tab 主动设置"子 Agent 工作中"状态：
+- showTyping 气泡文案改为 `"子 Agent 工作中..."`（而非默认的 `"正在思考..."`）
+- 这是现有 `showTyping()` 函数的文案参数化改造（`showTyping(text?)`），不是新增 UI 元素
+- 恢复时机：子 Agent `@end`（subagent_closed 事件）或主 Agent 收到 `chat_idle`
+
+## 12. 停止按钮行为定义
+
+现有停止按钮有双击批量停止语义（chat.html L1035-1064）：
+- 双击：POST `/api/stop_all` 停止所有子 Agent + 停主 Agent
+- 单击：只停主 Agent + `checkRunningSubagents()`
+
+子 Agent tab 下停止按钮行为：
+- **单击**：发送 `/stop` 到当前子 Agent（POST `/api/subagents/{id}/message` 发 `/stop`）
+- **双击**：沿用现有批量停止语义（POST `/api/stop_all` + 停主 Agent），让用户能快速终止所有
+- 与主对话 tab 的区别：单击目标从主 Agent 变为当前子 Agent，双击行为不变
+
+## 13. Tab 栏溢出处理
+
+- 多个子 Agent 同时运行时 tab 栏横向滚动（`overflow-x: auto`）
+- 新 tab 创建时自动 `scrollIntoView` 到可见区域
+- 切换 tab 时自动滚动 active tab 到可见区域
+- 可选：左右箭头按钮快速导航（一期可不做）
+
+## 14. 子 Agent tab 空状态
+
+子 Agent tab 刚创建、SSE 尚未推送任何事件时：
+- 显示居中占位文案：`"⏳ 子 Agent {name} 正在启动..."`
+- 同步子 Agent 可显示：`"⏳ 子 Agent {name} 工作中..."`
+- 首条事件到达后移除占位元素
+
+## 15. thinking chain 折叠/展开
+
+- **默认展开**，但限制最大高度（`max-height: 200px` + `overflow-y: auto`）防撑爆消息区
+- 超过最大高度时底部显示渐变遮罩 + `"展开全部"` 按钮
+- 点击按钮移除 `max-height` 限制，按钮变为 `"收起"`
+- 去掉"可考虑"模糊措辞，这是确定方案
+
+## 16. 子 Agent 名称截断
+
+- Tab 标题最大宽度限制：`max-width: 120px`
+- 截断样式：`text-overflow: ellipsis` + `white-space: nowrap` + `overflow: hidden`
+- hover 时显示 `title` tooltip 全名
+- 与现有 brain-item `.name` 截断模式一致
+
+## 17. 键盘导航
+
+- 一期**不支持**键盘左右箭头切换 tab（仅鼠标点击）
+- 明确记录为已知限制，二期可加 `tabindex=0` + 左右箭头切换
+
+## 18. 多个子 Agent 同时 @user
+
+- 所有对应 tab 同时闪烁 + 红点（简单方案）
+- 一期不增加全局提示条
+- 多个闪烁 tab 时，最近闪烁的 tab 闪烁频率/亮度更高（通过 CSS animation-delay 差异化）
+
+## 19. 加载/过渡状态
+
+| 状态 | 视觉表现 |
+|---|---|
+| SSE 建立中 | tab 标题后加 loading spinner（⏳ 或 CSS spin） |
+| 断线重连中 | messages 区顶部系统消息 `"连接已恢复，正在补发历史事件..."` |
+| 补发完成 | 正常追加消息，不额外提示 |
+| 连接失败（404） | tab 标记为错误状态（红色文字） |
+
+## 20. ring buffer 历史不足提示
+
+- 当 ring buffer 补发的事件恰好是 100 条（满）时，messages 区顶部显示提示：`"仅显示最近 100 条事件，更早历史暂不可查"`
+- 不满 100 条则不提示（说明是完整历史）
+
+## 21. @end 关闭后焦点管理与通知
+
+- `@end` 时若用户正在该子 Agent tab：自动切回主对话 tab + 主对话显示系统消息 `"子 Agent {name} 已完成"`（可点击回到该 tab 查看历史）
+- `@end` 时若用户在其他 tab：仅该 tab 标记完成 + 红点，不强制切换
+- 已完成的 tab 仍可点击查看历史消息
+
+## 22. 发送消息后等待态
+
+子 Agent tab 发送 supplement 消息后：
+- 输入栏 placeholder 改为 `"子 Agent 处理补充信息中..."`
+- 发送按钮 disabled，直到下一条事件到达（tool_status/reply/thinking_chain 等）
+- 子 Agent tab 需独立的 typing 指示：在 `#messages-{id}` 内创建状态气泡（不能复用主 #messages 的 status-bubble）
+- 下一条事件到达后恢复：placeholder 默认、发送按钮 enabled、移除 typing 指示
+
+## 23. 视觉一致性规格
+
+子 Agent tab 的 `#messages-{id}` 容器复用主 `#messages` 的全部 `.message` CSS（字号、间距、圆角、颜色方案），不重新定义。仅新增两个子类型样式：
+
+```css
+/* thinking chain 折叠块 */
+.message.thinking {
+  font-size: 12px;
+  color: #888;
+  border-left: 2px solid #ccc;
+  padding-left: 8px;
+  margin: 4px 0;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+  position: relative;
+}
+
+/* @user 提问高亮卡片 */
+.message.question {
+  background: rgba(255, 193, 7, 0.15);
+  border: 1px solid rgba(255, 193, 7, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 4px 0;
+}
+```
+
+## 24. 响应式布局
+
+- 沿用现有 `.container` flex column 响应式行为，不额外处理
+- tab 栏 `flex-shrink: 0` 固定高度，横向滚动处理溢出
+- 消息区 `flex: 1` 自适应，保证最小可读高度
+- 一期不定义最小窗口尺寸约束
