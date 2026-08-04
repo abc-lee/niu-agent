@@ -2643,6 +2643,10 @@
     let _activeTab = 'main';
     const tabBar = document.getElementById('tabBar');
 
+    // 待关闭的子 Agent tab（用户正在查看时等切走后关闭）
+    const _pendingCloseTabs = new Set();
+    // @end 延迟关闭的 timer（uniqueName → timerId），用于 _closeSubagentTab 时清理
+    const _endCloseTimers = new Map();
     // 子 Agent tab 下需隐藏的脑区面板元素
     const _BRAIN_ELEMENT_IDS = ['brainTriggerZone', 'brainOverlay', 'brainPanel', 'brainSparkContainer'];
 
@@ -2664,8 +2668,6 @@
     // 下一条事件到达时由 addSubagentMessageToTab 调 _setSubagentInputWaiting(false) 恢复
     let _subagentInputWaiting = false;
     let _subagentWaitingTab = null;
-    // 待关闭的子 Agent tab（用户正在查看时等切走后关闭）
-    const _pendingCloseTabs = new Set();
 
     function _setSubagentInputWaiting(waiting) {
       if (waiting) {
@@ -2716,7 +2718,10 @@
 
       // 用户切走一个 tab 时，如果它在待关闭列表里，延迟关闭
       if (prevTab !== name && _pendingCloseTabs.has(prevTab)) {
-        setTimeout(() => _closeSubagentTab(prevTab), 500);
+        setTimeout(() => {
+          // 回调时再次检查用户是否又切回来了
+          if (_activeTab !== prevTab) _closeSubagentTab(prevTab);
+        }, 500);
       }
 
       // tab 高亮切换
@@ -2758,12 +2763,12 @@
     }
 
     // 创建子 Agent tab + 独立消息容器，并自动切换过去
-    function createSubagentTab(uniqueName, displayName, isSync) {
+    function createSubagentTab(uniqueName, displayName, isSync, skipLoading) {
       if (document.getElementById('tab-' + uniqueName)) return;  // 已存在则不重复创建
 
       // tab 元素（无 × 按钮，不可手动关闭）
       const tab = document.createElement('div');
-      tab.className = 'tab new-tab loading';  // new-tab 触发从右滑入动画；loading 首条消息到达后移除
+      tab.className = 'tab new-tab' + (skipLoading ? '' : ' loading');  // loading 首条消息到达后移除（窗口恢复时跳过）
       tab.id = 'tab-' + uniqueName;
       tab.title = displayName;        // hover tooltip 显示全名
       tab.textContent = displayName;
@@ -2907,6 +2912,9 @@
     // 关闭子 Agent tab：移除 tab 元素 + 消息容器 + 断开 SSE
     function _closeSubagentTab(uniqueName) {
       _pendingCloseTabs.delete(uniqueName);
+      // 清理 @end 延迟关闭的 timer
+      const timer = _endCloseTimers.get(uniqueName);
+      if (timer) { clearTimeout(timer); _endCloseTimers.delete(uniqueName); }
       const tab = document.getElementById('tab-' + uniqueName);
       if (tab) tab.remove();
       const container = document.getElementById('messages-' + uniqueName);
@@ -2975,13 +2983,15 @@
               _pendingCloseTabs.add(unique_name);
             } else {
               // 用户不在该 tab：3 秒后关闭（但如果用户又切回来了，改为等切走后关闭）
-              setTimeout(() => {
+              const timer = setTimeout(() => {
+                _endCloseTimers.delete(unique_name);
                 if (_activeTab === unique_name) {
                   _pendingCloseTabs.add(unique_name);
                 } else {
                   _closeSubagentTab(unique_name);
                 }
               }, 3000);
+              _endCloseTimers.set(unique_name, timer);
             }
             break;
           case 'reconnected':
@@ -2997,12 +3007,15 @@
             }
         }
         // P0: 收到非 question / 非 user 事件时停止 tab 闪烁（用户已回答，子 Agent 继续工作）
-        // subagent_error / subagent_closed 已各自调用 clearTabWaiting，重复调用无害
-        if (event.type !== 'question' && event.type !== 'user') {
+        // subagent_error / subagent_closed 已在各自 case 中调用，这里排除避免重复
+        if (event.type !== 'question' && event.type !== 'user' &&
+            event.type !== 'subagent_error' && event.type !== 'subagent_closed') {
           clearTabWaiting(unique_name);
         }
         // 非 user 事件到达：恢复发送后输入等待态（§22，仅当等待的正是这个 tab）
-        if (event.type !== 'user' && _subagentWaitingTab === unique_name) {
+        // addSubagentMessageToTab 中已对非 user 事件处理，这里仅兜底未被渲染的事件类型
+        if (event.type !== 'user' && _subagentWaitingTab === unique_name &&
+            !['tool_status', 'thinking_chain', 'reply', 'question', 'user'].includes(event.type)) {
           _setSubagentInputWaiting(false);
         }
       });
@@ -3021,7 +3034,7 @@
             const uniqueName = agent.unique_name;
             if (!uniqueName) return;
             if (!document.getElementById('tab-' + uniqueName)) {
-              createSubagentTab(uniqueName, agent.display_name || uniqueName, agent.is_sync);
+              createSubagentTab(uniqueName, agent.display_name || uniqueName, agent.is_sync, true);  // skipLoading: 恢复的子 Agent 可能已完成，不会有新事件移除 loading
             }
             // 建立 SSE 连接（已连接的由 SubagentSSEManager 去重忽略）
             if (window.electronAPI.connectSubagentSSE) {
