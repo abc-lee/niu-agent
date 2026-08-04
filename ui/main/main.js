@@ -1810,8 +1810,9 @@ const SubagentSSEManager = {
     const apiPort = parseInt(process.env.NIU_API_PORT || '9876', 10);
     const req = http.get(`http://127.0.0.1:${apiPort}/api/subagents/${encodeURIComponent(uniqueName)}/stream`, (res) => {
       if (res.statusCode === 404) {
-        // 子 Agent 不存在，不重连
+        // 子 Agent 不存在，不重连，销毁 req 释放资源
         delete this.connections[uniqueName];
+        req.destroy();
         if (chatWindow && !chatWindow.isDestroyed()) {
           chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'subagent_error', content: '子 Agent 不存在' } });
         }
@@ -1856,10 +1857,10 @@ const SubagentSSEManager = {
 
   _reconnect(uniqueName, conn) {
     if (conn.cancelled) return;
-    if (conn.req) { conn.req.destroy(); conn.req = null; }
     this._connect(uniqueName, conn);
     // 通知前端连接已恢复（ring buffer 会补发历史事件）
-    if (chatWindow && !chatWindow.isDestroyed()) {
+    // 404 路径会 delete connection，此时不发 reconnected（已发 subagent_error）
+    if (this.connections[uniqueName] && chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'reconnected' } });
     }
   },
