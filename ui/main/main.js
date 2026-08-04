@@ -1811,6 +1811,7 @@ const SubagentSSEManager = {
     const req = http.get(`http://127.0.0.1:${apiPort}/api/subagents/${encodeURIComponent(uniqueName)}/stream`, (res) => {
       if (res.statusCode === 404) {
         // 子 Agent 不存在，不重连，销毁 req 释放资源
+        conn.cancelled = true;  // 阻止 req.destroy() 触发的 error/end 回调安排重连
         delete this.connections[uniqueName];
         req.destroy();
         if (chatWindow && !chatWindow.isDestroyed()) {
