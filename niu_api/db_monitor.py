@@ -14,8 +14,6 @@ import os
 import re
 import sqlite3
 
-from agent.runner import enqueue_supplement
-from agent.subagent_registry import SubagentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +73,8 @@ def parse_at_message(content: str) -> tuple[str, str, str]:
 def route_message(target: str, sender: str, content: str) -> None:
     """路由一条 @ 消息到目标。
 
-    阶段二改造：
-    - target==主Agent：推入 MainAgentRequestQueue（新机制下不应出现，保留兼容防护）
-    - target==子名 + is_terminate：cancel_pending_ask + 推 /stop 到 supplement queue
-    - target==子名 + sender==主Agent（非 /stop）：set_answer 解除 ask_main_agent 阻塞；
-      找不到 future 时降级推 supplement queue（主 Agent 在补充上下文）
-    - target==子名 + 其他 sender：推 supplement queue
-    - 孤儿回答（子 Agent 已退出）：sender==主Agent 时丢弃避免死循环，其他 sender 推回主 Agent
+    - target==主Agent：推入 MainAgentRequestQueue（兼容防护）
+    - target==子名：委托 route_to_subagent 公共函数处理
     """
     global _routed_count
 
@@ -99,77 +92,11 @@ def route_message(target: str, sender: str, content: str) -> None:
         logger.info(f"db_monitor 路由到主 Agent（推入 MainAgentRequestQueue）：{msg_for_queue[:50]}")
         return
 
-    # 目标是子 Agent
-    instance = SubagentRegistry.get(target)
-    if instance is None:
-        # 阶段二 A2：strip 非字母数字尾部（处理 LLM 误加标点的情况）
-        # _AT_MSG_PATTERN 用 \S+ 匹配 target，会吞掉 trailing 标点（如中文句号/逗号）。
-        # LLM 生成的 @消息可能带标点，导致 target 不匹配注册表。这里二次 strip 再查一次。
-        stripped = target.rstrip("。，！？；：、.,!?;:")
-        if stripped != target:
-            instance = SubagentRegistry.get(stripped)
-            if instance is not None:
-                target = stripped
-    if instance is None:
-        # 目标不在注册表（子 Agent 已退出/重启后残留消息）
-        # sender==主Agent 时丢弃（孤儿回答，不推回主 Agent 避免死循环）
-        # 其他 sender 推回主 Agent 让主 Agent 知道
-        if sender == "主Agent":
-            logger.warning(
-                f"db_monitor 孤儿回答：主 Agent 回答到达但子 Agent {target} 已不在注册表，丢弃：{content[:50]}"
-            )
-        else:
-            fallback = f"@主Agent [system] 目标子 Agent {target} 已不存在：{content}"
-            enqueue_supplement(fallback)
-            logger.warning(f"db_monitor 目标子 Agent {target} 不在注册表，推回主 Agent")
-        return
-
-    # /stop 优先分支：cancel_pending_ask + 推 /stop 到 supplement queue
-    is_terminate = content.strip() == "/stop"
-
-    if is_terminate:
-        try:
-            from agent.ask_main_agent import get_pending_ask_registry
-            get_pending_ask_registry().cancel_pending_ask(target)
-            logger.info(f"db_monitor /stop 同时 cancel ask_main_agent：{target}")
-        except Exception as e:
-            logger.error(f"db_monitor cancel_pending_ask 失败：{e}")
-
-        instance.supplement_queue.push(content, is_terminate=True, sender=sender)
-        _routed_count += 1
-        logger.info(f"db_monitor 路由到子 Agent {target}：{content[:50]} (terminate=True)")
-        return
-
-    if sender == "主Agent":
-        # 主 Agent 回答消息（非 /stop）→ 路由到 PendingAskRegistry.set_answer
-        # 用 sender=='主Agent' 区分回答/补充上下文，set_answer 找不到 future 时降级推 supplement queue
-        # （主 Agent 在补充上下文，不是回答 ask_main_agent）
-        try:
-            from agent.ask_main_agent import get_pending_ask_registry
-            found = get_pending_ask_registry().set_answer(target, content)
-            if found:
-                _routed_count += 1
-                logger.info(
-                    f"db_monitor 路由主 Agent 回答到 ask_main_agent：{target}：{content[:50]}"
-                )
-                return
-            # 找不到 future：主 Agent 在补充上下文（不是回答 ask_main_agent），降级推 supplement queue
-            instance.supplement_queue.push(content, is_terminate=False, sender=sender)
-            _routed_count += 1
-            logger.info(
-                f"db_monitor 路由主 Agent 补充上下文到子 Agent：{target}：{content[:50]}"
-            )
-            return
-        except Exception as e:
-            logger.error(f"db_monitor set_answer 失败：{e}")
-            instance.supplement_queue.push(content, is_terminate=False, sender=sender)
-            _routed_count += 1
-            return
-
-    # 其他 sender 普通补充消息 → 推 supplement queue
-    instance.supplement_queue.push(content, is_terminate=is_terminate, sender=sender)
+    # 目标是子 Agent —— 调用公共函数 route_to_subagent
+    from agent.route_to_subagent import route_to_subagent
+    result = route_to_subagent(target, sender, content, source='db_monitor')
     _routed_count += 1
-    logger.info(f"db_monitor 路由到子 Agent {target}：{content[:50]} (terminate={is_terminate})")
+    logger.info(f"db_monitor route_to_subagent: {result}")
 
 
 async def _drain_main_agent_request_queue() -> None:
