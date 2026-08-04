@@ -1037,14 +1037,46 @@ class NiuHandler(BaseHandler):
                     next_prompt="",
                 )
 
-            confirmation = _dispatch_async_subagent(
+            unique_name, confirmation = _dispatch_async_subagent(
                 agent_name=agent_name,
                 task=task,
                 llm_config=llm_config,
                 mcp_client=self.mcp_client,
             )
-            yield StreamEvent("tool_marker", f"[SubAgent] 异步派出：{confirmation[:100]}\n")
-            return StepOutcome({"status": "success", "result": confirmation}, next_prompt="")
+            if unique_name is not None:
+                # 推送 subagent_started 事件到主 Agent SSE 流
+                # 不走 notify_new_message_sync（它需要 message_id），直接调 _sync_broadcast
+                try:
+                    from niu_api.chat import _main_loop, _sync_broadcast
+                    if _main_loop and not _main_loop.is_closed():
+                        event = {
+                            'type': 'subagent_started',
+                            'unique_name': unique_name,
+                            'agent_name': agent_name,
+                            'is_sync': False,
+                        }
+                        _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+                except ImportError:
+                    pass
+                yield StreamEvent("tool_marker", f"[SubAgent] 异步派出：{confirmation[:100]}\n")
+                return StepOutcome({"status": "success", "result": confirmation}, next_prompt="")
+            else:
+                yield StreamEvent("system", confirmation)
+                return StepOutcome({"status": "error", "msg": confirmation}, next_prompt="")
+
+        # 同步子 Agent：unique_name = agent_name，推送 subagent_started 事件到主 Agent SSE 流
+        try:
+            from niu_api.chat import _main_loop, _sync_broadcast
+            if _main_loop and not _main_loop.is_closed():
+                event = {
+                    'type': 'subagent_started',
+                    'unique_name': agent_name,
+                    'agent_name': agent_name,
+                    'is_sync': True,
+                }
+                _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+        except ImportError:
+            pass
 
         # 同步路径（现有逻辑不变）
         try:
