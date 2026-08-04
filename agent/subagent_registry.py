@@ -31,7 +31,7 @@ class RunningSubagent:
     task: asyncio.Task | ConcurrentFuture | None = None  # 异步子 Agent 才有，同步为 None
     started_at: float = field(default_factory=time.time)  # 启动时间，用于动态注入区排序
     # 新增字段（同步 @niu-agent 挂起状态）
-    state: str = "running"  # "running" / "waiting_for_answer"
+    state: str = "running"  # "running" / "waiting_for_answer" / "waiting_for_user"
     suspended_messages: list | None = None
     suspended_handler: Any | None = None
     suspended_client: Any | None = None
