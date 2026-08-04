@@ -2915,6 +2915,7 @@
       // 清理 @end 延迟关闭的 timer
       const timer = _endCloseTimers.get(uniqueName);
       if (timer) { clearTimeout(timer); _endCloseTimers.delete(uniqueName); }
+      if (_subagentWaitingTab === uniqueName) _setSubagentInputWaiting(false);
       const tab = document.getElementById('tab-' + uniqueName);
       if (tab) tab.remove();
       const container = document.getElementById('messages-' + uniqueName);
@@ -2977,6 +2978,8 @@
             addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
             markTabCompleted(unique_name);
             clearTabWaiting(unique_name);
+            // 同步子 Agent @end 时清理主对话"工作中"气泡（§11）
+            hideTyping();
             // @end 关闭逻辑：用户不在该 tab 时 3 秒后关闭；用户在该 tab 时等切走后关闭
             if (_activeTab === unique_name) {
               // 用户正在该 tab：标记待关闭，等用户切走后关闭
