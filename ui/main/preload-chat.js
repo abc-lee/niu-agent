@@ -102,4 +102,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 窗口显示/获得焦点时通知前端同步状态
   onSyncState: (callback) => ipcRenderer.on('sync-state', () => callback()),
 
+  // ===== 子 Agent Tab 接口 =====
+  // 子 Agent 启动通知（SSE 顶级 subagent_started 事件）
+  onSubagentStarted: (callback) => ipcRenderer.on('subagent-started', (_event, data) => callback(data)),
+
+  // 子 Agent 事件流（含 unique_name + event）
+  onSubagentEvent: (callback) => ipcRenderer.on('subagent-event', (_event, data) => callback(data)),
+
+  // 建立子 Agent SSE 连接（窗口恢复时）
+  connectSubagentSSE: (uniqueName) => ipcRenderer.send('connect-subagent-sse', uniqueName),
+
+  // 断开子 Agent SSE 连接
+  disconnectSubagentSSE: (uniqueName) => ipcRenderer.send('disconnect-subagent-sse', uniqueName),
+
+  // 发送消息到子 Agent（补充信息 / /stop）
+  sendSubagentMessage: (uniqueName, message) => ipcRenderer.invoke('send-subagent-message', { uniqueName, message }),
+
 });
