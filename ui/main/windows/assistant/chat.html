@@ -2671,6 +2671,11 @@
 
     function _setSubagentInputWaiting(waiting) {
       if (waiting) {
+        // 清理上一个等待 tab 的 typing 气泡（防止跨 tab 等待冲突时孤儿气泡）
+        if (_subagentInputWaiting && _subagentWaitingTab && _subagentWaitingTab !== _activeTab) {
+          const oldBubble = document.getElementById('subagent-typing-' + _subagentWaitingTab);
+          if (oldBubble) oldBubble.remove();
+        }
         _subagentInputWaiting = true;
         _subagentWaitingTab = _activeTab;
         userInput.placeholder = '子 Agent 处理补充信息中...';
@@ -2786,6 +2791,7 @@
       tab.textContent = displayName;
       tab.addEventListener('click', () => switchTab(uniqueName));
       tab.dataset.sync = isSync ? 'true' : 'false';  // subagent_closed 时据此判断是否 hideTyping
+      tab.addEventListener('animationend', () => tab.classList.remove('new-tab'), { once: true });
 
       // 未读红点 badge
       const badge = document.createElement('span');
