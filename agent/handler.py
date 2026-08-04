@@ -1154,11 +1154,7 @@ class NiuHandler(BaseHandler):
         except Exception as e:
             yield StreamEvent("system", f"[SubAgent] Error: {e}\n")
             # 【问题 2d 修复】推送 subagent_error 事件到 SubagentEventBus（前端 tab 显示错误状态）
-            try:
-                from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
-                notify_subagent_event_sync(agent_name, 'subagent_error', {'content': str(e)[:2000]})
-            except Exception:
-                pass
+            _push_subagent_event(agent_name, 'subagent_error', {'content': str(e)[:2000]})
             return StepOutcome(
                 {"status": "error", "msg": str(e)}, next_prompt=""
             )
