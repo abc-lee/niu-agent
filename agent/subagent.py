@@ -1350,7 +1350,7 @@ async def _run_subagent_async(
         try:
             from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
             notify_subagent_event_sync(unique_name, 'subagent_error', {'content': str(e)[:2000]})
-        except ImportError:
+        except Exception:
             pass
         logger.error(f"[AsyncSubagent] {unique_name} 异常：{e}")
 
@@ -1369,12 +1369,18 @@ async def _run_subagent_async(
         try:
             from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
             notify_subagent_event_sync(unique_name, 'subagent_error', {'content': '子 Agent 被取消'})
-        except ImportError:
+        except Exception:
             pass
         raise  # 重新抛出 CancelledError
 
     finally:
         # 清理 ask_main_agent pending future（避免泄漏）
         get_pending_ask_registry().unregister(unique_name)
+        # 清理 ask_user pending future（避免 @user 阻塞期间 cancel 的边缘泄漏）
+        try:
+            from agent.ask_user import get_user_ask_registry
+            get_user_ask_registry().unregister(unique_name)
+        except ImportError:
+            pass
         # 从注册表注销
         SubagentRegistry.unregister(unique_name)
