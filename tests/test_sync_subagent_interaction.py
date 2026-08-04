@@ -163,7 +163,7 @@ def test_call_subagent_sync_uses_agent_name_as_unique_name(monkeypatch):
     def fake_run_agent_loop(**kwargs):
         handler = kwargs["handler"]
         captured_unique_names.append(getattr(handler, "_subagent_unique_name", ""))
-        return "子 Agent 完成", {"result": "EXITED", "messages": [], "finish_reason": "exited"}
+        return "子 Agent 完成", {"result": "EXITED", "messages": [], "finish_reason": "exited"}, ""
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
     monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {
@@ -208,7 +208,7 @@ def test_call_subagent_sync_second_call_with_answer_resumes_suspended_session(mo
     resumed_messages_seen = []
     def fake_run_agent_loop(**kwargs):
         resumed_messages_seen.append(kwargs.get("resumed_messages"))
-        return "子 Agent 完成", {"result": "EXITED", "messages": [], "finish_reason": "exited"}
+        return "子 Agent 完成", {"result": "EXITED", "messages": [], "finish_reason": "exited"}, ""
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
     monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {
@@ -253,7 +253,7 @@ def test_call_subagent_sync_second_call_same_agent_name_conflict(monkeypatch):
 
     # 防御性 mock：修改前 product code 不抛 ValueError 时会跑到 LLM，避免真调 LLM
     def fake_run_agent_loop(**kwargs):
-        return "不应被调到", {"result": "EXITED", "messages": [], "finish_reason": "exited"}
+        return "不应被调到", {"result": "EXITED", "messages": [], "finish_reason": "exited"}, ""
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
     monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {

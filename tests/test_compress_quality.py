@@ -248,7 +248,7 @@ def test_call_subagent_detects_truncation(monkeypatch):
 
     # mock _run_agent_loop 返回 finish_reason='length' 的 return_value
     def fake_run_agent_loop(**kwargs):
-        return "部分输出...", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "length"}
+        return "部分输出...", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "length"}, ""
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
 
@@ -280,7 +280,7 @@ def test_call_subagent_normal_return(monkeypatch):
     from agent import subagent
 
     def fake_run_agent_loop(**kwargs):
-        return "keep=1,2,3\nupdate=", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "stop"}
+        return "keep=1,2,3\nupdate=", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "stop"}, ""
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
 
