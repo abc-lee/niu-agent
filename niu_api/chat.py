@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
+from niu_api.internal.subagent_event_bus import subscribe, unsubscribe, has_subagent
 from niu_api.compat import _chat_lock
 
 router = APIRouter(tags=["chat"])
@@ -704,6 +705,37 @@ async def events_stream():
                 _event_subscribers.remove(q)
             except ValueError:
                 pass  # already removed (double-disconnect edge case)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/api/subagents/{unique_name}/stream")
+async def subagent_event_stream(unique_name: str):
+    """子 Agent 独立 SSE 端点。"""
+    if not has_subagent(unique_name):
+        raise HTTPException(status_code=404, detail=f"Subagent {unique_name} not found")
+
+    async def generate():
+        q = await subscribe(unique_name)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await unsubscribe(unique_name, q)
 
     return StreamingResponse(
         generate(),
