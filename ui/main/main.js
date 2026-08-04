@@ -1765,7 +1765,7 @@ ipcMain.on('disconnect-subagent-sse', (_event, uniqueName) => {
 ipcMain.handle('send-subagent-message', async (_event, { uniqueName, message }) => {
   const apiPort = parseInt(process.env.NIU_API_PORT || '9876', 10);
   return new Promise((resolve, reject) => {
-    const data = JSON.stringify({ message });
+    const data = JSON.stringify({ content: message });
     const req = http.request({
       hostname: '127.0.0.1', port: apiPort,
       path: `/api/subagents/${uniqueName}/message`,

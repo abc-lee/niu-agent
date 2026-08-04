@@ -1346,6 +1346,12 @@ async def _run_subagent_async(
             get_main_agent_request_queue().push(err_msg)
         except Exception:
             pass
+        # 推送 subagent_error 事件到 SubagentEventBus（前端 tab 显示错误状态）
+        try:
+            from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+            notify_subagent_event_sync(unique_name, 'subagent_error', {'content': str(e)[:2000]})
+        except ImportError:
+            pass
         logger.error(f"[AsyncSubagent] {unique_name} 异常：{e}")
 
     except asyncio.CancelledError:
@@ -1359,6 +1365,12 @@ async def _run_subagent_async(
         except Exception:
             pass
         logger.info(f"[AsyncSubagent] {unique_name} 被 cancel")
+        # 推送 subagent_error 事件到 SubagentEventBus
+        try:
+            from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+            notify_subagent_event_sync(unique_name, 'subagent_error', {'content': '子 Agent 被取消'})
+        except ImportError:
+            pass
         raise  # 重新抛出 CancelledError
 
     finally:
