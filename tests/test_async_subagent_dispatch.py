@@ -52,7 +52,7 @@ def test_dispatch_async_subagent_returns_immediately_with_unique_name(llm_config
     loop_thread.start()
 
     try:
-        result = _dispatch_async_subagent(
+        _, result = _dispatch_async_subagent(
             agent_name="file-processor",
             task="直接回复 OK，不要调用任何工具",
             llm_config=llm_config,

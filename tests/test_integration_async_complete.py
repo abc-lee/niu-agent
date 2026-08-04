@@ -53,7 +53,7 @@ def test_async_dispatch_and_completion_notification(llm_config, tmp_path):
 
     try:
         # 派异步子 Agent
-        confirmation = _dispatch_async_subagent(
+        _, confirmation = _dispatch_async_subagent(
             agent_name="file-processor",
             task="直接回复 OK，不要调用任何工具",
             llm_config=llm_config,

@@ -1188,7 +1188,7 @@ def _dispatch_async_subagent(
     task: str,
     llm_config: dict[str, Any],
     mcp_client=None,
-) -> str:
+) -> tuple[str | None, str]:
     """异步派子 Agent：立即返回派单确认，子 Agent 在后台 asyncio 协程跑（跨线程用 run_coroutine_threadsafe 提交到主 loop）。
 
     流程：
@@ -1225,7 +1225,7 @@ def _dispatch_async_subagent(
     loop = _main_loop
     if loop is None or loop.is_closed():
         SubagentRegistry.unregister(unique_name)
-        return "[错误] 主 asyncio loop 不可用，无法派发异步子 Agent"
+        return (None, "[错误] 主 asyncio loop 不可用，无法派发异步子 Agent")
 
     # 用 run_coroutine_threadsafe 跨线程调度（handler.dispatch 在 executor 线程，不在主 loop）
     try:
@@ -1245,7 +1245,7 @@ def _dispatch_async_subagent(
         # run_coroutine_threadsafe 失败 → 注销子 Agent，避免残留 task=None 的泄漏
         SubagentRegistry.unregister(unique_name)
         logger.error(f"[AsyncSubagent] 派发失败：{e}")
-        return f"[错误] 派发异步子 Agent 失败：{e}"
+        return (None, f"[错误] 派发异步子 Agent 失败：{e}")
 
     # 回填 future 到注册表（用 future 而非 asyncio.Task，因为跨线程调度返回的是 concurrent.futures.Future）
     instance = SubagentRegistry.get(unique_name)
@@ -1254,12 +1254,13 @@ def _dispatch_async_subagent(
 
     logger.info(f"[AsyncSubagent] 已派出异步子 Agent：{unique_name}")
 
-    return (
+    confirmation = (
         f"已派出子 Agent {unique_name}（类型：{agent_name}），后台运行中。\n"
         f"你可以用 check_subagent_progress('{unique_name}') 查看进度，\n"
         f"写 @ {unique_name} 消息给它补充上下文，\n"
         f"写 @ {unique_name} /stop 停止它。"
     )
+    return (unique_name, confirmation)
 
 
 async def _run_subagent_async(
