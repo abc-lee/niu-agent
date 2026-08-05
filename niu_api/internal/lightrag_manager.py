@@ -328,6 +328,29 @@ def _trigger_background_probe_if_needed() -> None:
     threading.Thread(target=_probe_in_background, daemon=True, name="response-format-probe").start()
 
 
+def _consume_generator(gen):
+    """Consume a LiteLLMSession.chat() generator, return (chunks, mock_response).
+
+    检测 stream_error：流式错误（重试耗尽或 fatal）时返回空 chunks，
+    调用方可通过 mock_response.stream_error 判断是否降级。
+    """
+    chunks = []
+    mock_response = None
+    try:
+        while True:
+            chunk = next(gen)
+            if isinstance(chunk, str):
+                chunks.append(chunk)
+    except StopIteration as e:
+        mock_response = e.value
+
+    if mock_response and getattr(mock_response, 'stream_error', False):
+        logger.warning(f"[LightRAG] LLM stream error: {mock_response.error_msg}")
+        return [], mock_response
+
+    return chunks, mock_response
+
+
 def _build_llm_model_func():
     """Build the async LLM function for LightRAG.
 
@@ -398,18 +421,7 @@ def _build_llm_model_func():
         stream = kwargs.pop("stream", False)
 
         # 7. Call LiteLLMSession via asyncio.to_thread
-        def _consume_generator(gen):
-            """Consume a LiteLLMSession.chat() generator, return (chunks, mock_response)."""
-            chunks = []
-            mock_response = None
-            try:
-                while True:
-                    chunk = next(gen)
-                    if isinstance(chunk, str):
-                        chunks.append(chunk)
-            except StopIteration as e:
-                mock_response = e.value
-            return chunks, mock_response
+
 
         def sync_call():
             from litellm import BadRequestError
@@ -429,7 +441,10 @@ def _build_llm_model_func():
                 gen = session.chat(messages=fallback_messages, response_format=None)
                 chunks, mock_response = _consume_generator(gen)
 
-            full_content = "".join(chunks)
+            if mock_response and getattr(mock_response, 'stream_error', False):
+                full_content = ""
+            else:
+                full_content = mock_response.content if mock_response and hasattr(mock_response, 'content') else "".join(chunks)
 
             # Handle enable_cot (thinking chain)
             if enable_cot and mock_response and mock_response.thinking:

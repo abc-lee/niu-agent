@@ -323,6 +323,9 @@ async def call_llm_via_litellm(
             except StopIteration as e:
                 # Generator returns MockResponse via StopIteration
                 mock_response = e.value
+            # stream_error 检查：流式错误（重试耗尽或 fatal）→ 返回特殊 dict 让调用方抛 502
+            if mock_response and getattr(mock_response, 'stream_error', False):
+                return {"_stream_error": True, "error_msg": mock_response.error_msg, "error_type": mock_response.error_type}
 
             elapsed = time.time() - start_time
             logger.info(f"[LLM Proxy] sync_call completed in {elapsed:.2f}s, content_len={len(''.join(chunks))}")
@@ -342,7 +345,7 @@ async def call_llm_via_litellm(
                     })
 
             # Build OpenAI-format response
-            full_text = "".join(chunks)
+            full_text = mock_response.content if mock_response else "".join(chunks)
 
             logger.info(f"[LLM Proxy] MockResponse exists: {mock_response is not None}")
             logger.info(f"[LLM Proxy] Tool calls count: {len(tool_calls_list)}")
@@ -359,7 +362,7 @@ async def call_llm_via_litellm(
                             "content": full_text or None,
                             "tool_calls": tool_calls_list if tool_calls_list else None,
                         },
-                        "finish_reason": "tool_calls" if tool_calls_list else "stop",
+                        "finish_reason": getattr(mock_response, 'finish_reason', None) or ("tool_calls" if tool_calls_list else "stop"),
                     }
                 ],
                 "usage": {
@@ -372,6 +375,11 @@ async def call_llm_via_litellm(
             return response
 
         response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=180)
+        if isinstance(response, dict) and response.get("_stream_error"):
+            raise HTTPException(status_code=502, detail={
+                "message": response.get("error_msg", "LLM call failed"),
+                "type": response.get("error_type", "stream_error"),
+            })
         elapsed = time.time() - start_time
         logger.info(f"[LLM Proxy] call_llm_via_litellm completed in {elapsed:.2f}s")
         return response
@@ -379,6 +387,8 @@ async def call_llm_via_litellm(
     except TimeoutError:
         logger.error("[LLM Proxy] LLM call timed out after 180s")
         raise HTTPException(status_code=504, detail="LLM call timed out") from None
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
         raise HTTPException(status_code=500, detail=f"LLM call failed: {str(e)}") from e

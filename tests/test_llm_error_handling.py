@@ -337,3 +337,65 @@ def test_normal_result_not_subagent_error():
     else:
         result = {"status": "executed"}
     assert result["status"] == "executed"
+
+
+
+
+# ===== Task 8: 消费者适配 (llm_proxy + lightrag_manager) =====
+
+
+
+import asyncio
+import pytest
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_llm_proxy_stream_error_returns_502():
+    """llm_proxy call_llm_via_litellm 检测 stream_error → HTTPException 502。"""
+    from niu_api.llm_proxy import call_llm_via_litellm
+    from fastapi import HTTPException
+    from agent.generic.llmcore import MockResponse
+
+    class _FakeGen:
+        def __iter__(self): return self
+        def __next__(self):
+            raise StopIteration(MockResponse(
+                thinking="", content="", tool_calls=[], raw="",
+                stream_error=True, error_type="fatal", error_msg="AuthError"
+            ))
+
+    class _FakeSession:
+        def chat(self, **kwargs): return _FakeGen()
+
+    config = {"model": "test-model", "apikey": "test", "apibase": "http://test", "type": "openai"}
+    with patch("agent.generic.litellm_adapter.LiteLLMSession", return_value=_FakeSession()):
+        try:
+            await call_llm_via_litellm(
+                messages=[{"role": "user", "content": "test"}],
+                config=config,
+            )
+            assert False, "应抛 HTTPException 502"
+        except HTTPException as e:
+            assert e.status_code == 502
+            assert "AuthError" in str(e.detail)
+
+
+def test_lightrag_consume_generator_stream_error():
+    """_consume_generator 检测 stream_error → 返回 ([], mock_response)。"""
+    from niu_api.internal.lightrag_manager import _consume_generator
+    from agent.generic.llmcore import MockResponse
+
+    class _FakeGen:
+        def __iter__(self): return self
+        def __next__(self):
+            raise StopIteration(MockResponse(
+                thinking="", content="", tool_calls=[], raw="",
+                stream_error=True, error_type="fatal", error_msg="AuthError"
+            ))
+
+    chunks, mock_resp = _consume_generator(_FakeGen())
+    assert chunks == []
+    assert mock_resp.stream_error is True
