@@ -214,3 +214,14 @@ def test_compact_truncated_prefix_stripped():
     stripped = prefixed[len("COMPACT_TRUNCATED:"):]
     assert stripped == truncated_content
     assert "[输出因超过最大长度被自动截断" in stripped
+
+
+def test_code_run_stdout_truncation_marker():
+    """code_run stdout 超 10000 字符时应有截断标记。"""
+    from agent.handler import code_run
+
+    long_output = "x" * 15000
+    result = code_run(f"print('{long_output}')", code_type="python", timeout=10)
+
+    assert result["status"] in ("success", "error")
+    assert "[输出已截断" in result.get("stdout", ""), f"Expected truncation marker in stdout, got length {len(result.get('stdout', ''))}"

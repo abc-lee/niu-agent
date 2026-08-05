@@ -404,9 +404,12 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
             exit_code = -1
         stdout_str = "".join(full_stdout)
 
+        if len(stdout_str) > 10000:
+            stdout_str = stdout_str[:10000] + f"\n\n[输出已截断：原始输出共 {len(stdout_str)} 字符，已截断至 10000 字符。如需完整输出，请调整程序输出或分页获取。]"
+
         return {
             "status": "success" if exit_code == 0 else "error",
-            "stdout": stdout_str[:10000] if len(stdout_str) > 10000 else stdout_str,
+            "stdout": stdout_str,
             "exit_code": exit_code,
         }
     except Exception as e:
