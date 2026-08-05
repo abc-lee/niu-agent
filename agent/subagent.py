@@ -389,6 +389,7 @@ def _extract_result_from_return_value(return_value: Any) -> str | None:
             "CONTEXT_OVERFLOW", "EXITED", "MAX_TURNS_EXCEEDED", "CURRENT_TASK_DONE", "TERMINATED_BY_SUPPLEMENT",
             "STOPPED",           # 阶段四补：子 Agent 收到 /stop 终止
             "INTERCEPTED_SYNC",  # 阶段四新增：同步 @niu-agent 挂起
+            "LLM_ERROR",         # LLM 流式错误（重试耗尽或 fatal），不应被序列化为结果
         }
         if return_value.get("result") in control_flow_results:
             return None
@@ -967,6 +968,12 @@ def call_subagent(
             state = getattr(instance, "state", None) if instance else None
             if state != "waiting_for_answer":
                 SubagentRegistry.unregister(unique_name)
+
+    # LLM_ERROR：流式错误（重试耗尽或 fatal），返回 SUBAGENT_ERROR 前缀让调用方降级
+    if return_value and isinstance(return_value, dict) and return_value.get("result") == "LLM_ERROR":
+        error_msg = return_value.get("error_msg", "未知错误")
+        logger.warning(f"[SubAgent] {agent_name}: LLM error: {error_msg}")
+        return f"SUBAGENT_ERROR:{error_msg}"
 
     # 检测输出截断（finish_reason == "length"）
     # LLM 输出被截断时无法产出合法 keep/update 结构，返回字符串信号让降级循环识别

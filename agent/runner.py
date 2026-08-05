@@ -1854,6 +1854,12 @@ class NiuRunner:
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
+            # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
+            if result and result.startswith("SUBAGENT_ERROR:"):
+                error_msg = result[len("SUBAGENT_ERROR:"):]
+                logger.warning(f"[Compact] Runner: context-manager LLM error: {error_msg}")
+                return {"status": "skipped", "mode": "force", "reason": f"LLM error: {error_msg}"}
+
             # 截断时触发内联应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
             # 同步实现：用 self._sync_delete_messages / self._sync_update_message，不调 async _emergency_clear
             if result and result.startswith("COMPACT_TRUNCATED:"):
