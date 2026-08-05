@@ -1106,6 +1106,9 @@ class NiuHandler(BaseHandler):
                 answer=answer,
                 answer_unique_name=(unique_name_arg or agent_name) if answer else None,
             )
+            # 剥除 COMPACT_TRUNCATED: 前缀（截断信号已被 context-manager 路径处理，主 Agent 只需内容）
+            if result and result.startswith("COMPACT_TRUNCATED:"):
+                result = result[len("COMPACT_TRUNCATED:"):]
 
             # journal-agent 特殊处理：更新游标
             if agent_name == "journal-agent" and journal_msg_ids_for_cursor:

@@ -1856,7 +1856,7 @@ class NiuRunner:
                 return
             # 截断时触发内联应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
             # 同步实现：用 self._sync_delete_messages / self._sync_update_message，不调 async _emergency_clear
-            if result == "COMPACT_TRUNCATED":
+            if result and result.startswith("COMPACT_TRUNCATED:"):
                 logger.warning("[Compact] runner.py force output truncated, triggering emergency clear")
                 from niu_api.compat import _find_protected_range
                 _force_id_set = set(_force_msg_ids)

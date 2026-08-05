@@ -204,3 +204,13 @@ def test_truncated_tool_calls_not_executed(monkeypatch):
         return_value = e.value
 
     assert not tool_executed["yes"], "截断的 tool_calls 不应被执行"
+
+
+def test_compact_truncated_prefix_stripped():
+    """主 Agent 收到 COMPACT_TRUNCATED: 前缀时应剥除前缀，保留截断内容。"""
+    truncated_content = "部分报告内容\n\n[输出因超过最大长度被自动截断，内容不完整。]"
+    prefixed = f"COMPACT_TRUNCATED:{truncated_content}"
+    assert prefixed.startswith("COMPACT_TRUNCATED:")
+    stripped = prefixed[len("COMPACT_TRUNCATED:"):]
+    assert stripped == truncated_content
+    assert "[输出因超过最大长度被自动截断" in stripped

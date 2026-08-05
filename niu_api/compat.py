@@ -2761,7 +2761,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         return {"status": "aborted", "message": "Stopped by user"}
 
                     # 截断时触发应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
-                    if compress_result == "COMPACT_TRUNCATED":
+                    if compress_result and compress_result.startswith("COMPACT_TRUNCATED:"):
                         logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
                         return await _emergency_clear(
                             history=compress_history,
@@ -3427,7 +3427,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 clear_stop()
                 return {"status": "aborted", "message": "Stopped by user"}
 
-            if result == "COMPACT_TRUNCATED":
+            if result and result.startswith("COMPACT_TRUNCATED:"):
                 logger.warning("[Compact] Force output truncated, triggering emergency clear")
                 return await _emergency_clear(
                     history=_force_history,
