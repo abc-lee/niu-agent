@@ -740,6 +740,7 @@ def call_subagent(
     answer: str | None = None,  # 阶段四新增：回复路径（第三分支）用
     answer_unique_name: str | None = None,  # 阶段四新增：回复路径锁定挂起 session
     bypass_at_prefix: bool = False,  # True=绕过@前缀拦截层（仅一轮出方案的子Agent用，如context-manager模式二/三）
+    program_triggered: bool = False,  # 程序触发子 Agent（如 entity-extractor）跳过超长写文件，保留游标标记
 ) -> str:
     """
     调用子 Agent
@@ -815,6 +816,7 @@ def call_subagent(
     # @前缀拦截层绕过开关：仅一轮出方案的子 Agent（context-manager 模式二/三）由调用方
     # 显式传 bypass_at_prefix=True 开启；模式一（多轮工具）保持默认 False，走标准 @end/FORMAT_ERROR 结束判断
     handler._bypass_at_prefix = bypass_at_prefix
+    handler._program_triggered = program_triggered
 
     # 5. 阶段二：tools_schema 构建提取到 helper（含 ask_main_agent 注入逻辑）
     tools_schema = _build_subagent_tools_schema(
@@ -1015,6 +1017,8 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     """
     auto_answer = "无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作"
 
+    # 程序触发子 Agent：超长报告不写文件，保留 processed_up_to 游标标记
+    kwargs.setdefault('program_triggered', True)
     result = call_subagent(agent_name=agent_name, task=task, **kwargs)
     while True:
         unique_name = _extract_unique_name(result, agent_name)
