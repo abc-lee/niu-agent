@@ -1815,7 +1815,7 @@ const SubagentSSEManager = {
         delete this.connections[uniqueName];
         req.destroy();
         if (chatWindow && !chatWindow.isDestroyed()) {
-          chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'subagent_error', content: '子 Agent 不存在' } });
+          chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'subagent_closed', content: '子 Agent 不存在或已结束' } });
         }
         return;
       }
@@ -1860,7 +1860,7 @@ const SubagentSSEManager = {
     if (conn.cancelled) return;
     this._connect(uniqueName, conn);
     // 通知前端连接已恢复（ring buffer 会补发历史事件）
-    // 404 路径会 delete connection，此时不发 reconnected（已发 subagent_error）
+    // 404 路径会 delete connection，此时不发 reconnected（已发 subagent_closed）
     if (this.connections[uniqueName] && chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.webContents.send('subagent-event', { unique_name: uniqueName, event: { type: 'reconnected' } });
     }

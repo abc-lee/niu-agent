@@ -1177,12 +1177,11 @@ class NiuHandler(BaseHandler):
                     # 【问题 2c 修复】instance is None：call_subagent 未 register 或在 register 前异常
                     # 但 pre_register 可能已创建 ring buffer + subagent_started 已广播
                     # 必须清理，否则 ring buffer 泄漏 + 前端 tab 卡死
-                    # 【问题 2e 修复】但场景 1/8（正常完成/@end 退出）call_subagent 内部已 unregister→close,
-                    # ring buffer 在 5 分钟延迟清理窗口内仍存在，has_subagent 返回 True 但不需要再 close。
-                    # 用 is_closing 检查是否已在 close 窗口内（_close_epochs 有记录表示已 close 过）
+                    # 【问题 2e 修复】场景 1/8（正常完成/@end 退出）call_subagent 内部已 close，
+                    # _closed set 标记后 has_subagent() 返回 False（已排除已 close 的），自动去重。
                     try:
-                        from niu_api.internal.subagent_event_bus import has_subagent, is_closing, close
-                        if has_subagent(agent_name) and not is_closing(agent_name):
+                        from niu_api.internal.subagent_event_bus import has_subagent, close
+                        if has_subagent(agent_name):
                             close(agent_name)
                     except ImportError:
                         pass

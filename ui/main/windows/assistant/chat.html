@@ -3002,7 +3002,7 @@
             clearTabWaiting(unique_name);
             break;
           case 'subagent_closed':
-            addSubagentMessageToTab(unique_name, 'system', '子 Agent 已结束');
+            addSubagentMessageToTab(unique_name, 'system', event.content || '子 Agent 已结束');
             markTabCompleted(unique_name);
             clearTabWaiting(unique_name);
             // 同步子 Agent @end 时清理主对话"工作中"气泡（§11，仅同步子 Agent）
