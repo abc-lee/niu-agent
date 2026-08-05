@@ -77,6 +77,48 @@ def _is_context_overflow_error(exc: Exception) -> bool:
     return any(p in msg for p in _OVERFLOW_PATTERNS)
 
 
+# === LLM 错误分类（流式错误重试/标记机制） ===
+# getattr 默认值用 None（不是 Exception），避免缺失时 isinstance 匹配所有异常
+try:
+    import litellm
+    _RETRYABLE_EXC = tuple(x for x in (
+        litellm.APIConnectionError,
+        litellm.Timeout,
+        litellm.RateLimitError,
+    ) if x is not None)
+    _FATAL_EXC = tuple(x for x in (
+        litellm.AuthenticationError,
+        getattr(litellm, 'PermissionDeniedError', None),
+        getattr(litellm, 'BudgetExceededError', None),
+        getattr(litellm, 'ContentPolicyViolationError', None),
+    ) if x is not None)
+    _UNCERTAIN_EXC = tuple(x for x in (
+        litellm.InternalServerError,
+        litellm.ServiceUnavailableError,
+        getattr(litellm, 'BadGatewayError', None),
+    ) if x is not None)
+except (ImportError, AttributeError):
+    _RETRYABLE_EXC = ()
+    _FATAL_EXC = ()
+    _UNCERTAIN_EXC = ()
+
+
+def _classify_stream_error(e) -> str:
+    """分类流式错误。返回 'retryable' | 'fatal' | 'uncertain'。"""
+    # 1. 字符串匹配兜底（优先，确保未验证类型也能分类）
+    type_name = type(e).__name__
+    if 'MidStreamFallback' in type_name:
+        return 'retryable'
+    # 2. isinstance 检查
+    if _FATAL_EXC and isinstance(e, _FATAL_EXC):
+        return 'fatal'
+    if _UNCERTAIN_EXC and isinstance(e, _UNCERTAIN_EXC):
+        return 'uncertain'
+    if _RETRYABLE_EXC and isinstance(e, _RETRYABLE_EXC):
+        return 'retryable'
+    # 3. 默认归入 retryable（未知错误给重试机会）
+    return 'retryable'
+
 # 完整无截断的原始日志序号计数器
 _raw_seq_counter = 0
 
