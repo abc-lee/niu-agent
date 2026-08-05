@@ -255,3 +255,56 @@ def test_agent_loop_stream_error_returns_llm_error():
     assert return_value is not None
     assert return_value.get("result") == "LLM_ERROR"
     assert "bad key" in return_value.get("error_msg", "")
+
+
+
+
+# ===== Task 6: SUBAGENT_ERROR 前缀机制 =====
+
+
+
+from unittest.mock import patch, MagicMock
+
+
+
+
+
+def test_call_subagent_returns_subagent_error_prefix():
+    """call_subagent 检测 return_value result='LLM_ERROR' → 返回 'SUBAGENT_ERROR:{error_msg}'。"""
+    from agent import subagent
+
+    def fake_run_agent_loop(**kwargs):
+        return "", {"result": "LLM_ERROR", "error_msg": "AuthError: bad key"}, ""
+
+    import inspect
+    src = inspect.getsource(subagent._extract_result_from_return_value)
+    assert "LLM_ERROR" in src, "control_flow_results 应包含 LLM_ERROR"
+
+    with patch.object(subagent, '_run_agent_loop', fake_run_agent_loop), \
+         patch.object(subagent, 'get_subagent_config', return_value={}), \
+         patch.object(subagent, 'build_subagent_system_segments', return_value=("test", "")), \
+         patch.object(subagent, '_build_subagent_tools_schema', return_value=[]), \
+         patch.object(subagent, '_read_context_window_tokens', return_value=24000), \
+         patch.object(subagent, '_read_target_threshold', return_value=0.3), \
+         patch('agent.subagent_registry.SubagentRegistry') as mock_registry:
+        mock_registry.register.return_value = MagicMock()
+        mock_registry.get.return_value = None
+        mock_registry.close.return_value = None
+
+        import agent.handler as handler_module
+        import agent.runner as runner_module
+        class FakeClient: pass
+        with patch.object(runner_module, 'create_client', lambda cfg: FakeClient()), \
+             patch.object(runner_module, 'get_tools_schema', lambda **kwargs: []), \
+             patch.object(handler_module, 'NiuHandler') as MockHandler:
+            MockHandler.return_value = MagicMock(
+                _disable_memory_recall=False, _is_subagent=False
+            )
+
+            result = subagent.call_subagent(
+                agent_name="context-manager",
+                task="test",
+                llm_config={"model": "test"},
+            )
+    assert result.startswith("SUBAGENT_ERROR:")
+    assert "bad key" in result

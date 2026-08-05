@@ -1109,6 +1109,14 @@ class NiuHandler(BaseHandler):
                 answer=answer,
                 answer_unique_name=(unique_name_arg or agent_name) if answer else None,
             )
+            # SUBAGENT_ERROR: 子 Agent LLM 错误，返回 error 让主 Agent 知道失败
+            if result and result.startswith("SUBAGENT_ERROR:"):
+                error_msg = result[len("SUBAGENT_ERROR:"):]
+                return StepOutcome(
+                    {"status": "error", "msg": error_msg},
+                    next_prompt=f"子Agent调用失败：{error_msg}",
+                )
+
             # 剥除 COMPACT_TRUNCATED: 前缀（截断信号已被 context-manager 路径处理，主 Agent 只需内容）
             if result and result.startswith("COMPACT_TRUNCATED:"):
                 result = result[len("COMPACT_TRUNCATED:"):]
