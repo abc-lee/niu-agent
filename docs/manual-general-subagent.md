@@ -203,7 +203,7 @@ mcpToolFilter:
 - **修复**：`pre_register` 提前到 `subagent_started` 推送之前调用，保证主 loop FIFO 先创建 ring buffer 再广播事件
 - **`if not answer` 守卫**：恢复路径（主 Agent 回答子 Agent 提问后继续）跳过冗余的 `pre_register` + `subagent_started`
 - **finally 条件 close**：`finally` 块检查 `state != 'waiting_for_answer'` 才 close，避免子 Agent 等待回答时被误清理
-- **`is_closing` 去重**：`is_closing()` 函数检查 `_close_epochs` 字典，防止场景 1/8（正常完成）双重 close
+- **`is_closed` 去重**：检查 `_closed` set，防止场景 1/8（正常完成）双重 close
 - **except 块 `subagent_error` 推送**：子 Agent 异常终止时推送 `subagent_error` 事件，前端 tab 显示红色错误状态
 
 ### 5. SubagentEventBus 独立事件总线
@@ -212,14 +212,12 @@ mcpToolFilter:
 
 - **per-unique_name 事件队列路由**：`_subscribers` dict 按 `unique_name` 路由事件，每个子 Agent 的事件独立推送
 - **ring buffer 断线重连补发**：每个子 Agent 维护 `deque(maxlen=100)` ring buffer，SSE 断线重连时补发最近 100 条事件
-- **epoch 机制防止同名子 Agent 误删**：`_close_epochs` + `_epoch_lock`，防止 5 分钟延迟清理窗口内同名子 Agent 重启被误删
 - **核心方法**：
   - `pre_register(unique_name)`：提前创建 ring buffer（在 `subagent_started` 之前调用，消除竞态）
   - `subscribe(unique_name)`：订阅子 Agent 事件流，返回 asyncio.Queue
   - `notify_subagent_event_sync(unique_name, event_type, data)`：同步推送事件（从 executor 线程调用）
-  - `close(unique_name)`：关闭事件流，触发延迟清理
-  - `has_subagent(unique_name)`：检查子 Agent 是否存在（ring buffer 是否已创建）
-  - `is_closing(unique_name)`：检查子 Agent 是否已 close（区分"已 close 过"和"从未 close"）
+  - `close(unique_name)`：关闭事件流，立即清理
+  - `has_subagent(unique_name)`：检查子 Agent 是否活跃（有订阅者或有 ring buffer 且未 close）
 
 ### 6. 事件类型清单
 
@@ -249,7 +247,7 @@ mcpToolFilter:
 
 | 文件 | 责任 |
 |------|------|
-| `niu_api/internal/subagent_event_bus.py` | SubagentEventBus（pre_register/subscribe/close/has_subagent/is_closing/notify_subagent_event_sync） |
+| `niu_api/internal/subagent_event_bus.py` | SubagentEventBus（pre_register/subscribe/close/has_subagent/_closed/notify_subagent_event_sync） |
 | `niu_api/chat.py` | 子 Agent SSE 端点 + POST API（L720-749） |
 | `agent/handler.py` | 同步路径 pre_register + subagent_started + finally close + except subagent_error（L1067-1195） |
 | `agent/subagent.py` | `_run_agent_loop`（last_reply）+ `_run_subagent_async`（L262-296, L1294-1386） |
