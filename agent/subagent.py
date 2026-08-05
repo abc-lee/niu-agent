@@ -1099,12 +1099,9 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     # 前端收到后调 /api/chat/session，content 作为 message 参数传给后端，
     # 后端 compat.py 写 user 消息（role=user, content="[子名] 问题"）
     #
-    # 阶段二 E1：question sanitization
-    # - 长度限制 2000 字符（避免恶意子 Agent 把超大内容塞进队列）
-    # - strip 行首 @ 字符（避免被 at_message_parser 误解析为 @消息注入指令）
-    sanitized_question = question[:2000] if question else ""
-    if sanitized_question.lstrip().startswith("@"):
-        sanitized_question = sanitized_question.lstrip()[1:]
+    # 超长检查已在 _intercept_at_prefix_content 中处理（FORMAT_ERROR 退回重试）
+    # 不截断、不剥行首 @（[子名] 前缀已标识提问）
+    sanitized_question = question if question else ""
     msg_content = f"[{unique_name}] {sanitized_question}"
     try:
         get_main_agent_request_queue().push(msg_content)
@@ -1211,12 +1208,9 @@ def _ask_main_agent_impl_sync(
     """
     messages.append({"role": "assistant", "content": content})
 
-    # sanitization（与异步路径 subagent.py:832-834 一致）
-    # - 长度限制 2000 字符
-    # - strip 行首 @ 字符（避免被 at_message_parser 误解析为 @消息注入指令）
-    sanitized = question[:2000] if question else ""
-    if sanitized.lstrip().startswith("@"):
-        sanitized = sanitized.lstrip()[1:]
+    # 超长检查已在 _intercept_at_prefix_content 中处理（FORMAT_ERROR 退回重试）
+    # 不截断、不剥行首 @（[子名] 前缀已标识提问）
+    sanitized = question if question else ""
     wrapped = f"[{unique_name}] {sanitized}"
     return wrapped
 

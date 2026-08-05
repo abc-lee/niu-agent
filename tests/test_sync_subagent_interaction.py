@@ -26,13 +26,13 @@ def test_ask_main_agent_impl_sync_appends_assistant_and_returns_wrapped():
 
 
 def test_ask_main_agent_impl_sync_sanitizes_question():
-    """_ask_main_agent_impl_sync 对 question 做 sanitization（限 2000 字符 + strip 行首 @）"""
+    """_ask_main_agent_impl_sync 不截断不剥 @（超长检查在 _intercept_at_prefix_content 中处理）"""
     from agent import subagent
 
     messages = []
     fake_handler = object()
 
-    # 超长 question 截断
+    # 超长 question 不截断（完整保留）
     long_question = "x" * 3000
     wrapped = subagent._ask_main_agent_impl_sync(
         question=long_question,
@@ -41,9 +41,9 @@ def test_ask_main_agent_impl_sync_sanitizes_question():
         messages=messages,
         content="@niu-agent ...",
     )
-    assert len(wrapped) < 3000  # 已截断
+    assert len(wrapped) >= 3000  # 不截断，完整保留
 
-    # question 行首 @ 被 strip
+    # question 行首 @ 不被 strip
     wrapped2 = subagent._ask_main_agent_impl_sync(
         question="@嵌套@问题",
         unique_name="test-ab12",
@@ -51,7 +51,7 @@ def test_ask_main_agent_impl_sync_sanitizes_question():
         messages=messages,
         content="@niu-agent @嵌套@问题",
     )
-    assert wrapped2 == "[test-ab12] 嵌套@问题"  # 行首 @ 被 strip
+    assert wrapped2 == "[test-ab12] @嵌套@问题"  # @ 保留不剥
 
 
 def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):
