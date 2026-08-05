@@ -24,6 +24,9 @@ from agent.runner import is_stop_requested
 
 logger = logging.getLogger(__name__)
 
+# 截断标记：模型侧截断（finish_reason="length"）时追加到 content 末尾
+TRUNCATION_MARKER = "[输出因超过最大长度被自动截断，内容不完整。请基于以上不完整内容，缩短后重新输出完整内容。]"
+
 # 抑制 LiteLLM 的调试输出（"Provider List" 等提示）
 litellm.suppress_debug_info = True
 
@@ -497,6 +500,8 @@ class LiteLLMSession(BaseSession):
         tool_calls: list[MockToolCall] = []
         usage = None
         last_finish_reason = None  # 捕获流式最后一个非空 finish_reason
+        was_stopped = False
+        _stream_error_occurred = False
 
         try:
             chunk_count = 0
@@ -600,6 +605,7 @@ class LiteLLMSession(BaseSession):
                 # yield f'<tool_use>{{"id": "{tc_data["id"]}", "name": "{tc_name}", "arguments": {args_str}}}</tool_use>'
 
         except Exception as e:
+            _stream_error_occurred = True
             error_msg = str(e)
 
             # 检测 context_length_exceeded 错误 — 设置标记让 agent_loop 触发强制压缩
@@ -647,6 +653,9 @@ class LiteLLMSession(BaseSession):
                                     ))
                         if hasattr(fallback_response, "usage") and fallback_response.usage:
                             usage = fallback_response.usage
+                        if hasattr(choice, "finish_reason") and choice.finish_reason:
+                            last_finish_reason = choice.finish_reason
+                        _stream_error_occurred = False  # 异常已恢复，避免 A3 误标
                         logger.info(f"[STREAM] Non-stream fallback succeeded ({len(full_content)} chars, {len(tool_calls)} tool_calls)")
                 except Exception as fb_err:
                     logger.error(f"[STREAM] Non-stream fallback also failed: {fb_err}")
@@ -654,6 +663,33 @@ class LiteLLMSession(BaseSession):
                 logger.error(f"[STREAM] Stream error: {e}")
                 if full_content:
                     logger.warning(f"[STREAM] Using partial content ({len(full_content)} chars)")
+
+        # === 截断标记注入 ===
+        # A1: finish_reason="length" — 模型侧截断
+        if last_finish_reason == "length" and full_content:
+            marker = "\n\n" + TRUNCATION_MARKER
+            full_content += marker
+            yield marker
+
+        # A5: thinking chain 截断
+        if last_finish_reason == "length" and reasoning_content:
+            reasoning_content += "\n\n[思考链因超长被自动截断]"
+
+        # A2: 用户 stop 中断（排除 A1 已处理的 length 截断场景）
+        if was_stopped and full_content and last_finish_reason != "length":
+            marker = "\n\n[输出被用户中断，内容不完整。]"
+            full_content += marker
+            yield marker
+
+        # A3: streaming 异常中断（排除已处理的 A1[length] / A2[stop] 路径）
+        # 条件用 last_finish_reason != "length" 而非 not last_finish_reason，
+        # 容忍 provider 提前发 finish_reason="stop" 但流仍被中断的不规范行为
+        if not full_content and _stream_error_occurred:
+            full_content = "[输出因网络错误中断，无有效内容]"
+        elif full_content and last_finish_reason != "length" and not was_stopped and _stream_error_occurred:
+            marker = "\n\n[输出因网络错误中断，内容不完整。]"
+            full_content += marker
+            yield marker
 
         mock_resp = MockResponse(
             thinking=reasoning_content,
@@ -684,7 +720,8 @@ class LiteLLMSession(BaseSession):
                 }
                 for tc in tool_calls
             ] if tool_calls else [],
-            "usage": mock_resp.usage if hasattr(mock_resp, 'usage') else None
+            "usage": mock_resp.usage if hasattr(mock_resp, 'usage') else None,
+            "finish_reason": mock_resp.finish_reason,
         })
 
         # 记录完整无截断的原始响应
@@ -698,6 +735,7 @@ class LiteLLMSession(BaseSession):
                 for tc in tool_calls
             ] if tool_calls else [],
             "usage": mock_resp.usage if hasattr(mock_resp, 'usage') else None,
+            "finish_reason": mock_resp.finish_reason,
         }, seq=raw_log_seq)
 
         return mock_resp
