@@ -65,3 +65,43 @@ def test_classify_unknown_error_defaults_retryable():
     from agent.generic.litellm_adapter import _classify_stream_error
     e = RuntimeError("unknown error")
     assert _classify_stream_error(e) == "retryable"
+from types import SimpleNamespace
+from agent.generic.litellm_adapter import LiteLLMSession
+from unittest.mock import patch
+
+
+def _make_chunk(content=None, finish_reason=None):
+    delta = SimpleNamespace(content=content, reasoning_content=None, tool_calls=None)
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)],
+        usage=None,
+    )
+
+
+def test_do_streaming_completion_consumes_chunks():
+    """_do_streaming_completion 消费流式 response，yield delta.content，return tuple。"""
+    cfg = {"apikey": "test", "apibase": "http://test", "model": "test-model", "read_timeout": 30}
+    session = LiteLLMSession(cfg)
+
+    fake_chunks = [_make_chunk(content="hello"), _make_chunk(content=" world"), _make_chunk(finish_reason="stop")]
+    response = iter(fake_chunks)
+
+    with patch("agent.generic.litellm_adapter.is_stop_requested", return_value=False):
+        gen = session._do_streaming_completion(response)
+        chunks = []
+        result = None
+        try:
+            while True:
+                chunk = next(gen)
+                if isinstance(chunk, str):
+                    chunks.append(chunk)
+        except StopIteration as e:
+            result = e.value
+
+    assert "".join(chunks) == "hello world"
+    assert result is not None
+    content, thinking, tool_calls, finish_reason, usage, was_stopped = result
+    assert content == "hello world"
+    assert finish_reason == "stop"
+    assert was_stopped is False
+    assert tool_calls == []

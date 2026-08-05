@@ -432,6 +432,102 @@ class LiteLLMSession(BaseSession):
         self.api_type = cfg.get("api_type", "openai")
         self.provider = cfg.get("provider", "")
 
+    def _do_streaming_completion(self, response):
+        """消费流式响应（generator）。不调 litellm.completion()。
+
+        litellm.completion() 保留在 chat() 中，初始调用错误保持 raise 行为不变。
+        _do_streaming_completion 只负责流式消费循环，接收 response 对象。
+
+        Yields:
+            str: 流式内容增量
+        Returns:
+            tuple(content, thinking, tool_calls, finish_reason, usage, was_stopped)
+        Raises:
+            Exception: 流式传输中的任何异常（由调用方捕获分类）
+        """
+        full_content = ""
+        reasoning_content = ""
+        tool_calls: list[MockToolCall] = []
+        usage = None
+        last_finish_reason = None
+        was_stopped = False
+        tool_calls_accumulator: dict[int, dict] = {}
+        chunk_count = 0
+
+        for chunk in response:
+            chunk_count += 1
+            # 协作式停止：每个 chunk 后检查，发现停止立即中断流式生成
+            if is_stop_requested():
+                was_stopped = True
+                break
+            if hasattr(chunk, 'choices') and chunk.choices:
+                choice = chunk.choices[0]
+                delta = getattr(choice, 'delta', None)
+                if delta:
+                    if hasattr(delta, 'content') and delta.content:
+                        full_content += delta.content
+                        yield delta.content
+                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                        reasoning_content += delta.reasoning_content
+                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            # 获取index（流式响应中同一个tool_call的多个chunk共享同一个index）
+                            idx = getattr(tc, 'index', len(tool_calls_accumulator))
+                            if idx not in tool_calls_accumulator:
+                                tool_calls_accumulator[idx] = {
+                                    'id': getattr(tc, 'id', None) or f"call_{idx}",
+                                    'name': '',
+                                    'arguments': ''
+                                }
+                            # 累积数据（增量更新）
+                            if hasattr(tc, 'id') and tc.id:
+                                tool_calls_accumulator[idx]['id'] = tc.id
+                            if hasattr(tc, 'function') and tc.function:
+                                if hasattr(tc.function, 'name') and tc.function.name:
+                                    tool_calls_accumulator[idx]['name'] = tc.function.name
+                                if hasattr(tc.function, 'arguments') and tc.function.arguments:
+                                    tool_calls_accumulator[idx]['arguments'] += tc.function.arguments
+                if hasattr(choice, 'finish_reason') and choice.finish_reason:
+                    last_finish_reason = choice.finish_reason
+            if hasattr(chunk, 'usage') and chunk.usage:
+                usage = chunk.usage
+
+        # 循环后重新检查 is_stop_requested
+        was_stopped = was_stopped or is_stop_requested()
+
+        # 循环后处理：tool_calls JSON 解析
+        for idx in sorted(tool_calls_accumulator.keys()):
+            tc_data = tool_calls_accumulator[idx]
+            tc_name = tc_data['name']
+            # 跳过空工具名
+            if not tc_name or not tc_name.strip():
+                continue
+            tc_args_raw = tc_data['arguments']
+            tc_args = {}
+            if was_stopped:
+                # 停止中断时，跳过不完整 JSON
+                try:
+                    tc_args = json.loads(tc_args_raw) if tc_args_raw else {}
+                except json.JSONDecodeError:
+                    continue
+            else:
+                if isinstance(tc_args_raw, dict):
+                    tc_args = tc_args_raw
+                elif isinstance(tc_args_raw, str) and tc_args_raw:
+                    try:
+                        tc_args = json.loads(tc_args_raw)
+                    except json.JSONDecodeError:
+                        tc_args = {}
+                else:
+                    tc_args = {}
+            tool_calls.append(MockToolCall(
+                name=tc_name,
+                args=tc_args,
+                id=str(tc_data['id']),
+            ))
+
+        return (full_content, reasoning_content, tool_calls, last_finish_reason, usage, was_stopped)
+
     def chat(
         self,
         messages: list,
