@@ -842,6 +842,8 @@ def call_subagent(
     from .subagent_registry import SubagentRegistry
     from .subagent_supplement import SubagentSupplementQueue
 
+    # 初始化 last_reply（三条路径统一用，最终返回优先用它）
+    last_reply = ""
     if answer is not None and answer_unique_name is not None:
         # 阶段四第三分支：回复路径——从 registry 拿回挂起 session 继续跑
         instance = SubagentRegistry.get(answer_unique_name)
@@ -860,7 +862,7 @@ def call_subagent(
 
         try:
             instance.suspended_handler._subagent_unique_name = answer_unique_name
-            result_text, return_value, _last_reply = _run_agent_loop(
+            result_text, return_value, last_reply = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
                 system_message=instance.suspended_system_message,
@@ -932,7 +934,7 @@ def call_subagent(
         handler._subagent_unique_name = unique_name
         handler._is_sync_subagent = True
         try:
-            result_text, return_value, _last_reply = _run_agent_loop(
+            result_text, return_value, last_reply = _run_agent_loop(
                 client=client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
                 system_message=system_message,
@@ -990,6 +992,9 @@ def call_subagent(
     if extracted is not None:
         return extracted
 
+    # 优先返回 last_reply（最终报告），fallback 到 result_text（全过程累加）
+    if last_reply:
+        return last_reply
     return result_text
 
 
