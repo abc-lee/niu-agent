@@ -32,10 +32,10 @@ Niu 的设计原则只有一条：**零摩擦**——用户不需要整理、不
 
 ChatGPT、Claude 和通用 RAG 工具能回答你的问题，但不会帮你经营"人"的关系。Niu 会：
 
-- 照片拖进来，本地人脸识别自动归档到人物相册
+- 照片拖进来，本地人脸识别自动归档到人物相册，同时记录同框人物与拍摄地点
 - 文档、照片、便签中的人物实体被自动提取
 - 点击一个人物节点，展开整个关系网：谁和谁同框、谁在哪些文档里出现过
-- 自动发现隐藏关系——"原来张三和李四的老婆是同事"
+- 自动发现隐藏关系——"原来张三和李四的老婆是同事"、"老王跟你的秘书10年前去过庐山"
 
 **对比**：原来通讯录只有名字和电话，不知道谁认识谁；现在点一个人，展开整个关系网。
 
@@ -128,7 +128,7 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 | 平台 | 下载链接 | 说明 |
 |------|---------|------|
 | macOS（Intel CPU） | [Niu-0.1.6-mac-intel.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.1.6/Niu-0.1.6-mac-intel.dmg) | 适用于 Intel 芯片的 Mac（约 934 MB） |
-| macOS（Apple M 系列） | _稍后提供_ | 后续发布 |
+| macOS（Apple M 系列） | [Niu-0.1.6-mac-apple-silicon.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.1.6/Niu-0.1.6-mac-apple-silicon.dmg) | 适用于 M系列 芯片的 Mac（约 905 MB） |
 | Windows x64 | [Niu-0.1.6-win-x64.7z](https://github.com/abc-lee/niu-agent/releases/download/v0.1.6/Niu-0.1.6-win-x64.7z) | 绿色安装，解压即用（约 460 MB） |
 
 **macOS 安装步骤**：
