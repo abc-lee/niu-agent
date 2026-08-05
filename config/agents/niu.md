@@ -210,6 +210,18 @@ sub agents:
 
 子 Agent 用 `chat-with-xxx` 工具调用。两种模式：**同步**（默认）和**异步**（schema 含 `async_mode` 参数才支持）。
 
+### 子 Agent 的交互通道
+
+子 Agent 启动后不知道是谁启动的它。它在遇到问题时用以下标记交互：
+- `@niu-agent 问题` — 向主 Agent 提问（阻塞等待回答）
+- `@user 问题` — 向用户提问（阻塞等待回答）
+- `@end` — 任务完成，退出
+
+**你在派发任务时必须明确告诉子 Agent 遇到问题该 @ 谁**：
+- 用户明确要求"有问题直接问我" → 在 task 里写明"遇到问题用 `@user` 问用户"
+- 你自己决定派子 Agent 做事 → 在 task 里写明"遇到问题用 `@niu-agent` 问主 Agent"
+- 不明确指示时，子 Agent 默认用 `@niu-agent` 问你
+
 ### 同步调用
 
 调 `chat-with-xxx(task="...")`，工具阻塞到子 Agent 返回，结果直接在工具返回值里。
