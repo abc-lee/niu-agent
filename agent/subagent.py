@@ -985,7 +985,7 @@ def call_subagent(
             "turns_completed": data.get("turns_completed", 0),
             "tokens_used": data.get("tokens_used", 0),
             "tokens_limit": data.get("tokens_limit", 0),
-            "partial_result": ("[内容已截断，仅保留最后 8000 字符]\n" + result_text[-8000:]) if (result_text and len(result_text) > 8000) else (result_text or ""),
+            "partial_result": result_text or "",
         }
         logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens")
         return json.dumps(overflow_report, ensure_ascii=False)
@@ -1345,16 +1345,7 @@ async def _run_subagent_async(
         # 用 last_reply（最后一轮输出）而非 result（所有轮次累加），避免中间过程挤占最终报告
         _inst = SubagentRegistry.get(unique_name)
         _last_reply = getattr(_inst, 'last_reply', '') if _inst else ''
-        if _last_reply:
-            if len(_last_reply) > 8000:
-                _result_for_notify = _last_reply[:8000] + "\n\n[内容已截断，完整内容请查看子 Agent 标签页]"
-            else:
-                _result_for_notify = _last_reply
-        else:
-            if len(result) > 2000:
-                _result_for_notify = result[:2000] + "\n\n[内容已截断，完整内容请查看子 Agent 标签页]"
-            else:
-                _result_for_notify = result
+        _result_for_notify = _last_reply if _last_reply else result
         completion_msg = f"[{unique_name}] 已完成，结果：{_result_for_notify}"
         try:
             get_main_agent_request_queue().push(completion_msg)
