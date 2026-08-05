@@ -93,3 +93,114 @@ def test_response_log_contains_finish_reason():
             response_calls = [c for c in mock_write.call_args_list if c.args and c.args[0] == "response"]
             assert response_calls, "_write_raw_log not called for response"
             assert "finish_reason" in response_calls[0].args[1], "finish_reason missing in response log"
+
+
+def test_agent_loop_truncation_retry(monkeypatch):
+    """finish_reason='length' 时 agent_loop 应注入重试提示，不执行 tool_calls。"""
+    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
+    from agent.generic.llmcore import MockResponse, MockToolCall
+
+    call_count = {"n": 0}
+
+    class FakeClient:
+        def chat(self, messages, tools=None):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                resp = MockResponse(
+                    thinking="", content="截断的内容",
+                    tool_calls=[MockToolCall(name="write", args={}, id="call_1")],
+                    raw="截断的内容",
+                    stop_reason="tool_use",
+                    finish_reason="length",
+                )
+            else:
+                resp = MockResponse(
+                    thinking="", content="正常完成",
+                    tool_calls=[], raw="正常完成",
+                    stop_reason="end_turn", finish_reason="stop",
+                )
+            yield from []  # 使函数成为 generator
+            return resp
+
+    class FakeHandler:
+        max_turns = 20
+        _is_subagent = False
+        _subagent_unique_name = None
+        _done_hooks = []
+        _last_prompt_tokens = 0
+        current_turn = 0
+        _current_messages = []
+        _bypass_at_prefix = False
+        _program_triggered = False
+
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_message={"role": "system", "content": "test"},
+        initial_user_content="test",
+        handler=FakeHandler(),
+        tools_schema=[],
+        verbose=False,
+    )
+    chunks = []
+    return_value = None
+    try:
+        while True:
+            chunks.append(next(gen))
+    except StopIteration as e:
+        return_value = e.value
+
+    assert call_count["n"] == 2
+    assert return_value["finish_reason"] != "length"
+
+
+def test_truncated_tool_calls_not_executed(monkeypatch):
+    """finish_reason='length' 且有 tool_calls 时，tool_calls 不应被执行。"""
+    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
+    from agent.generic.llmcore import MockResponse, MockToolCall
+
+    class FakeClient:
+        def chat(self, messages, tools=None):
+            resp = MockResponse(
+                thinking="", content="截断",
+                tool_calls=[MockToolCall(name="write", args={"file_path": "/tmp/test", "content": "x"}, id="call_1")],
+                raw="截断",
+                stop_reason="tool_use",
+                finish_reason="length",
+            )
+            yield from []
+            return resp
+
+    tool_executed = {"yes": False}
+
+    class FakeHandler:
+        max_turns = 20
+        _is_subagent = False
+        _subagent_unique_name = None
+        _done_hooks = []
+        _last_prompt_tokens = 0
+        current_turn = 0
+        _current_messages = []
+        _bypass_at_prefix = False
+        _program_triggered = False
+        def dispatch(self, tool_name, args, response, index=0):
+            tool_executed["yes"] = True
+            from agent.handler import StepOutcome
+            return StepOutcome(result="executed")
+        def next_prompt_patcher(self, *a, **kw):
+            return ""
+
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_message={"role": "system", "content": "test"},
+        initial_user_content="test",
+        handler=FakeHandler(),
+        tools_schema=[],
+        verbose=False,
+    )
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        return_value = e.value
+
+    assert not tool_executed["yes"], "截断的 tool_calls 不应被执行"

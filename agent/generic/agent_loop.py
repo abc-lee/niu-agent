@@ -664,6 +664,8 @@ def agent_runner_loop(
 
     _harness_fail_count = 0
     _max_harness_retries = 3
+    _truncation_retry_count = 0
+    _max_truncation_retries = 3
     warning_threshold = _read_warning_threshold()
 
     while turn < handler.max_turns:
@@ -744,6 +746,33 @@ def agent_runner_loop(
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
+
+            # === 截断重试（B1）===
+            if getattr(response, 'finish_reason', None) == "length":
+                if _truncation_retry_count < _max_truncation_retries:
+                    _truncation_retry_count += 1
+                    if on_turn_end is not None:
+                        tools_schema = on_turn_end(messages, tools_schema, turn)
+                    messages.append({"role": "assistant", "content": response.content or ""})
+                    messages.append({"role": "user", "content":
+                        "你的上一轮输出因超过最大长度被自动截断，内容不完整。"
+                        "请大幅缩短你的输出，只保留核心内容，确保输出完整结束。"
+                        "如果内容确实很长，请先用 write 工具写入文件，再返回文件路径摘要。"
+                    })
+                    yield StreamEvent("system", "⚠️ 输出超长被截断，正在重试...\n")
+                    logger.warning(f"[AgentLoop] Output truncated (finish_reason=length), retry {_truncation_retry_count}/{_max_truncation_retries}")
+                    continue
+                else:
+                    logger.warning(f"[AgentLoop] Output truncated after {_max_truncation_retries} retries, force exit")
+                    yield StreamEvent("system", "⚠️ 输出多次超长截断，已强制退出\n")
+                    if on_turn_end is not None:
+                        on_turn_end(messages, tools_schema, turn)
+                    clear_stop()
+                    yield StreamEvent("system", "chat_idle")
+                    return {"result": "CURRENT_TASK_DONE", "data": None,
+                            "messages": messages, "finish_reason": "length"}
+            else:
+                _truncation_retry_count = 0  # 非截断响应重置重试预算
 
             # 阶段三/四：@前缀子Agent意图识别拦截（异步+同步子 Agent）
             if not response.tool_calls:
@@ -884,6 +913,33 @@ def agent_runner_loop(
                 },
                 "messages": messages,
             }
+
+        # === 截断重试（B1）— 统一路径（覆盖 verbose=True）===
+        if getattr(response, 'finish_reason', None) == "length":
+            if _truncation_retry_count < _max_truncation_retries:
+                _truncation_retry_count += 1
+                if on_turn_end is not None:
+                    tools_schema = on_turn_end(messages, tools_schema, turn)
+                messages.append({"role": "assistant", "content": response.content or ""})
+                messages.append({"role": "user", "content":
+                    "你的上一轮输出因超过最大长度被自动截断，内容不完整。"
+                    "请大幅缩短你的输出，只保留核心内容，确保输出完整结束。"
+                    "如果内容确实很长，请先用 write 工具写入文件，再返回文件路径摘要。"
+                })
+                yield StreamEvent("system", "⚠️ 输出超长被截断，正在重试...\n")
+                logger.warning(f"[AgentLoop] Output truncated (finish_reason=length), retry {_truncation_retry_count}/{_max_truncation_retries}")
+                continue
+            else:
+                logger.warning(f"[AgentLoop] Output truncated after {_max_truncation_retries} retries, force exit")
+                yield StreamEvent("system", "⚠️ 输出多次超长截断，已强制退出\n")
+                if on_turn_end is not None:
+                    on_turn_end(messages, tools_schema, turn)
+                clear_stop()
+                yield StreamEvent("system", "chat_idle")
+                return {"result": "CURRENT_TASK_DONE", "data": None,
+                        "messages": messages, "finish_reason": "length"}
+        else:
+            _truncation_retry_count = 0  # 非截断响应重置重试预算
 
         # 如果在 LLM 流式传输期间请求停止，跳过部分 tool_calls 处理
         if is_stop_requested():
