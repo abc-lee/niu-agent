@@ -166,7 +166,8 @@ def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
     assert result is not None
     assert isinstance(result, MockResponse)
     assert result.finish_reason == "length"
-    assert result.content == "hello world"
+    assert result.content.startswith("hello world")
+    assert "[输出因超过最大长度被自动截断" in result.content
 
 
 def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
@@ -207,7 +208,7 @@ def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
             content="keep=1,2,3",
             tool_calls=[],
             raw="keep=1,2,3",
-            finish_reason="length",
+            finish_reason="stop",
         )
         yield "keep=1,2,3"
         return resp
@@ -239,7 +240,7 @@ def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
     assert return_value is not None
     assert isinstance(return_value, dict)
     assert return_value.get("result") == "CURRENT_TASK_DONE"
-    assert return_value.get("finish_reason") == "length"
+    assert return_value.get("finish_reason") == "stop"
 
 
 def test_call_subagent_detects_truncation(monkeypatch):
@@ -289,7 +290,7 @@ def test_call_subagent_normal_return(monkeypatch):
     class FakeClient:
         pass
     monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
-    monkeypatch.setattr(runner_module, "get_tools_schema", lambda: [])
+    monkeypatch.setattr(runner_module, "get_tools_schema", lambda **kwargs: [])
     class FakeHandler:
         def __init__(self, mcp_client=None):
             self._disable_memory_recall = False
