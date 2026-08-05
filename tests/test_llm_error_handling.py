@@ -194,3 +194,64 @@ def test_stream_error_fatal_no_retry():
     assert result.error_type == "fatal"
     assert call_count["n"] == 1
     assert result.content == ""
+
+
+def test_agent_loop_stream_error_returns_llm_error():
+    """agent_loop 检查 stream_error=True → yield error_msg + return LLM_ERROR。"""
+    from agent import runner as _runner_mod
+    from agent.generic import agent_loop
+
+    _runner_mod.is_stop_requested = lambda: False
+    _runner_mod.clear_stop = lambda: None
+    _runner_mod.drain_supplement = lambda: None
+
+    class _FakeValidation:
+        is_valid = True
+        def format_feedback(self): return ""
+
+    agent_loop.validate_references = lambda content: _FakeValidation()
+
+    class _FakeHandler:
+        _last_prompt_tokens = 0
+        _done_hooks = []
+        max_turns = 1
+        current_turn = 1
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
+
+    def _fake_chat(self, messages, tools=None, response_format=None):
+        resp = MockResponse(
+            thinking="", content="", tool_calls=[], raw="",
+            finish_reason="stop",
+            stream_error=True, error_type="fatal",
+            error_msg="AuthenticationError: bad key"
+        )
+        yield ""
+        return resp
+
+    class _FakeClient:
+        last_tools = ""
+        def chat(self, messages, tools=None, response_format=None):
+            return _fake_chat(self, messages, tools, response_format)
+
+    gen = agent_loop.agent_runner_loop(
+        client=_FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=_FakeHandler(),
+        tools_schema=[],
+        max_turns=1,
+        initial_user_content="test",
+        enable_supplement=False,
+    )
+
+    return_value = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        return_value = e.value
+
+    assert return_value is not None
+    assert return_value.get("result") == "LLM_ERROR"
+    assert "bad key" in return_value.get("error_msg", "")

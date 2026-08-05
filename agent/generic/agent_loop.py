@@ -740,9 +740,23 @@ def agent_runner_loop(
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
+            # === stream_error 检查（优先级最高，在 B1/拦截/reply yield 之前）===
+            if getattr(response, 'stream_error', False):
+                error_msg = getattr(response, 'error_msg', None) or "模型调用失败"
+                yield error_msg
+                yield StreamEvent("system", "chat_idle")
+                clear_stop()
+                return {"result": "LLM_ERROR", "error_msg": error_msg}
             yield StreamEvent("system", "\n\n")
         else:
             response = exhaust(response_gen)
+            # === stream_error 检查（优先级最高，在 B1/拦截/reply yield 之前）===
+            if getattr(response, 'stream_error', False):
+                error_msg = getattr(response, 'error_msg', None) or "模型调用失败"
+                yield error_msg
+                yield StreamEvent("system", "chat_idle")
+                clear_stop()
+                return {"result": "LLM_ERROR", "error_msg": error_msg}
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
@@ -1187,8 +1201,11 @@ def agent_runner_loop(
             try:
                 summary_gen = client.chat(messages=messages, tools=[])
                 summary_response = exhaust(summary_gen)
-                if summary_response and hasattr(summary_response, "content") and summary_response.content:
-                    summary_text = summary_response.content
+                if summary_response and getattr(summary_response, 'stream_error', False):
+                    logger.warning(f"[Summary] LLM error, skipping summary: {summary_response.error_msg}")
+                    summary_text = ''
+                else:
+                    summary_text = summary_response.content if summary_response else ''
                 # 3. persist 总结（复用现有纯文本 persist 模式）
                 if summary_text:
                     yield StreamEvent("reply", summary_text)
