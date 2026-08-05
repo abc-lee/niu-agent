@@ -1,8 +1,10 @@
 import json
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
 
+from agent.tmp_dir import get_tmp_dir
 from loguru import logger
 
 from agent.output_validator import validate_references
@@ -785,6 +787,20 @@ def agent_runner_loop(
                     else:
                         exit_content = content
                     yield StreamEvent("reply", exit_content)
+                    # 超长检测：非程序触发子 Agent 的 @end 报告超 2000 字符时写文件
+                    if len(exit_content) > 2000 and not getattr(handler, '_program_triggered', False):
+                        unique_name = getattr(handler, '_subagent_unique_name', 'unknown')
+                        N = len(exit_content)
+                        try:
+                            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                            filename = f'{timestamp}-{unique_name}.md'
+                            filepath = get_tmp_dir() / filename
+                            filepath.write_text(exit_content, encoding='utf-8')
+                            exit_content = f'{unique_name} 工作已完成，因信息内容共 {N} 字符已超限，存入以下文件：{filepath}'
+                            yield StreamEvent("reply", exit_content)  # 文件路径提示覆盖 last_reply
+                        except Exception as e:
+                            logger.warning(f'[SubAgent] Failed to save overlength report to file: {e}')
+                            # 写文件失败：exit_content 保持完整内容，跳过第二次 yield
                     yield StreamEvent("system", "chat_idle")
                     return {"result": "EXITED", "messages": messages, "finish_reason": "exited"}
                 if interception_status == FORMAT_ERROR:
