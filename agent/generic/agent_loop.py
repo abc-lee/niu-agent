@@ -161,6 +161,11 @@ def _intercept_at_prefix_content(
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
             return (FORMAT_ERROR, None)
+        # 超长检查：不截断，退回 FORMAT_ERROR 让子 Agent 精简后重新提问
+        if len(question) > 2000:
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content": f"[输出超限额] 你的问题超过 2000 字符（当前 {len(question)} 字符），请精简后重新提问。如果无法精简，请用 @end 退出并说明原因。"})
+            return (FORMAT_ERROR, None)
 
         unique_name = getattr(handler, "_subagent_unique_name", "")
         if not unique_name:
