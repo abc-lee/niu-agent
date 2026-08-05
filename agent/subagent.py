@@ -973,7 +973,8 @@ def call_subagent(
     if return_value and isinstance(return_value, dict):
         if return_value.get("finish_reason") == "length":
             logger.warning(f"[SubAgent] {agent_name}: Output truncated (finish_reason=length)")
-            return "COMPACT_TRUNCATED"
+            truncated_content = last_reply or result_text or "[输出因超过最大长度被自动截断，无有效内容]"
+            return f"COMPACT_TRUNCATED:{truncated_content}"
 
     # CONTEXT_OVERFLOW：返回结构化进度报告
     if return_value and isinstance(return_value, dict) and return_value.get("result") == "CONTEXT_OVERFLOW":

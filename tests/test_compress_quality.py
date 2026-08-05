@@ -243,7 +243,7 @@ def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
 
 
 def test_call_subagent_detects_truncation(monkeypatch):
-    """call_subagent 检测 finish_reason=='length' 时返回 'COMPACT_TRUNCATED'。"""
+    """call_subagent 检测 finish_reason=='length' 时返回 'COMPACT_TRUNCATED:' 前缀 + 截断内容。"""
     from agent import subagent
 
     # mock _run_agent_loop 返回 finish_reason='length' 的 return_value
@@ -259,7 +259,7 @@ def test_call_subagent_detects_truncation(monkeypatch):
     class FakeClient:
         pass
     monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
-    monkeypatch.setattr(runner_module, "get_tools_schema", lambda: [])
+    monkeypatch.setattr(runner_module, "get_tools_schema", lambda **kwargs: [])
     # NiuHandler 需要支持 _disable_memory_recall / _is_subagent 属性赋值
     class FakeHandler:
         def __init__(self, mcp_client=None):
@@ -272,7 +272,7 @@ def test_call_subagent_detects_truncation(monkeypatch):
         task="test",
         llm_config={"model": "test"},
     )
-    assert result == "COMPACT_TRUNCATED"
+    assert result.startswith("COMPACT_TRUNCATED:")
 
 
 def test_call_subagent_normal_return(monkeypatch):
@@ -413,7 +413,7 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
     def fake_call_subagent(*args, **kwargs):
         agent_name = kwargs.get("agent_name") or (args[0] if args else "")
         if agent_name == "context-manager":
-            return "COMPACT_TRUNCATED"
+            return "COMPACT_TRUNCATED:[输出因超过最大长度被自动截断，内容不完整。]"
         return "skip"
 
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
@@ -479,7 +479,7 @@ def test_mode2_truncate_too_few_no_clear(monkeypatch):
     def fake_call_subagent(*args, **kwargs):
         agent_name = kwargs.get("agent_name") or (args[0] if args else "")
         if agent_name == "context-manager":
-            return "COMPACT_TRUNCATED"
+            return "COMPACT_TRUNCATED:[输出因超过最大长度被自动截断，内容不完整。]"
         return "skip"
 
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
@@ -615,7 +615,7 @@ def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
     def fake_call_subagent(*args, **kwargs):
         agent_name = kwargs.get("agent_name") or (args[0] if args else "")
         if agent_name == "context-manager":
-            return "COMPACT_TRUNCATED"
+            return "COMPACT_TRUNCATED:[输出因超过最大长度被自动截断，内容不完整。]"
         return "skip"
 
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
@@ -750,7 +750,7 @@ def test_runner_mode3_prompt_contains_methodology(monkeypatch):
             captured["prompt"] = kwargs.get("task", "")
             captured["llm_config"] = kwargs.get("llm_config", {})
             captured["history"] = kwargs.get("history")
-            return "COMPACT_TRUNCATED"  # 触发应急清空分支（同时验证 prompt 已捕获）
+            return "COMPACT_TRUNCATED:[输出因超过最大长度被自动截断，内容不完整。]"  # 触发应急清空分支（同时验证 prompt 已捕获）
         return "skip"
 
     # call_subagent 在 _on_context_high_usage 内部从 agent.subagent 局部 import，patch 源模块
@@ -834,7 +834,7 @@ def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
 
     def fake_call_subagent(*args, **kwargs):
         call_count["n"] += 1
-        return "COMPACT_TRUNCATED"
+        return "COMPACT_TRUNCATED:[输出因超过最大长度被自动截断，内容不完整。]"
 
     monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
 
