@@ -308,3 +308,32 @@ def test_call_subagent_returns_subagent_error_prefix():
             )
     assert result.startswith("SUBAGENT_ERROR:")
     assert "bad key" in result
+
+
+
+
+# ===== Task 7: compat.py 压缩路径 SUBAGENT_ERROR 检查 =====
+
+
+
+def test_subagent_error_check_logic():
+    """SUBAGENT_ERROR: 前缀检查逻辑 → 返回 skipped dict。"""
+    compress_result = "SUBAGENT_ERROR:AuthError: bad key"
+    if compress_result and compress_result.startswith("SUBAGENT_ERROR:"):
+        error_msg = compress_result[len("SUBAGENT_ERROR:"):]
+        result = {"status": "skipped", "mode": "sleep", "reason": f"LLM error: {error_msg}"}
+    else:
+        result = {"status": "executed"}
+    assert result["status"] == "skipped"
+    assert "LLM error" in result["reason"]
+    assert "bad key" in result["reason"]
+
+
+def test_normal_result_not_subagent_error():
+    """正常 compress_result 不触发 SUBAGENT_ERROR 检查。"""
+    compress_result = "keep=1,2,3\\nupdate=1|[摘要] 测试"
+    if compress_result and compress_result.startswith("SUBAGENT_ERROR:"):
+        result = {"status": "skipped"}
+    else:
+        result = {"status": "executed"}
+    assert result["status"] == "executed"

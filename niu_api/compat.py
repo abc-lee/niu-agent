@@ -2760,6 +2760,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         clear_stop()
                         return {"status": "aborted", "message": "Stopped by user"}
 
+                    # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
+                    if compress_result and compress_result.startswith("SUBAGENT_ERROR:"):
+                        error_msg = compress_result[len("SUBAGENT_ERROR:"):]
+                        logger.warning(f"[Compact] Mode-2: context-manager LLM error: {error_msg}")
+                        return {"status": "skipped", "mode": "sleep", "reason": f"LLM error: {error_msg}"}
+
                     # 截断时触发应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
                     if compress_result and compress_result.startswith("COMPACT_TRUNCATED:"):
                         logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
@@ -3426,6 +3432,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                 clear_stop()
                 return {"status": "aborted", "message": "Stopped by user"}
+            # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
+            if result and result.startswith("SUBAGENT_ERROR:"):
+                error_msg = result[len("SUBAGENT_ERROR:"):]
+                logger.warning(f"[Compact] Force: context-manager LLM error: {error_msg}")
+                return {"status": "skipped", "mode": "force", "reason": f"LLM error: {error_msg}"}
+
 
             if result and result.startswith("COMPACT_TRUNCATED:"):
                 logger.warning("[Compact] Force output truncated, triggering emergency clear")
