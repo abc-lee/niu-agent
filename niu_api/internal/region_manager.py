@@ -1547,7 +1547,7 @@ class RegionManager:
         try:
             import threading
 
-            result_holder: list = [None, None]  # [content, exception]
+            result_holder: list = [None, None]  # [mock_response, exception]
 
             def _consume():
                 try:
@@ -1555,8 +1555,8 @@ class RegionManager:
                         chunk = next(gen)
                         if isinstance(chunk, str):
                             chunks.append(chunk)
-                except StopIteration:
-                    pass
+                except StopIteration as e:
+                    result_holder[0] = e.value
                 except Exception as e:
                     result_holder[1] = e
 
@@ -1566,14 +1566,26 @@ class RegionManager:
 
             if thread.is_alive():
                 logger.warning("LLM label generation timed out after 30s, using partial result")
-            if result_holder[1]:
-                raise result_holder[1]
+            else:
+                mock_resp = result_holder[0]
+                if mock_resp and getattr(mock_resp, 'stream_error', False):
+                    logger.warning(f"region labeling LLM error: {mock_resp.error_msg}")
+                    return ""
+                if result_holder[1]:
+                    raise result_holder[1]
 
         except Exception as e:
             if not chunks:
                 raise
             logger.warning("LLM label generation error: %s, using partial result", e)
 
+        # 优先使用 MockResponse.content（正常完成路径），fallback 到 chunks（timeout/exception 路径）
+        try:
+            mock_resp = result_holder[0]
+        except (NameError, IndexError):
+            mock_resp = None
+        if mock_resp and hasattr(mock_resp, 'content') and mock_resp.content:
+            return mock_resp.content
         return "".join(chunks)
 
     def _generate_labels(

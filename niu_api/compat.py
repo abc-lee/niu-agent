@@ -1687,14 +1687,18 @@ async def probe_response_format(request: Request) -> dict:
             session = LiteLLMSession(cfg=base_llm_config)
             gen = session.chat(messages=messages, response_format=response_format)
             chunks = []
+            mock_response = None
             try:
                 while True:
                     chunk = next(gen)
                     if isinstance(chunk, str):
                         chunks.append(chunk)
-            except StopIteration:
-                pass
-            text = "".join(chunks)
+            except StopIteration as e:
+                mock_response = e.value
+            # stream_error 检查：流式错误 → infra_error（不写配置，端点早返 probe_failed）
+            if mock_response and getattr(mock_response, 'stream_error', False):
+                return "infra_error", f"stream_error: {getattr(mock_response, 'error_msg', '')[:150]}"
+            text = mock_response.content if mock_response and hasattr(mock_response, 'content') and mock_response.content else "".join(chunks)
             if response_format is not None and response_format.get("type") == "json_schema":
                 tier = _classify_probe_response_tier1(text)
             elif response_format is not None and response_format.get("type") == "json_object":
