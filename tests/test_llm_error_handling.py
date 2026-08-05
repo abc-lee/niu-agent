@@ -105,3 +105,92 @@ def test_do_streaming_completion_consumes_chunks():
     assert finish_reason == "stop"
     assert was_stopped is False
     assert tool_calls == []
+
+
+def test_stream_error_retry_succeeds():
+    """流式错误后重试成功 → stream_error=False，content 为重试内容。"""
+    cfg = {"apikey": "test", "apibase": "http://test", "model": "test-model", "read_timeout": 30}
+    session = LiteLLMSession(cfg)
+
+    # 第一次流式抛 APIConnectionError，第二次返回完整内容
+    good_chunks = [_make_chunk(content="retried"), _make_chunk(finish_reason="stop")]
+    call_count = {"n": 0}
+
+    def mock_completion(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            def gen():
+                yield _make_chunk(content="partial")
+                raise litellm.APIConnectionError(message="burst protection", model="test", llm_provider="test")
+            return gen()
+        return iter(good_chunks)
+
+    with patch("litellm.completion", side_effect=mock_completion), \
+         patch("agent.generic.litellm_adapter.is_stop_requested", return_value=False):
+        gen = session.chat(messages=[{"role": "user", "content": "test"}], tools=None)
+        result = None
+        try:
+            while True:
+                next(gen)
+        except StopIteration as e:
+            result = e.value
+
+    assert result is not None
+    assert result.stream_error is False
+    assert result.content == "retried"
+    assert call_count["n"] == 2
+
+
+def test_stream_error_retry_exhausted():
+    """流式错误重试 3 次都失败 → stream_error=True, error_type='retry_exhausted'。"""
+    cfg = {"apikey": "test", "apibase": "http://test", "model": "test-model", "read_timeout": 30}
+    session = LiteLLMSession(cfg)
+
+    def mock_completion(**kwargs):
+        def gen():
+            yield _make_chunk(content="partial")
+            raise litellm.APIConnectionError(message="burst protection", model="test", llm_provider="test")
+        return gen()
+
+    with patch("litellm.completion", side_effect=mock_completion), \
+         patch("agent.generic.litellm_adapter.is_stop_requested", return_value=False):
+        gen = session.chat(messages=[{"role": "user", "content": "test"}], tools=None)
+        result = None
+        try:
+            while True:
+                next(gen)
+        except StopIteration as e:
+            result = e.value
+
+    assert result.stream_error is True
+    assert result.error_type == "retry_exhausted"
+    assert result.content == ""
+
+
+def test_stream_error_fatal_no_retry():
+    """不可重试错误（AuthenticationError）→ 不重试，stream_error=True, error_type='fatal'。"""
+    cfg = {"apikey": "test", "apibase": "http://test", "model": "test-model", "read_timeout": 30}
+    session = LiteLLMSession(cfg)
+
+    call_count = {"n": 0}
+    def mock_completion(**kwargs):
+        call_count["n"] += 1
+        def gen():
+            yield _make_chunk(content="partial")
+            raise litellm.AuthenticationError(message="bad key", model="test", llm_provider="test")
+        return gen()
+
+    with patch("litellm.completion", side_effect=mock_completion), \
+         patch("agent.generic.litellm_adapter.is_stop_requested", return_value=False):
+        gen = session.chat(messages=[{"role": "user", "content": "test"}], tools=None)
+        result = None
+        try:
+            while True:
+                next(gen)
+        except StopIteration as e:
+            result = e.value
+
+    assert result.stream_error is True
+    assert result.error_type == "fatal"
+    assert call_count["n"] == 1
+    assert result.content == ""

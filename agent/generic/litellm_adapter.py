@@ -640,113 +640,18 @@ class LiteLLMSession(BaseSession):
         last_finish_reason = None  # 捕获流式最后一个非空 finish_reason
         was_stopped = False
         _stream_error_occurred = False
+        _stream_error_msg = ""
+        _stream_error_type = None
 
         try:
-            chunk_count = 0
-            # 用于累积tool_calls的增量数据（按index分组）
-            tool_calls_accumulator: dict[int, dict[str, Any]] = {}
-
-            for chunk in response:
-                chunk_count += 1
-
-                # 协作式停止：每个 chunk 后检查，发现停止立即中断流式生成
-                if is_stop_requested():
-                    logger.info("[LLM] Stop requested, breaking stream")
-                    break
-
-                delta = getattr(chunk, 'choices', [None])[0].delta if hasattr(chunk, 'choices') else None
-                if not delta:
-                    continue
-
-                if hasattr(delta, 'content') and delta.content:
-                    full_content += delta.content
-                    yield delta.content
-
-                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                    reasoning_content += delta.reasoning_content
-
-                if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        # 获取index（流式响应中同一个tool_call的多个chunk共享同一个index）
-                        tc_index = getattr(tc, 'index', len(tool_calls_accumulator))
-
-                        # 初始化或更新累积器
-                        if tc_index not in tool_calls_accumulator:
-                            tool_calls_accumulator[tc_index] = {
-                                'id': getattr(tc, 'id', None) or f"call_{tc_index}",
-                                'name': '',
-                                'arguments': ''
-                            }
-
-                        # 累积数据（增量更新）
-                        # id 只有第一个 chunk 有
-                        if hasattr(tc, 'id') and tc.id:
-                            tool_calls_accumulator[tc_index]['id'] = tc.id
-
-                        if hasattr(tc, 'function') and tc.function:
-                            fn = tc.function
-                            # name 只有第一个 chunk 有，不要用 None 覆盖已有 name
-                            if hasattr(fn, 'name') and fn.name:
-                                tool_calls_accumulator[tc_index]['name'] = fn.name
-                            # arguments 每个 chunk 都累加
-                            if hasattr(fn, 'arguments') and fn.arguments:
-                                tool_calls_accumulator[tc_index]['arguments'] += fn.arguments
-
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    usage = chunk.usage
-
-                # 捕获 finish_reason（最后一个非空的覆盖）
-                try:
-                    if chunk.choices and chunk.choices[0].finish_reason:
-                        last_finish_reason = chunk.choices[0].finish_reason
-                except (AttributeError, IndexError):
-                    pass
-
-            # 处理累积完成后的tool_calls
-            was_stopped = is_stop_requested()
-            for idx in sorted(tool_calls_accumulator.keys()):
-                tc_data = tool_calls_accumulator[idx]
-                tc_name = tc_data['name']
-                tc_args_raw = tc_data['arguments'] or "{}"
-
-                # 停止中断时，跳过不完整的 tool_calls（arguments 未结束的 JSON）
-                if was_stopped:
-                    try:
-                        json.loads(tc_args_raw)
-                    except json.JSONDecodeError:
-                        logger.debug(f"[LLM] Skipping incomplete tool_call due to stop: {tc_name}")
-                        continue
-
-                # 跳过空工具名（MiniMax会把一个tool_call拆成多个chunk，只有name的chunk有name）
-                if not tc_name or tc_name.strip() == "":
-                    continue
-
-                if isinstance(tc_args_raw, str):
-                    try:
-                        tc_args = json.loads(tc_args_raw)
-                    except json.JSONDecodeError:
-                        tc_args = {}
-                elif isinstance(tc_args_raw, dict):
-                    tc_args = tc_args_raw
-                else:
-                    tc_args = {}
-
-                tool_calls.append(MockToolCall(
-                    name=tc_name,
-                    args=tc_args,
-                    id=str(tc_data['id']),
-                ))
-
-                # [已注释] MiniMax 工具调用走 tool_calls 字段，不走这个 yield。
-                # 这个 yield 会输出 <tool_use> 文本到流式响应中，被误当成对话内容输出到界面。
-                # 如果 MiniMax 正确使用 tool_calls，本行不需要任何 yield 输出。
-                # yield f'<tool_use>{{"id": "{tc_data["id"]}", "name": "{tc_name}", "arguments": {args_str}}}</tool_use>'
-
+            full_content, reasoning_content, tool_calls, last_finish_reason, usage, was_stopped = \
+                yield from self._do_streaming_completion(response)
         except Exception as e:
             _stream_error_occurred = True
+            _stream_error_msg = str(e)
             error_msg = str(e)
 
-            # 检测 context_length_exceeded 错误 — 设置标记让 agent_loop 触发强制压缩
+            # 检测 context_length_exceeded 错误
             if _is_context_overflow_error(e):
                 logger.warning(f"[STREAM] Context length exceeded: {e}")
                 return MockResponse(
@@ -762,7 +667,7 @@ class LiteLLMSession(BaseSession):
             is_socket_error = "10038" in error_msg or "10054" in error_msg or "non-socket" in error_msg.lower()
 
             if is_socket_error and not full_content:
-                # WinError 10038/10054: Windows socket 在流式传输中被关闭，尝试非流式 fallback
+                # Windows socket error with empty content → non-stream fallback
                 logger.warning(f"[STREAM] Socket error with empty content, trying non-stream fallback: {e}")
                 try:
                     fallback_params = {**request_params, "stream": False}
@@ -774,7 +679,6 @@ class LiteLLMSession(BaseSession):
                             yield full_content
                         if hasattr(choice.message, "reasoning_content") and choice.message.reasoning_content:
                             reasoning_content = choice.message.reasoning_content
-                        # 提取 tool_calls（非流式响应直接在 message 上）
                         if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
                             for tc in choice.message.tool_calls:
                                 tc_args = {}
@@ -793,14 +697,54 @@ class LiteLLMSession(BaseSession):
                             usage = fallback_response.usage
                         if hasattr(choice, "finish_reason") and choice.finish_reason:
                             last_finish_reason = choice.finish_reason
-                        _stream_error_occurred = False  # 异常已恢复，避免 A3 误标
+                        _stream_error_occurred = False
+                        _stream_error_msg = ""
                         logger.info(f"[STREAM] Non-stream fallback succeeded ({len(full_content)} chars, {len(tool_calls)} tool_calls)")
                 except Exception as fb_err:
                     logger.error(f"[STREAM] Non-stream fallback also failed: {fb_err}")
+                    _stream_error_type = "retry_exhausted"
+                    _stream_error_msg = str(fb_err)
             else:
+                # 其他错误 → 分类 + 重试
                 logger.error(f"[STREAM] Stream error: {e}")
-                if full_content:
-                    logger.warning(f"[STREAM] Using partial content ({len(full_content)} chars)")
+                error_type = _classify_stream_error(e)
+                if error_type == "fatal":
+                    logger.warning(f"[STREAM] Fatal error ({type(e).__name__}), no retry")
+                    _stream_error_type = "fatal"
+                else:
+                    max_retries = 3 if error_type == "retryable" else 2
+                    retry_succeeded = False
+                    for retry_idx in range(1, max_retries + 1):
+                        if is_stop_requested():
+                            logger.info("[STREAM] Stop requested, aborting retry")
+                            break
+                        logger.info(f"[STREAM] Retry {retry_idx}/{max_retries} for {type(e).__name__}")
+                        try:
+                            retry_response = litellm.completion(**request_params)
+                            full_content, reasoning_content, tool_calls, \
+                                last_finish_reason, usage, was_stopped = \
+                                yield from self._do_streaming_completion(retry_response)
+                            _stream_error_occurred = False
+                            _stream_error_msg = ""
+                            retry_succeeded = True
+                            logger.info(f"[STREAM] Retry {retry_idx} succeeded ({len(full_content)} chars)")
+                            break
+                        except Exception as retry_e:
+                            if _is_context_overflow_error(retry_e):
+                                logger.warning(f"[STREAM] Retry hit context_overflow, stopping")
+                                return MockResponse(
+                                    thinking=reasoning_content or "",
+                                    content=full_content or "",
+                                    tool_calls=tool_calls,
+                                    raw=full_content or "",
+                                    context_overflow=True,
+                                    finish_reason=last_finish_reason or "stop",
+                                )
+                            logger.error(f"[STREAM] Retry {retry_idx} failed: {retry_e}")
+                            _stream_error_msg = str(retry_e)
+                    if not retry_succeeded:
+                        _stream_error_type = "retry_exhausted"
+                        logger.error(f"[STREAM] All {max_retries} retries exhausted")
 
         # === 截断标记注入 ===
         # A1: finish_reason="length" — 模型侧截断
@@ -819,22 +763,15 @@ class LiteLLMSession(BaseSession):
             full_content += marker
             yield marker
 
-        # A3: streaming 异常中断（排除已处理的 A1[length] / A2[stop] 路径）
-        # 条件用 last_finish_reason != "length" 而非 not last_finish_reason，
-        # 容忍 provider 提前发 finish_reason="stop" 但流仍被中断的不规范行为
-        if not full_content and _stream_error_occurred:
-            full_content = "[输出因网络错误中断，无有效内容]"
-        elif full_content and last_finish_reason != "length" and not was_stopped and _stream_error_occurred:
-            marker = "\n\n[输出因网络错误中断，内容不完整。]"
-            full_content += marker
-            yield marker
-
         mock_resp = MockResponse(
             thinking=reasoning_content,
             content=full_content,
             tool_calls=tool_calls,
             raw=full_content,
             finish_reason=last_finish_reason or "stop",
+            stream_error=_stream_error_occurred,
+            error_type=_stream_error_type,
+            error_msg=_stream_error_msg or None,
         )
 
         if usage:
