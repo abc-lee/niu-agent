@@ -24,7 +24,10 @@ class MockToolCall:
 
 
 class MockResponse:
-    def __init__(self, thinking, content, tool_calls, raw, stop_reason="end_turn", context_overflow=False, usage=None, finish_reason=None):
+    def __init__(self, thinking, content, tool_calls, raw,
+                 stop_reason="end_turn", context_overflow=False, usage=None,
+                 finish_reason=None,
+                 stream_error=False, error_type=None, error_msg=None):
         self.thinking = thinking
         self.content = content
         self.tool_calls = tool_calls
@@ -33,6 +36,9 @@ class MockResponse:
         self.context_overflow = context_overflow
         self.usage = usage
         self.finish_reason = finish_reason
+        self.stream_error = stream_error
+        self.error_type = error_type
+        self.error_msg = error_msg
 
     def __repr__(self):
         return f"<MockResponse thinking={bool(self.thinking)}, content='{self.content}', tools={bool(self.tool_calls)}>"
