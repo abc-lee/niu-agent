@@ -1,13 +1,4 @@
 // force-graph renderer — based on vasturiano/force-graph (d3-force engine)
-// 等待 d3-force 布局收敛后执行动作。
-// 固定延迟对节点数量变化的场景不稳：节点多时 200ms 坐标未稳定，zoomToFit 算错 bbox。
-// 按节点数量估算延迟，节点多则多等。
-function waitForSettle(fn) {
-  const n = currentData.nodes.length;
-  // 每个节点约 30ms 布局时间，最少 300ms，最多 5s
-  const delay = Math.min(5000, Math.max(300, n * 30));
-  setTimeout(fn, delay);
-}
 
 // ===== Type Colors =====
 const typeColors = {
@@ -289,6 +280,7 @@ const graph = ForceGraph()(container)
   .d3AlphaDecay(0.0228)
   .d3AlphaMin(0.001)
   .d3VelocityDecay(0.4)
+  .minZoom(0.0001) // 允许 zoomToFit 大幅缩小（全图几千节点时 bbox 巨大，默认 0.01 会挡缩小）
   .onNodeClick((node) => {
     showDetail(node.id);
   })
@@ -601,10 +593,8 @@ function reLayout() {
   applyForceConfig();
   const data = buildGraphData();
   graph.graphData(data);
-  // 等坐标稳定后重新定位全图
-  waitForSettle(() => {
-    graph.zoomToFit(400, 40);
-  });
+  // 立即 zoomToFit——能瞬间算对 bbox，无需等待
+  graph.zoomToFit(400, 40);
 }
 
 // ===== Perspective Mode =====
@@ -804,13 +794,13 @@ openFolderBtn.addEventListener('click', () => {
 
 focusNodeBtn.addEventListener('click', () => {
   if (!currentSelectedNode) return;
-  // Find node in force-graph data and center on it
-  const fgData = graph.graphData();
-  const node = fgData.nodes.find(n => n.id === currentSelectedNode);
-  if (node && node.x != null) {
-    graph.centerAt(node.x, node.y, 800);
-    graph.zoom(5, 800);
-  }
+  // 聚焦目标节点 + 直接邻居（包含目标+邻居，缩放合理，不强制放大）
+  const neighborIds = new Set([currentSelectedNode]);
+  currentData.edges.forEach(e => {
+    if (e.source === currentSelectedNode) neighborIds.add(e.target);
+    if (e.target === currentSelectedNode) neighborIds.add(e.source);
+  });
+  graph.zoomToFit(800, 60, n => neighborIds.has(n.id));
 });
 
 // ===== Double-click to expand neighborhood =====
@@ -967,15 +957,28 @@ async function enterSubgraph(entityId, depth) {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    // 等节点坐标稳定后 zoomToFit + 聚焦。不用 onEngineStop（收敛后不触发）。
-    waitForSettle(() => {
-      graph.zoomToFit(400, 40);
-      const targetNode = graph.graphData().nodes.find(n => n.id === entityId);
+    // 先整体 zoomToFit 适配全图（瞬间算对 bbox，含缩小），
+    // 再聚焦目标节点及直接邻居（短延迟等节点坐标生成）。不用 onEngineStop。
+    graph.zoomToFit(400, 40);
+    setTimeout(() => {
+      const editor = graph.graphData().nodes;
+      const targetNode = editor.find(n => n.id === entityId);
       if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
-        graph.centerAt(targetNode.x, targetNode.y, 800);
-        graph.zoom(5, 800);
+        // 收集目标节点 + 其直接邻居的 ID
+        const neighborIds = new Set([entityId]);
+        currentData.edges.forEach(e => {
+          if (e.source === entityId) neighborIds.add(e.target);
+          if (e.target === entityId) neighborIds.add(e.source);
+        });
+        if (neighborIds.size > 1) {
+          // 邻居存在：按邻居集合聚焦（包含目标+邻居，缩放合理）
+          graph.zoomToFit(400, 60, n => neighborIds.has(n.id));
+        } else {
+          // 无邻居（孤立节点）：直接居中
+          graph.centerAt(targetNode.x, targetNode.y, 800);
+        }
       }
-    });
+    }, 150);
     updateStats();
     // 子图状态在 _justReplacedData=false 之前设置，使 pollChangelog 守卫更内聚
     _subgraphMode = true;
@@ -1032,10 +1035,8 @@ async function exitSubgraph() {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    // 等坐标稳定后重新定位全图
-    waitForSettle(() => {
-      graph.zoomToFit(400, 40);
-    });
+    // 立即 zoomToFit——能瞬间算对 bbox，无需等待
+    graph.zoomToFit(400, 40);
     updateStats();
   } finally {
     _justReplacedData = false;
