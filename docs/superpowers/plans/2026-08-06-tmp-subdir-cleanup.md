@@ -129,7 +129,8 @@ class TestCleanupOldTmp:
         old_file.write_text("old")
         old_time = time.time() - (2 * 24 * 3600)
         os.utime(old_file, (old_time, old_time))
-        cleanup_old_tmp()
+        deleted = cleanup_old_tmp()
+        assert deleted == 1
         assert not subdir.exists(), "空目录应被删除"
 
     def test_keeps_nonempty_directories(self, tmp_dir_fixture):
@@ -165,8 +166,8 @@ class TestCleanupOldTmp:
         deleted = cleanup_old_tmp()
         assert deleted == 0
 
-    def test_boundary_exactly_24_hours(self, tmp_dir_fixture):
-        """恰好24小时的文件不被删除（<24h保留，>=24h删除用严格大于）"""
+    def test_keeps_files_under_24_hours(self, tmp_dir_fixture):
+        """23小时前的文件不被删除（超过24小时才删除，用 mtime < cutoff 严格小于判断）"""
         import time
         from agent.tmp_dir import cleanup_old_tmp
         # 23小时前的文件 — 不应删除
@@ -180,9 +181,8 @@ class TestCleanupOldTmp:
 ```
 
 - [ ] **Step 2: 运行测试验证失败**
-
 Run: `python/bin/python -m pytest tests/test_tmp_dir.py::TestCleanupOldTmp -v`
-Expected: FAIL — `TestCleanupOldTmp` 测试会失败，因为当前 `cleanup_old_tmp()` 不遍历子目录、不删空目录
+Expected: 4 个测试 FAIL（子目录递归 + 空目录删除相关），4 个 PASS（根目录行为在旧实现下已正确）
 
 - [ ] **Step 3: Commit**
 
