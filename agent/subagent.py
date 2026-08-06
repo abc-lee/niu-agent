@@ -904,6 +904,8 @@ def call_subagent(
 
         try:
             instance.suspended_handler._subagent_unique_name = answer_unique_name
+            # 推送主 Agent 回答到子 Agent tab（同步续答路径）
+            _maybe_push_subagent_instruction(answer_unique_name, reply_text)
             result_text, return_value, last_reply = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
