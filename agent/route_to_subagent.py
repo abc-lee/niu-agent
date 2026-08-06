@@ -60,6 +60,9 @@ def route_to_subagent(target: str, sender: str, content: str, source: str = 'db_
         pending_ask = get_pending_ask_registry()
         if pending_ask.set_answer(target, content):
             logger.info(f"[route] 主 Agent 回答 → {target}")
+            # 推送主 Agent 回答到子 Agent tab（异步路径）
+            from agent.subagent import _maybe_push_subagent_instruction
+            _maybe_push_subagent_instruction(target, content)
             return {"status": "ok", "message": f"已回答 {target}"}
         # set_answer 失败（无 pending future），降级推 supplement_queue
         logger.warning(f"[route] {target} 无 pending ask，降级推 supplement_queue")
