@@ -813,7 +813,7 @@ focusNodeBtn.addEventListener('click', () => {
   const node = fgData.nodes.find(n => n.id === currentSelectedNode);
   if (node && node.x != null) {
     graph.centerAt(node.x, node.y, 800);
-    graph.zoom(3, 800);
+    graph.zoom(5, 800);
   }
 });
 
