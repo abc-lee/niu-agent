@@ -198,6 +198,42 @@ def _read_max_output_tokens() -> int:
     return min(val, MAX_OUTPUT_TOKENS_CAP)
 
 
+def _maybe_push_subagent_instruction(handler_or_unique_name, content) -> bool:
+    """推送主 Agent 指令/回答到子 Agent 前端 tab。
+
+    在三个推送点调用：
+    1. _run_agent_loop 开头（初始指令，传 handler）
+    2. route_to_subagent sender='主Agent'（异步回答，传 unique_name 字符串）
+    3. call_subagent 续答路径（同步回答，传 unique_name 字符串）
+
+    兼容两种参数：handler 对象（取 _subagent_unique_name 属性）或 unique_name 字符串。
+
+    Args:
+        handler_or_unique_name: NiuHandler 实例（有 _subagent_unique_name 属性）或 unique_name 字符串。
+        content: 要推送的文本（主 Agent 指令或回答）。
+
+    Returns:
+        True 表示已推送，False 表示跳过（内容为空或无 unique_name）。
+    """
+    if not content:
+        return False
+    # 兼容 handler 对象和 unique_name 字符串
+    if isinstance(handler_or_unique_name, str):
+        unique_name = handler_or_unique_name
+    else:
+        unique_name = getattr(handler_or_unique_name, '_subagent_unique_name', None)
+    if not unique_name:
+        return False
+    try:
+        from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
+        notify_subagent_event_sync(unique_name, 'instruction', {'content': content})
+    except ImportError:
+        pass  # niu_api 未启动，静默降级
+    except Exception:
+        pass  # 推送失败不影响子 Agent 循环
+    return True
+
+
 def _run_agent_loop(
     client,
     system_prompt: str = "",  # 向后兼容（system_message 非 None 时优先）
@@ -240,6 +276,9 @@ def _run_agent_loop(
 
     if initial_user_content is None:
         initial_user_content = user_input
+
+    # 推送主 Agent 初始指令到子 Agent tab（早于 reply/thinking/tool_status）
+    _maybe_push_subagent_instruction(handler, initial_user_content)
 
     gen = agent_runner_loop(
         client=client,
