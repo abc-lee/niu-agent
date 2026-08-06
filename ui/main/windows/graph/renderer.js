@@ -550,8 +550,6 @@ async function pollChangelog() {
       // object (which has d3-resolved node references in link.source/target)
       // causes rendering corruption — nodes appear without edges, simulation
       // freezes, and the graph becomes unresponsive until restart.
-      // Cancel any pending reLayout zoomToFit since we're replacing graph data
-      _reLayoutPending = false;
       buildEdgeCountCache();
       const freshData = buildGraphData(); // includes pruneStalePositions()
       graph.graphData(freshData);
@@ -587,7 +585,7 @@ const updateStats = () => {
 // ===== Re-layout helper =====
 // force-graph: just set new data, d3-force simulation auto-reheats
 // No clear/render needed — smooth animated transition
-let _reLayoutPending = false; // guard against rapid consecutive reLayout calls
+
 function reLayout() {
   buildEdgeCountCache();
   applyForceConfig();
@@ -962,6 +960,8 @@ async function enterSubgraph(entityId, depth) {
     if (!_subgraphMode) {
       // 首次进入子图（搜索）：聚焦目标节点及直接邻居
       setTimeout(() => {
+        if (myRequestId !== _subgraphRequestId) return; // 已被更新的操作取代
+        if (!_subgraphMode || _subgraphCenterId !== entityId) return; // 已退出或中心改变
         const editor = graph.graphData().nodes;
         const targetNode = editor.find(n => n.id === entityId);
         if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
