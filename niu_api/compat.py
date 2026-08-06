@@ -894,6 +894,27 @@ async def _emergency_clear(
     )
     return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
 
+def _build_degraded_config(llm_config: dict) -> dict:
+    """
+    构造降级第一步的 LLM 配置（deepcopy，不修改原始）。
+    传入的 llm_config 应已注入 max_tokens（即 llm_config_with_max）。
+    """
+    import copy
+
+    degraded = copy.deepcopy(llm_config)
+
+    # 关闭 thinking
+    litellm_kwargs = dict(degraded.get("litellm_kwargs", {}))
+    litellm_kwargs["thinking"] = {"type": "disabled"}
+    degraded["litellm_kwargs"] = litellm_kwargs
+
+    # reasoning_effort 降一级
+    effort = degraded.get("reasoning_effort", "")
+    effort_map = {"xhigh": "high", "high": "medium", "medium": "low", "low": "minimal"}
+    if effort in effort_map:
+        degraded["reasoning_effort"] = effort_map[effort]
+
+    return degraded
 
 def _estimate_text_tokens(text: str) -> int:
     """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
