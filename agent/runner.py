@@ -729,6 +729,7 @@ class NiuRunner:
         self.base_system_prompt = self.static_system_prompt + self.dynamic_system_prefix
 
         self._current_channel_id = ""
+        self._im_channel_id = ""  # IM 通道继承：记录最近真实用户消息/定时任务的 channel_id
         # 首轮 resources 注入（拖入文件模式要求），_on_before_llm turn==1 时合并进 injection 后清空
         self._first_turn_extra_injection: str = ""
 
@@ -757,6 +758,12 @@ class NiuRunner:
         _registry.set_mcp_client(self._ext_mcp_client)
         # 注意：_connect_external_servers 是 async，需要在 async 上下文中调用
         # 这里暂时不调用，由 lifespan 的 startup 事件触发
+    def set_im_channel(self, channel_id: str) -> None:
+        """设置/清除 IM 通道。必须在 _chat_lock 持有时调用。"""
+        self._im_channel_id = channel_id
+
+    def get_im_channel(self) -> str:
+        return self._im_channel_id
 
     def _refresh_base_tools_schema_if_dirty(self):
         """每次对话开始时扫 ~/.niu/agents/，发现新 MD 就重算 base_tools_schema。
@@ -2789,7 +2796,11 @@ class NiuRunner:
             history: 可选的历史消息列表
         """
         logger.info(f"[Runner] chat() called, session_id={session_id}, input={user_input[:50]}")
+        if not channel_id and self._im_channel_id:
+            channel_id = self._im_channel_id
         self._current_channel_id = channel_id
+        if channel_id:
+            self._im_channel_id = channel_id
         # 重置首轮 resources 注入，防跨对话泄漏
         self._first_turn_extra_injection = ""
 
