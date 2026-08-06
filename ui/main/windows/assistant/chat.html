@@ -3028,6 +3028,10 @@
           case 'reconnected':
             addSubagentMessageToTab(unique_name, 'system', '连接已恢复，正在补发历史事件...');
             break;
+          case 'instruction':
+            // 主 Agent 传给子 Agent 的指令/回答，渲染为子 Agent tab 消息
+            addSubagentMessageToTab(unique_name, 'user', event.content);
+            break;
           case 'user':
             // 用户自己的补充信息回声，已在本地渲染过，跳过
             break;
