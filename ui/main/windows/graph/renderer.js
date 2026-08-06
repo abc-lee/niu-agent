@@ -278,8 +278,8 @@ const graph = ForceGraph()(container)
   .linkWidth(d => d.width)
   .linkCurvature(0)
   .d3AlphaDecay(0.0228)
+  .d3AlphaMin(0.001)
   .d3VelocityDecay(0.4)
-  .cooldownTime(15000)
   .onNodeClick((node) => {
     showDetail(node.id);
   })
@@ -971,28 +971,17 @@ async function enterSubgraph(entityId, depth) {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    _reLayoutPending = true;
-    const onLayoutStop = () => {
-      if (!_reLayoutPending) return;
-      _reLayoutPending = false;
-      // zoomToFit(0, 40): ms=0 无 Tween，立即适配画布
-      // 避免与后续 centerAt+zoom 的 Tween 冲突（两组 Tween 同时操作 zoom transform 会抖动）
-      graph.zoomToFit(0, 40);
-      // 立即聚焦中心实体（引擎已稳定，节点坐标不再漂移）
-      const fgData = graph.graphData();
-      const targetNode = fgData.nodes.find(n => n.id === entityId);
+    // 不等 onEngineStop——引擎收敛后可能不触发回调。
+    // 官方 click-to-focus 示例直接用 node.x/node.y 聚焦，不等引擎停止。
+    // graphData 后节点需要几帧才有坐标，延时 200ms 让引擎跑几轮再聚焦。
+    setTimeout(() => {
+      graph.zoomToFit(400, 40);
+      const targetNode = graph.graphData().nodes.find(n => n.id === entityId);
       if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
         graph.centerAt(targetNode.x, targetNode.y, 800);
         graph.zoom(5, 800);
-        // 聚焦动画 800ms，延迟 850ms 确保动画完成后闪烁
-        setTimeout(() => {
-          if (myRequestId !== _subgraphRequestId) return;
-          flashNodes([entityId]);
-        }, 850);
       }
-      graph.onEngineStop(() => {});
-    };
-    graph.onEngineStop(onLayoutStop);
+    }, 200);
     updateStats();
     // 子图状态在 _justReplacedData=false 之前设置，使 pollChangelog 守卫更内聚
     _subgraphMode = true;
