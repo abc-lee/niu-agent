@@ -77,12 +77,12 @@ describe('loadFontConfig', () => {
     assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
   });
 
-  test('font 配置缺 file 字段时降级为兜底', () => {
+  test('font 配置只有 name 没有 file 时使用系统字体（不注入 @font-face，fontFamily 为 name）', () => {
     const niuDir = _tmpDir;
     writePrefs(niuDir, { font: { name: 'MyHand' } });
     const result = loadFontConfig(niuDir);
-    assert.equal(result.fontFaceCss, '');
-    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
+    assert.equal(result.fontFaceCss, '', '系统字体模式不应注入 @font-face');
+    assert.equal(result.fontFamily, "'MyHand', serif");
   });
 
   test('preferences.json 是损坏 JSON 时降级为兜底', () => {
