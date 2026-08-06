@@ -335,7 +335,6 @@ async function loadGraphSnapshot() {
     const onFirstStop = () => {
       if (!_initZoomPending) return;
       _initZoomPending = false;
-
       graph.zoomToFit(400, 40);
       graph.onEngineStop(() => {}); // Reset to no-op (null would crash force-graph)
     };
@@ -558,7 +557,7 @@ async function pollChangelog() {
       // object (which has d3-resolved node references in link.source/target)
       // causes rendering corruption — nodes appear without edges, simulation
       // freezes, and the graph becomes unresponsive until restart.
-
+      // Cancel any pending reLayout zoomToFit since we're replacing graph data
       _reLayoutPending = false;
       buildEdgeCountCache();
       const freshData = buildGraphData(); // includes pruneStalePositions()
@@ -954,7 +953,7 @@ async function selectSearchEntity(entity) {
 
 async function enterSubgraph(entityId, depth) {
   _subgraphRequestId++;
-
+  const myRequestId = _subgraphRequestId;
   _justReplacedData = true;
   try {
     const result = await window.electronAPI.exploreNode(entityId, depth, 0, 'both');
@@ -974,7 +973,6 @@ async function enterSubgraph(entityId, depth) {
     graph.graphData(freshData);
     _reLayoutPending = true;
     const onLayoutStop = () => {
-
       if (!_reLayoutPending) return;
       _reLayoutPending = false;
       // zoomToFit(0, 40): ms=0 无 Tween，立即适配画布
