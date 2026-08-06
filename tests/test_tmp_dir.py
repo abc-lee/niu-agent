@@ -119,3 +119,110 @@ class TestCleanupAllTmp:
         from agent.tmp_dir import cleanup_all_tmp
         deleted = cleanup_all_tmp()
         assert deleted == 0
+
+
+class TestCleanupOldTmp:
+    def test_deletes_old_files_in_root(self, tmp_dir_fixture):
+        """根目录超过24小时的文件被删除"""
+        import time
+        from agent.tmp_dir import cleanup_old_tmp
+        # 创建一个旧文件（修改时间设为2天前）
+        old_file = tmp_dir_fixture / "old.txt"
+        old_file.write_text("old")
+        old_time = time.time() - (2 * 24 * 3600)  # 2天前
+        os.utime(old_file, (old_time, old_time))
+        # 创建一个新文件
+        new_file = tmp_dir_fixture / "new.txt"
+        new_file.write_text("new")
+        deleted = cleanup_old_tmp()
+        assert deleted == 1
+        assert not old_file.exists()
+        assert new_file.exists()
+
+    def test_deletes_old_files_in_subdirectory(self, tmp_dir_fixture):
+        """子目录中超过24小时的文件被删除"""
+        import time
+        from agent.tmp_dir import cleanup_old_tmp
+        subdir = tmp_dir_fixture / "subdir"
+        subdir.mkdir()
+        old_file = subdir / "old_sub.txt"
+        old_file.write_text("old in subdir")
+        old_time = time.time() - (2 * 24 * 3600)
+        os.utime(old_file, (old_time, old_time))
+        deleted = cleanup_old_tmp()
+        assert deleted == 1
+        assert not old_file.exists()
+
+    def test_deletes_old_files_in_nested_subdirectory(self, tmp_dir_fixture):
+        """多级子目录中超过24小时的文件被删除"""
+        import time
+        from agent.tmp_dir import cleanup_old_tmp
+        deep_dir = tmp_dir_fixture / "a" / "b" / "c"
+        deep_dir.mkdir(parents=True)
+        old_file = deep_dir / "deep_old.txt"
+        old_file.write_text("deep old")
+        old_time = time.time() - (2 * 24 * 3600)
+        os.utime(old_file, (old_time, old_time))
+        deleted = cleanup_old_tmp()
+        assert deleted == 1
+        assert not old_file.exists()
+
+    def test_deletes_empty_directories(self, tmp_dir_fixture):
+        """文件被删除后空目录被删除"""
+        import time
+        from agent.tmp_dir import cleanup_old_tmp
+        subdir = tmp_dir_fixture / "empty_after_cleanup"
+        subdir.mkdir()
+        old_file = subdir / "old.txt"
+        old_file.write_text("old")
+        old_time = time.time() - (2 * 24 * 3600)
+        os.utime(old_file, (old_time, old_time))
+        deleted = cleanup_old_tmp()
+        assert deleted == 1
+        assert not subdir.exists(), "空目录应被删除"
+
+    def test_keeps_nonempty_directories(self, tmp_dir_fixture):
+        """子目录中有新文件时不删除目录"""
+        import time
+        from agent.tmp_dir import cleanup_old_tmp
+        subdir = tmp_dir_fixture / "has_new_file"
+        subdir.mkdir()
+        # 旧文件会被删除
+        old_file = subdir / "old.txt"
+        old_file.write_text("old")
+        old_time = time.time() - (2 * 24 * 3600)
+        os.utime(old_file, (old_time, old_time))
+        # 新文件保留
+        new_file = subdir / "new.txt"
+        new_file.write_text("new")
+        cleanup_old_tmp()
+        assert subdir.exists(), "有新文件的目录不应被删除"
+        assert new_file.exists()
+
+    def test_keeps_recent_files(self, tmp_dir_fixture):
+        """24小时内的文件不被删除"""
+        from agent.tmp_dir import cleanup_old_tmp
+        recent_file = tmp_dir_fixture / "recent.txt"
+        recent_file.write_text("recent")
+        deleted = cleanup_old_tmp()
+        assert deleted == 0
+        assert recent_file.exists()
+
+    def test_returns_zero_for_empty_dir(self, tmp_dir_fixture):
+        """空目录返回0"""
+        from agent.tmp_dir import cleanup_old_tmp
+        deleted = cleanup_old_tmp()
+        assert deleted == 0
+
+    def test_keeps_files_under_24_hours(self, tmp_dir_fixture):
+        """23小时前的文件不被删除（超过24小时才删除，用 mtime < cutoff 严格小于判断）"""
+        import time
+        from agent.tmp_dir import cleanup_old_tmp
+        # 23小时前的文件 — 不应删除
+        recent_file = tmp_dir_fixture / "23h.txt"
+        recent_file.write_text("recent")
+        recent_time = time.time() - (23 * 3600)
+        os.utime(recent_file, (recent_time, recent_time))
+        deleted = cleanup_old_tmp()
+        assert deleted == 0
+        assert recent_file.exists()
