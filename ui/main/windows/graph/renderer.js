@@ -1,4 +1,13 @@
 // force-graph renderer — based on vasturiano/force-graph (d3-force engine)
+// 等待 d3-force 布局收敛后执行动作。
+// 固定延迟对节点数量变化的场景不稳：节点多时 200ms 坐标未稳定，zoomToFit 算错 bbox。
+// 按节点数量估算延迟，节点多则多等。
+function waitForSettle(fn) {
+  const n = currentData.nodes.length;
+  // 每个节点约 30ms 布局时间，最少 300ms，最多 5s
+  const delay = Math.min(5000, Math.max(300, n * 30));
+  setTimeout(fn, delay);
+}
 
 // ===== Type Colors =====
 const typeColors = {
@@ -592,10 +601,10 @@ function reLayout() {
   applyForceConfig();
   const data = buildGraphData();
   graph.graphData(data);
-  // 200ms 后重新定位全图
-  setTimeout(() => {
+  // 等坐标稳定后重新定位全图
+  waitForSettle(() => {
     graph.zoomToFit(400, 40);
-  }, 200);
+  });
 }
 
 // ===== Perspective Mode =====
@@ -958,15 +967,15 @@ async function enterSubgraph(entityId, depth) {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    // 200ms 后聚焦——不用 onEngineStop（收敛后不触发），节点坐标 200ms 后已有效
-    setTimeout(() => {
+    // 等节点坐标稳定后 zoomToFit + 聚焦。不用 onEngineStop（收敛后不触发）。
+    waitForSettle(() => {
       graph.zoomToFit(400, 40);
       const targetNode = graph.graphData().nodes.find(n => n.id === entityId);
       if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
         graph.centerAt(targetNode.x, targetNode.y, 800);
         graph.zoom(5, 800);
       }
-    }, 200);
+    });
     updateStats();
     // 子图状态在 _justReplacedData=false 之前设置，使 pollChangelog 守卫更内聚
     _subgraphMode = true;
@@ -1023,10 +1032,10 @@ async function exitSubgraph() {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    // 200ms 后重新定位全图
-    setTimeout(() => {
+    // 等坐标稳定后重新定位全图
+    waitForSettle(() => {
       graph.zoomToFit(400, 40);
-    }, 200);
+    });
     updateStats();
   } finally {
     _justReplacedData = false;
