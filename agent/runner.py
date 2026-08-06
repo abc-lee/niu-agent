@@ -1851,6 +1851,7 @@ class NiuRunner:
                 logger.warning(f"[Runner] Force: context-manager failed: {e}")
                 result = ""
 
+            _force_halved_msg_ids = None  # 降级砍半的前半段 msg_ids
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
@@ -1860,33 +1861,37 @@ class NiuRunner:
                 logger.warning(f"[Compact] Runner: context-manager LLM error: {error_msg}")
                 return {"status": "skipped", "reason": f"LLM error: {error_msg}"}
 
-            # 截断时触发内联应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
-            # 同步实现：用 self._sync_delete_messages / self._sync_update_message，不调 async _emergency_clear
+            # 截断时触发三级降级（关思考链→砍半消息→报失败）
             if result and result.startswith("COMPACT_TRUNCATED:"):
-                logger.warning("[Compact] runner.py force output truncated, triggering emergency clear")
-                from niu_api.compat import _find_protected_range
-                _force_id_set = set(_force_msg_ids)
-                _force_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _force_id_set]
-                _protect_n = _read_protect_recent_count()
-                _protect_start = _find_protected_range(_force_msgs, _protect_n)
-                if _protect_start <= 0 or _protect_start >= len(_force_msg_ids):
-                    logger.warning(f"[Compact] Runner history all protected ({len(_force_msg_ids)} msgs), no clear needed")
-                    return {"status": "skipped", "mode": "force", "reason": "truncated, no clear needed (all protected)"}
-
-                delete_ids = _force_msg_ids[:_protect_start]
-                oldest_kept_id = _force_msg_ids[_protect_start]
-
-                # _sync_delete_messages 只接收 msg_ids（不接收 session_id）
-                self._sync_delete_messages(delete_ids)
-
-                # 最旧保留条改为"压缩失败"摘要
-                self._sync_update_message(
-                    message_id=oldest_kept_id,
-                    content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
+                logger.warning("[Compact] runner.py force output truncated, starting degradation")
+                from niu_api.compat import _compact_with_degradation_sync, _build_force_prompt as _bfp
+                result_str, actual_msg_ids, halved_msg_ids = _compact_with_degradation_sync(
+                    agent_name="context-manager",
+                    prompt=prompt,
+                    compress_history=_force_history,
+                    compress_msg_ids=_force_msg_ids,
+                    llm_config=llm_config_with_max,
+                    prompt_builder=_bfp,
+                    prompt_builder_kwargs={
+                        "display_tokens": display_tokens,
+                        "compress_target_tokens": target_tokens,
+                        "usage_percent": usage_percent,
+                        "force_history": _force_history,
+                        "last_compress_id": last_compress_id,
+                        "dream_idx_in_force": _dream_idx_in_force,
+                    },
+                    call_fn=call_subagent_with_auto_answer,
                 )
-
-                logger.warning(f"[Compact] Runner emergency cleared: deleted {len(delete_ids)} msgs, kept recent {len(_force_msg_ids) - _protect_start}")
-                return {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
+                if result_str is None:
+                    return {"status": "skipped", "reason": "compress failed: output truncated after all degradation steps"}
+                # 降级成功，用返回值替代 result
+                result = result_str
+                _force_msg_ids = actual_msg_ids
+                _force_halved_msg_ids = halved_msg_ids
+                # 重建 idx→UUID 映射（砍半后 msg_ids 变化，旧映射失效）
+                _f_idx_to_id = {}
+                for _i, _mid in enumerate(_force_msg_ids):
+                    _f_idx_to_id[_i + 1] = _mid
 
             # 正常返回，剥离 <analysis> 草稿块（在解析前）
             logger.info(f"[Runner] Force: context-manager completed, length={len(result)}")
@@ -1934,6 +1939,9 @@ class NiuRunner:
 
                 # 转换为 UUID
                 deletes = [_f_idx_to_id[i] for i in sorted(delete_idxs) if i in _f_idx_to_id]
+                # 砍半掉的前半段 msg_ids 加入删除列表
+                if _force_halved_msg_ids:
+                    deletes.extend(_force_halved_msg_ids)
                 updates = [
                     {"message_id": _f_idx_to_id[idx], "content": content}
                     for idx, content in update_list if idx in _f_idx_to_id
