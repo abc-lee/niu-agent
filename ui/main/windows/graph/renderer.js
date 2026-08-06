@@ -330,15 +330,7 @@ async function loadGraphSnapshot() {
     graph.graphData(data);
     updateStats();
 
-    // Initial load: zoom to fit once, then unregister
-    let _initZoomPending = true;
-    const onFirstStop = () => {
-      if (!_initZoomPending) return;
-      _initZoomPending = false;
-      graph.zoomToFit(400, 40);
-      graph.onEngineStop(() => {}); // Reset to no-op (null would crash force-graph)
-    };
-    graph.onEngineStop(onFirstStop);
+    // 不做 zoomToFit——让用户自由探索，收敛后不扰乱视图
   } catch (error) {
     console.error('Failed to load graph:', error);
     hideLoading();
@@ -597,18 +589,13 @@ const updateStats = () => {
 let _reLayoutPending = false; // guard against rapid consecutive reLayout calls
 function reLayout() {
   buildEdgeCountCache();
-  applyForceConfig(); // Apply forces BEFORE graphData so simulation uses correct parameters
+  applyForceConfig();
   const data = buildGraphData();
   graph.graphData(data);
-  // Wait for simulation to settle before zooming to fit, then unregister
-  _reLayoutPending = true;
-  const onLayoutStop = () => {
-    if (!_reLayoutPending) return; // stale callback from a previous reLayout
-    _reLayoutPending = false;
+  // 200ms 后重新定位全图
+  setTimeout(() => {
     graph.zoomToFit(400, 40);
-    graph.onEngineStop(() => {}); // Reset to no-op (null would crash force-graph)
-  };
-  graph.onEngineStop(onLayoutStop);
+  }, 200);
 }
 
 // ===== Perspective Mode =====
@@ -971,9 +958,7 @@ async function enterSubgraph(entityId, depth) {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    // 不等 onEngineStop——引擎收敛后可能不触发回调。
-    // 官方 click-to-focus 示例直接用 node.x/node.y 聚焦，不等引擎停止。
-    // graphData 后节点需要几帧才有坐标，延时 200ms 让引擎跑几轮再聚焦。
+    // 200ms 后聚焦——不用 onEngineStop（收敛后不触发），节点坐标 200ms 后已有效
     setTimeout(() => {
       graph.zoomToFit(400, 40);
       const targetNode = graph.graphData().nodes.find(n => n.id === entityId);
@@ -1038,14 +1023,10 @@ async function exitSubgraph() {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    _reLayoutPending = true;
-    const onLayoutStop = () => {
-      if (!_reLayoutPending) return;
-      _reLayoutPending = false;
+    // 200ms 后重新定位全图
+    setTimeout(() => {
       graph.zoomToFit(400, 40);
-      graph.onEngineStop(() => {});
-    };
-    graph.onEngineStop(onLayoutStop);
+    }, 200);
     updateStats();
   } finally {
     _justReplacedData = false;
