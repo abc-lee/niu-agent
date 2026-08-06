@@ -531,8 +531,8 @@ codesign --force --sign - /Applications/niu.app
 ```json
 {
   "font": {
-    "name": "字体显示名（CSS font-family 名，自定义）",
-    "file": "字体文件名（放在 ~/.niu/fonts/ 目录下）"
+    "name": "字体名（CSS font-family 名，自定义）",
+    "file": "字体文件名（放在 ~/.niu/fonts/ 目录下，可选）"
   }
 }
 ```
@@ -540,6 +540,20 @@ codesign --force --sign - /Applications/niu.app
 ### 字体文件目录
 
 用户自定义字体文件（.ttf/.otf）放在 `~/.niu/fonts/` 目录下。配置里 `file` 字段只填文件名，不填完整路径。
+
+### 系统字体模式
+
+只配 `name` 不配 `file` 时，直接引用系统已安装字体，不内联字体文件、不注入 `@font-face`，只覆盖 `font-family`。
+
+适用于系统已有字体（如 macOS 的 `PingFang SC`、Windows 的 `Microsoft YaHei`），无需下载字体文件。
+
+```json
+{
+  "font": {
+    "name": "PingFang SC"
+  }
+}
+```
 
 ### 不配置时的缺省字体
 
@@ -570,9 +584,8 @@ codesign --force --sign - /Applications/niu.app
 ### 容错
 
 以下情况自动降级为系统默认字体（不注入 `@font-face`、不覆盖 `font-family`），不影响使用：
-- `preferences.json` 不存在或无 `font` 段
-- `font` 段缺 `name` 或 `file` 字段
-- 字体文件不存在（`~/.niu/fonts/` 下找不到）
+- `font` 段缺 `name` 字段
+- `font` 段配了 `file` 但字体文件不存在（`~/.niu/fonts/` 下找不到）
 - `preferences.json` JSON 格式损坏
 
 ## 分册索引
