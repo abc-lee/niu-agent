@@ -1319,6 +1319,9 @@ async def test_llm(request: Request) -> dict:
                 mock_resp = e.value
             # 思考模型可能只输出 reasoning_content 而无文本 chunk，
             # 但 MockResponse 会包含 thinking/content 字段
+            # stream_error=True 表示流式传输中途出错，partial content 不可信
+            if mock_resp and getattr(mock_resp, 'stream_error', False):
+                return "", False  # 无内容，触发"模型返回空响应"错误提示
             text = "".join(chunks)
             has_content = bool(text.strip()) or (
                 mock_resp is not None and (getattr(mock_resp, 'content', None) or getattr(mock_resp, 'thinking', None))
