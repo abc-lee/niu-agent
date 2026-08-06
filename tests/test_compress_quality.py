@@ -745,12 +745,16 @@ def test_runner_mode3_prompt_contains_methodology(monkeypatch):
 
     captured = {"prompt": None, "llm_config": None, "history": None}
 
+    _call_n = {"n": 0}
+
     def fake_call_subagent(*args, **kwargs):
         if kwargs.get("agent_name") == "context-manager":
-            captured["prompt"] = kwargs.get("task", "")
-            captured["llm_config"] = kwargs.get("llm_config", {})
-            captured["history"] = kwargs.get("history")
-            return "COMPACT_TRUNCATED:[输出因超过最大长度被自动截断，内容不完整。]"  # 触发应急清空分支（同时验证 prompt 已捕获）
+            if _call_n["n"] == 0:
+                captured["prompt"] = kwargs.get("task", "")
+                captured["llm_config"] = kwargs.get("llm_config", {})
+                captured["history"] = kwargs.get("history")
+            _call_n["n"] += 1
+            return "COMPACT_TRUNCATED:[输出因超过最大长度被自动截断，内容不完整。]"  # 触发降级分支（同时验证 prompt 已捕获）
         return "skip"
 
     # call_subagent 在 _on_context_high_usage 内部从 agent.subagent 局部 import，patch 源模块
@@ -812,18 +816,17 @@ def test_runner_mode3_prompt_contains_methodology(monkeypatch):
     assert isinstance(captured["history"], list)
     assert len(captured["history"]) == 2  # 2 条消息都进 history（无保护消息排除）
 
-    # 截断分支断言（messages 不足 10 条，应返回 no clear needed）
+    # 截断分支断言（降级耗尽后返回 skipped，无 mode 字段）
     assert result is not None
     assert result.get("status") == "skipped"
-    assert result.get("mode") == "force"
-    assert "no clear needed" in result.get("reason", "")
+    assert "degradation" in result.get("reason", "") or "truncated" in result.get("reason", "")
 
 
-def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
-    """runner.py force 截断时触发应急清空（同步版）：保留最近 N 条，上面全删，最旧改"压缩失败"摘要。
+def test_runner_mode3_truncate_triggers_degradation(monkeypatch):
+    """runner.py force 截断时触发三级降级（同步版）：关思考链→砍半消息→报失败。
 
     构造 15 条消息，protect_recent_count=0（全部进 _force_msg_ids），
-    monkeypatch _find_protected_range 返回 5 → 删前 5 条（msg-1~5），第 6 条（msg-6）改摘要。
+    call_subagent 始终返回 COMPACT_TRUNCATED → 降级耗尽 → 返回 skipped（不删历史）。
     """
     from agent import runner as runner_module
     from agent import subagent as subagent_module
@@ -866,8 +869,7 @@ def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
     monkeypatch.setattr(subagent_module, "_read_protect_recent_count", lambda: 0)
     monkeypatch.setattr(subagent_module, "_read_context_window_tokens", lambda: 200000)
 
-    # _find_protected_range 在 protect_count=0 时返回 len(messages)（全部保护），
-    # 这会让 runner emergency_clear 走 "all protected" 分支。
+    # _find_protected_range monkeypatch（降级路径不走 emergency_clear，保留以防降级成功后进入正常解析路径）
     # monkeypatch 让它在 emergency_clear 路径返回 5（前 5 条可删，后 10 条保留）
     monkeypatch.setattr(compat, "_find_protected_range", lambda msgs, n: 5)
 
@@ -878,15 +880,12 @@ def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
     runner = _build_niu_runner_for_test()
     result = runner._on_context_high_usage([], 180000, 200000)
 
-    # 验证返回 skipped + emergency cleared
+    # 验证返回 skipped + degradation 耗尽（无 mode 字段，不删历史）
     assert result is not None
-    assert result == {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
-    # 删了前 5 条（msg-1 到 msg-5）
-    assert len(deleted_ids) == 5
-    assert deleted_ids == [f"msg-{i}" for i in range(1, 6)]
-    # 只更新最旧保留条（msg-6）
-    assert len(updated_msgs) == 1
-    assert updated_msgs[0][0] == "msg-6"
-    assert "压缩失败" in updated_msgs[0][1]
-    # 单次调用不重试
-    assert call_count["n"] == 1, f"call_subagent 应只调用 1 次，实际 {call_count['n']} 次"
+    assert result.get("status") == "skipped"
+    assert "degradation" in result.get("reason", "") or "truncated" in result.get("reason", "")
+    # 降级耗尽后 early return，不执行删除/更新
+    assert len(deleted_ids) == 0
+    assert len(updated_msgs) == 0
+    # 原始调用 + 降级第二步（thinking 未开启，跳过第一步）= 2 次
+    assert call_count["n"] == 2, f"call_subagent 应调用 2 次，实际 {call_count['n']} 次"
