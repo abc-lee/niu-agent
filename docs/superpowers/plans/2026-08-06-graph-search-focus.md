@@ -4,7 +4,7 @@
 
 **Goal:** 搜索选中实体后，自动聚焦到该实体（居中+放大），而非仅 zoomToFit 全部节点导致目标实体太小看不到。
 
-**Architecture:** 修改 `renderer.js` 的 `enterSubgraph` 函数：在 d3-force 引擎稳定后（`onEngineStop` 回调），用 `centerAt(node.x, node.y)` + `zoom(N)` 聚焦中心实体，替代当前的 `zoomToFit` 全图适配。同时修复 `focusNodeBtn` 按钮逻辑使其在子图模式下也能正确聚焦。
+**Architecture:** 修改 `renderer.js` 的 `enterSubgraph` 函数：在 d3-force 引擎稳定后（`onEngineStop` 回调），用 `zoomToFit(0, 40)` 即时适配画布（无 Tween 动画，避免与后续 centerAt+zoom Tween 冲突），然后立即 `centerAt(node.x, node.y, 800)` + `zoom(5, 800)` 聚焦中心实体。所有 setTimeout 回调内部检查 `myRequestId !== _subgraphRequestId` 防止快速操作时旧定时器在错误图数据上执行。`flashNodes` 移入 onEngineStop 回调，在聚焦动画完成后执行。
 
 **Tech Stack:** force-graph v1.51.4 (vasturiano/force-graph), vanilla JS, Electron
 
@@ -16,15 +16,31 @@
 
 **force-graph v1.51.4** — 2D force-directed graph，基于 d3-force 引擎，HTML5 canvas 渲染。
 
-关键 API（来自 README）：
+关键 API（来自 README + 源码验证）：
 - `graph.graphData(data)` — 设置图数据，触发 d3-force 重新模拟
-- `graph.zoomToFit(ms, px, nodeFilterFn)` — 自动缩放/平移使所有节点适配画布
-- `graph.centerAt(x, y, ms)` — 设置视口中心坐标，可选动画时长
-- `graph.zoom(num, ms)` — 设置缩放级别（1=原始，>1放大，<1缩小），可选动画时长
-- `graph.onEngineStop(fn)` — d3-force 引擎停止时回调（布局冻结）
-- `graph.graphData()` — 无参数时获取当前图数据（含节点 x/y 坐标）
-- `graph.graph2ScreenCoords(x, y)` — 图坐标→屏幕坐标
-- `graph.d3ReheatSimulation()` — 重新加热模拟（alpha=1）
+- `graph.zoomToFit(ms, px, nodeFilterFn)` — 自动缩放/平移使所有节点适配画布。**源码验证**：内部调用 `this.centerAt(center.x, center.y, transitionDuration)` + `this.zoom(zoomK, transitionDuration)`，各创建一个 Tween（持续 ms 毫秒）。ms=0 时无 Tween，立即完成。
+- `graph.centerAt(x, y, ms)` — 设置视口中心坐标，ms>0 时创建 Tween 动画
+- `graph.zoom(num, ms)` — 设置缩放级别（1=原始，>1放大，<1缩小），ms>0 时创建 Tween 动画
+- `graph.onEngineStop(fn)` — d3-force 引擎停止时回调。**覆盖式**：每次调用替换之前的回调。引擎停止后只触发一次。
+- `graph.graphData()` — 无参数时获取当前图数据（含节点 x/y 坐标）。引擎停止后坐标稳定不变。
+- `graph.centerAt()` — 无参数时返回当前中心坐标 `{x, y}`
+
+### 官方示例验证
+
+**click-to-focus**（`node_modules/force-graph/example/click-to-focus/index.html`）：
+```js
+.onNodeClick(node => {
+  Graph.centerAt(node.x, node.y, 1000);
+  Graph.zoom(8, 2000);
+});
+```
+官方做法：直接 `centerAt` + `zoom`，不需要先 `zoomToFit`。
+
+**fit-to-canvas**（`node_modules/force-graph/example/fit-to-canvas/index.html`）：
+```js
+Graph.onEngineStop(() => Graph.zoomToFit(400));
+```
+官方做法：在 `onEngineStop` 回调中调 `zoomToFit`。
 
 ### 问题根因
 
@@ -46,39 +62,25 @@ selectSearchEntity (L946)
 `zoomToFit(400, 40)` 把子图所有节点缩放到画布内。当子图有 20+ 节点时，中心实体只占几个像素——用户看不到搜索的实体在哪。
 
 **问题 2：`flashNodes` 时序错误。**
-`setTimeout(() => flashNodes([entityId]), 600)` — 600ms 时 d3-force 还在跑（cooldownTime=15000ms），节点位置还在漂移。闪烁的节点可能已移到画布边缘。且 `flashNodes` 内部用 `graph.centerAt(c.x, c.y)` 触发重绘，保持当前视口中心不变——不会追踪到闪烁节点。
+`setTimeout(() => flashNodes([entityId]), 600)` — 600ms 时 d3-force 还在跑（cooldownTime=15000ms），节点位置还在漂移。闪烁的节点可能已移到画布边缘。
 
-**问题 3：`onEngineStop` 回调互相覆盖。**
-`loadGraphSnapshot`（L342）、`reLayout`（L612）、`enterSubgraph`（L986）、`exitSubgraph`（L1047）都调用 `graph.onEngineStop()` 注册回调。每次调用覆盖前一个。快速操作时回调可能被覆盖导致 `zoomToFit` 被跳过。
-
-### 官方推荐做法
-
-force-graph 官方 `click-to-focus` 示例：
-```js
-.onNodeClick(node => {
-  Graph.centerAt(node.x, node.y, 1000);  // 居中到节点
-  Graph.zoom(8, 2000);                    // 放大
-});
-```
-
-本项目 `focusNodeBtn`（"在图谱中聚焦"按钮，L810-819）已经实现了正确逻辑：
-```js
-graph.centerAt(node.x, node.y, 800);
-graph.zoom(3, 800);
-```
-但需要用户手动点击——搜索后应该自动执行。
+**问题 3：`_subgraphMode` 设置时序。**
+`selectSearchEntity` 在 `enterSubgraph` 返回后才设 `_subgraphMode = true`（L953）。虽然 enterSubgraph return → L955 是同步代码，pollChangelog 是宏任务不会插入，但将 `_subgraphMode = true` 移入 `enterSubgraph` 内部更内聚。
 
 ### 解决方案
 
 修改 `enterSubgraph` 的 `onLayoutStop` 回调：
-1. 先 `zoomToFit(400, 40)` 让 d3-force 稳定后的布局适配画布（快速概览）
-2. 立即用 `centerAt(entityNode.x, entityNode.y, 800)` + `zoom(5, 800)` 聚焦中心实体
+1. `zoomToFit(0, 40)` — **ms=0 无 Tween**，立即适配画布（避免与后续 centerAt+zoom Tween 冲突）
+2. 立即 `centerAt(targetNode.x, targetNode.y, 800)` + `zoom(5, 800)` — 聚焦中心实体，800ms Tween 动画
+3. 850ms 后（centerAt+zoom 动画完成）`flashNodes([entityId])` — 引擎已稳定，位置不再漂移
 
-`flashNodes` 改为在 `onLayoutStop` 回调中执行（引擎稳定后位置不再漂移），而非 600ms 定时器。
+所有 setTimeout 回调内部检查 `myRequestId !== _subgraphRequestId`，防止快速操作（深度切换/退出子图）时旧定时器在错误图数据上执行。
 
-修改 `exitSubgraph` 的 `onLayoutStop` 回调保持 `zoomToFit`（退出子图返回总览需要看到全图）。
+将 `_subgraphMode = true` 和 `_subgraphCenterId = entityId` 移入 `enterSubgraph` 内部（在 `_justReplacedData = false` 之前），使守卫逻辑更内聚。
 
-`focusNodeBtn` 按钮保持现有逻辑（已正确），但增大 zoom 值从 3 到 5 以与搜索聚焦一致。
+修改 `focusNodeBtn` 的 zoom 值从 3 到 5，与搜索聚焦一致。
+
+`exitSubgraph` 的 `zoomToFit` 保持不变（返回总览需要看到全图）。`hideDetail()` 内部已清除 `currentSelectedNode`（L782），无需额外处理。
 
 ---
 
@@ -88,17 +90,37 @@ graph.zoom(3, 800);
 |---|---|---|
 | `ui/main/windows/graph/renderer.js` | force-graph 渲染器，搜索/子图/聚焦逻辑 | 修改 |
 
-只修改一个文件。所有修改集中在 `renderer.js` 的 `enterSubgraph` 函数和 `focusNodeBtn` 事件监听器。
+只修改一个文件。修改集中在 `enterSubgraph` 函数和 `focusNodeBtn` 事件监听器。
 
 ---
 
 ### Task 1: 修改 `enterSubgraph` 聚焦逻辑
 
 **Files:**
-- Modify: `ui/main/windows/graph/renderer.js:979-992`
+- Modify: `ui/main/windows/graph/renderer.js:959-1000`
 
-**当前代码（L979-992）：**
+**当前代码（L959-1000）：**
 ```js
+async function enterSubgraph(entityId, depth) {
+  _subgraphRequestId++;
+  const myRequestId = _subgraphRequestId;
+  _justReplacedData = true;
+  try {
+    const result = await window.electronAPI.exploreNode(entityId, depth, 0, 'both');
+    if (myRequestId !== _subgraphRequestId) return false;
+    if (!result.nodes || result.nodes.length === 0) {
+      _justReplacedData = false;
+      if (_subgraphMode) await exitSubgraph();
+      return false;
+    }
+    currentData = { nodes: result.nodes, edges: result.edges || [] };
+    _prevNodePositions = {};
+    currentPerspective = null;
+    currentMatchIds = null;
+    buildEdgeCountCache();
+    applyForceConfig();
+    const freshData = buildGraphData();
+    graph.graphData(freshData);
     _reLayoutPending = true;
     const onLayoutStop = () => {
       if (!_reLayoutPending) return;
@@ -114,66 +136,174 @@ graph.zoom(3, 800);
     showDetail(entityId);
     setTimeout(() => flashNodes([entityId]), 600);
     return true;
+  } catch (err) {
+    console.error('Failed to enter subgraph:', err);
+    if (myRequestId !== _subgraphRequestId) return false;
+    _justReplacedData = false;
+    return false;
+  }
+}
 ```
 
-**问题分析：**
-1. `onLayoutStop` 只做 `zoomToFit` — 适配全部节点，中心实体太小
-2. `flashNodes` 在 600ms 定时器中执行 — 引擎还在跑（15s cooldown），节点位置漂移
-3. `_justReplacedData = false` 在 `onEngineStop` 注册后立即执行 — pollChangelog 可能在引擎稳定前就触发增量更新，覆盖回调
+- [ ] **Step 1: 修改 `enterSubgraph` 的 `onLayoutStop` 回调和子图状态设置**
 
-- [ ] **Step 1: 修改 `enterSubgraph` 的 `onLayoutStop` 回调**
-
-将 `renderer.js` L979-992 替换为：
+将 `renderer.js` L959-1000 整个 `enterSubgraph` 函数替换为：
 
 ```js
+async function enterSubgraph(entityId, depth) {
+  _subgraphRequestId++;
+  const myRequestId = _subgraphRequestId;
+  _justReplacedData = true;
+  try {
+    const result = await window.electronAPI.exploreNode(entityId, depth, 0, 'both');
+    if (myRequestId !== _subgraphRequestId) return false;
+    if (!result.nodes || result.nodes.length === 0) {
+      _justReplacedData = false;
+      if (_subgraphMode) await exitSubgraph();
+      return false;
+    }
+    currentData = { nodes: result.nodes, edges: result.edges || [] };
+    _prevNodePositions = {};
+    currentPerspective = null;
+    currentMatchIds = null;
+    buildEdgeCountCache();
+    applyForceConfig();
+    const freshData = buildGraphData();
+    graph.graphData(freshData);
     _reLayoutPending = true;
     const onLayoutStop = () => {
       if (!_reLayoutPending) return;
       _reLayoutPending = false;
-      // 先 zoomToFit 让布局适配画布，再聚焦到中心实体
-      graph.zoomToFit(400, 40);
-      // 在 zoomToFit 完成后聚焦中心实体（zoomToFit 动画 400ms，延迟 450ms 确保完成）
-      setTimeout(() => {
-        const fgData = graph.graphData();
-        const targetNode = fgData.nodes.find(n => n.id === entityId);
-        if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
-          graph.centerAt(targetNode.x, targetNode.y, 800);
-          graph.zoom(5, 800);
-          // 引擎已稳定，节点位置不再漂移，此时闪烁
-          setTimeout(() => flashNodes([entityId]), 850);
-        }
-      }, 450);
+      // zoomToFit(0, 40): ms=0 无 Tween，立即适配画布
+      // 避免与后续 centerAt+zoom 的 Tween 冲突（两组 Tween 同时操作 zoom transform 会抖动）
+      graph.zoomToFit(0, 40);
+      // 立即聚焦中心实体（引擎已稳定，节点坐标不再漂移）
+      const fgData = graph.graphData();
+      const targetNode = fgData.nodes.find(n => n.id === entityId);
+      if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
+        graph.centerAt(targetNode.x, targetNode.y, 800);
+        graph.zoom(5, 800);
+        // 聚焦动画 800ms，延迟 850ms 确保动画完成后闪烁
+        setTimeout(() => {
+          if (myRequestId !== _subgraphRequestId) return;
+          flashNodes([entityId]);
+        }, 850);
+      }
       graph.onEngineStop(() => {});
     };
     graph.onEngineStop(onLayoutStop);
     updateStats();
+    // 子图状态在 _justReplacedData=false 之前设置，使 pollChangelog 守卫更内聚
+    _subgraphMode = true;
+    _subgraphCenterId = entityId;
+    _subgraphDepth = depth;
     _justReplacedData = false;
 
     currentSelectedNode = entityId;
     showDetail(entityId);
     return true;
+  } catch (err) {
+    console.error('Failed to enter subgraph:', err);
+    if (myRequestId !== _subgraphRequestId) return false;
+    _justReplacedData = false;
+    return false;
+  }
+}
 ```
 
 关键改动：
-- `onLayoutStop` 回调中：先 `zoomToFit(400, 40)` 适配全图，450ms 后（zoomToFit 动画完成）`centerAt` + `zoom(5)` 聚焦中心实体
-- `flashNodes` 移到 `onLayoutStop` 回调内部，在 `centerAt`+`zoom` 动画完成后（850ms）执行 — 引擎已稳定，位置不再漂移
-- 删除外层 `setTimeout(() => flashNodes([entityId]), 600)` — 不再需要，闪烁已在回调中处理
+1. `onLayoutStop` 回调：`zoomToFit(0, 40)` 无 Tween 立即适配 → `centerAt`+`zoom(5, 800)` 聚焦中心实体 → 850ms 后 `flashNodes`（检查 `myRequestId`）
+2. `flashNodes` 的 setTimeout 内部检查 `myRequestId !== _subgraphRequestId` — 快速操作时旧定时器自动跳过
+3. 删除外层 `setTimeout(() => flashNodes([entityId]), 600)` — 闪烁已在 onLayoutStop 回调内处理
+4. `_subgraphMode = true` / `_subgraphCenterId` / `_subgraphDepth` 移入 enterSubgraph 内部（在 `_justReplacedData = false` 之前）
 
-- [ ] **Step 2: 验证修改无语法错误**
+- [ ] **Step 2: 修改 `selectSearchEntity` 移除冗余的子图状态设置**
+
+`selectSearchEntity`（L946-957）当前在 `enterSubgraph` 返回后设置 `_subgraphMode`、`_subgraphCenterId`、调用 `updateSubgraphControls`。由于 Task 1 已将这些状态移入 `enterSubgraph`，`selectSearchEntity` 只需调用 `updateSubgraphControls`。
+
+将 `renderer.js` L946-957 替换为：
+
+```js
+async function selectSearchEntity(entity) {
+  closeSearchDropdown();
+  _justReplacedData = true;  // Block pollChangelog BEFORE the await
+  const success = await enterSubgraph(entity.id, 1);
+  if (success) {
+    updateSubgraphControls();
+  }
+}
+```
+
+删除的代码：`_subgraphDepth = 1`（已在 enterSubgraph 中通过 depth 参数设置）、`_subgraphMode = true`（已移入）、`_subgraphCenterId = entity.id`（已移入）。
+
+- [ ] **Step 3: 修改 `onNodeRightClick` 中的子图中心设置**
+
+`onNodeRightClick`（L286-293）当前在 `enterSubgraph` 返回后设置 `_subgraphCenterId`。由于 Task 1 已将此移入 `enterSubgraph`，需要删除冗余设置。
+
+将 `renderer.js` L286-293 替换为：
+
+```js
+  .onNodeRightClick(async (node) => {
+    if (_subgraphMode) {
+      await enterSubgraph(node.id, _subgraphDepth);
+    } else {
+      expandNode(node.id);
+    }
+  })
+```
+
+删除的代码：`const success = await enterSubgraph(...)` + `if (success) _subgraphCenterId = node.id`。`_subgraphCenterId` 已在 `enterSubgraph` 内部设置。
+
+- [ ] **Step 4: 修改 `depth-up` 事件监听器移除冗余的深度设置**
+
+`depth-up`（L1071-1079）当前在 `enterSubgraph` 返回后设置 `_subgraphDepth`。由于 Task 1 已将此移入 `enterSubgraph`，需要简化。
+
+将 `renderer.js` L1071-1079 替换为：
+
+```js
+document.getElementById('depth-up').addEventListener('click', async () => {
+  if (!_subgraphMode) return;
+  const newDepth = Math.min(5, _subgraphDepth + 1);
+  await enterSubgraph(_subgraphCenterId, newDepth);
+  if (_subgraphDepth === newDepth) {
+    document.getElementById('depth-display').textContent = newDepth;
+  }
+});
+```
+
+改动：删除 `const success = ...` + `if (success) { _subgraphDepth = newDepth; ... }`。`_subgraphDepth` 已在 `enterSubgraph` 内部设置（`_subgraphDepth = depth`）。检查 `_subgraphDepth === newDepth` 确认 enterSubgraph 成功（失败时不会更新深度）。
+
+- [ ] **Step 5: 修改 `depth-down` 事件监听器移除冗余的深度设置**
+
+将 `renderer.js` L1081-1089 替换为：
+
+```js
+document.getElementById('depth-down').addEventListener('click', async () => {
+  if (!_subgraphMode) return;
+  const newDepth = Math.max(1, _subgraphDepth - 1);
+  await enterSubgraph(_subgraphCenterId, newDepth);
+  if (_subgraphDepth === newDepth) {
+    document.getElementById('depth-display').textContent = newDepth;
+  }
+});
+```
+
+- [ ] **Step 6: 验证修改无语法错误**
 
 Run: `node -c ui/main/windows/graph/renderer.js`
 Expected: 无输出（语法正确）
 
-- [ ] **Step 3: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 git add ui/main/windows/graph/renderer.js
 git commit -m "fix: enterSubgraph now focuses on center entity after layout settles
 
-Instead of only zoomToFit (which fits ALL nodes, making the target entity
-too small to see), now zoomToFit first, then centerAt + zoom(5) on the
-target entity. flashNodes moved into onLayoutStop callback (after engine
-stabilizes) instead of 600ms timer (when positions were still drifting)."
+- zoomToFit(0, 40) instant (no Tween) then centerAt+zoom(5, 800) focus
+- flashNodes moved into onLayoutStop (after engine stabilizes)
+- setTimeout callbacks guard with myRequestId against stale execution
+- _subgraphMode/_subgraphCenterId/_subgraphDepth moved into enterSubgraph
+- selectSearchEntity/onNodeRightClick/depth-up/depth-down simplified"
 ```
 
 ---
@@ -201,7 +331,7 @@ focusNodeBtn.addEventListener('click', () => {
 
 - [ ] **Step 1: 修改 zoom 值从 3 到 5**
 
-将 `renderer.js` L817 的 `graph.zoom(3, 800)` 改为 `graph.zoom(5, 800)`：
+将 `renderer.js` L810-819 替换为：
 
 ```js
 focusNodeBtn.addEventListener('click', () => {
@@ -230,111 +360,12 @@ git commit -m "fix: focusNodeBtn zoom level 3→5 to match enterSubgraph focus"
 
 ---
 
-### Task 3: 修复 `exitSubgraph` 同样使用聚焦逻辑
-
-**Files:**
-- Modify: `ui/main/windows/graph/renderer.js:1040-1047`
-
-**当前代码（L1040-1047）：**
-```js
-    _reLayoutPending = true;
-    const onLayoutStop = () => {
-      if (!_reLayoutPending) return;
-      _reLayoutPending = false;
-      graph.zoomToFit(400, 40);
-      graph.onEngineStop(() => {});
-    };
-    graph.onEngineStop(onLayoutStop);
-    updateStats();
-```
-
-**分析：** `exitSubgraph` 返回总览模式，`zoomToFit` 是正确的行为（需要看到全图）。不需要聚焦特定节点。**此 Task 不修改代码**，仅确认 `exitSubgraph` 的 `zoomToFit` 行为正确。
-
-但有一个问题：如果用户之前选中了一个节点（`currentSelectedNode`），退出子图后 `currentSelectedNode` 仍然指向子图中的实体 ID，但该实体可能不在总览数据中。`exitSubgraph` 中调用了 `hideDetail()`（L1052），但没有清除 `currentSelectedNode`。
-
-- [ ] **Step 1: 在 `exitSubgraph` 中清除 `currentSelectedNode`**
-
-在 `renderer.js` 的 `exitSubgraph` 函数中，找到 `} finally {` 块（L1049-1053）：
-
-```js
-  } finally {
-    _justReplacedData = false;
-    hideLoading();
-    hideDetail();
-  }
-```
-
-改为：
-
-```js
-  } finally {
-    _justReplacedData = false;
-    hideLoading();
-    hideDetail();
-    currentSelectedNode = null;
-  }
-```
-
-这样退出子图后，`focusNodeBtn` 不会尝试聚焦一个已不存在的节点。
-
-- [ ] **Step 2: 验证语法**
-
-Run: `node -c ui/main/windows/graph/renderer.js`
-Expected: 无输出（语法正确）
-
-- [ ] **Step 3: 提交**
-
-```bash
-git add ui/main/windows/graph/renderer.js
-git commit -m "fix: clear currentSelectedNode on exitSubgraph to prevent stale focus"
-```
-
----
-
-### Task 4: 修复深度切换（depth-up/depth-down）的聚焦逻辑
-
-**Files:**
-- Modify: `ui/main/windows/graph/renderer.js:1071-1089`
-
-**当前代码（L1071-1089）：**
-```js
-document.getElementById('depth-up').addEventListener('click', async () => {
-  if (!_subgraphMode) return;
-  const newDepth = Math.min(5, _subgraphDepth + 1);
-  const success = await enterSubgraph(_subgraphCenterId, newDepth);
-  if (success) {
-    _subgraphDepth = newDepth;
-    document.getElementById('depth-display').textContent = newDepth;
-  }
-});
-
-document.getElementById('depth-down').addEventListener('click', async () => {
-  if (!_subgraphMode) return;
-  const newDepth = Math.max(1, _subgraphDepth - 1);
-  const success = await enterSubgraph(_subgraphCenterId, newDepth);
-  if (success) {
-    _subgraphDepth = newDepth;
-    document.getElementById('depth-display').textContent = newDepth;
-  }
-});
-```
-
-**分析：** 深度切换调用 `enterSubgraph(_subgraphCenterId, newDepth)`，而 Task 1 修改后的 `enterSubgraph` 已经会聚焦到 `entityId` 参数（即 `_subgraphCenterId`）。所以深度切换**自动继承**了 Task 1 的聚焦逻辑——切换深度后也会自动聚焦中心实体。
-
-**此 Task 不需要修改代码**，仅验证深度切换后聚焦逻辑正确工作。
-
-- [ ] **Step 1: 确认深度切换路径不需要额外修改**
-
-`enterSubgraph` 的 `entityId` 参数在深度切换时是 `_subgraphCenterId`（L1074, L1084），Task 1 修改的 `onLayoutStop` 回调用 `entityId` 查找目标节点并聚焦。深度切换时同一个中心实体会被聚焦，行为正确。
-
-无需修改。跳到下一个 Task。
-
----
-
-### Task 5: 端到端验证
+### Task 3: 端到端验证
 
 **Files:**
 - 无文件修改，仅验证
+
+**说明：** `exitSubgraph` 的 `zoomToFit` 保持不变（返回总览需要看到全图）。`hideDetail()` 内部已清除 `currentSelectedNode`（renderer.js L782），无需额外处理。
 
 - [ ] **Step 1: 启动应用**
 
@@ -351,6 +382,7 @@ Expected: 应用正常启动，知识图谱窗口可用
    - **中心实体自动居中并放大（zoom=5）**
    - 中心实体闪烁 3 次
    - 详情面板显示该实体信息
+   - 深度控制按钮显示 "1"
 
 - [ ] **Step 3: 验证深度切换聚焦**
 
@@ -359,13 +391,21 @@ Expected: 应用正常启动，知识图谱窗口可用
 3. 点击深度 "−" 按钮
 4. 验证：子图缩小后，中心实体仍然居中放大并闪烁
 
-- [ ] **Step 4: 验证"在图谱中聚焦"按钮**
+- [ ] **Step 4: 验证快速操作不冲突**
+
+1. 搜索选中一个实体，进入子图模式
+2. 在聚焦动画进行中（800ms 内）立即点击深度 "+" 按钮
+3. 验证：不会在错误图数据上执行旧定时器的 centerAt+zoom，新子图正确聚焦
+4. 在聚焦动画进行中立即点击"返回总览"
+5. 验证：总览图不会被执行 zoom(5)，正确显示全图
+
+- [ ] **Step 5: 验证"在图谱中聚焦"按钮**
 
 1. 在子图模式下，点击其他节点（非中心实体）
 2. 点击详情面板中的"在图谱中聚焦"按钮
 3. 验证：视图居中放大到该节点（zoom=5）
 
-- [ ] **Step 5: 验证退出子图**
+- [ ] **Step 6: 验证退出子图**
 
 1. 点击"返回总览"按钮
 2. 验证：
@@ -374,7 +414,7 @@ Expected: 应用正常启动，知识图谱窗口可用
    - 详情面板关闭
    - "在图谱中聚焦"按钮不会聚焦到已不存在的节点
 
-- [ ] **Step 6: 验证右键扩散聚焦**
+- [ ] **Step 7: 验证右键扩散聚焦**
 
 1. 在子图模式下，右键点击一个节点
 2. 验证：以该节点为中心扩散，新中心实体居中放大并闪烁
@@ -387,11 +427,11 @@ Expected: 应用正常启动，知识图谱窗口可用
 
 | 用户需求 | 对应 Task |
 |---|---|
-| 搜索点击后重新聚焦被选择的实体 | Task 1: `enterSubgraph` 的 `onLayoutStop` 改为 `centerAt`+`zoom` |
-| 重新缩放页面以适配当前图结构 | Task 1: 先 `zoomToFit` 适配全图，再 `centerAt`+`zoom(5)` 聚焦 |
+| 搜索点击后重新聚焦被选择的实体 | Task 1: `enterSubgraph` 的 `onLayoutStop` 改为 `centerAt`+`zoom(5)` |
+| 重新缩放页面以适配当前图结构 | Task 1: `zoomToFit(0, 40)` 即时适配全图，再 `centerAt`+`zoom(5)` 聚焦 |
 | 节点多的时候能看到搜索聚焦的点 | Task 1: `zoom(5)` 放大到 5 倍，中心实体占据画布中心 |
 | 手工能找到它在屏幕什么位置 | Task 1: `centerAt` 把实体移到画布中心 + `flashNodes` 闪烁 |
-| 深度切换后也聚焦 | Task 4 验证：深度切换调用 `enterSubgraph` 自动继承聚焦逻辑 |
+| 深度切换后也聚焦 | Task 1: 深度切换调用 `enterSubgraph` 自动继承聚焦逻辑 |
 
 ### 2. Placeholder scan
 
@@ -400,19 +440,34 @@ Expected: 应用正常启动，知识图谱窗口可用
 ### 3. Type consistency
 
 ✅ `enterSubgraph` 的 `entityId` 参数在所有调用方一致（`selectSearchEntity`、`depth-up`、`depth-down`、`onNodeRightClick`）。
-✅ `currentSelectedNode` 在 `showDetail`、`hideDetail`、`focusNodeBtn`、`exitSubgraph` 中使用一致。
+✅ `enterSubgraph` 的 `depth` 参数在所有调用方一致。
+✅ `_subgraphMode` / `_subgraphCenterId` / `_subgraphDepth` 在 `enterSubgraph` 内部统一设置，调用方不再重复设置。
 ✅ `zoom(5)` 在 Task 1（`enterSubgraph`）和 Task 2（`focusNodeBtn`）中一致。
+✅ `myRequestId` 守卫在 `enterSubgraph` 函数体内所有异步路径（exploreNode 返回、onLayoutStop 回调、setTimeout 回调、catch 块）中一致使用。
+
+### 4. 审查问题修复对照
+
+| 审查问题 | 严重度 | 修复方式 |
+|---|---|---|
+| P1: setTimeout 链无取消机制 | P1 | setTimeout 回调内部检查 `myRequestId !== _subgraphRequestId`，快速操作时旧定时器自动跳过 |
+| P2: zoomToFit Tween 与 centerAt+zoom Tween 冲突 | P2 | `zoomToFit(0, 40)` ms=0 无 Tween，立即完成，不与后续 centerAt+zoom Tween 冲突 |
+| P3: Task 3 currentSelectedNode=null 冗余 | P3 | 删除原 Task 3。`hideDetail()` 内部已清除 `currentSelectedNode` |
+| P2: _subgraphMode 设置时序 | P2 | `_subgraphMode = true` 移入 `enterSubgraph` 内部（在 `_justReplacedData = false` 之前） |
+| P3: pollChangelog NaN 检测交互 | P3 | 当前安全（_subgraphMode 阻止 pollChangelog），记录在分析中 |
+| P3: onEngineStop 回调覆盖 | P3 | 当前安全（子图模式下 perspective 按钮被禁用），记录在分析中 |
 
 ### 关键设计决策
 
-1. **先 `zoomToFit` 再 `centerAt`+`zoom`**：`zoomToFit` 让 d3-force 稳定后的布局先适配画布（避免极端坐标），然后聚焦到中心实体。如果跳过 `zoomToFit` 直接 `centerAt`+`zoom`，可能因为节点坐标范围过大导致 `centerAt` 到一个偏离的位置。
+1. **`zoomToFit(0, 40)` 无 Tween**：force-graph 源码验证 `zoomToFit(ms, px)` 内部调用 `centerAt(x, y, ms)` + `zoom(k, ms)`，ms>0 时各创建 Tween。ms=0 时无 Tween，立即完成布局适配。这避免了旧 zoomToFit Tween 与新 centerAt+zoom Tween 同时操作 zoom transform 导致的视口抖动。
 
-2. **450ms 延迟**：`zoomToFit(400, 40)` 动画时长 400ms，延迟 450ms 确保动画完成后再 `centerAt`+`zoom`。如果两者同时执行，`zoomToFit` 的平移和 `centerAt` 的平移会冲突。
+2. **不使用 setTimeout 延迟分离 zoomToFit 和 centerAt**：原计划用 450ms 延迟等 zoomToFit(400ms) Tween 完成，但 Tween 完成时间不保证（requestAnimationFrame 帧率波动、标签页后台时 Tween 延迟）。改用 `zoomToFit(0, 40)` 无 Tween 方案，彻底消除时序依赖。
 
-3. **850ms 延迟闪烁**：`centerAt(x, y, 800)` 动画 800ms，延迟 850ms 确保聚焦动画完成后再闪烁。引擎已稳定，节点位置不再漂移，闪烁位置准确。
+3. **`myRequestId` 守卫**：`enterSubgraph` 已有 `_subgraphRequestId` 机制防止快速点击竞态。所有 setTimeout 回调内部检查 `myRequestId !== _subgraphRequestId`，确保旧定时器在新请求到来时自动跳过。
 
-4. **`zoom(5)` 而非 `zoom(8)`**：官方示例用 `zoom(8)`，但本项目子图节点更密集（有描述/媒体节点），`zoom(8)` 可能太近看不到邻居。`zoom(5)` 平衡——中心实体足够大，也能看到直接邻居。
+4. **`zoom(5)` 而非 `zoom(8)`**：官方 click-to-focus 示例用 `zoom(8)`，但本项目子图节点更密集（有描述/媒体节点），`zoom(8)` 可能太近看不到邻居。`zoom(5)` 平衡——中心实体足够大，也能看到直接邻居。
 
-5. **不修改 `exitSubgraph` 的 `zoomToFit`**：退出子图返回总览需要看到全图，`zoomToFit` 是正确行为。只清除 `currentSelectedNode` 防止 stale focus。
+5. **子图状态内聚**：`_subgraphMode` / `_subgraphCenterId` / `_subgraphDepth` 移入 `enterSubgraph` 内部设置，调用方（`selectSearchEntity`、`onNodeRightClick`、`depth-up`、`depth-down`）不再重复设置。这消除了状态设置分散导致的时序依赖。
 
-6. **不修改 `reLayout` 和 `loadGraphSnapshot`**：这两个路径的 `zoomToFit` 是正确的——初始加载和透视切换需要看到全图。
+6. **不修改 `exitSubgraph`**：退出子图返回总览需要看到全图，`zoomToFit(400, 40)` 是正确行为。`hideDetail()` 内部已清除 `currentSelectedNode`，无需额外处理。
+
+7. **不修改 `reLayout` 和 `loadGraphSnapshot`**：这两个路径的 `zoomToFit` 是正确的——初始加载和透视切换需要看到全图。
