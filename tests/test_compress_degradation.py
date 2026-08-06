@@ -127,3 +127,151 @@ def test_renumber_history_no_idx_prefix():
     history = [{"role": "user", "content": "plain message"}]
     result = _renumber_history(history)
     assert result[0]["content"] == "plain message"
+
+
+def test_degradation_step1_success():
+    """降级第一步（关思考链）成功 → 返回 (方案, 原始 msg_ids, None)。
+    函数只执行降级调用，不执行原始调用（原始调用由调用方在调用本函数之前完成）。"""
+    from niu_api.compat import _compact_with_degradation_sync
+
+    call_count = [0]
+    def mock_call_fn(**kwargs):
+        call_count[0] += 1
+        # call 1 = 降级第一步，直接返回成功
+        return "keep=1,2\nupdate=1|[摘要] summary"
+
+    result_str, actual_ids, halved_ids = _compact_with_degradation_sync(
+        agent_name="context-manager",
+        prompt="original prompt",
+        compress_history=[{"role": "user", "content": "[idx:1] msg"}],
+        compress_msg_ids=["id1"],
+        llm_config={"reasoning_effort": "high", "litellm_kwargs": {"max_tokens": 32000}},
+        prompt_builder=lambda **kw: "rebuilt prompt",
+        prompt_builder_kwargs={"display_tokens": 1000, "compress_target_tokens": 500,
+                               "usage_percent": 80, "compress_history": []},
+        call_fn=mock_call_fn,
+    )
+    assert result_str is not None
+    assert "keep=" in result_str
+    assert actual_ids == ["id1"]  # 未砍半，返回原始 msg_ids
+    assert halved_ids is None
+    assert call_count[0] == 1  # 只有降级第一步1次
+
+
+def test_degradation_step2_success():
+    """降级第二步（砍半）成功 → 返回 (方案, 后半段 msg_ids, 前半段 msg_ids)。"""
+    from niu_api.compat import _compact_with_degradation_sync
+
+    call_count = [0]
+    def mock_call_fn(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "COMPACT_TRUNCATED:truncated"  # 降级第一步截断
+        return "keep=1\nupdate=1|[摘要] summary"  # 降级第二步成功
+
+    history = [{"role": "user", "content": f"[idx:{i+1}] msg{i+1}"} for i in range(4)]
+    msg_ids = ["id1", "id2", "id3", "id4"]
+
+    result_str, actual_ids, halved_ids = _compact_with_degradation_sync(
+        agent_name="context-manager",
+        prompt="original prompt",
+        compress_history=history,
+        compress_msg_ids=msg_ids,
+        llm_config={"reasoning_effort": "high", "litellm_kwargs": {"max_tokens": 32000}},
+        prompt_builder=lambda **kw: "rebuilt prompt",
+        prompt_builder_kwargs={"display_tokens": 1000, "compress_target_tokens": 500,
+                               "usage_percent": 80, "compress_history": []},
+        call_fn=mock_call_fn,
+    )
+    assert result_str is not None
+    assert "keep=" in result_str
+    # 砍半后 actual_ids 是后半段（target_cut=2, history[2] 是 user → cut_idx=2）
+    assert actual_ids == ["id3", "id4"]
+    assert halved_ids == ["id1", "id2"]  # 前半段
+    assert call_count[0] == 2  # 降级第一步1 + 降级第二步1
+
+
+def test_degradation_all_fail():
+    """全部失败 → 返回 (None, 原始 msg_ids, None)。"""
+    from niu_api.compat import _compact_with_degradation_sync
+
+    def mock_call_fn(**kwargs):
+        return "COMPACT_TRUNCATED:always truncated"
+
+    history = [{"role": "user", "content": "[idx:1] msg"},
+               {"role": "assistant", "content": "[idx:2] reply"},
+               {"role": "user", "content": "[idx:3] msg3"},
+               {"role": "assistant", "content": "[idx:4] reply4"}]
+    msg_ids = ["id1", "id2", "id3", "id4"]
+
+    result_str, actual_ids, halved_ids = _compact_with_degradation_sync(
+        agent_name="context-manager",
+        prompt="original prompt",
+        compress_history=history,
+        compress_msg_ids=msg_ids,
+        llm_config={"reasoning_effort": "high", "litellm_kwargs": {"max_tokens": 32000}},
+        prompt_builder=lambda **kw: "rebuilt prompt",
+        prompt_builder_kwargs={"display_tokens": 1000, "compress_target_tokens": 500,
+                               "usage_percent": 80, "compress_history": []},
+        call_fn=mock_call_fn,
+    )
+    assert result_str is None
+    assert actual_ids == msg_ids  # 返回原始
+    assert halved_ids is None
+
+
+def test_degradation_dream_idx_in_halved_range():
+    """Force 路径 dream_idx 落在裁剪范围内 → 不执行砍半，报失败。
+    dream_idx 是 1-based, cut_idx 是 0-based。
+    dream_idx=1 <= cut_idx=2 → dream 边界在 0-based idx 0（前半段），报失败。"""
+    from niu_api.compat import _compact_with_degradation_sync
+
+    call_count = [0]
+    def mock_call_fn(**kwargs):
+        call_count[0] += 1
+        # call 1 = 降级第一步，返回截断
+        return "COMPACT_TRUNCATED:truncated"
+
+    history = [{"role": "user", "content": f"[idx:{i+1}] msg{i+1}"} for i in range(4)]
+    msg_ids = ["id1", "id2", "id3", "id4"]
+
+    result_str, actual_ids, halved_ids = _compact_with_degradation_sync(
+        agent_name="context-manager",
+        prompt="original prompt",
+        compress_history=history,
+        compress_msg_ids=msg_ids,
+        llm_config={"reasoning_effort": "high", "litellm_kwargs": {"max_tokens": 32000}},
+        prompt_builder=lambda **kw: "rebuilt prompt",
+        prompt_builder_kwargs={"display_tokens": 1000, "compress_target_tokens": 500,
+                               "usage_percent": 80, "force_history": [],
+                               "last_compress_id": None,
+                               "dream_idx_in_force": 1},  # 1-based, <= cut_idx=2
+        call_fn=mock_call_fn,
+    )
+    # dream_idx=1 <= cut_idx=2 → 报失败，不执行砍半
+    assert result_str is None
+    assert call_count[0] == 1  # 只有降级第一步1次，没有降级第二步
+
+
+def test_degradation_subagent_error():
+    """降级第一步返回 SUBAGENT_ERROR → 报失败。"""
+    from niu_api.compat import _compact_with_degradation_sync
+
+    call_count = [0]
+    def mock_call_fn(**kwargs):
+        call_count[0] += 1
+        return "SUBAGENT_ERROR:AuthenticationError: invalid key"
+
+    result_str, actual_ids, halved_ids = _compact_with_degradation_sync(
+        agent_name="context-manager",
+        prompt="original prompt",
+        compress_history=[{"role": "user", "content": "[idx:1] msg"}],
+        compress_msg_ids=["id1"],
+        llm_config={"reasoning_effort": "high", "litellm_kwargs": {"max_tokens": 32000}},
+        prompt_builder=lambda **kw: "rebuilt prompt",
+        prompt_builder_kwargs={"display_tokens": 1000, "compress_target_tokens": 500,
+                               "usage_percent": 80, "compress_history": []},
+        call_fn=mock_call_fn,
+    )
+    assert result_str is None
+    assert call_count[0] == 1  # 只有降级第一步，SUBAGENT_ERROR 直接报失败
