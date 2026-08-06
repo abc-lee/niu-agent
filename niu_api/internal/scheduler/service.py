@@ -149,9 +149,13 @@ def trigger_callback(task: dict) -> str | None:
         from niu_api.channel import get_channel_router
         router = get_channel_router()
         if router.has_channel("im"):
-            push_chat_id = task.get("chat_id") or ""
+            # 优先用 task chat_id，回退到继承的 _im_channel_id（确保 route_out 走 SEND 终结卡片）
+            from niu_api.chat import get_or_create_runner
+            _runner = get_or_create_runner()
+            im_cid = _runner.get_im_channel() if _runner else ""
+            push_chat_id = task.get("chat_id") or im_cid
             push_future = asyncio.run_coroutine_threadsafe(
-                router.push(agent_reply, "im", push_chat_id),
+                router.route_out(agent_reply, "im", push_chat_id),
                 loop,
             )
             push_future.result(timeout=30)
@@ -248,9 +252,13 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
             from niu_api.channel import get_channel_router
             router = get_channel_router()
             if router.has_channel("im"):
-                push_chat_id = task.get("chat_id") or ""
+                # 优先用 task chat_id，回退到继承的 _im_channel_id（确保 route_out 走 SEND 终结卡片）
+                from niu_api.chat import get_or_create_runner
+                _runner = get_or_create_runner()
+                im_cid = _runner.get_im_channel() if _runner else ""
+                push_chat_id = task.get("chat_id") or im_cid
                 push_future = asyncio.run_coroutine_threadsafe(
-                    router.push(agent_reply, "im", push_chat_id),
+                    router.route_out(agent_reply, "im", push_chat_id),
                     loop,
                 )
                 push_future.result(timeout=30)
