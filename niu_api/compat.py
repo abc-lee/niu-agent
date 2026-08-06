@@ -2949,6 +2949,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         )
 
                     compress_result = await asyncio.to_thread(run_context_manager_mode2)
+                    _halved_msg_ids = None  # 降级砍半的前半段 msg_ids（正常路径为 None）
 
                     if is_stop_requested():
                         logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
@@ -2961,17 +2962,32 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         logger.warning(f"[Compact] Mode-2: context-manager LLM error: {error_msg}")
                         return {"status": "skipped", "mode": "sleep", "reason": f"LLM error: {error_msg}"}
 
-                    # 截断时触发应急清空（保留最近完整用户会话段落，上面全删，最旧改"压缩失败"摘要）
+                    # 截断时触发三级降级（关思考链→砍半消息→报失败）
                     if compress_result and compress_result.startswith("COMPACT_TRUNCATED:"):
-                        logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
-                        return await _emergency_clear(
-                            history=compress_history,
-                            msg_ids=compress_msg_ids,
-                            protect_recent_count=_read_protect_recent_count(),
-                            store=store,
-                            session_id=session_id,
-                            mode="sleep",
+                        logger.warning("[Compact] Mode-2 output truncated, starting degradation")
+                        result_str, actual_msg_ids, halved_msg_ids = await asyncio.to_thread(
+                            _compact_with_degradation_sync,
+                            agent_name="context-manager",
+                            prompt=prompt,
+                            compress_history=compress_history,
+                            compress_msg_ids=compress_msg_ids,
+                            llm_config=llm_config_with_max,
+                            prompt_builder=_build_mode2_prompt,
+                            prompt_builder_kwargs={
+                                "display_tokens": display_tokens,
+                                "compress_target_tokens": target_tokens,
+                                "usage_percent": usage_percent,
+                                "compress_history": compress_history,
+                            },
+                            call_fn=call_subagent_with_auto_answer,
                         )
+                        if result_str is None:
+                            return {"status": "skipped", "mode": "sleep",
+                                    "reason": "compress failed: output truncated after all degradation steps"}
+                        # 降级成功，用返回值替代 compress_result
+                        compress_result = result_str
+                        compress_msg_ids = actual_msg_ids
+                        _halved_msg_ids = halved_msg_ids
 
                     # 正常返回，剥离 <analysis> 草稿块（在解析前）
                     logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
@@ -3009,6 +3025,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         all_idxs = set(_idx_to_id.keys())
                         delete_idxs = all_idxs - keep_idxs
                         deletes = [_idx_to_id[i] for i in sorted(delete_idxs) if i in _idx_to_id]
+                        # 砍半掉的前半段 msg_ids 加入删除列表
+                        if _halved_msg_ids:
+                            deletes.extend(_halved_msg_ids)
                         for idx, _ in update_list:
                             if idx not in _idx_to_id:
                                 logger.warning(f"[Compact] Mode-2 LLM returned out-of-range update idx {idx}, silently dropped")
