@@ -117,8 +117,6 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 | 浏览器自动化 | Playwright |
 | 数据库 | SQLite |
 
-**MCP 同进程架构**：MCP 服务器不再走 stdio 进程通信，而是通过 ToolRegistry 在主进程内直接调用。10 次工具调用从旧架构的约 40 秒降到接近 0 秒。
-
 ## 下载安装
 
 ### 方式一：直接下载（推荐普通用户）
@@ -211,7 +209,7 @@ Niu 的照片处理功能（拖入照片自动入库、人脸识别、人物管�
 InsightFace 的 `buffalo_l` 模型（~326MB）是非商业许可证，**默认不含在安装包里**。Niu **不会自动下载**（避免下载卡死），本地没有模型时人脸识别直接报错，需手动下载安装：
 
 1. 从 InsightFace 官方 GitHub 下载 `buffalo_l.zip`：
-   - 地址：https://github.com/deepinsight/insightface/releases/tag/v0.7.3
+   - 地址：https://github.com/deepinsight/insightface/releases
    - 找 `buffalo_l.zip` 下载（国内访问慢可用代理）
 2. 解压后把 5 个 `.onnx` 文件放到：
    - **macOS**：`/Applications/niu.app/Contents/Resources/models/models/buffalo_l/`
