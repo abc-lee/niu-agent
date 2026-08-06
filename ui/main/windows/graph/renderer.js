@@ -601,7 +601,6 @@ function reLayout() {
   applyForceConfig(); // Apply forces BEFORE graphData so simulation uses correct parameters
   const data = buildGraphData();
   graph.graphData(data);
-  graph.d3ReheatSimulation();
   // Wait for simulation to settle before zooming to fit, then unregister
   _reLayoutPending = true;
   const onLayoutStop = () => {
@@ -973,7 +972,6 @@ async function enterSubgraph(entityId, depth) {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    graph.d3ReheatSimulation(); // 重置 alpha=1 重启引擎（graphData 不重置 alpha，收敛后静态引擎不会重新跑）
     _reLayoutPending = true;
     const onLayoutStop = () => {
 
@@ -1053,7 +1051,6 @@ async function exitSubgraph() {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    graph.d3ReheatSimulation();
     _reLayoutPending = true;
     const onLayoutStop = () => {
       if (!_reLayoutPending) return;
