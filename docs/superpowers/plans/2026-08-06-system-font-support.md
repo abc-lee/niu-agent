@@ -10,21 +10,25 @@
 
 ---
 
+## File Structure
+
 | File | Responsibility |
 |---|---|
 | `ui/main/lib/font-config.js` | 核心字体配置加载模块。修改验证逻辑，增加"只有 name"分支 |
-| `tests/test_font_config.js` | 字体配置测试。新增系统字体模式的测试用例 |
+| `tests/test_font_config.js` | 字体配置测试。修改"缺 file"测试为系统字体模式断言 |
 | `docs/SYSTEM_MANUAL.md` | 系统管理手册。同步字体配置说明（file 变为可选、新增系统字体模式说明、修正容错描述） |
 
 **不改动的文件**（现有逻辑已兼容）：
 - `ui/main/preload-assistant.js` / `preload-chat.js` / `preload-sticky.js` — 只透传 `fontFaceCss` 和 `fontFamily`，不关心来源
 - `ui/main/windows/assistant/chat.html` / `spirit.html` / `sticky.html` — 注入 IIFE 已处理 `fontFaceCss=''` 的情况（不注入 @font-face），`fontFamily` 非空就注入 font-family 覆盖
 
+**文档分册检查：** 已搜索全部 14 个分册（`docs/manual-*.md`），均无字体相关内容。字体配置文档只存在于 `SYSTEM_MANUAL.md` 主册 L525-576。
+
 ---
 
 ## 当前逻辑 vs 目标逻辑
 
-### 当前（font-config.js L32-34）
+### 当前（font-config.js L33）
 ```
 fontCfg 存在？
   ├─ 否 → 降级（空）
@@ -52,36 +56,49 @@ fontCfg 存在？
 
 ---
 
-### Task 1: 新增系统字体测试用例
+### Task 1: 修改"缺 file"测试用例（从降级改为系统字体模式）
 
 **Files:**
-- Test: `tests/test_font_config.js`
+- Test: `tests/test_font_config.js:80-86`
 
-- [ ] **Step 1: 写测试用例**
+**注意：** 现有测试 "font 配置缺 file 字段时降级为兜底"（L80-86）断言 `fontFamily === DEFAULT_FONT_FAMILY`（空）。新逻辑改为系统字体模式后，这个断言会失败。需要修改这个测试。
 
-在 `tests/test_font_config.js` 的 `describe('loadFontConfig', ...)` 块内，在 "font 配置缺 file 字段时降级为兜底" 测试之后（L86 之后），添加一个新测试：
+- [ ] **Step 1: 修改现有测试用例**
+
+将 `tests/test_font_config.js` L80-86 的：
 
 ```javascript
-  test('font 配置只有 name 没有 file 时使用系统字体（fontFaceCss 为空，fontFamily 为 name）', () => {
+  test('font 配置缺 file 字段时降级为兜底', () => {
     const niuDir = _tmpDir;
-    writePrefs(niuDir, { font: { name: 'PingFang SC' } });
-    // 不写字体文件，也不配 file
+    writePrefs(niuDir, { font: { name: 'MyHand' } });
+    const result = loadFontConfig(niuDir);
+    assert.equal(result.fontFaceCss, '');
+    assert.equal(result.fontFamily, DEFAULT_FONT_FAMILY);
+  });
+```
+
+替换为：
+
+```javascript
+  test('font 配置只有 name 没有 file 时使用系统字体（不注入 @font-face，fontFamily 为 name）', () => {
+    const niuDir = _tmpDir;
+    writePrefs(niuDir, { font: { name: 'MyHand' } });
     const result = loadFontConfig(niuDir);
     assert.equal(result.fontFaceCss, '', '系统字体模式不应注入 @font-face');
-    assert.equal(result.fontFamily, "'PingFang SC', serif");
+    assert.equal(result.fontFamily, "'MyHand', serif");
   });
 ```
 
 - [ ] **Step 2: 运行测试验证它失败**
 
 Run: `node --test tests/test_font_config.js`
-Expected: FAIL — 新测试 "只有 name 没有 file" 会失败，因为当前逻辑返回 `fontFamily: ''`（降级），而非 `"'PingFang SC', serif"`
+Expected: FAIL — 修改后的测试断言 `fontFamily === "'MyHand', serif"`，但当前逻辑返回 `''`（降级）
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add tests/test_font_config.js
-git commit -m "test: add system font mode test case (name without file)"
+git commit -m "test: change 'missing file' test to expect system font mode"
 ```
 
 ---
@@ -89,7 +106,7 @@ git commit -m "test: add system font mode test case (name without file)"
 ### Task 2: 实现系统字体模式
 
 **Files:**
-- Modify: `ui/main/lib/font-config.js:32-35`
+- Modify: `ui/main/lib/font-config.js:10-35`
 
 - [ ] **Step 1: 修改验证逻辑**
 
@@ -115,7 +132,7 @@ git commit -m "test: add system font mode test case (name without file)"
 
 - [ ] **Step 2: 更新函数 JSDoc 注释**
 
-将 L10-16 的注释，在"配置不完整"描述后补充系统字体模式说明：
+将 L10-16 的注释替换为：
 
 ```javascript
 /**
@@ -138,7 +155,7 @@ git commit -m "test: add system font mode test case (name without file)"
 - [ ] **Step 3: 运行全部字体测试验证通过**
 
 Run: `node --test tests/test_font_config.js`
-Expected: PASS — 全部 8 个测试通过（原 7 个 + 新增 1 个系统字体模式）
+Expected: PASS — 全部 7 个测试通过（原 7 个，修改了 1 个）
 
 - [ ] **Step 4: Commit**
 
@@ -237,10 +254,12 @@ git commit -m "docs: update system manual for system font support"
 
 ### 1. Spec coverage
 
-- ✅ "font 段缺 name 或 file 字段 → 自动降级为系统默认字体" — 当 name 缺失时降级（Task 2 的 `!fontCfg.name` 分支），当 file 缺失但有 name 时走系统字体模式（Task 2 的 `!fontCfg.file` 分支）
+- ✅ "font 段缺 name 或 file 字段 → 自动降级为系统默认字体" — 当 name 缺失时降级（Task 2 的 `!fontCfg.name` 分支），当 file 缺失但有 name 时走系统字体模式（Task 2 的 `!fontCfg.file` 分支，Task 1 修改对应测试）
 - ✅ "要支持系统字体的话，得加个逻辑——如果只有 name 没有 file" — Task 2 实现了这个分支
 - ✅ 不影响现有"自定义字体文件"方式 — name+file+文件存在仍走 @font-face 内联
 - ✅ 系统管理手册同步 — Task 3 更新配置 schema、新增系统字体模式段、修正容错描述
+- ✅ 分册检查 — 已搜索全部 14 个分册（manual-*.md），均无字体相关内容，只需更新 SYSTEM_MANUAL.md
+
 ### 2. Placeholder scan
 
 - 无 TBD/TODO
