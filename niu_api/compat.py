@@ -1336,6 +1336,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
     resources: list = []
+    source: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -2192,11 +2193,14 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         clear_stop()
         # 清理残留的补充消息（这些消息已被持久化，会通过历史加载重新进入上下文）
         drain_supplements()
+        # 通道继承：Electron 用户消息清除 IM 通道；子 Agent 注入（source=""）继承
+        if request.source == "electron":
+            runner.set_im_channel("")
 
         # Run chat using asyncio.to_thread to avoid blocking event loop
         def sync_chat():
             chunks = []
-            for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner, resources=request.resources or None):
+            for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner, resources=request.resources or None, channel_id=runner.get_im_channel()):
                 chunks.append(chunk)
             return "".join(chunks)
 
@@ -2239,12 +2243,24 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 finally:
                     _tidy_lock.release()
                 logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
-        return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
     finally:
         from agent.runner import clear_stop, drain_supplements
         clear_stop()  # 防御性清除：确保停止标志不残留
         drain_supplements()  # 清理残留补充消息，防止被 ChatQueue 路径读取
         _chat_lock.release()
+
+    # IM 推送在锁释放后执行（与 ChatQueue 模式一致，避免网络 I/O 阻塞锁）
+    try:
+        im_cid = runner.get_im_channel()
+        if im_cid and chat_error is None:
+            from niu_api.channel import get_channel_router
+            router = get_channel_router()
+            if router.has_channel("im"):
+                await router.route_out(full_reply, "im", im_cid)
+    except Exception as e:
+        logger.warning(f"[chat_session] IM push failed: {e}")
+
+    return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
 
 
 @router.get("/api/context/messages")
