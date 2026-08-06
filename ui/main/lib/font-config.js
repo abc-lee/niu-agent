@@ -11,8 +11,10 @@ const DEFAULT_FONT_FAMILY = "";
  * 读取 ~/.niu/preferences.json 的 font 段，校验字体文件存在性，
  * 返回 { fontFaceCss, fontFamily }。
  *
- * 无配置 / 配置不完整 / 字体文件缺失 / JSON 损坏 → 返回空 fontFaceCss + 空 fontFamily（用浏览器系统默认字体）。
- * 配置完整且文件存在 → 返回 @font-face CSS（base64 data URI 内联，绕开 file:// CORS）+ "自定义字体, serif 终极兜底" 的 fontFamily。
+ * 无配置 / 缺 name / JSON 损坏 → 返回空 fontFaceCss + 空 fontFamily（用浏览器系统默认字体）。
+ * 只有 name 没有 file（系统字体模式）→ 返回空 fontFaceCss + "name, serif"（直接引用系统已安装字体）。
+ * name + file 且文件存在 → 返回 @font-face CSS（base64 data URI 内联，绕开 file:// CORS）+ "自定义字体, serif" 的 fontFamily。
+ * name + file 但文件缺失 → 返回空 fontFaceCss + 空 fontFamily（用浏览器系统默认字体）。
  *
  * 用 base64 内联而非 file:// URL，原因：Electron webSecurity 默认 true，
  * 跨目录 file:// 字体加载可能被 CORS 拦截。base64 完全在渲染进程内，无网络/文件协议问题。
@@ -30,8 +32,12 @@ function loadFontConfig(niuDirOverride) {
     const raw = fs.readFileSync(prefsPath, 'utf-8');
     const prefs = JSON.parse(raw);
     const fontCfg = prefs && prefs.font;
-    if (!fontCfg || !fontCfg.name || !fontCfg.file) {
+    if (!fontCfg || !fontCfg.name) {
       return { fontFaceCss: '', fontFamily: DEFAULT_FONT_FAMILY };
+    }
+    // 系统字体模式：只有 name 没有 file → 直接用系统已安装字体，不内联字体文件
+    if (!fontCfg.file) {
+      return { fontFaceCss: '', fontFamily: `'${fontCfg.name}', serif` };
     }
     const fontFile = path.join(niuDir, 'fonts', fontCfg.file);
     if (!fs.existsSync(fontFile)) {
