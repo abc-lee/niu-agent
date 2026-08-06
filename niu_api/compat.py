@@ -3642,6 +3642,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 )
 
             result = await asyncio.to_thread(run_context_manager_force)
+            _force_halved_msg_ids = None  # 降级砍半的前半段 msg_ids
             if is_stop_requested():
                 logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                 clear_stop()
@@ -3654,15 +3655,36 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 
             if result and result.startswith("COMPACT_TRUNCATED:"):
-                logger.warning("[Compact] Force output truncated, triggering emergency clear")
-                return await _emergency_clear(
-                    history=_force_history,
-                    msg_ids=_force_msg_ids,
-                    protect_recent_count=protect_recent_count,
-                    store=store,
-                    session_id=session_id,
-                    mode="force",
+                logger.warning("[Compact] Force output truncated, starting degradation")
+                result_str, actual_msg_ids, halved_msg_ids = await asyncio.to_thread(
+                    _compact_with_degradation_sync,
+                    agent_name="context-manager",
+                    prompt=prompt,
+                    compress_history=_force_history,
+                    compress_msg_ids=_force_msg_ids,
+                    llm_config=llm_config_with_max,
+                    prompt_builder=_build_force_prompt,
+                    prompt_builder_kwargs={
+                        "display_tokens": display_tokens,
+                        "compress_target_tokens": target_tokens,
+                        "usage_percent": usage_percent,
+                        "force_history": _force_history,
+                        "last_compress_id": last_compress_id,
+                        "dream_idx_in_force": _dream_idx_in_force,
+                    },
+                    call_fn=call_subagent_with_auto_answer,
                 )
+                if result_str is None:
+                    return {"status": "skipped", "mode": "force",
+                            "reason": "compress failed: output truncated after all degradation steps"}
+                # 降级成功，用返回值替代 result
+                result = result_str
+                _force_msg_ids = actual_msg_ids
+                _force_halved_msg_ids = halved_msg_ids
+                # 重建 idx→UUID 映射（砍半后 msg_ids 变化，旧映射失效）
+                _f_idx_to_id = {}
+                for _i, _mid in enumerate(_force_msg_ids):
+                    _f_idx_to_id[_i + 1] = _mid
 
             # 正常返回，剥离 <analysis> 草稿块（在解析前）
             logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
@@ -3710,6 +3732,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
                 # 转换为 UUID
                 deletes = [_f_idx_to_id[i] for i in sorted(delete_idxs) if i in _f_idx_to_id]
+                # 砍半掉的前半段 msg_ids 加入删除列表
+                if _force_halved_msg_ids:
+                    deletes.extend(_force_halved_msg_ids)
                 for idx, _ in update_list:
                     if idx not in _f_idx_to_id:
                         logger.warning(f"[Compact] Force LLM returned out-of-range update idx {idx}, silently dropped")

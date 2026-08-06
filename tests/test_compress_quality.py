@@ -378,14 +378,17 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
 
 
 def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
-    """模式二 LLM 输出截断时触发应急清空（保留最近 10 条，上面全删，最旧改摘要）。"""
+    """模式二 LLM 输出截断时触发三级降级（关思考链→砍半消息→报失败）。
+
+    LLM 始终返回 COMPACT_TRUNCATED，降级两步均失败 → 返回 skipped，不删不改。
+    """
     import asyncio
 
     import agent.subagent as subagent_module
     import niu_api.chat as chat_module
     import niu_api.compat as compat
 
-    # 15 条消息，截断时应保留最近 10 条，删前 5 条，第 6 条改摘要
+    # 15 条消息
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
 
     deleted_ids = []
@@ -430,18 +433,13 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
     request = {"session_id": "test", "mode": "sleep"}
     result = asyncio.run(compat._tidy_context_impl(request))
 
-    # 验证返回 skipped + emergency cleared
+    # 验证返回 skipped + degradation failed
     assert result is not None
     assert result.get("status") == "skipped"
-    assert "emergency cleared" in result.get("reason", "")
-    # 验证删了前 5 条（msg-1 到 msg-5）
-    assert len(deleted_ids) == 5
-    assert "msg-1" in deleted_ids
-    assert "msg-5" in deleted_ids
-    # 验证第 6 条（msg-6，保留区最旧）被改为摘要
-    assert len(updated_ids) == 1
-    assert updated_ids[0][0] == "msg-6"
-    assert "压缩失败" in updated_ids[0][1]
+    assert "degradation" in result.get("reason", "")
+    # 降级失败不删不改
+    assert len(deleted_ids) == 0
+    assert len(updated_ids) == 0
 
 
 def test_mode2_truncate_too_few_no_clear(monkeypatch):
@@ -581,14 +579,17 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
 
 
 def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
-    """模式三 LLM 输出截断时触发应急清空（mode='force'）。"""
+    """模式三 LLM 输出截断时触发三级降级（关思考链→砍半消息→报失败）。
+
+    LLM 始终返回 COMPACT_TRUNCATED，降级两步均失败 → 返回 skipped，不删不改。
+    """
     import asyncio
 
     import agent.subagent as subagent_module
     import niu_api.chat as chat_module
     import niu_api.compat as compat
 
-    # 15 条消息，截断时应保留最近 10 条，删前 5 条，第 6 条改摘要
+    # 15 条消息
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
 
     deleted_ids = []
@@ -632,16 +633,14 @@ def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
     request = {"session_id": "test", "mode": "force"}
     result = asyncio.run(compat._tidy_context_impl(request))
 
-    # 验证返回 skipped + emergency cleared + mode=force
+    # 验证返回 skipped + degradation failed + mode=force
     assert result is not None
     assert result.get("status") == "skipped"
     assert result.get("mode") == "force"
-    assert "emergency cleared" in result.get("reason", "")
-    # 验证删了前 5 条
-    assert len(deleted_ids) == 5
-    # 验证第 6 条被改为摘要
-    assert len(updated_ids) == 1
-    assert "压缩失败" in updated_ids[0][1]
+    assert "degradation" in result.get("reason", "")
+    # 降级失败不删不改
+    assert len(deleted_ids) == 0
+    assert len(updated_ids) == 0
 
 
 def test_mode2_no_auto_keep_fixup(monkeypatch):
@@ -821,12 +820,14 @@ def test_runner_mode3_prompt_contains_methodology(monkeypatch):
 
 
 def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
-    """runner.py force 截断时触发应急清空（同步版）：保留最近 10 条，上面全删，最旧改"压缩失败"摘要。
+    """runner.py force 截断时触发应急清空（同步版）：保留最近 N 条，上面全删，最旧改"压缩失败"摘要。
 
-    构造 15 条消息，截断时应删前 5 条（msg-1 到 msg-5），第 6 条（msg-6）改摘要。
+    构造 15 条消息，protect_recent_count=0（全部进 _force_msg_ids），
+    monkeypatch _find_protected_range 返回 5 → 删前 5 条（msg-1~5），第 6 条（msg-6）改摘要。
     """
     from agent import runner as runner_module
     from agent import subagent as subagent_module
+    import niu_api.compat as compat
 
     monkeypatch.setattr(runner_module, "is_stop_requested", lambda: False)
 
@@ -852,7 +853,7 @@ def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
 
     monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(lambda path, field: ""))
 
-    # 15 条消息（全部 user 角色，_build_compress_history 全部进 history，无保护排除）
+    # 15 条消息（全部 user 角色，protect_recent_count=0 → 全部进 _force_msg_ids）
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
 
     def fake_sync_get_messages(self, limit=None):
@@ -862,9 +863,13 @@ def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
 
     monkeypatch.setattr(subagent_module, "_read_max_output_tokens", lambda: 32000)
     monkeypatch.setattr(subagent_module, "_read_compress_target_tokens", lambda: 60000)
-    # protect_recent_count=0：不排除任何消息，15 条都进 _force_msg_ids
     monkeypatch.setattr(subagent_module, "_read_protect_recent_count", lambda: 0)
     monkeypatch.setattr(subagent_module, "_read_context_window_tokens", lambda: 200000)
+
+    # _find_protected_range 在 protect_count=0 时返回 len(messages)（全部保护），
+    # 这会让 runner emergency_clear 走 "all protected" 分支。
+    # monkeypatch 让它在 emergency_clear 路径返回 5（前 5 条可删，后 10 条保留）
+    monkeypatch.setattr(compat, "_find_protected_range", lambda msgs, n: 5)
 
     def fake_run_subagent_step(self, step_name, *args, **kwargs):
         return ("", "")
