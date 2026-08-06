@@ -49,24 +49,30 @@ def cleanup_all_tmp() -> int:
 
 
 def cleanup_old_tmp() -> int:
-    """清理非当天的临时文件，返回删除数量"""
+    """清理超过24小时的临时文件（含子目录），空目录自动删除，返回删除文件数量"""
     tmp_dir = get_tmp_dir()
     if not tmp_dir.exists():
         return 0
-    today = datetime.date.today()
+    cutoff = datetime.datetime.now() - datetime.timedelta(hours=24)
     deleted = 0
-    for f in tmp_dir.iterdir():
-        if not f.is_file():
-            continue
-        # 按修改时间判断是否为当天文件
-        try:
-            mtime = datetime.date.fromtimestamp(f.stat().st_mtime)
-        except OSError:
-            continue
-        if mtime < today:
+    # topdown=False: 自底向上遍历，先处理文件再处理子目录
+    for root, dirs, files in os.walk(tmp_dir, topdown=False):
+        for filename in files:
+            filepath = os.path.join(root, filename)
             try:
-                f.unlink()
-                deleted += 1
+                mtime = datetime.datetime.fromtimestamp(os.path.getmtime(filepath))
+            except OSError:
+                continue
+            if mtime < cutoff:
+                try:
+                    os.remove(filepath)
+                    deleted += 1
+                except OSError:
+                    pass
+        for dirname in dirs:
+            dirpath = os.path.join(root, dirname)
+            try:
+                os.rmdir(dirpath)  # 只删除空目录，非空会抛 OSError
             except OSError:
                 pass
     return deleted
