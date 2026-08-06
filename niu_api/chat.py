@@ -614,6 +614,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
 
         runner = get_or_create_runner()
+        runner.set_im_channel("")
         session_id = request.session_id or "default"
 
         # Run chat (non-streaming)
