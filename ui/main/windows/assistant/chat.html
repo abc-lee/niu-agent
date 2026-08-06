@@ -2790,7 +2790,31 @@
 
     // 创建子 Agent tab + 独立消息容器，并自动切换过去
     function createSubagentTab(uniqueName, displayName, isSync, skipLoading) {
-      if (document.getElementById('tab-' + uniqueName)) return;  // 已存在则不重复创建
+      const existingTab = document.getElementById('tab-' + uniqueName);
+      if (existingTab) {
+        // 旧 tab 已结束（completed）或已出错（error）或待关闭（_pendingCloseTabs）→ 清空重用于新一轮
+        const isReusable = existingTab.classList.contains('completed') || existingTab.classList.contains('error') || _pendingCloseTabs.has(uniqueName);
+        if (!isReusable) return;  // 活跃 tab（仍在运行）——维持原不重复创建行为
+        // 取消 @end 延迟关闭 timer
+        const timer = _endCloseTimers.get(uniqueName);
+        if (timer) { clearTimeout(timer); _endCloseTimers.delete(uniqueName); }
+        _pendingCloseTabs.delete(uniqueName);
+        // 移除结束/等待/错误状态 + 同步标志，重设 loading
+        existingTab.classList.remove('completed', 'waiting', 'error');
+        existingTab.dataset.sync = isSync ? 'true' : 'false';
+        if (!skipLoading) existingTab.classList.add('loading');
+        // 清空消息容器，重建空状态占位
+        const container = document.getElementById('messages-' + uniqueName);
+        if (container) {
+          container.innerHTML = '';
+          const empty = document.createElement('div');
+          empty.className = 'tab-empty-state';
+          empty.textContent = isSync ? `⏳ 子 Agent ${displayName} 工作中...` : `⏳ 子 Agent ${displayName} 正在启动...`;
+          container.appendChild(empty);
+        }
+        tabBar.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+        return;
+      }
 
       // tab 元素（无 × 按钮，不可手动关闭）
       const tab = document.createElement('div');
@@ -2938,6 +2962,12 @@
 
     // 关闭子 Agent tab：移除 tab 元素 + 消息容器 + 断开 SSE
     function _closeSubagentTab(uniqueName) {
+      // 守卫：若 tab 已被复用为活跃新一轮（无 completed/error、不在待关闭列表），不关闭
+      // 防 "用户停留 completed tab → 切走 → 500ms 内同 agent 任务复用 → 迟到的 switchTab 500ms 关闭误杀新 tab"
+      const closeTab = document.getElementById('tab-' + uniqueName);
+      if (closeTab && !closeTab.classList.contains('completed') && !closeTab.classList.contains('error') && !_pendingCloseTabs.has(uniqueName)) {
+        return;  // 活跃 tab，禁止误杀
+      }
       _pendingCloseTabs.delete(uniqueName);
       // 清理 @end 延迟关闭的 timer
       const timer = _endCloseTimers.get(uniqueName);
