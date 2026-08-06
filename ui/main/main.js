@@ -922,7 +922,8 @@ ipcMain.handle('process-image', async (event, filePath) => {
     const action = isImage ? '入库照片' : '入库文件';
     const data = JSON.stringify({
       session_id: config.chatSessionId || null,
-      message: `${action}：${filePath.replace(/\\/g, '/')}`
+      message: `${action}：${filePath.replace(/\\/g, '/')}`,
+      source: 'electron'
     });
 
     const req = http.request({
@@ -957,10 +958,10 @@ ipcMain.handle('process-image', async (event, filePath) => {
   });
 });
 
-ipcMain.handle('send-message', async (event, message) => {
+ipcMain.handle('send-message', async (event, message, source) => {
   return new Promise((resolve) => {
     // Load session ID from config
-    const data = JSON.stringify({ message: message });
+    const data = JSON.stringify({ message: message, source: source !== undefined ? source : 'electron' });
 
     const req = http.request({
       hostname: '127.0.0.1',
@@ -1004,7 +1005,7 @@ ipcMain.handle('send-to-agent', async (event, { message, context }) => {
           mode: context.mode || 'copy'
         }))
       : undefined;
-    const payload = { message: message };
+    const payload = { message: message, source: 'electron' };
     if (resources) {
       payload.resources = resources;
     }

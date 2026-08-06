@@ -1384,10 +1384,10 @@
     }
     
     // 重试发送消息（自动重连）
-    async function sendMessageWithRetry(text, maxRetries = 10, delay = 2000) {
+    async function sendMessageWithRetry(text, source, maxRetries = 10, delay = 2000) {
       for (let i = 0; i < maxRetries; i++) {
         try {
-          const result = await window.electronAPI.sendMessage(text);
+          const result = await window.electronAPI.sendMessage(text, source);
           
           // 检查返回的错误是否是连接错误
           if (result && result.error) {
@@ -2424,7 +2424,7 @@
           // 不调 addMessage 本地渲染（避免重复——后端写 db 后会推 role=user SSE 让前端 refreshFromDB）
           // 直接调 sendMessageWithRetry 走 HTTP 路径（复用用户发消息的现有逻辑）
           const msgContent = data.content;
-          sendMessageWithRetry(msgContent).catch(err => {
+          sendMessageWithRetry(msgContent, '').catch(err => {
             console.error('[Stage2] 自动触发主 Agent 对话失败：', err);
           });
         } else {

@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   close: () => ipcRenderer.send('close-chat'),
   
   // 发送消息到后端
-  sendMessage: (message) => ipcRenderer.invoke('send-message', message),
+  sendMessage: (message, source) => ipcRenderer.invoke('send-message', message, source),
   
   // 获取统计数据
   getStats: () => ipcRenderer.invoke('get-stats'),
