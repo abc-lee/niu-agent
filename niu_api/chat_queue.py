@@ -328,6 +328,11 @@ class ChatQueue:
                 acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
                 if not acquired:
                     raise TimeoutError("Timeout waiting for chat lock")
+                if channel == "electron":
+                    self._runner.set_im_channel("")
+                elif channel == "im":
+                    self._runner.set_im_channel(channel_id)
+                # scheduler 不调，继承 _im_channel_id
                 full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
             except TimeoutError:
                 logger.error("[ChatQueue] Timeout waiting for chat lock")
