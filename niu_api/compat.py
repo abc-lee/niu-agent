@@ -916,6 +916,52 @@ def _build_degraded_config(llm_config: dict) -> dict:
 
     return degraded
 
+def _halve_history(compress_history: list, compress_msg_ids: list) -> tuple[list, list, list, int]:
+    """
+    砍半消息历史。在 N/2 附近向前找第一条 role=user 消息对齐截断。
+    返回 (后半段 history, 后半段 msg_ids, 前半段 msg_ids, cut_idx)。
+    cut_idx 是 0-based Python 列表索引。
+    [idx:N] 前缀需要重新编号（由 _renumber_history 执行）。
+    """
+    total = len(compress_history)
+    if total == 0:
+        return [], [], [], 0
+    target_cut = total // 2
+
+    # 从 target_cut 向前找第一条 role=user
+    cut_idx = target_cut
+    found_user = False
+    while cut_idx >= 0:
+        msg = compress_history[cut_idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            found_user = True
+            break
+        cut_idx -= 1
+
+    # 没找到 user 消息 → 从 target_cut 截断
+    if not found_user:
+        cut_idx = target_cut
+
+    halved_history = compress_history[cut_idx:]
+    halved_msg_ids = compress_msg_ids[cut_idx:]
+    removed_msg_ids = compress_msg_ids[:cut_idx]
+
+    return halved_history, halved_msg_ids, removed_msg_ids, cut_idx
+
+
+def _renumber_history(history: list) -> list:
+    """重新编号 history 中的 [idx:N] 前缀为连续的 1, 2, 3...（只替换第一个前缀）"""
+    import re
+
+    renumbered = []
+    for i, msg in enumerate(history):
+        if isinstance(msg, dict) and "content" in msg:
+            content = msg["content"]
+            content = re.sub(r"\[idx:\d+\]", f"[idx:{i + 1}]", content, count=1)
+            msg = {**msg, "content": content}
+        renumbered.append(msg)
+    return renumbered
+
 def _estimate_text_tokens(text: str) -> int:
     """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
     return len(text) // 2
