@@ -8,6 +8,7 @@ LiteLLM统一适配器，提供与现有BaseSession/ToolClient接口兼容的Lit
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Generator
 from datetime import datetime
@@ -118,6 +119,13 @@ def _classify_stream_error(e) -> str:
         return 'retryable'
     # 3. 默认归入 retryable（未知错误给重试机会）
     return 'retryable'
+
+def _sanitize_error_msg(msg: str) -> str:
+    """脱敏错误信息中的敏感字段。"""
+    # 脱敏 API key（key=xxx, api_key=xxx, apikey=xxx）
+    msg = re.sub(r'(key|api_key|apikey)\s*[=:]\s*\S+', r'\1=***', msg, flags=re.IGNORECASE)
+    msg = re.sub(r'Bearer\s+\S+', 'Bearer ***', msg, flags=re.IGNORECASE)
+    return msg
 
 # 完整无截断的原始日志序号计数器
 _raw_seq_counter = 0
@@ -648,7 +656,7 @@ class LiteLLMSession(BaseSession):
                 yield from self._do_streaming_completion(response)
         except Exception as e:
             _stream_error_occurred = True
-            _stream_error_msg = str(e)
+            _stream_error_msg = _sanitize_error_msg(str(e))
             error_msg = str(e)
 
             # 检测 context_length_exceeded 错误
@@ -703,7 +711,7 @@ class LiteLLMSession(BaseSession):
                 except Exception as fb_err:
                     logger.error(f"[STREAM] Non-stream fallback also failed: {fb_err}")
                     _stream_error_type = "retry_exhausted"
-                    _stream_error_msg = str(fb_err)
+                    _stream_error_msg = _sanitize_error_msg(str(fb_err))
             else:
                 # 其他错误 → 分类 + 重试
                 logger.error(f"[STREAM] Stream error: {e}")
@@ -717,6 +725,7 @@ class LiteLLMSession(BaseSession):
                     for retry_idx in range(1, max_retries + 1):
                         if is_stop_requested():
                             logger.info("[STREAM] Stop requested, aborting retry")
+                            _stream_error_type = "stopped"
                             break
                         logger.info(f"[STREAM] Retry {retry_idx}/{max_retries} for {type(e).__name__}")
                         try:
@@ -741,9 +750,10 @@ class LiteLLMSession(BaseSession):
                                     finish_reason=last_finish_reason or "stop",
                                 )
                             logger.error(f"[STREAM] Retry {retry_idx} failed: {retry_e}")
-                            _stream_error_msg = str(retry_e)
+                            _stream_error_msg = _sanitize_error_msg(str(retry_e))
                     if not retry_succeeded:
-                        _stream_error_type = "retry_exhausted"
+                        if _stream_error_type is None:
+                            _stream_error_type = "retry_exhausted"
                         logger.error(f"[STREAM] All {max_retries} retries exhausted")
 
         # === 截断标记注入 ===
