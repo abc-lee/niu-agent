@@ -285,8 +285,7 @@ const graph = ForceGraph()(container)
   })
   .onNodeRightClick(async (node) => {
     if (_subgraphMode) {
-      const success = await enterSubgraph(node.id, _subgraphDepth);
-      if (success) _subgraphCenterId = node.id;
+      await enterSubgraph(node.id, _subgraphDepth);
     } else {
       expandNode(node.id);
     }
@@ -946,12 +945,8 @@ searchInput.addEventListener('keydown', async (e) => {
 async function selectSearchEntity(entity) {
   closeSearchDropdown();
   _justReplacedData = true;  // Block pollChangelog BEFORE the await
-  _subgraphDepth = 1;
-
   const success = await enterSubgraph(entity.id, 1);
   if (success) {
-    _subgraphMode = true;
-    _subgraphCenterId = entity.id;
     updateSubgraphControls();
   }
 }
@@ -980,16 +975,33 @@ async function enterSubgraph(entityId, depth) {
     const onLayoutStop = () => {
       if (!_reLayoutPending) return;
       _reLayoutPending = false;
-      graph.zoomToFit(400, 40);
+      // zoomToFit(0, 40): ms=0 无 Tween，立即适配画布
+      // 避免与后续 centerAt+zoom 的 Tween 冲突（两组 Tween 同时操作 zoom transform 会抖动）
+      graph.zoomToFit(0, 40);
+      // 立即聚焦中心实体（引擎已稳定，节点坐标不再漂移）
+      const fgData = graph.graphData();
+      const targetNode = fgData.nodes.find(n => n.id === entityId);
+      if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
+        graph.centerAt(targetNode.x, targetNode.y, 800);
+        graph.zoom(5, 800);
+        // 聚焦动画 800ms，延迟 850ms 确保动画完成后闪烁
+        setTimeout(() => {
+          if (myRequestId !== _subgraphRequestId) return;
+          flashNodes([entityId]);
+        }, 850);
+      }
       graph.onEngineStop(() => {});
     };
     graph.onEngineStop(onLayoutStop);
     updateStats();
+    // 子图状态在 _justReplacedData=false 之前设置，使 pollChangelog 守卫更内聚
+    _subgraphMode = true;
+    _subgraphCenterId = entityId;
+    _subgraphDepth = depth;
     _justReplacedData = false;
 
     currentSelectedNode = entityId;
     showDetail(entityId);
-    setTimeout(() => flashNodes([entityId]), 600);
     return true;
   } catch (err) {
     console.error('Failed to enter subgraph:', err);
@@ -1071,9 +1083,8 @@ function updateSubgraphControls() {
 document.getElementById('depth-up').addEventListener('click', async () => {
   if (!_subgraphMode) return;
   const newDepth = Math.min(5, _subgraphDepth + 1);
-  const success = await enterSubgraph(_subgraphCenterId, newDepth);
-  if (success) {
-    _subgraphDepth = newDepth;
+  await enterSubgraph(_subgraphCenterId, newDepth);
+  if (_subgraphDepth === newDepth) {
     document.getElementById('depth-display').textContent = newDepth;
   }
 });
@@ -1081,9 +1092,8 @@ document.getElementById('depth-up').addEventListener('click', async () => {
 document.getElementById('depth-down').addEventListener('click', async () => {
   if (!_subgraphMode) return;
   const newDepth = Math.max(1, _subgraphDepth - 1);
-  const success = await enterSubgraph(_subgraphCenterId, newDepth);
-  if (success) {
-    _subgraphDepth = newDepth;
+  await enterSubgraph(_subgraphCenterId, newDepth);
+  if (_subgraphDepth === newDepth) {
     document.getElementById('depth-display').textContent = newDepth;
   }
 });
