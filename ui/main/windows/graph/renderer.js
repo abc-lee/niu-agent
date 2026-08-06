@@ -593,8 +593,8 @@ function reLayout() {
   applyForceConfig();
   const data = buildGraphData();
   graph.graphData(data);
-  // 立即 zoomToFit——能瞬间算对 bbox，无需等待
-  graph.zoomToFit(400, 40);
+  // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放
+  setTimeout(() => graph.zoomToFit(400, 40), 20);
 }
 
 // ===== Perspective Mode =====
@@ -957,28 +957,27 @@ async function enterSubgraph(entityId, depth) {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    // 先整体 zoomToFit 适配全图（瞬间算对 bbox，含缩小），
-    // 再聚焦目标节点及直接邻居（短延迟等节点坐标生成）。不用 onEngineStop。
-    graph.zoomToFit(400, 40);
-    setTimeout(() => {
-      const editor = graph.graphData().nodes;
-      const targetNode = editor.find(n => n.id === entityId);
-      if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
-        // 收集目标节点 + 其直接邻居的 ID
-        const neighborIds = new Set([entityId]);
-        currentData.edges.forEach(e => {
-          if (e.source === entityId) neighborIds.add(e.target);
-          if (e.target === entityId) neighborIds.add(e.source);
-        });
-        if (neighborIds.size > 1) {
-          // 邻居存在：按邻居集合聚焦（包含目标+邻居，缩放合理）
-          graph.zoomToFit(400, 60, n => neighborIds.has(n.id));
-        } else {
-          // 无邻居（孤立节点）：直接居中
-          graph.centerAt(targetNode.x, targetNode.y, 800);
+    // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放
+    setTimeout(() => graph.zoomToFit(400, 40), 20);
+    if (!_subgraphMode) {
+      // 首次进入子图（搜索）：聚焦目标节点及直接邻居
+      setTimeout(() => {
+        const editor = graph.graphData().nodes;
+        const targetNode = editor.find(n => n.id === entityId);
+        if (targetNode && Number.isFinite(targetNode.x) && Number.isFinite(targetNode.y)) {
+          const neighborIds = new Set([entityId]);
+          currentData.edges.forEach(e => {
+            if (e.source === entityId) neighborIds.add(e.target);
+            if (e.target === entityId) neighborIds.add(e.source);
+          });
+          if (neighborIds.size > 1) {
+            graph.zoomToFit(400, 60, n => neighborIds.has(n.id));
+          } else {
+            graph.centerAt(targetNode.x, targetNode.y, 800);
+          }
         }
-      }
-    }, 150);
+      }, 150);
+    }
     updateStats();
     // 子图状态在 _justReplacedData=false 之前设置，使 pollChangelog 守卫更内聚
     _subgraphMode = true;
@@ -1035,8 +1034,8 @@ async function exitSubgraph() {
     applyForceConfig();
     const freshData = buildGraphData();
     graph.graphData(freshData);
-    // 立即 zoomToFit——能瞬间算对 bbox，无需等待
-    graph.zoomToFit(400, 40);
+    // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放
+    setTimeout(() => graph.zoomToFit(400, 40), 20);
     updateStats();
   } finally {
     _justReplacedData = false;
