@@ -962,6 +962,127 @@ def _renumber_history(history: list) -> list:
         renumbered.append(msg)
     return renumbered
 
+def _compact_with_degradation_sync(
+    agent_name: str,
+    prompt: str,
+    compress_history: list,
+    compress_msg_ids: list,
+    llm_config: dict,
+    prompt_builder: callable,
+    prompt_builder_kwargs: dict,
+    call_fn: callable,
+) -> tuple[str | None, list, list | None]:
+    """
+    三级降级压缩（纯逻辑，不含 IO）。
+    返回值：
+    - 成功（未砍半）：(压缩方案字符串, 实际使用的 compress_msg_ids, None)
+    - 成功（砍半后）：(压缩方案字符串, 后半段 compress_msg_ids, 前半段被砍掉的 msg_ids)
+    - 失败：(None, 原始 compress_msg_ids, None)
+
+    注意：本函数不执行原始调用——原始调用由调用方在调用本函数之前完成。
+    本函数只执行降级第一步（call 1）和降级第二步（call 2）。
+    """
+    # 降级第一步：关闭思考链 + reasoning_effort 降一级
+    # 只在原配置开启了思考链时才执行此步（避免无意义的相同配置重试）
+    thinking_cfg = llm_config.get("litellm_kwargs", {}).get("thinking", {})
+    effort = llm_config.get("reasoning_effort", "")
+    thinking_enabled = (isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled") or effort not in ("none", "", None)
+
+    if thinking_enabled:
+        degraded_config = _build_degraded_config(llm_config)
+
+        step1_result = call_fn(
+            agent_name=agent_name,
+            task=prompt,
+            llm_config=degraded_config,
+            mcp_client=None,
+            context_fifo_threshold=-1,
+            history=compress_history,
+            bypass_at_prefix=True,
+        )
+
+        # SUBAGENT_ERROR 检查（LLM 调用失败）
+        if step1_result and step1_result.startswith("SUBAGENT_ERROR:"):
+            logger.warning(f"[Compact] Degradation step 1 LLM error: {step1_result}")
+            return None, compress_msg_ids, None
+
+        # 降级第一步成功（非截断、非错误）
+        if step1_result and not step1_result.startswith("COMPACT_TRUNCATED:"):
+            logger.info("[Compact] Degradation step 1 (disable thinking) succeeded")
+            return step1_result, compress_msg_ids, None
+
+        if step1_result and step1_result.startswith("COMPACT_TRUNCATED:"):
+            logger.warning("[Compact] Degradation step 1 still truncated, trying step 2 (halve history)")
+        elif not step1_result:
+            logger.warning("[Compact] Degradation step 1 returned empty, trying step 2 (halve history)")
+    else:
+        logger.info("[Compact] Thinking already disabled, skipping step 1, going directly to step 2 (halve history)")
+
+    # 停止检查
+    try:
+        from agent.runner import is_stop_requested
+        if is_stop_requested():
+            logger.warning("[Compact] Stop requested during degradation, aborting")
+            return None, compress_msg_ids, None
+    except Exception:
+        pass
+
+    # 降级第二步：砍半消息
+    halved_history, halved_msg_ids, removed_msg_ids, cut_idx = _halve_history(
+        compress_history, compress_msg_ids
+    )
+
+    if len(halved_history) <= 1:
+        logger.warning("[Compact] Degradation step 2: halved history too small, aborting")
+        return None, compress_msg_ids, None
+
+    # 重新构建 prompt（先 shallow copy 再修改，避免修改原始入参）
+    kwargs = dict(prompt_builder_kwargs)
+
+    # Force 路径 dream_idx 重新计算
+    # dream_idx 是 1-based（来自 _f_id_to_idx 的 _i+1），cut_idx 是 0-based（Python 列表索引）
+    # dream 边界被砍掉的条件：1-based D <= 0-based cut_idx（等价于 0-based D-1 <= cut_idx-1）
+    orig_dream_idx = kwargs.get("dream_idx_in_force", 0)
+    if orig_dream_idx and orig_dream_idx > 0:
+        if orig_dream_idx <= cut_idx:
+            # dream 边界在前半段（被砍掉），后半段全部受保护无法删除
+            logger.warning(f"[Compact] dream_idx={orig_dream_idx} <= cut_idx={cut_idx}, cannot halve")
+            return None, compress_msg_ids, None
+        kwargs["dream_idx_in_force"] = orig_dream_idx - cut_idx
+
+    # 重新编号
+    halved_history = _renumber_history(halved_history)
+
+    # Mode-2 用 compress_history，Force 用 force_history
+    if "compress_history" in kwargs:
+        kwargs["compress_history"] = halved_history
+    if "force_history" in kwargs:
+        kwargs["force_history"] = halved_history
+
+    rebuilt_prompt = prompt_builder(**kwargs)
+
+    step2_result = call_fn(
+        agent_name=agent_name,
+        task=rebuilt_prompt,
+        llm_config=degraded_config if thinking_enabled else llm_config,
+        mcp_client=None,
+        context_fifo_threshold=-1,
+        history=halved_history,
+        bypass_at_prefix=True,
+    )
+
+    # SUBAGENT_ERROR 检查
+    if step2_result and step2_result.startswith("SUBAGENT_ERROR:"):
+        logger.warning(f"[Compact] Degradation step 2 LLM error: {step2_result}")
+        return None, compress_msg_ids, None
+
+    if step2_result and not step2_result.startswith("COMPACT_TRUNCATED:"):
+        logger.info("[Compact] Degradation step 2 (halve history) succeeded")
+        return step2_result, halved_msg_ids, removed_msg_ids
+
+    logger.warning("[Compact] Degradation step 2 still truncated, aborting")
+    return None, compress_msg_ids, None
+
 def _estimate_text_tokens(text: str) -> int:
     """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
     return len(text) // 2
