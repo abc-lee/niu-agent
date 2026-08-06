@@ -445,14 +445,14 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
 
 
 def test_mode2_truncate_too_few_no_clear(monkeypatch):
-    """模式二截断但历史不足 10 条时，不删不改，返回 skipped no clear needed。"""
+    """模式二截断后降级也失败（历史太少砍半后仍截断）→ 不删不改，返回 skipped。"""
     import asyncio
 
     import agent.subagent as subagent_module
     import niu_api.chat as chat_module
     import niu_api.compat as compat
 
-    # 只有 3 条消息，不足 10 条，不应删任何消息
+    # 只有 3 条消息，降级砍半后仍截断 → 报失败，不删不改
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 4)]
 
     deleted_ids = []
@@ -496,10 +496,10 @@ def test_mode2_truncate_too_few_no_clear(monkeypatch):
     request = {"session_id": "test", "mode": "sleep"}
     result = asyncio.run(compat._tidy_context_impl(request))
 
-    # 验证返回 skipped + no clear needed
+    # 验证返回 skipped + degradation failed
     assert result is not None
     assert result.get("status") == "skipped"
-    assert "no clear needed" in result.get("reason", "")
+    assert "degradation" in result.get("reason", "")
     # 不删不改
     assert len(deleted_ids) == 0
     assert len(updated_ids) == 0
