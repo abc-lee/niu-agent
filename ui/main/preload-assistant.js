@@ -89,6 +89,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 接收用户活动通知（重置空闲计时器）
   onUserActivity: (callback) => ipcRenderer.on('user-activity', callback),
+
+  // 接收睡眠指令（/sleep 命令：触发 setState(SLEEP) → 自动 triggerTidy）
+  onEnterSleep: (callback) => ipcRenderer.on('enter-sleep', () => callback()),
   
   // 获取历史消息
   getHistory: (limit) => ipcRenderer.invoke('get-history', limit),
