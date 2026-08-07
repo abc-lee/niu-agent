@@ -43,7 +43,7 @@
 ### v3 → v4（第 3 轮审查 R3-1/2/3 修复）
 | 发现 | 严重级 | v4 处理 |
 |---|---|---|
-| R3-1 压缩块闭包边界数值模糊（L3588 vs L3961），若漏掉 return 则 ChatQueue `_retry_force_compression` 读到 tokens_after=0 静默耗尽 CONTEXT_OVERFLOW 重试 | P2 | Task 2 约束明确：闭包范围 **L3587 起至 L3961 止（含 final return）**，`_compress_force` 必须返回最终 dict |
+| R3-1 压缩块闭包边界数值模糊（L3588 vs L3961），若漏掉 return 则 ChatQueue `_retry_force_compression` 读到 tokens_after=0 静默耗尽 CONTEXT_OVERFLOW 重试 | P2 | Task 2 约束明确：闭包范围 **L3588 起至 L3961 止（含 final return）**，`_compress_force` 必须返回最终 dict |
 | R3-2 busy 分支 await 期间 chat_idle 重启用输入/隐藏 stopBtn，破坏 F6 输入禁用 | P2 | Task 7 加 `_clearTidyInFlight` 标志，gate chat_idle 的 `sendBtn`/`stopBtn` 重置；`/clear` 块 finally 统一恢复 |
 | R3-3 重申 R3-1 影响 | P2 | 由 R3-1 修复管理 |
 
@@ -133,7 +133,7 @@ cd /Users/lilei/tools/ai-bot && git add niu_api/compat.py && git commit -m "refa
 ### Task 2: 后端 — `_tidy_context_impl` 支持 `skip_compress`（request dict）+ 嵌套闭包 `_compress_force`
 
 **Files:**
-- Modify: `niu_api/compat.py:2477`（签名—无需改签名的 skip；改为从 request 读）、`niu_api/compat.py:~3587-3961`（force 压缩块抽闭包）
+- Modify: `niu_api/compat.py:2477`（签名—无需改签名的 skip；改为从 request 读）、`niu_api/compat.py:~3588-3961`（force 压缩块抽闭包）
 
 - [ ] **Step 1: docstring 记录 request 新增键**
 
@@ -146,7 +146,7 @@ cd /Users/lilei/tools/ai-bot && git add niu_api/compat.py && git commit -m "refa
 
 - [ ] **Step 2: force 分支把压缩块整体移入嵌套闭包 `_compress_force`，并在 journal 后、压缩前判断 `skip_compress`**
 
-force 分支的 context-manager 压缩从 `compat.py:3587`（`# 3/3. context-manager force prompt — 一轮 JSON 文件方案`）开始，到 `L3961` 的 final return 结束。
+force 分支的 context-manager 压缩从 `compat.py:3588`（`# 3/3. context-manager force prompt — 一轮 JSON 文件方案`）开始，到 `L3961` 的 final return 结束。
 
 在 force 分支的 journal-agent 段（`~L3586`）之后、原压缩块之前插入：
 
@@ -589,7 +589,7 @@ cd /Users/lilei/tools/ai-bot && git add ui/main/preload-chat.js ui/main/main.js 
 
 删除 `_pendingClear`/`_pendingClearTimeout` 声明（`chat.html:1018-1020`）与 busy-set（已被 Step 2 替换）。
 
-chat_idle 消费块（`chat.html:2442-2456`）当前：
+chat_idle 消费块（`chat.html:2444-2456`）当前：
 
 ```js
         hideTyping();
@@ -728,7 +728,7 @@ Expected: 既有测试不因本次改动失败。若全套太慢，只跑与 cle
 - `skip_compress` 从 request dict 读（Task 2 `request.get("skip_compress")` 与 Task 3 传 `"skip_compress": True` 一致）。
 - `_reset_all_cursors` async（Task 1），clear_chat/chat.py/session.py 均 `await`。
 - `clearChat(forceTidy)` 前端参数 preload 到 /clear 两分支一致。
-- `_pendingClear` 已完全删除（3 处），无悬空引用。
+- `_pendingClear` 已完全删除（3 处区域），无悬空引用。
 
 **4. 并发与锁（两轮审查 + 二次/三次核对结论）：**
 - `chat_lock_already_held=True` 所有调用方持 `_chat_lock`，无死锁。
