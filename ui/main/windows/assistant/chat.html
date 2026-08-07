@@ -1516,6 +1516,7 @@
           _clearTidyInFlight = false;
           sendBtn.disabled = false;
           userInput.disabled = false;
+          stopBtn.style.display = isProcessing ? 'flex' : 'none';  // 镜像 /new：整理完成且空闲时隐藏 stop 按钮
           userInput.focus();
         }
         return;
