@@ -23,12 +23,16 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
 | /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
 | /clear 指令 | 先触发整理（提炼实体/梦境进化/日志记录），记录完会话中有价值信息后清空对话；忙时先停止 Agent。支持 Electron 和 IM 通用 |
+| /compact 指令 | 强制压缩上下文：完整 force 管道（entity-extractor → dream-evolver → journal-agent → context-manager 模式三压缩），阻塞式 UI。仅 Electron |
+| /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（entity→dream→journal→context-manager 模式一/二）。仅 Electron |
 | 见缝插针 | Agent 运行期间发送的补充消息自动插入到当前对话上下文（补充在前，当前任务在后） |
 | 子 Agent 标签页 | 子 Agent 运行时自动创建独立标签页，实时展示回复/工具状态/思维链/提问；子 Agent 可通过 @user 向用户提问并阻塞等待回答 |
 
 **指令机制**：
 - `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
 - `/clear`：先触发后端 force 整理管道（entity-extractor → dream-evolver → journal-agent，跳过 context-manager 压缩），阻塞等待整理完成后再执行 `clear_messages()` 清空会话 + 复位全部游标；避免边整理边清空的信息丢失。忙时前端先发 `/stop` 释放锁。
+- `/compact`：调用 `POST /api/context/tidy {mode:'force'}`，跑完整 force 管道（entity-extractor 全量 → dream-evolver 增量 → journal-agent → context-manager 模式三强制压缩）。阻塞式 UI（系统提示 + 禁用输入 + compact_status 圆环动画），忙时先发 `/stop`。前端 600s 整体超时兜底（Promise.race，同 `/clear` 的后端 600s 兜底语义）——子 Agent LLM 卡死时前端恢复输入提示超时，后端 tidy 继续跑完无害（`_tidy_lock` 完成后自愈）。与 `/clear` 的区别：`/clear` 的 force_tidy 跳过 context-manager 压缩（`skip_compress=True`），`/compact` 跑完整管道含模式三压缩，不清空会话。**注意**：忙时 `/stop` 仅设置停止标志立即返回，不等 Agent 释放 `_chat_lock`；后端 force 模式获取 `_chat_lock` 超时 60s（compat.py:3828，比 `/clear` 的 120s 短），Agent 停止慢（如卡在子 Agent tool 调用）时 `/compact` 可能因锁超时而优雅失败并提示错误，重试即可。另注意：busy 场景 `/stop` 后若主 Agent 停止慢于 entity-extractor 完成，管道首个 `is_stop_requested()` 检查点（compat.py:3428）可能读到残留停止标志而返回 aborted（提示「⚠️ 压缩已中止」）——`/clear` 的 clear_chat 拿到锁后有防御性 `clear_stop()`（compat.py:2432），tidy 端点无此防御（后端零改动约束的固有代价）；aborted 分支会自动 `clear_stop()`，重试即可成功。
+- `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（entity→dream→journal→context-manager 模式一/二）。非阻塞，精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。与空闲自动睡眠完全一致，仅触发方式不同（手动 vs 空闲超时）。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
 - 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
 
 **见缝插针机制**：
