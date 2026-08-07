@@ -835,4 +835,7 @@ async def clear_session(session_id: str):
     runner = get_or_create_runner()
     if runner and runner.handler:
         runner.handler._last_prompt_tokens = 0
+    # 游标复位（与 clear_chat 一致，消除"清消息但游标残留"的不一致）
+    from niu_api.compat import _reset_all_cursors
+    await _reset_all_cursors()
     return {"status": "ok", "session_id": session_id}
