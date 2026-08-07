@@ -71,6 +71,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 清空聊天记录
   clearChat: (forceTidy) => ipcRenderer.invoke('clear-chat', forceTidy),
 
+  // 通知精灵进入睡眠（/sleep 命令：触发精灵 setState(SLEEP) → 自动 triggerTidy）
+  enterSleep: () => ipcRenderer.send('enter-sleep'),
+
+  // 触发上下文整理（/compact 命令：调后端 /api/context/tidy）
+  // 注意：preload-assistant.js L67 已有同名 tidyContext（无参数版，死代码——spirit.html 从未调用它，
+  // 它用 raw fetch 直接 POST）。本次新增 main.js handler 后该死代码"复活"但无人调用。
+  // 本任务不改动 preload-assistant.js 的死代码（清理超出范围），两者共用 'tidy-context' IPC 通道，
+  // main.js handler 用 `mode || 'force'` 兼容无参调用，不会出错。
+  tidyContext: (mode) => ipcRenderer.invoke('tidy-context', mode),
+
   // 接收提醒通知（scheduler 触发的定时任务）
   onAlert: (callback) => ipcRenderer.on('alert', (event, message) => callback(message)),
 
