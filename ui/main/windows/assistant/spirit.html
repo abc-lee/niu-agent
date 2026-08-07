@@ -748,6 +748,29 @@
       }
     });
 
+    // 监听 /sleep 命令（来自聊天窗口 → main.js 转发）：直接进入睡眠状态
+    // setState(SLEEP) 会自动播放 to-sleep 动画 + 调用 triggerTidy() 触发整理
+    window.electronAPI.onEnterSleep(() => {
+      console.log('[Spirit] 收到 /sleep 指令');
+      // BUSY 守卫（P2-1）：Agent 正在运行时忽略 /sleep。否则 Agent 完成后
+      // decrementBusy 归零 → setState(IDLE) 会把精灵从 SLEEP 强制唤醒，
+      // 导致"精灵显示 IDLE 但 triggerTidy 的整理还在后端跑"的状态不一致。
+      // chat.html /sleep 分支的 isProcessing 检查是主防线（给用户提示），
+      // 此处是兜底（防御直接 IPC 调用），spirit 是状态机唯一权威。
+      // 注意必须同时查 busyCount（P3-NEW-1）：ALERT 期间 onBusyState 只更新
+      // busyCount 不调 setState（L548-558），此时 currentState=ALERT 但
+      // busyCount>0，仅查 currentState===BUSY 会漏判；busyCount 才是忙碌权威
+      // 判据（endAlert L326-336 也按 busyCount 恢复状态）。
+      if (currentState === State.BUSY || busyCount > 0) {
+        console.log('[Spirit] 精灵忙碌中，忽略 /sleep');
+        return;
+      }
+      // SLEEP 守卫：防止重复进入 SLEEP 导致多次 triggerTidy()
+      if (currentState !== State.SLEEP) {
+        setState(State.SLEEP);
+      }
+    });
+
     // 启动入库进度轮询
     startProgressPolling();
 
