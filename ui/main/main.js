@@ -855,6 +855,13 @@ ipcMain.on('notify-activity', () => {
   }
 });
 
+// 接收聊天窗口的睡眠指令，转发给小女孩窗口（/sleep 命令：触发精灵 setState(SLEEP)）
+ipcMain.on('enter-sleep', () => {
+  if (spiritWindow && !spiritWindow.isDestroyed()) {
+    spiritWindow.webContents.send('enter-sleep');
+  }
+});
+
 // 用系统默认浏览器打开链接（仅允许 http/https）
 ipcMain.on('open-external', (event, url) => {
   if (!url) return;
@@ -1117,6 +1124,41 @@ ipcMain.handle('clear-chat', async (event, forceTidy) => {
     req.on('error', (e) => {
       console.error('清空聊天记录失败:', e.message);
       resolve({ success: false, error: e.message });
+    });
+    req.write(data);
+    req.end();
+  });
+});
+
+// 触发上下文整理（/compact 命令：调后端 /api/context/tidy）
+ipcMain.handle('tidy-context', async (event, mode) => {
+  return new Promise((resolve) => {
+    const data = JSON.stringify({ session_id: 'default', mode: mode || 'force' });
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: 9876,
+      path: '/api/context/tidy',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data)
+      }
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body);
+          console.log('[Tidy] 上下文整理:', result);
+          resolve(result);
+        } catch (e) {
+          resolve({ status: 'error', error: '解析响应失败' });
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.error('[Tidy] 上下文整理失败:', e.message);
+      resolve({ status: 'error', error: e.message });
     });
     req.write(data);
     req.end();
