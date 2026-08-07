@@ -1540,6 +1540,24 @@
         return;
       }
 
+      // /sleep 指令 - 让精灵进入睡眠（触发睡眠整理流程）
+      if (text === '/sleep') {
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        sendBtn.disabled = false;
+        // isProcessing 检查（P2-1 主防线）：Agent 忙碌时精灵处于 BUSY 状态，
+        // 此时进入睡眠会导致 Agent 完成后 chat_idle 把精灵从 SLEEP 强制唤醒回 IDLE
+        // 的状态冲突（整理还在后端跑但精灵已显示 IDLE）。忙碌时提示用户，不发 IPC。
+        // spirit.html 侧的 BUSY 守卫是兜底（防御直接 IPC 调用）。
+        if (isProcessing) {
+          addSystemMessage('⚠️ 精灵忙碌中，请先 /stop 停止当前任务再让它睡觉');
+          return;
+        }
+        addSystemMessage('💤 精灵已进入睡眠，开始整理…');
+        window.electronAPI.enterSleep();
+        return;
+      }
+
       // 铁律1：用户触发的 → 先刷新页面（即时反馈）
       const userMsg = addMessage('user', text);
       if (!userMsg) { return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
