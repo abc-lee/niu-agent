@@ -2251,12 +2251,14 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
     # IM 推送在锁释放后执行（与 ChatQueue 模式一致，避免网络 I/O 阻塞锁）
     try:
-        im_cid = runner.get_im_channel()
-        if im_cid and chat_error is None:
+        # 闸门：非 Electron 用户消息（async 子 Agent/定时任务续答 source=''）且 IM 通道可用时才推。
+        # channel_id 空时由网关 route_out→push 回退到 _push_target 广播（与 scheduler 服务首轮发飞书同款）。
+        # 规则 4：此处只读 get_im_channel()，绝不 set_im_channel——子 Agent 通道返回不改变通道。
+        if chat_error is None and request.source != "electron":
             from niu_api.channel import get_channel_router
             router = get_channel_router()
             if router.has_channel("im"):
-                await router.route_out(full_reply, "im", im_cid)
+                await router.route_out(full_reply, "im", runner.get_im_channel())
     except Exception as e:
         logger.warning(f"[chat_session] IM push failed: {e}")
 
