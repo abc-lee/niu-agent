@@ -1,4 +1,4 @@
-# /clear 命令增强：先整理（小憩+日志）后清空 实现计划（v4）
+# /clear 命令增强：先整理（小憩+日志）后清空 实现计划（v7）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -46,6 +46,19 @@
 | R3-1 压缩块闭包边界数值模糊（L3588 vs L3961），若漏掉 return 则 ChatQueue `_retry_force_compression` 读到 tokens_after=0 静默耗尽 CONTEXT_OVERFLOW 重试 | P2 | Task 2 约束明确：闭包范围 **L3588 起至 L3961 止（含 final return）**，`_compress_force` 必须返回最终 dict |
 | R3-2 busy 分支 await 期间 chat_idle 重启用输入/隐藏 stopBtn，破坏 F6 输入禁用 | P2 | Task 7 加 `_clearTidyInFlight` 标志，gate chat_idle 的 `sendBtn`/`stopBtn` 重置；`/clear` 块 finally 统一恢复 |
 | R3-3 重申 R3-1 影响 | P2 | 由 R3-1 修复管理 |
+
+### v4 → v5 → v6 → v7（第 4/5/6 轮审查修复，git 提交 `6be06e29`/`4478d625`/`4426b37c`）
+| 发现 | 严重级 | 处理 |
+|---|---|---|
+| R4-F1 Task 3 Step 1 '改为' 代码块缺开头围栏（围栏总数奇数），导致裸代码渲染 | P1 | 补 ```` ```python ```` 开围栏，围栏恢复偶数（74）；逻辑内容本就正确 |
+| R4-F2 外层 finally 行号 L4001-4005 → 实际 L3972-3978 | P3 | 修正行号 |
+| R4-F3 压缩起始 L3587 → 实际 L3588、H1 标题、双分隔线 | P3 | 修正：权威边界 L3588 起至 L3961 止；标题同步；清理双 `---` |
+| R5-P3-1 次要引用仍写 L3587（3 处） | P3 | 全部对齐 L3588 |
+| R5-P3-2 chat_idle 消费块行号措辞漂移 | P3 | 统一 L2444-2456 |
+| R5-P3-3 self-review '_pendingClear 3 处' 措辞 | P3 | 改 '3 处区域' |
+| v7 R3-1 警示措辞精炼（明确'漏末尾 return → ChatQueue tokens_after=0 耗尽重试'风险） | - | 措辞精确化 |
+
+**第 5、6 轮审查结论均为 ZERO-BUG PASS（findings: []），达到"连续两轮零 bug"交付门槛，计划可实施。**
 
 ---
 
