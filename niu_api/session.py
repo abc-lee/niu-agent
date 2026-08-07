@@ -59,6 +59,8 @@ async def delete_messages(session_id: str) -> dict:
     """Clear all messages (session_id is ignored)"""
     store = await get_message_store()
     count = await store.clear_messages()
+    from niu_api.compat import _reset_all_cursors
+    await _reset_all_cursors()
     return {"deleted_count": count}
 
 
@@ -86,4 +88,6 @@ async def delete_session(session_id: str) -> dict:
     runner = get_or_create_runner()
     if runner and runner.handler:
         runner.handler._last_prompt_tokens = 0
+    from niu_api.compat import _reset_all_cursors
+    await _reset_all_cursors()
     return {"deleted": True}
