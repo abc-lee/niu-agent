@@ -1084,12 +1084,14 @@ ipcMain.handle('get-history', async (event, limit, beforeId) => {
 });
 
 // 清空聊天记录
-ipcMain.handle('clear-chat', async () => {
+ipcMain.handle('clear-chat', async (event, forceTidy) => {
   // 清空待推送消息队列
   pendingAlertMessages = [];
 
   return new Promise((resolve) => {
-    const data = JSON.stringify({ sessionId: 'default' });
+    // /clear 传 force_tidy=true（先整理后清空）；/new 传 undefined（直接清空）
+    // snake_case：后端 clear_chat 用 body.get("force_tidy") 读取（raw dict，无 pydantic 转换）
+    const data = JSON.stringify({ sessionId: 'default', force_tidy: !!forceTidy });
     const req = http.request({
       hostname: '127.0.0.1',
       port: 9876,

@@ -69,7 +69,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
   // 清空聊天记录
-  clearChat: () => ipcRenderer.invoke('clear-chat'),
+  clearChat: (forceTidy) => ipcRenderer.invoke('clear-chat', forceTidy),
 
   // 接收提醒通知（scheduler 触发的定时任务）
   onAlert: (callback) => ipcRenderer.on('alert', (event, message) => callback(message)),
