@@ -1455,7 +1455,7 @@
       if (_activeTab !== 'main') {
         userInput.value = '';
         userInput.style.height = 'auto';
-        // /clear 和 /new 只对主对话有效（§5.5）
+        // /clear、/new、/compact、/sleep 只对主对话有效（§5.5）
         if (text === '/clear' || text === '/new' || text === '/compact' || text === '/sleep') {
           addSubagentMessageToTab(_activeTab, 'system', '请切回主对话使用此命令');
           sendBtn.disabled = false;
