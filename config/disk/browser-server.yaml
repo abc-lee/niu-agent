@@ -1,71 +1,98 @@
 server: browser-server
 directory: browser
-description: "浏览器 — 网页导航与交互"
+description: "浏览器 — 网页导航与交互。工作流：先 browser_navigate 导航 → 从返回的 elements 取编号 → 用 browser_interact 按编号操作。三条关键规则：1) 每次交互后元素重新编号，必须用最新返回的编号；2) URL 必须以 http:// 或 https:// 开头，不要写 url= 前缀；3) 需要刷新元素编号时用 action=get_state。支持多标签页（browser_new_tab / browser_switch_tab / browser_close_tab）。"
 
 tools:
   - name: browser_navigate
     category: write
     short: "导航到URL"
-    long: "启动浏览器导航到URL返回页面状态"
+    long: "启动浏览器并导航到 URL，自动返回页面结构化状态（url/title/elements/tabSummary/currentTabId）。LLM 根据返回的 elements（编号的交互元素）决策下一步 browser_interact 操作。wait_until 控制等待策略。"
     parameters:
       - name: url
         position: 1
         type: string
         required: true
+        description: "目标 URL，必须以 http:// 或 https:// 开头（不要写 url= 前缀）"
       - name: wait_until
         flag: wait
         type: string
         enum: [load, domcontentloaded, networkidle, commit]
         default: domcontentloaded
+        description: "页面加载完成判据。load=全部资源加载；networkidle=网络空闲（最稳，慢但对 SPA 好）；domcontentloaded=DOM就绪（默认，快）"
+    examples:
+      - "/browser/browser_navigate https://www.example.com"
+      - "/browser/browser_navigate https://example.com --wait networkidle"
+      - "/browser/browser_navigate https://www.google.com  搜索：导航后看返回的 elements，用编号定位搜索框"
 
   - name: browser_interact
     category: write
     short: "与页面交互"
-    long: "与页面元素交互(点击/输入/选择/滚动)"
+    long: "通过元素编号与页面交互。导航/操作后返回的 elements 含编号的交互元素，用 index 定位。\"串行操作\"——每次交互后元素重新编号，**始终用上一次返回结果中的最新 index**，编号过期会导致操作失败或点错元素。需要刷新编号时用 action=get_state。操作完成后返回更新后的页面状态（可继续据此决策）。"
     parameters:
       - name: action
         position: 1
         type: string
         required: true
         enum: [click, input, select, scroll, get_state]
+        description: "操作类型。click=点击元素；input=在元素输入文本；select=选择下拉选项；scroll=滚动页面；get_state=仅获取最新页面状态（刷新元素编号）"
       - name: index
         type: integer
+        description: "元素编号（来自最近一次返回的 elements，交互后编号会变，须用最新值）"
       - name: text
         type: string
+        description: "输入文本（仅 action=input 使用）"
       - name: option
         type: string
+        description: "下拉选项值（仅 action=select 使用）"
       - name: direction
         type: string
         enum: [up, down]
+        description: "滚动方向 up/down（仅 action=scroll）"
       - name: amount
         type: number
+        description: "滚动页数，支持小数（0.5=半页）（仅 action=scroll）"
+    examples:
+      - "/browser/browser_interact click --index 5  点击第 5 号元素"
+      - "/browser/browser_interact input --index 3 --text \"搜索内容\"  在第 3 号输入框填文本"
+      - "/browser/browser_interact select --index 2 --option \"选项A\"  选下拉项"
+      - "/browser/browser_interact scroll --direction down --amount 1.5  向下滚 1.5 页"
+      - "/browser/browser_interact get_state  刷新编号：编号过期/找不到元素时先调用"
 
   - name: browser_new_tab
     category: write
     short: "新标签页打开URL"
-    long: "在新标签页打开URL"
+    long: "在新标签页打开 URL。用于多页面并行浏览或对比不同网站。URL 必填（不能开空白标签页）。返回新标签页状态 + 更新后的 tabSummary。"
     parameters:
       - name: url
         position: 1
         type: string
         required: true
+        description: "新标签页要打开的 URL（必填，不能为空/空白）"
+    examples:
+      - "/browser/browser_new_tab https://example.com"
 
   - name: browser_switch_tab
     category: write
     short: "切换标签页"
-    long: "切换到指定标签页"
+    long: "切换到指定标签页。tab_id 必须来自最近一次响应中的 tabSummary（这些 id 是稳定的，跨操作不变）。切换后返回该标签页的页面状态。"
     parameters:
       - name: tab_id
         position: 1
         type: integer
         required: true
+        description: "标签页 ID，来自 tabSummary（如 42）"
+    examples:
+      - "/browser/browser_switch_tab --tab_id 42"
 
   - name: browser_close_tab
     category: write
     short: "关闭标签页"
-    long: "关闭指定标签页"
+    long: "关闭指定标签页。**不能关闭初始标签页**（最少保留一个）。tab_id 来自 tabSummary。返回更新后的 tabSummary 和 currentTabId。"
     parameters:
       - name: tab_id
         position: 1
         type: integer
         required: true
+        description: "要关闭的标签页 ID，来自 tabSummary"
+    examples:
+      - "/browser/browser_close_tab --tab_id 42"
