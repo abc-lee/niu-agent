@@ -1025,6 +1025,7 @@
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-btn');
     let _clearTidyInFlight = false;  // /clear 整理+清空进行中，gate chat_idle 的 UI 重置（R3-2）
+    let _compactingInFlight = false;  // /compact 压缩进行中，gate chat_idle 的 UI 重置（同 _clearTidyInFlight 模式）
     window._compacting = false;  // 压缩中标志，由 compact_status 事件切换
     const closeBtn = document.getElementById('close-btn');
     const header = document.getElementById('header');
@@ -1558,6 +1559,35 @@
         return;
       }
 
+      // /compact 指令 - 强制压缩上下文（entity→dream→journal→context-manager 模式三，阻塞式）
+      if (text === '/compact') {
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        if (isProcessing) {
+          // busy：先 /stop 停主 Agent（同 /clear 模式）
+          try {
+            await window.electronAPI.sendMessage('/stop');
+          } catch (e) {
+            console.error('停止失败:', e);
+            addSystemMessage('停止失败: ' + (e.message || e));
+          }
+        }
+        _compactingInFlight = true;
+        sendBtn.disabled = true;
+        userInput.disabled = true;
+        addSystemMessage('正在强制压缩上下文，请稍候…');
+        try {
+          await compactContext();
+        } finally {
+          _compactingInFlight = false;
+          sendBtn.disabled = false;
+          userInput.disabled = false;
+          stopBtn.style.display = isProcessing ? 'flex' : 'none';
+          userInput.focus();
+        }
+        return;
+      }
+
       // 铁律1：用户触发的 → 先刷新页面（即时反馈）
       const userMsg = addMessage('user', text);
       if (!userMsg) { return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
@@ -1609,7 +1639,38 @@
       }
       userInput.focus();
     }
-    
+
+    // 强制压缩上下文（/compact 命令）
+    async function compactContext() {
+      try {
+        // 600s 整体超时（设计文档第 6 条，同 /clear 的后端 600s 兜底）：
+        // 后端 /api/context/tidy 端点没有像 clear_chat 那样的 600s wait_for 兜底
+        // （clear_chat 在 compat.py:2440-2447 有；tidy 端点只有 _tidy_lock 互斥和
+        // 管道内 _chat_lock 60s），子 Agent LLM 卡死时本函数永不返回会永久禁用输入。
+        // 前端超时后恢复输入；后端 tidy 继续跑完无害（_tidy_lock 完成后自愈，
+        // 期间的睡眠整理会 skipped lock_busy，属预期降级）。
+        const result = await Promise.race([
+          window.electronAPI.tidyContext('force'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('压缩超时，请稍后重试')), 600000)),
+        ]);
+        if (result && result.status === 'ok') {
+          addSystemMessage('✅ 上下文压缩完成');
+        } else if (result && result.status === 'aborted') {
+          addSystemMessage('⚠️ 压缩已中止（用户停止）');
+        } else if (result && result.status === 'skipped') {
+          addSystemMessage('⚠️ 压缩已跳过：' + (result.reason || '未知原因'));
+        } else if (result && result.status === 'success') {
+          // P1-2：无消息可整理不是失败，避免误导性错误提示
+          addSystemMessage('ℹ️ ' + (result.message || '无需压缩'));
+        } else {
+          // P1-1：后端 error 返回字段是 message 不是 error，两者都尝试
+          addSystemMessage('❌ 压缩失败：' + ((result && (result.error || result.message)) || '未知错误'));
+        }
+      } catch (err) {
+        addSystemMessage('❌ ' + err.message);
+      }
+    }
+
     // ========== 路径编码预处理（括号平衡算法） ==========
     // 修复：文件路径中的括号（如 硅基银行项目 (2).docx）被 Markdown 语法截断
     // 简单正则 [^)]* 遇到第一个 ) 就停止匹配，导致路径截断
@@ -2467,8 +2528,9 @@
         // Agent循环结束：重置状态机
         hideTyping();
         isProcessing = false;
-        // R3-2：/clear 整理+清空进行中时，不重启用输入、不隐藏 stopBtn（clearChat 结束才会恢复）
-        if (!_clearTidyInFlight) {
+        // R3-2：/clear 或 /compact 进行中时，不重启用输入、不隐藏 stopBtn（对应函数结束才恢复）
+        // 两个标志任一为 true 都 gate：_clearTidyInFlight（/clear）| _compactingInFlight（/compact）
+        if (!_clearTidyInFlight && !_compactingInFlight) {
           stopBtn.style.display = 'none';
           sendBtn.disabled = false;
         }
