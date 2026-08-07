@@ -26,7 +26,7 @@ tools:
 
   - name: browser_interact
     category: write
-    short: "与页面交互"
+    short: "与网页元素交互(点击/输入/选择/滚动)或获取网页当前信息"
     long: "通过元素编号与页面交互。导航/操作后返回的 elements 含编号的交互元素，用 index 定位。\"串行操作\"——每次交互后元素重新编号，**始终用上一次返回结果中的最新 index**，编号过期会导致操作失败或点错元素。需要刷新编号时用 action=get_state。操作完成后返回更新后的页面状态（可继续据此决策）。"
     parameters:
       - name: action
@@ -82,7 +82,7 @@ tools:
         required: true
         description: "标签页 ID，来自 tabSummary（如 42）"
     examples:
-      - "/browser/browser_switch_tab --tab_id 42"
+      - "/browser/browser_switch_tab 42  切换到的 tab_id 来自最近响应的 tabSummary"
 
   - name: browser_close_tab
     category: write
@@ -95,4 +95,4 @@ tools:
         required: true
         description: "要关闭的标签页 ID，来自 tabSummary"
     examples:
-      - "/browser/browser_close_tab --tab_id 42"
+      - "/browser/browser_close_tab 42  关闭的 tab_id 来自 tabSummary（不能关闭初始标签页）"
