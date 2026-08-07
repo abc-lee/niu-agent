@@ -2494,6 +2494,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             跳过内部的 _chat_lock 获取和 ChatQueue pause/resume，
             避免自死锁（asyncio.Lock 不可重入）。
     """
+    # request 支持可选键 skip_compress: True 时跳过 force 模式的 context-manager 压缩
+    # （用于 /clear 场景：只做内容提炼+梦境进化+日志记录，不压缩）
     session_id = request.get("session_id", "default")
     mode = request.get("mode", "sleep")
 
@@ -3597,380 +3599,388 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 logger.info("[Tidy] Force: journal-agent no incremental messages")
 
-            # 3/3. context-manager force prompt — 一轮 JSON 文件方案
-            # 重新读取 compress 游标
-            last_compress_id = ""
-            if compress_cursor_path.exists():
-                try:
-                    cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
-                    last_compress_id = cdata.get("last_compress_id", "")
-                except Exception as e:
-                    logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
+            # 3/3. context-manager 强制压缩（抽为嵌套闭包；skip_compress=True 时跳过）
+            async def _compress_force():
+                # 3/3. context-manager force prompt — 一轮 JSON 文件方案
+                # 重新读取 compress 游标
+                last_compress_id = ""
+                if compress_cursor_path.exists():
+                    try:
+                        cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
+                        last_compress_id = cdata.get("last_compress_id", "")
+                    except Exception as e:
+                        logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
 
-            target_tokens = _read_compress_target_tokens()
-            compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
-            # 清理上次的残留计划文件
-            if os.path.exists(compress_plan_path):
-                try:
-                    os.remove(compress_plan_path)
-                except OSError:
-                    pass  # Windows 文件锁，忽略
+                target_tokens = _read_compress_target_tokens()
+                compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
+                # 清理上次的残留计划文件
+                if os.path.exists(compress_plan_path):
+                    try:
+                        os.remove(compress_plan_path)
+                    except OSError:
+                        pass  # Windows 文件锁，忽略
 
-            protect_recent_count = _read_protect_recent_count()
-            # 降级策略：允许外部传入更低的保护数量
-            _force_protect_recent = request.get("force_protect_recent") if isinstance(request, dict) else None
-            if _force_protect_recent is not None and isinstance(_force_protect_recent, int) and _force_protect_recent >= 1:
-                protect_recent_count = min(protect_recent_count, _force_protect_recent)
-                logger.info(f"[Tidy] Force: protect_recent_count degraded to {protect_recent_count} (from request)")
+                protect_recent_count = _read_protect_recent_count()
+                # 降级策略：允许外部传入更低的保护数量
+                _force_protect_recent = request.get("force_protect_recent") if isinstance(request, dict) else None
+                if _force_protect_recent is not None and isinstance(_force_protect_recent, int) and _force_protect_recent >= 1:
+                    protect_recent_count = min(protect_recent_count, _force_protect_recent)
+                    logger.info(f"[Tidy] Force: protect_recent_count degraded to {protect_recent_count} (from request)")
 
-            # 使用统一的 _build_compress_history 构建（与模式二一致）
-            _force_msg_ids = []
-            _force_history, _ = _build_compress_history(
-                messages, msg_tokens,
-                out_msg_ids=_force_msg_ids,
-                protect_recent=protect_recent_count,
-                exclude_protected=True,
-            )
-
-            # 构建 idx→UUID 映射 + id→idx 反向映射（用于 prompt 和解析）
-            _f_idx_to_id: dict[int, str] = {}
-            _f_id_to_idx: dict[str, int] = {}
-            for _i, _mid in enumerate(_force_msg_ids):
-                _f_idx_to_id[_i + 1] = _mid
-                _f_id_to_idx[_mid] = _i + 1
-
-            # dream-evolver 安全边界 idx（排除后列表中的位置）
-            if not new_dream_id:
-                _dream_idx_in_force = 0
-            else:
-                _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
-
-            # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
-            llm_config_with_max = dict(llm_config)
-            llm_config_with_max["litellm_kwargs"] = {
-                **llm_config.get("litellm_kwargs", {}),
-                "max_tokens": _read_max_output_tokens(),
-            }
-
-            # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
-            prompt = _build_force_prompt(
-                display_tokens, target_tokens, usage_percent,
-                _force_history, last_compress_id, _dream_idx_in_force
-            )
-
-            def run_context_manager_force():
-                return call_subagent_with_auto_answer(
-                    agent_name="context-manager",
-                    task=prompt,
-                    llm_config=llm_config_with_max,
-                    mcp_client=None,
-                    context_fifo_threshold=-1,  # FIFO 保底
-                    history=_force_history,  # 直接传 messages 列表，避免单条 user message 超限
-                    bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
+                # 使用统一的 _build_compress_history 构建（与模式二一致）
+                _force_msg_ids = []
+                _force_history, _ = _build_compress_history(
+                    messages, msg_tokens,
+                    out_msg_ids=_force_msg_ids,
+                    protect_recent=protect_recent_count,
+                    exclude_protected=True,
                 )
 
-            result = await asyncio.to_thread(run_context_manager_force)
-            _force_halved_msg_ids = None  # 降级砍半的前半段 msg_ids
-            if is_stop_requested():
-                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                clear_stop()
-                return {"status": "aborted", "message": "Stopped by user"}
-            # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
-            if result and result.startswith("SUBAGENT_ERROR:"):
-                error_msg = result[len("SUBAGENT_ERROR:"):]
-                logger.warning(f"[Compact] Force: context-manager LLM error: {error_msg}")
-                return {"status": "skipped", "mode": "force", "reason": f"LLM error: {error_msg}"}
-
-
-            if result and result.startswith("COMPACT_TRUNCATED:"):
-                logger.warning("[Compact] Force output truncated, starting degradation")
-                result_str, actual_msg_ids, halved_msg_ids = await asyncio.to_thread(
-                    _compact_with_degradation_sync,
-                    agent_name="context-manager",
-                    prompt=prompt,
-                    compress_history=_force_history,
-                    compress_msg_ids=_force_msg_ids,
-                    llm_config=llm_config_with_max,
-                    prompt_builder=_build_force_prompt,
-                    prompt_builder_kwargs={
-                        "display_tokens": display_tokens,
-                        "compress_target_tokens": target_tokens,
-                        "usage_percent": usage_percent,
-                        "force_history": _force_history,
-                        "last_compress_id": last_compress_id,
-                        "dream_idx_in_force": _dream_idx_in_force,
-                    },
-                    call_fn=call_subagent_with_auto_answer,
-                )
-                if result_str is None:
-                    return {"status": "skipped", "mode": "force",
-                            "reason": "compress failed: output truncated after all degradation steps"}
-                # 降级成功，用返回值替代 result
-                result = result_str
-                _force_msg_ids = actual_msg_ids
-                _force_halved_msg_ids = halved_msg_ids
-                # 重建 idx→UUID 映射（砍半后 msg_ids 变化，旧映射失效）
-                _f_idx_to_id = {}
+                # 构建 idx→UUID 映射 + id→idx 反向映射（用于 prompt 和解析）
+                _f_idx_to_id: dict[int, str] = {}
+                _f_id_to_idx: dict[str, int] = {}
                 for _i, _mid in enumerate(_force_msg_ids):
                     _f_idx_to_id[_i + 1] = _mid
+                    _f_id_to_idx[_mid] = _i + 1
 
-            # 正常返回，剥离 <analysis> 草稿块（在解析前）
-            logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
-            result = _strip_analysis(result)
-
-            # 从 sub-agent 回复中解析压缩计划（idx 格式）
-            new_compress_id = last_compress_id
-            try:
-                keep_idxs: set[int] = set()
-                update_list: list[tuple[int, str]] = []
-                cursor_idx: int | None = None
-
-                for line in result.splitlines():
-                    line = line.strip()
-                    if line.lower().startswith("keep="):
-                        keep_idxs = _parse_idx_list(line.split("=", 1)[1].strip())
-                    elif line.lower().startswith("update="):
-                        update_str = line.split("=", 1)[1].strip()
-                        if update_str:
-                            for part in update_str.split(";"):
-                                part = part.strip()
-                                if "|" in part:
-                                    idx_str, content = part.split("|", 1)
-                                    try:
-                                        idx = int(idx_str.strip())
-                                        _c = content.strip()
-                                        if not _c.startswith('[摘要]') and not _c.startswith('[合并]'):
-                                            _c = f'[摘要] {_c}'
-                                        update_list.append((idx, _c))
-                                    except ValueError:
-                                        pass
-                    elif line.lower().startswith("cursor="):
-                        cursor_str = line.split("=", 1)[1].strip()
-                        try:
-                            cursor_idx = int(cursor_str)
-                        except ValueError:
-                            pass
-
-                if not keep_idxs:
-                    raise ValueError("No keep= line found in sub-agent reply")
-
-                # 计算删除列表：所有 idx - 保留 idx
-                all_force_idxs = set(_f_idx_to_id.keys())
-                delete_idxs = all_force_idxs - keep_idxs
-
-                # 转换为 UUID
-                deletes = [_f_idx_to_id[i] for i in sorted(delete_idxs) if i in _f_idx_to_id]
-                # 砍半掉的前半段 msg_ids 加入删除列表
-                if _force_halved_msg_ids:
-                    deletes.extend(_force_halved_msg_ids)
-                for idx, _ in update_list:
-                    if idx not in _f_idx_to_id:
-                        logger.warning(f"[Compact] Force LLM returned out-of-range update idx {idx}, silently dropped")
-                updates = [
-                    {"message_id": _f_idx_to_id[idx], "content": content}
-                    for idx, content in update_list if idx in _f_idx_to_id
-                ]
-                # cursor 转换为 UUID
-                if cursor_idx and cursor_idx in _f_idx_to_id:
-                    new_compress_id = _f_idx_to_id[cursor_idx]
+                # dream-evolver 安全边界 idx（排除后列表中的位置）
+                if not new_dream_id:
+                    _dream_idx_in_force = 0
                 else:
-                    logger.warning(f"[Compact] Force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
-                    # new_compress_id 保持初始值（last_compress_id）
+                    _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
 
-                logger.info(f"[Tidy] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
+                # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
+                llm_config_with_max = dict(llm_config)
+                llm_config_with_max["litellm_kwargs"] = {
+                    **llm_config.get("litellm_kwargs", {}),
+                    "max_tokens": _read_max_output_tokens(),
+                }
 
-                # 安全协议：pause ChatQueue + acquire chat_lock
-                from niu_api.chat import _chat_lock
-                _f_chat_lock_acquired = False
-                _fq = None
+                # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
+                prompt = _build_force_prompt(
+                    display_tokens, target_tokens, usage_percent,
+                    _force_history, last_compress_id, _dream_idx_in_force
+                )
 
-                if chat_lock_already_held:
-                    _f_chat_lock_acquired = False
-                    logger.info("[Tidy] Force: chat_lock already held by caller, skipping ChatQueue pause+lock acquire")
-                else:
-                    from niu_api.chat_queue import get_chat_queue
-                    _fq = get_chat_queue()
-                    _fq.pause()
+                def run_context_manager_force():
+                    return call_subagent_with_auto_answer(
+                        agent_name="context-manager",
+                        task=prompt,
+                        llm_config=llm_config_with_max,
+                        mcp_client=None,
+                        context_fifo_threshold=-1,  # FIFO 保底
+                        history=_force_history,  # 直接传 messages 列表，避免单条 user message 超限
+                        bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
+                    )
 
-                    try:
-                        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
-                        _f_chat_lock_acquired = True
-                    except TimeoutError:
-                        logger.warning("[Tidy] Force: chat_lock 60s timeout, aborting execution")
+                result = await asyncio.to_thread(run_context_manager_force)
+                _force_halved_msg_ids = None  # 降级砍半的前半段 msg_ids
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
+                    return {"status": "aborted", "message": "Stopped by user"}
+                # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
+                if result and result.startswith("SUBAGENT_ERROR:"):
+                    error_msg = result[len("SUBAGENT_ERROR:"):]
+                    logger.warning(f"[Compact] Force: context-manager LLM error: {error_msg}")
+                    return {"status": "skipped", "mode": "force", "reason": f"LLM error: {error_msg}"}
 
-                    if not _f_chat_lock_acquired:
-                        _fq.resume()
-                        raise RuntimeError("Force: chat_lock timeout")
 
-                    if _fq._processing and _fq._processing_done.is_set():
-                        pass
-                    elif _fq._processing:
-                        try:
-                            await asyncio.wait_for(_fq._processing_done.wait(), timeout=30.0)
-                        except TimeoutError:
-                            logger.warning("[Tidy] Force: ChatQueue processing timeout, aborting execution")
-                            if _f_chat_lock_acquired:
-                                _chat_lock.release()
-                            _fq.resume()
-                            raise RuntimeError("Force: ChatQueue processing timeout") from None
+                if result and result.startswith("COMPACT_TRUNCATED:"):
+                    logger.warning("[Compact] Force output truncated, starting degradation")
+                    result_str, actual_msg_ids, halved_msg_ids = await asyncio.to_thread(
+                        _compact_with_degradation_sync,
+                        agent_name="context-manager",
+                        prompt=prompt,
+                        compress_history=_force_history,
+                        compress_msg_ids=_force_msg_ids,
+                        llm_config=llm_config_with_max,
+                        prompt_builder=_build_force_prompt,
+                        prompt_builder_kwargs={
+                            "display_tokens": display_tokens,
+                            "compress_target_tokens": target_tokens,
+                            "usage_percent": usage_percent,
+                            "force_history": _force_history,
+                            "last_compress_id": last_compress_id,
+                            "dream_idx_in_force": _dream_idx_in_force,
+                        },
+                        call_fn=call_subagent_with_auto_answer,
+                    )
+                    if result_str is None:
+                        return {"status": "skipped", "mode": "force",
+                                "reason": "compress failed: output truncated after all degradation steps"}
+                    # 降级成功，用返回值替代 result
+                    result = result_str
+                    _force_msg_ids = actual_msg_ids
+                    _force_halved_msg_ids = halved_msg_ids
+                    # 重建 idx→UUID 映射（砍半后 msg_ids 变化，旧映射失效）
+                    _f_idx_to_id = {}
+                    for _i, _mid in enumerate(_force_msg_ids):
+                        _f_idx_to_id[_i + 1] = _mid
 
+                # 正常返回，剥离 <analysis> 草稿块（在解析前）
+                logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
+                result = _strip_analysis(result)
+
+                # 从 sub-agent 回复中解析压缩计划（idx 格式）
+                new_compress_id = last_compress_id
                 try:
-                    # 重新获取消息列表
-                    fresh_messages = await store.get_messages()
-                    existing_ids = {getattr(m, "id", "") for m in fresh_messages}
-                    valid_deletes = [mid for mid in deletes if mid in existing_ids]
-                    valid_deletes = list(dict.fromkeys(valid_deletes))
-                    # 校验游标有效性
-                    if new_compress_id and new_compress_id not in existing_ids:
-                        logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
-                        new_compress_id = last_compress_id
-                    if new_compress_id and new_compress_id not in existing_ids:
-                        logger.warning(f"[Tidy] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
-                        new_compress_id = ""
+                    keep_idxs: set[int] = set()
+                    update_list: list[tuple[int, str]] = []
+                    cursor_idx: int | None = None
 
-                    # 保护游标
-                    cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
-                    for cursor_id in cursor_ids_set:
-                        if cursor_id in valid_deletes:
-                            valid_deletes.remove(cursor_id)
-                            logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
-                    valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
-                    cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
-                    if cursor_updates:
-                        logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
-                        valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
-                    # dream 安全边界
-                    if new_dream_id:
-                        dream_boundary_idx = -1
-                        for i, m in enumerate(fresh_messages):
-                            if (getattr(m, "id", "") or "") == new_dream_id:
-                                dream_boundary_idx = i
-                                break
-                        if dream_boundary_idx >= 0:
-                            post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
-                            unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
-                            if unsafe_deletes:
-                                logger.warning(f"[Tidy] Force: Protecting {len(unsafe_deletes)} messages after dream cursor from deletion")
-                                valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
-                            unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
-                            if unsafe_updates:
-                                logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
-                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
-                    # 保护近期消息
-                    # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
-                    protected_force_ids: set[str] = set()
-                    if protect_recent_count > 0:
-                        _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
-                        protected_force_ids = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
-                        removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
-                        if removed_deletes:
-                            logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
-                            valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
-                        removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
-                        if removed_updates:
-                            logger.warning(f"[Tidy] Force: Protecting {len(removed_updates)} recent messages from update")
-                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
-                    # 防止 delete/update 重叠
-                    update_ids = {u.get("message_id", "") for u in valid_updates}
-                    overlap_ids = update_ids & set(valid_deletes)
-                    if overlap_ids:
-                        logger.warning(f"[Tidy] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
-                        valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
-                    if len(valid_deletes) < len(deletes):
-                        logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
-                    if len(valid_updates) < len(updates):
-                        logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
+                    for line in result.splitlines():
+                        line = line.strip()
+                        if line.lower().startswith("keep="):
+                            keep_idxs = _parse_idx_list(line.split("=", 1)[1].strip())
+                        elif line.lower().startswith("update="):
+                            update_str = line.split("=", 1)[1].strip()
+                            if update_str:
+                                for part in update_str.split(";"):
+                                    part = part.strip()
+                                    if "|" in part:
+                                        idx_str, content = part.split("|", 1)
+                                        try:
+                                            idx = int(idx_str.strip())
+                                            _c = content.strip()
+                                            if not _c.startswith('[摘要]') and not _c.startswith('[合并]'):
+                                                _c = f'[摘要] {_c}'
+                                            update_list.append((idx, _c))
+                                        except ValueError:
+                                            pass
+                        elif line.lower().startswith("cursor="):
+                            cursor_str = line.split("=", 1)[1].strip()
+                            try:
+                                cursor_idx = int(cursor_str)
+                            except ValueError:
+                                pass
 
-                    # 级联删除
-                    _cascade_protected = cursor_ids_set | (protected_force_ids if protect_recent_count > 0 else set())
-                    cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
-                    valid_deletes = cascade_del.delete_ids
-                    dangling_tc_cleanups = cascade_del.dangling_cleanups
-                    cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
-                    valid_updates = cascade_upd.updates
-                    cascade_delete_ids = cascade_upd.cascade_delete_ids
-                    if cascade_delete_ids:
-                        existing = set(valid_deletes)
-                        for cid in cascade_delete_ids:
-                            if cid not in existing:
-                                valid_deletes.append(cid)
-                                existing.add(cid)
+                    if not keep_idxs:
+                        raise ValueError("No keep= line found in sub-agent reply")
 
-                    _post_update_ids = {u.get("message_id", "") for u in valid_updates}
-                    _post_overlap = _post_update_ids & set(valid_deletes)
-                    if _post_overlap:
-                        logger.warning(f"[Tidy] Force: Cascade created delete/update overlap: {_post_overlap}")
-                        valid_deletes = [mid for mid in valid_deletes if mid not in _post_overlap]
+                    # 计算删除列表：所有 idx - 保留 idx
+                    all_force_idxs = set(_f_idx_to_id.keys())
+                    delete_idxs = all_force_idxs - keep_idxs
 
-                    if dangling_tc_cleanups:
-                        for cleanup in dangling_tc_cleanups:
-                            mid = cleanup["message_id"]
-                            dangling_ids = cleanup["dangling_tc_ids"]
-                            m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
-                            if m and getattr(m, "tool_calls", None):
-                                tcs = m.tool_calls
-                                if isinstance(tcs, str):
-                                    tcs = json.loads(tcs)
-                                valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
-                                if valid_tcs:
-                                    await _clean_dangling_tool_calls(store, mid, valid_tcs)
-                                else:
-                                    await store.update_message(mid, getattr(m, "content", "") or "", clear_tool_calls=True)
-                                logger.info(f"[Tidy] Force: Cleaned {len(dangling_ids)} dangling tool_calls from protected assistant {mid}")
+                    # 转换为 UUID
+                    deletes = [_f_idx_to_id[i] for i in sorted(delete_idxs) if i in _f_idx_to_id]
+                    # 砍半掉的前半段 msg_ids 加入删除列表
+                    if _force_halved_msg_ids:
+                        deletes.extend(_force_halved_msg_ids)
+                    for idx, _ in update_list:
+                        if idx not in _f_idx_to_id:
+                            logger.warning(f"[Compact] Force LLM returned out-of-range update idx {idx}, silently dropped")
+                    updates = [
+                        {"message_id": _f_idx_to_id[idx], "content": content}
+                        for idx, content in update_list if idx in _f_idx_to_id
+                    ]
+                    # cursor 转换为 UUID
+                    if cursor_idx and cursor_idx in _f_idx_to_id:
+                        new_compress_id = _f_idx_to_id[cursor_idx]
+                    else:
+                        logger.warning(f"[Compact] Force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
+                        # new_compress_id 保持初始值（last_compress_id）
 
-                    if valid_deletes:
-                        del_result = await store.delete_messages_by_ids(valid_deletes)
-                        logger.info(f"[Tidy] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
+                    logger.info(f"[Tidy] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
 
-                    for upd in valid_updates:
-                        mid = upd.get("message_id", "")
-                        content = upd.get("content", "")
-                        if mid and content:
-                            clear_tc = upd.get("clear_tool_calls", False)
-                            ok = await store.update_message(message_id=mid, content=content, clear_tool_calls=clear_tc)
-                            if ok:
-                                logger.info(f"[Tidy] Force: Updated message {mid}")
-                            else:
-                                logger.warning(f"[Tidy] Force: Failed to update message {mid}")
+                    # 安全协议：pause ChatQueue + acquire chat_lock
+                    from niu_api.chat import _chat_lock
+                    _f_chat_lock_acquired = False
+                    _fq = None
 
-                    logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
-                    await _cleanup_orphan_tool_messages(store)
-                finally:
-                    if _f_chat_lock_acquired:
-                        _chat_lock.release()
-                    if _fq is not None:
-                        _fq.resume()
-            except ValueError as e:
-                logger.error(f"[Tidy] Force: Failed to parse compression plan: {e}")
-            except Exception as e:
-                logger.error(f"[Tidy] Force: Failed to execute compress plan: {e}")
+                    if chat_lock_already_held:
+                        _f_chat_lock_acquired = False
+                        logger.info("[Tidy] Force: chat_lock already held by caller, skipping ChatQueue pause+lock acquire")
+                    else:
+                        from niu_api.chat_queue import get_chat_queue
+                        _fq = get_chat_queue()
+                        _fq.pause()
 
-            # 写入 compress 游标
-            if new_compress_id:
-                _write_cursor_with_lock(compress_cursor_path, {
-                    "last_compress_id": new_compress_id,
-                    "last_compress_at": datetime.now().isoformat(),
-                })
-                logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
+                        try:
+                            await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+                            _f_chat_lock_acquired = True
+                        except TimeoutError:
+                            logger.warning("[Tidy] Force: chat_lock 60s timeout, aborting execution")
 
-            # 计算压缩后 token 数（用于降级判断）
-            tokens_after = display_tokens  # 默认值
-            try:
-                post_messages = await store.get_messages()
-                from agent.token_calculator import TokenCalculator
-                calc = TokenCalculator.get()
-                post_total = 0
-                for pm in post_messages:
+                        if not _f_chat_lock_acquired:
+                            _fq.resume()
+                            raise RuntimeError("Force: chat_lock timeout")
+
+                        if _fq._processing and _fq._processing_done.is_set():
+                            pass
+                        elif _fq._processing:
+                            try:
+                                await asyncio.wait_for(_fq._processing_done.wait(), timeout=30.0)
+                            except TimeoutError:
+                                logger.warning("[Tidy] Force: ChatQueue processing timeout, aborting execution")
+                                if _f_chat_lock_acquired:
+                                    _chat_lock.release()
+                                _fq.resume()
+                                raise RuntimeError("Force: ChatQueue processing timeout") from None
+
                     try:
-                        t = calc.count_message_single(pm.role, pm.content or "", tool_calls=getattr(pm, "tool_calls", None))
-                    except Exception:
-                        t = max(1, len(pm.content or "") // 2) + 4
-                    post_total += t
-                tokens_after = post_total
-            except Exception:
-                pass
+                        # 重新获取消息列表
+                        fresh_messages = await store.get_messages()
+                        existing_ids = {getattr(m, "id", "") for m in fresh_messages}
+                        valid_deletes = [mid for mid in deletes if mid in existing_ids]
+                        valid_deletes = list(dict.fromkeys(valid_deletes))
+                        # 校验游标有效性
+                        if new_compress_id and new_compress_id not in existing_ids:
+                            logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
+                            new_compress_id = last_compress_id
+                        if new_compress_id and new_compress_id not in existing_ids:
+                            logger.warning(f"[Tidy] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
+                            new_compress_id = ""
 
-            return {"status": "ok", "mode": "force", "tokens_before": display_tokens, "tokens_after": tokens_after}
+                        # 保护游标
+                        cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
+                        for cursor_id in cursor_ids_set:
+                            if cursor_id in valid_deletes:
+                                valid_deletes.remove(cursor_id)
+                                logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
+                        valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
+                        cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
+                        if cursor_updates:
+                            logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
+                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
+                        # dream 安全边界
+                        if new_dream_id:
+                            dream_boundary_idx = -1
+                            for i, m in enumerate(fresh_messages):
+                                if (getattr(m, "id", "") or "") == new_dream_id:
+                                    dream_boundary_idx = i
+                                    break
+                            if dream_boundary_idx >= 0:
+                                post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
+                                unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
+                                if unsafe_deletes:
+                                    logger.warning(f"[Tidy] Force: Protecting {len(unsafe_deletes)} messages after dream cursor from deletion")
+                                    valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
+                                unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
+                                if unsafe_updates:
+                                    logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
+                                    valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
+                        # 保护近期消息
+                        # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
+                        protected_force_ids: set[str] = set()
+                        if protect_recent_count > 0:
+                            _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
+                            protected_force_ids = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
+                            removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
+                            if removed_deletes:
+                                logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
+                                valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
+                            removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
+                            if removed_updates:
+                                logger.warning(f"[Tidy] Force: Protecting {len(removed_updates)} recent messages from update")
+                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
+                        # 防止 delete/update 重叠
+                        update_ids = {u.get("message_id", "") for u in valid_updates}
+                        overlap_ids = update_ids & set(valid_deletes)
+                        if overlap_ids:
+                            logger.warning(f"[Tidy] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
+                            valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
+                        if len(valid_deletes) < len(deletes):
+                            logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
+                        if len(valid_updates) < len(updates):
+                            logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
+
+                        # 级联删除
+                        _cascade_protected = cursor_ids_set | (protected_force_ids if protect_recent_count > 0 else set())
+                        cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
+                        valid_deletes = cascade_del.delete_ids
+                        dangling_tc_cleanups = cascade_del.dangling_cleanups
+                        cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                        valid_updates = cascade_upd.updates
+                        cascade_delete_ids = cascade_upd.cascade_delete_ids
+                        if cascade_delete_ids:
+                            existing = set(valid_deletes)
+                            for cid in cascade_delete_ids:
+                                if cid not in existing:
+                                    valid_deletes.append(cid)
+                                    existing.add(cid)
+
+                        _post_update_ids = {u.get("message_id", "") for u in valid_updates}
+                        _post_overlap = _post_update_ids & set(valid_deletes)
+                        if _post_overlap:
+                            logger.warning(f"[Tidy] Force: Cascade created delete/update overlap: {_post_overlap}")
+                            valid_deletes = [mid for mid in valid_deletes if mid not in _post_overlap]
+
+                        if dangling_tc_cleanups:
+                            for cleanup in dangling_tc_cleanups:
+                                mid = cleanup["message_id"]
+                                dangling_ids = cleanup["dangling_tc_ids"]
+                                m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
+                                if m and getattr(m, "tool_calls", None):
+                                    tcs = m.tool_calls
+                                    if isinstance(tcs, str):
+                                        tcs = json.loads(tcs)
+                                    valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
+                                    if valid_tcs:
+                                        await _clean_dangling_tool_calls(store, mid, valid_tcs)
+                                    else:
+                                        await store.update_message(mid, getattr(m, "content", "") or "", clear_tool_calls=True)
+                                    logger.info(f"[Tidy] Force: Cleaned {len(dangling_ids)} dangling tool_calls from protected assistant {mid}")
+
+                        if valid_deletes:
+                            del_result = await store.delete_messages_by_ids(valid_deletes)
+                            logger.info(f"[Tidy] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
+
+                        for upd in valid_updates:
+                            mid = upd.get("message_id", "")
+                            content = upd.get("content", "")
+                            if mid and content:
+                                clear_tc = upd.get("clear_tool_calls", False)
+                                ok = await store.update_message(message_id=mid, content=content, clear_tool_calls=clear_tc)
+                                if ok:
+                                    logger.info(f"[Tidy] Force: Updated message {mid}")
+                                else:
+                                    logger.warning(f"[Tidy] Force: Failed to update message {mid}")
+
+                        logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
+                        await _cleanup_orphan_tool_messages(store)
+                    finally:
+                        if _f_chat_lock_acquired:
+                            _chat_lock.release()
+                        if _fq is not None:
+                            _fq.resume()
+                except ValueError as e:
+                    logger.error(f"[Tidy] Force: Failed to parse compression plan: {e}")
+                except Exception as e:
+                    logger.error(f"[Tidy] Force: Failed to execute compress plan: {e}")
+
+                # 写入 compress 游标
+                if new_compress_id:
+                    _write_cursor_with_lock(compress_cursor_path, {
+                        "last_compress_id": new_compress_id,
+                        "last_compress_at": datetime.now().isoformat(),
+                    })
+                    logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
+
+                # 计算压缩后 token 数（用于降级判断）
+                tokens_after = display_tokens  # 默认值
+                try:
+                    post_messages = await store.get_messages()
+                    from agent.token_calculator import TokenCalculator
+                    calc = TokenCalculator.get()
+                    post_total = 0
+                    for pm in post_messages:
+                        try:
+                            t = calc.count_message_single(pm.role, pm.content or "", tool_calls=getattr(pm, "tool_calls", None))
+                        except Exception:
+                            t = max(1, len(pm.content or "") // 2) + 4
+                        post_total += t
+                    tokens_after = post_total
+                except Exception:
+                    pass
+
+                return {"status": "ok", "mode": "force", "tokens_before": display_tokens, "tokens_after": tokens_after}
+
+            if request.get("skip_compress"):
+                logger.info("[Tidy] Force: skip_compress=True, skipping context-manager compression")
+                return {"status": "ok", "mode": "force", "skip_compress": True,
+                        "tokens_before": display_tokens, "tokens_after": display_tokens}
+            return await _compress_force()
 
         else:
             logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
