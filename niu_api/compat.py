@@ -2399,18 +2399,30 @@ async def _reset_all_cursors() -> None:
 
 
 @router.post("/api/chat/clear")
-async def clear_chat() -> dict:
-    """Clear all messages (for /new and /clear commands)"""
-    # 先请求停止当前 Agent 工作
+async def clear_chat(request: Request) -> dict:
+    """Clear all messages (for /new and /clear commands)
+
+    body 可选键：
+        force_tidy (bool): True 时清空前先跑 force 整理（entity→dream→journal，skip_compress）
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    force_tidy = bool(body.get("force_tidy"))  # snake_case —— main.js 发送一致
+
+    # 先请求停止当前 Agent 工作（全局 stop 标志）
     from agent.runner import clear_stop, request_stop
     request_stop()
 
     # 获取锁，防止与正在进行的 chat 冲突
-    # 超时增加到 30 秒，等待 Agent 循环检测 stop 标志并退出
+    # 超时增加到 120 秒：/clear 的 busy 分支先发 /stop 停主 Agent，持锁者在 finally 释放；
+    # 120s 覆盖 persist + CONTEXT_OVERFLOW force-compress；若主 Agent 卡在子 agent tool 超时
+    # → 优雅失败需重试。
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=30.0)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=120.0)
     except TimeoutError:
-        logger.warning("[clear_chat] _chat_lock 30s timeout, clear rejected")
+        logger.warning("[clear_chat] _chat_lock 120s timeout, clear rejected")
         clear_stop()  # 防止停止标志残留，影响后续定时任务
         return {"success": False, "error": "系统正忙，请稍后再试"}
 
@@ -2420,6 +2432,20 @@ async def clear_chat() -> dict:
         from agent.runner import drain_supplements
         drain_supplements()
         store = await get_message_store()
+        # /clear：先跑 force 整理（entity→dream→journal，skip_compress），阻塞；超时降级为 clear-messages-only
+        if force_tidy:
+            try:
+                await asyncio.wait_for(
+                    _tidy_context_impl(
+                        {"session_id": "default", "mode": "force", "skip_compress": True},
+                        chat_lock_already_held=True,  # clear_chat 已持有 _chat_lock，防 asyncio.Lock 不可重入死锁
+                    ),
+                    timeout=600.0,  # 兜底：单个子 agent LLM 卡死时不永久占锁
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[clear_chat] tidy 600s timeout, clear-messages-only (orphan subagent thread self-heals)")
+            except Exception as e:
+                logger.warning(f"[clear_chat] run_tidy_before failed, proceed to clear: {e}")
         count = await store.clear_messages()
 
         # 重置 runner 的所有状态
