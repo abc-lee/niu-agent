@@ -44,13 +44,13 @@ tools:
 
   - name: get_storage_config
     category: read
-    short: "获取存储配置"
+    short: "获取存储路径(文档库/数据库)"
     long: "获取存储配置"
     parameters: []
 
   - name: set_storage_config
     category: write
-    short: "设置存储配置"
+    short: "设置存储路径(文档库/数据库)"
     long: "设置存储配置"
     parameters:
       - name: document_root
@@ -160,7 +160,7 @@ tools:
 
   - name: mkdir
     category: admin
-    short: "创建目录"
+    short: "在工作区创建目录"
     long: "创建目录"
     parameters:
       - name: path
@@ -170,7 +170,7 @@ tools:
 
   - name: copy_to_path
     category: admin
-    short: "复制文件"
+    short: "复制工作区文件到指定路径"
     long: "复制文件到指定路径"
     parameters:
       - name: source_path
@@ -184,7 +184,7 @@ tools:
 
   - name: move_to_path
     category: admin
-    short: "移动文件"
+    short: "移动工作区文件到指定路径"
     long: "移动文件到指定路径"
     parameters:
       - name: source_path
