@@ -1016,8 +1016,7 @@
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-btn');
-    let _pendingClear = false;
-    let _pendingClearTimeout = null;
+    let _clearTidyInFlight = false;  // /clear 整理+清空进行中，gate chat_idle 的 UI 重置（R3-2）
     window._compacting = false;  // 压缩中标志，由 compact_status 事件切换
     const closeBtn = document.getElementById('close-btn');
     const header = document.getElementById('header');
@@ -1492,29 +1491,32 @@
         return;
       }
 
-      // /clear 指令 - 先停止再清空（允许在 isProcessing=true 时执行）
+      // /clear 指令 - 先整理（小憩+日志）后清空（后端跑完 entity/dream/journal 才清空，阻塞）
       if (text === '/clear') {
         userInput.value = '';
         userInput.style.height = 'auto';
-        sendBtn.disabled = false;
         if (isProcessing) {
-          // Agent 正在运行：先停止，等 chat_idle 事件再清空
+          // busy：先 /stop 停主 Agent（全局 stop 标志，让持锁者在 finally 释放 _chat_lock），不做等 chat_idle
+          // 注意：主 Agent 卡在子 agent tool 时 /stop 不传播到运行中子 agent，后端 acquire(120s) 可能超时 → 优雅失败需重试
           try {
             await window.electronAPI.sendMessage('/stop');
           } catch (e) {
             console.error('停止失败:', e);
             addSystemMessage('停止失败: ' + (e.message || e));
           }
-          _pendingClear = true;
-          if (_pendingClearTimeout) clearTimeout(_pendingClearTimeout);
-          _pendingClearTimeout = setTimeout(() => {
-            _pendingClear = false;
-            _pendingClearTimeout = null;
-            addSystemMessage('停止超时，清空操作已取消');
-          }, 120000);
-        } else {
-          // Agent 空闲：直接清空，无需等 chat_idle
-          await clearChat();
+        }
+        // R3-2：整理/清空进行中标志，gate chat_idle 的 UI 重置（见 Step 3）
+        _clearTidyInFlight = true;
+        sendBtn.disabled = true;
+        userInput.disabled = true;
+        addSystemMessage('正在整理对话并清空会话，请稍候…');
+        try {
+          await clearChat(true);
+        } finally {
+          _clearTidyInFlight = false;
+          sendBtn.disabled = false;
+          userInput.disabled = false;
+          userInput.focus();
         }
         return;
       }
@@ -1562,9 +1564,9 @@
     }
     
     // 清空聊天记录
-    async function clearChat() {
+    async function clearChat(forceTidy) {
       try {
-        const result = await window.electronAPI.clearChat();
+        const result = await window.electronAPI.clearChat(forceTidy);
         if (result.success) {
           messages.innerHTML = '';
           clearSparks();
@@ -2438,20 +2440,12 @@
         // Agent循环结束：重置状态机
         hideTyping();
         isProcessing = false;
-        sendBtn.disabled = false;
-        stopBtn.style.display = 'none';
-        window.electronAPI.notifyBusy(false, 'chat');
-        // 处理 /clear 的延迟清空
-        if (_pendingClear) {
-          _pendingClear = false;
-          if (_pendingClearTimeout) { clearTimeout(_pendingClearTimeout); _pendingClearTimeout = null; }
-          try {
-            await clearChat();
-          } catch (e) {
-            console.error('清空失败:', e);
-            addSystemMessage('清空失败: ' + (e.message || e));
-          }
+        // R3-2：/clear 整理+清空进行中时，不重启用输入、不隐藏 stopBtn（clearChat 结束才会恢复）
+        if (!_clearTidyInFlight) {
+          stopBtn.style.display = 'none';
+          sendBtn.disabled = false;
         }
+        window.electronAPI.notifyBusy(false, 'chat');
       } else if (data && data.role === 'chat_busy') {
         // Agent循环开始：通知 spirit 进入忙碌状态
         isProcessing = true;
