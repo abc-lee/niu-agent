@@ -1,4 +1,4 @@
-# /clear 命令增强：先整理（小憩+日志）后清空 实现计划（v3）
+# /clear 命令增强：先整理（小憩+日志）后清空 实现计划（v4）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -43,7 +43,7 @@
 ### v3 → v4（第 3 轮审查 R3-1/2/3 修复）
 | 发现 | 严重级 | v4 处理 |
 |---|---|---|
-| R3-1 压缩块闭包边界数值模糊（L3960 vs L3961），若漏掉 return 则 ChatQueue `_retry_force_compression` 读到 tokens_after=0 静默耗尽 CONTEXT_OVERFLOW 重试 | P2 | Task 2 约束明确：闭包范围 **L3587 起至 L3961 止（含 final return）**，`_compress_force` 必须返回最终 dict |
+| R3-1 压缩块闭包边界数值模糊（L3588 vs L3961），若漏掉 return 则 ChatQueue `_retry_force_compression` 读到 tokens_after=0 静默耗尽 CONTEXT_OVERFLOW 重试 | P2 | Task 2 约束明确：闭包范围 **L3587 起至 L3961 止（含 final return）**，`_compress_force` 必须返回最终 dict |
 | R3-2 busy 分支 await 期间 chat_idle 重启用输入/隐藏 stopBtn，破坏 F6 输入禁用 | P2 | Task 7 加 `_clearTidyInFlight` 标志，gate chat_idle 的 `sendBtn`/`stopBtn` 重置；`/clear` 块 finally 统一恢复 |
 | R3-3 重申 R3-1 影响 | P2 | 由 R3-1 修复管理 |
 
@@ -53,7 +53,7 @@
 
 | 文件 | 责任 |
 |---|---|
-| `niu_api/compat.py` | `_reset_all_cursors()` helper、`_tidy_context_impl` 加 `skip_compress` 判断 + 嵌套 `_compress_force`（L3587~L3961 含 return）、`clear_chat` 加 `force_tidy`（信号 `Request` + `await request.json()`、acquire 120s、`wait_for` tidy 600s） |
+| `niu_api/compat.py` | `_reset_all_cursors()` helper、`_tidy_context_impl` 加 `skip_compress` 判断 + 嵌套 `_compress_force`（L3588~L3961 含 return）、`clear_chat` 加 `force_tidy`（信号 `Request` + `await request.json()`、acquire 120s、`wait_for` tidy 600s） |
 | `niu_api/chat.py` | 加固 `clear_session` 游标复位 |
 | `niu_api/session.py` | 加固 `delete_messages`/`delete_session` 游标复位 |
 | `ui/main/windows/assistant/chat.html` | `/clear` 两分支立即 `clearChat(true)`、删 `_pendingClear`、加 `_clearTidyInFlight` gate、await 期间禁用输入 |
@@ -62,9 +62,6 @@
 
 ---
 
-
-
----
 
 ### Task 1: 后端 — 抽出公共游标复位 helper `_reset_all_cursors`
 
@@ -156,7 +153,7 @@ force 分支的 context-manager 压缩从 `compat.py:3587`（`# 3/3. context-man
 ```python
             # 3/3. context-manager 强制压缩（抽为嵌套闭包；skip_compress=True 时跳过）
             async def _compress_force():
-                # <此处为原 L3587~L3961 压缩块整体内容（含末尾 final return），含：
+                # <此处为原 L3588~L3961 压缩块整体内容（含末尾 final return），含：
                 #   提前 return：aborted -> {"status":"aborted",...}；SUBAGENT_ERROR -> {"status":"skipped",...}；截断 -> return
                 #   L3770-3803 的 chat_lock_already_held 分流（False 时 pause+acquire+等 _processing_done；True 时跳过）
                 #   末尾 tokens_after 计算与 return {"status":"ok","mode":"force","tokens_before":display_tokens,"tokens_after":tokens_after}>
@@ -170,9 +167,9 @@ force 分支的 context-manager 压缩从 `compat.py:3587`（`# 3/3. context-man
 ```
 
 > ⚠️ **关键实现约束（两轮审查 + 二次核对确认）**：
-> **闭包边界（R3-1 修复，务必照做）：** 压缩块整体（**L3587 起至 L3961 止，含末尾 final return**）以**嵌套 async def 闭包**内联，捕获外层全部变量（display_tokens/target_tokens/usage_percent/llm_config/messages/msg_tokens/store/last_compress_id/new_dream_id/last_*_id/compress_cursor_path/protect_recent_count/request 等），**不要**改模块级巨签名 helper、**不要**手工缩进 370 行进 else。**`_compress_force` 必须返回最终 dict**——绝不可漏掉 return（画到 L3960 会导致返回 None，ChatQueue `_retry_force_compression` 读到 tokens_after=0 静默耗尽 CONTEXT_OVERFLOW 重试）。闭包内变量（last_compress_id L3590、new_compress_id、valid_deletes、fresh_messages、result、tokens_after L3945/3957）均为闭包局部，无 nonlocal 需求；外部只读变量按引用捕获。
+> **闭包边界（R3-1 修复，务必照做）：** 压缩块整体（**L3588 起至 L3961 止，含末尾 final return**）以**嵌套 async def 闭包**内联，捕获外层全部变量（display_tokens/target_tokens/usage_percent/llm_config/messages/msg_tokens/store/last_compress_id/new_dream_id/last_*_id/compress_cursor_path/protect_recent_count/request 等），**不要**改模块级巨签名 helper、**不要**手工缩进 370 行进 else。**`_compress_force` 必须返回最终 dict**——绝不可漏掉 return（画到 L3587 会导致返回 None，ChatQueue `_retry_force_compression` 读到 tokens_after=0 静默耗尽 CONTEXT_OVERFLOW 重试）。闭包内变量（last_compress_id L3590、new_compress_id、valid_deletes、fresh_messages、result、tokens_after L3945/3957）均为闭包局部，无 nonlocal 需求；外部只读变量按引用捕获。
 > 2. `skip_compress` 分支返回 `tokens_after: display_tokens`（压缩前值，语义正确；`tokens_after` 在 L3945 已有默认值）。
-> 3. `notify_compact_status_sync("done", mode=mode)` 在 `_tidy_context_impl` **外层 finally**（L4001-4005），两条路径都照常广播，**不要动**。
+> 3. `notify_compact_status_sync("done", mode=mode)` 在 `_tidy_context_impl` **外层 finally**（实际约 `L3972-3978`），两条路径都照常广播，**不要动**。
 > 4. `chat_lock_already_held=False` 的两条调用路径（`tidy_context` 端点 `compat.py:2472`、ChatQueue `_retry_force_compression` `chat_queue.py:425`）必须保持原 else 分支的 pause+acquire+等 `_processing_done` 逻辑（L3770-3803），**不得误改**。
 
 - [ ] **Step 3: 语法 + 编译检查**
@@ -211,6 +208,7 @@ async def clear_chat() -> dict:
 
 改为（沿用 compat.py 既有 `await request.json()` 模式 `L1448/1773`，`Request` 已在 `L25` 导入）：
 
+```python
 @router.post("/api/chat/clear")
 async def clear_chat(request: Request) -> dict:
     """Clear all messages (for /new and /clear commands)
