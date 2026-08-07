@@ -22,13 +22,13 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 智能记忆 | 自动学习用户偏好和习惯，按脑区优先级差异化遗忘曲线 |
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
 | /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
-| /clear 指令 | 先停止 Agent 再清空对话，支持 Electron 和 IM 通用 |
+| /clear 指令 | 先触发整理（提炼实体/梦境进化/日志记录），记录完会话中有价值信息后清空对话；忙时先停止 Agent。支持 Electron 和 IM 通用 |
 | 见缝插针 | Agent 运行期间发送的补充消息自动插入到当前对话上下文（补充在前，当前任务在后） |
 | 子 Agent 标签页 | 子 Agent 运行时自动创建独立标签页，实时展示回复/工具状态/思维链/提问；子 Agent 可通过 @user 向用户提问并阻塞等待回答 |
 
 **指令机制**：
 - `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
-- `/clear`：先发送 `/stop` 停止 Agent，等 `chat_idle` 事件后延迟执行 `clearChat()`，避免锁等待阻塞 UI。
+- `/clear`：先触发后端 force 整理管道（entity-extractor → dream-evolver → journal-agent，跳过 context-manager 压缩），阻塞等待整理完成后再执行 `clear_messages()` 清空会话 + 复位全部游标；避免边整理边清空的信息丢失。忙时前端先发 `/stop` 释放锁。
 - 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
 
 **见缝插针机制**：

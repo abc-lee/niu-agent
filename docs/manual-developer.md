@@ -175,7 +175,7 @@ niu [选项]
 | `/api/context/messages/update` | POST | 更新单条消息内容 |
 | `/api/context/messages/add` | POST | 添加消息 |
 | `/api/context/tidy` | POST | 上下文整理（sleep/force 模式） |
-| `/api/chat/clear` | POST | 清空当前会话 |
+| `/api/chat/clear` | POST | 清空当前会话。body 可选 `force_tidy:true` 时先跑整理（entity→dream→journal，skip 压缩）阻塞完成后清空 + 复位游标；忙时内部 request_stop。`force_tidy` 缺省/`false` 直接清空（/new 路径） |
 | `/api/chat/session` | POST | 同步对话（兼容旧 UI） |
 | `/api/shutdown` | POST | 关闭服务 |
 | `/api/preload-status` | GET | 预加载状态（Rust 启动器用） |
