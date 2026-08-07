@@ -2377,6 +2377,26 @@ async def add_context_message(request: dict) -> dict:
 
     return {"status": "ok", "message_id": msg_id}
 
+# 游标文件列表（清空消息后必须一并复位，否则游标指向已删除消息）
+_ALL_CURSOR_FILES = [
+    "last_entity_extract.json",
+    "last_dream_evolve.json",
+    "last_compress.json",
+    "last_journal.json",
+]
+
+
+async def _reset_all_cursors() -> None:
+    """删除全部增量处理游标文件（消息清空后调用，避免游标指向已删消息）。"""
+    from pathlib import Path
+    for cursor_name in _ALL_CURSOR_FILES:
+        cursor_p = Path.home() / ".niu" / cursor_name
+        try:
+            if cursor_p.exists():
+                cursor_p.unlink()
+        except OSError as e:
+            logger.warning(f"Failed to reset cursor file {cursor_name}: {e}")
+
 
 @router.post("/api/chat/clear")
 async def clear_chat() -> dict:
@@ -2421,16 +2441,8 @@ async def clear_chat() -> dict:
         # 清空临时目录（画框图片等）
         from agent.tmp_dir import cleanup_all_tmp
         cleaned_tmp = cleanup_all_tmp()
-
         # 重置游标文件（消息已清空，旧游标指向不存在的消息）
-        from pathlib import Path
-        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_journal.json"]:
-            cursor_p = Path.home() / ".niu" / cursor_name
-            try:
-                if cursor_p.exists():
-                    cursor_p.unlink()
-            except OSError as e:
-                logger.warning(f"[clear_chat] Failed to reset cursor file {cursor_name}: {e}")
+        await _reset_all_cursors()
 
         return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
     finally:
