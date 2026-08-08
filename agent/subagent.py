@@ -739,8 +739,9 @@ def _build_subagent_tools_schema(
     ]
     # 白名单过滤：缺省零基础工具，allowBaseTools 声明哪个有哪个
     tools_schema, allowed_base = _filter_base_tools(agent_config, tools_schema)
-    if allowed_base:
-        logger.info(f"[SubAgent] {agent_name}: Allowed base tools: {sorted(allowed_base)}")
+    allowed_names = sorted(t.get("function", {}).get("name", "") for t in tools_schema)
+    if allowed_names:
+        logger.info(f"[SubAgent] {agent_name}: Allowed base tools: {allowed_names}")
     else:
         logger.info(f"[SubAgent] {agent_name}: No base tools (allowBaseTools not configured)")
 
