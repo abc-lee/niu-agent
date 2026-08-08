@@ -244,7 +244,7 @@ class SkillSync:
     def _skill_file_for_name(self, name: str) -> Path | None:
         """按 skill 名称反查磁盘文件路径（平铺优先，目录式次之）。"""
         flat = self.skills_dir / f"{name}.md"
-        if flat.exists():
+        if flat.is_file():
             return flat
         sub = self.skills_dir / name / "SKILL.md"
         if sub.exists():

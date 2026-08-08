@@ -164,3 +164,49 @@ def test_skill_name_from_path_symlink_flat(fake_sync):
     link.symlink_to(outside)
 
     assert sync._skill_name_from_path(link, skills_dir) == "foo-link"
+
+
+def test_add_branch_none_guard_retries(fake_sync):
+    """新增分支 _skill_file_for_name 返回 None → continue 重试，不写 hash 不注入。"""
+    sync, skills_dir = fake_sync
+    (skills_dir / "ghost.md").write_text("# G\n", encoding="utf-8")
+
+    with mock.patch.object(sync, "_skill_file_for_name", return_value=None):
+        added, updated, deleted = sync.scan_and_sync()
+
+    assert added == 0
+    assert "ghost" not in sync._last_scan
+    sync._inject_skill_to_lightrag.assert_not_called()
+
+
+def test_update_branch_none_guard_keeps_old_hash(fake_sync):
+    """修改分支 _skill_file_for_name 返回 None → 保留旧 hash 供下次重试。"""
+    sync, skills_dir = fake_sync
+    (skills_dir / "dir1").mkdir()
+    sk = skills_dir / "dir1" / "SKILL.md"
+    sk.write_text("# v1\n", encoding="utf-8")
+    sync.scan_and_sync()
+    old_hash = sync._last_scan["dir1"]
+    # 首次扫描已注入（added=1），清掉以便断言第二次扫描未注入
+    sync._inject_skill_to_lightrag.reset_mock()
+
+    sk.write_text("# v2 changed\n", encoding="utf-8")
+    with mock.patch.object(sync, "_skill_file_for_name", return_value=None):
+        with mock.patch.object(sync, "_delete_skill_from_lightrag", return_value=True):
+            added, updated, deleted = sync.scan_and_sync()
+
+    assert updated == 0
+    assert sync._last_scan["dir1"] == old_hash  # 保留旧 hash（含已删实体的状态，下次扫描重试删除后注入）
+    sync._inject_skill_to_lightrag.assert_not_called()
+
+
+def test_skill_file_for_name_unit(fake_sync):
+    """_skill_file_for_name 三态：平铺文件 / 目录式 / 双缺失 None。"""
+    sync, skills_dir = fake_sync
+    (skills_dir / "plain.md").write_text("# P\n", encoding="utf-8")
+    (skills_dir / "dir1").mkdir()
+    (skills_dir / "dir1" / "SKILL.md").write_text("# D\n", encoding="utf-8")
+
+    assert sync._skill_file_for_name("plain") == skills_dir / "plain.md"
+    assert sync._skill_file_for_name("dir1") == skills_dir / "dir1" / "SKILL.md"
+    assert sync._skill_file_for_name("nonexistent") is None
