@@ -138,7 +138,7 @@ class TestFormatLightragEntities:
     """Test NiuRunner._format_lightrag_entities_for_prompt()."""
 
     @pytest.fixture
-    def runner(self):
+    def runner(self, tmp_path):
         """Create a minimal NiuRunner mock for testing."""
         from agent.runner import NiuRunner
 
@@ -146,9 +146,10 @@ class TestFormatLightragEntities:
              patch("agent.runner.create_client"), \
              patch("agent.runner.get_system_prompt", return_value=""), \
              patch("agent.runner.get_tools_schema", return_value=[]), \
+             patch("pathlib.Path.home", return_value=tmp_path), \
              patch("agent.runner.NiuHandler"):
             r = NiuRunner.__new__(NiuRunner)
-            return r
+            yield r
 
     def test_formats_skill_entities(self, runner):
         """Skill entities are formatted with file path annotation."""
