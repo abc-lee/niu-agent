@@ -100,6 +100,9 @@ def request_stop_all_subagents() -> None:
     pending_ask = get_pending_ask_registry()
 
     for instance in SubagentRegistry.list_running():
+        if getattr(instance, "source", "user") != "user":
+            # 程序触发（睡眠整理管道）或 scheduler 派生的子 Agent：不受停止按钮影响
+            continue
         try:
             state = getattr(instance, "state", "running")
             if state == "waiting_for_answer":
@@ -111,6 +114,9 @@ def request_stop_all_subagents() -> None:
                 # cancel_pending_ask 对 sync 是 no-op，安全
                 pending_ask.cancel_pending_ask(instance.unique_name)
                 instance.supplement_queue.push("/stop", is_terminate=True, sender="主Agent")
+                ev = getattr(instance, "terminate_event", None)
+                if ev is not None:
+                    ev.set()  # 让卡在 LLM 流式上的子 Agent ≤0.2s 内收到终止
         except Exception as e:
             logger.error(f"给子 Agent {instance.unique_name} 推 /stop 失败：{e}")
 
@@ -731,6 +737,7 @@ class NiuRunner:
         self._current_channel_id = ""
         self._im_channel_id = ""  # IM 通道继承：记录最近真实用户消息/定时任务的 channel_id
         self._im_force = False  # IM 强制标志：定时任务/后台触发置 True；仅 Electron 用户消息置 False
+        self._request_source = "user"  # 当前请求来源（scheduler/ha-watcher 触发时 chat_queue 置 "scheduler"；停止隔离用）
         # 首轮 resources 注入（拖入文件模式要求），_on_before_llm turn==1 时合并进 injection 后清空
         self._first_turn_extra_injection: str = ""
 
