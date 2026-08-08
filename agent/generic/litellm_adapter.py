@@ -439,6 +439,9 @@ class LiteLLMSession(BaseSession):
         super().__init__(cfg)
         self.api_type = cfg.get("api_type", "openai")
         self.provider = cfg.get("provider", "")
+        # stop 检查回调：默认全局停止标志（主 Agent）；子 Agent 由 call_subagent 按来源绑定
+        # （同步 user=全局 or terminate；异步 user/program/scheduler=仅 terminate，实现停止隔离）
+        self.stop_check = is_stop_requested
 
     def _do_streaming_completion(self, response):
         """消费流式响应（generator）。不调 litellm.completion()。
@@ -462,10 +465,10 @@ class LiteLLMSession(BaseSession):
         tool_calls_accumulator: dict[int, dict] = {}
         chunk_count = 0
 
-        for chunk in response:
+        for chunk in self._interruptible_iter(response):
             chunk_count += 1
             # 协作式停止：每个 chunk 后检查，发现停止立即中断流式生成
-            if is_stop_requested():
+            if self.stop_check():
                 was_stopped = True
                 break
             if hasattr(chunk, 'choices') and chunk.choices:
@@ -501,7 +504,7 @@ class LiteLLMSession(BaseSession):
                 usage = chunk.usage
 
         # 循环后重新检查 is_stop_requested
-        was_stopped = was_stopped or is_stop_requested()
+        was_stopped = was_stopped or self.stop_check()
 
         # 循环后处理：tool_calls JSON 解析
         for idx in sorted(tool_calls_accumulator.keys()):
@@ -535,6 +538,65 @@ class LiteLLMSession(BaseSession):
             ))
 
         return (full_content, reasoning_content, tool_calls, last_finish_reason, usage, was_stopped)
+
+    def _interruptible_iter(self, response):
+        """可中断的流式迭代：后台线程推进 response，前台轮询 stop_check。
+
+        解决协作式停止在"LLM 连接挂起无 chunk"时失效的问题——stop 条件任何时刻
+        置位，前台 ≤0.2s 内打断，不依赖底层是否吐 chunk。
+
+        注意：litellm CustomStreamWrapper 无同步 close()（仅 aclose），stop 后后台
+        线程无法立即断开，靠 q.put timeout 退出循环 + daemon 线程兜底（最多挂到
+        httpx read_timeout 由底层释放）。
+        """
+        import queue as _queue
+        import threading as _threading
+
+        q = _queue.Queue(maxsize=2)
+        pull_stop = _threading.Event()
+
+        def _pull():
+            try:
+                for chunk in response:
+                    if pull_stop.is_set():
+                        break
+                    try:
+                        q.put(("chunk", chunk), timeout=1.0)
+                    except _queue.Full:
+                        break
+                while not pull_stop.is_set():
+                    try:
+                        q.put(("done", None), timeout=1.0)
+                        break
+                    except _queue.Full:
+                        continue
+            except BaseException as e:  # noqa: BLE001 - 流式异常原样上抛（含 KeyboardInterrupt 转队列错误，可接受）
+                while not pull_stop.is_set():
+                    try:
+                        q.put(("error", e), timeout=1.0)
+                        break
+                    except _queue.Full:
+                        continue
+
+        t = _threading.Thread(target=_pull, daemon=True, name="llm-stream-pull")
+        t.start()
+        try:
+            while True:
+                try:
+                    kind, payload = q.get(timeout=0.2)
+                except _queue.Empty:
+                    if self.stop_check():
+                        pull_stop.set()
+                        break
+                    continue
+                if kind == "chunk":
+                    yield payload
+                elif kind == "error":
+                    raise payload
+                else:  # done
+                    break
+        finally:
+            pull_stop.set()
 
     def chat(
         self,
@@ -723,7 +785,7 @@ class LiteLLMSession(BaseSession):
                     max_retries = 3 if error_type == "retryable" else 2
                     retry_succeeded = False
                     for retry_idx in range(1, max_retries + 1):
-                        if is_stop_requested():
+                        if self.stop_check():
                             logger.info("[STREAM] Stop requested, aborting retry")
                             _stream_error_type = "stopped"
                             break
