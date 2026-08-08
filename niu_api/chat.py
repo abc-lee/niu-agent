@@ -344,7 +344,7 @@ async def persist_agent_reply(
         # persisted_msgs 中已写入的 assistant 内容拼接后若以 full_reply 为前缀
         # （含内容相等），说明文本已入库——跳过兜底写；非前缀（停止落在
         # reply→persist 窗口）兜底写避免丢内容。
-        import re  # chat.py 顶层未导入 re，函数体内 import（与 L259 at_message_parser 风格一致）
+        import re  # chat.py 顶层未导入 re，函数体内 import（与 L261 at_message_parser 风格一致）
         _persisted_concat = "".join(
             (pm.get("content") or "") for pm in (persisted_msgs or []) if pm.get("role") == "assistant"
         )
