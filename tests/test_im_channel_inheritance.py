@@ -1,5 +1,6 @@
 """IM 通道继承机制测试。"""
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from agent.runner import NiuRunner
 
@@ -8,6 +9,7 @@ def _make_runner():
     runner = NiuRunner.__new__(NiuRunner)
     runner._current_channel_id = ""
     runner._im_channel_id = ""
+    runner._im_force = False
     runner._first_turn_extra_injection = ""
     runner.last_return_value = None
     runner._persisted_msgs = []
@@ -66,3 +68,45 @@ class TestChatInheritance:
             list(runner.chat("default", "first", channel_id=""))
             list(runner.chat("default", "second", channel_id=""))
         assert runner._im_channel_id == "im_chat_123"
+
+
+class TestIMForceFlag:
+    def test_set_get_im_force(self):
+        runner = _make_runner()
+        assert runner.get_im_force() is False
+        runner.set_im_force(True)
+        assert runner.get_im_force() is True
+
+    def test_set_im_force_roundtrip(self):
+        # setter 往返语义：True↔False 可切换（粘性转假由 Electron 入口分支负责，此处仅测 setter）
+        runner = _make_runner()
+        runner.set_im_force(True)
+        assert runner.get_im_force() is True
+        runner.set_im_force(False)
+        assert runner.get_im_force() is False
+        assert runner.get_im_channel() == ""
+
+
+class TestChatQueueForceWiring:
+    """规则 3/2 接线行为锁定：置位/清除分支必须存在（防 implementer 漏写或写反）。"""
+
+    def test_electron_branch_clears_force(self):
+        src = Path("niu_api/chat_queue.py").read_text(encoding="utf-8")
+        idx = src.index('if channel == "electron":')
+        seg = src[idx:idx + 150]
+        assert "set_im_force(False)" in seg, "electron 分支必须清 force（规则 2 转假）"
+
+    def test_scheduler_else_branch_sets_force(self):
+        src = Path("niu_api/chat_queue.py").read_text(encoding="utf-8")
+        # else 分支紧随 im 分支之后；从 else: 行锚定（固定窗口会因注释长度截断）
+        idx = src.index('elif channel == "im":')
+        idx_else = src.index("else:", idx)
+        seg = src[idx_else:idx_else + 150]
+        assert "set_im_force(True)" in seg, "else 分支必须置 force（规则 3 定时任务置位）"
+
+    def test_compat_electron_branch_clears_force(self):
+        # compat.py chat_session 的 Electron 转假入口
+        src = Path("niu_api/compat.py").read_text(encoding="utf-8")
+        idx = src.index('if request.source == "electron":')
+        seg = src[idx:idx + 150]
+        assert "set_im_force(False)" in seg, "compat electron 分支必须清 force（规则 2 转假）"
