@@ -1192,12 +1192,6 @@ class NiuRunner:
             else:
                 logger.info("[Nap] entity-extractor: no new messages since cursor")
 
-            # 检查停止请求
-            if is_stop_requested():
-                logger.info("[Nap] Stop requested after entity-extractor, skipping dream-evolver")
-                clear_stop()
-                return
-
             # ============================================================
             # Step 2: dream-evolver（梦境进化）
             # ============================================================
@@ -1236,11 +1230,6 @@ class NiuRunner:
                 history=dream_history,
                 context_fifo_threshold=-1,  # FIFO 保底
             )
-
-            if is_stop_requested():
-                logger.info("[Nap] Stop requested, aborting after dream-evolver")
-                clear_stop()
-                return
 
             # 游标推进
             new_dream_id = last_dream_id
@@ -1903,6 +1892,7 @@ class NiuRunner:
                         "last_compress_id": last_compress_id,
                         "dream_idx_in_force": _dream_idx_in_force,
                     },
+                    stop_aware=True,
                     call_fn=call_subagent_with_auto_answer,
                 )
                 if result_str is None:

@@ -971,6 +971,7 @@ def _compact_with_degradation_sync(
     prompt_builder: callable,
     prompt_builder_kwargs: dict,
     call_fn: callable,
+    stop_aware: bool = False,
 ) -> tuple[str | None, list, list | None]:
     """
     三级降级压缩（纯逻辑，不含 IO）。
@@ -1021,7 +1022,7 @@ def _compact_with_degradation_sync(
     # 停止检查
     try:
         from agent.runner import is_stop_requested
-        if is_stop_requested():
+        if stop_aware and is_stop_requested():
             logger.warning("[Compact] Stop requested during degradation, aborting")
             return None, compress_msg_ids, None
     except Exception:
@@ -2540,6 +2541,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
     # （用于 /clear 场景：只做内容提炼+梦境进化+日志记录，不压缩）
     session_id = request.get("session_id", "default")
     mode = request.get("mode", "sleep")
+    stop_aware = mode == "force"  # 阶段间协作式停止：仅 force 模式（用户主动 /compact /clear）响应；sleep 模式（睡眠整理）不受停止按钮影响（程序任务隔离）
 
     # 广播压缩状态 started 事件（前端圆环动画启动）
     try:
@@ -2685,7 +2687,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
-                if is_stop_requested():
+                if stop_aware and is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
@@ -2766,7 +2768,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     )
 
                 dream_result = await asyncio.to_thread(run_dream_evolver)
-                if is_stop_requested():
+                if stop_aware and is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
@@ -2848,7 +2850,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         )
 
                     journal_result = await asyncio.to_thread(run_journal_agent)
-                    if is_stop_requested():
+                    if stop_aware and is_stop_requested():
                         logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                         clear_stop()
                         return {"status": "aborted", "message": "Stopped by user"}
@@ -3023,7 +3025,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     compress_result = await asyncio.to_thread(run_context_manager_mode2)
                     _halved_msg_ids = None  # 降级砍半的前半段 msg_ids（正常路径为 None）
 
-                    if is_stop_requested():
+                    if stop_aware and is_stop_requested():
                         logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                         clear_stop()
                         return {"status": "aborted", "message": "Stopped by user"}
@@ -3051,6 +3053,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                                 "usage_percent": usage_percent,
                                 "compress_history": compress_history,
                             },
+                            stop_aware=(mode == "force"),
                             call_fn=call_subagent_with_auto_answer,
                         )
                         if result_str is None:
@@ -3263,7 +3266,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         )
 
                     cm_result = await asyncio.to_thread(run_context_manager)
-                    if is_stop_requested():
+                    if stop_aware and is_stop_requested():
                         logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                         clear_stop()
                         return {"status": "aborted", "message": "Stopped by user"}
@@ -3746,6 +3749,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             "last_compress_id": last_compress_id,
                             "dream_idx_in_force": _dream_idx_in_force,
                         },
+                        stop_aware=True,
                         call_fn=call_subagent_with_auto_answer,
                     )
                     if result_str is None:
