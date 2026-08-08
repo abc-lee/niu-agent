@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendMessage: (message, source) => ipcRenderer.invoke('send-message', message, source),
   
   // 获取统计数据
-  getStats: () => ipcRenderer.invoke('get-stats'),
+  getStats: (agentName) => ipcRenderer.invoke('get-stats', agentName || ''),
   
   // 打开图谱
   openGraph: () => ipcRenderer.send('open-graph'),
