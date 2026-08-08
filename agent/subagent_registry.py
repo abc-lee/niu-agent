@@ -38,6 +38,7 @@ class RunningSubagent:
     suspended_system_message: dict | None = None
     suspended_tools_schema: list | None = None
     last_reply: str = ""  # 最后一次 reply 内容（完成通知用）
+    handler: Any | None = None  # 运行中 handler 引用（/api/stats?agent= 读取真实 _last_prompt_tokens）
 
 
 class SubagentRegistry:
@@ -62,6 +63,7 @@ class SubagentRegistry:
         is_sync: bool = True,
         task: asyncio.Task | ConcurrentFuture | None = None,
         force_unique_name: str | None = None,
+        handler: Any | None = None,  # 新增：运行中 handler 引用（同步路径直接传，异步路径协程内回填）
     ) -> str:
         """注册一个子 Agent，返回唯一名。
 
@@ -90,6 +92,7 @@ class SubagentRegistry:
                 memory_context=memory_context,
                 is_sync=is_sync,
                 task=task,
+                handler=handler,
             )
         # pre_register 调用移到锁外（与 unregister 的 close() 模式对齐）
         try:
