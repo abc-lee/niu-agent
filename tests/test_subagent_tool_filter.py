@@ -1,100 +1,97 @@
-"""测试 subagent.py 的基础工具过滤逻辑（disableBaseTools + allowBaseTools + 默认黑名单）。"""
+"""测试 subagent.py 的基础工具白名单过滤逻辑（allowBaseTools 白名单制）。
+
+白名单语义：缺省零基础工具，allowBaseTools 声明哪个有哪个。
+与 MCP 工具（mcpServers/mcpToolFilter）的白名单模型一致。
+"""
 from agent import subagent
 
 
 def _make_base_tools():
-    """构造 6 个基础工具的 schema（模拟 get_tools_schema 返回）。"""
-    names = ["bash", "code_run", "read", "write", "edit", "grep"]
-    return [{"type": "function", "function": {"name": n}} for n in names]
+    """构造 6 个基础工具的 schema（与 agent/generic/assets/tools_schema.json 一致）。"""
+    return [
+        {"type": "function", "function": {"name": n, "description": "", "parameters": {}}}
+        for n in ["bash", "code_run", "read", "write", "edit", "grep"]
+    ]
 
 
 def _run_filter(agent_config):
-    """跑一遍 subagent._filter_base_tools 真实函数。
-
-    调用 Task 1 Step 2a 抽取的真实函数，避免复制逻辑导致测试与代码失同步。
-    """
+    """跑一遍 subagent._filter_base_tools 真实函数。"""
     from agent.subagent import _filter_base_tools
 
     tools_schema = _make_base_tools()
-    filtered, disabled_set, _, _ = _filter_base_tools(agent_config, tools_schema)
+    filtered, _ = _filter_base_tools(agent_config, tools_schema)
     return [t["function"]["name"] for t in filtered]
 
 
-def test_default_blacklist_disables_bash_and_grep():
-    """未配置任何字段时，默认禁用 bash 和 grep。"""
-    result = _run_filter({})
-    assert "bash" not in result, f"bash should be disabled by default, got {result}"
-    assert "grep" not in result, f"grep should be disabled by default, got {result}"
-    assert "code_run" in result
-    assert "read" in result
-    assert "write" in result
-    assert "edit" in result
+def test_default_no_base_tools():
+    """缺省（未配置 allowBaseTools）：没有任何基础工具（白名单缺省为零）。"""
+    assert _run_filter({}) == []
 
 
-def test_disableBaseTools_adds_to_blacklist():
-    """disableBaseTools 追加禁用到默认黑名单。"""
-    result = _run_filter({"disableBaseTools": ["read", "write"]})
-    assert "bash" not in result  # 默认黑名单
-    assert "grep" not in result  # 默认黑名单
-    assert "read" not in result  # 追加禁用
-    assert "write" not in result  # 追加禁用
-    assert "code_run" in result
-    assert "edit" in result
+def test_allowBaseTools_whitelist():
+    """allowBaseTools 声明的工具保留，其余全部移除。"""
+    result = _run_filter({"allowBaseTools": ["read", "write"]})
+    assert sorted(result) == ["read", "write"]
 
 
-def test_allowBaseTools_unblocks_default_blacklist():
-    """allowBaseTools 从默认黑名单中解禁 bash。"""
-    result = _run_filter({"allowBaseTools": ["bash"]})
-    assert "bash" in result, f"bash should be allowed, got {result}"
-    assert "grep" not in result  # 默认黑名单仍禁用 grep
-    assert "code_run" in result
-    assert "read" in result
+def test_allowBaseTools_all_six():
+    """allowBaseTools 声明全部 6 个基础工具。"""
+    result = _run_filter(
+        {"allowBaseTools": ["bash", "code_run", "read", "write", "edit", "grep"]}
+    )
+    assert sorted(result) == ["bash", "code_run", "edit", "grep", "read", "write"]
 
 
-def test_allowBaseTools_priority_over_disableBaseTools():
-    """allowBaseTools 优先级高于 disableBaseTools（同时配置时 allow 胜出）。"""
-    result = _run_filter({
-        "disableBaseTools": ["bash", "read"],
-        "allowBaseTools": ["bash"],
-    })
-    assert "bash" in result, f"bash should be allowed (allow wins), got {result}"
-    assert "read" not in result  # 被 disableBaseTools 禁用，不在 allow 里
-    assert "grep" not in result  # 默认黑名单
+def test_allowBaseTools_unknown_name_ignored_with_warning():
+    """allowBaseTools 中不存在的工具名（笔误）：忽略并打 warning 日志。
+
+    注意：agent/subagent.py 用 loguru（不是标准 logging），
+    pytest caplog 捕获不到，必须用 loguru sink 捕获。
+    """
+    from loguru import logger
+
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        result = _run_filter({"allowBaseTools": ["reed", "read"]})
+    finally:
+        logger.remove(sink_id)
+    assert result == ["read"]
+    assert any("unknown tool names" in m and "reed" in m for m in messages)
 
 
-def test_dream_evolver_config_unblocks_bash():
-    """dream-evolver 的预期配置：allowBaseTools 解禁 bash（skill 删除需要 mv 命令）。"""
+def test_allowBaseTools_empty_list_means_no_tools():
+    """allowBaseTools: [] 显式空列表 = 零基础工具（与缺省一致）。"""
+    assert _run_filter({"allowBaseTools": []}) == []
+
+
+def test_context_manager_config():
+    """context-manager 白名单配置：只有 read。"""
+    assert _run_filter({"allowBaseTools": ["read"]}) == ["read"]
+
+
+def test_dream_evolver_config():
+    """dream-evolver 白名单配置：read/write/edit/bash（无 code_run、无 grep）。"""
     result = _run_filter({"allowBaseTools": ["read", "write", "edit", "bash"]})
-    assert "bash" in result
-    assert "read" in result
-    assert "write" in result
-    assert "edit" in result
-    assert "grep" not in result  # 默认黑名单仍禁用
-    assert "code_run" in result  # 不在默认黑名单也不在 allowBaseTools，保留
+    assert sorted(result) == ["bash", "edit", "read", "write"]
+    assert "code_run" not in result
+    assert "grep" not in result
 
 
 def test_journal_agent_config():
-    """journal-agent 的预期配置：allowBaseTools 解禁 read/write/edit/grep。"""
+    """journal-agent 白名单配置：read/write/edit/grep。"""
     result = _run_filter({"allowBaseTools": ["read", "write", "edit", "grep"]})
-    assert "read" in result
-    assert "write" in result
-    assert "edit" in result
-    assert "grep" in result
-    assert "bash" not in result  # 默认黑名单仍禁用
-    assert "code_run" in result  # 不在默认黑名单也不在 allowBaseTools，保留
+    assert sorted(result) == ["edit", "grep", "read", "write"]
 
 
-def test_event_manager_config_all_disabled():
-    """event-manager 的预期配置：disableBaseTools 全禁。"""
-    result = _run_filter({"disableBaseTools": ["bash", "code_run", "read", "write", "edit", "grep"]})
-    assert result == [], f"event-manager should have no base tools, got {result}"
+def test_mcp_only_agent_no_base_tools():
+    """纯 MCP 子 Agent（entity-extractor/event-manager/file-processor 形态）：
+    只有 mcpServers 没有 allowBaseTools → 零基础工具。"""
+    assert _run_filter({"mcpServers": ["lightrag-server"]}) == []
 
 
-def test_default_blacklist_constant_exists():
-    """确认 DEFAULT_DISABLED_BASE_TOOLS 常量已定义。"""
-    from agent.subagent import DEFAULT_DISABLED_BASE_TOOLS
-    assert "bash" in DEFAULT_DISABLED_BASE_TOOLS
-    assert "grep" in DEFAULT_DISABLED_BASE_TOOLS
+# ── 以下 4 个测试与白名单改造无关，是既有职责边界注入契约，
+#    仅本文件覆盖，全文重写时必须原样保留 ──────────────────────────
 
 
 def test_boundary_section_template_exists():
