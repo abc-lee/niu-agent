@@ -116,16 +116,37 @@ class SkillFileHandler(_SkillFileHandlerBase):  # type: ignore[misc]
             self._pending.pop(path, None)
 
         try:
-            name = Path(path).stem
+            name = self._sync._skill_name_from_path(Path(path), self._sync.skills_dir)
+            if name is None:
+                return  # 非 skill 文件（深层 .md / 非 SKILL.md），忽略
             if action == "sync":
-                if self._sync._sync_skill(name, Path(path)):
+                # 平铺优先：权威源以 _skill_file_for_name 为准。同名冲突
+                # （foo.md 与 foo/SKILL.md 并存）时事件可能是被忽略的目录
+                # 副本，直接注入会破坏 hash/内容一致性；不一致则忽略，
+                # 交给下一轮定时扫描用权威源自愈
+                source = self._sync._skill_file_for_name(name)
+                if source is None or source.resolve() != Path(path).resolve():
+                    logger.debug(
+                        f"[SkillFileHandler] Ignoring non-authoritative sync event for {name}: {path}"
+                    )
+                    return
+                if self._sync._sync_skill(name, source):
                     # 更新 hash 到状态文件，避免下次定时扫描重复注入
-                    content_hash = self._sync._compute_file_hash(Path(path))
+                    content_hash = self._sync._compute_file_hash(source)
                     if content_hash:
                         with self._sync._lock:
                             self._sync._last_scan[name] = content_hash
                         self._sync._save_state()
             elif action == "delete":
+                # 仅当删除的是权威源文件才删 KG 实体；同名冲突时删除
+                # 非权威副本（如 foo/SKILL.md 而平铺 foo.md 仍在）不删
+                # 实体，交给定时扫描按权威源自愈
+                source = self._sync._skill_file_for_name(name)
+                if source is not None and source.resolve() != Path(path).resolve():
+                    logger.debug(
+                        f"[SkillFileHandler] Ignoring non-authoritative delete event for {name}: {path}"
+                    )
+                    return
                 if self._sync._delete_skill_from_lightrag(name):
                     with self._sync._lock:
                         self._sync._last_scan.pop(name, None)
@@ -881,7 +902,7 @@ class SkillSync:
                 logger.error("[SkillSync] Observer not available, cannot start watchdog")
                 return
             observer = Observer()
-            observer.schedule(handler, str(self.skills_dir), recursive=False)
+            observer.schedule(handler, str(self.skills_dir), recursive=True)
             observer.start()
             self._observer = observer
             logger.info(f"[SkillSync] Started watchdog monitoring: {self.skills_dir}")

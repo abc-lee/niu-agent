@@ -210,3 +210,73 @@ def test_skill_file_for_name_unit(fake_sync):
     assert sync._skill_file_for_name("plain") == skills_dir / "plain.md"
     assert sync._skill_file_for_name("dir1") == skills_dir / "dir1" / "SKILL.md"
     assert sync._skill_file_for_name("nonexistent") is None
+
+
+def test_watchdog_execute_directory_skill(fake_sync):
+    """watchdog 事件：<dir>/SKILL.md 增改 → name=目录名注入 + hash 键=目录名。"""
+    sync, skills_dir = fake_sync
+    (skills_dir / "dir1").mkdir()
+    sk = skills_dir / "dir1" / "SKILL.md"
+    sk.write_text("# v1\n", encoding="utf-8")
+
+    from agent.injector.sync import SkillFileHandler
+    handler = SkillFileHandler(sync, debounce=0)
+    with mock.patch.object(sync, "_sync_skill", wraps=sync._sync_skill) as sync_skill:
+        handler._execute(str(sk), "sync")
+        sync_skill.assert_called_once_with("dir1", sk)
+    assert sync._last_scan["dir1"] == _sha256(sk)
+    assert sync._state_file.read_text(encoding="utf-8").find('"dir1"') != -1
+
+
+def test_watchdog_execute_deep_md_ignored(fake_sync):
+    """watchdog 事件：深层非 SKILL.md .md → 忽略（不注入不写 state）。"""
+    sync, skills_dir = fake_sync
+    (skills_dir / "dir1" / "references").mkdir(parents=True)
+    deep = skills_dir / "dir1" / "references" / "x.md"
+    deep.write_text("x\n", encoding="utf-8")
+
+    from agent.injector.sync import SkillFileHandler
+    handler = SkillFileHandler(sync, debounce=0)
+    with mock.patch.object(sync, "_sync_skill") as sync_skill:
+        handler._execute(str(deep), "sync")
+        sync_skill.assert_not_called()
+    assert sync._last_scan == {}
+
+
+def test_watchdog_schedule_recursive(fake_sync):
+    """watchdog 启动时 observer.schedule 必须 recursive=True（子目录事件可达性核心）。"""
+    sync, skills_dir = fake_sync
+    (skills_dir / "dir1").mkdir()
+    (skills_dir / "dir1" / "SKILL.md").write_text("# v1\n", encoding="utf-8")
+
+    from agent.injector import sync as sync_mod
+    fake_observer = mock.MagicMock()
+    fake_observer_class = mock.MagicMock(return_value=fake_observer)
+    sync.use_watchdog = True  # fixture 构造时 use_watchdog=False，_start_watchdog 会提前 return
+    with mock.patch.object(sync_mod, "Observer", fake_observer_class):
+        sync._start_watchdog()
+
+    fake_observer.schedule.assert_called_once()
+    call_kwargs = fake_observer.schedule.call_args.kwargs
+    assert call_kwargs.get("recursive") is True
+    assert fake_observer.start.called
+
+
+def test_watchdog_execute_conflict_flat_wins(fake_sync):
+    """同名冲突时 watchdog 事件：目录副本 sync/delete 均被忽略（权威源=平铺），
+    _sync_skill/_delete_skill_from_lightrag 不触发。"""
+    sync, skills_dir = fake_sync
+    (skills_dir / "foo.md").write_text("# flat\n", encoding="utf-8")
+    (skills_dir / "foo").mkdir()
+    sub = skills_dir / "foo" / "SKILL.md"
+    sub.write_text("# dir\n", encoding="utf-8")
+
+    from agent.injector.sync import SkillFileHandler
+    handler = SkillFileHandler(sync, debounce=0)
+    with mock.patch.object(sync, "_sync_skill") as sync_skill:
+        handler._execute(str(sub), "sync")  # 目录副本 sync → 忽略
+        sync_skill.assert_not_called()
+    with mock.patch.object(sync, "_delete_skill_from_lightrag") as deleter:
+        handler._execute(str(sub), "delete")  # 目录副本 delete → 忽略
+        deleter.assert_not_called()
+    assert sync._last_scan == {}
