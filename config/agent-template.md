@@ -2,20 +2,16 @@
 # 子 Agent 配置模板
 # 复制此文件到 ~/.niu/agents/{name}.md 并填写以下字段
 # name 用 kebab-case（如 photo-organizer、doc-summarizer）
-# 字段格式参照 config/agents/file-processor.md
+# 完整字段说明见本文档下方"frontmatter 字段说明"
 
-name: ""                 # 子 Agent 名字（与文件名一致，kebab-case）
-description: ""          # 一句话描述子 Agent 的职责（必填，主 Agent 据此判断何时调用）
-mode: subagent           # 标识为子 Agent（固定值）
-temperature: 0.7         # 可选：覆盖 LLM 温度（0.0 严谨 / 0.7 创意）
-taskDescription: ""      # 任务描述模板（主 Agent 调用时填的入参说明）
-permissions:
-  '*': allow             # 权限声明，默认全部允许
-mcpServers: []           # 该子 Agent 可用的 MCP 服务器列表（见下方"可用 MCP 服务器"）
-mcpToolFilter: null      # 可选：按 server 分组的白名单 map（见下方说明）
-disableBaseTools: []     # 可选：禁用基础工具列表（如 [bash, code_run]）
-allowBaseTools: []       # 可选：从 disableBaseTools 解禁的工具列表
-allowAsync: false        # 是否允许异步调用（长时任务设为 true）
+name: ""                 # 必填：子 Agent 名字（与文件名一致，kebab-case）
+description: ""          # 必填：一句话描述职责（主 Agent 据此判断何时调用你）
+mode: subagent           # 固定值，标识为子 Agent
+temperature: 0.7         # 可选：LLM 温度（0.0-0.3 严谨 / 0.7 创意），不写用默认
+mcpServers: []           # 该子 Agent 可用的 MCP 服务器列表（白名单，见下方"可用 MCP 服务器"）
+mcpToolFilter: null      # 可选：对 mcpServers 再做工具级白名单（见下方说明）
+allowBaseTools: []       # 可选：基础工具白名单（见下方"基础工具白名单"，不写=一个都没有）
+allowAsync: false        # 可选：true=允许异步调用（长时任务用）
 ---
 
 # 提示词正文
@@ -29,11 +25,25 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
 - **与用户交互**：子 Agent 可以用 `@user 问题内容` 向用户提问（阻塞等待回答，10 分钟超时）。如果你建的子 Agent 需要与用户多轮交互（如需要用户确认、选择方案、澄清需求），在正文提示词中说明交互流程即可——前端会自动为子 Agent 创建独立标签页，用户可在其中看到子 Agent 的工作过程并与它交流。注意：没有用户与子 Agent 对话时不要使用 `@user`，因为它会阻塞工作进度。
 - 何时该终止自己
 
-## 可用 MCP 服务器
+## 工具白名单规则（重要，先读懂再配）
 
-**重要**：`mcpServers` 字段填的是 **MCP 服务器名**（如下所列，如 `browser-server`、`photo-server`），**不是虚拟磁盘工具前缀**（如 `browser`、`photo`）。主 Agent 日常用 disk 命令看到的是工具前缀，与服务器名不同，不要混淆。
+子 Agent 的工具分两类，**两类都是白名单制：写了才有，没写就没有**。
 
-主 Agent 创建子 Agent 时，从以下服务器中选择 `mcpServers` 字段（必需服务器，启动时加载）：
+### 1. MCP 工具（mcpServers + mcpToolFilter）
+
+- `mcpServers`：填 **MCP 服务器名**（如下所列，如 `browser-server`、`photo-server`），**不是虚拟磁盘工具前缀**（如 `browser`、`photo`）。主 Agent 日常用 disk 命令看到的是工具前缀，与服务器名不同，不要混淆。
+- 写了某个服务器，该服务器的**全部**工具可用。
+- `mcpToolFilter`：可选，在 mcpServers 基础上再收窄到指定工具。格式：
+  ```yaml
+  mcpServers:
+    - lightrag-server
+  mcpToolFilter:
+    lightrag-server:
+      - lightrag_insert
+      - lightrag_search_entities
+  ```
+
+可用 MCP 服务器（必需服务器，启动时加载）：
 
 - `file-parser` — 文档解析（PDF/Word/PPT/Excel/MD/HTML）
 - `lightrag-server` — 知识图谱 + 向量检索
@@ -51,22 +61,75 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
 
 **维护提示**：MCP 服务器清单随项目演进更新，以 `agent/mcp_loader.py` 的 `REQUIRED_SERVERS` + `OPTIONAL_SERVERS` 为准。
 
+### 2. 基础工具（allowBaseTools）
+
+基础工具是系统自带的 6 个，**缺省一个都没有**，`allowBaseTools` 声明哪个有哪个：
+
+| 工具 | 用途 | 什么时候给 |
+|---|---|---|
+| `read` | 读文件内容 | 需要读本地文件（对话记录、文档、配置） |
+| `write` | 写文件 | 需要产出文件（报告、日志、skill 文件） |
+| `edit` | 编辑已有文件 | 需要修改文件而非重写 |
+| `grep` | 搜索文件内容 | 需要在文件中查找内容 |
+| `bash` | 执行 shell 命令 | 需要 curl 网络请求、系统命令、管道处理 |
+| `code_run` | 运行 Python 代码 | 需要复杂数据处理、计算 |
+
+**常见错误**：正文里写"使用 bash 工具做 XXX"，但 frontmatter 没把 `bash` 写进 `allowBaseTools`——子 Agent 运行时**根本没有 bash 这个工具**，会直接失败。正文提到的每个基础工具，都必须出现在 `allowBaseTools` 里。
+
+**笔误防护**：`allowBaseTools` 里写了不存在的工具名（如 `reed`），启动日志会打 warning（`unknown tool names`），该名字被忽略。
+
+**判断原则**：能用 MCP 服务器完成的操作（如知识图谱、照片、定时任务）就不要给基础工具；基础工具只给正文确实需要的。
+
 ## frontmatter 字段说明
 
-- `name`：子 Agent 名字（与文件名一致，kebab-case）
-- `description`（必填）：主 Agent 据此判断何时调用此子 Agent
-- `mode`：固定 `subagent`，标识为子 Agent
-- `temperature`：覆盖 LLM 温度（0.0 严谨 / 0.7 创意）
-- `taskDescription`：主 Agent 调 `chat-with-{name}` 时 task 参数的描述
-- `permissions`：权限 map，格式 `{ '*': allow }` 默认全部允许
-- `mcpServers`：MCP 服务器名字列表，子 Agent 只能用这些服务器的工具
-- `mcpToolFilter`：可选，按 server 分组的白名单 map。格式示例：
-  ```yaml
-  mcpToolFilter:
-    lightrag-server:
-      - lightrag_insert
-      - lightrag_search_entities
-  ```
-- `disableBaseTools`：可选，禁用基础工具列表（如 `[bash, code_run, read, write, edit, grep]`）
-- `allowBaseTools`：可选，从 disableBaseTools 解禁的工具列表（黑名单中的例外）
-- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动启用 @前缀拦截层，必须用 @niu-agent/@end 表达意图）
+- `name`（必填）：子 Agent 名字（与文件名一致，kebab-case）
+- `description`（必填）：主 Agent 据此判断何时调用此子 Agent，写清楚"什么任务该找你"
+- `mode`（必填）：固定 `subagent`
+- `temperature`（可选）：LLM 温度。0.0-0.3 适合严谨任务（数据处理、入库），0.7 适合创意任务（写作、摘要），不写则用系统 LLM 配置默认温度
+- `mcpServers`（可选）：MCP 服务器名列表，见上方。不写=没有 MCP 工具
+- `mcpToolFilter`（可选）：按 server 分组的工具级白名单 map，见上方
+- `allowBaseTools`（可选）：基础工具白名单，见上方。不写=没有基础工具
+- `allowAsync`（可选）：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动启用 @前缀拦截层，必须用 @niu-agent/@end 表达意图）。长时任务（几十秒以上）设 true
+
+## 完整示例
+
+### 示例 1：纯 MCP 子 Agent（不需要基础工具）
+
+```yaml
+---
+name: kg-query
+description: "知识图谱查询：按实体/关系/时间线检索知识库，返回结构化结果"
+mode: subagent
+temperature: 0.2
+mcpServers:
+  - lightrag-server
+mcpToolFilter:
+  lightrag-server:
+    - lightrag_search_entities
+    - lightrag_get_entity_info
+    - lightrag_timeline_query
+allowAsync: false
+---
+
+你是知识图谱查询子 Agent。用 lightrag 工具检索，把结果整理成表格返回……
+```
+
+### 示例 2：需要 bash 的网络抓取子 Agent
+
+```yaml
+---
+name: web-fetcher
+description: "网页抓取：用 curl 抓取指定 URL 内容并整理成摘要"
+mode: subagent
+temperature: 0.3
+mcpServers: []
+allowBaseTools:
+  - bash
+  - write
+allowAsync: true
+---
+
+你是网页抓取子 Agent。用 bash 工具执行 curl 抓取网页……抓到的原文用 write 存到 /tmp/……
+```
+
+注意示例 2：正文用了 `bash` 和 `write`，`allowBaseTools` 里就声明了这两个——**正文提到的基础工具必须全部声明**。
