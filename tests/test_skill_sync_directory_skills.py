@@ -280,3 +280,19 @@ def test_watchdog_execute_conflict_flat_wins(fake_sync):
         handler._execute(str(sub), "delete")  # 目录副本 delete → 忽略
         deleter.assert_not_called()
     assert sync._last_scan == {}
+
+
+def test_skill_file_for_name_md_suffix_dir_shadow(fake_sync):
+    """目录名以 .md 结尾（如 x.md/ 目录 + x/SKILL.md）不遮蔽目录式反查；
+    仅有 .md 目录无 SKILL.md 时返回 None。is_file 修复的回归钉。"""
+    sync, skills_dir = fake_sync
+    # 遮蔽场景：x.md 是目录 + x/SKILL.md 目录式 skill
+    (skills_dir / "x.md").mkdir()
+    (skills_dir / "x").mkdir()
+    (skills_dir / "x" / "SKILL.md").write_text("# X\n", encoding="utf-8")
+
+    assert sync._skill_file_for_name("x") == skills_dir / "x" / "SKILL.md"
+
+    # 只有 .md 目录、无平铺文件无目录式 skill
+    (skills_dir / "only-dir.md").mkdir()
+    assert sync._skill_file_for_name("only-dir") is None
