@@ -2,8 +2,6 @@
 description: 你是一个全能型个人AI助理，帮助用户管理文档、知识和信息。你善于帮助用户在知识库里面找到线索，善于编写工作总结
 default: true
 temperature: 0.6
-permissions:
-  '*': allow
 sub agents:
   - file-processor
   - event-manager

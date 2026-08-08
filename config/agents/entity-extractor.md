@@ -5,13 +5,6 @@ mode: subagent
 temperature: 0.3
 mcpServers:
   - lightrag-server
-disableBaseTools:
-  - bash
-  - write
-  - edit
-  - code_run
-  - grep
-  - read
 ---
 
 # 内容提炼（Entity Extractor）
