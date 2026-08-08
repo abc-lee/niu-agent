@@ -655,6 +655,18 @@ shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml \
 
 详细机制见 [manual-vector-store.md 第九章](manual-vector-store.md#九知识图谱损坏检测与自愈修复)。
 
+### 1.8 Chat 页面消息重复（停止后关闭重开仍重复）
+
+**原因**：停止场景下 `persist_agent_reply` 兜底路径（rv=None）无条件写 full_reply，与 V4 逐条持久化（已写同轮 assistant）重复入库。
+
+**解决**：已修复（2026-08-08）——兜底路径加 persisted_msgs 前缀去重（@ 对齐 + `<tool_use>` 剥除 + 双侧 strip 后前缀比对，命中跳过）。升级后新对话不再重复；历史已重复的消息需手动清理或 /clear。
+
+### 1.9 停止后异步子 Agent 被终止（同步子 Agent 结束后异步也停了）
+
+**原因**：旧版全局停止标志无隔离——单击 /stop 会打断所有正在流式的子 Agent LLM（含异步、程序触发的），子 Agent 退出时还可能清掉主 Agent 的停止意图。
+
+**解决**：已修复（2026-08-08）——停止语义下沉为按子 Agent 来源绑定的谓词：单击只终止同步 user 子 Agent，异步与程序触发子 Agent 不受影响；子 Agent 退出不再清全局停止标志。
+
 ---
 
 ## 验证记录

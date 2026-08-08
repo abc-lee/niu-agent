@@ -110,8 +110,9 @@ mcpToolFilter:
 
 ### 阶段一能力（主子 Agent 通信通道）
 - 主 Agent 通过 @子名 给子 Agent 发消息
-- /stop 终止子 Agent（子 Agent LLM 生成总结再退出）
-- 双击停止按钮触发批量 /stop
+- /stop 终止子 Agent：**单击**停止按钮（或 /stop 命令）终止**同步 user 子 Agent**（LLM 流式 ≤0.2s 穿透打断，直接退出）；**异步子 Agent 不受单击影响**（该跑跑，完成异步汇报）
+- **双击**停止按钮：向**用户对话派生的**所有子 Agent（同步+异步）推 /stop 并置终止信号（terminate_event，可穿透 LLM 阻塞 ≤0.2s），立即返回
+- **程序触发（睡眠整理管道、定时任务静默脚本）派生的子 Agent 不受停止按钮任何影响**（单击不打断、双击不推 /stop）
 
 ### 阶段二能力（异步交互 + ask）
 - 子 Agent 主动询问主 Agent（@niu-agent content 拦截层，仅异步子 Agent 自动启用）

@@ -203,7 +203,7 @@ niu [选项]
 | `/api/subagents/{unique_name}/stream` | GET | 子 Agent 独立 SSE 端点 |
 | `/api/subagents/running` | GET | 在跑子 Agent 列表（窗口恢复时用） |
 | `/api/subagents/{unique_name}/message` | POST | 用户向子 Agent 发消息/回答 @user 提问 |
-| `/api/stop_all` | POST | 停止所有子 Agent |
+| `/api/stop_all` | POST | 停止所有**用户对话派生的**子 Agent（source=user；程序触发/定时任务派生的跳过），置 terminate_event 可穿透 LLM 阻塞，立即返回 |
 
 **SSE 事件类型清单**（`/api/events/stream` 推送，定义于 `niu_api/chat.py` 与 `agent/generic/agent_loop.py`）：
 
@@ -214,7 +214,7 @@ niu [选项]
 | `ingest` | `chat.py` push_ingest_result | 文件入库异常通知（role=system） |
 | `chat_busy` | `agent_loop.py` StreamEvent("system", "chat_busy") | Agent 开始处理，进入忙碌状态 |
 | `chat_idle` | `agent_loop.py` StreamEvent("system", "chat_idle") | Agent 处理完成，进入空闲状态 |
-| `persist` | `agent_loop.py` StreamEvent("persist", ...) | V4 逐轮持久化推送（assistant/tool 消息逐条 yield） |
+| `persist` | `agent_loop.py` StreamEvent("persist", ...) | V4 逐轮持久化推送（assistant/tool 消息逐条 yield）；chat.py persist_agent_reply 兜底路径带前缀去重（停止/异常场景 rv=None 时与已入库 assistant 内容比对，防重复写入 messages.db） |
 | `subagent_started` | `handler.py` subagent_started 推送 | 子 Agent 启动通知（unique_name/agent_name/agent_type），前端创建 tab + 建立独立 SSE。子 Agent 详细事件（reply/tool_status/thinking_chain/question/subagent_suspended/subagent_error/subagent_closed）走独立 SSE 端点 `/api/subagents/{unique_name}/stream`，详见子 Agent 分册 |
 
 ### 2.4 许可证
