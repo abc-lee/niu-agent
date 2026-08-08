@@ -17,47 +17,45 @@ DEFAULT_CONTEXT_WINDOW_SIZE = 200000
 MIN_CONTEXT_WINDOW_SIZE = 32000    # 32K 最小合理值
 MAX_CONTEXT_WINDOW_SIZE = 2000000  # 2M 上限
 
-# 默认禁用的基础工具（子 Agent 默认不能调用，需要显式 allowBaseTools 解禁）
-# bash 和 grep 是"文件系统乱翻"的元凶，默认禁用
-DEFAULT_DISABLED_BASE_TOOLS = {"bash", "grep"}
+# 基础工具全集（agent/generic/assets/tools_schema.json 定义的 6 个系统工具）
+# 子 Agent 白名单制：缺省没有任何基础工具，frontmatter allowBaseTools 声明哪个有哪个
+_BASE_TOOL_NAMES = {"bash", "code_run", "read", "write", "edit", "grep"}
 
 
 def _filter_base_tools(agent_config: dict, tools_schema: list) -> tuple:
-    """根据 agent_config 的 disableBaseTools/allowBaseTools 过滤基础工具。
+    """根据 agent_config 的 allowBaseTools 白名单过滤基础工具。
 
-    三层过滤逻辑：
-    1. 默认黑名单（DEFAULT_DISABLED_BASE_TOOLS，bash/grep 默认禁用）
-    2. disableBaseTools 追加禁用
-    3. allowBaseTools 从黑名单中解禁（优先级最高）
+    白名单逻辑（与 MCP 工具 mcpServers/mcpToolFilter 白名单语义一致）：
+    - 缺省（未配置 allowBaseTools）：子 Agent 没有任何基础工具
+    - allowBaseTools 声明的工具保留，其余全部移除
+    - allowBaseTools 中出现不存在的工具名（笔误）打 warning 日志
 
     Args:
         agent_config: 子 Agent 配置字典（frontmatter 解析结果）
-        tools_schema: 待过滤的工具 schema 列表
+        tools_schema: 待过滤的工具 schema 列表（6 个基础工具）
 
     Returns:
-        (filtered_tools, disabled_set, custom_disabled, allowed_base) 元组：
+        (filtered_tools, allowed_base) 元组：
         - filtered_tools: 过滤后的工具 schema 列表
-        - disabled_set: 最终禁用的工具名集合
-        - custom_disabled: 子 Agent 自定义 disableBaseTools 列表
-        - allowed_base: 子 Agent 自定义 allowBaseTools 列表
+        - allowed_base: 子 Agent 配置的 allowBaseTools 列表
     """
-    disabled_set = set(DEFAULT_DISABLED_BASE_TOOLS)
-    custom_disabled = agent_config.get("disableBaseTools", [])
-    if custom_disabled:
-        disabled_set |= set(custom_disabled)
-    allowed_base = agent_config.get("allowBaseTools", [])
-    if allowed_base:
-        disabled_set -= set(allowed_base)
+    allowed_base = agent_config.get("allowBaseTools", []) or []
 
-    if disabled_set:
-        filtered = [
-            t for t in tools_schema
-            if t.get("function", {}).get("name", "") not in disabled_set
-        ]
-    else:
-        filtered = list(tools_schema)
+    # 笔误防护：白名单中出现不存在的工具名打 warning
+    unknown = [n for n in allowed_base if n not in _BASE_TOOL_NAMES]
+    if unknown:
+        logger.warning(
+            f"[SubAgent] allowBaseTools contains unknown tool names (typo?): {unknown}. "
+            f"Valid base tools: {sorted(_BASE_TOOL_NAMES)}"
+        )
 
-    return filtered, disabled_set, custom_disabled, allowed_base
+    allowed_set = set(allowed_base) & _BASE_TOOL_NAMES
+    filtered = [
+        t for t in tools_schema
+        if t.get("function", {}).get("name", "") in allowed_set
+    ]
+
+    return filtered, allowed_base
 
 
 # 子 Agent 职责边界段模板（自动注入到正文未含"直接退出"语义的子 Agent）
@@ -739,17 +737,12 @@ def _build_subagent_tools_schema(
         t for t in tools_schema
         if not t.get("function", {}).get("name", "").startswith("chat-with-")
     ]
-    # 三层过滤：默认黑名单 + disableBaseTools + allowBaseTools 解禁
-    tools_schema, disabled_set, custom_disabled, allowed_base = _filter_base_tools(agent_config, tools_schema)
-    if disabled_set:
-        logger.info(f"[SubAgent] {agent_name}: Disabled base tools: {sorted(disabled_set)}")
-
-    # 配置完整性检查
-    if not custom_disabled and not allowed_base:
-        logger.warning(
-            f"[SubAgent] {agent_name}: No disableBaseTools/allowBaseTools configured, "
-            f"using default blacklist only: {sorted(DEFAULT_DISABLED_BASE_TOOLS)}."
-        )
+    # 白名单过滤：缺省零基础工具，allowBaseTools 声明哪个有哪个
+    tools_schema, allowed_base = _filter_base_tools(agent_config, tools_schema)
+    if allowed_base:
+        logger.info(f"[SubAgent] {agent_name}: Allowed base tools: {sorted(allowed_base)}")
+    else:
+        logger.info(f"[SubAgent] {agent_name}: No base tools (allowBaseTools not configured)")
 
     # MCP 工具
     mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
