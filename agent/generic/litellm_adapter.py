@@ -439,9 +439,13 @@ class LiteLLMSession(BaseSession):
         super().__init__(cfg)
         self.api_type = cfg.get("api_type", "openai")
         self.provider = cfg.get("provider", "")
-        # stop 检查回调：默认全局停止标志（主 Agent）；子 Agent 由 call_subagent 按来源绑定
-        # （同步 user=全局 or terminate；异步 user/program/scheduler=仅 terminate，实现停止隔离）
-        self.stop_check = is_stop_requested
+        # stop 检查回调：默认全局停止标志（主 Agent），call-time 解析模块全局（测试 monkeypatch 有效）；
+        # 子 Agent 由 call_subagent 按来源覆盖属性（同步 user=全局 or terminate；异步 user/program/scheduler=仅 terminate）
+        self.stop_check = self._default_stop_check
+
+    def _default_stop_check(self):
+        """默认 stop 检查：call-time 解析模块全局 is_stop_requested（monkeypatch 生效）。"""
+        return is_stop_requested()
 
     def _do_streaming_completion(self, response):
         """消费流式响应（generator）。不调 litellm.completion()。
@@ -563,7 +567,16 @@ class LiteLLMSession(BaseSession):
                     try:
                         q.put(("chunk", chunk), timeout=1.0)
                     except _queue.Full:
-                        break
+                        # 下游消费方短暂停滞：重试（与 done/error 一致），
+                        # pull_stop 由循环顶检查兜底，消费方恢复后正常送达
+                        while not pull_stop.is_set():
+                            try:
+                                q.put(("chunk", chunk), timeout=1.0)
+                                break
+                            except _queue.Full:
+                                continue
+                        if pull_stop.is_set():
+                            break
                 while not pull_stop.is_set():
                     try:
                         q.put(("done", None), timeout=1.0)
@@ -571,12 +584,16 @@ class LiteLLMSession(BaseSession):
                     except _queue.Full:
                         continue
             except BaseException as e:  # noqa: BLE001 - 流式异常原样上抛（含 KeyboardInterrupt 转队列错误，可接受）
-                while not pull_stop.is_set():
-                    try:
-                        q.put(("error", e), timeout=1.0)
-                        break
-                    except _queue.Full:
-                        continue
+                # 先无条件尝试一次：stop 与流错误竞态时 error 不能被吞（P3）
+                try:
+                    q.put(("error", e), timeout=1.0)
+                except _queue.Full:
+                    while not pull_stop.is_set():
+                        try:
+                            q.put(("error", e), timeout=1.0)
+                            break
+                        except _queue.Full:
+                            continue
 
         t = _threading.Thread(target=_pull, daemon=True, name="llm-stream-pull")
         t.start()
