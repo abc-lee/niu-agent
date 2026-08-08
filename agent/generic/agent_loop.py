@@ -2,7 +2,7 @@ import json
 import re
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from agent.tmp_dir import get_tmp_dir
 from loguru import logger
@@ -577,8 +577,10 @@ def agent_runner_loop(
     memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据，None=主 Agent 路径不更新
     resumed_messages=None,  # 阶段四新增：挂起恢复路径，传入则跳过 messages 构造直接用
     on_before_llm=None,  # Optional: callback(messages, turn) called before each LLM call; modifies messages[0] in place
+    stop_predicate: Callable | None = None,  # 停止穿透：停止判定谓词（默认 None = 全局 is_stop_requested；子 Agent 由 call_subagent 传入）
 ):
     from agent.runner import clear_stop, drain_supplement, is_stop_requested
+    stop_predicate = stop_predicate or is_stop_requested  # 默认全局停止检查
 
     if resumed_messages is not None:
         # 回复路径：直接用挂起的 messages，跳过 system_message + history + user_input 构造
@@ -671,9 +673,11 @@ def agent_runner_loop(
     while turn < handler.max_turns:
         turn += 1
         # --- Stop flag check ---
-        if is_stop_requested():
+        if stop_predicate():
             logger.info("[AgentLoop] Stop requested, exiting loop")
-            clear_stop()
+            if not getattr(handler, "_is_subagent", False):
+                clear_stop()  # 主 Agent 自己消费停止意图
+            # 子 Agent（_is_subagent=True）不清全局标志——被主 Agent 停止意图打断时保留给主 Agent 消费
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
         # === 上下文使用率检测（prompt_tokens 驱动）===
@@ -745,7 +749,8 @@ def agent_runner_loop(
                 error_msg = getattr(response, 'error_msg', None) or "模型调用失败"
                 yield error_msg
                 yield StreamEvent("system", "chat_idle")
-                clear_stop()
+                if not getattr(handler, "_is_subagent", False):
+                    clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
                 return {"result": "LLM_ERROR", "error_msg": error_msg}
             yield StreamEvent("system", "\n\n")
         else:
@@ -755,7 +760,8 @@ def agent_runner_loop(
                 error_msg = getattr(response, 'error_msg', None) or "模型调用失败"
                 yield error_msg
                 yield StreamEvent("system", "chat_idle")
-                clear_stop()
+                if not getattr(handler, "_is_subagent", False):
+                    clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
                 return {"result": "LLM_ERROR", "error_msg": error_msg}
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
@@ -781,7 +787,8 @@ def agent_runner_loop(
                     yield StreamEvent("system", "⚠️ 输出多次超长截断，已强制退出\n")
                     if on_turn_end is not None:
                         on_turn_end(messages, tools_schema, turn)
-                    clear_stop()
+                    if not getattr(handler, "_is_subagent", False):
+                        clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
                     yield StreamEvent("system", "chat_idle")
                     return {"result": "CURRENT_TASK_DONE", "data": None,
                             "messages": messages, "finish_reason": "length"}
@@ -915,7 +922,8 @@ def agent_runner_loop(
             logger.warning("[Overflow] LLM API returned context_length_exceeded, triggering CONTEXT_OVERFLOW")
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
-            clear_stop()
+            if not getattr(handler, "_is_subagent", False):
+                clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
             yield StreamEvent("system", "chat_idle")
             return {
                 "result": "CONTEXT_OVERFLOW",
@@ -948,7 +956,8 @@ def agent_runner_loop(
                 yield StreamEvent("system", "⚠️ 输出多次超长截断，已强制退出\n")
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
-                clear_stop()
+                if not getattr(handler, "_is_subagent", False):
+                    clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
                 yield StreamEvent("system", "chat_idle")
                 return {"result": "CURRENT_TASK_DONE", "data": None,
                         "messages": messages, "finish_reason": "length"}
@@ -956,9 +965,11 @@ def agent_runner_loop(
             _truncation_retry_count = 0  # 非截断响应重置重试预算
 
         # 如果在 LLM 流式传输期间请求停止，跳过部分 tool_calls 处理
-        if is_stop_requested():
+        if stop_predicate():
             logger.info("[AgentLoop] Stop requested after LLM stream, skipping tool calls")
-            clear_stop()
+            if not getattr(handler, "_is_subagent", False):
+                clear_stop()  # 主 Agent 自己消费停止意图
+            # 子 Agent（_is_subagent=True）不清全局标志——被主 Agent 停止意图打断时保留给主 Agent 消费
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
 
@@ -1027,9 +1038,11 @@ def agent_runner_loop(
                 yield StreamEvent("tool_marker", f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n")
             handler.current_turn = turn
             # --- Stop flag check before tool dispatch ---
-            if is_stop_requested():
+            if stop_predicate():
                 logger.info("[AgentLoop] Stop requested, skipping remaining tools")
-                clear_stop()
+                if not getattr(handler, "_is_subagent", False):
+                    clear_stop()  # 主 Agent 自己消费停止意图
+                # 子 Agent（_is_subagent=True）不清全局标志——被主 Agent 停止意图打断时保留给主 Agent 消费
                 yield StreamEvent("system", "chat_idle")
                 return {"result": "STOPPED", "messages": messages}
             gen = handler.dispatch(tool_name, args, response, index=ii)
@@ -1095,7 +1108,8 @@ def agent_runner_loop(
                     yield StreamEvent("persist", json.dumps(tool_msg, ensure_ascii=False))
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
-                clear_stop()
+                if not getattr(handler, "_is_subagent", False):
+                    clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
                 yield StreamEvent("system", "chat_idle")
                 return {
                     "result": "EXITED",
@@ -1152,7 +1166,8 @@ def agent_runner_loop(
                     pure_text_msg = {"role": "assistant", "content": response.content}
                     yield StreamEvent("persist", json.dumps(pure_text_msg, ensure_ascii=False))
                 # V4: 通知前端进入空闲状态
-                clear_stop()
+                if not getattr(handler, "_is_subagent", False):
+                    clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
                 yield StreamEvent("system", "chat_idle")
                 if isinstance(should_exit, dict):
                     should_exit["messages"] = messages
@@ -1231,7 +1246,8 @@ def agent_runner_loop(
         if not response.tool_calls:
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
-            clear_stop()
+            if not getattr(handler, "_is_subagent", False):
+                clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
             yield StreamEvent("system", "chat_idle")
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
@@ -1263,6 +1279,7 @@ def agent_runner_loop(
     if on_turn_end is not None:
         on_turn_end(messages, tools_schema, turn)
     # V4: 通知前端进入空闲状态
-    clear_stop()
+    if not getattr(handler, "_is_subagent", False):
+        clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
     yield StreamEvent("system", "chat_idle")
     return {"result": "MAX_TURNS_EXCEEDED", "messages": messages}
