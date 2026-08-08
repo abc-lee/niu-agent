@@ -747,12 +747,13 @@ ipcMain.handle('get-sticky-size', async () => {
 });
 
 // 获取统计数据（供聊天窗口使用）
-ipcMain.handle('get-stats', async () => {
+ipcMain.handle('get-stats', async (event, agentName) => {
   return new Promise((resolve, reject) => {
+    const requestPath = agentName ? '/api/stats?agent=' + encodeURIComponent(agentName) : '/api/stats';
     const req = http.request({
       hostname: '127.0.0.1',
       port: 9876,
-      path: '/api/stats',
+      path: requestPath,
       method: 'GET'
     }, (res) => {
       let data = '';
