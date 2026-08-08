@@ -296,3 +296,29 @@ def test_skill_file_for_name_md_suffix_dir_shadow(fake_sync):
     # 只有 .md 目录、无平铺文件无目录式 skill
     (skills_dir / "only-dir.md").mkdir()
     assert sync._skill_file_for_name("only-dir") is None
+
+
+def test_skill_display_path_dir_vs_flat(tmp_path):
+    """路径行：目录式输出 <name>/SKILL.md，平铺输出 <name>.md，同名冲突平铺优先，
+    .md 后缀目录不遮蔽，都不存在平铺兜底。"""
+    from agent.runner import _skill_display_path
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "h3-prompt-writing").mkdir(parents=True)
+    (skills_dir / "h3-prompt-writing" / "SKILL.md").write_text("# H3\n", encoding="utf-8")
+    (skills_dir / "plain.md").write_text("# P\n", encoding="utf-8")
+
+    assert _skill_display_path("h3-prompt-writing", skills_dir) == "~/.niu/skills/h3-prompt-writing/SKILL.md"
+    assert _skill_display_path("plain", skills_dir) == "~/.niu/skills/plain.md"
+    assert _skill_display_path("ghost-entity", skills_dir) == "~/.niu/skills/ghost-entity.md"
+
+    # 同名冲突（conflict.md 文件与 conflict/SKILL.md 并存）：平铺优先
+    (skills_dir / "conflict.md").write_text("# CF\n", encoding="utf-8")
+    (skills_dir / "conflict").mkdir()
+    (skills_dir / "conflict" / "SKILL.md").write_text("# CD\n", encoding="utf-8")
+    assert _skill_display_path("conflict", skills_dir) == "~/.niu/skills/conflict.md"
+
+    # .md 后缀目录（dir.md/ 无平铺文件）不遮蔽目录式：返回 dir/SKILL.md
+    (skills_dir / "dir.md").mkdir()
+    (skills_dir / "dir").mkdir()
+    (skills_dir / "dir" / "SKILL.md").write_text("# D\n", encoding="utf-8")
+    assert _skill_display_path("dir", skills_dir) == "~/.niu/skills/dir/SKILL.md"

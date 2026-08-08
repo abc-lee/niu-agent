@@ -27,6 +27,26 @@ from agent.subagent_registry import SubagentRegistry
 # runner.py 顶部已有 `import re`，直接复用
 _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
+
+def _skill_display_path(display_name: str, skills_dir: Path | None = None) -> str:
+    """构造 skill 注入时的可读路径行（LLM 按此路径读取 skill 全文）。
+
+    平铺: ~/.niu/skills/<name>.md
+    目录式: ~/.niu/skills/<name>/SKILL.md
+    同名冲突与两处都不存在（旧数据/幽灵实体）: 平铺形式（与 _skill_file_for_name
+    平铺优先一致，保证 LLM 读取的路径与注入内容同源）
+
+    注意：平铺分支用 is_file() 而非 exists()——目录名以 .md 结尾
+    （~/.niu/skills/foo.md/）时 exists() 会把目录误判为平铺文件
+    （T1 同类缺陷 R12-P3 修复的一致性要求）。
+    """
+    root = skills_dir or (Path.home() / ".niu" / "skills")
+    flat = root / f"{display_name}.md"
+    sub = root / display_name / "SKILL.md"
+    if sub.exists() and not flat.is_file():
+        return f"~/.niu/skills/{display_name}/SKILL.md"
+    return f"~/.niu/skills/{display_name}.md"
+
 # 主 Agent 专用工具集合（子 Agent 不可见）
 # check_subagent_progress 是主 Agent 查子 Agent 进度的工具，子 Agent 不该有
 MAIN_AGENT_ONLY_TOOLS = {"check_subagent_progress"}
@@ -2386,7 +2406,7 @@ class NiuRunner:
             else:
                 lines.append(f"{added + 1}. **{display_name}**")
             if is_skill_section:
-                lines.append(f"   路径: ~/.niu/skills/{display_name}.md")
+                lines.append(f"   路径: {_skill_display_path(display_name)}")
                 if description.startswith("[草稿]"):
                     lines.append("   ⚠️ 草稿skill — 使用后反馈效果")
                 elif description.startswith("[待观察]"):
