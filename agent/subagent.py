@@ -738,12 +738,12 @@ def _build_subagent_tools_schema(
         if not t.get("function", {}).get("name", "").startswith("chat-with-")
     ]
     # 白名单过滤：缺省零基础工具，allowBaseTools 声明哪个有哪个
-    tools_schema, allowed_base = _filter_base_tools(agent_config, tools_schema)
+    tools_schema, _ = _filter_base_tools(agent_config, tools_schema)
     allowed_names = sorted(t.get("function", {}).get("name", "") for t in tools_schema)
     if allowed_names:
         logger.info(f"[SubAgent] {agent_name}: Allowed base tools: {allowed_names}")
     else:
-        logger.info(f"[SubAgent] {agent_name}: No base tools (allowBaseTools not configured)")
+        logger.info(f"[SubAgent] {agent_name}: No base tools (allowBaseTools empty or not configured)")
 
     # MCP 工具
     mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
