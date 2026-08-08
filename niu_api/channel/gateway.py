@@ -24,7 +24,7 @@ def _get_gateway_log_dir() -> Path:
 def _log_gateway_error(msg: str) -> None:
     """记录 gateway 致命错误到 logs/gateway_error.log，不受 logging flag 控制。
 
-    飞书 adapter 启动失败是关键诊断（app_id 配错、端口占用、credentials 缺失），
+    IM adapter 启动失败是关键诊断（app_id 配错、端口占用、credentials 缺失），
     即使 logging.enabled=false 也必须写，确保用户能诊断。
     """
     try:

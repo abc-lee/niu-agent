@@ -334,7 +334,7 @@ class ChatQueue:
                 elif channel == "im":
                     self._runner.set_im_channel(channel_id)
                 else:
-                    # scheduler / ha-watcher 等后台触发：直接置 IM 强制标志（定时任务天生发飞书）
+                    # scheduler / ha-watcher 等后台触发：直接置 IM 强制标志（定时任务天生发 IM）
                     self._runner.set_im_force(True)
                 full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
             except TimeoutError:
