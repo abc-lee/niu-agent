@@ -28,8 +28,6 @@ allowBaseTools:
   - write
   - edit
   - bash
-disableBaseTools:
-  - code_run
 ---
 
 # 梦境进化（Dream Evolver）

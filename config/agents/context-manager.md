@@ -5,12 +5,8 @@ mode: subagent
 temperature: 0.2
 mcpServers:
   - session-manager
-disableBaseTools:
-  - bash
-  - write
-  - edit
-  - code_run
-  - grep
+allowBaseTools:
+  - read
 ---
 
 # 记忆压缩器（Context Manager）
