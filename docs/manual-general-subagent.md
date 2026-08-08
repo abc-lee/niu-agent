@@ -13,7 +13,7 @@
 `config/agent-template.md`——子 Agent 配置模板，含所有可用 MCP 服务器清单和 frontmatter 字段说明。模板本身不被加载，仅供主 Agent 参考编写。
 
 模板包含：
-- frontmatter 字段（name / description / mode / temperature / taskDescription / permissions / mcpServers / mcpToolFilter / disableBaseTools / allowBaseTools / allowAsync）
+- frontmatter 字段（name / description / mode / temperature / mcpServers / mcpToolFilter / allowBaseTools / allowAsync）。工具为白名单制：MCP 工具由 mcpServers/mcpToolFilter 声明，基础工具由 allowBaseTools 声明（缺省为零）
 - 提示词正文编写规则（角色职责 / 工作流程 / 输出格式 / @niu-agent content 拦截层使用时机 / 何时终止）
 - 可用 MCP 服务器清单（必需 + 可选）
 - 字段格式示例
