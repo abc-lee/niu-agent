@@ -730,6 +730,7 @@ class NiuRunner:
 
         self._current_channel_id = ""
         self._im_channel_id = ""  # IM 通道继承：记录最近真实用户消息/定时任务的 channel_id
+        self._im_force = False  # IM 强制标志：定时任务/后台触发置 True；仅 Electron 用户消息置 False
         # 首轮 resources 注入（拖入文件模式要求），_on_before_llm turn==1 时合并进 injection 后清空
         self._first_turn_extra_injection: str = ""
 
@@ -764,6 +765,13 @@ class NiuRunner:
 
     def get_im_channel(self) -> str:
         return self._im_channel_id
+
+    def set_im_force(self, value: bool) -> None:
+        """设置/清除 IM 强制标志。定时任务/后台触发置 True；Electron 用户消息置 False。"""
+        self._im_force = value
+
+    def get_im_force(self) -> bool:
+        return self._im_force
 
     def _refresh_base_tools_schema_if_dirty(self):
         """每次对话开始时扫 ~/.niu/agents/，发现新 MD 就重算 base_tools_schema。
