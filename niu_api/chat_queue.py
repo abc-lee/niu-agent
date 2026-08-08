@@ -241,7 +241,7 @@ class ChatQueue:
 
             # 处理合并后的消息
             try:
-                reply = await self._process_single(merged_content, first_req.session_id, all_contents, channel=first_req.channel, channel_id=first_req.channel_id)
+                reply = await self._process_single(merged_content, first_req.session_id, all_contents, channel=first_req.channel, channel_id=first_req.channel_id, source=first_req.source)
             except Exception as e:
                 logger.error(f"[ChatQueue] Processing error: {e}")
                 reply = f"[处理出错: {e}]"
@@ -275,7 +275,7 @@ class ChatQueue:
 
     async def _process_single(self, content: str, session_id: str = "default",
                               user_contents: list[str] | None = None, channel: str = "electron",
-                              channel_id: str = "") -> str:
+                              channel_id: str = "", source: str = "user") -> str:
         """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
         from agent.runner import clear_stop, is_stop_requested
 
@@ -336,7 +336,15 @@ class ChatQueue:
                 else:
                     # scheduler / ha-watcher 等后台触发：直接置 IM 强制标志（定时任务天生发 IM）
                     self._runner.set_im_force(True)
-                full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
+                # 标记当前请求来源（归一化）：scheduler/ha-watcher → "scheduler"（子 Agent 停止隔离）；
+                # frontend/im → "user"（IM 对话也是用户对话，可被停止按钮停）
+                _norm_source = "scheduler" if source in ("scheduler", "ha-watcher") else "user"
+                prev_source = getattr(self._runner, "_request_source", "user")
+                self._runner._request_source = _norm_source
+                try:
+                    full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
+                finally:
+                    self._runner._request_source = prev_source
             except TimeoutError:
                 logger.error("[ChatQueue] Timeout waiting for chat lock")
                 chat_error = "timeout"
