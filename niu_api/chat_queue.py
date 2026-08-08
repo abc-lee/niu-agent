@@ -330,9 +330,12 @@ class ChatQueue:
                     raise TimeoutError("Timeout waiting for chat lock")
                 if channel == "electron":
                     self._runner.set_im_channel("")
+                    self._runner.set_im_force(False)
                 elif channel == "im":
                     self._runner.set_im_channel(channel_id)
-                # scheduler 不调，继承 _im_channel_id
+                else:
+                    # scheduler / ha-watcher 等后台触发：直接置 IM 强制标志（定时任务天生发飞书）
+                    self._runner.set_im_force(True)
                 full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
             except TimeoutError:
                 logger.error("[ChatQueue] Timeout waiting for chat lock")
