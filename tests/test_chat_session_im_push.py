@@ -44,15 +44,17 @@ def _push_block() -> ast.Try:
     return _extract_push_block(inspect.getsource(compat))
 
 
-def test_push_gate_condition_is_source_not_electron():
-    """推送闸门必须是 source != 'electron' 而非 if im_cid。"""
+def test_push_gate_condition_is_im_flag_not_source():
+    """推送闸门必须是 IM 标志（get_im_channel() or get_im_force()），而非 request.source。"""
     block = _push_block()
     if_node = next(n for n in ast.walk(block) if isinstance(n, ast.If))
     cond_src = ast.unparse(if_node.test)
-    assert "request.source" in cond_src, f"闸门未使用 source 判断, 实际: {cond_src}"
-    assert "!=" in cond_src and "electron" in cond_src, f"闸门未排除 electron, 实际: {cond_src}"
-    # 闸门不应再依赖 im_cid 非空（定时任务场景恒空导致静默丢弃）
-    assert "im_cid" not in cond_src, f"闸门仍依赖 im_cid, 实际: {cond_src}"
+    assert "get_im_channel" in cond_src, f"闸门未用 get_im_channel 判断, 实际: {cond_src}"
+    assert "get_im_force" in cond_src, f"闸门未用 get_im_force 判断（定时任务标志）, 实际: {cond_src}"
+    assert "request.source" not in cond_src, f"闸门不得依赖 request.source, 实际: {cond_src}"
+    # 括号完整性：`chat_error is None and (get_im_channel() or get_im_force())` 整体分组
+    # （丢括号会退化为 `(chat_error is None and channel) or force`——chat_error 非 None 时 force 置位也推错误文本）
+    assert "chat_error is None and (" in cond_src, f"闸门须整体分组, 实际: {cond_src}"
 
 
 def test_push_uses_get_im_channel_for_channel_id():
@@ -70,8 +72,15 @@ def test_push_uses_get_im_channel_for_channel_id():
 
 
 def test_no_set_im_channel_in_push_block():
-    """推送块内绝不调用 set_im_channel（规则 4：子 Agent 通道返回不改变通道）。"""
+    """推送块内绝不调用 set_im_channel / set_im_force（规则 5：子 Agent 返回不改变标志）。"""
     block = _push_block()
     for c in ast.walk(block):
-        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name):
-            assert c.func.id != "set_im_channel", "推送块不得调用 set_im_channel"
+        if isinstance(c, ast.Call):
+            fn = c.func
+            name = None
+            if isinstance(fn, ast.Name):
+                name = fn.id
+            elif isinstance(fn, ast.Attribute):
+                name = fn.attr
+            assert name not in ("set_im_channel", "set_im_force"), \
+                f"推送块不得调用 {name}"
