@@ -39,6 +39,8 @@ class RunningSubagent:
     suspended_tools_schema: list | None = None
     last_reply: str = ""  # 最后一次 reply 内容（完成通知用）
     handler: Any | None = None  # 运行中 handler 引用（/api/stats?agent= 读取真实 _last_prompt_tokens）
+    terminate_event: threading.Event | None = None  # 双击停止置位，子 Agent LLM 流式轮询（可穿透 LLM 阻塞）
+    source: str = "user"  # 来源："user"(用户对话派生，可被停止按钮停) / "program"(睡眠整理等程序触发) / "scheduler"(定时任务静默脚本派生)
 
 
 class SubagentRegistry:

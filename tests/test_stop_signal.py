@@ -9,8 +9,8 @@ def test_request_stop_all_subagents():
     mock_q2 = MagicMock()
     with patch("agent.runner.SubagentRegistry") as mock_registry:
         mock_registry.list_running.return_value = [
-            MagicMock(unique_name="a-1111", supplement_queue=mock_q1),
-            MagicMock(unique_name="b-2222", supplement_queue=mock_q2),
+            MagicMock(unique_name="a-1111", supplement_queue=mock_q1, source="user"),
+            MagicMock(unique_name="b-2222", supplement_queue=mock_q2, source="user"),
         ]
         request_stop_all_subagents()
         mock_q1.push.assert_called_once_with("/stop", is_terminate=True, sender="主Agent")
@@ -44,8 +44,8 @@ def test_request_stop_all_single_failure_continues():
     mock_q2 = MagicMock()
     with patch("agent.runner.SubagentRegistry") as mock_registry:
         mock_registry.list_running.return_value = [
-            MagicMock(unique_name="a-1111", supplement_queue=mock_q1),
-            MagicMock(unique_name="b-2222", supplement_queue=mock_q2),
+            MagicMock(unique_name="a-1111", supplement_queue=mock_q1, source="user"),
+            MagicMock(unique_name="b-2222", supplement_queue=mock_q2, source="user"),
         ]
         request_stop_all_subagents()  # 不应抛异常
         mock_q1.push.assert_called_once()
