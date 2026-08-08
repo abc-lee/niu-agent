@@ -248,6 +248,7 @@ def _run_agent_loop(
     supplement_queue: Any | None = None,  # 子 Agent 独立 supplement queue
     memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据
     resumed_messages: list | None = None,  # 阶段四新增：断点续传消息列表
+    stop_predicate: Any | None = None,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
 ) -> tuple[str, Any, str]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -297,6 +298,7 @@ def _run_agent_loop(
         supplement_drain=supplement_queue.drain if supplement_queue is not None else None,
         memory_context=memory_context,  # 阶段二新增：透传给 agent_runner_loop
         resumed_messages=resumed_messages,  # 阶段四新增：透传给 agent_runner_loop
+        stop_predicate=stop_predicate,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
     )
     result = ""
     last_reply = ""  # 只记录最后一次 reply 的内容（完成通知用）
@@ -840,6 +842,32 @@ def call_subagent(
     from .runner import create_client
     client = create_client(llm_config)
 
+    # 停止隔离：按来源与同步/异步绑定 stop 谓词（LLM 层 stop_check 与循环层 stop_predicate 同源）
+    # - 同步 user 子 Agent（含同步恢复）：全局 stop（单击停主 Agent 连带停同步子 Agent） or terminate（双击）
+    # - 异步 user 子 Agent：仅 terminate（单击不连累异步子 Agent）
+    # - program / scheduler 子 Agent：仅 terminate（用户双击不置位 → 永不被打断）
+    import threading as _threading
+    from agent.runner import get_runner as _get_runner
+    from agent.runner import is_stop_requested as _is_stop_global
+    from .subagent_registry import SubagentRegistry  # 顶部绑定需读异步实例 source 快照（既有 import 在其后，先局部导入避免 NameError）
+    terminate_event = _threading.Event()
+    if program_triggered:
+        _source = "program"
+    elif unique_name is not None and answer is None:
+        # 异步路径：source 从派发时快照读（_dispatch_async_subagent 已在派发线程写入实例，
+        # 避免 to_thread 线程读 runner._request_source 已恢复默认的竞态）
+        _async_inst = SubagentRegistry.get(unique_name)
+        _source = getattr(_async_inst, "source", "user") if _async_inst is not None else "user"
+    else:
+        # 同步路径（含恢复）：从 runner 当前请求来源读
+        _source = getattr(_get_runner(), "_request_source", "user")
+    _is_async = (unique_name is not None and answer is None)
+    if _is_async or _source != "user":
+        _stop_fn = lambda: terminate_event.is_set()
+    else:
+        _stop_fn = lambda: _is_stop_global() or terminate_event.is_set()
+    client.backend.stop_check = _stop_fn
+
     # 4. 创建 handler（禁用记忆检索，子 Agent 不需要）
     handler = NiuHandler(mcp_client=mcp_client)
     handler._disable_memory_recall = True
@@ -902,6 +930,15 @@ def call_subagent(
             instance.suspended_handler._subagent_unique_name = answer_unique_name
             # 推送主 Agent 回答到子 Agent tab（同步续答路径）
             _maybe_push_subagent_instruction(answer_unique_name, reply_text)
+            # 恢复路径：stop 谓词必须闭包实例的 terminate_event（首次注册的 E1，挂起期间不被替换）
+            _instance_ev = getattr(instance, "terminate_event", None)
+            _inst_terminate = (lambda: _instance_ev.is_set()) if _instance_ev else (lambda: False)
+            if getattr(instance, "source", "user") != "user":
+                # program/scheduler 子 Agent 恢复：仅 terminate（单击全局 stop 不打断）
+                _stop_fn = _inst_terminate
+            else:
+                # user 子 Agent 恢复（同步语义）：global or terminate
+                _stop_fn = lambda: _is_stop_global() or _inst_terminate()
             result_text, return_value, last_reply = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
@@ -913,6 +950,7 @@ def call_subagent(
                 memory_context=None,
                 resumed_messages=suspended_messages,
                 supplement_queue=instance.supplement_queue,
+                stop_predicate=_stop_fn,  # 停止穿透：恢复路径重建谓词（闭包实例 E1 + 按实例 source 区分）
             )
             _maybe_suspend_session(
                 unique_name=answer_unique_name,
@@ -937,6 +975,8 @@ def call_subagent(
         _instance = SubagentRegistry.get(unique_name)
         if _instance is not None:
             _instance.handler = handler
+            _instance.terminate_event = terminate_event
+            _instance.source = _source
         # 阶段四：异步路径不是同步子 Agent
         handler._is_sync_subagent = False
         # supplement_queue 也由调用方传入，不重新创建
@@ -956,6 +996,7 @@ def call_subagent(
                 history=history,
                 supplement_queue=supplement_queue,  # 调用方传入
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
+                stop_predicate=_stop_fn,  # 停止穿透：异步路径用顶部绑定（仅 terminate）
             )
         finally:
             # 异步路径不在这里 unregister（_run_subagent_async 的 finally 负责）
@@ -975,6 +1016,10 @@ def call_subagent(
         except ValueError as e:
             return f"[错误] {e}。请先用 chat-with-{agent_name}(answer=...) 回复当前挂起的子 Agent，或等它结束。"
         supplement_queue.unique_name = unique_name  # 回填唯一名（= agent_name）
+        _sync_inst = SubagentRegistry.get(unique_name)
+        if _sync_inst is not None:
+            _sync_inst.terminate_event = terminate_event
+            _sync_inst.source = _source
         handler._subagent_unique_name = unique_name
         handler._is_sync_subagent = True
         try:
@@ -993,6 +1038,7 @@ def call_subagent(
                 history=history,
                 supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
+                stop_predicate=_stop_fn,  # 停止穿透：同步路径用顶部绑定（user = global or terminate / 非 user = 仅 terminate）
             )
             # §5.5 后处理：必须在 try 块内、finally 之前执行（异常时跳过，直接进 finally）
             _maybe_suspend_session(
@@ -1307,6 +1353,13 @@ def _dispatch_async_subagent(
         task=None,  # 占位，run_coroutine_threadsafe 后回填
     )
     sq.unique_name = unique_name  # 回填唯一名
+
+    # R5-P2：派发线程（主 Agent executor 线程）快照 source 到实例——
+    # call_subagent 在 to_thread 线程读 runner._request_source 时主 Agent 可能已恢复默认
+    _src_inst = SubagentRegistry.get(unique_name)
+    if _src_inst is not None:
+        from agent.runner import get_runner as _gr
+        _src_inst.source = getattr(_gr(), "_request_source", "user")
 
     # 启动 asyncio task（主 Agent 在 executor 线程跑，必须用 run_coroutine_threadsafe 跨线程调度到主 loop）
     from niu_api.chat import _main_loop
