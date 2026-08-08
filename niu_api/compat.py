@@ -2026,7 +2026,7 @@ def _count_entities_from_graph(adapter) -> tuple[int, int]:
 
 
 @router.get("/api/stats")
-async def get_stats() -> StatsResponse:
+async def get_stats(agent: str | None = None) -> StatsResponse:
     """Get system stats"""
     store = await get_message_store()
     messages = await store.count_messages()
@@ -2071,15 +2071,27 @@ async def get_stats() -> StatsResponse:
     try:
         context_window = _read_context_window_tokens()
         real_tokens = 0
-        try:
-            from niu_api.chat import get_or_create_runner
-            runner = get_or_create_runner()
-            real_tokens = getattr(getattr(runner, 'handler', None), '_last_prompt_tokens', 0) or 0
-        except Exception:
-            pass
+        if agent:
+            # 子 Agent：从 SubagentRegistry 读运行中 handler 的真实 prompt_tokens
+            try:
+                from agent.subagent_registry import SubagentRegistry
+                instance = SubagentRegistry.get(agent)
+                if instance is not None:
+                    handler_ref = getattr(instance, "handler", None) or getattr(instance, "suspended_handler", None)
+                    real_tokens = getattr(handler_ref, "_last_prompt_tokens", 0) or 0
+            except Exception:
+                pass
+        else:
+            try:
+                from niu_api.chat import get_or_create_runner
+                runner = get_or_create_runner()
+                real_tokens = getattr(getattr(runner, 'handler', None), '_last_prompt_tokens', 0) or 0
+            except Exception:
+                pass
         if real_tokens > 0:
             context_usage = real_tokens / context_window if context_window > 0 else 0.0
-        else:
+        elif not agent:
+            # 主 Agent 无真实 tokens 时 fallback 估算全库消息；子 Agent 无此概念，直接 0
             all_msgs = await store.get_messages()
             total_tokens = _estimate_total_tokens(all_msgs)
             context_usage = total_tokens / context_window if context_window > 0 else 0.0
