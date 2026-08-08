@@ -340,8 +340,24 @@ async def persist_agent_reply(
             await notify_new_message(message_id, "assistant", full_reply, source=source)
     elif full_reply.strip():
         # 回退：无 return_value 时，从 full_reply 持久化 assistant 消息
-        message_id = await store.add_message(role="assistant", content=full_reply)
-        await notify_new_message(message_id, "assistant", full_reply, source=source)
+        # V4 去重（R1-P2 前缀判断 + R2-P2 @ 对齐 + R5-P3-A tool_use 对齐）：
+        # persisted_msgs 中已写入的 assistant 内容拼接后若以 full_reply 为前缀
+        # （含内容相等），说明文本已入库——跳过兜底写；非前缀（停止落在
+        # reply→persist 窗口）兜底写避免丢内容。
+        import re  # chat.py 顶层未导入 re，函数体内 import（与 L259 at_message_parser 风格一致）
+        _persisted_concat = "".join(
+            (pm.get("content") or "") for pm in (persisted_msgs or []) if pm.get("role") == "assistant"
+        )
+        if at_msgs:
+            _persisted_concat = strip_at_messages(_persisted_concat)
+        # <tool_use> 对齐（R5-P3-A）：主 Agent 非 verbose 分支 reply 已剥 <tool_use> 标签
+        # （agent_loop L767-768 re.sub），V4 persist 存原始含标签内容——比较前对拼接内容
+        # 做同款剥除（模式/flags 与 L767-768 逐字一致），否则含标签内容前缀失配仍重复
+        _persisted_concat = re.sub(r"<tool_use>.*?</tool_use>", "", _persisted_concat, flags=re.DOTALL)
+        # 双侧 strip（R4-P3-b）：V4 内容可能带前导空白，仅 strip 一侧会前缀失配仍重复
+        if not _persisted_concat.strip().startswith(full_reply.strip()):
+            message_id = await store.add_message(role="assistant", content=full_reply)
+            await notify_new_message(message_id, "assistant", full_reply, source=source)
 
     return message_id, full_reply
 
