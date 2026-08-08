@@ -894,6 +894,8 @@ def call_subagent(
         suspended_messages.append({"role": "user", "content": f"[主 Agent 回答] {reply_text}"})
 
         instance.state = "running"
+        # 续答期间用 suspended_handler 跑，同步 handler 引用供使用率读取
+        instance.handler = instance.suspended_handler
         # 注释：不预检查 supplement_queue 是否已有 /stop，依赖 agent_runner_loop 内部 drain 检测
 
         try:
@@ -931,6 +933,10 @@ def call_subagent(
         # 异步路径：调用方已注册（_dispatch_async_subagent），跳过内部 register
         # 只设置 handler._subagent_unique_name（handler.dispatch 的 ask_main_agent 分支用）
         handler._subagent_unique_name = unique_name
+        # 回填 handler 引用到 registry（/api/stats?agent= 读取该子 Agent 真实使用率）
+        _instance = SubagentRegistry.get(unique_name)
+        if _instance is not None:
+            _instance.handler = handler
         # 阶段四：异步路径不是同步子 Agent
         handler._is_sync_subagent = False
         # supplement_queue 也由调用方传入，不重新创建
@@ -964,7 +970,7 @@ def call_subagent(
             supplement_queue = SubagentSupplementQueue(unique_name="")
         try:
             unique_name = SubagentRegistry.register(
-                agent_name, supplement_queue, force_unique_name=agent_name,
+                agent_name, supplement_queue, force_unique_name=agent_name, handler=handler,
             )
         except ValueError as e:
             return f"[错误] {e}。请先用 chat-with-{agent_name}(answer=...) 回复当前挂起的子 Agent，或等它结束。"
