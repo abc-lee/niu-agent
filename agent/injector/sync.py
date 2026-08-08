@@ -216,6 +216,41 @@ class SkillSync:
                 h.update(chunk)
         return h.hexdigest()
 
+    @staticmethod
+    def _skill_name_from_path(skill_file: Path, skills_dir: Path) -> str | None:
+        """从 skill 文件路径解析 skill 名称。
+
+        平铺: <skills_dir>/foo.md → "foo"
+        目录式: <skills_dir>/h3-prompt-writing/SKILL.md → "h3-prompt-writing"
+        其他（非 SKILL.md 的深层 .md / 目录越界）: None（忽略）
+
+        注意：不做 resolve()——指向目录外的符号链接平铺 skill
+        （~/.niu/skills/foo.md -> /shared/foo.md）结构上仍在 skills_dir 下，
+        glob 已限定一层，stem 语义天然成立；resolve 会把 symlink 解析到
+        目录外导致 ValueError 被静默丢弃（已同步 name 还会触发 step-3
+        误删 KG 实体，R8-P3）。
+        """
+        try:
+            rel = skill_file.relative_to(skills_dir)
+        except ValueError:
+            return None
+        parts = rel.parts
+        if len(parts) == 1 and parts[0].endswith(".md"):
+            return Path(parts[0]).stem
+        if len(parts) == 2 and parts[1] == "SKILL.md":
+            return parts[0]
+        return None
+
+    def _skill_file_for_name(self, name: str) -> Path | None:
+        """按 skill 名称反查磁盘文件路径（平铺优先，目录式次之）。"""
+        flat = self.skills_dir / f"{name}.md"
+        if flat.exists():
+            return flat
+        sub = self.skills_dir / name / "SKILL.md"
+        if sub.exists():
+            return sub
+        return None
+
     def _load_state(self) -> dict[str, str]:
         """从磁盘加载持久化状态文件；损坏或不存在时返回空 dict。
 
@@ -311,9 +346,25 @@ class SkillSync:
             known_skills = dict(self._last_scan)
 
         # 2. 扫描 skills 目录，计算当前 current_hashes = {name: hash}
+        #    支持平铺 *.md 与目录式 */SKILL.md（仅下一级目录）
+        #    同名冲突（foo.md 与 foo/SKILL.md 并存）：平铺优先——
+        #    先扫平铺（记录 name），目录式遇到同名跳过，保证 hash 源与
+        #    内容源一致（_skill_file_for_name 平铺优先，runner 路径行平铺优先）
         current_hashes: dict[str, str] = {}
         for skill_file in self.skills_dir.glob("*.md"):
-            name = skill_file.stem
+            name = self._skill_name_from_path(skill_file, self.skills_dir)
+            if name is None:
+                continue
+            try:
+                content_hash = self._compute_file_hash(skill_file)
+            except OSError as e:
+                logger.error(f"[SkillSync] Cannot read skill file {name}: {e}")
+                continue
+            current_hashes[name] = content_hash
+        for skill_file in self.skills_dir.glob("*/SKILL.md"):
+            name = self._skill_name_from_path(skill_file, self.skills_dir)
+            if name is None or name in current_hashes:
+                continue
             try:
                 content_hash = self._compute_file_hash(skill_file)
             except OSError as e:
@@ -330,7 +381,10 @@ class SkillSync:
             known_hash = known_skills.get(name)
             if known_hash is None:
                 # 新增
-                skill_file = self.skills_dir / f"{name}.md"
+                skill_file = self._skill_file_for_name(name)
+                if skill_file is None:
+                    logger.error(f"[SkillSync] Cannot locate skill file for {name}, will retry next scan")
+                    continue
                 if self._sync_skill(name, skill_file):
                     next_scan[name] = current_hash  # 成功才写入新 hash
                     added += 1
@@ -341,8 +395,11 @@ class SkillSync:
             elif known_hash != current_hash:
                 # 修改：先删旧再注新，任一步失败都保留旧 hash
                 if self._delete_skill_from_lightrag(name):
-                    skill_file = self.skills_dir / f"{name}.md"
-                    if self._sync_skill(name, skill_file):
+                    skill_file = self._skill_file_for_name(name)
+                    if skill_file is None:
+                        logger.error(f"[SkillSync] Cannot locate skill file for {name}, keeping old hash for retry")
+                        next_scan[name] = known_hash
+                    elif self._sync_skill(name, skill_file):
                         next_scan[name] = current_hash  # 成功才更新 hash
                         updated += 1
                         logger.info(f"[SkillSync] Updated skill: {name} (content changed)")
@@ -423,10 +480,13 @@ class SkillSync:
         with self._lock:
             # 合并 scan 期间 watchdog 新增/修改的条目
             # 1. 不在 known_skills 快照中的 → watchdog 新增的，合并进 next_scan
-            # 2. 在 known_skills 中但 hash 跟 _last_scan 不同 → watchdog 改了已有 key 的 hash
-            #    （覆盖 next_scan 里 scan 算出的旧 hash，避免被覆盖回旧值）
+            # 2. 在 known_skills 中但 hash 跟 skills_snapshot_before（scan 入口快照）不同
+            #    → watchdog 在 scan 期间真正改过该 key 的 hash，合并进 next_scan
+            #    （对比入口快照而非 next_scan：无 watchdog 并发时，扫描自身对已有
+            #      key 的更新/删除不会被本循环回滚——旧条件 next_scan.get(name) != hash_val
+            #      在扫描刚更新/删除 hash 后必然成立，会把新值覆盖回旧值）
             for name, hash_val in self._last_scan.items():
-                if name not in known_skills or next_scan.get(name) != hash_val:
+                if name not in known_skills or skills_snapshot_before.get(name) != hash_val:
                     next_scan[name] = hash_val
 
             # 出口对比：_last_scan 或 _last_notes_scan 跟入口快照不同才写盘
