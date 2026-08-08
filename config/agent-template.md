@@ -9,7 +9,7 @@ description: ""          # 必填：一句话描述职责（主 Agent 据此判�
 mode: subagent           # 固定值，标识为子 Agent
 temperature: 0.7         # 可选：LLM 温度（0.0-0.3 严谨 / 0.7 创意），不写用默认
 mcpServers: []           # 该子 Agent 可用的 MCP 服务器列表（白名单，见下方"可用 MCP 服务器"）
-mcpToolFilter: null      # 可选：对 mcpServers 再做工具级白名单（见下方说明）
+mcpToolFilter: {}        # 可选：对 mcpServers 再做工具级白名单（见下方说明；{} 表示不过滤）
 allowBaseTools: []       # 可选：基础工具白名单（见下方"基础工具白名单"，不写=一个都没有）
 allowAsync: false        # 可选：true=允许异步调用（长时任务用）
 ---
@@ -84,7 +84,7 @@ allowAsync: false        # 可选：true=允许异步调用（长时任务用）
 
 - `name`（必填）：子 Agent 名字（与文件名一致，kebab-case）
 - `description`（必填）：主 Agent 据此判断何时调用此子 Agent，写清楚"什么任务该找你"
-- `mode`（必填）：固定 `subagent`
+- `mode`（惯例）：固定 `subagent`，代码不校验，保留用于文档标识
 - `temperature`（可选）：LLM 温度。0.0-0.3 适合严谨任务（数据处理、入库），0.7 适合创意任务（写作、摘要），不写则用系统 LLM 配置默认温度
 - `mcpServers`（可选）：MCP 服务器名列表，见上方。不写=没有 MCP 工具
 - `mcpToolFilter`（可选）：按 server 分组的工具级白名单 map，见上方
@@ -111,7 +111,7 @@ mcpToolFilter:
 allowAsync: false
 ---
 
-你是知识图谱查询子 Agent。用 lightrag 工具检索，把结果整理成表格返回……
+你是知识图谱查询子 Agent。用 lightrag 工具检索，把结果整理成表格返回。（可在此补充输出格式、交互流程等指令）
 ```
 
 ### 示例 2：需要 bash 的网络抓取子 Agent
@@ -129,7 +129,7 @@ allowBaseTools:
 allowAsync: true
 ---
 
-你是网页抓取子 Agent。用 bash 工具执行 curl 抓取网页……抓到的原文用 write 存到 /tmp/……
+你是网页抓取子 Agent。用 bash 工具执行 curl 抓取网页，抓到的原文用 write 存到 /tmp/，最后整理成摘要返回。（可在此补充输出格式等指令）
 ```
 
 注意示例 2：正文用了 `bash` 和 `write`，`allowBaseTools` 里就声明了这两个——**正文提到的基础工具必须全部声明**。
