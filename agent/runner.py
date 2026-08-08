@@ -88,11 +88,12 @@ def is_stop_requested() -> bool:
 
 
 def request_stop_all_subagents() -> None:
-    """给所有在跑的子 Agent 推 /stop（双击停止按钮触发）。
+    """给所有用户对话派生的子 Agent 推 /stop（双击停止按钮触发；program/scheduler 来源实例跳过）。
 
-    遍历 SubagentRegistry，给每个子 Agent：
+    遍历 SubagentRegistry，对每个 source == "user" 的子 Agent：
     1. 调 cancel_pending_ask 解除 ask_main_agent 阻塞（避免死锁）
     2. 推 /stop 到 supplement queue（让子 Agent 下一轮 drain 走终止总结流程）
+    3. 置 terminate_event（让卡在 LLM 流式上的子 Agent ≤0.2s 内收到终止）
 
     主 Agent 不受影响（主 Agent 用 _stop_requested 信号灯单独控制）。
     """
