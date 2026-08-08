@@ -242,7 +242,7 @@ mcpToolFilter:
 | `/api/subagents/{unique_name}/stream` | GET | 子 Agent 独立 SSE 端点 |
 | `/api/subagents/running` | GET | 在跑子 Agent 列表（窗口恢复时用） |
 | `/api/subagents/{unique_name}/message` | POST | 用户向子 Agent 发消息/回答 `@user` 提问 |
-| `/api/stop_all` | POST | 停止所有子 Agent |
+| `/api/stop_all` | POST | 停止所有用户对话派生的子 Agent（程序触发/定时任务派生的跳过） |
 
 ### 相关文件
 
