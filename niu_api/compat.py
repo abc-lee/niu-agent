@@ -2208,6 +2208,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         # 通道继承：Electron 用户消息清除 IM 通道；子 Agent 注入（source=""）继承
         if request.source == "electron":
             runner.set_im_channel("")
+            runner.set_im_force(False)  # Electron 用户消息转假（规则 2 + 粘性清除）
 
         # Run chat using asyncio.to_thread to avoid blocking event loop
         def sync_chat():
@@ -2262,11 +2263,12 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         _chat_lock.release()
 
     # IM 推送在锁释放后执行（与 ChatQueue 模式一致，避免网络 I/O 阻塞锁）
+    # 闸门：只看 IM 标志——get_im_channel()（飞书用户消息置的 chat_id）或 get_im_force()（定时任务置位）。
+    # 无标志不发（本地 Electron 对话的异步子 Agent 续答不推 IM）；有标志 channel_id 空时由网关 route_out→push
+    # 回退到 _push_target 广播（与 scheduler 服务首轮发飞书同款）。
+    # 规则 5：此处只读标志，绝不 set_im_channel / set_im_force——子 Agent 返回不改变标志。
     try:
-        # 闸门：非 Electron 用户消息（async 子 Agent/定时任务续答 source=''）且 IM 通道可用时才推。
-        # channel_id 空时由网关 route_out→push 回退到 _push_target 广播（与 scheduler 服务首轮发飞书同款）。
-        # 规则 4：此处只读 get_im_channel()，绝不 set_im_channel——子 Agent 通道返回不改变通道。
-        if chat_error is None and request.source != "electron":
+        if chat_error is None and (runner.get_im_channel() or runner.get_im_force()):
             from niu_api.channel import get_channel_router
             router = get_channel_router()
             if router.has_channel("im"):
