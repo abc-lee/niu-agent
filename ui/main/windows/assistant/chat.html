@@ -2243,9 +2243,11 @@
     }
 
     // ========== 加载统计数据 ==========
-    async function loadStats() {
+    async function loadStats(agentName) {
       try {
-        const result = await window.electronAPI.getStats();
+        // 未显式指定时跟随当前 tab：子 Agent tab 激活刷新其使用率，主对话刷新主 Agent
+        const target = agentName !== undefined ? agentName : (_activeTab === 'main' ? '' : _activeTab);
+        const result = await window.electronAPI.getStats(target || '');
         if (result) {
           fileCount.textContent = result.files || 0;
           personCount.textContent = result.persons || 0;
@@ -2869,6 +2871,9 @@
 
       // 自动滚动 active tab 到 tab 栏可见区域
       tabEl.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+
+      // 切换到子 Agent tab 时显示该子 Agent 的真实上下文使用率；切回主对话恢复主 Agent
+      loadStats(name === 'main' ? '' : name);
     }
 
     // 创建子 Agent tab + 独立消息容器，并自动切换过去
@@ -3092,6 +3097,8 @@
           case 'tool_status':
             if (event.status === 'start') {
               addSubagentMessageToTab(unique_name, 'system', '🔧 ' + (event.tool_name || '工具'));
+              // 子 Agent 每轮 LLM 请求已更新其真实使用率，当前 tab 是它时刷新圆环
+              if (_activeTab === unique_name) loadStats(unique_name);
             } else {
               addSubagentMessageToTab(unique_name, 'system', '✅ ' + (event.tool_name || '工具') + (event.summary ? ' — ' + event.summary : ''));
             }
@@ -3101,6 +3108,7 @@
             break;
           case 'reply':
             addSubagentMessageToTab(unique_name, 'reply', event.content);
+            if (_activeTab === unique_name) loadStats(unique_name);
             break;
           case 'question':
             addSubagentMessageToTab(unique_name, 'question', event.content);
