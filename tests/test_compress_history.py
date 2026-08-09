@@ -206,6 +206,10 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
         handler = type("H", (), {"_last_prompt_tokens": 120000})()  # 120K tokens
         llm_config = {}  # compat.py L1385 runner.llm_config 需要
 
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
+
     def fake_get_or_create_runner():
         return FakeRunner()
 
@@ -282,6 +286,10 @@ def test_mode3_passes_history_to_call_subagent(monkeypatch):
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 180000})()  # 180K tokens，模拟溢出
         llm_config = {}
+
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
 
     def fake_get_or_create_runner():
         return FakeRunner()

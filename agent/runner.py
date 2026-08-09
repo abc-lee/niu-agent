@@ -1425,7 +1425,7 @@ class NiuRunner:
             adapter = LightRAGAdapter()
             result = adapter.list_entities_by_name_regex(r"^\d{4}-\d{2}-\d{2}会话$")
             if result.get("status") != "ok":
-                logger.warning(f"[Nap] session chain: list failed: {result.get('message')}")
+                logger.warning(f"[SessionChain]: list failed: {result.get('message')}")
                 return
             names = sorted(e["entity_name"] for e in result.get("data", []))
             if not names:
@@ -1453,7 +1453,7 @@ class NiuRunner:
             for src, tgt in deletes:
                 r = adapter.delete_relation(src, tgt)
                 if r.get("status") != "ok":
-                    logger.warning(f"[Nap] session chain: break {src}->{tgt} failed: {r.get('message')}")
+                    logger.warning(f"[SessionChain]: break {src}->{tgt} failed: {r.get('message')}")
             if creates:
                 ingester = LightRAGIngester()
                 rels = [
@@ -1471,11 +1471,11 @@ class NiuRunner:
                     entities=[], relationships=rels, chunks=[], source_id="nap_session_chain"
                 )
                 if r.get("status") != "ok":
-                    logger.warning(f"[Nap] session chain: inject {len(rels)} edges failed: {r.get('message')}")
+                    logger.warning(f"[SessionChain]: inject {len(rels)} edges failed: {r.get('message')}")
                 else:
-                    logger.info(f"[Nap] session chain: broke {len(deletes)}, created {len(rels)} followed_by edges")
+                    logger.info(f"[SessionChain]: broke {len(deletes)}, created {len(rels)} followed_by edges")
         except Exception as e:
-            logger.warning(f"[Nap] session chain failed: {e}")
+            logger.warning(f"[SessionChain] failed: {e}")
 
     def _sync_get_messages(self, limit=None):
         """同步从 DB 读取消息（桥接 async MessageStore）
