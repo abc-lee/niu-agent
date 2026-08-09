@@ -339,6 +339,10 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
         handler = type("H", (), {"_last_prompt_tokens": 120000})()
         llm_config = {}
 
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
+
     def fake_get_or_create_runner():
         return FakeRunner()
 
@@ -410,6 +414,10 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
         handler = type("H", (), {"_last_prompt_tokens": 120000})()
         llm_config = {}
 
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
+
     def fake_get_or_create_runner():
         return FakeRunner()
 
@@ -471,6 +479,10 @@ def test_mode2_truncate_too_few_no_clear(monkeypatch):
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 120000})()
         llm_config = {}
+
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
 
     def fake_get_or_create_runner():
         return FakeRunner()
@@ -543,6 +555,10 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
         handler = type("H", (), {"_last_prompt_tokens": 180000})()
         llm_config = {}
 
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
+
     def fake_get_or_create_runner():
         return FakeRunner()
 
@@ -610,6 +626,10 @@ def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 180000})()
         llm_config = {}
+
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
 
     def fake_get_or_create_runner():
         return FakeRunner()
@@ -685,6 +705,10 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 120000})()
         llm_config = {}
+
+        def _ensure_session_chain(self):
+            """测试桩：无操作（生产为 NiuRunner 方法，三管道调用）。"""
+            pass
 
     def fake_get_or_create_runner():
         return FakeRunner()
