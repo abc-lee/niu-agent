@@ -1,5 +1,6 @@
 """会话日期链补链：纯函数规划器测试。零 mock，符合项目风格。"""
 from datetime import date
+from unittest.mock import MagicMock, patch
 
 from agent.runner import _build_session_chain_ops
 
@@ -63,3 +64,65 @@ def test_spanning_edge_not_broken_when_other_keywords():
 def test_empty_and_single():
     assert _build_session_chain_ops([], {}, today=date(2026, 8, 9)) == ([], [])
     assert _build_session_chain_ops(["2026-08-09会话"], {}, today=date(2026, 8, 9)) == ([], [])
+
+
+def test_ensure_session_chain_creates_and_breaks(monkeypatch):
+    """集成：列举→断跨越边→批量补相邻边。mock adapter/ingester。"""
+    from agent.runner import NiuRunner
+
+    runner = NiuRunner.__new__(NiuRunner)
+
+    adapter = MagicMock()
+    adapter.list_entities_by_name_regex.return_value = {
+        "status": "ok",
+        "data": [
+            {"entity_name": "2026-08-07会话"},
+            {"entity_name": "2026-08-08会话"},
+            {"entity_name": "2026-08-09会话"},
+        ],
+    }
+    # 已有边：8-7→8-9 跨越（仅 followed_by）、8-7→8-8 相邻
+    def fake_has_edge(src, tgt):
+        return (src, tgt) in {
+            ("2026-08-07会话", "2026-08-09会话"),
+            ("2026-08-07会话", "2026-08-08会话"),
+        }
+
+    adapter.has_edge.side_effect = fake_has_edge
+    adapter.get_edge_keywords_between.return_value = ["followed_by"]
+    ingester = MagicMock()
+
+    # _ensure_session_chain 内是局部 import：patch 真实解析源模块
+    with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter", return_value=adapter), \
+         patch("niu_api.internal.lightrag_adapter.LightRAGIngester", return_value=ingester), \
+         patch("datetime.date") as mock_date:
+        mock_date.today.return_value = date(2026, 8, 9)
+        runner._ensure_session_chain()
+
+    # 断 8-7→8-9
+    adapter.delete_relation.assert_called_once_with("2026-08-07会话", "2026-08-09会话")
+    # 批量建 8-8→8-9
+    assert ingester.inject_custom_kg.call_count == 1
+    rels = ingester.inject_custom_kg.call_args.kwargs["relationships"]
+    assert rels == [{
+        "src_id": "2026-08-08会话",
+        "tgt_id": "2026-08-09会话",
+        "keywords": "followed_by",
+        "description": "2026-08-08会话 之后是 2026-08-09会话",
+        "source_id": "nap_session_chain",
+        "file_path": "nap_session_chain",
+    }]
+
+
+def test_ensure_session_chain_noop_when_no_entities(monkeypatch):
+    from agent.runner import NiuRunner
+
+    runner = NiuRunner.__new__(NiuRunner)
+    adapter = MagicMock()
+    adapter.list_entities_by_name_regex.return_value = {"status": "ok", "data": []}
+    ingester = MagicMock()
+    with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter", return_value=adapter), \
+         patch("niu_api.internal.lightrag_adapter.LightRAGIngester", return_value=ingester):
+        runner._ensure_session_chain()  # 不应抛异常
+    adapter.delete_relation.assert_not_called()
+    ingester.inject_custom_kg.assert_not_called()
