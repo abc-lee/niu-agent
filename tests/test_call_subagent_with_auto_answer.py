@@ -1,4 +1,5 @@
 """call_subagent_with_auto_answer helper 单元测试"""
+import pytest
 from unittest import mock
 
 
@@ -225,3 +226,56 @@ def test_no_event_when_main_loop_closed():
         )
     assert result == "任务完成"
     bc.assert_not_called()
+
+
+def test_exception_path_closes_and_reraises():
+    """call_subagent 抛异常 → 无条件 close（防 ring buffer 泄漏 + tab 卡死）+ 异常继续传播"""
+    from agent import subagent
+    from niu_api import chat
+    from niu_api.internal import subagent_event_bus
+
+    class FakeLoop:
+        def is_closed(self):
+            return False
+
+        def call_soon_threadsafe(self, fn, *args):
+            pass
+
+    with mock.patch.object(subagent, "call_subagent", side_effect=RuntimeError("boom")), \
+            mock.patch.object(chat, "_main_loop", FakeLoop()), \
+            mock.patch.object(chat, "_sync_broadcast"), \
+            mock.patch.object(subagent_event_bus, "close") as close_mock:
+        with pytest.raises(RuntimeError):
+            subagent.call_subagent_with_auto_answer(
+                agent_name="entity-extractor",
+                task="做 X",
+                llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+            )
+    close_mock.assert_called_once_with("entity-extractor")
+
+
+def test_error_prefix_result_closes():
+    """首调用返回 '[错误]' 前缀（register 失败值错误路径）→ close 清理 tab"""
+    from agent import subagent
+    from niu_api import chat
+    from niu_api.internal import subagent_event_bus
+
+    class FakeLoop:
+        def is_closed(self):
+            return False
+
+        def call_soon_threadsafe(self, fn, *args):
+            pass
+
+    with mock.patch.object(subagent, "call_subagent",
+                            return_value="[错误] 同名实例已存在。请先回复当前挂起的子 Agent。"), \
+            mock.patch.object(chat, "_main_loop", FakeLoop()), \
+            mock.patch.object(chat, "_sync_broadcast"), \
+            mock.patch.object(subagent_event_bus, "close") as close_mock:
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="entity-extractor",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert result.startswith("[错误]")
+    close_mock.assert_called_once_with("entity-extractor")
