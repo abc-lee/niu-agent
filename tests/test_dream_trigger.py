@@ -388,3 +388,106 @@ def test_old_file_migration(tmp_path):
     assert threshold == 30.0
     assert count == 10
     assert ref_ema == 100.0  # 1000 / 10 = 100
+
+
+class TestExtractPrevCompleteTurn:
+    """测试 _extract_prev_complete_turn_msgs：延迟结算取上一完整轮。
+
+    上一轮 = 倒数第二条 user（含）到倒数第一条 user（不含）之间的所有消息；
+    最新 user 之后属于"本轮"（进行中），不参与计算。
+    """
+
+    @staticmethod
+    def _make(roles):
+        """按 role 序列构造消息；user 消息带递增 id，其余 role/content/tool_calls 占位。"""
+        import types
+        msgs = []
+        user_no = 0
+        for r in roles:
+            if r == "user":
+                user_no += 1
+                msgs.append(types.SimpleNamespace(role="user", content="hi", tool_calls=[], id=f"u{user_no}"))
+            else:
+                msgs.append(types.SimpleNamespace(role=r, content="x", tool_calls=[], id=""))
+        return msgs
+
+    @staticmethod
+    def _roles(msgs):
+        return [m.role for m in msgs]
+
+    def test_empty(self):
+        """空消息列表 → 无完整上一轮 → []。"""
+        from agent.runner import _extract_prev_complete_turn_msgs
+        assert _extract_prev_complete_turn_msgs([]) == []
+
+    def test_single_user(self):
+        """仅 1 条 user 消息 → 不足两轮 → []。"""
+        from agent.runner import _extract_prev_complete_turn_msgs
+        assert _extract_prev_complete_turn_msgs(self._make(["user"])) == []
+
+    def test_two_users_basic(self):
+        """两轮基本场景：上一轮 = user0 + assistant0 + tool0（最新 user 后不参与）。"""
+        from agent.runner import _extract_prev_complete_turn_msgs
+        extracted = _extract_prev_complete_turn_msgs(self._make(["user", "assistant", "tool", "user", "assistant"]))
+        assert self._roles(extracted) == ["user", "assistant", "tool"]
+
+    def test_three_users(self):
+        """三轮：上一轮 = user1（含）到 user2（不含），含全部 assistant/tool 输出。"""
+        from agent.runner import _extract_prev_complete_turn_msgs
+        extracted = _extract_prev_complete_turn_msgs(
+            self._make(["user", "a", "tool", "user", "a", "tool", "a", "user", "a"])
+        )
+        assert self._roles(extracted) == ["user", "a", "tool", "a"]
+
+    def test_consecutive_users(self):
+        """连续两条 user：上一轮仅含前一条 user 本身。"""
+        from agent.runner import _extract_prev_complete_turn_msgs
+        extracted = _extract_prev_complete_turn_msgs(self._make(["user", "user", "a"]))
+        assert self._roles(extracted) == ["user"]
+
+    def test_prev_compressed_absent(self):
+        """上一轮被压缩（游标切割后仅剩 1 条 user）→ 返回 []。"""
+        from agent.runner import _extract_prev_complete_turn_msgs
+        assert _extract_prev_complete_turn_msgs(self._make(["user", "a"])) == []
+
+    def test_tool_heavy_prev_turn(self):
+        """上一轮含多条 tool 输出：全部 5 条纳入计算。"""
+        from agent.runner import _extract_prev_complete_turn_msgs
+        extracted = _extract_prev_complete_turn_msgs(self._make(["user", "a", "tool", "tool", "a", "user"]))
+        assert self._roles(extracted) == ["user", "a", "tool", "tool", "a"]
+
+
+class TestEmaMarkerStep:
+    """测试 _ema_marker_step：EMA 去重 marker 状态机（skip/init/settle）。"""
+
+    @pytest.mark.parametrize("last_user_id,prev_marker,expected", [
+        ("", "", ("skip", "")),           # 无 user 消息 → 跳过
+        ("u1", "", ("init", "u1")),       # 启动后首次 → 只设 marker 不结算
+        ("u1", "u1", ("skip", "u1")),     # 同轮重复回调（id 未变）→ 跳过
+        ("u2", "u1", ("settle", "u2")),   # 新 user 消息到来 → 结算上一完整轮
+        ("u2", "u2", ("skip", "u2")),     # 压缩后 same last user → 不重复结算
+        ("u1", "u2", ("settle", "u1")),   # 压缩 removed last user → 新 id 结算
+    ])
+    def test_marker_step(self, last_user_id, prev_marker, expected):
+        from agent.runner import _ema_marker_step
+        assert _ema_marker_step(last_user_id, prev_marker) == expected
+
+
+class TestPrevTurnComplete:
+    """测试 _prev_turn_is_complete：上一轮是否完整可结算（尾部 role 判定）。"""
+
+    @staticmethod
+    def _make(roles):
+        """按 role 序列构造消息。"""
+        import types
+        return [types.SimpleNamespace(role=r) for r in roles]
+
+    @pytest.mark.parametrize("roles,expected", [
+        (["user", "assistant", "tool", "assistant"], True),  # 尾部 assistant：轮完整 → 可结算
+        (["user", "user"], True),                            # 连续 user：纯 user 消息轮 → 可结算
+        (["user", "assistant", "tool"], False),              # 尾部 tool：工具循环进行中 → 不可结算
+        ([], False),                                         # 空列表 → 不可结算
+    ])
+    def test_prev_turn_is_complete(self, roles, expected):
+        from agent.runner import _prev_turn_is_complete
+        assert _prev_turn_is_complete(self._make(roles)) is expected
