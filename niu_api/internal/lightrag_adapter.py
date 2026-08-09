@@ -15,7 +15,7 @@ from typing import Any
 
 from loguru import logger
 
-from niu_api.internal.lightrag_manager import call_async, get_lightrag
+from niu_api.internal.lightrag_manager import call_async, get_lightrag, lightrag_timeout
 
 # Valid query modes for LightRAG
 VALID_MODES = {"naive", "local", "global", "hybrid", "mix", "bypass"}
@@ -355,7 +355,7 @@ class LightRAGAdapter:
             if filter_lambda is not None:
                 param.filter_lambda = filter_lambda
 
-            result = call_async(rag.aquery_data(query, param=param), timeout=120)
+            result = call_async(rag.aquery_data(query, param=param), timeout=lightrag_timeout("query_timeout", 120))
             if fields:
                 result = _filter_result_fields(result, fields)
             result = _clean_sep_in_query_result(result)
@@ -748,7 +748,7 @@ class LightRAGAdapter:
             # Returns KnowledgeGraph(nodes=[KnowledgeGraphNode], edges=[KnowledgeGraphEdge])
             kg = call_async(
                 rag.get_knowledge_graph(entity_name, max_depth=depth),
-                timeout=120,
+                timeout=lightrag_timeout("query_timeout", 120),
             )
 
             if kg is None or (not kg.nodes and not kg.edges):
@@ -1120,7 +1120,7 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            result = call_async(rag.adelete_by_doc_id(doc_id), timeout=300)
+            result = call_async(rag.adelete_by_doc_id(doc_id), timeout=lightrag_timeout("delete_timeout", 300))
 
             # Check DeletionResult status
             if hasattr(result, "status"):
@@ -1172,7 +1172,7 @@ class LightRAGAdapter:
             # so concurrent writes are impossible. No write lock needed —
             # readers use graph_read_lock + copy() snapshot to avoid
             # RuntimeError("Graph changed during iteration").
-            result = call_async(rag.adelete_by_entity(entity_name), timeout=300)
+            result = call_async(rag.adelete_by_entity(entity_name), timeout=lightrag_timeout("delete_timeout", 300))
 
             # Check DeletionResult status (LightRAG returns a DeletionResult object)
             if hasattr(result, "status"):
@@ -1406,7 +1406,7 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            return call_async(rag.get_processing_status(), timeout=30)
+            return call_async(rag.get_processing_status(), timeout=lightrag_timeout("status_timeout", 30))
         except Exception as e:
             logger.error(f"LightRAG document_status failed: {e}")
             return {"status": "error", "message": str(e)}
@@ -1432,10 +1432,10 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
         try:
             if list_type == "labels":
-                data = call_async(rag.get_graph_labels(), timeout=30)
+                data = call_async(rag.get_graph_labels(), timeout=lightrag_timeout("status_timeout", 30))
                 return {"status": "ok", "data": data}
             elif list_type == "documents":
-                data = call_async(rag.get_docs_by_status("processed"), timeout=30)
+                data = call_async(rag.get_docs_by_status("processed"), timeout=lightrag_timeout("status_timeout", 30))
                 return {"status": "ok", "data": data}
             elif list_type == "entities":
                 if entity_type:
@@ -1471,7 +1471,7 @@ class LightRAGAdapter:
                             max_depth=1,
                             max_nodes=limit,
                         ),
-                        timeout=120,
+                        timeout=lightrag_timeout("query_timeout", 120),
                     )
                     if kg is None:
                         return {"status": "ok", "data": []}
@@ -1609,7 +1609,7 @@ class LightRAGAdapter:
             # RuntimeError("Graph changed during iteration").
             result = call_async(
                 rag.amerge_entities(resolved_sources, resolved_target, merge_strategy=merge_strategy, target_entity_data=target_entity_data),
-                timeout=300,
+                timeout=lightrag_timeout("merge_timeout", 300),
             )
 
             # Record change for frontend changelog polling (best-effort)
@@ -1809,7 +1809,7 @@ class LightRAGIngester:
             # so concurrent writes are impossible. No write lock needed —
             # readers use graph_read_lock + copy() snapshot to avoid
             # RuntimeError("Graph changed during iteration").
-            call_async(rag.ainsert_custom_kg(custom_kg), timeout=600)
+            call_async(rag.ainsert_custom_kg(custom_kg), timeout=lightrag_timeout("insert_timeout", 600))
 
             # Record changes for frontend changelog polling
             # (best-effort: never let changelog errors affect the write result)
@@ -1869,7 +1869,7 @@ class LightRAGIngester:
             kwargs = {}
             if file_paths:
                 kwargs["file_paths"] = file_paths
-            track_id = call_async(rag.ainsert(content, **kwargs), timeout=600)
+            track_id = call_async(rag.ainsert(content, **kwargs), timeout=lightrag_timeout("insert_timeout", 600))
 
             # Record change for frontend changelog polling (best-effort)
             # LLM-extracted entities are unknown at this point,
@@ -1921,7 +1921,7 @@ class LightRAGIngester:
             if file_path is not None:
                 kwargs["file_paths"] = file_path
 
-            track_id = call_async(rag.ainsert(content, **kwargs), timeout=600)
+            track_id = call_async(rag.ainsert(content, **kwargs), timeout=lightrag_timeout("insert_timeout", 600))
 
             # Record document insertion for frontend changelog
             # (LLM-extracted entities are unknown, so frontend should
@@ -1971,7 +1971,7 @@ class LightRAGIngester:
             if file_paths is not None:
                 kwargs["file_paths"] = file_paths
 
-            track_id = call_async(rag.ainsert(documents, **kwargs), timeout=600)
+            track_id = call_async(rag.ainsert(documents, **kwargs), timeout=lightrag_timeout("insert_timeout", 600))
 
             # Record document insertion for frontend changelog
             try:
