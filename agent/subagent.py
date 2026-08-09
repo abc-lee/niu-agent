@@ -13,6 +13,8 @@ from typing import Any
 import yaml
 from loguru import logger
 
+from .subagent_registry import SubagentRegistry
+
 DEFAULT_CONTEXT_WINDOW_SIZE = 200000
 MIN_CONTEXT_WINDOW_SIZE = 32000    # 32K 最小合理值
 MAX_CONTEXT_WINDOW_SIZE = 2000000  # 2M 上限
@@ -1158,7 +1160,7 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
             try:
                 from niu_api.internal.subagent_event_bus import close
                 close(agent_name)
-            except ImportError:
+            except Exception:
                 pass
         raise
 
@@ -1169,8 +1171,13 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     if kwargs.get('answer') is None and isinstance(result, str) and result.startswith('[错误]'):
         try:
             from niu_api.internal.subagent_event_bus import close
-            close(agent_name)
-        except ImportError:
+            # 【归属守卫】register 失败（ValueError）意味着同名实例已存在（活跃或挂起）——
+            # 其 tab/ring buffer 归活跃实例所有，失败方 close 会误关其 tab、断开 SSE、清空其事件。
+            # 仅当实例已不存在（get() 返回 None，如极端时序实例已 unregister）时才 close，
+            # 清理可能残留的 buffer。SubagentRegistry 有锁，无 has_subagent 式异步竞态。
+            if SubagentRegistry.get(agent_name) is None:
+                close(agent_name)
+        except Exception:
             pass
     while True:
         unique_name = _extract_unique_name(result, agent_name)
