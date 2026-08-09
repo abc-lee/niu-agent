@@ -878,11 +878,27 @@ class NiuRunner:
     def _extract_context_from_messages(self, messages: list) -> str:
         """从 messages 列表提取上下文用于向量检索。
 
-        策略：最近2条消息，≤80字符全量放入，>80字符从80位置往后找自然断点
+        策略：最近 2 条**对话**消息（user/assistant 各至多 1 条，跳过 tool），
+        ≤80字符全量放入，>80字符从80位置往后找自然断点
         （优先句末标点→段落换行→逗号），最大200字符。assistant 附带最多5个工具名。
         """
         context_parts = []
-        recent = messages[-2:] if len(messages) > 2 else messages
+        # 从尾部向前取最近 1 条 user + 1 条 assistant（各至多一次，跳过 tool）。
+        # tool 消息只是 assistant 的副产物；工具循环可能连续多条 assistant
+        # （asst→tool→asst→tool），按"取 2 条"会挤掉 user 意图——各角色
+        # 至多 1 条保证 user 意图恒在场 + 最近 assistant 的工具名
+        # （2026-08-09 修复：Minimax H3 skill 第二轮丢失根因）。
+        recent: list[dict] = []
+        for msg in reversed(messages):
+            role = msg.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            if any(existing.get("role") == role for existing in recent):
+                continue  # 该角色已收集，跳过（各至多一次）
+            recent.append(msg)
+            if len(recent) == 2:
+                break
+        recent.reverse()
 
         for msg in recent:
             role = msg.get("role", "")
