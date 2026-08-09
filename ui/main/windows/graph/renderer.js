@@ -331,7 +331,8 @@ async function loadGraphSnapshot() {
     graph.graphData(data);
     updateStats();
 
-    // 不做 zoomToFit——让用户自由探索，收敛后不扰乱视图
+    // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放（与全局重绘同一参数，统一观感）
+    setTimeout(() => graph.zoomToFit(400, 40), 20);
   } catch (error) {
     console.error('Failed to load graph:', error);
     hideLoading();
