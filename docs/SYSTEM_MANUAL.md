@@ -390,7 +390,8 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 | 触发位置 | `_on_turn_end`（每轮对话结束后）→ `_maybe_trigger_nap` |
 | 计数单位 | 对话轮数（一轮 = 一条 role=user 消息开始到下一条 user 消息之前） |
 | 触发阈值 | `_calc_dream_trigger_threshold_dynamic(context_window, ema_path)`，下限 10 轮，上限 50 轮 |
-| 阈值算法 | threshold 自身做 EMA（对数渐近张力模型）。冷启动(样本<5)返回10；否则直接读持久化 threshold 值。轻量对话(本轮token≤累积平均)→ threshold 上升：`threshold += (50-threshold) × 0.1`（越接近50越慢）；重量对话(本轮token>累积平均)→ threshold 快速下降：`threshold -= (threshold-10) × 0.4`。持久化于 `~/.niu/threshold_ema.json` |
+| 阈值算法 | threshold 自身做 EMA（对数渐近张力模型）。冷启动(样本<5)返回10；否则直接读持久化 threshold 值。轻量对话(本轮token≤EMA参考线)→ threshold 上升：`threshold += (50-threshold) × 0.1`（越接近50越慢）；重量对话(本轮token>EMA参考线)→ threshold 快速下降：`threshold -= (threshold-10) × 0.4`。持久化于 `~/.niu/threshold_ema.json` |
+| 参考线 | ref = 0.2 × 本轮token + 0.8 × 旧ref（EMA，等效近期 ~10 轮，参考线随近期负载双向快速响应——重活抬升、轻活回落，避免被早期历史定型；轻活历史后参考线低于全历史累积平均，门槛更低，中等轮更容易判重量 → threshold 回落更快） |
 | 执行方式 | 后台 daemon thread（`_run_nap_background`），不阻塞主 Agent |
 | 执行内容 | 串行：entity-extractor（内容提炼）→ dream-evolver（梦境进化） |
 | 并发防护 | `threading.Event`（`_nap_running`），运行中不重复触发 |
