@@ -169,6 +169,10 @@ class DiskNavigator:
                 header += f" — {tool.summary}"
             lines.append(header)
 
+            # Long description（完整说明——readme 应最全面，不能只给 short+参数）
+            if tool.description:
+                lines.append(f"  {tool.description}")
+
             # Usage line
             lines.append(f"  Usage: {_format_usage_line(dir_name, tool)}")
 
