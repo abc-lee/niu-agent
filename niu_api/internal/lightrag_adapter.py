@@ -1523,7 +1523,7 @@ class LightRAGAdapter:
             # 按名称排序后取最近 limit 个——名称=日期，字典序尾即最新
             # （插入序截断会丢最新实体，破坏 10 天窗口保证）
             nodes.sort(key=lambda n: n["entity_name"])
-            return {"status": "ok", "data": nodes[-limit:]}
+            return {"status": "ok", "data": nodes[-limit:] if limit > 0 else []}
         except Exception as e:
             logger.error(f"LightRAG list_entities_by_name_regex failed: {e}")
             return {"status": "error", "message": str(e)}
