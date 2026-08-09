@@ -1114,7 +1114,64 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
 
     # 程序触发子 Agent：超长报告不写文件，保留 processed_up_to 游标标记
     kwargs.setdefault('program_triggered', True)
-    result = call_subagent(agent_name=agent_name, task=task, **kwargs)
+
+    # 【subagent_started 补发】程序触发路径（nap/sleep/force 整理）此前不发 subagent_started 事件，
+    # 前端收不到启动通知 → 不建 tab、不连 SSE，用户在界面看不到系统子 Agent 的工作过程。
+    # 仅首次调用（新任务）推送；恢复回答路径（while 循环内直调 call_subagent 带 answer）不重入本函数，
+    # 无需重复推（守卫防御性保留：若未来有人带 answer 调用本函数，不重复建 tab）。
+    # 与 handler.py 同步路径发射点同款：pre_register 先建 ring buffer（防前端连 SSE 404 竞态），
+    # 再经主事件循环 call_soon_threadsafe 推 subagent_started（本函数在 to_thread 后台线程执行，线程安全）。
+    # is_sync=False：程序触发不阻塞主对话（sleep/nap 后台整理），tab 显示"正在启动..."占位文案。
+    # 注：异常清理在下方 try/except（无条件 close，同 handler.py 问题2c/2e 模式）。
+    if kwargs.get('answer') is None:
+        try:
+            from niu_api.internal.subagent_event_bus import pre_register
+            pre_register(agent_name)
+        except ImportError:
+            pass
+        try:
+            from niu_api.chat import _main_loop, _sync_broadcast
+            if _main_loop and not _main_loop.is_closed():
+                event = {
+                    'type': 'subagent_started',
+                    'unique_name': agent_name,
+                    'agent_name': agent_name,
+                    'is_sync': False,
+                }
+                _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+        except ImportError:
+            pass
+
+    try:
+        result = call_subagent(agent_name=agent_name, task=task, **kwargs)
+    except Exception:
+        # 【异常清理】仅首次调用（我们建了 ring buffer）时，若 call_subagent 在 register 之前抛异常
+        # （llm_config 非法、agent 配置缺失、schema 构建失败等），pre_register 的 ring buffer 可能已存在
+        # 但无人 close → 前端已建 tab 连 SSE 后无限 keepalive、永远"正在启动..."。
+        # 与 handler.py【问题2c/2e】同款清理：close 幂等（_closed set 防双关），无条件 close：
+        # ① register 成功但运行异常 → register 的 finally unregister→close 已置 _closed → 此处被拦截不双关；
+        # ② register 前异常 → 直接清理（无 buffer 时 notify/cleanup 无害）；
+        # ③ 不做 has_subagent 检查——避免与异步调度的 _do_pre_register 的窄竞态（检查时 buffer 未建、
+        #    跳过清理后主 loop 仍建 buffer + 广播 → tab 卡死，恰是修复想防的故障）。
+        # 恢复路径（answer 非 None）异常由 call_subagent answer 分支 finally unregister→close 负责。
+        if kwargs.get('answer') is None:
+            try:
+                from niu_api.internal.subagent_event_bus import close
+                close(agent_name)
+            except ImportError:
+                pass
+        raise
+
+    # 【值错误路径清理】register 失败不抛异常——call_subagent 内部捕获 ValueError 返回 '[错误]...'
+    # 字符串（如同名实例已存在：前一轮挂起残留/并发同 agent 触发，subagent.py L1016-1017）。
+    # 此时 pre_register 的 ring buffer + 前端 tab 已建，无人 close → tab 永久"正在启动..."。
+    # 首次调用结果以 '[错误]' 开头（register 失败专属前缀）→ close 清理，tab 立即 completed 关闭。
+    if kwargs.get('answer') is None and isinstance(result, str) and result.startswith('[错误]'):
+        try:
+            from niu_api.internal.subagent_event_bus import close
+            close(agent_name)
+        except ImportError:
+            pass
     while True:
         unique_name = _extract_unique_name(result, agent_name)
         if unique_name is None:
