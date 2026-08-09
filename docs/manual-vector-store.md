@@ -57,6 +57,8 @@ LLM 提取实体时被约束为上述类型，确保前端分类按钮与图谱�
 | description | 关系描述 |
 | weight | 边权重 |
 
+**方向语义**：LightRAG 图为无向图——`src_id`/`tgt_id` 的前后顺序仅为存储排序，**不代表方向**。关系方向语义存在于 `description` 文本中（如 "李磊 属于 人际关系脑区"），模型解读关系方向以 description 为准，不要依据 src/tgt 顺序判断"谁指向谁"。查询工具（query/query_data/get_graph/timeline_query/get_relation_info）返回的关系同理。
+
 ### 2.3 文档块（chunk）
 
 | 字段 | 说明 |
@@ -125,6 +127,8 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 | `lightrag_search_entities` | 按实体类型搜索（skill, tool, knowledge, person, photo, concept 等） |
 | `lightrag_get_graph` | 获取子图（explore: BFS 遍历 / snapshot: 全图快照） |
 | `lightrag_timeline_query` | 时间线查询：向量匹配 -> 遍历时间链 -> 按时间戳排序 |
+
+时间链由系统在 nap/sleep/force 管道收尾自动补全：会话实体（`YYYY-MM-DD会话`）按日期用 `followed_by` 相连，形成按天索引链；当天无重要内容时不建实体（链允许缺口）。用户提"之前/后来/某天发生了什么"时可用 timeline_query 或定位会话实体展开当天内容。
 
 ### 插入组（5 个）
 

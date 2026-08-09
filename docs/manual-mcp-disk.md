@@ -155,6 +155,8 @@ tools:
         description: "参数说明"
 ```
 
+**readme 渲染**：主 Agent `cat /<dir>/readme.txt` 查看目录总览时，每个工具显示 short + **long（完整描述）** + 参数 + examples——`long` 字段是工具完整说明，务必写清输出结构契约（如返回关系时说明"source/target 顺序不代表方向、方向在 description"），主 Agent 据此正确解读工具输出。
+
 **目录名规则**：
 - 不能与已有目录重复
 - 不能与内建命令冲突（ls/cat/help/cd/pwd/disk）
