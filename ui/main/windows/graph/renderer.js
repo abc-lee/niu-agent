@@ -591,6 +591,8 @@ function reLayout() {
   buildEdgeCountCache();
   applyForceConfig();
   const data = buildGraphData();
+  // 视角切换：丢弃恢复的旧位置，节点从初始螺旋布局起步（与初次加载/子图返回一致，否则 zoomToFit 基于分散 bbox 缩得过小）
+  data.nodes.forEach(n => { delete n.x; delete n.y; delete n.vx; delete n.vy; });
   graph.graphData(data);
   // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放
   setTimeout(() => graph.zoomToFit(400, 60), 20);
