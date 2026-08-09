@@ -591,6 +591,7 @@ _THRESHOLD_MAX = 50.0
 _THRESHOLD_ALPHA_UP = 0.1    # 上升慢：threshold += (50 - threshold) * 0.1
 _THRESHOLD_ALPHA_DOWN = 0.4  # 下降快：threshold -= (threshold - 10) * 0.4
 _THRESHOLD_MIN_SAMPLES = 5   # 冷启动保护：sample_count < 5 时保持 10
+_REF_ALPHA = 0.2   # 参考线 EMA 遗忘因子：ref = 0.2*current + 0.8*old（等效近期 ~10 轮，用户 2026-08-09 确认）
 
 
 def _calc_dream_trigger_threshold_dynamic(
@@ -605,7 +606,7 @@ def _calc_dream_trigger_threshold_dynamic(
 
     context_window 参数保留（调用方传入），但新模型不依赖它。
     """
-    threshold, sample_count, _cumulative = NiuRunner._read_ema(ema_path)
+    threshold, sample_count, _ref_ema = NiuRunner._read_ema(ema_path)
 
     if sample_count < _THRESHOLD_MIN_SAMPLES:
         return int(_THRESHOLD_MIN)
@@ -616,25 +617,27 @@ def _compute_threshold_update(
     threshold_old: float,
     sample_count: int,
     current_turn_tokens: int,
-    cumulative_tokens: int,
-) -> tuple[float, int]:
-    """计算 threshold EMA 更新。返回 (new_threshold, new_sample_count)。
+    ref_old: float,
+) -> tuple[float, int, float]:
+    """计算 threshold EMA 更新。返回 (new_threshold, new_sample_count, new_ref)。
 
-    对数渐近张力模型：
-    - 冷启动（sample_count < 5）：threshold 不变，保持 10
-    - 轻量（本轮 token <= 累积平均）：threshold 上升
+    对数渐近张力模型 + EMA 参考线：
+    - 冷启动（sample_count < 5）：threshold 不变，保持 10；参考线仍更新
+    - 参考线 EMA：ref = ALPHA * current + (1 - ALPHA) * old（等效近期 ~10 轮主导，
+      参考线随近期负载双向快速响应——重活抬升、轻活回落，避免被早期历史定型；
+      轻活历史后参考线低于全历史累积平均，门槛更低 → 中等轮更容易判重量）
+    - 轻量（本轮 token <= ref）：threshold 上升
       threshold += (THRESHOLD_MAX - threshold) * ALPHA_UP
-    - 重量（本轮 token > 累积平均）：threshold 下降
+    - 重量（本轮 token > ref）：threshold 下降
       threshold -= (threshold - THRESHOLD_MIN) * ALPHA_DOWN
     """
-    if sample_count < _THRESHOLD_MIN_SAMPLES:
-        return threshold_old, sample_count + 1
-
-    # 累积平均（含本轮）
     new_sample_count = sample_count + 1
-    cumulative_avg = cumulative_tokens / new_sample_count
+    new_ref = _REF_ALPHA * current_turn_tokens + (1 - _REF_ALPHA) * ref_old
 
-    if current_turn_tokens <= cumulative_avg:
+    if sample_count < _THRESHOLD_MIN_SAMPLES:
+        return threshold_old, new_sample_count, new_ref
+
+    if current_turn_tokens <= new_ref:
         # 轻量 → 上升（对数渐近，越接近 50 越慢）
         new_threshold = threshold_old + (_THRESHOLD_MAX - threshold_old) * _THRESHOLD_ALPHA_UP
     else:
@@ -644,7 +647,7 @@ def _compute_threshold_update(
     # clamp
     new_threshold = max(_THRESHOLD_MIN, min(_THRESHOLD_MAX, new_threshold))
 
-    return new_threshold, new_sample_count
+    return new_threshold, new_sample_count, new_ref
 
 
 def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
@@ -1095,16 +1098,15 @@ class NiuRunner:
 
                     # CQ-01 修复：用 threading.Lock 保证 read-modify-write 原子性
                     with self._ema_lock:
-                        threshold_old, sample_count, cumulative_tokens = self._read_ema(ema_path)
-                        new_cumulative = cumulative_tokens + current_turn_tokens
-                        new_threshold, new_sample_count = _compute_threshold_update(
-                            threshold_old, sample_count, current_turn_tokens, new_cumulative
+                        threshold_old, sample_count, ref_old = self._read_ema(ema_path)
+                        new_threshold, new_sample_count, new_ref = _compute_threshold_update(
+                            threshold_old, sample_count, current_turn_tokens, ref_old
                         )
 
-                        self._write_ema(ema_path, new_threshold, new_sample_count, new_cumulative)
+                        self._write_ema(ema_path, new_threshold, new_sample_count, new_ref)
                         logger.debug(f"[Nap] threshold EMA: old={threshold_old:.1f}, new={new_threshold:.1f}, "
                                     f"samples={new_sample_count}, turn_tokens={current_turn_tokens}, "
-                                    f"cumulative={new_cumulative}")
+                                    f"ref={ref_old:.0f}->{new_ref:.0f}")
 
             # 计算阈值
             from agent.subagent import _read_context_window_tokens
@@ -1442,11 +1444,11 @@ class NiuRunner:
 
     @staticmethod
     def _read_ema(ema_path):
-        """读取持久化的 threshold EMA 值、样本数和累积 token。
+        """读取持久化的 threshold EMA 值、样本数和参考线 EMA。
 
         Returns:
-            (threshold: float, sample_count: int, cumulative_tokens: int)
-            文件不存在或损坏时返回 (10.0, 0, 0)
+            (threshold: float, sample_count: int, ref_ema: float)
+            文件不存在或损坏时返回 (_THRESHOLD_MIN, 0, 0)
         """
         # CQ-04: exists() 短路保证后续 open(lock_path) 时父目录已存在
         if not ema_path.exists():
@@ -1466,15 +1468,20 @@ class NiuRunner:
                     data = json.loads(ema_path.read_text(encoding="utf-8"))
                     threshold = float(data.get("threshold", _THRESHOLD_MIN))
                     sc = int(data.get("sample_count", 0))
-                    ct = int(data.get("cumulative_tokens", 0))
+                    ref = data.get("ref_ema")
+                    if ref is None:
+                        # 旧文件迁移：用累积平均热启动参考线（旧分类参考线 = ct/sc）
+                        ct = int(data.get("cumulative_tokens", 0))
+                        ref = (ct / sc) if sc > 0 else 0.0
+                    ref = float(ref)
                     # CQ-02: NaN/负值校验
                     if threshold != threshold or threshold < 0:  # NaN check: NaN != NaN
                         threshold = _THRESHOLD_MIN
                     if sc < 0:
                         sc = 0
-                    if ct < 0:
-                        ct = 0
-                    return threshold, sc, ct
+                    if ref != ref or ref < 0:
+                        ref = 0.0
+                    return threshold, sc, ref
                 finally:
                     _funlock(lock_f)
         # CQ-03: 收窄异常范围
@@ -1483,7 +1490,7 @@ class NiuRunner:
             return _THRESHOLD_MIN, 0, 0
 
     @staticmethod
-    def _write_ema(ema_path, threshold: float, sample_count: int, cumulative_tokens: int):
+    def _write_ema(ema_path, threshold: float, sample_count: int, ref_ema: float):
         """写入持久化的 threshold EMA 值（加文件锁）。"""
         try:
             import json
@@ -1497,7 +1504,7 @@ class NiuRunner:
                     ema_path.write_text(json.dumps({
                         "threshold": threshold,
                         "sample_count": sample_count,
-                        "cumulative_tokens": cumulative_tokens,
+                        "ref_ema": ref_ema,
                         "last_updated_at": datetime.now().isoformat(),
                     }, ensure_ascii=False), encoding="utf-8")
                 finally:
