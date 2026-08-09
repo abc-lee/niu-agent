@@ -1368,6 +1368,11 @@ class NiuRunner:
                 context_fifo_threshold=-1,  # FIFO 保底
             )
 
+            # 补全会话日期链（只补边/断边，不建实体；失败不阻塞游标推进）
+            # 在 dream-evolver 完成后、游标推进前——当天会话实体（dream 挂边自动补 placeholder）
+            # 已入图，链边与断跨越边当轮生效
+            self._ensure_session_chain()
+
             # 游标推进
             new_dream_id = last_dream_id
             if _is_subagent_overflow(dream_result):
@@ -1406,6 +1411,68 @@ class NiuRunner:
             logger.error(f"[Nap] Background nap failed: {e}")
         finally:
             self._nap_running.clear()
+
+    def _ensure_session_chain(self, max_days: int = 10) -> None:
+        """小憩收尾：补全会话日期链（只补边/断边，不建实体）。
+
+        从已有 YYYY-MM-DD会话 实体取最近 max_days 日历天窗口：
+        断开跳过中间实体的跨越边（安全前提：两实体间仅 followed_by），
+        补全相邻日期的 followed_by 边。失败不抛出（nap 收尾容错）。
+        """
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+
+            adapter = LightRAGAdapter()
+            result = adapter.list_entities_by_name_regex(r"^\d{4}-\d{2}-\d{2}会话$")
+            if result.get("status") != "ok":
+                logger.warning(f"[Nap] session chain: list failed: {result.get('message')}")
+                return
+            names = sorted(e["entity_name"] for e in result.get("data", []))
+            if not names:
+                return
+
+            # 收集窗口内所有 pair 的已有边（keywords 集合）
+            from datetime import date, timedelta
+
+            today = date.today()
+            cutoff = (today - timedelta(days=max_days - 1)).isoformat()
+            in_window = [n for n in names if n >= cutoff]
+            if len(in_window) < 2:
+                return
+            existing_edges: dict[tuple[str, str], set[str]] = {}
+            for i in range(len(in_window)):
+                for j in range(i + 1, len(in_window)):
+                    src, tgt = in_window[i], in_window[j]
+                    if adapter.has_edge(src, tgt):  # 任意边（非仅 followed_by）
+                        kws = adapter.get_edge_keywords_between(src, tgt)
+                        existing_edges[(src, tgt)] = set(kws)
+
+            deletes, creates = _build_session_chain_ops(
+                in_window, existing_edges, max_days=max_days, today=today
+            )
+            for src, tgt in deletes:
+                r = adapter.delete_relation(src, tgt)
+                if r.get("status") != "ok":
+                    logger.warning(f"[Nap] session chain: break {src}->{tgt} failed: {r.get('message')}")
+            if creates:
+                ingester = LightRAGIngester()
+                rels = [
+                    {
+                        "src_id": src,
+                        "tgt_id": tgt,
+                        "keywords": "followed_by",
+                        "description": f"{src} 之后是 {tgt}",
+                        "source_id": "nap_session_chain",
+                        "file_path": "nap_session_chain",
+                    }
+                    for src, tgt in creates
+                ]
+                ingester.inject_custom_kg(
+                    entities=[], relationships=rels, chunks=[], source_id="nap_session_chain"
+                )
+                logger.info(f"[Nap] session chain: broke {len(deletes)}, created {len(rels)} followed_by edges")
+        except Exception as e:
+            logger.warning(f"[Nap] session chain failed: {e}")
 
     def _sync_get_messages(self, limit=None):
         """同步从 DB 读取消息（桥接 async MessageStore）
