@@ -509,7 +509,7 @@ preload_face_model()
 
 #### 新增：知识图谱时间链（会话日期链补全 + 主 Agent 认知 + dream-evolver 减负）
 
-- **程序补链**：nap 收尾 `_ensure_session_chain()` 补全会话实体 `followed_by` 日期链——只补边/断边、不建实体（当天无内容=选择性记忆正常行为）；10 日历天窗口；中间日期实体出现后断开跨越边、重建逐日链（如"昨天的事"补挂）
+- **程序补链**：`_ensure_session_chain()` 在三条 dream 管道收尾补全会话实体 `followed_by` 日期链——nap（小憩）/ sleep（睡眠兜底）/ force（手动整理），小憩与睡眠互补（一天没事小憩不触发但睡眠必触发）；只补边/断边、不建实体（当天无内容=选择性记忆正常行为）；10 日历天窗口；中间日期实体出现后断开跨越边、重建逐日链（如"昨天的事"补挂）
 - **dream-evolver 减负**：特殊节点表改为"日期实体天生存在"+ 连接示例（肯定式，无否定指令），消除其"先查再建"日期实体的动作
 - **主 Agent 教学**：niu.md 主动深挖策略加"知识图谱时间链"小节（何时用/怎么用，含 timeline_query 参数）
 - **disk 容错**：`--start-entities` 等 array 参数裸字符串自动包 JSON；get_entity_info 说明"关系用 get_graph"
