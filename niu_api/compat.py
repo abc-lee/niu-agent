@@ -2773,6 +2773,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
+                # 补全会话日期链（只补边/断边，不建实体；失败不阻塞——方法内部已容错）
+                runner._ensure_session_chain()
 
                 # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
                 if _is_subagent_overflow(dream_result):
@@ -3526,6 +3528,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
+                # 补全会话日期链（只补边/断边，不建实体；失败不阻塞——方法内部已容错）
+                runner._ensure_session_chain()
 
                 # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
                 if _is_subagent_overflow(dream_result):
