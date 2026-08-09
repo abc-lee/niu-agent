@@ -931,6 +931,7 @@ def create_litellm_client(config: dict[str, Any]) -> ToolClient:
         cfg["reasoning_effort"] = config["reasoning_effort"]
     cfg["provider"] = config.get("provider", "")
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
+    cfg["read_timeout"] = config.get("read_timeout") or 300
 
     # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List
     _register_model_cost(cfg["model"])
