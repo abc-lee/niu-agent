@@ -224,6 +224,9 @@ class DiskExecutor:
             if arg.cli_format == "json":
                 try:
                     converted = json.loads(value)
+                    if not isinstance(converted, list):
+                        # 合法 JSON 标量（数字/布尔/null）对 array 参数也包成单元素数组
+                        converted = [converted]
                 except json.JSONDecodeError:
                     if not value or not value.strip():
                         # 空值保持报错（spec：空值报错不变），格式与 _convert_value 其他错误一致

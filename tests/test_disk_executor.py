@@ -335,7 +335,21 @@ class TestArrayJsonBareString:
         assert kwargs["start_entities"] == ["2026-08-09会话"]
 
     def test_empty_value_keeps_error(self, executor, parser, mock_registry):
-        """空值报错不变（spec：空值报错）。"""
+        """空值报错不变（spec：空值报错），且消息含 tool_path 前缀与 invalid JSON array。"""
         parsed = parser.parse("/kg/timeline --start-entities ''")
         result = executor.execute(parsed)
         assert result.is_error is True
+        assert "invalid JSON array" in result.value
+        assert "/kg/timeline" in result.value
+
+    def test_whitespace_value_keeps_error(self, executor, parser, mock_registry):
+        """空白字符串也报错（value.strip() 为空的独立分支）。"""
+        parsed = parser.parse("/kg/timeline --start-entities '   '")
+        result = executor.execute(parsed)
+        assert result.is_error is True
+
+    def test_json_scalar_wrapped_into_array(self, executor, parser, mock_registry):
+        """合法 JSON 标量（数字）对 array 参数包成单元素数组。"""
+        kwargs = self._run(executor, parser, mock_registry,
+                           "/kg/timeline --start-entities '123'")
+        assert kwargs["start_entities"] == [123]
