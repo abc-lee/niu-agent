@@ -2,6 +2,7 @@
 from agent.generic.litellm_adapter import create_litellm_client
 from agent.generic.llmcore import ToolClient
 from agent.runner import create_client
+from niu_api.internal.lightrag_manager import _get_litellm_session
 
 
 def test_runner_create_client_passes_read_timeout():
@@ -50,3 +51,15 @@ def test_runner_create_client_falsy_read_timeout_falls_back():
         "read_timeout": None,
     })
     assert client.backend.read_timeout == 300
+
+
+def test_lightrag_session_passes_read_timeout():
+    """LightRAG session 应透传 read_timeout。"""
+    config = {
+        "type": "openai", "apikey": "k", "apibase": "https://example.com/v1",
+        "model": "m-lightrag-unique", "reasoning_effort": "none", "provider": "",
+        "litellm_kwargs": {}, "temperature": 0.2,
+        "read_timeout": 120,
+    }
+    session = _get_litellm_session(config)
+    assert session.read_timeout == 120

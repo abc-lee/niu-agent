@@ -58,13 +58,13 @@ _session_lock = threading.Lock()
 def _get_litellm_session(config: dict) -> Any:
     """Get or create a cached LiteLLMSession for LightRAG LLM calls.
 
-    Config changes (model/api_base/api_key/api_type/reasoning_effort) trigger session rebuild.
+    Config changes (model/api_base/api_key/api_type/reasoning_effort/read_timeout) trigger session rebuild.
     Thread-safe via double-check locking.
     """
     global _cached_session, _cached_config_key
     from agent.generic.litellm_adapter import LiteLLMSession
 
-    config_key = (config.get("model"), config.get("apibase"), config.get("apikey"), config.get("type"), config.get("reasoning_effort"), config.get("provider"), config.get("temperature", 0.2), tuple(sorted(config.get("litellm_kwargs", {}).items())))
+    config_key = (config.get("model"), config.get("apibase"), config.get("apikey"), config.get("type"), config.get("reasoning_effort"), config.get("provider"), config.get("temperature", 0.2), config.get("read_timeout"), tuple(sorted(config.get("litellm_kwargs", {}).items())))
 
     if _cached_session is not None and _cached_config_key == config_key:
         return _cached_session
@@ -83,6 +83,8 @@ def _get_litellm_session(config: dict) -> Any:
             "litellm_kwargs": config.get("litellm_kwargs", {}),
             "temperature": config.get("temperature", 0.2),
         }
+        # 透传 read_timeout（or 300 守卫：null/"" 等 falsy 值回退默认，防止 int() 崩溃）
+        llm_config["read_timeout"] = config.get("read_timeout") or 300
 
         _cached_session = LiteLLMSession(cfg=llm_config)
         _cached_config_key = config_key
