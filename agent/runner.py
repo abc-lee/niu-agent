@@ -662,6 +662,56 @@ def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
     return db_messages[cursor_idx + 1:] if cursor_idx >= 0 else db_messages
 
 
+def _extract_prev_complete_turn_msgs(post_compress_msgs: list) -> list:
+    """取上一完整轮的 messages（倒数第二条 user 消息含，到倒数第一条 user 消息不含）。
+
+    延迟结算语义：
+    - 最新 user 消息后的消息属于"本轮"（进行中，不确定是否完成），不参与计算
+    - 上一轮 = 上一条 user（含）到最新 user（不含）之间的所有消息（含全部 assistant/tool 输出）
+    - 不足两轮（无完整上一轮，如压缩游标刚越过、重启后仅 1 条 user）返回 []
+    - 上一轮被压缩（compress 游标切割后 user 不在切片内）时自然不出现，返回 []
+    """
+    user_indices = [
+        i for i, m in enumerate(post_compress_msgs)
+        if getattr(m, "role", "") == "user"
+    ]
+    if len(user_indices) < 2:
+        return []
+    return post_compress_msgs[user_indices[-2]:user_indices[-1]]
+
+
+def _ema_marker_step(last_user_id: str, prev_marker: str) -> tuple[str, str]:
+    """EMA marker 状态机：决定本次 _on_turn_end 回调是初始化、结算还是跳过。
+
+    Returns: (action, new_marker)
+    - "skip"：无 user 消息（last_user_id 空）或同轮重复回调（id 未变）→ 不结算
+    - "init"：启动后首次（prev_marker 空）→ 只设 marker 不结算
+      （避免重启重复结算重启前已结算的轮）
+    - "settle"：新 user 消息到来 → 结算上一完整轮
+    """
+    if not last_user_id:
+        return "skip", prev_marker
+    if not prev_marker:
+        return "init", last_user_id
+    if last_user_id == prev_marker:
+        return "skip", prev_marker
+    return "settle", last_user_id
+
+
+def _prev_turn_is_complete(prev_turn_msgs: list) -> bool:
+    """上一轮是否完整可结算：以 assistant/user 回复结束。
+
+    - 尾部是 assistant：轮完整（含最终回复）→ 可结算
+    - 尾部是 user（连续 user 消息）：该轮=纯 user 消息 → 可结算
+    - 尾部是 tool：工具循环进行中（快照可能缺尾部）或轮被截断 → 不可结算
+      （defer：marker 已在 settle 分支推进，下轮重新采样；若该轮最终完成，
+      其尾部 assistant 会在下一次 _on_turn_end 的新快照中出现并被结算）
+    """
+    if not prev_turn_msgs:
+        return False
+    return getattr(prev_turn_msgs[-1], "role", "") in ("assistant", "user")
+
+
 class NiuRunner:
     """
     Niu Agent Runner
@@ -775,7 +825,7 @@ class NiuRunner:
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
         self._nap_running = threading.Event()  # 小憩模式后台运行标志，避免并发启动
-        self._last_ema_turns = 0  # 去重：记录上次更新 EMA 时的 post_compress_turns
+        self._last_ema_user_id = ""  # 去重：记录上次结算 EMA 时最后一个 user 消息 id
         self._ema_lock = threading.Lock()  # EMA read-modify-write 进程内原子性（不与 _read_ema/_write_ema 的文件锁嵌套）
 
         # Decay pool (Ebbinghaus forgetting curve)
@@ -1059,29 +1109,29 @@ class NiuRunner:
             post_compress_msgs = _slice_after_cursor(db_messages, last_compress_id)
             post_compress_turns = sum(1 for m in post_compress_msgs if getattr(m, "role", "") == "user")
 
-            # 压缩后游标前移导致 post_compress_turns 变小，重置去重计数器
-            if post_compress_turns < self._last_ema_turns:
-                self._last_ema_turns = 0
-
             ema_path = niu_dir / "threshold_ema.json"
 
-            # 去重 + 更新 threshold EMA
-            if post_compress_turns > self._last_ema_turns and post_compress_turns >= 1:
-                self._last_ema_turns = post_compress_turns
+            # 找最后一个 user 消息 id（去重 marker：仅当新 user 到来时结算）
+            last_user_id = ""
+            for m in reversed(post_compress_msgs):
+                if getattr(m, "role", "") == "user":
+                    last_user_id = getattr(m, "id", "") or ""
+                    break
 
-                # 算本轮增量 token（最新一轮的消息）
-                # 本轮 = 最后一条 user 消息及其后的所有消息
-                last_user_idx = -1
-                for idx in range(len(post_compress_msgs) - 1, -1, -1):
-                    if getattr(post_compress_msgs[idx], "role", "") == "user":
-                        last_user_idx = idx
-                        break
+            # 去重 + 更新 threshold EMA（延迟结算上一完整轮）
+            action, new_marker = _ema_marker_step(last_user_id, self._last_ema_user_id)
+            if action == "settle":
+                self._last_ema_user_id = new_marker
+                # 延迟结算：新 user 消息到来时上一轮已完整。
+                # 算上一轮 = 倒数第二条 user（含）到倒数第一条 user（不含）的所有消息
+                # （含全部 assistant 与 tool 输出）；本轮（最新 user 之后）不确定是否
+                # 完成，不参与计算；上一轮被压缩（游标切割）或无完整上一轮时跳过。
+                prev_turn_msgs = _extract_prev_complete_turn_msgs(post_compress_msgs)
 
-                if last_user_idx >= 0:
-                    current_turn_msgs = post_compress_msgs[last_user_idx:]
+                if prev_turn_msgs and _prev_turn_is_complete(prev_turn_msgs):
                     from agent.token_calculator import TokenCalculator
                     calc = TokenCalculator.get()
-                    current_turn_dicts = [
+                    prev_turn_dicts = [
                         {
                             "role": getattr(m, "role", ""),
                             # CQ-05: 统一 content 为字符串，与 count_message_single 一致
@@ -1092,21 +1142,27 @@ class NiuRunner:
                             ))(getattr(m, "content", "") or ""),
                             "tool_calls": getattr(m, "tool_calls", []) or [],
                         }
-                        for m in current_turn_msgs
+                        for m in prev_turn_msgs
                     ]
-                    current_turn_tokens = calc.count_messages(current_turn_dicts)
+                    prev_turn_tokens = calc.count_messages(prev_turn_dicts)
 
                     # CQ-01 修复：用 threading.Lock 保证 read-modify-write 原子性
                     with self._ema_lock:
                         threshold_old, sample_count, ref_old = self._read_ema(ema_path)
                         new_threshold, new_sample_count, new_ref = _compute_threshold_update(
-                            threshold_old, sample_count, current_turn_tokens, ref_old
+                            threshold_old, sample_count, prev_turn_tokens, ref_old
                         )
 
                         self._write_ema(ema_path, new_threshold, new_sample_count, new_ref)
                         logger.debug(f"[Nap] threshold EMA: old={threshold_old:.1f}, new={new_threshold:.1f}, "
-                                    f"samples={new_sample_count}, turn_tokens={current_turn_tokens}, "
+                                    f"samples={new_sample_count}, prev_turn_tokens={prev_turn_tokens}, "
                                     f"ref={ref_old:.0f}->{new_ref:.0f}")
+                else:
+                    logger.debug(f"[Nap] No complete previous turn to settle (post_compress_turns={post_compress_turns})")
+            elif action == "init":
+                self._last_ema_user_id = new_marker
+                logger.debug("[Nap] EMA marker initialized, skip first settlement")
+            # "skip"：同轮重复回调或无 user，不结算
 
             # 计算阈值
             from agent.subagent import _read_context_window_tokens
