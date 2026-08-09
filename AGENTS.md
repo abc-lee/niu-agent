@@ -526,6 +526,7 @@ preload_face_model()
 - **修复**：`call_subagent_with_auto_answer` 首次调用（answer is None）补三件套——① pre_register（防 SSE 404 竞态，幂等）② `subagent_started` 推送（is_sync=False，程序触发不阻塞主对话；`call_soon_threadsafe` 线程安全，调用方在 to_thread 后台线程）③ 异常/值错误清理（call_subagent 抛异常时无条件 close、register 失败返回 `[错误]` 前缀时 close——close 幂等 _closed 防双关，防 ring buffer 泄漏 + tab 卡死，同 handler 问题2c/2e 模式）
 - **前端零改动**：main.js/chat.html 对 subagent_started 零过滤，收到即建 tab；同名复用（entity-extractor 每次整理同名复用旧 tab 不堆积）；窗口关闭守卫已有
 - **不受影响**：blocked_subagents 不动；subagent_started 是顶级事件不进 LLM 上下文；skill-sync 非子 Agent；调度器 cron 任务走主 Agent 工具路径本就显示（发射点互不重叠无双推）
+- **后续状态**：① 回归豁免（既有失败与本工程无关，按计划豁免不修）——`test_tidy_cursor.py` 4 个（PROTECTED 计数断言与 `_find_protected_range` user-turn-aware 语义不符，niu_api/compat.py 既有行为）+ `test_runner_stream_events.py` 1 个（`REDACTED_USER_PATH` 字面量路径未替换，纯测试工件）；② 实机验证待做——重启 Niu 触发 sleep 整理后确认四个子 Agent tab 显示、同名复用不堆积；③ 手册分册不专门更新——tab 渲染为既有机制（manual-general-subagent §十三 泛化描述已覆盖），本次仅补事件入口，SYSTEM_MANUAL L30"子 Agent 运行时自动创建独立标签页"修复后更准确无需改；④ 全量质量审查加固（commit fa59f3ad）——`[错误]` close 加归属守卫（`SubagentRegistry.get(agent_name) is None`，并发同名触发时不误关活跃实例 tab/ring buffer）+ 两处 close 异常吞噬（`except Exception: pass`，防 TOCTOU 掩盖原始异常/破坏契约）
 
 ### 2026-04-15
 
