@@ -225,7 +225,11 @@ class DiskExecutor:
                 try:
                     converted = json.loads(value)
                 except json.JSONDecodeError:
-                    return None, f"{tool_path}: --{arg.flag} invalid JSON array: {value}"
+                    if not value or not value.strip():
+                        # 空值保持报错（spec：空值报错不变），格式与 _convert_value 其他错误一致
+                        return None, f"{tool_path}: --{arg.flag} invalid JSON array: {value}"
+                    # 裸字符串容错：无法解析为 JSON 时包成单元素数组
+                    converted = [value]
             elif arg.cli_format == "repeatable":
                 converted = [value]
             else:

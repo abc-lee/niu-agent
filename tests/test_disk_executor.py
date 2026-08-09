@@ -52,6 +52,13 @@ def config(tmp_path):
                 ],
                 "mutually_exclusive": [["uri", "title"]],
             },
+            "timeline": {
+                "summary": "时间线查询", "description": "沿时间链查询。",
+                "args": [
+                    {"name": "start_entities", "type": "array", "flag": "start-entities",
+                     "cli_format": "json", "description": "起始实体数组"},
+                ],
+            },
         },
     }))
     (config_dir / "memory-server.yaml").write_text(yaml.dump({
@@ -302,3 +309,33 @@ class TestEdgeCases:
         call_kwargs = mock_registry.get.return_value.call_args[1]
         assert "min_confidence" in call_kwargs
         assert call_kwargs["min_confidence"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Array json bare-string tolerance
+# ---------------------------------------------------------------------------
+
+class TestArrayJsonBareString:
+    def _run(self, executor, parser, mock_registry, cmd):
+        parsed = parser.parse(cmd)
+        result = executor.execute(parsed)
+        assert result.is_error is False
+        return mock_registry.get.return_value.call_args[1]
+
+    def test_bare_string_wrapped_into_array(self, executor, parser, mock_registry):
+        """--start-entities '2026-08-09会话' 裸字符串自动包成 JSON 数组。"""
+        kwargs = self._run(executor, parser, mock_registry,
+                           "/kg/timeline --start-entities '2026-08-09会话'")
+        assert kwargs["start_entities"] == ["2026-08-09会话"]
+
+    def test_valid_json_array_unchanged(self, executor, parser, mock_registry):
+        """合法 JSON 数组照原样解析。"""
+        kwargs = self._run(executor, parser, mock_registry,
+                           '/kg/timeline --start-entities \'["2026-08-09会话"]\'')
+        assert kwargs["start_entities"] == ["2026-08-09会话"]
+
+    def test_empty_value_keeps_error(self, executor, parser, mock_registry):
+        """空值报错不变（spec：空值报错）。"""
+        parsed = parser.parse("/kg/timeline --start-entities ''")
+        result = executor.execute(parsed)
+        assert result.is_error is True

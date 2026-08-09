@@ -368,7 +368,7 @@ tools:
   - name: lightrag_get_entity_info
     category: query
     short: "查询实体详情"
-    long: "获取单个实体的详细信息"
+    long: "获取单个实体的详细信息。仅支持 --vector flag；查询实体关系请用 lightrag_get_graph（action=explore）"
     parameters:
       - name: entity_name
         position: 1
