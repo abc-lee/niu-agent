@@ -520,6 +520,13 @@ preload_face_model()
 - **修复**：① lightrag 查询工具（query/query_data/get_graph/timeline_query/get_relation_info）的 MCP Schema + disk yaml long 描述加输出契约说明"source/target 顺序仅为排序、不代表方向；方向看 description"；② **disk_navigator 目录 readme 渲染 tool.long 描述**（此前只显示 short+参数，漏 long——前天优化的 browser/config-manager/file-parser 描述与方向说明主 Agent 都看不到；readme 应为最全面的总览）
 - **排查教训**：虚拟磁盘工具说明主 Agent 实际看 `cat /<dir>/readme.txt`（动态生成，渲染 short+参数+examples，不渲染 long）——修改工具描述须确认 readme 呈现；LightRAG"方向乱"多为字典序字段与 description 混读的假象，先确认图存储/查询方向语义再下结论
 
+#### 新增：程序触发子 Agent 显示标签页（nap/sleep/force 全程可见）
+
+- **根因**：`subagent_started` 事件只有 `handler.py _call_subagent_gen`（主 Agent 工具循环 chat-with-* 路径）一个发射点；系统触发的子 Agent（nap 小憩 / sleep 睡眠整理 / force 压缩管道的 entity-extractor、dream-evolver、journal-agent、context-manager）走 `call_subagent_with_auto_answer` → 低层 `call_subagent`，从不发该事件 → 前端收不到启动通知，不建 tab、不连 SSE（详细事件堆积在 ring buffer 无人订阅）——不是有意隐藏，是事件缺失遗漏
+- **修复**：`call_subagent_with_auto_answer` 首次调用（answer is None）补三件套——① pre_register（防 SSE 404 竞态，幂等）② `subagent_started` 推送（is_sync=False，程序触发不阻塞主对话；`call_soon_threadsafe` 线程安全，调用方在 to_thread 后台线程）③ 异常/值错误清理（call_subagent 抛异常时无条件 close、register 失败返回 `[错误]` 前缀时 close——close 幂等 _closed 防双关，防 ring buffer 泄漏 + tab 卡死，同 handler 问题2c/2e 模式）
+- **前端零改动**：main.js/chat.html 对 subagent_started 零过滤，收到即建 tab；同名复用（entity-extractor 每次整理同名复用旧 tab 不堆积）；窗口关闭守卫已有
+- **不受影响**：blocked_subagents 不动；subagent_started 是顶级事件不进 LLM 上下文；skill-sync 非子 Agent；调度器 cron 任务走主 Agent 工具路径本就显示（发射点互不重叠无双推）
+
 ### 2026-04-15
 
 #### 新增：KG 数据流入 5 条渠道全部实现
