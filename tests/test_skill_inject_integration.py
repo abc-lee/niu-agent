@@ -2,7 +2,7 @@
 
 验证：
 1. skill 实体被注入衰减池后能通过 get_top_by_category("skill") 检索到
-2. 衰减后低分 skill 被淘汰（低于 DECAY_THRESHOLD=0.35）
+2. 衰减后低分 skill 被淘汰（低于 DECAY_THRESHOLD=0.3）
 """
 from unittest.mock import MagicMock, patch
 
@@ -69,7 +69,7 @@ def test_skill_injected_into_decay_pool_retrievable(runner):
 
 
 def test_low_score_skill_evicted_after_decay(runner):
-    """衰减后低分 skill 被淘汰（低于 DECAY_THRESHOLD=0.35）。"""
+    """衰减后低分 skill 被淘汰（低于 DECAY_THRESHOLD=0.3，×0.92/轮对齐脑区）。"""
     skill_entity = _make_skill_entity("临时技能", "临时技能描述")
     runner._decay_pool.inject(
         entity_name="临时技能",
@@ -79,8 +79,9 @@ def test_low_score_skill_evicted_after_decay(runner):
         vector_score=0.5,
     )
     assert len(runner._decay_pool.get_top_by_category("skill", 5)) == 1
-    runner._decay_pool.decay()  # 0.5*0.819 = 0.410 >= 0.35, 仍在
+    runner._decay_pool.decay()  # 0.5*0.92 = 0.46 >= 0.3, 仍在
     assert len(runner._decay_pool.get_top_by_category("skill", 5)) == 1, "轮1后应仍在"
-    runner._decay_pool.decay()  # 0.5*0.819^2 = 0.336 < 0.35, 淘汰
+    for _ in range(6):  # 共 7 轮：0.5*0.92^7 = 0.279 < 0.3, 淘汰
+        runner._decay_pool.decay()
     top = runner._decay_pool.get_top_by_category("skill", 5)
-    assert len(top) == 0, f"轮2后应被淘汰，实际还有 {len(top)}"
+    assert len(top) == 0, f"7轮后应被淘汰，实际还有 {len(top)}"
