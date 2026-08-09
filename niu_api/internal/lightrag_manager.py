@@ -487,6 +487,27 @@ def _get_lightrag_config() -> dict[str, Any]:
     return {}
 
 
+def lightrag_timeout(key: str, default: int) -> int:
+    """从 preferences.json 的 lightrag 段读取超时配置（秒）。
+
+    Args:
+        key: 配置键名（insert_timeout / query_timeout / delete_timeout /
+            status_timeout / merge_timeout）
+        default: 键缺失或值非法时使用的默认秒数
+
+    Returns:
+        配置值（int，至少 1），异常或非法时回退 default。
+    """
+    try:
+        raw = _get_lightrag_config().get(key)
+        if raw is None:
+            return default
+        val = int(raw)
+        return val if val >= 1 else default
+    except (AttributeError, TypeError, ValueError):
+        return default
+
+
 def _get_embedding_dim_for_lightrag() -> int:
     """Get embedding dimension for LightRAG from config."""
     from niu_api.internal.embedding import get_embedding_dim
