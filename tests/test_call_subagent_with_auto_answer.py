@@ -103,3 +103,125 @@ def test_call_subagent_with_auto_answer_sync_path_auto_replies(monkeypatch):
     second_call = call_args_log[1]
     assert second_call.get("answer") is not None
     assert second_call.get("answer_unique_name") == "browser-operator"
+
+
+def test_program_trigger_pushes_subagent_started_event():
+    """程序触发首次调用推送 subagent_started（type/unique_name/agent_name/is_sync=False）"""
+    from agent import subagent
+    from niu_api import chat
+
+    queued = []
+
+    class FakeLoop:
+        def is_closed(self):
+            return False
+
+        def call_soon_threadsafe(self, fn, *args):
+            queued.append((fn, args))
+
+    with mock.patch.object(subagent, "call_subagent", return_value="任务完成"), \
+            mock.patch.object(chat, "_main_loop", FakeLoop()), \
+            mock.patch.object(chat, "_sync_broadcast") as bc:
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="entity-extractor",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert result == "任务完成"
+    # 只统计广播调用（fn is bc）——真实 pre_register 内部会向 queued 追加 _do_pre_register 调度
+    bc_calls = [(fn, args) for fn, args in queued if fn is bc]
+    assert len(bc_calls) == 1
+    fn, args = bc_calls[0]
+    event = args[0]
+    assert event["type"] == "subagent_started"
+    assert event["unique_name"] == "entity-extractor"
+    assert event["agent_name"] == "entity-extractor"
+    assert event["is_sync"] is False
+
+
+def test_recovery_answer_path_does_not_push_subagent_started():
+    """自动回复恢复路径不重复推送 subagent_started——仅首次调用推 1 次"""
+    from agent import subagent
+    from niu_api import chat
+
+    queued = []
+
+    class FakeLoop:
+        def is_closed(self):
+            return False
+
+        def call_soon_threadsafe(self, fn, *args):
+            queued.append((fn, args))
+
+    call_count = [0]
+
+    def mock_call_subagent(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "[entity-extractor] 我该选哪个？"  # 第一次 @niu-agent 提问
+        return "任务完成结果"  # 自动回复后正常结束
+
+    with mock.patch.object(subagent, "call_subagent", side_effect=mock_call_subagent), \
+            mock.patch.object(chat, "_main_loop", FakeLoop()), \
+            mock.patch.object(chat, "_sync_broadcast") as bc:
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="entity-extractor",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert result == "任务完成结果"
+    assert call_count[0] == 2
+    # 仅首次调用推 1 次广播；恢复回答路径（while 循环内直调 call_subagent，answer 非 None）不推
+    bc_calls = [(fn, args) for fn, args in queued if fn is bc]
+    assert len(bc_calls) == 1
+
+
+def test_pre_register_before_broadcast():
+    """pre_register 先建 ring buffer，再推 subagent_started（防前端连 SSE 404 竞态）"""
+    from agent import subagent
+    from niu_api import chat
+    from niu_api.internal import subagent_event_bus
+
+    order = []
+
+    class FakeLoop:
+        def is_closed(self):
+            return False
+
+        def call_soon_threadsafe(self, fn, *args):
+            order.append("broadcast")
+
+    with mock.patch.object(subagent, "call_subagent", return_value="任务完成"), \
+            mock.patch.object(subagent_event_bus, "pre_register",
+                              side_effect=lambda name: order.append(f"pre_register:{name}")), \
+            mock.patch.object(chat, "_main_loop", FakeLoop()), \
+            mock.patch.object(chat, "_sync_broadcast"):
+        subagent.call_subagent_with_auto_answer(
+            agent_name="entity-extractor",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert order == ["pre_register:entity-extractor", "broadcast"]
+
+
+def test_no_event_when_main_loop_closed():
+    """主事件循环关闭时不推送（容错回归：防止实现无条件推送导致 AttributeError/崩溃）"""
+    from agent import subagent
+    from niu_api import chat
+
+    class ClosedLoop:
+        def is_closed(self):
+            return True
+
+        # 无 call_soon_threadsafe 方法——若实现无条件调用会 AttributeError，本测试可抓出
+
+    with mock.patch.object(subagent, "call_subagent", return_value="任务完成"), \
+            mock.patch.object(chat, "_main_loop", ClosedLoop()), \
+            mock.patch.object(chat, "_sync_broadcast") as bc:
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="entity-extractor",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert result == "任务完成"
+    bc.assert_not_called()
