@@ -332,7 +332,7 @@ async function loadGraphSnapshot() {
     updateStats();
 
     // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放（与全局重绘同一参数，统一观感）
-    setTimeout(() => graph.zoomToFit(400, 40), 20);
+    setTimeout(() => graph.zoomToFit(400, 60), 20);
   } catch (error) {
     console.error('Failed to load graph:', error);
     hideLoading();
@@ -593,7 +593,7 @@ function reLayout() {
   const data = buildGraphData();
   graph.graphData(data);
   // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放
-  setTimeout(() => graph.zoomToFit(400, 40), 20);
+  setTimeout(() => graph.zoomToFit(400, 60), 20);
 }
 
 // ===== Perspective Mode =====
@@ -957,7 +957,7 @@ async function enterSubgraph(entityId, depth) {
     const freshData = buildGraphData();
     graph.graphData(freshData);
     // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放
-    setTimeout(() => graph.zoomToFit(400, 40), 20);
+    setTimeout(() => graph.zoomToFit(400, 60), 20);
     if (!_subgraphMode) {
       // 首次进入子图（搜索）：聚焦目标节点及直接邻居
       setTimeout(() => {
@@ -1036,7 +1036,7 @@ async function exitSubgraph() {
     const freshData = buildGraphData();
     graph.graphData(freshData);
     // 等 graphData 的 digest（1ms）初始化节点坐标后再缩放
-    setTimeout(() => graph.zoomToFit(400, 40), 20);
+    setTimeout(() => graph.zoomToFit(400, 60), 20);
     updateStats();
   } finally {
     _justReplacedData = false;
@@ -1089,6 +1089,6 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => {
     graph.width(container.offsetWidth);
     graph.height(container.offsetHeight);
-    graph.zoomToFit(400, 40);
+    graph.zoomToFit(400, 60);
   }, 200);
 });
