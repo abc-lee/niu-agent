@@ -243,6 +243,8 @@ def get_llm_config(use_lightrag_config: bool = False) -> dict[str, str]:
                 user_temp = lightrag_llm.get("temperature")
                 if user_temp is not None:
                     llm["temperature"] = user_temp
+                if lightrag_llm.get("read_timeout"):
+                    llm["read_timeout"] = lightrag_llm["read_timeout"]
 
         # 统一转换为小写键名
         config = {}

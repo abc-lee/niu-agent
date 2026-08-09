@@ -595,6 +595,10 @@ codesign --force --sign - /Applications/niu.app
 - `font` 段配了 `file` 但字体文件不存在（`~/.niu/fonts/` 下找不到）
 - `preferences.json` JSON 格式损坏
 
+## LLM 调用与知识图谱超时配置
+
+LLM 流式读取超时（`read_timeout`，默认 300s）与 LightRAG 操作超时（`insert_timeout` 600s / `query_timeout` 120s / `delete_timeout` 300s / `status_timeout` 30s / `merge_timeout` 300s）均可通过配置文件调整：`read_timeout` 在 `config/user-config.json` 的 `llm` 与 `lightrag_llm` 段，LightRAG 操作超时在 `~/.niu/preferences.json` 的 `lightrag` 段。缺省值已显式写入两处配置示例，详见《用户操作手册》1.2 LLM 配置与 1.4 知识图谱章节。生效方式：主对话/子 Agent 的 `read_timeout` 修改后重启生效；知识图谱 LLM 调用与 LightRAG 操作超时每次操作实时读取配置，修改后即时生效。
+
 ## 分册索引
 
 > 主 Agent 遇到具体问题时按此表判断去哪个子文档查。每条说明该文档解决什么问题、包含哪些功能、什么时候应该去看。
