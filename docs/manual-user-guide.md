@@ -51,6 +51,7 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
     "type": "openai",
     "provider": "",
     "reasoning_effort": "",
+    "read_timeout": 300,
     "litellm_kwargs": {}
   },
   "lightrag_llm": {
@@ -61,10 +62,13 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
     "type": "openai",
     "provider": "",
     "reasoning_effort": "none",
+    "read_timeout": 300,
     "litellm_kwargs": {}
   }
 }
 ```
+
+**缺省值已显式列出**：系统默认 `read_timeout: 300`（秒）。首次运行时按上述示例写入即可；后续需要调整（如模型响应慢调大、卡顿调小），修改 `read_timeout` 数值后：主对话/子 Agent 链路**重启 Niu** 生效；知识图谱 LLM 调用**下次操作即时生效**。也可让 Agent 查询本手册后代为修改。
 
 **字段说明**：
 
@@ -78,6 +82,7 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
 | `provider` | LiteLLM 路由参数，映射为 `custom_llm_provider`。常见值：`""`（空，默认由 type 决定）、`"volcengine"`（火山引擎）。填写后模型名无需加厂商前缀 |
 | `reasoning_effort` | 思考链深度：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"`。主 Agent 默认空，LightRAG 默认 `"none"`。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，需实测确定（详见下方"reasoning_effort 配置与测试指南"） |
 | `litellm_kwargs` | 厂商特有参数，JSON 对象格式，原样透传给 LiteLLM。用于传递各厂商 SDK 要求的额外参数（如火山引擎的 `thinking`、`allowed_openai_params` 等）。代码不做任何厂商判断，只负责透传 |
+| `read_timeout` | LLM 流式响应读取超时（秒），默认 `300`。模型首响应/流式 chunk 间隔超过该值判定超时并触发重试。**调小场景**：对话卡顿久等（如 `60`）；**调大场景**：知识图谱入库/大文档分析（分块分析可能数分钟，见下方 LightRAG 段）。`llm` 段控制主对话/子 Agent；知识图谱 LLM 调用默认继承 `llm` 段的 `read_timeout`，若 `lightrag_llm` 段配置了独立 `model`，则以 `lightrag_llm` 段的 `read_timeout` 为准（两段同默认 `300`） |
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 
@@ -404,6 +409,34 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 **入库参数配置**：LightRAG 入库参数（并发数、分片大小、补充提取次数等）可在 `~/.niu/preferences.json` 的 `lightrag` 配置段调整，详见 [知识检索运维手册](manual-vector-store.md) 第 8.5 节。
 
 **入库模型与思考链配置**：LightRAG 入库使用的模型和思考链深度在 `config/user-config.json` 的 `lightrag_llm` 配置段设置，详见上方 1.2 节"LightRAG 知识图谱 LLM 配置"。默认禁用思考链（`reasoning_effort: "none"`），防止深度推理导致入库超时。
+
+**LightRAG 操作超时**（`~/.niu/preferences.json` 的 `lightrag` 段，缺省值已显式列出，首次运行按此写入）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `insert_timeout` | 600 | 文档/照片入库超时（秒）。大文档分块分析可能数分钟，模型慢时调大 |
+| `query_timeout` | 120 | 知识图谱语义查询/图谱快照超时（秒） |
+| `delete_timeout` | 300 | 文档/实体删除超时（秒） |
+| `status_timeout` | 30 | 处理状态/图谱标签等轻量查询超时（秒） |
+| `merge_timeout` | 300 | 实体合并超时（秒） |
+
+配置示例：
+
+```json
+{
+  "lightrag": {
+    "embedding_model": "bge-base-zh-v1.5",
+    "reranker_model": "none",
+    "insert_timeout": 600,
+    "query_timeout": 120,
+    "delete_timeout": 300,
+    "status_timeout": 30,
+    "merge_timeout": 300
+  }
+}
+```
+
+> 生效方式：主对话/子 Agent 的 `read_timeout`（user-config.json 的 llm 段）修改后需**重启 Niu** 生效；知识图谱 LLM 调用的 `read_timeout`（lightrag_llm 段或继承的 llm 段）与 LightRAG 操作超时（preferences.json 的 lightrag 段）每次操作实时读取配置，**修改后即时生效**。用户可让 Agent 查询本手册，由 Agent 代为修改这些高级设置。
 
 ### 1.5 支持的文件格式
 
