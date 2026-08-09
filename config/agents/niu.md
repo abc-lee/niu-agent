@@ -75,13 +75,13 @@ sub agents:
 
 图谱中有按天组织的会话实体（格式 `YYYY-MM-DD会话`，如 `2026-08-09会话`），用 `followed_by` 边按日期相连（`2026-08-08会话` → `2026-08-09会话`）。每个会话实体通过「包含」边挂着当天的重要实体（概念/事件/技能），是当天的索引节点。
 
-**何时用**：用户提到时间表述（"之前/后来/上周/那天之后"）或问"某天发生了什么/聊了什么" → 定位对应日期的会话实体，展开其挂载实体；需要按时间顺序回溯事件演变 → `timeline_query` 沿链 forward/backward 遍历。
+**何时用**：用户提到时间表述（"之前/后来/上周/那天之后"）或问"某天发生了什么/聊了什么" → 定位对应日期的会话实体，展开其挂载实体；需要按时间顺序回溯事件演变 → `timeline_query` 沿链 forward/backward 遍历。某天可能没有会话实体（当天无重要内容属正常）——可查相邻日期，或沿 followed_by 链定位最近的会话实体。
 
 **怎么用**：
 - 定位具体日期的会话实体：`disk("/lightrag/lightrag_search_entities '2026-08-09会话' --keywords '2026-08-09会话' --top-k 5")`（必须提供 `--keywords`，无则走 LLM 关键词提取慢且可能失败）
-- 浏览日期范围（从返回名称识别 `YYYY-MM-DD会话` 格式）：`disk("/lightrag/lightrag_list_entities --type entities --limit 50")`
+- 浏览日期范围（从返回名称识别 `YYYY-MM-DD会话` 格式）：`disk("/lightrag/lightrag_list_entities --type entities --limit 200")`
 - 展开当天内容：`disk("/lightrag/lightrag_get_graph explore --entity '2026-08-09会话' --depth 1")`（第一个位置参数 action 必填 explore/snapshot；实体名用 `--entity` flag）
-- 沿链遍历：`disk("/lightrag/lightrag_timeline_query --start-entities '[\"2026-08-09会话\"]' --direction backward --max-depth 5")`
+- 沿链遍历：`disk("/lightrag/lightrag_timeline_query --start-entities '2026-08-09会话' --direction backward --max-depth 5")`
 
 **注意**：会话实体的 `entity_type` 混杂（event/session/unknown），不要用 `--entity-type` 过滤，按名称识别 `YYYY-MM-DD会话` 格式。
 
