@@ -6,7 +6,7 @@ tools:
   - name: lightrag_query
     category: query
     short: "查询知识图谱"
-    long: "搜索知识库。模式: local(实体), global(概览), hybrid(平衡), mix(图+向量), naive(仅向量)"
+    long: "搜索知识库。模式: local(实体), global(概览), hybrid(平衡), mix(图+向量), naive(仅向量)。返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"李磊 属于 人际关系脑区\"），解读时以 description 为准。"
     parameters:
       - name: query
         position: 1
@@ -37,7 +37,7 @@ tools:
   - name: lightrag_query_data
     category: query
     short: "结构化查询"
-    long: "查询知识库返回结构化数据(实体+关系)。提供keywords可跳过LLM关键词提取，速度从10-100s降至<1s"
+    long: "查询知识库返回结构化数据(实体+关系)。提供keywords可跳过LLM关键词提取，速度从10-100s降至<1s。返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"李磊 属于 人际关系脑区\"），解读时以 description 为准。"
     parameters:
       - name: query
         position: 1
@@ -86,7 +86,7 @@ tools:
   - name: lightrag_get_graph
     category: query
     short: "获取子图"
-    long: "获取知识图谱子图。explore=实体邻居, snapshot=全图"
+    long: "获取知识图谱子图。explore=实体邻居, snapshot=全图。返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"李磊 属于 人际关系脑区\"），解读时以 description 为准。"
     parameters:
       - name: action
         position: 1
@@ -269,7 +269,7 @@ tools:
   - name: lightrag_timeline_query
     category: query
     short: "时间线查询"
-    long: "向量匹配内容后沿时间链遍历，按时间戳排序返回"
+    long: "向量匹配内容后沿时间链遍历，按时间戳排序返回。返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"李磊 属于 人际关系脑区\"），解读时以 description 为准。"
     parameters:
       - name: query
         position: 1
@@ -382,7 +382,7 @@ tools:
   - name: lightrag_get_relation_info
     category: query
     short: "查询关系详情"
-    long: "获取两实体间关系的详细信息"
+    long: "获取两实体间关系的详细信息。返回的关系中 source/target 前后顺序仅为排序、不代表方向；关系方向语义在 description 文本中（如\"李磊 属于 人际关系脑区\"），解读时以 description 为准。"
     parameters:
       - name: source_entity
         position: 1
