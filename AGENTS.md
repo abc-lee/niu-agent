@@ -514,6 +514,12 @@ preload_face_model()
 - **主 Agent 教学**：niu.md 主动深挖策略加"知识图谱时间链"小节（何时用/怎么用，含 timeline_query 参数）
 - **disk 容错**：`--start-entities` 等 array 参数裸字符串自动包 JSON；get_entity_info 说明"关系用 get_graph"
 
+#### 新增：LightRAG 关系方向语义说明（图无向，方向在 description）
+
+- **事实**：LightRAG 图本质无向（nx.Graph + 读取排序 + vdb sorted 去重，上游 2025-03 起设计，fork 未改）——边的 source/target 顺序只是排序，不代表方向；**方向语义只在关系 description 文本里**（如"李磊 属于 人际关系脑区"），LLM 读描述可正确推断（红楼梦人物关系测试准的真相）
+- **修复**：① lightrag 查询工具（query/query_data/get_graph/timeline_query/get_relation_info）的 MCP Schema + disk yaml long 描述加输出契约说明"source/target 顺序仅为排序、不代表方向；方向看 description"；② **disk_navigator 目录 readme 渲染 tool.long 描述**（此前只显示 short+参数，漏 long——前天优化的 browser/config-manager/file-parser 描述与方向说明主 Agent 都看不到；readme 应为最全面的总览）
+- **排查教训**：虚拟磁盘工具说明主 Agent 实际看 `cat /<dir>/readme.txt`（动态生成，渲染 short+参数+examples，不渲染 long）——修改工具描述须确认 readme 呈现；LightRAG"方向乱"多为字典序字段与 description 混读的假象，先确认图存储/查询方向语义再下结论
+
 ### 2026-04-15
 
 #### 新增：KG 数据流入 5 条渠道全部实现
