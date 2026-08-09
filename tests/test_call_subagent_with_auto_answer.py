@@ -279,3 +279,31 @@ def test_error_prefix_result_closes():
         )
     assert result.startswith("[错误]")
     close_mock.assert_called_once_with("entity-extractor")
+
+
+def test_error_prefix_does_not_close_when_same_name_instance_live():
+    """[错误] 路径归属守卫：同名实例存活（并发触发场景）时不 close——tab 归活跃实例所有"""
+    from agent import subagent
+    from niu_api import chat
+    from niu_api.internal import subagent_event_bus
+
+    class FakeLoop:
+        def is_closed(self):
+            return False
+
+        def call_soon_threadsafe(self, fn, *args):
+            pass
+
+    with mock.patch.object(subagent, "call_subagent",
+                            return_value="[错误] 同名实例已存在。请先回复当前挂起的子 Agent。"), \
+            mock.patch.object(chat, "_main_loop", FakeLoop()), \
+            mock.patch.object(chat, "_sync_broadcast"), \
+            mock.patch.object(subagent.SubagentRegistry, "get", return_value=object()), \
+            mock.patch.object(subagent_event_bus, "close") as close_mock:
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="entity-extractor",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert result.startswith("[错误]")
+    close_mock.assert_not_called()
