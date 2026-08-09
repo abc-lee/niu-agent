@@ -392,6 +392,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 | 触发阈值 | `_calc_dream_trigger_threshold_dynamic(context_window, ema_path)`，下限 10 轮，上限 50 轮 |
 | 阈值算法 | threshold 自身做 EMA（对数渐近张力模型）。冷启动(样本<5)返回10；否则直接读持久化 threshold 值。轻量对话(本轮token≤EMA参考线)→ threshold 上升：`threshold += (50-threshold) × 0.1`（越接近50越慢）；重量对话(本轮token>EMA参考线)→ threshold 快速下降：`threshold -= (threshold-10) × 0.4`。持久化于 `~/.niu/threshold_ema.json` |
 | 参考线 | ref = 0.2 × 本轮token + 0.8 × 旧ref（EMA，等效近期 ~10 轮，参考线随近期负载双向快速响应——重活抬升、轻活回落，避免被早期历史定型；轻活历史后参考线低于全历史累积平均，门槛更低，中等轮更容易判重量 → threshold 回落更快） |
+| 结算时机 | EMA 在每轮对话完整后延迟结算：新 user 消息到来时，结算上一轮（上一条 user 到本条 user 之间的全部消息，含工具输出与最终回复）；本轮（进行中）不参与计算，被压缩的轮不计算 |
 | 执行方式 | 后台 daemon thread（`_run_nap_background`），不阻塞主 Agent |
 | 执行内容 | 串行：entity-extractor（内容提炼）→ dream-evolver（梦境进化） |
 | 并发防护 | `threading.Event`（`_nap_running`），运行中不重复触发 |
