@@ -1,5 +1,4 @@
 """会话日期链补链：纯函数规划器测试。零 mock，符合项目风格。"""
-import pytest
 from datetime import date
 
 from agent.runner import _build_session_chain_ops
@@ -12,6 +11,8 @@ def test_window_cutoff_inclusive_today_minus_9():
     deletes, creates = _build_session_chain_ops(names, {}, today=date(2026, 8, 9))
     # 窗口 = >= 2026-07-31：2026-07-30 排除
     assert "2026-07-30会话" not in [c[0] for c in creates] + [d[0] for d in deletes]
+    # today-9（2026-07-31）必须入窗：相邻补边 2026-07-31→2026-08-09 生效
+    assert creates == [("2026-07-31会话", "2026-08-09会话")]
 
 
 def test_create_adjacent_edges():
