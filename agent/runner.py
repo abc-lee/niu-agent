@@ -1467,10 +1467,13 @@ class NiuRunner:
                     }
                     for src, tgt in creates
                 ]
-                ingester.inject_custom_kg(
+                r = ingester.inject_custom_kg(
                     entities=[], relationships=rels, chunks=[], source_id="nap_session_chain"
                 )
-                logger.info(f"[Nap] session chain: broke {len(deletes)}, created {len(rels)} followed_by edges")
+                if r.get("status") != "ok":
+                    logger.warning(f"[Nap] session chain: inject {len(rels)} edges failed: {r.get('message')}")
+                else:
+                    logger.info(f"[Nap] session chain: broke {len(deletes)}, created {len(rels)} followed_by edges")
         except Exception as e:
             logger.warning(f"[Nap] session chain failed: {e}")
 

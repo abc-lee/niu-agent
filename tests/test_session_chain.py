@@ -126,3 +126,59 @@ def test_ensure_session_chain_noop_when_no_entities(monkeypatch):
         runner._ensure_session_chain()  # 不应抛异常
     adapter.delete_relation.assert_not_called()
     ingester.inject_custom_kg.assert_not_called()
+
+
+def test_ensure_session_chain_list_failure_returns_quietly(monkeypatch):
+    """列举失败（status != ok）：warning + return，不调 delete/inject。"""
+    from agent.runner import NiuRunner
+
+    runner = NiuRunner.__new__(NiuRunner)
+    adapter = MagicMock()
+    adapter.list_entities_by_name_regex.return_value = {"status": "error", "message": "LightRAG not available"}
+    ingester = MagicMock()
+    with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter", return_value=adapter), \
+         patch("niu_api.internal.lightrag_adapter.LightRAGIngester", return_value=ingester):
+        runner._ensure_session_chain()  # 不应抛异常
+    adapter.delete_relation.assert_not_called()
+    ingester.inject_custom_kg.assert_not_called()
+
+
+def test_ensure_session_chain_keeps_semantic_edge(monkeypatch):
+    """两实体间含非 followed_by 语义边：delete_relation 不被调用（防误删）。"""
+    from agent.runner import NiuRunner
+
+    runner = NiuRunner.__new__(NiuRunner)
+    adapter = MagicMock()
+    adapter.list_entities_by_name_regex.return_value = {
+        "status": "ok",
+        "data": [
+            {"entity_name": "2026-08-07会话"},
+            {"entity_name": "2026-08-08会话"},
+            {"entity_name": "2026-08-09会话"},
+        ],
+    }
+
+    def fake_has_edge(src, tgt):
+        # 8-7→8-9 有边（含 followed_by + related_to）；8-7→8-8、8-8→8-9 无边
+        return (src, tgt) == ("2026-08-07会话", "2026-08-09会话")
+
+    def fake_keywords(src, tgt):
+        return ["followed_by", "related_to"]
+
+    adapter.has_edge.side_effect = fake_has_edge
+    adapter.get_edge_keywords_between.side_effect = fake_keywords
+    ingester = MagicMock()
+    with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter", return_value=adapter), \
+         patch("niu_api.internal.lightrag_adapter.LightRAGIngester", return_value=ingester), \
+         patch("datetime.date") as mock_date:
+        mock_date.today.return_value = date(2026, 8, 9)
+        runner._ensure_session_chain()
+    # 语义边保护：不删 8-7→8-9（kws ⊄ {followed_by}）
+    adapter.delete_relation.assert_not_called()
+    # 补相邻边仍执行：8-7→8-8、8-8→8-9
+    assert ingester.inject_custom_kg.call_count == 1
+    rels = ingester.inject_custom_kg.call_args.kwargs["relationships"]
+    assert [(r["src_id"], r["tgt_id"]) for r in rels] == [
+        ("2026-08-07会话", "2026-08-08会话"),
+        ("2026-08-08会话", "2026-08-09会话"),
+    ]
