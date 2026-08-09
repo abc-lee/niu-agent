@@ -4,8 +4,8 @@
 公式: R_i(t) = s_i × e^(-t/S)
   - s_i: 命中时的向量余弦相似度（0~1）
   - t: 经过轮数
-  - S=5: 记忆稳定性参数
-  - 阈值=0.35: 低于此值淘汰
+  - S=12: 记忆稳定性参数（exp(-1/12)≈0.92，与脑区 activation 的 ×0.92/轮 对齐）
+  - 阈值=0.3: 低于此值淘汰（与脑区 activation 阈值对齐）
 脑区 activation（*0.92, 阈值0.3）完全独立，不由此池管理。
 """
 from __future__ import annotations
@@ -16,9 +16,9 @@ from typing import Any
 
 
 # 衰减池常量（统一定义，避免硬编码散落多处）
-DECAY_S = 5.0                   # 记忆稳定性参数
-DECAY_THRESHOLD = 0.35           # 注入阈值
-DECAY_FACTOR = math.exp(-1 / DECAY_S)  # ≈ 0.8187，每轮衰减因子
+DECAY_S = 12.0                  # 记忆稳定性参数：exp(-1/12)≈0.92，对齐脑区 activation（×0.92/轮）
+DECAY_THRESHOLD = 0.3           # 注入阈值：对齐脑区 activation（0.3）
+DECAY_FACTOR = math.exp(-1 / DECAY_S)  # ≈ 0.92，每轮衰减因子
 
 
 @dataclass
