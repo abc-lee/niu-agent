@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from collections.abc import Generator
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -710,6 +710,48 @@ def _prev_turn_is_complete(prev_turn_msgs: list) -> bool:
     if not prev_turn_msgs:
         return False
     return getattr(prev_turn_msgs[-1], "role", "") in ("assistant", "user")
+
+
+def _build_session_chain_ops(
+    dates: list[str],
+    existing_edges: dict[tuple[str, str], set[str]],
+    max_days: int = 10,
+    today: date | None = None,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """纯函数：计算会话日期链补链操作（断跨越边 + 补相邻边）。
+
+    Args:
+        dates: 排序后的会话实体名列表（YYYY-MM-DD会话，字典序=时间序）。
+        existing_edges: {(src, tgt): set(keywords)} 两实体间已存在边（keywords 集合）。
+        max_days: 日历天窗口（含今天）。
+        today: 测试注入日期；缺省用系统日期。
+
+    Returns:
+        (deletes, creates)：要断开的跨越边对、要补的相邻边对（src=先, tgt=后）。
+    """
+    from datetime import timedelta
+
+    today = today or date.today()
+    cutoff = (today - timedelta(days=max_days - 1)).isoformat()
+    in_window = [d for d in dates if d >= cutoff]
+    if len(in_window) < 2:
+        return [], []
+
+    deletes: list[tuple[str, str]] = []
+    creates: list[tuple[str, str]] = []
+    # 断开跨越边：i、j 之间还有中间日期实体，且长边仅 followed_by（无其他语义边）
+    for i in range(len(in_window)):
+        for j in range(i + 2, len(in_window)):
+            pair = (in_window[i], in_window[j])
+            kws = existing_edges.get(pair)
+            if kws and kws <= {"followed_by"}:
+                deletes.append(pair)
+    # 补相邻边：相邻存在日之间缺 followed_by 则补
+    for i in range(len(in_window) - 1):
+        pair = (in_window[i], in_window[i + 1])
+        if pair not in existing_edges:
+            creates.append(pair)
+    return deletes, creates
 
 
 class NiuRunner:

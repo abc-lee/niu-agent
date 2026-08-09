@@ -1491,6 +1491,69 @@ class LightRAGAdapter:
             logger.error(f"LightRAG list_entities failed: {e}")
             return {"status": "error", "message": str(e)}
 
+    def list_entities_by_name_regex(self, pattern: str, limit: int = 200) -> dict[str, Any]:
+        """按实体名称正则匹配列举实体（不依赖 entity_type，placeholder 也可命中）。
+
+        会话实体 entity_type 混杂（event/session/unknown），必须按名称定位。
+        """
+        import re
+
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+            nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+            if nx_graph is None:
+                return {"status": "ok", "data": []}
+            regex = re.compile(pattern)
+            from niu_api.internal.lightrag_manager import graph_read_lock
+
+            with graph_read_lock():
+                snapshot = nx_graph.copy()
+            nodes = []
+            for node_id, node_data in snapshot.nodes(data=True):
+                if regex.match(node_id):
+                    nt = node_data.get("entity_type", "other")
+                    nodes.append({
+                        "entity_name": node_id,
+                        "entity_type": nt,
+                        "description": _clean_description(node_data.get("description", ""), nt),
+                    })
+            # 按名称排序后取最近 limit 个——名称=日期，字典序尾即最新
+            # （插入序截断会丢最新实体，破坏 10 天窗口保证）
+            nodes.sort(key=lambda n: n["entity_name"])
+            return {"status": "ok", "data": nodes[-limit:]}
+        except Exception as e:
+            logger.error(f"LightRAG list_entities_by_name_regex failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def get_edge_keywords_between(self, src_id: str, tgt_id: str) -> list[str]:
+        """返回两实体之间所有边的 keywords 列表（断边安全检查用）。
+
+        LightRAG 的 delete_relation 无 keywords 过滤、删两实体间所有边，
+        断边前必须确认无其他语义边。
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return []
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return []
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
+        with graph_read_lock():
+            src, tgt = src_id.lower(), tgt_id.lower()
+            if not nx_graph.has_edge(src, tgt):
+                return []
+            edge_data = nx_graph.get_edge_data(src, tgt)
+            if isinstance(edge_data, dict):
+                return [str(edge_data.get("keywords", ""))]
+            if isinstance(edge_data, list):
+                return [str(e.get("keywords", "")) for e in edge_data if isinstance(e, dict)]
+            return []
+
     def _resolve_entity_name_case_insensitive(
         self, entity_name: str, nx_graph
     ) -> str | None:
