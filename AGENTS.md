@@ -505,6 +505,17 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-10
+
+#### 修复：定时任务重复发送（trigger_callback 改 fire-and-forget，消除等待超时重试窗口）
+
+- **根因**：`trigger_callback` 用 `ChatQueue.enqueue_and_wait`（120s 超时）等 Agent 回复——周报类长任务（>120s，实证 121.8s）超时后 `future.cancel()` 只取消等待、Agent 仍在处理 → 10s 重试再入队 → 同一任务内容入队两次（2026-08-10 09:00 weekly-report-reminder 实证：09:00:00 与 09:02:10 两条周报入队）
+- **修复**：① reminder + background_script 两分支改 fire-and-forget——`enqueue_sync(channel="scheduler")` 入队即完成返回 "ok"，scheduler 立即 reschedule/删除；② 蹦高 + IM 推送提前到入队后（内容 = 任务内容 prompt，不再等 agent_reply）；③ bg recurring 报错保留 3-strike DLQ（返回 None）、one-time 报错 "ok"+永久删除（防 retry_failed 无限重置）；④ **enqueue_sync 必须显式传 `channel="scheduler"`**（默认 "im" 会让 ChatQueue worker 把 Agent 回复自动 push 到 IM——叠加手动 route_out = 同一任务两条 IM 消息；"scheduler" 通道未注册 → 自动回路由 no-op）；⑤ 删除 `enqueue_and_wait`/`_try_once`/10s 重试/`import time`；⑥ 删 `test_trigger_callback_retry.py`（3 个重试测试作废）
+- **保留**：scheduler.py 零改动（in_progress/CAS 跨进程防双触发、8h 超时重置、失败计数、retry_failed）；`ChatQueue.enqueue_and_wait` 方法本身（ha_watcher 仍用，120s 等待无重试）
+- **完成语义**：入队成功 = 通知已送达 = 任务完成；Agent 处理失败由 ChatQueue 降级回复机制兜底，不再需要 scheduler 等回复判成功
+- **交付**：commits 51485133（reminder）+ edd42231（bg）+ 7c165499（删重试测试+ruff 清理）；计划 4 轮审查（R1-R4，连续两轮零 bug）；3 Task 每 Task spec+quality 双审；终审 APPROVE（0 Critical/0 Important，5 Minor 文档级取舍：scheduler.py 过期注释/_CALLBACK_TIMEOUT 注释、bg 分支 4 个测试小缺口、两分支推送代码重复——均为计划已接受项）
+- **排查教训**："等 Agent 回复判成功"的等待协议脆弱（Agent 生成耗时不可控）——通知类任务应"送达即完成"，等待+超时重试必然引入重复窗口；跨通道自动回路由（ChatQueue worker 按 channel 回推回复）是防双消息的隐性耦合点，改 channel 语义必须先查 worker 路由行为
+
 ### 2026-08-09
 
 #### 新增：知识图谱时间链（会话日期链补全 + 主 Agent 认知 + dream-evolver 减负）
