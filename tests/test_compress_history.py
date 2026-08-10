@@ -240,7 +240,6 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
     # _read_context_window_tokens 等配置读取 mock（这些是模块级 import，patch compat 正确）
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
-    monkeypatch.setattr(compat, "_read_target_threshold", lambda: 0.3, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)  # 不保护，2 条都进 history
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
 
@@ -310,7 +309,6 @@ def test_mode3_passes_history_to_call_subagent(monkeypatch):
     monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
-    monkeypatch.setattr(compat, "_read_target_threshold", lambda: 0.3, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
 

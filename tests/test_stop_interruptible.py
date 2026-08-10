@@ -321,7 +321,6 @@ def test_stop_predicate_binding():
             stack.enter_context(mock.patch("agent.subagent.get_subagent_prompt", return_value=""))
             stack.enter_context(mock.patch("agent.subagent._build_subagent_tools_schema", return_value=[]))
             stack.enter_context(mock.patch("agent.subagent._read_context_window_tokens", return_value=200000))
-            stack.enter_context(mock.patch("agent.subagent._read_target_threshold", return_value=0.5))
             stack.enter_context(mock.patch("agent.subagent._maybe_suspend_session"))
             stack.enter_context(mock.patch("agent.subagent._maybe_push_subagent_instruction"))
             stack.enter_context(mock.patch("agent.subagent._strip_at_prefix", side_effect=lambda a, u: a))

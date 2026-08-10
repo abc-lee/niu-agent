@@ -402,7 +402,6 @@ def load_user_config() -> dict[str, Any]:
         "context": {
             "contextWindowSize": 200000,
             "warningThreshold": 0.8,
-            "targetThreshold": 0.5,
             "compressTargetTokens": 60000,
             "sleepTriggerMinutes": 5,
         },
@@ -874,7 +873,6 @@ def complete_setup(
         config["context"] = {
             "contextWindowSize": 200000,
             "warningThreshold": 0.8,
-            "targetThreshold": 0.5,
             "sleepTriggerMinutes": 5,
         }
     save_user_config(config)

@@ -285,7 +285,6 @@ def test_call_subagent_returns_subagent_error_prefix():
          patch.object(subagent, 'build_subagent_system_segments', return_value=("test", "")), \
          patch.object(subagent, '_build_subagent_tools_schema', return_value=[]), \
          patch.object(subagent, '_read_context_window_tokens', return_value=24000), \
-         patch.object(subagent, '_read_target_threshold', return_value=0.3), \
          patch('agent.subagent_registry.SubagentRegistry') as mock_registry:
         mock_registry.register.return_value = MagicMock()
         mock_registry.get.return_value = None

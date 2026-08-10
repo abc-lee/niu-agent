@@ -124,7 +124,7 @@ def _read_context_threshold(key: str, default: float) -> float:
     """Read a context threshold from config/user-config.json.
 
     Args:
-        key: Field name in context section (e.g. 'warningThreshold', 'targetThreshold')
+        key: Field name in context section (e.g. 'warningThreshold')
         default: Default value if key not found or invalid
     """
     try:
@@ -142,11 +142,6 @@ def _read_context_threshold(key: str, default: float) -> float:
 def _read_warning_threshold() -> float:
     """Read warning threshold (overflow detection). Default 0.80, matching Rust launcher."""
     return _read_context_threshold("warningThreshold", 0.80)
-
-
-def _read_target_threshold() -> float:
-    """Read target threshold (compress target usage). Default 0.30 — compress to 30% of window to reduce forced compression frequency."""
-    return _read_context_threshold("targetThreshold", 0.30)
 
 
 DEFAULT_PROTECT_RECENT_COUNT = 10
@@ -900,9 +895,8 @@ def call_subagent(
     else:
         fifo_threshold = context_fifo_threshold
 
-    # FIFO 裁剪目标 token 量
-    target_threshold = _read_target_threshold()
-    context_target_threshold_val = int(context_window_tokens * target_threshold) if context_window_tokens > 0 else 0
+    # FIFO 裁剪目标 token 量（写死 50% 窗口——targetThreshold 配置已删除，用户拍板：80% 触发 → 压到 50%）
+    context_target_threshold_val = int(context_window_tokens * 0.50) if context_window_tokens > 0 else 0
 
     # === 创建 supplement queue + 注册到 SubagentRegistry ===
     from .subagent_registry import SubagentRegistry
