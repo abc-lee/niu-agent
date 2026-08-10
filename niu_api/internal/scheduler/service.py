@@ -8,7 +8,6 @@ import asyncio
 import json
 import os
 import threading
-import time
 from pathlib import Path
 
 from loguru import logger
@@ -200,60 +199,57 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
         logger.error("[BG_SCRIPT] Main event loop not available")
         return None
 
-    try:
-        q = get_chat_queue()
-        future = asyncio.run_coroutine_threadsafe(
-            q.enqueue_and_wait(content=prompt, source="scheduler", session_id="default"),
-            loop,
-        )
-        agent_reply = future.result(timeout=300)
-        if not agent_reply:
-            logger.warning("[BG_SCRIPT] Agent returned empty reply")
-            return None
-
-        logger.info(f"[BG_SCRIPT] Agent replied: {agent_reply[:100]}")
-
-        # ===== 与 reminder 分支对齐：蹦高 + IM 推送（复制 service.py L131-148 逻辑） =====
-        task_content = task.get("content", "⏰")
-        alert_text = (task_content[:47] + "...") if len(task_content) > 50 else task_content
-        try:
-            add_alert_fn(alert_text)
-        except Exception as e:
-            logger.warning(f"[BG_SCRIPT] add_pending_alert failed: {e}")
-
-        # IM 通道推送
-        try:
-            from niu_api.channel import get_channel_router
-            router = get_channel_router()
-            if router.has_channel("im"):
-                # 优先用 task chat_id，回退到继承的 _im_channel_id（确保 route_out 走 SEND 终结卡片）
-                from niu_api.chat import get_or_create_runner
-                _runner = get_or_create_runner()
-                im_cid = _runner.get_im_channel() if _runner else ""
-                push_chat_id = task.get("chat_id") or im_cid
-                push_future = asyncio.run_coroutine_threadsafe(
-                    router.route_out(agent_reply, "im", push_chat_id),
-                    loop,
-                )
-                push_future.result(timeout=30)
-        except Exception as e:
-            logger.warning(f"[BG_SCRIPT] IM push failed: {e}")
-
-        # 报错（is_error）走失败路径；有输出非报错走成功路径
-        if is_error:
-            # one-time 报错：永久删除任务（retry_failed_tasks 会重置 is_recurring=0 的 failed，无限循环）
-            # recurring 报错：返回 None 走失败计数器（3次后标 failed，retry 不重置 recurring failed，不循环）
-            if not task.get("is_recurring"):
-                logger.warning(f"[BG_SCRIPT] one-time 任务报错，永久删除 {task.get('id')}")
-                try:
-                    get_store().delete_task_permanent(task["id"])
-                except Exception as e:
-                    logger.error(f"[BG_SCRIPT] 删除失败任务出错: {e}")
-            return None
-        return agent_reply
-    except Exception as e:
-        logger.error(f"[BG_SCRIPT] ChatQueue call failed: {e}")
+    # fire-and-forget：入队即完成，不等待 Agent 回复（与 reminder 分支一致，
+    # 消除"等待超时 → 重试再入队"导致的重复触发）。
+    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：ChatQueue worker
+    # 会把 Agent 回复自动 route 回 channel——若为 "im" 则回复被 push 到 IM，
+    # 叠加下方手动 route_out(prompt) = 双 IM 消息。"scheduler" 通道未注册 → no-op。
+    q = get_chat_queue()
+    enqueue_result = q.enqueue_sync(content=prompt, channel="scheduler", source="scheduler", session_id="default")
+    if not enqueue_result.queued:
+        logger.error(f"[BG_SCRIPT] Enqueue failed: {task.get('id')}")
         return None
+
+    # 蹦高 + IM 推送（与 reminder 分支对齐；内容 = prompt）
+    task_content = task.get("content", "⏰")
+    alert_text = (task_content[:47] + "...") if len(task_content) > 50 else task_content
+    try:
+        add_alert_fn(alert_text)
+    except Exception as e:
+        logger.warning(f"[BG_SCRIPT] add_pending_alert failed: {e}")
+
+    try:
+        from niu_api.channel import get_channel_router
+        router = get_channel_router()
+        if router.has_channel("im"):
+            from niu_api.chat import get_or_create_runner
+            _runner = get_or_create_runner()
+            im_cid = _runner.get_im_channel() if _runner else ""
+            push_chat_id = task.get("chat_id") or im_cid
+            push_future = asyncio.run_coroutine_threadsafe(
+                router.route_out(prompt, "im", push_chat_id),
+                loop,
+            )
+            push_future.result(timeout=30)
+    except Exception as e:
+        logger.warning(f"[BG_SCRIPT] IM push failed: {e}")
+
+    # 脚本报错已注入主 Agent（Agent 会看到错误输出并处理）。
+    # recurring 报错返回 None：保留 3-strike DLQ（scheduler 失败计数，3 次标
+    # status='failed' 终态——task_store.retry_failed_tasks 只重置 one-time，
+    # recurring failed 不再重试）。返回 "ok" 会让永久失败脚本每周期无限注入报错。
+    # one-time 报错返回 "ok"（scheduler 成功路径自动删除）+ 手动永久删除双保险，
+    # 避免 retry_failed_tasks 5 分钟后重置 → 无限循环。
+    if is_error and not task.get("is_recurring"):
+        logger.warning(f"[BG_SCRIPT] one-time 任务报错，永久删除 {task.get('id')}")
+        try:
+            get_store().delete_task_permanent(task["id"])
+        except Exception as e:
+            logger.error(f"[BG_SCRIPT] 删除失败任务出错: {e}")
+        return "ok"
+    if is_error:
+        return None
+    return "ok"
 
 
 # ============== 生命周期管理 ==============

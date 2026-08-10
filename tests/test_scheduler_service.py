@@ -25,8 +25,11 @@ class TestTriggerCallback:
             result = trigger_callback(task)
             assert result is None
 
-    def test_agent_reply_success(self):
-        """ChatQueue 正常返回时返回回复内容"""
+    def test_enqueue_success_returns_ok(self):
+        """入队成功（queued=True）→ 返回 ok（fire-and-forget：不等 Agent 回复）"""
+        from unittest.mock import MagicMock, patch
+
+        from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler.service import trigger_callback
 
         task = {"content": "test task"}
@@ -34,53 +37,19 @@ class TestTriggerCallback:
         mock_loop.is_closed.return_value = False
 
         mock_queue = MagicMock()
-        mock_future = MagicMock()
-        mock_future.result.return_value = "Agent replied"
-        mock_future.timeout = 300
+        mock_queue.enqueue_sync.return_value = EnqueueResult(queued=True, request_id="1")
 
         with patch("niu_api.chat._main_loop", mock_loop), \
              patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.internal.scheduler.service.asyncio") as mock_asyncio, \
-             patch("niu_api.alerts.add_pending_alert"):
-
-            mock_asyncio.run_coroutine_threadsafe.return_value = mock_future
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
+            mock_cr.return_value.has_channel.return_value = False  # 无 IM 通道，跳过推送
             result = trigger_callback(task)
-            assert result == "Agent replied"
 
-    def test_agent_empty_reply_returns_none(self):
-        """ChatQueue 返回空回复时返回 None"""
-        from niu_api.internal.scheduler.service import trigger_callback
-
-        task = {"content": "test task"}
-        mock_loop = MagicMock()
-        mock_loop.is_closed.return_value = False
-
-        mock_queue = MagicMock()
-        mock_future = MagicMock()
-        mock_future.result.return_value = ""
-
-        with patch("niu_api.chat._main_loop", mock_loop), \
-             patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.internal.scheduler.service.asyncio") as mock_asyncio, \
-             patch("niu_api.alerts.add_pending_alert"):
-
-            mock_asyncio.run_coroutine_threadsafe.return_value = mock_future
-            result = trigger_callback(task)
-            assert result is None
-
-    def test_chatqueue_exception_returns_none(self):
-        """ChatQueue 调用异常时返回 None"""
-        from niu_api.internal.scheduler.service import trigger_callback
-
-        task = {"content": "test task"}
-        mock_loop = MagicMock()
-        mock_loop.is_closed.return_value = False
-
-        with patch("niu_api.chat._main_loop", mock_loop), \
-             patch("niu_api.chat_queue.get_chat_queue", side_effect=Exception("queue error")):
-
-            result = trigger_callback(task)
-            assert result is None
+        assert result == "ok"
+        mock_queue.enqueue_sync.assert_called_once_with(
+            content="[定时任务] test task", channel="scheduler", source="scheduler", session_id="default"
+        )
 
 
 class TestTaskStoreMigration:
@@ -147,7 +116,8 @@ class TestTriggerCallbackBackgroundScript:
         }
 
     def test_silent_success_no_enqueue(self, tmp_path, monkeypatch):
-        """脚本 stdout 空 + exit 0 → 静默，不调 enqueue_and_wait"""
+        """脚本 stdout 空 + exit 0 → 静默，不调 enqueue_sync"""
+        from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler import service
 
         # workspace = tmp_path, scripts/clean.py 存在
@@ -162,7 +132,7 @@ class TestTriggerCallbackBackgroundScript:
 
         enqueue_called = []
         monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
-            "enqueue_and_wait": lambda self, **kw: enqueue_called.append(kw) or "repl"
+            "enqueue_sync": lambda self, **kw: enqueue_called.append(kw) or EnqueueResult(queued=True, request_id="1")
         })())
 
         result = service.trigger_callback(self._make_bg_task())
@@ -171,7 +141,10 @@ class TestTriggerCallbackBackgroundScript:
         assert enqueue_called == []  # 未通知
 
     def test_has_output_enqueues(self, tmp_path, monkeypatch):
-        """脚本 stdout 非空 → enqueue_and_wait 注入主 Agent"""
+        """脚本 stdout 非空 → enqueue_sync 注入主 Agent，返回 ok"""
+        from unittest.mock import MagicMock, patch
+
+        from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler import service
 
         scripts_dir = tmp_path / "scripts"
@@ -182,25 +155,28 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "有垃圾", "exit_code": 0})
 
         captured = {}
-        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
-            "enqueue_and_wait": lambda self, **kw: captured.update(kw) or "Agent处理"
-        })())
+        mock_q = type("Q", (), {
+            "enqueue_sync": lambda self, **kw: captured.update(kw) or EnqueueResult(queued=True, request_id="1")
+        })()
+        monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
              patch("niu_api.alerts.add_pending_alert"), \
              patch("niu_api.channel.get_channel_router") as mock_cr:
             mock_cr.return_value.has_channel.return_value = False  # 无 IM 通道，跳过推送
-            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "Agent处理", timeout=300)
             result = service.trigger_callback(self._make_bg_task())
 
-        assert result == "Agent处理"
+        assert result == "ok"
         assert captured["content"].startswith("[定时任务]")
         assert "有垃圾" in captured["content"]
         assert captured["source"] == "scheduler"
+        assert captured["channel"] == "scheduler"  # channel 必须保持 scheduler（防 IM 自动回路由双消息）
 
     def test_error_enqueues_with_stderr(self, tmp_path, monkeypatch):
-        """脚本异常 → code_run status=error，stdout(含traceback) 注入主 Agent"""
+        """脚本异常 → stdout(含traceback) 注入主 Agent；recurring 报错返回 None 走 DLQ"""
+        from unittest.mock import MagicMock, patch
+
+        from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler import service
 
         scripts_dir = tmp_path / "scripts"
@@ -211,22 +187,27 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "error", "stdout": "Traceback...boom", "exit_code": 1})
 
         captured = {}
-        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
-            "enqueue_and_wait": lambda self, **kw: captured.update(kw) or "Agent处理"
-        })())
+        mock_q = type("Q", (), {
+            "enqueue_sync": lambda self, **kw: captured.update(kw) or EnqueueResult(queued=True, request_id="1")
+        })()
+        monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
+
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
              patch("niu_api.alerts.add_pending_alert"), \
              patch("niu_api.channel.get_channel_router") as mock_cr:
             mock_cr.return_value.has_channel.return_value = False
-            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "Agent处理", timeout=300)
             result = service.trigger_callback(self._make_bg_task())
 
         assert "Traceback" in captured["content"]
-        assert result is None  # 报错走失败路径（spec：报错=失败+通知，调度器走失败计数器）
+        # recurring 报错：保留 3-strike DLQ（scheduler 失败计数 3 次标 failed 终态）——
+        # 返回 "ok" 会让永久失败脚本每周期无限注入报错
+        assert result is None
 
     def test_one_time_error_deletes_task(self, tmp_path, monkeypatch):
-        """one-time 报错 → 永久删除任务（避免 retry_failed_tasks 无限重置），返回 None"""
+        """one-time 报错 → 已注入主 Agent + 永久删除任务（防 retry_failed 无限重置），返回 ok"""
+        from unittest.mock import MagicMock, patch
+
+        from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler import service
 
         scripts_dir = tmp_path / "scripts"
@@ -236,9 +217,10 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "error", "stdout": "Traceback", "exit_code": 1})
 
-        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
-            "enqueue_and_wait": lambda self, **kw: "Agent处理"
-        })())
+        mock_q = type("Q", (), {
+            "enqueue_sync": lambda self, **kw: EnqueueResult(queued=True, request_id="1")
+        })()
+        monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
         deleted = []
         monkeypatch.setattr(service, "get_store", lambda: type("S", (), {
@@ -250,18 +232,17 @@ class TestTriggerCallbackBackgroundScript:
         task["is_recurring"] = False
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
              patch("niu_api.alerts.add_pending_alert"), \
              patch("niu_api.channel.get_channel_router") as mock_cr:
             mock_cr.return_value.has_channel.return_value = False
-            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "Agent处理", timeout=300)
             result = service.trigger_callback(task)
 
-        assert result is None
-        assert deleted == ["bg1"]  # one-time 报错永久删除
+        assert result == "ok"
+        assert deleted == ["bg1"]  # one-time 报错永久删除（scheduler 成功路径也会删，幂等）
 
     def test_missing_script_file_returns_none_no_enqueue(self, tmp_path, monkeypatch):
         """脚本文件不存在 → 永久删除任务 + 返回 None，不调 code_run/enqueue"""
+        from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler import service
 
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
@@ -273,7 +254,7 @@ class TestTriggerCallbackBackgroundScript:
 
         enqueue_called = []
         monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
-            "enqueue_and_wait": lambda self, **kw: enqueue_called.append(kw) or "x"
+            "enqueue_sync": lambda self, **kw: enqueue_called.append(kw) or EnqueueResult(queued=True, request_id="1")
         })())
 
         deleted = []
@@ -298,19 +279,61 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "x"*5000, "exit_code": 0})
 
+        from niu_api.chat_queue import EnqueueResult
+
         captured = {}
-        monkeypatch.setattr(service, "get_chat_queue", lambda: type("Q", (), {
-            "enqueue_and_wait": lambda self, **kw: captured.update(kw) or "ok"
-        })())
+        mock_q = type("Q", (), {
+            "enqueue_sync": lambda self, **kw: captured.update(kw) or EnqueueResult(queued=True, request_id="1")
+        })()
+        monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.internal.scheduler.service.asyncio") as mock_a, \
              patch("niu_api.alerts.add_pending_alert"), \
              patch("niu_api.channel.get_channel_router") as mock_cr:
             mock_cr.return_value.has_channel.return_value = False
-            mock_a.run_coroutine_threadsafe.return_value = MagicMock(result=lambda **kw: "ok", timeout=300)
             service.trigger_callback(self._make_bg_task())
 
         # [定时任务] 前缀 + 截断提示 + ≤2000 字符正文
         assert len(captured["content"]) < 2200
         assert "…[截断]" in captured["content"]  # 截断标记必须存在（spec：超出加提示）
+        assert captured["channel"] == "scheduler"
+
+    def test_has_output_with_im_channel_pushes(self, tmp_path, monkeypatch):
+        """有输出 + IM 通道存在 → 入队后立即 route_out(prompt) 推 IM（不再等 Agent 回复）"""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from niu_api.chat_queue import EnqueueResult
+        from niu_api.internal.scheduler import service
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "clean.py").write_text("print('有垃圾')\n")
+
+        monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
+        monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "有垃圾", "exit_code": 0})
+
+        mock_q = type("Q", (), {
+            "enqueue_sync": lambda self, **kw: EnqueueResult(queued=True, request_id="1")
+        })()
+        monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
+
+        mock_route_out = AsyncMock()
+        mock_router = MagicMock()
+        mock_router.has_channel.return_value = True
+        mock_router.route_out = mock_route_out
+
+        with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
+             patch("niu_api.chat.get_or_create_runner", return_value=None), \
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router", return_value=mock_router), \
+             patch("asyncio.run_coroutine_threadsafe") as mock_rc:
+
+            push_future = MagicMock()
+            push_future.result.return_value = None
+            mock_rc.side_effect = [push_future]
+
+            result = service.trigger_callback(self._make_bg_task())
+
+        assert result == "ok"
+        # 推送内容 = prompt（脚本输出，含 [定时任务] 前缀）
+        mock_route_out.assert_called_once_with("[定时任务] 有垃圾", "im", "")
