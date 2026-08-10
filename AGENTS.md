@@ -527,6 +527,7 @@ preload_face_model()
 - **重复触发无害**：子 Agent 分支不设压缩冷却/不重置 last_prompt_tokens → 下轮可能重复触发占位符化，因幂等 + 达标即停为 no-op
 - **交付**：commits 5cc3f890（占位符化纯函数 TDD，10 单测）+ a57bef47（两处触发点两级串联，兜底 0.30→0.50）+ 2550d937（删 targetThreshold 全链路）+ a0d1f671（回归适配）；计划 R1-R5 审查（R4+R5 连续两轮零 bug）；每 Task spec+quality 双审；终审 APPROVE（0 Critical/0 Important）
 - **用户可见变化**：子 Agent 压缩目标从 30%（配置缺失兜底）→ 50% 窗口（更温和）；旧轮次 tool 输出可能显示为 `[工具名 输出已裁剪]`
+- **真实场景验证待触发后补（2026-08-10 用户拍板"暂时算完成"）**：占位符化触发条件苛刻（子 Agent 上下文 > 80% 且旧轮次含大量 tool 输出，需真实 LLM 长会话），当前验证止于单测（test_tool_placeholderize.py 10 例）+ 集成测试（mock 层）——真实场景端到端效果（占位符化后 Agent 推理连贯性、达标即停是否如期、是否减少 FIFO 整组删）未实测；**以后实际触发该场景时（日志见 `[ToolCrop] placeholderized N tool outputs`）需确认效果，必要时再调优**
 - **排查教训**：子 Agent 触发分支（on_context_high_usage None）不设压缩冷却——与主 Agent 分支（回调后冷却）行为不同，跨轮重复触发依赖幂等兜底；测试断言"达标即停"必须用与实现同一 count 函数量 target（probe 法），不能猜字符数
 - **回归豁免清单（12 个 pre-existing 测试失败，与本工程无关，勿当新失败）**：
   - `tests/test_context_overflow.py`：3× TestLiteLLMAdapterContextOverflow（断言查 chat 方法源码字面量 'context window'/'prompt is too long'/'maximum context length'——源码已不含）+ 3× TestSubagentFIFOThreshold（call_subagent 测试 mock 的 client.backend AttributeError）
