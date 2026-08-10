@@ -771,12 +771,17 @@ def agent_runner_loop(
                     handler._last_prompt_tokens = 0
                     _compress_cooldown = True  # 冷却：本次 agent_runner_loop 不再触发压缩
                 else:
-                    # 子 Agent：FIFO 裁剪到 target 阈值
-                    target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.30)
-                    removed = _fifo_prune(messages, target_tokens, is_resumed=(resumed_messages is not None))
-                    if removed > 0:
-                        logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
-                                    f"({usage_ratio:.1%} > {warning_threshold:.0%}), removed {removed} messages, "
+                    # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
+                    target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
+                    replaced = _placeholderize_tool_outputs(messages, target_tokens)
+                    if count_messages_tokens(messages) > target_tokens:
+                        removed = _fifo_prune(messages, target_tokens, is_resumed=(resumed_messages is not None))
+                        if removed > 0:
+                            logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
+                                        f"({usage_ratio:.1%} > {warning_threshold:.0%}), removed {removed} messages, "
+                                        f"now ~{count_messages_tokens(messages)} tokens (target {target_tokens})")
+                    elif replaced > 0:
+                        logger.info(f"[ToolCrop] placeholderized {replaced} tool outputs, "
                                     f"now ~{count_messages_tokens(messages)} tokens (target {target_tokens})")
             # 旧 FIFO 回退：只在首轮（last_prompt_tokens==0）时执行
         if context_fifo_threshold > 0 and len(messages) > 2 and last_prompt_tokens == 0 and not _compress_cooldown:
@@ -987,10 +992,18 @@ def agent_runner_loop(
                             handler._last_prompt_tokens = 0
                             _compress_cooldown = True
                         else:
-                            target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.30)
-                            removed = _fifo_prune(messages, target_tokens, is_resumed=(resumed_messages is not None))
-                            if removed > 0:
-                                logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
+                            # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
+                            target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
+                            replaced = _placeholderize_tool_outputs(messages, target_tokens)
+                            if count_messages_tokens(messages) > target_tokens:
+                                removed = _fifo_prune(messages, target_tokens, is_resumed=(resumed_messages is not None))
+                                if removed > 0:
+                                    logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
+                                                f"({usage_ratio:.1%} > {warning_threshold:.0%}), removed {removed} messages, "
+                                                f"now ~{count_messages_tokens(messages)} tokens (target {target_tokens})")
+                            elif replaced > 0:
+                                logger.info(f"[ToolCrop] placeholderized {replaced} tool outputs, "
+                                            f"now ~{count_messages_tokens(messages)} tokens (target {target_tokens})")
         else:
             logger.debug(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}")
 
