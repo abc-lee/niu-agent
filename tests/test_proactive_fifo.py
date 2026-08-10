@@ -12,6 +12,7 @@ def _make_mock_response(content="hello", tool_calls=None):
     resp.content = content
     resp.tool_calls = tool_calls or []
     resp.context_overflow = False
+    resp.stream_error = False  # 关键：裸 Mock 的 stream_error 自动属性为真，会触发 LLM_ERROR 提前退出
     return resp
 
 
@@ -63,6 +64,10 @@ def _make_handler(dispatch_fn=None):
     handler.max_turns = 40
     handler._current_messages = []
     handler.current_turn = 0
+    # 关键：裸 Mock 的 _is_sync_subagent/_bypass_at_prefix 自动属性 truthy，
+    # 会令 _intercept_at_prefix_content 把普通 content 回复误判为子 Agent 格式错误。显式置 False。
+    handler._is_sync_subagent = False
+    handler._bypass_at_prefix = False
 
     if dispatch_fn:
         handler.dispatch = dispatch_fn
@@ -411,3 +416,67 @@ def test_truncate_tool_content_without_name():
     assert "工具" in result
     assert "memory-server" not in result
     assert len(result) <= MAX_TOOL_RESULT_CHARS
+
+
+def test_sub_agent_placeholderize_before_fifo():
+    """子 Agent 80% 触发 → 先占位符化；仍超 target 才 FIFO 兜底（两级串联、顺序可证）。
+
+    - 触发：第一轮 LLM 响应后立即检测（usage.prompt_tokens=170000 = 85% > 80%）
+    - 阶段 1：12 轮含超大 tool 输出的 history + agent_loop 追加的当前 user（user 总数 > 13）→ 最早若干轮 tool 可替换，
+      总量估算远 > target(100000) → 占位符化 3 条后仍超 → 阶段 2 FIFO 兜底
+    - 顺序证据：spy 里检查 FIFO 收到的 messages 已含占位符（阶段 1 先于阶段 2 执行）
+    """
+    from unittest import mock
+
+    import agent.generic.agent_loop as al
+
+    handler = _make_handler()
+
+    tc1 = _make_tool_call(name="read", args={}, tid="call_1")
+    resp1 = _make_mock_response(content="", tool_calls=[tc1])
+    resp1.usage = {"prompt_tokens": 170000, "completion_tokens": 500, "total_tokens": 170500}
+    resp2 = _make_mock_response(content="Done", tool_calls=[])
+    resp2.usage = {"prompt_tokens": 90000, "completion_tokens": 200, "total_tokens": 90200}
+    mock_client = _make_client([resp1, resp2])
+
+    tool_msgs = [
+        {"role": "assistant", "content": "调工具", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "read 输出很长" * 8000, "name": "read"},
+        {"role": "user", "content": "下一步"},
+    ]
+    history = [{"role": "system", "content": "sys"}, {"role": "user", "content": "任务"}] + tool_msgs * 12
+    # agent_loop 会在 history 后追加当前 user（L649-652），第一轮响应后 dispatch 再追加 tool/next_prompt
+    # ——messages user 总数 > 10 → 最早若干轮 tool 可替换（断言不依赖具体轮数）
+
+    calls = {"fifo": 0, "placeholder_seen": False}
+    orig_fifo = al._fifo_prune
+
+    def spy_fifo(messages, target_tokens, is_resumed=False):
+        calls["fifo"] += 1
+        # 累积 OR：子 Agent 分支不设 _compress_cooldown、不重置 last_prompt_tokens，
+        # 第 2 轮轮顶会再次触发 FIFO spy，此时 turn1 的 FIFO 已把占位符删光 + 新轮 dispatch 的
+        # tool('ok') 非占位符 → 直接赋值会覆盖 flag=False。用 or 累积保证首次 True 不被覆盖。
+        calls["placeholder_seen"] = calls["placeholder_seen"] or any(
+            m.get("role") == "tool" and str(m.get("content", "")).endswith("输出已裁剪]")
+            for m in messages
+        )
+        return orig_fifo(messages, target_tokens, is_resumed=is_resumed)
+
+    with mock.patch.object(al, "count_messages_tokens", return_value=500000), \
+         mock.patch.object(al, "_fifo_prune", side_effect=spy_fifo):
+        gen = agent_runner_loop(
+            client=mock_client, system_prompt="test", user_input="test",
+            handler=handler, tools_schema=[], max_turns=5, verbose=False,
+            context_window_tokens=200000, context_fifo_threshold=0,
+            context_target_threshold=100000, on_context_high_usage=None,
+            history=history,
+        )
+        _collect_events(gen)
+
+    # 两级顺序：FIFO 兜底收到的 messages 里已有占位符化的 tool 输出（阶段 1 先执行）
+    assert calls["placeholder_seen"], "FIFO received messages without placeholderized tool outputs"
+    # count_messages_tokens 被 patch 为常数 500000（恒 > target 100000）→ 占位符化后必仍超 → FIFO 兜底必被调用
+    assert calls["fifo"] >= 1
+    # 子 Agent 循环继续（不退出）
+    assert mock_client._chat_call_count[0] == 2
