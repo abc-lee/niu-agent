@@ -32,6 +32,24 @@ class _FakeAdapter:
             time.sleep(self.delay)
         return self.results
 
+    def _get_rag(self):
+        # T2 P2 防御：真实 _get_brain_injector 创建路径会调 adapter._get_rag()，
+        # 缺失会 AttributeError（被生产 except 吞掉）——返回 None 使该路径安全短路。
+        return None
+
+
+class _FakeBrainInjector:
+    """最小 brain injector：activate_for_query 记录 timeout，格式段返回空。"""
+
+    def __init__(self):
+        self.last_timeout = None
+
+    def activate_for_query(self, query_context, timeout):
+        self.last_timeout = timeout
+
+    def format_region_map_only(self):
+        return ""
+
 
 class _FakePool:
     """最小 decay pool：记录 inject 调用，get_top_by_category 返回已注入实体（格式段消费）。
@@ -85,6 +103,13 @@ def _make_runner(monkeypatch, adapter, pool):
     # R2-B P1-2：正常路径 all_hits 非空会触发真实 _traverse_from_hits → get_lightrag() 懒初始化
     # 真实 LightRAG（环境相关慢/挂）——测试必须覆盖为返回空（图遍历可中断正确性由生产代码保证）
     runner._traverse_from_hits = lambda hits: {}
+    # T2 P2：覆盖 _get_brain_injector 返回 fake injector——真实创建路径在测试里
+    # 会调 _FakeAdapter._get_rag()（现返回 None 走安全短路）且重，无法构造出可用
+    # BrainContextInjector；此前缺该方法导致 AttributeError 被生产 except 吞掉，
+    # activate_for_query(timeout=15) 透传分支从未执行。
+    fake_injector = _FakeBrainInjector()
+    runner._get_brain_injector = lambda: fake_injector
+    runner._fake_injector = fake_injector
     return runner
 
 
@@ -96,6 +121,7 @@ def test_normal_injection_passes_timeout_15(monkeypatch):
     injection, _ = runner._inject_dynamic_resources("测试上下文")
     assert adapter.search_multi_lightrag_timeout == 15
     assert adapter.search_by_file_path_timeout == 15
+    assert runner._fake_injector.last_timeout == 15  # 脑区激活 timeout 透传（T2 P2）
     assert "k1" in injection  # knowledge 实体进入注入文本（经 FakePool 注入 + 格式段）
 
 
