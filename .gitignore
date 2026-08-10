@@ -145,6 +145,4 @@ sessions/
 # Internal working docs — not for public release
 /docs/kg-dev-dictionary.md
 /docs/lightrag-plans/
-/docs/superpowers/specs
-/docs/superpowers/analysis
-/docs/superpowers/plans/
+/docs/superpowers/
