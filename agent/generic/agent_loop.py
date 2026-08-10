@@ -823,6 +823,14 @@ def agent_runner_loop(
                 on_before_llm(messages, turn)
             except Exception:
                 logger.exception("[AgentLoop] on_before_llm callback failed")
+        # 停止检查：动态注入（on_before_llm，含 LightRAG 检索）放弃后立即退出，
+        # 不发起 LLM 调用（注入可中断化 Task 2 的配套——放弃注入后主 Agent 立即 STOPPED）
+        if stop_predicate():
+            logger.info("[AgentLoop] Stop requested before LLM call, exiting")
+            if not getattr(handler, "_is_subagent", False):
+                clear_stop()  # 主 Agent 自己消费停止意图
+            yield StreamEvent("system", "chat_idle")
+            return {"result": "STOPPED", "messages": messages}
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
