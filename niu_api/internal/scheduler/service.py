@@ -58,26 +58,22 @@ def get_db_path() -> str:
 
 def trigger_callback(task: dict) -> str | None:
     """
-    任务触发回调：通过 ChatQueue 入队并等待 Agent 回复
+    任务触发回调：通过 ChatQueue 入队，入队成功即完成（fire-and-forget）
 
-    从调度器工作线程调用，通过 run_coroutine_threadsafe 桥接到主事件循环。
-    ChatQueue 串行处理消息，自动持久化到数据库并 SSE 推送。
+    从调度器工作线程调用。ChatQueue 串行处理消息，自动持久化到数据库并 SSE 推送。
 
-    失败重试：ChatQueue.enqueue_and_wait 内置 2 分钟超时（asyncio.wait_for timeout=120），
-    返回空字符串或异常时，10s 后重试 1 次。仍失败返回 None，
-    scheduler 收到 None 后会 reschedule（recurring）或标 failed（one-time）。
-    连续 3 次失败的 task 由 scheduler.py 内的失败计数器标记 status='failed'
-    （不引入 DLQ 表，复用现有 status 字段）。
+    完成语义：**入队成功 = 通知已送达 = 任务完成**，不再等待 Agent 回复。
+    此前实现用 enqueue_and_wait（120s 超时）等 Agent 回复，超时判失败后
+    10s 重试再入队——长任务（周报类 >120s）每次踩线超时 → 同一条任务入队两次
+    → 重复发送（2026-08-10 09:00 weekly-report-reminder 实证：121.8s 生成耗时
+    触发超时重试，09:00:00 与 09:02:10 两条周报入队）。
+    Agent 处理失败由 ChatQueue 降级回复机制兜底，不需要 scheduler 知道。
 
-    注意：本函数内部重试 1 次 = 2 次真实 ChatQueue.enqueue_and_wait 尝试。
-    scheduler 的失败计数器阈值 3 = trigger_callback 被调 3 次 = 6 次真实尝试。
-    循环任务 reschedule 到下次 cron 时间重试，一次性任务失败直接标 failed
-    （由 retry_failed_tasks 5 分钟后重置，见 scheduler.py _check_and_trigger_impl）。
-
-    外层 future.result(timeout=300) 兜底 5 分钟总超时，最坏情况（两次尝试都卡满
-    5 分钟）总耗时约 10 分钟。实践中内层 120s 超时会先返回空串触发重试。
-
-    IM 推送失败只 log warning，不影响 task 状态（避免重复触发 Agent 生成重复回复）。
+    返回：
+    - "ok"：入队成功（循环任务 reschedule / 一次性任务 completed）
+    - None：入队失败（loop 不可用）——scheduler 走失败链
+      （循环任务失败计数器 3 次标 failed；一次性任务标 failed 由 retry_failed_tasks
+      5 分钟后重置）
 
     background_script 任务：读 {workspace}/scripts/{script_file} → code_run →
     stdout 空+成功=静默返回 '(silent)'；有 stdout 或 status=error=stdout 注入主 Agent。
@@ -93,7 +89,7 @@ def trigger_callback(task: dict) -> str | None:
     if task.get("task_kind") == "background_script":
         return _trigger_background_script(task, _main_loop, add_pending_alert)
 
-    # ===== reminder 原逻辑（不动） =====
+    # ===== reminder 分支（fire-and-forget） =====
     from niu_api.chat_queue import get_chat_queue  # reminder 局部 import 保持原样
     prompt = f"[定时任务] {task['content']}"
 
@@ -102,49 +98,27 @@ def trigger_callback(task: dict) -> str | None:
         logger.error("[INTERNAL SCHEDULER] Main event loop not available, cannot trigger task")
         return None
 
-    # 单次尝试函数：通过 ChatQueue 入队并等待回复
-    def _try_once() -> str | None:
-        try:
-            q = get_chat_queue()
-            future = asyncio.run_coroutine_threadsafe(
-                q.enqueue_and_wait(
-                    content=prompt,
-                    source="scheduler",
-                    session_id="default",
-                ),
-                loop,
-            )
-            agent_reply = future.result(timeout=300)  # 5 分钟超时
-
-            if agent_reply:
-                logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100]}")
-                return agent_reply
-            else:
-                logger.warning("[INTERNAL SCHEDULER] Agent returned empty reply")
-                return None
-        except Exception as e:
-            logger.error(f"[INTERNAL SCHEDULER] ChatQueue call failed: {e}")
-            return None
-
-    # 第一次尝试
-    agent_reply = _try_once()
-
-    # 失败重试 1 次（10s 间隔）
-    if agent_reply is None:
-        logger.warning(f"[INTERNAL SCHEDULER] First attempt failed, retrying in 10s (task_id={task.get('id')})")
-        time.sleep(10)
-        agent_reply = _try_once()
-
-    if agent_reply is None:
-        logger.error(f"[INTERNAL SCHEDULER] Both attempts failed (task_id={task.get('id')})")
+    # 同步非阻塞入队（enqueue_sync 内部经 call_soon_threadsafe 桥接到主 loop）
+    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：ChatQueue worker
+    # （chat_queue.py L250-264）会把 Agent 回复自动 route 回 channel——若为 "im"，
+    # 回复会被 push 到 IM（channel/gateway.py 空 channel_id 回退广播），叠加下方手动
+    # route_out(prompt) = 同一任务两条 IM 消息。"scheduler" 通道未注册 → no-op，
+    # 回复只走 SSE 前端，与原 enqueue_and_wait(channel="scheduler") 语义一致。
+    q = get_chat_queue()
+    enqueue_result = q.enqueue_sync(content=prompt, channel="scheduler", source="scheduler", session_id="default")
+    if not enqueue_result.queued:
+        logger.error(f"[INTERNAL SCHEDULER] Enqueue failed (task_id={task.get('id')})")
         return None
 
-    # 触发小女孩蹦高提醒，传递任务内容摘要让用户知道是什么事
+    # 蹦高提醒：入队即触发（不再等 Agent 回复）
     task_content = task.get("content", "⏰")
     alert_text = (task_content[:47] + "...") if len(task_content) > 50 else task_content
-    add_pending_alert(alert_text)
+    try:
+        add_pending_alert(alert_text)
+    except Exception as e:
+        logger.warning(f"[INTERNAL SCHEDULER] add_pending_alert failed: {e}")
 
-    # IM 通道推送：有推送目标时才推送
+    # IM 通道推送（内容 = 任务内容，不再等 Agent 回复）
     try:
         from niu_api.channel import get_channel_router
         router = get_channel_router()
@@ -155,14 +129,14 @@ def trigger_callback(task: dict) -> str | None:
             im_cid = _runner.get_im_channel() if _runner else ""
             push_chat_id = task.get("chat_id") or im_cid
             push_future = asyncio.run_coroutine_threadsafe(
-                router.route_out(agent_reply, "im", push_chat_id),
+                router.route_out(prompt, "im", push_chat_id),
                 loop,
             )
             push_future.result(timeout=30)
     except Exception as e:
         logger.warning(f"[SCHEDULER] IM push failed: {e}")
 
-    return agent_reply
+    return "ok"
 
 
 def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | None:
