@@ -528,6 +528,20 @@ preload_face_model()
 - **交付**：commits 5cc3f890（占位符化纯函数 TDD，10 单测）+ a57bef47（两处触发点两级串联，兜底 0.30→0.50）+ 2550d937（删 targetThreshold 全链路）+ a0d1f671（回归适配）；计划 R1-R5 审查（R4+R5 连续两轮零 bug）；每 Task spec+quality 双审；终审 APPROVE（0 Critical/0 Important）
 - **用户可见变化**：子 Agent 压缩目标从 30%（配置缺失兜底）→ 50% 窗口（更温和）；旧轮次 tool 输出可能显示为 `[工具名 输出已裁剪]`
 - **真实场景验证待触发后补（2026-08-10 用户拍板"暂时算完成"）**：占位符化触发条件苛刻（子 Agent 上下文 > 80% 且旧轮次含大量 tool 输出，需真实 LLM 长会话），当前验证止于单测（test_tool_placeholderize.py 10 例）+ 集成测试（mock 层）——真实场景端到端效果（占位符化后 Agent 推理连贯性、达标即停是否如期、是否减少 FIFO 整组删）未实测；**以后实际触发该场景时（日志见 `[ToolCrop] placeholderized N tool outputs`）需确认效果，必要时再调优**
+
+#### 修复：子 Agent 去掉轮数上限（max_turns=None 无上限）+ 未完成结果游标不推进
+
+- **事故（2026-08-10 实机）**：睡眠整理 context-manager 逐条精简 103 条消息，第 20 次 LLM 调用（raw_http 20260810/000031，finish_reason=tool_calls 要求再精简 idx:33/67/71）后撞线 `call_subagent` 硬编码 `max_turns=20`（初始化代码带入，从未有人拍板）→ `agent_runner_loop` 返回 MAX_TURNS_EXCEEDED → `call_subagent` 后处理只有 LLM_ERROR/length/CONTEXT_OVERFLOW 三分支 → 落 `return last_reply`（中间文本"再精简几个小工具输出..."）→ `_tidy_context_impl` 判非 overflow → **游标自动推进到范围末尾** → "压缩没结束但完成"；未处理消息被游标越过、下次整理不再覆盖（日志 `[Tidy] context-manager result: 再精简几个` + `Compress cursor auto-advanced` 特征）
+- **用户拍板**：**子 Agent 是智能体，不需要轮数上限**（工具循环已有重复工具调用检测等多级保护，无上限后防失控依赖 stop_predicate 三检查点 + 上下文溢出保护 + 重复检测注入）；游标误判一并修
+- **修复**：
+  1. **max_turns=None = 无上限**：`agent_runner_loop` 循环条件 `while handler.max_turns is None or turn < handler.max_turns`（agent/generic/agent_loop.py L642/L750）；`_run_agent_loop` 默认 `max_turns: int | None = None`；`call_subagent` **新增 max_turns 参数（默认 None）**，resume/异步/同步三路径透传（agent/subagent.py）；主 Agent 默认 40 轮零改动（runner.py chat 入口）；显式传小值（测试用 1/2/5）仍触发 MAX_TURNS_EXCEEDED
+  2. **incomplete JSON 契约**：call_subagent 后处理在 LLM_ERROR 之后、finish_reason=length **之前**插入分支——result in (MAX_TURNS_EXCEEDED/STOPPED/TERMINATED_BY_SUPPLEMENT) → 返回 `{"incomplete": true, "agent", "reason", "partial_result"(≤2000)}`（分支前置防 TERMINATED_BY_SUPPLEMENT+length 双重命中被 COMPACT_TRUNCATED 抢先——/stop drain 时序会走 TERMINATED_BY_SUPPLEMENT 而非 STOPPED）
+  3. **全库 11 处游标决策点**（compat 7 + runner 3 + handler 1）`or _is_subagent_incomplete(x)` → 游标不推进 + reason 日志：compat L2697/L2780/L2862/L3279/L3453/L3535/L3617、runner L1297（Nap entity）/L1378（Nap dream，**三分支重构**：overflow 1/3 fallback 专属 / incomplete 不动 / else 全量保留 processed_up_to+range-end 兜底）/L1765（_run_subagent_step）、handler L963（_update_journal_cursor）
+  4. **handler 顺序钉死**：`_update_journal_cursor` 用原始 result；incomplete JSON → 自然语言"子Agent未完成任务（reason）"只作用于返回 LLM 的显示副本（L1163/L1164）
+  5. `_run_subagent_async` 通知基于 result 判 incomplete（"未完成（被停止/轮次耗尽）"）；mode2 入口短路；`_is_subagent_incomplete` 严格 `is True` 判定
+- **存量游标修复（一次性数据操作）**：`~/.niu/last_compress.json` 回退 `6327de4d`(idx:103) → `12ba93d6`(idx:32)（未处理 idx:33/67/71 重新进入下次整理）；备份 `last_compress.json.bak-20260810-1520`；**注意 15:18 实况：代码修复前每次整理都会重演 bug 推进（回退被覆盖一次）——修复完成后才回退才有效**
+- **交付**：commits d48e2d9a（agent_loop None）+ 13b306e9（call_subagent 参数透传）+ 292268dd（incomplete JSON 分支）+ 3948eec2（11 游标点 + _is_subagent_incomplete + 测试 22 新）；计划审查 R1-R6（R5+R6 连续两轮零 bug，R2 曾抓到"Task 2 改错函数"P0、R3 抓到"PM 采纳错误行号修正"、R4 抓到规格内部矛盾）；每 Task spec+quality 双审（Spec 符合规格可交付、Quality correct 0 Critical/0 Important，5 P3 非阻塞：journal 重写时间戳 cosmetic/force-cm fail-loud 日志误导（计划已接受）/JSON 误判面低概率/无上限逃逸风险（用户拍板，建议后续加轮数看门狗）/3 处覆盖缺口）
+- **排查教训**：①"压缩没结束但完成"先查**子 Agent 终止路径**（max_turns/STOPPED/TERMINATED_BY_SUPPLEMENT 三 result 是否在 call_subagent 后处理全有分支），不是先怀疑超时——最后一次 LLM 调用 10 秒正常返回，超时假设不成立；②游标推进逻辑"非 overflow 即成功"会把一切未完成结果当成功，程序化终止（非正常完成）必须有显式标记；③**PM 复核审查员行号类反馈必须 grep/sed 实证**——R2-A 的"L987 实为 L980"错误信息曾被采纳（R2-8），R3-A 实证纠正
 - **排查教训**：子 Agent 触发分支（on_context_high_usage None）不设压缩冷却——与主 Agent 分支（回调后冷却）行为不同，跨轮重复触发依赖幂等兜底；测试断言"达标即停"必须用与实现同一 count 函数量 target（probe 法），不能猜字符数
 - **回归豁免清单（12 个 pre-existing 测试失败，与本工程无关，勿当新失败）**：
   - `tests/test_context_overflow.py`：3× TestLiteLLMAdapterContextOverflow（断言查 chat 方法源码字面量 'context window'/'prompt is too long'/'maximum context length'——源码已不含）+ 3× TestSubagentFIFOThreshold（call_subagent 测试 mock 的 client.backend AttributeError）
