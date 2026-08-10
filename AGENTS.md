@@ -508,6 +508,18 @@ preload_face_model()
 
 ### 2026-08-10
 
+#### 新增：macOS Cmd+Q 拦截（阻止误退出，assistant 模式精灵/Chat/图谱 3 窗口全拒绝）
+
+- **问题**：macOS 按 Cmd+Q 直接退出应用（自定义菜单"退出"项 accelerator 触发 `app.quit()`），精灵/Chat/图谱 3 窗口（同进程）都被误退出；Windows 无此问题（无强制退出快捷键），零改动
+- **修复（ui/main/main.js 单文件，三重机制）**：
+  1. **根源拦截（按模式条件化）**：macMenu（顶层 darwin 块、全模式共享）"退出"项 accelerator 改 `WINDOW_MODE === 'assistant' ? undefined : 'Cmd+Q'`——assistant 模式移除 Cmd+Q 绑定（快捷键不再触发 quit），settings/graph 保留原行为
+  2. **防御网（before-quit 守卫）**：`process.platform === 'darwin' && WINDOW_MODE === 'assistant' && !allowQuit` → `e.preventDefault()` + 日志（darwin 门控保证 Windows/Linux 零语义）；拦截一切未闩锁的 quit（AppleScript `quit app`、系统 quit、未来 `app.quit()` 路径）
+  3. **系统关机放行（powerMonitor）**：`powerMonitor.on('shutdown')`（whenReady assistant 分支，Electron 文档标注 Linux/macOS）→ `e.preventDefault()` + `allowQuit = true` + `app.quit()`——避免守卫 preventDefault 打断 macOS 关机/注销（会弹强制退出对话框）
+  4. **allowQuit 闩锁**：macMenu 退出项鼠标点击、close-all IPC 先置位再 quit；托盘"⛔ 关闭妞妞"用 `app.exit(0)`（Electron 文档：不触发 before-quit）天然绕过；闩锁不复位语义已在守卫注释声明（当前无窗口 close 拦截中止路径）
+- **验证**：自动（osascript `quit app "Electron"` → 守卫 preventDefault + `[main] quit blocked (unlatched quit: AppleScript/system?)...` 日志；settings/graph 独立模式回归不拦）+ 用户实机（3 窗口按 Cmd+Q 均不退出、菜单点击/托盘确认正常退出）
+- **排查教训**：① **SIGTERM 给 Electron 会被 Chromium 路由进退出序列 → 触发 before-quit → 被守卫拦下**（dev 清理需 SIGKILL `pkill -9`；普通 pkill 的 SIGTERM 会让进程存活 ~1 分半；Rust launcher 从不向 Electron 发信号，生产无影响）② 守卫日志文案必须准确描述真实触发面——assistant 模式真实 Cmd+Q 被菜单层消费、永不触发 before-quit，守卫只在未闩锁的非 Cmd+Q quit（AppleScript/系统）触发，文案用 "unlatched quit" 防误导 ③ 实机验证的应用名：UI 进程是库存 Electron 二进制（bundle 名 "Electron"），`niu.app`（CFBundleName="Niu"）是 Rust launcher 监督进程（无 AppleEvent handler）——osascript 必须 `quit app "Electron"`
+- **质量链**：计划 5 轮审查（R1-R5，R4+R5 连续两轮零 bug；R3 抓 osascript 应用名 P1 双审交叉）；实施 + spec 审查 ✅ + code quality ✅（1 Minor 日志文案修复）；提交 b9943419 + cd11d191
+
 #### 修复：定时任务重复发送（trigger_callback 改 fire-and-forget，消除等待超时重试窗口）
 
 - **根因**：`trigger_callback` 用 `ChatQueue.enqueue_and_wait`（120s 超时）等 Agent 回复——周报类长任务（>120s，实证 121.8s）超时后 `future.cancel()` 只取消等待、Agent 仍在处理 → 10s 重试再入队 → 同一任务内容入队两次（2026-08-10 09:00 weekly-report-reminder 实证：09:00:00 与 09:02:10 两条周报入队）
