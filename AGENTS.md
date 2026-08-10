@@ -541,6 +541,7 @@ preload_face_model()
   5. `_run_subagent_async` 通知基于 result 判 incomplete（"未完成（被停止/轮次耗尽）"）；mode2 入口短路；`_is_subagent_incomplete` 严格 `is True` 判定
 - **存量游标修复（一次性数据操作）**：`~/.niu/last_compress.json` 回退 `6327de4d`(idx:103) → `12ba93d6`(idx:32)（未处理 idx:33/67/71 重新进入下次整理）；备份 `last_compress.json.bak-20260810-1520`；**注意 15:18 实况：代码修复前每次整理都会重演 bug 推进（回退被覆盖一次）——修复完成后才回退才有效**
 - **交付**：commits d48e2d9a（agent_loop None）+ 13b306e9（call_subagent 参数透传）+ 292268dd（incomplete JSON 分支）+ 3948eec2（11 游标点 + _is_subagent_incomplete + 测试 22 新）；计划审查 R1-R6（R5+R6 连续两轮零 bug，R2 曾抓到"Task 2 改错函数"P0、R3 抓到"PM 采纳错误行号修正"、R4 抓到规格内部矛盾）；每 Task spec+quality 双审（Spec 符合规格可交付、Quality correct 0 Critical/0 Important，5 P3 非阻塞：journal 重写时间戳 cosmetic/force-cm fail-loud 日志误导（计划已接受）/JSON 误判面低概率/无上限逃逸风险（用户拍板，建议后续加轮数看门狗）/3 处覆盖缺口）
+- **实机验证（2026-08-10 用户确认）**：修复后首次睡眠整理**压缩 5 轮自然完成**（对比事故时 20 轮撞线未完成）——修复生效的基本确认；长程大范围压缩场景待将来自然触发后验证（**下次触发时确认：无上限后长任务不被掐断、/stop 打断后游标不推进**）
 - **排查教训**：①"压缩没结束但完成"先查**子 Agent 终止路径**（max_turns/STOPPED/TERMINATED_BY_SUPPLEMENT 三 result 是否在 call_subagent 后处理全有分支），不是先怀疑超时——最后一次 LLM 调用 10 秒正常返回，超时假设不成立；②游标推进逻辑"非 overflow 即成功"会把一切未完成结果当成功，程序化终止（非正常完成）必须有显式标记；③**PM 复核审查员行号类反馈必须 grep/sed 实证**——R2-A 的"L987 实为 L980"错误信息曾被采纳（R2-8），R3-A 实证纠正
 - **排查教训**：子 Agent 触发分支（on_context_high_usage None）不设压缩冷却——与主 Agent 分支（回调后冷却）行为不同，跨轮重复触发依赖幂等兜底；测试断言"达标即停"必须用与实现同一 count 函数量 target（probe 法），不能猜字符数
 - **回归豁免清单（12 个 pre-existing 测试失败，与本工程无关，勿当新失败）**：
