@@ -684,3 +684,139 @@ class TestSubagentMaxTurnsPassthrough:
 
         assert "max_turns" in captured, f"resume 路径未收到 max_turns: {captured}"
         assert captured["max_turns"] is None
+
+
+class TestSubagentIncompleteResult:
+    """call_subagent 后处理 incomplete JSON 分支（Task 3）。
+
+    未完成终止（MAX_TURNS_EXCEEDED/STOPPED/TERMINATED_BY_SUPPLEMENT）返回结构化
+    {"incomplete": true, ...} JSON，避免中间文本被调用方误判为成功（游标误推进）。
+    分支必须优先于 finish_reason=length 判断（终止总结截断时仍带 incomplete 标记）。
+    """
+
+    def _call_with_return(self, monkeypatch, result_text, return_value, last_reply):
+        import json
+
+        from agent import subagent
+        import agent.runner as runner_mod
+        from unittest.mock import Mock
+
+        def mock_run(client, system_prompt, user_input, handler, tools_schema, **kwargs):
+            return (result_text, return_value, last_reply)
+
+        monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+        monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+        monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+        monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
+        return subagent.call_subagent(
+            agent_name="test-agent",
+            task="task",
+            llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+        )
+
+    def test_max_turns_exceeded_returns_incomplete_json(self, monkeypatch):
+        import json
+
+        result = self._call_with_return(
+            monkeypatch,
+            "中间累加文本",
+            {"result": "MAX_TURNS_EXCEEDED", "messages": []},
+            "再精简几个小工具输出：idx:33",
+        )
+        data = json.loads(result)
+        assert data.get("incomplete") is True
+        assert data.get("agent") == "test-agent"
+        assert data.get("reason") == "MAX_TURNS_EXCEEDED"
+        assert data.get("partial_result") == "再精简几个小工具输出：idx:33"
+
+    def test_stopped_returns_incomplete_json(self, monkeypatch):
+        import json
+
+        result = self._call_with_return(
+            monkeypatch,
+            "部分进度",
+            {"result": "STOPPED", "messages": []},
+            "被用户停止前的最后回复",
+        )
+        data = json.loads(result)
+        assert data.get("incomplete") is True
+        assert data.get("reason") == "STOPPED"
+        assert data.get("partial_result") == "被用户停止前的最后回复"
+
+    def test_terminated_by_supplement_returns_incomplete_json(self, monkeypatch):
+        import json
+
+        result = self._call_with_return(
+            monkeypatch,
+            "部分进度",
+            {"result": "TERMINATED_BY_SUPPLEMENT", "messages": []},
+            "/stop 终止总结",
+        )
+        data = json.loads(result)
+        assert data.get("incomplete") is True
+        assert data.get("reason") == "TERMINATED_BY_SUPPLEMENT"
+        assert data.get("partial_result") == "/stop 终止总结"
+
+    def test_terminated_by_supplement_with_length_prefers_incomplete(self, monkeypatch):
+        """边界：TERMINATED_BY_SUPPLEMENT + finish_reason=length 时必须返 incomplete JSON，
+        不能被 length 分支抢先拦截成 COMPACT_TRUNCATED（R2-3）。"""
+        import json
+
+        result = self._call_with_return(
+            monkeypatch,
+            "部分进度",
+            {"result": "TERMINATED_BY_SUPPLEMENT", "messages": [], "finish_reason": "length"},
+            "终止总结被截断的内容",
+        )
+        assert not result.startswith("COMPACT_TRUNCATED:"), f"length 分支抢先拦截: {result}"
+        data = json.loads(result)
+        assert data.get("incomplete") is True
+        assert data.get("reason") == "TERMINATED_BY_SUPPLEMENT"
+
+    def test_current_task_done_not_incomplete(self, monkeypatch):
+        """负例：正常完成 CURRENT_TASK_DONE 不得误中 incomplete 分支（R4-3）。"""
+        import json
+
+        result = self._call_with_return(
+            monkeypatch,
+            "全部处理完成",
+            {"result": "CURRENT_TASK_DONE", "data": None},
+            "最终报告",
+        )
+        assert result == "最终报告", f"正常完成应回退 last_reply: {result}"
+        try:
+            data = json.loads(result)
+            assert data.get("incomplete") is not True
+        except (json.JSONDecodeError, TypeError):
+            pass  # 非 JSON（正常回退文本）也满足
+
+    def test_stopped_empty_last_reply_partial_empty(self, monkeypatch):
+        """STOPPED 首轮空 last_reply → partial_result=''（R4-4）。"""
+        import json
+
+        result = self._call_with_return(
+            monkeypatch,
+            "",
+            {"result": "STOPPED", "messages": []},
+            "",
+        )
+        data = json.loads(result)
+        assert data.get("incomplete") is True
+        assert data.get("partial_result") == ""
+
+    def test_partial_result_truncated_to_2000(self, monkeypatch):
+        """partial_result 截断 ≤2000 字符（R1-4）。"""
+        import json
+
+        long_reply = "x" * 3000
+        result = self._call_with_return(
+            monkeypatch,
+            "",
+            {"result": "MAX_TURNS_EXCEEDED", "messages": []},
+            long_reply,
+        )
+        data = json.loads(result)
+        assert data.get("incomplete") is True
+        assert len(data.get("partial_result", "")) == 2000
