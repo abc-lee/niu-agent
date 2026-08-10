@@ -357,7 +357,6 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "context": {
     "contextWindowSize": 200000,
     "warningThreshold": 0.8,
-    "targetThreshold": 0.5,
     "sleepTriggerMinutes": 5
   }
 }
@@ -369,7 +368,6 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 |------|------|--------|------|
 | `contextWindowSize` | 模型上下文窗口大小（tokens） | 200000 | 32000 ~ 2000000 |
 | `warningThreshold` | 溢出警告阈值，上下文使用率超过此值触发压缩 | 0.8 | 0.0 ~ 1.0 |
-| `targetThreshold` | 强制压缩目标，压缩后上下文使用率降至此值 | 0.5 | 0.0 ~ 1.0 |
 | `sleepTriggerMinutes` | 空闲多久后触发睡眠整理（分钟） | 5 | > 0 |
 
 **常见模型的 contextWindowSize**：

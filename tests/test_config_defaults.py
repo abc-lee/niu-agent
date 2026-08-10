@@ -7,8 +7,9 @@ Why: 2026-07-27 首次启动 bug——缺省配置缺 thinking/reasoning_effort 
 
 三处一致性的精确含义（第 1 轮审查澄清）：前端两处缺省（get-config 兜底 /
 testAndSave 常量）与本处的**核心字段**一致（thinking / reasoning_effort /
-temperature / context 四项 / logging）；targetThreshold、storage 内部结构为
-Python 兜底特有的历史字段（向后兼容保留，JS 两处不含，已验证无害）。
+temperature / context 四项 / logging）；storage 内部结构为
+Python 兜底特有的历史字段（向后兼容保留，JS 两处不含，已验证无害）；
+targetThreshold 为已删除的历史字段（2026-08-10 随子 Agent 压缩目标写死 50% 移除）。
 """
 
 import pytest

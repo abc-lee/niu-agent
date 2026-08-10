@@ -425,7 +425,6 @@ preload_face_model()
 {
   "context": {
     "warningThreshold": 0.80,
-    "targetThreshold": 0.50,
     "sleepTriggerMinutes": 5,
     "contextWindowSize": 200000
   }
