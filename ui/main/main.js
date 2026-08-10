@@ -1686,7 +1686,7 @@ app.on('before-quit', (e) => {
   // preventDefault 需同步考虑复位语义。
   if (process.platform === 'darwin' && WINDOW_MODE === 'assistant' && !allowQuit) {
     e.preventDefault();
-    console.log('[main] quit blocked (Cmd+Q?). Use tray "⛔ 关闭妞妞" or menu 退出 to quit.');
+    console.log('[main] quit blocked (unlatched quit: AppleScript/system?). Use tray "⛔ 关闭妞妞" or menu 退出 to quit.');
     return;
   }
   // 仅 assistant 模式管理 Python API 生命周期（调 /api/shutdown + destroy 全部窗口 + tray）
