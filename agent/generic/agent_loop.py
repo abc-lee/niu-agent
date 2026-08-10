@@ -463,6 +463,83 @@ def _fifo_prune(messages, target_tokens, protect_recent_count=10, is_resumed=Fal
     return removed
 
 
+_PLACEHOLDER_SUFFIX = "输出已裁剪]"
+
+
+def _is_tool_placeholder(content) -> bool:
+    """判断 tool content 是否已是占位符（[name 输出已裁剪] 或 [输出已裁剪]）。幂等依据。"""
+    if not isinstance(content, str):
+        return False
+    return content.startswith("[") and content.endswith(_PLACEHOLDER_SUFFIX)
+
+
+def _find_tool_name_from_assistant(messages: list, tool_idx: int, tool_call_id: str) -> str:
+    """从当前 tool 消息向前找最近含 tool_calls 的 assistant，按 tool_call_id 匹配 function.name。
+    ⚠ assistant.tool_calls 是 OpenAI 嵌套格式 {id, type, function:{name, arguments}}（L1004-1010），
+    必须读 tc["function"]["name"]，不能读 tc["name"]（恒为 None）。
+    """
+    for j in range(tool_idx - 1, -1, -1):
+        m = messages[j]
+        if m.get("role") != "assistant":
+            continue
+        for tc in m.get("tool_calls", []) or []:
+            if not isinstance(tc, dict) or tc.get("id") != tool_call_id:
+                continue
+            fn = tc.get("function", {})
+            if isinstance(fn, dict):
+                return fn.get("name", "") or ""
+            return ""
+    return ""
+
+
+def _placeholderize_tool_outputs(messages: list, target_tokens: int, protect_turns: int = 10) -> int:
+    """阶段 1：把旧轮次 tool 输出替换为占位符，保留消息结构与 tool_call_id。
+
+    从最早的 tool 消息开始逐个替换 content 为 "[{name} 输出已裁剪]"（无 name 则 "[输出已裁剪]"），
+    满足其一即停：
+      a) count_messages_tokens(messages) <= target_tokens（达标即停，保留更多上下文）
+      b) 到达保护边界：最近 protect_turns 轮对话（从尾部数 user 消息，尾部 user 算第 1 轮）内的 tool 不动
+    已占位符化的消息跳过（幂等，用户约束：二次压缩不重复替换）。
+
+    Args:
+        messages: messages list（会被原地修改）
+        target_tokens: 目标 token 数
+        protect_turns: 保护最近 N 轮对话的 tool 输出（默认 10）
+    返回替换条数。
+    """
+    if len(messages) <= 2:
+        return 0
+    # 保护边界：从尾部数 protect_turns 个 user 消息，protect_start 之前可替换
+    protect_start = 0
+    user_count = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            user_count += 1
+            if user_count == protect_turns:
+                protect_start = i
+                break
+    replaced = 0
+    current_tokens = count_messages_tokens(messages)
+    for i in range(len(messages)):
+        if current_tokens <= target_tokens:
+            break
+        if i >= protect_start:
+            break
+        m = messages[i]
+        if m.get("role") != "tool":
+            continue
+        content = m.get("content", "")
+        if _is_tool_placeholder(content):
+            continue  # 幂等：已占位符化，跳过
+        name = m.get("name", "") or ""
+        if not name:
+            name = _find_tool_name_from_assistant(messages, i, m.get("tool_call_id", "") or "")
+        m["content"] = f"[{name} 输出已裁剪]" if name else "[输出已裁剪]"
+        replaced += 1
+        current_tokens = count_messages_tokens(messages)
+    return replaced
+
+
 MAX_TOOL_RESULT_CHARS = 30000  # 单个工具结果最大字符数（约 15K-30K token）
 MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200000  # 单消息内 tool 结果合计上限（参考 Claude Code）
 
