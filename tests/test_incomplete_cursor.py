@@ -51,6 +51,15 @@ class TestIsSubagentIncomplete:
         assert _incomplete_reason("plain text") == ""
         assert _incomplete_reason('{"overflow": true}') == ""
 
+    def test_incomplete_reason_malformed_json_empty(self):
+        # 畸形 JSON：json.loads 失败 → reason 空串（不抛异常）
+        assert _incomplete_reason('{"incomplete": true, broken') == ""
+
+    def test_incomplete_reason_non_incomplete_json_empty(self):
+        # 非 incomplete JSON（incomplete: false / 无 incomplete 键）→ reason 空串
+        assert _incomplete_reason('{"incomplete": false}') == ""
+        assert _incomplete_reason('{"ok": true}') == ""
+
 
 # ---------------------------------------------------------------------------
 # 2. _tidy_context_impl sleep 模式一集成（独立 fixture）
@@ -215,3 +224,230 @@ class TestHandlerJournalCursorIncomplete:
         assert write_text.call_count == 1
         payload = json.loads(write_text.call_args.args[0])
         assert payload.get("last_journal_id") == "m2"
+
+
+# ---------------------------------------------------------------------------
+# 4. _run_subagent_async 完成通知文案（incomplete / 正常 双分支）
+# ---------------------------------------------------------------------------
+
+class TestRunSubagentAsyncNotification:
+    """_run_subagent_async 推送到 MainAgentRequestQueue 的通知文案分支。
+
+    incomplete JSON → "[名] 未完成（reason），已保留进度…"；
+    正常 result → "[名] 已完成，结果：{last_reply or result}"。
+    mock call_subagent + 捕获 queue.push，不碰真实队列 / 注册表 / PendingAskRegistry。
+    """
+
+    def _run(self, subagent_result, registry_get=None):
+        import asyncio
+
+        from agent.subagent import _run_subagent_async
+
+        pushes = []
+        fake_queue = mock.MagicMock()
+        fake_queue.push.side_effect = lambda msg: pushes.append(msg)
+        unregister = mock.MagicMock()
+        with mock.patch("agent.subagent.call_subagent", return_value=subagent_result), \
+             mock.patch("agent.main_agent_request_queue.get_main_agent_request_queue", return_value=fake_queue), \
+             mock.patch("agent.ask_main_agent.get_pending_ask_registry", return_value=mock.MagicMock()), \
+             mock.patch("agent.ask_user.get_user_ask_registry", return_value=mock.MagicMock()), \
+             mock.patch("agent.subagent_registry.SubagentRegistry.get", return_value=registry_get), \
+             mock.patch("agent.subagent_registry.SubagentRegistry.unregister", unregister):
+            asyncio.run(_run_subagent_async(
+                unique_name="dream-evolver-1a2b",
+                agent_name="dream-evolver",
+                task="精加工实体",
+                llm_config={"model": "m", "apikey": "x", "apibase": "http://x"},
+                memory_context=None,
+                supplement_queue=None,
+            ))
+        return pushes, unregister
+
+    def test_incomplete_result_pushes_unfinished_notification(self):
+        """incomplete JSON → 通知含「未完成（reason）」+ 已保留进度，不含「已完成」。"""
+        pushes, unregister = self._run(INCOMPLETE_JSON)
+        assert len(pushes) == 1
+        msg = pushes[0]
+        assert msg.startswith("[dream-evolver-1a2b] 未完成（TERMINATED_BY_SUPPLEMENT）"), msg
+        assert "已保留进度" in msg
+        assert "已完成" not in msg
+        # finally 收尾：注册表注销（防泄漏）
+        unregister.assert_called_once_with("dream-evolver-1a2b")
+
+    def test_normal_result_prefers_last_reply_in_notification(self):
+        """正常 result + 注册表实例有 last_reply → 通知用 last_reply（中间轮次不挤占最终报告）。"""
+        inst = mock.MagicMock()
+        inst.last_reply = "最终报告：实体精加工完成"
+        pushes, _ = self._run("处理完成 @end processed_up_to=2", registry_get=inst)
+        assert pushes == ["[dream-evolver-1a2b] 已完成，结果：最终报告：实体精加工完成"]
+
+    def test_normal_result_falls_back_to_raw_result_without_instance(self):
+        """正常 result + 注册表无实例（last_reply 取不到）→ 通知回退用原始 result。"""
+        pushes, _ = self._run("处理完成 @end processed_up_to=2", registry_get=None)
+        assert pushes == ["[dream-evolver-1a2b] 已完成，结果：处理完成 @end processed_up_to=2"]
+
+
+# ---------------------------------------------------------------------------
+# 5. handler._call_subagent_gen display_result 转换（incomplete JSON → 自然语言）
+# ---------------------------------------------------------------------------
+
+class TestHandlerCallSubagentGenDisplay:
+    """_call_subagent_gen 同步路径：incomplete JSON → display_result 转为自然语言提示；
+    非 incomplete 结果原样透传。断言 StepOutcome.data["result"]（返回 LLM 的副本）。"""
+
+    def _drive(self, subagent_result, agent_name="dream-evolver"):
+        from agent.handler import NiuHandler
+
+        handler = NiuHandler(mcp_client=None)
+        fake_runner = mock.MagicMock()
+        fake_runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
+        with mock.patch("agent.runner.get_runner", return_value=fake_runner), \
+             mock.patch("agent.subagent.call_subagent", return_value=subagent_result), \
+             mock.patch("agent.subagent_registry.SubagentRegistry.get", return_value=None), \
+             mock.patch("niu_api.internal.subagent_event_bus.pre_register"), \
+             mock.patch("niu_api.internal.subagent_event_bus.has_subagent", return_value=False), \
+             mock.patch("niu_api.chat._main_loop", None):
+            gen = handler._call_subagent_gen(agent_name, {"task": "精加工实体"})
+            try:
+                while True:
+                    next(gen)
+            except StopIteration as si:
+                return si.value
+        raise AssertionError("generator 未返回 StepOutcome")
+
+    def test_incomplete_json_display_result_converted_to_natural_language(self):
+        """incomplete JSON → display_result 是自然语言提示（非 JSON），含 reason 与处置建议。"""
+        outcome = self._drive(INCOMPLETE_JSON)
+        assert outcome.data["status"] == "success"
+        display = outcome.data["result"]
+        assert display.startswith("子Agent未完成任务（TERMINATED_BY_SUPPLEMENT）"), display
+        assert "已保留进度" in display
+        assert "请决定是否让子Agent继续处理" in display
+        assert not display.strip().startswith("{")  # 返回 LLM 的是自然语言，非原始 JSON
+
+    def test_normal_result_passed_through_unchanged(self):
+        """非 incomplete 结果（纯文本）→ display_result 原样透传。"""
+        outcome = self._drive("处理完成 @end processed_up_to=2")
+        assert outcome.data["status"] == "success"
+        assert outcome.data["result"] == "处理完成 @end processed_up_to=2"
+
+
+# ---------------------------------------------------------------------------
+# 6. runner _run_nap_background dream-evolver 三分支游标（hermetic）
+# ---------------------------------------------------------------------------
+
+OVERFLOW_JSON = json.dumps({
+    "overflow": True,
+    "agent": "dream-evolver",
+    "turns_completed": 5,
+    "tokens_used": 1,
+    "tokens_limit": 2,
+    "partial_result": "",
+})
+
+
+def _nap_messages(n):
+    return [_Msg(f"m{i}") for i in range(1, n + 1)]
+
+
+def _fake_build_incremental_msg_text(messages, last_cursor_id, out_msg_ids, msg_tokens=None, **kwargs):
+    """与真实签名兼容：把 db 消息 id 全量填入 out_msg_ids（游标后增量 = 全部）。"""
+    out_msg_ids.extend([getattr(m, "id", "") for m in messages])
+    return ""
+
+
+def _fake_build_plain_history(messages, out_msg_ids=None):
+    """返回 ([N] 前缀 history, {idx: id} 映射) —— 与真实 _build_plain_history 同构（int 键）。"""
+    hist = []
+    idx_to_id = {}
+    for i, m in enumerate(messages, 1):
+        idx_to_id[i] = getattr(m, "id", "")
+        hist.append(f"[{i}] {getattr(m, 'content', '')}")
+    return hist, idx_to_id
+
+
+class TestNapDreamCursorBranches:
+    """_run_nap_background dream-evolver 三分支游标推进（R2-4/R4-7，P3 补测）。
+
+    - incomplete → new_dream_id 保持 last_dream_id（游标不动）+ warning 日志
+    - 正常 processed_up_to=N → 解析推进到对应 id（info 记录 Dream cursor advanced）
+    - overflow（增量 >10 条）→ 推进到 1/3 处兜底
+
+    mock 全部 dream 依赖（call_subagent_with_auto_answer / 游标读写 / 消息构建 / logger），
+    不碰真实 LightRAG / DB / 注册表；last_dream_id 取真实消息 id（m1），
+    使「游标不动」断言落在写入值上（若 incomplete 分支退化成 else 兜底会写 m2）。
+    """
+
+    def _run_nap(self, dream_result, entity_result="处理完成 @end processed_up_to=2", n_msgs=2):
+        from agent.runner import NiuRunner
+
+        runner = NiuRunner.__new__(NiuRunner)
+        runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
+        runner._nap_running = mock.MagicMock()
+        runner._sync_get_messages = lambda: _nap_messages(n_msgs)
+        runner._recalc_msg_stats = lambda msgs: [100] * len(msgs)
+        runner._read_cursor_locked = lambda path, field: "m1"  # 上一游标 = 真实消息 id（m1）
+        runner._ensure_session_chain = mock.MagicMock()
+
+        def _call_side(agent_name, task, **kwargs):
+            if agent_name == "entity-extractor":
+                return entity_result
+            if agent_name == "dream-evolver":
+                return dream_result
+            raise AssertionError(f"unexpected subagent: {agent_name}")
+
+        write_mock = mock.MagicMock()
+        with mock.patch("agent.subagent.call_subagent_with_auto_answer", side_effect=_call_side), \
+             mock.patch("niu_api.compat._build_incremental_msg_text", side_effect=_fake_build_incremental_msg_text), \
+             mock.patch("niu_api.compat._build_plain_history", side_effect=_fake_build_plain_history), \
+             mock.patch("niu_api.compat._write_cursor_with_lock", write_mock), \
+             mock.patch("agent.runner.logger") as logger_mock:
+            runner._run_nap_background()
+        return write_mock, logger_mock, runner
+
+    @staticmethod
+    def _dream_writes(write_mock):
+        """所有写入 last_dream_evolve_id 的 payload（entity 游标写入被过滤掉）。"""
+        return [c.args[1] for c in write_mock.call_args_list if "last_dream_evolve_id" in c.args[1]]
+
+    @staticmethod
+    def _logged(logger_mock, level, needle):
+        return any(needle in str(c.args[0]) for c in getattr(logger_mock, level).call_args_list)
+
+    def test_incomplete_dream_cursor_not_advanced(self):
+        """incomplete → 游标保持 last_dream_id（m1）+ warning 日志；绝不推进到 m2。"""
+        write_mock, logger_mock, runner = self._run_nap(INCOMPLETE_JSON)
+        writes = self._dream_writes(write_mock)
+        assert len(writes) == 1, f"incomplete 也应幂等写回原游标: {writes}"
+        assert writes[0]["last_dream_evolve_id"] == "m1", (
+            f"incomplete 时游标不得推进（应为 last_dream_id=m1）: {writes}"
+        )
+        assert self._logged(logger_mock, "warning", "[Nap] dream-evolver incomplete") and \
+               self._logged(logger_mock, "warning", "cursor not advanced"), \
+            f"应记录 incomplete warning: {logger_mock.warning.call_args_list}"
+        # 判别力：若 incomplete 分支退化成 else 兜底，会写 m2 且 info 记录 advanced —— 双否定
+        assert not self._logged(logger_mock, "info", "Dream cursor advanced")
+        assert not logger_mock.error.call_args_list, f"不应有 error: {logger_mock.error.call_args_list}"
+        runner._nap_running.clear.assert_called_once()
+
+    def test_normal_dream_cursor_advances_per_processed_up_to(self):
+        """正常 processed_up_to=2 → 解析推进到 m2（info 记录 Dream cursor advanced）。"""
+        write_mock, logger_mock, _ = self._run_nap("处理完成 @end processed_up_to=2")
+        writes = self._dream_writes(write_mock)
+        assert len(writes) == 1, writes
+        assert writes[0]["last_dream_evolve_id"] == "m2", writes
+        assert self._logged(logger_mock, "info", "Dream cursor advanced: m2"), \
+            f"应记录 advance info: {logger_mock.info.call_args_list}"
+        assert not logger_mock.error.call_args_list, f"不应有 error: {logger_mock.error.call_args_list}"
+
+    def test_overflow_dream_cursor_advances_to_one_third(self):
+        """overflow 且增量 >10 条 → 推进到 1/3 处（12 条 → idx 4 → m5）兜底。"""
+        write_mock, logger_mock, _ = self._run_nap(
+            OVERFLOW_JSON, entity_result="处理完成 @end processed_up_to=12", n_msgs=12,
+        )
+        writes = self._dream_writes(write_mock)
+        assert len(writes) == 1, writes
+        assert writes[0]["last_dream_evolve_id"] == "m5", writes  # 12 // 3 = 4 → dream_msg_ids[4]
+        assert self._logged(logger_mock, "info", "Overflow fallback"), \
+            f"应记录 overflow fallback info: {logger_mock.info.call_args_list}"
+        assert not logger_mock.error.call_args_list, f"不应有 error: {logger_mock.error.call_args_list}"
