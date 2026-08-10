@@ -50,6 +50,7 @@ MCP 服务器集群 (mcp-servers/)
 6. 项目代码量较大，为保护上下文窗口，无需长期记忆或大代码量的遍历工作交给子 Agent。
 7. 代码质量优先，用户不在乎 token 消耗。
 8. 版本号变更必须同步两处：根目录 `VERSION` 文件（单一真相源，对外发布用）、`ui/main/windows/assistant/chat.html` 中 `version-label` span 的文本（UI 展示用）。其他文件（Cargo.toml、package.json、Python `__version__`、pyproject.toml 等）的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
+9. **推送必须用 `./scripts/push.sh`，禁止裸 `git push`**（push.sh 自动排除本地私有文档 `docs/superpowers/plans/`，不推送到 GitHub）。plans 文档在主仓库**正常提交**（多轮审查需要 git 历史），推送时由脚本生成"树级排除 plans"的快照提交；本地 HEAD/历史完整不动。远端分支当前树不含 plans（历史仍可考古，完全无痕需一次性 filter-repo 重写历史——须用户拍板）。
 
 ---
 
