@@ -138,7 +138,7 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 | `lightrag_insert_file` | 按文件路径插入，LightRAG 读取并解析文件（支持 DOCX/PDF/PPTX/XLSX/TXT/MD 等），异步处理 |
 | `lightrag_insert_custom_kg` | 直接注入结构化知识（实体 + 关系 + chunks），跳过 LLM 提取。用于 Skills、工具、照片名等需精确控制的数据 |
 | `lightrag_insert_entity` | 插入单个实体（通过 inject_custom_kg），自动创建 Niu -> 实体锚点关系 |
-| `lightrag_insert_relation` | 插入实体间关系（通过 inject_custom_kg） |
+| `lightrag_insert_relation` | 插入实体间关系（通过 inject_custom_kg）。**若源/目标实体不存在会自动创建**（含 `YYYY-MM-DD会话` 日期节点）——无需预先查询存在性，直接建链 |
 
 ### 管理组（6 个）
 
