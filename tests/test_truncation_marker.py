@@ -55,9 +55,15 @@ def test_user_stop_adds_interrupt_marker():
     chunk1.choices[0].finish_reason = None
     chunk1.usage = None
 
+    # R9-P1：T2b 初始 _ri 预检消耗一次 stop_check 调用——side_effect=[False, True] 序列错位
+    # （预检吃 False → 流式检查吃 True → chunk 未处理 → content 空）。改可控 flag：
+    # 逐 chunk 消费（_do_streaming_completion 每 chunk yield 返回前台的机会）置位。
+    stop_flag = {"v": False}
     with patch("agent.generic.litellm_adapter.litellm.completion", return_value=iter([chunk1])):
-        with patch("agent.generic.litellm_adapter.is_stop_requested", side_effect=[False, True]):
+        with patch("agent.generic.litellm_adapter.is_stop_requested", lambda: stop_flag["v"]):
             gen = session.chat(messages=[{"role": "user", "content": "test"}])
+            next(gen)  # 消费首个 chunk（yield delta.content）→ 返回前台
+            stop_flag["v"] = True
             try:
                 while True:
                     next(gen)
