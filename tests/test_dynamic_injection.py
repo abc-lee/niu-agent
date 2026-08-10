@@ -99,11 +99,11 @@ class TestInjectDynamicResourcesSkillRetrieval:
 
         call_log = []
 
-        def mock_search_multi(query, mode="local", top_k=20, keywords=None):
+        def mock_search_multi(query, mode="local", top_k=20, keywords=None, timeout=None):
             call_log.append(("search_multi_lightrag", query, top_k))
             return {"skill": [], "knowledge": [], "other": []}
 
-        def mock_search_by_fp(query, file_path_contains, top_k=10, keywords=None):
+        def mock_search_by_fp(query, file_path_contains, top_k=10, keywords=None, timeout=None):
             call_log.append(("search_by_file_path", query, file_path_contains, top_k))
             return [{"entity_name": "report-skill", "entity_type": "Skill", "file_path": "skill_sync", "description": "test", "distance": 0.55}]
 

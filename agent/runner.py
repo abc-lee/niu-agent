@@ -2730,12 +2730,21 @@ class NiuRunner:
         5. 图遍历 (从 hit entities 沿知识边1跳) → 衰减池注入 (score=hit×0.8)
         6. 格式化注入 (脑区状态图 + skill + knowledge + 活跃脑区知识 + 习惯)
         """
+        from agent.generic.interruptible import run_interruptibly
+
         # 0. Brain region activation (不变)
         _brain_injector = None
         try:
-            _brain_injector = self._get_brain_injector()
-            if _brain_injector is not None:
-                _brain_injector.activate_for_query(context)
+            _ok, _brain_injector = run_interruptibly(
+                lambda: self._get_brain_injector(), is_stop_requested,
+            )
+            # R3-R1：_get_brain_injector 首次初始化持 _rag_lock（秒级）——一并包可中断（防御性）
+            if _ok and _brain_injector is not None:
+                _, _ = run_interruptibly(  # R4-P2-2：返回值丢弃（激活副作用已发生，无需接收）
+                    lambda: _brain_injector.activate_for_query(context, timeout=15),
+                    is_stop_requested,
+                )
+                # 放弃（stop 置位）→ 跳过本轮脑区激活；区域图反映既有状态，无副作用
         except Exception as e:
             logger.warning(f"Brain activation failed: {e}")
 
@@ -2752,17 +2761,28 @@ class NiuRunner:
         # 1a. Skill 专属检索：用 filter_lambda 按 file_path 预过滤，确保 skill 不被 knowledge 淹没
         #     独立 try 块：skill 检索失败不影响 knowledge 检索
         try:
-            skill_results = adapter.search_by_file_path(
-                context, file_path_contains="skill_sync", top_k=10, keywords=[context],
+            _ok, _res = run_interruptibly(
+                lambda: adapter.search_by_file_path(
+                    context, file_path_contains="skill_sync", top_k=10,
+                    keywords=[context], timeout=15,
+                ),
+                is_stop_requested,
             )
+            skill_results = _res if _ok else []
             lightrag_results["skill"] = skill_results
         except Exception as e:
             logger.warning(f"LightRAG skill retrieval failed: {e}")
+        if is_stop_requested():
+            return "", {}
         # 1b. Knowledge 全量检索
         try:
-            knowledge_results = adapter.search_multi_lightrag(
-                context, mode="local", top_k=10, keywords=[context],
+            _ok, _res = run_interruptibly(
+                lambda: adapter.search_multi_lightrag(
+                    context, mode="local", top_k=10, keywords=[context], timeout=15,
+                ),
+                is_stop_requested,
             )
+            knowledge_results = _res if _ok else {}
             # 从 knowledge 结果中移除已由 skill 检索获取的实体（按 entity_name 去重）
             skill_names = {e.get("entity_name", "") for e in lightrag_results["skill"]}
             for cat, entities in knowledge_results.items():
@@ -2776,6 +2796,8 @@ class NiuRunner:
                 lightrag_results[cat] = [e for e in entities if e.get("entity_name", "") not in skill_names]
         except Exception as e:
             logger.warning(f"LightRAG knowledge retrieval failed: {e}")
+        if is_stop_requested():
+            return "", {}
 
         # 2. 衰减池维护（先衰减旧实体，再注入新命中）
         self._decay_pool.decay()
@@ -2823,9 +2845,15 @@ class NiuRunner:
         traversed: dict[str, dict] = {}
         try:
             if all_hits:
-                traversed = self._traverse_from_hits(all_hits)
+                _ok, _res = run_interruptibly(
+                    lambda: self._traverse_from_hits(all_hits),
+                    is_stop_requested,
+                )
+                traversed = _res if _ok else {}
         except Exception as e:
             logger.warning(f"Graph traversal failed: {e}")
+        if is_stop_requested():
+            return "", {}
 
         # 图遍历结果注入衰减池
         # 建立 entity_name -> distance 映射（从全局检索结果）

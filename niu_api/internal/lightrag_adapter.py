@@ -306,6 +306,7 @@ class LightRAGAdapter:
         keywords: list[str] | None = None,
         filter_lambda=None,
         fields: list[str] | None = None,
+        timeout: int | None = None,
     ) -> dict[str, Any] | None:
         """Query LightRAG returning structured data (entities + relationships).
 
@@ -328,6 +329,8 @@ class LightRAGAdapter:
                 When provided, only these fields are kept in each entity/relationship/chunk.
                 Common choices: ["entity_name", "entity_type"] for name-only lists.
                 None (default) returns all fields (no filtering).
+            timeout: Timeout seconds for the underlying call_async; None uses the
+                configured lightrag_timeout("query_timeout", 120) default.
 
         Returns:
             Structured query result dict, or None on error.
@@ -355,7 +358,10 @@ class LightRAGAdapter:
             if filter_lambda is not None:
                 param.filter_lambda = filter_lambda
 
-            result = call_async(rag.aquery_data(query, param=param), timeout=lightrag_timeout("query_timeout", 120))
+            result = call_async(
+                rag.aquery_data(query, param=param),
+                timeout=timeout if timeout is not None else lightrag_timeout("query_timeout", 120),
+            )
             if fields:
                 result = _filter_result_fields(result, fields)
             result = _clean_sep_in_query_result(result)
@@ -460,6 +466,7 @@ class LightRAGAdapter:
         mode: str = "local",
         top_k: int = 20,
         keywords: list[str] | None = None,
+        timeout: int | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """Single-query multi-category search via LightRAG.
 
@@ -480,6 +487,7 @@ class LightRAGAdapter:
             keywords: Pre-provided search keywords to skip LLM extraction.
                 For "local" mode: used as ll_keywords (entity search).
                 For "global"/"hybrid"/"mix": used as both hl and ll keywords.
+            timeout: Timeout seconds, passed through to query_data().
 
         Returns:
             Dict with category keys matching _ENTITY_TYPE_TO_CATEGORY values,
@@ -492,6 +500,7 @@ class LightRAGAdapter:
 
         query_result = self.query_data(
             query, mode=mode, top_k=top_k, keywords=keywords,
+            timeout=timeout,
         )
         if self._is_no_result(query_result):
             logger.debug("LightRAG search_multi_lightrag: query_data returned no results")
@@ -568,6 +577,7 @@ class LightRAGAdapter:
         file_path_contains: str,
         top_k: int = 10,
         keywords: list[str] | None = None,
+        timeout: int | None = None,
     ) -> list[dict[str, Any]]:
         """Search entities with pre-filter on file_path via filter_lambda.
 
@@ -584,6 +594,7 @@ class LightRAGAdapter:
             file_path_contains: Substring to match in entity's file_path field.
             top_k: Number of top results to retrieve (after filtering).
             keywords: Pre-provided keywords to skip LLM extraction.
+            timeout: Timeout seconds, passed through to query_data().
 
         Returns:
             List of entity dicts matching the file_path filter.
@@ -595,6 +606,7 @@ class LightRAGAdapter:
         result = self.query_data(
             query, mode="local", top_k=top_k,
             keywords=keywords, filter_lambda=filter_fn,
+            timeout=timeout,
         )
         if not result:
             return []
