@@ -1170,9 +1170,13 @@ def agent_runner_loop(
                         try:
                             from agent.subagent_registry import SubagentRegistry
                             _inst = SubagentRegistry.get(_agent_name)
-                            if _inst is not None:
+                            if _inst is None:
+                                logger.warning(f"[AgentLoop] chat-with subagent {_agent_name} not found at abandon (escape risk)")
+                            else:
                                 _ev = getattr(_inst, "terminate_event", None)
-                                if _ev is not None:
+                                if _ev is None:
+                                    logger.warning(f"[AgentLoop] chat-with subagent {_agent_name} terminate_event missing at abandon (escape risk)")
+                                else:
                                     _ev.set()
                                     logger.info(f"[AgentLoop] Terminated subagent {_agent_name} on tool-abandon")
                         except Exception as _e:

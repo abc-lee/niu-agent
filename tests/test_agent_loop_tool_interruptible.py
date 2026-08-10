@@ -16,17 +16,27 @@ class _SlowToolHandler:
     test_normal_tool_completes AttributeError（T3 _MinHandler 已有，此处补齐）。
     """
 
-    def __init__(self, delay=0.5):
+    def __init__(self, delay=0.5, stop_flag=None):
         self._is_subagent = False
         self._current_messages = []
         self.current_turn = 0
         self._last_prompt_tokens = 0
         self.last_tools = ""
         self.delay = delay
+        self.stop_flag = stop_flag
 
     def dispatch(self, tool_name, args, response, index=0):
         def _gen():
-            time.sleep(self.delay)  # 慢速工具：停止应放弃等待
+            if self.stop_flag is not None:
+                # 确定性 stop 注入（无墙钟 Timer，R8 同款教训）：后台线程 0.1s 后
+                # 置位 → 前台 0.2s 轮询时 flag 已置且工具仍在跑 → 放弃发生在 ~0.2s
+                # （elapsed < 0.4 断言有 ~0.2s 余量）；预检时 stop 未置 → 真正锻炼
+                # "执行中放弃"路径，无假阳性。
+                time.sleep(0.1)
+                self.stop_flag["v"] = True
+                time.sleep(0.5)
+            else:
+                time.sleep(self.delay)  # 无停止场景：工具耗时（0 则立即完成）
             yield from ()
             return al.StepOutcome(data={"ok": True}, next_prompt="done")
         return _gen()
@@ -64,12 +74,9 @@ class _ToolClient:
 
 def test_slow_tool_abandoned_on_stop():
     """工具执行中 stop 置位：放弃等待，STOPPED，且耗时 < 工具时长。"""
-    handler = _SlowToolHandler(delay=0.5)
-    client = _ToolClient()
     stop_flag = {"v": False}
-
-    import threading
-    threading.Timer(0.05, lambda: stop_flag.__setitem__("v", True)).start()
+    handler = _SlowToolHandler(delay=0.5, stop_flag=stop_flag)
+    client = _ToolClient()
 
     started = time.monotonic()
     gen = al.agent_runner_loop(
@@ -137,10 +144,9 @@ def test_chat_with_subagent_terminated_on_abandon(monkeypatch):
                 return resp
             return _gen()
 
-    handler = _SlowToolHandler(delay=0.5)  # 慢速 dispatch（模拟卡在同步子 Agent loop）
-    client = _ChatWithClient()
     stop_flag = {"v": False}
-    threading.Timer(0.05, lambda: stop_flag.__setitem__("v", True)).start()
+    handler = _SlowToolHandler(delay=0.5, stop_flag=stop_flag)  # 慢速 dispatch（模拟卡在同步子 Agent loop）
+    client = _ChatWithClient()
 
     # mock SubagentRegistry.get 返回带 terminate_event 的实例
     ev = threading.Event()
