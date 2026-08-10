@@ -223,6 +223,67 @@ def test_return_value_contains_messages_on_max_turns_exceeded():
 
 
 # ---------------------------------------------------------------------------
+# 测试 4b: max_turns=None（无上限）— 长程任务跑到底，不触发 MAX_TURNS_EXCEEDED
+# ---------------------------------------------------------------------------
+
+def test_return_value_no_max_turns_runs_until_natural_exit():
+    """max_turns=None 时轮数无上限：24 轮工具调用 + 第 25 轮纯文本 → 自然退出 CURRENT_TASK_DONE。
+
+    回归防护：子 Agent 无轮数上限（长程任务跑到底），
+    while 条件 `handler.max_turns is None or turn < handler.max_turns` 必须放行 None。
+    """
+    # 24 轮 tool_calls + 第 25 轮纯文本
+    tc = _make_tool_call(name="loop_tool", args={}, tid="call_loop")
+    tool_resps = [_make_mock_response(content="", tool_calls=[tc]) for _ in range(24)]
+    text_resp = _make_mock_response(content="final", tool_calls=[])
+    # 既有 _make_mock_response 未设 stream_error/context_overflow → Mock 自动真值 →
+    # LLM_ERROR/CONTEXT_OVERFLOW 短路；本测试显式置 False，让循环真正跑满 25 轮
+    for _r in tool_resps + [text_resp]:
+        _r.stream_error = False
+        _r.context_overflow = False
+    client = _make_client(tool_resps + [text_resp])
+
+    handler = Mock()
+    handler._done_hooks = []
+    handler.max_turns = None  # 无上限
+    handler.current_turn = 1
+    # Mock 自动真值属性会把纯文本轮推进子 Agent @前缀拦截 → FORMAT_ERROR 死循环；
+    # 显式置 False 走主 Agent 分支（NO_INTERCEPTION）→ 纯文本自然退出 CURRENT_TASK_DONE
+    handler._is_sync_subagent = False
+    handler._is_subagent = False
+
+    call_count = [0]
+
+    def dispatch_loop(tool_name, args, response, index=0):
+        call_count[0] += 1
+        yield
+        # 前 24 轮（tool_calls）：返回 next_prompt，让循环继续
+        return StepOutcome(data="loop_data", next_prompt="继续", should_exit=False)
+
+    handler.dispatch = dispatch_loop
+
+    gen = agent_runner_loop(
+        client=client,
+        system_prompt="sys",
+        user_input="loop",
+        handler=handler,
+        tools_schema=[],
+        verbose=False,
+        max_turns=None,
+    )
+    events, return_value = _collect_and_get_return(gen)
+
+    assert isinstance(return_value, dict), f"Expected dict, got {type(return_value)}: {return_value}"
+    assert "messages" in return_value, f"Missing 'messages' key: {return_value}"
+    # 25 轮（24 工具 + 1 纯文本）全部跑完仍不触发轮次上限
+    assert return_value["result"] == "CURRENT_TASK_DONE", (
+        f"Expected natural exit CURRENT_TASK_DONE with max_turns=None, "
+        f"got {return_value.get('result')} (turn={handler.current_turn})"
+    )
+    assert call_count[0] == 24, f"Expected 24 tool dispatches, got {call_count[0]}"
+
+
+# ---------------------------------------------------------------------------
 # 测试 5: CURRENT_TASK_DONE 路径 — next_prompt 为空字符串
 # ---------------------------------------------------------------------------
 
