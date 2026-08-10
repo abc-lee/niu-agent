@@ -528,6 +528,12 @@ preload_face_model()
 - **不受影响**：blocked_subagents 不动；subagent_started 是顶级事件不进 LLM 上下文；skill-sync 非子 Agent；调度器 cron 任务走主 Agent 工具路径本就显示（发射点互不重叠无双推）
 - **后续状态**：① 回归豁免（既有失败与本工程无关，按计划豁免不修）——`test_tidy_cursor.py` 4 个（PROTECTED 计数断言与 `_find_protected_range` user-turn-aware 语义不符，niu_api/compat.py 既有行为）+ `test_runner_stream_events.py` 1 个（`REDACTED_USER_PATH` 字面量路径未替换，纯测试工件）；② 实机验证已通过（2026-08-09）——重启后 sleep 整理触发，entity-extractor/dream-evolver/journal-agent/context-manager 四子 Agent tab 实时显示工具调用与回复、结束后自动关闭、同名复用不堆积；③ 手册分册不专门更新——tab 渲染为既有机制（manual-general-subagent §十三 泛化描述已覆盖），本次仅补事件入口，SYSTEM_MANUAL L30"子 Agent 运行时自动创建独立标签页"修复后更准确无需改；④ 全量质量审查加固（commit fa59f3ad）——`[错误]` close 加归属守卫（`SubagentRegistry.get(agent_name) is None`，并发同名触发时不误关活跃实例 tab/ring buffer）+ 两处 close 异常吞噬（`except Exception: pass`，防 TOCTOU 掩盖原始异常/破坏契约）
 
+#### 修复：dream-evolver 自建日期节点（三层根因 + 工具契约修复）
+
+- **根因**：① 提示词日期节点行只说"天生存在"，无免查/免建指令——通用"先查再建"流程（阶段A A1 去重、实体提取规则 3）对日期节点同样生效；② 查询一致性——`search_entities` 是向量检索，日期节点不在 vdb_entities（数字+汉字日期名嵌入不可靠）必 miss，而 `insert_entity` 的精确名查重能命中——"查不到→准备建→发现又有了"三轮反复；③ **insert_relation 工具描述未说明"建链自动创建不存在实体"**（LightRAG fork 功能：insert_relation 对不存在端点自动创建占位节点 description=UNKNOWN/entity_type=unknown——图谱 08-03/08-04/08-07 会话占位节点即实证），Agent 无从得知可直接建链
+- **修复**：① MCP Schema + disk yaml 的 `insert_relation` 描述补"源/目标实体不存在时自动创建（含 `YYYY-MM-DD会话` 日期节点），无需预先查询存在性，直接建链即可"；② 提示词日期节点行改"当天日期节点由系统自动维护，建链时自动存在——不需要查询、不需要手动创建" + 连接优先原则第 3 条改"直接建链连接即可，节点自动存在"（**不提脑区**——禁止类比：脑区有注入列表而日期节点没有，类比会反向误导"没注入=不存在=要创建"）；③ manual-vector-store 工具表同步
+- **排查教训**：① 工具描述必须说明副作用类输入语义（建链自动创建）——大模型读工具描述判断行为，不写它就按最保守流程执行；② 提示词对系统固定节点要**直接陈述机制**（"建链即自动存在"），不要用类比——类比可被模型反向解读；③ 排查流程：日志还原 Agent 工具调用序列（search 的 query/top_k/返回 → 结论 → 补救动作）比读提示词更能定位真实触发点
+
 ### 2026-04-15
 
 #### 新增：KG 数据流入 5 条渠道全部实现
