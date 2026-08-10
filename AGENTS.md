@@ -508,6 +508,19 @@ preload_face_model()
 
 ### 2026-08-10
 
+#### 修复：主 Agent 停止立即返回（统一可中断执行层 run_interruptibly 覆盖注入检索/TTFT/工具执行盲区）
+
+- **根因**：2026-08-08 停止改造只覆盖 LLM 流式读取（`_interruptible_iter`）；主 Agent 每轮 LLM 前动态注入 LightRAG 检索（skill/knowledge/脑区激活 3 处 call_async，各 120s 超时）+ LLM 调用建立（TTFT，openai SDK `send(stream=True)` 同步等响应头，上界 read_timeout 300s）+ 工具执行（exhaust 同步消费）均无停止检查 → 卡住时停止无效、只能等超时（实测"三五分钟"= 120s×3 或 300s）
+- **修复（统一可中断执行层，机制级而非逐工具补丁）**：
+  1. **新增 `agent/generic/interruptible.py`**：`run_interruptibly(fn, stop_check)`——后台 daemon 线程执行 fn + 前台 0.2s 轮询 stop_check + **启动前预检**（stop 前置到达零线程启动，端到端收敛单轮询 ~0.2s），同 `_interruptible_iter` 模式
+  2. **动态注入四处包可中断**：search_by_file_path / search_multi_lightrag / _traverse_from_hits / 脑区激活 activate_for_query（runner.py，含 block 间 stop 短路）——检索超时 120s→15s（lightrag_adapter 两方法 + query_data 加 timeout 参数透传，慢则降级空注入）
+  3. **agent_loop LLM 前新增停止检查**（agent_loop.py L828/L834）：注入放弃后立即 STOPPED，不发起 LLM 调用
+  4. **LLM 调用建立（TTFT）三处 completion 包可中断**（litellm_adapter.py L710 初始 / L773 socket fallback / L837 重试）：放弃返回空或已积累内容 MockResponse（stream_error=False）→ after-LLM 检查 STOPPED，不再等 read_timeout 300s
+  5. **工具执行 exhaust 包可中断**（agent_loop.py L1157）：stop 放弃等待，后台线程继续跑、结果丢弃——用户拍板；chat-with-* 同步子 Agent 放弃时 terminate 实例（防 clear_stop 后逃逸单击停止）
+- **验证**：T1-T4 单测 16 用例（test_interruptible_runner 7 / test_inject_interruptible 3 / test_ttft_interruptible 3 / test_agent_loop_tool_interruptible 3）+ 既有 agent_loop 测试回归
+- **教训**：① **Python 线程模型无法 OS 级强杀**（pthread_kill 信号 handler 固定主线程 / PyThreadState_SetAsyncExc 不打断阻塞等待 / 杀 API 进程 launcher 不自动重启）——"停止立即返回"的最优实现 = 统一可中断执行层（后台执行 + 前台轮询放弃等待）② **用户语义**：不要求杀后台，只要主 Agent 前台立即回——放弃等待后 daemon 线程继续跑完可接受 ③ **TTFT 同步阻塞实证**：stream=True 仅"body 惰性读取"，请求发送+响应头等待同步阻塞（openai SDK `_base_client.py` request→send(stream=True) 实证），`_interruptible_iter` 在 response 返回后才启动、覆盖不到建立窗口 ④ 动态注入检索是主 Agent 每轮 LLM 前的隐藏长阻塞（120s×3 实测超时源），超时参数化是配套；锁核查无 self-deadlock（graph_read_lock=RLock copy-only、LightRAG coro 恒在单例 loop，asyncio 锁 coroutine-bound）
+- **质量链**：计划 11 轮审查（R1-R11，R10+R11 连续两轮零 bug；R5 跨 5 轮抓出 TTFT 盲区、R6 补重试/fallback、R7 测试缺陷双审交叉、R1/R2 补 chat-with 逃逸与脑区激活第 4 处）；每 Task spec+quality 双审；提交 c7493e4c（执行器）+ 25bc4b72（注入）+ 47b357d4（脑区）+ 1b6c3258（TTFT）+ e8805557（LLM 前检查）+ c4c9f740（工具执行）
+
 #### 新增：macOS Cmd+Q 拦截（阻止误退出，assistant 模式精灵/Chat/图谱 3 窗口全拒绝）
 
 - **问题**：macOS 按 Cmd+Q 直接退出应用（自定义菜单"退出"项 accelerator 触发 `app.quit()`），精灵/Chat/图谱 3 窗口（同进程）都被误退出；Windows 无此问题（无强制退出快捷键），零改动
