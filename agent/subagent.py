@@ -1061,6 +1061,22 @@ def call_subagent(
         logger.warning(f"[SubAgent] {agent_name}: LLM error: {error_msg}")
         return f"SUBAGENT_ERROR:{error_msg}"
 
+    # 未完成终止（轮次耗尽 / 被停止 / supplement 终止）：返回结构化报告，
+    # 避免中间文本被调用方误判为成功（游标误推进）。优先于 finish_reason=length
+    # 判断——终止总结截断时仍必须带 incomplete 标记。
+    if return_value and isinstance(return_value, dict) and return_value.get("result") in (
+        "MAX_TURNS_EXCEEDED", "STOPPED", "TERMINATED_BY_SUPPLEMENT",
+    ):
+        _partial = (last_reply or "")[:2000]
+        report = {
+            "incomplete": True,
+            "agent": agent_name,
+            "reason": return_value.get("result"),
+            "partial_result": _partial,
+        }
+        logger.warning(f"[SubAgent] {agent_name}: {return_value.get('result')} — task incomplete")
+        return json.dumps(report, ensure_ascii=False)
+
     # 检测输出截断（finish_reason == "length"）
     # LLM 输出被截断时无法产出合法 keep/update 结构，返回字符串信号让降级循环识别
     if return_value and isinstance(return_value, dict):
