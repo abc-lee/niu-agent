@@ -639,7 +639,7 @@ def agent_runner_loop(
     user_input=None,
     handler=None,
     tools_schema=None,
-    max_turns=40,
+    max_turns: int | None = 40,  # None = 无上限（子 Agent 长程任务跑到底）；主 Agent 默认 40 轮
     verbose=True,
     initial_user_content=None,
     history=None,  # Optional: list of {"role": "user/assistant", "content": str}
@@ -747,7 +747,7 @@ def agent_runner_loop(
     _max_truncation_retries = 3
     warning_threshold = _read_warning_threshold()
 
-    while turn < handler.max_turns:
+    while handler.max_turns is None or turn < handler.max_turns:
         turn += 1
         # --- Stop flag check ---
         if stop_predicate():
