@@ -657,6 +657,7 @@ def agent_runner_loop(
     stop_predicate: Callable | None = None,  # 停止穿透：停止判定谓词（默认 None = 全局 is_stop_requested；子 Agent 由 call_subagent 传入）
 ):
     from agent.runner import clear_stop, drain_supplement, is_stop_requested
+    from agent.generic.interruptible import run_interruptibly
     stop_predicate = stop_predicate or is_stop_requested  # 默认全局停止检查
 
     if resumed_messages is not None:
@@ -1149,7 +1150,38 @@ def agent_runner_loop(
                 outcome = yield from gen
                 yield StreamEvent("tool_marker", "`````\n")
             else:
-                outcome = exhaust(gen)
+                # 可中断工具执行：后台线程消费 dispatch generator，前台轮询 stop_predicate。
+                # stop 置位 → 放弃等待（后台线程继续跑完，结果丢弃——用户拍板"后台去运行好了"）。
+                # dispatch generator 的事件 yield（tool_marker/system）在非 verbose 下本就由
+                # exhaust 丢弃（现状行为），后台消费不改变可见性。
+                _completed, _outcome = run_interruptibly(
+                    exhaust, stop_predicate, args=(gen,),
+                )
+                if not _completed:
+                    logger.info("[AgentLoop] Stop requested during tool execution, abandoning wait")
+                    # R1-P1-1（双审查交叉）：chat-with-* 同步子 Agent 内联在 dispatch generator 里
+                    # （handler.py L1251-1265 通配路由 → _call_subagent_gen），后台线程继续消费 gen
+                    # 时子 Agent loop 的 stop_predicate=(global or terminate_event)——下面 clear_stop()
+                    # 清全局后谓词只剩 terminate_event（未置位）→ 子 Agent 逃逸单击停止跑完全程。
+                    # 修复：放弃分支先 terminate 该子 Agent 实例（terminate_event.set()，让子 Agent
+                    # LLM 流式/循环检查点 ≤0.2s 停止）。
+                    if tool_name.startswith("chat-with-"):
+                        _agent_name = tool_name[len("chat-with-"):]
+                        try:
+                            from agent.subagent_registry import SubagentRegistry
+                            _inst = SubagentRegistry.get(_agent_name)
+                            if _inst is not None:
+                                _ev = getattr(_inst, "terminate_event", None)
+                                if _ev is not None:
+                                    _ev.set()
+                                    logger.info(f"[AgentLoop] Terminated subagent {_agent_name} on tool-abandon")
+                        except Exception as _e:
+                            logger.warning(f"[AgentLoop] Failed to terminate subagent {_agent_name}: {_e}")
+                    if not getattr(handler, "_is_subagent", False):
+                        clear_stop()  # 主 Agent 自己消费停止意图
+                    yield StreamEvent("system", "chat_idle")
+                    return {"result": "STOPPED", "messages": messages}
+                outcome = _outcome
 
             # === 统一截断关口 ===
             # 距离 Agent 调用最近，覆盖所有工具路径（MCP/disk/内置/chat-with-*）
