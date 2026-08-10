@@ -1248,6 +1248,8 @@ class NiuRunner:
                 _parse_processed_up_to,
                 _write_cursor_with_lock,
                 _is_subagent_overflow,
+                _is_subagent_incomplete,
+                _incomplete_reason,
                 _extract_overflow_info,
             )
 
@@ -1294,10 +1296,13 @@ class NiuRunner:
 
                     # 游标推进
                     new_entity_id = last_entity_id
-                    if _is_subagent_overflow(entity_result):
-                        overflow_info = _extract_overflow_info(entity_result)
-                        logger.warning(f"[Nap] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                        # overflow 时游标不动
+                    if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result):
+                        if _is_subagent_incomplete(entity_result):
+                            logger.warning(f"[Nap] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
+                        else:
+                            overflow_info = _extract_overflow_info(entity_result)
+                            logger.warning(f"[Nap] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                        # overflow/incomplete 时游标不动
                     else:
                         _processed_idx = _parse_processed_up_to(entity_result)
                         if _processed_idx is not None and _processed_idx in entity_idx_to_id:
@@ -1381,6 +1386,9 @@ class NiuRunner:
                     _fallback_idx = len(dream_msg_ids) // 3
                     new_dream_id = dream_msg_ids[_fallback_idx]
                     logger.info(f"[Nap] Overflow fallback: advancing cursor to 1/3 ({_fallback_idx}/{len(dream_msg_ids)})")
+            elif _is_subagent_incomplete(dream_result):
+                # incomplete（/stop、轮次耗尽等打断场景）：游标不动，下次续做
+                logger.warning(f"[Nap] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
             else:
                 _processed_idx = _parse_processed_up_to(dream_result)
                 if _processed_idx is not None and _processed_idx in dream_idx_to_id:
@@ -1738,6 +1746,8 @@ class NiuRunner:
 
         from niu_api.compat import (
             _extract_overflow_info,
+            _incomplete_reason,
+            _is_subagent_incomplete,
             _is_subagent_overflow,
             _write_cursor_with_lock,
         )
@@ -1760,12 +1770,15 @@ class NiuRunner:
 
         logger.info(f"[Runner] Force: {step_name} completed, length={len(result)}")
 
-        # --- cursor advance: overflow→don't move; else parse processed_up_to=N + lookup idx_to_id, fallback fallback_ids[-1] ---
+        # --- cursor advance: overflow/incomplete→don't move; else parse processed_up_to=N + lookup idx_to_id, fallback fallback_ids[-1] ---
         new_cursor_id = last_cursor_id
-        if _is_subagent_overflow(result):
-            overflow_info = _extract_overflow_info(result)
-            logger.warning(f"[{step_name}] overflow: {overflow_info.get('turns_completed', 0)} turns")
-            # overflow 时游标不动
+        if _is_subagent_overflow(result) or _is_subagent_incomplete(result):
+            if _is_subagent_incomplete(result):
+                logger.warning(f"[{step_name}] incomplete ({_incomplete_reason(result)}) — cursor not advanced")
+            else:
+                overflow_info = _extract_overflow_info(result)
+                logger.warning(f"[{step_name}] overflow: {overflow_info.get('turns_completed', 0)} turns")
+            # overflow/incomplete 时游标不动
             new_cursor_id = last_cursor_id
         else:
             from niu_api.compat import _parse_processed_up_to

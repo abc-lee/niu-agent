@@ -934,6 +934,8 @@ class NiuHandler(BaseHandler):
             _extract_overflow_info,
             _flock,
             _funlock,
+            _incomplete_reason,
+            _is_subagent_incomplete,
             _is_subagent_overflow,
             _parse_processed_up_to,
         )
@@ -959,11 +961,14 @@ class NiuHandler(BaseHandler):
 
                 new_journal_id = last_journal_id
 
-                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(journal_result):
-                    overflow_info = _extract_overflow_info(journal_result)
-                    logger.warning(f"[Journal] overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    # overflow 时游标不动
+                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result):
+                    if _is_subagent_incomplete(journal_result):
+                        logger.warning(f"[Journal] incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
+                    else:
+                        overflow_info = _extract_overflow_info(journal_result)
+                        logger.warning(f"[Journal] overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    # overflow/incomplete 时游标不动
                     new_journal_id = last_journal_id
                 else:
                     _processed_idx = _parse_processed_up_to(journal_result)
@@ -994,6 +999,8 @@ class NiuHandler(BaseHandler):
 
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）— 同步/异步分流"""
+        from niu_api.compat import _incomplete_reason, _is_subagent_incomplete
+
         from .subagent import _dispatch_async_subagent, call_subagent, get_subagent_config
 
         task = args.get("task", "")
@@ -1121,9 +1128,18 @@ class NiuHandler(BaseHandler):
             if result and result.startswith("COMPACT_TRUNCATED:"):
                 result = result[len("COMPACT_TRUNCATED:"):]
 
-            # journal-agent 特殊处理：更新游标
+            # journal-agent 特殊处理：更新游标（必须用原始 result——incomplete/overflow
+            # 判定基于原始 JSON；转换只作用于返回 LLM 的副本，见下方 display_result）
             if agent_name == "journal-agent" and journal_msg_ids_for_cursor:
                 self._update_journal_cursor(result, journal_msg_ids_for_cursor, _journal_idx_to_id)
+
+            # incomplete JSON → 自然语言提示（只作用于返回 LLM 的副本，游标判定已用原始 result）
+            display_result = result
+            if result and result.strip().startswith("{") and _is_subagent_incomplete(result):
+                display_result = (
+                    f"子Agent未完成任务（{_incomplete_reason(result)}），已保留进度；"
+                    f"请决定是否让子Agent继续处理。"
+                )
 
             # 验证结果：检查 event-manager 是否真正创建了任务
             if agent_name == "event-manager" and ("提醒" in task or "定时" in task or "提醒我" in task):
@@ -1160,9 +1176,9 @@ class NiuHandler(BaseHandler):
                 except Exception as e:
                     yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
 
-            yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {result[:200] if len(result) > 200 else result}\n")
+            yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {display_result[:200] if len(display_result) > 200 else display_result}\n")
             return StepOutcome(
-                {"status": "success", "result": result},
+                {"status": "success", "result": display_result},
                 next_prompt=""
             )
         except Exception as e:
