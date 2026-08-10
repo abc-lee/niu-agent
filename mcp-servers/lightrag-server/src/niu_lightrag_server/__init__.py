@@ -435,7 +435,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_insert_relation": {
         "name": "lightrag_insert_relation",
-        "description": "Insert a relation between two entities using structured injection (ainsert_custom_kg). Relation src/tgt/keywords are preserved exactly — no LLM auto-extraction. Entity names must use natural language (e.g., 'Python', '任飞'), NOT colon-prefix format.",
+        "description": "Insert a relation between two entities using structured injection (ainsert_custom_kg). Relation src/tgt/keywords are preserved exactly — no LLM auto-extraction. Entity names must use natural language (e.g., 'Python', '任飞'), NOT colon-prefix format. If src_id or tgt_id does not exist yet, it will be auto-created (including system-maintained fixed nodes such as YYYY-MM-DD会话 date session nodes). No need to check entity existence before creating the relation — missing endpoints are created automatically.",
         "input_schema": {
             "type": "object",
             "properties": {
