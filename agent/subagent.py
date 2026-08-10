@@ -236,7 +236,7 @@ def _run_agent_loop(
     user_input: str = "",
     handler=None,
     tools_schema: list = None,
-    max_turns: int = 20,
+    max_turns: int | None = None,  # None = 无上限（子 Agent 长程任务跑到底）
     initial_user_content: str | None = None,
     context_window_tokens: int = 0,
     context_fifo_threshold: int = 0,
@@ -258,7 +258,7 @@ def _run_agent_loop(
         user_input: 用户输入
         handler: NiuHandler 实例
         tools_schema: 工具 schema 列表
-        max_turns: 最大轮次
+        max_turns: 最大轮次；None = 无上限（子 Agent 长程任务跑到底）
         initial_user_content: 初始用户内容（如果不提供则使用 user_input）
         context_window_tokens: 上下文窗口 token 数（0 表示不检查）
 
@@ -774,6 +774,7 @@ def call_subagent(
     answer_unique_name: str | None = None,  # 阶段四新增：回复路径锁定挂起 session
     bypass_at_prefix: bool = False,  # True=绕过@前缀拦截层（仅一轮出方案的子Agent用，如context-manager模式二/三）
     program_triggered: bool = False,  # 程序触发子 Agent（如 entity-extractor）跳过超长写文件，保留游标标记
+    max_turns: int | None = None,  # 子 Agent 轮数上限；None = 无上限（长程任务跑到底）
 ) -> str:
     """
     调用子 Agent
@@ -789,6 +790,7 @@ def call_subagent(
         history: 历史消息
         context_fifo_threshold: FIFO 截断阈值。-1 = 默认 75%，0 = 关闭 FIFO，>0 = 自定义值
         no_tools: 禁用所有工具（LLM 只能直接回复文本，不能调用任何工具）
+        max_turns: 子 Agent 轮数上限；None = 无上限（长程任务跑到底）。显式传小值仍触发 MAX_TURNS_EXCEEDED
 
     Returns:
         子 Agent 执行结果
@@ -943,6 +945,7 @@ def call_subagent(
                 initial_user_content=None,
                 handler=instance.suspended_handler,
                 tools_schema=instance.suspended_tools_schema,
+                max_turns=max_turns,  # resume 路径同源透传（None = 无上限）
                 memory_context=None,
                 resumed_messages=suspended_messages,
                 supplement_queue=instance.supplement_queue,
@@ -984,7 +987,7 @@ def call_subagent(
                 user_input=task,
                 handler=handler,
                 tools_schema=tools_schema,
-                max_turns=20,
+                max_turns=max_turns,  # None = 无上限
                 initial_user_content=task,
                 context_window_tokens=context_window_tokens,
                 context_fifo_threshold=fifo_threshold,
@@ -1026,7 +1029,7 @@ def call_subagent(
                 user_input=task,
                 handler=handler,
                 tools_schema=tools_schema,
-                max_turns=20,
+                max_turns=max_turns,  # None = 无上限
                 initial_user_content=task,
                 context_window_tokens=context_window_tokens,
                 context_fifo_threshold=fifo_threshold,
