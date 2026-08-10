@@ -32,6 +32,7 @@ def _common_patches(stack: ExitStack):
     stack.enter_context(patch("agent.runner.drain_supplement"))
     stack.enter_context(patch("agent.generic.agent_loop._enforce_message_budget", side_effect=lambda m: m))
     stack.enter_context(patch("agent.generic.agent_loop._fifo_prune", return_value=0))
+    stack.enter_context(patch("agent.generic.agent_loop._placeholderize_tool_outputs", return_value=0))
     stack.enter_context(patch("agent.generic.agent_loop.count_messages_tokens", return_value=100))
     # M2 修复：verbose=False 路径必调 _intercept_at_prefix_content，统一 patch 返回无拦截
     stack.enter_context(patch("agent.generic.agent_loop._intercept_at_prefix_content", return_value=(False, None)))
