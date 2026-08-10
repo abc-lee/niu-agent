@@ -704,7 +704,19 @@ class LiteLLMSession(BaseSession):
         }, seq=raw_log_seq)
 
         try:
-            response = litellm.completion(**request_params)
+            # R5-P1：TTFT（请求发送 + 响应头等待）同步阻塞——包可中断层，stop 置位放弃等待
+            # （后台线程继续跑，结果丢弃；返回空 MockResponse → agent_loop L1058 stop 检查 STOPPED）
+            from agent.generic.interruptible import run_interruptibly as _ri
+            _ok, response = _ri(
+                lambda: litellm.completion(**request_params),
+                self.stop_check,
+            )
+            if not _ok:
+                logger.info("[STREAM] Stop requested during initial call (TTFT), aborting")
+                return MockResponse(
+                    thinking="", content="", tool_calls=[], raw="",
+                    finish_reason="stop", stream_error=False,
+                )
         except Exception as init_err:
             # 初始 API 调用就失败（如 context_length_exceeded），直接返回 MockResponse
             if _is_context_overflow_error(init_err):
@@ -758,7 +770,21 @@ class LiteLLMSession(BaseSession):
                 logger.warning(f"[STREAM] Socket error with empty content, trying non-stream fallback: {e}")
                 try:
                     fallback_params = {**request_params, "stream": False}
-                    fallback_response = litellm.completion(**fallback_params)
+                    _ok_f, fallback_response = _ri(
+                        lambda: litellm.completion(**fallback_params),
+                        self.stop_check,
+                    )
+                    if not _ok_f:
+                        # fallback 等待中 stop 置位：放弃，返回已积累内容（stream_error=False → L1058 STOPPED）
+                        logger.info("[STREAM] Stop requested during socket fallback, aborting")
+                        return MockResponse(
+                            thinking=reasoning_content or "",
+                            content=full_content or "",
+                            tool_calls=tool_calls,
+                            raw=full_content or "",
+                            finish_reason=last_finish_reason or "stop",
+                            stream_error=False,
+                        )
                     if fallback_response and fallback_response.choices:
                         choice = fallback_response.choices[0]
                         full_content = choice.message.content or ""
@@ -808,7 +834,21 @@ class LiteLLMSession(BaseSession):
                             break
                         logger.info(f"[STREAM] Retry {retry_idx}/{max_retries} for {type(e).__name__}")
                         try:
-                            retry_response = litellm.completion(**request_params)
+                            _ok_r, retry_response = _ri(
+                                lambda: litellm.completion(**request_params),
+                                self.stop_check,
+                            )
+                            if not _ok_r:
+                                # 重试中 stop 置位：放弃（结果丢弃），返回已积累内容
+                                logger.info("[STREAM] Stop requested during retry call, aborting")
+                                return MockResponse(
+                                    thinking=reasoning_content or "",
+                                    content=full_content or "",
+                                    tool_calls=tool_calls,
+                                    raw=full_content or "",
+                                    finish_reason=last_finish_reason or "stop",
+                                    stream_error=False,
+                                )
                             full_content, reasoning_content, tool_calls, \
                                 last_finish_reason, usage, was_stopped = \
                                 yield from self._do_streaming_completion(retry_response)
