@@ -67,6 +67,7 @@ class TestTaskStoreMigration:
     def test_old_db_migrates_adds_columns(self, tmp_path):
         """模拟老库（无 task_kind/script_file 列）迁移后可正常读写"""
         import sqlite3
+
         from niu_api.internal.scheduler.task_store import TaskStore
 
         db_path = str(tmp_path / "old.db")

@@ -10,12 +10,13 @@ import os
 import threading
 from pathlib import Path
 
+from agent.handler import code_run
 from loguru import logger
+
+from niu_api.chat_queue import get_chat_queue
 
 from .scheduler import Scheduler
 from .task_store import TaskStore
-from agent.handler import code_run
-from niu_api.chat_queue import get_chat_queue
 
 # ============== 全局状态 ==============
 
@@ -89,7 +90,6 @@ def trigger_callback(task: dict) -> str | None:
         return _trigger_background_script(task, _main_loop, add_pending_alert)
 
     # ===== reminder 分支（fire-and-forget） =====
-    from niu_api.chat_queue import get_chat_queue  # reminder 局部 import 保持原样
     prompt = f"[定时任务] {task['content']}"
 
     loop = _main_loop
