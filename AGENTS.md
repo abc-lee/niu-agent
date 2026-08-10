@@ -515,6 +515,27 @@ preload_face_model()
 - **交付**：commits 51485133（reminder）+ edd42231（bg）+ 7c165499（删重试测试+ruff 清理）；计划 4 轮审查（R1-R4，连续两轮零 bug）；3 Task 每 Task spec+quality 双审；终审 APPROVE（0 Critical/0 Important，5 Minor 文档级取舍：scheduler.py 过期注释/_CALLBACK_TIMEOUT 注释、bg 分支 4 个测试小缺口、两分支推送代码重复——均为计划已接受项）
 - **排查教训**："等 Agent 回复判成功"的等待协议脆弱（Agent 生成耗时不可控）——通知类任务应"送达即完成"，等待+超时重试必然引入重复窗口；跨通道自动回路由（ChatQueue worker 按 channel 回推回复）是防双消息的隐性耦合点，改 channel 语义必须先查 worker 路由行为
 
+#### 修复：子 Agent 上下文压缩两级策略（tool 占位符化 → FIFO 兜底）+ 删除 targetThreshold 配置
+
+- **问题**：① 子 Agent 上下文超 80%（warningThreshold）后直接 `_fifo_prune` 整组删除——一轮的 assistant 推理文本 + 全部 tool 输出一起消失，LLM 推理链断裂，有用 tool 信息丢失导致重调工具；② `targetThreshold` 是子 Agent 专用压缩目标参数（百分比），但 `docs/manual-user-guide.md` 描述像主 Agent 的"强制压缩目标"，主 Agent 实际用 `compressTargetTokens`（绝对值 60000），参数对用户隐形且冗余。
+- **修复（两级压缩，scheduler/主 Agent 零改动）**：
+  1. **阶段 1（新增，温和）** `_placeholderize_tool_outputs`（agent/generic/agent_loop.py）：80% 触发时从最早 tool 输出开始，content 替换为 `[name 输出已裁剪]`（tool 消息自带 name，缺失回退 assistant.tool_calls 的 OpenAI 嵌套 `function.name` 匹配）；**达标即停**（token ≤ target 即停，保留尽量多上下文，防重调工具）；**10 轮保护**（最近 10 轮对话内 tool 不动，从尾部数 user 消息）；**幂等**（已占位符跳过，二次压缩不重复替换——用户拍板）
+  2. **阶段 2（保留）** 仍超 target 才 `_fifo_prune` 整组删（保护 system+初始 user 不变）
+  3. **删除 targetThreshold 配置**：`_read_target_threshold()` 删、压缩目标写死 `int(contextWindowSize × 0.50)`（用户拍板：80% 触发 → 压到 50%，参数无必要）；config-manager 模板 2 处、manual-user-guide、AGENTS.md 示例、3 个测试 patch 全链清理；settings UI 本无此字段
+  4. **保留**：warningThreshold（主/子共用触发线，配置+UI 可调）；`context_target_threshold` 内部参数（subagent.py 写死 50% 传入，runner.py 主 Agent 传 0）；主 Agent 压缩（compressTargetTokens/on_context_high_usage）零改动；首轮回退路径（context_fifo_threshold）零改动
+- **10 轮保护只约束阶段 1**：FIFO 兜底仍可删最近 10 轮内整组消息（两级设计必然，用户"10 轮内不动"仅适用于阶段 1）
+- **重复触发无害**：子 Agent 分支不设压缩冷却/不重置 last_prompt_tokens → 下轮可能重复触发占位符化，因幂等 + 达标即停为 no-op
+- **交付**：commits 5cc3f890（占位符化纯函数 TDD，10 单测）+ a57bef47（两处触发点两级串联，兜底 0.30→0.50）+ 2550d937（删 targetThreshold 全链路）+ a0d1f671（回归适配）；计划 R1-R5 审查（R4+R5 连续两轮零 bug）；每 Task spec+quality 双审；终审 APPROVE（0 Critical/0 Important）
+- **用户可见变化**：子 Agent 压缩目标从 30%（配置缺失兜底）→ 50% 窗口（更温和）；旧轮次 tool 输出可能显示为 `[工具名 输出已裁剪]`
+- **排查教训**：子 Agent 触发分支（on_context_high_usage None）不设压缩冷却——与主 Agent 分支（回调后冷却）行为不同，跨轮重复触发依赖幂等兜底；测试断言"达标即停"必须用与实现同一 count 函数量 target（probe 法），不能猜字符数
+- **回归豁免清单（12 个 pre-existing 测试失败，与本工程无关，勿当新失败）**：
+  - `tests/test_context_overflow.py`：3× TestLiteLLMAdapterContextOverflow（断言查 chat 方法源码字面量 'context window'/'prompt is too long'/'maximum context length'——源码已不含）+ 3× TestSubagentFIFOThreshold（call_subagent 测试 mock 的 client.backend AttributeError）
+  - `tests/test_on_before_llm_callback.py`：3×（_make_response 未设 stream_error=False → MagicMock 自动真值 → LLM_ERROR 短路）
+  - `tests/test_llm_error_handling.py`：1× test_call_subagent_returns_subagent_error_prefix（FakeClient 无 backend）
+  - `tests/test_compress_history.py`：1× test_build_compress_history_protected_assistant_excludes_its_tool（0==3）
+  - `tests/test_sync_subagent_interaction.py`：1×（suspended_handler None）
+  - 既有已知：test_compress_quality 的 REDACTED_USER_PATH、test_tidy_cursor 4 个 PROTECTED 断言
+
 ### 2026-08-09
 
 #### 新增：知识图谱时间链（会话日期链补全 + 主 Agent 认知 + dream-evolver 减负）
