@@ -35,6 +35,7 @@ MCP 服务器集群 (mcp-servers/)
    find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;
    ```
 8. **Rust 启动器编译必须用 `launcher/build.sh`，禁止直接 `cargo build`** — `cargo build` 只输出到 `launcher/target/debug/`，不会复制到项目根目录的 `niu`，导致测试用旧二进制。`launcher/build.sh` 编译后自动 `cp target/release/niu-launcher ../niu`。每次改 Rust 代码（`launcher/src/`）后必须跑 `./launcher/build.sh`。此铁律必须传达给派出去的子 Agent。
+9. **方案/计划等私有文档（`docs/superpowers/` 整个目录）必须在本地 `plans` 分支编写与提交，禁止在 main 上提交** — 写方案前 `git checkout plans`（私有文档只在 plans 分支存在），完成后 `git checkout main`；**`plans` 分支永远不推送**；main 的 `.gitignore` 排除 `docs/superpowers/`，push 天然干净、pull 不影响本地私有文档。审查 Agent 读计划文件时若在 main 上文件不可见，先 `git checkout plans`。此铁律必须传达给派出去的子 Agent。
 
 **违反任何一条就停下来，不要继续。**
 
@@ -50,7 +51,7 @@ MCP 服务器集群 (mcp-servers/)
 6. 项目代码量较大，为保护上下文窗口，无需长期记忆或大代码量的遍历工作交给子 Agent。
 7. 代码质量优先，用户不在乎 token 消耗。
 8. 版本号变更必须同步两处：根目录 `VERSION` 文件（单一真相源，对外发布用）、`ui/main/windows/assistant/chat.html` 中 `version-label` span 的文本（UI 展示用）。其他文件（Cargo.toml、package.json、Python `__version__`、pyproject.toml 等）的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
-9. **方案/计划文档（`docs/superpowers/plans/`）必须切到本地 `plans` 分支编写并提交，禁止在 main 上提交 plans 文档**。`plans` 分支是本地专用分支（含 `docs/superpowers/specs/` 等私有文档历史），**永远不推送**；main 的 `.gitignore` 排除 `docs/superpowers/plans/`，push 天然干净。流程：写方案前 `git checkout plans` → 编写 + `git add/commit`（多轮审查用该分支 git log/diff）→ 完成后 `git checkout main` 继续开发。检查/审查 Agent 读计划文件时若在 main 上文件不可见，先 `git checkout plans`。
+9. 私有文档（`docs/superpowers/` 整个目录）遵循铁律 9：在本地 `plans` 分支编写与提交（有 git 历史供多轮审查），`plans` 分支永不推送；main 通过 `.gitignore` 排除该目录，push 天然干净。
 
 ---
 
