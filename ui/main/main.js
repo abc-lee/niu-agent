@@ -4,7 +4,7 @@
 //   - settings:  只创 settings 窗口（不调 Dock.hide）
 //   - graph:     只创 graph 窗口（不调 Dock.hide）
 // 合并自 ui/assistant/main.js + ui/settings/main.js + ui/graph/main.js（零命名冲突）
-const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -22,6 +22,7 @@ let tray = null;          // 系统托盘
 let stickyHideTimer = null; // 便签隐藏定时器
 let mouseOnSticky = false;  // 鼠标是否在便签上
 let mouseOnSpirit = false;  // 鼠标是否在小女孩上
+let allowQuit = false;       // macOS Cmd+Q 拦截：明确退出路径（菜单点击/close-all/系统关机 powerMonitor）才置 true
 
 function shouldCreateTray() { return WINDOW_MODE === 'assistant'; }
 
@@ -808,6 +809,7 @@ ipcMain.on('save-sticky-size', (event, size) => {
 });
 
 ipcMain.on('close-all', () => {
+  allowQuit = true;  // 明确退出意图（前端 closeAll / 未来调用），放行 before-quit 守卫
   // 关闭所有窗口
   if (chatWindow) chatWindow.close();
   if (spiritWindow) spiritWindow.hide(); // 隐藏而不是关闭，因为还要用
@@ -1629,6 +1631,15 @@ app.whenReady().then(() => {
       app.dock.hide();
     }
 
+    // macOS 系统关机/注销：放行退出（否则 before-quit 守卫会 preventDefault，macOS 弹强制退出对话框打断关机）
+    // powerMonitor 'shutdown' 事件平台：Linux/macOS（Electron 官方文档）；注销/关机/重启均触发
+    // e.preventDefault()：按 Electron 文档建议延迟系统关机，等待 app 干净退出（/api/shutdown + 窗口销毁）
+    powerMonitor.on('shutdown', (e) => {
+      e.preventDefault();
+      allowQuit = true;
+      app.quit();
+    });
+
     createSpiritWindow();
     createChatWindow();
     createStickyWindow();
@@ -1665,7 +1676,19 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (e) => {
+  // macOS Cmd+Q 拦截（2026-08-10）：assistant 模式（精灵/Chat/图谱同进程）拒绝非明确退出的 quit
+  // darwin 门控：Windows/Linux 无 Cmd+Q 问题，守卫完全不生效（零语义改动）
+  // 守卫覆盖面：一切未置 allowQuit 的 quit（Cmd+Q 已无 accelerator 绑定、AppleScript `quit app`、
+  // 系统 quit、未来新增 app.quit() 路径）。系统关机/注销由 powerMonitor 'shutdown' 先置 allowQuit 放行。
+  // allowQuit 是闩锁（置位后不复位）：明确退出（菜单点击/close-all/shutdown）中途被中止时，
+  // 后续非明确 quit 可穿透守卫——当前无窗口 close 拦截（无现实中止路径），若未来加 beforeunload
+  // preventDefault 需同步考虑复位语义。
+  if (process.platform === 'darwin' && WINDOW_MODE === 'assistant' && !allowQuit) {
+    e.preventDefault();
+    console.log('[main] quit blocked (Cmd+Q?). Use tray "⛔ 关闭妞妞" or menu 退出 to quit.');
+    return;
+  }
   // 仅 assistant 模式管理 Python API 生命周期（调 /api/shutdown + destroy 全部窗口 + tray）
   // settings/graph 模式不管理 Python API 生命周期
   if (WINDOW_MODE === 'assistant') {
@@ -1708,8 +1731,11 @@ if (process.platform === 'darwin') {
         { type: 'separator' },
         {
           label: '退出',
-          accelerator: 'Cmd+Q',
+          // assistant 模式：无 accelerator（Cmd+Q 不触发退出，2026-08-10）
+          // settings/graph 模式：保留 Cmd+Q（macMenu 为全模式共享，需按模式区分）
+          accelerator: WINDOW_MODE === 'assistant' ? undefined : 'Cmd+Q',
           click: () => {
+            allowQuit = true;
             app.quit();
           }
         }
