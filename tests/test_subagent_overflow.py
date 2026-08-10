@@ -599,3 +599,88 @@ class TestBuildTruncatedMsgListText:
         result = build_truncated_msg_list_text([msg], truncate=False)
         assert "完整内容" in result
 
+
+
+class TestSubagentMaxTurnsPassthrough:
+    """call_subagent 的 max_turns 参数透传到 _run_agent_loop 三路径（Task 2）。
+
+    默认 None（无上限）、显式传值透传、resume（answer 非 None）透传。
+    create_client → Mock()（自动带 .backend，防 L866 stop_check AttributeError）。
+    """
+
+    def _setup(self, monkeypatch, captured):
+        from unittest.mock import Mock
+
+        from agent import subagent
+        import agent.runner as runner_mod
+
+        def mock_run(client, system_prompt, user_input, handler, tools_schema, **kwargs):
+            captured.update(kwargs)
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
+
+        monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+        monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+        monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+        monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
+        return subagent
+
+    def test_default_max_turns_none_passed_to_loop(self, monkeypatch):
+        captured = {}
+        subagent = self._setup(monkeypatch, captured)
+        subagent.call_subagent(
+            agent_name="test-agent",
+            task="test",
+            llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+        )
+        assert "max_turns" in captured, f"_run_agent_loop 未收到 max_turns: {captured}"
+        assert captured["max_turns"] is None
+
+    def test_explicit_max_turns_passed_through(self, monkeypatch):
+        captured = {}
+        subagent = self._setup(monkeypatch, captured)
+        subagent.call_subagent(
+            agent_name="test-agent",
+            task="test",
+            llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+            max_turns=5,
+        )
+        assert captured.get("max_turns") == 5
+
+    def test_resume_path_passes_max_turns_none(self, monkeypatch):
+        """resume 路径（answer 非 None）也要把 max_turns 透传给 _run_agent_loop。"""
+        from unittest.mock import Mock
+
+        from agent.subagent_registry import SubagentRegistry, RunningSubagent
+        from agent.subagent_supplement import SubagentSupplementQueue
+
+        captured = {}
+        subagent = self._setup(monkeypatch, captured)
+
+        inst = RunningSubagent(
+            unique_name="resume-test",
+            agent_type="test-agent",
+            supplement_queue=SubagentSupplementQueue(unique_name="resume-test"),
+            state="waiting_for_answer",
+            suspended_messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "orig"}],
+            suspended_handler=Mock(),
+            suspended_client=Mock(),
+            suspended_system_message={"role": "system", "content": "sys"},
+            suspended_tools_schema=[],
+            source="user",
+        )
+        SubagentRegistry._instances["resume-test"] = inst
+        try:
+            subagent.call_subagent(
+                agent_name="test-agent",
+                task="ignored (resume path)",
+                llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+                answer="继续任务",
+                answer_unique_name="resume-test",
+            )
+        finally:
+            SubagentRegistry._instances.pop("resume-test", None)
+
+        assert "max_turns" in captured, f"resume 路径未收到 max_turns: {captured}"
+        assert captured["max_turns"] is None
