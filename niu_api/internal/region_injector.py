@@ -56,6 +56,7 @@ class BrainContextInjector:
     def activate_for_query(
         self,
         query_context: str,
+        timeout: int | None = None,
     ) -> tuple[dict[str, str], dict[str, str], list[str]]:
         """Step 1-3: Get entity mapping, vector-search, activate regions.
 
@@ -76,7 +77,8 @@ class BrainContextInjector:
 
         try:
             query_result = self._adapter.query_data(
-                query_context, mode="local", top_k=20, keywords=[query_context]
+                query_context, mode="local", top_k=20, keywords=[query_context],
+                timeout=timeout,
             )
             if query_result and isinstance(query_result, dict):
                 data = query_result.get("data", {})
