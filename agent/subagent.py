@@ -1521,10 +1521,17 @@ async def _run_subagent_async(
 
         # 推完成通知到 MainAgentRequestQueue 内存队列（不写 db）
         # 用 last_reply（最后一轮输出）而非 result（所有轮次累加），避免中间过程挤占最终报告
-        _inst = SubagentRegistry.get(unique_name)
-        _last_reply = getattr(_inst, 'last_reply', '') if _inst else ''
-        _result_for_notify = _last_reply if _last_reply else result
-        completion_msg = f"[{unique_name}] 已完成，结果：{_result_for_notify}"
+        # incomplete 判定基于 result（last_reply 在打断时可能非空——中间文本，不可作完成依据）
+        from niu_api.compat import _is_subagent_incomplete
+        if _is_subagent_incomplete(result):
+            from niu_api.compat import _incomplete_reason
+            _reason = _incomplete_reason(result)
+            completion_msg = f"[{unique_name}] 未完成（{_reason}），已保留进度，可让主 Agent 安排继续处理"
+        else:
+            _inst = SubagentRegistry.get(unique_name)
+            _last_reply = getattr(_inst, 'last_reply', '') if _inst else ''
+            _result_for_notify = _last_reply if _last_reply else result
+            completion_msg = f"[{unique_name}] 已完成，结果：{_result_for_notify}"
         try:
             get_main_agent_request_queue().push(completion_msg)
         except Exception as e:

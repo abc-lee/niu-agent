@@ -53,6 +53,33 @@ def _is_subagent_overflow(result: str) -> bool:
         return False
 
 
+def _is_subagent_incomplete(result: str) -> bool:
+    """检测子 Agent 是否因未完成终止（轮次耗尽 / 被停止 / supplement 终止）而退出。
+
+    匹配 call_subagent 后处理返回的 incomplete JSON（{"incomplete": true, ...}）。
+    严格 is True 判定：{"incomplete": false} / {"incomplete": "true"} 均不命中。
+    纯文本 / overflow JSON / 畸形 JSON 均 False。
+    """
+    if not result or not result.strip().startswith("{"):
+        return False
+    try:
+        data = json.loads(result)
+        return isinstance(data, dict) and data.get("incomplete") is True
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+
+def _incomplete_reason(result: str) -> str:
+    """提取 incomplete JSON 的 reason（日志区分用）。非 incomplete 返回空串。"""
+    try:
+        data = json.loads(result) if result and result.strip().startswith("{") else None
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if isinstance(data, dict) and data.get("incomplete") is True:
+        return str(data.get("reason", "unknown"))
+    return ""
+
+
 def _extract_overflow_info(result: str) -> dict:
     """从子 Agent 溢出报告中提取信息"""
     try:
@@ -2693,11 +2720,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
-                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(entity_result):
-                    overflow_info = _extract_overflow_info(entity_result)
-                    logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # overflow 时游标不动，下次重跑相同范围
+                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result):
+                    if _is_subagent_incomplete(entity_result):
+                        logger.warning(f"[Tidy] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
+                    else:
+                        overflow_info = _extract_overflow_info(entity_result)
+                        logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow/incomplete 时游标不动，下次重跑相同范围
                 else:
                     _processed_idx = _parse_processed_up_to(entity_result)
                     if _processed_idx is not None and _processed_idx in entity_idx_to_id:
@@ -2776,11 +2806,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # 补全会话日期链（只补边/断边，不建实体；to_thread 避免阻塞主事件循环，方法内部已容错）
                 await asyncio.to_thread(runner._ensure_session_chain)
 
-                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(dream_result):
-                    overflow_info = _extract_overflow_info(dream_result)
-                    logger.warning(f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # overflow 时游标不动，下次重跑相同范围
+                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(dream_result) or _is_subagent_incomplete(dream_result):
+                    if _is_subagent_incomplete(dream_result):
+                        logger.warning(f"[Tidy] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
+                    else:
+                        overflow_info = _extract_overflow_info(dream_result)
+                        logger.warning(f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow/incomplete 时游标不动，下次重跑相同范围
                 else:
                     _processed_idx = _parse_processed_up_to(dream_result)
                     if _processed_idx is not None and _processed_idx in dream_idx_to_id:
@@ -2858,11 +2891,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
 
-                    # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                    if _is_subagent_overflow(journal_result):
-                        overflow_info = _extract_overflow_info(journal_result)
-                        logger.warning(f"[Tidy] journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
-                        # overflow 时游标不动，下次重跑相同范围
+                    # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                    if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result):
+                        if _is_subagent_incomplete(journal_result):
+                            logger.warning(f"[Tidy] journal-agent incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
+                        else:
+                            overflow_info = _extract_overflow_info(journal_result)
+                            logger.warning(f"[Tidy] journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
+                        # overflow/incomplete 时游标不动，下次重跑相同范围
                     else:
                         _processed_idx = _parse_processed_up_to(journal_result)
                         if _processed_idx is not None and _processed_idx in journal_idx_to_id:
@@ -3065,6 +3101,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         compress_result = result_str
                         compress_msg_ids = actual_msg_ids
                         _halved_msg_ids = halved_msg_ids
+
+                    # 未完成终止（/stop、轮次耗尽等）：跳过压缩，保持调用方游标不动
+                    if _is_subagent_incomplete(compress_result):
+                        logger.warning(f"[Compact] Mode-2: context-manager incomplete ({_incomplete_reason(compress_result)}), compression skipped")
+                        return {"status": "skipped", "mode": "sleep",
+                                "reason": f"context-manager incomplete ({_incomplete_reason(compress_result)})"}
 
                     # 正常返回，剥离 <analysis> 草稿块（在解析前）
                     logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
@@ -3274,12 +3316,15 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
-                    # 游标自动推进：成功→推进到范围内仍存在的最后一条，overflow→不动
+                    # 游标自动推进：成功→推进到范围内仍存在的最后一条，overflow/incomplete→不动
                     fresh_ids = None
-                    if _is_subagent_overflow(cm_result):
-                        overflow_info = _extract_overflow_info(cm_result)
-                        logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
-                        # overflow 时游标不动
+                    if _is_subagent_overflow(cm_result) or _is_subagent_incomplete(cm_result):
+                        if _is_subagent_incomplete(cm_result):
+                            logger.warning(f"[Tidy] context-manager incomplete ({_incomplete_reason(cm_result)}) — cursor not advanced")
+                        else:
+                            overflow_info = _extract_overflow_info(cm_result)
+                            logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
+                        # overflow/incomplete 时游标不动
                     else:
                         # 不盲取 compress_msg_ids[-1]（可能被 context-manager 删除），
                         # 而是重新读取 DB，取范围内仍存在的最后一条
@@ -3450,10 +3495,13 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
-                if _is_subagent_overflow(entity_result):
-                    overflow_info = _extract_overflow_info(entity_result)
-                    logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # overflow 时游标不动
+                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result):
+                    if _is_subagent_incomplete(entity_result):
+                        logger.warning(f"[Tidy] Force: entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
+                    else:
+                        overflow_info = _extract_overflow_info(entity_result)
+                        logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow/incomplete 时游标不动
                 else:
                     _processed_idx = _parse_processed_up_to(entity_result)
                     if _processed_idx is not None and _processed_idx in entity_force_idx_to_id:
@@ -3531,11 +3579,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # 补全会话日期链（只补边/断边，不建实体；to_thread 避免阻塞主事件循环，方法内部已容错）
                 await asyncio.to_thread(runner._ensure_session_chain)
 
-                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(dream_result):
-                    overflow_info = _extract_overflow_info(dream_result)
-                    logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # overflow 时游标不动
+                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(dream_result) or _is_subagent_incomplete(dream_result):
+                    if _is_subagent_incomplete(dream_result):
+                        logger.warning(f"[Tidy] Force: Dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
+                    else:
+                        overflow_info = _extract_overflow_info(dream_result)
+                        logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow/incomplete 时游标不动
                 else:
                     _processed_idx = _parse_processed_up_to(dream_result)
                     if _processed_idx is not None and _processed_idx in dream_force_idx_to_id:
@@ -3613,11 +3664,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
 
-                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(journal_result):
-                    overflow_info = _extract_overflow_info(journal_result)
-                    logger.warning(f"[Tidy] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    # overflow 时游标不动，下次重跑相同范围
+                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result):
+                    if _is_subagent_incomplete(journal_result):
+                        logger.warning(f"[Tidy] Force: journal-agent incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
+                    else:
+                        overflow_info = _extract_overflow_info(journal_result)
+                        logger.warning(f"[Tidy] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    # overflow/incomplete 时游标不动，下次重跑相同范围
                 else:
                     _processed_idx = _parse_processed_up_to(journal_result)
                     if _processed_idx is not None and _processed_idx in journal_force_idx_to_id:
