@@ -133,6 +133,51 @@ def test_ask_user_stop_early_return(handler, monkeypatch):
         clear_stop()  # 必须清除——泄漏会让本文件后续测试全部早退失败
 
 
+class _FakeGateway:
+    def __init__(self):
+        self.streamed = []
+        self.is_connected = True
+
+    def notify_stream(self, content, channel_id="", is_final=False):
+        self.streamed.append((content, channel_id, is_final))
+
+
+class _FakeRunnerForIM:
+    _current_channel_id = "im:123"
+
+
+def test_ask_user_im_push(fake_loop, handler, monkeypatch):
+    """R1：Electron SSE 无订阅者时走 IM 通道推送（notify_stream）——推送成功即继续等待。"""
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    monkeypatch.setattr("niu_api.chat._event_subscribers", [])  # SSE 无订阅者 → pushed=False
+    gw = _FakeGateway()
+    # do_ask_user 函数体内 `from agent.runner import get_runner` / `from niu_api.channel.gateway import get_im_gateway`
+    # ——patch 源模块
+    monkeypatch.setattr("agent.runner.get_runner", lambda: _FakeRunnerForIM())
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+    _set_answer_after(registry)
+    out = handler.do_ask_user({"question": "飞书继续吗？"}, response=None)
+    assert out.data == "[user 回答] 42"
+    assert gw.streamed and gw.streamed[0][0] == "❓ 飞书继续吗？"
+    assert gw.streamed[0][1] == "im:123"
+    assert not registry.is_waiting("main-agent")
+
+
+def test_ask_user_im_unavailable_when_no_channel(handler, monkeypatch):
+    """R1：SSE 无订阅者 + 无 IM 通道（current_channel_id 空）→ 无法显示错误分支（不阻塞）。"""
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    monkeypatch.setattr("niu_api.chat._event_subscribers", [])
+    monkeypatch.setattr("niu_api.chat._main_loop", None)
+    runner = _FakeRunnerForIM()
+    runner._current_channel_id = ""  # 无 IM 通道
+    monkeypatch.setattr("agent.runner.get_runner", lambda: runner)
+    out = handler.do_ask_user({"question": "无通道？"}, response=None)
+    assert "[ask_user 无法显示]" in out.data
+    assert not registry.is_waiting("main-agent")
+
+
 def test_ask_user_subagent_guard(handler):
     """P2-1：子 Agent（_is_subagent=True）调用 ask_user 直接返回错误，不劫持 main-agent future。"""
     handler._is_subagent = True

@@ -96,3 +96,72 @@ async def test_gateway_ready_sets_push_target():
         writer.close()
         await writer.wait_closed()
         await gw.stop()
+
+
+@pytest.mark.asyncio
+async def test_on_msg_intercepts_main_agent_answer(monkeypatch):
+    """R2：main-agent ask_user 等待中 → IM 回答直接 set_answer + 持久化 + 不 route_in_sync（防重复投递）。"""
+    from niu_api.channel.gateway import IMGateway
+    from agent.ask_user import get_user_ask_registry
+
+    registry = get_user_ask_registry()
+    registry.unregister("main-agent")
+    future = registry.register("main-agent")
+    try:
+        routed = []
+        persisted = []
+        pushed = []
+
+        class FakeRouter:
+            def route_in_sync(self, message, session_id=None, message_override=None):
+                routed.append((session_id, message_override))
+
+        class FakeStore:
+            async def add_message(self, role, content):
+                persisted.append((role, content))
+                return "im-msg-1"
+
+        async def _get_store():
+            return FakeStore()
+
+        async def _notify(msg_id, role, content, source="electron"):
+            pushed.append((msg_id, role, content, source))
+
+        monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+        monkeypatch.setattr("agent.session.get_message_store", _get_store)
+        monkeypatch.setattr("niu_api.chat.notify_new_message", _notify)
+
+        gw = IMGateway(channel_router=FakeRouter(), port=0)
+        await gw._on_msg({"type": "MSG", "session_id": "im:123", "content": "答案是 42",
+                          "channel_id": "ch1", "sender_id": "u1", "is_group": False, "reply_to_id": None})
+
+        assert future.wait(timeout=1) == "答案是 42"  # set_answer 注入成功
+        assert not registry.is_waiting("main-agent")
+        assert routed == []  # 不 route_in_sync（不 enqueue）
+        assert persisted == [("user", "答案是 42")]  # 持久化 user 消息（对话历史可见）
+        assert pushed and pushed[0][2] == "答案是 42"  # SSE 推送
+    finally:
+        registry.unregister("main-agent")
+
+
+@pytest.mark.asyncio
+async def test_on_msg_normal_route_when_not_waiting(monkeypatch):
+    """R2：main-agent 未等待 → 走原 route_in_sync（不回归）。"""
+    from niu_api.channel.gateway import IMGateway
+    from agent.ask_user import get_user_ask_registry
+
+    registry = get_user_ask_registry()
+    registry.unregister("main-agent")
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+
+    routed = []
+
+    class FakeRouter:
+        def route_in_sync(self, message, session_id=None, message_override=None):
+            routed.append((session_id, message_override, message.channel))
+
+    gw = IMGateway(channel_router=FakeRouter(), port=0)
+    await gw._on_msg({"type": "MSG", "session_id": "im:123", "content": "hello",
+                      "channel_id": "ch1", "sender_id": "u1", "is_group": False, "reply_to_id": None})
+    assert routed and routed[0][0] == "im:123" and routed[0][2] == "im"
+    assert not registry.is_waiting("main-agent")

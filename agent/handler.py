@@ -914,6 +914,22 @@ class NiuHandler(BaseHandler):
                     pushed = False
         except ImportError:
             pass
+        # IM 抽象通道（飞书等）：流式推问题（同步线程安全，gateway 为 executor 线程设计）。
+        # 纯飞书会话无 Electron SSE 订阅者——IM 推送成功也置 pushed，等待继续成立。
+        # notify_stream 延续流式卡片（不 send——send 会终结卡片）；question strip @ 段防 IM 用户看到
+        if not pushed:
+            try:
+                from agent.runner import get_runner
+                from niu_api.channel.gateway import get_im_gateway
+                from agent.at_message_parser import strip_at_messages
+                _runner = get_runner()
+                _cid = getattr(_runner, "_current_channel_id", "")
+                _gw = get_im_gateway()
+                if _cid and _gw and _gw.is_connected:
+                    _gw.notify_stream(f"❓ {strip_at_messages(question)}", channel_id=_cid)
+                    pushed = True
+            except Exception:
+                pushed = False
         if not pushed:
             return StepOutcome(
                 "[ask_user 无法显示] 前端事件通道不可用或无订阅者，无法向用户提问。请基于现有信息继续推进，或用 @end 结束。",

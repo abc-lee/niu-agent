@@ -254,16 +254,38 @@ class IMGateway(ChannelAdapter):
         """分发 Adapter 指令"""
         t = msg.get("type")
         if t == "MSG":
-            self._on_msg(msg)
+            await self._on_msg(msg)
         elif t == "READY":
             await self._on_ready(msg)
         elif t == "PING":
             await self._async_send({"type": "PONG"})
 
-    def _on_msg(self, msg: dict):
-        """处理 MSG 指令 — 入队到 ChatQueue"""
+    async def _on_msg(self, msg: dict):
+        """处理 MSG 指令 — 入队到 ChatQueue（主 Agent ask_user 等待中先拦截回答）"""
         if not self._channel_router:
             return
+        content = msg.get("content", "")
+        channel_id = msg.get("channel_id", "")
+        # 主 Agent ask_user 等待：IM 回答直接注入 set_answer（不 enqueue——防重复投递）。
+        # 只 guard import 语句：set_answer/持久化后段错误不得被吞（吞了消息会丢）
+        try:
+            from agent.ask_user import get_user_ask_registry
+        except ImportError:
+            pass
+        else:
+            if content.strip() and get_user_ask_registry().is_waiting("main-agent"):
+                get_user_ask_registry().set_answer("main-agent", content)
+                # 持久化 user 消息 + SSE（对话历史可见；对齐 chat_queue._process_single 的既有模型）
+                try:
+                    from agent.session import get_message_store
+                    from niu_api.chat import notify_new_message
+                    store = await get_message_store()
+                    user_msg_id = await store.add_message(role="user", content=content)
+                    await notify_new_message(user_msg_id, "user", content, source="electron")
+                    logger.info(f"[IMGateway] ask_user answered via IM: {content[:50]}...")
+                except Exception as e:
+                    logger.error(f"[IMGateway] ask_user answer persist failed: {e}")
+                return
         from .base import UnifiedMessage
         unified = UnifiedMessage(
             content=msg.get("content", ""),
