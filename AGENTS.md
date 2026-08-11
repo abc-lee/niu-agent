@@ -506,6 +506,20 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-11
+
+#### 修复：主 Agent ask_user 工具（暂停问话）+ 轮中 schema 刷新 + @ 通道反馈闭环 + cleanup 注销通知（nutritionist 事故四层修复收尾）
+
+- **根因**：① 主 Agent 没有 ask_user 工具——想与用户交流只能输出纯文本 → 无 tool_calls → 程序判定 CURRENT_TASK_DONE → **退出工具循环**（"停下来问话"），工作流中断；② schema 刷新只在 chat() 入口执行，工具循环内新建 agent md 当轮冻结 → 主 Agent 幻觉调用不在 schema 的 chat-with-*；③ @ 通道三层静默丢失（提取正则只认 @类型-4hex 不匹配同步名、回复防护只查 content 开头、orphan 静默丢弃）；④ 通配路由容忍不存在 agent 致幻影执行
+- **修复**：
+  1. **ask_user 工具**：复用子 Agent 的 UserAskRegistry（key="main-agent"），阻塞等待用户回答期间 chat() 生成器不结束 → 不触发 cleanup；挂起子 Agent 存活，工作流不中断（暂停而非停止）
+  2. **schema 轮中刷新**：_on_turn_end 每轮 LLM 前刷新工具 schema 并返回新 schema，工具循环内新建的 agent 当轮即出现 chat-with-*
+  3. **@ 通道反馈闭环**：提取正则兼容同步名（无 hex 后缀）、无匹配打日志、回复防护查任意位置、orphan 推回主 Agent 显式报错
+  4. **通配路由存在性检查**：get_subagent_config 对不存在 agent 返回空 dict → chat-with-* 未知 agent 显式错误反馈，不再容忍执行
+  5. **cleanup 注销通知**：轮末清理挂起同步子 Agent 时通知主 Agent，注销不再静默
+- **验证**：T1-T5 单测全过（test_main_agent_ask_user 11 / test_schema_refresh_in_turn 2 / test_at_sync_name 10 / test_at_prefix_interception 27 / test_at_message_parser 9 / test_ask_user_cleanup_protection 2 / test_chat_with_unknown 4 / test_dynamic_injection / test_truncation_marker）+ 全量回归与基线一致（db_monitor 9 陈旧 patch / agent_loop 13 为 pre-existing 豁免，零新增）
+- **教训**：需要与用户交流必须给显式暂停工具（业界 ask_user / LangGraph interrupt 模式）；"停下来问话"vs"暂停问话"是工作流中断与挂起的本质区别；工具调用任何失败都不得静默（无反馈 = 任务终止）
+
 ### 2026-08-10
 
 #### 修复：主 Agent 停止立即返回（统一可中断执行层 run_interruptibly 覆盖注入检索/TTFT/工具执行盲区）
