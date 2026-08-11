@@ -3375,8 +3375,11 @@ class NiuRunner:
                         self._extracted_at_msgs.append(db_content)
                 content = strip_at_messages(content)
             # P2-2：纯 @ 回复（strip 后为空）不写空 assistant 行（subagent_msg 已存），
-            # 对齐 persist_agent_reply rv 路径 `if not content.strip(): continue` 惯例
-            if not content.strip():
+            # 对齐 persist_agent_reply rv 路径 `if not content.strip(): continue` 惯例。
+            # Review P1：assistant(tool_calls) 排除——即使 content 为空也是锚点行
+            # （agent_loop L720-723 还原工具调用锚点，tool 消息靠 _valid_tc_ids 归属），
+            # 不入库会导致多轮工具对话丢失工具结果上下文。
+            if not content.strip() and not tool_calls:
                 return None
 
         # 同步写入 DB
