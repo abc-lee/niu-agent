@@ -13,7 +13,7 @@ _RESERVED_AT_TARGETS = {"end", "niu-agent", "user", "主Agent", "main-agent"}
 # （R2-B P2-5：中文 LLM 高发 "@nutritionist，你好" 无空格——标点紧跟也必须提取）
 # 负向前瞻排除保留标记
 _AT_PATTERN = re.compile(
-    r'@(?!end\b|niu-agent\b|user\b|主Agent\b|main-agent\b)'
+    r'(?<![\w])@(?!end\b|niu-agent\b|user\b|主Agent\b|main-agent\b)'
     r'([a-z0-9]+(?:-[a-z0-9]+)*(?:-[0-9a-f]{4})?)'
     r'(?:[\s，。；：！？,.;:!?]+)(.*?)(?=[\s，。；：！？,.;:!?]*@(?:[a-z0-9]+(?:-[a-z0-9]+)*(?:-[0-9a-f]{4})?|end|niu-agent|user|主Agent|main-agent)[\s，。；：！？,.;:!?]|\Z)',
     re.DOTALL,

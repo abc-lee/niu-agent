@@ -60,6 +60,15 @@ def test_extract_punctuation_adjacent():
     assert msgs2 and msgs2[0]["target"] == "nutritionist"
 
 
+def test_extract_excludes_email_address():
+    """邮箱（test@example.com）不误提取（T3 review P1：负向后顾排除词中 @）。"""
+    reply = "请联系 test@example.com 获取详情"
+    assert extract_at_messages(reply) == []
+    # 正常 @子Agent 仍提取（@ 前是行首或空白/标点）
+    msgs = extract_at_messages("请联系。\n@nutritionist 你好")
+    assert len(msgs) == 1 and msgs[0]["target"] == "nutritionist"
+
+
 def test_check_main_agent_mid_content_at(monkeypatch):
     """content 中间 @ 同步挂起子名 → 拦截（FORMAT_ERROR 语义）。"""
     from agent.generic.agent_loop import _check_main_agent_content_reply_to_suspended
