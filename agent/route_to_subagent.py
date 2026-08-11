@@ -3,7 +3,7 @@
 提取自 db_monitor.route_message 的子 Agent 路由逻辑。
 POST API 和 db_monitor 都调用此函数。
 
-source='db_monitor': 保留原有全部行为（含孤儿回答推回主 Agent via enqueue_supplement）
+source='db_monitor': 保留原有全部行为（孤儿 sender=主Agent 推 MainAgentRequestQueue 反馈主 Agent；其他 sender 推回主 Agent via enqueue_supplement）
 source='post_api': 孤儿回答返回 not_found，不推回主 Agent
 """
 import logging
@@ -28,10 +28,22 @@ def route_to_subagent(target: str, sender: str, content: str, source: str = 'db_
         # 孤儿回答
         if source == 'post_api':
             return {"status": "not_found", "message": f"子 Agent {target} 不存在或已结束"}
-        # db_monitor 场景：sender=='主Agent' 丢弃避免死循环，其他推回主 Agent
+        # db_monitor 场景：sender=='主Agent' 反馈主 Agent（不静默丢弃），其他推回主 Agent
         if sender == '主Agent':
-            logger.warning(f"[route] 主 Agent 回复孤儿 {target}，丢弃避免死循环")
-            return {"status": "error", "message": "orphan discarded"}
+            # 用户拍板（2026-08-11）：@ 不到必须反馈主 Agent，不静默丢弃。
+            # R3 定稿：MainAgentRequestQueue 直推 → db_monitor 链路 A 主 Agent 闲置时推 SSE 读到
+            # （不经 supplement 防 drain；不写 DB 防上下文污染）。
+            # 循环有界：内容带 [system] 前缀且主 Agent 收到后（Task 5 存在性检查）对不存在子 Agent
+            # 返回 error → 主 Agent 不再重复 @——不会死循环。
+            try:
+                from agent.main_agent_request_queue import get_main_agent_request_queue
+                get_main_agent_request_queue().push(
+                    f"@主Agent [system] 目标子 Agent {target} 已不存在（可能已结束或被清理），无法接收消息：{content[:200]}"
+                )
+                logger.info(f"[route] 主 Agent 回复孤儿 {target}，已推入主 Agent 请求队列")
+            except Exception as e:
+                logger.error(f"[route] 推孤儿通知失败: {e}")
+            return {"status": "error", "message": "orphan reported to main agent (queue)"}
         # 推回主 Agent（与原 db_monitor 一致，用 enqueue_supplement）
         fallback = f"@主Agent [system] 目标子 Agent {target} 已不存在：{content}"
         enqueue_supplement(fallback)

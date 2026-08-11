@@ -268,6 +268,10 @@ async def persist_agent_reply(
                 role="subagent_msg",
                 content=format_for_db(msg)
             )
+    elif "@" in full_reply:
+        # 用户拍板：@ 消息任何失败不得静默——打日志留痕
+        # 文案避免误导：未提取也可能是"为保留标记引用"（@end/@niu-agent 等行文转述）
+        logger.warning(f"[persist] full_reply 含 @ 但未提取到合法 @子Agent 消息（格式问题？或为保留标记引用）: {full_reply[:200]}")
 
     message_id = None
 
