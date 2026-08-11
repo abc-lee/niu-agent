@@ -2385,6 +2385,45 @@
       loadStats();
     });
 
+    // 主 Agent ask_user 提问：主对话流渲染提问卡片 + 回答提交（回答注入 /api/chat/ask-answer）
+    if (window.electronAPI && window.electronAPI.onAskUser) {
+      window.electronAPI.onAskUser((event) => {
+        const card = document.createElement('div');
+        card.className = 'ask-user-card';
+        card.innerHTML = `
+          <div class="ask-user-question">${escapeHtml(event.content || '')}</div>
+          <textarea class="ask-user-input" placeholder="输入回答，Enter 发送"></textarea>
+          <button class="ask-user-send">发送</button>`;
+        messages.appendChild(card);
+        const submit = () => submitAskAnswer(card);
+        card.querySelector('.ask-user-send').addEventListener('click', submit);
+        card.querySelector('.ask-user-input').addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+        });
+        card.querySelector('.ask-user-input').focus();
+      });
+
+      async function submitAskAnswer(card) {
+        const input = card.querySelector('.ask-user-input');
+        const answer = (input.value || '').trim();
+        if (!answer) return;
+        try {
+          const res = await window.electronAPI.askAnswer(answer);
+          if (res && res.ok) {
+            card.classList.add('answered');
+            input.disabled = true;
+            card.querySelector('.ask-user-send').disabled = true;
+            addMessage('user', answer);  // 本地回声
+          } else {
+            // R3-A P3-5：晚回答（超时/停止后）——不静默，禁用并提示
+            input.disabled = true;
+            card.querySelector('.ask-user-send').disabled = true;
+            card.querySelector('.ask-user-question').textContent += '（提问已超时或已结束）';
+          }
+        } catch (e) { console.error('ask-answer failed', e); }
+      }
+    }
+
     // 脑区状态变更通知：收到 SSE 事件后拉取最新数据
     // fetchBrainRegions 内部有防并发守卫和面板可见性守卫
     if (window.electronAPI && window.electronAPI.onBrainRegionsChanged) {

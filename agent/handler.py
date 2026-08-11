@@ -847,6 +847,88 @@ class NiuHandler(BaseHandler):
 
         return StepOutcome("\n".join(lines), next_prompt="")
 
+    def do_ask_user(self, args: dict, response) -> StepOutcome:
+        """向用户提问并等待回答（主 Agent 专用——暂停而非退出工具循环）。
+
+        复用子 Agent 的 UserAskRegistry（key="main-agent"），前端主对话流显示提问卡片。
+        回答经 /api/chat/ask-answer 注入 set_answer("main-agent", answer)。
+        停止按钮：request_stop_all_subagents 补 set_answer("main-agent", TERMINATED_SIGNAL)
+        （见 Task 1 Step 8 停止接线）。
+        """
+        from agent.ask_user import TERMINATED_SIGNAL, UNAVAILABLE_SIGNAL, _ASK_TIMEOUT, get_user_ask_registry
+
+        question = args.get("question", "")
+        if not question:
+            return StepOutcome(
+                {"status": "error", "msg": "question is required"},
+                next_prompt="",
+            )
+
+        # R6-A P1/P2：/stop 落在推送/register 前窗口——推送之前检查全局停止标志
+        # （轮末 clear_stop() 清除，天然轮次边界，无粘滞残留）
+        from agent.runner import is_stop_requested
+        if is_stop_requested():
+            return StepOutcome(
+                "[ask_user 已终止] 停止指令已在提问前到达。请基于现有信息继续推进，或用 @end 结束当前任务。",
+                next_prompt="",
+            )
+
+        # 1. 推 SSE 给前端（主对话流显示提问卡片）；失败/无订阅者不静默——直接返回错误
+        #    （R2-P1-4：_sync_broadcast 只把事件放队列，无订阅者（窗口关闭/SSE 断连）时
+        #    卡片永不渲染——必须检查 _event_subscribers，否则静默阻塞 600s）
+        pushed = False
+        try:
+            from niu_api.chat import _main_loop, _sync_broadcast, _event_subscribers
+            if _main_loop and not _main_loop.is_closed() and _event_subscribers:
+                event = {"type": "ask_user", "content": question}
+                try:
+                    _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+                    pushed = True
+                except RuntimeError:
+                    # R3-B P3：is_closed() 检查后 loop 恰好关闭（竞态）——置 pushed=False 走错误分支
+                    pushed = False
+        except ImportError:
+            pass
+        if not pushed:
+            return StepOutcome(
+                "[ask_user 无法显示] 前端事件通道不可用或无订阅者，无法向用户提问。请基于现有信息继续推进，或用 @end 结束。",
+                next_prompt="",
+            )
+
+        # 2. 注册 future 等待用户回答（复用子 Agent 注册表，key="main-agent"）
+        registry = get_user_ask_registry()
+        future = registry.register("main-agent")
+        try:
+            # R7-A/B P2：register 后 wait 前复查——/stop 落在"预检→register"毫秒窗口时，
+            # set_answer 对未注册 future 是 no-op（返回 False），复查捕获（finally unregister 覆盖早退）
+            if is_stop_requested():
+                return StepOutcome(
+                    "[ask_user 已终止] 停止指令已在提问建立前到达。请基于现有信息继续推进，或用 @end 结束当前任务。",
+                    next_prompt="",
+                )
+            answer = future.wait(timeout=_ASK_TIMEOUT)
+            # 3. 按结果返回（终止/不可用/超时/回答）
+            if answer == TERMINATED_SIGNAL:
+                return StepOutcome(
+                    "[ask_user 已终止] 用户未回答（停止指令）。请基于现有信息继续推进，或用 @end 结束当前任务。",
+                    next_prompt="",
+                )
+            if answer == UNAVAILABLE_SIGNAL:
+                # R4-A P1-4：前端无可渲染窗口时 main.js 回执此标记——不静默阻塞 600s
+                return StepOutcome(
+                    "[ask_user 无法显示] 前端无可用窗口显示提问（可能已关闭）。请基于现有信息继续推进，或用 @end 结束当前任务。",
+                    next_prompt="",
+                )
+            if answer is None:
+                return StepOutcome(
+                    "[ask_user 超时] 用户长时间未回答。你可以继续推进、用 @end 结束，或稍后再问。",
+                    next_prompt="",
+                )
+            return StepOutcome(f"[user 回答] {answer}", next_prompt="")
+        finally:
+            # 防 is_waiting 脏：超时/终止/回答后都移除 future（镜像子 Agent _ask_user_impl L1354-1356）
+            registry.unregister("main-agent")
+
     def _sync_get_messages(self):
         """同步获取消息列表 — 复用 runner 的桥接方法"""
         from .runner import get_runner

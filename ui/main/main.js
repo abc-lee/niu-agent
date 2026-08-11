@@ -1861,6 +1861,11 @@ ipcMain.handle('send-subagent-message', async (_event, { uniqueName, message }) 
   });
 });
 
+// 回答主 Agent 的 ask_user 提问（注入 /api/chat/ask-answer，不触发新对话轮）
+ipcMain.handle('ask-answer', async (_e, answer) => {
+  return apiRequest('POST', '/api/chat/ask-answer', { answer });
+});
+
 // ========== SSE 消息事件流（来自原 ui/assistant/main.js） ==========
 let sseReconnectTimer = null;
 let sseConnectedBefore = false;
@@ -2039,6 +2044,17 @@ function startMessageEventStream() {
               // 转发脑区状态变更到聊天窗口（脑区面板在 chat.html 中）
               if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('brain-regions-changed', event);
+              }
+            } else if (event.type === 'ask_user') {
+              // R4-A P1-4：聊天窗口关闭时（托盘/scheduler 轮）——spirit 窗口无 ask-user 监听（preload-assistant.js
+              // 无 onAskUser），转发是死路。无可渲染窗口时**立即回执后端**注入不可用标记，
+              // 让 do_ask_user 走错误分支（不静默阻塞 600s）
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('ask-user', event);
+              } else {
+                console.warn('[ask_user] no chat window — reporting unavailable to backend', event.content);
+                apiRequest('POST', '/api/chat/ask-answer', { answer: '__UNAVAILABLE__' })
+                  .catch((e) => console.error('[ask_user] report-unavailable failed', e));
               }
             } else if (event.type === 'ingest-started' || event.type === 'ingest-completed') {
               // 转发入库进度事件到 spirit 和 chat 窗口

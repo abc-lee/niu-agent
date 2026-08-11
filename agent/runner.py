@@ -49,7 +49,7 @@ def _skill_display_path(display_name: str, skills_dir: Path | None = None) -> st
 
 # 主 Agent 专用工具集合（子 Agent 不可见）
 # check_subagent_progress 是主 Agent 查子 Agent 进度的工具，子 Agent 不该有
-MAIN_AGENT_ONLY_TOOLS = {"check_subagent_progress"}
+MAIN_AGENT_ONLY_TOOLS = {"check_subagent_progress", "ask_user"}
 
 
 # --- Stop flag mechanism ---
@@ -59,6 +59,14 @@ _stop_requested = threading.Event()
 def request_stop():
     """Set the stop flag — Agent loops will check and exit."""
     _stop_requested.set()
+    # R2-P2-1：主 Agent ask_user 等待也一并终止（"main-agent" 不在注册表，单独接线）
+    # R6-A P1：不做粘滞标记——do_ask_user register 前直接检查 is_stop_requested()
+    # （全局标志轮末 clear_stop() 清除，天然轮次边界；set_answer 覆盖"wait 中"停止）
+    try:
+        from agent.ask_user import get_user_ask_registry, TERMINATED_SIGNAL
+        get_user_ask_registry().set_answer("main-agent", TERMINATED_SIGNAL)
+    except Exception:
+        pass
 
 
 def clear_stop():
@@ -110,16 +118,20 @@ def is_stop_requested() -> bool:
 def request_stop_all_subagents() -> None:
     """给所有用户对话派生的子 Agent 推 /stop（双击停止按钮触发；program/scheduler 来源实例跳过）。
 
-    遍历 SubagentRegistry，对每个 source == "user" 的子 Agent：
-    1. 调 cancel_pending_ask 解除 ask_main_agent 阻塞（避免死锁）
-    2. 推 /stop 到 supplement queue（让子 Agent 下一轮 drain 走终止总结流程）
-    3. 置 terminate_event（让卡在 LLM 流式上的子 Agent ≤0.2s 内收到终止）
-
-    主 Agent 不受影响（主 Agent 用 _stop_requested 信号灯单独控制）。
+    机制（保留既有描述）：挂起同步 session 直接 unregister（无活跃 loop 消费 supplement）；
+    活跃 session 推 /stop 到 supplement queue（is_terminate=True）+ cancel pending ask。
+    注（R6 接线后）：主 Agent 的 ask_user 等待也一并终止（"main-agent" 不在注册表，
+    set_answer 单独接线；与 request_stop 幂等）。
     """
     from agent.ask_main_agent import get_pending_ask_registry
     pending_ask = get_pending_ask_registry()
 
+    # R2-P2-1：主 Agent ask_user 等待一并终止（与 request_stop 幂等；set_answer 无 future 返回 False 无害）
+    try:
+        from agent.ask_user import get_user_ask_registry, TERMINATED_SIGNAL
+        get_user_ask_registry().set_answer("main-agent", TERMINATED_SIGNAL)
+    except Exception as e:
+        logger.error(f"停止主 Agent ask_user 失败：{e}")
     for instance in SubagentRegistry.list_running():
         if getattr(instance, "source", "user") != "user":
             # 程序触发（睡眠整理管道）或 scheduler 派生的子 Agent：不受停止按钮影响
@@ -526,6 +538,30 @@ def get_tools_schema(include_main_only: bool = True) -> list:
                         },
                     },
                     "required": ["subagent_name"],
+                },
+            },
+        })
+
+    # 阶段二b：主 Agent 的 ask_user 工具（显式暂停问话，工作流不中断；子 Agent 不可见）
+    if include_main_only:
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "ask_user",
+                "description": (
+                    "向用户提问并等待回答。当你需要用户确认、提供信息、做决策时使用。"
+                    "调用后暂停等待用户输入（不退出当前工作流），收到回答后继续原任务。"
+                    "回答以 [user 回答] 形式返回。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "要向用户提出的问题",
+                        },
+                    },
+                    "required": ["question"],
                 },
             },
         })
