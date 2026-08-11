@@ -1177,10 +1177,13 @@ class NiuRunner:
         # 小憩模式触发检查：增量消息达阈值则后台启动 entity-extractor → dream-evolver
         self._maybe_trigger_nap()
 
-        # Schema 刷新：每轮 LLM 后扫描 ~/.niu/agents/，发现新 MD 重算 base_tools_schema，
-        # 返回最新 tools_schema（agent_loop 循环尾每轮 LLM 前接收返回值，下一轮工具列表立即更新）
-        self._refresh_base_tools_schema_if_dirty()
-        return self._assemble_tools_schema()
+        # Schema 刷新：失败退回原 tools_schema（不击穿工具循环）
+        try:
+            self._refresh_base_tools_schema_if_dirty()
+            return self._assemble_tools_schema()
+        except Exception as e:
+            logger.warning(f"[Runner] schema refresh failed, keeping existing tools: {e}")
+            return tools_schema
 
     def _maybe_trigger_nap(self):
         """检查增量对话轮数，达阈值则后台启动小憩模式（entity-extractor → dream-evolver）。"""
