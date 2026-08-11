@@ -107,6 +107,23 @@ def test_persist_agent_reply_dedups_already_extracted():
     assert not notify.called
 
 
+def test_persist_one_msg_tool_calls_empty_content_anchor_kept():
+    """Review P1：assistant(tool_calls) content 为空仍是锚点行——不跳过写入（防多轮工具上下文丢失）。"""
+    runner, sync_add = _make_runner()
+    with mock.patch("niu_api.chat.notify_new_message_sync") as notify:
+        msg_id = runner._persist_one_msg({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1"}],
+        })
+    assert msg_id == "msg-1"
+    write_kwargs = sync_add.call_args.kwargs
+    assert write_kwargs["role"] == "assistant"
+    assert write_kwargs["tool_calls"] == [{"id": "call-1"}]
+    assert runner._extracted_at_msgs == []
+    notify.assert_not_called()  # content 空不推 SSE（原语义保留）
+
+
 def test_persist_agent_reply_extracts_when_no_dedup_list():
     """rv=None + extracted_at_msgs 未提供（None）→ 兜底提取照常（旧契约不回归）。"""
     from niu_api.chat import persist_agent_reply
