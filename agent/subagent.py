@@ -912,7 +912,8 @@ def call_subagent(
         if instance is None or getattr(instance, "state", None) != "waiting_for_answer":
             _st = getattr(instance, "state", None) if instance else None
             if instance is not None and _st == "running":
-                return f"[错误] 子 Agent {answer_unique_name} 正在运行（异步），不能用 chat-with(answer=...) 回复。请用 @{answer_unique_name} 文本回答或等待其完成。"
+                _kind = "异步" if not getattr(instance, "is_sync", True) else "同步"
+                return f"[错误] 子 Agent {answer_unique_name} 正在运行（{_kind}），不能用 chat-with(answer=...) 回复。请用 @{answer_unique_name} 文本回答或等待其完成。"
             return f"[错误] 找不到挂起的子 Agent session（unique_name={answer_unique_name}），可能已被终止"
         if instance.agent_type != agent_name:
             return f"[错误] unique_name={answer_unique_name} 不属于子 Agent {agent_name}（实际属于 {instance.agent_type}），请检查 unique_name 是否传错"
