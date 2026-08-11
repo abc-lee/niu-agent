@@ -167,8 +167,14 @@ def cleanup_suspended_sync_subagents():
         if state == "waiting_for_answer" and is_sync:
             try:
                 SubagentRegistry.unregister(instance.unique_name)
-                # 不静默（R3 定稿）：MainAgentRequestQueue 直推 → db_monitor 链路 A 在主 Agent
-                # 闲置时推 SSE 触发主 Agent 读到（不经 supplement 队列防 drain；不写 DB 防上下文污染）
+            except Exception as e:
+                logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 失败：{e}")
+                continue
+            try:
+                # 不静默：MainAgentRequestQueue 直推 → db_monitor 链路 A 在主 Agent 闲置时
+                # 推 SSE 触发 /api/chat/session 交付（通知以 user 消息写入历史——与 ask 消息同机制，
+                # 主 Agent 读到一次；@主Agent [system] 前缀被 _AT_PATTERN 排除防误路由；
+                # 循环有界：Task 5 存在性检查 + [system] 提示 LLM 不重复 @）
                 from agent.main_agent_request_queue import get_main_agent_request_queue
                 get_main_agent_request_queue().push(
                     f"@主Agent [system] 挂起子 Agent {instance.unique_name} 已被轮末清理"
@@ -176,7 +182,7 @@ def cleanup_suspended_sync_subagents():
                 )
                 logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}（已通知主 Agent）")
             except Exception as e:
-                logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 失败：{e}")
+                logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 成功但通知失败：{e}")
 
 
 # --- Supplement queue (见缝插针) ---
