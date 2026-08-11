@@ -239,7 +239,8 @@ def _msg_fingerprint(msg: dict) -> str | None:
 
 async def persist_agent_reply(
     store, rv, history_len: int, full_reply: str, source: str = "electron",
-    persisted_msgs: list[dict] | None = None
+    persisted_msgs: list[dict] | None = None,
+    extracted_at_msgs: list | None = None
 ) -> tuple[str | None, str]:
     """持久化 Agent 回复消息（从 rv["messages"] 双管道），通知前端。
 
@@ -258,20 +259,28 @@ async def persist_agent_reply(
     """
     # 通道一：解析 full_reply 里的 @ 消息，strip 后存纯净回复为 assistant，
     # @ 消息以 role=subagent_msg 存 db（db_monitor 会路由到子 Agent queue）
+    # 修正版方案 2：V4 主路径（rv 有 messages 且 persisted_msgs 非空）时 _persist_one_msg
+    # 已逐条轮中提取/剥离 @ 段——此处不再提取（full_reply 整轮拼接会跨消息懒匹配，
+    # 000006 超长 subagent_msg 根因）；仅 rv=None（停止/兜底）或未逐条持久化时兜底提取
+    # （test_persist_agent_reply_dedup 契约：停止窗口 reply→persist 未落库场景仍需提取）。
     from agent.at_message_parser import extract_at_messages, format_for_db, strip_at_messages
 
-    at_msgs = extract_at_messages(full_reply)
-    if at_msgs:
-        full_reply = strip_at_messages(full_reply)
-        for msg in at_msgs:
-            await store.add_message(
-                role="subagent_msg",
-                content=format_for_db(msg)
-            )
-    elif "@" in full_reply:
-        # 用户拍板：@ 消息任何失败不得静默——打日志留痕
-        # 文案避免误导：未提取也可能是"为保留标记引用"（@end/@niu-agent 等行文转述）
-        logger.warning(f"[persist] full_reply 含 @ 但未提取到合法 @子Agent 消息（格式问题？或为保留标记引用）: {full_reply[:200]}")
+    if not (rv and isinstance(rv, dict) and rv.get("messages") and persisted_msgs):
+        at_msgs = extract_at_messages(full_reply)
+        if at_msgs:
+            full_reply = strip_at_messages(full_reply)
+            for msg in at_msgs:
+                db_content = format_for_db(msg)
+                if extracted_at_msgs and db_content in extracted_at_msgs:
+                    continue  # 已由 _persist_one_msg 轮中提取（停止落在 persist 已消费窗口）——避免重复入库
+                await store.add_message(
+                    role="subagent_msg",
+                    content=db_content
+                )
+        elif "@" in full_reply:
+            # 用户拍板：@ 消息任何失败不得静默——打日志留痕
+            # 文案避免误导：未提取也可能是"为保留标记引用"（@end/@niu-agent 等行文转述）
+            logger.warning(f"[persist] full_reply 含 @ 但未提取到合法 @子Agent 消息（格式问题？或为保留标记引用）: {full_reply[:200]}")
 
     message_id = None
 
@@ -545,7 +554,8 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 # 正常路径：持久化 Agent 回复（使用 persist_agent_reply 双管道）
                 history_len = 0  # /chat 端点不加载历史，rv 包含完整 messages
                 persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
+                extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
+                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
 
             # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
             if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
@@ -660,7 +670,8 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             rv = getattr(runner, "last_return_value", None)
             history_len = len(history_for_runner) if history_for_runner else 0
             persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
+            extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
+            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
         else:
             rv = getattr(runner, "last_return_value", None)
             message_id = None
