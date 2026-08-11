@@ -13,7 +13,7 @@ from agent.session import get_message_store
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from niu_api.internal.subagent_event_bus import subscribe, unsubscribe, has_subagent
 from niu_api.compat import _chat_lock
@@ -836,7 +836,15 @@ async def send_subagent_message(unique_name: str, msg: SubagentMessage):
 
 
 class AskAnswerRequest(BaseModel):
-    answer: str
+    answer: str = Field(..., min_length=1)
+
+    @field_validator("answer")
+    @classmethod
+    def _strip_answer(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("answer must not be empty")
+        return v
 
 
 @router.post("/api/chat/ask-answer")

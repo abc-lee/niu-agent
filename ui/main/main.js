@@ -275,6 +275,10 @@ function createChatWindow() {
   chatWindow.on('closed', () => {
     SubagentSSEManager.disconnectAll();  // 用户关闭窗口：断开所有子 Agent SSE 连接
     chatWindow = null;
+    // P2-3b：窗口在 ask_user 等待期间关闭（卡片已渲染后）——主 Agent 会一直阻塞 600s，
+    // 回执 UNAVAILABLE 让 do_ask_user 走错误分支；无 pending ask 时端点返回 no pending ask，无害
+    apiRequest('POST', '/api/chat/ask-answer', { answer: '__UNAVAILABLE__' })
+      .catch((e) => console.error('[ask_user] report-unavailable-on-close failed', e));
     if (spiritWindow && !spiritWindow.isDestroyed()) {
       spiritWindow.webContents.send('chat-closed');
     }
@@ -2049,10 +2053,12 @@ function startMessageEventStream() {
               // R4-A P1-4：聊天窗口关闭时（托盘/scheduler 轮）——spirit 窗口无 ask-user 监听（preload-assistant.js
               // 无 onAskUser），转发是死路。无可渲染窗口时**立即回执后端**注入不可用标记，
               // 让 do_ask_user 走错误分支（不静默阻塞 600s）
-              if (chatWindow && !chatWindow.isDestroyed()) {
+              // P2-3a：renderer 未就绪/正在 reload（webContents.isLoading()）时 send 会被无监听页面静默丢弃——
+              // 等同不可渲染，回执 UNAVAILABLE（而非假转发）
+              if (chatWindow && !chatWindow.isDestroyed() && !chatWindow.webContents.isLoading()) {
                 chatWindow.webContents.send('ask-user', event);
               } else {
-                console.warn('[ask_user] no chat window — reporting unavailable to backend', event.content);
+                console.warn('[ask_user] no renderable chat window — reporting unavailable to backend', event.content);
                 apiRequest('POST', '/api/chat/ask-answer', { answer: '__UNAVAILABLE__' })
                   .catch((e) => console.error('[ask_user] report-unavailable failed', e));
               }

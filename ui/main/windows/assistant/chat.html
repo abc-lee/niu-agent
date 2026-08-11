@@ -2404,9 +2404,11 @@
       });
 
       async function submitAskAnswer(card) {
+        if (card.dataset.submitted) return;  // P2-2 在途守卫：防双击/Enter+click 并发 POST
         const input = card.querySelector('.ask-user-input');
         const answer = (input.value || '').trim();
         if (!answer) return;
+        card.dataset.submitted = '1';
         try {
           const res = await window.electronAPI.askAnswer(answer);
           if (res && res.ok) {

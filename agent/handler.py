@@ -857,6 +857,14 @@ class NiuHandler(BaseHandler):
         """
         from agent.ask_user import TERMINATED_SIGNAL, UNAVAILABLE_SIGNAL, _ASK_TIMEOUT, get_user_ask_registry
 
+        # P2-1：子 Agent 运行时守卫——ask_user 仅主 Agent 可用
+        # （防子 Agent 幻觉调用劫持 "main-agent" future——chat-with 幻觉先例存在）
+        if getattr(self, '_is_subagent', False):
+            return StepOutcome(
+                {"status": "error", "msg": "ask_user 仅主 Agent 可用"},
+                next_prompt="",
+            )
+
         question = args.get("question", "")
         if not question:
             return StepOutcome(
@@ -909,6 +917,9 @@ class NiuHandler(BaseHandler):
             answer = future.wait(timeout=_ASK_TIMEOUT)
             # 3. 按结果返回（终止/不可用/超时/回答）
             if answer == TERMINATED_SIGNAL:
+                # P3-9：非 verbose 主路径（工具循环）中 /stop 经 run_interruptibly 放弃等待、
+                # 结果被调用方丢弃（agent_loop 走 STOPPED 退出），不会到达本分支；
+                # 本分支仅在 verbose 工具调用路径可达（停止信号经 set_answer 注入时）
                 return StepOutcome(
                     "[ask_user 已终止] 用户未回答（停止指令）。请基于现有信息继续推进，或用 @end 结束当前任务。",
                     next_prompt="",
@@ -927,7 +938,10 @@ class NiuHandler(BaseHandler):
             return StepOutcome(f"[user 回答] {answer}", next_prompt="")
         finally:
             # 防 is_waiting 脏：超时/终止/回答后都移除 future（镜像子 Agent _ask_user_impl L1354-1356）
-            registry.unregister("main-agent")
+            # P3-4：unregister 前校验 future 身份——仅当注册表中仍是本次注册的 future 才移除
+            # （防并发/重复 register 把新 future 误删；set_answer 已 pop 时 get_future 返回 None，跳过无害）
+            if registry.get_future("main-agent") is future:
+                registry.unregister("main-agent")
 
     def _sync_get_messages(self):
         """同步获取消息列表 — 复用 runner 的桥接方法"""

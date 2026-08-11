@@ -65,6 +65,11 @@ class UserAskRegistry:
         with self._lock:
             self._futures.pop(unique_name, None)
 
+    def get_future(self, unique_name: str) -> AskUserFuture | None:
+        """返回当前注册的 future（无则 None）——供调用方校验身份后再 unregister。"""
+        with self._lock:
+            return self._futures.get(unique_name)
+
     def is_waiting(self, unique_name: str) -> bool:
         with self._lock:
             return unique_name in self._futures
