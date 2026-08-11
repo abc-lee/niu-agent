@@ -23,6 +23,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
 | /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
 | 停止按钮 | 单击：主 Agent 立即返回（≤0.2s）——无论卡在 LLM 通讯、动态注入向量检索还是工具执行，统一可中断执行层放弃当前阻塞等待，后台任务继续跑（结果丢弃）；同步子 Agent 终止，异步子 Agent 不受影响。双击：向用户对话派生的所有子 Agent 推 /stop 并立即返回。程序触发（睡眠整理/定时任务）的子 Agent 不受停止影响 |
+| 主 Agent ask_user 工具 | 主 Agent 想与用户交流时通过 ask_user 暂停问话（阻塞等待回答），工作流不中断——显式暂停工具，区别于"停下来问话"退出工具循环 |
 | /clear 指令 | 先触发整理（提炼实体/梦境进化/日志记录），记录完会话中有价值信息后清空对话；忙时先停止 Agent。支持 Electron 和 IM 通用 |
 | /compact 指令 | 强制压缩上下文：完整 force 管道（entity-extractor → dream-evolver → journal-agent → context-manager 模式三压缩），阻塞式 UI。仅 Electron |
 | /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（entity→dream→journal→context-manager 模式一/二）。仅 Electron |
