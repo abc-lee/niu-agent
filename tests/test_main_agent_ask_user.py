@@ -131,3 +131,69 @@ def test_ask_user_stop_early_return(handler, monkeypatch):
         assert not registry.is_waiting("main-agent")
     finally:
         clear_stop()  # 必须清除——泄漏会让本文件后续测试全部早退失败
+
+
+def test_ask_user_subagent_guard(handler):
+    """P2-1：子 Agent（_is_subagent=True）调用 ask_user 直接返回错误，不劫持 main-agent future。"""
+    handler._is_subagent = True
+    out = handler.do_ask_user({"question": "劫持？"}, response=None)
+    assert out.data["status"] == "error"
+    assert "仅主 Agent" in out.data["msg"]
+    assert not get_user_ask_registry().is_waiting("main-agent")
+
+
+def test_ask_user_stop_between_precheck_and_register(fake_loop, handler, monkeypatch):
+    """P3-7：/stop 落在"推送前预检→register 后复查"毫秒窗口——复查捕获，返回已终止且无残留。
+
+    副作用序列：第一次 is_stop_requested() 返回 False（推送通过），第二次返回 True（register 后复查）。
+    """
+    import agent.runner as runner_mod
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    calls = {"n": 0}
+
+    def _is_stop_requested():
+        calls["n"] += 1
+        return calls["n"] >= 2  # 推送前 False → register 后 True
+
+    monkeypatch.setattr(runner_mod, "is_stop_requested", _is_stop_requested)
+    out = handler.do_ask_user({"question": "复查窗口？"}, response=None)
+    assert calls["n"] == 2  # 两个检查点都走到
+    assert "[ask_user 已终止]" in out.data
+    assert not registry.is_waiting("main-agent")
+
+
+def test_ask_answer_endpoint_ok():
+    """P3-7：ask-answer 端点——有 pending ask 时注入成功且解除等待。"""
+    import asyncio
+    from niu_api.chat import AskAnswerRequest, ask_answer
+    registry = get_user_ask_registry()
+    registry.unregister("main-agent")  # 确保干净起点
+    registry.register("main-agent")
+    try:
+        res = asyncio.run(ask_answer(AskAnswerRequest(answer="42")))
+        assert res == {"ok": True}
+        assert not registry.is_waiting("main-agent")
+    finally:
+        registry.unregister("main-agent")
+
+
+def test_ask_answer_endpoint_no_pending():
+    """P3-7：ask-answer 端点——无 pending ask 返回 no pending ask（窗口关闭回执等场景无害）。"""
+    import asyncio
+    from niu_api.chat import AskAnswerRequest, ask_answer
+    registry = get_user_ask_registry()
+    registry.unregister("main-agent")  # 确保干净起点
+    res = asyncio.run(ask_answer(AskAnswerRequest(answer="42")))
+    assert res == {"ok": False, "error": "no pending ask"}
+
+
+def test_ask_answer_endpoint_empty_answer_rejected():
+    """P3-7：ask-answer 端点——空白回答被 pydantic 拒绝（min_length=1 + strip，空回答 400 契约）。"""
+    import pytest
+    from pydantic import ValidationError
+    from niu_api.chat import AskAnswerRequest
+    with pytest.raises(ValidationError):
+        AskAnswerRequest(answer="   ")
+    with pytest.raises(ValidationError):
+        AskAnswerRequest(answer="")
