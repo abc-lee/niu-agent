@@ -365,7 +365,8 @@ class ChatQueue:
                 # 都走 electron SSE 通道推送给前端，避免被 notify_new_message 白名单过滤
                 from niu_api.chat import persist_agent_reply
                 persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
+                extracted_at_msgs = getattr(self._runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
+                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
             else:
                 # 异常路径：写降级回复 [系统繁忙，请重试] 到 DB + SSE 推送
                 # 让前端看到 user 消息后立即跟一条 assistant 降级回复，不会卡 typing 状态

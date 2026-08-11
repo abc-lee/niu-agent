@@ -2277,7 +2277,8 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             rv = getattr(runner, "last_return_value", None)
             from niu_api.chat import persist_agent_reply
             persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
+            extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
+            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
         else:
             rv = getattr(runner, "last_return_value", None)
             message_id = None

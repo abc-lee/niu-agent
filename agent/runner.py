@@ -3207,6 +3207,7 @@ class NiuRunner:
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
         persisted_msgs = []  # V4: 已通过persist事件持久化的消息列表
+        self._extracted_at_msgs = []  # 修正版方案：本轮流中提取的 subagent_msg 内容（persist_agent_reply 去重用）
         chat_idle_pushed = False  # 跟踪是否已推送 chat_idle，避免重复推送
         try:
             while True:
@@ -3346,6 +3347,24 @@ class NiuRunner:
         content = msg_dict.get("content", "") or ""
         tool_calls = msg_dict.get("tool_calls")
         tool_call_id = msg_dict.get("tool_call_id", "")
+
+        # 修正版方案 1（来源处理）：主 Agent 对话流的 @ 消息在此源头剥离/提取，
+        # 避免主↔子对话中间过程原样写入 DB 泄露到用户对话（000006 实证：
+        # tool_calls assistant 的 content 含 @nutritionist 段被原样持久化 + 轮末
+        # persist_agent_reply 对 full_reply 整轮拼接懒匹配跨消息提取）。
+        # - 有 tool_calls：工具就是回复通道——仅 strip content 的 @ 段，不提取
+        # - 无 tool_calls：提取 @ 为 subagent_msg（轮中落库 → db_monitor 实时路由，
+        #   子 Agent 挂起时即收到，不 orphan）→ strip content 的 @ 段再写 assistant
+        if role == "assistant":
+            from agent.at_message_parser import extract_at_messages, format_for_db, strip_at_messages
+            if tool_calls:
+                content = strip_at_messages(content)
+            else:
+                for msg in extract_at_messages(content):
+                    db_content = format_for_db(msg)
+                    self._sync_add_message(role="subagent_msg", content=db_content)
+                    self._extracted_at_msgs.append(db_content)
+                content = strip_at_messages(content)
 
         # 同步写入 DB
         msg_id = self._sync_add_message(role=role, content=content,
