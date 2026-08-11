@@ -1135,6 +1135,29 @@ class NiuRunner:
         # 3. 原地修改 messages[0]，本轮 LLM 立即读到
         self._assemble_system_message(messages, memory_section, injection, self.default_model)
 
+    def _assemble_tools_schema(self) -> list:
+        """组装 tools_schema = base tools + static MCP tools + disk（chat 与轮中刷新共用）。"""
+        tools_schema = self.base_tools_schema.copy()
+        try:
+            from agent.tool_registry import get_registry
+            registry = get_registry()
+            for tool_name in registry.get_static_tools():
+                schema = registry._schemas.get(tool_name)
+                if schema:
+                    tools_schema.append({
+                        "type": "function",
+                        "function": {
+                            "name": schema["name"],
+                            "description": schema.get("description", ""),
+                            "parameters": schema.get("input_schema", {"type": "object", "properties": {}}),
+                        }
+                    })
+        except Exception as e:
+            logger.debug(f"Static MCP tools injection skipped: {e}")
+        disk_schema = self.disk_engine.get_schema()
+        tools_schema.append(disk_schema)
+        return tools_schema
+
     def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
         """每轮循环结束后的清理工作（动态注入已移到 _on_before_llm）。
 
@@ -1154,8 +1177,10 @@ class NiuRunner:
         # 小憩模式触发检查：增量消息达阈值则后台启动 entity-extractor → dream-evolver
         self._maybe_trigger_nap()
 
-        # No schema refresh — tools_schema stays base + disk
-        return tools_schema
+        # Schema 刷新：每轮 LLM 后扫描 ~/.niu/agents/，发现新 MD 重算 base_tools_schema，
+        # 返回最新 tools_schema（agent_loop 循环尾每轮 LLM 前接收返回值，下一轮工具列表立即更新）
+        self._refresh_base_tools_schema_if_dirty()
+        return self._assemble_tools_schema()
 
     def _maybe_trigger_nap(self):
         """检查增量对话轮数，达阈值则后台启动小憩模式（entity-extractor → dream-evolver）。"""
@@ -3132,31 +3157,8 @@ class NiuRunner:
         self._refresh_base_tools_schema_if_dirty()
 
         # 组装 tools_schema = base tools + static MCP tools + disk
-        tools_schema = self.base_tools_schema.copy()
-
-        # Inject static-visibility MCP tools (e.g. brain_region/*)
-        # These are always visible to the LLM, unlike hidden/dynamic tools
-        # which are accessed via disk().
-        try:
-            from agent.tool_registry import get_registry
-            registry = get_registry()
-            for tool_name in registry.get_static_tools():
-                schema = registry._schemas.get(tool_name)
-                if schema:
-                    tools_schema.append({
-                        "type": "function",
-                        "function": {
-                            "name": schema["name"],
-                            "description": schema.get("description", ""),
-                            "parameters": schema.get("input_schema", {"type": "object", "properties": {}}),
-                        }
-                    })
-        except Exception as e:
-            logger.debug(f"Static MCP tools injection skipped: {e}")
-
-        # Add disk tool
-        disk_schema = self.disk_engine.get_schema()
-        tools_schema.append(disk_schema)
+        # （chat 与轮中刷新共用 _assemble_tools_schema）
+        tools_schema = self._assemble_tools_schema()
 
         logger.debug(
             f"tools_schema: {len(self.base_tools_schema)} base + {len(tools_schema) - len(self.base_tools_schema) - 1} static + 1 disk = {len(tools_schema)} total"
