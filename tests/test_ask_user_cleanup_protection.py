@@ -45,19 +45,18 @@ def test_ask_user_blocking_keeps_generator_alive(monkeypatch):
     assert results == ["[user 回答] 继续"]
 
 
-def test_cleanup_notifies_and_unregisters(monkeypatch):
-    """cleanup 注销挂起同步子 Agent 时 MainAgentRequestQueue 通知（不静默）；注册表实例被清。"""
+def test_cleanup_unregisters_without_notify(monkeypatch):
+    """cleanup 注销挂起同步子 Agent 时不推送 MainAgentRequestQueue 通知（2026-08-11 用户拍板）：
+    工具错误/orphan 反馈已告知主 Agent，通知以 user 消息混入对话流会被误认为用户话。"""
     from agent.runner import cleanup_suspended_sync_subagents
     from agent.subagent_registry import SubagentRegistry
 
     # 用真实 register（内部新建 RunningSubagent，state 默认 running——需手动置 waiting_for_answer）
-    unique = SubagentRegistry.register(
+    SubagentRegistry.register(
         "nutritionist", object(), force_unique_name="nutritionist")
     inst = SubagentRegistry.get("nutritionist")
     inst.state = "waiting_for_answer"
-    # R4-A/B P1：生产代码函数内 `from agent.main_agent_request_queue import get_main_agent_request_queue`
-    # ——正确 patch 目标是**源模块**（patch agent.runner 同名属性无效——runner 无此模块属性，
-    # monkeypatch 默认 raising=True 会抛 AttributeError）
+    # 源模块 patch 记录 push 是否被调（cleanup 应完全不 push）
     pushed = []
     import agent.main_agent_request_queue as q_mod
     monkeypatch.setattr(q_mod, "get_main_agent_request_queue",
@@ -66,9 +65,6 @@ def test_cleanup_notifies_and_unregisters(monkeypatch):
         assert SubagentRegistry.get("nutritionist") is not None
         cleanup_suspended_sync_subagents()
         assert SubagentRegistry.get("nutritionist") is None  # 已注销
-        assert pushed  # 通知主 Agent 不静默
-        assert "已被轮末清理" in pushed[0]
-        assert "@niu-agent [system]" in pushed[0]  # 前缀被 _AT_PATTERN 排除防误路由
-        assert "chat-with-nutritionist" in pushed[0]  # 重派提示（Task 5 存在性检查兜底）
+        assert pushed == []  # 不推送清理通知（工具错误已反馈主 Agent）
     finally:
         SubagentRegistry.unregister("nutritionist")
