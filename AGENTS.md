@@ -508,7 +508,7 @@ preload_face_model()
 
 ### 2026-08-11
 
-#### 修复：主 Agent ask_user 工具（暂停问话）+ 轮中 schema 刷新 + @ 通道反馈闭环 + cleanup 注销通知（nutritionist 事故四层修复收尾）
+#### 修复：主 Agent ask_user 工具（暂停问话）+ 轮中 schema 刷新 + @ 通道反馈闭环 + 通配路由存在性检查 + cleanup 注销通知（nutritionist 事故五层修复收尾）
 
 - **根因**：① 主 Agent 没有 ask_user 工具——想与用户交流只能输出纯文本 → 无 tool_calls → 程序判定 CURRENT_TASK_DONE → **退出工具循环**（"停下来问话"），工作流中断；② schema 刷新只在 chat() 入口执行，工具循环内新建 agent md 当轮冻结 → 主 Agent 幻觉调用不在 schema 的 chat-with-*；③ @ 通道三层静默丢失（提取正则只认 @类型-4hex 不匹配同步名、回复防护只查 content 开头、orphan 静默丢弃）；④ 通配路由容忍不存在 agent 致幻影执行
 - **修复**：
