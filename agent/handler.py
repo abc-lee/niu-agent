@@ -51,6 +51,22 @@ def _run_coroutine(coro):
         return asyncio.run(coro)
 
 
+def _check_chat_with_agent_exists(agent_name: str) -> tuple[bool, str]:
+    """检查 chat-with-{name} 目标子 Agent 是否存在（config/agents/ + ~/.niu/agents/）。
+
+    get_subagent_config 返回空 dict = 配置不存在（未创建 MD 或拼写错误）。
+    """
+    from agent.subagent import get_subagent_config
+    config = get_subagent_config(agent_name)
+    if not config:
+        return False, (
+            f"子Agent {agent_name} 不存在（未在 config/agents/ 或 ~/.niu/agents/ 找到配置）。"
+            f"请先用 write 创建 ~/.niu/agents/{agent_name}.md（含 description frontmatter），"
+            f"或检查名称拼写。"
+        )
+    return True, ""
+
+
 def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
     """读取文件内容（支持 offset/limit 分页，limit 最大 500）"""
     import itertools
@@ -1353,6 +1369,13 @@ class NiuHandler(BaseHandler):
                 return StepOutcome(
                     {"status": "error", "message": f"子Agent {agent_name} 已由系统自动管理，不可手动调用"},
                     next_prompt=""
+                )
+            # 存在性检查：不存在的子 Agent 给主 Agent 明确反馈（不静默/不幻觉执行）
+            _ok, _err = _check_chat_with_agent_exists(agent_name)
+            if not _ok:
+                return StepOutcome(
+                    {"status": "error", "msg": _err},
+                    next_prompt=f"子Agent {agent_name} 不存在，无法调用。{_err}",
                 )
             args = {**args, "_index": index}
             yield from try_call_generator(
