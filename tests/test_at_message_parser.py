@@ -60,11 +60,12 @@ def test_format_for_db():
     assert formatted == "@file-processor-a1b2 [主Agent] 用 OCR"
 
 
-def test_extract_non_hex_suffix_rejected():
-    """非 hex 后缀（如 c3g4）不被匹配。"""
+def test_extract_non_hex_suffix_now_extracted_as_kebab():
+    """非 hex 后缀（如 c3g4）按 kebab 名兼容提取（hex 后缀从"必须 4 位合法"放宽为"可选"）。"""
     reply = "@file-processor-c3g4 测试"
     msgs = extract_at_messages(reply)
-    assert msgs == []
+    assert len(msgs) == 1
+    assert msgs[0]["target"] == "file-processor-c3g4"  # 整体作为 kebab 名（含数字段）
 
 
 def test_persist_agent_reply_strips_assistant_content_in_rv_path():

@@ -2,9 +2,11 @@
 1. 主 Agent 回答消息（@子名 来自主Agent）路由到 PendingAskRegistry.set_answer
 2. /stop 消息路由时同时 cancel_pending_ask 解除 ask_main_agent 阻塞
 3. 主 Agent 补充上下文（无 pending future）降级推 supplement queue
-4. 孤儿回答（子 Agent 已退出）丢弃不推回主 Agent
+4. 孤儿回答（子 Agent 已退出）推 MainAgentRequestQueue 反馈主 Agent
 5. 普通补充消息（其他 sender）推 supplement queue
 """
+from unittest import mock
+
 from agent.ask_main_agent import TERMINATED_SIGNAL, get_pending_ask_registry
 from agent.subagent_registry import SubagentRegistry
 from agent.subagent_supplement import SubagentSupplementQueue
@@ -71,12 +73,18 @@ def test_route_message_main_supplement_when_no_pending_ask():
         SubagentRegistry.unregister(name)
 
 
-def test_route_message_orphan_answer_dropped():
-    """主 Agent 回答路由时子 Agent 已不在注册表（孤儿回答）→ sender==主Agent 时丢弃，不推回主 Agent 避免死循环。"""
-    # 不注册子 Agent，直接路由（模拟子 Agent 已退出）
-    # 不应抛异常，不应推回主 Agent supplement queue
-    db_monitor.route_message(target="nonexistent-xxxx", sender="主Agent", content="回答")
-    # 不抛异常即可
+def test_route_message_orphan_answer_reported_to_main_agent():
+    """主 Agent 回答路由时子 Agent 已不在注册表（孤儿回答）→ 推 MainAgentRequestQueue 反馈主 Agent（不静默丢弃）。"""
+    pushed = []
+    # R4-A/B P1：route_to_subagent 函数内 `from agent.main_agent_request_queue import get_main_agent_request_queue`
+    # ——函数内 import 从**源模块**取属性，正确 patch 目标是源模块（patch 使用方 niu_api.db_monitor 无效）
+    import agent.main_agent_request_queue as q_mod
+    with mock.patch.object(
+        q_mod, "get_main_agent_request_queue",
+        staticmethod(lambda: type("_Q", (), {"push": staticmethod(lambda c: pushed.append(c))})()),
+    ):
+        db_monitor.route_message(target="nonexistent-xxxx", sender="主Agent", content="回答")
+    assert pushed and "已不存在" in pushed[0]
 
 
 def test_route_message_normal_supplement_to_subagent():
