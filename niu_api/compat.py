@@ -2180,8 +2180,12 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     if _chat_lock.locked():
         # 用户回答主 Agent ask_user 提问：直接注入 set_answer（不走补充队列）
         # ——回答随下一轮 [user 回答] 返回 do_ask_user；消息以 user 角色持久化 + SSE 推送（前端可见）
+        # 只 guard import 语句：set_answer 后段错误不得被吞（吞了会落到补充队列→重复投递）
         try:
             from agent.ask_user import get_user_ask_registry
+        except ImportError:
+            pass
+        else:
             if get_user_ask_registry().is_waiting("main-agent"):
                 get_user_ask_registry().set_answer("main-agent", request.message)
                 logger.info(f"[chat_session] ask_user answered: {request.message[:50]}...")
@@ -2190,8 +2194,6 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 from niu_api.chat import notify_new_message
                 await notify_new_message(user_msg_id, "user", request.message, source="electron")
                 return ChatResponse(reply="已收到", session_id="default", message_id=user_msg_id)
-        except ImportError:
-            pass
         # 原有补充队列逻辑（保留）
         from agent.runner import enqueue_supplement
 

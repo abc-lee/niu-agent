@@ -2390,7 +2390,6 @@
     if (window.electronAPI && window.electronAPI.onAskUser) {
       window.electronAPI.onAskUser((event) => {
         addMessage('assistant', '❓ ' + (event.content || ''));
-        userInput.placeholder = '回答妞妞的提问...';
       });
     }
 
