@@ -3224,11 +3224,17 @@ class NiuRunner:
                             if chunk.content:  # SSE 管道：只推送非空 reply
                                 yield chunk.content
                                 # IM Gateway 流式推送（完整内容，非增量）
+                                # R1：推送前 strip @ 段——IM 用户流式不见主↔子内容
+                                # （Electron 渲染走 DB new-message SSE 已 strip；IM 最终
+                                # 消息由 route_out(full_reply) 发，full_reply 在
+                                # persist_agent_reply 已 strip——此处 chunk 级 strip 为
+                                # 流式预览兜底，@ 段跨 chunk 拆分时尽力而为）
                                 try:
+                                    from agent.at_message_parser import strip_at_messages
                                     from niu_api.channel.gateway import get_im_gateway
                                     _gw = get_im_gateway()
                                     if _gw and _gw.is_connected and chunk.content and self._current_channel_id:
-                                        _gw.notify_stream(chunk.content, channel_id=self._current_channel_id)
+                                        _gw.notify_stream(strip_at_messages(chunk.content), channel_id=self._current_channel_id)
                                 except Exception:
                                     pass
                         elif chunk.type == "persist":
@@ -3362,9 +3368,16 @@ class NiuRunner:
             else:
                 for msg in extract_at_messages(content):
                     db_content = format_for_db(msg)
-                    self._sync_add_message(role="subagent_msg", content=db_content)
-                    self._extracted_at_msgs.append(db_content)
+                    sub_msg_id = self._sync_add_message(role="subagent_msg", content=db_content)
+                    if sub_msg_id is not None:
+                        # P3-1：写成功才记录去重（subagent_msg 写失败时不记——
+                        # 否则 rv=None 兜底会误判去重跳过，导致 @ 丢失）
+                        self._extracted_at_msgs.append(db_content)
                 content = strip_at_messages(content)
+            # P2-2：纯 @ 回复（strip 后为空）不写空 assistant 行（subagent_msg 已存），
+            # 对齐 persist_agent_reply rv 路径 `if not content.strip(): continue` 惯例
+            if not content.strip():
+                return None
 
         # 同步写入 DB
         msg_id = self._sync_add_message(role=role, content=content,

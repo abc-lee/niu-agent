@@ -127,3 +127,64 @@ def test_persist_agent_reply_extracts_when_no_dedup_list():
     assert len(subagent_writes) == 1
     assert "nutritionist" in subagent_writes[0]["content"]
     assert not notify.called
+
+
+def test_persist_one_msg_pure_at_reply_skips_empty_assistant():
+    """P2-2：纯 @ 回复（strip 后为空）不写空 assistant 行（subagent_msg 已存）。"""
+    runner, sync_add = _make_runner()
+    with mock.patch("niu_api.chat.notify_new_message_sync") as notify:
+        msg_id = runner._persist_one_msg({
+            "role": "assistant",
+            "content": "@nutritionist 你好",
+        })
+    assert msg_id is None  # 空 assistant 不写
+    calls = sync_add.call_args_list
+    assert len(calls) == 1
+    assert calls[0].kwargs["role"] == "subagent_msg"
+    assert runner._extracted_at_msgs == [calls[0].kwargs["content"]]
+    notify.assert_not_called()  # 无空气泡推前端
+
+
+def test_persist_one_msg_dedup_record_only_on_write_success():
+    """P3-1：subagent_msg 写失败（返回 None）不记去重——rv=None 兜底仍可提取，@ 不丢。"""
+    runner, sync_add = _make_runner()
+    sync_add.side_effect = [None, "msg-1"]  # subagent_msg 写失败，assistant 写成功
+    with mock.patch("niu_api.chat.notify_new_message_sync"):
+        msg_id = runner._persist_one_msg({
+            "role": "assistant",
+            "content": "哈哈它叫我老板了。\n@nutritionist 你好，先告诉你用户情况",
+        })
+    assert msg_id == "msg-1"
+    assert runner._extracted_at_msgs == []  # 写失败不记 → 兜底路径可重新提取
+    assert sync_add.call_args_list[0].kwargs["role"] == "subagent_msg"
+    assert sync_add.call_args_list[1].kwargs["role"] == "assistant"
+
+
+def test_persist_agent_reply_v4_path_strips_full_reply():
+    """P2-1：V4 主路径（rv 有 messages + persisted 非空）跳过重复提取但 full_reply 仍 strip。"""
+    from niu_api.chat import persist_agent_reply
+
+    class _FakeStore:
+        def __init__(self):
+            self.calls = []
+
+        async def add_message(self, **kwargs):
+            self.calls.append(kwargs)
+            return f"id-{len(self.calls)}"
+
+    store = _FakeStore()
+    rv = {"result": "CURRENT_TASK_DONE", "messages": [
+        {"role": "user", "content": "用户输入"},
+        {"role": "assistant", "content": "回复内容\n@nutritionist 你好",
+         "tool_calls": [{"id": "call-1"}]},
+    ]}
+    persisted = [{"role": "assistant", "content": "回复内容\n@nutritionist 你好",
+                  "tool_calls": [{"id": "call-1"}], "_persisted_id": "pid-1"}]
+    full_reply = "回复内容\n@nutritionist 你好"
+    with mock.patch("niu_api.chat.notify_new_message", new_callable=mock.AsyncMock) as notify:
+        mid, reply = asyncio.run(persist_agent_reply(
+            store, rv, 0, full_reply, persisted_msgs=persisted))
+    assert "@nutritionist" not in reply  # P2-1：full_reply 已 strip（IM route_out / ChatResponse.reply 不带 @ 段）
+    assert store.calls == []  # 指纹命中 → 0 额外写（不重复提取 subagent_msg）
+    assert mid == "pid-1"
+    assert not notify.called

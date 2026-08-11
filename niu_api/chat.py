@@ -281,6 +281,11 @@ async def persist_agent_reply(
             # 用户拍板：@ 消息任何失败不得静默——打日志留痕
             # 文案避免误导：未提取也可能是"为保留标记引用"（@end/@niu-agent 等行文转述）
             logger.warning(f"[persist] full_reply 含 @ 但未提取到合法 @子Agent 消息（格式问题？或为保留标记引用）: {full_reply[:200]}")
+    elif "@" in full_reply:
+        # V4 主路径（P2-1）：subagent_msg 已由 _persist_one_msg 轮中提取写入——跳过重复提取，
+        # 但仍需 strip full_reply（IM 终发 route_out / ChatResponse.reply 推给用户不带 @ 段；
+        # subagent_msg 已轮中写，strip 不丢任何东西）
+        full_reply = strip_at_messages(full_reply)
 
     message_id = None
 
