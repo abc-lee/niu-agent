@@ -834,6 +834,21 @@ async def send_subagent_message(unique_name: str, msg: SubagentMessage):
         raise HTTPException(status_code=404, detail=result['message'])
     return {"status": result['status'], "message": result['message']}
 
+
+class AskAnswerRequest(BaseModel):
+    answer: str
+
+
+@router.post("/api/chat/ask-answer")
+async def ask_answer(request: AskAnswerRequest):
+    """主 Agent ask_user 等待期间，用户回答注入（不触发新对话轮）。"""
+    from agent.ask_user import get_user_ask_registry
+    registry = get_user_ask_registry()
+    if not registry.is_waiting("main-agent"):
+        return {"ok": False, "error": "no pending ask"}
+    ok = registry.set_answer("main-agent", request.answer)
+    return {"ok": ok}
+
 @router.post("/chat/session")
 async def get_or_create_session(request: ChatRequest) -> dict:
     """Get or create a chat session"""

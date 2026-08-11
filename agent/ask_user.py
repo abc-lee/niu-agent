@@ -1,6 +1,7 @@
 import threading
 
 TERMINATED_SIGNAL = '__TERMINATED__'
+UNAVAILABLE_SIGNAL = '__UNAVAILABLE__'  # 前端无可渲染窗口时 main.js 回执，do_ask_user 走错误分支
 _ASK_TIMEOUT = 600  # 10 分钟（比 ask_main_agent 的 300s 长，用户响应慢）
 
 
