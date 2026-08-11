@@ -167,7 +167,14 @@ def cleanup_suspended_sync_subagents():
         if state == "waiting_for_answer" and is_sync:
             try:
                 SubagentRegistry.unregister(instance.unique_name)
-                logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}")
+                # 不静默（R3 定稿）：MainAgentRequestQueue 直推 → db_monitor 链路 A 在主 Agent
+                # 闲置时推 SSE 触发主 Agent 读到（不经 supplement 队列防 drain；不写 DB 防上下文污染）
+                from agent.main_agent_request_queue import get_main_agent_request_queue
+                get_main_agent_request_queue().push(
+                    f"@主Agent [system] 挂起子 Agent {instance.unique_name} 已被轮末清理"
+                    f"（主 Agent 本轮未续答）。如需继续，请用 chat-with-{instance.agent_type} 重新派发。"
+                )
+                logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}（已通知主 Agent）")
             except Exception as e:
                 logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 失败：{e}")
 
