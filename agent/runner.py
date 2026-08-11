@@ -160,6 +160,8 @@ def cleanup_suspended_sync_subagents():
     场景：主 Agent 调用 chat-with-xxx 后，LLM 不再调用第二次 chat-with-xxx
     而是直接回应用户，导致同步子 Agent session 残留在 waiting_for_answer 状态。
     主 Agent 工具循环 finally 块调用此函数清理。
+    注（2026-08-11 用户拍板）：不再推送清理通知（工具错误/orphan 反馈已告知主 Agent；
+    通知以 user 消息进对话流会被主 Agent 误认为用户话，造成转述混乱）。
     """
     for instance in SubagentRegistry.list_running():
         state = getattr(instance, "state", "running")
@@ -167,22 +169,9 @@ def cleanup_suspended_sync_subagents():
         if state == "waiting_for_answer" and is_sync:
             try:
                 SubagentRegistry.unregister(instance.unique_name)
+                logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}")
             except Exception as e:
                 logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 失败：{e}")
-                continue
-            try:
-                # 不静默：MainAgentRequestQueue 直推 → db_monitor 链路 A 在主 Agent 闲置时
-                # 推 SSE 触发 /api/chat/session 交付（通知以 user 消息写入历史——与 ask 消息同机制，
-                # 主 Agent 读到一次；@niu-agent [system] 前缀被 _AT_PATTERN 排除防误路由；
-                # 循环有界：Task 5 存在性检查 + [system] 提示 LLM 不重复 @）
-                from agent.main_agent_request_queue import get_main_agent_request_queue
-                get_main_agent_request_queue().push(
-                    f"@niu-agent [system] 挂起子 Agent {instance.unique_name} 已被轮末清理"
-                    f"（主 Agent 本轮未续答）。如需继续，请用 chat-with-{instance.agent_type} 重新派发。"
-                )
-                logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}（已通知主 Agent）")
-            except Exception as e:
-                logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 成功但通知失败：{e}")
 
 
 # --- Supplement queue (见缝插针) ---
