@@ -1253,13 +1253,6 @@ class NiuHandler(BaseHandler):
                     next_prompt=f"子Agent调用失败：{error_msg}",
                 )
 
-            # [错误] 前缀：显式错误（如找不到挂起的子 Agent session）——status error
-            if result and result.startswith("[错误]"):
-                return StepOutcome(
-                    {"status": "error", "msg": result},
-                    next_prompt=f"子Agent调用返回错误：{result}",
-                )
-
             # 剥除 COMPACT_TRUNCATED: 前缀（截断信号已被 context-manager 路径处理，主 Agent 只需内容）
             if result and result.startswith("COMPACT_TRUNCATED:"):
                 result = result[len("COMPACT_TRUNCATED:"):]
