@@ -267,25 +267,29 @@ class IMGateway(ChannelAdapter):
         content = msg.get("content", "")
         channel_id = msg.get("channel_id", "")
         # 主 Agent ask_user 等待：IM 回答直接注入 set_answer（不 enqueue——防重复投递）。
+        # P1：校验 channel_id == runner._current_channel_id（防其他通道/会话消息劫持注入——多会话隔离）
+        # P2：set_answer 返回值判定（无注册 future 返回 False → 自然落入原 route_in_sync，消除 is_waiting TOCTOU 双回答竞态）
         # 只 guard import 语句：set_answer/持久化后段错误不得被吞（吞了消息会丢）
-        try:
-            from agent.ask_user import get_user_ask_registry
-        except ImportError:
-            pass
-        else:
-            if content.strip() and get_user_ask_registry().is_waiting("main-agent"):
-                get_user_ask_registry().set_answer("main-agent", content)
-                # 持久化 user 消息 + SSE（对话历史可见；对齐 chat_queue._process_single 的既有模型）
-                try:
-                    from agent.session import get_message_store
-                    from niu_api.chat import notify_new_message
-                    store = await get_message_store()
-                    user_msg_id = await store.add_message(role="user", content=content)
-                    await notify_new_message(user_msg_id, "user", content, source="electron")
-                    logger.info(f"[IMGateway] ask_user answered via IM: {content[:50]}...")
-                except Exception as e:
-                    logger.error(f"[IMGateway] ask_user answer persist failed: {e}")
-                return
+        if content.strip():
+            try:
+                from agent.ask_user import get_user_ask_registry
+                from agent.runner import get_runner
+                _r = get_runner()
+                _ask_cid = getattr(_r, "_current_channel_id", "")
+                if _ask_cid and channel_id == _ask_cid and get_user_ask_registry().set_answer("main-agent", content):
+                    # 持久化 user 消息 + SSE（对话历史可见；对齐 chat_queue._process_single 的既有模型）
+                    try:
+                        from agent.session import get_message_store
+                        from niu_api.chat import notify_new_message
+                        store = await get_message_store()
+                        user_msg_id = await store.add_message(role="user", content=content)
+                        await notify_new_message(user_msg_id, "user", content, source="electron")
+                        logger.info(f"[IMGateway] ask_user answered via IM: {content[:50]}...")
+                    except Exception as e:
+                        logger.error(f"[IMGateway] ask_user answer persist failed: {e}")
+                    return
+            except ImportError:
+                pass
         from .base import UnifiedMessage
         unified = UnifiedMessage(
             content=msg.get("content", ""),

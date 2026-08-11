@@ -2181,13 +2181,13 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         # 用户回答主 Agent ask_user 提问：直接注入 set_answer（不走补充队列）
         # ——回答随下一轮 [user 回答] 返回 do_ask_user；消息以 user 角色持久化 + SSE 推送（前端可见）
         # 只 guard import 语句：set_answer 后段错误不得被吞（吞了会落到补充队列→重复投递）
+        # set_answer 返回值判定（无注册 future 返回 False → 落补充队列），消除 is_waiting TOCTOU 双回答竞态
         try:
             from agent.ask_user import get_user_ask_registry
         except ImportError:
             pass
         else:
-            if get_user_ask_registry().is_waiting("main-agent"):
-                get_user_ask_registry().set_answer("main-agent", request.message)
+            if get_user_ask_registry().set_answer("main-agent", request.message):
                 logger.info(f"[chat_session] ask_user answered: {request.message[:50]}...")
                 store = await get_message_store()
                 user_msg_id = await store.add_message(role="user", content=request.message)

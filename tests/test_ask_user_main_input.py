@@ -12,6 +12,7 @@ class _FakeRegistry:
 
     def set_answer(self, name, answer):
         self.answers.append((name, answer))
+        return self.waiting  # 有注册 future 才返回 True（对齐生产 set_answer 语义）
 
 
 class _FakeStore:
@@ -91,6 +92,7 @@ async def test_chat_session_not_waiting_uses_supplement_queue(monkeypatch):
     req = compat.ChatRequest(message="补充信息")
     res = await compat.chat_session(req)
 
-    assert registry.answers == []  # 不注入 set_answer
+    # P2：set_answer 被调用但返回 False（无注册 future）→ 回答未消费，落入补充队列
+    assert registry.answers == [("main-agent", "补充信息")]
     assert enqueued == ["补充信息"]  # 原有补充队列逻辑保留
     assert res.reply == "已收到"
