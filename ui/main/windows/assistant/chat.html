@@ -2422,7 +2422,12 @@
             card.querySelector('.ask-user-send').disabled = true;
             card.querySelector('.ask-user-question').textContent += '（提问已超时或已结束）';
           }
-        } catch (e) { console.error('ask-answer failed', e); }
+        } catch (e) {
+          // P2（T1b 复审）：IPC 传输失败——复位在途标记，允许用户重试
+          // （重试遇 no-pending 会走 !res.ok 优雅降级为"提问已超时或已结束"提示）
+          card.dataset.submitted = '';
+          console.error('ask-answer failed', e);
+        }
       }
     }
 
