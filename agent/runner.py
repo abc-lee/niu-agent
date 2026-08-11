@@ -173,11 +173,11 @@ def cleanup_suspended_sync_subagents():
             try:
                 # 不静默：MainAgentRequestQueue 直推 → db_monitor 链路 A 在主 Agent 闲置时
                 # 推 SSE 触发 /api/chat/session 交付（通知以 user 消息写入历史——与 ask 消息同机制，
-                # 主 Agent 读到一次；@主Agent [system] 前缀被 _AT_PATTERN 排除防误路由；
+                # 主 Agent 读到一次；@niu-agent [system] 前缀被 _AT_PATTERN 排除防误路由；
                 # 循环有界：Task 5 存在性检查 + [system] 提示 LLM 不重复 @）
                 from agent.main_agent_request_queue import get_main_agent_request_queue
                 get_main_agent_request_queue().push(
-                    f"@主Agent [system] 挂起子 Agent {instance.unique_name} 已被轮末清理"
+                    f"@niu-agent [system] 挂起子 Agent {instance.unique_name} 已被轮末清理"
                     f"（主 Agent 本轮未续答）。如需继续，请用 chat-with-{instance.agent_type} 重新派发。"
                 )
                 logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}（已通知主 Agent）")

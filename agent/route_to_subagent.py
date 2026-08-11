@@ -38,14 +38,14 @@ def route_to_subagent(target: str, sender: str, content: str, source: str = 'db_
             try:
                 from agent.main_agent_request_queue import get_main_agent_request_queue
                 get_main_agent_request_queue().push(
-                    f"@主Agent [system] 目标子 Agent {target} 已不存在（可能已结束或被清理），无法接收消息：{content[:200]}"
+                    f"@niu-agent [system] 目标子 Agent {target} 已不存在（可能已结束或被清理），无法接收消息：{content[:200]}"
                 )
                 logger.info(f"[route] 主 Agent 回复孤儿 {target}，已推入主 Agent 请求队列")
             except Exception as e:
                 logger.error(f"[route] 推孤儿通知失败: {e}")
             return {"status": "error", "message": "orphan reported to main agent (queue)"}
         # 推回主 Agent（与原 db_monitor 一致，用 enqueue_supplement）
-        fallback = f"@主Agent [system] 目标子 Agent {target} 已不存在：{content}"
+        fallback = f"@niu-agent [system] 目标子 Agent {target} 已不存在：{content}"
         enqueue_supplement(fallback)
         return {"status": "error", "message": "orphan forwarded to main agent"}
 

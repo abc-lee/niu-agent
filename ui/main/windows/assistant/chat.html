@@ -2385,50 +2385,13 @@
       loadStats();
     });
 
-    // 主 Agent ask_user 提问：主对话流渲染提问卡片 + 回答提交（回答注入 /api/chat/ask-answer）
+    // 主 Agent ask_user 提问：消息式显示（❓ 前缀 assistant 消息），用户用主输入框回答——
+    // 回答经 /api/chat/session 见缝插针分支直接注入 set_answer（不走补充队列，无卡片/DOM 输入框）
     if (window.electronAPI && window.electronAPI.onAskUser) {
       window.electronAPI.onAskUser((event) => {
-        const card = document.createElement('div');
-        card.className = 'ask-user-card';
-        card.innerHTML = `
-          <div class="ask-user-question">${escapeHtml(event.content || '')}</div>
-          <textarea class="ask-user-input" placeholder="输入回答，Enter 发送"></textarea>
-          <button class="ask-user-send">发送</button>`;
-        messages.appendChild(card);
-        const submit = () => submitAskAnswer(card);
-        card.querySelector('.ask-user-send').addEventListener('click', submit);
-        card.querySelector('.ask-user-input').addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
-        });
-        card.querySelector('.ask-user-input').focus();
+        addMessage('assistant', '❓ ' + (event.content || ''));
+        userInput.placeholder = '回答妞妞的提问...';
       });
-
-      async function submitAskAnswer(card) {
-        if (card.dataset.submitted) return;  // P2-2 在途守卫：防双击/Enter+click 并发 POST
-        const input = card.querySelector('.ask-user-input');
-        const answer = (input.value || '').trim();
-        if (!answer) return;
-        card.dataset.submitted = '1';
-        try {
-          const res = await window.electronAPI.askAnswer(answer);
-          if (res && res.ok) {
-            card.classList.add('answered');
-            input.disabled = true;
-            card.querySelector('.ask-user-send').disabled = true;
-            addMessage('user', answer);  // 本地回声
-          } else {
-            // R3-A P3-5：晚回答（超时/停止后）——不静默，禁用并提示
-            input.disabled = true;
-            card.querySelector('.ask-user-send').disabled = true;
-            card.querySelector('.ask-user-question').textContent += '（提问已超时或已结束）';
-          }
-        } catch (e) {
-          // P2（T1b 复审）：IPC 传输失败——复位在途标记，允许用户重试
-          // （重试遇 no-pending 会走 !res.ok 优雅降级为"提问已超时或已结束"提示）
-          card.dataset.submitted = '';
-          console.error('ask-answer failed', e);
-        }
-      }
     }
 
     // 脑区状态变更通知：收到 SSE 事件后拉取最新数据

@@ -1865,11 +1865,6 @@ ipcMain.handle('send-subagent-message', async (_event, { uniqueName, message }) 
   });
 });
 
-// 回答主 Agent 的 ask_user 提问（注入 /api/chat/ask-answer，不触发新对话轮）
-ipcMain.handle('ask-answer', async (_e, answer) => {
-  return apiRequest('POST', '/api/chat/ask-answer', { answer });
-});
-
 // ========== SSE 消息事件流（来自原 ui/assistant/main.js） ==========
 let sseReconnectTimer = null;
 let sseConnectedBefore = false;
