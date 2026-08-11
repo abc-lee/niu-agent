@@ -1,6 +1,8 @@
 """ask_user 等待期间 chat() 生成器不结束 → cleanup 不触发 → 挂起子 Agent 保留。"""
 import asyncio
 import threading
+import time
+
 import pytest
 
 
@@ -28,8 +30,13 @@ def test_ask_user_blocking_keeps_generator_alive(monkeypatch):
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    import time
-    time.sleep(0.1)
+    # P3-4：轮询等 do_ask_user 完成 register（固定 sleep 有竞态——注入前未 register 时
+    # set_answer 是 no-op，测试会静默挂死到 done.wait 超时）
+    deadline = time.time() + 2
+    while not registry.is_waiting("main-agent"):
+        if time.time() > deadline:
+            pytest.fail("do_ask_user 未在 2s 内注册 main-agent future")
+        time.sleep(0.01)
     # 等待期间：未完成（工具循环还在阻塞）
     assert not done.is_set()
     # 注入回答
@@ -59,6 +66,9 @@ def test_cleanup_notifies_and_unregisters(monkeypatch):
         assert SubagentRegistry.get("nutritionist") is not None
         cleanup_suspended_sync_subagents()
         assert SubagentRegistry.get("nutritionist") is None  # 已注销
-        assert pushed and "已被轮末清理" in pushed[0]  # 通知主 Agent 不静默
+        assert pushed  # 通知主 Agent 不静默
+        assert "已被轮末清理" in pushed[0]
+        assert "@主Agent [system]" in pushed[0]  # 前缀被 _AT_PATTERN 排除防误路由
+        assert "chat-with-nutritionist" in pushed[0]  # 重派提示（Task 5 存在性检查兜底）
     finally:
         SubagentRegistry.unregister("nutritionist")
