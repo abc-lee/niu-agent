@@ -866,8 +866,9 @@ class NiuHandler(BaseHandler):
     def do_ask_user(self, args: dict, response) -> StepOutcome:
         """向用户提问并等待回答（主 Agent 专用——暂停而非退出工具循环）。
 
-        复用子 Agent 的 UserAskRegistry（key="main-agent"），前端主对话流显示提问卡片。
-        回答经 /api/chat/ask-answer 注入 set_answer("main-agent", answer)。
+        复用子 Agent 的 UserAskRegistry（key="main-agent"），前端主对话流消息式显示提问
+        （❓ 前缀 assistant 消息），用户用主输入框回答——经 /api/chat/session 见缝插针分支
+        直接注入 set_answer("main-agent", answer)（不走补充队列）。
         停止按钮：request_stop_all_subagents 补 set_answer("main-agent", TERMINATED_SIGNAL)
         （见 Task 1 Step 8 停止接线）。
         """
@@ -897,9 +898,9 @@ class NiuHandler(BaseHandler):
                 next_prompt="",
             )
 
-        # 1. 推 SSE 给前端（主对话流显示提问卡片）；失败/无订阅者不静默——直接返回错误
+        # 1. 推 SSE 给前端（主对话流消息式显示提问）；失败/无订阅者不静默——直接返回错误
         #    （R2-P1-4：_sync_broadcast 只把事件放队列，无订阅者（窗口关闭/SSE 断连）时
-        #    卡片永不渲染——必须检查 _event_subscribers，否则静默阻塞 600s）
+        #    提问永不显示——必须检查 _event_subscribers，否则静默阻塞 600s）
         pushed = False
         try:
             from niu_api.chat import _main_loop, _sync_broadcast, _event_subscribers

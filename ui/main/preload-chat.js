@@ -112,7 +112,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 窗口显示/获得焦点时通知前端同步状态
   onSyncState: (callback) => ipcRenderer.on('sync-state', () => callback()),
 
-  // 主 Agent ask_user 提问通知（SSE 顶级 ask_user 事件，主对话流渲染提问卡片）
+  // 主 Agent ask_user 提问通知（SSE 顶级 ask_user 事件，主对话流消息式显示提问，用户用主输入框回答）
   onAskUser: (callback) => {
     ipcRenderer.on('ask-user', (_e, event) => callback(event));
   },
