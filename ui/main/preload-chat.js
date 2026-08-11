@@ -133,7 +133,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 发送消息到子 Agent（补充信息 / /stop）
   sendSubagentMessage: (uniqueName, message) => ipcRenderer.invoke('send-subagent-message', { uniqueName, message }),
 
-  // 回答主 Agent 的 ask_user 提问（注入 /api/chat/ask-answer，不触发新对话轮）
-  askAnswer: (answer) => ipcRenderer.invoke('ask-answer', answer),
-
 });

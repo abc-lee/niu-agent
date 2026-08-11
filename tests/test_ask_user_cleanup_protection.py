@@ -68,7 +68,7 @@ def test_cleanup_notifies_and_unregisters(monkeypatch):
         assert SubagentRegistry.get("nutritionist") is None  # 已注销
         assert pushed  # 通知主 Agent 不静默
         assert "已被轮末清理" in pushed[0]
-        assert "@主Agent [system]" in pushed[0]  # 前缀被 _AT_PATTERN 排除防误路由
+        assert "@niu-agent [system]" in pushed[0]  # 前缀被 _AT_PATTERN 排除防误路由
         assert "chat-with-nutritionist" in pushed[0]  # 重派提示（Task 5 存在性检查兜底）
     finally:
         SubagentRegistry.unregister("nutritionist")
