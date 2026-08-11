@@ -97,4 +97,6 @@ def test_route_orphan_main_agent_forwarded(monkeypatch):
                         staticmethod(lambda: type("_Q", (), {"push": staticmethod(lambda c: pushed.append(c))})()))
     result = route_to_subagent.route_to_subagent("nutritionist", "主Agent", "你好", source="db_monitor")
     assert result["status"] == "error"
-    assert pushed and "已不存在" in pushed[0]
+    assert pushed and "不存在" in pushed[0]
+    assert "@niu-agent [system]" in pushed[0]  # 用户拍板：简单告知 + @niu-agent 统一前缀
+    assert "你好" not in pushed[0]  # 不带内容回显（回显会被主 Agent 误认为用户话）

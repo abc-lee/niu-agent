@@ -84,7 +84,7 @@ def test_route_message_orphan_answer_reported_to_main_agent():
         staticmethod(lambda: type("_Q", (), {"push": staticmethod(lambda c: pushed.append(c))})()),
     ):
         db_monitor.route_message(target="nonexistent-xxxx", sender="主Agent", content="回答")
-    assert pushed and "已不存在" in pushed[0]
+    assert pushed and "不存在" in pushed[0]
 
 
 def test_route_message_normal_supplement_to_subagent():
