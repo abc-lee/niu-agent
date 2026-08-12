@@ -127,6 +127,52 @@ def _sanitize_error_msg(msg: str) -> str:
     msg = re.sub(r'Bearer\s+\S+', 'Bearer ***', msg, flags=re.IGNORECASE)
     return msg
 
+
+# 敏感字段名匹配：api_key / apiKey / apikey / authorization / secret / token（大小写不敏感）。
+# token 需整词匹配（前后为非字母数字），避免误伤 prompt_tokens / total_tokens 等
+# token 计数字段和 tokenizer 之类的普通词。
+_SENSITIVE_KEY_RE = re.compile(
+    r"(^|[^a-z0-9])(api[_-]?key|authorization|secret|token)([^a-z0-9]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """判断字段名是否携带敏感信息（api_key / authorization / token / secret 等）。"""
+    return bool(_SENSITIVE_KEY_RE.search(key))
+
+
+def _mask_api_key_value(value: Any) -> Any:
+    """脱敏单个密钥字符串：sk-abcdef...xyz -> sk-ab...yz（保留前4后3）。
+
+    参照 http_logger._mask_api_key 风格；None / 空串 / 非字符串值原样返回，
+    避免破坏日志结构（如 api_key=None 时仍记录为空）。
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    if len(value) <= 8:
+        return "***"
+    return value[:4] + "..." + value[-3:]
+
+
+def _mask_sensitive(raw: Any) -> Any:
+    """递归脱敏 dict/list 中携带敏感字段名的值（api_key/authorization/token/secret 等）。
+
+    纯函数：不修改入参，返回脱敏后的新结构。用于 _write_raw_log 落盘前，
+    避免明文 API key 写入 ~/.niu/logs/raw_http/*_request.json。
+    """
+    if isinstance(raw, dict):
+        return {
+            k: (_mask_sensitive(v) if isinstance(v, (dict, list)) else _mask_api_key_value(v))
+            if _is_sensitive_key(k)
+            else _mask_sensitive(v)
+            for k, v in raw.items()
+        }
+    if isinstance(raw, list):
+        return [_mask_sensitive(item) for item in raw]
+    return raw
+
+
 # 完整无截断的原始日志序号计数器
 _raw_seq_counter = 0
 
@@ -148,6 +194,8 @@ def _write_raw_log(log_type: str, data: dict, seq: int | None = None) -> None:
 
     与 _write_interaction_log（人类可读、有截断）互补，
     记录完整的 request/response 数据用于排查底层问题。
+    落盘前经 _mask_sensitive 脱敏 api_key / authorization / token / secret 等敏感字段，
+    避免明文密钥写入 raw_http 日志。
 
     Args:
         log_type: "request" 或 "response"
@@ -167,7 +215,7 @@ def _write_raw_log(log_type: str, data: dict, seq: int | None = None) -> None:
             _raw_seq_counter += 1
         filepath = log_dir / f"{seq:06d}_{log_type}.json"
         filepath.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, default=str),
+            json.dumps(_mask_sensitive(data), ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
     except Exception as e:
