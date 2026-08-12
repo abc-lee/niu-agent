@@ -1376,6 +1376,31 @@ async def compute_context_usage_estimate(store=None, context_window: int | None 
         return None
 
 
+async def _compute_post_compress_usage(store=None, msgs_before: int = -1) -> tuple[bool, float | None]:
+    """压缩后判定：消息数减少（实际压缩）→ (True, 全量估算 usage)；否则 (False, None)。
+
+    _tidy_context_impl finally 使用：仅"实际压缩"（删了消息）才重置 _last_prompt_tokens
+    并推送新 usage；skip/abort/error 路径未压缩，旧真实 token 数仍有效必须保留
+    （保留否则下次 sleep 判定切到偏低的估算基准，破坏 warningThreshold-0.1 冲突避让）。
+    store 可选注入：调用方（_tidy_context_impl）已持有则传入，避免全表二次扫描；None 时自取。
+    并发写入假阴性边界：压缩期间并发新增消息可能使计数不降（溢出 force + 用户活跃期），
+    此时返回 False 不重置——活跃期前端 loadStats 显示 stale、真实自愈靠下次 LLM 交互
+    更新 _last_prompt_tokens（agent_loop.py:994），见边界记录。
+    """
+    try:
+        if store is None:
+            store = await get_message_store()
+        after = await store.get_messages()
+    except Exception:
+        # store 读取失败：无法确认压缩是否发生，保守不 reset（不误重置未压缩场景）
+        return False, None
+    if len(after) < msgs_before:
+        # compute 内部已吞异常返回 None → (True, None)：估算失败仍确认压缩、reset + 前端兜底
+        usage = await compute_context_usage_estimate(store=store, messages=after)
+        return True, usage
+    return False, None
+
+
 _tidy_lock = asyncio.Lock()
 
 
@@ -2607,6 +2632,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             跳过内部的 _chat_lock 获取和 ChatQueue pause/resume，
             避免自死锁（asyncio.Lock 不可重入）。
     """
+    # 压缩前状态占位：finally 判定是否实际压缩（try 早期失败/取消时保持默认 -1/None）
+    _msgs_before = -1  # 压缩前消息数（finally 判定是否实际压缩；-1 表示 try 早期未读到）
+    _store_ref = None  # try 内 store 引用（finally 复用，避免二次 get_message_store）
     # request 支持可选键 skip_compress: True 时跳过 force 模式的 context-manager 压缩
     # （用于 /clear 场景：只做内容提炼+梦境进化+日志记录，不压缩）
     session_id = request.get("session_id", "default")
@@ -2626,6 +2654,10 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         # Get message store
         store = await get_message_store()
         messages = await store.get_messages()
+
+        # 记录压缩前状态（finally 判定是否实际压缩：消息数减少 = 删过消息）
+        _store_ref = store
+        _msgs_before = len(messages)
 
         if not messages:
             logger.info("[Tidy] No messages to tidy")
@@ -4138,10 +4170,21 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         logger.error(f"[Tidy] Error: {e}\n{traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
     finally:
-        # 无论成功/失败/异常都必须广播 done，避免前端圆环卡死
+        # 无论成功/失败/异常/任务取消都必须广播 done，避免前端圆环卡死：
+        # 1) 先无条件保底广播（无 await——asyncio.CancelledError 继承 BaseException 不入
+        #    except Exception，取消时 finally 首个 await 点会抛，保底广播必须在 await 之前完成）
+        # 2) 再 await 重算：仅"实际压缩"（消息数减少）补推 usage + reset_tokens（二次 done 幂等，
+        #    前端先 loadStats 兜底后 render usage，二者同源一致）
         try:
             from niu_api.chat import notify_compact_status_sync
             notify_compact_status_sync("done", mode=mode)
+            try:
+                _compressed, usage_after = await _compute_post_compress_usage(
+                    store=_store_ref, msgs_before=_msgs_before)
+                if _compressed:
+                    notify_compact_status_sync("done", mode=mode, usage=usage_after, reset_tokens=True)
+            except Exception:
+                pass
         except Exception:
             pass
 
