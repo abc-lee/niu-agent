@@ -2242,38 +2242,53 @@
       }
     }
 
+    // 压缩 usage 渲染代际守卫：压缩完成瞬间 finally 先发保底 done(无 usage) 触发 loadStats，
+    // 该 GET /api/stats 在服务端 reset_tokens 之前被处理、返回压缩前旧值——若其响应晚于
+    // 最新压缩 usage 渲染到达，旧值会覆盖新值。用「本次 fetch 发起时间」vs「最近 usage 渲染
+    // 时间戳」判定丢弃（fetchTs 必须为本请求局部变量——共享全局会在并发 loadStats 时
+    // 被后发请求覆盖，导致先发响应误判新鲜）。
+    let _compactUsageTs = 0;    // 最近一次压缩 usage 渲染时间戳（Date.now()）
+
+    // 渲染上下文使用率圆环（loadStats 与 compact_status done 共用）
+    function renderContextUsage(usage) {
+      const arc = document.getElementById('context-usage-arc');
+      const text = document.getElementById('context-usage-text');
+      if (!arc || !text) return;
+      const usageVal = usage || 0;
+      const pct = Math.round(usageVal * 100);
+      const circumference = 2 * Math.PI * 8; // 50.27
+      arc.setAttribute('stroke-dashoffset', circumference * (1 - usageVal));
+      // 颜色：<70% 绿色，70-80% 黄色，≥80% 红色
+      let color;
+      if (pct < 70) color = '#4CAF50';
+      else if (pct < 80) color = '#FF9800';
+      else color = '#F44336';
+      // 压缩中不改 arc stroke 和 text color（由 compact_status 事件控制为红色）
+      if (!window._compacting) {
+        arc.setAttribute('stroke', color);
+        text.textContent = pct + '%';
+        text.style.color = color;
+      } else {
+        // 压缩中：百分比照常更新，但颜色保持红色
+        text.textContent = pct + '%';
+      }
+    }
+
     // ========== 加载统计数据 ==========
     async function loadStats(agentName) {
       try {
         // 未显式指定时跟随当前 tab：子 Agent tab 激活刷新其使用率，主对话刷新主 Agent
         const target = agentName !== undefined ? agentName : (_activeTab === 'main' ? '' : _activeTab);
+        const fetchTs = Date.now();  // 本请求发起时间（渲染代际守卫用，局部防并发覆盖）
         const result = await window.electronAPI.getStats(target || '');
         if (result) {
           fileCount.textContent = result.files || 0;
           personCount.textContent = result.persons || 0;
           noteCount.textContent = result.notes || 0;
-          // 更新上下文使用率
-          const usage = result.context_usage || 0;
-          const pct = Math.round(usage * 100);
-          const arc = document.getElementById('context-usage-arc');
-          const text = document.getElementById('context-usage-text');
-          if (arc && text) {
-            const circumference = 2 * Math.PI * 8; // 50.27
-            arc.setAttribute('stroke-dashoffset', circumference * (1 - usage));
-            // 颜色：<70% 绿色，70-80% 黄色，≥80% 红色
-            let color;
-            if (pct < 70) color = '#4CAF50';
-            else if (pct < 80) color = '#FF9800';
-            else color = '#F44336';
-            // 压缩中不改 arc stroke 和 text color（由 compact_status 事件控制为红色）
-            if (!window._compacting) {
-              arc.setAttribute('stroke', color);
-              text.textContent = pct + '%';
-              text.style.color = color;
-            } else {
-              // 压缩中：百分比照常更新，但颜色保持红色
-              text.textContent = pct + '%';
-            }
+          // 更新上下文使用率（压缩 usage 代际守卫：仅主 Agent 目标生效——本请求 fetch 发起时间
+          // 早于最新压缩 usage 渲染 → 跳过，防旧值覆盖；子 Agent 目标与主压缩无关，直接渲染）
+          if (target === '' || fetchTs >= _compactUsageTs) {
+            renderContextUsage(result.context_usage);
           }
         }
         // 并行拉取脑区状态（F003: 有防并发保护，不阻塞 stats 渲染）
@@ -2332,7 +2347,15 @@
         } else if (data.status === 'done') {
           if (animate) animate.endElement();
           if (wrapper) wrapper.title = '上下文使用率';
-          window._compacting = false;  // 最后清标志，让 loadStats 恢复颜色
+          window._compacting = false;  // 最后清标志，让渲染恢复颜色
+          // 压缩完成后刷新使用率：后端推送 usage 直接渲染（标记代际，丢弃并发旧 fetch 响应）；
+          // 未推送（主 Agent 超阈值路径）走 loadStats 全量估算
+          if (typeof data.usage === 'number') {
+            _compactUsageTs = Date.now();  // 标记最新压缩 usage 渲染代际
+            renderContextUsage(data.usage);
+          } else {
+            loadStats();
+          }
         }
       });
     }
