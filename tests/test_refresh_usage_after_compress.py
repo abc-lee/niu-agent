@@ -163,3 +163,37 @@ async def test_notify_started_keeps_tokens(monkeypatch):
     chat_mod.notify_compact_status_sync("started", mode="sleep")
     assert fake_runner.handler._last_prompt_tokens == 60000  # 未动
     assert captured["usage"] is None
+
+
+@pytest.mark.asyncio
+async def test_notify_done_runner_none_defensive(monkeypatch):
+    """get_runner 返回 None（runner 未初始化）：reset 块静默跳过、无广播、无副作用"""
+    from niu_api import chat as chat_mod
+
+    monkeypatch.setattr(chat_mod, "get_runner", lambda: None)
+    monkeypatch.setattr(chat_mod, "_main_loop", None)  # 显式：loop 未启动 → 提前 return
+    broadcast_calls = []
+    monkeypatch.setattr(chat_mod, "_sync_broadcast", lambda ev: broadcast_calls.append(ev))
+
+    chat_mod.notify_compact_status_sync("done", mode="sleep", reset_tokens=True)  # 不抛
+    assert broadcast_calls == []  # _main_loop None → 未广播
+
+
+@pytest.mark.asyncio
+async def test_notify_done_runner_raises_defensive(monkeypatch):
+    """get_runner 抛异常：reset 块 try/except 静默吞掉，事件仍正常广播（usage=None）"""
+    from niu_api import chat as chat_mod
+
+    def boom():
+        raise RuntimeError("runner down")
+
+    monkeypatch.setattr(chat_mod, "get_runner", boom)
+    monkeypatch.setattr(chat_mod, "_main_loop",
+                        type("L", (), {"is_closed": lambda self: False,
+                                       "call_soon_threadsafe": lambda self, fn, ev: fn(ev)})())
+    captured = {}
+    monkeypatch.setattr(chat_mod, "_sync_broadcast", lambda ev: captured.update(ev))
+
+    chat_mod.notify_compact_status_sync("done", mode="sleep", reset_tokens=True)  # 不抛
+    assert captured["status"] == "done"  # 事件仍广播，usage 透传 None
+    assert captured["usage"] is None
