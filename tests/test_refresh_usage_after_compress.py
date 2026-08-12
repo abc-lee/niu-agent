@@ -197,3 +197,79 @@ async def test_notify_done_runner_raises_defensive(monkeypatch):
     chat_mod.notify_compact_status_sync("done", mode="sleep", reset_tokens=True)  # 不抛
     assert captured["status"] == "done"  # 事件仍广播，usage 透传 None
     assert captured["usage"] is None
+
+
+@pytest.mark.asyncio
+async def test_post_compress_usage_deleted(monkeypatch):
+    """消息数减少（实际压缩）→ (True, 估算 usage)"""
+    from niu_api import compat as compat_mod
+
+    async def fake_compute(*a, **kw):
+        return 0.3
+
+    # 辅助函数内部只调一次 get_messages 作为"压缩后"状态——恒返回 1 条（压缩后），
+    # msgs_before=2 参数即代表压缩前计数
+    class _ShrunkStore(_FakeStore):
+        async def get_messages(self):
+            return [self._msgs[0]]
+
+    monkeypatch.setattr(compat_mod, "compute_context_usage_estimate", fake_compute)
+
+    async def _fake_get_store():
+        return _ShrunkStore([_Msg("user", "a"), _Msg("assistant", "b")])
+
+    monkeypatch.setattr(compat_mod, "get_message_store", _fake_get_store)
+
+    compressed, usage = await compat_mod._compute_post_compress_usage(store=None, msgs_before=2)
+    assert compressed is True
+    assert usage == 0.3
+
+
+@pytest.mark.asyncio
+async def test_post_compress_usage_unchanged(monkeypatch):
+    """消息数不变（skip/未压缩）→ (False, None)"""
+    from niu_api import compat as compat_mod
+
+    async def _fake_get_store():
+        return _FakeStore([_Msg("user", "a"), _Msg("assistant", "b")])
+
+    monkeypatch.setattr(compat_mod, "get_message_store", _fake_get_store)
+    compressed, usage = await compat_mod._compute_post_compress_usage(store=None, msgs_before=2)
+    assert compressed is False
+    assert usage is None
+
+
+@pytest.mark.asyncio
+async def test_tidy_finally_no_reset_when_skipped(monkeypatch):
+    """force+skip 未压缩：finally 调 notify done 不带 usage、不 reset_tokens"""
+    from niu_api import compat as compat_mod
+    from niu_api import chat as chat_mod
+
+    calls = []
+    monkeypatch.setattr(chat_mod, "notify_compact_status_sync",
+                        lambda status, mode="", usage=None, reset_tokens=False:
+                            calls.append((status, mode, usage, reset_tokens)))
+    # 防真实 runner 创建 + dream-evolver 段 runner._ensure_session_chain 调用
+    # （force 管道在 skip 判定前会跑 entity/dream/journal 三段；SUBAGENT_ERROR mock 使各段跳过推进）
+    monkeypatch.setattr(chat_mod, "get_or_create_runner",
+                        lambda: type("R", (), {"llm_config": {},
+                                               "handler": None,
+                                               "_ensure_session_chain": lambda self, max_days=10: None})())
+    monkeypatch.setattr(chat_mod, "get_runner", lambda: None)
+    monkeypatch.setattr("agent.subagent.call_subagent_with_auto_answer",
+                        lambda *a, **kw: "SUBAGENT_ERROR: mocked")
+    # 非空库（空库会提前 return "No messages to tidy"，测不到 skip 判定）
+    async def _fake_get_store():
+        return _FakeStore([_Msg("user", "a"), _Msg("assistant", "b")])
+
+    monkeypatch.setattr(compat_mod, "get_message_store", _fake_get_store)
+
+    # force 分支读 request 的 skip_compress 键（sleep 分支不读——测试必须用 force）；
+    # 管道各段对 SUBAGENT_ERROR 可能 return skipped/继续，无论哪条路径 finally 都执行
+    # 且消息数不变 → done 无 usage——断言聚焦 done_calls，不依赖 result.status
+    result = await compat_mod._tidy_context_impl({"mode": "force", "skip_compress": True})
+
+    done_calls = [c for c in calls if c[0] == "done"]
+    assert done_calls, f"expected done broadcast, got calls={calls} result={result}"
+    assert done_calls[-1][2] is None      # 未推 usage
+    assert done_calls[-1][3] is False     # 未 reset_tokens
