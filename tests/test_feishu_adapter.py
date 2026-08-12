@@ -122,7 +122,7 @@ async def test_on_stream_empty_keepalive_only_seq(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_stream_new_card_discards_ask_finalized(monkeypatch):
-    """v11：建新卡清除 ask_finalized 标记（新卡出现，后续 SEND 走 state 分支）"""
+    """v11 + ImplReviewR3-P1：建新卡清标记、**保留内容记录**（2c 多轮拼接需跨卡累积）"""
     from niu_feishu_adapter.adapter import FeishuAdapter
     import niu_feishu_adapter.feishu_api as api
 
@@ -134,10 +134,10 @@ async def test_on_stream_new_card_discards_ask_finalized(monkeypatch):
     adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
     adapter._push_chat_id = "ch1"
     adapter._ask_finalized.add("ch1")  # 上一轮 ask_user 终结残留标记
-    adapter._ask_finalized_content["ch1"] = "旧终结内容"  # P2-2：内容记录同步清除
+    adapter._ask_finalized_content["ch1"] = "a1"  # 上一轮终结内容（供多轮拼接）
     await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "新回复", "reply_to_id": None})
-    assert "ch1" not in adapter._ask_finalized  # 建卡 discard
-    assert "ch1" not in adapter._ask_finalized_content
+    assert "ch1" not in adapter._ask_finalized  # 建卡 discard 标记（新卡出现，后续 SEND 走 state 分支）
+    assert adapter._ask_finalized_content.get("ch1") == "a1"  # 记录保留（round2 finalize 拼接 a1+a2）
 
 
 # ── _on_send ask_finalize 状态判重 ──
@@ -272,7 +272,8 @@ async def test_on_send_ask_finalize_fallback_not_skipped(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_send_ask_finalize_multi_round_concat(monkeypatch):
-    """ImplReviewFix-P2-2：多轮 ask_user（2c）——终结内容拼接记录，route_out 整轮 a1+a2 才跳过；兜底 ≠ 拼接 → 正常发"""
+    """ImplReviewFix-P2-2 + ImplReviewR3-P1：多轮 ask_user（2c）——终结内容跨卡拼接（建卡保留记录），
+    route_out 整轮 a1+a2 才跳过；兜底 ≠ 拼接 → 正常发"""
     from niu_feishu_adapter.adapter import FeishuAdapter, CardState
     import niu_feishu_adapter.feishu_api as api
 
@@ -286,11 +287,15 @@ async def test_on_send_ask_finalize_multi_round_concat(monkeypatch):
         sent.append(("md", target, content))
         return True
 
+    async def fake_create(client, receive_id, content, reply_to_id=None):
+        return f"card{len(finalized) + 1}", "msg"
+
     def fake_extract(content):
         return []
 
     monkeypatch.setattr(FeishuAdapter, "_do_finalize", fake_finalize)
     monkeypatch.setattr(api, "send_markdown", fake_send_markdown)
+    monkeypatch.setattr(api, "create_card", fake_create)
     monkeypatch.setattr(api, "extract_md_refs", fake_extract)
 
     adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
@@ -303,13 +308,14 @@ async def test_on_send_ask_finalize_multi_round_concat(monkeypatch):
     await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
     await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "❓ 第一问?", "ask_finalize": True})
 
-    # 轮 2：ask_user 终结卡 B（a2）+ 问题消息（记录拼接 a1+a2）
-    s2 = CardState("card2", "ch1")
-    s2.accumulated = "a2"
-    adapter._card_states["ch1"] = s2
+    # 用户回答 → 新流式 chunk → _on_stream 建卡 B（生产路径：标记 discard、内容记录保留 'a1'）
+    await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "a2", "reply_to_id": None})
+    assert "ch1" not in adapter._ask_finalized  # 建卡清标记
+    assert adapter._ask_finalized_content.get("ch1") == "a1"  # 记录保留供拼接
+
+    # 轮 2：ask_user 终结卡 B（accumulated 'a2' → finalize 'a2'）+ 问题消息（记录拼接 a1+a2）
     await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
     await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "❓ 第二问?", "ask_finalize": True})
-
     assert adapter._ask_finalized_content.get("ch1") == "a1a2"  # 拼接记录
 
     # route_out 整轮 a1+a2（无 state + 标记在 + 非 ask_finalize）→ 与拼接相等 → 跳过 + 双清
