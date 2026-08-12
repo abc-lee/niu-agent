@@ -2285,9 +2285,9 @@
           fileCount.textContent = result.files || 0;
           personCount.textContent = result.persons || 0;
           noteCount.textContent = result.notes || 0;
-          // 更新上下文使用率（压缩 usage 代际守卫：仅主 Agent 目标生效——本请求 fetch 发起时间
-          // 早于最新压缩 usage 渲染 → 跳过，防旧值覆盖；子 Agent 目标与主压缩无关，直接渲染）
-          if (target === '' || fetchTs >= _compactUsageTs) {
+          // 更新上下文使用率（压缩 usage 代际守卫：主 Agent 目标受守卫——本请求 fetch 发起时间
+          // 早于最新压缩 usage 渲染 → 跳过，防旧值覆盖；子 Agent 目标直接渲染不受守卫）
+          if (target !== '' || fetchTs >= _compactUsageTs) {
             renderContextUsage(result.context_usage);
           }
         }
@@ -2354,7 +2354,7 @@
             _compactUsageTs = Date.now();  // 标记最新压缩 usage 渲染代际
             renderContextUsage(data.usage);
           } else {
-            loadStats();
+            loadStats('');
           }
         }
       });
