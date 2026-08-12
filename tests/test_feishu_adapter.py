@@ -330,6 +330,70 @@ async def test_on_send_ask_finalize_multi_round_concat(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_on_stream_cross_turn_record_residue(monkeypatch):
+    """ImplReviewR4-P1：跨轮记录残留——turn1 state 分支终结后记录残留，turn2 新回合建卡（标记不在）→ pop 记录，
+    防 'a1'+'b1' 误拼接判重 miss 整轮重复"""
+    from niu_feishu_adapter.adapter import FeishuAdapter, CardState
+    import niu_feishu_adapter.feishu_api as api
+
+    finalized = []
+    sent = []
+
+    async def fake_finalize(self, state, content):
+        finalized.append((state.receive_id, content))
+
+    async def fake_send_markdown(client, target, content):
+        sent.append(("md", target, content))
+        return True
+
+    async def fake_create(client, receive_id, content, reply_to_id=None):
+        return f"card{len(finalized) + 1}", "msg"
+
+    def fake_extract(content):
+        return []
+
+    monkeypatch.setattr(FeishuAdapter, "_do_finalize", fake_finalize)
+    monkeypatch.setattr(api, "send_markdown", fake_send_markdown)
+    monkeypatch.setattr(api, "create_card", fake_create)
+    monkeypatch.setattr(api, "extract_md_refs", fake_extract)
+
+    adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
+    adapter._push_chat_id = "ch1"
+
+    # ── turn1：ask_user 终结卡 A（记录 'a1'）+ 流式建卡 B（标记清、记录保留）→ route_out state 分支终结卡 B（记录 'a1' 残留）──
+    sA = CardState("card1", "ch1")
+    sA.accumulated = "a1"
+    adapter._card_states["ch1"] = sA
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "❓ 问?", "ask_finalize": True})
+    assert adapter._ask_finalized_content.get("ch1") == "a1"
+
+    # 用户回答 → 流式建卡 B（2c 延续：标记在 → 保留记录 'a1'）
+    await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "a2", "reply_to_id": None})
+    assert "ch1" not in adapter._ask_finalized
+    assert adapter._ask_finalized_content.get("ch1") == "a1"
+
+    # route_out state 分支终结卡 B（accumulated 'a2'）——正常终结不记标记，记录 'a1' 残留
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "a1a2"})
+    assert finalized[-1] == ("ch1", "a2")  # F3 未触发（'a1a2' 非 'a2' 前缀）→ 用 accumulated
+    assert adapter._ask_finalized_content.get("ch1") == "a1"  # 残留
+    assert "ch1" not in adapter._ask_finalized
+
+    # ── turn2（新回合）：流式建卡 C——标记不在 → pop 跨轮残留记录 ──
+    await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "b1", "reply_to_id": None})
+    assert "ch1" not in adapter._ask_finalized_content  # 残留记录已清（防 'a1'+'b1' 误拼接）
+
+    # turn2 ask_user 终结卡 C（记录 'b1'）→ route_out content 'b1' == 记录 → 跳过（不重复）
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "❓ 第二问?", "ask_finalize": True})
+    assert adapter._ask_finalized_content.get("ch1") == "b1"  # 干净拼接（无 'a1' 污染）
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "b1"})
+    assert sent == [("md", "ch1", "❓ 问?"), ("md", "ch1", "❓ 第二问?")]  # route_out 判重跳过，无重复
+    assert "ch1" not in adapter._ask_finalized
+    assert "ch1" not in adapter._ask_finalized_content
+
+
+@pytest.mark.asyncio
 async def test_on_send_f3_prefix_recovery(monkeypatch):
     """F3（best-effort）：state 终结时 cmd.content 以 accumulated 为前缀且明显更长 → 用 cmd.content 补全（流式中断）"""
     from niu_feishu_adapter.adapter import FeishuAdapter, CardState
