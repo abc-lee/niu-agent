@@ -506,6 +506,26 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-12
+
+#### 修复：定时任务飞书流式卡片永不终结（死路由 pre-existing + 86d6c7a2 显性化）——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
+
+- **现象**：① 定时任务提醒用户不回答 → 飞书流式卡片一直"思考中"（streaming_mode 永不终结）② 下次用户说话 → 新会话流式内容追加到旧卡片（顺序混乱）③ 后续 update 报 300309 "streaming mode is closed"（im_adapter_stderr.log 11:10:33 实证）→ 新内容丢失且永不建新卡
+- **根因（改造前后 diff 实证——"动错了哪"）**：
+  1. **死路由是 pre-existing**：`git diff e77fe352 3fd648aa`——chat_queue.py/scheduler service.py/channel/__init__.py **零改动**；scheduler 通道从未注册进 ChannelRouter（__main__.py 只注册 electron/im）→ 定时任务回复路由 `router.push(reply, "scheduler", "")` no-op → **最终回复永不产生 SEND** → adapter 终结卡片唯一途径（_on_send pop state）永不触发 → streaming_mode 永不关闭
+  2. **"原来没问题"的解释**：改造前同一机制同样存在——当时无 IM 历史会话（_im_channel_id 空 → 不建卡）或旧版 chunk 替换显示下"卡死"不可见
+  3. **本次改造的直接贡献是 86d6c7a2（accumulated 累计全文）**：让"下次会话内容追加旧卡片"以字面"追加"形式显性化（改造前是替换显示）——用户症状精确对应此改动
+  4. **t0 SEND 提前消费**：trigger_callback 入队瞬间以任务文本 fire-and-forget 发 SEND → 卡片未创建 → send_markdown 普通消息；之后回复流式建卡 → 再无 SEND
+  5. **刻意设计冲突**：service.py L99-105 注释——channel="scheduler" 是刻意选择（"回复只走 SSE 前端，避免同一任务两条 IM 消息"）——修复不得把回复 push 成独立 IM 消息
+- **修复（main 3 commits：79952acb + dcec016b + 3e551f79）**：
+  1. **2.1 chat_queue 仅终结卡片不投递**：_process_with_merge 回复路由 elif 分支 scheduler 特判——`get_im_channel()` 非空时 `get_im_gateway().send_sync(im_cid, "", pop_reply_to=False)`（空 content → adapter _on_send 用 accumulated 定稿终结卡片、不新增独立消息——兼容刻意设计）；新增 `enqueue_and_wait_with_future`（返回 (result, reply_future) 元组，三返回点全元组）；watcher.py 自推条件化（读 reply_future._im_finalized 标志，遍历合并批次置位——无 TOCTOU）；无 IM 继承维持 no-op（回复只 SSE）
+  2. **2.2 adapter 死卡 pop 重建**：update_card_element 返回错误码（成功/异常 None、业务失败 resp.code）；_on_stream 死卡 pop 集 {300309, 200850, 200740, 200750} → 先 `finalize_card` 纯终结旧卡（4 参 + 完整卡片 JSON + subtitle 清空——旧卡不再永久"思考中"；跳过 _filter_media 防媒体双上传）→ 重建新卡（种子 = 旧 accumulated 已含当前 chunk 无 double-append、CardState 构造序/message_id/失败检查/ask 门控/last_content/seq=1）；瞬时错误保留 state
+  3. **2.3 do_ask_user 来源闸门兜底**：_cid 空且来源 scheduler/ha-watcher → `_gw.push_target` 兜底推问题（临时设 _current_channel_id/_im_channel_id 使注入守卫命中——回答可注入）；Electron 会话（source=user）永不触发；主路径 im_pushed=True 保留
+- **质量链**：改造前后 diff 实证（DiffAnalyzer 独立分析）→ 计划 R1-R14 十四轮双审查（每轮 2 审查员异角度、先学飞书官方手册、完整逻辑链；R13+R14 连续两轮零 bug）→ 实施 3 commits + 55 测试全绿 → 实施后重审 R15+R16 连续两轮零 bug → 轻量方案对齐审查通过（无实施遗漏、无越界改动、6 项已知偏差全部记录）
+- **已知接受边界（已记录）**：ha-watcher 降级/零 chunk 时回复仅 SSE（低频）；死卡重建 finalize 成功时两张同内容卡片（= 验收 #4 接受）；_im_channel_id 兜底残留至下条用户消息；push_target 群聊过期；跨来源合并（user IM + watcher supplement）双投递为 pre-existing 出范围
+- **实机验证待确认项**（对齐审查标注）：验收 #1 真实飞书 streaming_mode 关闭、验收 #3 下次会话开新卡——需实机确认
+- **排查教训**：①"原来没问题"≠"机制不存在"——同机制改造前后都存在，改造（86d6c7a2）让症状从不可见变可见；先 diff 实证再下结论，勿凭空想象新问题 ② 定时任务回复"死路由"是刻意设计（避免双消息）的副作用——修复必须兼容设计意图（仅终结不投递），不能简单改为投递 ③ watcher 的 future（concurrent.futures.Future）与 chat_queue 的 reply_future（asyncio.Future）是**不同对象**——跨线程共享信号必须同一对象（enqueue_and_wait_with_future 元组返回）④ "照抄可运行"伪代码标准：函数签名（finalize_card 4 参/update_card_element 返回码）、字段名（message_id 非 msg_id）、变量作用域（else 分支无 card_id 绑定）、future 对象链——每个都是实施炸点，必须审查到
+
 ### 2026-08-11
 
 #### 修复：主 Agent ask_user 工具（暂停问话）+ 轮中 schema 刷新 + @ 通道反馈闭环 + 通配路由存在性检查 + cleanup 注销通知（nutritionist 事故五层修复收尾）
