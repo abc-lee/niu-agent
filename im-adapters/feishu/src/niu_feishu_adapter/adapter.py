@@ -338,7 +338,50 @@ class FeishuAdapter:
             state.seq += 1
             # 字节守卫（官方卡片 JSON ≤30KB error 200860 / content ≤100000 字符）：
             display = _truncate_card_text(state.accumulated)
-            await update_card_element(self._client, state.card_id, display, state.seq)
+            code = await update_card_element(self._client, state.card_id, display, state.seq)
+            if code in {300309, 200850, 200740, 200750}:
+                # 死卡（streaming closed/timeout/实体不存在/过期）——pop + 重建
+                # 先纯终结旧死卡（best-effort，独立 try/except 不阻断重建）：
+                #   旧卡 subtitle 是建卡写死的"思考中..."——不终结则永久冻结显示"思考中"。
+                #   镜像 _do_finalize 的 final_card 构造，但跳过 _filter_media——其真实上传媒体
+                #   （upload_image/upload_file）：300309/200850 双上传浪费、200740/200750 实体失效纯浪费；
+                #   媒体留给新卡 SEND 终结统一上传投递。
+                try:
+                    from niu_feishu_adapter.feishu_api import finalize_card
+                    display = _truncate_card_text(state.accumulated.replace("[PHOTO_SEP]", ""))
+                    final_card = {
+                        "schema": "2.0",
+                        "header": {"title": {"content": "Niu助手", "tag": "plain_text"},
+                                   "subtitle": {"content": "", "tag": "plain_text"}},  # 清空"思考中..."
+                        "config": {"streaming_mode": False, "update_multi": True},
+                        "body": {"elements": [{"tag": "markdown", "content": display, "element_id": "md1"}]},
+                    }
+                    state.seq += 1  # 镜像 _do_finalize——settings 用 N+1、UpdateCard 用 N+2 必然严格递增（防 300317）
+                    await finalize_card(self._client, state.card_id, json.dumps(final_card, ensure_ascii=False), state.seq)
+                except Exception as e:
+                    logger.error(f"[FeishuAdapter] Old card finalize failed for {receive_id}: {e}")
+                self._card_states.pop(receive_id, None)
+                # 重建种子 = state.accumulated（已含当前 chunk，勿再 +content——double-append 缺陷）
+                display = _truncate_card_text(state.accumulated)
+                # 先 create_card 成功再构造 CardState（else 分支本帧无 card_id 绑定——勿在 create 前引用）
+                card_id, msg_id = await create_card(self._client, receive_id, display, state.reply_to_id)  # 携带旧 reply_to_id
+                if not card_id:
+                    # 镜像既有建卡分支失败检查：不留 state，下个 chunk 走正常建卡重试
+                    logger.error(f"[FeishuAdapter] Card rebuild failed for {receive_id}")
+                    return
+                new_state = CardState(card_id, receive_id, state.reply_to_id)  # 构造在 create_card 之后
+                new_state.message_id = msg_id  # 字段名是 message_id（非 msg_id——__slots__ 类 AttributeError）
+                new_state.accumulated = state.accumulated  # 已含当前 chunk
+                new_state.seq = 1
+                new_state.last_content = state.accumulated  # else 块外 last_content 赋值只作用于已 pop 旧 state——新卡需自设
+                # 复用既有建卡分支的 ask 标记门控：receive_id not in _ask_finalized → pop 记录；discard
+                if receive_id not in self._ask_finalized:
+                    self._ask_finalized_content.pop(receive_id, None)
+                self._ask_finalized.discard(receive_id)
+                self._card_states[receive_id] = new_state
+            else:
+                # 瞬时错误（网络/服务端内部 300120/300317/内容超限 200860）——保留 state 下次重试
+                pass
         state.last_content = state.accumulated
 
     async def _on_send(self, cmd: dict):

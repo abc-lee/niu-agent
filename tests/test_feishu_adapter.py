@@ -68,7 +68,7 @@ async def test_on_stream_accumulates_full_text(monkeypatch):
 
     async def fake_update(client, card_id, content, seq):
         updates.append((card_id, content, seq))
-        return True
+        return None
 
     monkeypatch.setattr(api, "create_card", fake_create)
     monkeypatch.setattr(api, "update_card_element", fake_update)
@@ -104,7 +104,7 @@ async def test_on_stream_empty_keepalive_only_seq(monkeypatch):
 
     async def fake_update(client, card_id, content, seq):
         updates.append(seq)
-        return True
+        return None
 
     monkeypatch.setattr(api, "update_card_element", fake_update)
 
@@ -118,6 +118,121 @@ async def test_on_stream_empty_keepalive_only_seq(monkeypatch):
     # 无 state 时空内容直接忽略
     await adapter._on_stream({"type": "STREAM", "channel_id": "ch2", "content": ""})
     assert "ch2" not in adapter._card_states
+
+
+# ── _on_stream 死卡错误码 pop + 重建 ──
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dead_code", [300309, 200850, 200740, 200750])
+async def test_on_stream_dead_card_pop_and_rebuild(monkeypatch, dead_code):
+    """死卡错误码（streaming closed/timeout/实体不存在/过期）：
+    先 finalize_card 纯终结旧卡（4 参 + 完整卡片 JSON + subtitle 清空）→ pop → 重建新卡
+    （种子 = 旧 accumulated 已含当前 chunk 单次，无 double-append；seq=1；message_id 字段）"""
+    from niu_feishu_adapter.adapter import FeishuAdapter, CardState, _truncate_card_text
+    import niu_feishu_adapter.feishu_api as api
+
+    finalized = []
+    created = []
+
+    async def fake_update(client, card_id, content, seq):
+        return dead_code  # 参数化返回 pop 集错误码
+
+    async def fake_finalize(client, card_id, final_json, seq):
+        finalized.append((client, card_id, final_json, seq))
+        return True
+
+    async def fake_create(client, receive_id, content, reply_to_id=None):
+        created.append((receive_id, content, reply_to_id))
+        return "card2", "msg2"
+
+    monkeypatch.setattr(api, "update_card_element", fake_update)
+    monkeypatch.setattr(api, "finalize_card", fake_finalize)
+    monkeypatch.setattr(api, "create_card", fake_create)
+
+    adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
+    old = CardState("card1", "ch1", "om_reply")
+    old.accumulated = "前文"
+    old.seq = 3
+    adapter._card_states["ch1"] = old
+
+    await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "新chunk", "reply_to_id": None})
+
+    # 旧卡终结：finalize_card 以 (client, card_id, 含 subtitle:"" 的完整卡片 JSON, seq) 被调用
+    assert len(finalized) == 1
+    _, fin_card_id, fin_json, fin_seq = finalized[0]
+    assert fin_card_id == "card1"
+    fin_card = json.loads(fin_json)
+    assert fin_card["header"]["subtitle"]["content"] == ""  # 清空"思考中..."
+    assert fin_card["config"]["streaming_mode"] is False
+    assert fin_card["body"]["elements"][0]["content"] == _truncate_card_text("前文新chunk")
+    assert fin_seq == 5  # update 用 seq=4（3+1），finalize 前再 += 1 → 5（严格递增防 300317）
+    # 重建：内容 = 旧 accumulated（已含当前 chunk）单次——无 double-append
+    assert created == [("ch1", _truncate_card_text("前文新chunk"), "om_reply")]  # 携带旧 reply_to_id
+    new_state = adapter._card_states["ch1"]
+    assert new_state.card_id == "card2"
+    assert new_state.message_id == "msg2"
+    assert new_state.accumulated == "前文新chunk"  # 单次（非 "前文新chunk新chunk"）
+    assert new_state.seq == 1  # 新卡序号从 1 重启
+    assert new_state.last_content == "前文新chunk"
+
+
+@pytest.mark.asyncio
+async def test_on_stream_dead_card_rebuild_failure_drops_state(monkeypatch):
+    """重建 create_card 失败（返回 falsy）：旧卡终结后 _card_states 无该 receive_id（不留死 state，
+    下个 chunk 走正常建卡重试——镜像既有建卡失败检查）"""
+    from niu_feishu_adapter.adapter import FeishuAdapter, CardState
+    import niu_feishu_adapter.feishu_api as api
+
+    finalized = []
+
+    async def fake_update(client, card_id, content, seq):
+        return 300309
+
+    async def fake_finalize(client, card_id, final_json, seq):
+        finalized.append(card_id)
+        return True
+
+    async def fake_create_fail(client, receive_id, content, reply_to_id=None):
+        return "", None  # create_card 内部消化异常转 falsy 返回
+
+    monkeypatch.setattr(api, "update_card_element", fake_update)
+    monkeypatch.setattr(api, "finalize_card", fake_finalize)
+    monkeypatch.setattr(api, "create_card", fake_create_fail)
+
+    adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
+    old = CardState("card1", "ch1")
+    old.accumulated = "前文"
+    old.seq = 1
+    adapter._card_states["ch1"] = old
+
+    await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "新chunk", "reply_to_id": None})
+
+    assert finalized == ["card1"]  # 旧卡已 best-effort 终结
+    assert "ch1" not in adapter._card_states  # 旧卡终结后无该 receive_id（不留 card_id="" 死 state）
+
+
+@pytest.mark.asyncio
+async def test_on_stream_transient_error_keeps_state(monkeypatch):
+    """瞬时/可重试错误（None=成功或异常、300120/300317/200860 不在 pop 集）——保留 state 下次重试"""
+    from niu_feishu_adapter.adapter import FeishuAdapter, CardState
+    import niu_feishu_adapter.feishu_api as api
+
+    async def fake_update(client, card_id, content, seq):
+        return 300120  # 服务端内部错误——不落入 pop 集
+
+    monkeypatch.setattr(api, "update_card_element", fake_update)
+
+    adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
+    state = CardState("card1", "ch1")
+    state.accumulated = "前文"
+    state.seq = 1
+    adapter._card_states["ch1"] = state
+
+    await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "新chunk", "reply_to_id": None})
+
+    assert adapter._card_states["ch1"] is state  # state 保留（不误杀活卡）
+    assert state.accumulated == "前文新chunk"  # 累积不丢
+    assert state.last_content == "前文新chunk"
 
 
 @pytest.mark.asyncio
