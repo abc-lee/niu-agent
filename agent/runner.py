@@ -3245,10 +3245,19 @@ class NiuRunner:
                                     chat_idle_pushed = True
                         # type="tool_marker" 不进入 SSE 和 full_resp
                     else:
-                        # 向后兼容：普通 str
+                        # 向后兼容：普通 str（stream_error/兼容文本）
                         full_resp += chunk
                         if chunk:
                             yield chunk
+                            # IM 流式也推（错误文本进 accumulated，finalize 不丢）；与 reply 分支同款守卫
+                            try:
+                                from agent.at_message_parser import strip_at_messages
+                                from niu_api.channel.gateway import get_im_gateway
+                                _gw = get_im_gateway()
+                                if _gw and _gw.is_connected and chunk and self._current_channel_id:
+                                    _gw.notify_stream(strip_at_messages(chunk), channel_id=self._current_channel_id)
+                            except Exception:
+                                pass
                 except StopIteration as e:
                     return_value = e.value
                     break
