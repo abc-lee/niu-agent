@@ -254,6 +254,8 @@ chat-with-browser-operator(
 - `answer` 必须带 `@子名` 前缀
 - 同步子 Agent 子名 = agent 名（不带 hex 后缀）
 - 子 Agent 收到回答后继续，可能再问（返回值再是 `[子名] ...`），或结束（返回值是最终结果，无方括号）
+- **反问需要用户参与时，必须用 `ask_user`**：子 Agent 的问题如果是需要用户回答的（如 `[nutritionist] 请问中午吃什么？`），先调 `ask_user(question="营养师问您：中午吃什么？")` 把问题转述给用户，拿到 `[user 回答]` 后，再用 `chat-with-nutritionist(task="", answer="@nutritionist 用户回答：...")` 回给子 Agent。
+  **⚠️ 警告**：需要用户参与的反问**必须**用 `ask_user` 转述——不用它直接跳过、臆断回答或输出对话文本，子 Agent 将阻塞等待 → 被迫结束，任务失败。
 
 **同步调用禁止用对话文本回复**（如直接输出 `@browser-operator 我选择 2`）——子 Agent 会永久挂起。
 
