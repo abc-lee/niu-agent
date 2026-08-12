@@ -209,15 +209,15 @@ class _HAWatcher:
 
             # 通过 ChatQueue 入队并等待 Agent 回复
             q = get_chat_queue()
-            future = asyncio.run_coroutine_threadsafe(
-                q.enqueue_and_wait(
+            fut = asyncio.run_coroutine_threadsafe(
+                q.enqueue_and_wait_with_future(  # 返回 (result, reply_future)——reply_future 是同一 asyncio.Future
                     content=f"[智能家居] {description}",
                     source="ha-watcher",
                     session_id="default",
                 ),
                 loop,
             )
-            agent_reply = future.result(timeout=300)
+            agent_reply, reply_future = fut.result(timeout=300)  # 解包
 
             if not agent_reply:
                 print(f"[HAWatcher] Agent returned empty reply for: {description}")
@@ -228,11 +228,15 @@ class _HAWatcher:
                 from niu_api.channel import get_channel_router
                 router = get_channel_router()
                 if router.has_channel("im"):
-                    push_future = asyncio.run_coroutine_threadsafe(
-                        router.push(agent_reply, "im", ""),
-                        loop,
-                    )
-                    push_future.result(timeout=30)
+                    # 读 chat_queue 挂到 reply_future 上的确定性标志（"本回合已由 chat_queue 终结卡片"）
+                    if not getattr(reply_future, "_im_finalized", False):
+                        # 无卡（chat_queue 未终结）→ 保持现状自推（保留 run_coroutine_threadsafe 桥接——同步线程函数）
+                        push_future = asyncio.run_coroutine_threadsafe(
+                            router.push(agent_reply, "im", ""),
+                            loop,
+                        )
+                        push_future.result(timeout=30)
+                    # else：有卡（chat_queue 已 send_sync 终结）→ watcher 不自推（防双投递）
             except Exception as e:
                 print(f"[HAWatcher] IM push failed: {e}")
 

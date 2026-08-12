@@ -126,12 +126,26 @@ class ChatQueue:
                                session_id: str = "default",
                                timeout: float = 120.0) -> str:
         """入队并等待回复 — 供 Scheduler 等需要同步结果的场景"""
+        result, _ = await self.enqueue_and_wait_with_future(
+            content=content, source=source, channel=channel,
+            session_id=session_id, timeout=timeout,
+        )
+        return result
+
+    async def enqueue_and_wait_with_future(self, content: str, source: str = "scheduler",
+                                           channel: str = "scheduler",
+                                           session_id: str = "default",
+                                           timeout: float = 120.0) -> tuple[str, asyncio.Future | None]:
+        """入队并等待回复，返回 (result, reply_future) 元组——reply_future 供调用方读取
+        确定性标志（如 _im_finalized：scheduler 回复已由 chat_queue 终结 IM 卡片，见
+        _process_with_merge 回复路由 elif 分支；ha_watcher 据此决定是否自推防双投递）。
+        全部返回点均为元组：/stop → ("已停止", None)；timeout → ("", future)；正常 → (reply, future)。"""
         # --- /stop directive: immediate stop, no queueing ---
         if content.strip() == "/stop":
             from agent.runner import request_stop
             request_stop()
             logger.info("[ChatQueue] /stop requested (immediate)")
-            return "已停止"
+            return ("已停止", None)
 
         loop = asyncio.get_running_loop()
         future = loop.create_future()
@@ -146,12 +160,12 @@ class ChatQueue:
         logger.info(f"[ChatQueue] Enqueued (wait): source={source}, channel={channel}, content={content[:50]}...")
 
         try:
-            return await asyncio.wait_for(future, timeout=timeout)
+            return (await asyncio.wait_for(future, timeout=timeout), future)
         except TimeoutError:
             if not future.done():
                 future.cancel()
             logger.warning(f"[ChatQueue] Wait timeout for: {content[:50]}...")
-            return ""
+            return ("", future)
 
     async def drain(self, timeout: float = 30.0) -> bool:
         """等待当前处理完成并清空队列"""
@@ -246,20 +260,42 @@ class ChatQueue:
                 logger.error(f"[ChatQueue] Processing error: {e}")
                 reply = f"[处理出错: {e}]"
 
-            # 通道无关的回复路由
+            # 通道无关的回复路由（保留实际两分支结构——分支 1 是正常 IM 会话卡片终结唯一路径，不可并入 else；
+            # 两分支均保留既有 try/except + logger.error 包装）
+            from niu_api.channel import get_channel_router
             if first_req.channel != "electron" and first_req.channel_id:
+                # 分支 1（原样保留）：有 channel_id → route_out → gateway.send → SEND → adapter _on_send 终结卡片
                 try:
-                    from niu_api.channel import get_channel_router
                     router = get_channel_router()
                     await router.route_out(reply, first_req.channel, first_req.channel_id)
                 except Exception as e:
                     logger.error(f"[ChatQueue] Failed to route reply to {first_req.channel}: {e}")
             elif first_req.channel != "electron" and not first_req.channel_id:
-                # 无目标通道ID（如scheduler主动推送），用push广播
+                # 分支 2：无目标通道 ID（scheduler 主动推送等）——scheduler 特判（仅终结不投递），其他通道原样 push
                 try:
-                    from niu_api.channel import get_channel_router
                     router = get_channel_router()
-                    await router.push(reply, first_req.channel, "")
+                    if first_req.channel == "scheduler":
+                        im_cid = self._runner.get_im_channel()  # 继承的 _im_channel_id
+                        if im_cid:
+                            # 仅终结卡片不投递：SEND 空 content → adapter _on_send state 分支用 accumulated 定稿
+                            # （卡片显示完整回复、streaming_mode 关闭、state pop）——不新增独立 IM 消息
+                            from niu_api.channel.gateway import get_im_gateway
+                            _gw = get_im_gateway()
+                            if _gw and _gw.is_connected:
+                                _gw.send_sync(im_cid, "", pop_reply_to=False)
+                                # 确定性标志：watcher 的 future 是 run_coroutine_threadsafe 的
+                                # concurrent.futures.Future，chat_queue 的 reply_future 是
+                                # enqueue_and_wait_with_future 内部的 asyncio.Future——不同对象。
+                                # watcher 解包拿到同一个 asyncio.Future → 置位/读取同源。
+                                # 值在 resolve 前写入（finally set_result 之前）、resolve 后不再变——无跨事件 TOCTOU 窗口。
+                                # 遍历整个合并批次置位——supplements（多请求合并）的 future 也需置位
+                                # （两事件同窗口入队合并时，只置 first_req 会让 supplement 的 watcher 自推 → 双投递）：
+                                for r in (first_req, *supplements):
+                                    if r.reply_future is not None:
+                                        r.reply_future._im_finalized = True  # watcher 读 getattr(reply_future, "_im_finalized", False) 决定是否自推
+                        # else：无 IM 继承（无卡片可终结）→ 维持原 no-op（回复只走 SSE，原设计语义）
+                    else:
+                        await router.push(reply, first_req.channel, "")
                 except Exception as e:
                     logger.error(f"[ChatQueue] Failed to push reply to {first_req.channel}: {e}")
 
