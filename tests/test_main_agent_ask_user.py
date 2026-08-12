@@ -134,12 +134,19 @@ def test_ask_user_stop_early_return(handler, monkeypatch):
 
 
 class _FakeGateway:
-    def __init__(self):
+    def __init__(self, connected=True, raise_on_send=False):
         self.streamed = []
-        self.is_connected = True
+        self.sent = []  # (channel_id, content, pop_reply_to, ask_finalize)
+        self.is_connected = connected
+        self._raise_on_send = raise_on_send
 
     def notify_stream(self, content, channel_id="", is_final=False):
         self.streamed.append((content, channel_id, is_final))
+
+    def send_sync(self, channel_id, content, pop_reply_to=False, ask_finalize=False):
+        if self._raise_on_send:
+            raise RuntimeError("send_sync boom")
+        self.sent.append((channel_id, content, pop_reply_to, ask_finalize))
 
 
 class _FakeRunnerForIM:
@@ -147,10 +154,10 @@ class _FakeRunnerForIM:
 
 
 def test_ask_user_im_push(fake_loop, handler, monkeypatch):
-    """R1：Electron SSE 无订阅者时走 IM 通道推送（notify_stream）——推送成功即继续等待。"""
+    """R1：Electron SSE 无订阅者时走 IM 通道推送（send_sync 终结+问题）——推送成功即继续等待。"""
     registry = get_user_ask_registry()
     monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
-    monkeypatch.setattr("niu_api.chat._event_subscribers", [])  # SSE 无订阅者 → pushed=False
+    monkeypatch.setattr("niu_api.chat._event_subscribers", [])  # SSE 无订阅者 → electron_pushed=False
     gw = _FakeGateway()
     # do_ask_user 函数体内 `from agent.runner import get_runner` / `from niu_api.channel.gateway import get_im_gateway`
     # ——patch 源模块
@@ -159,8 +166,43 @@ def test_ask_user_im_push(fake_loop, handler, monkeypatch):
     _set_answer_after(registry)
     out = handler.do_ask_user({"question": "飞书继续吗？"}, response=None)
     assert out.data == "[user 回答] 42"
-    assert gw.streamed and gw.streamed[0][0] == "❓ 飞书继续吗？"
-    assert gw.streamed[0][1] == "im:123"
+    # 终结空消息 + 问题独立消息（pop_reply_to=False, ask_finalize=True）
+    assert [c for _, c, _, _ in gw.sent] == ["", "❓ 飞书继续吗？"]
+    assert all(pop is False and fin is True for _, _, pop, fin in gw.sent)
+    assert not registry.is_waiting("main-agent")
+
+
+def test_ask_user_dual_channel_both_pushed(fake_loop, handler, monkeypatch):
+    """双端场景（Electron SSE 订阅者非空 + IM 通道存在）：双通道独立推送——去掉 if not pushed 门控，
+    Electron 推成功不再跳过 IM，飞书也收到问题。"""
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    # fake_loop 已 seed _event_subscribers 非空 → Electron 推成功（electron_pushed=True）
+    gw = _FakeGateway()
+    monkeypatch.setattr("agent.runner.get_runner", lambda: _FakeRunnerForIM())
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+    _set_answer_after(registry)
+    out = handler.do_ask_user({"question": "双端同步？"}, response=None)
+    assert out.data == "[user 回答] 42"
+    # Electron SSE 事件已推
+    assert fake_loop.events and fake_loop.events[0]["type"] == "ask_user"
+    assert fake_loop.events[0]["content"] == "双端同步？"
+    # IM 也推了（终结 + 问题）——不再被 electron_pushed 门控跳过
+    assert [c for _, c, _, _ in gw.sent] == ["", "❓ 双端同步？"]
+    assert not registry.is_waiting("main-agent")
+
+
+def test_ask_user_im_exception_keeps_electron(fake_loop, handler, monkeypatch):
+    """IM send_sync 异常只置 im_pushed=False，不拖累已成功的 Electron 推送（继续等待回答）。"""
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    gw = _FakeGateway(raise_on_send=True)  # IM 推送抛异常 → im_pushed=False
+    monkeypatch.setattr("agent.runner.get_runner", lambda: _FakeRunnerForIM())
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+    _set_answer_after(registry)
+    out = handler.do_ask_user({"question": "IM 挂了？"}, response=None)
+    assert out.data == "[user 回答] 42"  # Electron 通道仍成立，不走无法显示
+    assert fake_loop.events and fake_loop.events[0]["content"] == "IM 挂了？"
     assert not registry.is_waiting("main-agent")
 
 

@@ -898,44 +898,48 @@ class NiuHandler(BaseHandler):
                 next_prompt="",
             )
 
-        # 1. 推 SSE 给前端（主对话流消息式显示提问）；失败/无订阅者不静默——直接返回错误
+        # 1. Electron SSE 推送（主对话流消息式显示提问）；失败/无订阅者不静默——置 electron_pushed=False
         #    （R2-P1-4：_sync_broadcast 只把事件放队列，无订阅者（窗口关闭/SSE 断连）时
         #    提问永不显示——必须检查 _event_subscribers，否则静默阻塞 600s）
-        pushed = False
+        electron_pushed = False
         try:
             from niu_api.chat import _main_loop, _sync_broadcast, _event_subscribers
             if _main_loop and not _main_loop.is_closed() and _event_subscribers:
                 event = {"type": "ask_user", "content": question}
                 try:
                     _main_loop.call_soon_threadsafe(_sync_broadcast, event)
-                    pushed = True
+                    electron_pushed = True
                 except RuntimeError:
-                    # R3-B P3：is_closed() 检查后 loop 恰好关闭（竞态）——置 pushed=False 走错误分支
-                    pushed = False
+                    # R3-B P3：is_closed() 检查后 loop 恰好关闭（竞态）——置 electron_pushed=False 走错误分支
+                    electron_pushed = False
         except ImportError:
             pass
-        # IM 抽象通道：终结当前回复卡片 → 问题作独立消息（同步线程安全，gateway 为 executor 线程设计）。
-        # 纯 IM 会话无 Electron SSE 订阅者——IM 推送成功也置 pushed，等待继续成立。
-        # 终结用 send_sync 而非 notify_stream：流式问题会被回复卡 accumulated 吞掉且不即时显示；
-        # 独立 SEND 消息即时显示问题（用户立即看到 ❓），且不复写/污染回复卡。
-        if not pushed:
-            try:
-                from agent.runner import get_runner
-                from niu_api.channel.gateway import get_im_gateway
-                from agent.at_message_parser import strip_at_messages
-                _runner = get_runner()
-                _cid = getattr(_runner, "_current_channel_id", "")
-                _gw = get_im_gateway()
-                if _cid and _gw and _gw.is_connected:
-                    # 1) 终结当前回复卡片（content 空 → adapter 用 state.accumulated 终结）→ 记 ask_finalized 标记
-                    #    ask_finalize=True（v11：与 route_out 重复 SEND 区分）
-                    #    pop_reply_to=False：保留群聊回复目标（R2-B-P2 + R8-A-P3：问题 send 也 False，防卡 B 群聊不串联）
-                    _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
-                    # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
-                    _gw.send_sync(_cid, f"❓ {strip_at_messages(question)}", pop_reply_to=False, ask_finalize=True)
-                    pushed = True
-            except Exception:
-                pushed = False   # v10（R7-B-P3）：保留原 try/except 优雅降级（send_sync 异常 → pushed=False 走无法显示分支）
+        # 2. IM 抽象通道：独立推送（不依赖 electron_pushed——双端场景（Electron 窗口开 + 飞书 IM）
+        #    飞书也要看到问题；_cid 存在即推）。终结当前回复卡片 → 问题作独立消息
+        #    （同步线程安全，gateway 为 executor 线程设计）。
+        #    终结用 send_sync 而非 notify_stream：流式问题会被回复卡 accumulated 吞掉且不即时显示；
+        #    独立 SEND 消息即时显示问题（用户立即看到 ❓），且不复写/污染回复卡。
+        im_pushed = False
+        try:
+            from agent.runner import get_runner
+            from niu_api.channel.gateway import get_im_gateway
+            from agent.at_message_parser import strip_at_messages
+            _runner = get_runner()
+            _cid = getattr(_runner, "_current_channel_id", "")
+            _gw = get_im_gateway()
+            if _cid and _gw and _gw.is_connected:
+                # 1) 终结当前回复卡片（content 空 → adapter 用 state.accumulated 终结）→ 记 ask_finalized 标记
+                #    ask_finalize=True（v11：与 route_out 重复 SEND 区分）
+                #    pop_reply_to=False：保留群聊回复目标（R2-B-P2 + R8-A-P3：问题 send 也 False，防卡 B 群聊不串联）
+                _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
+                # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
+                _gw.send_sync(_cid, f"❓ {strip_at_messages(question)}", pop_reply_to=False, ask_finalize=True)
+                im_pushed = True
+        except Exception:
+            im_pushed = False   # v10（R7-B-P3）：保留 try/except 优雅降级（send_sync 异常 → 仅 IM 失败，不影响 electron_pushed）
+        # 双通道任一成功即视为可显示——都失败才走无法显示分支（去掉 if not pushed 门控：
+        # 双端场景 Electron 推成功不再跳过 IM，飞书也能看到问题）
+        pushed = electron_pushed or im_pushed
         if not pushed:
             return StepOutcome(
                 "[ask_user 无法显示] 前端事件通道不可用或无订阅者，无法向用户提问。请基于现有信息继续推进，或用 @end 结束。",
