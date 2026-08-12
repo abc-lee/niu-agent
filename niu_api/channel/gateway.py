@@ -376,6 +376,24 @@ class IMGateway(ChannelAdapter):
             future = asyncio.run_coroutine_threadsafe(self._async_send(cmd), self._loop)
             future.add_done_callback(self._on_send_done)
 
+    def send_sync(self, channel_id: str, content: str, pop_reply_to: bool = True, ask_finalize: bool = False) -> None:
+        """同步 SEND 指令（executor 线程安全，仿 notify_stream/_send_command）。终结卡片或发独立消息。
+
+        pop_reply_to=False 时保留群聊回复目标（供连续第二条问题消息复用，防丢失回复串联）。
+        ask_finalize=True 标记 ask_user 专用 SEND（终结+问题）——adapter 据此与 route_out 重复 SEND 区分（v11，见方案 §3.5）。
+        """
+        if not self._connected.is_set():
+            logger.debug("[IMGateway] Adapter not connected, cannot send_sync")
+            return
+        with self._lock:
+            reply_to_id = self._reply_to_ids.get(channel_id, "")
+        content = self._rewrite_unsupported_images(content)
+        self._send_command({"type": "SEND", "channel_id": channel_id, "content": content,
+                            "reply_to_id": reply_to_id, "ask_finalize": ask_finalize})
+        if pop_reply_to:
+            with self._lock:
+                self._reply_to_ids.pop(channel_id, None)
+
     # ── ChannelAdapter 接口 ──
 
     async def send(self, channel_id: str, content: str) -> None:
