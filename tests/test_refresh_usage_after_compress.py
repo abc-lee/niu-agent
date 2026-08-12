@@ -105,3 +105,61 @@ class _FakeStore:
 
     async def get_messages(self):
         return self._msgs
+
+
+class _FakeHandler:
+    def __init__(self):
+        self._last_prompt_tokens = 60000
+
+
+class _FakeRunner:
+    def __init__(self):
+        self.handler = _FakeHandler()
+
+
+def _patch_notify_env(monkeypatch, chat_mod):
+    """mock runner/loop/broadcast；call_soon_threadsafe 签名 (self, fn, ev) 与真实一致"""
+    fake_runner = _FakeRunner()
+    monkeypatch.setattr(chat_mod, "get_runner", lambda: fake_runner)
+    monkeypatch.setattr(chat_mod, "_main_loop",
+                        type("L", (), {"is_closed": lambda self: False,
+                                       "call_soon_threadsafe": lambda self, fn, ev: fn(ev)})())
+    captured = {}
+    monkeypatch.setattr(chat_mod, "_sync_broadcast", lambda ev: captured.update(ev))
+    return fake_runner, captured
+
+
+@pytest.mark.asyncio
+async def test_notify_done_resets_prompt_tokens(monkeypatch):
+    """done+reset_tokens=True：主 runner._last_prompt_tokens 置 0（旧值压缩后失效）"""
+    from niu_api import chat as chat_mod
+
+    fake_runner, captured = _patch_notify_env(monkeypatch, chat_mod)
+
+    chat_mod.notify_compact_status_sync("done", mode="sleep", usage=0.3, reset_tokens=True)
+    assert fake_runner.handler._last_prompt_tokens == 0
+    assert captured == {"type": "compact_status", "status": "done", "mode": "sleep", "usage": 0.3}
+
+
+@pytest.mark.asyncio
+async def test_notify_done_without_reset_keeps_tokens(monkeypatch):
+    """done 但 reset_tokens=False（未实际压缩的 skip 路径）：不置 0、usage 透传"""
+    from niu_api import chat as chat_mod
+
+    fake_runner, captured = _patch_notify_env(monkeypatch, chat_mod)
+
+    chat_mod.notify_compact_status_sync("done", mode="sleep")
+    assert fake_runner.handler._last_prompt_tokens == 60000  # 未动
+    assert captured["usage"] is None
+
+
+@pytest.mark.asyncio
+async def test_notify_started_keeps_tokens(monkeypatch):
+    """started 事件：不置 0、usage 透传为 None"""
+    from niu_api import chat as chat_mod
+
+    fake_runner, captured = _patch_notify_env(monkeypatch, chat_mod)
+
+    chat_mod.notify_compact_status_sync("started", mode="sleep")
+    assert fake_runner.handler._last_prompt_tokens == 60000  # 未动
+    assert captured["usage"] is None
