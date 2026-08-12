@@ -204,11 +204,17 @@ async def test_post_compress_usage_deleted(monkeypatch):
     """消息数减少（实际压缩）→ (True, 估算 usage)"""
     from niu_api import compat as compat_mod
 
+    # 锁 call-site 契约：messages=after（压缩后列表）与 store 必须传入（防回归成二次全表扫描）
+    calls = []
+
     async def fake_compute(*a, **kw):
+        calls.append(kw)
         return 0.3
 
     # 辅助函数内部只调一次 get_messages 作为"压缩后"状态——恒返回 1 条（压缩后），
     # msgs_before=2 参数即代表压缩前计数
+    msgs = [_Msg("user", "a"), _Msg("assistant", "b")]
+
     class _ShrunkStore(_FakeStore):
         async def get_messages(self):
             return [self._msgs[0]]
@@ -216,13 +222,16 @@ async def test_post_compress_usage_deleted(monkeypatch):
     monkeypatch.setattr(compat_mod, "compute_context_usage_estimate", fake_compute)
 
     async def _fake_get_store():
-        return _ShrunkStore([_Msg("user", "a"), _Msg("assistant", "b")])
+        return _ShrunkStore(msgs)
 
     monkeypatch.setattr(compat_mod, "get_message_store", _fake_get_store)
 
     compressed, usage = await compat_mod._compute_post_compress_usage(store=None, msgs_before=2)
     assert compressed is True
     assert usage == 0.3
+    assert calls, "compute_context_usage_estimate must be invoked on actual compression"
+    assert calls[0]["messages"] == [msgs[0]]  # messages=after（压缩后列表），identity 成立
+    assert calls[0]["store"]._msgs is msgs    # store 复用传入（未重新 get_message_store）
 
 
 @pytest.mark.asyncio

@@ -1386,6 +1386,8 @@ async def _compute_post_compress_usage(store=None, msgs_before: int = -1) -> tup
     并发写入假阴性边界：压缩期间并发新增消息可能使计数不降（溢出 force + 用户活跃期），
     此时返回 False 不重置——活跃期前端 loadStats 显示 stale、真实自愈靠下次 LLM 交互
     更新 _last_prompt_tokens（agent_loop.py:994），见边界记录。
+    纯 update 边界：keep-all + 只更新内容不删消息的压缩计数不变 → 判定未压缩 → 不 reset
+    ——已知接受边界（罕见；估算略高估，不会触发错误压缩）。
     """
     try:
         if store is None:
