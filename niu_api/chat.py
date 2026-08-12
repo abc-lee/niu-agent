@@ -164,16 +164,28 @@ def notify_tool_status_sync(tool_name: str, status: str, summary: str = ""):
         pass
 
 
-def notify_compact_status_sync(status: str, mode: str = "") -> None:
+def notify_compact_status_sync(status: str, mode: str = "", usage: float | None = None,
+                               reset_tokens: bool = False) -> None:
     """广播压缩状态事件到 /api/events/stream。
 
     跨线程安全：可在 executor 工作线程或后台 asyncio task 中调用。
     status: "started" | "done"
     mode: "force" | "sleep" | "auto"（可选，用于日志和前端提示）
+    usage: done 时压缩后重算的 context_usage（0-1）；None 表示未计算（前端 fallback loadStats）
+    reset_tokens: done 时是否清空主 runner 的 _last_prompt_tokens。
+        仅"实际发生压缩"的路径传 True（sleep/force/clear 删除消息后）；
+        skip/abort/error 等未压缩路径传 False——旧真实 token 数仍有效，保留使下次判定准确。
     """
+    if status == "done" and reset_tokens:
+        try:
+            runner = get_runner()  # 无创建副作用（不存在返回 None）；勿用 get_or_create_runner
+            if runner is not None and getattr(runner, "handler", None) is not None:
+                runner.handler._last_prompt_tokens = 0
+        except Exception:
+            pass
     if _main_loop is None:
         return
-    event = {"type": "compact_status", "status": status, "mode": mode}
+    event = {"type": "compact_status", "status": status, "mode": mode, "usage": usage}
     try:
         _main_loop.call_soon_threadsafe(_sync_broadcast, event)
     except RuntimeError:
