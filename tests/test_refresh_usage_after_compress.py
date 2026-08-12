@@ -251,8 +251,8 @@ async def test_post_compress_usage_unchanged(monkeypatch):
 @pytest.mark.asyncio
 async def test_tidy_finally_no_reset_when_skipped(monkeypatch):
     """force+skip 未压缩：finally 调 notify done 不带 usage、不 reset_tokens"""
-    from niu_api import compat as compat_mod
     from niu_api import chat as chat_mod
+    from niu_api import compat as compat_mod
 
     calls = []
     monkeypatch.setattr(chat_mod, "notify_compact_status_sync",
