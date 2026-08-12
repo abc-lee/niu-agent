@@ -191,7 +191,9 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 1. **精加工描述**（先做）：优化关键实体的描述
    - `lightrag_insert_entity(name, entity_type, description="实体描述内容")`
    - **实体描述内容 ≤ 80 字符**（硬性要求）
-   - 描述只写实体本身的含义，不要添加 L0/L1/L2、weight、decay_rate 等元数据标签
+   - 描述只写实体本身的含义，不要添加 weight、decay_rate 等元数据标签
+   - 对于原有描述出现重复项或过于冗长、价值不高的信息，必须进行合并和归纳
+   - 对于旧描述后期已更正为正确的信息，必须将旧的描述删除
 
 2. **时间链**：建立事件间的时序/因果连接
    - `lightrag_insert_relation(src_id, tgt_id, relation="followed_by")` — 时间顺序
