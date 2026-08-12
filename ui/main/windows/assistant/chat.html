@@ -2385,11 +2385,11 @@
       loadStats();
     });
 
-    // 主 Agent ask_user 提问：消息式显示（❓ 前缀 assistant 消息），用户用主输入框回答——
+    // 主 Agent ask_user 提问：消息式显示（assistant 消息），用户用主输入框回答——
     // 回答经 /api/chat/session 见缝插针分支直接注入 set_answer（不走补充队列，无卡片/DOM 输入框）
     if (window.electronAPI && window.electronAPI.onAskUser) {
       window.electronAPI.onAskUser((event) => {
-        addMessage('assistant', '❓ ' + (event.content || ''));
+        addMessage('assistant', (event.content || ''));
       });
     }
 

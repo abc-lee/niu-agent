@@ -66,7 +66,7 @@ def _patch_ask_user_env(monkeypatch, runner, gateway, subagent):
 
 
 def test_ask_user_impl_im_push_finalize_and_question(monkeypatch):
-    """IM 会话：先 send_sync("") 终结当前流式卡片，再 send_sync("❓ 问题") 独立消息。"""
+    """IM 会话：先 send_sync("") 终结当前流式卡片，再 send_sync("问题") 独立消息。"""
     from agent.subagent import _ask_user_impl
 
     runner = _FakeRunner("ch1")
@@ -79,7 +79,7 @@ def test_ask_user_impl_im_push_finalize_and_question(monkeypatch):
     assert answer == "42"
     assert gw.calls == [
         ("ch1", "", False, True),            # 终结当前流式卡片（adapter 用 accumulated 定稿）
-        ("ch1", "❓ 你的问题?", False, True),  # 问题作独立消息即时显示
+        ("ch1", "你的问题?", False, True),  # 问题作独立消息即时显示
     ]
     assert sub.state == "running"  # 等待结束恢复 state
 
