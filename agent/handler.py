@@ -914,9 +914,10 @@ class NiuHandler(BaseHandler):
                     pushed = False
         except ImportError:
             pass
-        # IM 抽象通道：流式推问题（同步线程安全，gateway 为 executor 线程设计）。
+        # IM 抽象通道：终结当前回复卡片 → 问题作独立消息（同步线程安全，gateway 为 executor 线程设计）。
         # 纯 IM 会话无 Electron SSE 订阅者——IM 推送成功也置 pushed，等待继续成立。
-        # notify_stream 延续流式卡片（不 send——send 会终结卡片）；question strip @ 段防 IM 用户看到
+        # 终结用 send_sync 而非 notify_stream：流式问题会被回复卡 accumulated 吞掉且不即时显示；
+        # 独立 SEND 消息即时显示问题（用户立即看到 ❓），且不复写/污染回复卡。
         if not pushed:
             try:
                 from agent.runner import get_runner
@@ -926,10 +927,15 @@ class NiuHandler(BaseHandler):
                 _cid = getattr(_runner, "_current_channel_id", "")
                 _gw = get_im_gateway()
                 if _cid and _gw and _gw.is_connected:
-                    _gw.notify_stream(f"❓ {strip_at_messages(question)}", channel_id=_cid)
+                    # 1) 终结当前回复卡片（content 空 → adapter 用 state.accumulated 终结）→ 记 ask_finalized 标记
+                    #    ask_finalize=True（v11：与 route_out 重复 SEND 区分）
+                    #    pop_reply_to=False：保留群聊回复目标（R2-B-P2 + R8-A-P3：问题 send 也 False，防卡 B 群聊不串联）
+                    _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
+                    # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
+                    _gw.send_sync(_cid, f"❓ {strip_at_messages(question)}", pop_reply_to=False, ask_finalize=True)
                     pushed = True
             except Exception:
-                pushed = False
+                pushed = False   # v10（R7-B-P3）：保留原 try/except 优雅降级（send_sync 异常 → pushed=False 走无法显示分支）
         if not pushed:
             return StepOutcome(
                 "[ask_user 无法显示] 前端事件通道不可用或无订阅者，无法向用户提问。请基于现有信息继续推进，或用 @end 结束。",
