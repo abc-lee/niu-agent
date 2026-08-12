@@ -1357,7 +1357,7 @@ def _ask_user_impl(question: str, unique_name: str) -> str | None:
             # 1) 终结当前回复卡片（content 空 → adapter 用 state.accumulated 终结，记 ask_finalized 标记）
             _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
             # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
-            _gw.send_sync(_cid, f"❓ {question[:2000]}", pop_reply_to=False, ask_finalize=True)
+            _gw.send_sync(_cid, f"{question[:2000]}", pop_reply_to=False, ask_finalize=True)
     except Exception:
         pass
 

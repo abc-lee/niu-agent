@@ -867,7 +867,7 @@ class NiuHandler(BaseHandler):
         """向用户提问并等待回答（主 Agent 专用——暂停而非退出工具循环）。
 
         复用子 Agent 的 UserAskRegistry（key="main-agent"），前端主对话流消息式显示提问
-        （❓ 前缀 assistant 消息），用户用主输入框回答——经 /api/chat/session 见缝插针分支
+        （assistant 消息），用户用主输入框回答——经 /api/chat/session 见缝插针分支
         直接注入 set_answer("main-agent", answer)（不走补充队列）。
         停止按钮：request_stop_all_subagents 补 set_answer("main-agent", TERMINATED_SIGNAL)
         （见 Task 1 Step 8 停止接线）。
@@ -918,7 +918,7 @@ class NiuHandler(BaseHandler):
         #    飞书也要看到问题；_cid 存在即推）。终结当前回复卡片 → 问题作独立消息
         #    （同步线程安全，gateway 为 executor 线程设计）。
         #    终结用 send_sync 而非 notify_stream：流式问题会被回复卡 accumulated 吞掉且不即时显示；
-        #    独立 SEND 消息即时显示问题（用户立即看到 ❓），且不复写/污染回复卡。
+        #    独立 SEND 消息即时显示问题（用户立即看到），且不复写/污染回复卡。
         im_pushed = False
         try:
             from agent.runner import get_runner
@@ -933,7 +933,7 @@ class NiuHandler(BaseHandler):
                 #    pop_reply_to=False：保留群聊回复目标（R2-B-P2 + R8-A-P3：问题 send 也 False，防卡 B 群聊不串联）
                 _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
                 # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
-                _gw.send_sync(_cid, f"❓ {strip_at_messages(question)}", pop_reply_to=False, ask_finalize=True)
+                _gw.send_sync(_cid, f"{strip_at_messages(question)}", pop_reply_to=False, ask_finalize=True)
                 im_pushed = True
         except Exception:
             im_pushed = False   # v10（R7-B-P3）：保留 try/except 优雅降级（send_sync 异常 → 仅 IM 失败，不影响 electron_pushed）

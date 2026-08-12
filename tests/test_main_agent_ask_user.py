@@ -167,7 +167,7 @@ def test_ask_user_im_push(fake_loop, handler, monkeypatch):
     out = handler.do_ask_user({"question": "飞书继续吗？"}, response=None)
     assert out.data == "[user 回答] 42"
     # 终结空消息 + 问题独立消息（pop_reply_to=False, ask_finalize=True）
-    assert [c for _, c, _, _ in gw.sent] == ["", "❓ 飞书继续吗？"]
+    assert [c for _, c, _, _ in gw.sent] == ["", "飞书继续吗？"]
     assert all(pop is False and fin is True for _, _, pop, fin in gw.sent)
     assert not registry.is_waiting("main-agent")
 
@@ -188,7 +188,7 @@ def test_ask_user_dual_channel_both_pushed(fake_loop, handler, monkeypatch):
     assert fake_loop.events and fake_loop.events[0]["type"] == "ask_user"
     assert fake_loop.events[0]["content"] == "双端同步？"
     # IM 也推了（终结 + 问题）——不再被 electron_pushed 门控跳过
-    assert [c for _, c, _, _ in gw.sent] == ["", "❓ 双端同步？"]
+    assert [c for _, c, _, _ in gw.sent] == ["", "双端同步？"]
     assert not registry.is_waiting("main-agent")
 
 
