@@ -523,15 +523,20 @@ preload_face_model()
 #### 修复：飞书流式卡片（打字机失效 + ask_user 问题不即时显示）——IM 抽象层内容形态错配，R1-R11 方案审查 + 6 轮实施审查收敛
 
 - **根因（官方文档定案）**：飞书 CardKit 流式更新文本 API（`PUT card-element/content`）要求**每次传元素累计全文**，平台自动算增量做打字机（新文本以旧文本为前缀 → 续打；前缀不同 → 整体替换直接显示）。本项目 IM 抽象层全链路（runner → gateway.notify_stream → feishu adapter `update_card_element`）传的是 **chunk 增量**——相邻 chunk 前缀不同 → 每次整体替换 → 卡片只显示最后一个 chunk，**打字机永不触发**；只有 route_out SEND 终结（`full_reply` 全文）才显示完整 → 用户"内容在流式里但只有结束才显示全貌、ask_user 问题看不到"。
-- **修复（main 分支 9 commits：86d6c7a2 → ca6473dc）**：
-  1. **adapter 累积全文**：`CardState` 加 `accumulated`（首 chunk raw 种子，后续追加）→ `update_card_element` 每次传 `_truncate_card_text(accumulated)`（字节守卫 CUT_BYTES=29500，官方卡片 ≤30KB error 200860；CJK 3B/字，17900 字符≈53KB 超限）
+- **修复（main 分支 9 commits：86d6c7a2 → ca6473dc）**：  1. **adapter 累积全文**：`CardState` 加 `accumulated`（首 chunk raw 种子，后续追加）→ `update_card_element` 每次传 `_truncate_card_text(accumulated)`（字节守卫 CUT_BYTES=29500，官方卡片 ≤30KB error 200860；CJK 3B/字，17900 字符≈53KB 超限）
   2. **ask_user 终结 + 问题独立消息**：`handler.do_ask_user` 改 `send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)` 终结当前卡片（adapter 用 accumulated 定稿）→ `send_sync(_cid, f"❓ {question}", ask_finalize=True)` 问题作独立消息即时显示；`gateway` 加 `send_sync`（同步线程安全桥，透传 ask_finalize）
   3. **重复防护 `_ask_finalized` + `_ask_finalized_content`**：ask_user 终结记标记 + 拼接记录终结内容；无 state + 标记在 + 非 ask_finalize 的 route_out SEND 仅当 `content == 记录` 才跳过（真重复，防 ask_user 终结后无新 chunk 整轮重发）；return_value 兜底文本（CONTEXT_OVERFLOW/STOPPED/错误）≠ 记录 → 正常 send_markdown（不丢）；标记清除三处（建新卡 mark 门控 pop、route_out 跳过/兜底双清、重连 clear）
   4. **stream_error 进流式**：runner else 分支（普通 str）也 notify_stream（进 accumulated，终结含错误文本不丢）
   5. **uuid 防跨卡冲突**：`update_card_element`/`finalize_card` 的 uuid 带 card_id 前缀（`niu-{card_id[-6:]}-...`，防 ask_user 多卡 seq 重置 uuid 复用触发 200770）
   6. **`_build_final_body` 总预算**：有图多段终结按总 JSON ≤30KB 分摊（实测常数 wrapper 220 / md 55 / img 135 / 后缀 26 / 转义 1.08）
 - **质量链**：方案 v3→v15 十一轮双审查（R1-R11，每轮 2 审查员异角度、**必须先学飞书官方手册**——未学=审查无效；R10+R11 连续两轮零 bug 通过）；实施 9 commits + 6 轮实施审查（Spec 合规 + Quality 2 P2 + 判重生命周期 4 轮修复收敛，最终 APPROVE 92%）；测试：tests/test_feishu_adapter.py 新建（21 用例，sys.path 需加 im-adapters/feishu/src）+ ask_main_agent/gateway 系列 33 passed
-- **排查教训**：① **飞书功能必须先学官方机制再动手**——本工程初版靠半途子 Agent 的猜测闭门造车，v1/v2 全错被回退（`git reset --hard e77fe352`）；官方文档一句话点破："Pass the **full text content**... prefix → typewriter, different prefix → replace"；② **IM 抽象层是"内容形态"约定层**——流式推增量 vs 平台要全文，语义在层间流转必须一致（runner 推 chunk 是增量抽象，adapter 负责翻译成飞书全文契约）；③ 审查 Agent 必须先学官方手册（用户铁律），否则凭印象审查全部无效；④ 方案多轮修订会引入代码块截断/残留/块间不一致——修订后必须验证代码块配对（偶数）+ 引用一致；⑤ 内容判重（accumulated vs full_reply）受 strip_at_messages 逐 chunk 归一化失配影响不可靠——状态判重（标记+记录）更稳
+- **实测反馈修复链（2026-08-12 用户飞书实测，4 commits：f2df81ac → 8ff12548）**：
+  1. **主 Agent ask_user 双通道（ba46b949）**：`do_ask_user` 的 `if not pushed:` 门控导致 **Electron 窗口开 + 飞书 IM 双端场景 IM 推送被跳过**（Electron SSE 推成功即 pushed=True → IM 不推）→ 飞书只看到主 Agent 流式回复"现在用 ask_user 问您"，看不到 ❓ 问题内容。改：`electron_pushed` + `im_pushed` 独立，IM 无条件推（_cid 存在时），`pushed = or`
+  2. **子 Agent @user 提问补 IM 推送（f2df81ac）**：`_ask_user_impl`（subagent.py）只推 Electron（SubagentEventBus）无 IM 推送 → 双端场景子 Agent @user 提问飞书同样收不到。补：`send_sync` 终结 + 问题独立消息（同 do_ask_user 模式）
+  3. **去 ❓ 装饰前缀（2f769b25）**：ask_user 问题消息的 `❓` 红色问号纯展示（回答拦截/判重都不解析），用户认为多余——三处（handler/subagent/chat.html）同步去掉
+  4. **niu.md 同步子 Agent 反问补 ask_user 强制警告（8ff12548）**：主 Agent 提示词原无 ask_user 指导——补"反问需要用户参与时**必须用 ask_user** 转述，否则子 Agent 阻塞 → 被迫结束 → 任务失败"（含 nutritionist 示例）
+  - **验证**：用户飞书实测全链路通过（messages.db + llm_interaction 确认：子 Agent 提问 → ask_user 显示 → 飞书回答 → set_answer 注入 → 主 Agent 转述 → 子 Agent 完成；测试 44 passed）
+- **排查教训**：① **飞书功能必须先学官方机制再动手**——本工程初版靠半途子 Agent 的猜测闭门造车，v1/v2 全错被回退（`git reset --hard e77fe352`）；官方文档一句话点破："Pass the **full text content**... prefix → typewriter, different prefix → replace"；② **IM 抽象层是"内容形态"约定层**——流式推增量 vs 平台要全文，语义在层间流转必须一致（runner 推 chunk 是增量抽象，adapter 负责翻译成飞书全文契约）；③ 审查 Agent 必须先学官方手册（用户铁律），否则凭印象审查全部无效；④ 方案多轮修订会引入代码块截断/残留/块间不一致——修订后必须验证代码块配对（偶数）+ 引用一致；⑤ **双端场景（Electron+飞书同开）是 ask_user IM 推送的盲区**——`if not pushed` 门控假设"纯 IM 会话"，实际 Electron 有订阅者时 IM 被跳过；排查须看 messages.db 会话还原 + 完整读 llm_interaction（勿凭单条日志下结论）；⑥ 内容判重（accumulated vs full_reply）受 strip_at_messages 逐 chunk 归一化失配影响不可靠——状态判重（标记+记录）更稳
 
 ### 2026-08-10
 
