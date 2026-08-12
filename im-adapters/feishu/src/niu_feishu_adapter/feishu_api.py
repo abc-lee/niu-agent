@@ -412,7 +412,13 @@ async def create_card(client, receive_id: str, content: str,
 
 
 async def update_card_element(client, card_id: str, content: str, seq: int):
-    """更新卡片的 markdown 元素"""
+    """更新卡片的 markdown 元素
+
+    返回值：成功返回 None；业务失败返回 resp.code（int，供调用方识别死卡错误码
+    300309/200850/200740/200750 做 pop+重建）；异常路径（网络/超时等）内部 catch 后
+    返回 None（与吞异常语义一致——None 与成功不可区分是刻意设计：均不落入 pop 集、
+    保留 state 下次重试，防瞬时错误误杀活卡）。
+    """
     try:
         from lark_oapi.api.cardkit.v1 import (
             ContentCardElementRequest, ContentCardElementRequestBody,
@@ -425,11 +431,11 @@ async def update_card_element(client, card_id: str, content: str, seq: int):
         resp = await asyncio.to_thread(client.cardkit.v1.card_element.content, req)
         if not resp.success():
             logger.error(f"[FeishuAPI] Update element failed: {resp.code} {resp.msg}")
-            return False
-        return True
+            return resp.code
+        return None
     except Exception as e:
         logger.error(f"[FeishuAPI] Update element error: {e}")
-        return False
+        return None
 
 
 async def finalize_card(client, card_id: str, final_json: str, seq: int):
