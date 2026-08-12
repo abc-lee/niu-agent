@@ -526,6 +526,19 @@ preload_face_model()
 - **实机验证待确认项**（对齐审查标注）：验收 #1 真实飞书 streaming_mode 关闭、验收 #3 下次会话开新卡——需实机确认
 - **排查教训**：①"原来没问题"≠"机制不存在"——同机制改造前后都存在，改造（86d6c7a2）让症状从不可见变可见；先 diff 实证再下结论，勿凭空想象新问题 ② 定时任务回复"死路由"是刻意设计（避免双消息）的副作用——修复必须兼容设计意图（仅终结不投递），不能简单改为投递 ③ watcher 的 future（concurrent.futures.Future）与 chat_queue 的 reply_future（asyncio.Future）是**不同对象**——跨线程共享信号必须同一对象（enqueue_and_wait_with_future 元组返回）④ "照抄可运行"伪代码标准：函数签名（finalize_card 4 参/update_card_element 返回码）、字段名（message_id 非 msg_id）、变量作用域（else 分支无 card_id 绑定）、future 对象链——每个都是实施炸点，必须审查到
 
+#### 修复：压缩后主动重算前端模型使用率（sleep 强制压缩后圆环不刷新 → 下次睡眠重复强制压缩）
+
+- **现象**：压缩前 60% → sleep 强制压缩 → 前端圆环仍显示 60% → 用户唤醒不说话（无 LLM 交互）→ 下次 sleep 判定仍见 60% → 再做一轮强制压缩
+- **根因（实证）**：① sleep/force 压缩（`_tidy_context_impl`）后 `_last_prompt_tokens` **不置 0**（旧真实 token 数残留——只有主 Agent 超阈值路径 agent_loop.py:777/1006 置 0）；② `notify_compact_status_sync` 只广播 `{type,status,mode}`，done 不带 usage；③ 前端 chat.html compact_status 'done' 分支只清 `_compacting` 标志、不刷新使用率；④ 无交互 → real_tokens 永不更新 → 下次 sleep 判定（compat.py:2631-2648 real_tokens 优先）仍见旧高值
+- **修复（8 commits：1a846726→4292cb54）**：
+  1. **compat.py `compute_context_usage_estimate(store, context_window, messages)`**——启动时 get_stats fallback 同源全量估算抽取（返回 `float|None`，失败不伪装 0%）；get_stats fallback 改调（DRY + store/窗口注入免重复读取）
+  2. **chat.py `notify_compact_status_sync`** 加 `usage`/`reset_tokens` 参数——done+reset_tokens 才置 0 旧 `_last_prompt_tokens`（用 `get_runner` 无创建副作用）；SSE 事件带 usage（6 处既有调用零改动，向后兼容）
+  3. **compat.py `_tidy_context_impl` finally**——**先无条件保底 done（无 await——CancelledError 继承 BaseException 不入 except Exception，任务取消（clear_chat wait_for 600s 超时兜底）时保底广播必须在 await 前）**→ 再 `_compute_post_compress_usage`（消息数前后对比确认实际压缩）→ 条件二次 done（usage+reset_tokens）；**skip/abort/error 路径不置 0**（保留旧值 → 70% warningThreshold-0.1 冲突避让设计保持）
+  4. **chat.html**——抽 `renderContextUsage` + **渲染代际守卫**（loadStats 用本请求局部 `fetchTs` vs `_compactUsageTs` 最近压缩 usage 渲染时间戳——主 Agent 目标受守卫丢弃"保底 done 触发、reset 前被服务端处理"的旧值响应；子 Agent 目标直渲）；done 分支 `typeof data.usage === 'number'` → 标记代际 + 渲染，else → `loadStats('')` 固定刷新主 Agent
+- **质量链**：计划 R1-R5 五轮双审查（R4+R5 连续两轮零 bug；R3 抓 CancelledError 丢 done、R4 抓保底 done 竞态旧值覆盖、T4 quality 抓守卫条件反转）→ subagent-driven 实施（T1-T4 每 Task spec+quality 双审）+ 14 新测试全绿 + 全量回归 93 passed（4 个 test_tidy_cursor PROTECTED 断言为 pre-existing 豁免）
+- **已知接受边界**：并发写入假阴性（计数对比不降 → 不置 0，活跃期靠下次 LLM 交互自愈、scheduler 并发受 70% 避让保护）；纯 update 压缩（无删除）不触发重算；/clear 短暂旧值竞态（低频自愈）；chat_queue 溢出 force 三 done 幂等
+- **实机验证待确认**：压缩后圆环立即新值、done 后 2-3 秒不回跳（守卫验证点）、唤醒不交互不重复压缩、/clear 归 0、溢出 force 终态一致
+
 ### 2026-08-11
 
 #### 修复：主 Agent ask_user 工具（暂停问话）+ 轮中 schema 刷新 + @ 通道反馈闭环 + 通配路由存在性检查 + cleanup 注销通知（nutritionist 事故五层修复收尾）
