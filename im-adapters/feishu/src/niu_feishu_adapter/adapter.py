@@ -64,6 +64,11 @@ class FeishuAdapter:
         # v11/v12：channel 处于「ask_user 终结后待新卡/重复 SEND」态——ask_user 专用
         # SEND（ask_finalize=True）记标记；route_out 重复 SEND（无 ask_finalize）被跳过时清标记
         self._ask_finalized: set[str] = set()
+        # ImplReview-P2-2：ask_user 终结时的 final_content 记录——无 state 判重改「内容双重判定」：
+        # 仅当 route_out SEND content == 终结内容（真重复：2b 无新 chunk 整轮已显示）才跳过；
+        # runner return_value 兜底文本（CONTEXT_OVERFLOW/STOPPED/错误）≠ 终结内容 → 正常 send_markdown
+        # （无条件跳过会把兜底吞掉——pre-patch 会发，新回归）
+        self._ask_finalized_content: dict[str, str] = {}
 
     async def run(self):
         self._loop = asyncio.get_running_loop()
@@ -234,6 +239,7 @@ class FeishuAdapter:
                 self._reader, self._writer = await asyncio.open_connection("127.0.0.1", self._gateway_port)
                 self._card_states.clear()  # 重连后清空旧卡片状态，避免用过时状态更新
                 self._ask_finalized.clear()  # R11-B-P3：标记随卡片状态一起失效（防重连后 turn2 无流式 SEND 被误跳）
+                self._ask_finalized_content.clear()  # P2-2：内容记录与标记同步失效
                 logger.info(f"[FeishuAdapter] Connected to Gateway :{self._gateway_port}")
                 return
             except ConnectionRefusedError:
@@ -320,6 +326,7 @@ class FeishuAdapter:
             state.accumulated = content
             # v11（R7-A-P3 + R8 修订）：建新卡清除 ask_finalized 标记（新卡出现，后续 SEND 走 state 分支）
             self._ask_finalized.discard(receive_id)
+            self._ask_finalized_content.pop(receive_id, None)  # P2-2：内容记录同步清除
             self._card_states[receive_id] = state
         else:
             state.accumulated = state.accumulated + content          # 追加增量到累计全文
@@ -345,6 +352,8 @@ class FeishuAdapter:
             # 用 cmd.content 补全（流式中断语义）；否则用 accumulated（卡 A 空串跳过、卡 B 后缀不触发、正常流相等）
             # R9-P2 注记：F3 为 best-effort——startswith 比较受归一化失配影响（chunk 边界空白），
             # 未命中时终结用 accumulated（卡片已显示内容，无功能回归）；命中时补全尾部。
+            # P3-3（ImplReview）：route_out SEND content 经 persist_agent_reply（chat.py L288）无条件
+            # strip_at_messages 已去 @ 段——F3 send_content 无 @，@ 段重注入风险已缓解（无逻辑改动）。
             send_content = cmd.get("content", "")
             if (send_content and send_content.startswith(state.accumulated)
                     and len(state.accumulated) < len(send_content) * 0.9):
@@ -374,16 +383,26 @@ class FeishuAdapter:
                             await send_image_message(self._client, receive_id, img_key)
                     except Exception as e:
                         logger.error(f"[FeishuAdapter] Image fallback failed: {e}")
-            # ask_user 终结（ask_finalize=True）→ 记标记；route_out 正常终结不记
+            # ask_user 终结（ask_finalize=True）→ 记标记 + 记录终结内容；route_out 正常终结不记
             if cmd.get("ask_finalize"):
                 self._ask_finalized.add(receive_id)
+                self._ask_finalized_content[receive_id] = final_content
         else:
             if not content:
                 return
             if receive_id in self._ask_finalized and not cmd.get("ask_finalize"):
-                # route_out 重复 SEND（ask_user 终结后无新卡，整轮已显示）→ 跳过 + 清标记（本轮结束）
+                # route_out 重复 SEND 判重（ImplReview-P2-2：内容双重判定替代无条件跳过）：
+                # 仅当 content == ask_user 终结内容（真重复：2b 无新 chunk，整轮已显示）→ 跳过 + 清标记；
+                # 否则（runner return_value 兜底文本——CONTEXT_OVERFLOW/STOPPED/错误，pre-patch 会
+                # send_markdown，无条件跳过会吞掉用户回答后该看到的兜底）→ 落 send_markdown 正常发。
+                # 注记：2b 场景 content 与终结内容因归一化失配可能 miss → 低频重复（方案已注明接受）。
+                if content == self._ask_finalized_content.get(receive_id):
+                    self._ask_finalized.discard(receive_id)
+                    self._ask_finalized_content.pop(receive_id, None)
+                    return
+                # 非重复（兜底文本）→ 清标记防跨轮残留（R6-P2），落 send_markdown
                 self._ask_finalized.discard(receive_id)
-                return
+                self._ask_finalized_content.pop(receive_id, None)
             # ask_user 问题（ask_finalize=True，无 state）→ 正常 send_markdown，【不清标记】（保留供 route_out 判重）
             if not receive_id:
                 logger.warning("[FeishuAdapter] SEND without receive_id and no card, dropping")
@@ -538,19 +557,30 @@ class FeishuAdapter:
         """构建终结卡片 body：markdown + img 交替。
 
         R4-P1：每段截断改字节守卫 _truncate_card_text（17900 字符对 CJK 超 30KB，error 200860）。
-        R5-P2：多段施加总预算分摊——wrapper ~250B + 每 img ~100B + 各 markdown 段，
+        R5-P2 + ImplReview-P2-1：总预算分摊计元素开销——wrapper ~184B + md 段 ~49B/个 +
+        img ~127B/个（含 img_key）+ json.dumps 转义 ~1.05× + 截断后缀 22B/段，
         最终卡片 JSON 总字节 ≤ 30000（两种 30KB 口径安全）。截断放分段后（防切坏 [PHOTO_SEP] 标记）。
+        注记：转义系数按实际回复内容实测（CJK/英文无转义，仅引号/反斜杠类字符扩展）；
+        病态内容（如 40KB 纯引号/反斜杠，转义 ~2×）可能超限——超限时终结 200860 失败，
+        属极低概率边界（正常回复为散文），接受并注明（best-effort，与官方 30KB 口径一致）。
         """
         TOTAL_BUDGET = 30000
-        WRAPPER_BUDGET = 250
-        IMG_BUDGET_PER = 100
+        WRAPPER_BUDGET = 184      # schema/header/config/body 骨架（ImplReview 实测）
+        MD_ELEMENT_BUDGET = 49    # 每个 markdown 元素键开销（tag/content/element_id）
+        IMG_ELEMENT_BUDGET = 127  # 每个 img 元素键开销（含 img_key/alt 结构）
+        ESCAPE_FACTOR = 1.05      # json.dumps 转义预留（引号/反斜杠等；ensure_ascii=False 下 CJK 不转义）
+        TRUNC_SUFFIX_BYTES = len("\n\n...[内容已截断]".encode('utf-8'))  # 截断时每段 +22B
 
         parts = filtered_content.split("[PHOTO_SEP]")
         md_parts = [p.strip() for p in parts if p.strip()]
+        n_md = len(md_parts)
 
-        # 总预算分摊：text 预算 = 总预算 - wrapper - img 元素；超出按各段字节占比分配
-        text_budget = TOTAL_BUDGET - WRAPPER_BUDGET - IMG_BUDGET_PER * len(pending_images)
+        # 总预算分摊：text 原始字节预算 = (总预算 - 骨架 - 元素开销 - 截断后缀预留×段数) / 转义系数
+        text_budget = (TOTAL_BUDGET - WRAPPER_BUDGET
+                       - MD_ELEMENT_BUDGET * n_md - IMG_ELEMENT_BUDGET * len(pending_images)
+                       - TRUNC_SUFFIX_BYTES * n_md)
         if md_parts and text_budget > 0:
+            text_budget = int(text_budget / ESCAPE_FACTOR)
             total_bytes = sum(len(p.encode('utf-8')) for p in md_parts)
             if total_bytes > text_budget:
                 md_parts = [

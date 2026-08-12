@@ -134,11 +134,43 @@ async def test_on_stream_new_card_discards_ask_finalized(monkeypatch):
     adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
     adapter._push_chat_id = "ch1"
     adapter._ask_finalized.add("ch1")  # 上一轮 ask_user 终结残留标记
+    adapter._ask_finalized_content["ch1"] = "旧终结内容"  # P2-2：内容记录同步清除
     await adapter._on_stream({"type": "STREAM", "channel_id": "ch1", "content": "新回复", "reply_to_id": None})
     assert "ch1" not in adapter._ask_finalized  # 建卡 discard
+    assert "ch1" not in adapter._ask_finalized_content
 
 
 # ── _on_send ask_finalize 状态判重 ──
+
+def test_build_final_body_total_budget():
+    """R5-P2 + ImplReview-P2-1：多段+图 / 单段超长 终结卡片 JSON 总字节 ≤ 30000（元素开销计入预算）"""
+    import json as _json
+    from niu_feishu_adapter.adapter import FeishuAdapter
+    build = FeishuAdapter._build_final_body
+
+    def _wrap(elements):
+        return {
+            "schema": "2.0",
+            "header": {"title": {"content": "Niu助手", "tag": "plain_text"},
+                       "subtitle": {"content": "", "tag": "plain_text"}},
+            "config": {"streaming_mode": False, "update_multi": True},
+            "body": {"elements": elements},
+        }
+
+    # 5 个超长 CJK 段 + 3 张图（最坏多段场景）
+    big = "你" * 15000  # 45KB
+    imgs = [{"img_key": "img_" + "x" * 24, "alt": "照片"},
+            {"img_key": "img_" + "y" * 24, "alt": "照片2"},
+            {"img_key": "img_" + "z" * 24, "alt": "照片3"}]
+    elements = build("[PHOTO_SEP]".join([big] * 5), imgs)
+    total = len(_json.dumps(_wrap(elements), ensure_ascii=False).encode("utf-8"))
+    assert total <= 30000, f"multi-seg card {total}B > 30000B"
+
+    # 单段超长 + 无图
+    elements2 = build("你" * 40000, [])
+    total2 = len(_json.dumps(_wrap(elements2), ensure_ascii=False).encode("utf-8"))
+    assert total2 <= 30000, f"single-seg card {total2}B > 30000B"
+
 
 @pytest.mark.asyncio
 async def test_on_send_ask_finalize_flow(monkeypatch):
@@ -171,13 +203,14 @@ async def test_on_send_ask_finalize_flow(monkeypatch):
     adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
     adapter._push_chat_id = "ch1"
 
-    # ① ask_user 终结：有 state + ask_finalize=True → 终结 accumulated + 记标记
+    # ① ask_user 终结：有 state + ask_finalize=True → 终结 accumulated + 记标记 + 记终结内容
     state = CardState("card1", "ch1")
     state.accumulated = "累积的回复内容"
     adapter._card_states["ch1"] = state
     await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
     assert finalized == [("ch1", "累积的回复内容")]
     assert "ch1" in adapter._ask_finalized
+    assert adapter._ask_finalized_content.get("ch1") == "累积的回复内容"
     assert "ch1" not in adapter._card_states
 
     # ② 问题独立消息：无 state + ask_finalize=True → send_markdown，不清标记
@@ -185,14 +218,56 @@ async def test_on_send_ask_finalize_flow(monkeypatch):
     assert sent == [("md", "ch1", "❓ 请确认")]
     assert "ch1" in adapter._ask_finalized  # 标记保留（供 route_out 判重）
 
-    # ③ route_out 重复 SEND：无 state + 标记在 + 非 ask_finalize → 跳过 + discard
-    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "整轮回复"})
+    # ③ route_out 真重复 SEND（content == 终结内容，2b 场景）：无 state + 标记在 + 非 ask_finalize → 跳过 + discard
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "累积的回复内容"})
     assert sent == [("md", "ch1", "❓ 请确认")]  # 无新增（不重复）
     assert "ch1" not in adapter._ask_finalized  # 标记清除（本轮结束）
+    assert "ch1" not in adapter._ask_finalized_content
 
     # ④ 下一轮无流式 SEND：标记已清 → send_markdown 兜底（不丢）
     await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "兜底内容"})
     assert sent[-1] == ("md", "ch1", "兜底内容")
+
+
+@pytest.mark.asyncio
+async def test_on_send_ask_finalize_fallback_not_skipped(monkeypatch):
+    """ImplReview-P2-2：marker 在 + 非 ask_finalize + content ≠ 终结内容（runner return_value 兜底文本）→ 不跳过，send_markdown 正常发"""
+    from niu_feishu_adapter.adapter import FeishuAdapter, CardState
+    import niu_feishu_adapter.feishu_api as api
+
+    finalized = []
+    sent = []
+
+    async def fake_finalize(self, state, content):
+        finalized.append((state.receive_id, content))
+
+    async def fake_send_markdown(client, target, content):
+        sent.append(("md", target, content))
+        return True
+
+    def fake_extract(content):
+        return []
+
+    monkeypatch.setattr(FeishuAdapter, "_do_finalize", fake_finalize)
+    monkeypatch.setattr(api, "send_markdown", fake_send_markdown)
+    monkeypatch.setattr(api, "extract_md_refs", fake_extract)
+
+    adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
+    adapter._push_chat_id = "ch1"
+
+    # ask_user 终结（记录终结内容 part1）+ 问题消息
+    state = CardState("card1", "ch1")
+    state.accumulated = "part1"
+    adapter._card_states["ch1"] = state
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "❓ 确认?", "ask_finalize": True})
+    assert "ch1" in adapter._ask_finalized
+
+    # 用户回答后 turn 以 return_value 兜底结束（CONTEXT_OVERFLOW/STOPPED/错误）：route_out SEND 带兜底文本 ≠ part1
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "[上下文超限] 已保留部分内容"})
+    # 兜底文本必须正常发出（pre-patch 行为），不得被判重吞掉
+    assert sent[-1] == ("md", "ch1", "[上下文超限] 已保留部分内容")
+    assert "ch1" not in adapter._ask_finalized  # 兜底发送后清标记（防跨轮残留 R6-P2）
 
 
 @pytest.mark.asyncio
