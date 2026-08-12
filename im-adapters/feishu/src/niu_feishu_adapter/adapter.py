@@ -18,7 +18,7 @@ MAX_MSG_SIZE = 10 * 1024 * 1024  # 10MB
 class CardState:
     """单个 channel 的流式卡片状态"""
     __slots__ = ("card_id", "seq", "message_id", "receive_id", "reply_to_id",
-                 "pending_images", "pending_files", "last_content")
+                 "pending_images", "pending_files", "last_content", "accumulated")
 
     def __init__(self, card_id: str, receive_id: str, reply_to_id: str | None = None):
         self.card_id = card_id
@@ -29,6 +29,20 @@ class CardState:
         self.pending_images: list[dict] = []
         self.pending_files: list[dict] = []
         self.last_content = ""
+        self.accumulated = ""  # 累计全文（流式追加，飞书要求每次传累计，前缀一致→打字机续打）
+
+
+def _truncate_card_text(text: str, max_bytes: int = 29500) -> str:
+    """飞书卡片内容字节守卫：官方卡片 JSON ≤30KB（error 200860）、content ≤100000 字符。
+    按 UTF-8 字节截（CJK 3B/字——17900 字×3≈53KB 超 30KB）。create/update/finalize 共用。
+    默认 CUT_BYTES=29500——29500+22 后缀+~250 wrapper≈29772，十进制 30KB(30000) 与
+    1024 口径(30720) 都安全（官方未定义 KB 单位，猜错代价=丢回复）。
+    max_bytes：多段总预算分摊时传按占比计算的段预算（见 _build_final_body）。"""
+    SUFFIX = "\n\n...[内容已截断]"
+    if len(text.encode('utf-8')) <= max_bytes:
+        return text
+    cut = text.encode('utf-8')[:max_bytes].decode('utf-8', errors='ignore')
+    return cut + SUFFIX
 
 
 class FeishuAdapter:
@@ -47,6 +61,9 @@ class FeishuAdapter:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client = None
         self._card_states: dict[str, CardState] = {}
+        # v11/v12：channel 处于「ask_user 终结后待新卡/重复 SEND」态——ask_user 专用
+        # SEND（ask_finalize=True）记标记；route_out 重复 SEND（无 ask_finalize）被跳过时清标记
+        self._ask_finalized: set[str] = set()
 
     async def run(self):
         self._loop = asyncio.get_running_loop()
@@ -216,6 +233,7 @@ class FeishuAdapter:
             try:
                 self._reader, self._writer = await asyncio.open_connection("127.0.0.1", self._gateway_port)
                 self._card_states.clear()  # 重连后清空旧卡片状态，避免用过时状态更新
+                self._ask_finalized.clear()  # R11-B-P3：标记随卡片状态一起失效（防重连后 turn2 无流式 SEND 被误跳）
                 logger.info(f"[FeishuAdapter] Connected to Gateway :{self._gateway_port}")
                 return
             except ConnectionRefusedError:
@@ -266,6 +284,10 @@ class FeishuAdapter:
         1. STREAM 发的是增量 chunk，图片引用可能不完整
         2. 流式阶段上传图片后 [PHOTO_SEP] 被删掉，图片信息丢失
         3. 同一张图片被上传两次（STREAM + SEND），浪费且 img_key 不一致
+
+        飞书契约：每次 PUT card-element/content 传「元素累计全文」（非增量），
+        平台自动算增量做打字机——前缀一致→续打，前缀不同→整体替换。
+        因此这里把每个 chunk 追加到 state.accumulated，update/create 都用累计全文。
         """
         receive_id = cmd.get("channel_id", "") or self._push_chat_id
         content = cmd.get("content", "")
@@ -282,40 +304,58 @@ class FeishuAdapter:
             state.seq += 1
             return
 
-        # 有内容 = 更新卡片显示（纯文本，图片引用原样显示，终结时再处理）
-        display = content
-        if len(display) > 18000:
-            display = display[:17900] + "\n\n...[内容已截断]"
-
+        # 累积全文（飞书要求每次传累计，前缀一致→打字机续打）
         if not state:
-            card_id, msg_id = await create_card(self._client, receive_id, display, reply_to_id)
+            # 建卡：内容=首 chunk 的字节截断版（超大首 chunk 防 30KB 建卡失败 200860）
+            init_display = _truncate_card_text(content)
+            card_id, msg_id = await create_card(self._client, receive_id, init_display, reply_to_id)
             if not card_id:
                 logger.error(f"[FeishuAdapter] Card creation failed for {receive_id}")
                 return
             state = CardState(card_id, receive_id, reply_to_id)
             state.message_id = msg_id
             state.seq = 1
+            # R3-P3：accumulated 存「原始首 chunk」作种子（非截断 init_display）——
+            # 截断只作用于显示值，raw 全文留给后续累积与 finalize（防首 chunk 尾部永久丢失）
+            state.accumulated = content
+            # v11（R7-A-P3 + R8 修订）：建新卡清除 ask_finalized 标记（新卡出现，后续 SEND 走 state 分支）
+            self._ask_finalized.discard(receive_id)
             self._card_states[receive_id] = state
         else:
+            state.accumulated = state.accumulated + content          # 追加增量到累计全文
             state.seq += 1
+            # 字节守卫（官方卡片 JSON ≤30KB error 200860 / content ≤100000 字符）：
+            display = _truncate_card_text(state.accumulated)
             await update_card_element(self._client, state.card_id, display, state.seq)
-
-        state.last_content = content
+        state.last_content = state.accumulated
 
     async def _on_send(self, cmd: dict):
         """SEND = 最终回复 → 终结卡片（无卡片时发 Markdown 文本）
 
         终结失败不重发：超时可能已成功（重发=重复），业务错误重试也失败。
+        v11 权威实现：F3 三重条件（best-effort）+ try/except + 媒体回退保留
+        （pending_files/failed_images——_do_finalize 只 populate 不发，此处是唯一投递路径）
+        + ask_finalized 状态判重（ask_user 终结后 route_out 重复 SEND 跳过）。
         """
         receive_id = cmd.get("channel_id", "") or self._push_chat_id
         content = cmd.get("content", "")
         state = self._card_states.pop(receive_id, None)
         if state:
+            # F3 三重条件（R5-P1）：cmd.content 非空 且 startswith(accumulated) 且 len 比 <0.9 →
+            # 用 cmd.content 补全（流式中断语义）；否则用 accumulated（卡 A 空串跳过、卡 B 后缀不触发、正常流相等）
+            # R9-P2 注记：F3 为 best-effort——startswith 比较受归一化失配影响（chunk 边界空白），
+            # 未命中时终结用 accumulated（卡片已显示内容，无功能回归）；命中时补全尾部。
+            send_content = cmd.get("content", "")
+            if (send_content and send_content.startswith(state.accumulated)
+                    and len(state.accumulated) < len(send_content) * 0.9):
+                final_content = send_content
+            else:
+                final_content = state.accumulated
             try:
-                await self._do_finalize(state, content)
+                await self._do_finalize(state, final_content)
             except Exception as e:
                 logger.error(f"[FeishuAdapter] Finalize failed for {receive_id}: {e}")
-            # 终结后发送独立文件消息（文件不在卡片中）
+            # 【媒体回退保留——R8-P1/A+B】终结后发送独立文件消息（文件不在卡片中）
             if state.pending_files:
                 from niu_feishu_adapter.feishu_api import send_file_message
                 for file_info in state.pending_files:
@@ -334,7 +374,17 @@ class FeishuAdapter:
                             await send_image_message(self._client, receive_id, img_key)
                     except Exception as e:
                         logger.error(f"[FeishuAdapter] Image fallback failed: {e}")
+            # ask_user 终结（ask_finalize=True）→ 记标记；route_out 正常终结不记
+            if cmd.get("ask_finalize"):
+                self._ask_finalized.add(receive_id)
         else:
+            if not content:
+                return
+            if receive_id in self._ask_finalized and not cmd.get("ask_finalize"):
+                # route_out 重复 SEND（ask_user 终结后无新卡，整轮已显示）→ 跳过 + 清标记（本轮结束）
+                self._ask_finalized.discard(receive_id)
+                return
+            # ask_user 问题（ask_finalize=True，无 state）→ 正常 send_markdown，【不清标记】（保留供 route_out 判重）
             if not receive_id:
                 logger.warning("[FeishuAdapter] SEND without receive_id and no card, dropping")
                 return
@@ -417,9 +467,7 @@ class FeishuAdapter:
         if success_images and "[PHOTO_SEP]" in filtered:
             elements = self._build_final_body(filtered, success_images)
         else:
-            display = filtered.replace("[PHOTO_SEP]", "")
-            if len(display) > 18000:
-                display = display[:17900] + "\n\n...[内容已截断]"
+            display = _truncate_card_text(filtered.replace("[PHOTO_SEP]", ""))
             elements = [{"tag": "markdown", "content": display, "element_id": "md1"}]
 
         final_card = {
@@ -487,16 +535,37 @@ class FeishuAdapter:
 
     @staticmethod
     def _build_final_body(filtered_content: str, pending_images: list) -> list:
-        """构建终结卡片 body：markdown + img 交替"""
-        elements = []
+        """构建终结卡片 body：markdown + img 交替。
+
+        R4-P1：每段截断改字节守卫 _truncate_card_text（17900 字符对 CJK 超 30KB，error 200860）。
+        R5-P2：多段施加总预算分摊——wrapper ~250B + 每 img ~100B + 各 markdown 段，
+        最终卡片 JSON 总字节 ≤ 30000（两种 30KB 口径安全）。截断放分段后（防切坏 [PHOTO_SEP] 标记）。
+        """
+        TOTAL_BUDGET = 30000
+        WRAPPER_BUDGET = 250
+        IMG_BUDGET_PER = 100
+
         parts = filtered_content.split("[PHOTO_SEP]")
+        md_parts = [p.strip() for p in parts if p.strip()]
+
+        # 总预算分摊：text 预算 = 总预算 - wrapper - img 元素；超出按各段字节占比分配
+        text_budget = TOTAL_BUDGET - WRAPPER_BUDGET - IMG_BUDGET_PER * len(pending_images)
+        if md_parts and text_budget > 0:
+            total_bytes = sum(len(p.encode('utf-8')) for p in md_parts)
+            if total_bytes > text_budget:
+                md_parts = [
+                    _truncate_card_text(p, max_bytes=max(1, int(len(p.encode('utf-8')) / total_bytes * text_budget)))
+                    for p in md_parts
+                ]
+
+        elements = []
         md_idx, img_idx = 1, 0
+        md_iter = iter(md_parts)
         for i, part in enumerate(parts):
             part = part.strip()
             if part:
-                if len(part) > 18000:
-                    part = part[:17900] + "\n\n...[内容已截断]"
-                elements.append({"tag": "markdown", "content": part, "element_id": f"md{md_idx}"})
+                md_content = next(md_iter, part)
+                elements.append({"tag": "markdown", "content": md_content, "element_id": f"md{md_idx}"})
                 md_idx += 1
             if i < len(pending_images):
                 info = pending_images[i]

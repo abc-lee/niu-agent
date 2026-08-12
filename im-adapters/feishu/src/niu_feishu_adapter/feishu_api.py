@@ -420,7 +420,7 @@ async def update_card_element(client, card_id: str, content: str, seq: int):
         req = ContentCardElementRequest.builder() \
             .card_id(card_id).element_id("md1") \
             .request_body(ContentCardElementRequestBody.builder()
-                .content(content).sequence(seq).uuid(f"niu-stream-{seq}").build()) \
+                .content(content).sequence(seq).uuid(f"niu-{card_id[-6:]}-stream-{seq}").build()) \
             .build()
         resp = await asyncio.to_thread(client.cardkit.v1.card_element.content, req)
         if not resp.success():
@@ -445,7 +445,7 @@ async def finalize_card(client, card_id: str, final_json: str, seq: int):
             .card_id(card_id) \
             .request_body(SettingsCardRequestBody.builder()
                 .settings(settings_json).sequence(seq)
-                .uuid("niu-finalize-settings").build()) \
+                .uuid(f"niu-{card_id[-6:]}-finalize-settings").build()) \
             .build()
         settings_resp = await asyncio.to_thread(client.cardkit.v1.card.settings, settings_req)
         if not settings_resp.success():
@@ -458,7 +458,7 @@ async def finalize_card(client, card_id: str, final_json: str, seq: int):
             .card_id(card_id) \
             .request_body(UpdateCardRequestBody.builder()
                 .card(Card.builder().type("card_json").data(final_json).build())
-                .sequence(new_seq).uuid("niu-finalize-update").build()) \
+                .sequence(new_seq).uuid(f"niu-{card_id[-6:]}-finalize-update").build()) \
             .build()
         resp = await asyncio.to_thread(client.cardkit.v1.card.update, update_req)
         if not resp.success():
