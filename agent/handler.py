@@ -934,7 +934,25 @@ class NiuHandler(BaseHandler):
                 _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
                 # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
                 _gw.send_sync(_cid, f"{strip_at_messages(question)}", pop_reply_to=False, ask_finalize=True)
-                im_pushed = True
+                im_pushed = True  # 必须置位——无 Electron 订阅者时保证 pushed=True → 注册 future（漏置 = 提前 return + 回答无法注入）
+            elif _gw and _gw.is_connected and getattr(_runner, "_request_source", "") in ("scheduler", "ha-watcher"):
+                # elif 守卫含 _gw and _gw.is_connected（防 _gw=None 时 push_target AttributeError）
+                # 注："ha-watcher" 是死值——_process_single 归一化把 scheduler/ha-watcher 都映射为
+                #   "scheduler"，_request_source 永不等于 "ha-watcher"——保留元组写法无害（闸门功能正确）
+                # 兜底：定时任务场景无 IM 继承 → 推最近会话 + 临时设 channel（回答可注入）
+                # target 仅依赖 push_target——get_im_channel() 回退在 elif 内逻辑不可达
+                #   （elif 成立 ⇔ _current_channel_id 空 ⇔ _im_channel_id 空，chat() 继承逻辑）——不写防御性死代码
+                target = _gw.push_target  # 公开线程安全属性（带 _lock）
+                if target:
+                    # 设置 channel 使 gateway._on_msg 注入守卫（_ask_cid and channel_id==_ask_cid）命中
+                    _runner._current_channel_id = target
+                    _runner._im_channel_id = target  # 同步——chat_queue 的 get_im_channel() 终结目标与建卡渠道一致
+                    _gw.send_sync(target, "", pop_reply_to=False, ask_finalize=True)
+                    _gw.send_sync(target, f"{strip_at_messages(question)}", pop_reply_to=False, ask_finalize=True)
+                    im_pushed = True  # 必须置位——无 Electron 时保证 pushed=True → 注册 future
+                    # chat() 末尾仍会重置 _current_channel_id——不需手动恢复
+                else:
+                    logger.warning("[AskUser] IM fallback skipped: no push_target and no im_channel for scheduler ask")  # 可观测性
         except Exception:
             im_pushed = False   # v10（R7-B-P3）：保留 try/except 优雅降级（send_sync 异常 → 仅 IM 失败，不影响 electron_pushed）
         # 双通道任一成功即视为可显示——都失败才走无法显示分支（去掉 if not pushed 门控：
