@@ -139,6 +139,7 @@ class _FakeGateway:
         self.sent = []  # (channel_id, content, pop_reply_to, ask_finalize)
         self.is_connected = connected
         self._raise_on_send = raise_on_send
+        self.push_target = None  # 2.3 兜底目标（scheduler/ha-watcher 来源 _cid 空时推最近会话）
 
     def notify_stream(self, content, channel_id="", is_final=False):
         self.streamed.append((content, channel_id, is_final))
@@ -217,6 +218,74 @@ def test_ask_user_im_unavailable_when_no_channel(handler, monkeypatch):
     monkeypatch.setattr("agent.runner.get_runner", lambda: runner)
     out = handler.do_ask_user({"question": "无通道？"}, response=None)
     assert "[ask_user 无法显示]" in out.data
+    assert not registry.is_waiting("main-agent")
+
+
+class _FakeRunnerScheduler:
+    """定时任务来源 runner：无 IM 继承（_current_channel_id/_im_channel_id 空）+ _request_source 闸门字段"""
+    _current_channel_id = ""
+    _im_channel_id = ""
+    _request_source = "scheduler"
+
+
+def test_ask_user_scheduler_fallback_push_target(handler, monkeypatch):
+    """2.3 兜底：scheduler 来源 + _cid 空 → 推 push_target + 临时设 channel（注入守卫命中）→ 回答可注入。"""
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    monkeypatch.setattr("niu_api.chat._event_subscribers", [])  # SSE 无订阅者
+    monkeypatch.setattr("niu_api.chat._main_loop", None)
+    gw = _FakeGateway()
+    gw.push_target = "oc_target_1"
+    runner = _FakeRunnerScheduler()
+    monkeypatch.setattr("agent.runner.get_runner", lambda: runner)
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+    _set_answer_after(registry)
+    out = handler.do_ask_user({"question": "定时任务确认？"}, response=None)
+    # im_pushed=True → 注册 future → 回答注入成功
+    assert out.data == "[user 回答] 42"
+    # 终结 + 问题独立消息都推到 push_target
+    assert [(cid, c) for cid, c, _, _ in gw.sent] == [("oc_target_1", ""), ("oc_target_1", "定时任务确认？")]
+    assert all(pop is False and fin is True for _, _, pop, fin in gw.sent)
+    # 临时设 channel（gateway._on_msg 注入守卫 _ask_cid and channel_id==_ask_cid 命中条件）
+    assert runner._current_channel_id == "oc_target_1"
+    assert runner._im_channel_id == "oc_target_1"
+    assert not registry.is_waiting("main-agent")
+
+
+def test_ask_user_source_gate_blocks_user_fallback(handler, monkeypatch):
+    """2.3 来源闸门：source=user（Electron 会话）_cid 空时永不触发兜底——Electron 零影响。"""
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    monkeypatch.setattr("niu_api.chat._event_subscribers", [])
+    monkeypatch.setattr("niu_api.chat._main_loop", None)
+    gw = _FakeGateway()
+    gw.push_target = "oc_target_1"  # 即使有 push_target 也不兜底
+    runner = _FakeRunnerScheduler()
+    runner._request_source = "user"  # Electron 用户消息来源
+    monkeypatch.setattr("agent.runner.get_runner", lambda: runner)
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+    out = handler.do_ask_user({"question": "用户来源？"}, response=None)
+    assert "[ask_user 无法显示]" in out.data
+    assert gw.sent == []  # 未推 IM
+    assert runner._current_channel_id == ""  # 未临时设 channel
+    assert not registry.is_waiting("main-agent")
+
+
+def test_ask_user_scheduler_fallback_no_target(handler, monkeypatch):
+    """2.3 兜底目标缺失（push_target=None，全新部署/从未私聊）→ warning + 无法显示（不阻塞）。"""
+    registry = get_user_ask_registry()
+    monkeypatch.setattr("agent.ask_user.get_user_ask_registry", lambda: registry)
+    monkeypatch.setattr("niu_api.chat._event_subscribers", [])
+    monkeypatch.setattr("niu_api.chat._main_loop", None)
+    gw = _FakeGateway()
+    gw.push_target = None
+    runner = _FakeRunnerScheduler()
+    monkeypatch.setattr("agent.runner.get_runner", lambda: runner)
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+    out = handler.do_ask_user({"question": "无目标？"}, response=None)
+    assert "[ask_user 无法显示]" in out.data
+    assert gw.sent == []
+    assert runner._current_channel_id == ""  # 未设 channel
     assert not registry.is_waiting("main-agent")
 
 
