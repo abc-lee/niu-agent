@@ -325,10 +325,12 @@ class FeishuAdapter:
             # 截断只作用于显示值，raw 全文留给后续累积与 finalize（防首 chunk 尾部永久丢失）
             state.accumulated = content
             # v11（R7-A-P3 + R8 修订）：建新卡清除 ask_finalized 标记（新卡出现，后续 SEND 走 state 分支）。
-            # ImplReviewR3-P1：**不清内容记录**——2c 多轮 ask_user 需跨卡拼接终结内容
-            # （round1 记录 'a1' → 建卡 B 后 round2 finalize 拼接 'a1'+'a2'='a1a2' → route_out 整轮判重 ✓；
-            # 建卡时 pop 记录 → round2 只记 'a2' → 判重 miss 整轮重复）。记录由 round-end
-            # route_out 跳过/兜底时双清 + 重连 clear 收敛，建卡处不必要且有害。
+            # ImplReviewR3-P1：内容记录跨卡保留供 2c 多轮拼接（round1 'a1' → 建卡 B → round2 拼接 'a1a2'）。
+            # ImplReviewR4-P1（mark 门控 pop）：标记在 = 同回合延续（2c）→ 保留记录；标记不在 = 新回合
+            # → pop 跨轮残留（turn1 state 分支终结不清记录，turn2 建卡时清，防 'a1'+'b1' 误拼接判重 miss）。
+            # 残留接受边界：stop-before-route_out 留 stale 标记 → 后续建卡仍保留记录（低频，接受并注明）。
+            if receive_id not in self._ask_finalized:
+                self._ask_finalized_content.pop(receive_id, None)
             self._ask_finalized.discard(receive_id)
             self._card_states[receive_id] = state
         else:
