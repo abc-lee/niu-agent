@@ -1349,6 +1349,33 @@ def _estimate_total_tokens(messages) -> int:
         return count_tokens_for_text(total_content)
 
 
+async def compute_context_usage_estimate(store=None, context_window: int | None = None, messages=None) -> float | None:
+    """全量估算当前上下文使用率（0-1）。
+
+    与 get_stats 的 fallback 分支同源：读全量 messages.db → 本地 tokenizer 估算 →
+    ÷ context_window。压缩完成后复用此函数重算并推送前端（旧 _last_prompt_tokens 失效）。
+    返回 None 表示无法计算（异常或窗口配置无效），调用方应回退（前端走 loadStats 兜底），
+    不要返回 0.0 伪装"空库"——0% 会误导前端渲染虚假低值。
+    store/context_window/messages 可选注入：get_stats 已持有 store/窗口则传入避免重复读取；
+    _compute_post_compress_usage 已取压缩后消息列表则传 messages 避免全表二次扫描。
+    """
+    try:
+        if store is None:
+            store = await get_message_store()
+        if context_window is None:
+            context_window = _read_context_window_tokens()
+        if context_window <= 0:
+            return None
+        if messages is None:
+            all_msgs = await store.get_messages()
+        else:
+            all_msgs = messages
+        total_tokens = _estimate_total_tokens(all_msgs)
+        return total_tokens / context_window
+    except Exception:
+        return None
+
+
 _tidy_lock = asyncio.Lock()
 
 
@@ -2120,9 +2147,7 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
             context_usage = real_tokens / context_window if context_window > 0 else 0.0
         elif not agent:
             # 主 Agent 无真实 tokens 时 fallback 估算全库消息；子 Agent 无此概念，直接 0
-            all_msgs = await store.get_messages()
-            total_tokens = _estimate_total_tokens(all_msgs)
-            context_usage = total_tokens / context_window if context_window > 0 else 0.0
+            context_usage = (await compute_context_usage_estimate(store=store, context_window=context_window)) or 0.0
     except Exception:
         context_usage = 0.0
 
