@@ -1344,6 +1344,23 @@ def _ask_user_impl(question: str, unique_name: str) -> str | None:
     except ImportError:
         logger.warning('[ask_user] SubagentEventBus not available, question event not pushed to frontend')
 
+    # IM 抽象通道：终结当前流式卡片 + 问题独立消息（与 do_ask_user 一致——IM 用户即时看到问题）。
+    # 仅 IM 会话（_current_channel_id 有值）触发；Electron 会话 _cid 空则跳过，不影响原路径。
+    # 终结用 send_sync 而非 notify_stream：流式问题会被回复卡 accumulated 吞掉且不即时显示。
+    try:
+        from agent.runner import get_runner
+        from niu_api.channel.gateway import get_im_gateway
+        _runner = get_runner()
+        _cid = getattr(_runner, "_current_channel_id", "")
+        _gw = get_im_gateway()
+        if _cid and _gw and _gw.is_connected:
+            # 1) 终结当前回复卡片（content 空 → adapter 用 state.accumulated 终结，记 ask_finalized 标记）
+            _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
+            # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
+            _gw.send_sync(_cid, f"❓ {question[:2000]}", pop_reply_to=False, ask_finalize=True)
+    except Exception:
+        pass
+
     # 设 state
     instance.state = 'waiting_for_user'
 
