@@ -352,8 +352,9 @@ class FeishuAdapter:
             # 用 cmd.content 补全（流式中断语义）；否则用 accumulated（卡 A 空串跳过、卡 B 后缀不触发、正常流相等）
             # R9-P2 注记：F3 为 best-effort——startswith 比较受归一化失配影响（chunk 边界空白），
             # 未命中时终结用 accumulated（卡片已显示内容，无功能回归）；命中时补全尾部。
-            # P3-3（ImplReview）：route_out SEND content 经 persist_agent_reply（chat.py L288）无条件
-            # strip_at_messages 已去 @ 段——F3 send_content 无 @，@ 段重注入风险已缓解（无逻辑改动）。
+            # P3-3（ImplReviewFix）：route_out SEND content 正常路径已去 @ 段（persist_agent_reply
+            # strip_at_messages；rv=None 兜底且 @ 未匹配时可能保留字面 @，非子 Agent 指令，无重注入）——
+            # F3 send_content 无子 Agent @ 指令，重注入风险已缓解（无逻辑改动）。
             send_content = cmd.get("content", "")
             if (send_content and send_content.startswith(state.accumulated)
                     and len(state.accumulated) < len(send_content) * 0.9):
@@ -383,10 +384,12 @@ class FeishuAdapter:
                             await send_image_message(self._client, receive_id, img_key)
                     except Exception as e:
                         logger.error(f"[FeishuAdapter] Image fallback failed: {e}")
-            # ask_user 终结（ask_finalize=True）→ 记标记 + 记录终结内容；route_out 正常终结不记
+            # ask_user 终结（ask_finalize=True）→ 记标记 + 拼接记录终结内容（ImplReviewFix-P2-2：
+            # 多轮 ask_user 各轮终结内容拼接——2c 场景 route_out 整轮 a1+a2 与拼接记录相等才判重跳过；
+            # 单轮 dict 覆盖会丢 a1 → 判重 miss 整轮重复）
             if cmd.get("ask_finalize"):
                 self._ask_finalized.add(receive_id)
-                self._ask_finalized_content[receive_id] = final_content
+                self._ask_finalized_content[receive_id] = (self._ask_finalized_content.get(receive_id, "") + final_content)
         else:
             if not content:
                 return
@@ -557,19 +560,19 @@ class FeishuAdapter:
         """构建终结卡片 body：markdown + img 交替。
 
         R4-P1：每段截断改字节守卫 _truncate_card_text（17900 字符对 CJK 超 30KB，error 200860）。
-        R5-P2 + ImplReview-P2-1：总预算分摊计元素开销——wrapper ~184B + md 段 ~49B/个 +
-        img ~127B/个（含 img_key）+ json.dumps 转义 ~1.05× + 截断后缀 22B/段，
-        最终卡片 JSON 总字节 ≤ 30000（两种 30KB 口径安全）。截断放分段后（防切坏 [PHOTO_SEP] 标记）。
-        注记：转义系数按实际回复内容实测（CJK/英文无转义，仅引号/反斜杠类字符扩展）；
-        病态内容（如 40KB 纯引号/反斜杠，转义 ~2×）可能超限——超限时终结 200860 失败，
-        属极低概率边界（正常回复为散文），接受并注明（best-effort，与官方 30KB 口径一致）。
+        R5-P2 + ImplReview-P2-1：总预算分摊计元素开销——wrapper 220B（含 subtitle）/ md 元素
+        55B/个 / img 元素 135B/个（含 img_key）/ 截断后缀 26B/段（转义后）/ json.dumps 转义
+        1.08×（实测：LLM markdown 转义主导源 \n→\\n 2×，~4.6% 扩展；CJK/英文不转义）。
+        最终卡片 JSON 总字节 ≤ 30000（escape ≤8% 时两种 30KB 口径安全）。截断放分段后
+        （防切坏 [PHOTO_SEP] 标记）。注记：病态内容（如 40KB 纯引号/反斜杠，转义 ~2×）
+        可能超限——超限时终结 200860 失败，属极低概率边界（正常回复为散文），接受并注明。
         """
         TOTAL_BUDGET = 30000
-        WRAPPER_BUDGET = 184      # schema/header/config/body 骨架（ImplReview 实测）
-        MD_ELEMENT_BUDGET = 49    # 每个 markdown 元素键开销（tag/content/element_id）
-        IMG_ELEMENT_BUDGET = 127  # 每个 img 元素键开销（含 img_key/alt 结构）
-        ESCAPE_FACTOR = 1.05      # json.dumps 转义预留（引号/反斜杠等；ensure_ascii=False 下 CJK 不转义）
-        TRUNC_SUFFIX_BYTES = len("\n\n...[内容已截断]".encode('utf-8'))  # 截断时每段 +22B
+        WRAPPER_BUDGET = 220      # schema/header(含 subtitle)/config/body 骨架（ImplReviewFix 实测）
+        MD_ELEMENT_BUDGET = 55    # 每个 markdown 元素键开销（tag/content/element_id）
+        IMG_ELEMENT_BUDGET = 135  # 每个 img 元素键开销（含 img_key/alt 结构）
+        ESCAPE_FACTOR = 1.08      # json.dumps 转义预留（主导源 \n→\\n 2×，LLM markdown ~4.6% 扩展）
+        TRUNC_SUFFIX_BYTES = 26   # 截断后缀 "\n\n...[内容已截断]" 转义后字节（每段 +26B）
 
         parts = filtered_content.split("[PHOTO_SEP]")
         md_parts = [p.strip() for p in parts if p.strip()]

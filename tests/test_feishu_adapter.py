@@ -271,6 +271,59 @@ async def test_on_send_ask_finalize_fallback_not_skipped(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_on_send_ask_finalize_multi_round_concat(monkeypatch):
+    """ImplReviewFix-P2-2：多轮 ask_user（2c）——终结内容拼接记录，route_out 整轮 a1+a2 才跳过；兜底 ≠ 拼接 → 正常发"""
+    from niu_feishu_adapter.adapter import FeishuAdapter, CardState
+    import niu_feishu_adapter.feishu_api as api
+
+    finalized = []
+    sent = []
+
+    async def fake_finalize(self, state, content):
+        finalized.append((state.receive_id, content))
+
+    async def fake_send_markdown(client, target, content):
+        sent.append(("md", target, content))
+        return True
+
+    def fake_extract(content):
+        return []
+
+    monkeypatch.setattr(FeishuAdapter, "_do_finalize", fake_finalize)
+    monkeypatch.setattr(api, "send_markdown", fake_send_markdown)
+    monkeypatch.setattr(api, "extract_md_refs", fake_extract)
+
+    adapter = FeishuAdapter(gateway_port=0, app_id="a", app_secret="s")
+    adapter._push_chat_id = "ch1"
+
+    # 轮 1：ask_user 终结卡 A（a1）+ 问题消息
+    s1 = CardState("card1", "ch1")
+    s1.accumulated = "a1"
+    adapter._card_states["ch1"] = s1
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "❓ 第一问?", "ask_finalize": True})
+
+    # 轮 2：ask_user 终结卡 B（a2）+ 问题消息（记录拼接 a1+a2）
+    s2 = CardState("card2", "ch1")
+    s2.accumulated = "a2"
+    adapter._card_states["ch1"] = s2
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "", "ask_finalize": True})
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "❓ 第二问?", "ask_finalize": True})
+
+    assert adapter._ask_finalized_content.get("ch1") == "a1a2"  # 拼接记录
+
+    # route_out 整轮 a1+a2（无 state + 标记在 + 非 ask_finalize）→ 与拼接相等 → 跳过 + 双清
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "a1a2"})
+    assert sent == [("md", "ch1", "❓ 第一问?"), ("md", "ch1", "❓ 第二问?")]  # 无新增（不重复）
+    assert "ch1" not in adapter._ask_finalized
+    assert "ch1" not in adapter._ask_finalized_content
+
+    # 非重复兜底（≠ 拼接）→ 正常发
+    await adapter._on_send({"type": "SEND", "channel_id": "ch1", "content": "[停止] 任务中断"})
+    assert sent[-1] == ("md", "ch1", "[停止] 任务中断")
+
+
+@pytest.mark.asyncio
 async def test_on_send_f3_prefix_recovery(monkeypatch):
     """F3（best-effort）：state 终结时 cmd.content 以 accumulated 为前缀且明显更长 → 用 cmd.content 补全（流式中断）"""
     from niu_feishu_adapter.adapter import FeishuAdapter, CardState
