@@ -549,6 +549,13 @@ preload_face_model()
 - **已知边界**：原始形态不迁移（把 tool_calls 移到上一条有内容消息的方案因多消息一致性风险高不做——YAGNI，空壳清理已解决残留问题）；非压缩路径（模型空响应等）产生的空壳需等下次压缩清理
 - **质量链**：计划 R1-R4 四轮双审查（R1/R2 REJECT 含 WAL 备份/模式一缺口/根因归因/mock 形态等；R3+R4 连续两轮双 APPROVE）；实施 subagent-driven 每 Task spec/quality 双审；commits 354581f6（Task 1）+ Task 2 纯 DB 无 commit + 本条目
 
+#### 修复：主/子 Agent 提示词 Current Time 每轮实时（启动固定 → 每轮 LLM 前刷新）
+
+- **问题**：主 Agent 提示词 Current Time 永远不变——`NiuRunner.__init__` 里 `datetime.now()` 只算一次存 `self.dynamic_system_prefix`（注释明文"启动时固定，不每轮更新"），`_assemble_system_message`（每轮 LLM 前由 `_on_before_llm` 调用）复用固定值——所有轮次 Current Time = 进程启动时刻；子 Agent 的 `system_message` 在 `call_subagent` 启动时构建一次（build_subagent_system_segments 实时取启动时刻），长任务（context-manager 压缩 20+ 轮、dream-evolver 跨午夜）会话内时间漂移——dream-evolver 用日期建 `YYYY-MM-DD会话` 节点，跨午夜有真实风险
+- **修复**：主 Agent——`dynamic_system_prefix` 拆出 Current Time（只留 disk_desc 启动缓存——磁盘结构运行期不变），`_assemble_system_message` 每轮 `datetime.now()` 实时生成；子 Agent——新增 `_refresh_subagent_current_time`（on_before_llm 回调，正则替换 system 的 Current Time 行，兼容 str/Claude list 两种格式），`call_subagent` 三处 `_run_agent_loop`（新任务/恢复/异步）统一传入——会话内每轮 LLM 前刷新
+- **不受影响**：prompt cache 设计（动态段本就不 cache、静态段在前字节稳定，后部变化不影响前缀命中——Claude cache_control/字符串 prefix cache 均无破坏）；`build_subagent_system_segments` 启动实时语义保留（首轮即正确）
+- **质量链**：计划 R1-R4 四轮双审查（R1 双 REJECT：_run_agent_loop 缺 on_before_llm 参数+转发；R2 双 REJECT：异步接线缺锁/红相预期；R3+R4 连续两轮双 APPROVE）+ 每 Task spec/quality 双审；commits 12f2674b（Task 1 主 Agent）+ 50a57196（Task 2 子 Agent）+ 本条目
+
 ### 2026-08-12
 
 #### 修复：定时任务飞书流式卡片永不终结（死路由 pre-existing + 86d6c7a2 显性化）——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
