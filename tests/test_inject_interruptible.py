@@ -39,16 +39,33 @@ class _FakeAdapter:
 
 
 class _FakeBrainInjector:
-    """最小 brain injector：activate_for_query 记录 timeout，格式段返回空。"""
+    """最小 brain injector：activate_for_query 记录 timeout 并返回 3 元组，分级格式段按输入返回。
+
+    T3-1 前置（R3-B P3-1 + R22-B P3-3）：activate_for_query 返回
+    (region_entities, entity_to_region, hit_entities) 3 元组（实体用独立脑区名，
+    不能用 "k1"——test_stop_abandon_returns_empty 断言 "k1" not in injection）；
+    format_region_knowledge 空输入返回 []（守卫锁定——tests 1/3 正常路径不产生脑区段）。
+    """
 
     def __init__(self):
         self.last_timeout = None
 
     def activate_for_query(self, query_context, timeout):
         self.last_timeout = timeout
+        return (
+            {"测试脑区": [{"entity_name": "region_entity", "entity_type": "knowledge", "description": "desc"}]},
+            {},
+            ["region_entity"],
+        )
 
     def format_region_map_only(self):
         return ""
+
+    def format_region_knowledge(self, region_entities):
+        # 空输入 → []（T3-1 真实保护：step0 守卫使 _brain_region_entities 保持 {} 时无段）
+        if not region_entities:
+            return []
+        return [("🟢 测试脑区：", "region_entity", "knowledge", "desc")]
 
 
 class _FakePool:
@@ -162,3 +179,66 @@ def test_slow_adapter_abandons_under_stop(monkeypatch):
     elapsed = time.monotonic() - started
     assert elapsed < 0.5  # 放弃（块间短路收敛到单轮询 ~0.2s + 余量）
     assert isinstance(injection, str)
+
+
+def test_t3_1_region_knowledge_wired_to_format(monkeypatch):
+    """T3-1：runner 已接线 activate_for_query 返回值 → step 6 活跃脑区知识段。
+
+    红相：runner 未接线（返回值丢弃）→ step 6 无 format_region_knowledge 调用
+    或 _brain_region_entities 恒空 → 注入无"活跃脑区知识"段。
+    绿相：step0 保留 3 元组 → format_region_knowledge(_brain_region_entities)
+    stub 返回非空条目 → 段含"测试脑区"。
+    """
+    adapter = _FakeAdapter()
+    pool = _FakePool()
+    runner = _make_runner(monkeypatch, adapter, pool)
+    injection, _ = runner._inject_dynamic_resources("测试上下文")
+    assert "活跃脑区知识" in injection
+    assert "测试脑区" in injection  # 分级条目标签（stub 返回的 label）
+
+
+def test_t3_2_graph_traversal_not_injected_to_pool(monkeypatch):
+    """T3-2：图遍历删除——邻居实体不再注入衰减池（池级断言）。
+
+    显式覆盖 runner._traverse_from_hits 返回非空邻居：旧代码 step 4 会将其注入
+    衰减池（source="graph_traversal"）→ 断言失败（红）；新代码 step 4 已删除 →
+    池中无 graph_traversal 条目（绿）。
+    """
+    adapter = _FakeAdapter()
+    pool = _FakePool()
+    runner = _make_runner(monkeypatch, adapter, pool)
+    runner._traverse_from_hits = lambda hits: {
+        "邻居实体": {"entity_type": "knowledge", "description": "x", "source": "neighbor:基于"},
+    }
+    runner._inject_dynamic_resources("测试上下文")
+    assert not any(e["source"] == "graph_traversal" for e in pool.entities)
+
+
+def test_t3_3_brain_injector_none_skips_region_section(monkeypatch):
+    """T3-3：_brain_injector 不可用（None）→ 无活跃脑区知识段、无异常。
+
+    红相前提（R31-A P2 + R32-B P1）：预置必须用 runner 真实 DecayPool——
+    FakePool.get_top_by_source 硬编码 [] 使残留读不到、红相不可演示。预置签名
+    inject(entity_name, entity_dict, category, source, vector_score) 五参；
+    decay 后 0.5×0.92=0.46 ≥ 0.3 存活可见。旧 step 6 消费 graph_traversal 残留
+    → 段出现 → 断言失败（红）；新代码 _brain_injector None → 守卫跳过 → 无段（绿）。
+    """
+    from agent.decay_pool import DecayPool
+
+    adapter = _FakeAdapter()
+    real_pool = DecayPool()
+    real_pool.inject(
+        "残留实体", {"entity_type": "knowledge", "description": "x"},
+        "knowledge", "graph_traversal", 0.5,
+    )
+    runner = _make_runner(monkeypatch, adapter, real_pool)
+    # 守卫锁定（R32-B P2）：共享 _make_runner 硬编码 _get_brain_injector → fake——
+    # 本测试显式覆写为 None，并断言 format_region_knowledge stub 未被调用
+    runner._get_brain_injector = lambda: None
+    frk_calls: list = []
+    orig_frk = runner._fake_injector.format_region_knowledge
+    runner._fake_injector.format_region_knowledge = lambda *a, **k: (frk_calls.append(1), orig_frk(*a, **k))[1]
+    injection, _ = runner._inject_dynamic_resources("测试上下文")
+    assert isinstance(injection, str)  # 无异常
+    assert "活跃脑区知识" not in injection  # 脑区不可用 → 降级无段
+    assert frk_calls == []  # step 6 守卫跳过——None 时不调用 format_region_knowledge
