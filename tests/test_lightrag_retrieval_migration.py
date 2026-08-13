@@ -416,6 +416,9 @@ class TestInjectDynamicResourcesUsesLightRAG:
             # 新契约：_inject_dynamic_resources 调 format_region_map_only() 而非
             # inject_brain_context()，且不再加 "## 脑区激活上下文" 前缀（见 commit f49ffabe）
             mock_injector.format_region_map_only.return_value = "brain region map text"
+            # T3-1 绿相：step 6 调 format_region_knowledge(_brain_region_entities)——裸 MagicMock
+            # 返回值语义不定，明确契约为空列表（R7-A P3 归因：MagicMock __iter__ 零迭代不抛 TypeError）
+            mock_injector.format_region_knowledge.return_value = []
             mock_injector_cls.return_value = mock_injector
 
             injection, _ = runner._inject_dynamic_resources("test query")

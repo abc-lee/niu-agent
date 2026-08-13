@@ -87,7 +87,6 @@ class TestInjectDynamicResourcesSkillRetrieval:
         runner._decay_pool.decay = MagicMock()
         runner._decay_pool.inject = MagicMock()
         runner._decay_pool.get_top_by_category = MagicMock(return_value=[])
-        runner._decay_pool.get_top_by_source = MagicMock(return_value=[])
         runner._brain_adapter = MagicMock()
         runner._brain_adapter.activate_for_query = MagicMock()
         runner._brain_adapter.format_region_map_only = MagicMock(return_value="")
