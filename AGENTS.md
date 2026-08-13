@@ -536,8 +536,11 @@ preload_face_model()
   3. **compat.py `_tidy_context_impl` finally**——**先无条件保底 done（无 await——CancelledError 继承 BaseException 不入 except Exception，任务取消（clear_chat wait_for 600s 超时兜底）时保底广播必须在 await 前）**→ 再 `_compute_post_compress_usage`（消息数前后对比确认实际压缩）→ 条件二次 done（usage+reset_tokens）；**skip/abort/error 路径不置 0**（保留旧值 → 70% warningThreshold-0.1 冲突避让设计保持）
   4. **chat.html**——抽 `renderContextUsage` + **渲染代际守卫**（loadStats 用本请求局部 `fetchTs` vs `_compactUsageTs` 最近压缩 usage 渲染时间戳——主 Agent 目标受守卫丢弃"保底 done 触发、reset 前被服务端处理"的旧值响应；子 Agent 目标直渲）；done 分支 `typeof data.usage === 'number'` → 标记代际 + 渲染，else → `loadStats('')` 固定刷新主 Agent
 - **质量链**：计划 R1-R5 五轮双审查（R4+R5 连续两轮零 bug；R3 抓 CancelledError 丢 done、R4 抓保底 done 竞态旧值覆盖、T4 quality 抓守卫条件反转）→ subagent-driven 实施（T1-T4 每 Task spec+quality 双审）+ 14 新测试全绿 + 全量回归 93 passed（4 个 test_tidy_cursor PROTECTED 断言为 pre-existing 豁免）
-- **已知接受边界**：并发写入假阴性（计数对比不降 → 不置 0，活跃期靠下次 LLM 交互自愈、scheduler 并发受 70% 避让保护）；纯 update 压缩（无删除）不触发重算；/clear 短暂旧值竞态（低频自愈）；chat_queue 溢出 force 三 done 幂等
-- **实机验证待确认**：压缩后圆环立即新值、done 后 2-3 秒不回跳（守卫验证点）、唤醒不交互不重复压缩、/clear 归 0、溢出 force 终态一致
+- **实机验证（2026-08-13）与工程结束决策**：
+  - **mode-1（低使用率 <50%）场景实测**：23% → sleep 全套整理 → 前端 done 推送正常（红色→绿色）但值不变（仍 23%）——**这是正确语义**：mode-1（非破坏性）只推进增量游标（`Compress cursor auto-advanced`），context-manager 方案文本**不落地执行**；主 LLM prompt 由 `ContextManager.load_history → store.get_messages()` **全量加载、无游标过滤**（R6 全量逻辑链双审查实证：last_compress_id 只被 nap-EMA/force prompt/tidy 增量范围消费，无一处裁剪主 prompt）→ mode-1 后 messages.db 与下次 prompt 均不变 → 使用率不变是真实行为
+  - **已知限制（待遇到再修）**：mode-2/force 的**纯 update 压缩**（0 删 N 精简——如"8 条 0 删 1 精简"）消息数对比判定漏判 → 不置 0 不推 usage；v2.5 执行段标志方案已备（plans 分支 1aadf698：mode-2/force 最终级联过滤后 `valid_deletes|valid_updates` 非空置 `_compressed`；mode-1 纯游标推进**不置**——R6 双审查 REJECT 修正；force 嵌套函数需 nonlocal）——当前无法实机验证高使用率场景，工程结束，**遇到 mode-2/force 真实压缩（删除/更新落地）时再实施验证**
+  - **前端刷新机制本体有效**：done 分支 usage 渲染/loadStats 兜底 + 渲染代际守卫（保底 done 竞态已解决）——mode-2/force 删除场景下使用率会正确刷新
+- **质量链补充（R6 全量逻辑链审查教训）**：用户要求审查必须**从用户场景出发追踪完整逻辑链 + 主动找计划外受影响位置**（不是只核对计划语句）——R6 抓出"mode-1 游标推进不构成压缩"（prompt 全量加载无游标过滤）与"测试默认 protectRecentCount=10 走不到游标推进"两个此前漏掉的真实问题——点式审查（R4/R5 漏守卫反转）已被证明无效，后续审查一律全量逻辑链
 
 ### 2026-08-11
 
