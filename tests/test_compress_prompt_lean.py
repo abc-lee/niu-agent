@@ -1,11 +1,5 @@
 """压缩 task prompt 瘦身测试：去方法论重复、禁止报告、保留输出契约与参数。"""
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-
-from niu_api.compat import _build_force_prompt, _build_mode2_prompt
+from niu_api.compat import _build_force_prompt, _build_mode2_prompt  # noqa: E402
 
 
 def _mode2(**kw):
