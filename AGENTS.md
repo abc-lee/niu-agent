@@ -556,6 +556,14 @@ preload_face_model()
 - **不受影响**：prompt cache 设计（动态段本就不 cache、静态段在前字节稳定，后部变化不影响前缀命中——Claude cache_control/字符串 prefix cache 均无破坏）；`build_subagent_system_segments` 启动实时语义保留（首轮即正确）
 - **质量链**：计划 R1-R4 四轮双审查（R1 双 REJECT：_run_agent_loop 缺 on_before_llm 参数+转发；R2 双 REJECT：异步接线缺锁/红相预期；R3+R4 连续两轮双 APPROVE）+ 每 Task spec/quality 双审；commits 12f2674b（Task 1 主 Agent）+ 50a57196（Task 2 子 Agent）+ 本条目
 
+#### 修复：LLM 启动探测去重（单一真相源——正常启动从两次真实探测降为一次）
+
+- **问题**：每次正常启动触发两次真实 LLM 探测（2026-08-13 20:13/20:14 实证：lifespan check_llm_ready + 启动器 test-llm 各一次，均 max_tokens=256 "hi" 探测）——上午启动门控工程新增后端 lifespan 探测时未盘点既有启动器 test-llm 验证（6/23 d1cbb953 引入），两进程并行互不知晓、无共享状态（LLM 就绪状态无单一真相源）→ 每次启动多一次 LLM 调用 + 4-6s 延迟。十轮门控审查全部聚焦"LLM 不通时怎么办"，无人从正常启动路径审视"探测几次"——点式审查盲区实证
+- **修复**：llm-status 从"仅配置存在性"升级三态——ready（配置存在 AND lifespan 探测通过）/ probe_failed（配置存在 AND 探测失败）/ not_ready（配置缺失）——读 lightrag_manager._llm_gate_ready（新增对称 get_llm_gate_ready）；启动器决策改三态：ready 直接启动（不再 test-llm）、probe_failed 保留 test-llm 兜底（230s——配逃生口（wait≤220<230s）后慢模型可被放行；未配逃生口时 >120s 首字节慢模型后端 150s 强杀失败 → 配置页，与修复前一致）、not_ready 配置页（现状）
+- **探测次数全景**：正常 1（原 2）/ 配置缺失 0 / 探测失败（快速失败/慢模型 >120s 未配逃生口/挂起 wait_for 生效）3→配置页（原 3）/ 挂起 wait_for 失效 >230s 2→proceed-anyway（原 2）/ 逃生口 1（原 2）——唯一行为变化 = 正常启动跳过重复 test-llm，异常路径行为等价（无死循环）
+- **已知取舍（R1-A5 记录）**：正常路径从"2 次探测都有机会抓启动瞬间瞬态故障"降为"1 次"——若 lifespan 探测通过后、启动器决策前 LLM 恰好不可用（极窄窗口），修复后直接 proceed（运行期走 LLM 失败降级）——与边界⑥同族但检测窗口缩短——低概率、可接受（去重目标固有取舍）；升级兼容：新启动器+旧后端（无门控）probe_failed 缺省 false → 跳过 test-llm 失去唯一真实验证——混窗仅手工混用，文档化接受
+- **质量链**：计划 R1-R4 四轮双审查（R1 双 REJECT：patch 目标错误 P0 + 探测次数表预算语义 P2×2 + 计数方法 P1；R2 双 APPROVE 后清零：Task 3 mtime 限定 P2；R3+R4 连续两轮双 APPROVE）+ 每 Task spec/quality 双审（Task 1/2 PASS）；commits e63d38ea（Task 1 llm-status 三态）+ a83c9868（Task 2 启动器三态决策）+ 本条目
+
 ### 2026-08-12
 
 #### 修复：定时任务飞书流式卡片永不终结（死路由 pre-existing + 86d6c7a2 显性化）——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
