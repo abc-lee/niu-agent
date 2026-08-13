@@ -65,6 +65,9 @@ def test_force_keeps_dream_boundary_and_cursor_info():
     assert "abc-123" in p
     p2 = _force(dream_idx_in_force=0, last_compress_id=None)
     assert "（无，从最早消息开始）" in p2
+    # 0 哨兵（无 dream 游标）：prompt 渲染 idx > 0 → 全保护语义（只 update 不删）——锁定行为防误改
+    p3 = _force(dream_idx_in_force=0)
+    assert "idx > 0" in p3
 
 
 def test_force_forbids_analysis():
