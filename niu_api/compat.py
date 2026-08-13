@@ -2487,6 +2487,24 @@ async def _reset_all_cursors() -> None:
             logger.warning(f"Failed to reset cursor file {cursor_name}: {e}")
 
 
+def _reset_runner_brain_state(runner) -> None:
+    """会话边界清空脑区注入缓存（防跨会话旧实体注入）。
+
+    激活管理器为跨会话单例 + _recent_region_entities 缓存无会话生命周期——
+    /new 与 /clear 不清缓存会使新会话前 ~11-15 轮持续注入上一会话缓存实体。
+    用 getattr 直接读属性而非 _get_brain_injector()（None 时后者会触发 LightRAG
+    懒初始化 300s 阻塞 + forced-sync daemon spawn——clear 路径不应有此副作用；
+    该场景缓存恒空，clear 本就是 no-op）。
+    """
+    inj = getattr(runner, "_brain_injector", None)
+    if inj is None:
+        return
+    try:  # 防注入器创建路径异常传播破坏 clear
+        inj.clear_recent_region_entities()
+    except Exception as e:
+        logger.warning(f"Clear brain region cache failed: {e}")
+
+
 @router.post("/api/chat/clear")
 async def clear_chat(request: Request) -> dict:
     """Clear all messages (for /new and /clear commands)
@@ -2548,6 +2566,8 @@ async def clear_chat(request: Request) -> dict:
                 runner.handler._last_prompt_tokens = 0
             # 清空衰减池（新会话开始）
             runner._decay_pool.clear()
+            # 清空脑区注入缓存（_recent_region_entities——防跨会话旧实体注入）
+            _reset_runner_brain_state(runner)
 
             # Note: LLM session history is managed by ContextManager,
             # which reloads from message store each call.

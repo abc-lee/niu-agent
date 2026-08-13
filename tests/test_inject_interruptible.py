@@ -242,3 +242,24 @@ def test_t3_3_brain_injector_none_skips_region_section(monkeypatch):
     assert isinstance(injection, str)  # 无异常
     assert "活跃脑区知识" not in injection  # 脑区不可用 → 降级无段
     assert frk_calls == []  # step 6 守卫跳过——None 时不调用 format_region_knowledge
+
+
+def test_t3_4_region_knowledge_format_error_degraded(monkeypatch):
+    """T3-4（绿相回归锁）：format_region_knowledge 抛异常 → 降级空段、不传播。
+
+    两段式实施合并 commit（方案 R11-B P1）：try/except 与 step 6 替换同 commit——
+    本测试作绿相回归锁（无红相演示）：per-test monkeypatch 抛 RuntimeError 的 stub
+    （R15-B P3-4：不放共享 fake，避免红相连带 ERROR）→ 无"活跃脑区知识"段、
+    异常被吞（try/except 包裹惯例 R7-A P2-1）。
+    """
+    adapter = _FakeAdapter()
+    pool = _FakePool()
+    runner = _make_runner(monkeypatch, adapter, pool)
+
+    def boom(*a, **k):
+        raise RuntimeError("format boom")
+
+    runner._fake_injector.format_region_knowledge = boom
+    injection, _ = runner._inject_dynamic_resources("测试上下文")
+    assert isinstance(injection, str)  # 无异常传播至 LLM 轮次
+    assert "活跃脑区知识" not in injection  # 降级为空段
