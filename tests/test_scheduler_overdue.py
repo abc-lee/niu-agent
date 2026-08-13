@@ -1,7 +1,7 @@
 """Tests for Scheduler.check_and_trigger with sequential execution"""
 import time
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -72,7 +72,6 @@ class TestCheckAndTriggerSequential:
             "scheduled_at": due_tasks[0]["scheduled_at"],
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         with patch.object(scheduler, '_is_backend_busy', return_value=False):
             scheduler.check_and_trigger()
@@ -102,7 +101,6 @@ class TestCheckAndTriggerSequential:
             "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat(),
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         with patch.object(scheduler, '_is_backend_busy', return_value=False):
             start_time = time.time()
@@ -149,7 +147,6 @@ class TestCheckAndTriggerSequential:
             "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat(),
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         def stop_after_first(task_id, **_kwargs):
             if task_id == "task-1":
@@ -213,7 +210,8 @@ class TestCheckAndTriggerSequential:
 
         scheduler.check_and_trigger()
         assert callback.call_count == 0
-        mock_store.update_task.assert_called()  # reschedule 到下次
+        # CAS in_progress 写入 + 跳过分支的 reschedule 都应发生；reschedule 调用必带 scheduled_at 参数
+        mock_store.update_task.assert_any_call(ANY, scheduled_at=ANY, status="pending", expected_status="in_progress")
 
     def test_hourly_cron_executes_again_same_day(self, mock_scheduler):
         """小时级 cron：当天不同触发点依次执行（回归 2026-08-13 bug）
@@ -389,7 +387,6 @@ class TestCheckAndTriggerSequential:
             "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         # First call acquires _check_lock
         results = []
@@ -489,7 +486,6 @@ class TestStaggerWaitBackendIdle:
             "scheduled_at": due_tasks[0]["scheduled_at"],
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         with patch.object(scheduler, '_is_backend_busy', return_value=False) as mock_busy:
             scheduler.check_and_trigger()
@@ -519,7 +515,6 @@ class TestStaggerWaitBackendIdle:
             "scheduled_at": due_tasks[0]["scheduled_at"],
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         # 首次 False→二次确认 True（被抢占）→轮询 False→二次确认 False
         busy_sequence = [False, True, False, False]
@@ -550,7 +545,6 @@ class TestStaggerWaitBackendIdle:
             "scheduled_at": due_tasks[0]["scheduled_at"],
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         # 2次忙→False→二次确认False
         busy_sequence = [True, True, False, False]
@@ -581,7 +575,6 @@ class TestStaggerWaitBackendIdle:
             "scheduled_at": due_tasks[0]["scheduled_at"],
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         # 后端空闲（进入二次确认），0.5s 后 stop
         import threading
@@ -622,7 +615,6 @@ class TestStaggerWaitBackendIdle:
             "scheduled_at": due_tasks[0]["scheduled_at"],
             "last_executed_date": None,
         }
-        mock_store.update_last_executed_date.return_value = True
 
         with patch.object(scheduler, '_is_backend_busy', return_value=True):
             start = time.time()
