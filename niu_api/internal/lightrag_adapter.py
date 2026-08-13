@@ -274,6 +274,10 @@ class LightRAGAdapter:
             from lightrag import QueryParam
 
             param = QueryParam(mode=mode, only_need_context=only_need_context)
+            # 无 rerank 模型（reranker_model="none" 未注入 rerank_model_func），显式关闭
+            # 避免每次查询走空 rerank 分支 + 警告（LightRAG fork utils.py apply_rerank_if_enabled）；
+            # 若日后配置 rerank 模型，此开关需重新评估
+            param.enable_rerank = False
             if keywords is not None:
                 param.hl_keywords = keywords
                 param.ll_keywords = keywords
@@ -349,6 +353,10 @@ class LightRAGAdapter:
             from lightrag import QueryParam
 
             param = QueryParam(mode=mode)
+            # 无 rerank 模型（reranker_model="none" 未注入 rerank_model_func），显式关闭
+            # 避免每次查询走空 rerank 分支 + 警告（LightRAG fork utils.py apply_rerank_if_enabled）；
+            # 若日后配置 rerank 模型，此开关需重新评估
+            param.enable_rerank = False
             if top_k is not None:
                 param.top_k = top_k
             if keywords:
