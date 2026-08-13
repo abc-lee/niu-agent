@@ -1417,11 +1417,21 @@ def set_preload_stage(stage: str):
 
 @router.get("/api/llm-status")
 async def get_llm_status() -> dict:
-    """检测 LLM 是否已配置可用（直接从文件读取，不走缓存）"""
+    """检测 LLM 是否已配置可用（三态，供启动器决策）。
+
+    返回：
+        ready: True = 配置存在 AND lifespan 探测通过（后端已真实连通性验证）
+        probe_failed: True = 配置存在但 lifespan 探测失败（启动器需 test-llm 兜底
+            区分慢模型/瞬态与真不通——配 llm.read_timeout 逃生口（wait≤220<230s）后
+            慢模型可被 230s 验证放行；未配逃生口时 >120s 首字节慢模型后端 150s 强杀
+            失败 → 配置页，与修复前一致）
+        error: 失败原因（配置缺失或探测失败消息）
+    """
     import json
     from pathlib import Path
 
     from niu_api.config import CONFIG_PATH
+    from niu_api.internal.lightrag_manager import get_llm_gate_ready
 
     config_path = Path(CONFIG_PATH)
     try:
@@ -1432,12 +1442,14 @@ async def get_llm_status() -> dict:
         model = llm.get("model", "")
 
         if not api_key:
-            return {"ready": False, "error": "API key not configured"}
+            return {"ready": False, "probe_failed": False, "error": "API key not configured"}
         if not api_base or not model:
-            return {"ready": False, "error": "API base or model not configured"}
-        return {"ready": True}
+            return {"ready": False, "probe_failed": False, "error": "API base or model not configured"}
+        if not get_llm_gate_ready():
+            return {"ready": False, "probe_failed": True, "error": "LLM connectivity probe failed at startup"}
+        return {"ready": True, "probe_failed": False}
     except Exception as e:
-        return {"ready": False, "error": str(e)}
+        return {"ready": False, "probe_failed": False, "error": str(e)}
 
 
 async def _probe_llm(

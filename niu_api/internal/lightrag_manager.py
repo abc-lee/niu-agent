@@ -51,6 +51,11 @@ def set_llm_gate_ready(ready: bool) -> None:
     _llm_gate_ready = ready
 
 
+def get_llm_gate_ready() -> bool:
+    """读取 LLM 门控状态（lifespan 探测后置位；llm-status 端点读它暴露探测结果）。"""
+    return _llm_gate_ready
+
+
 # ============== Config ==============
 
 # STORAGE_DIR 支持环境变量覆盖（让 e2e 测试能用临时目录避免污染 ~/.niu/lightrag_storage）
