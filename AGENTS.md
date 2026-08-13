@@ -540,7 +540,7 @@ preload_face_model()
 - **问题**：①压缩 task prompt（_build_mode2_prompt/_build_force_prompt）内联重复 system 提示词（context-manager.md）已有方法论约 120 行（三份划分/会话单元/工具级联/摘要规范/转义），指令性不足；②prompt 强制"先写 <analysis> 再输出三行"→ 模型写长报告占掉输出预算（min(contextWindow×0.16, 65536)=32000）→ keep=/update=/cursor= 在末尾被截断 → finish_reason=length；③B1 三连重试不改参数（thinking 仍开、max_tokens 不变）→ 每次重试重复截断，3 次耗尽转 COMPACT_TRUNCATED；④降级链 step1 才关思考链（"第一轮失败第二轮才停"），思考链占输出 token（doubao 实证：max_tokens=5 探测时思考链跑 ~172 token 挤压 content 至截断）
 - **修复**：①task prompt 瘦身为"任务参数 + 严格输出契约 + 禁止报告"（删方法论重复，方法论信任 system；保留 CRITICAL 门控短语（context-manager.md L194-199 用它判定模式二"一轮方案"分支）+ force 专属参数（上次压缩游标/dream 安全边界））；②新增 _build_compress_llm_config helper（max_tokens + thinking disabled）统一 4 处压缩调用点（compat 模式二/模式一/force + runner force）——首次调用即停思考链，B1 重试复用同一 config 自动继承；③_probe_llm 检测 finish_reason=length → 报"输出被截断"（曾静默判"模型测试通过"——raw_http 实证），探测 max_tokens 5→256（thinking 模型 content 有空间，防标准 thinking 模型 50 截断误杀启动门控）；④降级链 thinking_enabled 判定自然跳过已关思考链的 step1 空转
 - **已知边界**：①流被中断吞掉 finish_reason chunk → 截断仍静默（无法可靠检测，未修）；②B1 重试对非压缩子 Agent 保持原行为（通用路径 client 重建成本高，压缩路径已由首次注入覆盖）；③context-manager.md system 提示词本身不瘦身（358 行完整方法论文档保留）；④模式一（睡眠整理非破坏性）注入 thinking disabled 但不走三行输出契约（工具化操作，不受影响）
-- **质量链**：计划 R1-R7 七轮双审查（v1-v6.1，连续两轮双 APPROVE 达成——R6+R7；测试定义缺陷 15+ 个经审查抓出：PEP 479/子串断言/MagicMock 自动真值/锚点漂移/魔法短语门控/第 4 调用点等）；实施 subagent-driven 每 Task spec+quality 双审（Task 1 quality 2 P2 修复、Task 4 quality 2 P2 修复）；commits 172146da→76c5e038
+- **质量链**：计划 R1-R7 七轮双审查（v1-v6.1，连续两轮双 APPROVE 达成——R6+R7；测试定义缺陷 15+ 个经审查抓出：PEP 479/子串断言/MagicMock 自动真值/锚点漂移/魔法短语门控/第 4 调用点等）；实施 subagent-driven 每 Task spec+quality 双审（Task 1 quality 2 P2 修复、Task 4 quality 2 P2 修复）；commits 172146da→dde63a28
 
 ### 2026-08-12
 
