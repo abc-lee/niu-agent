@@ -392,6 +392,9 @@
         apiKey, apiBase, model, type,
         litellm_kwargs: { ...DEFAULT_LLM_KWARGS, ...(existingConfig.llm?.litellm_kwargs || {}) }
       };
+      // v2.5：逃生口——合并文件已有 read_timeout（existingConfig 在本作用域已存在）
+      const existingLlm = existingConfig && existingConfig.llm;
+      if (existingLlm && existingLlm.read_timeout) config.read_timeout = existingLlm.read_timeout;
       const result = await window.electronAPI.testConnection(config);
 
       if (result.success) {
@@ -443,7 +446,7 @@
         };
 
         const saveResult = await window.electronAPI.saveConfig({
-          llm: { ...config, presetId: presetId, reasoning_effort: existingConfig.llm?.reasoning_effort || "" },
+          llm: { ...config, presetId: presetId, reasoning_effort: existingConfig.llm?.reasoning_effort || "", ...(existingConfig?.llm?.read_timeout ? { read_timeout: existingConfig.llm.read_timeout } : {}) },
           lightrag_llm: lightragLlmConfig,
           context: {
             contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,

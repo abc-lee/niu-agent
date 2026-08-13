@@ -2017,11 +2017,12 @@ fn main() {
         // Wait for preload to complete (embedding-service, MCP tools)
         info!("Waiting for preload to complete...");
         let mut preload_ready = false;
-        // 180s 超时（原 60s）：脑区启动就绪 gate 让 lifespan 在 signal_scheduler_ready
-        // 前同步跑 run_sync_once_for_startup（~40s）+ wait_first_sync_done(90)，
-        // 最坏情况 90s + 启动开销（embedding 9s + MCP 5s + LightRAG 1s + ...）= 100s+。
-        // 180s 留足余量，避免 Rust 误判启动完成、前端启动后无法连接 API。
-        for i in 0..360 {
+        // 3600 轮 × 0.5s ≈ 30min 墙钟（lifespan 阻塞时连接拒绝使每轮 ≈0.5s）——
+        // 覆盖 lifespan 最长 ~335s（LLM 门控阻塞探测 210s + 初始化 ~125s），
+        // 防慢模型启动时 preload 耗尽致启动器过早弹配置页（无限重启循环）。
+        // v2.6.1：同步更新既有注释（原"180s 超时（原 60s）：脑区 gate 40s+90s"依据
+        //   已过时——新依据为 LLM 门控阻塞 150-210s + 初始化 ~125s）
+        for i in 0..3600 {
             thread::sleep(Duration::from_millis(500));
             let url = format!("http://127.0.0.1:{}/api/preload-status", port);
             match check_client.get(&url).send() {
@@ -2112,8 +2113,13 @@ fn main() {
                 need_settings = true;
             } else {
                 info!("LLM configured, running real test...");
+                // 对齐后端 /api/test-llm 端点 wait_for 上限 220s（resolve_probe_budget
+                // 钳制 llm.read_timeout ≤ 190 → wait ≤ 220；逃生口全范围覆盖）——
+                // 25s 会让慢首响推理模型（20-120s）在此超时并落入 proceed-anyway 分支
+                // 或配置页轮询永久超时，与后端 LLM 门控判定分歧（静默降级/配置页卡死）。
+                // 230s 与 settings 前端 socket 超时一致（v2.5：三方统一 230）。
                 let test_client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(25)).build().unwrap_or_else(|_| check_client.clone());
+                    .timeout(Duration::from_secs(230)).build().unwrap_or_else(|_| check_client.clone());
                 let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
 
                 match test_client.post(&test_url)
@@ -2161,8 +2167,13 @@ fn main() {
                 let settings_result = launch_window("settings", port);
                 if let Ok(mut settings_child) = settings_result {
                     let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+                    // 对齐后端 /api/test-llm 端点 wait_for 上限 220s（resolve_probe_budget
+                    // 钳制 llm.read_timeout ≤ 190 → wait ≤ 220；逃生口全范围覆盖）——
+                    // 25s 会让慢首响推理模型（20-120s）在此超时并落入 proceed-anyway 分支
+                    // 或配置页轮询永久超时，与后端 LLM 门控判定分歧（静默降级/配置页卡死）。
+                    // 230s 与 settings 前端 socket 超时一致（v2.5：三方统一 230）。
                     let poll_client = reqwest::blocking::Client::builder()
-                        .timeout(Duration::from_secs(25))
+                        .timeout(Duration::from_secs(230))
                         .build().unwrap_or_else(|_| check_client.clone());
                     // 轮询：直到 settings 测试通过 OR settings 窗口被关闭
                     // 删除 reopen_count>3 重开死循环——settings 一关就 break
