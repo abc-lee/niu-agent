@@ -2714,85 +2714,20 @@ class NiuRunner:
 
     # ============== Dynamic Resource Injection ==============
 
-    def _traverse_from_hits(self, hits: list[str]) -> dict[str, dict]:
-        """从 hit entities 沿知识边1跳图遍历，收集邻居实体。
-
-        Args:
-            hits: 向量检索命中的 entity_name 列表
-
-        Returns:
-            {entity_name_lower: {description, entity_type, source, ...}}
-            source 为 "hit" 或 "neighbor:{关系关键词}"
-        """
-        from niu_api.internal.lightrag_manager import get_lightrag, graph_read_lock
-
-        rag = get_lightrag()
-        if rag is None:
-            return {}
-
-        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
-        if graph_obj is None:
-            return {}
-
-        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
-        if nx_graph is None or nx_graph.number_of_nodes() == 0:
-            return {}
-
-        result: dict[str, dict] = {}
-
-        with graph_read_lock():
-            snapshot = nx_graph.copy()
-
-        for hit in hits:
-            hit_lower = hit.lower() if isinstance(hit, str) else hit
-            if hit_lower not in snapshot:
-                continue
-
-            node = snapshot.nodes.get(hit_lower, {})
-            if hit_lower not in result:
-                result[hit_lower] = {**node, "entity_name": hit_lower, "source": "hit"}
-
-            for neighbor in snapshot.neighbors(hit_lower):
-                if neighbor.endswith("脑区"):
-                    continue
-
-                edge_data = snapshot.get_edge_data(hit_lower, neighbor)
-                if not edge_data:
-                    continue
-
-                if isinstance(list(edge_data.values())[0], dict):
-                    edge_list = list(edge_data.values())
-                else:
-                    edge_list = [edge_data]
-
-                for ed in edge_list:
-                    kw = ed.get("keywords", "") if isinstance(ed, dict) else ""
-                    if kw and kw != "包含" and not kw.startswith("_session"):
-                        node2 = snapshot.nodes.get(neighbor, {})
-                        neighbor_lower = neighbor.lower()
-                        if neighbor_lower not in result:
-                            result[neighbor_lower] = {
-                                **node2,
-                                "entity_name": neighbor_lower,
-                                "source": f"neighbor:{kw}",
-                            }
-
-        return result
-
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
-        """动态注入相关资源 — 向量检索 + 图遍历 + Ebbinghaus 衰减池。
+        """动态注入相关资源 — 向量检索 + 分级脑区知识 + Ebbinghaus 衰减池。
 
         流程:
-        1. 脑区激活 (不变)
+        1. 脑区激活（保留返回值——step 6 分级注入消费；图遍历已删除，见方案 2.3）
         2. 全局向量检索
         3. 衰减池维护 (先衰减旧实体，再注入新命中)
         4. 衰减池注入：全局检索命中 (score=distance)
-        5. 图遍历 (从 hit entities 沿知识边1跳) → 衰减池注入 (score=hit×0.8)
-        6. 格式化注入 (脑区状态图 + skill + knowledge + 活跃脑区知识 + 习惯)
+        5. 格式化注入 (脑区状态图 + skill + knowledge + 活跃脑区知识 + 习惯)
         """
         from agent.generic.interruptible import run_interruptibly
 
-        # 0. Brain region activation (不变)
+        # 0. Brain region activation——保留 activate_for_query 返回值（step 6 分级注入消费）
+        _brain_region_entities: dict[str, list[dict]] = {}
         _brain_injector = None
         try:
             _ok, _brain_injector = run_interruptibly(
@@ -2800,11 +2735,14 @@ class NiuRunner:
             )
             # R3-R1：_get_brain_injector 首次初始化持 _rag_lock（秒级）——一并包可中断（防御性）
             if _ok and _brain_injector is not None:
-                _, _ = run_interruptibly(  # R4-P2-2：返回值丢弃（激活副作用已发生，无需接收）
+                _ok2, _brain_result = run_interruptibly(
                     lambda: _brain_injector.activate_for_query(context, timeout=15),
                     is_stop_requested,
                 )
-                # 放弃（stop 置位）→ 跳过本轮脑区激活；区域图反映既有状态，无副作用
+                if _ok2 and _brain_result:
+                    # (region_entities, entity_to_region, hit_entities)——分级注入消费第一项
+                    _brain_region_entities, _, _ = _brain_result
+                # 放弃等待但后台 daemon 线程仍可能完成激活副作用（置 1.0 + SSE 推送 + 缓存合并更新）
         except Exception as e:
             logger.warning(f"Brain activation failed: {e}")
 
@@ -2863,7 +2801,6 @@ class NiuRunner:
         self._decay_pool.decay()
 
         # 3. 衰减池注入：全局检索命中的实体
-        all_hits = []  # 用于图遍历
         for category, entities in lightrag_results.items():
             for i, entity in enumerate(entities):
                 name = entity.get("entity_name", "")
@@ -2899,76 +2836,11 @@ class NiuRunner:
                     source="vector",
                     vector_score=distance,
                 )
-                all_hits.append(name)
 
-        # 4. 图遍历：从 hit entities 沿知识边1跳
-        traversed: dict[str, dict] = {}
-        try:
-            if all_hits:
-                _ok, _res = run_interruptibly(
-                    lambda: self._traverse_from_hits(all_hits),
-                    is_stop_requested,
-                )
-                traversed = _res if _ok else {}
-        except Exception as e:
-            logger.warning(f"Graph traversal failed: {e}")
+        # 4. 图遍历已删除（2026-08-13 实验裁决，见方案 2.3：命中实体已够好，
+        #    图邻居是噪声放大器——applescript 混入实证；保留块间停止守卫与 1a/1b 后一致）
         if is_stop_requested():
             return "", {}
-
-        # 图遍历结果注入衰减池
-        # 建立 entity_name -> distance 映射（从全局检索结果）
-        hit_distance_map: dict[str, float] = {}
-        for category, entities in lightrag_results.items():
-            for i, entity in enumerate(entities):
-                name = entity.get("entity_name", "")
-                if name:
-                    distance = entity.get("distance")
-                    if distance is None:
-                        distance = 1.0 - (i / max(len(entities), 1)) * 0.5
-                    hit_distance_map[name.lower()] = distance
-
-        for entity_name, node_data in traversed.items():
-            source = node_data.get("source", "")
-            if source == "hit":
-                # hit 实体已在 step 3 注入，跳过
-                continue
-            # 如果实体已通过向量检索注入（source="vector"），不覆盖
-            existing_entry = self._decay_pool.get_entry(entity_name)
-            if existing_entry is not None and existing_entry.source == "vector":
-                continue
-            # 黑名单预过滤（与向量路径一致）
-            entity_type = (node_data.get("entity_type") or "").lower()
-            if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
-                continue
-            if entity_name in self._INJECT_ENTITY_NAME_BLACKLIST:
-                continue
-            # 邻居实体：用平均 hit 分数 × 0.8
-            neighbor_score = 0.8 * (
-                sum(hit_distance_map.values()) / max(len(hit_distance_map), 1)
-                if hit_distance_map else 0.5
-            )
-
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter
-            category = LightRAGAdapter._ENTITY_TYPE_TO_CATEGORY.get(entity_type, "knowledge")
-
-            # 真实 skill 检查：file_path 含 "skill_sync" 段（与向量检索路径一致）
-            if category == "skill":
-                entity_file_path = node_data.get("file_path", "")
-                is_real_skill = any(
-                    seg.strip() == "skill_sync"
-                    for seg in entity_file_path.split("<SEP>")
-                )
-                if not is_real_skill:
-                    skill_path = Path.home() / ".niu" / "skills" / f"{entity_name}.md"
-                    category = "knowledge" if not skill_path.exists() else "skill"
-
-            self._decay_pool.inject(
-                entity_name=entity_name,
-                entity_dict=node_data,
-                category=category,
-                source="graph_traversal",
-                vector_score=neighbor_score,
-            )
 
         # ============== Format & Inject ==============
         parts: list[str] = []
@@ -3003,32 +2875,23 @@ class NiuRunner:
             if knowledge_text:
                 parts.append(knowledge_text)
 
-        # 活跃脑区知识 (从衰减池取 source=graph_traversal)
-        region_entries = self._decay_pool.get_top_by_source("graph_traversal", 5)
-        if region_entries:
+        # 活跃脑区知识（点亮脑区分级：🟢 5 / 🟡 3 / ⚫ 0——本轮命中优先、缓存回退）
+        # region_entries 块外初始化——尾部 debug 行 len(region_entries) 无条件引用（R4-A P1-1）
+        region_entries: list[tuple] = []
+        if _brain_injector is not None:
+            try:  # injector 交互惯例——失败降级空段，不传播至 LLM 轮次（R7-A P2-1）
+                region_entries = _brain_injector.format_region_knowledge(_brain_region_entities)
+            except Exception as e:
+                logger.warning(f"Brain region knowledge formatting failed: {e}")
             region_lines: list[str] = []
-            for entry in region_entries:
-                name = entry.entity_dict.get("entity_name", entry.entity_name)
+            for label, name, etype, desc in region_entries:
                 if name in seen_names:
                     continue
-                # 黑名单过滤（与 _format_lightrag_entities_for_prompt 一致，case-sensitive）
-                entity_type = (entry.entity_dict.get("entity_type") or "").lower()
-                if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
-                    continue
-                if name in self._INJECT_ENTITY_NAME_BLACKLIST:
-                    continue
                 seen_names.add(name)
-                desc = (entry.entity_dict.get("description") or "").replace("<SEP>", "\n")
-                source = entry.entity_dict.get("source", "")
-                if source == "hit":
-                    source_label = "(hit)"
-                elif source.startswith("neighbor:"):
-                    relation = source.split(":", 1)[1]
-                    source_label = f"(邻居: {relation})"
-                else:
-                    source_label = ""
-                desc_line = f"   {desc[:500]}" if desc else ""
-                region_lines.append(f"{len(region_lines)+1}. **{name}** {source_label}\n{desc_line}")
+                # `or ""` 守卫：query_data 实体可无 description 字段（R8-A P2-1）
+                desc_clean = (desc or "").replace("<SEP>", "\n")
+                desc_line = f"   {desc_clean[:500]}" if desc_clean else ""
+                region_lines.append(f"{label} **{name}** [{etype}]\n{desc_line}")
             if region_lines:
                 parts.append("### [活跃脑区知识]\n" + "\n".join(region_lines))
                 parts.append(
