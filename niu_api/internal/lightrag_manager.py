@@ -229,7 +229,6 @@ def _trigger_background_probe_if_needed() -> None:
     M2 atomic write：先写临时文件再 os.replace，避免主进程在写入过程中读到
     部分 JSON 触发 JSONDecodeError。
     """
-    global _llm_gate_ready
     if not _llm_gate_ready:
         logger.warning("[ProbeFormat] 后台探测跳过（LLM 不可用）")
         return

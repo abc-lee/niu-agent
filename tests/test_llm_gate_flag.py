@@ -7,8 +7,6 @@ patch 全局 threading.Thread 断言 .start 调用（lightrag_manager 模块级
 import threading——函数内 Thread 调用经共享模块对象被拦截）。"""
 from unittest.mock import patch
 
-import pytest
-
 from niu_api.internal.lightrag_manager import _llm_gate_ready, set_llm_gate_ready
 
 
