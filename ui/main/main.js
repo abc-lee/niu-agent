@@ -1268,9 +1268,9 @@ ipcMain.handle('test-connection', async (event, config) => {
         hostname: '127.0.0.1', port,
         path: '/api/test-llm', method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-        // 推理模型（deepseek-reasoner/o1/o3）首响应 20-120s，后端 test-llm read_timeout=60 + wait_for=90，
-        // 前端 socket 必须大于 90s，否则推理模型设置页测试必失败
-        timeout: 100000
+        // 后端 test-llm read_timeout=120 + wait_for=150（llm_ready resolve_probe_budget，
+        // llm.read_timeout 可覆盖至 190/220）——前端 socket 必须大于 220s（推理模型 20-120s 显式支持）
+        timeout: 230000  // 230s — 对齐后端 /api/test-llm wait_for 上限 220s（llm.read_timeout 可覆盖至 190）
       }, (res) => {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
@@ -1344,8 +1344,8 @@ ipcMain.handle('test-connection', async (event, config) => {
             'anthropic-version': '2023-06-01',
             'Content-Length': Buffer.byteLength(body)
           },
-          // 推理模型首响应 20-120s，对齐主路径 100s
-          timeout: 100000
+          // 推理模型首响应 20-120s，对齐主路径 230s（后端 wait_for 上限 220s）
+          timeout: 230000  // 230s — 对齐后端 /api/test-llm wait_for 上限 220s（llm.read_timeout 可覆盖至 190）
         }, (res) => {
           let data = '';
           res.on('data', (chunk) => { data += chunk; });
@@ -1400,8 +1400,8 @@ ipcMain.handle('test-connection', async (event, config) => {
             'Authorization': `Bearer ${apiKey}`,
             'Content-Length': Buffer.byteLength(body)
           },
-          // 推理模型首响应 20-120s，对齐主路径 100s
-          timeout: 100000
+          // 推理模型首响应 20-120s，对齐主路径 230s（后端 wait_for 上限 220s）
+          timeout: 230000  // 230s — 对齐后端 /api/test-llm wait_for 上限 220s（llm.read_timeout 可覆盖至 190）
         }, (res) => {
           let data = '';
           res.on('data', (chunk) => { data += chunk; });
