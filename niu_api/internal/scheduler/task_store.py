@@ -35,7 +35,8 @@ class TaskStore:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     triggered_at DATETIME,
                     last_triggered_at DATETIME,
-                    last_executed_date TEXT
+                    last_executed_date TEXT,
+                    last_executed_trigger TEXT
                 )
             """)
             conn.execute("""
@@ -50,6 +51,13 @@ class TaskStore:
                 """)
             except sqlite3.OperationalError:
                 pass  # 列已存在
+            # 迁移：老数据库可能没有 last_executed_trigger 列（2026-08-13 触发点级记账）
+            try:
+                conn.execute("""
+                    ALTER TABLE scheduled_tasks ADD COLUMN last_executed_trigger TEXT
+                """)
+            except sqlite3.OperationalError:
+                pass  # 列已存在（新库或已迁移）
             # 迁移：老数据库可能没有 name 列
             try:
                 conn.execute("""
@@ -131,14 +139,14 @@ class TaskStore:
 
             if status:
                 cursor.execute("""
-                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
+                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, last_executed_trigger, name, chat_id, task_kind, script_file
                     FROM scheduled_tasks
                     WHERE status = ?
                     ORDER BY scheduled_at
                 """, (status,))
             else:
                 cursor.execute("""
-                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
+                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, last_executed_trigger, name, chat_id, task_kind, script_file
                     FROM scheduled_tasks
                     ORDER BY scheduled_at
                 """)
@@ -158,10 +166,11 @@ class TaskStore:
                 "status": row[6],
                 "created_at": row[7],
                 "last_executed_date": row[8],
-                "name": row[9],
-                "chat_id": row[10],
-                "task_kind": row[11],
-                "script_file": row[12]
+                "last_executed_trigger": row[9],
+                "name": row[10],
+                "chat_id": row[11],
+                "task_kind": row[12],
+                "script_file": row[13]
             }
             for row in rows
         ]
@@ -190,7 +199,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, last_executed_trigger, name, chat_id, task_kind, script_file
                 FROM scheduled_tasks
                 WHERE name = ? AND status != 'cancelled'
                 LIMIT 1
@@ -212,10 +221,11 @@ class TaskStore:
             "status": row[6],
             "created_at": row[7],
             "last_executed_date": row[8],
-            "name": row[9],
-            "chat_id": row[10],
-            "task_kind": row[11],
-            "script_file": row[12]
+            "last_executed_trigger": row[9],
+            "name": row[10],
+            "chat_id": row[11],
+            "task_kind": row[12],
+            "script_file": row[13]
         }
 
     def update_task(
@@ -308,7 +318,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, triggered_at, task_kind, script_file
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, last_executed_trigger, name, chat_id, triggered_at, task_kind, script_file
                 FROM scheduled_tasks
                 WHERE id = ?
             """, (task_id,))
@@ -329,11 +339,12 @@ class TaskStore:
             "status": row[6],
             "created_at": row[7],
             "last_executed_date": row[8],
-            "name": row[9],
-            "chat_id": row[10],
-            "triggered_at": row[11],
-            "task_kind": row[12],
-            "script_file": row[13]
+            "last_executed_trigger": row[9],
+            "name": row[10],
+            "chat_id": row[11],
+            "triggered_at": row[12],
+            "task_kind": row[13],
+            "script_file": row[14]
         }
 
     def delete_task_permanent(self, task_id: str) -> bool:
@@ -349,22 +360,28 @@ class TaskStore:
             conn.close()
         return affected > 0
 
-    def update_last_executed_date(self, task_id: str, date_str: str) -> bool:
-        """更新上次执行日期"""
+    def update_last_executed_trigger(self, task_id: str, trigger_iso: str) -> bool:
+        """记录任务最近一次实际执行的触发点（scheduled_at 值，触发点级记账）。
+
+        2026-08-13：从 last_executed_date（日期粒度）升级——日期粒度无法区分
+        "日级崩溃重跑"与"小时级当天多触发点"，触发点粒度使 scheduler 的跳过判断
+        精确到单个触发点。
+        """
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE scheduled_tasks
-                SET last_executed_date = ?
-                WHERE id = ?
-            """, (date_str, task_id))
-            affected = cursor.rowcount
+            cursor.execute(
+                "UPDATE scheduled_tasks SET last_executed_trigger = ? WHERE id = ?",
+                (trigger_iso, task_id),
+            )
             conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Failed to update last_executed_trigger for task {task_id}: {e}")
+            return False
         finally:
             conn.close()
-        return affected > 0
 
     def get_overdue_tasks(self) -> list[dict[str, Any]]:
         """获取所有到期和过期的待执行任务（scheduled_at <= now）"""
@@ -376,7 +393,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name, chat_id, task_kind, script_file
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, last_executed_trigger, name, chat_id, task_kind, script_file
                 FROM scheduled_tasks
                 WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?)
                 ORDER BY scheduled_at
@@ -396,10 +413,11 @@ class TaskStore:
                 "status": row[6],
                 "created_at": row[7],
                 "last_executed_date": row[8],
-                "name": row[9],
-                "chat_id": row[10],
-                "task_kind": row[11],
-                "script_file": row[12]
+                "last_executed_trigger": row[9],
+                "name": row[10],
+                "chat_id": row[11],
+                "task_kind": row[12],
+                "script_file": row[13]
             }
             for row in rows
         ]
