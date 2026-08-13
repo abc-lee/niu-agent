@@ -2185,6 +2185,16 @@ fn main() {
                             break;
                         }
                         thread::sleep(Duration::from_secs(3));
+                        // v2.6.4：sleep 期间窗口可能已关闭——POST test-llm 最长阻塞
+                        // ~220s（后端 wait_for 上限）。若关窗发生在 sleep 期间而只在循环
+                        // 顶部检查，启动器仍会阻塞在慢 POST 上，延迟 notify_shutdown/重启
+                        // 2-3.5 分钟。这里在 sleep 之后、POST 之前再查一次窗口退出，
+                        // 消除确定性退出延迟（残余竞态：POST 在途时关窗，最坏仍 ≤220s）。
+                        if cancelled_bg.load(Ordering::SeqCst) { break; }
+                        if let Ok(Some(exit_status)) = settings_child.try_wait() {
+                            info!("Settings window closed (exit_status={})", exit_status);
+                            break;
+                        }
                         if let Ok(resp) = poll_client.post(&test_url)
                             .header("Content-Type", "application/json").body("{}").send() {
                             if let Ok(v) = resp.json::<TestLlmResult>() {
