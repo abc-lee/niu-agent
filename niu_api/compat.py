@@ -277,11 +277,49 @@ async def _clean_dangling_tool_calls(store, message_id: str, valid_tcs: list[dic
         await db.commit()
 
 
-async def _cleanup_orphan_tool_messages(store):
-    """清理 DB 中所有孤立的 tool 消息（没有对应 assistant tool_calls 的 tool 输出）。
+def _is_empty_shell_assistant(m) -> bool:
+    """判断是否为空壳 assistant 消息（压缩残留）。
 
-    压缩可能遗留孤立 tool 消息（旧 bug 或模式2/3 没有完整性验证步骤）。
-    这些消息在 agent_loop 加载时会被安全网跳过，但占用 DB 空间。
+    同时满足才为 True（严格判断，防止误删合法消息）：
+    1. role == assistant
+    2. content 为空（strip 后空）
+    3. tool_calls 为空（'[]' / [] / None——JSON 解析后空列表）
+    4. tool_call_id 为空
+
+    **原始形态（content 空但 tool_calls 非空）不满足条件 3 → 返回 False → 保留**
+    （工具调用锚点——删除会导致多轮工具对话丢失工具结果上下文）
+    """
+    if getattr(m, "role", "") != "assistant":
+        return False
+    content = getattr(m, "content", "") or ""
+    if content.strip():
+        return False
+    tcs = getattr(m, "tool_calls", None)
+    if tcs:
+        try:
+            tcs = json.loads(tcs) if isinstance(tcs, str) else tcs
+        except (json.JSONDecodeError, TypeError):
+            return False  # 解析失败 → 保守保留（防误删优先，与 Task 2 SQL 方向一致；
+            # 注：生产路径 _safe_json 提前把坏 JSON 归 []，此分支是防御性——实际不触发）
+    if tcs:  # 非空列表 = 工具调用锚点 → 保留
+        return False
+    tc_id = getattr(m, "tool_call_id", "") or ""
+    if tc_id:
+        return False
+    return True
+
+
+async def _cleanup_orphan_tool_messages(store):
+    """清理 DB 中的压缩残留消息：孤立 tool 消息 + 空壳 assistant 消息。
+
+    压缩可能遗留：
+    1. 孤立 tool 消息（旧 bug 或模式2/3 没有完整性验证步骤）——tool_call_id 无对应 assistant tool_calls
+    2. 空壳 assistant 消息——原始形态（content 空 + tool_calls 非空）的 assistant 的
+       tool 输出被级联删除后，悬空清理清空其 tool_calls → 留下 content 空 + tool_calls 空 的空壳
+
+    **保留**：content 空但 tool_calls 非空的 assistant（工具调用锚点——agent_loop
+    还原工具调用锚点、tool 消息靠 tool_call_id 归属）——绝不删除，防止工具结果上下文丢失。
+    空壳 assistant 无任何语义，安全删除。
     """
     post_msgs = await store.get_messages()
     _valid_tc_ids: set[str] = set()
@@ -300,12 +338,17 @@ async def _cleanup_orphan_tool_messages(store):
                     pass
     _orphan_mids: list[str] = []
     for m in post_msgs:
-        if getattr(m, "role", "") == "tool":
+        role = getattr(m, "role", "")
+        if role == "tool":
             tc_call_id = getattr(m, "tool_call_id", "") or ""
             if tc_call_id and tc_call_id not in _valid_tc_ids:
                 _orphan_mids.append(getattr(m, "id", ""))
+        elif role == "assistant" and _is_empty_shell_assistant(m):
+            # 空壳 assistant：content 空 + tool_calls 空 + tool_call_id 空——
+            # 压缩残留，无任何对话/工具语义，安全删除
+            _orphan_mids.append(getattr(m, "id", ""))
     if _orphan_mids:
-        logger.info(f"[Tidy] Cleaning up {len(_orphan_mids)} orphan tool messages from DB")
+        logger.info(f"[Tidy] Cleaning up {len(_orphan_mids)} orphan/empty-shell messages from DB")
         await store.delete_messages_by_ids(_orphan_mids)
 
 
@@ -3418,6 +3461,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                                                 pass
                     except Exception as e:
                         logger.warning(f"[Tidy] Mode-1 tool chain integrity check failed: {e}")
+
+                    # 模式一：压缩后统一清理孤立 tool + 空壳 assistant 消息
+                    await _cleanup_orphan_tool_messages(store)
 
                     # 模式一：推进压缩游标
                     if new_compress_id:
