@@ -92,12 +92,6 @@ class _FakePool:
         matched = [e for e in self.entities if e["category"] == category][:n]
         return [SimpleNamespace(entity_name=e["entity_name"], entity_dict=e["entity_dict"]) for e in matched]
 
-    def get_top_by_source(self, source, n):
-        return []
-
-    def get_entry(self, entity_name):
-        return None
-
     def __len__(self):
         return len(self.entities)
 
@@ -117,9 +111,6 @@ def _make_runner(monkeypatch, adapter, pool):
     runner._brain_adapter = None  # 触发 LightRAGAdapter() 新建路径（被 __new__ patch 接管）
     runner._INJECT_ENTITY_TYPE_BLACKLIST = set()
     runner._INJECT_ENTITY_NAME_BLACKLIST = set()
-    # R2-B P1-2：正常路径 all_hits 非空会触发真实 _traverse_from_hits → get_lightrag() 懒初始化
-    # 真实 LightRAG（环境相关慢/挂）——测试必须覆盖为返回空（图遍历可中断正确性由生产代码保证）
-    runner._traverse_from_hits = lambda hits: {}
     # T2 P2：覆盖 _get_brain_injector 返回 fake injector——真实创建路径在测试里
     # 会调 _FakeAdapter._get_rag()（现返回 None 走安全短路）且重，无法构造出可用
     # BrainContextInjector；此前缺该方法导致 AttributeError 被生产 except 吞掉，

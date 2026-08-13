@@ -27,7 +27,7 @@ class DecayEntry:
     entity_name: str
     entity_dict: dict[str, Any]   # LightRAG entity dict（description, entity_type 等）
     category: str                  # skill / knowledge
-    source: str                    # "vector" / "graph_traversal"
+    source: str                    # "vector"（graph_traversal 已随图遍历删除，2026-08-13）
     score: float                   # 当前 R 值
 
 
@@ -69,8 +69,7 @@ class DecayPool:
         existing = self._entries.get(key)
         if existing is not None and vector_score < existing.score:
             # 保留高分，但更新 entity_dict 和 category（纠正分类错误）
-            # 不更新 source：source 标识发现路径（vector/graph_traversal），
-            # 跨轮低分注入不应改变显示分类（参考知识 vs 活跃脑区知识）
+            # 不更新 source：source 标识发现路径（vector），跨轮低分注入不应改变显示分类
             existing.entity_dict = entity_dict
             existing.category = category
             return
@@ -87,15 +86,6 @@ class DecayPool:
         qualified = [
             e for e in self._entries.values()
             if e.category == category and e.score >= DECAY_THRESHOLD
-        ]
-        qualified.sort(key=lambda e: e.score, reverse=True)
-        return qualified[:top_n]
-
-    def get_top_by_source(self, source: str, top_n: int) -> list[DecayEntry]:
-        """按 source 取 top N（按 score 降序）。"""
-        qualified = [
-            e for e in self._entries.values()
-            if e.source == source and e.score >= DECAY_THRESHOLD
         ]
         qualified.sort(key=lambda e: e.score, reverse=True)
         return qualified[:top_n]
