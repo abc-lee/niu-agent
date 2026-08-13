@@ -522,6 +522,13 @@ preload_face_model()
 - **实机验证（待执行）**：配置无效（改坏 key）→ 启动 → 后端日志 `[LLMGate] LLM 连通性检测失败` + 无 `Internal scheduler started` → 配置页 → 配好 → 重启 → `Internal scheduler started` 正常；正常配置回归
 - **已知边界**：① **>120s 首字节模型**：patch 前可用、patch 后两端一致判定失败弹配置页——**逃生口：user-config llm.read_timeout 覆盖（≤190s，wait ≤220 < 三方客户端 230s）**，对门控 + 启动器验证生效；**配置页保存仍受 probe 保存闸门（⑨）限制——>10s 首字节模型经 UI testAndSave 保存必败，需手改 user-config.json**；settings UI 保存保留覆盖（v2.6）② llm_ready=False 时 `/api/scheduler` 端点用 get_store()（返回 200、任务可见但永不触发——非 500）③ 启动器 `/api/llm-status` 判空无 is_local 豁免（pre-existing——Ollama 空 apiKey 场景启动器仍弹配置页）④ lifespan 门控决策无单测（对齐 LightRAG v7 先例，靠双审查 + 实机验证）⑤ ChatQueue 不 pause 后，llm_ready=False 期间若有消息入队（理论无源）走 LLM 失败降级回复 ⑥ **瞬态分歧会话级副作用**（启动瞬间 LLM 短暂不可达 + 启动器验证前恢复）：后台组件整会话跳过、无用户可见通知——需**手动重启**恢复全量 ⑦ **挂起 provider** 弹配置页前总等待 ≈455s（默认）/ ≈445s（逃生口）——预算覆盖 20-120s 首响模型的设计取舍 ⑧ 配置页轮询 sleep 后二次窗口检查（残余在途 POST 竞态 ≤230s）⑨ **settings 保存双闸门**：testAndSave 还须 probe-response-format 返回 supported——probe 端点 read_timeout=10 → 首 chunk >10-20s 模型 probe_failed → "配置未保存"——pre-existing，遇真实慢模型场景单独扩展
 
+#### 修复：定时任务小时级 cron 当天只执行一次（last_executed_date 日期粒度缺陷 → 触发点级记账）
+
+- **症状**：定时任务 `10 9-23 * * *`（每整点后 10 分钟检查邮件）9:10 执行一次后当天再不执行——`last_executed_date` 每日去重（为日级任务防崩溃重跑设计）把"当天已执行过"当成"当天不再需要执行"，吞掉当天全部后续触发点（DB 实证：triggered_at=11:10:04 被扫描但跳过、scheduled_at 被 reschedule 到 12:10）
+- **根因**：日期粒度无法区分场景 A（日级崩溃重跑，应跳过）与场景 B（小时级当天最后触发点 23:10 到期，应执行）——两者数据形态相同（last_executed==today + 到期 + next=明天）
+- **修复**：新增 `last_executed_trigger` 列（触发点粒度，存上次执行的触发点 scheduled_at）+ try/except ALTER 迁移；跳过判断改 `scheduled_at <= last_executed_trigger`（同触发点再到期=崩溃重跑→跳过；不同触发点=当天多次→执行）——23:10 最后触发点也执行（15/15），判断不依赖当前时刻（无墙钟问题），旧数据 NULL 部署当天即自愈。**取舍**：回调在途崩溃场景从"漏执行"转向"可能重复"（at-least-once，窗口=回调期+落库间隙，对幂等任务良性）
+- **质量链**：计划 R1-R6 六轮双审查（v1 next_time.date() 方案 R1/R2 REJECT：23:10 丢失 P2 + 测试墙钟 P1×2；v2 触发点级 R3/R4 REJECT：CREATE TABLE 示例缺列 P1 + 测试 mock 缺复现形态 P1 + 索引映射 P2×2 + 验证命令问题；v3 R5/R6 双 APPROVE：R5 补 at-least-once 取舍文档 P2 + 行号/论证 P3×2，R6 补断言强化/格式不变式 P3×4——v3.1 修订后实施）；与 2026-07-31 cron 高级修饰符改造（#/L/LW，仅 cron_parser.py）修改面不相交
+
 ### 2026-08-12
 
 #### 修复：定时任务飞书流式卡片永不终结（死路由 pre-existing + 86d6c7a2 显性化）——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
