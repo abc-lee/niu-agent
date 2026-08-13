@@ -1517,51 +1517,38 @@ async def get_llm_status() -> dict:
         return {"ready": False, "error": str(e)}
 
 
-@router.post("/api/test-llm")
-async def test_llm(request: Request) -> dict:
-    """通过真实 LLM 调用验证配置。验证完整链路：config → LiteLLM → provider 路由 → API 调用 → 响应。
+async def _probe_llm(
+    config: dict,
+    *,
+    read_timeout: float = 120.0,
+    wait_timeout: float = 150.0,
+) -> tuple[bool, str]:
+    """真实 LLM 调用探测：验证 config → LiteLLM → provider 路由 → API 调用 → 响应。
 
-    请求体可选：传入 config 字典则用它测试（配置页面预保存测试）；
-    不传或为空则从 user-config.json 读取（启动器验证）。
+    供 /api/test-llm 端点与启动 LLM 门控复用（同一预算——v2.2：read_timeout=120
+    覆盖代码库显式支持的 20-120s 首响应推理模型；短预算会误杀慢首响模型，
+    且与启动器 test-llm 判定分歧导致静默降级）。
+    返回 (success, message_or_error)；异常消息已脱敏（key=*** / Bearer ***）。
     """
     from agent.generic.litellm_adapter import LiteLLMSession
 
-    from niu_api.llm_proxy import get_llm_config
-
-    # 读取配置：优先用请求体，否则从文件读取
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    # 统一键名为小写（前端传 apiKey/apiBase，get_llm_config 返回小写，需统一）
-    body = {k.lower(): v for k, v in body.items()} if body else {}
-
-    if body:
-        # 用 body 测试（预保存测试）——body 非空即测 body（即使 apiKey 为空），
-        # 与 probe 端点 :1562 闸门语义对齐。回退读文件会掩盖被测问题
-        # （如 Ollama 空 apiKey 表单场景，回退读到空配置导致 is_local 豁免不可达）。
-        config = body
-    else:
-        # 启动器调用：从文件读取
-        try:
-            config = get_llm_config()
-        except Exception as e:
-            return {"success": False, "error": f"读取配置失败: {e}"}
-
-    # body 已归一化，config 也需要确保小写
+    # 入口键名归一化（settings 表单可能传 apiKey/apiBase 原始大写键）
     config = {k.lower(): v for k, v in config.items()}
 
-    # Ollama 等本地模型无需 API Key（apiBase 为 localhost/127.0.0.1 时豁免）
-    # 与 probe 端点 :1572 的豁免判定保持一致
+    # 判空（Ollama 等本地模型 apiBase 为 localhost/127.0.0.1 时 apiKey 豁免）
     apibase = config.get("apibase", "")
-    is_local = apibase.startswith("http://localhost") or apibase.startswith("http://127.0.0.1") or apibase.startswith("https://localhost") or apibase.startswith("https://127.0.0.1")
+    is_local = (
+        apibase.startswith("http://localhost")
+        or apibase.startswith("http://127.0.0.1")
+        or apibase.startswith("https://localhost")
+        or apibase.startswith("https://127.0.0.1")
+    )
     if not config.get("apikey") and not is_local:
-        return {"success": False, "error": "API Key 未配置"}
+        return False, "API Key 未配置"
     if not config.get("apibase"):
-        return {"success": False, "error": "API 地址未配置"}
+        return False, "API 地址未配置"
     if not config.get("model"):
-        return {"success": False, "error": "模型名称未配置"}
+        return False, "模型名称未配置"
 
     try:
         llm_config = {
@@ -1572,8 +1559,7 @@ async def test_llm(request: Request) -> dict:
             "reasoning_effort": None,
             "provider": config.get("provider", ""),
             "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": 5},
-            # 推理模型（deepseek-reasoner/o1/o3）首响应 20-120s，10s 必然超时
-            "read_timeout": 60,
+            "read_timeout": read_timeout,
         }
         session = LiteLLMSession(cfg=llm_config)
 
@@ -1591,36 +1577,84 @@ async def test_llm(request: Request) -> dict:
             # 思考模型可能只输出 reasoning_content 而无文本 chunk，
             # 但 MockResponse 会包含 thinking/content 字段
             # stream_error=True 表示流式传输中途出错，partial content 不可信
-            if mock_resp and getattr(mock_resp, 'stream_error', False):
+            if mock_resp and getattr(mock_resp, "stream_error", False):
                 return "", False  # 无内容，触发"模型返回空响应"错误提示
             text = "".join(chunks)
             has_content = bool(text.strip()) or (
-                mock_resp is not None and (getattr(mock_resp, 'content', None) or getattr(mock_resp, 'thinking', None))
+                mock_resp is not None
+                and (getattr(mock_resp, "content", None) or getattr(mock_resp, "thinking", None))
             )
             return text, has_content
 
-        # 外层超时给 read_timeout(60s) + 重试留余量（推理模型首响应慢）
-        result, has_content = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=90)
+        # 外层超时给 read_timeout + 重试留余量（推理模型首响应慢）
+        result, has_content = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=wait_timeout)
         if not has_content:
-            return {"success": False, "error": "模型返回空响应"}
+            return False, "模型返回空响应"
 
         provider = config.get("provider", "") or config.get("type", "openai")
-        return {"success": True, "message": f"模型测试通过 (model={config.get('model')}, provider={provider})"}
+        return True, f"模型测试通过 (model={config.get('model')}, provider={provider})"
     except TimeoutError:
-        return {"success": False, "error": "连接超时，请检查网络和 API 地址"}
+        return False, "连接超时，请检查网络和 API 地址"
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg or "unauthorized" in error_msg.lower() or "invalid api key" in error_msg.lower():
-            return {"success": False, "error": "API Key 无效或未授权"}
+            return False, "API Key 无效或未授权"
         if "404" in error_msg or "not found" in error_msg.lower():
-            return {"success": False, "error": "模型或 API 端点不存在，请检查模型名称和地址"}
+            return False, "模型或 API 端点不存在，请检查模型名称和地址"
         # Sanitize error message to avoid leaking API keys in URLs/headers
         import re
-        safe_msg = re.sub(r'key=[^&\s]+', 'key=***', error_msg)
-        safe_msg = re.sub(r'Bearer\s+[^\s]+', 'Bearer ***', safe_msg)[:200]
+        safe_msg = re.sub(r"key=[^&\s]+", "key=***", error_msg)
+        safe_msg = re.sub(r"Bearer\s+[^\s]+", "Bearer ***", safe_msg)[:200]
         if "provider" in error_msg.lower() or "unmapped" in error_msg.lower():
-            return {"success": False, "error": f"Provider 路由错误: {safe_msg}"}
-        return {"success": False, "error": f"模型测试失败: {safe_msg}"}
+            return False, f"Provider 路由错误: {safe_msg}"
+        return False, f"模型测试失败: {safe_msg}"
+
+
+@router.post("/api/test-llm")
+async def test_llm(request: Request) -> dict:
+    """通过真实 LLM 调用验证配置。验证完整链路：config → LiteLLM → provider 路由 → API 调用 → 响应。
+
+    请求体可选：传入 config 字典则用它测试（配置页面预保存测试）；
+    不传或为空则从 user-config.json 读取（启动器验证）。
+    """
+    from niu_api.llm_ready import resolve_probe_budget
+    from niu_api.llm_proxy import get_llm_config
+
+    # 读取配置：优先用请求体，否则从文件读取
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    # 统一键名为小写（前端传 apiKey/apiBase，get_llm_config 返回小写，需统一）
+    body = {k.lower(): v for k, v in body.items()} if body else {}
+
+    if body:
+        # 用 body 测试（预保存测试）——body 非空即测 body（即使 apiKey 为空），
+        # 与 probe 端点闸门语义对齐。回退读文件会掩盖被测问题
+        # （如 Ollama 空 apiKey 表单场景，回退读到空配置导致 is_local 豁免不可达）。
+        config = body
+    else:
+        # 启动器调用：从文件读取
+        try:
+            config = get_llm_config()
+        except Exception as e:
+            return {"success": False, "error": f"读取配置失败: {e}"}
+
+    # body 已归一化，config 也需要确保小写
+    config = {k.lower(): v for k, v in config.items()}
+
+    # 预算解析：config.read_timeout 可覆盖默认（逃生口——>120s 慢模型通道，
+    # 与启动门控 check_llm_ready 同一 helper，闭环）
+    read_timeout, wait_timeout = resolve_probe_budget(config)
+    success, message = await _probe_llm(
+        config,
+        read_timeout=read_timeout,
+        wait_timeout=wait_timeout,
+    )
+    if success:
+        return {"success": True, "message": message}
+    return {"success": False, "error": message}
 
 
 def _build_probe_response_format_json_schema() -> dict:
