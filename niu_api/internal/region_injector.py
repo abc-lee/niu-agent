@@ -2,8 +2,9 @@
 Brain Region Context Injector
 
 Injects brain region context into the system prompt based on activation levels.
-Provides the region status map (always injected); detailed content is now
-provided by region-filtered search results.
+Provides the region status map (always injected) and tiered region knowledge
+formatted by format_region_knowledge(): 🟢 lit regions get top 5 current/cached
+hit entities, 🟡 dimming regions get top 3 cached hits, ⚫ off regions get none.
 
 M4 module: Context injection, M1-M3 provide detection, node management, and activation.
 """
@@ -25,13 +26,33 @@ from niu_api.internal.region_manager import RegionManager
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# 实体过滤黑名单（与 agent/runner.py 常量同步维护——跨模块 import 会循环，
+# 双份副本须手动保持一致）：
+# - entity_type 黑名单：.lower() 归一化后比较（title case 变体也会命中）
+# - entity_name 黑名单：case-sensitive 精确匹配（与 runner 现存实现一致）
+# ---------------------------------------------------------------------------
+_INJECT_ENTITY_TYPE_BLACKLIST = {"mcp_tool", "tool", "brainregion"}
+_INJECT_ENTITY_NAME_BLACKLIST = {
+    "agent_loop.py", "handler.py", "tool_registry.py", "主Agent",
+    "context-manager", "chat_idle事件", "chat-with-file-processor",
+    "chat-with-event-manager", "chat-with-journal-agent",
+}
+
+# 活跃脑区知识段全局条数上限：🟢 top5 + 🟡 top3 累计超 26 条截断。
+# 逐条准入（严格 `>`）：第 26 条照常进入，累计达 26 后停止——
+# 4🟢×5 + 2🟡×3 = 26 恰好全量输出；更亮场景截断（最坏 10🟢 压缩 50→26）。
+_REGION_ENTRY_CAP = 26
+
 
 class BrainContextInjector:
     """Brain region context injection
 
     Takes a query, activates relevant brain regions, and returns the
-    region status map for the system prompt. Detailed content is now
-    provided by region-filtered search results.
+    region status map plus tiered region knowledge for the system prompt.
+    Detailed content is provided by format_region_knowledge(): 🟢 regions get
+    their top 5 hit entities (current round first, recent-hit cache fallback),
+    🟡 regions get top 3 cached entities, ⚫ regions get none.
 
     Usage::
 
@@ -48,6 +69,9 @@ class BrainContextInjector:
         self._adapter = adapter
         self._activation_mgr = activation_mgr
         self._region_mgr = region_mgr
+        # 跨轮缓存"每个脑区最近一次命中"（合并更新：只覆盖本轮命中脑区，
+        # 保留未命中脑区旧条目）——供 🟡 档与 🟢 未命中回退使用。
+        self._recent_region_entities: dict[str, list[dict]] = {}
 
     # ------------------------------------------------------------------
     # Main entry
@@ -57,11 +81,14 @@ class BrainContextInjector:
         self,
         query_context: str,
         timeout: int | None = None,
-    ) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    ) -> tuple[dict[str, list[dict]], dict[str, str], list[str]]:
         """Step 1-3: Get entity mapping, vector-search, activate regions.
 
         Returns:
-            (region_knowledge, entity_to_region, hit_entities) for use by format_injection_text().
+            (region_entities, entity_to_region, hit_entities) for use by
+            format_region_knowledge() / format_injection_text().
+            region_entities: region_id -> list of hit entity dicts
+            (each with entity_name/entity_type/description, in query_data order).
         """
         if not query_context:
             return {}, {}, []
@@ -73,7 +100,7 @@ class BrainContextInjector:
                 entity_to_region[member.lower()] = region_name
 
         hit_entities: list[str] = []
-        region_knowledge: dict[str, str] = {}
+        region_entities: dict[str, list[dict]] = {}
 
         try:
             query_result = self._adapter.query_data(
@@ -99,10 +126,12 @@ class BrainContextInjector:
                             region_name = self._classify_entity_to_region(entity_name, entity_type)
                             if region_name:
                                 entity_to_region[entity_name.lower()] = region_name
-                        if region_name and region_name not in region_knowledge:
-                            desc = entity.get("description", "")
-                            if desc:
-                                region_knowledge[region_name] = desc
+                        if region_name:
+                            region_entities.setdefault(region_name, []).append({
+                                "entity_name": entity_name,
+                                "entity_type": entity_type,
+                                "description": entity.get("description", ""),
+                            })
         except Exception as e:
             logger.warning("脑区注入向量检索失败: %s", e)
 
@@ -110,18 +139,23 @@ class BrainContextInjector:
             hit_entities, entity_to_region
         )
 
-        return region_knowledge, entity_to_region, hit_entities
+        # 合并更新最近命中缓存：只覆盖本轮命中脑区，保留未命中脑区旧条目
+        # （覆盖更新会清空未命中脑区旧条目 → 🟡 档读取时恒空）
+        for region_name, entities in region_entities.items():
+            self._recent_region_entities[region_name] = entities
+
+        return region_entities, entity_to_region, hit_entities
 
     def format_injection_text(
         self,
-        region_knowledge: dict[str, str],
+        region_entities: dict[str, list[dict]] | None = None,
         entity_to_region: dict[str, str] | None = None,
         hit_entities: list[str] | None = None,
     ) -> str:
         """Format brain region injection text.
 
-        After refactoring, only returns the region status map.
-        Detailed content is now provided by region-filtered search results.
+        Returns only the region status map (kept for backward compatibility);
+        detailed tiered region knowledge is provided by format_region_knowledge().
         """
         regions = self._activation_mgr.get_region_map()
         if not regions:
@@ -135,8 +169,8 @@ class BrainContextInjector:
         """Convenience: activate + format in one call."""
         if not query_context:
             return ""
-        region_knowledge, entity_to_region, hit_entities = self.activate_for_query(query_context)
-        return self.format_injection_text(region_knowledge, entity_to_region, hit_entities)
+        region_entities, entity_to_region, hit_entities = self.activate_for_query(query_context)
+        return self.format_injection_text(region_entities, entity_to_region, hit_entities)
 
     # ------------------------------------------------------------------
     # Formatting: region map (always injected)
@@ -160,7 +194,8 @@ class BrainContextInjector:
 
         lines = [f"## 脑区状态 ({len(regions)}个脑区)"]
 
-        lit_count = sum(1 for r in regions if r.activation > 0.3)
+        # 口径与 🟢 图标一致（>0.7）：黄灯不算点亮
+        lit_count = sum(1 for r in regions if r.activation > 0.7)
         if lit_count > 5:
             lines.append(f"> ⚠ {lit_count}个脑区已点亮，建议关闭与当前会话无关脑区以减少干扰")
 
@@ -195,8 +230,8 @@ class BrainContextInjector:
     def format_region_map_only(self) -> str:
         """Format brain region status map only, without detailed content.
 
-        Used when detailed content is provided by region-filtered search results
-        instead of the old layered injection approach.
+        Used when detailed content is provided by format_region_knowledge()
+        (tiered by activation level) instead of the old layered injection approach.
         """
         regions = self._activation_mgr.get_region_map()
         if not regions:
@@ -223,6 +258,82 @@ class BrainContextInjector:
         if not regions:
             return ""
         return self.format_region_map(regions)
+
+    def format_region_knowledge(
+        self,
+        region_entities: dict[str, list[dict]],
+    ) -> list[tuple[str, str, str, str]]:
+        """Format tiered region knowledge: 🟢 top 5 / 🟡 top 3 / ⚫ none.
+
+        🟢 (activation > 0.7): current-round hits first, recent-hit cache
+            fallback (a region stays green for several rounds after its last
+            hit; falling back to cache keeps injection monotonic with
+            activation: 🟢 >= 🟡 > ⚫).
+        🟡 (activation > 0.3): recent-hit cache top 3 (yellow = recently
+            relevant, not the current focus).
+        ⚫: skipped.
+
+        Filters: entity_type (lowercased) and entity_name (case-sensitive
+        exact match) blacklists. Global cap: stops once _REGION_ENTRY_CAP
+        entries have been admitted (green regions processed before yellow).
+
+        Returns:
+            List of (label, entity_name, entity_type, description) tuples;
+            label is like "🟢 工作事务：" (status light + region label).
+            Empty list when nothing to inject.
+        """
+        regions = self._activation_mgr.get_region_map()
+        if not regions:
+            return []
+
+        # 🟢 先 🟡 后（⚫ 跳过）——cap 截断时绿灯档优先占满额度
+        status_order = {STATUS_LIT: 0, STATUS_DIMMING: 1, STATUS_OFF: 2}
+        sorted_regions = sorted(
+            regions,
+            key=lambda r: status_order.get(
+                self._activation_mgr.get_status_light(r.activation), 3
+            ),
+        )
+
+        entries: list[tuple[str, str, str, str]] = []
+        for region in sorted_regions:
+            light = self._activation_mgr.get_status_light(region.activation)
+            if light == STATUS_LIT:
+                source = (
+                    region_entities.get(region.region_id)
+                    or self._recent_region_entities.get(region.region_id, [])
+                )
+                tier_limit = 5
+            elif light == STATUS_DIMMING:
+                source = self._recent_region_entities.get(region.region_id, [])
+                tier_limit = 3
+            else:
+                continue
+
+            label = f"{light} {region.label}："
+            for entity in source[:tier_limit]:
+                name = entity.get("entity_name", "")
+                if not name:
+                    continue
+                etype = entity.get("entity_type", "")
+                if (etype or "").lower() in _INJECT_ENTITY_TYPE_BLACKLIST:
+                    continue
+                if name in _INJECT_ENTITY_NAME_BLACKLIST:
+                    continue
+                desc = entity.get("description") or ""
+                entries.append((label, name, etype, desc))
+                # 逐条准入：累计达上限立即停止（严格 `>`——恰好 26 条全量输出）
+                if len(entries) >= _REGION_ENTRY_CAP:
+                    return entries
+        return entries
+
+    def clear_recent_region_entities(self) -> None:
+        """清空最近命中缓存（会话边界清理用）。
+
+        /new 或 /clear 清空会话时调用，防止新会话前 ~11-15 轮持续注入
+        上一会话的缓存实体（Task 3 在 runner clear 路径接线）。
+        """
+        self._recent_region_entities = {}
 
     def _get_graph_region_names(self) -> set[str]:
         """Bug 1: 查图拿到所有真实存在的 brainregion 实体名

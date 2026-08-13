@@ -243,7 +243,7 @@ class TestLitCountSoftControl:
         for i in range(6):
             activation_mgr._regions[f"region_{i}"] = BrainRegionState(
                 region_id=f"region_{i}", community_id="",
-                label=f"测试脑区{i}", activation=0.5,
+                label=f"测试脑区{i}", activation=0.8,
                 last_activated_at=0, activation_count=1, manually_dimmed=False,
             )
         # Add an off region to verify the count is about lit, not total
@@ -264,7 +264,7 @@ class TestLitCountSoftControl:
         for i in range(5):
             activation_mgr._regions[f"region_{i}"] = BrainRegionState(
                 region_id=f"region_{i}", community_id="",
-                label=f"测试脑区{i}", activation=0.5,
+                label=f"测试脑区{i}", activation=0.8,
                 last_activated_at=0, activation_count=1, manually_dimmed=False,
             )
         injector = _make_injector(activation_mgr)
