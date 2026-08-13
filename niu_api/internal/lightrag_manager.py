@@ -37,6 +37,20 @@ from loguru import logger
 
 from niu_api.internal.region_manager import FLOOR_WEIGHT
 
+# ============== LLM 门控状态（lifespan 启动门控） ==============
+
+# 进程启动默认 True——probe 只在 lifespan 显式 set_llm_gate_ready(False) 时跳过
+# （lifespan 在 check_llm_ready 前后调用；llm_ready 是 lifespan 局部变量，
+#  probe 无参数通道 → 模块级 flag 传递）
+_llm_gate_ready: bool = True
+
+
+def set_llm_gate_ready(ready: bool) -> None:
+    """设置 LLM 门控状态（lifespan 在 check_llm_ready 前后调用）。"""
+    global _llm_gate_ready
+    _llm_gate_ready = ready
+
+
 # ============== Config ==============
 
 # STORAGE_DIR 支持环境变量覆盖（让 e2e 测试能用临时目录避免污染 ~/.niu/lightrag_storage）
@@ -215,6 +229,10 @@ def _trigger_background_probe_if_needed() -> None:
     M2 atomic write：先写临时文件再 os.replace，避免主进程在写入过程中读到
     部分 JSON 触发 JSONDecodeError。
     """
+    global _llm_gate_ready
+    if not _llm_gate_ready:
+        logger.warning("[ProbeFormat] 后台探测跳过（LLM 不可用）")
+        return
     import json
     import threading
     from pathlib import Path
