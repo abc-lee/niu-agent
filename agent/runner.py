@@ -1899,7 +1899,6 @@ class NiuRunner:
             _build_incremental_msg_text,
             _build_journal_task,
             _build_plain_history,
-            _is_subagent_overflow,      # 新增：检测 overflow
             _parse_idx_list,
             _strip_analysis,
             _write_cursor_with_lock,

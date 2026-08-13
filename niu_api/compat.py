@@ -1438,7 +1438,7 @@ async def _probe_llm(
             "model": config["model"],
             "reasoning_effort": None,
             "provider": config.get("provider", ""),
-            "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": 5},
+            "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": 256},
             "read_timeout": read_timeout,
         }
         session = LiteLLMSession(cfg=llm_config)
@@ -1447,6 +1447,7 @@ async def _probe_llm(
             gen = session.chat(messages=[{"role": "user", "content": "hi"}])
             chunks = []
             mock_resp = None
+            truncated = False
             try:
                 while True:
                     chunk = next(gen)
@@ -1458,16 +1459,21 @@ async def _probe_llm(
             # 但 MockResponse 会包含 thinking/content 字段
             # stream_error=True 表示流式传输中途出错，partial content 不可信
             if mock_resp and getattr(mock_resp, "stream_error", False):
-                return "", False  # 无内容，触发"模型返回空响应"错误提示
+                return "", False, False  # 无内容，触发"模型返回空响应"错误提示
+            # finish_reason=length：输出被 max_tokens 截断——必须报错（曾静默判通过）
+            if mock_resp is not None and getattr(mock_resp, "finish_reason", None) == "length":
+                truncated = True
             text = "".join(chunks)
             has_content = bool(text.strip()) or (
                 mock_resp is not None
                 and (getattr(mock_resp, "content", None) or getattr(mock_resp, "thinking", None))
             )
-            return text, has_content
+            return text, has_content, truncated
 
         # 外层超时给 read_timeout + 重试留余量（推理模型首响应慢）
-        result, has_content = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=wait_timeout)
+        result, has_content, truncated = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=wait_timeout)
+        if truncated:
+            return False, "模型输出被 max_tokens 截断（思考链可能消耗过多输出 token），建议关闭思考链或调大 max_tokens"
         if not has_content:
             return False, "模型返回空响应"
 
