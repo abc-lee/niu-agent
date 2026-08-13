@@ -130,7 +130,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 你要做什么 | 用什么工具 | 关键参数 |
 |-----------|-----------|---------|
-| 检查实体是否已存在 | `lightrag_search_entities` | query=实体名, keywords=实体名, top_k=5 |
+| 检查实体是否已存在（纯名） | `lightrag_search_entities` | query=实体名, keywords=实体名, top_k=20, fields=["entity_name","entity_type"]——纯名检查不占上下文，top_k 可在 20 上下自调；要查实体属性保持 top_k=5 |
 | 创建/更新实体 | `lightrag_insert_entity` | name, entity_type, description |
 | 创建关系 | `lightrag_insert_relation` | src_id, tgt_id, relation |
 | 查看实体周围的关系 | `lightrag_get_graph` | entity_name, depth=1 |
@@ -170,7 +170,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 **A1. 提取实体**（供阶段B精加工用）
 - 从消息中识别有持久价值的实体（概念、偏好、技能、事件）
-- 注意去重：用 `lightrag_search_entities(query, keywords=实体名, top_k=5)` 检查是否已存在
+- 注意去重：用 `lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查是否已存在——纯名检查不消耗太多上下文，为确保能查到更多语义接近的实体（含碎片/别名），top_k 可适度提高至 20 上下自我判断调整；要查实体属性的查询保持 top_k=5
 
 **A2. 观察 skill 相关信号**（供阶段C用）
 - ✦ **明确的 skill 反馈**：assistant 消息中包含"根据…的指导"、"按照…的步骤"、"…的规则与实际不符"等表述——这是最可靠的信号，优先处理
@@ -447,7 +447,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 ## 实体提取规则
 
 - **每次处理实体数量上限：20 个**（超出则按出现频率取前 20）
-- 去重检查：`lightrag_search_entities(query, keywords=实体名, top_k=5)` 检查同名是否已存在。实体名是唯一标识，同名即重复。需要按类型枚举所有实体时用 `lightrag_list_entities --entity-type 类型名`（top_k=5，硬性要求，必须提供 keywords）
+- 去重检查：`lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查同名是否已存在——纯名检查不占上下文，top_k 可适度提高至 20 上下自调，确保能查到更多语义接近的实体（含碎片/别名）；要查实体属性保持 top_k=5。实体名是唯一标识，同名即重复。需要按类型枚举所有实体时用 `lightrag_list_entities --entity-type 类型名`（top_k=5，硬性要求，必须提供 keywords）
 
 从消息中提取实体时：
 1. 只提取有持久价值的知识（概念、偏好、技能、事件），不提取临时性内容
@@ -481,7 +481,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_merge_entities(source_entities, target_entity, merge_strategy, target_entity_data)` — 合并多个实体为一个（用于修复实体碎片化）。`source_entities` 是数组（可合并多个源实体）。`merge_strategy` 指定合并策略。`target_entity_data` 指定目标实体的属性
 - `lightrag_delete_entity(entity_name)` — 删除实体（慎用，仅用于纠错）
 - `lightrag_delete_relation(source_entity, target_entity, keywords)` — 删除关系（慎用，仅用于纠错）。`source_entity`/`target_entity` 定位两端实体。`keywords` 非必填，不指定则删除两实体间所有关系
-- `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议设为 5。`keywords` 为字符串数组，非必填（提供可加速返回）。`fields` 指定返回字段
+- `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议设为：纯名存在性检查用 top_k=20 + fields=["entity_name","entity_type"]（不占上下文），实体名+属性查询保持 top_k=5。`keywords` 为字符串数组，非必填（提供可加速返回）。`fields` 指定返回字段
 - `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/skill/tool/knowledge/photo/concept）
 - `lightrag_get_graph(action, entity_name, depth, limit, edge_types)` — 获取图谱子图。`action` 必填（"explore"/"snapshot"）。`limit` 用于 snapshot 模式限制节点数。`edge_types` 按关系类型过滤。depth 建议 1-2
 - `lightrag_timeline_query(query, start_entities, direction, max_depth, top_k, max_results)` — 时间线查询。`query` 非必填（可用 `start_entities` 替代）。`start_entities` 为字符串数组，直接指定起始实体。`top_k` 控制向量搜索返回实体数
