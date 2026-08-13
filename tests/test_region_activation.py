@@ -7,10 +7,13 @@ Brain Region Activation Manager 测试 — 验证 RegionActivationManager 的
 
 import time
 
+import pytest
+
 from niu_api.internal.region_activation import (
     STATUS_DIMMING,
     STATUS_LIT,
     STATUS_OFF,
+    BrainRegionState,
     RegionActivationManager,
 )
 from niu_api.internal.region_manager import BrainRegionInfo
@@ -541,3 +544,47 @@ class TestGetStatusLight:
         assert manager.get_status_light(0.7) == STATUS_DIMMING
         # Exactly 0.1 is NOT dimming (>0.1), so it's off
         assert manager.get_status_light(0.1) == STATUS_OFF
+
+
+# ============== Test 9: lit-aware decay acceleration ==============
+
+
+def _make_lit_manager(activations: list[float]) -> RegionActivationManager:
+    """创建指定激活值列表的 RegionActivationManager（直插 _regions，≥7 🟢 触发加速）"""
+    manager = RegionActivationManager()
+    for i, activation in enumerate(activations):
+        manager._regions[f"测试脑区{i}"] = BrainRegionState(
+            region_id=f"测试脑区{i}",
+            community_id="",
+            label=f"测试脑区{i}",
+            activation=activation,
+            last_activated_at=0.0,
+            activation_count=1,
+            manually_dimmed=False,
+        )
+    return manager
+
+
+class TestLitAwareDecayAcceleration:
+    """验证点亮数感知熄灭加速（lit > 6 时 factor = 0.92**(1+0.15*(lit-6))）"""
+
+    def test_t1_1_six_lit_no_acceleration(self):
+        """T1-1：6 个 🟢（0.8×6）→ decay → factor 仍 0.92（不触发加速）"""
+        manager = _make_lit_manager([0.8] * 6)
+        manager.decay_all()
+        for state in manager._regions.values():
+            assert state.activation == pytest.approx(0.8 * 0.92, abs=0.001)
+
+    def test_t1_2_eight_lit_accelerated(self):
+        """T1-2：8 个 🟢（0.8×8）→ decay → 0.8×0.92^1.3 == 0.7178"""
+        manager = _make_lit_manager([0.8] * 8)
+        manager.decay_all()
+        for state in manager._regions.values():
+            assert state.activation == pytest.approx(0.7178, abs=0.001)
+
+    def test_t1_5_seven_lit_transition(self):
+        """T1-5：lit=7 精确过渡值 → 0.8×0.92^1.15 == 0.72687（锁定阈值 off-by-one）"""
+        manager = _make_lit_manager([0.8] * 7)
+        manager.decay_all()
+        for state in manager._regions.values():
+            assert state.activation == pytest.approx(0.72687, abs=0.001)
