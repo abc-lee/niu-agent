@@ -5,7 +5,7 @@ Session-level activation/decay management for brain regions (Leiden communities)
 Each region has an activation score 0.0-1.0 that:
 - Activates (1.0) when query hits entities in that region
 - Reinforces (max(current, 0.85)) when a tool within that region is used
-- Decays (*0.92) each conversation turn
+- Decays (*0.92) each conversation turn (accelerated when > 6 regions are lit)
 - Spills over to neighboring regions at 0.3x factor
 - Can be manually activated or dimmed
 
@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 STATUS_LIT = "🟢"
 STATUS_DIMMING = "🟡"
 STATUS_OFF = "⚫"
+
+# 点亮数感知熄灭加速：🟢(>0.7) 点亮数 > _LIT_ACCEL_THRESHOLD 时，
+# decay factor = decay_factor ** (1 + _LIT_ACCEL_EXP * (lit_count - _LIT_ACCEL_THRESHOLD))
+# 点亮越多，衰减越快（指数加速），抑制冗余脑区长期占用 🟢。
+_LIT_ACCEL_THRESHOLD = 6
+_LIT_ACCEL_EXP = 0.15
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +72,7 @@ class RegionActivationManager:
     Core mechanisms:
     - Activate: query hits region entity -> activation=1.0
     - Reinforce: tool used within region -> activation=max(current, 0.85)
-    - Decay: each turn activation *= 0.92
+    - Decay: each turn activation *= 0.92 (点亮 >6 时加速)
     - Manual control: activate/dim, dimmed regions skip auto-activation this turn
     - Spillover: activated region's neighbors get 0.3 * activation
 
@@ -580,12 +586,21 @@ class RegionActivationManager:
     def decay_all(self) -> None:
         """Decay all regions after each conversation turn.
 
-        activation *= decay_factor, then clear manually_dimmed flags
+        activation *= decay_factor (accelerated when more than 6 regions are
+        lit green: factor = decay_factor ** (1 + 0.15 * (lit_count - 6))),
+        then clear manually_dimmed flags
         (so they can be auto-activated on the next turn).
         """
         with self._lock:
+            # 点亮数感知：🟢(>0.7) 点亮越多，衰减越快（指数加速）
+            lit_count = sum(1 for s in self._regions.values() if s.activation > 0.7)
+            factor = self._decay_factor
+            if lit_count > _LIT_ACCEL_THRESHOLD:
+                factor = self._decay_factor ** (
+                    1 + _LIT_ACCEL_EXP * (lit_count - _LIT_ACCEL_THRESHOLD)
+                )
             for state in self._regions.values():
-                state.activation *= self._decay_factor
+                state.activation *= factor
                 # Clamp to avoid floating-point drift below 0
                 if state.activation < 0.001:
                     state.activation = 0.0
