@@ -102,19 +102,44 @@ async def lifespan(app: FastAPI):
     preload_embedding()
     logger.info("Embedding model ready")
 
-    # 3. Start internal scheduler
-    set_preload_stage("正在启动调度器")
-    from niu_api.internal.scheduler import start_scheduler
-    start_scheduler()
-    logger.info("Internal scheduler started")
+    # 2.5. LLM 配置门控：检测失败时不启动依赖 LLM 的后台组件
+    #      （scheduler/IM/HAWatcher/db_monitor/脑区 gate/LightRAG 背景同步/
+    #      response_format 后台探测），仅保留 API 供配置页使用；
+    #      启动器弹配置页 → 配置成功 → 退出重启。
+    #      与 LightRAG v7 阻塞模式同型：前置条件不可用 → 不启动依赖它的后台工作。
+    #      预算 120s/150s（与 test-llm 端点经 resolve_probe_budget 一致，
+    #      与启动器 230s 对齐）——慢首响推理模型不会被误判降级（v2.2/v2.4/v2.5）。
+    set_preload_stage("正在检测大模型配置")
+    from niu_api.internal.lightrag_manager import set_llm_gate_ready
+    # 2.6. response_format 后台探测门控（v2.6 时序收口）：先置 False——慢探测
+    #      （150-210s）窗口内任何 daemon（如 SkillSync 30s 等待后 get_lightrag()）
+    #      触发的 probe 都被跳过（就绪性未确认，跳过正确）；探测结束后再置 llm_ready
+    set_llm_gate_ready(False)
+    from niu_api.llm_ready import check_llm_ready
+    llm_ready, llm_ready_reason = await check_llm_ready()
+    logger.info(f"LLM config gate: ready={llm_ready} ({llm_ready_reason})")
+    set_llm_gate_ready(llm_ready)
+
+    # 3. Start internal scheduler（仅 LLM 可用时；get_scheduler() 无 lazy 启动，
+    #    跳过 start_scheduler 即无定时任务扫描）
+    if llm_ready:
+        set_preload_stage("正在启动调度器")
+        from niu_api.internal.scheduler import start_scheduler
+        start_scheduler()
+        logger.info("Internal scheduler started")
+    else:
+        logger.warning("[LLMGate] scheduler 跳过启动（LLM 不可用，定时任务不会触发）")
 
     # 3.1. Start HAWatcher (if HA configured)
-    try:
-        from niu_api.internal.ha_watcher import check_and_start
-        check_and_start()
-        logger.info("HAWatcher check done")
-    except Exception as e:
-        logger.debug(f"HAWatcher not started: {e}")
+    if llm_ready:
+        try:
+            from niu_api.internal.ha_watcher import check_and_start
+            check_and_start()
+            logger.info("HAWatcher check done")
+        except Exception as e:
+            logger.debug(f"HAWatcher not started: {e}")
+    else:
+        logger.warning("[LLMGate] HAWatcher 跳过启动（LLM 不可用）")
 
     # 3.5. Start page-agent-mcp (Node.js browser automation)
     # NOTE: page-agent-mcp should run as a standalone process, NOT started here.
@@ -165,33 +190,36 @@ async def lifespan(app: FastAPI):
     logger.info("Channel router initialized (electron channel registered)")
 
     # 6.2. Start IM Gateway (if configured)
-    try:
-        import json as _json
-        prefs_path = Path.home() / ".niu" / "preferences.json"
-        if prefs_path.exists():
-            _prefs = _json.loads(prefs_path.read_text(encoding="utf-8"))
-        else:
-            _prefs = {}
-        im_config = _prefs.get("im", {})
-        if im_config.get("enabled"):
-            from niu_api.channel.gateway import IMGateway, set_im_gateway
-            gateway = IMGateway(channel_router=channel_router, port=im_config.get("gateway_port", 19877))
-            channel_router.register("im", gateway)
-            set_im_gateway(gateway)
-            gateway_task = asyncio.create_task(gateway.start())
+    if llm_ready:
+        try:
+            import json as _json
+            prefs_path = Path.home() / ".niu" / "preferences.json"
+            if prefs_path.exists():
+                _prefs = _json.loads(prefs_path.read_text(encoding="utf-8"))
+            else:
+                _prefs = {}
+            im_config = _prefs.get("im", {})
+            if im_config.get("enabled"):
+                from niu_api.channel.gateway import IMGateway, set_im_gateway
+                gateway = IMGateway(channel_router=channel_router, port=im_config.get("gateway_port", 19877))
+                channel_router.register("im", gateway)
+                set_im_gateway(gateway)
+                gateway_task = asyncio.create_task(gateway.start())
 
-            def _on_gateway_done(t: asyncio.Task):
-                if not t.cancelled():
-                    exc = t.exception()
-                    if exc:
-                        logger.error(f"IM Gateway startup failed: {exc}")
+                def _on_gateway_done(t: asyncio.Task):
+                    if not t.cancelled():
+                        exc = t.exception()
+                        if exc:
+                            logger.error(f"IM Gateway startup failed: {exc}")
 
-            gateway_task.add_done_callback(_on_gateway_done)
-            logger.info("IM Gateway starting (TCP Server)")
-        else:
-            logger.info("IM Gateway disabled")
-    except Exception as e:
-        logger.warning(f"IM Gateway setup failed: {e}")
+                gateway_task.add_done_callback(_on_gateway_done)
+                logger.info("IM Gateway starting (TCP Server)")
+            else:
+                logger.info("IM Gateway disabled")
+        except Exception as e:
+            logger.warning(f"IM Gateway setup failed: {e}")
+    else:
+        logger.warning("[LLMGate] IM Gateway 跳过启动（LLM 不可用）")
 
     # 6.5. Save main event loop for SSE sync notifications
     from niu_api.chat import set_main_event_loop
@@ -249,13 +277,15 @@ async def lifespan(app: FastAPI):
     from niu_api.internal.lightrag_manager import cancel_scheduler_delayed_start_if_corrupt
     cancel_scheduler_delayed_start_if_corrupt(phase1_result)
 
-    # 6.7.2. db_monitor 推迟到 Phase 1 之后启动（need_repair=True 时跳过）
+    # 6.7.2. db_monitor 推迟到 Phase 1 之后启动（need_repair=True 或 LLM 不可用时跳过）
     db_monitor_task = None  # 占位变量，shutdown 时引用不报 NameError
     from niu_api.internal.lightrag_manager import should_start_db_monitor
-    if should_start_db_monitor(phase1_result):
+    if llm_ready and should_start_db_monitor(phase1_result):
         from niu_api.db_monitor import run_db_monitor
         db_monitor_task = asyncio.create_task(run_db_monitor())
         logger.info("db_monitor task 已启动")
+    elif not llm_ready:
+        logger.warning("[LLMGate] db_monitor 跳过启动（LLM 不可用）")
     else:
         logger.warning("[LightRAG] db_monitor 跳过启动（LightRAG 损坏，等用户决策）")
 
@@ -326,10 +356,16 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Pipeline watcher start failed: {e}")
 
         # 8. Start LightRAG background sync (periodic photo/document backfill)
+        #     叠加 LLM 门控（v2.6）：LLM 不可用时 auto_start=False——保留完整
+        #     try/except 骨架，勿裸调用；shutdown 的 get_lightrag_sync()/
+        #     stop_background_sync() 对未启动实例有 `if self._thread:` 守卫，安全。
         try:
             from agent.injector.lightrag_sync import get_lightrag_sync
-            lightrag_sync = get_lightrag_sync(auto_start=True)
-            logger.info("LightRAG background sync started (interval: 6h)")
+            lightrag_sync = get_lightrag_sync(auto_start=llm_ready)
+            if llm_ready:
+                logger.info("LightRAG background sync started (interval: 6h)")
+            else:
+                logger.warning("[LLMGate] LightRAG 背景同步跳过启动（LLM 不可用）")
         except Exception as e:
             logger.warning(f"LightRAG background sync start failed: {e}")
 
@@ -452,45 +488,51 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Failed to ensure system tasks: {e}")
 
     # 8.7. Brain region startup gate + Signal scheduler + start_background_sync（推迟）
-    set_preload_stage("正在同步脑区状态")
-    #      必须在所有后台依赖就绪后才 signal。
-    #      脑区就绪 gate（run_sync_once_for_startup）：在 signal_scheduler_ready 之前同步跑首次
-    #      run_sync()，确保 activation_mgr 已 set。否则日常重启场景下 _sync_loop 因 24h
-    #      间隔保护不跑首次，activation_mgr 永远 None，scheduler 触发的过期任务和用户第一轮
-    #      请求都撞 None，脑区动态注入缺失。90s 超时兜底：超时后 warning 但仍 signal，
-    #      靠 _get_brain_injector 的 forced sync daemon 兜底（5 分钟冷却 + 防并发）。
-    #      region_sync is None（LightRAG 损坏分支）时 helper 跳过 gate。
-    #      start_background_sync 推迟到 gate 之后调用（v3）：gate 运行期间 _sync_loop
-    #      daemon 不存在，run_sync_once_for_startup 必拿锁必跑完，消除首次启动竞态。
-    from niu_api.internal.lightrag_manager import should_signal_scheduler_ready
-    from niu_api.internal.scheduler.service import signal_scheduler_ready
-    from niu_api.startup_gate import run_brain_region_startup_gate
-    gate_result = run_brain_region_startup_gate(
-        region_sync=region_sync,
-        signal_scheduler_ready_fn=signal_scheduler_ready,
-        should_signal=should_signal_scheduler_ready(phase1_result),
-        timeout=90.0,
-    )
-    if gate_result is True:
-        logger.info("Scheduler system_ready signal sent (brain region ready)")
-    elif gate_result is False:
-        logger.warning(
-            "Scheduler system_ready signal sent (brain region degraded, "
-            "forced sync daemon will retry on first request)"
+    #      llm_ready=False 时整段跳过：scheduler 未启动（signal 无意义）、
+    #      脑区 gate 会条件性调 LLM 生成标签（LLM 不可用时应跳过）、
+    #      region 背景同步同样依赖 LLM 标签生成。
+    if llm_ready:
+        set_preload_stage("正在同步脑区状态")
+        #      必须在所有后台依赖就绪后才 signal。
+        #      脑区就绪 gate（run_sync_once_for_startup）：在 signal_scheduler_ready 之前同步跑首次
+        #      run_sync()，确保 activation_mgr 已 set。否则日常重启场景下 _sync_loop 因 24h
+        #      间隔保护不跑首次，activation_mgr 永远 None，scheduler 触发的过期任务和用户第一轮
+        #      请求都撞 None，脑区动态注入缺失。90s 超时兜底：超时后 warning 但仍 signal，
+        #      靠 _get_brain_injector 的 forced sync daemon 兜底（5 分钟冷却 + 防并发）。
+        #      region_sync is None（LightRAG 损坏分支）时 helper 跳过 gate。
+        #      start_background_sync 推迟到 gate 之后调用（v3）：gate 运行期间 _sync_loop
+        #      daemon 不存在，run_sync_once_for_startup 必拿锁必跑完，消除首次启动竞态。
+        from niu_api.internal.lightrag_manager import should_signal_scheduler_ready
+        from niu_api.internal.scheduler.service import signal_scheduler_ready
+        from niu_api.startup_gate import run_brain_region_startup_gate
+        gate_result = run_brain_region_startup_gate(
+            region_sync=region_sync,
+            signal_scheduler_ready_fn=signal_scheduler_ready,
+            should_signal=should_signal_scheduler_ready(phase1_result),
+            timeout=90.0,
         )
-    else:
-        logger.warning("[LightRAG] Scheduler system_ready signal 跳过（LightRAG 损坏或 region_sync 未创建）")
+        if gate_result is True:
+            logger.info("Scheduler system_ready signal sent (brain region ready)")
+        elif gate_result is False:
+            logger.warning(
+                "Scheduler system_ready signal sent (brain region degraded, "
+                "forced sync daemon will retry on first request)"
+            )
+        else:
+            logger.warning("[LightRAG] Scheduler system_ready signal 跳过（LightRAG 损坏或 region_sync 未创建）")
 
-    # 8.7.5. Start brain region periodic sync（v3：从 8.1 推迟到 gate 之后，含 None 守卫）
-    #      必须在 run_brain_region_startup_gate 之后调用，确保 gate 先抢锁跑完首次同步。
-    #      保留 if region_sync is not None 守卫：LightRAG 损坏分支 region_sync=None，
-    #      裸调用会 AttributeError。整块从原 8.1 平移而来。
-    if region_sync is not None:
-        try:
-            region_sync.start_background_sync()
-            logger.info("Brain region sync started (interval: 24h, after startup gate)")
-        except Exception as e:
-            logger.warning(f"Brain region sync start failed: {e}")
+        # 8.7.5. Start brain region periodic sync（v3：从 8.1 推迟到 gate 之后，含 None 守卫）
+        #      必须在 run_brain_region_startup_gate 之后调用，确保 gate 先抢锁跑完首次同步。
+        #      保留 if region_sync is not None 守卫：LightRAG 损坏分支 region_sync=None，
+        #      裸调用会 AttributeError。整块从原 8.1 平移而来。
+        if region_sync is not None:
+            try:
+                region_sync.start_background_sync()
+                logger.info("Brain region sync started (interval: 24h, after startup gate)")
+            except Exception as e:
+                logger.warning(f"Brain region sync start failed: {e}")
+    else:
+        logger.warning("[LLMGate] 脑区 gate / scheduler signal / 背景同步跳过（LLM 不可用）")
 
     # 8.8. Mark preload as complete — 所有后端依赖就绪后才标记
     #      启动器轮询 /api/preload-status 看到这个标志后才 launch 前端
