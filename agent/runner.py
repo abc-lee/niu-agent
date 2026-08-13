@@ -878,13 +878,10 @@ class NiuRunner:
         self.disk_engine = DiskEngine([bundle_disk_dir, user_disk_dir], registry=None)
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client, disk_engine=self.disk_engine)
 
-        # 动态前缀段：Current Time + disk_desc（启动时固定，不每轮更新）
-        now = datetime.now()
-        dynamic_prefix = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+        # 动态前缀段：disk_desc（磁盘结构启动时固定，缓存）；Current Time 由
+        # _assemble_system_message 每轮实时生成（disk_desc 自带 \n\n 开头，空时为空串）
         disk_desc = self._build_disk_description()
-        if disk_desc:
-            dynamic_prefix += disk_desc
-        self.dynamic_system_prefix = dynamic_prefix
+        self.dynamic_system_prefix = disk_desc
 
         # 向后兼容：base_system_prompt = 静态段 + 动态前缀段（不含 injection，不含 memory 段）
         self.base_system_prompt = self.static_system_prompt + self.dynamic_system_prefix
@@ -1082,10 +1079,11 @@ class NiuRunner:
         if not messages or messages[0].get("role") != "system":
             return
 
-        # 动态段 = memory_section + Current Time + disk_desc + injection
+        # 动态段 = memory_section + Current Time（每轮实时）+ disk_desc + injection
         dynamic_text = ""
         if memory_section:
             dynamic_text += "\n\n" + memory_section
+        dynamic_text += f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         dynamic_text += self.dynamic_system_prefix
         if injection:
             dynamic_text += injection
