@@ -1,14 +1,13 @@
-"""截断重试链路回归测试：B1 重试触发/成功，耗尽转 COMPACT_TRUNCATED 信号。"""
+"""截断重试链路回归测试：B1 重试恢复、call_subagent COMPACT_TRUNCATED 映射存在性（弱断言）、thinking-disabled 降级跳过 step1。"""
 import inspect
 from unittest.mock import MagicMock
 
 from agent import subagent
-from agent.generic.agent_loop import (  # StepOutcome/exhaust 均定义在 agent_loop.py
-    StepOutcome,
+from agent.generic.agent_loop import (  # exhaust 定义在 agent_loop.py
     agent_runner_loop,
     exhaust,
 )
-from niu_api.compat import _build_force_prompt, _compact_with_degradation_sync  # noqa: E402
+from niu_api.compat import _build_force_prompt, _compact_with_degradation_sync
 
 
 def _mock_resp(finish_reason: str, content: str, tool_calls=None):
@@ -29,8 +28,8 @@ def _mock_resp(finish_reason: str, content: str, tool_calls=None):
 def test_agent_loop_b1_retry_recovers_after_truncation():
     """B1：首次 length → 重试；第二次正常 → 成功返回（不报截断）。
 
-    驱动范式参照 tests/test_agent_loop_return_messages.py（handler.dispatch
-    返回 StepOutcome(next_prompt=None, should_exit=True) 使无工具轮立即退出）。
+    无工具轮走纯文本退出路径（不经 dispatch）——handler 只需
+    _is_subagent/_is_sync_subagent/max_turns 属性。
     """
     # 注意：不能 yield 后 raise StopIteration(r)（生成器内手动 raise 是 PEP 479 RuntimeError）
     # ——与 Task 3 的 _MockGen 同款：普通类 __next__ 里 raise StopIteration(value) 合法
@@ -66,10 +65,7 @@ def test_agent_loop_b1_retry_recovers_after_truncation():
     # 关键规避：MagicMock 的 _is_sync_subagent 自动真值会走入子 Agent 拦截 → FORMAT_ERROR
     # （既有 tests/test_agent_loop_return_messages.py 4b 注释明示裸 Mock 会短路）
     handler._is_sync_subagent = False
-    handler.max_turns = 5
-    handler.dispatch = lambda tool_name, args, response, index=0: StepOutcome(
-        data=None, next_prompt=None, should_exit=True
-    )
+    # max_turns 会被 agent_runner_loop 内部覆盖（默认 40），无需设置
 
     gen = agent_runner_loop(
         client=fake_client,
@@ -113,7 +109,7 @@ def test_degradation_skips_step1_when_thinking_disabled():
         compress_history=[
             {"role": "user", "content": "[idx:1] x"}, {"role": "user", "content": "[idx:2] y"},
             {"role": "user", "content": "[idx:3] z"}, {"role": "user", "content": "[idx:4] w"},
-        ],  # 4 条 user → 砍半后 2 条，通过 len<=1 中止闸门（2 条会 abort）
+        ],  # 4 条 user → 砍半后 2 条，通过 len<=1 中止闸门（2 条→砍半 1 条→len<=1 中止闸门，故需 4 条）
         compress_msg_ids=["a", "b", "c", "d"],
         llm_config=llm_config,
         prompt_builder=_build_force_prompt,
@@ -129,3 +125,6 @@ def test_degradation_skips_step1_when_thinking_disabled():
     assert len(calls) == 1
     assert result is not None
     assert "keep=1,2" in result
+    # 区分断言：第三返回值 = step2 成功路径的 removed_msg_ids 前半段（4 条 → cut_idx=2 → ["a","b"]）；
+    # 若产品代码回归为 thinking_enabled 恒 True，step1 误执行并成功 → 第三返回值是 None → 断言挂
+    assert halved == ["a", "b"]
