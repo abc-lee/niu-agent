@@ -315,7 +315,7 @@ class FakeMsg:
         self.tool_call_id = tool_call_id
 
 
-def test_mode2_prompt_contains_methodology(monkeypatch):
+def test_mode2_prompt_not_contains_methodology(monkeypatch):
     """模式二 task prompt 不再内联方法论（system 已有），含禁止报告强指令 + llm_config 注入 max_tokens。"""
     import asyncio
 
@@ -531,7 +531,7 @@ def test_strip_analysis_missing_then_parse():
     assert "1,2,3" in keep_line[0]
 
 
-def test_mode3_prompt_contains_methodology(monkeypatch):
+def test_mode3_prompt_not_contains_methodology(monkeypatch):
     """模式三 task prompt 不再内联方法论，含禁止报告强指令 + cursor + dream 安全边界。"""
     import asyncio
 
@@ -759,7 +759,7 @@ def _build_niu_runner_for_test():
     return runner
 
 
-def test_runner_mode3_prompt_contains_methodology(monkeypatch):
+def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
     """runner.py force prompt 不再内联方法论，含禁止报告强指令 + cursor + dream 安全边界 + max_tokens 注入。"""
     from agent import runner as runner_module
     from agent import subagent as subagent_module

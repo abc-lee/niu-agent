@@ -2117,7 +2117,7 @@ class NiuRunner:
 
             # 计算 dream 安全边界 idx（参考 compat.py 模式三）
             # new_dream_id 在 runner.py 前面 dream-evolver 阶段已算出
-            # 当 dream 不在 force history 里时，用 len(_force_msg_ids)（越界值，由 _build_force_prompt 内部判断"无 dream 约束"）
+            # 当 dream 不在 force history 里时，用 len(_force_msg_ids) 作为越界边界（idx > 全量 → 实际不限制删除；_build_force_prompt 是纯数字插值，无内部判断分支）
             if not new_dream_id:
                 _dream_idx_in_force = 0
             else:
