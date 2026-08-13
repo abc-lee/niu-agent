@@ -71,7 +71,7 @@ def test_assemble_system_message_non_claude():
 
     runner = NiuRunner.__new__(NiuRunner)  # 绕过 __init__ 的重资源加载
     runner.static_system_prompt = "STATIC_PART"
-    runner.dynamic_system_prefix = "\n\nCurrent Time: 2026-06-30 10:51:00"
+    runner.dynamic_system_prefix = "\n\n### [虚拟磁盘工具]\n...disk desc..."
     runner.default_model = "ark-code-latest"
 
     injection = "\n\n### [相关技能]\n- skill1"
@@ -92,7 +92,7 @@ def test_assemble_system_message_claude():
 
     runner = NiuRunner.__new__(NiuRunner)
     runner.static_system_prompt = "STATIC_PART"
-    runner.dynamic_system_prefix = "\n\nCurrent Time: 2026-06-30 10:51:00"
+    runner.dynamic_system_prefix = "\n\n### [虚拟磁盘工具]\n...disk desc..."
     runner.default_model = "claude-sonnet-4-6"
 
     injection = "\n\n### [相关技能]\n- skill1"
@@ -118,19 +118,25 @@ def test_assemble_system_message_claude():
 
 
 def test_assemble_system_message_empty_injection():
-    """injection 为空时动态段只含 Current Time + disk_desc。"""
+    """injection 为空时动态段含实时 Current Time + disk_desc（prefix）。"""
+    from datetime import datetime as _real_datetime
+    from unittest.mock import patch
+
     from agent.runner import NiuRunner
 
     runner = NiuRunner.__new__(NiuRunner)
     runner.static_system_prompt = "STATIC"
-    runner.dynamic_system_prefix = "\n\nCurrent Time: 2026-06-30 10:51:00"
+    runner.dynamic_system_prefix = "\n\n### [虚拟磁盘工具]\n...disk desc..."
     runner.default_model = "ark-code-latest"
 
-    messages = [{"role": "system", "content": ""}]
-    runner._assemble_system_message(messages, "", "", model="ark-code-latest")
+    fixed = _real_datetime(2026, 8, 13, 18, 30, 0)
+    with patch("agent.runner.datetime") as mock_dt:
+        mock_dt.now.return_value = fixed
+        messages = [{"role": "system", "content": ""}]
+        runner._assemble_system_message(messages, "", "", model="ark-code-latest")
 
     content = messages[0]["content"]
-    assert content == "STATIC\n\nCurrent Time: 2026-06-30 10:51:00"
+    assert content == "STATIC\n\nCurrent Time: 2026-08-13 18:30:00\n\n### [虚拟磁盘工具]\n...disk desc..."
 
 
 def test_assemble_system_message_non_system_first_msg():
