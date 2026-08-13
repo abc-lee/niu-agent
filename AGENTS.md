@@ -542,6 +542,13 @@ preload_face_model()
 - **已知边界**：①流被中断吞掉 finish_reason chunk → 截断仍静默（无法可靠检测，未修）；②B1 重试对非压缩子 Agent 保持原行为（通用路径 client 重建成本高，压缩路径已由首次注入覆盖）；③context-manager.md system 提示词本身不瘦身（358 行完整方法论文档保留）；④模式一（睡眠整理非破坏性）注入 thinking disabled 但不走三行输出契约（工具化操作，不受影响）
 - **质量链**：计划 R1-R7 七轮双审查（v1-v6.1，连续两轮双 APPROVE 达成——R6+R7；测试定义缺陷 15+ 个经审查抓出：PEP 479/子串断言/MagicMock 自动真值/锚点漂移/魔法短语门控/第 4 调用点等）；实施 subagent-driven 每 Task spec+quality 双审（Task 1 quality 2 P2 修复、Task 4 quality 2 P2 修复）；commits 172146da→dde63a28
 
+#### 修复：压缩后空壳 assistant 消息残留（悬空清理扩展 + 原始形态严格保留）
+
+- **问题**：用户发现 messages.db 存在空记录（如 08-12 23:40 两条 content='' + tool_calls='[]' 的 assistant）。根因机制（代码实证）：压缩对 content 空的消息 clear_tool_calls（模式二/force 对受保护锚点、模式一对空 content 消息）会产生空壳（content 空 + tool_calls 空 + tool_call_id 空）——`_cleanup_orphan_tool_messages` 只清理孤立 tool 消息，不处理空壳 assistant。具体空壳的产生路径（压缩 vs 模型空响应）未完全证实——清理是条件式删除，无论来源都安全
+- **修复**：`_cleanup_orphan_tool_messages` 扩展——新增 `_is_empty_shell_assistant`（四条件严格判断：role=assistant + content 空 + tool_calls 空 + tool_call_id 空；JSON 解析失败保守保留）；三处压缩路径全覆盖（模式二/force 既有调用 + 模式一完整性检查后补调）；**原始形态（content 空但 tool_calls 非空）严格保留**（工具调用锚点——agent_loop 还原锚点、tool 消息靠 tool_call_id 归属，删除会丢失工具结果上下文）；存量 2 条空壳一次性清理（WAL 安全备份 + 精确条件删除 + 验证 4 条锚点完好——含今日活跃会话新锚点）
+- **已知边界**：原始形态不迁移（把 tool_calls 移到上一条有内容消息的方案因多消息一致性风险高不做——YAGNI，空壳清理已解决残留问题）；非压缩路径（模型空响应等）产生的空壳需等下次压缩清理
+- **质量链**：计划 R1-R4 四轮双审查（R1/R2 REJECT 含 WAL 备份/模式一缺口/根因归因/mock 形态等；R3+R4 连续两轮双 APPROVE）；实施 subagent-driven 每 Task spec/quality 双审；commits 354581f6（Task 1）+ Task 2 纯 DB 无 commit + 本条目
+
 ### 2026-08-12
 
 #### 修复：定时任务飞书流式卡片永不终结（死路由 pre-existing + 86d6c7a2 显性化）——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
