@@ -284,10 +284,6 @@ class Scheduler:
         if self._store_factory is not None:
             self.store = self._store_factory()
 
-        from datetime import date
-
-        today = date.today().isoformat()
-
         # 1. 查询所有到期任务（scheduled_at <= now）
         due_tasks = self.store.get_overdue_tasks()
         if not due_tasks:
@@ -383,9 +379,13 @@ class Scheduler:
                     self.store.update_task(task_id, status="failed", expected_status="in_progress")
                     continue
 
-                # 检查当天是否已执行
-                last_executed = fresh_task.get("last_executed_date")
-                if last_executed == today:
+                # 检查当前触发点是否已执行（防崩溃恢复后重复触发）
+                # 2026-08-13 修复：last_executed_date（日期粒度）升级为 last_executed_trigger
+                # （触发点粒度）——日期粒度无法区分"日级崩溃重跑"与"小时级当天多触发点"。
+                # scheduled_at <= last_executed_trigger → 当前触发点已执行过 → 跳过防重复；
+                # scheduled_at > last_executed_trigger → 未执行 → 放行（含当天多次触发）。
+                last_trigger = fresh_task.get("last_executed_trigger")
+                if last_trigger and scheduled_at <= last_trigger:
                     next_time = self._calc_next_trigger(datetime.now().isoformat(), cron_expr)
                     if next_time:
                         self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
@@ -431,7 +431,7 @@ class Scheduler:
 
                 # 成功：清零失败计数器（在 if result is None 之后，确保失败时不会先 pop 再 +=1）
                 self._task_fail_count.pop(task_id, None)
-                self.store.update_last_executed_date(task_id, today)
+                self.store.update_last_executed_trigger(task_id, scheduled_at)
                 if next_time:
                     self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
                 else:

@@ -185,31 +185,111 @@ class TestCheckAndTriggerSequential:
         scheduler.check_and_trigger()
         assert callback.call_count == 0
 
-    def test_already_executed_today_skips_and_reschedules(self, mock_scheduler):
-        """当天已执行的循环任务跳过执行，reschedule 到下次"""
+    def test_already_executed_trigger_skips_and_reschedules(self, mock_scheduler):
+        """同一触发点再次到期（崩溃恢复窗口）应跳过，不重复执行
+
+        scheduled_at == last_executed_trigger（上次执行的触发点）→ 该点已执行过 → 跳过。
+        例：3:00 触发点执行成功但 reschedule 落库前崩溃，重启后 scheduled_at 仍=3:00。
+        """
         scheduler, callback, mock_store, _ = mock_scheduler
 
-        today = __import__("datetime").date.today().isoformat()
+        trigger = (datetime.now() - timedelta(hours=1)).isoformat()
         mock_store.get_overdue_tasks.return_value = [
             {
                 "id": "task-1",
                 "content": "task1",
                 "is_recurring": True,
                 "cron_expr": "0 3 * * *",
-                "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+                "scheduled_at": trigger,
             }
         ]
         mock_store.update_task.return_value = True
         mock_store.get_task.return_value = {
             "id": "task-1",
             "status": "in_progress",
-            "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
-            "last_executed_date": today,
+            "scheduled_at": trigger,
+            "last_executed_trigger": trigger,  # 同触发点已执行过
         }
 
         scheduler.check_and_trigger()
         assert callback.call_count == 0
-        mock_store.update_task.assert_called()
+        mock_store.update_task.assert_called()  # reschedule 到下次
+
+    def test_hourly_cron_executes_again_same_day(self, mock_scheduler):
+        """小时级 cron：当天不同触发点依次执行（回归 2026-08-13 bug）
+
+        last_executed_trigger=9:10（今早已执行）→ 10:10 触发点到期 → 10:10 > 9:10 → 执行。
+        修复前 last_executed_date==today 无条件跳过，全天只执行一次。
+        mock 含 last_executed_date=today：复现原 bug 数据形态——若未来回退为日期粒度
+        判断，本用例立即变红（旧分支跳过 → callback=0）。
+        """
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 0
+        scheduler._is_backend_busy = MagicMock(return_value=False)
+
+        today = __import__("datetime").date.today().isoformat()
+        earlier = (datetime.now() - timedelta(hours=1)).isoformat()  # 10:10 触发点
+        last = (datetime.now() - timedelta(hours=2)).isoformat()    # 9:10 已执行
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-hourly",
+                "content": "check mail",
+                "is_recurring": True,
+                "cron_expr": "10 9-23 * * *",
+                "scheduled_at": earlier,
+            }
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-hourly",
+            "status": "in_progress",
+            "scheduled_at": earlier,
+            "last_executed_date": today,          # 原 bug 数据形态（今天已执行过）
+            "last_executed_trigger": last,        # 触发点级：9:10 已执行
+        }
+        mock_store.update_last_executed_trigger.return_value = True
+
+        scheduler.check_and_trigger()
+
+        assert callback.call_count == 1
+        mock_store.update_last_executed_trigger.assert_called_once_with("task-hourly", earlier)
+
+    def test_last_trigger_of_day_still_executes(self, mock_scheduler):
+        """当天最后一个触发点（23:10）必须执行——不能因当天早先触发点已执行而跳过
+
+        v1 方案（next_time.date()>today 判断）在此场景误跳过：23:10 到期时 next=明天 09:10，
+        触发点被当"已处理"丢弃。v2/v3 触发点级比较：23:10 > 22:10 → 执行。
+        """
+        scheduler, callback, mock_store, _ = mock_scheduler
+        scheduler._double_confirm_delay = 0
+        scheduler._is_backend_busy = MagicMock(return_value=False)
+
+        today = __import__("datetime").date.today().isoformat()
+        trigger = (datetime.now() - timedelta(minutes=5)).isoformat()   # 23:10 触发点
+        last = (datetime.now() - timedelta(hours=1)).isoformat()        # 22:10 已执行
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-last",
+                "content": "check mail",
+                "is_recurring": True,
+                "cron_expr": "10 9-23 * * *",
+                "scheduled_at": trigger,
+            }
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-last",
+            "status": "in_progress",
+            "scheduled_at": trigger,
+            "last_executed_date": today,          # 原 bug 数据形态
+            "last_executed_trigger": last,        # 22:10 已执行，23:10 未执行
+        }
+        mock_store.update_last_executed_trigger.return_value = True
+
+        scheduler.check_and_trigger()
+
+        assert callback.call_count == 1
+        mock_store.update_last_executed_trigger.assert_called_once_with("task-last", trigger)
 
     def test_callback_timeout_is_300s(self, mock_scheduler):
         """回调超时为300秒（覆盖 service 最坏 250s + 余量）"""

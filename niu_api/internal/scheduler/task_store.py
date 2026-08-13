@@ -383,23 +383,6 @@ class TaskStore:
         finally:
             conn.close()
 
-    def update_last_executed_date(self, task_id: str, date_str: str) -> bool:
-        """更新上次执行日期"""
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE scheduled_tasks
-                SET last_executed_date = ?
-                WHERE id = ?
-            """, (date_str, task_id))
-            affected = cursor.rowcount
-            conn.commit()
-        finally:
-            conn.close()
-        return affected > 0
-
     def get_overdue_tasks(self) -> list[dict[str, Any]]:
         """获取所有到期和过期的待执行任务（scheduled_at <= now）"""
         from datetime import datetime
