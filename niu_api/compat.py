@@ -663,86 +663,16 @@ def _strip_analysis(response: str) -> str:
 
 
 def _build_mode2_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float, compress_history: list) -> str:
-    """构造模式二 task prompt（含压缩方法论 + analysis 草稿块）。"""
-    return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
-- 不调用 write、delete_messages、update_message、bash 等
-- 你的回复必须包含 <analysis> 块和 keep=/update= 两行
-- 调用工具会被拒绝，浪费唯一一轮，任务失败
+    """构造模式二 task prompt（瘦身版：去方法论重复，禁止报告，直接输出两行）。
 
-先在 <analysis> 块里写分析过程，然后输出 keep=/update= 两行。
-
-<analysis> 块内容：
-- 列出三份的 idx 范围
-- 估算每份删工具输出 + 合并会话单元能释放多少 token
-- 判断第一份的旧摘要与近期工作的关联性
-- 决定每份的处理强度
-
-输出格式：
-keep=1,2,3,5-10,11,15
-update=2|[摘要] 摘要内容;11|[摘要] 摘要内容
-
-说明：
-- keep= 保留的消息 idx（逗号分隔，连续用短横线如 5-10）
-- update= 需压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
-- update 的 idx 必须在 keep 中（update 的消息保留但 content 改为摘要）
-- update 多条用分号 `;` 分隔。如果摘要内容本身含分号，必须用全角分号 `；` 替代，避免解析冲突
-- 摘要内容内的 `|` 字符也要避免（三段式摘要的 `|` 是段分隔符，段内不要用 `|`）
-- 未列在 keep 中的消息将被删除
-
-示例：
-<analysis>
-第一份 idx 1-100：含 3 个会话单元（智能家居调试/知识图谱/周报），旧摘要 5 条
-其中 2 条与近期无关可删，估算释放 8K tokens
-第二份 idx 101-200：估算释放 3K tokens
-累计 11K，已达目标 10K，第三份轻度处理
-</analysis>
-
-keep=1,5,15,30,50,75,100,105,115,150,180,200
-update=1|[摘要] 指令：智能家居调试 | 流程：read config + 测微波炉/空调 | 结果：完成测试;5|[摘要] ...
-
-压缩方法论（必须在一轮内完成，禁止多轮）：
-
-1. 估算：当前 {display_tokens} tokens，目标 {compress_target_tokens} tokens，
-   需释放 {display_tokens - compress_target_tokens} tokens。
-   估算方法：累加待删消息的 Ntokens 前缀值（每条消息开头带的 Ntokens 即该条 token 数）。
-
-2. 划分优先级（按 idx 范围，粗粒度）：
-   - 第一份（最早）：idx 最小的约 1/3 范围
-   - 第二份（中间）：中间约 1/3 范围
-   - 第三份（最近）：idx 最大的约 1/3 范围
-   注：划分是优先级提示，实际处理按会话单元边界，
-   不得切断一个完整的会话单元（单元跨越划分边界时，
-   整个单元归入更早的那份）。
-
-3. 逐份处理（在 analysis 块里思考，一次输出结果）：
-   a. 第一份（最早）最激进：
-      - role=tool 的工具输出：全删（不进 keep）。
-        工具输出随父 assistant 级联处理：
-        父 assistant 被删 → 工具输出随父级联删除，有价值的工具调用过程写进同会话单元锚 idx 摘要的流程段；
-        父 assistant 进 update 改摘要 → 工具输出随父 tool_calls 清空级联删除，工具调用过程写进这条摘要的流程段；
-        父 assistant 进 keep 保留原文 → 大工具输出（>1000 tokens）单独 update 改精简版（工具输出 idx 进 update），小工具输出可保留原文
-      - 原始对话：按会话单元（2-15 条一个话题）合并，
-        每个会话单元保留 1 条（锚 idx），content 改为摘要，其余删除
-      - 旧摘要（已是 [摘要] 开头）：判断与近期工作的关联性，
-        无关的直接删除（不放 keep），相关的保留或合并为更精炼摘要
-        （注：只有第一份允许删旧摘要，第二份/第三份的摘要保留不动）
-   b. 估算累计释放量。若已达目标，第二份/第三份按"轻度处理"
-      （仅删工具输出、保留原文）即可。
-   c. 若未达目标，处理第二份（中间）：
-      - role=tool 工具输出：全删
-      - 对话：按会话单元合并为摘要
-      - 已有摘要：保留不动（禁止二次压缩）
-   d. 再估算。若仍未达目标，处理第三份（最近）：
-      - role=tool 工具输出：全删
-      - 对话：仅精简超长内容，优先保留原文
-   e. 若三份处理完仍未达目标，接受当前结果（受保护消息已排除）
-
-4. 硬约束：
-   - 每个会话单元至少保留 1 条（不得把多个会话单元合并成 1 条）
-   - 摘要长度 ≤ 300 字符，必须包含指令/流程/结果三部分
-   - 已是 [摘要] 开头的消息不再二次压缩（无论长度，看开头标记判断，不数字符）
-   - update 的 idx 必须在 keep 中
-   - 摘要格式：[摘要] 指令：<用户原话核心> | 流程：<工具名/关键步骤> | 结果：<最终结论/状态/产物>（三部分必填，详见系统提示词"摘要格式规范"）
+    方法论（三份划分/会话单元/工具输出级联/摘要规范/转义规则）已在系统提示词
+    （config/agents/context-manager.md）完整定义——task prompt 不再内联重复。
+    输出契约提醒保留（靠近输出点、指令性强、成本极低）。
+    CRITICAL 短语必须保留：context-manager.md L194-199 用 prompt 含
+    "CRITICAL: 你只有一轮机会" 判定模式二"一轮方案"分支激活（门控），
+    删除会导致模式二走工具调用路径。门控说明只写 docstring，不进 prompt 文本。
+    """
+    return f"""本次任务：对上方历史消息执行模式二压缩。压缩规则详见你的系统提示词（模式二章节），不再重复。
 
 当前上下文状态：
 - 参与压缩的消息数：{len(compress_history)}（受保护消息已排除）
@@ -750,103 +680,28 @@ update=1|[摘要] 指令：智能家居调试 | 流程：read config + 测微波
 - 目标 token 总数：{compress_target_tokens}
 - 需释放至少 {display_tokens - compress_target_tokens} tokens
 
-上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(compress_history)} 条。
-role=tool 的工具输出处理规则：
-- 父 assistant 被删或不进 keep：工具输出随父级联删除，不进 keep 也不进 update
-- 父 assistant 进 update 改摘要：工具输出随父 tool_calls 清空级联删除，不进 update（工具调用过程写进摘要流程段）
-- 父 assistant 进 keep 保留原文：大工具输出（>1000 tokens）单独 update 改精简版（工具输出 idx 进 update），小工具输出可保留原文
+CRITICAL: 你只有一轮机会完成压缩决策。
 
-REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 keep=/update= 两行。"""
+输出要求（严格，违反即失败）：
+- 只输出两行：keep= 行和 update= 行
+- 禁止输出任何其他内容：禁止 <analysis>、禁止分析过程、禁止解释、禁止总结报告、禁止 markdown 代码块
+- 格式示例（仅格式参考，内容由你按规则决定）：
+  keep=1,5,15,30,50,75,100,105,115,150,180,200
+  update=1|[摘要] 指令：xxx | 流程：xxx | 结果：xxx;5|[摘要] 指令：xxx | 流程：xxx | 结果：xxx
+- update= 多条用分号 `;` 分隔；摘要内容含分号用全角 `；`；段内避免 `|`
+- update 的 idx 必须在 keep= 中；未列在 keep= 中的消息将被删除
+
+REMINDER: 禁止调用任何工具，直接输出 keep=/update= 两行，仅此两行。"""
 
 
 def _build_force_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float,
                         force_history: list, last_compress_id: str | None, dream_idx_in_force: int) -> str:
-    """构造模式三 force task prompt（含方法论 + analysis 草稿块 + cursor + dream 安全边界）。
+    """构造模式三 force task prompt（瘦身版：去方法论重复，禁止报告，直接输出三行）。
 
-    单次调用构造一次 prompt（截断时走应急清空）。
+    方法论（保留优先级/强度量化表/dream 安全边界规则）已在系统提示词（模式三章节）完整定义。
+    last_compress_id 与 dream_idx_in_force 是本次调用的专属参数，必须注入。
     """
-    return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
-- 不调用 write、delete_messages、update_message、bash 等
-- 你的回复必须包含 <analysis> 块和 keep=/update=/cursor= 三行
-- 调用工具会被拒绝，浪费唯一一轮，任务失败
-
-先在 <analysis> 块里写分析过程，然后输出 keep=/update=/cursor= 三行。
-
-<analysis> 块内容：
-- 列出三份的 idx 范围
-- 估算每份删工具输出 + 合并会话单元能释放多少 token
-- 判断第一份的旧摘要与近期工作的关联性
-- 决定每份的处理强度
-
-输出格式：
-keep=1,5,15,30,50,75,100,105,115,150,180,200
-update=1|[摘要] 摘要内容;5|[摘要] 摘要内容
-cursor=200
-
-说明：
-- keep= 保留的消息 idx（逗号分隔，连续用短横线如 5-10）
-- update= 需压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
-- update 的 idx 必须在 keep 中（update 的消息保留但 content 改为摘要）
-- update 多条用分号 `;` 分隔。如果摘要内容本身含分号，必须用全角分号 `；` 替代，避免解析冲突
-- 摘要内容内的 `|` 字符也要避免（三段式摘要的 `|` 是段分隔符，段内不要用 `|`）
-- cursor= 操作范围内 idx 最大且仍存在的消息 idx
-- 未列在 keep 中的消息将被删除
-
-示例：
-<analysis>
-第一份 idx 1-100：含 3 个会话单元（智能家居调试/知识图谱/周报），旧摘要 5 条
-其中 2 条与近期无关可删，估算释放 8K tokens
-第二份 idx 101-200：估算释放 3K tokens
-累计 11K，已达目标 10K，第三份轻度处理
-</analysis>
-
-keep=1,5,15,30,50,75,100,105,115,150,180,200
-update=1|[摘要] 指令：智能家居调试 | 流程：read config + 测微波炉/空调 | 结果：完成测试;5|[摘要] ...
-cursor=200
-
-压缩方法论（必须在一轮内完成，禁止多轮）：
-
-1. 估算：当前 {display_tokens} tokens，目标 {compress_target_tokens} tokens，
-   需释放 {display_tokens - compress_target_tokens} tokens。
-   估算方法：累加待删消息的 Ntokens 前缀值（每条消息开头带的 Ntokens 即该条 token 数）。
-
-2. 划分优先级（按 idx 范围，粗粒度）：
-   - 第一份（最早）：idx 最小的约 1/3 范围
-   - 第二份（中间）：中间约 1/3 范围
-   - 第三份（最近）：idx 最大的约 1/3 范围
-   注：划分是优先级提示，实际处理按会话单元边界，
-   不得切断一个完整的会话单元（单元跨越划分边界时，
-   整个单元归入更早的那份）。
-
-3. 逐份处理（在 analysis 块里思考，一次输出结果）：
-   a. 第一份（最早）最激进：
-      - role=tool 的工具输出：全删（不进 keep）。
-        工具输出随父 assistant 级联处理：
-        父 assistant 被删 → 工具输出随父级联删除，有价值的工具调用过程写进同会话单元锚 idx 摘要的流程段；
-        父 assistant 进 update 改摘要 → 工具输出随父 tool_calls 清空级联删除，工具调用过程写进这条摘要的流程段；
-        父 assistant 进 keep 保留原文 → 大工具输出（>1000 tokens）单独 update 改精简版（工具输出 idx 进 update），小工具输出可保留原文
-      - 原始对话：按会话单元（2-15 条一个话题）合并，
-        每个会话单元保留 1 条（锚 idx），content 改为摘要，其余删除
-      - 旧摘要（已是 [摘要] 开头）：判断与近期工作的关联性，
-        无关的直接删除（不放 keep），相关的保留或合并为更精炼摘要
-        （注：只有第一份允许删旧摘要，第二份/第三份的摘要保留不动）
-   b. 估算累计释放量。若已达目标，第二份/第三份按"轻度处理"
-      （仅删工具输出、保留原文）即可。
-   c. 若未达目标，处理第二份（中间）：
-      - role=tool 工具输出：全删
-      - 对话：按会话单元合并为摘要
-      - 已有摘要：保留不动（禁止二次压缩）
-   d. 再估算。若仍未达目标，处理第三份（最近）：
-      - role=tool 工具输出：全删
-      - 对话：仅精简超长内容，优先保留原文
-   e. 若三份处理完仍未达目标，接受当前结果（受保护消息已排除）
-
-4. 硬约束：
-   - 每个会话单元至少保留 1 条（不得把多个会话单元合并成 1 条）
-   - 摘要长度 ≤ 300 字符，必须包含指令/流程/结果三部分
-   - 已是 [摘要] 开头的消息不再二次压缩（无论长度，看开头标记判断，不数字符）
-   - update 的 idx 必须在 keep 中
-   - 摘要格式：[摘要] 指令：<用户原话核心> | 流程：<工具名/关键步骤> | 结果：<最终结论/状态/产物>（三部分必填，详见系统提示词"摘要格式规范"）
+    return f"""本次任务：对上方历史消息执行模式三强制压缩。压缩规则详见你的系统提示词（模式三章节），不再重复。
 
 当前上下文状态：
 - 参与压缩的消息数：{len(force_history)}（受保护消息已排除）
@@ -855,18 +710,24 @@ cursor=200
 - 需释放至少 {display_tokens - compress_target_tokens} tokens
 - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
-上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(force_history)} 条。
-role=tool 的工具输出处理规则：
-- 父 assistant 被删或不进 keep：工具输出随父级联删除，不进 keep 也不进 update
-- 父 assistant 进 update 改摘要：工具输出随父 tool_calls 清空级联删除，不进 update（工具调用过程写进摘要流程段）
-- 父 assistant 进 keep 保留原文：大工具输出（>1000 tokens）单独 update 改精简版（工具输出 idx 进 update），小工具输出可保留原文
-
 安全边界：idx > {dream_idx_in_force} 的消息（dream-evolver 未提取知识），
 不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
 注：受保护消息已从列表中排除，无需处理。
 
-请按照【模式三】执行压缩决策，安全边界优先于模式三决策流程。
-REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 keep=/update=/cursor= 三行。"""
+CRITICAL: 你只有一轮机会完成压缩决策。
+
+输出要求（严格，违反即失败）：
+- 只输出三行：keep= 行、update= 行、cursor= 行
+- 禁止输出任何其他内容：禁止 <analysis>、禁止分析过程、禁止解释、禁止总结报告、禁止 markdown 代码块
+- 格式示例（仅格式参考，内容由你按规则决定）：
+  keep=1,5,15,30,50,75,100,105,115,150,180,200
+  update=1|[摘要] 指令：xxx | 流程：xxx | 结果：xxx;5|[摘要] 指令：xxx | 流程：xxx | 结果：xxx
+  cursor=200
+- update= 多条用分号 `;` 分隔；摘要内容含分号用全角 `；`；段内避免 `|`
+- update 的 idx 必须在 keep= 中；cursor= 是操作范围内 idx 最大且仍存在的消息 idx
+- 未列在 keep= 中的消息将被删除
+
+REMINDER: 禁止调用任何工具，直接输出 keep=/update=/cursor= 三行，仅此三行。"""
 
 
 async def _emergency_clear(
@@ -3115,7 +2976,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     # 释放量太小（<5%），不值得压缩一轮，跳过
                     logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
                     _skip_compress = True
-                # 模式二 task prompt 由 _build_mode2_prompt 构造（内联方法论），不再构造 _compress_target
+                # 模式二 task prompt 由 _build_mode2_prompt 构造（瘦身版：方法论在 system，仅输出 keep=/update= 两行指令）
                 # 模式一/二：游标均由程序自动推进，不需要报告指令
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
@@ -3136,7 +2997,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         except OSError:
                             pass
 
-                    # 模式二 task prompt 由 _build_mode2_prompt 构造（含方法论 + analysis 草稿块）
+                    # 模式二 task prompt 由 _build_mode2_prompt 构造（瘦身版：禁止报告，直接输出两行）
                     prompt = ""
                 else:
                     prompt = f"""系统进入睡眠状态。

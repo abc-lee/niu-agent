@@ -316,7 +316,7 @@ class FakeMsg:
 
 
 def test_mode2_prompt_contains_methodology(monkeypatch):
-    """模式二 task prompt 应含压缩方法论（三份/会话单元/硬约束）+ llm_config 注入 max_tokens。"""
+    """模式二 task prompt 不再内联方法论（system 已有），含禁止报告强指令 + llm_config 注入 max_tokens。"""
     import asyncio
 
     import agent.subagent as subagent_module
@@ -372,11 +372,11 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
 
     # 验证 call_subagent 被调用且捕获了参数
     assert "task" in captured, "call_subagent 未被调用，可能 _tidy_context_impl 提前返回或抛错"
-    # prompt 含方法论关键词
-    assert "压缩方法论" in captured["task"]
-    assert "第一份" in captured["task"]
-    assert "会话单元" in captured["task"]
-    assert "<analysis>" in captured["task"]
+    # prompt 不再内联方法论（system 已有），改为禁止报告强指令
+    assert "压缩方法论" not in captured["task"]
+    assert "第一份" not in captured["task"]
+    assert "会话单元" not in captured["task"]
+    assert "禁止输出任何其他内容" in captured["task"]
     # llm_config 注入了 max_tokens
     assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 16384
 
@@ -532,7 +532,7 @@ def test_strip_analysis_missing_then_parse():
 
 
 def test_mode3_prompt_contains_methodology(monkeypatch):
-    """模式三 task prompt 应含压缩方法论 + cursor + dream 安全边界。"""
+    """模式三 task prompt 不再内联方法论，含禁止报告强指令 + cursor + dream 安全边界。"""
     import asyncio
 
     import agent.subagent as subagent_module
@@ -585,10 +585,10 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
     asyncio.run(compat._tidy_context_impl(request))
 
     assert "task" in captured, "call_subagent 未被调用"
-    assert "压缩方法论" in captured["task"]
-    assert "第一份" in captured["task"]
-    assert "会话单元" in captured["task"]
-    assert "<analysis>" in captured["task"]
+    assert "压缩方法论" not in captured["task"]
+    assert "第一份" not in captured["task"]
+    assert "会话单元" not in captured["task"]
+    assert "禁止输出任何其他内容" in captured["task"]
     assert "cursor=" in captured["task"]
     assert "安全边界" in captured["task"]
     assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 32000
@@ -760,7 +760,7 @@ def _build_niu_runner_for_test():
 
 
 def test_runner_mode3_prompt_contains_methodology(monkeypatch):
-    """runner.py force prompt 应含压缩方法论 + cursor + dream 安全边界 + max_tokens 注入。"""
+    """runner.py force prompt 不再内联方法论，含禁止报告强指令 + cursor + dream 安全边界 + max_tokens 注入。"""
     from agent import runner as runner_module
     from agent import subagent as subagent_module
 
@@ -827,11 +827,11 @@ def test_runner_mode3_prompt_contains_methodology(monkeypatch):
 
     # 验证 call_subagent 被调用且捕获了参数
     assert captured["prompt"] is not None, "call_subagent 未被调用，prompt 未捕获"
-    # prompt 含方法论关键词
-    assert "压缩方法论" in captured["prompt"]
-    assert "第一份" in captured["prompt"]
-    assert "会话单元" in captured["prompt"]
-    assert "<analysis>" in captured["prompt"]
+    # prompt 不再内联方法论（system 已有），改为禁止报告强指令
+    assert "压缩方法论" not in captured["prompt"]
+    assert "第一份" not in captured["prompt"]
+    assert "会话单元" not in captured["prompt"]
+    assert "禁止输出任何其他内容" in captured["prompt"]
     assert "cursor=" in captured["prompt"]
     assert "安全边界" in captured["prompt"]
     # llm_config 注入了 max_tokens
