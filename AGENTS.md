@@ -506,6 +506,22 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-13
+
+#### 修复：LLM 不可用启动门控（模型不通时不启动依赖 LLM 的后台组件，只等配置成功后重启）
+
+- **现象**：启动检测到大模型不通（配置缺失或连通性失败）→ 启动器弹配置页 → 但后端不阻塞：scheduler 在第 3 步无条件启动 → `_delayed_start` 三阶段（ready 180s → frontend_ready 60s 超时 proceed → sleep 2s → start）→ 10s 后扫描过期任务 → trigger_callback 入队 ChatQueue → runner.chat → LLM 不通 → **定时任务全部失败**
+- **根因（实证）**：配置页与后端启动进程**零耦合**——① `signal_scheduler_ready` 只被 LightRAG/脑区门控，从不被 LLM 配置门控；② scheduler Phase2 `frontend_ready_event.wait(60)` 超时 proceed-anyway 是配置页期间启动的直接使能点（settings 窗口不连 SSE、不调 /api/frontend-ready）；③ 启动器"阻塞"只发生在配置流程结束后（need_settings → 配置页 → test-llm 通过 → notify_shutdown → 退出进程），期间后端已完整启动；④ 用户记忆的"之前修过"= 启动器 LLM settings flow，只挡流程结束后的进程，不挡流程期间的后端后台组件
+- **修复（main 5 commits）**：
+  1. **compat.py 提取 `_probe_llm`**（test-llm 端点内部逻辑 → 模块级函数，read_timeout/wait_timeout 参数化，入口键名归一化）——端点与启动检测共用同一探测核心
+  2. **新建 `niu_api/llm_ready.py`**：`resolve_probe_budget`（预算解析 + **逃生口：user-config llm.read_timeout 覆盖（≤190s——wait ≤220 < 三方客户端 230s；float/bool/isfinite/非正/超上限全防护）**，check_llm_ready 与 test-llm 端点共用，>120s 慢模型全链路生效）+ `check_llm_ready`（存在性 + 真实连通性探测，**预算 read_timeout=120 / wait_for=150**——覆盖代码库显式支持的 20-120s 首响应推理模型；短预算会误杀慢首响模型 → 配置页保存被测试闸门挡 → 永久降级循环 = 回归）
+  3. **lifespan 门控**（__main__.py + lightrag_manager.py）：embedding 后、start_scheduler 前插检测——**flag 前置时序**：check_llm_ready **之前**先 `set_llm_gate_ready(False)`（慢探测窗口内 daemon 触发的 probe 全被跳过）、探测结束后置 `llm_ready`；`llm_ready=False` 时跳过 scheduler/HAWatcher/IM gateway/db_monitor/脑区 gate/signal/region 背景同步 + lightrag_sync（`auto_start=llm_ready`，保留既有 try/except）+ response_format 后台探测（lightrag_manager 模块级 `_llm_gate_ready` flag + `set_llm_gate_ready`）；**ChatQueue 照常启动不 pause**（配置页无消息源；瞬态分歧场景消息走 LLM 失败降级自愈）；**preload_complete 无条件置位**；shutdown 段零改动即安全
+  4. **启动器三处对齐**（main.rs）：test-llm 客户端超时 25s→230s（LLM 验证 + 配置页轮询）+ **preload-status 轮询迭代上限 360→3600**（实证：lifespan 阻塞时 uvicorn 不接连接、每轮 ≈0.5s，原 360 轮 ≈180s 墙钟——慢模型探测 150s+初始化会耗尽致无限重启循环；3600 轮 ≈30min）+ **settings 轮询 sleep 后 POST 前二次窗口关闭检查**（v2.6.4：关窗在 sleep 期间立即退出，消除确定性 2-3.5 分钟退出延迟；残余在途 POST 竞态 ≤230s 接受）
+  5. **settings 前端**（main.js + windows/settings/index.html）：socket 超时 100s→230s（三处含 fallback 直连）+ 过时注释更新 + **testAndSave body 合并文件 llm.read_timeout + saveConfig 写回保留**（index.html——testAndSave/saveConfig 在此文件非 main.js；existingConfig 变量；UI 保存不再抹掉逃生口覆盖）；**启动器配置页流程零改动**（既有 need_settings → settings 窗口 → 轮询 test-llm → 通过 → 退出重启已满足"配置成功后重启"）
+- **质量链**：scout 全量启动链探索 + 细节 scout → **计划审查 R1-R10 十轮双审查**（R1 双 REJECT：预算分歧 P1 + LiteLLMSession patch 目标 P1；R3 一 APPROVE 一 REJECT：read_timeout 60s 封顶误杀 60-120s 首响模型 P1 + ChatQueue 单向闩锁 P2；R4 双 REJECT：>120s 模型回归定性 + 逃生口 P2 + 瞬态分歧会话级副作用 P2；R5 双 REJECT：逃生口未闭环到端点 P1 + preload 墙钟 180s 无限重启 P1 + probe 保存闸门 P2 + llm_ready 传参 NameError P2；R6 双 REJECT：逃生口 wait 超出三方客户端封顶 P1/P2 + 端点接线零单测 P2；R7 双 REJECT：Step 4.5 改错文件 P2 + 保存腿声明与 probe 闸门矛盾 P2；R8 一 APPROVE 一 REJECT（Task 4 commit 缺 index.html P2）；**R9+R10 连续两轮零 bug 通过**）→ subagent-driven 实施（T1-T4 每 Task spec+quality 双审；实施中修复：_hang 签名（计划测试缺陷）、T2 ruff F401 + 日志常量 + 负数断言、T3 ruff F401 + global 死语法、T4 settings 轮询 P2）→ 35 新测试全绿 + 回归无新增失败 → **实机验证待用户执行**
+- **实机验证（待执行）**：配置无效（改坏 key）→ 启动 → 后端日志 `[LLMGate] LLM 连通性检测失败` + 无 `Internal scheduler started` → 配置页 → 配好 → 重启 → `Internal scheduler started` 正常；正常配置回归
+- **已知边界**：① **>120s 首字节模型**：patch 前可用、patch 后两端一致判定失败弹配置页——**逃生口：user-config llm.read_timeout 覆盖（≤190s，wait ≤220 < 三方客户端 230s）**，对门控 + 启动器验证生效；**配置页保存仍受 probe 保存闸门（⑨）限制——>10s 首字节模型经 UI testAndSave 保存必败，需手改 user-config.json**；settings UI 保存保留覆盖（v2.6）② llm_ready=False 时 `/api/scheduler` 端点用 get_store()（返回 200、任务可见但永不触发——非 500）③ 启动器 `/api/llm-status` 判空无 is_local 豁免（pre-existing——Ollama 空 apiKey 场景启动器仍弹配置页）④ lifespan 门控决策无单测（对齐 LightRAG v7 先例，靠双审查 + 实机验证）⑤ ChatQueue 不 pause 后，llm_ready=False 期间若有消息入队（理论无源）走 LLM 失败降级回复 ⑥ **瞬态分歧会话级副作用**（启动瞬间 LLM 短暂不可达 + 启动器验证前恢复）：后台组件整会话跳过、无用户可见通知——需**手动重启**恢复全量 ⑦ **挂起 provider** 弹配置页前总等待 ≈455s（默认）/ ≈445s（逃生口）——预算覆盖 20-120s 首响模型的设计取舍 ⑧ 配置页轮询 sleep 后二次窗口检查（残余在途 POST 竞态 ≤230s）⑨ **settings 保存双闸门**：testAndSave 还须 probe-response-format 返回 supported——probe 端点 read_timeout=10 → 首 chunk >10-20s 模型 probe_failed → "配置未保存"——pre-existing，遇真实慢模型场景单独扩展
+
 ### 2026-08-12
 
 #### 修复：定时任务飞书流式卡片永不终结（死路由 pre-existing + 86d6c7a2 显性化）——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
