@@ -19,7 +19,6 @@ read_timeout 是真实首字节封顶（litellm 每次读超时，超时后重�
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 
@@ -70,7 +69,7 @@ def resolve_probe_budget(
                 parsed = MAX_READ_TIMEOUT
             read_timeout = parsed
             wait_timeout = max(wait_timeout, read_timeout + 30.0)
-            logger.info(f"[LLMGate] 使用 user-config llm.read_timeout={read_timeout}（覆盖默认 120s）")
+            logger.info(f"[LLMGate] 使用 user-config llm.read_timeout={read_timeout}（覆盖默认 {STARTUP_READ_TIMEOUT}s）")
     return read_timeout, wait_timeout
 
 
