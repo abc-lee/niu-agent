@@ -29,6 +29,7 @@ from agent.injector.dream_writer import (
 )
 from niu_api.internal.region_activation import (
     STATUS_LIT,
+    BrainRegionState,
     RegionActivationManager,
 )
 from niu_api.internal.region_injector import BrainContextInjector
@@ -418,3 +419,45 @@ class TestFullBrainRegionFlow:
         assert CHAIN_RELATION_FOLLOWED not in content_c
         assert "event_B" in content_c
         assert "event_C" in content_c
+
+
+# ============== Test 9: lit-aware decay acceleration (integration) ==============
+
+
+def _make_lit_mgr(activations: list[float]) -> RegionActivationManager:
+    """创建指定激活值列表的 RegionActivationManager（直插 _regions，≥7 🟢 触发加速）"""
+    manager = RegionActivationManager()
+    for i, activation in enumerate(activations):
+        manager._regions[f"测试脑区{i}"] = BrainRegionState(
+            region_id=f"测试脑区{i}",
+            community_id="",
+            label=f"测试脑区{i}",
+            activation=activation,
+            last_activated_at=0.0,
+            activation_count=1,
+            manually_dimmed=False,
+        )
+    return manager
+
+
+class TestLitAwareDecayAccelerationIntegration:
+    """点亮数感知熄灭加速——真实管理器 + 混合激活值夹具"""
+
+    def test_t1_3_seven_lit_plus_full_lit(self) -> None:
+        """T1-3：7 个 🟢 0.8 + 1 个 1.0 → decay → 1.0→0.897、0.8→0.7178"""
+        manager = _make_lit_mgr([0.8] * 7 + [1.0])
+        manager.decay_all()
+        full = manager._regions["测试脑区7"]
+        assert full.activation == pytest.approx(0.897, abs=0.001)
+        eight = manager._regions["测试脑区0"]
+        assert eight.activation == pytest.approx(0.7178, abs=0.001)
+
+    def test_t1_4_uniform_scaling_preserves_order(self) -> None:
+        """T1-4：8 个 🟢 0.8 + 1 个 ⚫ 0.2 → decay → 0.2×0.897 == 0.1794（仍最低序）"""
+        manager = _make_lit_mgr([0.8] * 8 + [0.2])
+        manager.decay_all()
+        off = manager._regions["测试脑区8"]
+        assert off.activation == pytest.approx(0.2 * 0.897, abs=0.001)
+        # 统一因子缩放不改变相对排序：0.2 仍低于所有 🟢
+        lit_values = [s.activation for s in manager._regions.values() if s is not off]
+        assert off.activation < min(lit_values)
