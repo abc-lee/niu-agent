@@ -246,6 +246,7 @@ def _run_agent_loop(
     memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据
     resumed_messages: list | None = None,  # 阶段四新增：断点续传消息列表
     stop_predicate: Any | None = None,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
+    on_before_llm: Any | None = None,  # 每轮 LLM 前回调（Current Time 刷新），透传给 agent_runner_loop
 ) -> tuple[str, Any, str]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -296,6 +297,7 @@ def _run_agent_loop(
         memory_context=memory_context,  # 阶段二新增：透传给 agent_runner_loop
         resumed_messages=resumed_messages,  # 阶段四新增：透传给 agent_runner_loop
         stop_predicate=stop_predicate,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
+        on_before_llm=on_before_llm,  # 每轮 LLM 前刷新 Current Time（透传）
     )
     result = ""
     last_reply = ""  # 只记录最后一次 reply 的内容（完成通知用）
@@ -523,6 +525,44 @@ def get_subagent_prompt(agent_name: str) -> str:
             return content
 
     return f"You are {agent_name} sub-agent. Complete the task efficiently."
+
+
+_CURRENT_TIME_RE = re.compile(r"Current Time: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+
+
+def _refresh_subagent_current_time(messages: list, turn: int) -> None:
+    """会话内每轮刷新子 Agent system 的 Current Time（on_before_llm 回调）。
+
+    子 Agent 的 system_message 在 call_subagent 启动时构建一次（build_subagent_system_segments
+    实时取 datetime.now），长任务（context-manager 压缩 20+ 轮、dream-evolver 跨午夜）会话内
+    Current Time 会漂移。此回调在 agent_runner_loop 每轮 LLM 前被调用，原地更新
+    messages[0] 中的 Current Time 行为实时值；无匹配行时不变（安全）。
+
+    假设：str 格式下 re.sub 作用于整个 content——内置模板（agent.md/user_info/boundary/
+    ask-guide）实证不含 "Current Time: YYYY-MM-DD HH:MM:SS" 精确模式，不会误替换；
+    用户自写 agent.md 若含该精确模式会被一并替换（与 Claude list 分支的 search 选块
+    保护不同，str 分支无块边界——接受该风险，docstring 声明假设）。Claude list 分支
+    同理：极端场景下若静态块恰含精确模式，会先命中静态块而漏掉动态块刷新（概率极低、
+    后果=该轮时间陈旧——等同修复前现状，接受）。
+
+    Args:
+        messages: agent_runner_loop 的消息列表（messages[0] 为 system）
+        turn: 当前轮次（从 1 开始；本函数不使用，签名与 on_before_llm 回调一致）
+    """
+    if not messages or messages[0].get("role") != "system":
+        return
+    from datetime import datetime
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    content = messages[0].get("content")
+    if isinstance(content, list):
+        # Claude 格式：Current Time 在动态段（content[1]；content[0] 静态段有 cache_control）。
+        # 用正则 search 选块（R1-P2：子串 "Current Time" 可能命中静态块且无格式匹配时漏刷）
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and _CURRENT_TIME_RE.search(block.get("text", "")):
+                block["text"] = _CURRENT_TIME_RE.sub(f"Current Time: {now_str}", block["text"])
+                return
+    elif isinstance(content, str):
+        messages[0]["content"] = _CURRENT_TIME_RE.sub(f"Current Time: {now_str}", content)
 
 
 def build_subagent_system_segments(agent_name: str) -> tuple:
@@ -954,6 +994,7 @@ def call_subagent(
                 resumed_messages=suspended_messages,
                 supplement_queue=instance.supplement_queue,
                 stop_predicate=_stop_fn,  # 停止穿透：恢复路径重建谓词（闭包实例 E1 + 按实例 source 区分）
+                on_before_llm=_refresh_subagent_current_time,
             )
             _maybe_suspend_session(
                 unique_name=answer_unique_name,
@@ -1000,6 +1041,7 @@ def call_subagent(
                 supplement_queue=supplement_queue,  # 调用方传入
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
                 stop_predicate=_stop_fn,  # 停止穿透：异步路径用顶部绑定（仅 terminate）
+                on_before_llm=_refresh_subagent_current_time,
             )
         finally:
             # 异步路径不在这里 unregister（_run_subagent_async 的 finally 负责）
@@ -1042,6 +1084,7 @@ def call_subagent(
                 supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
                 stop_predicate=_stop_fn,  # 停止穿透：同步路径用顶部绑定（user = global or terminate / 非 user = 仅 terminate）
+                on_before_llm=_refresh_subagent_current_time,
             )
             # §5.5 后处理：必须在 try 块内、finally 之前执行（异常时跳过，直接进 finally）
             _maybe_suspend_session(
