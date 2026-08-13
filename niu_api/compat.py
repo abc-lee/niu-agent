@@ -730,6 +730,25 @@ CRITICAL: 你只有一轮机会完成压缩决策。
 REMINDER: 禁止调用任何工具，直接输出 keep=/update=/cursor= 三行，仅此三行。"""
 
 
+def _build_compress_llm_config(llm_config: dict) -> dict:
+    """压缩专用 LLM 配置：注入 max_tokens（输出预算）+ 关闭思考链。
+
+    思考链占输出 token（doubao 实证：max_tokens=5 探测时思考链跑 ~172 token 挤压内容），
+    压缩是结构化三行输出任务，不需要思考链——首次调用即关闭，
+    避免"第一轮失败第二轮才关"浪费一轮。降级链 step1（_build_degraded_config）
+    保留作兜底（reasoning_effort 降级仍可能触发）。
+
+    不修改原始 llm_config（dict 浅拷贝 + litellm_kwargs 新建字典）。
+    """
+    cfg = dict(llm_config)
+    cfg["litellm_kwargs"] = {
+        **llm_config.get("litellm_kwargs", {}),
+        "max_tokens": _read_max_output_tokens(),
+        "thinking": {"type": "disabled"},
+    }
+    return cfg
+
+
 async def _emergency_clear(
     history: list,
     msg_ids: list,
@@ -3011,12 +3030,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
                 if _is_mode2:
                     # === 模式二：单次调用 + 应急清空（不重试） ===
-                    # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
-                    llm_config_with_max = dict(llm_config)
-                    llm_config_with_max["litellm_kwargs"] = {
-                        **llm_config.get("litellm_kwargs", {}),
-                        "max_tokens": _read_max_output_tokens(),
-                    }
+                    # llm_config 动态注入 max_tokens + 关闭思考链（首次即停）
+                    llm_config_with_max = _build_compress_llm_config(llm_config)
 
                     # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
                     prompt = _build_mode2_prompt(display_tokens, target_tokens, usage_percent, compress_history)
@@ -3276,7 +3291,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         return call_subagent_with_auto_answer(
                             agent_name="context-manager",
                             task=truncated_prompt,
-                            llm_config=llm_config,
+                            llm_config=_build_compress_llm_config(llm_config),
                             mcp_client=None,
                             context_fifo_threshold=-1,  # FIFO 保底
                         )
@@ -3724,12 +3739,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 else:
                     _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
 
-                # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
-                llm_config_with_max = dict(llm_config)
-                llm_config_with_max["litellm_kwargs"] = {
-                    **llm_config.get("litellm_kwargs", {}),
-                    "max_tokens": _read_max_output_tokens(),
-                }
+                # llm_config 动态注入 max_tokens + 关闭思考链（首次即停）
+                llm_config_with_max = _build_compress_llm_config(llm_config)
 
                 # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
                 prompt = _build_force_prompt(

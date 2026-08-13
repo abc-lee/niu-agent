@@ -1893,6 +1893,7 @@ class NiuRunner:
         from pathlib import Path as _Path
 
         from niu_api.compat import (
+            _build_compress_llm_config,
             _build_compress_history,
             _build_force_prompt,
             _build_incremental_msg_text,
@@ -1907,7 +1908,6 @@ class NiuRunner:
         from agent.subagent import (
             _read_compress_target_tokens,
             _read_context_window_tokens,
-            _read_max_output_tokens,
             _read_protect_recent_count,
             call_subagent_with_auto_answer,
         )
@@ -2129,13 +2129,8 @@ class NiuRunner:
                 _force_history, last_compress_id, _dream_idx_in_force,
             )
 
-            # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
-            # _read_max_output_tokens 动态算：contextWindowSize × 0.16，封顶 65536
-            llm_config_with_max = dict(llm_config)
-            llm_config_with_max["litellm_kwargs"] = {
-                **llm_config.get("litellm_kwargs", {}),
-                "max_tokens": _read_max_output_tokens(),
-            }
+            # llm_config 动态注入 max_tokens + 关闭思考链（首次即停）
+            llm_config_with_max = _build_compress_llm_config(llm_config)
 
             def run_context_manager_force():
                 return call_subagent_with_auto_answer(
