@@ -67,6 +67,9 @@ def test_resolve_probe_budget_zero_or_negative():
     rt, wt = resolve_probe_budget({"read_timeout": 0})
     assert rt == STARTUP_READ_TIMEOUT
     assert wt == STARTUP_WAIT_TIMEOUT
+    rt3, wt3 = resolve_probe_budget({"read_timeout": -5})
+    assert rt3 == STARTUP_READ_TIMEOUT
+    assert wt3 == STARTUP_WAIT_TIMEOUT
 
 
 def test_resolve_probe_budget_bool():
