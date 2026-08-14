@@ -431,7 +431,7 @@ def _decode_vdb_vector(entry: dict) -> np.ndarray | None:
         raw = base64.b64decode(entry["vector"])
         vec = np.frombuffer(zlib.decompress(raw), dtype=np.float16).astype(np.float32)
         norm = np.linalg.norm(vec)
-        if norm <= 0:
+        if not np.isfinite(norm) or norm <= 0:
             return None
         return vec / norm
     except Exception:
