@@ -525,7 +525,7 @@ preload_face_model()
   3. **Task 3（本条目）**：回归全清单零新增失败 + brain-region-management.md assign 引用清理（归属建边由 LLM 提示词引导自然完成）+ grep 零残留
 - **用户拍板**：删除不保留 force 逃生口（LLM 建连接是设计路径）；**启动器提示保留验证**——splash "正在同步脑区状态" + launcher 社区检测警告均不依赖 assign（两处提示与 assign 解耦）
 - **质量链**：计划 v1→v19 十九版演进 + **R1-R18 十八轮双审查**（R18 双 CONDITIONAL 同 P2-1 明示补后 APPROVE——实质达成双 APPROVE 终止进入实施；关键教训：description 源改图快照直读（R3 P0-1）/priority 固定映射自愈（R5/R6 实证配置旧值落空）/fake graph 必须显式真实 networkx.Graph（R18 P3-6））+ 每 Task spec+quality 双审
-- **实机验证（用户执行）**：重启无 1606 注入（`批量注入实体-脑区关系` 日志消失）+ 长运行 >24h 第 2 次 `[Decay]`（衰减持续执行、无检测门控阻断）
+- **实机验证（用户 2026-08-14 19:03 执行——通过）**：① 重启日志**无** `批量注入实体-脑区关系`——改为 `[RegionSync] Updated 7 default region sizes`（新 size 更新路径）② `[Decay] brain region edges: decayed=3185, deleted=0, protected=546` + `[RegionSync] 衰减结果: {...}`（`_run_decay` 新提取路径生效）③ splash `[STAGE] 正在同步脑区状态` + `[StartupGate] Running brain region first sync` 保留 ④ 完整启动无回归（LightRAG Phase 1 全过 + VDB (3242,768) matrix/data 一致 + 85 MCP 工具 + Scheduler/IM/Electron）⑤ 边数 6314（上次 6282——assign 移除后归属边仍增长——**LLM 建连接路径真实生效**）⑥ `距上次同步 0 秒，不足 77760 秒，等待 77760 秒后再首次同步`——21.6h 门控 + 24h 后台循环就位；新 stats 键 `regions_size_updated: 7`/`edges_disconnected: 0` 写入。**长运行 >24h 第 2 次 `[Decay]` 待用户后续确认**（24h 循环——衰减持续执行、无检测门控阻断）
 
 #### 修复：VDB 并发写混写根治——单写者保证三层防线（launcher 无条件清理等进程消失 + niu_api 启动单实例自检）
 
