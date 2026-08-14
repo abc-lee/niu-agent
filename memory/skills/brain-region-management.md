@@ -51,9 +51,9 @@ Add your new brain region to the `brain_regions.defaults` section. Each entry su
 | `label` | Yes | Region display name (e.g., "工作事务") |
 | `description` | Yes | What the region stores |
 | `priority` | Yes | `"core"` (always active) or `"category"` (on-demand) |
-| `keywords` | No | List of Chinese keywords for heuristic entity-to-region matching |
+| `keywords` | No | Reserved field, retained for config compatibility (no longer drives automatic matching) |
 
-The `keywords` field is used by `assign_entities_to_default_regions` to match entities to regions by name/description similarity. If omitted, the system falls back to a built-in keyword list for known default regions.
+Region membership edges (`包含` belongs-to) are created naturally by LLM-prompt-guided knowledge graph operations — dream-evolver injects the brain region list and guides edge creation, entity extraction / document ingestion prompts do the same, and skill sync links skill entities to the knowledge system region.
 
 ### Step 3: Restart
 
