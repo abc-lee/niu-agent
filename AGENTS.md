@@ -42,6 +42,7 @@ MCP 服务器集群 (mcp-servers/)
    - 实施：在 main 分支执行，与 plans 分支无关；实施计划提交只进 main
    - `plans` 分支**永远不推送**；main 的 `.gitignore` 排除 `docs/superpowers/`（plans 分支的 .gitignore 不排除该目录——两分支 .gitignore 语义不同是预期设计，不是要 merge 的理由）
    此铁律必须传达给派出去的子 Agent。
+10. **禁止用 Python/脚本直接修改任何代码或文档** — 所有文件修改（代码、配置、计划、手册）必须用 **Edit 工具**（先读后改：old_string 不匹配会显式报错，不会静默失败）。**Python 仅限只读分析**（读文件、算数据、grep 统计），禁止 `open(p,'w').write()` 写文件。`python -c 's=open(f).read().replace(...); open(f,"w").write(s)'` 一类批量静默替换**一律禁止**——`str.replace` 的 old_string 不匹配时静默跳过不报错，是"改了但没改对"的根源（2026-08-14 脑区 assign 计划 19 轮审查教训：行号漂移连续三轮、fake 结构修错、改一处漏同步，全因静默 replace）。此铁律必须传达给派出去的子 Agent。
 
 **违反任何一条就停下来，不要继续。**
 
