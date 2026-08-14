@@ -111,3 +111,126 @@ def test_update_regions_partial_success(client):
         })
         assert response.status_code == 200
         assert response.json()["updated"] == 2
+
+
+# ============== consolidate: Task 2 — Step 4.5 update_default_region_sizes ==============
+
+
+def _consolidate_context(update_return_value=None, update_side_effect=None):
+    """consolidate 全 mock 上下文（T2-2 mock 清单）。
+
+    get_region_sync（锁）+ LightRAGAdapter 构造 + CommunityDetector.detect_communities
+    （partitions 非空 list + modularity float——round() 需要）+ _get_region_mgr
+    （带 return values）+ _get_activation_mgr None + update/assign patch create=True。
+    """
+    from contextlib import ExitStack
+    from unittest import mock
+
+    stack = ExitStack()
+    sync_mock = mock.MagicMock()
+    sync_mock.try_acquire_sync.return_value = True
+    region_mgr = mock.MagicMock()
+    region_mgr.cleanup_stale_regions.return_value = ([], [], set())
+    region_mgr.create_region_nodes.return_value = []
+    region_mgr.get_all_regions.return_value = []
+    region_mgr.update_region_summaries.return_value = None
+    region_mgr.dissolve_shrunk_regions.return_value = []
+    region_mgr.decay_structural_edges.return_value = {"decayed": 0, "deleted": 0}
+    detection = mock.MagicMock()
+    detection.partitions = [mock.MagicMock()]  # 非空——consolidate 无分区早退不触发
+    detection.modularity = 0.42
+    detection.total_regions = 3
+
+    stack.enter_context(
+        mock.patch("agent.injector.region_sync.get_region_sync", return_value=sync_mock)
+    )
+    stack.enter_context(
+        mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter")
+    )
+    stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_detector.CommunityDetector.detect_communities",
+            return_value=detection,
+        )
+    )
+    stack.enter_context(
+        mock.patch("niu_api.brain_region_api._get_region_mgr", return_value=region_mgr)
+    )
+    stack.enter_context(
+        mock.patch("niu_api.brain_region_api._get_activation_mgr", return_value=None)
+    )
+    update_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.update_default_region_sizes",
+            create=True,
+            return_value=update_return_value,
+            side_effect=update_side_effect,
+        )
+    )
+    assign_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.assign_entities_to_default_regions",
+            create=True,
+            return_value={},
+        )
+    )
+    return stack, region_mgr, update_mock, assign_mock
+
+
+def test_t2_2_consolidate_no_assign_update_sizes_decay_kept():
+    """T2-2：consolidate Step 4.5 不再调 assign + 调 update_default_region_sizes + Step 8 decay 保留。"""
+    from niu_api.brain_region_api import ConsolidateRequest, consolidate_brain_regions
+
+    stack, region_mgr, update_mock, assign_mock = _consolidate_context(
+        update_return_value={"updated": 3},
+    )
+    with stack:
+        result = consolidate_brain_regions(ConsolidateRequest(resolution=1.0))
+
+    assert result["status"] == "ok"
+    update_mock.assert_called_once()
+    assign_mock.assert_not_called()
+    # Step 4.6 正常执行
+    region_mgr.update_region_summaries.assert_called()
+    # Step 8 decay 保留原位
+    region_mgr.decay_structural_edges.assert_called()
+
+
+def test_t2_2_variant_a_update_error_step46_continues():
+    """update 抛异常 → 被吞 + Step 4.6 summaries 仍执行 + 返回 ok。"""
+    from niu_api.brain_region_api import ConsolidateRequest, consolidate_brain_regions
+
+    stack, region_mgr, update_mock, assign_mock = _consolidate_context(
+        update_side_effect=RuntimeError("boom"),
+    )
+    with stack:
+        result = consolidate_brain_regions(ConsolidateRequest(resolution=1.0))
+
+    assert result["status"] == "ok"
+    region_mgr.update_region_summaries.assert_called()
+    assign_mock.assert_not_called()
+
+
+def test_t2_2_variant_b_updated_zero_no_log():
+    """updated=0：无 [Consolidate] Updated 日志。"""
+    from unittest import mock
+
+    import niu_api.brain_region_api as api_mod
+    from niu_api.brain_region_api import ConsolidateRequest, consolidate_brain_regions
+
+    info_calls = []
+    stack, region_mgr, update_mock, assign_mock = _consolidate_context(
+        update_return_value={"updated": 0},
+    )
+    with stack:
+        with mock.patch.object(
+            api_mod.logger, "info",
+            side_effect=lambda *a, **k: info_calls.append(a),
+        ):
+            result = consolidate_brain_regions(ConsolidateRequest(resolution=1.0))
+
+    assert result["status"] == "ok"
+    assert not any(
+        "Updated" in str(c) and "default region sizes" in str(c)
+        for c in info_calls
+    ), f"updated=0 不应有 Updated 日志: {info_calls}"

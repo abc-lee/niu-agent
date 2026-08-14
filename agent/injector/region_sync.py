@@ -163,6 +163,22 @@ class RegionSync:
             stats["errors"].append(f"detection_unexpected: {e}")
 
         if detection_result is None:
+            # 衰减与 size 更新不依赖社区检测——照常执行（遗忘曲线持续，用户确认）。
+            # 顺序：decay → size → refresh（decay 先于 refresh——防删边后已遗忘实体
+            # 仍留在 _entity_to_region 至下次同步——与正常路径一致；正常路径 size 在
+            # decay 前（Step 4.5）——本分支 size 在 decay 后——口径差一轮（size 反映
+            # 删边后成员，更准）——注明接受）
+            self._run_decay(stats)
+            try:
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
+                from niu_api.internal.region_manager import update_default_region_sizes
+                result = update_default_region_sizes(LightRAGAdapter())
+                updated = result.get("updated", 0)
+                if updated > 0:
+                    stats["regions_size_updated"] = updated
+                    logger.info(f"[RegionSync] Updated {updated} default region sizes")
+            except Exception as e:
+                logger.debug(f"[RegionSync] update_default_region_sizes skipped: {e}")
             # Still refresh activation manager even when detection is skipped
             # (default brain regions exist independently of community detection)
             self._refresh_activation_manager(stats)
@@ -288,16 +304,17 @@ class RegionSync:
                 stats["errors"].append(f"create: {e}")
                 create_ok = False
 
-            # Step 4.5: Assign existing entities to default brain regions
+            # Step 4.5: Refresh default region size metadata (no entity assignment —
+            #           region membership edges are created by LLM-driven KG operations)
             try:
-                from niu_api.internal.region_manager import assign_entities_to_default_regions
-                result = assign_entities_to_default_regions(adapter)
-                assigned = result.get("assigned", 0)
-                if assigned > 0:
-                    logger.info(f"[RegionSync] Assigned {assigned} entities to default regions")
-                    stats["entities_assigned"] = assigned
+                from niu_api.internal.region_manager import update_default_region_sizes
+                result = update_default_region_sizes(adapter)
+                updated = result.get("updated", 0)
+                if updated > 0:
+                    stats["regions_size_updated"] = updated
+                    logger.info(f"[RegionSync] Updated {updated} default region sizes")
             except Exception as e:
-                logger.debug(f"[RegionSync] assign_entities_to_default_regions skipped: {e}")
+                logger.debug(f"[RegionSync] update_default_region_sizes skipped: {e}")
 
             # Step 3b: Execute cleanup only if create didn't throw and dry_run succeeded
             # create_ok=True but created=[] is normal (all regions exist), still run cleanup
@@ -332,18 +349,32 @@ class RegionSync:
             except Exception as e:
                 logger.debug(f"[RegionSync] update_region_summaries skipped: {e}")
 
-            # Step 6: Decay structural edges
-            try:
-                disconnected = manager.decay_structural_edges()
-                if disconnected.get("deleted", 0) > 0 or disconnected.get("decayed", 0) > 0:
-                    stats["edges_disconnected"] = disconnected.get("deleted", 0)
-                    logger.info(f"[RegionSync] 衰减结果: {disconnected}")
-            except Exception as e:
-                logger.debug(f"[RegionSync] Edge decay skipped: {e}")
+            # Step 6: Decay structural edges (decoupled from community detection)
+            self._run_decay(stats)
 
         except Exception as e:
             logger.warning(f"[RegionSync] Region management failed: {e}")
             stats["errors"].append(f"management: {e}")
+
+    def _run_decay(self, stats: dict) -> None:
+        """图边衰减——独立于社区检测（detection 失败时照常执行，遗忘曲线持续）。
+
+        整体 try/except（含 manager/adapter 构造——run_sync 的 try 无 except，
+        异常传播至 lifespan 启动 gate 被吞会导致 sync 中断 + 当次衰减丢失）。
+
+        Args:
+            stats: Stats dict (updated in place with edges_disconnected).
+        """
+        try:
+            from niu_api.internal.region_manager import RegionManager
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+            manager = RegionManager(LightRAGAdapter(), LightRAGIngester())
+            disconnected = manager.decay_structural_edges()
+            if disconnected.get("deleted", 0) > 0 or disconnected.get("decayed", 0) > 0:
+                stats["edges_disconnected"] = disconnected.get("deleted", 0)
+                logger.info(f"[RegionSync] 衰减结果: {disconnected}")
+        except Exception as e:
+            logger.debug(f"[RegionSync] Edge decay skipped: {e}")
 
     def _refresh_activation_manager(self, stats: dict) -> None:
         """Initialize activation manager with current region data.

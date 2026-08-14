@@ -256,15 +256,16 @@ def consolidate_brain_regions(
             else:
                 logger.warning("[Consolidate] create_region_nodes exception, preserving stale regions")
 
-            # Step 4.5: Assign existing entities to default brain regions
+            # Step 4.5: Refresh default region size metadata (no entity assignment —
+            #           region membership edges are created by LLM-driven KG operations)
             try:
-                from niu_api.internal.region_manager import assign_entities_to_default_regions
-                result = assign_entities_to_default_regions(adapter)
-                assigned = result.get("assigned", 0)
-                if assigned > 0:
-                    logger.info("[Consolidate] Assigned %d entities to default regions", assigned)
+                from niu_api.internal.region_manager import update_default_region_sizes
+                result = update_default_region_sizes(adapter)
+                updated = result.get("updated", 0)
+                if updated > 0:
+                    logger.info("[Consolidate] Updated %d default region sizes", updated)
             except Exception as e:
-                logger.debug("[Consolidate] assign_entities_to_default_regions skipped: %s", e)
+                logger.debug("[Consolidate] update_default_region_sizes skipped: %s", e)
 
             # Step 4.6: Update region summaries (exclude created and drifted)
             try:
