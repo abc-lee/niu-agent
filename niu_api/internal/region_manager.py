@@ -71,18 +71,6 @@ FLOOR_WEIGHT = 0.1       # 保底权重 / 删除阈值
 INITIAL_WEIGHT = 1.0     # 边初始权重 / 增强恢复目标值
 DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
 
-# 7 个默认脑区的固定 priority 映射（与 get_default_regions_config fallback 同源——
-# 两处需同步维护；配置值合法则尊重，旧值 core/category/缺失则用此映射自愈）
-_DEFAULT_REGION_PRIORITY = {
-    "聊天历史脑区": "medium",
-    "文档库脑区": "permanent",
-    "知识体系脑区": "long",
-    "人际关系脑区": "permanent",
-    "工作事务脑区": "medium",
-    "生活事务脑区": "short",
-    "组织机构脑区": "permanent",
-}
-
 
 def daily_decay_rate(priority: str) -> float:
     """根据优先级计算日衰减率（半衰期模型）"""
@@ -2021,8 +2009,8 @@ def update_default_region_sizes(adapter) -> dict:
     原全量分配函数的 size 更新职责提取（D-15 防膨胀口径：size = 实际成员数，
     不累加）。归属建边由 LLM 知识图谱操作完成，删除全量分配后保留此轻量更新，
     使脑区状态图/面板的成员计数保持准确。只更新 size/updated_at 字段；
-    summary/region_id/representative 从旧 description 透传，priority 用
-    固定映射自愈（配置合法值尊重/旧值映射）。
+    summary/region_id/representative 从旧 description 透传，priority 从配置读取
+    （配置权威——配置写什么用什么；缺失回退 DEFAULT_PRIORITY）。
 
     Args:
         adapter: LightRAGAdapter instance.
@@ -2077,13 +2065,8 @@ def update_default_region_sizes(adapter) -> dict:
     update_entities: list[dict] = []
     for region_name, desc in desc_map.items():
         parsed = _parse_description(desc)
-        # priority 自愈：配置合法值尊重（自定义脑区兼容）；旧值 core/category/缺失
-        # → 7 默认脑区固定映射（.get 而非 []——旧配置缺 priority 防 KeyError）
-        cfg_priority = config_map.get(region_name, {}).get("priority", "")
-        if cfg_priority in ("permanent", "long", "medium", "short"):
-            priority = cfg_priority
-        else:
-            priority = _DEFAULT_REGION_PRIORITY.get(region_name, DEFAULT_PRIORITY)
+        # priority 从配置读取（配置权威——配置写什么用什么；缺失回退 DEFAULT_PRIORITY）
+        priority = config_map.get(region_name, {}).get("priority", DEFAULT_PRIORITY)
         updated_desc = _encode_description(
             summary=parsed.get("summary", ""),
             region_id=parsed.get("region_id", ""),
