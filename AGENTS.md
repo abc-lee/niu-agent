@@ -515,6 +515,18 @@ preload_face_model()
 
 ### 2026-08-14
 
+#### 修复：脑区 assign 每次启动全量重注入抵消图边衰减（遗忘曲线失效）——assign 删除 + update_default_region_sizes 提取 + decay 从 detection 解耦
+
+- **问题（实证）**：① 每次启动重注入 1606 条实体→默认脑区归属边（weight=1.0 幂等 upsert 恢复满权）→ 同次同步 decay 只削到 ≈0.996 → 边权重恒水平线永不跌穿 FLOOR_WEIGHT=0.1 → **图边遗忘永不发生**（净效果≈0）；② 定时衰减被社区检测失败门控（detection 异常分支早退跳过 decay）；③ **description 源既有缺陷（R3-P0-1 实证）**——list_entities 经 `_clean_description` 清洗剥掉 brain_meta_* 字段抹平 priority（assign 自 08-02 起已在污染存量 description；同源影响 update_region_summaries region_id 抹空 / dissolve shrink_count 失效）——差异化半衰期（90-360 天）被抹平
+- **根因**：`assign_entities_to_default_regions` docstring 自述 "one-time operation"（05-12 引入时设计=一次性填充、零调用点）——06-09 df870087 接线进 region_sync Step 3.5 后即每次同步全量重注入，**"一次性"实现成"每次启动全量重注入"**（run_sync_once_for_startup 只查进程内 Event、绕过 21.6h 跨重启门控 + 每 24h 后台 + consolidate API 三条触发链无条件调用）；归属建边实为 **LLM 设计路径**——dream-evolver 动态注入脑区列表+提示词引导建边、entity-extractor/文档入库提示词注入（brain_region_prompt.py）、技能同步（sync.py L663-671 知识体系包含边）——assign 是多余旧机制
+- **修复（main 3 commits）**：
+  1. **Task 1（f89a2e5a）**：region_manager.py 删除 assign_entities_to_default_regions（clean cutover——无调用者死代码不留，git 历史可取回）+ 新增 `update_default_region_sizes`（get_all_region_members 单次读——7 次全图拷贝→1 次；**图快照直读原始描述**绕开 _clean_description 清洗 + priority 固定映射自愈（实证用户配置 core/category 旧值——合法值尊重、旧值归一化））
+  2. **Task 2（b3a5156a）**：region_sync Step 4.5 替换 update_default_region_sizes + decay 提取 `_run_decay` 从 detection 解耦（**检测异常仍衰减**）+ 早退分支 decay + consolidate 同构替换（Step 4.5 assign→size 更新；无分区早退 L218 仍早退——接受边界）
+  3. **Task 3（本条目）**：回归全清单零新增失败 + brain-region-management.md assign 引用清理（归属建边由 LLM 提示词引导自然完成）+ grep 零残留
+- **用户拍板**：删除不保留 force 逃生口（LLM 建连接是设计路径）；**启动器提示保留验证**——splash "正在同步脑区状态" + launcher 社区检测警告均不依赖 assign（两处提示与 assign 解耦）
+- **质量链**：计划 v1→v19 十九版演进 + **R1-R18 十八轮双审查**（R18 双 CONDITIONAL 同 P2-1 明示补后 APPROVE——实质达成双 APPROVE 终止进入实施；关键教训：description 源改图快照直读（R3 P0-1）/priority 固定映射自愈（R5/R6 实证配置旧值落空）/fake graph 必须显式真实 networkx.Graph（R18 P3-6））+ 每 Task spec+quality 双审
+- **实机验证（用户执行）**：重启无 1606 注入（`批量注入实体-脑区关系` 日志消失）+ 长运行 >24h 第 2 次 `[Decay]`（衰减持续执行、无检测门控阻断）
+
 #### 修复：VDB 并发写混写根治——单写者保证三层防线（launcher 无条件清理等进程消失 + niu_api 启动单实例自检）
 
 - **根因修正（用户纠正后定稿——不是上游 bug）**：nano_vectordb `save()` 非原子（open('w')+json.dump）+ LightRAG 文档明示 "Only one process should updating the storage at a time"——是**单进程前提设计**，单进程内 `save()` 顺序执行完全正常。LightRAG 生产写路径实证无并发写：所有写路径经 `call_async` 同步桥（run_coroutine_threadsafe）收敛到唯一 lightrag-loop 事件循环线程——asyncio.Lock 同 loop 有效、单 client 内存单调、save 串行——单进程内不可能产生两个独立内存快照并发 save。**混写 = 08-11 前的一次双进程并存事故**（数据实证：副本快照 08-11 14:11 matrix 3213 vs data 3211 已差 2；08-11 → 08-14 两文件同步 +14、差 2 保持——单进程正常写不产生新错位）；06:51 越界 = **历史孤儿概率命中**（非新写损坏）。现象链：矩阵错位 → 检索排序错误（李磊 Top 15）→ 孤儿行累积 → 越界崩溃。**双进程来源（我们部署的问题）**：launcher `kill_stale_api_process` 只查端口占用（半死进程不触发）+ pkill 后不等待退出；崩溃残留 + 重启窗口；手动双起——重启窗口/双开窗口期新旧实例并存双双跑整理管线。
