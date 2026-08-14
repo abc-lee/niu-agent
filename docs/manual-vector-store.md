@@ -541,6 +541,13 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 - GraphML 有 edge 但 `vdb_relationships` 无对应向量 → major
 - 这是 v2 的核心改进：真损坏判定从"文件存在性"改为"数据一致性"
 
+**vdb 文件内部一致性检测**（`_check_vdb_internal`，v3 新增 2026-08-14）：
+- 检测 vdb_entities / vdb_relationships / vdb_chunks 的 matrix 行数 vs data 条数是否一致（孤儿向量）
+- 不一致 → major（vdb_matrix_mismatch）
+- 成因：跨进程并发 upsert 导致 matrix 与 data 不同步（LightRAG fork 注释警告 "Only one process should updating the storage at a time"）
+- 后果：nano-vectordb 查询时孤儿向量行号越界崩溃——表现为知识图谱查询报错/无结果
+- 与 v2 的区别：v2 只查 GraphML⊆vdb 单向（防数据丢失）；v3 查 vdb 文件内部（孤儿向量/尾部错位）
+
 **派生 kv_store 文件缺失**（`_check_derived_missing`，v2 改为不报错）：
 - `kv_store_doc_status` / `entity_chunks` / `relation_chunks` / `full_entities` / `full_relations` 缺失不是损坏
 - LightRAG `JsonKVStorage.initialize` 把缺失文件当空 dict，运行时按需 upsert
@@ -560,6 +567,8 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 - 其他所有进程（API 请求、文档入库、脑区同步等）全部阻断
 
 用户点击"尝试修复"后，调 `/api/kg/lightrag/repair` → `run_repair_on_user_request` 进入修复流程。
+
+**v3 例外（自动修复不弹窗，2026-08-14）**：`vdb_matrix_mismatch`（vdb 文件内部 matrix/data 行数不一致）→ **启动自检自动修复**——从 data.vector 重建 matrix（秒级、不删任何数据）→ 重跑检测 → 通过后正常启动，**不弹窗、无需用户操作**。其他损坏（真相源 corrupt / vdb_missing 文件缺失）仍走阻断 + "尝试修复"弹窗路径。
 
 ### 9.4 修复流程（run_repair_on_user_request）
 
@@ -669,6 +678,20 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
    修复期间 RegionSync 必须完全停止。如果日志看到"RegionSync 已停止"后又有"Sync complete"，说明守护线程没真正停。
 
 ### 9.9 用户简易修复指引（删 vdb 触发修复）
+
+**v3 优先路径（重启即自动修复，无需删文件）**：
+
+当 vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量）时，**直接重启程序即可自动修复**：
+1. 退出程序
+2. 重新启动 ./niu
+3. 启动自检检测到 vdb 内部不一致 → 自动从 data.vector 重建 matrix → 恢复正常
+   （无需删文件、无需点弹窗，几秒内完成）
+
+**用户可观察的症状**（判断是否属于此类问题，不需要看控制台窗口）：
+- 问知识图谱类问题（如"我上次聊了什么""关于 XX 的事情"）时，Agent 回复"知识图谱查询失败""查询出错"或直接说查不到
+- 聊天窗口中 Agent 回复内容里出现 LightRAG / 图谱查询相关错误描述
+- 脑区相关的知识注入不工作（图谱检索是脑区点亮/知识注入的依赖，图谱坏了脑区也点不亮）
+- 以上症状出现时，先重启程序——绝大多数情况重启后自动修复，无需做其他操作
 
 **当用户怀疑知识图谱数据有问题时**（查询结果异常、实体缺失、关系丢失等），最简单的修复方法是**删除 3 个 vdb 文件后重启程序**，系统会自动触发修复流程重建向量索引：
 
