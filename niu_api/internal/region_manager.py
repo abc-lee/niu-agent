@@ -71,6 +71,18 @@ FLOOR_WEIGHT = 0.1       # 保底权重 / 删除阈值
 INITIAL_WEIGHT = 1.0     # 边初始权重 / 增强恢复目标值
 DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
 
+# 7 个默认脑区的固定 priority 映射（与 get_default_regions_config fallback 同源——
+# 两处需同步维护；配置值合法则尊重，旧值 core/category/缺失则用此映射自愈）
+_DEFAULT_REGION_PRIORITY = {
+    "聊天历史脑区": "medium",
+    "文档库脑区": "permanent",
+    "知识体系脑区": "long",
+    "人际关系脑区": "permanent",
+    "工作事务脑区": "medium",
+    "生活事务脑区": "short",
+    "组织机构脑区": "permanent",
+}
+
 
 def daily_decay_rate(priority: str) -> float:
     """根据优先级计算日衰减率（半衰期模型）"""
@@ -2003,173 +2015,98 @@ def create_default_regions(
     return {"created": created, "existing": existing}
 
 
-def assign_entities_to_default_regions(
-    adapter: Any,
-    entity_keywords: dict[str, list[str]] | None = None,
-) -> dict:
-    """Assign existing entities to default brain regions based on keywords.
+def update_default_region_sizes(adapter) -> dict:
+    """用当前实际成员数刷新 7 个默认脑区的 brain_meta_size 元数据。
 
-    This is a one-time operation to populate default regions with existing
-    entities. After this, entities will naturally accumulate in regions
-    through normal knowledge graph operations.
+    原全量分配函数的 size 更新职责提取（D-15 防膨胀口径：size = 实际成员数，
+    不累加）。归属建边由 LLM 知识图谱操作完成，删除全量分配后保留此轻量更新，
+    使脑区状态图/面板的成员计数保持准确。只更新 size/updated_at 字段；
+    summary/region_id/representative 从旧 description 透传，priority 用
+    固定映射自愈（配置合法值尊重/旧值映射）。
 
     Args:
         adapter: LightRAGAdapter instance.
-        entity_keywords: Optional mapping of entity_name -> keywords for
-            precise matching. If not provided, uses heuristic keyword matching.
 
     Returns:
-        Dict with assigned counts per region.
+        Dict with updated count: {"updated": n}.
     """
-    from niu_api.internal.lightrag_manager import get_brain_regions
-
-    existing_regions = get_brain_regions()
-    if not existing_regions:
-        return {"assigned": 0, "regions": 0}
-
     rag = adapter._get_rag()
     if rag is None:
-        return {"assigned": 0, "regions": 0}
+        return {"updated": 0}
 
     kg = rag.chunk_entity_relation_graph
     if kg is None:
-        return {"assigned": 0, "regions": 0}
+        return {"updated": 0}
 
-    # Dynamic keyword mapping from config (replaces hardcoded region_keywords)
-    _default_keywords_fallback: dict[str, list[str]] = {
-        "聊天历史脑区": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"],
-        "文档库脑区": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"],
-        "知识体系脑区": ["概念", "理论", "方法", "原理", "定义", "技术"],
-        "人际关系脑区": ["人物", "家人", "朋友", "同事", "联系人", "人名"],
-        "工作事务脑区": ["项目", "任务", "会议", "决策", "工作", "进度"],
-        "生活事务脑区": ["日程", "健康", "财务", "旅行", "生活", "日常"],
-        "组织机构脑区": ["公司", "部门", "机构", "组织", "团队", "单位"],
-    }
-    region_keywords: dict[str, list[str]] = {}
-    for region_def in get_default_regions_config():
-        region_name = f"{region_def['label']}{REGION_SUFFIX}"
-        keywords = region_def.get("keywords", [])
-        if not keywords:
-            keywords = _default_keywords_fallback.get(region_name, [])
-        if keywords:
-            region_keywords[region_name] = keywords
+    if kg._graph is None:
+        return {"updated": 0}
 
-    assigned_counts: dict[str, int] = {}
-    all_relationships: list[dict] = []
+    from niu_api.internal.lightrag_manager import (
+        get_all_region_members,
+        get_brain_regions,
+        graph_read_lock,
+    )
 
-    # Take a snapshot under read lock to prevent RuntimeError from concurrent writes
-    from niu_api.internal.lightrag_manager import graph_read_lock
+    # 默认脑区列表（is_default_region 按配置 label + REGION_SUFFIX 过滤）
+    default_regions = [r for r in get_brain_regions() if is_default_region(r)]
+    if not default_regions:
+        return {"updated": 0}
+
+    # 图快照直读原始 description（不经 list_entities/_clean_description 清洗——
+    # 清洗会剥掉 brain_meta_* 字段导致 priority/region_id/representative 被抹平）。
+    # 描述缺失脑区跳过更新（防空描述覆盖清空 description + priority 掉 medium）。
     with graph_read_lock():
         snapshot = kg._graph.copy()
+    desc_map: dict[str, str] = {}
+    for region_name in default_regions:
+        node_data = snapshot.nodes.get(region_name.lower())
+        if node_data and node_data.get("description"):
+            desc_map[region_name] = node_data["description"]
 
-    # Iterate all entity nodes
-    for node_id, node_data in snapshot.nodes(data=True):
-        if not isinstance(node_data, dict):
-            continue
-        entity_name = node_data.get("entity_name", node_id)
-        entity_desc = node_data.get("description", "")
+    # 成员数：一次图快照返回全部脑区成员（缺 key 脑区 = 无成员 → size=0）；
+    # 整体返回空（读失败/图异常）→ 跳过更新
+    members_map = get_all_region_members()
+    if not members_map:
+        return {"updated": 0}
 
-        # Skip region nodes themselves
-        if entity_name.endswith("脑区"):
-            continue
+    # 配置读取（与 assign 原关键词构建同源——label 无后缀，匹配脑区名）
+    config_map: dict[str, dict] = {}
+    for region_def in get_default_regions_config():
+        config_map[f"{region_def['label']}{REGION_SUFFIX}"] = region_def
 
-        # Matching logic: keyword matching + description similarity
-        best_region = None
-        best_score = 0.0
+    update_entities: list[dict] = []
+    for region_name, desc in desc_map.items():
+        parsed = _parse_description(desc)
+        # priority 自愈：配置合法值尊重（自定义脑区兼容）；旧值 core/category/缺失
+        # → 7 默认脑区固定映射（.get 而非 []——旧配置缺 priority 防 KeyError）
+        cfg_priority = config_map.get(region_name, {}).get("priority", "")
+        if cfg_priority in ("permanent", "long", "medium", "short"):
+            priority = cfg_priority
+        else:
+            priority = _DEFAULT_REGION_PRIORITY.get(region_name, DEFAULT_PRIORITY)
+        updated_desc = _encode_description(
+            summary=parsed.get("summary", ""),
+            region_id=parsed.get("region_id", ""),
+            size=len(members_map.get(region_name, [])),
+            representative=parsed.get("representative", ""),
+            priority=priority,
+            updated_at=time.time(),
+        )
+        update_entities.append({
+            "entity_name": region_name,
+            "entity_type": REGION_ENTITY_TYPE,
+            "description": updated_desc,
+        })
 
-        for region_name, keywords in region_keywords.items():
-            if region_name not in existing_regions:
-                continue
-
-            # Keyword matching
-            score = 0.0
-            for kw in keywords:
-                if kw in entity_name or kw in entity_desc:
-                    score += 1.0
-
-            if score > best_score:
-                best_score = score
-                best_region = region_name
-
-        # If matched, create belongs_to relation
-        if best_region and best_score > 0:
-            all_relationships.append({
-                "src_id": best_region,
-                "tgt_id": entity_name,
-                "keywords": BELONGS_TO_RELATION,
-                "description": f"{entity_name} 属于 {best_region}",
-                "weight": INITIAL_WEIGHT,
-                "source_id": REGION_SOURCE_ID,
-                "file_path": REGION_FILE_PATH,
-            })
-            assigned_counts[best_region] = assigned_counts.get(best_region, 0) + 1
-
-    # Batch inject relations
-    if all_relationships:
-        try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
-            ingester = LightRAGIngester()
-            ingester.inject_custom_kg(
-                entities=[],
-                relationships=all_relationships,
-                chunks=[],
-                source_id=REGION_SOURCE_ID,
-            )
-            logger.info(
-                "批量注入实体-脑区关系: %d 条",
-                len(all_relationships),
-            )
-        except Exception as e:
-            logger.warning(f"批量注入实体-脑区关系失败: {e}")
-
-    # Update size metadata for default regions that got new assignments
-    if assigned_counts:
-        try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
-            ingester = LightRAGIngester()
-
-            # Get current descriptions for all default regions
-            list_result = adapter.list_entities(
-                list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
-            )
-            if isinstance(list_result, dict) and list_result.get("status") == "ok":
-                update_entities = []
-                for entity in list_result.get("data", []):
-                    name = entity.get("id") or entity.get("entity_name", "")
-                    if name in assigned_counts:
-                        desc = entity.get("description", "")
-                        parsed = _parse_description(desc)
-                        # D-15 fix: Use actual member count instead of cumulative size
-                        from niu_api.internal.lightrag_manager import (
-                            get_region_members as lightrag_get_region_members,
-                        )
-                        actual_members = lightrag_get_region_members(name)
-                        priority = parse_priority_from_description(desc)
-                        updated_desc = _encode_description(
-                            summary=parsed.get("summary", ""),
-                            region_id=parsed.get("region_id", ""),
-                            size=len(actual_members),
-                            representative=parsed.get("representative", ""),
-                            updated_at=time.time(),
-                            priority=priority,
-                        )
-                        update_entities.append({
-                            "entity_name": name,
-                            "entity_type": REGION_ENTITY_TYPE,
-                            "description": updated_desc,
-                        })
-                if update_entities:
-                    ingester.inject_custom_kg(
-                        entities=update_entities,
-                        relationships=[],
-                        chunks=[],
-                        source_id=REGION_SOURCE_ID,
-                    )
-                    logger.info(
-                        "更新 %d 个默认脑区的 size 元数据",
-                        len(update_entities),
-                    )
-        except Exception as e:
-            logger.warning("更新默认脑区 size 失败: %s", e)
-
-    return {"assigned": sum(assigned_counts.values()), "regions": len(assigned_counts)}
+    # 只更新元数据——relationships/chunks 硬性空（绝不建边）；
+    # inject 异常不吞——向上传播至调用方记录（防虚报 Updated N 成功日志）
+    if update_entities:
+        from niu_api.internal.lightrag_adapter import LightRAGIngester
+        ingester = LightRAGIngester()
+        ingester.inject_custom_kg(
+            entities=update_entities,
+            relationships=[],
+            chunks=[],
+            source_id=REGION_SOURCE_ID,
+        )
+    return {"updated": len(update_entities)}
