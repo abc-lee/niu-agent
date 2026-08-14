@@ -216,6 +216,22 @@ def test_repair_bad_vector_no_writeback(storage_dir):
     assert path.read_text(encoding="utf-8") == before  # 未写回
 
 
+def test_repair_nan_vector_no_writeback(storage_dir):
+    """含 NaN 的 vector（float16 可表示 NaN）→ norm=NaN 绕过 norm<=0 守卫 → 判坏
+    status=error 且文件内容不变（P3：np.linalg.norm 对 NaN 分量返回 NaN，NaN<=0 为
+    False——原守卫放行 NaN 行写入"已修复" matrix）。"""
+    vec = [0.1] * DIM
+    vec[0] = float("nan")
+    entries = [_make_entry("e0", [0.1] * DIM), _make_entry("e_nan", vec)]
+    path = storage_dir / "vdb_entities.json"
+    _write_vdb(path, entries, _make_matrix(3, seed=6))
+    before = path.read_text(encoding="utf-8")
+    r = _repair_vdb_matrix_inplace(path)
+    assert r["status"] == "error"
+    assert "解码失败" in r["message"]
+    assert path.read_text(encoding="utf-8") == before  # 未写回
+
+
 def test_repair_missing_matrix_field_ok(storage_dir):
     """无 matrix 键（旧格式）→ status=ok——本函数对旧格式会实际重建并写回 matrix
     （entries 非空逐条解码重建）；真正跳过旧格式的是 auto_repair_vdb_matrices
