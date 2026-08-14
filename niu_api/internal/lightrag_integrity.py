@@ -16,9 +16,13 @@
 import base64
 import json
 import logging
+import os
 import xml.etree.ElementTree as ET
+import zlib
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +416,95 @@ def _check_vdb_internal(storage_dir: Path) -> list[dict[str, Any]]:
                 "msg": f"{fname} matrix 行数({matrix_rows}) != data 条数({len(entries)})——查询会越界崩溃",
             })
     return errors
+
+
+def _decode_vdb_vector(entry: dict) -> np.ndarray | None:
+    """解压 data[].vector（base64(zlib(float16))）→ float32 L2 归一化向量。
+
+    matrix 存的是 L2 归一化行（nano-vectordb upsert 对 cosine metric 先 normalize
+    再 vstack）。data[].vector 实测（2026-08-14）解压后已是归一化向量
+    （范数 0.9999~1.0001，float16 量化偏差内）——此处无条件归一化对已归一化
+    输入幂等，修正量化范数偏差并对齐 matrix 的 float32 单位行语义。
+    任何解码/范数异常 → None（调用方判定 data 损坏）。
+    """
+    try:
+        raw = base64.b64decode(entry["vector"])
+        vec = np.frombuffer(zlib.decompress(raw), dtype=np.float16).astype(np.float32)
+        norm = np.linalg.norm(vec)
+        if norm <= 0:
+            return None
+        return vec / norm
+    except Exception:
+        return None
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """原子写 JSON：写同目录 .tmp 文件 + os.replace（避免写一半崩溃损坏文件）。"""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _repair_vdb_matrix_inplace(vdb_path: Path) -> dict[str, Any]:
+    """从 data.vector 重建 matrix（外科 in-place 修复）——data 是权威，matrix 完全重建。
+
+    任一条 vector 解码失败 → 不写回，status=error（data 本身损坏，需走全量重建
+    repair_all 路径——本函数不碰 data、不删其他文件）。
+    返回 {status, target_file, data_count, matrix_rows, message}。
+    """
+    result: dict[str, Any] = {"target_file": vdb_path.name}
+    try:
+        data = json.loads(vdb_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {**result, "status": "error", "message": f"expected dict, got {type(data).__name__}"}
+        entries = data.get("data", []) or []
+        dim = data.get("embedding_dim") or 768  # 顶层缺失兜底 768（LightRAG bge-base-zh-v1.5 固定维度）
+        if not entries:
+            # 空 data：matrix 若非空则清空（(0, dim)），保持一致
+            if data.get("matrix"):
+                empty = np.array([], dtype=np.float32).reshape(0, int(dim))
+                data["matrix"] = base64.b64encode(empty.tobytes()).decode()
+                _atomic_write_json(vdb_path, data)
+            return {**result, "status": "ok", "data_count": 0, "matrix_rows": 0, "message": "空 data，无需重建"}
+        rows = [_decode_vdb_vector(e) for e in entries]
+        bad = sum(1 for r in rows if r is None)
+        if bad:
+            return {**result, "status": "error", "data_count": len(entries),
+                    "message": f"{bad}/{len(entries)} 条 vector 解码失败——data 损坏，需走全量重建"}
+        matrix = np.vstack(rows).astype(np.float32)  # type: ignore[arg-type]
+        if matrix.shape[1] != int(dim):
+            return {**result, "status": "error",
+                    "message": f"向量维度 {matrix.shape[1]} != embedding_dim {dim}"}
+        data["matrix"] = base64.b64encode(matrix.tobytes()).decode()
+        _atomic_write_json(vdb_path, data)
+        return {**result, "status": "ok", "data_count": len(entries), "matrix_rows": int(matrix.shape[0]),
+                "message": "matrix 已从 data.vector 重建"}
+    except Exception as e:
+        return {**result, "status": "error", "message": f"{type(e).__name__}: {e}"}
+
+
+def auto_repair_vdb_matrices() -> dict[str, Any]:
+    """自动修复所有 vdb 文件的 matrix/data 不一致。返回 {"repaired": [...], "errors": [...]}。
+
+    只修复真不一致文件（matrix_rows != len(data)）——健康文件不重建
+    （避免从 float16 data.vector 重导出 float32 matrix 引入量化降级，R1-P1 修正）。
+    """
+    storage_dir = _resolve_storage_dir()
+    repaired: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for fname in _VDB_FILES:
+        path = storage_dir / fname
+        if not path.exists():
+            continue
+        entries, matrix_rows, err = _load_vdb_full(path)
+        if err:
+            errors.append(err)
+            continue
+        if matrix_rows is None or matrix_rows == len(entries):
+            continue  # 无 matrix（旧格式）或已一致 → 跳过
+        r = _repair_vdb_matrix_inplace(path)
+        (repaired if r.get("status") == "ok" else errors).append(r)
+    return {"repaired": repaired, "errors": errors}
 
 
 def _check_derived_missing(storage_dir: Path) -> list[dict[str, Any]]:

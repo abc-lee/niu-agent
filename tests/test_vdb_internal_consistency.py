@@ -16,11 +16,10 @@ import pytest
 
 from niu_api.internal.lightrag_integrity import (
     _check_vdb_internal,
+    _repair_vdb_matrix_inplace,
+    auto_repair_vdb_matrices,
     check_all,
 )
-
-# 注：_repair_vdb_matrix_inplace / auto_repair_vdb_matrices 在 Task 2 实现后
-#     追加 import（Task 1 绿相不可依赖未实现函数——R1-P1 修正）
 
 DIM = 768
 
@@ -161,3 +160,145 @@ def test_check_all_consistent_ok(storage_dir):
     result = check_all()
     mismatch = [e for e in result["errors"] if e.get("check") == "vdb_matrix_mismatch"]
     assert mismatch == []
+
+
+# ---------- 修复：从 data.vector 重建 matrix ----------
+
+def _normalize(vec: np.ndarray) -> np.ndarray:
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
+
+
+def test_repair_rebuilds_matrix_from_data(storage_dir):
+    """不一致（3 data + 5 matrix 行）→ 修复 → matrix 行数 == 3 且内容与 data.vector 归一化一致。
+    vec 用非整数（float16 对整数精确表示 → 量化误差 0，容差论证需真实误差触发——R6-B P3 修正）。"""
+    rng = np.random.default_rng(42)
+    vecs = [rng.random(DIM).astype(np.float32) + i * 0.001 for i in range(3)]
+    entries = [_make_entry(f"e{i}", v.tolist()) for i, v in enumerate(vecs)]
+    path = storage_dir / "vdb_entities.json"
+    _write_vdb(path, entries, _make_matrix(5, seed=4))
+    r = _repair_vdb_matrix_inplace(path)
+    assert r["status"] == "ok"
+    assert r["data_count"] == 3
+    assert r["matrix_rows"] == 3
+    # 重读文件验证 matrix 内容
+    data = json.loads(path.read_text(encoding="utf-8"))
+    mat = np.frombuffer(base64.b64decode(data["matrix"]), dtype=np.float32).reshape(-1, DIM)
+    assert mat.shape[0] == 3
+    for i, v in enumerate(vecs):
+        expected = _normalize(v)
+        assert np.abs(mat[i] - expected).max() < 1e-3  # float16 量化误差 ~5e-4
+
+
+def test_repair_keeps_other_fields(storage_dir):
+    """修复只重写 matrix，保留 data/embedding_dim 等字段。"""
+    vecs = [np.linspace(1, 768, DIM).astype(np.float32) for _ in range(2)]
+    entries = [_make_entry(f"e{i}", v.tolist()) for i, v in enumerate(vecs)]
+    path = storage_dir / "vdb_entities.json"
+    _write_vdb(path, entries, _make_matrix(3, seed=5))
+    before = json.loads(path.read_text(encoding="utf-8"))
+    _repair_vdb_matrix_inplace(path)
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["embedding_dim"] == before["embedding_dim"] == DIM
+    assert after["data"] == before["data"]  # data 原样保留
+    assert after["matrix"] != before["matrix"]
+
+
+def test_repair_bad_vector_no_writeback(storage_dir):
+    """任一条 vector 解码失败 → status=error 且文件内容不变（data 损坏需走全量重建）。"""
+    entries = [_make_entry("e0", [0.1] * DIM), {"__id__": "ent-bad", "entity_name": "bad", "vector": "not-valid-base64!!"}]
+    path = storage_dir / "vdb_entities.json"
+    _write_vdb(path, entries, _make_matrix(3, seed=6))
+    before = path.read_text(encoding="utf-8")
+    r = _repair_vdb_matrix_inplace(path)
+    assert r["status"] == "error"
+    assert "解码失败" in r["message"]
+    assert path.read_text(encoding="utf-8") == before  # 未写回
+
+
+def test_repair_missing_matrix_field_ok(storage_dir):
+    """无 matrix 键（旧格式）→ status=ok——本函数对旧格式会实际重建并写回 matrix
+    （entries 非空逐条解码重建）；真正跳过旧格式的是 auto_repair_vdb_matrices
+    编排层的 matrix_rows is None 门控（R4-P3 docstring 修正）。"""
+    entries = [_make_entry(f"e{i}", [0.1] * DIM) for i in range(2)]
+    path = storage_dir / "vdb_entities.json"
+    _write_vdb(path, entries, matrix=None)
+    r = _repair_vdb_matrix_inplace(path)
+    assert r["status"] == "ok"
+    # 重建后 matrix 写回且一致
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data.get("matrix")
+    mat = np.frombuffer(base64.b64decode(data["matrix"]), dtype=np.float32).reshape(-1, DIM)
+    assert mat.shape[0] == 2
+
+
+def test_auto_repair_both_files(storage_dir):
+    """auto_repair_vdb_matrices：entities 坏 + relationships 好 → repaired 1 + errors 0。"""
+    bad = [_make_entry(f"e{i}", [0.1] * DIM) for i in range(3)]
+    _write_vdb(storage_dir / "vdb_entities.json", bad, _make_matrix(5, seed=7))
+    good = [_make_entry(f"r{i}", [0.1] * DIM) for i in range(2)]
+    _write_vdb(storage_dir / "vdb_relationships.json", good, _make_matrix(2, seed=8))
+    r = auto_repair_vdb_matrices()
+    assert len(r["repaired"]) == 1
+    assert r["repaired"][0]["target_file"] == "vdb_entities.json"
+    assert r["errors"] == []
+    # 修复后检测通过
+    assert _check_vdb_internal(storage_dir) == []
+
+
+def test_auto_repair_skips_consistent_file(storage_dir):
+    """健康文件（matrix/data 一致）不被重建——mismatch 门控（R1-P1 修正）。"""
+    good = [_make_entry(f"e{i}", [0.1] * DIM) for i in range(2)]
+    _write_vdb(storage_dir / "vdb_entities.json", good, _make_matrix(2, seed=9))
+    r = auto_repair_vdb_matrices()
+    assert r["repaired"] == []
+    assert r["errors"] == []
+
+
+def test_auto_repair_missing_file_skipped(storage_dir):
+    """不存在文件跳过——不产生 error（R1-P3 修正）。"""
+    bad = [_make_entry(f"e{i}", [0.1] * DIM) for i in range(3)]
+    _write_vdb(storage_dir / "vdb_entities.json", bad, _make_matrix(5, seed=10))
+    # 只写 entities，不写 relationships
+    r = auto_repair_vdb_matrices()
+    assert len(r["repaired"]) == 1
+    assert r["repaired"][0]["target_file"] == "vdb_entities.json"
+    assert r["errors"] == []
+
+
+def test_check_internal_matrix_format_error(storage_dir):
+    """matrix 字节数不能被 4*embedding_dim 整除 → major vdb_matrix_format（R1-P3 修正）。"""
+    entries = [_make_entry(f"e{i}", [0.1] * DIM) for i in range(2)]
+    path = storage_dir / "vdb_entities.json"
+    # 构造 2 条 + 1 个额外 float32（= 768*2+1 个 float 字节，不可整除）
+    bad_matrix = np.array([0.1] * (DIM * 2 + 1), dtype=np.float32).tobytes()
+    payload = {"embedding_dim": DIM, "data": entries,
+               "matrix": base64.b64encode(bad_matrix).decode()}
+    path.write_text(json.dumps(payload))
+    errors = _check_vdb_internal(storage_dir)
+    assert len(errors) == 1
+    assert errors[0]["check"] == "vdb_matrix_format"
+    assert errors[0]["severity"] == "major"
+
+
+def test_repair_atomic_write_no_tmp_leftover(storage_dir):
+    """修复成功写回后无 .tmp 临时文件残留（原子写路径，R2-P3 修正）。"""
+    vecs = [np.linspace(1, 768, DIM).astype(np.float32) for _ in range(2)]
+    entries = [_make_entry(f"e{i}", v.tolist()) for i, v in enumerate(vecs)]
+    path = storage_dir / "vdb_entities.json"
+    _write_vdb(path, entries, _make_matrix(3, seed=11))
+    _repair_vdb_matrix_inplace(path)
+    assert not (storage_dir / "vdb_entities.json.tmp").exists()
+
+
+def test_repair_empty_data_clears_matrix(storage_dir):
+    """data 空 + matrix 非空（孤儿 matrix）→ 修复清空 matrix 为 (0, dim)（R2-P3 修正）。"""
+    path = storage_dir / "vdb_entities.json"
+    payload = {"embedding_dim": DIM, "data": [], "matrix": _encode_matrix(_make_matrix(3, seed=12))}
+    path.write_text(json.dumps(payload))
+    r = _repair_vdb_matrix_inplace(path)
+    assert r["status"] == "ok"
+    assert r["data_count"] == 0
+    data = json.loads(path.read_text(encoding="utf-8"))
+    mat = np.frombuffer(base64.b64decode(data["matrix"]), dtype=np.float32).reshape(-1, DIM)
+    assert mat.shape[0] == 0
