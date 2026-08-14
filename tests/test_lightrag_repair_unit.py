@@ -134,7 +134,7 @@ def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
         "kv_store_full_relations.json",
     ]
     vdb_e = {"data": [{"__id__": "ent-test-entity", "entity_name": "test-entity", "vector": "AAAAAA=="}],
-             "file_hash": "fake", "embedding_dim": 8, "matrix": "AAAAAA=="}
+             "file_hash": "fake", "embedding_dim": 8}
     (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e, ensure_ascii=False))
     for fname in _derived_files_list:
         if fname == "vdb_entities.json":

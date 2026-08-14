@@ -3,6 +3,9 @@
 检查项：
 1. 3 真相源 corrupt 检测（GraphML XML 解析失败 / full_docs/cache JSON 解析失败）→ critical
 2. vdb 与 GraphML 数据一致性检测（node/edge 在 vdb 有对应向量）→ major = 真损坏
+3. vdb 文件内部一致性检测（matrix 行数 vs data 条数，孤儿向量）→ major
+   （nano-vectordb _cosine_query 孤儿行号越界崩溃；检测到后由
+   lightrag_manager.run_resilience_phase1 自动修复——从 data.vector 重建 matrix）
 
 派生 kv_store 文件缺失不是损坏：脑区/Skills 注入路径只写 GraphML + 3 vdb +
 可选 text_chunks，其他派生 kv_store 由 LightRAG 内部 JsonKVStorage.initialize
@@ -10,6 +13,7 @@
 本方案不主动调用任何重建，不写空文件。
 """
 
+import base64
 import json
 import logging
 import xml.etree.ElementTree as ET
@@ -27,6 +31,13 @@ _TRUTH_SOURCE_FILES = [
     "kv_store_full_docs.json",
     "kv_store_llm_response_cache.json",
 ]
+
+# vdb 文件（nano-vectordb 持久化：matrix=base64(float32)，data[].vector=base64(zlib(float16))）
+# v3 新增：内部一致性检测（matrix 行数 vs data 条数）覆盖这三个文件
+# （R3-P1 修正：vdb_chunks.json 同样被 LightRAG local 查询路径
+#  _perform_kg_search → _get_vector_context → chunks_vdb.query 检索——漏修则查询仍越界；
+#  2026-08-14 实证三文件全部不一致：entities 3225/3227、relationships 6265/6266、chunks 1095/1097）
+_VDB_FILES = ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]
 
 # 6 派生 kv_store 文件（仅用于文档入库 pipeline，脑区/Skills 路径不写）
 # 注意：lightrag_repair._DERIVED_FILES 仍含 9 个文件（含 3 vdb）用于 repair_all 删除派生，
@@ -177,6 +188,49 @@ def _load_vdb(path: Path) -> tuple[list[dict], dict[str, Any] | None]:
             "msg": f"{type(e).__name__}: {e}",
             "severity": "major",
         }
+
+
+def _load_vdb_full(path: Path) -> tuple[list[dict], int | None, dict[str, Any] | None]:
+    """加载 vdb 文件，返回 (data_list, matrix_rows, error)。
+
+    matrix_rows 从 matrix base64 + 顶层 embedding_dim 计算（len(bytes) // (4*dim)）。
+    matrix 键缺失（旧格式）→ matrix_rows=None，调用方跳过一致性检查（不误报）；
+    matrix 键存在但为空串（0 行空矩阵）→ matrix_rows=0（R3-P3 修正：空 matrix + 非空 data
+    是真实不一致形态，须报 mismatch 而非跳过）。
+    matrix 字节数不能被 4*dim 整除 → 格式损坏，报 major error。
+    """
+    if not path.exists():
+        return [], None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return [], None, {
+                "check": "vdb_type_mismatch",
+                "file": path.name,
+                "msg": f"expected dict, got {type(data).__name__}",
+                "severity": "major",
+            }
+        entries = data.get("data", []) or []
+        dim = data.get("embedding_dim")
+        if "matrix" in data and dim:
+            matrix_b64 = data["matrix"]
+            if matrix_b64:
+                raw = base64.b64decode(matrix_b64)
+                row_bytes = 4 * int(dim)
+                if len(raw) % row_bytes != 0:
+                    return entries, None, {
+                        "check": "vdb_matrix_format",
+                        "file": path.name,
+                        "msg": f"matrix 字节数 {len(raw)} 不能被 4*embedding_dim({row_bytes}) 整除——格式损坏",
+                        "severity": "major",
+                    }
+                return entries, len(raw) // row_bytes, None
+            return entries, 0, None  # matrix 键存在但空串 → 0 行
+        return entries, None, None  # 无 matrix 键（旧格式）→ 跳过
+    except json.JSONDecodeError as e:
+        return [], None, {"check": "vdb_parse", "file": path.name, "msg": str(e), "severity": "major"}
+    except Exception as e:
+        return [], None, {"check": "vdb_read", "file": path.name, "msg": f"{type(e).__name__}: {e}", "severity": "major"}
 
 
 def _check_truth_source(fname: str, storage_dir: Path) -> dict[str, Any]:
@@ -331,6 +385,35 @@ def _check_vdb_missing(storage_dir: Path) -> list[dict[str, Any]]:
     return errors
 
 
+def _check_vdb_internal(storage_dir: Path) -> list[dict[str, Any]]:
+    """vdb 文件内部一致性：matrix 行数 vs data 条数（v3 新增）。
+
+    不一致 → major（真损坏）：nano-vectordb _cosine_query 的
+    filter_index[sort_index] 会因孤儿向量行号 ≥ len(data) 越界崩溃
+    （2026-08-14 实证：index 3225 is out of bounds for axis 0 with size 3225）。
+    matrix 缺失（旧格式/全新）→ 跳过不误报。
+    """
+    errors: list[dict[str, Any]] = []
+    for fname in _VDB_FILES:
+        path = storage_dir / fname
+        entries, matrix_rows, err = _load_vdb_full(path)
+        if err:
+            errors.append(err)
+            continue
+        if matrix_rows is None:
+            continue  # 无 matrix → 无法比对
+        if matrix_rows != len(entries):
+            errors.append({
+                "check": "vdb_matrix_mismatch",
+                "severity": "major",
+                "target_file": fname,
+                "matrix_rows": matrix_rows,
+                "data_count": len(entries),
+                "msg": f"{fname} matrix 行数({matrix_rows}) != data 条数({len(entries)})——查询会越界崩溃",
+            })
+    return errors
+
+
 def _check_derived_missing(storage_dir: Path) -> list[dict[str, Any]]:
     """检测派生 kv_store 文件缺失。
 
@@ -388,14 +471,18 @@ def _check_truth_source_graphml(storage_dir: Path) -> dict[str, Any]:
 
 
 def check_all() -> dict[str, Any]:
-    """v4 简化版 check_all：检 3 真相源完好性 + 9 派生文件 missing。
+    """v4 简化版 check_all：检 3 真相源完好性 + 6 派生 kv_store missing + vdb 一致性。
 
     1. 检 3 真相源（GraphML + full_docs + cache）完好性
        - 文件不存在 / size=0 → ok（全新用户合法）
        - JSON/XML 解析失败 / 非 dict → critical
-    2. 检 9 派生文件 missing
-       - 全新用户（3 真相源都不存在）时不报错
-       - 否则 missing/empty 文件 → major
+    2. 检 6 派生 kv_store 文件 missing（_check_derived_missing——当前恒返回 []，
+       派生缺失由 LightRAG 内部 lazy 加载兜底，不是损坏）
+    3. 检 vdb 与 GraphML 数据一致性（_check_vdb_missing——node/edge 缺对应
+       向量 → major，防数据丢失）
+    4. 检 3 vdb 文件内部一致性（_check_vdb_internal——vdb_entities/vdb_relationships/
+       vdb_chunks 的 matrix 行数 vs data 条数）
+       - 不一致 → major vdb_matrix_mismatch（启动自动修复：从 data.vector 重建 matrix）
 
     Returns:
         {
@@ -407,6 +494,8 @@ def check_all() -> dict[str, Any]:
             "checks": {
                 "truth_source": {"name": ..., "errors": list},
                 "derived_missing": {"name": ..., "errors": list},
+                "vdb_missing": {"name": ..., "errors": list},
+                "vdb_internal": {"name": ..., "errors": list},
             },
         }
     """
@@ -434,6 +523,11 @@ def check_all() -> dict[str, Any]:
     vdb_errors = _check_vdb_missing(storage_dir)
     all_errors.extend(vdb_errors)
 
+    # 4. 检测 vdb 文件内部一致性（matrix 行数 vs data 条数）——v3 新增
+    #    不一致 → major（查询必崩：_cosine_query filter_index[sort_index] 越界）
+    vdb_internal_errors = _check_vdb_internal(storage_dir)
+    all_errors.extend(vdb_internal_errors)
+
     critical = sum(1 for e in all_errors if e.get("severity") == "critical")
     major = sum(1 for e in all_errors if e.get("severity") == "major")
     minor = sum(1 for e in all_errors if e.get("severity") == "minor")
@@ -448,5 +542,6 @@ def check_all() -> dict[str, Any]:
             "truth_source": {"name": "truth_source", "errors": truth_errors},
             "derived_missing": {"name": "derived_missing", "errors": derived_errors},
             "vdb_missing": {"name": "vdb_missing", "errors": vdb_errors},
+            "vdb_internal": {"name": "vdb_internal", "errors": vdb_internal_errors},
         },
     }
