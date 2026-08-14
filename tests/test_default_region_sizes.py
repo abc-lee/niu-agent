@@ -3,8 +3,8 @@
 单元测试：python/bin/pytest tests/test_default_region_sizes.py -v
 
 覆盖 T1-1 ~ T1-10：
-- size 更新正确性 + priority 固定映射自愈（配置旧值 core/category → 固定映射）
-- 配置合法 priority 尊重（自定义脑区兼容）
+- size 更新正确性 + priority 配置权威透传（配置写什么用什么——含旧值 core；缺失回退 medium）
+- 配置 priority 原样透传（自定义脑区兼容）
 - 缺 key 空成员（.get 默认 size=0 无条件更新）
 - 三层图守卫（rag None / kg None / kg._graph None）
 - 无默认脑区 / assign 已删除 / 成员映射整体空防御
@@ -94,23 +94,23 @@ def _setup(brain_regions=None, members=None, config=None):
 
 
 class TestUpdateDefaultRegionSizes:
-    """T1-1 主场景：size 更新正确性 + priority 固定映射自愈"""
+    """T1-1 主场景：size 更新正确性 + priority 配置权威透传"""
 
-    def test_t1_1_size_update_and_priority_self_heal(self):
+    def test_t1_1_size_update_and_priority_passthrough(self):
         from niu_api.internal.region_manager import update_default_region_sizes
 
         config = [
-            # 配置旧值 core/category（实证 ~/.niu/preferences.json 形态）——固定映射自愈
-            {"label": "文档库", "description": "文档库描述", "priority": "core"},
-            {"label": "生活事务", "description": "生活事务描述", "priority": "category"},
+            # 配置新值（与迁移后 ~/.niu/preferences.json 一致）——原样透传
+            {"label": "文档库", "description": "文档库描述", "priority": "permanent"},
+            {"label": "生活事务", "description": "生活事务描述", "priority": "short"},
         ]
         graph_desc = {
-            # 文档库脑区预置 medium——模拟 assign 08-02 起抹平污染 → 自愈 permanent
+            # 旧描述 priority=medium——输出以配置为准（配置权威，非旧描述透传）
             "文档库脑区": _desc(
                 summary="文档库摘要", region_id="default_文档库", size=2,
                 representative="rep_doc", priority="medium",
             ),
-            # 生活事务脑区预置 core——模拟更早旧值 → 自愈 short
+            # 旧描述 priority=core——同样被配置覆盖（旧值不再触发固定映射）
             "生活事务脑区": _desc(
                 summary="生活摘要", region_id="default_生活事务", size=1,
                 representative="rep_life", priority="core",
@@ -149,7 +149,7 @@ class TestUpdateDefaultRegionSizes:
 
         doc_entity = next(e for e in entities if e["entity_name"] == "文档库脑区")
         assert doc_entity["entity_type"] == REGION_ENTITY_TYPE
-        # 配置 core 旧值 → 固定映射 permanent（自愈，非配置权威/非旧描述 medium）
+        # 配置 priority=permanent 原样透传（配置权威——非旧描述 medium/非固定映射）
         assert "brain_meta_priority:permanent" in doc_entity["description"]
         # size = 实际成员数（3）
         assert "brain_meta_size:3" in doc_entity["description"]
@@ -160,16 +160,16 @@ class TestUpdateDefaultRegionSizes:
         assert "brain_meta_updated_at:" in doc_entity["description"]
 
         life_entity = next(e for e in entities if e["entity_name"] == "生活事务脑区")
-        # 配置 category 旧值 → 固定映射 short
+        # 配置 priority=short 原样透传
         assert "brain_meta_priority:short" in life_entity["description"]
         assert "brain_meta_size:1" in life_entity["description"]
 
     def test_t1_1b_valid_config_priority_respected(self):
-        """配置 priority 合法值尊重（组织机构脑区配置 short → 注入 short——非固定映射 permanent）"""
+        """配置 priority 原样透传（组织机构脑区配置 short → 注入 short——自定义脑区兼容）"""
         from niu_api.internal.region_manager import update_default_region_sizes
 
         config = [
-            # 合法值 short——尊重（固定映射为 permanent，判别两种实现）
+            # 配置 short——原样透传（无固定映射改写）
             {"label": "组织机构", "description": "组织机构描述", "priority": "short"},
         ]
         graph_desc = {
@@ -189,8 +189,33 @@ class TestUpdateDefaultRegionSizes:
         kwargs = ingester_cls.return_value.inject_custom_kg.call_args.kwargs
         entity = kwargs["entities"][0]
         assert entity["entity_name"] == "组织机构脑区"
-        # 配置合法值 short 被尊重（固定映射是 permanent——假绿实现会写 permanent）
+        # 配置 short 原样透传
         assert "brain_meta_priority:short" in entity["description"]
+
+    # T1-1c 配置 priority=旧值 core → 原样透传（无固定映射自愈——判别新旧实现）
+    def test_t1_1c_legacy_config_priority_passthrough(self):
+        """配置 priority=旧值 core → description 含 brain_meta_priority:core（配置权威原样透传）"""
+        from niu_api.internal.region_manager import update_default_region_sizes
+
+        config = [
+            # 旧值 core（迁移前 ~/.niu/preferences.json 形态）——配置权威：原样透传不映射
+            {"label": "文档库", "description": "文档库描述", "priority": "core"},
+        ]
+        graph_desc = {
+            "文档库脑区": _desc(summary="d", priority="permanent"),
+        }
+        members = {"文档库脑区": ["a", "b"]}
+        stack, ingester_cls = _setup(
+            brain_regions=["文档库脑区"], members=members, config=config,
+        )
+        with stack:
+            result = update_default_region_sizes(_make_adapter(graph_desc))
+
+        assert result == {"updated": 1}
+        kwargs = ingester_cls.return_value.inject_custom_kg.call_args.kwargs
+        entity = kwargs["entities"][0]
+        # 判别断言：旧实现固定映射 → permanent；新实现配置权威 → 原样透传 core
+        assert "brain_meta_priority:core" in entity["description"]
 
     # T1-2 缺 key 空成员：非空 map 缺目标 key → .get 默认 size=0 无条件更新
     def test_t1_2_missing_key_empty_members(self):
@@ -343,13 +368,13 @@ class TestUpdateDefaultRegionSizes:
             with pytest.raises(RuntimeError, match="boom"):
                 update_default_region_sizes(_make_adapter(graph_desc))
 
-    # T1-10 config 条目缺 priority key（旧配置形态）→ 不抛 KeyError + 固定映射判别
+    # T1-10 config 条目缺 priority key（旧配置形态）→ 不抛 KeyError + 回退 medium 判别
     def test_t1_10_config_missing_priority_key(self):
         from niu_api.internal.region_manager import update_default_region_sizes
 
         config = [{"label": "文档库", "description": "文档库描述"}]  # 无 priority 键
         graph_desc = {
-            # 文档库脑区固定映射 permanent（≠ medium——判别 .get 默认假绿实现）
+            # 旧描述 priority=permanent——配置缺 priority → 回退 medium（非旧描述/非固定映射）
             "文档库脑区": _desc(summary="d", priority="permanent"),
         }
         members = {"文档库脑区": ["a", "b"]}
@@ -363,6 +388,6 @@ class TestUpdateDefaultRegionSizes:
         assert result == {"updated": 1}
         kwargs = ingester_cls.return_value.inject_custom_kg.call_args.kwargs
         entity = kwargs["entities"][0]
-        # 判别断言：缺 priority → 固定映射 permanent
-        # （假绿实现 .get("priority", DEFAULT_PRIORITY) → medium → 本断言红）
-        assert "brain_meta_priority:permanent" in entity["description"]
+        # 判别断言：缺 priority → 回退 DEFAULT_PRIORITY=medium
+        # （旧实现固定映射 → permanent → 本断言红；新实现正是原"假绿"路径）
+        assert "brain_meta_priority:medium" in entity["description"]
