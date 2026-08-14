@@ -8,6 +8,7 @@
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::net::{ToSocketAddrs, TcpStream};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -1307,55 +1308,179 @@ fn is_api_running(port: u16) -> bool {
 // killStaleAPIProcess — corresponds to Go's killStaleAPIProcess()
 // ---------------------------------------------------------------------------
 
-/// killStaleAPIProcess checks if the API port is occupied and kills the stale process
-fn kill_stale_api_process(port: u16) {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .expect("Failed to build HTTP client");
-
-    // Check if port is occupied by trying to connect
-    let url = format!("http://127.0.0.1:{}/health", port);
-    let resp = client.get(&url).send();
-    let conn = match resp {
-        Ok(r) => r,
-        Err(_) => {
-            // Port not occupied, safe to start
-            return;
+/// Wait for every process matching `process_pattern` (pgrep -f) to disappear.
+///
+/// Polls every 300ms. Exit codes: pgrep exit 1 (no match) = gone → true;
+/// exit 0 (still running) → keep polling; spawn failure / any other exit
+/// code = conservative (treated as alive) so we never misreport a process
+/// as gone and spawn a second writer while the old one is still running
+/// (double-write corruption). The elapsed budget is checked at the top of
+/// every loop iteration; returns false on timeout.
+///
+/// The conservative branch (pgrep spawn failure / unexpected exit code) is
+/// not unit-testable — Command cannot be mocked, and T1.1/T1.6 exercise the
+/// two real pgrep states. Defensive code, accepted without a test.
+#[cfg(unix)]
+fn wait_for_process_exit(process_pattern: &str, timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() >= timeout {
+            return false;
         }
-    };
-    // Drain the body (Go's resp.Body.Close())
-    let _ = conn.text();
-
-    warn!("Port already occupied, attempting to stop stale API process (port={})", port);
-
-    // Try graceful shutdown via HTTP endpoint
-    if notify_shutdown(port).is_ok() {
-        info!("Sent shutdown request to stale API process, waiting 2s...");
-        thread::sleep(Duration::from_secs(2));
-        // Check if port is now free
-        let url2 = format!("http://127.0.0.1:{}/health", port);
-        match client.get(&url2).send() {
+        match Command::new("pgrep").args(["-f", process_pattern]).output() {
+            Ok(output) => match output.status.code() {
+                Some(1) => {
+                    // No match — process(es) gone.
+                    return true;
+                }
+                Some(0) => {
+                    // Still alive — keep polling.
+                    thread::sleep(Duration::from_millis(300));
+                }
+                code => {
+                    // Unexpected exit code — conservative: treat as alive.
+                    warn!("pgrep returned unexpected exit code {:?}, treating as alive", code);
+                    thread::sleep(Duration::from_millis(300));
+                }
+            },
             Err(_) => {
-                info!("Stale API process exited gracefully");
-                return;
-            }
-            Ok(r) => {
-                let _ = r.text();
+                // pgrep not spawnable — conservative: treat as alive.
+                warn!("pgrep spawn failed, treating as alive");
+                thread::sleep(Duration::from_millis(300));
             }
         }
     }
+}
 
+/// Windows variant of `wait_for_process_exit` — PowerShell CIM query with an
+/// explicit exit-code contract (a bare CIM pipeline exits 0 even on an empty
+/// match, so the script must set the exit code itself):
+///   exit 1 = no match = gone → true; exit 0 = alive → keep polling;
+///   exit 2 (query error, caught by try/catch) / spawn failure = conservative
+///   (treated as alive — never misreport gone and spawn a second writer).
+/// `process_pattern` must not contain single quotes (callers pass
+/// `python.*niu_api`-style regex fragments; quote-escape by using double
+/// quotes around the whole -Command argument).
+#[cfg(windows)]
+fn wait_for_process_exit(process_pattern: &str, timeout: Duration) -> bool {
+    let script = format!(
+        "try {{ $m = @(Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object {{$_.CommandLine -match '{pattern}'}}) }} catch {{ exit 2 }}; if ($m.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}",
+        pattern = process_pattern
+    );
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        match Command::new("powershell").args(["-NoProfile", "-Command", &script]).status() {
+            Ok(status) => match status.code() {
+                Some(1) => {
+                    // No match — process(es) gone.
+                    return true;
+                }
+                Some(0) => {
+                    // Still alive — keep polling.
+                    thread::sleep(Duration::from_millis(300));
+                }
+                code => {
+                    warn!("PowerShell query returned unexpected exit code {:?}, treating as alive", code);
+                    thread::sleep(Duration::from_millis(300));
+                }
+            },
+            Err(_) => {
+                warn!("PowerShell spawn failed, treating as alive");
+                thread::sleep(Duration::from_millis(300));
+            }
+        }
+    }
+}
+
+/// Wait until nothing accepts new connections on `port` (ConnectionRefused).
+///
+/// Probe = `TcpStream::connect_timeout(300ms)` (CONNECT_TIMEOUT — distinct
+/// from the function's `timeout` parameter, which is the elapsed budget):
+/// ConnectionRefused = free → true; Ok (connected) / Timeout / any other
+/// connect error (EHOSTUNREACH/ENETUNREACH etc.) = conservatively treated as
+/// occupied → keep polling (the Timeout branch is unreachable on loopback in
+/// practice — defensive only, no test). Re-probe interval is an explicit
+/// 500ms (REPROBE_INTERVAL); the elapsed budget is checked at the top of
+/// every loop iteration. Returns false on timeout.
+fn wait_for_port_free(port: u16, timeout: Duration) -> bool {
+    const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+    const REPROBE_INTERVAL: Duration = Duration::from_millis(500);
+
+    // Resolve the loopback addr once (infallible for a literal IP — but never
+    // unwrap: any resolution failure conservatively reports "occupied").
+    let addr = match format!("127.0.0.1:{}", port).to_socket_addrs() {
+        Ok(mut addrs) => addrs.next(),
+        Err(_) => None,
+    };
+    let Some(addr) = addr else {
+        warn!("Failed to resolve 127.0.0.1:{} — treating port as occupied", port);
+        return false;
+    };
+
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                // Nothing listening — port is free.
+                return true;
+            }
+            Ok(_) => {
+                // Occupied — keep polling.
+                thread::sleep(REPROBE_INTERVAL);
+            }
+            Err(_) => {
+                // Timeout / other errors — conservative: treat as occupied.
+                thread::sleep(REPROBE_INTERVAL);
+            }
+        }
+    }
+}
+
+/// killStaleAPIProcess checks if the API port is occupied and kills the stale process
+fn kill_stale_api_process(port: u16) {
+    // --- Step 1: best-effort graceful shutdown (drain in-flight vdb writes) ---
+    // /api/shutdown runs shutdown_pending_futures(1.5s) — the only drain point
+    // for in-flight writes; the process self-exits at the latest ~4.5s later
+    // (1.5s drain + 3s os._exit fallback). The 2s wait only happens after a
+    // SUCCESSFUL notify — a fresh start (port idle) skips straight to pkill
+    // (~100ms fast path, no +2s delay). The port check is observation only:
+    // the stale process may be half-dead (not listening but still holding vdb
+    // state), so this MUST NOT early-return on either outcome.
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build();
+    if let Ok(client) = client {
+        let url = format!("http://127.0.0.1:{}/health", port);
+        match client.get(&url).send() {
+            Ok(resp) => {
+                let _ = resp.text(); // drain body (Go's resp.Body.Close())
+                warn!("Port already occupied, attempting graceful shutdown of stale API process (port={})", port);
+                if notify_shutdown(port).is_ok() {
+                    info!("Sent shutdown request to stale API process, waiting 2s...");
+                    thread::sleep(Duration::from_secs(2));
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    // --- Step 2: unconditional pkill (the only cleanup mechanism — also
+    // covers half-dead processes that never listened on the port) ---
     #[cfg(unix)]
     {
-        warn!("Stale API process still alive, force killing with pkill");
-        let kill_result = Command::new("pkill")
-            .arg("-f")
-            .arg("python.*niu_api")
-            .status();
-        match kill_result {
+        // 无条件清理：exit 1（无匹配）= 全新启动常态——info；其他（spawn 失败）= 真失败——warn（P3 打磨）
+        match Command::new("pkill").args(["-f", "python.*niu_api"]).status() {
             Ok(status) if status.success() => {
-                info!("Sent SIGTERM to stale API process via pkill");
+                info!("Sent SIGTERM to stale API processes via pkill");
+            }
+            Ok(status) if status.code() == Some(1) => {
+                info!("pkill: no matching stale API process (fresh start)");
             }
             _ => {
                 warn!("pkill failed (process may already be gone)");
@@ -1364,26 +1489,55 @@ fn kill_stale_api_process(port: u16) {
     }
     #[cfg(windows)]
     {
-        warn!("Stale API process still alive, force killing with PowerShell");
-        // Use PowerShell to find and kill Python processes running niu_api
-        // Python background processes have no window title, so WINDOWTITLE filter won't work
-        let kill_result = Command::new("powershell")
-            .args([
-                "-Command",
-                "Get-Process python* | Where-Object {$_.CommandLine -match 'niu_api'} | Stop-Process -Force",
-            ])
-            .status();
-        match kill_result {
+        // Get-CimInstance (NOT Get-Process — PS 5.1 Get-Process has no
+        // CommandLine property, so a CommandLine filter would always be
+        // empty and kill nothing). Stop-Process -Force is SIGKILL semantics.
+        warn!("Force killing stale API processes with PowerShell");
+        let kill_script = "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object {$_.CommandLine -match 'python.*niu_api'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
+        match Command::new("powershell").args(["-NoProfile", "-Command", kill_script]).status() {
             Ok(status) if status.success() => {
-                info!("Sent kill to stale API process via PowerShell");
+                info!("Sent kill to stale API processes via PowerShell");
             }
             _ => {
                 warn!("PowerShell kill failed (process may already be gone)");
             }
         }
     }
-    // Wait for process to exit
-    thread::sleep(Duration::from_secs(1));
+
+    // --- Step 3: wait for process exit (primary signal — port free ≠ process
+    // dead: uvicorn closes its LISTEN socket before draining SSE streams) ---
+    if wait_for_process_exit("python.*niu_api", Duration::from_secs(10)) {
+        info!("Stale API process(es) exited after pkill");
+    } else {
+        // --- Step 4: SIGKILL escalation (mirrors the cleanup ladder) ---
+        warn!("Stale API process(es) still alive after 10s, escalating to SIGKILL");
+        #[cfg(unix)]
+        {
+            let _ = Command::new("pkill").args(["-9", "-f", "python.*niu_api"]).status();
+        }
+        #[cfg(windows)]
+        {
+            // Stop-Process -Force is already SIGKILL semantics — repeat it.
+            let kill_script = "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object {$_.CommandLine -match 'python.*niu_api'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
+            let _ = Command::new("powershell").args(["-NoProfile", "-Command", kill_script]).status();
+        }
+        if wait_for_process_exit("python.*niu_api", Duration::from_secs(5)) {
+            info!("Stale API process(es) exited after SIGKILL escalation");
+        } else {
+            // Proceed anyway — never block startup. Task 2's bind self-check
+            // in niu_api is the backstop if the residue still holds the port.
+            warn!("Stale API process(es) still alive after SIGKILL — proceeding anyway");
+        }
+    }
+
+    // --- Step 5: port auxiliary check (final confirmation before spawn) ---
+    if wait_for_port_free(port, Duration::from_secs(3)) {
+        info!("Port {} is free, safe to start", port);
+    } else {
+        // Bounded short wait; failure is warn + proceed (Task 2 bind
+        // self-check is the backstop).
+        warn!("Port {} still occupied after process cleanup — proceeding anyway", port);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1870,14 +2024,18 @@ fn main() {
         info!("Setting WORKSPACE_PATH for Python API: {}", workspace_path);
     }
 
-    // Kill stale Python API process occupying the port before starting a new one
-    kill_stale_api_process(args.port);
-
     // Spawn background thread: start Python API, health check, preload check, launch Electron
     let python_path_bg = python_path.clone();
     let project_root_bg = project_root.clone();
     let env_vars_bg = env_vars.clone();
     let bg_handle = thread::spawn(move || {
+        // Kill stale Python API processes before starting a new one (single-writer
+        // guarantee: wait for the old process to actually disappear — not just the
+        // port to free — before spawning). Moved into the bg thread so the splash
+        // window appears immediately and covers the cleanup period, instead of the
+        // main thread freezing for up to ~20s of cleanup before the splash shows.
+        kill_stale_api_process(port);
+
         // Start Python API server as background process
         info!("Starting Python API server...");
         let mut api_server_cmd = Command::new(&python_path_bg);
@@ -1986,6 +2144,20 @@ fn main() {
 
         let mut api_ready = false;
         for _ in 0..30 {
+            // 进程早退检测（Task 2 sys.exit 场景：spawn 后 2-4s 退出——防空转弹配置页）。
+            // 早退分支绝不能裸 return：会跳过 bg 线程闭包末尾的 wait-loop 与
+            // CleanupDone 发送（L2361）等关键收尾路径 → splash 永不关闭 + 主线程
+            // while !cancelled 双重挂死。正确做法：显式设置 cancelled + 发
+            // CleanupDone → 走正常收尾（子进程已死，无需清理阶梯）。
+            match api_server_child.try_wait() {
+                Ok(Some(status)) => {
+                    warn!("Python API process exited early: {status} — aborting startup");
+                    cancelled_bg.store(true, Ordering::SeqCst);
+                    let _ = phase_tx.send(SplashPhase::CleanupDone);
+                    return;
+                }
+                _ => {}
+            }
             thread::sleep(Duration::from_secs(1));
 
             // Read startup stage from file (works before HTTP is available —
@@ -2025,6 +2197,17 @@ fn main() {
         // v2.6.1：同步更新既有注释（原"180s 超时（原 60s）：脑区 gate 40s+90s"依据
         //   已过时——新依据为 LLM 门控阻塞 150-210s + 初始化 ~125s）
         for i in 0..3600 {
+            // 进程早退检测（与 health 循环同型——见上注释：绝不能裸 return，
+            // 必须显式 cancelled + CleanupDone 走正常收尾）。
+            match api_server_child.try_wait() {
+                Ok(Some(status)) => {
+                    warn!("Python API process exited early: {status} — aborting startup");
+                    cancelled_bg.store(true, Ordering::SeqCst);
+                    let _ = phase_tx.send(SplashPhase::CleanupDone);
+                    return;
+                }
+                _ => {}
+            }
             thread::sleep(Duration::from_millis(500));
             let url = format!("http://127.0.0.1:{}/api/preload-status", port);
             match check_client.get(&url).send() {
@@ -2461,5 +2644,142 @@ mod tests {
         let result = detect_niu_home();
         assert!(result.is_ok());
         assert!(result.unwrap().to_string_lossy().ends_with("/.niu"));
+    }
+
+    // ------------------------------------------------------------------
+    // Task 1: wait_for_process_exit / wait_for_port_free (T1.1-T1.6)
+    // ------------------------------------------------------------------
+
+    /// Hold a port in TIME_WAIT (active-close a connection FROM that port) and
+    /// return it. While TIME_WAIT lasts (~60s, 2×MSL):
+    ///   (a) the port stays in the TCP table → a parallel bind-0 test cannot
+    ///       be reassigned it (verified: 0 collisions in 30000 binds);
+    ///   (b) a new connect probe gets RST → ECONNREFUSED → port reads "free".
+    /// This replaces the plan's bound-not-listening trick, which only works on
+    /// Linux (bound-not-listening answers new SYNs with RST); macOS/BSD drop
+    /// the SYN instead → connect times out → the port reads "occupied"
+    /// forever. TIME_WAIT is the cross-platform equivalent with the same
+    /// race-elimination property (verified empirically on the dev OS).
+    /// The port-P side must close FIRST, or TIME_WAIT lands on the client's
+    /// ephemeral port instead of P.
+    fn hold_port_in_time_wait() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let port = listener.local_addr().expect("getsockname failed").port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect failed");
+        let (server_side, _) = listener.accept().expect("accept failed");
+        drop(listener);
+        drop(server_side); // active close FIRST from the port-P side → P in TIME_WAIT
+        drop(client);
+        port
+    }
+
+    /// SystemTime-derived random value — unique per test run. Used to build
+    /// unique pgrep patterns / random sleep durations without adding a rand
+    /// dependency (Cargo.toml deliberately has none).
+    #[cfg(unix)]
+    fn random_nanos() -> u32 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("SystemTime before UNIX_EPOCH")
+            .subsec_nanos()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_wait_for_process_exit_no_match() {
+        // T1.1: no matching process → immediate true. The pattern carries a
+        // SystemTime-derived random suffix — NEVER the production pattern
+        // "python.*niu_api" (a running dev Niu instance would keep pgrep
+        // exit 0 and make the test red). The runtime-computed suffix never
+        // appears in the test binary's own argv, so pgrep can't self-match.
+        let pattern = format!("niu_api_test_no_match_{}", random_nanos());
+        assert!(wait_for_process_exit(&pattern, Duration::from_secs(5)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_wait_for_process_exit_killed_transition() {
+        // T1.6: pgrep exit 0 → 1 transition. Random duration n ∈ [1600, 10599]
+        // (sleep takes seconds; the 1600 lower bound ≫ the ~1.2s observation
+        // window of the 1s-budget call — the sleep cannot exit naturally
+        // mid-test; collision probability ≈ 1/9000 across concurrent runs,
+        // accepted). The pattern is a substring match ("sleep {n}" — argv[0]
+        // may render as "/bin/sleep {n}", so never anchor with ^$).
+        let n = 1600 + random_nanos() % 9000;
+        let pattern = format!("sleep {}", n);
+        let mut child = Command::new("sleep")
+            .arg(n.to_string())
+            .spawn()
+            .expect("spawn sleep failed");
+        // Still alive within a 1s budget (n ≥ 1600s — can't exit naturally).
+        assert!(!wait_for_process_exit(&pattern, Duration::from_secs(1)));
+        // SIGKILL + reap (direct spawn, no shell wrapper — no grandchildren).
+        child.kill().expect("kill sleep failed");
+        child.wait().expect("reap sleep failed");
+        // Exit 0 → 1 transition observed within 5s.
+        assert!(wait_for_process_exit(&pattern, Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn test_wait_for_port_free_idle_port() {
+        // T1.2: port free from the probe's perspective → immediate true. The
+        // port is held in TIME_WAIT: the first probe hits ECONNREFUSED, and
+        // the port stays allocated so a parallel bind-0 test can't be
+        // reassigned it (eliminates the close-then-probe reassignment race —
+        // see hold_port_in_time_wait).
+        let port = hold_port_in_time_wait();
+        assert!(wait_for_port_free(port, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn test_wait_for_port_free_occupied_timeout() {
+        // T1.3: real listener holds the port → the 300ms elapsed budget is
+        // exhausted → false. First probe connects Ok, then the explicit 500ms
+        // re-probe interval blows the budget.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let port = listener.local_addr().expect("getsockname failed").port();
+        assert!(!wait_for_port_free(port, Duration::from_millis(300)));
+        drop(listener);
+    }
+
+    #[test]
+    fn test_wait_for_port_free_occupied_then_released() {
+        // T1.4: occupied → released transition, deterministic two-way
+        // handshake (no elapsed-assert — ④ send and bg drop have no
+        // happens-before; the 5s budget makes the eventual ConnectionRefused
+        // observation certain):
+        //   ① bg: bind 127.0.0.1:0 → listen → getsockname → send (port, ())
+        //      via channel A → block on channel B recv
+        //   ② main: manual probe asserts Ok (occupancy observed — bg still
+        //      listening)
+        //   ③ wait_for_port_free(port, 300ms) → false
+        //   ④ main sends confirmation via channel B (ignore Err — bg is
+        //      blocked in recv so Ok is guaranteed; Err only in the extreme
+        //      case bg already ended — must not panic-mask assertions)
+        //   ⑤ bg drops listener
+        //   ⑥ wait_for_port_free(port, 5s) → true
+        let (tx_a, rx_a) = std::sync::mpsc::channel::<(u16, ())>();
+        let (tx_b, rx_b) = std::sync::mpsc::channel::<()>();
+        let bg = std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind failed");
+            let port = listener.local_addr().expect("getsockname failed").port();
+            let _ = tx_a.send((port, ())); // ① ready
+            let _ = rx_b.recv(); // block until main confirms
+            drop(listener); // ⑤
+        });
+        let (port, _) = rx_a.recv().expect("bg ready signal");
+        // ② manual probe observes the live listener (deterministic: bg still
+        // holds it; probe stream enters TIME_WAIT on its own ephemeral source
+        // port — irrelevant to the probed port, no SO_REUSEADDR needed).
+        std::net::TcpStream::connect(("127.0.0.1", port))
+            .expect("probe should connect to live listener");
+        // ③ occupied → false (one Ok probe + 500ms re-probe interval exhausts
+        // the 300ms budget).
+        assert!(!wait_for_port_free(port, Duration::from_millis(300)));
+        // ④ release the bg thread, ⑤ listener dropped.
+        let _ = tx_b.send(());
+        bg.join().expect("bg thread join");
+        // ⑥ within the 5s budget a later probe must observe ConnectionRefused.
+        assert!(wait_for_port_free(port, Duration::from_secs(5)));
     }
 }

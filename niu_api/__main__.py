@@ -702,8 +702,38 @@ async def root():
     }
 
 
+def _check_single_instance(port: int) -> bool:
+    """启动前检查端口是否已被其他 niu_api 占用——占用则返回 False（调用方退出）。
+
+    防双实例并发写 vdb（LightRAG 单进程前提）。launcher kill_stale 是主防线，
+    本检查是最后防线（绕过 launcher 手动双起 / kill_stale 漏网）。
+    """
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # SO_REUSEADDR=1：允许 TIME_WAIT 重绑防假阳性；LISTEN 端口双 bind 与
+        # REUSEADDR 取值无关（无 SO_REUSEPORT）——检测有效性不受影响（R2 P1-1）
+        if sys.platform != "win32":  # Windows setsockopt 语义不同——直接 bind 已满足（R2 P2-2）
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", port))
+        return True  # 能 bind = 无实例占用
+    except OSError:
+        return False  # 端口被占 = 已有实例
+    finally:
+        s.close()
+
+
 def main():
     """Main entry point - run with: python -m niu_api"""
+    # 单实例自检（防线二，最后防线）：launcher kill_stale 是主防线，本检查兜底
+    # 绕过 launcher 手动双起 / kill_stale 漏网的场景——防双实例并发写 vdb。
+    # 端口读取上移到 main() 开头（main() 内仅保留这一处读取，保证 T2.7 env 接线断言唯一语义）
+    port = int(os.environ.get("NIU_API_PORT", "9876"))
+    if not _check_single_instance(port):
+        logger.error(f"检测到已有 niu_api 实例占用端口 {port}，退出（防双实例并发写 vdb）")
+        sys.exit(1)
+
     import atexit
 
     import uvicorn
@@ -725,9 +755,6 @@ def main():
         logger.info(f"[PROCESS-EXIT] PID={os.getpid()} exiting normally")
 
     atexit.register(_log_process_exit)
-
-    # Get port from environment or default
-    port = int(os.environ.get("NIU_API_PORT", "9876"))
 
     logger.info(f"Starting Niu API Server on port {port}")
 
