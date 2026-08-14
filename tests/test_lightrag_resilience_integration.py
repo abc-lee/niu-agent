@@ -28,7 +28,11 @@ def test_phase1_only_checks_no_backup_or_cleanup(monkeypatch):
 
 
 def test_phase1_corrupt_sets_need_repair(monkeypatch):
-    """Phase 1 检测到损坏时设 need_repair=True，但不立即修复（v6 不自动修复）"""
+    """Phase 1 检测到损坏（非 vdb_matrix_mismatch）→ need_repair=True，不自动修复。
+
+    v3 例外：vdb_matrix_mismatch（matrix/data 行数不一致）由启动自检自动修复——
+    其他损坏（真相源 corrupt / vdb_missing）仍不自动修（走 rfd 弹窗）。
+    """
     from niu_api.internal import lightrag_manager
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity.check_all",

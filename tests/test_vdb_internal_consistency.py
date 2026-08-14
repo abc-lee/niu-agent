@@ -318,3 +318,98 @@ def test_repair_empty_data_clears_matrix(storage_dir):
     data = json.loads(path.read_text(encoding="utf-8"))
     mat = np.frombuffer(base64.b64decode(data["matrix"]), dtype=np.float32).reshape(-1, DIM)
     assert mat.shape[0] == 0
+
+
+# ---------- 启动接线：run_resilience_phase1 自动修复 ----------
+
+def test_run_resilience_phase1_auto_repairs(storage_dir, monkeypatch):
+    """check_all 首次报 vdb_matrix_mismatch → auto_repair 被调 → 重跑 check_all 通过 → check_ok=True。"""
+    import niu_api.internal.lightrag_manager as lm
+    from niu_api.internal import lightrag_integrity
+
+    mismatch_result = {
+        "ok": False, "critical_errors": 0, "major_errors": 1, "minor_errors": 0,
+        "errors": [{
+            "check": "vdb_matrix_mismatch", "severity": "major",
+            "target_file": "vdb_entities.json", "matrix_rows": 5, "data_count": 3,
+            "msg": "vdb_entities.json matrix 行数(5) != data 条数(3)",
+        }],
+        "checks": {"vdb_internal": {"name": "vdb_internal", "errors": [{}]}},
+    }
+    clean_result = {
+        "ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0,
+        "errors": [], "checks": {"vdb_internal": {"name": "vdb_internal", "errors": []}},
+    }
+    calls = {"n": 0}
+
+    def fake_check_all():
+        calls["n"] += 1
+        return mismatch_result if calls["n"] == 1 else clean_result
+
+    repaired = {"repaired": [{"status": "ok", "target_file": "vdb_entities.json"}], "errors": []}
+    repair_calls = {"n": 0}
+
+    def fake_repair():
+        repair_calls["n"] += 1
+        return repaired
+
+    monkeypatch.setattr(lightrag_integrity, "check_all", fake_check_all)
+    monkeypatch.setattr(lightrag_integrity, "auto_repair_vdb_matrices", fake_repair)
+
+    result = lm.run_resilience_phase1()
+    assert result["check_ok"] is True
+    assert result["need_repair"] is False
+    assert calls["n"] == 2  # 检测 + 修复后重检
+    assert repair_calls["n"] == 1  # auto_repair 恰被调一次（R8-P3 补强：防"丢掉调用只重跑"的回归实现）
+
+
+def test_run_resilience_phase1_repair_failure_keeps_mismatch(storage_dir, monkeypatch):
+    """auto_repair 抛异常 → 保留 mismatch 结果（need_repair=True，走 rfd 弹窗兜底）。"""
+    import niu_api.internal.lightrag_manager as lm
+    from niu_api.internal import lightrag_integrity
+
+    mismatch_result = {
+        "ok": False, "critical_errors": 0, "major_errors": 1, "minor_errors": 0,
+        "errors": [{"check": "vdb_matrix_mismatch", "severity": "major", "target_file": "vdb_entities.json",
+                    "matrix_rows": 5, "data_count": 3, "msg": "mismatch"}],
+        "checks": {"vdb_internal": {"name": "vdb_internal", "errors": [{}]}},
+    }
+    calls = {"n": 0}
+
+    def fake_check_all():
+        calls["n"] += 1
+        return mismatch_result
+
+    monkeypatch.setattr(lightrag_integrity, "check_all", fake_check_all)
+    monkeypatch.setattr(lightrag_integrity, "auto_repair_vdb_matrices",
+                        lambda: (_ for _ in ()).throw(RuntimeError("repair boom")))
+
+    result = lm.run_resilience_phase1()
+    assert result["need_repair"] is True
+    assert calls["n"] == 1  # 修复失败不重跑（保留原检测结果）
+
+
+def test_run_resilience_phase1_no_mismatch_no_repair(storage_dir, monkeypatch):
+    """无 mismatch → auto_repair 不被调用。"""
+    import niu_api.internal.lightrag_manager as lm
+    from niu_api.internal import lightrag_integrity
+
+    clean_result = {
+        "ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0,
+        "errors": [], "checks": {},
+    }
+    called = {"n": 0}
+
+    def fake_check_all():
+        return clean_result
+
+    def fake_repair():
+        called["n"] += 1
+        return {"repaired": [], "errors": []}
+
+    monkeypatch.setattr(lightrag_integrity, "check_all", fake_check_all)
+    monkeypatch.setattr(lightrag_integrity, "auto_repair_vdb_matrices", fake_repair)
+
+    result = lm.run_resilience_phase1()
+    assert result["check_ok"] is True
+    assert called["n"] == 0
