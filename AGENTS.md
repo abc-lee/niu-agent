@@ -520,12 +520,25 @@ preload_face_model()
 - **问题（实证）**：① 每次启动重注入 1606 条实体→默认脑区归属边（weight=1.0 幂等 upsert 恢复满权）→ 同次同步 decay 只削到 ≈0.996 → 边权重恒水平线永不跌穿 FLOOR_WEIGHT=0.1 → **图边遗忘永不发生**（净效果≈0）；② 定时衰减被社区检测失败门控（detection 异常分支早退跳过 decay）；③ **description 源既有缺陷（R3-P0-1 实证）**——list_entities 经 `_clean_description` 清洗剥掉 brain_meta_* 字段抹平 priority（assign 自 08-02 起已在污染存量 description；同源影响 update_region_summaries region_id 抹空 / dissolve shrink_count 失效）——差异化半衰期（90-360 天）被抹平
 - **根因**：`assign_entities_to_default_regions` docstring 自述 "one-time operation"（05-12 引入时设计=一次性填充、零调用点）——06-09 df870087 接线进 region_sync Step 3.5 后即每次同步全量重注入，**"一次性"实现成"每次启动全量重注入"**（run_sync_once_for_startup 只查进程内 Event、绕过 21.6h 跨重启门控 + 每 24h 后台 + consolidate API 三条触发链无条件调用）；归属建边实为 **LLM 设计路径**——dream-evolver 动态注入脑区列表+提示词引导建边、entity-extractor/文档入库提示词注入（brain_region_prompt.py）、技能同步（sync.py L663-671 知识体系包含边）——assign 是多余旧机制
 - **修复（main 3 commits）**：
-  1. **Task 1（f89a2e5a）**：region_manager.py 删除 assign_entities_to_default_regions（clean cutover——无调用者死代码不留，git 历史可取回）+ 新增 `update_default_region_sizes`（get_all_region_members 单次读——7 次全图拷贝→1 次；**图快照直读原始描述**绕开 _clean_description 清洗 + priority 固定映射自愈（实证用户配置 core/category 旧值——合法值尊重、旧值归一化））
+  1. **Task 1（f89a2e5a）**：region_manager.py 删除 assign_entities_to_default_regions（clean cutover——无调用者死代码不留，git 历史可取回）+ 新增 `update_default_region_sizes`（get_all_region_members 单次读——7 次全图拷贝→1 次；**图快照直读原始描述**绕开 _clean_description 清洗 + priority 固定映射自愈（实证用户配置 core/category 旧值——合法值尊重、旧值归一化））**【注意：priority 固定映射自愈为错误做法——已被 2026-08-14 脑区 priority 配置权威工程废止（见下条）——配置原样透传】**
   2. **Task 2（b3a5156a）**：region_sync Step 4.5 替换 update_default_region_sizes + decay 提取 `_run_decay` 从 detection 解耦（**检测异常仍衰减**）+ 早退分支 decay + consolidate 同构替换（Step 4.5 assign→size 更新；无分区早退 L218 仍早退——接受边界）
   3. **Task 3（本条目）**：回归全清单零新增失败 + brain-region-management.md assign 引用清理（归属建边由 LLM 提示词引导自然完成）+ grep 零残留
 - **用户拍板**：删除不保留 force 逃生口（LLM 建连接是设计路径）；**启动器提示保留验证**——splash "正在同步脑区状态" + launcher 社区检测警告均不依赖 assign（两处提示与 assign 解耦）
-- **质量链**：计划 v1→v19 十九版演进 + **R1-R18 十八轮双审查**（R18 双 CONDITIONAL 同 P2-1 明示补后 APPROVE——实质达成双 APPROVE 终止进入实施；关键教训：description 源改图快照直读（R3 P0-1）/priority 固定映射自愈（R5/R6 实证配置旧值落空）/fake graph 必须显式真实 networkx.Graph（R18 P3-6））+ 每 Task spec+quality 双审
+- **质量链**：计划 v1→v19 十九版演进 + **R1-R18 十八轮双审查**（R18 双 CONDITIONAL 同 P2-1 明示补后 APPROVE——实质达成双 APPROVE 终止进入实施；关键教训：description 源改图快照直读（R3 P0-1）/priority 固定映射自愈（R5/R6 实证配置旧值落空）【**该自愈方案本身为错误做法——已被配置权威工程废止（见下条）**】/fake graph 必须显式真实 networkx.Graph（R18 P3-6））+ 每 Task spec+quality 双审
 - **实机验证（用户 2026-08-14 19:03 执行——通过）**：① 重启日志**无** `批量注入实体-脑区关系`——改为 `[RegionSync] Updated 7 default region sizes`（新 size 更新路径）② `[Decay] brain region edges: decayed=3185, deleted=0, protected=546` + `[RegionSync] 衰减结果: {...}`（`_run_decay` 新提取路径生效）③ splash `[STAGE] 正在同步脑区状态` + `[StartupGate] Running brain region first sync` 保留 ④ 完整启动无回归（LightRAG Phase 1 全过 + VDB (3242,768) matrix/data 一致 + 85 MCP 工具 + Scheduler/IM/Electron）⑤ 边数 6314（上次 6282——assign 移除后归属边仍增长——**LLM 建连接路径真实生效**）⑥ `距上次同步 0 秒，不足 77760 秒，等待 77760 秒后再首次同步`——21.6h 门控 + 24h 后台循环就位；新 stats 键 `regions_size_updated: 7`/`edges_disconnected: 0` 写入。**长运行 >24h 第 2 次 `[Decay]` 待用户后续确认**（24h 循环——衰减持续执行、无检测门控阻断）
+
+#### 修复：脑区 priority 配置权威——删 `_DEFAULT_REGION_PRIORITY` 写死映射 + 迁移用户配置文件（用户指出严重错误）
+
+- **问题（用户指出）**：`update_default_region_sizes` 用 `_DEFAULT_REGION_PRIORITY`（7 脑区→priority 固定映射**写死在代码里**）自愈旧值——但默认脑区配置的权威来源是 `~/.niu/preferences.json` 的 `brain_regions.defaults`（label/description/priority/keywords 全量定义）——代码写死导致配置与代码不一致、用户改配置不跟随、两处维护漂移——低级错误
+- **根因链（实证）**：06-19 优先级体系变更（core/category → permanent/long/medium/short，差异化半衰期 90-360 天）→ `memory/preferences.json` 模板已更新新值 → **用户实际 `~/.niu/preferences.json` 从未迁移**（仍 core/category——launcher 不覆盖已有配置）→ 衰减算法只认新值（`parse_priority_from_description` 旧值回退 medium）→ 差异化半衰期从未生效 → 上一工程用代码写死映射补救（**错误做法——应迁移配置文件而非写死代码**）
+- **修复（main 3 commits：4c2d4b0c + f11458ee + T4 文档）**：
+  1. **T2（配置迁移，先于 T1 原子落地）**：Edit 工具迁移 `~/.niu/preferences.json` 7 脑区 priority 旧值→新值（与 memory/preferences.json 模板 7/7 一致：聊天历史 medium/文档库 permanent/知识体系 long/人际关系 permanent/工作事务 medium/生活事务 short/组织机构 permanent）——即时生效（`get_default_regions_config` 每次调用重读文件）；验证：json.load 合法 + 模板比对 + label/description/keywords 未触碰
+  2. **T1（删写死）**：region_manager.py 删 `_DEFAULT_REGION_PRIORITY` 常量（含注释）+ `update_default_region_sizes` priority 改**配置原样透传** `config_map.get(region_name, {}).get("priority", DEFAULT_PRIORITY)`（删 cfg_priority 合法值分支）+ docstring 更新——**T1/T2 原子性**：live 图 description 已差异化（上工程已改写存量）——T1 单独生效会把差异化降级回旧值（R1 双审查实证）——顺序 T2→T1→重启规避
+  3. **T3（测试）**：test_default_region_sizes.py 断言更新（T1-1 改透传形态 + T1-10 permanent→medium + 新增旧值透传判别 + 删自愈断言）——3 相关文件 95 passed 全绿零污染；T4：brain-region-management.md priority 枚举同步新值（permanent/long/medium/short + 半衰期）
+- **存量自愈**：live 图 description 已差异化（上工程已改写）——配置迁移后与图一致——无需手动改图
+- **质量链**：计划 R1 双审查（A-P2 原子性 + B-P2 断言/豁免/验证步骤）→ v1.1 修正 → R2 双 APPROVE（连续两轮零 bug）→ T2+T1 实施 + PM 复核 diff → T3 断言更新 + 3 文件回归
+- **测试污染事故（记录）**：T3 首轮被指示跑全量 pytest → photo 测试真实写图（`person:test-uuid-003` + `test_photo_for_depicts.jpg` 写入 vdb_entities/relationships/chunks/kv_store/graphml 5 文件——19:45 实证）→ 按 lightrag-data-repair 流程修复（备份 `~/.niu/lightrag_storage/fix-bak-20260814-1948/` + 内容匹配精确删除 2/1/2/2/2节点1边 + XML 验证 + 与 19:04 基线核对一致）→ **教训：Niu 测试任务必须写死"只跑指定文件、禁全量"（全量含写图测试）——改动面小就只跑相关文件（用户质疑"为什么全量"正确）**
+- **实机验证（待用户执行）**：重启 Niu → 日志 `[RegionSync] Updated 7 default region sizes` 后 description priority 写入新值（配置透传）→ 长运行 24h 后 `[Decay]` 按差异化半衰期衰减（permanent 360 天/medium 180 天/short 90 天）
 
 #### 修复：VDB 并发写混写根治——单写者保证三层防线（launcher 无条件清理等进程消失 + niu_api 启动单实例自检）
 
