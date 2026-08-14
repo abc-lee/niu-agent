@@ -1430,12 +1430,15 @@ def run_resilience_phase1() -> dict:
 
     v6 修正：不做 cleanup / full_backup（备份是用户自己的事）。
     检测到损坏不自动修复，由 rfd 原生弹窗让用户选'退出'或'尝试修复'。
+    例外（v3）：vdb 内部不一致（matrix/data 行数不匹配，vdb_matrix_mismatch）→
+    自动外科修复（从 data.vector 重建 matrix）→ 重跑 check_all 验证——
+    这是唯一自动修复路径，其他损坏仍走弹窗。
 
     Returns:
         {"check_ok": bool, "need_repair": bool, "check_result": dict}
     """
     global _integrity_result
-    from niu_api.internal.lightrag_integrity import check_all
+    from niu_api.internal.lightrag_integrity import auto_repair_vdb_matrices, check_all
 
     # 只做检测，不动任何文件
     try:
@@ -1443,6 +1446,22 @@ def run_resilience_phase1() -> dict:
     except Exception as e:
         logger.warning(f"[LightRAG] 一致性检测失败（不影响启动）: {e}")
         check_result = {"ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0, "error": str(e)}
+
+    # v3: vdb 内部不一致（matrix/data 行数不匹配）→ 自动外科修复（从 data.vector 重建 matrix）
+    # 唯一自动修复路径——其他损坏（真相源 corrupt / vdb_missing）仍走 rfd 弹窗
+    mismatch_errors = [
+        e for e in check_result.get("errors", []) if e.get("check") == "vdb_matrix_mismatch"
+    ]
+    if mismatch_errors:
+        logger.warning(
+            f"[LightRAG] 检测到 vdb 内部不一致（{len(mismatch_errors)} 个文件 matrix/data 行数不匹配），自动修复..."
+        )
+        try:
+            repair_result = auto_repair_vdb_matrices()
+            logger.info(f"[LightRAG] vdb 自动修复完成: {repair_result}")
+            check_result = check_all()  # 重跑检测验证
+        except Exception as e:
+            logger.warning(f"[LightRAG] vdb 自动修复失败（保留弹窗路径）: {e}")
 
     _integrity_result = check_result
 
