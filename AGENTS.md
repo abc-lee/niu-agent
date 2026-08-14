@@ -512,6 +512,21 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-14
+
+#### 修复：启动自检检不出 VDB matrix/data 不一致（孤儿向量越界崩溃）——检测 + 自动修复
+
+- **现象**：`query_data("李磊")` 报 `LightRAG query_data failed: index 3225 is out of bounds for axis 0 with size 3225`（2026-08-14 06:51 实证）——脑区点亮/注入全部依赖 query_data，图谱损坏直接瘫痪。
+- **根因链（实证）**：三个 vdb 文件全部内部不一致（2026-08-14 实测）——`vdb_entities.json` matrix 3227 行 vs data 3225 条、`vdb_relationships.json` 6266 vs 6265、`vdb_chunks.json` 1097 vs 1095（各差 1-2 个孤儿向量）+ entities 尾部 ~7 条错位——LightRAG fork 注释警告 "Only one process should updating the storage at a time"——跨进程并发 upsert 各持 data 快照、各自 append matrix → 保存互相覆盖；nano-vectordb `_cosine_query`（site-packages dbs.py L180-182）`filter_index = arange(len(data))` → `filter_index[sort_index]`（sort_index 索引 matrix 行）孤儿行号 ≥ len(data) → 越界崩溃。
+- **检测盲区（本工程修复对象）**：`lightrag_integrity._check_vdb_missing` 只做**单向**检查（GraphML 节点 ⊆ vdb 向量）——不读 matrix——matrix/data 行数不一致完全不可见——启动检测"健康"但查询必崩。
+- **修复（main 4 commits）**：
+  1. **检测**：`_check_vdb_internal` + `_load_vdb_full`——vdb_entities/vdb_relationships/**vdb_chunks** 的 matrix 行数（base64(float32) ÷ 4×embedding_dim）vs data 条数，不一致 → major `vdb_matrix_mismatch`（check_all 第 4 步 + checks.vdb_internal 键）；matrix 键缺失（旧格式）跳过不误报、空 matrix（0 行）+ 非空 data 也报 mismatch
+  2. **外科修复**：`_decode_vdb_vector`（base64(zlib(float16)) → float32 L2 归一化——matrix 存归一化行，NaN/Inf 非有限范数拒绝解码防 NaN 行写回）+ `_repair_vdb_matrix_inplace`（data 是权威，逐条解码 → vstack 重建 matrix → `_atomic_write_json` 原子写回；任一条解码失败不写回 status=error 走全量重建）+ `auto_repair_vdb_matrices` 编排（mismatch 门控——只修真不一致文件）
+  3. **启动接线**：`run_resilience_phase1` 检测到 `vdb_matrix_mismatch` → 自动修复 → 重跑 check_all → 门控用修复后结果（**唯一自动修复路径**——真相源 corrupt / vdb_missing 仍走 rfd 弹窗）
+- **验证**：Task 1-3 测试 23 passed（9 检测 + 11 修复/编排/格式 + 3 接线）+ 回归零新增 + Task 4 真实损坏副本端到端（2026-08-14 实执：三文件副本检测 data=3225/6265/1095 vs matrix_rows=3227/6266/1097 + 3 个 `vdb_matrix_mismatch` → `_repair_vdb_matrix_inplace` 三文件 status=ok、修复后 matrix_rows==data（3225/6265/1095）→ 模拟 `_cosine_query` 三文件 `query OK（无越界）`——真实 ~/.niu 数据零改动，副本验证后清理）
+- **已知边界**：① 并发写根治（LightRAG 跨进程 upsert 串行化）超出本工程范围——自检修复后再次并发写仍会复发，检测+自动修复为兜底 ② nano-vectordb `_cosine_query` 越界保护是依赖层（site-packages 安装产物，pip 覆盖）——不做——修复后 matrix/data 一致即不越界 ③ float16 量化误差 ~1e-3（data.vector 实测已归一化（范数 0.9999~1.0001）→ 重建误差更小；测试断言容差 <1e-3）④ data 条目本身损坏（vector 解码失败）→ 修复拒绝写回，走全量重建弹窗 ⑤ matrix/data 同数但内容错位（无行数差）检测不到——本次实机形态是行数不一致（检测可触发），重建天然按 data 顺序对齐也修正尾部错位；同数错位无实证，接受 ⑥ `vdb_matrix_format`（matrix 字节不可整除——罕见，截断写通常表现为 JSON 解析失败）不在自动修复触发条件内，走 rfd 弹窗 ⑦ 顶层 JSON 非 dict/解析失败的损坏 vdb 文件会被 `_load_vdb`（_check_vdb_missing）与 `_load_vdb_full`（_check_vdb_internal）重复报错（major 计数虚增一倍）——均为 major、不触发自动修复、布尔语义不变，真实三文件均正常解析——接受（R8-P3 记录）
+- **实机验证（待用户执行）**：重启 Niu → 启动日志见 `[LightRAG] 检测到 vdb 内部不一致（3 个文件 matrix/data 行数不匹配），自动修复...` → 三个 vdb 文件 matrix 行数变 3225/6265/1095 → `query_data("李磊")` 正常返回 → 脑区点亮恢复
+
 ### 2026-08-13
 
 #### 修复：LLM 不可用启动门控（模型不通时不启动依赖 LLM 的后台组件，只等配置成功后重启）
