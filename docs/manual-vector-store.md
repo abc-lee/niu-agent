@@ -677,7 +677,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 4. **RegionSync 守护线程状态**：
    修复期间 RegionSync 必须完全停止。如果日志看到"RegionSync 已停止"后又有"Sync complete"，说明守护线程没真正停。
 
-### 9.9 用户简易修复指引（删 vdb 触发修复）
+### 9.9 用户简易修复指引（重启自动修复优先，删 vdb 为兜底）
 
 **v3 优先路径（重启即自动修复，无需删文件）**：
 
