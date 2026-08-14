@@ -72,18 +72,26 @@ class TestRunSyncDetectionFailure:
         """When community detection fails, stats contain detection error."""
         sync = RegionSync(sync_interval=86400)
 
+        # decay 解耦后早退分支会真实执行图写（decay + size 更新 + 激活刷新）——
+        # 三件套 patch 防真实图写与全局单例覆盖
         with patch(
             "agent.injector.region_sync.RegionSync._save_status"
+        ), patch(
+            "agent.injector.region_sync.get_lightrag",
+            return_value=MagicMock(),
+        ), patch(
+            "agent.injector.region_sync.RegionSync._run_detection",
+            return_value=None,
+        ), patch.object(
+            RegionSync, "_run_decay", create=True,
+        ), patch(
+            "niu_api.internal.region_manager.update_default_region_sizes",
+            create=True,
+            return_value={"updated": 0},
+        ), patch.object(
+            RegionSync, "_refresh_activation_manager",
         ):
-            with patch(
-                "agent.injector.region_sync.get_lightrag",
-                return_value=MagicMock(),
-            ):
-                with patch(
-                    "agent.injector.region_sync.RegionSync._run_detection",
-                    return_value=None,
-                ):
-                    stats = sync.run_sync()
+            stats = sync.run_sync()
 
         assert stats["regions_created"] == 0
         # Detection returned None, so no regions were processed
@@ -95,16 +103,22 @@ class TestRunSyncDetectionFailure:
 
         with patch(
             "agent.injector.region_sync.RegionSync._save_status"
+        ), patch(
+            "agent.injector.region_sync.get_lightrag",
+            return_value=MagicMock(),
+        ), patch(
+            "agent.injector.region_sync.RegionSync._run_detection",
+            side_effect=RuntimeError("detection crashed"),
+        ), patch.object(
+            RegionSync, "_run_decay", create=True,
+        ), patch(
+            "niu_api.internal.region_manager.update_default_region_sizes",
+            create=True,
+            return_value={"updated": 0},
+        ), patch.object(
+            RegionSync, "_refresh_activation_manager",
         ):
-            with patch(
-                "agent.injector.region_sync.get_lightrag",
-                return_value=MagicMock(),
-            ):
-                with patch(
-                    "agent.injector.region_sync.RegionSync._run_detection",
-                    side_effect=RuntimeError("detection crashed"),
-                ):
-                    stats = sync.run_sync()
+            stats = sync.run_sync()
 
         assert stats["regions_created"] == 0
         assert any("detection_unexpected" in e for e in stats["errors"])
@@ -465,3 +479,271 @@ def test_merge_and_dissolve_logs_warning_on_merge_exception(monkeypatch):
     # 断言：warning 调用里包含 "Merge" 或 "merge"
     assert any("Merge" in str(msg) or "merge" in str(msg) for msg in warning_calls), \
         f"merge 异常应被 warning 记录，实际 warning 调用: {warning_calls}"
+
+
+# ============== Test 8: Task 2 — Step 4.5 update_default_region_sizes + decay 解耦 ==============
+
+
+def _task2_step45_context(update_return_value=None, update_side_effect=None):
+    """T2-1/T2-5 正常路径（detection 成功）全 mock 上下文。
+
+    _manage_region_nodes 内部构造 RegionManager/LightRAGAdapter/LightRAGIngester——
+    必须类级 patch（红相阶段真实图写 + MagicMock 元组解包 ValueError）。
+    update/assign 用 create=True——红相阶段局部 import 从 patched 模块属性取。
+    """
+    from contextlib import ExitStack
+    from unittest import mock
+
+    stack = ExitStack()
+    stack.enter_context(
+        mock.patch("agent.injector.region_sync.get_lightrag", return_value=mock.MagicMock())
+    )
+    stack.enter_context(
+        mock.patch.object(RegionSync, "_run_detection", return_value=mock.MagicMock())
+    )
+    stack.enter_context(mock.patch.object(RegionSync, "_refresh_activation_manager"))
+    stack.enter_context(mock.patch.object(RegionSync, "_merge_and_dissolve"))
+    stack.enter_context(mock.patch.object(RegionSync, "_save_status"))
+    stack.enter_context(mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter"))
+    stack.enter_context(mock.patch("niu_api.internal.lightrag_adapter.LightRAGIngester"))
+    cleanup_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.RegionManager.cleanup_stale_regions",
+            return_value=([], [], set()),
+        )
+    )
+    create_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.RegionManager.create_region_nodes",
+            return_value=[],
+        )
+    )
+    get_all_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.RegionManager.get_all_regions",
+            return_value=[],
+        )
+    )
+    summaries_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.RegionManager.update_region_summaries",
+        )
+    )
+    decay_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.RegionManager.decay_structural_edges",
+            return_value={},
+        )
+    )
+    update_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.update_default_region_sizes",
+            create=True,
+            return_value=update_return_value,
+            side_effect=update_side_effect,
+        )
+    )
+    assign_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.assign_entities_to_default_regions",
+            create=True,
+            return_value={},
+        )
+    )
+    return stack, {
+        "update": update_mock,
+        "assign": assign_mock,
+        "cleanup": cleanup_mock,
+        "create_nodes": create_mock,
+        "get_all_regions": get_all_mock,
+        "update_summaries": summaries_mock,
+        "decay": decay_mock,
+    }
+
+
+class TestTask2Step45UpdateSizes:
+    """T2-1：Step 4.5 替换 update_default_region_sizes——assign 不再被调 + _run_decay 提取。"""
+
+    def test_t2_1_update_called_assign_not_called_run_decay(self):
+        """正常路径：update 被调（updated=7 入 stats）+ assign 不被调 + Step 6 走 _run_decay。"""
+        sync = RegionSync(sync_interval=86400)
+        stack, mocks = _task2_step45_context(update_return_value={"updated": 7})
+        with stack, patch.object(RegionSync, "_run_decay", create=True) as run_decay_mock:
+            stats = sync.run_sync()
+
+        mocks["update"].assert_called_once()
+        mocks["assign"].assert_not_called()
+        run_decay_mock.assert_called_once()
+        assert stats["regions_size_updated"] == 7
+
+    def test_t2_1_variant_updated_zero_no_key_no_log(self):
+        """updated=0：stats 无 regions_size_updated 键 + 无 Updated 日志。"""
+        from agent.injector import region_sync as rs_mod
+
+        sync = RegionSync(sync_interval=86400)
+        info_calls = []
+        stack, mocks = _task2_step45_context(update_return_value={"updated": 0})
+        with stack, patch.object(RegionSync, "_run_decay", create=True), \
+             patch.object(
+                 rs_mod.logger, "info",
+                 side_effect=lambda *a, **k: info_calls.append(a),
+             ):
+            stats = sync.run_sync()
+
+        mocks["update"].assert_called_once()
+        mocks["assign"].assert_not_called()
+        assert "regions_size_updated" not in stats
+        assert not any(
+            "default region sizes" in str(c) for c in info_calls
+        ), f"updated=0 不应有 Updated 日志: {info_calls}"
+
+    def test_t2_5_update_exception_swallowed_steps_continue(self):
+        """T2-5：Step 4.5 update 抛异常 → 被吞 + Step 5 summaries / Step 6 _run_decay 仍执行。"""
+        sync = RegionSync(sync_interval=86400)
+        stack, mocks = _task2_step45_context(update_side_effect=RuntimeError("boom"))
+        with stack, patch.object(RegionSync, "_run_decay", create=True) as run_decay_mock:
+            stats = sync.run_sync()  # 不抛
+
+        mocks["update"].assert_called_once()
+        mocks["assign"].assert_not_called()
+        run_decay_mock.assert_called_once()
+        # Step 5 仍执行（update_region_summaries 被调）
+        mocks["update_summaries"].assert_called_once()
+        assert stats["regions_updated"] == 0
+
+
+class TestTask2DetectionNoneDecay:
+    """T2-3：detection=None 早退分支——decay 解耦（用户提醒核心）。"""
+
+    def test_t2_3a_order_decay_update_refresh_save(self):
+        """顺序：decay → size(update) → refresh → save。"""
+        sync = RegionSync(sync_interval=86400)
+        order: list[str] = []
+        stack, mocks = _task2_early_return_context(update_return_value={"updated": 7})
+        with stack, patch.object(
+            RegionSync, "_run_decay", create=True,
+            side_effect=lambda s: order.append("decay"),
+        ), patch.object(
+            RegionSync, "_refresh_activation_manager",
+            side_effect=lambda s: order.append("refresh"),
+        ), patch.object(RegionSync, "_save_status") as save_mock:
+            stats = sync.run_sync()
+
+        assert order == ["decay", "refresh"], f"早退分支顺序错误: {order}"
+        mocks["update"].assert_called_once()
+        save_mock.assert_called_once()
+        assert stats["regions_size_updated"] == 7
+
+    def test_t2_3a_variant_update_error_swallowed(self):
+        """早退分支 update 抛异常 → run_sync 不抛 + refresh/save 仍执行。"""
+        sync = RegionSync(sync_interval=86400)
+        order: list[str] = []
+        stack, mocks = _task2_early_return_context(update_side_effect=RuntimeError("boom"))
+        with stack, patch.object(
+            RegionSync, "_run_decay", create=True,
+            side_effect=lambda s: order.append("decay"),
+        ), patch.object(
+            RegionSync, "_refresh_activation_manager",
+            side_effect=lambda s: order.append("refresh"),
+        ), patch.object(RegionSync, "_save_status") as save_mock:
+            stats = sync.run_sync()  # 不抛
+
+        assert order == ["decay", "refresh"]
+        mocks["update"].assert_called_once()
+        save_mock.assert_called_once()
+        assert "regions_size_updated" not in stats
+
+    def test_t2_3b_true_path_decay_and_size(self):
+        """真路径（不 patch _run_decay）：真实衰减执行 + size 更新 + 衰减日志。"""
+        from unittest import mock
+
+        from agent.injector import region_sync as rs_mod
+
+        sync = RegionSync(sync_interval=86400)
+        info_calls = []
+        stack, mocks = _task2_early_return_context(update_return_value={"updated": 7})
+        with stack, \
+             mock.patch(
+                 "niu_api.internal.region_manager.RegionManager.decay_structural_edges",
+                 return_value={"decayed": 5, "deleted": 0, "protected": 0, "skipped_anchor": 0},
+             ) as decay_mock, \
+             mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter"), \
+             mock.patch("niu_api.internal.lightrag_adapter.LightRAGIngester"), \
+             mock.patch.object(RegionSync, "_refresh_activation_manager"), \
+             mock.patch.object(RegionSync, "_save_status"), \
+             mock.patch.object(
+                 rs_mod.logger, "info",
+                 side_effect=lambda *a, **k: info_calls.append(a),
+             ):
+            stats = sync.run_sync()
+
+        decay_mock.assert_called_once()
+        mocks["update"].assert_called_once()
+        assert stats["edges_disconnected"] == 0
+        assert stats["regions_size_updated"] == 7
+        assert any("衰减结果:" in str(c) for c in info_calls), \
+            f"应记录衰减日志: {info_calls}"
+
+    def test_t2_3b_variant_decay_error_swallowed(self):
+        """_run_decay 内部 try/except：decay 抛异常 → run_sync 不抛 + stats 无 edges_disconnected。"""
+        from unittest import mock
+
+        sync = RegionSync(sync_interval=86400)
+        stack, mocks = _task2_early_return_context(update_return_value={"updated": 7})
+        with stack, \
+             mock.patch(
+                 "niu_api.internal.region_manager.RegionManager.decay_structural_edges",
+                 side_effect=RuntimeError("boom"),
+             ), \
+             mock.patch("niu_api.internal.lightrag_adapter.LightRAGAdapter"), \
+             mock.patch("niu_api.internal.lightrag_adapter.LightRAGIngester"), \
+             mock.patch.object(RegionSync, "_refresh_activation_manager"), \
+             mock.patch.object(RegionSync, "_save_status"):
+            stats = sync.run_sync()  # 不抛
+
+        mocks["update"].assert_called_once()
+        assert "edges_disconnected" not in stats
+        assert stats["regions_size_updated"] == 7
+
+
+def _task2_early_return_context(update_return_value=None, update_side_effect=None):
+    """detection=None 早退分支上下文：get_lightrag ok + _run_detection 返回 None。"""
+    from contextlib import ExitStack
+    from unittest import mock
+
+    stack = ExitStack()
+    stack.enter_context(
+        mock.patch("agent.injector.region_sync.get_lightrag", return_value=mock.MagicMock())
+    )
+    stack.enter_context(
+        mock.patch.object(RegionSync, "_run_detection", return_value=None)
+    )
+    update_mock = stack.enter_context(
+        mock.patch(
+            "niu_api.internal.region_manager.update_default_region_sizes",
+            create=True,
+            return_value=update_return_value,
+            side_effect=update_side_effect,
+        )
+    )
+    return stack, {"update": update_mock}
+
+
+def test_t2_4_sync_loop_runs_first_sync_when_no_status_file(tmp_path):
+    """T2-4：status 文件不存在 → 24h 门控跳过 → _sync_loop 恰 1 次 run_sync（每日衰减点）。"""
+    from unittest import mock
+
+    from agent.injector.region_sync import RegionSync
+
+    sync = RegionSync(sync_interval=86400)
+    sync._status_file = tmp_path / "no_status_file.json"  # 不存在
+    sync._brain_ready.set()
+    sync._stop_event.set()  # 让所有 wait 立即返回 True
+    sync.run_sync = mock.Mock(return_value={})
+
+    with mock.patch(
+        "agent.injector.region_sync.wait_lightrag_ready", return_value=True
+    ):
+        sync._sync_loop()
+
+    assert sync.run_sync.call_count == 1, "无 status 文件应跳过门控，跑 1 次 run_sync"
