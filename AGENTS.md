@@ -517,9 +517,9 @@ preload_face_model()
 #### 修复：启动自检检不出 VDB matrix/data 不一致（孤儿向量越界崩溃）——检测 + 自动修复
 
 - **现象**：`query_data("李磊")` 报 `LightRAG query_data failed: index 3225 is out of bounds for axis 0 with size 3225`（2026-08-14 06:51 实证）——脑区点亮/注入全部依赖 query_data，图谱损坏直接瘫痪。
-- **根因链（实证）**：三个 vdb 文件全部内部不一致（2026-08-14 实测）——`vdb_entities.json` matrix 3227 行 vs data 3225 条、`vdb_relationships.json` 6266 vs 6265、`vdb_chunks.json` 1097 vs 1095（各差 1-2 个孤儿向量）+ entities 尾部 ~7 条错位——LightRAG fork 注释警告 "Only one process should updating the storage at a time"——跨进程并发 upsert 各持 data 快照、各自 append matrix → 保存互相覆盖；nano-vectordb `_cosine_query`（site-packages dbs.py L180-182）`filter_index = arange(len(data))` → `filter_index[sort_index]`（sort_index 索引 matrix 行）孤儿行号 ≥ len(data) → 越界崩溃。
+- **根因链（实证）**：三个 vdb 文件全部内部不一致（2026-08-14 实测）——`vdb_entities.json` matrix 3227 行 vs data 3225 条、`vdb_relationships.json` 6266 vs 6265、`vdb_chunks.json` 1097 vs 1095（各差 1-2 个孤儿向量）+ entities 尾部 ~7 条错位——LightRAG fork 注释警告 "Only one process should updating the storage at a time"——跨进程并发 upsert 各持 data 快照、各自 append matrix → 保存互相覆盖；nano-vectordb `_cosine_query`（site-packages dbs.py L169-182）`filter_index = arange(len(data))` → `filter_index[sort_index]`（sort_index 索引 matrix 行）孤儿行号 ≥ len(data) → 越界崩溃。
 - **检测盲区（本工程修复对象）**：`lightrag_integrity._check_vdb_missing` 只做**单向**检查（GraphML 节点 ⊆ vdb 向量）——不读 matrix——matrix/data 行数不一致完全不可见——启动检测"健康"但查询必崩。
-- **修复（main 4 commits）**：
+- **修复（main 5 commits）**：
   1. **检测**：`_check_vdb_internal` + `_load_vdb_full`——vdb_entities/vdb_relationships/**vdb_chunks** 的 matrix 行数（base64(float32) ÷ 4×embedding_dim）vs data 条数，不一致 → major `vdb_matrix_mismatch`（check_all 第 4 步 + checks.vdb_internal 键）；matrix 键缺失（旧格式）跳过不误报、空 matrix（0 行）+ 非空 data 也报 mismatch
   2. **外科修复**：`_decode_vdb_vector`（base64(zlib(float16)) → float32 L2 归一化——matrix 存归一化行，NaN/Inf 非有限范数拒绝解码防 NaN 行写回）+ `_repair_vdb_matrix_inplace`（data 是权威，逐条解码 → vstack 重建 matrix → `_atomic_write_json` 原子写回；任一条解码失败不写回 status=error 走全量重建）+ `auto_repair_vdb_matrices` 编排（mismatch 门控——只修真不一致文件）
   3. **启动接线**：`run_resilience_phase1` 检测到 `vdb_matrix_mismatch` → 自动修复 → 重跑 check_all → 门控用修复后结果（**唯一自动修复路径**——真相源 corrupt / vdb_missing 仍走 rfd 弹窗）
