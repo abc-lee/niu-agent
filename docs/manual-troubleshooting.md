@@ -592,7 +592,7 @@ typeof NiuDomTree !== 'undefined'
 | 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 |
 | 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
 | 脑区边被意外删除 | 衰减算法配置错误 | 检查 preferences.json 中脑区 priority 是否为新值（permanent/long/medium/short），旧值 core/category 会回退到 medium |
-| 知识图谱查询报错/无结果（Agent 回复"查询失败""查不到"） | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量） | **直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启触发完整重建（见 1.7.1 简易指引） |
+| 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量） | **直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启触发完整重建（见 1.7.1 简易指引） |
 
 #### 1.7.1 知识图谱损坏修复故障排查
 
@@ -606,7 +606,7 @@ typeof NiuDomTree !== 'undefined'
 **v3 检测与自动修复**（2026-08-14）：
 - 新增 vdb 文件内部一致性检测（`_check_vdb_internal`）：vdb_entities/vdb_relationships/vdb_chunks 的 matrix 行数 vs data 条数不一致 → major（vdb_matrix_mismatch）——孤儿向量导致查询越界崩溃
 - **vdb_matrix_mismatch 启动自动修复，不弹窗**：启动自检检测到后自动从 data.vector 重建 matrix → 重跑检测 → 正常启动
-- 用户可观察症状：问知识图谱问题 Agent 回复"查询失败"/无结果；脑区知识注入不工作——**先重启程序，绝大多数情况自动修复**
+- 用户可观察症状：依赖知识图谱的回答准确度下降（变模糊、答非所问、漏关键信息）；搜索功能匹配度降低（搜相关话题搜不到、搜出无关内容）；显式"查询失败"报错只在极端场景出现——**先重启程序，绝大多数情况自动修复**
 - 重启后仍异常（vdb 文件缺失 / GraphML 损坏等场景）才走下方"用户简易修复指引"（删 3 个 vdb 文件）
 
 **修复失败的常见症状与排查**：
