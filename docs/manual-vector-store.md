@@ -546,7 +546,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 - 不一致 → major（vdb_matrix_mismatch）
 - 成因：跨进程并发 upsert 导致 matrix 与 data 不同步（LightRAG fork 注释警告 "Only one process should updating the storage at a time"）
 - 后果：nano-vectordb 查询时孤儿向量行号越界崩溃——多数时候不显式报错，仅表现为回答准确度下降/搜索匹配度降低；极端场景（top_k 恰好命中孤儿向量）才显式报错
-- 与 v2 的区别：v2 只查 GraphML⊆vdb 单向（防数据丢失）；v3 查 vdb 文件内部（孤儿向量/尾部错位）
+- 与 v2 的区别：v2 只查 GraphML⊆vdb 单向（防数据丢失）；v3 查 vdb 文件内部 matrix 行数 vs data 条数（孤儿向量）——行数比对不检测等行数的内容级错位；修复重建（从 data.vector 重建 matrix）可一并消除尾部错位
 
 **派生 kv_store 文件缺失**（`_check_derived_missing`，v2 改为不报错）：
 - `kv_store_doc_status` / `entity_chunks` / `relation_chunks` / `full_entities` / `full_relations` 缺失不是损坏
@@ -694,7 +694,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 - 显式"查询失败"报错只在极端场景出现（检索恰好命中损坏的向量），多数时候不报错，只是结果错乱
 - 以上症状出现时，先重启程序——绝大多数情况重启后自动修复，无需做其他操作
 
-**当用户怀疑知识图谱数据有问题时**（查询结果异常、实体缺失、关系丢失等），最简单的修复方法是**删除 3 个 vdb 文件后重启程序**，系统会自动触发修复流程重建向量索引：
+**兜底路径**（v3 自动修复不适用时——vdb 文件缺失、GraphML-vdb 不一致等场景）：删除 3 个 vdb 文件后重启程序，系统会自动触发修复流程重建向量索引：
 
 ```bash
 # 1. 退出程序（确保没有 niu 进程在运行）
@@ -717,7 +717,6 @@ rm ~/.niu/lightrag_storage/vdb_relationships.json
 - **3 真相源（GraphML + full_docs + cache）不会被改写**，只是向量索引重建
 
 **适用场景**：
-- 查询知识图谱报错或结果异常
 - 实体/关系丢失但 GraphML 应该有
 - 切换 embedding 模型后需要重建向量索引
 - vdb 文件损坏（JSON 解析失败）
