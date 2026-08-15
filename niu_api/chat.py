@@ -215,6 +215,30 @@ def notify_brain_region_sync(source: str = 'auto', changed_labels: list[str] | N
     except RuntimeError:
         pass
 
+
+def notify_llm_error_sync(error_type: str | None, error_msg: str, source: str) -> None:
+    """广播 LLM 错误事件到 /api/events/stream。
+
+    跨线程安全：可在 agent_loop 线程、HTTP 请求线程中调用（照抄 notify_brain_region_sync 模式）。
+
+    只推不落 DB——事件不经过 persist 路径，刷新 Chat 从 DB 加载历史时该消息自然消失；
+    不进 LLM 上下文——事件只到前端。
+
+    Args:
+        error_type: 错误类型名（如 "RateLimitError"）；可为 None（未识别类型——通道 3 保底，
+            仅友好文案展示，error_type 为信息字段）
+        error_msg: 用户友好文案（调用方已 format_llm_error_for_user 生成）
+        source: 触发来源（"chat_session"/"chat_queue" 等，透传信息字段）
+    """
+    if _main_loop is None:
+        return
+    event = {"type": "llm_error", "error_type": error_type, "error_msg": error_msg, "source": source}
+    try:
+        _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass
+
+
 def _sync_broadcast(event: dict):
     """在 FastAPI 事件循环中执行广播"""
     for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改

@@ -939,6 +939,7 @@ class LiteLLMSession(BaseSession):
         _stream_error_occurred = False
         _stream_error_msg = ""
         _stream_error_type = None
+        _stream_error_type_name = None  # E2：异常类名透传（error_type 内部类别不动——llm_proxy 消费 error_type="retry_exhausted" 等保持）
 
         try:
             full_content, reasoning_content, tool_calls, last_finish_reason, usage, was_stopped = \
@@ -946,6 +947,7 @@ class LiteLLMSession(BaseSession):
         except Exception as e:
             _stream_error_occurred = True
             _stream_error_msg = _sanitize_error_msg(str(e))
+            _stream_error_type_name = type(e).__name__
             error_msg = str(e)
 
             # 检测 context_length_exceeded 错误
@@ -1015,6 +1017,7 @@ class LiteLLMSession(BaseSession):
                     logger.error(f"[STREAM] Non-stream fallback also failed: {fb_err}")
                     _stream_error_type = "retry_exhausted"
                     _stream_error_msg = _sanitize_error_msg(str(fb_err))
+                    _stream_error_type_name = type(fb_err).__name__
             else:
                 # 其他错误 → 分类 + 重试
                 logger.error(f"[STREAM] Stream error: {e}")
@@ -1068,6 +1071,7 @@ class LiteLLMSession(BaseSession):
                                 )
                             logger.error(f"[STREAM] Retry {retry_idx} failed: {retry_e}")
                             _stream_error_msg = _sanitize_error_msg(str(retry_e))
+                            _stream_error_type_name = type(retry_e).__name__
                     if not retry_succeeded:
                         if _stream_error_type is None:
                             _stream_error_type = "retry_exhausted"
@@ -1099,6 +1103,7 @@ class LiteLLMSession(BaseSession):
             stream_error=_stream_error_occurred,
             error_type=_stream_error_type,
             error_msg=_stream_error_msg or None,
+            error_type_name=_stream_error_type_name,
         )
 
         if usage:

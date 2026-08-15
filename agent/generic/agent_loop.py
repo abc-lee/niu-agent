@@ -882,23 +882,27 @@ def agent_runner_loop(
             response = yield from response_gen
             # === stream_error 检查（优先级最高，在 B1/拦截/reply yield 之前）===
             if getattr(response, 'stream_error', False):
+                # E2 源头友好化：函数内局部导入防循环依赖（agent_loop→litellm_adapter→runner→agent_loop 环）
+                from agent.generic.litellm_adapter import format_llm_error_for_user
                 error_msg = getattr(response, 'error_msg', None) or "模型调用失败"
-                yield error_msg
+                yield format_llm_error_for_user(error_msg, getattr(response, "error_type_name", None))
                 yield StreamEvent("system", "chat_idle")
                 if not getattr(handler, "_is_subagent", False):
                     clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
-                return {"result": "LLM_ERROR", "error_msg": error_msg}
+                return {"result": "LLM_ERROR", "error_msg": error_msg, "error_type": getattr(response, "error_type_name", None)}
             yield StreamEvent("system", "\n\n")
         else:
             response = exhaust(response_gen)
             # === stream_error 检查（优先级最高，在 B1/拦截/reply yield 之前）===
             if getattr(response, 'stream_error', False):
+                # E2 源头友好化：函数内局部导入防循环依赖（agent_loop→litellm_adapter→runner→agent_loop 环）
+                from agent.generic.litellm_adapter import format_llm_error_for_user
                 error_msg = getattr(response, 'error_msg', None) or "模型调用失败"
-                yield error_msg
+                yield format_llm_error_for_user(error_msg, getattr(response, "error_type_name", None))
                 yield StreamEvent("system", "chat_idle")
                 if not getattr(handler, "_is_subagent", False):
                     clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
-                return {"result": "LLM_ERROR", "error_msg": error_msg}
+                return {"result": "LLM_ERROR", "error_msg": error_msg, "error_type": getattr(response, "error_type_name", None)}
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
