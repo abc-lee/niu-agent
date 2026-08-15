@@ -497,6 +497,10 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
     runner = get_or_create_runner()
 
+    # Electron 用户消息 → 去 IM 标志（规则 2）：channel_id 清空 + force 清空
+    runner.set_im_channel("")
+    runner.set_im_force(False)
+
     # Get or create session
     session_id = request.session_id or "default"
 
@@ -662,6 +666,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
 
         runner = get_or_create_runner()
         runner.set_im_channel("")
+        runner.set_im_force(False)  # Electron 用户消息转假（规则 2 + 粘性清除）——与 compat/chat_queue electron 分支对齐
         session_id = request.session_id or "default"
 
         # Run chat (non-streaming)
