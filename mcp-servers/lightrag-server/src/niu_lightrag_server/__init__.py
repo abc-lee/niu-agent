@@ -419,7 +419,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Entity name (e.g., 'Python', '数据分析')"},
-                "entity_type": {"type": "string", "description": "Entity type (e.g., 'person', 'concept', 'skill', 'tool')"},
+                "entity_type": {"type": "string", "description": "Entity type (e.g., 'person', 'concept', 'skill')"},
                 "description": {"type": "string", "default": "", "description": "Entity description"},
                 "source_id": {"type": "string", "default": "custom_kg", "description": "Deprecated — ignored. Kept for backward compatibility."},
                 "file_path": {"type": "string", "default": "custom_kg", "description": "File path for citation"},
@@ -638,7 +638,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "entity_name": {"type": "string", "description": "Entity name (must be unique)"},
-                "entity_type": {"type": "string", "description": "Entity type (e.g., person, concept, skill, tool)"},
+                "entity_type": {"type": "string", "description": "Entity type (e.g., person, concept, skill)"},
                 "description": {"type": "string", "default": "", "description": "Entity description"},
                 "source_id": {"type": "string", "default": "manual_creation", "description": "Source chunk ID"},
                 "file_path": {"type": "string", "default": "manual_creation", "description": "File path for citation"},
@@ -1222,7 +1222,7 @@ def lightrag_insert_entity(
 
     Args:
         name: Entity name (e.g., 'Python', '数据分析', '任飞').
-        entity_type: Entity type (e.g., 'Person', 'Concept', 'Skill', 'Tool').
+        entity_type: Entity type (e.g., 'Person', 'Concept', 'Skill').
         description: Entity description.
         source_id: Deprecated, kept for backward compatibility (ignored).
         file_path: File path for citation.

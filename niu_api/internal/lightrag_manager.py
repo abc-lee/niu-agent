@@ -1238,7 +1238,7 @@ def _create_lightrag_instance():
     custom_entity_types = [
         "person", "organization", "technology", "concept",
         "location", "event", "document", "photo", "video",
-        "note", "chat", "skill", "tool", "knowledge",
+        "note", "chat", "skill", "knowledge",
         "episodicevent", "brainregion", "other",
     ]
 
