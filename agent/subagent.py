@@ -591,6 +591,8 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
         static_system += "\n\n" + _BOUNDARY_SECTION_TEMPLATE
 
     # 3.5 为 dream-evolver 预注入当前脑区列表（注入 dynamic_system，因为脑区列表会变化，不适合放在 cache 前缀的 static_system 中）
+    # R15a（P14 拍板——不静默）：获取失败/空列表均升级为 warning，显式记录原因与 fallback 行为。
+    # fallback 行为不变：_brain_region_section 保持空——不注入动态脑区列表，子 Agent 仅见静态脑区说明。
     _brain_region_section = ""
     if agent_name == "dream-evolver":
         try:
@@ -599,8 +601,16 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
             if brain_regions:
                 region_list = "、".join(brain_regions)
                 _brain_region_section = f"\n\n## 当前脑区列表（预注入，无需搜索）\n\n{region_list}\n\n创建实体时直接参考以上脑区列表选择归属，不要调用 lightrag_search_entities 查询脑区。"
+            else:
+                logger.warning(
+                    f"[SubAgent] get_brain_regions returned empty list for {agent_name}: "
+                    f"不注入动态脑区列表（fallback——子 Agent 仅见静态脑区说明）"
+                )
         except Exception as e:
-            logger.debug(f'[SubAgent] Failed to get brain regions for {agent_name}: {e}')
+            logger.warning(
+                f"[SubAgent] Failed to get brain regions for {agent_name}: {e} — "
+                f"不注入动态脑区列表（fallback——子 Agent 仅见静态脑区说明）"
+            )
 
     # 4. 强制注入 @niu-agent/@end 守则
     # context-manager 例外：它原设计是直接输出 keep=/update=/cursor= 让程序写数据库，
