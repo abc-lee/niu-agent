@@ -38,6 +38,28 @@ def test_helper_auto_replies_to_at_niu_question():
     assert call_count[0] == 2
 
 
+def test_helper_auto_replies_to_t2_format_question():
+    """第一次返回 T2 注入格式提问（【子Agent提问·需回复】[name]）→ 自动回复 → 正常返回"""
+    from agent import subagent
+
+    call_count = [0]
+
+    def mock_call_subagent(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "【子Agent提问·需回复】[file-processor-a1b2]\n我该选哪个？\n收到请回复"
+        return "任务完成结果"
+
+    with mock.patch.object(subagent, "call_subagent", side_effect=mock_call_subagent):
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="file-processor",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert result == "任务完成结果"
+    assert call_count[0] == 2  # 提问被识别 → 自动回复一次 → 正常结束
+
+
 def test_helper_does_not_misidentify_normal_result():
     """子 Agent 正常结果含 [已完成] 不被误判为 @niu-agent 问题"""
     from agent import subagent
@@ -63,6 +85,30 @@ def test_extract_unique_name_async_path_hex_suffix_still_works():
     from agent.subagent import _extract_unique_name
     assert _extract_unique_name("[file-processor-a1b2] 第一个问题", "file-processor") == "file-processor-a1b2"
     assert _extract_unique_name("[browser-operator-708b] 问题", "browser-operator") == "browser-operator-708b"
+
+
+def test_extract_unique_name_t2_format_header_extracts_name():
+    """T2 注入格式 【子Agent提问·需回复】[unique_name] 提问能被提取（同步+异步路径）"""
+    from agent.subagent import _extract_unique_name
+    # 同步路径：纯 agent_name
+    assert _extract_unique_name(
+        "【子Agent提问·需回复】[file-processor]\n我该选哪个？\n收到请回复", "file-processor"
+    ) == "file-processor"
+    # 异步路径：agent_name-4位hex
+    assert _extract_unique_name(
+        "【子Agent提问·需回复】[file-processor-a1b2]\n我该选哪个？\n收到请回复", "file-processor"
+    ) == "file-processor-a1b2"
+
+
+def test_extract_unique_name_t2_format_no_match_returns_none():
+    """T2 格式但 agent 名不匹配 / 缺换行（非拼装产物）→ None"""
+    from agent.subagent import _extract_unique_name
+    # 其他子 Agent 的提问注入消息
+    assert _extract_unique_name(
+        "【子Agent提问·需回复】[other-agent]\n问题\n收到请回复", "browser-operator"
+    ) is None
+    # 未按 T2 拼装（] 后无 \n）不匹配——严格匹配避免误判
+    assert _extract_unique_name("【子Agent提问·需回复】[browser-operator] 问题", "browser-operator") is None
 
 
 def test_extract_unique_name_no_match_returns_none():

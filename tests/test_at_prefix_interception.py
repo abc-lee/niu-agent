@@ -19,7 +19,7 @@ def test_ask_main_agent_impl_callable_directly(monkeypatch):
     sr_module.SubagentRegistry.get = mock.Mock(return_value=fake_instance)
 
     # mock push queue（get_main_agent_request_queue 在 main_agent_request_queue 模块）
-    # T2 兼容：push(content, type="ask")——side_effect 兼容 kwarg
+    # T2 兼容：push(content, msg_type="ask")——side_effect 兼容 kwarg
     pushed = []
     fake_queue = mock.MagicMock()
     fake_queue.push = mock.Mock(side_effect=lambda content, **kw: pushed.append(content))
