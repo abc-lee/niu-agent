@@ -530,6 +530,19 @@ preload_face_model()
 - **核销**：E1 归属 10 条——修 2（E1-02/08）/ 覆盖 5（E1-01/03/04/05/10）/ 无需修 2（E1-07 get() 五调用方可见、E1-09 interruptible re-raise 仅剩 BaseException）/ 重归属 E4 1（E1-06 三序列化点在 dispatch 之后）。
 - **验证**：7 新测试（TOOL_ERROR 格式/循环存活/BaseException 穿透/MCP 内层优先/坏 __str__/状态 end 双路径）+ 回归 10 文件 95 passed（6 个 pre-existing 失败基线复现确认非本工程引入）+ 实机验证待用户重启。
 
+#### 新增：LLM 通讯失败错误可见化（E2——错误推前端可见，SSE 只推不落库刷新自然消失）
+
+- **方向定案**（用户原话可引）：**不做弹窗**（"这个应用未必在电脑上操作，可能远端（飞书），你弹窗没有用啊"——远端场景无效）；**逻辑不变**（现有错误处理零改动）；**错误推前端可见**（SSE 事件只推不写 DB——"你写 Message 点 DB 是没有意义的，因为它也自我修复不了呀"）；**不进 LLM 上下文**（"你推消息的这个事还不占用上下文"）；**自愈靠下次调用自然重试**（"临时网络/服务端故障不代表模型坏了，过一段时间自愈了，你再发消息它又好了"）；**刷新 Chat 错误消失**（不落库 → 刷新从 DB 加载历史时自然消失）；**文案三通道**（标准翻译/非标准原文展示/保底不卡死——"绝不能出现识别不了就卡死的路径"）。
+- **核心机制**：
+  1. **format_llm_error_for_user 三层识别通道**（litellm_adapter.py 纯函数）：① 显式 error_type ② 映射表键名子串匹配（真实 str() 带 "litellm." 前缀）③ 通用正则兜底；映射表 10 键翻译（RateLimitError 429/ServiceUnavailableError 503/AuthenticationError 401/NotFoundError 404/BadRequestError 400/LiteLLMUnknownProvider/APIConnectionError/Timeout/BudgetExceededError/MidStreamFallbackError）；非映射类型 → 类型名+原文（通道 2）；裸原文保底（通道 3）；**保底不变式**（str 强转防坏 __str__ + 任何输入非空不抛异常 + 截断保尾 ≤500）；extract_error_type 同源导出 + is_litellm_error_type 动态判定（hasattr 双模块 + 异常类校验）
+  2. **error_type 透传链**：MockResponse 加 error_type_name 字段（llmcore 签名加参默认 None）→ adapter 流中段 except/覆盖点记录 → agent_loop LLM_ERROR 双分支**源头友好化 yield**（函数内绝对导入防 agent_loop→litellm_adapter→runner→agent_loop 循环依赖）→ IM 流式卡 accumulated 友好 → route_out → 飞书 F3 startswith 命中 → 终稿友好
+  3. **三入口 LLM_ERROR skip persist**（compat chat_session / chat_queue / chat/sync）：`rv["result"] == "LLM_ERROR"` 显式守卫 → 错误文本零落库（E2-03/04 真实 bug：此前错误文本经 persist_agent_reply 兜底入库）+ message_id=None 初始化（返回处无条件读，防 NameError 500）+ notify error_type 优先 rv 透传
+  4. **chat_queue 降级分离**：中性占位符 [系统繁忙，请重试] 落库（错误细节不进 DB）+ 友好文案投递 + **notify 与 persist 解耦**（persist 成败均推）；chat_error 保留异常对象（str() 化后 type() 判定恒 'str'——is_litellm_error_type 失效）；timeout 路径 chat_error="timeout" 字符串 → isinstance BaseException 守卫 False → 中性占位符 + 不 notify
+  5. **notify_llm_error_sync → SSE llm_error 事件 → main.js 分发（chatWindow 存在性守卫）→ chat.html ⚠️ system 提示**（不落 DB 刷新消失；_main_loop None 早退 + RuntimeError 守卫，照抄 notify_brain_region_sync）
+- **核销**：E2 归属 13 条——E2-02 保留（错误不进 LLM 上下文）/ E2-03/04 改修（三入口 skip persist）/ E2-05 修（降级友好投递）；接受项 E2-01/06-13 逐条理由（详设 §5：弹窗不做/定时任务入 DB/触发矩阵等）。
+- **质量链**：详设 v1.1→v1.15 十四轮双审（R13+R14 连续两轮零 bug）+ subagent-driven 实施（Task 1-6 每 Task spec+quality 双审）；**关键教训：测试 patch 目标必须消费方命名空间**（compat 模块级绑定——patch 源模块无效直写真实 DB，15 条幽灵 hello 消息污染 messages.db 事故 + 备份清理恢复；E2 Task2 起测试全部 patch 消费方）。
+- **验证（Task 6 收尾）**：回归 10 文件 134 passed（规格列 11——tests/test_tool_registry.py 顶层不存在，实为 tests/test_p0/test_tool_registry.py）+ 2 个 pre-existing mock 形状修复：① test_chat_sse_persist 补 `resp.stream_error = False`（aa38d208 引入 stream_error 检查后 getattr 命中 truthy Mock 误走 LLM_ERROR）② test_llm_error_handling FakeClient 补 `backend = MagicMock()`（53cbc6f9 stop 特性加 `client.backend.stop_check` 后即失败，2026-08-10 豁免清单项）——**pre-existing 集合归零**；新增 _chat_lock 超时路径测试（chat_error="timeout" 字符串 → 中性占位符 + 不 notify，isinstance 守卫分支锁定）；~/.niu/messages.db 523→523 零新增。
+
 ### 2026-08-14
 
 #### 修复：脑区 assign 每次启动全量重注入抵消图边衰减（遗忘曲线失效）——assign 删除 + update_default_region_sizes 提取 + decay 从 detection 解耦

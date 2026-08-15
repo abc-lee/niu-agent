@@ -219,6 +219,11 @@ def test_plain_text_return_value_structure():
     resp.context_overflow = False
     resp.usage = None
     resp.finish_reason = "stop"
+    # E2：agent_loop 行 884 检测 `response.stream_error`——Mock 未显式赋值时属性值
+    # 为 truthy Mock 对象，getattr 命中走 LLM_ERROR 分支（aa38d208 2026-08-06 引入
+    # stream_error 检查后此测试即失败，与 E2 无关的 pre-existing）。显式设 False
+    # 让纯文本回复走正常 CURRENT_TASK_DONE 路径。
+    resp.stream_error = False
 
     client = Mock()
     client.last_tools = ""
