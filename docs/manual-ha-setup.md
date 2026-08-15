@@ -415,6 +415,11 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 2. HA 仅在条件满足时推送 trigger 事件
 3. Agent 收到事件后执行后续动作
 
+**推送通道（与定时任务一致，2026-08-15 起）**：
+- 订阅触发事件（程序消息）写入 Message.DB 唤醒主 Agent——**不直接推 IM**；Chat 页面由 DB 变更 SSE 刷新显示（前端逻辑，同定时提醒）
+- ha-watcher 与定时任务同走 chat_queue 后台触发分支（`else` 分支置 IM 标志为真——`set_im_force(True)`）
+- 主 Agent 收到事件后的话（如"湿度已超过 60%了"）经 `should_push_im` 闸门投递 IM（chat_queue 特判 `send_sync` + 流式卡片）
+
 ### 5.2 三种触发器类型
 
 **状态触发器（精确 from→to 过滤）：**
