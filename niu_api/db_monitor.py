@@ -154,7 +154,7 @@ async def _drain_main_agent_request_queue() -> None:
         logger.error(f"db_monitor 链路 A 推 SSE 异常，消息留队列：{e}")
 
 
-def _remind_pending_asks(now: float | None = None) -> None:
+def _remind_pending_asks(now: float | None = None, ask_queue_empty: bool | None = None) -> None:
     """链路三：等待状态机——主 Agent 闲置时提醒其回复等待中的子 Agent 提问。
 
     用户要求（2026-08-15 拍板）：子 Agent 一旦有问题问主 Agent（@niu-agent）→
@@ -164,8 +164,10 @@ def _remind_pending_asks(now: float | None = None) -> None:
     1. _chat_lock.locked() → 主 Agent 忙（正在跑 LLM 轮），跳过
     2. PendingAskRegistry.waiting_unique_names() 空 → 无等待子 Agent，跳过
        （非空时顺带清理 _last_remind 中已不在等待的残留——future 被 set_answer/超时/终止移除）
-    3. MainAgentRequestQueue 非空 → ask 未投递仍留队列（drain 先于 remind 时序保证），
-       跳过——主 Agent 还没看到问题，催答无意义
+    3. ask_queue_empty 快照非空 → ask 在迭代开始前未投递（P2：快照由 run_db_monitor
+       在 drain **前**捕获），跳过——主 Agent 还没看到问题，催答无意义。防 drain 同迭代
+       投递 ask 后队列被清空、守卫看到空队列而提前提醒（ask 刚交前端还在 SSE→session
+       延迟窗口）。快照为空后仍复查实时队列（防迭代中途新 push 漏网）
 
     对每个 waiting 子 Agent（节流：每子 Agent 30s 一次，_last_remind 记录）推：
     【子Agent等待提醒】子 Agent {unique_name} 正在等待你的回答，请回复 @{unique_name} 你的回答
@@ -174,6 +176,8 @@ def _remind_pending_asks(now: float | None = None) -> None:
     future 解除 → waiting 不含 → 提醒自动停止（闭环）。
 
     now 参数可注入（测试确定性——不依赖真实时钟）；None 时取 time.time()。
+    ask_queue_empty 参数为 run_db_monitor 迭代开始（drain 前）的队列空状态快照；
+    None（直接调用）时回退实时 is_empty() 检查。
     """
     global _last_remind
     if now is None:
@@ -193,7 +197,12 @@ def _remind_pending_asks(now: float | None = None) -> None:
         _last_remind.clear()
         return
 
-    # 队列非空（ask 未投递仍留队列）→ 跳过（drain 先于 remind 时序保证）
+    # P2 队列守卫：ask 未投递（迭代开始快照队列非空）→ 跳过——主 Agent 还没看到问题，
+    # 催答无意义。快照由 run_db_monitor 在 drain **前**捕获（防 drain 同迭代投递 ask 后
+    # 队列被清空、守卫误判已投递而提前提醒）；快照为 None（直接调用）时回退实时检查。
+    # 快照空后仍复查实时队列（防迭代中途新 push 漏网——双保险）。
+    if ask_queue_empty is not None and not ask_queue_empty:
+        return
     if not get_main_agent_request_queue().is_empty():
         return
 
@@ -206,12 +215,20 @@ def _remind_pending_asks(now: float | None = None) -> None:
     for name in waiting:
         if now - _last_remind.get(name, 0.0) < _REMIND_INTERVAL:
             continue  # 30s 节流——该子 Agent 刚提醒过
-        _last_remind[name] = now
         content = f"【子Agent等待提醒】子 Agent {name} 正在等待你的回答，请回复 @{name} 你的回答"
         try:
-            notify_new_message_sync("", "subagent_msg", content, source="subagent")
+            ok = notify_new_message_sync("", "subagent_msg", content, source="subagent")
         except Exception as e:
+            # 推送异常——不记节流（与链路 A C1 惯例：失败不占槽位，下轮重试）
             logger.error(f"db_monitor 等待提醒推送异常：{e}")
+            continue
+        if not ok:
+            # 推送失败（主 loop 不可用/已关闭/无订阅者）——不记节流，下轮重试
+            # （与链路 A C1 惯例一致——失败不占 30s 槽位，且失败可见）
+            logger.warning(f"db_monitor 等待提醒推送失败（loop 不可用或无订阅者），子 Agent {name} 下轮重试")
+            continue
+        # P3-1：节流记录移到 notify 成功之后——失败/异常不占 30s 槽位
+        _last_remind[name] = now
 
 
 async def _poll_messages() -> None:
@@ -264,17 +281,26 @@ async def run_db_monitor(interval: float = 0.2) -> None:
     logger.info("db_monitor 启动")
     # 初始化基线
     await _init_routed_baseline()
+    # _last_remind_sweep 在循环内赋值（sweep 时间戳）——必须声明 global，
+    # 否则成为函数局部变量、首轮读取即 UnboundLocalError（T4 链路三从未生效）
+    global _last_remind_sweep
 
     while True:
         try:
+            # P2：迭代开始（drain **前**）捕获队列空状态快照——_remind_pending_asks 队列守卫
+            # 用它判断"ask 是否在迭代开始前已投递"。防 drain 同迭代投递 ask 后队列被清空、
+            # 守卫看到空队列而提前提醒（ask 刚交前端还在 SSE→session 延迟窗口）。
+            from agent.main_agent_request_queue import get_main_agent_request_queue
+            ask_queue_empty = get_main_agent_request_queue().is_empty()
+
             await _poll_messages()
             await _drain_main_agent_request_queue()
             # 链路三：等待状态机——每 30s 扫一次（200ms 主循环内按时间判断）
-            # drain 先于 remind——ask 未投递（队列非空）时提醒内部跳过
+            # drain 先于 remind——ask 未投递（迭代开始快照非空）时提醒内部跳过
             now = time.time()
             if now - _last_remind_sweep >= _REMIND_INTERVAL:
                 _last_remind_sweep = now
-                _remind_pending_asks(now=now)
+                _remind_pending_asks(now=now, ask_queue_empty=ask_queue_empty)
             await asyncio.sleep(interval)
             # 每 100 条心跳日志
             if _routed_count > 0 and _routed_count % 100 == 0:
