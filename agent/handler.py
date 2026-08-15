@@ -24,6 +24,9 @@ from .generic.agent_loop import BaseHandler, StepOutcome, StreamEvent, try_call_
 # 导入经验总结器
 # ExperienceSummarizer disabled
 
+# E1 统一异常兜底（2026-08-15）：错误文本截断上限（防上下文爆炸——总体方案风险 6）
+_TOOL_ERROR_MAX = 500
+
 
 def format_error(e: Exception) -> str:
     """格式化错误信息"""
@@ -1383,7 +1386,56 @@ class NiuHandler(BaseHandler):
     }
 
     def dispatch(self, tool_name: str, args, response, index=0):
-        """分发工具调用（支持 MCP 工具）- 必须是生成器"""
+        """分发工具调用（支持 MCP 工具）- 必须是生成器
+
+        E1 统一异常兜底（2026-08-15）：整体包裹——do_* 参数畸形 / disk_engine.execute
+        裸调用 / chat-with 异步分支 / 回调穿透抛出的 Exception 转 TOOL_ERROR error dict
+        （进 StepOutcome.data → tool 消息 → LLM 可见可自纠），工具循环不死亡、会话不中止。
+        BaseException（KeyboardInterrupt/SystemExit/CancelledError）保留穿透（停止语义兼容）。
+        """
+        try:
+            return (yield from self._dispatch_impl(tool_name, args, response, index))
+        except Exception as e:
+            # 错误文本构造——format_error 内层 try/except 兜底坏 __str__（防二次抛异常逃逸 except 块）
+            try:
+                err_detail = format_error(e)  # f"{type(e).__name__}: {e} ({fname}:{f.lineno})"
+            except Exception:
+                err_detail = f"{type(e).__name__}: <unprintable>"
+            err_msg = f"Tool {tool_name} failed: {err_detail}"
+            # 截断保尾：前 _TOOL_ERROR_MAX-103(=len('...')+尾100) + '...' + 尾 100 = 总 ≤500，
+            # 保留 (fname:lineno) 位置信息（供区分 harness 伪装与真实工具错误）
+            if len(err_msg) > _TOOL_ERROR_MAX:
+                err_msg = err_msg[:_TOOL_ERROR_MAX - 103] + "..." + err_msg[-100:]
+
+            # 错误路径镜像 tool_after_callback 职责（复制 L520-566 段结构）：
+            # ① 重复调用检测——失败工具同参重试时重复检测警告仍触发（防 LLM 自旋）
+            try:
+                self._track_tool_call_for_repeat_detection(tool_name, args)
+            except Exception:
+                pass
+            # ② 工具状态 end 推送——失败工具不滞留前端状态（status 只用 'start'/'end'）
+            try:
+                short_name = tool_name.split('/')[-1]
+                if getattr(self, "_is_subagent", False):
+                    unique_name = getattr(self, "_subagent_unique_name", None)
+                    if unique_name:
+                        _push_subagent_event(unique_name, 'tool_status',
+                                             {'tool_name': short_name, 'status': 'end', 'summary': 'tool error'})
+                else:
+                    from niu_api.chat import notify_tool_status_sync
+                    notify_tool_status_sync(short_name, 'end')
+            except Exception:
+                pass
+
+            # system 事件与 msg 均复用 err_detail（已兜底）——不再直接调 str(e)
+            yield StreamEvent("system", f"[Tool Error] {tool_name}: {err_detail[:_TOOL_ERROR_MAX]}\n")
+            return StepOutcome(
+                {"status": "error", "error_code": "TOOL_ERROR", "msg": err_msg},
+                next_prompt="",
+            )
+
+    def _dispatch_impl(self, tool_name: str, args, response, index=0):
+        """dispatch 原始函数体（被外层统一异常包裹兜底）。"""
 
         # 统一路径参数展开（~/ → 实际 home 目录）
         expand_path_args(args)
