@@ -21,7 +21,7 @@ _FORMAT_ERROR_PROMPT = (
     "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
     f"1. 询问主 Agent：把完整上下文写在 `{_AT_NIU_PREFIX}` 前后，用 `{_AT_NIU_PREFIX}` 标注提问（如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`），末尾加「收到请回复」——主 Agent 会看到整段\n"
     "2. 询问用户：把完整上下文写在 `@user` 前，用 `@user` 标注提问（如 `@user 你需要哪个文件？`）——用户会看到整段\n"
-    "3. 结束会话：把汇报内容写在 `@end` 前（如 `@end 任务已完成，结果：...`）——主 Agent 会收到完整汇报\n"
+    "3. 结束会话：把汇报内容写在 `@end` 前（如 `任务已完成，结果：... @end`）——主 Agent 会收到完整汇报\n"
     "禁止输出不带 @ 前缀的纯 content。请重新输出。"
 )
 
@@ -78,9 +78,12 @@ def _compute_exit_content(stripped: str, at_end_idx: int, content: str) -> str:
     T1（2026-08-15）：@end 边界修复——原实现 `stripped[at_end_idx + 4:].lstrip()`
     只取 @end 后内容，@end 在 content 中间时前半主体被丢弃。改为前 + 后整段保留。
 
-    - @end 在末尾 → 返回 @end 前完整内容（与旧回退效果一致——无回归）
-    - @end 在中间 → 前 + 后拼接（标记剥掉——终止控制符不传给主 Agent）
-    - 拼接结果为空（仅输出 "@end" 的合法形态）→ 兜底返回原始 content（与历史行为一致）
+    - @end 在末尾 → 返回 @end 前完整内容（尾部空白归一——无尾随空格）
+    - @end 在中间 → 前 + 后拼接（标记剥掉 + 段间空白归一为单空格）
+    - 拼接结果为空或纯空白（"@end" / "@end\n" 形态）→ 兜底返回原始 content（与历史行为一致）
+
+    P3（2026-08-15）：拼接两段做 rstrip/lstrip 归一——`f"{before.rstrip()} {after.lstrip()}".strip()`
+    语义：双空格/尾随空格/前导空格统一为单空格；纯空白结果（如 "@end\n" → "\n"）不再绕过空值兜底。
 
     Args:
         stripped: 已 lstrip 的 content
@@ -90,7 +93,9 @@ def _compute_exit_content(stripped: str, at_end_idx: int, content: str) -> str:
     Returns:
         退出内容字符串
     """
-    exit_content = stripped[:at_end_idx] + stripped[at_end_idx + 4:]
+    before = stripped[:at_end_idx].rstrip()
+    after = stripped[at_end_idx + 4:].lstrip()
+    exit_content = f"{before} {after}".strip()
     if not exit_content:
         return content
     return exit_content
