@@ -128,6 +128,141 @@ def _sanitize_error_msg(msg: str) -> str:
     return msg
 
 
+# === E2 LLM 错误友好文案（纯函数——三层识别通道 + 原文保底，任何输入返回非空字符串、绝不抛异常） ===
+
+# 错误原文截断上限（复用 E1 _TOOL_ERROR_MAX 模式——防超长错误刷屏）
+_LLM_ERROR_MAX = 500
+# 截断时尾部保留长度——保尾（类型/关键信息常在尾部）
+_LLM_ERROR_TAIL = 100
+
+# 标准 LLM 错误 → 中文友好文案（通道 1 翻译）。映射依赖显式 error_type ①——
+# LiteLLMUnknownProvider 的 str() 含基类名 BadRequestError，子串②会误映射，故只经显式类型命中。
+# 其余类型走识别通道 2/3。
+# 注：InvalidRequestError 为 litellm 1.88.1 DEPRECATED 死类（全包零 raise 点）——不收录；
+# APIError/InternalServerError 有意不在映射表——500/未映射码经 exception_type() 归入 APIError
+# （兜底类）→ 通道 2 原文展示（用户看到 500 英文原文属预期行为，非翻译缺失）。
+_LLM_ERROR_FRIENDLY: dict[str, str] = {
+    "RateLimitError": "模型服务限流（429），请稍后重试",
+    "ServiceUnavailableError": "模型服务暂不可用（503），请稍后重试",
+    "AuthenticationError": "模型认证失败（401），请检查 API Key 配置",
+    "NotFoundError": "模型或服务不存在（404），请检查模型配置",
+    "BadRequestError": "模型请求被拒绝（400），请检查请求参数",
+    "LiteLLMUnknownProvider": "模型服务商配置错误，请检查模型名/服务商设置",
+    "APIConnectionError": "无法连接模型服务，请检查网络",
+    "Timeout": "模型响应超时，请稍后重试",
+    "BudgetExceededError": "模型配额已用完，请等待配额恢复或更换模型",
+    "MidStreamFallbackError": "模型流式响应中断，请稍后重试",
+}
+
+
+def _truncate_error_text(text: str) -> str:
+    """原文截断保尾 ≤500：前 _LLM_ERROR_MAX-(len('...')+_LLM_ERROR_TAIL) + '...' + 尾 _LLM_ERROR_TAIL。"""
+    if len(text) > _LLM_ERROR_MAX:
+        return text[: _LLM_ERROR_MAX - (len("...") + _LLM_ERROR_TAIL)] + "..." + text[-_LLM_ERROR_TAIL:]
+    return text
+
+
+def _extract_error_type_from_text(text: str) -> str | None:
+    """从错误文本提取类型名（format 内部二级提取 ②+③，与 extract_error_type 同源）。
+
+    ② 映射表键名子串匹配——真实 litellm 异常 str() 带模块前缀 "litellm.RateLimitError: ..."，
+       锚定正则跨不了 '.'，须子串匹配；优先匹配冒号前类型段，冒号后消息段仅兜底——
+       降低长消息内嵌其他键名的跨错误误映射；亦覆盖 "Timeout" 这类无 Error 后缀键。
+    ③ 通用正则 r'([A-Za-z]+Error)'（去 ^ 锚定）兜底——提取不到返回 None。
+    """
+    if not text:
+        return None
+    # ② 映射表键名子串匹配：冒号前类型段优先
+    prefix = text.split(":", 1)[0]
+    for key in _LLM_ERROR_FRIENDLY:
+        if key in prefix:
+            return key
+    # 冒号后消息段兜底
+    for key in _LLM_ERROR_FRIENDLY:
+        if key in text:
+            return key
+    # ③ 通用正则兜底
+    m = re.search(r'([A-Za-z]+Error)', text)
+    if m:
+        return m.group(1)
+    return None
+
+
+def extract_error_type(error_msg) -> str | None:
+    """从错误消息提取 LLM 错误类型名（独立导出，与 format_llm_error_for_user 内部二级提取同源）。
+
+    notify 站点统一调用，防实施者自写不一致。任何输入不抛异常（str 强转失败返回 None）。
+    """
+    try:
+        raw = str(error_msg or '')
+    except Exception:
+        return None
+    return _extract_error_type_from_text(_sanitize_error_msg(raw))
+
+
+def format_llm_error_for_user(error_msg: str, error_type: str | None = None) -> str:
+    """把 LLM 错误转用户友好文案。三层识别通道，任何输入都返回非空字符串（绝不抛异常）。
+
+    处理顺序：先 str(error_msg or '') 强转（坏 __str__ → <unprintable> 内层 try/except 兜底）
+    → 再过 _sanitize_error_msg 脱敏（key=/api_key=/Bearer 等敏感字段——用户可见错误文本
+    必须脱敏，LLM_ERROR 路径的 error_msg 虽已脱敏，幂等无害）→ 提取类型 → 生成文案。
+
+    error_type 提取顺序（三级）：
+      ① 显式 error_type（except 子句有异常对象处直接传 type(e).__name__；LLM_ERROR 路径
+         透传 MockResponse.error_type_name——无模块前缀，命中 BudgetExceededError 等
+         str() 无类型信息特例）
+      ② 映射表键名子串匹配（见 _extract_error_type_from_text）
+      ③ 通用正则 r'([A-Za-z]+Error)'（去 ^ 锚定）兜底——提取不到返回 None。
+
+    三层通道：
+      通道 1（标准错误）：error_type 在 _LLM_ERROR_FRIENDLY 映射表命中 → 中文翻译文案。
+      通道 2（非标准但可识别类型）：error_type 不在映射表 → 类型名 + 错误原文
+        （原文为空时省略冒号——无悬空冒号）。
+      通道 3（原文保底）：error_type 为 None（什么都提取不到）→ 裸原文展示（无前缀）；
+        空/None 输入 → "模型调用失败"（保底不变式——error_type 非 None 时仍按通道 1/2 处理）。
+    原文一律截断保尾 ≤500（复用 E1 _TOOL_ERROR_MAX 模式）。
+    """
+    # 1. str 强转（坏 __str__ → 内层 try/except 兜底 <unprintable>）
+    try:
+        raw = str(error_msg or '')
+    except Exception:
+        raw = "<unprintable>"
+    # 2. 脱敏（幂等）
+    sanitized = _sanitize_error_msg(raw)
+    # 3. 三级类型提取（①显式参数优先；None 时走 ②③）
+    if error_type is None:
+        error_type = _extract_error_type_from_text(sanitized)
+    # 4. 原文截断保尾 ≤500
+    truncated = _truncate_error_text(sanitized)
+    # 5. 三层通道文案
+    if error_type is not None:
+        friendly = _LLM_ERROR_FRIENDLY.get(error_type)
+        if friendly is not None:
+            # 通道 1：标准错误翻译
+            return friendly
+        # 通道 2：非标准类型 → 类型名 + 原文（原文为空时省略冒号）
+        if truncated:
+            return f"模型调用失败（{error_type}）：{truncated}"
+        return f"模型调用失败（{error_type}）"
+    # 通道 3：裸原文保底（无前缀）；空/None 输入 → "模型调用失败"
+    if truncated:
+        return truncated
+    return "模型调用失败"
+
+
+def is_litellm_error_type(type_name: str) -> bool:
+    """判断异常类型名是否为 litellm 异常类。
+
+    hasattr(litellm, type_name) or hasattr(litellm.exceptions, type_name) 双模块动态判定——
+    litellm 顶层导出含 RateLimitError/BudgetExceededError/LiteLLMUnknownProvider 等；
+    litellm.exceptions 子模块含全部异常类（MidStreamFallbackError 等仅子模块有）——
+    天然覆盖静态名单漏类 + 未来新增类；ValueError/KeyError 等内部异常因非 litellm 属性自动排除。
+    """
+    if not isinstance(type_name, str) or not type_name:
+        return False
+    return hasattr(litellm, type_name) or hasattr(litellm.exceptions, type_name)
+
+
 # 敏感字段名匹配：api_key / apiKey / apikey / authorization / secret / token（大小写不敏感）。
 # token 需整词匹配（前后为非字母数字），避免误伤 prompt_tokens / total_tokens 等
 # token 计数字段和 tokenizer 之类的普通词。
