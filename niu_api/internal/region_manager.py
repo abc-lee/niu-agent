@@ -2028,7 +2028,13 @@ def is_default_region(region_name: str) -> bool:
     """
     defaults = get_default_regions_config()
     for d in defaults:
-        if region_name == f"{d['label']}{REGION_SUFFIX}":
+        # 缺键防御：配置缺 label（或非字符串）时跳过，避免 KeyError 中断
+        # consolidate 链路（R15b 新调用面——R14 时 update_default_region_sizes
+        # 同类直接索引；此处只防 is_default_region 本函数）
+        label = d.get("label")
+        if not isinstance(label, str):
+            continue
+        if region_name == f"{label}{REGION_SUFFIX}":
             return True
     return False
 

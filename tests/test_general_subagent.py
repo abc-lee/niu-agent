@@ -465,3 +465,65 @@ def test_build_subagent_system_segments_no_duplicate_injection(tmp_path, monkeyp
     static_system, _ = subagent.build_subagent_system_segments("my-agent")
     # 守则只出现一次（marker 计数 == 1）
     assert static_system.count(subagent._SUBAGENT_ASK_GUIDE_MARKER) == 1
+
+
+# ============== R15a：dream-evolver 脑区预注入失败/空列表 warning 日志（P3 补测） ==============
+# 注意：agent/subagent.py 用 loguru（不是标准 logging），pytest caplog 捕获不到，
+# 必须用 loguru sink 捕获（同 test_subagent_tool_filter.py 模式）。
+
+
+def test_build_subagent_system_segments_warns_when_get_brain_regions_fails(monkeypatch):
+    """R15a：get_brain_regions 抛异常时产生 warning 日志（不静默）且 fallback 不注入脑区列表"""
+    from loguru import logger
+
+    from agent import subagent
+    from agent.subagent import build_subagent_system_segments
+
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "你是 dream-evolver。")
+    monkeypatch.setattr(subagent, "_build_user_info_section", lambda: "")
+
+    def _boom():
+        raise RuntimeError("graph unavailable")
+
+    # 函数体内 from niu_api.internal.lightrag_manager import get_brain_regions
+    # → patch 源模块属性（函数级 import 每次取源模块）
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_brain_regions", _boom)
+
+    warnings = []
+    sink_id = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
+    try:
+        _, dynamic_system = build_subagent_system_segments("dream-evolver")
+    finally:
+        logger.remove(sink_id)
+
+    assert any("Failed to get brain regions" in w for w in warnings), (
+        f"应有 warning 记录失败原因，实际: {warnings}"
+    )
+    # fallback 行为：_brain_region_section 保持空——不注入动态脑区列表
+    assert "当前脑区列表" not in dynamic_system
+
+
+def test_build_subagent_system_segments_warns_when_get_brain_regions_empty(monkeypatch):
+    """R15a：get_brain_regions 返回空列表时产生 warning 日志（不静默）且 fallback 不注入脑区列表"""
+    from loguru import logger
+
+    from agent import subagent
+    from agent.subagent import build_subagent_system_segments
+
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "你是 dream-evolver。")
+    monkeypatch.setattr(subagent, "_build_user_info_section", lambda: "")
+
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_brain_regions", lambda: [])
+
+    warnings = []
+    sink_id = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
+    try:
+        _, dynamic_system = build_subagent_system_segments("dream-evolver")
+    finally:
+        logger.remove(sink_id)
+
+    assert any("returned empty list" in w for w in warnings), (
+        f"应有 warning 记录空列表，实际: {warnings}"
+    )
+    # fallback 行为：_brain_region_section 保持空——不注入动态脑区列表
+    assert "当前脑区列表" not in dynamic_system

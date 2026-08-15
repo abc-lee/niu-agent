@@ -2076,6 +2076,11 @@ class TestDissolveShrunkRegionsBatchRead:
             return_value=False,
         ), patch.object(
             manager, "_find_most_similar_neighbor", return_value=None,
+        ), patch.object(
+            # 孤岛保护 mock 放行（同 TestDissolveShrunkRegions._make_manager island=False
+            # 模式）——fake 图只有脑区节点无成员节点，不 mock 则 _has_isolated_member
+            # 保守返回 True 永久取消 dissolve，删除路径不可达
+            manager, "_has_isolated_member", return_value=False,
         ):
             dissolved = manager.dissolve_shrunk_regions(
                 shrink_threshold=100, shrink_rounds=3
@@ -2108,7 +2113,8 @@ class TestDissolveShrunkRegionsBatchRead:
         # 重新设计测试见下一个测试函数。
 
         # 此处先断言删除被触发（基础行为）
-        assert "Python脑区" in dissolved or len(dissolved) >= 0  # 至少不报错
+        # P3 补强：原恒真式（len(dissolved) >= 0）改为断言解散触发且目标脑区被删除
+        assert dissolved and "Python脑区" in dissolved  # 解散触发且目标脑区被删除
 
     @pytest.mark.asyncio
     async def test_reassign_uses_batch_members_not_singular_empty(self):
