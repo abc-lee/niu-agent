@@ -167,7 +167,7 @@ niu [选项]
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/chat` | POST | 主对话接口（SSE 流式） |
-| `/chat/sync` | POST | 同步对话（定时任务用） |
+| `/chat/sync` | POST | 同步对话端点（遗留——无生产调用方，仅测试脚本使用；Electron 入口语义：_chat_lock 内清 IM 通道标志——set_im_channel("") + set_im_force(False)，与 /chat 一致） |
 | `/chat/session/{session_id}` | DELETE | 删除指定会话 |
 | `/api/events/stream` | GET | SSE 事件流（新消息推送） |
 | `/api/context/messages` | GET | 获取上下文消息（含分页） |
