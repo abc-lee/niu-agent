@@ -102,6 +102,11 @@ def get_brain_regions(
 
         # Get activation states from ActivationManager
         activation_mgr = _get_activation_mgr()
+        # Key semantics = brain region NAME (name-key), NOT region_id as an
+        # independent id. BrainRegionState.region_id holds the unique region name
+        # (see region_activation.py field doc; initialize_from_regions sets
+        # region_id=region.name). Lookup below uses region.name — keep BOTH sides
+        # on the same name-key semantic to prevent region_id semantic drift.
         activation_map: dict[str, BrainRegionState] = {}
         if activation_mgr is not None:
             for state in activation_mgr.get_region_map():
