@@ -68,8 +68,8 @@ def test_build_static_brain_region_prompt_contains_key_concepts():
     # Must contain these key terms
     assert "niu" in result
     assert "包含" in result
-    # Static prompt uses "知识体系脑区" and "人际关系脑区" as examples
-    assert "知识体系脑区" in result
+    # Static prompt uses "文档库脑区" and "人际关系脑区" as examples
+    assert "文档库脑区" in result
     assert "人际关系脑区" in result
     assert "脑区" in result
 
