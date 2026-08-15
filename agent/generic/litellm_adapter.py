@@ -213,14 +213,22 @@ def format_llm_error_for_user(error_msg: str, error_type: str | None = None) -> 
          str() 无类型信息特例）
       ② 映射表键名子串匹配（见 _extract_error_type_from_text）
       ③ 通用正则 r'([A-Za-z]+Error)'（去 ^ 锚定）兜底——提取不到返回 None。
+    error_type 按真值判定：空串 "" 与 None 统一（都触发文本提取、都走通道 3 保底）——
+    消除"模型调用失败（）：…"悬空空名（空 error_type 若走通道 2 会渲染空括号）。
 
     三层通道：
       通道 1（标准错误）：error_type 在 _LLM_ERROR_FRIENDLY 映射表命中 → 中文翻译文案。
       通道 2（非标准但可识别类型）：error_type 不在映射表 → 类型名 + 错误原文
         （原文为空时省略冒号——无悬空冒号）。
-      通道 3（原文保底）：error_type 为 None（什么都提取不到）→ 裸原文展示（无前缀）；
-        空/None 输入 → "模型调用失败"（保底不变式——error_type 非 None 时仍按通道 1/2 处理）。
+      通道 3（原文保底）：error_type 为空/None（未显式给定且提取不到）→ 裸原文展示（无前缀）；
+        空/None 输入 → "模型调用失败"（保底不变式——error_type 为空时统一走通道 3，
+        非空时按通道 1/2）。
     原文一律截断保尾 ≤500（复用 E1 _TOOL_ERROR_MAX 模式）。
+
+    幂等性（full_reply 不重复 format 的理由）：通道 3 输出再 format 幂等（裸原文原样返回）；
+    通道 2 输出再 format 会双包——"模型调用失败（X）："中的 X 会被③正则提取 → 二次包装。
+    源头友好化后（full_reply）已是友好文案，任何再 format 都有双包风险（通道 2），
+    调用方不得对 full_reply 重复 format。
     """
     # 1. str 强转（坏 __str__ → 内层 try/except 兜底 <unprintable>）
     try:
@@ -229,13 +237,13 @@ def format_llm_error_for_user(error_msg: str, error_type: str | None = None) -> 
         raw = "<unprintable>"
     # 2. 脱敏（幂等）
     sanitized = _sanitize_error_msg(raw)
-    # 3. 三级类型提取（①显式参数优先；None 时走 ②③）
-    if error_type is None:
+    # 3. 三级类型提取（①显式参数优先；空/None 时走 ②③）
+    if not error_type:
         error_type = _extract_error_type_from_text(sanitized)
     # 4. 原文截断保尾 ≤500
     truncated = _truncate_error_text(sanitized)
-    # 5. 三层通道文案
-    if error_type is not None:
+    # 5. 三层通道文案（error_type 真值判定：空串与 None 统一走通道 3 保底）
+    if error_type:
         friendly = _LLM_ERROR_FRIENDLY.get(error_type)
         if friendly is not None:
             # 通道 1：标准错误翻译
@@ -253,14 +261,21 @@ def format_llm_error_for_user(error_msg: str, error_type: str | None = None) -> 
 def is_litellm_error_type(type_name: str) -> bool:
     """判断异常类型名是否为 litellm 异常类。
 
-    hasattr(litellm, type_name) or hasattr(litellm.exceptions, type_name) 双模块动态判定——
+    getattr(litellm, type_name) / getattr(litellm.exceptions, type_name) 双模块动态判定——
     litellm 顶层导出含 RateLimitError/BudgetExceededError/LiteLLMUnknownProvider 等；
     litellm.exceptions 子模块含全部异常类（MidStreamFallbackError 等仅子模块有）——
-    天然覆盖静态名单漏类 + 未来新增类；ValueError/KeyError 等内部异常因非 litellm 属性自动排除。
+    天然覆盖静态名单漏类 + 未来新增类。与纯 hasattr 的区别：取到属性后校验
+    isinstance(cls, type) and issubclass(cls, BaseException) 确认为异常类——
+    "exceptions"（子模块）/ "model_cost"（dict 数据）等非类属性 hasattr 也为 True，
+    不校验会误判；ValueError/KeyError 等内部异常因非 litellm 属性自动排除。
     """
     if not isinstance(type_name, str) or not type_name:
         return False
-    return hasattr(litellm, type_name) or hasattr(litellm.exceptions, type_name)
+    for mod in (litellm, litellm.exceptions):
+        cls = getattr(mod, type_name, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            return True
+    return False
 
 
 # 敏感字段名匹配：api_key / apiKey / apikey / authorization / secret / token（大小写不敏感）。
