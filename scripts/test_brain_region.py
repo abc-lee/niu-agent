@@ -618,24 +618,15 @@ def test_6_brain_region_prompt_injection(rag, call_async):
     # 获取 brain_region_prompt 生成的内容
     print("  [B] 获取 brain_region_prompt 注入内容...")
     try:
-        from niu_api.internal.brain_region_prompt import inject_brain_region_context, is_lightrag_extraction_request
+        from niu_api.internal.brain_region_prompt import (
+            build_dynamic_brain_region_prompt,
+            build_static_brain_region_prompt,
+        )
 
-        # 构造 LightRAG 提取请求格式的 messages（必须包含 "Knowledge Graph Specialist" 标记）
-        messages = [
-            {
-                "role": "system",
-                "content": "---Role---\nYou are a Knowledge Graph Specialist...",
-            },
-            {"role": "user", "content": "你好"},
-        ]
-        assert is_lightrag_extraction_request(messages), "messages 应被识别为 LightRAG 提取请求"
-
-        # 需要传入 adapter 参数
-        from niu_api.internal.lightrag_adapter import LightRAGAdapter
-
-        adapter = LightRAGAdapter()
-        augmented = inject_brain_region_context(messages, adapter)
-        injected_content = augmented[0]["content"] if augmented else ""
+        # 注入内容 = 静态脑区架构 + 动态脑区列表（lightrag_manager._llm_model_func 组合方式）
+        injected_content = (
+            build_static_brain_region_prompt() + "\n\n" + build_dynamic_brain_region_prompt()
+        )
 
         has_brain_info = "brain" in injected_content.lower() or "脑区" in injected_content
         print(f"  注入内容长度: {len(injected_content)}")
@@ -981,7 +972,6 @@ def test_10_region_manager_api(rag, call_async):
         "get_region_members",
         "cleanup_stale_regions",
         "dissolve_shrunk_regions",
-        "incremental_update",
         "_decay_structural_edges",
     ]
     found_count = 0

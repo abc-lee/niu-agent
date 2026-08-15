@@ -1,57 +1,6 @@
 """Tests for brain region prompt injection into LightRAG LLM requests."""
 from pathlib import Path
 
-from niu_api.internal.brain_region_prompt import is_lightrag_extraction_request
-
-
-def test_is_lightrag_extraction_request_with_specialist():
-    """System prompt containing 'Knowledge Graph Specialist' is detected."""
-    messages = [
-        {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
-        {"role": "user", "content": "Extract entities from this text..."},
-    ]
-    assert is_lightrag_extraction_request(messages) is True
-
-
-def test_is_lightrag_extraction_request_without_specialist():
-    """Normal chat messages are NOT detected as extraction requests."""
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello, how are you?"},
-    ]
-    assert is_lightrag_extraction_request(messages) is False
-
-
-def test_is_lightrag_extraction_request_empty_messages():
-    """Empty message list is not an extraction request."""
-    assert is_lightrag_extraction_request([]) is False
-
-
-def test_is_lightrag_extraction_request_no_system():
-    """Messages without system prompt are not extraction requests."""
-    messages = [
-        {"role": "user", "content": "Hello"},
-    ]
-    assert is_lightrag_extraction_request(messages) is False
-
-
-def test_is_lightrag_extraction_request_system_no_content():
-    """System message without 'content' key is not an extraction request."""
-    messages = [
-        {"role": "system"},
-        {"role": "user", "content": "Hello"},
-    ]
-    assert is_lightrag_extraction_request(messages) is False
-
-
-def test_is_lightrag_extraction_request_system_empty_content():
-    """System message with empty content is not an extraction request."""
-    messages = [
-        {"role": "system", "content": ""},
-        {"role": "user", "content": "Hello"},
-    ]
-    assert is_lightrag_extraction_request(messages) is False
-
 
 def test_build_static_brain_region_prompt_returns_string():
     """Static prompt is a non-empty string."""
@@ -140,69 +89,6 @@ def test_build_dynamic_brain_region_prompt_uses_local_mode():
 
     # Verify get_brain_regions was called (reads graph directly, no LLM)
     mock_get.assert_called_once()
-
-
-def test_inject_brain_region_context_adds_to_system_prompt():
-    """Injection appends brain region info to the system message."""
-    from niu_api.internal.brain_region_prompt import inject_brain_region_context
-    messages = [
-        {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
-        {"role": "user", "content": "Extract entities..."},
-    ]
-
-    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["测试脑区"]):
-        result = inject_brain_region_context(messages)
-
-    # System message should be modified
-    system_msg = next(m for m in result if m["role"] == "system")
-    assert "大脑区域架构" in system_msg["content"]
-    assert "测试脑区" in system_msg["content"]
-
-
-def test_inject_brain_region_context_preserves_other_messages():
-    """Non-system messages are not modified."""
-    from niu_api.internal.brain_region_prompt import inject_brain_region_context
-    messages = [
-        {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
-        {"role": "user", "content": "Extract entities..."},
-    ]
-
-    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
-        result = inject_brain_region_context(messages)
-
-    user_msg = next(m for m in result if m["role"] == "user")
-    assert user_msg["content"] == "Extract entities..."
-
-
-def test_inject_brain_region_context_non_extraction_request_unchanged():
-    """Non-extraction requests are not modified at all."""
-    from niu_api.internal.brain_region_prompt import inject_brain_region_context
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello"},
-    ]
-
-    result = inject_brain_region_context(messages)
-
-    # Same content, returned as a shallow copy
-    assert len(result) == len(messages)
-    assert all(m["role"] == r["role"] and m["content"] == r["content"] for m, r in zip(messages, result, strict=False))
-
-
-def test_inject_brain_region_context_returns_new_list():
-    """Injection returns a new list, does not mutate the original."""
-    from niu_api.internal.brain_region_prompt import inject_brain_region_context
-    messages = [
-        {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
-        {"role": "user", "content": "Extract entities..."},
-    ]
-
-    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
-        result = inject_brain_region_context(messages)
-
-    assert result is not messages
-    # Original system message should NOT contain brain region info
-    assert "大脑区域架构" not in messages[0]["content"]
 
 
 # ============== build_user_info_prompt Tests ==============

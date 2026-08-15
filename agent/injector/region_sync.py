@@ -35,7 +35,6 @@ REGION_CONFIG_DEFAULTS: dict[str, Any] = {
     "resolution": 1.0,
     "min_graph_size": 50,
     "min_community_size": 100,
-    "incremental_update": True,
     "co_activation_threshold": 0.9,
     "shrink_threshold": 100,  # 成员数 < 100 才判萎缩（用户要求）
     "shrink_rounds": 3,

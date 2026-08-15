@@ -79,20 +79,6 @@ _STATIC_BRAIN_REGION_PROMPT = """\
 - 修改已有实体时，保留原有描述，用 `<SEP>` 追加新内容，不要覆盖。照片实体的文件路径属性绝对不能修改。"""
 
 
-def is_lightrag_extraction_request(messages: list[dict]) -> bool:
-    """Detect whether a message list is a LightRAG extraction request.
-
-    LightRAG extraction requests always have a system prompt starting with
-    '---Role---\nYou are a Knowledge Graph Specialist...'.
-    """
-    for msg in messages:
-        if msg.get("role") == "system":
-            content = msg.get("content", "")
-            if BRAIN_REGION_MARKER in content:
-                return True
-    return False
-
-
 def _get_fallback_regions_text() -> str:
     from niu_api.internal.region_manager import REGION_SUFFIX, get_default_regions_config
     defaults = get_default_regions_config()
@@ -134,43 +120,6 @@ def build_static_brain_region_prompt() -> str:
     to follow when extracting entities and relationships for LightRAG.
     """
     return _STATIC_BRAIN_REGION_PROMPT
-
-
-def inject_brain_region_context(
-    messages: list[dict],
-) -> list[dict]:
-    """Inject brain region architecture info into LightRAG extraction requests.
-
-    If the messages are a LightRAG extraction request, appends brain region
-    context to the system prompt. Otherwise, returns messages unchanged.
-
-    Returns a NEW list — non-injection path returns a shallow copy.
-
-    Args:
-        messages: LiteLLM-format message list.
-
-    Returns:
-        New message list with brain region context injected (or original if
-        not an extraction request).
-    """
-    if not is_lightrag_extraction_request(messages):
-        return list(messages)
-
-    # Build injection content
-    static_part = build_static_brain_region_prompt()
-    dynamic_part = build_dynamic_brain_region_prompt()
-    injection = f"\n\n{static_part}\n\n{dynamic_part}"
-
-    # Create new list with modified system prompt
-    result = []
-    for msg in messages:
-        if msg.get("role") == "system" and BRAIN_REGION_MARKER in msg.get("content", ""):
-            new_msg = {**msg, "content": msg.get("content", "") + injection}
-            result.append(new_msg)
-        else:
-            result.append(msg)
-
-    return result
 
 
 def build_user_info_prompt() -> str:
