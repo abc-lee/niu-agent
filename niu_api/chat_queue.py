@@ -271,7 +271,7 @@ class ChatQueue:
                 except Exception as e:
                     logger.error(f"[ChatQueue] Failed to route reply to {first_req.channel}: {e}")
             elif first_req.channel != "electron" and not first_req.channel_id:
-                # 分支 2：无目标通道 ID（scheduler 主动推送等）——scheduler 特判（仅终结不投递），其他通道原样 push
+                # 分支 2：无目标通道 ID（scheduler 主动推送等）——scheduler 特判（投递回复内容），其他通道原样 push
                 try:
                     router = get_channel_router()
                     if first_req.channel == "scheduler":

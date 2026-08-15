@@ -302,7 +302,7 @@ def _scheduler_patches(mock_store):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_reply_finalizes_im_card(mock_runner, mock_store, monkeypatch):
+async def test_scheduler_reply_delivers_to_im(mock_runner, mock_store, monkeypatch):
     """scheduler 通道无 channel_id + 有 IM 继承（should_push_im True）：send_sync 投递回复内容
     （adapter _on_send state 分支用 reply 终结流式卡片），reply_future._im_finalized 置位"""
     from niu_api.chat_queue import ChatQueue
