@@ -6,8 +6,7 @@
 测试场景：
 1. 直接调用 LLM proxy（不经过 LightRAG）
 2. 模拟 LightRAG 实体提取流程
-3. 测试 inject_brain_region_context 的执行时间
-4. 测试 asyncio.to_thread 线程池状态
+3. 测试 asyncio.to_thread 线程池状态
 """
 
 import sys
@@ -18,42 +17,6 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-
-def test_1_inject_brain_region_context():
-    """测试 inject_brain_region_context 的执行时间"""
-    print("\n" + "=" * 60)
-    print("测试 1: inject_brain_region_context 执行时间")
-    print("=" * 60)
-
-    from niu_api.internal.brain_region_prompt import inject_brain_region_context, is_lightrag_extraction_request
-
-    # 模拟 LightRAG 实体提取请求
-    messages = [
-        {
-            "role": "system",
-            "content": "---Role---\nYou are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.\n\n---Instructions---"
-        },
-        {"role": "user", "content": "Extract entities from: 照片 20150919_102426：未命名人物_1合影"}
-    ]
-
-    # 检测是否是 LightRAG 提取请求
-    start = time.time()
-    is_extraction = is_lightrag_extraction_request(messages)
-    elapsed = time.time() - start
-    print(f"  is_lightrag_extraction_request: {is_extraction} ({elapsed:.3f}s)")
-
-    # 测试注入
-    start = time.time()
-    result = inject_brain_region_context(messages)
-    elapsed = time.time() - start
-    print(f"  inject_brain_region_context: {elapsed:.3f}s")
-
-    # 检查是否注入了脑区信息
-    injected = "大脑区域架构" in result[0].get("content", "")
-    print(f"  脑区信息已注入: {injected}")
-
-    return elapsed
 
 
 def test_2_get_brain_regions():
@@ -269,7 +232,6 @@ async def main():
     results = {}
 
     # 同步测试
-    results["inject_brain_region"] = test_1_inject_brain_region_context()
     results["get_brain_regions"] = test_2_get_brain_regions()
     results["get_lightrag"] = test_3_get_lightrag()
 

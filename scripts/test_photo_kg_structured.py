@@ -61,7 +61,7 @@ class APIServerManager:
     """管理 Niu API 服务器的启动和关闭。
 
     测试需要 LLM 代理（/llm/v1/chat/completions），
-    因为代理过程中会注入脑区提示词（inject_brain_region_context），
+    因为代理过程中会注入脑区提示词（brain_region_prompt 静态+动态提示词），
     不走代理就测不出真实效果。
     """
 

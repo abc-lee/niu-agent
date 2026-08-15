@@ -258,7 +258,6 @@ class TestRegionConfigDefaults:
             "algorithm",
             "resolution",
             "min_graph_size",
-            "incremental_update",
             "neighbor_unfreeze_depth",
             "decay_factor",
             "activation_boost",
