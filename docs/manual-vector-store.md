@@ -27,7 +27,7 @@ LightRAG 统一了知识图谱 + 语义检索，取代了旧的 vector-store + k
 CUSTOM_ENTITY_TYPES = [
     "person", "organization", "technology", "concept",
     "location", "event", "document", "photo", "video",
-    "note", "chat", "skill", "tool", "knowledge",
+    "note", "chat", "skill", "knowledge",
     "interactionhabit", "episodicevent", "brainregion", "other",
 ]
 ```
@@ -83,7 +83,6 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 | 类型 | 说明 | 创建来源 |
 |------|------|----------|
 | skill | Skills 文件 | injector/sync.py 同步 |
-| tool | MCP 工具描述 | injector/lightrag_sync.py 同步（当前已禁用，工具走 disk 模式发现） |
 | person | 人物 | photo-server 照片入库时创建 |
 | concept | 概念/知识实体 | 文档入库时 LightRAG 自动提取 |
 | photo | 照片摘要 | photo-server 照片入库时创建 |
@@ -124,7 +123,7 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 |------|------|
 | `lightrag_query` | 查询知识库，返回生成文本或原始上下文 |
 | `lightrag_query_data` | 查询知识库，返回结构化数据（实体 + 关系 + chunks）。支持 keywords 参数跳过 LLM 提取 |
-| `lightrag_search_entities` | 按实体类型搜索（skill, tool, knowledge, person, photo, concept 等） |
+| `lightrag_search_entities` | 按实体类型搜索（skill, knowledge, person, photo, concept 等） |
 | `lightrag_get_graph` | 获取子图（explore: BFS 遍历 / snapshot: 全图快照） |
 | `lightrag_timeline_query` | 时间线查询：向量匹配 -> 遍历时间链 -> 按时间戳排序 |
 

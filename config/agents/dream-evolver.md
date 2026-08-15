@@ -76,14 +76,14 @@ allowBaseTools:
 
 **你写入**：
 ```
-lightrag_insert_entity(name="FastAPI", entity_type="tool", description="Python Web框架，用户用于构建API服务")
+lightrag_insert_entity(name="FastAPI", entity_type="skill", description="Python Web框架，用户用于构建API服务")
 lightrag_insert_relation(src_id="知识体系脑区", tgt_id="FastAPI", relation="包含")
 ```
 
 **以后检索"Web框架"时**：
 ```
 lightrag_search_entities(query="Web框架", top_k=5)
-→ 返回：[Entity name="FastAPI" type="tool" description="Python Web框架，用户用于构建API服务"]
+→ 返回：[Entity name="FastAPI" type="skill" description="Python Web框架，用户用于构建API服务"]
 → 检索结果中展示 description，可知用户擅长 FastAPI，用于构建API服务
 
 lightrag_get_graph(entity_name="FastAPI", depth=1)
@@ -470,7 +470,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 图谱工具（上方速查表有简要说明，此处列出完整参数）：
 - `lightrag_insert_entity(name, entity_type, description, source_id, file_path)`
   - `name`：实体名称（必填，唯一标识）
-  - `entity_type`：实体类型（必填，小写：person/concept/project/tool/event/skill/location）
+  - `entity_type`：实体类型（必填，小写：person/concept/project/event/skill/location）
   - `description`：描述（非必填，默认空字符串，只写实体含义，≤ 80 字符）
   - `source_id`/`file_path`：非必填
 - `lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
@@ -482,7 +482,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_delete_entity(entity_name)` — 删除实体（慎用，仅用于纠错）
 - `lightrag_delete_relation(source_entity, target_entity, keywords)` — 删除关系（慎用，仅用于纠错）。`source_entity`/`target_entity` 定位两端实体。`keywords` 非必填，不指定则删除两实体间所有关系
 - `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议设为：纯名存在性检查用 top_k=20 + fields=["entity_name","entity_type"]（不占上下文），实体名+属性查询保持 top_k=5。`keywords` 为字符串数组，非必填（提供可加速返回）。`fields` 指定返回字段
-- `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/skill/tool/knowledge/photo/concept）
+- `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/skill/knowledge/photo/concept）
 - `lightrag_get_graph(action, entity_name, depth, limit, edge_types)` — 获取图谱子图。`action` 必填（"explore"/"snapshot"）。`limit` 用于 snapshot 模式限制节点数。`edge_types` 按关系类型过滤。depth 建议 1-2
 - `lightrag_timeline_query(query, start_entities, direction, max_depth, top_k, max_results)` — 时间线查询。`query` 非必填（可用 `start_entities` 替代）。`start_entities` 为字符串数组，直接指定起始实体。`top_k` 控制向量搜索返回实体数
 
