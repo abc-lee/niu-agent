@@ -3,12 +3,12 @@ from agent.at_message_parser import extract_at_messages, format_for_db, strip_at
 
 
 def test_extract_single_at_message():
-    """单条 @ 消息提取。"""
+    """单条 @ 消息提取（T3：content = 公共前言 + @ 后内容——主→子整段传递）。"""
     reply = "好的，我处理。\n@file-processor-a1b2 是的，用 OCR 处理"
     msgs = extract_at_messages(reply)
     assert len(msgs) == 1
     assert msgs[0]["target"] == "file-processor-a1b2"
-    assert msgs[0]["content"] == "是的，用 OCR 处理"
+    assert msgs[0]["content"] == "好的，我处理。\n是的，用 OCR 处理"
     assert msgs[0]["sender"] == "主Agent"
 
 

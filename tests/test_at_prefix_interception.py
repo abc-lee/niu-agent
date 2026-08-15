@@ -19,9 +19,10 @@ def test_ask_main_agent_impl_callable_directly(monkeypatch):
     sr_module.SubagentRegistry.get = mock.Mock(return_value=fake_instance)
 
     # mock push queue（get_main_agent_request_queue 在 main_agent_request_queue 模块）
+    # T2 兼容：push(content, type="ask")——side_effect 兼容 kwarg
     pushed = []
     fake_queue = mock.MagicMock()
-    fake_queue.push = mock.Mock(side_effect=lambda x: pushed.append(x))
+    fake_queue.push = mock.Mock(side_effect=lambda content, **kw: pushed.append(content))
     monkeypatch.setattr(maq_module, "get_main_agent_request_queue", mock.Mock(return_value=fake_queue))
 
     # mock future wait 立即返回
@@ -88,10 +89,10 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
         memory_context=mock.MagicMock(),  # 非 None（异步子 Agent）
     )
 
-    # 断言：_ask_main_agent_impl 被调用（只传 question + unique_name）
+    # 断言：_ask_main_agent_impl 被调用（T1：question = 完整 content——含 @niu-agent 标记）
     subagent._ask_main_agent_impl.assert_called_once()
     call_kwargs = subagent._ask_main_agent_impl.call_args
-    assert call_kwargs.kwargs["question"] == "我应该选择哪个选项？"
+    assert call_kwargs.kwargs["question"] == "@niu-agent 我应该选择哪个选项？"
     assert call_kwargs.kwargs["unique_name"] == "test-agent-abc1"
 
     # 断言：messages 被追加了 assistant content + user 回答（不是 tool 消息）
@@ -702,3 +703,58 @@ def test_at_end_priority_over_at_niu(monkeypatch):
     # 断言：走 @end 分支（EXIT），不走 @niu-agent 阻塞
     assert result == (agent_loop.EXIT, None)
     subagent._ask_main_agent_impl.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# T1 @end 边界修复：_compute_exit_content 纯函数（@end 前 + @end 后拼接，标记剥掉）
+# ---------------------------------------------------------------------------
+
+
+def test_compute_exit_content_at_end_at_end_of_content():
+    """@end 在末尾 → 完整前内容保留（标记剥掉——与旧回退效果一致，无回归）。"""
+    from agent.generic.agent_loop import _compute_exit_content
+
+    content = "任务完成，结果：成功 @end"
+    stripped = content.lstrip()
+    at_end_idx = _find_marker(stripped, "@end")
+    exit_content = _compute_exit_content(stripped, at_end_idx, content)
+    assert exit_content == "任务完成，结果：成功 "  # @end 标记剥掉，前内容完整
+
+
+def test_compute_exit_content_at_end_in_middle():
+    """@end 在中间 → 前 + 后拼接（标记剥掉——前半不再丢弃）。"""
+    from agent.generic.agent_loop import _compute_exit_content
+
+    content = "前半主体内容 @end 后半残留内容"
+    stripped = content.lstrip()
+    at_end_idx = _find_marker(stripped, "@end")
+    exit_content = _compute_exit_content(stripped, at_end_idx, content)
+    assert exit_content == "前半主体内容  后半残留内容"  # 前 + 后都保留，仅标记剥掉
+
+
+def test_compute_exit_content_only_end_marker_falls_back_to_content():
+    """仅输出 @end（无汇报内容）→ 拼接结果空 → 兜底返回原始 content（与历史行为一致）。"""
+    from agent.generic.agent_loop import _compute_exit_content
+
+    content = "@end"
+    stripped = content.lstrip()
+    at_end_idx = _find_marker(stripped, "@end")
+    exit_content = _compute_exit_content(stripped, at_end_idx, content)
+    assert exit_content == "@end"  # 空值兜底 content（实码为准）
+
+
+def test_compute_exit_content_with_leading_whitespace_fallback():
+    """content 带前导空白时兜底返回原始 content（与历史行为一致——非 stripped）。"""
+    from agent.generic.agent_loop import _compute_exit_content
+
+    content = "  @end"  # 前导空白 + 仅 @end
+    stripped = content.lstrip()
+    at_end_idx = _find_marker(stripped, "@end")
+    exit_content = _compute_exit_content(stripped, at_end_idx, content)
+    assert exit_content == "  @end"  # 兜底用原始 content（含前导空白）
+
+
+def _find_marker(text: str, marker: str) -> int:
+    """测试辅助：直接定位标记（复用生产 _find_unescaped_marker 语义）。"""
+    from agent.generic.agent_loop import _find_unescaped_marker
+    return _find_unescaped_marker(text, marker)

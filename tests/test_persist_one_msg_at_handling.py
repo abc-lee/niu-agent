@@ -63,7 +63,8 @@ def test_persist_one_msg_pure_text_extracts_subagent_msg():
     calls = sync_add.call_args_list
     roles = [c.kwargs["role"] for c in calls]
     assert roles == ["subagent_msg", "assistant"]  # 先 subagent_msg 后 assistant
-    assert "@nutritionist [主Agent]" in calls[0].kwargs["content"]  # format_for_db
+    # T3：content = 公共前言 + @ 后内容（主→子整段传递）——format_for_db 存含前言整段
+    assert calls[0].kwargs["content"] == "@nutritionist [主Agent] 哈哈它叫我老板了。\n你好，先告诉你用户情况"
     assert "@nutritionist" not in calls[1].kwargs["content"]  # assistant content 已 strip
     assert runner._extracted_at_msgs == [calls[0].kwargs["content"]]  # 去重记录
     notify.assert_called_once()

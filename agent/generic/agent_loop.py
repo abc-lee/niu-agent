@@ -16,11 +16,12 @@ _AT_NIU_PREFIX = "@niu-agent"  # 子 Agent 询问主 Agent 的 content 前缀（
 _AT_USER_PREFIX = "@user"  # 子 Agent 询问用户的 content 前缀（5 字符）
 
 # 格式错误提示文本（用 f-string 插值 _AT_NIU_PREFIX，未来改名只改常量）
+# T1（2026-08-15）：@ 整段传递——完整上下文 + @niu-agent 提问 + 收到请回复
 _FORMAT_ERROR_PROMPT = (
     "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
-    f"1. 询问主 Agent：content 中包含 `{_AT_NIU_PREFIX}`，如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`\n"
-    "2. 询问用户：content 中包含 `@user`，如 `@user 你需要哪个文件？`\n"
-    "3. 结束会话：content 中包含 `@end`，如 `@end 任务已完成，结果：...`\n"
+    f"1. 询问主 Agent：把完整上下文写在 `{_AT_NIU_PREFIX}` 前后，用 `{_AT_NIU_PREFIX}` 标注提问（如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`），末尾加「收到请回复」——主 Agent 会看到整段\n"
+    "2. 询问用户：把完整上下文写在 `@user` 前，用 `@user` 标注提问（如 `@user 你需要哪个文件？`）——用户会看到整段\n"
+    "3. 结束会话：把汇报内容写在 `@end` 前（如 `@end 任务已完成，结果：...`）——主 Agent 会收到完整汇报\n"
     "禁止输出不带 @ 前缀的纯 content。请重新输出。"
 )
 
@@ -69,6 +70,30 @@ def _find_unescaped_marker(content: str, marker: str) -> int:
             start = idx + 1
             continue
         return idx
+
+
+def _compute_exit_content(stripped: str, at_end_idx: int, content: str) -> str:
+    """计算 @end 退出内容：@end 标记前 + @end 标记后拼接（标记本身剥掉）。
+
+    T1（2026-08-15）：@end 边界修复——原实现 `stripped[at_end_idx + 4:].lstrip()`
+    只取 @end 后内容，@end 在 content 中间时前半主体被丢弃。改为前 + 后整段保留。
+
+    - @end 在末尾 → 返回 @end 前完整内容（与旧回退效果一致——无回归）
+    - @end 在中间 → 前 + 后拼接（标记剥掉——终止控制符不传给主 Agent）
+    - 拼接结果为空（仅输出 "@end" 的合法形态）→ 兜底返回原始 content（与历史行为一致）
+
+    Args:
+        stripped: 已 lstrip 的 content
+        at_end_idx: @end 标记在 stripped 中的起始 index（_find_unescaped_marker 返回值）
+        content: 原始 content（空值兜底用——以实码为准，main 现有兜底是 content 非 stripped）
+
+    Returns:
+        退出内容字符串
+    """
+    exit_content = stripped[:at_end_idx] + stripped[at_end_idx + 4:]
+    if not exit_content:
+        return content
+    return exit_content
 
 
 @dataclass
@@ -156,17 +181,22 @@ def _intercept_at_prefix_content(
     # @niu-agent 检测（子 Agent 向主 Agent 提问，阻塞等待回答）
     at_niu_idx = _find_unescaped_marker(stripped, _AT_NIU_PREFIX)
     if at_niu_idx >= 0:
-        # 剥除 "@niu-agent" 前缀 + 可选空格（question 是 @niu-agent 之后的内容）
-        question = stripped[at_niu_idx + len(_AT_NIU_PREFIX):].lstrip()
-        if not question:
+        # T1（2026-08-15）：整段传递——question = 完整 stripped
+        # （@ 前上下文 + @niu-agent + @ 后提问全部传给主 Agent——含标记原样保留；
+        # @niu-agent 是收件人称呼属整段内容，与 @end（终止控制符剥掉）处理不同）
+        question = stripped
+        # 空问题守卫保留：@niu-agent 标记后无问题内容 → 仍 FORMAT_ERROR
+        # （裸 @niu-agent 即时纠错不阻塞 300s——与整段传递并存）
+        if not stripped[at_niu_idx + len(_AT_NIU_PREFIX):].strip():
             logger.error(f"[AtPrefix] {_AT_NIU_PREFIX} 后无问题内容")
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
             return (FORMAT_ERROR, None)
-        # 超长检查：不截断，退回 FORMAT_ERROR 让子 Agent 精简后重新提问
-        if len(question) > 2000:
+        # 超长检查（判定对象 = 完整 stripped——@niu-agent 进主 Agent 上下文需保护）：
+        # 不截断，退回 FORMAT_ERROR 让子 Agent 精简后重新提问
+        if len(question) > 8000:
             messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "user", "content": f"[输出超限额] 你的问题超过 2000 字符（当前 {len(question)} 字符），请精简后重新提问。如果无法精简，请用 @end 退出并说明原因。"})
+            messages.append({"role": "user", "content": f"[输出超限额] 完整内容超过 8000 字符（当前 {len(question)} 字符），请精简后重新提问。如果无法精简，请用 @end 退出并说明原因。"})
             return (FORMAT_ERROR, None)
 
         unique_name = getattr(handler, "_subagent_unique_name", "")
@@ -206,11 +236,16 @@ def _intercept_at_prefix_content(
         after_marker = at_user_idx + len(_AT_USER_PREFIX)
         # 检查 @user 后面是空白、常见标点或字符串结尾（词边界）
         if after_marker >= len(stripped) or stripped[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';', '.', '。', '?', '？', '!', '！', '-', '/', ')', ']'):
-            question = stripped[after_marker:].strip()
-            if not question:
+            # T1（2026-08-15）：整段传递——question = 完整 stripped
+            # （@user 前上下文 + @user + @ 后提问全传——用户看到整段）
+            question = stripped
+            # 空问题守卫：@user 标记后无内容仍 FORMAT_ERROR（裸 @user 即时纠错）
+            if not stripped[after_marker:].strip():
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
                 return (FORMAT_ERROR, None)
+            # 无上限检查：@user 给用户看——用户无上下文限制——完整传
+            # （IM 超长由适配层 _truncate_card_text 兜底——前端 tab 可滚动）
             return (INTERCEPTED_ASK_USER, question)
         # @user 后面紧跟非空白字符（如 @username），不拦截，继续走到格式错误
 
@@ -922,14 +957,12 @@ def agent_runner_loop(
                     yield StreamEvent("system", "chat_idle")
                     return {"result": "INTERCEPTED_SYNC", "messages": messages, "finish_reason": "intercepted_sync"}
                 if interception_status == EXIT:
-                    # @end 允许退出，剥除 "@end" 前缀 + 可选空格后推前端
+                    # @end 允许退出：@end 前 + @end 后拼接（标记剥掉——T1 边界修复），
+                    # 空值兜底原始 content——_compute_exit_content 纯函数计算
                     stripped_content = content.lstrip()
                     at_end_idx = _find_unescaped_marker(stripped_content, "@end")
                     if at_end_idx >= 0:
-                        exit_content = stripped_content[at_end_idx + 4:].lstrip()
-                        # 边界：@end 恰好 4 字符时剥前缀后为空，用原始 content 避免前端收到空回复
-                        if not exit_content:
-                            exit_content = content
+                        exit_content = _compute_exit_content(stripped_content, at_end_idx, content)
                     else:
                         exit_content = content
                     yield StreamEvent("reply", exit_content)

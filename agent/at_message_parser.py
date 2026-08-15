@@ -27,13 +27,24 @@ def extract_at_messages(reply_text: str) -> list:
     保留标记（@end/@niu-agent/@user/@主Agent）不提取。
     R3-B P2：相邻 @ 目标（"@a @b"）时 content 可能为空——过滤空内容（空回答无意义，
     避免子 Agent 收到空消息）。
+    T3（2026-08-15）：content = 公共前言 + @ 后内容——主→子 @ 整段传递：
+    - 公共前言 = reply_text[:第一个 @ 匹配.start()]（strip 后参与拼接防双换行；strip 后非空才拼）
+    - content = f"{前言}\n{@后内容}"（前言非空时——单 @ 场景 = 完整整段；多 @ 各自带公共前言）
+    - 空 @ 内容仍过滤（既有行为保留）
     """
+    matches = list(_AT_PATTERN.finditer(reply_text))
+    if not matches:
+        return []
+    # 公共前言：从第一个 @ 匹配前截取，strip 归一化（前言以换行结尾时字面拼接会产双换行）
+    preface = reply_text[:matches[0].start()].strip()
     msgs = []
-    for match in _AT_PATTERN.finditer(reply_text):
+    for match in matches:
         target = match.group(1)
         content = match.group(2).strip()
         if not content:
             continue  # R3-B P2：相邻 @ 目标空 content 过滤
+        if preface:
+            content = f"{preface}\n{content}"
         msgs.append({"target": target, "content": content, "sender": "主Agent"})
     return msgs
 
