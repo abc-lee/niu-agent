@@ -285,6 +285,17 @@ class TestRegionConfigDefaults:
         assert 0.0 < REGION_CONFIG_DEFAULTS["tool_reinforce_value"] <= 1.0
         assert 0.0 < REGION_CONFIG_DEFAULTS["spillover_factor"] <= 1.0
 
+    def test_shrink_threshold_config_key_is_100(self) -> None:
+        """REGION_CONFIG_DEFAULTS 配置键 shrink_threshold 必须是 100（用户 P1 要求）.
+
+        防 shrink 事故重演：方法默认 100 但配置键 10 静默覆盖——生产生效值由配置键决定，
+        断言必须落在配置键（region_sync 的 REGION_CONFIG_DEFAULTS）而不是方法签名默认。
+        """
+        assert REGION_CONFIG_DEFAULTS["shrink_threshold"] == 100, (
+            f"shrink_threshold 配置键必须是 100（用户要求），实际 "
+            f"{REGION_CONFIG_DEFAULTS['shrink_threshold']}"
+        )
+
 
 # ============== Test 7: _refresh_activation_manager 失败保护 ==============
 
