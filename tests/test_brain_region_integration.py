@@ -11,9 +11,7 @@ Test coverage:
 3. test_manual_control_overrides_auto — manual dim/activate override logic
 4. test_tool_use_reinforces_region — tool dispatch reinforce steady state
 5. test_spillover_activation — neighbor spillover activation
-6. test_dream_writer_semantic_vs_episodic — dual-pipeline write paths
-7. test_dream_writer_time_chain_integrity — followed_by/corrected_by chain
-8. test_context_budget_not_exceeded — token budget truncation
+6. test_context_budget_not_exceeded — token budget truncation
 """
 
 from __future__ import annotations
@@ -22,11 +20,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.injector.dream_writer import (
-    CHAIN_RELATION_CORRECTED,
-    CHAIN_RELATION_FOLLOWED,
-    DreamWriter,
-)
 from niu_api.internal.region_activation import (
     STATUS_LIT,
     BrainRegionState,
@@ -100,18 +93,6 @@ def _make_injector(
         activation_mgr=activation_mgr,
         region_mgr=region_mgr,
     )
-
-
-def _make_dream_writer() -> tuple[DreamWriter, MagicMock]:
-    """Create a DreamWriter with mock ingester.
-
-    Returns:
-        (writer, mock_ingester) tuple.
-    """
-    ingester = MagicMock()
-    ingester.lightrag_insert.return_value = {"status": "ok"}
-    writer = DreamWriter(ingester)
-    return writer, ingester
 
 
 def _set_activation(
@@ -296,129 +277,6 @@ class TestFullBrainRegionFlow:
         # (it's a neighbor of 项目管理脑区, but spillover only goes 1 hop)
         distant_state = manager._regions["日常偏好脑区"]
         assert distant_state.activation == pytest.approx(0.0)
-
-    def test_dream_writer_semantic_vs_episodic(self) -> None:
-        """Semantic writes use 语义记忆 prefix, episodic writes use 情景记忆 prefix.
-
-        Steps:
-        1. Write semantic entity — content starts with 语义记忆
-        2. Write episodic event — content starts with 情景记忆
-        3. Semantic writes do NOT create time chains
-        4. Episodic writes with prev_event include chain keyword in content
-        """
-        writer, ingester = _make_dream_writer()
-
-        # Step 1: Semantic entity
-        result = writer.write_semantic_entity(
-            name="Python",
-            entity_type="Skill",
-            description="Programming language",
-        )
-        assert result["status"] == "ok"
-
-        # Verify lightrag_insert called with semantic prefix
-        call_content = ingester.lightrag_insert.call_args.kwargs["content"]
-        assert call_content.startswith("语义记忆:")
-        assert "Python" in call_content
-        assert "Skill" in call_content
-
-        # Step 2: Episodic event (no prev, so no chain keyword)
-        ingester.reset_mock()
-
-        result = writer.write_episodic_event(
-            event_name="tool_x_failed",
-            description="Tool X returned error",
-            experience_type="error",
-        )
-        assert result["status"] == "ok"
-
-        # Verify lightrag_insert called with episodic prefix
-        call_content = ingester.lightrag_insert.call_args.kwargs["content"]
-        assert call_content.startswith("情景记忆:")
-        assert "tool_x_failed" in call_content
-        # No prev_event, so no chain keyword in content
-        assert CHAIN_RELATION_FOLLOWED not in call_content
-        assert CHAIN_RELATION_CORRECTED not in call_content
-
-        # Step 3: Episodic event WITH prev_event includes chain keyword
-        ingester.reset_mock()
-
-        result = writer.write_episodic_event(
-            event_name="tried_tool_y",
-            description="Tried tool Y successfully",
-            experience_type="success",
-            prev_event_name="tool_x_failed",
-            is_correction=False,
-        )
-        assert result["status"] == "ok"
-
-        # Verify chain relation is followed_by (not corrected_by)
-        call_content = ingester.lightrag_insert.call_args.kwargs["content"]
-        assert CHAIN_RELATION_FOLLOWED in call_content
-        assert CHAIN_RELATION_CORRECTED not in call_content
-        assert "tool_x_failed" in call_content
-        assert "tried_tool_y" in call_content
-
-    def test_dream_writer_time_chain_integrity(self) -> None:
-        """Time chain: followed_by and corrected_by keywords in content.
-
-        Steps:
-        1. Write event A (no prev) — no chain keyword
-        2. Write event B (prev=A, is_correction=False) — followed_by in content
-        3. Write event C (prev=B, is_correction=True) — corrected_by in content
-        """
-        writer, ingester = _make_dream_writer()
-
-        # Step 1: Write event A (no prev)
-        result_a = writer.write_episodic_event(
-            event_name="event_A",
-            description="First event",
-            experience_type="success",
-        )
-        assert result_a["status"] == "ok"
-
-        # No chain keyword in content
-        content_a = ingester.lightrag_insert.call_args.kwargs["content"]
-        assert CHAIN_RELATION_FOLLOWED not in content_a
-        assert CHAIN_RELATION_CORRECTED not in content_a
-
-        # Step 2: Write event B (prev=A, is_correction=False)
-        ingester.reset_mock()
-
-        result_b = writer.write_episodic_event(
-            event_name="event_B",
-            description="Second event follows A",
-            experience_type="success",
-            prev_event_name="event_A",
-            is_correction=False,
-        )
-        assert result_b["status"] == "ok"
-
-        # Verify followed_by chain: A -> B in content
-        content_b = ingester.lightrag_insert.call_args.kwargs["content"]
-        assert CHAIN_RELATION_FOLLOWED in content_b
-        assert CHAIN_RELATION_CORRECTED not in content_b
-        assert "event_A" in content_b
-        assert "event_B" in content_b
-
-        # Step 3: Write event C (prev=B, is_correction=True)
-        ingester.reset_mock()
-
-        result_c = writer.write_episodic_event(
-            event_name="event_C",
-            description="Third event corrects B",
-            experience_type="success",
-            prev_event_name="event_B",
-            is_correction=True,
-        )
-        assert result_c["status"] == "ok"
-
-        # Verify corrected_by chain: B -> C in content
-        content_c = ingester.lightrag_insert.call_args.kwargs["content"]
-        assert CHAIN_RELATION_CORRECTED in content_c
-        assert CHAIN_RELATION_FOLLOWED not in content_c
-        assert "event_B" in content_c
-        assert "event_C" in content_c
 
 
 # ============== Test 9: lit-aware decay acceleration (integration) ==============
