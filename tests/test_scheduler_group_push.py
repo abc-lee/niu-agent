@@ -84,12 +84,13 @@ class TestF4TaskStoreChatId:
         assert task["chat_id"] == "oc_group_named"
 
 
-class TestF4ServiceChatIdPass:
-    """F4: trigger_callback 传递 chat_id 到 router.push（fire-and-forget：入队即推送）"""
+class TestF4ServiceNoImPush:
+    """F4: trigger_callback 不再推 IM——程序消息只写 DB 唤醒主 Agent（用户需求：
+    定时提醒写 Message.DB，主 Agent 的话才由 chat_queue 特判投递 IM）"""
 
-    def test_trigger_callback_with_chat_id(self):
-        """trigger_callback 应从 task 读取 chat_id 并传给 router.route_out；入队即完成"""
-        from unittest.mock import AsyncMock, MagicMock, patch
+    def test_trigger_callback_with_chat_id_no_im_push(self):
+        """带 chat_id 的任务：enqueue 写 DB 唤醒主 Agent，不再 route_out 推 IM"""
+        from unittest.mock import MagicMock, patch
 
         from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler.service import trigger_callback
@@ -107,39 +108,23 @@ class TestF4ServiceChatIdPass:
         mock_queue = MagicMock()
         mock_queue.enqueue_sync.return_value = EnqueueResult(queued=True, request_id="1")
 
-        mock_route_out = AsyncMock()
-        mock_router = MagicMock()
-        mock_router.has_channel.return_value = True
-        mock_router.route_out = mock_route_out
-
         with patch("niu_api.chat._main_loop", mock_loop), \
              patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.chat.get_or_create_runner", return_value=None), \
-             patch("niu_api.channel.get_channel_router", return_value=mock_router), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("asyncio.run_coroutine_threadsafe") as mock_rc:
-
-            push_future = MagicMock()
-            push_future.result.return_value = None
-            mock_rc.side_effect = [push_future]
+             patch("niu_api.alerts.add_pending_alert"):
 
             result = trigger_callback(task)
 
         assert result == "ok"
-        # 入队内容 = [定时任务] + 任务内容，同步入队；channel 必须保持 "scheduler"
-        # （enqueue_sync 默认 channel="im"——若漏传，ChatQueue worker 会把 Agent 回复
-        #  经 router.push 广播回退 _push_target 错位（channel/gateway.py 空 channel_id 回退广播），
-        #  叠加手动 route_out = 回复走广播错位——真实危害：卡片不终结 + _im_finalized 不置位
-        #  → ha_watcher 自推双投递风险（与 service.py 同口径，非消息条数））
+        # 入队内容 = [定时任务] + 任务内容，同步入队；channel 保持 "scheduler"
+        # （主 Agent 回复由 chat_queue scheduler 特判经 should_push_im 闸门投递 IM——
+        #  程序消息本身不再推 IM，chat_id 不参与推送）
         mock_queue.enqueue_sync.assert_called_once_with(
             content="[定时任务] 群聊提醒", channel="scheduler", source="scheduler", session_id="default"
         )
-        # IM 推送内容 = prompt（任务内容），不再等 Agent 回复
-        mock_route_out.assert_called_once_with("[定时任务] 群聊提醒", "im", "oc_group123")
 
-    def test_trigger_callback_without_chat_id(self):
-        """私聊任务 chat_id 为空时，route_out 传空串"""
-        from unittest.mock import AsyncMock, MagicMock, patch
+    def test_trigger_callback_without_chat_id_no_im_push(self):
+        """私聊任务（无 chat_id）：同样只 enqueue 写 DB，不再推 IM"""
+        from unittest.mock import MagicMock, patch
 
         from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler.service import trigger_callback
@@ -156,21 +141,9 @@ class TestF4ServiceChatIdPass:
         mock_queue = MagicMock()
         mock_queue.enqueue_sync.return_value = EnqueueResult(queued=True, request_id="1")
 
-        mock_route_out = AsyncMock()
-        mock_router = MagicMock()
-        mock_router.has_channel.return_value = True
-        mock_router.route_out = mock_route_out
-
         with patch("niu_api.chat._main_loop", mock_loop), \
              patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.chat.get_or_create_runner", return_value=None), \
-             patch("niu_api.channel.get_channel_router", return_value=mock_router), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("asyncio.run_coroutine_threadsafe") as mock_rc:
-
-            push_future = MagicMock()
-            push_future.result.return_value = None
-            mock_rc.side_effect = [push_future]
+             patch("niu_api.alerts.add_pending_alert"):
 
             result = trigger_callback(task)
 
@@ -178,8 +151,6 @@ class TestF4ServiceChatIdPass:
         mock_queue.enqueue_sync.assert_called_once_with(
             content="[定时任务] 私聊提醒", channel="scheduler", source="scheduler", session_id="default"
         )
-        # chat_id 为 None 时，task.get("chat_id") or "" 应返回 ""
-        mock_route_out.assert_called_once_with("[定时任务] 私聊提醒", "im", "")
 
     def test_trigger_callback_enqueue_failure_returns_none(self):
         """enqueue_sync 返回 queued=False（loop 不可用）→ 返回 None，走 scheduler 失败链"""

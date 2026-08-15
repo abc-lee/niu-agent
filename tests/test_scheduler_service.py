@@ -299,9 +299,9 @@ class TestTriggerCallbackBackgroundScript:
         assert "…[截断]" in captured["content"]  # 截断标记必须存在（spec：超出加提示）
         assert captured["channel"] == "scheduler"
 
-    def test_has_output_with_im_channel_pushes(self, tmp_path, monkeypatch):
-        """有输出 + IM 通道存在 → 入队后立即 route_out(prompt) 推 IM（不再等 Agent 回复）"""
-        from unittest.mock import AsyncMock, MagicMock, patch
+    def test_has_output_no_im_push(self, tmp_path, monkeypatch):
+        """有输出 → 入队写 DB 唤醒主 Agent，不再 route_out 推 IM（程序消息不推 IM——用户需求）"""
+        from unittest.mock import MagicMock, patch
 
         from niu_api.chat_queue import EnqueueResult
         from niu_api.internal.scheduler import service
@@ -318,23 +318,9 @@ class TestTriggerCallbackBackgroundScript:
         })()
         monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
-        mock_route_out = AsyncMock()
-        mock_router = MagicMock()
-        mock_router.has_channel.return_value = True
-        mock_router.route_out = mock_route_out
-
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.chat.get_or_create_runner", return_value=None), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("niu_api.channel.get_channel_router", return_value=mock_router), \
-             patch("asyncio.run_coroutine_threadsafe") as mock_rc:
-
-            push_future = MagicMock()
-            push_future.result.return_value = None
-            mock_rc.side_effect = [push_future]
+             patch("niu_api.alerts.add_pending_alert"):
 
             result = service.trigger_callback(self._make_bg_task())
 
         assert result == "ok"
-        # 推送内容 = prompt（脚本输出，含 [定时任务] 前缀）
-        mock_route_out.assert_called_once_with("[定时任务] 有垃圾", "im", "")
