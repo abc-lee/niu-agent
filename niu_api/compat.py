@@ -2295,21 +2295,43 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         except Exception as e:
             import traceback
             logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
-            chat_error = str(e)
+            chat_error = e  # E2：保留异常对象（str() 化后 type() 判定恒 'str'——is_litellm_error_type 失效）；str() 插值/None 判定/日志均兼容
             full_reply = f"Error: {str(e)}"
 
         # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
         if chat_error is None:
-            # 双管道持久化：使用 persist_agent_reply 统一处理
             rv = getattr(runner, "last_return_value", None)
-            from niu_api.chat import persist_agent_reply
-            persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-            extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
-            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
+            if rv and isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
+                # E2：LLM_ERROR 错误文本不落库（用户拍板"不写 DB"——刷新 Chat 从 DB 加载历史时自然消失）
+                message_id = None  # 显式初始化：返回处无条件读取，不初始化则 NameError 500
+                error_msg = rv.get("error_msg", "") or ""
+                error_type = rv.get("error_type")
+                from niu_api.chat import notify_llm_error_sync
+                from agent.generic.litellm_adapter import extract_error_type, format_llm_error_for_user
+                notify_llm_error_sync(
+                    error_type or extract_error_type(error_msg),
+                    format_llm_error_for_user(error_msg, error_type),
+                    "chat_session",
+                )
+                # skip persist（错误文本不落库）
+            else:
+                # 双管道持久化：使用 persist_agent_reply 统一处理
+                from niu_api.chat import persist_agent_reply
+                persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+                extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
+                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
         else:
             rv = getattr(runner, "last_return_value", None)
             message_id = None
             logger.warning(f"[Chat Session] Skipped persist due to chat error: {chat_error}")
+            # E2：LLM 异常（异常穿透路径——缺口①，错误 key/模型不存在等主场景）→ 友好文案 + notify
+            from niu_api.chat import notify_llm_error_sync
+            from agent.generic.litellm_adapter import format_llm_error_for_user, is_litellm_error_type
+            type_name = type(chat_error).__name__ if isinstance(chat_error, BaseException) else None
+            if type_name and is_litellm_error_type(type_name):
+                full_reply = format_llm_error_for_user(str(chat_error), type_name)
+                notify_llm_error_sync(type_name, full_reply, "chat_session")
+            # 非 LLM 异常（内部 bug）不 notify、full_reply 保持既有（不误标"模型调用失败"）
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
