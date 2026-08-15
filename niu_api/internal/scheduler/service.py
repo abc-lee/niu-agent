@@ -4,7 +4,6 @@ Scheduler Service Lifecycle Management
 管理内部调度器的启动、停止和状态。
 """
 
-import asyncio
 import json
 import os
 import threading
@@ -98,9 +97,10 @@ def trigger_callback(task: dict) -> str | None:
         return None
 
     # 同步非阻塞入队（enqueue_sync 内部经 call_soon_threadsafe 桥接到主 loop）
-    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：走 chat_queue scheduler 特判——
-    # 主 Agent 回复由特判经 should_push_im 闸门投递 IM（用户拍板：trigger 提醒 + 回复两条都应在 IM）。
-    # 若误传默认 "im"：回复会走 router.push 广播，叠加下方手动 route_out(prompt) = 双消息错位。
+    # 定时提醒只写 DB 唤醒主 Agent（enqueue_sync 入队即写入 Message.DB；Chat 前端由 DB 变更
+    # SSE 刷新显示）——程序消息本身不推 IM；主 Agent 的话由 chat_queue scheduler 特判经
+    # should_push_im 闸门投递 IM。channel 必须显式传 "scheduler"（默认 "im" 会让主 Agent 回复
+    # 走 router.push 广播回退 _push_target，非任务会话）。
     q = get_chat_queue()
     enqueue_result = q.enqueue_sync(content=prompt, channel="scheduler", source="scheduler", session_id="default")
     if not enqueue_result.queued:
@@ -114,24 +114,6 @@ def trigger_callback(task: dict) -> str | None:
         add_pending_alert(alert_text)
     except Exception as e:
         logger.warning(f"[INTERNAL SCHEDULER] add_pending_alert failed: {e}")
-
-    # IM 通道推送（内容 = 任务内容，不再等 Agent 回复）
-    try:
-        from niu_api.channel import get_channel_router
-        router = get_channel_router()
-        if router.has_channel("im"):
-            # 优先用 task chat_id，回退到继承的 _im_channel_id（确保 route_out 走 SEND 终结卡片）
-            from niu_api.chat import get_or_create_runner
-            _runner = get_or_create_runner()
-            im_cid = _runner.get_im_channel() if _runner else ""
-            push_chat_id = task.get("chat_id") or im_cid
-            push_future = asyncio.run_coroutine_threadsafe(
-                router.route_out(prompt, "im", push_chat_id),
-                loop,
-            )
-            push_future.result(timeout=30)
-    except Exception as e:
-        logger.warning(f"[SCHEDULER] IM push failed: {e}")
 
     return "ok"
 
@@ -199,38 +181,23 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
 
     # fire-and-forget：入队即完成，不等待 Agent 回复（与 reminder 分支一致，
     # 消除"等待超时 → 重试再入队"导致的重复触发）。
-    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：走 chat_queue scheduler 特判——
-    # 主 Agent 回复由特判经 should_push_im 闸门投递 IM（用户拍板：trigger 提醒 + 回复两条都应在 IM）。
-    # 若误传默认 "im"：回复会走 router.push 广播，叠加下方手动 route_out(prompt) = 双消息错位。
+    # 程序消息只写 DB 唤醒主 Agent（enqueue_sync 入队即写入 Message.DB；Chat 前端由 DB 变更
+    # SSE 刷新显示）——程序消息本身不推 IM；主 Agent 的话由 chat_queue scheduler 特判经
+    # should_push_im 闸门投递 IM。channel 必须显式传 "scheduler"（默认 "im" 会让主 Agent 回复
+    # 走 router.push 广播回退 _push_target，非任务会话）。
     q = get_chat_queue()
     enqueue_result = q.enqueue_sync(content=prompt, channel="scheduler", source="scheduler", session_id="default")
     if not enqueue_result.queued:
         logger.error(f"[BG_SCRIPT] Enqueue failed: {task.get('id')}")
         return None
 
-    # 蹦高 + IM 推送（与 reminder 分支对齐；内容 = prompt）
+    # 蹦高提醒（与 reminder 分支对齐；内容 = task content）
     task_content = task.get("content", "⏰")
     alert_text = (task_content[:47] + "...") if len(task_content) > 50 else task_content
     try:
         add_alert_fn(alert_text)
     except Exception as e:
         logger.warning(f"[BG_SCRIPT] add_pending_alert failed: {e}")
-
-    try:
-        from niu_api.channel import get_channel_router
-        router = get_channel_router()
-        if router.has_channel("im"):
-            from niu_api.chat import get_or_create_runner
-            _runner = get_or_create_runner()
-            im_cid = _runner.get_im_channel() if _runner else ""
-            push_chat_id = task.get("chat_id") or im_cid
-            push_future = asyncio.run_coroutine_threadsafe(
-                router.route_out(prompt, "im", push_chat_id),
-                loop,
-            )
-            push_future.result(timeout=30)
-    except Exception as e:
-        logger.warning(f"[BG_SCRIPT] IM push failed: {e}")
 
     # 脚本报错已注入主 Agent（Agent 会看到错误输出并处理）。
     # recurring 报错返回 None：保留 3-strike DLQ（scheduler 失败计数，3 次标
