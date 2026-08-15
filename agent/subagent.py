@@ -1264,18 +1264,25 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
 def _extract_unique_name(result, agent_name):
     """从 '[unique_name] ...' 提取 unique_name，不匹配返回 None。
 
-    支持两种格式（向后兼容）：
-    - 同步路径：[agent_name] 问题（如 [browser-operator] 第一个问题）
-    - 异步路径：[agent_name-4位hex] 问题（如 [file-processor-a1b2] 第一个问题）
+    支持三种格式：
+    - T2 注入格式（当前生产）：【子Agent提问·需回复】[unique_name]\n问题\n收到请回复
+      （同步路径 unique_name=纯 agent_name，异步路径=agent_name-4位hex）
+    - 同步旧格式：[agent_name] 问题（如 [browser-operator] 第一个问题）
+    - 异步旧格式：[agent_name-4位hex] 问题（如 [file-processor-a1b2] 第一个问题）
 
     严格匹配避免误判 `[已完成]` 等正常文本。
     """
-    # 优先匹配带 hex 后缀（异步路径）
+    # 优先匹配 T2 注入格式（当前生产——_compose_ask_main_agent_message 拼装，header 常量同步）
+    pattern_new = rf"^{_ASK_MAIN_AGENT_HEADER}\[({re.escape(agent_name)}(?:-[0-9a-f]{{4}})?)\]\n"
+    m = re.match(pattern_new, result)
+    if m:
+        return m.group(1)
+    # 再匹配带 hex 后缀（异步旧格式）
     pattern_with_hex = rf"^\[({re.escape(agent_name)}-[0-9a-f]{{4}})\] "
     m = re.match(pattern_with_hex, result)
     if m:
         return m.group(1)
-    # 再匹配纯 agent_name（同步路径）
+    # 最后匹配纯 agent_name（同步旧格式）
     pattern_plain = rf"^\[({re.escape(agent_name)})\] "
     m = re.match(pattern_plain, result)
     return m.group(1) if m else None
@@ -1351,14 +1358,14 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     #   收到请回复
     # db_monitor 推 SSE 时 role=subagent_msg，前端收到后调 /api/chat/session，
     # content 作为 message 参数传给后端，后端 compat.py 写 user 消息（role=user）。
-    # push type="ask"——队列层结构区分（与完成通知 type="notify" 显式区分——Bug2 修复核心）
+    # push msg_type="ask"——队列层结构区分（与完成通知 msg_type="notify" 显式区分——Bug2 修复核心）
     #
     # 超长检查已在 _intercept_at_prefix_content 中处理（FORMAT_ERROR 退回重试）
     # 不截断、不剥行首 @（【子Agent提问·需回复】前缀已标识提问）
     sanitized_question = question if question else ""
     msg_content = _compose_ask_main_agent_message(unique_name, sanitized_question)
     try:
-        get_main_agent_request_queue().push(msg_content, type="ask")
+        get_main_agent_request_queue().push(msg_content, msg_type="ask")
     except Exception as e:
         # 推队列失败 → 注销 future，返回错误
         registry.unregister(unique_name)

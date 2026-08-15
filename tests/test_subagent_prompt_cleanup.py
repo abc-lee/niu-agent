@@ -2,9 +2,9 @@
 
 验证三件事：
 1. 补丁句"你不需要在输出里包含自己的标识符"已删除（Task A 的回归保护）
-2. 新守则首句是命令式强提醒"任务完成时必须用 @end"（Task B 的首句强提醒）
-3. 新守则结尾是命令式总结"记住：完成用 @end"（Task B 的结尾总结）
-4. marker 升级为 v2（强制走新模板）
+2. 新守则首句是 @niu-agent 提问语法（含「收到请回复」需回复标志——T2）
+3. 新守则结尾是 @end 退出语法（任务完成退出 + 汇报内容写在 @end 前）
+4. marker 与当前模板版本（v4）一致（强制走新模板）
 5. context-manager 仍不被注入守则（回归保护）
 6. 其他子 Agent（如 file-processor）仍被注入新守则（回归保护）
 """
@@ -18,15 +18,15 @@ def test_patch_sentence_removed():
     assert "程序会自动在你的问题前加上唯一标识" not in _SUBAGENT_ASK_GUIDE_TEMPLATE
 
 
-def test_guide_first_line_is_command_style_exit_reminder():
-    """新守则首句是命令式强提醒，含"任务完成"和"@end"
+def test_guide_first_line_is_niu_agent_ask_rule():
+    """新守则首句是 @niu-agent 提问语法——含「收到请回复」需回复标志
 
-    首句强提醒：让子 Agent 第一眼就建立"做完要 @end"的肌肉记忆。
+    首句强提醒：让子 Agent 第一眼看到提问方式（@niu-agent 整段传递 + 收到请回复）。
     利用 primacy effect（LLM 处理 system prompt 时首句 attention 权重最高）。
     """
     from agent.subagent import _SUBAGENT_ASK_GUIDE_TEMPLATE
 
-    # 去掉 marker 行、空行、markdown 标题行后，第一句实际内容应含"任务完成"和"@end"
+    # 去掉 marker 行、空行、markdown 标题行后，第一句实际内容是 @niu-agent 提问语法
     lines = [
         line for line in _SUBAGENT_ASK_GUIDE_TEMPLATE.splitlines()
         if line.strip()
@@ -34,15 +34,17 @@ def test_guide_first_line_is_command_style_exit_reminder():
         and not line.strip().startswith("#")
     ]
     first_content_line = lines[0] if lines else ""
-    # 首句应含"任务完成"和"@end"两个关键词（命令式强提醒）
-    assert "任务完成" in first_content_line, f"首句应含'任务完成'，实际: {first_content_line}"
-    assert "@end" in first_content_line, f"首句应含'@end'，实际: {first_content_line}"
+    # 首句是 @niu-agent 提问语法（主 Agent 通讯主通道）
+    assert "@niu-agent" in first_content_line, f"首句应含'@niu-agent'，实际: {first_content_line}"
+    # T2 需回复标志：末尾加「收到请回复」——主 Agent 会看到整段
+    assert "收到请回复" in first_content_line, f"首句应含'收到请回复'，实际: {first_content_line}"
+    assert "主 Agent" in first_content_line, f"首句应含'主 Agent'，实际: {first_content_line}"
 
 
-def test_guide_last_line_is_command_style_summary():
-    """新守则结尾是命令式总结"记住：完成用 @end"
+def test_guide_last_line_is_end_exit_rule():
+    """新守则结尾是 @end 退出语法（任务完成退出 + 汇报内容写在 @end 前）
 
-    结尾总结：子 Agent 扫到结尾时再被提醒一次。
+    结尾总结：子 Agent 扫到结尾时再被提醒一次退出方式。
     利用 recency effect（结尾 attention 权重高）。
     """
     from agent.subagent import _SUBAGENT_ASK_GUIDE_TEMPLATE
@@ -54,19 +56,18 @@ def test_guide_last_line_is_command_style_summary():
         and not line.strip().startswith("#")
     ]
     last_content_line = lines[-1] if lines else ""
-    # 结尾应含"记住"和"@end"（命令式总结）
-    assert "记住" in last_content_line, f"结尾应含'记住'，实际: {last_content_line}"
+    # 结尾是 @end 退出语法
     assert "@end" in last_content_line, f"结尾应含'@end'，实际: {last_content_line}"
-    # 结尾应同时提到 @niu-agent（二选一）
-    assert "@niu-agent" in last_content_line, f"结尾应含'@niu-agent'，实际: {last_content_line}"
+    assert "任务完成" in last_content_line, f"结尾应含'任务完成'，实际: {last_content_line}"
+    assert "退出" in last_content_line, f"结尾应含'退出'，实际: {last_content_line}"
 
 
-def test_guide_marker_upgraded_to_v2():
-    """marker 从 v1 升级到 v2，强制走新模板注入"""
+def test_guide_marker_pinned_to_current_version():
+    """marker 与当前模板版本（v4）一致，强制走新模板注入"""
     from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER, _SUBAGENT_ASK_GUIDE_TEMPLATE
 
-    assert _SUBAGENT_ASK_GUIDE_MARKER == "<!-- NIU_SUBAGENT_GUIDE_v2 -->"
-    assert "<!-- NIU_SUBAGENT_GUIDE_v2 -->" in _SUBAGENT_ASK_GUIDE_TEMPLATE
+    assert _SUBAGENT_ASK_GUIDE_MARKER == "<!-- NIU_SUBAGENT_GUIDE_v4 -->"
+    assert "<!-- NIU_SUBAGENT_GUIDE_v4 -->" in _SUBAGENT_ASK_GUIDE_TEMPLATE
     # 旧 marker 不应出现在新模板里
     assert "<!-- NIU_SUBAGENT_GUIDE_v1 -->" not in _SUBAGENT_ASK_GUIDE_TEMPLATE
 

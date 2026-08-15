@@ -82,11 +82,11 @@ def route_message(target: str, sender: str, content: str) -> None:
         # 阶段二：target==主Agent 的 subagent_msg 在新机制下不应出现
         # （ask_main_agent 和完成通知都改走 MainAgentRequestQueue 内存队列，不写 db）
         # 但为了兼容性（防止未来有人写 @主Agent 到 db），改为推入 MainAgentRequestQueue
-        # push type="ask"——语义=有人 @主Agent 找主 Agent（需要主 Agent 处理/回复）
+        # push msg_type="ask"——语义=有人 @主Agent 找主 Agent（需要主 Agent 处理/回复）
         msg_for_queue = f"[{sender}] {content}" if sender else f"[主Agent] {content}"
         try:
             from agent.main_agent_request_queue import get_main_agent_request_queue
-            get_main_agent_request_queue().push(msg_for_queue, type="ask")
+            get_main_agent_request_queue().push(msg_for_queue, msg_type="ask")
         except Exception as e:
             logger.error(f"db_monitor 推入 MainAgentRequestQueue 失败：{e}")
         _routed_count += 1
