@@ -6,9 +6,12 @@ import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import litellm
 import pytest
 
 from niu_api.chat_queue import ChatQueue
+
+_RATE_LIMIT_FRIENDLY = "模型服务限流（429），请稍后重试"  # 通道 1 RateLimitError 文案（产品文案锁定）
 
 
 class _FakeStore:
@@ -34,26 +37,31 @@ async def test_runner_chat_exception_writes_degraded_reply_to_db():
     q._runner._persisted_msgs = None
 
     fake_store = _FakeStore()
+    notify_calls = []
 
     # 用真实 persist_agent_reply（不 patch），验证 rv=None 走 elif 分支写入 DB
     # patch get_message_store 返回 _FakeStore
     # patch notify_new_message 避免实际 SSE 推送（只验证 DB 写入）
+    # patch notify_llm_error_sync 记录调用——非 LLM 异常（RuntimeError）不 notify
     # patch get_context_manager 返回 AsyncMock（避免 await MagicMock 抛 TypeError）
     with patch("niu_api.chat_queue.get_message_store", new=AsyncMock(return_value=fake_store)):
         with patch("niu_api.chat.notify_new_message", new=AsyncMock(return_value=True)):
-            with patch("agent.context_manager.get_context_manager", new=AsyncMock()) as mock_cm:
-                mock_cm.return_value.get_context_for_chat = AsyncMock(return_value=[])
+            with patch("niu_api.chat.notify_llm_error_sync", side_effect=lambda *a: notify_calls.append(a)):
+                with patch("agent.context_manager.get_context_manager", new=AsyncMock()) as mock_cm:
+                    mock_cm.return_value.get_context_for_chat = AsyncMock(return_value=[])
 
-                result = await asyncio.wait_for(
-                    q.enqueue_and_wait(content="test", source="scheduler", session_id="default"),
-                    timeout=5
-                )
+                    result = await asyncio.wait_for(
+                        q.enqueue_and_wait(content="test", source="scheduler", session_id="default"),
+                        timeout=5
+                    )
 
     # 验证降级回复被写入 DB
     assert result == "[系统繁忙，请重试]", f"Expected degraded reply, got {result!r}"
     assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
     assert len(assistant_msgs) == 1, f"Expected 1 assistant message, got {len(assistant_msgs)}"
     assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
+    # E2：非 LLM 异常（RuntimeError 内部 bug）不 notify（不误标"模型调用失败"）
+    assert notify_calls == []
 
     await q.stop()
 
@@ -88,5 +96,155 @@ async def test_normal_path_unchanged():
     assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
     assert len(assistant_msgs) == 1
     assert assistant_msgs[0]["content"] == "正常回复"
+
+    await q.stop()
+
+
+# ===== E2 Task 3：降级分离（中性落库 + 友好投递 + notify 解耦） =====
+
+
+def _litellm_error_runner():
+    """runner：chat 抛 litellm.RateLimitError（chat_error 保留对象后 type() 有效）"""
+    q = ChatQueue(runner=MagicMock())
+
+    def _raise(*args, **kwargs):
+        raise litellm.RateLimitError(message="You exceeded your current quota", llm_provider="openai", model="gpt-4o")
+    q._runner.chat = MagicMock(side_effect=_raise)
+    q._runner.last_return_value = None
+    q._runner._persisted_msgs = None
+    return q
+
+
+async def _run_chat_queue(q, fake_store, persist_side_effect=None):
+    """在 mock 环境中跑 enqueue_and_wait，返回 (result, notify_calls)。
+    消费方命名空间 patch：get_message_store 为 chat_queue 模块级绑定（patch 源模块无效——会写真实 DB）；
+    notify_llm_error_sync / persist_agent_reply / notify_new_message / get_context_manager 为函数内
+    局部 import——patch 源模块（与 compat Task 2 测试同款）。
+    """
+    notify_calls = []
+    patches = [
+        patch("niu_api.chat_queue.get_message_store", new=AsyncMock(return_value=fake_store)),
+        patch("niu_api.chat.notify_new_message", new=AsyncMock(return_value=True)),
+        patch("niu_api.chat.notify_llm_error_sync", side_effect=lambda *a: notify_calls.append(a)),
+        patch("agent.context_manager.get_context_manager", new=AsyncMock()),
+    ]
+    if persist_side_effect is not None:
+        patches.append(patch("niu_api.chat.persist_agent_reply", side_effect=persist_side_effect))
+    with patches[0], patches[1], patches[2], patches[3]:
+        if persist_side_effect is not None:
+            with patches[4]:
+                result = await asyncio.wait_for(
+                    q.enqueue_and_wait(content="test", source="scheduler", session_id="default"), timeout=5
+                )
+        else:
+            result = await asyncio.wait_for(
+                q.enqueue_and_wait(content="test", source="scheduler", session_id="default"), timeout=5
+            )
+    return result, notify_calls
+
+
+@pytest.mark.asyncio
+async def test_llm_exception_friendly_push_neutral_db_and_notify():
+    """LLM 类异常（litellm.RateLimitError 实例）→ 投递文本为友好文案 + DB 仍中性占位符 + notify 事件触发"""
+    q = _litellm_error_runner()
+    await q.start()
+    fake_store = _FakeStore()
+
+    result, notify_calls = await _run_chat_queue(q, fake_store)
+
+    # 投递友好文案（通道 1 翻译）——与落库文本分离
+    assert result == _RATE_LIMIT_FRIENDLY
+    # DB 仍中性占位符（错误细节不落库）
+    assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
+    # notify 事件触发（is_llm 时 notify_llm_error_sync 被调）
+    assert len(notify_calls) == 1
+    etype, emsg, src = notify_calls[0]
+    assert etype == "RateLimitError"  # type(chat_error).__name__ 有效（保留异常对象）
+    assert emsg == _RATE_LIMIT_FRIENDLY
+    assert src == "chat_queue"
+
+    await q.stop()
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_guard_keeps_friendly_push_and_notify():
+    """persist 抛异常（DB 降级）→ 投递仍友好 + notify 仍触发（notify 与 persist 解耦）"""
+    q = _litellm_error_runner()
+    await q.start()
+    fake_store = _FakeStore()
+
+    result, notify_calls = await _run_chat_queue(q, fake_store, persist_side_effect=RuntimeError("db down"))
+
+    # persist 失败投递仍友好（try/except 守卫后统一赋值）
+    assert result == _RATE_LIMIT_FRIENDLY
+    # persist 失败 → 无 assistant 落库（仅 user 消息）
+    assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
+    assert len(assistant_msgs) == 0
+    assert len(fake_store.messages) == 1  # 仅 user 消息
+    # notify 与 persist 解耦——persist 成败均推（Electron 并行可见性一致）
+    assert len(notify_calls) == 1
+    assert notify_calls[0][2] == "chat_queue"
+
+    await q.stop()
+
+
+def _llm_error_rv_runner(error_msg="litellm.RateLimitError: quota exceeded", error_type="RateLimitError", yield_text=_RATE_LIMIT_FRIENDLY):
+    """runner：chat 正常 yield（源头友好文案）+ last_return_value 为 LLM_ERROR dict"""
+    q = ChatQueue(runner=MagicMock())
+
+    def _ok(*args, **kwargs):
+        yield yield_text  # 源头友好化后 full_reply 已是友好文案（agent_loop yield 双参）
+    q._runner.chat = MagicMock(side_effect=_ok)
+    rv = {"result": "LLM_ERROR", "error_msg": error_msg}
+    if error_type is not None:
+        rv["error_type"] = error_type
+    q._runner.last_return_value = rv
+    q._runner._persisted_msgs = None
+    return q
+
+
+@pytest.mark.asyncio
+async def test_llm_error_rv_skip_persist_friendly_push_not_double_format():
+    """LLM_ERROR return 路径：skip persist（DB 无 assistant 落库）+ notify + full_reply 源头友好文案（非双包）"""
+    q = _llm_error_rv_runner()
+    await q.start()
+    fake_store = _FakeStore()
+
+    result, notify_calls = await _run_chat_queue(q, fake_store)
+
+    # full_reply 直通源头友好文案——不重复 format（通道 2 双包风险）
+    assert result == _RATE_LIMIT_FRIENDLY
+    # skip persist——错误文本不落库（用户拍板"不写 DB"，刷新 Chat 自然消失）
+    assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
+    assert len(assistant_msgs) == 0, "LLM_ERROR 分支必须 skip persist——DB 无 assistant 落库"
+    # notify 用 raw error_msg 单独 format
+    assert len(notify_calls) == 1
+    etype, emsg, src = notify_calls[0]
+    assert etype == "RateLimitError"  # error_type 优先 rv 透传显式类型
+    assert emsg == _RATE_LIMIT_FRIENDLY
+    assert src == "chat_queue"
+
+    await q.stop()
+
+
+@pytest.mark.asyncio
+async def test_llm_error_rv_no_error_type_extraction():
+    """LLM_ERROR dict 无 error_type 键 → error_type 从原文提取（error_type or extract_error_type 分支）"""
+    q = _llm_error_rv_runner(error_msg="litellm.RateLimitError: quota exceeded", error_type=None)
+    await q.start()
+    fake_store = _FakeStore()
+
+    result, notify_calls = await _run_chat_queue(q, fake_store)
+
+    assert result == _RATE_LIMIT_FRIENDLY
+    assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
+    assert len(assistant_msgs) == 0  # skip persist
+    assert len(notify_calls) == 1
+    etype, emsg, src = notify_calls[0]
+    assert etype == "RateLimitError"  # extract_error_type 从 "litellm.RateLimitError: ..." 提取
+    assert emsg == _RATE_LIMIT_FRIENDLY
+    assert src == "chat_queue"
 
     await q.stop()
