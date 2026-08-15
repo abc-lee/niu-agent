@@ -1,7 +1,7 @@
 """主 Agent 请求内存队列。
 
 存子 Agent 的 ask 请求和完成通知（FIFO），content 两种格式与 msg_type 字段对应：
-- ask（子 Agent 提问需主 Agent 回复）：【子Agent提问·需回复】[unique_name]\n问题\n收到请回复
+- ask（子 Agent 提问需主 Agent 回复）：【子Agent提问·需回复】[unique_name]\n问题
   （unique_name 同步路径=纯 agent_name，异步路径=agent_name-4位hex；
    文本由 _compose_ask_main_agent_message 拼装，db_monitor 链路 A 直通不拼装）
 - notify（完成通知/告知）：[子名] 内容（如 [file-processor] 已完成）

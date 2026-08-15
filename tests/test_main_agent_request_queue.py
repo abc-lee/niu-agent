@@ -26,13 +26,13 @@ def test_push_default_type_is_notify():
 def test_push_ask_type_roundtrip():
     """push(msg_type="ask") 后 peek_type/pop_type 返回 "ask"，pop 返回 content。"""
     q = MainAgentRequestQueue()
-    q.push("【子Agent提问·需回复】[子名]\n问题\n收到请回复", msg_type="ask")
+    q.push("【子Agent提问·需回复】[子名]\n问题", msg_type="ask")
 
-    assert q.peek() == "【子Agent提问·需回复】[子名]\n问题\n收到请回复"
+    assert q.peek() == "【子Agent提问·需回复】[子名]\n问题"
     assert q.peek_type() == "ask"
 
     # pop 解包返回 content
-    assert q.pop() == "【子Agent提问·需回复】[子名]\n问题\n收到请回复"
+    assert q.pop() == "【子Agent提问·需回复】[子名]\n问题"
     assert q.is_empty()
 
     # pop_type 解包返回 msg_type

@@ -69,7 +69,7 @@ _BOUNDARY_SECTION_TEMPLATE = """## 职责边界
 
 _SUBAGENT_ASK_GUIDE_TEMPLATE = """<!-- NIU_SUBAGENT_GUIDE_v4 -->
 ## 通讯语法
-- `@niu-agent 问题内容` — 向主 Agent 提问，阻塞等待回答（5 分钟超时）。**把完整上下文写在 @niu-agent 前后，末尾加「收到请回复」**——主 Agent 会看到整段
+- `@niu-agent 问题内容` — 向主 Agent 提问，阻塞等待回答（5 分钟超时）。**把完整上下文写在 @niu-agent 前后**——主 Agent 会看到整段
 - `@user 问题内容` — 向用户提问，阻塞等待回答（10 分钟超时）。**上下文写在 @user 前**，用户会看到整段
 - `@end` — 任务完成，退出（汇报内容写在 @end 前，主 Agent 会收到完整汇报）
 """
@@ -1171,7 +1171,7 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
 
     与主 Agent 调用 call_subagent 不同：程序触发（force 压缩 / 手动 tidy API）
     时没有主 Agent 在工具循环里等子 Agent 回答。子 Agent 输出 T2 注入格式提问
-    （【子Agent提问·需回复】[unique_name]\n{问题}\n收到请回复——_compose_ask_main_agent_message
+    （【子Agent提问·需回复】[unique_name]\n{问题}——_compose_ask_main_agent_message
     拼装）时，由本 helper 自动回复固定文案，让子 Agent 自行决策继续或 @end 结束。
 
     Args:
@@ -1266,7 +1266,7 @@ def _extract_unique_name(result, agent_name):
     """从 '[unique_name] ...' 提取 unique_name，不匹配返回 None。
 
     支持三种格式：
-    - T2 注入格式（当前生产）：【子Agent提问·需回复】[unique_name]\n问题\n收到请回复
+    - T2 注入格式（当前生产）：【子Agent提问·需回复】[unique_name]\n问题
       （同步路径 unique_name=纯 agent_name，异步路径=agent_name-4位hex）
     - 同步旧格式：[agent_name] 问题（如 [browser-operator] 第一个问题）
     - 异步旧格式：[agent_name-4位hex] 问题（如 [file-processor-a1b2] 第一个问题）
@@ -1293,9 +1293,8 @@ def _extract_unique_name(result, agent_name):
 
 # 子 Agent 提问注入格式（T2——Bug2 修复：与完成通知 [子名] 已完成，结果： 显式区分）
 # 异步（_ask_main_agent_impl）与同步（_ask_main_agent_impl_sync）共用同一拼装，
-# 主 Agent 看到【子Agent提问·需回复】即知要回答；末尾「收到请回复」强化语义。
+# 主 Agent 看到【子Agent提问·需回复】即知要回答。
 _ASK_MAIN_AGENT_HEADER = "【子Agent提问·需回复】"
-_ASK_MAIN_AGENT_TRAILER = "收到请回复"
 
 
 def _compose_ask_main_agent_message(unique_name: str, question: str) -> str:
@@ -1304,10 +1303,9 @@ def _compose_ask_main_agent_message(unique_name: str, question: str) -> str:
     ```
     【子Agent提问·需回复】[unique_name]
     {完整内容}
-    收到请回复
     ```
     """
-    return f"{_ASK_MAIN_AGENT_HEADER}[{unique_name}]\n{question}\n{_ASK_MAIN_AGENT_TRAILER}"
+    return f"{_ASK_MAIN_AGENT_HEADER}[{unique_name}]\n{question}"
 
 
 def _ask_main_agent_impl(question: str, unique_name: str) -> str:
@@ -1316,7 +1314,7 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     子 Agent 调用流程（阶段二内存队列机制）：
       1. 检查是否已被 cancel 过（_ask_terminated 标记）——避免 cancel 后 LLM 又调 ask_main_agent 死锁
       2. 注册 future 到 PendingAskRegistry（key=unique_name）
-      3. 推 "【子Agent提问·需回复】[unique_name]\n问题\n收到请回复"（type="ask"）到 MainAgentRequestQueue 内存队列（**不写 db**）
+      3. 推 "【子Agent提问·需回复】[unique_name]\n问题"（type="ask"）到 MainAgentRequestQueue 内存队列（**不写 db**）
       4. future.wait() 阻塞（不写 db，由 db_monitor 检测主 Agent 闲置时推 SSE 触发前端）
       5. 前端调 /api/chat/session → 后端写 user 消息到 db + 调 LLM → 主 Agent 回复 @子名 回答
       6. db_monitor 链路 B 轮询到主 Agent 回复的 subagent_msg → set_answer 解除 future
@@ -1356,7 +1354,6 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     # content 格式（T2 注入格式）：
     #   【子Agent提问·需回复】[子名]
     #   {完整内容}
-    #   收到请回复
     # db_monitor 推 SSE 时 role=subagent_msg，前端收到后调 /api/chat/session，
     # content 作为 message 参数传给后端，后端 compat.py 写 user 消息（role=user）。
     # push msg_type="ask"——队列层结构区分（与完成通知 msg_type="notify" 显式区分——Bug2 修复核心）
@@ -1468,7 +1465,7 @@ def _ask_main_agent_impl_sync(
     messages: list,
     content: str,
 ) -> str:
-    """同步路径：包装 question 为 T2 注入格式（【子Agent提问·需回复】[unique_name]\n问题\n收到请回复），append assistant content 到 messages。
+    """同步路径：包装 question 为 T2 注入格式（【子Agent提问·需回复】[unique_name]\n问题），append assistant content 到 messages。
 
     与异步 _ask_main_agent_impl（subagent.py:782）的包装逻辑一致，但：
     - 不阻塞等主 Agent 回答（同步路径靠工具返回值通道）
@@ -1483,7 +1480,7 @@ def _ask_main_agent_impl_sync(
         content: 原始 LLM 输出文本（含 @niu-agent 前缀）
 
     Returns:
-        包装后的文本 "【子Agent提问·需回复】[unique_name]\n{sanitized_question}\n收到请回复"
+        包装后的文本 "【子Agent提问·需回复】[unique_name]\n{sanitized_question}"
     """
     messages.append({"role": "assistant", "content": content})
 

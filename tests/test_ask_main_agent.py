@@ -136,7 +136,9 @@ def test_ask_main_agent_tool_returns_answer():
         assert "【子Agent提问·需回复】" in queued
         assert name in queued
         assert "这是问题" in queued
-        assert queued.endswith("收到请回复")
+        # 无「收到请回复」trailer（2026-08-15 用户拍板删除——需回复标志+30s 提醒已足够）
+        assert "收到请回复" not in queued
+        assert queued.endswith("这是问题")
     finally:
         SubagentRegistry.unregister(name)
 
