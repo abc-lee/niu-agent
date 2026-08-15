@@ -305,6 +305,9 @@ class TestDispatch:
         """裸工具名（无 / 前缀）执行成功时应 yield StreamEvent('tool_marker', ...)。"""
         handler = _make_handler()
         mock_registry = Mock()
+        # dispatch bare-name auto-resolve 会迭代 registry._server_tools/_schemas（真实实现为 dict）——补全 mock 形状
+        mock_registry._server_tools = {}
+        mock_registry._schemas = {}
         mock_func = Mock(return_value={"status": "success", "data": "ok"})
         mock_registry.get.return_value = mock_func
 
@@ -325,6 +328,9 @@ class TestDispatch:
         """裸工具名执行异常时应 yield StreamEvent('system', ...)。"""
         handler = _make_handler()
         mock_registry = Mock()
+        # dispatch bare-name auto-resolve 会迭代 registry._server_tools/_schemas（真实实现为 dict）——补全 mock 形状
+        mock_registry._server_tools = {}
+        mock_registry._schemas = {}
         mock_func = Mock(side_effect=RuntimeError("bare tool crash"))
         mock_registry.get.return_value = mock_func
 
@@ -345,6 +351,9 @@ class TestDispatch:
         """未知工具应 yield StreamEvent('system', ...)。"""
         handler = _make_handler()
         mock_registry = Mock()
+        # dispatch bare-name auto-resolve 会迭代 registry._server_tools/_schemas（真实实现为 dict）——补全 mock 形状
+        mock_registry._server_tools = {}
+        mock_registry._schemas = {}
         mock_registry.get.return_value = None
 
         with patch("agent.tool_registry.get_registry", return_value=mock_registry):
