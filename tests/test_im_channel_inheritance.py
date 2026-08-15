@@ -110,3 +110,37 @@ class TestChatQueueForceWiring:
         idx = src.index('if request.source == "electron":')
         seg = src[idx:idx + 150]
         assert "set_im_force(False)" in seg, "compat electron 分支必须清 force（规则 2 转假）"
+
+
+class TestShouldPushIM:
+    """should_push_im() 单一判定入口——四组合真值表（用户拍板：全局只有一个 IM 推送判定）"""
+
+    def test_channel_set_force_false(self):
+        runner = _make_runner()
+        runner.set_im_channel("oc_x")
+        runner.set_im_force(False)
+        assert runner.should_push_im() is True
+
+    def test_channel_empty_force_true(self):
+        runner = _make_runner()
+        runner.set_im_channel("")
+        runner.set_im_force(True)
+        assert runner.should_push_im() is True
+
+    def test_both_set(self):
+        runner = _make_runner()
+        runner.set_im_channel("oc_x")
+        runner.set_im_force(True)
+        assert runner.should_push_im() is True
+
+    def test_both_empty(self):
+        runner = _make_runner()
+        runner.set_im_channel("")
+        runner.set_im_force(False)
+        assert runner.should_push_im() is False
+
+    def test_returns_bool_not_string(self):
+        # 必须返回 bool——_im_channel_id 是 str，直接 or 返回会透出 str 类型
+        runner = _make_runner()
+        runner.set_im_channel("oc_x")
+        assert isinstance(runner.should_push_im(), bool)
