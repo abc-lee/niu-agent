@@ -387,7 +387,7 @@ class ChatQueue:
                 full_reply = "处理消息超时，请稍后重试"
             except Exception as e:
                 logger.error(f"[ChatQueue] Chat error: {e}")
-                chat_error = str(e)
+                chat_error = e  # E2：保留异常对象（str() 化后 type() 判定恒 'str'——is_litellm_error_type 失效）；str() 插值/None 判定/日志均兼容
                 full_reply = f"处理消息时出错：{str(e)}"
             finally:
                 if acquired:
@@ -396,31 +396,54 @@ class ChatQueue:
             # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
             rv = getattr(self._runner, "last_return_value", None)
             if chat_error is None:
-                # 持久化回复消息（使用共享函数）
-                # source 强制 "electron"——所有 source（包括 scheduler）的 assistant 回复
-                # 都走 electron SSE 通道推送给前端，避免被 notify_new_message 白名单过滤
-                from niu_api.chat import persist_agent_reply
-                persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-                extracted_at_msgs = getattr(self._runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
-                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
+                if rv and isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
+                    # E2：LLM_ERROR 错误文本不落库（用户拍板"不写 DB"——刷新 Chat 从 DB 加载历史时自然消失）
+                    # full_reply 已是源头友好文案（agent_loop yield 双参）——不重复 format（通道 2 双包风险）
+                    # 该函数内 message_id 无读取点（return full_reply、_check_overflow 均不消费），无需赋值
+                    error_msg = rv.get("error_msg", "") or ""
+                    error_type = rv.get("error_type")
+                    from niu_api.chat import notify_llm_error_sync
+                    from agent.generic.litellm_adapter import extract_error_type, format_llm_error_for_user
+                    notify_llm_error_sync(
+                        error_type or extract_error_type(error_msg),
+                        format_llm_error_for_user(error_msg, error_type),
+                        "chat_queue",
+                    )
+                    # skip persist——错误文本不落库
+                else:
+                    # 持久化回复消息（使用共享函数）
+                    # source 强制 "electron"——所有 source（包括 scheduler）的 assistant 回复
+                    # 都走 electron SSE 通道推送给前端，避免被 notify_new_message 白名单过滤
+                    from niu_api.chat import persist_agent_reply
+                    persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+                    extracted_at_msgs = getattr(self._runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
+                    message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
             else:
-                # 异常路径：写降级回复 [系统繁忙，请重试] 到 DB + SSE 推送
-                # 让前端看到 user 消息后立即跟一条 assistant 降级回复，不会卡 typing 状态
-                # 保留原 full_reply（含具体错误信息）记日志，DB 存降级回复避免污染下轮向量检索
+                # 异常路径：中性占位符落库 + 友好文案投递 + notify 解耦（E2）
+                # DB 存中性占位符（错误细节不进 DB，避免污染下轮向量检索）；投递文本为友好文案（用户可见）
+                # type_name/is_llm 提前判定（与 persist 解耦）——persist 成败均 notify
                 # persisted_msgs 强制 None——异常路径下 _persisted_msgs 可能是上次的列表（语义陷阱）
                 # source 强制 "electron"——与正常路径一致，避免被 notify_new_message 白名单过滤
                 logger.warning(f"[ChatQueue] Chat error, writing degraded reply. original_error={chat_error}")
-                degraded_reply = "[系统繁忙，请重试]"
+                degraded_reply = "[系统繁忙，请重试]"  # 中性占位符落库（既有行为保持——错误细节不进 DB）
+                from niu_api.chat import notify_llm_error_sync
+                from agent.generic.litellm_adapter import format_llm_error_for_user, is_litellm_error_type
+                type_name = type(chat_error).__name__ if isinstance(chat_error, BaseException) else None
+                is_llm = bool(type_name) and is_litellm_error_type(type_name)
+                if is_llm:
+                    push_text = format_llm_error_for_user(str(chat_error), type_name)  # 友好文案（独立于 persist 成败）
                 from niu_api.chat import persist_agent_reply
                 try:
                     message_id, _ = await persist_agent_reply(
                         store, None, history_len, degraded_reply,
                         source="electron", persisted_msgs=None,
                     )
-                    full_reply = degraded_reply
                 except Exception as persist_e:
                     logger.error(f"[ChatQueue] Degraded reply persist failed: {persist_e}")
-                    full_reply = degraded_reply
+                # 统一赋值：persist 失败 DB 降级但投递仍友好（try/except 后单行）
+                full_reply = push_text if is_llm else degraded_reply
+                if is_llm:
+                    notify_llm_error_sync(type_name, push_text, "chat_queue")  # notify 与 persist 解耦——persist 成败均推（Electron 并行可见性一致）；非 LLM 异常不 notify（不误标）
 
             # 上下文溢出检测
             await self._check_overflow(session_id, store, full_reply)
