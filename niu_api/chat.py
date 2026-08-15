@@ -712,16 +712,20 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             full_reply = f"Error: {str(e)}"
 
         # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
+        # LLM_ERROR：agent_loop 返回 LLM_ERROR 时错误文本不落库（E2 用户拍板"不写 DB"——刷新 Chat 从 DB 加载历史时自然消失）
+        rv = getattr(runner, "last_return_value", None)
+        message_id = None  # E2 显式初始化：返回处无条件读取（对齐 /chat SSE 模式），LLM_ERROR skip persist 后保持 None
         if chat_error is None:
             # 持久化 Agent 回复（使用 persist_agent_reply 双管道）
-            rv = getattr(runner, "last_return_value", None)
-            history_len = len(history_for_runner) if history_for_runner else 0
-            persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-            extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
-            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
+            if rv and isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
+                # E2：LLM_ERROR 分支 skip persist——显式守卫（对齐 compat）：rv=None（用户 Stop 等）时防 None.get AttributeError
+                logger.warning(f"[Chat Sync] Skipped persist due to LLM_ERROR: {rv.get('error_msg', '')}")
+            else:
+                history_len = len(history_for_runner) if history_for_runner else 0
+                persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+                extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
+                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
         else:
-            rv = getattr(runner, "last_return_value", None)
-            message_id = None
             logger.warning(f"[Chat Sync] Skipped persist due to chat error: {chat_error}")
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞，压缩完再继续）
