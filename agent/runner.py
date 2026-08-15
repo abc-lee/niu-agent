@@ -3083,11 +3083,13 @@ class NiuRunner:
                                 # 消息由 route_out(full_reply) 发，full_reply 在
                                 # persist_agent_reply 已 strip——此处 chunk 级 strip 为
                                 # 流式预览兜底，@ 段跨 chunk 拆分时尽力而为）
+                                # 闸门统一 should_push_im() 单一入口——force-only 时 channel_id 空，
+                                # adapter 回退 _push_chat_id 广播建卡
                                 try:
                                     from agent.at_message_parser import strip_at_messages
                                     from niu_api.channel.gateway import get_im_gateway
                                     _gw = get_im_gateway()
-                                    if _gw and _gw.is_connected and chunk.content and self._current_channel_id:
+                                    if _gw and _gw.is_connected and chunk.content and self.should_push_im():
                                         _gw.notify_stream(strip_at_messages(chunk.content), channel_id=self._current_channel_id)
                                 except Exception:
                                     pass
@@ -3119,7 +3121,7 @@ class NiuRunner:
                                 from agent.at_message_parser import strip_at_messages
                                 from niu_api.channel.gateway import get_im_gateway
                                 _gw = get_im_gateway()
-                                if _gw and _gw.is_connected and chunk and self._current_channel_id:
+                                if _gw and _gw.is_connected and chunk and self.should_push_im():
                                     _gw.notify_stream(strip_at_messages(chunk), channel_id=self._current_channel_id)
                             except Exception:
                                 pass
@@ -3136,7 +3138,7 @@ class NiuRunner:
             try:
                 from niu_api.channel.gateway import get_im_gateway
                 _gw = get_im_gateway()
-                if _gw and _gw.is_connected and self._current_channel_id:
+                if _gw and _gw.is_connected and self.should_push_im():
                     _gw.notify_stream("", channel_id=self._current_channel_id, is_final=True)
             except Exception:
                 pass
