@@ -7,6 +7,7 @@ Brain Region Node Management 测试 — 验证 RegionManager 对脑区主节点�
 
 from unittest.mock import MagicMock
 
+import networkx as nx
 import pytest
 
 from niu_api.internal.region_detector import (
@@ -23,6 +24,7 @@ from niu_api.internal.region_manager import (
     RegionManager,
     _encode_description,
     _parse_description,
+    _read_region_raw_descriptions,
 )
 
 # ============== 辅助函数 ==============
@@ -92,6 +94,47 @@ def _make_mock_adapter_and_ingester() -> tuple[MagicMock, MagicMock]:
     adapter.delete_entity.return_value = {"status": "ok"}
 
     return adapter, ingester
+
+
+def _make_region_graph(node_desc_map: dict[str, str]) -> nx.Graph:
+    """构造 fake networkx.Graph——脑区节点（entity_type=brainregion）带原始 <SEP> 描述。
+
+    节点键用真实存储形态（小写——LightRAG graph 节点 id 全部小写）。
+    同 test_region_manager_decay.py 的 fake_rag 模式。
+    """
+    g = nx.Graph()
+    for key, desc in node_desc_map.items():
+        g.add_node(key, entity_type=REGION_ENTITY_TYPE, description=desc)
+    return g
+
+
+def _wire_rag_graph(adapter, g: nx.Graph) -> None:
+    """把 fake networkx.Graph 挂到 adapter._get_rag() 链路（kg._graph = g）。"""
+    adapter._get_rag.return_value = MagicMock(
+        chunk_entity_relation_graph=MagicMock(_graph=g)
+    )
+
+
+def _make_region_info(
+    name: str,
+    label: str = "",
+    community_id: str = "",
+    description: str = "",
+    size: int = 0,
+    representative: str = "",
+    updated_at: float = 0.0,
+) -> BrainRegionInfo:
+    """构造 BrainRegionInfo（label 缺省取 name 去 REGION_SUFFIX）。"""
+    return BrainRegionInfo(
+        name=name,
+        label=label or name.removesuffix(REGION_SUFFIX),
+        community_id=community_id,
+        description=description,
+        size=size,
+        representative=representative,
+        members=[],
+        updated_at=updated_at,
+    )
 
 
 # ============== Test 1: create_region_nodes ==============
@@ -276,6 +319,15 @@ class TestUpdateRegionSummaries:
                 },
             ],
         }
+        # R11：图快照直读原始描述（list_entities 清洗会剥掉 brain_meta_*）
+        g = _make_region_graph({
+            "python脑区": (
+                "summary<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_size:3<SEP>brain_meta_representative:Python"
+                "<SEP>brain_meta_updated_at:1745366400"
+            ),
+        })
+        _wire_rag_graph(adapter, g)
 
         # Mock lightrag_manager.get_region_members
         with pytest.MonkeyPatch.context() as m:
@@ -387,6 +439,177 @@ class TestGetAllRegions:
         regions = manager.get_all_regions()
 
         assert regions == []
+
+
+class TestReadRegionRawDescriptions:
+    """R11：_read_region_raw_descriptions——图快照直读原始描述（读清洗断裂修复）"""
+
+    def test_reads_raw_descriptions_for_all_brainregion_nodes(self):
+        """全量枚举 entity_type=brainregion 节点（含配置外/幽灵）——原始描述直读"""
+        g = nx.Graph()
+        g.add_node(
+            "python脑区", entity_type="brainregion",
+            description=(
+                "Python(language)<SEP>Django(framework)"
+                "<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_shrink_count:2<SEP>brain_meta_priority:permanent"
+            ),
+        )
+        g.add_node("文档库脑区", entity_type="brainregion",
+                   description="文档摘要<SEP>brain_meta_priority:permanent")
+        # 配置外/幽灵脑区（非默认配置名）——helper 必须全量枚举（dissolve 的 shrink_count 来源）
+        g.add_node("知识库脑区", entity_type="brainregion",
+                   description="幽灵摘要<SEP>brain_meta_shrink_count:2")
+        # 非脑区实体（忽略）
+        g.add_node("普通实体", entity_type="concept", description="不是脑区")
+        # 无描述脑区（忽略——元数据回路无意义）
+        g.add_node("空描述脑区", entity_type="brainregion")
+
+        result = _read_region_raw_descriptions(MagicMock(_graph=g))
+
+        assert result["python脑区"].startswith("Python(language)<SEP>")
+        assert "brain_meta_shrink_count:2" in result["python脑区"]
+        assert result["文档库脑区"] == "文档摘要<SEP>brain_meta_priority:permanent"
+        assert result["知识库脑区"] == "幽灵摘要<SEP>brain_meta_shrink_count:2"
+        assert "普通实体" not in result
+        assert "空描述脑区" not in result
+
+    def test_entity_type_case_insensitive(self):
+        """entity_type 大小写不敏感（BrainRegion 也命中）"""
+        g = nx.Graph()
+        g.add_node("python脑区", entity_type="BrainRegion", description="摘要")
+        g.add_node("react脑区", entity_type="BRAINREGION", description="摘要2")
+
+        result = _read_region_raw_descriptions(MagicMock(_graph=g))
+
+        assert set(result) == {"python脑区", "react脑区"}
+
+    def test_lowercase_node_key_lookup(self):
+        """节点键小写——调用方用 region_name.lower() 查找（大小写契约）"""
+        g = _make_region_graph({"ai脑区": "AI摘要<SEP>brain_meta_priority:long"})
+
+        result = _read_region_raw_descriptions(MagicMock(_graph=g))
+
+        # 大写脑区名 → lower 后命中
+        assert result.get("AI脑区".lower()) == "AI摘要<SEP>brain_meta_priority:long"
+
+    def test_kg_none_or_exception_returns_empty(self):
+        """kg 为 None / 图读取异常 → 返回 {}（调用方降级到既有行为）"""
+        assert _read_region_raw_descriptions(None) == {}
+        assert _read_region_raw_descriptions(MagicMock(_graph=None)) == {}
+
+        class BrokenGraph:
+            def copy(self):
+                raise RuntimeError("graph locked")
+
+        result = _read_region_raw_descriptions(MagicMock(_graph=BrokenGraph()))
+        assert result == {}
+
+
+class TestGetAllRegionsR11RawDesc:
+    """R11：get_all_regions 元数据从图快照直读原始描述——size 保真 + 展示契约"""
+
+    @pytest.mark.asyncio
+    async def test_metadata_from_graph_snapshot_size_real(self):
+        """size/region_id/representative/updated_at 从图快照直读——不被清洗抹成默认值"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # list_entities 返回清洗后描述（模拟 _clean_description 产物——无 brain_meta_*）
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "entity_type": "BrainRegion",
+                    "description": "Python(language)、Django(framework)",
+                },
+            ],
+        }
+        # 图快照含原始 <SEP> 描述（节点键小写）
+        g = _make_region_graph({
+            "python脑区": (
+                "Python(language)<SEP>Django(framework)"
+                "<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_size:3"
+                "<SEP>brain_meta_representative:Python"
+                "<SEP>brain_meta_updated_at:1745366400"
+                "<SEP>brain_meta_priority:permanent"
+            ),
+        })
+        _wire_rag_graph(adapter, g)
+
+        regions = manager.get_all_regions()
+
+        assert len(regions) == 1
+        r0 = regions[0]
+        assert r0.size == 3, f"size 应读真实值 3（不被清洗抹成 0），实际 {r0.size}"
+        assert r0.community_id == "community_0"
+        assert r0.representative == "Python"
+        assert r0.updated_at == 1745366400.0
+
+    @pytest.mark.asyncio
+    async def test_description_stays_formatted_summary(self):
+        """展示契约：description 保持 _format_summary_for_display 格式化摘要——brain_meta_* 不泄漏"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "entity_type": "BrainRegion",
+                    "description": "Python(language)、Django(framework)",
+                },
+            ],
+        }
+        g = _make_region_graph({
+            "python脑区": (
+                "Python(language)<SEP>Django(framework)"
+                "<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_priority:permanent"
+                "<SEP>brain_meta_shrink_count:2"
+            ),
+        })
+        _wire_rag_graph(adapter, g)
+
+        regions = manager.get_all_regions()
+        r0 = regions[0]
+
+        assert r0.description == "Python(language)、Django(framework)"
+        assert "brain_meta_" not in r0.description, (
+            f"description 不得泄漏 brain_meta_* 原始 token，实际 {r0.description!r}"
+        )
+        assert "permanent" not in r0.description
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_list_entities_when_graph_unavailable(self):
+        """图快照不可用（helper 返回空）→ 降级解析 list_entities 描述（既有行为）"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "entity_type": "BrainRegion",
+                    "description": (
+                        "Python(language)、Django(framework) | "
+                        "brain_meta_region_id:community_0 | brain_meta_size:3 | "
+                        "brain_meta_representative:Python | brain_meta_updated_at:1745366400"
+                    ),
+                },
+            ],
+        }
+        # 不 wire 图——_get_rag 返回 MagicMock → helper 返回 {}
+
+        regions = manager.get_all_regions()
+
+        assert len(regions) == 1
+        assert regions[0].size == 3
+        assert regions[0].description == "Python(language)、Django(framework)"
 
 
 # ============== Test 4: get_region_members ==============
@@ -1075,6 +1298,13 @@ class TestUpdateRegionSummariesNoLLM:
                 },
             ],
         }
+        # R11：图快照直读原始描述
+        _wire_rag_graph(adapter, _make_region_graph({
+            "python脑区": _encode_description(
+                summary="旧摘要", region_id="community_0",
+                size=3, representative="Python", updated_at=1000.0,
+            ),
+        }))
 
         # Mock get_region_members
         from unittest.mock import patch
@@ -1083,8 +1313,8 @@ class TestUpdateRegionSummariesNoLLM:
 
         assert label_calls == []
 
-    def test_update_uses_generate_region_summary(self):
-        """update_region_summaries should use _generate_region_summary format."""
+    def test_update_preserves_old_summary_and_metadata(self):
+        """R11/P4：summary 保留旧值（不重新从成员名生成覆盖）——元数据保真"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
@@ -1100,6 +1330,14 @@ class TestUpdateRegionSummariesNoLLM:
                 },
             ],
         }
+        # R11：图快照直读原始描述（含 priority/shrink_count 动态元数据）
+        g = _make_region_graph({
+            "python脑区": (
+                "旧摘要<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_priority:permanent<SEP>brain_meta_shrink_count:2"
+            ),
+        })
+        _wire_rag_graph(adapter, g)
 
         from unittest.mock import patch
         with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
@@ -1109,7 +1347,14 @@ class TestUpdateRegionSummariesNoLLM:
         entities = call_kwargs.get("entities", [])
         assert len(entities) == 1
         desc = entities[0]["description"]
-        assert "Python" in desc
+        # P4：已建脑区描述不改——summary 保留旧值
+        assert desc.startswith("旧摘要<SEP>"), f"summary 应保留旧值，实际 {desc}"
+        # 元数据保真：region_id/priority/shrink_count 不被清洗抹平
+        assert "brain_meta_region_id:community_0" in desc
+        assert "brain_meta_priority:permanent" in desc
+        assert "brain_meta_shrink_count:2" in desc
+        # size 用当前成员数刷新
+        assert "brain_meta_size:2" in desc
 
 
 class TestBatchLabelGeneration:
@@ -1325,6 +1570,61 @@ class TestSkipRelationshipInjectionForExistingRegions:
         assert "brain_编程开发脑区" not in chunk_source_ids
         assert "brain_React脑区" in chunk_source_ids
 
+    def test_existing_region_priority_preserved_from_graph_raw_desc(self):
+        """R11：is_existing 脑区 priority 从图快照直读原始描述保真——不被判 medium 重写
+
+        无修复时：get_all_regions().description 是格式化摘要（展示契约——不含
+        brain_meta_*）→ parse_priority_from_description 恒 medium → 高优已存在
+        脑区每次 consolidate 被重写为 medium。
+        """
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_labels = lambda summaries_list, existing: [("编程开发", "")]
+
+        # list_entities 返回清洗后描述（无 brain_meta_*——模拟 _clean_description）
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [{
+                "id": "编程开发脑区",
+                "entity_type": "BrainRegion",
+                "description": "Python<SEP>Django",
+            }],
+        }
+        # 图快照原始描述：priority=permanent（高优）
+        _wire_rag_graph(adapter, _make_region_graph({
+            "编程开发脑区": _encode_description(
+                summary="Python<SEP>Django", region_id="community_0",
+                size=3, representative="Python", updated_at=1000.0,
+                priority="permanent",
+            ),
+        }))
+
+        members = ["Python", "Django", "FastAPI"] + [f"E{i}" for i in range(97)]
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=list(members),
+                entity_types={"language": 50, "framework": 50},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+
+        manager.get_region_members = lambda name: list(members)
+
+        created_regions = manager.create_region_nodes(result)
+
+        assert created_regions == []  # 已存在——不新建
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        entities = call_kwargs.get("entities", [])
+        descs = {e["entity_name"]: e["description"] for e in entities}
+        assert "brain_meta_priority:permanent" in descs["编程开发脑区"], (
+            f"is_existing 脑区 priority 应保真 permanent（不被展示摘要解析成 medium），"
+            f"实际 {descs['编程开发脑区']}"
+        )
+
     def test_skip_community_ids_filters_partitions(self):
         """skip_community_ids 参数过滤漂移分区"""
         adapter, ingester = _make_mock_adapter_and_ingester()
@@ -1449,63 +1749,43 @@ class TestSkipRelationshipInjectionForExistingRegions:
         assert chunks == []
 
 
-class TestUpdateRegionSummariesPreservesTypeInfo:
-    """D-16 fix: update_region_summaries preserves entity type info from NetworkX graph."""
+class TestUpdateRegionSummariesR11RawDesc:
+    """R11：update_region_summaries 元数据从图快照直读原始描述——priority/region_id 保真"""
 
-    def test_type_info_from_graph_in_summary(self):
-        """Entity types from NetworkX graph should be passed to _build_entity_summaries."""
+    def test_priority_and_region_id_preserved_from_graph_raw_desc(self):
+        """priority 保真（不被清洗抹成 medium）——region_id 保真（不被抹空）"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
-        # Mock list_entities to return the region entity
+        # list_entities 返回清洗后描述（模拟 _clean_description——无 brain_meta_*）
         adapter.list_entities.return_value = {
             "status": "ok",
-            "data": [
-                {
-                    "id": "Python脑区",
-                    "description": _encode_description(
-                        summary="Python<SEP>Django",
-                        region_id="community_0",
-                        size=2,
-                        representative="Python",
-                        updated_at=1000.0,
-                    ),
-                },
-            ],
+            "data": [{"id": "Python脑区", "description": "旧摘要"}],
         }
-
-        # Mock _get_rag to return a LightRAG instance with node data
-        mock_rag = MagicMock()
-        mock_kg = MagicMock()
-        mock_nx_graph = MagicMock()
-        mock_nx_graph.nodes = {
-            "python": {"entity_type": "language"},
-            "django": {"entity_type": "framework"},
-        }
-        mock_nx_graph.__contains__ = lambda _, key: key in mock_nx_graph.nodes
-        mock_kg._graph = mock_nx_graph
-        mock_rag.chunk_entity_relation_graph = mock_kg
-        adapter._get_rag.return_value = mock_rag
-
-        # Spy on _build_entity_summaries to capture its entity_name_to_type arg
-        original_build = manager._build_entity_summaries
-        captured_type_map = {}
-        def spy_build(members, entity_types, entity_name_to_type=None):
-            if entity_name_to_type:
-                captured_type_map.update(entity_name_to_type)
-            return original_build(members, entity_types, entity_name_to_type)
-        manager._build_entity_summaries = spy_build
+        # 图快照原始描述：priority=permanent（高优）——无修复时漂移/摘要更新会抹成 medium
+        g = _make_region_graph({
+            "python脑区": (
+                "旧摘要<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_priority:permanent"
+            ),
+        })
+        _wire_rag_graph(adapter, g)
 
         from unittest.mock import patch
-        with patch.object(manager, "get_region_members", return_value=["Python", "Django"]), \
-             patch("niu_api.internal.lightrag_manager.graph_read_lock", return_value=MagicMock()):
+        with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
             manager.update_region_summaries(["Python脑区"])
 
-        # Verify entity_name_to_type was populated from graph node data
-        assert captured_type_map == {"Python": "language", "Django": "framework"}
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        desc = call_kwargs["entities"][0]["description"]
+        assert "brain_meta_priority:permanent" in desc, (
+            f"priority 应保真 permanent（不被清洗抹成 medium），实际 {desc}"
+        )
+        assert "brain_meta_region_id:community_0" in desc, (
+            f"region_id 应保真 community_0（不被抹空），实际 {desc}"
+        )
 
     def test_fallback_when_rag_is_none(self):
-        """When _get_rag returns None, summary still works (types become 'unknown')."""
+        """_get_rag 返回 None → helper 空 → 降级 explore_node，更新仍工作"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
@@ -1525,18 +1805,33 @@ class TestUpdateRegionSummariesPreservesTypeInfo:
             ],
         }
 
-        # _get_rag returns None
+        # _get_rag returns None → helper 返回 {} → explore_node 降级路径提供描述
         adapter._get_rag.return_value = None
+        adapter.explore_node.return_value = {
+            "center": {"id": "Python脑区"},
+            "nodes": [
+                {
+                    "id": "Python脑区",
+                    "description": _encode_description(
+                        summary="Python(language)<SEP>Django(framework)",
+                        region_id="community_0",
+                        size=2,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
 
         from unittest.mock import patch
         with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
             manager.update_region_summaries(["Python脑区"])
 
-        # Should still work (with 'unknown' types as before the fix)
+        # Should still work (graph unavailable → explore_node fallback)
         ingester.inject_custom_kg.assert_called_once()
 
     def test_fallback_when_graph_raises_exception(self):
-        """When graph read raises an exception, summary still works."""
+        """图读取抛异常 → helper 返回 {} → 更新仍工作（不崩溃）"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
@@ -1556,14 +1851,29 @@ class TestUpdateRegionSummariesPreservesTypeInfo:
             ],
         }
 
-        # _get_rag raises an exception
+        # _get_rag raises an exception → helper 空 → explore_node 降级路径
         adapter._get_rag.side_effect = RuntimeError("graph not ready")
+        adapter.explore_node.return_value = {
+            "center": {"id": "Python脑区"},
+            "nodes": [
+                {
+                    "id": "Python脑区",
+                    "description": _encode_description(
+                        summary="Python(language)<SEP>Django(framework)",
+                        region_id="community_0",
+                        size=2,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
 
         from unittest.mock import patch
         with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
             manager.update_region_summaries(["Python脑区"])
 
-        # Should still work (exception caught, falls back to empty mapping)
+        # Should still work (exception caught, falls back to explore_node)
         ingester.inject_custom_kg.assert_called_once()
 
 
@@ -1594,11 +1904,19 @@ class TestDissolveShrunkRegionsBatchRead:
                         "Python 摘要 | brain_meta_region_id:community_0 | "
                         "brain_meta_size:5 | brain_meta_representative:Python | "
                         "brain_meta_updated_at:1745366400"
-                        "<SEP>brain_meta_shrink_count:2"
                     ),
                 },
             ],
         }
+        # R11：shrink_count 从图快照直读原始描述（list_entities 清洗会剥掉 brain_meta_*）
+        _wire_rag_graph(adapter, _make_region_graph({
+            "python脑区": (
+                "Python 摘要<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_size:5<SEP>brain_meta_representative:Python"
+                "<SEP>brain_meta_updated_at:1745366400"
+                "<SEP>brain_meta_shrink_count:2"
+            ),
+        }))
 
         # get_all_regions 返回脑区列表
         manager.get_all_regions = lambda: [
@@ -1683,7 +2001,6 @@ class TestDissolveShrunkRegionsBatchRead:
                         "Python 摘要 | brain_meta_region_id:community_0 | "
                         "brain_meta_size:5 | brain_meta_representative:Python | "
                         "brain_meta_updated_at:1745366400"
-                        "<SEP>brain_meta_shrink_count:2"
                     ),
                 },
                 {
@@ -1697,6 +2014,20 @@ class TestDissolveShrunkRegionsBatchRead:
                 },
             ],
         }
+        # R11：shrink_count 从图快照直读原始描述（list_entities 清洗会剥掉 brain_meta_*）
+        _wire_rag_graph(adapter, _make_region_graph({
+            "python脑区": (
+                "Python 摘要<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_size:5<SEP>brain_meta_representative:Python"
+                "<SEP>brain_meta_updated_at:1745366400"
+                "<SEP>brain_meta_shrink_count:2"
+            ),
+            "target脑区": (
+                "Target 摘要<SEP>brain_meta_region_id:community_1"
+                "<SEP>brain_meta_size:3<SEP>brain_meta_representative:Target"
+                "<SEP>brain_meta_updated_at:1745366400"
+            ),
+        }))
 
         manager.get_all_regions = lambda: [
             BrainRegionInfo(
@@ -1774,6 +2105,240 @@ class TestDissolveShrunkRegionsBatchRead:
             f"reassign relationships 应有 5 条（批量读真实成员），"
             f"实际 {len(relationships)} 条——可能 dissolve 仍用单数读返回空"
         )
+
+
+class TestDissolveR11ShrinkCountRawRead:
+    """R11 核心回归：shrink_count 从图快照直读真实值——dissolve 恢复工作（P2 拍板）"""
+
+    def _make_manager(
+        self,
+        graph_desc: str,
+        region_info: BrainRegionInfo,
+        member_map: dict[str, list[str]],
+        island: bool = False,
+    ):
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [{
+                "id": region_info.name,
+                "entity_type": "BrainRegion",
+                "description": region_info.description,
+            }],
+        }
+        # R11：shrink_count 从图快照直读原始描述（节点键小写）
+        _wire_rag_graph(adapter, _make_region_graph({
+            region_info.name.lower(): graph_desc,
+        }))
+        manager.get_all_regions = lambda: [region_info]
+
+        from unittest.mock import patch
+        patchers = [
+            patch("niu_api.internal.lightrag_manager.get_all_region_members",
+                  return_value=member_map),
+            patch("niu_api.internal.region_manager.is_default_region", return_value=False),
+            patch.object(manager, "_find_most_similar_neighbor", return_value=None),
+        ]
+        if island:
+            # 孤岛保护走真实方法（图里成员 degree<=1 → 取消 dissolve）
+            pass
+        else:
+            patchers.append(patch.object(manager, "_has_isolated_member", return_value=False))
+        for p in patchers:
+            p.start()
+        self._patchers = patchers
+        return manager, adapter, ingester
+
+    def _stop_patchers(self):
+        for p in self._patchers:
+            p.stop()
+
+    def _last_persisted_shrink_count(self, ingester) -> int:
+        """从最后一次 inject_custom_kg 的实体描述里解析持久化的 shrink_count"""
+        calls = ingester.inject_custom_kg.call_args_list
+        for call in reversed(calls):
+            entities = call.kwargs.get("entities") or []
+            for ent in entities:
+                parsed = _parse_description(ent.get("description", ""))
+                val = parsed.get("shrink_count")
+                if val is not None:
+                    return int(val)
+        return 0
+
+    def test_shrink_count_accumulates_3_rounds_via_graph_snapshot(self):
+        """读清洗断裂修复核心：上一轮持久化的 shrink_count 被图快照真实读回——3 轮触发 dissolve
+
+        无修复时：list_entities/_clean_description 每轮剥掉 brain_meta_shrink_count →
+        每轮都读到 0 → +1 → 1 → 永远到不了 3 → dissolve 永不触发。
+        修复后：图快照直读 → 2 → +1 → 3 → dissolve 触发。
+        """
+        region_info = _make_region_info(
+            name="Python脑区", community_id="community_0",
+            description="Python 摘要", size=5, representative="Python",
+        )
+        member_map = {"Python脑区": ["Python", "Django", "NumPy", "Pandas", "Flask"]}
+
+        # 模拟三轮同步：图里 shrink_count 从 0（无字段）→ 1 → 2
+        for round_idx, graph_shrink in enumerate([None, 1, 2], start=1):
+            desc = "Python 摘要"
+            if graph_shrink is not None:
+                desc += f"<SEP>brain_meta_shrink_count:{graph_shrink}"
+            manager, adapter, ingester = self._make_manager(
+                desc, region_info, member_map, island=False,
+            )
+            try:
+                dissolved = manager.dissolve_shrunk_regions(
+                    shrink_threshold=100, shrink_rounds=3
+                )
+                if round_idx < 3:
+                    # 前两轮：未达 3 轮——只持久化累加值，不 dissolve
+                    assert dissolved == [], f"第 {round_idx} 轮不应 dissolve，实际 {dissolved}"
+                    persisted = self._last_persisted_shrink_count(ingester)
+                    assert persisted == round_idx, (
+                        f"第 {round_idx} 轮应持久化 shrink_count={round_idx}"
+                        f"（读回 {graph_shrink} + 1），实际 {persisted}"
+                    )
+                else:
+                    # 第三轮：2 → +1 → 3 触发 dissolve
+                    assert dissolved == ["Python脑区"], (
+                        f"第 3 轮 shrink_count 读回真实值 2 应触发 dissolve，实际 {dissolved}"
+                    )
+                    adapter.delete_entity.assert_called_once_with("Python脑区")
+            finally:
+                self._stop_patchers()
+
+    def test_config_external_ghost_region_dissolve_reachable(self):
+        """配置外/幽灵脑区 dissolve 可达（真实 is_default_region——helper 全量枚举不限配置）"""
+        ghost = _make_region_info(
+            name="R11幽灵脑区", community_id="community_9",
+            description="幽灵摘要", size=20, representative="幽灵成员",
+        )
+        # 幽灵 20 成员（<100）——shrink_count 已累计 2——下一轮触发
+        g = _make_region_graph({
+            "r11幽灵脑区": (
+                "幽灵摘要<SEP>brain_meta_region_id:community_9"
+                "<SEP>brain_meta_shrink_count:2"
+            ),
+        })
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [{
+                "id": ghost.name, "entity_type": "BrainRegion",
+                "description": "幽灵摘要",
+            }],
+        }
+        _wire_rag_graph(adapter, g)
+        manager.get_all_regions = lambda: [ghost]
+
+        from unittest.mock import patch
+        with patch(
+            "niu_api.internal.lightrag_manager.get_all_region_members",
+            return_value={"R11幽灵脑区": [f"m{i}" for i in range(20)]},
+        ), patch.object(manager, "_has_isolated_member", return_value=False), \
+           patch.object(manager, "_find_most_similar_neighbor", return_value=None):
+            dissolved = manager.dissolve_shrunk_regions(
+                shrink_threshold=100, shrink_rounds=3
+            )
+
+        # 配置外脑区不触发 is_default_region 保护（真实判断）——dissolve 可达
+        assert dissolved == ["R11幽灵脑区"], (
+            f"配置外/幽灵脑区 shrink_count 3 轮应 dissolve，实际 {dissolved}"
+        )
+        adapter.delete_entity.assert_called_once_with("R11幽灵脑区")
+
+    def test_ghost_deadlock_island_protection_blocks_dissolve(self):
+        """幽灵死锁披露：幽灵脑区有 degree-1 孤立成员 → 孤岛保护永久取消 dissolve
+
+        R11 后幽灵 shrink_count 开始累计，但 3 个 degree-1 孤立成员触发
+        _has_isolated_member → dissolve 永久取消——幽灵永不溶解（数据保留——可接受）。
+        """
+        from unittest.mock import patch
+
+        # 幽灵脑区 + 一个只有归属边的 degree-1 成员（真实孤岛检查）
+        g = nx.Graph()
+        g.add_node("r11幽灵脑区", entity_type="brainregion",
+                   description="幽灵摘要<SEP>brain_meta_shrink_count:2")
+        g.add_node("孤立成员x", entity_type="concept")
+        g.add_node("正常成员y", entity_type="concept")
+        g.add_node("其他实体", entity_type="concept")
+        g.add_edge("r11幽灵脑区", "孤立成员x", keywords="包含", weight=1.0)  # x degree=1
+        g.add_edge("r11幽灵脑区", "正常成员y", keywords="包含", weight=1.0)
+        g.add_edge("正常成员y", "其他实体", keywords="相关", weight=1.0)  # y degree=2
+
+        ghost = _make_region_info(
+            name="R11幽灵脑区", community_id="community_9",
+            description="幽灵摘要", size=2, representative="孤立成员x",
+        )
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [{
+                "id": ghost.name, "entity_type": "BrainRegion",
+                "description": "幽灵摘要",
+            }],
+        }
+        _wire_rag_graph(adapter, g)
+        manager.get_all_regions = lambda: [ghost]
+
+        with patch(
+            "niu_api.internal.lightrag_manager.get_all_region_members",
+            return_value={"R11幽灵脑区": ["孤立成员x", "正常成员y"]},
+        ), patch.object(manager, "_find_most_similar_neighbor", return_value=None):
+            dissolved = manager.dissolve_shrunk_regions(
+                shrink_threshold=100, shrink_rounds=3
+            )
+
+        # 孤岛保护取消 dissolve（幽灵永不溶解——死锁披露）
+        assert dissolved == [], "孤岛保护应取消幽灵 dissolve（死锁——数据保留）"
+        adapter.delete_entity.assert_not_called()
+        # shrink_count 仍按规则累加持久化（2 → 3）
+        call = ingester.inject_custom_kg.call_args
+        entities = call.kwargs.get("entities", [])
+        desc = entities[0].get("description", "") if entities else ""
+        assert "brain_meta_shrink_count:3" in desc, (
+            f"孤岛保护取消后 shrink_count 应累加到 3 持久化（等下轮重扫），实际 {desc}"
+        )
+
+    def test_default_region_skipped(self):
+        """默认脑区（is_default_region=True）跳过——不 dissolve"""
+        from unittest.mock import patch
+
+        default_region = _make_region_info(
+            name="文档库脑区", community_id="default_文档库",
+            description="文档摘要", size=1, representative="成员x",
+        )
+        g = _make_region_graph({
+            "文档库脑区": "文档摘要<SEP>brain_meta_shrink_count:5",
+        })
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [{
+                "id": default_region.name, "entity_type": "BrainRegion",
+                "description": "文档摘要",
+            }],
+        }
+        _wire_rag_graph(adapter, g)
+        manager.get_all_regions = lambda: [default_region]
+
+        with patch(
+            "niu_api.internal.lightrag_manager.get_all_region_members",
+            return_value={"文档库脑区": ["成员x"]},
+        ), patch(
+            "niu_api.internal.region_manager.is_default_region", return_value=True,
+        ):
+            dissolved = manager.dissolve_shrunk_regions(
+                shrink_threshold=100, shrink_rounds=3
+            )
+
+        assert dissolved == [], "默认脑区应被跳过"
+        adapter.delete_entity.assert_not_called()
 
 
 # ============== Bug 1: 删除脑区后刷新 activation_mgr 缓存 ==============
@@ -1861,11 +2426,19 @@ class TestDissolveShrunkRegionsRefreshesActivationCache:
                         "Python 摘要 | brain_meta_region_id:community_0 | "
                         "brain_meta_size:5 | brain_meta_representative:Python | "
                         "brain_meta_updated_at:1745366400"
-                        "<SEP>brain_meta_shrink_count:2"
                     ),
                 },
             ],
         }
+        # R11：shrink_count 从图快照直读原始描述（list_entities 清洗会剥掉 brain_meta_*）
+        _wire_rag_graph(adapter, _make_region_graph({
+            "python脑区": (
+                "Python 摘要<SEP>brain_meta_region_id:community_0"
+                "<SEP>brain_meta_size:5<SEP>brain_meta_representative:Python"
+                "<SEP>brain_meta_updated_at:1745366400"
+                "<SEP>brain_meta_shrink_count:2"
+            ),
+        }))
         # delete_entity 返回 ok
         adapter.delete_entity.return_value = {"status": "ok"}
 
