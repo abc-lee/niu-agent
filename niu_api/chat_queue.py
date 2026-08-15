@@ -275,25 +275,25 @@ class ChatQueue:
                 try:
                     router = get_channel_router()
                     if first_req.channel == "scheduler":
-                        im_cid = self._runner.get_im_channel()  # 继承的 _im_channel_id
-                        if im_cid:
-                            # 仅终结卡片不投递：SEND 空 content → adapter _on_send state 分支用 accumulated 定稿
-                            # （卡片显示完整回复、streaming_mode 关闭、state pop）——不新增独立 IM 消息
+                        # 单一判定入口（用户拍板：全局只有一个 IM 推送判定）——
+                        # 定时任务主 Agent 回复必须走 IM（trigger 提醒 + 回复两条都应在 IM）
+                        if self._runner.should_push_im():
                             from niu_api.channel.gateway import get_im_gateway
                             _gw = get_im_gateway()
                             if _gw and _gw.is_connected:
-                                _gw.send_sync(im_cid, "", pop_reply_to=False)
-                                # 确定性标志：watcher 的 future 是 run_coroutine_threadsafe 的
-                                # concurrent.futures.Future，chat_queue 的 reply_future 是
-                                # enqueue_and_wait_with_future 内部的 asyncio.Future——不同对象。
-                                # watcher 解包拿到同一个 asyncio.Future → 置位/读取同源。
-                                # 值在 resolve 前写入（finally set_result 之前）、resolve 后不再变——无跨事件 TOCTOU 窗口。
-                                # 遍历整个合并批次置位——supplements（多请求合并）的 future 也需置位
-                                # （两事件同窗口入队合并时，只置 first_req 会让 supplement 的 watcher 自推 → 双投递）：
+                                im_cid = self._runner.get_im_channel()
+                                # 投递回复内容（替代 08-12"仅终结不投递"）——卡片生命周期由 adapter _on_send 保证：
+                                # 有流式卡 → state 分支用 reply 终结（reply==accumulated 时直接终结不重复；
+                                # strip 失配回退 accumulated best-effort）；无卡 → send_markdown 独立消息，
+                                # receive_id 空时 adapter 回退 _push_chat_id 广播。
+                                _gw.send_sync(im_cid, reply, pop_reply_to=False)
+                                # 确定性标志（置位/读取同源 asyncio.Future；resolve 前写入无 TOCTOU；
+                                # 遍历整个合并批次——supplement 未置位会让 watcher 自推 → 双投递）：
                                 for r in (first_req, *supplements):
                                     if r.reply_future is not None:
                                         r.reply_future._im_finalized = True  # watcher 读 getattr(reply_future, "_im_finalized", False) 决定是否自推
-                        # else：无 IM 继承（无卡片可终结）→ 维持原 no-op（回复只走 SSE，原设计语义）
+                        # else：防御分支——scheduler 请求按规则 3 每轮重臂 force，双假生产不可达
+                        # （仅 _chat_lock 超时等边缘路径）→ 回复只走 SSE
                     else:
                         await router.push(reply, first_req.channel, "")
                 except Exception as e:

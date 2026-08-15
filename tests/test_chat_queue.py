@@ -277,7 +277,7 @@ async def test_drain_cancels_pending_futures(mock_runner, mock_store):
     assert future2.result() == "[会话已清空]"
 
 
-# ── scheduler 回复"仅终结卡片、不投递"（定时任务飞书流式卡片永不终结修复）──
+# ── scheduler 回复投递 IM（单一入口 should_push_im + 投递回复内容——定时任务主 Agent 回复必达 IM）──
 
 class _FakeIMGateway:
     """记录 send_sync 调用的假 IMGateway（is_connected 可配）"""
@@ -303,12 +303,13 @@ def _scheduler_patches(mock_store):
 
 @pytest.mark.asyncio
 async def test_scheduler_reply_finalizes_im_card(mock_runner, mock_store, monkeypatch):
-    """scheduler 通道无 channel_id + 有 IM 继承：send_sync 空 content 终结卡片（仅终结不投递，
-    不新增独立 IM 消息），reply_future._im_finalized 置位（watcher 据此跳过自推防双投递）"""
+    """scheduler 通道无 channel_id + 有 IM 继承（should_push_im True）：send_sync 投递回复内容
+    （adapter _on_send state 分支用 reply 终结流式卡片），reply_future._im_finalized 置位"""
     from niu_api.chat_queue import ChatQueue
 
     q = ChatQueue(mock_runner)
     mock_runner.get_im_channel.return_value = "oc_im_cid_1"
+    mock_runner.should_push_im.return_value = True  # 显式——MagicMock 自动真值防假绿
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
@@ -319,21 +320,22 @@ async def test_scheduler_reply_finalizes_im_card(mock_runner, mock_store, monkey
         try:
             reply, future = await q.enqueue_and_wait_with_future("[定时任务] 吃药", timeout=10.0)
             assert reply == "回复内容"
-            # 仅终结不投递：SEND 空 content（adapter _on_send 用 accumulated 定稿），pop_reply_to=False 保留回复目标
-            assert gw.sent == [("oc_im_cid_1", "", False, False)]
-            # 确定性标志置位（resolve 前写入，watcher 读同源 asyncio.Future）
+            # 投递回复内容（替代"仅终结不投递"——用户拍板：定时任务回复必须走 IM）
+            assert gw.sent == [("oc_im_cid_1", "回复内容", False, False)]
             assert getattr(future, "_im_finalized", False) is True
         finally:
             await q.stop()
 
 
 @pytest.mark.asyncio
-async def test_scheduler_reply_no_im_inherit_noop(mock_runner, mock_store, monkeypatch):
-    """scheduler 通道无 IM 继承：维持原 no-op（回复只走 SSE）——不 send_sync、不置标志"""
+async def test_scheduler_reply_force_only_delivers(mock_runner, mock_store, monkeypatch):
+    """scheduler 通道无 IM 继承但 should_push_im True（定时任务天生置真——用户规则 3）：
+    投递回复内容（adapter 无 state 有 content → send_markdown 独立消息/有流式卡则终结），_im_finalized 置位"""
     from niu_api.chat_queue import ChatQueue
 
     q = ChatQueue(mock_runner)
     mock_runner.get_im_channel.return_value = ""  # 无 IM 继承
+    mock_runner.should_push_im.return_value = True
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
@@ -342,10 +344,62 @@ async def test_scheduler_reply_no_im_inherit_noop(mock_runner, mock_store, monke
         _setup_context_manager(mock_cm)
         await q.start()
         try:
-            reply, future = await q.enqueue_and_wait_with_future("[定时任务] 无继承", timeout=10.0)
+            reply, future = await q.enqueue_and_wait_with_future("[定时任务] 打开咖啡机", timeout=10.0)
             assert reply == "回复内容"
-            assert gw.sent == []  # 无卡片可终结 → no-op
+            # force-only：channel_id 空照传——adapter/gateway 回退 push_target 广播投递
+            assert gw.sent == [("", "回复内容", False, False)]
+            assert getattr(future, "_im_finalized", False) is True
+        finally:
+            await q.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_reply_no_flag_noop(mock_runner, mock_store, monkeypatch):
+    """should_push_im False 时 scheduler 回复不投递、不置标志——锁「无标志不投递」闸门不变式。
+    注意：生产上 scheduler 请求按规则 3 每轮重臂 force，双假仅 _chat_lock 超时等边缘路径可达——
+    本用例锁的是闸门逻辑本身，非描述生产常态场景。"""
+    from niu_api.chat_queue import ChatQueue
+
+    q = ChatQueue(mock_runner)
+    mock_runner.get_im_channel.return_value = ""
+    mock_runner.should_push_im.return_value = False  # 显式——边缘路径（如 lock 超时未置位）
+    gw = _FakeIMGateway()
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+
+    p1, p2, p3, p4, p5 = _scheduler_patches(mock_store)
+    with p1, p2, p3 as mock_cm, p4, p5:
+        _setup_context_manager(mock_cm)
+        await q.start()
+        try:
+            reply, future = await q.enqueue_and_wait_with_future("[定时任务] 边缘", timeout=10.0)
+            assert reply == "回复内容"
+            assert gw.sent == []  # 无标志 → no-op
             assert getattr(future, "_im_finalized", False) is False
+        finally:
+            await q.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_reply_im_disconnected_noop(mock_runner, mock_store, monkeypatch):
+    """should_push_im True 但 IM 未连接（gateway 未配置/未连上）：no-op 且不置 _im_finalized
+    （不置位 = watcher 场景保留自推兜底语义；IM 未配置时无任何投递尝试异常）"""
+    from niu_api.chat_queue import ChatQueue
+
+    q = ChatQueue(mock_runner)
+    mock_runner.get_im_channel.return_value = ""
+    mock_runner.should_push_im.return_value = True
+    gw = _FakeIMGateway(connected=False)
+    monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
+
+    p1, p2, p3, p4, p5 = _scheduler_patches(mock_store)
+    with p1, p2, p3 as mock_cm, p4, p5:
+        _setup_context_manager(mock_cm)
+        await q.start()
+        try:
+            reply, future = await q.enqueue_and_wait_with_future("[定时任务] 未连接", timeout=10.0)
+            assert reply == "回复内容"
+            assert gw.sent == []  # 未连接 → 不投递
+            assert getattr(future, "_im_finalized", False) is False  # 不置位
         finally:
             await q.stop()
 
@@ -358,6 +412,7 @@ async def test_scheduler_merged_batch_all_futures_flagged(mock_runner, mock_stor
 
     q = ChatQueue(mock_runner)
     mock_runner.get_im_channel.return_value = "oc_im_cid_1"
+    mock_runner.should_push_im.return_value = True
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
@@ -375,7 +430,8 @@ async def test_scheduler_merged_batch_all_futures_flagged(mock_runner, mock_stor
             assert r1 == r2 == "回复内容"  # 合并批次共享同一回复
             assert getattr(f1, "_im_finalized", False) is True
             assert getattr(f2, "_im_finalized", False) is True  # supplement 也置位
-            assert len(gw.sent) == 1  # 合并批次只终结一次
+            assert len(gw.sent) == 1  # 合并批次只投递一次
+            assert gw.sent == [("oc_im_cid_1", "回复内容", False, False)]
         finally:
             await q.stop()
 
