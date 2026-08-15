@@ -2014,10 +2014,18 @@
       let html = '';
       let lastGroup = -1;
       const groupLabels = ['🟢 点亮', '🟡 调暗', '⚫ 关闭'];
+      // R8 标注（用户 2026-08-15 澄清的正确语义）：调暗改的是真实激活值——无触发条件时保持——
+      // 后续对话命中该脑区（触发条件）才重新点亮——不是"仅本回合有效"
+      const groupTips = [
+        '',
+        '手动调暗直接修改该脑区的激活状态；若后续对话命中该脑区（触发条件），将重新点亮',
+        '',
+      ];
       for (const item of displayList) {
         const s = BRAIN_STATES[item.stateIdx];
         if (s.group !== lastGroup) {
-          html += `<div class="brain-group-label">${groupLabels[s.group]}</div>`;
+          const tip = groupTips[s.group];
+          html += `<div class="brain-group-label"${tip ? ` title="${tip}"` : ''}>${groupLabels[s.group]}</div>`;
           lastGroup = s.group;
         }
         const cls = s.group === 2 ? 'brain-item off' : 'brain-item';
