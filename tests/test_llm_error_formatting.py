@@ -48,13 +48,23 @@ def test_channel1_mapping_translation(error_type):
 # === 真实 litellm 格式：子串②匹配 ===
 
 def test_real_litellm_rate_limit_str_channel1():
-    """真实 litellm 异常 str() 带 "litellm." 前缀——子串②匹配命中通道 1。"""
-    assert format_llm_error_for_user("litellm.RateLimitError: You exceeded your current quota", None) == _MAPPING_EXPECTED["RateLimitError"]
+    """真实 litellm 异常对象 str() 带 "litellm." 前缀——子串②匹配命中通道 1。
+
+    构造签名按 litellm 1.88.1 实测：RateLimitError(message=..., llm_provider=..., model=...)
+    → str() = 'litellm.RateLimitError: You exceeded your current quota'（与旧字面量一致）。
+    """
+    e = litellm.RateLimitError(message="You exceeded your current quota", llm_provider="openai", model="gpt-4o")
+    assert format_llm_error_for_user(str(e), None) == _MAPPING_EXPECTED["RateLimitError"]
 
 
 def test_real_litellm_timeout_str_channel1():
-    """"Timeout: ..."（无 Error 后缀键名）——子串②命中 Timeout 键。"""
-    assert format_llm_error_for_user("litellm.Timeout: Request timed out", None) == _MAPPING_EXPECTED["Timeout"]
+    """真实 litellm.Timeout 对象 str()（无 Error 后缀键名）——子串②命中 Timeout 键。
+
+    构造签名按 litellm 1.88.1 实测：Timeout(message=..., model=..., llm_provider=...)
+    → str() = 'litellm.Timeout: Request timed out'（与旧字面量一致）。
+    """
+    e = litellm.Timeout(message="Request timed out", model="gpt-4o", llm_provider="openai")
+    assert format_llm_error_for_user(str(e), None) == _MAPPING_EXPECTED["Timeout"]
 
 
 # === BudgetExceededError 真实 str()（构造签名特殊） ===
@@ -118,8 +128,24 @@ def test_explicit_type_beats_empty_input():
 
 
 def test_already_friendly_message_no_double_wrap():
-    """裸原文自然无双包：输入"模型调用失败" → 原样输出。"""
+    """裸原文自然无双包：输入"模型调用失败" → 原样输出（通道 3 输出再 format 幂等）。"""
     assert format_llm_error_for_user("模型调用失败", None) == "模型调用失败"
+
+
+def test_empty_error_type_empty_msg_channel3():
+    """空串 error_type 与 None 统一走通道 3 保底：format("", "") → "模型调用失败"（无悬空括号）。"""
+    assert format_llm_error_for_user("", "") == "模型调用失败"
+
+
+def test_channel2_output_reformat_double_wrap_locked():
+    """锁定已知行为：通道 2 输出再 format 会双包（"模型调用失败（X）："中 X 被③正则提取 → 二次包装）。
+
+    非期望修复——通道 3 输出再 format 幂等（裸原文原样返回），但通道 2 输出含类型名前缀，
+    任何再 format 都有双包风险；设计上源头友好化后（full_reply）不重复 format。
+    """
+    first = format_llm_error_for_user("some detail", "SomeCustomError")
+    assert first == "模型调用失败（SomeCustomError）：some detail"
+    assert format_llm_error_for_user(first, None) == "模型调用失败（SomeCustomError）：模型调用失败（SomeCustomError）：some detail"
 
 
 # === 截断保尾 / 坏输入 / 脱敏 ===
@@ -190,3 +216,9 @@ def test_is_litellm_error_type_positive():
 def test_is_litellm_error_type_negative():
     """内部/非 litellm 异常（非 litellm 属性）→ False。"""
     assert is_litellm_error_type("ValueError") is False
+
+
+def test_is_litellm_error_type_module_attr_false():
+    """非类模块属性（hasattr 为 True 但不是异常类）→ False：防 "exceptions"/"model_cost" 误判。"""
+    assert is_litellm_error_type("exceptions") is False
+    assert is_litellm_error_type("model_cost") is False
