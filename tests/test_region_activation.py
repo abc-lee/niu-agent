@@ -2,7 +2,7 @@
 Tests for niu_api/internal/region_activation.py
 
 Brain Region Activation Manager 测试 — 验证 RegionActivationManager 的
-激活、衰减、强化、溢出和手动控制机制。
+激活、衰减、溢出和手动控制机制。
 """
 
 import time
@@ -61,7 +61,6 @@ def _make_manager_with_regions(
     decay_factor: float = 0.92,
     activation_threshold: float = 0.3,
     spillover_factor: float = 0.3,
-    tool_reinforce_value: float = 0.85,
     neighbor_map: dict[str, set[str]] | None = None,
 ) -> RegionActivationManager:
     """创建已初始化区域的 RegionActivationManager"""
@@ -69,7 +68,6 @@ def _make_manager_with_regions(
         decay_factor=decay_factor,
         activation_threshold=activation_threshold,
         spillover_factor=spillover_factor,
-        tool_reinforce_value=tool_reinforce_value,
     )
     manager.initialize_from_regions(_make_region_infos())
     if neighbor_map is not None:
@@ -146,105 +144,6 @@ class TestActivateRegions:
         assert len(activated) == 2
         assert "Python脑区" in activated
         assert "React脑区" in activated
-
-
-# ============== Test 2: reinforce_by_tool_use ==============
-
-
-class TestReinforceByToolUse:
-    """验证 reinforce_by_tool_use 强化机制"""
-
-    def test_reinforce_sets_activation_to_max(self):
-        """强化时 activation = max(current, 0.85)"""
-        manager = _make_manager_with_regions()
-
-        # 先让区域有较低激活值
-        manager._regions["Python脑区"].activation = 0.4
-
-        result = manager.reinforce_by_tool_use(
-            tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "Python脑区"},
-        )
-
-        assert result == "Python脑区"
-        assert manager._regions["Python脑区"].activation == 0.85
-
-    def test_reinforce_does_not_reduce_higher_activation(self):
-        """强化不降低已有高激活值"""
-        manager = _make_manager_with_regions()
-
-        # 区域已有高激活值
-        manager._regions["Python脑区"].activation = 1.0
-
-        manager.reinforce_by_tool_use(
-            tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "Python脑区"},
-        )
-
-        # activation 保持在 1.0（max(1.0, 0.85) = 1.0）
-        assert manager._regions["Python脑区"].activation == 1.0
-
-    def test_reinforce_unknown_tool_returns_none(self):
-        """未知工具返回 None"""
-        manager = _make_manager_with_regions()
-
-        result = manager.reinforce_by_tool_use(
-            tool_name="unknown-tool",
-            tool_to_region={"kg-server/query": "Python脑区"},
-        )
-
-        assert result is None
-
-    def test_reinforce_unknown_region_returns_none(self):
-        """未知区域返回 None"""
-        manager = _make_manager_with_regions()
-
-        result = manager.reinforce_by_tool_use(
-            tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "NonExistent脑区"},
-        )
-
-        assert result is None
-
-
-# ============== Test 3: reinforce steady state ==============
-
-
-class TestReinforceSteadyState:
-    """验证强化稳态 — 连续使用工具时 activation 振荡在 0.78-0.85"""
-
-    def test_reinforce_steady_state(self):
-        """连续工具使用时，激活值振荡在稳态区间"""
-        manager = _make_manager_with_regions()
-
-        # Turn 1: tool call -> 0.85
-        manager.reinforce_by_tool_use(
-            tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "Python脑区"},
-        )
-        assert manager._regions["Python脑区"].activation == 0.85
-
-        # Simulate 10 turns of continuous tool use
-        for _ in range(10):
-            # Decay
-            manager.decay_all()
-            activation_after_decay = manager._regions["Python脑区"].activation
-
-            # Reinforce
-            manager.reinforce_by_tool_use(
-                tool_name="kg-server/query",
-                tool_to_region={"kg-server/query": "Python脑区"},
-            )
-            activation_after_reinforce = manager._regions["Python脑区"].activation
-
-            # After decay: ~0.78 (0.85 * 0.92)
-            # After reinforce: back to 0.85 (max(~0.78, 0.85))
-            assert activation_after_decay >= 0.78 * 0.99  # allow small rounding
-            assert activation_after_decay <= 0.85
-            assert activation_after_reinforce == 0.85
-
-        # Steady state: oscillates between ~0.78 and 0.85, well above threshold 0.3
-        assert manager._regions["Python脑区"].activation > 0.3
 
 
 # ============== Test 4: decay curve ==============
@@ -435,21 +334,6 @@ class TestManualDimBlocksAuto:
         assert "Python脑区" not in activated
         assert manager._regions["Python脑区"].activation == 0.0
         assert manager._regions["Python脑区"].manually_dimmed is True
-
-    def test_manual_dim_blocks_tool_reinforce(self):
-        """手动调暗的区域在该轮次中不会被工具强化"""
-        manager = _make_manager_with_regions()
-
-        manager.manual_dim(["Python"])
-
-        result = manager.reinforce_by_tool_use(
-            tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "Python脑区"},
-        )
-
-        # Reinforce should be skipped
-        assert result is None
-        assert manager._regions["Python脑区"].activation == 0.0
 
     def test_manual_activate_overrides_dim(self):
         """手动激活可以覆盖调暗状态"""

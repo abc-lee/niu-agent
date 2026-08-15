@@ -16,9 +16,7 @@ from agent.brain_tools import (
     handle_brain_region_activate,
     handle_brain_region_dim,
     handle_brain_region_status,
-    reinforce_on_tool_use,
     set_activation_mgr,
-    set_tool_to_region,
 )
 from niu_api.internal.region_activation import (
     BrainRegionState,
@@ -270,41 +268,6 @@ class TestSetGetActivationMgr:
         set_activation_mgr(mgr2)
         assert get_activation_mgr() is mgr2
         assert get_activation_mgr() is not mgr1
-
-
-# ============== Test 6: reinforce_on_tool_use ==============
-
-
-class TestReinforceOnToolUse:
-    """Verify tool dispatch reinforce integration."""
-
-    def test_reinforce_finds_region_for_tool(self):
-        """reinforce_on_tool_use activates the correct region for a tool."""
-        mgr = _make_activation_mgr()
-        set_activation_mgr(mgr)
-        set_tool_to_region({"kg-server/query": "Python脑区"})
-
-        result = reinforce_on_tool_use("kg-server/query")
-
-        assert result == "Python脑区"
-        # Activation should be reinforced
-        assert mgr._regions["Python脑区"].activation >= 0.85
-
-    def test_reinforce_unknown_tool(self):
-        """Unknown tool returns None."""
-        mgr = _make_activation_mgr()
-        set_activation_mgr(mgr)
-        set_tool_to_region({})
-
-        result = reinforce_on_tool_use("unknown-tool")
-
-        assert result is None
-
-    def test_reinforce_no_manager(self):
-        """Returns None when activation manager is not set."""
-        set_activation_mgr(None)
-
-        reinforce_on_tool_use("kg-server/query")
 
 
 # ============== Bug 1: brain_region_status 差集过滤已删脑区 ==============

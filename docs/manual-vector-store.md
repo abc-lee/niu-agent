@@ -340,7 +340,6 @@ source_id = "skill://{skill_name}"
 
 **触发时机**：
 - 衰减：RegionSync 守护线程每24小时执行一次
-- 增强：handler.py 工具调用成功后触发 `reinforce_on_tool_use(tool_name)`
 
 **脑区内过滤检索机制**：
 
