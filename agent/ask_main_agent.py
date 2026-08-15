@@ -119,6 +119,16 @@ class PendingAskRegistry:
         with self._lock:
             self._futures.pop(unique_name, None)
 
+    def waiting_unique_names(self) -> list[str]:
+        """返回正在等待主 Agent 回答的 unique_name 列表（带锁）。
+
+        @niu-agent 提问注册表快照——等待状态机（db_monitor 第三链路）的数据源：
+        future 被 set_answer（主 Agent 回答）/ 超时 / cancel / 终止移除后自动不在列表内，
+        提醒随之停止（闭环）。
+        """
+        with self._lock:
+            return list(self._futures.keys())
+
 
 # 全局单例 — db_monitor 和 ask_main_agent 工具共用
 _pending_ask_registry = PendingAskRegistry()
