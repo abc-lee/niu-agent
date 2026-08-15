@@ -711,25 +711,25 @@ def test_at_end_priority_over_at_niu(monkeypatch):
 
 
 def test_compute_exit_content_at_end_at_end_of_content():
-    """@end 在末尾 → 完整前内容保留（标记剥掉——与旧回退效果一致，无回归）。"""
+    """@end 在末尾 → 完整前内容保留（标记剥掉 + 尾部空白归一——无尾随空格，P3）。"""
     from agent.generic.agent_loop import _compute_exit_content
 
     content = "任务完成，结果：成功 @end"
     stripped = content.lstrip()
     at_end_idx = _find_marker(stripped, "@end")
     exit_content = _compute_exit_content(stripped, at_end_idx, content)
-    assert exit_content == "任务完成，结果：成功 "  # @end 标记剥掉，前内容完整
+    assert exit_content == "任务完成，结果：成功"  # @end 标记剥掉，前内容完整、无尾随空格
 
 
 def test_compute_exit_content_at_end_in_middle():
-    """@end 在中间 → 前 + 后拼接（标记剥掉——前半不再丢弃）。"""
+    """@end 在中间 → 前 + 后拼接（标记剥掉 + 段间空白归一为单空格——前半不再丢弃）。"""
     from agent.generic.agent_loop import _compute_exit_content
 
     content = "前半主体内容 @end 后半残留内容"
     stripped = content.lstrip()
     at_end_idx = _find_marker(stripped, "@end")
     exit_content = _compute_exit_content(stripped, at_end_idx, content)
-    assert exit_content == "前半主体内容  后半残留内容"  # 前 + 后都保留，仅标记剥掉
+    assert exit_content == "前半主体内容 后半残留内容"  # 前 + 后都保留，双空格归一为单空格
 
 
 def test_compute_exit_content_only_end_marker_falls_back_to_content():

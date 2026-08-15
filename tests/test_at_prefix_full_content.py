@@ -70,6 +70,34 @@ def test_at_niu_over_8000_returns_format_error(monkeypatch):
     subagent._ask_main_agent_impl.assert_not_called()
 
 
+def test_at_niu_exactly_8000_ok(monkeypatch):
+    """@niu-agent 完整内容恰好 8000 字符 → 放行不误判（len(question) > 8000 语义——精确边界）。"""
+    from agent import subagent
+    from agent.generic import agent_loop
+
+    monkeypatch.setattr(
+        subagent, "_ask_main_agent_impl",
+        mock.Mock(return_value="回答")
+    )
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "test-agent-abc1"
+    fake_handler._is_sync_subagent = False
+    messages = [{"role": "user", "content": "开始"}]
+
+    content = "a" * 7987 + "@niu-agent 问题"  # 7987 + 13 = 恰好 8000
+    assert len(content) == 8000
+    result = agent_loop._intercept_at_prefix_content(
+        content=content,
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    assert result == (agent_loop.INTERCEPTED, None)
+    assert subagent._ask_main_agent_impl.call_args.kwargs["question"] == content
+
+
 def test_at_niu_under_8000_ok_with_full_content(monkeypatch):
     """@niu-agent 完整内容在 8000 内（含 @ 前长上下文）→ 正常传递不误判。"""
     from agent import subagent
@@ -84,8 +112,9 @@ def test_at_niu_under_8000_ok_with_full_content(monkeypatch):
     fake_handler._is_sync_subagent = False
     messages = [{"role": "user", "content": "开始"}]
 
-    # 2325 字符 HN 报告场景（Bug 1 实证规模）——整段传必须通过
-    content = "报告内容" * 400 + "\n@niu-agent 以上报告请查收"  # ~1600+ 字符 < 8000
+    # 长上下文放行场景——整段传必须通过
+    # （P3 修正：原注释误称"2325 字符 HN 报告场景（Bug 1 实证规模）"——实构 400×4+19 ≈ 1619 字符）
+    content = "报告内容" * 400 + "\n@niu-agent 以上报告请查收"  # ~1620 字符 < 8000
     assert len(content) < 8000
     result = agent_loop._intercept_at_prefix_content(
         content=content,
@@ -187,23 +216,43 @@ def test_at_user_word_boundary_not_intercepted():
 
 
 def test_compute_exit_content_end_at_end_form():
-    """@end 两形态之一：@end 在末尾 → 前内容完整保留（标记剥掉）。"""
+    """@end 两形态之一：@end 在末尾 → 前内容完整保留（标记剥掉 + 尾部空白归一——无尾随空格）。"""
     from agent.generic.agent_loop import _compute_exit_content
 
     content = "汇报正文内容 @end"
     stripped = content.lstrip()
     idx = stripped.index("@end")
-    assert _compute_exit_content(stripped, idx, content) == "汇报正文内容 "
+    assert _compute_exit_content(stripped, idx, content) == "汇报正文内容"
 
 
 def test_compute_exit_content_end_in_middle_form():
-    """@end 两形态之二：@end 在中间 → 前 + 后拼接（标记剥掉——前半不再丢弃）。"""
+    """@end 两形态之二：@end 在中间 → 前 + 后拼接（标记剥掉 + 段间空白归一为单空格——前半不再丢弃）。"""
     from agent.generic.agent_loop import _compute_exit_content
 
     content = "前段汇报 @end 后段残留说明"
     stripped = content.lstrip()
     idx = stripped.index("@end")
-    assert _compute_exit_content(stripped, idx, content) == "前段汇报  后段残留说明"
+    assert _compute_exit_content(stripped, idx, content) == "前段汇报 后段残留说明"
+
+
+def test_compute_exit_content_end_whitespace_only_falls_back():
+    """@end 后仅空白（如 "@end\\n"——LLM 常见尾随换行）→ 拼接结果纯空白也兜底原始 content（P3 修复：strip 后再判空）。"""
+    from agent.generic.agent_loop import _compute_exit_content
+
+    content = "@end\n"
+    stripped = content.lstrip()
+    idx = stripped.index("@end")
+    assert _compute_exit_content(stripped, idx, content) == content
+
+
+def test_compute_exit_content_end_leading_marker_form():
+    """@end 在开头 + 后有内容 → 前段空 + 后段拼接（前导空白归一——无前导空格）。"""
+    from agent.generic.agent_loop import _compute_exit_content
+
+    content = "@end 后续残留说明"
+    stripped = content.lstrip()
+    idx = stripped.index("@end")
+    assert _compute_exit_content(stripped, idx, content) == "后续残留说明"
 
 
 def test_at_end_over_2000_writes_file_with_full_content(tmp_path, monkeypatch):
@@ -282,13 +331,14 @@ def test_at_end_over_2000_writes_file_with_full_content(tmp_path, monkeypatch):
 
     assert rv["result"] == "EXITED"
     replies = [ev.content for ev in events if ev.type == "reply"]
-    # 第一个 reply = 完整拼接内容（@end 标记剥掉）；第二个 reply = 文件路径提示
-    assert replies[0] == prefix + suffix
+    # 第一个 reply = 完整拼接内容（@end 标记剥掉 + 段间空白归一为单空格——P3）；
+    # 第二个 reply = 文件路径提示
+    assert replies[0] == prefix + " " + suffix
     assert len(replies) >= 2
     assert "已超限" in replies[1]
 
-    # 写文档内容 = 前+后完整拼接值（不丢一半）
+    # 写文档内容 = 归一化后的前+后完整拼接值（不丢一半）
     written = glob.glob(str(tmp_path / "*.md"))
     assert len(written) == 1
     file_content = open(written[0], encoding="utf-8").read()
-    assert file_content == prefix + suffix
+    assert file_content == prefix + " " + suffix
