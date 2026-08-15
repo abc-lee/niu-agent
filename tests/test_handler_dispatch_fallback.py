@@ -7,6 +7,8 @@ chat-with 异步分支 / 回调穿透）→ 工具循环死亡 / 会话中止，
 
 TDD: 先写测试确认红（当前实现崩溃），再改实现跑绿。
 """
+import re
+
 import pytest
 from unittest.mock import Mock, patch
 
@@ -179,3 +181,47 @@ def test_failed_tool_status_end_pushed():
     assert event_type == "tool_status"
     assert data["tool_name"] == "read"
     assert data["summary"] == "tool error"
+
+
+class LongStrError(Exception):
+    """__str__ 返回 1000+ 字符的长错误——测试截断保尾（M3）。"""
+
+    def __str__(self):
+        return "x" * 1200
+
+
+def test_long_error_msg_truncated_keeps_tail():
+    """长错误消息 __str__ 1000+ 字符 → msg ≤500 且尾部 (fname:lineno) 位置信息保留（M3）。"""
+    handler = _make_handler()
+    with patch.object(handler, "do_read", side_effect=LongStrError("boom")):
+        events, outcome = _run_dispatch(handler, "read", {})
+
+    assert isinstance(outcome, StepOutcome), f"应返回 StepOutcome，实际: {outcome!r}"
+    data = outcome.data if isinstance(outcome.data, dict) else {}
+    assert data.get("status") == "error"
+    assert data.get("error_code") == "TOOL_ERROR"
+    msg = data.get("msg", "")
+    assert len(msg) <= 500, f"msg 应 ≤500（防上下文爆炸），实际长度: {len(msg)}"
+    # 截断保尾：位置信息 (fname:lineno) 在尾部必须保留（供区分 harness 伪装与真实工具错误）
+    assert re.search(r"\([^)]*:\d+\)$", msg), \
+        f"msg 尾部应保留 (fname:lineno)，实际尾部: {msg[-80:]!r}"
+    assert "..." in msg, f"截断应含省略号标记，实际: {msg!r}"
+
+
+def test_failed_tool_recorded_in_repeat_detection():
+    """失败工具 → _recent_tool_calls 已记录 (name, hash)——失败同参重试仍触发重复检测警告（M4）。"""
+    handler = _make_handler()
+    with patch.object(handler, "do_read", side_effect=ValueError("boom")):
+        events, outcome = _run_dispatch(handler, "read", {"path": "/tmp/foo.txt"})
+
+    assert isinstance(outcome, StepOutcome), f"应返回 StepOutcome，实际: {outcome!r}"
+    data = outcome.data if isinstance(outcome.data, dict) else {}
+    assert data.get("status") == "error"
+    assert data.get("error_code") == "TOOL_ERROR"
+    assert len(handler._recent_tool_calls) == 1, \
+        f"失败后应记录 1 条重复检测记录，实际: {handler._recent_tool_calls}"
+    tool_name, args_hash = handler._recent_tool_calls[-1]
+    assert tool_name == "read"
+    # args_hash 对应排除 _ 前缀参数后的 {path: /tmp/foo.txt}
+    clean_args = {"path": "/tmp/foo.txt"}
+    assert args_hash == hash(str(sorted(clean_args.items())))
