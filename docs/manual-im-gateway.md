@@ -186,7 +186,7 @@ Adapter 应在 STREAM 阶段创建可更新的消息卡片（或等效机制）�
 
 #### PUSH — 主动推送
 
-非对话触发的主动推送（定时提醒、系统通知等）。
+非对话触发的主动推送（系统通知、ha-watcher 补充等）。**定时提醒程序消息不推 IM**——只写 DB 由前端 SSE 刷新显示；主 Agent 的话经 chat_queue scheduler 特判投递（SEND 指令），不走 PUSH。
 
 ```json
 {
@@ -519,10 +519,10 @@ Adapter 收到 SEND
              └── 清理内部图片标记（无卡片可终结）
 ```
 
-### 主动推送（定时提醒等）
+### 主动推送（系统通知等）
 
 ```
-定时任务 / 系统事件触发
+系统事件 / ha-watcher 补充触发
        │
        ▼
 ChannelRouter.push() → Gateway.push() → PUSH 指令
@@ -537,6 +537,8 @@ Adapter 收到 PUSH
              ├── open_id 发送失败 → 自动回退用 chat_id 发送
              └── P2P 消息发送成功后，更新 push_target 到 preferences.json
 ```
+
+> **定时任务说明（2026-08-15 起）**：定时提醒**程序消息不推 IM**——trigger 时只写 Message.DB 唤醒主 Agent（Chat 页面由 DB 变更 SSE 刷新显示，前端逻辑），不走 ChannelRouter.push()。主 Agent 收到提醒后的话由 chat_queue scheduler 特判经 should_push_im 闸门 send_sync 投递（STREAM 流式卡 + SEND 终结，见上节出方向），不经过 PUSH。
 
 **push 目标优先级**：`override_id`（PUSH 指令中的 channel_id）→ `open_id` → `chat_id`。open_id 发送失败时自动回退到 chat_id，确保推送可达。当用户首次与 Adapter 交互后，Adapter 会将有效的 open_id 写回 `preferences.json` 的 `push_target` 字段，供后续 PUSH 使用。
 
