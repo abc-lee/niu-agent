@@ -497,10 +497,6 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
     runner = get_or_create_runner()
 
-    # Electron 用户消息 → 去 IM 标志（规则 2）：channel_id 清空 + force 清空
-    runner.set_im_channel("")
-    runner.set_im_force(False)
-
     # Get or create session
     session_id = request.session_id or "default"
 
@@ -514,6 +510,11 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps({'error': 'Another request is in progress, please wait'})}\n\n"
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
             return
+
+        # Electron 用户消息 → 去 IM 标志（规则 2）：channel_id 清空 + force 清空
+        # 必须在 _chat_lock 内（对齐 /chat/sync）：排队等锁期间 scheduler 可能重臂 force，锁内清除才生效
+        runner.set_im_channel("")
+        runner.set_im_force(False)
 
         try:
             reply_chunks = []
