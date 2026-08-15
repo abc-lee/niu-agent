@@ -98,13 +98,9 @@ def trigger_callback(task: dict) -> str | None:
         return None
 
     # 同步非阻塞入队（enqueue_sync 内部经 call_soon_threadsafe 桥接到主 loop）
-    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：ChatQueue worker
-    # （chat_queue.py 回复路由 elif 分支）会把 Agent 回复自动 route 回 channel——若为 "im"，
-    # 回复会被 push 到 IM（channel/gateway.py 空 channel_id 回退广播），叠加下方手动
-    # route_out(prompt) = 同一任务两条 IM 消息。"scheduler" 通道未注册 → 不投递独立消息；
-    # chat_queue 对 scheduler 特判"仅终结不投递"：有 IM 继承（_im_channel_id 非空）时
-    # send_sync 空 content 终结流式卡片（卡片显示完整回复、streaming_mode 关闭），
-    # 无 IM 继承时维持 no-op——回复只走 SSE 前端，与原 enqueue_and_wait(channel="scheduler") 语义一致。
+    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：走 chat_queue scheduler 特判——
+    # 主 Agent 回复由特判经 should_push_im 闸门投递 IM（用户拍板：trigger 提醒 + 回复两条都应在 IM）。
+    # 若误传默认 "im"：回复会走 router.push 广播，叠加下方手动 route_out(prompt) = 双消息错位。
     q = get_chat_queue()
     enqueue_result = q.enqueue_sync(content=prompt, channel="scheduler", source="scheduler", session_id="default")
     if not enqueue_result.queued:
@@ -203,9 +199,9 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
 
     # fire-and-forget：入队即完成，不等待 Agent 回复（与 reminder 分支一致，
     # 消除"等待超时 → 重试再入队"导致的重复触发）。
-    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：ChatQueue worker
-    # 会把 Agent 回复自动 route 回 channel——若为 "im" 则回复被 push 到 IM，
-    # 叠加下方手动 route_out(prompt) = 双 IM 消息。"scheduler" 通道未注册 → no-op。
+    # channel 必须显式传 "scheduler"（enqueue_sync 默认 "im"）：走 chat_queue scheduler 特判——
+    # 主 Agent 回复由特判经 should_push_im 闸门投递 IM（用户拍板：trigger 提醒 + 回复两条都应在 IM）。
+    # 若误传默认 "im"：回复会走 router.push 广播，叠加下方手动 route_out(prompt) = 双消息错位。
     q = get_chat_queue()
     enqueue_result = q.enqueue_sync(content=prompt, channel="scheduler", source="scheduler", session_id="default")
     if not enqueue_result.queued:
