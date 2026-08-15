@@ -657,6 +657,14 @@ preload_face_model()
 - **实机验证待确认项**（对齐审查标注）：验收 #1 真实飞书 streaming_mode 关闭、验收 #3 下次会话开新卡——需实机确认
 - **排查教训**：①"原来没问题"≠"机制不存在"——同机制改造前后都存在，改造（86d6c7a2）让症状从不可见变可见；先 diff 实证再下结论，勿凭空想象新问题 ② 定时任务回复"死路由"是刻意设计（避免双消息）的副作用——修复必须兼容设计意图（仅终结不投递），不能简单改为投递 ③ watcher 的 future（concurrent.futures.Future）与 chat_queue 的 reply_future（asyncio.Future）是**不同对象**——跨线程共享信号必须同一对象（enqueue_and_wait_with_future 元组返回）④ "照抄可运行"伪代码标准：函数签名（finalize_card 4 参/update_card_element 返回码）、字段名（message_id 非 msg_id）、变量作用域（else 分支无 card_id 绑定）、future 对象链——每个都是实施炸点，必须审查到
 
+#### 修复：IM 推送判定收口 should_push_im() 单一入口 + scheduler 回复投递内容 + 程序消息不推 IM（工程修复记录，非用户原话）
+
+- **收口**：`runner.should_push_im()`（= bool(_im_channel_id or _im_force)）成为"是否推 IM"唯一判定入口——五消费点统一调用（compat.py chat_session 闸门 / chat_queue.py scheduler 特判 / runner.py 流式三处 L3092/L3124/L3141）；禁止内联 get_im_channel() or get_im_force() 自写判定
+- **chat_queue scheduler 特判投递回复内容**：定时任务主 Agent 回复经 should_push_im 闸门 `send_sync(im_cid, reply, pop_reply_to=False)` 投递完整回复内容（替代 08-12"仅终结不投递"）——卡片生命周期由 adapter _on_send 保证（有流式卡 → state 分支用 reply 终结；无卡 → send_markdown 独立消息，receive_id 空时 adapter 回退 _push_chat_id 广播）
+- **service.py 删除程序消息推 IM**：reminder/background_script 两分支不再 route_out 推 IM——定时提醒程序消息只写 DB（enqueue_sync 入队即写入 Message.DB）唤醒主 Agent，Chat 前端由 DB 变更 SSE 刷新显示
+- **/chat 与 /chat/sync Electron 入口锁内双清 force**：两个会话入口在 _chat_lock 内 set_im_channel("") + set_im_force(False)（排队等锁期间 scheduler 可能重臂 force，锁内清除才生效）
+- **用户语义**：定时提醒置 IM 标志为真（规则 3）、主 Agent 的话发 IM、程序消息不推 IM
+
 #### 修复：压缩后主动重算前端模型使用率（sleep 强制压缩后圆环不刷新 → 下次睡眠重复强制压缩）
 
 - **现象**：压缩前 60% → sleep 强制压缩 → 前端圆环仍显示 60% → 用户唤醒不说话（无 LLM 交互）→ 下次 sleep 判定仍见 60% → 再做一轮强制压缩

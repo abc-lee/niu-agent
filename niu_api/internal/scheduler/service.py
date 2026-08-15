@@ -122,7 +122,7 @@ def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | Non
     """background_script 触发：跑脚本，有输出才通知主 Agent。
 
     复用模块级 code_run / get_chat_queue（service.py 顶部已 import）。
-    IM 推送与 reminder 分支保持一致（enqueue 后调 add_pending_alert + channel_router.push）。
+    两分支一致：enqueue_sync 写 DB 唤醒主 Agent（程序消息不推 IM），add_pending_alert 蹦高提醒；主 Agent 的话由 chat_queue scheduler 特判投递 IM。
     """
     script_file = task.get("script_file")
     if not script_file:
