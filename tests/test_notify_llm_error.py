@@ -124,7 +124,10 @@ def _mock_chat_session_env(runner):
 
     ctx = (
         patch("niu_api.config.get_config", return_value=SimpleNamespace(llm=SimpleNamespace(api_key="test"))),
-        patch("agent.session.get_message_store", AsyncMock(return_value=store)),
+        # P1 修复：compat.py L17 模块级 `from agent.session import get_message_store` 已复制绑定到
+        # compat 命名空间——patch 源模块对 chat_session 内调用无效（会写真实 ~/.niu/messages.db）。
+        # 必须 patch 消费方命名空间 niu_api.compat.get_message_store。
+        patch("niu_api.compat.get_message_store", AsyncMock(return_value=store)),
         patch("agent.context_manager.get_context_manager", AsyncMock(return_value=cm)),
         patch("niu_api.chat.get_or_create_runner", return_value=runner),
         patch("niu_api.chat.notify_new_message", AsyncMock()),
@@ -424,8 +427,13 @@ def test_socket_fallback_failure_error_type_name_synced():
     assert "fallback timeout" in result.error_msg  # 末错文本 = fallback 错
 
 
-def test_stream_error_type_name_budget_exceeded_channel1():
-    """流中段 BudgetExceededError（str() 无类名）→ error_type_name 记录 → 显式类型通道 1 翻译。"""
+def test_stream_error_type_name_unknown_type_channel2():
+    """流中段未知类型异常（FakeBudgetError 不在映射表）→ error_type_name 记录 → 显式类型通道 2（类型名+原文）。
+
+    注：此测试保留 FakeBudgetError 而非真实 litellm.BudgetExceededError——未知类型走通道 2
+    （类型名+原文），与 test_real_budget_exceeded_cross_path_channel1 的真实异常通道 1 互补，
+    两通道在 error_type_name 透传下均有锁定。
+    """
     session = _session()
 
     class FakeBudgetError(Exception):
@@ -446,6 +454,51 @@ def test_stream_error_type_name_budget_exceeded_channel1():
     # agent_loop 侧拿到 error_type_name 后 format 出通道 1 中文——全链路一致由 agent_loop 测试锁定
     from agent.generic.litellm_adapter import format_llm_error_for_user
     assert format_llm_error_for_user(result.error_msg, result.error_type_name) == "模型调用失败（FakeBudgetError）：Budget has been exceeded!"
+
+
+def test_real_budget_exceeded_cross_path_channel1():
+    """B8 P1 跨路径一致性：真实 litellm.BudgetExceededError（构造签名特殊——current_cost/max_budget 必填，
+    str() 无类名）→ adapter 流中段路径（fatal 不重试）→ agent_loop yield 与 compat notify 均 =
+    通道 1 配额文案。"""
+    session = _session()
+    exc = litellm.BudgetExceededError(current_cost=10.0, max_budget=5.0, message="Budget has been exceeded!")
+
+    def mock_completion(**kwargs):
+        def gen():
+            yield _make_chunk(content="partial")
+            raise exc
+        return gen()
+
+    with patch("litellm.completion", side_effect=mock_completion), \
+         patch("agent.generic.litellm_adapter.is_stop_requested", return_value=False):
+        result = _exhaust_chat(session)
+
+    # adapter 流中段：error_type_name 记录真实类名（fatal 分支在分类前已记录 type(e).__name__）
+    assert result.stream_error is True
+    assert result.error_type == "fatal"  # BudgetExceededError 在 _FATAL_EXC——配额耗尽不重试（重试无意义）
+    assert result.error_type_name == "BudgetExceededError"
+    assert "Budget has been exceeded!" in result.error_msg
+
+    # agent_loop 分支：显式 error_type_name → 通道 1 配额文案（与 test_agent_loop_stream_error_yield_friendly_both_branches 同源）
+    yielded, rv = _run_agent_loop_with_stream_error(
+        verbose=False,
+        error_type_name=result.error_type_name,
+        error_msg=result.error_msg,
+    )
+    texts = [y for y in yielded if isinstance(y, str)]
+    assert any(_QUOTA_FRIENDLY in t for t in texts), f"agent_loop yield 非通道 1 配额文案: {texts!r}"
+    assert rv.get("result") == "LLM_ERROR"
+    assert rv.get("error_type") == "BudgetExceededError"
+
+    # compat chat_session 分支：notify 文案同样 = 通道 1 配额文案（同一真实异常跨路径一致）
+    _, notify_calls, _ = _run_chat_session(
+        _llm_error_runner(error_msg=result.error_msg, error_type=result.error_type_name)
+    )
+    assert len(notify_calls) == 1
+    etype, emsg, src = notify_calls[0]
+    assert etype == "BudgetExceededError"
+    assert emsg == _QUOTA_FRIENDLY
+    assert src == "chat_session"
 
 
 def test_happy_path_mock_response_construction_no_nameerror():
