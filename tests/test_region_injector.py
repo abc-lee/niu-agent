@@ -860,3 +860,111 @@ class TestClearRecentRegionEntities:
         _set_activation(activation_mgr, "知识体系脑区", 0.5)
         result = injector.format_region_knowledge({})
         assert result == []
+
+
+# ============== Test 12: R10 keywords 前置分类 ==============
+
+
+class TestClassifyEntityToRegionKeywords:
+    """R10: keywords 前置匹配——entity_name 命中配置 keywords → 归用户设计脑区（P6 拍板）
+
+    分类优先级：keywords 命中（配置顺序首个）> 原 entity_type 映射（全 miss 才走）。
+    消费来源：get_default_regions_config() 的 keywords 字段——全量消费（不硬编码子集）。
+    """
+
+    # 与硬编码 fallback 同构的确定性配置（测试不依赖真实 ~/.niu/preferences.json）
+    _CONFIG = [
+        {"label": "聊天历史", "priority": "medium", "keywords": ["偏好", "习惯", "设置"]},
+        {"label": "文档库", "priority": "permanent", "keywords": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"]},
+        {"label": "知识体系", "priority": "long", "keywords": ["概念", "理论", "方法"]},
+        {"label": "人际关系", "priority": "permanent", "keywords": ["人物", "家人", "朋友"]},
+        {"label": "工作事务", "priority": "medium", "keywords": ["项目", "任务", "会议"]},
+        {"label": "生活事务", "priority": "short", "keywords": ["健康", "财务", "旅行"]},
+    ]
+
+    def _classify(self, entity_name: str, entity_type: str = "skill", config=None) -> str:
+        """直接调用 _classify_entity_to_region，monkeypatch 配置为确定性输入"""
+        injector = _make_injector()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "niu_api.internal.region_injector.get_default_regions_config",
+                lambda: self._CONFIG if config is None else config,
+            )
+            return injector._classify_entity_to_region(entity_name, entity_type)
+
+    def test_keyword_hit_classifies_to_designed_region(self):
+        """keywords 任一命中 → 归用户设计的脑区（即使 entity_type 指向别的脑区）"""
+        assert self._classify("我的Markdown笔记", "chat") == "文档库脑区"
+        assert self._classify("家人聚会", "document") == "人际关系脑区"
+        assert self._classify("季度项目复盘", "person") == "工作事务脑区"
+        assert self._classify("健康检查", "skill") == "生活事务脑区"
+
+    def test_keyword_match_is_case_insensitive(self):
+        """大小写不敏感：'pdf' 命中配置 'PDF'（与系统小写归一化约定一致）"""
+        assert self._classify("年度pdf归档", "chat") == "文档库脑区"
+        assert self._classify("MARKDOWN总结", "chat") == "文档库脑区"
+
+    def test_keyword_miss_falls_back_to_entity_type_mapping(self):
+        """keywords 全 miss → 回退原 entity_type 映射"""
+        assert self._classify("quarterly_report", "document") == "文档库脑区"
+        assert self._classify("alice", "person") == "人际关系脑区"
+        assert self._classify("random_thing", "skill") == "知识体系脑区"
+
+    def test_multiple_region_hit_takes_first_config_order(self):
+        """双区 keywords 同时命中 → 取配置顺序首个命中脑区"""
+        config = [
+            {"label": "工作事务", "keywords": ["会议"]},
+            {"label": "文档库", "keywords": ["文档"]},
+        ]
+        # "会议文档" 同时含 "会议"(工作事务) 与 "文档"(文档库)——配置顺序首个=工作事务
+        assert self._classify("会议文档", "skill", config=config) == "工作事务脑区"
+        # 反转配置顺序 → 首个命中变为文档库（锁定"配置顺序首个"语义）
+        assert self._classify("会议文档", "skill", config=config[::-1]) == "文档库脑区"
+
+    def test_config_missing_keywords_field_does_not_crash(self):
+        """配置缺 keywords 字段（.get 默认 []）或为 None → 跳过该配置不崩溃 → 回退原映射"""
+        config = [
+            {"label": "聊天历史", "priority": "medium"},  # 无 keywords 字段
+            {"label": "文档库", "priority": "permanent", "keywords": None},
+        ]
+        # 缺 keywords 的脑区不参与匹配——不崩溃且回退原 entity_type 映射
+        assert self._classify("quarterly_report", "document", config=config) == "文档库脑区"
+        assert self._classify("偏好习惯", "skill", config=config) == "知识体系脑区"
+        # 缺 label 的配置项同样跳过（防御——不崩溃）
+        config_no_label = [{"priority": "medium", "keywords": ["偏好"]}]
+        assert self._classify("偏好记录", "chat", config=config_no_label) == "聊天历史脑区"
+
+    def test_original_entity_type_mapping_regression(self):
+        """原 entity_type 映射全分支回归（keywords 全 miss 时行为不变）"""
+        assert self._classify("entity_x", "chat") == "聊天历史脑区"
+        assert self._classify("entity_x", "文档") == "文档库脑区"
+        assert self._classify("entity_x", "person") == "人际关系脑区"
+        assert self._classify("entity_x", "任务") == "工作事务脑区"
+        assert self._classify("entity_x", "health") == "生活事务脑区"
+        assert self._classify("entity_x", "unknown_type") == "知识体系脑区"
+
+    def test_keyword_hit_through_activate_for_query(self):
+        """集成：activate_for_query 中 keywords 命中归入用户设计脑区（P6 行为）"""
+        activation_mgr = _make_classify_manager()
+        injector = _make_injector(activation_mgr)
+        injector._adapter.query_data = MagicMock(return_value={
+            "data": {"entities": [
+                {"entity_name": "项目复盘", "entity_type": "skill", "description": "d"},
+            ]}
+        })
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "niu_api.internal.region_injector.get_all_region_members",
+                lambda: {},
+            )
+            mp.setattr(
+                "niu_api.internal.region_injector.get_default_regions_config",
+                lambda: self._CONFIG,
+            )
+            region_entities, entity_to_region, hit_entities = injector.activate_for_query("q")
+
+        # entity_type=skill 本会归知识体系——keywords "项目" 命中 → 归工作事务脑区
+        assert "工作事务脑区" in region_entities
+        assert entity_to_region["项目复盘"] == "工作事务脑区"
+        assert hit_entities == ["项目复盘"]

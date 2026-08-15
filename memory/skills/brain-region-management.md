@@ -51,7 +51,7 @@ Add your new brain region to the `brain_regions.defaults` section. Each entry su
 | `label` | Yes | Region display name (e.g., "工作事务") |
 | `description` | Yes | What the region stores (only takes effect when the region is created — existing regions' descriptions are maintained by the knowledge graph; changing `description` in config does not affect existing regions) |
 | `priority` | Yes | `"permanent"` (360天半衰期，永不删除) / `"long"` (360天) / `"medium"` (180天) / `"short"` (90天) |
-| `keywords` | No | Reserved field, retained for config compatibility (no longer drives automatic matching) |
+| `keywords` | No | Used for runtime classification — when a hit entity's name contains any keyword, it is classified into this region (first config-order match wins); keywords all miss → fall back to entity_type mapping |
 
 Region membership edges (`包含` belongs-to) are created naturally by LLM-prompt-guided knowledge graph operations — dream-evolver injects the brain region list and guides edge creation, entity extraction / document ingestion prompts do the same, and skill sync links skill entities to the knowledge system region.
 
