@@ -26,6 +26,8 @@ from .generic.agent_loop import BaseHandler, StepOutcome, StreamEvent, try_call_
 
 # E1 统一异常兜底（2026-08-15）：错误文本截断上限（防上下文爆炸——总体方案风险 6）
 _TOOL_ERROR_MAX = 500
+# 截断时尾部保留长度——保尾 (fname:lineno) 位置信息（供区分 harness 伪装与真实工具错误）
+_TOOL_ERROR_TAIL = 100
 
 
 def format_error(e: Exception) -> str:
@@ -1396,19 +1398,20 @@ class NiuHandler(BaseHandler):
         try:
             return (yield from self._dispatch_impl(tool_name, args, response, index))
         except Exception as e:
-            # 错误文本构造——format_error 内层 try/except 兜底坏 __str__（防二次抛异常逃逸 except 块）
+            # 错误文本构造——format_error 调用处内层 try/except 兜底坏 __str__（防二次抛异常逃逸 except 块）
             try:
                 err_detail = format_error(e)  # f"{type(e).__name__}: {e} ({fname}:{f.lineno})"
             except Exception:
                 err_detail = f"{type(e).__name__}: <unprintable>"
             err_msg = f"Tool {tool_name} failed: {err_detail}"
-            # 截断保尾：前 _TOOL_ERROR_MAX-103(=len('...')+尾100) + '...' + 尾 100 = 总 ≤500，
+            # 截断保尾：前 _TOOL_ERROR_MAX-(len('...')+_TOOL_ERROR_TAIL) + '...' + 尾 _TOOL_ERROR_TAIL = 总 ≤500，
             # 保留 (fname:lineno) 位置信息（供区分 harness 伪装与真实工具错误）
             if len(err_msg) > _TOOL_ERROR_MAX:
-                err_msg = err_msg[:_TOOL_ERROR_MAX - 103] + "..." + err_msg[-100:]
+                err_msg = err_msg[: _TOOL_ERROR_MAX - (len("...") + _TOOL_ERROR_TAIL)] + "..." + err_msg[-_TOOL_ERROR_TAIL:]
 
             # 错误路径镜像 tool_after_callback 职责（复制 L520-566 段结构）：
-            # ① 重复调用检测——失败工具同参重试时重复检测警告仍触发（防 LLM 自旋）
+            # ① 重复调用检测——失败工具同参重试时重复检测警告仍触发（防 LLM 自旋）。
+            # args 非 dict（如字符串参数）时静默跳过——可接受降级（重复检测仅对 dict 参数有意义）
             try:
                 self._track_tool_call_for_repeat_detection(tool_name, args)
             except Exception:
@@ -1427,7 +1430,8 @@ class NiuHandler(BaseHandler):
             except Exception:
                 pass
 
-            # system 事件与 msg 均复用 err_detail（已兜底）——不再直接调 str(e)
+            # system 事件与 msg 均复用 err_detail（已兜底）——不再直接调 str(e)。
+            # 截断策略：msg 保尾为权威信息源（LLM 消费，含位置信息）；system 事件仅前端展示，截头即可
             yield StreamEvent("system", f"[Tool Error] {tool_name}: {err_detail[:_TOOL_ERROR_MAX]}\n")
             return StepOutcome(
                 {"status": "error", "error_code": "TOOL_ERROR", "msg": err_msg},
@@ -1479,9 +1483,12 @@ class NiuHandler(BaseHandler):
                 self.tool_before_callback, tool_name, args, response
             )
             ret = yield from try_call_generator(self._call_subagent_gen, agent_name, args)
-            _ = yield from try_call_generator(
-                self.tool_after_callback, tool_name, args, response, ret
-            )
+            try:
+                _ = yield from try_call_generator(
+                    self.tool_after_callback, tool_name, args, response, ret
+                )
+            except Exception:
+                pass  # callback 失败不影响主流程（工具已成功，防 wrapper 误标 TOOL_ERROR）
             return ret
 
         # 再检查内置工具（工具名中的 - 转换为 _）
@@ -1493,9 +1500,12 @@ class NiuHandler(BaseHandler):
                 self.tool_before_callback, tool_name, args, response
             )
             ret = yield from try_call_generator(getattr(self, method_name), args, response)
-            _ = yield from try_call_generator(
-                self.tool_after_callback, tool_name, args, response, ret
-            )
+            try:
+                _ = yield from try_call_generator(
+                    self.tool_after_callback, tool_name, args, response, ret
+                )
+            except Exception:
+                pass  # callback 失败不影响主流程（工具已成功，防 wrapper 误标 TOOL_ERROR）
             return ret
 
         # 检查 disk 虚拟磁盘命令
@@ -1517,10 +1527,13 @@ class NiuHandler(BaseHandler):
                     if server is not None:
                         real_tool_name = f"{server.server_name}/{tool}"
                 # 截断由 agent_loop 统一关口处理（dispatch 返回后）
-                _ = yield from try_call_generator(
-                    self.tool_after_callback, real_tool_name,
-                    args, response, result
-                )
+                try:
+                    _ = yield from try_call_generator(
+                        self.tool_after_callback, real_tool_name,
+                        args, response, result
+                    )
+                except Exception:
+                    pass  # callback 失败不影响主流程（工具已成功，防 wrapper 误标 TOOL_ERROR）
                 # Determine success: dict with status != error, or any non-dict result (str/list)
                 is_success = (
                     isinstance(result, dict) and result.get("status") not in ("error", None)
@@ -1536,16 +1549,22 @@ class NiuHandler(BaseHandler):
             elif disk_result.action == "ERROR":
                 # 参数/执行错误 → 提示修正
                 result = disk_result.text
-                _ = yield from try_call_generator(
-                    self.tool_after_callback, tool_name, args, response, result
-                )
+                try:
+                    _ = yield from try_call_generator(
+                        self.tool_after_callback, tool_name, args, response, result
+                    )
+                except Exception:
+                    pass  # callback 失败不影响主流程（工具已成功，防 wrapper 误标 TOOL_ERROR）
                 return StepOutcome(result, next_prompt="")
             else:
                 # 导航命令 (LIST/READ/HELP/EMPTY) → 继续工作
                 result = disk_result.text
-                _ = yield from try_call_generator(
-                    self.tool_after_callback, tool_name, args, response, result
-                )
+                try:
+                    _ = yield from try_call_generator(
+                        self.tool_after_callback, tool_name, args, response, result
+                    )
+                except Exception:
+                    pass  # callback 失败不影响主流程（工具已成功，防 wrapper 误标 TOOL_ERROR）
                 return StepOutcome(result, next_prompt="")
 
         # 检查 MCP 工具（工具名格式：server/tool）

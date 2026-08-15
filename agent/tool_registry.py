@@ -302,7 +302,12 @@ class ToolRegistry:
             }.items() if k in valid_params}
             return self._ask_agent(**kwargs)
         except Exception as e:
-            logger.error(f"ask_agent callback failed: {e}")  # E1-08：消除静默（异常类型+消息进日志）
+            # 坏 __str__ 兜底：f-string 拼接 str(e) 可能二次抛异常（防日志调用自身崩）
+            try:
+                err_text = str(e)
+            except Exception:
+                err_text = type(e).__name__
+            logger.error(f"ask_agent callback failed: {err_text}")  # E1-08：消除静默（异常类型+消息进日志）
             return None
 
     def clear(self):
