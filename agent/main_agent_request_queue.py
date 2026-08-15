@@ -1,6 +1,6 @@
 """主 Agent 请求内存队列。
 
-存子 Agent 的 ask 请求和完成通知（FIFO），content 两种格式与 type 字段对应：
+存子 Agent 的 ask 请求和完成通知（FIFO），content 两种格式与 msg_type 字段对应：
 - ask（子 Agent 提问需主 Agent 回复）：【子Agent提问·需回复】[unique_name]\n问题\n收到请回复
   （unique_name 同步路径=纯 agent_name，异步路径=agent_name-4位hex；
    文本由 _compose_ask_main_agent_message 拼装，db_monitor 链路 A 直通不拼装）
@@ -13,7 +13,7 @@ db_monitor 检测主 Agent 闲置时 pop 一条，推 SSE 触发前端调 /api/c
 
 线程安全：queue.Queue 实现，多线程 push/pop 安全。
 
-type 字段（T2 兼容设计）：内部存 (content, msg_type) 元组——
+msg_type 字段（T2 兼容设计）：内部存 (content, msg_type) 元组——
 - `push(content, msg_type="ask"|"notify")`，默认 "notify"（向后兼容既有调用）
 - `peek()/pop()` 解包返回 content（字符串——既有消费方零破坏）
 - 新增 `peek_type()/pop_type()` 读取 msg_type（db_monitor 链路 A 日志标注 + 测试断言）
