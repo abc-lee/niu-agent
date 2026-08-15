@@ -513,6 +513,15 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-15
+
+#### 修复：strip_at_messages 删除回复空行（飞书卡片块不闭合——子 Agent 转述与主 Agent 话直接连接）
+
+- **现象**：飞书 IM 中主 Agent 回复里子 Agent 转述块后主 Agent 的话直接连接（文本无分隔/表格吞并"简单说："入表）；Chat 页面正常（另起一行）。实证：Chat 显示 DB 持久化文本、飞书显示流式卡片累计，两条路径都过 strip_at_messages。
+- **根因（实证链）**：LLM 原始输出（raw_http 20260815/000007）`...日志\n\n您看...`（空行存在）→ `strip_at_messages` 的 `if line.strip()` 过滤空行 + 单 \n 重连 → DB（messages.db a01d63e5）与飞书卡片均 `...日志\n您看...`（空行被删）→ Chat（marked）单 \n 显示换行（正常）；飞书 CardKit 列表/表格项内单 \n 折叠/吞并（连接）——同一文本两端渲染差异。
+- **修复**：`strip_at_messages` 只做 `_AT_PATTERN.sub('', reply_text).strip()`——@ 消息段剥离 + 两端清理，原文换行/空行结构原样保留。@ 剥离残留空行保留（无害，段落间距）。函数签名/调用点零改动（gitnexus CRITICAL 12 处核验：persist 去重双方同版本一致、纯 @ 回复判定 .strip() 保留不变、ask_user 问题文本无空行结构）。
+- **验证**：TDD（空行保留核心断言 2 新）+ 5 回归文件 41 passed 零新增失败（test_at_message_parser 11 / full_text 8 / at_sync_name 10 / persist_dedup 9 / scheduler_sse 3）+ 实机验证待用户重启（飞书卡片块闭合）。
+
 ### 2026-08-14
 
 #### 修复：脑区 assign 每次启动全量重注入抵消图边衰减（遗忘曲线失效）——assign 删除 + update_default_region_sizes 提取 + decay 从 detection 解耦
