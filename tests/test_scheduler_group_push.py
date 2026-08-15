@@ -128,7 +128,9 @@ class TestF4ServiceChatIdPass:
         assert result == "ok"
         # 入队内容 = [定时任务] + 任务内容，同步入队；channel 必须保持 "scheduler"
         # （enqueue_sync 默认 channel="im"——若漏传，ChatQueue worker 会把 Agent 回复
-        #  自动 push 到 IM（channel/gateway.py 空 channel_id 回退广播），叠加手动 route_out = 双 IM 消息）
+        #  经 router.push 广播回退 _push_target 错位（channel/gateway.py 空 channel_id 回退广播），
+        #  叠加手动 route_out = 回复走广播错位——真实危害：卡片不终结 + _im_finalized 不置位
+        #  → ha_watcher 自推双投递风险（与 service.py 同口径，非消息条数））
         mock_queue.enqueue_sync.assert_called_once_with(
             content="[定时任务] 群聊提醒", channel="scheduler", source="scheduler", session_id="default"
         )
