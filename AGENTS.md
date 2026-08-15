@@ -522,6 +522,14 @@ preload_face_model()
 - **修复**：`strip_at_messages` 只做 `_AT_PATTERN.sub('', reply_text).strip()`——@ 消息段剥离 + 两端清理，原文换行/空行结构原样保留。@ 剥离残留空行保留（无害，段落间距）。函数签名/调用点零改动（gitnexus CRITICAL 12 处核验：persist 去重双方同版本一致、纯 @ 回复判定 .strip() 保留不变、ask_user 问题文本无空行结构）。
 - **验证**：TDD（空行保留核心断言 2 新）+ 5 回归文件 41 passed 零新增失败（test_at_message_parser 11 / full_text 8 / at_sync_name 10 / persist_dedup 9 / scheduler_sse 3）+ 实机验证待用户重启（飞书卡片块闭合）。
 
+#### 修复：工具调用统一异常兜底（E1——dispatch 整体包裹，循环不死亡/错误 LLM 可见）
+
+- **问题**：主/子 Agent 工具调用抛未捕获异常（do_* 参数畸形如 offset='abc'、disk_engine.execute 裸调用链、chat-with 异步分支、回调穿透）时——子 Agent 循环直接死亡（错误穿透 call_subagent 转报主 Agent，子 Agent 自身盲）、主 Agent 会话中止（chat_queue/compat 降级回复），Agent 看不到报错。
+- **根因**：handler.dispatch（agent/handler.py）无统一异常包裹——MCP 两分支有内层 try/except，但内置 do_*、disk、chat-with 路径裸调用；异常穿透 interruptible re-raise → agent_loop 无 catch → 消费端中止。
+- **修复（main 2 commits：74bec278 + 3c5fc4a8）**：dispatch 外壳 `try: return (yield from _dispatch_impl(...)) except Exception`（非 BaseException——KeyboardInterrupt/CancelledError 保留穿透兼容停止语义）→ 任何未捕获 Exception 转 `TOOL_ERROR` error dict（error_code + format_error 类型/消息/位置 + 截断保尾 ≤500）进 StepOutcome.data → tool 消息 → LLM 下一轮可见可自纠；错误路径镜像 tool_after_callback 职责（重复调用检测防 LLM 自旋 + 工具状态 end 推送防前端滞留——主 Agent notify_tool_status_sync/子 Agent _push_subagent_event，status 仅 start|end）；format_error 内层兜底坏 __str__（<unprintable> 防二次抛异常）；E1-08 ask_agent 吞异常加 logger.error。
+- **核销**：E1 归属 10 条——修 2（E1-02/08）/ 覆盖 5（E1-01/03/04/05/10）/ 无需修 2（E1-07 get() 五调用方可见、E1-09 interruptible re-raise 仅剩 BaseException）/ 重归属 E4 1（E1-06 三序列化点在 dispatch 之后）。
+- **验证**：7 新测试（TOOL_ERROR 格式/循环存活/BaseException 穿透/MCP 内层优先/坏 __str__/状态 end 双路径）+ 回归 10 文件 95 passed（6 个 pre-existing 失败基线复现确认非本工程引入）+ 实机验证待用户重启。
+
 ### 2026-08-14
 
 #### 修复：脑区 assign 每次启动全量重注入抵消图边衰减（遗忘曲线失效）——assign 删除 + update_default_region_sizes 提取 + decay 从 detection 解耦
