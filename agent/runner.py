@@ -932,6 +932,14 @@ class NiuRunner:
     def get_im_force(self) -> bool:
         return self._im_force
 
+    def should_push_im(self) -> bool:
+        """IM 推送统一判定（全局唯一入口——用户拍板：所有消费点统一调用，禁止内联复制判定式）。
+
+        True = IM 用户消息置的 channel_id 或定时任务/后台触发置的 force 任一在。
+        消费点：compat.py chat_session 推送闸门 / chat_queue.py scheduler 特判 / runner 流式三处。
+        注意读 _im_channel_id（粘性，回合外仍有效）而非 _current_channel_id（回合结束清空）。"""
+        return bool(self._im_channel_id or self._im_force)
+
     def _refresh_base_tools_schema_if_dirty(self):
         """每次对话开始时扫 ~/.niu/agents/，发现新 MD 就重算 base_tools_schema。
 
