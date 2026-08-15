@@ -927,10 +927,6 @@ def test_9_region_activation_manager_api(rag, call_async):
         manager.manual_activate(["测试2"])
         print("  OK: manual_activate()")
 
-        # reinforce_by_tool_use
-        rid = manager.reinforce_by_tool_use("lightrag_insert", {"lightrag_insert": "test_1"})
-        print(f"  OK: reinforce_by_tool_use() → {rid}")
-
         api_ok = True
     except Exception as e:
         print(f"  FAIL: {e}")

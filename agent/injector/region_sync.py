@@ -42,7 +42,6 @@ REGION_CONFIG_DEFAULTS: dict[str, Any] = {
     "decay_factor": 0.92,
     "activation_boost": 1.0,
     "activation_threshold": 0.3,
-    "tool_reinforce_value": 0.85,
     "spillover_factor": 0.3,
     "context_budget_tokens": 4000,
     "high_activation_budget": 2000,
@@ -210,14 +209,6 @@ class RegionSync:
 
         # Step 8: Save status
         self._save_status(stats)
-
-        # Invalidate cached tool-to-region mapping so it will be lazily rebuilt
-        # with current region structure (regions may have been merged/dissolved)
-        try:
-            from agent.brain_tools import invalidate_tool_to_region
-            invalidate_tool_to_region()
-        except Exception:
-            pass
 
         logger.info(
             f"[RegionSync] Sync complete: "
@@ -440,7 +431,6 @@ class RegionSync:
                     decay_factor=REGION_CONFIG_DEFAULTS["decay_factor"],
                     activation_threshold=REGION_CONFIG_DEFAULTS["activation_threshold"],
                     spillover_factor=REGION_CONFIG_DEFAULTS["spillover_factor"],
-                    tool_reinforce_value=REGION_CONFIG_DEFAULTS["tool_reinforce_value"],
                 )
             activation_mgr.initialize_from_regions(all_regions)
 

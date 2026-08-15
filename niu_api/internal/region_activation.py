@@ -4,7 +4,6 @@ Brain Region Activation Manager
 Session-level activation/decay management for brain regions (Leiden communities).
 Each region has an activation score 0.0-1.0 that:
 - Activates (1.0) when query hits entities in that region
-- Reinforces (max(current, 0.85)) when a tool within that region is used
 - Decays (*0.92) each conversation turn (accelerated when > 6 regions are lit)
 - Spills over to neighboring regions at 0.3x factor
 - Can be manually activated or dimmed
@@ -48,7 +47,7 @@ _LIT_ACCEL_EXP = 0.15
 class BrainRegionState:
     """Brain region activation state (session-level, NOT persisted to graph)
 
-    Tracks per-region activation score with decay, reinforce, and spillover
+    Tracks per-region activation score with decay and spillover
     mechanisms. Reset on each new session.
     """
 
@@ -71,7 +70,6 @@ class RegionActivationManager:
 
     Core mechanisms:
     - Activate: query hits region entity -> activation=1.0
-    - Reinforce: tool used within region -> activation=max(current, 0.85)
     - Decay: each turn activation *= 0.92 (点亮 >6 时加速)
     - Manual control: activate/dim, dimmed regions skip auto-activation this turn
     - Spillover: activated region's neighbors get 0.3 * activation
@@ -85,9 +83,6 @@ class RegionActivationManager:
         # On query hit
         activated = manager.activate_regions(hit_entities, entity_to_region)
 
-        # On tool use
-        manager.reinforce_by_tool_use(tool_name, tool_to_region)
-
         # End of turn
         manager.decay_all()
     """
@@ -97,17 +92,14 @@ class RegionActivationManager:
         decay_factor: float = 0.92,
         activation_threshold: float = 0.3,
         spillover_factor: float = 0.3,
-        tool_reinforce_value: float = 0.85,
     ) -> None:
         assert 0.0 < decay_factor <= 1.0, "decay_factor must be in (0, 1]"
         assert 0.0 <= activation_threshold <= 1.0, "activation_threshold must be in [0, 1]"
         assert 0.0 <= spillover_factor <= 1.0, "spillover_factor must be in [0, 1]"
-        assert 0.0 <= tool_reinforce_value <= 1.0, "tool_reinforce_value must be in [0, 1]"
 
         self._decay_factor = decay_factor
         self._activation_threshold = activation_threshold
         self._spillover_factor = spillover_factor
-        self._tool_reinforce_value = tool_reinforce_value
 
         self._lock = threading.RLock()
 
@@ -397,70 +389,6 @@ class RegionActivationManager:
             try:
                 from niu_api.chat import notify_brain_region_sync
                 notify_brain_region_sync('auto', [self._regions[rid].label for rid in result if rid in self._regions])
-            except Exception:
-                pass
-        return result
-
-    # ------------------------------------------------------------------
-    # Reinforce (tool use)
-    # ------------------------------------------------------------------
-
-    def reinforce_by_tool_use(
-        self,
-        tool_name: str,
-        tool_to_region: dict[str, str],
-    ) -> str | None:
-        """Reinforce when a tool within a region is actually called.
-
-        Rules:
-        - Find which region the tool belongs to
-        - activation = max(current, tool_reinforce_value)
-        - Skip if manually_dimmed=True
-
-        Args:
-            tool_name: Name of the tool that was called
-            tool_to_region: tool_name -> region_id mapping
-
-        Returns:
-            The reinforced region_id, or None.
-        """
-        with self._lock:
-            region_id = tool_to_region.get(tool_name)
-            if region_id is None:
-                return None
-
-            state = self._regions.get(region_id)
-            if state is None:
-                return None
-
-            # Skip manually dimmed regions
-            if state.manually_dimmed:
-                logger.debug(
-                    "跳过手动调暗的区域（工具强化）: %s (%s)", state.label, region_id
-                )
-                return None
-
-            # Reinforce: max(current, reinforce_value)
-            old_activation = state.activation
-            state.activation = max(state.activation, self._tool_reinforce_value)
-            state.last_activated_at = time.time()
-
-            logger.debug(
-                "工具强化脑区 %s (%s): %.2f -> %.2f",
-                state.label,
-                region_id,
-                old_activation,
-                state.activation,
-            )
-
-            result = region_id
-            result_label = state.label
-
-        # 锁外推送 SSE
-        if result:
-            try:
-                from niu_api.chat import notify_brain_region_sync
-                notify_brain_region_sync('auto', [result_label])
             except Exception:
                 pass
         return result

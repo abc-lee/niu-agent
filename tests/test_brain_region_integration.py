@@ -7,11 +7,10 @@ work together correctly.
 
 Test coverage:
 1. test_insert_detect_activate_inject — full insert -> detect -> activate -> inject cycle
-2. test_activate_decay_reactivate — activation, decay, and reinforce cycle
+2. test_activate_decay_reactivate — activation, decay, and re-activation cycle
 3. test_manual_control_overrides_auto — manual dim/activate override logic
-4. test_tool_use_reinforces_region — tool dispatch reinforce steady state
-5. test_spillover_activation — neighbor spillover activation
-6. test_context_budget_not_exceeded — token budget truncation
+4. test_spillover_activation — neighbor spillover activation
+5. test_context_budget_not_exceeded — token budget truncation
 """
 
 from __future__ import annotations
@@ -138,12 +137,11 @@ class TestFullBrainRegionFlow:
         assert STATUS_LIT in region_map
 
     def test_activate_decay_reactivate(self) -> None:
-        """Activation, decay, and reinforce cycle.
+        """Activation and decay cycle.
 
         - Activate region (activation=1.0)
         - Decay once (activation=0.92)
-        - Reinforce via tool use (activation=max(0.92*0.92, 0.85)=0.85)
-        - Verify reinforce brings it back up
+        - Decay again (activation=0.8464)
         """
         manager = _make_activation_mgr()
 
@@ -163,13 +161,6 @@ class TestFullBrainRegionFlow:
         # Decay again (activation = 0.92 * 0.92 = 0.8464)
         manager.decay_all()
         assert state.activation == pytest.approx(0.8464)
-
-        # Reinforce via tool use (max(current, 0.85))
-        tool_to_region = {"kg-server/query": "编程开发脑区"}
-        manager.reinforce_by_tool_use("kg-server/query", tool_to_region)
-
-        # Reinforce should bring it to 0.85 (0.8464 < 0.85)
-        assert state.activation == pytest.approx(0.85)
 
     def test_manual_control_overrides_auto(self) -> None:
         """Manual dim overrides auto-activation, manual_activate overrides dim.
@@ -208,41 +199,6 @@ class TestFullBrainRegionFlow:
         manager.manual_activate(["编程开发"])
         assert state.activation == 1.0
         assert state.manually_dimmed is False
-
-    def test_tool_use_reinforces_region(self) -> None:
-        """Tool use reinforces the region, steady state in 0.78-0.85 range.
-
-        Steps:
-        1. Set tool_to_region mapping
-        2. Reinforce (activation=0.85)
-        3. Decay (activation=0.85*0.92=0.782)
-        4. Reinforce again (max(0.782, 0.85)=0.85)
-        5. Verify steady state in 0.78-0.85 range
-        """
-        manager = _make_activation_mgr()
-
-        # Set tool mapping
-        tool_to_region = {"kg-server/query": "编程开发脑区"}
-
-        # Reinforce (region starts at 0.0, max(0.0, 0.85) = 0.85)
-        result = manager.reinforce_by_tool_use("kg-server/query", tool_to_region)
-        assert result == "编程开发脑区"
-        state = manager._regions["编程开发脑区"]
-        assert state.activation == pytest.approx(0.85)
-
-        # Decay (0.85 * 0.92 = 0.782)
-        manager.decay_all()
-        assert state.activation == pytest.approx(0.782)
-
-        # Reinforce again (max(0.782, 0.85) = 0.85)
-        manager.reinforce_by_tool_use("kg-server/query", tool_to_region)
-        assert state.activation == pytest.approx(0.85)
-
-        # Verify steady state after several cycles
-        for _ in range(3):
-            manager.decay_all()
-            manager.reinforce_by_tool_use("kg-server/query", tool_to_region)
-            assert 0.78 <= state.activation <= 0.85
 
     def test_spillover_activation(self) -> None:
         """Activated region spills over to neighbors.

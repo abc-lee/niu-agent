@@ -262,7 +262,6 @@ class TestRegionConfigDefaults:
             "decay_factor",
             "activation_boost",
             "activation_threshold",
-            "tool_reinforce_value",
             "spillover_factor",
             "context_budget_tokens",
             "high_activation_budget",
@@ -281,7 +280,6 @@ class TestRegionConfigDefaults:
         assert 0.0 < REGION_CONFIG_DEFAULTS["resolution"] <= 2.0
         assert 0.0 < REGION_CONFIG_DEFAULTS["decay_factor"] < 1.0
         assert 0.0 < REGION_CONFIG_DEFAULTS["activation_threshold"] < 1.0
-        assert 0.0 < REGION_CONFIG_DEFAULTS["tool_reinforce_value"] <= 1.0
         assert 0.0 < REGION_CONFIG_DEFAULTS["spillover_factor"] <= 1.0
 
     def test_shrink_threshold_config_key_is_100(self) -> None:

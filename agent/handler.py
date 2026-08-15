@@ -1469,13 +1469,6 @@ class NiuHandler(BaseHandler):
                     self.tool_after_callback, real_tool_name,
                     args, response, result
                 )
-                # Reinforce brain region on tool use via disk
-                if not getattr(self, '_is_subagent', False):
-                    try:
-                        from agent.brain_tools import reinforce_on_tool_use
-                        reinforce_on_tool_use(real_tool_name)
-                    except Exception:
-                        pass
                 # Determine success: dict with status != error, or any non-dict result (str/list)
                 is_success = (
                     isinstance(result, dict) and result.get("status") not in ("error", None)
@@ -1517,14 +1510,6 @@ class NiuHandler(BaseHandler):
                         {"status": "error", "error_code": "TOOL_NOT_FOUND", "msg": f"Tool {tool_name} not found in registry"},
                         next_prompt=""
                     )
-
-                # Reinforce brain region on tool use
-                if not getattr(self, '_is_subagent', False):
-                    try:
-                        from agent.brain_tools import reinforce_on_tool_use
-                        reinforce_on_tool_use(tool_name)
-                    except Exception:
-                        pass
 
                 # 直接调用工具函数
                 result = func(**args)
@@ -1568,14 +1553,6 @@ class NiuHandler(BaseHandler):
         func = get_registry().get(tool_name)
         if func is not None:
             try:
-                # Reinforce brain region on tool use
-                if not getattr(self, '_is_subagent', False):
-                    try:
-                        from agent.brain_tools import reinforce_on_tool_use
-                        reinforce_on_tool_use(tool_name)
-                    except Exception:
-                        pass
-
                 result = func(**args)
 
                 result = _run_coroutine(result)

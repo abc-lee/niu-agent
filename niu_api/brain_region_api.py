@@ -367,13 +367,6 @@ def consolidate_brain_regions(
             except Exception as e:
                 logger.debug("[Consolidate] Edge decay skipped: %s", e)
 
-            # Step 9: Invalidate cached tool-to-region mapping
-            try:
-                from agent.brain_tools import invalidate_tool_to_region
-                invalidate_tool_to_region()
-            except Exception:
-                pass
-
             return {
                 "status": "ok",
                 "regions_created": len(created),
