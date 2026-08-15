@@ -606,15 +606,16 @@ class RegionSync:
     def _save_status(self, stats: dict) -> None:
         """Save sync status to file.
 
-        Args:
-            stats: Sync statistics for this run.
+        R14 合并语义（防整体替换丢 decay_at）：保留文件中的既有字段
+        （decay_at——region_manager 衰减门控独立字段——及其他未来字段），
+        只更新 last_sync / stats。decay_at 由衰减入口（decay_structural_edges）
+        自包含写回——此处不覆盖不删除。
         """
         try:
             self._status_file.parent.mkdir(parents=True, exist_ok=True)
-            status = {
-                "last_sync": datetime.now().isoformat(),
-                "stats": stats,
-            }
+            status = self._load_status()
+            status["last_sync"] = datetime.now().isoformat()
+            status["stats"] = stats
             self._status_file.write_text(
                 json.dumps(status, ensure_ascii=False, indent=2),
                 encoding="utf-8",

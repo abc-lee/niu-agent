@@ -324,6 +324,81 @@ def _read_region_raw_descriptions(kg) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# R14 衰减门控（P13 用户拍板——算法调度改动）
+# ---------------------------------------------------------------------------
+# 背景（实证）：衰减频率 = 重启频率——startup gate 绕过 21.6h 门控每次重启
+# 衰减（内存改动落盘依赖后续写——崩溃丢衰减/重启后双重衰减）。
+# 门控放 decay_structural_edges（三链唯一公共入口：启动 gate/24h 后台
+# RegionSync._run_decay / consolidate brain_region_api 直调）——距上次衰减
+# < 21.6h（86400×0.9）→ 跳过衰减（caller 继续 refresh activation manager）。
+# decay_at 独立字段（epoch 秒——不复用 last_sync——防污染同步语义），衰减
+# 实际执行后立即自包含写回 ~/.niu/last_region_sync.json（合并保留现有字段
+# ——含 region_sync 的 last_sync/stats）——consolidate 链不经过
+# region_sync._save_status 也能记录（防门控失效双衰减复现——A5-P3）。
+DECAY_GATE_INTERVAL = 86400 * 0.9  # 21.6h——稳态 24h 后台节奏 > 门控——正常节奏保持
+REGION_SYNC_STATUS_FILE = "last_region_sync.json"  # 与 region_sync 共享的状态文件
+
+
+def _region_sync_status_path() -> str:
+    """~/.niu/last_region_sync.json——衰减门控与 RegionSync 共享状态文件路径。
+
+    独立函数便于测试 patch（不污染真实用户文件）。
+    """
+    return os.path.join(os.path.expanduser("~"), ".niu", REGION_SYNC_STATUS_FILE)
+
+
+def _load_region_sync_status() -> dict:
+    """读 last_region_sync.json——文件缺失/损坏返回 {}（首次衰减语义）。
+
+    只读——与 region_sync.RegionSync._load_status 等价但自包含
+    （不依赖 RegionSync 实例——consolidate 链无实例）。
+    """
+    try:
+        with open(_region_sync_status_path(), encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _merge_save_region_sync_status(patch_fields: dict) -> None:
+    """合并读改写 last_region_sync.json——保留现有字段——只更新 patch_fields。
+
+    自包含（不依赖 region_sync._save_status）：consolidate 链
+    （brain_region_api 直调 decay_structural_edges——不经过 region_sync）
+    衰减后也能记录 decay_at——防"consolidate 衰减不记录 → 门控失效 →
+    重启双重衰减"复现（A5-P3 要求）。
+    """
+    try:
+        status = _load_region_sync_status()
+        status.update(patch_fields)
+        path = _region_sync_status_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(status, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        # 写失败只降级（本次衰减照常返回）——但下次门控可能不生效——warning 可发现
+        logger.warning("[Decay] 写衰减状态失败（decay_at 未记录——下次门控可能不生效）: %s", e)
+
+
+def _should_gate_decay() -> bool:
+    """R14 衰减门控判定：距上次衰减 < 21.6h → True（跳过本次衰减）。
+
+    - 无 status file / 无 decay_at 字段 → False（首次衰减——跑）
+    - 文件损坏/格式异常 → False（宁可多衰减不可漏衰减）
+    """
+    try:
+        status = _load_region_sync_status()
+        decay_at = status.get("decay_at")
+        if decay_at is None:
+            return False
+        elapsed = time.time() - float(decay_at)
+        return elapsed < DECAY_GATE_INTERVAL
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Region Manager
 # ---------------------------------------------------------------------------
 
@@ -1847,7 +1922,31 @@ class RegionManager:
         Only decays entity→brainregion attribution edges.
         Knowledge edges (entity→entity) are not affected.
         Anchor edges (brainregion→brainregion) are skipped.
+
+        R14 衰减门控（P13 用户拍板——算法调度改动）：三链唯一公共入口
+        （启动 gate/24h 后台 RegionSync._run_decay / consolidate
+        brain_region_api 直调）——距上次衰减 < 21.6h（86400×0.9）→
+        跳过衰减（返回 gated 结果——caller 继续 refresh activation
+        manager）。decay_at 独立字段（epoch 秒——不复用 last_sync——
+        防污染同步语义）——衰减实际执行后立即自包含写回
+        ~/.niu/last_region_sync.json（合并保留现有字段——含 region_sync
+        的 last_sync/stats——consolidate 链不经过 _save_status 也能记录）。
+
+        行为变化标注（B4-P3）：
+        ① 门控只挡重启额外衰减——正常 24h 后台衰减节奏保持
+           （稳态 24h > 21.6h——每次同步正常衰减）
+        ② consolidate（手动触发）链同样被门控——距上次衰减 <21.6h 时
+           手动 consolidate 不再衰减（功能行为变化）
+        ③ 冷启动后 _sync_loop 首轮同步可能边际跳过（距上次 <21.6h）——
+           稳态节奏保持——首个周期可能边际跳过
+
+        无 status file / 无 decay_at 字段 → 跑衰减（首次）。
         """
+        if _should_gate_decay():
+            logger.info("[Decay] 距上次衰减 < 21.6h——门控跳过（R14——重启额外衰减被挡）")
+            return {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0, "gated": True}
+
+        executed = False
         try:
             from niu_api.internal.lightrag_manager import graph_write_lock
 
@@ -1865,10 +1964,17 @@ class RegionManager:
 
             with graph_write_lock():
                 result = _decay_brain_region_edges(nx_graph)
+            executed = True
 
         except Exception as e:
             logger.warning("Edge decay failed: %s", e)
             result = {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
+
+        # R14：衰减实际执行后立即记录 decay_at（跳过衰减/早退/异常不写——
+        # 保持上次值——防漏衰减）。合并保留现有字段（含 region_sync 的
+        # last_sync/stats）——consolidate 链不经过 _save_status 也能记录。
+        if executed:
+            _merge_save_region_sync_status({"decay_at": time.time()})
 
         logger.info(
             f"[Decay] brain region edges: decayed={result['decayed']}, deleted={result['deleted']}, "

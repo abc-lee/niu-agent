@@ -3,6 +3,17 @@ import networkx as nx
 
 from niu_api.internal.region_manager import FLOOR_WEIGHT, _decay_brain_region_edges
 
+# ---- R14 衰减门控 imports（测试见文件尾部 TestDecayGate）----
+import contextlib
+import json
+import time
+from collections.abc import Iterator
+from unittest import mock
+
+import pytest
+
+from niu_api.internal import region_manager as rm
+
 
 def _build_graph_with_permanent_region():
     """构造 1 个永久脑区 + 1 个普通实体（含多条知识边避免 total_degree<=1）"""
@@ -856,4 +867,199 @@ def test_has_isolated_member_degree_call_raises_returns_true():
 
     result = manager._has_isolated_member(["成员X"])
     assert result is True, "degree() 抛异常时应保守返回 True（阻止 dissolve）"
+
+
+# =============================================================================
+# R14 衰减门控（P13 用户拍板——decay_at 独立字段——三链门控——24h 节奏保持）
+# =============================================================================
+# 验证 decay_structural_edges（三链唯一公共入口：启动 gate/24h 后台
+# RegionSync._run_decay / consolidate brain_region_api 直调——同一方法）：
+# 1. 首次启动（无 status file）衰减 + decay_at 写入
+# 2. 连续两次启动（mock status file 带最近 decay_at）第二次不衰减（门控跳过）
+# 3. consolidate 链同样被门控（门控在公共入口——consolidate 走同一方法——
+#    edges_disconnected=0——行为变化：当前行为是每次衰减）
+# 4. 22h 后连续两次调用仅第一次衰减（decay_at 写回后立即再门控）
+# 5. 21.6h 边界：=21.6h 衰减 / <21.6h 门控
+# 6. decay_at 合并保留（不丢 last_sync/stats——含 region_sync._save_status 合并语义）
+# 7. 门控跳过不写 decay_at（保持上次值）
+# 8. 衰减异常（未实际执行）不写 decay_at（下次可重试——防漏衰减）
+# 9. 老 status file（无 decay_at 字段）视为首次衰减
+#
+# 边界纪律：不初始化真实 LightRAG/图谱——_region_sync_status_path patch 到
+# tmp_path（不写真实 ~/.niu/last_region_sync.json）——_decay_brain_region_edges
+# 与 graph_write_lock 全部 mock——零真实副作用。
+
+DECAYED = {"decayed": 5, "deleted": 2, "protected": 1, "skipped_anchor": 0}
+
+
+@pytest.fixture()
+def status_path(tmp_path) -> Iterator[str]:
+    """状态文件指向 tmp_path——patch 路径函数防污染真实 ~/.niu。"""
+    path = tmp_path / "last_region_sync.json"
+    with mock.patch.object(rm, "_region_sync_status_path", return_value=str(path)):
+        yield str(path)
+
+
+@pytest.fixture()
+def mgr() -> Iterator[rm.RegionManager]:
+    """adapter 已装配（_get_rag 返回带 _graph 的 rag）——decay 路径可走通。"""
+    mgr = rm.RegionManager(adapter=mock.MagicMock(), ingester=mock.MagicMock())
+    rag = mock.MagicMock()
+    graph = mock.MagicMock()
+    graph._graph = mock.MagicMock()
+    rag.chunk_entity_relation_graph = graph
+    mgr._adapter._get_rag.return_value = rag
+    return mgr
+
+
+@contextlib.contextmanager
+def _decay_executes(mgr, result=None):
+    """让 decay_structural_edges 真正走到内部衰减实现（mock 掉真实图操作）。"""
+    with mock.patch.object(
+        rm, "_decay_brain_region_edges", return_value=result or DECAYED
+    ) as decay_mock, mock.patch(
+        "niu_api.internal.lightrag_manager.graph_write_lock",
+        lambda: contextlib.nullcontext(),  # 生产代码 `with graph_write_lock():`——需可调用
+    ):
+        yield decay_mock
+
+
+class TestDecayGate:
+    def test_first_start_no_status_file_decays(self, status_path, mgr) -> None:
+        """首次启动（无 status file）→ 衰减执行 + decay_at 写入。"""
+        before = time.time()
+        with _decay_executes(mgr) as decay_mock:
+            result = mgr.decay_structural_edges()
+        assert result["decayed"] == 5
+        assert decay_mock.call_count == 1
+        status = json.loads(open(status_path, encoding="utf-8").read())
+        assert "decay_at" in status
+        assert before <= status["decay_at"] <= time.time() + 1
+
+    def test_second_start_within_gate_skips(self, status_path, mgr) -> None:
+        """连续两次启动：status file 带最近 decay_at → 第二次启动不衰减。"""
+        old_decay_at = time.time() - 3600  # 1h 前衰减过
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"decay_at": old_decay_at}, f)
+        with _decay_executes(mgr) as decay_mock:
+            result = mgr.decay_structural_edges()
+        assert result.get("gated") is True
+        decay_mock.assert_not_called()
+        # 门控跳过不写 decay_at——保持上次值
+        status = json.loads(open(status_path, encoding="utf-8").read())
+        assert status["decay_at"] == old_decay_at
+
+    def test_consolidate_chain_gated_same_entry(self, status_path, mgr) -> None:
+        """consolidate 链同样被门控（brain_region_api 直调同一方法）。
+
+        门控在 decay_structural_edges（三链唯一公共入口）——consolidate
+        （brain_region_api L370 直调）走同一方法——距上次衰减 <21.6h 时
+        consolidate 不再衰减（edges_disconnected=0——功能行为变化：
+        当前行为是每次衰减）。
+        """
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"decay_at": time.time() - 3600}, f)
+        with _decay_executes(mgr) as decay_mock:
+            result = mgr.decay_structural_edges()
+        assert result.get("gated") is True
+        decay_mock.assert_not_called()
+        assert result.get("deleted", 0) == 0  # consolidate 的 edges_disconnected=0
+
+    def test_22h_later_two_calls_only_first_decays(self, status_path, mgr) -> None:
+        """22h 后（> 21.6h）连续两次调用仅第一次衰减。
+
+        第二次距第一次衰减 < 21.6h（decay_at 已写回 now）→ 门控跳过。
+        """
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"decay_at": time.time() - 22 * 3600}, f)
+        with _decay_executes(mgr) as decay_mock:
+            first = mgr.decay_structural_edges()
+        assert first["decayed"] == 5
+        assert decay_mock.call_count == 1
+        # decay_at 已写回 now——立即再调 → 门控
+        with _decay_executes(mgr) as decay_mock:
+            second = mgr.decay_structural_edges()
+        assert second.get("gated") is True
+        assert decay_mock.call_count == 0
+
+    def test_exactly_21_6h_decays(self, status_path, mgr) -> None:
+        """恰 21.6h（elapsed == interval——非 <）→ 衰减（门控边界开）。"""
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"decay_at": time.time() - rm.DECAY_GATE_INTERVAL}, f)
+        with _decay_executes(mgr) as decay_mock:
+            result = mgr.decay_structural_edges()
+        assert result["decayed"] == 5
+        assert decay_mock.call_count == 1
+
+    def test_under_21_6h_gated(self, status_path, mgr) -> None:
+        """21.5h（< 21.6h）→ 门控跳过（稳态 24h 节奏 > 21.6h——不受影响）。"""
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"decay_at": time.time() - 21.5 * 3600}, f)
+        with _decay_executes(mgr) as decay_mock:
+            result = mgr.decay_structural_edges()
+        assert result.get("gated") is True
+        decay_mock.assert_not_called()
+
+    def test_decay_at_merge_preserves_existing_fields(self, status_path, mgr) -> None:
+        """decay_at 写入合并保留现有字段（region_sync 的 last_sync/stats）。"""
+        now_iso = "2026-08-15T10:00:00"
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"last_sync": now_iso, "stats": {"regions_created": 3, "total_regions": 5}},
+                f,
+            )
+        with _decay_executes(mgr):
+            mgr.decay_structural_edges()
+        status = json.loads(open(status_path, encoding="utf-8").read())
+        assert status["last_sync"] == now_iso
+        assert status["stats"]["regions_created"] == 3
+        assert status["stats"]["total_regions"] == 5
+        assert "decay_at" in status
+
+    def test_status_file_without_decay_at_decays(self, status_path, mgr) -> None:
+        """老 status file（只有 last_sync——无 decay_at 字段）→ 视为首次衰减。"""
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"last_sync": "2026-08-15T09:00:00", "stats": {}}, f)
+        with _decay_executes(mgr) as decay_mock:
+            result = mgr.decay_structural_edges()
+        assert result["decayed"] == 5
+        assert decay_mock.call_count == 1
+
+    def test_failed_decay_does_not_write_decay_at(self, status_path, mgr) -> None:
+        """衰减异常（未实际执行）→ 不写 decay_at——下次调用可重试（防漏衰减）。"""
+        old_decay_at = time.time() - 22 * 3600
+        with open(status_path, "w", encoding="utf-8") as f:
+            json.dump({"decay_at": old_decay_at}, f)
+        with mock.patch.object(
+            rm, "_decay_brain_region_edges", side_effect=RuntimeError("boom")
+        ), mock.patch(
+            "niu_api.internal.lightrag_manager.graph_write_lock",
+            lambda: contextlib.nullcontext(),
+        ):
+            result = mgr.decay_structural_edges()
+        assert result["decayed"] == 0
+        status = json.loads(open(status_path, encoding="utf-8").read())
+        assert status["decay_at"] == old_decay_at  # 未执行——保持上次值
+
+    def test_region_sync_save_status_preserves_decay_at(self, tmp_path) -> None:
+        """region_sync._save_status 合并语义：decay_at 不被整体替换丢弃。"""
+        from agent.injector.region_sync import RegionSync
+
+        sync = RegionSync(sync_interval=86400)
+        sync._status_file = tmp_path / "last_region_sync.json"
+        decay_at = time.time() - 3600
+        with open(sync._status_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "last_sync": "2026-08-15T09:00:00",
+                    "decay_at": decay_at,
+                    "stats": {"regions_created": 3},
+                },
+                f,
+            )
+        sync._save_status({"regions_created": 3, "total_regions": 5})
+        status = json.loads(sync._status_file.read_text(encoding="utf-8"))
+        assert status["decay_at"] == decay_at  # 保留——门控不失效
+        assert status["stats"]["total_regions"] == 5
+        assert "last_sync" in status
 
