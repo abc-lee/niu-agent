@@ -110,9 +110,11 @@ class TestF4ServiceNoImPush:
 
         with patch("niu_api.chat._main_loop", mock_loop), \
              patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.alerts.add_pending_alert"):
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
 
             result = trigger_callback(task)
+            mock_cr.assert_not_called()  # 正向锁定 no-push 契约：程序消息不推 IM（防回归重新引入推送）
 
         assert result == "ok"
         # 入队内容 = [定时任务] + 任务内容，同步入队；channel 保持 "scheduler"
@@ -143,9 +145,11 @@ class TestF4ServiceNoImPush:
 
         with patch("niu_api.chat._main_loop", mock_loop), \
              patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.alerts.add_pending_alert"):
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
 
             result = trigger_callback(task)
+            mock_cr.assert_not_called()  # 正向锁定 no-push 契约：程序消息不推 IM（防回归重新引入推送）
 
         assert result == "ok"
         mock_queue.enqueue_sync.assert_called_once_with(

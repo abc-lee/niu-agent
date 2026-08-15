@@ -276,7 +276,7 @@ class ChatQueue:
                     router = get_channel_router()
                     if first_req.channel == "scheduler":
                         # 单一判定入口（用户拍板：全局只有一个 IM 推送判定）——
-                        # 定时任务主 Agent 回复必须走 IM（trigger 提醒 + 回复两条都应在 IM）
+                        # 定时任务主 Agent 回复必达 IM（trigger 提醒程序消息不推 IM——只写 DB 由前端 SSE 刷新；仅主 Agent 的话经 should_push_im 闸门投递）
                         if self._runner.should_push_im():
                             from niu_api.channel.gateway import get_im_gateway
                             _gw = get_im_gateway()

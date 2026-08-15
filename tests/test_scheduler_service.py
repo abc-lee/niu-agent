@@ -41,9 +41,8 @@ class TestTriggerCallback:
 
         with patch("niu_api.chat._main_loop", mock_loop), \
              patch("niu_api.chat_queue.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("niu_api.channel.get_channel_router") as mock_cr:
-            mock_cr.return_value.has_channel.return_value = False  # 无 IM 通道，跳过推送
+             patch("niu_api.alerts.add_pending_alert"):
+
             result = trigger_callback(task)
 
         assert result == "ok"
@@ -162,9 +161,8 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("niu_api.channel.get_channel_router") as mock_cr:
-            mock_cr.return_value.has_channel.return_value = False  # 无 IM 通道，跳过推送
+             patch("niu_api.alerts.add_pending_alert"):
+
             result = service.trigger_callback(self._make_bg_task())
 
         assert result == "ok"
@@ -194,9 +192,8 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("niu_api.channel.get_channel_router") as mock_cr:
-            mock_cr.return_value.has_channel.return_value = False
+             patch("niu_api.alerts.add_pending_alert"):
+
             result = service.trigger_callback(self._make_bg_task())
 
         assert "Traceback" in captured["content"]
@@ -233,9 +230,8 @@ class TestTriggerCallbackBackgroundScript:
         task["is_recurring"] = False
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("niu_api.channel.get_channel_router") as mock_cr:
-            mock_cr.return_value.has_channel.return_value = False
+             patch("niu_api.alerts.add_pending_alert"):
+
             result = service.trigger_callback(task)
 
         assert result == "ok"
@@ -289,9 +285,8 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.alerts.add_pending_alert"), \
-             patch("niu_api.channel.get_channel_router") as mock_cr:
-            mock_cr.return_value.has_channel.return_value = False
+             patch("niu_api.alerts.add_pending_alert"):
+
             service.trigger_callback(self._make_bg_task())
 
         # [定时任务] 前缀 + 截断提示 + ≤2000 字符正文
@@ -319,8 +314,10 @@ class TestTriggerCallbackBackgroundScript:
         monkeypatch.setattr(service, "get_chat_queue", lambda: mock_q)
 
         with patch("niu_api.chat._main_loop", MagicMock(is_closed=lambda: False)), \
-             patch("niu_api.alerts.add_pending_alert"):
+             patch("niu_api.alerts.add_pending_alert"), \
+             patch("niu_api.channel.get_channel_router") as mock_cr:
 
             result = service.trigger_callback(self._make_bg_task())
+            mock_cr.assert_not_called()  # 正向锁定 no-push 契约：程序消息不推 IM（防回归重新引入推送）
 
         assert result == "ok"
