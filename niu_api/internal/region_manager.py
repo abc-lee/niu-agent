@@ -273,6 +273,56 @@ def _format_summary_for_display(parsed: dict) -> str:
     return parsed.get("summary", "").replace("<SEP>", "、")
 
 
+def _read_region_raw_descriptions(kg) -> dict[str, str]:
+    """图快照直读所有脑区（entity_type=brainregion）的原始 description。
+
+    R11 读清洗断裂修复（P2 拍板）：list_entities 经 `_clean_description`
+    （lightrag_adapter L90-117）会剥掉 brain_meta_* 元数据 → region_id /
+    priority / shrink_count / size 解析失败回默认 → shrink_count 恒 0 →
+    dissolve 永不触发。本 helper 绕开清洗，从图快照直读原始描述。
+
+    模式同 update_default_region_sizes（graph_read_lock + kg._graph.copy()
+    + nodes.get(name.lower())）——节点键小写（LightRAG graph 节点 id 全部
+    小写）——返回 dict 的键为小写节点键，调用方用 region_name.lower() 查找。
+
+    全量枚举 entity_type==brainregion 节点（含配置外/幽灵脑区——防 dissolve
+    对配置外脑区失效——helper 是 dissolve 的 shrink_count 真实值来源）。
+
+    Args:
+        kg: LightRAG chunk_entity_relation_graph（含 _graph 的 NetworkX 图）。
+
+    Returns:
+        小写节点键 -> 原始 description 的映射。图不可用/读取异常 → {}。
+    """
+    if kg is None:
+        return {}
+    nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+    if nx_graph is None:
+        return {}
+
+    # 方法内 import（同 _has_isolated_member——lightrag_manager 模块级
+    # import region_manager，此处避免循环 import）
+    from niu_api.internal.lightrag_manager import graph_read_lock
+
+    try:
+        with graph_read_lock():
+            snapshot = nx_graph.copy()
+        raw: dict[str, str] = {}
+        for node_key, node_data in snapshot.nodes(data=True):
+            etype = node_data.get("entity_type", "")
+            if etype and str(etype).lower() == REGION_ENTITY_TYPE:
+                desc = node_data.get("description", "")
+                if desc:
+                    raw[node_key] = desc
+        return raw
+    except Exception:
+        logger.warning(
+            "_read_region_raw_descriptions 图快照读取失败，返回空映射（元数据保真降级）",
+            exc_info=True,
+        )
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Region Manager
 # ---------------------------------------------------------------------------
@@ -331,10 +381,24 @@ class RegionManager:
         existing_region_names: set[str] = set()
         existing_labels: list[str] = []
         existing_region_descriptions: dict[str, str] = {}
+        # R11 读清洗断裂修复（P2 拍板）：get_all_regions().description 是格式化摘要
+        # （展示契约——不含 brain_meta_*）→ parse_priority_from_description 恒 medium
+        # → is_existing 脑区 priority 被重写为 medium。图快照直读原始描述恢复
+        # priority 保真（is_existing 分支不被判 medium 重写）。
+        region_raw_desc_map: dict[str, str] = {}
+        try:
+            rag = self._adapter._get_rag()
+            if rag is not None:
+                kg = rag.chunk_entity_relation_graph
+                region_raw_desc_map = _read_region_raw_descriptions(kg)
+        except Exception:
+            pass
         try:
             for region in self.get_all_regions():
                 existing_region_names.add(region.name.lower())
-                existing_region_descriptions[region.name.lower()] = region.description or ""
+                existing_region_descriptions[region.name.lower()] = (
+                    region_raw_desc_map.get(region.name.lower(), "") or (region.description or "")
+                )
                 label = region.label or region.name.removesuffix(REGION_SUFFIX)
                 existing_labels.append(label)
         except Exception:
@@ -534,11 +598,16 @@ class RegionManager:
         self,
         region_names: list[str],
     ) -> None:
-        """Re-generate summaries for specified regions (after membership changes)
+        """Refresh metadata for specified regions (after membership changes)
+
+        P4（description 仅建区生效——已建脑区描述不改）：summary 保留旧值，
+        不重新从成员名生成覆盖。仅刷新 size（当前成员数）/updated_at，
+        region_id/priority/shrink_count/extra_meta 从图快照原始描述保真透传
+        （R11 读清洗断裂修复——list_entities 清洗会剥掉 brain_meta_*）。
 
         For each region:
         1. Get current members via get_region_members()
-        2. Re-generate summary via _generate_region_summary() (no LLM call)
+        2. Read raw description via graph snapshot (helper)
         3. Update master node via inject_entity (overwrite)
 
         Args:
@@ -546,16 +615,17 @@ class RegionManager:
         """
         all_entities: list[dict] = []
 
-        # Pre-fetch all region entities once (avoids N+1 list_entities calls)
+        # R11 读清洗断裂修复（P2 拍板）：list_entities 经 _clean_description 清洗
+        # 会剥掉 brain_meta_* → region_id/priority/shrink_count 解析失败回默认。
+        # 图快照直读原始描述恢复元数据保真（region_id/priority/shrink_count/extra_meta）。
         region_desc_map: dict[str, str] = {}
-        list_result = self._adapter.list_entities(
-            list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
-        )
-        if isinstance(list_result, dict) and list_result.get("status") == "ok":
-            for entity in list_result.get("data", []):
-                name = entity.get("id") or entity.get("entity_name", "")
-                if name:
-                    region_desc_map[name] = entity.get("description", "")
+        try:
+            rag = self._adapter._get_rag()
+            if rag is not None:
+                kg = rag.chunk_entity_relation_graph
+                region_desc_map = _read_region_raw_descriptions(kg)
+        except Exception:
+            pass
 
         for region_name in region_names:
             if is_default_region(region_name):
@@ -569,8 +639,8 @@ class RegionManager:
                 logger.debug("脑区 %s 无成员，跳过摘要更新", region_name)
                 continue
 
-            # Step 2: Get current region description from pre-fetched map
-            current_desc = region_desc_map.get(region_name, "")
+            # Step 2: Get current region description from raw desc map
+            current_desc = region_desc_map.get(region_name.lower(), "")
 
             if not current_desc:
                 # Fallback: try explore_node for backward compatibility
@@ -592,6 +662,9 @@ class RegionManager:
             community_id = parsed.get("region_id", "")
             representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
 
+            # P4：已建脑区描述不改——保留旧摘要（不重新从成员名生成覆盖）
+            summary = parsed.get("summary", "")
+
             # Preserve dynamic metadata keys (e.g. shrink_count) that
             # _encode_description does not include in its standard 5 fields
             standard_keys = {"summary", "region_id", "size", "representative", "updated_at", "priority"}
@@ -600,33 +673,10 @@ class RegionManager:
                 if k not in standard_keys and v
             }
 
-            # Build entity summaries with type labels from graph
-            # Read entity types from NetworkX graph to preserve type info (D-16 fix)
-            from niu_api.internal.lightrag_manager import graph_read_lock
-            entity_name_to_type: dict[str, str] = {}
-            try:
-                rag = self._adapter._get_rag()
-                if rag is not None:
-                    kg = rag.chunk_entity_relation_graph
-                    nx_graph = kg._graph if hasattr(kg, "_graph") else kg
-                    if nx_graph is not None:
-                        with graph_read_lock():
-                            for member in members:
-                                member_lower = member.lower() if isinstance(member, str) else member
-                                if member_lower in nx_graph:
-                                    node_data = nx_graph.nodes[member_lower]
-                                    etype = node_data.get("entity_type", "")
-                                    if etype:
-                                        entity_name_to_type[member] = etype
-            except Exception:
-                pass  # Read failure falls back to empty mapping — no worse than current code
-            entity_summaries = self._build_entity_summaries(members, {}, entity_name_to_type or None)
-            region_summary = self._generate_region_summary(entity_summaries)
-
             now = time.time()
             priority = parse_priority_from_description(current_desc)
             description = _encode_description(
-                summary=region_summary,
+                summary=summary,
                 region_id=community_id,
                 size=len(members),
                 representative=representative,
@@ -679,13 +729,29 @@ class RegionManager:
             return []
 
         data = result.get("data", [])
+
+        # R11 读清洗断裂修复（P2 拍板）：list_entities 经 _clean_description 清洗
+        # 会剥掉 brain_meta_* → region_id/size/representative/updated_at 解析失败
+        # 回默认（size 恒 0）。图快照直读原始描述恢复元数据保真；
+        # description 仍走展示契约（_format_summary_for_display 格式化摘要——
+        # brain_meta_* 不泄漏到 /regions API 与前端面板）。
+        raw_desc_map: dict[str, str] = {}
+        try:
+            rag = self._adapter._get_rag()
+            if rag is not None:
+                kg = rag.chunk_entity_relation_graph
+                raw_desc_map = _read_region_raw_descriptions(kg)
+        except Exception:
+            pass
+
         regions: list[BrainRegionInfo] = []
 
         for entity in data:
             entity_name = entity.get("id", entity.get("entity_name", ""))
             description = entity.get("description", "")
+            raw_desc = raw_desc_map.get(entity_name.lower(), "") or description
 
-            parsed = _parse_description(description)
+            parsed = _parse_description(raw_desc)
 
             # Extract label from entity name: "{label}脑区"
             label = entity_name
@@ -930,6 +996,18 @@ class RegionManager:
         all_relationships: list[dict] = []
         region_new_members: dict[str, set[str]] = {}
 
+        # R11 读清洗断裂修复（P2 拍板）：explore_node 经 _clean_description 清洗
+        # 会剥掉 brain_meta_* → priority 解析失败回 medium（漂移更新把高优脑区
+        # 重写为 medium）。图快照直读原始描述恢复 priority 保真。
+        region_raw_desc_map: dict[str, str] = {}
+        try:
+            rag = self._adapter._get_rag()
+            if rag is not None:
+                kg = rag.chunk_entity_relation_graph
+                region_raw_desc_map = _read_region_raw_descriptions(kg)
+        except Exception:
+            pass
+
         for region_name, (best_cid, new_members) in drift_info.items():
             if not new_members:
                 continue
@@ -943,19 +1021,21 @@ class RegionManager:
                 partition.entity_name_to_type if partition else None,
             )
             summary = self._generate_region_summary(entity_summaries)
-            representative = list(new_members)[0].replace("<SEP>", "-").replace("|", "-")
-            # Preserve priority from existing region description
-            old_desc = ""
-            try:
-                explore_result = self._adapter.explore_node(region_name, depth=0)
-                if explore_result and explore_result.get("center"):
-                    for node in explore_result.get("nodes", []):
-                        if node.get("id") == region_name or node.get("name") == region_name:
-                            old_desc = node.get("description", "")
-                            break
-            except Exception:
-                pass
+            # 稳定排序（new_members 是 set——list() 顺序不确定）
+            representative = sorted(new_members)[0].replace("<SEP>", "-").replace("|", "-")
+            # Preserve priority from existing region raw description
+            old_desc = region_raw_desc_map.get(region_name.lower(), "")
             priority = parse_priority_from_description(old_desc)
+            # Preserve dynamic metadata keys (e.g. shrink_count) that
+            # _encode_description does not include in its standard 5 fields
+            extra_meta: dict[str, str] = {}
+            if old_desc:
+                parsed = _parse_description(old_desc)
+                standard_keys = {"summary", "region_id", "size", "representative", "updated_at", "priority"}
+                extra_meta = {
+                    k: v for k, v in parsed.items()
+                    if k not in standard_keys and v
+                }
             now = time.time()
             description = _encode_description(
                 summary=summary, region_id=best_cid,
@@ -963,6 +1043,8 @@ class RegionManager:
                 updated_at=now,
                 priority=priority,
             )
+            for key, value in extra_meta.items():
+                description += f"<SEP>brain_meta_{key}:{value}"
             all_entities.append({
                 "entity_name": region_name, "entity_type": REGION_ENTITY_TYPE,
                 "description": description, "source_id": REGION_SOURCE_ID,
@@ -1042,16 +1124,24 @@ class RegionManager:
         dissolved: list[str] = []
         dissolved_names: set[str] = set()  # Track dissolved names for stale snapshot filtering
 
-        # Pre-fetch raw descriptions from KG (get_all_regions strips brain_meta_* metadata)
+        # R11 读清洗断裂修复（P2 拍板）：list_entities 经 _clean_description 清洗
+        # 会剥掉 brain_meta_shrink_count → shrink_count 恒 0 → dissolve 永不触发。
+        # 图快照直读原始描述恢复 shrink_count 3 轮累计（dissolve 机制本体不动——
+        # 阈值 100 + 3 轮 + is_default_region + _has_isolated_member 孤岛保护）。
+        #
+        # 幽灵死锁披露（B-P2）：R1（阈值 100）+ R11（shrink_count 读回真实值）后——
+        # 现网幽灵『知识库脑区』（20 成员 <100 配置外）shrink_count 将开始累计——
+        # 但其 3 个 degree-1 孤立成员触发孤岛保护 _has_isolated_member → dissolve
+        # 永久取消——幽灵永不溶解（数据保留——可接受——与 P7 一致）——不执行一次性
+        # 清理（数据不主动改）。
         region_raw_desc_map: dict[str, str] = {}
-        list_result = self._adapter.list_entities(
-            list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
-        )
-        if isinstance(list_result, dict) and list_result.get("status") == "ok":
-            for entity in list_result.get("data", []):
-                name = entity.get("id") or entity.get("entity_name", "")
-                if name:
-                    region_raw_desc_map[name] = entity.get("description", "")
+        try:
+            rag = self._adapter._get_rag()
+            if rag is not None:
+                kg = rag.chunk_entity_relation_graph
+                region_raw_desc_map = _read_region_raw_descriptions(kg)
+        except Exception:
+            pass
 
         # 批量读取所有脑区成员（避免循环内调单数 get_region_members 触发读取失败返回空）
         # 单数版本与复数版本读取逻辑一致，都有 try/except 返回空——
@@ -1069,8 +1159,9 @@ class RegionManager:
             current_size = len(members)
 
             # Parse shrink count from RAW KG description (not stripped summary)
-            raw_desc = region_raw_desc_map.get(region.name, "")
-            # Fallback: try explore_node if list_entities didn't return this region
+            # helper 返回键为小写节点键（LightRAG 图节点 id 全部小写）
+            raw_desc = region_raw_desc_map.get(region.name.lower(), "")
+            # Fallback: try explore_node if graph snapshot didn't return this region
             if not raw_desc:
                 try:
                     explore_result = self._adapter.explore_node(region.name, depth=0)
