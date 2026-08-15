@@ -44,7 +44,7 @@ TOOL_SCHEMAS = {
                 "is_recurring": {"type": "boolean", "description": "是否循环任务"},
                 "cron_expr": {"type": "string", "description": "cron 表达式"},
                 "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"},
-                "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"},
+                "chat_id": {"type": "string", "description": "群聊 chat_id（兼容保留——定时提醒不推 IM（只写 DB），主 Agent 回复投递目标跟随当前 IM 会话，不按此字段定向）"},
                 "task_kind": {
                     "type": "string",
                     "enum": ["reminder", "background_script"],
@@ -278,7 +278,7 @@ async def run_server():
                         "is_recurring": {"type": "boolean", "description": "是否循环任务"},
                         "cron_expr": {"type": "string", "description": "cron 表达式"},
                         "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"},
-                        "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"},
+                        "chat_id": {"type": "string", "description": "群聊 chat_id（兼容保留——定时提醒不推 IM（只写 DB），主 Agent 回复投递目标跟随当前 IM 会话，不按此字段定向）"},
                         "task_kind": {
                             "type": "string",
                             "enum": ["reminder", "background_script"],
