@@ -1749,6 +1749,136 @@ class TestSkipRelationshipInjectionForExistingRegions:
         assert chunks == []
 
 
+class TestDefaultRegionCollisionHijackDefense:
+    """R15b（#22 社区标签劫持默认脑区——P14 拍板）：社区标签（Leiden）撞默认脑区名
+    ——整分支跳过——防社区标签覆盖配置数据（描述不覆写/stale 不清理/成员边不注入）
+
+    守卫落点：is_existing 计算之后、描述构建/upsert 之前——不能在 is_existing
+    分支顶部（否则 'Always upsert entity' 无条件描述 upsert 仍覆写默认脑区描述）。
+    """
+
+    def _mock_default_config(self):
+        """确定性默认脑区配置——测试不依赖真实 ~/.niu/preferences.json"""
+        from unittest.mock import patch
+        return patch(
+            "niu_api.internal.region_manager.get_default_regions_config",
+            return_value=[
+                {"label": "文档库", "description": "d", "priority": "permanent", "keywords": []},
+            ],
+        )
+
+    def test_default_region_collision_skipped_entire_branch(self):
+        """撞名默认脑区——整分支跳过：描述不覆写/成员边不注入/stale 不删"""
+        from unittest.mock import patch
+
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        # 社区标签 = "文档库"（默认脑区 label）——撞名劫持场景
+        manager._generate_labels = lambda summaries_list, existing: [("文档库", "")]
+
+        # 默认脑区已存在（配置数据——描述不能被社区摘要覆写）
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [{
+                "id": "文档库脑区",
+                "entity_type": "BrainRegion",
+                "description": _encode_description(
+                    summary="配置描述", region_id="default_文档库",
+                    size=0, representative="", updated_at=1000.0,
+                    priority="permanent",
+                ),
+            }],
+        }
+
+        # 成员与现有默认脑区不同——无守卫时触发成员边注入 + stale 清理
+        members = ["Python", "Django", "FastAPI"] + [f"E{i}" for i in range(97)]
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=list(members),
+                entity_types={"language": 50, "framework": 50},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+
+        with self._mock_default_config(), patch.object(
+            manager, "get_region_members", return_value=["不同成员"],
+        ) as mock_get_members, patch(
+            "niu_api.internal.lightrag_manager.remove_region_stale_edges",
+            return_value=0,
+        ) as remove_stale:
+            created_regions = manager.create_region_nodes(result)
+
+        assert created_regions == []
+        # 描述不覆写：无任何实体 upsert（批量注入整体未被调用）
+        ingester.inject_custom_kg.assert_not_called()
+        # 成员边不注入：is_existing 分支未进入（成员比对从未发生）
+        mock_get_members.assert_not_called()
+        # stale 不删：remove_region_stale_edges 未被调用
+        remove_stale.assert_not_called()
+
+    def test_non_default_region_unaffected_by_collision(self):
+        """混合场景：撞默认脑区名的社区被跳过——非默认脑区正常路径不受影响"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_labels = lambda summaries_list, existing: [("文档库", ""), ("React", "")]
+
+        # 默认脑区已存在（劫持对象）
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [{
+                "id": "文档库脑区",
+                "entity_type": "BrainRegion",
+                "description": _encode_description(
+                    summary="配置描述", region_id="default_文档库",
+                    size=0, representative="", updated_at=1000.0,
+                    priority="permanent",
+                ),
+            }],
+        }
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=[f"E{i}" for i in range(100)],
+                entity_types={"language": 100},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+            RegionPartition(
+                region_id=1,
+                region_name="region_1",
+                entity_names=["React", "Vue", "Angular"] + [f"N{i}" for i in range(97)],
+                entity_types={"framework": 100},
+                edge_count=3,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+
+        with self._mock_default_config():
+            created_regions = manager.create_region_nodes(result)
+
+        # 撞名分区被跳过——只有非默认新脑区创建
+        assert created_regions == ["React脑区"]
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        entities = call_kwargs.get("entities", [])
+        entity_names = [e["entity_name"] for e in entities]
+        assert entity_names == ["React脑区"], f"默认脑区不应被 upsert，实际 {entity_names}"
+        # 边不注入：默认脑区不出现在任何关系里（React 锚点 + 成员边正常）
+        relationships = call_kwargs.get("relationships", [])
+        rel_targets = [r["tgt_id"] for r in relationships]
+        assert "文档库脑区" not in rel_targets
+        assert "React脑区" in rel_targets
+        # chunk 不含默认脑区
+        chunks = call_kwargs.get("chunks", [])
+        assert all("文档库脑区" not in c["source_id"] for c in chunks)
+
+
 class TestUpdateRegionSummariesR11RawDesc:
     """R11：update_region_summaries 元数据从图快照直读原始描述——priority/region_id 保真"""
 
