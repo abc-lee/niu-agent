@@ -1,4 +1,6 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+from loguru import logger
 
 from agent.tool_registry import ToolRegistry
 
@@ -92,13 +94,16 @@ class TestAskAgent:
         assert calls[0]["max_tokens"] == 100
 
     def test_ask_agent_returns_none_on_callback_exception(self):
-        """callback 抛异常时 ask_agent 返回 None"""
+        """callback 抛异常时 ask_agent 返回 None，且异常进日志（E1-08 消除静默）"""
         def bad_callback(prompt, system_prompt="", max_tokens=500):
             raise RuntimeError("LLM 调用失败")
 
         self.registry.set_ask_agent(bad_callback)
-        result = self.registry.ask_agent(prompt="test")
+        with patch.object(logger, "error", create=True) as mock_error:
+            result = self.registry.ask_agent(prompt="test")
         assert result is None
+        mock_error.assert_called_once()
+        assert "LLM 调用失败" in str(mock_error.call_args)
 
     def test_set_ask_agent_overrides_previous(self):
         """重复设置 callback 会覆盖前一个"""

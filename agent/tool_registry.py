@@ -301,7 +301,8 @@ class ToolRegistry:
                 "max_tokens": max_tokens,
             }.items() if k in valid_params}
             return self._ask_agent(**kwargs)
-        except Exception:
+        except Exception as e:
+            logger.error(f"ask_agent callback failed: {e}")  # E1-08：消除静默（异常类型+消息进日志）
             return None
 
     def clear(self):
