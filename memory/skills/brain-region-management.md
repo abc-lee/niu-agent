@@ -31,7 +31,7 @@ last_tested: 2026-06-16
 |--------|--------------|
 | **Add a new brain region** | Edit `~/.niu/preferences.json`, add to `brain_regions.defaults` |
 | **Apply changes** | Restart the system after modifying preferences |
-| **Remove a brain region** | Remove from preferences, restart |
+| **Remove a brain region** | Configured-out regions are cleaned up automatically by the dissolve mechanism (member count < 100 threshold + 3 consecutive sync rounds + orphan protection — takes several sync rounds to apply; ghosts are retained due to orphan protection) |
 
 ## Implementation
 
@@ -49,7 +49,7 @@ Add your new brain region to the `brain_regions.defaults` section. Each entry su
 | Field | Required | Description |
 |-------|----------|-------------|
 | `label` | Yes | Region display name (e.g., "工作事务") |
-| `description` | Yes | What the region stores |
+| `description` | Yes | What the region stores (only takes effect when the region is created — existing regions' descriptions are maintained by the knowledge graph; changing `description` in config does not affect existing regions) |
 | `priority` | Yes | `"permanent"` (360天半衰期，永不删除) / `"long"` (360天) / `"medium"` (180天) / `"short"` (90天) |
 | `keywords` | No | Reserved field, retained for config compatibility (no longer drives automatic matching) |
 
