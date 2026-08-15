@@ -22,7 +22,11 @@ from niu_api.internal.region_activation import (
     BrainRegionState,
     RegionActivationManager,
 )
-from niu_api.internal.region_manager import RegionManager
+from niu_api.internal.region_manager import (
+    REGION_SUFFIX,
+    RegionManager,
+    get_default_regions_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -369,19 +373,33 @@ class BrainContextInjector:
         return self._activation_mgr.get_members_of_region(region_id)
 
     def _classify_entity_to_region(self, entity_name: str, entity_type: str) -> str:
-        """根据实体类型运行时分类到默认脑区（不写回图谱）
+        """根据实体名称/类型运行时分类到默认脑区（不写回图谱）
 
         当实体没有 包含 边（即不在 entity_to_region 映射中）时，
-        根据其 entity_type 做简单分类，让脑区注入先能工作起来。
-        这只是注入时的运行时分类，不写回图谱（不改数据）。
+        运行时分类让脑区注入先能工作起来。这只是注入时的运行时分类，
+        不写回图谱（不改数据）。
+
+        分类优先级（R10——用户 P6 拍板——keywords 分类机制）：
+        1. keywords 匹配（前置）：entity_name 包含某脑区配置的 keywords
+           （任一命中）→ 归该脑区（配置顺序首个命中）——全量消费
+           get_default_regions_config() 的 keywords 字段（不硬编码子集）
+        2. keywords 全 miss → 回退原 entity_type 映射（原逻辑保留原样）
+
+        行为变化标注：keywords 命中的实体分类会变化（归入用户设计的脑区）——
+        这是用户 P6 要求的行为（用户设计 keywords 就是为了分类）。
 
         Args:
-            entity_name: 实体名称（未使用，保留用于未来扩展）
+            entity_name: 实体名称
             entity_type: 实体类型字符串
 
         Returns:
             脑区名称字符串
         """
+        # R10: 前置 keywords 匹配（用户 P6 设计——配置里每个脑区的 keywords 字段）
+        region_name = self._match_region_by_keywords(entity_name)
+        if region_name:
+            return region_name
+
         et = (entity_type or "").lower()
         # 聊天历史
         if et in ("chat", "chatmessage", "session", "conversation", "dialog",
@@ -406,3 +424,34 @@ class BrainContextInjector:
             return "生活事务脑区"
         # 知识体系 (default)
         return "知识体系脑区"
+
+    def _match_region_by_keywords(self, entity_name: str) -> str:
+        """R10: entity_name 包含脑区配置 keywords（任一命中）→ 归该脑区（配置顺序首个）
+
+        全量消费 get_default_regions_config() 的 keywords 字段——配置里每个脑区的
+        所有 keywords 都参与匹配（不硬编码子集）。大小写不敏感（与系统
+        entity_type/keywords 小写归一化约定一致——如配置 "PDF" 可命中实体名 "pdf"）。
+        配置缺失 keywords 字段（.get 默认 []）或 label 时跳过该配置——不崩溃。
+
+        Args:
+            entity_name: 实体名称（可为空字符串）
+
+        Returns:
+            命中的脑区名称；全 miss 返回空字符串（由调用方回退原 entity_type 映射）
+        """
+        if not entity_name:
+            return ""
+        name_lower = entity_name.lower()
+        for config in get_default_regions_config():
+            label = config.get("label")
+            if not isinstance(label, str) or not label:
+                continue
+            keywords = config.get("keywords") or []
+            for keyword in keywords:
+                if (
+                    isinstance(keyword, str)
+                    and keyword
+                    and keyword.lower() in name_lower
+                ):
+                    return f"{label}{REGION_SUFFIX}"
+        return ""
