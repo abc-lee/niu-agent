@@ -171,7 +171,7 @@ class TestTriggerCallbackBackgroundScript:
         assert captured["content"].startswith("[定时任务]")
         assert "有垃圾" in captured["content"]
         assert captured["source"] == "scheduler"
-        assert captured["channel"] == "scheduler"  # channel 必须保持 scheduler（防 IM 自动回路由双消息）
+        assert captured["channel"] == "scheduler"  # channel 必须保持 scheduler（防回复走广播错位——router.push 广播回退 _push_target，非消息条数）
 
     def test_error_enqueues_with_stderr(self, tmp_path, monkeypatch):
         """脚本异常 → stdout(含traceback) 注入主 Agent；recurring 报错返回 None 走 DLQ"""
