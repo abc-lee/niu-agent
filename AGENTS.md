@@ -656,7 +656,7 @@ preload_face_model()
 - **已知接受边界（已记录）**：ha-watcher 降级/零 chunk 时回复仅 SSE（低频）；死卡重建 finalize 成功时两张同内容卡片（= 验收 #4 接受）；_im_channel_id 兜底残留至下条用户消息；push_target 群聊过期；跨来源合并（user IM + watcher supplement）双投递为 pre-existing 出范围
 - **实机验证待确认项**（对齐审查标注）：验收 #1 真实飞书 streaming_mode 关闭、验收 #3 下次会话开新卡——需实机确认
 - **排查教训**：①"原来没问题"≠"机制不存在"——同机制改造前后都存在，改造（86d6c7a2）让症状从不可见变可见；先 diff 实证再下结论，勿凭空想象新问题 ② 定时任务回复"死路由"是刻意设计（避免双消息）的副作用——修复必须兼容设计意图（仅终结不投递），不能简单改为投递 ③ watcher 的 future（concurrent.futures.Future）与 chat_queue 的 reply_future（asyncio.Future）是**不同对象**——跨线程共享信号必须同一对象（enqueue_and_wait_with_future 元组返回）④ "照抄可运行"伪代码标准：函数签名（finalize_card 4 参/update_card_element 返回码）、字段名（message_id 非 msg_id）、变量作用域（else 分支无 card_id 绑定）、future 对象链——每个都是实施炸点，必须审查到
-- **2026-08-15 用户拍板反转**：scheduler 特判经 should_push_im 闸门投递回复内容——trigger 提醒 + 主 Agent 回复两条消息均为预期（原「回复只走 SSE 前端」设计废止）
+- **2026-08-15 修复**：scheduler 特判经 should_push_im 闸门投递回复内容——定时任务主 Agent 回复必达 IM（用户要求："只要有定时任务的消息，就必须把 IM 通道的标志置为真"）；修复后 IM 端将出现 trigger 提醒 + 主 Agent 回复两条消息，08-12 的"回复只走 SSE 前端"设计废止（注：本行是工程修复记录，非用户原话；用户拍板原文见本日工程方案与对话）
 
 #### 修复：压缩后主动重算前端模型使用率（sleep 强制压缩后圆环不刷新 → 下次睡眠重复强制压缩）
 
