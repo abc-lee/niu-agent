@@ -96,6 +96,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收脑区状态变更通知（SSE 推送，刷新脑区面板）
   onBrainRegionsChanged: (callback) => ipcRenderer.on('brain-regions-changed', (_event, data) => callback(data)),
 
+  // 接收 LLM 调用错误通知（SSE 推送，⚠️ system 提示，刷新消失——不落库）
+  onLlmError: (callback) => ipcRenderer.on('llm-error', (_event, data) => callback(data)),
+
   // 接收入库开始通知（SSE推送）
   onIngestStarted: (callback) => ipcRenderer.on('ingest-started', callback),
 
