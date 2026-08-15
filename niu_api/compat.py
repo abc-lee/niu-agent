@@ -2336,12 +2336,12 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         _chat_lock.release()
 
     # IM 推送在锁释放后执行（与 ChatQueue 模式一致，避免网络 I/O 阻塞锁）
-    # 闸门：只看 IM 标志——get_im_channel()（IM 用户消息置的 chat_id）或 get_im_force()（定时任务置位）。
+    # 闸门：只看 IM 标志——runner.should_push_im() 单一判定入口（channel_id 或 force 任一在）。
     # 无标志不发（本地 Electron 对话的异步子 Agent 续答不推 IM）；有标志 channel_id 空时由网关 route_out→push
     # 回退到 _push_target 广播（与 scheduler 服务首轮发 IM 同款）。
     # 规则 5：此处只读标志，绝不 set_im_channel / set_im_force——子 Agent 返回不改变标志。
     try:
-        if chat_error is None and (runner.get_im_channel() or runner.get_im_force()):
+        if chat_error is None and runner.should_push_im():
             from niu_api.channel import get_channel_router
             router = get_channel_router()
             if router.has_channel("im"):

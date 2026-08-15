@@ -44,17 +44,19 @@ def _push_block() -> ast.Try:
     return _extract_push_block(inspect.getsource(compat))
 
 
-def test_push_gate_condition_is_im_flag_not_source():
-    """推送闸门必须是 IM 标志（get_im_channel() or get_im_force()），而非 request.source。"""
+def test_push_gate_condition_is_unified_gate_not_source():
+    """推送闸门必须调 should_push_im() 单一判定入口（用户拍板：全局只有一个 IM 推送判定），
+    而非 request.source，也不再内联 get_im_channel()/get_im_force() 判定式。"""
     block = _push_block()
     if_node = next(n for n in ast.walk(block) if isinstance(n, ast.If))
     cond_src = ast.unparse(if_node.test)
-    assert "get_im_channel" in cond_src, f"闸门未用 get_im_channel 判断, 实际: {cond_src}"
-    assert "get_im_force" in cond_src, f"闸门未用 get_im_force 判断（定时任务标志）, 实际: {cond_src}"
+    assert "should_push_im" in cond_src, f"闸门未用 should_push_im 单一入口, 实际: {cond_src}"
     assert "request.source" not in cond_src, f"闸门不得依赖 request.source, 实际: {cond_src}"
-    # 括号完整性：`chat_error is None and (get_im_channel() or get_im_force())` 整体分组
-    # （丢括号会退化为 `(chat_error is None and channel) or force`——chat_error 非 None 时 force 置位也推错误文本）
-    assert "chat_error is None and (" in cond_src, f"闸门须整体分组, 实际: {cond_src}"
+    assert "get_im_force" not in cond_src, f"闸门不得内联 get_im_force（应收口 should_push_im）, 实际: {cond_src}"
+    # 完整条件子串（unparse 对单调用不保留源码括号——`chat_error is None and runner.should_push_im()`）
+    # ——同时锁 chat_error 前置与 and 连接（防 `or` 退化：or 形态此处子串不匹配）
+    assert "chat_error is None and runner.should_push_im()" in cond_src, \
+        f"闸门须为 chat_error is None and runner.should_push_im(), 实际: {cond_src}"
 
 
 def test_push_uses_get_im_channel_for_channel_id():
