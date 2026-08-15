@@ -248,3 +248,56 @@ async def test_llm_error_rv_no_error_type_extraction():
     assert src == "chat_queue"
 
     await q.stop()
+
+
+class _FakeLockNeverAcquire:
+    """模拟 _chat_lock 获取失败——acquire() 返回 False（非阻塞语义），
+    触发 `if not acquired: raise TimeoutError` 分支（与 wait_for 600s 超时
+    汇入同一 except TimeoutError → chat_error="timeout" 字符串路径）。"""
+
+    async def acquire(self):
+        return False
+
+    def release(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_chat_lock_timeout_neutral_reply_no_notify():
+    """_chat_lock 超时路径（chat_error="timeout" 字符串）→ 中性占位符投递 + notify 为空。
+
+    chat_error 是字符串而非异常对象——`isinstance(chat_error, BaseException)` 守卫
+    判 False → is_llm=False → 不 format 友好文案、不 notify（is_llm 分支锁定）。
+    full_reply 回退中性占位符 [系统繁忙，请重试]（与 RuntimeError 等非 LLM 异常同路径）。
+    """
+    q = ChatQueue(runner=MagicMock())
+    q._runner.last_return_value = None
+    q._runner._persisted_msgs = None
+    await q.start()
+    fake_store = _FakeStore()
+    notify_calls = []
+
+    # patch _chat_lock（_process_single 函数内 `from niu_api.compat import _chat_lock`
+    # 模块级绑定——patch 源模块 niu_api.compat 生效）
+    with patch("niu_api.compat._chat_lock", new=_FakeLockNeverAcquire()):
+        with patch("niu_api.chat_queue.get_message_store", new=AsyncMock(return_value=fake_store)):
+            with patch("niu_api.chat.notify_new_message", new=AsyncMock(return_value=True)):
+                with patch("niu_api.chat.notify_llm_error_sync", side_effect=lambda *a: notify_calls.append(a)):
+                    with patch("agent.context_manager.get_context_manager", new=AsyncMock()) as mock_cm:
+                        mock_cm.return_value.get_context_for_chat = AsyncMock(return_value=[])
+
+                        result = await asyncio.wait_for(
+                            q.enqueue_and_wait(content="test", source="scheduler", session_id="default"),
+                            timeout=5
+                        )
+
+    # 字符串 "timeout" 非 BaseException → is_llm=False → 投递中性占位符（非 LLM 友好文案）
+    assert result == "[系统繁忙，请重试]", f"Expected neutral placeholder, got {result!r}"
+    # 中性占位符落库（错误细节不进 DB）
+    assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
+    # 非 LLM（isinstance BaseException 守卫 False）→ notify_llm_error_sync 不被调用
+    assert notify_calls == []
+
+    await q.stop()

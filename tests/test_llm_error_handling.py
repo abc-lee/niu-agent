@@ -292,7 +292,12 @@ def test_call_subagent_returns_subagent_error_prefix():
 
         import agent.handler as handler_module
         import agent.runner as runner_module
-        class FakeClient: pass
+        class FakeClient:
+            # 53cbc6f9 (2026-08-08 stop 特性) 起 call_subagent L918 无条件
+            # `client.backend.stop_check = _stop_fn`——FakeClient 无 backend 属性 →
+            # AttributeError（pre-existing，测试早于 stop 特性编写，与 E2 无关）。
+            # MagicMock 即可（subagent.py 中 backend 仅此一处赋值，无读取）。
+            backend = MagicMock()
         with patch.object(runner_module, 'create_client', lambda cfg: FakeClient()), \
              patch.object(runner_module, 'get_tools_schema', lambda **kwargs: []), \
              patch.object(handler_module, 'NiuHandler') as MockHandler:
