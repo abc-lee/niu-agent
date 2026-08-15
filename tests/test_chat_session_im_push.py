@@ -53,6 +53,7 @@ def test_push_gate_condition_is_unified_gate_not_source():
     assert "should_push_im" in cond_src, f"闸门未用 should_push_im 单一入口, 实际: {cond_src}"
     assert "request.source" not in cond_src, f"闸门不得依赖 request.source, 实际: {cond_src}"
     assert "get_im_force" not in cond_src, f"闸门不得内联 get_im_force（应收口 should_push_im）, 实际: {cond_src}"
+    assert "get_im_channel" not in cond_src, f"闸门不得内联 get_im_channel（顶层 or 退化——应收口 should_push_im）, 实际: {cond_src}"
     # 完整条件子串（unparse 对单调用不保留源码括号——`chat_error is None and runner.should_push_im()`）
     # ——同时锁 chat_error 前置与 and 连接（防 `or` 退化：or 形态此处子串不匹配）
     assert "chat_error is None and runner.should_push_im()" in cond_src, \
