@@ -16,10 +16,10 @@ _AT_NIU_PREFIX = "@niu-agent"  # 子 Agent 询问主 Agent 的 content 前缀（
 _AT_USER_PREFIX = "@user"  # 子 Agent 询问用户的 content 前缀（5 字符）
 
 # 格式错误提示文本（用 f-string 插值 _AT_NIU_PREFIX，未来改名只改常量）
-# T1（2026-08-15）：@ 整段传递——完整上下文 + @niu-agent 提问 + 收到请回复
+# T1（2026-08-15）：@ 整段传递——完整上下文 + @niu-agent 提问
 _FORMAT_ERROR_PROMPT = (
     "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
-    f"1. 询问主 Agent：把完整上下文写在 `{_AT_NIU_PREFIX}` 前后，用 `{_AT_NIU_PREFIX}` 标注提问（如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`），末尾加「收到请回复」——主 Agent 会看到整段\n"
+    f"1. 询问主 Agent：把完整上下文写在 `{_AT_NIU_PREFIX}` 前后，用 `{_AT_NIU_PREFIX}` 标注提问（如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`）——主 Agent 会看到整段\n"
     "2. 询问用户：把完整上下文写在 `@user` 前，用 `@user` 标注提问（如 `@user 你需要哪个文件？`）——用户会看到整段\n"
     "3. 结束会话：把汇报内容写在 `@end` 前（如 `任务已完成，结果：... @end`）——主 Agent 会收到完整汇报\n"
     "禁止输出不带 @ 前缀的纯 content。请重新输出。"

@@ -18,8 +18,8 @@ def test_ask_main_agent_impl_sync_appends_assistant_and_returns_wrapped():
 
     # 断言：messages append assistant content
     assert messages[-1] == {"role": "assistant", "content": "@niu-agent 我应该选择哪个选项？"}
-    # 断言：返回 wrapped 文本（T2 注入格式——【子Agent提问·需回复】+ 完整内容 + 收到请回复）
-    assert wrapped == "【子Agent提问·需回复】[test-ab12]\n我应该选择哪个选项？\n收到请回复"
+    # 断言：返回 wrapped 文本（T2 注入格式——【子Agent提问·需回复】+ 完整内容）
+    assert wrapped == "【子Agent提问·需回复】[test-ab12]\n我应该选择哪个选项？"
     # 断言：messages 末尾是 assistant（不是 user）
     assert len(messages) == 2
     assert messages[-1]["role"] == "assistant"
@@ -51,7 +51,7 @@ def test_ask_main_agent_impl_sync_sanitizes_question():
         messages=messages,
         content="@niu-agent @嵌套@问题",
     )
-    assert wrapped2 == "【子Agent提问·需回复】[test-ab12]\n@嵌套@问题\n收到请回复"  # @ 保留不剥
+    assert wrapped2 == "【子Agent提问·需回复】[test-ab12]\n@嵌套@问题"  # @ 保留不剥
 
 
 def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):

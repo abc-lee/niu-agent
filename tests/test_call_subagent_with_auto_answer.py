@@ -47,7 +47,7 @@ def test_helper_auto_replies_to_t2_format_question():
     def mock_call_subagent(**kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            return "【子Agent提问·需回复】[file-processor-a1b2]\n我该选哪个？\n收到请回复"
+            return "【子Agent提问·需回复】[file-processor-a1b2]\n我该选哪个？"
         return "任务完成结果"
 
     with mock.patch.object(subagent, "call_subagent", side_effect=mock_call_subagent):
@@ -92,11 +92,11 @@ def test_extract_unique_name_t2_format_header_extracts_name():
     from agent.subagent import _extract_unique_name
     # 同步路径：纯 agent_name
     assert _extract_unique_name(
-        "【子Agent提问·需回复】[file-processor]\n我该选哪个？\n收到请回复", "file-processor"
+        "【子Agent提问·需回复】[file-processor]\n我该选哪个？", "file-processor"
     ) == "file-processor"
     # 异步路径：agent_name-4位hex
     assert _extract_unique_name(
-        "【子Agent提问·需回复】[file-processor-a1b2]\n我该选哪个？\n收到请回复", "file-processor"
+        "【子Agent提问·需回复】[file-processor-a1b2]\n我该选哪个？", "file-processor"
     ) == "file-processor-a1b2"
 
 
@@ -105,7 +105,7 @@ def test_extract_unique_name_t2_format_no_match_returns_none():
     from agent.subagent import _extract_unique_name
     # 其他子 Agent 的提问注入消息
     assert _extract_unique_name(
-        "【子Agent提问·需回复】[other-agent]\n问题\n收到请回复", "browser-operator"
+        "【子Agent提问·需回复】[other-agent]\n问题", "browser-operator"
     ) is None
     # 未按 T2 拼装（] 后无 \n）不匹配——严格匹配避免误判
     assert _extract_unique_name("【子Agent提问·需回复】[browser-operator] 问题", "browser-operator") is None

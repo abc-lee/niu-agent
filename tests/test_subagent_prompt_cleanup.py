@@ -2,7 +2,7 @@
 
 验证三件事：
 1. 补丁句"你不需要在输出里包含自己的标识符"已删除（Task A 的回归保护）
-2. 新守则首句是 @niu-agent 提问语法（含「收到请回复」需回复标志——T2）
+2. 新守则首句是 @niu-agent 提问语法（@niu-agent 整段传递——T2）
 3. 新守则结尾是 @end 退出语法（任务完成退出 + 汇报内容写在 @end 前）
 4. marker 与当前模板版本（v4）一致（强制走新模板）
 5. context-manager 仍不被注入守则（回归保护）
@@ -19,10 +19,11 @@ def test_patch_sentence_removed():
 
 
 def test_guide_first_line_is_niu_agent_ask_rule():
-    """新守则首句是 @niu-agent 提问语法——含「收到请回复」需回复标志
+    """新守则首句是 @niu-agent 提问语法——@niu-agent 整段传递
 
-    首句强提醒：让子 Agent 第一眼看到提问方式（@niu-agent 整段传递 + 收到请回复）。
+    首句强提醒：让子 Agent 第一眼看到提问方式（@niu-agent 整段传递）。
     利用 primacy effect（LLM 处理 system prompt 时首句 attention 权重最高）。
+    「收到请回复」已删除（2026-08-15 用户拍板——需回复标志+30s 提醒已足够）。
     """
     from agent.subagent import _SUBAGENT_ASK_GUIDE_TEMPLATE
 
@@ -36,8 +37,8 @@ def test_guide_first_line_is_niu_agent_ask_rule():
     first_content_line = lines[0] if lines else ""
     # 首句是 @niu-agent 提问语法（主 Agent 通讯主通道）
     assert "@niu-agent" in first_content_line, f"首句应含'@niu-agent'，实际: {first_content_line}"
-    # T2 需回复标志：末尾加「收到请回复」——主 Agent 会看到整段
-    assert "收到请回复" in first_content_line, f"首句应含'收到请回复'，实际: {first_content_line}"
+    # 「收到请回复」已删除（2026-08-15 用户拍板）——首句不应含 trailer 引导
+    assert "收到请回复" not in first_content_line, f"首句不应含'收到请回复'，实际: {first_content_line}"
     assert "主 Agent" in first_content_line, f"首句应含'主 Agent'，实际: {first_content_line}"
 
 
