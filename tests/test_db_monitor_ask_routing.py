@@ -102,3 +102,28 @@ def test_route_message_normal_supplement_to_subagent():
         assert items[0].sender == "other-agent-aaaa"
     finally:
         SubagentRegistry.unregister(name)
+
+
+def test_route_message_to_main_agent_push_type_ask_no_prefix_injection():
+    """@主Agent 消息推 MainAgentRequestQueue：type="ask" + 内容原样直通（无前缀注入）。
+
+    T2 语义：有人 @主Agent 找主 Agent → type="ask"（需主 Agent 处理）。
+    链路 A 不注入【子Agent提问·需回复】前缀——文本标志由代码拼装源头保证，
+    db_monitor 只做 content 直通（R1-B P1：再注入必然双前缀）。
+    """
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+
+    q = get_main_agent_request_queue()
+    while q.pop() is not None:
+        pass
+
+    try:
+        db_monitor.route_message(target="主Agent", sender="sub-1", content="测试内容")
+
+        assert q.peek_type() == "ask"
+        item = q.pop()
+        assert item == "[sub-1] 测试内容"  # content 原样直通
+        assert "【子Agent提问·需回复】" not in item  # 无前缀注入
+    finally:
+        while q.pop() is not None:
+            pass

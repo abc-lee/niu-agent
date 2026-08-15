@@ -4,7 +4,7 @@ from agent.main_agent_request_queue import MainAgentRequestQueue
 
 
 def test_push_and_pop_fifo():
-    """push 后 pop 按 FIFO 顺序返回。"""
+    """push 后 pop 按 FIFO 顺序返回（pop 解包返回 content——兼容设计）。"""
     q = MainAgentRequestQueue()
     q.push("[file-processor-a1b2] 问题 1")
     q.push("[file-processor-c3d4] 问题 2")
@@ -12,6 +12,40 @@ def test_push_and_pop_fifo():
     assert q.pop() == "[file-processor-a1b2] 问题 1"
     assert q.pop() == "[file-processor-c3d4] 问题 2"
     assert q.pop() is None  # 队列空
+
+
+def test_push_default_type_is_notify():
+    """push 不传 type 时默认 "notify"（向后兼容既有调用）。"""
+    q = MainAgentRequestQueue()
+    q.push("[子名] 完成通知")
+
+    assert q.peek() == "[子名] 完成通知"
+    assert q.peek_type() == "notify"
+
+
+def test_push_ask_type_roundtrip():
+    """push(type="ask") 后 peek_type/pop_type 返回 "ask"，pop 返回 content。"""
+    q = MainAgentRequestQueue()
+    q.push("【子Agent提问·需回复】[子名]\n问题\n收到请回复", type="ask")
+
+    assert q.peek() == "【子Agent提问·需回复】[子名]\n问题\n收到请回复"
+    assert q.peek_type() == "ask"
+
+    # pop 解包返回 content
+    assert q.pop() == "【子Agent提问·需回复】[子名]\n问题\n收到请回复"
+    assert q.is_empty()
+
+    # pop_type 解包返回 type
+    q.push("[子名2] 内容", type="ask")
+    assert q.pop_type() == "ask"
+    assert q.is_empty()
+
+
+def test_peek_type_empty_returns_none():
+    """空队列 peek_type/pop_type 返回 None。"""
+    q = MainAgentRequestQueue()
+    assert q.peek_type() is None
+    assert q.pop_type() is None
 
 
 def test_pop_empty_returns_none():

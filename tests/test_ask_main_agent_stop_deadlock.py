@@ -22,6 +22,10 @@ import pytest
 def llm_config():
     import json
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "user-config.json")
+    # user-config.json 是本地 gitignore 配置——缺失时返回空配置，让测试走
+    # "LLM API key not configured" skip 分支（真 LLM 测试，无 key 不跑）
+    if not os.path.exists(config_path):
+        return {"apikey": "", "apibase": "", "model": "", "type": "openai"}
     with open(config_path) as f:
         cfg = json.load(f)
     llm = cfg.get("llm", {})
