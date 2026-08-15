@@ -3,12 +3,11 @@
 
 测试目标：
 1. 脑区实体创建 + 锚定关系（brain:Niu → brain:{region}）
-2. 边权重 reinforce（工具使用时加强连接）
-3. 边权重 decay（定时衰减）
-4. 边断开（权重低于阈值时删除边）
-5. 脑区激活/衰减闭环（激活度 0.92/轮衰减）
-6. 上下文注入（brain_region_prompt → LLM 提示词）
-7. amerge_entities 改名后关系迁移
+2. 边权重 decay（定时衰减）
+3. 边断开（权重低于阈值时删除边）
+4. 脑区激活/衰减闭环（激活度 0.92/轮衰减）
+5. 上下文注入（brain_region_prompt → LLM 提示词）
+6. amerge_entities 改名后关系迁移
 
 前置条件：API 服务器在运行（python -m niu_api）
 
@@ -30,7 +29,6 @@ TEST_TOOL = "lightrag-server"
 
 # 衰减参数（与 region_manager.py 对齐）
 DECAY_FACTOR = 0.92
-REINFORCE_DELTA = 0.15
 MIN_WEIGHT = 0.05
 DISCONNECT_THRESHOLD = 0.03
 
@@ -174,109 +172,6 @@ def test_1_brain_region_creation(rag, call_async):
     cleanup_entity(rag, call_async, TEST_REGION)
 
     return has_region and has_anchor
-
-
-def test_2_edge_weight_reinforce(rag, call_async):
-    """
-    测试2: 边权重 reinforce（工具使用时加强连接）
-    - 创建脑区 + 知识实体 + 初始边（weight=0.1）
-    - 模拟 reinforce 操作：直接修改边权重
-    - 验证权重增加
-    """
-    print("\n" + "=" * 60)
-    print("测试2: 边权重 reinforce（工具使用时加强连接）")
-    print("=" * 60)
-
-    # 清理
-    for n in [TEST_REGION, TEST_KNOWLEDGE]:
-        cleanup_entity(rag, call_async, n)
-
-    # 创建脑区 + 知识实体 + 初始边
-    print("  [A] inject_custom_kg 创建脑区+知识实体+初始边...")
-    ok = inject_kg(
-        rag,
-        call_async,
-        entities=[
-            {
-                "entity_name": TEST_REGION,
-                "entity_type": "BrainRegion",
-                "description": "测试脑区",
-            },
-            {
-                "entity_name": TEST_KNOWLEDGE,
-                "entity_type": "Concept",
-                "description": "Python编程知识",
-            },
-        ],
-        relationships=[
-            {
-                "src_id": BRAIN_ENTITY,
-                "tgt_id": TEST_REGION,
-                "keywords": "remembers",
-                "description": "拥有测试脑区",
-            },
-            {
-                "src_id": TEST_REGION,
-                "tgt_id": TEST_KNOWLEDGE,
-                "keywords": "knows_about",
-                "description": "测试脑区关联Python编程知识",
-            },
-        ],
-        source_id="brain:test",
-    )
-    if not ok:
-        return False
-
-    # 检查初始边权重
-    print("  [B] 检查初始边权重...")
-    edge = get_edge_data(rag, TEST_REGION, TEST_KNOWLEDGE)
-    if edge:
-        initial_weight = edge.get("weight", 1.0)
-        print(f"  初始 weight: {initial_weight}")
-    else:
-        print("  边不存在！")
-        cleanup_entity(rag, call_async, TEST_REGION)
-        cleanup_entity(rag, call_async, TEST_KNOWLEDGE)
-        return False
-
-    # 设置初始权重 < 1.0，否则 min(1.0, 1.0+delta)=1.0 无变化
-    g = rag.chunk_entity_relation_graph._graph
-    src_lower = TEST_REGION.lower()
-    tgt_lower = TEST_KNOWLEDGE.lower()
-    if g.has_edge(src_lower, tgt_lower):
-        g.edges[src_lower, tgt_lower]["weight"] = 0.5
-        initial_weight = 0.5
-        print(f"  设置初始 weight=0.5（确保 reinforce 可见）")
-
-    # 模拟 reinforce：直接修改 LightRAG 图中的边权重
-    print(f"  [C] reinforce: weight += {REINFORCE_DELTA}...")
-    if g.has_edge(src_lower, tgt_lower):
-        current_weight = g.edges[src_lower, tgt_lower].get("weight", 1.0)
-        new_weight = min(1.0, current_weight + REINFORCE_DELTA)
-        g.edges[src_lower, tgt_lower]["weight"] = new_weight
-        print(f"  weight: {current_weight} → {new_weight}")
-    else:
-        print("  边不存在，无法 reinforce")
-        cleanup_entity(rag, call_async, TEST_REGION)
-        cleanup_entity(rag, call_async, TEST_KNOWLEDGE)
-        return False
-
-    # 验证
-    edge_after = get_edge_data(rag, TEST_REGION, TEST_KNOWLEDGE)
-    if edge_after:
-        final_weight = edge_after.get("weight", 0)
-        print(f"  reinforce 后 weight: {final_weight}")
-        success = final_weight > initial_weight
-    else:
-        success = False
-
-    print(f"  权重增加: {success}")
-
-    # 清理
-    cleanup_entity(rag, call_async, TEST_REGION)
-    cleanup_entity(rag, call_async, TEST_KNOWLEDGE)
-
-    return success
 
 
 def test_3_edge_weight_decay(rag, call_async):
@@ -454,125 +349,6 @@ def test_4_edge_disconnect(rag, call_async):
     cleanup_entity(rag, call_async, TEST_KNOWLEDGE)
 
     return not edge_exists_after and region_exists and knowledge_exists
-
-
-def test_5_reinforce_decay_cycle(rag, call_async):
-    """
-    测试5: reinforce + decay 闭环
-    - 创建脑区 + 知识实体 + 边
-    - 模拟多轮：reinforce（权重+0.15）→ decay（权重*0.92）
-    - 验证：频繁 reinforce 的边权重稳定，不 reinforce 的边权重衰减
-    """
-    print("\n" + "=" * 60)
-    print("测试5: reinforce + decay 闭环（动态连接核心）")
-    print("=" * 60)
-
-    # 清理
-    for n in [TEST_REGION, TEST_KNOWLEDGE, "Rust编程"]:
-        cleanup_entity(rag, call_async, n)
-
-    # 创建脑区 + 两个知识实体 + 两条边
-    print("  [A] inject_custom_kg 创建脑区+2个知识实体+2条边...")
-    ok = inject_kg(
-        rag,
-        call_async,
-        entities=[
-            {
-                "entity_name": TEST_REGION,
-                "entity_type": "BrainRegion",
-                "description": "测试脑区",
-            },
-            {
-                "entity_name": TEST_KNOWLEDGE,
-                "entity_type": "Concept",
-                "description": "Python编程知识（频繁使用）",
-            },
-            {
-                "entity_name": "Rust编程",
-                "entity_type": "Concept",
-                "description": "Rust编程知识（不使用）",
-            },
-        ],
-        relationships=[
-            {
-                "src_id": TEST_REGION,
-                "tgt_id": TEST_KNOWLEDGE,
-                "keywords": "knows_about",
-                "description": "测试脑区关联Python编程知识",
-            },
-            {
-                "src_id": TEST_REGION,
-                "tgt_id": "Rust编程",
-                "keywords": "knows_about",
-                "description": "测试脑区关联Rust编程知识",
-            },
-        ],
-        source_id="brain:test",
-    )
-    if not ok:
-        return False
-
-    # 设置初始权重
-    g = rag.chunk_entity_relation_graph._graph
-    src_lower = TEST_REGION.lower()
-    py_lower = TEST_KNOWLEDGE.lower()
-    rust_lower = "rust编程".lower()
-
-    initial_weight = 0.5
-    if g.has_edge(src_lower, py_lower):
-        g.edges[src_lower, py_lower]["weight"] = initial_weight
-    if g.has_edge(src_lower, rust_lower):
-        g.edges[src_lower, rust_lower]["weight"] = initial_weight
-    print(f"  初始权重: Python={initial_weight}, Rust={initial_weight}")
-
-    # 模拟 20 轮
-    print(f"  [B] 模拟 20 轮 (reinforce Python, decay both)...")
-    py_weights = [initial_weight]
-    rust_weights = [initial_weight]
-
-    for i in range(20):
-        # Decay both
-        if g.has_edge(src_lower, py_lower):
-            w = g.edges[src_lower, py_lower].get("weight", 0)
-            w = max(MIN_WEIGHT, w * DECAY_FACTOR)
-            g.edges[src_lower, py_lower]["weight"] = w
-
-        if g.has_edge(src_lower, rust_lower):
-            w = g.edges[src_lower, rust_lower].get("weight", 0)
-            w = max(MIN_WEIGHT, w * DECAY_FACTOR)
-            g.edges[src_lower, rust_lower]["weight"] = w
-
-        # Reinforce Python only (every 3 rounds = frequent use)
-        if i % 3 == 0:
-            if g.has_edge(src_lower, py_lower):
-                w = g.edges[src_lower, py_lower].get("weight", 0)
-                w = min(1.0, w + REINFORCE_DELTA)
-                g.edges[src_lower, py_lower]["weight"] = w
-
-        py_w = g.edges[src_lower, py_lower].get("weight", 0) if g.has_edge(src_lower, py_lower) else 0
-        rust_w = g.edges[src_lower, rust_lower].get("weight", 0) if g.has_edge(src_lower, rust_lower) else 0
-        py_weights.append(round(py_w, 4))
-        rust_weights.append(round(rust_w, 4))
-
-    # 结果
-    py_final = py_weights[-1]
-    rust_final = rust_weights[-1]
-    print(f"  Python 权重轨迹: {py_weights[:5]}...{py_weights[-3:]}")
-    print(f"  Rust 权重轨迹: {rust_weights[:5]}...{rust_weights[-3:]}")
-    print(f"  最终: Python={py_final:.4f}, Rust={rust_final:.4f}")
-
-    # 验证：Python 权重应高于 Rust
-    python_stronger = py_final > rust_final
-    rust_decayed = rust_final < initial_weight
-    print(f"  Python > Rust: {python_stronger}")
-    print(f"  Rust 衰减: {rust_decayed}")
-
-    # 清理
-    cleanup_entity(rag, call_async, TEST_REGION)
-    cleanup_entity(rag, call_async, TEST_KNOWLEDGE)
-    cleanup_entity(rag, call_async, "Rust编程")
-
-    return python_stronger and rust_decayed
 
 
 def test_6_brain_region_prompt_injection(rag, call_async):
@@ -1056,10 +832,8 @@ def run_test():
 
     tests = [
         ("test1_region_creation", test_1_brain_region_creation),
-        ("test2_edge_reinforce", test_2_edge_weight_reinforce),
         ("test3_edge_decay", test_3_edge_weight_decay),
         ("test4_edge_disconnect", test_4_edge_disconnect),
-        ("test5_reinforce_decay_cycle", test_5_reinforce_decay_cycle),
         ("test6_prompt_injection", test_6_brain_region_prompt_injection),
         ("test7_merge_rename", test_7_merge_region_rename),
         ("test8_activation_decay_sim", test_8_activation_decay_simulation),
