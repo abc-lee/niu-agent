@@ -50,10 +50,15 @@ def extract_at_messages(reply_text: str) -> list:
 
 
 def strip_at_messages(reply_text: str) -> str:
-    """从回复文本移除 @ 消息，返回剩余文本。"""
-    stripped = _AT_PATTERN.sub('', reply_text)
-    lines = [line.rstrip() for line in stripped.splitlines() if line.strip()]
-    return '\n'.join(lines).strip()
+    """从回复文本移除 @ 消息，返回剩余文本（保留原文换行/空行结构）。
+
+    2026-08-15 修复：原实现按行过滤（if line.strip()）删除回复所有空行——
+    LLM 输出块间空行（\\n\\n）被删成单 \\n，飞书 CardKit 块（列表/表格）不闭合，
+    主 Agent 的话与子 Agent 转述直接连接（Chat marked 单 \\n 显示换行正常，两端差异）。
+    _AT_PATTERN.sub 已整段删除 @ 消息（含内容）——此处不再做行级处理，
+    只清理整体两端空白（.strip()）。
+    """
+    return _AT_PATTERN.sub('', reply_text).strip()
 
 
 def format_for_db(msg: dict) -> str:
