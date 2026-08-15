@@ -129,11 +129,14 @@ def test_ask_main_agent_tool_returns_answer():
 
         assert "这是主 Agent 的回答" in result
 
-        # 验证消息推入了 MainAgentRequestQueue（content 格式 "[子名] 问题"）
+        # 验证消息推入了 MainAgentRequestQueue（T2 注入格式 + type="ask"）
+        assert q.peek_type() == "ask"  # 提问走 type="ask"（与完成通知 notify 区分）
         queued = q.pop()
         assert queued is not None
+        assert "【子Agent提问·需回复】" in queued
         assert name in queued
         assert "这是问题" in queued
+        assert queued.endswith("收到请回复")
     finally:
         SubagentRegistry.unregister(name)
 

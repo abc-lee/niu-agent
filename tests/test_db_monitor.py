@@ -46,10 +46,12 @@ def test_route_to_main_agent():
     while q.pop() is not None:
         pass
 
-    with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+    with patch("agent.route_to_subagent.enqueue_supplement") as mock_enqueue:
         route_message("主Agent", "file-processor-a1b2", "测试问题")
         mock_enqueue.assert_not_called()
 
+    # T2：@主Agent push type="ask"（语义=有人 @主Agent 找主 Agent）
+    assert q.peek_type() == "ask"
     item = q.pop()
     assert item is not None
     assert "file-processor-a1b2" in item
@@ -60,7 +62,7 @@ def test_route_to_subagent_normal():
     """@子名 普通消息推入子 Agent supplement queue。"""
     from niu_api.db_monitor import route_message
     mock_queue = MagicMock()
-    with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+    with patch("agent.route_to_subagent.SubagentRegistry") as mock_registry:
         mock_registry.get.return_value = MagicMock(supplement_queue=mock_queue)
         route_message("file-processor-a1b2", "主Agent", "补充内容")
         mock_queue.push.assert_called_once_with("补充内容", is_terminate=False, sender="主Agent")
@@ -70,7 +72,7 @@ def test_route_to_subagent_stop():
     """@子名 /stop 推入子 Agent supplement queue 标记 is_terminate=True。"""
     from niu_api.db_monitor import route_message
     mock_queue = MagicMock()
-    with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+    with patch("agent.route_to_subagent.SubagentRegistry") as mock_registry:
         mock_registry.get.return_value = MagicMock(supplement_queue=mock_queue)
         route_message("file-processor-a1b2", "主Agent", "/stop")
         mock_queue.push.assert_called_once_with("/stop", is_terminate=True, sender="主Agent")
@@ -85,16 +87,16 @@ def test_route_target_not_found():
     from niu_api.db_monitor import route_message
 
     # sender==主Agent：丢弃
-    with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+    with patch("agent.route_to_subagent.SubagentRegistry") as mock_registry:
         mock_registry.get.return_value = None
-        with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+        with patch("agent.route_to_subagent.enqueue_supplement") as mock_enqueue:
             route_message("unknown-subagent", "主Agent", "测试")
             mock_enqueue.assert_not_called()
 
     # 其他 sender：推回主 Agent
-    with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+    with patch("agent.route_to_subagent.SubagentRegistry") as mock_registry:
         mock_registry.get.return_value = None
-        with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+        with patch("agent.route_to_subagent.enqueue_supplement") as mock_enqueue:
             route_message("unknown-subagent", "other-agent", "测试")
             mock_enqueue.assert_called_once()
             call_args = mock_enqueue.call_args[0][0]
@@ -106,7 +108,7 @@ def test_route_to_subagent_multi_hyphen_type():
     """多连字符类型子 Agent 名（如 context-manager）能正确路由。"""
     from niu_api.db_monitor import route_message
     mock_queue = MagicMock()
-    with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+    with patch("agent.route_to_subagent.SubagentRegistry") as mock_registry:
         mock_registry.get.return_value = MagicMock(supplement_queue=mock_queue)
         route_message("context-manager-c3d4", "主Agent", "压缩吧")
         mock_queue.push.assert_called_once_with("压缩吧", is_terminate=False, sender="主Agent")
@@ -212,7 +214,7 @@ def test_poll_messages_routes_new_only():
             _insert_msg(path, "subagent_msg", "@主Agent [sub1] 新1")
             _insert_msg(path, "subagent_msg", "@主Agent [sub1] 新2")
 
-            with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+            with patch("agent.route_to_subagent.enqueue_supplement") as mock_enqueue:
                 asyncio.run(db_monitor_mod._poll_messages())
                 # 主 Agent 目标走 MainAgentRequestQueue，不走 enqueue_supplement
                 mock_enqueue.assert_not_called()
@@ -243,7 +245,7 @@ def test_poll_messages_no_new_does_nothing():
             import asyncio
             asyncio.run(db_monitor_mod._init_routed_baseline())
             baseline = db_monitor_mod._last_seen_rowid
-            with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+            with patch("agent.route_to_subagent.enqueue_supplement") as mock_enqueue:
                 asyncio.run(db_monitor_mod._poll_messages())
                 mock_enqueue.assert_not_called()
             assert db_monitor_mod._last_seen_rowid == baseline
@@ -261,7 +263,7 @@ def test_poll_messages_routes_to_subagent_queue():
             _insert_msg(path, "subagent_msg", "@file-processor-a1b2 测试任务")
 
             mock_queue = MagicMock()
-            with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+            with patch("agent.route_to_subagent.SubagentRegistry") as mock_registry:
                 mock_registry.get.return_value = MagicMock(supplement_queue=mock_queue)
                 asyncio.run(db_monitor_mod._poll_messages())
                 mock_queue.push.assert_called_once()
@@ -280,7 +282,7 @@ def test_poll_messages_unparsable_advances_cursor():
             import asyncio
             asyncio.run(db_monitor_mod._init_routed_baseline())
             _insert_msg(path, "subagent_msg", "no_at_prefix_here")
-            with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+            with patch("agent.route_to_subagent.enqueue_supplement") as mock_enqueue:
                 asyncio.run(db_monitor_mod._poll_messages())
                 mock_enqueue.assert_not_called()
             # 游标应推进（即使没路由）

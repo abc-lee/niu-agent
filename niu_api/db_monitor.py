@@ -82,10 +82,11 @@ def route_message(target: str, sender: str, content: str) -> None:
         # 阶段二：target==主Agent 的 subagent_msg 在新机制下不应出现
         # （ask_main_agent 和完成通知都改走 MainAgentRequestQueue 内存队列，不写 db）
         # 但为了兼容性（防止未来有人写 @主Agent 到 db），改为推入 MainAgentRequestQueue
+        # push type="ask"——语义=有人 @主Agent 找主 Agent（需要主 Agent 处理/回复）
         msg_for_queue = f"[{sender}] {content}" if sender else f"[主Agent] {content}"
         try:
             from agent.main_agent_request_queue import get_main_agent_request_queue
-            get_main_agent_request_queue().push(msg_for_queue)
+            get_main_agent_request_queue().push(msg_for_queue, type="ask")
         except Exception as e:
             logger.error(f"db_monitor 推入 MainAgentRequestQueue 失败：{e}")
         _routed_count += 1
@@ -111,8 +112,10 @@ async def _drain_main_agent_request_queue() -> None:
 
     不写 db——写 db 由前端触发 /api/chat/session 后由 compat.py 完成
 
-    阶段二说明：队列里 ask 请求和完成通知两类消息都由程序源头 push，
-    db_monitor 不做类型区分，一视同仁推 SSE 给主 Agent。
+    阶段二说明：队列里 ask 请求和完成通知两类消息都由程序源头 push，type 字段
+    （"ask"/"notify"）在队列层结构区分。db_monitor **不注入任何前缀**——T2.1 的
+    【子Agent提问·需回复】文本标志由代码拼装（非 LLM 话术，无变异），链路 A 只做
+    content 直通 + peek_type() 日志标注（ask/notify）。
     """
     from agent.main_agent_request_queue import get_main_agent_request_queue
 
@@ -125,6 +128,7 @@ async def _drain_main_agent_request_queue() -> None:
     content = q.peek()
     if content is None:
         return
+    msg_type = q.peek_type()
 
     # 阶段二 C1：检查 notify 返回值，False 时不 pop 留队列下次重试
     try:
@@ -132,7 +136,7 @@ async def _drain_main_agent_request_queue() -> None:
         ok = notify_new_message_sync("", "subagent_msg", content, source="subagent")
         if ok:
             q.pop()
-            logger.info(f"db_monitor 链路 A 推 SSE 触发主 Agent：{content[:50]}")
+            logger.info(f"db_monitor 链路 A 推 SSE 触发主 Agent（type={msg_type}）：{content[:50]}")
         else:
             # 推送失败（主 loop 不可用/已关闭/无订阅者），消息留队列下次重试
             logger.warning("db_monitor 链路 A 推 SSE 失败（loop 不可用或无订阅者），消息留队列重试")

@@ -18,8 +18,8 @@ def test_ask_main_agent_impl_sync_appends_assistant_and_returns_wrapped():
 
     # 断言：messages append assistant content
     assert messages[-1] == {"role": "assistant", "content": "@niu-agent 我应该选择哪个选项？"}
-    # 断言：返回 wrapped 文本
-    assert wrapped == "[test-ab12] 我应该选择哪个选项？"
+    # 断言：返回 wrapped 文本（T2 注入格式——【子Agent提问·需回复】+ 完整内容 + 收到请回复）
+    assert wrapped == "【子Agent提问·需回复】[test-ab12]\n我应该选择哪个选项？\n收到请回复"
     # 断言：messages 末尾是 assistant（不是 user）
     assert len(messages) == 2
     assert messages[-1]["role"] == "assistant"
@@ -51,7 +51,7 @@ def test_ask_main_agent_impl_sync_sanitizes_question():
         messages=messages,
         content="@niu-agent @嵌套@问题",
     )
-    assert wrapped2 == "[test-ab12] @嵌套@问题"  # @ 保留不剥
+    assert wrapped2 == "【子Agent提问·需回复】[test-ab12]\n@嵌套@问题\n收到请回复"  # @ 保留不剥
 
 
 def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):
@@ -199,7 +199,10 @@ def test_call_subagent_sync_second_call_with_answer_resumes_suspended_session(mo
     instance = SubagentRegistry.get("browser-operator")
     instance.state = "waiting_for_answer"
     instance.suspended_messages = [{"role": "system", "content": "挂起的 messages"}]
-    instance.suspended_handler = None
+    # 恢复分支会解引用 suspended_handler（赋 _subagent_unique_name + 透传给 _run_agent_loop），
+    # 用 MagicMock 提供真实 handler 形状（_run_agent_loop 已被 mock，handler 不会被真正使用）
+    from unittest import mock
+    instance.suspended_handler = mock.MagicMock()
     instance.suspended_client = None
     instance.suspended_tools_schema = []
     instance.suspended_system_message = None

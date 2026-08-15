@@ -51,6 +51,9 @@ def test_drain_consumes_when_main_agent_idle(monkeypatch):
             pass
         q.push(f"[{unique_name}] 测试消息")
 
+        # 默认 push type="notify"（完成通知语义——与提问 type="ask" 区分）
+        assert q.peek_type() == "notify"
+
         pushed = []
 
         def fake_notify(msg_id, role, content, source="electron"):
