@@ -83,3 +83,17 @@ def test_persist_agent_reply_strips_assistant_content_in_rv_path():
     assert "not content.strip()" in source, (
         "rv 路径 strip 后为空应跳过（@ 消息已单独存 subagent_msg）"
     )
+
+
+def test_strip_preserves_blank_lines():
+    """LLM 输出块间空行必须保留（飞书 CardKit 块闭合依赖空行）——2026-08-15 实证：日志\n\n您看 被删成单 \n。"""
+    reply = "11. **日志管理** — 调用journal-agent记录今日工作日志\n\n您看有需要修改或补充的吗？"
+    stripped = strip_at_messages(reply)
+    assert stripped == reply  # 无 @ 消息时输出与输入逐字节一致（含空行）
+
+
+def test_strip_removes_at_keeps_blank_lines():
+    """@ 消息剥离 + @ 前置文本空行保留（@ 在末尾——单 @ 尾随文本被吞为文档化行为 test_at_sync_name.py L28-36，不在本测试范围）。"""
+    reply = "A\n\nC\n\n@file-processor-a1b2 处理 B"
+    stripped = strip_at_messages(reply)
+    assert stripped == "A\n\nC"  # @ 段剥离（含内容）→ 前置文本 + 空行结构保留
