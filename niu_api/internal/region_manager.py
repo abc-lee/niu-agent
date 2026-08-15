@@ -520,6 +520,15 @@ class RegionManager:
             region_name = f"{region_label}{REGION_SUFFIX}"
             is_existing = region_name.lower() in existing_region_names
 
+            # R15b 社区劫持防御（P14 拍板）：社区标签（Leiden）撞默认脑区名
+            # ——整分支跳过（描述不覆写/stale 不清理/成员边不注入）——默认脑区
+            # 成员归属由 LLM 驱动建边为设计路径——防社区标签覆盖配置数据。
+            # 守卫必须在 is_existing 分支顶部之前：下方 'Always upsert entity'
+            # 无条件执行——放分支顶部则描述仍被覆写。
+            if is_default_region(region_name):
+                logger.debug("跳过默认脑区覆盖（社区标签撞名）: %s", region_name)
+                continue
+
             # Preserve priority for existing regions, use DEFAULT_PRIORITY for new ones
             if is_existing:
                 old_desc = existing_region_descriptions.get(region_name.lower(), "")
