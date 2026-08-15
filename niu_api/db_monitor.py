@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,15 @@ _last_seen_rowid: int = 0
 
 # 心跳计数
 _routed_count = 0
+
+# 等待状态机（链路三）：提醒周期（秒）——每 30s 检查主 Agent 闲置并提醒等待中的子 Agent
+_REMIND_INTERVAL = 30.0
+
+# 等待状态机：主循环上一次提醒扫描时间（主循环 200ms 内按时间判断，≥_REMIND_INTERVAL 才扫一次）
+_last_remind_sweep: float = 0.0
+
+# 等待状态机：每子 Agent 上次提醒时间（节流——同一子 Agent 30s 内不重复推）
+_last_remind: dict[str, float] = {}
 
 
 def _set_db_path(path: str) -> None:
@@ -144,6 +154,66 @@ async def _drain_main_agent_request_queue() -> None:
         logger.error(f"db_monitor 链路 A 推 SSE 异常，消息留队列：{e}")
 
 
+def _remind_pending_asks(now: float | None = None) -> None:
+    """链路三：等待状态机——主 Agent 闲置时提醒其回复等待中的子 Agent 提问。
+
+    用户要求（2026-08-15 拍板）：子 Agent 一旦有问题问主 Agent（@niu-agent）→
+    每 30s 检查主 Agent 状态为闲置 → 推送"有子 Agent 在后台等待回复"。
+
+    判据（按序）：
+    1. _chat_lock.locked() → 主 Agent 忙（正在跑 LLM 轮），跳过
+    2. PendingAskRegistry.waiting_unique_names() 空 → 无等待子 Agent，跳过
+       （非空时顺带清理 _last_remind 中已不在等待的残留——future 被 set_answer/超时/终止移除）
+    3. MainAgentRequestQueue 非空 → ask 未投递仍留队列（drain 先于 remind 时序保证），
+       跳过——主 Agent 还没看到问题，催答无意义
+
+    对每个 waiting 子 Agent（节流：每子 Agent 30s 一次，_last_remind 记录）推：
+    【子Agent等待提醒】子 Agent {unique_name} 正在等待你的回答，请回复 @{unique_name} 你的回答
+    推送通道 = 链路 A 同款 notify_new_message_sync（subagent_msg/source=subagent →
+    前端 → session → 主 Agent LLM 新一轮）。主 Agent 回复 @子名 → 链路 B set_answer →
+    future 解除 → waiting 不含 → 提醒自动停止（闭环）。
+
+    now 参数可注入（测试确定性——不依赖真实时钟）；None 时取 time.time()。
+    """
+    global _last_remind
+    if now is None:
+        now = time.time()
+
+    from agent.ask_main_agent import get_pending_ask_registry
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+    from niu_api.chat import notify_new_message_sync
+    from niu_api.compat import _chat_lock
+
+    if _chat_lock.locked():
+        return
+
+    waiting = get_pending_ask_registry().waiting_unique_names()
+    if not waiting:
+        # 无等待子 Agent——清理残留节流记录（防止旧 name 重新注册后节流记录误伤）
+        _last_remind.clear()
+        return
+
+    # 队列非空（ask 未投递仍留队列）→ 跳过（drain 先于 remind 时序保证）
+    if not get_main_agent_request_queue().is_empty():
+        return
+
+    # 清理：已不在等待（future 解除/超时/终止）的子 Agent 移除节流记录
+    waiting_set = set(waiting)
+    for name in list(_last_remind):
+        if name not in waiting_set:
+            _last_remind.pop(name, None)
+
+    for name in waiting:
+        if now - _last_remind.get(name, 0.0) < _REMIND_INTERVAL:
+            continue  # 30s 节流——该子 Agent 刚提醒过
+        _last_remind[name] = now
+        content = f"【子Agent等待提醒】子 Agent {name} 正在等待你的回答，请回复 @{name} 你的回答"
+        try:
+            notify_new_message_sync("", "subagent_msg", content, source="subagent")
+        except Exception as e:
+            logger.error(f"db_monitor 等待提醒推送异常：{e}")
+
+
 async def _poll_messages() -> None:
     """轮询 db 中 rowid > last_seen 的 subagent_msg 消息。
 
@@ -183,9 +253,10 @@ async def _poll_messages() -> None:
 async def run_db_monitor(interval: float = 0.2) -> None:
     """db 监测程序主循环。崩溃自动重启。
 
-    两条职责独立的链路：
+    三条职责独立的链路：
     - 链路 B（现有）：轮询 messages.db 中 role=subagent_msg 新消息，按 @目标路由
     - 链路 A（阶段二新增）：检测主 Agent 闲置 + 消费 MainAgentRequestQueue + 推 SSE 触发前端
+    - 链路三（T4 新增）：等待状态机——每 30s 检查主 Agent 闲置，提醒等待回复的子 Agent
 
     启动时先初始化基线（记当前 max(rowid) 作为游标），
     然后只路由启动后的新消息。
@@ -198,6 +269,12 @@ async def run_db_monitor(interval: float = 0.2) -> None:
         try:
             await _poll_messages()
             await _drain_main_agent_request_queue()
+            # 链路三：等待状态机——每 30s 扫一次（200ms 主循环内按时间判断）
+            # drain 先于 remind——ask 未投递（队列非空）时提醒内部跳过
+            now = time.time()
+            if now - _last_remind_sweep >= _REMIND_INTERVAL:
+                _last_remind_sweep = now
+                _remind_pending_asks(now=now)
             await asyncio.sleep(interval)
             # 每 100 条心跳日志
             if _routed_count > 0 and _routed_count % 100 == 0:
