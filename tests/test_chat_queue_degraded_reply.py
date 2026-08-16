@@ -299,5 +299,9 @@ async def test_chat_lock_timeout_neutral_reply_no_notify():
     assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
     # 非 LLM（isinstance BaseException 守卫 False）→ notify_llm_error_sync 不被调用
     assert notify_calls == []
+    # 判别锁超时分支：sync_chat 只在锁获取成功后执行——锁超时路径 runner.chat 永不调用。
+    # （若 `if not acquired: raise TimeoutError` 被删/锁后移，unstubbed MagicMock runner.chat
+    # 抛 TypeError → generic except → 同降级契约 → 无此断言测试静默通过丢失覆盖）
+    q._runner.chat.assert_not_called()
 
     await q.stop()
