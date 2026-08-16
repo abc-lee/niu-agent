@@ -203,8 +203,9 @@ class RegionActivationManager:
         # Update entity type counts (best-effort, failure is non-critical)
         try:
             self._entity_type_counts = self._build_entity_type_counts()
-        except Exception:
-            pass
+        except Exception as e:
+            # E3-10：不再静默吞错——失败可诊断（旧映射/计数保留，安全降级不变）
+            logger.warning("初始化脑区激活管理器: 实体类型计数构建失败: %s", e)
 
         preserved_count = sum(1 for rid in old_state if rid in new_regions)
         logger.info(

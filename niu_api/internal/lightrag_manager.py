@@ -1445,7 +1445,9 @@ def run_resilience_phase1() -> dict:
         check_result = check_all()
     except Exception as e:
         logger.warning(f"[LightRAG] 一致性检测失败（不影响启动）: {e}")
-        check_result = {"ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0, "error": str(e)}
+        # E3 契约 #7：检测失败 ≠ 数据损坏——ok=True 是"无损坏"语义（不触发 launcher !ok 修复弹窗闩锁），
+        # check_failed=True 独立标识检测未完成（错误文本进 error 字段 + 日志）
+        check_result = {"ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0, "error": str(e), "check_failed": True}
 
     # v3: vdb 内部不一致（matrix/data 行数不匹配）→ 自动外科修复（从 data.vector 重建 matrix）
     # 唯一自动修复路径——其他损坏（真相源 corrupt / vdb_missing）仍走 rfd 弹窗
@@ -1475,7 +1477,9 @@ def run_resilience_phase1() -> dict:
     )
     return {
         "check_ok": check_result.get("ok", True),
-        "need_repair": not check_result.get("ok", True),
+        # E3 契约 #7：need_repair 基于真实错误计数（critical/major > 0）——check_failed（检测失败）
+        # 不参与（检测失败 ≠ 损坏——B11 P3-2：显式 .get 默认 0，缺键形态不抛 KeyError）
+        "need_repair": check_result.get("critical_errors", 0) > 0 or check_result.get("major_errors", 0) > 0,
         "check_result": check_result,
     }
 
@@ -1751,6 +1755,10 @@ def get_lightrag_status() -> dict[str, Any]:
         minor = _integrity_result.get("minor_errors", 0)
         integrity_ok = _integrity_result.get("ok", False)
         total_errors = critical + major + minor
+        # E3 契约 #7：Phase-1 存储路径——check_failed/error 随 _integrity_result 暴露
+        # （run_resilience_phase1 异常分支已写 check_failed=True + error=str(e)；成功路径缺键 → False/None）
+        check_failed = _integrity_result.get("check_failed", False)
+        check_error = _integrity_result.get("error")
     else:
         # _integrity_result 为 None（首次启动 / Phase 1 未跑过）时即时跑 check_all，
         # 避免暴露空 integrity（ok=True）但实际数据已损坏的"假绿"——参考 v5.8 Task 7 修复
@@ -1762,11 +1770,17 @@ def get_lightrag_status() -> dict[str, Any]:
             minor = fresh.get("minor_errors", 0)
             integrity_ok = fresh.get("ok", False)
             total_errors = critical + major + minor
+            check_failed = False
+            check_error = None
         except Exception as e:
             logger.warning(f"[LightRAG] get_lightrag_status 即时 check_all 失败: {e}")
             critical = major = minor = 0
             integrity_ok = True
             total_errors = 0
+            # E3 契约 #7：fresh 异常路径与 run_resilience_phase1 异常分支对齐——
+            # 检测失败可见化（check_failed=True + error=str(e)），不再伪装成 integrity_ok=True 无痕
+            check_failed = True
+            check_error = str(e)
     # v4: total_errors 是 critical + major + minor 之和，保留是为了向后兼容
     # Rust IntegrityStatus.total_errors（main.rs:54）读这个字段生成弹窗文案，
     # 删了会导致 Rust serde 反序列化报 "missing field"（main.rs:42 注释明确警告过）。
@@ -1777,6 +1791,9 @@ def get_lightrag_status() -> dict[str, Any]:
         "critical_errors": critical,
         "major_errors": major,
         "minor_errors": minor,
+        # E3 契约 #7：四子路径统一输出——check_failed（检测失败 True / 成功 False）+ error（失败 str(e) / 成功 None）
+        "check_failed": check_failed,
+        "error": check_error,
     }
     return result
 
