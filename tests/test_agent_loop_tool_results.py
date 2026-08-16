@@ -97,7 +97,7 @@ def test_tool_result_for_none_data():
         user_input="测试输入",
         handler=handler,
         tools_schema=[],
-        max_turns=3  # 三轮边界：第 1、2 轮各 chat 一次，第 3 轮边界退出——确保第 2 次 chat 调用包含完整消息历史（max_turns=2 时循环体仅执行 1 次，断言不可达）
+        max_turns=3  # 三轮边界：确保第 2 次 chat 调用包含完整消息历史（max_turns=3 而非 2 的原因：旧 response_gen 恒重复返回同一工具响应导致 assistant 消息重复、断言不可达——max_turns=3 保证循环至少执行 2 次 chat，末次含完整历史）
     )
 
     try:
@@ -119,7 +119,6 @@ def test_tool_result_for_none_data():
     assert len(assistant_msgs[0].get("tool_calls", [])) == 1
 
     # 关键断言：即使 data 为 None，也必须有 tool 消息（E4-03 契约反转）
-    # 此断言会失败，证明 bug 存在
     assert len(tool_msgs) == 1, (
         f"预期有 1 条 tool 消息对应 tool_call，实际: {len(tool_msgs)} 条。"
         f"当前代码在 outcome.data 为 None 时不添加 tool_result，这违反了 Anthropic API 要求。"
