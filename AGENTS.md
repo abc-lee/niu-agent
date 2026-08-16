@@ -513,6 +513,23 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-16
+
+#### 新增：知识图谱错误分类与可见化（E3——错误不再静默吞掉：adapter 分类返回 + MCP 透传 + 前端简单提示 + 注入段标注 + 门控不伪装）
+
+- **背景**：四路审计定位 D 类知识图谱 28 处失败位置（~20 静默/3 伪 no_results/5 可见）——查询异常返回 None/空图/空列表，LLM 与用户把"检索失败"误解为"没有知识"。
+- **核心机制**：
+  1. **adapter 7 读方法错误分类返回**（lightrag_adapter.py）：query 真异常 → 错误文本 `[图谱查询失败: <err>]`（fail_response `""` 真空保持）；query_data/explore_node/get_graph_snapshot → `{"status":"error","message":err}` dict（空壳字段 nodes/edges/center/stats 保持——消费点缺键安全依赖）；timeline_query 内部 error → raise RuntimeError（MCP except 转 error dict）；**has_entity/has_edge 保持 bool 不动**（dict 化会静默破坏去重/前置校验）；`_sanitize_graph_error` E3 专用脱敏（绝对路径剥离 + key/Bearer 复用——函数内延迟导入防循环依赖）；rag None（门控拒绝）→ 通用文案 `知识图谱不可用（初始化门控拒绝）`
+  2. **raise 传导链**：adapter 内部 self-callers（search_multi_lightrag/search_by_file_path/**activate_for_query**）遇 error dict → raise RuntimeError → runner 既有 except 捕获 → 标注注入；**activate_for_query 内部 except 对 RuntimeError 重抛**（`except RuntimeError: raise`——error dict 传导至 runner，其余异常保持降级日志）
+  3. **MCP 工具层收紧**（lightrag-server）：query_data/search_entities error dict 透传（LLM 可见 message，不再伪装 no_results）；lightrag_query 三分支显式判定（错误前缀 → error dict / 空串 → no_results / 门控通用文案 → error dict——不再裸文本直达 LLM）；TOOL_SCHEMAS 计数断言核正 16→23（陈旧断言）
+  4. **kg_api 三端点转错误响应 + 前端简单提示**（graph_snapshot/explore_node/search_entities）：error dict → HTTP 错误响应；renderer 各消费点 `status=="error"` 显式分支 → **简单文案**（"知识图谱不可用/检索失败"——不显示复杂详情）+ 首屏提示一次节流（后续失败仅 console + 状态角标，不重复打扰）
+  5. **runner 注入标注**：`_inject_dynamic_resources` 新增 `injection_notes` 累加器（函数起始初始化——parts 在 L2854 才定义），5 处 except 各追加固定标注（`[脑区激活失败，本轮无脑区注入]`/`[技能检索失败，本轮无技能注入]`/`[知识检索失败，本轮无参考知识注入]`/`[脑区状态图生成失败]`/`[脑区知识格式化失败]`）组装前并入 parts——**不泄露 err 详情**（LLM 只需感知"检索失败"；err 进日志）；`_brain_injector_failed` 实例标记生命周期（`__init__` 初始化 False + re-check 块块级互斥置位 `(_activation_mgr is None)`（L2613 子分支之外）+ 成功创建/缓存命中返回路径前置清除 + 消费端 getattr 守卫）——仅置位时追加 `[脑区上下文不可用]` 标注——冷却/防并发/异步/无图谱正常态不标注，恢复后标注消失
+  6. **门控层不伪装**（lightrag_manager）：`run_resilience_phase1` check_all 异常 → **ok=True（"无损坏"语义——不触发 launcher 修复弹窗闩锁）+ check_failed=True + error=str(e)**——检测失败 ≠ 数据损坏；`get_lightrag_status` integrity dict 四子路径统一输出 check_failed/error；`need_repair` 公式改写为 critical/major > 0（显式 .get 默认 0 防缺键 KeyError——check_failed 不参与）；region_activation `initialize_from_regions` except pass → 补 warning
+- **用户拍板**：①前端简单提示——用户原话"前端对于用户来讲，无需显示那么复杂的，用户看不懂的内容"（不显示错误详情）②**错误与修复方法写入系统管理手册 Troubleshooting 分册**（docs/manual-troubleshooting.md 新增 1.7.2 知识图谱错误分类与修复方法——"把一些可能的错误和修复方法记录到我们的系统管理手册里边"）③E3-09（sync.py skill 同步失败仅日志）显式接受——后台进程有下轮重试机制（skill_sync_state），失败仅日志是既有设计 ④门控原因通用文案（"知识图谱不可用"——不细分修复中/损坏/冷却——门控 warning 日志已含具体原因；最小改动）
+- **核销**（error-inventory.md E3 归属 11 条）：**E3-01~08/10 修**（adapter 分类/工具层收紧/get_graph+timeline/门控可见化/resilience 不伪装 ok/注入标注/_get_brain_injector 标记/activate_for_query raise/region_activation 补日志）；**E3-09 显式接受**（用户拍板）；**E3-11 无需修（已覆盖）**——启动期 import 失败响亮（RuntimeError 终止启动），运行时失败在工具层统一 except 可见
+- **质量链**：详设 v1.0→v1.13 十四轮双审（A 技术 + B 原则——R13+R14 连续两轮零 bug）+ subagent-driven 实施（T1-T6 每 Task spec+quality 双审——E2 教训：quality 审查不能省）；**关键教训：①explore_node 真空 vs error 区分**——实体不存在（真空 no_results 保持）≠ 查询失败（error dict）——D1/D3/D7 真空保持语义；**②check_failed ok=True 语义**——检测失败 ≠ 损坏——launcher 闩锁防回归（ok:False 会弹修复窗 + 跳过全部初始化 + repair_all 手术作用于可能健康的图谱）
+- **验证（Task 6 收尾）**：回归 17 文件 **395 passed 0 新增失败**；12 个 pre-existing 豁免记录：①test_lightrag_adapter.py 9 个（TestIngester* 6 个——`inject_entity` 等写方法 85034d6d 重构移除后测试未更新，2026-05 起就红；TestSearchSkills/Tools/Knowledge 3 个——`filter_by_entity_type(..., "Skill"/"Tool")` 大写实体类型与测试期望小写不符，代码 650690f1 起字节级未变）②test_lightrag_repair_unit.py 3 个真实数据用例（~/.niu 数据增长——E2 已记录豁免）；E3 契约反转测试全绿（query_data/query rag None → error dict、explore_node/get_graph_snapshot 异常 → error dict + 空壳、lightrag_query 三分支、check_failed 四路径、注入标注断言）；~/.niu/messages.db **65→65 零新增**。
+
 ### 2026-08-15
 
 #### 修复：strip_at_messages 删除回复空行（飞书卡片块不闭合——子 Agent 转述与主 Agent 话直接连接）

@@ -664,6 +664,23 @@ shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml \
 
 详细机制见 [manual-vector-store.md 第九章](manual-vector-store.md#九知识图谱损坏检测与自愈修复)。
 
+#### 1.7.2 知识图谱错误分类与修复方法（E3，2026-08-16）
+
+E3 工程后，知识图谱不再静默吞错——查询异常会以错误文本/dict 形式暴露到前端、API 与 LLM 注入段，用户可据此定位并修复。**错误形态 → 修复动作**映射表：
+
+| # | 错误形态（用户可见） | 可能原因 | 修复动作 |
+|---|---------------------|---------|---------|
+| ① | 前端图谱页显示"知识图谱不可用" | `get_lightrag` 初始化门控拒绝（修复中/损坏/冷却） | 查启动日志中门控原因（`[LightRAG] 核心数据损坏（N critical errors），拒绝初始化` / `[LightRAG] 数据不一致（N major errors），拒绝初始化` 等 warning）→ 按下方 1.7.1 修复流程处理（删 3 个 vdb 文件重启触发修复） |
+| ② | API/日志出现"一致性检测失败"（`get_lightrag_status` 返回的 `integrity.check_failed=true` + `integrity.error` 字段） | `run_resilience_phase1` / `get_lightrag_status` 即时检查时 `check_all` 抛异常——检测未完成，不等于数据损坏 | 查 `logs/api_stderr.log` 定位检测异常（如 vdb 文件不可解析）→ 重试或重启程序；若持续 → 按 1.7.1 全量重建 |
+| ③ | LLM 注入段出现标注"`[知识检索失败，本轮无参考知识注入]`"（本轮对话没有参考知识注入） | 知识图谱服务不可用（检索 raise → runner except 标注，LLM 感知"检索失败"而非假装无知识） | 检查图谱服务状态（`curl http://127.0.0.1:9876/api/kg/stats`）→ 若为门控拒绝（修复中/损坏）→ 等冷却重试或按 1.7.1 修复；恢复后标注自然消失 |
+| ④ | adapter 错误文本"知识图谱不可用（初始化门控拒绝）"（对话/工具返回中可见） | `get_lightrag` 返回 None（门控拒绝）——adapter 不再静默返回空结果，改报通用文案 | 原因在门控 warning 日志（修复中/损坏/冷却三态）→ 对应 1.7.1 流程：修复中/损坏走删 vdb 重建，冷却等待重试 |
+
+**要点**：
+
+- **"检测失败" ≠ "数据损坏"**：`check_failed=true` 只是说明本次一致性检测没跑完（如文件读取异常），不触发修复弹窗、`need_repair=false`——先重试/重启，持续失败才走 1.7.1 重建。
+- **"检索失败" ≠ "没有知识"**：注入段出现 `[知识检索失败...]` 标注说明图谱当时不可用，不是知识库为空——修复后重试即可，无需重新导入文档。
+- **门控拒绝的三种原因**（详见 1.7.1 与 `lightrag_manager.py` 三级门控）：critical（核心数据损坏）→ 必须修复；major（数据不一致）→ 走修复功能恢复；冷却（初始化失败后 60s 重试窗口）→ 等待自动重试。
+
 ### 1.8 Chat 页面消息重复（停止后关闭重开仍重复）
 
 **原因**：停止场景下 `persist_agent_reply` 兜底路径（rv=None）无条件写 full_reply，与 V4 逐条持久化（已写同轮 assistant）重复入库。
