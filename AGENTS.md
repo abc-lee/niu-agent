@@ -546,6 +546,16 @@ preload_face_model()
 - **质量链**：详设 v1.0→v1.13 十四轮双审（A 技术 + B 原则——R13+R14 连续两轮零 bug）+ subagent-driven 实施（T1-T6 每 Task spec+quality 双审——E2 教训：quality 审查不能省）；**关键教训：①explore_node 真空 vs error 区分**——实体不存在（真空 no_results 保持）≠ 查询失败（error dict）——D1/D3/D7 真空保持语义；**②check_failed ok=True 语义**——检测失败 ≠ 损坏——launcher 闩锁防回归（ok:False 会弹修复窗 + 跳过全部初始化 + repair_all 手术作用于可能健康的图谱）
 - **验证（Task 6 收尾）**：回归 17 文件 **395 passed 0 新增失败**；12 个 pre-existing 豁免记录：①test_lightrag_adapter.py 9 个（TestIngester* 6 个——`inject_entity` 等写方法 85034d6d 重构移除后测试未更新，2026-05 起就红；TestSearchSkills/Tools/Knowledge 3 个——`filter_by_entity_type(..., "Skill"/"Tool")` 大写实体类型与测试期望小写不符，代码 650690f1 起字节级未变）②test_lightrag_repair_unit.py 3 个真实数据用例（~/.niu 数据增长——2026-08-14 VDB 并发写工程已记录豁免）；E3 契约反转测试全绿（query_data/query rag None → error dict、explore_node/get_graph_snapshot 异常 → error dict + 空壳、lightrag_query 三分支、check_failed 四路径、注入标注断言）；~/.niu/messages.db **65→65 零新增**。
 
+#### 修复：知识图谱界面两问题（macOS 剪贴板快捷键 + 主图右键进子图）
+
+- **问题一（剪贴板）**：macOS 上图谱窗口 Cmd+C/Cmd+V 不生效（搜索框无法粘贴/复制）。
+  - **根因（scout 实证）**：darwin 菜单模板（main.js L1729-1751）仅「妞妞」一个顶层菜单、无 Edit 菜单，`Menu.setApplicationMenu` 替换默认菜单后渲染进程编辑快捷键全被吞；**项目既有解法 = per-window `before-input-event` 手动分发**（chat L197-214 / sticky L338-360 / settings L403-419 三处先例），唯独 graph 窗口（createGraphWindow）漏挂。Windows 保留默认菜单 + Chromium 原生支持故正常（用户未报）。
+  - **修复**：createGraphWindow 内 loadFile/show 后补挂同款处理器（F12 devtools + `input.meta` → Cmd+V/C/X/A 分发，无 preventDefault——对齐先例）。**不做全局 Edit 菜单**（第二条并行约定 + 菜单栏外观变化 + 三处现有处理器变死代码）。
+- **问题二（主图右键进子图）**：右键"以此节点为中心扩散"只在子图态生效；主图态右键是就地展开邻居（expandNode）。
+  - **修复**：主图态右键改为 `enterSubgraph(node.id, 1)` + 成功后 `updateSubgraphControls()`——与搜索框进子图（selectSearchEntity）完全同路径（depth=1、聚焦动画、showDetail、加减层级/返回控件自动可用）；**Document 节点守卫保留**（`node._originalData && node._originalData.nodeType !== 'Document'`——force-graph 节点顶层无 nodeType，只在 _originalData 上；R1 双审查员交叉抓出计划初版 `node.nodeType` 守卫恒真失效）；删除 expandNode 死代码（唯一调用点即右键）+ 主图态 tooltip 补"右键点击：以此为中心进入子图"提示（Document 不显示）。
+- **质量链**：计划 v1.0→v1.3 三轮双审查（R1 双 CONDITIONAL：P1 Document 守卫字段错 + P2 主进程改动验证需重启应用 + P3 行号；R2 A=CONDITIONAL 仅 P3（行号引用）B=APPROVE；R3 双 APPROVE——连续两轮零阻断达成）+ subagent-driven 实施（Task 1/2 并行，各 commit 独立可回退）；**关键教训：①force-graph 回调节点字段在顶层 vs _originalData 的层级差异——守卫类代码引用字段必须核对对象构造处（buildGraphData L220-228 实证）②main.js 主进程改动验证必须重启应用、renderer.js 关窗重开即可——验证前置条件按代码层区分**。
+- **验证**：两文件 `node --check` 通过 + `grep expandNode` 零残留 + 实施 diff 与计划逐字核对；**实机验证待用户执行**：Task 1 重启应用后搜索框 Cmd+V/Cmd+A/Cmd+C/Cmd+X + 详情面板文本 Cmd+C；Task 2 关窗重开图谱后主图右键实体节点 → 进子图（depth=1）→ +/− 层级 → 返回总览；右键 Document 无操作；子图内右键保持原行为。
+
 ### 2026-08-15
 
 #### 修复：strip_at_messages 删除回复空行（飞书卡片块不闭合——子 Agent 转述与主 Agent 话直接连接）
