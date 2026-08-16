@@ -353,3 +353,49 @@ async def test_degraded_reason_migration_and_old_row_null_tolerance(tmp_path):
     assert len(new) == 1, f"应只有 1 条新行，实际 {len(new)}"
     assert new[0].degraded_reason == "timeout"
     assert new[0].content == "[系统繁忙，请重试]"
+
+
+# ===== E4 T5 Quality 2 P3-2：异常对象超时分类分支（isinstance 锁定） =====
+
+
+def _timeout_error_runner():
+    """runner：chat 抛 litellm.Timeout 实例（类型名含 timeout——isinstance 分支锁定目标）"""
+    q = ChatQueue(runner=MagicMock())
+
+    def _raise(*args, **kwargs):
+        raise litellm.Timeout(message="Request timed out", model="gpt-4o", llm_provider="openai")
+    q._runner.chat = MagicMock(side_effect=_raise)
+    q._runner.last_return_value = None
+    q._runner._persisted_msgs = None
+    return q
+
+
+@pytest.mark.asyncio
+async def test_timeout_exception_instance_degraded_reason_timeout():
+    """E4 T5 P3-2：runner.chat 抛 litellm.Timeout 实例 → degraded_reason="timeout" 落库。
+
+    锁定 _classify_degraded_reason 的 isinstance 异常对象分支（类型名含 timeout）——
+    此前该分支仅有锁超时字符串路径（chat_error=="timeout"）覆盖，异常对象路径无直接测试，
+    防回归把超时实例静默记成 "internal"（transient 与 internal 不可区分）。
+    """
+    q = _timeout_error_runner()
+    await q.start()
+    fake_store = _FakeStore()
+
+    result, notify_calls = await _run_chat_queue(q, fake_store)
+
+    # 友好投递（通道 1 映射 Timeout → 模型响应超时文案）
+    assert result == "模型响应超时，请稍后重试"
+    # DB 中性占位符 + degraded_reason="timeout"（瞬态可区分——非 internal）
+    assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
+    assert assistant_msgs[0]["degraded_reason"] == "timeout"
+    # Timeout 是 litellm 异常（is_litellm_error_type("Timeout") True）→ notify 触发一次
+    assert len(notify_calls) == 1
+    etype, emsg, src = notify_calls[0]
+    assert etype == "Timeout"
+    assert emsg == "模型响应超时，请稍后重试"
+    assert src == "chat_queue"
+
+    await q.stop()

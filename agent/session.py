@@ -103,12 +103,13 @@ class MessageStore:
                 logger.info("Migrated messages table: added tool_call_id column")
 
             # Migration: add degraded_reason column if missing (E4-12——降级回复可追溯标记；
-            # 旧行 NULL——读取端 .get 默认容错；显式列清单/显式 SELECT 列——不迁移旧库即查询失败)
+            # DEFAULT '' 对齐 tool_call_id 先例——旧行读空串与 Message dataclass str 契约一致；
+            # 保留 NULL 容错——读取端 .get 默认容错；显式列清单/显式 SELECT 列——不迁移旧库即查询失败)
             cursor = await db.execute("PRAGMA table_info(messages)")
             columns = [row[1] for row in await cursor.fetchall()]
             if "degraded_reason" not in columns:
                 await db.execute(
-                    "ALTER TABLE messages ADD COLUMN degraded_reason TEXT"
+                    "ALTER TABLE messages ADD COLUMN degraded_reason TEXT DEFAULT ''"
                 )
                 await db.commit()
                 logger.info("Migrated messages table: added degraded_reason column")
