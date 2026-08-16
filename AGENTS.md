@@ -35,12 +35,12 @@ MCP 服务器集群 (mcp-servers/)
    find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;
    ```
 8. **Rust 启动器编译必须用 `launcher/build.sh`，禁止直接 `cargo build`** — `cargo build` 只输出到 `launcher/target/debug/`，不会复制到项目根目录的 `niu`，导致测试用旧二进制。`launcher/build.sh` 编译后自动 `cp target/release/niu-launcher ../niu`。每次改 Rust 代码（`launcher/src/`）后必须跑 `./launcher/build.sh`。此铁律必须传达给派出去的子 Agent。
-9. **方案/计划等私有文档（`docs/superpowers/` 整个目录）必须在本地 `plans` 分支编写与提交，禁止在 main 上提交** — 写方案前 `git checkout plans`（私有文档只在 plans 分支存在），完成后 `git checkout main`。**分支纪律（2026-08-13 修正——曾两次犯"plans 与 main merge"错误）**：
-   - **`plans` 与 `main` 永不 merge（双向禁止）**——merge 破坏分支分离意义、污染提交历史；plans 需要"看 main 最新代码"时用 `git show main:<path>` 读，**禁止 checkout main 或 merge main**
-   - plans 分支从 main 顶端分叉后，**只添加 `docs/superpowers/` 文档提交**；代码文件保持分叉点状态，永不因 plans 分支操作改变
-   - 审查 Agent：工作区在 plans 分支读计划文件（读 main 代码用 `git show main:<file>`），禁 checkout、禁 merge、禁 pytest
-   - 实施：在 main 分支执行，与 plans 分支无关；实施计划提交只进 main
-   - `plans` 分支**永远不推送**；main 的 `.gitignore` 排除 `docs/superpowers/`（plans 分支的 .gitignore 不排除该目录——两分支 .gitignore 语义不同是预期设计，不是要 merge 的理由）
+9. **方案/计划等私有文档（`docs/superpowers/` 整个目录）在独立 git 仓库管理（2026-08-16 起，替代原 plans 分支机制——分支切换会导致运行中 Niu 服务的延迟导入读到旧代码，事故实证 2026-08-16）**：
+   - `docs/superpowers/` 是**独立 git 仓库**（内层 `.git/`）——外层 main 仓库的 `.gitignore` 排除该目录（push 天然干净、pull 不删除、`git status` 零干扰）
+   - **写方案/计划直接在 `docs/superpowers/` 内提交**：`cd docs/superpowers && git add -A && git commit`——不切分支、无 plans 分支、Niu 服务运行中写文档零影响
+   - 读 main 代码用 `git show main:<path>`；审查 Agent 直接读工作区计划文件（禁 pytest、禁改代码、禁跑测试）
+   - 实施：在 main 分支执行，与文档仓库无关；实施计划提交只进 main
+   - 文档仓库**永远不推送**（本地版本比对用）
    此铁律必须传达给派出去的子 Agent。
 10. **禁止用 Python/脚本直接修改任何代码或文档** — 所有文件修改（代码、配置、计划、手册）必须用 **Edit 工具**（先读后改：old_string 不匹配会显式报错，不会静默失败）。**Python 仅限只读分析**（读文件、算数据、grep 统计），禁止 `open(p,'w').write()` 写文件。`python -c 's=open(f).read().replace(...); open(f,"w").write(s)'` 一类批量静默替换**一律禁止**——`str.replace` 的 old_string 不匹配时静默跳过不报错，是"改了但没改对"的根源（2026-08-14 脑区 assign 计划 19 轮审查教训：行号漂移连续三轮、fake 结构修错、改一处漏同步，全因静默 replace）。此铁律必须传达给派出去的子 Agent。
 
@@ -58,7 +58,7 @@ MCP 服务器集群 (mcp-servers/)
 6. 项目代码量较大，为保护上下文窗口，无需长期记忆或大代码量的遍历工作交给子 Agent。
 7. 代码质量优先，用户不在乎 token 消耗。
 8. 版本号变更必须同步两处：根目录 `VERSION` 文件（单一真相源，对外发布用）、`ui/main/windows/assistant/chat.html` 中 `version-label` span 的文本（UI 展示用）。其他文件（Cargo.toml、package.json、Python `__version__`、pyproject.toml 等）的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
-9. 私有文档（`docs/superpowers/` 整个目录）遵循铁律 9：在本地 `plans` 分支编写与提交（有 git 历史供多轮审查），`plans` 分支永不推送、**永不与 main merge（双向）**；main 通过 `.gitignore` 排除该目录，push 天然干净。
+9. 私有文档（`docs/superpowers/` 整个目录）遵循铁律 9：在**独立 git 仓库**（`docs/superpowers/` 内层 `.git`）编写与提交（有 git 历史供多轮审查），该仓库永不推送；main 通过 `.gitignore` 排除该目录，push 天然干净。
 
 ---
 
