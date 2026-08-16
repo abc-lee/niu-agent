@@ -319,8 +319,9 @@ const graph = ForceGraph()(container)
   .onNodeRightClick(async (node) => {
     if (_subgraphMode) {
       await enterSubgraph(node.id, _subgraphDepth);
-    } else {
-      expandNode(node.id);
+    } else if (node._originalData && node._originalData.nodeType !== 'Document') {
+      const success = await enterSubgraph(node.id, 1);
+      if (success) updateSubgraphControls();
     }
   })
   .onBackgroundClick(() => {
@@ -688,6 +689,8 @@ function showTooltip(node) {
   tooltip.innerHTML = `<div>${escapeHtml(name)}</div><div class="tooltip-type">${escapeHtml(typeLabel)}</div>`;
   if (_subgraphMode) {
     tooltip.innerHTML += '<div class="tooltip-type" style="margin-top:4px;opacity:0.5;">右键点击：以此为中心扩散</div>';
+  } else if (orig.nodeType !== 'Document') {
+    tooltip.innerHTML += '<div class="tooltip-type" style="margin-top:4px;opacity:0.5;">右键点击：以此为中心进入子图</div>';
   }
   tooltip.classList.remove('hidden');
   // Position near mouse — force-graph doesn't give mouse coords in hover,
@@ -857,64 +860,6 @@ focusNodeBtn.addEventListener('click', () => {
   });
   graph.zoomToFit(800, 60, n => neighborIds.has(n.id));
 });
-
-// ===== Double-click to expand neighborhood =====
-async function expandNode(nodeId) {
-  const orig = currentData.nodes.find(n => n.id === nodeId);
-  if (!orig || orig.nodeType === 'Document') return;
-
-  const entityId = orig.id;
-
-  try {
-    const result = await window.electronAPI.exploreNode(entityId, 2, 0, 'both');
-    if (isGraphError(result)) {
-      // E3 D7：后续操作失败——仅 console + 状态角标，不重复弹提示
-      markGraphUnavailable('知识图谱不可用');
-      return;
-    }
-    if (!result.nodes || result.nodes.length === 0) return;
-
-    // 展开成功 = 图谱后端可用——撤掉状态角标（后续成功操作清除角标）
-    clearGraphUnavailable();
-
-    const existingIds = new Set(currentData.nodes.map(n => n.id));
-    let addedCount = 0;
-
-    result.nodes.forEach(n => {
-      const nid = n.id;
-      if (!existingIds.has(nid)) {
-        currentData.nodes.push({
-          id: nid, label: n.label || n.name, nodeType: n.nodeType || 'Entity',
-          entityType: n.entityType, description: n.description || '',
-          uri: n.uri || '', source: n.source || '',
-        });
-        existingIds.add(nid);
-        addedCount++;
-      }
-    });
-
-    result.edges.forEach(edge => {
-      const srcId = edge.source;
-      const tgtId = edge.target;
-      if (!existingIds.has(srcId) || !existingIds.has(tgtId)) return;
-      const edgeExists = currentData.edges.some(e => e.source === srcId && e.target === tgtId && e.relation === edge.relation);
-      if (!edgeExists) {
-        currentData.edges.push({ source: srcId, target: tgtId, relation: edge.relation, confidence: edge.confidence, edgeType: 'RELATED_TO' });
-      }
-    });
-
-    if (addedCount > 0) {
-      // Rebuild from currentData (source of truth) to avoid mutating
-      // force-graph's internal state with d3-resolved node references
-      buildEdgeCountCache();
-      const freshData = buildGraphData();
-      graph.graphData(freshData);
-      updateStats();
-    }
-  } catch (err) {
-    console.error('Failed to expand node:', err);
-  }
-}
 
 // ===== Search =====
 const searchInput = document.getElementById('searchInput');
