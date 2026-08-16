@@ -238,7 +238,7 @@ class TestRunSubagentAsyncNotification:
     mock call_subagent + 捕获 queue.push，不碰真实队列 / 注册表 / PendingAskRegistry。
     """
 
-    def _run(self, subagent_result, registry_get=None):
+    def _run(self, subagent_result, registry_get=None, call_impl=None):
         import asyncio
 
         from agent.subagent import _run_subagent_async
@@ -247,7 +247,18 @@ class TestRunSubagentAsyncNotification:
         fake_queue = mock.MagicMock()
         fake_queue.push.side_effect = lambda msg: pushes.append(msg)
         unregister = mock.MagicMock()
-        with mock.patch("agent.subagent.call_subagent", return_value=subagent_result), \
+        # call_impl：mock call_subagent 的可调用实现（默认恒返 subagent_result）。
+        # E4 T3 P2：降级测试需要 call_subagent 在 worker 线程内置位 TLS 标记，故支持可调用。
+        # 默认实现先清零标记——to_thread worker 线程可复用（防跨测试 TLS 残留串扰，
+        # 与生产 call_subagent 每次调用起始清零同语义）。
+        from agent import subagent
+        subagent._set_subagent_prompt_degraded_reason(None)  # 主（测试）线程清零，防前置残留
+        if call_impl is None:
+            def _default_call(*args, **kwargs):
+                subagent._set_subagent_prompt_degraded_reason(None)
+                return subagent_result
+            call_impl = _default_call
+        with mock.patch("agent.subagent.call_subagent", side_effect=call_impl), \
              mock.patch("agent.main_agent_request_queue.get_main_agent_request_queue", return_value=fake_queue), \
              mock.patch("agent.ask_main_agent.get_pending_ask_registry", return_value=mock.MagicMock()), \
              mock.patch("agent.ask_user.get_user_ask_registry", return_value=mock.MagicMock()), \
@@ -285,6 +296,42 @@ class TestRunSubagentAsyncNotification:
         """正常 result + 注册表无实例（last_reply 取不到）→ 通知回退用原始 result。"""
         pushes, _ = self._run("处理完成 @end processed_up_to=2", registry_get=None)
         assert pushes == ["[dream-evolver-1a2b] 已完成，结果：处理完成 @end processed_up_to=2"]
+
+    def test_degraded_prompt_annotates_completion_notification(self):
+        """E4 T3 P2：异步完成通知——worker 线程置位降级标记 → completion_msg 追加降级标注。
+
+        完整链：call_subagent（mock 内同线程置位 TLS 标记）→ completion_msg 构造在同一
+        worker 线程 annotate（threading.local 可读）→ 队列消息含降级标注。
+        P1 防护：标记是 thread-local——worker 线程置位，主（测试）线程读不到（无串扰）。
+        """
+        from agent import subagent
+
+        def _degraded_call_subagent(*args, **kwargs):
+            subagent._set_subagent_prompt_degraded_reason("系统提示词构建失败：boom")
+            return "处理完成 @end processed_up_to=2"
+
+        pushes, _ = self._run("unused", call_impl=_degraded_call_subagent)
+        assert len(pushes) == 1
+        assert pushes[0] == (
+            "[dream-evolver-1a2b] 已完成，结果：处理完成 @end processed_up_to=2\n"
+            "[子 Agent 提示词降级: 系统提示词构建失败：boom]"
+        )
+        # P1：标记是 thread-local——worker 线程置位，主（测试）线程不可见（防并发串扰）
+        assert subagent._get_subagent_prompt_degraded_reason() is None
+
+    def test_degraded_prompt_annotates_incomplete_completion(self):
+        """E4 T3 P2：incomplete JSON 结果的完成通知同样追加降级标注（消息文本非 JSON 消费——追加安全）。"""
+        from agent import subagent
+
+        def _degraded_call_subagent(*args, **kwargs):
+            subagent._set_subagent_prompt_degraded_reason("系统提示词构建失败：boom")
+            return INCOMPLETE_JSON
+
+        pushes, _ = self._run("unused", call_impl=_degraded_call_subagent)
+        assert len(pushes) == 1
+        msg = pushes[0]
+        assert msg.startswith("[dream-evolver-1a2b] 未完成（TERMINATED_BY_SUPPLEMENT）")
+        assert msg.endswith("[子 Agent 提示词降级: 系统提示词构建失败：boom]")
 
     # ------------------------------------------------------------------
     # E4-05：异常 / 取消路径——4 处推送点统一 logger.error（含异常），推送失败语义保持
