@@ -47,9 +47,11 @@ class TestToolSchemas:
     """Test TOOL_SCHEMAS structure and completeness."""
 
     def test_schemas_count(self):
-        """Should have exactly 16 tool schemas."""
+        """Should have exactly 23 tool schemas."""
+        # E3 契约 #8 核正：TOOL_SCHEMAS 实为 23 键（lightrag_insert_entity L415 是 8 空格
+        # 缩进顶层键、有完整 schema——陈旧断言 16 核正）
         mod = _import_module()
-        assert len(mod.TOOL_SCHEMAS) == 16
+        assert len(mod.TOOL_SCHEMAS) == 23
 
     def test_all_tools_have_required_fields(self):
         """Each schema must have name, description, input_schema."""
@@ -88,11 +90,12 @@ class TestToolSchemas:
         assert "chunks" in props
 
     def test_get_tool_schemas_returns_list(self):
-        """get_tool_schemas() must return a list of 16 schemas."""
+        """get_tool_schemas() must return a list of 23 schemas."""
+        # E3 契约 #8b 核正：同 #8——陈旧断言 16 核正为 23
         mod = _import_module()
         schemas = mod.get_tool_schemas()
         assert isinstance(schemas, list)
-        assert len(schemas) == 16
+        assert len(schemas) == 23
 
 
 # ============== Tool Functions ==============
@@ -114,6 +117,7 @@ class TestLightragQuery:
             query="test query", mode="mix",
             only_need_context=True, top_k=5,
             response_type="{}".format("Multiple Paragraphs"),
+            keywords=None,
         )
         assert result == "test result"
 
@@ -134,7 +138,43 @@ class TestLightragQuery:
             query="test", mode="local",
             only_need_context=False, top_k=10,
             response_type="Bullet Points",
+            keywords=None,
         )
+
+    def test_fail_response_empty_string_becomes_no_results(self):
+        """E3 契约：错误不再伪装为无结果——fail_response ""（真空）不再裸空串直达 LLM，转 no_results。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query.return_value = ""
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_query(query="nonexistent")
+
+        assert result["status"] == "no_results"
+
+    def test_error_text_becomes_error_dict(self):
+        """E3 契约：错误不再伪装为无结果——"[图谱查询失败: ...]" 错误文本转 error dict（message 含原文）。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query.return_value = "[图谱查询失败: vector store unavailable]"
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_query(query="test")
+
+        assert result["status"] == "error"
+        assert "[图谱查询失败: vector store unavailable]" in result["message"]
+
+    def test_graph_unavailable_text_becomes_error_dict(self):
+        """E3 契约（B5 P3-2 第三分支）：rag None 通用文案转 error dict——不裸文本直达 LLM。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query.return_value = "知识图谱不可用（初始化门控拒绝）"
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_query(query="test")
+
+        assert result["status"] == "error"
+        assert "知识图谱不可用" in result["message"]
 
 
 class TestLightragQueryData:
@@ -152,6 +192,19 @@ class TestLightragQueryData:
         mock_adapter.query_data.assert_called_once_with(
             query="test", mode="local", top_k=10, keywords=None, fields=None,
         )
+
+    def test_error_dict_passthrough(self):
+        """E3 契约：错误不再伪装为无结果——adapter error dict 透传（LLM 可见 message）。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query_data.return_value = {"status": "error", "message": "知识图谱不可用（初始化门控拒绝）"}
+        mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = MagicMock(return_value=False)
+
+        result = mod.lightrag_query_data(query="test", mode="local", top_k=10)
+
+        assert result["status"] == "error"
+        assert "知识图谱不可用" in result["message"]
 
 
 class TestLightragSearchEntities:
@@ -200,6 +253,19 @@ class TestLightragSearchEntities:
         result = mod.lightrag_search_entities(query="nonexistent")
 
         assert result["status"] == "no_results"
+
+    def test_error_dict_passthrough(self):
+        """E3 契约：错误不再伪装为无结果——error dict 透传（现状 data 缺失 → 空 ok 丢失错误）。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query_data.return_value = {"status": "error", "message": "图谱查询失败: boom"}
+        mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = MagicMock(return_value=False)
+
+        result = mod.lightrag_search_entities(query="test")
+
+        assert result["status"] == "error"
+        assert "图谱查询失败: boom" in result["message"]
 
 
 class TestLightragGetGraph:
@@ -250,6 +316,41 @@ class TestLightragGetGraph:
         assert "Invalid action" in result["message"]
 
 
+class TestLightragTimelineQuery:
+    """Test lightrag_timeline_query tool function."""
+
+    def test_delegates_to_adapter(self):
+        """lightrag_timeline_query should delegate to adapter.timeline_query()."""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.timeline_query.return_value = [{"event": "a"}]
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_timeline_query(
+            query="test", start_entities=["x"], direction="backward",
+            max_depth=2, top_k=5, max_results=10,
+        )
+
+        mock_adapter.timeline_query.assert_called_once_with(
+            query="test", start_entities=["x"], direction="backward",
+            max_depth=2, top_k=5, max_results=10,
+        )
+        assert result == {"status": "ok", "timeline": [{"event": "a"}]}
+
+    def test_adapter_raise_becomes_error_dict(self):
+        """E3 契约：错误不再伪装为无结果——adapter raise（T1 传导链）→ MCP error dict（LLM 可见）。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.timeline_query.side_effect = RuntimeError("图谱查询失败: boom")
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_timeline_query(query="test")
+
+        assert result["status"] == "error"
+        assert result["timeline"] == []
+        assert "图谱查询失败: boom" in result["message"]
+
+
 class TestLightragInsert:
     """Test lightrag_insert tool function."""
 
@@ -287,17 +388,18 @@ class TestLightragInsertCustomKg:
         )
 
     def test_empty_params_default(self):
-        """Should default to empty lists when no params provided."""
+        """Should early-return ok (no data provided) without calling ingester."""
         mod = _import_module()
         mock_ingester = MagicMock()
         mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
         mod._ingester = mock_ingester
 
-        mod.lightrag_insert_custom_kg()
+        result = mod.lightrag_insert_custom_kg()
 
-        mock_ingester.inject_custom_kg.assert_called_once_with(
-            entities=[], relationships=[], chunks=[], source_id="custom_kg",
-        )
+        # 现状（既有设计）：无任何实体/关系数据 → 提前返回，不发起空注入
+        assert result["status"] == "ok"
+        assert "未提供任何实体或关系数据" in result["message"]
+        mock_ingester.inject_custom_kg.assert_not_called()
 
 
 class TestLightragInsertEntity:
@@ -460,6 +562,7 @@ class TestLightragMergeEntities:
 
         mock_adapter.merge_entities.assert_called_once_with(
             source_entities=["小李", "李某某"], target_entity="李磊",
+            merge_strategy=None, target_entity_data=None,
         )
         assert result["status"] == "ok"
         assert result["target_entity"] == "李磊"
@@ -519,6 +622,7 @@ class TestCallTool:
             query="test", mode="mix",
             only_need_context=True, top_k=5,
             response_type="{}".format("Multiple Paragraphs"),
+            keywords=None,
         )
 
     def test_all_tools_dispatchable(self):
