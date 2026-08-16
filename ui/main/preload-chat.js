@@ -102,6 +102,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收系统提示通知（E4-02 强制退出等——SSE 推送，⚠️ system 提示，刷新消失——不落库）
   onSystemNotice: (callback) => ipcRenderer.on('system-notice', (_event, data) => callback(data)),
 
+  // 接收 MCP 服务器加载失败状态槽（SSE 连接建立时拉取，每连接一次——简单提示，不落库；
+  // 服务端保留至下次加载周期，窗口后开时靠 getChatStatus 轮询补拉）
+  onMcpLoadFailures: (callback) => ipcRenderer.on('mcp-load-failures', (_event, data) => callback(data)),
+
   // 接收入库开始通知（SSE推送）
   onIngestStarted: (callback) => ipcRenderer.on('ingest-started', callback),
 

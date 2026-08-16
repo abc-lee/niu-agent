@@ -622,3 +622,157 @@ def test_frontend_system_notice_four_hop_chain():
         "chat.html 渲染层不得再拼接 '⚠️ ' 前缀（生产者已自带，防双重 ⚠️）"
     assert "event.message || '⚠️ 系统提示'" in chat_html, \
         "chat.html 应透传 event.message，兜底文案自带 ⚠️"
+
+
+# ---------------------------------------------------------------------------
+# E4-08/E4-16：MCP 加载失败状态槽——拉取模式（每连接一次、服务端不清除）
+# ---------------------------------------------------------------------------
+
+# 测试用失败样本（与 mcp_loader 记录格式一致：{server, reason}）
+_MCP_FAILURE_SAMPLE = [
+    {"server": "ext-tool", "reason": "连接失败: Connection refused"},
+    {"server": "ha-server", "reason": "模块不可用: No module named 'niu_ha_server'"},
+]
+
+
+def _inject_mcp_load_failures(failures):
+    """注入失败状态槽（替换模块级列表），返回原值供恢复"""
+    from agent import mcp_loader as mcp_loader_mod
+    original = mcp_loader_mod._mcp_load_failures
+    mcp_loader_mod._mcp_load_failures = list(failures)
+    return original
+
+
+def test_connection_initial_events_pushed_once_per_connection():
+    """E4-08：状态槽多连接/断线重连——每连接拉取一次 mcp_load_failures，服务端不清除。
+
+    场景：连接 A（首次连接）收到一次 → 断开 → 连接 B（断线重连/第二窗口）再收到一次；
+    两次连接消费后状态槽内容不变（R4 P1：不显示后清除——清除则重连拉取恒空 = 静默丢失）。
+    """
+    from agent.mcp_loader import get_mcp_load_failures
+    from niu_api import chat as chat_mod
+
+    original = _inject_mcp_load_failures(_MCP_FAILURE_SAMPLE)
+    created = []
+    try:
+        # 连接 A：订阅注册 + 拉取状态槽（与 frontend_ready 机制同点接合）
+        q1 = chat_mod._register_connection()
+        created.append(q1)
+        assert q1.qsize() == 1, \
+            f"连接 A 应恰好收到 1 次 mcp_load_failures，实际: {q1.qsize()}"
+        ev1 = q1.get_nowait()
+        assert ev1 == {"type": "mcp_load_failures", "failures": _MCP_FAILURE_SAMPLE}
+
+        # 连接 B（断线重连场景）：同样收到一次——服务端未清除
+        q2 = chat_mod._register_connection()
+        created.append(q2)
+        assert q2.qsize() == 1, \
+            f"连接 B 应恰好收到 1 次 mcp_load_failures，实际: {q2.qsize()}"
+        ev2 = q2.get_nowait()
+        assert ev2 == {"type": "mcp_load_failures", "failures": _MCP_FAILURE_SAMPLE}
+
+        # 服务端保留状态槽至下次加载周期——两次连接消费后内容不变
+        assert get_mcp_load_failures() == _MCP_FAILURE_SAMPLE, \
+            "状态槽在连接消费后不得清除（服务端保留至下次加载周期）"
+    finally:
+        for q in created:
+            try:
+                chat_mod._event_subscribers.remove(q)
+            except ValueError:
+                pass
+        from agent import mcp_loader as mcp_loader_mod
+        mcp_loader_mod._mcp_load_failures = original
+
+
+def test_connection_initial_events_empty_slot_no_push():
+    """状态槽为空（无 MCP 加载失败）→ 连接建立不推送 mcp_load_failures 事件。"""
+    from agent.mcp_loader import reset_mcp_load_failures
+    from niu_api import chat as chat_mod
+
+    original = _inject_mcp_load_failures([])
+    created = []
+    try:
+        q = chat_mod._register_connection()
+        created.append(q)
+        assert q.qsize() == 0, \
+            f"空状态槽不应推送 mcp_load_failures，实际: {q.qsize()}"
+    finally:
+        for q in created:
+            try:
+                chat_mod._event_subscribers.remove(q)
+            except ValueError:
+                pass
+        from agent import mcp_loader as mcp_loader_mod
+        mcp_loader_mod._mcp_load_failures = original
+
+
+def test_chat_status_returns_mcp_load_failures():
+    """E4-08：既有轮询路径 /api/chat/status 返回 mcp_load_failures 字段（窗口恢复拉取）。"""
+    from fastapi import FastAPI
+
+    from niu_api.chat import router as chat_router
+
+    original = _inject_mcp_load_failures(_MCP_FAILURE_SAMPLE)
+    try:
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+
+        resp = client.get("/api/chat/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "busy" in body, f"应保留既有 busy 字段，实际: {body}"
+        assert body["mcp_load_failures"] == _MCP_FAILURE_SAMPLE, \
+            f"轮询路径应返回状态槽内容，实际: {body['mcp_load_failures']}"
+
+        # 空槽 → 空列表（字段始终存在，前端可统一处理）
+        from agent import mcp_loader as mcp_loader_mod
+        mcp_loader_mod._mcp_load_failures = []
+        body2 = client.get("/api/chat/status").json()
+        assert body2["mcp_load_failures"] == []
+    finally:
+        from agent import mcp_loader as mcp_loader_mod
+        mcp_loader_mod._mcp_load_failures = original
+
+
+def test_frontend_mcp_load_failures_four_hop_chain():
+    """E4-08 四跳链前端消费点：main.js SSE 分支 → preload IPC 桥 → chat.html 简单提示。
+
+    拉取模式：SSE 连接建立后服务端随连接响应返回 mcp_load_failures（每连接一次），
+    main.js 分支转发 → preload onMcpLoadFailures → chat.html 渲染 ⚠️ 简单提示
+    （E3 "首屏一次"节流模式同族——窗口会话内只显示一次，不落库）。
+    """
+    project_root = pathlib.Path(__file__).resolve().parent.parent
+
+    main_js = (project_root / "ui" / "main" / "main.js").read_text(encoding="utf-8")
+    preload = (project_root / "ui" / "main" / "preload-chat.js").read_text(encoding="utf-8")
+    chat_html = (project_root / "ui" / "main" / "windows" / "assistant" / "chat.html").read_text(encoding="utf-8")
+
+    # 第 2 跳：main.js 处理 mcp_load_failures SSE 事件 → 转发到 chat 窗口
+    assert "event.type === 'mcp_load_failures'" in main_js, \
+        "main.js 应有 mcp_load_failures SSE 分支"
+    assert "webContents.send('mcp-load-failures', event)" in main_js, \
+        "main.js 应转发 mcp-load-failures 到 chat 窗口"
+
+    # 第 3 跳：preload-chat.js 暴露 onMcpLoadFailures 桥接 mcp-load-failures 频道
+    assert "onMcpLoadFailures:" in preload, "preload-chat.js 应暴露 onMcpLoadFailures"
+    assert "ipcRenderer.on('mcp-load-failures'" in preload, \
+        "preload-chat.js 应监听 mcp-load-failures IPC 频道"
+
+    # 频道名逐字一致性（防一端改名另一端漏改——从分支与 on 块内各自提取字面量比较）
+    _mcp_block = main_js[main_js.index("event.type === 'mcp_load_failures'"):]
+    m_send = re.search(r"webContents\.send\('([^']+)',\s*event\)", _mcp_block)
+    _on_block = preload[preload.index("onMcpLoadFailures:"):]
+    m_on = re.search(r"ipcRenderer\.on\('([^']+)'", _on_block)
+    assert m_send is not None and m_on is not None, \
+        "应能从 main.js mcp_load_failures 分支与 preload onMcpLoadFailures 块提取频道名字面量"
+    assert m_send.group(1) == m_on.group(1), \
+        f"main.js send 频道名 {m_send.group(1)!r} 与 preload on 频道名 {m_on.group(1)!r} 必须一致"
+
+    # 第 4 跳：chat.html 注册 onMcpLoadFailures → addMessage('system', '⚠️ MCP 服务器加载失败：…')
+    assert "onMcpLoadFailures(" in chat_html, "chat.html 应注册 onMcpLoadFailures 监听器"
+    assert "addMessage('system', '⚠️ MCP 服务器加载失败：" in chat_html, \
+        "chat.html 应渲染 ⚠️ MCP 服务器加载失败简单提示（含服务器与原因）"
+    # 首屏一次节流：窗口会话内只显示一次（SSE 路径与轮询路径双源去重）
+    assert "_mcpLoadFailuresShown" in chat_html, \
+        "chat.html 应有窗口会话级显示去重标记（E3 首屏一次节流模式同族）"
