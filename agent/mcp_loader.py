@@ -62,6 +62,19 @@ def get_mcp_load_failures() -> list[dict]:
     return list(_mcp_load_failures)
 
 
+def _fold_and_cap_reason(reason: str, limit: int = 200) -> str:
+    """统一 reason 记录格式：换行折叠（\n → 空格）+ 保尾截断（对齐 E4 T2 verify_fail_reason 先例）。
+
+    在记录端而非渲染端处理——状态槽内 reason 恒为单行且长度有界，
+    渲染端直接展示无需再处理（保持状态槽原始语义）。防异常文本
+    （如超长数据库错误消息/多行 traceback 文本）膨胀状态槽或破坏前端单行布局。
+    """
+    folded = reason.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    if len(folded) > limit:
+        return "..." + folded[-(limit - 3):]
+    return folded
+
+
 # ============================================================================
 # Config Loader
 # ============================================================================
@@ -199,10 +212,10 @@ def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> Too
 
         except ImportError as e:
             logger.debug(f"Optional server {server_name} not available: {e}")
-            record_mcp_load_failure(server_name, f"模块不可用: {e}")
+            record_mcp_load_failure(server_name, _fold_and_cap_reason(f"模块不可用: {e}"))
         except Exception as e:
             logger.warning(f"Optional server {server_name} error: {e}")
-            record_mcp_load_failure(server_name, f"加载异常: {e}")
+            record_mcp_load_failure(server_name, _fold_and_cap_reason(f"加载异常: {e}"))
 
     # Set global registry instance
     set_registry(registry)
@@ -297,4 +310,4 @@ async def load_external_servers(mcp_client, registry=None):
 
         except Exception as e:
             logger.error(f"Failed to load external MCP server {server_name}: {e}")
-            record_mcp_load_failure(server_name, f"连接失败: {e}")
+            record_mcp_load_failure(server_name, _fold_and_cap_reason(f"连接失败: {e}"))
