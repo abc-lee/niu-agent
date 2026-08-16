@@ -527,3 +527,187 @@ def test_build_subagent_system_segments_warns_when_get_brain_regions_empty(monke
     )
     # fallback 行为：_brain_region_section 保持空——不注入动态脑区列表
     assert "当前脑区列表" not in dynamic_system
+
+
+# ============== E4-14：提示词降级标注（call_subagent 三级降级） ==============
+# 降级：build_subagent_system_segments 失败 → get_subagent_prompt → 裸 prompt。
+# 标注 [子 Agent 提示词降级: <原因>]：非 JSON 结果 call_subagent 内拼接；
+# JSON 结构化结果保持原样（游标/JSON 消费不受影响），降级事实经模块级标记旁路
+# 在展示层（handler._call_subagent_gen display_result）补注。
+import pytest  # noqa: E402（autouse fixture 用）
+
+
+@pytest.fixture(autouse=True)
+def _reset_prompt_degradation_marker():
+    """E4-14：每个测试后清零模块级降级标记（防跨测试污染）。"""
+    from agent import subagent
+
+    yield
+    subagent._subagent_prompt_degraded_reason = None
+
+
+def _call_subagent_hermetic(monkeypatch, run_result=("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")):
+    """hermetic call_subagent 依赖集（范式照抄 test_subagent_current_time）。"""
+    from unittest.mock import Mock
+
+    import agent.runner as runner_mod
+    from agent import subagent
+
+    captured = {}
+
+    def mock_run(client, system_prompt, user_input, handler, tools_schema, **kwargs):
+        captured["user_input"] = user_input
+        captured["tools_schema"] = tools_schema
+        return run_result
+
+    monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+    monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+    monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
+    monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
+    return captured
+
+
+def test_prompt_degradation_annotates_non_json_result(monkeypatch):
+    """E4-14：系统提示词降级 + 非 JSON 结果 → 结果附加 [子 Agent 提示词降级: 原因]。"""
+    from agent import subagent
+
+    def _boom(name):
+        raise RuntimeError("system segments boom")
+
+    monkeypatch.setattr(subagent, "build_subagent_system_segments", _boom)
+    _call_subagent_hermetic(monkeypatch)
+
+    result = subagent.call_subagent(
+        agent_name="test-agent",
+        task="处理文件",
+        llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+    )
+    assert result == "done\n[子 Agent 提示词降级: 系统提示词构建失败：system segments boom]"
+    # 模块级标记置位（供展示层消费）
+    assert subagent._subagent_prompt_degraded_reason == "系统提示词构建失败：system segments boom"
+
+
+def test_prompt_degradation_json_result_stays_clean(monkeypatch):
+    """E4-14：降级 + JSON 结构化结果 → call_subagent 返回原样 JSON（不拼接标注——JSON 消费/游标不受影响）。"""
+    from agent import subagent
+
+    def _boom(name):
+        raise RuntimeError("system segments boom")
+
+    monkeypatch.setattr(subagent, "build_subagent_system_segments", _boom)
+    _call_subagent_hermetic(
+        monkeypatch,
+        run_result=('{"ok": true}', {"result": "CURRENT_TASK_DONE", "data": "ok"}, ""),
+    )
+
+    result = subagent.call_subagent(
+        agent_name="test-agent",
+        task="处理文件",
+        llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+    )
+    assert result == '{"ok": true}'
+    assert "子 Agent 提示词降级" not in result
+    # 降级事实仍经模块级标记旁路（展示层补注）
+    assert subagent._subagent_prompt_degraded_reason is not None
+
+
+def test_prompt_degradation_marker_resets_on_next_call(monkeypatch):
+    """E4-14：下一次调用起始清零标记——正常路径零变化（不残留上次降级标注）。"""
+    from agent import subagent
+
+    def _boom(name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(subagent, "build_subagent_system_segments", _boom)
+    _call_subagent_hermetic(monkeypatch)
+    subagent.call_subagent(
+        agent_name="test-agent", task="t1",
+        llm_config={"apikey": "k", "apibase": "http://x", "model": "m"},
+    )
+    assert subagent._subagent_prompt_degraded_reason is not None  # 第一次调用降级置位
+
+    # 第二次调用：正常构建 → 标记清零 + 结果无标注
+    monkeypatch.setattr(subagent, "build_subagent_system_segments", lambda name: ("static", "dynamic"))
+    _call_subagent_hermetic(monkeypatch)
+    result = subagent.call_subagent(
+        agent_name="test-agent", task="t2",
+        llm_config={"apikey": "k", "apibase": "http://x", "model": "m"},
+    )
+    assert result == "done"
+    assert subagent._subagent_prompt_degraded_reason is None
+
+
+def _drive_call_subagent_gen(agent_name, subagent_result):
+    """hermetic 驱动 handler._call_subagent_gen 同步路径（范式照抄 test_incomplete_cursor.py）。"""
+    from unittest import mock
+
+    from agent.handler import NiuHandler
+
+    handler = NiuHandler(mcp_client=None)
+    fake_runner = mock.MagicMock()
+    fake_runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
+    with mock.patch("agent.runner.get_runner", return_value=fake_runner), \
+         mock.patch("agent.subagent.call_subagent", return_value=subagent_result), \
+         mock.patch("agent.subagent_registry.SubagentRegistry.get", return_value=None), \
+         mock.patch("niu_api.internal.subagent_event_bus.pre_register"), \
+         mock.patch("niu_api.internal.subagent_event_bus.has_subagent", return_value=False), \
+         mock.patch("niu_api.chat._main_loop", None):
+        gen = handler._call_subagent_gen(agent_name, {"task": "精加工实体"})
+        try:
+            while True:
+                next(gen)
+        except StopIteration as si:
+            return si.value
+    raise AssertionError("generator 未返回 StepOutcome")
+
+
+def test_prompt_degradation_display_layer_annotates_json_result():
+    """E4-14：降级标记置位 + JSON 结果 → 展示层 display_result 附标注（返回 LLM 的展示副本）。"""
+    from agent import subagent
+
+    subagent._subagent_prompt_degraded_reason = "系统提示词构建失败：boom"
+    outcome = _drive_call_subagent_gen("test-agent", '{"ok": true}')
+    assert outcome.data["status"] == "success"
+    assert outcome.data["result"] == '{"ok": true}\n[子 Agent 提示词降级: 系统提示词构建失败：boom]'
+
+
+def test_prompt_degradation_display_layer_unchanged_without_marker():
+    """E4-14：无降级标记 → 展示层 JSON 原样透传（正常路径零变化）。"""
+    from agent import subagent
+
+    assert subagent._subagent_prompt_degraded_reason is None  # 前提：默认无标记
+    outcome = _drive_call_subagent_gen("test-agent", '{"ok": true}')
+    assert outcome.data["result"] == '{"ok": true}'
+
+
+class _FakeGenMsg:
+    """journal 游标测试用最小消息（同 test_incomplete_cursor.py _Msg）。"""
+
+    def __init__(self, mid):
+        self.id = mid
+
+
+def test_prompt_degradation_json_result_cursor_unaffected(monkeypatch):
+    """E4-14：降级返回的干净 JSON（无标注）→ journal 游标照常推进（JSON 消费端不受影响）。
+
+    链：call_subagent 降级时 JSON 结果不拼接标注（test_prompt_degradation_json_result_stays_clean）→
+    原始 result 保持可解析 → _update_journal_cursor 正常写游标。
+    """
+    import json as _json
+    from unittest import mock
+
+    from agent.handler import NiuHandler
+
+    handler = NiuHandler(mcp_client=None)
+    handler._sync_get_messages = lambda: [_FakeGenMsg("m1"), _FakeGenMsg("m2")]
+    write_text = mock.MagicMock()
+    with mock.patch("agent.handler.Path.exists", return_value=False), \
+         mock.patch("agent.handler.Path.write_text", write_text):
+        handler._update_journal_cursor(
+            '{"processed_up_to": 2}', ["m1", "m2"], {"1": "m1", "2": "m2"},
+        )
+    assert write_text.call_count == 1
+    payload = _json.loads(write_text.call_args.args[0])
+    assert payload.get("last_journal_id") == "m2"

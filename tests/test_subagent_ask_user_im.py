@@ -123,3 +123,30 @@ def test_ask_user_impl_im_push_not_connected_skips(monkeypatch):
 
     assert answer == "42"
     assert gw.calls == []
+
+
+def test_ask_user_impl_im_push_exception_logs_error(monkeypatch):
+    """E4-04：send_sync 异常被吞掉（不中断子 Agent——AskUserFuture 超时兜底），
+    但记录 logger.error（含异常文本）——不再静默 pass。
+
+    吞异常语义保持 + 日志断言：error 日志含异常文本，回答照常返回。
+    """
+    from loguru import logger
+
+    from agent.subagent import _ask_user_impl
+
+    runner = _FakeRunner("ch1")
+    gw = _FakeGateway(raise_on_send=True)
+    _patch_ask_user_env(monkeypatch, runner, gw, _FakeSubagent())
+
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+    try:
+        answer = _ask_user_impl("问题?", "sub-3")
+    finally:
+        logger.remove(sink_id)
+
+    assert answer == "42"  # 吞异常语义保持——问题照常等待回答
+    assert any("send_sync boom" in m for m in messages), (
+        f"应记录 error 含异常文本，实际: {messages}"
+    )
