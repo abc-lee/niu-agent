@@ -118,6 +118,15 @@ class TestSearchMultiLightrag:
 
         assert result == {"skill": [], "knowledge": [], "other": []}
 
+    def test_raises_runtime_error_on_error_dict(self):
+        """E3 契约：error dict 必须 raise 传导（防重新静默丢失）——search_multi_lightrag 抛 RuntimeError 含原文"""
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+        with patch.object(adapter, "query_data", return_value={"status": "error", "message": "boom"}):
+            with pytest.raises(RuntimeError, match="boom"):
+                adapter.search_multi_lightrag("test")
+
     def test_returns_empty_on_empty_entities(self):
         """Returns empty buckets when no entities found."""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
