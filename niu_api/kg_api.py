@@ -513,8 +513,15 @@ def _graph_error_response(message: str) -> JSONResponse:
     body 形状 {"status": "error", "message": ...} 与既有 error dict 一致，前端
     renderer 检查 body status 即可识别（ui/main/main.js apiRequest 不检查 HTTP
     状态码——任何状态都 JSON.parse 后 resolve，错误响应原样透传到 renderer）。
+
+    分类采用**精确匹配**（不等宽子串）——不可用文案只有两个字面量：
+    "LightRAG not available"（result is None 防御分支）与 E3 通用文案
+    "知识图谱不可用（初始化门控拒绝）"（adapter 门控拒绝 _GRAPH_UNAVAILABLE_MSG）。
+    其他错误文本即使含 "not available" 子串也归 500——防真实错误误分类 503。
     """
-    status_code = 503 if ("not available" in message or "初始化门控拒绝" in message) else 500
+    status_code = 503 if (
+        message == "LightRAG not available" or message == "知识图谱不可用（初始化门控拒绝）"
+    ) else 500
     return JSONResponse(status_code=status_code, content={"status": "error", "message": message})
 
 

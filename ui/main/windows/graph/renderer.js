@@ -558,20 +558,28 @@ async function pollChangelog() {
     if (refreshEvent) {
       try {
         const snapshot = await window.electronAPI.getGraphSnapshot(2000, 0);
-        const newNodes = snapshot.nodes || [];
-        const newEdges = snapshot.edges || [];
-        // Only replace currentData if snapshot has data.
-        // During pipeline processing, LightRAG's NetworkX graph may be
-        // temporarily empty (entities being merged), causing snapshot to
-        // return {nodes: [], edges: []}. Replacing currentData with empty
-        // data would make the entire graph vanish — the "sudden blank" bug.
-        if (newNodes.length > 0) {
-          currentData = { nodes: newNodes, edges: newEdges };
-          changed = true;
-          // 图谱恢复可用——撤掉首屏不可用遮罩与状态角标
-          clearGraphUnavailable();
+        if (isGraphError(snapshot)) {
+          // 快照仍不可用——保留不可用遮罩/角标；syncSince 照常推进避免无限重试
         } else {
-          // Snapshot returned empty — don't replace, wait for backend to emit another refresh
+          // 快照 fetch 成功 = 图谱后端已恢复可用——撤掉不可用遮罩与角标。
+          // 空数据也清除（空库恢复：后端可用但暂无实体——展示空态而非不可用态）。
+          clearGraphUnavailable();
+          const newNodes = snapshot.nodes || [];
+          const newEdges = snapshot.edges || [];
+          // Only replace currentData if snapshot has data.
+          // During pipeline processing, LightRAG's NetworkX graph may be
+          // temporarily empty (entities being merged), causing snapshot to
+          // return {nodes: [], edges: []}. Replacing currentData with empty
+          // data would make the entire graph vanish — the "sudden blank" bug.
+          if (newNodes.length > 0) {
+            currentData = { nodes: newNodes, edges: newEdges };
+            changed = true;
+            hideEmpty();
+          } else {
+            // Snapshot returned empty — don't replace, show empty state and
+            // wait for backend to emit another refresh when data is available.
+            showEmpty();
+          }
         }
       } catch (e) {
         // Snapshot fetch failed — syncSince still advances to avoid infinite retry
@@ -587,6 +595,11 @@ async function pollChangelog() {
     }
 
     if (changed) {
+      // 增量合并成功（entity_created/edge_created 等）或快照替换成功——
+      // 图谱已恢复可用：撤掉不可用遮罩/角标，隐藏空态（数据已存在）。
+      // 覆盖正常恢复路径：增量事件不产生 snapshot_refresh，只有这里能清除。
+      clearGraphUnavailable();
+      hideEmpty();
       // Rebuild graph data from currentData (source of truth) instead of
       // mutating force-graph's internal state. Mutating the internal fgData
       // object (which has d3-resolved node references in link.source/target)
@@ -861,6 +874,9 @@ async function expandNode(nodeId) {
     }
     if (!result.nodes || result.nodes.length === 0) return;
 
+    // 展开成功 = 图谱后端可用——撤掉状态角标（后续成功操作清除角标）
+    clearGraphUnavailable();
+
     const existingIds = new Set(currentData.nodes.map(n => n.id));
     let addedCount = 0;
 
@@ -964,6 +980,9 @@ searchInput.addEventListener('keydown', async (e) => {
       return;
     }
 
+    // 搜索结果展示成功 = 图谱后端可用——撤掉状态角标（后续成功操作清除角标）
+    clearGraphUnavailable();
+
     searchDropdown.innerHTML = '';
     entities.forEach(ent => {
       const item = document.createElement('div');
@@ -1048,6 +1067,8 @@ async function enterSubgraph(entityId, depth) {
 
     currentSelectedNode = entityId;
     showDetail(entityId);
+    // 子图进入成功 = 图谱后端可用——撤掉状态角标（后续成功操作清除角标）
+    clearGraphUnavailable();
     return true;
   } catch (err) {
     console.error('Failed to enter subgraph:', err);

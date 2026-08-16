@@ -173,3 +173,99 @@ def test_search_entities_empty_query_stays_200(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == {"entities": []}
+
+
+# ---------------------------------------------------------------------------
+# 防御分支：result is None（adapter 不可用）→ graph_snapshot/explore_node 503，
+# search_entities 200 空列表（T3 审查补全）
+# ---------------------------------------------------------------------------
+
+
+def test_graph_snapshot_none_to_503(monkeypatch):
+    """graph_snapshot: adapter 返回 None → 503 + "LightRAG not available" 字面量。"""
+    _patch_adapter(monkeypatch, _FakeAdapter(snapshot=None))
+
+    resp = _make_client().get("/api/kg/snapshot")
+
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "error", "message": "LightRAG not available"}
+
+
+def test_explore_node_none_to_503(monkeypatch):
+    """explore_node: adapter 返回 None → 503 + "LightRAG not available" 字面量。"""
+    _patch_adapter(monkeypatch, _FakeAdapter(explore=None))
+
+    resp = _make_client().post("/api/kg/explore", json={"entity_id": "x", "depth": 2})
+
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "error", "message": "LightRAG not available"}
+
+
+def test_search_entities_none_stays_200(monkeypatch):
+    """search_entities: adapter 返回 None → 200 + 空列表（与 no_results 同语义）。"""
+    _patch_adapter(monkeypatch, _FakeAdapter(query_data=None))
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "python", "top_k": 20})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"entities": []}
+
+
+# ---------------------------------------------------------------------------
+# 503 分类精确匹配：仅两个字面量归 503，含 "not available" 子串的真实错误归 500
+# （T3 审查补全——防宽子串误分类）
+# ---------------------------------------------------------------------------
+
+
+def test_graph_snapshot_not_available_substring_is_500(monkeypatch):
+    """graph_snapshot: 错误文本含 "not available" 子串但非字面量 → 500（不误分类 503）。"""
+    fake = _FakeAdapter(
+        snapshot={
+            "nodes": [], "edges": [],
+            "status": "error", "message": "storage not available: disk error",
+        }
+    )
+    _patch_adapter(monkeypatch, fake)
+
+    resp = _make_client().get("/api/kg/snapshot")
+
+    assert resp.status_code == 500
+    assert resp.json() == {"status": "error", "message": "storage not available: disk error"}
+
+
+# ---------------------------------------------------------------------------
+# error dict 缺 message 键 → 端点默认文案（T3 审查补全）
+# ---------------------------------------------------------------------------
+
+
+def test_graph_snapshot_error_dict_missing_message_defaults(monkeypatch):
+    """graph_snapshot: error dict 无 message 键 → 500 + 默认文案"知识图谱不可用"。"""
+    _patch_adapter(monkeypatch, _FakeAdapter(snapshot={"nodes": [], "edges": [], "status": "error"}))
+
+    resp = _make_client().get("/api/kg/snapshot")
+
+    assert resp.status_code == 500
+    assert resp.json() == {"status": "error", "message": "知识图谱不可用"}
+
+
+def test_explore_node_error_dict_missing_message_defaults(monkeypatch):
+    """explore_node: error dict 无 message 键 → 500 + 默认文案"知识图谱不可用"。"""
+    _patch_adapter(
+        monkeypatch,
+        _FakeAdapter(explore={"center": None, "nodes": [], "edges": [], "status": "error"}),
+    )
+
+    resp = _make_client().post("/api/kg/explore", json={"entity_id": "x", "depth": 2})
+
+    assert resp.status_code == 500
+    assert resp.json() == {"status": "error", "message": "知识图谱不可用"}
+
+
+def test_search_entities_error_dict_missing_message_defaults(monkeypatch):
+    """search_entities: error dict 无 message 键 → 500 + 默认文案"知识图谱检索失败"。"""
+    _patch_adapter(monkeypatch, _FakeAdapter(query_data={"status": "error"}))
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "python", "top_k": 20})
+
+    assert resp.status_code == 500
+    assert resp.json() == {"status": "error", "message": "知识图谱检索失败"}
