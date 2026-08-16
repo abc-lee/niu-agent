@@ -107,3 +107,43 @@ def test_running_subagent_state_transition():
     assert r.state == "waiting_for_answer"
     r.state = "running"
     assert r.state == "running"
+
+
+def test_register_pre_register_import_error_logs_warning(monkeypatch):
+    """E4-07：register 的 pre_register ImportError（niu_api 未启动）→ logger.warning（不再静默 pass）。"""
+    import sys
+
+    from loguru import logger
+
+    from agent.subagent_registry import SubagentRegistry
+
+    monkeypatch.setitem(sys.modules, "niu_api.internal.subagent_event_bus", None)
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        name = SubagentRegistry.register("file-processor", MagicMock())
+    finally:
+        logger.remove(sink_id)
+    assert name.startswith("file-processor-")
+    assert any("pre_register" in m and "未启动" in m for m in messages), messages
+
+
+def test_unregister_close_import_error_logs_warning(monkeypatch):
+    """E4-07：unregister 的 close ImportError（niu_api 未启动）→ logger.warning（补日志）。"""
+    import sys
+
+    from loguru import logger
+
+    from agent.subagent_registry import SubagentRegistry
+
+    # register 在 sys.modules 置 None 之前执行（pre_register 正常走通，不产生 warning）
+    name = SubagentRegistry.register("file-processor", MagicMock())
+    monkeypatch.setitem(sys.modules, "niu_api.internal.subagent_event_bus", None)
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        SubagentRegistry.unregister(name)
+    finally:
+        logger.remove(sink_id)
+    assert SubagentRegistry.get(name) is None
+    assert any("close" in m and "未启动" in m for m in messages), messages

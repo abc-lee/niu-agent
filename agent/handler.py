@@ -1161,6 +1161,8 @@ class NiuHandler(BaseHandler):
 
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）— 同步/异步分流"""
+        import json  # E4-14：函数顶部绑定——事件块内 import json 使 json 成为函数局部名，先于其执行引用会 UnboundLocalError
+
         from niu_api.compat import _incomplete_reason, _is_subagent_incomplete
 
         from .subagent import _dispatch_async_subagent, call_subagent, get_subagent_config
@@ -1302,6 +1304,19 @@ class NiuHandler(BaseHandler):
                     f"子Agent未完成任务（{_incomplete_reason(result)}），已保留进度；"
                     f"请决定是否让子Agent继续处理。"
                 )
+
+            # E4-14：提示词降级标注（展示层注入）——call_subagent 内已在非 JSON 结果拼接
+            # [子 Agent 提示词降级: ...]；JSON 结构化结果保持原样（游标/JSON 消费不受影响），
+            # 降级事实经模块级标记旁路在此补注到 display_result（返回 LLM 的展示副本，不解析）。
+            from . import subagent as _subagent_mod
+            _degraded_reason = getattr(_subagent_mod, "_subagent_prompt_degraded_reason", None)
+            if _degraded_reason and result and result.strip().startswith("{"):
+                try:
+                    json.loads(result.strip())
+                except json.JSONDecodeError:
+                    pass  # 非可解析 JSON——call_subagent 内已拼接，不重复补注
+                else:
+                    display_result = f"{display_result}\n[子 Agent 提示词降级: {_degraded_reason}]"
 
             # 验证结果：检查 event-manager 是否真正创建了任务
             if agent_name == "event-manager" and ("提醒" in task or "定时" in task or "提醒我" in task):

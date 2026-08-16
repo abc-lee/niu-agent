@@ -65,3 +65,48 @@ def test_skips_when_unique_name_empty_string():
         result = _maybe_push_subagent_instruction("", "请处理文件")
     assert result is False
     mock_notify.assert_not_called()
+
+
+def test_import_error_logs_warning_and_returns_true(monkeypatch):
+    """E4-06：ImportError（niu_api 未启动——环境预期态）→ logger.warning + 仍返回 True。
+
+    与推送真异常分开记日志（warning/error 两级）；return True 语义保持
+    （3 调用方不检查返回值，推送失败不影响子 Agent 循环）。
+    """
+    import sys
+
+    from loguru import logger
+
+    from agent.subagent import _maybe_push_subagent_instruction
+
+    monkeypatch.setitem(sys.modules, "niu_api.internal.subagent_event_bus", None)
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        result = _maybe_push_subagent_instruction("file-processor-a1b2", "请处理 test.txt")
+    finally:
+        logger.remove(sink_id)
+    assert result is True
+    assert any("指令推送" in m and "file-processor-a1b2" in m for m in messages), (
+        f"ImportError 应记 warning（环境未启动预期态），实际: {messages}"
+    )
+
+
+def test_push_exception_logs_error_and_returns_true():
+    """E4-06：推送真异常（RuntimeError）→ logger.error（含异常文本）+ 仍返回 True。"""
+    from loguru import logger
+
+    from agent.subagent import _maybe_push_subagent_instruction
+
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+    try:
+        with patch("niu_api.internal.subagent_event_bus.notify_subagent_event_sync",
+                   side_effect=RuntimeError("push boom")):
+            result = _maybe_push_subagent_instruction("file-processor-a1b2", "请处理 test.txt")
+    finally:
+        logger.remove(sink_id)
+    assert result is True
+    assert any("push boom" in m and "指令推送失败" in m for m in messages), (
+        f"真异常应记 error 含异常文本，实际: {messages}"
+    )

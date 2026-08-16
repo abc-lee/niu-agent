@@ -286,6 +286,158 @@ class TestRunSubagentAsyncNotification:
         pushes, _ = self._run("处理完成 @end processed_up_to=2", registry_get=None)
         assert pushes == ["[dream-evolver-1a2b] 已完成，结果：处理完成 @end processed_up_to=2"]
 
+    # ------------------------------------------------------------------
+    # E4-05：异常 / 取消路径——4 处推送点统一 logger.error（含异常），推送失败语义保持
+    # ------------------------------------------------------------------
+
+    def _run_exception_path(self, queue_push=None, notify=None):
+        """call_subagent 抛异常 → 跑完整异常路径；返回 (pushes, notify_events, error_logs)。"""
+        import asyncio
+
+        from loguru import logger
+
+        from agent.subagent import _run_subagent_async
+
+        pushes = []
+        fake_queue = mock.MagicMock()
+        if queue_push is None:
+            fake_queue.push.side_effect = lambda msg: pushes.append(msg)
+        else:
+            fake_queue.push.side_effect = queue_push
+        unregister = mock.MagicMock()
+        notify_events = []
+        if notify is None:
+            notify_impl = lambda name, etype, payload: notify_events.append((name, etype, payload))
+        else:
+            notify_impl = notify
+        messages = []
+        sink_id = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+        try:
+            with mock.patch("agent.subagent.call_subagent", side_effect=RuntimeError("subagent boom")), \
+                 mock.patch("agent.main_agent_request_queue.get_main_agent_request_queue", return_value=fake_queue), \
+                 mock.patch("agent.ask_main_agent.get_pending_ask_registry", return_value=mock.MagicMock()), \
+                 mock.patch("agent.ask_user.get_user_ask_registry", return_value=mock.MagicMock()), \
+                 mock.patch("agent.subagent_registry.SubagentRegistry.get", return_value=None), \
+                 mock.patch("agent.subagent_registry.SubagentRegistry.unregister", unregister), \
+                 mock.patch("niu_api.internal.subagent_event_bus.notify_subagent_event_sync", side_effect=notify_impl):
+                asyncio.run(_run_subagent_async(
+                    unique_name="dream-evolver-1a2b",
+                    agent_name="dream-evolver",
+                    task="精加工实体",
+                    llm_config={"model": "m", "apikey": "x", "apibase": "http://x"},
+                    memory_context=None,
+                    supplement_queue=None,
+                ))
+        finally:
+            logger.remove(sink_id)
+        return pushes, notify_events, messages, unregister
+
+    def test_exception_path_pushes_error_notification_and_notify_event(self):
+        """call_subagent 抛异常 → 推 [名] 异常结束 通知 + subagent_error 事件 + logger.error 记录异常本体。"""
+        pushes, notify_events, messages, unregister = self._run_exception_path()
+        assert pushes == ["[dream-evolver-1a2b] 异常结束：subagent boom"]
+        assert notify_events == [("dream-evolver-1a2b", "subagent_error", {"content": "subagent boom"})]
+        assert any("异常：subagent boom" in m for m in messages), (
+            f"异常本体应记 error 含异常文本，实际: {messages}"
+        )
+        unregister.assert_called_once_with("dream-evolver-1a2b")
+
+    def test_exception_path_push_failures_logged_but_swallowed(self):
+        """异常路径：queue.push / notify 抛异常 → 各自 logger.error（推送失败语义保持——db_monitor 轮询兜底）。"""
+        pushes, notify_events, messages, unregister = self._run_exception_path(
+            queue_push=mock.MagicMock(side_effect=RuntimeError("queue boom")),
+            notify=mock.MagicMock(side_effect=RuntimeError("notify boom")),
+        )
+        assert pushes == []  # 推送失败不中断异常路径
+        assert notify_events == []
+        assert any("异常通知推送失败" in m and "queue boom" in m for m in messages), messages
+        assert any("subagent_error 事件推送失败" in m and "notify boom" in m for m in messages), messages
+        unregister.assert_called_once_with("dream-evolver-1a2b")
+
+    def _run_cancel_path(self, queue_push=None, notify=None):
+        """cancel 进行中的 _run_subagent_async（call_subagent 阻塞中）→ 跑完整取消路径。"""
+        import asyncio
+        import threading
+
+        from loguru import logger
+
+        from agent.subagent import _run_subagent_async
+
+        pushes = []
+        fake_queue = mock.MagicMock()
+        if queue_push is None:
+            fake_queue.push.side_effect = lambda msg: pushes.append(msg)
+        else:
+            fake_queue.push.side_effect = queue_push
+        unregister = mock.MagicMock()
+        notify_events = []
+        if notify is None:
+            notify_impl = lambda name, etype, payload: notify_events.append((name, etype, payload))
+        else:
+            notify_impl = notify
+        started = threading.Event()
+        release = threading.Event()
+        messages = []
+        sink_id = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+
+        def _blocking_call(*a, **kw):
+            started.set()
+            release.wait(timeout=5)
+            return "done"
+
+        try:
+            with mock.patch("agent.subagent.call_subagent", side_effect=_blocking_call), \
+                 mock.patch("agent.main_agent_request_queue.get_main_agent_request_queue", return_value=fake_queue), \
+                 mock.patch("agent.ask_main_agent.get_pending_ask_registry", return_value=mock.MagicMock()), \
+                 mock.patch("agent.ask_user.get_user_ask_registry", return_value=mock.MagicMock()), \
+                 mock.patch("agent.subagent_registry.SubagentRegistry.get", return_value=None), \
+                 mock.patch("agent.subagent_registry.SubagentRegistry.unregister", unregister), \
+                 mock.patch("niu_api.internal.subagent_event_bus.notify_subagent_event_sync", side_effect=notify_impl):
+                loop = asyncio.new_event_loop()
+                try:
+                    task = loop.create_task(_run_subagent_async(
+                        unique_name="dream-evolver-1a2b",
+                        agent_name="dream-evolver",
+                        task="精加工实体",
+                        llm_config={"model": "m", "apikey": "x", "apibase": "http://x"},
+                        memory_context=None,
+                        supplement_queue=None,
+                    ))
+                    loop.run_until_complete(asyncio.sleep(0.05))
+                    task.cancel()
+                    try:
+                        loop.run_until_complete(task)
+                    except asyncio.CancelledError:
+                        pass  # 预期：CancelledError 重新抛出
+                    finally:
+                        release.set()  # 释放后台 to_thread 线程防泄漏
+                    loop.run_until_complete(asyncio.sleep(0.1))
+                finally:
+                    loop.close()
+        finally:
+            logger.remove(sink_id)
+            release.set()
+        return pushes, notify_events, messages, unregister
+
+    def test_cancel_path_pushes_cancel_notification_and_rethrows(self):
+        """CancelledError → 推取消通知 + subagent_error 事件 + 重新抛出 CancelledError。"""
+        pushes, notify_events, messages, unregister = self._run_cancel_path()
+        assert pushes == ["[dream-evolver-1a2b] 被取消（应用关闭或主 Agent 停止）"]
+        assert notify_events == [("dream-evolver-1a2b", "subagent_error", {"content": "子 Agent 被取消"})]
+        unregister.assert_called_once_with("dream-evolver-1a2b")
+
+    def test_cancel_path_push_failures_logged_but_swallowed(self):
+        """取消路径：queue.push / notify 抛异常 → 各自 logger.error（推送失败不阻断取消语义）。"""
+        pushes, notify_events, messages, unregister = self._run_cancel_path(
+            queue_push=mock.MagicMock(side_effect=RuntimeError("queue boom")),
+            notify=mock.MagicMock(side_effect=RuntimeError("notify boom")),
+        )
+        assert pushes == []
+        assert notify_events == []
+        assert any("取消通知推送失败" in m and "queue boom" in m for m in messages), messages
+        assert any("取消事件推送失败" in m and "notify boom" in m for m in messages), messages
+        unregister.assert_called_once_with("dream-evolver-1a2b")
+
 
 # ---------------------------------------------------------------------------
 # 5. handler._call_subagent_gen display_result 转换（incomplete JSON → 自然语言）

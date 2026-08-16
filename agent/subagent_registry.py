@@ -17,6 +17,8 @@ from concurrent.futures import Future as ConcurrentFuture
 from dataclasses import dataclass, field
 from typing import Any
 
+from loguru import logger
+
 
 @dataclass
 class RunningSubagent:
@@ -100,8 +102,9 @@ class SubagentRegistry:
         try:
             from niu_api.internal.subagent_event_bus import pre_register
             pre_register(name)
-        except ImportError:
-            pass  # niu_api 未启动时跳过
+        except ImportError as e:
+            # E4-07：环境未启动预期态——warning（不再静默 pass；不扩大捕获范围，运行时异常仍传播）
+            logger.warning(f"[SubAgentRegistry] pre_register skipped（niu_api 未启动）：{e}")
         return name
 
     @classmethod
@@ -111,8 +114,9 @@ class SubagentRegistry:
         try:
             from niu_api.internal.subagent_event_bus import close
             close(unique_name)
-        except ImportError:
-            pass  # niu_api 未启动时跳过
+        except ImportError as e:
+            # E4-07：环境未启动预期态——warning（补日志；不扩大捕获范围，运行时异常仍传播）
+            logger.warning(f"[SubAgentRegistry] close skipped（niu_api 未启动）：{e}")
 
     @classmethod
     def get(cls, unique_name: str) -> RunningSubagent | None:

@@ -223,9 +223,11 @@ def _maybe_push_subagent_instruction(handler_or_unique_name, content) -> bool:
         from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
         notify_subagent_event_sync(unique_name, 'instruction', {'content': content})
     except ImportError:
-        pass  # niu_api 未启动，静默降级
-    except Exception:
-        pass  # 推送失败不影响子 Agent 循环
+        # E4-06：环境未启动预期态——warning（对齐 D7/E4-07），不再静默 pass
+        logger.warning(f"[SubAgent] subagent_event_bus 不可用（niu_api 未启动），{unique_name} 指令推送跳过")
+    except Exception as e:
+        # E4-06：推送失败真异常——error（含异常）；仍返回 True（3 调用方不检查返回值，不影响子 Agent 循环）
+        logger.error(f"[SubAgent] {unique_name} 指令推送失败：{e}")
     return True
 
 
@@ -640,46 +642,53 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> list[dict]:
 
     Returns:
         MCP 工具 schema 列表（OpenAI格式）
+
+    E4-09：内部异常 → 返回 [] + logger.error（不返回裸字符串——_build_subagent_tools_schema 的
+    tools_schema + mcp_tools_schema 拼接要求 list，裸字符串会抛 list+str TypeError）。
     """
-    from .tool_registry import get_registry
+    try:
+        from .tool_registry import get_registry
 
-    config = get_subagent_config(agent_name)
-    mcp_servers = config.get("mcpServers", [])
-    mcp_tool_filter = config.get("mcpToolFilter", {})
+        config = get_subagent_config(agent_name)
+        mcp_servers = config.get("mcpServers", [])
+        mcp_tool_filter = config.get("mcpToolFilter", {})
 
-    if not mcp_servers:
+        if not mcp_servers:
+            return []
+
+        # 从 ToolRegistry 获取所有工具
+        registry = get_registry()
+        all_tools = registry.get_schemas()
+
+        # 过滤出指定服务器的工具，并转换为OpenAI格式
+        schema = []
+        for tool in all_tools:
+            tool_name = tool.get("name", "")
+            # 工具名格式：server_name/tool_name
+            if "/" in tool_name:
+                server = tool_name.split("/")[0]
+                bare_name = tool_name.split("/", 1)[1]
+                if server in mcp_servers:
+                    # 如果该服务器有白名单，只注入白名单中的工具
+                    server_filter = mcp_tool_filter.get(server)
+                    if server_filter is not None and bare_name not in server_filter:
+                        continue
+                    # hidden 只对主 Agent 生效；子 Agent 由 mcpServers 白名单控制工具范围
+                    # 转换为OpenAI工具格式
+                    schema.append({
+                        "type": "function",
+                        "function": {
+                            "name": bare_name,  # LLM sees bare name; handler auto-resolves to full name
+                            "description": tool.get("description", ""),
+                            "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                        }
+                    })
+
+        logger.info(f"[SubAgent] {agent_name}: Found {len(schema)} MCP tools for servers {mcp_servers}")
+        return schema
+    except Exception as e:
+        logger.error(f"[SubAgent] {agent_name}: MCP 工具 schema 加载失败——返回空列表（预期能力不完整）: {e}")
         return []
-
-    # 从 ToolRegistry 获取所有工具
-    registry = get_registry()
-    all_tools = registry.get_schemas()
-
-    # 过滤出指定服务器的工具，并转换为OpenAI格式
-    schema = []
-    for tool in all_tools:
-        tool_name = tool.get("name", "")
-        # 工具名格式：server_name/tool_name
-        if "/" in tool_name:
-            server = tool_name.split("/")[0]
-            bare_name = tool_name.split("/", 1)[1]
-            if server in mcp_servers:
-                # 如果该服务器有白名单，只注入白名单中的工具
-                server_filter = mcp_tool_filter.get(server)
-                if server_filter is not None and bare_name not in server_filter:
-                    continue
-                # hidden 只对主 Agent 生效；子 Agent 由 mcpServers 白名单控制工具范围
-                # 转换为OpenAI工具格式
-                schema.append({
-                    "type": "function",
-                    "function": {
-                        "name": bare_name,  # LLM sees bare name; handler auto-resolves to full name
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-                    }
-                })
-
-    logger.info(f"[SubAgent] {agent_name}: Found {len(schema)} MCP tools for servers {mcp_servers}")
-    return schema
 
 
 def _build_user_info_section() -> str:
@@ -754,6 +763,7 @@ def _build_subagent_tools_schema(
     agent_config: dict | None = None,
     memory_context: Any | None = None,
     no_tools: bool = False,
+    mcp_tools_schema: list | None = None,  # E4-09：None 时内部获取（向后兼容）；非 None 时直接使用（call_subagent 已取——避免双重调用/双重 error 日志）
 ) -> list:
     """构建子 Agent 的 tools_schema。
 
@@ -795,7 +805,8 @@ def _build_subagent_tools_schema(
         logger.info(f"[SubAgent] {agent_name}: No base tools (allowBaseTools empty or not configured)")
 
     # MCP 工具
-    mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
+    if mcp_tools_schema is None:
+        mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
     if mcp_tools_schema:
         tools_schema = tools_schema + mcp_tools_schema
         logger.info(f"[SubAgent] {agent_name}: {len(tools_schema)} tools ({len(mcp_tools_schema)} MCP)")
@@ -807,6 +818,34 @@ def _build_subagent_tools_schema(
     logger.debug(f"[SubAgent] {agent_name}: Tools = {tool_names}")
 
     return tools_schema
+
+
+# E4-14：提示词降级标注旁路通道（模块级标记）。
+# call_subagent 系统提示词降级（build_subagent_system_segments 失败 → get_subagent_prompt → 裸 prompt）
+# 时置位；非 JSON 结构化结果在 call_subagent 内拼接 [子 Agent 提示词降级: <原因>]，
+# JSON 结构化结果保持原样（游标/JSON 消费不受影响），降级事实由展示层
+# （handler._call_subagent_gen display_result 构造点）读取本标记补注。每次 call_subagent 起始清零。
+_subagent_prompt_degraded_reason: str | None = None
+
+
+def _annotate_subagent_prompt_degradation(result_text: str) -> str:
+    """E4-14：降级标注附加——仅非 JSON 结构化结果拼接。
+
+    JSON 结构化结果（以 { 开头且 json.loads 可解析）不拼接——游标/JSON 消费不受影响，
+    由展示层（handler._call_subagent_gen）经模块级标记补注。无降级标记时原样返回（正常路径零变化）。
+    """
+    reason = _subagent_prompt_degraded_reason
+    if not reason or not result_text:
+        return result_text
+    stripped = result_text.strip()
+    if stripped.startswith("{"):
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            pass  # 不以 { 开头可解析 → 附加
+        else:
+            return result_text  # JSON 结构化结果不拼接（展示层补注）
+    return f"{result_text}\n[子 Agent 提示词降级: {reason}]"
 
 
 def call_subagent(
@@ -847,6 +886,10 @@ def call_subagent(
     """
     from .handler import NiuHandler
 
+    # E4-14：模块级降级标记每次调用起始清零（防跨调用残留——正常路径零变化）
+    global _subagent_prompt_degraded_reason
+    _subagent_prompt_degraded_reason = None
+
     # 顶部校验：在 get_subagent_config 之前
     if not task and not answer:
         return "[错误] chat-with-xxx 必须传 task（新任务）或 answer + unique_name（回复子 Agent 问题）"
@@ -861,6 +904,8 @@ def call_subagent(
         static_system, dynamic_system = build_subagent_system_segments(agent_name)
     except Exception as e:
         logger.warning(f'[SubAgent] build_subagent_system_segments failed for {agent_name}, falling back to bare prompt: {e}')
+        # E4-14：真正降级 → 置位模块级标记（顶部已 global 声明；仅降级标注——正常路径零变化）
+        _subagent_prompt_degraded_reason = f"系统提示词构建失败：{e}"
         try:
             static_system = get_subagent_prompt(agent_name)
         except Exception:
@@ -929,12 +974,19 @@ def call_subagent(
     handler._program_triggered = program_triggered
 
     # 5. 阶段二：tools_schema 构建提取到 helper（含 ask_main_agent 注入逻辑）
+    # E4-09：MCP schema 在此取一次（避免 helper 内再取——双重调用/异常时双重 error 日志）
+    mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name) if not no_tools else None
     tools_schema = _build_subagent_tools_schema(
         agent_name=agent_name,
         agent_config=agent_config,
         memory_context=memory_context,
         no_tools=no_tools,
+        mcp_tools_schema=mcp_tools_schema,
     )
+    # E4-09：mcpServers 配置非空但 0 工具可用 → task 附加标注（LLM 输入可见；标注绝不进入 tools_schema）。
+    # mcpServers 配置本身为空 = 纯基础工具有意设计 → 不标注；no_tools 强制无工具 → 不标注。
+    if not no_tools and (agent_config.get("mcpServers") or []) and not mcp_tools_schema:
+        task = f"⚠ 配置的 MCP 工具加载失败——0 工具可用（预期能力不完整）\n{task}"
 
     # 7. 执行（单次，不分片）
     context_window_tokens = _read_context_window_tokens()
@@ -1158,12 +1210,12 @@ def call_subagent(
     # 优先从 return 值提取结构化结果
     extracted = _extract_result_from_return_value(return_value)
     if extracted is not None:
-        return extracted
+        return _annotate_subagent_prompt_degradation(extracted)
 
     # 优先返回 last_reply（最终报告），fallback 到 result_text（全过程累加）
     if last_reply:
-        return last_reply
-    return result_text
+        return _annotate_subagent_prompt_degradation(last_reply)
+    return _annotate_subagent_prompt_degradation(result_text)
 
 
 def call_subagent_with_auto_answer(agent_name, task, **kwargs):
@@ -1437,8 +1489,10 @@ def _ask_user_impl(question: str, unique_name: str) -> str | None:
             _gw.send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)
             # 2) 问题作独立消息发（无卡片 state + ask_finalize → send_markdown，不清标记供 route_out 判重）
             _gw.send_sync(_cid, f"{question}", pop_reply_to=False, ask_finalize=True)
-    except Exception:
-        pass
+    except Exception as e:
+        # E4-04：IM 通道故障不静默——error 留痕（含异常）；吞异常语义保持
+        # （IM 通道故障不应中断子 Agent——AskUserFuture 超时是既有兜底）
+        logger.error(f"[ask_user] {unique_name} IM 推送失败（吞异常——AskUserFuture 超时兜底）：{e}")
 
     # 设 state
     instance.state = 'waiting_for_user'
@@ -1645,16 +1699,19 @@ async def _run_subagent_async(
         err_msg = f"[{unique_name}] 异常结束：{err_str[:1000]}" + ("...[已截断]" if len(err_str) > 1000 else "")
         try:
             get_main_agent_request_queue().push(err_msg)
-        except Exception:
-            pass
+        except Exception as e_push:
+            # E4-05：推送失败不静默——error 留痕（含异常）；推送失败语义保持
+            # （db_monitor 轮询兜底异步完成，主 Agent 仍能从 DB 感知）
+            logger.error(f"[AsyncSubagent] {unique_name} 异常通知推送失败：{e_push}")
         # 推送 subagent_error 事件到 SubagentEventBus（前端 tab 显示错误状态）
         try:
             from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
             err_str_full = str(e)
             err_content = err_str_full[:2000] + ("...[已截断]" if len(err_str_full) > 2000 else "")
             notify_subagent_event_sync(unique_name, 'subagent_error', {'content': err_content})
-        except Exception:
-            pass
+        except Exception as e_notify:
+            # E4-05：同上——推送失败不静默，error 留痕
+            logger.error(f"[AsyncSubagent] {unique_name} subagent_error 事件推送失败：{e_notify}")
         logger.error(f"[AsyncSubagent] {unique_name} 异常：{e}")
 
     except asyncio.CancelledError:
@@ -1665,15 +1722,17 @@ async def _run_subagent_async(
         cancel_msg = f"[{unique_name}] 被取消（应用关闭或主 Agent 停止）"
         try:
             get_main_agent_request_queue().push(cancel_msg)
-        except Exception:
-            pass
+        except Exception as e_push:
+            # E4-05：推送失败不静默——error 留痕（含异常）；推送失败语义保持
+            logger.error(f"[AsyncSubagent] {unique_name} 取消通知推送失败：{e_push}")
         logger.info(f"[AsyncSubagent] {unique_name} 被 cancel")
         # 推送 subagent_error 事件到 SubagentEventBus
         try:
             from niu_api.internal.subagent_event_bus import notify_subagent_event_sync
             notify_subagent_event_sync(unique_name, 'subagent_error', {'content': '子 Agent 被取消'})
-        except Exception:
-            pass
+        except Exception as e_notify:
+            # E4-05：同上——推送失败不静默，error 留痕
+            logger.error(f"[AsyncSubagent] {unique_name} 取消事件推送失败：{e_notify}")
         raise  # 重新抛出 CancelledError
 
     finally:

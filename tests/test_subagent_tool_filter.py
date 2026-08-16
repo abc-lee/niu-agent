@@ -148,3 +148,117 @@ def test_build_subagent_system_segments_injects_for_dream_evolver_existing_secti
     assert "你负责精加工实体" in static_system
     # 标题出现 2 次：原文 1 次 + 模板 1 次（这是预期行为，dream-evolver 的旧段不含退出语义需追加）
     assert static_system.count("## 职责边界") == 2
+
+
+# ── E4-09：MCP 工具加载失败——[] 返回 + task 标注（LLM 输入可见，不进 tools_schema） ──
+
+
+def test_get_subagent_mcp_tools_schema_exception_returns_empty_list(monkeypatch):
+    """E4-09：get_subagent_mcp_tools_schema 内部异常 → 返回 [] + logger.error（不返回裸字符串）。
+
+    返回裸字符串会导致 _build_subagent_tools_schema 的 tools_schema + mcp_tools_schema 抛
+    list+str TypeError——必须返回空列表。
+    """
+    from loguru import logger
+
+    from agent import subagent
+
+    monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {"mcpServers": ["lightrag-server"]})
+
+    def _boom():
+        raise RuntimeError("registry boom")
+
+    monkeypatch.setattr("agent.tool_registry.get_registry", _boom)
+
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+    try:
+        schema = subagent.get_subagent_mcp_tools_schema("test-agent")
+    finally:
+        logger.remove(sink_id)
+    assert schema == []  # 空列表而非裸字符串——防 list+str TypeError
+    assert any("MCP 工具" in m and "registry boom" in m for m in messages), (
+        f"应记录 error 含异常文本，实际: {messages}"
+    )
+
+
+def _call_subagent_capture(monkeypatch, agent_config, mcp_schema):
+    """hermetic call_subagent：capture user_input + tools_schema（范式照抄 test_subagent_current_time）。"""
+    from unittest.mock import Mock
+
+    import agent.runner as runner_mod
+    from agent import subagent
+
+    captured = {}
+
+    def mock_run(client, system_prompt, user_input, handler, tools_schema, **kwargs):
+        captured["user_input"] = user_input
+        captured["tools_schema"] = tools_schema
+        return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
+
+    monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+    monkeypatch.setattr(subagent, "get_subagent_config", lambda name: agent_config)
+    monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: mcp_schema)
+    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
+    monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
+    return captured
+
+
+def test_call_subagent_annotates_mcp_tools_load_failure(monkeypatch):
+    """E4-09：mcpServers 非空 + 0 工具可用 → task 附加 ⚠ 标注（LLM 输入可见）；
+    标注绝不进入 tools_schema（tools_schema 仍是空列表）。"""
+    from agent import subagent
+
+    captured = _call_subagent_capture(
+        monkeypatch,
+        agent_config={"mcpServers": ["lightrag-server"]},
+        mcp_schema=[],
+    )
+    subagent.call_subagent(
+        agent_name="test-agent",
+        task="处理文件",
+        llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+    )
+    assert captured["user_input"].startswith(
+        "⚠ 配置的 MCP 工具加载失败——0 工具可用（预期能力不完整）"
+    ), captured["user_input"]
+    assert "处理文件" in captured["user_input"]
+    # 标注在 task 文本而非 tools_schema
+    assert captured["tools_schema"] == []
+    assert all("MCP 工具加载失败" not in str(t) for t in captured["tools_schema"])
+
+
+def test_call_subagent_no_annotation_when_mcp_not_configured(monkeypatch):
+    """E4-09：mcpServers 配置为空 → 不标注（纯基础工具有意设计）。"""
+    from agent import subagent
+
+    captured = _call_subagent_capture(monkeypatch, agent_config={}, mcp_schema=[])
+    subagent.call_subagent(
+        agent_name="test-agent",
+        task="处理文件",
+        llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+    )
+    assert "MCP 工具加载失败" not in captured["user_input"]
+
+
+def test_call_subagent_no_annotation_when_mcp_tools_loaded(monkeypatch):
+    """E4-09：MCP 工具正常加载 → 不标注（正常路径零变化）。"""
+    from agent import subagent
+
+    mcp_tools = [{
+        "type": "function",
+        "function": {"name": "lightrag_query", "description": "q", "parameters": {}},
+    }]
+    captured = _call_subagent_capture(
+        monkeypatch,
+        agent_config={"mcpServers": ["lightrag-server"]},
+        mcp_schema=mcp_tools,
+    )
+    subagent.call_subagent(
+        agent_name="test-agent",
+        task="处理文件",
+        llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+    )
+    assert "MCP 工具加载失败" not in captured["user_input"]
+    assert [t["function"]["name"] for t in captured["tools_schema"]] == ["lightrag_query"]
