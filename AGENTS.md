@@ -553,8 +553,8 @@ preload_face_model()
   - **修复**：createGraphWindow 内 loadFile/show 后补挂同款处理器（F12 devtools + `input.meta` → Cmd+V/C/X/A 分发，无 preventDefault——对齐先例）。**不做全局 Edit 菜单**（第二条并行约定 + 菜单栏外观变化 + 三处现有处理器变死代码）。
 - **问题二（主图右键进子图）**：右键"以此节点为中心扩散"只在子图态生效；主图态右键是就地展开邻居（expandNode）。
   - **修复**：主图态右键改为 `enterSubgraph(node.id, 1)` + 成功后 `updateSubgraphControls()`——与搜索框进子图（selectSearchEntity）完全同路径（depth=1、聚焦动画、showDetail、加减层级/返回控件自动可用）；**Document 节点守卫保留**（`node._originalData && node._originalData.nodeType !== 'Document'`——force-graph 节点顶层无 nodeType，只在 _originalData 上；R1 双审查员交叉抓出计划初版 `node.nodeType` 守卫恒真失效）；删除 expandNode 死代码（唯一调用点即右键）+ 主图态 tooltip 补"右键点击：以此为中心进入子图"提示（Document 不显示）。
-- **质量链**：计划 v1.0→v1.3 三轮双审查（R1 双 CONDITIONAL：P1 Document 守卫字段错 + P2 主进程改动验证需重启应用 + P3 行号；R2 A=CONDITIONAL 仅 P3（行号引用）B=APPROVE；R3 双 APPROVE——连续两轮零阻断达成）+ subagent-driven 实施（Task 1/2 并行，各 commit 独立可回退）；**关键教训：①force-graph 回调节点字段在顶层 vs _originalData 的层级差异——守卫类代码引用字段必须核对对象构造处（buildGraphData L220-228 实证）②main.js 主进程改动验证必须重启应用、renderer.js 关窗重开即可——验证前置条件按代码层区分**。
-- **验证**：两文件 `node --check` 通过 + `grep expandNode` 零残留 + 实施 diff 与计划逐字核对；**实机验证待用户执行**：Task 1 重启应用后搜索框 Cmd+V/Cmd+A/Cmd+C/Cmd+X + 详情面板文本 Cmd+C；Task 2 关窗重开图谱后主图右键实体节点 → 进子图（depth=1）→ +/− 层级 → 返回总览；右键 Document 无操作；子图内右键保持原行为。
+- **质量链**：计划 v1.0→v1.3 三轮双审查（R1 双 CONDITIONAL：P1 Document 守卫字段错 + P2 主进程改动验证需重启应用 + P3 行号；R2 A=CONDITIONAL 仅 P3（行号引用）B=APPROVE；R3 双 APPROVE——连续两轮零阻断达成）+ subagent-driven 实施（Task 1/2 并行，各 commit 独立可回退）；**关键教训：①force-graph 回调节点字段在顶层 vs _originalData 的层级差异——守卫类代码引用字段必须核对对象构造处（buildGraphData L220-228 实证）②main.js 主进程改动验证必须重启应用、renderer.js 关窗重开即可——验证前置条件按代码层区分 ③用户"建议回退"时不要立刻回退——先确认修复是否已被验证过；回退会移除代码，用户此后重启验证的是无修复版本 = 假阴性（实证：22:57 提交 → 23:02 回退 → 用户 23:11 重启验证无效——处理器从未被运行过；重新应用 2a1524f1 后用户重启验证通过）④Chat 复制粘贴有效 = before-input-event 处理器 + Chromium macOS 原生编辑快捷键双通道（chat 输入框 9+ 处自动 focus 使粘贴目标常聚焦；graph 搜索框从不聚焦是体验差异非根因）**。
+- **验证**：两文件 `node --check` 通过 + `grep expandNode` 零残留 + 实施 diff 与计划逐字核对；**实机验证通过（用户 2026-08-16 确认）**：Task 1 重启应用后图谱搜索框 Cmd+V/Cmd+C 正常（2a1524f1 恢复后验证）；Task 2 关窗重开图谱后主图右键实体节点进子图（depth=1）+ 加减层级 + 返回总览正常；右键 Document 无操作；子图内右键保持原行为。
 
 ### 2026-08-15
 
