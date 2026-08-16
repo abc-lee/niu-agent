@@ -425,7 +425,11 @@ class BaseHandler:
 def json_default(o):
     if isinstance(o, set):
         return list(o)
-    return str(o)
+    try:
+        return str(o)
+    except Exception:
+        # E4-15：坏 __str__（如 RecursionError）→ 安全占位文本，防序列化整轮失败
+        return f"[无法序列化: {type(o).__name__}]"
 
 
 def exhaust(g):
@@ -607,38 +611,63 @@ def _truncate_dict_result(result, tool_name: str = ""):
     - 小 dict：原样返回
     - 大 dict：返回 {"status": "truncated", "message": "...", "data": 截断后的字符串}
     - 非 dict（不可序列化）：降级用 str() 后调 _truncate_tool_content
+    - 序列化链路任何异常（含 str() 降级抛 RecursionError）：返回错误 dict 兜底（E4-15）
 
     这样既保留 dict 语义（status 检查），又避免超大结果进 messages。
     """
     try:
-        serialized = json.dumps(result, ensure_ascii=False)
-    except (TypeError, ValueError):
-        # 不可序列化，降级为 str 截断
-        return _truncate_tool_content(str(result), tool_name)
+        try:
+            serialized = json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError):
+            # 不可序列化，降级为 str 截断
+            return _truncate_tool_content(str(result), tool_name)
 
-    if len(serialized) <= MAX_TOOL_RESULT_CHARS:
-        return result  # 原样返回 dict
+        if len(serialized) <= MAX_TOOL_RESULT_CHARS:
+            return result  # 原样返回 dict
 
-    # 超限：返回截断提示 dict
-    label = f"{tool_name} " if tool_name else ""
-    message = f"[截断] {label}原始输出 {len(serialized)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。如需完整内容，请调整查询参数（如缩小 depth/limit）或分页重新获取。"
-    # 逐步缩减 data 直到整个 dict 序列化后 <= MAX_TOOL_RESULT_CHARS
-    # （data 内可能含 " 等 JSON 特殊字符，被 json.dumps 转义后体积会膨胀，
-    #   因此不能仅按 serialized 的字符数算，必须用 json.dumps 整体校验）
-    budget = MAX_TOOL_RESULT_CHARS - len(message) - 200  # 给 status/message/结构开销留余量
-    truncated_data = serialized[:budget]
-    while True:
-        candidate = {
-            "status": "truncated",
-            "message": message,
-            "data": truncated_data,
-        }
-        if len(json.dumps(candidate, ensure_ascii=False)) <= MAX_TOOL_RESULT_CHARS:
-            return candidate
-        # 超限：继续砍 100 字符直到满足（保守，避免死循环）
-        truncated_data = truncated_data[:-100] if len(truncated_data) > 100 else ""
-        if not truncated_data:
-            return candidate  # 极端情况：data 空也超限（message 过长），直接返回
+        # 超限：返回截断提示 dict
+        label = f"{tool_name} " if tool_name else ""
+        message = f"[截断] {label}原始输出 {len(serialized)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。如需完整内容，请调整查询参数（如缩小 depth/limit）或分页重新获取。"
+        # 逐步缩减 data 直到整个 dict 序列化后 <= MAX_TOOL_RESULT_CHARS
+        # （data 内可能含 " 等 JSON 特殊字符，被 json.dumps 转义后体积会膨胀，
+        #   因此不能仅按 serialized 的字符数算，必须用 json.dumps 整体校验）
+        budget = MAX_TOOL_RESULT_CHARS - len(message) - 200  # 给 status/message/结构开销留余量
+        truncated_data = serialized[:budget]
+        while True:
+            candidate = {
+                "status": "truncated",
+                "message": message,
+                "data": truncated_data,
+            }
+            if len(json.dumps(candidate, ensure_ascii=False)) <= MAX_TOOL_RESULT_CHARS:
+                return candidate
+            # 超限：继续砍 100 字符直到满足（保守，避免死循环）
+            truncated_data = truncated_data[:-100] if len(truncated_data) > 100 else ""
+            if not truncated_data:
+                return candidate  # 极端情况：data 空也超限（message 过长），直接返回
+    except Exception:
+        # E4-15：外层兜底（非 BaseException——KeyboardInterrupt/CancelledError 保留穿透）
+        return {"error": f"[工具结果序列化失败: {type(result).__name__}]"}
+
+
+def _serialize_tool_result_data(data) -> str:
+    """E4-15：工具结果序列化兜底（datastr 计算共用）。
+
+    - dict/list：json.dumps(default=json_default)；异常 → 错误 dict 的 JSON 串
+      （与统一关口 list 分支 except 语义一致——[工具结果序列化失败: <type>]）
+    - 其他（含裸对象）：str()；异常 → 同错误文本（修复④——裸对象直调 str() 包 try/except）
+
+    非 BaseException 语义：KeyboardInterrupt/CancelledError 保留穿透。
+    """
+    if type(data) in [dict, list]:
+        try:
+            return json.dumps(data, ensure_ascii=False, default=json_default)
+        except Exception:
+            return json.dumps({"error": f"[工具结果序列化失败: {type(data).__name__}]"}, ensure_ascii=False)
+    try:
+        return str(data)
+    except Exception:
+        return f"[工具结果序列化失败: {type(data).__name__}]"
 
 
 def _enforce_message_budget(messages: list) -> list:
@@ -791,6 +820,8 @@ def agent_runner_loop(
     _max_harness_retries = 3
     _truncation_retry_count = 0
     _max_truncation_retries = 3
+    _parse_fail_count = 0  # E4-01：连续参数解析失败计数（函数级局部——每次调用自然复位；解析成功时清零）
+    _max_parse_failures = 3
     warning_threshold = _read_warning_threshold()
 
     while handler.max_turns is None or turn < handler.max_turns:
@@ -1119,6 +1150,10 @@ def agent_runner_loop(
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
 
+        tool_results = []
+        next_prompts = set()
+        should_exit = None
+
         if not response.tool_calls:
             tool_calls = [{"tool_name": "no_tool", "args": {}}]
         else:
@@ -1132,16 +1167,34 @@ def agent_runner_loop(
                         "args": args,
                         "id": tc.id,
                     })
+                    _parse_fail_count = 0  # E4-01：解析成功时计数清零（零散失败不跨成功轮累计）
                 except json.JSONDecodeError as e:
-                    # 记录错误并使用空参数继续执行
+                    # E4-01：不再 append {"args": {}} 空参继续（空参调用会产生误导性结果——
+                    # 如 do_edit 空参）——①构建错误工具结果直接进 tool_results（跳过 dispatch，
+                    # tc['error'] 在此消费）；②同错误文本注入 next_prompts 循环续行（防全失败轮
+                    # len(next_prompts)==0 走 CURRENT_TASK_DONE 退出——LLM 下一轮可见可自纠）。
+                    _parse_fail_count += 1
+                    err_text = f"[工具参数解析失败: {e}]"
+                    if len(err_text) > 500:  # 截断保尾 ≤500（复用 E1 错误格式规范）
+                        err_text = err_text[: 500 - (len("...") + 100)] + "..." + err_text[-100:]
                     logger.error(f"[ERROR] Failed to parse tool arguments for {tc.function.name}: {e}")
                     logger.error(f"[ERROR] Raw arguments: {tc.function.arguments}")
-                    tool_calls.append({
+                    if _parse_fail_count >= _max_parse_failures:
+                        # 同一轮连续 3 次解析失败：第 3 次不再注入 next_prompts（错误工具结果已可见），
+                        # 显式退出（对齐截断强制退出 L925-934 模式——先 yield chat_idle 再 return）
+                        logger.warning(f"[AgentLoop] Failed to parse tool arguments {_max_parse_failures} times consecutively, force exit")
+                        if on_turn_end is not None:
+                            on_turn_end(messages, tools_schema, turn)
+                        if not getattr(handler, "_is_subagent", False):
+                            clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
+                        yield StreamEvent("system", "chat_idle")
+                        return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
+                    tool_results.append({
+                        "tool_use_id": tc.id,
+                        "content": err_text,
                         "tool_name": tc.function.name,
-                        "args": {},  # 回退为空参数
-                        "id": tc.id,
-                        "error": str(e),  # 记录错误信息
                     })
+                    next_prompts.add(err_text)
 
         # 添加assistant消息（如果有工具调用）
         if response.tool_calls:
@@ -1159,9 +1212,6 @@ def agent_runner_loop(
             # V4: yield persist事件，逐条持久化assistant(tool_calls)消息
             yield StreamEvent("persist", json.dumps(assistant_msg, ensure_ascii=False))
 
-        tool_results = []
-        next_prompts = set()
-        should_exit = None
         # 注入当前消息列表到 handler，使子Agent能获取主Agent的对话历史
         # 注意：此时 messages 包含本轮的 assistant(tool_calls) 但不含 tool 结果
         handler._current_messages = messages
@@ -1242,16 +1292,21 @@ def agent_runner_loop(
                     outcome.data = _truncate_dict_result(outcome.data, tool_name)
                 elif isinstance(outcome.data, list):
                     # list 类型：序列化后截断，返回 truncated dict（与 _truncate_dict_result 一致）
-                    _list_str = json.dumps(outcome.data, ensure_ascii=False, default=json_default)
-                    if len(_list_str) > MAX_TOOL_RESULT_CHARS:
-                        _label = f"工具 {tool_name}" if tool_name else "工具"
-                        _message = f"[截断] {_label}原始输出 {len(_list_str)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。"
-                        _budget = MAX_TOOL_RESULT_CHARS - len(_message) - 200
-                        outcome.data = {
-                            "status": "truncated",
-                            "message": _message,
-                            "data": _list_str[:_budget],
-                        }
+                    try:
+                        _list_str = json.dumps(outcome.data, ensure_ascii=False, default=json_default)
+                    except Exception:
+                        # E4-15：list 序列化失败（如自引用循环 ValueError）→ 错误 dict 兜底（防整轮失败）
+                        outcome.data = {"error": f"[工具结果序列化失败: {type(outcome.data).__name__}]"}
+                    else:
+                        if len(_list_str) > MAX_TOOL_RESULT_CHARS:
+                            _label = f"工具 {tool_name}" if tool_name else "工具"
+                            _message = f"[截断] {_label}原始输出 {len(_list_str)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。"
+                            _budget = MAX_TOOL_RESULT_CHARS - len(_message) - 200
+                            outcome.data = {
+                                "status": "truncated",
+                                "message": _message,
+                                "data": _list_str[:_budget],
+                            }
                 elif isinstance(outcome.data, str):
                     outcome.data = _truncate_tool_content(outcome.data, tool_name)
 
@@ -1259,14 +1314,11 @@ def agent_runner_loop(
                 # should_exit路径：补齐当前tool_result到tool_results列表
                 if tid:
                     if outcome.data is not None:
-                        datastr = (
-                            json.dumps(outcome.data, ensure_ascii=False, default=json_default)
-                            if type(outcome.data) in [dict, list]
-                            else str(outcome.data)
-                        )
+                        datastr = _serialize_tool_result_data(outcome.data)
                         tool_results.append({"tool_use_id": tid, "content": datastr, "tool_name": tool_name})
                     else:
-                        tool_results.append({"tool_use_id": tid, "content": "", "tool_name": tool_name})
+                        # E4-03：data=None → 中性占位（无错误前缀语义）
+                        tool_results.append({"tool_use_id": tid, "content": "（工具已执行，无返回值）", "tool_name": tool_name})
                 # 添加tool消息到messages
                 for tool_result in tool_results:
                     tool_msg = {
@@ -1301,18 +1353,15 @@ def agent_runner_loop(
                 client.last_tools = ""
 
             # 关键：Anthropic API 要求每个 tool_call 都有 tool_result
-            # 即使 outcome.data 为 None，也必须添加空的 tool_result
+            # 即使 outcome.data 为 None，也必须添加 tool_result
             # 但 no_tool 场景 tid 为空字符串，不应产生孤立的 tool 消息
             if tid:
                 if outcome.data is not None:
-                    datastr = (
-                        json.dumps(outcome.data, ensure_ascii=False, default=json_default)
-                        if type(outcome.data) in [dict, list]
-                        else str(outcome.data)
-                    )
+                    datastr = _serialize_tool_result_data(outcome.data)
                     tool_results.append({"tool_use_id": tid, "content": datastr, "tool_name": tool_name})
                 else:
-                    tool_results.append({"tool_use_id": tid, "content": "", "tool_name": tool_name})
+                    # E4-03：data=None → 中性占位（无错误前缀语义）
+                    tool_results.append({"tool_use_id": tid, "content": "（工具已执行，无返回值）", "tool_name": tool_name})
 
             next_prompts.add(outcome.next_prompt)
 
