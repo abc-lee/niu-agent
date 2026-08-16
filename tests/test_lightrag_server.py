@@ -206,6 +206,21 @@ class TestLightragQueryData:
         assert result["status"] == "error"
         assert "知识图谱不可用" in result["message"]
 
+    def test_error_dict_passthrough_real_interplay(self):
+        """E3 契约：真实 _is_no_result 对 error dict 返回 False——透传不被吞（锁定真实 interplay）。"""
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter as _RealLightRAGAdapter
+
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query_data.return_value = {"status": "error", "message": "知识图谱不可用（初始化门控拒绝）"}
+        mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = _RealLightRAGAdapter._is_no_result
+
+        result = mod.lightrag_query_data(query="test", mode="local", top_k=10)
+
+        assert result["status"] == "error"
+        assert "知识图谱不可用" in result["message"]
+
 
 class TestLightragSearchEntities:
     """Test lightrag_search_entities tool function."""
@@ -267,6 +282,21 @@ class TestLightragSearchEntities:
         assert result["status"] == "error"
         assert "图谱查询失败: boom" in result["message"]
 
+    def test_error_dict_passthrough_real_interplay(self):
+        """E3 契约：真实 _is_no_result 对 error dict 返回 False——透传不被吞（锁定真实 interplay）。"""
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter as _RealLightRAGAdapter
+
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query_data.return_value = {"status": "error", "message": "图谱查询失败: boom"}
+        mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = _RealLightRAGAdapter._is_no_result
+
+        result = mod.lightrag_search_entities(query="test")
+
+        assert result["status"] == "error"
+        assert "图谱查询失败: boom" in result["message"]
+
 
 class TestLightragGetGraph:
     """Test lightrag_get_graph tool function."""
@@ -303,6 +333,20 @@ class TestLightragGetGraph:
 
         assert result["status"] == "error"
         assert result["center"] is None
+
+    def test_error_dict_passthrough(self):
+        """E3 契约（E3-03）：错误不再伪装为无结果——explore_node error dict 原样透传（status/message 保留）。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        error_dict = {"status": "error", "message": "图谱查询失败: boom", "nodes": [], "edges": []}
+        mock_adapter.explore_node.return_value = error_dict
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_get_graph(action="explore", entity_name="x")
+
+        assert result == error_dict
+        assert result["status"] == "error"
+        assert result["message"] == "图谱查询失败: boom"
 
     def test_invalid_action(self):
         """Invalid action should return error."""
@@ -626,7 +670,7 @@ class TestCallTool:
         )
 
     def test_all_tools_dispatchable(self):
-        """All 12 tool names should be dispatchable via call_tool."""
+        """All 23 tool names should be dispatchable via call_tool."""
         mod = _import_module()
         for name in mod.TOOL_SCHEMAS:
             assert name in mod._TOOL_FUNCTIONS, f"{name} not in _TOOL_FUNCTIONS"
