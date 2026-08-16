@@ -2873,7 +2873,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             new_dream_id = last_dream_evolve_id  # 默认保留旧游标
             if dream_msg_ids:
                 logger.info(f"[Tidy] dream-evolver: {len(dream_msg_ids)} new messages since cursor")
-                dream_task_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+                dream_task_prompt = """对以上消息中涉及的实体进行精加工（精简描述、建时间链、关联脑区、用户画像关联），并维护 skill 文件。
 
 消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
                 # 构造增量 history
@@ -3645,7 +3645,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
             new_dream_id = last_dream_evolve_id  # 默认保留旧游标，防止 overflow 时未定义
             if dream_force_msg_ids:
-                dream_force_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+                dream_force_prompt = """对以上消息中涉及的实体进行精加工（精简描述、建时间链、关联脑区、用户画像关联），并维护 skill 文件。
 
 消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
                 # 构造增量 history
