@@ -790,6 +790,21 @@ class TestSearchKnowledge:
         mock_query_data.assert_called_once_with("test", mode="local", top_k=10, keywords=None)
 
 
+class TestSearchByFilePath:
+    """Tests for LightRAGAdapter.search_by_file_path."""
+
+    @patch.object(LightRAGAdapter, "query_data")
+    def test_raises_runtime_error_on_error_dict(self, mock_query_data):
+        """E3 契约：error dict 必须 raise 传导（防重新静默丢失）——search_by_file_path 抛 RuntimeError 含原文"""
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+        mock_query_data.return_value = {"status": "error", "message": "boom"}
+
+        with pytest.raises(RuntimeError, match="boom"):
+            adapter.search_by_file_path("test", file_path_contains="skill_sync")
+
+
 # ============== Tests for explore_node ==============
 
 
