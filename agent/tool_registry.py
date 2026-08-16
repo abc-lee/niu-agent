@@ -28,6 +28,19 @@ from typing import Any
 from loguru import logger
 
 
+def _record_mcp_load_failure(server_name: str, reason: str) -> None:
+    """记录 MCP 加载失败进状态槽（E4-08/E4-16）。
+
+    函数内延迟导入——mcp_loader 顶部导入本模块，模块级导入会形成循环依赖。
+    记录失败不阻断注册流程（日志保留现场）。
+    """
+    try:
+        from agent.mcp_loader import record_mcp_load_failure
+        record_mcp_load_failure(server_name, reason)
+    except Exception as e:
+        logger.warning(f"Failed to record MCP load failure for {server_name}: {e}")
+
+
 class ToolRegistry:
     """
     MCP工具注册中心
@@ -102,6 +115,7 @@ class ToolRegistry:
         # 检查模块是否有get_tool_schemas函数
         if not hasattr(module, 'get_tool_schemas'):
             logger.warning(f"Module {module} does not have get_tool_schemas function")
+            _record_mcp_load_failure(server_name, "模块缺少 get_tool_schemas 函数")
             return False
 
         try:
@@ -208,6 +222,7 @@ class ToolRegistry:
 
         except Exception as e:
             logger.error(f"Failed to register server {server_name}: {e}")
+            _record_mcp_load_failure(server_name, f"注册异常: {e}")
             return False
 
     def get(self, tool_name: str) -> Callable | None:

@@ -2457,6 +2457,20 @@
       addMessage('system', event.message || '⚠️ 系统提示');
     });
 
+    // 监听 MCP 服务器加载失败（E4-08/E4-16——SSE 连接建立时拉取状态槽，每连接一次；简单提示，不落库）
+    // E3 "首屏一次"节流模式同族：窗口会话内只显示一次（SSE 路径与轮询路径双源去重）
+    let _mcpLoadFailuresShown = false;
+    function _showMcpLoadFailures(failures) {
+      if (_mcpLoadFailuresShown) return;
+      if (!Array.isArray(failures) || failures.length === 0) return;
+      _mcpLoadFailuresShown = true;
+      const summary = failures.map(f => (f.server || '?') + '（' + (f.reason || '未知原因') + '）').join('、');
+      addMessage('system', '⚠️ MCP 服务器加载失败：' + summary);
+    }
+    window.electronAPI.onMcpLoadFailures((event) => {
+      _showMcpLoadFailures(event && event.failures);
+    });
+
     // ========== 数据库$视图刷新 ==========
     let _refreshFromDBRunning = false;  // 防止并发调用
     let _refreshPending = false;
@@ -2602,6 +2616,11 @@
     window.electronAPI.onSyncState(async () => {
       try {
         const status = await window.electronAPI.getChatStatus();
+        // 窗口恢复轮询路径：MCP 加载失败状态槽（SSE 连接先于窗口建立时事件已随连接发出，
+        // 窗口后开时靠轮询补拉——_showMcpLoadFailures 窗口会话级去重）
+        if (status && Array.isArray(status.mcp_load_failures)) {
+          _showMcpLoadFailures(status.mcp_load_failures);
+        }
         if (status && status.busy) {
           stopBtn.style.display = 'flex';
           isProcessing = true;

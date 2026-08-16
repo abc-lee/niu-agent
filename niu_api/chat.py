@@ -42,6 +42,37 @@ def set_frontend_ready():
     logger.info("[FRONTEND_READY] Frontend SSE subscription established")
 
 
+def _push_connection_initial_events(q: asyncio.Queue) -> None:
+    """SSE 连接建立后拉取状态槽：mcp_load_failures 随连接响应返回（每连接一次）。
+
+    拉取模式（E4-08/E4-16）：
+    - 订阅注册后才推送（与 frontend_ready 机制同点接合）——不在启动完成时推送
+      （R2 B P3 实证：推送必然先于前端订阅发出丢失——SSE 无重放缓冲）；
+    - 服务端保留状态槽至下次加载周期，不随显示清除
+      （R4 P1：清除则第二窗口/重连拉取恒空 = 静默丢失）。
+    """
+    from agent.mcp_loader import get_mcp_load_failures
+
+    failures = get_mcp_load_failures()
+    if failures:
+        q.put_nowait({"type": "mcp_load_failures", "failures": failures})
+
+
+def _register_connection() -> asyncio.Queue:
+    """注册一个 SSE 订阅队列并完成连接建立初始化（frontend_ready 机制接合点）。
+
+    每个连接拥有自己的队列；订阅注册后立即拉取状态槽（mcp_load_failures），
+    再通知 frontend_ready——保证 scheduler 扫描过期任务时订阅已就绪、
+    reply 推 SSE 不会丢（重连兜底仍在 main.js 调 POST /api/frontend-ready）。
+    """
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    _event_subscribers.append(q)
+    # 连接建立后拉取状态槽（每连接一次）——与 frontend_ready 机制同点接合
+    _push_connection_initial_events(q)
+    set_frontend_ready()
+    return q
+
+
 def set_main_event_loop(loop: asyncio.AbstractEventLoop):
     """在 uvicorn 启动时调用，保存主事件循环引用"""
     global _main_loop
@@ -786,14 +817,8 @@ async def events_stream():
     通过 Electron IPC 推送给 chat.html 渲染。
     """
     async def generate():
-        # 每个连接拥有自己的队列
-        q: asyncio.Queue = asyncio.Queue(maxsize=100)
-        _event_subscribers.append(q)
-        # 在订阅者注册之后通知 frontend_ready——保证 scheduler 扫描过期任务时
-        # _event_subscribers 非空，reply 推 SSE 不会丢
-        # （前端 main.js 仍会调 POST /api/frontend-ready 作为重连兜底，
-        #   但首次连接的可靠通知在这里）
-        set_frontend_ready()
+        # 每个连接拥有自己的队列（订阅注册 + 状态槽拉取 + frontend_ready 同点接合）
+        q = _register_connection()
         logger.info(f"[SSE] Client connected (total: {len(_event_subscribers)})")
         try:
             while True:
@@ -869,8 +894,15 @@ async def frontend_ready():
 
 @router.get("/api/chat/status")
 async def chat_status():
-    """返回当前 Agent 是否忙碌。用于前端窗口恢复时同步停止按钮状态。"""
-    return {"busy": _chat_lock.locked()}
+    """返回当前 Agent 是否忙碌 + MCP 加载失败状态槽。用于前端窗口恢复时同步状态。
+
+    mcp_load_failures：既有轮询路径返回状态槽（E4-08 拉取模式——
+    窗口在 SSE 连接之后打开时，事件已随连接发出丢失，靠轮询补拉；
+    服务端保留状态槽至下次加载周期，不随显示清除）。
+    """
+    from agent.mcp_loader import get_mcp_load_failures
+
+    return {"busy": _chat_lock.locked(), "mcp_load_failures": get_mcp_load_failures()}
 
 
 @router.post("/api/stop_all")

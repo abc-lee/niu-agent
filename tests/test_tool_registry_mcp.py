@@ -157,3 +157,75 @@ class TestCallToolWrapper:
         # 应该传播原始异常
         with pytest.raises(RuntimeError, match="工具执行失败"):
             tool_fn()
+
+
+class TestRegisterServerFailureSlot:
+    """register_server 失败 → MCP 加载失败状态槽（E4-08/E4-16）。
+
+    锚点（tool_registry.py L90-211）：
+    - get_tool_schemas 缺失 → warning + return False
+    - 空工具列表 → warning + return True（仍视为有效注册，不收集）
+    - 注册异常 → 末尾 return False
+    """
+
+    def setup_method(self):
+        """每个测试前重置 registry + 清空状态槽"""
+        from agent.mcp_loader import reset_mcp_load_failures
+        reset_registry()
+        reset_mcp_load_failures()
+
+    def test_missing_get_tool_schemas_records_failure(self):
+        """模块缺 get_tool_schemas → return False + 状态槽收集"""
+        from agent.mcp_loader import get_mcp_load_failures
+
+        mock_module = Mock(spec=[])  # spec=[] 防止 Mock 自动提供属性
+        registry = ToolRegistry()
+
+        assert registry.register_server("bad-server", mock_module) is False
+
+        failures = get_mcp_load_failures()
+        assert len(failures) == 1, f"应收集 1 条失败，实际: {failures}"
+        assert failures[0]["server"] == "bad-server"
+        assert "get_tool_schemas" in failures[0]["reason"]
+
+    def test_exception_records_failure(self):
+        """get_tool_schemas 抛异常 → return False + 状态槽收集（含异常文本）"""
+        from agent.mcp_loader import get_mcp_load_failures
+
+        def boom():
+            raise RuntimeError("schema generation failed")
+
+        mock_module = Mock(spec=["get_tool_schemas"])
+        mock_module.get_tool_schemas = boom
+        registry = ToolRegistry()
+
+        assert registry.register_server("err-server", mock_module) is False
+
+        failures = get_mcp_load_failures()
+        assert len(failures) == 1, f"应收集 1 条失败，实际: {failures}"
+        assert failures[0]["server"] == "err-server"
+        assert "schema generation failed" in failures[0]["reason"]
+
+    def test_empty_tools_not_recorded_as_failure(self):
+        """空工具列表仍是有效注册（return True）——不收集进状态槽"""
+        from agent.mcp_loader import get_mcp_load_failures
+
+        mock_module = Mock(spec=["get_tool_schemas"])
+        mock_module.get_tool_schemas = Mock(return_value=[])
+        registry = ToolRegistry()
+
+        assert registry.register_server("empty-server", mock_module) is True
+        assert get_mcp_load_failures() == []
+
+    def test_successful_registration_not_recorded(self):
+        """正常注册成功（return True）——不收集进状态槽"""
+        from agent.mcp_loader import get_mcp_load_failures
+
+        mock_module = Mock(spec=["get_tool_schemas"])
+        mock_module.get_tool_schemas = Mock(return_value=[
+            {"name": "ok_tool", "description": "ok", "inputSchema": {}}
+        ])
+        registry = ToolRegistry()
+
+        assert registry.register_server("good-server", mock_module) is True
+        assert get_mcp_load_failures() == []

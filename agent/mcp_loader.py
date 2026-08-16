@@ -36,6 +36,33 @@ OPTIONAL_SERVERS: list[tuple[str, str]] = [
 
 
 # ============================================================================
+# MCP 加载失败状态槽（E4-08/E4-16）
+# ============================================================================
+# 收集 (server_name, reason) 供前端 SSE 连接建立后拉取显示（拉取模式——不在启动
+# 完成时推送：R2 B P3 实证推送必然先于前端订阅发出丢失，SSE 无重放缓冲）。
+# 服务端保留至下次加载周期（load_mcp_tools 重新开始时清空）；
+# 不随前端显示清除（R4 P1：清除则第二窗口/重连拉取恒空 = 静默丢失）。
+_mcp_load_failures: list[dict] = []
+
+
+def reset_mcp_load_failures() -> None:
+    """清空失败状态槽——下一次加载周期开始时调用（保留至本次加载周期结束）"""
+    _mcp_load_failures.clear()
+
+
+def record_mcp_load_failure(server_name: str, reason: str) -> None:
+    """记录一条 MCP 服务器加载失败（同 server+reason 去重）"""
+    entry = {"server": server_name, "reason": reason}
+    if entry not in _mcp_load_failures:
+        _mcp_load_failures.append(entry)
+
+
+def get_mcp_load_failures() -> list[dict]:
+    """返回失败状态槽副本（查询不改变状态槽内容）"""
+    return list(_mcp_load_failures)
+
+
+# ============================================================================
 # Config Loader
 # ============================================================================
 
@@ -107,6 +134,9 @@ def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> Too
     """
     servers = required_servers or REQUIRED_SERVERS
 
+    # 新加载周期开始：清空失败状态槽（服务端保留至下次加载周期的边界）
+    reset_mcp_load_failures()
+
     # Load MCP configuration and add workdirs to sys.path
     config = _load_mcp_config()
     # 确保项目根目录在 sys.path（MCP 服务器需要 import agent.*）
@@ -165,11 +195,14 @@ def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> Too
                 logger.info(f"Optional server loaded: {server_name}")
             else:
                 logger.warning(f"Optional server {server_name} registration failed")
+                # register_server 内部已收集失败（缺 get_tool_schemas/注册异常），不重复记录
 
         except ImportError as e:
             logger.debug(f"Optional server {server_name} not available: {e}")
+            record_mcp_load_failure(server_name, f"模块不可用: {e}")
         except Exception as e:
             logger.warning(f"Optional server {server_name} error: {e}")
+            record_mcp_load_failure(server_name, f"加载异常: {e}")
 
     # Set global registry instance
     set_registry(registry)
@@ -264,3 +297,4 @@ async def load_external_servers(mcp_client, registry=None):
 
         except Exception as e:
             logger.error(f"Failed to load external MCP server {server_name}: {e}")
+            record_mcp_load_failure(server_name, f"连接失败: {e}")
