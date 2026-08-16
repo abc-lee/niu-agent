@@ -136,6 +136,13 @@ _ANNOTATIONS = (
 )
 
 
+def _assert_siblings_absent(injection, own_marker):
+    """兄弟标注隔离：自身标注之外其余 5 种标注必须缺席（防兄弟路径误标回归，P3-2）。"""
+    for marker in _ANNOTATIONS:
+        if marker != own_marker:
+            assert marker not in injection
+
+
 def _make_runner():
     """最小 NiuRunner 装配（NiuRunner.__new__ 绕过 __init__——E3-07 getattr 守卫验证面）。"""
     from agent.runner import NiuRunner
@@ -187,8 +194,7 @@ def _brain_patches():
          patch("niu_api.internal.lightrag_adapter.LightRAGIngester"), \
          patch("agent.brain_tools.get_activation_mgr") as get_mgr, \
          patch("niu_api.internal.region_manager.RegionManager"), \
-         patch("niu_api.internal.region_injector.BrainContextInjector") as injector_cls, \
-         patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")):
+         patch("niu_api.internal.region_injector.BrainContextInjector") as injector_cls:
         injector = MagicMock()
         injector.activate_for_query.return_value = ({}, None, None)
         injector.format_region_map_only.return_value = ""
@@ -205,6 +211,7 @@ class TestInjectionNotes:
         runner._get_brain_injector = MagicMock(side_effect=RuntimeError("brain down"))
         injection, _ = runner._inject_dynamic_resources("test")
         assert "[脑区激活失败，本轮无脑区注入]" in injection
+        _assert_siblings_absent(injection, "[脑区激活失败，本轮无脑区注入]")
 
     def test_skill_retrieval_failure_adds_annotation(self):
         runner = _make_runner()
@@ -212,6 +219,7 @@ class TestInjectionNotes:
         runner._brain_adapter.search_by_file_path = MagicMock(side_effect=RuntimeError("skill down"))
         injection, _ = runner._inject_dynamic_resources("test")
         assert "[技能检索失败，本轮无技能注入]" in injection
+        _assert_siblings_absent(injection, "[技能检索失败，本轮无技能注入]")
 
     def test_knowledge_retrieval_failure_adds_annotation(self):
         runner = _make_runner()
@@ -219,6 +227,7 @@ class TestInjectionNotes:
         runner._brain_adapter.search_multi_lightrag = MagicMock(side_effect=RuntimeError("kg down"))
         injection, _ = runner._inject_dynamic_resources("test")
         assert "[知识检索失败，本轮无参考知识注入]" in injection
+        _assert_siblings_absent(injection, "[知识检索失败，本轮无参考知识注入]")
 
     def test_region_map_failure_adds_annotation(self):
         runner = _make_runner()
@@ -228,6 +237,7 @@ class TestInjectionNotes:
         runner._get_brain_injector = MagicMock(return_value=injector)
         injection, _ = runner._inject_dynamic_resources("test")
         assert "[脑区状态图生成失败]" in injection
+        _assert_siblings_absent(injection, "[脑区状态图生成失败]")
 
     def test_region_knowledge_format_failure_adds_annotation(self):
         runner = _make_runner()
@@ -238,6 +248,7 @@ class TestInjectionNotes:
         runner._get_brain_injector = MagicMock(return_value=injector)
         injection, _ = runner._inject_dynamic_resources("test")
         assert "[脑区知识格式化失败]" in injection
+        _assert_siblings_absent(injection, "[脑区知识格式化失败]")
 
     def test_normal_path_has_no_annotations(self):
         """正常路径（检索成功）无任何标注。"""
