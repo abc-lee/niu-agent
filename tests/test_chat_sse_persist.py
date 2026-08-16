@@ -13,6 +13,7 @@
 """
 import json
 import os
+import pathlib
 import tempfile
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -402,3 +403,183 @@ async def test_chat_db_pipeline_skips_system_messages(temp_db_path, temp_message
     messages = await store.get_messages()
     system_msgs = [m for m in messages if m.role == "system"]
     assert len(system_msgs) == 0, f"DB 不应有 system 消息，实际: {len(system_msgs)}"
+
+
+# ---------------------------------------------------------------------------
+# E4-02：system_notice 专用 SSE 事件（强制退出转发——E2 llm_error 模式）
+# ---------------------------------------------------------------------------
+
+class _FakeLoop:
+    """记录 call_soon_threadsafe 调用的假事件循环（不真正调度）。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def call_soon_threadsafe(self, callback, *args):
+        self.calls.append((callback, args))
+
+
+def test_notify_system_notice_sync_broadcasts_event_to_subscribers():
+    """notify_system_notice_sync 应广播 system_notice 事件（type/message/source）到订阅者。"""
+    from niu_api import chat as chat_mod
+
+    fake = _FakeLoop()
+    old_loop = chat_mod._main_loop
+    chat_mod._main_loop = fake
+    try:
+        chat_mod.notify_system_notice_sync("⚠️ 输出多次超长截断，已强制退出", "runner")
+        assert len(fake.calls) == 1
+        cb, args = fake.calls[0]
+        assert cb is chat_mod._sync_broadcast
+        assert args[0] == {
+            "type": "system_notice",
+            "message": "⚠️ 输出多次超长截断，已强制退出",
+            "source": "runner",
+        }
+    finally:
+        chat_mod._main_loop = old_loop
+
+
+def test_notify_system_notice_sync_main_loop_none_early_exit():
+    """_main_loop=None 时 notify_system_notice_sync 早退不抛。"""
+    from niu_api import chat as chat_mod
+
+    old_loop = chat_mod._main_loop
+    chat_mod._main_loop = None
+    try:
+        chat_mod.notify_system_notice_sync("msg", "runner")
+    finally:
+        chat_mod._main_loop = old_loop
+
+
+def _make_runner_for_notice():
+    """构造 NiuRunner（mock 掉重依赖——与 test_runner_stream_events 同款）。"""
+    with patch("agent.runner.create_client") as mock_create_client, \
+         patch("agent.runner.get_system_prompt", return_value="sys"), \
+         patch("agent.runner.get_tools_schema", return_value=[]), \
+         patch("agent.runner.get_skill_sync"), \
+         patch("agent.runner.NiuHandler"), \
+         patch("niu_api.internal.disk_engine.DiskEngine") as mock_disk_cls:
+        mock_create_client.return_value = Mock()
+        mock_disk_instance = Mock()
+        mock_disk_instance.get_schema.return_value = {"type": "function", "function": {"name": "disk"}}
+        mock_disk_instance.config.servers = {}  # empty servers dict for _build_disk_description
+        mock_disk_cls.return_value = mock_disk_instance
+
+        from agent.runner import NiuRunner
+        runner = NiuRunner(
+            llm_config={"apikey": "test", "model": "test-model"},
+            mcp_client=None,
+        )
+    return runner
+
+
+def test_runner_chat_forced_exit_system_event_forwards_system_notice():
+    """E4-02：runner.chat 收到含 '已强制退出' 的 system 事件 → 触发 notify_system_notice_sync。
+
+    强制退出事件不落库、不进 LLM 上下文，仅经 SSE system_notice 推前端 ⚠️ 提示；
+    不是 reply 内容，不 yield 给调用方。
+    """
+    from agent.generic.agent_loop import StreamEvent
+    runner = _make_runner_for_notice()
+
+    events = [
+        StreamEvent("system", "⚠️ 输出多次超长截断，已强制退出\n"),
+        StreamEvent("system", "chat_idle"),
+    ]
+
+    with patch("agent.runner.agent_runner_loop", return_value=iter(events)), \
+         patch("niu_api.chat.notify_system_notice_sync") as mock_notice:
+        results = list(runner.chat(
+            session_id="test-session",
+            user_input="test",
+        ))
+
+    assert results == [], f"强制退出 system 事件不应作为 reply 输出，实际: {results}"
+    mock_notice.assert_called_once_with("⚠️ 输出多次超长截断，已强制退出", source="runner")
+
+
+def test_runner_chat_chat_busy_idle_still_forwarded():
+    """E4-02：chat_busy/chat_idle 状态机事件转发保持（notify_new_message_sync 仍被调用）。"""
+    from agent.generic.agent_loop import StreamEvent
+    runner = _make_runner_for_notice()
+
+    events = [
+        StreamEvent("system", "chat_busy"),
+        StreamEvent("system", "chat_idle"),
+    ]
+
+    with patch("agent.runner.agent_runner_loop", return_value=iter(events)), \
+         patch("niu_api.chat.notify_system_notice_sync") as mock_notice, \
+         patch("niu_api.chat.notify_new_message_sync") as mock_state:
+        results = list(runner.chat(
+            session_id="test-session",
+            user_input="test",
+        ))
+
+    assert results == []
+    assert mock_state.call_count == 2, \
+        f"chat_busy/chat_idle 应触发 2 次 notify_new_message_sync，实际: {mock_state.call_count}"
+    mock_state.assert_any_call("", "chat_busy", "", source="electron")
+    mock_state.assert_any_call("", "chat_idle", "", source="electron")
+    mock_notice.assert_not_called()
+
+
+def test_runner_chat_other_system_events_dropped_no_notify():
+    """E4-02：其余 system 事件（截断重试提示/普通文本）丢弃——不触发任何通知。
+
+    截断重试分支（'正在重试'）已注入 LLM 上下文（messages.append user 角色）——
+    显式接受零改动，不转发 SSE。
+    """
+    from agent.generic.agent_loop import StreamEvent
+    runner = _make_runner_for_notice()
+
+    events = [
+        StreamEvent("system", "LLM Running...\n"),
+        StreamEvent("system", "⚠️ 输出超长被截断，正在重试...\n"),
+        StreamEvent("system", "some other system msg"),
+        StreamEvent("reply", "Hello"),
+    ]
+
+    with patch("agent.runner.agent_runner_loop", return_value=iter(events)), \
+         patch("niu_api.chat.notify_system_notice_sync") as mock_notice, \
+         patch("niu_api.chat.notify_new_message_sync") as mock_state:
+        results = list(runner.chat(
+            session_id="test-session",
+            user_input="test",
+        ))
+
+    assert results == ["Hello"]
+    # 流内普通 system 事件（截断重试/LLM Running/其他）不触发任何通知
+    mock_notice.assert_not_called()
+    # chat() 收尾的防御性 chat_idle 推送保持（既有行为——非流内 system 事件）
+    assert mock_state.call_count == 1, \
+        f"只应有收尾 chat_idle 推送，实际: {mock_state.call_count}"
+    mock_state.assert_called_once_with("", "chat_idle", "", source="electron")
+
+
+def test_frontend_system_notice_four_hop_chain():
+    """E4-02 四跳链前端消费点：main.js SSE 分支 → preload IPC 桥 → chat.html ⚠️ 渲染。
+
+    E2 llm_error 模式参照：chat.py 广播 → main.js 分支 → preload onSystemNotice →
+    chat.html addMessage('system', ...) 提示渲染（只推不落 DB，刷新消失）。
+    """
+    project_root = pathlib.Path(__file__).resolve().parent.parent
+
+    main_js = (project_root / "ui" / "main" / "main.js").read_text(encoding="utf-8")
+    preload = (project_root / "ui" / "main" / "preload-chat.js").read_text(encoding="utf-8")
+    chat_html = (project_root / "ui" / "main" / "windows" / "assistant" / "chat.html").read_text(encoding="utf-8")
+
+    # 第 2 跳：main.js 处理 system_notice SSE 事件 → 转发 system-notice IPC 到 chat 窗口
+    assert "event.type === 'system_notice'" in main_js, "main.js 应有 system_notice SSE 分支"
+    assert "webContents.send('system-notice', event)" in main_js, \
+        "main.js 应转发 system-notice 到 chat 窗口"
+
+    # 第 3 跳：preload-chat.js 暴露 onSystemNotice 桥接 system-notice 频道
+    assert "onSystemNotice:" in preload, "preload-chat.js 应暴露 onSystemNotice"
+    assert "ipcRenderer.on('system-notice'" in preload, \
+        "preload-chat.js 应监听 system-notice IPC 频道"
+
+    # 第 4 跳：chat.html 监听 onSystemNotice → addMessage('system', ...) ⚠️ 提示渲染
+    assert "onSystemNotice(" in chat_html, "chat.html 应注册 onSystemNotice 监听器"
+    assert "addMessage('system'," in chat_html, "chat.html 应渲染 ⚠️ system 提示"

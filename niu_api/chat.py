@@ -239,6 +239,28 @@ def notify_llm_error_sync(error_type: str | None, error_msg: str, source: str) -
         pass
 
 
+def notify_system_notice_sync(message: str, source: str) -> None:
+    """广播系统提示事件（system_notice）到 /api/events/stream。
+
+    E4-02：强制退出等系统关键事件专用通道（独立于 llm_error——语义专用）。
+    跨线程安全：可在 agent_loop 线程、HTTP 请求线程中调用（照抄 notify_llm_error_sync 模式）。
+
+    只推不落 DB——事件不经过 persist 路径，刷新 Chat 从 DB 加载历史时该消息自然消失；
+    不进 LLM 上下文——事件只到前端。
+
+    Args:
+        message: 提示文案（如 "⚠️ 输出多次超长截断，已强制退出"）
+        source: 触发来源（"runner" 等，透传信息字段）
+    """
+    if _main_loop is None:
+        return
+    event = {"type": "system_notice", "message": message, "source": source}
+    try:
+        _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass
+
+
 def _sync_broadcast(event: dict):
     """在 FastAPI 事件循环中执行广播"""
     for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改

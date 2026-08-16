@@ -1305,6 +1305,9 @@ class NiuHandler(BaseHandler):
 
             # 验证结果：检查 event-manager 是否真正创建了任务
             if agent_name == "event-manager" and ("提醒" in task or "定时" in task or "提醒我" in task):
+                # E4-11：验证失败原因（None=验证成功——display_result 保持原样不注入；
+                # 非 None=失败——注入 chat-with 结果流，主 Agent 下一轮可见验证失败）
+                verify_fail_reason = None
                 try:
                     import json
                     import sqlite3
@@ -1330,13 +1333,22 @@ class NiuHandler(BaseHandler):
                                 except sqlite3.Error as e:
                                     yield StreamEvent("system", f"[SubAgent] ⚠ Database error: {e}\n")
                                     latest_task = None
+                                    verify_fail_reason = f"数据库错误: {e}"
 
                                 if latest_task:
                                     yield StreamEvent("tool_marker", f"[SubAgent] ✓ Verified task in database: {latest_task[1]} at {latest_task[3]}\n")
                                 else:
                                     yield StreamEvent("system", "[SubAgent] ⚠ Warning: No task found in database\n")
+                                    verify_fail_reason = verify_fail_reason or "数据库中无任务记录"
                 except Exception as e:
                     yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
+                    verify_fail_reason = f"验证异常: {e}"
+
+                # E4-11：验证失败 → 注入 chat-with 结果流（display_result——主 Agent 下一轮可见
+                # 验证失败；不走 next_prompt——防 test_working_memory_removal 白名单回归）；
+                # 成功分支保持丢弃（display_result 原样）
+                if verify_fail_reason:
+                    display_result = f"[event-manager 任务验证失败：{verify_fail_reason}]\n{display_result}"
 
             yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {display_result[:200] if len(display_result) > 200 else display_result}\n")
             return StepOutcome(

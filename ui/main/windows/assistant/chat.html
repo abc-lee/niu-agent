@@ -2451,6 +2451,11 @@
       addMessage('system', '⚠️ ' + (event.error_msg || '模型调用失败'));
     });
 
+    // 监听系统提示（E4-02 强制退出等——SSE 推送，⚠️ system 提示；不落库，刷新后自然消失）
+    window.electronAPI.onSystemNotice((event) => {
+      addMessage('system', event.message || '系统提示');
+    });
+
     // ========== 数据库$视图刷新 ==========
     let _refreshFromDBRunning = false;  // 防止并发调用
     let _refreshPending = false;
