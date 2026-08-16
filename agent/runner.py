@@ -898,6 +898,7 @@ class NiuRunner:
         self._brain_ingester = None     # LightRAGIngester
         self._brain_region_mgr = None   # RegionManager
         self._brain_injector = None     # BrainContextInjector
+        self._brain_injector_failed = False  # E3-07：re-check 脑区上下文不可用标记（_inject_dynamic_resources getattr 守卫消费）
         self._cached_activation_mgr = None  # RegionActivationManager (for cache invalidation)
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
@@ -2609,6 +2610,8 @@ class NiuRunner:
                     # 主线程立即返回 None，下次调用 _get_brain_injector 时后台 sync 可能已完成
                     return None
                 # Re-check after forced sync attempt
+                # E3-07：块级互斥置位/清除（L2613 子分支之外——子分支内恒置 True、Case A 过渡清除失效）
+                self._brain_injector_failed = (_activation_mgr is None)
                 if self._brain_adapter._get_rag() is None or _activation_mgr is None:
                     if _activation_mgr is None:
                         logger.error("[BrainInjector] activation_mgr still None after forced sync, brain context disabled")
@@ -2626,6 +2629,8 @@ class NiuRunner:
                 activation_mgr=_activation_mgr,
                 region_mgr=self._brain_region_mgr,
             )
+        # E3-07：成功创建/缓存命中共用返回路径——标记清除（恢复后标注消失）
+        self._brain_injector_failed = False
         return self._brain_injector
 
     # ============== LightRAG Helper Methods ==============
@@ -2734,6 +2739,9 @@ class NiuRunner:
         """
         from agent.generic.interruptible import run_interruptibly
 
+        # E3 D4：注入失败标注累加器——5 处 except 分支追加固定标注，组装前并入 parts
+        injection_notes: list[str] = []
+
         # 0. Brain region activation——保留 activate_for_query 返回值（step 6 分级注入消费）
         _brain_region_entities: dict[str, list[dict]] = {}
         _brain_injector = None
@@ -2753,6 +2761,7 @@ class NiuRunner:
                 # 放弃等待但后台 daemon 线程仍可能完成激活副作用（置 1.0 + SSE 推送 + 缓存合并更新）
         except Exception as e:
             logger.warning(f"Brain activation failed: {e}")
+            injection_notes.append("[脑区激活失败，本轮无脑区注入]")
 
         # 1. LightRAG 检索 — 按类型独立检索，避免 skill 被 knowledge 淹没
         lightrag_results: dict[str, list[dict]] = {
@@ -2778,6 +2787,7 @@ class NiuRunner:
             lightrag_results["skill"] = skill_results
         except Exception as e:
             logger.warning(f"LightRAG skill retrieval failed: {e}")
+            injection_notes.append("[技能检索失败，本轮无技能注入]")
         if is_stop_requested():
             return "", {}
         # 1b. Knowledge 全量检索
@@ -2802,6 +2812,7 @@ class NiuRunner:
                 lightrag_results[cat] = [e for e in entities if e.get("entity_name", "") not in skill_names]
         except Exception as e:
             logger.warning(f"LightRAG knowledge retrieval failed: {e}")
+            injection_notes.append("[知识检索失败，本轮无参考知识注入]")
         if is_stop_requested():
             return "", {}
 
@@ -2862,6 +2873,7 @@ class NiuRunner:
                     parts.append(f"\n{brain_context}")
         except Exception as e:
             logger.warning(f"Brain region map injection failed: {e}")
+            injection_notes.append("[脑区状态图生成失败]")
 
         # Skills (从衰减池取 category=skill)
         skill_entries = self._decay_pool.get_top_by_category("skill", 5)
@@ -2891,6 +2903,7 @@ class NiuRunner:
                 region_entries = _brain_injector.format_region_knowledge(_brain_region_entities)
             except Exception as e:
                 logger.warning(f"Brain region knowledge formatting failed: {e}")
+                injection_notes.append("[脑区知识格式化失败]")
             region_lines: list[str] = []
             for label, name, etype, desc in region_entries:
                 if name in seen_names:
@@ -2912,6 +2925,11 @@ class NiuRunner:
             f"skills={len(skill_entries)}, knowledge={len(knowledge_entries)}, "
             f"region={len(region_entries)}"
         )
+
+        # E3 D4：脑区上下文不可用标注（getattr 守卫消费——__new__ 装配测试不崩）——组装前并入
+        if getattr(self, "_brain_injector_failed", False):
+            injection_notes.append("[脑区上下文不可用]")
+        parts.extend(injection_notes)
 
         injection = "\n".join(parts)
         if injection:
