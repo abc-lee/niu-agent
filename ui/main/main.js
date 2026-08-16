@@ -447,6 +447,25 @@ function createGraphWindow() {
   graphWindow.loadFile(path.join(__dirname, 'windows', 'graph', 'index.html'));
   graphWindow.show();
 
+  // F12 打开开发者工具（调试用）
+  // macOS: 确保编辑快捷键正常工作（与 chat/settings 窗口保持一致，参考 chatWindow 的 before-input-event）
+  graphWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') {
+      graphWindow.webContents.toggleDevTools();
+    }
+    if (input.meta) {  // Cmd 键（macOS）；Windows 上 Chromium 原生处理 Ctrl+C/V，不在此拦截
+      if (input.key === 'v') {
+        graphWindow.webContents.paste();
+      } else if (input.key === 'c') {
+        graphWindow.webContents.copy();
+      } else if (input.key === 'x') {
+        graphWindow.webContents.cut();
+      } else if (input.key === 'a') {
+        graphWindow.webContents.selectAll();
+      }
+    }
+  });
+
   graphWindow.on('closed', () => {
     graphWindow = null;
   });
