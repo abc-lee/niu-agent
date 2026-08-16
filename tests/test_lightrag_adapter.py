@@ -152,6 +152,17 @@ class TestSanitizeGraphError:
         assert "~/.niu" not in result
         assert result.count("***") >= 2
 
+    def test_tilde_requires_path_separator(self):
+        """~ 后必须跟 / 才剥离（P3-1）——~100/版本~1.0 不误伤，~/.niu 真实路径剥离"""
+        from niu_api.internal.lightrag_adapter import _sanitize_graph_error
+
+        msg = "score ~100 and version ~1.0; storage at ~/.niu/data; workdir ~/projects"
+        result = _sanitize_graph_error(msg)
+        assert "~100" in result
+        assert "~1.0" in result
+        assert "~/.niu" not in result
+        assert "~/projects" not in result
+
     def test_strips_keys_and_bearer(self):
         """key=xxx / api_key=xxx / Bearer xxx 凭证 → 脱敏（复用 E2 规则）"""
         from niu_api.internal.lightrag_adapter import _sanitize_graph_error
@@ -799,6 +810,7 @@ class TestExploreNode:
     @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")
     def test_returns_empty_when_kg_is_none(self, mock_get_rag, mock_call_async):
+        """真空分支（P1）：kg 为 None 是真实无结果——返回无 status 空壳，不带 error dict"""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         mock_get_rag.return_value = MagicMock()
@@ -808,6 +820,29 @@ class TestExploreNode:
         result = adapter.explore_node("Python")
         assert result["nodes"] == []
         assert result["edges"] == []
+        assert result["stats"]["nodes"] == 0
+        assert "status" not in result
+        assert "message" not in result
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_empty_when_kg_has_no_nodes_or_edges(self, mock_get_rag, mock_call_async):
+        """真空分支（P1）：空图（nodes/edges 均空）同样返回无 status 空壳"""
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        kg = MagicMock()
+        kg.nodes = []
+        kg.edges = []
+        mock_get_rag.return_value = MagicMock()
+        mock_call_async.return_value = kg
+
+        adapter = LightRAGAdapter()
+        result = adapter.explore_node("Python")
+        assert result["nodes"] == []
+        assert result["edges"] == []
+        assert result["stats"]["nodes"] == 0
+        assert "status" not in result
+        assert "message" not in result
 
     @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")

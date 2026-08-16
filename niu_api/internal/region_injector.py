@@ -115,7 +115,8 @@ class BrainContextInjector:
                 # E3 契约反转：错误不再伪装为无结果——query_data error dict → raise，
                 # 经下方 `except RuntimeError: raise` 重抛传导至 runner 既有 except
                 # （脑区激活失败标注可达——断链修复；空激活语义（真空）保持不变）
-                raise RuntimeError(query_result.get("message") or "知识图谱不可用")
+                from niu_api.internal.lightrag_adapter import _GRAPH_UNAVAILABLE_MSG
+                raise RuntimeError(query_result.get("message") or _GRAPH_UNAVAILABLE_MSG)
             if query_result and isinstance(query_result, dict):
                 data = query_result.get("data", {})
                 if not data:

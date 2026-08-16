@@ -50,7 +50,7 @@ def _sanitize_graph_error(text: str) -> str:
     # 脱敏 Bearer token
     text = re.sub(r'Bearer\s+\S+', 'Bearer ***', text, flags=re.IGNORECASE)
     # 剥离绝对路径（/Users/...、~/...、C:\...）
-    text = re.sub(r'(?:/Users|~|C:)[^\s,;]+', '***', text)
+    text = re.sub(r'(?:/Users|~/|C:\\)[^\s,;]+', '***', text)
     return text
 
 
@@ -802,7 +802,8 @@ class LightRAGAdapter:
 
         Returns:
             Dict with center, nodes, edges, and stats keys.
-            Returns empty result on error or if entity not found.
+            Returns empty shell dict plus {"status": "error", "message": ...}
+            on error or gate rejection.
         """
         rag = self._get_rag()
         if rag is None:
@@ -825,11 +826,11 @@ class LightRAGAdapter:
             )
 
             if kg is None or (not kg.nodes and not kg.edges):
-                # E3 契约反转：错误不再伪装为无结果——实体无图谱结果时不再返回纯空图
+                # 真空分支（D1/D3/D7）：实体不存在/无邻居是真实无结果场景——
+                # 返回无 status 空壳（仅异常与门控拒绝路径带 error dict）
                 return {
                     "center": None, "nodes": [], "edges": [],
                     "stats": {"nodes": 0, "edges": 0, "max_depth": depth},
-                    "status": "error", "message": f"实体 '{entity_name}' 无图谱结果",
                 }
 
             # Build center from the first node (should be the queried entity)
@@ -1094,7 +1095,8 @@ class LightRAGAdapter:
 
         Returns:
             Dict with nodes and edges lists for frontend visualization.
-            Returns empty result on error.
+            Returns empty shell dict plus {"status": "error", "message": ...}
+            on error or gate rejection.
         """
         rag = self._get_rag()
         if rag is None:
