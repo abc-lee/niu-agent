@@ -3109,8 +3109,9 @@ class NiuRunner:
                                     _gw = get_im_gateway()
                                     if _gw and _gw.is_connected and chunk.content and self.should_push_im():
                                         _gw.notify_stream(strip_at_messages(chunk.content), channel_id=self._current_channel_id)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    # E4-10：IM 通道故障可监控——静默 pass → error（闸门结构零变化）
+                                    logger.error(f"[Runner] IM notify_stream (reply) failed: {e}")
                         elif chunk.type == "persist":
                             # V4: 逐条持久化消息到 DB + 通知 SSE
                             try:
@@ -3120,7 +3121,8 @@ class NiuRunner:
                                     msg_dict["_persisted_id"] = msg_id  # 记录写入后的消息ID
                                     persisted_msgs.append(msg_dict)
                             except Exception as e:
-                                logger.warning(f"[Runner] Failed to persist msg: {e}")
+                                # E4-10：DB 写失败是数据完整性事件——warning→error 提升（监控可见）
+                                logger.error(f"[Runner] Failed to persist msg: {e}")
                         elif chunk.type == "system":
                             # V4: chat_busy/chat_idle 状态机事件，通过SSE推送给前端
                             if chunk.content in ("chat_busy", "chat_idle"):
@@ -3147,8 +3149,9 @@ class NiuRunner:
                                 _gw = get_im_gateway()
                                 if _gw and _gw.is_connected and chunk and self.should_push_im():
                                     _gw.notify_stream(strip_at_messages(chunk), channel_id=self._current_channel_id)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                # E4-10：IM 通道故障可监控——静默 pass → error（闸门结构零变化）
+                                logger.error(f"[Runner] IM notify_stream (str chunk) failed: {e}")
                 except StopIteration as e:
                     return_value = e.value
                     break
@@ -3164,8 +3167,9 @@ class NiuRunner:
                 _gw = get_im_gateway()
                 if _gw and _gw.is_connected and self.should_push_im():
                     _gw.notify_stream("", channel_id=self._current_channel_id, is_final=True)
-            except Exception:
-                pass
+            except Exception as e:
+                # E4-10：IM 通道故障可监控——静默 pass → error（闸门结构零变化）
+                logger.error(f"[Runner] IM notify_stream (final) failed: {e}")
             self._current_channel_id = ""
             # 防御性推送 chat_idle：gen.close() 可能中断 agent_loop 的正常退出路径
             # 只在未推送过时才推送，避免重复

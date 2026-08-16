@@ -335,7 +335,8 @@ def _msg_fingerprint(msg: dict) -> str | None:
 async def persist_agent_reply(
     store, rv, history_len: int, full_reply: str, source: str = "electron",
     persisted_msgs: list[dict] | None = None,
-    extracted_at_msgs: list | None = None
+    extracted_at_msgs: list | None = None,
+    degraded_reason: str = "",
 ) -> tuple[str | None, str]:
     """持久化 Agent 回复消息（从 rv["messages"] 双管道），通知前端。
 
@@ -469,7 +470,8 @@ async def persist_agent_reply(
         _persisted_concat = re.sub(r"<tool_use>.*?</tool_use>", "", _persisted_concat, flags=re.DOTALL)
         # 双侧 strip（R4-P3-b）：V4 内容可能带前导空白，仅 strip 一侧会前缀失配仍重复
         if not _persisted_concat.strip().startswith(full_reply.strip()):
-            message_id = await store.add_message(role="assistant", content=full_reply)
+            # E4-12：降级回复行附加错误类别（degraded_reason——"timeout"|"internal"——DB 可追溯；正常回复传空）
+            message_id = await store.add_message(role="assistant", content=full_reply, degraded_reason=degraded_reason)
             await notify_new_message(message_id, "assistant", full_reply, source=source)
 
     return message_id, full_reply

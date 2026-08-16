@@ -13,6 +13,23 @@ from agent.session import get_message_store
 from loguru import logger
 
 
+def _classify_degraded_reason(chat_error) -> str:
+    """E4-12：降级回复错误类别——"timeout" | "internal"（DB 可追溯标记）。
+
+    仅运维可追溯用——用户侧保持中性占位符（E2 定案，不泄露内部错误细节）。
+    分类规则：
+    - 锁超时路径（chat_error 为字符串 "timeout"）→ "timeout"
+    - 异常对象类型名含 timeout（litellm.Timeout / APITimeoutError / TimeoutError 等瞬态）→ "timeout"
+    - 其余（含 LLM 非超时类如 RateLimitError）→ "internal"
+    """
+    if chat_error == "timeout":
+        return "timeout"
+    if isinstance(chat_error, BaseException):
+        if "timeout" in type(chat_error).__name__.lower():
+            return "timeout"
+    return "internal"
+
+
 @dataclass
 class ChatRequest:
     """入队消息"""
@@ -424,7 +441,6 @@ class ChatQueue:
                 # type_name/is_llm 提前判定（与 persist 解耦）——persist 成败均 notify
                 # persisted_msgs 强制 None——异常路径下 _persisted_msgs 可能是上次的列表（语义陷阱）
                 # source 强制 "electron"——与正常路径一致，避免被 notify_new_message 白名单过滤
-                logger.warning(f"[ChatQueue] Chat error, writing degraded reply. original_error={chat_error}")
                 degraded_reply = "[系统繁忙，请重试]"  # 中性占位符落库（既有行为保持——错误细节不进 DB）
                 from niu_api.chat import notify_llm_error_sync
                 from agent.generic.litellm_adapter import format_llm_error_for_user, is_litellm_error_type
@@ -432,11 +448,19 @@ class ChatQueue:
                 is_llm = bool(type_name) and is_litellm_error_type(type_name)
                 if is_llm:
                     push_text = format_llm_error_for_user(str(chat_error), type_name)  # 友好文案（独立于 persist 成败）
+                # E4-12：降级是监控可见事件——非 LLM 异常（内部 bug/锁超时）error 级；
+                # LLM 异常保持 warning（notify_llm_error_sync 已负责用户可见）。degraded_reason 落库（DB 可追溯）。
+                degraded_reason = _classify_degraded_reason(chat_error)
+                _degraded_log = logger.error if not is_llm else logger.warning
+                _degraded_log(
+                    f"[ChatQueue] Chat error, writing degraded reply. original_error={chat_error}, degraded_reason={degraded_reason}"
+                )
                 from niu_api.chat import persist_agent_reply
                 try:
                     message_id, _ = await persist_agent_reply(
                         store, None, history_len, degraded_reply,
                         source="electron", persisted_msgs=None,
+                        degraded_reason=degraded_reason,
                     )
                 except Exception as persist_e:
                     logger.error(f"[ChatQueue] Degraded reply persist failed: {persist_e}")

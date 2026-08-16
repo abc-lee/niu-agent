@@ -40,6 +40,7 @@ class Message:
     tool_calls: list[dict] = field(default_factory=list)
     tool_results: list[dict] = field(default_factory=list)
     tool_call_id: str = ""  # Links tool result to assistant's tool_calls[].id
+    degraded_reason: str = ""  # E4-12：降级回复错误类别（"timeout"|"internal"——旧行 NULL 读取端容错）
     created_at: str = ""
     rowid: int = 0  # SQLite rowid, 0 = sentinel for "not loaded from DB" (real rowid starts at 1)
 
@@ -101,6 +102,17 @@ class MessageStore:
                 await db.commit()
                 logger.info("Migrated messages table: added tool_call_id column")
 
+            # Migration: add degraded_reason column if missing (E4-12——降级回复可追溯标记；
+            # 旧行 NULL——读取端 .get 默认容错；显式列清单/显式 SELECT 列——不迁移旧库即查询失败)
+            cursor = await db.execute("PRAGMA table_info(messages)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "degraded_reason" not in columns:
+                await db.execute(
+                    "ALTER TABLE messages ADD COLUMN degraded_reason TEXT"
+                )
+                await db.commit()
+                logger.info("Migrated messages table: added degraded_reason column")
+
             await db.commit()
             logger.info(f"MessageStore initialized: {self.db_path}")
 
@@ -111,6 +123,7 @@ class MessageStore:
         tool_calls: list[dict] = None,
         tool_results: list[dict] = None,
         tool_call_id: str = "",
+        degraded_reason: str = "",
     ) -> str:
         """Add a message"""
         msg_id = str(uuid4())
@@ -121,9 +134,9 @@ class MessageStore:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """INSERT INTO messages
-                   (id, role, content, tool_calls, tool_results, tool_call_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, created_at),
+                   (id, role, content, tool_calls, tool_results, tool_call_id, degraded_reason, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, degraded_reason, created_at),
             )
             await db.commit()
 
@@ -136,7 +149,7 @@ class MessageStore:
         Pagination uses rowid (write order), not created_at timestamp.
         before_id is resolved to its rowid for cursor-based pagination.
         """
-        _columns = "id, role, content, tool_calls, tool_results, tool_call_id, created_at, rowid"
+        _columns = "id, role, content, tool_calls, tool_results, tool_call_id, degraded_reason, created_at, rowid"
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -205,6 +218,7 @@ class MessageStore:
                         tool_calls=_safe_json(row["tool_calls"]),
                         tool_results=_safe_json(row["tool_results"]),
                         tool_call_id=row["tool_call_id"] if "tool_call_id" in row.keys() else "",
+                        degraded_reason=row["degraded_reason"] if "degraded_reason" in row.keys() else "",
                         created_at=row["created_at"],
                         rowid=row["rowid"],
                     )
