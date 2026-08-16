@@ -820,7 +820,7 @@ def agent_runner_loop(
     _max_harness_retries = 3
     _truncation_retry_count = 0
     _max_truncation_retries = 3
-    _parse_fail_count = 0  # E4-01：连续参数解析失败计数（函数级局部——每次调用自然复位；解析成功时清零）
+    _parse_fail_count = 0  # E4-01：同一轮内连续参数解析失败计数（每轮解析循环起点重置 + 解析成功清零——触发严格限定"同一轮连续 3 次"）
     _max_parse_failures = 3
     warning_threshold = _read_warning_threshold()
 
@@ -1158,6 +1158,7 @@ def agent_runner_loop(
             tool_calls = [{"tool_name": "no_tool", "args": {}}]
         else:
             # P0-6: 添加 JSON 解析异常处理
+            _parse_fail_count = 0  # E4-01：轮起点重置——触发严格限定"同一轮连续 3 次"（防纯文本/成功轮不清零跨轮累计提前截断 LLM 自纠）
             tool_calls = []
             for tc in response.tool_calls:
                 try:
@@ -1167,7 +1168,7 @@ def agent_runner_loop(
                         "args": args,
                         "id": tc.id,
                     })
-                    _parse_fail_count = 0  # E4-01：解析成功时计数清零（零散失败不跨成功轮累计）
+                    _parse_fail_count = 0  # E4-01：解析成功时计数清零（同一轮内成功后失败重新计数）
                 except json.JSONDecodeError as e:
                     # E4-01：不再 append {"args": {}} 空参继续（空参调用会产生误导性结果——
                     # 如 do_edit 空参）——①构建错误工具结果直接进 tool_results（跳过 dispatch，
@@ -1181,8 +1182,11 @@ def agent_runner_loop(
                     logger.error(f"[ERROR] Raw arguments: {tc.function.arguments}")
                     if _parse_fail_count >= _max_parse_failures:
                         # 同一轮连续 3 次解析失败：第 3 次不再注入 next_prompts（错误工具结果已可见），
-                        # 显式退出（对齐截断强制退出 L925-934 模式——先 yield chat_idle 再 return）
+                        # 显式退出（对齐截断强制退出 L1131-1140 模式——⚠️ system → chat_idle → return）。
+                        # ⚠️ 提示先行：退出路径用户侧可见不静默；不落库本轮 tool_results——return 发生在
+                        # 工具结果 flush/persist 之前，保持丢弃语义（防孤儿 tool 消息）
                         logger.warning(f"[AgentLoop] Failed to parse tool arguments {_max_parse_failures} times consecutively, force exit")
+                        yield StreamEvent("system", "⚠️ 工具参数连续 3 次解析失败，已强制退出\n")
                         if on_turn_end is not None:
                             on_turn_end(messages, tools_schema, turn)
                         if not getattr(handler, "_is_subagent", False):
