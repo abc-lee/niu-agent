@@ -616,3 +616,9 @@ def test_frontend_system_notice_four_hop_chain():
     # 第 4 跳：chat.html 监听 onSystemNotice → addMessage('system', ...) ⚠️ 提示渲染
     assert "onSystemNotice(" in chat_html, "chat.html 应注册 onSystemNotice 监听器"
     assert "addMessage('system'," in chat_html, "chat.html 应渲染 ⚠️ system 提示"
+    # P2：渲染层不追加 "⚠️ " 前缀——生产者（agent_loop L958/L1133/L1189）已自带 ⚠️，
+    # 渲染层再拼会 "⚠️ ⚠️" 双重；透传 event.message，兜底文案自带 ⚠️
+    assert "'⚠️ ' + (event.message" not in chat_html, \
+        "chat.html 渲染层不得再拼接 '⚠️ ' 前缀（生产者已自带，防双重 ⚠️）"
+    assert "event.message || '⚠️ 系统提示'" in chat_html, \
+        "chat.html 应透传 event.message，兜底文案自带 ⚠️"
