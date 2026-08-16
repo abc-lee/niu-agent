@@ -99,6 +99,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收 LLM 调用错误通知（SSE 推送，⚠️ system 提示，刷新消失——不落库）
   onLlmError: (callback) => ipcRenderer.on('llm-error', (_event, data) => callback(data)),
 
+  // 接收系统提示通知（E4-02 强制退出等——SSE 推送，⚠️ system 提示，刷新消失——不落库）
+  onSystemNotice: (callback) => ipcRenderer.on('system-notice', (_event, data) => callback(data)),
+
   // 接收入库开始通知（SSE推送）
   onIngestStarted: (callback) => ipcRenderer.on('ingest-started', callback),
 

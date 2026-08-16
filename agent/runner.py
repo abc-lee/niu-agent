@@ -3128,6 +3128,12 @@ class NiuRunner:
                                 notify_new_message_sync("", chunk.content, "", source="electron")
                                 if chunk.content == "chat_idle":
                                     chat_idle_pushed = True
+                            elif "已强制退出" in chunk.content:
+                                # E4-02：强制退出事件（agent_loop 截断重试耗尽/工具参数连续解析失败——
+                                # "已强制退出"特征文本）→ 专用 SSE 事件 system_notice（E2 llm_error 模式）。
+                                # 不落库、不进 LLM 上下文——只推前端 ⚠️ 提示；chat_busy/chat_idle 之上独立分支。
+                                from niu_api.chat import notify_system_notice_sync
+                                notify_system_notice_sync(chunk.content.strip(), source="runner")
                         # type="tool_marker" 不进入 SSE 和 full_resp
                     else:
                         # 向后兼容：普通 str（stream_error/兼容文本）

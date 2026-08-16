@@ -2049,6 +2049,11 @@ function startMessageEventStream() {
               if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('llm-error', event);
               }
+            } else if (event.type === 'system_notice') {
+              // 转发系统提示（E4-02 强制退出等）到聊天窗口（⚠️ system 提示，刷新消失——不落库）
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('system-notice', event);
+              }
             } else if (event.type === 'ask_user') {
               // R4-A P1-4：聊天窗口关闭时（托盘/scheduler 轮）——spirit 窗口无 ask-user 监听（preload-assistant.js
               // 无 onAskUser），转发是死路。无可渲染窗口时**立即回执后端**注入不可用标记，

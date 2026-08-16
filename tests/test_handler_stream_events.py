@@ -22,6 +22,18 @@ def _collect_events(gen):
     return events
 
 
+def _collect_events_with_return(gen):
+    """收集生成器产生的所有 yield 值，并返回生成器返回值（StopIteration.value）。"""
+    events = []
+    return_value = None
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as e:
+        return_value = e.value
+    return events, return_value
+
+
 def _make_handler(**kwargs):
     """创建一个 NiuHandler 实例，带默认 mock 依赖。"""
     return NiuHandler(
@@ -233,6 +245,118 @@ class TestCallSubagentGen:
         assert any("Failed to verify" in e.content for e in system_events), \
             f"应有包含 'Failed to verify' 的 system 事件，实际: {system_events}"
         assert len(raw_str_events) == 0, f"不应有裸 str yield，实际: {raw_str_events}"
+
+    def test_subagent_verify_fail_injected_into_display_result(self):
+        """E4-11：event-manager 验证失败（DB 无任务）→ 失败文本注入 chat-with 结果流。
+
+        主 Agent 下一轮可见验证失败（display_result——不走 next_prompt——
+        防 test_working_memory_removal 白名单回归）；system yield 保留（verbose 调试通道）。
+        """
+        handler = _make_handler()
+        mock_runner = Mock()
+        mock_runner.llm_config = {"model": "test"}
+
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create memory.json pointing to tmpdir
+            memory_path = Path(tmpdir) / ".niu" / "memory.json"
+            memory_path.parent.mkdir(parents=True, exist_ok=True)
+            memory_path.write_text('{"workspace": {"path": "' + tmpdir + '"}}', encoding="utf-8")
+
+            # Create an empty scheduled_tasks.db (table exists but no rows)
+            db_path = Path(tmpdir) / "scheduled_tasks.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                    id INTEGER PRIMARY KEY,
+                    content TEXT,
+                    status TEXT,
+                    scheduled_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            conn.close()
+
+            with patch("agent.runner.get_runner", return_value=mock_runner), \
+                 patch("agent.subagent.call_subagent", return_value="reminder set"), \
+                 patch.object(Path, "home", return_value=Path(tmpdir)):
+                gen = handler._call_subagent_gen("event-manager", {"task": "提醒我明天开会"})
+                events, return_value = _collect_events_with_return(gen)
+
+        # chat-with 结果流（StepOutcome.data["result"]）含验证失败标记 + 失败原因 + 原始内容
+        assert return_value is not None, "应返回 StepOutcome"
+        result_text = return_value.data["result"]
+        assert "[event-manager 任务验证失败" in result_text, \
+            f"结果流应含验证失败标记，实际: {result_text}"
+        assert "数据库中无任务记录" in result_text, \
+            f"结果流应含失败原因，实际: {result_text}"
+        assert "reminder set" in result_text, \
+            f"结果流应保留子 Agent 原始返回，实际: {result_text}"
+
+        # system yield 保留（verbose 调试通道——3 既有测试锁定行为不回归）
+        stream_events = [e for e in events if isinstance(e, StreamEvent)]
+        system_events = [e for e in stream_events if e.type == "system"]
+        assert any("No task found" in e.content for e in system_events), \
+            f"system yield 应保留 'No task found'，实际: {system_events}"
+
+    def test_subagent_verify_success_keeps_display_result_discard(self):
+        """E4-11：event-manager 验证成功（DB 有任务）→ display_result 不注入（成功分支保持丢弃）。"""
+        handler = _make_handler()
+        mock_runner = Mock()
+        mock_runner.llm_config = {"model": "test"}
+
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create memory.json pointing to tmpdir
+            memory_path = Path(tmpdir) / ".niu" / "memory.json"
+            memory_path.parent.mkdir(parents=True, exist_ok=True)
+            memory_path.write_text('{"workspace": {"path": "' + tmpdir + '"}}', encoding="utf-8")
+
+            # Create scheduled_tasks.db with one row (verified task exists)
+            db_path = Path(tmpdir) / "scheduled_tasks.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                    id INTEGER PRIMARY KEY,
+                    content TEXT,
+                    status TEXT,
+                    scheduled_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute(
+                "INSERT INTO scheduled_tasks (content, status, scheduled_at, created_at) "
+                "VALUES ('开会提醒', 'pending', '2026-08-17 09:00:00', '2026-08-16 10:00:00')"
+            )
+            conn.commit()
+            conn.close()
+
+            with patch("agent.runner.get_runner", return_value=mock_runner), \
+                 patch("agent.subagent.call_subagent", return_value="reminder set"), \
+                 patch.object(Path, "home", return_value=Path(tmpdir)):
+                gen = handler._call_subagent_gen("event-manager", {"task": "提醒我明天开会"})
+                events, return_value = _collect_events_with_return(gen)
+
+        # 验证成功 → 结果流保持子 Agent 原始返回（不注入失败文本）
+        assert return_value is not None, "应返回 StepOutcome"
+        assert return_value.data["result"] == "reminder set", \
+            f"验证成功时结果流不应注入失败文本，实际: {return_value.data['result']}"
+        assert "[event-manager 任务验证失败" not in return_value.data["result"]
+
+        # 验证成功 → tool_marker 展示 Verified
+        tool_markers = [
+            e.content for e in events
+            if isinstance(e, StreamEvent) and e.type == "tool_marker"
+        ]
+        assert any("Verified task in database" in c for c in tool_markers), \
+            f"应展示 Verified tool_marker，实际: {tool_markers}"
 
 
 # ---------------------------------------------------------------------------
