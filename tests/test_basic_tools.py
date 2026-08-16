@@ -13,6 +13,8 @@ Testing the new function signatures and behaviors:
 # Import: use new names only
 # ---------------------------------------------------------------------------
 
+import os
+
 from agent.handler import edit_file, grep_search, read_file, write_file
 
 # ===================================================================
@@ -374,6 +376,34 @@ class TestGrepSearch:
 
         assert "no match" in result.lower() or "not found" in result.lower() or "0 match" in result.lower(), \
             "Should indicate no matches found"
+
+    def test_partial_read_failure_reported_with_no_match(self, tmp_path):
+        """Partial read failure keeps 'No matches' but appends the failure list."""
+        good = tmp_path / "good.txt"
+        good.write_text("nothing relevant here\n", encoding="utf-8")
+        locked = tmp_path / "locked.txt"
+        locked.write_text("secret data\n", encoding="utf-8")
+        os.chmod(locked, 0)  # no read permission -> OSError on open
+
+        result = grep_search("zzzznonexistent", str(tmp_path))
+
+        # Partial failure: No matches text preserved + failure count/list appended
+        assert "no match" in result.lower()
+        assert "failed to read" in result
+        assert "locked.txt" in result
+
+    def test_all_read_failures_do_not_report_no_match(self, tmp_path):
+        """When every file fails to read, report the failure instead of 'No matches'."""
+        locked = tmp_path / "locked.txt"
+        locked.write_text("secret data\n", encoding="utf-8")
+        os.chmod(locked, 0)  # no read permission -> OSError on open
+
+        result = grep_search("zzzznonexistent", str(tmp_path))
+
+        # All-failed branch: explicit failure, no misleading "No matches"
+        assert "读取失败" in result
+        assert "无法确认匹配" in result
+        assert "no match" not in result.lower()
 
     def test_result_limit_50(self, tmp_path):
         """Search results are limited to at most 50 matches."""

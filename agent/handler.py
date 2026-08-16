@@ -208,6 +208,7 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
         files = [f for f in files if os.path.isfile(f) and not f.endswith(binary_exts)]
 
     searched_count = 0
+    failed_files = []
     for filepath in files[:200]:
         searched_count += 1
         try:
@@ -218,12 +219,23 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
                         if len(matches) >= max_lines:
                             break
         except (OSError, UnicodeDecodeError):
+            failed_files.append(filepath)
             continue
         if len(matches) >= max_lines:
             break
 
+    failed_count = len(failed_files)
     if not matches:
-        return f"[GREP] No matches for '{pattern}' in {path} (searched {searched_count} files)"
+        if failed_count > 0 and failed_count == searched_count:
+            return f"[GREP] 读取失败 {failed_count} 个文件——无法确认匹配"
+        failure_note = ""
+        if failed_count:
+            shown = failed_files[:5]
+            shown_repr = ", ".join(shown)
+            if failed_count > len(shown):
+                shown_repr += ", ..."
+            failure_note = f", {failed_count} failed to read: [{shown_repr}]"
+        return f"[GREP] No matches for '{pattern}' in {path} (searched {searched_count} files{failure_note})"
 
     result = "\n".join(matches)
     if len(matches) >= max_lines:
