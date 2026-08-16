@@ -141,6 +141,38 @@ const hideEmpty = () => {
   if (el) el.style.display = 'none';
 };
 
+// ===== Graph Unavailable Helpers (E3 D7: 简单提示 + 首屏节流) =====
+// kg_api 三端点把 adapter error dict 转成错误响应（body 为 {"status":"error","message":...}）；
+// 链路 renderer → electronAPI → ipcMain → apiRequest 不检查 HTTP 状态码（任何状态都
+// JSON.parse 后 resolve）——所以这里判 body.status，不判 HTTP 状态。真空（空图/无结果）
+// 保持 200 + 空数据，只有 status=="error" 走此分支。
+const isGraphError = (body) => !!(body && body.status === 'error');
+
+let _unavailableHintShown = false; // 页面会话内首屏提示只显示一次
+
+const showUnavailableOverlay = () => {
+  if (_unavailableHintShown) return;
+  _unavailableHintShown = true;
+  const el = document.getElementById('unavailable-overlay');
+  if (el) el.style.display = 'flex';
+};
+
+const markGraphUnavailable = (label) => {
+  console.warn(`[graph] ${label}`);
+  const badge = document.getElementById('kg-status-badge');
+  if (badge) {
+    badge.textContent = label;
+    badge.style.display = 'flex';
+  }
+};
+
+const clearGraphUnavailable = () => {
+  const el = document.getElementById('unavailable-overlay');
+  if (el) el.style.display = 'none';
+  const badge = document.getElementById('kg-status-badge');
+  if (badge) badge.style.display = 'none';
+};
+
 // ===== Build force-graph data from currentData =====
 // Preserves existing node positions (x, y, vx, vy) from the force-graph
 // to avoid visual "jumping" on incremental updates.
@@ -317,6 +349,13 @@ async function loadGraphSnapshot() {
 
   try {
     const snapshot = await window.electronAPI.getGraphSnapshot(2000, 0);
+    if (isGraphError(snapshot)) {
+      // E3 D7：不可用 ≠ 空库——首屏提示一次（遮罩）+ 状态角标，不渲染空库遮罩
+      markGraphUnavailable('知识图谱不可用');
+      showUnavailableOverlay();
+      hideLoading();
+      return;
+    }
     currentData = { nodes: snapshot.nodes || [], edges: snapshot.edges || [] };
 
     if (currentData.nodes.length === 0) {
@@ -529,6 +568,8 @@ async function pollChangelog() {
         if (newNodes.length > 0) {
           currentData = { nodes: newNodes, edges: newEdges };
           changed = true;
+          // 图谱恢复可用——撤掉首屏不可用遮罩与状态角标
+          clearGraphUnavailable();
         } else {
           // Snapshot returned empty — don't replace, wait for backend to emit another refresh
         }
@@ -813,6 +854,11 @@ async function expandNode(nodeId) {
 
   try {
     const result = await window.electronAPI.exploreNode(entityId, 2, 0, 'both');
+    if (isGraphError(result)) {
+      // E3 D7：后续操作失败——仅 console + 状态角标，不重复弹提示
+      markGraphUnavailable('知识图谱不可用');
+      return;
+    }
     if (!result.nodes || result.nodes.length === 0) return;
 
     const existingIds = new Set(currentData.nodes.map(n => n.id));
@@ -904,6 +950,12 @@ searchInput.addEventListener('keydown', async (e) => {
 
   try {
     const result = await window.electronAPI.searchEntities(query, 20);
+    if (isGraphError(result)) {
+      // E3 D7：检索失败显式分支——不再把 error 伪装成"未找到匹配实体"
+      markGraphUnavailable('检索失败');
+      searchDropdown.innerHTML = '<div class="search-dropdown-empty">检索失败</div>';
+      return;
+    }
     const entities = result.entities || [];
 
     if (entities.length === 0) {
@@ -945,6 +997,12 @@ async function enterSubgraph(entityId, depth) {
   try {
     const result = await window.electronAPI.exploreNode(entityId, depth, 0, 'both');
     if (myRequestId !== _subgraphRequestId) return false;
+    if (isGraphError(result)) {
+      // E3 D7：后续操作失败——仅 console + 状态角标，不重复弹提示
+      _justReplacedData = false;
+      markGraphUnavailable('知识图谱不可用');
+      return false;
+    }
     if (!result.nodes || result.nodes.length === 0) {
       _justReplacedData = false;
       if (_subgraphMode) await exitSubgraph();
@@ -1006,6 +1064,13 @@ async function exitSubgraph() {
 
   try {
     const snapshot = await window.electronAPI.getGraphSnapshot(2000, 0);
+    if (isGraphError(snapshot)) {
+      // E3 D7：错误 ≠ 空库——保留当前图，仅 console + 状态角标
+      markGraphUnavailable('知识图谱不可用');
+      _justReplacedData = false;
+      hideLoading();
+      return;
+    }
     if (snapshot.nodes && snapshot.nodes.length > 0) {
       currentData = { nodes: snapshot.nodes, edges: snapshot.edges || [] };
       hideEmpty();

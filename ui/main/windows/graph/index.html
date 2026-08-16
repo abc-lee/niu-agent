@@ -21,6 +21,15 @@
     </div>
   </div>
 
+  <!-- Unavailable Overlay (E3 D7: 知识图谱不可用——首屏提示一次，区别于空库) -->
+  <div id="unavailable-overlay" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(250,248,240,0.95);display:none;align-items:center;justify-content:center;z-index:999;">
+    <div style="text-align:center;color:#c0392b;">
+      <div style="font-size:40px;margin-bottom:12px;">⚠️</div>
+      <div style="font-size:16px;">知识图谱不可用</div>
+      <div style="font-size:12px;margin-top:6px;">请稍后重试</div>
+    </div>
+  </div>
+
   <!-- Toolbar -->
   <div class="toolbar">
     <div class="search-wrapper">
@@ -86,6 +95,7 @@
   <!-- Status Bar -->
   <div class="status-bar">
     <span id="stats"></span>
+    <span id="kg-status-badge" style="display:none;color:#c0392b;font-size:12px;margin-left:auto;"></span>
   </div>
 
   <script src="../../node_modules/force-graph/dist/force-graph.min.js"></script>
