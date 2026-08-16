@@ -169,3 +169,7 @@ def test_get_lightrag_status_exposes_check_failed(monkeypatch):
     status = lightrag_manager.get_lightrag_status()
     assert status["integrity"]["check_failed"] is True
     assert status["integrity"]["error"] == "fresh check boom"
+    # 防回归锁定：fresh 异常路径 integrity.ok 必须保持 True（"无损坏"语义）——
+    # launcher main.rs !i.ok 门控依赖此值，改 False 会静默重新引入 rfd 修复弹窗闩锁回归
+    assert status["integrity"]["ok"] is True
+    assert status["integrity"]["total_errors"] == 0
