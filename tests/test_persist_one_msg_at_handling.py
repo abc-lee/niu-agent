@@ -206,3 +206,39 @@ def test_persist_agent_reply_v4_path_strips_full_reply():
     assert store.calls == []  # 指纹命中 → 0 额外写（不重复提取 subagent_msg）
     assert mid == "pid-1"
     assert not notify.called
+
+
+def test_persist_chunk_failure_logs_error():
+    """E4-10：persist 事件处理失败 → error 级日志（warning→error 提升——DB 写失败是数据完整性事件）。
+
+    驱动 chat() 完整消费循环（mock agent_runner_loop 产出 persist StreamEvent + 非法 JSON），
+    走真实的 persist chunk 处理器 except 分支，验证日志级别为 error 且非 warning。
+    """
+    from agent.generic.agent_loop import StreamEvent
+
+    runner = _MiniRunner()
+    runner.default_model = mock.MagicMock()
+    runner.client = mock.MagicMock()
+    runner.handler = mock.MagicMock()
+    runner.base_tools_schema = []
+    runner._im_channel_id = ""
+
+    with mock.patch.object(runner, "_assemble_system_message"), \
+            mock.patch.object(runner, "_refresh_base_tools_schema_if_dirty"), \
+            mock.patch.object(runner, "_assemble_tools_schema", return_value=[]), \
+            mock.patch.object(runner, "_on_turn_end"), \
+            mock.patch.object(runner, "_on_before_llm"), \
+            mock.patch.object(runner, "_on_context_high_usage"), \
+            mock.patch("agent.runner.agent_runner_loop",
+                       return_value=iter([StreamEvent("persist", "{invalid-json")])), \
+            mock.patch("niu_api.channel.gateway.get_im_gateway", return_value=None), \
+            mock.patch("niu_api.chat.notify_new_message_sync"), \
+            mock.patch("agent.runner.logger") as logger_mock:
+        list(runner.chat("default", "hi", stream=False, history=[], channel_id=""))
+
+    error_msgs = [c.args[0] for c in logger_mock.error.call_args_list]
+    assert any("Failed to persist msg" in m for m in error_msgs), \
+        "persist 失败必须 error 级日志（E4-10：warning→error 提升）"
+    warning_msgs = [c.args[0] for c in logger_mock.warning.call_args_list]
+    assert not any("Failed to persist msg" in m for m in warning_msgs), \
+        "persist 失败不得仍为 warning 级"

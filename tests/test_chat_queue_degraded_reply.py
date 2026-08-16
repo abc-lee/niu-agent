@@ -19,7 +19,7 @@ class _FakeStore:
         self.messages = []
     async def add_message(self, role, content, **kwargs):
         msg_id = str(uuid.uuid4())
-        self.messages.append({"id": msg_id, "role": role, "content": content})
+        self.messages.append({"id": msg_id, "role": role, "content": content, **kwargs})
         return msg_id
 
 
@@ -60,6 +60,8 @@ async def test_runner_chat_exception_writes_degraded_reply_to_db():
     assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
     assert len(assistant_msgs) == 1, f"Expected 1 assistant message, got {len(assistant_msgs)}"
     assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
+    # E4-12：非 LLM 异常（RuntimeError 内部 bug）→ degraded_reason="internal" 落库（DB 可追溯）
+    assert assistant_msgs[0]["degraded_reason"] == "internal"
     # E2：非 LLM 异常（RuntimeError 内部 bug）不 notify（不误标"模型调用失败"）
     assert notify_calls == []
 
@@ -158,6 +160,8 @@ async def test_llm_exception_friendly_push_neutral_db_and_notify():
     assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
     assert len(assistant_msgs) == 1
     assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
+    # E4-12：LLM 异常（RateLimitError——非超时类）→ degraded_reason="internal"（粗分类——仅 timeout 单独标记）
+    assert assistant_msgs[0]["degraded_reason"] == "internal"
     # notify 事件触发（is_llm 时 notify_llm_error_sync 被调）
     assert len(notify_calls) == 1
     etype, emsg, src = notify_calls[0]
@@ -297,6 +301,8 @@ async def test_chat_lock_timeout_neutral_reply_no_notify():
     assistant_msgs = [m for m in fake_store.messages if m["role"] == "assistant"]
     assert len(assistant_msgs) == 1
     assert assistant_msgs[0]["content"] == "[系统繁忙，请重试]"
+    # E4-12：锁超时路径（chat_error="timeout" 字符串）→ degraded_reason="timeout" 落库（瞬态可区分）
+    assert assistant_msgs[0]["degraded_reason"] == "timeout"
     # 非 LLM（isinstance BaseException 守卫 False）→ notify_llm_error_sync 不被调用
     assert notify_calls == []
     # 判别锁超时分支：sync_chat 只在锁获取成功后执行——锁超时路径 runner.chat 永不调用。
@@ -305,3 +311,45 @@ async def test_chat_lock_timeout_neutral_reply_no_notify():
     q._runner.chat.assert_not_called()
 
     await q.stop()
+
+
+# ===== E4 T5：degraded_reason 列迁移 + 旧行 NULL 读取端容错（E4-12） =====
+
+
+@pytest.mark.asyncio
+async def test_degraded_reason_migration_and_old_row_null_tolerance(tmp_path):
+    """E4-12：degraded_reason 列扩展（tool_call_id 同款 PRAGMA table_info + ALTER TABLE ADD COLUMN 迁移模式）
+    + 旧行 NULL 读取端 .get 默认容错（不迁移旧库即显式 SELECT 列查询失败——R4 B P3 实证）。"""
+    import sqlite3
+
+    from agent.session import MessageStore
+
+    db_path = str(tmp_path / "messages.db")
+    store = MessageStore(db_path=db_path)
+    await store.init_db()
+
+    # 模拟旧行：迁移后列存在但值为 NULL（INSERT 未指定 degraded_reason——历史行形态）
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        ("old-row-1", "assistant", "[系统繁忙，请重试]", "2026-08-01T00:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    # 新行：带 degraded_reason 类别写入（走 add_message 显式列清单）
+    await store.add_message(role="assistant", content="[系统繁忙，请重试]", degraded_reason="timeout")
+
+    messages = await store.get_messages()
+    by_id = {m.id: m for m in messages}
+
+    # 旧行：degraded_reason 为 NULL → 读取端容错（falsy、不崩溃）；dict 形态 .get 默认亦容错
+    old = by_id["old-row-1"]
+    assert not old.degraded_reason, f"旧行 degraded_reason 应为 NULL 容错（falsy），实际 {old.degraded_reason!r}"
+    assert old.to_dict().get("degraded_reason") in (None, ""), "dict 形态 .get 默认 NULL 容错"
+
+    # 新行：类别写读回一致
+    new = [m for m in messages if m.id != "old-row-1"]
+    assert len(new) == 1, f"应只有 1 条新行，实际 {len(new)}"
+    assert new[0].degraded_reason == "timeout"
+    assert new[0].content == "[系统繁忙，请重试]"
