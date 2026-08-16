@@ -113,15 +113,18 @@ class TestAdapterQueryModes:
 class TestAdapterErrorHandling:
     """J5: Graceful error handling when LightRAG unavailable."""
 
-    def test_query_returns_none_when_lightrag_not_installed(self):
+    def test_query_returns_error_text_when_lightrag_not_installed(self):
+        """E3 契约反转：错误不再伪装为无结果——query rag None 返回错误文本 str（通用文案）"""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         adapter = LightRAGAdapter()
         with patch.object(adapter, "_get_rag", return_value=None):
             result = adapter.query("What is X?")
-            assert result is None
+            assert isinstance(result, str)
+            assert "知识图谱不可用" in result
 
     def test_query_handles_lightrag_exception(self):
+        """E3 契约反转：错误不再伪装为无结果——真异常返回错误文本 str（含"图谱查询失败"）"""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         adapter = LightRAGAdapter()
@@ -130,8 +133,35 @@ class TestAdapterErrorHandling:
 
         with patch.object(adapter, "_get_rag", return_value=mock_rag):
             result = adapter.query("What is X?")
-            # Should not raise, should return None or error indicator
-            assert result is None
+            # Should not raise, should return error text str
+            assert isinstance(result, str)
+            assert result.startswith("[图谱查询失败")
+            assert "LLM timeout" in result
+
+
+class TestSanitizeGraphError:
+    """E3 专用脱敏 _sanitize_graph_error——绝对路径 + key/Bearer 凭证剥离。"""
+
+    def test_strips_absolute_paths(self):
+        """绝对路径（/Users/...、~/...、C:\\...）→ ***（不暴露本机目录结构给 LLM）"""
+        from niu_api.internal.lightrag_adapter import _sanitize_graph_error
+
+        msg = "Failed to open /Users/lilei/tools/ai-bot/data/vdb_entities.json: no such file; check ~/.niu/storage"
+        result = _sanitize_graph_error(msg)
+        assert "/Users/lilei" not in result
+        assert "~/.niu" not in result
+        assert result.count("***") >= 2
+
+    def test_strips_keys_and_bearer(self):
+        """key=xxx / api_key=xxx / Bearer xxx 凭证 → 脱敏（复用 E2 规则）"""
+        from niu_api.internal.lightrag_adapter import _sanitize_graph_error
+
+        msg = "auth failed api_key=sk-abc123 Bearer token-xyz"
+        result = _sanitize_graph_error(msg)
+        assert "sk-abc123" not in result
+        assert "token-xyz" not in result
+        assert "api_key=***" in result
+        assert "Bearer ***" in result
 
 
 class TestAdapterInvalidMode:
@@ -602,13 +632,16 @@ class TestQueryData:
         assert result == {"data": {"entities": []}}
 
     @patch.object(LightRAGAdapter, "_get_rag")
-    def test_returns_none_when_rag_none(self, mock_get_rag):
+    def test_returns_error_dict_when_rag_none(self, mock_get_rag):
+        """E3 契约反转：错误不再伪装为无结果——query_data rag None 返回 error dict（通用文案）"""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         mock_get_rag.return_value = None
         adapter = LightRAGAdapter()
         result = adapter.query_data("test")
-        assert result is None
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert "知识图谱不可用" in result["message"]
 
     def test_raises_on_invalid_mode(self):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
@@ -619,7 +652,8 @@ class TestQueryData:
 
     @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")
-    def test_returns_none_on_exception(self, mock_get_rag, mock_call_async):
+    def test_returns_error_dict_on_exception(self, mock_get_rag, mock_call_async):
+        """E3 契约反转：错误不再伪装为无结果——query_data 真异常返回 error dict"""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         rag = MagicMock()
@@ -628,7 +662,9 @@ class TestQueryData:
 
         adapter = LightRAGAdapter()
         result = adapter.query_data("test", mode="local")
-        assert result is None
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert "query_data error" in result["message"]
 
 
 # ============== Tests for search_skills ==============
@@ -838,6 +874,7 @@ class TestExploreNode:
     @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")
     def test_handles_exception_gracefully(self, mock_get_rag, mock_call_async):
+        """E3 契约反转：错误不再伪装为无结果——真异常返回空壳 + error dict"""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         rag = MagicMock()
@@ -846,6 +883,8 @@ class TestExploreNode:
 
         adapter = LightRAGAdapter()
         result = adapter.explore_node("Python")
+        assert result["status"] == "error"
+        assert "graph error" in result["message"]
         assert result["nodes"] == []
         assert result["edges"] == []
         assert result["stats"]["nodes"] == 0
@@ -938,6 +977,7 @@ class TestGetGraphSnapshot:
     @patch("niu_api.internal.lightrag_manager.graph_read_lock")
     @patch.object(LightRAGAdapter, "_get_rag")
     def test_handles_exception_gracefully(self, mock_get_rag, mock_read_lock):
+        """E3 契约反转：错误不再伪装为无结果——真异常返回空壳 + error dict"""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         rag = MagicMock()
@@ -955,5 +995,7 @@ class TestGetGraphSnapshot:
 
         adapter = LightRAGAdapter()
         result = adapter.get_graph_snapshot()
+        assert result["status"] == "error"
+        assert "snapshot error" in result["message"]
         assert result["nodes"] == []
         assert result["edges"] == []

@@ -111,6 +111,11 @@ class BrainContextInjector:
                 query_context, mode="local", top_k=20, keywords=[query_context],
                 timeout=timeout,
             )
+            if isinstance(query_result, dict) and query_result.get("status") == "error":
+                # E3 契约反转：错误不再伪装为无结果——query_data error dict → raise，
+                # 经下方 `except RuntimeError: raise` 重抛传导至 runner 既有 except
+                # （脑区激活失败标注可达——断链修复；空激活语义（真空）保持不变）
+                raise RuntimeError(query_result.get("message") or "知识图谱不可用")
             if query_result and isinstance(query_result, dict):
                 data = query_result.get("data", {})
                 if not data:
@@ -136,6 +141,9 @@ class BrainContextInjector:
                                 "entity_type": entity_type,
                                 "description": entity.get("description", ""),
                             })
+        except RuntimeError:
+            # E3 契约反转：error dict 传导——不吞错（runner 侧 except 标注可达）
+            raise
         except Exception as e:
             logger.warning("脑区注入向量检索失败: %s", e)
 
