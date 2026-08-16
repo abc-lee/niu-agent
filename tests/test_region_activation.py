@@ -472,3 +472,40 @@ class TestLitAwareDecayAcceleration:
         manager.decay_all()
         for state in manager._regions.values():
             assert state.activation == pytest.approx(0.72687, abs=0.001)
+
+
+# ============== E3-10: initialize_from_regions 失败可诊断 ==============
+
+
+class TestInitializeFromRegionsLogging:
+    """E3-10：initialize_from_regions 的 except pass → 补 warning 日志（不再静默吞错）"""
+
+    def test_type_count_build_failure_logs_warning(self, monkeypatch, caplog):
+        """_build_entity_type_counts 抛异常 → 记录 warning（含错误文本）而非静默 pass"""
+        import logging
+
+        from niu_api.internal.region_activation import RegionActivationManager
+
+        def boom():
+            raise RuntimeError("type count boom")
+
+        manager = RegionActivationManager()
+        monkeypatch.setattr(manager, "_build_entity_type_counts", boom)
+
+        with caplog.at_level(logging.WARNING, logger="niu_api.internal.region_activation"):
+            manager.initialize_from_regions(_make_region_infos())
+
+        assert any(
+            "实体类型计数构建失败" in record.message and "type count boom" in record.message
+            for record in caplog.records
+        ), "initialize_from_regions 失败应记录 warning（E3-10）"
+
+    def test_type_count_build_success_no_warning(self, caplog):
+        """正常路径不产生该 warning——只补日志不改成功行为"""
+        import logging
+
+        manager = _make_manager_with_regions()
+        with caplog.at_level(logging.WARNING, logger="niu_api.internal.region_activation"):
+            manager.initialize_from_regions(_make_region_infos())
+
+        assert not any("实体类型计数构建失败" in record.message for record in caplog.records)
