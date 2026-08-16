@@ -543,3 +543,97 @@ async def test_scenario3b_persist_tool_calls_to_sqlite():
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
+
+
+# ---------------------------------------------------------------------------
+# 场景4：工具返回 data=None → 中性占位符进 tool 消息与 persist 事件（E4-03）
+# ---------------------------------------------------------------------------
+
+def test_scenario4_none_data_tool_persist_placeholder():
+    """场景4：工具返回 data=None 时，中性占位符同步进 tool 消息与 persist 事件。
+
+    E4-03 契约反转：data=None 不再落空串 ""，而是落中性占位
+    "（工具已执行，无返回值）"（全角括号中性占位——无错误前缀语义）；
+    persist 事件（L1287-1289/L1335-1338）同步携带该占位符。
+
+    与场景 1-3b 不同，本场景用 mock client 确定性构造 data=None 的工具结果
+    （真实 LLM 无法强制返回 None 数据），持久化断言聚焦占位符契约本身。
+    """
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from agent.generic.agent_loop import StepOutcome
+
+    client = Mock()
+    client.last_tools = ""
+    mock_response = Mock()
+    mock_response.content = "测试中"
+    mock_response.stream_error = False
+    mock_response.context_overflow = False
+    mock_response.tool_calls = [
+        Mock(
+            id="call_none",
+            function=SimpleNamespace(name="no_data_tool", arguments="{}")  # Mock(name=) 是显示名配置非属性——用 SimpleNamespace 防 .name 返回自动 Mock
+        )
+    ]
+
+    def mock_dispatch(tool_name, args, response, index=0):
+        outcome = StepOutcome(data=None, next_prompt="继续执行", should_exit=False)
+        yield  # 使函数成为生成器
+        return outcome
+
+    handler = Mock()
+    handler.dispatch = mock_dispatch
+    handler._done_hooks = []
+    handler.max_turns = 10
+    handler._is_subagent = False  # 防 Mock 自动真值 → 子 Agent thinking 分支噪音
+    handler._is_sync_subagent = False  # 防 Mock 自动真值 → 拦截层误判子 Agent → FORMAT_ERROR 死循环
+    handler.next_prompt_patcher = lambda next_prompt, outcome, turn: next_prompt
+
+    call_count = {"n": 0}
+
+    def capture_messages(**kwargs):
+        call_count["n"] += 1
+
+        def response_gen():
+            if call_count["n"] == 1:
+                yield mock_response
+                return mock_response
+            done = Mock()
+            done.content = "完成"
+            done.stream_error = False
+            done.context_overflow = False
+            done.tool_calls = []
+            yield done
+            return done
+
+        return response_gen()
+
+    client.chat = capture_messages
+
+    events, rv = _run_agent_loop(
+        client=client,
+        system_prompt="测试",
+        user_input="测试输入",
+        handler=handler,
+        tools_schema=[],
+        verbose=False,
+    )
+
+    # 1. tool 消息 content 为中性占位（非空串）
+    messages = rv["messages"]
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs, "expected tool message for None-data tool"
+    assert tool_msgs[0]["content"] == "（工具已执行，无返回值）", (
+        f"data=None 应落中性占位，实际 content={tool_msgs[0]['content']!r}"
+    )
+
+    # 2. persist 事件同步携带占位符（E4-03 persist 同步——L1287-1289/L1335-1338）
+    tool_persist_events = [
+        e for e in events
+        if isinstance(e, StreamEvent) and e.type == "persist" and '"role": "tool"' in e.content
+    ]
+    assert tool_persist_events, "expected tool persist event"
+    assert "（工具已执行，无返回值）" in tool_persist_events[0].content, (
+        f"persist 事件应同步占位符，实际 content={tool_persist_events[0].content!r}"
+    )

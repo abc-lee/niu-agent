@@ -1,4 +1,6 @@
 """工具输出截断测试。"""
+import pytest
+
 from agent.generic.agent_loop import (
     MAX_TOOL_RESULT_CHARS,
     _truncate_dict_result,
@@ -683,4 +685,116 @@ def test_unified_gate_truncates_should_exit_path(monkeypatch):
     content = tool_msgs[0].get("content", "")
     assert len(content) <= MAX_TOOL_RESULT_CHARS, (
         f"should_exit path should also be truncated, got {len(content)}"
+    )
+
+
+# ============================================================================
+# E4-15：序列化三层兜底——坏 __str__ / 自引用结构不崩，错误文本进工具结果
+# ============================================================================
+
+class _BadStrRecursion:
+    """str()/repr() 都抛 RecursionError 的坏对象（dict/list 的 str() 走 repr）。"""
+
+    def __str__(self):
+        return self.__str__()  # 无限递归 → RecursionError
+
+    __repr__ = __str__
+
+
+def test_truncate_dict_result_bad_str_value_returns_error_dict():
+    """dict 内值坏 __str__（str(dict) 走 repr 同样抛）→ 外层 except → 错误 dict（修复②）。"""
+    result = _truncate_dict_result({"a": _BadStrRecursion()}, "test_tool")
+    assert result == {"error": "[工具结果序列化失败: dict]"}
+
+
+def _self_referencing_list():
+    lst = []
+    lst.append(lst)
+    return lst
+
+
+def _run_loop_with_tool_data(data):
+    """跑一轮 agent_runner_loop：工具返回 data，下一轮退出；返回 (final_return, events)。"""
+    import json
+    from types import SimpleNamespace
+
+    from agent.generic.agent_loop import agent_runner_loop
+    from agent.handler import StepOutcome
+
+    class FakeHandler:
+        current_turn = 0
+        max_turns = 40
+
+        def dispatch(self, tool_name, args, response, index=0):
+            yield  # 让方法成为生成器（agent_loop 用 exhaust/yield from 消费）
+            return StepOutcome(data, next_prompt="")
+
+        def tool_before_callback(self, *a, **kw):
+            return
+            yield
+
+        def tool_after_callback(self, *a, **kw):
+            return
+            yield
+
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
+
+    class FakeClient:
+        def __init__(self):
+            self._call_count = 0
+
+        def chat(self, **kw):
+            self._call_count += 1
+            yield
+            if self._call_count == 1:
+                return SimpleNamespace(
+                    content="",
+                    tool_calls=[SimpleNamespace(
+                        id="tc1",
+                        function=SimpleNamespace(name="data_tool", arguments="{}"),
+                    )],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                    finish_reason="tool_calls",
+                )
+            return SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                finish_reason="stop",
+            )
+
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=FakeHandler(),
+        tools_schema=[{"type": "function", "function": {"name": "data_tool", "parameters": {"type": "object", "properties": {}}}}],
+        verbose=False,
+    )
+    events = []
+    final_return = None
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as e:
+        final_return = e.value
+    return final_return, events
+
+
+@pytest.mark.parametrize("make_data, expected_substr", [
+    (lambda: [_BadStrRecursion()], "[无法序列化: _BadStrRecursion]"),   # 修复① json_default str(o) 兜底
+    (lambda: _BadStrRecursion(), "[工具结果序列化失败: _BadStrRecursion]"),  # 修复④ 裸对象直调 str() 兜底
+    (_self_referencing_list, '{"error": "[工具结果序列化失败: list]"}'),  # 修复③ list 分支 json.dumps 兜底
+])
+def test_unified_gate_serialization_fallback(make_data, expected_substr):
+    """E4-15：坏 __str__/自引用结构不崩——错误文本进工具消息（单工具降级，防整轮失败）。"""
+    rv, _events = _run_loop_with_tool_data(make_data())
+    assert rv is not None, "agent_runner_loop should return final dict"
+    messages = rv.get("messages", [])
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs, "expected tool message for serialization-fallback data"
+    content = tool_msgs[0].get("content", "")
+    assert expected_substr in content, (
+        f"expected {expected_substr!r} in tool content, got: {content[:200]!r}"
     )
