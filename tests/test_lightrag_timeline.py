@@ -24,6 +24,18 @@ class TestTimelineQuery:
                 result = mock_adapter.timeline_query("不存在的内容")
                 assert result == []
 
+    def test_raises_on_query_data_error_dict(self, mock_adapter):
+        """E3 契约反转：错误不再伪装为无结果——query_data error dict → timeline_query 抛 RuntimeError。
+
+        锁定 raise 传导链：adapter 层 error dict 不再被吞错返回 []，而是从
+        timeline_query 顶层出——MCP lightrag_timeline_query except 捕获转 error dict。
+        """
+        mock_adapter.query_data = MagicMock(
+            return_value={"status": "error", "message": "图谱查询失败: boom"}
+        )
+        with pytest.raises(RuntimeError, match="图谱查询失败"):
+            mock_adapter.timeline_query("查询")
+
     def test_returns_timeline_results_sorted_by_timestamp(self, mock_adapter):
         """返回时间线结果，按时间戳排序（最近优先）"""
         mock_adapter.query_data = MagicMock(

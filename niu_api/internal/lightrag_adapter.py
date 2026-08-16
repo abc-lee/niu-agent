@@ -10,6 +10,7 @@ Both delegate to lightrag_manager for the LightRAG instance and use
 call_async() for the async/sync bridge.
 """
 
+import re
 import time
 from typing import Any
 
@@ -30,6 +31,27 @@ LIGHTRAG_GRAPH_MAX_CHARS = 20000
 # produce no results.  These are not LLM-generated responses — they are
 # hard-coded fallback strings that must never leak into system prompts.
 _LIGHTRAG_ERROR_MARKERS = ("not able to provide", "[no-context]")
+
+# 门控拒绝通用文案（D5：不细分修复中/损坏/冷却原因——门控 warning 日志已含具体原因）
+_GRAPH_UNAVAILABLE_MSG = "知识图谱不可用（初始化门控拒绝）"
+
+
+def _sanitize_graph_error(text: str) -> str:
+    """E3 专用脱敏：剥离绝对路径 + API key/Bearer 凭证。
+
+    错误文本可能经 MCP 透传回 LLM（query_data/explore_node/get_graph_snapshot 的
+    error message），必须脱敏：绝对路径（/Users/...、~/...、C:\\...）暴露本机目录结构，
+    key/Bearer 暴露凭证。与 E2 的 _sanitize_error_msg（litellm_adapter L123-131）同源
+    逻辑内联实现——不模块级 import litellm_adapter（避免拉入 runner 依赖链进
+    lightrag-server 进程——防循环依赖）。
+    """
+    # 脱敏 API key（key=xxx, api_key=xxx, apikey=xxx）——复用 E2 _sanitize_error_msg 规则
+    text = re.sub(r'(key|api_key|apikey)\s*[=:]\s*\S+', r'\1=***', text, flags=re.IGNORECASE)
+    # 脱敏 Bearer token
+    text = re.sub(r'Bearer\s+\S+', 'Bearer ***', text, flags=re.IGNORECASE)
+    # 剥离绝对路径（/Users/...、~/...、C:\...）
+    text = re.sub(r'(?:/Users|~|C:)[^\s,;]+', '***', text)
+    return text
 
 
 def _filter_result_fields(result: dict, fields: list) -> dict:
@@ -164,6 +186,11 @@ class LightRAGAdapter:
         - {"status": "success", "data": {"entities": [], ...}} (bypass mode,
           all inner lists empty)
 
+        E3 契约（D3 A4 P3-5 实证——现状已排除，无新增逻辑）：
+        error dict（{"status": "error", "message": ...}——E3 分类后的错误形态）
+        不在上述场景内——status != "failure" 且无 data 键 → 走到底部 return False，
+        **不归入 no_results 真空判定**（错误不再伪装为无结果）。
+
         Prioritises structural fields (status, data content) over string
         matching so the check is robust against LightRAG version changes.
 
@@ -255,7 +282,10 @@ class LightRAGAdapter:
                 to prevent deadlock when the LightRAG event loop is busy.
 
         Returns:
-            Query result string, or None on error.
+            Query result string, or error text string on failure.
+            fail_response ("" ) keeps its vacuum no-results semantics (never leaks
+            into system prompts); real exceptions return "[图谱查询失败: <err>]";
+            gate-rejected LightRAG (rag None) returns the generic unavailable text.
 
         Raises:
             ValueError: If mode is invalid.
@@ -268,7 +298,8 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             logger.warning("LightRAG not available, query failed")
-            return None
+            # E3 契约反转：错误不再伪装为无结果——门控拒绝返回错误文本 str（通用文案）
+            return _GRAPH_UNAVAILABLE_MSG
 
         try:
             from lightrag import QueryParam
@@ -300,7 +331,10 @@ class LightRAGAdapter:
 
         except Exception as e:
             logger.error(f"LightRAG query failed: {e}")
-            return None
+            # E3 契约反转：错误不再伪装为无结果——真异常返回错误文本 str
+            # （[图谱查询失败: <err>]——MCP 工具层据此转 error dict）
+            err_msg = _sanitize_graph_error(str(e) or f"{type(e).__name__}: (no message)")
+            return f"[图谱查询失败: {err_msg}]"
 
     def query_data(
         self,
@@ -337,7 +371,11 @@ class LightRAGAdapter:
                 configured lightrag_timeout("query_timeout", 120) default.
 
         Returns:
-            Structured query result dict, or None on error.
+            Structured query result dict, or error dict
+            {"status": "error", "message": <err>} on failure / gate rejection.
+
+        Raises:
+            ValueError: If mode is invalid.
         """
         if mode not in VALID_MODES:
             raise ValueError(
@@ -347,7 +385,8 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             logger.warning("LightRAG not available, query_data failed")
-            return None
+            # E3 契约反转：错误不再伪装为无结果——门控拒绝返回 error dict（通用文案）
+            return {"status": "error", "message": _GRAPH_UNAVAILABLE_MSG}
 
         try:
             from lightrag import QueryParam
@@ -377,7 +416,9 @@ class LightRAGAdapter:
 
         except Exception as e:
             logger.error(f"LightRAG query_data failed: {e}")
-            return None
+            # E3 契约反转：错误不再伪装为无结果——真异常返回 error dict（带脱敏错误文本）
+            err_msg = _sanitize_graph_error(str(e) or f"{type(e).__name__}: (no message)")
+            return {"status": "error", "message": err_msg}
 
     def filter_by_entity_type(
         self,
@@ -510,6 +551,10 @@ class LightRAGAdapter:
             query, mode=mode, top_k=top_k, keywords=keywords,
             timeout=timeout,
         )
+        if isinstance(query_result, dict) and query_result.get("status") == "error":
+            # E3 契约反转：错误不再伪装为无结果——raise 传导至 runner 既有 except
+            # （不 raise 则 _categorize_results 会把 error dict 当数据取空桶——错误静默丢失）
+            raise RuntimeError(query_result.get("message") or _GRAPH_UNAVAILABLE_MSG)
         if self._is_no_result(query_result):
             logger.debug("LightRAG search_multi_lightrag: query_data returned no results")
             return result
@@ -616,6 +661,9 @@ class LightRAGAdapter:
             keywords=keywords, filter_lambda=filter_fn,
             timeout=timeout,
         )
+        if isinstance(result, dict) and result.get("status") == "error":
+            # E3 契约反转：错误不再伪装为无结果——raise 传导至 runner 既有 except
+            raise RuntimeError(result.get("message") or _GRAPH_UNAVAILABLE_MSG)
         if not result:
             return []
 
@@ -759,7 +807,12 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             logger.warning("LightRAG not available, explore_node failed")
-            return {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0, "max_depth": depth}}
+            # E3 契约反转：错误不再伪装为无结果——门控拒绝返回空壳 + error dict
+            return {
+                "center": None, "nodes": [], "edges": [],
+                "stats": {"nodes": 0, "edges": 0, "max_depth": depth},
+                "status": "error", "message": _GRAPH_UNAVAILABLE_MSG,
+            }
 
         depth = max(1, min(5, depth))
 
@@ -772,7 +825,12 @@ class LightRAGAdapter:
             )
 
             if kg is None or (not kg.nodes and not kg.edges):
-                return {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0, "max_depth": depth}}
+                # E3 契约反转：错误不再伪装为无结果——实体无图谱结果时不再返回纯空图
+                return {
+                    "center": None, "nodes": [], "edges": [],
+                    "stats": {"nodes": 0, "edges": 0, "max_depth": depth},
+                    "status": "error", "message": f"实体 '{entity_name}' 无图谱结果",
+                }
 
             # Build center from the first node (should be the queried entity)
             center = None
@@ -831,7 +889,13 @@ class LightRAGAdapter:
 
         except Exception as e:
             logger.error(f"LightRAG explore_node failed: {e}")
-            return {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0, "max_depth": depth}}
+            # E3 契约反转：错误不再伪装为无结果——真异常返回空壳 + error dict
+            err_msg = _sanitize_graph_error(str(e) or f"{type(e).__name__}: (no message)")
+            return {
+                "center": None, "nodes": [], "edges": [],
+                "stats": {"nodes": 0, "edges": 0, "max_depth": depth},
+                "status": "error", "message": err_msg,
+            }
 
     def timeline_query(
         self,
@@ -869,6 +933,11 @@ class LightRAGAdapter:
             query_result = self.query_data(
                 query, mode="local", top_k=top_k,
             )
+
+            if isinstance(query_result, dict) and query_result.get("status") == "error":
+                # E3 契约反转：错误不再伪装为无结果——query_data error dict 不再吞错返回 []
+                # raise 从 timeline_query 顶层出——MCP lightrag_timeline_query except 捕获转 error dict
+                raise RuntimeError(query_result.get("message") or _GRAPH_UNAVAILABLE_MSG)
 
             if query_result is None:
                 return []
@@ -1030,7 +1099,8 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             logger.warning("LightRAG not available, get_graph_snapshot failed")
-            return {"nodes": [], "edges": []}
+            # E3 契约反转：错误不再伪装为无结果——门控拒绝返回空壳 + error dict
+            return {"nodes": [], "edges": [], "status": "error", "message": _GRAPH_UNAVAILABLE_MSG}
 
         try:
             from niu_api.internal.lightrag_manager import graph_read_lock
@@ -1051,8 +1121,10 @@ class LightRAGAdapter:
                 try:
                     snapshot = nx_graph.copy()
                 except Exception as e:
-                    logger.warning(f"[KG] graph copy failed: {e}, returning empty snapshot")
-                    return {"nodes": [], "edges": []}
+                    logger.warning(f"[KG] graph copy failed: {e}, returning error snapshot")
+                    # E3 契约反转：错误不再伪装为无结果——图拷贝失败返回空壳 + error dict
+                    err_msg = _sanitize_graph_error(str(e) or f"{type(e).__name__}: (no message)")
+                    return {"nodes": [], "edges": [], "status": "error", "message": err_msg}
 
             # Now iterate the snapshot without holding the lock (safe because
             # it's our local copy — no other thread can modify it)
@@ -1118,7 +1190,9 @@ class LightRAGAdapter:
 
         except Exception as e:
             logger.error(f"LightRAG get_graph_snapshot failed: {e}")
-            return {"nodes": [], "edges": []}
+            # E3 契约反转：错误不再伪装为无结果——真异常返回空壳 + error dict
+            err_msg = _sanitize_graph_error(str(e) or f"{type(e).__name__}: (no message)")
+            return {"nodes": [], "edges": [], "status": "error", "message": err_msg}
 
     # ============== Management Methods ==============
 

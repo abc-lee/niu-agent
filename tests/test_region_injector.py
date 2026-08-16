@@ -465,6 +465,31 @@ class TestActivateForQueryRegionEntities:
             assert {"entity_name", "entity_type", "description"} <= set(entity)
 
 
+class TestActivateForQueryErrorPropagation:
+    """E3-08: activate_for_query 遇 query_data error dict → raise RuntimeError（不降级吞错）。"""
+
+    def test_raises_runtime_error_on_query_data_error_dict(self):
+        """E3 契约反转：错误不再伪装为无结果——query_data error dict → 抛 RuntimeError。
+
+        锁定断链修复：内部 except 必须对 RuntimeError 重抛（`except RuntimeError: raise`），
+        否则 runner 侧脑区激活失败标注（_inject_dynamic_resources except 分支）不可达——
+        错误被静默吞掉、LLM 误以为"无脑区知识"。
+        """
+        activation_mgr = _make_classify_manager()
+        injector = _make_injector(activation_mgr)
+        injector._adapter.query_data = MagicMock(
+            return_value={"status": "error", "message": "图谱查询失败: boom"}
+        )
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "niu_api.internal.region_injector.get_all_region_members",
+                lambda: {},
+            )
+            with pytest.raises(RuntimeError, match="图谱查询失败"):
+                injector.activate_for_query("Python数据分析")
+
+
 # ============== Test 6: format_region_knowledge 分级格式化 ==============
 
 
