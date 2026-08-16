@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -500,6 +501,23 @@ def stop_pipeline_watcher() -> None:
     _pipeline_watcher_stop.set()
 
 
+def _graph_error_response(message: str) -> JSONResponse:
+    """将 adapter 错误 dict（status=="error"）转为前端可识别的错误响应（E3 D7）。
+
+    kg_api 三端点（graph_snapshot / explore_node / search_entities）识别 adapter
+    返回的 error dict 后转 HTTP 错误响应——不再把 error dict 当图数据回前端：
+    - 不可用（服务未初始化/门控拒绝——"LightRAG not available" / E3 通用文案）→ 503
+    - 其他读取/检索错误 → 500
+
+    真空（no_results / 空图）保持 200 + 空数据——只有 status=="error" 走此路径。
+    body 形状 {"status": "error", "message": ...} 与既有 error dict 一致，前端
+    renderer 检查 body status 即可识别（ui/main/main.js apiRequest 不检查 HTTP
+    状态码——任何状态都 JSON.parse 后 resolve，错误响应原样透传到 renderer）。
+    """
+    status_code = 503 if ("not available" in message or "初始化门控拒绝" in message) else 500
+    return JSONResponse(status_code=status_code, content={"status": "error", "message": message})
+
+
 # ============== Endpoints ==============
 # NOTE: All endpoints use `def` (not `async def`) because LightRAGAdapter.query()
 # and _shared_dicts reads are blocking.  FastAPI runs regular def endpoints in a
@@ -519,7 +537,10 @@ def graph_snapshot(
 
     result = adapter.get_graph_snapshot(limit=limit)
     if result is None:
-        return {"status": "error", "message": "LightRAG not available"}
+        return _graph_error_response("LightRAG not available")
+    if isinstance(result, dict) and result.get("status") == "error":
+        # E3 D7：adapter 错误 dict 不再当图数据回前端——转错误响应（message 已由 adapter 脱敏）
+        return _graph_error_response(result.get("message", "知识图谱不可用"))
     # Normalize adapter format to frontend-expected format
     if "nodes" in result:
         result["nodes"] = _normalize_nodes(result["nodes"])
@@ -705,7 +726,10 @@ def explore_node(request: ExploreRequest):
         depth=request.depth,
     )
     if result is None:
-        return {"status": "error", "message": "LightRAG not available"}
+        return _graph_error_response("LightRAG not available")
+    if isinstance(result, dict) and result.get("status") == "error":
+        # E3 D7：adapter 错误 dict 不再 normalize 跳过原样回——转错误响应
+        return _graph_error_response(result.get("message", "知识图谱不可用"))
     # Normalize adapter format to frontend-expected format
     if "nodes" in result:
         result["nodes"] = _normalize_nodes(result["nodes"])
@@ -1132,6 +1156,10 @@ def search_entities(query: str = Query(default=""), top_k: int = Query(default=2
 
         if result is None:
             return {"entities": []}
+
+        # E3 D7：adapter 错误 dict（status=="error"）→ 错误响应——不再 data.get("entities") 空列表静默
+        if isinstance(result, dict) and result.get("status") == "error":
+            return _graph_error_response(result.get("message", "知识图谱检索失败"))
 
         # query_data returns {status, data: {entities: [...], relationships: [...], chunks: [...]}}
         data = result.get("data", {})
