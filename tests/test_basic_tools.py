@@ -405,6 +405,23 @@ class TestGrepSearch:
         assert "无法确认匹配" in result
         assert "no match" not in result.lower()
 
+    def test_matches_with_read_failure_appends_failure_note(self, tmp_path):
+        """When matches exist and some files fail to read, append the failure note."""
+        good = tmp_path / "good.txt"
+        good.write_text("needle here\n", encoding="utf-8")
+        locked = tmp_path / "locked.txt"
+        locked.write_text("needle also here\n", encoding="utf-8")
+        os.chmod(locked, 0)  # no read permission -> OSError on open
+
+        result = grep_search("needle", str(tmp_path))
+
+        # Match lines present
+        assert "good.txt" in result
+        assert "needle here" in result
+        # Failure note appended at end of match results (count + truncated path list)
+        assert "另有 1 个文件读取失败" in result
+        assert "locked.txt" in result
+
     def test_result_limit_50(self, tmp_path):
         """Search results are limited to at most 50 matches."""
         # Create a file with 60 matching lines

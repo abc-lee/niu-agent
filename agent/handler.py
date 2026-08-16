@@ -240,6 +240,12 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
     result = "\n".join(matches)
     if len(matches) >= max_lines:
         result += f"\n... (showing first {max_lines} matches)"
+    if failed_count:
+        shown = failed_files[:5]
+        shown_repr = ", ".join(shown)
+        if failed_count > len(shown):
+            shown_repr += ", ..."
+        result += f"\n（另有 {failed_count} 个文件读取失败：{shown_repr}）"
     return result
 
 
