@@ -2452,8 +2452,9 @@
     });
 
     // 监听系统提示（E4-02 强制退出等——SSE 推送，⚠️ system 提示；不落库，刷新后自然消失）
+    // 生产者（agent_loop L958/L1133/L1189）已自带 "⚠️ " 前缀——渲染层透传不追加，防 "⚠️ ⚠️" 双重
     window.electronAPI.onSystemNotice((event) => {
-      addMessage('system', '⚠️ ' + (event.message || '系统提示'));
+      addMessage('system', event.message || '⚠️ 系统提示');
     });
 
     // ========== 数据库$视图刷新 ==========
