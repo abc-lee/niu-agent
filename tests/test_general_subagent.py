@@ -539,11 +539,11 @@ import pytest  # noqa: E402（autouse fixture 用）
 
 @pytest.fixture(autouse=True)
 def _reset_prompt_degradation_marker():
-    """E4-14：每个测试后清零模块级降级标记（防跨测试污染）。"""
+    """E4-14：每个测试后清零降级标记（thread-local——防跨测试污染）。"""
     from agent import subagent
 
     yield
-    subagent._subagent_prompt_degraded_reason = None
+    subagent._set_subagent_prompt_degraded_reason(None)
 
 
 def _call_subagent_hermetic(monkeypatch, run_result=("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")):
@@ -585,8 +585,8 @@ def test_prompt_degradation_annotates_non_json_result(monkeypatch):
         llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
     )
     assert result == "done\n[子 Agent 提示词降级: 系统提示词构建失败：system segments boom]"
-    # 模块级标记置位（供展示层消费）
-    assert subagent._subagent_prompt_degraded_reason == "系统提示词构建失败：system segments boom"
+    # 降级标记置位（供展示层消费——同线程可读）
+    assert subagent._get_subagent_prompt_degraded_reason() == "系统提示词构建失败：system segments boom"
 
 
 def test_prompt_degradation_json_result_stays_clean(monkeypatch):
@@ -609,8 +609,8 @@ def test_prompt_degradation_json_result_stays_clean(monkeypatch):
     )
     assert result == '{"ok": true}'
     assert "子 Agent 提示词降级" not in result
-    # 降级事实仍经模块级标记旁路（展示层补注）
-    assert subagent._subagent_prompt_degraded_reason is not None
+    # 降级事实仍经降级标记旁路（展示层补注）
+    assert subagent._get_subagent_prompt_degraded_reason() is not None
 
 
 def test_prompt_degradation_marker_resets_on_next_call(monkeypatch):
@@ -626,7 +626,7 @@ def test_prompt_degradation_marker_resets_on_next_call(monkeypatch):
         agent_name="test-agent", task="t1",
         llm_config={"apikey": "k", "apibase": "http://x", "model": "m"},
     )
-    assert subagent._subagent_prompt_degraded_reason is not None  # 第一次调用降级置位
+    assert subagent._get_subagent_prompt_degraded_reason() is not None  # 第一次调用降级置位
 
     # 第二次调用：正常构建 → 标记清零 + 结果无标注
     monkeypatch.setattr(subagent, "build_subagent_system_segments", lambda name: ("static", "dynamic"))
@@ -636,7 +636,7 @@ def test_prompt_degradation_marker_resets_on_next_call(monkeypatch):
         llm_config={"apikey": "k", "apibase": "http://x", "model": "m"},
     )
     assert result == "done"
-    assert subagent._subagent_prompt_degraded_reason is None
+    assert subagent._get_subagent_prompt_degraded_reason() is None
 
 
 def _drive_call_subagent_gen(agent_name, subagent_result):
@@ -667,7 +667,7 @@ def test_prompt_degradation_display_layer_annotates_json_result():
     """E4-14：降级标记置位 + JSON 结果 → 展示层 display_result 附标注（返回 LLM 的展示副本）。"""
     from agent import subagent
 
-    subagent._subagent_prompt_degraded_reason = "系统提示词构建失败：boom"
+    subagent._set_subagent_prompt_degraded_reason("系统提示词构建失败：boom")
     outcome = _drive_call_subagent_gen("test-agent", '{"ok": true}')
     assert outcome.data["status"] == "success"
     assert outcome.data["result"] == '{"ok": true}\n[子 Agent 提示词降级: 系统提示词构建失败：boom]'
@@ -677,37 +677,112 @@ def test_prompt_degradation_display_layer_unchanged_without_marker():
     """E4-14：无降级标记 → 展示层 JSON 原样透传（正常路径零变化）。"""
     from agent import subagent
 
-    assert subagent._subagent_prompt_degraded_reason is None  # 前提：默认无标记
+    assert subagent._get_subagent_prompt_degraded_reason() is None  # 前提：默认无标记
     outcome = _drive_call_subagent_gen("test-agent", '{"ok": true}')
     assert outcome.data["result"] == '{"ok": true}'
 
 
-class _FakeGenMsg:
-    """journal 游标测试用最小消息（同 test_incomplete_cursor.py _Msg）。"""
-
-    def __init__(self, mid):
-        self.id = mid
-
-
 def test_prompt_degradation_json_result_cursor_unaffected(monkeypatch):
-    """E4-14：降级返回的干净 JSON（无标注）→ journal 游标照常推进（JSON 消费端不受影响）。
+    """E4-14：降级返回的干净 JSON（无标注）→ journal 游标更新收到原始 result（JSON 消费端不受影响）。
 
-    链：call_subagent 降级时 JSON 结果不拼接标注（test_prompt_degradation_json_result_stays_clean）→
-    原始 result 保持可解析 → _update_journal_cursor 正常写游标。
+    E4 T3 P3b：原测试只直接调 _update_journal_cursor（未涉及降级链——与
+    test_incomplete_cursor.py 游标测试冗余）。改为驱动完整链路：
+    真实 call_subagent（build_subagent_system_segments 降级）→ handler._call_subagent_gen
+    journal-agent 路径 → 捕获 _update_journal_cursor 收到的 journal_result——
+    断言为无标注原始 JSON（JSON 守卫不拼接），降级标注只进 display_result（展示副本）。
     """
-    import json as _json
     from unittest import mock
+
+    from agent import subagent
+
+    def _boom(name):
+        raise RuntimeError("system segments boom")
+
+    monkeypatch.setattr(subagent, "build_subagent_system_segments", _boom)
+    _call_subagent_hermetic(
+        monkeypatch,
+        run_result=('{"processed_up_to": 2}', {"result": "CURRENT_TASK_DONE", "data": "ok"}, ""),
+    )
 
     from agent.handler import NiuHandler
 
     handler = NiuHandler(mcp_client=None)
-    handler._sync_get_messages = lambda: [_FakeGenMsg("m1"), _FakeGenMsg("m2")]
-    write_text = mock.MagicMock()
-    with mock.patch("agent.handler.Path.exists", return_value=False), \
-         mock.patch("agent.handler.Path.write_text", write_text):
-        handler._update_journal_cursor(
-            '{"processed_up_to": 2}', ["m1", "m2"], {"1": "m1", "2": "m2"},
-        )
-    assert write_text.call_count == 1
-    payload = _json.loads(write_text.call_args.args[0])
-    assert payload.get("last_journal_id") == "m2"
+    captured = {}
+
+    def _capture_cursor(journal_result, journal_msg_ids, journal_idx_to_id=None):
+        captured["result"] = journal_result
+        captured["msg_ids"] = journal_msg_ids
+        captured["idx_to_id"] = journal_idx_to_id
+
+    handler._update_journal_cursor = _capture_cursor
+    # journal 增量任务构建 hermetic 化（不读真实 last_journal.json / DB）——与 tidy 管道同构
+    handler._build_journal_task_for_handler = lambda original_task: (
+        "精加工实体", [], {"2": "m2"}, ["m1", "m2"],
+    )
+
+    fake_runner = mock.MagicMock()
+    fake_runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
+    outcome = None
+    with mock.patch("agent.runner.get_runner", return_value=fake_runner), \
+         mock.patch("agent.subagent_registry.SubagentRegistry.get", return_value=None), \
+         mock.patch("niu_api.internal.subagent_event_bus.pre_register"), \
+         mock.patch("niu_api.internal.subagent_event_bus.has_subagent", return_value=False), \
+         mock.patch("niu_api.chat._main_loop", None):
+        gen = handler._call_subagent_gen("journal-agent", {"task": "精加工实体"})
+        try:
+            while True:
+                next(gen)
+        except StopIteration as si:
+            outcome = si.value
+    assert outcome is not None, "generator 未返回 StepOutcome"
+
+    # 游标更新收到无标注原始 result（JSON 守卫不拼接——标注只在展示副本）
+    assert captured["result"] == '{"processed_up_to": 2}'
+    assert "子 Agent 提示词降级" not in captured["result"]
+    assert captured["idx_to_id"] == {"2": "m2"}  # 游标映射来自真实 _call_subagent_gen 分支
+    # 降级事实仍进展示层 display_result（返回 LLM 的展示副本，不解析）
+    assert outcome.data["status"] == "success"
+    assert outcome.data["result"] == '{"processed_up_to": 2}\n[子 Agent 提示词降级: 系统提示词构建失败：system segments boom]'
+
+
+def test_prompt_degradation_annotates_compact_truncated(monkeypatch):
+    """E4 T3 P3a：降级 + COMPACT_TRUNCATED 早期返回 → 标注拼接在截断内容末尾（前缀剥离消费不受影响）。"""
+    from agent import subagent
+
+    def _boom(name):
+        raise RuntimeError("truncated boom")
+
+    monkeypatch.setattr(subagent, "build_subagent_system_segments", _boom)
+    _call_subagent_hermetic(
+        monkeypatch,
+        run_result=("partial done", {"result": "CURRENT_TASK_DONE", "data": "ok", "finish_reason": "length"}, ""),
+    )
+
+    result = subagent.call_subagent(
+        agent_name="test-agent", task="t",
+        llm_config={"apikey": "k", "apibase": "http://x", "model": "m"},
+    )
+    assert result.startswith("COMPACT_TRUNCATED:partial done")
+    assert result.endswith("[子 Agent 提示词降级: 系统提示词构建失败：truncated boom]")
+    # 前缀剥离后内容尾部仍含标注（消费端可见降级事实）
+    assert "子 Agent 提示词降级" in result[len("COMPACT_TRUNCATED:"):]
+
+
+def test_prompt_degradation_annotates_subagent_error(monkeypatch):
+    """E4 T3 P3a：降级 + LLM_ERROR 早期返回 → SUBAGENT_ERROR 尾部附降级标注（错误文本含降级原因）。"""
+    from agent import subagent
+
+    def _boom(name):
+        raise RuntimeError("error boom")
+
+    monkeypatch.setattr(subagent, "build_subagent_system_segments", _boom)
+    _call_subagent_hermetic(
+        monkeypatch,
+        run_result=("", {"result": "LLM_ERROR", "error_msg": "rate limit"}, ""),
+    )
+
+    result = subagent.call_subagent(
+        agent_name="test-agent", task="t",
+        llm_config={"apikey": "k", "apibase": "http://x", "model": "m"},
+    )
+    assert result == "SUBAGENT_ERROR:rate limit\n[子 Agent 提示词降级: 系统提示词构建失败：error boom]"

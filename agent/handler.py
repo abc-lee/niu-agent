@@ -1307,9 +1307,11 @@ class NiuHandler(BaseHandler):
 
             # E4-14：提示词降级标注（展示层注入）——call_subagent 内已在非 JSON 结果拼接
             # [子 Agent 提示词降级: ...]；JSON 结构化结果保持原样（游标/JSON 消费不受影响），
-            # 降级事实经模块级标记旁路在此补注到 display_result（返回 LLM 的展示副本，不解析）。
+            # 降级事实经 thread-local 标记旁路在此补注到 display_result（返回 LLM 的展示副本，不解析）。
+            # E4 T3 P1：同步链 handler 与 call_subagent 同一执行线程——threading.local 可读；
+            # 异步 worker 线程的标记不在此读取（防并发串扰）。
             from . import subagent as _subagent_mod
-            _degraded_reason = getattr(_subagent_mod, "_subagent_prompt_degraded_reason", None)
+            _degraded_reason = _subagent_mod._get_subagent_prompt_degraded_reason()
             if _degraded_reason and result and result.strip().startswith("{"):
                 try:
                     json.loads(result.strip())

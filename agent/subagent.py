@@ -7,6 +7,7 @@ SubAgent Module
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -820,23 +821,39 @@ def _build_subagent_tools_schema(
     return tools_schema
 
 
-# E4-14：提示词降级标注旁路通道（模块级标记）。
+# E4-14：提示词降级标注旁路通道（thread-local 标记——E4 T3 P1 并发串扰修复）。
 # call_subagent 系统提示词降级（build_subagent_system_segments 失败 → get_subagent_prompt → 裸 prompt）
 # 时置位；非 JSON 结构化结果在 call_subagent 内拼接 [子 Agent 提示词降级: <原因>]，
 # JSON 结构化结果保持原样（游标/JSON 消费不受影响），降级事实由展示层
 # （handler._call_subagent_gen display_result 构造点）读取本标记补注。每次 call_subagent 起始清零。
-_subagent_prompt_degraded_reason: str | None = None
+#
+# 线程模型（P1）：置位与读取必须在同一执行线程——threading.local 天然隔离，
+# 并发子 Agent（同步主线程 + 异步 worker 线程 + 多个异步子 Agent 各占 worker 线程）
+# 互不串扰：异步 worker 线程的降级不会污染主线程同步链的展示层补注。
+_subagent_prompt_degraded_reason_tls = threading.local()
+
+
+def _set_subagent_prompt_degraded_reason(reason: str | None) -> None:
+    """E4 T3 P1：置位降级标记（仅当前线程可见）。"""
+    _subagent_prompt_degraded_reason_tls.reason = reason
+
+
+def _get_subagent_prompt_degraded_reason() -> str | None:
+    """E4 T3 P1：读取降级标记；当前线程未置位返回 None（异线程互不可见）。"""
+    return getattr(_subagent_prompt_degraded_reason_tls, "reason", None)
 
 
 def _annotate_subagent_prompt_degradation(result_text: str) -> str:
     """E4-14：降级标注附加——仅非 JSON 结构化结果拼接。
 
     JSON 结构化结果（以 { 开头且 json.loads 可解析）不拼接——游标/JSON 消费不受影响，
-    由展示层（handler._call_subagent_gen）经模块级标记补注。无降级标记时原样返回（正常路径零变化）。
+    由展示层（handler._call_subagent_gen）经 thread-local 标记补注。无降级标记时原样返回（正常路径零变化）。
     """
-    reason = _subagent_prompt_degraded_reason
+    reason = _get_subagent_prompt_degraded_reason()
     if not reason or not result_text:
         return result_text
+    if "[子 Agent 提示词降级:" in result_text:
+        return result_text  # 已含标注（同链重复 annotate 防重——如异步完成通知内嵌已标注结果）
     stripped = result_text.strip()
     if stripped.startswith("{"):
         try:
@@ -886,9 +903,8 @@ def call_subagent(
     """
     from .handler import NiuHandler
 
-    # E4-14：模块级降级标记每次调用起始清零（防跨调用残留——正常路径零变化）
-    global _subagent_prompt_degraded_reason
-    _subagent_prompt_degraded_reason = None
+    # E4-14：降级标记每次调用起始清零（thread-local——仅当前线程；防跨调用残留——正常路径零变化）
+    _set_subagent_prompt_degraded_reason(None)
 
     # 顶部校验：在 get_subagent_config 之前
     if not task and not answer:
@@ -904,8 +920,8 @@ def call_subagent(
         static_system, dynamic_system = build_subagent_system_segments(agent_name)
     except Exception as e:
         logger.warning(f'[SubAgent] build_subagent_system_segments failed for {agent_name}, falling back to bare prompt: {e}')
-        # E4-14：真正降级 → 置位模块级标记（顶部已 global 声明；仅降级标注——正常路径零变化）
-        _subagent_prompt_degraded_reason = f"系统提示词构建失败：{e}"
+        # E4-14：真正降级 → 置位 thread-local 标记（仅降级标注——正常路径零变化）
+        _set_subagent_prompt_degraded_reason(f"系统提示词构建失败：{e}")
         try:
             static_system = get_subagent_prompt(agent_name)
         except Exception:
@@ -1167,7 +1183,8 @@ def call_subagent(
     if return_value and isinstance(return_value, dict) and return_value.get("result") == "LLM_ERROR":
         error_msg = return_value.get("error_msg", "未知错误")
         logger.warning(f"[SubAgent] {agent_name}: LLM error: {error_msg}")
-        return f"SUBAGENT_ERROR:{error_msg}"
+        # E4 T3 P3a：早期返回信号路径统一走标注（降级时尾部附加原因；SUBAGENT_ERROR: 前缀剥离不受影响）
+        return _annotate_subagent_prompt_degradation(f"SUBAGENT_ERROR:{error_msg}")
 
     # 未完成终止（轮次耗尽 / 被停止 / supplement 终止）：返回结构化报告，
     # 避免中间文本被调用方误判为成功（游标误推进）。优先于 finish_reason=length
@@ -1183,7 +1200,8 @@ def call_subagent(
             "partial_result": _partial,
         }
         logger.warning(f"[SubAgent] {agent_name}: {return_value.get('result')} — task incomplete")
-        return json.dumps(report, ensure_ascii=False)
+        # E4 T3 P3a：早期返回统一走标注（JSON 守卫——结构化报告不拼接，保持游标消费干净）
+        return _annotate_subagent_prompt_degradation(json.dumps(report, ensure_ascii=False))
 
     # 检测输出截断（finish_reason == "length"）
     # LLM 输出被截断时无法产出合法 keep/update 结构，返回字符串信号让降级循环识别
@@ -1191,7 +1209,8 @@ def call_subagent(
         if return_value.get("finish_reason") == "length":
             logger.warning(f"[SubAgent] {agent_name}: Output truncated (finish_reason=length)")
             truncated_content = last_reply or result_text or "[输出因超过最大长度被自动截断，无有效内容]"
-            return f"COMPACT_TRUNCATED:{truncated_content}"
+            # E4 T3 P3a：标注拼接在截断内容末尾——COMPACT_TRUNCATED: 前缀剥离消费不受影响
+            return _annotate_subagent_prompt_degradation(f"COMPACT_TRUNCATED:{truncated_content}")
 
     # CONTEXT_OVERFLOW：返回结构化进度报告
     if return_value and isinstance(return_value, dict) and return_value.get("result") == "CONTEXT_OVERFLOW":
@@ -1205,7 +1224,8 @@ def call_subagent(
             "partial_result": result_text or "",
         }
         logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens")
-        return json.dumps(overflow_report, ensure_ascii=False)
+        # E4 T3 P3a：早期返回统一走标注（JSON 守卫——结构化报告不拼接，保持消费端解析干净）
+        return _annotate_subagent_prompt_degradation(json.dumps(overflow_report, ensure_ascii=False))
 
     # 优先从 return 值提取结构化结果
     extracted = _extract_result_from_return_value(return_value)
@@ -1658,34 +1678,42 @@ async def _run_subagent_async(
     from .subagent_registry import SubagentRegistry
 
     try:
-        # call_subagent 是同步函数，用 asyncio.to_thread 包一层避免阻塞主 loop
+        # call_subagent 是同步函数，用 asyncio.to_thread 包一层避免阻塞主 loop。
         # 阶段二关键：传 unique_name=unique_name，跳过 call_subagent 内部 register
-        # （_dispatch_async_subagent 已注册过，避免双重注册 + handler._subagent_unique_name 不匹配）
-        result = await asyncio.to_thread(
-            call_subagent,
-            agent_name=agent_name,
-            task=task,
-            llm_config=llm_config,
-            mcp_client=mcp_client,
-            history=None,
-            supplement_queue=supplement_queue,
-            memory_context=memory_context,
-            unique_name=unique_name,  # 透传 unique_name，跳过 call_subagent 内部 register
-        )
+        # （_dispatch_async_subagent 已注册过，避免双重注册 + handler._subagent_unique_name 不匹配）。
+        # 完成通知构造也移入同一 worker 线程（E4 T3 P2）：降级标记是 threading.local——
+        # call_subagent 置位后必须同线程读取；主 loop 线程只拿最终消息文本（不读标记，防串扰/丢失）。
+        def _run_and_build_completion():
+            result = call_subagent(
+                agent_name=agent_name,
+                task=task,
+                llm_config=llm_config,
+                mcp_client=mcp_client,
+                history=None,
+                supplement_queue=supplement_queue,
+                memory_context=memory_context,
+                unique_name=unique_name,  # 透传 unique_name，跳过 call_subagent 内部 register
+            )
 
-        # 推完成通知到 MainAgentRequestQueue 内存队列（不写 db）
-        # 用 last_reply（最后一轮输出）而非 result（所有轮次累加），避免中间过程挤占最终报告
-        # incomplete 判定基于 result（last_reply 在打断时可能非空——中间文本，不可作完成依据）
-        from niu_api.compat import _is_subagent_incomplete
-        if _is_subagent_incomplete(result):
-            from niu_api.compat import _incomplete_reason
-            _reason = _incomplete_reason(result)
-            completion_msg = f"[{unique_name}] 未完成（{_reason}），已保留进度，可让主 Agent 安排继续处理"
-        else:
-            _inst = SubagentRegistry.get(unique_name)
-            _last_reply = getattr(_inst, 'last_reply', '') if _inst else ''
-            _result_for_notify = _last_reply if _last_reply else result
-            completion_msg = f"[{unique_name}] 已完成，结果：{_result_for_notify}"
+            # 推完成通知到 MainAgentRequestQueue 内存队列（不写 db）
+            # 用 last_reply（最后一轮输出）而非 result（所有轮次累加），避免中间过程挤占最终报告
+            # incomplete 判定基于 result（last_reply 在打断时可能非空——中间文本，不可作完成依据）
+            from niu_api.compat import _is_subagent_incomplete
+            if _is_subagent_incomplete(result):
+                from niu_api.compat import _incomplete_reason
+                _reason = _incomplete_reason(result)
+                completion_msg = f"[{unique_name}] 未完成（{_reason}），已保留进度，可让主 Agent 安排继续处理"
+            else:
+                _inst = SubagentRegistry.get(unique_name)
+                _last_reply = getattr(_inst, 'last_reply', '') if _inst else ''
+                _result_for_notify = _last_reply if _last_reply else result
+                completion_msg = f"[{unique_name}] 已完成，结果：{_result_for_notify}"
+            # E4 T3 P2：completion_msg 是展示文本（非 JSON 消费点）——同线程读 TLS 标记
+            # 追加降级标注；JSON 结果时 completion_msg 同样可追加（消息文本非 JSON 消费）。
+            # 内嵌结果已含标注时 annotate 幂等防重（不双拼）。
+            return _annotate_subagent_prompt_degradation(completion_msg)
+
+        completion_msg = await asyncio.to_thread(_run_and_build_completion)
         try:
             get_main_agent_request_queue().push(completion_msg)
         except Exception as e:
