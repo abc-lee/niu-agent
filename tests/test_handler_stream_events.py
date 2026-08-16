@@ -303,6 +303,102 @@ class TestCallSubagentGen:
         assert any("No task found" in e.content for e in system_events), \
             f"system yield 应保留 'No task found'，实际: {system_events}"
 
+    def test_subagent_db_missing_fails_verification(self):
+        """P3-2：event-manager 数据库文件缺失 → 验证失败可见化（不再静默通过）。
+
+        第四分支补全（数据库错误/无任务/验证异常/数据库缺失）——system yield
+        （验证失败类）+ display_result 注入失败原因（chat-with 结果流）。
+        """
+        handler = _make_handler()
+        mock_runner = Mock()
+        mock_runner.llm_config = {"model": "test"}
+
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create memory.json pointing to tmpdir——但【不创建】scheduled_tasks.db
+            memory_path = Path(tmpdir) / ".niu" / "memory.json"
+            memory_path.parent.mkdir(parents=True, exist_ok=True)
+            memory_path.write_text('{"workspace": {"path": "' + tmpdir + '"}}', encoding="utf-8")
+
+            with patch("agent.runner.get_runner", return_value=mock_runner), \
+                 patch("agent.subagent.call_subagent", return_value="reminder set"), \
+                 patch.object(Path, "home", return_value=Path(tmpdir)):
+                gen = handler._call_subagent_gen("event-manager", {"task": "提醒我明天开会"})
+                events, return_value = _collect_events_with_return(gen)
+
+        # system yield（验证失败类——原静默通过分支）
+        stream_events = [e for e in events if isinstance(e, StreamEvent)]
+        system_events = [e for e in stream_events if e.type == "system"]
+        assert any("数据库不存在，无法验证任务" in e.content for e in system_events), \
+            f"应有包含 '数据库不存在' 的 system 事件，实际: {system_events}"
+
+        # display_result 注入失败原因（主 Agent 下一轮可见）+ 原始返回保留
+        assert return_value is not None, "应返回 StepOutcome"
+        result_text = return_value.data["result"]
+        assert "[event-manager 任务验证失败" in result_text, \
+            f"结果流应含验证失败标记，实际: {result_text}"
+        assert "数据库不存在，无法验证任务" in result_text, \
+            f"结果流应含失败原因，实际: {result_text}"
+        assert "reminder set" in result_text, \
+            f"结果流应保留子 Agent 原始返回，实际: {result_text}"
+
+    def test_subagent_verify_fail_reason_length_capped(self):
+        """P3-1：验证失败原因长度上限——超长失败文本保尾截断（200 字符）。
+
+        防异常文本（如超长数据库错误消息）挤占 tool_marker 200 截断窗口；
+        截断保留尾部（信息最新端）且失败标记仍在结果流头部。
+        """
+        handler = _make_handler()
+        mock_runner = Mock()
+        mock_runner.llm_config = {"model": "test"}
+
+        import sqlite3 as real_sqlite3
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory_path = Path(tmpdir) / ".niu" / "memory.json"
+            memory_path.parent.mkdir(parents=True, exist_ok=True)
+            memory_path.write_text('{"workspace": {"path": "' + tmpdir + '"}}', encoding="utf-8")
+
+            db_path = Path(tmpdir) / "scheduled_tasks.db"
+            real_conn = real_sqlite3.connect(str(db_path))
+            real_conn.execute(
+                "CREATE TABLE IF NOT EXISTS scheduled_tasks ("
+                "id INTEGER PRIMARY KEY, content TEXT, status TEXT, "
+                "scheduled_at TEXT, created_at TEXT)"
+            )
+            real_conn.commit()
+            real_conn.close()
+
+            # 超长数据库错误消息（500 字符）→ verify_fail_reason 必须被截断
+            with patch("agent.runner.get_runner", return_value=mock_runner), \
+                 patch("agent.subagent.call_subagent", return_value="reminder set"), \
+                 patch.object(Path, "home", return_value=Path(tmpdir)), \
+                 patch.object(real_sqlite3, "connect", side_effect=real_sqlite3.Error("x" * 500)):
+                gen = handler._call_subagent_gen("event-manager", {"task": "提醒我明天开会"})
+                events, return_value = _collect_events_with_return(gen)
+
+        assert return_value is not None, "应返回 StepOutcome"
+        result_text = return_value.data["result"]
+        assert "[event-manager 任务验证失败" in result_text, \
+            f"结果流应含验证失败标记（头部——截断不应挤掉标记），实际: {result_text}"
+
+        # 失败原因截断到 ≤200 字符（保尾——尾部信息保留）
+        reason_part = result_text.split("任务验证失败：", 1)[1].split("]\n", 1)[0]
+        assert len(reason_part) <= 200, \
+            f"验证失败原因应 ≤200 字符，实际 {len(reason_part)}: {reason_part}"
+        assert reason_part.endswith("x" * 10), \
+            f"保尾截断应保留尾部信息，实际尾部: {reason_part[-20:]!r}"
+
+        # system yield 保留（verbose 调试通道——原样未截断）
+        stream_events = [e for e in events if isinstance(e, StreamEvent)]
+        system_events = [e for e in stream_events if e.type == "system"]
+        assert any("Database error" in e.content for e in system_events), \
+            f"system yield 应保留 Database error，实际: {system_events}"
+
     def test_subagent_verify_success_keeps_display_result_discard(self):
         """E4-11：event-manager 验证成功（DB 有任务）→ display_result 不注入（成功分支保持丢弃）。"""
         handler = _make_handler()

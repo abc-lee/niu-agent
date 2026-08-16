@@ -1340,6 +1340,10 @@ class NiuHandler(BaseHandler):
                                 else:
                                     yield StreamEvent("system", "[SubAgent] ⚠ Warning: No task found in database\n")
                                     verify_fail_reason = verify_fail_reason or "数据库中无任务记录"
+                            else:
+                                # P3-2：第四分支——数据库文件缺失（原静默通过 → 验证失败可见化）
+                                yield StreamEvent("system", "[SubAgent] ⚠ Warning: 数据库不存在，无法验证任务\n")
+                                verify_fail_reason = "数据库不存在，无法验证任务"
                 except Exception as e:
                     yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
                     verify_fail_reason = f"验证异常: {e}"
@@ -1348,6 +1352,10 @@ class NiuHandler(BaseHandler):
                 # 验证失败；不走 next_prompt——防 test_working_memory_removal 白名单回归）；
                 # 成功分支保持丢弃（display_result 原样）
                 if verify_fail_reason:
+                    # P3-1：验证失败原因长度上限——保尾截断（200 字符），防异常文本
+                    # （如超长数据库错误消息）挤占 tool_marker 200 截断窗口
+                    if len(verify_fail_reason) > 200:
+                        verify_fail_reason = "..." + verify_fail_reason[-197:]
                     display_result = f"[event-manager 任务验证失败：{verify_fail_reason}]\n{display_result}"
 
             yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {display_result[:200] if len(display_result) > 200 else display_result}\n")

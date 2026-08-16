@@ -14,6 +14,7 @@
 import json
 import os
 import pathlib
+import re
 import tempfile
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -579,6 +580,38 @@ def test_frontend_system_notice_four_hop_chain():
     assert "onSystemNotice:" in preload, "preload-chat.js 应暴露 onSystemNotice"
     assert "ipcRenderer.on('system-notice'" in preload, \
         "preload-chat.js 应监听 system-notice IPC 频道"
+
+    # P3-4a：两端频道名逐字一致性（防一端改名另一端漏改——从 system_notice 分支
+    # 与 onSystemNotice 块内各自提取频道字面量，逐字比较；单端改名即失配）
+    _notice_block = main_js[main_js.index("event.type === 'system_notice'"):]
+    m_send = re.search(r"webContents\.send\('([^']+)',\s*event\)", _notice_block)
+    _on_block = preload[preload.index("onSystemNotice:"):]
+    m_on = re.search(r"ipcRenderer\.on\('([^']+)'", _on_block)
+    assert m_send is not None and m_on is not None, \
+        "应能从 main.js system_notice 分支与 preload onSystemNotice 块提取频道名字面量"
+    assert m_send.group(1) == m_on.group(1), \
+        f"main.js send 频道名 {m_send.group(1)!r} 与 preload on 频道名 {m_on.group(1)!r} 必须一致"
+
+    # P3-4b：分支相对位置——system_notice 必须与 llm_error/ask_user 同为顶层 else-if
+    # 链分支（同级缩进、非嵌套——防被其他分支包裹遮蔽），且位于 ask_user 之前
+    def _branch_line(src, marker):
+        i = src.index(marker)
+        line_start = src.rfind("\n", 0, i) + 1
+        return src[line_start:src.find("\n", i)]
+
+    _sys_line = _branch_line(main_js, "event.type === 'system_notice'")
+    _llm_line = _branch_line(main_js, "event.type === 'llm_error'")
+    _ask_line = _branch_line(main_js, "event.type === 'ask_user'")
+    for _name, _line in (("system_notice", _sys_line), ("llm_error", _llm_line), ("ask_user", _ask_line)):
+        assert _line.strip().startswith("} else if ("), \
+            f"{_name} 应为顶层 else-if 分支，实际行: {_line!r}"
+    _sys_indent = len(_sys_line) - len(_sys_line.lstrip())
+    _llm_indent = len(_llm_line) - len(_llm_line.lstrip())
+    _ask_indent = len(_ask_line) - len(_ask_line.lstrip())
+    assert _sys_indent == _llm_indent == _ask_indent, \
+        "system_notice 与 llm_error/ask_user 必须同级缩进（顶层链，非嵌套遮蔽）"
+    assert main_js.index("event.type === 'system_notice'") < main_js.index("event.type === 'ask_user'"), \
+        "system_notice 分支必须位于 ask_user 之前（链序）"
 
     # 第 4 跳：chat.html 监听 onSystemNotice → addMessage('system', ...) ⚠️ 提示渲染
     assert "onSystemNotice(" in chat_html, "chat.html 应注册 onSystemNotice 监听器"
