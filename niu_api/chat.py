@@ -55,7 +55,13 @@ def _push_connection_initial_events(q: asyncio.Queue) -> None:
 
     failures = get_mcp_load_failures()
     if failures:
-        q.put_nowait({"type": "mcp_load_failures", "failures": failures})
+        try:
+            q.put_nowait({"type": "mcp_load_failures", "failures": failures})
+        except asyncio.QueueFull:
+            # 连接建立初始事件队列满（客户端处理慢）——降级跳过不抛异常；
+            # 对齐 notify_new_message/_sync_broadcast 既有防御模式（防御一致化），
+            # 防未来扩展初始事件时连接建立因队列满抛异常。
+            logger.warning("[SSE] Connection initial events queue full, skipping mcp_load_failures push")
 
 
 def _register_connection() -> asyncio.Queue:
