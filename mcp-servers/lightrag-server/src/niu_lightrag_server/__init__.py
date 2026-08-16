@@ -1,7 +1,7 @@
 """
 LightRAG Unified MCP Server
 
-Replaces vector-store (7 tools) and kg-server (20 tools) with 16 unified tools
+Replaces vector-store (7 tools) and kg-server (20 tools) with 23 unified tools
 that delegate to LightRAGAdapter and LightRAGIngester.
 
 Tool groups:
@@ -700,6 +700,16 @@ def lightrag_query(
             response_type=response_type,
             keywords=keywords,
         )
+        # E3 契约（D3）：错误不再伪装为无结果——显式判定三分支（_is_error_text markers 机制不适用）
+        if isinstance(result, str) and result.startswith("[图谱查询失败"):
+            # T1 新错误文本（真异常 → "[图谱查询失败: <err>]"）→ error dict——LLM 可见 message
+            return {"status": "error", "message": result}
+        if isinstance(result, str) and not result.strip():
+            # fail_response "" 真空——修复 "" 绕过（不再裸空串直达 LLM）
+            return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
+        if isinstance(result, str) and result.startswith("知识图谱不可用"):
+            # 第三分支（B5 P3-2）：rag None 通用文案 → error dict（形态与异常路径一致，不裸文本直达 LLM）
+            return {"status": "error", "message": result}
         if result is None:
             return {"status": "error", "message": "No results from LightRAG"}
         return result
@@ -738,6 +748,10 @@ def lightrag_query_data(
         )
         if LightRAGAdapter._is_no_result(result):
             return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
+        if isinstance(result, dict) and result.get("status") == "error":
+            # E3 契约（D3）：错误不再伪装为无结果——error dict 透传返回（LLM 可见 message；
+            # _is_no_result 已排除 error dict——此分支保险）
+            return result
         return result
     except Exception as e:
         logger.error(f"lightrag_query_data failed: {e}")
@@ -756,6 +770,9 @@ def lightrag_search_entities(
         result = adapter.query_data(query=query, mode="local", top_k=top_k, keywords=keywords, fields=fields)
         if LightRAGAdapter._is_no_result(result):
             return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
+        if isinstance(result, dict) and result.get("status") == "error":
+            # E3 契约（D3）：错误不再伪装为无结果——error dict 透传（现状 data 缺失 → 空 ok 丢失错误）
+            return result
         data = result.get("data", result) if isinstance(result, dict) else {}
         if isinstance(data, list):
             return {"status": "ok", "data": data}
