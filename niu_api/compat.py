@@ -2358,16 +2358,14 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         _chat_lock.release()
 
     # IM 推送在锁释放后执行（与 ChatQueue 模式一致，避免网络 I/O 阻塞锁）
-    # 闸门：只看 IM 标志——runner.should_push_im() 单一判定入口（channel_id 或 force 任一在）。
-    # 无标志不发（本地 Electron 对话的异步子 Agent 续答不推 IM）；有标志 channel_id 空时由网关 route_out→push
-    # 回退到 _push_target 广播（与 scheduler 服务首轮发 IM 同款）。
+    # 统一入口 push_im_reply：should_push_im 闸门在函数内；channel_id 非空 → route_out(SEND)；
+    # force-only（channel_id 空）→ send_sync("") SEND 终结流式卡片（修复 08-12 只在 ChatQueue
+    # 分支 2 修终结、chat_session 缺口导致的卡片"思考中"不终结——2026-08-17）。
+    # chat_error 也投递：错误文案流式期已进卡（LLM 错误）必须终结；对齐 ChatQueue 分支 2 语义。
     # 规则 5：此处只读标志，绝不 set_im_channel / set_im_force——子 Agent 返回不改变标志。
     try:
-        if chat_error is None and runner.should_push_im():
-            from niu_api.channel import get_channel_router
-            router = get_channel_router()
-            if router.has_channel("im"):
-                await router.route_out(full_reply, "im", runner.get_im_channel())
+        from niu_api.channel.gateway import push_im_reply
+        await push_im_reply(runner, full_reply)
     except Exception as e:
         logger.warning(f"[chat_session] IM push failed: {e}")
 
