@@ -513,6 +513,21 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-17
+
+#### 修复：IM 流式卡片终结统一化——chat_session 补 SEND 终结（定时任务异步子 Agent 回填触发飞书卡片"思考中"不终结）
+
+- **问题（用户实证）**：定时任务（HN 新闻 10:00 触发）→ 主 Agent 异步调用子 Agent（chat-with-* async_mode）→ 第一轮正常终结（ChatQueue 分支 2 send_sync）→ **子 Agent 完成回填触发第二轮（前端 source='' → chat_session 路径）**→ 流式建卡 B（"思考中"）→ 会话末 `route_out(full_reply, "im", "")` 空 channel_id 退化为 **PUSH（send_markdown 独立消息，不终结卡片）** → 卡 B 永久"思考中"；同日 10:01:50 HA 门锁通知恰好走 ChatQueue 分支 2 send_sync 终结了当时的卡片——用户误以为"HA 修复了状态"。
+- **根因**：08-12 只在 P1 ChatQueue 分支 2 补了 scheduler 特判 `send_sync` 终结；**P2 chat_session 路径对 force-only 会话（`_im_force` 粘性 True + `_im_channel_id` 空）无等价特判**——route_out 空 channel_id → PUSH 不终结。异步子 Agent 回填（source='' 触发 chat_session）首次系统性踩中。**点式修复教训实证**：08-12 修分支 2、08-15 收口 IM 推送，两次都没覆盖 chat_session 的 force-only 分支。
+- **修复（main 3 commits：c3e78302 + 80a6a19e + 80b27198）**：
+  1. **gateway.py 新增 `async def push_im_reply(runner, reply) -> bool`**（统一投递入口）：should_push_im 早退 → has_channel("im") 早退 → im_cid 非空 `route_out`（SEND，既有行为）→ **force-only `send_sync("", reply, pop_reply_to=False)`（SEND 终结，与分支 2 逐字对齐——条件仅 `_gw and _gw.is_connected`，不查 `_push_target`：READY 期快照与 adapter 实时 `_push_chat_id` 不同步，检查会导致 fresh-P2P 配置修复失效——R3/R4 双审交叉 P1-1）** → gateway 未连接回退 `router.push`（独立消息）
+  2. **compat.py chat_session 投递段**（L2359-2371）：`if chat_error is None and runner.should_push_im(): route_out(...)` → **无条件 `await push_im_reply(runner, full_reply)`**（chat_error 也终结——错误文案流式期已进卡必须终结，对齐分支 2；非 LLM 内部异常 F3 失配以 accumulated 终结、无卡时错误文案独立消息发出）
+  3. **ChatQueue 分支 2 零改动**（现状正确 + reply_to 串联语义 + `_im_finalized` 置位，改不得）
+  4. **测试三文件**：test_push_im_reply.py 新建（5 路径 mock 单测，send_sync 参数级断言）+ test_chat_session_push_runtime.py 新建（rows 6/7 runtime mock：chat_error 非 None/None 均调用且传 full_reply）+ test_chat_session_im_push.py AST 改造（_extract_push_block 定位 push_im_reply；闸门收敛断言；新增 test_push_block_is_unconditional 父链无 If）
+- **全场景矩阵（方案核心交付物）**：13 场景 A-M 逐链路分析——缺口集合 {E, G, K}（scheduler/ha-watcher + 异步子 Agent 回填 = force 粘性 + channel 空 + chat_session + PUSH 不终结）；A/B/L（无标志早退）、C（IM 走 P1 分支 1）、D/F（分支 2 零改动）、H/I/J（不新建会话/ask_finalize/程序消息不推）、M（channel 非空 route_out SEND）均正常。接受边界：`_push_chat_id` 会话期竞态（入站 P2P 消息改写——分支 2 同款既有）、gateway 断线窗口（临时悬挂非永久）、前端 isProcessing 竞态丢回填（既有数据面边界）。
+- **质量链**：方案 v1.0→v1.3 四版 + **六轮双审**（R1/R2 CONDITIONAL 4P1+5P2 → v1.1 分支 2 零改动；R3/R4 CONDITIONAL **双审交叉同一 P1-1**（_push_target 守卫错误）→ v1.2 删守卫；**R5/R6 连续两轮 APPROVE 零阻断**）+ subagent-driven 实施（4 Task 每 Task spec+quality 双审：Task 1 gateway 双审 PASS / Task 2 compat 双审 PASS / Task 3 spec FAIL→复审 PASS（rows 6/7 缺失补齐）+quality PASS / Task 4 回归 PASS）+ 最终整体审查 **READY FOR DELIVERY**；**关键教训：①点式修复恶性循环的根治 = 全场景矩阵先穷举再动手（用户拍板"分析透彻了再动手"）②`_push_target` 是 READY 快照、adapter `_push_chat_id` 实时更新——两字段不同步，守卫必须用实时源 ③AST 测试锁结构（无条件投递父链无 If）与 runtime mock 锁行为（rows 6/7）互补，缺一不可**。
+- **验证**：回归 10 文件 **93 passed 零新增失败零污染**（messages.db 181→181）；**实机验证待用户执行**（清单：①HN 定时任务+异步子 Agent → 第二轮卡片终结 ②HA 门锁通知回归 ③Electron 对话中回填不推 IM ④双端 IM 会话后回填行为不变）。
+
 ### 2026-08-16
 
 #### 新增：残余静默点清理收尾（E4——E1/E2/E3 覆盖之外 17 条全处置：工具链错误可见化 + 事件转发 + 生命周期日志 + MCP 状态槽 + 降级可追溯 + do_grep 读失败清单——验收标准 1 全清单归零）
