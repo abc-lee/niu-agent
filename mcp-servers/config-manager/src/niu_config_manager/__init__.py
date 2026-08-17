@@ -97,7 +97,7 @@ TOOL_SCHEMAS = {
                 },
                 "reasoning_effort": {
                     "type": "string",
-                    "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Standard default config uses 'high'.",
+                    "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
                 },
             },
         },
@@ -392,7 +392,7 @@ def load_user_config() -> dict[str, Any]:
             "apiBase": "",
             "model": "",
             "type": "openai",
-            "reasoning_effort": "high",
+            "reasoning_effort": "",
             "temperature": 0.2,
             "litellm_kwargs": {
                 "thinking": {"type": "disabled"},
@@ -1073,7 +1073,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "reasoning_effort": {
                         "type": "string",
-                        "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Standard default config uses 'high'.",
+                        "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
                     },
                 },
             },
