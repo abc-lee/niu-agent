@@ -532,3 +532,35 @@ def get_im_gateway() -> IMGateway | None:
 def set_im_gateway(gw: IMGateway):
     global _gateway
     _gateway = gw
+
+
+async def push_im_reply(runner, reply: str) -> bool:
+    """会话结束 IM 投递统一入口（async，供 chat_session 调用）。
+
+    返回 bool：True=已尝试投递（网络层失败由 gateway 静默容忍）；False=无 IM 上下文不投递。
+    覆盖两态：
+    - _im_channel_id 非空 → route_out → SEND（终结卡片，既有行为）
+    - _im_channel_id 空（force-only）→ send_sync("", reply) → SEND（终结卡片，与分支 2 逐字对齐）
+      gateway 未连接/None → 回退 router.push 独立消息（无卡可终结，对齐现状 PUSH 语义）
+    """
+    if not runner.should_push_im():
+        return False
+    from niu_api.channel import get_channel_router
+    router = get_channel_router()
+    if not router.has_channel("im"):
+        return False
+    im_cid = runner.get_im_channel()
+    if im_cid:
+        await router.route_out(reply, "im", im_cid)
+        return True
+    # force-only：SEND 终结流式卡（STREAM 已用 _push_chat_id 建卡，SEND("") 解析同 key）
+    # 条件与分支 2 逐字对齐（chat_queue.py L297-300）：仅 _gw and _gw.is_connected，
+    # 不检查 _push_target——它是 READY 期快照，与 adapter 实时 _push_chat_id 不同步，
+    # 检查会导致 fresh-P2P 配置下修复失效（R3/R4 P1-1）
+    _gw = get_im_gateway()
+    if _gw and _gw.is_connected:
+        _gw.send_sync("", reply, pop_reply_to=False)
+        return True
+    # gateway 未连接/None：无卡可终结 → 独立消息（对齐现状 route_out→push 语义）
+    await router.push(reply, "im", "")
+    return True
