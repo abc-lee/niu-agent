@@ -523,11 +523,11 @@ preload_face_model()
 - **修复（main aed4e664，用户拍板范围：只修 schema 剥前缀 + DB 一次性清理，不做发送链路永久规范化）**：
   1. **runner.py**：`_assemble_tools_schema` name 剥 `server/` 前缀发裸名（`split("/", 1)[1]`，对齐 subagent.py 既有模式；dispatch 裸名自动解析 handler.py L1508-1517 既有零改动；该函数仅 2 调用点共用 = 单点全覆盖）
   2. **防回归测试**：test_schema_refresh_in_turn.py 新增 test_assemble_tools_schema_strips_server_prefix（假 registry 带斜杠名 → 断言无斜杠 + 裸名存在）
-  3. **scripts/cleanup_tool_name_prefix.py**：messages.db 一次性清理（--db/--dry-run + sqlite3 在线备份 + **JSON 解析判定禁 LIKE**（arguments 文件路径斜杠假阳性 31 条实证）+ 仅改 function.name + 验证不符即停）——本机 DB 实测 0 污染（Windows 机需用户自跑）
+  3. **~~scripts/cleanup_tool_name_prefix.py~~**（一次性，用后已删）：messages.db 清理（--db/--dry-run + sqlite3 在线备份 + **JSON 解析判定禁 LIKE**（arguments 文件路径斜杠假阳性 31 条实证）+ 仅改 function.name + 验证不符即停）——本机 DB 实测 **0 污染**（105 条 assistant 扫描 0 命中——斜杠仅 Windows 测试机 doubao 时代产生）；Windows 测试机用户直接弃库无需清理
   4. **context-manager.md**：L83/L328 斜杠教学文本改裸名（防 LLM 学斜杠名再污染——子 Agent schema 本就裸名，提示词对齐）
 - **双审查（修复前）**：AuditCodePaths + AuditDataCompat 双 scout——确认 L1159 唯一同类问题点、裸名零重名冲突、dispatch 双兼容、无测试锁定斜杠发送、其余持久化点全干净；**无阻断风险**。
 - **验证**：双审 PASS（Spec S1-S5 + Quality APPROVE 2 Minor 已修权限）+ 测试 3 passed + **本机判定性实测：修复前同请求 400 → 修复后同配置同路径正常回复**（你好！老板有什么我可以帮您的吗）+ 测试消息 3 条已精确清理（DB 回 208 条，备份留存）。
-- **Windows 机待办**：① 换新包（重新打包后）② 跑 `python scripts/cleanup_tool_name_prefix.py`（清其 messages.db 历史斜杠名）③ 再配 zen 使用。
+- **Windows 机待办**：测试机直接弃库重配即可（用户拍板不清理）。
 - **已知边界**：zen 免费层间歇 503/400 波动（上游不稳定，与 Niu 无关）；跨 server 裸名重名时 dispatch first-match-wins（当前注册表零重名，未来注册新 server 留意）。
 
 #### 修复：IM 流式卡片终结统一化——chat_session 补 SEND 终结（定时任务异步子 Agent 回填触发飞书卡片"思考中"不终结）
