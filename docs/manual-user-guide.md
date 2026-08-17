@@ -61,7 +61,7 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
     "model": "",
     "type": "openai",
     "provider": "",
-    "reasoning_effort": "none",
+    "reasoning_effort": "",
     "read_timeout": 300,
     "litellm_kwargs": {}
   }
@@ -80,7 +80,7 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
 | `model` | 模型名称 |
 | `type` | 系统内部参数，用于区分 API 格式转换和认证方式：`openai`（OpenAI 兼容格式）或 `anthropic`（Anthropic 原生格式）。**不是** LiteLLM 的 custom_llm_provider |
 | `provider` | LiteLLM 路由参数，映射为 `custom_llm_provider`。常见值：`""`（空，默认由 type 决定）、`"volcengine"`（火山引擎）。填写后模型名无需加厂商前缀 |
-| `reasoning_effort` | 思考链深度：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"`。主 Agent 默认空，LightRAG 默认 `"none"`。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，需实测确定（详见下方"reasoning_effort 配置与测试指南"） |
+| `reasoning_effort` | 推理深度档位：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"` 等（取值以模型能力探测档案为准）。主 Agent 默认空；LightRAG 默认由探测档案驱动——设置窗口"探测能力"按钮（lightrag 段）探测后，下拉框只显示该模型实际支持的档位，选择即写入。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，换模型/换服务商后必须重新探测（详见下方"reasoning_effort 配置与测试指南"）。`reasoning_effort` 只控制推理深度，**不控制**思考链返回——思考链返回由 `litellm_kwargs.thinking` 独立控制 |
 | `litellm_kwargs` | 厂商特有参数，JSON 对象格式，原样透传给 LiteLLM。用于传递各厂商 SDK 要求的额外参数（如火山引擎的 `thinking`、`allowed_openai_params` 等）。代码不做任何厂商判断，只负责透传 |
 | `read_timeout` | LLM 流式响应读取超时（秒），默认 `300`。模型首响应/流式 chunk 间隔超过该值判定超时并触发重试。**调小场景**：对话卡顿久等（如 `60`）；**调大场景**：知识图谱入库/大文档分析（分块分析可能数分钟，见下方 LightRAG 段）。`llm` 段控制主对话/子 Agent；知识图谱 LLM 调用默认继承 `llm` 段的 `read_timeout`，若 `lightrag_llm` 段配置了独立 `model`，则以 `lightrag_llm` 段的 `read_timeout` 为准（两段同默认 `300`） |
 
@@ -225,11 +225,11 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 | `model` | 模型名称。为空时使用主 Agent 同一模型 | `doubao-seed-2.0-pro`（Coding Plan 别名）或 `doubao-seed-2-0-pro-260215`（标准端点全名） |
 | `type` | 类型：`openai` 或 `anthropic` | `openai` |
 | `provider` | LiteLLM 路由参数，同 `llm` 段说明。火山引擎填 `"volcengine"` | `""` 或 `"volcengine"` |
-| `reasoning_effort` | **思考链深度（核心配置）** | `"none"`（禁用，见下表） |
+| `reasoning_effort` | **推理深度档位（核心配置）** | 探测后从下拉选择模型实际支持的档位；未探测时留空（模型默认） |
 | `temperature` | LLM 采样温度。0.0 完全确定性，1.0 高随机度。为空时由系统兜底 0.2 | `0.2`（实体/关系抽取建议低温度避免 JSON 漂移） |
 | `litellm_kwargs` | 厂商特有参数，同 `llm` 段说明。火山引擎知识图谱需传 `thinking` 和 `allowed_openai_params` | `{}` 或见配置示例 |
 
-> **重要**：LightRAG 官方建议入库时不要使用带思考链的模型。思考链会导致实体提取超时（单次调用可达 198 秒）。`reasoning_effort` 默认 `"none"` 确保即使主 Agent 使用思考链模型，入库也不受影响。
+> **重要**：LightRAG 官方建议入库时不要使用带思考链的模型。思考链会导致实体提取超时（单次调用可达 198 秒）。是否返回思考链由 `litellm_kwargs.thinking` 独立控制（与 `reasoning_effort` 是两个不同参数，互不替代）——火山方舟入库场景配置 `thinking: {"type": "disabled"}` 关闭思考链返回。`reasoning_effort` 只控制推理深度档位，默认由模型能力探测档案驱动（不再预设固定档位，见下方"reasoning_effort 配置与测试指南"），即使主 Agent 使用思考链模型，只要入库段 thinking disabled + 探测出的合理档位，入库也不受影响。
 
 > **温度值说明**：LightRAG 调 LLM 时如果不配 `temperature` 字段，系统兜底默认 `0.2`。这是为实体抽取、关系抽取等结构化任务优化的低温度值，避免高随机度导致 JSON 格式漂移、实体名不一致。如果需要更稳定的输出可设 `0.0`，需要更多创造性可设 `0.5~0.7`，但不建议超过 `1.0`。主 Agent / 子 Agent 的温度值在提示词文档里独立配置（主 Agent 0.6、子 Agent 多数 0.2），与此处的 `lightrag_llm.temperature` 完全独立，互不影响。
 
@@ -245,7 +245,13 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 **reasoning_effort 配置与测试指南**：
 
-`reasoning_effort` 的最优值与模型基础能力强相关，不存在通用最优值。实测数据（ark-code-latest 模型入库 SYSTEM_MANUAL.md）：
+`reasoning_effort` 的最优值与模型基础能力强相关，不存在通用最优值，且**不同厂商/模型对取值范围的接受度不同**（部分服务端对不支持的取值直接 400，部分静默忽略）。系统通过**模型能力探测器**按"生产同参"实测每个模型真实支持的值域，写入能力档案后驱动配置页动态档位：
+
+- **LightRAG 段默认档位由探测档案驱动**（2026-08-18 起，不再预设固定档位——旧版曾兜底 `"high"`）：设置窗口"探测能力"按钮（lightrag 段）探测后，推理深度下拉只显示该模型**实际支持**的档位（厂商原生档位名原样），选择即写入 `lightrag_llm.reasoning_effort`；未探测时留空（由模型默认决定）。
+- **探测按场景同参**：值域扫描 `[minimal, low, medium, high, xhigh, none, max]`，请求携带当前场景的 thinking 配置（lightrag 场景恒 disabled、llm 场景按用户配置）——**值域结论只对当前场景 thinking 成立**，不得外推到其他场景（如豆包 `disabled` 场景只接受 minimal/none，`high` + disabled 直接 400）。
+- **档案位置**：`~/.niu/model_capabilities.json`，键 = `apiBase|model|llm` / `apiBase|model|lightrag`——换模型/换服务商后旧档案不适用，**必须重新探测**。
+
+实测数据（ark-code-latest 模型入库 SYSTEM_MANUAL.md，仅供参考——不同模型差异很大）：
 
 | 配置 | 实体类型准确率 | 空响应率 | 补充提取有效性 | 综合评分 |
 |------|--------------|---------|--------------|---------|
@@ -259,7 +265,17 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 2. **补充提取受影响**：高推理级别下模型过度自信，判断"无需补充"，导致遗漏无法弥补
 3. **不同模型差异很大**：能力强的模型（如 Claude、GPT-4o）在 `none` 或 `low` 即可高质量提取；能力有限的模型可能需要 `high`，但也可能适得其反
 
-**换模型后必须实测**：更改模型或 reasoning_effort 后，用同一文档入库并检查日志验证效果。
+**换模型/换服务商后必须重新探测**（2026-08-18 起）：
+- **设置窗口"探测能力"按钮**：llm 段与 lightrag 段各一个按钮，探测成功后自动刷新推理深度下拉（档案 supported 档位）
+- **CLI**（主 Agent 可直接调用）：
+  ```bash
+  python/bin/python3 scripts/model_capability_probe.py --api-base URL --model MODEL [--api-type anthropic] [--lightrag] [--api-key KEY]
+  ```
+  - `--lightrag` 探测 lightrag_llm 场景（档案键后缀 `|lightrag`，apiKey 缺省从 lightrag_llm 段读）
+  - 退出码 `0` = 档案已更新；`1` = 探测失败未覆盖旧档（保持旧档案，检查配置后重试）
+  - 探测预算：单场景 ≈11 次极小请求（单次 ≤10s），值域候选超时重试最坏 ≈140s——CLI 建议 `timeout=150`；双场景（llm + lightrag）建议 `timeout=300` 或分两次调用
+
+探测通过后，用同一文档入库并检查日志验证实际效果（见下方"入库质量检查方法"）。
 
 **入库质量检查方法**：
 1. 入库后检查日志目录 `logs/raw_http/YYYYMMDD/`，读取 `*_response.json` 文件
@@ -323,7 +339,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 }
 ```
 
-场景三：能力强的模型，禁用思考链即可（如 Claude、GPT-4o）：
+场景三：能力强的模型，禁用思考链返回即可（如 Claude、GPT-4o）——注意"关思考链"用 `thinking` 参数，`reasoning_effort` 留空（模型默认）或选探测支持的低档位：
 ```json
 "lightrag_llm": {
   "presetId": "",
@@ -332,9 +348,11 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "model": "",
   "type": "openai",
   "provider": "",
-  "reasoning_effort": "none",
+  "reasoning_effort": "",
   "temperature": 0.2,
-  "litellm_kwargs": {}
+  "litellm_kwargs": {
+    "thinking": {"type": "disabled"}
+  }
 }
 ```
 
@@ -410,7 +428,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 **入库参数配置**：LightRAG 入库参数（并发数、分片大小、补充提取次数等）可在 `~/.niu/preferences.json` 的 `lightrag` 配置段调整，详见 [知识检索运维手册](manual-vector-store.md) 第 8.5 节。
 
-**入库模型与思考链配置**：LightRAG 入库使用的模型和思考链深度在 `config/user-config.json` 的 `lightrag_llm` 配置段设置，详见上方 1.2 节"LightRAG 知识图谱 LLM 配置"。默认禁用思考链（`reasoning_effort: "none"`），防止深度推理导致入库超时。
+**入库模型与思考链配置**：LightRAG 入库使用的模型和推理深度档位在 `config/user-config.json` 的 `lightrag_llm` 配置段设置，详见上方 1.2 节"LightRAG 知识图谱 LLM 配置"。思考链返回由 `litellm_kwargs.thinking` 独立控制（火山方舟入库配置 `thinking: {"type": "disabled"}` 关闭，防止深度思考导致入库超时）；`reasoning_effort`（推理深度档位）由模型能力探测档案驱动，默认不预设固定档位。
 
 **LightRAG 操作超时**（`~/.niu/preferences.json` 的 `lightrag` 段，缺省值已显式列出，首次运行按此写入）：
 

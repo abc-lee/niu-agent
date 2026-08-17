@@ -595,6 +595,7 @@ typeof NiuDomTree !== 'undefined'
 | 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
 | 脑区边被意外删除 | 衰减算法配置错误 | 检查 preferences.json 中脑区 priority 是否为新值（permanent/long/medium/short），旧值 core/category 会回退到 medium |
 | 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量） | **直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启，splash 弹窗后点"尝试修复"触发完整重建（见 1.7.1 简易指引） |
+| 更换模型/服务商后推理深度或思考链参数不生效（`reasoning_effort`/`thinking` 配置后无效果、报 400、或"测试通过"但请求体没带参数） | 参数未送达（顶层通道被 litellm 白名单静默丢弃，假 200）/ 取值超出该模型支持范围 / 旧能力档案不适用新模型 | ① 检查 `logs/raw_http/{YYYYMMDD}/` 请求体是否含 `extra_body.reasoning_effort` / `extra_body.thinking`（**顶层参数会被 drop_params 静默丢弃**，参数必须走 extra_body 通道）② 设置窗口"探测能力"按钮重新探测（换模型/换服务商后旧档案不适用），下拉只选档案支持的档位 ③ 详见下方 1.7.2 |
 
 #### 1.7.1 知识图谱损坏修复故障排查
 
@@ -680,6 +681,21 @@ E3 工程后，知识图谱不再静默吞错——查询异常会以错误文�
 - **"检测失败" ≠ "数据损坏"**：`check_failed=true` 只是说明本次一致性检测没跑完（如文件读取异常），不触发修复弹窗、`need_repair=false`——先重试/重启，持续失败才走 1.7.1 重建。
 - **"检索失败" ≠ "没有知识"**：注入段出现 `[知识检索失败...]` 标注说明图谱当时不可用，不是知识库为空——修复后重试即可，无需重新导入文档。
 - **门控拒绝的三种状态**（详见 1.7.1 与 `lightrag_manager.py` 三级门控）：修复中（repair 执行中，静默返回）→ 等待修复完成；损坏（critical 核心数据损坏 / major 数据不一致，均打印拒绝初始化 warning）→ 走 1.7.1 删 vdb 重建；冷却（初始化失败后 60s 重试窗口，静默返回）→ 等待 60s 自动重试。
+
+#### 1.7.2 更换模型/服务商后推理深度或思考链参数不生效（extra_body 送达检查法）
+
+**症状**：更换模型/服务商后，`reasoning_effort`（推理深度）或 `thinking`（思考链返回）配置看似生效（配置页测试通过、无报错），但实际请求未携带参数——或携带后服务端 400 拒绝。
+
+**根因**：
+1. **顶层参数通道被 litellm 白名单静默丢弃**：`reasoning_effort`/`thinking` 经顶层参数传递时，litellm 按模型能力白名单过滤，白名单外的参数被 `drop_params` **静默 pop（无任何告警）**——产生**假 200**（服务端从未收到该参数，"测试通过"不代表参数送达）。
+2. **参数必须走 extra_body 通道**：litellm 白名单不拦 extra_body 内键。Niu 统一由 `assemble_request_params` 把 `reasoning_effort`/`thinking` 注入 `extra_body` 送达（2026-08-18 模型能力探测器工程）。
+3. **取值超出模型实际支持范围**：不同模型值域不同（如豆包 `disabled` 场景只接受 minimal/none，`high` + disabled 直接 400），且值域与场景 thinking 配置强耦合。
+
+**检查法**：
+1. **确认参数是否上线（extra_body 送达检查）**：查看 `logs/raw_http/{YYYYMMDD}/` 的传输层请求体（`NNNNNN.json`），检查是否含 `extra_body` → `reasoning_effort` / `thinking`。请求体没有该参数 = 未送达；有但报 400 = 值域问题（该模型不支持该值）。
+2. **换模型/换服务商后重新探测**：设置窗口"探测能力"按钮（llm 段 / lightrag 段各一个），或 CLI：`python/bin/python3 scripts/model_capability_probe.py --api-base URL --model MODEL [--lightrag]`。能力档案按 `apiBase|model|场景` 区分，**旧档案不适用新模型**；探测后下拉只显示模型实际支持的档位。
+3. **探测失败 ≠ 参数失效**：探测失败（CLI 退出码 1）会**保持旧档案**——此时需检查 API 配置/网络后重试，不要误以为参数已按旧值生效。
+4. **区分两个独立维度**：`reasoning_effort`（推理深度）与 `thinking`（是否返回思考链）是两个不同参数，互不替代——"关思考链"用 `litellm_kwargs.thinking`，不靠 `reasoning_effort`。
 
 ### 1.8 Chat 页面消息重复（停止后关闭重开仍重复）
 
