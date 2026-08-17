@@ -2056,11 +2056,12 @@ async def model_capability_probe(request: Request) -> dict:
     一致；llm/lightrag 段配置键名均不含 lightrag，无冲突）。
 
     调 niu_api/model_probe.probe 核心（与 CLI 共用同一实现，同步阻塞——≤11 次
-    极小请求×单次 ≤10s ≈ 110s，放线程池避免阻塞事件循环），返回 probe_status
+    极小请求×单次 ≤10s ≈ 110s，值域候选超时重试最坏 7×2=14 次 ≈140s，放线程池
+    避免阻塞事件循环），返回 probe_status
     JSON（含档案路径/键/摘要）。probe_status: ok / partial / failed
-    （failed = 值域扫描遇非值域错误终止，不覆盖旧档案）。
-    socket 超时对齐 test-connection 230s：探测全程预算 ≈110s < 230s，无需外层
-    额外超时；CLI 场景由主 Agent bash timeout=120/240 兜底。
+    （failed = 值域扫描遇非值域错误终止（超时重试 1 次后仍失败亦终止），不覆盖旧档案）。
+    socket 超时对齐 test-connection 230s：探测全程预算最坏 ≈140s < 230s，无需外层
+    额外超时；CLI 场景由主 Agent bash timeout=150/300 兜底。
     """
     from niu_api.model_probe import build_profile_key, default_profile_path, is_local_api_base, probe
 

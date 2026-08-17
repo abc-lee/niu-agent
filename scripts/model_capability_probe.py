@@ -23,9 +23,10 @@ stdout 契约：
 
 退出码：0 = 档案已更新；1 = 探测失败未覆盖旧档（主 Agent 可据此告知用户"保持旧档案"）。
 
-bash timeout 预算（R5 补）：
-    单场景探测 ≤ 11 次 × 10s ≈ 110s——主 Agent 显式传 timeout=120（bash 上限 300s 内）；
-    双场景（llm + --lightrag）22 次 ≈ 220s——传 timeout=240 或分两次调用。
+bash timeout 预算（R5 补，R18 修订——值域候选超时重试）：
+    单场景探测 ≤ 11 次 × 10s ≈ 110s，值域候选超时重试最坏 7×2=14 次 × 10s ≈ 140s
+    ——主 Agent 显式传 timeout=150（bash 上限 300s 内）；
+    双场景（llm + --lightrag）最坏 28 次 ≈ 280s——传 timeout=300 或分两次调用。
 """
 
 import argparse
