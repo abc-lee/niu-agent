@@ -80,7 +80,7 @@ allowBaseTools:
 
 **示例**：
 - `[摘要] 指令：分析日志找异常 | 流程：read app.log + grep ERROR + 统计行号 | 结果：发现3个ERROR级别异常，位于142/256/891行`
-- `[摘要] 指令：识别照片里的人 | 流程：photo-server/recognize 调 InsightFace | 结果：识别出张三(0.92)、李四(0.87)`
+- `[摘要] 指令：识别照片里的人 | 流程：recognize 调 InsightFace | 结果：识别出张三(0.92)、李四(0.87)`
 - `[摘要] 指令：查项目进度 | 流程：read sprint.json + 聚合 P1 任务 | 结果：剩余3个 P1，截止 2026-05-01`
 
 **保留语义原则**：
@@ -325,7 +325,7 @@ cursor=15
 - 删除消息：`delete_messages(session_id, message_ids, reason)`
 
 > **注意**：
-> - 实际调用时工具名可能带 server 前缀（如 `session-manager/update_message`），以运行时工具列表为准
+> - 工具名即上方列出的裸名（如 `update_message`），以运行时工具列表为准
 > - **不要调用 get_messages** — 消息已通过 prompt 传入，重新获取会浪费 token
 > - session_id 传 `"default"`
 

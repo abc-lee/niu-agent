@@ -1156,7 +1156,10 @@ class NiuRunner:
                     tools_schema.append({
                         "type": "function",
                         "function": {
-                            "name": schema["name"],
+                            # 剥 server/ 前缀发裸名（对齐 subagent.py 模式）——OpenAI 规范
+                            # function name 不允许 /，严格校验的服务（如 opencode zen）直接 400；
+                            # dispatch 侧 handler.py 裸名自动解析全名，无需反向映射
+                            "name": schema["name"].split("/", 1)[1] if "/" in schema["name"] else schema["name"],
                             "description": schema.get("description", ""),
                             "parameters": schema.get("input_schema", {"type": "object", "properties": {}}),
                         }

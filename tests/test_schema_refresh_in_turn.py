@@ -65,3 +65,33 @@ def test_on_turn_end_no_change_no_rebuild(fresh_agents_dir, monkeypatch):
     # 无变化：_refresh 短路不重算 → base_tools_schema 引用不变
     r._on_turn_end([], [], 1)
     assert r.base_tools_schema is old_schema
+
+
+def test_assemble_tools_schema_strips_server_prefix(monkeypatch):
+    """static MCP 工具注册键带 server/ 前缀时，发给 LLM 的 function name 必须是裸名。
+
+    防回归：OpenAI 规范 function name 不允许 /（^[a-zA-Z0-9_-]{1,64}$），
+    严格校验的服务（opencode zen 实测）对含斜杠名直接 400。
+    dispatch 侧 handler.py 裸名自动解析全名，schema 只需发裸名。
+    """
+    r = _make_runner(monkeypatch)
+    r.base_tools_schema = []
+
+    full_name = "brain-region-server/brain_region_activate"
+    fake_registry = type("_FakeRegistry", (), {
+        "get_static_tools": lambda self: [full_name],
+        "_schemas": {full_name: {
+            "name": full_name,
+            "description": "激活脑区",
+            "input_schema": {"type": "object", "properties": {}},
+            "visibility": "static",
+        }},
+    })()
+    # _assemble_tools_schema 内部 `from agent.tool_registry import get_registry`——
+    # patch 模块属性即可（局部 import 在调用时取 patch 后属性）
+    monkeypatch.setattr("agent.tool_registry.get_registry", lambda: fake_registry)
+
+    schema = r._assemble_tools_schema()
+    names = [t["function"]["name"] for t in schema]
+    assert all("/" not in n for n in names)
+    assert "brain_region_activate" in names
