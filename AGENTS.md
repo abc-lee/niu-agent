@@ -515,6 +515,21 @@ preload_face_model()
 
 ### 2026-08-17
 
+#### 修复：主 Agent 工具名带斜杠致 OpenAI 严格校验服务 400（zen 实测根因 + 剥前缀修复 + DB 清理脚本）
+
+- **问题（用户实证，Windows 测试机）**：配置 opencode.ai/zen + nemotron-3.5-lightning-free，启动探测"hi"成功进程序，Chat 对话**立即 400**（"模型请求被拒绝，请检查请求参数"）；睡眠管道子 Agent（entity-extractor/dream-evolver/context-manager）全部成功；raw_http 只有请求无响应日志。
+- **根因（二分实证链）**：① zen 上游严格校验 function name 规范（OpenAI：`^[a-zA-Z0-9_-]{1,64}$`，**禁 `/`**）——doubao/火山方舟宽松不校验所以历史无恙；② **ToolRegistry 内部注册键 = `server/tool` 带斜杠**（内部约定），子 Agent 路径（subagent.py L686）剥前缀发裸名（"LLM sees bare name"），**主 Agent 路径（runner.py `_assemble_tools_schema` L1159）漏剥**直接发带斜杠全名——不对称实现缺陷；③ 主 Agent 15 个静态工具中 `brain-region-server/brain_region_activate/dim/status` 三个带斜杠 → 单工具即 400；④ 次要触发点：messages.db 历史 assistant tool_calls 存带斜杠全名 + agent_loop L749-790 重发时给 tool 消息补 name 字段——旧会话历史原样外发同样 400。
+- **诊断方法（可复用）**：本机换错误配置起 API 真实复现（curl /api/chat/session 重现 400）→ raw_http 提取失败请求体裸重放拿响应 → 单变量二分（messages 无罪 → tools 触发 → 逐工具单测定位 3 个 brain-region 工具 → 改名验证 `/`→`_` 全 15 工具 200）+ 6 连发判定确定性（6/6 400）；zen 免费层同时存在间歇 503（"服务忙"，独立现象）。
+- **修复（main aed4e664，用户拍板范围：只修 schema 剥前缀 + DB 一次性清理，不做发送链路永久规范化）**：
+  1. **runner.py**：`_assemble_tools_schema` name 剥 `server/` 前缀发裸名（`split("/", 1)[1]`，对齐 subagent.py 既有模式；dispatch 裸名自动解析 handler.py L1508-1517 既有零改动；该函数仅 2 调用点共用 = 单点全覆盖）
+  2. **防回归测试**：test_schema_refresh_in_turn.py 新增 test_assemble_tools_schema_strips_server_prefix（假 registry 带斜杠名 → 断言无斜杠 + 裸名存在）
+  3. **scripts/cleanup_tool_name_prefix.py**：messages.db 一次性清理（--db/--dry-run + sqlite3 在线备份 + **JSON 解析判定禁 LIKE**（arguments 文件路径斜杠假阳性 31 条实证）+ 仅改 function.name + 验证不符即停）——本机 DB 实测 0 污染（Windows 机需用户自跑）
+  4. **context-manager.md**：L83/L328 斜杠教学文本改裸名（防 LLM 学斜杠名再污染——子 Agent schema 本就裸名，提示词对齐）
+- **双审查（修复前）**：AuditCodePaths + AuditDataCompat 双 scout——确认 L1159 唯一同类问题点、裸名零重名冲突、dispatch 双兼容、无测试锁定斜杠发送、其余持久化点全干净；**无阻断风险**。
+- **验证**：双审 PASS（Spec S1-S5 + Quality APPROVE 2 Minor 已修权限）+ 测试 3 passed + **本机判定性实测：修复前同请求 400 → 修复后同配置同路径正常回复**（你好！老板有什么我可以帮您的吗）+ 测试消息 3 条已精确清理（DB 回 208 条，备份留存）。
+- **Windows 机待办**：① 换新包（重新打包后）② 跑 `python scripts/cleanup_tool_name_prefix.py`（清其 messages.db 历史斜杠名）③ 再配 zen 使用。
+- **已知边界**：zen 免费层间歇 503/400 波动（上游不稳定，与 Niu 无关）；跨 server 裸名重名时 dispatch first-match-wins（当前注册表零重名，未来注册新 server 留意）。
+
 #### 修复：IM 流式卡片终结统一化——chat_session 补 SEND 终结（定时任务异步子 Agent 回填触发飞书卡片"思考中"不终结）
 
 - **问题（用户实证）**：定时任务（HN 新闻 10:00 触发）→ 主 Agent 异步调用子 Agent（chat-with-* async_mode）→ 第一轮正常终结（ChatQueue 分支 2 send_sync）→ **子 Agent 完成回填触发第二轮（前端 source='' → chat_session 路径）**→ 流式建卡 B（"思考中"）→ 会话末 `route_out(full_reply, "im", "")` 空 channel_id 退化为 **PUSH（send_markdown 独立消息，不终结卡片）** → 卡 B 永久"思考中"；同日 10:01:50 HA 门锁通知恰好走 ChatQueue 分支 2 send_sync 终结了当时的卡片——用户误以为"HA 修复了状态"。
