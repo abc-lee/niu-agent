@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   testConnection: (params) => ipcRenderer.invoke('test-connection', params),
   probeResponseFormat: (config) => ipcRenderer.invoke('probe-response-format', config),
+  getCapabilityProfile: (params) => ipcRenderer.invoke('get-capability-profile', params),
+  probeCapability: (config) => ipcRenderer.invoke('probe-capability', config),
   closeWindow: () => ipcRenderer.invoke('close-window'),
   minimizeWindow: () => ipcRenderer.invoke('minimize-window')
 });
