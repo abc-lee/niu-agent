@@ -860,7 +860,7 @@ def _build_degraded_config(llm_config: dict) -> dict:
 
     # reasoning_effort 降一级
     effort = degraded.get("reasoning_effort", "")
-    effort_map = {"xhigh": "high", "high": "medium", "medium": "low", "low": "minimal"}
+    effort_map = {"max": "xhigh", "xhigh": "high", "high": "medium", "medium": "low", "low": "minimal"}
     if effort in effort_map:
         degraded["reasoning_effort"] = effort_map[effort]
 

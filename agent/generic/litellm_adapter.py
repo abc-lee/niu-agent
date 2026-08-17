@@ -558,19 +558,18 @@ def _derive_provider_prefix(api_base: str | None, model: str, api_type: str | No
     return f"openai/{model}"
 
 
-def get_provider_params(model: str, reasoning_effort: str | None = None) -> dict[str, Any]:
-    """获取提供商特定参数"""
+def get_provider_params(model: str) -> dict[str, Any]:
+    """获取提供商特定参数。
+
+    注：reasoning_effort 不再经此函数进顶层参数——统一由 assemble_request_params
+    注入 extra_body 送达（litellm 白名单碰不到，任何模型任何路由同一行为）。
+    """
     params: dict[str, Any] = {}
     model_lower = model.lower()
 
     # Claude: 启用prompt caching
     if "claude" in model_lower:
         params["extra_headers"] = {"anthropic-beta": "prompt-caching-2024-07-31"}
-
-    # reasoning_effort: 支持 OpenAI o-series, DeepSeek, 火山方舟等模型
-    # LiteLLM 将此参数作为 OpenAI 标准参数传递；不支持该参数的模型会被 LiteLLM 的 drop_params 忽略
-    if reasoning_effort:
-        params["reasoning_effort"] = reasoning_effort
 
     return params
 
@@ -623,6 +622,72 @@ def _convert_tools_schema(tools: list | None, model: str = "") -> list | None:
         converted[-1] = {**converted[-1], "cache_control": {"type": "ephemeral"}}
 
     return converted
+
+
+def build_base_params(stream=True, max_tokens=None, timeout=None, **overrides) -> dict:
+    """共享基础参数组装（探测直发与生产 chat 共用一份，杜绝两份漂移）。
+
+    - 产出 stream/stream_options/temperature/proxies/api_base/api_key/timeout/
+      extra_headers 等基础字段；None 值不产键（探测形态 max_tokens=8/timeout=10
+      显式传入才有对应键，生产缺省则无）
+    - extra_headers 来自 get_provider_params（prompt caching L565-568 保留），
+      由调用方经 **overrides 传入
+    - 探测用 build_base_params(stream=False, max_tokens=8, timeout=10) + 前缀推导
+      model + 固定消息；生产用 build_base_params(stream=True) + chat 调用态字段
+    """
+    params: dict[str, Any] = {
+        "stream": stream,
+        "stream_options": {"include_usage": True},
+    }
+    if max_tokens is not None:
+        params["max_tokens"] = max_tokens
+    if timeout is not None:
+        params["timeout"] = timeout
+    for key, value in overrides.items():
+        if value is not None:
+            params[key] = value
+    return params
+
+
+def assemble_request_params(
+    config: dict,
+    raw_reasoning_effort: str | None = None,
+    raw_thinking: dict | None = None,
+) -> dict:
+    """组装 extra_body/drop_params 增量——探测与生产同源参数注入（组件 3 契约）。
+
+    返回**仅含 extra_body/drop_params 键**的增量 dict（不含 messages/model/stream
+    等调用态字段——由 chat()/探测器在增量上补齐）。合并用法：
+    request_params = {**build_base_params(...), **assemble_request_params(config)}
+
+    - raw_reasoning_effort 非 None（探测）：该值无条件注入 extra_body
+      （绕过 none 排除与 llmcore 归一化——测服务端对 none/xhigh 的真实值域）
+    - raw_thinking 非 None（探测 thinking 候选）：注入 extra_body.thinking（dict 形态）
+    - 均 None（生产）：reasoning_effort 从 config 读归一值（排除 "none"——none 不注入，
+      语义由 thinking disabled 表达——豆包/zen none 400 实测）；thinking 从
+      config.litellm_kwargs 读
+    - extra_body 合并：用户已有 extra_body 键优先（{**注入, **用户}）——注入值不整块丢失
+    - drop_params：raw 非 None / litellm_kwargs 非空 → True（触发时才返回该 key，
+      不触发不含——避免增量恒 False 覆盖 chat() 对 response_format 的置 True）
+    """
+    litellm_kwargs = config.get("litellm_kwargs") or {}
+    injected_extra: dict[str, Any] = {}
+
+    effort = raw_reasoning_effort if raw_reasoning_effort is not None else config.get("reasoning_effort")
+    if effort and (raw_reasoning_effort is not None or effort != "none"):
+        injected_extra["reasoning_effort"] = effort
+
+    thinking_val = raw_thinking if raw_thinking is not None else litellm_kwargs.get("thinking")
+    if thinking_val:
+        injected_extra["thinking"] = thinking_val
+
+    result: dict[str, Any] = {}
+    if injected_extra:
+        user_extra_body = config.get("extra_body") or litellm_kwargs.get("extra_body") or {}
+        result["extra_body"] = {**injected_extra, **user_extra_body}
+    if raw_reasoning_effort is not None or raw_thinking is not None or litellm_kwargs:
+        result["drop_params"] = True
+    return result
 
 
 class LiteLLMSession(BaseSession):
@@ -840,23 +905,25 @@ class LiteLLMSession(BaseSession):
         # custom_llm_provider 覆盖走 openai 路由，豆包网关报 NotFoundError）。
         custom_provider = self.provider or ("anthropic" if self.api_type == "anthropic" else "openai")
         model_with_prefix = _derive_provider_prefix(self.api_base, self.default_model, self.api_type)
-        provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
+        # 仅保留 extra_headers（prompt caching L565-568）；reasoning_effort 不再进顶层参数——
+        # 统一经 assemble_request_params 走 extra_body 送达（litellm 白名单碰不到，消除双通道冗余）
+        provider_params = get_provider_params(self.default_model)
         litellm_tools = _convert_tools_schema(tools, self.default_model)
 
+        # 基础组装（共享 build_base_params——探测直发与生产 chat 共用一份，杜绝两份漂移）
         request_params: dict[str, Any] = {
-            "model": model_with_prefix,
+            **build_base_params(
+                stream=True,
+                timeout=self.read_timeout,
+                model=model_with_prefix,
+                api_base=self.api_base or None,
+                api_key=self.api_key or None,
+                temperature=self.temperature,
+                proxies=self.proxies,
+                **provider_params,
+            ),
             "messages": messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "api_base": self.api_base or None,
-            "api_key": self.api_key or None,
-            "timeout": self.read_timeout,
-            **provider_params,
         }
-        # Only drop unsupported params when passing reasoning_effort
-        # (e.g., some models don't support this OpenAI extension parameter)
-        if provider_params.get("reasoning_effort"):
-            request_params["drop_params"] = True
         if response_format is not None:
             request_params["response_format"] = response_format
             request_params["drop_params"] = True
@@ -864,15 +931,17 @@ class LiteLLMSession(BaseSession):
         # 让 LiteLLM 自动丢弃不支持的参数（如 OpenAI 路由下的 thinking），避免 UnsupportedParamsError。
         # 通用修复：不针对任何特定模型，未来任何模型特定参数都能自动适配。
         if self.litellm_kwargs:
+            request_params.update(self.litellm_kwargs)
             request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
-        if self.proxies:
-            request_params["proxy"] = self.proxies
-        if self.temperature is not None:
-            request_params["temperature"] = self.temperature
-        if self.litellm_kwargs:
-            request_params.update(self.litellm_kwargs)
+        # 参数注入增量（extra_body 统一送达 + drop_params 决策）——在 litellm_kwargs.update
+        # 之后：extra_body 合并语义 {**注入, **用户} 用户键优先，注入值不因用户 extra_body
+        # 存在而整块丢失；drop_params 仅在触发时返回（增量不含该键时不覆盖调用点置位）
+        request_params.update(assemble_request_params({
+            "reasoning_effort": self.reasoning_effort,
+            "litellm_kwargs": self.litellm_kwargs,
+        }))
 
         # 记录完整请求（全量，包含 messages）
         _write_interaction_log({
