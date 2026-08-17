@@ -64,7 +64,7 @@ class BaseSession:
         effort = cfg.get("reasoning_effort")
         effort = None if effort is None else str(effort).strip().lower()
         self.reasoning_effort = (
-            effort if effort in ("none", "minimal", "low", "medium", "high", "xhigh") else None
+            effort if effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max") else None
         )
         if effort and not self.reasoning_effort:
             print(f"[WARN] Invalid reasoning_effort {effort!r}, ignored.")

@@ -22,7 +22,7 @@ def test_build_degraded_config_effort_map():
     """reasoning_effort 降级映射：xhigh→high→medium→low→minimal。"""
     from niu_api.compat import _build_degraded_config
 
-    cases = {"xhigh": "high", "high": "medium", "medium": "low", "low": "minimal"}
+    cases = {"max": "xhigh", "xhigh": "high", "high": "medium", "medium": "low", "low": "minimal"}
     for orig, expected in cases.items():
         result = _build_degraded_config({"reasoning_effort": orig, "litellm_kwargs": {}})
         assert result["reasoning_effort"] == expected, f"{orig} should degrade to {expected}"
