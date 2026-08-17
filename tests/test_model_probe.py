@@ -1,8 +1,15 @@
 """模型能力探测器核心单测（组件 1，Task 2）。
 
 覆盖：
-① 值域判定（200→supported / 400+e.body 含 reasoning_effort→unsupported 继续 /
-   401→failed 终止不覆盖旧档）
+① 值域判定（200→supported / 400→unsupported 继续——R19：400 本身表明该值不被
+   接受，body 含 token 是充分条件非必要条件，body 缺失/None 不改变 400 语义
+   （volcengine 路由实测 400 响应 body=None）/ 401→failed 终止不覆盖旧档 /
+   P1-1：值域扫描携带场景 thinking——disabled 下
+   high+disabled 400→high unsupported、enabled vs disabled supported 差异断言；
+   **值域超时重试（R18）**：首次超时→重试成功→supported；连续两次超时→
+   unsupported 继续且 probe_status 非 failed；重试遇 401→failed 终止；
+   请求总数恒 11 = 7 值域 + 2 thinking + 1 response_format + 1 tools，
+   含重试最坏 14 次）
 ② partial 例外（response_format 超时→partial + 值域照写 + timeout 形状；tools
    失败→partial + tools 段形状；rf 400→unsupported 形状）
 ③ thinking 剔除行为（config 含 litellm_kwargs.thinking 时探测请求 thinking 仅
@@ -52,7 +59,8 @@ def _ok_response(**message_attrs):
 
 
 def _bad_request(body, message="bad request"):
-    """按 litellm 异常构造：BadRequestError(body={...})——e.response.text 空，分类用 e.body。"""
+    """按 litellm 异常构造：BadRequestError(body={...})——e.response.text 空；
+    R19 后分类只看 status_code（body 可 None——volcengine 实测 400 响应 body=None）。"""
     from litellm import BadRequestError
 
     return BadRequestError(message, model="probe-model", llm_provider="openai", body=body)
@@ -140,15 +148,98 @@ def test_value_domain_400_with_reasoning_effort_token_marks_unsupported(profile_
     assert profile["ignores_unknown"] is False
 
 
-def test_value_domain_other_400_fails_and_terminates(profile_path):
-    """400 但 body 不含 reasoning_effort（max_tokens 过小/模型名错）→ failed 终止。"""
-    results = [_ok_response()]
-    results.append(_bad_request({"error": {"message": "max_tokens must be at least 16"}}))
+def test_value_domain_disabled_thinking_rejects_high_as_unsupported(profile_path):
+    """场景 thinking=disabled（lightrag 生产恒 disabled）值域扫描：high 候选 400
+    （body 含 reasoning_effort/combination——豆包实测 "Invalid combination of
+    reasoning_effort and thinking type: high + disabled"）→ high 记 unsupported，
+    值域结论与生产场景一致（P1-1）。"""
+    results = [_ok_response()] * 3  # minimal/low/medium（disabled 下 200）
+    results.append(_bad_request({
+        "error": {"message": "Invalid combination of reasoning_effort and thinking type: high + disabled"}
+    }))  # high 400（与 t5_lightrag Variant A 实测同型）
+    results += [_ok_response()] * 3  # xhigh/none/max
+    results += [_ok_response()] * 2  # thinking
+    results += [_ok_response()] * 2  # rf + tools
+    with _patch_completion(*results) as mock_completion:
+        profile = probe(**PROBE_ARGS, user_config=USER_CONFIG, lightrag=True)
+    assert profile["probe_status"] == "ok"
+    assert profile["reasoning_effort"]["supported"] == ["minimal", "low", "medium", "xhigh", "none", "max"]
+    assert profile["reasoning_effort"]["unsupported"] == ["high"]
+    assert profile["ignores_unknown"] is False  # 任一值被拒即 false（R11 同步）
+    # wire 验证：值域扫描 7 次请求均携带场景 thinking=disabled，且无顶层 thinking 键（单一来源）
+    for call in mock_completion.call_args_list[:7]:
+        assert call.kwargs.get("extra_body", {}).get("thinking") == {"type": "disabled"}
+        assert "thinking" not in call.kwargs
+
+
+def test_value_domain_supported_differs_between_thinking_enabled_and_disabled(profile_path):
+    """场景 thinking=enabled vs disabled 值域结论差异断言（P1-1）：同服务端下
+    enabled（llm 场景）→ 7 值全 supported + ignores_unknown=true；disabled
+    （lightrag 场景）→ high 被拒 unsupported + ignores_unknown=false。"""
+    # llm 场景（thinking=enabled）：7 值全 200
+    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+        profile_enabled = probe(**PROBE_ARGS, user_config=USER_CONFIG)
+    assert profile_enabled["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
+    assert profile_enabled["reasoning_effort"]["unsupported"] == []
+    assert profile_enabled["ignores_unknown"] is True
+    for call in mock_completion.call_args_list[:7]:
+        assert call.kwargs.get("extra_body", {}).get("thinking") == {"type": "enabled"}
+
+    # lightrag 场景（thinking=disabled）：high 400 → unsupported；其余 6 值 200
+    results = [_ok_response()] * 3
+    results.append(_bad_request({
+        "error": {"message": "Invalid combination of reasoning_effort and thinking type: high + disabled"}
+    }))
+    results += [_ok_response()] * 3
+    results += [_ok_response()] * 2
+    results += [_ok_response()] * 2
+    with _patch_completion(*results) as mock_completion:
+        profile_disabled = probe(**PROBE_ARGS, user_config=USER_CONFIG, lightrag=True)
+    assert profile_disabled["reasoning_effort"]["supported"] == ["minimal", "low", "medium", "xhigh", "none", "max"]
+    assert profile_disabled["reasoning_effort"]["unsupported"] == ["high"]
+    assert profile_disabled["ignores_unknown"] is False
+    for call in mock_completion.call_args_list[:7]:
+        assert call.kwargs.get("extra_body", {}).get("thinking") == {"type": "disabled"}
+
+    # supported 差异断言：enabled 的 supported 真包含 disabled 的（high 仅 enabled 下可用）
+    assert set(profile_enabled["reasoning_effort"]["supported"]) - \
+        set(profile_disabled["reasoning_effort"]["supported"]) == {"high"}
+
+
+def test_value_domain_400_without_token_marks_unsupported_and_continues(profile_path):
+    """400 但 body 不含 reasoning_effort（max_tokens 过小/模型名错/限流）→ 仍
+    unsupported 继续探测（R19：400 本身表明该值不被接受，body 含 token 是充分
+    条件非必要条件，body 缺失不改变 400 语义）。"""
+    results = [_ok_response()]  # minimal
+    results.append(_bad_request({"error": {"message": "max_tokens must be at least 16"}}))  # low 400 无 token
+    results += [_ok_response()] * 5  # medium..max
+    results += [_ok_response()] * 2  # thinking
+    results += [_ok_response()] * 2  # rf + tools
     with _patch_completion(*results) as mock_completion:
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
-    assert profile["probe_status"] == "failed"
-    assert mock_completion.call_count == 2  # 立即终止，不再探测
-    assert profile["reasoning_effort"]["supported"] == ["minimal"]
+    assert profile["probe_status"] == "ok"  # 探测完成（结果是不支持部分值），不 failed 终止
+    assert profile["reasoning_effort"]["supported"] == ["minimal", "medium", "high", "xhigh", "none", "max"]
+    assert profile["reasoning_effort"]["unsupported"] == ["low"]
+    assert profile["ignores_unknown"] is False  # low 未确认 200 → 不置位
+    assert mock_completion.call_count == 11  # 全部 7 值域 + 2 thinking + rf + tools 测完
+
+
+def test_value_domain_400_with_none_body_marks_unsupported_and_continues(profile_path):
+    """400 + body=None（volcengine 路由实测——litellm 未解析 body，token 无法匹配）→
+    仍 unsupported 继续探测（R19 核心场景：不再因 body 缺失误分类 failed 导致探测
+    中断、只记录 minimal）。"""
+    results = [_ok_response()] * 2  # minimal/low
+    results.append(_bad_request(None))  # medium 400 body=None
+    results += [_ok_response()] * 4  # high..max
+    results += [_ok_response()] * 2  # thinking
+    results += [_ok_response()] * 2  # rf + tools
+    with _patch_completion(*results) as mock_completion:
+        profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
+    assert profile["probe_status"] == "ok"
+    assert profile["reasoning_effort"]["supported"] == ["minimal", "low", "high", "xhigh", "none", "max"]
+    assert profile["reasoning_effort"]["unsupported"] == ["medium"]
+    assert profile["ignores_unknown"] is False
+    assert mock_completion.call_count == 11
 
 
 def test_value_domain_401_fails_and_does_not_overwrite_old_profile(profile_path):
@@ -166,6 +257,55 @@ def test_value_domain_401_fails_and_does_not_overwrite_old_profile(profile_path)
     assert saved is not None
     assert saved["probe_status"] == "ok"
     assert saved["probed_at"] == "2026-01-01T00:00:00"
+
+
+def test_value_domain_timeout_retried_then_supported(profile_path):
+    """值域候选首次超时 → 重试该候选一次 → 重试 200 → supported（超时 ≠ 值不支持，
+    R18——豆包响应在 10s 边界波动，Task 5 实测 minimal 成功/low 超时即 failed 终止）。"""
+    results = [_ok_response()]  # minimal
+    results.append(_timeout_error())  # low 首次超时
+    results.append(_ok_response())    # low 重试成功
+    results += [_ok_response()] * 5   # medium..max
+    results += [_ok_response()] * 2   # thinking
+    results += [_ok_response()] * 2   # rf + tools
+    with _patch_completion(*results) as mock_completion:
+        profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
+    assert profile["probe_status"] == "ok"
+    assert profile["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
+    assert profile["reasoning_effort"]["unsupported"] == []
+    assert profile["ignores_unknown"] is True  # 重试成功 → 7 值全部确认 200
+    assert mock_completion.call_count == 12  # 7 值域（含 1 次重试）+ 2 thinking + rf + tools
+
+
+def test_value_domain_double_timeout_marks_unsupported_and_continues(profile_path):
+    """连续两次超时（重试仍超时）→ 记 unsupported（保守——无法确认支持）并继续探测，
+    不 failed 终止；超时 unsupported 不参与 ignores_unknown 置位。"""
+    results = [_ok_response()] * 2  # minimal/low
+    results.append(_timeout_error())  # medium 首次超时
+    results.append(_timeout_error())  # medium 重试仍超时
+    results += [_ok_response()] * 4   # high..max
+    results += [_ok_response()] * 2   # thinking
+    results += [_ok_response()] * 2   # rf + tools
+    with _patch_completion(*results) as mock_completion:
+        profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
+    assert profile["probe_status"] == "ok"  # 非 failed——值域探测完成（结果是不支持）
+    assert profile["reasoning_effort"]["supported"] == ["minimal", "low", "high", "xhigh", "none", "max"]
+    assert profile["reasoning_effort"]["unsupported"] == ["medium"]
+    assert profile["ignores_unknown"] is False  # medium 未确认 200（超时 unsupported）→ 不置位
+    assert mock_completion.call_count == 12  # 7 值域（含 1 次重试）+ 2 thinking + rf + tools
+
+
+def test_value_domain_timeout_retry_then_401_fails(profile_path):
+    """超时重试仅 1 次；重试遇非值域错误（401）→ failed 终止（服务端拒绝 ≠ 慢，
+    不继续重试——R18 只对 Timeout 类重试）。"""
+    results = [_ok_response()]  # minimal
+    results.append(_timeout_error())  # low 首次超时
+    results.append(_auth_error())     # low 重试遇 401
+    with _patch_completion(*results) as mock_completion:
+        profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
+    assert profile["probe_status"] == "failed"
+    assert mock_completion.call_count == 3  # 重试 1 次后即终止，不再探测
+    assert profile["reasoning_effort"]["supported"] == ["minimal"]
 
 
 # ---------------------------------------------------------------------------
@@ -240,10 +380,12 @@ def test_tools_timeout_is_timeout_shape(profile_path):
 
 
 def test_thinking_probe_strips_config_thinking_key(profile_path):
-    """config 含 litellm_kwargs.thinking 时，thinking 探测请求 thinking 仅来自 raw 候选。
+    """config 含 litellm_kwargs.thinking 时，探测请求 thinking 单一来源（R13 + P1-1）。
 
-    断言传入 assemble_request_params 的 config 副本不含 thinking 键——volcengine
-    transformation 顶层与注入双源冲突的静默回归只能靠单测防。
+    thinking 探测：config 副本剔除 thinking 键，raw 候选经 raw_thinking 注入——
+    volcengine transformation 顶层与注入双源冲突的静默回归只能靠单测防。
+    P1-1 扩展：值域扫描同样单一来源——config 副本剔除 thinking 键（无顶层通道），
+    场景 thinking 经 raw_thinking 显式传入（值域结论与场景 thinking 耦合）。
     """
     captured = []
     real_assemble = model_probe.assemble_request_params
@@ -259,7 +401,7 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
          _patch_completion(*results):
         probe(**PROBE_ARGS, user_config=USER_CONFIG)
 
-    thinking_calls = [c for c in captured if c[2] is not None]
+    thinking_calls = [c for c in captured if c[2] is not None and c[1] is None]
     assert len(thinking_calls) == 2, "应有 2 次 thinking 探测（enabled/disabled）"
     for config, _raw_effort, raw_thinking in thinking_calls:
         litellm_kwargs = config.get("litellm_kwargs") or {}
@@ -267,10 +409,16 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
             "thinking 探测传入 assemble_request_params 的 config 副本必须不含 thinking 键"
         )
         assert raw_thinking in ({"type": "enabled"}, {"type": "disabled"})
-    # 值域扫描（raw_thinking=None）的 config 仍保留生产 thinking（与 chat() 顶层通道一致）
-    reasoning_calls = [c for c in captured if c[2] is None and c[1] is not None]
+    # 值域扫描（raw_reasoning_effort 非 None）：config 副本剔除 thinking 键，
+    # 场景 thinking 经 raw_thinking 显式传入（P1-1——不得默认 enabled）
+    reasoning_calls = [c for c in captured if c[1] is not None]
     assert len(reasoning_calls) == 7
-    assert all(("thinking" in (c[0].get("litellm_kwargs") or {})) for c in reasoning_calls)
+    for config, _raw_effort, raw_thinking in reasoning_calls:
+        litellm_kwargs = config.get("litellm_kwargs") or {}
+        assert "thinking" not in litellm_kwargs, (
+            "值域扫描 config 副本必须剔除 thinking 键——thinking 单一来源走 raw_thinking"
+        )
+        assert raw_thinking == {"type": "enabled"}  # llm 场景配置 thinking=enabled 随值域扫描注入
 
 
 def test_thinking_probe_sends_raw_candidate_via_extra_body(profile_path):
@@ -424,22 +572,30 @@ def test_write_profile_lock_contention_skips_write(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_error_classification_uses_e_body_not_response_text():
-    """分类读 e.body：BadRequestError(body={...}) 即使无 response（e.response.text 空）
-    也按 body token 归类 unsupported；token 不匹配的 400 与 401 归 failed。"""
+def test_error_classification_r19_400_always_unsupported():
+    """R19 分类：status==400 → "unsupported"（body 含 token 与否、body 缺失/None
+    均不改判——volcengine 路由实测 400 响应 body=None，litellm 未解析 body）；
+    Timeout 类 → "timeout"；其他状态码（401 等）→ "failed"。"""
     from niu_api.model_probe import _classify_value_domain_error
 
     e = _bad_request({"error": {"message": "reasoning_effort not supported"}})
     assert getattr(e, "status_code", None) == 400
     assert _classify_value_domain_error(e, "reasoning_effort") == "unsupported"
-    assert _classify_value_domain_error(e, "thinking") == "failed"  # token 不匹配
+    assert _classify_value_domain_error(e, "thinking") == "unsupported"  # 400 即 unsupported，与 token 无关
 
     e2 = _bad_request({"error": {"message": "max_tokens too small"}})
-    assert _classify_value_domain_error(e2, "reasoning_effort") == "failed"
+    assert _classify_value_domain_error(e2, "reasoning_effort") == "unsupported"  # 无 token 亦 unsupported
 
-    e3 = _auth_error()
-    assert getattr(e3, "status_code", None) == 401
-    assert _classify_value_domain_error(e3, "reasoning_effort") == "failed"
+    e3 = _bad_request(None)  # body 缺失（volcengine 实测形态）
+    assert getattr(e3, "status_code", None) == 400
+    assert _classify_value_domain_error(e3, "reasoning_effort") == "unsupported"
+
+    e4 = _auth_error()
+    assert getattr(e4, "status_code", None) == 401
+    assert _classify_value_domain_error(e4, "reasoning_effort") == "failed"
+
+    e5 = _timeout_error()
+    assert _classify_value_domain_error(e5, "reasoning_effort") == "timeout"
 
 
 def test_probe_request_transport_shape(profile_path):

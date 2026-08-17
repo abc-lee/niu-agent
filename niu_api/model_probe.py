@@ -4,9 +4,16 @@
 （~/.niu/model_capabilities.json），供 CLI 壳（scripts/model_capability_probe.py）与
 /api/model-capability-probe 端点共用。
 
-探测项与成本控制（合计 ≈11 次极小请求/模型，单次 ≤10s）：
+探测项与成本控制（合计 ≈11 次极小请求/模型，单次 ≤10s；值域候选超时重试最坏
+7×2=14 次 ≈140s）：
   1. reasoning_effort 值域 [minimal, low, medium, high, xhigh, none, max] 按序探测，
-     每个值 1 次请求（max_tokens=8、消息固定 "OK"、timeout=10、stream=False）
+     每个值至多 2 次请求（max_tokens=8、消息固定 "OK"、timeout=10、stream=False；
+     首次超时重试 1 次——豆包响应在 10s 边界波动，超时 ≠ 值不支持，R18）。
+     请求携带**场景配置的 thinking**（probe_config.litellm_kwargs.thinking——
+     lightrag 场景恒 disabled、llm 场景按用户配置，P1-1 修复）——值域结论只对
+     当前场景 thinking 成立，不得固定/默认 enabled（豆包实测：high + disabled
+     400 Invalid combination；enabled 下测出的全 supported 不能外推到 disabled
+     生产场景）
   2. thinking：enabled / disabled 各 1 次（raw_thinking 候选走 extra_body 注入；
      探测 config 副本剔除 litellm_kwargs.thinking——raw 候选单一来源，R13）
   3. response_format：json_object 1 次（litellm_kwargs 合并
@@ -23,14 +30,21 @@ response_format 探测项在 openai 路由挂起不响应，注释实证 litellm
 配置页下拉只给档案 supported 值，生产发的值必在 supported 内。
 
 分类规则（R2 精化：错误体必须从 e.body 取——litellm 的 e.response.text 实证为空、
-e.response.json() 抛异常）：
+ e.response.json() 抛异常；R19 修订：400 一律 unsupported——body 含 token 是充分
+ 条件但非必要条件，volcengine 路由实测 400 响应 body=None（litellm 未解析 body），
+ body 缺失不改变 400 语义）：
   - 200 → supported
-  - 400 + e.body 含 "reasoning_effort"（值域扫描）→ unsupported，继续探测（值域不连续）
-  - 其他 400（max_tokens 过小/min 约束/模型名错/限流——body 不含 token）→
-    probe_status=failed，终止，不覆盖旧档案
-  - 401/404/429/5xx/网络 → probe_status=failed，终止，不覆盖旧档案
-  - ignores_unknown：reasoning_effort 7 值全 200 且无一个 400 → true（服务端静默
-    忽略未知参数——档位 supported 全列表为假象）；部分值 400 → false
+  - 400（值域扫描）→ unsupported，继续探测（值域不连续——400 本身表明该值不被接受）
+  - 超时（litellm.Timeout / asyncio.TimeoutError）→ 重试该候选一次；重试仍超时 →
+    记 unsupported（保守——无法确认支持）并继续探测（不 failed 终止）；重试遇
+    其他非值域错误 → failed 终止
+  - 401/404/429/5xx/网络 → probe_status=failed，终止，不覆盖旧档案（服务端拒绝/
+    不可达 ≠ 慢，不重试）
+  - ignores_unknown：reasoning_effort 7 值全部确认 200（无 400、无超时未确认）→
+    true（服务端静默忽略未知参数——档位 supported 全列表为假象）；任一值
+    unsupported（400 或超时无法确认）→ false。置位与场景
+    thinking 同步（P1-1）：场景 thinking disabled 下同样全 200 才置 true——任一值
+    被拒（如 high+disabled 400）即 false
 
 partial 例外（R4/R6/R7/R9/R10/R17）：
   - response_format/tools 子项超时或失败 → 值域结果照写档案 + 子项标 timeout/
@@ -76,6 +90,16 @@ logger = logging.getLogger(__name__)
 REASONING_EFFORT_CANDIDATES = ["minimal", "low", "medium", "high", "xhigh", "none", "max"]
 THINKING_CANDIDATES = ["enabled", "disabled"]
 PROBE_MESSAGE = [{"role": "user", "content": "OK"}]
+# response_format json_object 探测专用消息：必须含 "json" 字样——OpenAI 兼容网关
+# （含豆包）对 json_object 模式硬性要求 prompt 含 "json" 字符串，否则直接 400
+# （对真支持厂商造成假阴性——Task 5 真实实测实证：豆包 400 "messages must contain
+# the word 'json'"）。消息与 compat.py _build_probe_messages 同款（冲突式设计：
+# 要求输出 JSON 但 prompt 命令不要输出 JSON——只有网关真正执行 response_format 时
+# 输出才是 JSON）。
+PROBE_RESPONSE_FORMAT_MESSAGE = [{
+    "role": "user",
+    "content": "Write exactly one English sentence about the ocean. Do not output JSON.",
+}]
 PROBE_MAX_TOKENS = 8
 PROBE_TIMEOUT = 10
 PROBE_TOOL = {
@@ -223,24 +247,37 @@ def _strip_thinking_key(probe_config: dict) -> dict:
     return {**probe_config, "litellm_kwargs": new_litellm_kwargs}
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    """Timeout 类判定（litellm.Timeout / asyncio.TimeoutError）。
+
+    区分"值域扫描超时"（探测请求 10s 超时/服务端慢——豆包响应在边界波动）与
+    连接/网络等错误：Timeout 类 → 重试路径；其他（400/401/404/429/5xx/网络）→
+    failed 终止（服务端拒绝/不可达 ≠ 慢）。
+    """
+    return isinstance(exc, (litellm.Timeout, asyncio.TimeoutError))
+
+
 def _classify_value_domain_error(exc: Exception, token: str) -> str:
-    """值域扫描错误分类（R2）：400 + e.body 含 token → "unsupported"（继续探测）；
-    其他（400 无 token / 401 / 404 / 429 / 5xx / 网络 / 超时）→ "failed"（终止）。
+    """值域扫描错误分类（R2，R18 补超时，R19 修订）：status==400 → "unsupported"
+    （保守——400 本身表明该值不被接受；body 含 token 是充分条件但非必要条件，body
+    缺失不改变 400 语义——volcengine 路由实测 400 响应 body=None，litellm 未解析
+    body）；Timeout 类 → "timeout"（重试该候选一次——超时 ≠ 值不支持）；其他状态码
+    （401/404/429/5xx/网络）→ "failed"（终止——服务端拒绝/不可达 ≠ 慢，不重试）。
 
     错误体必须从 e.body 取——litellm 的 e.response.text 实证为空、e.response.json()
     抛异常。
     """
+    if _is_timeout_error(exc):
+        return "timeout"
     status = getattr(exc, "status_code", None)
-    body = getattr(exc, "body", None)
-    body_text = json.dumps(body, ensure_ascii=False) if body else ""
-    if status == 400 and token in body_text:
+    if status == 400:
         return "unsupported"
     return "failed"
 
 
 def _classify_subitem_error(exc: Exception) -> str:
     """子项（response_format/tools）错误分类：超时/挂起 → "timeout"；其他 → "unsupported"。"""
-    if isinstance(exc, (litellm.Timeout, asyncio.TimeoutError)):
+    if _is_timeout_error(exc):
         return "timeout"
     return "unsupported"
 
@@ -264,6 +301,7 @@ def _build_probe_params(
     raw_thinking: dict | None = None,
     response_format: dict | None = None,
     tools: list | None = None,
+    messages: list | None = None,
 ) -> dict:
     """组装单次探测请求参数（直发 litellm.completion）。
 
@@ -284,7 +322,7 @@ def _build_probe_params(
             api_base=api_base or None,
             api_key=api_key or None,
         ),
-        "messages": PROBE_MESSAGE,
+        "messages": messages if messages is not None else PROBE_MESSAGE,
     }
     litellm_kwargs = probe_config.get("litellm_kwargs") or {}
     if litellm_kwargs:
@@ -312,25 +350,61 @@ def _scan_reasoning_effort(
     api_base: str, api_key: str, model: str, api_type: str,
     probe_config: dict, profile: dict,
 ) -> bool:
-    """reasoning_effort 值域扫描。返回 False = failed 终止（调用方不落盘）。"""
-    saw_400 = False
+    """reasoning_effort 值域扫描。返回 False = failed 终止（调用方不落盘）。
+
+    R18：候选超时（litellm.Timeout/asyncio.TimeoutError）→ 重试该候选一次；
+    重试仍超时 → 记 unsupported（保守——无法确认支持）并继续探测（不 failed
+    终止）；重试遇其他非值域错误 → failed 终止。
+    R19：单值 400（body 缺失/None 亦然——volcengine 路由实测 400 响应 body=None，
+    litellm 未解析 body）→ 一律 unsupported 继续探测，不因 body 无法匹配 token
+    误分类 failed 中断。
+
+    P1-1 修复——值域结论与场景 thinking 强耦合：请求 thinking 必须 = 场景配置的
+    thinking（probe_config.litellm_kwargs.thinking：lightrag 场景恒 disabled、
+    llm 场景按用户配置），不得固定/默认 enabled——否则 enabled 下测出的全 supported
+    不能外推到 disabled 生产场景（豆包实测：high + disabled 400 Invalid combination，
+    该值须记 unsupported，值域结论才与生产一致）。
+    单一来源（同 _scan_thinking R13 纪律）：config 副本剔除 thinking 键（无顶层
+    通道），场景 thinking 经 raw_thinking 显式注入 extra_body——顶层 + extra_body
+    双源歧义消除（behavior 实证：volcengine/openai 路由最终 wire body 与双通道
+    一致，传输无损）。
+    """
+    probe_config_no_thinking = _strip_thinking_key(probe_config)
+    scene_thinking = (probe_config.get("litellm_kwargs") or {}).get("thinking")
+    all_confirmed_supported = True  # ignores_unknown 只在 7 值全部确认 200 时置位（R11）
     for cand in REASONING_EFFORT_CANDIDATES:
         params = _build_probe_params(
-            api_base, api_key, model, api_type, probe_config,
+            api_base, api_key, model, api_type, probe_config_no_thinking,
             raw_reasoning_effort=cand,
+            raw_thinking=scene_thinking,
         )
         try:
             litellm.completion(**params)
             profile["reasoning_effort"]["supported"].append(cand)
         except Exception as e:  # noqa: BLE001 - 分类规则覆盖全部异常
-            if _classify_value_domain_error(e, "reasoning_effort") == "unsupported":
+            cls = _classify_value_domain_error(e, "reasoning_effort")
+            if cls == "unsupported":
                 profile["reasoning_effort"]["unsupported"].append(cand)
-                saw_400 = True
+                all_confirmed_supported = False
+            elif cls == "timeout":
+                # 超时 → 重试该候选一次（豆包响应在 10s 边界波动，超时 ≠ 值不支持——
+                # Task 5 实测 minimal 成功/low 超时即被 failed 终止的错误归因）
+                try:
+                    litellm.completion(**params)
+                    profile["reasoning_effort"]["supported"].append(cand)
+                except Exception as e2:  # noqa: BLE001 - 分类规则覆盖全部异常
+                    if _classify_value_domain_error(e2, "reasoning_effort") in ("unsupported", "timeout"):
+                        # 重试仍超时/400 → 无法确认支持 → 保守记 unsupported，继续探测（不 failed 终止）
+                        profile["reasoning_effort"]["unsupported"].append(cand)
+                        all_confirmed_supported = False
+                    else:
+                        profile["probe_status"] = "failed"
+                        return False
             else:
                 profile["probe_status"] = "failed"
                 return False
-    if not saw_400:
-        # 7 值全 200 且无一个 400 → 服务端静默忽略未知参数（R11）
+    if all_confirmed_supported:
+        # 7 值全 200 确认且无一个 unsupported → 服务端静默忽略未知参数（R11）
         profile["ignores_unknown"] = True
     return True
 
@@ -342,6 +416,10 @@ def _scan_thinking(
     """thinking enabled/disabled 各 1 次探测。返回 False = failed 终止。
 
     R13：探测 config 副本剔除 litellm_kwargs.thinking——raw 候选单一来源。
+    R18：超时重试仅限值域扫描（reasoning_effort）——thinking 探测超时仍 failed
+    终止（不重试）。
+    R19：thinking 值 400（body 缺失亦然）→ 该值 false 继续（400 即该值不被接受），
+    仅非 400 状态码（401/404/429/5xx/网络）→ failed 终止。
     状态聚合（R9/R10/R15/R17）：双 true→ok / 一 false→partial / 双 false→partial。
     """
     probe_config_no_thinking = _strip_thinking_key(probe_config)
@@ -388,6 +466,7 @@ def _probe_response_format(
     params = _build_probe_params(
         api_base, api_key, model, api_type, rf_config,
         response_format={"type": "json_object"},
+        messages=PROBE_RESPONSE_FORMAT_MESSAGE,
     )
     try:
         litellm.completion(**params)
@@ -458,7 +537,8 @@ def probe(
 
     Returns:
         能力档案 dict。probe_status:
-          - "failed": 值域扫描遇非值域错误终止——不覆盖旧档案（调用方退出码 1）
+          - "failed": 值域扫描遇非值域错误终止（超时重试 1 次后仍失败亦终止）——
+            不覆盖旧档案（调用方退出码 1）
           - "partial": 值域成功但 thinking 部分不支持 / response_format/tools 子项失败
           - "ok": 全部探测完成
     """
