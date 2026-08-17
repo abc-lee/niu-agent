@@ -513,6 +513,23 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-18
+
+#### 新增：模型能力探测器 + 配置页动态档位（方案 19 轮审查 + Task 1-5 实施 + 真实实测）
+
+- **背景**：zen 接入暴露 `reasoning_effort`/`thinking` 参数被 litellm 白名单静默丢弃（utils.py L4107-4112，`drop_params=True` 时静默 pop 无告警）——配置意图与实际载荷脱节；LightRAG 入库"关思考链"指令（thinking disabled）从未送达，图谱在 zen/nemotron 下瘫痪。
+- **实证链**：① `extra_body` 全路由送达（litellm 白名单不拦 extra_body 内键）——参数上线逃生通道；② 顶层通道 `drop_params` 丢弃产生**假 200**——豆包"全值域 200"是 reasoning_effort 被丢的假象（服务端从未收到该参数）；③ 豆包 `disabled` 场景真实值域 [minimal, none]——minimal/none 200、其余 400（`high` + `disabled` 400 Invalid combination），经 extra_body 通道实测。
+- **关键机制**：
+  - `assemble_request_params` / `build_base_params`（agent/generic/litellm_adapter.py）——extra_body 注入 + none 排除（none 不注入，语义由 thinking disabled 表达——豆包/zen none 400 实测）+ 用户已有 extra_body 键优先；**生产 chat 与探测直发共用一份基础参数组装**，杜绝两份漂移
+  - 探测器（niu_api/model_probe.py）：值域扫描 [minimal, low, medium, high, xhigh, none, max] 按序探测、请求携带**场景配置的 thinking**（lightrag 场景恒 disabled、llm 场景按用户配置——值域结论只对当前场景 thinking 成立，不得外推）、候选超时重试 1 次（豆包响应 10s 边界波动，超时 ≠ 不支持）、400 body=None 分类健壮性（volcengine 路由实测 400 响应 body=None——litellm 未解析 body；body 缺失不改变 400 语义，错误体必须从 e.body 取，e.response.text 实证为空）
+  - 档案 `~/.niu/model_capabilities.json`：键 = `apiBase|model|llm` / `apiBase|model|lightrag`（api_base rstrip("/") 规范化——settings 保存值与 CLI 读取值尾部斜杠差异不致档案不命中）+ **原子写（临时文件 + os.replace）+ fcntl.flock 非阻塞写锁**（读-改-写整体持锁；锁被占用 → 跳过写入返回 False，失败不写坏旧档）
+  - settings 动态下拉：llm 段与 lightrag 段各一个"探测能力"按钮（POST /api/model-capability-probe，与 CLI 共用 probe 核心），探测成功后用档案 supported 值刷新推理深度下拉（**厂商原生档位名原样**），选择即写入配置
+  - 探测生产同参（组件 3）：探测请求 reasoning_effort/thinking 从配置透传（compat.py 三处 None 硬编码清除——_probe_llm / probe-response-format 等），经 assemble_request_params 注入 extra_body 送达，探测"服务端认不认原始值"与生产"配置值归一后直发"无矛盾
+  - high 五源头清理 + 存量迁移：lightrag_llm.reasoning_effort 兜底统一改 `""`（模型默认/配置页驱动，不强制档位——llm_proxy.py get_llm_config），旧配置存量迁移
+  - CLI 入口：`python/bin/python3 scripts/model_capability_probe.py --api-base URL --model MODEL [--api-type anthropic] [--lightrag] [--api-key KEY]`（退出码 0=档案已更新 / 1=探测失败未覆盖旧档；单场景预算 ≈11 次×10s，值域超时重试最坏 ≈140s 建议 timeout=150，双场景 ≈280s 建议 timeout=300 或分两次调用）
+- **服务端行为变化记录**：豆包 2026-08-18 更新接受 reasoning_effort 全值（早前 none/xhigh/max 400 过期）；但 disabled 场景仍只接受 minimal/none——值域结论与场景 thinking 强耦合，探测必须按生产场景 thinking 配置测值域（enabled 下测出的全 supported 不能外推到 disabled 生产场景）。
+- **教训**：① **顶层参数 vs extra_body 两通道行为差异**——顶层被 drop_params 静默丢弃产生假 200，验证参数是否上线必须抓 HTTP 发送层请求体（extra_body 送达检查法，raw_http 传输层 `NNNNNN.json`）；② 400 body=None 分类健壮性（body 含 token 是充分条件非必要条件）；③ 探测必须按生产场景 thinking 配置测值域。
+
 ### 2026-08-17
 
 #### 修复：主 Agent 工具名带斜杠致 OpenAI 严格校验服务 400（zen 实测根因 + 剥前缀修复 + DB 清理脚本）
