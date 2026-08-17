@@ -1491,7 +1491,10 @@ async def _probe_llm(
             "apikey": config["apikey"],
             "apibase": config["apibase"],
             "model": config["model"],
-            "reasoning_effort": None,
+            # 探测与生产同参数（组件 3）：reasoning_effort 从配置透传（不再硬编码 None）——
+            # chat() 内 assemble_request_params 注入 extra_body 送达；thinking 随
+            # litellm_kwargs 同源透传
+            "reasoning_effort": config.get("reasoning_effort"),
             "provider": config.get("provider", ""),
             "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": 256},
             "read_timeout": read_timeout,
@@ -1874,7 +1877,9 @@ async def probe_response_format(request: Request) -> dict:
         "apikey": config["apikey"],
         "apibase": config["apibase"],
         "model": config["model"],
-        "reasoning_effort": None,
+        # 探测与生产同参数（组件 3）：reasoning_effort 从配置透传（不再硬编码 None）——
+        # chat() 内 assemble_request_params 注入 extra_body 送达
+        "reasoning_effort": config.get("reasoning_effort"),
         "provider": config.get("provider", ""),
         # temperature 与运行时 _get_litellm_session 一致（默认 0.2），
         # 避免探测和运行时采样随机性差异
@@ -2039,6 +2044,64 @@ async def probe_response_format(request: Request) -> dict:
         "reason": f"Tier 1（{tier1_result}: {tier1_raw[:60] if tier1_raw else ''}）+ Tier 2（{tier2_result}: {tier2_raw[:60] if tier2_raw else ''}）均失败，降级到 prompt-only 模式",
         "raw_response": "",
     }
+
+
+@router.post("/api/model-capability-probe")
+async def model_capability_probe(request: Request) -> dict:
+    """探测模型能力（reasoning_effort/thinking/response_format/tools），写能力档案。
+
+    settings 配置页"探测能力"按钮调用（llm 段与 lightrag 段各一个按钮）：
+    body = llm 段或 lightrag 段配置（键名小写归一；顶层 `lightrag: true` 标记
+    lightrag 场景——档案键后缀 |lightrag，竖线分隔与 model_probe.build_profile_key
+    一致；llm/lightrag 段配置键名均不含 lightrag，无冲突）。
+
+    调 niu_api/model_probe.probe 核心（与 CLI 共用同一实现，同步阻塞——≤11 次
+    极小请求×单次 ≤10s ≈ 110s，放线程池避免阻塞事件循环），返回 probe_status
+    JSON（含档案路径/键/摘要）。probe_status: ok / partial / failed
+    （failed = 值域扫描遇非值域错误终止，不覆盖旧档案）。
+    socket 超时对齐 test-connection 230s：探测全程预算 ≈110s < 230s，无需外层
+    额外超时；CLI 场景由主 Agent bash timeout=120/240 兜底。
+    """
+    from niu_api.model_probe import build_profile_key, default_profile_path, is_local_api_base, probe
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = {k.lower(): v for k, v in body.items()} if body else {}
+
+    # lightrag 标记：body 顶层布尔（pop 后不进入探测 config）
+    lightrag = bool(body.pop("lightrag", False))
+
+    if not body.get("apibase"):
+        return {"probe_status": "failed", "error": "API 地址未配置"}
+    if not body.get("model"):
+        return {"probe_status": "failed", "error": "模型名称未配置"}
+    apikey = body.get("apikey", "")
+    # 本地模型（localhost/127.0.0.1）免 apiKey——对齐 _probe_llm is_local 豁免
+    if not apikey and not is_local_api_base(body.get("apibase", "")):
+        return {"probe_status": "failed", "error": "API Key 未配置"}
+
+    # user_config 按场景段包裹（_section_from_user_config 取段并小写归一）
+    user_config = {"lightrag_llm": body} if lightrag else {"llm": body}
+    try:
+        profile = await asyncio.to_thread(
+            probe,
+            api_base=body["apibase"],
+            api_key=apikey,
+            model=body["model"],
+            api_type=body.get("type", "openai"),
+            lightrag=lightrag,
+            user_config=user_config,
+        )
+        return {
+            "probe_status": profile.get("probe_status", "failed"),
+            "profile_path": str(default_profile_path()),
+            "profile_key": build_profile_key(body["apibase"], body["model"], lightrag),
+            "profile": profile,
+        }
+    except Exception as e:
+        return {"probe_status": "failed", "error": f"探测异常: {e}"}
 
 
 @router.get("/api/preload-status")
