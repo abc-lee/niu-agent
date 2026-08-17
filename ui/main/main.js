@@ -1492,6 +1492,63 @@ ipcMain.handle('probe-response-format', async (event, config) => {
   }
 });
 
+// 能力探测档案路径：~/.niu/model_capabilities.json（与 niu_api/model_probe.py
+// default_profile_path 一致；键 = api_base|model|llm / api_base|model|lightrag，
+// api_base 规范化 rstrip("/")）
+const capabilityProfilePath = path.join(os.homedir(), '.niu', 'model_capabilities.json');
+
+ipcMain.handle('get-capability-profile', (event, params) => {
+  // params: { apiBase, model, lightrag } → 返回该 api_base|model|场景 键的能力档案（无 → null）
+  try {
+    const { apiBase, model, lightrag } = params || {};
+    if (!apiBase || !model) return null;
+    if (!fs.existsSync(capabilityProfilePath)) return null;
+    const data = JSON.parse(fs.readFileSync(capabilityProfilePath, 'utf-8'));
+    const key = `${String(apiBase).replace(/\/+$/, '')}|${model}|${lightrag ? 'lightrag' : 'llm'}`;
+    return data[key] || null;
+  } catch (e) {
+    console.error('Failed to read capability profile:', e);
+    return null;
+  }
+});
+
+ipcMain.handle('probe-capability', async (event, config) => {
+  // POST 本机 127.0.0.1:9876/api/model-capability-probe（settings "探测能力"按钮）
+  // body = llm 段或 lightrag 段配置（lightrag 段带顶层 lightrag:true）
+  // socket 超时对齐 test-connection 230s（后端探测全程预算 ≈110s，留足余量）
+  try {
+    const http = require('http');
+    const payload = JSON.stringify(config || {});
+    const options = {
+      hostname: '127.0.0.1',
+      port: parseInt(process.env.NIU_API_PORT || '9876', 10),  // 与 test-connection 一致，支持 launcher --port 自定义
+      path: '/api/model-capability-probe',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: 230000,  // 230s — 对齐 test-connection /api/test-llm wait_for 上限 220s
+    };
+    return await new Promise((resolve) => {
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)); }
+          catch { resolve({ probe_status: 'failed', error: '响应解析失败', raw_response: data.slice(0, 200) }); }
+        });
+      });
+      req.on('error', (e) => resolve({ probe_status: 'failed', error: e.message }));
+      req.on('timeout', () => { req.destroy(); resolve({ probe_status: 'failed', error: 'HTTP 超时（探测超过 230s）' }); });
+      req.write(payload);
+      req.end();
+    });
+  } catch (e) {
+    return { probe_status: 'failed', error: String(e) };
+  }
+});
+
 ipcMain.handle('close-window', () => {
   // 优先关 settings 窗口；若 assistant 模式下也调用此 IPC（虽然原 assistant 无此 handler），
   // 退化为关闭当前焦点窗口

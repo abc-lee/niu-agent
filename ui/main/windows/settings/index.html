@@ -251,6 +251,29 @@
           <option value="anthropic">Anthropic</option>
         </select>
       </div>
+
+      <div class="note-card mint" style="margin-top: 15px;">
+        <div class="form-group">
+          <label class="pencil-text">思考链</label>
+          <select id="llmThinking">
+            <option value="">跟随模型默认</option>
+            <option value="enabled">开启</option>
+            <option value="disabled">关闭</option>
+          </select>
+          <div style="font-size: 12px; color: #666; margin-top: 4px;">控制模型是否返回思考链（litellm_kwargs.thinking）；"跟随模型默认" = 不配置</div>
+        </div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="pencil-text">推理深度</label>
+          <select id="llmReasoningEffort">
+            <option value="">跟随模型默认</option>
+          </select>
+          <div style="font-size: 12px; color: #666; margin-top: 4px;"><span id="llmCapabilityHint">未探测，请点击下方"探测能力"</span></div>
+        </div>
+
+        <button class="btn btn-primary" id="llmProbeBtn" onclick="probeCapability('llm')" style="margin-top: 12px;">探测能力（对话模型）</button>
+      </div>
+
       <div class="form-group" style="margin-top: 12px;">
         <label class="pencil-text">API 地址</label>
         <input type="text" id="apiBase" placeholder="https://api.openai.com/v1">
@@ -279,6 +302,37 @@
           <div style="font-size: 12px; color: #666; margin-top: 4px;">空闲多久后触发睡眠整理（默认 5 分钟）</div>
         </div>
       </div>
+    </div>
+
+    <div class="note-card blue" style="margin-top: 15px;">
+      <div style="font-size: 16px; color: #333; margin-bottom: 4px;">知识图谱模型（入库）</div>
+      <div style="font-size: 12px; color: #666; margin-bottom: 12px;">入库链路（LightRAG）独立配置；API 地址/模型不填则继承上方对话模型。</div>
+
+      <div class="form-group">
+        <label class="pencil-text">思考链</label>
+        <select id="lightragThinking">
+          <option value="">跟随模型默认</option>
+          <option value="enabled">开启</option>
+          <option value="disabled" selected>关闭</option>
+        </select>
+        <div style="font-size: 12px; color: #666; margin-top: 4px;">LightRAG 官方要求入库关闭思考链；"跟随模型默认" = 不配置</div>
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="pencil-text">推理深度</label>
+        <select id="lightragReasoningEffort">
+          <option value="">跟随模型默认</option>
+        </select>
+        <div style="font-size: 12px; color: #666; margin-top: 4px;"><span id="lightragCapabilityHint">未探测，请点击下方"探测能力"</span></div>
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="pencil-text">Temperature</label>
+        <input type="number" id="lightragTemperature" placeholder="0.2" min="0" max="2" step="0.1">
+        <div style="font-size: 12px; color: #666; margin-top: 4px;">入库调用温度（默认 0.2）</div>
+      </div>
+
+      <button class="btn btn-primary" id="lightragProbeBtn" onclick="probeCapability('lightrag')" style="margin-top: 12px;">探测能力（入库模型）</button>
     </div>
     
     <button class="btn btn-primary" id="testBtn" onclick="testAndSave()">
@@ -334,6 +388,27 @@
         document.getElementById('compressTargetTokens').value = config.context.compressTargetTokens || '';
         document.getElementById('sleepTriggerMinutes').value = config.context.sleepTriggerMinutes || '';
       }
+
+      // 能力控件回填（R7：防存量配置升级后首次保存静默丢失——reasoning_effort/thinking
+      // 必须以配置值回填新 select，否则保存时被 select 默认"跟随模型默认"覆盖）
+      const llmCap = (config.llm && config.llm.litellm_kwargs) || {};
+      const llmThinkingVal = (llmCap.thinking && llmCap.thinking.type) || '';
+      const llmEffortVal = (config.llm && config.llm.reasoning_effort) || '';
+      document.getElementById('llmThinking').value = llmThinkingVal;
+      const lightragLlm = config.lightrag_llm || {};
+      const lightragKwargs = lightragLlm.litellm_kwargs || {};
+      const lightragThinkingVal = (lightragKwargs.thinking && lightragKwargs.thinking.type) || '';
+      const lightragEffortVal = lightragLlm.reasoning_effort || '';
+      document.getElementById('lightragThinking').value = lightragThinkingVal;
+      document.getElementById('lightragTemperature').value = lightragLlm.temperature ?? 0.2;
+
+      // 档案驱动的推理深度下拉（探测档案 supported 值，厂商原生档位名原样；无档案 → 空态）
+      const probeApiBase = (config.llm && config.llm.apiBase) || '';
+      const probeModel = (config.llm && config.llm.model) || '';
+      const llmProfile = (probeApiBase && probeModel) ? await window.electronAPI.getCapabilityProfile({ apiBase: probeApiBase, model: probeModel, lightrag: false }) : null;
+      const lightragProfile = (probeApiBase && probeModel) ? await window.electronAPI.getCapabilityProfile({ apiBase: probeApiBase, model: probeModel, lightrag: true }) : null;
+      populateReasoningOptions('llmReasoningEffort', 'llmCapabilityHint', llmProfile, llmEffortVal);
+      populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', lightragProfile, lightragEffortVal);
     }
     
     function toggleAdvanced() {
@@ -363,12 +438,113 @@
       });
     });
 
+    // 五个新控件 change 时也重置 testPassedInSession（与 preset/apiKey/apiBase/model/apiType 同款）
+    ['llmThinking', 'lightragThinking', 'llmReasoningEffort', 'lightragReasoningEffort', 'lightragTemperature'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', () => { testPassedInSession = false; });
+    });
+
     // 标准基础配置缺省（三处一致：本处 / main.js get-config 兜底 / config-manager 兜底）。
     // Why: 首次启动 existingConfig 是空骨架，probe/save 的缺省必须自带这些
     // 基础运行字段，保证 probe 探测环境 = 运行时环境（2026-07-27 首次启动
     // probe 失败根因：缺 thinking:disabled，探测请求与运行时实际调用不一致）。
     const DEFAULT_LLM_KWARGS = {};
     const DEFAULT_LIGHTRAG_KWARGS = { thinking: { type: "disabled" }, allowed_openai_params: [] };
+
+    // 推理深度下拉选项填充：探测档案 supported 值（厂商原生档位名原样）。
+    // 无档案 → 空态（仅"跟随模型默认"）；ignores_unknown → 仅"跟随模型默认"（R11，
+    // 服务端静默忽略未知参数时档位全列表是假象，不误导用户）；
+    // 配置值不在档案选项（或档案缺失）→ 追加显示配置值本身（R7，防存量丢失）。
+    function populateReasoningOptions(selectId, hintId, profile, currentValue) {
+      const sel = document.getElementById(selectId);
+      const hint = document.getElementById(hintId);
+      const defaultOption = sel.options[0];  // "跟随模型默认"
+      sel.innerHTML = '';
+      if (defaultOption) sel.appendChild(defaultOption);
+      let supported = [];
+      if (profile && profile.reasoning_effort && !profile.ignores_unknown) {
+        supported = (profile.reasoning_effort.supported || []).slice();
+      }
+      supported.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        sel.appendChild(opt);
+      });
+      if (currentValue && !Array.from(sel.options).some(o => o.value === currentValue)) {
+        const opt = document.createElement('option');
+        opt.value = currentValue;
+        opt.textContent = currentValue;
+        sel.appendChild(opt);
+      }
+      sel.value = currentValue || '';
+      if (hint) {
+        if (profile && profile.reasoning_effort) {
+          hint.textContent = profile.ignores_unknown
+            ? '该服务端忽略未知参数（无法确认真实档位），仅支持跟随模型默认'
+            : '档位来自能力探测档案（探测于 ' + (profile.probed_at || '') + '）';
+        } else {
+          hint.textContent = '未探测，请点击"探测能力"获取档位';
+        }
+      }
+    }
+
+    // "探测能力"按钮：调 probe-capability IPC（POST /api/model-capability-probe），
+    // 探测成功后用档案 supported 值刷新推理深度下拉（厂商原生档位名原样）。
+    // llm 段 body=llm 段配置（档案键 |llm）；lightrag 段 body=lightrag 段配置 + lightrag:true（档案键 |lightrag）。
+    async function probeCapability(scenario) {
+      const lightrag = scenario === 'lightrag';
+      const existingConfig = await window.electronAPI.getConfig();
+      const apiKey = document.getElementById('apiKey').value;
+      const apiBase = document.getElementById('apiBase').value;
+      const model = document.getElementById('model').value;
+      const type = document.getElementById('apiType').value;
+      if (!apiBase) { setStatus('请选择预设或填写 API 地址', 'error'); return; }
+      if (!model) { setStatus('请输入模型名称', 'error'); return; }
+      const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(apiBase);
+      if (!apiKey && !isLocal) { setStatus('请输入 API Key', 'error'); return; }
+
+      const thinkingVal = document.getElementById(lightrag ? 'lightragThinking' : 'llmThinking').value;
+      const effortVal = document.getElementById(lightrag ? 'lightragReasoningEffort' : 'llmReasoningEffort').value;
+      const litellmKwargs = lightrag
+        ? { ...DEFAULT_LIGHTRAG_KWARGS, ...(existingConfig.lightrag_llm?.litellm_kwargs || {}) }
+        : { ...DEFAULT_LLM_KWARGS, ...(existingConfig.llm?.litellm_kwargs || {}) };
+      if (thinkingVal) litellmKwargs.thinking = { type: thinkingVal };
+      else delete litellmKwargs.thinking;
+      const body = {
+        apiKey, apiBase, model, type,
+        reasoning_effort: effortVal,
+        litellm_kwargs: litellmKwargs,
+      };
+      if (lightrag) {
+        body.temperature = parseFloat(document.getElementById('lightragTemperature').value);
+        body.lightrag = true;
+      }
+
+      const btn = document.getElementById(lightrag ? 'lightragProbeBtn' : 'llmProbeBtn');
+      btn.disabled = true;
+      setStatus(lightrag ? '探测入库模型能力中（约 1-2 分钟）...' : '探测对话模型能力中（约 1-2 分钟）...', 'loading');
+      try {
+        const result = await window.electronAPI.probeCapability(body);
+        if (!result || result.probe_status === 'failed') {
+          setStatus('能力探测失败: ' + ((result && (result.error || result.reason)) || '未知错误') + '（未覆盖旧档案）', 'error');
+          return;
+        }
+        const profile = (result && result.profile) || null;
+        populateReasoningOptions(
+          lightrag ? 'lightragReasoningEffort' : 'llmReasoningEffort',
+          lightrag ? 'lightragCapabilityHint' : 'llmCapabilityHint',
+          profile,
+          effortVal
+        );
+        const statusWord = result.probe_status === 'partial' ? '部分完成（个别档位不支持）' : '完成';
+        setStatus('能力探测' + statusWord + '！推理深度下拉已刷新。', 'success');
+      } catch (e) {
+        setStatus('能力探测异常: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
 
     async function testAndSave() {
       const existingConfig = await window.electronAPI.getConfig();
@@ -387,10 +563,22 @@
       setStatus('测试模型连接中...', 'loading');
       document.getElementById('testBtn').disabled = true;
 
-      // 第一步：测试（传表单值到请求体，不保存文件）
+      try {
+      // 能力控件值（P1-3：testAndSave 四处接线——测试/探测/保存都读新 select，
+      // 不再读 existingConfig 旧值兜底，否则存量配置升级后首次保存静默丢失）
+      const llmThinking = document.getElementById('llmThinking').value;
+      const llmReasoningEffort = document.getElementById('llmReasoningEffort').value;
+      const lightragThinking = document.getElementById('lightragThinking').value;
+      const lightragReasoningEffort = document.getElementById('lightragReasoningEffort').value;
+
+      // 第一步：测试（传表单值到请求体，不保存文件）——测试环境 = 生产环境（同参数）
+      const llmLitellmKwargs = { ...DEFAULT_LLM_KWARGS, ...(existingConfig.llm?.litellm_kwargs || {}) };
+      if (llmThinking) llmLitellmKwargs.thinking = { type: llmThinking };
+      else delete llmLitellmKwargs.thinking;
       const config = {
         apiKey, apiBase, model, type,
-        litellm_kwargs: { ...DEFAULT_LLM_KWARGS, ...(existingConfig.llm?.litellm_kwargs || {}) }
+        reasoning_effort: llmReasoningEffort,
+        litellm_kwargs: llmLitellmKwargs
       };
       // v2.5：逃生口——合并文件已有 read_timeout（existingConfig 在本作用域已存在）
       const existingLlm = existingConfig && existingConfig.llm;
@@ -400,11 +588,15 @@
       if (result.success) {
         // 第一步半：测试通过后追加 response_format 探测（3 档递进）
         setStatus('探测格式化输出能力中（可能需要 1-5 分钟（三次采样 + 限流/超时重试））...', 'loading');
-        // probe 必须用知识图谱模型的运行时基础配置（含 thinking:disabled），
-        // 保证探测环境 = 运行时环境，探测档位结果对运行时才有效
+        // probe 必须用知识图谱模型的运行时配置（含入库卡片思考链/推理深度 select），
+        // 保证探测环境 = 运行时环境，探测档位结果对运行时才有效（P1-3 接线 2）
+        const lightragKwargs = { ...DEFAULT_LIGHTRAG_KWARGS, ...(existingConfig.lightrag_llm?.litellm_kwargs || {}) };
+        if (lightragThinking) lightragKwargs.thinking = { type: lightragThinking };
+        else delete lightragKwargs.thinking;
         const probeConfig = {
           ...config,
-          litellm_kwargs: { ...DEFAULT_LIGHTRAG_KWARGS, ...(existingConfig.lightrag_llm?.litellm_kwargs || {}) },
+          reasoning_effort: lightragReasoningEffort,
+          litellm_kwargs: lightragKwargs,
         };
         const probeResult = await window.electronAPI.probeResponseFormat(probeConfig);
 
@@ -414,7 +606,6 @@
         // Response 格式档位。不自动关窗，让用户决定重试或放弃。
         if (probeResult.result !== 'supported') {
           setStatus('格式化输出探测失败（' + (probeResult.reason || '未知错误') + '），配置未保存。请稍后点击按钮重试。', 'error');
-          document.getElementById('testBtn').disabled = false;
           return;
         }
 
@@ -426,27 +617,30 @@
         setStatus('保存配置中...（' + probeReason + '）', 'loading');
         const existingLightragLlm = existingConfig.lightrag_llm || {};
         const existingLightragKwargs = existingLightragLlm.litellm_kwargs || {};
-        // 基础配置（thinking:disabled 等）无条件写入 + 探测结果覆盖
+        // 基础配置（thinking:disabled 等）无条件写入 + 探测结果覆盖 + 入库卡片思考链 select 覆盖
         const newLitellmKwargs = {
           ...DEFAULT_LIGHTRAG_KWARGS,
           ...existingLightragKwargs,
           response_format_mode: responseFormatMode,
           allowed_openai_params: allowedOpenaiParams,
         };
+        if (lightragThinking) newLitellmKwargs.thinking = { type: lightragThinking };
+        else delete newLitellmKwargs.thinking;
+        const lightragTemperature = parseFloat(document.getElementById('lightragTemperature').value);
         const lightragLlmConfig = {
           presetId: existingLightragLlm.presetId || "",
           apiKey: existingLightragLlm.apiKey || "",
           apiBase: existingLightragLlm.apiBase || "",
           model: existingLightragLlm.model || "",
           type: existingLightragLlm.type || "openai",
-          // 思维深度 High 是知识图谱基础配置（用户确认），缺省不是 "none"
-          reasoning_effort: existingLightragLlm.reasoning_effort || "high",
-          temperature: existingLightragLlm.temperature ?? 0.2,
+          // 推理深度来自入库卡片 select（跟随模型默认 = ""，不再 || "high" 兜底旧值——P1-3 接线 3）
+          reasoning_effort: lightragReasoningEffort,
+          temperature: isNaN(lightragTemperature) ? (existingLightragLlm.temperature ?? 0.2) : lightragTemperature,
           litellm_kwargs: newLitellmKwargs,
         };
 
         const saveResult = await window.electronAPI.saveConfig({
-          llm: { ...config, presetId: presetId, reasoning_effort: existingConfig.llm?.reasoning_effort || "", ...(existingConfig?.llm?.read_timeout ? { read_timeout: existingConfig.llm.read_timeout } : {}) },
+          llm: { ...config, presetId: presetId, reasoning_effort: llmReasoningEffort, ...(existingConfig?.llm?.read_timeout ? { read_timeout: existingConfig.llm.read_timeout } : {}) },
           lightrag_llm: lightragLlmConfig,
           context: {
             contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
@@ -469,7 +663,9 @@
       } else {
         setStatus('模型测试失败: ' + (result.message || '请检查配置'), 'error');
       }
-      document.getElementById('testBtn').disabled = false;
+      } finally {
+        document.getElementById('testBtn').disabled = false;
+      }
     }
     
     function setStatus(msg, cls) {
