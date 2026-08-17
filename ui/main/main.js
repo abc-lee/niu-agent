@@ -1245,7 +1245,7 @@ ipcMain.handle('get-config', () => {
     },
     lightrag_llm: {
       presetId: "", apiKey: "", apiBase: "", model: "", type: "openai",
-      reasoning_effort: "high", temperature: 0.2,
+      reasoning_effort: "", temperature: 0.2,
       litellm_kwargs: { thinking: { type: "disabled" }, allowed_openai_params: [] }
     },
     context: {

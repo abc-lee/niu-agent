@@ -43,8 +43,8 @@ def test_fallback_llm_fields(fallback):
 def test_fallback_lightrag_llm_fields(fallback):
     lightrag = fallback["lightrag_llm"]
     assert lightrag["type"] == "openai"
-    # 思维深度 High（用户确认的基础配置，R11）；历史错误值 "none"/"xhigh" 统一为 "high"
-    assert lightrag["reasoning_effort"] == "high"
+    # 思维深度默认空（模型默认/配置页驱动，不强制档位——R12 修订）；不再强制 high
+    assert lightrag["reasoning_effort"] == ""
     # 知识图谱模型温度（与前端 testAndSave 现有缺省一致，R14）
     assert lightrag["temperature"] == 0.2
     # 关闭思考链返回（保证 JSON 输出干净）——探测环境=运行时环境的关键
