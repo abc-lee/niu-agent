@@ -113,6 +113,9 @@ PROBE_RESPONSE_FORMAT_MESSAGE = [{
 # 探测不传 timeout（litellm 默认大超时）——显式短 timeout 会在模型深度思考
 # （豆包 high/max 档实测 8-12s）返回前主动放弃（用户拍板 2026-08-18）。
 PROBE_MAX_TOKENS = 256
+# response_format 探测专用超时兜底（豆包 rf json_object 慢/挂起——日志实证 27s
+# 才返回；20s 上限防探测被 rf 拖长，失败仅降级 partial，值域结果不受影响）
+PROBE_RF_TIMEOUT = 20
 PROBE_TOOL = {
     "type": "function",
     "function": {
@@ -519,6 +522,7 @@ def _probe_response_format(
         api_base, api_key, model, api_type, rf_config,
         response_format={"type": "json_object"},
         messages=PROBE_RESPONSE_FORMAT_MESSAGE,
+        timeout=PROBE_RF_TIMEOUT,
     )
     try:
         litellm.completion(**params)
@@ -622,11 +626,28 @@ def probe(
 
     if not _scan_reasoning_effort(api_base, api_key, model, api_type, probe_config, profile):
         return profile  # failed——不落盘（旧档保留）
-    if not _scan_thinking(api_base, api_key, model, api_type, probe_config, profile):
-        return profile  # failed——不落盘（旧档保留）
 
-    _probe_response_format(api_base, api_key, model, api_type, probe_config, profile)
-    _probe_tools(api_base, api_key, model, api_type, probe_config, profile)
+    # thinking/rf/tools 并行（互不依赖——串行累加是探测耗时的主因：值域 36s 后
+    # thinking 17s + rf 27s + tools 5s 逐个等；并行收敛到最慢单项）
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=3) as _ex:
+        _futures = [
+            _ex.submit(_scan_thinking, api_base, api_key, model, api_type, probe_config, profile),
+            _ex.submit(_probe_response_format, api_base, api_key, model, api_type, probe_config, profile),
+            _ex.submit(_probe_tools, api_base, api_key, model, api_type, probe_config, profile),
+        ]
+        # 任一 failed → 不落盘
+        _scan_thinking_ok = True
+        for _f in _futures:
+            try:
+                r = _f.result()
+            except Exception:
+                profile["probe_status"] = "failed"
+                return profile
+            if _f is _futures[0] and r is False:
+                _scan_thinking_ok = False
+        if not _scan_thinking_ok:
+            return profile  # thinking failed——不落盘
 
     if profile["probe_status"] != "failed":
         write_profile(profile, lightrag=lightrag, profile_path=profile_path)
