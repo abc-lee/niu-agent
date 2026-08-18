@@ -364,6 +364,26 @@
       return !lightragLlm.model || lightragLlm.model === '';
     }
 
+    // 参数选齐后启用测试并保存（Task 2 状态机）
+    // 注意：选齐条件 = 下拉框 enabled（探测完成）——disabled 表示未探测，不能测
+    async function updateTestSaveButton() {
+      const llmThinkingEl = document.getElementById('llmThinking');
+      const llmReasoningEffortEl = document.getElementById('llmReasoningEffort');
+      const lightragThinkingEl = document.getElementById('lightragThinking');
+      const lightragReasoningEffortEl = document.getElementById('lightragReasoningEffort');
+
+      // 选齐条件：下拉框 enabled（探测完成，用户可以选择）
+      const llmComplete = !llmThinkingEl.disabled && !llmReasoningEffortEl.disabled;
+      const lightragComplete = !lightragThinkingEl.disabled && !lightragReasoningEffortEl.disabled;
+
+      // 如果 lightrag_llm 继承主 llm，只需要 LLM 参数选齐
+      const existingConfig = await window.electronAPI.getConfig();
+      const inherited = isLightragInherited(existingConfig);
+      const allComplete = inherited ? llmComplete : (llmComplete && lightragComplete);
+
+      document.getElementById('testBtn').disabled = !allComplete;
+    }
+
     async function init() {
       presets = await window.electronAPI.getPresets();
       const config = await window.electronAPI.getConfig();
@@ -416,6 +436,12 @@
       populateReasoningOptions('llmReasoningEffort', 'llmCapabilityHint', llmProfile, llmEffortVal);
       populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', lightragProfile, lightragEffortVal);
 
+      // Task 2 状态机：无探测档案 → 下拉框 disabled（不知道模型支持什么值域，探测成功后启用）
+      document.getElementById('llmThinking').disabled = !llmProfile;
+      document.getElementById('llmReasoningEffort').disabled = !llmProfile;
+      document.getElementById('lightragThinking').disabled = !lightragProfile;
+      document.getElementById('lightragReasoningEffort').disabled = !lightragProfile;
+
       // lightrag_llm 继承主 llm 时，隐藏 LightRAG 探测按钮（探测主 llm 即可）
       const lightragProbeBtn = document.getElementById('lightragProbeBtn');
       if (isLightragInherited(config)) {
@@ -423,6 +449,9 @@
       } else {
         lightragProbeBtn.style.display = 'inline-block';
       }
+
+      // 初始调用：根据下拉框 disabled 状态设置测试并保存按钮
+      updateTestSaveButton();
     }
     
     function toggleAdvanced() {
@@ -456,6 +485,12 @@
     ['llmThinking', 'lightragThinking', 'llmReasoningEffort', 'lightragReasoningEffort', 'lightragTemperature'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', () => { testPassedInSession = false; });
+    });
+
+    // 监听下拉框变化，参数选齐后启用测试并保存（Task 2 状态机；初始调用在 init() 末尾，
+    // 需等探测档案加载完并设置好下拉框 disabled 状态后再判定）
+    ['llmThinking', 'llmReasoningEffort', 'lightragThinking', 'lightragReasoningEffort'].forEach(id => {
+      document.getElementById(id).addEventListener('change', updateTestSaveButton);
     });
 
     // 标准基础配置缺省（三处一致：本处 / main.js get-config 兜底 / config-manager 兜底）。
@@ -551,6 +586,9 @@
           profile,
           effortVal
         );
+        // 探测成功后：下拉框 enabled（Task 2 状态机——探测完成才可选择值域）
+        document.getElementById(lightrag ? 'lightragThinking' : 'llmThinking').disabled = false;
+        document.getElementById(lightrag ? 'lightragReasoningEffort' : 'llmReasoningEffort').disabled = false;
         if (scenario === 'llm' && isLightragInherited(existingConfig)) {
           // lightrag_llm 继承主 llm——自动用主 llm 的探测结果填充
           // 注意：探测档案缓存键是 apiBase|model|lightrag（与 llm 不同）
@@ -561,6 +599,8 @@
           document.getElementById('lightragThinking').disabled = false;
           document.getElementById('lightragReasoningEffort').disabled = false;
         }
+        // 探测后刷新测试并保存按钮状态（参数选齐判定基于下拉框 disabled）
+        updateTestSaveButton();
         const statusWord = result.probe_status === 'partial' ? '部分完成（个别档位不支持）' : '完成';
         setStatus('能力探测' + statusWord + '！推理深度下拉已刷新。', 'success');
       } catch (e) {
@@ -688,7 +728,8 @@
         setStatus('模型测试失败: ' + (result.message || '请检查配置'), 'error');
       }
       } finally {
-        document.getElementById('testBtn').disabled = false;
+        // 按状态机恢复按钮（参数选齐才 enabled，而非无条件恢复）
+        updateTestSaveButton();
       }
     }
     
