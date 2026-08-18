@@ -384,9 +384,11 @@ function createStickyWindow() {
 // 注意：settings 模式不调 Dock.hide（否则窗口不显示）
 function createSettingsWindow() {
   settingsWindow = new BrowserWindow({
-    width: 500,
-    height: 650,
-    resizable: false,
+    width: 1020,
+    height: 845,
+    minWidth: 960,
+    minHeight: 600,
+    resizable: true,
     frame: false,
     transparent: true,
     webPreferences: {
