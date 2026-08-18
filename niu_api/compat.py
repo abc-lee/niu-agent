@@ -1589,6 +1589,37 @@ async def _probe_llm(
         return False, f"模型测试失败: {safe_msg}"
 
 
+@router.post("/api/config/reload")
+async def reload_config() -> dict:
+    """配置保存后热更新（免重启）：清除全部 LLM 相关缓存，下次使用按新配置重建。
+
+    由设置窗口 save-config（Electron main.js IPC）写入 user-config.json 后调用。
+    覆盖三层缓存：
+    1. niu_api.config 全局 Config 单例（chat_session 的"LLM 未配置"检查读它）
+    2. agent.runner 全局 Runner 单例（主 Agent LiteLLMSession 随 Runner 重建；
+       进行中的回合持有旧实例引用不受影响，下一回合用新配置）
+    3. lightrag_manager 缓存的 LiteLLMSession（LightRAG 链路）
+
+    子 Agent 无缓存无需处理（subagent.py 每次调用 create_client 新建，
+    llm_config 随调用方传入）。
+    """
+    from niu_api import config as config_module
+
+    config_module._config = None
+
+    from agent import runner as runner_module
+
+    with runner_module._runner_lock:
+        runner_module._runner = None
+
+    from niu_api.internal.lightrag_manager import reset_litellm_session_cache
+
+    reset_litellm_session_cache()
+
+    logger.info("[ConfigReload] LLM caches cleared, next request uses new config")
+    return {"success": True}
+
+
 @router.post("/api/test-llm")
 async def test_llm(request: Request) -> dict:
     """通过真实 LLM 调用验证配置。验证完整链路：config → LiteLLM → provider 路由 → API 调用 → 响应。

@@ -111,6 +111,24 @@ def _get_litellm_session(config: dict) -> Any:
         return _cached_session
 
 
+def reset_litellm_session_cache() -> None:
+    """清除缓存的 LiteLLMSession（配置保存后热更新，免重启）。
+
+    由 /api/config/reload 端点（设置窗口 save-config 后调用）触发。
+    下次 _get_litellm_session 调用按新配置重建——config_key 机制本身已能
+    检测配置变化自动重建，本函数提供保存路径的显式重置入口（语义清晰 +
+    不依赖下次调用的 config_key 比对）。
+
+    注意必须走本函数而非 `from ... import _cached_session; _cached_session = None`
+    ——from-import 只重绑定调用方局部名，不改模块全局。
+    """
+    global _cached_session, _cached_config_key
+    with _session_lock:
+        _cached_session = None
+        _cached_config_key = None
+    logger.info("LightRAG LiteLLMSession cache cleared (config hot reload)")
+
+
 def _build_keyword_extraction_response_format() -> dict:
     """构造 keyword_extraction 用的 json_schema strict response_format。
 
