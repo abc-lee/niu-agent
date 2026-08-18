@@ -385,7 +385,7 @@ function createStickyWindow() {
 function createSettingsWindow() {
   settingsWindow = new BrowserWindow({
     width: 1020,
-    height: 845,
+    height: 770,
     minWidth: 960,
     minHeight: 600,
     resizable: true,
