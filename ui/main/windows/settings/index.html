@@ -357,7 +357,13 @@
   <script>
     let presets = [];
     let testPassedInSession = false;
-    
+
+    // 检测 lightrag_llm 是否继承主 llm（model 为空 = 继承）
+    function isLightragInherited(config) {
+      const lightragLlm = config.lightrag_llm || {};
+      return !lightragLlm.model || lightragLlm.model === '';
+    }
+
     async function init() {
       presets = await window.electronAPI.getPresets();
       const config = await window.electronAPI.getConfig();
@@ -409,6 +415,14 @@
       const lightragProfile = (probeApiBase && probeModel) ? await window.electronAPI.getCapabilityProfile({ apiBase: probeApiBase, model: probeModel, lightrag: true }) : null;
       populateReasoningOptions('llmReasoningEffort', 'llmCapabilityHint', llmProfile, llmEffortVal);
       populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', lightragProfile, lightragEffortVal);
+
+      // lightrag_llm 继承主 llm 时，隐藏 LightRAG 探测按钮（探测主 llm 即可）
+      const lightragProbeBtn = document.getElementById('lightragProbeBtn');
+      if (isLightragInherited(config)) {
+        lightragProbeBtn.style.display = 'none';
+      } else {
+        lightragProbeBtn.style.display = 'inline-block';
+      }
     }
     
     function toggleAdvanced() {
@@ -537,6 +551,16 @@
           profile,
           effortVal
         );
+        if (scenario === 'llm' && isLightragInherited(existingConfig)) {
+          // lightrag_llm 继承主 llm——自动用主 llm 的探测结果填充
+          // 注意：探测档案缓存键是 apiBase|model|lightrag（与 llm 不同）
+          // 方案：populateReasoningOptions 时用主 llm 的档案（不写 lightrag 缓存键）
+          const lightragEffortVal = document.getElementById('lightragReasoningEffort').value;
+          populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', profile, lightragEffortVal);
+          // 同时启用 lightrag 下拉框（探测完成）
+          document.getElementById('lightragThinking').disabled = false;
+          document.getElementById('lightragReasoningEffort').disabled = false;
+        }
         const statusWord = result.probe_status === 'partial' ? '部分完成（个别档位不支持）' : '完成';
         setStatus('能力探测' + statusWord + '！推理深度下拉已刷新。', 'success');
       } catch (e) {
