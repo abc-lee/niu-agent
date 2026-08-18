@@ -640,7 +640,7 @@ def test_probe_request_transport_shape(profile_path):
     assert first["model"] == "openai/m1"  # 前缀推导（openai 兼容路由）
     assert first["stream"] is False
     assert first["max_tokens"] == 256
-    assert first["timeout"] == 60
+    assert "timeout" not in first  # 探测不传 timeout（litellm 默认大超时，等模型真实响应）
     assert first["messages"] == [{"role": "user", "content": "OK"}]
     assert first["api_base"] == "https://api.example.com/v1/"
     assert first["api_key"] == "k-llm"

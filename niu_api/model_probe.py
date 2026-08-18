@@ -7,7 +7,7 @@
 探测项与成本控制（合计 ≈11 次极小请求/模型，单次 ≤10s；值域候选超时重试最坏
 7×2=14 次 ≈140s）：
   1. reasoning_effort 值域 [minimal, low, medium, high, xhigh, none, max] 按序探测，
-     每个值至多 2 次请求（max_tokens=256、消息固定 "OK"、timeout=60、stream=False；
+     每个值至多 2 次请求（max_tokens=256、消息固定 "OK"、不传 timeout 等默认、stream=False；
      首次超时重试 1 次——豆包响应在 10s 边界波动，超时 ≠ 值不支持，R18）。
      请求携带**场景配置的 thinking**（probe_config.litellm_kwargs.thinking——
      lightrag 场景恒 disabled、llm 场景按用户配置，P1-1 修复）——值域结论只对
@@ -110,13 +110,9 @@ PROBE_RESPONSE_FORMAT_MESSAGE = [{
 # 截断误杀——豆包 thinking enabled + reasoning_effort high/max 深度思考时
 # max_tokens=8 连思考链都放不下，响应被拖到 9.5s+ 贴超时边界 → 超时重试翻倍，
 # 实测 222s 探测时长根因；model_probe.py 此前漏改此常量）。
-# timeout=60（深度思考档位（high/xhigh/max）响应慢——豆包 max 档实测 9.5s，
-# 10s 超时太紧对所有模型都不适用）。
+# 探测不传 timeout（litellm 默认大超时）——显式短 timeout 会在模型深度思考
+# （豆包 high/max 档实测 8-12s）返回前主动放弃（用户拍板 2026-08-18）。
 PROBE_MAX_TOKENS = 256
-PROBE_TIMEOUT = 60
-# response_format 探测专用超时（豆包 rf json_object 挂起不响应——挂起等 60s 无意义，
-# 20s 足够区分"真响应慢"与"挂起"；失败仅降级 partial，值域结果不受影响）
-PROBE_RF_TIMEOUT = 20
 PROBE_TOOL = {
     "type": "function",
     "function": {
@@ -317,12 +313,15 @@ def _build_probe_params(
     response_format: dict | None = None,
     tools: list | None = None,
     messages: list | None = None,
-    timeout: int = PROBE_TIMEOUT,
+    timeout: int | None = None,
 ) -> dict:
     """组装单次探测请求参数（直发 litellm.completion）。
 
     与 chat() 同构（litellm_adapter.py L842-877 参数组装顺序）：
-      1. build_base_params(stream=False, max_tokens=256, timeout=60) + 前缀推导 model
+      1. build_base_params(stream=False, max_tokens=256) + 前缀推导 model——
+         **不传 timeout**（litellm 默认大超时，等模型真实响应；临时脚本实测
+         豆包深度思考档 8-12s，显式短 timeout 会主动放弃本会返回的响应——
+         用户拍板 2026-08-18）
       2. litellm_kwargs 顶层合并（allowed_openai_params 等需顶层送达 litellm——
          与生产 request_params.update(litellm_kwargs) 一致）+ 非空时 drop_params
       3. response_format 顶层 + drop_params=True（与 chat() 调用点同决策）
@@ -520,7 +519,6 @@ def _probe_response_format(
         api_base, api_key, model, api_type, rf_config,
         response_format={"type": "json_object"},
         messages=PROBE_RESPONSE_FORMAT_MESSAGE,
-        timeout=PROBE_RF_TIMEOUT,
     )
     try:
         litellm.completion(**params)
