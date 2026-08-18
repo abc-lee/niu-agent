@@ -7,7 +7,7 @@
 探测项与成本控制（合计 ≈11 次极小请求/模型，单次 ≤10s；值域候选超时重试最坏
 7×2=14 次 ≈140s）：
   1. reasoning_effort 值域 [minimal, low, medium, high, xhigh, none, max] 按序探测，
-     每个值至多 2 次请求（max_tokens=8、消息固定 "OK"、timeout=10、stream=False；
+     每个值至多 2 次请求（max_tokens=256、消息固定 "OK"、timeout=60、stream=False；
      首次超时重试 1 次——豆包响应在 10s 边界波动，超时 ≠ 值不支持，R18）。
      请求携带**场景配置的 thinking**（probe_config.litellm_kwargs.thinking——
      lightrag 场景恒 disabled、llm 场景按用户配置，P1-1 修复）——值域结论只对
@@ -41,10 +41,11 @@ response_format 探测项在 openai 路由挂起不响应，注释实证 litellm
   - 401/404/429/5xx/网络 → probe_status=failed，终止，不覆盖旧档案（服务端拒绝/
     不可达 ≠ 慢，不重试）
   - ignores_unknown：reasoning_effort 7 值全部确认 200（无 400、无超时未确认）→
-    true（服务端静默忽略未知参数——档位 supported 全列表为假象）；任一值
-    unsupported（400 或超时无法确认）→ false。置位与场景
-    thinking 同步（P1-1）：场景 thinking disabled 下同样全 200 才置 true——任一值
-    被拒（如 high+disabled 400）即 false
+    加无效值探针判别（R11 增强）：无效值 400 → 服务端严格校验 → 全 200 = 真全支持
+    （false）；无效值也 200 → 服务端静默忽略未知参数（true，档位 supported 全列表
+    为假象）；探针无法判别（超时/网络）→ 保守 true。置位与场景
+    thinking 同步（P1-1）：场景 thinking disabled 下同样判别——任一值
+    被拒（如 high+disabled 400）即 false 不进入探针
 
 partial 例外（R4/R6/R7/R9/R10/R17）：
   - response_format/tools 子项超时或失败 → 值域结果照写档案 + 子项标 timeout/
@@ -88,6 +89,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 REASONING_EFFORT_CANDIDATES = ["minimal", "low", "medium", "high", "xhigh", "none", "max"]
+# 无效值探针：判别"7 值全 200"是真全支持还是服务端忽略未知参数（R11 增强）。
+# 无效值 400 → 服务端严格校验 → 全 200 = 真支持；无效值也 200 → 忽略未知参数。
+# 豆包 2026-08-18 服务端更新接受全值后，"全 200"两种语义无法仅凭值域区分（实测无效值判别有效）。
+INVALID_EFFORT_VALUE = "__probe_invalid__"
 THINKING_CANDIDATES = ["enabled", "disabled"]
 PROBE_MESSAGE = [{"role": "user", "content": "OK"}]
 # response_format json_object 探测专用消息：必须含 "json" 字样——OpenAI 兼容网关
@@ -100,8 +105,14 @@ PROBE_RESPONSE_FORMAT_MESSAGE = [{
     "role": "user",
     "content": "Write exactly one English sentence about the ocean. Do not output JSON.",
 }]
-PROBE_MAX_TOKENS = 8
-PROBE_TIMEOUT = 10
+# max_tokens=256（对齐 test-llm 08-13 教训：thinking 模型 max_tokens 太小会被
+# 截断误杀——豆包 thinking enabled + reasoning_effort high/max 深度思考时
+# max_tokens=8 连思考链都放不下，响应被拖到 9.5s+ 贴超时边界 → 超时重试翻倍，
+# 实测 222s 探测时长根因；model_probe.py 此前漏改此常量）。
+# timeout=60（深度思考档位（high/xhigh/max）响应慢——豆包 max 档实测 9.5s，
+# 10s 超时太紧对所有模型都不适用）。
+PROBE_MAX_TOKENS = 256
+PROBE_TIMEOUT = 60
 PROBE_TOOL = {
     "type": "function",
     "function": {
@@ -306,7 +317,7 @@ def _build_probe_params(
     """组装单次探测请求参数（直发 litellm.completion）。
 
     与 chat() 同构（litellm_adapter.py L842-877 参数组装顺序）：
-      1. build_base_params(stream=False, max_tokens=8, timeout=10) + 前缀推导 model
+      1. build_base_params(stream=False, max_tokens=256, timeout=60) + 前缀推导 model
       2. litellm_kwargs 顶层合并（allowed_openai_params 等需顶层送达 litellm——
          与生产 request_params.update(litellm_kwargs) 一致）+ 非空时 drop_params
       3. response_format 顶层 + drop_params=True（与 chat() 调用点同决策）
@@ -404,8 +415,28 @@ def _scan_reasoning_effort(
                 profile["probe_status"] = "failed"
                 return False
     if all_confirmed_supported:
-        # 7 值全 200 确认且无一个 unsupported → 服务端静默忽略未知参数（R11）
-        profile["ignores_unknown"] = True
+        # 7 值全 200——需判别"真全支持"还是"服务端静默忽略未知参数"（R11）：
+        # 加无效值探针：无效值 400 → 服务端严格校验 → 全 200 = 真支持（false）；
+        # 无效值也 200 → 服务端忽略未知参数（true）；探针无法判别（超时/网络）→ 保守 true。
+        # 背景：豆包 2026-08-18 服务端更新接受 reasoning_effort 全值——"全 200"从此
+        # 可能是真支持而非忽略未知参数，仅凭值域无法区分（实测无效值 400 判别有效）。
+        invalid_params = _build_probe_params(
+            api_base, api_key, model, api_type, probe_config_no_thinking,
+            raw_reasoning_effort=INVALID_EFFORT_VALUE,
+            raw_thinking=scene_thinking,
+        )
+        try:
+            litellm.completion(**invalid_params)
+            # 无效值也 200 → 服务端不校验未知参数 → 忽略未知参数
+            profile["ignores_unknown"] = True
+        except Exception as e:  # noqa: BLE001 - 分类规则覆盖全部异常
+            cls = _classify_value_domain_error(e, "reasoning_effort")
+            if cls == "unsupported":
+                # 无效值被拒（400）→ 服务端严格校验 → 全 200 = 真支持
+                profile["ignores_unknown"] = False
+            else:
+                # 探针无法判别（超时/网络）→ 保守保持 true（R11 原语义：宁可少显示不误导）
+                profile["ignores_unknown"] = True
     return True
 
 

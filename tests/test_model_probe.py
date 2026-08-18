@@ -125,12 +125,12 @@ def profile_path(tmp_path):
 
 def test_value_domain_200_marks_supported(profile_path):
     """值域 200 → supported（7 值全收）。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile["probe_status"] == "ok"
     assert profile["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
     assert profile["reasoning_effort"]["unsupported"] == []
-    assert mock_completion.call_count == 11  # 7 值域 + 2 thinking + rf + tools
+    assert mock_completion.call_count == 12  # 7 值域 + 无效值探针 + 2 thinking + rf + tools
 
 
 def test_value_domain_400_with_reasoning_effort_token_marks_unsupported(profile_path):
@@ -174,10 +174,10 @@ def test_value_domain_disabled_thinking_rejects_high_as_unsupported(profile_path
 
 def test_value_domain_supported_differs_between_thinking_enabled_and_disabled(profile_path):
     """场景 thinking=enabled vs disabled 值域结论差异断言（P1-1）：同服务端下
-    enabled（llm 场景）→ 7 值全 supported + ignores_unknown=true；disabled
-    （lightrag 场景）→ high 被拒 unsupported + ignores_unknown=false。"""
-    # llm 场景（thinking=enabled）：7 值全 200
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    enabled（llm 场景）→ 7 值全 supported + 无效值探针 200 → ignores_unknown=true；
+    disabled（lightrag 场景）→ high 被拒 unsupported + ignores_unknown=false。"""
+    # llm 场景（thinking=enabled）：7 值全 200 + 探针 200（mock 全 _ok_response）
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         profile_enabled = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile_enabled["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
     assert profile_enabled["reasoning_effort"]["unsupported"] == []
@@ -266,6 +266,7 @@ def test_value_domain_timeout_retried_then_supported(profile_path):
     results.append(_timeout_error())  # low 首次超时
     results.append(_ok_response())    # low 重试成功
     results += [_ok_response()] * 5   # medium..max
+    results.append(_ok_response())    # 无效值探针（7 值全 200 判别）
     results += [_ok_response()] * 2   # thinking
     results += [_ok_response()] * 2   # rf + tools
     with _patch_completion(*results) as mock_completion:
@@ -273,8 +274,8 @@ def test_value_domain_timeout_retried_then_supported(profile_path):
     assert profile["probe_status"] == "ok"
     assert profile["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
     assert profile["reasoning_effort"]["unsupported"] == []
-    assert profile["ignores_unknown"] is True  # 重试成功 → 7 值全部确认 200
-    assert mock_completion.call_count == 12  # 7 值域（含 1 次重试）+ 2 thinking + rf + tools
+    assert profile["ignores_unknown"] is True  # 探针 200 → 忽略未知参数
+    assert mock_completion.call_count == 13  # 7 值域（含 1 次重试）+ 探针 + 2 thinking + rf + tools
 
 
 def test_value_domain_double_timeout_marks_unsupported_and_continues(profile_path):
@@ -316,6 +317,7 @@ def test_value_domain_timeout_retry_then_401_fails(profile_path):
 def test_response_format_timeout_is_partial_with_value_domain_written(profile_path):
     """response_format 超时 → partial + 值域照写 + response_format 段 timeout 形状。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针（7 值全 200 判别）
     results += [_ok_response()] * 2  # thinking 双 true
     results.append(_timeout_error())  # response_format 挂起
     results.append(_ok_response())    # tools ok
@@ -337,6 +339,7 @@ def test_response_format_timeout_is_partial_with_value_domain_written(profile_pa
 def test_response_format_400_is_unsupported_shape(profile_path):
     """response_format 400 → unsupported（区别于 timeout）。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2
     results.append(_bad_request({"error": {"message": "response_format not supported"}}))
     results.append(_ok_response())
@@ -349,6 +352,7 @@ def test_response_format_400_is_unsupported_shape(profile_path):
 def test_tools_failure_is_partial_with_tools_section_shape(profile_path):
     """tools 400 → partial + tools 段 {"status":"unsupported","supported":[]} 形状。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2
     results.append(_ok_response())  # rf ok
     results.append(_bad_request({"error": {"message": "tools not supported"}}))
@@ -365,6 +369,7 @@ def test_tools_failure_is_partial_with_tools_section_shape(profile_path):
 def test_tools_timeout_is_timeout_shape(profile_path):
     """tools 超时 → timeout 形状。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2
     results.append(_ok_response())
     results.append(_timeout_error())
@@ -395,6 +400,7 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
         return real_assemble(config, raw_reasoning_effort=raw_reasoning_effort, raw_thinking=raw_thinking)
 
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2
     results += [_ok_response()] * 2
     with patch.object(model_probe, "assemble_request_params", side_effect=_spy), \
@@ -411,8 +417,9 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
         assert raw_thinking in ({"type": "enabled"}, {"type": "disabled"})
     # 值域扫描（raw_reasoning_effort 非 None）：config 副本剔除 thinking 键，
     # 场景 thinking 经 raw_thinking 显式传入（P1-1——不得默认 enabled）
+    # 7 值 + 无效值探针（探针同走 raw_reasoning_effort 注入）
     reasoning_calls = [c for c in captured if c[1] is not None]
-    assert len(reasoning_calls) == 7
+    assert len(reasoning_calls) == 8
     for config, _raw_effort, raw_thinking in reasoning_calls:
         litellm_kwargs = config.get("litellm_kwargs") or {}
         assert "thinking" not in litellm_kwargs, (
@@ -423,12 +430,12 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
 
 def test_thinking_probe_sends_raw_candidate_via_extra_body(profile_path):
     """thinking 探测请求 extra_body.thinking 来自 raw 候选（enabled/disabled 各一）。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         probe(**PROBE_ARGS, user_config=USER_CONFIG)
     calls = mock_completion.call_args_list
-    # 第 8、9 次（index 7/8）是 thinking 探测
-    assert calls[7].kwargs["extra_body"]["thinking"] == {"type": "enabled"}
-    assert calls[8].kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+    # 第 9、10 次（index 8/9）是 thinking 探测（index 7 = 无效值探针）
+    assert calls[8].kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+    assert calls[9].kwargs["extra_body"]["thinking"] == {"type": "disabled"}
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +446,7 @@ def test_thinking_probe_sends_raw_candidate_via_extra_body(profile_path):
 def test_thinking_aggregation_both_true_ok(profile_path):
     """双 true → probe_status=ok（R17）。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2  # enabled 200 / disabled 200
     results += [_ok_response()] * 2
     with _patch_completion(*results):
@@ -450,6 +458,7 @@ def test_thinking_aggregation_both_true_ok(profile_path):
 def test_thinking_aggregation_one_false_partial(profile_path):
     """一 false（enabled 400 / disabled 200）→ partial + thinking 段如实记录。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results.append(_bad_request({"error": {"message": "thinking param not allowed"}}))  # enabled 400
     results.append(_ok_response())  # disabled 200
     results += [_ok_response()] * 2
@@ -462,6 +471,7 @@ def test_thinking_aggregation_one_false_partial(profile_path):
 def test_thinking_aggregation_both_false_partial(profile_path):
     """双 false（enabled 400 + disabled 400）→ partial（值域结果照写）。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results.append(_bad_request({"error": {"message": "thinking param not allowed"}}))
     results.append(_bad_request({"error": {"message": "thinking disabled invalid"}}))
     results += [_ok_response()] * 2
@@ -477,6 +487,7 @@ def test_thinking_aggregation_both_false_partial(profile_path):
 def test_thinking_records_reasoning_content(profile_path):
     """thinking 响应含 reasoning_content → returns_reasoning_content=true。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results.append(_ok_response(reasoning_content="thinking..."))  # enabled 带思考链返回
     results.append(_ok_response())
     results += [_ok_response()] * 2
@@ -492,7 +503,7 @@ def test_thinking_records_reasoning_content(profile_path):
 
 def test_ignores_unknown_true_when_all_7_values_200(profile_path):
     """7×200 且无一个 400 → ignores_unknown=true（服务端静默忽略未知参数）。"""
-    with _patch_completion(*[_ok_response()] * 11):
+    with _patch_completion(*[_ok_response()] * 12):
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile["ignores_unknown"] is True
 
@@ -600,17 +611,17 @@ def test_error_classification_r19_400_always_unsupported():
 
 def test_probe_request_transport_shape(profile_path):
     """探测请求直发 litellm.completion：前缀推导 model + build_base_params
-    (stream=False, max_tokens=8, timeout=10) + 固定消息 + extra_body raw 注入。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    (stream=False, max_tokens=256, timeout=60) + 固定消息 + extra_body raw 注入。"""
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         probe(**PROBE_ARGS, user_config=USER_CONFIG)
     calls = mock_completion.call_args_list
-    assert len(calls) == 11
+    assert len(calls) == 12
 
     first = calls[0].kwargs
     assert first["model"] == "openai/m1"  # 前缀推导（openai 兼容路由）
     assert first["stream"] is False
-    assert first["max_tokens"] == 8
-    assert first["timeout"] == 10
+    assert first["max_tokens"] == 256
+    assert first["timeout"] == 60
     assert first["messages"] == [{"role": "user", "content": "OK"}]
     assert first["api_base"] == "https://api.example.com/v1/"
     assert first["api_key"] == "k-llm"
@@ -618,20 +629,20 @@ def test_probe_request_transport_shape(profile_path):
     assert first["extra_body"]["reasoning_effort"] == "minimal"
     assert first["drop_params"] is True
 
-    # 第 10 次（index 9）= response_format 探测：顶层 response_format + 逃生口
-    rf_call = calls[9].kwargs
+    # 第 11 次（index 10）= response_format 探测：顶层 response_format + 逃生口
+    rf_call = calls[10].kwargs
     assert rf_call["response_format"] == {"type": "json_object"}
     assert rf_call["allowed_openai_params"] == ["response_format"]  # 顶层送达 litellm
     assert rf_call["drop_params"] is True
 
-    # 第 11 次（index 10）= tools 探测：顶层 tools
-    tools_call = calls[10].kwargs
+    # 第 12 次（index 11）= tools 探测：顶层 tools
+    tools_call = calls[11].kwargs
     assert tools_call["tools"][0]["function"]["name"] == "probe_tool"
 
 
 def test_probe_volces_domain_derives_volcengine_prefix(profile_path):
     """volces.com 域名 → volcengine/ 前缀（否则豆包 response_format 探测挂起）。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         probe(
             api_base="https://ark.cn-beijing.volces.com/api/plan/v3",
             api_key="k",
@@ -643,7 +654,7 @@ def test_probe_volces_domain_derives_volcengine_prefix(profile_path):
 
 def test_local_model_omits_api_key(profile_path):
     """本地模型（localhost）免 apiKey：api_key="" → 请求不含 api_key 键。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         probe(api_base="http://localhost:11434/v1", api_key="", model="llama3", user_config=None)
     first = mock_completion.call_args_list[0].kwargs
     assert "api_key" not in first
@@ -654,6 +665,7 @@ def test_lightrag_scenario_probes_with_lightrag_section(profile_path):
     """lightrag 场景：config 取 lightrag_llm 段（thinking disabled 随生产注入），
     档案键 api_base|model|lightrag。"""
     results = [_ok_response()] * 7
+    results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2
     results += [_ok_response()] * 2
     with _patch_completion(*results) as mock_completion:
