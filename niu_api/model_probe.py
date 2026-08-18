@@ -269,6 +269,20 @@ def _classify_value_domain_error(exc: Exception, token: str) -> str:
     return "failed"
 
 
+def _describe_fail_reason(exc: Exception) -> str:
+    """探测失败原因描述（用户可读——429 限流/401 认证/404 不存在/5xx 服务端）。"""
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return "服务端限流（429），请稍后重试"
+    if status == 401:
+        return "认证失败（401），请检查 API Key"
+    if status == 404:
+        return "模型或地址不存在（404），请检查 API 地址和模型名"
+    if status and 500 <= status < 600:
+        return f"服务端错误（{status}），请稍后重试"
+    return f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
 def _response_message(response):
     """稳健取响应 message（mock 与真实 ModelResponse 均可）。"""
     try:
@@ -399,8 +413,9 @@ def _scan_reasoning_effort(
         for fut in as_completed(futures):
             try:
                 cand, supported = fut.result()
-            except Exception:
+            except Exception as e:
                 profile["probe_status"] = "failed"
+                profile["probe_fail_reason"] = _describe_fail_reason(e)
                 return False
             if supported:
                 profile["reasoning_effort"]["supported"].append(cand)
@@ -469,6 +484,7 @@ def _scan_thinking(
                 values[cand] = False
             else:
                 profile["probe_status"] = "failed"
+                profile["probe_fail_reason"] = _describe_fail_reason(e)
                 return False
     profile["thinking"] = {
         "enabled": bool(values.get("enabled")),
