@@ -61,22 +61,43 @@ partial 例外（R4/R6/R7/R9/R10/R17）：
   - thinking 双值均 200 → probe_status="ok"
   - reasoning_effort 全 unsupported → probe_status="ok"（探测完成，结果是不支持）
 
-档案写安全（P2-2 修订）：原子写（临时文件 + os.replace）+ fcntl.flock 非阻塞写锁
-（读-改-写整体持锁；锁被占用 → 跳过写入返回 False，不写坏旧档；探测进程单次调用
+档案写安全（P2-2 修订）：原子写（临时文件 + os.replace）+ 跨平台非阻塞写锁
+（Unix fcntl.flock / Windows msvcrt.locking；读-改-写整体持锁；锁被占用 → 跳过写入返回 False，不写坏旧档；探测进程单次调用
 内只锁一次，避免嵌套锁）。失败不写坏旧档。
 """
 
 import asyncio
-import fcntl
 import json
 import logging
 import os
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 import litellm
+
+# 跨平台文件锁（Windows 无 fcntl——探测页在 Windows 上 import 即崩，2026-08-18 实证）。
+# 对齐 compat.py _flock/_funlock 模式：Unix 用 fcntl.flock，Windows 用 msvcrt.locking。
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_nonblocking(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd: int) -> None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_nonblocking(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 from agent.generic.litellm_adapter import (
     _derive_provider_prefix,
@@ -183,7 +204,7 @@ def write_profile(profile: dict, lightrag: bool = False, profile_path=None) -> b
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_nonblocking(lock_fd)
         except OSError:
             return False  # 另一进程持锁——跳过写入，旧档保留
 
@@ -207,7 +228,7 @@ def write_profile(profile: dict, lightrag: bool = False, profile_path=None) -> b
             raise
     finally:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            _unlock(lock_fd)
         except OSError:
             pass
         os.close(lock_fd)
