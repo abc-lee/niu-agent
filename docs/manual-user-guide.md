@@ -397,6 +397,43 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 > **边界**：仅当用户明确要求"帮我直接改配置文件"、或设置窗口不可用（如后端异常）时，才允许 Agent 手动修改 `user-config.json`——修改后必须告知用户回设置窗口"测试连接并保存"做一次校验。
 
+**配置独立入库模型（第二个模型）**：
+
+设置窗口的入库卡片**只支持继承场景**（`lightrag_llm.model` 为空 = 用主模型，只显示一个探测按钮）——它没有暴露入库段的 API Key/地址/模型输入框。当用户需要**独立的入库模型**（如主对话用思考链模型、入库用轻量模型）时，必须由 Agent 协助：
+
+1. **写入配置**：调用 MCP 工具 `set_lightrag_llm_config`（config-manager 服务器）：
+   - 按预设：`set_lightrag_llm_config(preset_id="doubao")`（自动填 apiBase/model/type）
+   - 完全自定义：`set_lightrag_llm_config(api_key="…", api_base="https://ark.cn-beijing.volces.com/api/v3", model="doubao-seed-2-0-pro-260215", llm_type="openai")`
+   - 回退继承：`set_lightrag_llm_config(model="")`（清除独立模型，reasoning_effort 保留——两维度独立）
+2. **探测档位**：入库模型配好后，让用户在设置窗口点"探测能力（入库模型）"按钮（此刻非继承，按钮显示）——探测写入 `|lightrag` 档案并刷新档位下拉。
+3. **校验保存**：引导用户选档位后点"测试连接并保存"——程序按入库段配置真实探测 + 参数组合校验，通过才落盘。
+
+> 独立入库模型建议：轻量快速（如豆包标准端点 `doubao-seed-2-0-pro-260215`），`thinking: {"type": "disabled"}` 关闭思考链（入库建议），`temperature` 建议 0.2 或更低；若用火山方舟，必须用**标准端点**（含 `/api/v3`）——Coding Plan 端点 400 拒绝 response_format，入库无法工作。
+
+**Agent 自主评测新模型能力**：
+
+Agent 可以自己启动评测代码评估一个新模型，无需用户手动操作。评测工具 = `scripts/model_capability_probe.py`（真实 LLM 调用，按生产同参扫描模型支持的推理深度值域）：
+
+```bash
+python/bin/python3 scripts/model_capability_probe.py \
+  --api-base https://api.example.com/v1 \
+  --model 模型名 \
+  [--api-type anthropic]   # 默认 openai；Anthropic 原生格式才需要
+  [--api-key KEY]          # 缺省从配置文件 llm 段读
+  [--lightrag]             # 评测入库场景（档案键后缀 |lightrag，值域按入库 thinking 配置）
+```
+
+**何时评测**：用户换模型/换服务商/不确定模型支持哪些档位时；或用户要求"帮我看看这个模型能不能用/支持什么档位"。
+
+**评测流程与结果**：
+1. 先向用户确认模型名（**大小写敏感**——从服务商控制台复制原样粘贴；zen/go 包月端点模型名全小写）与 API Key 归属（避免把用户 key 用于未知端点）。
+2. 运行 CLI（llm 场景）或加 `--lightrag`（入库场景）。**评测要真实连接模型，需在目标机执行**；若 Niu 运行中且目标模型就是当前配置，也可引导用户直接用设置页"探测能力"按钮（同核心、免命令行）。
+3. 退出码 `0` = 档案已更新（`~/.niu/model_capabilities.json`，键 `apiBase|model|llm` / `|lightrag`）；`1` = 探测失败**保持旧档案**（检查 429 限流/401 认证/404 模型名后重试）。
+4. 评测后：告诉用户该模型支持的档位清单，引导在设置窗口选档位 → "测试连接并保存"完成配置；或直接 `set_lightrag_llm_config(reasoning_effort="low")` 写入（但仍建议走一次设置页校验）。
+5. 预算提示：单场景 ≈11 次极小请求，值域超时重试最坏 ≈140s——CLI 建议超时 `timeout=150`；双场景 ≈280s 建议 `timeout=300` 或分两次。
+
+> **评测纪律**：①评测消耗用户 API 配额（11 次极小请求），先征得用户同意；②评测值域只对**当前场景 thinking 配置**成立（lightrag 恒 disabled、llm 按用户配置）——不要把一个场景测出的档位外推到另一个场景；③评测不是测试对话质量——档位支持 ≠ 输出质量，质量评估按上文"入库质量检查方法"或对话实测。
+
 ### 1.3 上下文配置
 
 **配置文件**：`config/user-config.json` 中的 `context` 段
