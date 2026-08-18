@@ -71,6 +71,7 @@ import json
 import logging
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -113,6 +114,9 @@ PROBE_RESPONSE_FORMAT_MESSAGE = [{
 # 10s 超时太紧对所有模型都不适用）。
 PROBE_MAX_TOKENS = 256
 PROBE_TIMEOUT = 60
+# response_format 探测专用超时（豆包 rf json_object 挂起不响应——挂起等 60s 无意义，
+# 20s 足够区分"真响应慢"与"挂起"；失败仅降级 partial，值域结果不受影响）
+PROBE_RF_TIMEOUT = 20
 PROBE_TOOL = {
     "type": "function",
     "function": {
@@ -313,6 +317,7 @@ def _build_probe_params(
     response_format: dict | None = None,
     tools: list | None = None,
     messages: list | None = None,
+    timeout: int = PROBE_TIMEOUT,
 ) -> dict:
     """组装单次探测请求参数（直发 litellm.completion）。
 
@@ -328,7 +333,7 @@ def _build_probe_params(
         **build_base_params(
             stream=False,
             max_tokens=PROBE_MAX_TOKENS,
-            timeout=PROBE_TIMEOUT,
+            timeout=timeout,
             model=_derive_provider_prefix(api_base, model, api_type),
             api_base=api_base or None,
             api_key=api_key or None,
@@ -383,7 +388,10 @@ def _scan_reasoning_effort(
     probe_config_no_thinking = _strip_thinking_key(probe_config)
     scene_thinking = (probe_config.get("litellm_kwargs") or {}).get("thinking")
     all_confirmed_supported = True  # ignores_unknown 只在 7 值全部确认 200 时置位（R11）
-    for cand in REASONING_EFFORT_CANDIDATES:
+
+    def _probe_one(cand: str) -> tuple[str, bool]:
+        """单值探测：200 → (cand, True)；400/超时重试仍失败 → (cand, False)；
+        非值域错误 → raise（外层转 failed）。"""
         params = _build_probe_params(
             api_base, api_key, model, api_type, probe_config_no_thinking,
             raw_reasoning_effort=cand,
@@ -391,29 +399,43 @@ def _scan_reasoning_effort(
         )
         try:
             litellm.completion(**params)
-            profile["reasoning_effort"]["supported"].append(cand)
+            return cand, True
         except Exception as e:  # noqa: BLE001 - 分类规则覆盖全部异常
             cls = _classify_value_domain_error(e, "reasoning_effort")
             if cls == "unsupported":
-                profile["reasoning_effort"]["unsupported"].append(cand)
-                all_confirmed_supported = False
-            elif cls == "timeout":
+                return cand, False
+            if cls == "timeout":
                 # 超时 → 重试该候选一次（豆包响应在 10s 边界波动，超时 ≠ 值不支持——
                 # Task 5 实测 minimal 成功/low 超时即被 failed 终止的错误归因）
                 try:
                     litellm.completion(**params)
-                    profile["reasoning_effort"]["supported"].append(cand)
+                    return cand, True
                 except Exception as e2:  # noqa: BLE001 - 分类规则覆盖全部异常
                     if _classify_value_domain_error(e2, "reasoning_effort") in ("unsupported", "timeout"):
                         # 重试仍超时/400 → 无法确认支持 → 保守记 unsupported，继续探测（不 failed 终止）
-                        profile["reasoning_effort"]["unsupported"].append(cand)
-                        all_confirmed_supported = False
-                    else:
-                        profile["probe_status"] = "failed"
-                        return False
-            else:
+                        return cand, False
+                    raise
+            raise
+
+    # 7 值并行（互不依赖——串行 7×慢响应是探测耗时的主因，并行收敛到最慢值）。
+    # 并行度限制 3：服务端 API 有并发限制，7 个并行会触发限流/封禁（用户拍板）。
+    with ThreadPoolExecutor(max_workers=3) as _ex:
+        futures = {_ex.submit(_probe_one, cand): cand for cand in REASONING_EFFORT_CANDIDATES}
+        for fut in as_completed(futures):
+            try:
+                cand, supported = fut.result()
+            except Exception:
                 profile["probe_status"] = "failed"
                 return False
+            if supported:
+                profile["reasoning_effort"]["supported"].append(cand)
+            else:
+                profile["reasoning_effort"]["unsupported"].append(cand)
+                all_confirmed_supported = False
+
+    # 并行完成顺序不定——按候选顺序排序保持档案输出确定性
+    profile["reasoning_effort"]["supported"].sort(key=REASONING_EFFORT_CANDIDATES.index)
+    profile["reasoning_effort"]["unsupported"].sort(key=REASONING_EFFORT_CANDIDATES.index)
     if all_confirmed_supported:
         # 7 值全 200——需判别"真全支持"还是"服务端静默忽略未知参数"（R11）：
         # 加无效值探针：无效值 400 → 服务端严格校验 → 全 200 = 真支持（false）；
@@ -498,6 +520,7 @@ def _probe_response_format(
         api_base, api_key, model, api_type, rf_config,
         response_format={"type": "json_object"},
         messages=PROBE_RESPONSE_FORMAT_MESSAGE,
+        timeout=PROBE_RF_TIMEOUT,
     )
     try:
         litellm.completion(**params)

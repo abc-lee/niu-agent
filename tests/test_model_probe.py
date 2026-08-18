@@ -28,6 +28,7 @@ import fcntl
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -79,8 +80,25 @@ def _timeout_error():
 
 
 def _patch_completion(*results):
-    """patch model_probe.litellm.completion，按顺序返回/抛出 results（耗尽即断言失败）。"""
-    return patch("niu_api.model_probe.litellm.completion", side_effect=list(results))
+    """patch model_probe.litellm.completion，按顺序返回/抛出 results（耗尽即断言失败）。
+
+    线程安全（值域扫描并行后 completion 被多线程并发调用——unittest.mock 的
+    side_effect 列表索引遍历非线程安全，竞态会丢响应/重复取）。
+    """
+    from unittest.mock import patch
+    _lock = threading.Lock()
+    _queue = list(results)
+
+    def _side_effect(*a, **kw):
+        with _lock:
+            if not _queue:
+                raise StopIteration
+            r = _queue.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    return patch("niu_api.model_probe.litellm.completion", side_effect=_side_effect)
 
 
 PROBE_ARGS = dict(
@@ -251,7 +269,8 @@ def test_value_domain_401_fails_and_does_not_overwrite_old_profile(profile_path)
     with _patch_completion(*results) as mock_completion:
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile["probe_status"] == "failed"
-    assert mock_completion.call_count == 2
+    # 并行值域扫描：7 个候选已全部提交（其中 2 个用 mock 响应，其余 StopIteration 也走 failed）
+    assert mock_completion.call_count == 7
     # 旧档保留（含 api_base 尾部斜杠差异也能命中——键规范化）
     saved = read_profile("https://api.example.com/v1/", "m1")
     assert saved is not None
@@ -298,15 +317,15 @@ def test_value_domain_double_timeout_marks_unsupported_and_continues(profile_pat
 
 def test_value_domain_timeout_retry_then_401_fails(profile_path):
     """超时重试仅 1 次；重试遇非值域错误（401）→ failed 终止（服务端拒绝 ≠ 慢，
-    不继续重试——R18 只对 Timeout 类重试）。"""
+    不继续重试——R18 只对 Timeout 类重试）。并行语义：7 候选全部提交，任一线程
+    遇非值域错误（401/StopIteration）→ failed；supported 完成顺序不定不再断言具体值。"""
     results = [_ok_response()]  # minimal
     results.append(_timeout_error())  # low 首次超时
     results.append(_auth_error())     # low 重试遇 401
     with _patch_completion(*results) as mock_completion:
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile["probe_status"] == "failed"
-    assert mock_completion.call_count == 3  # 重试 1 次后即终止，不再探测
-    assert profile["reasoning_effort"]["supported"] == ["minimal"]
+    assert mock_completion.call_count >= 3  # 7 候选已提交 + 至少 1 次超时重试
 
 
 # ---------------------------------------------------------------------------
