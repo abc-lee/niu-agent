@@ -139,7 +139,13 @@ class LoggingTransport(httpx.BaseTransport):
             if _is_streaming_response(response):
                 resp_body = _read_streaming_body(response)
             else:
-                resp_body = _decode_body(response.content)
+                try:
+                    resp_body = _decode_body(response.content)
+                except Exception:
+                    # stream=True 请求（探测/对话）的响应是流式模式（未 read）——
+                    # 即使 400 错误响应 content-type 为 json，访问 .content 仍抛
+                    # "Attempted to access streaming response content"——降级记 streaming note
+                    resp_body = _read_streaming_body(response)
 
             log_entry = {
                 "seq": seq,
@@ -305,7 +311,13 @@ def _do_patch_http() -> None:
             if _is_streaming_response(response):
                 resp_body = _read_streaming_body(response)
             else:
-                resp_body = _decode_body(response.content)
+                try:
+                    resp_body = _decode_body(response.content)
+                except Exception:
+                    # stream=True 请求（探测/对话）的响应是流式模式（未 read）——
+                    # 即使 400 错误响应 content-type 为 json，访问 .content 仍抛
+                    # "Attempted to access streaming response content"——降级记 streaming note
+                    resp_body = _read_streaming_body(response)
 
             log_entry = {
                 "seq": seq,
