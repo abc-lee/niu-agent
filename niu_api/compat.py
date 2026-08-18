@@ -1599,8 +1599,8 @@ async def reload_config() -> dict:
     2. agent.runner 全局 Runner 单例（主 Agent LiteLLMSession 随 Runner 重建；
        进行中的回合持有旧实例引用不受影响，下一回合用新配置）
     3. lightrag_manager 缓存的 LiteLLMSession（LightRAG 链路）
-    4. ChatQueue 全局单例（定时任务链路——_queue._runner 持有旧 Runner，
-       必须清除否则定时任务仍用旧模型）
+    4. ChatQueue 的 runner 引用（定时任务链路——reload_runner 替换 self._runner，
+       不清队列不重启 worker，待处理消息自动用新配置）
 
     子 Agent 无缓存无需处理（subagent.py 每次调用 create_client 新建，
     llm_config 随调用方传入）。
@@ -1618,10 +1618,13 @@ async def reload_config() -> dict:
 
     reset_litellm_session_cache()
 
-    # 清除 ChatQueue 缓存（定时任务链路——_queue._runner 持有旧 Runner）
+    # 刷新 ChatQueue 的 runner 引用（定时任务链路——不能 _queue=None：
+    # 新队列 worker 不会启动（start 仅应用启动时调用），消息会静默卡死）
     from niu_api import chat_queue as chat_queue_module
 
-    chat_queue_module._queue = None
+    q = chat_queue_module._queue
+    if q is not None:
+        q.reload_runner()
 
     logger.info("[ConfigReload] LLM caches cleared, next request uses new config")
     return {"success": True}
