@@ -553,6 +553,20 @@ preload_face_model()
 - **http_logger**：stream=True 请求的响应即使 content-type 为 json 也是流式模式（未 read），访问 `.content` 抛 "Attempted to access streaming response content"——try/except 降级记 streaming note，不再刷错误日志（也是"只有请求无响应日志"的根因）
 - **实测结论（Open Code）**：免费层 zen/v1 **429 限流频繁**（探测 10 请求全 429 + SDK Retrying；mimo/hy3 均限流）——失败提示明确"稍后重试"；**zen/go 包月端点模型名全小写**（用户输入 `MiMo-V2.5` 大写 → 401 "Model not supported"；`mimo-v2.5` 全小写 → 200）——**模型名大小写敏感教训**（26 模型：minimax-m3/m2.7/m2.5、kimi-k3/k2.7-code/k2.6/k2.5、glm-5.2/5.3/5.1/5、deepseek-v4-pro/flash、qwen3.7-max/3.8-max/3.7-plus/3.6-plus/3.5-plus、mimo-v2-pro/v2-omni/v2.5-pro/v2.5、hy3/hy3-preview、gpt-5.6-luna、grok-4.5）
 
+#### 重设计：设置页面横屏三栏布局 + 0.2.1 发布（用户实机验收 2026-08-18）
+
+- **背景**：原设置页 500×650 竖条固定窗口 + "高级选项"折叠，用户拍板重设计——横屏标准窗口、不要折叠全部铺开、三栏布局（第一栏内容多拐弯到第二栏顶上）、status 长文案挪第三栏下方空白区
+- **布局（commits 67dd92f5 + b88f1916 + 23a59ea7 + 88e05443）**：
+  - 三栏：左=对话模型基础（预设/Key/地址/模型/类型），中上=对话模型能力（思考链/推理深度/探测按钮），中下=知识图谱模型，右=上下文与压缩；窗口 1020×770 resizable（minWidth 960/minHeight 600）
+  - 删除高级折叠（advanced-toggle/advancedFields/toggleAdvanced 零残留）+ logo 大图区 + 底部装饰 footer；探测按钮改低调虚线样式；提示文案缩短单行
+  - **status 浮层**：`position: absolute` 浮在右栏下方空白区（按钮上方），长错误文案多行换行 + 超高内部滚动，**不占文档流**——出现时按钮位置不动
+  - **坑**：absolute 定位的 right/width 百分比基准是包含块的 **padding box**（含 padding）——`right:0 + width:(100%-28px)/3` 右偏 20px + 宽度多算 13px = 出屏 33px（用户实机抓出）；修 `right:20px` + 宽度减 40px 双 padding
+  - JS 逻辑零改动（全部 DOM id 保留）；继承场景入库探测按钮隐藏时 hint 文案指向对话模型探测（不再误导点击）
+- **验证方法（UI 改动新流程）**：browser 工具 + `evaluateOnNewDocument` 注入 mock electronAPI（getPresets/getConfig 等）+ reload + 截图 + `getBoundingClientRect` 对齐断言——继承/非继承两场景一屏放下（scrollHeight ≤ viewport）、状态机（下拉框 disabled/enabled/testBtn 选齐）逐项断言——**main.js 主进程改动需重启应用生效，index.html 重开窗口即生效**（不重启会看到"新 HTML 塞进旧竖窗"的错乱布局）
+- **0.2.1 发布**：VERSION + chat.html version-label 两处同步（d6325bd8）→ `rm -rf niu.app && ./launcher/build.sh --dmg`（hub start 进程跑无超时，12m45s）→ `dist/Niu-0.2.1-mac-intel.dmg`（941M）；bundle 内容验证（版本号/三栏/窗口尺寸全进包）
+- **敏感信息核查（用户要求）**：本次 5 commit 仅 4 文件（VERSION/main.js/chat.html/settings index.html）零测试文件；测试文件全文扫描零真实 key（全假值占位 `"k"`/`"test-key"`/`"fake-key"`/环境变量读取）；`config/user-config.json` 在 .gitignore 从未追踪；browser mock 数据仅内存注入不写文件
+- **挂起项关闭（用户拍板）**：①文件入库"Content already exists" = doc_status 残留 FAILED 记录未清理干净（非程序缺陷）②zen 模型问题已解决
+
 ### 2026-08-17
 
 #### 修复：主 Agent 工具名带斜杠致 OpenAI 严格校验服务 400（zen 实测根因 + 剥前缀修复 + DB 清理脚本）
