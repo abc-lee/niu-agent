@@ -432,16 +432,11 @@
       document.getElementById('lightragThinking').value = lightragThinkingVal;
       document.getElementById('lightragTemperature').value = lightragLlm.temperature ?? 0.2;
 
-      // 档案驱动的推理深度下拉（探测档案 supported 值，厂商原生档位名原样；无档案 → 空态）
-      const probeApiBase = (config.llm && config.llm.apiBase) || '';
-      const probeModel = (config.llm && config.llm.model) || '';
-      const llmProfile = (probeApiBase && probeModel) ? await window.electronAPI.getCapabilityProfile({ apiBase: probeApiBase, model: probeModel, lightrag: false }) : null;
-      populateReasoningOptions('llmReasoningEffort', 'llmCapabilityHint', llmProfile, llmEffortVal);
-      // lightrag 下拉框与 llm 使用同一套档位（同一模型完整档位——用户拍板 2026-08-18：
-      // 两框动态注入内容必须一致；探测成功分支已用 llm 档案，此处对齐。
-      // 已知边界：lightrag 生产恒 thinking=disabled，豆包 disabled 只接受 minimal/none，
-      // 选 high/xhigh/max 档入库会 400）
-      populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', llmProfile, lightragEffortVal);
+      // 推理深度下拉初始态：未探测 → 只显示被选中项（当前配置值 + 跟随模型默认），
+      // 不注入历史档案档位（用户拍板 2026-08-18——档位列表是探测结果，未探测
+      // 时下拉框只有被选中的内容一项；探测成功后复写档位）
+      populateReasoningOptions('llmReasoningEffort', 'llmCapabilityHint', null, llmEffortVal);
+      populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', null, lightragEffortVal);
 
       // 状态机：无配置（model 为空）或换模型清空后 → 下拉框 disabled；
       // 有旧配置 → enabled（有值能点，与档案存在无关）
@@ -581,6 +576,10 @@
     // llm 段 body=llm 段配置（档案键 |llm）；lightrag 段 body=lightrag 段配置 + lightrag:true（档案键 |lightrag）。
     async function probeCapability(scenario) {
       const lightrag = scenario === 'lightrag';
+      // 探测第一个动作：清空四个下拉框（思考链+推理深度，llm+lightrag）+ 不可选
+      // （用户拍板 2026-08-18——探测中不知道支持集，档位待探测结果复写；
+      // 探测中不可选，防止用户选到旧档位）
+      clearCapabilityDropdowns();
       const existingConfig = await window.electronAPI.getConfig();
       const apiKey = document.getElementById('apiKey').value;
       const apiBase = document.getElementById('apiBase').value;
