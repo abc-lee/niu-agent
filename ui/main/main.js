@@ -1276,6 +1276,26 @@ ipcMain.handle('save-config', (event, config) => {
     }
     fs.writeFileSync(userConfigPath, JSON.stringify(config, null, 2));
     console.log('Config saved to:', userConfigPath);
+
+    // 配置热更新（免重启）：通知后端清除 LLM 缓存（/api/config/reload）。
+    // fire-and-forget——后端不可达时忽略（niu --settings 独立模式），
+    // 后端侧惰性重载兜底（chat.py get_or_create_runner 配置比对 +
+    // lightrag_manager config_key 自动重建）。
+    try {
+      const http = require('http');
+      const port = parseInt(process.env.NIU_API_PORT || '9876');
+      const req = http.request({
+        hostname: '127.0.0.1', port,
+        path: '/api/config/reload', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+        timeout: 5000
+      });
+      req.on('error', () => { /* 后端不可达——惰性重载兜底 */ });
+      req.on('timeout', () => { req.destroy(); });
+      req.write('{}');
+      req.end();
+    } catch (e) { /* 通知失败不阻塞保存 */ }
+
     return { success: true };
   } catch (e) {
     console.error('Failed to save config:', e);
