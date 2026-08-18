@@ -335,7 +335,7 @@
       <button class="btn btn-primary" id="lightragProbeBtn" onclick="probeCapability('lightrag')" style="margin-top: 12px;">探测能力（入库模型）</button>
     </div>
     
-    <button class="btn btn-primary" id="testBtn" onclick="testAndSave()">
+    <button class="btn btn-primary" id="testBtn" onclick="testAndSave()" disabled>
       ✨ 测试连接并保存
     </button>
     
@@ -357,6 +357,9 @@
   <script>
     let presets = [];
     let testPassedInSession = false;
+    // 换模型后置 true（要求重新探测）；探测成功后置 false。
+    // 判定依据：进入页面有配置（model 有值）→ 能点；换模型清空 → 灰；探测成功 → 亮。
+    let capabilityCleared = false;
 
     // 检测 lightrag_llm 是否继承主 llm（model 为空 = 继承）
     function isLightragInherited(config) {
@@ -365,19 +368,20 @@
     }
 
     // 参数选齐后启用测试并保存（Task 2 状态机）
-    // 注意：选齐条件 = 下拉框 enabled（探测完成）——disabled 表示未探测，不能测
+    // 注意：选齐条件 = 下拉框 enabled（有配置或探测完成）——disabled 表示未探测，不能测
     async function updateTestSaveButton() {
+      // 先 await 再读 DOM（D7：DOM 读取必须在 await 之后，避免过期状态点亮按钮）
+      const existingConfig = await window.electronAPI.getConfig();
       const llmThinkingEl = document.getElementById('llmThinking');
       const llmReasoningEffortEl = document.getElementById('llmReasoningEffort');
       const lightragThinkingEl = document.getElementById('lightragThinking');
       const lightragReasoningEffortEl = document.getElementById('lightragReasoningEffort');
 
-      // 选齐条件：下拉框 enabled（探测完成，用户可以选择）
+      // 选齐条件：下拉框 enabled（有配置或探测完成，用户可以选择）
       const llmComplete = !llmThinkingEl.disabled && !llmReasoningEffortEl.disabled;
       const lightragComplete = !lightragThinkingEl.disabled && !lightragReasoningEffortEl.disabled;
 
       // 如果 lightrag_llm 继承主 llm，只需要 LLM 参数选齐
-      const existingConfig = await window.electronAPI.getConfig();
       const inherited = isLightragInherited(existingConfig);
       const allComplete = inherited ? llmComplete : (llmComplete && lightragComplete);
 
@@ -436,11 +440,14 @@
       populateReasoningOptions('llmReasoningEffort', 'llmCapabilityHint', llmProfile, llmEffortVal);
       populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', lightragProfile, lightragEffortVal);
 
-      // Task 2 状态机：无探测档案 → 下拉框 disabled（不知道模型支持什么值域，探测成功后启用）
-      document.getElementById('llmThinking').disabled = !llmProfile;
-      document.getElementById('llmReasoningEffort').disabled = !llmProfile;
-      document.getElementById('lightragThinking').disabled = !lightragProfile;
-      document.getElementById('lightragReasoningEffort').disabled = !lightragProfile;
+      // 状态机：无配置（model 为空）或换模型清空后 → 下拉框 disabled；
+      // 有旧配置 → enabled（有值能点，与档案存在无关）
+      const hasModel = !!document.getElementById('model').value;
+      const llmHasCapability = hasModel && !capabilityCleared;
+      document.getElementById('llmThinking').disabled = !llmHasCapability;
+      document.getElementById('llmReasoningEffort').disabled = !llmHasCapability;
+      document.getElementById('lightragThinking').disabled = !llmHasCapability;
+      document.getElementById('lightragReasoningEffort').disabled = !llmHasCapability;
 
       // lightrag_llm 继承主 llm 时，隐藏 LightRAG 探测按钮（探测主 llm 即可）
       const lightragProbeBtn = document.getElementById('lightragProbeBtn');
@@ -463,13 +470,25 @@
     
     // 换模型检测：模型名或路径变化 → 清空四个下拉框 + 禁用（要求重新探测）
     function clearCapabilityDropdowns() {
+      capabilityCleared = true;
       ['llmThinking', 'llmReasoningEffort', 'lightragThinking', 'lightragReasoningEffort'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
-          el.innerHTML = '<option value="">跟随模型默认</option>';
+          if (id === 'llmThinking' || id === 'lightragThinking') {
+            // 思考链选项固定（跟随默认/开启/关闭）——清值保留选项，探测成功后恢复可用即可
+            el.value = '';
+          } else {
+            // 推理深度选项档案驱动——清空只留"跟随模型默认"
+            el.innerHTML = '<option value="">跟随模型默认</option>';
+          }
           el.disabled = true;
         }
       });
+      // 重置能力提示文案（避免仍显示旧探测时间误导）
+      const h1 = document.getElementById('llmCapabilityHint');
+      const h2 = document.getElementById('lightragCapabilityHint');
+      if (h1) h1.textContent = '未探测，请点击下方"探测能力"';
+      if (h2) h2.textContent = '未探测，请点击下方"探测能力"';
       updateTestSaveButton();
     }
 
@@ -603,6 +622,7 @@
           effortVal
         );
         // 探测成功后：下拉框 enabled（Task 2 状态机——探测完成才可选择值域）
+        capabilityCleared = false;
         document.getElementById(lightrag ? 'lightragThinking' : 'llmThinking').disabled = false;
         document.getElementById(lightrag ? 'lightragReasoningEffort' : 'llmReasoningEffort').disabled = false;
         if (scenario === 'llm' && isLightragInherited(existingConfig)) {

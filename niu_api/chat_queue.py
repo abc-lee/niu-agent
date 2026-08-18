@@ -75,6 +75,16 @@ class ChatQueue:
         """当前是否正在处理消息"""
         return self._processing
 
+    def reload_runner(self):
+        """配置热更新后刷新 runner 引用（worker 下次处理消息即用新 runner）。
+
+        不清除队列、不重启 worker——_worker_loop 每次处理消息时读 self._runner，
+        替换引用后待处理消息自动用新配置。正在处理中的消息持旧 runner 完成（
+        与 Runner 单例语义一致：进行中的回合不受影响）。
+        """
+        from niu_api.chat import get_or_create_runner
+        self._runner = get_or_create_runner()
+
     async def start(self):
         """启动 ChatWorker 后台协程"""
         if self._running:

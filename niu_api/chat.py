@@ -556,7 +556,13 @@ def get_or_create_runner() -> Optional["NiuRunner"]:
     if existing is not None and current["apikey"] and current["model"]:
         # Runner 已存在，检查配置是否变更
         runner_llm = getattr(existing, "llm_config", {})
-        if runner_llm.get("apikey") != current["apikey"] or runner_llm.get("model") != current["model"] or runner_llm.get("reasoning_effort") != current.get("reasoning_effort") or runner_llm.get("litellm_kwargs") != current.get("litellm_kwargs"):
+        if (runner_llm.get("apikey") != current["apikey"] or
+                runner_llm.get("model") != current["model"] or
+                runner_llm.get("apibase") != current.get("apibase") or
+                runner_llm.get("type") != current.get("type") or
+                runner_llm.get("read_timeout") != current.get("read_timeout") or
+                runner_llm.get("reasoning_effort") != current.get("reasoning_effort") or
+                runner_llm.get("litellm_kwargs") != current.get("litellm_kwargs")):
             # 配置已变更，重新初始化
             with runner_module._runner_lock:
                 runner_module._runner = None
