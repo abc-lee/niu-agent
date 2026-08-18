@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 打开图谱
   openGraph: () => ipcRenderer.send('open-graph'),
   
+  // 打开设置页面
+  openSettings: () => ipcRenderer.send('open-settings'),
+  
   // 接收小女孩状态
   onSpiritState: (callback) => ipcRenderer.on('spirit-state', (event, state) => callback(state)),
   

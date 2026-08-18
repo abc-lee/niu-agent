@@ -988,6 +988,10 @@
           <span class="cmd-name">/sleep</span>
           <span class="cmd-desc">让精灵进入睡眠，自动整理对话</span>
         </div>
+        <div class="slash-dropdown-item" data-cmd="/setup">
+          <span class="cmd-name">/setup</span>
+          <span class="cmd-desc">打开设置页面</span>
+        </div>
       </div>
     </div>
     
@@ -1456,8 +1460,8 @@
       if (_activeTab !== 'main') {
         userInput.value = '';
         userInput.style.height = 'auto';
-        // /clear、/new、/compact、/sleep 只对主对话有效（§5.5）
-        if (text === '/clear' || text === '/new' || text === '/compact' || text === '/sleep') {
+        // /clear、/new、/compact、/sleep、/setup 只对主对话有效（§5.5）
+        if (text === '/clear' || text === '/new' || text === '/compact' || text === '/sleep' || text === '/setup') {
           addSubagentMessageToTab(_activeTab, 'system', '请切回主对话使用此命令');
           sendBtn.disabled = false;
           return;
@@ -1538,6 +1542,17 @@
         stopBtn.style.display = 'none';
         sendBtn.disabled = false;
         await clearChat();
+        return;
+      }
+
+      // /setup 指令 - 打开设置页面
+      if (text === '/setup') {
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        if (window.electronAPI && window.electronAPI.openSettings) {
+          window.electronAPI.openSettings();
+        }
+        sendBtn.disabled = false;
         return;
       }
 
