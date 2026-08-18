@@ -436,9 +436,12 @@
       const probeApiBase = (config.llm && config.llm.apiBase) || '';
       const probeModel = (config.llm && config.llm.model) || '';
       const llmProfile = (probeApiBase && probeModel) ? await window.electronAPI.getCapabilityProfile({ apiBase: probeApiBase, model: probeModel, lightrag: false }) : null;
-      const lightragProfile = (probeApiBase && probeModel) ? await window.electronAPI.getCapabilityProfile({ apiBase: probeApiBase, model: probeModel, lightrag: true }) : null;
       populateReasoningOptions('llmReasoningEffort', 'llmCapabilityHint', llmProfile, llmEffortVal);
-      populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', lightragProfile, lightragEffortVal);
+      // lightrag 下拉框与 llm 使用同一套档位（同一模型完整档位——用户拍板 2026-08-18：
+      // 两框动态注入内容必须一致；探测成功分支已用 llm 档案，此处对齐。
+      // 已知边界：lightrag 生产恒 thinking=disabled，豆包 disabled 只接受 minimal/none，
+      // 选 high/xhigh/max 档入库会 400）
+      populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', llmProfile, lightragEffortVal);
 
       // 状态机：无配置（model 为空）或换模型清空后 → 下拉框 disabled；
       // 有旧配置 → enabled（有值能点，与档案存在无关）
