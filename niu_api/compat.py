@@ -773,22 +773,55 @@ CRITICAL: 你只有一轮机会完成压缩决策。
 REMINDER: 禁止调用任何工具，直接输出 keep=/update=/cursor= 三行，仅此三行。"""
 
 
+def _should_disable_thinking(llm_config: dict) -> bool:
+    """检查探测档案是否支持关闭思考链。
+
+    返回 True = 支持关闭（默认，向后兼容）；False = 不支持关闭（探测档案明确说不支持）。
+    档案键与 model_probe.build_profile_key 同格式：api_base(rstrip "/")|model|llm。
+    """
+    try:
+        profile_path = os.path.expanduser("~/.niu/model_capabilities.json")
+        if not os.path.exists(profile_path):
+            return True  # 无档案 → 默认关闭（向后兼容）
+        with open(profile_path) as f:
+            profiles = json.load(f)
+        api_base = llm_config.get("apibase", "").rstrip("/")
+        model = llm_config.get("model", "")
+        key = f"{api_base}|{model}|llm"
+        profile = profiles.get(key)
+        if profile and profile.get("thinking"):
+            # 探测档案明确说不支持关闭 → 不强行关闭
+            if profile["thinking"].get("disabled") is False:
+                return False
+        return True
+    except Exception:
+        return True  # 读取失败 → 默认关闭（向后兼容）
+
+
 def _build_compress_llm_config(llm_config: dict) -> dict:
-    """压缩专用 LLM 配置：注入 max_tokens（输出预算）+ 关闭思考链。
+    """压缩专用 LLM 配置：注入 max_tokens（输出预算）+ 关闭思考链（探测支持才关闭）。
 
     思考链占输出 token（doubao 实证：max_tokens=5 探测时思考链跑 ~172 token 挤压内容），
     压缩是结构化三行输出任务，不需要思考链——首次调用即关闭，
     避免"第一轮失败第二轮才关"浪费一轮。降级链 step1（_build_degraded_config）
     保留作兜底（reasoning_effort 降级仍可能触发）。
+    探测档案明确不支持 thinking=disabled 时不强行注入，避免服务端 400。
 
     不修改原始 llm_config（dict 浅拷贝 + litellm_kwargs 新建字典）。
     """
     cfg = dict(llm_config)
-    cfg["litellm_kwargs"] = {
+
+    # 读取探测档案，检查是否支持关闭思考链
+    thinking_disabled = _should_disable_thinking(llm_config)
+
+    litellm_kwargs = {
         **llm_config.get("litellm_kwargs", {}),
         "max_tokens": _read_max_output_tokens(),
-        "thinking": {"type": "disabled"},
     }
+    if thinking_disabled:
+        litellm_kwargs["thinking"] = {"type": "disabled"}
+
+    cfg["litellm_kwargs"] = litellm_kwargs
     return cfg
 
 
@@ -847,16 +880,18 @@ async def _emergency_clear(
 def _build_degraded_config(llm_config: dict) -> dict:
     """
     构造降级第一步的 LLM 配置（deepcopy，不修改原始）。
+    关闭思考链（探测支持才关闭）+ reasoning_effort 降一级。
     传入的 llm_config 应已注入 max_tokens（即 llm_config_with_max）。
     """
     import copy
 
     degraded = copy.deepcopy(llm_config)
 
-    # 关闭 thinking
-    litellm_kwargs = dict(degraded.get("litellm_kwargs", {}))
-    litellm_kwargs["thinking"] = {"type": "disabled"}
-    degraded["litellm_kwargs"] = litellm_kwargs
+    # 关闭 thinking（探测支持才关闭）
+    if _should_disable_thinking(llm_config):
+        litellm_kwargs = dict(degraded.get("litellm_kwargs", {}))
+        litellm_kwargs["thinking"] = {"type": "disabled"}
+        degraded["litellm_kwargs"] = litellm_kwargs
 
     # reasoning_effort 降一级
     effort = degraded.get("reasoning_effort", "")
