@@ -173,12 +173,22 @@
       transform: none;
     }
 
+    /* status 浮在第三栏下方空白区（按钮上方），absolute 不占文档流——
+       长文案出现时按钮位置不动；多行换行，超高内部滚动 */
+    .container { position: relative; }
     .status {
-      text-align: center;
-      margin-top: 10px;
-      font-size: 15px;
-      padding: 8px;
+      position: absolute;
+      right: 0;
+      bottom: 93px;
+      width: calc((100% - 28px) / 3);
+      text-align: left;
+      font-size: 13px;
+      padding: 8px 10px;
       border-radius: 4px;
+      word-break: break-all;
+      max-height: 130px;
+      overflow-y: auto;
+      box-shadow: 3px 3px 8px rgba(0,0,0,0.12);
     }
     .status:empty { display: none; }
     .status.success { background: #9bc295; color: #333; }
@@ -336,11 +346,11 @@
       </div>
     </div>
 
+    <div class="status" id="status"></div>
+
     <button class="btn btn-primary" id="testBtn" onclick="testAndSave()" disabled>
       ✨ 测试连接并保存
     </button>
-
-    <div class="status" id="status"></div>
 
     <div class="footer">
       配置完成后，妞妞就可以帮你管理知识啦！
