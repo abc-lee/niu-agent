@@ -461,6 +461,18 @@
       btn.textContent = fields.classList.contains('show') ? '▲ 高级选项' : '▼ 高级选项';
     }
     
+    // 换模型检测：模型名或路径变化 → 清空四个下拉框 + 禁用（要求重新探测）
+    function clearCapabilityDropdowns() {
+      ['llmThinking', 'llmReasoningEffort', 'lightragThinking', 'lightragReasoningEffort'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.innerHTML = '<option value="">跟随模型默认</option>';
+          el.disabled = true;
+        }
+      });
+      updateTestSaveButton();
+    }
+
     document.getElementById('preset').addEventListener('change', (e) => {
       testPassedInSession = false;
       const preset = presets.find(p => p.id === e.target.value);
@@ -468,6 +480,8 @@
         document.getElementById('apiBase').value = preset.apiBase;
         document.getElementById('model').value = preset.model;
         document.getElementById('apiType').value = preset.type || 'openai';
+        // 换预设 = 换模型 → 清空下拉框要求重新探测
+        clearCapabilityDropdowns();
       }
     });
 
@@ -478,6 +492,8 @@
         // 用户手动修改任何字段 → 自动变为"自定义配置"（清空 presetId）
         // 因为表单值已不再匹配任何预设
         document.getElementById('preset').value = '';
+        // 换模型名或路径 → 清空下拉框要求重新探测
+        if (id === 'apiBase' || id === 'model') clearCapabilityDropdowns();
       });
     });
 
