@@ -1,14 +1,19 @@
 """模型能力探测器核心（组件 1）。
 
-探测 reasoning_effort / thinking / response_format / tools 四项能力，输出能力档案
-（~/.niu/model_capabilities.json），供 CLI 壳（scripts/model_capability_probe.py）与
-/api/model-capability-probe 端点共用。
+探测 reasoning_effort / thinking 两项能力（response_format/tools 不在此测——
+无档案消费点，且 rf 的探测归属"测试连接并保存"按钮的 testAndSave 流程，
+用户拍板 2026-08-18），输出能力档案（~/.niu/model_capabilities.json），
+供 CLI 壳（scripts/model_capability_probe.py）与 /api/model-capability-probe
+端点共用。
 
-探测项与成本控制（合计 ≈11 次极小请求/模型，单次 ≤10s；值域候选超时重试最坏
-7×2=14 次 ≈140s）：
+探测项与成本控制（合计 ≈10 次极小请求/模型；值域候选超时重试最坏 7×2=14 次）：
   1. reasoning_effort 值域 [minimal, low, medium, high, xhigh, none, max] 按序探测，
      每个值至多 2 次请求（max_tokens=256、消息固定 "OK"、不传 timeout 等默认、stream=False；
      首次超时重试 1 次——豆包响应在 10s 边界波动，超时 ≠ 值不支持，R18）。
+     7 值并行（max_workers=3——服务端并发限制，用户拍板）；值域全 200 时加
+     无效值探针（INVALID_EFFORT_VALUE）判别 ignores_unknown（豆包 2026-08-18
+     起 enabled 场景全值接受——"全 200"可能是真支持而非忽略未知参数，实测
+     无效值 400 判别有效）。
      请求携带**场景配置的 thinking**（probe_config.litellm_kwargs.thinking——
      lightrag 场景恒 disabled、llm 场景按用户配置，P1-1 修复）——值域结论只对
      当前场景 thinking 成立，不得固定/默认 enabled（豆包实测：high + disabled
@@ -16,10 +21,6 @@
      生产场景）
   2. thinking：enabled / disabled 各 1 次（raw_thinking 候选走 extra_body 注入；
      探测 config 副本剔除 litellm_kwargs.thinking——raw 候选单一来源，R13）
-  3. response_format：json_object 1 次（litellm_kwargs 合并
-     allowed_openai_params=["response_format"] 逃生口——volcengine 路由 drop_params
-     会静默丢弃 response_format，不加逃生口测到假 ok）
-  4. tools：1 次带工具请求
 
 传输层（R3 修订）：不经过 LiteLLMSession/llmcore 归一化——直发 litellm.completion，
 但复用 _derive_provider_prefix 的路由推导（volces.com → volcengine/，否则豆包
@@ -96,16 +97,6 @@ REASONING_EFFORT_CANDIDATES = ["minimal", "low", "medium", "high", "xhigh", "non
 INVALID_EFFORT_VALUE = "__probe_invalid__"
 THINKING_CANDIDATES = ["enabled", "disabled"]
 PROBE_MESSAGE = [{"role": "user", "content": "OK"}]
-# response_format json_object 探测专用消息：必须含 "json" 字样——OpenAI 兼容网关
-# （含豆包）对 json_object 模式硬性要求 prompt 含 "json" 字符串，否则直接 400
-# （对真支持厂商造成假阴性——Task 5 真实实测实证：豆包 400 "messages must contain
-# the word 'json'"）。消息与 compat.py _build_probe_messages 同款（冲突式设计：
-# 要求输出 JSON 但 prompt 命令不要输出 JSON——只有网关真正执行 response_format 时
-# 输出才是 JSON）。
-PROBE_RESPONSE_FORMAT_MESSAGE = [{
-    "role": "user",
-    "content": "Write exactly one English sentence about the ocean. Do not output JSON.",
-}]
 # max_tokens=256（对齐 test-llm 08-13 教训：thinking 模型 max_tokens 太小会被
 # 截断误杀——豆包 thinking enabled + reasoning_effort high/max 深度思考时
 # max_tokens=8 连思考链都放不下，响应被拖到 9.5s+ 贴超时边界 → 超时重试翻倍，
@@ -113,17 +104,6 @@ PROBE_RESPONSE_FORMAT_MESSAGE = [{
 # 探测不传 timeout（litellm 默认大超时）——显式短 timeout 会在模型深度思考
 # （豆包 high/max 档实测 8-12s）返回前主动放弃（用户拍板 2026-08-18）。
 PROBE_MAX_TOKENS = 256
-# response_format 探测专用超时兜底（豆包 rf json_object 慢/挂起——日志实证 27s
-# 才返回；20s 上限防探测被 rf 拖长，失败仅降级 partial，值域结果不受影响）
-PROBE_RF_TIMEOUT = 20
-PROBE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "probe_tool",
-        "description": "模型能力探测工具（探测 tools 参数支持）",
-        "parameters": {"type": "object", "properties": {}},
-    },
-}
 
 
 def default_profile_path() -> Path:
@@ -287,13 +267,6 @@ def _classify_value_domain_error(exc: Exception, token: str) -> str:
     if status == 400:
         return "unsupported"
     return "failed"
-
-
-def _classify_subitem_error(exc: Exception) -> str:
-    """子项（response_format/tools）错误分类：超时/挂起 → "timeout"；其他 → "unsupported"。"""
-    if _is_timeout_error(exc):
-        return "timeout"
-    return "unsupported"
 
 
 def _response_message(response):
@@ -507,62 +480,6 @@ def _scan_thinking(
     return True
 
 
-def _probe_response_format(
-    api_base: str, api_key: str, model: str, api_type: str,
-    probe_config: dict, profile: dict,
-) -> None:
-    """response_format json_object 1 次探测（R7 逃生口：allowed_openai_params）。
-
-    超时/挂起 → {"status": "timeout", "supported": []}（区别于 400 的 unsupported，
-    供 UI 提示"该服务端对 response_format 挂起"）；失败仅降级 partial。
-    """
-    rf_kwargs = {**(probe_config.get("litellm_kwargs") or {}), "allowed_openai_params": ["response_format"]}
-    rf_config = {**probe_config, "litellm_kwargs": rf_kwargs}
-    params = _build_probe_params(
-        api_base, api_key, model, api_type, rf_config,
-        response_format={"type": "json_object"},
-        messages=PROBE_RESPONSE_FORMAT_MESSAGE,
-        timeout=PROBE_RF_TIMEOUT,
-    )
-    try:
-        litellm.completion(**params)
-        status = "ok"
-    except Exception as e:  # noqa: BLE001 - 子项失败仅降级 partial
-        status = _classify_subitem_error(e)
-    profile["response_format"] = {
-        "status": status,
-        "supported": ["json_object"] if status == "ok" else [],
-    }
-    if status != "ok":
-        profile["probe_status"] = "partial"
-
-
-def _probe_tools(
-    api_base: str, api_key: str, model: str, api_type: str,
-    probe_config: dict, profile: dict,
-) -> None:
-    """tools 1 次带工具请求（R6/R8）。
-
-    200 带 tool_calls → ok；200 无 tool_calls → ok（服务端接受 tools 参数即视为
-    支持，模型选择纯文本回复属正常）；超时 → timeout；400/其他 → unsupported。
-    """
-    params = _build_probe_params(
-        api_base, api_key, model, api_type, probe_config,
-        tools=[PROBE_TOOL],
-    )
-    try:
-        litellm.completion(**params)
-        status = "ok"
-    except Exception as e:  # noqa: BLE001 - 子项失败仅降级 partial
-        status = _classify_subitem_error(e)
-    profile["tools"] = {
-        "status": status,
-        "supported": ["probe_tool"] if status == "ok" else [],
-    }
-    if status != "ok":
-        profile["probe_status"] = "partial"
-
-
 # ---------------------------------------------------------------------------
 # 探测主入口
 # ---------------------------------------------------------------------------
@@ -620,34 +537,15 @@ def probe(
         "ignores_unknown": False,
         "reasoning_effort": {"supported": [], "unsupported": []},
         "thinking": {},
-        "response_format": {"status": "ok", "supported": ["json_object"]},
-        "tools": {"status": "ok", "supported": ["probe_tool"]},
     }
 
     if not _scan_reasoning_effort(api_base, api_key, model, api_type, probe_config, profile):
         return profile  # failed——不落盘（旧档保留）
 
-    # thinking/rf/tools 并行（互不依赖——串行累加是探测耗时的主因：值域 36s 后
-    # thinking 17s + rf 27s + tools 5s 逐个等；并行收敛到最慢单项）
-    from concurrent.futures import ThreadPoolExecutor as _TPE
-    with _TPE(max_workers=3) as _ex:
-        _futures = [
-            _ex.submit(_scan_thinking, api_base, api_key, model, api_type, probe_config, profile),
-            _ex.submit(_probe_response_format, api_base, api_key, model, api_type, probe_config, profile),
-            _ex.submit(_probe_tools, api_base, api_key, model, api_type, probe_config, profile),
-        ]
-        # 任一 failed → 不落盘
-        _scan_thinking_ok = True
-        for _f in _futures:
-            try:
-                r = _f.result()
-            except Exception:
-                profile["probe_status"] = "failed"
-                return profile
-            if _f is _futures[0] and r is False:
-                _scan_thinking_ok = False
-        if not _scan_thinking_ok:
-            return profile  # thinking failed——不落盘
+    # thinking 探测（response_format/tools 不在此测——无档案消费点，且 rf 的
+    # 探测归属"测试连接并保存"按钮的 testAndSave 流程；用户拍板 2026-08-18）
+    if not _scan_thinking(api_base, api_key, model, api_type, probe_config, profile):
+        return profile  # thinking failed——不落盘（旧档保留）
 
     if profile["probe_status"] != "failed":
         write_profile(profile, lightrag=lightrag, profile_path=profile_path)
