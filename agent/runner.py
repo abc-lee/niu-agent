@@ -2140,8 +2140,8 @@ class NiuRunner:
                 _force_history, last_compress_id, _dream_idx_in_force,
             )
 
-            # llm_config 动态注入 max_tokens + 关闭思考链（首次即停）
-            llm_config_with_max = _build_compress_llm_config(llm_config)
+            # 压缩 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）
+            llm_config_with_max = _build_compress_llm_config()
 
             def run_context_manager_force():
                 return call_subagent_with_auto_answer(

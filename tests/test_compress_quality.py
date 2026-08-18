@@ -2,12 +2,25 @@
 import json
 from unittest.mock import patch
 
+import niu_api.llm_proxy as llm_proxy_module
 from agent.generic.llmcore import MockResponse
 from agent.subagent import (
     _read_compress_target_tokens,
     _read_max_output_tokens,
 )
 from niu_api.compat import _strip_analysis
+
+
+def _mock_lightrag_config(monkeypatch):
+    """隔离 builder 的 lightrag 段 refetch（T2 后 _build_compress_llm_config 无参内部 refetch）。
+
+    thinking 不注入 → 降级链门控 False（thinking type 判定）→ step1 不执行，直接 step2。
+    """
+    monkeypatch.setattr(llm_proxy_module, "get_llm_config", lambda use_lightrag_config=False: {
+        "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
+        "type": "openai", "provider": "", "reasoning_effort": "",
+        "litellm_kwargs": {},
+    })
 
 
 def test_read_compress_target_tokens_default(tmp_path):
@@ -365,6 +378,7 @@ def test_mode2_prompt_not_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     request = {"session_id": "test", "mode": "sleep"}
     # 不用 try/except 吞异常
@@ -437,6 +451,7 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     request = {"session_id": "test", "mode": "sleep"}
     result = asyncio.run(compat._tidy_context_impl(request))
@@ -502,6 +517,7 @@ def test_mode2_truncate_too_few_no_clear(monkeypatch):
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     request = {"session_id": "test", "mode": "sleep"}
     result = asyncio.run(compat._tidy_context_impl(request))
@@ -510,7 +526,7 @@ def test_mode2_truncate_too_few_no_clear(monkeypatch):
     assert result is not None
     assert result.get("status") == "skipped"
     assert "degradation" in result.get("reason", "")
-    # 不删不改
+    # 历史太少砍半后仍截断 → 不删不改
     assert len(deleted_ids) == 0
     assert len(updated_ids) == 0
 
@@ -580,6 +596,7 @@ def test_mode3_prompt_not_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     request = {"session_id": "test", "mode": "force"}
     asyncio.run(compat._tidy_context_impl(request))
@@ -649,6 +666,7 @@ def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     request = {"session_id": "test", "mode": "force"}
     result = asyncio.run(compat._tidy_context_impl(request))
@@ -731,6 +749,7 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     request = {"session_id": "test", "mode": "sleep"}
     asyncio.run(compat._tidy_context_impl(request))
@@ -761,6 +780,7 @@ def _build_niu_runner_for_test():
 
 def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
     """runner.py force prompt 不再内联方法论，含禁止报告强指令 + cursor + dream 安全边界 + max_tokens 注入。"""
+    import niu_api.compat as compat
     from agent import runner as runner_module
     from agent import subagent as subagent_module
 
@@ -815,6 +835,9 @@ def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
     monkeypatch.setattr(subagent_module, "_read_compress_target_tokens", lambda: 60000)
     monkeypatch.setattr(subagent_module, "_read_protect_recent_count", lambda: 0)
     monkeypatch.setattr(subagent_module, "_read_context_window_tokens", lambda: 200000)
+    # builder 在 compat.py 用模块级绑定 _read_max_output_tokens + refetch lightrag 段（局部 import）
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     # mock _run_subagent_step（entity/dream/journal 步骤跳过，避免真实子 Agent 调用）
     def fake_run_subagent_step(self, step_name, *args, **kwargs):
@@ -852,11 +875,14 @@ def test_runner_mode3_truncate_triggers_degradation(monkeypatch):
     构造 15 条消息，protect_recent_count=0（全部进 _force_msg_ids），
     call_subagent 始终返回 COMPACT_TRUNCATED → 降级耗尽 → 返回 skipped（不删历史）。
     """
+    import niu_api.compat as compat
     from agent import runner as runner_module
     from agent import subagent as subagent_module
-    import niu_api.compat as compat
 
     monkeypatch.setattr(runner_module, "is_stop_requested", lambda: False)
+    # builder 在 compat.py 用模块级绑定 _read_max_output_tokens + refetch lightrag 段（局部 import）
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+    _mock_lightrag_config(monkeypatch)
 
     # 用计数器验证 call_subagent 调用次数（单次调用不重试）
     call_count = {"n": 0}

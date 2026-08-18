@@ -128,3 +128,47 @@ def test_degradation_skips_step1_when_thinking_disabled():
     # 区分断言：第三返回值 = step2 成功路径的 removed_msg_ids 前半段（4 条 → cut_idx=2 → ["a","b"]）；
     # 若产品代码回归为 thinking_enabled 恒 True，step1 误执行并成功 → 第三返回值是 None → 断言挂
     assert halved == ["a", "b"]
+
+
+def test_degradation_skips_step1_when_effort_nonempty():
+    """门控只判 thinking type（2026-08-18 用户拍板）：effort 非空但 thinking disabled → 不触发 step1。
+
+    回归锁：T2 前门控含 `effort not in ("none", "", None)` 条件——lightrag 段用户配置
+    reasoning_effort 非空（如 high）+ thinking disabled 时门控误判 True → step1 用与
+    初始完全相同配置重复调用（纯浪费一轮 LLM）。T2 后 effort 条件移除——本用例断言
+    仅 step2 1 次调用（step1 不执行）。
+    """
+    llm_config = {
+        "reasoning_effort": "high",  # effort 非空——T2 前会误触发 step1
+        "litellm_kwargs": {"max_tokens": 32000, "thinking": {"type": "disabled"}},
+    }
+
+    calls = []
+
+    def _fake_call_fn(**kwargs):
+        calls.append(kwargs)
+        return "keep=1,2\nupdate=2|[摘要] xxx\ncursor=2"  # step2 成功
+
+    result, msg_ids, halved = _compact_with_degradation_sync(
+        agent_name="context-manager",
+        prompt="prompt",
+        compress_history=[
+            {"role": "user", "content": "[idx:1] x"}, {"role": "user", "content": "[idx:2] y"},
+            {"role": "user", "content": "[idx:3] z"}, {"role": "user", "content": "[idx:4] w"},
+        ],
+        compress_msg_ids=["a", "b", "c", "d"],
+        llm_config=llm_config,
+        prompt_builder=_build_force_prompt,
+        prompt_builder_kwargs={
+            "display_tokens": 1000, "compress_target_tokens": 500, "usage_percent": 80.0,
+            "force_history": [{"role": "user", "content": "[idx:1] x"}],
+            "last_compress_id": None, "dream_idx_in_force": 0,
+        },
+        stop_aware=False,
+        call_fn=_fake_call_fn,
+    )
+    # effort 非空不触发 step1——仅 step2 1 次调用（T2 前会 2 次：step1 重复调用 + step2）
+    assert len(calls) == 1
+    assert result is not None
+    assert "keep=1,2" in result
+    assert halved == ["a", "b"]
