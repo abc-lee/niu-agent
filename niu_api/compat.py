@@ -1594,11 +1594,13 @@ async def reload_config() -> dict:
     """配置保存后热更新（免重启）：清除全部 LLM 相关缓存，下次使用按新配置重建。
 
     由设置窗口 save-config（Electron main.js IPC）写入 user-config.json 后调用。
-    覆盖三层缓存：
+    覆盖四层缓存：
     1. niu_api.config 全局 Config 单例（chat_session 的"LLM 未配置"检查读它）
     2. agent.runner 全局 Runner 单例（主 Agent LiteLLMSession 随 Runner 重建；
        进行中的回合持有旧实例引用不受影响，下一回合用新配置）
     3. lightrag_manager 缓存的 LiteLLMSession（LightRAG 链路）
+    4. ChatQueue 全局单例（定时任务链路——_queue._runner 持有旧 Runner，
+       必须清除否则定时任务仍用旧模型）
 
     子 Agent 无缓存无需处理（subagent.py 每次调用 create_client 新建，
     llm_config 随调用方传入）。
@@ -1615,6 +1617,11 @@ async def reload_config() -> dict:
     from niu_api.internal.lightrag_manager import reset_litellm_session_cache
 
     reset_litellm_session_cache()
+
+    # 清除 ChatQueue 缓存（定时任务链路——_queue._runner 持有旧 Runner）
+    from niu_api import chat_queue as chat_queue_module
+
+    chat_queue_module._queue = None
 
     logger.info("[ConfigReload] LLM caches cleared, next request uses new config")
     return {"success": True}
