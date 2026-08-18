@@ -530,6 +530,29 @@ preload_face_model()
 - **服务端行为变化记录**：豆包 2026-08-18 更新接受 reasoning_effort 全值（早前 none/xhigh/max 400 过期）；但 disabled 场景仍只接受 minimal/none——值域结论与场景 thinking 强耦合，探测必须按生产场景 thinking 配置测值域（enabled 下测出的全 supported 不能外推到 disabled 生产场景）。
 - **教训**：① **顶层参数 vs extra_body 两通道行为差异**——顶层被 drop_params 静默丢弃产生假 200，验证参数是否上线必须抓 HTTP 发送层请求体（extra_body 送达检查法，raw_http 传输层 `NNNNNN.json`）；② 400 body=None 分类健壮性（body 含 token 是充分条件非必要条件）；③ 探测必须按生产场景 thinking 配置测值域。
 
+#### 修复：配置热更新四层缓存 + 设置页状态机 + 探测提速（用户实机验收 2026-08-18）
+
+- **配置热更新（定时任务用旧模型 → ChatQueue 卡死回归）**：
+  - 根因：`get_chat_queue()` 初始化时缓存 runner（`_queue._runner`）——/api/config/reload 三层缓存（Config 单例/Runner 单例/LightRAG session）**漏 ChatQueue** → 定时任务（scheduler→ChatQueue）用旧模型
+  - D2 回归：补清时 `_queue = None` 导致**新队列 worker 永不启动**（start() 仅应用启动时调用一次）→ 定时任务/IM/HA 消息入队后静默卡死（比"用旧模型"更糟，双审查抓出）
+  - 修复：`ChatQueue.reload_runner()` 替换 `self._runner` 引用（不清队列不重启 worker——`_worker_loop` 每次处理读 self._runner，待处理消息自动用新配置；正在处理持旧 runner 完成）
+  - `get_or_create_runner` 惰性配置比对补 apiBase/type/read_timeout（reload POST 失败时的兜底重载；**temperature 不加**——NiuRunner.__init__ 覆盖其值致恒不等、每次重建 runner）
+- **设置页状态机（用户拍板语义）**：
+  - 换模型检测：apiBase/model 任一变化（含 preset 选择）→ 立即清空四下拉框（思考链+推理深度）+ 不可选 + 测试保存灰 + 能力提示重置（D6）
+  - 探测按钮**第一个动作** = 清空四下拉框 + 不可选（探测中档位未知）；探测成功 → 复写档位 + 可选 + 测试保存亮；失败 → 保持灰
+  - init 未探测 → 只显示被选中项（不注入历史档案档位）；有旧配置 → 可点（D3：判定用"model 有值"非"档案存在"）
+  - llm/lightrag 推理深度下拉框**档位统一**（lightrag 改用 llm 档案——两框动态注入内容一致；已知边界：lightrag 生产恒 disabled 下选 high/xhigh/max 档入库 400）
+  - 探测按钮加载动画（"探测中"+循环动点）；设置页全部字体统一宋体（删 Ma Shan Zheng/Caveat + Google Fonts link）；Chat 斜杠命令下拉框 max-height 200→300px（/setup 不再被截断滚动）
+- **探测提速（222s → ~40s）**：
+  - **PROBE_MAX_TOKENS=8 对 thinking 模型太小**（08-13 压缩工程改 test-llm 5→256 时 model_probe.py 漏改）——豆包 thinking enabled + high/max 深度思考档连思考链都放不下，响应 9.5s+ 贴超时边界 → 8→256
+  - **显式短 timeout 在模型深度思考档返回前主动放弃**（用户拍板：临时脚本不传 timeout 能测通、程序传 10s 测不通的差异根源）——探测不传 timeout（litellm 默认大超时，等模型真实响应 1.9-12s）
+  - 值域 7 值并行（max_workers=**3**——服务端并发限制，用户拍板防限流）；结果按候选顺序排序（并行完成顺序不定）
+  - **删除 rf/tools 探测项**（无档案消费点 + 用户未要求；response_format 探测归属"测试连接并保存"按钮的 testAndSave 流程）——探测项 12→10
+  - 失败原因可读化：`probe_fail_reason` 透传前端（429 限流/401 认证/404 不存在/5xx 服务端明确提示，不再笼统"探测失败"）
+- **ignores_unknown 误判修复**：豆包 enabled 场景"7 值全 200"可能是**真全支持**而非"忽略未知参数"——加**无效值探针**（INVALID_EFFORT_VALUE）判别：无效值 400 → 真支持（false）；无效值也 200 → 忽略未知参数（true）；探针无法判别 → 保守 true
+- **http_logger**：stream=True 请求的响应即使 content-type 为 json 也是流式模式（未 read），访问 `.content` 抛 "Attempted to access streaming response content"——try/except 降级记 streaming note，不再刷错误日志（也是"只有请求无响应日志"的根因）
+- **实测结论（Open Code）**：免费层 zen/v1 **429 限流频繁**（探测 10 请求全 429 + SDK Retrying；mimo/hy3 均限流）——失败提示明确"稍后重试"；**zen/go 包月端点模型名全小写**（用户输入 `MiMo-V2.5` 大写 → 401 "Model not supported"；`mimo-v2.5` 全小写 → 200）——**模型名大小写敏感教训**（26 模型：minimax-m3/m2.7/m2.5、kimi-k3/k2.7-code/k2.6/k2.5、glm-5.2/5.3/5.1/5、deepseek-v4-pro/flash、qwen3.7-max/3.8-max/3.7-plus/3.6-plus/3.5-plus、mimo-v2-pro/v2-omni/v2.5-pro/v2.5、hy3/hy3-preview、gpt-5.6-luna、grok-4.5）
+
 ### 2026-08-17
 
 #### 修复：主 Agent 工具名带斜杠致 OpenAI 严格校验服务 400（zen 实测根因 + 剥前缀修复 + DB 清理脚本）
