@@ -12,11 +12,11 @@
       color: #333;
       -webkit-app-region: drag;
       /* 棉纸纹理 */
-      background-image: 
+      background-image:
         url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
     }
     .container {
-      padding: 20px;
+      padding: 10px 20px;
       -webkit-app-region: no-drag;
     }
     .titlebar {
@@ -27,8 +27,8 @@
       background: #e7ca4a;
       border-bottom: 2px dashed rgba(0,0,0,0.1);
     }
-    .titlebar h1 { 
-      font-size: 20px; 
+    .titlebar h1 {
+      font-size: 20px;
       font-weight: normal;
       color: #333;
       text-shadow: 0.5px 0.5px 0.5px rgba(0,0,0,0.15);
@@ -47,34 +47,29 @@
       transition: transform 0.2s;
       -webkit-app-region: no-drag;
     }
-    .close-btn:hover { 
+    .close-btn:hover {
       transform: scale(1.1);
       box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
     }
-    
-    .logo { 
-      text-align: center; 
-      margin: 25px 0 20px; 
+
+    /* 横屏三栏布局 */
+    .columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 14px;
+      align-items: start;
     }
-    .logo-icon { font-size: 56px; }
-    .logo-text { 
-      font-size: 28px; 
-      color: #333;
-      text-shadow: 0.5px 0.5px 0.5px rgba(0,0,0,0.15);
-      margin-top: 10px;
+    .col-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
     }
-    .logo-sub { 
-      font-size: 16px; 
-      color: #666;
-      margin-top: 5px;
-    }
-    
+
     /* 便签卡片 */
     .note-card {
       background: #e7ca4a;
       border-radius: 4px;
-      padding: 16px;
-      margin-bottom: 16px;
+      padding: 12px 16px;
       box-shadow: 3px 3px 8px rgba(0,0,0,0.1);
       position: relative;
     }
@@ -89,71 +84,65 @@
       border-radius: 4px;
       pointer-events: none;
     }
-    .note-card.pink { background: #f8a7c8; }
     .note-card.blue { background: #78b2be; }
     .note-card.mint { background: #a3f0c2; }
-    
-    label { 
-      display: block; 
-      margin-bottom: 8px; 
-      font-size: 16px; 
+
+    .card-title {
+      font-size: 17px;
+      color: #333;
+      margin-bottom: 2px;
+      position: relative;
+    }
+    .card-sub {
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 6px;
+      position: relative;
+    }
+
+    .form-group { margin-top: 5px; position: relative; }
+    .form-group:first-of-type { margin-top: 0; }
+
+    label {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 14px;
       color: #333;
     }
-    
+
     select, input {
       width: 100%;
-      padding: 10px 14px;
+      padding: 7px 12px;
       border: 2px dashed rgba(0,0,0,0.15);
       border-radius: 4px;
-      font-size: 16px;
+      font-size: 14px;
       font-family: 'Songti SC', 'SimSun', '宋体', serif;
       background: rgba(255,255,255,0.7);
       color: #333;
       background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 50 50' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
     }
-    select:focus, input:focus { 
-      outline: none; 
+    select:focus, input:focus {
+      outline: none;
       border-color: #78b2be;
       background: rgba(255,255,255,0.9);
     }
+    select:disabled, input:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     input::placeholder { color: #999; }
-    
-    .advanced-toggle {
-      background: none;
-      border: 2px dashed rgba(0,0,0,0.15);
-      color: #666;
-      cursor: pointer;
-      font-size: 14px;
-      font-family: 'Songti SC', 'SimSun', '宋体', serif;
-      padding: 8px 16px;
-      border-radius: 4px;
-      width: 100%;
-      text-align: left;
-      margin-top: 10px;
-    }
-    .advanced-toggle:hover { 
-      background: rgba(0,0,0,0.03);
-      border-color: #78b2be;
-    }
-    .advanced-fields { 
-      display: none; 
-      margin-top: 15px;
-      padding: 15px;
-      background: rgba(0,0,0,0.02);
-      border-radius: 4px;
-      border: 2px dashed rgba(0,0,0,0.08);
-    }
-    .advanced-fields.show { display: block; }
-    
+
+    .hint { font-size: 11px; color: #666; margin-top: 3px; }
+
     .btn {
       width: 100%;
-      padding: 14px;
+      padding: 11px;
       border: none;
       border-radius: 4px;
-      font-size: 18px;
+      font-size: 16px;
       font-family: 'Songti SC', 'SimSun', '宋体', serif;
       cursor: pointer;
-      margin-top: 16px;
+      margin-top: 10px;
       transition: all 0.2s;
       box-shadow: 3px 3px 8px rgba(0,0,0,0.1);
     }
@@ -161,46 +150,51 @@
       background: #a3f0c2;
       color: #333;
     }
-    .btn-primary:hover { 
+    .btn-primary:hover {
       transform: translateY(-2px);
       box-shadow: 4px 4px 12px rgba(0,0,0,0.15);
     }
-    .btn-primary:disabled { 
-      opacity: 0.5; 
-      cursor: not-allowed; 
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
       transform: none;
     }
-    
-    .status { 
-      text-align: center; 
-      margin-top: 12px; 
-      font-size: 16px;
+    .btn-probe {
+      padding: 9px;
+      font-size: 14px;
+      margin-top: 10px;
+      background: rgba(255,255,255,0.55);
+      border: 2px dashed rgba(0,0,0,0.18);
+      box-shadow: none;
+      color: #333;
+    }
+    .btn-probe:hover {
+      background: rgba(255,255,255,0.85);
+      transform: none;
+    }
+
+    .status {
+      text-align: center;
+      margin-top: 10px;
+      font-size: 15px;
       padding: 8px;
       border-radius: 4px;
     }
-    .status.success { 
-      background: #9bc295;
-      color: #333;
-    }
-    .status.error { 
-      background: #f8a7c8;
-      color: #333;
-    }
-    .status.loading { 
-      background: #78b2be;
-      color: white;
-    }
-    
-    .footer { 
-      text-align: center; 
-      margin-top: 20px; 
-      font-size: 14px; 
+    .status:empty { display: none; }
+    .status.success { background: #9bc295; color: #333; }
+    .status.error { background: #f8a7c8; color: #333; }
+    .status.loading { background: #78b2be; color: white; }
+
+    .footer {
+      text-align: center;
+      margin-top: 4px;
+      font-size: 13px;
       color: #999;
     }
-    
+
     /* 铅笔字效果 */
     .pencil-text {
-      text-shadow: 
+      text-shadow:
         0.5px 0.5px 0.5px rgba(0,0,0,0.2),
         -0.5px -0.5px 0 rgba(255,255,255,0.5);
       letter-spacing: 0.5px;
@@ -212,134 +206,142 @@
     <h1 class="pencil-text">🤖 妞妞设置</h1>
     <button class="close-btn">×</button>
   </div>
-  
+
   <div class="container">
-    <div class="logo">
-      <div class="logo-icon">👋</div>
-      <div class="logo-text pencil-text">欢迎使用妞妞</div>
-      <div class="logo-sub">请配置你的大模型</div>
-    </div>
-    
-    <div class="note-card">
-      <div class="form-group">
-        <label class="pencil-text">选择预设</label>
-        <select id="preset">
-          <option value="">自定义配置</option>
-        </select>
-        <div style="font-size: 12px; color: #666; margin-top: 4px;">选择预设可自动填充参考值；手动修改任何字段后自动变为"自定义配置"</div>
-      </div>
-      
-      <div class="form-group" style="margin-top: 12px;">
-        <label class="pencil-text">API Key</label>
-        <input type="password" id="apiKey" placeholder="输入你的 API Key">
-      </div>
+    <div class="columns">
+      <!-- 第一栏：对话模型基础 -->
+      <div class="note-card">
+        <div class="card-title pencil-text">对话模型</div>
+        <div class="card-sub">主对话使用的大模型配置</div>
 
-      <div class="form-group" style="margin-top: 12px;">
-        <label class="pencil-text">上下文窗口大小 (tokens)</label>
-        <input type="number" id="contextWindowSize" placeholder="200000" min="32000" max="2000000" step="1000">
-        <div style="font-size: 12px; color: #666; margin-top: 4px;">模型上下文窗口：128K=128000, 200K=200000, 256K=256000, 1M=1000000</div>
-      </div>
-    </div>
-    
-    <button class="advanced-toggle" onclick="toggleAdvanced()">▼ 高级选项</button>
-    <div class="advanced-fields" id="advancedFields">
-      <div class="form-group">
-        <label class="pencil-text">API 类型</label>
-        <select id="apiType">
-          <option value="openai">OpenAI 兼容</option>
-          <option value="anthropic">Anthropic</option>
-        </select>
-      </div>
-
-      <div class="note-card mint" style="margin-top: 15px;">
         <div class="form-group">
-          <label class="pencil-text">思考链</label>
-          <select id="llmThinking">
-            <option value="">跟随模型默认</option>
-            <option value="enabled">开启</option>
-            <option value="disabled">关闭</option>
+          <label class="pencil-text">选择预设</label>
+          <select id="preset">
+            <option value="">自定义配置</option>
           </select>
-          <div style="font-size: 12px; color: #666; margin-top: 4px;">控制模型是否返回思考链（litellm_kwargs.thinking）；"跟随模型默认" = 不配置</div>
+          <div class="hint">选预设自动填充；手动修改后变为自定义</div>
         </div>
 
-        <div class="form-group" style="margin-top: 12px;">
-          <label class="pencil-text">推理深度</label>
-          <select id="llmReasoningEffort">
-            <option value="">跟随模型默认</option>
-          </select>
-          <div style="font-size: 12px; color: #666; margin-top: 4px;"><span id="llmCapabilityHint">未探测，请点击下方"探测能力"</span></div>
+        <div class="form-group">
+          <label class="pencil-text">API Key</label>
+          <input type="password" id="apiKey" placeholder="输入你的 API Key">
         </div>
 
-        <button class="btn btn-primary" id="llmProbeBtn" onclick="probeCapability('llm')" style="margin-top: 12px;">探测能力（对话模型）</button>
+        <div class="form-group">
+          <label class="pencil-text">API 地址</label>
+          <input type="text" id="apiBase" placeholder="https://api.openai.com/v1">
+        </div>
+
+        <div class="form-group">
+          <label class="pencil-text">模型名称</label>
+          <input type="text" id="model" placeholder="gpt-4o-mini">
+        </div>
+
+        <div class="form-group">
+          <label class="pencil-text">API 类型</label>
+          <select id="apiType">
+            <option value="openai">OpenAI 兼容</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+        </div>
       </div>
 
-      <div class="form-group" style="margin-top: 12px;">
-        <label class="pencil-text">API 地址</label>
-        <input type="text" id="apiBase" placeholder="https://api.openai.com/v1">
-      </div>
-      <div class="form-group" style="margin-top: 12px;">
-        <label class="pencil-text">模型名称</label>
-        <input type="text" id="model" placeholder="gpt-4o-mini">
+      <!-- 第二栏：上=对话模型能力（第一栏拐弯），下=知识图谱模型 -->
+      <div class="col-stack">
+        <div class="note-card">
+          <div class="card-title pencil-text">对话模型能力</div>
+          <div class="card-sub">思考链与推理深度（探测后可选档位）</div>
+
+          <div class="form-group">
+            <label class="pencil-text">思考链</label>
+            <select id="llmThinking">
+              <option value="">跟随模型默认</option>
+              <option value="enabled">开启</option>
+              <option value="disabled">关闭</option>
+            </select>
+            <div class="hint">是否返回思考链；"跟随模型默认" = 不配置</div>
+          </div>
+
+          <div class="form-group">
+            <label class="pencil-text">推理深度</label>
+            <select id="llmReasoningEffort">
+              <option value="">跟随模型默认</option>
+            </select>
+            <div class="hint"><span id="llmCapabilityHint">未探测，请点击下方"探测能力"</span></div>
+          </div>
+
+          <button class="btn btn-probe" id="llmProbeBtn" onclick="probeCapability('llm')">探测能力（对话模型）</button>
+        </div>
+
+        <div class="note-card blue">
+          <div class="card-title pencil-text">知识图谱模型（入库）</div>
+          <div class="card-sub">入库链路独立配置；地址/模型不填则继承对话模型。</div>
+
+          <div class="form-group">
+            <label class="pencil-text">思考链</label>
+            <select id="lightragThinking">
+              <option value="">跟随模型默认</option>
+              <option value="enabled">开启</option>
+              <option value="disabled" selected>关闭</option>
+            </select>
+            <div class="hint">入库建议关闭思考链；"跟随模型默认" = 不配置</div>
+          </div>
+
+          <div class="form-group">
+            <label class="pencil-text">推理深度</label>
+            <select id="lightragReasoningEffort">
+              <option value="">跟随模型默认</option>
+            </select>
+            <div class="hint"><span id="lightragCapabilityHint">未探测，请点击下方"探测能力"</span></div>
+          </div>
+
+          <div class="form-group">
+            <label class="pencil-text">Temperature</label>
+            <input type="number" id="lightragTemperature" placeholder="0.2" min="0" max="2" step="0.1">
+            <div class="hint">入库调用温度（默认 0.2）</div>
+          </div>
+
+          <button class="btn btn-probe" id="lightragProbeBtn" onclick="probeCapability('lightrag')">探测能力（入库模型）</button>
+        </div>
       </div>
 
-      <div class="note-card mint" style="margin-top: 15px;">
+      <!-- 第三栏：上下文与压缩 -->
+      <div class="note-card mint">
+        <div class="card-title pencil-text">上下文与压缩</div>
+        <div class="card-sub">上下文窗口管理与睡眠整理参数</div>
+
+        <div class="form-group">
+          <label class="pencil-text">上下文窗口大小 (tokens)</label>
+          <input type="number" id="contextWindowSize" placeholder="200000" min="32000" max="2000000" step="1000">
+          <div class="hint">128K=128000，1M=1000000</div>
+        </div>
+
         <div class="form-group">
           <label class="pencil-text">溢出警告阈值</label>
           <input type="number" id="warningThreshold" placeholder="0.8" min="0.1" max="0.99" step="0.05">
-          <div style="font-size: 12px; color: #666; margin-top: 4px;">上下文使用率达到此比例时触发压缩（默认 0.8 = 80%）</div>
+          <div class="hint">达到此比例触发压缩（默认 0.8 = 80%）</div>
         </div>
 
-        <div class="form-group" style="margin-top: 12px;">
+        <div class="form-group">
           <label class="pencil-text">压缩目标 token 数</label>
           <input type="number" id="compressTargetTokens" placeholder="60000" min="10000" max="500000" step="5000">
-          <div style="font-size: 12px; color: #666; margin-top: 4px;">压缩后保留的目标 token 数（默认 60000，即压到约 30%）</div>
+          <div class="hint">压缩后保留的 token 数（默认 60000）</div>
         </div>
 
-        <div class="form-group" style="margin-top: 12px;">
+        <div class="form-group">
           <label class="pencil-text">睡眠触发时间 (分钟)</label>
           <input type="number" id="sleepTriggerMinutes" placeholder="5" min="1" max="60" step="1">
-          <div style="font-size: 12px; color: #666; margin-top: 4px;">空闲多久后触发睡眠整理（默认 5 分钟）</div>
+          <div class="hint">空闲后触发睡眠整理（默认 5 分钟）</div>
         </div>
       </div>
     </div>
 
-    <div class="note-card blue" style="margin-top: 15px;">
-      <div style="font-size: 16px; color: #333; margin-bottom: 4px;">知识图谱模型（入库）</div>
-      <div style="font-size: 12px; color: #666; margin-bottom: 12px;">入库链路（LightRAG）独立配置；API 地址/模型不填则继承上方对话模型。</div>
-
-      <div class="form-group">
-        <label class="pencil-text">思考链</label>
-        <select id="lightragThinking">
-          <option value="">跟随模型默认</option>
-          <option value="enabled">开启</option>
-          <option value="disabled" selected>关闭</option>
-        </select>
-        <div style="font-size: 12px; color: #666; margin-top: 4px;">LightRAG 官方要求入库关闭思考链；"跟随模型默认" = 不配置</div>
-      </div>
-
-      <div class="form-group" style="margin-top: 12px;">
-        <label class="pencil-text">推理深度</label>
-        <select id="lightragReasoningEffort">
-          <option value="">跟随模型默认</option>
-        </select>
-        <div style="font-size: 12px; color: #666; margin-top: 4px;"><span id="lightragCapabilityHint">未探测，请点击下方"探测能力"</span></div>
-      </div>
-
-      <div class="form-group" style="margin-top: 12px;">
-        <label class="pencil-text">Temperature</label>
-        <input type="number" id="lightragTemperature" placeholder="0.2" min="0" max="2" step="0.1">
-        <div style="font-size: 12px; color: #666; margin-top: 4px;">入库调用温度（默认 0.2）</div>
-      </div>
-
-      <button class="btn btn-primary" id="lightragProbeBtn" onclick="probeCapability('lightrag')" style="margin-top: 12px;">探测能力（入库模型）</button>
-    </div>
-    
     <button class="btn btn-primary" id="testBtn" onclick="testAndSave()" disabled>
       ✨ 测试连接并保存
     </button>
-    
+
     <div class="status" id="status"></div>
-    
+
     <div class="footer">
       配置完成后，妞妞就可以帮你管理知识啦！
     </div>
@@ -390,7 +392,7 @@
     async function init() {
       presets = await window.electronAPI.getPresets();
       const config = await window.electronAPI.getConfig();
-      
+
       const presetSelect = document.getElementById('preset');
       presets.forEach(p => {
         const opt = document.createElement('option');
@@ -398,7 +400,7 @@
         opt.textContent = p.name;
         presetSelect.appendChild(opt);
       });
-      
+
       if (config.llm) {
         // 如果配置文件的 presetId 不在预设列表中（或为空），下拉选""（自定义配置）
         // 否则选对应预设
@@ -450,6 +452,11 @@
       const lightragProbeBtn = document.getElementById('lightragProbeBtn');
       if (isLightragInherited(config)) {
         lightragProbeBtn.style.display = 'none';
+        // 继承场景下入库段无探测按钮——提示文案指向对话模型探测，避免误导
+        const lightragHint = document.getElementById('lightragCapabilityHint');
+        if (lightragHint && lightragHint.textContent.includes('探测能力')) {
+          lightragHint.textContent = '继承对话模型——探测对话模型后自动填充';
+        }
       } else {
         lightragProbeBtn.style.display = 'inline-block';
       }
@@ -457,14 +464,7 @@
       // 初始调用：根据下拉框 disabled 状态设置测试并保存按钮
       updateTestSaveButton();
     }
-    
-    function toggleAdvanced() {
-      const fields = document.getElementById('advancedFields');
-      const btn = document.querySelector('.advanced-toggle');
-      fields.classList.toggle('show');
-      btn.textContent = fields.classList.contains('show') ? '▲ 高级选项' : '▼ 高级选项';
-    }
-    
+
     // 换模型检测：模型名或路径变化 → 清空四个下拉框 + 禁用（要求重新探测）
     function clearCapabilityDropdowns() {
       capabilityCleared = true;
@@ -780,13 +780,13 @@
         updateTestSaveButton();
       }
     }
-    
+
     function setStatus(msg, cls) {
       const el = document.getElementById('status');
       el.textContent = msg;
       el.className = 'status ' + cls;
     }
-    
+
     // Close button handler
     document.querySelector('.close-btn').addEventListener('click', () => {
       if (!testPassedInSession) {
@@ -804,7 +804,7 @@
     document.getElementById('confirmNo').addEventListener('click', () => {
       document.getElementById('confirmModal').style.display = 'none';
     });
-    
+
     init();
   </script>
 </body>
