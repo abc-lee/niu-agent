@@ -178,9 +178,11 @@
     .container { position: relative; }
     .status {
       position: absolute;
-      right: 0;
+      right: 20px;
       bottom: 66px;
-      width: calc((100% - 28px) / 3);
+      /* 100% = container padding box（含左右 20px padding）——
+         减 40px 得内容宽，再减 2×14 gap 后三等分 = 单栏宽 */
+      width: calc((100% - 40px - 28px) / 3);
       text-align: left;
       font-size: 13px;
       padding: 8px 10px;
