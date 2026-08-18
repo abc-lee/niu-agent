@@ -202,6 +202,7 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
     # 必须 patch 源模块 niu_api.chat.get_or_create_runner，patch compat.get_or_create_runner 无效
     import agent.subagent as subagent_module
     import niu_api.chat as chat_module
+    import niu_api.llm_proxy as llm_proxy_module
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 120000})()  # 120K tokens
         llm_config = {}  # compat.py L1385 runner.llm_config 需要
@@ -242,6 +243,11 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)  # 不保护，2 条都进 history
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    # builder refetch lightrag 段（T2 后无参内部 refetch）——mock 隔离，不读真实用户配置
+    monkeypatch.setattr(llm_proxy_module, "get_llm_config", lambda use_lightrag_config=False: {
+        "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
+        "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
+    })
 
     # 调用 _tidy_context_impl（request dict 形式）
     request = {"session_id": "test", "mode": "sleep"}
@@ -282,6 +288,7 @@ def test_mode3_passes_history_to_call_subagent(monkeypatch):
     # mock runner 控制 usage_percent（force 模式不依赖 usage，但 _tidy_context_impl 仍会读取）
     import agent.subagent as subagent_module
     import niu_api.chat as chat_module
+    import niu_api.llm_proxy as llm_proxy_module
     class FakeRunner:
         handler = type("H", (), {"_last_prompt_tokens": 180000})()  # 180K tokens，模拟溢出
         llm_config = {}
@@ -311,6 +318,11 @@ def test_mode3_passes_history_to_call_subagent(monkeypatch):
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    # builder refetch lightrag 段（T2 后无参内部 refetch）——mock 隔离，不读真实用户配置
+    monkeypatch.setattr(llm_proxy_module, "get_llm_config", lambda use_lightrag_config=False: {
+        "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
+        "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
+    })
 
     # 调用 _tidy_context_impl force 模式
     request = {"session_id": "test", "mode": "force"}

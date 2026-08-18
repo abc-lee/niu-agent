@@ -127,6 +127,7 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
 | Tier 3（最弱） | 无 response_format | prompt + `json_repair` 客户端容错 | 所有厂商兜底 |
 
 **探测流程**：从 Tier 1 开始测，失败则降级测 Tier 2，再失败则定为 Tier 3。每档失败条件：
+- `param_conflict`：LiteLLM 抛 400 且错误文案含 `reasoning_effort`/`combination`（参数组合无效，如推理深度档位与思考链状态不兼容）——探测立即失败并**阻断保存**，提示"参数组合无效"，请调整思考链/推理深度档位后重试
 - `model_rejected`：LiteLLM 抛 `BadRequestError`/`UnsupportedParamsError`（模型/网关 4xx 拒绝，如豆包 Coding Plan）
 - `gateway_blocked`：网关返回 200 但响应非合法 JSON（网关接受参数但模型输出漂移，如 GLM xopglm5）
 

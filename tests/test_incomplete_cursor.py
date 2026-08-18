@@ -117,6 +117,11 @@ def _tidy_incomplete_patches(subagent_result, call_mock):
         mock.patch("niu_api.compat._read_context_window_tokens", return_value=8000),
         mock.patch("niu_api.chat.get_or_create_runner", return_value=_FakeRunner()),
         mock.patch("agent.subagent.call_subagent_with_auto_answer", call_mock),
+        # builder refetch lightrag 段（T2 后无参内部 refetch）——mock 隔离，不读真实用户配置
+        mock.patch("niu_api.llm_proxy.get_llm_config", return_value={
+            "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
+            "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
+        }),
         mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
         mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         # 四个游标文件 READ 强制 cursor=''（R3-4）：Path.exists→False（缺失文件 → 游标留空）。

@@ -773,54 +773,19 @@ CRITICAL: 你只有一轮机会完成压缩决策。
 REMINDER: 禁止调用任何工具，直接输出 keep=/update=/cursor= 三行，仅此三行。"""
 
 
-def _should_disable_thinking(llm_config: dict) -> bool:
-    """检查探测档案是否支持关闭思考链。
+def _build_compress_llm_config() -> dict:
+    """压缩专用 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）。
 
-    返回 True = 支持关闭（默认，向后兼容）；False = 不支持关闭（探测档案明确说不支持）。
-    档案键与 model_probe.build_profile_key 同格式：api_base(rstrip "/")|model|llm。
+    用户拍板 2026-08-18：程序不预设过滤——thinking/effort 按用户 lightrag 段配置
+    原样透传（testAndSave 已把关组合可用性——保存的配置组合一定可用，压缩送同样
+    组合不 400）；不再注入 thinking disabled（lightrag 段用户配置已含）、不再置
+    reasoning_effort。只注入 max_tokens（压缩结构化三行输出的输出预算）。
+    无入参（内部 refetch，不留死参数）。
     """
-    try:
-        profile_path = os.path.expanduser("~/.niu/model_capabilities.json")
-        if not os.path.exists(profile_path):
-            return True  # 无档案 → 默认关闭（向后兼容）
-        with open(profile_path) as f:
-            profiles = json.load(f)
-        api_base = llm_config.get("apibase", "").rstrip("/")
-        model = llm_config.get("model", "")
-        key = f"{api_base}|{model}|llm"
-        profile = profiles.get(key)
-        if profile and profile.get("thinking"):
-            # 探测档案明确说不支持关闭 → 不强行关闭
-            if profile["thinking"].get("disabled") is False:
-                return False
-        return True
-    except Exception:
-        return True  # 读取失败 → 默认关闭（向后兼容）
+    from niu_api.llm_proxy import get_llm_config
 
-
-def _build_compress_llm_config(llm_config: dict) -> dict:
-    """压缩专用 LLM 配置：注入 max_tokens（输出预算）+ 关闭思考链（探测支持才关闭）。
-
-    思考链占输出 token（doubao 实证：max_tokens=5 探测时思考链跑 ~172 token 挤压内容），
-    压缩是结构化三行输出任务，不需要思考链——首次调用即关闭，
-    避免"第一轮失败第二轮才关"浪费一轮。降级链 step1（_build_degraded_config）
-    保留作兜底（reasoning_effort 降级仍可能触发）。
-    探测档案明确不支持 thinking=disabled 时不强行注入，避免服务端 400。
-
-    不修改原始 llm_config（dict 浅拷贝 + litellm_kwargs 新建字典）。
-    """
-    cfg = dict(llm_config)
-
-    # 读取探测档案，检查是否支持关闭思考链
-    thinking_disabled = _should_disable_thinking(llm_config)
-
-    litellm_kwargs = {
-        **llm_config.get("litellm_kwargs", {}),
-        "max_tokens": _read_max_output_tokens(),
-    }
-    if thinking_disabled:
-        litellm_kwargs["thinking"] = {"type": "disabled"}
-
+    cfg = dict(get_llm_config(use_lightrag_config=True))  # lightrag 段：thinking/effort 用户配置原样
+    litellm_kwargs = {**cfg.get("litellm_kwargs", {}), "max_tokens": _read_max_output_tokens()}
     cfg["litellm_kwargs"] = litellm_kwargs
     return cfg
 
@@ -877,29 +842,20 @@ async def _emergency_clear(
     )
     return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
 
-def _build_degraded_config(llm_config: dict) -> dict:
+def _build_degraded_config() -> dict:
+    """构造降级第一步的 LLM 配置（与 _build_compress_llm_config 同构，无入参）。
+
+    用户拍板 2026-08-18：降级按知识图谱（lightrag 段）用户配置原样透传——
+    thinking/effort 不注入不降级（程序不干预用户配置，组合可用性由 testAndSave
+    把关）。effort_map 降级已删除（T2：disabled 路径下 high→medium 仍 400——
+    有害代码而非死代码）。只注入 max_tokens（输出预算）。
     """
-    构造降级第一步的 LLM 配置（deepcopy，不修改原始）。
-    关闭思考链（探测支持才关闭）+ reasoning_effort 降一级。
-    传入的 llm_config 应已注入 max_tokens（即 llm_config_with_max）。
-    """
-    import copy
+    from niu_api.llm_proxy import get_llm_config
 
-    degraded = copy.deepcopy(llm_config)
-
-    # 关闭 thinking（探测支持才关闭）
-    if _should_disable_thinking(llm_config):
-        litellm_kwargs = dict(degraded.get("litellm_kwargs", {}))
-        litellm_kwargs["thinking"] = {"type": "disabled"}
-        degraded["litellm_kwargs"] = litellm_kwargs
-
-    # reasoning_effort 降一级
-    effort = degraded.get("reasoning_effort", "")
-    effort_map = {"max": "xhigh", "xhigh": "high", "high": "medium", "medium": "low", "low": "minimal"}
-    if effort in effort_map:
-        degraded["reasoning_effort"] = effort_map[effort]
-
-    return degraded
+    cfg = dict(get_llm_config(use_lightrag_config=True))  # lightrag 段：thinking/effort 用户配置原样
+    litellm_kwargs = {**cfg.get("litellm_kwargs", {}), "max_tokens": _read_max_output_tokens()}
+    cfg["litellm_kwargs"] = litellm_kwargs
+    return cfg
 
 def _halve_history(compress_history: list, compress_msg_ids: list) -> tuple[list, list, list, int]:
     """
@@ -968,14 +924,15 @@ def _compact_with_degradation_sync(
     注意：本函数不执行原始调用——原始调用由调用方在调用本函数之前完成。
     本函数只执行降级第一步（call 1）和降级第二步（call 2）。
     """
-    # 降级第一步：关闭思考链 + reasoning_effort 降一级
-    # 只在原配置开启了思考链时才执行此步（避免无意义的相同配置重试）
+    # 降级第一步：按知识图谱（lightrag 段）配置原样重试（T2——程序不干预 thinking/effort）
+    # 门控只判 thinking type（2026-08-18 用户拍板：effort 条件移除——程序不预设过滤；
+    # lightrag 段默认 disabled → 门控 False → step1 不执行，直接 step2 halve history。
+    # 实际降级手段 = halve history；max_tokens 是基础输出预算非降级步骤）
     thinking_cfg = llm_config.get("litellm_kwargs", {}).get("thinking", {})
-    effort = llm_config.get("reasoning_effort", "")
-    thinking_enabled = (isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled") or effort not in ("none", "", None)
+    thinking_enabled = isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled"
 
     if thinking_enabled:
-        degraded_config = _build_degraded_config(llm_config)
+        degraded_config = _build_degraded_config()
 
         step1_result = call_fn(
             agent_name=agent_name,
@@ -1778,12 +1735,12 @@ async def _probe_tier_three_samples_async(try_fn, response_format: dict) -> tupl
 
     Args:
         try_fn: 单次采样异步函数，签名 () -> await (tier_result, raw_text_or_reason)。
-                tier_result 取值: "supported" / "gateway_blocked" / "model_rejected" / "rate_limited" / "timeout" / "infra_error"
+                tier_result 取值: "supported" / "gateway_blocked" / "model_rejected" / "param_conflict" / "rate_limited" / "timeout" / "infra_error"
         response_format: 本档 response_format（用于日志）
 
     Returns:
         (result, last_raw) 元组：
-        - result: "supported" / "gateway_blocked" / "model_rejected" / "rate_limited" / "infra_error"
+        - result: "supported" / "gateway_blocked" / "model_rejected" / "param_conflict" / "rate_limited" / "infra_error"
         - last_raw: 最后一次采样的 raw 摘要（含异常类名，用于诊断；三次全过时为空字符串）
 
     Why 三次采样：2026-07-21 实测豆包 Coding Plan 网关行为非确定性（flaky），
@@ -1869,7 +1826,9 @@ async def probe_response_format(request: Request) -> dict:
       * litellm.Timeout / asyncio.TimeoutError → "timeout"（超时，sleep 重试不计失败）
       * AuthenticationError / APIConnectionError / 5xx → "infra_error"
         （基础设施错误，端点早返 probe_failed 不写配置）
-      * BadRequestError / UnsupportedParamsError → "model_rejected"
+      * BadRequestError / UnsupportedParamsError → "param_conflict"
+        （错误文案含 combination/reasoning_effort——参数组合无效，端点早返
+        probe_failed 报"参数组合无效"阻断，不降级不保存）或 "model_rejected"
         （模型/网关明确拒绝，该档失败降级）
       * 其他异常 → "model_rejected"
 
@@ -1978,7 +1937,10 @@ async def probe_response_format(request: Request) -> dict:
         - 抛 litellm.Timeout / openai.APITimeoutError → "timeout"（超时，不计失败，上层重试）
         - 抛 AuthenticationError / APIConnectionError / InternalServerError /
           ServiceUnavailableError → "infra_error"（基础设施错误，不写配置，端点早返 probe_failed）
-        - 抛 BadRequestError / UnsupportedParamsError → "model_rejected"
+        - 抛 BadRequestError / UnsupportedParamsError → "param_conflict"（错误文案含
+          combination / reasoning_effort——参数组合无效（如推理深度档位与思考链状态不兼容），
+          端点 probe_failed 阻断报"参数组合无效"，不降级不保存）
+          或 "model_rejected"（其余 4xx 拒绝，该档失败降级）
         - 抛其他异常 → "model_rejected"（统一视为不支持，reason 记录供诊断）
 
         Why 限流/超时单独分类：RateLimitError / litellm.Timeout ≠ 不支持，只是
@@ -2043,7 +2005,15 @@ async def probe_response_format(request: Request) -> dict:
         except (AuthenticationError, APIConnectionError, InternalServerError, ServiceUnavailableError) as e:
             return "infra_error", f"{type(e).__name__}: {str(e)[:150]}"
         except (BadRequestError, UnsupportedParamsError) as e:
-            return "model_rejected", f"{type(e).__name__}: {str(e)[:150]}"
+            err_msg = str(e)
+            reason = f"{type(e).__name__}: {err_msg[:150]}"
+            # 参数组合 400（如 high + disabled）≠ response_format 不支持——必须报出阻断，
+            # 不能误分类 model_rejected 降级 prompt_only（保存后入库仍 400）。
+            # 按错误语义关键字区分（通用逻辑，不按 provider 特判）——litellm 1.88.1
+            # openai 路由 400 分支 e.body=None，必须用 str(e)（message 恒含原始错误全文）。
+            if "combination" in err_msg.lower() or "reasoning_effort" in err_msg.lower():
+                return "param_conflict", reason
+            return "model_rejected", reason
         except Exception as e:
             return "model_rejected", f"{type(e).__name__}: {str(e)[:150]}"
 
@@ -2068,6 +2038,16 @@ async def probe_response_format(request: Request) -> dict:
         return {
             "result": "probe_failed",
             "reason": "探测遇到基础设施错误（API Key 失效/网络断/网关 5xx），请检查配置后手动重试",
+            "mode": None,
+            "raw_response": "",
+        }
+
+    # 参数组合 400（错误文案含 combination/reasoning_effort）→ 阻断报错，不降级不保存
+    # （testAndSave lightrag 段组合测试：组合错误报真实错误，用户调整档位后重试）
+    if tier1_result == "param_conflict":
+        return {
+            "result": "probe_failed",
+            "reason": f"参数组合无效（模型拒绝）：{tier1_raw[:150]}。请调整思考链/推理深度档位（跟随模型默认或更低档位）后重试",
             "mode": None,
             "raw_response": "",
         }
@@ -2101,6 +2081,15 @@ async def probe_response_format(request: Request) -> dict:
         return {
             "result": "probe_failed",
             "reason": "探测遇到基础设施错误（API Key 失效/网络断/网关 5xx），请检查配置后手动重试",
+            "mode": None,
+            "raw_response": "",
+        }
+
+    # 参数组合 400（同 tier1）：阻断报错，不降级不保存
+    if tier2_result == "param_conflict":
+        return {
+            "result": "probe_failed",
+            "reason": f"参数组合无效（模型拒绝）：{tier2_raw[:150]}。请调整思考链/推理深度档位（跟随模型默认或更低档位）后重试",
             "mode": None,
             "raw_response": "",
         }
@@ -3271,8 +3260,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
                 if _is_mode2:
                     # === 模式二：单次调用 + 应急清空（不重试） ===
-                    # llm_config 动态注入 max_tokens + 关闭思考链（首次即停）
-                    llm_config_with_max = _build_compress_llm_config(llm_config)
+                    # 压缩 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）
+                    llm_config_with_max = _build_compress_llm_config()
 
                     # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
                     prompt = _build_mode2_prompt(display_tokens, target_tokens, usage_percent, compress_history)
@@ -3532,7 +3521,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         return call_subagent_with_auto_answer(
                             agent_name="context-manager",
                             task=truncated_prompt,
-                            llm_config=_build_compress_llm_config(llm_config),
+                            llm_config=_build_compress_llm_config(),
                             mcp_client=None,
                             context_fifo_threshold=-1,  # FIFO 保底
                         )
@@ -3983,8 +3972,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 else:
                     _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
 
-                # llm_config 动态注入 max_tokens + 关闭思考链（首次即停）
-                llm_config_with_max = _build_compress_llm_config(llm_config)
+                # 压缩 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）
+                llm_config_with_max = _build_compress_llm_config()
 
                 # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
                 prompt = _build_force_prompt(

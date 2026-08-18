@@ -871,3 +871,91 @@ async def test_try_tier_classifies_bad_request_error():
     # model_rejected 降级 prompt_only
     assert result["result"] == "supported"
     assert result["mode"] == "prompt_only"
+
+
+@pytest.mark.asyncio
+async def test_try_tier_classifies_param_conflict_combination():
+    """_try_tier 捕获 BadRequestError 文案含 combination → param_conflict → 端点 probe_failed 阻断。
+
+    参数组合 400（如 high + disabled）≠ response_format 不支持——必须报真实错误阻断
+    （不降级 prompt_only、不保存），用户调整思考链/推理深度档位后重试。
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import Request
+    from litellm import BadRequestError
+
+    from niu_api.compat import probe_response_format
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = BadRequestError(
+                "Invalid combination of reasoning_effort and thinking type: high + disabled",
+                model="test-model", llm_provider="openai",
+            )
+            mock_session_class.return_value = mock_session
+
+            result = await probe_response_format(mock_request)
+
+    # param_conflict → probe_failed 阻断（不降级不保存）
+    assert result["result"] == "probe_failed"
+    assert result["mode"] is None
+    assert result["raw_response"] == ""
+    assert "参数组合无效" in result["reason"]
+    assert "请调整思考链/推理深度档位" in result["reason"]
+    # 原始错误透传（含类名），方便用户诊断
+    assert "BadRequestError" in result["reason"]
+    assert "high + disabled" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_try_tier_classifies_param_conflict_reasoning_effort_keyword():
+    """_try_tier 分类关键字 OR 分支：错误文案含 reasoning_effort 也判 param_conflict。
+
+    覆盖 classification 条件里的 reasoning_effort 关键字（combination 之外的独立词面）。
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import Request
+    from litellm import BadRequestError
+
+    from niu_api.compat import probe_response_format
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = BadRequestError(
+                "reasoning_effort value invalid for this model",
+                model="test-model", llm_provider="openai",
+            )
+            mock_session_class.return_value = mock_session
+
+            result = await probe_response_format(mock_request)
+
+    # reasoning_effort 关键字 → param_conflict → probe_failed 阻断
+    assert result["result"] == "probe_failed"
+    assert result["mode"] is None
+    assert "参数组合无效" in result["reason"]
