@@ -1200,6 +1200,16 @@ ipcMain.on('open-graph', () => {
   }
 });
 
+// 打开设置窗口（同进程：直接 createSettingsWindow()）
+ipcMain.on('open-settings', () => {
+  // 设置窗口已存在 → 聚焦，不创建新窗口
+  if (settingsWindow) {
+    settingsWindow.focus();
+    return;
+  }
+  createSettingsWindow();
+});
+
 // ---------- 来自 ui/settings/main.js（6 个） ----------
 
 // Config paths：user-config.json 写到 ~/.niu/config/（bundle 内只读）
