@@ -3,11 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <title>Niu 设置</title>
-  <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Caveat:wght@400;600&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: 'Ma Shan Zheng', 'Caveat', cursive;
+      font-family: 'Songti SC', 'SimSun', '宋体', serif;
       background: #faf8f0;
       min-height: 100vh;
       color: #333;
@@ -43,7 +42,7 @@
       border-radius: 50%;
       cursor: pointer;
       font-size: 16px;
-      font-family: 'Ma Shan Zheng', cursive;
+      font-family: 'Songti SC', 'SimSun', '宋体', serif;
       box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
       transition: transform 0.2s;
       -webkit-app-region: no-drag;
@@ -107,7 +106,7 @@
       border: 2px dashed rgba(0,0,0,0.15);
       border-radius: 4px;
       font-size: 16px;
-      font-family: 'Ma Shan Zheng', 'Caveat', cursive;
+      font-family: 'Songti SC', 'SimSun', '宋体', serif;
       background: rgba(255,255,255,0.7);
       color: #333;
       background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 50 50' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
@@ -125,7 +124,7 @@
       color: #666;
       cursor: pointer;
       font-size: 14px;
-      font-family: 'Ma Shan Zheng', cursive;
+      font-family: 'Songti SC', 'SimSun', '宋体', serif;
       padding: 8px 16px;
       border-radius: 4px;
       width: 100%;
@@ -152,7 +151,7 @@
       border: none;
       border-radius: 4px;
       font-size: 18px;
-      font-family: 'Ma Shan Zheng', cursive;
+      font-family: 'Songti SC', 'SimSun', '宋体', serif;
       cursor: pointer;
       margin-top: 16px;
       transition: all 0.2s;
@@ -608,8 +607,16 @@
       }
 
       const btn = document.getElementById(lightrag ? 'lightragProbeBtn' : 'llmProbeBtn');
+      // 探测中按钮加载态：禁用 + 文字动画（"探测中" + 循环动点——用户反馈
+      // 探测过程无反馈像死机，2026-08-18）
       btn.disabled = true;
-      setStatus(lightrag ? '探测入库模型能力中（约 1-2 分钟）...' : '探测对话模型能力中（约 1-2 分钟）...', 'loading');
+      const _origText = btn.textContent;
+      let _dotCount = 0;
+      const _dotTimer = setInterval(() => {
+        _dotCount = (_dotCount % 3) + 1;
+        btn.textContent = '探测中' + '.'.repeat(_dotCount);
+      }, 500);
+      setStatus(lightrag ? '探测入库模型能力中（约 1 分钟）...' : '探测对话模型能力中（约 1 分钟）...', 'loading');
       try {
         const result = await window.electronAPI.probeCapability(body);
         if (!result || result.probe_status === 'failed') {
@@ -644,6 +651,8 @@
       } catch (e) {
         setStatus('能力探测异常: ' + e.message, 'error');
       } finally {
+        clearInterval(_dotTimer);
+        btn.textContent = _origText;
         btn.disabled = false;
       }
     }
