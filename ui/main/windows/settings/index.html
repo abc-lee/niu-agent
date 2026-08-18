@@ -620,7 +620,8 @@
       try {
         const result = await window.electronAPI.probeCapability(body);
         if (!result || result.probe_status === 'failed') {
-          setStatus('能力探测失败: ' + ((result && (result.error || result.reason)) || '未知错误') + '（未覆盖旧档案）', 'error');
+          const failReason = (result && (result.error || result.reason || (result.profile && result.profile.probe_fail_reason))) || '未知错误';
+          setStatus('能力探测失败: ' + failReason + '（未覆盖旧档案）', 'error');
           return;
         }
         const profile = (result && result.profile) || null;
