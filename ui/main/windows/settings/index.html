@@ -59,8 +59,8 @@
       gap: 14px;
       align-items: start;
     }
-    /* 知识图谱卡片：横跨中右两栏（行 2），内部字段横排 */
-    .note-card.wide { grid-column: 2 / 4; }
+    /* 知识图谱卡片：横跨左中两栏（行 2），内部字段横排；右下角留空（status 浮层位） */
+    .note-card.wide { grid-column: 1 / 3; }
     .kg-fields {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
@@ -185,7 +185,7 @@
     .container { position: relative; }
     .status {
       position: absolute;
-      left: 20px;
+      right: 20px;
       bottom: 66px;
       /* 100% = container padding box（含左右 20px padding）——
          减 40px 得内容宽，再减 2×14 gap 后三等分 = 单栏宽 */
