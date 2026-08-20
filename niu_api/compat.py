@@ -2625,24 +2625,22 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 notify_llm_error_sync(type_name, full_reply, "chat_session")
             # 非 LLM 异常（内部 bug）不 notify、full_reply 保持既有（不误标"模型调用失败"）
 
-        # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
+        # 检测主 Agent 上下文溢出 → fire-and-forget 投递 force 压缩（§3.1 入口 5）
+        # 不 await：溢出压缩后台执行（worker 持 held=False 自拿 _chat_lock + pause）；None 窗口防御同步执行。
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
             overflow_data = rv.get("data", {})
             logger.warning(
                 f"[Chat Session] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                f"triggering force compression (blocking)"
+                f"enqueueing force compression (fire-and-forget)"
             )
-            try:
-                await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
-            except TimeoutError:
-                logger.warning("[Chat Session] Force compression skipped: tidy lock held by another operation")
-                tidy_result = {"status": "skipped", "reason": "lock_busy"}
+            if _pipeline_queue is None:
+                # None 窗口（§3.0 Option A）：同步执行（调用方持锁 → held=True 防 asyncio.Lock 不可重入）
+                await _tidy_context_impl(
+                    request={"session_id": session_id, "mode": "force"},
+                    chat_lock_already_held=True,
+                )
             else:
-                try:
-                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"}, chat_lock_already_held=True)
-                finally:
-                    _tidy_lock.release()
-                logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
+                _pipeline_enqueue("force", {"session_id": session_id, "mode": "force"}, held=False)
     finally:
         from agent.runner import clear_stop, drain_supplements
         clear_stop()  # 防御性清除：确保停止标志不残留
@@ -2851,16 +2849,22 @@ async def clear_chat(request: Request) -> dict:
         from agent.runner import drain_supplements
         drain_supplements()
         store = await get_message_store()
-        # /clear：先跑 force 整理（entity→dream→journal，skip_compress），阻塞；超时降级为 clear-messages-only
+        # /clear：投递 force 整理（entity→dream→journal，skip_compress）→ await 完成 → 清空
+        # §3.1 入口 6：排队+执行共享 600s 总预算（同现状）；held=True（clear_chat 已持有 _chat_lock，
+        # worker 透传防 asyncio.Lock 不可重入）；超时降级 clear-messages-only；None 窗口（§3.0 Option A）同步执行。
         if force_tidy:
-            try:
-                await asyncio.wait_for(
-                    _tidy_context_impl(
-                        {"session_id": "default", "mode": "force", "skip_compress": True},
-                        chat_lock_already_held=True,  # clear_chat 已持有 _chat_lock，防 asyncio.Lock 不可重入死锁
-                    ),
-                    timeout=600.0,  # 兜底：单个子 agent LLM 卡死时不永久占锁
+            if _pipeline_queue is None:
+                tidy_task = _tidy_context_impl(
+                    {"session_id": "default", "mode": "force", "skip_compress": True},
+                    chat_lock_already_held=True,
                 )
+            else:
+                tidy_fut = _pipeline_enqueue(
+                    "force", {"session_id": "default", "mode": "force", "skip_compress": True}, held=True
+                )
+                tidy_task = asyncio.wrap_future(tidy_fut)
+            try:
+                await asyncio.wait_for(tidy_task, timeout=600.0)  # 兜底：单个子 agent LLM 卡死时不永久占锁
             except asyncio.TimeoutError:
                 logger.warning("[clear_chat] tidy 600s timeout, clear-messages-only (orphan subagent thread self-heals)")
             except Exception as e:

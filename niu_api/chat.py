@@ -670,29 +670,24 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
                 message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
 
-            # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
+            # 检测主 Agent 上下文溢出 → fire-and-forget 投递 force 压缩（§3.1 入口 3）
+            # 不 await：溢出压缩后台执行（worker 持 held=False 自拿 _chat_lock + pause，60s 超时既有），
+            # 不再阻塞当前消息响应（时序变化记录 §7.4）；None 窗口防御（§3.0 Option A）同步执行。
             if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
                 overflow_data = rv.get("data", {})
                 logger.warning(
                     f"[Chat SSE] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                    f"triggering force compression (blocking)"
+                    f"enqueueing force compression (fire-and-forget)"
                 )
-                from niu_api.compat import _tidy_context_impl, _tidy_lock
-                # 使用带超时的acquire避免AB-BA死锁：
-                # SSE /chat 持有 _chat_lock → 等待 _tidy_lock，
-                # 模式2压缩持有 _tidy_lock → 等待 _chat_lock
-                _tidy_acquired = False
-                try:
-                    await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
-                    _tidy_acquired = True
-                except TimeoutError:
-                    logger.warning("[Chat SSE] Tidy lock busy, skipping force compression")
-                if _tidy_acquired:
-                    try:
-                        tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"}, chat_lock_already_held=True)
-                    finally:
-                        _tidy_lock.release()
-                    logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
+                from niu_api.compat import _tidy_context_impl, _pipeline_enqueue, _pipeline_queue
+                if _pipeline_queue is None:
+                    # None 窗口：同步执行（调用方持锁 → held=True 防 asyncio.Lock 不可重入）
+                    await _tidy_context_impl(
+                        request={"session_id": session_id, "mode": "force"},
+                        chat_lock_already_held=True,
+                    )
+                else:
+                    _pipeline_enqueue("force", {"session_id": session_id, "mode": "force"}, held=False)
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
         finally:
@@ -795,28 +790,23 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         else:
             logger.warning(f"[Chat Sync] Skipped persist due to chat error: {chat_error}")
 
-        # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞，压缩完再继续）
+        # 检测主 Agent 上下文溢出 → fire-and-forget 投递 force 压缩（§3.1 入口 4）
+        # 不 await：溢出压缩后台执行（worker 持 held=False 自拿 _chat_lock + pause）；None 窗口防御同步执行。
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
             overflow_data = rv.get("data", {})
             logger.warning(
                 f"[Chat] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                f"triggering force compression (blocking)"
+                f"enqueueing force compression (fire-and-forget)"
             )
-            from niu_api.compat import _tidy_context_impl, _tidy_lock
-            # 使用带超时的acquire避免AB-BA死锁（同SSE /chat路径）
-            _tidy_acquired = False
-            try:
-                await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
-                _tidy_acquired = True
-            except TimeoutError:
-                logger.warning("[Chat] Tidy lock busy, skipping force compression")
-            if _tidy_acquired:
-                try:
-                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"}, chat_lock_already_held=True)
-                finally:
-                    _tidy_lock.release()
-                logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")
-            # 压缩完成后不再触发额外异步整理（force 已包含完整3步，压缩已在 agent_loop 轮内同步完成）
+            from niu_api.compat import _tidy_context_impl, _pipeline_enqueue, _pipeline_queue
+            if _pipeline_queue is None:
+                # None 窗口：同步执行（调用方持锁 → held=True 防 asyncio.Lock 不可重入）
+                await _tidy_context_impl(
+                    request={"session_id": session_id, "mode": "force"},
+                    chat_lock_already_held=True,
+                )
+            else:
+                _pipeline_enqueue("force", {"session_id": session_id, "mode": "force"}, held=False)
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
         _chat_lock.release()
