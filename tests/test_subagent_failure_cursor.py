@@ -133,7 +133,7 @@ def _tidy_failure_patches(subagent_result, call_mock):
 
 
 class TestTidySleepFailureCursor:
-    def _run_sleep_tidy(self, subagent_result):
+    def _run_sleep_tidy(self, subagent_result, cursor_value=None):
         from niu_api.compat import _tidy_context_impl
 
         store = mock.MagicMock()
@@ -144,6 +144,9 @@ class TestTidySleepFailureCursor:
             stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
             for p in _tidy_failure_patches(subagent_result, call_mock):
                 stack.enter_context(p)
+            if cursor_value is not None:
+                # T6：压缩前置游标追平校验——追平才继续到压缩段
+                stack.enter_context(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
             write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
             result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
         return result, write_mock, call_mock
@@ -153,12 +156,17 @@ class TestTidySleepFailureCursor:
         return [call.args[1] for call in write_mock.call_args_list]
 
     def test_error_bracket_does_not_advance_any_cursor(self):
-        """sleep 全链收 '[错误]' → entity/dream 游标零写（L2953/L3039 决策点）。"""
+        """sleep 全链收 '[错误]' → entity/dream 游标零写（L2953/L3039 决策点）。
+
+        T6：entity/dream 失败 → 游标未追平 → 压缩前置校验不通过 → skipped（cm 不执行）。
+        """
         result, write_mock, call_mock = self._run_sleep_tidy(ERROR_BRACKET)
-        assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
+        assert result == {"status": "skipped", "reason": "还有消息未提炼完，本次不压缩"}, (
+            f"游标未追平应 skipped，实际: {result}"
+        )
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["entity-extractor", "dream-evolver", "context-manager"], (
-            f"期望 entity/dream/cm 依次调用，实际 {called_agents}"
+        assert called_agents == ["entity-extractor", "dream-evolver"], (
+            f"失败后游标未追平，cm 不应执行，实际 {called_agents}"
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"'[错误]' 结果不应写任何游标: {writes}"
@@ -166,19 +174,24 @@ class TestTidySleepFailureCursor:
     def test_subagent_error_does_not_advance_compress_cursor(self):
         """sleep mode1 压缩点（L3546）收 'SUBAGENT_ERROR:' → 压缩游标不动。
 
-        判别力：cm 真实被调用（called_agents 断言），压缩游标零写——
-        若 failure 退化成 else 兜底会写 last_compress_id ∈ (m1, m2)。
+        T6：entity/dream 收 SUBAGENT_ERROR → 游标未追平 → 压缩前置校验不通过 →
+        skipped（cm 不执行）；判别力：若不判定 failure 会 else 推进游标、cm 执行、写
+        last_compress_id ∈ (m1, m2)。
         """
         result, write_mock, call_mock = self._run_sleep_tidy(SUBAGENT_ERROR_STR)
-        assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
+        assert result.get("status") == "skipped", f"游标未追平应 skipped: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert "context-manager" in called_agents, f"cm 应被调用: {called_agents}"
+        assert "context-manager" not in called_agents, f"未追平 cm 不应被调用: {called_agents}"
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"'SUBAGENT_ERROR:' 结果不应写任何游标: {writes}"
 
     def test_normal_result_advances_compress_cursor(self):
-        """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。"""
-        result, write_mock, _ = self._run_sleep_tidy(NORMAL_JSON)
+        """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。
+
+        T6：cursor_value='m2' 模拟 entity/dream 已追平（本 fixture 游标文件缺失，
+        不提供则压缩前置校验保守不压）。
+        """
+        result, write_mock, _ = self._run_sleep_tidy(NORMAL_JSON, cursor_value="m2")
         assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
         compress_writes = [
             d for d in self._cursor_writes(write_mock)

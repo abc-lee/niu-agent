@@ -134,7 +134,7 @@ def _tidy_incomplete_patches(subagent_result, call_mock):
 
 
 class TestTidyContextImplIncomplete:
-    def _run_sleep_tidy(self, subagent_result):
+    def _run_sleep_tidy(self, subagent_result, cursor_value=None):
         import asyncio
         from contextlib import ExitStack
 
@@ -148,6 +148,9 @@ class TestTidyContextImplIncomplete:
             stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
             for p in _tidy_incomplete_patches(subagent_result, call_mock):
                 stack.enter_context(p)
+            if cursor_value is not None:
+                # T6：压缩前置游标追平校验——追平才继续到压缩段
+                stack.enter_context(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
             write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
             result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
         return result, write_mock, call_mock
@@ -157,24 +160,28 @@ class TestTidyContextImplIncomplete:
         return [call.args[1] for call in write_mock.call_args_list]
 
     def test_incomplete_result_does_not_advance_any_cursor(self):
-        """entity/dream/journal/compress 全部收 incomplete JSON → 四个游标都不推进（R4-6/R4-7）。
+        """entity/dream/compress 全部收 incomplete JSON → 游标不推进（R4-6/R4-7）。
 
-        判别力：断言子 Agent 真实被调用（entity+dream+cm；journal 2.5%<50% 跳过），
-        且 _write_cursor_with_lock 零次调用（四个游标全不动）。
+        T6：entity/dream incomplete → 游标未追平 → 压缩前置校验不通过 → skipped（cm 不执行）。
+        判别力：子 Agent 真实被调用（entity+dream；journal 2.5%<50% 跳过），
+        且 _write_cursor_with_lock 零次调用（游标全不动）。
         """
         result, write_mock, call_mock = self._run_sleep_tidy(INCOMPLETE_JSON)
-        assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
-        # 子 Agent 真实跑了 entity + dream + cm（journal usage 2.5% < 50% 跳过）
+        assert result.get("status") == "skipped", f"游标未追平应 skipped: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["entity-extractor", "dream-evolver", "context-manager"], (
-            f"期望 entity/dream/cm 依次调用，实际 {called_agents}"
+        assert called_agents == ["entity-extractor", "dream-evolver"], (
+            f"失败后 cm 不应执行，实际 {called_agents}"
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"incomplete 结果不应写任何游标: {writes}"
 
     def test_normal_result_advances_compress_cursor(self):
-        """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。"""
-        result, write_mock, _ = self._run_sleep_tidy(NORMAL_JSON)
+        """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。
+
+        T6：cursor_value='m2' 模拟 entity/dream 已追平（本 fixture 游标文件缺失，
+        不提供则压缩前置校验保守不压）。
+        """
+        result, write_mock, _ = self._run_sleep_tidy(NORMAL_JSON, cursor_value="m2")
         assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
         compress_writes = [
             d for d in self._cursor_writes(write_mock)

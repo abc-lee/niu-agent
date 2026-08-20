@@ -242,6 +242,8 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)  # 不保护，2 条都进 history
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     # builder refetch lightrag 段（T2 后无参内部 refetch）——mock 隔离，不读真实用户配置
@@ -318,6 +320,8 @@ def test_mode3_passes_history_to_call_subagent(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     # builder refetch lightrag 段（T2 后无参内部 refetch）——mock 隔离，不读真实用户配置
     monkeypatch.setattr(llm_proxy_module, "get_llm_config", lambda use_lightrag_config=False: {
