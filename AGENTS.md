@@ -513,6 +513,32 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-20
+
+#### 工程：整理管道全局排队 + 睡眠状态机打断 + 压缩前置校验 + 游标假推进修复（方案 7 轮双审 + T1-T8 分批实施）
+
+- **用户现象**：小憩（nap）正在做梦境进化（dream-evolver），睡眠（sleep）同时触发 → nap 的 dream-evolver 前端 tab "突然退出"，sleep 的 dream-evolver 开始。期望：整理类子 Agent **全局一次一个、排队执行**。
+- **实证根因**：
+  - **nap 与 sleep 无互斥**：`_nap_running`（runner.py，threading.Event）只防 nap-vs-nap；`_tidy_lock`（compat.py，asyncio.Lock）只防 sleep-vs-force——两套锁互不感知
+  - **无"顶掉"机制**：SubagentRegistry.register 同名冲突抛 ValueError——杀的是**后到者**（用户观感 = nap 的 dream-evolver 独立退出 + 前端同名 tab 清空复用）
+  - **真 bug（数据丢失级）**：后到者注册失败返回 `"[错误]"` 前缀字符串（subagent.py L1138-1139），游标推进逻辑只识别 overflow/incomplete 两种 JSON → 落 else 兜底被当成功 → **游标假推进**；`SUBAGENT_ERROR:`（subagent.py L1183-1187）同类洞
+  - **后端对睡眠状态完全无感知**：进入 SLEEP 时 POST /api/context/tidy，唤醒时无通知后端机制
+- **方案**（docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md v1.6，R1-R7 七轮双审、连续两轮零 bug）：
+  - **单 worker 全局队列**：`_pipeline_queue`（asyncio.Queue）+ `_pipeline_worker` 单协程串行消费——队列模型无锁嵌套即无环（锁方案在 chat.py/compat 持 `_chat_lock` 调 impl 必成环，R1 实证）
+  - **九入口全接入**：tidy 端点 sleep（投递+立即返回 queued）/force（投递+await）、chat.py 溢出 ×2（fire-and-forget）、chat_session（fire-and-forget）、clear_chat（await 600s 超时+held=True）、chat_queue 降级重试（await+参数透传）、runner 80% 水位（call_soon_threadsafe+300s 超时+转换块留回调）、runner nap 触发（call_soon_threadsafe+失败清 `_nap_running`）——各按语义阻塞/await/fire-and-forget；future 统一 `concurrent.futures.Future`（asyncio wrap_future / runner 线程 result(timeout)）；**None 窗口防御**（队列未创建 → 同步执行 Option A）
+  - **队列去重**：键 = (kind, skip_compress, force_protect_recent)；压缩类在队 ≤3（force/runner-force/clear skip_compress 键不同可并存）；跨线程 check-then-set 竞态后果有界
+  - **CP0-CP3 睡眠状态检查**（仅 sleep）：CP0 排队唤醒非睡眠 → cancelled/woke_up；CP1 实体段后 / CP2 梦境段后 / CP3 压缩段前 → interrupted/woke_up（已推进游标不回滚，下次续跑）；**nap/force/runner-force 零插入**（需求 4/5 用户拍板矩阵）
+  - **压缩前置校验** `_cursors_caught_up`（sleep+force+runner-force 三处）：提炼+进化游标全追平才允许压缩；protect 同源 `effective_protect`（force 降级提前到分支顶部）；protect=0 特判真实尾部（Quality P1-1 吸收：继续查 dream 游标不 early-return）；protect_start==0 全保护放行；未追平 → `{"status":"skipped","reason":"还有消息未提炼完，本次不压缩"}`（中文 reason 前端直接展示）
+  - **`_is_subagent_failure` 修游标假推进**：`[错误]` / `SUBAGENT_ERROR:` 前缀识别为失败；11 决策点（compat 7 + runner 4）分支顺序 failure/incomplete 先判、再判 overflow、else 才推进
+- **关键设计教训**：
+  - ① 锁模型在持锁方多入口调用场景（chat.py/compat 持 `_chat_lock` 调 impl）必然成环 → 队列单 worker 是绕开死锁的正确选择
+  - ② 校验视图不能简单剔除保护尾部（剔除后游标落在视图外 → `_build_incremental_msg_text` 降级全量 → 恒判未追平 → 压缩死代码）——改 `_find_protected_range` 索引比较
+  - ③ agent_loop 的 `messages[:]` 回写契约是 **dict 列表**（非 Message dataclass）——入口 8 转换块（L2417-2529：dict 构建/孤立 tool 清理/system 保留/cache_control 重注入）整体保留在回调内执行，不能简化为"自加载"
+  - ④ 跨线程投递统一 `call_soon_threadsafe` 桥（先例 chat.py L145-151 / runner L1566-1585）；fire-and-forget 只是不 await，item 一律带 future（去重依赖 done()）
+- **验证**：T1-T7 配套测试 **79 passed**（全 mock：禁真实 LLM、禁图谱写入、messages.db 零新增）+ T8 回归 **19 文件 252 passed / 11 failed**（11 failed 全部 pre-existing——基线 34575f3a 同文件同失败复现豁免：test_compress_quality 2（FakeClient.backend 缺失）+ test_compress_history 1 + test_tidy_cursor 4 + test_subagent_overflow 4）
+- **文档同步**：SYSTEM_MANUAL 指令机制（/clear 排队+600s 预算、/compact 排队+await+压缩前置校验+skipped 中文、/sleep 与空闲自动睡眠同路径+CP0-CP3，compat.py 行号锚点重写 3828→4398 / 3428→3988 / 2432→2909）；manual-developer 端点表（/api/context/tidy queued/skipped 语义、新增 /api/spirit-state 行、/api/chat/clear 排队+await）
+- **commit**：main 10 个（T1 eb869b5e → T7 f9aae026 → T2 1060715b → T7 journal 修复 577cf045 → T3 abd4d60c → T5 16d53c54 → T4 66feb58d → 批次2 Quality 733c48b5 → T6 0e736db0 → T6 Quality 14efef64），HEAD=14efef64
+
 ### 2026-08-18
 
 #### 新增：模型能力探测器 + 配置页动态档位（方案 19 轮审查 + Task 1-5 实施 + 真实实测）
