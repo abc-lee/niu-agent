@@ -714,10 +714,10 @@ impl Splash {
                                     "try {{ $r = Invoke-WebRequest -Uri '{}' -Method POST -UseBasicParsing -TimeoutSec 0; $r.Content }} catch {{ if ($_.Exception.Response) {{ \"HTTP $([int]$_.Exception.Response.StatusCode)\" }} else {{ $_.Exception.Message }}; exit 1 }}",
                                     url
                                 );
-                                let output = std::process::Command::new("powershell")
-                                    .arg("-NoProfile")
-                                    .arg("-Command")
-                                    .arg(&ps_script)
+                                let mut cmd = std::process::Command::new("powershell");
+                                cmd.arg("-NoProfile").arg("-Command").arg(&ps_script);
+                                no_window(&mut cmd);
+                                let output = cmd
                                     .output()
                                     .map_err(|e| format!("PowerShell 启动失败: {}", e))?;
                                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -978,6 +978,21 @@ impl Splash {
 }
 
 // ---------------------------------------------------------------------------
+// no_window — Windows CREATE_NO_WINDOW helper
+// ---------------------------------------------------------------------------
+
+/// Windows GUI 子系统下 spawn console 子进程（cmd/powershell/python）会弹
+/// 控制台窗口——统一补 CREATE_NO_WINDOW (0x08000000)。非 Windows 平台 no-op。
+/// 先例：launch_window / api_server_cmd 的内联 creation_flags 调用。
+#[cfg(windows)]
+fn no_window(cmd: &mut Command) {
+    cmd.creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn no_window(_cmd: &mut Command) {}
+
+// ---------------------------------------------------------------------------
 // detectPython — corresponds to Go's detectPython()
 // ---------------------------------------------------------------------------
 
@@ -1005,12 +1020,10 @@ fn detect_python() -> String {
     // Primary: resources root
     let resources_root = detect_resources_root();
     let candidate = resources_root.join(&python_rel_path);
-    if Command::new(&candidate)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
+    let mut cmd = Command::new(&candidate);
+    cmd.arg("--version");
+    no_window(&mut cmd);
+    if cmd.output().map(|o| o.status.success()).unwrap_or(false) {
         let abs_path = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
         info!("Found project Python (resources): {}", abs_path.display());
         return abs_path.to_string_lossy().to_string();
@@ -1021,12 +1034,10 @@ fn detect_python() -> String {
         .map(|d| d.to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".to_string());
     let cwd_candidate = PathBuf::from(&cwd).join(&python_rel_path);
-    if Command::new(&cwd_candidate)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
+    let mut cmd = Command::new(&cwd_candidate);
+    cmd.arg("--version");
+    no_window(&mut cmd);
+    if cmd.output().map(|o| o.status.success()).unwrap_or(false) {
         let abs_path = dunce::canonicalize(&cwd_candidate).unwrap_or_else(|_| cwd_candidate.clone());
         info!("Found project Python (cwd fallback): {}", abs_path.display());
         return abs_path.to_string_lossy().to_string();
@@ -1372,7 +1383,10 @@ fn wait_for_process_exit(process_pattern: &str, timeout: Duration) -> bool {
         if start.elapsed() >= timeout {
             return false;
         }
-        match Command::new("powershell").args(["-NoProfile", "-Command", &script]).status() {
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &script]);
+        no_window(&mut cmd);
+        match cmd.status() {
             Ok(status) => match status.code() {
                 Some(1) => {
                     // No match — process(es) gone.
@@ -1494,7 +1508,10 @@ fn kill_stale_api_process(port: u16) {
         // empty and kill nothing). Stop-Process -Force is SIGKILL semantics.
         warn!("Force killing stale API processes with PowerShell");
         let kill_script = "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object {$_.CommandLine -match 'python.*niu_api'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
-        match Command::new("powershell").args(["-NoProfile", "-Command", kill_script]).status() {
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", kill_script]);
+        no_window(&mut cmd);
+        match cmd.status() {
             Ok(status) if status.success() => {
                 info!("Sent kill to stale API processes via PowerShell");
             }
@@ -1519,7 +1536,10 @@ fn kill_stale_api_process(port: u16) {
         {
             // Stop-Process -Force is already SIGKILL semantics — repeat it.
             let kill_script = "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Where-Object {$_.CommandLine -match 'python.*niu_api'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
-            let _ = Command::new("powershell").args(["-NoProfile", "-Command", kill_script]).status();
+            let mut cmd = Command::new("powershell");
+            cmd.args(["-NoProfile", "-Command", kill_script]);
+            no_window(&mut cmd);
+            let _ = cmd.status();
         }
         if wait_for_process_exit("python.*niu_api", Duration::from_secs(5)) {
             info!("Stale API process(es) exited after SIGKILL escalation");
