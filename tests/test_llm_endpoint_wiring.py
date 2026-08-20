@@ -66,3 +66,34 @@ async def test_endpoint_failure_maps_error():
         result = await test_llm(_make_request(body))
     assert result["success"] is False
     assert result["error"] == "API Key 无效或未授权"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_body_path_passes_user_capability_config_verbatim():
+    """body 非空（testAndSave 预保存测试）→ 用户能力参数原样透传 _probe_llm，不经 _minimal_probe_config 剥离。
+
+    回归锁（Quality Minor 吸收）：剥离分支只在 `if not body`（启动器兜底）执行——
+    _minimal_probe_config 白名单只留 apibase/apikey/model/type/provider，
+    会剥掉 max_tokens/reasoning_effort/litellm_kwargs。若未来重构把剥离误移到公共路径，
+    testAndSave 的用户 max_tokens/thinking/reasoning_effort 组合校验会静默失效
+    （本文件既有 4 例只断言预算 kwargs，无法发现该回归）。本用例断言
+    _probe_llm 第一位置参数原样含全部用户能力键。
+    """
+    from niu_api.compat import test_llm
+
+    body = {
+        "apiKey": "sk",
+        "apiBase": "https://x/v1",
+        "model": "m",
+        "type": "openai",
+        "reasoning_effort": "high",
+        "litellm_kwargs": {"thinking": {"type": "enabled"}},
+        "max_tokens": 32768,
+    }
+    with patch("niu_api.compat._probe_llm", return_value=(True, "ok")) as mock_probe:
+        result = await test_llm(_make_request(body))
+    assert result["success"] is True
+    received = mock_probe.call_args.args[0]
+    assert received["max_tokens"] == 32768
+    assert received["reasoning_effort"] == "high"
+    assert received["litellm_kwargs"]["thinking"] == {"type": "enabled"}
