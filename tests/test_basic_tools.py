@@ -116,6 +116,21 @@ class TestReadFile:
         assert "gamma" in text
         assert "alpha" not in text
 
+    def test_do_read_negative_offset_passthrough(self, tmp_path):
+        """do_read passes negative offset through to read_file (tail via tool layer)."""
+        from agent.handler import Handler
+
+        f = tmp_path / "tail_compat.txt"
+        f.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
+
+        handler = Handler.__new__(Handler)
+        result = handler.do_read({"path": str(f), "offset": -2}, response=None)
+
+        text = result.output if hasattr(result, "output") else str(result)
+        assert "gamma" in text
+        assert "delta" in text
+        assert "alpha" not in text
+
     def test_offset_zero_normalized_to_one(self, tmp_path):
         """offset=0 should be normalized to 1."""
         f = tmp_path / "test.txt"
@@ -124,13 +139,18 @@ class TestReadFile:
         result = read_file(str(f), offset=0)
         assert "line1" in result
 
-    def test_negative_offset_normalized(self, tmp_path):
-        """Negative offset should be normalized to 1."""
+    def test_negative_offset_returns_last_lines(self, tmp_path):
+        """Negative offset reads the last |offset| lines (tail semantics)."""
         f = tmp_path / "test.txt"
-        f.write_text("line1\nline2\n", encoding="utf-8")
+        f.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
 
-        result = read_file(str(f), offset=-5)
-        assert "line1" in result
+        result = read_file(str(f), offset=-3)
+
+        assert "line1" not in result
+        assert "line2" not in result
+        assert "line3" in result
+        assert "line4" in result
+        assert "line5" in result
 
     def test_offset_exceeds_total_lines(self, tmp_path):
         """offset beyond file length should return clear message."""
@@ -139,6 +159,63 @@ class TestReadFile:
 
         result = read_file(str(f), offset=100)
         assert "exceeds total lines" in result
+
+    def test_negative_offset_exceeds_total_lines_returns_all(self, tmp_path):
+        """offset=-N with N > total lines returns the whole file, never an error."""
+        f = tmp_path / "fifty.txt"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 51)) + "\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=-300)
+
+        content_lines = [line for line in result.split("\n") if "|" in line and not line.startswith("[")]
+        assert len(content_lines) == 50
+        assert "line1" in result
+        assert "line50" in result
+        assert "error" not in result.lower()
+
+    def test_negative_offset_empty_file(self, tmp_path):
+        """offset=-N on an empty file returns 'No content', never crashes."""
+        f = tmp_path / "empty.txt"
+        f.write_text("", encoding="utf-8")
+
+        result = read_file(str(f), offset=-10)
+
+        assert "No content" in result
+        assert "error" not in result.lower()
+
+    def test_negative_offset_last_single_line(self, tmp_path):
+        """offset=-1 returns only the very last line with its real line number."""
+        f = tmp_path / "three.txt"
+        f.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=-1)
+
+        content_lines = [line for line in result.split("\n") if "|" in line and not line.startswith("[")]
+        assert len(content_lines) == 1
+        assert "3|line3" in result
+
+    def test_negative_offset_linenumbers_are_absolute(self, tmp_path):
+        """Tail mode reports real file line numbers, not 1-based tail positions."""
+        f = tmp_path / "hundred.txt"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 101)) + "\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=-50)
+
+        assert "51|line51" in result
+        assert "100|line100" in result
+        assert "1|line1" not in result
+
+    def test_negative_offset_with_limit(self, tmp_path):
+        """limit still caps returned lines after tail positioning (51-60 of 100)."""
+        f = tmp_path / "hundred.txt"
+        f.write_text("\n".join(f"line{i}" for i in range(1, 101)) + "\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=-50, limit=10)
+
+        content_lines = [line for line in result.split("\n") if "|" in line and not line.startswith("[")]
+        assert len(content_lines) == 10
+        assert "51|line51" in result
+        assert "60|line60" in result
 
 
 # ===================================================================

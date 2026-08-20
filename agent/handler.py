@@ -73,10 +73,12 @@ def _check_chat_with_agent_exists(agent_name: str) -> tuple[bool, str]:
 
 
 def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
-    """读取文件内容（支持 offset/limit 分页，limit 最大 500）"""
+    """读取文件内容（支持 offset/limit 分页，limit 最大 500；offset 为负数时读取文件末尾 |offset| 行）"""
     import itertools
 
     max_limit = 500
+    # offset < 0 → tail 语义：读取文件末尾 |offset| 行（需先数总行数再换算起始行）
+    tail_lines = -offset if offset < 0 else 0
     if offset < 1:
         offset = 1
     if limit < 1:
@@ -90,6 +92,11 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
         with open(file_path, encoding="utf-8", errors="replace") as f:
             total_lines = sum(1 for _ in f)
             f.seek(0)
+            if tail_lines > 0:
+                if total_lines == 0:
+                    return "[FILE] No content to display (total=0 lines)"
+                # 末尾 N 行起始行 = total - N + 1；文件不足 N 行则从第 1 行开始（返回全部，不报错）
+                offset = max(1, total_lines - tail_lines + 1)
             stream = ((i, line.rstrip("\r\n")) for i, line in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < offset, stream)
             res = list(itertools.islice(stream, limit))
