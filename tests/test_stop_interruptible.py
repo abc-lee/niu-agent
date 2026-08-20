@@ -425,6 +425,9 @@ def _tidy_common_patches():
         mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         # T5：sleep 管道测试保持睡眠态（CP1-CP3 检查点需 is_sleeping=True 才不打断）
         mock.patch("niu_api.compat.is_sleeping", return_value=True),
+        # T6：压缩前置游标追平校验——entity/dream 游标已追平（m2=尾部）才继续到压缩段；
+        # 本 fixture _build_incremental_msg_text 恒空（各段 no new messages），无真实游标写入
+        mock.patch("niu_api.compat._read_cursor_value", return_value="m2"),
         # 增量区间恒空 → 各阶段"no new messages"，不调子 Agent、不写游标
         mock.patch("niu_api.compat._build_incremental_msg_text", return_value=""),
         # 防 ~/.niu 既有游标文件触发真实游标写入（测试保持 hermetic）

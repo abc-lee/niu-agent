@@ -447,6 +447,51 @@ def _find_protected_range(messages, min_protect_count: int) -> int:
 
     return idx_user
 
+
+def _read_cursor_value(cursor_path, key: str) -> str:
+    """读取游标 JSON 文件中的单个游标值（由 L3045-3059 内联读取模式提取）。
+
+    文件缺失 / 解析失败 → ""（与内联模式一致：缺失=从未处理，保守不压）。
+    """
+    if not cursor_path.exists():
+        return ""
+    try:
+        cursor_data = json.loads(cursor_path.read_text(encoding="utf-8"))
+        return cursor_data.get(key, "")
+    except Exception as e:
+        logger.warning(f"[Tidy] Failed to read cursor {cursor_path.name}: {e}")
+        return ""
+
+
+def _cursors_caught_up(messages, protect_recent) -> bool:
+    """提炼+进化游标均已追平。判定与即将执行的压缩使用同一 protect 有效值（§4.3）。
+
+    历史教训：①force entity 游标钉死在 protect_start-1（entity history 排除保护区）；
+    ②protect=0 时 _find_protected_range 返回 len(messages)；③protect 取值必须与
+    压缩/entity 排除同源（降级路径）。journal 游标不查（用户字面"提炼和进化"）。
+    """
+    from pathlib import Path as _Path
+
+    if not messages:
+        return True  # 空库无可压缩内容
+    protect_start = _find_protected_range(messages, protect_recent)
+    msg_ids = [getattr(m, "id", "") or "" for m in messages]
+    for cursor_path, key in ((_Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id"),
+                             (_Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id")):
+        cursor = _read_cursor_value(cursor_path, key)
+        if not cursor:
+            return False  # 空游标=从未处理——保守不压
+        try:
+            idx = msg_ids.index(cursor)
+        except ValueError:
+            return False  # 游标指向已删消息——保守不压（管道 entity/dream 步骤先跑自愈重写，同轮校验前已修复）
+        if protect_start >= len(messages):
+            return idx == len(messages) - 1  # protect=0：全部可压——游标须到真实尾部
+        if idx < protect_start - 1:
+            return False  # 游标在最后一条未保护消息之前——有未处理
+    return True
+
+
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
@@ -3367,6 +3412,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.warning("[Tidy] Sleep interrupted before context-manager (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
+            # 读取保护数量配置（CP3 同处解析：压缩前置校验与压缩段同源，§4.3）
+            protect_recent_count = _read_protect_recent_count()
+
+            # CP3 后：压缩前置游标追平校验（先状态机后游标）——提炼/进化游标未追平则本次不压缩（§4.3）
+            if not _cursors_caught_up(messages, protect_recent_count):
+                logger.warning("[Tidy] Sleep: 还有消息未提炼完，本次不压缩")
+                return {"status": "skipped", "reason": "还有消息未提炼完，本次不压缩"}
+
             # 3/3. context-manager（增量 task 方式，保护范围 [compress_cursor, dream_cursor_new]）
             # 串行执行：重新获取消息列表（Dream 可能已修改 DB）
             messages = await store.get_messages()
@@ -3382,8 +3435,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     msg_tokens.append(t)
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-            # 读取保护数量配置
-            protect_recent_count = _read_protect_recent_count()
 
             # 模式二：始终全量传入（无游标机制），模式一：增量范围
             _is_mode2 = usage_percent >= 50
@@ -3885,12 +3936,20 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         elif mode == "force":
             # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
+            # 降级解析提前到 force 分支顶部（§4.3 v1.4）：entity 排除/校验/压缩三处同源。
+            # chat_queue 降级 5/2 实证经 request dict 传入 force_protect_recent（L514-518）
+            _effective_protect = _read_protect_recent_count()
+            _force_protect_recent = request.get("force_protect_recent") if isinstance(request, dict) else None
+            if _force_protect_recent is not None and isinstance(_force_protect_recent, int) and _force_protect_recent >= 1:
+                _effective_protect = min(_effective_protect, _force_protect_recent)
+                logger.info(f"[Tidy] Force: protect_recent_count degraded to {_effective_protect} (from request)")
             # 计算 PROTECTED 消息 ID 集合（最近 N 条 user/assistant，与 context-manager 对齐）
             # 用于 entity force 方案 A：排除最近 PROTECTED 条防止 overflow 死循环（详见 Architecture §6）
-            _force_protect_recent_count = _read_protect_recent_count()
+            # R4-B P1：entity 排除用 effective_protect（与校验/压缩同源）——降级路径 entity 游标
+            # 钉在 effective-1 而校验用降级值 → 判定一致，attempt 2/3 溢出救援不再恒 skipped
             _force_protected_ids: set[str] = set()
-            if _force_protect_recent_count > 0 and messages:
-                _protect_start = _find_protected_range(messages, _force_protect_recent_count)
+            if _effective_protect > 0 and messages:
+                _protect_start = _find_protected_range(messages, _effective_protect)
                 _force_protected_ids = {getattr(messages[i], "id", "") or "" for i in range(_protect_start, len(messages))}
 
             # 1/3. entity-extractor（全量 history 逐条 + task 独立指令，cursor 传空 = 全量）
@@ -4139,6 +4198,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
             # 3/3. context-manager 强制压缩（抽为嵌套闭包；skip_compress=True 时跳过）
             async def _compress_force():
+                # 压缩前置游标追平校验（§4.3）：提炼/进化游标未追平则本次不压缩
+                # 位置：压缩段入口（effective_protect 已提前到 force 分支顶部解析）
+                if not _cursors_caught_up(messages, _effective_protect):
+                    logger.warning("[Tidy] Force: 还有消息未提炼完，本次不压缩")
+                    return {"status": "skipped", "mode": "force", "reason": "还有消息未提炼完，本次不压缩"}
+
                 # 3/3. context-manager force prompt — 一轮 JSON 文件方案
                 # 重新读取 compress 游标
                 last_compress_id = ""
@@ -4158,12 +4223,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     except OSError:
                         pass  # Windows 文件锁，忽略
 
-                protect_recent_count = _read_protect_recent_count()
-                # 降级策略：允许外部传入更低的保护数量
-                _force_protect_recent = request.get("force_protect_recent") if isinstance(request, dict) else None
-                if _force_protect_recent is not None and isinstance(_force_protect_recent, int) and _force_protect_recent >= 1:
-                    protect_recent_count = min(protect_recent_count, _force_protect_recent)
-                    logger.info(f"[Tidy] Force: protect_recent_count degraded to {protect_recent_count} (from request)")
+                # 降级解析已提前到 force 分支顶部（§4.3 同源：entity 排除/校验/压缩三处一致）
+                protect_recent_count = _effective_protect
 
                 # 使用统一的 _build_compress_history 构建（与模式二一致）
                 _force_msg_ids = []

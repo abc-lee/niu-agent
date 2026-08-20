@@ -702,6 +702,34 @@ def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
     return db_messages[cursor_idx + 1:] if cursor_idx >= 0 else db_messages
 
 
+def _cursors_caught_up(messages, protect_recent) -> bool:
+    """提炼+进化游标均已追平（runner 版，读游标用 _read_cursor_locked）。
+
+    与 niu_api/compat._cursors_caught_up 同逻辑（§4.3）——判定与即将执行的压缩
+    使用同一 protect 有效值。journal 游标不查（用户字面"提炼和进化"）。
+    """
+    from niu_api.compat import _find_protected_range
+
+    if not messages:
+        return True  # 空库无可压缩内容
+    protect_start = _find_protected_range(messages, protect_recent)
+    msg_ids = [getattr(m, "id", "") or "" for m in messages]
+    for cursor_path, key in ((Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id"),
+                             (Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id")):
+        cursor = NiuRunner._read_cursor_locked(cursor_path, key)
+        if not cursor:
+            return False  # 空游标=从未处理——保守不压
+        try:
+            idx = msg_ids.index(cursor)
+        except ValueError:
+            return False  # 游标指向已删消息——保守不压
+        if protect_start >= len(messages):
+            return idx == len(messages) - 1  # protect=0：全部可压——游标须到真实尾部
+        if idx < protect_start - 1:
+            return False  # 游标在最后一条未保护消息之前——有未处理
+    return True
+
+
 def _extract_prev_complete_turn_msgs(post_compress_msgs: list) -> list:
     """取上一完整轮的 messages（倒数第二条 user 消息含，到倒数第一条 user 消息不含）。
 
@@ -2132,6 +2160,12 @@ class NiuRunner:
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
 
+            # 压缩前置游标追平校验（§4.3）：提炼/进化游标未追平则本次不压缩（runner 侧 protect 同源）
+            protect_recent_count = _read_protect_recent_count()
+            if not _cursors_caught_up(db_messages, protect_recent_count):
+                logger.warning("[Runner] Force: 还有消息未提炼完，本次不压缩")
+                return {"status": "skipped", "reason": "还有消息未提炼完，本次不压缩"}
+
             # 重新读取 compress 游标
             last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
 
@@ -2143,8 +2177,6 @@ class NiuRunner:
                     os.remove(compress_plan_path)
                 except OSError:
                     pass  # Windows 文件锁，忽略
-
-            protect_recent_count = _read_protect_recent_count()
 
             # 构造 history 列表 + idx 映射（参考 compat.py 模式三）
             # _build_compress_history 内部处理 exclude_protected（PROTECTED 消息不进 history、不分配 idx）

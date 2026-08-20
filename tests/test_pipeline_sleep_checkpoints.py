@@ -94,8 +94,12 @@ def _cp_patches(sleep_side_effect, call_mock):
     ]
 
 
-def _run_sleep_tidy(sleep_side_effect, call_mock=None):
-    """直接调 _tidy_context_impl sleep 分支（绕过 worker/CP0），驱动 CP1-CP3。"""
+def _run_sleep_tidy(sleep_side_effect, call_mock=None, cursor_value=None):
+    """直接调 _tidy_context_impl sleep 分支（绕过 worker/CP0），驱动 CP1-CP3。
+
+    cursor_value: 非 None 时 patch _read_cursor_value 返回该值（T6：压缩前置游标追平
+    校验需要 entity/dream 游标"已追平"才继续到压缩段；None 保持 T5 原语义——游标空 → 校验不追平）。
+    """
     from niu_api.compat import _tidy_context_impl
 
     store = mock.MagicMock()
@@ -107,6 +111,8 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None):
         stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
         for p in _cp_patches(sleep_side_effect, call_mock):
             stack.enter_context(p)
+        if cursor_value is not None:
+            stack.enter_context(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
         write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
         result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
     return result, write_mock, call_mock
@@ -183,8 +189,12 @@ def test_cp3_interrupt_before_compress():
 
 
 def test_sleep_full_run_not_interrupted_when_asleep():
-    """对照：全程睡眠 → 完整跑完（fixture 非空洞，CP 断言有判别力）。"""
-    result, write_mock, call_mock = _run_sleep_tidy(lambda: True)
+    """对照：全程睡眠 → 完整跑完（fixture 非空洞，CP 断言有判别力）。
+
+    T6：cursor_value='m2' 模拟 entity/dream 已追平（本 fixture 游标文件缺失，
+    不提供则压缩前置校验保守不压，测不到"完整跑完"）。
+    """
+    result, write_mock, call_mock = _run_sleep_tidy(lambda: True, cursor_value="m2")
     assert result.get("status") == "ok", f"睡眠中不应打断: {result}"
     assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver", "context-manager"]
     compress_writes = [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")]

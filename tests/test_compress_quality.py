@@ -375,6 +375,8 @@ def test_mode2_prompt_not_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
@@ -449,6 +451,8 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
@@ -516,6 +520,8 @@ def test_mode2_truncate_too_few_no_clear(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
@@ -596,6 +602,8 @@ def test_mode3_prompt_not_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
@@ -666,6 +674,8 @@ def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
@@ -749,6 +759,8 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: messages[-1].id, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
@@ -822,6 +834,10 @@ def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
 
     # mock _read_cursor 返回空（无历史游标）
     monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(lambda path, field: ""))
+
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor_locked",
+                        staticmethod(lambda path, field: messages[-1].id))
 
     # mock _sync_get_messages 返回 2 条消息（force 用 _build_compress_history，2 条都进 history）
     messages = [
@@ -909,6 +925,10 @@ def test_runner_mode3_truncate_triggers_degradation(monkeypatch):
     )
 
     monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(lambda path, field: ""))
+
+    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
+    monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor_locked",
+                        staticmethod(lambda path, field: messages[-1].id))
 
     # 15 条消息（全部 user 角色，protect_recent_count=0 → 全部进 _force_msg_ids）
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
