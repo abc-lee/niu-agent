@@ -11,8 +11,9 @@ import re
 import threading
 import time
 from asyncio import sleep as _asyncio_sleep
+from concurrent.futures import Future
 from datetime import datetime
-from typing import NamedTuple
+from typing import NamedTuple, TypedDict
 
 from agent.session import get_message_store
 from agent.subagent import (
@@ -1339,6 +1340,140 @@ async def _compute_post_compress_usage(store=None, msgs_before: int = -1) -> tup
 
 
 _tidy_lock = asyncio.Lock()
+
+
+# ===========================================================================
+# 全局整理队列（T2）：单 worker 串行执行整理类管道——全局一次一个、后来者排队
+# 设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §3.0-3.3
+# ===========================================================================
+
+class _PipelineItem(TypedDict):
+    """整理管道任务项（§3.1）"""
+    kind: str      # "nap" | "sleep" | "force" | "runner-force"
+    request: dict  # sleep/force：_tidy_context_impl 的 request dict
+    held: bool     # chat_lock_already_held（worker 透传；nap/runner-force 不用）
+    result: Future  # 一律携带，由 worker 完结（fire-and-forget 只是调用方不 await——去重依赖 done()）
+
+
+_pipeline_queue: asyncio.Queue | None = None
+_pipeline_worker_task: asyncio.Task | None = None
+
+# 压缩类去重表：键 = (kind, skip_compress, force_protect_recent) → 在队/执行中的 future。
+# §3.2 表述为单槽 _active_compress_fut；本实现用 dict 支持多键并存：force 与 runner-force
+# 键不同可同时各 1 个在队（§7.9「去重后 force 键 ≤1，runner-force 键 ≤1」），单槽在键交错
+# 时会放行同键第二个任务，违背该不变式。
+_active_compress_futs: dict[tuple, Future] = {}
+
+
+async def _pipeline_worker():
+    """全局整理队列单 worker（§3.3 伪代码逐字）"""
+    while True:
+        item = await _pipeline_queue.get()
+        result = {"status": "error", "message": "not executed"}  # 预初始化
+        runner = None
+        try:
+            kind = item["kind"]
+            if kind in ("nap", "runner-force"):
+                from niu_api.chat import get_or_create_runner  # 惰性 import 防循环
+                runner = get_or_create_runner()
+                if runner is None:
+                    result = {"status": "error", "message": "runner not ready"}
+                elif kind == "nap":
+                    await asyncio.to_thread(runner._run_nap_background)  # 本体零改动
+                    result = {"status": "ok"}
+                else:
+                    # _execute_force_pipeline 返回 {"status":"ok"/"skipped",...}——承接返回值
+                    result = await asyncio.to_thread(runner._execute_force_pipeline)
+            else:  # sleep / force
+                if kind == "sleep" and not is_sleeping():
+                    result = {"status": "cancelled", "reason": "woke_up"}  # CP0
+                else:
+                    async with _tidy_lock:  # 双保险
+                        result = await _tidy_context_impl(item["request"], chat_lock_already_held=item["held"])
+        except Exception as e:
+            logger.exception("[Pipeline] worker item failed")
+            result = {"status": "error", "message": str(e)}
+        finally:
+            if item["kind"] == "nap" and runner is not None:
+                runner._nap_running.clear()  # None 守卫；get_or_create_runner 实际不返回 None（chat.py L549-573）
+            fut = item["result"]
+            if not fut.done():
+                fut.set_result(result)
+
+
+def _pipeline_worker_guard(task: asyncio.Task) -> None:
+    """worker 守护（done_callback）：CancelledError（shutdown）不重建；异常退出打 error 日志 + 重建。"""
+    if task.cancelled() or not task.done():
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    logger.error(f"[Pipeline] worker crashed: {exc!r} — restarting")
+    global _pipeline_worker_task
+    if _pipeline_queue is None:
+        logger.warning("[Pipeline] queue closed, skip worker restart")
+        return
+    _pipeline_worker_task = asyncio.ensure_future(_pipeline_worker())
+    _pipeline_worker_task.add_done_callback(_pipeline_worker_guard)
+
+
+def _drop_active_compress(fut: Future) -> None:
+    """压缩任务完结时从去重表摘除（identity 守卫：只删自己的键，防误删后续同键新任务）"""
+    for key, active in list(_active_compress_futs.items()):
+        if active is fut:
+            del _active_compress_futs[key]
+
+
+def _pipeline_enqueue(kind: str, request: dict | None = None, held: bool = False) -> Future:
+    """投递整理任务到全局队列，返回 concurrent.futures.Future（fire-and-forget 只是调用方不 await）。
+
+    - None 窗口（队列未创建）：调用方按 §3.0 Option A 同步执行，本函数不处理。
+    - 压缩类（force/runner-force）去重：键 = (kind, skip_compress, force_protect_recent)，
+      在队/执行中同键任务复用同一 future（§3.2）。
+    """
+    request = request or {}
+    fut: Future = Future()
+    if kind in ("force", "runner-force"):
+        key = (kind, bool(request.get("skip_compress")), request.get("force_protect_recent"))
+        active = _active_compress_futs.get(key)
+        if active is not None and not active.done():
+            return active
+        _active_compress_futs[key] = fut
+        fut.add_done_callback(_drop_active_compress)
+    item: _PipelineItem = {"kind": kind, "request": request, "held": held, "result": fut}
+    _pipeline_queue.put_nowait(item)
+    return fut
+
+
+def start_pipeline_queue() -> None:
+    """lifespan 启动：创建队列 + 启动 worker（幂等）。"""
+    global _pipeline_queue, _pipeline_worker_task
+    if _pipeline_queue is not None:
+        return
+    _pipeline_queue = asyncio.Queue()
+    _pipeline_worker_task = asyncio.ensure_future(_pipeline_worker())
+    _pipeline_worker_task.add_done_callback(_pipeline_worker_guard)
+
+
+async def stop_pipeline_queue() -> None:
+    """lifespan 关闭：排出队列剩余项（shutting down 异常）→ 取消 worker。"""
+    global _pipeline_queue, _pipeline_worker_task
+    queue = _pipeline_queue
+    _pipeline_queue = None
+    if queue is not None:
+        while not queue.empty():
+            item = queue.get_nowait()
+            fut = item["result"]
+            if not fut.done():
+                fut.set_exception(RuntimeError("shutting down"))
+    task = _pipeline_worker_task
+    _pipeline_worker_task = None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 router = APIRouter(tags=["compat"])
@@ -2800,16 +2935,16 @@ async def tidy_context(request: dict):
     # 挂点 2（冗余）：睡眠整理触发时冗余置位（主挂点为 main.js spirit-state 转发）
     if (request.get("mode") or "").lower() == "sleep":
         set_spirit_state("sleep")
-    # 加锁防止并发：手动触发和自动触发互斥，超时10秒避免死锁
-    try:
-        await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
-    except TimeoutError:
-        logger.warning("[Tidy] tidy_context skipped: tidy lock held by another operation")
-        return {"status": "skipped", "reason": "lock_busy"}
-    try:
+    # 全局整理队列投递（§3.1 入口 1/2）：sleep → 投递 + 立即返回 queued（result 无人消费，
+    # CP0 cancelled 依赖此）；force → 投递 + await wrap_future（600s 前端超时兜底既有 chat.html）。
+    # None 窗口防御（§3.0 Option A）：队列未创建时同步执行，调用方等完成。
+    if _pipeline_queue is None:
         return await _tidy_context_impl(request)
-    finally:
-        _tidy_lock.release()
+    mode = (request.get("mode") or "sleep").lower()
+    fut = _pipeline_enqueue(mode, request, held=False)
+    if mode == "force":
+        return await asyncio.wrap_future(fut)
+    return {"status": "queued"}
 
 
 async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False):
