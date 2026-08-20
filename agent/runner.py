@@ -583,6 +583,8 @@ def create_client(config: dict[str, Any]):
         cfg["temperature"] = config["temperature"]
     if "reasoning_effort" in config and config["reasoning_effort"] is not None:
         cfg["reasoning_effort"] = config["reasoning_effort"]
+    if config.get("max_tokens") is not None:
+        cfg["max_tokens"] = config["max_tokens"]
     cfg["provider"] = config.get("provider", "")
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
     cfg["read_timeout"] = config.get("read_timeout") or 300

@@ -224,6 +224,8 @@ def get_llm_config(use_lightrag_config: bool = False) -> dict[str, str]:
                     lightrag_llm["provider"] = llm.get("provider", "")
                 if not lightrag_llm.get("litellm_kwargs"):
                     lightrag_llm["litellm_kwargs"] = llm.get("litellm_kwargs", {})
+                if lightrag_llm.get("max_tokens") is None and llm.get("max_tokens") is not None:
+                    lightrag_llm["max_tokens"] = llm["max_tokens"]
                 # Default reasoning_effort to "" if not explicitly set（模型默认/配置页驱动，不强制档位）
                 if not lightrag_llm.get("reasoning_effort"):
                     lightrag_llm["reasoning_effort"] = ""
@@ -245,6 +247,8 @@ def get_llm_config(use_lightrag_config: bool = False) -> dict[str, str]:
                     llm["temperature"] = user_temp
                 if lightrag_llm.get("read_timeout"):
                     llm["read_timeout"] = lightrag_llm["read_timeout"]
+                if lightrag_llm.get("max_tokens") is not None:
+                    llm["max_tokens"] = lightrag_llm["max_tokens"]
 
         # 统一转换为小写键名
         config = {}
@@ -297,6 +301,8 @@ async def call_llm_via_litellm(
         "litellm_kwargs": config.get("litellm_kwargs", {}),
         "read_timeout": config.get("read_timeout", 300),
     }
+    if config.get("max_tokens") is not None:
+        llm_config["max_tokens"] = config["max_tokens"]
 
     # Create independent session (not shared with main chat)
     session = LiteLLMSession(cfg=llm_config)
