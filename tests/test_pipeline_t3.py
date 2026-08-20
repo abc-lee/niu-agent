@@ -78,8 +78,11 @@ async def test_nap_dispatch_sets_flag_and_suppresses_retrigger(monkeypatch):
     release = threading.Event()
 
     def fake_run_nap():
-        entered.set()
-        release.wait(5.0)
+        try:
+            entered.set()
+            release.wait(5.0)
+        finally:
+            runner._nap_running.clear()  # 与真实 _run_nap_background（L1505）同语义：自身 finally 恒 clear
 
     runner._run_nap_background = fake_run_nap
     monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: runner)
@@ -95,7 +98,7 @@ async def test_nap_dispatch_sets_flag_and_suppresses_retrigger(monkeypatch):
     runner._maybe_trigger_nap()
     assert runner._nap_running.is_set()  # 仍在运行（第二次调用未清除/未重启）
 
-    # 释放 → worker 完成 → finally 清除
+    # 释放 → _run_nap_background 自身 finally 清除（P2-1：worker 成功路径不再重复 clear）
     release.set()
     deadline = time.monotonic() + 2.0
     while runner._nap_running.is_set() and time.monotonic() < deadline:
@@ -214,6 +217,37 @@ async def test_entry8_timeout_conversion_block_still_runs(monkeypatch):
     assert messages[0].get("role") == "system"
 
 
+async def test_entry8_future_exception_conversion_block_still_runs(monkeypatch):
+    """非超时异常路径：fut.result(timeout=300) 抛 RuntimeError（shutdown）→ 转换块仍执行（P3-5）。"""
+    runner = _make_runner()
+    runner._sync_get_messages = lambda: [
+        _FakeDbMsg("m1", "user", "hello"),
+        _FakeDbMsg("m2", "assistant", "hi"),
+    ]
+
+    seen_timeout = {}
+
+    class _FailedFut:
+        def result(self, timeout=None):
+            seen_timeout["timeout"] = timeout  # 300s 参数化注入断言
+            raise RuntimeError("shutting down")  # 非 TimeoutError（stop_pipeline_queue 置入）
+
+    monkeypatch.setattr(runner, "_dispatch_to_pipeline", lambda kind, request=None, held=False: _FailedFut())
+
+    def _must_not_sync():
+        raise AssertionError("异常路径不应同步执行 _execute_force_pipeline")
+
+    runner._execute_force_pipeline = _must_not_sync
+    messages = [{"role": "system", "content": "sys"}]
+    runner._on_context_high_usage(messages, 180000, 200000)
+
+    assert seen_timeout["timeout"] == 300  # 300s 上限参数化注入
+    assert messages, "非超时异常后转换块仍应回写消息"
+    assert all(isinstance(m, dict) for m in messages)
+    assert all("role" in m and "content" in m for m in messages)
+    assert messages[0].get("role") == "system"
+
+
 async def test_entry8_none_window_sync_execution(monkeypatch):
     """None 窗口（队列未创建）：同步执行 _execute_force_pipeline，调用方等执行完成（§3.0 Option A）。"""
     runner = _make_runner()
@@ -277,3 +311,22 @@ async def test_entry8_dispatch_failure_rolls_back_dedup(monkeypatch):
 
     assert calls == [1]  # 投递失败 → 同步兜底执行
     assert not compat._active_compress_futs  # 去重登记已回滚（无残留）
+
+
+async def test_enqueue_failure_rolls_back_dedup(monkeypatch):
+    """compat _pipeline_enqueue 投递失败（put_nowait 抛异常）：回滚去重登记 + 重新 raise（P3-2/P3-5）。"""
+    start_pipeline_queue()
+    q = compat._pipeline_queue
+
+    def _boom_put(*a, **k):
+        raise RuntimeError("queue closed")
+
+    monkeypatch.setattr(q, "put_nowait", _boom_put)
+    with pytest.raises(RuntimeError, match="queue closed"):
+        compat._pipeline_enqueue("force", {"mode": "force", "session_id": "s"}, held=False)
+    assert not compat._active_compress_futs  # 去重登记已回滚（无残留）
+
+    # 非压缩类（sleep）无去重登记可回滚，异常同样重新抛出
+    with pytest.raises(RuntimeError, match="queue closed"):
+        compat._pipeline_enqueue("sleep", {"mode": "sleep", "session_id": "s"}, held=False)
+    assert not compat._active_compress_futs

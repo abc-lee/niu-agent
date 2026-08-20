@@ -1371,6 +1371,7 @@ async def _pipeline_worker():
         item = await _pipeline_queue.get()
         result = {"status": "error", "message": "not executed"}  # 预初始化
         runner = None
+        nap_started = False  # 是否已进入 _run_nap_background（进入后其自身 finally 恒 clear，P2-1）
         try:
             kind = item["kind"]
             if kind in ("nap", "runner-force"):
@@ -1379,6 +1380,7 @@ async def _pipeline_worker():
                 if runner is None:
                     result = {"status": "error", "message": "runner not ready"}
                 elif kind == "nap":
+                    nap_started = True
                     await asyncio.to_thread(runner._run_nap_background)  # 本体零改动
                     result = {"status": "ok"}
                 else:
@@ -1394,8 +1396,14 @@ async def _pipeline_worker():
             logger.exception("[Pipeline] worker item failed")
             result = {"status": "error", "message": str(e)}
         finally:
-            if item["kind"] == "nap" and runner is not None:
-                runner._nap_running.clear()  # None 守卫；get_or_create_runner 实际不返回 None（chat.py L549-573）
+            if item["kind"] == "nap" and not nap_started:
+                # P2-1：nap 成功路径不重复 clear——_run_nap_background 自身 finally（L1505）恒执行
+                # 已 clear；worker 再 clear 会在新触发置位后擦除（触发线程与 worker 协程竞态），
+                # 抑制不变式可被违反。仅在 nap 未实际执行（runner not ready / 进入
+                # _run_nap_background 前异常 → 未跑不会自清）时补偿清除；runner 为 None 时
+                # 无可清除对象（该分支实际不可达——get_or_create_runner 恒返回实例，chat.py L549-573）。
+                if runner is not None:
+                    runner._nap_running.clear()
             fut = item["result"]
             if not fut.done():
                 fut.set_result(result)
@@ -1441,7 +1449,14 @@ def _pipeline_enqueue(kind: str, request: dict | None = None, held: bool = False
         _active_compress_futs[key] = fut
         fut.add_done_callback(_drop_active_compress)
     item: _PipelineItem = {"kind": kind, "request": request, "held": held, "result": fut}
-    _pipeline_queue.put_nowait(item)
+    try:
+        _pipeline_queue.put_nowait(item)
+    except Exception:
+        # P3-2：投递失败回滚去重登记（与 runner._dispatch_to_pipeline 对称）。调用方契约是返回
+        # Future（chat_queue await wrap_future；None 会 TypeError），故重新 raise 而非返回 None。
+        if kind in ("force", "runner-force"):
+            _drop_active_compress(fut)
+        raise
     return fut
 
 
@@ -2939,12 +2954,16 @@ async def tidy_context(request: dict):
     # 挂点 2（冗余）：睡眠整理触发时冗余置位（主挂点为 main.js spirit-state 转发）
     if (request.get("mode") or "").lower() == "sleep":
         set_spirit_state("sleep")
+    mode = (request.get("mode") or "sleep").lower()
+    if mode not in ("sleep", "force"):
+        # P3-1：未知 mode 直接返回 error（改造前 _tidy_context_impl 同步路径语义 L4501-4503），
+        # 不再投递返回误导性 queued
+        return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'force'."}
     # 全局整理队列投递（§3.1 入口 1/2）：sleep → 投递 + 立即返回 queued（result 无人消费，
     # CP0 cancelled 依赖此）；force → 投递 + await wrap_future（600s 前端超时兜底既有 chat.html）。
     # None 窗口防御（§3.0 Option A）：队列未创建时同步执行，调用方等完成。
     if _pipeline_queue is None:
         return await _tidy_context_impl(request)
-    mode = (request.get("mode") or "sleep").lower()
     fut = _pipeline_enqueue(mode, request, held=False)
     if mode == "force":
         return await asyncio.wrap_future(fut)
