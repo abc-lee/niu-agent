@@ -959,3 +959,69 @@ async def test_try_tier_classifies_param_conflict_reasoning_effort_keyword():
     assert result["result"] == "probe_failed"
     assert result["mode"] is None
     assert "参数组合无效" in result["reason"]
+
+
+# ===== _probe_llm max_tokens 透传测试 =====
+# testAndSave 链路：用户配置 max_tokens 时探测请求带用户值（顺带校验合法性——
+# 非法值 → 服务端 400 → probe 报错阻断保存）；无配置保持 256（探测提速）。
+# mock LiteLLMSession（_probe_llm 内局部 import，patch 模块属性即可拦截），
+# 断言构造 cfg 的 litellm_kwargs["max_tokens"]。
+
+
+def _fake_probe_chat_gen():
+    """假探测响应：产出一个文本 chunk，StopIteration value=None（无 MockResponse）。"""
+    yield "ok"
+    return None
+
+
+@pytest.mark.asyncio
+async def test_probe_uses_user_max_tokens():
+    """用户配置 max_tokens 时探测请求带用户值（校验合法性）。"""
+    from unittest.mock import MagicMock, patch
+
+    from niu_api.compat import _probe_llm
+
+    config = {
+        "apikey": "test-key",
+        "apibase": "https://test.example.com",
+        "model": "test-model",
+        "type": "openai",
+        "max_tokens": 8192,
+    }
+
+    with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+        mock_session = MagicMock()
+        mock_session.chat.side_effect = lambda messages: _fake_probe_chat_gen()
+        mock_session_class.return_value = mock_session
+
+        success, _msg = await _probe_llm(config)
+
+    assert success is True
+    cfg = mock_session_class.call_args.kwargs["cfg"]
+    assert cfg["litellm_kwargs"]["max_tokens"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_probe_default_256_without_user_max_tokens():
+    """无用户配置时保持 256（探测提速）。"""
+    from unittest.mock import MagicMock, patch
+
+    from niu_api.compat import _probe_llm
+
+    config = {
+        "apikey": "test-key",
+        "apibase": "https://test.example.com",
+        "model": "test-model",
+        "type": "openai",
+    }
+
+    with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+        mock_session = MagicMock()
+        mock_session.chat.side_effect = lambda messages: _fake_probe_chat_gen()
+        mock_session_class.return_value = mock_session
+
+        success, _msg = await _probe_llm(config)
+
+    assert success is True
+    cfg = mock_session_class.call_args.kwargs["cfg"]
+    assert cfg["litellm_kwargs"]["max_tokens"] == 256
