@@ -860,6 +860,12 @@ ipcMain.on('spirit-state', (event, state) => {
   if (chatWindow && !chatWindow.isDestroyed()) {
     chatWindow.webContents.send('spirit-state', state);
   }
+  // 转发到后端（整理管道睡眠状态机读取；fire-and-forget，失败吞掉）
+  fetch('http://127.0.0.1:' + (process.env.NIU_API_PORT || 9876) + '/api/spirit-state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state })
+  }).catch(() => {});
 });
 
 // 接收聊天窗口的忙碌状态通知，转发给小女孩窗口

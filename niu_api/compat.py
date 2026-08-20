@@ -26,6 +26,19 @@ from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
 
+# 精灵（spirit）睡眠状态通道：Electron 主进程状态转换时转发（main.js spirit-state），
+# tidy mode='sleep' 时冗余置位。整理管道 sleep 状态机（CP0-CP3）读取。
+_SPIRIT_STATE = "idle"  # 默认非睡眠（安全方向）
+
+
+def set_spirit_state(state: str) -> None:
+    global _SPIRIT_STATE
+    _SPIRIT_STATE = (state or "").lower()
+
+
+def is_sleeping() -> bool:
+    return _SPIRIT_STATE == "sleep"
+
 
 class CascadeDeleteResult(NamedTuple):
     delete_ids: list[str]
@@ -2748,6 +2761,17 @@ async def get_pending_alerts() -> list:
     return get_and_clear_pending_alerts()
 
 
+@router.post("/api/spirit-state")
+async def set_spirit_state_endpoint(request: dict):
+    """精灵状态通道：Electron 主进程（main.js spirit-state IPC）转发状态转换。
+
+    body: {"state": str}——"sleep" 表示睡眠，其余值（"idle" 等）表示非睡眠。
+    """
+    state = request.get("state", "") if isinstance(request, dict) else ""
+    set_spirit_state(state)
+    return {"status": "ok", "state": _SPIRIT_STATE}
+
+
 @router.post("/api/context/tidy")
 async def tidy_context(request: dict):
     """
@@ -2766,6 +2790,9 @@ async def tidy_context(request: dict):
             "freed_tokens": int (optional)
         }
     """
+    # 挂点 2（冗余）：睡眠整理触发时冗余置位（主挂点为 main.js spirit-state 转发）
+    if (request.get("mode") or "").lower() == "sleep":
+        set_spirit_state("sleep")
     # 加锁防止并发：手动触发和自动触发互斥，超时10秒避免死锁
     try:
         await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
