@@ -253,6 +253,13 @@ async def lifespan(app: FastAPI):
     await start_chat_queue()
     logger.info("ChatQueue started")
 
+    # 6.6.1. Start global tidy pipeline queue (single worker serial execution)
+    #        §3.0：与 ChatQueue 同生命周期——所有 9 个入口均要求 ChatQueue 已启动（≥6.6）
+    set_preload_stage("正在启动整理队列")
+    from niu_api.compat import start_pipeline_queue
+    start_pipeline_queue()
+    logger.info("Pipeline queue started")
+
     set_preload_stage("正在检查知识图谱")
     # 6.7. Phase 1 先跑一致性检测，再根据结果决定是否 signal scheduler / 启动 db_monitor
     # v7: 修复 LightRAG 损坏时 scheduler/ChatQueue/db_monitor 不阻塞的 bug
@@ -577,6 +584,16 @@ async def lifespan(app: FastAPI):
         logger.info("LightRAG event loop stopped")
     except Exception as e:
         logger.warning(f"Failed to stop LightRAG event loop: {e}")
+
+    # 停止全局整理队列（先于 ChatQueue——worker 依赖 chat 机制）：排出剩余项 + 取消 worker
+    try:
+        from niu_api.compat import stop_pipeline_queue
+        await asyncio.wait_for(stop_pipeline_queue(), timeout=10.0)
+        logger.info("Pipeline queue stopped")
+    except TimeoutError:
+        logger.warning("Pipeline queue stop timed out after 10s")
+    except Exception as e:
+        logger.warning(f"Failed to stop pipeline queue: {e}")
 
     # 停止 ChatQueue
     try:
