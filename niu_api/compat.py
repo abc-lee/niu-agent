@@ -486,7 +486,9 @@ def _cursors_caught_up(messages, protect_recent) -> bool:
         except ValueError:
             return False  # 游标指向已删消息——保守不压（管道 entity/dream 步骤先跑自愈重写，同轮校验前已修复）
         if protect_start >= len(messages):
-            return idx == len(messages) - 1  # protect=0：全部可压——游标须到真实尾部
+            if idx != len(messages) - 1:
+                return False  # protect=0：游标未到真实尾部——未追平
+            continue  # 已追平 → 继续查下一个游标（dream）
         if idx < protect_start - 1:
             return False  # 游标在最后一条未保护消息之前——有未处理
     return True
