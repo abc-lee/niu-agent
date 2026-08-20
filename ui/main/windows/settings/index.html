@@ -275,6 +275,12 @@
             <div class="hint"><span id="llmCapabilityHint">未探测，请点击下方"探测能力"</span></div>
           </div>
 
+          <div class="form-group">
+            <label class="pencil-text">输出上限 (max_tokens)</label>
+            <input type="number" id="llmMaxTokens" min="1" step="1" placeholder="留空 = 模型默认" />
+            <div class="hint">单次回复最大输出 token 数。留空不传（用服务端默认）。长报告被截断时调大（如 8192/16384）。</div>
+          </div>
+
           <button class="btn btn-probe" id="llmProbeBtn" onclick="probeCapability('llm')">探测能力（对话模型）</button>
         </div>
 
@@ -412,6 +418,7 @@
         document.getElementById('apiBase').value = config.llm.apiBase || '';
         document.getElementById('model').value = config.llm.model || '';
         document.getElementById('apiType').value = config.llm.type || 'openai';
+        document.getElementById('llmMaxTokens').value = config.llm?.max_tokens ?? '';
       }
 
       if (config.context) {
@@ -514,8 +521,8 @@
       });
     });
 
-    // 五个新控件 change 时也重置 testPassedInSession（与 preset/apiKey/apiBase/model/apiType 同款）
-    ['llmThinking', 'lightragThinking', 'llmReasoningEffort', 'lightragReasoningEffort', 'lightragTemperature'].forEach(id => {
+    // 六个新控件 change 时也重置 testPassedInSession（与 preset/apiKey/apiBase/model/apiType 同款）
+    ['llmThinking', 'lightragThinking', 'llmReasoningEffort', 'lightragReasoningEffort', 'lightragTemperature', 'llmMaxTokens'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', () => { testPassedInSession = false; });
     });
@@ -693,6 +700,17 @@
         reasoning_effort: llmReasoningEffort,
         litellm_kwargs: llmLitellmKwargs
       };
+      // 输出上限 max_tokens：空 = 不传（缺省）；非空校验正整数后并入——
+      // 同一 config 对象流向 testConnection（校验合法性）/probeConfig/saveConfig 三处
+      const maxTokensRaw = document.getElementById('llmMaxTokens').value.trim();
+      if (maxTokensRaw !== '') {
+        const mt = Number(maxTokensRaw);
+        if (!Number.isInteger(mt) || mt <= 0) {
+          setStatus('输出上限必须是正整数', 'error');
+          return;
+        }
+        config.max_tokens = mt;
+      }
       // v2.5：逃生口——合并文件已有 read_timeout（existingConfig 在本作用域已存在）
       const existingLlm = existingConfig && existingConfig.llm;
       if (existingLlm && existingLlm.read_timeout) config.read_timeout = existingLlm.read_timeout;
