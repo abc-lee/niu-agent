@@ -196,12 +196,24 @@ class TestCursorsCaughtUp:
     def test_protect_zero_requires_cursor_at_true_tail(self):
         """protect=0：全部可压——游标须到真实尾部（含 tool 消息）才追平。"""
         msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "tool"))
-        # 游标 = 最后一条（tool 消息）→ 追平
+        # 双游标 = 最后一条（tool 消息）→ 追平
         assert self._caught_up(msgs, 0, entity="m3", dream="m3") is True
-        # 游标 = 倒数第二条 → 不追平（压缩会删掉未提炼消息）
+        # entity 游标 = 倒数第二条 → 不追平（压缩会删掉未提炼消息）
         assert self._caught_up(msgs, 0, entity="m2", dream="m3") is False
-        # 注：§4.3 伪代码 protect=0 分支按首游标（entity）early-return（idx == len-1），
-        # dream 落后而 entity 在尾部时不再查 dream——逐字实现，行为如伪代码所示。
+        # Quality P1-1 修复（§4.3 同步）：protect=0 分支不再按首游标（entity）early-return，
+        # 追平后 continue 继续查 dream——entity 在尾部但 dream 落后必须判 False（见反例测试）。
+
+    def test_protect_zero_entity_at_tail_dream_behind_false(self):
+        """反例（Quality P1-1）：protect=0 时 entity 追平但 dream 落后 → 必须 False。
+
+        旧实现 protect=0 分支 `return idx == len(messages) - 1` 在 entity 位于尾部时
+        early-return True，漏查第二个游标（dream）——force 压缩会删除 dream 未处理消息。
+        """
+        msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "tool"))
+        # entity 在尾部、dream 落后（倒数第二条）→ 未追平（dream 未处理消息会被压缩删掉）
+        assert self._caught_up(msgs, 0, entity="m3", dream="m2") is False
+        # 对照：entity 在尾部、dream 也在尾部 → 追平
+        assert self._caught_up(msgs, 0, entity="m3", dream="m3") is True
 
     def test_protect_start_zero_all_protected_passes(self):
         """protect_start==0（全保护=压缩不删任何消息）→ 提炼未做也安全，校验放行。"""
