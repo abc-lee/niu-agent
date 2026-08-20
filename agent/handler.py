@@ -717,7 +717,7 @@ class NiuHandler(BaseHandler):
     # ========== 文件操作 ==========
 
     def do_read(self, args: dict, response) -> StepOutcome:
-        """读取文件（新 API，兼容旧参数名 path/start/count）"""
+        """读取文件（新 API，兼容旧参数名 path/start/count；offset 负数 = 读取文件末尾 |offset| 行）"""
         raw_path = args.get("file_path") if "file_path" in args else args.get("path", "")
         file_path = self._get_abs_path(raw_path) if hasattr(self, "cwd") and self.cwd else raw_path
         raw_offset = args.get("offset") if "offset" in args else args.get("start", 1)
