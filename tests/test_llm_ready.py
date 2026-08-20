@@ -217,3 +217,40 @@ def test_check_llm_ready_uses_minimal_probe_config(monkeypatch):
     assert "reasoning_effort" not in cfg
     assert "temperature" not in cfg
     assert "litellm_kwargs" not in cfg
+
+
+def test_test_llm_empty_body_uses_minimal_probe_config(monkeypatch):
+    """启动器兜底（body 空）读已保存配置时走最小连通配置——只测连通性。"""
+    import asyncio
+
+    from niu_api import compat
+
+    captured = {}
+
+    async def fake_probe(config, **kwargs):
+        captured["config"] = config
+        return True, "ok"
+
+    monkeypatch.setattr(compat, "_probe_llm", fake_probe)
+    monkeypatch.setattr(
+        "niu_api.llm_proxy.get_llm_config",
+        lambda: {"apiBase": "http://127.0.0.1:1", "apiKey": "k", "model": "m", "type": "openai",
+                 "provider": "openai",
+                 "max_tokens": 32768, "thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+    )
+
+    class FakeRequest:
+        async def json(self):
+            return {}
+
+    async def run():
+        return await compat.test_llm(FakeRequest())
+
+    result = asyncio.run(run())
+
+    assert result["success"] is True
+    cfg = captured["config"]
+    assert set(cfg.keys()) == {"apibase", "apikey", "model", "type", "provider"}
+    assert "max_tokens" not in cfg
+    assert "thinking" not in cfg
+    assert "reasoning_effort" not in cfg
