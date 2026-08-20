@@ -508,8 +508,14 @@ class ChatQueue:
             _task.add_done_callback(lambda t: self._bg_tasks.discard(t))
 
     async def _retry_force_compression(self, session_id: str, delay: float = 5.0, max_retries: int = 3):
-        """重试 force 压缩，逐步放宽保护"""
-        from niu_api.compat import _tidy_context_impl, _tidy_lock
+        """重试 force 压缩，逐步放宽保护
+
+        §3.1 入口 7：投递 + await wrap_future（held=False——worker 自拿 _chat_lock + pause）；
+        30s 锁超时废除（队列单 worker 天然互斥）；3 次降级 attempt 串行 await——
+        前一个 future done 后才投下一个，天然不重叠；降级参数 force_protect_recent 透传进 request
+        （去重键含该参数，各 attempt 键不同不互相去重）。None 窗口（§3.0 Option A）同步执行。
+        """
+        from niu_api.compat import _tidy_context_impl, _pipeline_enqueue, _pipeline_queue
         # 降级策略：每次重试减少保护消息数量
         # 第 1 次：默认 protect_recent_count（10）
         # 第 2 次：protect_recent_count = 5
@@ -519,26 +525,25 @@ class ChatQueue:
         for attempt in range(max_retries):
             await asyncio.sleep(delay)
 
+            request = {"session_id": session_id, "mode": "force"}
+            if attempt < len(degrade_schedule) and degrade_schedule[attempt] is not None:
+                request["force_protect_recent"] = degrade_schedule[attempt]
+                logger.info(f"[ChatQueue] Force compression retry {attempt+1} with degraded protect_recent={degrade_schedule[attempt]}")
+
+            # 广播压缩状态 started（前端圆环动画启动）
             try:
-                await asyncio.wait_for(_tidy_lock.acquire(), timeout=30.0)
-            except TimeoutError:
-                logger.warning(f"[ChatQueue] Force compression retry {attempt+1}/{max_retries}: tidy lock still busy")
-                continue
+                from niu_api.chat import notify_compact_status_sync
+                notify_compact_status_sync("started", mode="force")
+            except Exception:
+                pass
 
             try:
-                request = {"session_id": session_id, "mode": "force"}
-                if attempt < len(degrade_schedule) and degrade_schedule[attempt] is not None:
-                    request["force_protect_recent"] = degrade_schedule[attempt]
-                    logger.info(f"[ChatQueue] Force compression retry {attempt+1} with degraded protect_recent={degrade_schedule[attempt]}")
-
-                # 广播压缩状态 started（前端圆环动画启动）
-                try:
-                    from niu_api.chat import notify_compact_status_sync
-                    notify_compact_status_sync("started", mode="force")
-                except Exception:
-                    pass
-
-                result = await _tidy_context_impl(request=request)
+                if _pipeline_queue is None:
+                    # None 窗口（§3.0 Option A）：同步执行，调用方等完成
+                    result = await _tidy_context_impl(request=request)
+                else:
+                    fut = _pipeline_enqueue("force", request, held=False)
+                    result = await asyncio.wrap_future(fut)
 
                 # 检查压缩后 token 是否降到安全水平
                 tokens_after = result.get("tokens_after", 0) if isinstance(result, dict) else 0
@@ -560,13 +565,12 @@ class ChatQueue:
                 logger.error(f"[ChatQueue] Force compression retry {attempt+1} failed: {e}")
                 # 继续降级重试，不 return——降级策略需要多轮才能生效
             finally:
-                # 广播压缩状态 done（前端圆环动画结束），必须在 release 之前
+                # 广播压缩状态 done（前端圆环动画结束）
                 try:
                     from niu_api.chat import notify_compact_status_sync
                     notify_compact_status_sync("done", mode="force")
                 except Exception:
                     pass
-                _tidy_lock.release()
 
         logger.error(f"[ChatQueue] All {max_retries} force compression retries exhausted")
 
