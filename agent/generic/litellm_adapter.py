@@ -702,6 +702,12 @@ class LiteLLMSession(BaseSession):
         super().__init__(cfg)
         self.api_type = cfg.get("api_type", "openai")
         self.provider = cfg.get("provider", "")
+        # max_tokens 顶层字段并入 litellm_kwargs——chat() 经 request_params.update(self.litellm_kwargs) 送达。
+        # kwargs 已有 max_tokens 则 kwargs 优先：压缩（compat 程序预算）/探测（256/50）在 config 层注入 kwargs，
+        # 不被用户顶层配置覆盖；用户 kwargs 显式配置同样优先于顶层字段（兼容存量配置）。
+        mt = cfg.get("max_tokens")
+        if mt is not None and "max_tokens" not in self.litellm_kwargs:
+            self.litellm_kwargs = {**self.litellm_kwargs, "max_tokens": mt}
         # stop 检查回调：默认全局停止标志（主 Agent），call-time 解析模块全局（测试 monkeypatch 有效）；
         # 子 Agent 由 call_subagent 按来源覆盖属性（同步 user=全局 or terminate；异步 user/program/scheduler=仅 terminate）
         self.stop_check = self._default_stop_check
@@ -1241,6 +1247,8 @@ def create_litellm_client(config: dict[str, Any]) -> ToolClient:
         cfg["temperature"] = config["temperature"]
     if "reasoning_effort" in config and config["reasoning_effort"] is not None:
         cfg["reasoning_effort"] = config["reasoning_effort"]
+    if config.get("max_tokens") is not None:
+        cfg["max_tokens"] = config["max_tokens"]
     cfg["provider"] = config.get("provider", "")
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
     cfg["read_timeout"] = config.get("read_timeout") or 300
