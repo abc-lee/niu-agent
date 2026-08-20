@@ -99,6 +99,10 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
                 },
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Set larger (e.g. 8192/16384) when long reports get truncated.",
+                },
             },
         },
     },
@@ -547,6 +551,7 @@ def get_lightrag_llm_config() -> dict[str, Any]:
         "hasApiKey": bool(lightrag_llm.get("apiKey", "")),
         "configured": bool(lightrag_llm.get("model", "")),
         "reasoning_effort": lightrag_llm.get("reasoning_effort", "none"),
+        "max_tokens": lightrag_llm.get("max_tokens"),
         "temperature": lightrag_llm.get("temperature", 0.2),
         "litellm_kwargs": lightrag_llm.get("litellm_kwargs", {}),
     }
@@ -559,16 +564,17 @@ def set_lightrag_llm_config(
     model: str = None,
     llm_type: str = None,
     reasoning_effort: str = None,
+    max_tokens: int = None,
 ) -> dict[str, Any]:
     """Set LightRAG LLM configuration.
 
     If model is set to empty string, removes model-specific fields
-    but preserves reasoning_effort (model 和 reasoning_effort 是独立维度).
+    but preserves reasoning_effort 和 max_tokens（均为独立维度）.
     """
     config = load_user_config()
 
     # If clearing the model (model=""), remove model-specific fields
-    # but preserve reasoning_effort (model 和 reasoning_effort 是独立维度)
+    # but preserve reasoning_effort 和 max_tokens（均为独立维度）
     if model == "":
         lightrag_llm = config.get("lightrag_llm", {})
         for key in ("presetId", "apiKey", "apiBase", "model", "type"):
@@ -576,6 +582,11 @@ def set_lightrag_llm_config(
         # Apply reasoning_effort even when clearing model (two independent dimensions)
         if reasoning_effort is not None:
             lightrag_llm["reasoning_effort"] = reasoning_effort
+        if max_tokens is not None:
+            if max_tokens > 0:
+                lightrag_llm["max_tokens"] = max_tokens
+            else:
+                lightrag_llm.pop("max_tokens", None)  # 0/负数 = 清除（回退不传）
         if lightrag_llm:
             config["lightrag_llm"] = lightrag_llm
         else:
@@ -607,6 +618,11 @@ def set_lightrag_llm_config(
         lightrag_llm["type"] = llm_type
     if reasoning_effort is not None:
         lightrag_llm["reasoning_effort"] = reasoning_effort
+    if max_tokens is not None:
+        if max_tokens > 0:
+            lightrag_llm["max_tokens"] = max_tokens
+        else:
+            lightrag_llm.pop("max_tokens", None)  # 0/负数 = 清除（回退不传）
 
     config["lightrag_llm"] = lightrag_llm
     save_user_config(config)
@@ -1075,6 +1091,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
                     },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Set larger (e.g. 8192/16384) when long reports get truncated.",
+                    },
                 },
             },
         ),
@@ -1317,6 +1337,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 model=arguments.get("model"),
                 llm_type=arguments.get("llm_type"),
                 reasoning_effort=arguments.get("reasoning_effort"),
+                max_tokens=arguments.get("max_tokens"),
             )
 
         # Storage Configuration
