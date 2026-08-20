@@ -73,6 +73,20 @@ def resolve_probe_budget(
     return read_timeout, wait_timeout
 
 
+_MINIMAL_PROBE_KEYS = ("apibase", "apikey", "model", "type", "provider")
+
+
+def _minimal_probe_config(config: dict) -> dict:
+    """启动探测最小连通配置：白名单构造，只保留连通所需键。
+
+    能力参数（max_tokens/thinking/reasoning_effort/temperature 等）天然排除——
+    启动探测只验证"模型在不在、能不能用"（用户需求 2026-08-20）；能力组合可用性
+    由设置页 testAndSave 探测把关（_probe_llm 本体零改动）。白名单而非黑名单剥离：
+    未来 _probe_llm 新增能力参数自动被排除，无"忘记剥离"污染风险。
+    """
+    return {k: config[k] for k in _MINIMAL_PROBE_KEYS if k in config}
+
+
 async def check_llm_ready(
     *,
     read_timeout: float = STARTUP_READ_TIMEOUT,
@@ -97,7 +111,11 @@ async def check_llm_ready(
     read_timeout, wait_timeout = resolve_probe_budget(config, read_timeout=read_timeout, wait_timeout=wait_timeout)
 
     logger.info(f"[LLMGate] 探测 LLM 连通性（启动检测，预算 read_timeout={read_timeout}/wait_for={wait_timeout}）...")
-    success, message = await _probe_llm(config, read_timeout=read_timeout, wait_timeout=wait_timeout)
+    success, message = await _probe_llm(
+        _minimal_probe_config(config),
+        read_timeout=read_timeout,
+        wait_timeout=wait_timeout,
+    )
     if success:
         logger.info(f"[LLMGate] LLM 连通性检测通过: {message}")
         return True, message

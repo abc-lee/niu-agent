@@ -178,3 +178,42 @@ async def test_check_llm_ready_custom_budget():
     assert ready is True
     assert mock_probe.call_args.kwargs["read_timeout"] == 30.0
     assert mock_probe.call_args.kwargs["wait_timeout"] == 60.0
+
+
+def test_check_llm_ready_uses_minimal_probe_config(monkeypatch):
+    """启动探测只测连通性——传给 _probe_llm 的配置只含白名单键，无能力参数（用户需求 2026-08-20）。"""
+    import asyncio
+
+    from niu_api import llm_ready
+
+    captured = {}
+
+    async def fake_probe(config, **kwargs):
+        captured["config"] = config
+        return True, "ok"
+
+    monkeypatch.setattr("niu_api.compat._probe_llm", fake_probe)
+    # 注意：check_llm_ready 内部是函数局部 import（from niu_api.compat import _probe_llm）
+    # → 必须 patch 源头模块 niu_api.compat._probe_llm（llm_ready 无模块级属性，patch 它无效）
+    # 注入带能力参数的已保存配置（get_llm_config 返回小写键 + setdefault provider）
+    monkeypatch.setattr(
+        "niu_api.llm_proxy.get_llm_config",
+        lambda: {"apibase": "http://127.0.0.1:1", "apikey": "k", "model": "m", "type": "openai",
+                 "provider": "openai",
+                 "max_tokens": 32768, "thinking": {"type": "enabled"}, "reasoning_effort": "high",
+                 "temperature": 0.7, "litellm_kwargs": {"max_tokens": 32768, "thinking": {"type": "enabled"}}},
+    )
+
+    async def run():
+        return await llm_ready.check_llm_ready()
+
+    ok, msg = asyncio.run(run())
+
+    assert ok
+    cfg = captured["config"]
+    assert set(cfg.keys()) == {"apibase", "apikey", "model", "type", "provider"}
+    assert "max_tokens" not in cfg
+    assert "thinking" not in cfg
+    assert "reasoning_effort" not in cfg
+    assert "temperature" not in cfg
+    assert "litellm_kwargs" not in cfg
