@@ -43,7 +43,7 @@ Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
 
 Niu 的模型配置以**设置窗口**为权威入口（`/setup` 命令或托盘图标打开），整套机制由三层构成：
 
-1. **基础字段**（预设 / API Key / 地址 / 模型 / 类型）：决定"用哪个模型"。模型名**大小写敏感**（如 zen/go 包月端点 `MiMo-V2.5` 大写 → 401，须全小写 `mimo-v2.5`）。
+1. **基础字段**（预设 / API Key / 地址 / 模型 / 类型 / 输出上限 max_tokens）：决定"用哪个模型"。模型名**大小写敏感**（如 zen/go 包月端点 `MiMo-V2.5` 大写 → 401，须全小写 `mimo-v2.5`）。`max_tokens` 缺省不传（服务端默认），长回复被截断时调大——见字段说明表。
 2. **能力探测档案**（`~/.niu/model_capabilities.json`）：决定"这个模型支持哪些推理深度档位"。设置窗口"探测能力"按钮按**生产同参**（当前场景的 thinking 配置）实测模型真实支持的值域，写入档案后驱动推理深度下拉框——**只显示模型实际支持的档位**。档案键 = `apiBase|model|llm` / `apiBase|model|lightrag`；换模型/换服务商后旧档案不适用，**必须重新探测**。
 3. **测试连接并保存**（testAndSave）：最后把关。先测连通性，再自动探测 response_format 能力（3 档递进），全程真实 LLM + 生产同参；参数组合无效（如推理深度档位与思考链状态不兼容）报"参数组合无效"**阻断保存**。全通过才写入配置文件。
 
@@ -97,6 +97,7 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 | `reasoning_effort` | 推理深度档位：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"` 等（取值以模型能力探测档案为准）。主 Agent 默认空；LightRAG 默认由探测档案驱动——设置窗口"探测能力"按钮（lightrag 段）探测后，下拉框只显示该模型实际支持的档位，选择即写入。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，换模型/换服务商后必须重新探测（详见下方"reasoning_effort 配置与测试指南"）。`reasoning_effort` 只控制推理深度，**不控制**思考链返回——思考链返回由 `litellm_kwargs.thinking` 独立控制 |
 | `litellm_kwargs` | 厂商特有参数，JSON 对象格式，原样透传给 LiteLLM。用于传递各厂商 SDK 要求的额外参数（如火山引擎的 `thinking`、`allowed_openai_params` 等）。代码不做任何厂商判断，只负责透传 |
 | `read_timeout` | LLM 流式响应读取超时（秒），默认 `300`。模型首响应/流式 chunk 间隔超过该值判定超时并触发重试。**调小场景**：对话卡顿久等（如 `60`）；**调大场景**：知识图谱入库/大文档分析（分块分析可能数分钟，见下方 LightRAG 段）。`llm` 段控制主对话/子 Agent；知识图谱 LLM 调用默认继承 `llm` 段的 `read_timeout`，若 `lightrag_llm` 段配置了独立 `model`，则以 `lightrag_llm` 段的 `read_timeout` 为准（两段同默认 `300`） |
+| `max_tokens` | 单次回复最大输出 token 数（输出上限）。**缺省不传**（用服务端默认）。长报告/长回复被截断时调大（如 `8192`/`16384`）。**注意**：模型对 max_tokens 无感知——它是服务端硬截断线，到上限即 `finish_reason=length` 截断；思考链（thinking）与正文**共享**该预算，思考链模型尤其要调大。设置窗口"测试连接并保存"会顺带校验该值合法性（非法值服务端 400 阻断保存）。只作用于会话对话链路（主 Agent/子 Agent/知识图谱），压缩与能力探测保持程序内部固定值 |
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 
@@ -243,6 +244,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 | `reasoning_effort` | **推理深度档位（核心配置）** | 探测后从下拉选择模型实际支持的档位；未探测时留空（模型默认） |
 | `temperature` | LLM 采样温度。0.0 完全确定性，1.0 高随机度。为空时由系统兜底 0.2 | `0.2`（实体/关系抽取建议低温度避免 JSON 漂移） |
 | `litellm_kwargs` | 厂商特有参数，同 `llm` 段说明。火山引擎知识图谱需传 `thinking` 和 `allowed_openai_params` | `{}` 或见配置示例 |
+| `max_tokens` | 单次回复最大输出 token 数。**缺省不传**（用服务端默认）；为空时自动继承 `llm` 段的 max_tokens。入库调用一般不需要调大——结构化输出被截断（日志见 `finish_reason=length`）时再设 | 空 |
 
 > **重要**：LightRAG 官方建议入库时不要使用带思考链的模型。思考链会导致实体提取超时（单次调用可达 198 秒）。是否返回思考链由 `litellm_kwargs.thinking` 独立控制（与 `reasoning_effort` 是两个不同参数，互不替代）——火山方舟入库场景配置 `thinking: {"type": "disabled"}` 关闭思考链返回。`reasoning_effort` 只控制推理深度档位，默认由模型能力探测档案驱动（不再预设固定档位，见下方"reasoning_effort 配置与测试指南"），即使主 Agent 使用思考链模型，只要入库段 thinking disabled + 探测出的合理档位，入库也不受影响。
 
@@ -392,7 +394,8 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 2. **基础配置**：引导选择预设，或填入 API Key / 地址 / 模型 / 类型。提醒：模型名**大小写敏感**，从服务商控制台复制原样粘贴；不确定模型名时查该服务商文档或先探测验证。
 3. **探测能力**：点"探测能力（对话模型）"按钮——探测完成后推理深度下拉只显示该模型**实际支持**的档位。入库段若继承主模型（`lightrag_llm.model` 为空，默认），探测主 llm 会自动填充入库段，无需单独探测。
 4. **选档位**：llm 段按对话需求选（深度思考选 high，速度优先选 low/medium）；入库段按知识图谱质量选——见上文"reasoning_effort 配置与测试指南"实测数据（能力强的模型 none/low 即可高质量提取，**不要盲目 high**；不同模型差异大，以探测档案为准）。
-5. **测试连接并保存**：点按钮——程序自动测连通性 + response_format 能力 + 参数组合校验，全部通过才保存。若报"参数组合无效"，回到第 3-4 步调整档位/思考链后重试。
+4.5 **输出上限（可选）**：长回复被截断（回复不完整/报告断尾，或日志 `finish_reason=length`）时，引导用户在"输出上限 (max_tokens)"填入更大值（如 `8192`/`16384`），再点"测试连接并保存"——测试会顺带校验该值合法性（非法值服务端 400 阻断）。思考链模型尤其注意：thinking 与正文共享该预算。
+5. **测试连接并保存**：点按钮——程序自动测连通性 + response_format 能力 + 参数组合校验 + max_tokens 合法性，全部通过才保存。若报"参数组合无效"，回到第 3-4 步调整档位/思考链后重试。
 6. **验证效果**：入库一个文档，按上文"入库质量检查方法"检查日志确认提取质量；对话侧直接发消息观察回复。
 
 > **边界**：仅当用户明确要求"帮我直接改配置文件"、或设置窗口不可用（如后端异常）时，才允许 Agent 手动修改 `user-config.json`——修改后必须告知用户回设置窗口"测试连接并保存"做一次校验。
@@ -404,7 +407,8 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 1. **写入配置**：调用 MCP 工具 `set_lightrag_llm_config`（config-manager 服务器）：
    - 按预设：`set_lightrag_llm_config(preset_id="doubao")`（自动填 apiBase/model/type）
    - 完全自定义：`set_lightrag_llm_config(api_key="…", api_base="https://ark.cn-beijing.volces.com/api/v3", model="doubao-seed-2-0-pro-260215", llm_type="openai")`
-   - 回退继承：`set_lightrag_llm_config(model="")`（清除独立模型，reasoning_effort 保留——两维度独立）
+   - 输出上限：`set_lightrag_llm_config(max_tokens=8192)`；`max_tokens=0` 清除（回退不传）；读回确认用 `get_lightrag_llm_config`
+   - 回退继承：`set_lightrag_llm_config(model="")`（清除独立模型，reasoning_effort 和 max_tokens 保留——均独立维度）
 2. **探测档位**：入库模型配好后，让用户在设置窗口点"探测能力（入库模型）"按钮（此刻非继承，按钮显示）——探测写入 `|lightrag` 档案并刷新档位下拉。
 3. **校验保存**：引导用户选档位后点"测试连接并保存"——程序按入库段配置真实探测 + 参数组合校验，通过才落盘。
 
