@@ -18,10 +18,10 @@
   }},
   {"type": "function", "function": {
     "name": "read",
-    "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 500 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned with line numbers starting at 1.",
+    "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 500 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned with line numbers starting at 1. A negative offset reads the last |offset| lines of the file (e.g. offset=-50 reads the last 50 lines).",
     "parameters": {"type": "object", "properties": {
       "file_path": {"type": "string", "description": "The absolute path to the file to read"},
-      "offset": {"type": "integer", "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once.", "default": 1},
+      "offset": {"type": "integer", "description": "The line number to start reading from (1-based). Use a negative value to read the last |offset| lines (e.g. offset=-50 = last 50 lines). Only provide if the file is too large to read at once.", "default": 1},
       "limit": {"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once. Maximum 500.", "default": 500}
     }, "required": ["file_path"]}
   }},
