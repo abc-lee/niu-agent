@@ -1626,6 +1626,12 @@ async def test_llm(request: Request) -> dict:
     # 预算解析：config.read_timeout 可覆盖默认（逃生口——>120s 慢模型通道，
     # 与启动门控 check_llm_ready 同一 helper，闭环）
     read_timeout, wait_timeout = resolve_probe_budget(config)
+    # 启动器兜底路径（body 空，读已保存配置）走最小连通配置——启动探测只测连通性；
+    # body 非空（testAndSave 预保存测试）保留用户参数校验组合可用性（用户需求 2026-08-20）。
+    # 注意顺序：resolve_probe_budget 先消费完整 config（read_timeout 逃生口），再最小化。
+    if not body:
+        from niu_api.llm_ready import _minimal_probe_config
+        config = _minimal_probe_config(config)
     success, message = await _probe_llm(
         config,
         read_timeout=read_timeout,
