@@ -82,6 +82,13 @@ def _is_subagent_incomplete(result: str) -> bool:
         return False
 
 
+def _is_subagent_failure(result) -> bool:
+    """子 Agent 程序化失败（注册冲突 '[错误]' / LLM 错误 'SUBAGENT_ERROR:'）——游标不得推进。"""
+    return isinstance(result, str) and (
+        result.startswith("[错误]") or result.startswith("SUBAGENT_ERROR:")
+    )
+
+
 def _incomplete_reason(result: str) -> str:
     """提取 incomplete JSON 的 reason（日志区分用）。非 incomplete 返回空串。"""
     try:
@@ -2977,7 +2984,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
                 # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result):
+                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
                     if _is_subagent_incomplete(entity_result):
                         logger.warning(f"[Tidy] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
                     else:
@@ -3063,7 +3070,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 await asyncio.to_thread(runner._ensure_session_chain)
 
                 # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(dream_result) or _is_subagent_incomplete(dream_result):
+                if _is_subagent_overflow(dream_result) or _is_subagent_incomplete(dream_result) or _is_subagent_failure(dream_result):
                     if _is_subagent_incomplete(dream_result):
                         logger.warning(f"[Tidy] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
                     else:
@@ -3148,7 +3155,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
 
                     # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                    if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result):
+                    if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result) or _is_subagent_failure(journal_result):
                         if _is_subagent_incomplete(journal_result):
                             logger.warning(f"[Tidy] journal-agent incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
                         else:
@@ -3570,7 +3577,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
                     # 游标自动推进：成功→推进到范围内仍存在的最后一条，overflow/incomplete→不动
                     fresh_ids = None
-                    if _is_subagent_overflow(cm_result) or _is_subagent_incomplete(cm_result):
+                    if _is_subagent_overflow(cm_result) or _is_subagent_incomplete(cm_result) or _is_subagent_failure(cm_result):
                         if _is_subagent_incomplete(cm_result):
                             logger.warning(f"[Tidy] context-manager incomplete ({_incomplete_reason(cm_result)}) — cursor not advanced")
                         else:
@@ -3750,7 +3757,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
-                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result):
+                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
                     if _is_subagent_incomplete(entity_result):
                         logger.warning(f"[Tidy] Force: entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
                     else:
@@ -3835,7 +3842,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 await asyncio.to_thread(runner._ensure_session_chain)
 
                 # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(dream_result) or _is_subagent_incomplete(dream_result):
+                if _is_subagent_overflow(dream_result) or _is_subagent_incomplete(dream_result) or _is_subagent_failure(dream_result):
                     if _is_subagent_incomplete(dream_result):
                         logger.warning(f"[Tidy] Force: Dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
                     else:
@@ -3920,7 +3927,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
 
                 # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result):
+                if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result) or _is_subagent_failure(journal_result):
                     if _is_subagent_incomplete(journal_result):
                         logger.warning(f"[Tidy] Force: journal-agent incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
                     else:

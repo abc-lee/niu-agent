@@ -1327,6 +1327,7 @@ class NiuRunner:
                 _write_cursor_with_lock,
                 _is_subagent_overflow,
                 _is_subagent_incomplete,
+                _is_subagent_failure,
                 _incomplete_reason,
                 _extract_overflow_info,
             )
@@ -1374,7 +1375,7 @@ class NiuRunner:
 
                     # 游标推进
                     new_entity_id = last_entity_id
-                    if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result):
+                    if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
                         if _is_subagent_incomplete(entity_result):
                             logger.warning(f"[Nap] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
                         else:
@@ -1456,17 +1457,20 @@ class NiuRunner:
             # 已入图，链边与断跨越边当轮生效
             self._ensure_session_chain()
 
-            # 游标推进
+            # 游标推进：failure（[错误]/SUBAGENT_ERROR:）或 incomplete→不动；overflow→1/3 兜底；否则解析推进
             new_dream_id = last_dream_id
-            if _is_subagent_overflow(dream_result):
+            if _is_subagent_failure(dream_result) or _is_subagent_incomplete(dream_result):
+                # 失败前缀（注册冲突 [错误] / LLM 错误 SUBAGENT_ERROR:）与 incomplete（/stop、轮次耗尽等打断场景）：游标不动，下次续做
+                if _is_subagent_failure(dream_result):
+                    logger.warning(f"[Nap] dream-evolver failure: {dream_result[:200]} — cursor not advanced")
+                else:
+                    logger.warning(f"[Nap] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
+            elif _is_subagent_overflow(dream_result):
                 logger.warning(f"[Nap] dream-evolver overflow")
                 if len(dream_msg_ids) > 10:
                     _fallback_idx = len(dream_msg_ids) // 3
                     new_dream_id = dream_msg_ids[_fallback_idx]
                     logger.info(f"[Nap] Overflow fallback: advancing cursor to 1/3 ({_fallback_idx}/{len(dream_msg_ids)})")
-            elif _is_subagent_incomplete(dream_result):
-                # incomplete（/stop、轮次耗尽等打断场景）：游标不动，下次续做
-                logger.warning(f"[Nap] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
             else:
                 _processed_idx = _parse_processed_up_to(dream_result)
                 if _processed_idx is not None and _processed_idx in dream_idx_to_id:
@@ -1827,6 +1831,7 @@ class NiuRunner:
             _incomplete_reason,
             _is_subagent_incomplete,
             _is_subagent_overflow,
+            _is_subagent_failure,
             _write_cursor_with_lock,
         )
 
@@ -1850,7 +1855,7 @@ class NiuRunner:
 
         # --- cursor advance: overflow/incomplete→don't move; else parse processed_up_to=N + lookup idx_to_id, fallback fallback_ids[-1] ---
         new_cursor_id = last_cursor_id
-        if _is_subagent_overflow(result) or _is_subagent_incomplete(result):
+        if _is_subagent_overflow(result) or _is_subagent_incomplete(result) or _is_subagent_failure(result):
             if _is_subagent_incomplete(result):
                 logger.warning(f"[{step_name}] incomplete ({_incomplete_reason(result)}) — cursor not advanced")
             else:
