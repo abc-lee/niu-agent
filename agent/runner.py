@@ -1296,14 +1296,16 @@ class NiuRunner:
 
             logger.info(f"[Nap] Triggering nap: {turn_count} turns >= threshold {threshold} (post_compress={len(post_compress_msgs)} msgs)")
 
-            # 后台启动小憩模式
+            # 后台启动小憩模式（投递到全局整理队列，§3.1 入口 9）
             self._nap_running.set()
             try:
-                threading.Thread(
-                    target=self._run_nap_background,
-                    daemon=True,
-                    name="nap-bg"
-                ).start()
+                fut = self._dispatch_to_pipeline("nap")
+                if fut is None:
+                    # None 窗口（队列未创建/主 loop 不可用）：同步执行兜底（§3.0 Option A）
+                    try:
+                        self._run_nap_background()
+                    finally:
+                        self._nap_running.clear()
             except Exception:
                 self._nap_running.clear()
                 raise
@@ -1897,15 +1899,51 @@ class NiuRunner:
 
         return result, new_cursor_id
 
-    def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
-        """主 Agent 上下文超阈值回调 — 执行完整 force 压缩流程
+    def _dispatch_to_pipeline(self, kind: str, request: dict | None = None, held: bool = False):
+        """跨线程投递整理任务到全局队列（§3.1 跨线程投递桥：call_soon_threadsafe）。
 
-        回调完成后原地修改 messages 列表（从 DB 重新加载压缩后的消息）。
-        agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
+        返回 concurrent.futures.Future（调用方可 .result(timeout) 等待）；
+        队列未创建 / 主 loop 不可用（None 窗口，§3.0）→ 返回 None，调用方按 Option A
+        同步执行兜底。压缩类（force/runner-force）去重键与 _pipeline_enqueue 一致（§3.2）。
+        """
+        from concurrent.futures import Future
 
-        实现参考：niu_api/compat.py _tidy_context_impl(mode="force") L1429-1907
-        关键差异：compat.py 是 async，这里是同步线程中运行，
-        子 Agent 调用用 concurrent.futures.ThreadPoolExecutor，无总超时限制。
+        from niu_api import chat as _chat_module
+        from niu_api.compat import (
+            _pipeline_queue, _active_compress_futs, _drop_active_compress,
+        )
+
+        if _pipeline_queue is None:
+            return None
+        loop = _chat_module._main_loop
+        if loop is None or loop.is_closed():
+            return None
+        request = request or {}
+        fut: Future = Future()
+        if kind in ("force", "runner-force"):
+            key = (kind, bool(request.get("skip_compress")), request.get("force_protect_recent"))
+            active = _active_compress_futs.get(key)
+            if active is not None and not active.done():
+                return active
+            _active_compress_futs[key] = fut
+            fut.add_done_callback(_drop_active_compress)
+        item = {"kind": kind, "request": request, "held": held, "result": fut}
+        try:
+            loop.call_soon_threadsafe(_pipeline_queue.put_nowait, item)
+        except Exception:
+            # 投递失败：回滚去重登记（如有）→ 返回 None 让调用方同步兜底
+            if kind in ("force", "runner-force"):
+                _drop_active_compress(fut)
+            return None
+        return fut
+
+    def _execute_force_pipeline(self) -> dict | None:
+        """运行完整 force 压缩管道（entity → dream → journal → context-manager → DB 写删）。
+
+        由全局整理队列 worker（§3.1 入口 8，kind="runner-force"）在后台线程调用。
+        不含转换块（dict 转换/孤立 tool 清理/system 保留/messages[:] 回写）——转换块由
+        调用方 _on_context_high_usage 在回调内执行，保证 agent_loop 的 messages 为 dict 列表契约。
+        返回 {"status": "ok"} / {"status": "skipped", "reason": ...} / {"status": "error", ...}。
         """
         from pathlib import Path as _Path
 
@@ -1927,16 +1965,6 @@ class NiuRunner:
             _read_protect_recent_count,
             call_subagent_with_auto_answer,
         )
-
-        logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
-                     f"({tokens_used/tokens_limit:.1%})")
-
-        # 广播压缩状态 started 事件（前端圆环动画启动，模式1 auto）
-        try:
-            from niu_api.chat import notify_compact_status_sync
-            notify_compact_status_sync("started", mode="auto")
-        except Exception:
-            pass
 
         try:
             # === 读取游标 ===
@@ -2419,6 +2447,52 @@ class NiuRunner:
                 })
                 logger.info(f"[Runner] Force: Compress cursor updated: {new_compress_id}")
 
+            return {"status": "ok"}
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"[Runner] Proactive compress failed: {e}\n{tb}")
+            return {"status": "error", "message": str(e)}
+
+    def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
+        """主 Agent 上下文超阈值回调 — 投递 runner-force 到全局整理队列并等待，随后执行转换块
+
+        压缩管道（_execute_force_pipeline）在队列 worker 中执行（全局一次一个、排队）。
+        本回调等待其完成（fut.result(timeout=300)；超时是队列等待上限非状态机打断——
+        force 不可打断语义不违背，§7.12），然后从 DB 重载消息并原地修改 messages 列表
+        （dict 转换/孤立 tool 清理/system 保留/cache_control 重注入/messages[:] 回写——
+        agent_loop L845-848 契约：messages 为 dict 列表）。
+        agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
+        """
+        from concurrent.futures import TimeoutError as _FutureTimeoutError
+
+        logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
+                     f"({tokens_used/tokens_limit:.1%})")
+
+        # 广播压缩状态 started 事件（前端圆环动画启动，模式1 auto）
+        try:
+            from niu_api.chat import notify_compact_status_sync
+            notify_compact_status_sync("started", mode="auto")
+        except Exception:
+            pass
+
+        try:
+            # === 入口 8：投递 runner-force 到全局整理队列（§3.1）===
+            _fut = self._dispatch_to_pipeline("runner-force")
+            if _fut is None:
+                # None 窗口（队列未创建/主 loop 不可用）：同步执行压缩管道（§3.0 Option A）
+                _result = self._execute_force_pipeline()
+            else:
+                try:
+                    _result = _fut.result(timeout=300)
+                except _FutureTimeoutError:
+                    # 超时 = 队列等待上限（§7.12）：压缩可能仍在 worker 继续——转换块自加载当前 DB 状态
+                    logger.warning("[Runner] Force: timed out waiting for pipeline queue (300s), reloading current DB state")
+                    _result = None
+                except Exception as e:
+                    logger.warning(f"[Runner] Force: pipeline task failed: {e}")
+                    _result = None
+
             # === 重新加载消息，原地修改 agent_loop 的 messages 列表 ===
             fresh_db_msgs = self._sync_get_messages()
             if fresh_db_msgs:
@@ -2521,6 +2595,7 @@ class NiuRunner:
                     messages[:] = fresh_msgs
                 logger.info(f"[Runner] Force: Reloaded {len(fresh_msgs)} messages from DB after compress")
 
+            return _result
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
