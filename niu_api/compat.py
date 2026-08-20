@@ -1488,7 +1488,9 @@ async def _probe_llm(
             # litellm_kwargs 同源透传
             "reasoning_effort": config.get("reasoning_effort"),
             "provider": config.get("provider", ""),
-            "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": 256},
+            # 用户配置 max_tokens 时用用户值（testAndSave 顺带校验合法性：非法值 → 服务端 400 → probe 报错阻断保存）；
+            # 无配置保持 256（探测提速——max_tokens 是上限非目标，不影响 "hi" 探测速度）
+            "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": config.get("max_tokens") or 256},
             "read_timeout": read_timeout,
         }
         session = LiteLLMSession(cfg=llm_config)
