@@ -174,8 +174,9 @@ niu [选项]
 | `/api/context/messages/delete` | POST | 按 ID 删除消息 |
 | `/api/context/messages/update` | POST | 更新单条消息内容 |
 | `/api/context/messages/add` | POST | 添加消息 |
-| `/api/context/tidy` | POST | 上下文整理（sleep/force 模式） |
-| `/api/chat/clear` | POST | 清空当前会话。body 可选 `force_tidy:true` 时先跑整理（entity→dream→journal，skip 压缩）阻塞完成后清空 + 复位游标；忙时内部 request_stop。`force_tidy` 缺省/`false` 直接清空（/new 路径） |
+| `/api/context/tidy` | POST | 上下文整理（sleep/force 模式）。整理管道全局一次一个排队（单 worker 队列）：`mode:'sleep'` → 投递 + 立即返回 `{"status":"queued"}`（后端继续排队执行）；`mode:'force'` → 投递 + await 队列执行完成（600s 前端超时兜底）。force 压缩前校验提炼/进化游标追平（`_cursors_caught_up`），未追平 → `{"status":"skipped","reason":"还有消息未提炼完，本次不压缩"}` |
+| `/api/spirit-state` | POST | 精灵状态同步。body `{"state": str}`（如 `"sleep"`/`"idle"`，小写归一）；后端据此刻 `is_sleeping()` 判定 sleep 管道 CP0-CP3 状态机（睡眠整理可被唤醒打断，nap/force 不检查） |
+| `/api/chat/clear` | POST | 清空当前会话。body 可选 `force_tidy:true` 时先跑整理（entity→dream→journal，skip 压缩）**经全局整理队列投递 + await 完成**（排队+执行共享 600s 总预算，超时降级 clear-messages-only）后清空 + 复位游标；忙时内部 request_stop。`force_tidy` 缺省/`false` 直接清空（/new 路径） |
 | `/api/chat/session` | POST | 同步对话（兼容旧 UI） |
 | `/api/shutdown` | POST | 关闭服务 |
 | `/api/preload-status` | GET | 预加载状态（Rust 启动器用） |
