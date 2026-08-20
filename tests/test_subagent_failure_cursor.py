@@ -9,6 +9,7 @@
 2. compat sleep 代表点：全链（entity/dream）+ L3546 mode1 压缩点 → 游标全不动
 3. compat force 代表点：entity/dream/journal（skip_compress=True）→ 游标全不动
 4. runner nap 代表点：entity + dream 分支顺序（failure 优先于 overflow / else 推进）
+5. handler._update_journal_cursor（journal 游标：failure 前缀零写入，正常推进判别力）
 
 fixture 数学同 test_incomplete_cursor（R6-B 验证）：2 条消息 × _FakeCalc 100 token/条 = 200 tokens，
 _read_context_window_tokens=8000 → 2.5% usage：sleep journal 跳过（<50%）、mode1 压缩执行（<70% 不 skip）。
@@ -353,3 +354,67 @@ class TestNapFailureCursorBranches:
         )
         assert not logger_mock.error.call_args_list, f"不应有 error: {logger_mock.error.call_args_list}"
         runner._nap_running.clear.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 5. handler._update_journal_cursor（journal 游标 hermetic——T7 决策点补齐）
+# ---------------------------------------------------------------------------
+
+class TestHandlerJournalCursorFailure:
+    """_update_journal_cursor 失败前缀分支（T7：handler.py L1152 决策点）。
+
+    - '[错误]' → last_journal.json 零写入（游标不动）
+    - 'SUBAGENT_ERROR:' → last_journal.json 零写入
+    - 正常 processed_up_to=2 → 写 m2（判别力，证明 fixture 非空洞）
+
+    断言基于 mock write_text call args（同 test_incomplete_cursor 第 3 节模式），
+    不依赖真实 last_journal.json / DB。
+    """
+
+    def _make_handler(self):
+        from agent.handler import NiuHandler
+
+        handler = NiuHandler(mcp_client=None)
+        handler._sync_get_messages = lambda: [_Msg("m1"), _Msg("m2")]
+        return handler
+
+    def test_error_bracket_does_not_write_journal_cursor(self):
+        """journal-agent 返回 '[错误]' 前缀 → journal 游标不写入（Quality P1 场景）。"""
+        handler = self._make_handler()
+        write_text = mock.MagicMock()
+        with mock.patch("agent.handler.Path.exists", return_value=False), \
+             mock.patch("agent.handler.Path.write_text", write_text):
+            handler._update_journal_cursor(
+                ERROR_BRACKET,
+                ["m1", "m2"],
+                {"1": "m1", "2": "m2"},
+            )
+        write_text.assert_not_called()
+
+    def test_subagent_error_prefix_does_not_write_journal_cursor(self):
+        """journal-agent 返回 'SUBAGENT_ERROR:' 前缀 → journal 游标不写入。"""
+        handler = self._make_handler()
+        write_text = mock.MagicMock()
+        with mock.patch("agent.handler.Path.exists", return_value=False), \
+             mock.patch("agent.handler.Path.write_text", write_text):
+            handler._update_journal_cursor(
+                SUBAGENT_ERROR_STR,
+                ["m1", "m2"],
+                {"1": "m1", "2": "m2"},
+            )
+        write_text.assert_not_called()
+
+    def test_normal_result_writes_journal_cursor(self):
+        """对照：正常 processed_up_to=2 → journal 游标写 m2（判别力）。"""
+        handler = self._make_handler()
+        write_text = mock.MagicMock()
+        with mock.patch("agent.handler.Path.exists", return_value=False), \
+             mock.patch("agent.handler.Path.write_text", write_text):
+            handler._update_journal_cursor(
+                "处理完成 @end processed_up_to=2",
+                ["m1", "m2"],
+                {"1": "m1", "2": "m2"},
+            )
+        assert write_text.call_count == 1
+        payload = json.loads(write_text.call_args.args[0])
+        assert payload.get("last_journal_id") == "m2"

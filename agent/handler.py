@@ -1122,6 +1122,7 @@ class NiuHandler(BaseHandler):
             _flock,
             _funlock,
             _incomplete_reason,
+            _is_subagent_failure,
             _is_subagent_incomplete,
             _is_subagent_overflow,
             _parse_processed_up_to,
@@ -1148,14 +1149,16 @@ class NiuHandler(BaseHandler):
 
                 new_journal_id = last_journal_id
 
-                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result):
-                    if _is_subagent_incomplete(journal_result):
+                # 游标推进：failure/overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
+                if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result) or _is_subagent_failure(journal_result):
+                    if _is_subagent_failure(journal_result):
+                        logger.warning(f"[Journal] failure: {journal_result[:200]} — cursor not advanced")
+                    elif _is_subagent_incomplete(journal_result):
                         logger.warning(f"[Journal] incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
                     else:
                         overflow_info = _extract_overflow_info(journal_result)
                         logger.warning(f"[Journal] overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    # overflow/incomplete 时游标不动
+                    # failure/overflow/incomplete 时游标不动
                     new_journal_id = last_journal_id
                 else:
                     _processed_idx = _parse_processed_up_to(journal_result)
