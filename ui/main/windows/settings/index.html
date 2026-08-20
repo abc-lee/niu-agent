@@ -59,6 +59,13 @@
       gap: 14px;
       align-items: start;
     }
+    /* 知识图谱卡片：横跨中右两栏（行 2），内部字段横排 */
+    .note-card.wide { grid-column: 2 / 4; }
+    .kg-fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 0 14px;
+    }
     .col-stack {
       display: flex;
       flex-direction: column;
@@ -178,7 +185,7 @@
     .container { position: relative; }
     .status {
       position: absolute;
-      right: 20px;
+      left: 20px;
       bottom: 66px;
       /* 100% = container padding box（含左右 20px padding）——
          减 40px 得内容宽，再减 2×14 gap 后三等分 = 单栏宽 */
@@ -251,9 +258,8 @@
         </div>
       </div>
 
-      <!-- 第二栏：上=对话模型能力（第一栏拐弯），下=知识图谱模型 -->
-      <div class="col-stack">
-        <div class="note-card">
+      <!-- 第二栏：对话模型能力（第一栏拐弯） -->
+      <div class="note-card">
           <div class="card-title pencil-text">对话模型能力</div>
           <div class="card-sub">思考链与推理深度（探测后可选档位）</div>
 
@@ -282,38 +288,6 @@
           </div>
 
           <button class="btn btn-probe" id="llmProbeBtn" onclick="probeCapability('llm')">探测能力（对话模型）</button>
-        </div>
-
-        <div class="note-card blue">
-          <div class="card-title pencil-text">知识图谱模型（入库）</div>
-          <div class="card-sub">入库链路独立配置；地址/模型不填则继承对话模型。</div>
-
-          <div class="form-group">
-            <label class="pencil-text">思考链</label>
-            <select id="lightragThinking">
-              <option value="">跟随模型默认</option>
-              <option value="enabled">开启</option>
-              <option value="disabled" selected>关闭</option>
-            </select>
-            <div class="hint">入库建议关闭思考链；"跟随模型默认" = 不配置</div>
-          </div>
-
-          <div class="form-group">
-            <label class="pencil-text">推理深度</label>
-            <select id="lightragReasoningEffort">
-              <option value="">跟随模型默认</option>
-            </select>
-            <div class="hint"><span id="lightragCapabilityHint">未探测，请点击下方"探测能力"</span></div>
-          </div>
-
-          <div class="form-group">
-            <label class="pencil-text">Temperature</label>
-            <input type="number" id="lightragTemperature" placeholder="0.2" min="0" max="2" step="0.1">
-            <div class="hint">入库调用温度（默认 0.2）</div>
-          </div>
-
-          <button class="btn btn-probe" id="lightragProbeBtn" onclick="probeCapability('lightrag')">探测能力（入库模型）</button>
-        </div>
       </div>
 
       <!-- 第三栏：上下文与压缩 -->
@@ -344,6 +318,40 @@
           <input type="number" id="sleepTriggerMinutes" placeholder="5" min="1" max="60" step="1">
           <div class="hint">空闲后触发睡眠整理（默认 5 分钟）</div>
         </div>
+      </div>
+
+      <!-- 知识图谱模型：横跨中右两栏（行 2），字段横排 -->
+      <div class="note-card blue wide">
+        <div class="card-title pencil-text">知识图谱模型（入库）</div>
+        <div class="card-sub">入库链路独立配置；地址/模型不填则继承对话模型。</div>
+
+        <div class="kg-fields">
+          <div class="form-group">
+            <label class="pencil-text">思考链</label>
+            <select id="lightragThinking">
+              <option value="">跟随模型默认</option>
+              <option value="enabled">开启</option>
+              <option value="disabled" selected>关闭</option>
+            </select>
+            <div class="hint">入库建议关闭思考链；"跟随模型默认" = 不配置</div>
+          </div>
+
+          <div class="form-group">
+            <label class="pencil-text">推理深度</label>
+            <select id="lightragReasoningEffort">
+              <option value="">跟随模型默认</option>
+            </select>
+            <div class="hint"><span id="lightragCapabilityHint">未探测，请点击下方"探测能力"</span></div>
+          </div>
+
+          <div class="form-group">
+            <label class="pencil-text">Temperature</label>
+            <input type="number" id="lightragTemperature" placeholder="0.2" min="0" max="2" step="0.1">
+            <div class="hint">入库调用温度（默认 0.2）</div>
+          </div>
+        </div>
+
+        <button class="btn btn-probe" id="lightragProbeBtn" onclick="probeCapability('lightrag')">探测能力（入库模型）</button>
       </div>
     </div>
 
