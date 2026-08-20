@@ -3155,6 +3155,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 logger.info("[Tidy] entity-extractor: no new messages since cursor")
 
+            # CP1：entity 段完成后——非睡眠（睡眠中被唤醒）→ 中断；entity 游标已推进不回滚，下次续跑
+            if not is_sleeping():
+                logger.warning("[Tidy] Sleep interrupted after entity-extractor (woke up)")
+                return {"status": "interrupted", "reason": "woke_up"}
+
             # 2/3. dream-evolver（增量 task 方式）
             # 串行执行：重新获取消息列表（Entity 可能已修改 DB）
             messages = await store.get_messages()
@@ -3240,6 +3245,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 logger.info("[Tidy] dream-evolver: no new messages since cursor")
                 new_dream_id = last_dream_evolve_id
+
+            # CP2：dream 段完成后——非睡眠 → 中断；entity/dream 游标已推进不回滚，下次续跑
+            if not is_sleeping():
+                logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
+                return {"status": "interrupted", "reason": "woke_up"}
 
             # 2.5/3. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
             if usage_percent >= 50:
@@ -3328,6 +3338,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     logger.info("[Tidy] journal-agent: no new messages since cursor")
             else:
                 logger.info(f"[Tidy] journal-agent: skipped (usage {usage_percent:.1f}% < 50%)")
+
+            # CP3：compress 段入口（journal 两路汇合后单点覆盖）——非睡眠 → 中断；已推进游标不回滚，下次续跑
+            if not is_sleeping():
+                logger.warning("[Tidy] Sleep interrupted before context-manager (woke up)")
+                return {"status": "interrupted", "reason": "woke_up"}
 
             # 3/3. context-manager（增量 task 方式，保护范围 [compress_cursor, dream_cursor_new]）
             # 串行执行：重新获取消息列表（Dream 可能已修改 DB）

@@ -376,6 +376,7 @@ def test_mode2_prompt_not_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
     _mock_lightrag_config(monkeypatch)
@@ -449,6 +450,7 @@ def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
     _mock_lightrag_config(monkeypatch)
@@ -515,6 +517,7 @@ def test_mode2_truncate_too_few_no_clear(monkeypatch):
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
     _mock_lightrag_config(monkeypatch)
@@ -747,6 +750,7 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
     _mock_lightrag_config(monkeypatch)

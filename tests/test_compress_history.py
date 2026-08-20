@@ -243,6 +243,7 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)  # 不保护，2 条都进 history
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "is_sleeping", lambda: True, raising=False)  # T5：sleep 管道测试保持睡眠态
     # builder refetch lightrag 段（T2 后无参内部 refetch）——mock 隔离，不读真实用户配置
     monkeypatch.setattr(llm_proxy_module, "get_llm_config", lambda use_lightrag_config=False: {
         "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",

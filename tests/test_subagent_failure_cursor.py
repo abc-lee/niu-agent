@@ -123,6 +123,8 @@ def _tidy_failure_patches(subagent_result, call_mock):
         }),
         mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
         mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
+        # T5：sleep 管道测试保持睡眠态（CP1-CP3 检查点需 is_sleeping=True 才不打断）
+        mock.patch("niu_api.compat.is_sleeping", return_value=True),
         # 四个游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）。
         # compat.py 在函数内 `from pathlib import Path`，无模块级 Path，故 patch 类方法本身
         mock.patch("pathlib.Path.exists", return_value=False),

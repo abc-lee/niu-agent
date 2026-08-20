@@ -423,6 +423,8 @@ def _tidy_common_patches():
         mock.patch("agent.subagent.call_subagent_with_auto_answer", return_value=""),
         mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
         mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
+        # T5：sleep 管道测试保持睡眠态（CP1-CP3 检查点需 is_sleeping=True 才不打断）
+        mock.patch("niu_api.compat.is_sleeping", return_value=True),
         # 增量区间恒空 → 各阶段"no new messages"，不调子 Agent、不写游标
         mock.patch("niu_api.compat._build_incremental_msg_text", return_value=""),
         # 防 ~/.niu 既有游标文件触发真实游标写入（测试保持 hermetic）
