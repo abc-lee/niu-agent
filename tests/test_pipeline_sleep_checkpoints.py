@@ -252,8 +252,10 @@ async def test_nap_never_calls_is_sleeping(monkeypatch):
             self.called = False
 
         def _run_nap_background(self):
-            self.called = True
-            return None
+            try:
+                self.called = True
+            finally:
+                self._nap_running.clear()  # 与真实 _run_nap_background（L1505）同语义：自身 finally 恒 clear
 
     fake = _FakeNapRunner()
     monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: fake)
@@ -266,7 +268,7 @@ async def test_nap_never_calls_is_sleeping(monkeypatch):
         await compat.stop_pipeline_queue()
     assert result == {"status": "ok"}
     assert fake.called
-    assert not fake._nap_running.is_set()  # worker finally 清 _nap_running
+    assert not fake._nap_running.is_set()  # _run_nap_background 自身 finally 清除（P2-1：worker 不再重复 clear）
 
 
 async def test_runner_force_never_calls_is_sleeping(monkeypatch):
