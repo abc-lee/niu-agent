@@ -2089,9 +2089,9 @@ class LightRAGIngester:
                 from niu_api.internal.lightrag_manager import get_change_log
 
                 get_change_log().record_change("document_created", {
-                    "id": doc_id or "",
+                    "id": doc_id or track_id or "",
                     "uri": file_path or "",
-                    "title": file_path or doc_id or "",
+                    "title": file_path or doc_id or track_id or "",
                     "source": "inject_document",
                 })
             except Exception as e:
