@@ -1,6 +1,6 @@
 server: browser-server
 directory: browser
-description: "浏览器 — 网页导航与交互。工作流：先 browser_navigate 导航 → 从返回的 elements 取编号 → 用 browser_interact 按编号操作。三条关键规则：1) 每次交互后元素重新编号，必须用最新返回的编号；2) URL 必须以 http:// 或 https:// 开头，不要写 url= 前缀；3) 需要刷新元素编号时用 action=get_state。支持多标签页（browser_new_tab / browser_switch_tab / browser_close_tab）。"
+description: "浏览器 — 网页导航、元素交互与多标签页管理"
 
 tools:
   - name: browser_navigate
@@ -27,7 +27,7 @@ tools:
   - name: browser_interact
     category: write
     short: "与网页元素交互(点击/输入/选择/滚动)或获取网页当前信息"
-    long: "通过元素编号与页面交互。导航/操作后返回的 elements 含编号的交互元素，用 index 定位。\"串行操作\"——每次交互后元素重新编号，**始终用上一次返回结果中的最新 index**，编号过期会导致操作失败或点错元素。需要刷新编号时用 action=get_state。操作完成后返回更新后的页面状态（可继续据此决策）。"
+    long: "通过元素编号与页面交互。导航/操作后返回的 elements 含编号的交互元素，用 index 定位。\"串行操作\"——每次交互后元素重新编号，**始终用上一次返回结果中的最新 index**，编号过期会导致操作失败或点错元素。需要刷新编号时用 action=get_state。操作完成后返回更新后的页面状态（可继续据此决策）。**查看用户正在浏览的页面**：用户自己在浏览器里浏览时，直接用 action=get_state 即可读取用户当前正在看的页面内容（无需先 navigate——导航会替换用户正在看的页面）；返回的 tabSummary 列出所有已打开标签页（包括用户自己打开的），需要看其他标签页时先用 browser_switch_tab 切换，再 get_state。"
     parameters:
       - name: action
         position: 1
