@@ -513,6 +513,25 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-21
+
+#### 修复：entity-extractor 提炼入库 doc_id 撞车静默丢失（方案 R1+R2 双轮审查 + T1-T4 实施 + 实机验证）
+
+- **现象（用户报告）**：内容提炼调 `lightrag_insert` 入库后，知识图谱**多数情况无动作**、少数才有——当天第二次提炼起全部静默丢失（2026-08-21 实证：10:42 首次入库成功，11:08 第二次同 doc_id 被吞）。
+- **根因三层**：
+  1. **提示词层**：entity-extractor.md L44/L66 教 LLM 自编 `doc_id="refined:{date}:{seq:03d}"`——LLM 不知道当天已用几号 seq → 恒写 `001` → 当天第二次提炼撞车
+  2. **去重层**：LightRAG `apipeline_enqueue_documents`（lightrag.py L1452-1513）`doc_status.filter_keys` 检出 doc_id 已存在 → 过滤出处理队列（early-return L1508-1510）→ 仅 warning → **不做实体抽取**；`ainsert` 仍正常返回 track_id（L1237-1270）→ 工具/LLM/程序三层无感知
+  3. **清洗层**（dup- 记录不可见之谜）：撞车时 upsert 的 `dup-` FAILED 记录**立即落盘**（json_doc_status_impl.py L222 upsert 自带 index_done_callback），但 `GET /api/kg/pipeline_status`（kg_api.py L569-620）被 chat.html:2390/spirit.html:636 每 3s 轮询，管道完成后 `_cleanup_failed_docs`（kg_api.py L23-104）删除全部 dup- 条目——**dup 记录活不过一个轮询周期**，事后排查永远看不到撞车痕迹
+- **方案 A（删 doc_id 走内容 MD5）**：root cause 修复——去重键从"LLM 瞎编的序号"变"内容本身"（不同内容永不撞车、相同内容合理去重）。`lightrag_insert` schema 的 doc_id 本就 Optional（auto-generated if omitted）
+- **实施（main 4 commits + AGENTS.md 本条）**：
+  - `c13c28a1`：entity-extractor.md L44/L66 删 doc_id 指导 + 显式"不要传 doc_id"（提示词每次调用现读，无需重启）
+  - `9730a4c9`：inject_document changelog 空 id 修复——`"id": doc_id or track_id or ""`（doc_id=None 时用 track_id，防图谱前端空 id 伪节点；对齐既有先例 L2040）
+  - `5283838f`：删除 message_injector.py 死代码（4 函数生产零调用——generate_doc_id 生成的正是 `refined:{date}:{seq:03d}`，同一错误抽象的化石）+ 其唯一测试
+  - `0104fdeb`：新测试 tests/test_inject_document_changelog.py（3 用例：doc_id=None→id==track_id / 显式 doc_id→id==doc_id / rag None→不 record_change）
+- **验证**：新测试 3 passed；adapter 套件 9 failed 与基线完全一致（pre-existing 陈旧测试）；实施后双审 APPROVE（唯一 P3 = 本条日志补录）
+- **已知边界**：11:08 被吞内容不补救（游标已推进，内容价值低且部分过时）；同内容提炼仍会被合理去重（MD5 撞车=设计语义）；file-processor/主 Agent 经 disk 仍可传 doc_id（未教学、行为=修复前，接受）；撞车保持不可观测（程序调用方无法解释错误——用户拍板）
+- **实机验证（待用户）**：新对话产生游标后新消息 → 自然睡眠或 /sleep → doc_status 出现 `doc-xxxx` 新条目（content_summary 含"记忆提炼"）且 status=processed；图谱前端 changelog 无空 id 伪节点
+
 ### 2026-08-20
 
 #### 工程：整理管道全局排队 + 睡眠状态机打断 + 压缩前置校验 + 游标假推进修复（方案 7 轮双审 + T1-T8 分批实施）
