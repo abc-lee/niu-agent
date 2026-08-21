@@ -355,7 +355,7 @@ TOOL_SCHEMAS = {
     },
     "browser_interact": {
         "name": "browser_interact",
-        "description": "与页面元素交互（按索引）：点击、输入文本、选择下拉项、滚动、获取当前状态。每次操作返回更新后的页面状态（含重新编号的元素和标签页摘要）。操作是串行的——始终使用上一次结果的最新索引。查看用户正在浏览的页面：用户自己在浏览器里浏览时，直接 action=get_state 即可读取用户当前页面（无需先 browser_navigate）；返回的 tabSummary 列出所有已打开标签页（含用户自己打开的），看其他标签页先 browser_switch_tab 再 get_state。",
+        "description": "与页面元素交互（按索引）：点击、输入文本、选择下拉项、滚动、获取当前状态。每次操作返回更新后的页面状态（含重新编号的元素和标签页摘要）。操作是串行的——始终使用上一次结果的最新索引。查看用户正在浏览的页面：用户自己在浏览器里浏览时，直接 action=get_state 即可读取用户当前页面（无需先 browser_navigate）；返回的 tabSummary 列出所有已打开标签页（含用户自己打开的），看其他标签页先 browser_switch_tab 再 get_state。若报错目标页不支持 content script（当前页是浏览器内部页），从错误附带的标签页列表选 tab_id 用 browser_switch_tab 切换后重试。",
         "input_schema": {
             "type": "object",
             "properties": {

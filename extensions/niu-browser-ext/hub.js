@@ -325,7 +325,7 @@ async function handleCommand(msg) {
       try {
         const targetTab = await chrome.tabs.get(targetTabId);
         if (!isContentScriptAllowed(targetTab.url)) {
-          sendResult(id, false, 'Target tab does not support content scripts: ' + (targetTab.url || 'unknown'));
+          sendResult(id, false, 'Target tab does not support content scripts: ' + (targetTab.url || 'unknown') + '\n\n可切换的标签页：\n' + summarizeTabs());
           return;
         }
       } catch (e) {
@@ -395,13 +395,18 @@ async function handleClick(msg, id) {
     return;
   }
 
-  // Record URL before click
+  // 检查目标标签页是否支持 content script（同时记录点击前 URL）
   let urlBefore;
   try {
-    const tab = await chrome.tabs.get(targetTabId);
-    urlBefore = tab.url;
+    const targetTab = await chrome.tabs.get(targetTabId);
+    if (!isContentScriptAllowed(targetTab.url)) {
+      sendResult(id, false, 'Target tab does not support content scripts: ' + (targetTab.url || 'unknown') + '\n\n可切换的标签页：\n' + summarizeTabs());
+      return;
+    }
+    urlBefore = targetTab.url;
   } catch (e) {
-    urlBefore = '';
+    sendResult(id, false, 'Tab not found: ' + targetTabId);
+    return;
   }
 
   // Send click to content_script
@@ -455,19 +460,9 @@ async function handleClick(msg, id) {
 // ============== Utility functions ==============
 
 function getActiveTabId() {
-  return chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
+  return chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
     const tab = tabs[0];
-    if (!tab) return null;
-
-    // Browser internal pages (edge://, chrome://, about:) don't support content scripts.
-    // Navigate to a real page so content_script can be injected.
-    if (tab.url && isInternalUrl(tab.url)) {
-      console.log('[NiuHub] Active tab is internal page, navigating to bing.com');
-      await chrome.tabs.update(tab.id, { url: 'https://www.bing.com' });
-      await waitForTabLoad(tab.id, 10000);
-    }
-
-    return tab.id;
+    return tab ? tab.id : null;
   });
 }
 
