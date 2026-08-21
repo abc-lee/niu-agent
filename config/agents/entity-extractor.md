@@ -41,7 +41,7 @@ mcpServers:
 
 ### 输出格式
 将提炼结果直接作为 `lightrag_insert` 的 `content` 参数传入入库，不要写入文件：
-- 调用 `lightrag_insert(content=精炼文档, doc_id="refined:{date}:{seq}")` — content 参数直接传精炼文档文本，不要先写文件再入库
+- 调用 `lightrag_insert(content=精炼文档)` — content 参数直接传精炼文档文本，不要先写文件再入库；不要传 doc_id 参数（程序自动按内容生成唯一 ID）
 - 每条提炼内容一行，包含：类型标签 + 时间戳 + 精炼摘要
 - 无价值内容不输出（纯确认如"好的""收到"、系统状态通知等跳过）
 - **注意**：用户的提问本身可能蕴含兴趣或偏好，不要因为"只是问了个问题"就跳过。判断标准是：如果用户主动发起了一个话题（而非被动回应系统提示），这个话题反映了用户的关注点，就值得提取
@@ -63,7 +63,7 @@ mcpServers:
 
 ## 工具使用规范
 
-- 文档注入：`lightrag_insert(content=精炼文档, doc_id="refined:{date}:{seq:03d}")` — 整体入库，LightRAG 自动提取实体和关系
+- 文档注入：`lightrag_insert(content=精炼文档)` — 整体入库，LightRAG 自动提取实体和关系；不要传 doc_id 参数
 - 查询已有文档：`lightrag_document_status()` — 检查已有精炼文档
 - 查询已有实体：`lightrag_search_entities(query, top_k)` — 语义搜索，按关键词找相关实体。需要按类型枚举时用 `lightrag_list_entities --entity-type 类型名`
 - 图遍历：`lightrag_get_graph(action="explore", entity_name, depth)`
