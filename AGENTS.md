@@ -513,6 +513,24 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-22
+
+#### 修复：向量检索精确名短路——query 恰为实体名时图层精确命中置顶（精确名查询根治）
+
+- **现象**：睡眠后向量检索某高频人物实体检索不到（rank 49 掉出 top_k）。
+- **根因链（全实证）**：① dream-evolver 触发式精简（`lightrag_edit_entity`）把该实体描述归纳覆盖为**无主语属性堆叠**（正文零次实体名、丢称呼锚点）→ ② 向量 = embed(entity_name + "\n" + description)，bge pooling 全文加权——开头 1 次名字被 130 字正文稀释（量化：无主语堆叠 sim 0.4409 rank 49；名字首句（"XX是…"）sim 0.5780 ≈历史 #1）→ ③ **检索侧真实缺陷**：`search_entities`→`query_data(mode=local)` 纯向量语义排序，query 恰好等于实体名时无图层精确索引短路——向量排序决定精确名查询命运。
+- **机制认知（bge 稀释）**：向量化构造 name+\n+description 本身没错，但隐含假设"description 是自然语言描述（主语会反复出现）"——精简成无主语电报体后假设破裂。name 在开头出现 1 次被正文稀释，正文再出现名字信号加倍。
+- **方案（用户拍板）**：向量检索与图层精确名检索**并行**，精确命中实体分数置最高。落地为 query_data 返回前后置修正（**不动 LightRAG fork**——成熟产品不改原则）；**事实更正**：返回实体项无 rank 分数字段（rank 是 operate.py 内部图度数中间值，convert_to_user_format 已丢弃）——"分数放到最高分"落地为"置顶到首位"。
+- **实施（main 2 commits）**：
+  - `26a37871`：query_data 短路块（45 行）——守卫 G1 status==success（failure 零命中不短路）/ G2 filter_lambda is None（search_by_file_path 技能通道契约不绕过）/ G3 mode∈(local,global,hybrid,mix)（naive/bypass 实体恒空）/ G4 data dict+entities list 双形态；query.strip() 非空+≤50 字符+has_entity(q) lowercase 精确命中 → get_entity_info 下钻 data.graph_data 构造同构项（无 rank 无 distance；fields 在场同过滤）→ 在列重排首位/不在列插入首位截断生效 top_k；全块 try/except 异常返回原结果
+  - `89ac2cdd`：tests/test_query_data_exact_match.py 10 用例（命中不在列截断/命中在列重排/未命中/组合 query/异常防御/failure/filter_lambda/info error/naive 门控/51 字符门控）
+- **一个入口全覆盖**（gitnexus impact 核对一致）：MCP search_entities/lightrag_query_data、kg_api 前端搜索、search_multi_lightrag 动态注入、region_injector 脑区激活、timeline_query、photo-server 全过 query_data；filter_lambda 通道（search_by_file_path/search_within_region）G2 豁免
+- **下游效应（有利）**：置顶实体 distance 缺失 → runner 衰减池 fallback i=0 → 1.0 = 池内最高分（decay_pool 降序）——与置顶意图一致
+- **质量链**：方案 v1.0→v1.2（R1 双审交叉抓出 rank 事实错误+failure 门控 2 P1 + filter_lambda/mode 契约 2 P2；R2 双审仅剩 P3 级行号/清单/测试增补，修正后确认可交付）→ 实施 2 commits → 实施后双审 APPROVE（Quality 零缺陷）
+- **验证**：新测试 10 passed；adapter 回归 51 passed/9 failed 与 pre-existing 基线精确一致零新增
+- **实机验证（待用户重启）**：search_entities("<实体名>") 或对话查该实体 → 该实体在结果首位（永久免疫描述形态漂移）
+- **已知边界**：多词 query（"<实体名>是谁"）不短路走向量（保守语义）；>50 字符实体名不短路（DEFAULT_ENTITY_NAME_MAX_LENGTH=256 的取舍）；向量异常/failure 路径短路不可达（门控优先）；语义通道（模糊查询）质量交由 dream-evolver 自然演进（精简锚点规则不改——用户拍板）；受损描述不手动修（短路后精确名查询已免疫）
+
 ### 2026-08-21
 
 #### 修复：entity-extractor 提炼入库 doc_id 撞车静默丢失（方案 R1+R2 双轮审查 + T1-T4 实施 + 实机验证）
