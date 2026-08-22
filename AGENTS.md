@@ -26,7 +26,7 @@ MCP 服务器集群 (mcp-servers/)
 1. **你是项目经理** — 不要自己遍历代码，把控全局，减少无价值上下文占用。
 2. **禁止自己改代码** — 所有代码修改必须委托给子 Agent 执行，主对话只做分析和决策。
 3. **修改前必须先做临时提交备份** — `git add -A && git commit`，恢复前也必须先备份当前状态，不能直接 `git checkout` 覆盖；完整回退到过去的某点必须经过用户同意。
-4. **修改前必须用 gitnexus 分析影响范围** — 评估 blast radius 后再动手。
+4. **修改前必须用 先 分析影响范围** — 评估 blast radius 后再动手。
 5. **测试必须用真实数据 + 真实 LLM** — 绕过 LLM 的测试是假测试。
 6. **`python/` 目录必须是完整的自包含 Python 安装** — 所有二进制、库、依赖必须真实存在于 `python/` 目录内，禁止符号链接指向外部路径（如 `/Library/Frameworks/Python.framework/`）。此目录最终要打包分发，客户无需自装 Python 环境和依赖。当前 `python/` 目录的 stdlib 仍指向系统 Python（自包含 stdlib 尚未复制进来），需另开会话重建。numpy<2 和 opencv<4.12 是隐性约束（torch 2.2.2 / insightface C 扩展用 numpy 1.x ABI；opencv 4.12+ 强制 numpy>=2）。
 7. **git 操作后必须修复文件权限** — `git checkout/reset` 会丢失可执行权限，执行后必须运行：
@@ -524,7 +524,7 @@ preload_face_model()
 - **实施（main 2 commits）**：
   - `26a37871`：query_data 短路块（45 行）——守卫 G1 status==success（failure 零命中不短路）/ G2 filter_lambda is None（search_by_file_path 技能通道契约不绕过）/ G3 mode∈(local,global,hybrid,mix)（naive/bypass 实体恒空）/ G4 data dict+entities list 双形态；query.strip() 非空+≤50 字符+has_entity(q) lowercase 精确命中 → get_entity_info 下钻 data.graph_data 构造同构项（无 rank 无 distance；fields 在场同过滤）→ 在列重排首位/不在列插入首位截断生效 top_k；全块 try/except 异常返回原结果
   - `89ac2cdd`：tests/test_query_data_exact_match.py 10 用例（命中不在列截断/命中在列重排/未命中/组合 query/异常防御/failure/filter_lambda/info error/naive 门控/51 字符门控）
-- **一个入口全覆盖**（gitnexus impact 核对一致）：MCP search_entities/lightrag_query_data、kg_api 前端搜索、search_multi_lightrag 动态注入、region_injector 脑区激活、timeline_query、photo-server 全过 query_data；filter_lambda 通道（search_by_file_path/search_within_region）G2 豁免
+- **一个入口全覆盖**（调用点核对一致）：MCP search_entities/lightrag_query_data、kg_api 前端搜索、search_multi_lightrag 动态注入、region_injector 脑区激活、timeline_query、photo-server 全过 query_data；filter_lambda 通道（search_by_file_path/search_within_region）G2 豁免
 - **下游效应（有利）**：置顶实体 distance 缺失 → runner 衰减池 fallback i=0 → 1.0 = 池内最高分（decay_pool 降序）——与置顶意图一致
 - **质量链**：方案 v1.0→v1.2（R1 双审交叉抓出 rank 事实错误+failure 门控 2 P1 + filter_lambda/mode 契约 2 P2；R2 双审仅剩 P3 级行号/清单/测试增补，修正后确认可交付）→ 实施 2 commits → 实施后双审 APPROVE（Quality 零缺陷）
 - **验证**：新测试 10 passed；adapter 回归 51 passed/9 failed 与 pre-existing 基线精确一致零新增
@@ -709,7 +709,7 @@ preload_face_model()
 
 - **现象**：飞书 IM 中主 Agent 回复里子 Agent 转述块后主 Agent 的话直接连接（文本无分隔/表格吞并"简单说："入表）；Chat 页面正常（另起一行）。实证：Chat 显示 DB 持久化文本、飞书显示流式卡片累计，两条路径都过 strip_at_messages。
 - **根因（实证链）**：LLM 原始输出（raw_http 20260815/000007）`...日志\n\n您看...`（空行存在）→ `strip_at_messages` 的 `if line.strip()` 过滤空行 + 单 \n 重连 → DB（messages.db a01d63e5）与飞书卡片均 `...日志\n您看...`（空行被删）→ Chat（marked）单 \n 显示换行（正常）；飞书 CardKit 列表/表格项内单 \n 折叠/吞并（连接）——同一文本两端渲染差异。
-- **修复**：`strip_at_messages` 只做 `_AT_PATTERN.sub('', reply_text).strip()`——@ 消息段剥离 + 两端清理，原文换行/空行结构原样保留。@ 剥离残留空行保留（无害，段落间距）。函数签名/调用点零改动（gitnexus CRITICAL 12 处核验：persist 去重双方同版本一致、纯 @ 回复判定 .strip() 保留不变、ask_user 问题文本无空行结构）。
+- **修复**：`strip_at_messages` 只做 `_AT_PATTERN.sub('', reply_text).strip()`——@ 消息段剥离 + 两端清理，原文换行/空行结构原样保留。@ 剥离残留空行保留（无害，段落间距）。函数签名/调用点零改动（12 处调用点核验：persist 去重双方同版本一致、纯 @ 回复判定 .strip() 保留不变、ask_user 问题文本无空行结构）。
 - **验证**：TDD（空行保留核心断言 2 新）+ 5 回归文件 41 passed 零新增失败（test_at_message_parser 11 / full_text 8 / at_sync_name 10 / persist_dedup 9 / scheduler_sse 3）+ 实机验证待用户重启（飞书卡片块闭合）。
 
 #### 修复：工具调用统一异常兜底（E1——dispatch 整体包裹，循环不死亡/错误 LLM 可见）
@@ -1320,49 +1320,3 @@ def unload_face_model():
 - 新增 `GetMessagesBefore` 支持加载更早的消息。
 
 **消息顺序**：最旧在上，最新在下，滚动到顶部加载更多。
-
----
-
-<!-- gitnexus:start -->
-# GitNexus — Code Intelligence
-
-This project is indexed by GitNexus as **niu-agent** (19826 symbols, 37650 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
-- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/niu-agent/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/niu-agent/clusters` | All functional areas |
-| `gitnexus://repo/niu-agent/processes` | All execution flows |
-| `gitnexus://repo/niu-agent/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-
-<!-- gitnexus:end -->

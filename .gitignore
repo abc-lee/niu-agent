@@ -92,7 +92,6 @@ models/paraphrase-multilingual-MiniLM-L12-v2/model.safetensors
 
 # User config files with API keys
 config/user-config*.json
-.gitnexus
 /data/mcp_tools.json
 
 # Tool-generated directories (not project code)
@@ -106,7 +105,6 @@ config/user-config*.json
 kv_end.txt
 /config/.obsidian
 /docs/.obsidian
-/.claude/skills/gitnexus/gitnexus-cli
 niu-launcher
 niu.app/
 
