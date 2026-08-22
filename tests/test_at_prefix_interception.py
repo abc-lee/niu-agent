@@ -105,6 +105,72 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
     assert result == (agent_loop.INTERCEPTED, None)
 
 
+def test_at_niu_agent_uppercase_triggers_ask_main_agent(monkeypatch):
+    """子 Agent content 以大写 @NIU-AGENT 开头时同样拦截（大小写不敏感）"""
+    from agent import subagent
+    from agent.generic import agent_loop
+
+    # mock _ask_main_agent_impl 返回固定回答
+    monkeypatch.setattr(
+        subagent, "_ask_main_agent_impl",
+        mock.Mock(return_value="主 Agent 的回答")
+    )
+
+    messages = [
+        {"role": "system", "content": "你是子 Agent"},
+        {"role": "user", "content": "开始测试"},
+        {"role": "assistant", "content": "好的"},
+    ]
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "test-agent-abc1"
+    fake_handler._is_sync_subagent = False  # 显式设为 False，模拟异步子 Agent
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="@NIU-AGENT 我应该选择哪个选项？",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),  # 非 None（异步子 Agent）
+    )
+
+    # 断言：整段原样传递（大写保留）
+    subagent._ask_main_agent_impl.assert_called_once()
+    call_kwargs = subagent._ask_main_agent_impl.call_args
+    assert call_kwargs.kwargs["question"] == "@NIU-AGENT 我应该选择哪个选项？"
+    assert call_kwargs.kwargs["unique_name"] == "test-agent-abc1"
+
+    # 断言：messages 被追加了 assistant content + user 回答
+    assert messages[-2]["role"] == "assistant"
+    assert messages[-2]["content"] == "@NIU-AGENT 我应该选择哪个选项？"
+    assert messages[-1]["role"] == "user"
+    assert "主 Agent 的回答" in messages[-1]["content"]
+
+    # 断言：返回 (INTERCEPTED, None)（让 agent_loop continue）
+    assert result == (agent_loop.INTERCEPTED, None)
+
+
+def test_at_user_uppercase_triggers_intercepted_ask_user(monkeypatch):
+    """子 Agent content 以大写 @USER 开头时同样拦截（大小写不敏感）→ INTERCEPTED_ASK_USER"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "test-agent-abc1"
+    fake_handler._is_sync_subagent = False  # 显式设为 False，模拟异步子 Agent
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="@USER 你需要哪个文件？",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),  # 非 None（异步子 Agent）
+    )
+
+    # 断言：整段原样作为 question 返回（大写保留）
+    assert result == (agent_loop.INTERCEPTED_ASK_USER, "@USER 你需要哪个文件？")
+
+
 def test_at_end_prefix_allows_exit_with_space(monkeypatch):
     """@end 带空格时允许退出"""
     from agent.generic import agent_loop
@@ -141,6 +207,25 @@ def test_at_end_prefix_allows_exit_without_space(monkeypatch):
 
     assert result == (agent_loop.EXIT, None)
     assert len(messages) == 1
+
+
+def test_at_end_uppercase_allows_exit(monkeypatch):
+    """@END 大写形式也允许退出（大小写不敏感）"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="@END 任务已完成，结果：成功",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    assert result == (agent_loop.EXIT, None)
+    assert len(messages) == 1  # messages 不被追加
 
 
 def test_no_at_prefix_no_tool_calls_returns_format_error(monkeypatch):

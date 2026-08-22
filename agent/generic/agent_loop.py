@@ -35,11 +35,14 @@ INTERCEPTED_ASK_USER = "intercepted_ask_user"  # @user 拦截成功
 
 
 def _find_unescaped_marker(content: str, marker: str) -> int:
-    """在 content 里查找未转义标记的位置。
+    """在 content 里查找未转义标记的位置（大小写不敏感——Agent 可能输出 @END/@NIU-AGENT/@USER 等大写形式）。
 
     规则（简单转义判断）：
     - 标记前一个紧邻字符是 `\\` → 不识别（转义），继续向后找
     - 其他位置（开头、中间、被反引号/引号包装等）→ 识别
+
+    实现：用 content.lower() 与 marker.lower() 做 find；idx 在 lower 字符串与原始字符串中一致
+    （.lower() 不改变 ASCII 长度），转义判断仍用原始 content（content[idx-1]）。
 
     Args:
         content: 待搜索的文本（已 lstrip 或原始均可）
@@ -51,6 +54,8 @@ def _find_unescaped_marker(content: str, marker: str) -> int:
     Examples:
         >>> _find_unescaped_marker("@end 任务完成", "@end")
         0
+        >>> _find_unescaped_marker("@END 任务完成", "@end")
+        0
         >>> _find_unescaped_marker("`@end 任务完成`", "@end")
         1
         >>> _find_unescaped_marker("blah @end blah", "@end")
@@ -60,12 +65,14 @@ def _find_unescaped_marker(content: str, marker: str) -> int:
         >>> _find_unescaped_marker("没有标记", "@end")
         -1
     """
+    lower_content = content.lower()
+    lower_marker = marker.lower()
     start = 0
     while True:
-        idx = content.find(marker, start)
+        idx = lower_content.find(lower_marker, start)
         if idx == -1:
             return -1
-        # 前一个紧邻字符是 \\ → 转义，跳过本次匹配，从 idx+1 继续找
+        # 前一个紧邻字符是 \\ → 转义，跳过本次匹配，从 idx+1 继续找（idx 在 lower 与原始字符串中一致）
         if idx > 0 and content[idx - 1] == "\\":
             start = idx + 1
             continue
