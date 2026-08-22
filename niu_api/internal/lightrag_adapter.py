@@ -412,6 +412,51 @@ class LightRAGAdapter:
             if fields:
                 result = _filter_result_fields(result, fields)
             result = _clean_sep_in_query_result(result)
+
+            # 精确名短路：query 恰为实体名时，图层精确索引命中实体置顶
+            # （向量排序不决定精确名查询命运——高频实体向量 rank 掉出修复；不动 LightRAG fork）
+            try:
+                data = result.get("data", result)
+                if (
+                    result.get("status") == "success"  # G1: failure 形态（data 为空）不短路
+                    and filter_lambda is None  # G2: filter_lambda 技能通道契约不绕过
+                    and mode in ("local", "global", "hybrid", "mix")  # G3: naive/bypass 实体数组契约为空
+                    and isinstance(data, dict)  # G4: entities 双形态——data 为 list 时跳过
+                    and isinstance(data.get("entities"), list)
+                ):
+                    q = query.strip()
+                    # ≤50 字符门控：组合长句 query 不命中自动跳过（罕见长实体名接受不短路）
+                    if q and len(q) <= 50 and self.has_entity(q):
+                        info = self.get_entity_info(q)
+                        if info.get("status") == "ok":
+                            gd = info["data"]["graph_data"]
+                            # 无 rank 字段（rank 是 operate.py 内部中间值）；distance 不可得——
+                            # 缺失时 runner 衰减池 fallback 1.0=池内最高分，恰符合置顶意图
+                            hit = {"entity_name": q}
+                            for f in ("entity_type", "description", "source_id", "file_path", "created_at"):
+                                v = gd.get(f)
+                                if v is not None:
+                                    hit[f] = v
+                            if fields:
+                                field_set = set(fields)
+                                hit = {k: v for k, v in hit.items() if k in field_set}
+                            entities = data["entities"]
+                            idx = next(
+                                (i for i, e in enumerate(entities)
+                                 if isinstance(e, dict)
+                                 and str(e.get("entity_name", "")).lower() == q.lower()),
+                                None,
+                            )
+                            if idx is not None:
+                                entities.insert(0, entities.pop(idx))
+                            else:
+                                orig_len = len(entities)
+                                entities.insert(0, hit)
+                                limit = top_k if top_k is not None else orig_len
+                                del entities[limit:]
+                            logger.debug(f"query_data 精确名短路: '{q}' 图层索引命中，置顶")
+            except Exception as e:
+                logger.warning(f"query_data 精确名短路异常（返回原向量结果）: {e}")
             return result
 
         except Exception as e:
