@@ -3657,25 +3657,21 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             return {"status": "interrupted", "reason": "woke_up"}
 
                         # 安全协议：pause + 无限心跳拿 chat_lock + 等待worker空闲（§3.9，生产永不放弃）
+                        # pause 后立即进 try：任何退出路径（含等待窗口内 CancelledError）统一经 finally 释放锁并恢复队列
                         from niu_api.chat_queue import get_chat_queue
                         _q = get_chat_queue()
                         _q.pause()
 
-                        from niu_api.chat import _chat_lock
                         _chat_lock_acquired = False
-                        if not await _acquire_chat_lock_with_retry("Tidy Mode-2"):
-                            # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
-                            logger.error("[Tidy] Mode-2: lock wait aborted, skipping compression plan execution")
-                            _q.resume()
-                            return {"status": "skipped", "mode": "sleep", "reason": "lock wait aborted (defensive)"}
-                        _chat_lock_acquired = True
-                        if not await _wait_queue_idle_with_retry(_q, "Tidy Mode-2"):
-                            logger.error("[Tidy] Mode-2: queue wait aborted, skipping compression plan execution")
-                            _chat_lock.release()
-                            _chat_lock_acquired = False
-                            _q.resume()
-                            return {"status": "skipped", "mode": "sleep", "reason": "queue wait aborted (defensive)"}
                         try:
+                            if not await _acquire_chat_lock_with_retry("Tidy Mode-2"):
+                                # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
+                                logger.error("[Tidy] Mode-2: lock wait aborted, skipping compression plan execution")
+                                return {"status": "skipped", "mode": "sleep", "reason": "lock wait aborted (defensive)"}
+                            _chat_lock_acquired = True
+                            if not await _wait_queue_idle_with_retry(_q, "Tidy Mode-2"):
+                                logger.error("[Tidy] Mode-2: queue wait aborted, skipping compression plan execution")
+                                return {"status": "skipped", "mode": "sleep", "reason": "queue wait aborted (defensive)"}
                             fresh_messages = await store.get_messages()
                             existing_ids = {getattr(m, "id", "") for m in fresh_messages}
 
@@ -4397,24 +4393,22 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     logger.info(f"[Tidy] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
                     # 安全协议：acquire chat_lock（无限心跳）+ 等待 worker 空闲（§3.9，生产永不放弃）。
                     # ChatQueue pause 已上移到 force 分支入口（_force_fq），此处只等在途 item 收尾。
-                    from niu_api.chat import _chat_lock
+                    # 标志初始化后立即进 try：任何退出路径（含等待窗口内 CancelledError）统一经 finally 释放锁
                     _f_chat_lock_acquired = False
 
-                    if chat_lock_already_held:
-                        logger.info("[Tidy] Force: chat_lock already held by caller, skipping lock acquire")
-                    else:
-                        if not await _acquire_chat_lock_with_retry("Tidy Force"):
-                            # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
-                            logger.error("[Tidy] Force: lock wait aborted, skipping compression plan execution")
-                            return {"status": "skipped", "mode": "force", "reason": "lock wait aborted (defensive)"}
-                        _f_chat_lock_acquired = True
-                        if not await _wait_queue_idle_with_retry(_force_fq, "Tidy Force"):
-                            logger.error("[Tidy] Force: queue wait aborted, skipping compression plan execution")
-                            _chat_lock.release()
-                            _f_chat_lock_acquired = False
-                            return {"status": "skipped", "mode": "force", "reason": "queue wait aborted (defensive)"}
-
                     try:
+                        if chat_lock_already_held:
+                            logger.info("[Tidy] Force: chat_lock already held by caller, skipping lock acquire")
+                        else:
+                            if not await _acquire_chat_lock_with_retry("Tidy Force"):
+                                # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
+                                logger.error("[Tidy] Force: lock wait aborted, skipping compression plan execution")
+                                return {"status": "skipped", "mode": "force", "reason": "lock wait aborted (defensive)"}
+                            _f_chat_lock_acquired = True
+                            if not await _wait_queue_idle_with_retry(_force_fq, "Tidy Force"):
+                                logger.error("[Tidy] Force: queue wait aborted, skipping compression plan execution")
+                                return {"status": "skipped", "mode": "force", "reason": "queue wait aborted (defensive)"}
+
                         # 重新获取消息列表
                         fresh_messages = await store.get_messages()
                         existing_ids = {getattr(m, "id", "") for m in fresh_messages}
