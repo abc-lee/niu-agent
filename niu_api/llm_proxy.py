@@ -299,7 +299,7 @@ async def call_llm_via_litellm(
         "reasoning_effort": config.get("reasoning_effort"),
         "provider": config.get("provider", ""),
         "litellm_kwargs": config.get("litellm_kwargs", {}),
-        "read_timeout": config.get("read_timeout", 300),
+        "read_timeout": config.get("read_timeout") or 300,
     }
     if config.get("max_tokens") is not None:
         llm_config["max_tokens"] = config["max_tokens"]

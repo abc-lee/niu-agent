@@ -324,7 +324,9 @@ async def test_td_lock_gives_up_with_max_elapsed(monkeypatch):
     monkeypatch.setattr(compat, "TIDY_WAIT_CHUNK", 0.01)
     try:
         t0 = time.monotonic()
-        ok = await compat._acquire_chat_lock_with_retry("T", max_elapsed=0.05)
+        ok = await asyncio.wait_for(
+            compat._acquire_chat_lock_with_retry("T", max_elapsed=0.05), timeout=5
+        )
         elapsed = time.monotonic() - t0
     finally:
         compat._chat_lock.release()
@@ -371,7 +373,9 @@ async def test_td_queue_busy_gives_up_with_max_elapsed(monkeypatch):
     q = SimpleNamespace(_processing=True, _processing_done=asyncio.Event())
     monkeypatch.setattr(compat, "TIDY_WAIT_CHUNK", 0.01)
     t0 = time.monotonic()
-    ok = await compat._wait_queue_idle_with_retry(q, "QP", max_elapsed=0.05)
+    ok = await asyncio.wait_for(
+        compat._wait_queue_idle_with_retry(q, "QP", max_elapsed=0.05), timeout=5
+    )
     elapsed = time.monotonic() - t0
     assert ok is False
     assert elapsed < 5.0
