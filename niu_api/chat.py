@@ -579,6 +579,11 @@ async def chat(request: ChatRequest) -> StreamingResponse:
     """
     [DEPRECATED] Main chat endpoint - 使用 NiuRunner 流式响应
     """
+    # 唤醒睡眠整理管道（Case 3 可打断，方案 §3.4）：本端点仅 Electron 前端直连调用
+    # （无程序化流量入口，来源判据闭合），按契约视为 electron 来源 → 唤醒
+    from niu_api.compat import set_spirit_state  # 函数内惰性 import
+    set_spirit_state("idle")
+
     llm_cfg = _load_llm_config()
 
     if not llm_cfg["apikey"]:
@@ -721,6 +726,11 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
     Synchronous chat endpoint - waits for complete response.
     Persists both user and assistant messages to the database.
     """
+    # 唤醒睡眠整理管道（Case 3 可打断，方案 §3.4）：本端点仅 Electron 前端调用
+    # （scheduler 已走 ChatQueue 入队），按契约视为 electron 来源 → 唤醒
+    from niu_api.compat import set_spirit_state  # 函数内惰性 import
+    set_spirit_state("idle")
+
     llm_cfg = _load_llm_config()
 
     if not llm_cfg["apikey"]:

@@ -466,7 +466,8 @@ def _setup_watcher_mocks(monkeypatch, bg_loop, reply, reply_future):
     """配置 _push_to_chat 的 loop/queue/router  mocks，返回 fake router"""
     from niu_api.internal.ha_watcher.watcher import _HAWatcher
 
-    async def _fake_enqueue(content, source, session_id):
+    async def _fake_enqueue(content, source, session_id, timeout=120.0):
+        # timeout 形参：watcher 解耦后传 timeout=None（排队到底），mock 需接住
         return (reply, reply_future)
 
     fake_q = MagicMock()

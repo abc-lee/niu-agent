@@ -1,4 +1,4 @@
-"""T4 内部路径接入测试：入口 3/4/5 fire-and-forget + held=False；入口 6 阻塞契约 + 600s 超时降级；入口 7 chat_queue await + 降级 attempt 串行。
+"""T4 内部路径接入测试：入口 3/4/5 fire-and-forget + held=False；入口 6 直接清空（不再投递/等待 tidy）；入口 7 chat_queue await + 降级 attempt 串行。
 
 设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §3.1 / §5 T4 / §6 T4。
 全 mock：`_tidy_context_impl`（阻塞/记录型假实现）/ runner / store / persist——禁真实 LLM、
@@ -231,7 +231,7 @@ async def test_entry5_chat_session_overflow_fire_and_forget(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 入口 6：clear_chat（/clear force_tidy）→ 投递 + await 600s 超时 + held=True
+# 入口 6：clear_chat（/clear）→ 直接清空，不再投递/等待 tidy（§3.6 重写）
 # ---------------------------------------------------------------------------
 
 def _patch_clear_chat_env(monkeypatch, order: list[str], clear_result=5):
@@ -263,81 +263,54 @@ def _patch_clear_chat_env(monkeypatch, order: list[str], clear_result=5):
     return FakeRequest()
 
 
-async def test_entry6_clear_chat_awaits_tidy_then_clear(monkeypatch):
-    """入口 6 阻塞契约：整理完成才清空（mock 断言顺序 impl-start→impl-end→clear）+ held=True + skip_compress。"""
+async def test_entry6_clear_chat_ignores_force_tidy_clears_directly(monkeypatch):
+    """/clear 直接清空：后端不再读取 force_tidy 投递通道——请求体带 force_tidy=True 也零投递、零 tidy 执行。"""
     from niu_api.compat import clear_chat
 
-    release = asyncio.Event()
     order: list[str] = []
 
-    async def fake_impl(request, chat_lock_already_held=False):
-        order.append("impl-start")
-        await release.wait()
-        order.append("impl-end")
-        return {"status": "ok"}
+    async def must_not_run(request, chat_lock_already_held=False):
+        raise AssertionError("clear 不应再触发 tidy 管道")
 
-    monkeypatch.setattr(compat, "_tidy_context_impl", fake_impl)
-    start_pipeline_queue()
-    spy_calls, spy_futs = _spy_enqueue(monkeypatch)
-
-    fake_req = _patch_clear_chat_env(monkeypatch, order)
-
-    async def release_later():
-        await asyncio.sleep(0.05)
-        release.set()
-
-    rl = asyncio.create_task(release_later())
-    result = await asyncio.wait_for(clear_chat(fake_req), timeout=3.0)
-    await rl
-
-    # 阻塞契约：整理（impl）完成后才清空
-    assert order == ["impl-start", "impl-end", "clear"], order
-    # 投递语义：force + skip_compress=True + held=True（clear_chat 持锁 → worker 透传）
-    assert spy_calls == [
-        ("force", {"session_id": "default", "mode": "force", "skip_compress": True}, True)
-    ], spy_calls
-    assert result["success"] is True
-    assert result["deleted_count"] == 5
-    assert spy_futs[0].done()
-
-
-async def test_entry6_clear_chat_600s_timeout_degrades(monkeypatch):
-    """入口 6 超时降级：整理 600s（参数化压成 0.01s）未完成 → 清空照常（clear-messages-only）。"""
-    from niu_api.compat import clear_chat
-
-    entered = asyncio.Event()
-    never = asyncio.Event()
-    order: list[str] = []
-
-    async def fake_impl(request, chat_lock_already_held=False):
-        entered.set()
-        await never.wait()  # 永不完成 → 触发 600s 超时
-        return {"status": "ok"}
-
-    monkeypatch.setattr(compat, "_tidy_context_impl", fake_impl)
+    monkeypatch.setattr(compat, "_tidy_context_impl", must_not_run)
     start_pipeline_queue()
     spy_calls, _ = _spy_enqueue(monkeypatch)
 
-    # 600s 超时参数化：包装 asyncio.wait_for 用 0.01s 生效（clear_chat 内 wait_for 调用点）
-    real_wait_for = asyncio.wait_for
+    fake_req = _patch_clear_chat_env(monkeypatch, order)
+    result = await asyncio.wait_for(clear_chat(fake_req), timeout=3.0)
 
-    async def fast_wait_for(aw, timeout=None, *args, **kwargs):
-        return await real_wait_for(aw, 0.01, *args, **kwargs)
+    assert spy_calls == [], f"不应有任何队列投递，实际 {spy_calls}"
+    assert order == ["clear"], f"应直接清空（无 tidy 前置），实际 {order}"
+    assert result["success"] is True
+    assert result["deleted_count"] == 5
 
-    monkeypatch.setattr(asyncio, "wait_for", fast_wait_for)
+
+async def test_entry6_clear_chat_no_tidy_wait_degrade_path(monkeypatch):
+    """无降级路径：不存在"等 tidy 超时降级清空"分支——清空即时完成，不等任何在途整理。
+
+    tripwire：若实现回退为直接 await tidy（旧阻塞契约），asyncio.timeout(3) 红相取消。
+    """
+    from niu_api.compat import clear_chat
+
+    order: list[str] = []
+    entered = asyncio.Event()
+
+    async def slow_impl(request, chat_lock_already_held=False):
+        entered.set()
+        await asyncio.sleep(30)  # 若被 await 则必然超时红相
+        return {"status": "ok"}
+
+    monkeypatch.setattr(compat, "_tidy_context_impl", slow_impl)
+    start_pipeline_queue()
+    spy_calls, _ = _spy_enqueue(monkeypatch)
 
     fake_req = _patch_clear_chat_env(monkeypatch, order)
-    # 外层守卫用 asyncio.timeout（TimerHandle 实现，不走 asyncio.wait_for——不受 fast 补丁影响）：
-    # 若实现错误（阻塞等待）→ 3s 取消 clear_chat 红相；正确实现 → tidy wait_for 0.01s 超时降级
     async with asyncio.timeout(3.0):
         result = await clear_chat(fake_req)
 
-    # 走投递路径（enqueue 被调）+ 超时降级 clear-messages-only
-    assert spy_calls == [
-        ("force", {"session_id": "default", "mode": "force", "skip_compress": True}, True)
-    ], spy_calls
-    assert entered.is_set(), "impl 应已启动（队列路径）——超时的是等待而非投递"
-    assert order == ["clear"], f"整理未完成 → 只清空（clear-messages-only），实际 {order}"
+    assert not entered.is_set(), "tidy impl 不应被启动（零投递、零直调）"
+    assert spy_calls == [], f"不应有任何队列投递，实际 {spy_calls}"
+    assert order == ["clear"], f"应直接清空，实际 {order}"
     assert result["success"] is True
 
 

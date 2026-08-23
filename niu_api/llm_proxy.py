@@ -382,7 +382,10 @@ async def call_llm_via_litellm(
 
             return response
 
-        response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=180)
+        # 外层超时对齐 LLM read_timeout（方案 §3.10）：max(300, read_timeout)+60，
+        # 只兜底线程调度/进程级异常，正常路径由 session 内部 read_timeout 先收敛
+        outer_timeout = max(300, llm_config["read_timeout"]) + 60
+        response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=outer_timeout)
         if isinstance(response, dict) and response.get("_stream_error"):
             raise HTTPException(status_code=502, detail={
                 "message": response.get("error_msg", "LLM call failed"),
@@ -393,7 +396,7 @@ async def call_llm_via_litellm(
         return response
 
     except TimeoutError:
-        logger.error("[LLM Proxy] LLM call timed out after 180s")
+        logger.error(f"[LLM Proxy] LLM call timed out after {outer_timeout}s")
         raise HTTPException(status_code=504, detail="LLM call timed out") from None
     except HTTPException:
         raise
