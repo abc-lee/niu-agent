@@ -1,13 +1,13 @@
-"""T3 整理管道队列测试：nap 投递 + _execute_force_pipeline 提取 + 入口 8（转换块留回调）。
+"""T3 整理管道队列测试：nap 投递 + _execute_force_pipeline 提取 + 入口 8（内联直调 + 转换块）。
 
-设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §3.1 入口 8/9 + §3.0 None 窗口 + §5/§6 T3。
+设计见 docs/superpowers/plans/2026-08-23-remove-outer-subagent-timeouts.md §3.3（入口 8 内联化，
+不经队列、无外层等待上限）与 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §3.1 入口 9。
 全 mock：runner._execute_force_pipeline（不真实调压缩管道）+ 转换块 DB 重载（_sync_get_messages 假消息）——
 禁真实 LLM、禁图谱写入、messages.db 零新增（转换块孤立 tool 清理路径用无 tool_calls 假消息绕过）。
 """
 import asyncio
 import threading
 import time
-from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import pytest
 
@@ -144,38 +144,38 @@ async def test_nap_loop_unavailable_sync_fallback(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 入口 8：runner-force 投递 + 转换块（§3.1 / §3.0 / §7.12）
+# 入口 8：runner-force 内联直调（Case 2：不经队列、无外层等待上限）+ 转换块
 # ---------------------------------------------------------------------------
 
-async def test_entry8_dispatch_waits_worker_then_conversion_block(monkeypatch):
-    """投递 runner-force → 回调等待 worker 完成 → 转换块输出 dict 契约（role/content 键 + system 保留）。"""
-    loop = asyncio.get_running_loop()
-    monkeypatch.setattr(chat_module, "_main_loop", loop)
-    start_pipeline_queue()
-
+def test_entry8_inline_direct_call_then_conversion_block(monkeypatch):
+    """直调契约：_execute_force_pipeline 被同步调用、零队列投递；转换块输出 dict 契约。"""
     runner = _make_runner()
-    pipeline_called = threading.Event()
+    calls = []
 
     def fake_execute():
-        pipeline_called.set()
+        calls.append(1)
         return {"status": "ok"}
 
     runner._execute_force_pipeline = fake_execute
-    monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: runner)
     runner._sync_get_messages = lambda: [
         _FakeDbMsg("s1", "system", "system prompt"),
         _FakeDbMsg("m1", "user", "hello"),
         _FakeDbMsg("m2", "assistant", "hi there"),
     ]
 
-    messages = [{"role": "system", "content": "system prompt"}]
-    # 回调阻塞 fut.result(timeout)——必须在独立线程调用（worker 与回调共享事件循环）
-    await asyncio.wait_for(
-        asyncio.to_thread(runner._on_context_high_usage, messages, 180000, 200000),
-        timeout=3.0,
+    enqueue_calls: list[tuple] = []
+    monkeypatch.setattr(
+        compat, "_pipeline_enqueue",
+        lambda kind, request=None, held=False: enqueue_calls.append((kind, request, held)),
     )
+    start_pipeline_queue()  # 队列可用也应零投递（内联化后回调不再触碰队列）
 
-    assert pipeline_called.is_set()  # 队列 worker 真实执行了压缩管道（mock 版，未真实调 runner 压缩）
+    messages = [{"role": "system", "content": "system prompt"}]
+    result = runner._on_context_high_usage(messages, 180000, 200000)
+
+    assert calls == [1]  # 直调完成——回调返回前压缩管道已执行完
+    assert enqueue_calls == [], f"不应有任何队列投递，实际 {enqueue_calls}"
+    assert result == {"status": "ok"}
     # 转换块输出格式断言（§6 T3）：每条 dict + role/content 键 + system 保留在 messages[0]
     assert messages, "转换块应回写消息"
     assert all(isinstance(m, dict) for m in messages)
@@ -183,134 +183,52 @@ async def test_entry8_dispatch_waits_worker_then_conversion_block(monkeypatch):
     assert messages[0].get("role") == "system"
 
 
-async def test_entry8_timeout_conversion_block_still_runs(monkeypatch):
-    """超时路径：fut.result(timeout=300) 抛 TimeoutError → 转换块仍执行，输出格式正确（§7.12）。"""
-    runner = _make_runner()
-    runner._sync_get_messages = lambda: [
-        _FakeDbMsg("m1", "user", "hello"),
-        _FakeDbMsg("m2", "assistant", "hi"),
-    ]
-
-    seen_timeout = {}
-
-    class _TimedOutFut:
-        def result(self, timeout=None):
-            seen_timeout["timeout"] = timeout  # 300s 参数化注入断言
-            raise FutureTimeoutError("simulated 300s queue wait")
-
-    def fake_dispatch(kind, request=None, held=False):
-        return _TimedOutFut()
-
-    monkeypatch.setattr(runner, "_dispatch_to_pipeline", fake_dispatch)
-
-    def _must_not_sync():
-        raise AssertionError("超时路径不应同步执行 _execute_force_pipeline")
-
-    runner._execute_force_pipeline = _must_not_sync
-    messages = [{"role": "system", "content": "sys"}]
-    runner._on_context_high_usage(messages, 180000, 200000)
-
-    assert seen_timeout["timeout"] == 300  # 300s 上限参数化注入
-    assert messages, "超时后转换块仍应回写消息"
-    assert all(isinstance(m, dict) for m in messages)
-    assert all("role" in m and "content" in m for m in messages)
-    assert messages[0].get("role") == "system"
-
-
-async def test_entry8_future_exception_conversion_block_still_runs(monkeypatch):
-    """非超时异常路径：fut.result(timeout=300) 抛 RuntimeError（shutdown）→ 转换块仍执行（P3-5）。"""
-    runner = _make_runner()
-    runner._sync_get_messages = lambda: [
-        _FakeDbMsg("m1", "user", "hello"),
-        _FakeDbMsg("m2", "assistant", "hi"),
-    ]
-
-    seen_timeout = {}
-
-    class _FailedFut:
-        def result(self, timeout=None):
-            seen_timeout["timeout"] = timeout  # 300s 参数化注入断言
-            raise RuntimeError("shutting down")  # 非 TimeoutError（stop_pipeline_queue 置入）
-
-    monkeypatch.setattr(runner, "_dispatch_to_pipeline", lambda kind, request=None, held=False: _FailedFut())
-
-    def _must_not_sync():
-        raise AssertionError("异常路径不应同步执行 _execute_force_pipeline")
-
-    runner._execute_force_pipeline = _must_not_sync
-    messages = [{"role": "system", "content": "sys"}]
-    runner._on_context_high_usage(messages, 180000, 200000)
-
-    assert seen_timeout["timeout"] == 300  # 300s 上限参数化注入
-    assert messages, "非超时异常后转换块仍应回写消息"
-    assert all(isinstance(m, dict) for m in messages)
-    assert all("role" in m and "content" in m for m in messages)
-    assert messages[0].get("role") == "system"
-
-
-async def test_entry8_none_window_sync_execution(monkeypatch):
-    """None 窗口（队列未创建）：同步执行 _execute_force_pipeline，调用方等执行完成（§3.0 Option A）。"""
+def test_entry8_none_return_conversion_block_still_runs(monkeypatch):
+    """None 返回分支（Stop 中断序列：阶段检查点 bare return）→ 转换块仍执行，回调透传 None。"""
     runner = _make_runner()
     calls = []
 
     def fake_execute():
         calls.append(1)
-        return {"status": "ok"}
+        return None  # Stop 中断 / skip 的 None 返回
+
+    runner._execute_force_pipeline = fake_execute
+    runner._sync_get_messages = lambda: [
+        _FakeDbMsg("m1", "user", "hello"),
+        _FakeDbMsg("m2", "assistant", "hi"),
+    ]
+
+    messages = [{"role": "system", "content": "sys"}]
+    result = runner._on_context_high_usage(messages, 180000, 200000)
+
+    assert calls == [1]
+    assert result is None  # None 返回分支透传
+    assert messages, "None 返回后转换块仍应回写消息"
+    assert all(isinstance(m, dict) for m in messages)
+    assert all("role" in m and "content" in m for m in messages)
+    assert messages[0].get("role") == "system"
+
+
+def test_entry8_no_queue_dependency(monkeypatch):
+    """无队列依赖：全局整理队列未创建时直调照常工作（原 None 窗口同步兜底成为唯一路径）。"""
+    runner = _make_runner()
+    calls = []
+
+    def fake_execute():
+        calls.append(1)
+        return {"status": "skipped", "reason": "stop"}
 
     runner._execute_force_pipeline = fake_execute
     runner._sync_get_messages = lambda: [_FakeDbMsg("m1", "user", "hello")]
-    assert compat._pipeline_queue is None
+    assert compat._pipeline_queue is None  # 队列未创建（fixture 复位）
 
     messages = [{"role": "system", "content": "sys"}]
-    runner._on_context_high_usage(messages, 180000, 200000)
+    result = runner._on_context_high_usage(messages, 100, 200000)
 
-    assert calls == [1]  # 同步执行完成——回调返回前压缩管道已执行完（调用方等执行完成）
+    assert calls == [1]
+    assert result["status"] == "skipped"
     assert messages and all(isinstance(m, dict) for m in messages)
     assert messages[0].get("role") == "system"
-
-
-async def test_entry8_runner_force_dedup(monkeypatch):
-    """入口 8 压缩类去重（§3.2）：同键（runner-force）在队时复用同一 future。"""
-    loop = asyncio.get_running_loop()
-    monkeypatch.setattr(chat_module, "_main_loop", loop)
-    start_pipeline_queue()
-
-    runner = _make_runner()
-    runner._execute_force_pipeline = lambda: {"status": "ok"}
-    monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: runner)
-
-    fut1 = runner._dispatch_to_pipeline("runner-force")
-    fut2 = runner._dispatch_to_pipeline("runner-force")
-    assert fut1 is fut2  # 同键复用（同步两连投递无 await，worker 不可能中途完成）
-
-
-async def test_entry8_dispatch_failure_rolls_back_dedup(monkeypatch):
-    """投递失败（call_soon_threadsafe 抛 RuntimeError）：回滚去重登记 → 同步兜底执行，去重表无残留。"""
-    runner = _make_runner()
-
-    class _BadLoop:
-        def is_closed(self):
-            return False
-
-        def call_soon_threadsafe(self, *a, **k):
-            raise RuntimeError("loop closed")
-
-    monkeypatch.setattr(chat_module, "_main_loop", _BadLoop())
-    start_pipeline_queue()
-
-    calls = []
-
-    def fake_execute():
-        calls.append(1)
-        return {"status": "ok"}
-
-    runner._execute_force_pipeline = fake_execute
-    runner._sync_get_messages = lambda: []
-    messages = [{"role": "system", "content": "sys"}]
-    runner._on_context_high_usage(messages, 100, 200000)
-
-    assert calls == [1]  # 投递失败 → 同步兜底执行
-    assert not compat._active_compress_futs  # 去重登记已回滚（无残留）
 
 
 async def test_enqueue_failure_rolls_back_dedup(monkeypatch):

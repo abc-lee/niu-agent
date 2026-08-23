@@ -2489,16 +2489,15 @@ class NiuRunner:
             return {"status": "error", "message": str(e)}
 
     def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
-        """主 Agent 上下文超阈值回调 — 投递 runner-force 到全局整理队列并等待，随后执行转换块
+        """主 Agent 上下文超阈值回调 — 内联执行压缩管道，随后执行转换块
 
-        压缩管道（_execute_force_pipeline）在队列 worker 中执行（全局一次一个、排队）。
-        本回调等待其完成（fut.result(timeout=300)；超时是队列等待上限非状态机打断——
-        force 不可打断语义不违背，§7.12），然后从 DB 重载消息并原地修改 messages 列表
+        压缩管道（_execute_force_pipeline）直接同步调用（Case 2 内联化：阻塞的是
+        对话请求自身，不经全局整理队列、无外层等待上限——仅 Stop 可断，管道阶段间
+        十余处 is_stop_requested 检查点）。然后从 DB 重载消息并原地修改 messages 列表
         （dict 转换/孤立 tool 清理/system 保留/cache_control 重注入/messages[:] 回写——
         agent_loop L845-848 契约：messages 为 dict 列表）。
         agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
         """
-        from concurrent.futures import TimeoutError as _FutureTimeoutError
 
         logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
                      f"({tokens_used/tokens_limit:.1%})")
@@ -2511,21 +2510,8 @@ class NiuRunner:
             pass
 
         try:
-            # === 入口 8：投递 runner-force 到全局整理队列（§3.1）===
-            _fut = self._dispatch_to_pipeline("runner-force")
-            if _fut is None:
-                # None 窗口（队列未创建/主 loop 不可用）：同步执行压缩管道（§3.0 Option A）
-                _result = self._execute_force_pipeline()
-            else:
-                try:
-                    _result = _fut.result(timeout=300)
-                except _FutureTimeoutError:
-                    # 超时 = 队列等待上限（§7.12）：压缩可能仍在 worker 继续——转换块自加载当前 DB 状态
-                    logger.warning("[Runner] Force: timed out waiting for pipeline queue (300s), reloading current DB state")
-                    _result = None
-                except Exception as e:
-                    logger.warning(f"[Runner] Force: pipeline task failed: {e}")
-                    _result = None
+            # === 入口 8：内联执行压缩管道（Case 2 直调；None 返回 = Stop 中断/skip 天然覆盖）===
+            _result = self._execute_force_pipeline()
 
             # === 重新加载消息，原地修改 agent_loop 的 messages 列表 ===
             fresh_db_msgs = self._sync_get_messages()

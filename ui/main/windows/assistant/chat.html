@@ -1524,7 +1524,7 @@
         userInput.disabled = true;
         addSystemMessage('正在整理对话并清空会话，请稍候…');
         try {
-          await clearChat(true);
+          await clearChat();
         } finally {
           _clearTidyInFlight = false;
           sendBtn.disabled = false;
@@ -1636,9 +1636,9 @@
     }
     
     // 清空聊天记录
-    async function clearChat(forceTidy) {
+    async function clearChat() {
       try {
-        const result = await window.electronAPI.clearChat(forceTidy);
+        const result = await window.electronAPI.clearChat();
         if (result.success) {
           messages.innerHTML = '';
           clearSparks();
@@ -1658,16 +1658,10 @@
     // 强制压缩上下文（/compact 命令）
     async function compactContext() {
       try {
-        // 600s 整体超时（设计文档第 6 条，同 /clear 的后端 600s 兜底）：
-        // 后端 /api/context/tidy 端点没有像 clear_chat 那样的 600s wait_for 兜底
-        // （clear_chat 在 compat.py:2440-2447 有；tidy 端点只有 _tidy_lock 互斥和
-        // 管道内 _chat_lock 60s），子 Agent LLM 卡死时本函数永不返回会永久禁用输入。
-        // 前端超时后恢复输入；后端 tidy 继续跑完无害（_tidy_lock 完成后自愈，
-        // 期间的睡眠整理会 skipped lock_busy，属预期降级）。
-        const result = await Promise.race([
-          window.electronAPI.tidyContext('force'),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('压缩超时，请稍后重试')), 600000)),
-        ]);
+        // 直接 await，无前端整体超时：解锁真源是后端 tidy 处理器的 try/finally
+        // （必释放 _tidy_lock），子 Agent 必然三态返回（LLM read_timeout 保底），
+        // 前端 Promise.race 假失败只会误导用户（方案 §3.10）
+        const result = await window.electronAPI.tidyContext('force');
         if (result && result.status === 'ok') {
           addSystemMessage('✅ 上下文压缩完成');
         } else if (result && result.status === 'aborted') {

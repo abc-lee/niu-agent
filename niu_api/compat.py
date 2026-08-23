@@ -1388,6 +1388,53 @@ async def _compute_post_compress_usage(store=None, msgs_before: int = -1) -> tup
 
 _tidy_lock = asyncio.Lock()
 
+# 锁等待分片时长（§3.9）：helper 函数体内运行时读取，便于测试注入
+TIDY_WAIT_CHUNK = 60.0
+
+
+async def _acquire_chat_lock_with_retry(log_prefix: str, *, max_elapsed: float | None = None) -> bool:
+    """无限心跳等待获取 _chat_lock（§3.9）。
+
+    生产调用不传 max_elapsed——永不放弃（真排队无放弃，§3.1 统一不变量）；
+    max_elapsed 仅测试注入，命中时 logger.error + return False。
+    心跳日志仅在真实争用时出现（无争用一次 acquire 即成功，零日志）。
+
+    Returns:
+        True=已持有锁；False=仅测试注入 max_elapsed 超限放弃（生产不可达）。
+    """
+    start = time.monotonic()
+    while True:
+        try:
+            await asyncio.wait_for(_chat_lock.acquire(), timeout=TIDY_WAIT_CHUNK)
+            return True
+        except TimeoutError:
+            elapsed = time.monotonic() - start
+            if max_elapsed is not None and elapsed >= max_elapsed:
+                logger.error(f"[{log_prefix}] chat lock busy over {max_elapsed:.0f}s, giving up")
+                return False
+            logger.info(f"[{log_prefix}] chat lock busy, retrying ({elapsed:.0f}s elapsed)")
+
+
+async def _wait_queue_idle_with_retry(q, log_prefix: str, *, max_elapsed: float | None = None) -> bool:
+    """无限心跳等待 ChatQueue 在途消息处理完毕（§3.9，与 _acquire_chat_lock_with_retry 同构）。
+
+    队列空闲（未在处理）立即返回 True；否则分片等待 _processing_done。
+    生产永不放弃；max_elapsed 仅测试注入。
+    """
+    if not getattr(q, "_processing", False):
+        return True
+    start = time.monotonic()
+    while True:
+        try:
+            await asyncio.wait_for(q._processing_done.wait(), timeout=TIDY_WAIT_CHUNK)
+            return True
+        except TimeoutError:
+            elapsed = time.monotonic() - start
+            if max_elapsed is not None and elapsed >= max_elapsed:
+                logger.error(f"[{log_prefix}] queue busy over {max_elapsed:.0f}s, giving up")
+                return False
+            logger.info(f"[{log_prefix}] queue busy, retrying ({elapsed:.0f}s elapsed)")
+
 
 # ===========================================================================
 # 全局整理队列（T2）：单 worker 串行执行整理类管道——全局一次一个、后来者排队
@@ -2550,6 +2597,15 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     if not config.llm or not config.llm.api_key:
         return ChatResponse(reply="Error: LLM not configured, please set API Key first")
 
+    # Case 3 唤醒接线（§3.4）：electron 用户动作打断睡眠管道（幂等 sleep→idle 才翻转语义由
+    # set_spirit_state 归一化保证）。source==""（异步子 Agent 回填程序化流量）不唤醒。
+    # R5 枚举闭合：chat_session 的 source 仅 {'electron', ''} 两值，判据闭合。
+    # 门控放在函数入口：下方 supplement 提前返回路径（_chat_lock.locked() 分支）同样被覆盖，
+    # 无需重复接线；ask_user 回答注入路径按方案定案不接唤醒（等待期持锁+忙碌守卫使
+    # "睡眠中收到 ask_user 回答"基本不可达，此处误唤醒无害）。
+    if request.source == "electron":
+        set_spirit_state("idle")
+
     # --- /stop directive: stop current Agent work ---
     if request.message.strip() == "/stop":
         from agent.runner import request_stop
@@ -2839,12 +2895,7 @@ async def add_context_message(request: dict) -> dict:
     return {"status": "ok", "message_id": msg_id}
 
 # 游标文件列表（清空消息后必须一并复位，否则游标指向已删除消息）
-_ALL_CURSOR_FILES = [
-    "last_entity_extract.json",
-    "last_dream_evolve.json",
-    "last_compress.json",
-    "last_journal.json",
-]
+_ALL_CURSOR_FILES = ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_journal.json"]
 
 
 async def _reset_all_cursors() -> None:
@@ -2881,27 +2932,18 @@ def _reset_runner_brain_state(runner) -> None:
 async def clear_chat(request: Request) -> dict:
     """Clear all messages (for /new and /clear commands)
 
-    body 可选键：
-        force_tidy (bool): True 时清空前先跑 force 整理（entity→dream→journal，skip_compress）
+    即时清除语义（§3.6）：取消清空前提炼——不再读取任何提炼开关字段，原「清空前先跑
+    force 整理」通道已整块删除。游标重置即管道天然终止信号。
     """
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    force_tidy = bool(body.get("force_tidy"))  # snake_case —— main.js 发送一致
-
-    # 先请求停止当前 Agent 工作（全局 stop 标志）
+    # ① 停止主 Agent（既有）；② 唤醒睡眠管道（新增，无条件）——用户动作打断 Case 3
     from agent.runner import clear_stop, request_stop
     request_stop()
+    set_spirit_state("idle")
 
-    # 获取锁，防止与正在进行的 chat 冲突
-    # 超时增加到 120 秒：/clear 的 busy 分支先发 /stop 停主 Agent，持锁者在 finally 释放；
-    # 120s 覆盖 persist + CONTEXT_OVERFLOW force-compress；若主 Agent 卡在子 agent tool 超时
-    # → 优雅失败需重试。
-    try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=120.0)
-    except TimeoutError:
-        logger.warning("[clear_chat] _chat_lock 120s timeout, clear rejected")
+    # ③ 排队拿锁：无限心跳等待（替代旧 120s 拒绝清除）——对在途对话请求仍是排队语义
+    if not await _acquire_chat_lock_with_retry("ClearChat"):
+        # 防御分支（生产不可达，仅测试注入 max_elapsed）
+        logger.error("[ClearChat] lock wait aborted, clear rejected")
         clear_stop()  # 防止停止标志残留，影响后续定时任务
         return {"success": False, "error": "系统正忙，请稍后再试"}
 
@@ -2911,26 +2953,6 @@ async def clear_chat(request: Request) -> dict:
         from agent.runner import drain_supplements
         drain_supplements()
         store = await get_message_store()
-        # /clear：投递 force 整理（entity→dream→journal，skip_compress）→ await 完成 → 清空
-        # §3.1 入口 6：排队+执行共享 600s 总预算（同现状）；held=True（clear_chat 已持有 _chat_lock，
-        # worker 透传防 asyncio.Lock 不可重入）；超时降级 clear-messages-only；None 窗口（§3.0 Option A）同步执行。
-        if force_tidy:
-            if _pipeline_queue is None:
-                tidy_task = _tidy_context_impl(
-                    {"session_id": "default", "mode": "force", "skip_compress": True},
-                    chat_lock_already_held=True,
-                )
-            else:
-                tidy_fut = _pipeline_enqueue(
-                    "force", {"session_id": "default", "mode": "force", "skip_compress": True}, held=True
-                )
-                tidy_task = asyncio.wrap_future(tidy_fut)
-            try:
-                await asyncio.wait_for(tidy_task, timeout=600.0)  # 兜底：单个子 agent LLM 卡死时不永久占锁
-            except asyncio.TimeoutError:
-                logger.warning("[clear_chat] tidy 600s timeout, clear-messages-only (orphan subagent thread self-heals)")
-            except Exception as e:
-                logger.warning(f"[clear_chat] run_tidy_before failed, proceed to clear: {e}")
         count = await store.clear_messages()
 
         # 重置 runner 的所有状态
@@ -3021,18 +3043,22 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
     """tidy_context 的内部实现（不加锁，由调用方负责并发控制）。
 
     Args:
-        chat_lock_already_held: 调用方已持有 _chat_lock 时传 True，
-            跳过内部的 _chat_lock 获取和 ChatQueue pause/resume，
-            避免自死锁（asyncio.Lock 不可重入）。
+        chat_lock_already_held: 调用方已持有 _chat_lock 时传 True（None 窗口同步路径），
+            压缩段跳过重复获取 _chat_lock（asyncio.Lock 不可重入）；与 ChatQueue
+            pause/resume 解耦——force 分支入口的队列门禁照常生效（§3.2）。
     """
     # 压缩前状态占位：finally 判定是否实际压缩（try 早期失败/取消时保持默认 -1/None）
     _msgs_before = -1  # 压缩前消息数（finally 判定是否实际压缩；-1 表示 try 早期未读到）
     _store_ref = None  # try 内 store 引用（finally 复用，避免二次 get_message_store）
+    # Case 1 门禁（§3.2）：force 分支入口 pause ChatQueue，函数级 finally 统一 resume——
+    # 等价于 try/finally 包裹整个 elif 分支体，防任何退出路径永久冻结队列。sleep/nap 恒为 None。
+    _force_fq = None
     # request 支持可选键 skip_compress: True 时跳过 force 模式的 context-manager 压缩
     # （用于 /clear 场景：只做内容提炼+梦境进化+日志记录，不压缩）
     session_id = request.get("session_id", "default")
     mode = request.get("mode", "sleep")
-    stop_aware = mode == "force"  # 阶段间协作式停止：仅 force 模式（用户主动 /compact /clear）响应；sleep 模式（睡眠整理）不受停止按钮影响（程序任务隔离）
+    # 注：原 sleep 分支五处 stop_aware 门控死检查点已清理（§3.4）；force 检查点无门控直呼
+    # is_stop_requested，降级路径以 stop_aware=(mode=="force") 参数显式传入。
 
     # 广播压缩状态 started 事件（前端圆环动画启动）
     try:
@@ -3182,10 +3208,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
-                if stop_aware and is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
                 # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
@@ -3271,10 +3293,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     )
 
                 dream_result = await asyncio.to_thread(run_dream_evolver)
-                if stop_aware and is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
                 # 补全会话日期链（只补边/断边，不建实体；to_thread 避免阻塞主事件循环，方法内部已容错）
                 await asyncio.to_thread(runner._ensure_session_chain)
@@ -3363,10 +3381,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         )
 
                     journal_result = await asyncio.to_thread(run_journal_agent)
-                    if stop_aware and is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
 
                     # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
@@ -3548,11 +3562,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     compress_result = await asyncio.to_thread(run_context_manager_mode2)
                     _halved_msg_ids = None  # 降级砍半的前半段 msg_ids（正常路径为 None）
 
-                    if stop_aware and is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
-
                     # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
                     if compress_result and compress_result.startswith("SUBAGENT_ERROR:"):
                         error_msg = compress_result[len("SUBAGENT_ERROR:"):]
@@ -3641,35 +3650,31 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         ]
                         logger.info(f"[Tidy] Mode-2: Plan parsed: {len(deletes)} deletes, {len(updates)} updates (keep={len(keep_idxs)})")
 
-                        # 安全协议：pause + acquire chat_lock + 等待worker空闲
+                        # Case 3 应用前复查（解析方案后、执行删除/更新之前）：睡眠中被唤醒 → 放弃应用。
+                        # 覆盖窗口 = context-manager 长推理期间用户唤醒（CP3 之后到本点之间）。
+                        if not is_sleeping():
+                            logger.warning("[Tidy] Sleep interrupted before applying Mode-2 compression plan (woke up)")
+                            return {"status": "interrupted", "reason": "woke_up"}
+
+                        # 安全协议：pause + 无限心跳拿 chat_lock + 等待worker空闲（§3.9，生产永不放弃）
                         from niu_api.chat_queue import get_chat_queue
                         _q = get_chat_queue()
                         _q.pause()
 
                         from niu_api.chat import _chat_lock
                         _chat_lock_acquired = False
-                        try:
-                            await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
-                            _chat_lock_acquired = True
-                        except TimeoutError:
-                            logger.warning("[Tidy] Mode-2: chat_lock 60s timeout, aborting execution")
-
-                        if not _chat_lock_acquired:
+                        if not await _acquire_chat_lock_with_retry("Tidy Mode-2"):
+                            # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
+                            logger.error("[Tidy] Mode-2: lock wait aborted, skipping compression plan execution")
                             _q.resume()
-                            raise RuntimeError("chat_lock timeout")
-
-                        if _q._processing and _q._processing_done.is_set():
-                            pass
-                        elif _q._processing:
-                            try:
-                                await asyncio.wait_for(_q._processing_done.wait(), timeout=30.0)
-                            except TimeoutError:
-                                logger.warning("[Tidy] Mode-2: ChatQueue processing timeout, aborting execution")
-                                if _chat_lock_acquired:
-                                    _chat_lock.release()
-                                _q.resume()
-                                raise RuntimeError("ChatQueue processing timeout") from None
-
+                            return {"status": "skipped", "mode": "sleep", "reason": "lock wait aborted (defensive)"}
+                        _chat_lock_acquired = True
+                        if not await _wait_queue_idle_with_retry(_q, "Tidy Mode-2"):
+                            logger.error("[Tidy] Mode-2: queue wait aborted, skipping compression plan execution")
+                            _chat_lock.release()
+                            _chat_lock_acquired = False
+                            _q.resume()
+                            return {"status": "skipped", "mode": "sleep", "reason": "queue wait aborted (defensive)"}
                         try:
                             fresh_messages = await store.get_messages()
                             existing_ids = {getattr(m, "id", "") for m in fresh_messages}
@@ -3794,11 +3799,13 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             context_fifo_threshold=-1,  # FIFO 保底
                         )
 
+                    # Case 3 应用前复查（§3.4）：模式一的"应用"发生在 context-manager 子 Agent
+                    # 运行中（工具直改消息），派发前是最后可检查点——CP3 之后到本点为纯同步代码，
+                    # 此复查与 CP3 语义重叠但按方案要求保留单点防御。
+                    if not is_sleeping():
+                        logger.warning("[Tidy] Sleep interrupted before dispatching Mode-1 context-manager (woke up)")
+                        return {"status": "interrupted", "reason": "woke_up"}
                     cm_result = await asyncio.to_thread(run_context_manager)
-                    if stop_aware and is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
                     # 游标自动推进：成功→推进到范围内仍存在的最后一条，overflow/incomplete→不动
@@ -3936,6 +3943,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 
         elif mode == "force":
+            # Case 1 门禁上移（§3.2）：ChatQueue pause 从分支入口开始，resume 挂函数级 finally
+            # （_force_fq 非 None 即 resume）——分支内所有退出路径（stop abort/skip/异常/取消）均恢复队列。
+            # held=True（None 窗口同步路径）语义：仅指调用方已持 _chat_lock（asyncio.Lock 不可重入，
+            # 压缩段跳过重复拿锁）；与队列 pause 解耦——入口 pause 照常生效。
+            from niu_api.chat_queue import get_chat_queue
+            _force_fq = get_chat_queue()
+            _force_fq.pause()
+
             # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
             # 降级解析提前到 force 分支顶部（§4.3 v1.4）：entity 排除/校验/压缩三处同源。
@@ -4380,41 +4395,24 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         # new_compress_id 保持初始值（last_compress_id）
 
                     logger.info(f"[Tidy] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
-
-                    # 安全协议：pause ChatQueue + acquire chat_lock
+                    # 安全协议：acquire chat_lock（无限心跳）+ 等待 worker 空闲（§3.9，生产永不放弃）。
+                    # ChatQueue pause 已上移到 force 分支入口（_force_fq），此处只等在途 item 收尾。
                     from niu_api.chat import _chat_lock
                     _f_chat_lock_acquired = False
-                    _fq = None
 
                     if chat_lock_already_held:
-                        _f_chat_lock_acquired = False
-                        logger.info("[Tidy] Force: chat_lock already held by caller, skipping ChatQueue pause+lock acquire")
+                        logger.info("[Tidy] Force: chat_lock already held by caller, skipping lock acquire")
                     else:
-                        from niu_api.chat_queue import get_chat_queue
-                        _fq = get_chat_queue()
-                        _fq.pause()
-
-                        try:
-                            await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
-                            _f_chat_lock_acquired = True
-                        except TimeoutError:
-                            logger.warning("[Tidy] Force: chat_lock 60s timeout, aborting execution")
-
-                        if not _f_chat_lock_acquired:
-                            _fq.resume()
-                            raise RuntimeError("Force: chat_lock timeout")
-
-                        if _fq._processing and _fq._processing_done.is_set():
-                            pass
-                        elif _fq._processing:
-                            try:
-                                await asyncio.wait_for(_fq._processing_done.wait(), timeout=30.0)
-                            except TimeoutError:
-                                logger.warning("[Tidy] Force: ChatQueue processing timeout, aborting execution")
-                                if _f_chat_lock_acquired:
-                                    _chat_lock.release()
-                                _fq.resume()
-                                raise RuntimeError("Force: ChatQueue processing timeout") from None
+                        if not await _acquire_chat_lock_with_retry("Tidy Force"):
+                            # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
+                            logger.error("[Tidy] Force: lock wait aborted, skipping compression plan execution")
+                            return {"status": "skipped", "mode": "force", "reason": "lock wait aborted (defensive)"}
+                        _f_chat_lock_acquired = True
+                        if not await _wait_queue_idle_with_retry(_force_fq, "Tidy Force"):
+                            logger.error("[Tidy] Force: queue wait aborted, skipping compression plan execution")
+                            _chat_lock.release()
+                            _f_chat_lock_acquired = False
+                            return {"status": "skipped", "mode": "force", "reason": "queue wait aborted (defensive)"}
 
                     try:
                         # 重新获取消息列表
@@ -4540,8 +4538,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     finally:
                         if _f_chat_lock_acquired:
                             _chat_lock.release()
-                        if _fq is not None:
-                            _fq.resume()
                 except ValueError as e:
                     logger.error(f"[Tidy] Force: Failed to parse compression plan: {e}")
                 except Exception as e:
@@ -4589,6 +4585,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         logger.error(f"[Tidy] Error: {e}\n{traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
     finally:
+        # Case 1 门禁兜底（§3.2）：force 分支入口暂停的 ChatQueue 在此统一 resume——
+        # 覆盖 return/异常/取消等全部退出路径，防队列永久冻结
+        if _force_fq is not None:
+            _force_fq.resume()
+
         # 无论成功/失败/异常/任务取消都必须广播 done，避免前端圆环卡死：
         # 1) 先无条件保底广播（无 await——asyncio.CancelledError 继承 BaseException 不入
         #    except Exception，取消时 finally 首个 await 点会抛，保底广播必须在 await 之前完成）

@@ -72,7 +72,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
   // 清空聊天记录
-  clearChat: (forceTidy) => ipcRenderer.invoke('clear-chat', forceTidy),
+  clearChat: () => ipcRenderer.invoke('clear-chat'),
 
   // 通知精灵进入睡眠（/sleep 命令：触发精灵 setState(SLEEP) → 自动 triggerTidy）
   enterSleep: () => ipcRenderer.send('enter-sleep'),

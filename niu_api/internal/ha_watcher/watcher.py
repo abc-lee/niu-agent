@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 _watcher = None
 _init_lock = threading.Lock()
@@ -50,6 +51,9 @@ class _HAWatcher:
         self._running = False
         self._last_mtime = 0
         self._current_subscriptions = {}
+        # 推送解耦（方案 §3.10）：单 worker 线程池（FIFO 保事件顺序）+ 无界队列。
+        # 监听循环 recv 到事件后 submit 即返回——ping/配置检查/重连永不被推送阻塞。
+        self._push_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ha-push")
 
     def start(self):
         self._running = True
@@ -65,6 +69,10 @@ class _HAWatcher:
             pass
         if self._thread:
             self._thread.join(timeout=5)
+        # 不等待在途推送（wait=False）：worker 内部有 LLM read_timeout 保底必收敛。
+        # worker 非 daemon（concurrent.futures 语义），进程退出依赖 /api/shutdown 的
+        # os._exit(0) 兜底（绕过 atexit join），不会因在途推送挂住退出流程
+        self._push_pool.shutdown(wait=False)
 
     def _run_loop(self):
         loop = asyncio.new_event_loop()
@@ -193,7 +201,8 @@ class _HAWatcher:
             entity_id = trigger_data.get("entity_id", "")
             description = f"{entity_id} 状态变化"
 
-        self._push_to_chat(description)
+        # 解耦提交：监听循环只入队即返回，推送等待全部发生在后台 worker（方案 §3.10）
+        self._submit_push(description)
 
     def _push_to_chat(self, description: str):
         try:
@@ -207,17 +216,19 @@ class _HAWatcher:
                 print(f"[HAWatcher] Main event loop not available, cannot push: {description}")
                 return
 
-            # 通过 ChatQueue 入队并等待 Agent 回复
+            # 通过 ChatQueue 入队并等待 Agent 回复（timeout=None：排队到底——
+            # 等待语义符合公理，worker 自身有 LLM read_timeout 保底必收敛）
             q = get_chat_queue()
             fut = asyncio.run_coroutine_threadsafe(
                 q.enqueue_and_wait_with_future(  # 返回 (result, reply_future)——reply_future 是同一 asyncio.Future
                     content=f"[智能家居] {description}",
                     source="ha-watcher",
                     session_id="default",
+                    timeout=None,
                 ),
                 loop,
             )
-            agent_reply, reply_future = fut.result(timeout=300)  # 解包
+            agent_reply, reply_future = fut.result()  # 解包（外层不再设超时）
 
             if not agent_reply:
                 print(f"[HAWatcher] Agent returned empty reply for: {description}")
@@ -242,6 +253,18 @@ class _HAWatcher:
 
         except Exception as e:
             print(f"[HAWatcher] 推送失败: {e}")
+
+    def _submit_push(self, description: str):
+        """把一次推送提交到单 worker 线程池。worker 内 wrap try/except：
+        单个推送的异常不得杀掉常驻 worker（否则后续事件全部滞留队列）。"""
+
+        def _worker():
+            try:
+                self._push_to_chat(description)
+            except Exception as e:  # noqa: BLE001 — 兜底隔离，保 worker 存活
+                print(f"[HAWatcher] 推送 worker 异常: {e}")
+
+        self._push_pool.submit(_worker)
 
     def _read_config(self) -> dict:
         try:

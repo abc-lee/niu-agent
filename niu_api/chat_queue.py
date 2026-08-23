@@ -233,6 +233,13 @@ class ChatQueue:
                     await self._queue.put(req)
                     await asyncio.sleep(0.1)
                     continue
+                # 唤醒睡眠整理管道（Case 3 可打断，方案 §3.4）：仅用户来源动作唤醒。
+                # 门控按 channel 判据：electron/im 才唤醒；scheduler 与 ha-watcher 的
+                # 入队 channel 均非 electron/im（ha-watcher 走默认 "scheduler"），
+                # 后台来源天然不唤醒——双保险排除。
+                if req.channel in ("electron", "im"):
+                    from niu_api.compat import set_spirit_state  # 函数内惰性 import
+                    set_spirit_state("idle")
                 await self._process_with_merge(req)
             except asyncio.CancelledError:
                 break
