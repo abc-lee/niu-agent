@@ -76,7 +76,8 @@ async def test_entry3_chat_sse_overflow_fire_and_forget(monkeypatch):
     阻塞型假 impl（等 release 才完成）：端点返回时 impl 尚未完成 → 未 await；
     worker 侧收到的 chat_lock_already_held 为 False（held 透传）。
     """
-    from niu_api.chat import ChatRequest, chat as chat_endpoint
+    from niu_api.chat import ChatRequest
+    from niu_api.chat import chat as chat_endpoint
 
     mock_runner, _ = _overflow_runner("你好")
 
@@ -133,7 +134,8 @@ async def test_entry3_chat_sse_overflow_fire_and_forget(monkeypatch):
 
 async def test_entry4_chat_sync_overflow_fire_and_forget(monkeypatch):
     """/chat/sync 溢出：投递 force（held=False）后立即返回响应，不等整理完成。"""
-    from niu_api.chat import ChatRequest, chat_sync as chat_sync_endpoint
+    from niu_api.chat import ChatRequest
+    from niu_api.chat import chat_sync as chat_sync_endpoint
 
     mock_runner, _ = _overflow_runner("你好")
 
@@ -184,7 +186,7 @@ async def test_entry4_chat_sync_overflow_fire_and_forget(monkeypatch):
 
 async def test_entry5_chat_session_overflow_fire_and_forget(monkeypatch):
     """chat_session 溢出：投递 force（held=False）后立即返回响应，不等整理完成。"""
-    from niu_api.compat import chat_session, ChatRequest
+    from niu_api.compat import ChatRequest, chat_session
 
     mock_runner, _ = _overflow_runner("你好")
 
@@ -340,7 +342,8 @@ async def test_entry7_retry_awaits_serial_degrade(monkeypatch):
         return f
 
     monkeypatch.setattr(compat, "_pipeline_enqueue", fake_enqueue)
-    monkeypatch.setattr(compat, "_pipeline_queue", object())  # 非 None → 走投递路径
+    # 非 None 即视为"队列窗口存在"；须提供 empty()——teardown stop_pipeline_queue 会排空
+    monkeypatch.setattr(compat, "_pipeline_queue", SimpleNamespace(empty=lambda: True))
     monkeypatch.setattr("niu_api.chat.notify_compact_status_sync", Mock())
     monkeypatch.setattr(compat, "_tidy_context_impl", AsyncMock())  # None 窗口不被走（防御确认）
 
@@ -379,7 +382,7 @@ async def test_entry7_retry_success_returns_early(monkeypatch):
         return f
 
     monkeypatch.setattr(compat, "_pipeline_enqueue", fake_enqueue)
-    monkeypatch.setattr(compat, "_pipeline_queue", object())
+    monkeypatch.setattr(compat, "_pipeline_queue", SimpleNamespace(empty=lambda: True))
     monkeypatch.setattr("niu_api.chat.notify_compact_status_sync", Mock())
     monkeypatch.setattr("agent.subagent._read_context_window_tokens", lambda: 1000)
     monkeypatch.setattr("agent.subagent._read_warning_threshold", lambda: 0.1)  # safe_level = 100

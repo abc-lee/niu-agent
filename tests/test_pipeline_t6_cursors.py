@@ -16,14 +16,12 @@ runner / TokenCalculator——禁真实 LLM、禁图谱写入、messages.db 零�
 """
 import asyncio
 import json
+import os
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 import niu_api.compat as compat
-
 
 NORMAL_JSON = json.dumps({"ok": True})  # 非 overflow / 非 incomplete / 非 failure 的正常返回
 OVERFLOW_JSON = json.dumps({
@@ -127,18 +125,31 @@ def _patch_cursor_store(store, call_mock=None, protect_recent=0):
 
 
 def _run_sleep_tidy(store, call_mock):
-    """直接调 _tidy_context_impl sleep 分支（绕过 worker/CP0）。"""
+    """直接调 _tidy_context_impl sleep 分支（绕过 worker/CP0）。
+
+    v2：种子记录写入隔离 F1（conftest tmp）使 entity 步真实执行；F2 patch 到
+    测试专用 tmp（relay 剪切目标只允许落测试文件）。返回附 (f1_path, f2_path)。
+    """
+    import tempfile
+
+    import agent.md_mirror as mdm
     from niu_api.compat import _tidy_context_impl
 
     msgs = _messages(("m1", "user"), ("m2", "user"))
     store_obj = mock.MagicMock()
     store_obj.get_messages = mock.AsyncMock(return_value=msgs)
+    f2_path = os.path.join(tempfile.mkdtemp(prefix="t6_relay_"), "f2.md")
     with ExitStack() as stack:
         stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store_obj)))
         for p in _patch_cursor_store(store, call_mock):
             stack.enter_context(p)
+        stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
+        block = mdm.format_message_record(
+            msg_id="t6-seed-not-in-db", created_at="t", role="user", content="种子",
+        )
+        assert mdm.append_record(block, mdm.F1_PATH)
         result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
-    return result, call_mock
+    return result, call_mock, mdm.F1_PATH, f2_path
 
 
 def _agent_keyed_call(agent_results):
@@ -161,121 +172,125 @@ def _called_agents(call_mock):
 # ---------------------------------------------------------------------------
 
 class TestCursorsCaughtUp:
-    def _caught_up(self, messages, protect, entity="", dream=""):
-        """直接调 _cursors_caught_up，patch 游标读取为指定值。"""
-        def _read(path, key):
-            return {
-                "last_entity_extract_id": entity,
-                "last_dream_evolve_id": dream,
-            }.get(key, "")
+    """v2 门控分治：睡眠版 _cursors_caught_up = F1 空性 + dream 追平（委托 dream_only）；
+    _cursors_caught_up_dream_only（force 入口共用）无 entity 腿、无 F1 判定。
 
+    entity UUID 游标已退役——本类不再断言任何 last_entity_extract_id 行为。
+    """
+
+    def _caught_up(self, messages, protect, dream="", variant="dream_only"):
+        """variant='dream_only' 直测 dream_only；'sleep' 测睡眠版（F1 由 conftest 隔离，缺省为空）。"""
+        def _read(path, key):
+            return {"last_dream_evolve_id": dream}.get(key, "")
+
+        fn = compat._cursors_caught_up_dream_only if variant == "dream_only" else compat._cursors_caught_up
         with mock.patch("niu_api.compat._read_cursor_value", side_effect=_read):
-            return compat._cursors_caught_up(messages, protect)
+            return fn(messages, protect)
 
     def test_empty_messages_true(self):
-        """空库无可压缩内容 → True（保护/游标不判）。"""
+        """空库无可压缩内容 → True（保护/游标/F1 不判）。"""
         assert compat._cursors_caught_up([], 10) is True
+        assert compat._cursors_caught_up_dream_only([], 10) is True
+
+    def test_sleep_gate_f1_leg_behavioral(self, tmp_path, monkeypatch):
+        """睡眠版 entity 腿=F1 空性（Task4-D 行为测试）：F1 非空→未追平；空→追平。
+
+        前提：dream 游标钉在尾部（protect=0）；隔离 F1 指向 tmp_path（monkeypatch）。
+        """
+        import agent.md_mirror as mdm
+
+        f1 = tmp_path / "f1.md"
+        monkeypatch.setattr(mdm, "F1_PATH", str(f1))
+        msgs = _messages(("m1", "user"), ("m2", "user"))
+        f1.write_text('{"msg_id": "x"}\nbody\n\n', encoding="utf-8")
+        assert self._caught_up(msgs, 0, dream="m2", variant="sleep") is False, "F1 非空=还有未提炼消息"
+        f1.unlink()
+        assert self._caught_up(msgs, 0, dream="m2", variant="sleep") is True, "F1 空=全部已提炼"
 
     def test_tool_msg_at_tail_not_naive_tail_cut(self):
         """tool 消息穿插尾部：_find_protected_range ≠ 朴素尾切（保护边界上移到 user 组起始）。
 
         messages = [u1, a1, u2, a2, tool]，protect=2：
         - 朴素尾切保护 [a2, tool]（idx 3-4），_find_protected_range 保护 [u2, a2, tool]（idx 2-4）
-        - 游标钉在 protect_start-1（a1, idx 1）→ 追平 ✓；游标在 a1 之前（u1, idx 0）→ 不追平 ✗
+        - dream 游标钉在 protect_start-1（a1, idx 1）→ 追平 ✓；游标在 u1（idx 0）→ 不追平 ✗
         """
         msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "user"),
                          ("m4", "assistant"), ("m5", "tool"))
-        # 判追平语义验证：protect_start == 2（保护含 tool 尾部 + 上移到 u2），非朴素尾切 len-2=3
         protect_start = compat._find_protected_range(msgs, 2)
         assert protect_start == 2, f"期望保护边界 idx=2，实际 {protect_start}"
-        # 游标 = protect_start-1（a1）→ 追平
-        assert self._caught_up(msgs, 2, entity="m2", dream="m4") is True
-        # 游标在保护区前（u1）→ 不追平
-        assert self._caught_up(msgs, 2, entity="m1", dream="m4") is False
+        assert self._caught_up(msgs, 2, dream="m4") is True
+        assert self._caught_up(msgs, 2, dream="m1") is False
 
     def test_protect_zero_requires_cursor_at_true_tail(self):
         """protect=0：全部可压——游标须到真实尾部（含 tool 消息）才追平。"""
         msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "tool"))
-        # 双游标 = 最后一条（tool 消息）→ 追平
-        assert self._caught_up(msgs, 0, entity="m3", dream="m3") is True
-        # entity 游标 = 倒数第二条 → 不追平（压缩会删掉未提炼消息）
-        assert self._caught_up(msgs, 0, entity="m2", dream="m3") is False
-        # Quality P1-1 修复（§4.3 同步）：protect=0 分支不再按首游标（entity）early-return，
-        # 追平后 continue 继续查 dream——entity 在尾部但 dream 落后必须判 False（见反例测试）。
-
-    def test_protect_zero_entity_at_tail_dream_behind_false(self):
-        """反例（Quality P1-1）：protect=0 时 entity 追平但 dream 落后 → 必须 False。
-
-        旧实现 protect=0 分支 `return idx == len(messages) - 1` 在 entity 位于尾部时
-        early-return True，漏查第二个游标（dream）——force 压缩会删除 dream 未处理消息。
-        """
-        msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "tool"))
-        # entity 在尾部、dream 落后（倒数第二条）→ 未追平（dream 未处理消息会被压缩删掉）
-        assert self._caught_up(msgs, 0, entity="m3", dream="m2") is False
-        # 对照：entity 在尾部、dream 也在尾部 → 追平
-        assert self._caught_up(msgs, 0, entity="m3", dream="m3") is True
+        assert self._caught_up(msgs, 0, dream="m3") is True
+        assert self._caught_up(msgs, 0, dream="m2") is False
 
     def test_protect_start_zero_all_protected_passes(self):
         """protect_start==0（全保护=压缩不删任何消息）→ 提炼未做也安全，校验放行。"""
         msgs = _messages(("m1", "user"), ("m2", "assistant"))
         protect_start = compat._find_protected_range(msgs, 2)
         assert protect_start == 0  # 少于 N 对 → 全保护
-        assert self._caught_up(msgs, 2, entity="m1", dream="m2") is True
+        assert self._caught_up(msgs, 2, dream="m2") is True
         # 游标任意位置都放行（idx >= -1 恒真）
-        assert self._caught_up(msgs, 2, entity="m2", dream="m1") is True
+        assert self._caught_up(msgs, 2, dream="m1") is True
 
     def test_cursor_before_protected_range_false(self):
         """游标在最后一条未保护消息之前 → 有未处理 → 不压。"""
         msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "user"), ("m4", "assistant"))
         protect_start = compat._find_protected_range(msgs, 2)
         assert protect_start == 2
-        # 游标在 protect_start-2（u1, idx 0）→ 不追平
-        assert self._caught_up(msgs, 2, entity="m1", dream="m4") is False
-        # 游标恰好钉在 protect_start-1（a1, idx 1）→ 追平（entity 排除保护区，游标语义即此）
-        assert self._caught_up(msgs, 2, entity="m2", dream="m4") is True
+        assert self._caught_up(msgs, 2, dream="m1") is False
+        assert self._caught_up(msgs, 2, dream="m4") is True
 
     def test_empty_cursor_false(self):
         """空游标（文件缺失/从未处理）→ 保守不压。"""
         msgs = _messages(("m1", "user"), ("m2", "user"))
-        assert self._caught_up(msgs, 0, entity="", dream="m2") is False
-        # dream 空游标：entity 不早退时（首游标非尾部）同样保守不压
-        assert self._caught_up(msgs, 0, entity="m1", dream="") is False
+        assert self._caught_up(msgs, 0, dream="") is False
 
     def test_stale_cursor_value_error_false(self):
         """游标指向已删消息（ValueError）→ 保守不压。"""
         msgs = _messages(("m1", "user"), ("m2", "user"))
-        assert self._caught_up(msgs, 0, entity="deleted-id", dream="m2") is False
-        # dream 游标失效：entity 通过首轮（protect=1 不早退，全保护 protect_start=0 仍逐游标查）→ 查 dream 时 ValueError
-        assert self._caught_up(msgs, 1, entity="m2", dream="deleted-id") is False
+        assert self._caught_up(msgs, 0, dream="deleted-id") is False
+        assert self._caught_up(msgs, 1, dream="deleted-id") is False
 
 
 # ---------------------------------------------------------------------------
 # 2. sleep 调用点：CP3 同处（先状态机后游标）
 # ---------------------------------------------------------------------------
 
-def test_sleep_skipped_when_cursors_not_caught_up():
-    """sleep：entity 失败（overflow）游标未追平 → CP3 后校验失败 → skipped + 中文 reason；cm 不执行。"""
-    store = _CursorStore(entity="m1", dream="m2")  # 上一轮成功游标：entity 钉在 m1（保护区内）
-    call_mock = _agent_keyed_call({"entity-extractor": OVERFLOW_JSON})  # 本轮失败 → 游标不推进
-    result, call_mock = _run_sleep_tidy(store, call_mock)
+def test_sleep_skipped_when_f1_not_caught_up():
+    """sleep：F1 有未提炼内容（entity 收 overflow 未剪切）→ 门控 F1 腿不通过 → skipped；cm 不执行。"""
+    store = _CursorStore()
+    call_mock = _agent_keyed_call({"entity-extractor": OVERFLOW_JSON})
+    result, call_mock, f1, _f2 = _run_sleep_tidy(store, call_mock)
 
     assert result == {"status": "skipped", "reason": SKIP_REASON}, f"实际: {result}"
     assert "context-manager" not in _called_agents(call_mock), "未追平不应调用 cm"
+    # v2 契约：entity 失败 → F1 不剪切（数据保留，下次重跑）
+    with open(f1, encoding="utf-8") as f:
+        assert '"msg_id": "t6-seed-not-in-db"' in f.read(), "失败时 F1 不得被剪切"
 
 
 def test_sleep_caught_up_proceeds_to_compress():
-    """sleep：entity/dream 真实推进到尾部（protect=0 游标=尾部）→ 校验通过 → 压缩执行。"""
-    store = _CursorStore()  # 空游标 → entity/dream 全量处理并推进到 m2
-    call_mock = _agent_keyed_call({})  # 全部 NORMAL_JSON
-    result, call_mock = _run_sleep_tidy(store, call_mock)
+    """sleep：entity relay 剪切 F1 至空 + dream 真实推进到尾部 → 两腿齐 → 压缩执行。"""
+    store = _CursorStore()
+    call_mock = _agent_keyed_call({"entity-extractor": "处理完成 @end\nprocessed_line=999999"})
+    result, call_mock, f1, f2 = _run_sleep_tidy(store, call_mock)
 
     assert result.get("status") == "ok", f"追平后应正常压缩: {result}"
     agents = _called_agents(call_mock)
     assert agents == ["entity-extractor", "dream-evolver", "context-manager"], f"实际: {agents}"
-    # 游标真实写回（内存 store）→ 校验读到 m2
-    assert store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id") == "m2"
+    # 游标真实写回（内存 store）→ 校验读到 m2；entity UUID 游标退役零写
     assert store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id") == "m2"
     assert store.read(Path.home() / ".niu" / "last_compress.json", "last_compress_id") == "m2"
+    assert store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id") == ""
+    # v2：成功提炼后 F1 被剪切清空，剪下前缀落入 F2
+    with open(f1, encoding="utf-8") as f:
+        assert f.read() == "", "成功提炼后 F1 应为空"
+    with open(f2, encoding="utf-8") as f:
+        assert '"msg_id": "t6-seed-not-in-db"' in f.read(), "剪下前缀应追加到 F2"
 
 
 # ---------------------------------------------------------------------------
@@ -286,68 +301,79 @@ FORCE_MESSAGES = [("m1", "user"), ("m2", "assistant"), ("m3", "user"), ("m4", "a
 
 
 def _run_force_tidy(store, call_mock, request_extra=None, protect_recent=0):
-    """直接调 _tidy_context_impl force 分支（不 skip_compress，走到 _compress_force）。"""
+    """直接调 _tidy_context_impl force 分支（不 skip_compress，走到 _compress_force）。
+
+    v2：种子记录写入隔离 F1——D3 后模式三无 entity 腿，F1 非空也不拦、不消费
+    （用例据此断言 F1 原样）；F2 patch 到测试专用 tmp 以防意外 relay。
+    """
+    import tempfile
+
+    import agent.md_mirror as mdm
     from niu_api.compat import _tidy_context_impl
 
     msgs = _messages(*FORCE_MESSAGES)
     store_obj = mock.MagicMock()
     store_obj.get_messages = mock.AsyncMock(return_value=msgs)
+    f2_path = os.path.join(tempfile.mkdtemp(prefix="t6_relay_f_"), "f2.md")
     with ExitStack() as stack:
         stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store_obj)))
         for p in _patch_cursor_store(store, call_mock, protect_recent=protect_recent):
             stack.enter_context(p)
+        stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
+        block = mdm.format_message_record(
+            msg_id="t6-force-seed", created_at="t", role="user", content="种子",
+        )
+        assert mdm.append_record(block, mdm.F1_PATH)
         req = {"mode": "force", "session_id": "t"}
         if request_extra:
             req.update(request_extra)
         result = asyncio.run(_tidy_context_impl(req, chat_lock_already_held=True))
-    return result, call_mock
+    return result, call_mock, mdm.F1_PATH
 
 
-def test_force_skipped_when_cursor_not_caught_up():
-    """force：entity 失败游标空 → 压缩段入口校验失败 → skipped + 中文 reason；cm 不执行。"""
-    store = _CursorStore(dream="m4")  # 仅 dream 追平；entity 空
-    call_mock = _agent_keyed_call({"entity-extractor": OVERFLOW_JSON})
-    result, call_mock = _run_force_tidy(store, call_mock)
+def test_force_skipped_when_dream_not_caught_up():
+    """force：门控为 dream_only 变体（D3 摘除 entity 腿）——dream 失败游标空 → skipped。"""
+    store = _CursorStore()
+    call_mock = _agent_keyed_call({"dream-evolver": OVERFLOW_JSON, "journal-agent": OVERFLOW_JSON})
+    result, call_mock, _f1 = _run_force_tidy(store, call_mock)
 
     assert result.get("status") == "skipped", f"实际: {result}"
     assert result.get("reason") == SKIP_REASON
     assert "context-manager" not in _called_agents(call_mock), "未追平不应调用 cm"
+    assert "entity-extractor" not in _called_agents(call_mock), "模式三已摘除 entity 段"
 
 
-def test_force_entity_real_advance_passes_check():
-    """端到端：force entity 真实推进后校验通过（protect_start-1 判追平）→ cm 执行。
+def test_force_dream_advance_passes_check_no_entity_leg():
+    """端到端（D3）：模式三无 entity 腿——F1 非空也不拦、不消费；dream/journal 推进后 cm 执行。
 
-    protect=1：保护区 [m3, m4]（idx 2-3）；entity 排除保护区后处理 [m1, m2]，
-    processed_up_to=2 → 游标钉在 protect_start-1（m2, idx 1）——校验接受。
+    protect=1：保护区 [m3, m4]；dream 推进到 m4（尾部）→ dream_only 校验接受。
     cm 返回 SUBAGENT_ERROR（证明 cm 被调=校验通过；LLM 错误自身跳过，不触 DB 写删）。
     """
     store = _CursorStore()
     call_mock = _agent_keyed_call({
-        "entity-extractor": "处理完成 @end processed_up_to=2",
         "dream-evolver": "处理完成 @end processed_up_to=4",
         "journal-agent": "处理完成 @end processed_up_to=4",
         "context-manager": "SUBAGENT_ERROR:mock",
     })
-    result, call_mock = _run_force_tidy(store, call_mock, protect_recent=1)
+    result, call_mock, f1 = _run_force_tidy(store, call_mock, protect_recent=1)
 
-    # 校验通过 → cm 被调用；cm LLM 错误 → 返回 skipped LLM error（不写删）
-    assert "context-manager" in _called_agents(call_mock), "校验通过后 cm 应被调用"
+    called = _called_agents(call_mock)
+    assert "context-manager" in called, "校验通过后 cm 应被调用"
+    assert "entity-extractor" not in called, "模式三已摘除 entity 段"
     assert result.get("status") == "skipped"
     assert "LLM error" in result.get("reason", ""), f"实际: {result}"
-    # entity 游标钉在 protect_start-1（m2）
-    entity_id = store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id")
-    assert entity_id == "m2", f"entity 游标应钉在 protect_start-1=m2，实际 {entity_id}"
+    # F1 非空也放行且原样（模式三零消费）
+    with open(f1, encoding="utf-8") as f:
+        assert '"msg_id": "t6-force-seed"' in f.read(), "模式三不得剪切/改动 F1"
 
 
 def test_force_degraded_protect_same_source():
     """降级同源（R4-B P1）：config protect=10 + force_protect_recent=5 → effective=5，
-    entity 排除/校验/压缩三处 _find_protected_range 全用 5（不得出现 10）。"""
-    import niu_api.llm_proxy as llm_proxy_module
+    校验/压缩两处 _find_protected_range 全用 5（不得出现 10）；v2 无 entity 排除处。"""
 
     msgs = _messages(*[(f"m{i}", "user" if i % 2 else "assistant") for i in range(1, 13)])
     store = _CursorStore()
     call_mock = _agent_keyed_call({
-        "entity-extractor": "处理完成 @end processed_up_to=6",
         "dream-evolver": "处理完成 @end processed_up_to=12",
         "journal-agent": "处理完成 @end processed_up_to=12",
         "context-manager": "SUBAGENT_ERROR:mock",
@@ -372,12 +398,11 @@ def test_force_degraded_protect_same_source():
             chat_lock_already_held=True,
         ))
 
-    assert "context-manager" in _called_agents(call_mock), "校验应通过（entity 钉在 5-1）"
+    called = _called_agents(call_mock)
+    assert "context-manager" in called, "校验应通过（dream 钉在尾部）"
+    assert "entity-extractor" not in called, "模式三已摘除 entity 段"
     assert recorded, f"应发生 _find_protected_range 调用: {recorded}"
-    assert all(v == 5 for v in recorded), f"entity 排除/校验/压缩三处应全用 effective=5，实际 {recorded}"
-    # entity 游标钉在 effective-1（protect_start-1）
-    entity_id = store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id")
-    assert entity_id == "m6", f"entity 游标应钉在 protect_start-1=m6，实际 {entity_id}"
+    assert all(v == 5 for v in recorded), f"校验/压缩各处应全用 effective=5，实际 {recorded}"
     assert result.get("status") == "skipped" and "LLM error" in result.get("reason", "")
 
 
@@ -428,27 +453,28 @@ def _run_runner_force(monkeypatch, agent_results, store=None):
 
 
 def test_runner_force_skipped_when_cursor_not_caught_up(monkeypatch):
-    """runner-force：entity/dream/journal 全失败（overflow）→ 游标空 → 压缩段入口校验失败 → skipped。"""
+    """runner-force：dream/journal 全失败（overflow）→ dream 游标空 → 校验失败 → skipped。"""
     result, call_mock, _ = _run_runner_force(
         monkeypatch,
-        {"entity-extractor": OVERFLOW_JSON, "dream-evolver": OVERFLOW_JSON, "journal-agent": OVERFLOW_JSON},
+        {"dream-evolver": OVERFLOW_JSON, "journal-agent": OVERFLOW_JSON},
     )
     assert result == {"status": "skipped", "reason": SKIP_REASON}, f"实际: {result}"
     assert "context-manager" not in _called_agents(call_mock), "未追平不应调用 cm"
 
 
 def test_runner_force_caught_up_proceeds(monkeypatch):
-    """runner-force：三步真实推进到尾部（protect=0 游标=尾部）→ 校验通过 → 压缩执行（cm 被调）。"""
+    """runner-force：dream/journal 真实推进到尾部（protect=0 游标=尾部）→ 校验通过 → 压缩执行（cm 被调）。"""
     result, call_mock, store = _run_runner_force(
         monkeypatch,
         {
-            "entity-extractor": "处理完成 @end processed_up_to=2",
             "dream-evolver": "处理完成 @end processed_up_to=2",
             "journal-agent": "处理完成 @end processed_up_to=2",
             "context-manager": "SUBAGENT_ERROR:mock",
         },
     )
-    assert "context-manager" in _called_agents(call_mock), "校验通过后 cm 应被调用"
+    called = _called_agents(call_mock)
+    assert "context-manager" in called, "校验通过后 cm 应被调用"
+    assert "entity-extractor" not in called, "runner force 已摘除 entity 段"
     assert result.get("status") == "skipped" and "LLM error" in result.get("reason", ""), f"实际: {result}"
-    entity_id = store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id")
-    assert entity_id == "m2", f"entity 游标应推进到 m2，实际 {entity_id}"
+    dream_id = store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id")
+    assert dream_id == "m2", f"dream 游标应推进到 m2，实际 {dream_id}"

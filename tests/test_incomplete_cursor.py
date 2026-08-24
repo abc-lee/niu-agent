@@ -15,7 +15,6 @@ from unittest import mock
 
 from niu_api.compat import _incomplete_reason, _is_subagent_incomplete
 
-
 # ---------------------------------------------------------------------------
 # 1. _is_subagent_incomplete 单元测试（R3-13）
 # ---------------------------------------------------------------------------
@@ -135,25 +134,45 @@ def _tidy_incomplete_patches(subagent_result, call_mock):
 
 class TestTidyContextImplIncomplete:
     def _run_sleep_tidy(self, subagent_result, cursor_value=None):
+        """v2：种子记录写入隔离 F1 使 entity 步真实执行。
+
+        成功结果（NORMAL_JSON）补 processed_line 触发 relay 剪切；incomplete 结果
+        保持原样（F1 不剪切契约）。F2 patch 到测试专用 tmp。返回附 (f1, f2) 路径。
+        """
         import asyncio
+        import os as _os
+        import tempfile
         from contextlib import ExitStack
 
+        import agent.md_mirror as mdm
         from niu_api.compat import _tidy_context_impl
 
         store = mock.MagicMock()
         store.get_messages = mock.AsyncMock(return_value=_tidy_messages())
         call_mock = mock.MagicMock()
-        call_mock.return_value = subagent_result
+
+        def _keyed(agent_name=None, **kwargs):
+            if agent_name == "entity-extractor" and subagent_result == NORMAL_JSON:
+                return NORMAL_JSON + "\n处理完成 @end\nprocessed_line=999999"
+            return subagent_result
+
+        call_mock.side_effect = _keyed
+        f2_path = _os.path.join(tempfile.mkdtemp(prefix="inc_relay_"), "f2.md")
         with ExitStack() as stack:
             stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
             for p in _tidy_incomplete_patches(subagent_result, call_mock):
                 stack.enter_context(p)
+            stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
             if cursor_value is not None:
-                # T6：压缩前置游标追平校验——追平才继续到压缩段
+                # 压缩前置门控的 dream 游标追平校验（v2：entity 腿改判 F1 空性）
                 stack.enter_context(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
             write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
+            block = mdm.format_message_record(
+                msg_id="inc-seed-not-in-db", created_at="t", role="user", content="种子",
+            )
+            assert mdm.append_record(block, mdm.F1_PATH)
             result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
-        return result, write_mock, call_mock
+        return result, write_mock, call_mock, mdm.F1_PATH, f2_path
 
     @staticmethod
     def _cursor_writes(write_mock):
@@ -162,11 +181,11 @@ class TestTidyContextImplIncomplete:
     def test_incomplete_result_does_not_advance_any_cursor(self):
         """entity/dream/compress 全部收 incomplete JSON → 游标不推进（R4-6/R4-7）。
 
-        T6：entity/dream incomplete → 游标未追平 → 压缩前置校验不通过 → skipped（cm 不执行）。
+        v2：entity incomplete → F1 不剪切 → 门控 F1 腿不通过 → skipped（cm 不执行）。
         判别力：子 Agent 真实被调用（entity+dream；journal 2.5%<50% 跳过），
-        且 _write_cursor_with_lock 零次调用（游标全不动）。
+        且 _write_cursor_with_lock 零次调用（游标全不动）、F1 原样保留。
         """
-        result, write_mock, call_mock = self._run_sleep_tidy(INCOMPLETE_JSON)
+        result, write_mock, call_mock, f1, _f2 = self._run_sleep_tidy(INCOMPLETE_JSON)
         assert result.get("status") == "skipped", f"游标未追平应 skipped: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
         assert called_agents == ["entity-extractor", "dream-evolver"], (
@@ -174,14 +193,16 @@ class TestTidyContextImplIncomplete:
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"incomplete 结果不应写任何游标: {writes}"
+        with open(f1, encoding="utf-8") as f:
+            assert '"msg_id": "inc-seed-not-in-db"' in f.read(), "incomplete 时 F1 不得被剪切"
 
     def test_normal_result_advances_compress_cursor(self):
         """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。
 
-        T6：cursor_value='m2' 模拟 entity/dream 已追平（本 fixture 游标文件缺失，
-        不提供则压缩前置校验保守不压）。
+        v2：entity 成功 → relay 剪切 F1 至空 + cursor_value='m2'（dream 腿追平）→
+        门控两腿齐 → 压缩执行。
         """
-        result, write_mock, _ = self._run_sleep_tidy(NORMAL_JSON, cursor_value="m2")
+        result, write_mock, _call, _f1, _f2 = self._run_sleep_tidy(NORMAL_JSON, cursor_value="m2")
         assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
         compress_writes = [
             d for d in self._cursor_writes(write_mock)
@@ -189,6 +210,7 @@ class TestTidyContextImplIncomplete:
         ]
         assert compress_writes, "正常返回应推进 compress 游标"
         assert compress_writes[-1]["last_compress_id"] in ("m1", "m2")
+
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +389,10 @@ class TestRunSubagentAsyncNotification:
             fake_queue.push.side_effect = queue_push
         unregister = mock.MagicMock()
         notify_events = []
+
         if notify is None:
-            notify_impl = lambda name, etype, payload: notify_events.append((name, etype, payload))
+            def notify_impl(name, etype, payload):
+                notify_events.append((name, etype, payload))
         else:
             notify_impl = notify
         messages = []
@@ -432,8 +456,10 @@ class TestRunSubagentAsyncNotification:
             fake_queue.push.side_effect = queue_push
         unregister = mock.MagicMock()
         notify_events = []
+
         if notify is None:
-            notify_impl = lambda name, etype, payload: notify_events.append((name, etype, payload))
+            def notify_impl(name, etype, payload):
+                notify_events.append((name, etype, payload))
         else:
             notify_impl = notify
         started = threading.Event()
