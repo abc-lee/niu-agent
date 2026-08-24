@@ -118,9 +118,14 @@ def append_record(block: str, md_path: str | None = None) -> bool:
             written = 0
             while written < len(data):
                 n = os.write(fd, data[written:])
+                if n == 0:
+                    raise OSError("os.write returned 0")
                 written += n
         finally:
-            _unlock_fd(fd)
+            try:
+                _unlock_fd(fd)
+            except Exception:
+                pass
             os.close(fd)
         return True
     except Exception as e:  # best-effort：镜像故障绝不影响对话
