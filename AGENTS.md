@@ -565,7 +565,7 @@ preload_face_model()
   - **九入口全接入**：tidy 端点 sleep（投递+立即返回 queued）/force（投递+await）、chat.py 溢出 ×2（fire-and-forget）、chat_session（fire-and-forget）、clear_chat（await 600s 超时+held=True）、chat_queue 降级重试（await+参数透传）、runner 80% 水位（call_soon_threadsafe+300s 超时+转换块留回调）、runner nap 触发（call_soon_threadsafe+失败清 `_nap_running`）——各按语义阻塞/await/fire-and-forget；future 统一 `concurrent.futures.Future`（asyncio wrap_future / runner 线程 result(timeout)）；**None 窗口防御**（队列未创建 → 同步执行 Option A）
   - **队列去重**：键 = (kind, skip_compress, force_protect_recent)；压缩类在队 ≤3（force/runner-force/clear skip_compress 键不同可并存）；跨线程 check-then-set 竞态后果有界
   - **CP0-CP3 睡眠状态检查**（仅 sleep）：CP0 排队唤醒非睡眠 → cancelled/woke_up；CP1 实体段后 / CP2 梦境段后 / CP3 压缩段前 → interrupted/woke_up（已推进游标不回滚，下次续跑）；**nap/force/runner-force 零插入**（需求 4/5 用户拍板矩阵）
-  - **压缩前置校验** `_cursors_caught_up`（sleep+force+runner-force 三处）：提炼+进化游标全追平才允许压缩；protect 同源 `effective_protect`（force 降级提前到分支顶部）；protect=0 特判真实尾部（Quality P1-1 吸收：继续查 dream 游标不 early-return）；protect_start==0 全保护放行；未追平 → `{"status":"skipped","reason":"还有消息未提炼完，本次不压缩"}`（中文 reason 前端直接展示）
+  - **压缩前置校验** `_cursors_caught_up`（sleep+force+runner-force 三处）：提炼+进化游标全追平才允许压缩；protect 同源 `effective_protect`（force 降级提前到分支顶部）；protect=0 特判真实尾部（Quality P1-1 吸收：继续查 dream 游标不 early-return）；protect_start==0 全保护放行；未追平 → `{"status":"skipped","reason":"还有消息未提炼完，本次不压缩"}`（中文 reason 前端直接展示）。**【已被 2026-08-24 MD 中继工程三取代】**force/runner-force 两处门控随 force 梦境腿摘除而删除（手动 /compact 不再被梦境积压阻塞），仅保留睡眠 CP3 门控——现状以 2026-08-24 条目为准
   - **`_is_subagent_failure` 修游标假推进**：`[错误]` / `SUBAGENT_ERROR:` 前缀识别为失败；11 决策点（compat 7 + runner 4）分支顺序 failure/incomplete 先判、再判 overflow、else 才推进
 - **关键设计教训**：
   - ① 锁模型在持锁方多入口调用场景（chat.py/compat 持 `_chat_lock` 调 impl）必然成环 → 队列单 worker 是绕开死锁的正确选择
