@@ -168,15 +168,15 @@ class TestClearChatJournalCursorReset:
         assert '"last_journal.json"' in source
 
     def test_journal_cursor_reset_list_complete(self):
-        """验证游标重置列表包含所有已知游标文件"""
+        """验证游标重置列表包含三键游标文件（工程四决策 5：三键方案，dream 键必须留驻防哨兵翻转）"""
         source = _read_source()
         # 找到重置列表所在行
         lines = source.split("\n")
         for line in lines:
-            if "last_entity_extract.json" in line and "last_journal.json" in line:
-                # 所有游标文件都应在同一行
-                assert "last_dream_evolve.json" in line
-                assert "last_compress.json" in line
+            if '"last_journal.json"' in line:
+                # 三键游标文件都应在同一行
+                assert '"last_dream_evolve.json"' in line
+                assert '"last_compress.json"' in line
                 break
         else:
             pytest.fail("Cursor reset list not found with expected entries")
@@ -289,31 +289,31 @@ class TestJournalCursorFallback:
 class TestJournalIntegrationWithOtherAgents:
     """测试 journal-agent 与其他子 Agent 的集成"""
 
-    def test_journal_runs_after_dream_evolver(self):
-        """验证 journal-agent 在 dream-evolver 之后执行（步骤 2.5/3）"""
+    def test_journal_runs_before_dream_evolver(self):
+        """验证 journal-agent 在 dream-evolver 之前执行（工程四重排：步骤 1/4 vs 4/4）"""
         source = _read_source()
         lines = source.split("\n")
         dream_line = None
         journal_line = None
         for i, line in enumerate(lines):
-            if "dream-evolver" in line and "2/3" in line:
+            if "dream-evolver" in line and "4/4" in line:
                 dream_line = i
-            if "journal-agent" in line and "2.5/3" in line:
+            if "journal-agent" in line and "1/4" in line:
                 journal_line = i
         assert dream_line is not None, "dream-evolver step not found"
         assert journal_line is not None, "journal-agent step not found"
-        assert journal_line > dream_line, "journal-agent should run after dream-evolver"
+        assert journal_line < dream_line, "journal-agent should run before dream-evolver (工程四重排)"
 
     def test_journal_runs_before_context_manager(self):
-        """验证 journal-agent 在 context-manager 之前执行"""
+        """验证 journal-agent 在 context-manager 之前执行（工程四重排：步骤 1/4 → 2/4）"""
         source = _read_source()
         lines = source.split("\n")
         journal_line = None
         context_line = None
         for i, line in enumerate(lines):
-            if "journal-agent" in line and "2.5/3" in line:
+            if "journal-agent" in line and "1/4" in line:
                 journal_line = i
-            if "context-manager" in line and "3/3" in line:
+            if "context-manager" in line and "2/4" in line:
                 context_line = i
         assert journal_line is not None, "journal-agent step not found"
         assert context_line is not None, "context-manager step not found"
