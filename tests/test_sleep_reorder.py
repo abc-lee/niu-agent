@@ -333,6 +333,9 @@ def test_entry_shared_cursor_read_preserved(tmp_path):
         call_mock, msg_ids=("m1", "m2"), home=tmp_path, seed_f1="m2",
         extra_patches=(mock.patch("pathlib.Path.read_text", _spy_read_text),),
     )
+    assert any("last_dream_evolve.json" in str(p) for p in recorded), \
+        f"入口应读取共享 dream 游标文件，实际 recorded={recorded}"
+    assert result.get("status") == "ok"
 
 # ---------------------------------------------------------------------------
 # 8. 复位表三键清算（工程四决策 5 / T2：_ALL_CURSOR_FILES 收缩）
