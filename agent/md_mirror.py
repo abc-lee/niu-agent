@@ -103,3 +103,26 @@ def format_message_record(
     else:
         lines.append(content or "")
     return "\n".join(lines) + "\n\n"
+
+
+def append_record(block: str, md_path: str | None = None) -> bool:
+    """向 F1 追加一个记录块。O_APPEND 单次写 + 排它锁；失败告警不抛。"""
+    path = md_path or F1_PATH
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        data = block.encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            _lock_fd(fd)
+            written = os.write(fd, data)
+            if written != len(data):
+                raise OSError(f"partial write: {written}/{len(data)}")
+        finally:
+            _unlock_fd(fd)
+            os.close(fd)
+        return True
+    except Exception as e:  # best-effort：镜像故障绝不影响对话
+        logger.warning(f"[MdMirror] F1 追加失败（不影响对话）: {e}")
+        return False
