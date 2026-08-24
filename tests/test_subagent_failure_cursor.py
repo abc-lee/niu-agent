@@ -6,9 +6,8 @@
 
 覆盖：
 1. _is_subagent_failure 单元测试（前缀判定 + 非 str/正常 JSON 不命中）
-2. compat sleep 代表点：全链（entity/dream）+ L3546 mode1 压缩点 → 游标全不动
-3. compat force 代表点：entity/dream/journal（skip_compress=True）→ 游标全不动
-4. runner nap 代表点：entity + dream 分支顺序（failure 优先于 overflow / else 推进）
+2. compat sleep 代表点：entity 失败 F1 不剪切 → 梦境循环 D5 短路 → 门控 skipped，游标全不动
+3. compat force 代表点：journal（skip_compress=True；模式三梦境腿已摘除）→ 游标全不动
 5. handler._update_journal_cursor（journal 游标：failure 前缀零写入，正常推进判别力）
 
 fixture 数学同 test_incomplete_cursor（R6-B 验证）：2 条消息 × _FakeCalc 100 token/条 = 200 tokens，
@@ -185,8 +184,8 @@ class TestTidySleepFailureCursor:
             f"游标未追平应 skipped，实际: {result}"
         )
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["entity-extractor", "dream-evolver"], (
-            f"失败后游标未追平，cm 不应执行，实际 {called_agents}"
+        assert called_agents == ["entity-extractor"], (
+            f"entity 失败 F1 未剪切 → F2 空 → 梦境循环 D5 短路，cm 不应执行，实际 {called_agents}"
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"'[错误]' 结果不应写任何游标: {writes}"
@@ -229,7 +228,7 @@ class TestTidySleepFailureCursor:
 
 
 # ---------------------------------------------------------------------------
-# 3. compat _tidy_context_impl force 代表点（skip_compress=True）
+# 3. compat _tidy_context_impl force 代表点（skip_compress=True；v3 梦境腿已摘除）
 # ---------------------------------------------------------------------------
 
 class TestTidyForceFailureCursor:
@@ -257,21 +256,21 @@ class TestTidyForceFailureCursor:
 
 
     def test_error_bracket_does_not_advance_force_cursors(self):
-        """force 全链收 '[错误]' → dream/journal 游标零写（v2：模式三已摘除 entity 段）。
+        """force 收 '[错误]' → journal 游标零写（v3：模式三只跑压缩对，梦境腿已摘除）。
 
         force 模式 journal 始终调用（区别于 sleep 的 usage>=50% 门控）。
         """
         result, write_mock, call_mock = self._run_force_tidy(ERROR_BRACKET)
         assert result.get("status") == "ok", f"force tidy 应正常结束: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["dream-evolver", "journal-agent"], (
-            f"期望 dream/journal 依次调用（entity 段已摘除），实际 {called_agents}"
+        assert called_agents == ["journal-agent"], (
+            f"期望仅 journal 调用（entity/dream 腿均已摘除），实际 {called_agents}"
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"force '[错误]' 结果不应写任何游标: {writes}"
 
     def test_normal_result_advances_force_cursors(self):
-        """对照：正常返回时 force dream/journal 游标必须推进（判别力）。"""
+        """对照：正常返回时 force journal 游标必须推进（判别力）。"""
         result, write_mock, _ = self._run_force_tidy("处理完成 @end processed_up_to=2")
         assert result.get("status") == "ok", f"force tidy 应正常结束: {result}"
         writes = self._cursor_writes(write_mock)
@@ -281,132 +280,9 @@ class TestTidyForceFailureCursor:
         )
 
 
-# ---------------------------------------------------------------------------
-# 4. runner _run_nap_background 代表点（entity + dream 分支顺序）
-# ---------------------------------------------------------------------------
-
 class _Msg:
     def __init__(self, mid):
         self.id = mid
-
-
-def _nap_messages(n):
-    return [_Msg(f"m{i}") for i in range(1, n + 1)]
-
-
-def _fake_build_incremental_msg_text(messages, last_cursor_id, out_msg_ids, msg_tokens=None, **kwargs):
-    """与真实签名兼容：把 db 消息 id 全量填入 out_msg_ids（游标后增量 = 全部）。"""
-    out_msg_ids.extend([getattr(m, "id", "") for m in messages])
-    return ""
-
-
-def _fake_build_plain_history(messages, out_msg_ids=None):
-    """返回 ([N] 前缀 history, {idx: id} 映射) —— 与真实 _build_plain_history 同构（int 键）。"""
-    hist = []
-    idx_to_id = {}
-    for i, m in enumerate(messages, 1):
-        idx_to_id[i] = getattr(m, "id", "")
-        hist.append(f"[{i}] {getattr(m, 'content', '')}")
-    return hist, idx_to_id
-
-
-class TestNapFailureCursorBranches:
-    """_run_nap_background 失败前缀分支（T7 v2 适配）。
-
-    - entity 收 '[错误]' → F1 不剪切、UUID 游标零写（游标已退役），绝不推进
-    - dream 收 'SUBAGENT_ERROR:' → dream 游标保持 m1；不触发 overflow 1/3 兜底
-    """
-
-    def _run_nap(self, dream_result, entity_result="处理完成 @end\nprocessed_line=999999", n_msgs=2):
-        """v2：种子记录写入隔离 F1（nap entity 步执行的前提）；F2 patch 到测试专用 tmp。
-        返回 (write_mock, logger_mock, runner, ctx)；ctx 含 f1 路径与被调 agent 记录。
-        """
-        import os as _os
-        import tempfile
-
-        import agent.md_mirror as mdm
-        from agent.runner import NiuRunner
-
-        runner = NiuRunner.__new__(NiuRunner)
-        runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
-        runner._nap_running = mock.MagicMock()
-        runner._sync_get_messages = lambda: _nap_messages(n_msgs)
-        runner._recalc_msg_stats = lambda msgs: [100] * len(msgs)
-        runner._read_cursor_locked = lambda path, field: "m1"  # 上一游标 = 真实消息 id（m1）
-        runner._ensure_session_chain = mock.MagicMock()
-
-        called_agents = []
-
-        def _call_side(agent_name, task, **kwargs):
-            called_agents.append(agent_name)
-            if agent_name == "entity-extractor":
-                return entity_result
-            if agent_name == "dream-evolver":
-                return dream_result
-            raise AssertionError(f"unexpected subagent: {agent_name}")
-
-        write_mock = mock.MagicMock()
-        f2_path = _os.path.join(tempfile.mkdtemp(prefix="t7_nap_relay_"), "f2.md")
-        block = mdm.format_message_record(
-            msg_id="t7-nap-seed", created_at="t", role="user", content="种子",
-        )
-        assert mdm.append_record(block, mdm.F1_PATH)
-        with mock.patch("agent.subagent.call_subagent_with_auto_answer", side_effect=_call_side), \
-             mock.patch("agent.md_mirror.F2_PATH", f2_path), \
-             mock.patch("niu_api.compat._build_incremental_msg_text", side_effect=_fake_build_incremental_msg_text), \
-             mock.patch("niu_api.compat._build_plain_history", side_effect=_fake_build_plain_history), \
-             mock.patch("niu_api.compat._write_cursor_with_lock", write_mock), \
-             mock.patch("agent.runner.logger") as logger_mock:
-            runner._run_nap_background()
-        ctx = {"f1": mdm.F1_PATH, "called_agents": called_agents}
-        return write_mock, logger_mock, runner, ctx
-
-    @staticmethod
-    def _entity_writes(write_mock):
-        return [c.args[1] for c in write_mock.call_args_list if "last_entity_extract_id" in c.args[1]]
-
-    @staticmethod
-    def _dream_writes(write_mock):
-        return [c.args[1] for c in write_mock.call_args_list if "last_dream_evolve_id" in c.args[1]]
-
-    @staticmethod
-    def _logged(logger_mock, level, needle):
-        return any(needle in str(c.args[0]) for c in getattr(logger_mock, level).call_args_list)
-
-    def test_error_bracket_entity_f1_not_cut_no_cursor_write(self):
-        """nap entity 收 '[错误]' → F1 不剪切（下次重跑）+ UUID 游标零写（游标已退役）。"""
-        write_mock, logger_mock, runner, ctx = self._run_nap(
-            "处理完成 @end processed_up_to=2", entity_result=ERROR_BRACKET,
-        )
-        assert "entity-extractor" in ctx["called_agents"], "F1 非空时 entity 步应被执行"
-        writes = self._entity_writes(write_mock)
-        assert writes == [], f"entity UUID 游标已退役，任何分支都不应写: {writes}"
-        with open(ctx["f1"], encoding="utf-8") as f:
-            assert '"msg_id": "t7-nap-seed"' in f.read(), "失败时 F1 不得被剪切"
-        runner._nap_running.clear.assert_called_once()
-
-
-    def test_subagent_error_dream_cursor_not_advanced_and_overflow_priority(self):
-        """dream 收 'SUBAGENT_ERROR:' → 游标保持 m1 + 无 overflow fallback + 无 else 推进。
-
-        分支顺序验证：failure 判定优先级高于 overflow（'SUBAGENT_ERROR:' 非 JSON 不命中
-        overflow，但改写前落 else 全量推进 → 写 m2 红相；改写后保持 m1 绿相）。
-        """
-        write_mock, logger_mock, runner, _ctx = self._run_nap(SUBAGENT_ERROR_STR)
-        writes = self._dream_writes(write_mock)
-        assert len(writes) == 1, f"失败也应幂等写回原游标: {writes}"
-        assert writes[0]["last_dream_evolve_id"] == "m1", (
-            f"'SUBAGENT_ERROR:' 时 dream 游标不得推进（应为 last=m1）: {writes}"
-        )
-        # 双否定判别：不落 overflow 1/3 兜底、不落 else 全量推进
-        assert not self._logged(logger_mock, "info", "Overflow fallback"), (
-            f"不应触发 overflow 1/3 兜底: {logger_mock.info.call_args_list}"
-        )
-        assert not self._logged(logger_mock, "info", "Dream cursor advanced"), (
-            f"不应触发 else 推进: {logger_mock.info.call_args_list}"
-        )
-        assert not logger_mock.error.call_args_list, f"不应有 error: {logger_mock.error.call_args_list}"
-        runner._nap_running.clear.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

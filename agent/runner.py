@@ -621,164 +621,7 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
         else:
             lines.append(f"{i}. {r.content} (分数: {score_pct})")
 
-    return "\n".join(lines)
-
-
-
-# --- Threshold EMA 张力模型常量 ---
-_THRESHOLD_MIN = 10.0
-_THRESHOLD_MAX = 50.0
-_THRESHOLD_ALPHA_UP = 0.1    # 上升慢：threshold += (50 - threshold) * 0.1
-_THRESHOLD_ALPHA_DOWN = 0.4  # 下降快：threshold -= (threshold - 10) * 0.4
-_THRESHOLD_MIN_SAMPLES = 5   # 冷启动保护：sample_count < 5 时保持 10
-_REF_ALPHA = 0.2   # 参考线 EMA 遗忘因子：ref = 0.2*current + 0.8*old（等效近期 ~10 轮，用户 2026-08-09 确认）
-
-
-def _calc_dream_trigger_threshold_dynamic(
-    context_window: int,
-    ema_path: Path,
-) -> int:
-    """根据持久化 threshold EMA 值返回触发阈值。
-
-    threshold 自身做 EMA（对数渐近张力模型）：
-    - 冷启动（sample_count < 5）：返回 10
-    - 否则返回持久化的 threshold 值（int 截断）
-
-    context_window 参数保留（调用方传入），但新模型不依赖它。
-    """
-    threshold, sample_count, _ref_ema = NiuRunner._read_ema(ema_path)
-
-    if sample_count < _THRESHOLD_MIN_SAMPLES:
-        return int(_THRESHOLD_MIN)
-
-    return max(int(_THRESHOLD_MIN), min(int(_THRESHOLD_MAX), int(threshold)))
-
-def _compute_threshold_update(
-    threshold_old: float,
-    sample_count: int,
-    current_turn_tokens: int,
-    ref_old: float,
-) -> tuple[float, int, float]:
-    """计算 threshold EMA 更新。返回 (new_threshold, new_sample_count, new_ref)。
-
-    对数渐近张力模型 + EMA 参考线：
-    - 冷启动（sample_count < 5）：threshold 不变，保持 10；参考线仍更新
-    - 参考线 EMA：ref = ALPHA * current + (1 - ALPHA) * old（等效近期 ~10 轮主导，
-      参考线随近期负载双向快速响应——重活抬升、轻活回落，避免被早期历史定型；
-      轻活历史后参考线低于全历史累积平均，门槛更低 → 中等轮更容易判重量）
-    - 轻量（本轮 token <= ref）：threshold 上升
-      threshold += (THRESHOLD_MAX - threshold) * ALPHA_UP
-    - 重量（本轮 token > ref）：threshold 下降
-      threshold -= (threshold - THRESHOLD_MIN) * ALPHA_DOWN
-    """
-    new_sample_count = sample_count + 1
-    new_ref = _REF_ALPHA * current_turn_tokens + (1 - _REF_ALPHA) * ref_old
-
-    if sample_count < _THRESHOLD_MIN_SAMPLES:
-        return threshold_old, new_sample_count, new_ref
-
-    if current_turn_tokens <= new_ref:
-        # 轻量 → 上升（对数渐近，越接近 50 越慢）
-        new_threshold = threshold_old + (_THRESHOLD_MAX - threshold_old) * _THRESHOLD_ALPHA_UP
-    else:
-        # 重量 → 下降（快速回 10）
-        new_threshold = threshold_old - (threshold_old - _THRESHOLD_MIN) * _THRESHOLD_ALPHA_DOWN
-
-    # clamp
-    new_threshold = max(_THRESHOLD_MIN, min(_THRESHOLD_MAX, new_threshold))
-
-    return new_threshold, new_sample_count, new_ref
-
-
-def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
-    """截取游标之后的消息。游标为空或找不到时返回全量消息。"""
-    if not cursor_id:
-        return db_messages
-    cursor_idx = -1
-    for i, msg in enumerate(db_messages):
-        if (getattr(msg, "id", "") or "") == cursor_id:
-            cursor_idx = i
-            break
-    return db_messages[cursor_idx + 1:] if cursor_idx >= 0 else db_messages
-
-
-def _cursors_caught_up(messages, protect_recent) -> bool:
-    """进化（dream）游标追平（runner 版，读游标用 _read_cursor_locked）。
-
-    与 niu_api/compat._cursors_caught_up_dream_only 同逻辑（§4.3 v2）——D3：模式三管道无提炼腿，
-    只查进化游标；判定与即将执行的压缩使用同一 protect 有效值。journal 游标不查。
-    """
-    from niu_api.compat import _find_protected_range
-
-    if not messages:
-        return True  # 空库无可压缩内容
-    protect_start = _find_protected_range(messages, protect_recent)
-    msg_ids = [getattr(m, "id", "") or "" for m in messages]
-    cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
-    cursor = NiuRunner._read_cursor_locked(cursor_path, "last_dream_evolve_id")
-    if not cursor:
-        return False  # 空游标=从未处理——保守不压
-    try:
-        idx = msg_ids.index(cursor)
-    except ValueError:
-        return False  # 游标指向已删消息——保守不压
-    if protect_start >= len(messages):
-        if idx != len(messages) - 1:
-            return False  # protect=0：游标未到真实尾部——未追平
-        return True  # 已追平
-    if idx < protect_start - 1:
-        return False  # 游标在最后一条未保护消息之前——有未处理
-    return True
-
-
-def _extract_prev_complete_turn_msgs(post_compress_msgs: list) -> list:
-    """取上一完整轮的 messages（倒数第二条 user 消息含，到倒数第一条 user 消息不含）。
-
-    延迟结算语义：
-    - 最新 user 消息后的消息属于"本轮"（进行中，不确定是否完成），不参与计算
-    - 上一轮 = 上一条 user（含）到最新 user（不含）之间的所有消息（含全部 assistant/tool 输出）
-    - 不足两轮（无完整上一轮，如压缩游标刚越过、重启后仅 1 条 user）返回 []
-    - 上一轮被压缩（compress 游标切割后 user 不在切片内）时自然不出现，返回 []
-    """
-    user_indices = [
-        i for i, m in enumerate(post_compress_msgs)
-        if getattr(m, "role", "") == "user"
-    ]
-    if len(user_indices) < 2:
-        return []
-    return post_compress_msgs[user_indices[-2]:user_indices[-1]]
-
-
-def _ema_marker_step(last_user_id: str, prev_marker: str) -> tuple[str, str]:
-    """EMA marker 状态机：决定本次 _on_turn_end 回调是初始化、结算还是跳过。
-
-    Returns: (action, new_marker)
-    - "skip"：无 user 消息（last_user_id 空）或同轮重复回调（id 未变）→ 不结算
-    - "init"：启动后首次（prev_marker 空）→ 只设 marker 不结算
-      （避免重启重复结算重启前已结算的轮）
-    - "settle"：新 user 消息到来 → 结算上一完整轮
-    """
-    if not last_user_id:
-        return "skip", prev_marker
-    if not prev_marker:
-        return "init", last_user_id
-    if last_user_id == prev_marker:
-        return "skip", prev_marker
-    return "settle", last_user_id
-
-
-def _prev_turn_is_complete(prev_turn_msgs: list) -> bool:
-    """上一轮是否完整可结算：以 assistant/user 回复结束。
-
-    - 尾部是 assistant：轮完整（含最终回复）→ 可结算
-    - 尾部是 user（连续 user 消息）：该轮=纯 user 消息 → 可结算
-    - 尾部是 tool：工具循环进行中（快照可能缺尾部）或轮被截断 → 不可结算
-      （defer：marker 已在 settle 分支推进，下轮重新采样；若该轮最终完成，
-      其尾部 assistant 会在下一次 _on_turn_end 的新快照中出现并被结算）
-    """
-    if not prev_turn_msgs:
-        return False
-    return getattr(prev_turn_msgs[-1], "role", "") in ("assistant", "user")
+        return "\n".join(lines)
 
 
 def _build_session_chain_ops(
@@ -933,9 +776,6 @@ class NiuRunner:
         self._cached_activation_mgr = None  # RegionActivationManager (for cache invalidation)
         self._last_forced_sync_fail_time: float = 0.0  # forced sync 失败冷却时间戳
         self._forced_sync_running = threading.Event()  # forced sync 后台线程运行标志，避免并发启动多个 daemon
-        self._nap_running = threading.Event()  # 小憩模式后台运行标志，避免并发启动
-        self._last_ema_user_id = ""  # 去重：记录上次结算 EMA 时最后一个 user 消息 id
-        self._ema_lock = threading.Lock()  # EMA read-modify-write 进程内原子性（不与 _read_ema/_write_ema 的文件锁嵌套）
 
         # Decay pool (Ebbinghaus forgetting curve)
         self._decay_pool = DecayPool()
@@ -1206,7 +1046,6 @@ class NiuRunner:
 
         保留：
         - 脑区衰减 decay_all：每轮降低脑区激活级别
-        - 小憩模式触发检查：增量消息达阈值则后台启动 entity-extractor → dream-evolver
         """
         # Decay brain region activation levels
         try:
@@ -1217,9 +1056,6 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Brain region decay failed: {e}")
 
-        # 小憩模式触发检查：增量消息达阈值则后台启动 entity-extractor → dream-evolver
-        self._maybe_trigger_nap()
-
         # Schema 刷新：失败退回原 tools_schema（不击穿工具循环）
         try:
             self._refresh_base_tools_schema_if_dirty()
@@ -1228,274 +1064,12 @@ class NiuRunner:
             logger.warning(f"[Runner] schema refresh failed, keeping existing tools: {e}")
             return tools_schema
 
-    def _maybe_trigger_nap(self):
-        """检查增量对话轮数，达阈值则后台启动小憩模式（entity-extractor → dream-evolver）。"""
-        # 防止并发启动
-        if self._nap_running.is_set():
-            return
-
-        try:
-            from pathlib import Path
-            niu_dir = Path.home() / ".niu"
-            dream_cursor_path = niu_dir / "last_dream_evolve.json"
-            last_dream_evolve_id = self._read_cursor_locked(dream_cursor_path, "last_dream_evolve_id")
-            compress_cursor_path = niu_dir / "last_compress.json"
-            last_compress_id = self._read_cursor_locked(compress_cursor_path, "last_compress_id")
-
-            # 从 DB 获取消息
-            db_messages = self._sync_get_messages()
-            if not db_messages:
-                logger.debug('[Nap] No messages in DB, skipping trigger check')
-                return
-
-            # 数游标后的增量对话轮数（一轮 = 两条 user 消息之间的所有消息）
-            incremental_msgs = _slice_after_cursor(db_messages, last_dream_evolve_id)
-
-            # 计算轮数：每遇到一条 role=user 消息算一轮开始
-            turn_count = sum(1 for msg in incremental_msgs if getattr(msg, "role", "") == "user")
-
-            # 截取压缩游标后的消息（用于 EMA 更新）
-            post_compress_msgs = _slice_after_cursor(db_messages, last_compress_id)
-            post_compress_turns = sum(1 for m in post_compress_msgs if getattr(m, "role", "") == "user")
-
-            ema_path = niu_dir / "threshold_ema.json"
-
-            # 找最后一个 user 消息 id（去重 marker：仅当新 user 到来时结算）
-            last_user_id = ""
-            for m in reversed(post_compress_msgs):
-                if getattr(m, "role", "") == "user":
-                    last_user_id = getattr(m, "id", "") or ""
-                    break
-
-            # 去重 + 更新 threshold EMA（延迟结算上一完整轮）
-            action, new_marker = _ema_marker_step(last_user_id, self._last_ema_user_id)
-            if action == "settle":
-                self._last_ema_user_id = new_marker
-                # 延迟结算：新 user 消息到来时上一轮已完整。
-                # 算上一轮 = 倒数第二条 user（含）到倒数第一条 user（不含）的所有消息
-                # （含全部 assistant 与 tool 输出）；本轮（最新 user 之后）不确定是否
-                # 完成，不参与计算；上一轮被压缩（游标切割）或无完整上一轮时跳过。
-                prev_turn_msgs = _extract_prev_complete_turn_msgs(post_compress_msgs)
-
-                if prev_turn_msgs and _prev_turn_is_complete(prev_turn_msgs):
-                    from agent.token_calculator import TokenCalculator
-                    calc = TokenCalculator.get()
-                    prev_turn_dicts = [
-                        {
-                            "role": getattr(m, "role", ""),
-                            # CQ-05: 统一 content 为字符串，与 count_message_single 一致
-                            "content": (lambda c: (
-                                " ".join(p.get("text", "") for p in c
-                                         if isinstance(p, dict) and p.get("type") == "text")
-                                if isinstance(c, list) else c
-                            ))(getattr(m, "content", "") or ""),
-                            "tool_calls": getattr(m, "tool_calls", []) or [],
-                        }
-                        for m in prev_turn_msgs
-                    ]
-                    prev_turn_tokens = calc.count_messages(prev_turn_dicts)
-
-                    # CQ-01 修复：用 threading.Lock 保证 read-modify-write 原子性
-                    with self._ema_lock:
-                        threshold_old, sample_count, ref_old = self._read_ema(ema_path)
-                        new_threshold, new_sample_count, new_ref = _compute_threshold_update(
-                            threshold_old, sample_count, prev_turn_tokens, ref_old
-                        )
-
-                        self._write_ema(ema_path, new_threshold, new_sample_count, new_ref)
-                        logger.debug(f"[Nap] threshold EMA: old={threshold_old:.1f}, new={new_threshold:.1f}, "
-                                    f"samples={new_sample_count}, prev_turn_tokens={prev_turn_tokens}, "
-                                    f"ref={ref_old:.0f}->{new_ref:.0f}")
-                else:
-                    logger.debug(f"[Nap] No complete previous turn to settle (post_compress_turns={post_compress_turns})")
-            elif action == "init":
-                self._last_ema_user_id = new_marker
-                logger.debug("[Nap] EMA marker initialized, skip first settlement")
-            # "skip"：同轮重复回调或无 user，不结算
-
-            # 计算阈值
-            from agent.subagent import _read_context_window_tokens
-            context_window = _read_context_window_tokens()
-            threshold = _calc_dream_trigger_threshold_dynamic(context_window, ema_path)
-
-            logger.info(f"[Nap] turn_count={turn_count}, threshold={threshold}, post_compress_turns={post_compress_turns}")
-
-            if turn_count < threshold:
-                return
-
-            logger.info(f"[Nap] Triggering nap: {turn_count} turns >= threshold {threshold} (post_compress={len(post_compress_msgs)} msgs)")
-
-            # 后台启动小憩模式（投递到全局整理队列，§3.1 入口 9）
-            self._nap_running.set()
-            try:
-                fut = self._dispatch_to_pipeline("nap")
-                if fut is None:
-                    # None 窗口（队列未创建/主 loop 不可用）：同步执行兜底（§3.0 Option A）
-                    try:
-                        self._run_nap_background()
-                    finally:
-                        self._nap_running.clear()
-            except Exception:
-                self._nap_running.clear()
-                raise
-        except Exception as e:
-            logger.warning(f'[Nap] Trigger check failed: {e}', exc_info=True)
-
-    def _run_nap_background(self):
-        """小憩模式：后台串行执行 entity-extractor → dream-evolver。
-
-        简化版的睡眠模式——只做内容提炼和梦境进化，不压缩、不提取日志。
-        entity-extractor 先入库精炼文档（LightRAG LLM 自动提取实体），
-        dream-evolver 再精加工这些已入库的实体，避免实体碎片化。
-        """
-        try:
-            from pathlib import Path
-
-            from niu_api.compat import (
-                _build_incremental_msg_text,
-                _build_plain_history,
-                _call_entity_extractor_on_f1,
-                _extract_overflow_info,
-                _incomplete_reason,
-                _is_subagent_failure,
-                _is_subagent_incomplete,
-                _is_subagent_overflow,
-                _parse_and_relay_f1,
-                _parse_processed_up_to,
-                _write_cursor_with_lock,
-            )
-
-            from agent.subagent import call_subagent_with_auto_answer
-
-            niu_dir = Path.home() / ".niu"
-            llm_config = self.llm_config
-            db_messages = self._sync_get_messages()
-            if not db_messages:
-                return
-            msg_tokens = self._recalc_msg_stats(db_messages)
-
-            # ============================================================
-            # Step 1 v2: entity-extractor 自读 F1（nap 为同步上下文，对齐扫描只在异步睡眠侧）
-            # ============================================================
-            from agent.md_mirror import F1_PATH
-
-            f1_path = F1_PATH
-            if os.path.exists(f1_path) and os.path.getsize(f1_path) > 0:
-                try:
-                    entity_result = _call_entity_extractor_on_f1(llm_config, f1_path)
-                    logger.info(f"[Nap] entity-extractor completed, length={len(entity_result)}")
-
-                    if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
-                        if _is_subagent_incomplete(entity_result):
-                            logger.warning(f"[Nap] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — F1 不剪切")
-                        else:
-                            overflow_info = _extract_overflow_info(entity_result)
-                            logger.warning(f"[Nap] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                        # overflow/incomplete/failure 时 F1 不剪切，下次重跑
-                    else:
-                        cut = _parse_and_relay_f1(entity_result, f1_path)
-                        logger.info(f"[Nap] relay cut {cut} lines" if cut else "[Nap] relay skipped (invalid line number)")
-                except Exception as e:
-                    logger.error(f"[Nap] entity-extractor failed: {e}")
-                    # entity-extractor 失败不阻断 dream-evolver
-            else:
-                logger.info("[Nap] entity-extractor: F1 空/不存在，跳过提炼")
-
-            # ============================================================
-            # Step 2: dream-evolver（梦境进化）
-            # ============================================================
-            dream_cursor_path = niu_dir / "last_dream_evolve.json"
-            last_dream_id = self._read_cursor_locked(dream_cursor_path, "last_dream_evolve_id")
-
-            # 重新获取消息（entity-extractor 可能已修改 LightRAG 知识图谱，重新读取确保 DB 一致）
-            db_messages = self._sync_get_messages()
-            if not db_messages:
-                return
-            msg_tokens = self._recalc_msg_stats(db_messages)
-
-            dream_msg_ids = []
-            _ = _build_incremental_msg_text(
-                db_messages, last_dream_id, dream_msg_ids, msg_tokens
-            )
-
-            if not dream_msg_ids:
-                logger.info("[Nap] dream-evolver: no new messages since cursor")
-                return
-
-            logger.info(f"[Nap] dream-evolver: {len(dream_msg_ids)} new messages since cursor")
-            _id_set = set(dream_msg_ids)
-            dream_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
-            dream_history, dream_idx_to_id = _build_plain_history(dream_msgs)
-
-            dream_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
-
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-
-            dream_result = call_subagent_with_auto_answer(
-                agent_name="dream-evolver",
-                task=dream_prompt,
-                llm_config=llm_config,
-                mcp_client=None,
-                history=dream_history,
-                context_fifo_threshold=-1,  # FIFO 保底
-            )
-
-            # 补全会话日期链（只补边/断边，不建实体；失败不阻塞游标推进）
-            # 在 dream-evolver 完成后、游标推进前——当天会话实体（dream 挂边自动补 placeholder）
-            # 已入图，链边与断跨越边当轮生效
-            self._ensure_session_chain()
-
-            # 游标推进：failure（[错误]/SUBAGENT_ERROR:）或 incomplete→不动；overflow→1/3 兜底；否则解析推进
-            new_dream_id = last_dream_id
-            if _is_subagent_failure(dream_result) or _is_subagent_incomplete(dream_result):
-                # 失败前缀（注册冲突 [错误] / LLM 错误 SUBAGENT_ERROR:）与 incomplete（/stop、轮次耗尽等打断场景）：游标不动，下次续做
-                if _is_subagent_failure(dream_result):
-                    logger.warning(f"[Nap] dream-evolver failure: {dream_result[:200]} — cursor not advanced")
-                else:
-                    logger.warning(f"[Nap] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — cursor not advanced")
-            elif _is_subagent_overflow(dream_result):
-                logger.warning(f"[Nap] dream-evolver overflow")
-                if len(dream_msg_ids) > 10:
-                    _fallback_idx = len(dream_msg_ids) // 3
-                    new_dream_id = dream_msg_ids[_fallback_idx]
-                    logger.info(f"[Nap] Overflow fallback: advancing cursor to 1/3 ({_fallback_idx}/{len(dream_msg_ids)})")
-            else:
-                _processed_idx = _parse_processed_up_to(dream_result)
-                if _processed_idx is not None and _processed_idx in dream_idx_to_id:
-                    new_dream_id = dream_idx_to_id[_processed_idx]
-                    logger.info(f"[Nap] Dream cursor advanced: {new_dream_id}")
-                elif dream_msg_ids:
-                    new_dream_id = dream_msg_ids[-1]
-                    logger.info(f"[Nap] Dream cursor fallback to range end: {new_dream_id}")
-
-            # 游标校验
-            if new_dream_id:
-                fresh_msgs = self._sync_get_messages()
-                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                if new_dream_id not in fresh_ids:
-                    new_dream_id = last_dream_id
-                    if new_dream_id and new_dream_id not in fresh_ids:
-                        new_dream_id = ""
-
-            if new_dream_id:
-                from datetime import datetime
-                _write_cursor_with_lock(dream_cursor_path, {
-                    "last_dream_evolve_id": new_dream_id,
-                    "last_evolve_at": datetime.now().isoformat(),
-                })
-                logger.info(f"[Nap] Dream cursor written: {new_dream_id}")
-
-        except Exception as e:
-            logger.error(f"[Nap] Background nap failed: {e}")
-        finally:
-            self._nap_running.clear()
-
     def _ensure_session_chain(self, max_days: int = 10) -> None:
-        """小憩收尾：补全会话日期链（只补边/断边，不建实体）。
+        """睡眠/dream 段收尾：补全会话日期链（只补边/断边，不建实体）。
 
         从已有 YYYY-MM-DD会话 实体取最近 max_days 日历天窗口：
         断开跳过中间实体的跨越边（安全前提：两实体间仅 followed_by），
-        补全相邻日期的 followed_by 边。失败不抛出（nap 收尾容错）。
+        补全相邻日期的 followed_by 边。失败不抛出（收尾容错）。
         """
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
@@ -1540,13 +1114,13 @@ class NiuRunner:
                         "tgt_id": tgt,
                         "keywords": "followed_by",
                         "description": f"{src} 之后是 {tgt}",
-                        "source_id": "nap_session_chain",
-                        "file_path": "nap_session_chain",
+                        "source_id": "dream_session_chain",
+                        "file_path": "dream_session_chain",
                     }
                     for src, tgt in creates
                 ]
                 r = ingester.inject_custom_kg(
-                    entities=[], relationships=rels, chunks=[], source_id="nap_session_chain"
+                    entities=[], relationships=rels, chunks=[], source_id="dream_session_chain"
                 )
                 if r.get("status") != "ok":
                     logger.warning(f"[SessionChain]: inject {len(rels)} edges failed: {r.get('message')}")
@@ -1663,100 +1237,6 @@ class NiuRunner:
         except Exception as e:
             logger.warning(f"[Runner] Failed to read cursor {cursor_path.name}: {e}")
             return ""
-
-    @staticmethod
-    def _read_cursor_locked(cursor_path, cursor_field):
-        """Read a cursor ID from a JSON file with file locking.
-
-        Uses _flock/_funlock (same as _write_cursor_with_lock) to prevent
-        read-write races between the main thread and background daemon thread.
-        """
-        if not cursor_path.exists():
-            return ""
-        try:
-            import json
-            from niu_api.compat import _flock, _funlock
-            lock_path = cursor_path.with_suffix(".lock")
-            with open(lock_path, "w") as lock_f:
-                _flock(lock_f)
-                try:
-                    data = json.loads(cursor_path.read_text(encoding="utf-8"))
-                    return data.get(cursor_field, "")
-                finally:
-                    _funlock(lock_f)
-        except Exception as e:
-            logger.warning(f"[Runner] Failed to read cursor {cursor_path.name}: {e}")
-            return ""
-
-    @staticmethod
-    def _read_ema(ema_path):
-        """读取持久化的 threshold EMA 值、样本数和参考线 EMA。
-
-        Returns:
-            (threshold: float, sample_count: int, ref_ema: float)
-            文件不存在或损坏时返回 (_THRESHOLD_MIN, 0, 0)
-        """
-        # CQ-04: exists() 短路保证后续 open(lock_path) 时父目录已存在
-        if not ema_path.exists():
-            # 检测旧版 avg_tokens_per_turn.json 是否存在，提醒用户数据不会自动迁移
-            old_path = ema_path.parent / "avg_tokens_per_turn.json"
-            if old_path.exists():
-                logger.warning(f"[Nap] Old EMA file {old_path.name} found but no longer used; "
-                               f"threshold EMA starts fresh from {_THRESHOLD_MIN}")
-            return _THRESHOLD_MIN, 0, 0
-        try:
-            import json
-            from niu_api.compat import _flock, _funlock
-            lock_path = ema_path.with_suffix(".lock")
-            with open(lock_path, "w") as lock_f:
-                _flock(lock_f)
-                try:
-                    data = json.loads(ema_path.read_text(encoding="utf-8"))
-                    threshold = float(data.get("threshold", _THRESHOLD_MIN))
-                    sc = int(data.get("sample_count", 0))
-                    ref = data.get("ref_ema")
-                    if ref is None:
-                        # 旧文件迁移：用累积平均热启动参考线（旧分类参考线 = ct/sc）
-                        ct = int(data.get("cumulative_tokens", 0))
-                        ref = (ct / sc) if sc > 0 else 0.0
-                    ref = float(ref)
-                    # CQ-02: NaN/负值校验
-                    if threshold != threshold or threshold < 0:  # NaN check: NaN != NaN
-                        threshold = _THRESHOLD_MIN
-                    if sc < 0:
-                        sc = 0
-                    if ref != ref or ref < 0:
-                        ref = 0.0
-                    return threshold, sc, ref
-                finally:
-                    _funlock(lock_f)
-        # CQ-03: 收窄异常范围
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError) as e:
-            logger.warning(f"[Nap] Failed to read threshold EMA {ema_path.name}: {e}")
-            return _THRESHOLD_MIN, 0, 0
-
-    @staticmethod
-    def _write_ema(ema_path, threshold: float, sample_count: int, ref_ema: float):
-        """写入持久化的 threshold EMA 值（加文件锁）。"""
-        try:
-            import json
-            from datetime import datetime
-            from niu_api.compat import _flock, _funlock
-            ema_path.parent.mkdir(parents=True, exist_ok=True)
-            lock_path = ema_path.with_suffix(".lock")
-            with open(lock_path, "w") as lock_f:
-                _flock(lock_f)
-                try:
-                    ema_path.write_text(json.dumps({
-                        "threshold": threshold,
-                        "sample_count": sample_count,
-                        "ref_ema": ref_ema,
-                        "last_updated_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False), encoding="utf-8")
-                finally:
-                    _funlock(lock_f)
-        except (OSError, TypeError) as e:
-            logger.warning(f"[Nap] Failed to write threshold EMA {ema_path.name}: {e}")
 
     @staticmethod
     def _recalc_msg_stats(db_messages):
@@ -1924,7 +1404,10 @@ class NiuRunner:
         return fut
 
     def _execute_force_pipeline(self) -> dict | None:
-        """运行完整 force 压缩管道（entity → dream → journal → context-manager → DB 写删）。
+        """运行完整 force 压缩管道（journal → context-manager → DB 写删）。
+
+        工程三摘除梦境腿（spec §5 定稿：模式三只跑压缩对）；entity 腿已于工程二摘除。
+        压缩保护边界使用入口读取的 last_dream_evolve_id（由睡眠循环推进，force 不再推进游标）。
 
         由全局整理队列 worker（§3.1 入口 8，kind="runner-force"）在后台线程调用。
         不含转换块（dict 转换/孤立 tool 清理/system 保留/messages[:] 回写）——转换块由
@@ -1988,45 +1471,6 @@ class NiuRunner:
 
             llm_config = self.llm_config
 
-            # === 步骤 2/4: dream-evolver（增量 task 方式）===
-            if is_stop_requested():
-                logger.warning("[Runner] Stop requested, aborting force compress")
-                return
-
-            # 重新获取消息列表（entity 可能已修改 DB）
-            db_messages = self._sync_get_messages()
-            msg_tokens = self._recalc_msg_stats(db_messages)
-
-            new_dream_id = last_dream_evolve_id
-            dream_force_msg_ids = []
-            _ = _build_incremental_msg_text(
-                db_messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens
-            )
-            logger.info(f"[Runner] Force: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
-
-            if dream_force_msg_ids:
-                dream_force_prompt = """对以上消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
-
-消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那个消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-                # 构造增量 history + idx_to_id 映射
-                _id_set = set(dream_force_msg_ids)
-                dream_force_incremental_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
-                dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
-
-                _, new_dream_id = self._run_subagent_step(
-                    "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                    dream_force_prompt, llm_config, last_dream_evolve_id,
-                    dream_force_msg_ids, "last_evolve_at",
-                    history=dream_force_history, context_fifo_threshold=-1,  # FIFO 保底
-                    idx_to_id=dream_force_idx_to_id,
-                )
-
-                if is_stop_requested():
-                    logger.warning("[Runner] Stop requested, aborting force compress")
-                    return
-            else:
-                logger.info("[Runner] Force: dream-evolver no incremental messages")
-
             # === 步骤 2.5/4: journal-agent（force 模式，始终调用）===
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
@@ -2069,11 +1513,7 @@ class NiuRunner:
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
 
-            # 压缩前置游标追平校验（§4.3）：提炼/进化游标未追平则本次不压缩（runner 侧 protect 同源）
-            protect_recent_count = _read_protect_recent_count()
-            if not _cursors_caught_up(db_messages, protect_recent_count):
-                logger.warning("[Runner] Force: 还有消息未提炼完，本次不压缩")
-                return {"status": "skipped", "reason": "还有消息未提炼完，本次不压缩"}
+            # 模式三门控随 dream 腿摘除归零（spec §5）：force 只跑压缩对，不被梦境积压阻塞。
 
             # 重新读取 compress 游标
             last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
@@ -2090,6 +1530,7 @@ class NiuRunner:
             # 构造 history 列表 + idx 映射（参考 compat.py 模式三）
             # _build_compress_history 内部处理 exclude_protected（PROTECTED 消息不进 history、不分配 idx）
             # out_msg_ids 是出参：函数内部 append 真实 message_id，与 history 等长同顺序
+            protect_recent_count = _read_protect_recent_count()
             _force_msg_ids = []
             _force_history, _f_idx_to_id = _build_compress_history(
                 db_messages, msg_tokens,
@@ -2100,15 +1541,15 @@ class NiuRunner:
             # 构造反向映射 id→idx（用于 dream 安全边界计算）
             _f_id_to_idx = {mid: idx for idx, mid in _f_idx_to_id.items()}
 
-            # 计算 dream 安全边界 idx（参考 compat.py 模式三）
-            # new_dream_id 在 runner.py 前面 dream-evolver 阶段已算出
-            # dream 哨兵：0（无 new_dream_id——首次 force 或 dream 失败）→ prompt 渲染 idx > 0 → 所有消息受保护（全保护：只 update 不删）
-            # len(_force_msg_ids)（new_dream_id 不在映射）→ 渲染 idx > 全量 → 实际不限制删除。
+            # 计算 dream 安全边界 idx（7c：梦境腿摘除后 force 不推进游标，
+            # 直接用入口读取的 last_dream_evolve_id——由睡眠循环写入，二者恒等）
+            # dream 哨兵：0（空游标——首次或睡眠未跑）→ prompt 渲染 idx > 0 → 所有消息受保护（全保护：只 update 不删）
+            # len(_force_msg_ids)（游标不在映射）→ 渲染 idx > 全量 → 实际不限制删除。
             # 两种哨兵均为纯数字插值，_build_force_prompt 内部无判断分支。
-            if not new_dream_id:
+            if not last_dream_evolve_id:
                 _dream_idx_in_force = 0
             else:
-                _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
+                _dream_idx_in_force = _f_id_to_idx.get(last_dream_evolve_id, len(_force_msg_ids))
 
             # 复用上文的 target_tokens（不重复读配置）
             prompt = _build_force_prompt(
@@ -2254,7 +1695,7 @@ class NiuRunner:
                     new_compress_id = ""
 
                 # 保护游标
-                cursor_ids_set = {cid for cid in [new_compress_id, new_dream_id] if cid}
+                cursor_ids_set = {cid for cid in [new_compress_id, last_dream_evolve_id] if cid}
                 for cursor_id in cursor_ids_set:
                     if cursor_id in valid_deletes:
                         valid_deletes.remove(cursor_id)
@@ -2267,10 +1708,10 @@ class NiuRunner:
                     valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
 
                 # dream 安全边界
-                if new_dream_id:
+                if last_dream_evolve_id:
                     dream_boundary_idx = -1
                     for i, m in enumerate(fresh_messages):
-                        if (getattr(m, "id", "") or "") == new_dream_id:
+                        if (getattr(m, "id", "") or "") == last_dream_evolve_id:
                             dream_boundary_idx = i
                             break
                     if dream_boundary_idx >= 0:

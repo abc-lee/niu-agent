@@ -109,8 +109,8 @@ def test_ensure_session_chain_creates_and_breaks(monkeypatch):
         "tgt_id": "2026-08-09会话",
         "keywords": "followed_by",
         "description": "2026-08-08会话 之后是 2026-08-09会话",
-        "source_id": "nap_session_chain",
-        "file_path": "nap_session_chain",
+        "source_id": "dream_session_chain",
+        "file_path": "dream_session_chain",
     }]
 
 

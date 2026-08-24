@@ -144,10 +144,14 @@ def _run_sleep_tidy(store, call_mock):
         for p in _patch_cursor_store(store, call_mock):
             stack.enter_context(p)
         stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
-        block = mdm.format_message_record(
-            msg_id="t6-seed-not-in-db", created_at="t", role="user", content="种子",
+        block_m1 = mdm.format_message_record(
+            msg_id="m1", created_at="t", role="user", content="种子一",
         )
-        assert mdm.append_record(block, mdm.F1_PATH)
+        block_m2 = mdm.format_message_record(
+            msg_id="m2", created_at="t", role="user", content="种子二",
+        )
+        assert mdm.append_record(block_m1, mdm.F1_PATH)
+        assert mdm.append_record(block_m2, mdm.F1_PATH)
         result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
     return result, call_mock, mdm.F1_PATH, f2_path
 
@@ -270,13 +274,21 @@ def test_sleep_skipped_when_f1_not_caught_up():
     assert "context-manager" not in _called_agents(call_mock), "未追平不应调用 cm"
     # v2 契约：entity 失败 → F1 不剪切（数据保留，下次重跑）
     with open(f1, encoding="utf-8") as f:
-        assert '"msg_id": "t6-seed-not-in-db"' in f.read(), "失败时 F1 不得被剪切"
+        f1_content = f.read()
+    assert '"msg_id": "m1"' in f1_content and '"msg_id": "m2"' in f1_content, "失败时 F1 不得被剪切"
 
 
 def test_sleep_caught_up_proceeds_to_compress():
-    """sleep：entity relay 剪切 F1 至空 + dream 真实推进到尾部 → 两腿齐 → 压缩执行。"""
+    """sleep：entity relay 剪切 F1 至空 + 梦境循环删空 F2 并推进游标到尾部 → 两腿齐 → 压缩执行。
+
+    v3：F2 种子改用 store 真实消息 id（m1+m2）——drop 返回的末删 msg_id 经 fresh_ids
+    校验后才写游标；dream mock 报 processed_line=6（两条记录共 6 行，全删）。
+    """
     store = _CursorStore()
-    call_mock = _agent_keyed_call({"entity-extractor": "处理完成 @end\nprocessed_line=999999"})
+    call_mock = _agent_keyed_call({
+        "entity-extractor": "处理完成 @end\nprocessed_line=999999",
+        "dream-evolver": "处理完成 @end\nprocessed_line=6",
+    })
     result, call_mock, f1, f2 = _run_sleep_tidy(store, call_mock)
 
     assert result.get("status") == "ok", f"追平后应正常压缩: {result}"
@@ -286,11 +298,11 @@ def test_sleep_caught_up_proceeds_to_compress():
     assert store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id") == "m2"
     assert store.read(Path.home() / ".niu" / "last_compress.json", "last_compress_id") == "m2"
     assert store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id") == ""
-    # v2：成功提炼后 F1 被剪切清空，剪下前缀落入 F2
+    # v2：成功提炼后 F1 被剪切清空，剪下前缀落入 F2；v3：梦境循环删空 F2 前缀
     with open(f1, encoding="utf-8") as f:
         assert f.read() == "", "成功提炼后 F1 应为空"
     with open(f2, encoding="utf-8") as f:
-        assert '"msg_id": "t6-seed-not-in-db"' in f.read(), "剪下前缀应追加到 F2"
+        assert f.read() == "", "梦境循环 covered_all 后 F2 应已删空"
 
 
 # ---------------------------------------------------------------------------
@@ -331,16 +343,23 @@ def _run_force_tidy(store, call_mock, request_extra=None, protect_recent=0):
     return result, call_mock, mdm.F1_PATH
 
 
-def test_force_skipped_when_dream_not_caught_up():
-    """force：门控为 dream_only 变体（D3 摘除 entity 腿）——dream 失败游标空 → skipped。"""
-    store = _CursorStore()
-    call_mock = _agent_keyed_call({"dream-evolver": OVERFLOW_JSON, "journal-agent": OVERFLOW_JSON})
-    result, call_mock, _f1 = _run_force_tidy(store, call_mock)
+def test_force_proceeds_without_dream_leg_and_gating():
+    """force（v3 spec §5）：梦境腿与门控一并摘除——dream 游标空/积压也照常压缩，只跑压缩对。
 
-    assert result.get("status") == "skipped", f"实际: {result}"
-    assert result.get("reason") == SKIP_REASON
-    assert "context-manager" not in _called_agents(call_mock), "未追平不应调用 cm"
-    assert "entity-extractor" not in _called_agents(call_mock), "模式三已摘除 entity 段"
+    journal 收 overflow（游标不动）、dream-evolver 不得被调；门控放行 → cm 被调
+    （cm 返 SUBAGENT_ERROR 证明被调且 LLM 错误自身跳过）。
+    """
+    store = _CursorStore()
+    call_mock = _agent_keyed_call({"journal-agent": OVERFLOW_JSON, "context-manager": "SUBAGENT_ERROR:mock"})
+    result, call_mock, f1 = _run_force_tidy(store, call_mock)
+
+    called = _called_agents(call_mock)
+    assert "context-manager" in called, "无门控应直接进入压缩段"
+    assert "dream-evolver" not in called and "entity-extractor" not in called, "模式三只跑压缩对"
+    assert result.get("status") == "skipped"
+    assert "LLM error" in result.get("reason", ""), f"实际: {result}"
+    with open(f1, encoding="utf-8") as f:
+        assert '"msg_id": "t6-force-seed"' in f.read(), "模式三不得剪切/改动 F1"
 
 
 def test_force_dream_advance_passes_check_no_entity_leg():
@@ -434,7 +453,6 @@ def _run_runner_force(monkeypatch, agent_results, store=None):
     monkeypatch.setattr(runner_module, "is_stop_requested", lambda: False)
     monkeypatch.setattr(runner_module.NiuRunner, "_sync_get_messages", lambda self, limit=None: messages)
     monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(store.read))
-    monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor_locked", staticmethod(store.read))
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda path, data: store.write(path, data))
     monkeypatch.setattr("agent.token_calculator.TokenCalculator.get", lambda: _FakeCalc())
     monkeypatch.setattr(subagent_module, "call_subagent_with_auto_answer", call_mock)
@@ -452,29 +470,22 @@ def _run_runner_force(monkeypatch, agent_results, store=None):
     return result, call_mock, store
 
 
-def test_runner_force_skipped_when_cursor_not_caught_up(monkeypatch):
-    """runner-force：dream/journal 全失败（overflow）→ dream 游标空 → 校验失败 → skipped。"""
-    result, call_mock, _ = _run_runner_force(
-        monkeypatch,
-        {"dream-evolver": OVERFLOW_JSON, "journal-agent": OVERFLOW_JSON},
-    )
-    assert result == {"status": "skipped", "reason": SKIP_REASON}, f"实际: {result}"
-    assert "context-manager" not in _called_agents(call_mock), "未追平不应调用 cm"
+def test_runner_force_proceeds_without_dream_step_and_gating(monkeypatch):
+    """runner-force（v3）：dream 步与门控摘除——journal overflow 后仍直接进入压缩段。
 
-
-def test_runner_force_caught_up_proceeds(monkeypatch):
-    """runner-force：dream/journal 真实推进到尾部（protect=0 游标=尾部）→ 校验通过 → 压缩执行（cm 被调）。"""
+    判别力：cm 返 SUBAGENT_ERROR 证明被调；dream-evolver 零调用、dream 游标零写
+    （force 不再推进游标，压缩保护边界用入口读取值）。
+    """
     result, call_mock, store = _run_runner_force(
         monkeypatch,
         {
-            "dream-evolver": "处理完成 @end processed_up_to=2",
-            "journal-agent": "处理完成 @end processed_up_to=2",
+            "journal-agent": OVERFLOW_JSON,
             "context-manager": "SUBAGENT_ERROR:mock",
         },
     )
     called = _called_agents(call_mock)
-    assert "context-manager" in called, "校验通过后 cm 应被调用"
-    assert "entity-extractor" not in called, "runner force 已摘除 entity 段"
+    assert "context-manager" in called, "无门控应直接进入压缩段（cm 被调）"
+    assert "dream-evolver" not in called and "entity-extractor" not in called, "模式三只跑压缩对"
     assert result.get("status") == "skipped" and "LLM error" in result.get("reason", ""), f"实际: {result}"
     dream_id = store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id")
-    assert dream_id == "m2", f"dream 游标应推进到 m2，实际 {dream_id}"
+    assert dream_id == "", f"runner force 不再推进 dream 游标，实际 {dream_id}"

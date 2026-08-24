@@ -1,4 +1,4 @@
-"""T5 测试：sleep 状态机检查点 CP1-CP3（nap/force/runner-force 零插入）。
+"""T5 测试：sleep 状态机检查点 CP1-CP3（force/runner-force 零插入）。
 
 设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §4.2 / §5 T5 / §6 T5。
 全 mock：call_subagent_with_auto_answer / 游标文件 / is_sleeping / runner——禁真实 LLM、禁图谱写入、messages.db 零新增。
@@ -9,11 +9,10 @@
 - CP2 dream 段完成后：同上，cm 不执行
 - CP3 compress 段入口（journal 两路汇合后单点）：同上，cm 不执行
 - 已推进游标不回滚（entity/dream 游标保留 CP 打断时的推进值，下次续跑）
-- nap/force/runner-force 零插入（反向断言：mock is_sleeping 抛异常 → 这些路径必须不触发）
+- force/runner-force 零插入（反向断言：mock is_sleeping 抛异常 → 这些路径必须不触发）
 """
 import asyncio
 import json
-import threading
 from contextlib import ExitStack
 from unittest import mock
 
@@ -120,6 +119,9 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None, cursor_value=None):
         def _keyed(agent_name=None, **kwargs):
             if agent_name == "entity-extractor":
                 return NORMAL_JSON + "\n处理完成 @end\nprocessed_line=999999"
+            if agent_name == "dream-evolver":
+                # v3 梦境循环：F2 单种子记录 3 行 → 报 processed_line=3 全删
+                return NORMAL_JSON + "\n处理完成 @end\nprocessed_line=3"
             return NORMAL_JSON
 
         call_mock.side_effect = _keyed
@@ -134,7 +136,8 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None, cursor_value=None):
         f2_path = _os.path.join(tempfile.mkdtemp(prefix="t5_cp_relay_"), "f2.md")
         stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
         block = mdm.format_message_record(
-            msg_id="t5-seed-not-in-db", created_at="t", role="user", content="种子",
+            # v3 梦境循环：F2 种子须用 store 真实消息 id——drop 返回的末删 msg_id 经 fresh_ids 校验后才写游标
+            msg_id="m2", created_at="t", role="user", content="种子",
         )
         assert mdm.append_record(block, mdm.F1_PATH)
         relay["f1"], relay["f2"] = mdm.F1_PATH, f2_path
@@ -165,7 +168,7 @@ def test_cp1_interrupt_after_entity():
     with open(relay["f1"], encoding="utf-8") as f:
         assert f.read() == "", "entity 步后 F1 应已被剪切（剪切不回滚）"
     with open(relay["f2"], encoding="utf-8") as f:
-        assert '"msg_id": "t5-seed-not-in-db"' in f.read(), "剪下前缀应已追加到 F2"
+        assert '"msg_id": "m2"' in f.read(), "剪下前缀应已追加到 F2"
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")] == []
@@ -256,18 +259,18 @@ async def test_cp0_worker_cancel_when_not_sleeping(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 零插入反向断言：nap/force/runner-force 路径不得调用 is_sleeping
+# 零插入反向断言：force/runner-force 路径不得调用 is_sleeping
 # ---------------------------------------------------------------------------
 
 def _boom():
     """反向断言哨兵：is_sleeping 被调用即抛错 → 该路径存在零插入违反。"""
-    raise AssertionError("该路径不应调用 is_sleeping（nap/force/runner-force 零插入）")
+    raise AssertionError("该路径不应调用 is_sleeping（force/runner-force 零插入）")
 
 
 def test_force_never_calls_is_sleeping():
     """force 零插入：is_sleeping mock 抛异常 → force 路径不触发（反向断言）。
 
-    v2（D3）：模式三摘除 entity 段——管道为 dream-evolver → journal-agent。
+    v3（spec §5）：模式三摘除梦境腿——管道为 journal-agent（skip_compress=True 时无 cm）。
     """
     from niu_api.compat import _tidy_context_impl
 
@@ -285,35 +288,8 @@ def test_force_never_calls_is_sleeping():
         ))
     assert result.get("status") == "ok", f"force 应正常跑完: {result}"
     called = _called_agents(call_mock)
-    assert called == ["dream-evolver", "journal-agent"]
-    assert "entity-extractor" not in called, "模式三已摘除 entity 段"
-
-
-async def test_nap_never_calls_is_sleeping(monkeypatch):
-    """nap 零插入：is_sleeping mock 抛异常 → nap 路径不触发（反向断言）。"""
-    class _FakeNapRunner:
-        def __init__(self):
-            self._nap_running = threading.Event()
-            self.called = False
-
-        def _run_nap_background(self):
-            try:
-                self.called = True
-            finally:
-                self._nap_running.clear()  # 与真实 _run_nap_background（L1505）同语义：自身 finally 恒 clear
-
-    fake = _FakeNapRunner()
-    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: fake)
-    monkeypatch.setattr(compat, "is_sleeping", _boom)
-    compat.start_pipeline_queue()
-    try:
-        fut = compat._pipeline_enqueue("nap", {}, held=False)
-        result = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=1.0)
-    finally:
-        await compat.stop_pipeline_queue()
-    assert result == {"status": "ok"}
-    assert fake.called
-    assert not fake._nap_running.is_set()  # _run_nap_background 自身 finally 清除（P2-1：worker 不再重复 clear）
+    assert called == ["journal-agent"], "模式三只跑压缩对（梦境腿已摘除）"
+    assert "entity-extractor" not in called and "dream-evolver" not in called, "模式三 entity/dream 腿均已摘除"
 
 
 async def test_runner_force_never_calls_is_sleeping(monkeypatch):

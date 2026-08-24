@@ -1259,13 +1259,13 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     # 程序触发子 Agent：超长报告不写文件，保留 processed_up_to 游标标记
     kwargs.setdefault('program_triggered', True)
 
-    # 【subagent_started 补发】程序触发路径（nap/sleep/force 整理）此前不发 subagent_started 事件，
+    # 【subagent_started 补发】程序触发路径（sleep/force 整理）此前不发 subagent_started 事件，
     # 前端收不到启动通知 → 不建 tab、不连 SSE，用户在界面看不到系统子 Agent 的工作过程。
     # 仅首次调用（新任务）推送；恢复回答路径（while 循环内直调 call_subagent 带 answer）不重入本函数，
     # 无需重复推（守卫防御性保留：若未来有人带 answer 调用本函数，不重复建 tab）。
     # 与 handler.py 同步路径发射点同款：pre_register 先建 ring buffer（防前端连 SSE 404 竞态），
     # 再经主事件循环 call_soon_threadsafe 推 subagent_started（本函数在 to_thread 后台线程执行，线程安全）。
-    # is_sync=False：程序触发不阻塞主对话（sleep/nap 后台整理），tab 显示"正在启动..."占位文案。
+    # is_sync=False：程序触发不阻塞主对话（sleep 后台整理），tab 显示"正在启动..."占位文案。
     # 注：异常清理在下方 try/except（无条件 close，同 handler.py 问题2c/2e 模式）。
     if kwargs.get('answer') is None:
         try:

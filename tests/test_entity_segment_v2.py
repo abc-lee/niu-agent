@@ -27,9 +27,9 @@ class TestSwitchSurface:
 
     def test_runner_switch_surface(self):
         r = self._runner()
-        # nap 切自读；force 的 entity 调用摘除（含 _run_subagent_step 位置参数形态，审查 B-P2）
+        # v3：nap 整链删除——runner 不再引用 entity-extractor，也不再有 relay 剪切调用点
         assert '"entity-extractor"' not in r
-        assert "_parse_and_relay_f1" in r
+        assert "_parse_and_relay_f1" not in r
 
     def test_compat_helper_single_definition(self):
         src = self._compat()
@@ -58,7 +58,7 @@ def test_truncate_relay_files(tmp_path):
 
 
 def test_caught_up_entity_leg_switched():
-    """睡眠版 entity 腿以 F1 空性为据；force 变体与 runner 版无 entity 腿、无 UUID 游标残留。"""
+    """睡眠版 entity 腿以 F1 空性为据；force 变体保留、runner 版随 7e 摘除。"""
     from agent import runner
     from niu_api import compat
     sleep_src = inspect.getsource(compat._cursors_caught_up)
@@ -67,8 +67,7 @@ def test_caught_up_entity_leg_switched():
     assert hasattr(compat, "_cursors_caught_up_dream_only")
     dream_only = inspect.getsource(compat._cursors_caught_up_dream_only)
     assert "last_entity_extract" not in dream_only
-    runner_src = inspect.getsource(runner._cursors_caught_up)
-    assert "last_entity_extract" not in runner_src
+    assert not hasattr(runner, "_cursors_caught_up"), "runner 版门控已随 force 摘除删除（7e）"
 
 
 def test_sleep_gate_f1_emptiness(tmp_path, monkeypatch):

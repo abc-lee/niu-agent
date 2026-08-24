@@ -23,7 +23,8 @@ class TestCallDreamEvolverOnF3:
         result = compat._call_dream_evolver_on_f3({"model": "m"})
         assert result == "ok"
         assert calls["agent_name"] == "dream-evolver"
-        assert "`" in calls["task"] and "/F3_dream_workset.md" in calls["task"]
+        # T4-D 起 conftest 将 F3_PATH 一并隔离到 tmp——只断言反引号路径形态，不断言规范文件名
+        assert "`" in calls["task"] and calls["task"].rstrip().endswith("processed_line 行号。")
         # 无 history 注入：签名只允许这五个关键字
         assert set(calls) == {"agent_name", "task", "llm_config", "mcp_client", "context_fifo_threshold"}
         assert calls["llm_config"] == {"model": "m"}

@@ -1504,7 +1504,7 @@
         return;
       }
 
-      // /clear 指令 - 先整理（小憩+日志）后清空（后端跑完 entity/dream/journal 才清空，阻塞）
+      // /clear 指令 - 先整理（日志）后清空（后端跑完 journal 才清空，阻塞）
       if (text === '/clear') {
         userInput.value = '';
         userInput.style.height = 'auto';
