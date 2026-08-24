@@ -73,3 +73,33 @@ def truncate_tool_output(text: str) -> str:
     head = _safe_decode_head(raw, TOOL_OUTPUT_HEAD_BYTES)
     tail = _safe_decode_tail(raw, TOOL_OUTPUT_TAIL_BYTES)
     return f"{head}{TOOL_OUTPUT_MARKER}{tail}"
+
+F1_PATH = os.path.join(MD_DIR, F1_NAME)
+
+
+def format_message_record(
+    *,
+    msg_id: str,
+    created_at: str,
+    role: str,
+    content: str,
+    tool_calls: list | None = None,
+    tool_call_id: str = "",
+    degraded_reason: str = "",
+) -> str | None:
+    """格式化单条消息为模拟 JSON 结构的 MD 记录块。system 角色返回 None（不镜像）。"""
+    if role == "system":
+        return None
+    meta: dict = {"msg_id": msg_id, "ts": created_at, "role": role}
+    if tool_calls:
+        meta["tool_calls"] = tool_calls
+    if tool_call_id:
+        meta["tool_call_id"] = tool_call_id
+    if degraded_reason:
+        meta["degraded_reason"] = degraded_reason
+    lines = [json.dumps(meta, ensure_ascii=False)]
+    if role == "tool":
+        lines += ["```output", truncate_tool_output(content), "```"]
+    else:
+        lines.append(content or "")
+    return "\n".join(lines) + "\n\n"
