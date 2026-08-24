@@ -187,8 +187,8 @@ def relay_processed_prefix(processed_line, f1_path=None, f2_path=None, min_progr
         if not cut:
             logger.warning(f"[MdMirror] relay 校验失败: line={processed_line}")
             return 0
-        prefix = "".join(l + "\n" for l in lines[:cut])
-        rest = "".join(l + "\n" for l in lines[cut:])
+        prefix = "".join(ln + "\n" for ln in lines[:cut])
+        rest = "".join(ln + "\n" for ln in lines[cut:])
         original_bytes = content.encode("utf-8")
         _append_under_lock(p2, prefix)
         try:
