@@ -448,64 +448,6 @@ def _find_protected_range(messages, min_protect_count: int) -> int:
     return idx_user
 
 
-def _read_cursor_value(cursor_path, key: str) -> str:
-    """读取游标 JSON 文件中的单个游标值（由 L3045-3059 内联读取模式提取）。
-
-    文件缺失 / 解析失败 → ""（与内联模式一致：缺失=从未处理，保守不压）。
-    """
-    if not cursor_path.exists():
-        return ""
-    try:
-        cursor_data = json.loads(cursor_path.read_text(encoding="utf-8"))
-        return cursor_data.get(key, "")
-    except Exception as e:
-        logger.warning(f"[Tidy] Failed to read cursor {cursor_path.name}: {e}")
-        return ""
-
-
-def _cursors_caught_up(messages, protect_recent) -> bool:
-    """睡眠版：提炼腿按 F1 空判 + 进化游标追平（v2 文件驱动，§4.3）。
-
-    entity UUID 游标退役（工程二切换）：F1 空 = 全部已提炼；F1 非空 = 还有未提炼消息，本次不压。
-    进化（dream）游标检查委托 _cursors_caught_up_dream_only（与 force 入口同源）。journal 游标不查（用户字面"提炼和进化"）。
-    """
-    if not messages:
-        return True  # 空库无可压缩内容
-    from agent.md_mirror import F1_PATH
-    if os.path.exists(F1_PATH) and os.path.getsize(F1_PATH) > 0:
-        return False  # F1 非空 = 还有未提炼消息，本次不压
-    return _cursors_caught_up_dream_only(messages, protect_recent)
-
-
-def _cursors_caught_up_dream_only(messages, protect_recent) -> bool:
-    """进化（dream）游标追平（force 入口版，§4.3 v2）。
-
-    D3：模式三管道零 F1 消费者（entity 段已摘除），不按 F1 空判（否则恒阻塞 force）；
-    F1 与 DB 压缩已解耦（F1 记录独立于 DB 行，压缩不丢未提炼内容）。
-    """
-    from pathlib import Path as _Path
-
-    if not messages:
-        return True  # 空库无可压缩内容
-    protect_start = _find_protected_range(messages, protect_recent)
-    msg_ids = [getattr(m, "id", "") or "" for m in messages]
-    cursor_path = _Path.home() / ".niu" / "last_dream_evolve.json"
-    cursor = _read_cursor_value(cursor_path, "last_dream_evolve_id")
-    if not cursor:
-        return False  # 空游标=从未处理——保守不压
-    try:
-        idx = msg_ids.index(cursor)
-    except ValueError:
-        return False  # 游标指向已删消息——保守不压（管道 dream 步骤先跑自愈重写，同轮校验前已修复）
-    if protect_start >= len(messages):
-        if idx != len(messages) - 1:
-            return False  # protect=0：游标未到真实尾部——未追平
-        return True  # 已追平
-    if idx < protect_start - 1:
-        return False  # 游标在最后一条未保护消息之前——有未处理
-    return True
-
-
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
@@ -2953,7 +2895,7 @@ async def add_context_message(request: dict) -> dict:
     return {"status": "ok", "message_id": msg_id}
 
 # 游标文件列表（清空消息后必须一并复位，否则游标指向已删除消息）
-_ALL_CURSOR_FILES = ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_journal.json"]
+_ALL_CURSOR_FILES = ["last_dream_evolve.json", "last_compress.json", "last_journal.json"]  # 三键：dream 键必须留驻防 force 哨兵翻转（工程四决策 5；last_entity_extract.json 死键移除）
 
 
 async def _reset_all_cursors() -> None:

@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agent.md_mirror import append_record, format_message_record, F1_PATH
 
 DEFAULT_DB = Path.home() / ".niu" / "messages.db"
-DEFAULT_CURSOR = Path.home() / ".niu" / "last_entity_extract.json"
 
 
 def _existing_ids(path: str) -> set[str]:
@@ -36,11 +35,17 @@ def _existing_ids(path: str) -> set[str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", default=str(DEFAULT_DB))
-    ap.add_argument("--cursor", default=str(DEFAULT_CURSOR))
+    ap.add_argument("--cursor", default="",
+                    help="游标 JSON 文件（含 last_entity_extract_id）；缺省时须显式给 --from-id")
     ap.add_argument("--f1", default=F1_PATH)
     ap.add_argument("--from-id", default="", help="游标文件缺失时显式给起点消息 uuid")
     ap.add_argument("--confirm", action="store_true", help="真写（缺省 dry-run）")
     args = ap.parse_args(argv)
+
+    if not args.cursor and not args.from_id:
+        print("未给 --cursor：默认游标文件 last_entity_extract.json 已退役（工程四 T2 清算）。"
+              "请显式给 --cursor 或 --from-id，本次不执行。", file=sys.stderr)
+        return 2
 
     from_id = args.from_id
     if not from_id and Path(args.cursor).exists():
