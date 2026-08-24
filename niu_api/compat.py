@@ -790,7 +790,7 @@ def _call_entity_extractor_on_f1(llm_config, f1_path=None) -> str:
 
 def _parse_and_relay_f1(entity_result: str, f1_path=None) -> int:
     """解析 processed_line 并触发 relay 剪切；解析失败告警并返回 0。"""
-    m = re.search(r"processed_line=(\d+)", entity_result or "")
+    m = re.search(r"processed_line\s*[=:\s]\s*(\d+)", entity_result or "")
     if m is None:
         logger.warning("[Tidy] entity-extractor 未输出 processed_line — F1 不剪切")
         return 0
