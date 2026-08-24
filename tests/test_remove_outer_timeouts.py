@@ -414,10 +414,10 @@ def _tf_messages():
     ]
 
 
-def _run_sleep_tidy_tf(tokens_per_msg, sleep_side_effect, subagent_reply=None, cursor_value="m2"):
+def _run_sleep_tidy_tf(tokens_per_msg, sleep_side_effect, subagent_reply=None):
     """直接调 _tidy_context_impl sleep 分支，全 mock 驱动到压缩段。
 
-    cursor_value="m2"：模拟 entity/dream 游标已追平（否则压缩前置校验保守不压）。
+    门控已随工程四重排摘除（决策 2）——无 cursor_value 参与对应 patch 缝。
     返回 (result, store, call_mock)。
     """
     from niu_api.compat import _tidy_context_impl
@@ -446,7 +446,6 @@ def _run_sleep_tidy_tf(tokens_per_msg, sleep_side_effect, subagent_reply=None, c
         # 四个游标文件 READ 强制缺失（compat 函数内 `from pathlib import Path`，patch 类方法本身）
         patch("pathlib.Path.exists", return_value=False),
         patch("niu_api.compat._write_cursor_with_lock"),
-        patch("niu_api.compat._read_cursor_value", return_value=cursor_value),
         patch("niu_api.compat._read_compress_target_tokens", return_value=1000),
         patch("niu_api.compat.is_sleeping", side_effect=sleep_side_effect),
     ]
@@ -463,12 +462,12 @@ def _called_agents(call_mock):
 
 
 def test_tf_mode2_interrupted_before_apply_zero_deletion():
-    """Mode-2（usage≥50%）：方案解析成功后唤醒 → interrupted；零删除/更新执行、不碰队列锁。"""
+    """Mode-2（usage≥50%）：方案解析成功后唤醒（应用前复查=新序首个检查点）→ interrupted；零删除/更新执行、不碰队列锁。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 4  # CP1/CP2/CP3 仍睡眠；第 4 次 = 应用前复查 → 已被唤醒
+        return False  # 工程四重排：压缩对内部无检查点，应用前复查是首个 is_sleeping 检查 → 已被唤醒
 
     def _boom(*a, **k):
         raise AssertionError("interrupted 后不得触碰 ChatQueue 门禁")
@@ -487,12 +486,12 @@ def test_tf_mode2_interrupted_before_apply_zero_deletion():
 
 
 def test_tf_mode1_interrupted_before_dispatch():
-    """Mode-1（usage<50%）：派发 context-manager 前唤醒 → interrupted；cm 不派发。"""
+    """Mode-1（usage<50%，新序 cm 居首）：派发 context-manager 前唤醒 → interrupted；cm 不派发。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 4
+        return False  # 工程四重排：mode-1 派发前复查是 sleep 分支首个检查点 → 即断
 
     result, store, call_mock = _run_sleep_tidy_tf(
         tokens_per_msg=100,  # 200/8000 = 2.5% → Mode-1

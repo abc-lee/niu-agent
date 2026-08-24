@@ -1,15 +1,13 @@
-"""T6 测试：压缩前置游标追平校验（_cursors_caught_up 三处 + force 降级同源）。
+"""T6 测试：压缩前置游标追平校验（force 入口 + 单元级；sleep 门控已随工程四重排摘除）。
 
-方案 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §4.3 + §5 T6 + §6 T6。
-覆盖：
-1. _cursors_caught_up 单元测试（compat 版）：tool 消息穿插尾部（≠ 朴素尾切）/
-   protect=0（游标=真实尾部才追平）/ protect_start==0 全保护放行 / 游标在保护区前 → False /
-   空游标 → False / 游标失效（ValueError）→ False / 空 messages → True
-2. sleep 调用点（CP3 同处，先状态机后游标）：entity 失败游标未追平 → skipped（中文 reason）+ cm 不执行；
-   追平 → 压缩执行
-3. compat force 调用点：entity 真实推进后校验通过（protect_start-1 判追平）→ cm 执行；
-   未追平 → skipped；降级同源（effective_protect=5，entity 排除/校验/压缩三处全用 5）
-4. runner _execute_force_pipeline 调用点：未追平 → skipped；追平 → 压缩继续（cm 被调）
+方案 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §4.3 + §5 T6 + §6 T6；
+工程四决策 2 摘除睡眠门控调用——sleep 调用点 skipped 用例删除，保留：
+1. _cursors_caught_up 单元测试（compat 版，函数体存续至工程四 T2 删除）：tool 消息穿插尾部 /
+   protect=0 / protect_start==0 全保护放行 / 游标位置判定 / 空游标 / 失效游标 / 空 messages
+2. sleep 全序用例（新序 journal→cm→entity→dream，无门控 skipped 语义）
+3. compat force 调用点（4 个不引用被删符号的 force 回归用例显式保留）：校验通过 → cm 执行；
+   降级同源（effective_protect=5，校验/压缩全用 5）
+4. runner _execute_force_pipeline 调用点：直接进入压缩段（cm 被调）
 
 全 mock：call_subagent_with_auto_answer / 游标文件（内存 _CursorStore 模拟真实文件往返）/
 runner / TokenCalculator——禁真实 LLM、禁图谱写入、messages.db 零新增。
@@ -28,7 +26,6 @@ OVERFLOW_JSON = json.dumps({
     "overflow": True, "agent": "a", "turns_completed": 1,
     "tokens_used": 1, "tokens_limit": 2, "partial_result": "",
 })
-SKIP_REASON = "还有消息未提炼完，本次不压缩"
 
 
 class _FakeCalc:
@@ -120,7 +117,6 @@ def _patch_cursor_store(store, call_mock=None, protect_recent=0):
         mock.patch("pathlib.Path.exists", _exists),
         mock.patch("pathlib.Path.read_text", _read_text),
         mock.patch("niu_api.compat._write_cursor_with_lock", side_effect=store.write),
-        mock.patch("niu_api.compat._read_cursor_value", side_effect=store.read),
     ]
 
 
@@ -261,28 +257,15 @@ class TestCursorsCaughtUp:
 
 
 # ---------------------------------------------------------------------------
-# 2. sleep 调用点：CP3 同处（先状态机后游标）
+# 2. sleep 全序用例（工程四重排：journal→cm→entity→dream，门控 skipped 语义已消失）
 # ---------------------------------------------------------------------------
 
-def test_sleep_skipped_when_f1_not_caught_up():
-    """sleep：F1 有未提炼内容（entity 收 overflow 未剪切）→ 门控 F1 腿不通过 → skipped；cm 不执行。"""
-    store = _CursorStore()
-    call_mock = _agent_keyed_call({"entity-extractor": OVERFLOW_JSON})
-    result, call_mock, f1, _f2 = _run_sleep_tidy(store, call_mock)
+def test_sleep_full_order_compress_pair_first():
+    """工程四重排全序：cm 先于 entity/dream 被调（usage<50% journal skipped）；门控消失无 skipped。
 
-    assert result == {"status": "skipped", "reason": SKIP_REASON}, f"实际: {result}"
-    assert "context-manager" not in _called_agents(call_mock), "未追平不应调用 cm"
-    # v2 契约：entity 失败 → F1 不剪切（数据保留，下次重跑）
-    with open(f1, encoding="utf-8") as f:
-        f1_content = f.read()
-    assert '"msg_id": "m1"' in f1_content and '"msg_id": "m2"' in f1_content, "失败时 F1 不得被剪切"
-
-
-def test_sleep_caught_up_proceeds_to_compress():
-    """sleep：entity relay 剪切 F1 至空 + 梦境循环删空 F2 并推进游标到尾部 → 两腿齐 → 压缩执行。
-
-    v3：F2 种子改用 store 真实消息 id（m1+m2）——drop 返回的末删 msg_id 经 fresh_ids
-    校验后才写游标；dream mock 报 processed_line=6（两条记录共 6 行，全删）。
+    entity relay 剪切 F1 至空 + 梦境循环删空 F2 并推进游标到尾部。v3：F2 种子改用
+    store 真实消息 id（m1+m2）——drop 返回的末删 msg_id 经 fresh_ids 校验后才写游标；
+    dream mock 报 processed_line=6（两条记录共 6 行，全删）。
     """
     store = _CursorStore()
     call_mock = _agent_keyed_call({
@@ -291,9 +274,9 @@ def test_sleep_caught_up_proceeds_to_compress():
     })
     result, call_mock, f1, f2 = _run_sleep_tidy(store, call_mock)
 
-    assert result.get("status") == "ok", f"追平后应正常压缩: {result}"
+    assert result.get("status") == "ok", f"重排后应正常完成: {result}"
     agents = _called_agents(call_mock)
-    assert agents == ["entity-extractor", "dream-evolver", "context-manager"], f"实际: {agents}"
+    assert agents == ["context-manager", "entity-extractor", "dream-evolver"], f"实际: {agents}"
     # 游标真实写回（内存 store）→ 校验读到 m2；entity UUID 游标退役零写
     assert store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id") == "m2"
     assert store.read(Path.home() / ".niu" / "last_compress.json", "last_compress_id") == "m2"

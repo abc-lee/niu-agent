@@ -131,8 +131,10 @@ def _tidy_failure_patches(subagent_result, call_mock):
 
 
 class TestTidySleepFailureCursor:
-    def _run_sleep_tidy(self, subagent_result, cursor_value=None):
+    def _run_sleep_tidy(self, subagent_result):
         """v2：种子记录写入隔离 F1 使 entity 步真实执行。
+
+        门控已随工程四重排摘除（决策 2）——无 cursor_value 参与对应 patch 缝。
 
         成功结果（NORMAL_JSON）补 processed_line 触发 relay 剪切；失败/incomplete
         结果保持原样（F1 不剪切契约）。F2 patch 到测试专用 tmp。返回附 (f1, f2) 路径。
@@ -159,9 +161,6 @@ class TestTidySleepFailureCursor:
             for p in _tidy_failure_patches(subagent_result, call_mock):
                 stack.enter_context(p)
             stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
-            if cursor_value is not None:
-                # 压缩前置门控的 dream 游标追平校验（v2：entity 腿改判 F1 空性）
-                stack.enter_context(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
             write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
             block = mdm.format_message_record(
                 msg_id="t7-seed-not-in-db", created_at="t", role="user", content="种子",
@@ -175,17 +174,16 @@ class TestTidySleepFailureCursor:
         return [call.args[1] for call in write_mock.call_args_list]
 
     def test_error_bracket_does_not_advance_any_cursor(self):
-        """sleep 全链收 '[错误]' → 游标零写 + F1 不剪切（v2 契约：数据保留下次重跑）。
+        """sleep 全链收 '[错误]' → 游标零写 + F1 不剪切（契约：数据保留下次重跑）。
 
-        entity 失败 → F1 未剪切 → 门控 F1 腿不通过 → skipped（cm 不执行）。
+        工程四重排：门控摘除——cm 先跑收 '[错误]'（mode-1 吸收失败续跑、无早退），
+        entity 后跑也失败（F1 不剪切）→ F2 空 → 梦境循环 D5 短路 → 终态 ok（called 含 cm 在前）。
         """
         result, write_mock, call_mock, f1, _f2 = self._run_sleep_tidy(ERROR_BRACKET)
-        assert result == {"status": "skipped", "reason": "还有消息未提炼完，本次不压缩"}, (
-            f"游标未追平应 skipped，实际: {result}"
-        )
+        assert result.get("status") == "ok", f"mode-1 吸收失败应续跑至终态 ok，实际: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["entity-extractor"], (
-            f"entity 失败 F1 未剪切 → F2 空 → 梦境循环 D5 短路，cm 不应执行，实际 {called_agents}"
+        assert called_agents == ["context-manager", "entity-extractor"], (
+            f"新序 cm 在前；entity 失败 F1 未剪切 → F2 空 → 梦境循环 D5 短路，实际 {called_agents}"
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"'[错误]' 结果不应写任何游标: {writes}"
@@ -195,24 +193,24 @@ class TestTidySleepFailureCursor:
     def test_subagent_error_does_not_advance_compress_cursor(self):
         """sleep 全链收 'SUBAGENT_ERROR:' → 压缩游标不动。
 
-        v2：entity 收 SUBAGENT_ERROR → F1 不剪切 → 门控 F1 腿不通过 →
-        skipped（cm 不执行）；判别力：若不判定 failure 会 relay 推进、cm 执行、写
-        last_compress_id ∈ (m1, m2)。
+        工程四重排：门控摘除——cm 先跑收 SUBAGENT_ERROR（mode-1 吸收、游标不动、无早退）；
+        entity 收 SUBAGENT_ERROR → F1 不剪切。终态 ok；
+        判别力：若不判定 failure 会 relay 推进、写 last_compress_id ∈ (m1, m2)。
         """
         result, write_mock, call_mock, _f1, _f2 = self._run_sleep_tidy(SUBAGENT_ERROR_STR)
-        assert result.get("status") == "skipped", f"游标未追平应 skipped: {result}"
+        assert result.get("status") == "ok", f"mode-1 吸收失败应续跑至终态 ok: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert "context-manager" not in called_agents, f"未追平 cm 不应被调用: {called_agents}"
+        assert called_agents[0] == "context-manager", f"新序 cm 应最先被调: {called_agents}"
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"'SUBAGENT_ERROR:' 结果不应写任何游标: {writes}"
 
     def test_normal_result_advances_compress_cursor(self):
         """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。
 
-        v2：entity 成功 → relay 剪切 F1 至空（F1 空性腿通过）+ cursor_value='m2'
-        （dream 腿追平）→ 压缩执行。
+        工程四重排：门控摘除——cm 直接执行推进压缩游标；entity 成功 → relay
+        剪切 F1 至空（F1 空性腿概念随门控消失）→ 压缩先行后提炼照常完成。
         """
-        result, write_mock, _call, f1, f2 = self._run_sleep_tidy(NORMAL_JSON, cursor_value="m2")
+        result, write_mock, _call, f1, f2 = self._run_sleep_tidy(NORMAL_JSON)
         assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
         compress_writes = [
             d for d in self._cursor_writes(write_mock)

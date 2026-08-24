@@ -486,28 +486,29 @@ class TestExtractResultFromReturnValue:
 
 
 class TestTidyFlowOrder:
-    """Verify tidy_context calls entity-extractor → dream-evolver → context-manager in order."""
+    """工程四重排后管道序：journal(≥50%) → context-manager → entity-extractor → dream-evolver。"""
 
     def test_sleep_mode_calls_three_agents_in_order(self):
-        """Sleep mode should call entity-extractor, then dream-evolver, then context-manager."""
+        """Sleep mode should call context-manager first, then entity-extractor, then dream-evolver."""
         # This is a structural test: verify the code path exists
-        # by checking the source code contains entity-extractor calls
+        # by checking the source code contains agent call sites.
+        # 注意：分支头注释已按新序书写（旧序文字残留会使 find 首现命中落在注释内致断言必败）。
         import inspect
 
         from niu_api import compat
         source = inspect.getsource(compat._tidy_context_impl)
-        # entity-extractor must appear before dream-evolver in sleep mode
+        # 按源码文本位置断言新序：context-manager → entity-extractor → dream-evolver
+        context_pos = source.find("context-manager")
         entity_pos = source.find("entity-extractor")
         dream_pos = source.find("dream-evolver")
-        context_pos = source.find("context-manager")
         # All three should be present
+        assert context_pos > 0, "context-manager not found in _tidy_context_impl"
         assert entity_pos > 0, "entity-extractor not found in _tidy_context_impl"
         assert dream_pos > 0, "dream-evolver not found in _tidy_context_impl"
-        assert context_pos > 0, "context-manager not found in _tidy_context_impl"
+        # context-manager must come before entity-extractor (compress pair first)
+        assert context_pos < entity_pos, "context-manager must be called before entity-extractor"
         # entity-extractor must come before dream-evolver
         assert entity_pos < dream_pos, "entity-extractor must be called before dream-evolver"
-        # dream-evolver must come before context-manager
-        assert dream_pos < context_pos, "dream-evolver must be called before context-manager"
 
 
 class TestCompatOverflowHandling:

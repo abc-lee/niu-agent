@@ -3230,125 +3230,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 
         if mode == "sleep":
-            # Sleep mode: entity-extractor (F1 自读) → dream-evolver (增量) → context-manager (增量)
+            # Sleep mode: journal-agent (≥50%) → context-manager → entity-extractor (F1 自读) → dream-evolver (增量)
 
-            # 1/3. entity-extractor（v2：自读 F1 → processed_line → relay 剪切）
-            from agent.md_mirror import F1_PATH
-
-            from niu_api.md_alignment import align_f1_with_store
-
-            f1_path = F1_PATH
-            f1_nonempty = os.path.exists(f1_path) and os.path.getsize(f1_path) > 0
-
-            if not f1_nonempty:
-                logger.info("[Tidy] entity-extractor: F1 空/不存在，跳过提炼")
-            else:
-                try:
-                    patched = await align_f1_with_store(store, f1_path)
-                    if patched:
-                        logger.info(f"[Tidy] F1 aligned: +{patched} records")
-                except Exception as e:
-                    logger.warning(f"[Tidy] F1 对齐失败（跳过）: {e}")
-
-                def run_entity_extractor():
-                    return _call_entity_extractor_on_f1(llm_config, f1_path)
-
-                entity_result = await asyncio.to_thread(run_entity_extractor)
-                logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
-                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
-                    logger.warning("[Tidy] entity-extractor 未正常完成 — F1 不剪切，下次重跑")
-                else:
-                    cut = _parse_and_relay_f1(entity_result, f1_path)
-                    logger.info(f"[Tidy] relay cut {cut} lines" if cut else "[Tidy] relay skipped (invalid line number)")
-
-            # CP1：entity 段完成后——非睡眠（睡眠中被唤醒）→ 中断；F1 剪切已执行不回滚，下次续跑
-            if not is_sleeping():
-                logger.warning("[Tidy] Sleep interrupted after entity-extractor (woke up)")
-                return {"status": "interrupted", "reason": "woke_up"}
-
-            # 2/3. dream-evolver（v3 多轮子循环：F2 头部重建 F3 工作集 → 自读报行号 → 删 F2 前缀；
-            # 终止判据 covered_all=本轮 F3 涵盖全量 F2，非「F2 删空」——会话边界合法留置尾部时 F2 永不删空）
-            from agent.md_mirror import F2_PATH, build_f3_from_f2, drop_f2_prefix
-
-            def _f2_line_count() -> int:
-                """F2 当前行数（与 md_mirror 同法剥离 split 尾部伪影，使边界值==显示行数）。"""
-                with open(F2_PATH, encoding="utf-8") as f:
-                    _lines = f.read().split("\n")
-                if _lines and _lines[-1] == "":
-                    _lines.pop()
-                return len(_lines)
-
-            new_dream_id = last_dream_evolve_id  # 循环携带：每轮成功回写后更新，供下游 mode-1 切片/mode-2 保护边界消费
-            while True:
-                f2_total = _f2_line_count() if os.path.exists(F2_PATH) else 0
-                if f2_total == 0:
-                    break  # D5：F2 空/不存在 → 无梦境待处理
-                f3_lines = await asyncio.to_thread(build_f3_from_f2)
-                if f3_lines == 0:
-                    logger.error(f"[Tidy] dream-evolver: F2 有内容（{f2_total} 行）但 build_f3 返回 0（畸形停摆），本轮放弃")
-                    break
-                covered_all = f3_lines >= f2_total  # ★ 本轮 F3 是否涵盖全量 F2
-                dream_result = await asyncio.to_thread(_call_dream_evolver_on_f3, llm_config)
-                logger.info(f"[Tidy] dream-evolver result: {dream_result[:200]}")
-                # fresh_ids 预取（async 上下文）：drop 返回的末删 msg_id 必须仍在 DB 才回写游标
-                fresh_msgs = await store.get_messages()
-                fresh_ids = {getattr(m, "id", "") or "" for m in fresh_msgs}
-                if _is_subagent_failure(dream_result) or _is_subagent_incomplete(dream_result):
-                    if _is_subagent_incomplete(dream_result):
-                        logger.warning(f"[Tidy] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — F2/游标不动，下次重跑")
-                    else:
-                        logger.warning(f"[Tidy] dream-evolver failure: {dream_result[:200]} — F2/游标不动，下次重跑")
-                    break
-                if _is_subagent_overflow(dream_result):
-                    overflow_info = _extract_overflow_info(dream_result)
-                    logger.warning(
-                        f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns — "
-                        f"drop 前 ⌊{f3_lines}/3⌋ 行部分进度后中断"
-                    )
-                    deleted_lines, dropped_msg_id = await asyncio.to_thread(
-                        drop_f2_prefix, max(1, f3_lines // 3), f3_lines
-                    )
-                    if deleted_lines and dropped_msg_id in fresh_ids:
-                        _write_cursor_with_lock(dream_cursor_path, {
-                            "last_dream_evolve_id": dropped_msg_id,
-                            "last_evolve_at": datetime.now().isoformat(),
-                        })
-                        new_dream_id = dropped_msg_id
-                        logger.info(f"[Tidy] dream-evolver 本轮完成：overflow 部分进度删前 {deleted_lines} 行，游标 -> {dropped_msg_id}")
-                    elif deleted_lines:
-                        logger.warning("[Tidy] dream-evolver overflow drop 的 msg_id 不在 DB — 游标不动（已删部分属已消费内容不回滚）")
-                    break
-                deleted_lines, done_msg_id = await asyncio.to_thread(_parse_and_drop_f2, dream_result, f3_lines)
-                if deleted_lines and done_msg_id in fresh_ids:
-                    _write_cursor_with_lock(dream_cursor_path, {
-                        "last_dream_evolve_id": done_msg_id,
-                        "last_evolve_at": datetime.now().isoformat(),
-                    })
-                    new_dream_id = done_msg_id
-                    logger.info(f"[Tidy] dream-evolver 本轮完成：删 F2 前 {deleted_lines}/{f2_total} 行，游标 -> {done_msg_id}")
-                elif deleted_lines:
-                    logger.warning("[Tidy] dream-evolver 删除前缀末条 msg_id 不在 DB — 本轮不写游标继续循环（已删部分属已消费内容不回滚）")
-                else:
-                    logger.warning("[Tidy] dream-evolver 未输出有效 processed_line 或删除无进度 — F2 不动")
-                if deleted_lines == 0 and not covered_all:
-                    break  # 零进度防空转（M 无效/校验失败分支）
-                if not is_sleeping():
-                    logger.warning("[Tidy] Sleep interrupted in dream-evolver loop (woke up)")
-                    return {"status": "interrupted", "reason": "woke_up"}
-                if covered_all:
-                    break  # ★ 终止判据：本轮 F3 已涵盖全量 F2
-
-            # 补全会话日期链（循环退出后一次收尾全覆盖；幂等图补边扫描，方法内部已容错）
-            await asyncio.to_thread(runner._ensure_session_chain)
-
-            # CP2：dream 段完成后——非睡眠 → 中断；entity/dream 游标已推进不回滚，下次续跑
-            if not is_sleeping():
-                logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
-                return {"status": "interrupted", "reason": "woke_up"}
-
-            # 2.5/3. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
+            # 1/4. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
             if usage_percent >= 50:
-                # 重新获取消息列表（Dream 可能已修改 DB）
+                # 重新获取消息列表（增量基准）
                 messages = await store.get_messages()
                 msg_tokens = []
                 try:
@@ -3430,21 +3316,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 logger.info(f"[Tidy] journal-agent: skipped (usage {usage_percent:.1f}% < 50%)")
 
-            # CP3：compress 段入口（journal 两路汇合后单点覆盖）——非睡眠 → 中断；已推进游标不回滚，下次续跑
-            if not is_sleeping():
-                logger.warning("[Tidy] Sleep interrupted before context-manager (woke up)")
-                return {"status": "interrupted", "reason": "woke_up"}
-
-            # 读取保护数量配置（CP3 同处解析：压缩前置校验与压缩段同源，§4.3）
+            # 读取保护数量配置（压缩段同源，§4.3）
             protect_recent_count = _read_protect_recent_count()
 
-            # CP3 后：压缩前置游标追平校验（先状态机后游标）——提炼/进化游标未追平则本次不压缩（§4.3）
-            if not _cursors_caught_up(messages, protect_recent_count):
-                logger.warning("[Tidy] Sleep: 还有消息未提炼完，本次不压缩")
-                return {"status": "skipped", "reason": "还有消息未提炼完，本次不压缩"}
-
-            # 3/3. context-manager（增量 task 方式，保护范围 [compress_cursor, dream_cursor_new]）
-            # 串行执行：重新获取消息列表（Dream 可能已修改 DB）
+            # 2/4. context-manager（增量 task 方式；模式一全量切片无上界 / 模式二全量 history）
+            # 串行执行：重新获取消息列表
             messages = await store.get_messages()
             msg_tokens = []
             try:
@@ -3462,7 +3338,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             # 模式二：始终全量传入（无游标机制），模式一：增量范围
             _is_mode2 = usage_percent >= 50
             _compress_cursor = "" if _is_mode2 else last_compress_id
-            _end_cursor = None if _is_mode2 else new_dream_id
             compress_msg_ids = []
             compress_history: list[dict] = []  # 模式二专用（替代 compress_msg_text）
             if _is_mode2:
@@ -3478,7 +3353,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # 模式一：保持原序列化文本逻辑
                 compress_msg_text = _build_incremental_msg_text(
                     messages, _compress_cursor, compress_msg_ids, msg_tokens,
-                    end_cursor_id=_end_cursor, protect_recent=protect_recent_count,
+                    protect_recent=protect_recent_count,
                     exclude_protected=True
                 )
 
@@ -3658,7 +3533,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         logger.info(f"[Tidy] Mode-2: Plan parsed: {len(deletes)} deletes, {len(updates)} updates (keep={len(keep_idxs)})")
 
                         # Case 3 应用前复查（解析方案后、执行删除/更新之前）：睡眠中被唤醒 → 放弃应用。
-                        # 覆盖窗口 = context-manager 长推理期间用户唤醒（CP3 之后到本点之间）。
+                        # 覆盖窗口 = context-manager 长推理期间用户唤醒（CP1 之后到本点之间）。
                         if not is_sleeping():
                             logger.warning("[Tidy] Sleep interrupted before applying Mode-2 compression plan (woke up)")
                             return {"status": "interrupted", "reason": "woke_up"}
@@ -3686,26 +3561,11 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             valid_deletes = list(dict.fromkeys(valid_deletes))
                             valid_updates = [u for u in updates if u.get("message_id") and u["message_id"] in existing_ids]
 
-                            cursor_ids_set = {cid for cid in [new_dream_id] if cid}
+                            # 锚点消息排除（force 哨兵承重墙）：数据源=入口读取的 last_dream_evolve_id
+                            # （新序下 cm 先于本轮 dream 执行，入口读取值与循环末值等值）
+                            cursor_ids_set = {cid for cid in [last_dream_evolve_id] if cid}
                             valid_deletes = [mid for mid in valid_deletes if mid not in cursor_ids_set]
                             valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
-
-                            if new_dream_id:
-                                dream_boundary_idx = -1
-                                for i, m in enumerate(fresh_messages):
-                                    if (getattr(m, "id", "") or "") == new_dream_id:
-                                        dream_boundary_idx = i
-                                        break
-                                if dream_boundary_idx >= 0:
-                                    post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
-                                    unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
-                                    unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
-                                    if unsafe_deletes:
-                                        logger.warning(f"[Tidy] Mode-2: Protecting {len(unsafe_deletes)} post-dream messages from deletion")
-                                        valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
-                                    if unsafe_updates:
-                                        logger.warning(f"[Tidy] Mode-2: Protecting {len(unsafe_updates)} post-dream messages from content replacement")
-                                        valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
 
                             protect_recent_count = _read_protect_recent_count()
                             # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
@@ -3803,8 +3663,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         )
 
                     # Case 3 应用前复查（§3.4）：模式一的"应用"发生在 context-manager 子 Agent
-                    # 运行中（工具直改消息），派发前是最后可检查点——CP3 之后到本点为纯同步代码，
-                    # 此复查与 CP3 语义重叠但按方案要求保留单点防御。
+                    # 运行中（工具直改消息），派发前是最后可检查点——CP1 之后到本点为纯同步代码，
+                    # 此复查与 CP1 语义重叠但按方案要求保留单点防御。
                     if not is_sleeping():
                         logger.warning("[Tidy] Sleep interrupted before dispatching Mode-1 context-manager (woke up)")
                         return {"status": "interrupted", "reason": "woke_up"}
@@ -3942,6 +3802,122 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         logger.info("[Tidy] context-manager: skipped (suggest_release below threshold or already at target)")
                 else:
                     logger.info("[Tidy] context-manager: no messages to process")
+            # CP1：压缩对（journal + context-manager）完成后——非睡眠 → 中断；已落库压缩不回滚，下次续跑
+            if not is_sleeping():
+                logger.warning("[Tidy] Sleep interrupted after compress pair (woke up)")
+                return {"status": "interrupted", "reason": "woke_up"}
+
+            # 3/4. entity-extractor（v2：自读 F1 → processed_line → relay 剪切）
+            from agent.md_mirror import F1_PATH
+
+            from niu_api.md_alignment import align_f1_with_store
+
+            f1_path = F1_PATH
+            f1_nonempty = os.path.exists(f1_path) and os.path.getsize(f1_path) > 0
+
+            if not f1_nonempty:
+                logger.info("[Tidy] entity-extractor: F1 空/不存在，跳过提炼")
+            else:
+                try:
+                    patched = await align_f1_with_store(store, f1_path)
+                    if patched:
+                        logger.info(f"[Tidy] F1 aligned: +{patched} records")
+                except Exception as e:
+                    logger.warning(f"[Tidy] F1 对齐失败（跳过）: {e}")
+
+                def run_entity_extractor():
+                    return _call_entity_extractor_on_f1(llm_config, f1_path)
+
+                entity_result = await asyncio.to_thread(run_entity_extractor)
+                logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
+                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
+                    logger.warning("[Tidy] entity-extractor 未正常完成 — F1 不剪切，下次重跑")
+                else:
+                    cut = _parse_and_relay_f1(entity_result, f1_path)
+                    logger.info(f"[Tidy] relay cut {cut} lines" if cut else "[Tidy] relay skipped (invalid line number)")
+
+            # CP2：entity 段完成后——非睡眠 → 中断；F1 剪切已执行不回滚，下次续跑
+            if not is_sleeping():
+                logger.warning("[Tidy] Sleep interrupted after entity-extractor (woke up)")
+                return {"status": "interrupted", "reason": "woke_up"}
+
+            # 4/4. dream-evolver（v3 多轮子循环：F2 头部重建 F3 工作集 → 自读报行号 → 删 F2 前缀；
+            # 终止判据 covered_all=本轮 F3 涵盖全量 F2，非「F2 删空」——会话边界合法留置尾部时 F2 永不删空）
+            from agent.md_mirror import F2_PATH, build_f3_from_f2, drop_f2_prefix
+
+            def _f2_line_count() -> int:
+                """F2 当前行数（与 md_mirror 同法剥离 split 尾部伪影，使边界值==显示行数）。"""
+                with open(F2_PATH, encoding="utf-8") as f:
+                    _lines = f.read().split("\n")
+                if _lines and _lines[-1] == "":
+                    _lines.pop()
+                return len(_lines)
+
+            while True:
+                f2_total = _f2_line_count() if os.path.exists(F2_PATH) else 0
+                if f2_total == 0:
+                    break  # D5：F2 空/不存在 → 无梦境待处理
+                f3_lines = await asyncio.to_thread(build_f3_from_f2)
+                if f3_lines == 0:
+                    logger.error(f"[Tidy] dream-evolver: F2 有内容（{f2_total} 行）但 build_f3 返回 0（畸形停摆），本轮放弃")
+                    break
+                covered_all = f3_lines >= f2_total  # ★ 本轮 F3 是否涵盖全量 F2
+                dream_result = await asyncio.to_thread(_call_dream_evolver_on_f3, llm_config)
+                logger.info(f"[Tidy] dream-evolver result: {dream_result[:200]}")
+                # fresh_ids 预取（async 上下文）：drop 返回的末删 msg_id 必须仍在 DB 才回写游标
+                fresh_msgs = await store.get_messages()
+                fresh_ids = {getattr(m, "id", "") or "" for m in fresh_msgs}
+                if _is_subagent_failure(dream_result) or _is_subagent_incomplete(dream_result):
+                    if _is_subagent_incomplete(dream_result):
+                        logger.warning(f"[Tidy] dream-evolver incomplete ({_incomplete_reason(dream_result)}) — F2/游标不动，下次重跑")
+                    else:
+                        logger.warning(f"[Tidy] dream-evolver failure: {dream_result[:200]} — F2/游标不动，下次重跑")
+                    break
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(
+                        f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns — "
+                        f"drop 前 ⌊{f3_lines}/3⌋ 行部分进度后中断"
+                    )
+                    deleted_lines, dropped_msg_id = await asyncio.to_thread(
+                        drop_f2_prefix, max(1, f3_lines // 3), f3_lines
+                    )
+                    if deleted_lines and dropped_msg_id in fresh_ids:
+                        _write_cursor_with_lock(dream_cursor_path, {
+                            "last_dream_evolve_id": dropped_msg_id,
+                            "last_evolve_at": datetime.now().isoformat(),
+                        })
+                        logger.info(f"[Tidy] dream-evolver 本轮完成：overflow 部分进度删前 {deleted_lines} 行，游标 -> {dropped_msg_id}")
+                    elif deleted_lines:
+                        logger.warning("[Tidy] dream-evolver overflow drop 的 msg_id 不在 DB — 游标不动（已删部分属已消费内容不回滚）")
+                    break
+                deleted_lines, done_msg_id = await asyncio.to_thread(_parse_and_drop_f2, dream_result, f3_lines)
+                if deleted_lines and done_msg_id in fresh_ids:
+                    _write_cursor_with_lock(dream_cursor_path, {
+                        "last_dream_evolve_id": done_msg_id,
+                        "last_evolve_at": datetime.now().isoformat(),
+                    })
+                    logger.info(f"[Tidy] dream-evolver 本轮完成：删 F2 前 {deleted_lines}/{f2_total} 行，游标 -> {done_msg_id}")
+                elif deleted_lines:
+                    logger.warning("[Tidy] dream-evolver 删除前缀末条 msg_id 不在 DB — 本轮不写游标继续循环（已删部分属已消费内容不回滚）")
+                else:
+                    logger.warning("[Tidy] dream-evolver 未输出有效 processed_line 或删除无进度 — F2 不动")
+                if deleted_lines == 0 and not covered_all:
+                    break  # 零进度防空转（M 无效/校验失败分支）
+                if not is_sleeping():
+                    logger.warning("[Tidy] Sleep interrupted in dream-evolver loop (woke up)")
+                    return {"status": "interrupted", "reason": "woke_up"}
+                if covered_all:
+                    break  # ★ 终止判据：本轮 F3 已涵盖全量 F2
+
+            # 补全会话日期链（循环退出后一次收尾全覆盖；幂等图补边扫描，方法内部已容错）
+            await asyncio.to_thread(runner._ensure_session_chain)
+
+            # CP3：dream 循环完成后——纯中断检查；entity/dream 游标已推进不回滚，下次续跑
+            if not is_sleeping():
+                logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
+                return {"status": "interrupted", "reason": "woke_up"}
+
 
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 

@@ -133,8 +133,10 @@ def _tidy_incomplete_patches(subagent_result, call_mock):
 
 
 class TestTidyContextImplIncomplete:
-    def _run_sleep_tidy(self, subagent_result, cursor_value=None):
+    def _run_sleep_tidy(self, subagent_result):
         """v2：种子记录写入隔离 F1 使 entity 步真实执行。
+
+        门控已随工程四重排摘除（决策 2）——无 cursor_value 参与对应 patch 缝。
 
         成功结果（NORMAL_JSON）补 processed_line 触发 relay 剪切；incomplete 结果
         保持原样（F1 不剪切契约）。F2 patch 到测试专用 tmp。返回附 (f1, f2) 路径。
@@ -163,9 +165,6 @@ class TestTidyContextImplIncomplete:
             for p in _tidy_incomplete_patches(subagent_result, call_mock):
                 stack.enter_context(p)
             stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
-            if cursor_value is not None:
-                # 压缩前置门控的 dream 游标追平校验（v2：entity 腿改判 F1 空性）
-                stack.enter_context(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
             write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
             block = mdm.format_message_record(
                 msg_id="inc-seed-not-in-db", created_at="t", role="user", content="种子",
@@ -179,17 +178,17 @@ class TestTidyContextImplIncomplete:
         return [call.args[1] for call in write_mock.call_args_list]
 
     def test_incomplete_result_does_not_advance_any_cursor(self):
-        """entity 收 incomplete JSON → 游标不推进（R4-6/R4-7）。
+        """entity/cm 收 incomplete JSON → 游标不推进（R4-6/R4-7；工程四重排后 mode-1 吸收续跑）。
 
-        v3：entity incomplete → F1 不剪切 → F2 空 → 梦境循环 D5 短路（dream 不调用）
-        → 门控 F1 腿不通过 → skipped（cm 不执行）。
-        判别力：_write_cursor_with_lock 零次调用（游标全不动）、F1 原样保留。
+        工程四重排：门控摘除——cm 先跑且收 incomplete（mode-1 吸收，无早退），
+        entity 后跑也 incomplete（F1 不剪切）→ F2 空 → 梦境循环 D5 短路（dream 不调用）
+        → 终态 ok。判别力：_write_cursor_with_lock 零次调用（游标全不动）、F1 原样保留。
         """
         result, write_mock, call_mock, f1, _f2 = self._run_sleep_tidy(INCOMPLETE_JSON)
-        assert result.get("status") == "skipped", f"游标未追平应 skipped: {result}"
+        assert result.get("status") == "ok", f"mode-1 吸收失败应续跑至终态 ok: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["entity-extractor"], (
-            f"F2 空时梦境循环应短路（dream 不调用），cm 不应执行，实际 {called_agents}"
+        assert called_agents == ["context-manager", "entity-extractor"], (
+            f"新序 cm 在前；F2 空梦境循环 D5 短路（dream 不调用），实际 {called_agents}"
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"incomplete 结果不应写任何游标: {writes}"
@@ -199,10 +198,10 @@ class TestTidyContextImplIncomplete:
     def test_normal_result_advances_compress_cursor(self):
         """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。
 
-        v2：entity 成功 → relay 剪切 F1 至空 + cursor_value='m2'（dream 腿追平）→
-        门控两腿齐 → 压缩执行。
+        工程四重排：门控摘除——cm 直接执行推进压缩游标；entity 成功 → relay
+        剪切 F1 至空 → 梦境循环删空 F2。
         """
-        result, write_mock, _call, _f1, _f2 = self._run_sleep_tidy(NORMAL_JSON, cursor_value="m2")
+        result, write_mock, _call, _f1, _f2 = self._run_sleep_tidy(NORMAL_JSON)
         assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
         compress_writes = [
             d for d in self._cursor_writes(write_mock)

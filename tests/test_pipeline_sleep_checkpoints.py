@@ -3,12 +3,12 @@
 设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §4.2 / §5 T5 / §6 T5。
 全 mock：call_subagent_with_auto_answer / 游标文件 / is_sleeping / runner——禁真实 LLM、禁图谱写入、messages.db 零新增。
 
-检查点契约（仅 mode=='sleep'，§4.2）：
+检查点契约（仅 mode=='sleep'，工程四重排后管道序：journal(≥50%) → context-manager → entity-extractor → dream-evolver）：
 - CP0 worker 取出 sleep 任务执行前：非睡眠 → {"status":"cancelled","reason":"woke_up"}，impl 零调用
-- CP1 entity 段完成后：非睡眠 → {"status":"interrupted","reason":"woke_up"}，dream/cm 不执行
-- CP2 dream 段完成后：同上，cm 不执行
-- CP3 compress 段入口（journal 两路汇合后单点）：同上，cm 不执行
-- 已推进游标不回滚（entity/dream 游标保留 CP 打断时的推进值，下次续跑）
+- CP1 压缩对（journal+context-manager）完成后：非睡眠 → {"status":"interrupted","reason":"woke_up"}，entity/dream 不执行
+- CP2 entity 段完成后：同上，dream 不执行
+- CP3 dream 循环完成后（纯中断检查）：同上
+- 已推进游标不回滚（compress/entity/dream 游标保留 CP 打断时的推进值，下次续跑）
 - force/runner-force 零插入（反向断言：mock is_sleeping 抛异常 → 这些路径必须不触发）
 """
 import asyncio
@@ -93,7 +93,7 @@ def _cp_patches(sleep_side_effect, call_mock):
     ]
 
 
-def _run_sleep_tidy(sleep_side_effect, call_mock=None, cursor_value=None):
+def _run_sleep_tidy(sleep_side_effect, call_mock=None):
     """直接调 _tidy_context_impl sleep 分支（绕过 worker/CP0），驱动 CP1-CP3。
 
     v2 适配：向隔离 F1（conftest 已把 mdm.F1_PATH 指向 tmp）写入一条种子记录，
@@ -101,8 +101,7 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None, cursor_value=None):
     tmp 文件——relay 剪切目标只允许落测试文件。entity 默认返回带
     processed_line=999999（snap 到末记录边界 → 全量剪切进 F2），模拟提炼成功。
 
-    cursor_value: 非 None 时 patch _read_cursor_value 返回该值（压缩前置门控的
-    dream 游标追平校验；v2 起 entity 腿改判 F1 空性，不再读 entity 游标）。
+    门控已随工程四重排摘除（决策 2），无 cursor_value 参。
     返回 (result, write_mock, call_mock, relay)，relay = {"f1":..., "f2":...} 供断言剪切语义。
     """
     import os as _os
@@ -130,8 +129,6 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None, cursor_value=None):
         stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
         for p in _cp_patches(sleep_side_effect, call_mock):
             stack.enter_context(p)
-        if cursor_value is not None:
-            stack.enter_context(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
         write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
         f2_path = _os.path.join(tempfile.mkdtemp(prefix="t5_cp_relay_"), "f2.md")
         stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
@@ -153,80 +150,81 @@ def _cursor_writes(write_mock):
     return [call.args[1] for call in write_mock.call_args_list]
 
 
-def test_cp1_interrupt_after_entity():
-    """CP1：entity 段完成后唤醒 → interrupted；dream/cm 不执行；F1 剪切已执行不回滚（v2 relay 语义）。"""
+def test_cp1_interrupt_after_compress_pair():
+    """CP1：压缩对（journal+context-manager）完成后唤醒 → interrupted；entity/dream 不执行；已落库压缩不回滚。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return False  # 模拟 entity 期间被唤醒 → CP1 即断
+        return calls["n"] < 2  # mode-1 派发前复查仍睡眠 → CP1 断
 
     result, write_mock, call_mock, relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == ["entity-extractor"], "dream/cm 不应执行"
-    # v2：entity 成功后 F1 被 relay 剪切且不回滚，剪下前缀追加到 F2
-    with open(relay["f1"], encoding="utf-8") as f:
-        assert f.read() == "", "entity 步后 F1 应已被剪切（剪切不回滚）"
-    with open(relay["f2"], encoding="utf-8") as f:
-        assert '"msg_id": "m2"' in f.read(), "剪下前缀应已追加到 F2"
+    assert _called_agents(call_mock) == ["context-manager"], "entity/dream 不应执行"
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")] == []
-    assert calls["n"] == 1  # 仅 CP1 检查一次
+    compress_writes = [d for d in writes if d.get("last_compress_id")]
+    assert compress_writes, "压缩对已完成：compress 游标推进不回滚"
+    with open(relay["f1"], encoding="utf-8") as f:
+        assert '"msg_id": "m2"' in f.read(), "entity 未执行，F1 不得被剪切"
+    assert calls["n"] == 2  # mode-1 派发前复查 + CP1 各一次
 
 
 # ---------------------------------------------------------------------------
 # CP1-CP3：各检查点打断后后续步骤不执行、已推进游标不回滚
 # ---------------------------------------------------------------------------
-def test_cp2_interrupt_after_dream():
-    """CP2：dream 段完成后唤醒 → interrupted；cm 不执行；F1 已剪切、dream 游标推进不回滚。"""
+def test_cp2_interrupt_after_entity():
+    """CP2：entity 段完成后唤醒 → interrupted；dream 不执行；F1 已剪切、压缩游标推进不回滚。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 2  # CP1 仍睡眠，CP2 断
+        return calls["n"] < 3  # 派发前复查 + CP1 仍睡眠，CP2 断
 
-    result, write_mock, call_mock, _relay = _run_sleep_tidy(sleep_side_effect)
+    result, write_mock, call_mock, relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver"], "cm 不应执行"
+    assert _called_agents(call_mock) == ["context-manager", "entity-extractor"], "dream 不应执行"
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
-    dream_writes = [d for d in writes if d.get("last_dream_evolve_id")]
-    assert dream_writes[-1]["last_dream_evolve_id"] == "m2"  # 不回滚
-    assert [d for d in writes if d.get("last_compress_id")] == []
-    assert calls["n"] == 2
+    assert [d for d in writes if d.get("last_dream_evolve_id")] == [], "dream 未执行零写"
+    assert [d for d in writes if d.get("last_compress_id")], "压缩游标已推进不回滚"
+    with open(relay["f1"], encoding="utf-8") as f:
+        assert f.read() == "", "entity 步后 F1 应已被剪切（剪切不回滚）"
+    with open(relay["f2"], encoding="utf-8") as f:
+        assert '"msg_id": "m2"' in f.read(), "剪下前缀应已追加到 F2"
+    assert calls["n"] == 3
 
 
 
-def test_cp3_interrupt_before_compress():
-    """CP3：compress 段入口（journal 两路汇合后单点）唤醒 → interrupted；cm 不执行。"""
+def test_cp3_interrupt_after_dream_loop():
+    """CP3：dream 循环完成后（纯中断检查）唤醒 → interrupted；无后续段可跳过。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 3  # CP1/CP2 仍睡眠，CP3 断
+        return calls["n"] < 5  # 派发复查/CP1/CP2/dream 轮间检查仍睡眠，CP3 断
 
     result, write_mock, call_mock, _relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    # journal 此 fixture usage 2.5% < 50% 走 skipped 分支——CP3 在两路汇合后单点覆盖
-    assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver"], "cm 不应执行"
+    # journal 此 fixture usage 2.5% < 50% 走 skipped 分支；新序 cm 先于 entity/dream
+    assert _called_agents(call_mock) == ["context-manager", "entity-extractor", "dream-evolver"]
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")][-1]["last_dream_evolve_id"] == "m2"
-    assert [d for d in writes if d.get("last_compress_id")] == []
-    assert calls["n"] == 3
+    assert [d for d in writes if d.get("last_compress_id")], "压缩游标已推进不回滚"
+    assert calls["n"] == 5
 
 
 
 def test_sleep_full_run_not_interrupted_when_asleep():
     """对照：全程睡眠 → 完整跑完（fixture 非空洞，CP 断言有判别力）。
 
-    v2 门控：F1 空性腿由 entity 步 relay 剪切满足；dream 腿由 cursor_value='m2'
-    （尾部）满足——两腿齐才放行到压缩段。
+    门控已随工程四重排摘除；管道序 journal(≥50% skipped)→cm→entity→dream。
     """
-    result, write_mock, call_mock, relay = _run_sleep_tidy(lambda: True, cursor_value="m2")
+    result, write_mock, call_mock, relay = _run_sleep_tidy(lambda: True)
     assert result.get("status") == "ok", f"睡眠中不应打断: {result}"
-    assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver", "context-manager"]
+    assert _called_agents(call_mock) == ["context-manager", "entity-extractor", "dream-evolver"]
     compress_writes = [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")]
     assert compress_writes, "正常完成应推进压缩游标"
     with open(relay["f1"], encoding="utf-8") as f:

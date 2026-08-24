@@ -11,7 +11,7 @@
 4. 零进度守卫（covered_all=False 且零删除 → break 防空转）
 5. 循环中唤醒（is_sleeping 轮间翻转 → interrupted，已删不回滚）
 6. 游标写入三态（成功写新 id / fresh_ids 校验失败不写 / failure-incomplete 不写）
-7. new_dream_id 下游消费（mode-1 切片 end_cursor == 最终游标）
+7. mode-1 压缩切片无上界（end_cursor 契约作废——工程四 3'a 移除，模式一全量切片）
 8. F2 空 D5 短路（dream 不调用）
 9. 畸形 F2（零记录边界）error 日志
 10. failure/incomplete 不动（F2 字节不变）
@@ -79,9 +79,12 @@ def _record(msg_id):
     )
 
 
-def _patches(call_mock, store_msgs=None, is_sleeping=lambda: True, cursor_value=None,
+def _patches(call_mock, store_msgs=None, is_sleeping=lambda: True,
              f3_budget=None):
-    """公共 patch 组：环境隔离 + 依赖 mock。返回 (patch 列表, write_mock 占位)。"""
+    """公共 patch 组：环境隔离 + 依赖 mock。返回 (patch 列表, write_mock 占位)。
+
+    门控已随工程四重排摘除（决策 2）——无 _read_cursor_value patch 缝。
+    """
     store = mock.MagicMock()
     store.get_messages = mock.AsyncMock(return_value=store_msgs if store_msgs is not None else _messages())
     plist = [
@@ -100,14 +103,12 @@ def _patches(call_mock, store_msgs=None, is_sleeping=lambda: True, cursor_value=
         mock.patch("pathlib.Path.exists", return_value=False),
         mock.patch("pathlib.Path.read_text", return_value=""),
     ]
-    if cursor_value is not None:
-        plist.append(mock.patch("niu_api.compat._read_cursor_value", return_value=cursor_value))
     if f3_budget is not None:
         plist.append(mock.patch.object(mdm, "_f3_max_bytes", lambda: f3_budget))
     return store, plist
 
 
-def _run_sleep(call_mock, seed_ids=(), *, is_sleeping=lambda: True, cursor_value=None,
+def _run_sleep(call_mock, seed_ids=(), *, is_sleeping=lambda: True,
                f3_budget=None, seed_f2_directly=True, extra_patches=()):
     """驱动 _tidy_context_impl sleep 分支。
 
@@ -118,7 +119,7 @@ def _run_sleep(call_mock, seed_ids=(), *, is_sleeping=lambda: True, cursor_value
 
     with ExitStack() as stack:
         store, plist = _patches(call_mock, is_sleeping=is_sleeping,
-                                cursor_value=cursor_value, f3_budget=f3_budget)
+                                f3_budget=f3_budget)
         stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
         for p in plist:
             stack.enter_context(p)
@@ -163,11 +164,11 @@ def test_sleep_success_single_round_drains_and_advances():
 
     call_mock.side_effect = _keyed
     result, write_mock, call_mock, runner, paths = _run_sleep(
-        call_mock, seed_ids=MSG_IDS, cursor_value="m3",
+        call_mock, seed_ids=MSG_IDS,
     )
 
-    assert _called_agents(call_mock) == ["dream-evolver", "context-manager"], (
-        f"F1 空 entity 跳过；梦境一轮排空后压缩执行: {[_called_agents(call_mock)]}"
+    assert _called_agents(call_mock) == ["context-manager", "dream-evolver"], (
+        f"F1 空 entity 跳过；工程四重排后 cm 先跑、梦境一轮排空: {[_called_agents(call_mock)]}"
     )
     with open(paths["f2"], encoding="utf-8") as f:
         assert f.read() == "", "covered_all 全删后 F2 应为空"
@@ -194,7 +195,7 @@ def test_sleep_multi_round_drains():
 
     call_mock.side_effect = _keyed
     result, write_mock, call_mock, runner, paths = _run_sleep(
-        call_mock, seed_ids=MSG_IDS, cursor_value="m3", f3_budget=budget,
+        call_mock, seed_ids=MSG_IDS, f3_budget=budget,
     )
 
     assert calls["dream"] == 3, f"3 条积压应恰好 3 轮: {calls['dream']}"
@@ -224,7 +225,7 @@ def test_sleep_leftover_tail_terminates_on_covered_all():
 
     call_mock.side_effect = _keyed
     result, write_mock, call_mock, runner, paths = _run_sleep(
-        call_mock, seed_ids=MSG_IDS, cursor_value="m3",
+        call_mock, seed_ids=MSG_IDS,
     )
 
     assert _called_agents(call_mock).count("dream-evolver") == 1, "covered_all 一轮即终止"
@@ -269,8 +270,9 @@ def test_sleep_zero_progress_guard_breaks():
 def test_sleep_interrupted_mid_loop():
     """轮间唤醒检查：round1 后仍睡眠继续、round2 后被唤醒 → interrupted；已删不回滚。"""
     budget = len(_record("m1").encode("utf-8"))
-    # 消费顺序：CP1(True) → round1 唤醒检查(True) → round2 唤醒检查(False)
-    flips = iter([True, True, False])
+    # 消费顺序（工程四重排）：mode-1 派发前复查(T) → CP1(T) → CP2(T) → round1 唤醒检查(T)
+    # → round2 唤醒检查(False)；新序压缩对在前多占 2 次调用，迭代器补值至 5
+    flips = iter([True, True, True, True, False])
     call_mock = mock.MagicMock()
 
     def _keyed(agent_name=None, **kwargs):
@@ -339,17 +341,16 @@ def test_cursor_write_three_states():
 
 
 # ---------------------------------------------------------------------------
-# 7. new_dream_id 下游消费（mode-1 切片上界）
+# 7. mode-1 切片无上界（end_cursor 契约作废——工程四决策 3'a）
 # ---------------------------------------------------------------------------
 
-def test_downstream_mode1_slice_uses_final_cursor():
-    """睡眠完成后 mode-1 压缩切片的 end_cursor 必须等于最终 dream 游标。"""
+def test_downstream_mode1_slice_has_no_end_cursor():
+    """工程四 3'a：模式一压缩切片移除 end_cursor 上界——全量切片，不得携带 end_cursor_id。"""
     captured = []
     real_build = compat._build_incremental_msg_text
 
     def _spy(messages, last_cursor_id, out_msg_ids, msg_tokens=None, **kwargs):
-        if "end_cursor_id" in kwargs:
-            captured.append(kwargs["end_cursor_id"])
+        captured.append(kwargs.get("end_cursor_id"))
         return real_build(messages, last_cursor_id, out_msg_ids, msg_tokens, **kwargs)
 
     call_mock = mock.MagicMock()
@@ -361,13 +362,13 @@ def test_downstream_mode1_slice_uses_final_cursor():
 
     call_mock.side_effect = _keyed
     result, write_mock, _, _, _ = _run_sleep(
-        call_mock, seed_ids=MSG_IDS, cursor_value="m3",
+        call_mock, seed_ids=MSG_IDS,
         extra_patches=(mock.patch.object(compat, "_build_incremental_msg_text", _spy),),
     )
 
     assert result.get("status") == "ok"
-    assert captured, "mode-1 压缩切片应携带 end_cursor_id"
-    assert captured[-1] == "m3", f"切片上界应为最终游标 m3: {captured}"
+    assert captured, "mode-1 压缩切片应调用 _build_incremental_msg_text"
+    assert all(v is None for v in captured), f"模式一切片不得携带 end_cursor_id: {captured}"
 
 
 # ---------------------------------------------------------------------------
