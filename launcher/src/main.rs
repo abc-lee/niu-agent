@@ -2143,7 +2143,7 @@ fn main() {
                                 info!("niu_api stderr: {}", line_text);
                             } else if line_text.contains("| WARNING") || line_text.contains("| WARN") || line_text.contains(":WARNING") || line_text.contains(":WARN") {
                                 warn!("niu_api stderr: {}", line_text);
-                            } else if line_text.contains("Error") || line_text.contains("Exception") || line_text.contains("Traceback") {
+                            } else if line_text.contains("| ERROR") || line_text.contains("| CRITICAL") || line_text.contains("Error") || line_text.contains("Exception") || line_text.contains("Traceback") {
                                 error!("niu_api stderr: {}", line_text);
                             } else {
                                 info!("niu_api stderr: {}", line_text);
