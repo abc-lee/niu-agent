@@ -26,7 +26,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 主 Agent ask_user 工具 | 主 Agent 想与用户交流时通过 ask_user 暂停问话（阻塞等待回答），工作流不中断——显式暂停工具，区别于"停下来问话"退出工具循环 |
 | /clear 指令 | 即时清空对话（取消清空前提炼）；忙时先停止 Agent 并唤醒在途睡眠整理（阶段边界自行退出）。支持 Electron 和 IM 通用 |
 | /compact 指令 | 强制压缩上下文：force 压缩对（journal-agent → context-manager 模式三压缩；entity/dream 提炼腿已摘除，梦境整理仅由睡眠管道承担），阻塞式 UI。仅 Electron |
-| /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（entity→dream→journal→context-manager 模式一/二）。仅 Electron |
+| /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（journal-agent → context-manager → entity-extractor → dream-evolver 多轮循环 模式一/二）。仅 Electron |
 | 见缝插针 | Agent 运行期间发送的补充消息自动插入到当前对话上下文（补充在前，当前任务在后） |
 | 子 Agent 标签页 | 子 Agent 运行时自动创建独立标签页，实时展示回复/工具状态/思维链/提问；子 Agent 可通过 @user 向用户提问并阻塞等待回答 |
 | 上下文使用率圆环 | 主对话显示主 Agent 的真实上下文占用；切换到子 Agent 标签页时显示该子 Agent 的真实占用（每轮 LLM 实际 prompt_tokens / 上下文窗口），切回主对话自动恢复 |
@@ -35,8 +35,8 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 **指令机制**：
 - `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
 - `/clear`：即时清除——① `request_stop()` 停主 Agent；② 无条件唤醒睡眠整理管道（`set_spirit_state("idle")`，在途 sleep 管道于 CP0-CP3 阶段边界自行退出）；③ 无限心跳排队拿 `_chat_lock`（60s 一跳，不再 120s 拒绝）后直接 `clear_messages()` 清空会话 + `cleanup_all_tmp()` + 复位全部游标。**已删除 force_tidy 提炼通道**（用户拍板"取消清空前提炼"）：不再投递整理管道、后端不读取请求的 force_tidy 字段；游标写回前有 fresh 校验，不会复活已清消息。支持 Electron 和 IM 通用
-- `/compact`：调用 `POST /api/context/tidy {mode:'force'}`，跑 force 压缩管道（journal-agent → context-manager 模式三强制压缩；entity/dream 提炼腿已摘除——梦境整理仅由睡眠管道承担）。阻塞式 UI（系统提示 + 禁用输入 + compact_status 圆环动画），忙时先发 `/stop`。**全局整理队列排队语义**：所有整理类管道（sleep/force/runner-force/内部溢出）全局一次一个排队，`/compact` 投递 force 任务后 await 队列执行完成；若 sleep/其他整理在跑则排队等待（不失败返回）。**前端无整体超时**：直接 await `tidyContext('force')`（已删 Promise.race 600s 假超时）——解锁真源是后端 tidy 处理器的 try/finally（必释放 `_tidy_lock`），子 Agent 有 LLM read_timeout 保底必收敛，前端假超时只会误导用户。**压缩前置校验**：force 压缩段入口先校验提炼/进化游标是否追平（`_cursors_caught_up`，sleep/force/runner-force 三处同源 protect），未追平则返回 `{"status":"skipped","reason":"还有消息未提炼完，本次不压缩"}`（中文提示直接展示，不删除消息）。与 `/clear` 的区别：`/clear` 即时清空会话、不跑任何整理管道；`/compact` 跑完整管道含模式三压缩，不清空会话。**注意**：忙时 `/stop` 仅设置停止标志立即返回，不等 Agent 释放 `_chat_lock`；后端拿锁为无限心跳重试（60s 一跳，永不超时放弃），Agent 停止慢（如卡在子 Agent tool 调用）时 `/compact` 排队等待而非失败。另注意：busy 场景 `/stop` 后若主 Agent 停止慢于 entity-extractor 完成，管道首个 `is_stop_requested()` 检查点可能读到残留停止标志而返回 aborted（提示「⚠️ 压缩已中止」）；aborted 分支会自动 `clear_stop()`，重试即可成功。
-- `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（entity→dream→journal→context-manager 模式一/二）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行时与 force/runner-force 全局互斥排队；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（CP0-CP3，仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`（CP0）；entity/dream/compress 每步完成后检查，被唤醒 → `interrupted/woke_up`（CP1-CP3），已完成步骤游标已推进不丢失，下次续跑；force 不检查状态机（手动强制不可打断）。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
+- `/compact`：调用 `POST /api/context/tidy {mode:'force'}`，跑 force 压缩管道（journal-agent → context-manager 模式三强制压缩；entity/dream 提炼腿已摘除——梦境整理仅由睡眠管道承担）。阻塞式 UI（系统提示 + 禁用输入 + compact_status 圆环动画），忙时先发 `/stop`。**全局整理队列排队语义**：所有整理类管道（sleep/force/runner-force/内部溢出）全局一次一个排队，`/compact` 投递 force 任务后 await 队列执行完成；若 sleep/其他整理在跑则排队等待（不失败返回）。**前端无整体超时**：直接 await `tidyContext('force')`（已删 Promise.race 600s 假超时）——解锁真源是后端 tidy 处理器的 try/finally（必释放 `_tidy_lock`），子 Agent 有 LLM read_timeout 保底必收敛，前端假超时只会误导用户。**压缩前置校验已移除**（2026-08-24 工程四）：原 force 压缩前校验提炼/进化游标追平的 `_cursors_caught_up` 门控已删除——睡眠重排为压缩在前、提炼在后，且提炼改文件驱动（读 F1/F2 原文，DB 压缩不触文件），门控失去意义；`/compact` 不再出现 skipped 状态。与 `/clear` 的区别：`/clear` 即时清空会话、不跑任何整理管道；`/compact` 跑完整管道含模式三压缩，不清空会话。**注意**：忙时 `/stop` 仅设置停止标志立即返回，不等 Agent 释放 `_chat_lock`；后端拿锁为无限心跳重试（60s 一跳，永不超时放弃），Agent 停止慢（如卡在子 Agent tool 调用）时 `/compact` 排队等待而非失败。另注意：busy 场景 `/stop` 后若主 Agent 停止慢于 entity-extractor 完成，管道首个 `is_stop_requested()` 检查点可能读到残留停止标志而返回 aborted（提示「⚠️ 压缩已中止」）；aborted 分支会自动 `clear_stop()`，重试即可成功。
+- `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（journal-agent → context-manager → entity-extractor → dream-evolver 多轮循环；2026-08-24 工程四重排——压缩先行、提炼靠后，提炼文件驱动不受 DB 压缩影响，压缩前置游标门控 `_cursors_caught_up` 已随之移除 模式一/二）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行时与 force/runner-force 全局互斥排队；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（CP0-CP3，仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`（CP0）；entity/dream/compress 每步完成后检查，被唤醒 → `interrupted/woke_up`（CP1-CP3），已完成步骤游标已推进不丢失，下次续跑；force 不检查状态机（手动强制不可打断）。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
 - 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
 
 **见缝插针机制**：
@@ -375,12 +375,12 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 | 步骤 | 子 Agent | 说明 |
 |------|----------|------|
-| 1 | entity-extractor | 内容提炼，`lightrag_insert` 入库 |
-| 2 | dream-evolver | 梦境进化，精加工实体 + 维护 skill |
-| 3 | journal-agent | 日志提取（仅模式2及以上：sleep usage≥50% 或 force） |
-| 4 | context-manager | 上下文压缩 |
+| 1 | journal-agent | 日志提取（仅模式2及以上：sleep usage≥50% 或 force）——压缩前先落日志，防日志内容随压缩丢失 |
+| 2 | context-manager | 上下文压缩（DB 压缩只动 Message DB，不触 F1/F2 文件） |
+| 3 | entity-extractor | 内容提炼：自读 F1 提炼源文件，`lightrag_insert` 入库（F1 为 DB 镜像，压缩产生的 [摘要] 替换不回写镜像，读到的永远是完整原文） |
+| 4 | dream-evolver | 梦境进化多轮循环：F2→F3 工作集精加工，covered_all 终止 |
 
-压缩前必须保证 entity-extractor + dream-evolver 都跑完，否则压缩删除原始消息后，实体提取和图谱精加工的机会就丢失了。模式2及以上压缩前还必须跑 journal-agent，否则日志内容随压缩丢失。
+**2026-08-24 工程四重排**：管道顺序由 entity→dream→journal→compress 改为上述 journal→compress→entity→dream。安全性根基是提炼文件驱动化——压缩只删/改 Message DB 消息，提炼读的是 F1/F2 文件原文，故压缩先行不再丢失提炼机会；原「压缩前置游标追平门控」（`_cursors_caught_up`）随之移除。entity-extractor → dream-evolver 的顺序依赖保持不变。
 
 **entity-extractor → dream-evolver 的顺序依赖**：entity-extractor 先用 `lightrag_insert` 入库精炼文档，LightRAG LLM 自动从中提取实体。dream-evolver 再搜索这些已入库的实体做精加工。如果 dream-evolver 先跑，它自己创建的实体名可能与 entity-extractor 入库后 LLM 提取的实体名不一致——同一概念变成两个独立节点，永远无法合并（实体碎片化）。
 

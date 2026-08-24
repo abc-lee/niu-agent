@@ -406,6 +406,9 @@ class _FakeRunner:
         self.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
         self.handler = mock.MagicMock()
         self.handler._last_prompt_tokens = 0
+    def _ensure_session_chain(self, max_days: int = 10) -> None:
+        # 睡眠段收尾补链（真函数依赖 LightRAG，测试桩空操作）
+        return None
 
 
 def _tidy_common_patches():

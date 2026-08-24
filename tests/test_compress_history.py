@@ -104,7 +104,9 @@ def test_build_compress_history_protected_excludes_orphan_tool():
 
 
 def test_build_compress_history_protected_assistant_excludes_its_tool():
-    """PROTECTED 排除 assistant(tool_calls) 时，其 tool 消息也同步排除（孤立 tool 检测）。"""
+    """PROTECTED 用户轮边界保护：边界落在最近的用户轮起点，边界起整段排除；
+    被排除段内的 assistant(tool_calls) 连同其 tool 消息一起不进 history
+    （孤立 tool 同步排除已被连续区间保护涵盖）。"""
     messages = [
         FakeMsg(id="msg-1", role="user", content="远端"),
         FakeMsg(
@@ -112,15 +114,13 @@ def test_build_compress_history_protected_assistant_excludes_its_tool():
             tool_calls=[{"id": "tc-1", "type": "function", "function": {"name": "tool_x", "arguments": "{}"}}],
         ),
         FakeMsg(id="msg-3", role="tool", content="tool 输出", tool_call_id="tc-1"),
-        FakeMsg(id="msg-4", role="assistant", content="近端回复"),  # 受保护
+        FakeMsg(id="msg-4", role="user", content="近端问题"),
+        FakeMsg(id="msg-5", role="assistant", content="近端回复"),  # 受保护
     ]
-    msg_tokens = [10, 20, 30, 15]
+    msg_tokens = [10, 20, 30, 15, 12]
 
-    # protect_recent=1：最后 1 条 user/assistant = msg-4 受保护
-    # exclude_protected=True：msg-4 排除
-    # msg-2(assistant, tool_calls) 不在保护集，保留
-    # msg-3(tool, tc-1) 父 assistant msg-2 在，保留
-    # 此场景 history 应含 msg-1, msg-2, msg-3
+    # protect_recent=1：从尾数 1 条 user/assistant（msg-5），向上找到最近用户轮 msg-4 → 边界=3
+    # msg-4/msg-5 受保护排除；msg-1/msg-2/msg-3 保留（msg-2 的 tc-1 未被孤立）
     history, idx_to_id = _build_compress_history(
         messages=messages,
         msg_tokens=msg_tokens,
@@ -132,18 +132,17 @@ def test_build_compress_history_protected_assistant_excludes_its_tool():
     assert len(history) == 3
     assert idx_to_id == {1: "msg-1", 2: "msg-2", 3: "msg-3"}
 
-    # 现在构造另一个场景：protect_recent=2，msg-2 和 msg-4 都受保护
-    # msg-2 被排除 → msg-3(tool, tc-1) 父 assistant 不在 → 孤立 tool，必须同步排除
+    # protect_recent=3：从尾数 3 条（msg-5/msg-4/msg-2）越过近端用户轮，向上找到 msg-1 → 边界=0
+    # 全量保护：history 为空，msg-2(assistant, tool_calls) 与 msg-3(tool) 一并不进 history
     history2, idx_to_id2 = _build_compress_history(
         messages=messages,
         msg_tokens=msg_tokens,
         out_msg_ids=None,
-        protect_recent=2,
+        protect_recent=3,
         exclude_protected=True,
     )
-    # msg-2 和 msg-4 被排除，msg-3 孤立 tool 同步排除，只剩 msg-1
-    assert len(history2) == 1
-    assert idx_to_id2 == {1: "msg-1"}
+    assert len(history2) == 0
+    assert idx_to_id2 == {}
 
 
 def test_build_compress_history_out_msg_ids():
