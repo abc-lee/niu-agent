@@ -7,8 +7,64 @@ from agent.md_mirror import (
     TOOL_OUTPUT_MARKER,
     TOOL_OUTPUT_MAX_BYTES,
     TOOL_OUTPUT_TAIL_BYTES,
+    format_message_record,
     truncate_tool_output,
 )
+
+
+class TestFormatMessageRecord:
+    def test_user_record(self):
+        block = format_message_record(
+            msg_id="m1", created_at="2026-08-24T10:00:00", role="user", content="帮我查周报"
+        )
+        lines = block.split("\n")
+        meta = json.loads(lines[0])
+        assert meta == {"msg_id": "m1", "ts": "2026-08-24T10:00:00", "role": "user"}
+        assert lines[1] == "帮我查周报"
+        assert block.endswith("\n\n")  # 记录间空行分隔
+
+    def test_assistant_with_tool_calls(self):
+        calls = [{"name": "do_grep", "arguments": {"pattern": "周报"}}]
+        block = format_message_record(
+            msg_id="m2", created_at="t", role="assistant",
+            content="我来搜索", tool_calls=calls,
+        )
+        meta = json.loads(block.split("\n")[0])
+        assert meta["tool_calls"] == calls
+        assert block.split("\n")[1] == "我来搜索"
+
+    def test_tool_record_fenced_and_truncated(self):
+        big = "y" * 3000
+        block = format_message_record(
+            msg_id="m3", created_at="t", role="tool", content=big,
+            tool_call_id="call_x",
+        )
+        lines = block.split("\n")
+        meta = json.loads(lines[0])
+        assert meta["role"] == "tool" and meta["tool_call_id"] == "call_x"
+        assert lines[1] == "```output"
+        assert lines[3] == "```"
+        assert TOOL_OUTPUT_MARKER in lines[2]
+
+    def test_degraded_reason_in_meta(self):
+        block = format_message_record(
+            msg_id="m4", created_at="t", role="assistant",
+            content="[系统繁忙]", degraded_reason="timeout",
+        )
+        assert json.loads(block.split("\n")[0])["degraded_reason"] == "timeout"
+
+    def test_subagent_msg_supported(self):
+        block = format_message_record(
+            msg_id="m5", created_at="t", role="subagent_msg", content="子Agent结果"
+        )
+        assert json.loads(block.split("\n")[0])["role"] == "subagent_msg"
+
+    def test_system_skipped(self):
+        assert format_message_record(msg_id="m6", created_at="t", role="system", content="通知") is None
+
+    def test_empty_content_ok(self):
+        block = format_message_record(msg_id="m7", created_at="t", role="assistant", content="")
+        assert block.split("\n")[1] == ""
 
 
 class TestTruncateToolOutput:
