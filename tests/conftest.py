@@ -73,6 +73,10 @@ def _isolate_md_mirror(tmp_path, monkeypatch):
     import agent.session as sess
     fake = str(tmp_path / "isolated_f1.md")
     monkeypatch.setattr(mdm, "F1_PATH", fake)
+    if hasattr(mdm, "F2_PATH"):
+        monkeypatch.setattr(mdm, "F2_PATH", str(tmp_path / "isolated_f2.md"))
+    if hasattr(mdm, "F3_PATH"):
+        monkeypatch.setattr(mdm, "F3_PATH", str(tmp_path / "isolated_f3.md"))
     if hasattr(sess, "F1_PATH"):
         monkeypatch.setattr(sess, "F1_PATH", fake)
     yield

@@ -1,5 +1,4 @@
 """Schema 刷新在工具循环内生效测试。"""
-import threading
 import pytest
 
 
@@ -23,11 +22,8 @@ def _make_runner(monkeypatch):
     """构造最小 runner（不执行完整 __init__）。"""
     from agent.runner import NiuRunner
     r = NiuRunner.__new__(NiuRunner)
-    # _on_turn_end 无条件调 _maybe_trigger_nap（runner.py L1119）——__new__ 实例无 _nap_running，
-    # 必须设置并 set() 短路（避免读真实 cursor/db）
-    r._nap_running = threading.Event()
-    r._nap_running.set()
-    # 改造后 _on_turn_end 返回 self._assemble_tools_schema()——内部访问 self.disk_engine.get_schema()
+    # nap 链已删除：_on_turn_end 只做脑区衰减 + schema 刷新。
+    # _on_turn_end 返回 self._assemble_tools_schema()——内部访问 self.disk_engine.get_schema()
     # （__new__ 实例无 disk_engine，必须 stub，否则 AttributeError）
     r.disk_engine = type("_FakeDisk", (), {
         "get_schema": staticmethod(lambda: {"type": "function", "function": {"name": "disk", "description": "", "parameters": {"type": "object", "properties": {}}}})
