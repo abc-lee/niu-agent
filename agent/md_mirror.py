@@ -25,6 +25,7 @@ TOOL_OUTPUT_MARKER = "<已精简>"
 
 MD_DIR = os.path.join(os.path.expanduser("~"), ".niu", "md")
 F1_NAME = "F1_extract_source.md"
+F1_PATH = os.path.join(MD_DIR, F1_NAME)
 
 
 def _lock_fd(fd) -> None:
@@ -74,8 +75,6 @@ def truncate_tool_output(text: str) -> str:
     tail = _safe_decode_tail(raw, TOOL_OUTPUT_TAIL_BYTES)
     return f"{head}{TOOL_OUTPUT_MARKER}{tail}"
 
-F1_PATH = os.path.join(MD_DIR, F1_NAME)
-
 
 def format_message_record(
     *,
@@ -106,7 +105,7 @@ def format_message_record(
 
 
 def append_record(block: str, md_path: str | None = None) -> bool:
-    """向 F1 追加一个记录块。O_APPEND 单次写 + 排它锁；失败告警不抛。"""
+    """向 F1 追加一个记录块。O_APPEND 持锁写循环（保证全量）+ 排它锁；失败告警不抛。"""
     path = md_path or F1_PATH
     try:
         parent = os.path.dirname(path)
@@ -116,9 +115,10 @@ def append_record(block: str, md_path: str | None = None) -> bool:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             _lock_fd(fd)
-            written = os.write(fd, data)
-            if written != len(data):
-                raise OSError(f"partial write: {written}/{len(data)}")
+            written = 0
+            while written < len(data):
+                n = os.write(fd, data[written:])
+                written += n
         finally:
             _unlock_fd(fd)
             os.close(fd)
