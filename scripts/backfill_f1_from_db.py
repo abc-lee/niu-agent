@@ -1,0 +1,70 @@
+#!/usr/bin/env python
+"""存量回填：旧提炼游标之后的 DB 消息按 MD 镜像格式回填 F1。缺省 dry-run。"""
+
+import argparse
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent.md_mirror import append_record, format_message_record, F1_PATH
+
+DEFAULT_DB = Path.home() / ".niu" / "messages.db"
+DEFAULT_CURSOR = Path.home() / ".niu" / "last_entity_extract.json"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--db", default=str(DEFAULT_DB))
+    ap.add_argument("--cursor", default=str(DEFAULT_CURSOR))
+    ap.add_argument("--f1", default=F1_PATH)
+    ap.add_argument("--from-id", default="", help="游标文件缺失时显式给起点消息 uuid")
+    ap.add_argument("--confirm", action="store_true", help="真写（缺省 dry-run）")
+    args = ap.parse_args(argv)
+
+    from_id = args.from_id
+    if not from_id and Path(args.cursor).exists():
+        from_id = json.loads(Path(args.cursor).read_text(encoding="utf-8")).get("last_entity_extract_id", "")
+    if not from_id:
+        print("缺少起点：游标文件不存在且未给 --from-id", file=sys.stderr)
+        return 2
+
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT rowid FROM messages WHERE id = ?", (from_id,)).fetchone()
+    if row is None:
+        print(f"起点 {from_id} 不在 DB", file=sys.stderr)
+        return 2
+    rows = conn.execute(
+        "SELECT id, role, content, tool_calls, tool_call_id, degraded_reason, created_at"
+        " FROM messages WHERE rowid > ? ORDER BY rowid",
+        (row["rowid"],),
+    ).fetchall()
+
+    print(f"待回填 {len(rows)} 条；confirm={args.confirm}")
+    if not args.confirm:
+        for r in rows[:5]:
+            print(f"  [{r['role']}] {r['id']} {(r['content'] or '')[:40]!r}")
+        return 0
+
+    ok = 0
+    for r in rows:
+        try:
+            tool_calls = json.loads(r["tool_calls"] or "[]")
+        except Exception:
+            tool_calls = []
+        block = format_message_record(
+            msg_id=r["id"], created_at=r["created_at"] or "", role=r["role"] or "",
+            content=r["content"] or "", tool_calls=tool_calls,
+            tool_call_id=r["tool_call_id"] or "", degraded_reason=r["degraded_reason"] or "",
+        )
+        if block and append_record(block, args.f1):
+            ok += 1
+    print(f"回填完成 {ok}/{len(rows)} → {args.f1}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
