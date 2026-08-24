@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import aiosqlite
 
-from agent.md_mirror import append_record, format_message_record, F1_PATH
+from agent.md_mirror import F1_PATH, append_record, format_message_record
 
 
 def _safe_json(raw, default=None):
