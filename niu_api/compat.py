@@ -798,6 +798,37 @@ def _parse_and_relay_f1(entity_result: str, f1_path=None) -> int:
     return relay_processed_prefix(int(m.group(1)), f1_path)
 
 
+def _call_dream_evolver_on_f3(llm_config, f3_path=None) -> str:
+    """梦境调用：task 只含 F3 路径指令，不注入 history（睡眠循环专用，措辞仿 entity 版）。"""
+    from agent.md_mirror import F3_PATH
+    from agent.subagent import call_subagent_with_auto_answer
+
+    p = f3_path or F3_PATH
+    task = (
+        f"本次待精加工的内容在文件 `{p}` 中。请按你的输入规范用 read 工具分段读取并完成知识图谱精加工，"
+        "完成后输出 @end 和 processed_line 行号。"
+    )
+    return call_subagent_with_auto_answer(
+        agent_name="dream-evolver",
+        task=task,
+        llm_config=llm_config,
+        mcp_client=None,
+        context_fifo_threshold=-1,
+    )
+
+
+def _parse_and_drop_f2(dream_result: str, f3_lines: int, f2_path=None) -> tuple[int, str]:
+    """解析 processed_line 并触发 F2 前缀删除；纯同步（fresh_ids 校验由调用方在 async 上下文完成后进行）。
+
+    f3_lines 是 build_f3_from_f2 返回值由调用方透传的硬上界。
+    """
+    m = re.search(r"processed_line\s*[=:\s]\s*(\d+)", dream_result or "")
+    if m is None:
+        logger.warning("[Tidy] dream-evolver 未输出 processed_line — F2 不删除")
+        return 0, ""
+    from agent.md_mirror import drop_f2_prefix
+    return drop_f2_prefix(int(m.group(1)), max_lines=f3_lines, f2_path=f2_path)
+
 def _strip_analysis(response: str) -> str:
     """剥离 <analysis>...</analysis> 块，只保留 keep/update/cursor 部分。
 
