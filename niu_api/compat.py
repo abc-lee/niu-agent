@@ -464,11 +464,24 @@ def _read_cursor_value(cursor_path, key: str) -> str:
 
 
 def _cursors_caught_up(messages, protect_recent) -> bool:
-    """提炼+进化游标均已追平。判定与即将执行的压缩使用同一 protect 有效值（§4.3）。
+    """睡眠版：提炼腿按 F1 空判 + 进化游标追平（v2 文件驱动，§4.3）。
 
-    历史教训：①force entity 游标钉死在 protect_start-1（entity history 排除保护区）；
-    ②protect=0 时 _find_protected_range 返回 len(messages)；③protect 取值必须与
-    压缩/entity 排除同源（降级路径）。journal 游标不查（用户字面"提炼和进化"）。
+    entity UUID 游标退役（工程二切换）：F1 空 = 全部已提炼；F1 非空 = 还有未提炼消息，本次不压。
+    进化（dream）游标检查委托 _cursors_caught_up_dream_only（与 force 入口同源）。journal 游标不查（用户字面"提炼和进化"）。
+    """
+    if not messages:
+        return True  # 空库无可压缩内容
+    from agent.md_mirror import F1_PATH
+    if os.path.exists(F1_PATH) and os.path.getsize(F1_PATH) > 0:
+        return False  # F1 非空 = 还有未提炼消息，本次不压
+    return _cursors_caught_up_dream_only(messages, protect_recent)
+
+
+def _cursors_caught_up_dream_only(messages, protect_recent) -> bool:
+    """进化（dream）游标追平（force 入口版，§4.3 v2）。
+
+    D3：模式三管道零 F1 消费者（entity 段已摘除），不按 F1 空判（否则恒阻塞 force）；
+    F1 与 DB 压缩已解耦（F1 记录独立于 DB 行，压缩不丢未提炼内容）。
     """
     from pathlib import Path as _Path
 
@@ -476,21 +489,20 @@ def _cursors_caught_up(messages, protect_recent) -> bool:
         return True  # 空库无可压缩内容
     protect_start = _find_protected_range(messages, protect_recent)
     msg_ids = [getattr(m, "id", "") or "" for m in messages]
-    for cursor_path, key in ((_Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id"),
-                             (_Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id")):
-        cursor = _read_cursor_value(cursor_path, key)
-        if not cursor:
-            return False  # 空游标=从未处理——保守不压
-        try:
-            idx = msg_ids.index(cursor)
-        except ValueError:
-            return False  # 游标指向已删消息——保守不压（管道 entity/dream 步骤先跑自愈重写，同轮校验前已修复）
-        if protect_start >= len(messages):
-            if idx != len(messages) - 1:
-                return False  # protect=0：游标未到真实尾部——未追平
-            continue  # 已追平 → 继续查下一个游标（dream）
-        if idx < protect_start - 1:
-            return False  # 游标在最后一条未保护消息之前——有未处理
+    cursor_path = _Path.home() / ".niu" / "last_dream_evolve.json"
+    cursor = _read_cursor_value(cursor_path, "last_dream_evolve_id")
+    if not cursor:
+        return False  # 空游标=从未处理——保守不压
+    try:
+        idx = msg_ids.index(cursor)
+    except ValueError:
+        return False  # 游标指向已删消息——保守不压（管道 dream 步骤先跑自愈重写，同轮校验前已修复）
+    if protect_start >= len(messages):
+        if idx != len(messages) - 1:
+            return False  # protect=0：游标未到真实尾部——未追平
+        return True  # 已追平
+    if idx < protect_start - 1:
+        return False  # 游标在最后一条未保护消息之前——有未处理
     return True
 
 
@@ -755,6 +767,35 @@ def _parse_processed_up_to(response: str) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _call_entity_extractor_on_f1(llm_config, f1_path=None) -> str:
+    """v2 提炼调用：task 只含 F1 路径指令，不注入 history（睡眠与 nap 共用）。"""
+    from agent.md_mirror import F1_PATH
+    from agent.subagent import call_subagent_with_auto_answer
+
+    p = f1_path or F1_PATH
+    task = (
+        f"本次待提炼内容在文件 `{p}` 中。请按你的输入规范用 read 工具分段读取并提炼入库，"
+        "完成后输出 @end 和 processed_line 行号。"
+    )
+    return call_subagent_with_auto_answer(
+        agent_name="entity-extractor",
+        task=task,
+        llm_config=llm_config,
+        mcp_client=None,
+        context_fifo_threshold=-1,
+    )
+
+
+def _parse_and_relay_f1(entity_result: str, f1_path=None) -> int:
+    """解析 processed_line 并触发 relay 剪切；解析失败告警并返回 0。"""
+    m = re.search(r"processed_line=(\d+)", entity_result or "")
+    if m is None:
+        logger.warning("[Tidy] entity-extractor 未输出 processed_line — F1 不剪切")
+        return 0
+    from agent.md_mirror import relay_processed_prefix
+    return relay_processed_prefix(int(m.group(1)), f1_path)
 
 
 def _strip_analysis(response: str) -> str:
@@ -2979,6 +3020,10 @@ async def clear_chat(request: Request) -> dict:
         # 重置游标文件（消息已清空，旧游标指向不存在的消息）
         await _reset_all_cursors()
 
+        from agent.md_mirror import truncate_relay_files
+        truncate_relay_files()
+        logger.info("[Clear] F1/F2 relay files truncated")
+
         return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
     finally:
         _chat_lock.release()
@@ -3134,15 +3179,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         from pathlib import Path
 
         # 读取三游标（UUID 基准）
-        entity_cursor_path = Path.home() / ".niu" / "last_entity_extract.json"
-        last_entity_extract_id = ""
-        if entity_cursor_path.exists():
-            try:
-                cursor_data = json.loads(entity_cursor_path.read_text(encoding="utf-8"))
-                last_entity_extract_id = cursor_data.get("last_entity_extract_id", "")
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to read entity cursor: {e}")
-
         dream_cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
         last_dream_evolve_id = ""
         if dream_cursor_path.exists():
@@ -3176,78 +3212,38 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 
         if mode == "sleep":
-            # Sleep mode: entity-extractor (增量) → dream-evolver (增量) → context-manager (增量)
+            # Sleep mode: entity-extractor (F1 自读) → dream-evolver (增量) → context-manager (增量)
 
-            # 1/3. entity-extractor（增量，history 逐条 + task 独立指令）
-            entity_msg_ids = []
-            # _build_incremental_msg_text 仅用于收集增量范围内的 msg_ids（游标推进用）
-            _ = _build_incremental_msg_text(
-                messages, last_entity_extract_id, entity_msg_ids, msg_tokens
-            )
-            new_entity_id = last_entity_extract_id  # 默认保留旧游标
-            entity_task_prompt = """以上是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，N 是 1-based 序号）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            # 1/3. entity-extractor（v2：自读 F1 → processed_line → relay 剪切）
+            from agent.md_mirror import F1_PATH
 
-注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
+            from niu_api.md_alignment import align_f1_with_store
 
-处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-            if entity_msg_ids:
-                logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
-                # 构造增量 history：只含游标之后的消息（按 entity_msg_ids 过滤）
-                _id_set = set(entity_msg_ids)
-                entity_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
-                entity_history, entity_idx_to_id = _build_plain_history(entity_incremental_msgs)
+            f1_path = F1_PATH
+            f1_nonempty = os.path.exists(f1_path) and os.path.getsize(f1_path) > 0
+
+            if not f1_nonempty:
+                logger.info("[Tidy] entity-extractor: F1 空/不存在，跳过提炼")
+            else:
+                try:
+                    patched = await align_f1_with_store(store, f1_path)
+                    if patched:
+                        logger.info(f"[Tidy] F1 aligned: +{patched} records")
+                except Exception as e:
+                    logger.warning(f"[Tidy] F1 对齐失败（跳过）: {e}")
 
                 def run_entity_extractor():
-                    return call_subagent_with_auto_answer(
-                        agent_name="entity-extractor",
-                        task=entity_task_prompt,
-                        llm_config=llm_config,
-                        mcp_client=None,
-                        history=entity_history,
-                        context_fifo_threshold=-1,  # FIFO 保底：首轮裁剪到 75%，防止溢出死循环
-                    )
+                    return _call_entity_extractor_on_f1(llm_config, f1_path)
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
-
-                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
                 if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
-                    if _is_subagent_incomplete(entity_result):
-                        logger.warning(f"[Tidy] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
-                    else:
-                        overflow_info = _extract_overflow_info(entity_result)
-                        logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # overflow/incomplete 时游标不动，下次重跑相同范围
+                    logger.warning("[Tidy] entity-extractor 未正常完成 — F1 不剪切，下次重跑")
                 else:
-                    _processed_idx = _parse_processed_up_to(entity_result)
-                    if _processed_idx is not None and _processed_idx in entity_idx_to_id:
-                        new_entity_id = entity_idx_to_id[_processed_idx]
-                        logger.info(f"[Tidy] Entity cursor advanced per processed_up_to={_processed_idx} -> {new_entity_id}")
-                    elif entity_msg_ids:
-                        new_entity_id = entity_msg_ids[-1]  # 兜底
-                        logger.info(f"[Tidy] Entity cursor fallback to range end: {new_entity_id}")
-                    else:
-                        new_entity_id = last_entity_extract_id
-                # 校验游标
-                if new_entity_id:
-                    fresh_msgs = await store.get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_entity_id not in fresh_ids:
-                        logger.warning(f"[Tidy] Entity cursor {new_entity_id} deleted by sub-agent, reverting to {last_entity_extract_id}")
-                        new_entity_id = last_entity_extract_id
-                        if new_entity_id and new_entity_id not in fresh_ids:
-                            new_entity_id = ""
+                    cut = _parse_and_relay_f1(entity_result, f1_path)
+                    logger.info(f"[Tidy] relay cut {cut} lines" if cut else "[Tidy] relay skipped (invalid line number)")
 
-                if new_entity_id:
-                    _write_cursor_with_lock(entity_cursor_path, {
-                        "last_entity_extract_id": new_entity_id,
-                        "last_entity_extract_at": datetime.now().isoformat(),
-                    })
-                    logger.info(f"[Tidy] entity cursor updated: last_entity_extract_id={new_entity_id}")
-            else:
-                logger.info("[Tidy] entity-extractor: no new messages since cursor")
-
-            # CP1：entity 段完成后——非睡眠（睡眠中被唤醒）→ 中断；entity 游标已推进不回滚，下次续跑
+            # CP1：entity 段完成后——非睡眠（睡眠中被唤醒）→ 中断；F1 剪切已执行不回滚，下次续跑
             if not is_sleeping():
                 logger.warning("[Tidy] Sleep interrupted after entity-extractor (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
@@ -3679,7 +3675,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             valid_deletes = list(dict.fromkeys(valid_deletes))
                             valid_updates = [u for u in updates if u.get("message_id") and u["message_id"] in existing_ids]
 
-                            cursor_ids_set = {cid for cid in [new_entity_id, new_dream_id] if cid}
+                            cursor_ids_set = {cid for cid in [new_dream_id] if cid}
                             valid_deletes = [mid for mid in valid_deletes if mid not in cursor_ids_set]
                             valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
 
@@ -3947,94 +3943,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             _force_fq = get_chat_queue()
             _force_fq.pause()
 
-            # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
-            logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
-            # 降级解析提前到 force 分支顶部（§4.3 v1.4）：entity 排除/校验/压缩三处同源。
+            # Force mode（模式三，D3）：dream-evolver 增量 → context-manager 强制压缩（工程二摘除 entity 段）
+            # 降级解析提前到 force 分支顶部（§4.3 v1.4）：校验/压缩同源。
             # chat_queue 降级 5/2 实证经 request dict 传入 force_protect_recent（L514-518）
             _effective_protect = _read_protect_recent_count()
             _force_protect_recent = request.get("force_protect_recent") if isinstance(request, dict) else None
             if _force_protect_recent is not None and isinstance(_force_protect_recent, int) and _force_protect_recent >= 1:
                 _effective_protect = min(_effective_protect, _force_protect_recent)
                 logger.info(f"[Tidy] Force: protect_recent_count degraded to {_effective_protect} (from request)")
-            # 计算 PROTECTED 消息 ID 集合（最近 N 条 user/assistant，与 context-manager 对齐）
-            # 用于 entity force 方案 A：排除最近 PROTECTED 条防止 overflow 死循环（详见 Architecture §6）
-            # R4-B P1：entity 排除用 effective_protect（与校验/压缩同源）——降级路径 entity 游标
-            # 钉在 effective-1 而校验用降级值 → 判定一致，attempt 2/3 溢出救援不再恒 skipped
-            _force_protected_ids: set[str] = set()
-            if _effective_protect > 0 and messages:
-                _protect_start = _find_protected_range(messages, _effective_protect)
-                _force_protected_ids = {getattr(messages[i], "id", "") or "" for i in range(_protect_start, len(messages))}
-
-            # 1/3. entity-extractor（全量 history 逐条 + task 独立指令，cursor 传空 = 全量）
-            new_entity_id = last_entity_extract_id  # 默认保留旧游标
-            entity_force_msg_ids = []
-            _ = _build_incremental_msg_text(
-                messages, "", entity_force_msg_ids, msg_tokens
-            )
-            entity_force_prompt = """以上是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
-
-注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
-
-处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-            # 构造全量 history + idx_to_id 映射（force 模式 cursor 为空 = 全量）
-            # 方案 A：排除 PROTECTED 消息（最近 N 条 user/assistant）防止 overflow 死循环（详见 Architecture §6）
-            # _force_protected_ids 已在 Step 6.0 force 块顶部计算（与 context-manager protect_recent_count 对齐）
-            entity_force_msgs_filtered = [m for m in messages if (getattr(m, "id", "") or "") not in _force_protected_ids]
-            entity_force_history, entity_force_idx_to_id = _build_plain_history(entity_force_msgs_filtered)
-            # 同步过滤 entity_force_msg_ids（游标推进兜底用，与 history 保持一致）
-            entity_force_msg_ids = [getattr(m, "id", "") or "" for m in entity_force_msgs_filtered]
-
-            def run_entity_extractor_force():
-                return call_subagent_with_auto_answer(
-                    agent_name="entity-extractor",
-                    task=entity_force_prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                    history=entity_force_history,
-                    context_fifo_threshold=-1,  # FIFO 保底
-                )
-
-            if entity_force_msg_ids:
-                entity_result = await asyncio.to_thread(run_entity_extractor_force)
-                if is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
-                logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
-
-                if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
-                    if _is_subagent_incomplete(entity_result):
-                        logger.warning(f"[Tidy] Force: entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
-                    else:
-                        overflow_info = _extract_overflow_info(entity_result)
-                        logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # overflow/incomplete 时游标不动
-                else:
-                    _processed_idx = _parse_processed_up_to(entity_result)
-                    if _processed_idx is not None and _processed_idx in entity_force_idx_to_id:
-                        new_entity_id = entity_force_idx_to_id[_processed_idx]
-                        logger.info(f"[Tidy] Force: Entity cursor advanced per processed_up_to={_processed_idx} -> {new_entity_id}")
-                    elif entity_force_msg_ids:
-                        new_entity_id = entity_force_msg_ids[-1]  # 兜底
-                        logger.info(f"[Tidy] Force: Entity cursor fallback to range end: {new_entity_id}")
-                    else:
-                        new_entity_id = last_entity_extract_id
-                # 校验游标
-                if new_entity_id:
-                    fresh_msgs = await store.get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_entity_id not in fresh_ids:
-                        logger.warning(f"[Tidy] Force: Entity cursor {new_entity_id} deleted by sub-agent, reverting to {last_entity_extract_id}")
-                        new_entity_id = last_entity_extract_id
-                        if new_entity_id and new_entity_id not in fresh_ids:
-                            new_entity_id = ""
-                if new_entity_id:
-                    _write_cursor_with_lock(entity_cursor_path, {
-                        "last_entity_extract_id": new_entity_id,
-                        "last_entity_extract_at": datetime.now().isoformat(),
-                    })
-            else:
-                logger.info("[Tidy] Force mode: entity-extractor skipped, no messages")
 
             # 2/3. dream-evolver（增量 task 方式，force 模式也是增量）
             # 串行执行：重新获取消息列表
@@ -4211,9 +4127,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
             # 3/3. context-manager 强制压缩（抽为嵌套闭包；skip_compress=True 时跳过）
             async def _compress_force():
-                # 压缩前置游标追平校验（§4.3）：提炼/进化游标未追平则本次不压缩
+                # 压缩前置游标追平校验（§4.3 v2）：进化游标未追平则本次不压缩（D3：模式三无提炼腿）
                 # 位置：压缩段入口（effective_protect 已提前到 force 分支顶部解析）
-                if not _cursors_caught_up(messages, _effective_protect):
+                if not _cursors_caught_up_dream_only(messages, _effective_protect):
                     logger.warning("[Tidy] Force: 还有消息未提炼完，本次不压缩")
                     return {"status": "skipped", "mode": "force", "reason": "还有消息未提炼完，本次不压缩"}
 
@@ -4423,7 +4339,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             new_compress_id = ""
 
                         # 保护游标
-                        cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
+                        cursor_ids_set = {cid for cid in [new_compress_id, new_dream_id] if cid}
                         for cursor_id in cursor_ids_set:
                             if cursor_id in valid_deletes:
                                 valid_deletes.remove(cursor_id)

@@ -703,10 +703,10 @@ def _slice_after_cursor(db_messages: list, cursor_id: str) -> list:
 
 
 def _cursors_caught_up(messages, protect_recent) -> bool:
-    """提炼+进化游标均已追平（runner 版，读游标用 _read_cursor_locked）。
+    """进化（dream）游标追平（runner 版，读游标用 _read_cursor_locked）。
 
-    与 niu_api/compat._cursors_caught_up 同逻辑（§4.3）——判定与即将执行的压缩
-    使用同一 protect 有效值。journal 游标不查（用户字面"提炼和进化"）。
+    与 niu_api/compat._cursors_caught_up_dream_only 同逻辑（§4.3 v2）——D3：模式三管道无提炼腿，
+    只查进化游标；判定与即将执行的压缩使用同一 protect 有效值。journal 游标不查。
     """
     from niu_api.compat import _find_protected_range
 
@@ -714,21 +714,20 @@ def _cursors_caught_up(messages, protect_recent) -> bool:
         return True  # 空库无可压缩内容
     protect_start = _find_protected_range(messages, protect_recent)
     msg_ids = [getattr(m, "id", "") or "" for m in messages]
-    for cursor_path, key in ((Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id"),
-                             (Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id")):
-        cursor = NiuRunner._read_cursor_locked(cursor_path, key)
-        if not cursor:
-            return False  # 空游标=从未处理——保守不压
-        try:
-            idx = msg_ids.index(cursor)
-        except ValueError:
-            return False  # 游标指向已删消息——保守不压
-        if protect_start >= len(messages):
-            if idx != len(messages) - 1:
-                return False  # protect=0：游标未到真实尾部——未追平
-            continue  # 已追平 → 继续查下一个游标（dream）
-        if idx < protect_start - 1:
-            return False  # 游标在最后一条未保护消息之前——有未处理
+    cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
+    cursor = NiuRunner._read_cursor_locked(cursor_path, "last_dream_evolve_id")
+    if not cursor:
+        return False  # 空游标=从未处理——保守不压
+    try:
+        idx = msg_ids.index(cursor)
+    except ValueError:
+        return False  # 游标指向已删消息——保守不压
+    if protect_start >= len(messages):
+        if idx != len(messages) - 1:
+            return False  # protect=0：游标未到真实尾部——未追平
+        return True  # 已追平
+    if idx < protect_start - 1:
+        return False  # 游标在最后一条未保护消息之前——有未处理
     return True
 
 
@@ -1351,18 +1350,22 @@ class NiuRunner:
         """
         try:
             from pathlib import Path
-            from agent.subagent import call_subagent_with_auto_answer
+
             from niu_api.compat import (
-                _build_plain_history,
                 _build_incremental_msg_text,
+                _build_plain_history,
+                _call_entity_extractor_on_f1,
+                _extract_overflow_info,
+                _incomplete_reason,
+                _is_subagent_failure,
+                _is_subagent_incomplete,
+                _is_subagent_overflow,
+                _parse_and_relay_f1,
                 _parse_processed_up_to,
                 _write_cursor_with_lock,
-                _is_subagent_overflow,
-                _is_subagent_incomplete,
-                _is_subagent_failure,
-                _incomplete_reason,
-                _extract_overflow_info,
             )
+
+            from agent.subagent import call_subagent_with_auto_answer
 
             niu_dir = Path.home() / ".niu"
             llm_config = self.llm_config
@@ -1372,78 +1375,31 @@ class NiuRunner:
             msg_tokens = self._recalc_msg_stats(db_messages)
 
             # ============================================================
-            # Step 1: entity-extractor（内容提炼）
+            # Step 1 v2: entity-extractor 自读 F1（nap 为同步上下文，对齐扫描只在异步睡眠侧）
             # ============================================================
-            entity_cursor_path = niu_dir / "last_entity_extract.json"
-            last_entity_id = self._read_cursor_locked(entity_cursor_path, "last_entity_extract_id")
+            from agent.md_mirror import F1_PATH
 
-            entity_msg_ids = []
-            _ = _build_incremental_msg_text(
-                db_messages, last_entity_id, entity_msg_ids, msg_tokens
-            )
-
-            if entity_msg_ids:
-                logger.info(f"[Nap] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
-                _id_set = set(entity_msg_ids)
-                entity_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
-                entity_history, entity_idx_to_id = _build_plain_history(entity_msgs)
-
-                entity_prompt = """以上是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，N 是 1-based 序号）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
-
-注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
-
-处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-
+            f1_path = F1_PATH
+            if os.path.exists(f1_path) and os.path.getsize(f1_path) > 0:
                 try:
-                    entity_result = call_subagent_with_auto_answer(
-                        agent_name="entity-extractor",
-                        task=entity_prompt,
-                        llm_config=llm_config,
-                        mcp_client=None,
-                        history=entity_history,
-                        context_fifo_threshold=-1,  # FIFO 保底
-                    )
+                    entity_result = _call_entity_extractor_on_f1(llm_config, f1_path)
                     logger.info(f"[Nap] entity-extractor completed, length={len(entity_result)}")
 
-                    # 游标推进
-                    new_entity_id = last_entity_id
                     if _is_subagent_overflow(entity_result) or _is_subagent_incomplete(entity_result) or _is_subagent_failure(entity_result):
                         if _is_subagent_incomplete(entity_result):
-                            logger.warning(f"[Nap] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — cursor not advanced")
+                            logger.warning(f"[Nap] entity-extractor incomplete ({_incomplete_reason(entity_result)}) — F1 不剪切")
                         else:
                             overflow_info = _extract_overflow_info(entity_result)
                             logger.warning(f"[Nap] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                        # overflow/incomplete 时游标不动
+                        # overflow/incomplete/failure 时 F1 不剪切，下次重跑
                     else:
-                        _processed_idx = _parse_processed_up_to(entity_result)
-                        if _processed_idx is not None and _processed_idx in entity_idx_to_id:
-                            new_entity_id = entity_idx_to_id[_processed_idx]
-                            logger.info(f"[Nap] Entity cursor advanced: {new_entity_id}")
-                        elif entity_msg_ids:
-                            new_entity_id = entity_msg_ids[-1]
-                            logger.info(f"[Nap] Entity cursor fallback to range end: {new_entity_id}")
-
-                    # 游标校验
-                    if new_entity_id:
-                        fresh_msgs = self._sync_get_messages()
-                        fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                        if new_entity_id not in fresh_ids:
-                            new_entity_id = last_entity_id
-                            if new_entity_id and new_entity_id not in fresh_ids:
-                                new_entity_id = ""
-
-                    if new_entity_id:
-                        from datetime import datetime
-                        _write_cursor_with_lock(entity_cursor_path, {
-                            "last_entity_extract_id": new_entity_id,
-                            "last_entity_extract_at": datetime.now().isoformat(),
-                        })
-                        logger.info(f"[Nap] Entity cursor written: {new_entity_id}")
+                        cut = _parse_and_relay_f1(entity_result, f1_path)
+                        logger.info(f"[Nap] relay cut {cut} lines" if cut else "[Nap] relay skipped (invalid line number)")
                 except Exception as e:
                     logger.error(f"[Nap] entity-extractor failed: {e}")
                     # entity-extractor 失败不阻断 dream-evolver
             else:
-                logger.info("[Nap] entity-extractor: no new messages since cursor")
+                logger.info("[Nap] entity-extractor: F1 空/不存在，跳过提炼")
 
             # ============================================================
             # Step 2: dream-evolver（梦境进化）
@@ -1832,11 +1788,11 @@ class NiuRunner:
         Parameters
         ----------
         step_name : str
-            Sub-agent name passed to call_subagent (e.g. "entity-extractor").
+            Sub-agent name passed to call_subagent (e.g. "dream-evolver").
         cursor_path : Path
             JSON file that persists the cursor.
         cursor_field : str
-            Key name inside the cursor JSON (e.g. "last_entity_extract_id").
+            Key name inside the cursor JSON (e.g. "last_dream_evolve_id").
         prompt : str
             The task prompt for the sub-agent (already truncated).
         llm_config : dict
@@ -1848,7 +1804,7 @@ class NiuRunner:
             fallback cursor when extraction fails.
         timestamp_field : str
             Key name for the timestamp written into the cursor JSON
-            (e.g. "last_entity_extract_at").
+            (e.g. "last_dream_evolve_at").
 
         Returns
         -------
@@ -1999,12 +1955,10 @@ class NiuRunner:
         try:
             # === 读取游标 ===
             niu_dir = _Path.home() / ".niu"
-            entity_cursor_path = niu_dir / "last_entity_extract.json"
             dream_cursor_path = niu_dir / "last_dream_evolve.json"
             compress_cursor_path = niu_dir / "last_compress.json"
             journal_cursor_path = niu_dir / "last_journal.json"
 
-            last_entity_extract_id = self._read_cursor(entity_cursor_path, "last_entity_extract_id")
             last_dream_evolve_id = self._read_cursor(dream_cursor_path, "last_dream_evolve_id")
             last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
             last_journal_id = self._read_cursor(journal_cursor_path, "last_journal_id")
@@ -2033,53 +1987,6 @@ class NiuRunner:
 
 
             llm_config = self.llm_config
-
-            # === 步骤 1/4: entity-extractor（全量，cursor 传空 = 全量）===
-            logger.info("[Runner] Force: starting entity-extractor (full processing)")
-            new_entity_id = last_entity_extract_id
-            # 计算 PROTECTED 消息 ID 集合（最近 N 条 user/assistant，与 context-manager 对齐）
-            # 用于 entity force 方案 A：排除最近 PROTECTED 条防止 overflow 死循环（详见 Architecture §6）
-            _force_protect_recent_count = _read_protect_recent_count()
-            _force_protected_ids: set[str] = set()
-            if _force_protect_recent_count > 0 and db_messages:
-                from niu_api.compat import _find_protected_range
-                _protect_start = _find_protected_range(db_messages, _force_protect_recent_count)
-                _force_protected_ids = {getattr(db_messages[i], "id", "") or "" for i in range(_protect_start, len(db_messages))}
-
-            if is_stop_requested():
-                logger.warning("[Runner] Stop requested, aborting force compress")
-                return
-
-            entity_force_msg_ids = []
-            _ = _build_incremental_msg_text(
-                db_messages, "", entity_force_msg_ids, msg_tokens
-            )
-            if entity_force_msg_ids:
-                entity_force_prompt = """以上是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
-
-注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
-
-处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-                # 构造全量 history + idx_to_id 映射（force 模式 cursor 为空 = 全量）
-                # 方案 A：排除 PROTECTED 消息（最近 N 条 user/assistant）防止 overflow 死循环（详见 Architecture §6）
-                entity_force_msgs_filtered = [m for m in db_messages if (getattr(m, "id", "") or "") not in _force_protected_ids]
-                entity_force_history, entity_force_idx_to_id = _build_plain_history(entity_force_msgs_filtered)
-                # 同步过滤 entity_force_msg_ids（游标推进兜底用，与 history 保持一致）
-                entity_force_msg_ids = [getattr(m, "id", "") or "" for m in entity_force_msgs_filtered]
-
-                _, new_entity_id = self._run_subagent_step(
-                    "entity-extractor", entity_cursor_path, "last_entity_extract_id",
-                    entity_force_prompt, llm_config, last_entity_extract_id,
-                    entity_force_msg_ids, "last_entity_extract_at",
-                    history=entity_force_history, context_fifo_threshold=-1,  # FIFO 保底
-                    idx_to_id=entity_force_idx_to_id,
-                )
-
-                if is_stop_requested():
-                    logger.warning("[Runner] Stop requested, aborting force compress")
-                    return
-            else:
-                logger.info("[Runner] Force: entity-extractor skipped, no messages")
 
             # === 步骤 2/4: dream-evolver（增量 task 方式）===
             if is_stop_requested():
@@ -2347,7 +2254,7 @@ class NiuRunner:
                     new_compress_id = ""
 
                 # 保护游标
-                cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
+                cursor_ids_set = {cid for cid in [new_compress_id, new_dream_id] if cid}
                 for cursor_id in cursor_ids_set:
                     if cursor_id in valid_deletes:
                         valid_deletes.remove(cursor_id)
