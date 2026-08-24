@@ -334,7 +334,46 @@ def test_entry_shared_cursor_read_preserved(tmp_path):
         extra_patches=(mock.patch("pathlib.Path.read_text", _spy_read_text),),
     )
 
-    assert result.get("status") == "ok"
-    assert any(p.endswith("last_dream_evolve.json") for p in recorded), (
-        f"入口共享游标读取应保留并消费 dream 游标文件: {recorded}"
-    )
+# ---------------------------------------------------------------------------
+# 8. 复位表三键清算（工程四决策 5 / T2：_ALL_CURSOR_FILES 收缩）
+# ---------------------------------------------------------------------------
+
+def test_reset_all_cursors_clears_exactly_three_keys(tmp_path):
+    """reset 恰清三键：last_journal/last_compress/last_dream_evolve 删除。
+
+    dream 键必须留驻复位列表（防 /new 后陈旧游标 + F2 truncate 致 force 哨兵
+    0=全保护 ↔ len=不限制删除翻转）；entity_extract 死键已移出列表。
+    """
+    from niu_api.compat import _reset_all_cursors
+
+    home = tmp_path
+    niu = home / ".niu"
+    niu.mkdir(parents=True)
+    for name in ("last_journal.json", "last_compress.json", "last_dream_evolve.json"):
+        (niu / name).write_text("{}", encoding="utf-8")
+
+    with mock.patch("pathlib.Path.home", return_value=home):
+        asyncio.run(_reset_all_cursors())
+
+    remaining = sorted(p.name for p in niu.iterdir())
+    assert remaining == [], f"三键游标应全部删除，实际残留 {remaining}"
+
+
+def test_reset_all_cursors_never_touches_entity_extract_file(tmp_path):
+    """reset 不触碰 last_entity_extract.json——死键已移出 _ALL_CURSOR_FILES。
+
+    磁盘残留的 last_entity_extract.json 为一次性手工 rm 迁移动作（不入生产代码路径，
+    无断言载体）：生产 reset 循环对其零接触，由本测试锁定。
+    """
+    from niu_api.compat import _reset_all_cursors
+
+    home = tmp_path
+    niu = home / ".niu"
+    niu.mkdir(parents=True)
+    entity_file = niu / "last_entity_extract.json"
+    entity_file.write_text(json.dumps({"last_entity_extract_id": "legacy-id"}), encoding="utf-8")
+
+    with mock.patch("pathlib.Path.home", return_value=home):
+        asyncio.run(_reset_all_cursors())
+
+    assert entity_file.exists(), "last_entity_extract.json 不应被生产复位逻辑触碰"

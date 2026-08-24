@@ -1,6 +1,4 @@
-"""工程二 Task4：切换接线源码级断言 + 门控行为测试（锁定 4 处调用点的新旧形态）。"""
-
-import inspect
+"""工程二 Task4：切换接线源码级断言（门控已随工程四 T2 删除，仅存孤儿清除断言）。"""
 
 
 class TestSwitchSurface:
@@ -57,36 +55,11 @@ def test_truncate_relay_files(tmp_path):
     truncate_relay_files(str(tmp_path / "g1.md"), str(tmp_path / "g2.md"))  # 不存在不抛
 
 
-def test_caught_up_entity_leg_switched():
-    """睡眠版 entity 腿以 F1 空性为据；force 变体保留、runner 版随 7e 摘除。"""
+def test_gating_orphans_removed():
+    """门控三孤儿随工程四 T2 删除（决策 2 收尾）；runner 版早已随 force 摘除（7e）。"""
     from agent import runner
     from niu_api import compat
-    sleep_src = inspect.getsource(compat._cursors_caught_up)
-    assert "last_entity_extract" not in sleep_src
-    assert "F1_PATH" in sleep_src or "getsize" in sleep_src  # 收紧：防 docstring 提及恒真（审查 B-P3）
-    assert hasattr(compat, "_cursors_caught_up_dream_only")
-    dream_only = inspect.getsource(compat._cursors_caught_up_dream_only)
-    assert "last_entity_extract" not in dream_only
+    assert not hasattr(compat, "_cursors_caught_up")
+    assert not hasattr(compat, "_cursors_caught_up_dream_only")
+    assert not hasattr(compat, "_read_cursor_value")
     assert not hasattr(runner, "_cursors_caught_up"), "runner 版门控已随 force 摘除删除（7e）"
-
-
-def test_sleep_gate_f1_emptiness(tmp_path, monkeypatch):
-    """行为：F1 非空 → 睡眠门控判未追平（本次不压缩）；F1 空 → 追平（dream 腿已隔离）。"""
-    import agent.md_mirror as mdm
-    from niu_api import compat
-
-    class FakeMsg:
-        def __init__(self, mid):
-            self.id = mid
-
-    msgs = [FakeMsg(f"m{i}") for i in range(3)]
-    # dream 腿隔离：游标指向末条消息 id（空列表会在函数头短路 True，必须非空）
-    monkeypatch.setattr(compat, "_read_cursor_value", lambda path, key: "m2")
-
-    f1 = tmp_path / "f1.md"
-    f1.write_text('{"msg_id": "m0"}\ncontent\n', encoding="utf-8")
-    monkeypatch.setattr(mdm, "F1_PATH", str(f1))
-    assert compat._cursors_caught_up(msgs, 0) is False
-
-    f1.write_text("", encoding="utf-8")
-    assert compat._cursors_caught_up(msgs, 0) is True

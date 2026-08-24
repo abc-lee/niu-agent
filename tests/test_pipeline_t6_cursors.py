@@ -1,13 +1,12 @@
-"""T6 测试：压缩前置游标追平校验（force 入口 + 单元级；sleep 门控已随工程四重排摘除）。
+"""T6 测试：force 压缩入口回归 + sleep 全序用例。
 
 方案 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §4.3 + §5 T6 + §6 T6；
-工程四决策 2 摘除睡眠门控调用——sleep 调用点 skipped 用例删除，保留：
-1. _cursors_caught_up 单元测试（compat 版，函数体存续至工程四 T2 删除）：tool 消息穿插尾部 /
-   protect=0 / protect_start==0 全保护放行 / 游标位置判定 / 空游标 / 失效游标 / 空 messages
-2. sleep 全序用例（新序 journal→cm→entity→dream，无门控 skipped 语义）
-3. compat force 调用点（4 个不引用被删符号的 force 回归用例显式保留）：校验通过 → cm 执行；
+工程四 T2 门控三孤儿（_cursors_caught_up/_dream_only/_read_cursor_value）已删除，
+原单元测试类随之移除，保留：
+1. sleep 全序用例（新序 journal→cm→entity→dream，无门控 skipped 语义）
+2. compat force 调用点（4 个不引用被删符号的 force 回归用例显式保留）：校验通过 → cm 执行；
    降级同源（effective_protect=5，校验/压缩全用 5）
-4. runner _execute_force_pipeline 调用点：直接进入压缩段（cm 被调）
+3. runner _execute_force_pipeline 调用点：直接进入压缩段（cm 被调）
 
 全 mock：call_subagent_with_auto_answer / 游标文件（内存 _CursorStore 模拟真实文件往返）/
 runner / TokenCalculator——禁真实 LLM、禁图谱写入、messages.db 零新增。
@@ -59,7 +58,7 @@ def _messages(*specs):
 
 
 class _CursorStore:
-    """内存游标文件：_write_cursor_with_lock 写入 → _read_cursor_value/Path 读取（模拟真实文件往返）。
+    """内存游标文件：_write_cursor_with_lock 写入 → Path 读取（模拟真实文件往返）。
 
     测试 hermetic：不触碰 ~/.niu 真实游标文件。
     """
@@ -168,96 +167,7 @@ def _called_agents(call_mock):
 
 
 # ---------------------------------------------------------------------------
-# 1. _cursors_caught_up 单元测试（compat 版）
-# ---------------------------------------------------------------------------
-
-class TestCursorsCaughtUp:
-    """v2 门控分治：睡眠版 _cursors_caught_up = F1 空性 + dream 追平（委托 dream_only）；
-    _cursors_caught_up_dream_only（force 入口共用）无 entity 腿、无 F1 判定。
-
-    entity UUID 游标已退役——本类不再断言任何 last_entity_extract_id 行为。
-    """
-
-    def _caught_up(self, messages, protect, dream="", variant="dream_only"):
-        """variant='dream_only' 直测 dream_only；'sleep' 测睡眠版（F1 由 conftest 隔离，缺省为空）。"""
-        def _read(path, key):
-            return {"last_dream_evolve_id": dream}.get(key, "")
-
-        fn = compat._cursors_caught_up_dream_only if variant == "dream_only" else compat._cursors_caught_up
-        with mock.patch("niu_api.compat._read_cursor_value", side_effect=_read):
-            return fn(messages, protect)
-
-    def test_empty_messages_true(self):
-        """空库无可压缩内容 → True（保护/游标/F1 不判）。"""
-        assert compat._cursors_caught_up([], 10) is True
-        assert compat._cursors_caught_up_dream_only([], 10) is True
-
-    def test_sleep_gate_f1_leg_behavioral(self, tmp_path, monkeypatch):
-        """睡眠版 entity 腿=F1 空性（Task4-D 行为测试）：F1 非空→未追平；空→追平。
-
-        前提：dream 游标钉在尾部（protect=0）；隔离 F1 指向 tmp_path（monkeypatch）。
-        """
-        import agent.md_mirror as mdm
-
-        f1 = tmp_path / "f1.md"
-        monkeypatch.setattr(mdm, "F1_PATH", str(f1))
-        msgs = _messages(("m1", "user"), ("m2", "user"))
-        f1.write_text('{"msg_id": "x"}\nbody\n\n', encoding="utf-8")
-        assert self._caught_up(msgs, 0, dream="m2", variant="sleep") is False, "F1 非空=还有未提炼消息"
-        f1.unlink()
-        assert self._caught_up(msgs, 0, dream="m2", variant="sleep") is True, "F1 空=全部已提炼"
-
-    def test_tool_msg_at_tail_not_naive_tail_cut(self):
-        """tool 消息穿插尾部：_find_protected_range ≠ 朴素尾切（保护边界上移到 user 组起始）。
-
-        messages = [u1, a1, u2, a2, tool]，protect=2：
-        - 朴素尾切保护 [a2, tool]（idx 3-4），_find_protected_range 保护 [u2, a2, tool]（idx 2-4）
-        - dream 游标钉在 protect_start-1（a1, idx 1）→ 追平 ✓；游标在 u1（idx 0）→ 不追平 ✗
-        """
-        msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "user"),
-                         ("m4", "assistant"), ("m5", "tool"))
-        protect_start = compat._find_protected_range(msgs, 2)
-        assert protect_start == 2, f"期望保护边界 idx=2，实际 {protect_start}"
-        assert self._caught_up(msgs, 2, dream="m4") is True
-        assert self._caught_up(msgs, 2, dream="m1") is False
-
-    def test_protect_zero_requires_cursor_at_true_tail(self):
-        """protect=0：全部可压——游标须到真实尾部（含 tool 消息）才追平。"""
-        msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "tool"))
-        assert self._caught_up(msgs, 0, dream="m3") is True
-        assert self._caught_up(msgs, 0, dream="m2") is False
-
-    def test_protect_start_zero_all_protected_passes(self):
-        """protect_start==0（全保护=压缩不删任何消息）→ 提炼未做也安全，校验放行。"""
-        msgs = _messages(("m1", "user"), ("m2", "assistant"))
-        protect_start = compat._find_protected_range(msgs, 2)
-        assert protect_start == 0  # 少于 N 对 → 全保护
-        assert self._caught_up(msgs, 2, dream="m2") is True
-        # 游标任意位置都放行（idx >= -1 恒真）
-        assert self._caught_up(msgs, 2, dream="m1") is True
-
-    def test_cursor_before_protected_range_false(self):
-        """游标在最后一条未保护消息之前 → 有未处理 → 不压。"""
-        msgs = _messages(("m1", "user"), ("m2", "assistant"), ("m3", "user"), ("m4", "assistant"))
-        protect_start = compat._find_protected_range(msgs, 2)
-        assert protect_start == 2
-        assert self._caught_up(msgs, 2, dream="m1") is False
-        assert self._caught_up(msgs, 2, dream="m4") is True
-
-    def test_empty_cursor_false(self):
-        """空游标（文件缺失/从未处理）→ 保守不压。"""
-        msgs = _messages(("m1", "user"), ("m2", "user"))
-        assert self._caught_up(msgs, 0, dream="") is False
-
-    def test_stale_cursor_value_error_false(self):
-        """游标指向已删消息（ValueError）→ 保守不压。"""
-        msgs = _messages(("m1", "user"), ("m2", "user"))
-        assert self._caught_up(msgs, 0, dream="deleted-id") is False
-        assert self._caught_up(msgs, 1, dream="deleted-id") is False
-
-
-# ---------------------------------------------------------------------------
-# 2. sleep 全序用例（工程四重排：journal→cm→entity→dream，门控 skipped 语义已消失）
+# 1. sleep 全序用例（工程四重排：journal→cm→entity→dream，门控 skipped 语义已消失）
 # ---------------------------------------------------------------------------
 
 def test_sleep_full_order_compress_pair_first():
@@ -289,7 +199,7 @@ def test_sleep_full_order_compress_pair_first():
 
 
 # ---------------------------------------------------------------------------
-# 3. compat force 调用点：_compress_force 压缩段入口 + 降级同源
+# 2. compat force 调用点：_compress_force 压缩段入口 + 降级同源
 # ---------------------------------------------------------------------------
 
 FORCE_MESSAGES = [("m1", "user"), ("m2", "assistant"), ("m3", "user"), ("m4", "assistant")]
@@ -409,7 +319,7 @@ def test_force_degraded_protect_same_source():
 
 
 # ---------------------------------------------------------------------------
-# 4. runner _execute_force_pipeline 调用点
+# 3. runner _execute_force_pipeline 调用点
 # ---------------------------------------------------------------------------
 
 def _build_niu_runner_for_test():
