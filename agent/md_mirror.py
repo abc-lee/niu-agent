@@ -6,6 +6,7 @@
 
 import json
 import os
+import re
 
 from loguru import logger
 
@@ -137,6 +138,10 @@ F2_NAME = "F2_dream_queue.md"
 F2_PATH = os.path.join(MD_DIR, F2_NAME)
 _META_PREFIX = '{"msg_id":'
 
+F3_NAME = "F3_dream_workset.md"
+F3_PATH = os.path.join(MD_DIR, F3_NAME)
+F3_MAX_BYTES_DEFAULT = 64 * 1024
+
 
 def record_end_boundaries(lines: list[str]) -> list[int]:
     """记录独占终点列表（0-based 行数==read 显示行数）。输入不得含 split 尾部伪影。"""
@@ -229,9 +234,151 @@ def _append_under_lock(path: str, text: str) -> None:
         os.close(fd)
 
 
-def truncate_relay_files(f1_path: str | None = None, f2_path: str | None = None) -> None:
-    """/clear 配套：截断 F1 与 F2（各自持锁，best-effort）。"""
-    for p in (f1_path or F1_PATH, f2_path or F2_PATH):
+def _f3_max_bytes() -> int:
+    """读 ~/.niu/preferences.json 的 context.dreamWorksetBytes（int 且 >0 才采用）；缺失/非法回退 64KB。"""
+    try:
+        pref = os.path.join(os.path.expanduser("~"), ".niu", "preferences.json")
+        with open(pref, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        v = data.get("context", {}).get("dreamWorksetBytes")
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    except Exception:
+        pass
+    return F3_MAX_BYTES_DEFAULT
+
+
+def build_f3_from_f2(max_bytes=None, f2_path=None, f3_path=None) -> int:
+    """从 F2 头部切 ≤max_bytes 字节的前缀（按记录边界对齐）整体重建 F3；返回前缀行数。
+
+    F3 必须是 F2 的逐字节相同前缀副本（否则游标映射断裂）；预算内无完整记录时
+    软上限取首条记录整体并告警。F3 单写者，open 'w' 整体重写即可。
+    """
+    p2 = f2_path or F2_PATH
+    p3 = f3_path or F3_PATH
+    budget = _f3_max_bytes() if max_bytes is None else max_bytes
+    try:
+        parent = os.path.dirname(p3)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(p3, "w", encoding="utf-8"):
+            pass  # 先写空 F3：所有失败路径上 F3 保持为空文件
+    except Exception as e:
+        logger.warning(f"[MdMirror] build_f3 初始化 F3 失败: {e}")
+        return 0
+    if not os.path.exists(p2):
+        return 0
+    try:
+        fd = os.open(p2, os.O_RDONLY)
+    except Exception as e:
+        logger.warning(f"[MdMirror] build_f3 打开 F2 失败: {e}")
+        return 0
+    try:
+        _lock_fd(fd)
+        with os.fdopen(os.dup(fd), "r", encoding="utf-8") as f:
+            content = f.read()
+    finally:
+        _unlock_fd(fd)
+        os.close(fd)
+    if not content:
+        return 0
+    lines = content.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # 剥离尾部伪影（与 relay 一致，使边界值==read 显示行数）
+    boundaries = record_end_boundaries(lines)
+    if not boundaries:
+        logger.warning("[MdMirror] build_f3 F2 无记录边界（畸形）")
+        return 0
+    line_bytes = [len(ln.encode("utf-8")) + 1 for ln in lines]
+    picked, running, pos = None, 0, 0
+    for b in boundaries:
+        while pos < b:
+            running += line_bytes[pos]
+            pos += 1
+        if running > budget:
+            break
+        picked = b
+    if picked is None:
+        logger.warning(f"[MdMirror] build_f3 首记录超预算 {budget}B，软上限取首条记录整体")
+        picked = boundaries[0]
+    prefix = "".join(ln + "\n" for ln in lines[:picked])
+    try:
+        with open(p3, "w", encoding="utf-8") as f:
+            f.write(prefix)
+    except Exception as e:
+        logger.warning(f"[MdMirror] build_f3 写 F3 失败: {e}")
+        return 0
+    return picked
+
+
+def drop_f2_prefix(n_lines, max_lines=None, f2_path=None) -> tuple[int, str]:
+    """dream-evolver 报 processed_line 后删 F2 头部 n_lines 行（吸附记录边界，不多删）。
+
+    返回 (删除行数, 被删前缀末条 msg_id)；任何校验失败返回 (0,"") 且不动文件。
+    锁纪律：持 F2 锁体内不得再对同一文件取第二把锁。
+    """
+    p2 = f2_path or F2_PATH
+    if not isinstance(n_lines, int) or n_lines <= 0:
+        logger.warning(f"[MdMirror] drop_f2_prefix 无效行数: {n_lines!r}")
+        return (0, "")
+    try:
+        fd = os.open(p2, os.O_RDWR)
+    except Exception as e:
+        logger.warning(f"[MdMirror] drop_f2_prefix 打开 F2 失败: {e}")
+        return (0, "")
+    try:
+        _lock_fd(fd)
+        with os.fdopen(os.dup(fd), "r", encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()  # 剥离尾部伪影（与 relay 一致，使边界值==read 显示行数）
+        total = len(lines)
+        if n_lines > total:
+            logger.warning(f"[MdMirror] drop_f2_prefix 越界: {n_lines} > {total}")
+            return (0, "")
+        if max_lines is not None and n_lines > max_lines:
+            logger.warning(f"[MdMirror] drop_f2_prefix 超上限: {n_lines} > max_lines={max_lines}")
+            return (0, "")
+        boundaries = record_end_boundaries(lines)
+        cut = snap_to_boundary(n_lines, boundaries, min_progress=0)
+        if cut is None or cut < boundaries[0]:
+            logger.warning(f"[MdMirror] drop_f2_prefix 无有效边界: n={n_lines}")
+            return (0, "")
+        prefix_text = "".join(ln + "\n" for ln in lines[:cut])
+        matches = re.findall(r'"msg_id":\s*"([^"]+)"', prefix_text)
+        if not matches:
+            logger.warning("[MdMirror] drop_f2_prefix 前缀无 msg_id（畸形）")
+            return (0, "")
+        msg_id = matches[-1]
+        rest = "".join(ln + "\n" for ln in lines[cut:])
+        original_bytes = content.encode("utf-8")
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            _write_all(fd, rest.encode("utf-8"))
+        except Exception:
+            # 重写失败 → 尽力恢复 F2 原文（镜像 relay_processed_prefix 的恢复模式）
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.ftruncate(fd, 0)
+                _write_all(fd, original_bytes)
+                logger.warning("[MdMirror] drop_f2_prefix 重写失败已恢复 F2 原文")
+            except Exception as restore_err:
+                logger.error(f"[MdMirror] F2 恢复失败（数据可能丢失，需人工核查）: {restore_err}")
+            return (0, "")
+        return (cut, msg_id)
+    except Exception as e:
+        logger.warning(f"[MdMirror] drop_f2_prefix 失败: {e}")
+        return (0, "")
+    finally:
+        _unlock_fd(fd)
+        os.close(fd)
+
+
+def truncate_relay_files(f1_path: str | None = None, f2_path: str | None = None, f3_path: str | None = None) -> None:
+    """/clear 配套：截断 F1、F2 与 F3（各自持锁，best-effort）。"""
+    for p in (f1_path or F1_PATH, f2_path or F2_PATH, f3_path or F3_PATH):
         try:
             if not os.path.exists(p):
                 continue
