@@ -38,6 +38,15 @@ class TestBackfill:
         ids = __import__("re").findall(r'"msg_id":\s*"([^"]+)"', open(f1, encoding="utf-8").read())
         assert ids == ["id2", "id3", "id4"]
 
+    def test_confirm_skips_existing_records(self, tmp_path):
+        from agent.md_mirror import append_record, format_message_record
+        db, cur, f1 = _make_db(tmp_path)
+        for mid in ("id2", "id3"):
+            append_record(format_message_record(msg_id=mid, created_at="t", role="user", content=f"内容{mid[-1]}"), f1)
+        assert main(["--db", db, "--cursor", cur, "--f1", f1, "--confirm"]) == 0
+        ids = __import__("re").findall(r'"msg_id":\s*"([^"]+)"', open(f1, encoding="utf-8").read())
+        assert ids == ["id2", "id3", "id4"]
+
     def test_missing_cursor_requires_from_id(self, tmp_path):
         db, _, f1 = _make_db(tmp_path)
         assert main(["--db", db, "--f1", f1, "--confirm"]) == 2

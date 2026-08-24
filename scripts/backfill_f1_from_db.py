@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -13,6 +14,23 @@ from agent.md_mirror import append_record, format_message_record, F1_PATH
 
 DEFAULT_DB = Path.home() / ".niu" / "messages.db"
 DEFAULT_CURSOR = Path.home() / ".niu" / "last_entity_extract.json"
+
+
+def _existing_ids(path: str) -> set[str]:
+    """目标 F1 已有 msg_id 集合（文件不存在返回空集；坏行跳过）。"""
+    ids: set[str] = set()
+    if not os.path.exists(path):
+        return ids
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.startswith('{"msg_id":'):
+                try:
+                    mid = json.loads(line)["msg_id"]
+                except Exception:
+                    continue
+                if mid:
+                    ids.add(mid)
+    return ids
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,14 +61,18 @@ def main(argv: list[str] | None = None) -> int:
         (row["rowid"],),
     ).fetchall()
 
-    print(f"待回填 {len(rows)} 条；confirm={args.confirm}")
+    existing = _existing_ids(args.f1)
+    todo = [r for r in rows if r["id"] not in existing]
+    skipped = len(rows) - len(todo)
+
+    print(f"待回填 {len(todo)} 条（跳过已存在 {skipped}）；confirm={args.confirm}")
     if not args.confirm:
-        for r in rows[:5]:
+        for r in todo[:5]:
             print(f"  [{r['role']}] {r['id']} {(r['content'] or '')[:40]!r}")
         return 0
 
     ok = 0
-    for r in rows:
+    for r in todo:
         try:
             tool_calls = json.loads(r["tool_calls"] or "[]")
         except Exception:
@@ -62,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if block and append_record(block, args.f1):
             ok += 1
-    print(f"回填完成 {ok}/{len(rows)} → {args.f1}")
+    print(f"回填完成 {ok}/{len(todo)}（跳过已存在 {skipped}）→ {args.f1}")
     return 0
 
 
