@@ -1,6 +1,7 @@
 """工程一：MD 镜像层单测（全 mock/tmp_path，零真实依赖）。"""
 
 import json
+import os
 import threading
 
 import pytest
@@ -8,12 +9,12 @@ import pytest
 from agent.md_mirror import (
     TOOL_OUTPUT_HEAD_BYTES,
     TOOL_OUTPUT_MARKER,
-    TOOL_OUTPUT_MAX_BYTES,
     TOOL_OUTPUT_TAIL_BYTES,
     append_record,
     format_message_record,
     truncate_tool_output,
 )
+from agent.session import MessageStore
 
 
 class TestFormatMessageRecord:
@@ -133,12 +134,21 @@ class TestAppendRecord:
         d.mkdir()
         assert append_record("x", str(d)) is False
 
-    def test_concurrent_appends_no_interleave(self, tmp_path):
+    def test_concurrent_appends_no_interleave(self, tmp_path, monkeypatch):
         # 块放大到 >64KB：O_APPEND 小写入近似原子，只有大块才能暴露无锁交叉撕裂（审查 B-P1）
+        # 另把每次 os.write 拆成两次系统调用（模拟 EINTR/部分写）：无锁必撕裂、有锁才完整——测试才有判别力
         p = tmp_path / "f1.md"
         n = 8
         filler = "z" * 65536
         blocks = [f'{{"msg_id":"i{i}"}}\n{filler}{i}\n\n' for i in range(n)]
+
+        real_write = os.write
+
+        def split_write(fd, data):
+            mid = len(data) // 2
+            return real_write(fd, data[:mid]) + real_write(fd, data[mid:])
+
+        monkeypatch.setattr("agent.md_mirror.os.write", split_write)
 
         def worker(b):
             append_record(b, str(p))
@@ -149,12 +159,9 @@ class TestAppendRecord:
         text = p.read_text(encoding="utf-8")
         # 总长度守恒
         assert len(text.encode("utf-8")) == sum(len(b.encode("utf-8")) for b in blocks)
-        # 每个 block 作为完整子串存在——撕裂即失败（锁存在的意义所在）
+        # 每个 block 作为完整子串存在——撕裂即失败（拆分写场景下，锁是完整性保证）
         for b in blocks:
             assert b in text
-
-
-from agent.session import MessageStore
 
 
 class TestAddMessageHook:
@@ -180,7 +187,7 @@ class TestAddMessageHook:
         store = MessageStore(str(tmp_path / "messages.db"))
         await store.init_db()
         md = tmp_path / "f1.md"
-        # tool_calls 不可序列化 → json.dumps 在 INSERT 前抛错 → 无 commit 即无镜像
+        # 不可序列化 tool_calls 在 DB 侧 json.dumps 先抛，镜像不可达
         with pytest.raises(TypeError):
             await store.add_message(
                 role="assistant", content="x", tool_calls=[{"bad": object()}],
