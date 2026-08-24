@@ -64,3 +64,15 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "e2e" in item.keywords or "integration" in item.keywords:
             item.add_marker(skip_e2e)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_md_mirror(tmp_path, monkeypatch):
+    """MD 镜像路径全局指向临时文件——防止任何测试污染用户真实 ~/.niu/md/F1。"""
+    import agent.md_mirror as mdm
+    import agent.session as sess
+    fake = str(tmp_path / "isolated_f1.md")
+    monkeypatch.setattr(mdm, "F1_PATH", fake, raising=False)
+    if hasattr(sess, "F1_PATH"):
+        monkeypatch.setattr(sess, "F1_PATH", fake)
+    yield
