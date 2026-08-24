@@ -3,6 +3,8 @@
 import json
 import threading
 
+import pytest
+
 from agent.md_mirror import (
     TOOL_OUTPUT_HEAD_BYTES,
     TOOL_OUTPUT_MARKER,
@@ -150,3 +152,50 @@ class TestAppendRecord:
         # 每个 block 作为完整子串存在——撕裂即失败（锁存在的意义所在）
         for b in blocks:
             assert b in text
+
+
+from agent.session import MessageStore
+
+
+class TestAddMessageHook:
+    async def test_mirror_written_after_commit(self, tmp_path):
+        store = MessageStore(str(tmp_path / "messages.db"))
+        await store.init_db()
+        md = tmp_path / "f1.md"
+        msg_id = await store.add_message(
+            role="user", content="你好", md_path=str(md),
+        )
+        text = md.read_text(encoding="utf-8")
+        assert msg_id in text
+        assert '"role": "user"' in text  # json.dumps 默认带空格分隔
+
+    async def test_system_not_mirrored(self, tmp_path):
+        store = MessageStore(str(tmp_path / "messages.db"))
+        await store.init_db()
+        md = tmp_path / "f1.md"
+        await store.add_message(role="system", content="通知", md_path=str(md))
+        assert not md.exists()  # system 跳过 → 连文件都不建
+
+    async def test_commit_failure_no_mirror(self, tmp_path):
+        store = MessageStore(str(tmp_path / "messages.db"))
+        await store.init_db()
+        md = tmp_path / "f1.md"
+        # tool_calls 不可序列化 → json.dumps 在 INSERT 前抛错 → 无 commit 即无镜像
+        with pytest.raises(TypeError):
+            await store.add_message(
+                role="assistant", content="x", tool_calls=[{"bad": object()}],
+                md_path=str(md),
+            )
+        assert not md.exists()
+
+    async def test_mirror_failure_does_not_break_db(self, tmp_path):
+        store = MessageStore(str(tmp_path / "messages.db"))
+        await store.init_db()
+        # md 路径指向一个已存在文件但不可写目录场景：直接指向目录
+        bad = tmp_path / "badir"
+        bad.mkdir()
+        msg_id = await store.add_message(role="user", content="hi", md_path=str(bad))
+        assert msg_id  # DB 写入成功返回 id
+        # DB 里确实有这条
+        msgs = await store.get_messages()
+        assert any(m.content == "hi" for m in msgs)

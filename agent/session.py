@@ -14,6 +14,8 @@ from uuid import uuid4
 
 import aiosqlite
 
+from agent.md_mirror import append_record, format_message_record, F1_PATH
+
 
 def _safe_json(raw, default=None):
     """Parse JSON from DB column, returning default on any failure."""
@@ -125,6 +127,7 @@ class MessageStore:
         tool_results: list[dict] = None,
         tool_call_id: str = "",
         degraded_reason: str = "",
+        md_path: str | None = None,
     ) -> str:
         """Add a message"""
         msg_id = str(uuid4())
@@ -140,6 +143,22 @@ class MessageStore:
                 (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, degraded_reason, created_at),
             )
             await db.commit()
+
+        # MD 镜像（best-effort，spec §3.4）：DB 提交成功才镜像；失败只告警
+        try:
+            block = format_message_record(
+                msg_id=msg_id,
+                created_at=created_at,
+                role=role,
+                content=content,
+                tool_calls=tool_calls,
+                tool_call_id=tool_call_id,
+                degraded_reason=degraded_reason,
+            )
+            if block:
+                append_record(block, md_path or F1_PATH)
+        except Exception as mirror_err:
+            logger.warning(f"[MdMirror] 镜像异常（不影响对话）: {mirror_err}")
 
         logger.debug(f"Added message: {msg_id}")
         return msg_id
