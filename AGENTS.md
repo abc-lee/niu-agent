@@ -513,6 +513,21 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-24
+
+#### 工程：MD 中继工程四——睡眠管道重排 + 压缩前置门控清算 + 游标清算（方案 v1.0→v1.9 共十一轮双审收敛，连续两轮零发现）
+
+- **背景**：工程二/三完成提炼文件驱动化（F1/F2/F3 中继）后，睡眠管道仍保留旧物理顺序 entity→dream→journal→compress；spec §5/D3 定稿顺序为压缩在前、提炼在后——用户实机验证时发现该盲区，重排补进工程四走完整计划→双审→SDD 流程。
+- **方案**（docs/superpowers/plans/2026-08-24-md-relay-project4-reorder.md v1.9，R1-R11 双审全远端派审）：
+  - **睡眠管道重排**：entity→dream→journal→compress 改为 **journal（仅模式2及以上 usage≥50%）→ context-manager → entity-extractor → dream-evolver 多轮循环**。安全性根基=提炼文件驱动化：DB 压缩只动 Message DB 不触 F1/F2 文件（镜像仅挂 add_message，压缩的 [摘要] 替换不回写），entity/dream 读到的永远是完整原文，压缩先行零丢失
+  - **CP 重排**：CP0 排队唤醒非睡眠 → cancelled；CP1 journal+压缩段完成后 / CP2 entity 段完成后 / CP3 dream 循环完成后 → interrupted（已推进不回滚，下次续跑）
+  - **门控清算**：删压缩前置游标追平校验 `_cursors_caught_up` 调用及三孤儿函数（`_cursors_caught_up`/`_dream_only`/`_read_cursor_value`，含 7 处 monkeypatch 缝）；/compact 不再出现 skipped 状态，不被梦境积压阻塞
+  - **游标收缩与哨兵保护**：模式一 end_cursor 上界移除；post-dream 范围守卫收窄但**保留锚点排除+cascade**（数据源改入口读取 last_dream_evolve_id——force 哨兵承重墙）；dream 游标继续回写（force 边界唯一数据源，停写=永久全保护退化）；复位表三键方案（journal/compress/dream 全留，防 /new 后陈旧游标+F2 truncate 致 force 哨兵 0↔len 翻转静默关闭边界）；`last_entity_extract.json` 死键清算，scripts/backfill_f1_from_db.py DEFAULT_CURSOR 默认空串防误跑
+  - **已知边界**：cm 失败 mode-2 早退中止整个 sleep（entity/dream 延迟一轮自愈）、mode-1 三类失败吸收续跑；压缩对内部无检查点，唤醒最早 CP1 被感知（既有段落原子性非新退化）；force 保护边界滞后为保守方向（多保护不少删）
+- **实施**（main 2 commits，SDD 每 Task 新鲜子 Agent）：`23b8c4c1` T1 重排+CP 检查点迁移+12 文件约 30 例测试适配（含 test_subagent_overflow getsource 源码序断言——三轮被删符号 grep 盲区，R4-B 抓出）；`9eb1d36a` T2 门控三孤儿删除+复位表三键+backfill 防误跑+残留游标档清理
+- **验证**：T3 点名回归 20 文件 307 passed；剩余 7 failed 全部基线既有豁免（test_tidy_cursor 4 例 PROTECTED 类 + test_subagent_overflow 3 例 client.backend None 环境）+ 本次顺带修复 6 例历史存量测试腐化（test_compress_quality FakeClient.backend×2 与 _read_cursor_locked patch×2、test_compress_history 用户轮边界语义×1、test_stop_interruptible _ensure_session_chain 桩缺失×1——worktree 对照 b3bb7cb7 实证全部 pre-existing）；py_compile 三文件通过，ruff 17 条告警与基线逐码一致零新增
+- **实机验证（待用户重启）**：①睡眠日志顺序 journal→cm→entity→dream 多轮循环 ②手动 /compact 不再被积压阻塞且无 dream-evolver tab ③/new 后 F1/F2/F3 清空且游标复位正常 ④force 边界行为正常（[Tidy] 游标跳过告警频度观测）
+
 ### 2026-08-22
 
 #### 修复：向量检索精确名短路——query 恰为实体名时图层精确命中置顶（精确名查询根治）
@@ -564,7 +579,7 @@ preload_face_model()
   - **单 worker 全局队列**：`_pipeline_queue`（asyncio.Queue）+ `_pipeline_worker` 单协程串行消费——队列模型无锁嵌套即无环（锁方案在 chat.py/compat 持 `_chat_lock` 调 impl 必成环，R1 实证）
   - **九入口全接入**：tidy 端点 sleep（投递+立即返回 queued）/force（投递+await）、chat.py 溢出 ×2（fire-and-forget）、chat_session（fire-and-forget）、clear_chat（await 600s 超时+held=True）、chat_queue 降级重试（await+参数透传）、runner 80% 水位（call_soon_threadsafe+300s 超时+转换块留回调）、runner nap 触发（call_soon_threadsafe+失败清 `_nap_running`）——各按语义阻塞/await/fire-and-forget；future 统一 `concurrent.futures.Future`（asyncio wrap_future / runner 线程 result(timeout)）；**None 窗口防御**（队列未创建 → 同步执行 Option A）
   - **队列去重**：键 = (kind, skip_compress, force_protect_recent)；压缩类在队 ≤3（force/runner-force/clear skip_compress 键不同可并存）；跨线程 check-then-set 竞态后果有界
-  - **CP0-CP3 睡眠状态检查**（仅 sleep）：CP0 排队唤醒非睡眠 → cancelled/woke_up；CP1 实体段后 / CP2 梦境段后 / CP3 压缩段前 → interrupted/woke_up（已推进游标不回滚，下次续跑）；**nap/force/runner-force 零插入**（需求 4/5 用户拍板矩阵）
+  - **CP0-CP3 睡眠状态检查**（仅 sleep）：CP0 排队唤醒非睡眠 → cancelled/woke_up；CP1 实体段后 / CP2 梦境段后 / CP3 压缩段前 → interrupted/woke_up（已推进游标不回滚，下次续跑）；**nap/force/runner-force 零插入**（需求 4/5 用户拍板矩阵）。**【已被 2026-08-24 MD 中继工程四取代】**睡眠管道重排后 CP 位次变为 CP0 排队/CP1 journal+压缩段后/CP2 entity 段后/CP3 dream 循环后——现状以 2026-08-24 工程四条目为准
   - **压缩前置校验** `_cursors_caught_up`（sleep+force+runner-force 三处）：提炼+进化游标全追平才允许压缩；protect 同源 `effective_protect`（force 降级提前到分支顶部）；protect=0 特判真实尾部（Quality P1-1 吸收：继续查 dream 游标不 early-return）；protect_start==0 全保护放行；未追平 → `{"status":"skipped","reason":"还有消息未提炼完，本次不压缩"}`（中文 reason 前端直接展示）。**【已被 2026-08-24 MD 中继工程三取代】**force/runner-force 两处门控随 force 梦境腿摘除而删除（手动 /compact 不再被梦境积压阻塞），仅保留睡眠 CP3 门控——现状以 2026-08-24 条目为准
   - **`_is_subagent_failure` 修游标假推进**：`[错误]` / `SUBAGENT_ERROR:` 前缀识别为失败；11 决策点（compat 7 + runner 4）分支顺序 failure/incomplete 先判、再判 overflow、else 才推进
 - **关键设计教训**：

@@ -271,7 +271,9 @@ def test_call_subagent_detects_truncation(monkeypatch):
     import agent.handler as handler_module
     import agent.runner as runner_module
     class FakeClient:
-        pass
+        # subagent L979 会写 client.backend.stop_check（停止感知注入）
+        class backend:
+            stop_check = None
     monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
     monkeypatch.setattr(runner_module, "get_tools_schema", lambda **kwargs: [])
     # NiuHandler 需要支持 _disable_memory_recall / _is_subagent 属性赋值
@@ -301,7 +303,9 @@ def test_call_subagent_normal_return(monkeypatch):
     import agent.handler as handler_module
     import agent.runner as runner_module
     class FakeClient:
-        pass
+        # subagent L979 会写 client.backend.stop_check（停止感知注入）
+        class backend:
+            stop_check = None
     monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
     monkeypatch.setattr(runner_module, "get_tools_schema", lambda **kwargs: [])
     class FakeHandler:
@@ -829,10 +833,6 @@ def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
     # mock _read_cursor 返回空（无历史游标）
     monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(lambda path, field: ""))
 
-    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
-    monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor_locked",
-                        staticmethod(lambda path, field: messages[-1].id))
-
     # mock _sync_get_messages 返回 2 条消息（force 用 _build_compress_history，2 条都进 history）
     messages = [
         FakeMsg(id="msg-1", role="user", content="你好"),
@@ -919,10 +919,6 @@ def test_runner_mode3_truncate_triggers_degradation(monkeypatch):
     )
 
     monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(lambda path, field: ""))
-
-    # T6：压缩前置游标追平校验——模拟 entity/dream 已追平（游标=尾部最后一条消息）
-    monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor_locked",
-                        staticmethod(lambda path, field: messages[-1].id))
 
     # 15 条消息（全部 user 角色，protect_recent_count=0 → 全部进 _force_msg_ids）
     messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
