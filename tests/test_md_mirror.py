@@ -1,12 +1,14 @@
 """工程一：MD 镜像层单测（全 mock/tmp_path，零真实依赖）。"""
 
 import json
+import threading
 
 from agent.md_mirror import (
     TOOL_OUTPUT_HEAD_BYTES,
     TOOL_OUTPUT_MARKER,
     TOOL_OUTPUT_MAX_BYTES,
     TOOL_OUTPUT_TAIL_BYTES,
+    append_record,
     format_message_record,
     truncate_tool_output,
 )
@@ -114,3 +116,37 @@ class TestTruncateToolOutput:
         out = truncate_tool_output(text)
         assert "\ufffd" not in out
         assert TOOL_OUTPUT_MARKER in out
+
+
+class TestAppendRecord:
+    def test_creates_dir_and_appends(self, tmp_path):
+        p = tmp_path / "md" / "f1.md"  # md 目录不存在，须自建
+        assert append_record("block-a\n\n", str(p)) is True
+        assert append_record("block-b\n\n", str(p)) is True
+        assert p.read_text(encoding="utf-8") == "block-a\n\nblock-b\n\n"
+
+    def test_failure_returns_false_not_raise(self, tmp_path):
+        # 目标是目录 → open 必败 → 吞异常返回 False
+        d = tmp_path / "adir"
+        d.mkdir()
+        assert append_record("x", str(d)) is False
+
+    def test_concurrent_appends_no_interleave(self, tmp_path):
+        # 块放大到 >64KB：O_APPEND 小写入近似原子，只有大块才能暴露无锁交叉撕裂（审查 B-P1）
+        p = tmp_path / "f1.md"
+        n = 8
+        filler = "z" * 65536
+        blocks = [f'{{"msg_id":"i{i}"}}\n{filler}{i}\n\n' for i in range(n)]
+
+        def worker(b):
+            append_record(b, str(p))
+
+        threads = [threading.Thread(target=worker, args=(b,)) for b in blocks]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        text = p.read_text(encoding="utf-8")
+        # 总长度守恒
+        assert len(text.encode("utf-8")) == sum(len(b.encode("utf-8")) for b in blocks)
+        # 每个 block 作为完整子串存在——撕裂即失败（锁存在的意义所在）
+        for b in blocks:
+            assert b in text
