@@ -73,6 +73,26 @@ class TestRelayProcessedPrefix:
         assert _read_ids(p1) == []
         assert _read_ids(p2) == ids
 
+    def test_rewrite_failure_restores_f1(self, tmp_path, monkeypatch):
+        p1, p2, ids = _make_f1(tmp_path)
+        calls = {"n": 0}
+        real_write = __import__("os").write
+
+        def flaky_write(fd, data):
+            calls["n"] += 1
+            # 第 1 次 os.write 是 _append_under_lock 写 F2（放行）；第 2 次起是重写 F1：首次成功半途、之后失败，恢复写放行
+            if calls["n"] == 2:
+                mid = len(data) // 2
+                return real_write(fd, data[:mid])
+            if calls["n"] == 3:
+                raise OSError("simulated mid-write failure")
+            return real_write(fd, data)
+
+        monkeypatch.setattr("agent.md_mirror.os.write", flaky_write)
+        assert relay_processed_prefix(8, p1, p2) == 0
+        # F1 原文完整恢复
+        assert _read_ids(p1) == ["id0", "id1", "id2"]
+
     def test_min_progress_blocks_regression(self, tmp_path):
         p1, p2, _ = _make_f1(tmp_path)
         assert relay_processed_prefix(4, p1, p2, min_progress=8) == 0

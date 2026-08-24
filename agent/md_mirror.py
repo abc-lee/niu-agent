@@ -184,6 +184,8 @@ def relay_processed_prefix(processed_line, f1_path=None, f2_path=None, min_progr
         if lines and lines[-1] == "":
             lines.pop()  # 剥离尾部伪影：使边界值==read 显示行数（P0-1 修复核心）
         cut = snap_to_boundary(processed_line, record_end_boundaries(lines), min_progress)
+        if cut and processed_line > cut:
+            logger.warning(f"[MdMirror] relay 过报告吸附: line={processed_line} -> {cut}（未处理尾部留 F1）")
         if not cut:
             logger.warning(f"[MdMirror] relay 校验失败: line={processed_line}")
             return 0
