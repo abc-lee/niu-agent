@@ -238,7 +238,7 @@ def _f3_max_bytes() -> int:
     """读 ~/.niu/preferences.json 的 context.dreamWorksetBytes（int 且 >0 才采用）；缺失/非法回退 64KB。"""
     try:
         pref = os.path.join(os.path.expanduser("~"), ".niu", "preferences.json")
-        with open(pref, "r", encoding="utf-8") as f:
+        with open(pref, encoding="utf-8") as f:
             data = json.load(f)
         v = data.get("context", {}).get("dreamWorksetBytes")
         if isinstance(v, int) and not isinstance(v, bool) and v > 0:
