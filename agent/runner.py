@@ -1469,7 +1469,7 @@ class NiuRunner:
 
             llm_config = self.llm_config
 
-            # === 步骤 2.5/4: journal-agent（force 模式，始终调用）===
+            # === 步骤 1/2: journal-agent（force 模式，始终调用）===
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
@@ -1506,7 +1506,7 @@ class NiuRunner:
             else:
                 logger.info("[Runner] Force: journal-agent no incremental messages")
 
-            # === 步骤 3/4: context-manager force prompt — 一轮 JSON 文件方案 ===
+            # === 步骤 2/2: context-manager force prompt — 一轮 JSON 文件方案 ===
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
