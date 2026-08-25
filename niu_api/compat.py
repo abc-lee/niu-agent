@@ -3839,6 +3839,18 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
+            # 5/5 块摘要增强（Task 5 可选层）：context.blockSummaryEnabled 默认关闭；
+            # 仅空闲时段执行（睡眠管道运行期即用户离开期，活跃对话期模块内部跳过本轮）；
+            # 裸调 lightrag_llm 一次一call、失败保 pending 不抛出（spec D6/D13）
+            try:
+                from agent.context_assembler.summarizer import process_pending_blocks
+
+                _summarized = await asyncio.to_thread(process_pending_blocks)
+                if _summarized:
+                    logger.info(f"[Tidy] block summarizer: {_summarized} blocks done")
+            except Exception as _sum_err:
+                logger.warning(f"[Tidy] block summarizer skipped: {_sum_err}")
+
 
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 
