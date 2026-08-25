@@ -185,7 +185,7 @@ def test_sleep_full_order_compress_pair_first():
     assert result.get("status") == "ok", f"重排后应正常完成: {result}"
     agents = _called_agents(call_mock)
     assert agents == ["context-manager", "entity-extractor", "dream-evolver"], f"实际: {agents}"
-    # 游标真实写回（内存 store）→ 校验读到 m2；entity UUID 与 dream 游标均退役零写
+    # 游标真实写回（内存 store）→ 校验游标退役后无残留写入；entity UUID 与 dream 游标均退役零写
     assert store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id") == ""
     assert store.read(Path.home() / ".niu" / "last_compress.json", "last_compress_id") == "m2"
     assert store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id") == ""
