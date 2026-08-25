@@ -2728,22 +2728,15 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 notify_llm_error_sync(type_name, full_reply, "chat_session")
             # 非 LLM 异常（内部 bug）不 notify、full_reply 保持既有（不误标"模型调用失败"）
 
-        # 检测主 Agent 上下文溢出 → fire-and-forget 投递 force 压缩（§3.1 入口 5）
-        # 不 await：溢出压缩后台执行（worker 持 held=False 自拿 _chat_lock + pause）；None 窗口防御同步执行。
+        # 检测主 Agent 上下文溢出 → fire-and-forget 机械压实（Task 3 收编，替代 force 投递）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
             overflow_data = rv.get("data", {})
             logger.warning(
                 f"[Chat Session] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                f"enqueueing force compression (fire-and-forget)"
+                f"running mechanical compaction (fire-and-forget)"
             )
-            if _pipeline_queue is None:
-                # None 窗口（§3.0 Option A）：同步执行（调用方持锁 → held=True 防 asyncio.Lock 不可重入）
-                await _tidy_context_impl(
-                    request={"session_id": session_id, "mode": "force"},
-                    chat_lock_already_held=True,
-                )
-            else:
-                _pipeline_enqueue("force", {"session_id": session_id, "mode": "force"}, held=False)
+            from niu_api.chat import fire_and_forget_compaction
+            fire_and_forget_compaction(store, source="ChatSession")
     finally:
         from agent.runner import clear_stop, drain_supplements
         clear_stop()  # 防御性清除：确保停止标志不残留
@@ -2999,7 +2992,7 @@ async def tidy_context(request: dict):
     Args:
         request: {
             "session_id": str,
-            "mode": "sleep" | "force"
+            "mode": "sleep" | "compact"
         }
 
     Returns:
@@ -3013,19 +3006,55 @@ async def tidy_context(request: dict):
     if (request.get("mode") or "").lower() == "sleep":
         set_spirit_state("sleep")
     mode = (request.get("mode") or "sleep").lower()
-    if mode not in ("sleep", "force"):
-        # P3-1：未知 mode 直接返回 error（改造前 _tidy_context_impl 同步路径语义 L4501-4503），
-        # 不再投递返回误导性 queued
-        return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'force'."}
-    # 全局整理队列投递（§3.1 入口 1/2）：sleep → 投递 + 立即返回 queued（result 无人消费，
-    # CP0 cancelled 依赖此）；force → 投递 + await wrap_future（600s 前端超时兜底既有 chat.html）。
+    if mode == "compact":
+        # /compact 重定义（D12）：手动触发批量压实，与自动触发共用同一压实函数；
+        # 纯机械秒级、零 LLM、无 ChatQueue pause 门禁——直接执行不经整理队列
+        return await _compact_context_impl(request)
+    if mode != "sleep":
+        return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'compact'."}
+    # 全局整理队列投递：sleep → 投递 + 立即返回 queued（result 无人消费，CP0 cancelled 依赖此）。
     # None 窗口防御（§3.0 Option A）：队列未创建时同步执行，调用方等完成。
     if _pipeline_queue is None:
         return await _tidy_context_impl(request)
     fut = _pipeline_enqueue(mode, request, held=False)
-    if mode == "force":
-        return await asyncio.wrap_future(fut)
     return {"status": "queued"}
+
+
+async def _compact_context_impl(request: dict) -> dict:
+    """/compact 直达实现：调 compaction.compact_now_detailed 并回传圆环 usage。"""
+    session_id = (request or {}).get("session_id", "default")
+    from niu_api.chat import notify_compact_status_sync
+    try:
+        notify_compact_status_sync("started", mode="compact")
+    except Exception:
+        pass
+    try:
+        store = await get_message_store()
+        from agent.context_assembler import compaction
+        _, stats = await compaction.compact_now_detailed(store)
+        logger.info(f"[Compact] manual compact done: session={session_id}, "
+                    f"keep_turns={stats['keep_turns']}, blocks_archived={stats['blocks_archived']}, "
+                    f"tools_placeholderized={stats['tools_placeholderized']}, "
+                    f"est_usage={stats.get('usage')}")
+        try:
+            notify_compact_status_sync("done", mode="compact",
+                                       usage=stats.get("usage"), reset_tokens=True)
+        except Exception:
+            pass
+        return {
+            "status": "ok",
+            "mode": "compact",
+            "tokens_estimate": stats["tokens_estimate"],
+            "context_window": stats["context_window"],
+            "usage": stats.get("usage"),
+        }
+    except Exception as e:
+        logger.error(f"[Compact] manual compact failed: {e}")
+        try:
+            notify_compact_status_sync("done", mode="compact")
+        except Exception:
+            pass
+        return {"status": "error", "mode": "compact", "message": str(e)}
 
 
 async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False):
@@ -3039,9 +3068,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
     # 压缩前状态占位：finally 判定是否实际压缩（try 早期失败/取消时保持默认 -1/None）
     _msgs_before = -1  # 压缩前消息数（finally 判定是否实际压缩；-1 表示 try 早期未读到）
     _store_ref = None  # try 内 store 引用（finally 复用，避免二次 get_message_store）
-    # Case 1 门禁（§3.2）：force 分支入口 pause ChatQueue，函数级 finally 统一 resume——
-    # 等价于 try/finally 包裹整个 elif 分支体，防任何退出路径永久冻结队列。sleep 恒为 None。
-    _force_fq = None
+    # Task 3：ChatQueue pause 门禁随 force 投递面移除而退役——机械压实无需独占队列
     # request 支持可选键 skip_compress: True 时跳过 force 模式的强制压缩段
     # （用于 /clear 场景：模式三只跑压缩对——此处即 journal 日志记录，不压缩；
     # 梦境进化已随 force 梦境腿摘除归睡眠循环专属）
@@ -3816,14 +3843,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 
         elif mode == "force":
-            # Case 1 门禁上移（§3.2）：ChatQueue pause 从分支入口开始，resume 挂函数级 finally
-            # （_force_fq 非 None 即 resume）——分支内所有退出路径（stop abort/skip/异常/取消）均恢复队列。
-            # held=True（None 窗口同步路径）语义：仅指调用方已持 _chat_lock（asyncio.Lock 不可重入，
-            # 压缩段跳过重复拿锁）；与队列 pause 解耦——入口 pause 照常生效。
-            from niu_api.chat_queue import get_chat_queue
-            _force_fq = get_chat_queue()
-            _force_fq.pause()
-
+            # Task 3 注：端点白名单已收缩为 sleep|compact，mode="force" 不再可达；
+            # 本分支体（journal 腿+压缩闭包）由 Task 6 退役清理整体删除
             # Force mode（模式三，D3/spec §5 定稿）：journal-agent → context-manager 强制压缩
             # （工程二摘 entity 段；工程三摘 dream 腿——手动 /compact 与 80% 内联只跑压缩对）
             # 降级解析提前到 force 分支顶部（§4.3 v1.4）：校验/压缩同源。
@@ -4103,6 +4124,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                                 logger.error("[Tidy] Force: lock wait aborted, skipping compression plan execution")
                                 return {"status": "skipped", "mode": "force", "reason": "lock wait aborted (defensive)"}
                             _f_chat_lock_acquired = True
+                            # ⚠️ 死分支，Task6 整删，勿复用：_force_fq 已随 ChatQueue pause 上移被删，此行现不可达且引用会 NameError
                             if not await _wait_queue_idle_with_retry(_force_fq, "Tidy Force"):
                                 logger.error("[Tidy] Force: queue wait aborted, skipping compression plan execution")
                                 return {"status": "skipped", "mode": "force", "reason": "queue wait aborted (defensive)"}
@@ -4253,18 +4275,13 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
         else:
             logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
-            return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'force'."}
+            return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'compact'."}
 
     except Exception as e:
         import traceback
         logger.error(f"[Tidy] Error: {e}\n{traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
     finally:
-        # Case 1 门禁兜底（§3.2）：force 分支入口暂停的 ChatQueue 在此统一 resume——
-        # 覆盖 return/异常/取消等全部退出路径，防队列永久冻结
-        if _force_fq is not None:
-            _force_fq.resume()
-
         # 无论成功/失败/异常/任务取消都必须广播 done，避免前端圆环卡死：
         # 1) 先无条件保底广播（无 await——asyncio.CancelledError 继承 BaseException 不入
         #    except Exception，取消时 finally 首个 await 点会抛，保底广播必须在 await 之前完成）

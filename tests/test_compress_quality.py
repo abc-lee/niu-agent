@@ -859,8 +859,9 @@ def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
     monkeypatch.setattr(runner_module.NiuRunner, "_run_subagent_step", fake_run_subagent_step)
 
     runner = _build_niu_runner_for_test()
-    # 触发 force 压缩
-    result = runner._on_context_high_usage([], 180000, 200000)
+    # Task 3 收编：_on_context_high_usage 已改调机械压实，不再驱动 mode3 管道；
+    # 本用例改为直调 _execute_force_pipeline（该管道由 Task 6 整体退役）。
+    result = runner._execute_force_pipeline()
 
     # 验证 call_subagent 被调用且捕获了参数
     assert captured["prompt"] is not None, "call_subagent 未被调用，prompt 未捕获"
@@ -942,7 +943,8 @@ def test_runner_mode3_truncate_triggers_degradation(monkeypatch):
     monkeypatch.setattr(runner_module.NiuRunner, "_run_subagent_step", fake_run_subagent_step)
 
     runner = _build_niu_runner_for_test()
-    result = runner._on_context_high_usage([], 180000, 200000)
+    # Task 3 收编：回调已改调机械压实，本用例直调 _execute_force_pipeline（Task 6 退役）
+    result = runner._execute_force_pipeline()
 
     # 验证返回 skipped + degradation 耗尽（无 mode 字段，不删历史）
     assert result is not None

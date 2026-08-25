@@ -68,7 +68,6 @@ class ChatQueue:
         self._processing_done = asyncio.Event()
         self._processing_done.set()  # 初始状态：未在处理
         self._request_counter = itertools.count(1)
-        self._bg_tasks: set = set()  # 后台任务引用集合，防止 GC 回收
 
     @property
     def is_processing(self) -> bool:
@@ -433,7 +432,7 @@ class ChatQueue:
                 if rv and isinstance(rv, dict) and rv.get("result") == "LLM_ERROR":
                     # E2：LLM_ERROR 错误文本不落库（用户拍板"不写 DB"——刷新 Chat 从 DB 加载历史时自然消失）
                     # full_reply 已是源头友好文案（agent_loop yield 双参）——不重复 format（通道 2 双包风险）
-                    # 该函数内 message_id 无读取点（return full_reply、_check_overflow 均不消费），无需赋值
+                    # 该函数内 message_id 无读取点（return full_reply 不消费），无需赋值
                     error_msg = rv.get("error_msg", "") or ""
                     error_type = rv.get("error_type")
                     from niu_api.chat import notify_llm_error_sync
@@ -486,100 +485,14 @@ class ChatQueue:
                 if is_llm:
                     notify_llm_error_sync(type_name, push_text, "chat_queue")  # notify 与 persist 解耦——persist 成败均推（Electron 并行可见性一致）；非 LLM 异常不 notify（不误标）
 
-            # 上下文溢出检测
-            await self._check_overflow(session_id, store, full_reply)
+            # Task 3 溢出投递面收编：_check_overflow/_retry_force_compression 降级重试链整删。
+            # 终态语义：压实后仍超限=放行服务端报错走既有降级回复（上方 chat_error 分支已落库）。
 
             return full_reply
         finally:
             # 防御性清除：确保停止标志不残留（与 chat_session 的 finally 对齐）
             if is_stop_requested():
                 clear_stop()
-
-    async def _check_overflow(self, session_id: str, store, full_reply: str):
-        """检测上下文溢出，触发压缩
-
-        不在 ChatQueue worker 内部直接调用 _tidy_context_impl(force)，
-        因为 force 模式会 pause ChatQueue + 等待 _processing_done，
-        而当前协程就是 ChatQueue worker，会导致死锁。
-        改为调度延迟任务，让 worker 先完成当前消息处理。
-        """
-        rv = getattr(self._runner, "last_return_value", None)
-        if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
-            overflow_data = rv.get("data", {})
-            logger.warning(
-                f"[ChatQueue] CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                f"scheduling delayed force compression"
-            )
-            _task = asyncio.create_task(self._retry_force_compression(session_id, delay=1.0))
-            self._bg_tasks.add(_task)
-            _task.add_done_callback(lambda t: self._bg_tasks.discard(t))
-
-    async def _retry_force_compression(self, session_id: str, delay: float = 5.0, max_retries: int = 3):
-        """重试 force 压缩，逐步放宽保护
-
-        §3.1 入口 7：投递 + await wrap_future（held=False——worker 自拿 _chat_lock + pause）；
-        30s 锁超时废除（队列单 worker 天然互斥）；3 次降级 attempt 串行 await——
-        前一个 future done 后才投下一个，天然不重叠；降级参数 force_protect_recent 透传进 request
-        （去重键含该参数，各 attempt 键不同不互相去重）。None 窗口（§3.0 Option A）同步执行。
-        """
-        from niu_api.compat import _tidy_context_impl, _pipeline_enqueue, _pipeline_queue
-        # 降级策略：每次重试减少保护消息数量
-        # 第 1 次：默认 protect_recent_count（10）
-        # 第 2 次：protect_recent_count = 5
-        # 第 3 次：protect_recent_count = 2
-        degrade_schedule = [None, 5, 2]  # None = 使用默认值
-
-        for attempt in range(max_retries):
-            await asyncio.sleep(delay)
-
-            request = {"session_id": session_id, "mode": "force"}
-            if attempt < len(degrade_schedule) and degrade_schedule[attempt] is not None:
-                request["force_protect_recent"] = degrade_schedule[attempt]
-                logger.info(f"[ChatQueue] Force compression retry {attempt+1} with degraded protect_recent={degrade_schedule[attempt]}")
-
-            # 广播压缩状态 started（前端圆环动画启动）
-            try:
-                from niu_api.chat import notify_compact_status_sync
-                notify_compact_status_sync("started", mode="force")
-            except Exception:
-                pass
-
-            try:
-                if _pipeline_queue is None:
-                    # None 窗口（§3.0 Option A）：同步执行，调用方等完成
-                    result = await _tidy_context_impl(request=request)
-                else:
-                    fut = _pipeline_enqueue("force", request, held=False)
-                    result = await asyncio.wrap_future(fut)
-
-                # 检查压缩后 token 是否降到安全水平
-                tokens_after = result.get("tokens_after", 0) if isinstance(result, dict) else 0
-                if tokens_after > 0:
-                    from agent.subagent import _read_context_window_tokens, _read_warning_threshold
-                    _cw = _read_context_window_tokens()
-                    _wt = _read_warning_threshold()
-                    _safe_level = int(_cw * _wt)
-                    if tokens_after <= _safe_level:
-                        logger.info(f"[ChatQueue] Force compression retry {attempt+1} succeeded: tokens_after={tokens_after} <= warning_threshold={_safe_level}")
-                        return
-                    else:
-                        logger.warning(f"[ChatQueue] Force compression retry {attempt+1}: tokens_after={tokens_after} still above warning_threshold={_safe_level}")
-                        # 继续降级重试，不 return
-                else:
-                    logger.warning(f"[ChatQueue] Force compression retry {attempt+1}: no tokens_after in result, continuing degradation")
-                    # 继续降级重试，不 return
-            except Exception as e:
-                logger.error(f"[ChatQueue] Force compression retry {attempt+1} failed: {e}")
-                # 继续降级重试，不 return——降级策略需要多轮才能生效
-            finally:
-                # 广播压缩状态 done（前端圆环动画结束）
-                try:
-                    from niu_api.chat import notify_compact_status_sync
-                    notify_compact_status_sync("done", mode="force")
-                except Exception:
-                    pass
-
-        logger.error(f"[ChatQueue] All {max_retries} force compression retries exhausted")
 
 
 # ============== 全局单例 ==============
@@ -611,10 +524,5 @@ async def stop_chat_queue():
     global _queue, _queue_stopped
     _queue_stopped = True
     if _queue:
-        # Cancel background tasks (e.g., _retry_force_compression)
-        for task in list(_queue._bg_tasks):
-            task.cancel()
-        if _queue._bg_tasks:
-            await asyncio.gather(*_queue._bg_tasks, return_exceptions=True)
         await _queue.stop()
         _queue = None

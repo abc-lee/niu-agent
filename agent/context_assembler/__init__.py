@@ -1,9 +1,11 @@
-"""上下文组装器（Context Assembler）——指针块存储层与会话单元切割器。
+"""上下文组装器（Context Assembler）。
 
-本包当前仅含纯函数与独立存储层，不含任何接线（不 import 进 runner/compat）。
-后续任务（组装器替换/校准倍率/压实）逐步落位于此。
+模块：blocks 指针块存储 / slicer 会话单元切割 / calibration token 校准倍率 /
+compaction 批量压实。接线点在 context_manager（组装出口 80% 触发）、
+runner._on_context_high_usage（真值回调回写）与 compat /compact 端点。
 """
 
+from agent.context_assembler import calibration, compaction
 from agent.context_assembler.blocks import (
     PointerBlock,
     default_db_path,
@@ -17,6 +19,8 @@ from agent.context_assembler.slicer import slice_units
 
 __all__ = [
     "PointerBlock",
+    "calibration",
+    "compaction",
     "default_db_path",
     "delete_all",
     "load_all",
