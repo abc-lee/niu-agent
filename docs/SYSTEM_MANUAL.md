@@ -25,8 +25,8 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 停止按钮 | 单击：主 Agent 立即返回（≤0.2s）——无论卡在 LLM 通讯、动态注入向量检索还是工具执行，统一可中断执行层放弃当前阻塞等待，后台任务继续跑（结果丢弃）；同步子 Agent 终止，异步子 Agent 不受影响。双击：向用户对话派生的所有子 Agent 推 /stop 并立即返回。程序触发（睡眠整理/定时任务）的子 Agent 不受停止影响 |
 | 主 Agent ask_user 工具 | 主 Agent 想与用户交流时通过 ask_user 暂停问话（阻塞等待回答），工作流不中断——显式暂停工具，区别于"停下来问话"退出工具循环 |
 | /clear 指令 | 即时清空对话（取消清空前提炼）；忙时先停止 Agent 并唤醒在途睡眠整理（阶段边界自行退出）。支持 Electron 和 IM 通用 |
-| /compact 指令 | 强制压缩上下文：force 压缩对（journal-agent → context-manager 模式三压缩；entity/dream 提炼腿已摘除，梦境整理仅由睡眠管道承担），阻塞式 UI。仅 Electron |
-| /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（journal-agent → context-manager → entity-extractor → dream-evolver 多轮循环 模式一/二）。仅 Electron |
+| /compact 指令 | 手动触发批量压实：与自动触发共用同一纯机械压实函数（秒级、零 LLM、DB 不动），完成后推送新 usage 给前端圆环。仅 Electron |
+| /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（entity-extractor → dream-evolver 多轮循环 → 块摘要可选层；journal 已移出为每日定时任务）。仅 Electron |
 | 见缝插针 | Agent 运行期间发送的补充消息自动插入到当前对话上下文（补充在前，当前任务在后） |
 | 子 Agent 标签页 | 子 Agent 运行时自动创建独立标签页，实时展示回复/工具状态/思维链/提问；子 Agent 可通过 @user 向用户提问并阻塞等待回答 |
 | 上下文使用率圆环 | 主对话显示主 Agent 的真实上下文占用；切换到子 Agent 标签页时显示该子 Agent 的真实占用（每轮 LLM 实际 prompt_tokens / 上下文窗口），切回主对话自动恢复 |
@@ -34,9 +34,9 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 
 **指令机制**：
 - `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
-- `/clear`：即时清除——① `request_stop()` 停主 Agent；② 无条件唤醒睡眠整理管道（`set_spirit_state("idle")`，在途 sleep 管道于 CP0-CP3 阶段边界自行退出）；③ 无限心跳排队拿 `_chat_lock`（60s 一跳，不再 120s 拒绝）后直接 `clear_messages()` 清空会话 + `cleanup_all_tmp()` + 复位全部游标。**已删除 force_tidy 提炼通道**（用户拍板"取消清空前提炼"）：不再投递整理管道、后端不读取请求的 force_tidy 字段；游标写回前有 fresh 校验，不会复活已清消息。支持 Electron 和 IM 通用
-- `/compact`：调用 `POST /api/context/tidy {mode:'force'}`，跑 force 压缩管道（journal-agent → context-manager 模式三强制压缩；entity/dream 提炼腿已摘除——梦境整理仅由睡眠管道承担）。阻塞式 UI（系统提示 + 禁用输入 + compact_status 圆环动画），忙时先发 `/stop`。**全局整理队列排队语义**：所有整理类管道（sleep/force/runner-force/内部溢出）全局一次一个排队，`/compact` 投递 force 任务后 await 队列执行完成；若 sleep/其他整理在跑则排队等待（不失败返回）。**前端无整体超时**：直接 await `tidyContext('force')`（已删 Promise.race 600s 假超时）——解锁真源是后端 tidy 处理器的 try/finally（必释放 `_tidy_lock`），子 Agent 有 LLM read_timeout 保底必收敛，前端假超时只会误导用户。**压缩前置校验已移除**（2026-08-24 工程四）：原 force 压缩前校验提炼/进化游标追平的 `_cursors_caught_up` 门控已删除——睡眠重排为压缩在前、提炼在后，且提炼改文件驱动（读 F1/F2 原文，DB 压缩不触文件），门控失去意义；`/compact` 不再出现 skipped 状态。与 `/clear` 的区别：`/clear` 即时清空会话、不跑任何整理管道；`/compact` 跑完整管道含模式三压缩，不清空会话。**注意**：忙时 `/stop` 仅设置停止标志立即返回，不等 Agent 释放 `_chat_lock`；后端拿锁为无限心跳重试（60s 一跳，永不超时放弃），Agent 停止慢（如卡在子 Agent tool 调用）时 `/compact` 排队等待而非失败。另注意：busy 场景 `/stop` 后若主 Agent 停止慢于 entity-extractor 完成，管道首个 `is_stop_requested()` 检查点可能读到残留停止标志而返回 aborted（提示「⚠️ 压缩已中止」）；aborted 分支会自动 `clear_stop()`，重试即可成功。
-- `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（journal-agent → context-manager → entity-extractor → dream-evolver 多轮循环；2026-08-24 工程四重排——压缩先行、提炼靠后，提炼文件驱动不受 DB 压缩影响，压缩前置游标门控 `_cursors_caught_up` 已随之移除 模式一/二）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行时与 force/runner-force 全局互斥排队；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（CP0-CP3，仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`（CP0）；entity/dream/compress 每步完成后检查，被唤醒 → `interrupted/woke_up`（CP1-CP3），已完成步骤游标已推进不丢失，下次续跑；force 不检查状态机（手动强制不可打断）。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
+- `/clear`：即时清除——① `request_stop()` 停主 Agent；② 无条件唤醒睡眠整理管道（`set_spirit_state("idle")`，在途 sleep 管道于阶段边界自行退出）；③ 无限心跳排队拿 `_chat_lock` 后直接 `clear_messages()` 清空会话 + `cleanup_all_tmp()` + 复位全部游标 + 截断 F1/F2/F3 中继文件 + 删除指针块库 + 校准倍率复位（journal.md 本体保留）。支持 Electron 和 IM 通用
+- `/compact`：调用 `POST /api/context/tidy {mode:'compact'}`，直达批量压实实现（与自动触发共用 compaction.compact_now_detailed）：纯机械秒级、零 LLM、DB 不动、不经整理队列直接执行；完成后推送新 usage 给前端圆环。阻塞式 UI（系统提示 + 禁用输入 + compact_status 圆环动画），忙时先发 `/stop`。与 `/clear` 的区别：`/clear` 即时清空会话；`/compact` 只压实视图不清空会话，历史全部可经 read_history_block 取回。前端直接 await 执行结果，秒级收敛（压实零 LLM）。**注意**：忙时 `/stop` 仅设置停止标志立即返回，不等 Agent 释放 `_chat_lock`；后端拿锁为无限心跳重试（永不超时放弃），Agent 停止慢时 `/compact` 排队等待而非失败。
+- `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（entity-extractor → dream-evolver 多轮循环 → 块摘要可选层；journal 已移出为每日 18 点定时任务——见「上下文管理」章节）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`；entity/dream 每步完成后检查，被唤醒 → `interrupted/woke_up`，已推进不回滚下次续跑。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
 - 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
 
 **见缝插针机制**：
@@ -181,23 +181,23 @@ ai-bot/
 
 主 Agent 负责对话，子 Agent 负责执行特定任务。子 Agent 通过 `chat-with-{agentName}` 工具调用。
 
-**已定义的子 Agent（6个）：**
+**已定义的子 Agent（5个）：**
 
 | 子 Agent | 职责 | 触发方式 | 温度 |
 |----------|------|----------|------|
 | `file-processor` | 文件处理：复制、解析、存储、向量化 | 主 Agent 委托（文件拖入） | 0.2 |
 | `event-manager` | 事件管理：创建/查询/删除事件 | 主 Agent 委托 | 0.2 |
-| `context-manager` | 上下文管理：内容压缩 | auto-tidy 管线自动调度 | 0.2 |
-| `journal-agent` | 工作日志：从对话提取工作内容写入日志 | 主 Agent 委托或 auto-tidy | 0.3 |
-| `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | auto-tidy 管线自动调度 | 0.3 |
-| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | auto-tidy 管线自动调度 | 0.3 |
+| `journal-agent` | 工作日志：自读程序导出的增量对话文件提取工作内容写入日志 | 主 Agent 委托或 journal_daily 定时任务直执行 | 0.3 |
+| `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | 睡眠管线自动调度 | 0.3 |
+| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | 睡眠管线自动调度 | 0.3 |
 
-**BLOCKED_SUBAGENTS 机制：**
+> `context-manager` 子 Agent 已随压缩体系退役（2026-08-26）；上下文管理由确定性组装器接管，见「上下文管理」章节。
 
-`context-manager`、`entity-extractor`、`dream-evolver` 三个子 Agent 在 `agent/handler.py` 中被列入 `BLOCKED_SUBAGENTS` 集合，禁止主 Agent 手动调用。它们的触发方式各不相同：
-- `entity-extractor`：由睡眠模式（auto-tidy 管线）触发
-- `dream-evolver`：由睡眠模式（auto-tidy 管线）触发，在 entity-extractor 之后串行执行
-- `context-manager`：由睡眠模式（auto-tidy 管线）自动调度
+**屏蔽机制：**
+
+`entity-extractor`、`dream-evolver` 两个子 Agent 在 `agent/handler.py` 中被列入 blocked 集合，禁止主 Agent 手动调用：
+- `entity-extractor`：由睡眠管线触发
+- `dream-evolver`：由睡眠管线触发，在 entity-extractor 之后串行执行
 
 这确保：
 - 避免主 Agent 误触发导致重复执行
@@ -367,28 +367,65 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 同步子 Agent 调用时，主 Agent 在工具循环里阻塞等待。子 Agent 输出 `@niu-agent 问题` 时，程序拦截层识别后挂起 session，把问题包装成 `[子名] 问题` 作为工具返回值送给主 Agent。主 Agent LLM 看到 JSON 工具结果 `{"status":"success","result":"[子名] 问题"}` 后，调同一 chat-with-xxx 工具回复（task="" + answer="@子名 回答" + unique_name="子名"）。程序从 registry 拿回挂起 session，注入回答后继续跑。
 
-程序触发子 Agent（force 压缩 / 手动 tidy API）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案“无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作”。
+程序触发子 Agent（睡眠管线 / journal_daily 定时任务）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案“无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作”。
 
-### 睡眠模式整理管道
+### 上下文管理（上下文组装器，2026-08-26 起）
 
-**睡眠模式**（sleep 跑完整管道；force 只跑步骤 1-2 压缩对——entity/dream 提炼腿已于工程二/三摘除）：sleep 由闲置 5 分钟触发、force 由上下文超阈值（80% 内联）或手动 /compact 触发。**全局整理队列**（2026-08-20 起）：所有整理类管道（sleep/force/runner-force/内部溢出）投递到单 worker 全局队列串行执行，全局一次一个、后来者排队等待（不失败返回）；sleep 管道执行时按 CP0-CP3 状态机检查睡眠状态，被唤醒即取消后续步骤（已推进游标保留，下次续跑），force 不检查状态机。
+> 压缩体系（keep/update/delete、模式一二三、context-manager 子 Agent、保护 N 轮、compress 游标）已整体退役。取而代之的是**存储/视图分离**的确定性组装器：messages.db 是真相源永不动，LLM 每轮看到的只是组装视图；主链路零 LLM 承重。
 
-| 步骤 | 子 Agent | 说明 |
-|------|----------|------|
-| 1 | journal-agent | 日志提取（仅模式2及以上：sleep usage≥50% 或 force）——压缩前先落日志，防日志内容随压缩丢失 |
-| 2 | context-manager | 上下文压缩（DB 压缩只动 Message DB，不触 F1/F2 文件） |
-| 3 | entity-extractor | 内容提炼：自读 F1 提炼源文件，`lightrag_insert` 入库（F1 为 DB 镜像，压缩产生的 [摘要] 替换不回写镜像，读到的永远是完整原文） |
-| 4 | dream-evolver | 梦境进化多轮循环：F2→F3 工作集精加工，covered_all 终止 |
+#### 组装视图：分区预算
 
-**2026-08-24 工程四重排**：管道顺序由 entity→dream→journal→compress 改为上述 journal→compress→entity→dream。安全性根基是提炼文件驱动化——压缩只删/改 Message DB 消息，提炼读的是 F1/F2 文件原文，故压缩先行不再丢失提炼机会；原「压缩前置游标追平门控」（`_cursors_caught_up`）随之移除。entity-extractor → dream-evolver 的顺序依赖保持不变。
+每次对话开始，`get_context_for_chat` 从 DB 全量读消息并组装视图：
 
-**entity-extractor → dream-evolver 的顺序依赖**：entity-extractor 先用 `lightrag_insert` 入库精炼文档，LightRAG LLM 自动从中提取实体。dream-evolver 再搜索这些已入库的实体做精加工。如果 dream-evolver 先跑，它自己创建的实体名可能与 entity-extractor 入库后 LLM 提取的实体名不一致——同一概念变成两个独立节点，永远无法合并（实体碎片化）。
+1. **会话单元切割**：消息流按 user 轮 + tool_calls 配对切成完整会话单元
+2. **原文窗口装填**：从最新单元向前累加，装不下即止（预算 = `contextWindowSize` × 50%）；窗口起点恒为单元边界，tool 配对完整
+3. **指针块归档**：被挤出窗口的完整单元机械写入指针块存储（幂等，同区间已有块则跳过）
+4. **输出视图** = [历史索引前导 user 消息] + [窗口内原文消息]；无归档块时省略索引消息
 
-**文件驱动梦境链（F1/F2/F3，2026-08-24 起）**：提炼与梦境不再按消息游标切分，改三文件中继（均位于 `~/.niu/md/`，/clear 时一并截断）：
-- `F1_extract_source.md` 提炼源：DB 镜像（MessageStore.add_message 收口追加）；entity-extractor 自读 F1 并报 `processed_line=N`，relay 据此剪切 F1 已处理前缀整体追加到 F2
-- `F2_dream_queue.md` 梦境队列：无限队列，提炼产物只增不减
-- `F3_dream_workset.md` 梦境工作集：睡眠时程序从 F2 头部按记录边界切 ≤64KB 软预算整体重建；dream-evolver 自读 F3 并报 processed_line=M，成功后删 F2 前 M 行（失败不动 F2，天然幂等）
-- **多轮循环终止判据**：会话边界合法留置尾部导致 F2 永不删空，故梦境子循环以 covered_all（本轮 F3 行数 ≥ F2 总行数，即本轮已涵盖全量 F2）终止，另设零进度守卫防卡死
+| 分区 | 预算 | 说明 |
+|------|------|------|
+| 原文窗口 | ≤50% 窗口 | 最近若干完整会话单元逐字原文 |
+| 历史索引 | ≤30% 窗口 | 每块一行时间线 FIFO 机械行：`[块#N] 时间~时间 · X条 · 实体:a/b/c · 首问:"…"`；索引超预算时最老相邻块合并为一行 |
+
+**指针块存储**：SQLite 单表 `~/.niu/context_blocks.db`（flock 排它锁），记录每块的 msg_id/rowid 区间、条数、时间范围、实体标签（≤3 个）、首问摘录（≤40 字）。块是派生数据，可从 messages.db 全量重建；启动时挂 lifespan 一致性校验（msg_id 存在性/rowid 单调/count 一致），不一致自动整库重切重建。
+
+#### token 校准倍率
+
+本地 TokenCalculator 估算与服务端真值存在中英文比例漂移，程序维护校准倍率桥接：每次主 Agent 响应后用 `usage.prompt_tokens` 真值 ÷ 同消息集本地估算覆盖更新倍率（仅主 Agent，子 Agent 副模型不混入）；倍率持久化在 `~/.niu/token_calibration.json`，默认 1.15，越界（0.2~10 之外）自动回退。80%/95% 触发判定均基于**校准后估算**。
+
+#### 批量压实：纯机械、零 LLM、秒级
+
+- **触发**：校准后总量估算 ≥80%（组装出口与 runner 真值回调共用滞回闸门 AUTO_GATE——≥80% 触发闩锁、<78% 复位，同轮双触发去重不双压）；**95% 应急线**：保留轮工具输出全部占位符化+仅留最近 1 轮
+- **动作**：保留最近 N 个会话单元（`context.keepRecentTurns`，默认 3）→ 其余单元全量转指针块 → 索引行合并（超 30% 预算合并最老相邻块）→ D15 三轮硬约束（压实后校准总量仍超 80% 则先占位符化保留轮内旧工具输出，仍超减轮 3→2→1）
+- **无损性**：messages.db 真相源一字不动；任何历史内容可随时经 read_history_block 取回或从 DB 全量重建
+
+#### 历史取回：read_history_block 工具
+
+模型看到索引中的 `[块#N]` 句柄后，调用 `read_history_block(block_id=N)` 即可取回该块的**逐字原文**（时间+角色+内容，tool 输出含 tool_call_id 归属；超大块头尾保留+精简标注）。该工具挂在 session-manager（hidden，仅模型侧使用）；解码说明书写在主 Agent 提示词（config/agents/niu.md）。索引区职责边界=模拟全量上下文的目录页，不做语义检索——图谱兜底深挖走知识图谱工具。
+
+#### 睡眠管道新序
+
+sleep 由闲置 5 分钟触发，投递全局整理队列单 worker 串行执行；执行期按 CP 检查点检查睡眠状态，被唤醒即取消后续步骤（已推进不回滚，下次续跑）：
+
+| 步骤 | 组件 | 说明 |
+|------|------|------|
+| 1 | entity-extractor | 自读 F1 提炼源文件，`lightrag_insert` 入库，报 processed_line=N 后 relay 剪切 |
+| 2 | dream-evolver | 多轮循环：F2→F3 工作集精加工，covered_all 终止，成功删 F2 前缀 |
+| 3 | 块摘要增强（可选层） | 对摘要状态 pending 的归档块裸调 lightrag_llm（副模型一次一 call）生成 ≤100 字摘要行替代机械行；失败保 pending 下次重试；活跃对话期自动跳过本轮；默认关闭（`context.blockSummaryEnabled`） |
+
+journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖保持不变：先入库再精加工，防实体碎片化。文件驱动梦境链（F1/F2/F3 三文件中继，位于 `~/.niu/md/`）机制不变：F1 为 DB 镜像只增不减、F2 无限队列、F3 按 ≤64KB 软预算切分重建；组装器的指针块归档同样只动派生数据不触三文件。
+
+#### journal 定时任务（每日 18 点直执行）
+
+journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`）：后台线程**直执行**——从 DB 导出增量消息为临时工作集文件（`~/.niu/md/journal_workset.md`），调 journal-agent 自读提取写入 journal.md，游标自管（`~/.niu/last_journal.json`）。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；执行失败游标不推进，下轮自动重覆盖同一增量区间。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
+
+#### /compact 新语义
+
+手动 /compact 与自动触发共用同一个批量压实函数：纯机械秒级、零 LLM、无 ChatQueue pause 门禁、不经整理队列直接执行；完成后推送新 usage 给前端圆环。（旧语义「force 全量 keep/update/delete 整理」随压缩体系退役。）
+
+#### /clear 与 /new 清理面
+
+两者同端点（即时清除语义，无清空前提炼）：清空 messages.db → 截断 F1/F2/F3 中继文件 → 复位全部游标 → 删除指针块库 → 校准倍率复位默认值 → 作废内存派生缓存。**journal.md 本体保留**（§8 拍板：日记是长期资产，不随会话清空）。
 
 ### 维护注意事项
 
