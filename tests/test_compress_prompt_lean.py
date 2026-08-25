@@ -15,7 +15,7 @@ def _force(**kw):
     defaults = {
         "display_tokens": 100000, "compress_target_tokens": 60000,
         "usage_percent": 80.0, "force_history": [{"role": "user", "content": "[idx:1] 100tokens hi"}],
-        "last_compress_id": None, "dream_idx_in_force": 0,
+        "last_compress_id": None,
     }
     defaults.update(kw)
     return _build_force_prompt(**defaults)
@@ -57,17 +57,16 @@ def test_force_keeps_cursor_contract():
     assert "update=" in p
 
 
-def test_force_keeps_dream_boundary_and_cursor_info():
-    """force 保留 dream 安全边界与上次压缩游标两行。"""
-    p = _force(dream_idx_in_force=42, last_compress_id="abc-123")
-    assert "42" in p
-    assert "dream" in p.lower() or "未提取知识" in p
+def test_force_no_dream_boundary_keeps_cursor_info():
+    """工程五七件套退役：force 无 dream 安全边界行，保留上次压缩游标行。"""
+    p = _force(last_compress_id="abc-123")
     assert "abc-123" in p
-    p2 = _force(dream_idx_in_force=0, last_compress_id=None)
+    assert "安全边界" not in p
+    assert "dream" not in p.lower()
+    assert "未提取知识" not in p
+    assert "idx >" not in p
+    p2 = _force(last_compress_id=None)
     assert "（无，从最早消息开始）" in p2
-    # 0 哨兵（无 dream 游标）：prompt 渲染 idx > 0 → 全保护语义（只 update 不删）——锁定行为防误改
-    p3 = _force(dream_idx_in_force=0)
-    assert "idx > 0" in p3
 
 
 def test_force_forbids_analysis():

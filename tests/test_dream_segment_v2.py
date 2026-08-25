@@ -5,12 +5,12 @@
 （mdm._f3_max_bytes）——禁真实 LLM、禁图谱写入、messages.db 零新增。
 
 用例清单（计划 T4-D）：
-1. 睡眠成功路径（单轮 covered_all 排空 + 游标推进 + 压缩执行）
+1. 睡眠成功路径（单轮 covered_all 排空 + 零游标写入 + 压缩执行）
 2. 多轮排空（小预算逐记录消化，covered_all 终止）
 3. 留置尾部终止（M<F3 末行时 F2 留置尾部，不空转）
 4. 零进度守卫（covered_all=False 且零删除 → break 防空转）
 5. 循环中唤醒（is_sleeping 轮间翻转 → interrupted，已删不回滚）
-6. 游标写入三态（成功写新 id / fresh_ids 校验失败不写 / failure-incomplete 不写）
+6. dream 游标退役零写入（成功/fresh 失配/failure-incomplete 三场景均不写——工程五七件套）
 7. mode-1 压缩切片无上界（end_cursor 契约作废——工程四 3'a 移除，模式一全量切片）
 8. F2 空 D5 短路（dream 不调用）
 9. 畸形 F2（零记录边界）error 日志
@@ -154,7 +154,7 @@ def _dream_writes(write_mock):
 # ---------------------------------------------------------------------------
 
 def test_sleep_success_single_round_drains_and_advances():
-    """F2 单轮排空：dream 报全量行号 → 删空 F2 → 游标=m3 → 门控放行 → 压缩执行。"""
+    """F2 单轮排空：dream 报全量行号 → 删空 F2 → 零游标写入（工程五退役）→ 压缩执行 。"""
     call_mock = mock.MagicMock()
 
     def _keyed(agent_name=None, **kwargs):
@@ -173,7 +173,7 @@ def test_sleep_success_single_round_drains_and_advances():
     with open(paths["f2"], encoding="utf-8") as f:
         assert f.read() == "", "covered_all 全删后 F2 应为空"
     writes = _dream_writes(write_mock)
-    assert writes and writes[-1]["last_dream_evolve_id"] == "m3"
+    assert writes == [], "dream 游标已退役（工程五），全程零写入"
     assert result.get("status") == "ok", f"应正常完成: {result}"
 
 
@@ -202,7 +202,7 @@ def test_sleep_multi_round_drains():
     with open(paths["f2"], encoding="utf-8") as f:
         assert f.read() == "", "多轮排空后 F2 应为空"
     writes = _dream_writes(write_mock)
-    assert [d["last_dream_evolve_id"] for d in writes] == MSG_IDS, f"游标逐轮推进: {writes}"
+    assert writes == [], f"多轮排空零游标写入: {writes}"
     assert result.get("status") == "ok"
 
 
@@ -234,7 +234,7 @@ def test_sleep_leftover_tail_terminates_on_covered_all():
     assert '"msg_id": "m2"' in rest and '"msg_id": "m3"' in rest, "尾部两条应留置 F2"
     assert '"msg_id": "m1"' not in rest, "已处理首条应被删除"
     writes = _dream_writes(write_mock)
-    assert writes[-1]["last_dream_evolve_id"] == "m1"
+    assert writes == [], "留置尾部零游标写入"
     assert result.get("status") == "ok"
 
 
@@ -288,7 +288,7 @@ def test_sleep_interrupted_mid_loop():
     assert result == {"status": "interrupted", "reason": "woke_up"}
     assert _called_agents(call_mock).count("dream-evolver") == 2, "第二轮完成后才打断"
     writes = _dream_writes(write_mock)
-    assert [d["last_dream_evolve_id"] for d in writes] == ["m1", "m2"], "已推进游标不回滚"
+    assert writes == [], "已删部分不回滚（零游标写入）"
     with open(paths["f2"], encoding="utf-8") as f:
         rest = f.read()
     assert '"msg_id": "m1"' not in rest and '"msg_id": "m2"' not in rest, "已删部分不回滚"
@@ -296,12 +296,15 @@ def test_sleep_interrupted_mid_loop():
 
 
 # ---------------------------------------------------------------------------
-# 6. 游标写入三态
+# 6. dream 游标退役零写入（三场景）
 # ---------------------------------------------------------------------------
 
-def test_cursor_write_three_states():
-    """三态：成功写新 id / fresh_ids 校验失败不写 / failure 不写。"""
-    # 态 1：成功
+def test_cursor_write_retired_zero_writes_all_states():
+    """工程五七件套退役反向钉：成功/末删 id 失配/failure 三场景均零 last_dream_evolve 写入。
+
+    旧行为（三态）：成功且 fresh 校验通过才写新 id；退役后 dream 循环无任何游标读写。
+    """
+    # 态 1：成功排空
     call_ok = mock.MagicMock()
 
     def _ok(agent_name=None, **kwargs):
@@ -310,10 +313,12 @@ def test_cursor_write_three_states():
         return NORMAL_JSON
 
     call_ok.side_effect = _ok
-    _, w1, _, _, _ = _run_sleep(call_ok, seed_ids=["m1", "m2", "m3"])
-    assert _dream_writes(w1)[-1]["last_dream_evolve_id"] == "m3"
+    _, w1, _, _, paths1 = _run_sleep(call_ok, seed_ids=["m1", "m2", "m3"])
+    assert _dream_writes(w1) == [], "退役后成功路径也不写 dream 游标"
+    with open(paths1["f2"], encoding="utf-8") as f:
+        assert f.read() == "", "F2 删除行为不受退役影响"
 
-    # 态 2：drop 的末删 msg_id 不在 DB（种子用伪 id）→ 不写游标
+    # 态 2：drop 的末删 msg_id 不在 DB（种子用伪 id）
     call_fake = mock.MagicMock()
 
     def _fake(agent_name=None, **kwargs):
@@ -323,9 +328,9 @@ def test_cursor_write_three_states():
 
     call_fake.side_effect = _fake
     _, w2, _, _, _ = _run_sleep(call_fake, seed_ids=["ghost-1"])
-    assert _dream_writes(w2) == [], "fresh_ids 校验失败不得写游标"
+    assert _dream_writes(w2) == []
 
-    # 态 3：failure 前缀 → 不写
+    # 态 3：failure 前缀 → F2 字节不变
     call_fail = mock.MagicMock()
 
     def _fail(agent_name=None, **kwargs):
@@ -335,7 +340,7 @@ def test_cursor_write_three_states():
 
     call_fail.side_effect = _fail
     _, w3, _, _, paths = _run_sleep(call_fail, seed_ids=["m1"])
-    assert _dream_writes(w3) == [], "failure 不写游标"
+    assert _dream_writes(w3) == []
     with open(paths["f2"], encoding="utf-8") as f:
         assert '"msg_id": "m1"' in f.read(), "failure 时 F2 不动"
 
@@ -449,7 +454,7 @@ def test_failure_incomplete_leaves_f2_byte_identical(bad_result):
 # ---------------------------------------------------------------------------
 
 def test_overflow_partial_progress_then_break():
-    """overflow → drop 前 ⌈f3/3⌉ 行（吸附到首条记录边界）→ 游标写部分进度 → break。"""
+    """overflow → drop 前 ⌈f3/3⌉ 行（吸附到首条记录边界）→ 零游标写入 → break。"""
     call_mock = mock.MagicMock()
 
     def _keyed(agent_name=None, **kwargs):
@@ -465,7 +470,7 @@ def test_overflow_partial_progress_then_break():
         rest = f.read()
     assert '"msg_id": "m1"' not in rest, "前 ⌊9/3⌋=3 行（首条记录）应已删除"
     assert rest.count('{"msg_id":') == 2
-    assert _dream_writes(write_mock)[-1]["last_dream_evolve_id"] == "m1"
+    assert _dream_writes(write_mock) == [], "overflow 部分进度也零游标写入"
 
 
 # ---------------------------------------------------------------------------

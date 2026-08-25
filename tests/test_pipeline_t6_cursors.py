@@ -173,9 +173,7 @@ def _called_agents(call_mock):
 def test_sleep_full_order_compress_pair_first():
     """工程四重排全序：cm 先于 entity/dream 被调（usage<50% journal skipped）；门控消失无 skipped。
 
-    entity relay 剪切 F1 至空 + 梦境循环删空 F2 并推进游标到尾部。v3：F2 种子改用
-    store 真实消息 id（m1+m2）——drop 返回的末删 msg_id 经 fresh_ids 校验后才写游标；
-    dream mock 报 processed_line=6（两条记录共 6 行，全删）。
+    entity relay 剪切 F1 至空 + 梦境循环删空 F2 。dream mock 报 processed_line=6（两条记录共 6 行，全删）。
     """
     store = _CursorStore()
     call_mock = _agent_keyed_call({
@@ -187,8 +185,8 @@ def test_sleep_full_order_compress_pair_first():
     assert result.get("status") == "ok", f"重排后应正常完成: {result}"
     agents = _called_agents(call_mock)
     assert agents == ["context-manager", "entity-extractor", "dream-evolver"], f"实际: {agents}"
-    # 游标真实写回（内存 store）→ 校验读到 m2；entity UUID 游标退役零写
-    assert store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id") == "m2"
+    # 游标真实写回（内存 store）→ 校验读到 m2；entity UUID 与 dream 游标均退役零写
+    assert store.read(Path.home() / ".niu" / "last_dream_evolve.json", "last_dream_evolve_id") == ""
     assert store.read(Path.home() / ".niu" / "last_compress.json", "last_compress_id") == "m2"
     assert store.read(Path.home() / ".niu" / "last_entity_extract.json", "last_entity_extract_id") == ""
     # v2：成功提炼后 F1 被剪切清空，剪下前缀落入 F2；v3：梦境循环删空 F2 前缀

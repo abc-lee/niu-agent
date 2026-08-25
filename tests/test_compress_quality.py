@@ -558,7 +558,7 @@ def test_strip_analysis_missing_then_parse():
 
 
 def test_mode3_prompt_not_contains_methodology(monkeypatch):
-    """模式三 task prompt 不再内联方法论，含禁止报告强指令 + cursor + dream 安全边界。"""
+    """模式三 task prompt 不再内联方法论，含禁止报告强指令 + cursor （dream 安全边界已随工程五退役）。"""
     import asyncio
 
     import agent.subagent as subagent_module
@@ -618,7 +618,7 @@ def test_mode3_prompt_not_contains_methodology(monkeypatch):
     assert "会话单元" not in captured["task"]
     assert "禁止输出任何其他内容" in captured["task"]
     assert "cursor=" in captured["task"]
-    assert "安全边界" in captured["task"]
+    assert "安全边界" not in captured["task"], "dream 安全边界已退役，不得回流 prompt"
     assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 32000
 
 
@@ -793,7 +793,7 @@ def _build_niu_runner_for_test():
 
 
 def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
-    """runner.py force prompt 不再内联方法论，含禁止报告强指令 + cursor + dream 安全边界 + max_tokens 注入。"""
+    """runner.py force prompt 不再内联方法论，含禁止报告强指令 + cursor （dream 安全边界已随工程五退役） + max_tokens 注入。"""
     import niu_api.compat as compat
     from agent import runner as runner_module
     from agent import subagent as subagent_module
@@ -870,7 +870,7 @@ def test_runner_mode3_prompt_not_contains_methodology(monkeypatch):
     assert "会话单元" not in captured["prompt"]
     assert "禁止输出任何其他内容" in captured["prompt"]
     assert "cursor=" in captured["prompt"]
-    assert "安全边界" in captured["prompt"]
+    assert "安全边界" not in captured["prompt"], "dream 安全边界已退役，不得回流 prompt"
     # llm_config 注入了 max_tokens
     assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 32000
     # history 是 list[dict]（_build_compress_history 返回）

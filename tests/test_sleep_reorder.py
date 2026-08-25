@@ -4,12 +4,11 @@
 1. 重序断言：context-manager 先于 entity/dream 被调（默认 usage<50%，以 cm 为序锚）
 2. ≥50% 用例单列钉 journal 位次（usage 取 [50%,70%) 窗口——≥70% 触发 _skip_compress 阈值）
 3. ≥50% 模式二全序 journal→cm→entity→dream + 无 post-dream 范围过滤
-   + 锚点排除正向钉：Path.home patch 预建含已知 msg_id 的 last_dream_evolve.json，
-   断言越界消息被正常落库删除且锚点 id 不进 valid_deletes/valid_updates（force 哨兵承重墙）
+   + 无锚点排除（工程五七件套退役）：cm 方案中的锚点消息 update 正常应用
 4. CP1 唤醒（压缩对后）→ interrupted 且压缩已落库
 5. 门控消失：游标滞后/F1 未提炼不再产生 skipped 返回
-6. dream 循环仍回写 last_dream_evolve.json（决策 3''）
-7. 入口共享游标读取保留（compat 入口三游标读取，force 哨兵数据源）
+6. dream 循环零游标写入（last_dream_evolve 退役反向钉——工程五）
+7. 入口零读取反向钉：compat 入口不再读 last_dream_evolve.json（工程五）
 
 全 mock：call_subagent_with_auto_answer / 游标文件 / is_sleeping / runner / chat_queue——
 禁真实 LLM、禁图谱写入、messages.db 零新增、不碰真实 ~/.niu。
@@ -211,13 +210,12 @@ def test_mode2_window_journal_agent_runs_first():
 # ---------------------------------------------------------------------------
 
 def test_mode2_full_order_anchor_exclusion_no_post_filter():
-    """≥50% 全序 journal→cm→entity→dream；锚点 id 不进删除/更新；越界消息正常落库删除。
+    """≥50% 全序 journal→cm→entity→dream；无锚点排除（工程五七件套退役）；越界消息正常落库删除。
 
-    - 预建 last_dream_evolve.json：last_dream_evolve_id=m1（锚点=入口读取值，新序下 cm
-      先于本轮 dream 执行二者等值）
+    - 预建 last_dream_evolve.json（磁盘残留态，生产已零读取）
     - cm 方案 keep=3：deletes=[m1,m2]、updates=[(1→m1)]
-      → 锚点 m1 从 deletes/updates 双双排除；m2（旧 post-dream 守卫会保护的「越界」消息）
-        正常落库删除——证明范围守卫已随工程四摘除
+      → m2 正常落库删除——证明范围守卫已随工程四摘除；
+        m1 因与 update 重叠从 deletes 移出、update 正常应用——证明锚点排除已退役
     """
     home = pathlib.Path(tempfile.mkdtemp(prefix="t4_anchor_"))
     _write_home_cursor(home, "last_dream_evolve.json", {"last_dream_evolve_id": "m1"})
@@ -238,12 +236,11 @@ def test_mode2_full_order_anchor_exclusion_no_post_filter():
 
     all_deleted = [mid for batch in ctx["deleted_batches"] for mid in batch]
     assert "m2" in all_deleted, f"越界消息 m2 应回落库正常删除: {ctx['deleted_batches']}"
-    assert "m1" not in all_deleted, f"锚点 m1 不得进 valid_deletes: {ctx['deleted_batches']}"
-    assert ctx["updated"] == [], f"锚点 m1 的 update 应被排除: {ctx['updated']}"
+    assert ctx["updated"] == [("m1", "[摘要] 锚点更新应被排除")], \
+        f"无锚点排除：m1 的 update 应正常应用（与 delete 重叠故从 deletes 移出）: {ctx['updated']}"
 
-    # 决策 3''：dream 游标继续回写（done_msg_id=m1 经 fresh_ids 校验后写游标）
-    dream_writes = [d for d in _cursor_writes(write_mock) if d.get("last_dream_evolve_id")]
-    assert dream_writes and dream_writes[-1]["last_dream_evolve_id"] == "m1"
+    # 工程五退役反向钉：dream 循环零游标写入
+    assert [d for d in _cursor_writes(write_mock) if d.get("last_dream_evolve_id")] == []
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +286,11 @@ def test_gating_gone_stale_cursor_and_full_f1_proceed():
 
 
 # ---------------------------------------------------------------------------
-# 6. dream 循环仍回写 last_dream_evolve.json
+# 6. dream 循环零游标写入（工程五退役反向钉）
 # ---------------------------------------------------------------------------
 
-def test_dream_cursor_still_written_after_reorder():
-    """决策 3''：重排后梦境循环照常回写 dream 游标（force 边界唯一数据源）。"""
+def test_dream_cursor_no_longer_written_after_retirement():
+    """工程五七件套退役：dream 循环只删 F2 前缀，零 last_dream_evolve 写入。"""
     call_mock = _keyed({
         "entity-extractor": NORMAL_JSON + PROCESSED_LINE_ALL,
         "dream-evolver": NORMAL_JSON + PROCESSED_LINE_ALL,
@@ -303,16 +300,16 @@ def test_dream_cursor_still_written_after_reorder():
     )
 
     assert result.get("status") == "ok"
-    dream_writes = [d for d in _cursor_writes(write_mock) if d.get("last_dream_evolve_id")]
-    assert dream_writes and dream_writes[-1]["last_dream_evolve_id"] == "m2"
+    assert [d for d in _cursor_writes(write_mock) if d.get("last_dream_evolve_id")] == [], \
+        f"dream 游标已退役，全程零写入: {_cursor_writes(write_mock)}"
 
 
 # ---------------------------------------------------------------------------
-# 7. 入口共享游标读取保留（force 哨兵数据源）
+# 7. 入口零读取反向钉（工程五退役）
 # ---------------------------------------------------------------------------
 
-def test_entry_shared_cursor_read_preserved(tmp_path):
-    """入口三游标共享读取保留：预建 dream 游标文件 → 入口真实读出（spy Path.read_text）。"""
+def test_entry_no_dream_cursor_read(tmp_path):
+    """工程五七件套退役反向钉：入口不再读取 last_dream_evolve.json（残留文件在盘也不读）。"""
     home = tmp_path / ".niu"
     home.mkdir(parents=True)
     (home / "last_dream_evolve.json").write_text(
@@ -333,33 +330,29 @@ def test_entry_shared_cursor_read_preserved(tmp_path):
         call_mock, msg_ids=("m1", "m2"), home=tmp_path, seed_f1="m2",
         extra_patches=(mock.patch("pathlib.Path.read_text", _spy_read_text),),
     )
-    assert any("last_dream_evolve.json" in str(p) for p in recorded), \
-        f"入口应读取共享 dream 游标文件，实际 recorded={recorded}"
+    assert not any("last_dream_evolve.json" in str(p) for p in recorded), \
+        f"入口不得再读取 dream 游标文件（已退役），实际 recorded={recorded}"
     assert result.get("status") == "ok"
 
 # ---------------------------------------------------------------------------
-# 8. 复位表三键清算（工程四决策 5 / T2：_ALL_CURSOR_FILES 收缩）
+# 8. 复位表两键清算（工程五七件套退役：_ALL_CURSOR_FILES 收缩）
 # ---------------------------------------------------------------------------
 
-def test_reset_all_cursors_clears_exactly_three_keys(tmp_path):
-    """reset 恰清三键：last_journal/last_compress/last_dream_evolve 删除。
-
-    dream 键必须留驻复位列表（防 /new 后陈旧游标 + F2 truncate 致 force 哨兵
-    0=全保护 ↔ len=不限制删除翻转）；entity_extract 死键已移出列表。
-    """
+def test_reset_all_cursors_clears_exactly_two_keys(tmp_path):
+    """reset 恰清两键：last_journal/last_compress 删除；dream 游标已退役出复位表。"""
     from niu_api.compat import _reset_all_cursors
 
     home = tmp_path
     niu = home / ".niu"
     niu.mkdir(parents=True)
-    for name in ("last_journal.json", "last_compress.json", "last_dream_evolve.json"):
+    for name in ("last_journal.json", "last_compress.json"):
         (niu / name).write_text("{}", encoding="utf-8")
 
     with mock.patch("pathlib.Path.home", return_value=home):
         asyncio.run(_reset_all_cursors())
 
     remaining = sorted(p.name for p in niu.iterdir())
-    assert remaining == [], f"三键游标应全部删除，实际残留 {remaining}"
+    assert remaining == [], f"两键游标应全部删除，实际残留 {remaining}"
 
 
 def test_reset_all_cursors_never_touches_entity_extract_file(tmp_path):

@@ -168,15 +168,15 @@ class TestClearChatJournalCursorReset:
         assert '"last_journal.json"' in source
 
     def test_journal_cursor_reset_list_complete(self):
-        """验证游标重置列表包含三键游标文件（工程四决策 5：三键方案，dream 键必须留驻防哨兵翻转）"""
+        """验证游标重置列表恰含两键游标文件（工程五七件套退役：dream 游标已消亡）"""
         source = _read_source()
         # 找到重置列表所在行
         lines = source.split("\n")
         for line in lines:
             if '"last_journal.json"' in line:
-                # 三键游标文件都应在同一行
-                assert '"last_dream_evolve.json"' in line
+                # 两键游标文件应在同一行，且不得残留已退役的 dream 键
                 assert '"last_compress.json"' in line
+                assert '"last_dream_evolve.json"' not in line
                 break
         else:
             pytest.fail("Cursor reset list not found with expected entries")

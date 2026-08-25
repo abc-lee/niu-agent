@@ -116,7 +116,7 @@ def test_degradation_skips_step1_when_thinking_disabled():
         prompt_builder_kwargs={
             "display_tokens": 1000, "compress_target_tokens": 500, "usage_percent": 80.0,
             "force_history": [{"role": "user", "content": "[idx:1] x"}],
-            "last_compress_id": None, "dream_idx_in_force": 0,
+            "last_compress_id": None,
         },
         stop_aware=False,
         call_fn=_fake_call_fn,
@@ -162,7 +162,7 @@ def test_degradation_skips_step1_when_effort_nonempty():
         prompt_builder_kwargs={
             "display_tokens": 1000, "compress_target_tokens": 500, "usage_percent": 80.0,
             "force_history": [{"role": "user", "content": "[idx:1] x"}],
-            "last_compress_id": None, "dream_idx_in_force": 0,
+            "last_compress_id": None,
         },
         stop_aware=False,
         call_fn=_fake_call_fn,

@@ -211,7 +211,7 @@ def test_cp3_interrupt_after_dream_loop():
     assert _called_agents(call_mock) == ["context-manager", "entity-extractor", "dream-evolver"]
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
-    assert [d for d in writes if d.get("last_dream_evolve_id")][-1]["last_dream_evolve_id"] == "m2"
+    assert [d for d in writes if d.get("last_dream_evolve_id")] == [], "dream 游标已退役（工程五），零写"
     assert [d for d in writes if d.get("last_compress_id")], "压缩游标已推进不回滚"
     assert calls["n"] == 5
 
