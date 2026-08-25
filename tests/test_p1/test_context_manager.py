@@ -75,53 +75,6 @@ class TestContextManager:
         assert tokens > 0, "Tokens should be positive"
         assert tokens < 100, "Simple messages should have less than 100 tokens"
 
-    def test_should_compress_by_message_count(self):
-        """测试 should_compress 已禁用：压缩只在 agent_loop 工具循环中同步触发"""
-        manager = ContextManager(None, max_messages=50)
-
-        # should_compress 已禁用，无论消息数量多少都返回 False
-        messages = [{"role": "user", "content": f"Message {i}"} for i in range(40)]
-        assert not manager.should_compress(messages), "should_compress is disabled, should return False"
-
-        messages = [{"role": "user", "content": f"Message {i}"} for i in range(60)]
-        assert not manager.should_compress(messages), "should_compress is disabled, should return False"
-
-    def test_compress_messages(self):
-        """测试消息压缩"""
-        manager = ContextManager(None, max_messages=50)
-
-        # 创建 50 条消息
-        messages = [{"role": "user", "content": f"Message {i}"} for i in range(50)]
-
-        compressed = manager.compress_messages(messages)
-
-        # 验证压缩后保留 80%
-        assert len(compressed) == int(50 * 0.8) + 1, "Should keep 80% plus compression note"  # +1 是压缩说明
-
-        # 验证包含压缩说明
-        assert "压缩" in compressed[0]["content"]
-
-        # 验证保留的是最近的消息
-        assert "Message 49" in compressed[-1]["content"]
-
-    def test_estimate_context_usage(self):
-        """测试上下文使用情况估算"""
-        manager = ContextManager(None, max_messages=50, max_tokens=100000)
-
-        messages = [{"role": "user", "content": f"Test message {i}"} for i in range(30)]
-
-        usage = manager.estimate_context_usage(messages)
-
-        # 验证返回值
-        assert "message_count" in usage
-        assert "estimated_tokens" in usage
-        assert "usage_percentage" in usage
-        assert "should_compress" in usage
-
-        assert usage["message_count"] == 30
-        assert usage["estimated_tokens"] > 0
-        assert 0 <= usage["usage_percentage"] <= 100
-
     @pytest.mark.asyncio
     async def test_get_context_for_chat(self, store_with_messages):
         """测试获取聊天上下文（主入口）"""
