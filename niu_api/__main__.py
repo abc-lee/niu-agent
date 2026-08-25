@@ -435,11 +435,14 @@ async def lifespan(app: FastAPI):
         # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
         set_preload_stage("正在加载系统任务")
         _system_tasks = [
+            # T7：journal 迁出睡眠管道 → scheduler 内置定时任务（journal_daily 直执行，
+            # 不经主 Agent/ChatQueue——journal 内容写进 messages.db 会反污染上下文窗口）
             {
-                "name": "daily-journal-check",
-                "content": "请调用 journal-agent 记录今天的日志，整理后展示给用户确认是否需要修改",
+                "name": "journal-daily",
+                "content": "每日日志整理：程序直读 DB 增量提取写入 journal.md",
                 "cron_expr": "0 18 * * *",
                 "hour": 18,
+                "task_kind": "journal_daily",
             },
             {
                 "name": "weekly-report-reminder",
@@ -482,6 +485,7 @@ async def lifespan(app: FastAPI):
                         cron_expr=task_def["cron_expr"],
                         event_type="recurring",
                         name=task_def["name"],
+                        task_kind=task_def.get("task_kind", "reminder"),
                     )
                     logger.info(f"Created system task '{task_def['name']}' (next run: {next_time})")
                 elif existing.get("content") != task_def["content"]:
@@ -490,6 +494,12 @@ async def lifespan(app: FastAPI):
                     logger.info(f"Updated system task '{task_def['name']}' content (id={existing['id']})")
                 else:
                     logger.debug(f"System task '{task_def['name']}' already exists and up-to-date")
+            # T7 一次性迁移：旧 daily-journal-check 提醒经主 Agent 调 journal-agent（ChatQueue
+            # 注入 messages.db 反污染上下文），已被内置 journal-daily 直执行任务取代
+            legacy_journal = ts.find_task_by_name("daily-journal-check")
+            if legacy_journal is not None:
+                ts.delete_task_permanent(legacy_journal["id"])
+                logger.info("Removed legacy system task 'daily-journal-check' (superseded by journal-daily)")
 
         except Exception as e:
             logger.warning(f"Failed to ensure system tasks: {e}")

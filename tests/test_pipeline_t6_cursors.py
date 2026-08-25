@@ -2,11 +2,9 @@
 
 方案 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §4.3 + §5 T6 + §6 T6；
 工程四 T2 门控三孤儿（_cursors_caught_up/_dream_only/_read_cursor_value）已删除，
-原单元测试类随之移除，保留：
-1. sleep 全序用例（新序 journal→cm→entity→dream，无门控 skipped 语义）
-2. compat force 调用点（4 个不引用被删符号的 force 回归用例显式保留）：校验通过 → cm 执行；
-   降级同源（effective_protect=5，校验/压缩全用 5）
-3. runner _execute_force_pipeline 调用点：直接进入压缩段（cm 被调）
+原单元测试类随之移除；force/cm 回归用例已随 T6 压缩退役、T7 journal 迁 scheduler 移除，
+保留：
+1. sleep 全序用例（entity→dream；journal 已迁 scheduler 定时任务、cm 已退役——二者零调用）
 
 全 mock：call_subagent_with_auto_answer / 游标文件（内存 _CursorStore 模拟真实文件往返）/
 runner / TokenCalculator——禁真实 LLM、禁图谱写入、messages.db 零新增。
@@ -165,11 +163,11 @@ def _called_agents(call_mock):
 
 
 # ---------------------------------------------------------------------------
-# 1. sleep 全序用例（工程四重排：journal→cm→entity→dream，门控 skipped 语义已消失）
+# 1. sleep 全序用例（entity→dream；journal/cm 均已退出睡眠管道）
 # ---------------------------------------------------------------------------
 
-def test_sleep_full_order_journal_skipped_then_entity_dream():
-    """T6 压缩退役后睡眠全序：usage<50% journal skipped → entity → dream。
+def test_sleep_full_order_entity_then_dream():
+    """T7 后睡眠全序：entity → dream（journal 迁 scheduler、cm 退役，均零调用）。
 
     entity relay 剪切 F1 至空 + 梦境循环删空 F2。dream mock 报 processed_line=6（两条记录共 6 行，全删）。
     """
@@ -193,8 +191,3 @@ def test_sleep_full_order_journal_skipped_then_entity_dream():
         assert f.read() == "", "成功提炼后 F1 应为空"
     with open(f2, encoding="utf-8") as f:
         assert f.read() == "", "梦境循环 covered_all 后 F2 应已删空"
-
-
-# ---------------------------------------------------------------------------
-# 2. compat force 调用点：_compress_force 压缩段入口 + 降级同源
-# ---------------------------------------------------------------------------

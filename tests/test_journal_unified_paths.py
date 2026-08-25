@@ -1,14 +1,17 @@
 # tests/test_journal_unified_paths.py
 """
-Journal-Agent 三路径统一集成测试
+Journal-Agent 触发路径集成测试
 
 真实测试：需要程序运行 + 真实 LLM。
 手动执行：RUN_INTEGRATION_TESTS=1 python tests/test_journal_unified_paths.py
 
 验证点：
-1. 路径2/3（API触发）— journal.md 格式一致
-2. 路径1（主Agent触发）— 也能正确写入日志
-3. 游标文件正确更新
+1. 路径1（主Agent对话触发）— 正确写入 journal.md
+2. journal.md 格式一致性（日期头去重、条目格式）
+
+注：tidy/force 触发路径已退役（T6 压缩退役 + T7 journal 迁 scheduler journal_daily
+定时任务），原「force tidy 推进 journal 游标」断言随之删除；游标推进由 scheduler
+直执行分支负责，单元覆盖见 tests/test_journal_daily_scheduler.py。
 """
 
 import json
@@ -56,36 +59,6 @@ def test_send_chat_messages():
     print(f"[PASS] Sent {len(messages)} chat messages")
 
 
-def test_force_tidy_triggers_journal():
-    """路径3：通过 force tidy 触发 journal-agent"""
-    old_cursor = ""
-    if CURSOR_PATH.exists():
-        old_cursor = json.loads(CURSOR_PATH.read_text()).get("last_journal_id", "")
-
-    resp = requests.post(
-        f"{API_BASE}/api/context/tidy",
-        json={"session_id": "default", "mode": "force"},
-        timeout=120,
-    )
-    assert resp.status_code == 200, f"Force tidy failed: {resp.status_code}"
-    result = resp.json()
-    print(f"[INFO] Force tidy result: {json.dumps(result, ensure_ascii=False)[:200]}")
-
-    time.sleep(10)
-
-    assert CURSOR_PATH.exists(), "Cursor file not created"
-    new_cursor = json.loads(CURSOR_PATH.read_text()).get("last_journal_id", "")
-    assert new_cursor != old_cursor, f"Cursor not updated: {old_cursor} -> {new_cursor}"
-    print(f"[PASS] Force tidy: cursor updated {old_cursor[:8]}... -> {new_cursor[:8]}...")
-
-    assert JOURNAL_PATH.exists(), "journal.md not created"
-    content = JOURNAL_PATH.read_text(encoding="utf-8")
-    from datetime import datetime
-    today = datetime.now().strftime("%Y-%m-%d")
-    assert f"# {today}" in content, "Today's date header not found in journal.md"
-    print("[PASS] Force tidy: journal.md contains today's entries")
-
-
 def test_chat_triggers_journal_via_handler():
     """路径1：通过主Agent对话触发 journal-agent"""
     old_cursor = json.loads(CURSOR_PATH.read_text()).get("last_journal_id", "")
@@ -125,13 +98,12 @@ def test_journal_format_consistency():
 
 
 if __name__ == "__main__":
-    print("=== Journal-Agent 三路径统一集成测试 ===\n")
+    print("=== Journal-Agent 触发路径集成测试 ===\n")
     print("前置条件：程序已启动（./niu）\n")
 
     try:
         test_api_health()
         test_send_chat_messages()
-        test_force_tidy_triggers_journal()
         test_chat_triggers_journal_via_handler()
         test_journal_format_consistency()
         print("\n=== 所有测试通过 ===")

@@ -1,9 +1,10 @@
-"""T3 整理管道队列测试：_execute_force_pipeline 提取 + 入口 8（内联直调 + 转换块）。
+"""整理管道队列测试：入口 8 机械压实内联直调（零队列投递 + 滞回闸门 + 回写契约）+ 投递失败重抛。
 
 设计见 docs/superpowers/plans/2026-08-23-remove-outer-subagent-timeouts.md §3.3（入口 8 内联化，
 不经队列、无外层等待上限）与 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §3.1 入口 9。
-全 mock：runner._execute_force_pipeline（不真实调压缩管道）+ 转换块 DB 重载（_sync_get_messages 假消息）——
+全 mock：compaction.build_compact_view（不真实调压实管道）+ DB 读取（_sync_get_messages 假消息）——
 禁真实 LLM、禁图谱写入、messages.db 零新增（转换块孤立 tool 清理路径用无 tool_calls 假消息绕过）。
+（_execute_force_pipeline 已随 T6 压缩退役删除，本文件现钉入口 8 机械压实回调契约。）
 """
 import asyncio
 

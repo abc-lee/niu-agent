@@ -3,12 +3,12 @@
 设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §4.2 / §5 T5 / §6 T5。
 全 mock：call_subagent_with_auto_answer / 游标文件 / is_sleeping / runner——禁真实 LLM、禁图谱写入、messages.db 零新增。
 
-检查点契约（仅 mode=='sleep'，工程四重排后管道序：journal(≥50%) → context-manager → entity-extractor → dream-evolver）：
+检查点契约（仅 mode=='sleep'；T7 journal 迁 scheduler 后管道序：entity-extractor → dream-evolver → 块摘要可选层）：
 - CP0 worker 取出 sleep 任务执行前：非睡眠 → {"status":"cancelled","reason":"woke_up"}，impl 零调用
-- CP1 压缩对（journal+context-manager）完成后：非睡眠 → {"status":"interrupted","reason":"woke_up"}，entity/dream 不执行
-- CP2 entity 段完成后：同上，dream 不执行
-- CP3 dream 循环完成后（纯中断检查）：同上
-- 已推进游标不回滚（compress/entity/dream 游标保留 CP 打断时的推进值，下次续跑）
+- CP1 entity 段完成后：非睡眠 → {"status":"interrupted","reason":"woke_up"}，dream 不执行（F1 已剪切不回滚）
+- dream 循环内删除前缀后中断检查：同上
+- CP2 dream 循环完成后（纯中断检查）：同上
+- 已推进游标不回滚（游标保留 CP 打断时的推进值，下次续跑）
 - force/runner-force 零插入（反向断言：mock is_sleeping 抛异常 → 这些路径必须不触发）
 """
 import asyncio
@@ -147,76 +147,71 @@ def _cursor_writes(write_mock):
     return [call.args[1] for call in write_mock.call_args_list]
 
 
-def test_cp1_interrupt_after_journal():
-    """CP1：journal 腿完成后唤醒 → interrupted；entity/dream 不执行（T6：cm 腿退役，CP1 收缩为 journal 检查点）。"""
+def test_cp1_interrupt_after_entity():
+    """CP1：entity 段完成后唤醒 → interrupted；dream 不执行（T7：journal 腿迁 scheduler，entity 为首腿）。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return False  # 首次检查即 CP1（usage<50% journal skipped，无派发前复查）
+        return False  # 首次检查即 CP1（entity 后）
 
     result, write_mock, call_mock, relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == [], "journal skipped（usage<50%）且 entity/dream 不应执行"
+    assert _called_agents(call_mock) == ["entity-extractor"], "entity 已执行，dream 不应执行"
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")] == []
     assert [d for d in writes if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
     with open(relay["f1"], encoding="utf-8") as f:
-        assert '"msg_id": "m2"' in f.read(), "entity 未执行，F1 不得被剪切"
+        assert f.read() == "", "entity 已执行，F1 应已被剪切"
+    with open(relay["f2"], encoding="utf-8") as f:
+        assert '"msg_id": "m2"' in f.read(), "剪下前缀应已追加到 F2"
     assert calls["n"] == 1
 
 
 # ---------------------------------------------------------------------------
 # CP1-CP3：各检查点打断后后续步骤不执行、已推进游标不回滚
 # ---------------------------------------------------------------------------
-def test_cp2_interrupt_after_entity():
-    """CP2：entity 段完成后唤醒 → interrupted；dream 不执行；F1 已剪切不回滚。"""
+def test_dream_loop_interrupt_when_awake():
+    """dream 循环内删除前缀后的中断检查：唤醒 → interrupted；F2 已删不回滚。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 2  # CP1 仍睡眠，CP2 断
+        return calls["n"] < 2  # CP1（entity 后）仍睡眠，dream 循环内检查断
 
     result, write_mock, call_mock, relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == ["entity-extractor"], "dream 不应执行"
-    writes = _cursor_writes(write_mock)
-    assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
-    assert [d for d in writes if d.get("last_dream_evolve_id")] == [], "dream 未执行零写"
-    assert [d for d in writes if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
-    with open(relay["f1"], encoding="utf-8") as f:
-        assert f.read() == "", "entity 步后 F1 应已被剪切（剪切不回滚）"
+    assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver"]
     with open(relay["f2"], encoding="utf-8") as f:
-        assert '"msg_id": "m2"' in f.read(), "剪下前缀应已追加到 F2"
+        assert f.read() == "", "dream 首轮已删 F2 前缀，不回滚"
     assert calls["n"] == 2
 
 
-
-def test_cp3_interrupt_after_dream_loop():
-    """CP3：dream 循环完成后（纯中断检查）唤醒 → interrupted；无后续段可跳过。"""
+def test_cp2_interrupt_after_dream_loop():
+    """CP2：dream 循环完成后（纯中断检查）唤醒 → interrupted；无后续段可跳过。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 4  # CP1/CP2/dream 轮间检查仍睡眠，CP3 断
+        return calls["n"] < 3  # CP1/dream 循环内检查仍睡眠，CP2 断
 
     result, write_mock, call_mock, _relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    # journal 此 fixture usage 2.5% < 50% 走 skipped 分支；T6 后管道序 entity→dream
+    # T7 后管道序 entity→dream（journal 已迁 scheduler journal_daily）
     assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver"]
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")] == [], "dream 游标已退役（工程五），零写"
     assert [d for d in writes if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
-    assert calls["n"] == 4
+    assert calls["n"] == 3
 
 
 
 def test_sleep_full_run_not_interrupted_when_asleep():
     """对照：全程睡眠 → 完整跑完（fixture 非空洞，CP 断言有判别力）。
 
-    T6 后管道序 journal(≥50% 才跑，本 fixture skipped)→entity→dream→块摘要。
+    T7 后管道序 entity→dream→块摘要（journal 已迁 scheduler journal_daily）。
     """
     result, write_mock, call_mock, relay = _run_sleep_tidy(lambda: True)
     assert result.get("status") == "ok", f"睡眠中不应打断: {result}"

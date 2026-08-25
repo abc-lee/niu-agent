@@ -268,8 +268,8 @@ def test_sleep_zero_progress_guard_breaks():
 def test_sleep_interrupted_mid_loop():
     """轮间唤醒检查：round1 后仍睡眠继续、round2 后被唤醒 → interrupted；已删不回滚。"""
     budget = len(_record("m1").encode("utf-8"))
-    # 消费顺序（T6 后）：CP1(journal)(T) → CP2(T) → round1 唤醒检查(T) → round2 唤醒检查(False)
-    flips = iter([True, True, True, False])
+    # 消费顺序（T7 后，journal 腿迁 scheduler）：CP1(entity 后)(T) → round1 唤醒检查(T) → round2 唤醒检查(False)
+    flips = iter([True, True, False])
     call_mock = mock.MagicMock()
 
     def _keyed(agent_name=None, **kwargs):

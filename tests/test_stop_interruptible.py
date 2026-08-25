@@ -426,11 +426,8 @@ def _tidy_common_patches():
         mock.patch("agent.subagent.call_subagent_with_auto_answer", return_value=""),
         # T5：sleep 管道测试保持睡眠态（CP1-CP3 检查点需 is_sleeping=True 才不打断）
         mock.patch("niu_api.compat.is_sleeping", return_value=True),
-        # 本 fixture _build_incremental_msg_text 恒空（各段 no new messages），无真实游标写入
-        # （工程四重排：门控摘除，原 _read_cursor_value patch 缝删除）
-        # 增量区间恒空 → 各阶段"no new messages"，不调子 Agent、不写游标
-        mock.patch("niu_api.compat._build_incremental_msg_text", return_value=""),
-        # 防 ~/.niu 既有游标文件触发真实游标写入（测试保持 hermetic）
+        # 防 ~/.niu 既有游标文件触发真实游标写入（测试保持 hermetic；
+        # T7 后 sleep 管道无 journal 腿，原 _build_incremental_msg_text 恒空 patch 缝随符号退役）
         mock.patch("niu_api.compat._write_cursor_with_lock"),
     ]
 

@@ -10,7 +10,6 @@ Tests written BEFORE implementation to verify:
 7. 3x repeat detection preserved
 8. do_no_tool next_prompt never worked (confirmed by code review)
 """
-import inspect
 import os
 import subprocess
 import sys
@@ -166,14 +165,6 @@ class TestThreeRepeatDetectionPreserved:
         recent_tools = _recent_tool_calls[-3:]
         assert not (len(recent_tools) == 3 and recent_tools[0] == recent_tools[1] == recent_tools[2])
 
-
-class TestFilterWmRemoved:
-    """filter_wm parameter should be removed from _build_incremental_msg_text."""
-
-    def test_no_filter_wm_parameter(self):
-        from niu_api.compat import _build_incremental_msg_text
-        sig = inspect.signature(_build_incremental_msg_text)
-        assert "filter_wm" not in sig.parameters
 
 
 class TestHandlerNoAnchorPromptAsNextPrompt:

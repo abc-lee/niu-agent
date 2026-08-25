@@ -1,17 +1,16 @@
-"""非压缩子 Agent（entity-extractor/dream-evolver/journal-agent）改用 history 逐条传消息的单元测试。
+"""journal 增量导出通道单元测试（T7：history 注入 → 文件自读）。
 
-背景：这三个子 Agent 原本把 600 条消息拼成单条 task 字符串传给 call_subagent_with_auto_answer，
-被 _truncate_task_for_subagent 砍掉末尾最新工作内容，且每条消息前加了无用的 [id:UUID] [idx:N] 前缀。
-本次改造仿 context-manager 简易 ID 映射：history 每条 content 前缀 [N] 极简编号，
-程序内存维护 idx_to_id 映射，子 Agent 回传 processed_up_to=N，程序查映射更新游标。
+背景（T7）：journal-agent 输入通道改为自读导出 md——程序把 DB 增量导出到工作集
+文件（[N] 编号），子 Agent 自读后回报 processed_up_to=N，程序按 idx_to_id 映射
+推进游标。原 _build_plain_history/_build_incremental_msg_text 随 history 注入通道
+退役整删。
 
 本测试验证：
-1. _build_plain_history 构造带 [N] 前缀的 history + 返回 idx_to_id 映射
-2. _build_plain_history 保留 tool_calls/tool_call_id
-3. content 前缀是 [N] 极简编号（不是 [id:UUID] [idx:N] Ntokens role:）
+1. _export_journal_increment 游标下界（增量区间、找不到游标降级全量、零增量）
+2. 导出格式：[N] 头行编号 + role/created_at，idx_to_id 映射与编号一致
+3. tool_calls / tool_call_id 标注与 role=tool 超长正文截断（md_mirror 先例）
 4. _parse_processed_up_to 解析各种格式（= / : / 空格，大小写不敏感）
 5. _parse_processed_up_to 未找到返回 None
-6. entity/dream/journal 三个子 Agent 的 force 调用用 history=... 而非 task=巨型字符串
 """
 import sys
 from pathlib import Path
@@ -20,85 +19,82 @@ _root = Path(__file__).parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from niu_api.compat import _build_plain_history, _parse_processed_up_to  # noqa: E402
+from niu_api.compat import _export_journal_increment, _parse_processed_up_to  # noqa: E402
 
 
 class FakeMsg:
     """模拟 Message 对象（compat.py 用 getattr(msg, 'id') 等访问）。"""
-    def __init__(self, id, role, content, tool_calls=None, tool_call_id=None):
-        self.id = id
+
+    def __init__(self, mid, role="user", content="hello", tool_calls=None, tool_call_id="", created_at="t"):
+        self.id = mid
         self.role = role
         self.content = content
-        self.tool_calls = tool_calls
+        self.tool_calls = tool_calls if tool_calls is not None else []
         self.tool_call_id = tool_call_id
+        self.created_at = created_at
 
 
-def test_build_plain_history_basic_and_idx_to_id():
-    """基本场景：3 条消息构造 history，content 前缀 [N] + 返回 idx_to_id 映射。"""
+def test_export_increment_cursor_lower_bound(tmp_path):
+    """游标之后的消息导出；编号 1-based 与 idx_to_id 一致。"""
     messages = [
-        FakeMsg(id="uuid-1", role="user", content="你好"),
-        FakeMsg(id="uuid-2", role="assistant", content="你好，我是 Niu"),
-        FakeMsg(id="uuid-3", role="user", content="今天天气"),
+        FakeMsg("uuid-0", content="旧消息"),
+        FakeMsg("uuid-1", content="你好"),
+        FakeMsg("uuid-2", content="做完了 A"),
+        FakeMsg("uuid-3", content="收到"),
     ]
-    out_msg_ids = []
-    history, idx_to_id = _build_plain_history(messages, out_msg_ids=out_msg_ids)
+    out = tmp_path / "workset.md"
+    msg_ids, idx_to_id = _export_journal_increment(messages, "uuid-0", out)
 
-    assert len(history) == 3
-    assert history[0]["role"] == "user"
-    assert history[0]["content"] == "[1] 你好"  # 极简编号前缀
-    assert history[1]["content"] == "[2] 你好，我是 Niu"
-    assert history[2]["content"] == "[3] 今天天气"
-    assert out_msg_ids == ["uuid-1", "uuid-2", "uuid-3"]
-    # idx_to_id 映射：1-based 简易编号 -> 真实 UUID
+    assert msg_ids == ["uuid-1", "uuid-2", "uuid-3"]
     assert idx_to_id == {1: "uuid-1", 2: "uuid-2", 3: "uuid-3"}
+    text = out.read_text(encoding="utf-8")
+    assert "[1] user" in text and "[3] user" in text
+    assert "旧消息" not in text, "游标之前的消息不得出现在工作集"
+    assert "你好" in text
 
 
-def test_build_plain_history_preserves_tool_calls():
-    """assistant 带 tool_calls + tool 消息：保留 tool_calls/tool_call_id，content 前缀 [N]。"""
+def test_export_increment_missing_cursor_degrades_full(tmp_path):
+    """游标 UUID 找不到 → 降级全量处理。"""
+    messages = [FakeMsg("m1"), FakeMsg("m2")]
+    out = tmp_path / "workset.md"
+    msg_ids, idx_to_id = _export_journal_increment(messages, "not-exist", out)
+    assert msg_ids == ["m1", "m2"]
+    assert idx_to_id == {1: "m1", 2: "m2"}
+
+
+def test_export_increment_empty_when_no_new_messages(tmp_path):
+    """游标指向末条 → 零增量，返回空且不写文件。"""
+    messages = [FakeMsg("m1")]
+    out = tmp_path / "workset.md"
+    msg_ids, idx_to_id = _export_journal_increment(messages, "m1", out)
+    assert msg_ids == [] and idx_to_id == {}
+    assert not out.exists()
+
+
+def test_export_increment_tool_annotations_and_truncation(tmp_path):
+    """tool_calls/tool_call_id 进头行标注；role=tool 超长正文截断。"""
+    from agent.md_mirror import TOOL_OUTPUT_MARKER
+
+    long_output = "x" * 5000
     messages = [
-        FakeMsg(id="msg-1", role="user", content="查天气"),
-        FakeMsg(
-            id="msg-2", role="assistant", content="",
-            tool_calls=[{"id": "tc-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}],
-        ),
-        FakeMsg(id="msg-3", role="tool", content="今天晴", tool_call_id="tc-1"),
+        FakeMsg("a1", role="assistant", content="", tool_calls=[{"function": {"name": "search"}}]),
+        FakeMsg("t1", role="tool", content=long_output, tool_call_id="call-9"),
     ]
-    history, idx_to_id = _build_plain_history(messages)
+    out = tmp_path / "workset.md"
+    _export_journal_increment(messages, "", out)
 
-    assert len(history) == 3
-    assert history[0]["content"] == "[1] 查天气"
-    assert history[1]["tool_calls"] == [{"id": "tc-1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}]
-    assert history[1]["content"] == "[2] "  # 空 content 前缀 [2]
-    assert history[2]["role"] == "tool"
-    assert history[2]["tool_call_id"] == "tc-1"
-    assert history[2]["content"] == "[3] 今天晴"
-    assert idx_to_id == {1: "msg-1", 2: "msg-2", 3: "msg-3"}
-
-
-def test_build_plain_history_prefix_is_minimal_not_verbose():
-    """content 前缀是极简 [N]，不是 [id:UUID] / [idx:N] / Ntokens / role:。"""
-    messages = [
-        FakeMsg(id="uuid-abc-123", role="user", content="测试内容"),
-    ]
-    history, _ = _build_plain_history(messages)
-
-    content = history[0]["content"]
-    assert content == "[1] 测试内容"  # 极简 [N] 前缀
-    assert "[id:" not in content
-    assert "[idx:" not in content
-    assert "tokens" not in content
-    assert "role:" not in content
-    assert "uuid-abc-123" not in content  # UUID 不出现在 content 里
+    text = out.read_text(encoding="utf-8")
+    assert "[1] assistant" in text and "(tool_calls: search)" in text
+    assert "[2] tool" in text and "(answers tool_call_id=call-9)" in text
+    assert TOOL_OUTPUT_MARKER in text, "超长工具输出应按 md_mirror 先例截断"
 
 
 def test_parse_processed_up_to_various_formats():
     """_parse_processed_up_to 支持 = / : / 空格分隔，大小写不敏感。"""
     assert _parse_processed_up_to("处理完成\nprocessed_up_to=15") == 15
     assert _parse_processed_up_to("processed_up_to: 15") == 15
-    assert _parse_processed_up_to("processed_up_to 15") == 15
     assert _parse_processed_up_to("PROCESSED_UP_TO=15") == 15
-    assert _parse_processed_up_to("Processed_Up_To=15") == 15
-    # 匹配第一个有效整数
+    assert _parse_processed_up_to("processed_up_to 15") == 15
     assert _parse_processed_up_to("processed_up_to=3\nprocessed_up_to=15") == 3
 
 
@@ -106,20 +102,5 @@ def test_parse_processed_up_to_not_found_returns_none():
     """未找到 processed_up_to= 时返回 None。"""
     assert _parse_processed_up_to("处理完成，无标记") is None
     assert _parse_processed_up_to("") is None
-    assert _parse_processed_up_to("processed_up_to=") is None  # 无数字
+    assert _parse_processed_up_to("processed_up_to=") is None
     assert _parse_processed_up_to("processed_up_to=abc") is None  # 非整数
-
-
-def test_build_plain_history_empty_messages():
-    """空消息列表返回空 history + 空 idx_to_id。"""
-    history, idx_to_id = _build_plain_history([])
-    assert history == []
-    assert idx_to_id == {}
-
-
-def test_build_plain_history_out_msg_ids_default_none():
-    """out_msg_ids=None 时不报错（内部初始化为空列表）。"""
-    messages = [FakeMsg(id="m1", role="user", content="hi")]
-    history, idx_to_id = _build_plain_history(messages)  # 不传 out_msg_ids
-    assert len(history) == 1
-    assert idx_to_id == {1: "m1"}
