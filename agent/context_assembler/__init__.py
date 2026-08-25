@@ -5,7 +5,7 @@ compaction 批量压实。接线点在 context_manager（组装出口 80% 触发
 runner._on_context_high_usage（真值回调回写）与 compat /compact 端点。
 """
 
-from agent.context_assembler import calibration, compaction
+from agent.context_assembler import calibration, compaction, summarizer
 from agent.context_assembler.blocks import (
     PointerBlock,
     default_db_path,
@@ -27,5 +27,6 @@ __all__ = [
     "load_by_ids",
     "rowid_range_query",
     "slice_units",
+    "summarizer",
     "upsert_blocks",
 ]
