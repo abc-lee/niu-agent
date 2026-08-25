@@ -40,7 +40,7 @@ def _setup_context_manager(mock_cm):
 
 # get_context_manager 是在 _process_single 内部延迟导入的，
 # 所以必须 patch 定义处 agent.context_manager.get_context_manager
-# _check_overflow 是实例方法，patch 为 niu_api.chat_queue.ChatQueue._check_overflow
+# （Task 3 溢出投递面收编：_check_overflow/_retry_force_compression 已整删，无需再隔离）
 
 
 @pytest.mark.asyncio
@@ -54,8 +54,7 @@ async def test_enqueue_and_process(mock_runner, mock_store):
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
-         patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
 
         _setup_context_manager(mock_cm)
 
@@ -91,8 +90,7 @@ async def test_message_merging(mock_runner, mock_store):
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
-         patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
 
         _setup_context_manager(mock_cm)
 
@@ -132,8 +130,7 @@ async def test_enqueue_returns_immediately(mock_runner, mock_store):
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
-         patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
 
         _setup_context_manager(mock_cm)
 
@@ -158,8 +155,7 @@ async def test_enqueue_and_wait(mock_runner, mock_store):
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
-         patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
 
         _setup_context_manager(mock_cm)
 
@@ -181,8 +177,7 @@ async def test_drain(mock_runner, mock_store):
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
-         patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
 
         _setup_context_manager(mock_cm)
 
@@ -210,8 +205,7 @@ async def test_is_processing_flag(mock_runner, mock_store):
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
          patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
-         patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")):
 
         _setup_context_manager(mock_cm)
 
@@ -297,7 +291,6 @@ def _scheduler_patches(mock_store):
         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
         patch("agent.context_manager.get_context_manager"),
         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")),
-        patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock),
     )
 
 
@@ -313,8 +306,8 @@ async def test_scheduler_reply_delivers_to_im(mock_runner, mock_store, monkeypat
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4, p5 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4, p5:
+    p1, p2, p3, p4 = _scheduler_patches(mock_store)
+    with p1, p2, p3 as mock_cm, p4:
         _setup_context_manager(mock_cm)
         await q.start()
         try:
@@ -339,8 +332,8 @@ async def test_scheduler_reply_force_only_delivers(mock_runner, mock_store, monk
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4, p5 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4, p5:
+    p1, p2, p3, p4 = _scheduler_patches(mock_store)
+    with p1, p2, p3 as mock_cm, p4:
         _setup_context_manager(mock_cm)
         await q.start()
         try:
@@ -366,8 +359,8 @@ async def test_scheduler_reply_no_flag_noop(mock_runner, mock_store, monkeypatch
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4, p5 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4, p5:
+    p1, p2, p3, p4 = _scheduler_patches(mock_store)
+    with p1, p2, p3 as mock_cm, p4:
         _setup_context_manager(mock_cm)
         await q.start()
         try:
@@ -391,8 +384,8 @@ async def test_scheduler_reply_im_disconnected_noop(mock_runner, mock_store, mon
     gw = _FakeIMGateway(connected=False)
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4, p5 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4, p5:
+    p1, p2, p3, p4 = _scheduler_patches(mock_store)
+    with p1, p2, p3 as mock_cm, p4:
         _setup_context_manager(mock_cm)
         await q.start()
         try:
@@ -416,8 +409,8 @@ async def test_scheduler_merged_batch_all_futures_flagged(mock_runner, mock_stor
     gw = _FakeIMGateway()
     monkeypatch.setattr("niu_api.channel.gateway.get_im_gateway", lambda: gw)
 
-    p1, p2, p3, p4, p5 = _scheduler_patches(mock_store)
-    with p1, p2, p3 as mock_cm, p4, p5:
+    p1, p2, p3, p4 = _scheduler_patches(mock_store)
+    with p1, p2, p3 as mock_cm, p4:
         _setup_context_manager(mock_cm)
         q.pause()  # 暂停 worker，确保两请求同窗口入队合并
         await q.start()

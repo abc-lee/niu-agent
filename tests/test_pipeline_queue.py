@@ -80,20 +80,48 @@ async def test_tidy_sleep_returns_queued_immediately(monkeypatch):
     await asyncio.wait_for(entered.wait(), timeout=1.0)
 
 
-async def test_tidy_force_awaits_worker_result(monkeypatch):
-    """mode='force' → 投递 + await wrap_future，返回 worker 执行结果。"""
-    async def fake_impl(request, chat_lock_already_held=False):
-        await asyncio.sleep(0.01)
-        return {"status": "ok", "message": "compressed"}
+from unittest.mock import AsyncMock
 
-    monkeypatch.setattr(compat, "_tidy_context_impl", fake_impl)
-    start_pipeline_queue()
-    resp = await tidy_context({"session_id": "s", "mode": "force"})
-    assert resp == {"status": "ok", "message": "compressed"}
+
+async def test_tidy_force_rejected_compact_direct(monkeypatch):
+    """Task 3 收编：mode='force' 随白名单收缩被拒；mode='compact' 直达机械压实
+    （不经整理队列、不触 _tidy_context_impl），并回传圆环 usage。"""
+    from agent.context_assembler import compaction
+
+    impl_spy = AsyncMock()
+    monkeypatch.setattr(compat, "_tidy_context_impl", impl_spy)  # compact 不得经 impl
+    monkeypatch.setattr(compat, "get_message_store", AsyncMock(return_value=object()))
+    monkeypatch.setattr("niu_api.chat.notify_compact_status_sync", lambda *a, **k: None)
+
+    async def fake_compact(store, system_msg=None, **kw):
+        return [{"role": "user", "content": "[历史索引]"}], {
+            "usage": 0.35, "tokens_estimate": 3500, "context_window": 10000,
+            "keep_turns": 3, "units_total": 5, "blocks_archived": 2,
+            "blocks_total": 2, "tools_placeholderized": 0, "emergency": False,
+        }
+
+    monkeypatch.setattr(compaction, "compact_now_detailed", fake_compact)
+
+    resp_force = await tidy_context({"session_id": "s", "mode": "force"})
+    assert resp_force["status"] == "error"
+
+    start_pipeline_queue()  # 队列可用也不得被 compact 触碰
+    try:
+        resp = await tidy_context({"session_id": "s", "mode": "compact"})
+    finally:
+        if compat._pipeline_queue is not None:
+            await compat.stop_pipeline_queue()
+    assert resp["status"] == "ok" and resp["mode"] == "compact"
+    assert resp["usage"] == 0.35
+    impl_spy.assert_not_awaited()
 
 
 async def test_tidy_none_window_sync(monkeypatch):
-    """None 窗口（队列未创建）：同步执行 impl，调用方等完成（§3.0 Option A）。"""
+    """None 窗口（队列未创建）：sleep 同步执行 impl，调用方等完成（§3.0 Option A）。
+
+    Task 3 注：force 分支已随白名单收缩移除——compact 不走 _tidy_context_impl，
+    同步语义由 test_tidy_force_rejected_compact_direct 覆盖。
+    """
     called: list[dict] = []
 
     async def fake_impl(request, chat_lock_already_held=False):
@@ -102,12 +130,9 @@ async def test_tidy_none_window_sync(monkeypatch):
 
     monkeypatch.setattr(compat, "_tidy_context_impl", fake_impl)
     assert compat._pipeline_queue is None
-    # sleep 与 force 同路径：同步执行返回 impl 结果（T1 端点测试依赖此路径保持同步语义）
     resp = await tidy_context({"session_id": "s", "mode": "sleep"})
     assert resp == {"status": "success"}
-    resp2 = await tidy_context({"session_id": "s", "mode": "force"})
-    assert resp2 == {"status": "success"}
-    assert len(called) == 2
+    assert len(called) == 1
 
 
 # ---------------------------------------------------------------------------

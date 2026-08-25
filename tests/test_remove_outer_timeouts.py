@@ -133,18 +133,33 @@ def _make_runner():
     return runner
 
 
+def _release_auto_gate():
+    """测试间复位全局滞回闸门（防跨用例闩锁污染）。"""
+    from agent.context_assembler.compaction import AUTO_GATE
+    AUTO_GATE.release()
+
+
 async def test_tb_inline_direct_call_zero_queue_dispatch(monkeypatch):
-    """spy 契约：_execute_force_pipeline 被直接同步调用；零 _dispatch_to_pipeline/_pipeline_enqueue 投递。"""
+    """spy 契约：机械压实被回调直接同步调用；零 _dispatch_to_pipeline/_pipeline_enqueue 投递；
+    新视图原地回写（Task 3 收编后语义）。"""
+    from agent.context_assembler import compaction
+
     from niu_api.compat import start_pipeline_queue
 
+    _release_auto_gate()
     runner = _make_runner()
-    execute_calls = []
+    compact_calls = []
 
-    def fake_execute():
-        execute_calls.append(1)
-        return {"status": "ok"}
+    def fake_compact(db_messages, *, system_msg=None, **kw):
+        compact_calls.append((len(db_messages), system_msg is not None))
+        return [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "[历史索引] 共 1 块早期对话已归档"},
+            {"role": "user", "content": "hello"},
+        ], {"usage": 0.35, "keep_turns": 3, "blocks_archived": 1,
+            "tools_placeholderized": 0}
 
-    runner._execute_force_pipeline = fake_execute
+    monkeypatch.setattr(compaction, "build_compact_view", fake_compact)
     dispatch_calls = []
     runner._dispatch_to_pipeline = lambda *a, **k: dispatch_calls.append(a)
     enqueue_calls = []
@@ -154,69 +169,65 @@ async def test_tb_inline_direct_call_zero_queue_dispatch(monkeypatch):
         _FakeDbMsg("m1", "user", "hello"),
     ]
 
-    messages = [{"role": "system", "content": "system prompt"}]
-    start_pipeline_queue()  # 队列可用也应零投递（内联化后回调不再触碰队列）
+    messages = [{"role": "system", "content": "system prompt"}, {"role": "user", "content": "old"}]
+    start_pipeline_queue()  # 队列可用也应零投递（机械压实不经队列）
     try:
         result = runner._on_context_high_usage(messages, 180000, 200000)
     finally:
         if compat._pipeline_queue is not None:
             await compat.stop_pipeline_queue()
 
-    assert execute_calls == [1], "压缩管道应被回调直接同步调用（Case 2 内联化）"
+    assert result is None
+    assert compact_calls == [(2, True)], "压实应被回调直接同步调用，且 system 原样传入"
     assert dispatch_calls == [], "不得有任何队列投递"
     assert enqueue_calls == [], "不得有任何队列投递"
-    assert result == {"status": "ok"}
-    # 转换块契约：dict 列表 + system 保留在 messages[0]
+    # 回写契约：dict 列表 + system 保留在 messages[0]
+    assert len(messages) == 3
     assert all(isinstance(m, dict) and "role" in m and "content" in m for m in messages)
     assert messages[0].get("role") == "system"
+    assert messages[1]["content"].startswith("[历史索引]")
 
 
 def test_tb_none_branch_empty_db_no_raise(monkeypatch):
-    """None 返回分支（空 DB 消息）：转换块跳过回写、回调不抛异常、透传 None。"""
+    """空 DB 消息分支：跳过回写、回调不抛异常、原列表保持。"""
+    _release_auto_gate()
     runner = _make_runner()
-    runner._execute_force_pipeline = lambda: None  # 管道 None 返回
     runner._sync_get_messages = lambda: []  # 空 DB
 
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
     result = runner._on_context_high_usage(messages, 100, 200000)
 
     assert result is None
-    assert messages == [  # 空 fresh_db_msgs → 不回写，原列表保持
+    assert messages == [  # 空 db_messages → 不回写，原列表保持
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hi"},
     ]
 
 
-def test_tb_stop_sequence_stages_exit_conversion_block_runs(monkeypatch):
-    """Stop 中断序列：is_stop_requested=True → 管道阶段检查点退出（None）；
-    转换块仍执行（DB 重载 + messages[:] 回写），done 事件广播。"""
-    monkeypatch.setattr(runner_module, "is_stop_requested", lambda: True)
+def test_tb_compaction_failure_releases_gate_and_broadcasts_done(monkeypatch):
+    """压实失败：done 事件仍广播（防圆环卡死）、滞回闸门解除、messages 不动。"""
+    from agent.context_assembler import compaction
 
+    _release_auto_gate()
     runner = _make_runner()
 
-    def fake_execute():
-        # 模拟管道首个阶段检查点：Stop 置位即 bare return（阶段退出）
-        if runner_module.is_stop_requested():
-            return None
-        return {"status": "ok"}
+    def boom(*a, **kw):
+        raise RuntimeError("compact failed")
 
-    runner._execute_force_pipeline = fake_execute
-    runner._sync_get_messages = lambda: [
-        _FakeDbMsg("m1", "user", "hello"),
-        _FakeDbMsg("m2", "assistant", "hi"),
-    ]
+    monkeypatch.setattr(compaction, "build_compact_view", boom)
+    runner._sync_get_messages = lambda: [_FakeDbMsg("m1", "user", "hello")]
     broadcasts = []
     monkeypatch.setattr(
         "niu_api.chat.notify_compact_status_sync",
-        lambda status, **k: broadcasts.append(status),
+        lambda status, **k: broadcasts.append((status, k)),
     )
 
     messages = [{"role": "system", "content": "sys"}]
-    result = runner._on_context_high_usage(messages, 180000, 200000)
-    assert len(messages) == 3 and all(isinstance(m, dict) for m in messages), "转换块仍应回写消息"
-    assert result is None  # 阶段退出透传
-    assert messages[0].get("role") == "system"  # system 保留
-    assert broadcasts == ["started", "done"], "started/done 事件均须广播（防前端圆环卡死）"
+    runner._on_context_high_usage(messages, 190000, 200000)
+    assert [s for s, _ in broadcasts] == ["started", "done"]
+    done_kw = broadcasts[1][1]
+    assert done_kw.get("reset_tokens") is False  # 未实际压实不得清真实 token 数
+    assert all(m["content"] != "[历史索引]" for m in messages if m.get("role") == "user")
 
 
 # ---------------------------------------------------------------------------

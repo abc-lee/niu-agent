@@ -230,6 +230,45 @@ def notify_compact_status_sync(status: str, mode: str = "", usage: float | None 
         pass
 
 
+# 溢出后 fire-and-forget 压实任务的引用集合（防 GC；完成即自动移除）
+_overflow_compact_tasks: set = set()
+
+
+def fire_and_forget_compaction(store, source: str = "chat") -> None:
+    """溢出投递面收编（Task 3）：CONTEXT_OVERFLOW 后直接调机械压实，替代旧
+    _pipeline_enqueue("force") 投递链。纯机械秒级、不经整理队列、无 ChatQueue pause；
+    完成后广播 done + usage + reset_tokens=True（圆环跳变协议不变）。
+    终态语义：压实后仍超限=放行服务端报错走既有降级回复。
+    """
+    async def _run():
+        usage = None
+        reset = False
+        try:
+            from agent.context_assembler import compaction
+            notify_compact_status_sync("started", mode="compact")
+            _, stats = await compaction.compact_now_detailed(store)
+            usage = stats.get("usage")
+            reset = True
+        except Exception:
+            logger.exception(f"[{source}] Post-overflow compaction failed")
+        finally:
+            # 无论成败都广播 done，防前端圆环卡死；仅实际压实路径清 token（协议语义）
+            try:
+                notify_compact_status_sync("done", mode="compact",
+                                           usage=usage, reset_tokens=reset)
+            except Exception:
+                pass
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning(f"[{source}] No running loop, skipping post-overflow compaction")
+        return
+    task = loop.create_task(_run())
+    _overflow_compact_tasks.add(task)
+    task.add_done_callback(_overflow_compact_tasks.discard)
+
+
 def notify_brain_region_sync(source: str = 'auto', changed_labels: list[str] | None = None) -> None:
     """广播脑区状态变更事件到 /api/events/stream。
 
@@ -675,24 +714,14 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 extracted_at_msgs = getattr(runner, "_extracted_at_msgs", None)  # 修正版方案：轮中提取的 subagent_msg（去重用）
                 message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs, extracted_at_msgs=extracted_at_msgs)
 
-            # 检测主 Agent 上下文溢出 → fire-and-forget 投递 force 压缩（§3.1 入口 3）
-            # 不 await：溢出压缩后台执行（worker 持 held=False 自拿 _chat_lock + pause，60s 超时既有），
-            # 不再阻塞当前消息响应（时序变化记录 §7.4）；None 窗口防御（§3.0 Option A）同步执行。
+            # 检测主 Agent 上下文溢出 → fire-and-forget 机械压实（Task 3 收编，替代 force 投递）
             if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
                 overflow_data = rv.get("data", {})
                 logger.warning(
                     f"[Chat SSE] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                    f"enqueueing force compression (fire-and-forget)"
+                    f"running mechanical compaction (fire-and-forget)"
                 )
-                from niu_api.compat import _tidy_context_impl, _pipeline_enqueue, _pipeline_queue
-                if _pipeline_queue is None:
-                    # None 窗口：同步执行（调用方持锁 → held=True 防 asyncio.Lock 不可重入）
-                    await _tidy_context_impl(
-                        request={"session_id": session_id, "mode": "force"},
-                        chat_lock_already_held=True,
-                    )
-                else:
-                    _pipeline_enqueue("force", {"session_id": session_id, "mode": "force"}, held=False)
+                fire_and_forget_compaction(store, source="ChatSSE")
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
         finally:
@@ -800,23 +829,14 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         else:
             logger.warning(f"[Chat Sync] Skipped persist due to chat error: {chat_error}")
 
-        # 检测主 Agent 上下文溢出 → fire-and-forget 投递 force 压缩（§3.1 入口 4）
-        # 不 await：溢出压缩后台执行（worker 持 held=False 自拿 _chat_lock + pause）；None 窗口防御同步执行。
+        # 检测主 Agent 上下文溢出 → fire-and-forget 机械压实（Task 3 收编，替代 force 投递）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
             overflow_data = rv.get("data", {})
             logger.warning(
                 f"[Chat] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                f"enqueueing force compression (fire-and-forget)"
+                f"running mechanical compaction (fire-and-forget)"
             )
-            from niu_api.compat import _tidy_context_impl, _pipeline_enqueue, _pipeline_queue
-            if _pipeline_queue is None:
-                # None 窗口：同步执行（调用方持锁 → held=True 防 asyncio.Lock 不可重入）
-                await _tidy_context_impl(
-                    request={"session_id": session_id, "mode": "force"},
-                    chat_lock_already_held=True,
-                )
-            else:
-                _pipeline_enqueue("force", {"session_id": session_id, "mode": "force"}, held=False)
+            fire_and_forget_compaction(store, source="ChatSync")
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
         _chat_lock.release()

@@ -1014,6 +1014,18 @@ class NiuRunner:
 
         # 3. 原地修改 messages[0]，本轮 LLM 立即读到
         self._assemble_system_message(messages, memory_section, injection, self.default_model)
+        # 4. 回填 system token 估算（Task 3：80% 触发判定的系统侧输入）。
+        # 挂点选在 _assemble_system_message 出口：此时 messages[0] 已含本轮动态段，
+        # 尺寸即最终发送值。计数失败不阻塞对话（缺省 0=未知，首轮回退偏保守）。
+        try:
+            from agent import context_manager as _cm_mod
+            _cm = _cm_mod.peek_context_manager()
+            if _cm is not None and messages and messages[0].get("role") == "system":
+                _cm.set_system_token_estimate(
+                    _cm_mod.ContextManager.count_tokens_simple([messages[0]])
+                )
+        except Exception as e:
+            logger.debug(f"[Runner] system token estimate backfill skipped: {e}")
 
     def _assemble_tools_schema(self) -> list:
         """组装 tools_schema = base tools + static MCP tools + disk（chat 与轮中刷新共用）。"""
@@ -1802,145 +1814,71 @@ class NiuRunner:
             return {"status": "error", "message": str(e)}
 
     def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
-        """主 Agent 上下文超阈值回调 — 内联执行压缩管道，随后执行转换块
+        """主 Agent 上下文超阈值回调 — 机械压实 + 原地回写新视图
 
-        压缩管道（_execute_force_pipeline）直接同步调用（Case 2 内联化：阻塞的是
-        对话请求自身，不经全局整理队列、无外层等待上限——仅 Stop 可断，管道阶段间
-        十余处 is_stop_requested 检查点）。然后从 DB 重载消息并原地修改 messages 列表
-        （dict 转换/孤立 tool 清理/system 保留/cache_control 重注入/messages[:] 回写——
-        agent_loop L845-848 契约：messages 为 dict 列表）。
+        Task 3 定案：调 context_assembler.compaction 压实（纯机械、零 LLM、DB 不动），
+        产出 [system 原样（含 cache_control）]+[索引消息]+[窗口 dict] 新视图后
+        `messages[:] = new_view` 原地回写——当轮对话立即生效；不做 DB 重载
+        （机械压实不改 DB，重载是 no-op 假动作）。与组装出口触发共用 AUTO_GATE
+        滞回闸门（≥80% 触发/<78% 复位），同一轮次双触发去重不双压。
         agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
         """
 
         logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
                      f"({tokens_used/tokens_limit:.1%})")
 
-        # 广播压缩状态 started 事件（前端圆环动画启动，模式1 auto）
+        # 广播压缩状态 started 事件（前端圆环动画启动）
         try:
             from niu_api.chat import notify_compact_status_sync
             notify_compact_status_sync("started", mode="auto")
         except Exception:
             pass
 
+        usage_after = None
+        compacted = False
         try:
-            # === 入口 8：内联执行压缩管道（Case 2 直调；None 返回 = Stop 中断/skip 天然覆盖）===
-            _result = self._execute_force_pipeline()
+            from agent.context_assembler import compaction
 
-            # === 重新加载消息，原地修改 agent_loop 的 messages 列表 ===
-            fresh_db_msgs = self._sync_get_messages()
-            if fresh_db_msgs:
-                # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
-                # 同时收集所有有效的 tool_call_id（压缩可能留下孤立的 tool 消息）
-                # （与 agent_loop.py 历史还原路径相同逻辑）
-                _tc_id_to_name: dict[str, str] = {}
-                _valid_tc_ids: set[str] = set()
-                for m in fresh_db_msgs:
-                    if m.role == "assistant" and m.tool_calls:
-                        for tc in m.tool_calls:
-                            tc_id = tc.get("id", "")
-                            tc_name = tc.get("function", {}).get("name", "")
-                            if tc_id and tc_name:
-                                _tc_id_to_name[tc_id] = tc_name
-                            if tc_id:
-                                _valid_tc_ids.add(tc_id)
-
-                # 收集所有 tool 消息的 tool_call_id，用于验证 assistant tool_calls 完整性
-                _tool_response_ids: set[str] = set()
-                for m in fresh_db_msgs:
-                    if m.role == "tool" and m.tool_call_id:
-                        _tool_response_ids.add(m.tool_call_id)
-
-                # 收集需要清理的消息
-                _orphan_tool_mids = []  # 孤立 tool 消息 ID（需从 DB 删除）
-                _dangling_tc_updates = []  # 悬空 tool_calls 更新（需更新 DB）
-
-                fresh_msgs = []
-                for msg in fresh_db_msgs:
-                    d = {
-                        "role": msg.role,
-                        "content": msg.content or "",
-                    }
-                    if msg.tool_calls:
-                        valid_tcs = [tc for tc in msg.tool_calls if tc.get("id") in _tool_response_ids]
-                        if valid_tcs and len(valid_tcs) < len(msg.tool_calls):
-                            d["tool_calls"] = valid_tcs
-                            # 收集悬空 tool_calls 清理（循环后统一执行）
-                            _dangling_tc_updates.append({
-                                "message_id": msg.id,
-                                "valid_tcs": valid_tcs,
-                                "original_count": len(msg.tool_calls),
-                            })
-                        elif valid_tcs:
-                            d["tool_calls"] = valid_tcs
-                        # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
-                        elif msg.tool_calls:
-                            # 收集清空 tool_calls（保留原始 content）
-                            _dangling_tc_updates.append({
-                                "message_id": msg.id,
-                                "valid_tcs": [],
-                                "original_count": len(msg.tool_calls),
-                            })
-                    if msg.tool_call_id:
-                        if msg.tool_call_id not in _valid_tc_ids:
-                            logger.warning(f"[Runner] Force: Skipping orphan tool message: tool_call_id={msg.tool_call_id}")
-                            _orphan_tool_mids.append(msg.id)
-                            continue
-                        d["tool_call_id"] = msg.tool_call_id
-                        _tn = _tc_id_to_name.get(msg.tool_call_id, "")
-                        if _tn:
-                            d["name"] = _tn
-                    fresh_msgs.append(d)
-
-                # 统一执行 DB 清理（遍历后执行，避免遍历中修改）
-                if _orphan_tool_mids or _dangling_tc_updates:
-                    try:
-                        import sqlite3
-                        _cleanup_db_path = os.path.join(os.path.expanduser("~"), ".niu", "messages.db")
-                        with sqlite3.connect(_cleanup_db_path) as _c:
-                            _c.execute("PRAGMA busy_timeout=5000")
-                            for mid in _orphan_tool_mids:
-                                _c.execute("DELETE FROM messages WHERE id = ?", (mid,))
-                                logger.info(f"[Force-reload] Deleted orphan tool message {mid}")
-                            for upd in _dangling_tc_updates:
-                                mid = upd["message_id"]
-                                if upd["valid_tcs"]:
-                                    _c.execute(
-                                        "UPDATE messages SET tool_calls = ? WHERE id = ?",
-                                        (json.dumps(upd["valid_tcs"], ensure_ascii=False), mid),
-                                    )
-                                    logger.info(f"[Force-reload] Cleaned dangling tool_calls for assistant {mid}: {upd['original_count']} -> {len(upd['valid_tcs'])}")
-                                else:
-                                    # 清空 tool_calls 但保留原始 content
-                                    _c.execute("UPDATE messages SET tool_calls = '[]' WHERE id = ?", (mid,))
-                                    logger.info(f"[Force-reload] Cleared all tool_calls for assistant {mid}")
-                            _c.commit()
-                    except Exception as e:
-                        logger.warning(f"[Force-reload] DB cleanup failed: {e}")
-                # 保留 system prompt（messages[0]），替换其余消息
-                system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
-                if system_msg:
-                    # 压缩后重建 system message（确保 Claude cache_control 不丢失）
-                    # injection="" 和 memory_section=""：本轮 _on_before_llm 会重新读 memory + 重新注入
-                    # （动态注入已从 _on_turn_end 移到 LLM 调用前，memory 也已每轮重读）
-                    self._assemble_system_message([system_msg], "", "", self.default_model)
-                    messages[:] = [system_msg] + fresh_msgs
-                else:
-                    messages[:] = fresh_msgs
-                logger.info(f"[Runner] Force: Reloaded {len(fresh_msgs)} messages from DB after compress")
-
-            return _result
+            # 真值比率过滞回闸门：与组装出口共用同一闸门，同轮去重
+            ratio_now = tokens_used / tokens_limit if tokens_limit else 1.0
+            if not compaction.AUTO_GATE.try_acquire(ratio_now):
+                logger.info("[Runner] Compaction skipped: gate latched by another trigger this round")
+                return
+            db_messages = self._sync_get_messages()
+            if not db_messages:
+                logger.warning("[Runner] Compaction skipped: no DB messages available")
+                try:
+                    compaction.AUTO_GATE.release()  # 早退也须解除闩锁，避免此后永不再自动触发
+                except Exception:
+                    pass
+                return
+            system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
+            new_view, stats = compaction.build_compact_view(db_messages, system_msg=system_msg)
+            messages[:] = new_view  # 原地回写（agent_loop 契约：messages 为 dict 列表）
+            compacted = True
+            usage_after = stats.get("usage")
+            logger.info(f"[Runner] Compacted in-flight view: {len(messages)} entries, "
+                        f"keep_turns={stats['keep_turns']}, blocks_archived={stats['blocks_archived']}, "
+                        f"tools_placeholderized={stats['tools_placeholderized']}, "
+                        f"est_usage={usage_after}")
         except Exception as e:
             import traceback
-            tb = traceback.format_exc()
-            logger.error(f"[Runner] Proactive compress failed: {e}\n{tb}")
-        finally:
-            # 无论成功/失败/异常都必须广播 done，避免前端圆环卡死
+            logger.error(f"[Runner] Compaction failed: {e}\n{traceback.format_exc()}")
             try:
-                from niu_api.chat import notify_compact_status_sync
-                notify_compact_status_sync("done", mode="auto")
+                from agent.context_assembler.compaction import AUTO_GATE
+                AUTO_GATE.release()  # 失败解除闩锁，避免此后永不再自动触发
             except Exception:
                 pass
-
+        finally:
+            # 无论成功/失败/异常都必须广播 done，避免前端圆环卡死；
+            # reset_tokens 仅在实际压实路径为 True（未压实路径保留旧真实 token 数，
+            # 使下次判定准确——notify 协议语义不变）
+            try:
+                from niu_api.chat import notify_compact_status_sync
+                notify_compact_status_sync("done", mode="auto", usage=usage_after,
+                                           reset_tokens=compacted)
+            except Exception:
+                pass
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
 

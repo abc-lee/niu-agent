@@ -15,14 +15,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent.context_assembler.blocks import (
-    PointerBlock,
-    default_db_path,
-    load_all,
-    upsert_blocks,
-)
+from agent.context_assembler.blocks import PointerBlock, default_db_path, load_all
 from agent.context_assembler.slicer import slice_units
 from agent.session import MessageStore
 from agent.subagent import _read_context_window_tokens, _read_warning_threshold
@@ -57,6 +54,9 @@ class ContextManager:
         self.max_tokens = max_tokens
         self._warning_threshold = _read_warning_threshold()
         self._blocks_db_path = Path(blocks_db_path) if blocks_db_path is not None else None
+        # 最近一次组装的 system 消息 token 数（Task 3：80% 触发判定的系统侧输入；
+        # 由 runner 组装 system 后回填，缺省 0=未知，首轮回退偏保守）
+        self._system_token_estimate = 0
 
     @staticmethod
     def _message_to_dict(msg) -> dict[str, Any] | None:
@@ -102,7 +102,8 @@ class ContextManager:
 
         return history
 
-    def count_tokens_simple(self, messages: list[dict[str, Any]]) -> int:
+    @staticmethod
+    def count_tokens_simple(messages: list[dict[str, Any]]) -> int:
         """
         使用 TokenCalculator 计算 token 数量
 
@@ -146,45 +147,20 @@ class ContextManager:
             )
         return "\n".join(lines)
 
-    def _archive_excluded_units(self, messages, units, window_start: int) -> None:
-        """把窗口之外的完整会话单元机械写入指针块存储。
+    def _archive_excluded_units(self, messages, units, window_start: int) -> int:
+        """把窗口之外的完整会话单元机械写入指针块存储（委托 compaction 单一实现）。
 
         幂等：同 (start_msg_id, end_msg_id) 区间的块已存在则跳过。
-        entities 标签留空（stub，Task 4 接通 KG 反查）。
         """
-        db_path = self._blocks_db_path or default_db_path()
-        archived = load_all(db_path)
-        existing_pairs = {(b.start_msg_id, b.end_msg_id) for b in archived}
-        next_id = max((b.id for b in archived), default=0) + 1
+        from agent.context_assembler.compaction import archive_excluded_units
+        return archive_excluded_units(
+            messages, units, window_start,
+            self._blocks_db_path or default_db_path(),
+        )
 
-        new_blocks: list[PointerBlock] = []
-        for start, end in units:
-            if start >= window_start:
-                break  # 单元无缝有序，抵达窗口起点后全部在窗内
-            pair = (messages[start].id, messages[end].id)
-            if pair in existing_pairs:
-                continue
-            first_user = next(
-                (m.content for m in messages[start : end + 1] if m.role == "user"), ""
-            )
-            new_blocks.append(
-                PointerBlock(
-                    id=next_id,
-                    start_msg_id=pair[0],
-                    end_msg_id=pair[1],
-                    start_rowid=messages[start].rowid,
-                    end_rowid=messages[end].rowid,
-                    count=end - start + 1,
-                    time_start=messages[start].created_at,
-                    time_end=messages[end].created_at,
-                    entities=[],
-                    first_user=first_user,
-                )
-            )
-            next_id += 1
-
-        if new_blocks:
-            upsert_blocks(new_blocks, db_path)
+    def set_system_token_estimate(self, n_tokens: int) -> None:
+        """记录最近一次组装的 system 消息 token 数（80% 触发判定的系统侧输入）。"""
+        self._system_token_estimate = max(0, int(n_tokens))
 
     async def get_context_for_chat(self, exclude_last: bool = True) -> list[dict[str, Any]]:
         """
@@ -236,6 +212,39 @@ class ContextManager:
         if index_blocks:
             view.append({"role": "user", "content": self._render_index(index_blocks)})
         view.extend(e for e in converted[window_start:] if e is not None)
+
+        # Task 3：组装出口 80% 触发检查——校准后总量估算 ≥80% 即地压实（D14）。
+        # 滞回（≥80% 触发 / <78% 复位）与 runner 真值回调共用 AUTO_GATE，双触发去重不双压。
+        try:
+            from agent.context_assembler import calibration
+            from agent.context_assembler.compaction import AUTO_GATE, build_compact_view
+
+            est = calibration.estimate(
+                self.count_tokens_simple(view) + self._system_token_estimate
+            )
+            usage_ratio = est / self.max_tokens if self.max_tokens else 0.0
+            if AUTO_GATE.try_acquire(usage_ratio):
+                logger.info(
+                    f"[Context] Calibrated usage {est:.0f}/{self.max_tokens} "
+                    f"({usage_ratio:.1%}) >= 80%, compacting at assembly exit"
+                )
+                new_view, stats = build_compact_view(
+                    messages,
+                    system_msg=None,
+                    blocks_db_path=self._blocks_db_path,
+                    context_window_tokens=self.max_tokens,
+                )
+                logger.info(
+                    f"[Context] Compacted at assembly exit: keep_turns={stats['keep_turns']}, "
+                    f"blocks_archived={stats['blocks_archived']}, "
+                    f"tools_placeholderized={stats['tools_placeholderized']}, "
+                    f"usage_after={stats['usage']}"
+                )
+                return new_view
+        except Exception as e:
+            from agent.context_assembler import compaction as _comp
+            _comp.AUTO_GATE.release()  # 压实失败解除闩锁，避免永久不再自动触发
+            logger.warning(f"[Context] Assembly-exit compaction failed, using un-compacted view: {e}")
         return view
 
 
@@ -267,3 +276,10 @@ def reset_context_manager():
     """重置全局实例（用于测试）"""
     global _context_manager
     _context_manager = None
+
+def peek_context_manager() -> ContextManager | None:
+    """同步读取全局实例（未初始化返回 None）。
+    供 runner 在组装 system 后回填 set_system_token_estimate 用——
+    get_context_manager 是 async 且首次调用需要 message_store，回填场景两者都不适用。
+    """
+    return _context_manager

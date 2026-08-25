@@ -51,16 +51,31 @@ async def _clean_pipeline():
 # 入口 8：runner-force 内联直调（Case 2：不经队列、无外层等待上限）+ 转换块
 # ---------------------------------------------------------------------------
 
+def _release_auto_gate():
+    """测试间复位全局滞回闸门（防跨用例闩锁污染）。"""
+    from agent.context_assembler.compaction import AUTO_GATE
+    AUTO_GATE.release()
+
+
 def test_entry8_inline_direct_call_then_conversion_block(monkeypatch):
-    """直调契约：_execute_force_pipeline 被同步调用、零队列投递；转换块输出 dict 契约。"""
+    """直调契约：机械压实被回调直接同步调用、零队列投递；新视图原地回写（Task 3 收编）。"""
+    from agent.context_assembler import compaction
+
+    _release_auto_gate()
     runner = _make_runner()
     calls = []
 
-    def fake_execute():
-        calls.append(1)
-        return {"status": "ok"}
+    def fake_compact(db_messages, *, system_msg=None, **kw):
+        calls.append((len(db_messages), system_msg is not None))
+        return [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "[历史索引] 共 1 块早期对话已归档"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ], {"usage": 0.35, "keep_turns": 3, "blocks_archived": 1,
+            "tools_placeholderized": 0}
 
-    runner._execute_force_pipeline = fake_execute
+    monkeypatch.setattr(compaction, "build_compact_view", fake_compact)
     runner._sync_get_messages = lambda: [
         _FakeDbMsg("s1", "system", "system prompt"),
         _FakeDbMsg("m1", "user", "hello"),
@@ -72,66 +87,84 @@ def test_entry8_inline_direct_call_then_conversion_block(monkeypatch):
         compat, "_pipeline_enqueue",
         lambda kind, request=None, held=False: enqueue_calls.append((kind, request, held)),
     )
-    start_pipeline_queue()  # 队列可用也应零投递（内联化后回调不再触碰队列）
+    start_pipeline_queue()  # 队列可用也应零投递（机械压实不经队列）
 
     messages = [{"role": "system", "content": "system prompt"}]
     result = runner._on_context_high_usage(messages, 180000, 200000)
 
-    assert calls == [1]  # 直调完成——回调返回前压缩管道已执行完
+    assert calls == [(3, True)]  # 直调完成——回调返回前压实已执行完，system 原样传入
     assert enqueue_calls == [], f"不应有任何队列投递，实际 {enqueue_calls}"
-    assert result == {"status": "ok"}
-    # 转换块输出格式断言（§6 T3）：每条 dict + role/content 键 + system 保留在 messages[0]
-    assert messages, "转换块应回写消息"
+    assert result is None
+    # 回写格式契约：每条 dict + role/content 键 + system 保留在 messages[0]
+    assert len(messages) == 4, "压实视图应原地回写"
     assert all(isinstance(m, dict) for m in messages)
     assert all("role" in m and "content" in m for m in messages)
     assert messages[0].get("role") == "system"
+    assert messages[1]["content"].startswith("[历史索引]")
 
 
-def test_entry8_none_return_conversion_block_still_runs(monkeypatch):
-    """None 返回分支（Stop 中断序列：阶段检查点 bare return）→ 转换块仍执行，回调透传 None。"""
+def test_entry8_gate_latched_skips_compaction(monkeypatch):
+    """滞回闸门闩锁中：回调跳过压实、零投递、messages 不动（双触发去重语义）。"""
+    from agent.context_assembler import compaction
+
+    from niu_api.compat import start_pipeline_queue as _start  # noqa: F401
+
+    _release_auto_gate()
+    from agent.context_assembler.compaction import AUTO_GATE
+    AUTO_GATE.try_acquire(0.9)  # 预先闩锁
+
     runner = _make_runner()
-    calls = []
+    compact_spy = []
 
-    def fake_execute():
-        calls.append(1)
-        return None  # Stop 中断 / skip 的 None 返回
+    def fake_compact(*a, **kw):
+        compact_spy.append(1)
+        return [], {}
 
-    runner._execute_force_pipeline = fake_execute
-    runner._sync_get_messages = lambda: [
-        _FakeDbMsg("m1", "user", "hello"),
-        _FakeDbMsg("m2", "assistant", "hi"),
+    monkeypatch.setattr(compaction, "build_compact_view", fake_compact)
+    runner._sync_get_messages = lambda: [_FakeDbMsg("m1", "user", "hello")]
+
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "old"}]
+    result = runner._on_context_high_usage(messages, 190000, 200000)
+
+    assert result is None
+    assert compact_spy == [], "闸门闩锁中不得重复压实"
+    assert messages == [  # 未压实 → 原列表保持
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "old"},
     ]
-
-    messages = [{"role": "system", "content": "sys"}]
-    result = runner._on_context_high_usage(messages, 180000, 200000)
-
-    assert calls == [1]
-    assert result is None  # None 返回分支透传
-    assert messages, "None 返回后转换块仍应回写消息"
-    assert all(isinstance(m, dict) for m in messages)
-    assert all("role" in m and "content" in m for m in messages)
-    assert messages[0].get("role") == "system"
 
 
 def test_entry8_no_queue_dependency(monkeypatch):
-    """无队列依赖：全局整理队列未创建时直调照常工作（原 None 窗口同步兜底成为唯一路径）。"""
+    """无队列依赖：全局整理队列未创建时机械压实照常工作并完成回写广播。"""
+    from agent.context_assembler import compaction
+
+    _release_auto_gate()
     runner = _make_runner()
-    calls = []
 
-    def fake_execute():
-        calls.append(1)
-        return {"status": "skipped", "reason": "stop"}
+    def fake_compact(db_messages, *, system_msg=None, **kw):
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "[历史索引]"},
+            {"role": "user", "content": "hello"},
+        ], {"usage": 0.30, "keep_turns": 2, "blocks_archived": 1,
+            "tools_placeholderized": 0}
 
-    runner._execute_force_pipeline = fake_execute
+    monkeypatch.setattr(compaction, "build_compact_view", fake_compact)
     runner._sync_get_messages = lambda: [_FakeDbMsg("m1", "user", "hello")]
     assert compat._pipeline_queue is None  # 队列未创建（fixture 复位）
 
-    messages = [{"role": "system", "content": "sys"}]
-    result = runner._on_context_high_usage(messages, 100, 200000)
+    broadcasts = []
+    monkeypatch.setattr(
+        "niu_api.chat.notify_compact_status_sync",
+        lambda status, **k: broadcasts.append(status),
+    )
 
-    assert calls == [1]
-    assert result["status"] == "skipped"
-    assert messages and all(isinstance(m, dict) for m in messages)
+    messages = [{"role": "system", "content": "sys"}]
+    result = runner._on_context_high_usage(messages, 180000, 200000)  # 真值比率 90% 过闸门
+
+    assert result is None
+    assert broadcasts == ["started", "done"], "started/done 事件均须广播（防前端圆环卡死）"
+    assert len(messages) == 3 and all(isinstance(m, dict) for m in messages)
     assert messages[0].get("role") == "system"
 
 
