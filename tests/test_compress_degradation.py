@@ -299,10 +299,11 @@ def test_degradation_all_fail():
     assert halved_ids is None
 
 
-def test_degradation_dream_idx_in_halved_range():
-    """门控 True（thinking enabled）→ Force 路径 dream_idx 落在裁剪范围内 → 不执行砍半，报失败。
-    dream_idx 是 1-based, cut_idx 是 0-based。
-    dream_idx=1 <= cut_idx=2 → dream 边界在 0-based idx 0（前半段），报失败。"""
+def test_degradation_halving_has_no_dream_mutex():
+    """工程五七件套退役：砍半降级无 dream_idx 互斥路径——step1 截断后照常执行砍半。
+
+    旧行为：dream_idx_in_force=1 <= cut_idx=2 → 报失败不砍半；退役后无该分支。
+    """
     from unittest.mock import patch
 
     from niu_api.compat import _compact_with_degradation_sync
@@ -320,8 +321,8 @@ def test_degradation_dream_idx_in_halved_range():
     call_count = [0]
     def mock_call_fn(**kwargs):
         call_count[0] += 1
-        # call 1 = 降级第一步，返回截断
-        return "COMPACT_TRUNCATED:truncated"
+        return "COMPACT_TRUNCATED:truncated" if call_count[0] == 1 \
+            else "keep=1,2\nupdate=2|[摘要] xxx\ncursor=2"  # step1 截断 → step2 成功
 
     history = [{"role": "user", "content": f"[idx:{i+1}] msg{i+1}"} for i in range(4)]
     msg_ids = ["id1", "id2", "id3", "id4"]
@@ -337,13 +338,13 @@ def test_degradation_dream_idx_in_halved_range():
             prompt_builder=lambda **kw: "rebuilt prompt",
             prompt_builder_kwargs={"display_tokens": 1000, "compress_target_tokens": 500,
                                    "usage_percent": 80, "force_history": [],
-                                   "last_compress_id": None,
-                                   "dream_idx_in_force": 1},  # 1-based, <= cut_idx=2
+                                   "last_compress_id": None},  # 无 dream_idx_in_force 键
             call_fn=mock_call_fn,
         )
-    # dream_idx=1 <= cut_idx=2 → 报失败，不执行砍半
-    assert result_str is None
-    assert call_count[0] == 1  # 只有降级第一步1次，没有降级第二步
+    # 无互斥：step1 截断 → step2 砍半执行并成功
+    assert result_str is not None
+    assert halved_ids == ["id1", "id2"], f"砍半应正常执行: {halved_ids}"
+    assert call_count[0] == 2  # 降级第一步 + 砍半第二步
 
 
 def test_degradation_halve_too_small_aborts():

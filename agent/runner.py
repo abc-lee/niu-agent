@@ -1268,11 +1268,11 @@ class NiuRunner:
         Parameters
         ----------
         step_name : str
-            Sub-agent name passed to call_subagent (e.g. "dream-evolver").
+            Sub-agent name passed to call_subagent (e.g. "journal-agent").
         cursor_path : Path
             JSON file that persists the cursor.
         cursor_field : str
-            Key name inside the cursor JSON (e.g. "last_dream_evolve_id").
+            Key name inside the cursor JSON (e.g. "last_journal_id").
         prompt : str
             The task prompt for the sub-agent (already truncated).
         llm_config : dict
@@ -1284,7 +1284,7 @@ class NiuRunner:
             fallback cursor when extraction fails.
         timestamp_field : str
             Key name for the timestamp written into the cursor JSON
-            (e.g. "last_dream_evolve_at").
+            (e.g. "last_journal_at").
 
         Returns
         -------
@@ -1407,8 +1407,8 @@ class NiuRunner:
         """运行完整 force 压缩管道（journal → context-manager → DB 写删）。
 
         工程三摘除梦境腿（spec §5 定稿：模式三只跑压缩对）；entity 腿已于工程二摘除。
-        压缩保护边界使用入口读取的 last_dream_evolve_id（由睡眠循环推进，force 不再推进游标）。
-
+        
+        
         由全局整理队列 worker（§3.1 入口 8，kind="runner-force"）在后台线程调用。
         不含转换块（dict 转换/孤立 tool 清理/system 保留/messages[:] 回写）——转换块由
         调用方 _on_context_high_usage 在回调内执行，保证 agent_loop 的 messages 为 dict 列表契约。
@@ -1438,11 +1438,9 @@ class NiuRunner:
         try:
             # === 读取游标 ===
             niu_dir = _Path.home() / ".niu"
-            dream_cursor_path = niu_dir / "last_dream_evolve.json"
             compress_cursor_path = niu_dir / "last_compress.json"
             journal_cursor_path = niu_dir / "last_journal.json"
 
-            last_dream_evolve_id = self._read_cursor(dream_cursor_path, "last_dream_evolve_id")
             last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
             last_journal_id = self._read_cursor(journal_cursor_path, "last_journal_id")
 
@@ -1538,23 +1536,10 @@ class NiuRunner:
                 protect_recent=protect_recent_count,
                 exclude_protected=True,
             )
-            # 构造反向映射 id→idx（用于 dream 安全边界计算）
-            _f_id_to_idx = {mid: idx for idx, mid in _f_idx_to_id.items()}
-
-            # 计算 dream 安全边界 idx（7c：梦境腿摘除后 force 不推进游标，
-            # 直接用入口读取的 last_dream_evolve_id——由睡眠循环写入，二者恒等）
-            # dream 哨兵：0（空游标——首次或睡眠未跑）→ prompt 渲染 idx > 0 → 所有消息受保护（全保护：只 update 不删）
-            # len(_force_msg_ids)（游标不在映射）→ 渲染 idx > 全量 → 实际不限制删除。
-            # 两种哨兵均为纯数字插值，_build_force_prompt 内部无判断分支。
-            if not last_dream_evolve_id:
-                _dream_idx_in_force = 0
-            else:
-                _dream_idx_in_force = _f_id_to_idx.get(last_dream_evolve_id, len(_force_msg_ids))
-
             # 复用上文的 target_tokens（不重复读配置）
             prompt = _build_force_prompt(
                 display_tokens, target_tokens, usage_percent,
-                _force_history, last_compress_id, _dream_idx_in_force,
+                _force_history, last_compress_id,
             )
 
             # 压缩 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）
@@ -1604,7 +1589,6 @@ class NiuRunner:
                         "usage_percent": usage_percent,
                         "force_history": _force_history,
                         "last_compress_id": last_compress_id,
-                        "dream_idx_in_force": _dream_idx_in_force,
                     },
                     stop_aware=True,
                     call_fn=call_subagent_with_auto_answer,
@@ -1695,7 +1679,7 @@ class NiuRunner:
                     new_compress_id = ""
 
                 # 保护游标
-                cursor_ids_set = {cid for cid in [new_compress_id, last_dream_evolve_id] if cid}
+                cursor_ids_set = {cid for cid in [new_compress_id] if cid}
                 for cursor_id in cursor_ids_set:
                     if cursor_id in valid_deletes:
                         valid_deletes.remove(cursor_id)
@@ -1706,24 +1690,6 @@ class NiuRunner:
                 if cursor_updates:
                     logger.warning(f"[Runner] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
                     valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
-
-                # dream 安全边界
-                if last_dream_evolve_id:
-                    dream_boundary_idx = -1
-                    for i, m in enumerate(fresh_messages):
-                        if (getattr(m, "id", "") or "") == last_dream_evolve_id:
-                            dream_boundary_idx = i
-                            break
-                    if dream_boundary_idx >= 0:
-                        post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
-                        unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
-                        if unsafe_deletes:
-                            logger.warning(f"[Runner] Force: Protecting {len(unsafe_deletes)} messages after dream cursor from deletion")
-                            valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
-                        unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
-                        if unsafe_updates:
-                            logger.warning(f"[Runner] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
-                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
 
                 # 保护最近完整用户会话段落（从最近 user 消息开始）
                 protect_recent_count = _read_protect_recent_count()
