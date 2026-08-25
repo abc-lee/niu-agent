@@ -1031,4 +1031,7 @@ async def clear_session(session_id: str):
     # 游标复位（与 clear_chat 一致，消除"清消息但游标残留"的不一致）
     from niu_api.compat import _reset_all_cursors
     await _reset_all_cursors()
+    # 派生状态复位（与 clear_chat 一致——Task 8：指针块/校准倍率/内存状态）
+    from agent.context_assembler import reset_derived_state
+    reset_derived_state()
     return {"status": "ok", "session_id": session_id}

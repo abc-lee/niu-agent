@@ -2131,6 +2131,11 @@ async def clear_chat(request: Request) -> dict:
         truncate_relay_files()
         logger.info("[Clear] F1/F2 relay files truncated")
 
+        # Task 8：/new 清理面——指针块删除 + 校准倍率复位 + 内存派生状态作废
+        # （F1/F2/F3 上面已截断；journal.md 本体按 §8 拍板保留）
+        from agent.context_assembler import reset_derived_state
+        reset_derived_state()
+
         return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
     finally:
         _chat_lock.release()

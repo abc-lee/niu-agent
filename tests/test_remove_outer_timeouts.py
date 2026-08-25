@@ -273,6 +273,13 @@ async def test_tc_clear_chat_safe_mocks(monkeypatch):
     monkeypatch.setattr(runner_module, "request_stop", lambda: stop_calls.append("request_stop"))
     monkeypatch.setattr(runner_module, "clear_stop", lambda: stop_calls.append("clear_stop"))
     monkeypatch.setattr(runner_module, "drain_supplements", lambda: events.append("drain") or [])
+    # 6. agent.context_assembler.reset_derived_state → recorder（Task 8 /new 清理面；
+    #    函数级 import，patch 包命名空间——否则真实删 ~/.niu/context_blocks.db 与
+    #    token_calibration.json）
+    monkeypatch.setattr(
+        "agent.context_assembler.reset_derived_state",
+        lambda *a, **k: events.append("reset_derived"),
+    )
 
     # 零 tidy 投递哨兵：投递路径一旦被触碰立即失败
     def _boom(*a, **k):
@@ -290,7 +297,9 @@ async def test_tc_clear_chat_safe_mocks(monkeypatch):
     assert result["success"] is True
     assert result["deleted_count"] == 5
     # 四步各恰一次：drain_supplements → clear_messages → cleanup_tmp → reset_cursors
-    assert events == ["drain", "clear_messages", "cleanup_tmp", "reset_cursors"]
+    # 五步各恰一次（Task 8 新增 reset_derived_state 收尾）：drain → clear →
+    # cleanup_tmp → reset_cursors → reset_derived
+    assert events == ["drain", "clear_messages", "cleanup_tmp", "reset_cursors", "reset_derived"]
     assert stop_calls.count("request_stop") == 1  # 停主 Agent 恰一次
     assert "clear_stop" in stop_calls  # 防御性清除保留
     assert compat._SPIRIT_STATE == "idle"  # 无条件唤醒睡眠管道

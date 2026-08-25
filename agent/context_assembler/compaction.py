@@ -88,13 +88,15 @@ AUTO_GATE = CompactionGate()
 # ---------------------------------------------------------------------------
 
 def archive_excluded_units(messages, units, window_start: int,
-                           db_path: Path | None = None) -> int:
+                           db_path: Path | None = None,
+                           collect_entities: bool = True) -> int:
     """把窗口之外的完整会话单元机械写入指针块存储。返回新增块数。
 
     幂等：同 (start_msg_id, end_msg_id) 区间的块已存在则跳过。
-    
+
     实体标签按块时间范围反查知识图谱（Task 4 接通，entity_tags.collect_tags）；
-    失败降级为空标签，绝不阻塞归档。
+    失败降级为空标签，绝不阻塞归档。collect_entities=False 用于启动段整库重建
+    （integrity）——此时 LightRAG 尚未 eager init，反查会触发阻塞式懒初始化。
     """
     p = Path(db_path) if db_path is not None else default_db_path()
     archived = load_all(p)
@@ -131,8 +133,10 @@ def archive_excluded_units(messages, units, window_start: int,
         # 实体标签批量反查（单次图快照服务全部新块；失败=空标签不阻塞）
         try:
             from agent.context_assembler.entity_tags import collect_tags
-            tags_list = collect_tags(
-                [(b.time_start, b.time_end) for b in new_blocks]
+            tags_list = (
+                collect_tags([(b.time_start, b.time_end) for b in new_blocks])
+                if collect_entities
+                else [[] for _ in new_blocks]
             )
         except Exception as e:
             logger.debug(f"[Compaction] entity tags degraded to empty: {e}")

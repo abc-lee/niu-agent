@@ -135,6 +135,33 @@ class ContextManager:
         if len(ts) >= 10 and ts[4] == "-" and ts[7] == "-":
             return ts[5:10]
         return ""
+    @staticmethod
+    def compute_window_start(converted: list, units: list[tuple[int, int]],
+                             budget: int, count_fn) -> int:
+        """窗口装填：从最新单元向前累加，装不下即止（保底最新一个单元恒在窗内）。
+
+        返回窗口起点在 converted 中的消息索引（恒为会话单元边界）。
+        组装出口与整库重建（context_assembler.integrity）共用的唯一实现。
+
+        Args:
+            converted: _message_to_dict 转换后的消息 dict 列表（元素可为 None）
+            units: slice_units 输出的闭区间单元列表
+            budget: 窗口 token 预算
+            count_fn: 单参数 token 计数器（实例方法绑定/类访问皆可——测试两种
+                mock 约定兼容的关键，test_calibration.py staticmethod 先例）
+        """
+        window_start = len(converted)
+        total = 0
+        included = 0
+        for start, end in reversed(units):
+            unit_entries = [e for e in converted[start : end + 1] if e is not None]
+            unit_cost = count_fn(unit_entries)
+            if included and total + unit_cost > budget:
+                break
+            window_start = start
+            total += unit_cost
+            included += 1
+        return window_start
 
     @staticmethod
     def _render_index(blocks: list[PointerBlock]) -> str:
@@ -203,19 +230,11 @@ class ContextManager:
         converted = [self._message_to_dict(m) for m in messages]
         budget = int(self.max_tokens * _WINDOW_BUDGET_RATIO)
 
-        # 窗口装填：从最新单元向前累加，装不下即止（保底最新一个单元恒在窗内）
-        window_start = len(messages)
-        total = 0
-        included = 0
-        for start, end in reversed(units):
-            unit_entries = [e for e in converted[start : end + 1] if e is not None]
-            unit_cost = self.count_tokens_simple(unit_entries)
-            if included and total + unit_cost > budget:
-                break
-            window_start = start
-            total += unit_cost
-            included += 1
-
+        # 窗口装填：从最新单元向前累加（唯一实现见 compute_window_start，
+        # 整库重建 integrity 复用同一逻辑）
+        window_start = self.compute_window_start(
+            converted, units, budget, self.count_tokens_simple
+        )
         # 被挤出的完整单元 → 指针块归档（幂等）
         if units and window_start < len(messages):
             self._archive_excluded_units(messages, units, window_start)
