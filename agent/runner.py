@@ -1407,8 +1407,7 @@ class NiuRunner:
         """运行完整 force 压缩管道（journal → context-manager → DB 写删）。
 
         工程三摘除梦境腿（spec §5 定稿：模式三只跑压缩对）；entity 腿已于工程二摘除。
-        
-        
+
         由全局整理队列 worker（§3.1 入口 8，kind="runner-force"）在后台线程调用。
         不含转换块（dict 转换/孤立 tool 清理/system 保留/messages[:] 回写）——转换块由
         调用方 _on_context_high_usage 在回调内执行，保证 agent_loop 的 messages 为 dict 列表契约。
