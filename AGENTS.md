@@ -513,6 +513,20 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-25
+
+#### 工程：MD 中继工程五——force dream 保护链退役 + dream 游标终退 + 化石清理（方案 v1.0→v2.5 共九版，R1-R7 双审+全局架构审计收敛）
+
+- **背景**：用户质询「force 保护链在文件驱动下不存在」——工程四完成提炼文件驱动化后，F1/F2 不受 DB 压缩影响，基于 `~/.niu/last_dream_evolve.json` 的 force dream 哨兵保护链成为旧范式自洽残留（提示词层引用已消失的游标 UUID、机制层哨兵计算与砍半互斥空转）；全局架构审计清查提示词/机制/文档三层残留后重构计划。
+- **方案**（docs/superpowers/plans/2026-08-24-md-relay-project5-cursor-retirement.md v2.5；门禁=同文本连续两轮零发现）：
+  - **T1 提示词层对齐**：context-manager.md 三处 dream 边界描述改写（模式一=last_compress_id 之后全量无上界）；dream-evolver.md frontmatter mcpServers+mcpToolFilter 双删 session-manager（单删过滤项会因缺省 filter 全放行而扩权），get_messages 禁止理由改「对话记录在 F3 文件中自读」
+  - **T2 机制层七件套整链退役**：force/runner-force 哨兵与边界防护、睡眠 cm 锚点排除+cascade cursor 分量、dream 循环游标回写与 fresh_ids 校验、`_build_force_prompt` 安全边界行、砍半互斥、`_ALL_CURSOR_FILES` 收缩两键（journal+compress）、入口共享读取删除、`_f_id_to_idx` 反向映射整删；磁盘清算 `~/.niu/last_dream_evolve.json`(+.lock)；新建 tests/test_cursor_retirement.py 六组退役钉
+  - **T3 化石清理与回归收尾**：context-manager.md 三处「安全边界」死文本块删除+「未提取知识」悬空引用改写为现行语义+决策流程列表缩进修复；步骤编号化石（compat force 分支 2.5/3·3/3、runner 2.5/4·3/4 → 1/2·2/2）；CP3 注释改文件驱动措辞；SYSTEM_MANUAL 睡眠管道段澄清 force 只跑压缩对；AGENTS.md 增量游标存量化石标注退役；md_alignment docstring 补 [摘要] 补写边缘态标注
+- **拆链后终态**：模式三=对全部消息 keep/update/delete（无 dream 边界；PROTECTED 近期消息排除照常保留）；dream-evolver 只删 F2 前缀、无任何游标读写；journal/compress 两游标语义不变
+- **验证**：点名回归 10 文件全绿（test_cursor_retirement/test_sleep_reorder/test_md_f3/test_dream_segment_v2/test_entity_segment_v2/test_journal_agent_tidy/test_compress_prompt_lean/test_compress_degradation/test_compress_history/test_compress_quality）；py_compile+ruff 零新增
+- **commit**：`7dd61379`（T1）+ `8aaba576`（T2）+ 本条目（T3）
+- **实机验证（待用户重启）**：①/compact 正常且模式三方案覆盖全部消息（无边界截断）②睡眠 dream 多轮循环正常、F2 前缀按 processed_line 删除③/new 后仅复位 journal/compress 两键④`~/.niu/last_dream_evolve.json` 不复活
+
 ### 2026-08-24
 
 #### 工程：MD 中继工程四——睡眠管道重排 + 压缩前置门控清算 + 游标清算（方案 v1.0→v1.9 共十一轮双审收敛，连续两轮零发现）
@@ -1070,7 +1084,7 @@ preload_face_model()
 
 - **执行顺序**：sleep → dream-evolver（增量学习+KG写入）→ context-manager（压缩删除）
 - **6 项工作**：错误经验、成功经验、工具方言、用户状态、用户画像、KG 实体/关系写入
-- **增量游标**：`~/.niu/last_dream_evolve.json`，避免重复处理
+- **增量游标**：`~/.niu/last_dream_evolve.json`，避免重复处理 **【已随 2026-08-25 MD 中继工程五退役】**——提炼文件驱动化（F2 队列）后无重复处理问题，dream-evolver 改为自读 F3 工作集报行号、程序删 F2 前缀，无任何游标读写
 - **metadata 对齐**：工具方言→query_pattern（递归检索），经验→document（参考知识桶），状态/画像→interaction_habit（交互习惯桶）
 - **关键文件**：`config/agents/dream-evolver.md`、`niu_api/compat.py`、`config/agents/context-manager.md`
 

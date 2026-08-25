@@ -3144,7 +3144,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 
         if mode == "sleep":
-            # Sleep mode: journal-agent (≥50%) → context-manager → entity-extractor (F1 自读) → dream-evolver (增量)
+            # Sleep mode: journal-agent (≥50%) → context-manager → entity-extractor (F1 自读) → dream-evolver (F3 自读多轮循环)
 
             # 1/4. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
             if usage_percent >= 50:
@@ -3807,7 +3807,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             # 补全会话日期链（循环退出后一次收尾全覆盖；幂等图补边扫描，方法内部已容错）
             await asyncio.to_thread(runner._ensure_session_chain)
 
-            # CP3：dream 循环完成后——纯中断检查；entity/dream 游标已推进不回滚，下次续跑
+            # CP3：dream 循环完成后——纯中断检查；F2 前缀删除已执行不回滚，下次续跑
             if not is_sleeping():
                 logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
@@ -3834,7 +3834,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 _effective_protect = min(_effective_protect, _force_protect_recent)
                 logger.info(f"[Tidy] Force: protect_recent_count degraded to {_effective_protect} (from request)")
 
-            # 2.5/3. journal-agent（force 模式，始终调用）
+            # 1/2. journal-agent（force 模式，始终调用）
             # 重新获取消息列表
             messages = await store.get_messages()
             msg_tokens = []
@@ -3919,12 +3919,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 logger.info("[Tidy] Force: journal-agent no incremental messages")
 
-            # 3/3. context-manager 强制压缩（抽为嵌套闭包；skip_compress=True 时跳过）
+            # 2/2. context-manager 强制压缩（抽为嵌套闭包；skip_compress=True 时跳过）
             async def _compress_force():
                 # 模式三门控随 dream 腿摘除归零（spec §5 定稿）：force 只跑压缩对，
                 # 不再被梦境积压阻塞——游标由睡眠循环推进，压缩保护区间照常读取入口游标。
 
-                # 3/3. context-manager force prompt — 一轮 JSON 文件方案
+                # 2/2. context-manager force prompt — 一轮 JSON 文件方案
                 # 重新读取 compress 游标
                 last_compress_id = ""
                 if compress_cursor_path.exists():

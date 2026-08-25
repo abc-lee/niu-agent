@@ -22,7 +22,11 @@ def _last_msg_id_of_f1(f1_path: str) -> str | None:
 
 
 async def align_f1_with_store(store, f1_path: str | None = None, max_backfill: int = 200) -> int:
-    """对齐 F1 与 DB，返回补写条数。store 需提供 async get_messages()（rowid 序）。"""
+    """对齐 F1 与 DB，返回补写条数。store 需提供 async get_messages()（rowid 序）。
+
+    已知边界（工程五决策1②，接受）：补写读的是 DB 当前内容——尾失联窗口内若压缩先行，
+    被替换消息补入的是 [摘要] 视图记录而非原文；缺口超 max_backfill 的更早历史不补。
+    """
     p1 = f1_path or F1_PATH
     messages = await store.get_messages()
     index_by_id = {getattr(m, "id", "") or "": i for i, m in enumerate(messages)}
