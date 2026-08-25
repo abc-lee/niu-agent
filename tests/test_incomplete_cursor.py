@@ -2,13 +2,11 @@
 
 覆盖：
 1. _is_subagent_incomplete 严格判定（R3-13 六例）
-2. _tidy_context_impl sleep 模式一集成（独立 fixture，不动 _tidy_common_patches，
-   四个游标文件 READ 强制 cursor=''，真实 _build_incremental_msg_text 非空范围）
-3. handler._update_journal_cursor（journal 游标 hermetic：基于 mock write_text，
-   不依赖真实 last_journal.json）
+2. _tidy_context_impl sleep 模式集成（独立 fixture；T7 后 journal 游标钩子退役，
+   handler._update_journal_cursor 测试随符号整删）
 
 fixture 数学验证（R6-B）：2 条消息 × _FakeCalc 100 token/条 = 200 tokens，
-_read_context_window_tokens=8000 → 2.5% usage < 50% 走模式一，且 < 70% 不 skip，范围非空。
+_read_context_window_tokens=8000。
 """
 import json
 from unittest import mock
@@ -108,7 +106,7 @@ def _tidy_incomplete_patches(subagent_result, call_mock):
     R4-10 patch 清单显式化：
     - 四个游标文件 READ 强制 cursor=''（R3-4）：Path.exists→False（缺失文件 → 游标留空）
     - 窗口 8000 / _FakeCalc
-    - 保留真实 _build_incremental_msg_text（不 patch）→ 范围非空
+    - 游标读取路径不 patch（T7 后 sleep 管道已无 journal 游标读取）
     - _write_cursor_with_lock → MagicMock（记录调用，测试 hermetic）
     """
     return [
@@ -205,55 +203,6 @@ class TestTidyContextImplIncomplete:
         ]
         assert compress_writes == [], "compress 游标已退役，零写"
 
-
-
-# ---------------------------------------------------------------------------
-# 3. handler._update_journal_cursor（journal 游标 hermetic）
-# ---------------------------------------------------------------------------
-
-class _Msg:
-    def __init__(self, mid):
-        self.id = mid
-
-
-class TestHandlerJournalCursorIncomplete:
-    def _make_handler(self):
-        from agent.handler import NiuHandler
-
-        handler = NiuHandler(mcp_client=None)
-        handler._sync_get_messages = lambda: [_Msg("m1"), _Msg("m2")]
-        return handler
-
-    def test_incomplete_json_does_not_write_journal_cursor(self):
-        """journal-agent 返回 incomplete JSON → last_journal.json 不写入（R2-1/R4-7）。
-
-        断言基于 mock write_text call args，不依赖真实 last_journal.json。
-        """
-        handler = self._make_handler()
-        write_text = mock.MagicMock()
-        with mock.patch("agent.handler.Path.exists", return_value=False), \
-             mock.patch("agent.handler.Path.write_text", write_text):
-            handler._update_journal_cursor(
-                json.dumps({"incomplete": True, "agent": "journal-agent", "reason": "STOPPED", "partial_result": ""}),
-                ["m1", "m2"],
-                {"1": "m1", "2": "m2"},
-            )
-        write_text.assert_not_called()
-
-    def test_normal_result_writes_journal_cursor(self):
-        """对照：正常 processed_up_to=2 → journal 游标写 m2（判别力）。"""
-        handler = self._make_handler()
-        write_text = mock.MagicMock()
-        with mock.patch("agent.handler.Path.exists", return_value=False), \
-             mock.patch("agent.handler.Path.write_text", write_text):
-            handler._update_journal_cursor(
-                "处理完成 @end processed_up_to=2",
-                ["m1", "m2"],
-                {"1": "m1", "2": "m2"},
-            )
-        assert write_text.call_count == 1
-        payload = json.loads(write_text.call_args.args[0])
-        assert payload.get("last_journal_id") == "m2"
 
 
 # ---------------------------------------------------------------------------

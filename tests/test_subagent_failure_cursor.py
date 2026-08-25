@@ -6,12 +6,11 @@
 
 覆盖：
 1. _is_subagent_failure 单元测试（前缀判定 + 非 str/正常 JSON 不命中）
-2. compat sleep 代表点：entity 失败 F1 不剪切 → 梦境循环 D5 短路 → 门控 skipped，游标全不动
-3. compat force 代表点：journal（skip_compress=True；模式三梦境腿已摘除）→ 游标全不动
-5. handler._update_journal_cursor（journal 游标：failure 前缀零写入，正常推进判别力）
+2. compat sleep 代表点：entity 失败 F1 不剪切 → 梦境循环 D5 短路，游标零写
 
 fixture 数学同 test_incomplete_cursor（R6-B 验证）：2 条消息 × _FakeCalc 100 token/条 = 200 tokens，
-_read_context_window_tokens=8000 → 2.5% usage：sleep journal 跳过（<50%）、mode1 压缩执行（<70% 不 skip）。
+_read_context_window_tokens=8000 → 2.5% usage（低 usage 场景；T7 后 usage 不再门控睡眠管道任何腿，
+force 压缩与 handler 游标推进路径已随 T6/T7 退役，原对应代表点用例一并移除）。
 """
 import asyncio
 import json
@@ -104,9 +103,8 @@ def _tidy_messages():
 def _tidy_failure_patches(subagent_result, call_mock):
     """T7 独立 fixture（同 test_incomplete_cursor._tidy_incomplete_patches 模式，各 Task fixture 独立）。
 
-    - 四个游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）
+    - 游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）
     - 窗口 8000 / _FakeCalc
-    - 保留真实 _build_incremental_msg_text（不 patch）→ 范围非空
     - _write_cursor_with_lock → MagicMock（记录调用，测试 hermetic）
     """
     return [
@@ -214,73 +212,3 @@ class TestTidySleepFailureCursor:
             assert f.read() == "", "成功提炼后 F1 应被剪切清空"
         with open(f2, encoding="utf-8") as f:
             assert '"msg_id": "t7-seed-not-in-db"' in f.read(), "剪下前缀应追加到 F2"
-
-
-
-class _Msg:
-    def __init__(self, mid):
-        self.id = mid
-
-
-# ---------------------------------------------------------------------------
-# 5. handler._update_journal_cursor（journal 游标 hermetic——T7 决策点补齐）
-# ---------------------------------------------------------------------------
-
-class TestHandlerJournalCursorFailure:
-    """_update_journal_cursor 失败前缀分支（T7：handler.py L1152 决策点）。
-
-    - '[错误]' → last_journal.json 零写入（游标不动）
-    - 'SUBAGENT_ERROR:' → last_journal.json 零写入
-    - 正常 processed_up_to=2 → 写 m2（判别力，证明 fixture 非空洞）
-
-    断言基于 mock write_text call args（同 test_incomplete_cursor 第 3 节模式），
-    不依赖真实 last_journal.json / DB。
-    """
-
-    def _make_handler(self):
-        from agent.handler import NiuHandler
-
-        handler = NiuHandler(mcp_client=None)
-        handler._sync_get_messages = lambda: [_Msg("m1"), _Msg("m2")]
-        return handler
-
-    def test_error_bracket_does_not_write_journal_cursor(self):
-        """journal-agent 返回 '[错误]' 前缀 → journal 游标不写入（Quality P1 场景）。"""
-        handler = self._make_handler()
-        write_text = mock.MagicMock()
-        with mock.patch("agent.handler.Path.exists", return_value=False), \
-             mock.patch("agent.handler.Path.write_text", write_text):
-            handler._update_journal_cursor(
-                ERROR_BRACKET,
-                ["m1", "m2"],
-                {"1": "m1", "2": "m2"},
-            )
-        write_text.assert_not_called()
-
-    def test_subagent_error_prefix_does_not_write_journal_cursor(self):
-        """journal-agent 返回 'SUBAGENT_ERROR:' 前缀 → journal 游标不写入。"""
-        handler = self._make_handler()
-        write_text = mock.MagicMock()
-        with mock.patch("agent.handler.Path.exists", return_value=False), \
-             mock.patch("agent.handler.Path.write_text", write_text):
-            handler._update_journal_cursor(
-                SUBAGENT_ERROR_STR,
-                ["m1", "m2"],
-                {"1": "m1", "2": "m2"},
-            )
-        write_text.assert_not_called()
-
-    def test_normal_result_writes_journal_cursor(self):
-        """对照：正常 processed_up_to=2 → journal 游标写 m2（判别力）。"""
-        handler = self._make_handler()
-        write_text = mock.MagicMock()
-        with mock.patch("agent.handler.Path.exists", return_value=False), \
-             mock.patch("agent.handler.Path.write_text", write_text):
-            handler._update_journal_cursor(
-                "处理完成 @end processed_up_to=2",
-                ["m1", "m2"],
-                {"1": "m1", "2": "m2"},
-            )
-        assert write_text.call_count == 1
-        payload = json.loads(write_text.call_args.args[0])
-        assert payload.get("last_journal_id") == "m2"

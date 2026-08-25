@@ -1,14 +1,17 @@
-"""工程四 T1：睡眠管道重排（journal(≥50%) → context-manager → entity-extractor → dream-evolver）行为测试。
+"""睡眠管道行为测试（工程四重排 → T6 压缩退役 → T7 journal 迁 scheduler 后的现状钉）。
 
-对应计划 docs/superpowers/plans/2026-08-24-md-relay-project4-reorder.md §3-T1 测试清单：
-1. 重序断言：context-manager 先于 entity/dream 被调（默认 usage<50%，以 cm 为序锚）
-2. ≥50% 用例单列钉 journal 位次
-3. ≥50% 模式二全序 journal→cm→entity→dream + 无 post-dream 范围过滤
-   + 无锚点排除（工程五七件套退役）：cm 方案中的锚点消息 update 正常应用
-4. CP1 唤醒（压缩对后）→ interrupted 且压缩已落库
-5. 门控消失：游标滞后/F1 未提炼不再产生 skipped 返回
-6. dream 循环零游标写入（last_dream_evolve 退役反向钉——工程五）
-7. 入口零读取反向钉：compat 入口不再读 last_dream_evolve.json（工程五）
+睡眠管道现序：entity-extractor → dream-evolver（→ 块摘要可选层）；journal 腿已迁
+scheduler journal_daily 定时任务（T7）、context-manager 已退役（T6）——睡眠全程零
+journal/cm 调用，usage 不再门控任何腿。
+
+测试清单：
+1. 全序钉：entity 先于 dream（cm 零调用）
+2. 高 usage（≥50%）反向钉：journal-agent 不再出现于睡眠管道（T7 迁出）
+3. CP1 唤醒（entity 腿后首个 is_sleeping 检查点）→ interrupted
+4. 门控消失：游标滞后/F1 未提炼不再产生 skipped 返回
+5. dream 循环零游标写入（last_dream_evolve 退役反向钉——工程五）
+6. 入口零读取反向钉：compat 入口不再读 last_dream_evolve.json（工程五）
+7. 复位表收缩：reset 恰清 journal 一键、不触碰 last_entity_extract.json
 
 全 mock：call_subagent_with_auto_answer / 游标文件 / is_sleeping / runner / chat_queue——
 禁真实 LLM、禁图谱写入、messages.db 零新增、不碰真实 ~/.niu。
@@ -69,7 +72,7 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), tokens_per_msg=100,
                seed_f1=None, extra_patches=()):
     """驱动 _tidy_context_impl sleep 分支（绕过 worker/CP0），全 mock。
 
-    - Path.home → 隔离 tmp 目录（入口三游标读取全部落在 tmp，缺失即空游标）
+    - Path.home → 隔离 tmp 目录（游标文件读写全部落在 tmp，缺失即空游标）
     - store：内存消息表 + 删除/更新留痕（delete_messages_by_ids/update_message 记录调用并同步裁剪 db）
     - seed_f1：非 None 时向隔离 F1 写入一条该 msg_id 的种子记录（entity 步真实执行）
     返回 (result, write_mock, call_mock, store, ctx)；ctx 含 deleted_batches/updated/home/db。
@@ -161,7 +164,7 @@ def _cursor_writes(write_mock):
 
 
 # ---------------------------------------------------------------------------
-# 1. 重序断言：cm 先于 entity/dream（usage<50%）
+# 1. 全序钉：entity 先于 dream（cm 已退役零调用）
 # ---------------------------------------------------------------------------
 
 def test_t6_order_entity_then_dream_no_cm():
@@ -180,13 +183,14 @@ def test_t6_order_entity_then_dream_no_cm():
 
 
 # ---------------------------------------------------------------------------
-# 2. ≥50%（[50%,70%) 窗口）：journal 位次钉
+# 2. 高 usage（≥50%）反向钉：journal-agent 不在睡眠管道（T7 迁 scheduler）
 # ---------------------------------------------------------------------------
 
-def test_mode2_window_journal_runs_first():
-    """usage∈[50%,70%)：journal-agent 被调且先于 entity/dream（T6 后无 cm）。
+def test_high_usage_no_journal_in_sleep_pipeline():
+    """usage∈[50%,70%)（旧四腿序的 journal 触发窗口）：T7 后睡眠管道零 journal/cm 调用。
 
-    3 条 ×1500 tok / 8000 窗口 = 56.25%。
+    3 条 ×1500 tok / 8000 窗口 = 56.25%；无 F1/F2 内容 → entity/dream 亦无工作，
+    全程零子 Agent 调用、status ok。
     """
     call_mock = _keyed({})
     result, _w, call_mock, _store, _ctx = _run_sleep(
@@ -194,32 +198,32 @@ def test_mode2_window_journal_runs_first():
     )
 
     agents = _called_agents(call_mock)
-    assert agents[0] == "journal-agent" and "context-manager" not in agents, (
-        f"T6 后 journal 应最先被调且无 cm: {agents}"
+    assert agents == [], (
+        f"journal 已迁 scheduler、cm 已退役；无 F1/F2 内容时全程零子 Agent 调用: {agents}"
     )
     assert result.get("status") == "ok", f"实际: {result}"
 
 
 # ---------------------------------------------------------------------------
-# 4. CP1 唤醒（压缩对后）→ interrupted 且压缩已落库
+# 3. CP1 唤醒（entity 腿后首个 is_sleeping 检查点）→ interrupted
 # ---------------------------------------------------------------------------
 
-def test_cp1_interrupt_after_journal_leg():
-    """CP1（journal 腿后）唤醒 → interrupted；entity/dream 不执行、compress 游标零写。"""
+def test_cp1_interrupt_at_first_checkpoint():
+    """CP1（entity 腿后首个 is_sleeping 检查点）唤醒 → interrupted；entity/dream 不执行、compress 游标零写。"""
     def sleep():
-        return False  # 首个 is_sleeping 检查即 CP1（usage<50% journal skipped）
+        return False  # 首个 is_sleeping 检查即 CP1
 
     call_mock = _keyed({})
     result, write_mock, call_mock, _store, _ctx = _run_sleep(call_mock, sleep=sleep)
 
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == [], "usage<50% journal skipped，entity/dream 不应执行"
+    assert _called_agents(call_mock) == [], "首个检查点（entity 腿后）即命中，entity/dream 不应执行"
     assert [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")] == [], \
         f"compress 游标已退役，零写: {_cursor_writes(write_mock)}"
 
 
 # ---------------------------------------------------------------------------
-# 5. 门控消失：游标滞后不再产生 skipped
+# 4. 门控消失：游标滞后不再产生 skipped
 # ---------------------------------------------------------------------------
 
 def test_gating_gone_stale_cursor_and_full_f1_proceed():
@@ -240,7 +244,7 @@ def test_gating_gone_stale_cursor_and_full_f1_proceed():
 
 
 # ---------------------------------------------------------------------------
-# 6. dream 循环零游标写入（工程五退役反向钉）
+# 5. dream 循环零游标写入（工程五退役反向钉）
 # ---------------------------------------------------------------------------
 
 def test_dream_cursor_no_longer_written_after_retirement():
@@ -259,7 +263,7 @@ def test_dream_cursor_no_longer_written_after_retirement():
 
 
 # ---------------------------------------------------------------------------
-# 7. 入口零读取反向钉（工程五退役）
+# 6. 入口零读取反向钉（工程五退役）
 # ---------------------------------------------------------------------------
 
 def test_entry_no_dream_cursor_read(tmp_path):
@@ -289,7 +293,7 @@ def test_entry_no_dream_cursor_read(tmp_path):
     assert result.get("status") == "ok"
 
 # ---------------------------------------------------------------------------
-# 8. 复位表两键清算（工程五七件套退役：_ALL_CURSOR_FILES 收缩）
+# 7. 复位表收缩（工程五七件套退役：_ALL_CURSOR_FILES 仅剩 journal 一键）
 # ---------------------------------------------------------------------------
 
 def test_reset_all_cursors_clears_exactly_journal_key(tmp_path):

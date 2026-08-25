@@ -7,6 +7,7 @@ Scheduler Service Lifecycle Management
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 from agent.handler import code_run
@@ -77,6 +78,10 @@ def trigger_callback(task: dict) -> str | None:
     background_script 任务：读 {workspace}/scripts/{script_file} → code_run →
     stdout 空+成功=静默返回 '(silent)'；有 stdout 或 status=error=stdout 注入主 Agent。
     脚本文件不存在=永久删除任务（避免无限重试）。
+
+    journal_daily 任务（T7）：后台线程直执行——导出 DB 增量给 journal-agent 自读，
+    日志只写 journal.md 文件、游标自管，**严禁经 ChatQueue enqueue**（journal 内容
+    写进 messages.db 会反污染上下文窗口）。派发即返回 "ok"。
     """
     from niu_api.alerts import add_pending_alert
     from niu_api.chat import _main_loop
@@ -87,6 +92,10 @@ def trigger_callback(task: dict) -> str | None:
     # ===== background_script 分支 =====
     if task.get("task_kind") == "background_script":
         return _trigger_background_script(task, _main_loop, add_pending_alert)
+
+    # ===== journal_daily 分支（T7：journal 迁出睡眠管道后的定时直执行）=====
+    if task.get("task_kind") == "journal_daily":
+        return _trigger_journal_daily(task)
 
     # ===== reminder 分支（fire-and-forget） =====
     prompt = f"[定时任务] {task['content']}"
@@ -116,6 +125,203 @@ def trigger_callback(task: dict) -> str | None:
         logger.warning(f"[INTERNAL SCHEDULER] add_pending_alert failed: {e}")
 
     return "ok"
+
+
+# ============== journal_daily 定时任务（T7：journal 直执行，严禁经 ChatQueue） ==============
+
+# 串行化同进程内 journal_daily 运行（防上一轮未完、下一轮触发重叠）
+_journal_run_lock = threading.Lock()
+_journal_thread: threading.Thread | None = None
+
+
+def read_journal_scheduled_enabled() -> bool:
+    """读 context.journalScheduledEnabled（默认 True——定时 journal 默认开启）。
+
+    D13 禁用语义覆盖 journal：关闭后定时任务静默跳过本轮（返回成功语义，
+    不进失败链——禁用是配置而非故障）。避让活跃对话由 scheduler backend-busy
+    等待 + 运行前复查共同承担。
+    """
+    try:
+        from niu_api.config import CONFIG_PATH
+
+        config = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
+        return bool(config.get("context", {}).get("journalScheduledEnabled", True))
+    except Exception as e:
+        logger.debug(f"[JOURNAL_DAILY] 配置读取失败，按开启处理: {e}")
+        return True
+
+
+def _trigger_journal_daily(task: dict) -> str | None:
+    """journal_daily 触发：派后台线程直执行，**不经 ChatQueue enqueue**。
+
+    journal 内容若经 enqueue 写入 messages.db 会反污染上下文窗口（T7 铁律），
+    故本分支与 reminder/background_script 不同：日志只写 journal.md 文件，
+    游标由本分支自管（last_journal.json），对主 Agent 上下文零注入。
+
+    完成语义：派发即返回 "ok"（recurring 正常 reschedule）。执行失败仅落日志，
+    游标不推进 → 下轮自动重覆盖同一增量区间（journal.md 写入侧内容去重兜底），
+    无需借 scheduler 失败计数器重试。运行中重复触发由 _run_journal_daily_job 内
+    _journal_run_lock 非阻塞去重（跳过本轮，下轮 cron 再来）。
+
+    D13 避让：后台线程先复用 Scheduler 既有 backend-busy 轮询（_is_backend_busy
+    + 二次确认防抖，stagger 同款），活跃对话期等待、超时兜底放行。
+    """
+    global _journal_thread
+
+    if not read_journal_scheduled_enabled():
+        logger.info("[JOURNAL_DAILY] context.journalScheduledEnabled=false, skip")
+        return "ok"
+
+    _journal_thread = threading.Thread(
+        target=_run_journal_daily_job, name="journal-daily", daemon=True
+    )
+    _journal_thread.start()
+    logger.info(f"[JOURNAL_DAILY] dispatched (task_id={task.get('id')})")
+    return "ok"
+
+
+def _wait_backend_idle(sched: "Scheduler | None") -> None:
+    """复用 scheduler 既有 backend-busy 等待：忙则轮询，非忙二次确认后放行。
+
+    总超时兜底沿用 stagger_max_wait 先例（一直忙也强制执行，防永久饥饿）。
+    """
+    if sched is None:
+        return
+    poll = sched._busy_poll_interval
+    confirm = sched._double_confirm_delay
+    deadline = time.monotonic() + sched._stagger_max_wait
+    while True:
+        if not sched._is_backend_busy():
+            # 二次确认防抖（与 scheduler stagger 同款）
+            time.sleep(confirm)
+            if not sched._is_backend_busy():
+                return
+            logger.debug("[JOURNAL_DAILY] backend became busy during double-confirm, rewaiting")
+        if time.monotonic() >= deadline:
+            logger.warning(f"[JOURNAL_DAILY] backend busy wait exceeded {sched._stagger_max_wait}s, forcing run")
+            return
+        time.sleep(poll)
+
+
+def _run_journal_daily_job() -> None:
+    """journal_daily 执行体：避让等待 → 导出增量 → 调 journal-agent 自读 → 推进游标。
+
+    运行中重复触发由 _journal_run_lock 非阻塞去重：抢不到锁直接跳过本轮
+    （下轮 cron 再来），锁由本函数独占持有/释放。
+    """
+    if not _journal_run_lock.acquire(blocking=False):
+        logger.warning("[JOURNAL_DAILY] previous run still in progress, skip")
+        return
+    try:
+        from agent.subagent import call_subagent_with_auto_answer
+
+        from niu_api.compat import (
+            JOURNAL_CURSOR_PATH,
+            JOURNAL_WORKSET_PATH,
+            _build_journal_file_task,
+            _export_journal_increment,
+            _extract_overflow_info,
+            _incomplete_reason,
+            _is_subagent_failure,
+            _is_subagent_incomplete,
+            _is_subagent_overflow,
+            _parse_processed_up_to,
+            _read_cursor_with_lock,
+            _write_cursor_with_lock,
+        )
+
+        # 1. D13 避让：复用既有 backend-busy 等待（scheduler 未启动时跳过避让）
+        try:
+            sched = get_scheduler()
+        except RuntimeError:
+            sched = None
+        _wait_backend_idle(sched)
+
+        # 2. LLM 调用前复查开关（避让等待期间用户可能改配置——禁用也应终止本轮）
+        if not read_journal_scheduled_enabled():
+            logger.info("[JOURNAL_DAILY] disabled after idle wait, skip")
+            return
+
+        # 3. 读游标（跨线程统一走 .lock helper，禁止另开 fd 嵌套加锁）
+        last_journal_id = _read_cursor_with_lock(JOURNAL_CURSOR_PATH, "last_journal_id")
+
+        # 4. 从 DB 同步读消息并导出增量工作集
+        from niu_api.chat import get_or_create_runner
+
+        runner = get_or_create_runner()
+        if not runner:
+            logger.warning("[JOURNAL_DAILY] Runner not initialized, skip")
+            return
+        messages = runner._sync_get_messages()
+        if not messages:
+            logger.info("[JOURNAL_DAILY] no messages in DB, skip")
+            return
+
+        msg_ids, idx_to_id = _export_journal_increment(
+            messages, last_journal_id, JOURNAL_WORKSET_PATH
+        )
+        if not msg_ids:
+            logger.info("[JOURNAL_DAILY] no incremental messages since cursor")
+            return
+        logger.info(f"[JOURNAL_DAILY] exported {len(msg_ids)} incremental messages")
+
+        # 5. 调 journal-agent 自读工作集（直执行；结果只写 journal.md 与回复文本）
+        result = call_subagent_with_auto_answer(
+            "journal-agent",
+            _build_journal_file_task(JOURNAL_WORKSET_PATH, len(msg_ids)),
+            llm_config=runner.llm_config,
+            mcp_client=None,
+        )
+        logger.info(f"[JOURNAL_DAILY] journal-agent result: {result[:200]}")
+
+        # 6. 游标推进（程序侧按映射推进，F1 同款模式）：failure/overflow/incomplete→不动
+        new_journal_id = last_journal_id
+        if _is_subagent_overflow(result) or _is_subagent_incomplete(result) or _is_subagent_failure(result):
+            if _is_subagent_incomplete(result):
+                logger.warning(f"[JOURNAL_DAILY] incomplete ({_incomplete_reason(result)}) — cursor not advanced")
+            elif _is_subagent_overflow(result):
+                overflow_info = _extract_overflow_info(result)
+                logger.warning(f"[JOURNAL_DAILY] overflow: {overflow_info.get('turns_completed', 0)} turns — cursor not advanced")
+            else:
+                logger.warning(f"[JOURNAL_DAILY] failure: {result[:200]} — cursor not advanced")
+        else:
+            processed_idx = _parse_processed_up_to(result)
+            if processed_idx is not None and processed_idx in idx_to_id:
+                new_journal_id = idx_to_id[processed_idx]
+                logger.info(f"[JOURNAL_DAILY] cursor advanced per processed_up_to={processed_idx} -> {new_journal_id}")
+            else:
+                new_journal_id = msg_ids[-1]  # 兜底：区间末尾
+                logger.info(f"[JOURNAL_DAILY] cursor fallback to range end: {new_journal_id}")
+
+        # 7. 校验游标仍存在于 DB（防并发删除），写回
+        if new_journal_id:
+            fresh_ids = {getattr(m, "id", "") for m in runner._sync_get_messages()}
+            if new_journal_id not in fresh_ids:
+                logger.warning(f"[JOURNAL_DAILY] cursor {new_journal_id} deleted, reverting to {last_journal_id}")
+                new_journal_id = last_journal_id
+                if new_journal_id and new_journal_id not in fresh_ids:
+                    new_journal_id = ""
+
+        if new_journal_id:
+            from datetime import datetime
+
+            _write_cursor_with_lock(JOURNAL_CURSOR_PATH, {
+                "last_journal_id": new_journal_id,
+                "last_journal_at": datetime.now().isoformat(),
+            })
+            logger.info(f"[JOURNAL_DAILY] cursor updated: last_journal_id={new_journal_id}")
+
+        # 8. 清理工作集临时文件（best-effort）
+        try:
+            JOURNAL_WORKSET_PATH.unlink(missing_ok=True)
+        except Exception as e:
+            logger.debug(f"[JOURNAL_DAILY] workset cleanup failed: {e}")
+    except Exception as e:
+        import traceback
+
+        logger.error(f"[JOURNAL_DAILY] run failed: {e}\n{traceback.format_exc()}")
+    finally:
+        _journal_run_lock.release()
 
 
 def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | None:

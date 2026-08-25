@@ -682,14 +682,13 @@ def test_prompt_degradation_display_layer_unchanged_without_marker():
     assert outcome.data["result"] == '{"ok": true}'
 
 
-def test_prompt_degradation_json_result_cursor_unaffected(monkeypatch):
-    """E4-14：降级返回的干净 JSON（无标注）→ journal 游标更新收到原始 result（JSON 消费端不受影响）。
+def test_prompt_degradation_json_result_display_layer_only(monkeypatch):
+    """E4-14：降级返回的干净 JSON（无标注）→ 降级标注只进展示副本（JSON 结果本体不被腐蚀）。
 
-    E4 T3 P3b：原测试只直接调 _update_journal_cursor（未涉及降级链——与
-    test_incomplete_cursor.py 游标测试冗余）。改为驱动完整链路：
-    真实 call_subagent（build_subagent_system_segments 降级）→ handler._call_subagent_gen
-    journal-agent 路径 → 捕获 _update_journal_cursor 收到的 journal_result——
-    断言为无标注原始 JSON（JSON 守卫不拼接），降级标注只进 display_result（展示副本）。
+    E4 T3 P3b 改版（T7：handler journal 游标钩子退役，journal-agent 走普通子 Agent
+    路径）：驱动完整链路——真实 call_subagent（build_subagent_system_segments 降级）
+    → handler._call_subagent_gen journal-agent 路径，直接断言 StepOutcome 返回的
+    展示结果带标注、且原始 JSON 完整保留在结果文本头部。
     """
     from unittest import mock
 
@@ -707,18 +706,9 @@ def test_prompt_degradation_json_result_cursor_unaffected(monkeypatch):
     from agent.handler import NiuHandler
 
     handler = NiuHandler(mcp_client=None)
-    captured = {}
-
-    def _capture_cursor(journal_result, journal_msg_ids, journal_idx_to_id=None):
-        captured["result"] = journal_result
-        captured["msg_ids"] = journal_msg_ids
-        captured["idx_to_id"] = journal_idx_to_id
-
-    handler._update_journal_cursor = _capture_cursor
-    # journal 增量任务构建 hermetic 化（不读真实 last_journal.json / DB）——与 tidy 管道同构
-    handler._build_journal_task_for_handler = lambda original_task: (
-        "精加工实体", [], {"2": "m2"}, ["m1", "m2"],
-    )
+    # journal 任务构建 hermetic 化（T7 后返回纯 task 字符串；不读真实 last_journal.json / DB）
+    handler._build_journal_task_for_handler = lambda original_task: original_task
+    handler._sync_get_messages = lambda: []
 
     fake_runner = mock.MagicMock()
     fake_runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
@@ -736,10 +726,6 @@ def test_prompt_degradation_json_result_cursor_unaffected(monkeypatch):
             outcome = si.value
     assert outcome is not None, "generator 未返回 StepOutcome"
 
-    # 游标更新收到无标注原始 result（JSON 守卫不拼接——标注只在展示副本）
-    assert captured["result"] == '{"processed_up_to": 2}'
-    assert "子 Agent 提示词降级" not in captured["result"]
-    assert captured["idx_to_id"] == {"2": "m2"}  # 游标映射来自真实 _call_subagent_gen 分支
     # 降级事实仍进展示层 display_result（返回 LLM 的展示副本，不解析）
     assert outcome.data["status"] == "success"
     assert outcome.data["result"] == '{"processed_up_to": 2}\n[子 Agent 提示词降级: 系统提示词构建失败：system segments boom]'

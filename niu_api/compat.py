@@ -13,6 +13,7 @@ import time
 from asyncio import sleep as _asyncio_sleep
 from concurrent.futures import Future
 from datetime import datetime
+from pathlib import Path
 from typing import TypedDict
 
 from agent.session import get_message_store
@@ -170,19 +171,21 @@ async def _cleanup_orphan_tool_messages(store):
         await store.delete_messages_by_ids(_orphan_mids)
 
 
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None) -> str:
-    """
-    构建增量消息文本：只包含游标之后的新消息。
+def _export_journal_increment(messages, last_cursor_id: str, out_path) -> tuple[list[str], dict[int, str]]:
+    """导出游标之后的增量消息到 out_path（journal-agent 自读通道，F1 同款文件自读模式）。
 
-    Args:
-        messages: 全量消息列表
-        last_cursor_id: 上次处理到的消息 UUID（空字符串表示全量）
-        out_msg_ids: 输出参数，收集增量消息的 UUID 列表
-        msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不注解
-        end_cursor_id: 上界游标 UUID，只生成到该消息为止（含该消息），None 则到末尾
+    T7 起 journal 输入通道不再走 history 注入：调用方（scheduler journal_daily /
+    handler 交互路径）先把 DB 增量导出为临时 md 文件，journal-agent 用 read 工具
+    自读并回报 processed_up_to=N，程序按 idx_to_id 映射推进游标。
+
+    - 下界：last_cursor_id 在 messages 中的位置；找不到降级全量（与原增量语义一致）
+    - 每条记录一个块：头行 "[N] role created_at" + 正文；role=tool 超长正文按
+      md_mirror.truncate_tool_output 先例截断
+    - out_path 每次运行整体覆盖写（确定性派生文件，可随时重建）
 
     Returns:
-        格式化的消息文本
+        (msg_ids, idx_to_id)：msg_ids 与编号同序（游标兜底用）；idx_to_id[N]=UUID
+        供解析 processed_up_to=N 后查 UUID 推进游标。零增量时返回 ([], {})。
     """
     # 找到下界游标位置
     cursor_idx = -1
@@ -193,47 +196,49 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
                 cursor_idx = i
                 break
         if cursor_idx < 0:
-            logger.warning(f"[Tidy] Cursor UUID {last_cursor_id} not found in message list, degrading to full processing")
+            logger.warning(f"[Journal] Cursor UUID {last_cursor_id} not found in message list, degrading to full processing")
 
-    # 找到上界游标位置
-    end_idx = len(messages) - 1
-    if end_cursor_id:
-        found = False
-        for i, msg in enumerate(messages):
-            if (getattr(msg, "id", "") or "") == end_cursor_id:
-                end_idx = i
-                found = True
-                break
-        if not found:
-            logger.warning(f"[Tidy] End cursor UUID {end_cursor_id} not found in message list, degrading to full range")
-            end_idx = len(messages) - 1
-
-    # 计算有效范围：[start, effective_end)
     start = cursor_idx + 1 if cursor_idx >= 0 else 0
-    effective_end = end_idx + 1  # 包含 end_cursor 本身
+    incremental = messages[start:]
+    if not incremental:
+        return [], {}
 
-    if start >= effective_end:
-        return "（无新增消息）"
+    from agent.md_mirror import truncate_tool_output
 
-    # 构建带原始位置的消息列表（保留原始 idx）
-    range_messages_with_pos = [(i, msg) for i, msg in enumerate(messages[start:effective_end])]
-
-    lines = []
+    lines: list[str] = [f"# Journal 增量导出（共 {len(incremental)} 条，编号 [1]..[{len(incremental)}]）"]
+    msg_ids: list[str] = []
+    idx_to_id: dict[int, str] = {}
     display_idx = 0
-    for rel_pos, (orig_pos, msg) in enumerate(range_messages_with_pos):
+    for msg in incremental:
         msg_id = getattr(msg, "id", "") or ""
-        content = msg.content or ""
-        token_annotation = ""
-        if msg_tokens and (start + orig_pos) < len(msg_tokens):
-            token_annotation = f"{msg_tokens[start + orig_pos]}tokens "
+        role = getattr(msg, "role", "user")
+        content = getattr(msg, "content", "") or ""
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        tool_call_id = getattr(msg, "tool_call_id", "") or ""
+        created_at = getattr(msg, "created_at", "") or ""
+
         display_idx += 1
-        out_msg_ids.append(msg_id)
-        lines.append(f"[id:{msg_id}] [idx:{display_idx}] {token_annotation}{msg.role}: {content}")
+        msg_ids.append(msg_id)
+        idx_to_id[display_idx] = msg_id
 
-    if not lines:
-        return "（无新增消息）"
+        header = f"[{display_idx}] {role} {created_at}".rstrip()
+        if tool_calls:
+            names = ", ".join(
+                (tc.get("function", {}) or {}).get("name", "?") if isinstance(tc, dict) else "?"
+                for tc in tool_calls
+            )
+            header += f" (tool_calls: {names})"
+        elif tool_call_id:
+            header += f" (answers tool_call_id={tool_call_id})"
 
-    return f"共 {len(lines)} 条新消息\n\n" + "\n".join(lines)
+        body = truncate_tool_output(content) if role == "tool" else content
+        lines.append(header)
+        lines.append(body)
+        lines.append("")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return msg_ids, idx_to_id
 
 
 def _build_compress_history(
@@ -243,10 +248,10 @@ def _build_compress_history(
 ) -> tuple[list[dict], dict[int, str]]:
     """构造带 [idx:N] 前缀的 history 列表 + idx↔UUID 映射。
 
-    T6 保留（R4-A 边界）：压缩退役后暂无生产调用方，journal 路径（T7 迁移后）
-    与后续 history 型输入可复用——只摘除 protect_recent/exclude_protected 参数。
+    T6 保留（R4-A 边界）：压缩退役后暂无生产调用方，与后续 history 型输入可复用
+    ——只摘除 protect_recent/exclude_protected 参数。
 
-    与 _build_incremental_msg_text 的区别：
+    与文件导出通道（_export_journal_increment）的区别：
     - 输出 history 列表（role/content/tool_calls/tool_call_id 原样），而非序列化文本
     - content 开头加 `[idx:N] Ntokens ` 前缀（简易 idx，不用 UUID）
     - 单条 message 不会超限（每条就是原大小 + 前缀）
@@ -286,58 +291,6 @@ def _build_compress_history(
         prefix = f"[idx:{display_idx}] {token_annotation}"
 
         # 构造 history entry（原样保留 role/tool_calls/tool_call_id）
-        entry: dict = {"role": role, "content": prefix + content}
-        if tool_calls:
-            entry["tool_calls"] = tool_calls
-        if tool_call_id:
-            entry["tool_call_id"] = tool_call_id
-
-        history.append(entry)
-
-    return history, idx_to_id
-
-
-def _build_plain_history(messages, out_msg_ids: list | None = None) -> tuple[list[dict], dict[int, str]]:
-    """构造带 [N] 极简前缀的 history 列表 + 简易ID↔UUID 映射。
-
-    用于非压缩子 Agent（journal-agent / entity-extractor / dream-evolver）的睡眠/force 管道：
-    - history 每条 content 前缀 "[N] "（N 是 1-based 简易编号）
-    - 同步构建 idx_to_id 映射 {N: 真实UUID}，供程序解析子 Agent 输出的 processed_up_to=N 后查 UUID 更新游标
-    - 全量透传：不排除任何消息、不排除孤立 tool（保持原顺序，子 Agent 自己判断）
-
-    与 _build_compress_history 的区别：
-    - 前缀极简 "[N] "（不是 "[idx:N] Ntokens "）
-    - 无 token 标注（非压缩子 Agent 不需要做压缩决策）
-
-    Args:
-        messages: 全量消息列表（Message 对象，含 id/role/content/tool_calls/tool_call_id）
-        out_msg_ids: 输出参数，收集消息的真实 ID 列表（与 history 等长同顺序，用于游标推进兜底）
-
-    Returns:
-        (history, idx_to_id):
-        - history: [{"role":..., "content": "[N] 原content", "tool_calls"?:..., "tool_call_id"?:...}, ...]
-        - idx_to_id: {N: 真实 message_id}，用于解析子 Agent 输出的 processed_up_to=N
-    """
-    if out_msg_ids is None:
-        out_msg_ids = []
-
-    history: list[dict] = []
-    idx_to_id: dict[int, str] = {}
-    display_idx = 0
-
-    for msg in messages:
-        msg_id = getattr(msg, "id", "") or ""
-        role = getattr(msg, "role", "user")
-        content = getattr(msg, "content", "") or ""
-        tool_calls = getattr(msg, "tool_calls", None)
-        tool_call_id = getattr(msg, "tool_call_id", None)
-
-        display_idx += 1
-        out_msg_ids.append(msg_id)
-        idx_to_id[display_idx] = msg_id
-
-        # 极简前缀 [N]（不带 UUID / tokens / role）
-        prefix = f"[{display_idx}] "
         entry: dict = {"role": role, "content": prefix + content}
         if tool_calls:
             entry["tool_calls"] = tool_calls
@@ -438,13 +391,48 @@ def _parse_and_drop_f2(dream_result: str, f3_lines: int, f2_path=None) -> tuple[
     from agent.md_mirror import drop_f2_prefix
     return drop_f2_prefix(int(m.group(1)), max_lines=f3_lines, f2_path=f2_path)
 
-def _build_journal_task() -> str:
-    """构建 journal-agent 的 task prompt（纯指令，消息以 history 形式逐条传入）。
+# journal 增量导出工作集（journal-agent 自读通道的临时文件；每次运行整体覆盖）
+# 并发窗口取舍（计划内）：handler 交互路径导出后不清文件，scheduler journal_daily 跑完会 unlink；
+# 两路径并发时后到的导出整体覆盖先到的工作集——由 journal.md 写入侧内容去重兜底
+JOURNAL_WORKSET_PATH = Path.home() / ".niu" / "md" / "journal_workset.md"
 
-    Returns:
-        纯指令 task prompt 字符串（含 @end processed_up_to=N 说明，程序据此推进游标）
+JOURNAL_CURSOR_PATH = Path.home() / ".niu" / "last_journal.json"
+
+
+def _read_cursor_with_lock(cursor_path, field: str) -> str:
+    """带文件锁保护的游标读取 — 与 _write_cursor_with_lock 同一把 .lock 文件。
+
+    flock 纪律：本 helper 与写 helper 各自独立 open fd 顺序使用，调用方禁止在
+    持锁期间再调任一 helper（同进程嵌套 flock 同一 .lock 会自死锁）。
     """
-    return """以上是对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
+    if not cursor_path.exists():
+        return ""
+    lock_path = cursor_path.with_suffix(".lock")
+    try:
+        with open(lock_path, "w") as lock_f:
+            _flock(lock_f)
+            try:
+                data = json.loads(cursor_path.read_text(encoding="utf-8"))
+                return data.get(field, "") or ""
+            except Exception as e:
+                logger.warning(f"[Journal] Failed to read cursor: {e}")
+                return ""
+            finally:
+                _funlock(lock_f)
+    except Exception as e:
+        logger.warning(f"[Journal] Cursor lock acquire failed: {e}")
+        return ""
+
+
+def _build_journal_file_task(workset_path, count: int) -> str:
+    """构建 journal-agent 自读导出文件的 task prompt。
+
+    T7 输入通道：增量消息已由程序导出到 workset_path（每条记录 [N] 编号），
+    子 Agent 用 read 工具自读后提取日志，回报 processed_up_to=N 由程序推进游标。
+    """
+    return f"""增量对话消息已导出到文件：{workset_path}（共 {count} 条）。
+
+请先用 read 工具读取该文件。文件内每条消息一个记录块：头行以 `[N]` 开头（N 为 1-based 编号，含 role 与时间），随后是消息正文。请从中识别工作内容，提取为日志条目追加写入 journal.md。
 
 处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
 
@@ -2055,7 +2043,7 @@ async def add_context_message(request: dict) -> dict:
     return {"status": "ok", "message_id": msg_id}
 
 # 游标文件列表（清空消息后必须一并复位，否则游标指向已删除消息）
-_ALL_CURSOR_FILES = ["last_journal.json"]  # T6 压缩退役后仅剩 journal 一键（T7 journal 迁 scheduler 后再定去留）
+_ALL_CURSOR_FILES = ["last_journal.json"]  # T6 压缩退役后仅剩 journal 一键；T7 定案保留——游标指向 messages.db，消息清空时必须一并复位
 
 
 async def _reset_all_cursors() -> None:
@@ -2312,7 +2300,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
         from agent.runner import clear_stop, is_stop_requested
-        from agent.subagent import call_subagent_with_auto_answer
 
         from niu_api.chat import get_or_create_runner
 
@@ -2321,115 +2308,13 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             logger.warning("[Tidy] Runner not initialized")
             return {"status": "error", "message": "Runner not initialized"}
 
-        llm_config = runner.llm_config
-
-        import json
-        from pathlib import Path
-
-        # 读取游标（UUID 基准；compress 游标已随 T6 压缩退役删除，仅剩 journal）
-        journal_cursor_path = Path.home() / ".niu" / "last_journal.json"
-        last_journal_id = ""
-        if journal_cursor_path.exists():
-            try:
-                cursor_data = json.loads(journal_cursor_path.read_text(encoding="utf-8"))
-                last_journal_id = cursor_data.get("last_journal_id", "")
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to read journal cursor: {e}")
-
-
         if mode == "sleep":
-            # Sleep mode: journal-agent (≥50%) → entity-extractor (F1 自读) → dream-evolver (F3 自读多轮循环)
+            # Sleep mode: entity-extractor (F1 自读) → dream-evolver (F3 自读多轮循环) → 块摘要（可选层）
+            # （journal 腿已迁 scheduler journal_daily 定时任务——直执行分支自管游标，不经本管道）
 
-            # 1/4. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
-            if usage_percent >= 50:
-                # 重新获取消息列表（增量基准）
-                messages = await store.get_messages()
-                msg_tokens = []
-                try:
-                    from agent.token_calculator import TokenCalculator
-                    calc = TokenCalculator.get()
-                    for msg in messages:
-                        try:
-                            t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
-                        except Exception:
-                            t = max(1, len(msg.content or "") // 2) + 4
-                        msg_tokens.append(t)
-                except ImportError:
-                    msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            llm_config = runner.llm_config
 
-                new_journal_id = last_journal_id
-                journal_msg_ids = []
-                _ = _build_incremental_msg_text(
-                    messages, last_journal_id, journal_msg_ids, msg_tokens
-                )
-                logger.info(f"[Tidy] Sleep: starting journal-agent ({len(journal_msg_ids)} incremental messages)")
-
-                if journal_msg_ids:
-                    journal_task_prompt = _build_journal_task()
-                    # 构造增量 history
-                    _id_set = set(journal_msg_ids)
-                    journal_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
-                    journal_history, journal_idx_to_id = _build_plain_history(journal_incremental_msgs)
-
-                    def run_journal_agent():
-                        return call_subagent_with_auto_answer(
-                            agent_name="journal-agent",
-                            task=journal_task_prompt,
-                            llm_config=llm_config,
-                            mcp_client=None,
-                            history=journal_history,
-                            context_fifo_threshold=-1,  # FIFO 保底
-                        )
-
-                    journal_result = await asyncio.to_thread(run_journal_agent)
-                    logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
-
-                    # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                    if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result) or _is_subagent_failure(journal_result):
-                        if _is_subagent_incomplete(journal_result):
-                            logger.warning(f"[Tidy] journal-agent incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
-                        else:
-                            overflow_info = _extract_overflow_info(journal_result)
-                            logger.warning(f"[Tidy] journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
-                        # overflow/incomplete 时游标不动，下次重跑相同范围
-                    else:
-                        _processed_idx = _parse_processed_up_to(journal_result)
-                        if _processed_idx is not None and _processed_idx in journal_idx_to_id:
-                            new_journal_id = journal_idx_to_id[_processed_idx]
-                            logger.info(f"[Tidy] Journal cursor advanced per processed_up_to={_processed_idx} -> {new_journal_id}")
-                        elif journal_msg_ids:
-                            new_journal_id = journal_msg_ids[-1]  # 兜底
-                            logger.info(f"[Tidy] Journal cursor fallback to range end: {new_journal_id}")
-                        else:
-                            new_journal_id = last_journal_id
-
-                    # 校验游标
-                    if new_journal_id:
-                        fresh_msgs = await store.get_messages()
-                        fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                        if new_journal_id not in fresh_ids:
-                            logger.warning(f"[Tidy] Journal cursor {new_journal_id} deleted, reverting to {last_journal_id}")
-                            new_journal_id = last_journal_id
-                            if new_journal_id and new_journal_id not in fresh_ids:
-                                new_journal_id = ""
-
-                    if new_journal_id:
-                        _write_cursor_with_lock(journal_cursor_path, {
-                            "last_journal_id": new_journal_id,
-                            "last_journal_at": datetime.now().isoformat(),
-                        })
-                        logger.info(f"[Tidy] Journal cursor updated: last_journal_id={new_journal_id}")
-                else:
-                    logger.info("[Tidy] journal-agent: no new messages since cursor")
-            else:
-                logger.info(f"[Tidy] journal-agent: skipped (usage {usage_percent:.1f}% < 50%)")
-
-            # CP1：journal 腿完成后——非睡眠 → 中断；已写游标不回滚，下次续跑
-            if not is_sleeping():
-                logger.warning("[Tidy] Sleep interrupted after journal-agent (woke up)")
-                return {"status": "interrupted", "reason": "woke_up"}
-
-            # 2/4. entity-extractor（v2：自读 F1 → processed_line → relay 剪切）
+            # 1/3. entity-extractor（v2：自读 F1 → processed_line → relay 剪切）
             from agent.md_mirror import F1_PATH
 
             from niu_api.md_alignment import align_f1_with_store
@@ -2458,12 +2343,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     cut = _parse_and_relay_f1(entity_result, f1_path)
                     logger.info(f"[Tidy] relay cut {cut} lines" if cut else "[Tidy] relay skipped (invalid line number)")
 
-            # CP2：entity 段完成后——非睡眠 → 中断；F1 剪切已执行不回滚，下次续跑
+            # CP1：entity 段完成后——非睡眠 → 中断；F1 剪切已执行不回滚，下次续跑
             if not is_sleeping():
                 logger.warning("[Tidy] Sleep interrupted after entity-extractor (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
-            # 3/4. dream-evolver（v3 多轮子循环：F2 头部重建 F3 工作集 → 自读报行号 → 删 F2 前缀；
+            # 2/3. dream-evolver（v3 多轮子循环：F2 头部重建 F3 工作集 → 自读报行号 → 删 F2 前缀；
             # 终止判据 covered_all=本轮 F3 涵盖全量 F2，非「F2 删空」——会话边界合法留置尾部时 F2 永不删空）
             from agent.md_mirror import F2_PATH, build_f3_from_f2, drop_f2_prefix
 
@@ -2521,12 +2406,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             # 补全会话日期链（循环退出后一次收尾全覆盖；幂等图补边扫描，方法内部已容错）
             await asyncio.to_thread(runner._ensure_session_chain)
 
-            # CP3：dream 循环完成后——纯中断检查；F2 前缀删除已执行不回滚，下次续跑
+            # CP2：dream 循环完成后——纯中断检查；F2 前缀删除已执行不回滚，下次续跑
             if not is_sleeping():
                 logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
-            # 4/4 块摘要增强（Task 5 可选层）：context.blockSummaryEnabled 默认关闭；
+            # 3/3 块摘要增强（Task 5 可选层）：context.blockSummaryEnabled 默认关闭；
             # 仅空闲时段执行（睡眠管道运行期即用户离开期，活跃对话期模块内部跳过本轮）；
             # 裸调 lightrag_llm 一次一call、失败保 pending 不抛出（spec D6/D13）
             try:
