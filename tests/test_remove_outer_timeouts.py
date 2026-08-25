@@ -345,59 +345,9 @@ async def test_td_lock_gives_up_with_max_elapsed(monkeypatch):
     assert elapsed < 5.0, "必须在 max_elapsed 附近放弃而非无限等待"
 
 
-async def test_td_queue_idle_immediate_true():
-    """队列未在处理 → 立即 True，零等待零日志。"""
-    q = SimpleNamespace(_processing=False, _processing_done=asyncio.Event())
-    messages, sink_id = _capture_loguru()
-    try:
-        ok = await compat._wait_queue_idle_with_retry(q, "QP")
-    finally:
-        logger.remove(sink_id)
-    assert ok is True
-    assert not any("queue busy" in m for m in messages)
-
-
-async def test_td_queue_busy_heartbeat_then_success(monkeypatch):
-    """队列 busy → 分片等待 + 心跳 "queue busy, retrying"；置位后返回 True。"""
-    q = SimpleNamespace(_processing=True, _processing_done=asyncio.Event())
-    monkeypatch.setattr(compat, "TIDY_WAIT_CHUNK", 0.01)
-
-    async def set_done_later():
-        await asyncio.sleep(0.03)
-        q._processing_done.set()
-
-    finisher = asyncio.create_task(set_done_later())
-    messages, sink_id = _capture_loguru()
-    try:
-        ok = await compat._wait_queue_idle_with_retry(q, "QP")
-    finally:
-        logger.remove(sink_id)
-        await finisher
-    assert ok is True
-    heartbeats = [m for m in messages if "queue busy, retrying" in m]
-    assert len(heartbeats) >= 1
-    assert "[QP]" in heartbeats[0]
-
-
-async def test_td_queue_busy_gives_up_with_max_elapsed(monkeypatch):
-    """队列永不空闲 + max_elapsed 注入 → 返回 False（终止性）。"""
-    q = SimpleNamespace(_processing=True, _processing_done=asyncio.Event())
-    monkeypatch.setattr(compat, "TIDY_WAIT_CHUNK", 0.01)
-    t0 = time.monotonic()
-    ok = await asyncio.wait_for(
-        compat._wait_queue_idle_with_retry(q, "QP", max_elapsed=0.05), timeout=5
-    )
-    elapsed = time.monotonic() - t0
-    assert ok is False
-    assert elapsed < 5.0
-
-
 # ---------------------------------------------------------------------------
-# T-F 睡眠应用前复查（§3.4）：Mode-2 应用前 / Mode-1 派发前 is_sleeping()=False → interrupted
+# T-F 睡眠检查点（T6）：journal 腿后 CP1 唤醒 → interrupted，零删除/更新执行
 # （驱动模式仿 tests/test_pipeline_sleep_checkpoints.py，全 mock 零真实依赖）
-# ---------------------------------------------------------------------------
-
-MODE2_PLAN = "keep=1\nupdate=2|[摘要] 压缩后的第二条"
 
 
 class _FakeCalc:
@@ -452,12 +402,9 @@ def _run_sleep_tidy_tf(tokens_per_msg, sleep_side_effect, subagent_reply=None):
             "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
             "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
         }),
-        patch("niu_api.compat._read_protect_recent_count", return_value=0),
-        patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         # 四个游标文件 READ 强制缺失（compat 函数内 `from pathlib import Path`，patch 类方法本身）
         patch("pathlib.Path.exists", return_value=False),
         patch("niu_api.compat._write_cursor_with_lock"),
-        patch("niu_api.compat._read_compress_target_tokens", return_value=1000),
         patch("niu_api.compat.is_sleeping", side_effect=sleep_side_effect),
     ]
     with ExitStack() as stack:
@@ -472,46 +419,25 @@ def _called_agents(call_mock):
     return [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
 
 
-def test_tf_mode2_interrupted_before_apply_zero_deletion():
-    """Mode-2（usage≥50%）：方案解析成功后唤醒（应用前复查=新序首个检查点）→ interrupted；零删除/更新执行、不碰队列锁。"""
-    calls = {"n": 0}
-
+def test_tf_wakeup_at_cp1_zero_deletion():
+    """CP1（journal 腿后）唤醒 → interrupted；零删除/更新执行、不碰队列锁（T6：压缩应用段已退役）。"""
     def sleep_side_effect():
-        calls["n"] += 1
-        return False  # 工程四重排：压缩对内部无检查点，应用前复查是首个 is_sleeping 检查 → 已被唤醒
+        return False  # 首个 is_sleeping 检查即 CP1（usage<50% journal skipped）→ 已被唤醒
 
     def _boom(*a, **k):
         raise AssertionError("interrupted 后不得触碰 ChatQueue 门禁")
 
     with patch("niu_api.chat_queue.get_chat_queue", _boom):
         result, store, call_mock = _run_sleep_tidy_tf(
-            tokens_per_msg=2500,  # 5000/8000 = 62.5% ∈ [50%, 70%) → Mode-2 且不被 skip 阈值拦截
+            tokens_per_msg=100,
             sleep_side_effect=sleep_side_effect,
-            subagent_reply=MODE2_PLAN,
         )
 
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock)[-1] == "context-manager"  # 方案已解析（cm 已跑完）
+    agents = _called_agents(call_mock)
+    assert agents == [], f"T6 后 usage<50% 无任何子 Agent 被调，实际 {agents}"
     non_get = [c for c in store.mock_calls if c[0] != "get_messages"]
     assert non_get == [], f"零删除/更新执行，实际 store 调用 {non_get}"
-
-
-def test_tf_mode1_interrupted_before_dispatch():
-    """Mode-1（usage<50%，新序 cm 居首）：派发 context-manager 前唤醒 → interrupted；cm 不派发。"""
-    calls = {"n": 0}
-
-    def sleep_side_effect():
-        calls["n"] += 1
-        return False  # 工程四重排：mode-1 派发前复查是 sleep 分支首个检查点 → 即断
-
-    result, store, call_mock = _run_sleep_tidy_tf(
-        tokens_per_msg=100,  # 200/8000 = 2.5% → Mode-1
-        sleep_side_effect=sleep_side_effect,
-    )
-
-    assert result == {"status": "interrupted", "reason": "woke_up"}
-    agents = _called_agents(call_mock)
-    assert "context-manager" not in agents, f"cm 不应派发，实际 {agents}"
 
 
 # ---------------------------------------------------------------------------

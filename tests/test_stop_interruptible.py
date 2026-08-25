@@ -424,8 +424,6 @@ def _tidy_common_patches():
         mock.patch("niu_api.compat._read_context_window_tokens", return_value=8000),
         mock.patch("niu_api.chat.get_or_create_runner", return_value=_FakeRunner()),
         mock.patch("agent.subagent.call_subagent_with_auto_answer", return_value=""),
-        mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
-        mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         # T5：sleep 管道测试保持睡眠态（CP1-CP3 检查点需 is_sleeping=True 才不打断）
         mock.patch("niu_api.compat.is_sleeping", return_value=True),
         # 本 fixture _build_incremental_msg_text 恒空（各段 no new messages），无真实游标写入
@@ -454,26 +452,6 @@ def test_sleep_tidy_stop_aware_false():
         result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"}, chat_lock_already_held=True))
     assert result.get("status") == "ok"  # sleep 完整跑完，不 abort
     assert result.get("status") != "aborted"
-
-
-def test_force_tidy_stop_aware_true():
-    """force 模式（stop_aware=True）：is_stop_requested=True 时第一阶段后 abort。"""
-    import asyncio
-    from contextlib import ExitStack
-
-    from niu_api.compat import _tidy_context_impl
-
-    store = mock.MagicMock()
-    store.get_messages = mock.AsyncMock(return_value=_tidy_messages())
-    with ExitStack() as stack:
-        stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
-        for p in _tidy_common_patches():
-            stack.enter_context(p)
-        stack.enter_context(mock.patch("agent.runner.is_stop_requested", return_value=True))
-        clear_stop_mock = stack.enter_context(mock.patch("agent.runner.clear_stop"))
-        result = asyncio.run(_tidy_context_impl({"mode": "force", "session_id": "t"}, chat_lock_already_held=True))
-    assert result.get("status") == "aborted"  # force 阶段间检查 abort
-    assert clear_stop_mock.called
 
 
 # ---- T3: source 归一化 ----

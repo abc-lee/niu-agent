@@ -26,7 +26,6 @@ async def _clean_pipeline():
     """每个用例前复位全局队列/去重表/精灵状态（模块级全局，避免用例间串扰）。"""
     if compat._pipeline_queue is not None:
         await compat.stop_pipeline_queue()
-    compat._active_compress_futs.clear()
     compat._SPIRIT_STATE = "idle"
     yield
     if compat._pipeline_queue is not None:
@@ -83,8 +82,6 @@ def _cp_patches(sleep_side_effect, call_mock):
             "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
             "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
         }),
-        mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
-        mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         # 四个游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）。
         # compat.py 在函数内 `from pathlib import Path`，无模块级 Path，故 patch 类方法本身
         mock.patch("pathlib.Path.exists", return_value=False),
@@ -150,50 +147,49 @@ def _cursor_writes(write_mock):
     return [call.args[1] for call in write_mock.call_args_list]
 
 
-def test_cp1_interrupt_after_compress_pair():
-    """CP1：压缩对（journal+context-manager）完成后唤醒 → interrupted；entity/dream 不执行；已落库压缩不回滚。"""
+def test_cp1_interrupt_after_journal():
+    """CP1：journal 腿完成后唤醒 → interrupted；entity/dream 不执行（T6：cm 腿退役，CP1 收缩为 journal 检查点）。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 2  # mode-1 派发前复查仍睡眠 → CP1 断
+        return False  # 首次检查即 CP1（usage<50% journal skipped，无派发前复查）
 
     result, write_mock, call_mock, relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == ["context-manager"], "entity/dream 不应执行"
+    assert _called_agents(call_mock) == [], "journal skipped（usage<50%）且 entity/dream 不应执行"
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")] == []
-    compress_writes = [d for d in writes if d.get("last_compress_id")]
-    assert compress_writes, "压缩对已完成：compress 游标推进不回滚"
+    assert [d for d in writes if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
     with open(relay["f1"], encoding="utf-8") as f:
         assert '"msg_id": "m2"' in f.read(), "entity 未执行，F1 不得被剪切"
-    assert calls["n"] == 2  # mode-1 派发前复查 + CP1 各一次
+    assert calls["n"] == 1
 
 
 # ---------------------------------------------------------------------------
 # CP1-CP3：各检查点打断后后续步骤不执行、已推进游标不回滚
 # ---------------------------------------------------------------------------
 def test_cp2_interrupt_after_entity():
-    """CP2：entity 段完成后唤醒 → interrupted；dream 不执行；F1 已剪切、压缩游标推进不回滚。"""
+    """CP2：entity 段完成后唤醒 → interrupted；dream 不执行；F1 已剪切不回滚。"""
     calls = {"n": 0}
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 3  # 派发前复查 + CP1 仍睡眠，CP2 断
+        return calls["n"] < 2  # CP1 仍睡眠，CP2 断
 
     result, write_mock, call_mock, relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == ["context-manager", "entity-extractor"], "dream 不应执行"
+    assert _called_agents(call_mock) == ["entity-extractor"], "dream 不应执行"
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")] == [], "dream 未执行零写"
-    assert [d for d in writes if d.get("last_compress_id")], "压缩游标已推进不回滚"
+    assert [d for d in writes if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
     with open(relay["f1"], encoding="utf-8") as f:
         assert f.read() == "", "entity 步后 F1 应已被剪切（剪切不回滚）"
     with open(relay["f2"], encoding="utf-8") as f:
         assert '"msg_id": "m2"' in f.read(), "剪下前缀应已追加到 F2"
-    assert calls["n"] == 3
+    assert calls["n"] == 2
 
 
 
@@ -203,33 +199,31 @@ def test_cp3_interrupt_after_dream_loop():
 
     def sleep_side_effect():
         calls["n"] += 1
-        return calls["n"] < 5  # 派发复查/CP1/CP2/dream 轮间检查仍睡眠，CP3 断
+        return calls["n"] < 4  # CP1/CP2/dream 轮间检查仍睡眠，CP3 断
 
     result, write_mock, call_mock, _relay = _run_sleep_tidy(sleep_side_effect)
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    # journal 此 fixture usage 2.5% < 50% 走 skipped 分支；新序 cm 先于 entity/dream
-    assert _called_agents(call_mock) == ["context-manager", "entity-extractor", "dream-evolver"]
+    # journal 此 fixture usage 2.5% < 50% 走 skipped 分支；T6 后管道序 entity→dream
+    assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver"]
     writes = _cursor_writes(write_mock)
     assert [d for d in writes if d.get("last_entity_extract_id")] == [], "entity UUID 游标已退役，零写"
     assert [d for d in writes if d.get("last_dream_evolve_id")] == [], "dream 游标已退役（工程五），零写"
-    assert [d for d in writes if d.get("last_compress_id")], "压缩游标已推进不回滚"
-    assert calls["n"] == 5
+    assert [d for d in writes if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
+    assert calls["n"] == 4
 
 
 
 def test_sleep_full_run_not_interrupted_when_asleep():
     """对照：全程睡眠 → 完整跑完（fixture 非空洞，CP 断言有判别力）。
 
-    门控已随工程四重排摘除；管道序 journal(≥50% skipped)→cm→entity→dream。
+    T6 后管道序 journal(≥50% 才跑，本 fixture skipped)→entity→dream→块摘要。
     """
     result, write_mock, call_mock, relay = _run_sleep_tidy(lambda: True)
     assert result.get("status") == "ok", f"睡眠中不应打断: {result}"
-    assert _called_agents(call_mock) == ["context-manager", "entity-extractor", "dream-evolver"]
-    compress_writes = [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")]
-    assert compress_writes, "正常完成应推进压缩游标"
+    assert _called_agents(call_mock) == ["entity-extractor", "dream-evolver"]
+    assert [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")] == [], "compress 游标已退役，零写"
     with open(relay["f1"], encoding="utf-8") as f:
         assert f.read() == "", "完整跑完后 F1 应已被提炼剪切清空"
-
 
 
 # ---------------------------------------------------------------------------
@@ -254,60 +248,3 @@ async def test_cp0_worker_cancel_when_not_sleeping(monkeypatch):
         await compat.stop_pipeline_queue()
     assert result == {"status": "cancelled", "reason": "woke_up"}
     assert called == [], f"CP0 cancelled 时 impl 不应被调用: {called}"
-
-
-# ---------------------------------------------------------------------------
-# 零插入反向断言：force/runner-force 路径不得调用 is_sleeping
-# ---------------------------------------------------------------------------
-
-def _boom():
-    """反向断言哨兵：is_sleeping 被调用即抛错 → 该路径存在零插入违反。"""
-    raise AssertionError("该路径不应调用 is_sleeping（force/runner-force 零插入）")
-
-
-def test_force_never_calls_is_sleeping():
-    """force 零插入：is_sleeping mock 抛异常 → force 路径不触发（反向断言）。
-
-    v3（spec §5）：模式三摘除梦境腿——管道为 journal-agent（skip_compress=True 时无 cm）。
-    """
-    from niu_api.compat import _tidy_context_impl
-
-    store = mock.MagicMock()
-    store.get_messages = mock.AsyncMock(return_value=_tidy_messages())
-    call_mock = mock.MagicMock()
-    call_mock.return_value = NORMAL_JSON
-    with ExitStack() as stack:
-        stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
-        for p in _cp_patches(_boom, call_mock):
-            stack.enter_context(p)
-        result = asyncio.run(_tidy_context_impl(
-            {"mode": "force", "skip_compress": True, "session_id": "t"},
-            chat_lock_already_held=True,
-        ))
-    assert result.get("status") == "ok", f"force 应正常跑完: {result}"
-    called = _called_agents(call_mock)
-    assert called == ["journal-agent"], "模式三只跑压缩对（梦境腿已摘除）"
-    assert "entity-extractor" not in called and "dream-evolver" not in called, "模式三 entity/dream 腿均已摘除"
-
-
-async def test_runner_force_never_calls_is_sleeping(monkeypatch):
-    """runner-force 零插入：is_sleeping mock 抛异常 → runner-force 路径不触发（反向断言）。"""
-    class _FakeForceRunner:
-        def __init__(self):
-            self.called = False
-
-        def _execute_force_pipeline(self):
-            self.called = True
-            return {"status": "ok"}
-
-    fake = _FakeForceRunner()
-    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: fake)
-    monkeypatch.setattr(compat, "is_sleeping", _boom)
-    compat.start_pipeline_queue()
-    try:
-        fut = compat._pipeline_enqueue("runner-force", {}, held=False)
-        result = await asyncio.wait_for(asyncio.wrap_future(fut), timeout=1.0)
-    finally:
-        await compat.stop_pipeline_queue()
-    assert result == {"status": "ok"}
-    assert fake.called

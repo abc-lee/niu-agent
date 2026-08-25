@@ -968,10 +968,6 @@
       <button id="send-btn">发送</button>
       <button class="stop-btn" id="stop-btn" style="display:none;" title="停止生成 (/stop)">■</button>
       <div class="slash-dropdown" id="slash-dropdown">
-        <div class="slash-dropdown-item" data-cmd="/clear">
-          <span class="cmd-name">/clear</span>
-          <span class="cmd-desc">先记录当前会话中有价值的信息，再清空会话</span>
-        </div>
         <div class="slash-dropdown-item" data-cmd="/new">
           <span class="cmd-name">/new</span>
           <span class="cmd-desc">新会话</span>
@@ -982,7 +978,7 @@
         </div>
         <div class="slash-dropdown-item" data-cmd="/compact">
           <span class="cmd-name">/compact</span>
-          <span class="cmd-desc">强制压缩上下文（提炼+梦境+日志+压缩）</span>
+          <span class="cmd-desc">快速压缩：立即释放上下文空间</span>
         </div>
         <div class="slash-dropdown-item" data-cmd="/sleep">
           <span class="cmd-name">/sleep</span>
@@ -1028,8 +1024,7 @@
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-btn');
-    let _clearTidyInFlight = false;  // /clear 整理+清空进行中，gate chat_idle 的 UI 重置（R3-2）
-    let _compactingInFlight = false;  // /compact 压缩进行中，gate chat_idle 的 UI 重置（同 _clearTidyInFlight 模式）
+    let _compactingInFlight = false;  // /compact 压缩进行中，gate chat_idle 的 UI 重置
     window._compacting = false;  // 压缩中标志，由 compact_status 事件切换
     const closeBtn = document.getElementById('close-btn');
     const header = document.getElementById('header');
@@ -1504,39 +1499,9 @@
         return;
       }
 
-      // /clear 指令 - 先整理（日志）后清空（后端跑完 journal 才清空，阻塞）
-      if (text === '/clear') {
-        userInput.value = '';
-        userInput.style.height = 'auto';
-        if (isProcessing) {
-          // busy：先 /stop 停主 Agent（全局 stop 标志，让持锁者在 finally 释放 _chat_lock），不做等 chat_idle
-          // 注意：主 Agent 卡在子 agent tool 时 /stop 不传播到运行中子 agent，后端 acquire(120s) 可能超时 → 优雅失败需重试
-          try {
-            await window.electronAPI.sendMessage('/stop');
-          } catch (e) {
-            console.error('停止失败:', e);
-            addSystemMessage('停止失败: ' + (e.message || e));
-          }
-        }
-        // R3-2：整理/清空进行中标志，gate chat_idle 的 UI 重置（见 Step 3）
-        _clearTidyInFlight = true;
-        sendBtn.disabled = true;
-        userInput.disabled = true;
-        addSystemMessage('正在整理对话并清空会话，请稍候…');
-        try {
-          await clearChat();
-        } finally {
-          _clearTidyInFlight = false;
-          sendBtn.disabled = false;
-          userInput.disabled = false;
-          stopBtn.style.display = isProcessing ? 'flex' : 'none';  // 镜像 /new：整理完成且空闲时隐藏 stop 按钮
-          userInput.focus();
-        }
-        return;
-      }
-
+      // /clear 指令 - 已随压缩体系退役（T6）：等价 /new，直接清空不再先整理
       // /new 指令 - 清空聊天记录
-      if (text === '/new') {
+      if (text === '/clear' || text === '/new') {
         userInput.value = '';
         userInput.style.height = 'auto';
         stopBtn.style.display = 'none';
@@ -1574,12 +1539,12 @@
         return;
       }
 
-      // /compact 指令 - 强制压缩上下文（entity→dream→journal→context-manager 模式三，阻塞式）
+      // /compact 指令 - 快速压缩：立即触发机械压实（零 LLM 秒级，T6 新语义）
       if (text === '/compact') {
         userInput.value = '';
         userInput.style.height = 'auto';
         if (isProcessing) {
-          // busy：先 /stop 停主 Agent（同 /clear 模式）
+          // busy：先 /stop 停主 Agent（避免压实与在途回复交错）
           try {
             await window.electronAPI.sendMessage('/stop');
           } catch (e) {
@@ -1658,10 +1623,9 @@
     // 强制压缩上下文（/compact 命令）
     async function compactContext() {
       try {
-        // 直接 await，无前端整体超时：解锁真源是后端 tidy 处理器的 try/finally
-        // （必释放 _tidy_lock），子 Agent 必然三态返回（LLM read_timeout 保底），
-        // 前端 Promise.race 假失败只会误导用户（方案 §3.10）
-        const result = await window.electronAPI.tidyContext('force');
+          // T6 后 /compact = 机械压实（零 LLM、秒级返回）；后端 _compact_context_impl
+        // try/finally 保证必有终态响应
+        const result = await window.electronAPI.tidyContext('compact');
         if (result && result.status === 'ok') {
           addSystemMessage('✅ 上下文压缩完成');
         } else if (result && result.status === 'aborted') {
@@ -2603,9 +2567,8 @@
         // Agent循环结束：重置状态机
         hideTyping();
         isProcessing = false;
-        // R3-2：/clear 或 /compact 进行中时，不重启用输入、不隐藏 stopBtn（对应函数结束才恢复）
-        // 两个标志任一为 true 都 gate：_clearTidyInFlight（/clear）| _compactingInFlight（/compact）
-        if (!_clearTidyInFlight && !_compactingInFlight) {
+        // R3-2：/compact 进行中时，不重启用输入、不隐藏 stopBtn（对应函数结束才恢复）
+        if (!_compactingInFlight) {
           stopBtn.style.display = 'none';
           sendBtn.disabled = false;
         }

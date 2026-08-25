@@ -62,16 +62,15 @@ class TestSubagentMigrationIntegration:
     def test_all_subagent_configs_valid(self):
         """All sub-agent config files should parse correctly."""
         from agent.subagent import get_subagent_config
-        for name in ["dream-evolver", "entity-extractor", "context-manager", "event-manager"]:
+        for name in ["dream-evolver", "entity-extractor", "event-manager"]:
             cfg = get_subagent_config(name)
             assert cfg["name"] == name
             assert "mcpServers" in cfg
 
-    def test_context_manager_no_lightrag(self):
-        """context-manager should NOT have lightrag-server (pure compressor)."""
+    def test_context_manager_retired(self):
+        """T6 压缩退役反向钉：config/agents/context-manager.md 已删，配置解析为空。"""
         from agent.subagent import get_subagent_config
-        cfg = get_subagent_config("context-manager")
-        assert "lightrag-server" not in cfg["mcpServers"]
+        assert get_subagent_config("context-manager") == {}
 
     def test_dream_evolver_has_lightrag(self):
         """dream-evolver should have lightrag-server."""

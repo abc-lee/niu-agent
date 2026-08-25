@@ -6,23 +6,12 @@
 - 模式二/三（一轮出 keep=/update=/cursor= 方案）：传 True 绕过，行为与整改前一致
 - 模式一（多轮工具）：默认 False，走标准 @end/FORMAT_ERROR 结束判断
 本测试验证：
-1. context-manager 系统提示词不含 @niu-agent 守则（保持不变）
-2. bypass_at_prefix=True 时输出 keep= 方案不被拦截（模式二/三行为锁定）
-3. bypass_at_prefix=False 时空响应走 FORMAT_ERROR 追问（模式一新行为）
-4. 其他子 Agent（file-processor）仍被注入守则、仍被拦截（不受影响）
-5. call_subagent 把 bypass_at_prefix 参数透传到 handler._bypass_at_prefix
+1. bypass_at_prefix=True 时输出 keep= 方案不被拦截（模式二/三行为锁定）
+2. bypass_at_prefix=False 时空响应走 FORMAT_ERROR 追问（模式一新行为）
+3. 其他子 Agent（file-processor）仍被注入守则、仍被拦截（不受影响）
+4. call_subagent 把 bypass_at_prefix 参数透传到 handler._bypass_at_prefix
 """
 from unittest import mock
-
-
-def test_context_manager_system_prompt_has_no_at_niu_guide():
-    """context-manager 的系统提示词里不包含 @niu-agent/@end 守则段"""
-    from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER, build_subagent_system_segments
-
-    static_system, _ = build_subagent_system_segments("context-manager")
-    assert _SUBAGENT_ASK_GUIDE_MARKER not in static_system
-    assert "@niu-agent" not in static_system
-    assert "## 子 Agent 与主 Agent 对话规则" not in static_system
 
 
 def test_file_processor_system_prompt_still_has_at_niu_guide():

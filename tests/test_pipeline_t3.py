@@ -40,7 +40,6 @@ async def _clean_pipeline():
     """每个用例前复位全局队列/去重表/精灵状态（模块级全局，避免用例间串扰）。"""
     if compat._pipeline_queue is not None:
         await stop_pipeline_queue()
-    compat._active_compress_futs.clear()
     compat._SPIRIT_STATE = "idle"
     yield
     if compat._pipeline_queue is not None:
@@ -168,8 +167,11 @@ def test_entry8_no_queue_dependency(monkeypatch):
     assert messages[0].get("role") == "system"
 
 
-async def test_enqueue_failure_rolls_back_dedup(monkeypatch):
-    """compat _pipeline_enqueue 投递失败（put_nowait 抛异常）：回滚去重登记 + 重新 raise（P3-2/P3-5）。"""
+async def test_enqueue_failure_reraises(monkeypatch):
+    """compat _pipeline_enqueue 投递失败（put_nowait 抛异常）：重新 raise（调用方契约是返回 Future）。
+
+    T6：force/runner-force 去重表已退役，仅剩「异常重新抛出」语义。
+    """
     start_pipeline_queue()
     q = compat._pipeline_queue
 
@@ -178,10 +180,4 @@ async def test_enqueue_failure_rolls_back_dedup(monkeypatch):
 
     monkeypatch.setattr(q, "put_nowait", _boom_put)
     with pytest.raises(RuntimeError, match="queue closed"):
-        compat._pipeline_enqueue("force", {"mode": "force", "session_id": "s"}, held=False)
-    assert not compat._active_compress_futs  # 去重登记已回滚（无残留）
-
-    # 非压缩类（sleep）无去重登记可回滚，异常同样重新抛出
-    with pytest.raises(RuntimeError, match="queue closed"):
         compat._pipeline_enqueue("sleep", {"mode": "sleep", "session_id": "s"}, held=False)
-    assert not compat._active_compress_futs

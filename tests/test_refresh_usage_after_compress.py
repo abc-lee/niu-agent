@@ -249,8 +249,14 @@ async def test_post_compress_usage_unchanged(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tidy_finally_no_reset_when_skipped(monkeypatch):
-    """force+skip 未压缩：finally 调 notify done 不带 usage、不 reset_tokens"""
+async def test_tidy_finally_no_reset_when_skipped(monkeypatch, tmp_path):
+    """sleep 管道未压缩（skip 场景）：finally 调 notify done 不带 usage、不 reset_tokens。
+
+    真实路径：mode='sleep' + 低使用率（journal 腿被跳过）+ F1/F2 为空（entity/dream 无事可做）
+    → 消息数不变 → _compute_post_compress_usage 判定未压缩 → done 不携带 usage、不 reset。
+    """
+    import pathlib as _pl
+
     from niu_api import chat as chat_mod
     from niu_api import compat as compat_mod
 
@@ -258,8 +264,6 @@ async def test_tidy_finally_no_reset_when_skipped(monkeypatch):
     monkeypatch.setattr(chat_mod, "notify_compact_status_sync",
                         lambda status, mode="", usage=None, reset_tokens=False:
                             calls.append((status, mode, usage, reset_tokens)))
-    # 防真实 runner 创建 + dream-evolver 段 runner._ensure_session_chain 调用
-    # （force 管道在 skip 判定前会跑 entity/dream/journal 三段；SUBAGENT_ERROR mock 使各段跳过推进）
     monkeypatch.setattr(chat_mod, "get_or_create_runner",
                         lambda: type("R", (), {"llm_config": {},
                                                "handler": None,
@@ -273,12 +277,28 @@ async def test_tidy_finally_no_reset_when_skipped(monkeypatch):
 
     monkeypatch.setattr(compat_mod, "get_message_store", _fake_get_store)
 
-    # force 分支读 request 的 skip_compress 键（sleep 分支不读——测试必须用 force）；
-    # 管道各段对 SUBAGENT_ERROR 可能 return skipped/继续，无论哪条路径 finally 都执行
-    # 且消息数不变 → done 无 usage——断言聚焦 done_calls，不依赖 result.status
-    result = await compat_mod._tidy_context_impl({"mode": "force", "skip_compress": True})
+    # 低使用率（<50%）→ journal 腿跳过；游标/中继文件全部落在隔离 tmp 目录
+    class _Calc:
+        @staticmethod
+        def count_message_single(role, content, tool_calls=None):
+            return 10  # 2×10=20 tokens / 窗口 8000 → usage 远低于 50%
 
+    monkeypatch.setattr("agent.token_calculator.TokenCalculator.get", lambda: _Calc())
+    monkeypatch.setattr(compat_mod, "_read_context_window_tokens", lambda: 8000)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("os.path.expanduser",
+                        lambda p: str(tmp_path / ".niu" / "isolated") if p.startswith("~") else p)
+    monkeypatch.setattr("niu_api.compat.is_sleeping", lambda: True)
+    empty_f1 = str(tmp_path / "f1.md")
+    empty_f2 = str(tmp_path / "f2.md")
+    monkeypatch.setattr("agent.md_mirror.F1_PATH", empty_f1)
+    monkeypatch.setattr("agent.md_mirror.F2_PATH", empty_f2)
+
+    result = await compat_mod._tidy_context_impl({"mode": "sleep"})
+
+    assert result.get("status") == "ok", f"实际: {result}"
     done_calls = [c for c in calls if c[0] == "done"]
-    assert done_calls, f"expected done broadcast, got calls={calls} result={result}"
-    assert done_calls[-1][2] is None      # 未推 usage
+    assert len(done_calls) == 1, f"expected single done broadcast, got calls={calls}"
+    assert done_calls[-1][1] == "sleep"
+    assert done_calls[-1][2] is None      # 未压缩 → 未推 usage
     assert done_calls[-1][3] is False     # 未 reset_tokens

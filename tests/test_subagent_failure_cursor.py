@@ -105,7 +105,7 @@ def _tidy_failure_patches(subagent_result, call_mock):
     """T7 独立 fixture（同 test_incomplete_cursor._tidy_incomplete_patches 模式，各 Task fixture 独立）。
 
     - 四个游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）
-    - _read_protect_recent_count→0 / _read_warning_threshold→0.8 / 窗口 8000 / _FakeCalc
+    - 窗口 8000 / _FakeCalc
     - 保留真实 _build_incremental_msg_text（不 patch）→ 范围非空
     - _write_cursor_with_lock → MagicMock（记录调用，测试 hermetic）
     """
@@ -119,8 +119,6 @@ def _tidy_failure_patches(subagent_result, call_mock):
             "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
             "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
         }),
-        mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
-        mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         # T5：sleep 管道测试保持睡眠态（CP1-CP3 检查点需 is_sleeping=True 才不打断）
         mock.patch("niu_api.compat.is_sleeping", return_value=True),
         # 四个游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）。
@@ -176,106 +174,47 @@ class TestTidySleepFailureCursor:
     def test_error_bracket_does_not_advance_any_cursor(self):
         """sleep 全链收 '[错误]' → 游标零写 + F1 不剪切（契约：数据保留下次重跑）。
 
-        工程四重排：门控摘除——cm 先跑收 '[错误]'（mode-1 吸收失败续跑、无早退），
-        entity 后跑也失败（F1 不剪切）→ F2 空 → 梦境循环 D5 短路 → 终态 ok（called 含 cm 在前）。
+        T6：cm 腿退役——entity 收 '[错误]'（F1 不剪切）→ F2 空 → 梦境循环 D5 短路
+        → 终态 ok。
         """
         result, write_mock, call_mock, f1, _f2 = self._run_sleep_tidy(ERROR_BRACKET)
-        assert result.get("status") == "ok", f"mode-1 吸收失败应续跑至终态 ok，实际: {result}"
+        assert result.get("status") == "ok", f"失败应续跑至终态 ok，实际: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["context-manager", "entity-extractor"], (
-            f"新序 cm 在前；entity 失败 F1 未剪切 → F2 空 → 梦境循环 D5 短路，实际 {called_agents}"
+        assert called_agents == ["entity-extractor"], (
+            f"T6 后无 cm；entity 失败 F1 未剪切 → F2 空 → 梦境循环 D5 短路，实际 {called_agents}"
         )
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"'[错误]' 结果不应写任何游标: {writes}"
         with open(f1, encoding="utf-8") as f:
             assert '"msg_id": "t7-seed-not-in-db"' in f.read(), "失败时 F1 不得被剪切"
 
-    def test_subagent_error_does_not_advance_compress_cursor(self):
-        """sleep 全链收 'SUBAGENT_ERROR:' → 压缩游标不动。
+    def test_subagent_error_does_not_advance_any_cursor(self):
+        """sleep 全链收 'SUBAGENT_ERROR:' → 游标全不动（T6：cm 腿退役，仅 entity 路径）。
 
-        工程四重排：门控摘除——cm 先跑收 SUBAGENT_ERROR（mode-1 吸收、游标不动、无早退）；
         entity 收 SUBAGENT_ERROR → F1 不剪切。终态 ok；
-        判别力：若不判定 failure 会 relay 推进、写 last_compress_id ∈ (m1, m2)。
+        判别力：若不判定 failure 会 relay 推进、写游标。
         """
         result, write_mock, call_mock, _f1, _f2 = self._run_sleep_tidy(SUBAGENT_ERROR_STR)
-        assert result.get("status") == "ok", f"mode-1 吸收失败应续跑至终态 ok: {result}"
+        assert result.get("status") == "ok", f"失败吸收应续跑至终态 ok: {result}"
         called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents[0] == "context-manager", f"新序 cm 应最先被调: {called_agents}"
+        assert called_agents[0] == "entity-extractor", f"T6 后 entity 应最先被调: {called_agents}"
         writes = self._cursor_writes(write_mock)
         assert writes == [], f"'SUBAGENT_ERROR:' 结果不应写任何游标: {writes}"
 
-    def test_normal_result_advances_compress_cursor(self):
-        """对照：正常返回时压缩游标必须推进（证明 fixture 非空洞、断言有判别力）。
-
-        工程四重排：门控摘除——cm 直接执行推进压缩游标；entity 成功 → relay
-        剪切 F1 至空（F1 空性腿概念随门控消失）→ 压缩先行后提炼照常完成。
-        """
+    def test_normal_result_cuts_f1_no_compress_cursor(self):
+        """对照：正常返回时 relay 剪切执行且 compress 游标零写（T6 退役反向钉）。"""
         result, write_mock, _call, f1, f2 = self._run_sleep_tidy(NORMAL_JSON)
         assert result.get("status") == "ok", f"tidy 应正常结束: {result}"
         compress_writes = [
             d for d in self._cursor_writes(write_mock)
             if d.get("last_compress_id")
         ]
-        assert compress_writes, "正常返回应推进压缩游标"
-        assert compress_writes[-1]["last_compress_id"] in ("m1", "m2")
+        assert compress_writes == [], "compress 游标已退役，零写"
         with open(f1, encoding="utf-8") as f:
             assert f.read() == "", "成功提炼后 F1 应被剪切清空"
         with open(f2, encoding="utf-8") as f:
             assert '"msg_id": "t7-seed-not-in-db"' in f.read(), "剪下前缀应追加到 F2"
 
-
-
-# ---------------------------------------------------------------------------
-# 3. compat _tidy_context_impl force 代表点（skip_compress=True；v3 梦境腿已摘除）
-# ---------------------------------------------------------------------------
-
-class TestTidyForceFailureCursor:
-    def _run_force_tidy(self, subagent_result):
-        from niu_api.compat import _tidy_context_impl
-
-        store = mock.MagicMock()
-        store.get_messages = mock.AsyncMock(return_value=_tidy_messages())
-        call_mock = mock.MagicMock()
-        call_mock.return_value = subagent_result
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
-            for p in _tidy_failure_patches(subagent_result, call_mock):
-                stack.enter_context(p)
-            write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
-            result = asyncio.run(_tidy_context_impl(
-                {"mode": "force", "skip_compress": True, "session_id": "t"},
-                chat_lock_already_held=True,
-            ))
-        return result, write_mock, call_mock
-
-    @staticmethod
-    def _cursor_writes(write_mock):
-        return [call.args[1] for call in write_mock.call_args_list]
-
-
-    def test_error_bracket_does_not_advance_force_cursors(self):
-        """force 收 '[错误]' → journal 游标零写（v3：模式三只跑压缩对，梦境腿已摘除）。
-
-        force 模式 journal 始终调用（区别于 sleep 的 usage>=50% 门控）。
-        """
-        result, write_mock, call_mock = self._run_force_tidy(ERROR_BRACKET)
-        assert result.get("status") == "ok", f"force tidy 应正常结束: {result}"
-        called_agents = [c.kwargs.get("agent_name") for c in call_mock.call_args_list]
-        assert called_agents == ["journal-agent"], (
-            f"期望仅 journal 调用（entity/dream 腿均已摘除），实际 {called_agents}"
-        )
-        writes = self._cursor_writes(write_mock)
-        assert writes == [], f"force '[错误]' 结果不应写任何游标: {writes}"
-
-    def test_normal_result_advances_force_cursors(self):
-        """对照：正常返回时 force journal 游标必须推进（判别力）。"""
-        result, write_mock, _ = self._run_force_tidy("处理完成 @end processed_up_to=2")
-        assert result.get("status") == "ok", f"force tidy 应正常结束: {result}"
-        writes = self._cursor_writes(write_mock)
-        assert writes, f"force 正常返回应推进游标: {writes}"
-        assert writes[-1].get("last_journal_id") == "m2", (
-            f"journal 游标应推进到 m2: {writes}"
-        )
 
 
 class _Msg:

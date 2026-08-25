@@ -13,15 +13,11 @@ import time
 from asyncio import sleep as _asyncio_sleep
 from concurrent.futures import Future
 from datetime import datetime
-from typing import NamedTuple, TypedDict
+from typing import TypedDict
 
 from agent.session import get_message_store
 from agent.subagent import (
-    _read_compress_target_tokens,
     _read_context_window_tokens,
-    _read_max_output_tokens,
-    _read_protect_recent_count,
-    _read_warning_threshold,
 )
 from fastapi import APIRouter, Request
 from loguru import logger
@@ -39,16 +35,6 @@ def set_spirit_state(state: str) -> None:
 
 def is_sleeping() -> bool:
     return _SPIRIT_STATE == "sleep"
-
-
-class CascadeDeleteResult(NamedTuple):
-    delete_ids: list[str]
-    dangling_cleanups: list[dict]
-
-
-class CascadeUpdateResult(NamedTuple):
-    updates: list[dict]
-    cascade_delete_ids: list[str]
 
 
 def _is_subagent_overflow(result: str) -> bool:
@@ -109,195 +95,6 @@ def _extract_overflow_info(result: str) -> dict:
         return {"overflow": True, "raw": result}
 
 
-def _cascade_tool_chain_deletes(fresh_messages, delete_ids: list[str], protected_ids: set[str] | None = None) -> CascadeDeleteResult:
-    """级联删除：确保 tool 调用链完整性。
-
-    当删除 assistant(tool_calls) 时，对应的 tool 输出也必须删除；
-    当删除 tool 输出时，发起调用的 assistant(tool_calls) 也必须删除。
-
-    protected_ids: 受保护的消息 ID 集合，级联命中这些 ID 时跳过删除并记录 warning。
-    返回 (级联后的完整删除 ID 列表, 需要清理悬空 tool_calls 的更新列表)。
-    当受保护的 assistant(tool_calls) 的 tool output 被删除时，assistant 本身不能删，
-    但其 tool_calls 需要过滤掉已删除的 tool_call_id，避免 DB 中留下悬空引用。
-    """
-    delete_set = set(delete_ids)
-    added = set()
-    skipped_protected = set()
-    # 收集受保护 assistant 的悬空 tool_calls 清理需求
-    dangling_tc_cleanups: list[dict] = []  # [{"message_id": str, "dangling_tc_ids": set[str]}]
-
-    # 预构建索引：消息 ID → 消息, tool_call_id → [tool 消息 ID]
-    msg_map = {}
-    tc_id_to_tool_mids: dict[str, list[str]] = {}
-    for m in fresh_messages:
-        mid = getattr(m, "id", "") or ""
-        if mid:
-            msg_map[mid] = m
-        tc_call_id = getattr(m, "tool_call_id", "") or ""
-        if getattr(m, "role", "") == "tool" and tc_call_id:
-            tc_id_to_tool_mids.setdefault(tc_call_id, []).append(mid)
-
-    def _try_add(mid: str):
-        if mid in delete_set or mid in added:
-            return
-        if protected_ids and mid in protected_ids:
-            skipped_protected.add(mid)
-        else:
-            added.add(mid)
-
-    # Pass 1: 删除 assistant(tool_calls) → 级联删除对应的 tool 输出
-    for mid in delete_ids:
-        m = msg_map.get(mid)
-        if not m:
-            continue
-        if getattr(m, "role", "") != "assistant":
-            continue
-        tcs = getattr(m, "tool_calls", None)
-        if not tcs:
-            continue
-        try:
-            if isinstance(tcs, str):
-                tcs = json.loads(tcs)
-            for tc in tcs:
-                tc_id = tc.get("id", "")
-                if tc_id:
-                    for tool_mid in tc_id_to_tool_mids.get(tc_id, []):
-                        _try_add(tool_mid)
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    # Pass 2: 删除 tool 输出 → 级联删除发起调用的 assistant(tool_calls)
-    deleted_tool_call_ids = set()
-    for mid in delete_ids:
-        m = msg_map.get(mid)
-        if not m:
-            continue
-        if getattr(m, "role", "") == "tool":
-            tc_call_id = getattr(m, "tool_call_id", "")
-            if tc_call_id:
-                deleted_tool_call_ids.add(tc_call_id)
-
-    if deleted_tool_call_ids:
-        for m in fresh_messages:
-            mid = getattr(m, "id", "") or ""
-            if getattr(m, "role", "") != "assistant" or mid in delete_set or mid in added:
-                continue
-            tcs = getattr(m, "tool_calls", None)
-            if not tcs:
-                continue
-            try:
-                if isinstance(tcs, str):
-                    tcs = json.loads(tcs)
-                for tc in tcs:
-                    if tc.get("id", "") in deleted_tool_call_ids:
-                        _try_add(mid)
-                        # 只有当 assistant 未被保护跳过时，才级联删除其其他 tool 输出
-                        # 受保护的 assistant 需要保持 tool 调用链完整性
-                        if mid not in skipped_protected:
-                            for tc2 in tcs:
-                                tc2_id = tc2.get("id", "")
-                                if tc2_id and tc2_id not in deleted_tool_call_ids:
-                                    for tool_mid in tc_id_to_tool_mids.get(tc2_id, []):
-                                        _try_add(tool_mid)
-                        break
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-    # 收集所有被删除/级联删除的 tool 消息的 tool_call_id（Pass 1 + Pass 2 全部）
-    for mid in added:
-        m = msg_map.get(mid)
-        if m and getattr(m, "role", "") == "tool":
-            tc_call_id = getattr(m, "tool_call_id", "")
-            if tc_call_id:
-                deleted_tool_call_ids.add(tc_call_id)
-
-    # Pass 3: 受保护的 assistant(tool_calls) 的 tool output 被删除 → 清理悬空 tool_calls
-    if skipped_protected and deleted_tool_call_ids:
-        for mid in skipped_protected:
-            m = msg_map.get(mid)
-            if not m or getattr(m, "role", "") != "assistant":
-                continue
-            tcs = getattr(m, "tool_calls", None)
-            if not tcs:
-                continue
-            try:
-                if isinstance(tcs, str):
-                    tcs = json.loads(tcs)
-                dangling = {tc.get("id", "") for tc in tcs if tc.get("id", "") in deleted_tool_call_ids}
-                if dangling:
-                    dangling_tc_cleanups.append({"message_id": mid, "dangling_tc_ids": dangling})
-                    logger.info(f"[Tidy] Cascade: protected assistant {mid} has {len(dangling)} dangling tool_calls to clean")
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-    if skipped_protected:
-        logger.warning(f"[Tidy] Cascade: skipped {len(skipped_protected)} protected messages from cascade deletes: {skipped_protected}")
-    if added:
-        logger.info(f"[Tidy] Cascade: adding {len(added)} tool-chain messages to deletes: {added}")
-    return CascadeDeleteResult(delete_ids + list(added), dangling_tc_cleanups)
-
-
-def _cascade_tool_chain_updates(fresh_messages, updates: list[dict]) -> CascadeUpdateResult:
-    """级联更新：更新 assistant(tool_calls) 时清除悬空的 tool_calls，并返回需级联删除的 tool output ID。
-
-    当 assistant 消息有 tool_calls 但其对应的 tool 输出已被删除时，
-    将 tool_calls 清空，避免 LLM API 收到没有响应的工具调用。
-    同时，如果 update 的目标消息有 tool_calls，清空 tool_calls，
-    并将对应的 tool output 消息 ID 加入级联删除列表。
-
-    Returns:
-        tuple[list[dict], list[str]]: (更新后的 updates 列表, 需级联删除的 tool output 消息 ID 列表)
-    """
-    result = []
-    cascade_delete_ids: list[str] = []
-    for upd in updates:
-        mid = upd.get("message_id", "")
-        content = upd.get("content", "")
-        if not mid or not content:
-            result.append(upd)
-            continue
-        # 检查目标消息是否有 tool_calls
-        msg = None
-        for m in fresh_messages:
-            if getattr(m, "id", "") == mid:
-                msg = m
-                break
-        if msg and getattr(msg, "role", "") == "assistant":
-            tcs = getattr(msg, "tool_calls", None)
-            if tcs:
-                try:
-                    if isinstance(tcs, str):
-                        tcs = json.loads(tcs)
-                    if tcs:  # 非空 tool_calls → 清空 + 收集对应 tool output
-                        logger.info(f"[Tidy] Cascade: clearing tool_calls on updated message {mid}")
-                        # 收集所有 tool_call id，查找对应的 tool output 消息
-                        tc_ids = {tc.get("id", "") for tc in tcs if tc.get("id", "")}
-                        for m in fresh_messages:
-                            m_id = getattr(m, "id", "") or ""
-                            if getattr(m, "role", "") == "tool" and getattr(m, "tool_call_id", "") in tc_ids:
-                                cascade_delete_ids.append(m_id)
-                        if cascade_delete_ids:
-                            logger.info(f"[Tidy] Cascade: marking {len(cascade_delete_ids)} orphan tool outputs for delete: {cascade_delete_ids}")
-                        result.append({"message_id": mid, "content": content, "clear_tool_calls": True})
-                        continue
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        result.append(upd)
-    return CascadeUpdateResult(result, cascade_delete_ids)
-
-
-async def _clean_dangling_tool_calls(store, message_id: str, valid_tcs: list[dict]):
-    """清理受保护 assistant 消息的悬空 tool_calls，保留仍有 tool 响应的部分。
-
-    直接用 aiosqlite 更新 tool_calls 字段，因为 store.update_message 不支持部分更新 tool_calls。
-    """
-    import aiosqlite
-    async with aiosqlite.connect(store.db_path) as db:
-        await db.execute("UPDATE messages SET tool_calls = ? WHERE id = ?",
-                       (json.dumps(valid_tcs, ensure_ascii=False), message_id))
-        await db.commit()
-
-
 def _is_empty_shell_assistant(m) -> bool:
     """判断是否为空壳 assistant 消息（压缩残留）。
 
@@ -331,12 +128,12 @@ def _is_empty_shell_assistant(m) -> bool:
 
 
 async def _cleanup_orphan_tool_messages(store):
-    """清理 DB 中的压缩残留消息：孤立 tool 消息 + 空壳 assistant 消息。
+    """清理 DB 中的畸形消息：孤立 tool 消息 + 空壳 assistant 消息。
 
-    压缩可能遗留：
-    1. 孤立 tool 消息（旧 bug 或模式2/3 没有完整性验证步骤）——tool_call_id 无对应 assistant tool_calls
-    2. 空壳 assistant 消息——原始形态（content 空 + tool_calls 非空）的 assistant 的
-       tool 输出被级联删除后，悬空清理清空其 tool_calls → 留下 content 空 + tool_calls 空 的空壳
+    可能来源（历史压缩管道残留 / 异常中断）：
+    1. 孤立 tool 消息——tool_call_id 无对应 assistant tool_calls
+    2. 空壳 assistant 消息——tool 输出被级联删除后悬空清理清空其 tool_calls →
+       留下 content 空 + tool_calls 空 的空壳
 
     **保留**：content 空但 tool_calls 非空的 assistant（工具调用锚点——agent_loop
     还原工具调用锚点、tool 消息靠 tool_call_id 归属）——绝不删除，防止工具结果上下文丢失。
@@ -373,82 +170,7 @@ async def _cleanup_orphan_tool_messages(store):
         await store.delete_messages_by_ids(_orphan_mids)
 
 
-def _parse_idx_list(s: str) -> set[int]:
-    """解析 '1,3,5-10,12' 格式的 idx 列表，返回 set[int]"""
-    result = set()
-    for part in s.split(','):
-        part = part.strip()
-        if not part:
-            continue
-        if '-' in part:
-            try:
-                a, b = part.split('-', 1)
-                a_val, b_val = int(a), int(b)
-                if a_val > 0 and b_val > 0 and a_val <= b_val:
-                    result.update(range(a_val, b_val + 1))
-            except ValueError:
-                pass
-        else:
-            try:
-                val = int(part)
-                if val > 0:
-                    result.add(val)
-            except ValueError:
-                pass
-    return result
-
-
-def _find_protected_range(messages, min_protect_count: int) -> int:
-    """Find the protection start index using user-turn-aware logic.
-
-    1. From tail, count min_protect_count user/assistant messages -> idx_N
-    2. From idx_N, scan upward (toward index 0) for the nearest role=user message:
-       - First, skip any non-user messages (assistant/tool) going upward from idx_N
-       - When a user message is found, keep scanning upward for consecutive user messages
-       - Protect to the earliest user in the consecutive group
-    3. Return idx_user (or idx_N if no user found above, or len(messages) if min_protect_count=0)
-
-    All messages[index >= return_value] should be protected, including tool messages.
-    """
-    if min_protect_count <= 0 or not messages:
-        return len(messages)  # no protection
-
-    total = len(messages)
-
-    # Step 1: from tail, count N user/assistant messages
-    idx_N = total  # exclusive upper bound (one past last counted)
-    count = 0
-    for i in range(total - 1, -1, -1):
-        role = getattr(messages[i], "role", "") if hasattr(messages[i], "role") else messages[i].get("role", "")
-        if role in ("user", "assistant"):
-            count += 1
-            if count >= min_protect_count:
-                idx_N = i
-                break
-    else:
-        # Fewer than N user/assistant messages -> protect everything
-        return 0
-
-    # Step 2: from idx_N, scan upward (toward index 0) for nearest role=user message
-    # Phase A: skip non-user messages (assistant, tool) going upward
-    # Phase B: once user found, keep going up for consecutive user messages
-    idx_user = idx_N
-    found_user = False
-    for i in range(idx_N, -1, -1):
-        role = getattr(messages[i], "role", "") if hasattr(messages[i], "role") else messages[i].get("role", "")
-        if role == "user":
-            idx_user = i
-            found_user = True
-            # keep scanning upward for consecutive user messages
-        elif found_user:
-            # we found user(s) but hit a non-user -> stop
-            break
-        # if not found_user and role != "user", continue scanning (skip assistant/tool)
-
-    return idx_user
-
-
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
+def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
 
@@ -458,7 +180,6 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         out_msg_ids: 输出参数，收集增量消息的 UUID 列表
         msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不注解
         end_cursor_id: 上界游标 UUID，只生成到该消息为止（含该消息），None 则到末尾
-        protect_recent: 对最后 N 条消息加 [PROTECTED] 标签（0 表示不加）
 
     Returns:
         格式化的消息文本
@@ -498,14 +219,6 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     range_messages_with_pos = [(i, msg) for i, msg in enumerate(messages[start:effective_end])]
 
     lines = []
-    total_count = len(range_messages_with_pos)
-    # 预计算保护位置：从尾部向前找 N 条 user/assistant 消息的相对位置
-    _protected_positions = None
-    if protect_recent > 0:
-        # User-turn-aware protection: protect from nearest user message at/below the N-th user/assistant from tail
-        _range_msgs = [m for _, m in range_messages_with_pos]
-        _protect_start = _find_protected_range(_range_msgs, protect_recent)
-        _protected_positions = set(range(_protect_start, total_count))
     display_idx = 0
     for rel_pos, (orig_pos, msg) in enumerate(range_messages_with_pos):
         msg_id = getattr(msg, "id", "") or ""
@@ -513,15 +226,9 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         token_annotation = ""
         if msg_tokens and (start + orig_pos) < len(msg_tokens):
             token_annotation = f"{msg_tokens[start + orig_pos]}tokens "
-        # protect_recent: 对最后 N 条 user/assistant 消息加 [PROTECTED] 标签（不保护 role=tool 的工具输出）
-        protected_label = ""
-        if protect_recent > 0 and _protected_positions is not None and rel_pos in _protected_positions:
-            if exclude_protected:
-                continue  # 排除 PROTECTED 消息：不加入 out_msg_ids 和 lines
-            protected_label = "[PROTECTED] "
         display_idx += 1
         out_msg_ids.append(msg_id)
-        lines.append(f"[id:{msg_id}] [idx:{display_idx}] {token_annotation}{msg.role}: {protected_label}{content}")
+        lines.append(f"[id:{msg_id}] [idx:{display_idx}] {token_annotation}{msg.role}: {content}")
 
     if not lines:
         return "（无新增消息）"
@@ -533,73 +240,35 @@ def _build_compress_history(
     messages,
     msg_tokens: list | None = None,
     out_msg_ids: list | None = None,
-    protect_recent: int = 0,
-    exclude_protected: bool = False,
 ) -> tuple[list[dict], dict[int, str]]:
-    """构造 context-manager 模式二的 history 列表（每条 message 加 idx 前缀）。
+    """构造带 [idx:N] 前缀的 history 列表 + idx↔UUID 映射。
+
+    T6 保留（R4-A 边界）：压缩退役后暂无生产调用方，journal 路径（T7 迁移后）
+    与后续 history 型输入可复用——只摘除 protect_recent/exclude_protected 参数。
 
     与 _build_incremental_msg_text 的区别：
     - 输出 history 列表（role/content/tool_calls/tool_call_id 原样），而非序列化文本
     - content 开头加 `[idx:N] Ntokens ` 前缀（简易 idx，不用 UUID）
     - 单条 message 不会超限（每条就是原大小 + 前缀）
-    - 同步排除孤立 tool 消息：若父 assistant 被 PROTECTED 排除，其 tool 消息也排除
-      （避免 agent_runner_loop 过滤孤立 tool 导致 LLM 看到的 idx 不连续）
 
     Args:
         messages: 全量消息列表（Message 对象，含 id/role/content/tool_calls/tool_call_id）
         msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不加 tokens 前缀
-        out_msg_ids: 输出参数，收集保留消息的真实 ID 列表（与 idx 顺序一致）
-        protect_recent: 对最后 N 条 user/assistant 消息加 PROTECTED 标签（0 表示不加）
-        exclude_protected: True 则排除 PROTECTED 消息（不进 history、不进 out_msg_ids、不分配 idx）
+        out_msg_ids: 输出参数，收集消息的真实 ID 列表（与 idx 顺序一致）
 
     Returns:
         (history, idx_to_id):
         - history: [{"role":..., "content": "[idx:N] Ntokens ...原content", "tool_calls"?:..., "tool_call_id"?:...}, ...]
-        - idx_to_id: {idx: 真实 message_id}，用于解析 context-manager 输出的 keep=/update=
+        - idx_to_id: {idx: 真实 message_id}
     """
     if out_msg_ids is None:
         out_msg_ids = []
 
-    total_count = len(messages)
-    _protected_positions: set[int] = set()
-    if protect_recent > 0:
-        _protect_start = _find_protected_range(messages, protect_recent)
-        _protected_positions = set(range(_protect_start, total_count))
-
-    # 第一遍：确定哪些位置被排除（PROTECTED 排除 + 孤立 tool 同步排除）
-    excluded_positions: set[int] = set()
-
-    # 1) PROTECTED 排除
-    if exclude_protected:
-        for rp in _protected_positions:
-            excluded_positions.add(rp)
-
-    # 2) 孤立 tool 同步排除：若 tool 消息的父 assistant（持有对应 tool_call_id）被排除，则 tool 也排除
-    #    收集所有被排除的 assistant 的 tool_call_id
-    orphaned_tool_call_ids: set[str] = set()
-    for rp in excluded_positions:
-        m = messages[rp]
-        if getattr(m, "role", "") == "assistant" and getattr(m, "tool_calls", None):
-            for tc in m.tool_calls:
-                tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
-                if tc_id:
-                    orphaned_tool_call_ids.add(tc_id)
-    # 排除孤立 tool 消息
-    for rp, m in enumerate(messages):
-        if getattr(m, "role", "") == "tool":
-            tc_id = getattr(m, "tool_call_id", "") or ""
-            if tc_id in orphaned_tool_call_ids:
-                excluded_positions.add(rp)
-
-    # 第二遍：构造 history（只含未被排除的消息，idx 连续编号）
     history: list[dict] = []
     idx_to_id: dict[int, str] = {}
     display_idx = 0
 
     for rel_pos, msg in enumerate(messages):
-        if rel_pos in excluded_positions:
-            continue
-
         msg_id = getattr(msg, "id", "") or ""
         role = getattr(msg, "role", "user")
         content = getattr(msg, "content", "") or ""
@@ -629,18 +298,16 @@ def _build_compress_history(
 
 
 def _build_plain_history(messages, out_msg_ids: list | None = None) -> tuple[list[dict], dict[int, str]]:
-    """构造带 [N] 极简前缀的 history 列表 + 简易ID↔UUID 映射（仿 context-manager 的 _build_compress_history）。
+    """构造带 [N] 极简前缀的 history 列表 + 简易ID↔UUID 映射。
 
-    用于非压缩子 Agent（entity-extractor / dream-evolver / journal-agent）的 force/sleep 调用：
+    用于非压缩子 Agent（journal-agent / entity-extractor / dream-evolver）的睡眠/force 管道：
     - history 每条 content 前缀 "[N] "（N 是 1-based 简易编号）
     - 同步构建 idx_to_id 映射 {N: 真实UUID}，供程序解析子 Agent 输出的 processed_up_to=N 后查 UUID 更新游标
-    - 不排除 PROTECTED 消息（所有消息都该看到）
-    - 不排除孤立 tool（保持原顺序，子 Agent 自己判断）
+    - 全量透传：不排除任何消息、不排除孤立 tool（保持原顺序，子 Agent 自己判断）
 
     与 _build_compress_history 的区别：
     - 前缀极简 "[N] "（不是 "[idx:N] Ntokens "）
-    - 不排除 PROTECTED / 不排除孤立 tool（调用方按需在调用前过滤 PROTECTED，如 entity force 全量路径，详见 Architecture §6）
-    - 不含 token 标注（非压缩子 Agent 不需要做压缩决策）
+    - 无 token 标注（非压缩子 Agent 不需要做压缩决策）
 
     Args:
         messages: 全量消息列表（Message 对象，含 id/role/content/tool_calls/tool_call_id）
@@ -771,402 +438,6 @@ def _parse_and_drop_f2(dream_result: str, f3_lines: int, f2_path=None) -> tuple[
     from agent.md_mirror import drop_f2_prefix
     return drop_f2_prefix(int(m.group(1)), max_lines=f3_lines, f2_path=f2_path)
 
-def _strip_analysis(response: str) -> str:
-    """剥离 <analysis>...</analysis> 块，只保留 keep/update/cursor 部分。
-
-    处理以下情况：
-    1. 闭合的 <analysis>...</analysis>（含跨行）
-    2. 未闭合的 <analysis>（有开始无结束，剥离到字符串末尾）
-    3. 大小写不敏感（<ANALYSIS> 也识别）
-    4. 无 analysis 块时原样返回
-    """
-    # 先匹配闭合的 <analysis>...</analysis>
-    cleaned = re.sub(r'<analysis>.*?</analysis>\s*', '', response, flags=re.DOTALL | re.IGNORECASE)
-    # 再处理未闭合的 <analysis>（LLM 写了开始标签但没写结束）
-    cleaned = re.sub(r'<analysis>.*$', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-    return cleaned.strip()
-
-
-def _build_mode2_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float, compress_history: list) -> str:
-    """构造模式二 task prompt（瘦身版：去方法论重复，禁止报告，直接输出两行）。
-
-    方法论（三份划分/会话单元/工具输出级联/摘要规范/转义规则）已在系统提示词
-    （config/agents/context-manager.md）完整定义——task prompt 不再内联重复。
-    输出契约提醒保留（靠近输出点、指令性强、成本极低）。
-    CRITICAL 短语必须保留：context-manager.md L194-199 用 prompt 含
-    "CRITICAL: 你只有一轮机会" 判定模式二"一轮方案"分支激活（门控），
-    删除会导致模式二走工具调用路径。门控说明只写 docstring，不进 prompt 文本。
-    """
-    return f"""本次任务：对上方历史消息执行模式二压缩。压缩规则详见你的系统提示词（模式二章节），不再重复。
-
-当前上下文状态：
-- 参与压缩的消息数：{len(compress_history)}（受保护消息已排除）
-- 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
-- 目标 token 总数：{compress_target_tokens}
-- 需释放至少 {display_tokens - compress_target_tokens} tokens
-
-CRITICAL: 你只有一轮机会完成压缩决策。
-
-输出要求（严格，违反即失败）：
-- 只输出两行：keep= 行和 update= 行
-- 禁止输出任何其他内容：禁止 <analysis>、禁止分析过程、禁止解释、禁止总结报告、禁止 markdown 代码块
-- 格式示例（仅格式参考，内容由你按规则决定）：
-  keep=1,5,15,30,50,75,100,105,115,150,180,200
-  update=1|[摘要] 指令：xxx | 流程：xxx | 结果：xxx;5|[摘要] 指令：xxx | 流程：xxx | 结果：xxx
-- update= 多条用分号 `;` 分隔；摘要内容含分号用全角 `；`；段内避免 `|`
-- update 的 idx 必须在 keep= 中；未列在 keep= 中的消息将被删除
-
-REMINDER: 禁止调用任何工具，直接输出 keep=/update= 两行，仅此两行。"""
-
-
-def _build_force_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float,
-                        force_history: list, last_compress_id: str | None) -> str:
-    """构造模式三 force task prompt（瘦身版：去方法论重复，禁止报告，直接输出三行）。
-
-    方法论（保留优先级/强度量化表）已在系统提示词（模式三章节）完整定义。
-    last_compress_id 是本次调用的专属参数，必须注入。
-    """
-    return f"""本次任务：对上方历史消息执行模式三强制压缩。压缩规则详见你的系统提示词（模式三章节），不再重复。
-
-当前上下文状态：
-- 参与压缩的消息数：{len(force_history)}（受保护消息已排除）
-- 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
-- 目标 token 总数：{compress_target_tokens}
-- 需释放至少 {display_tokens - compress_target_tokens} tokens
-- 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
-
-CRITICAL: 你只有一轮机会完成压缩决策。
-
-输出要求（严格，违反即失败）：
-- 只输出三行：keep= 行、update= 行、cursor= 行
-- 禁止输出任何其他内容：禁止 <analysis>、禁止分析过程、禁止解释、禁止总结报告、禁止 markdown 代码块
-- 格式示例（仅格式参考，内容由你按规则决定）：
-  keep=1,5,15,30,50,75,100,105,115,150,180,200
-  update=1|[摘要] 指令：xxx | 流程：xxx | 结果：xxx;5|[摘要] 指令：xxx | 流程：xxx | 结果：xxx
-  cursor=200
-- update= 多条用分号 `;` 分隔；摘要内容含分号用全角 `；`；段内避免 `|`
-- update 的 idx 必须在 keep= 中；cursor= 是操作范围内 idx 最大且仍存在的消息 idx
-- 未列在 keep= 中的消息将被删除
-
-REMINDER: 禁止调用任何工具，直接输出 keep=/update=/cursor= 三行，仅此三行。"""
-
-
-def _build_compress_llm_config() -> dict:
-    """压缩专用 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）。
-
-    用户拍板 2026-08-18：程序不预设过滤——thinking/effort 按用户 lightrag 段配置
-    原样透传（testAndSave 已把关组合可用性——保存的配置组合一定可用，压缩送同样
-    组合不 400）；不再注入 thinking disabled（lightrag 段用户配置已含）、不再置
-    reasoning_effort。只注入 max_tokens（压缩结构化三行输出的输出预算）。
-    无入参（内部 refetch，不留死参数）。
-    """
-    from niu_api.llm_proxy import get_llm_config
-
-    cfg = dict(get_llm_config(use_lightrag_config=True))  # lightrag 段：thinking/effort 用户配置原样
-    litellm_kwargs = {**cfg.get("litellm_kwargs", {}), "max_tokens": _read_max_output_tokens()}
-    cfg["litellm_kwargs"] = litellm_kwargs
-    return cfg
-
-
-async def _emergency_clear(
-    history: list,
-    msg_ids: list,
-    protect_recent_count: int,
-    store,
-    session_id: str,
-    mode: str,
-) -> dict:
-    """截断时的应急清空：保留最近完整用户会话段落，上面全删，最旧那条改为"压缩失败"摘要。
-
-    - history: 压缩历史消息列表（受保护消息已排除），按 idx 顺序排列（list[dict]，无 id 字段）
-    - msg_ids: 与 history 等长、同顺序的真实 message_id 列表（来自 out_msg_ids）
-    - protect_recent_count: 最少保护的 user/assistant 消息对数（来自配置）
-    - store: MessageStore，用于 delete_messages_by_ids / update_message
-    - session_id: 会话 ID（仅用于日志，delete_messages_by_ids 不需要）
-    - mode: "sleep" 或 "force"（用于返回值）
-
-    返回 {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
-    """
-    total = len(history)
-    # Use user-turn-aware protection to find the keep boundary
-    _protect_start = _find_protected_range(history, protect_recent_count)
-    if _protect_start <= 0 or _protect_start >= len(msg_ids):
-        logger.warning(
-            f"[Compact] history len {len(msg_ids)}, all protected, no clear needed"
-        )
-        return {
-            "status": "skipped",
-            "mode": mode,
-            "reason": "truncated, no clear needed (all protected)",
-        }
-
-    delete_ids = list(msg_ids[:_protect_start])
-    oldest_kept_id = msg_ids[_protect_start]
-
-    # 最旧保留条改为"压缩失败"摘要
-    await store.update_message(
-        message_id=oldest_kept_id,
-        content=(
-            "[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。"
-            "可通过 journal.md 和知识图谱回溯。"
-        ),
-    )
-
-    # 删除上面的消息
-    await store.delete_messages_by_ids(delete_ids)
-
-    logger.warning(
-        f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, kept recent {len(msg_ids) - _protect_start}, marked oldest ({oldest_kept_id}) as lost-summary"
-    )
-    return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
-
-def _build_degraded_config() -> dict:
-    """构造降级第一步的 LLM 配置（与 _build_compress_llm_config 同构，无入参）。
-
-    用户拍板 2026-08-18：降级按知识图谱（lightrag 段）用户配置原样透传——
-    thinking/effort 不注入不降级（程序不干预用户配置，组合可用性由 testAndSave
-    把关）。effort_map 降级已删除（T2：disabled 路径下 high→medium 仍 400——
-    有害代码而非死代码）。只注入 max_tokens（输出预算）。
-    """
-    from niu_api.llm_proxy import get_llm_config
-
-    cfg = dict(get_llm_config(use_lightrag_config=True))  # lightrag 段：thinking/effort 用户配置原样
-    litellm_kwargs = {**cfg.get("litellm_kwargs", {}), "max_tokens": _read_max_output_tokens()}
-    cfg["litellm_kwargs"] = litellm_kwargs
-    return cfg
-
-def _halve_history(compress_history: list, compress_msg_ids: list) -> tuple[list, list, list, int]:
-    """
-    砍半消息历史。在 N/2 附近向前找第一条 role=user 消息对齐截断。
-    返回 (后半段 history, 后半段 msg_ids, 前半段 msg_ids, cut_idx)。
-    cut_idx 是 0-based Python 列表索引。
-    [idx:N] 前缀需要重新编号（由 _renumber_history 执行）。
-    """
-    total = len(compress_history)
-    if total == 0:
-        return [], [], [], 0
-    target_cut = total // 2
-
-    # 从 target_cut 向前找第一条 role=user
-    cut_idx = target_cut
-    found_user = False
-    while cut_idx >= 0:
-        msg = compress_history[cut_idx]
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            found_user = True
-            break
-        cut_idx -= 1
-
-    # 没找到 user 消息 → 从 target_cut 截断
-    if not found_user:
-        cut_idx = target_cut
-
-    halved_history = compress_history[cut_idx:]
-    halved_msg_ids = compress_msg_ids[cut_idx:]
-    removed_msg_ids = compress_msg_ids[:cut_idx]
-
-    return halved_history, halved_msg_ids, removed_msg_ids, cut_idx
-
-
-def _renumber_history(history: list) -> list:
-    """重新编号 history 中的 [idx:N] 前缀为连续的 1, 2, 3...（只替换第一个前缀）"""
-    import re
-
-    renumbered = []
-    for i, msg in enumerate(history):
-        if isinstance(msg, dict) and "content" in msg:
-            content = msg["content"]
-            content = re.sub(r"\[idx:\d+\]", f"[idx:{i + 1}]", content, count=1)
-            msg = {**msg, "content": content}
-        renumbered.append(msg)
-    return renumbered
-
-def _compact_with_degradation_sync(
-    agent_name: str,
-    prompt: str,
-    compress_history: list,
-    compress_msg_ids: list,
-    llm_config: dict,
-    prompt_builder: callable,
-    prompt_builder_kwargs: dict,
-    call_fn: callable,
-    stop_aware: bool = False,
-) -> tuple[str | None, list, list | None]:
-    """
-    三级降级压缩（纯逻辑，不含 IO）。
-    返回值：
-    - 成功（未砍半）：(压缩方案字符串, 实际使用的 compress_msg_ids, None)
-    - 成功（砍半后）：(压缩方案字符串, 后半段 compress_msg_ids, 前半段被砍掉的 msg_ids)
-    - 失败：(None, 原始 compress_msg_ids, None)
-
-    注意：本函数不执行原始调用——原始调用由调用方在调用本函数之前完成。
-    本函数只执行降级第一步（call 1）和降级第二步（call 2）。
-    """
-    # 降级第一步：按知识图谱（lightrag 段）配置原样重试（T2——程序不干预 thinking/effort）
-    # 门控只判 thinking type（2026-08-18 用户拍板：effort 条件移除——程序不预设过滤；
-    # lightrag 段默认 disabled → 门控 False → step1 不执行，直接 step2 halve history。
-    # 实际降级手段 = halve history；max_tokens 是基础输出预算非降级步骤）
-    thinking_cfg = llm_config.get("litellm_kwargs", {}).get("thinking", {})
-    thinking_enabled = isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled"
-
-    if thinking_enabled:
-        degraded_config = _build_degraded_config()
-
-        step1_result = call_fn(
-            agent_name=agent_name,
-            task=prompt,
-            llm_config=degraded_config,
-            mcp_client=None,
-            context_fifo_threshold=-1,
-            history=compress_history,
-            bypass_at_prefix=True,
-        )
-
-        # SUBAGENT_ERROR 检查（LLM 调用失败）
-        if step1_result and step1_result.startswith("SUBAGENT_ERROR:"):
-            logger.warning(f"[Compact] Degradation step 1 LLM error: {step1_result}")
-            return None, compress_msg_ids, None
-
-        # 降级第一步成功（非截断、非错误）
-        if step1_result and not step1_result.startswith("COMPACT_TRUNCATED:"):
-            logger.info("[Compact] Degradation step 1 (disable thinking) succeeded")
-            return step1_result, compress_msg_ids, None
-
-        if step1_result and step1_result.startswith("COMPACT_TRUNCATED:"):
-            logger.warning("[Compact] Degradation step 1 still truncated, trying step 2 (halve history)")
-        elif not step1_result:
-            logger.warning("[Compact] Degradation step 1 returned empty, trying step 2 (halve history)")
-    else:
-        logger.info("[Compact] Thinking already disabled, skipping step 1, going directly to step 2 (halve history)")
-
-    # 停止检查
-    try:
-        from agent.runner import is_stop_requested
-        if stop_aware and is_stop_requested():
-            logger.warning("[Compact] Stop requested during degradation, aborting")
-            return None, compress_msg_ids, None
-    except Exception:
-        pass
-
-    # 降级第二步：砍半消息
-    halved_history, halved_msg_ids, removed_msg_ids, cut_idx = _halve_history(
-        compress_history, compress_msg_ids
-    )
-
-    if len(halved_history) <= 1:
-        logger.warning("[Compact] Degradation step 2: halved history too small, aborting")
-        return None, compress_msg_ids, None
-
-    # 重新构建 prompt（先 shallow copy 再修改，避免修改原始入参）
-    kwargs = dict(prompt_builder_kwargs)
-
-    # 重新编号
-    halved_history = _renumber_history(halved_history)
-
-    # Mode-2 用 compress_history，Force 用 force_history
-    if "compress_history" in kwargs:
-        kwargs["compress_history"] = halved_history
-    if "force_history" in kwargs:
-        kwargs["force_history"] = halved_history
-
-    rebuilt_prompt = prompt_builder(**kwargs)
-
-    step2_result = call_fn(
-        agent_name=agent_name,
-        task=rebuilt_prompt,
-        llm_config=degraded_config if thinking_enabled else llm_config,
-        mcp_client=None,
-        context_fifo_threshold=-1,
-        history=halved_history,
-        bypass_at_prefix=True,
-    )
-
-    # SUBAGENT_ERROR 检查
-    if step2_result and step2_result.startswith("SUBAGENT_ERROR:"):
-        logger.warning(f"[Compact] Degradation step 2 LLM error: {step2_result}")
-        return None, compress_msg_ids, None
-
-    if step2_result and not step2_result.startswith("COMPACT_TRUNCATED:"):
-        logger.info("[Compact] Degradation step 2 (halve history) succeeded")
-        return step2_result, halved_msg_ids, removed_msg_ids
-
-    logger.warning("[Compact] Degradation step 2 still truncated, aborting")
-    return None, compress_msg_ids, None
-
-def _estimate_text_tokens(text: str) -> int:
-    """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
-    return len(text) // 2
-
-
-def _truncate_preserving_tail(text: str, max_tokens: int) -> str:
-    """截断文本，保留末尾第三份（最近）消息（第一份从开头截断）。
-    消息列表在 prompt 末尾，开头是第一份（idx小的），末尾是第三份（idx大的）。
-    截断第一份保留第三份，确保 LLM 能看到需要保护的消息。"""
-    max_chars = max_tokens * 2  # 反向估算字符数
-    if len(text) <= max_chars:
-        return text
-    # 保留末尾第三份部分，截断开头第一份
-    kept_tail = text[-max_chars:]
-    # 找到第一个完整的消息行（以 [id: 开头）
-    first_line_pos = kept_tail.find("[id:")
-    if first_line_pos > 0:
-        kept_tail = kept_tail[first_line_pos:]
-    # 更新消息计数
-    line_count = kept_tail.count("[id:")
-    return f"共约 {line_count} 条消息（第一份部分已省略。当前可见消息均属于第二份和第三份，按相对位置划分区域即可）\n\n" + kept_tail
-
-
-def _truncate_preserving_both(text: str, max_tokens: int) -> str:
-    """双向截断：保留开头指令 + 末尾第三份（最近）消息，截断中间第一份消息。
-    用于全量范围压缩模式，确保 LLM 能同时看到指令和受保护消息。
-    结构化截断：以"消息列表："为分割点，确保指令部分完整保留。"""
-    max_chars = max_tokens * 2
-    if len(text) <= max_chars:
-        return text
-    # 找到"消息列表："分割点，确保指令部分完整
-    msg_marker = "\n消息列表：\n"
-    marker_pos = text.find(msg_marker)
-    if marker_pos < 0:
-        msg_marker = "消息列表："
-        marker_pos = text.find(msg_marker)
-    if marker_pos > 0 and marker_pos < max_chars * 0.5:
-        # 指令部分在合理范围内，完整保留指令 + 截断消息列表
-        head = text[:marker_pos + len(msg_marker)]
-        msg_text = text[marker_pos + len(msg_marker):]
-        # 消息列表部分：保留末尾第三份消息
-        tail_budget = max_chars - len(head) - 200
-        if tail_budget > 0 and len(msg_text) > tail_budget:
-            tail = msg_text[-tail_budget:]
-            first_msg = tail.find("[id:")
-            if first_msg > 0:
-                tail = tail[first_msg:]
-            msg_count = tail.count("[id:")
-            return head + f"[第一份消息已省略，保留第三份 {msg_count} 条消息。可见消息从第一份中后段开始，按相对位置划分区域]\n\n" + tail
-        return text
-    # fallback：纯字符截断（指令部分过大）
-    # 先提取保护 ID 行，确保 fallback 路径不丢失关键信息
-    protected_line = ""
-    for _line in text.split('\n'):
-        if _line.startswith('保护消息ID:'):
-            protected_line = _line
-            break
-    head_chars = int(max_chars * 0.2)
-    tail_chars = max_chars - head_chars - 200
-    head = text[:head_chars]
-    last_nl = head.rfind('\n')
-    if last_nl > head_chars // 2:
-        head = head[:last_nl]
-    # 如果 head 中没有保护 ID 行，追加到 head 末尾
-    if protected_line and '保护消息ID:' not in head:
-        head = head + '\n' + protected_line
-    tail = text[-tail_chars:]
-    first_msg = tail.find("[id:")
-    if first_msg > 0:
-        tail = tail[first_msg:]
-    msg_count = tail.count("[id:")
-    return head + "\n\n[中间第一份消息已省略，保留第三份 " + str(msg_count) + " 条消息。可见消息从第一份中后段开始，按相对位置划分区域]\n\n" + tail
-
-
 def _build_journal_task() -> str:
     """构建 journal-agent 的 task prompt（纯指令，消息以 history 形式逐条传入）。
 
@@ -1270,41 +541,6 @@ def build_truncated_msg_list_text(
         lines.append(f"[id:{msg_id}] [idx:{idx}] {msg.role}: {content}")
     return "\n".join(lines)
 
-
-def _truncate_task_for_subagent(task: str, max_tokens: int) -> str:
-    """
-    截断子Agent的 task 内容，确保不超过 max_tokens。
-    保留 task 开头（包含指令和状态信息），截断末尾的消息列表。
-    在截断位置添加截断标记。
-    """
-    if not task:
-        return task
-    try:
-        from agent.token_calculator import TokenCalculator
-        token_count = TokenCalculator.get().count_text(task)
-    except Exception:
-        # 回退估算：2 字符/token
-        token_count = max(1, len(task) // 2)
-
-    if token_count <= max_tokens:
-        return task
-
-    # 按 token 比例估算需要保留的字符数
-    keep_ratio = max_tokens / token_count
-    keep_chars = int(len(task) * keep_ratio * 0.9)  # 留 10% 安全余量
-
-    truncated = task[:keep_chars]
-    # 找到最近的完整行
-    last_newline = truncated.rfind('\n')
-    if last_newline > keep_chars // 2:
-        truncated = truncated[:last_newline]
-
-    truncated += "\n\n[内容已截断：原始 task 超过 token 限制，仅保留前半部分消息。请基于已有内容完成整理。]"
-    logger.warning(f"[Tidy] Task truncated: {token_count} -> ~{max_tokens} tokens, {len(task)} -> {len(truncated)} chars")
-    return truncated
-
-
-_MAX_TOOL_RESULT_CHARS = 30000
 
 def _estimate_total_tokens(messages) -> int:
     """估算消息列表的总 token 数（逐条计算，含角色开销）。
@@ -1414,27 +650,6 @@ async def _acquire_chat_lock_with_retry(log_prefix: str, *, max_elapsed: float |
             logger.info(f"[{log_prefix}] chat lock busy, retrying ({elapsed:.0f}s elapsed)")
 
 
-async def _wait_queue_idle_with_retry(q, log_prefix: str, *, max_elapsed: float | None = None) -> bool:
-    """无限心跳等待 ChatQueue 在途消息处理完毕（§3.9，与 _acquire_chat_lock_with_retry 同构）。
-
-    队列空闲（未在处理）立即返回 True；否则分片等待 _processing_done。
-    生产永不放弃；max_elapsed 仅测试注入。
-    """
-    if not getattr(q, "_processing", False):
-        return True
-    start = time.monotonic()
-    while True:
-        try:
-            await asyncio.wait_for(q._processing_done.wait(), timeout=TIDY_WAIT_CHUNK)
-            return True
-        except TimeoutError:
-            elapsed = time.monotonic() - start
-            if max_elapsed is not None and elapsed >= max_elapsed:
-                logger.error(f"[{log_prefix}] queue busy over {max_elapsed:.0f}s, giving up")
-                return False
-            logger.info(f"[{log_prefix}] queue busy, retrying ({elapsed:.0f}s elapsed)")
-
-
 # ===========================================================================
 # 全局整理队列（T2）：单 worker 串行执行整理类管道——全局一次一个、后来者排队
 # 设计见 docs/superpowers/plans/2026-08-20-tidy-pipeline-queue.md §3.0-3.3
@@ -1442,21 +657,14 @@ async def _wait_queue_idle_with_retry(q, log_prefix: str, *, max_elapsed: float 
 
 class _PipelineItem(TypedDict):
     """整理管道任务项（§3.1）"""
-    kind: str      # "sleep" | "force" | "runner-force"
-    request: dict  # sleep/force：_tidy_context_impl 的 request dict
-    held: bool     # chat_lock_already_held（worker 透传；runner-force 不用）
-    result: Future  # 一律携带，由 worker 完结（fire-and-forget 只是调用方不 await——去重依赖 done()）
+    kind: str      # "sleep"（force/runner-force 已随 T6 压缩退役删除）
+    request: dict  # _tidy_context_impl 的 request dict
+    held: bool     # chat_lock_already_held（worker 透传）
+    result: Future  # 一律携带，由 worker 完结（fire-and-forget 只是调用方不 await）
 
 
 _pipeline_queue: asyncio.Queue | None = None
 _pipeline_worker_task: asyncio.Task | None = None
-
-# 压缩类去重表：键 = (kind, skip_compress, force_protect_recent) → 在队/执行中的 future。
-# §3.2 表述为单槽 _active_compress_fut；本实现用 dict 支持多键并存：force 与 runner-force
-# 键不同可同时各 1 个在队（§7.9「去重后 force 键 ≤1，runner-force 键 ≤1」），单槽在键交错
-# 时会放行同键第二个任务，违背该不变式。
-_active_compress_futs: dict[tuple, Future] = {}
-
 
 async def _pipeline_worker():
     """全局整理队列单 worker（§3.3 伪代码逐字）"""
@@ -1465,20 +673,11 @@ async def _pipeline_worker():
         result = {"status": "error", "message": "not executed"}  # 预初始化
         try:
             kind = item["kind"]
-            if kind == "runner-force":
-                from niu_api.chat import get_or_create_runner  # 惰性 import 防循环
-                runner = get_or_create_runner()
-                if runner is None:
-                    result = {"status": "error", "message": "runner not ready"}
-                else:
-                    # _execute_force_pipeline 返回 {"status":"ok"/"skipped",...}——承接返回值
-                    result = await asyncio.to_thread(runner._execute_force_pipeline)
-            else:  # sleep / force
-                if kind == "sleep" and not is_sleeping():
-                    result = {"status": "cancelled", "reason": "woke_up"}  # CP0
-                else:
-                    async with _tidy_lock:  # 双保险
-                        result = await _tidy_context_impl(item["request"], chat_lock_already_held=item["held"])
+            if kind == "sleep" and not is_sleeping():
+                result = {"status": "cancelled", "reason": "woke_up"}  # CP0
+            else:
+                async with _tidy_lock:  # 双保险
+                    result = await _tidy_context_impl(item["request"], chat_lock_already_held=item["held"])
         except Exception as e:
             logger.exception("[Pipeline] worker item failed")
             result = {"status": "error", "message": str(e)}
@@ -1504,37 +703,20 @@ def _pipeline_worker_guard(task: asyncio.Task) -> None:
     _pipeline_worker_task.add_done_callback(_pipeline_worker_guard)
 
 
-def _drop_active_compress(fut: Future) -> None:
-    """压缩任务完结时从去重表摘除（identity 守卫：只删自己的键，防误删后续同键新任务）"""
-    for key, active in list(_active_compress_futs.items()):
-        if active is fut:
-            del _active_compress_futs[key]
-
-
 def _pipeline_enqueue(kind: str, request: dict | None = None, held: bool = False) -> Future:
     """投递整理任务到全局队列，返回 concurrent.futures.Future（fire-and-forget 只是调用方不 await）。
 
     - None 窗口（队列未创建）：调用方按 §3.0 Option A 同步执行，本函数不处理。
-    - 压缩类（force/runner-force）去重：键 = (kind, skip_compress, force_protect_recent)，
-      在队/执行中同键任务复用同一 future（§3.2）。
+    - 压缩类（force/runner-force）去重表已随 T6 压缩退役整体移除。
     """
     request = request or {}
     fut: Future = Future()
-    if kind in ("force", "runner-force"):
-        key = (kind, bool(request.get("skip_compress")), request.get("force_protect_recent"))
-        active = _active_compress_futs.get(key)
-        if active is not None and not active.done():
-            return active
-        _active_compress_futs[key] = fut
-        fut.add_done_callback(_drop_active_compress)
     item: _PipelineItem = {"kind": kind, "request": request, "held": held, "result": fut}
     try:
         _pipeline_queue.put_nowait(item)
     except Exception:
-        # P3-2：投递失败回滚去重登记（与 runner._dispatch_to_pipeline 对称）。调用方契约是返回
-        # Future（chat_queue await wrap_future；None 会 TypeError），故重新 raise 而非返回 None。
-        if kind in ("force", "runner-force"):
-            _drop_active_compress(fut)
+        # 调用方契约是返回 Future（chat_queue await wrap_future；None 会 TypeError），
+        # 故投递失败重新 raise 而非返回 None。
         raise
     return fut
 
@@ -2767,7 +1949,7 @@ async def get_context_messages(
     Args:
         limit: Number of messages to return (default 100)
         before_id: Get messages before this ID (for pagination)
-        full: If True, return full content (for context-manager)
+        full: If True, return full content
         session_id: Ignored (kept for compatibility with session-manager)
     """
     store = await get_message_store()
@@ -2873,7 +2055,7 @@ async def add_context_message(request: dict) -> dict:
     return {"status": "ok", "message_id": msg_id}
 
 # 游标文件列表（清空消息后必须一并复位，否则游标指向已删除消息）
-_ALL_CURSOR_FILES = ["last_compress.json", "last_journal.json"]  # 两键：dream 游标已随工程五七件套退役（last_entity_extract.json 死键已移除）
+_ALL_CURSOR_FILES = ["last_journal.json"]  # T6 压缩退役后仅剩 journal 一键（T7 journal 迁 scheduler 后再定去留）
 
 
 async def _reset_all_cursors() -> None:
@@ -3062,21 +2244,15 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
     Args:
         chat_lock_already_held: 调用方已持有 _chat_lock 时传 True（None 窗口同步路径），
-            压缩段跳过重复获取 _chat_lock（asyncio.Lock 不可重入）；与 ChatQueue
-            pause/resume 解耦——force 分支入口的队列门禁照常生效（§3.2）。
+            跳过重复获取 _chat_lock（asyncio.Lock 不可重入）。
     """
     # 压缩前状态占位：finally 判定是否实际压缩（try 早期失败/取消时保持默认 -1/None）
     _msgs_before = -1  # 压缩前消息数（finally 判定是否实际压缩；-1 表示 try 早期未读到）
     _store_ref = None  # try 内 store 引用（finally 复用，避免二次 get_message_store）
-    # Task 3：ChatQueue pause 门禁随 force 投递面移除而退役——机械压实无需独占队列
-    # request 支持可选键 skip_compress: True 时跳过 force 模式的强制压缩段
-    # （用于 /clear 场景：模式三只跑压缩对——此处即 journal 日志记录，不压缩；
-    # 梦境进化已随 force 梦境腿摘除归睡眠循环专属）
+    # Task 6：压缩退役后本实现仅服务 mode="sleep"（journal/entity/dream/摘要）；
+    # ChatQueue pause 门禁与 skip_compress 键随 force 投递面一同退役
     session_id = request.get("session_id", "default")
     mode = request.get("mode", "sleep")
-    # 注：原 sleep 分支五处 stop_aware 门控死检查点已清理（§3.4）；force 检查点无门控直呼
-    # is_stop_requested，降级路径以 stop_aware=(mode=="force") 参数显式传入。
-
     # 广播压缩状态 started 事件（前端圆环动画启动）
     try:
         from niu_api.chat import notify_compact_status_sync
@@ -3150,16 +2326,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         import json
         from pathlib import Path
 
-        # 读取两游标（UUID 基准）
-        compress_cursor_path = Path.home() / ".niu" / "last_compress.json"
-        last_compress_id = ""
-        if compress_cursor_path.exists():
-            try:
-                cursor_data = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
-                last_compress_id = cursor_data.get("last_compress_id", "")
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to read compress cursor: {e}")
-
+        # 读取游标（UUID 基准；compress 游标已随 T6 压缩退役删除，仅剩 journal）
         journal_cursor_path = Path.home() / ".niu" / "last_journal.json"
         last_journal_id = ""
         if journal_cursor_path.exists():
@@ -3171,7 +2338,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 
         if mode == "sleep":
-            # Sleep mode: journal-agent (≥50%) → context-manager → entity-extractor (F1 自读) → dream-evolver (F3 自读多轮循环)
+            # Sleep mode: journal-agent (≥50%) → entity-extractor (F1 自读) → dream-evolver (F3 自读多轮循环)
 
             # 1/4. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
             if usage_percent >= 50:
@@ -3257,492 +2424,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 logger.info(f"[Tidy] journal-agent: skipped (usage {usage_percent:.1f}% < 50%)")
 
-            # 读取保护数量配置（压缩段同源，§4.3）
-            protect_recent_count = _read_protect_recent_count()
-
-            # 2/4. context-manager（增量 task 方式；模式一全量切片无上界 / 模式二全量 history）
-            # 串行执行：重新获取消息列表
-            messages = await store.get_messages()
-            msg_tokens = []
-            try:
-                from agent.token_calculator import TokenCalculator
-                calc = TokenCalculator.get()
-                for msg in messages:
-                    try:
-                        t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
-                    except Exception:
-                        t = max(1, len(msg.content or "") // 2) + 4
-                    msg_tokens.append(t)
-            except ImportError:
-                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-
-            # 模式二：始终全量传入（无游标机制），模式一：增量范围
-            _is_mode2 = usage_percent >= 50
-            _compress_cursor = "" if _is_mode2 else last_compress_id
-            compress_msg_ids = []
-            compress_history: list[dict] = []  # 模式二专用（替代 compress_msg_text）
-            if _is_mode2:
-                # 模式二：构造 history 列表（每条 message 加 idx 前缀），避免单条 user message 超限
-                compress_history, _ = _build_compress_history(
-                    messages, msg_tokens,
-                    out_msg_ids=compress_msg_ids,
-                    protect_recent=protect_recent_count,
-                    exclude_protected=True,
-                )
-                compress_msg_text = ""  # 模式二不用序列化文本
-            else:
-                # 模式一：保持原序列化文本逻辑
-                compress_msg_text = _build_incremental_msg_text(
-                    messages, _compress_cursor, compress_msg_ids, msg_tokens,
-                    protect_recent=protect_recent_count,
-                    exclude_protected=True
-                )
-
-            if not _is_mode2:
-                # 模式一：限制增量范围的 token 总量，避免截断砍掉第三份（近期）消息
-                _compress_window = int(_read_context_window_tokens() * 0.4)
-                if compress_msg_text and _estimate_text_tokens(compress_msg_text) > _compress_window:
-                    compress_msg_text = _truncate_preserving_tail(compress_msg_text, _compress_window)
-                    _visible_ids = re.findall(r'\[id:([a-f0-9-]+)\]', compress_msg_text)
-                    _visible_set = set(_visible_ids)
-                    compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
-            compress_mode = "模式二：睡眠整理（半破坏性）" if _is_mode2 else "模式一：睡眠整理（非破坏性）"
-            _skip_compress = False
-            # 接近强制压缩阈值时跳过睡眠压缩，避免与强制压缩并发冲突
-            # 阈值 = warningThreshold - 0.1（默认0.8-0.1=0.7，即70%以上跳过）
-            _warning_threshold = _read_warning_threshold()
-            _skip_compress_threshold = (_warning_threshold - 0.1) * 100
-            if usage_percent >= _skip_compress_threshold:
-                logger.info(f"[Tidy] Sleep: usage {usage_percent:.1f}% >= skip threshold {_skip_compress_threshold:.0f}% (warningThreshold-0.1), skipping compression — will be handled by force mode")
-                _skip_compress = True
-            # 模式二量化目标：基于 compressTargetTokens（绝对值）计算动态目标（提前计算，决定是否跳过）
-            _compress_target = ""
-            if _skip_compress:
-                pass  # 接近强制阈值，跳过所有压缩
-            elif _is_mode2:
-                target_tokens = _read_compress_target_tokens()
-                suggest_release = max(display_tokens - target_tokens, 0)
-                if suggest_release == 0:
-                    # 当前已在目标范围内，不需要压缩
-                    logger.info("[Tidy] Mode-2: already at target, skipping compression")
-                    _skip_compress = True
-                elif suggest_release < int(display_tokens * 0.05):
-                    # 释放量太小（<5%），不值得压缩一轮，跳过
-                    logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
-                    _skip_compress = True
-                # 模式二 task prompt 由 _build_mode2_prompt 构造（瘦身版：方法论在 system，仅输出 keep=/update= 两行指令）
-                # 模式一/二：游标均由程序自动推进，不需要报告指令
-            logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
-
-            new_compress_id = last_compress_id
-            if compress_msg_ids and not _skip_compress:
-                # 构建保护消息 UUID 列表（含所有消息类型：user/assistant/tool，从 protect_start 到末尾）
-                # 直接从完整 messages 列表计算，不依赖截断后的 compress_msg_ids
-                # 这样即使截断移除了第三份（近期）消息，受保护消息的 ID 仍然完整
-                _protect_start = _find_protected_range(messages, protect_recent_count)
-                # Protect all messages (including tool) from protect_start to end
-                protected_ids = [getattr(messages[i], "id", "") or "" for i in range(_protect_start, len(messages))]
-
-                if _is_mode2:
-                    compress_plan_path = os.path.expanduser("~/.niu/compress_plan_mode2.json")
-                    if os.path.exists(compress_plan_path):
-                        try:
-                            os.remove(compress_plan_path)
-                        except OSError:
-                            pass
-
-                    # 模式二 task prompt 由 _build_mode2_prompt 构造（瘦身版：禁止报告，直接输出两行）
-                    prompt = ""
-                else:
-                    prompt = f"""系统进入睡眠状态。
-
-当前上下文：{display_tokens} tokens（{usage_percent:.1f}%）
-{_compress_target}消息列表（已排除受保护消息）：
-{compress_msg_text}
-
-请按照【{compress_mode}】的规则处理。"""
-
-                # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
-                if _is_mode2:
-                    # === 模式二：单次调用 + 应急清空（不重试） ===
-                    # 压缩 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）
-                    llm_config_with_max = _build_compress_llm_config()
-
-                    # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
-                    prompt = _build_mode2_prompt(display_tokens, target_tokens, usage_percent, compress_history)
-
-                    def run_context_manager_mode2():
-                        return call_subagent_with_auto_answer(
-                            agent_name="context-manager",
-                            task=prompt,
-                            llm_config=llm_config_with_max,
-                            mcp_client=None,
-                            context_fifo_threshold=-1,  # FIFO 保底
-                            history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
-                            bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
-                        )
-
-                    compress_result = await asyncio.to_thread(run_context_manager_mode2)
-                    _halved_msg_ids = None  # 降级砍半的前半段 msg_ids（正常路径为 None）
-
-                    # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
-                    if compress_result and compress_result.startswith("SUBAGENT_ERROR:"):
-                        error_msg = compress_result[len("SUBAGENT_ERROR:"):]
-                        logger.warning(f"[Compact] Mode-2: context-manager LLM error: {error_msg}")
-                        return {"status": "skipped", "mode": "sleep", "reason": f"LLM error: {error_msg}"}
-
-                    # 截断时触发三级降级（关思考链→砍半消息→报失败）
-                    if compress_result and compress_result.startswith("COMPACT_TRUNCATED:"):
-                        logger.warning("[Compact] Mode-2 output truncated, starting degradation")
-                        result_str, actual_msg_ids, halved_msg_ids = await asyncio.to_thread(
-                            _compact_with_degradation_sync,
-                            agent_name="context-manager",
-                            prompt=prompt,
-                            compress_history=compress_history,
-                            compress_msg_ids=compress_msg_ids,
-                            llm_config=llm_config_with_max,
-                            prompt_builder=_build_mode2_prompt,
-                            prompt_builder_kwargs={
-                                "display_tokens": display_tokens,
-                                "compress_target_tokens": target_tokens,
-                                "usage_percent": usage_percent,
-                                "compress_history": compress_history,
-                            },
-                            stop_aware=(mode == "force"),
-                            call_fn=call_subagent_with_auto_answer,
-                        )
-                        if result_str is None:
-                            return {"status": "skipped", "mode": "sleep",
-                                    "reason": "compress failed: output truncated after all degradation steps"}
-                        # 降级成功，用返回值替代 compress_result
-                        compress_result = result_str
-                        compress_msg_ids = actual_msg_ids
-                        _halved_msg_ids = halved_msg_ids
-
-                    # 未完成终止（/stop、轮次耗尽等）：跳过压缩，保持调用方游标不动
-                    if _is_subagent_incomplete(compress_result):
-                        logger.warning(f"[Compact] Mode-2: context-manager incomplete ({_incomplete_reason(compress_result)}), compression skipped")
-                        return {"status": "skipped", "mode": "sleep",
-                                "reason": f"context-manager incomplete ({_incomplete_reason(compress_result)})"}
-
-                    # 正常返回，剥离 <analysis> 草稿块（在解析前）
-                    logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
-                    compress_result = _strip_analysis(compress_result)
-
-                    # 从 LLM content 解析序号格式压缩方案
-                    _idx_to_id: dict[int, str] = {}
-                    for _i, _mid in enumerate(compress_msg_ids):
-                        _idx_to_id[_i + 1] = _mid
-
-                    keep_idxs: set[int] = set()
-                    update_list: list[tuple[int, str]] = []
-                    for line in compress_result.splitlines():
-                        line = line.strip()
-                        if line.lower().startswith('keep='):
-                            keep_idxs = _parse_idx_list(line.split('=', 1)[1].strip())
-                        elif line.lower().startswith('update='):
-                            update_str = line.split('=', 1)[1].strip()
-                            if update_str:
-                                for part in update_str.split(';'):
-                                    part = part.strip()
-                                    if '|' in part:
-                                        idx_str, content = part.split('|', 1)
-                                        try:
-                                            _c = content.strip()
-                                            if not _c.startswith('[摘要]') and not _c.startswith('[合并]'):
-                                                _c = f'[摘要] {_c}'
-                                            update_list.append((int(idx_str.strip()), _c))
-                                        except ValueError:
-                                            pass
-
-                    if not keep_idxs:
-                        logger.error("[Tidy] Mode-2: No keep= line found in LLM response, compression skipped")
-                    else:
-                        all_idxs = set(_idx_to_id.keys())
-                        delete_idxs = all_idxs - keep_idxs
-                        deletes = [_idx_to_id[i] for i in sorted(delete_idxs) if i in _idx_to_id]
-                        # 砍半掉的前半段 msg_ids 加入删除列表
-                        if _halved_msg_ids:
-                            deletes.extend(_halved_msg_ids)
-                        for idx, _ in update_list:
-                            if idx not in _idx_to_id:
-                                logger.warning(f"[Compact] Mode-2 LLM returned out-of-range update idx {idx}, silently dropped")
-                        updates = [
-                            {"message_id": _idx_to_id[idx], "content": content}
-                            for idx, content in update_list if idx in _idx_to_id
-                        ]
-                        logger.info(f"[Tidy] Mode-2: Plan parsed: {len(deletes)} deletes, {len(updates)} updates (keep={len(keep_idxs)})")
-
-                        # Case 3 应用前复查（解析方案后、执行删除/更新之前）：睡眠中被唤醒 → 放弃应用。
-                        # 覆盖窗口 = context-manager 长推理期间用户唤醒（CP1 之后到本点之间）。
-                        if not is_sleeping():
-                            logger.warning("[Tidy] Sleep interrupted before applying Mode-2 compression plan (woke up)")
-                            return {"status": "interrupted", "reason": "woke_up"}
-
-                        # 安全协议：pause + 无限心跳拿 chat_lock + 等待worker空闲（§3.9，生产永不放弃）
-                        # pause 后立即进 try：任何退出路径（含等待窗口内 CancelledError）统一经 finally 释放锁并恢复队列
-                        from niu_api.chat_queue import get_chat_queue
-                        _q = get_chat_queue()
-                        _q.pause()
-
-                        _chat_lock_acquired = False
-                        try:
-                            if not await _acquire_chat_lock_with_retry("Tidy Mode-2"):
-                                # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
-                                logger.error("[Tidy] Mode-2: lock wait aborted, skipping compression plan execution")
-                                return {"status": "skipped", "mode": "sleep", "reason": "lock wait aborted (defensive)"}
-                            _chat_lock_acquired = True
-                            if not await _wait_queue_idle_with_retry(_q, "Tidy Mode-2"):
-                                logger.error("[Tidy] Mode-2: queue wait aborted, skipping compression plan execution")
-                                return {"status": "skipped", "mode": "sleep", "reason": "queue wait aborted (defensive)"}
-                            fresh_messages = await store.get_messages()
-                            existing_ids = {getattr(m, "id", "") for m in fresh_messages}
-
-                            valid_deletes = [mid for mid in deletes if mid in existing_ids]
-                            valid_deletes = list(dict.fromkeys(valid_deletes))
-                            valid_updates = [u for u in updates if u.get("message_id") and u["message_id"] in existing_ids]
-
-                            protect_recent_count = _read_protect_recent_count()
-                            # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
-                            protected_set: set[str] = set()
-                            if protect_recent_count > 0:
-                                _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
-                                protected_set = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
-                                valid_deletes = [mid for mid in valid_deletes if mid not in protected_set]
-                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_set]
-
-                            update_ids = {u.get("message_id", "") for u in valid_updates}
-                            overlap_ids = update_ids & set(valid_deletes)
-                            if overlap_ids:
-                                logger.warning(f"[Tidy] Mode-2: Removing {len(overlap_ids)} IDs from deletes that also appear in updates")
-                                valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
-
-                            _cascade_protected = (protected_set if protect_recent_count > 0 else set())
-                            cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
-                            valid_deletes = cascade_del.delete_ids
-                            dangling_tc_cleanups = cascade_del.dangling_cleanups
-                            cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
-                            valid_updates = cascade_upd.updates
-                            cascade_delete_ids = cascade_upd.cascade_delete_ids
-                            if cascade_delete_ids:
-                                existing = set(valid_deletes)
-                                for cid in cascade_delete_ids:
-                                    if cid not in existing:
-                                        valid_deletes.append(cid)
-                                        existing.add(cid)
-
-                            _post_update_ids = {u.get("message_id", "") for u in valid_updates}
-                            _post_overlap = _post_update_ids & set(valid_deletes)
-                            if _post_overlap:
-                                logger.warning(f"[Tidy] Mode-2: Cascade created delete/update overlap: {_post_overlap}")
-                                valid_deletes = [mid for mid in valid_deletes if mid not in _post_overlap]
-
-                            if dangling_tc_cleanups:
-                                for cleanup in dangling_tc_cleanups:
-                                    mid = cleanup["message_id"]
-                                    dangling_ids = cleanup["dangling_tc_ids"]
-                                    m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
-                                    if m and getattr(m, "tool_calls", None):
-                                        tcs = m.tool_calls
-                                        if isinstance(tcs, str):
-                                            tcs = json.loads(tcs)
-                                        valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
-                                        if valid_tcs:
-                                            await _clean_dangling_tool_calls(store, mid, valid_tcs)
-                                        else:
-                                            await store.update_message(mid, getattr(m, "content", "") or "", clear_tool_calls=True)
-                                        logger.info(f"[Tidy] Mode-2: Cleaned {len(dangling_ids)} dangling tool_calls from protected assistant {mid}")
-
-                            if valid_deletes:
-                                del_result = await store.delete_messages_by_ids(valid_deletes)
-                                logger.info(f"[Tidy] Mode-2: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
-
-                            for upd in valid_updates:
-                                mid = upd.get("message_id", "")
-                                content = upd.get("content", "")
-                                if mid and content:
-                                    clear_tc = upd.get("clear_tool_calls", False)
-                                    ok = await store.update_message(message_id=mid, content=content, clear_tool_calls=clear_tc)
-                                    if ok:
-                                        logger.info(f"[Tidy] Mode-2: Updated message {mid}")
-                                    else:
-                                        logger.warning(f"[Tidy] Mode-2: Failed to update message {mid}")
-
-                            await _cleanup_orphan_tool_messages(store)
-                            logger.info(f"[Tidy] Mode-2: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
-                        finally:
-                            if _chat_lock_acquired:
-                                _chat_lock.release()
-                            _q.resume()
-
-                    # 模式二完成后清空压缩游标：模式二全量重组了消息列表，旧游标语义失效
-                    # 清空后下次模式一自然全量处理，行为明确且一致
-                    _write_cursor_with_lock(compress_cursor_path, {
-                        "last_compress_id": "",
-                        "last_compress_at": datetime.now().isoformat(),
-                    })
-                    logger.info("[Tidy] Mode-2: Cleared compress cursor (full-range reorg invalidated old cursor)")
-                else:
-                    # === 模式一：原有逻辑完整保留 ===
-                    context_window_for_truncate = _read_context_window_tokens()
-                    safe_tokens = int(context_window_for_truncate * 0.6)
-                    truncated_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
-
-                    def run_context_manager():
-                        return call_subagent_with_auto_answer(
-                            agent_name="context-manager",
-                            task=truncated_prompt,
-                            llm_config=_build_compress_llm_config(),
-                            mcp_client=None,
-                            context_fifo_threshold=-1,  # FIFO 保底
-                        )
-
-                    # Case 3 应用前复查（§3.4）：模式一的"应用"发生在 context-manager 子 Agent
-                    # 运行中（工具直改消息），派发前是最后可检查点——CP1 之后到本点为纯同步代码，
-                    # 此复查与 CP1 语义重叠但按方案要求保留单点防御。
-                    if not is_sleeping():
-                        logger.warning("[Tidy] Sleep interrupted before dispatching Mode-1 context-manager (woke up)")
-                        return {"status": "interrupted", "reason": "woke_up"}
-                    cm_result = await asyncio.to_thread(run_context_manager)
-                    logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
-
-                    # 游标自动推进：成功→推进到范围内仍存在的最后一条，overflow/incomplete→不动
-                    fresh_ids = None
-                    if _is_subagent_overflow(cm_result) or _is_subagent_incomplete(cm_result) or _is_subagent_failure(cm_result):
-                        if _is_subagent_incomplete(cm_result):
-                            logger.warning(f"[Tidy] context-manager incomplete ({_incomplete_reason(cm_result)}) — cursor not advanced")
-                        else:
-                            overflow_info = _extract_overflow_info(cm_result)
-                            logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
-                        # overflow/incomplete 时游标不动
-                    else:
-                        # 不盲取 compress_msg_ids[-1]（可能被 context-manager 删除），
-                        # 而是重新读取 DB，取范围内仍存在的最后一条
-                        fresh_msgs = await store.get_messages()
-                        fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                        surviving = [mid for mid in compress_msg_ids if mid in fresh_ids]
-                        new_compress_id = surviving[-1] if surviving else last_compress_id
-                        logger.info(f"[Tidy] Compress cursor auto-advanced to: {new_compress_id}")
-
-                    # 校验游标指向的消息仍存在（last_compress_id 可能已失效）
-                    if new_compress_id:
-                        if fresh_ids is None:
-                            fresh_msgs = await store.get_messages()
-                            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                        if new_compress_id not in fresh_ids:
-                            logger.warning(f"[Tidy] Compress cursor {new_compress_id} not in DB, reverting to {last_compress_id}")
-                            new_compress_id = last_compress_id
-                            if new_compress_id and new_compress_id not in fresh_ids:
-                                new_compress_id = ""
-
-                    compress_integrity_ok = True
-                    if protected_ids:
-                        try:
-                            post_msgs = await store.get_messages()
-                            post_ids = {getattr(m, "id", "") for m in post_msgs}
-                            for pid in protected_ids:
-                                if pid not in post_ids:
-                                    logger.error(f"[Tidy] PROTECTED message {pid} missing after compress! Blocking cursor advance.")
-                                    compress_integrity_ok = False
-                                    break
-                        except Exception as e:
-                            logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
-                            compress_integrity_ok = False
-
-                    # 工具链完整性验证：迭代收敛，检测并修复孤立 tool 消息和悬空 tool_calls
-                    # 清除 tool_calls 后可能产生新孤立 tool 消息，需要反复扫描直到收敛
-                    try:
-                        for _round in range(5):  # 最多 5 轮收敛
-                            post_msgs = await store.get_messages()
-                            # 收集所有 assistant tool_calls 的 id
-                            _valid_tc_ids: set[str] = set()
-                            for m in post_msgs:
-                                if getattr(m, "role", "") == "assistant":
-                                    tcs = getattr(m, "tool_calls", None)
-                                    if tcs:
-                                        try:
-                                            if isinstance(tcs, str):
-                                                tcs = json.loads(tcs)
-                                            for tc in tcs:
-                                                tc_id = tc.get("id", "")
-                                                if tc_id:
-                                                    _valid_tc_ids.add(tc_id)
-                                        except (json.JSONDecodeError, TypeError):
-                                            pass
-                            # 收集所有 tool 消息的 tool_call_id + 孤立 tool 消息
-                            _tool_response_ids: set[str] = set()
-                            _orphan_tool_mids: list[str] = []
-                            for m in post_msgs:
-                                if getattr(m, "role", "") == "tool":
-                                    tc_call_id = getattr(m, "tool_call_id", "") or ""
-                                    if tc_call_id:
-                                        _tool_response_ids.add(tc_call_id)
-                                        if tc_call_id not in _valid_tc_ids:
-                                            _orphan_tool_mids.append(getattr(m, "id", ""))
-                            # 检测悬空 tool_calls
-                            _dangling_tc_ids: set[str] = set()
-                            for tc_id in _valid_tc_ids:
-                                if tc_id not in _tool_response_ids:
-                                    _dangling_tc_ids.add(tc_id)
-
-                            if not _orphan_tool_mids and not _dangling_tc_ids:
-                                break  # 收敛，无需继续
-
-                            # 修复：删除孤立 tool 消息
-                            if _orphan_tool_mids:
-                                logger.warning(f"[Tidy] Mode-1 integrity round {_round+1}: deleting {len(_orphan_tool_mids)} orphan tool messages")
-                                await store.delete_messages_by_ids(_orphan_tool_mids)
-                            # 修复：清除悬空 tool_calls
-                            if _dangling_tc_ids:
-                                for m in post_msgs:
-                                    if getattr(m, "role", "") == "assistant":
-                                        tcs = getattr(m, "tool_calls", None)
-                                        if tcs:
-                                            try:
-                                                if isinstance(tcs, str):
-                                                    tcs = json.loads(tcs)
-                                                valid_tcs = [tc for tc in tcs if tc.get("id", "") not in _dangling_tc_ids]
-                                                if len(valid_tcs) < len(tcs):
-                                                    mid = getattr(m, "id", "")
-                                                    if valid_tcs:
-                                                        await _clean_dangling_tool_calls(store, mid, valid_tcs)
-                                                        logger.warning(f"[Tidy] Mode-1 integrity round {_round+1}: cleaned {len(tcs) - len(valid_tcs)} dangling tool_calls from {mid}")
-                                                    else:
-                                                        await store.update_message(mid, getattr(m, "content", "") or "",
-                                                                                   clear_tool_calls=True)
-                                                        logger.warning(f"[Tidy] Mode-1 integrity round {_round+1}: cleared all tool_calls from {mid}")
-                                            except (json.JSONDecodeError, TypeError):
-                                                pass
-                    except Exception as e:
-                        logger.warning(f"[Tidy] Mode-1 tool chain integrity check failed: {e}")
-
-                    # 模式一：压缩后统一清理孤立 tool + 空壳 assistant 消息
-                    await _cleanup_orphan_tool_messages(store)
-
-                    # 模式一：推进压缩游标
-                    if new_compress_id:
-                        if compress_integrity_ok:
-                            _write_cursor_with_lock(compress_cursor_path, {
-                                "last_compress_id": new_compress_id,
-                                "last_compress_at": datetime.now().isoformat(),
-                            })
-                            logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
-                        else:
-                            logger.warning("[Tidy] Skipping cursor advance due to protected message integrity failure")
-            else:
-                if _skip_compress:
-                    if usage_percent >= _skip_compress_threshold:
-                        logger.info(f"[Tidy] context-manager: skipped (usage {usage_percent:.1f}% >= skip threshold {_skip_compress_threshold:.0f}%, waiting for force mode)")
-                    else:
-                        logger.info("[Tidy] context-manager: skipped (suggest_release below threshold or already at target)")
-                else:
-                    logger.info("[Tidy] context-manager: no messages to process")
-            # CP1：压缩对（journal + context-manager）完成后——非睡眠 → 中断；已落库压缩不回滚，下次续跑
+            # CP1：journal 腿完成后——非睡眠 → 中断；已写游标不回滚，下次续跑
             if not is_sleeping():
-                logger.warning("[Tidy] Sleep interrupted after compress pair (woke up)")
+                logger.warning("[Tidy] Sleep interrupted after journal-agent (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
-            # 3/4. entity-extractor（v2：自读 F1 → processed_line → relay 剪切）
+            # 2/4. entity-extractor（v2：自读 F1 → processed_line → relay 剪切）
             from agent.md_mirror import F1_PATH
 
             from niu_api.md_alignment import align_f1_with_store
@@ -3776,7 +2463,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.warning("[Tidy] Sleep interrupted after entity-extractor (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
-            # 4/4. dream-evolver（v3 多轮子循环：F2 头部重建 F3 工作集 → 自读报行号 → 删 F2 前缀；
+            # 3/4. dream-evolver（v3 多轮子循环：F2 头部重建 F3 工作集 → 自读报行号 → 删 F2 前缀；
             # 终止判据 covered_all=本轮 F3 涵盖全量 F2，非「F2 删空」——会话边界合法留置尾部时 F2 永不删空）
             from agent.md_mirror import F2_PATH, build_f3_from_f2, drop_f2_prefix
 
@@ -3839,7 +2526,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.warning("[Tidy] Sleep interrupted after dream-evolver (woke up)")
                 return {"status": "interrupted", "reason": "woke_up"}
 
-            # 5/5 块摘要增强（Task 5 可选层）：context.blockSummaryEnabled 默认关闭；
+            # 4/4 块摘要增强（Task 5 可选层）：context.blockSummaryEnabled 默认关闭；
             # 仅空闲时段执行（睡眠管道运行期即用户离开期，活跃对话期模块内部跳过本轮）；
             # 裸调 lightrag_llm 一次一call、失败保 pending 不抛出（spec D6/D13）
             try:
@@ -3853,437 +2540,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
-
-        elif mode == "force":
-            # Task 3 注：端点白名单已收缩为 sleep|compact，mode="force" 不再可达；
-            # 本分支体（journal 腿+压缩闭包）由 Task 6 退役清理整体删除
-            # Force mode（模式三，D3/spec §5 定稿）：journal-agent → context-manager 强制压缩
-            # （工程二摘 entity 段；工程三摘 dream 腿——手动 /compact 与 80% 内联只跑压缩对）
-            # 降级解析提前到 force 分支顶部（§4.3 v1.4）：校验/压缩同源。
-            # chat_queue 降级 5/2 实证经 request dict 传入 force_protect_recent（L514-518）
-            _effective_protect = _read_protect_recent_count()
-            _force_protect_recent = request.get("force_protect_recent") if isinstance(request, dict) else None
-            if _force_protect_recent is not None and isinstance(_force_protect_recent, int) and _force_protect_recent >= 1:
-                _effective_protect = min(_effective_protect, _force_protect_recent)
-                logger.info(f"[Tidy] Force: protect_recent_count degraded to {_effective_protect} (from request)")
-
-            # 1/2. journal-agent（force 模式，始终调用）
-            # 重新获取消息列表
-            messages = await store.get_messages()
-            msg_tokens = []
-            try:
-                from agent.token_calculator import TokenCalculator
-                calc = TokenCalculator.get()
-                for msg in messages:
-                    try:
-                        t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
-                    except Exception:
-                        t = max(1, len(msg.content or "") // 2) + 4
-                    msg_tokens.append(t)
-            except ImportError:
-                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-
-            new_journal_id = last_journal_id
-            journal_force_msg_ids = []
-            _ = _build_incremental_msg_text(
-                messages, last_journal_id, journal_force_msg_ids, msg_tokens
-            )
-            logger.info(f"[Tidy] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
-
-            if journal_force_msg_ids:
-                journal_force_prompt = _build_journal_task()  # 纯指令，无参（含 processed_up_to 说明）
-                # 构造增量 history
-                _id_set = set(journal_force_msg_ids)
-                journal_force_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
-                journal_force_history, journal_force_idx_to_id = _build_plain_history(journal_force_incremental_msgs)
-
-                def run_journal_agent_force():
-                    return call_subagent_with_auto_answer(
-                        agent_name="journal-agent",
-                        task=journal_force_prompt,
-                        llm_config=llm_config,
-                        mcp_client=None,
-                        history=journal_force_history,
-                        context_fifo_threshold=-1,  # FIFO 保底
-                    )
-
-                journal_result = await asyncio.to_thread(run_journal_agent_force)
-                if is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
-                logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
-
-                # 游标推进：overflow/incomplete→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
-                if _is_subagent_overflow(journal_result) or _is_subagent_incomplete(journal_result) or _is_subagent_failure(journal_result):
-                    if _is_subagent_incomplete(journal_result):
-                        logger.warning(f"[Tidy] Force: journal-agent incomplete ({_incomplete_reason(journal_result)}) — cursor not advanced")
-                    else:
-                        overflow_info = _extract_overflow_info(journal_result)
-                        logger.warning(f"[Tidy] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    # overflow/incomplete 时游标不动，下次重跑相同范围
-                else:
-                    _processed_idx = _parse_processed_up_to(journal_result)
-                    if _processed_idx is not None and _processed_idx in journal_force_idx_to_id:
-                        new_journal_id = journal_force_idx_to_id[_processed_idx]
-                        logger.info(f"[Tidy] Force: Journal cursor advanced per processed_up_to={_processed_idx} -> {new_journal_id}")
-                    elif journal_force_msg_ids:
-                        new_journal_id = journal_force_msg_ids[-1]  # 兜底
-                        logger.info(f"[Tidy] Force: Journal cursor fallback to range end: {new_journal_id}")
-                    else:
-                        new_journal_id = last_journal_id
-
-                # 校验游标
-                if new_journal_id:
-                    fresh_msgs = await store.get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_journal_id not in fresh_ids:
-                        logger.warning(f"[Tidy] Force: Journal cursor {new_journal_id} deleted, reverting to {last_journal_id}")
-                        new_journal_id = last_journal_id
-                        if new_journal_id and new_journal_id not in fresh_ids:
-                            new_journal_id = ""
-
-                if new_journal_id:
-                    _write_cursor_with_lock(journal_cursor_path, {
-                        "last_journal_id": new_journal_id,
-                        "last_journal_at": datetime.now().isoformat(),
-                    })
-                    logger.info(f"[Tidy] Force: Journal cursor updated: last_journal_id={new_journal_id}")
-            else:
-                logger.info("[Tidy] Force: journal-agent no incremental messages")
-
-            # 2/2. context-manager 强制压缩（抽为嵌套闭包；skip_compress=True 时跳过）
-            async def _compress_force():
-                # 模式三门控随 dream 腿摘除归零（spec §5 定稿）：force 只跑压缩对，
-                # 不再被梦境积压阻塞——游标由睡眠循环推进，压缩保护区间照常读取入口游标。
-
-                # 2/2. context-manager force prompt — 一轮 JSON 文件方案
-                # 重新读取 compress 游标
-                last_compress_id = ""
-                if compress_cursor_path.exists():
-                    try:
-                        cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
-                        last_compress_id = cdata.get("last_compress_id", "")
-                    except Exception as e:
-                        logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
-
-                target_tokens = _read_compress_target_tokens()
-                compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
-                # 清理上次的残留计划文件
-                if os.path.exists(compress_plan_path):
-                    try:
-                        os.remove(compress_plan_path)
-                    except OSError:
-                        pass  # Windows 文件锁，忽略
-
-                # 降级解析已提前到 force 分支顶部（§4.3 同源：entity 排除/校验/压缩三处一致）
-                protect_recent_count = _effective_protect
-
-                # 使用统一的 _build_compress_history 构建（与模式二一致）
-                _force_msg_ids = []
-                _force_history, _ = _build_compress_history(
-                    messages, msg_tokens,
-                    out_msg_ids=_force_msg_ids,
-                    protect_recent=protect_recent_count,
-                    exclude_protected=True,
-                )
-
-                # 构建 idx→UUID 映射 （用于 prompt 和解析）
-                _f_idx_to_id: dict[int, str] = {}
-                for _i, _mid in enumerate(_force_msg_ids):
-                    _f_idx_to_id[_i + 1] = _mid
-
-                # 压缩 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）
-                llm_config_with_max = _build_compress_llm_config()
-
-                # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
-                prompt = _build_force_prompt(
-                    display_tokens, target_tokens, usage_percent,
-                    _force_history, last_compress_id
-                )
-
-                def run_context_manager_force():
-                    return call_subagent_with_auto_answer(
-                        agent_name="context-manager",
-                        task=prompt,
-                        llm_config=llm_config_with_max,
-                        mcp_client=None,
-                        context_fifo_threshold=-1,  # FIFO 保底
-                        history=_force_history,  # 直接传 messages 列表，避免单条 user message 超限
-                        bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
-                    )
-
-                result = await asyncio.to_thread(run_context_manager_force)
-                _force_halved_msg_ids = None  # 降级砍半的前半段 msg_ids
-                if is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
-                # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
-                if result and result.startswith("SUBAGENT_ERROR:"):
-                    error_msg = result[len("SUBAGENT_ERROR:"):]
-                    logger.warning(f"[Compact] Force: context-manager LLM error: {error_msg}")
-                    return {"status": "skipped", "mode": "force", "reason": f"LLM error: {error_msg}"}
-
-
-                if result and result.startswith("COMPACT_TRUNCATED:"):
-                    logger.warning("[Compact] Force output truncated, starting degradation")
-                    result_str, actual_msg_ids, halved_msg_ids = await asyncio.to_thread(
-                        _compact_with_degradation_sync,
-                        agent_name="context-manager",
-                        prompt=prompt,
-                        compress_history=_force_history,
-                        compress_msg_ids=_force_msg_ids,
-                        llm_config=llm_config_with_max,
-                        prompt_builder=_build_force_prompt,
-                        prompt_builder_kwargs={
-                            "display_tokens": display_tokens,
-                            "compress_target_tokens": target_tokens,
-                            "usage_percent": usage_percent,
-                            "force_history": _force_history,
-                            "last_compress_id": last_compress_id,
-                        },
-                        stop_aware=True,
-                        call_fn=call_subagent_with_auto_answer,
-                    )
-                    if result_str is None:
-                        return {"status": "skipped", "mode": "force",
-                                "reason": "compress failed: output truncated after all degradation steps"}
-                    # 降级成功，用返回值替代 result
-                    result = result_str
-                    _force_msg_ids = actual_msg_ids
-                    _force_halved_msg_ids = halved_msg_ids
-                    # 重建 idx→UUID 映射（砍半后 msg_ids 变化，旧映射失效）
-                    _f_idx_to_id = {}
-                    for _i, _mid in enumerate(_force_msg_ids):
-                        _f_idx_to_id[_i + 1] = _mid
-
-                # 正常返回，剥离 <analysis> 草稿块（在解析前）
-                logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
-                result = _strip_analysis(result)
-
-                # 从 sub-agent 回复中解析压缩计划（idx 格式）
-                new_compress_id = last_compress_id
-                try:
-                    keep_idxs: set[int] = set()
-                    update_list: list[tuple[int, str]] = []
-                    cursor_idx: int | None = None
-
-                    for line in result.splitlines():
-                        line = line.strip()
-                        if line.lower().startswith("keep="):
-                            keep_idxs = _parse_idx_list(line.split("=", 1)[1].strip())
-                        elif line.lower().startswith("update="):
-                            update_str = line.split("=", 1)[1].strip()
-                            if update_str:
-                                for part in update_str.split(";"):
-                                    part = part.strip()
-                                    if "|" in part:
-                                        idx_str, content = part.split("|", 1)
-                                        try:
-                                            idx = int(idx_str.strip())
-                                            _c = content.strip()
-                                            if not _c.startswith('[摘要]') and not _c.startswith('[合并]'):
-                                                _c = f'[摘要] {_c}'
-                                            update_list.append((idx, _c))
-                                        except ValueError:
-                                            pass
-                        elif line.lower().startswith("cursor="):
-                            cursor_str = line.split("=", 1)[1].strip()
-                            try:
-                                cursor_idx = int(cursor_str)
-                            except ValueError:
-                                pass
-
-                    if not keep_idxs:
-                        raise ValueError("No keep= line found in sub-agent reply")
-
-                    # 计算删除列表：所有 idx - 保留 idx
-                    all_force_idxs = set(_f_idx_to_id.keys())
-                    delete_idxs = all_force_idxs - keep_idxs
-
-                    # 转换为 UUID
-                    deletes = [_f_idx_to_id[i] for i in sorted(delete_idxs) if i in _f_idx_to_id]
-                    # 砍半掉的前半段 msg_ids 加入删除列表
-                    if _force_halved_msg_ids:
-                        deletes.extend(_force_halved_msg_ids)
-                    for idx, _ in update_list:
-                        if idx not in _f_idx_to_id:
-                            logger.warning(f"[Compact] Force LLM returned out-of-range update idx {idx}, silently dropped")
-                    updates = [
-                        {"message_id": _f_idx_to_id[idx], "content": content}
-                        for idx, content in update_list if idx in _f_idx_to_id
-                    ]
-                    # cursor 转换为 UUID
-                    if cursor_idx and cursor_idx in _f_idx_to_id:
-                        new_compress_id = _f_idx_to_id[cursor_idx]
-                    else:
-                        logger.warning(f"[Compact] Force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
-                        # new_compress_id 保持初始值（last_compress_id）
-
-                    logger.info(f"[Tidy] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
-                    # 安全协议：acquire chat_lock（无限心跳）+ 等待 worker 空闲（§3.9，生产永不放弃）。
-                    # ChatQueue pause 已上移到 force 分支入口（_force_fq），此处只等在途 item 收尾。
-                    # 标志初始化后立即进 try：任何退出路径（含等待窗口内 CancelledError）统一经 finally 释放锁
-                    _f_chat_lock_acquired = False
-
-                    try:
-                        if chat_lock_already_held:
-                            logger.info("[Tidy] Force: chat_lock already held by caller, skipping lock acquire")
-                        else:
-                            if not await _acquire_chat_lock_with_retry("Tidy Force"):
-                                # 防御分支（生产不可达，仅测试注入 max_elapsed）：跳过本次计划应用
-                                logger.error("[Tidy] Force: lock wait aborted, skipping compression plan execution")
-                                return {"status": "skipped", "mode": "force", "reason": "lock wait aborted (defensive)"}
-                            _f_chat_lock_acquired = True
-                            # ⚠️ 死分支，Task6 整删，勿复用：_force_fq 已随 ChatQueue pause 上移被删，此行现不可达且引用会 NameError
-                            if not await _wait_queue_idle_with_retry(_force_fq, "Tidy Force"):
-                                logger.error("[Tidy] Force: queue wait aborted, skipping compression plan execution")
-                                return {"status": "skipped", "mode": "force", "reason": "queue wait aborted (defensive)"}
-
-                        # 重新获取消息列表
-                        fresh_messages = await store.get_messages()
-                        existing_ids = {getattr(m, "id", "") for m in fresh_messages}
-                        valid_deletes = [mid for mid in deletes if mid in existing_ids]
-                        valid_deletes = list(dict.fromkeys(valid_deletes))
-                        # 校验游标有效性
-                        if new_compress_id and new_compress_id not in existing_ids:
-                            logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
-                            new_compress_id = last_compress_id
-                        if new_compress_id and new_compress_id not in existing_ids:
-                            logger.warning(f"[Tidy] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
-                            new_compress_id = ""
-
-                        # 保护游标
-                        cursor_ids_set = {cid for cid in [new_compress_id] if cid}
-                        for cursor_id in cursor_ids_set:
-                            if cursor_id in valid_deletes:
-                                valid_deletes.remove(cursor_id)
-                                logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
-                        valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
-                        cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
-                        if cursor_updates:
-                            logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
-                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
-                        # 保护近期消息
-                        # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
-                        protected_force_ids: set[str] = set()
-                        if protect_recent_count > 0:
-                            _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
-                            protected_force_ids = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
-                            removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
-                            if removed_deletes:
-                                logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
-                                valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
-                            removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
-                            if removed_updates:
-                                logger.warning(f"[Tidy] Force: Protecting {len(removed_updates)} recent messages from update")
-                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
-                        # 防止 delete/update 重叠
-                        update_ids = {u.get("message_id", "") for u in valid_updates}
-                        overlap_ids = update_ids & set(valid_deletes)
-                        if overlap_ids:
-                            logger.warning(f"[Tidy] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
-                            valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
-                        if len(valid_deletes) < len(deletes):
-                            logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
-                        if len(valid_updates) < len(updates):
-                            logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
-
-                        # 级联删除
-                        _cascade_protected = cursor_ids_set | (protected_force_ids if protect_recent_count > 0 else set())
-                        cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
-                        valid_deletes = cascade_del.delete_ids
-                        dangling_tc_cleanups = cascade_del.dangling_cleanups
-                        cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
-                        valid_updates = cascade_upd.updates
-                        cascade_delete_ids = cascade_upd.cascade_delete_ids
-                        if cascade_delete_ids:
-                            existing = set(valid_deletes)
-                            for cid in cascade_delete_ids:
-                                if cid not in existing:
-                                    valid_deletes.append(cid)
-                                    existing.add(cid)
-
-                        _post_update_ids = {u.get("message_id", "") for u in valid_updates}
-                        _post_overlap = _post_update_ids & set(valid_deletes)
-                        if _post_overlap:
-                            logger.warning(f"[Tidy] Force: Cascade created delete/update overlap: {_post_overlap}")
-                            valid_deletes = [mid for mid in valid_deletes if mid not in _post_overlap]
-
-                        if dangling_tc_cleanups:
-                            for cleanup in dangling_tc_cleanups:
-                                mid = cleanup["message_id"]
-                                dangling_ids = cleanup["dangling_tc_ids"]
-                                m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
-                                if m and getattr(m, "tool_calls", None):
-                                    tcs = m.tool_calls
-                                    if isinstance(tcs, str):
-                                        tcs = json.loads(tcs)
-                                    valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
-                                    if valid_tcs:
-                                        await _clean_dangling_tool_calls(store, mid, valid_tcs)
-                                    else:
-                                        await store.update_message(mid, getattr(m, "content", "") or "", clear_tool_calls=True)
-                                    logger.info(f"[Tidy] Force: Cleaned {len(dangling_ids)} dangling tool_calls from protected assistant {mid}")
-
-                        if valid_deletes:
-                            del_result = await store.delete_messages_by_ids(valid_deletes)
-                            logger.info(f"[Tidy] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
-
-                        for upd in valid_updates:
-                            mid = upd.get("message_id", "")
-                            content = upd.get("content", "")
-                            if mid and content:
-                                clear_tc = upd.get("clear_tool_calls", False)
-                                ok = await store.update_message(message_id=mid, content=content, clear_tool_calls=clear_tc)
-                                if ok:
-                                    logger.info(f"[Tidy] Force: Updated message {mid}")
-                                else:
-                                    logger.warning(f"[Tidy] Force: Failed to update message {mid}")
-
-                        logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
-                        await _cleanup_orphan_tool_messages(store)
-                    finally:
-                        if _f_chat_lock_acquired:
-                            _chat_lock.release()
-                except ValueError as e:
-                    logger.error(f"[Tidy] Force: Failed to parse compression plan: {e}")
-                except Exception as e:
-                    logger.error(f"[Tidy] Force: Failed to execute compress plan: {e}")
-
-                # 写入 compress 游标
-                if new_compress_id:
-                    _write_cursor_with_lock(compress_cursor_path, {
-                        "last_compress_id": new_compress_id,
-                        "last_compress_at": datetime.now().isoformat(),
-                    })
-                    logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
-
-                # 计算压缩后 token 数（用于降级判断）
-                tokens_after = display_tokens  # 默认值
-                try:
-                    post_messages = await store.get_messages()
-                    from agent.token_calculator import TokenCalculator
-                    calc = TokenCalculator.get()
-                    post_total = 0
-                    for pm in post_messages:
-                        try:
-                            t = calc.count_message_single(pm.role, pm.content or "", tool_calls=getattr(pm, "tool_calls", None))
-                        except Exception:
-                            t = max(1, len(pm.content or "") // 2) + 4
-                        post_total += t
-                    tokens_after = post_total
-                except Exception:
-                    pass
-
-                return {"status": "ok", "mode": "force", "tokens_before": display_tokens, "tokens_after": tokens_after}
-
-            if request.get("skip_compress"):
-                logger.info("[Tidy] Force: skip_compress=True, skipping context-manager compression")
-                return {"status": "ok", "mode": "force", "skip_compress": True,
-                        "tokens_before": display_tokens, "tokens_after": display_tokens}
-            return await _compress_force()
 
         else:
             logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")

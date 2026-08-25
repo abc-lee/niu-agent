@@ -96,8 +96,6 @@ def _patches(call_mock, store_msgs=None, is_sleeping=lambda: True,
             "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
             "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
         }),
-        mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
-        mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         mock.patch("niu_api.compat.is_sleeping", side_effect=is_sleeping),
         # 游标文件读取全部短路（缺失 → 游标留空）；写入走 mock
         mock.patch("pathlib.Path.exists", return_value=False),
@@ -167,8 +165,8 @@ def test_sleep_success_single_round_drains_and_advances():
         call_mock, seed_ids=MSG_IDS,
     )
 
-    assert _called_agents(call_mock) == ["context-manager", "dream-evolver"], (
-        f"F1 空 entity 跳过；工程四重排后 cm 先跑、梦境一轮排空: {[_called_agents(call_mock)]}"
+    assert _called_agents(call_mock) == ["dream-evolver"], (
+        f"T6 后 F1 空 entity 跳过、cm 已退役，仅梦境一轮排空: {[_called_agents(call_mock)]}"
     )
     with open(paths["f2"], encoding="utf-8") as f:
         assert f.read() == "", "covered_all 全删后 F2 应为空"
@@ -270,9 +268,8 @@ def test_sleep_zero_progress_guard_breaks():
 def test_sleep_interrupted_mid_loop():
     """轮间唤醒检查：round1 后仍睡眠继续、round2 后被唤醒 → interrupted；已删不回滚。"""
     budget = len(_record("m1").encode("utf-8"))
-    # 消费顺序（工程四重排）：mode-1 派发前复查(T) → CP1(T) → CP2(T) → round1 唤醒检查(T)
-    # → round2 唤醒检查(False)；新序压缩对在前多占 2 次调用，迭代器补值至 5
-    flips = iter([True, True, True, True, False])
+    # 消费顺序（T6 后）：CP1(journal)(T) → CP2(T) → round1 唤醒检查(T) → round2 唤醒检查(False)
+    flips = iter([True, True, True, False])
     call_mock = mock.MagicMock()
 
     def _keyed(agent_name=None, **kwargs):
@@ -348,33 +345,6 @@ def test_cursor_write_retired_zero_writes_all_states():
 # ---------------------------------------------------------------------------
 # 7. mode-1 切片无上界（end_cursor 契约作废——工程四决策 3'a）
 # ---------------------------------------------------------------------------
-
-def test_downstream_mode1_slice_has_no_end_cursor():
-    """工程四 3'a：模式一压缩切片移除 end_cursor 上界——全量切片，不得携带 end_cursor_id。"""
-    captured = []
-    real_build = compat._build_incremental_msg_text
-
-    def _spy(messages, last_cursor_id, out_msg_ids, msg_tokens=None, **kwargs):
-        captured.append(kwargs.get("end_cursor_id"))
-        return real_build(messages, last_cursor_id, out_msg_ids, msg_tokens, **kwargs)
-
-    call_mock = mock.MagicMock()
-
-    def _keyed(agent_name=None, **kwargs):
-        if agent_name == "dream-evolver":
-            return NORMAL_JSON + "\n处理完成 @end\nprocessed_line=9"
-        return NORMAL_JSON
-
-    call_mock.side_effect = _keyed
-    result, write_mock, _, _, _ = _run_sleep(
-        call_mock, seed_ids=MSG_IDS,
-        extra_patches=(mock.patch.object(compat, "_build_incremental_msg_text", _spy),),
-    )
-
-    assert result.get("status") == "ok"
-    assert captured, "mode-1 压缩切片应调用 _build_incremental_msg_text"
-    assert all(v is None for v in captured), f"模式一切片不得携带 end_cursor_id: {captured}"
-
 
 # ---------------------------------------------------------------------------
 # 8. F2 空 D5 短路
@@ -499,34 +469,6 @@ def test_invalid_or_oversized_m_rejected(reported):
 # ---------------------------------------------------------------------------
 # 13. force 不再调 dream-evolver 且门控放行
 # ---------------------------------------------------------------------------
-
-def test_force_no_dream_leg_and_no_gating():
-    """force：梦境腿摘除 + 门控归零——dream 游标空也直接进压缩段（cm 被调即证明）。"""
-    from niu_api.compat import _tidy_context_impl
-
-    store = mock.MagicMock()
-    store.get_messages = mock.AsyncMock(return_value=_messages())
-    call_mock = mock.MagicMock()
-
-    def _keyed(agent_name=None, **kwargs):
-        if agent_name == "context-manager":
-            return "SUBAGENT_ERROR:mock"
-        return NORMAL_JSON
-
-    call_mock.side_effect = _keyed
-    with ExitStack() as stack:
-        store_obj, plist = _patches(call_mock)
-        stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
-        for p in plist:
-            stack.enter_context(p)
-        stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
-        result = asyncio.run(_tidy_context_impl({"mode": "force", "session_id": "t"}, chat_lock_already_held=True))
-
-    called = _called_agents(call_mock)
-    assert "dream-evolver" not in called and "entity-extractor" not in called, "模式三只跑压缩对"
-    assert "context-manager" in called, "门控已摘除，不受 dream 游标阻塞"
-    assert result.get("status") == "skipped" and "LLM error" in result.get("reason", "")
-
 
 # ---------------------------------------------------------------------------
 # 14. clear 后三文件全空
