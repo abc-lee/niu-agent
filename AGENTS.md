@@ -513,6 +513,32 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
 
+### 2026-08-26
+
+#### 工程：上下文组装器——压缩体系退役 + 存储/视图分离的确定性组装（spec v1.3.1 + 计划 v1.5 双审 R1-R6 收敛）
+
+- **背景**：Windows 测试机实证压缩体系死穴——35 条消息短对话被「保护 N 轮」全量吞掉 → compress_msg_ids 空 → 65% 使用率静默跳过压缩；模式一/二/三逐条裁决对弱模型必然脆弱。用户逐轮纠偏后确立新架构方向：压缩概念整体退役，改为存储/视图分离的确定性组装器。
+- **架构定案**：
+  - **存储/视图分离**：messages.db 是真相源永不动；LLM 每轮只见组装视图 = [历史索引前导] + [近期原文窗口]；索引区职责边界 = 模拟全量上下文的目录页，纯时间线 FIFO 无语义注入
+  - **分区预算**：原文窗口 ≤50% 窗口（完整会话单元装填，tool_calls 配对完整）；历史索引 ≤30%（每块一行机械行，超预算最老相邻块合并）
+  - **指针块**：窗口外单元归档为 SQLite 单表指针块（`~/.niu/context_blocks.db`，flock 排它锁），不向量化——模型看索引报块号，`read_history_block(block_id)` 取回逐字原文（session-manager hidden 工具 + 主 Agent 提示词解码说明书）
+  - **批量压实**：校准后估算 ≥80% 触发（AUTO_GATE 滞回 ≥80% 触发/<78% 复位，组装出口与 runner 真值回调双触发去重）、95% 应急线；保留最近 N 轮（`context.keepRecentTurns` 默认 3 可配置）；D15 三轮硬约束（工具输出占位符化→减轮）；纯机械零 LLM 秒级
+  - **token 校准倍率**：每次主 Agent 响应后真值 prompt_tokens ÷ 本地估算覆盖更新倍率（`~/.niu/token_calibration.json`，默认 1.15），桥接本地估算与服务端真值
+  - **journal 迁出睡眠管道**：scheduler 内置 `journal-daily` 定时任务每日 18 点直执行（导出 DB 增量为工作集文件让 journal-agent 自读；严禁经 ChatQueue enqueue 防反污染；backend-busy 避让活跃对话；游标自管）
+  - **§8 拍板落地**：journal.md 本体 /new 时保留；指针块 SQLite 单表；read_history_block 对子 Agent 开放；保留轮数默认 3 可配置
+- **交付链**（SDD 每 Task 新鲜子 Agent + spec/quality 双审，main `1af5ffab`→`5be2c087` 共 8 commits + 本条目 T9）：
+  - `1af5ffab` T1 指针块存储层 + 会话单元切割器（纯函数零接线）
+  - `4fa0132b` T2 get_context_for_chat 重写为索引+窗口新视图（压缩调用路径退役）
+  - `8da1bc97` T3 校准倍率闭环 + 80%/95% 触发 + 五入口溢出收编（回写 `messages[:] = [system]+new_view` 原地生效）
+  - `ce61f6c4` T4 read_history_block 工具 + 实体标签会话展开 + 解码说明书
+  - `6e0a7221` T5 摘要增强可选层（裸调 lightrag_llm 一次一 call + 空闲调度 + 默认禁用）
+  - `23362b12` T6 压缩体系退役大清理——cm/模式一二三/compress 游标/保护 N 轮/force 投递面全链清零（compat 净删 5687 行）
+  - `f1f6fbe8` T7 journal → journal_daily 定时任务直执行
+  - `5be2c087` T8 一致性校验挂 lifespan（不一致整库重切重建）+ /new 清理面四端点接线
+  - 本条目 T9 文档收官（SYSTEM_MANUAL 上下文管理章节重写/manual-performance 双路并发升格+KV cache 踩踏机理/manual-user-guide 用户视角/niu.md journal 自读语义修正）
+- **验证**：各 Task 点名回归全绿（T1 34/T2 17/T3 35/T4 17/T5 15/T6 322/T8 15 passed）；主链路确定性零 LLM 承重，LLM 仅做可选异步增强且失败无害
+- **实机验收清单（待用户重启执行）**：①对话至 80% 自动压实、圆环跳变回落②/compact 手动秒级生效③/new 清空彻底且 journal.md 保留④读块工具取回原文⑤重启后块一致性校验通过⑥每日 18 点 journal-daily 触发正常（活跃对话时避让）
+
 ### 2026-08-25
 
 #### 工程：MD 中继工程五——force dream 保护链退役 + dream 游标终退 + 化石清理（方案 v1.0→v2.5 共九版，R1-R7 双审+全局架构审计收敛）
