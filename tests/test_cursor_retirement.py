@@ -25,8 +25,6 @@ from unittest import mock
 
 from niu_api.compat import (
     _ALL_CURSOR_FILES,
-    _build_force_prompt,
-    _compact_with_degradation_sync,
     _reset_all_cursors,
 )
 
@@ -119,17 +117,10 @@ def _base_patches(call_mock, home, store, tokens_per_msg=100, context_window=800
             "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
             "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
         }),
-        mock.patch("niu_api.compat._read_max_output_tokens", return_value=32000),
-        mock.patch("niu_api.compat._read_compress_target_tokens", return_value=1000),
-        mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
-        mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         mock.patch("pathlib.Path.home", return_value=home),
-        mock.patch("os.path.expanduser",
-                   lambda p, _h=home: str(_h / ".niu" / "compress_plan_t5.json") if p.startswith("~") else p),
         mock.patch("niu_api.compat.is_sleeping", return_value=True),
         mock.patch("niu_api.chat_queue.get_chat_queue", return_value=fake_queue),
         mock.patch("niu_api.compat._acquire_chat_lock_with_retry", side_effect=_lock_ok),
-        mock.patch("niu_api.compat._wait_queue_idle_with_retry", side_effect=_lock_ok),
         mock.patch("niu_api.compat._chat_lock", mock.MagicMock()),
     ]
 
@@ -163,27 +154,6 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), home=None,
 # 1. force prompt 无安全边界行 / dream_idx 注入
 # ---------------------------------------------------------------------------
 
-def test_force_prompt_has_no_safety_boundary_line():
-    """退役正向钉：_build_force_prompt 新签名渲染后不含安全边界行与任何 dream 字样。"""
-    p = _build_force_prompt(
-        display_tokens=100000, compress_target_tokens=60000, usage_percent=80.0,
-        force_history=[{"role": "user", "content": "[idx:1] 100tokens hi"}],
-        last_compress_id="compress-anchor-id",
-    )
-    assert "安全边界" not in p, "dream 安全边界行已退役，不得回流 prompt"
-    assert "未提取知识" not in p
-    assert "idx >" not in p
-    assert "dream" not in p.lower()
-    # 上次压缩游标行保留
-    assert "compress-anchor-id" in p
-    # 输出契约三行保留
-    assert "keep=" in p and "update=" in p and "cursor=" in p
-
-
-# ---------------------------------------------------------------------------
-# 2. 睡眠全程无 last_dream_evolve 写入（反向钉）
-# ---------------------------------------------------------------------------
-
 def test_sleep_never_writes_dream_cursor():
     """全链（cm→entity→dream 循环）零 last_dream_evolve 游标写入。"""
     call_mock = _keyed({})
@@ -198,10 +168,10 @@ def test_sleep_never_writes_dream_cursor():
 # 3. reset 只清两键且不触碰残留文件
 # ---------------------------------------------------------------------------
 
-def test_reset_clears_two_keys_and_spares_residual_file(tmp_path):
-    """_ALL_CURSOR_FILES 收缩两键：journal/compress 删除；盘上残留的 dream 游标文件不被触碰。"""
-    assert _ALL_CURSOR_FILES == ["last_compress.json", "last_journal.json"], \
-        f"复位表应恰两键且不含 dream 键: {_ALL_CURSOR_FILES}"
+def test_reset_clears_journal_key_and_spares_residual_file(tmp_path):
+    """_ALL_CURSOR_FILES 收缩单键（T6 压缩退役）：journal 复位；盘上残留的 dream/compress 游标文件不被触碰。"""
+    assert _ALL_CURSOR_FILES == ["last_journal.json"], \
+        f"复位表应恰 journal 一键: {_ALL_CURSOR_FILES}"
 
     niu = tmp_path / ".niu"
     niu.mkdir(parents=True)
@@ -213,79 +183,15 @@ def test_reset_clears_two_keys_and_spares_residual_file(tmp_path):
     with mock.patch("pathlib.Path.home", return_value=tmp_path):
         asyncio.run(_reset_all_cursors())
 
+    # journal 键被复位（unlink）；compress 已不在复位表——盘上残留属一次性手工清算，生产代码不触碰
     remaining = sorted(p.name for p in niu.iterdir())
-    assert remaining == ["last_dream_evolve.json"], \
-        f"只应剩磁盘残留的 dream 游标文件（一次性手工清算，不入生产代码路径）: {remaining}"
+    assert remaining == ["last_compress.json", "last_dream_evolve.json"], \
+        f"只应剩磁盘残留文件: {remaining}"
+    assert not (niu / "last_journal.json").exists()
 
 
 # ---------------------------------------------------------------------------
 # 4. mode-2 对未提炼消息正常落库删除（锚点 id 进 valid_deletes 判别力钉）
-# ---------------------------------------------------------------------------
-
-def test_mode2_deletes_unextracted_anchor_message():
-    """种子含锚点 id 消息（m1）：旧行为锚点被排除，退役后 m1 正常落库删除。
-
-    判别力：若锚点排除回流，m1 不在删除批次 → 断言挂。
-    """
-    call_mock = _keyed({
-        # keep=2 → 删除 idx {1,3} → UUID [m1, m3]（m1 即「锚点」）
-        "context-manager": "keep=2\ncursor=2",
-    })
-    result, _w, ctx = _run_sleep(
-        call_mock, msg_ids=("m1", "m2", "m3"), tokens_per_msg=1500)  # 56% ≥50% → 模式二
-
-    assert result.get("status") == "ok", f"模式二应正常完成: {result}"
-    all_deleted = [mid for batch in ctx["deleted_batches"] for mid in batch]
-    assert "m1" in all_deleted, f"锚点 id 应正常进 valid_deletes 落库删除: {ctx['deleted_batches']}"
-    assert "m3" in all_deleted
-    assert set(all_deleted) == {"m1", "m3"}, f"恰删 keep 外两条: {ctx['deleted_batches']}"
-
-
-# ---------------------------------------------------------------------------
-# 5. 砍半降级无 dream_idx 互斥路径
-# ---------------------------------------------------------------------------
-
-def test_halving_degradation_has_no_dream_mutex():
-    """step1 截断 → step2 砍半照常执行；prompt_builder_kwargs 不含 dream_idx_in_force 键。"""
-    llm_config = {"litellm_kwargs": {"max_tokens": 32000, "thinking": {"type": "disabled"}}}
-    captured_kwargs = []
-    calls = []
-
-    def _fake_call_fn(**kwargs):
-        calls.append(kwargs)
-        return "keep=1,2\nupdate=2|[摘要] xxx\ncursor=2"  # step2 成功
-
-    def _builder(**kw):
-        captured_kwargs.append(dict(kw))
-        return "rebuilt prompt"
-
-    history = [{"role": "user", "content": f"[idx:{i+1}] msg{i+1}"} for i in range(4)]
-    result, msg_ids, halved = _compact_with_degradation_sync(
-        agent_name="context-manager",
-        prompt="prompt",
-        compress_history=history,
-        compress_msg_ids=["a", "b", "c", "d"],
-        llm_config=llm_config,
-        prompt_builder=_builder,
-        prompt_builder_kwargs={
-            "display_tokens": 1000, "compress_target_tokens": 500, "usage_percent": 80.0,
-            "force_history": [{"role": "user", "content": "[idx:1] x"}],
-            "last_compress_id": None,  # 无 dream_idx_in_force 键
-        },
-        stop_aware=False,
-        call_fn=_fake_call_fn,
-    )
-
-    assert result is not None, "砍半互斥已退役：step2 应执行成功"
-    assert halved == ["a", "b"], f"砍半前半段应返回: {halved}"
-    assert msg_ids == ["c", "d"]
-    # 砍半重建的 prompt kwargs 不得出现 dream_idx 分量（互斥路径消亡）
-    assert captured_kwargs and all("dream_idx_in_force" not in kw for kw in captured_kwargs), \
-        f"dream_idx_in_force 已退役: {captured_kwargs}"
-
-
-# ---------------------------------------------------------------------------
-# 6. 双入口零读取反向钉（compat 入口 + runner 入口，对称覆盖）
 # ---------------------------------------------------------------------------
 
 def test_compat_entry_zero_dream_cursor_read(tmp_path):
@@ -337,8 +243,7 @@ def test_runner_entry_zero_dream_cursor_read(monkeypatch):
     call_mock = mock.MagicMock()
 
     def _side(agent_name=None, **kwargs):
-        if agent_name == "context-manager":
-            return "SUBAGENT_ERROR:mock"
+        assert agent_name != "context-manager", "T6 后 runner 管道不得再调 context-manager"
         return NORMAL_JSON
 
     call_mock.side_effect = _side
@@ -355,20 +260,13 @@ def test_runner_entry_zero_dream_cursor_read(monkeypatch):
     monkeypatch.setattr("agent.token_calculator.TokenCalculator.get",
                         lambda: _FakeCalc(100))
     monkeypatch.setattr(subagent_module, "call_subagent_with_auto_answer", call_mock)
-    monkeypatch.setattr(subagent_module, "_read_context_window_tokens", lambda: 8000)
-    monkeypatch.setattr(subagent_module, "_read_protect_recent_count", lambda: 0)
-    monkeypatch.setattr(subagent_module, "_read_compress_target_tokens", lambda: 60000)
-    monkeypatch.setattr(subagent_module, "_read_max_output_tokens", lambda: 32000)
-    monkeypatch.setattr(llm_proxy_module, "get_llm_config", lambda use_lightrag_config=False: {
-        "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
-        "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
-    })
 
     result = runner._execute_force_pipeline()
 
-    assert result is not None and result.get("status") == "skipped", f"实际: {result}"
-    assert "context-manager" in [
-        c.kwargs.get("agent_name") for c in call_mock.call_args_list
-    ], "runner 压缩段应被调（SUBAGENT_ERROR 早退即证明）"
+    # T6：管道仅剩 journal 腿——journal-agent 被调、状态 ok、零 dream 游标分量读取
+    assert result is not None and result.get("status") == "ok", f"实际: {result}"
+    called_names = [c.args[0] if c.args else c.kwargs.get("agent_name") for c in call_mock.call_args_list]
+    assert "journal-agent" in called_names, f"runner journal 腿应被调: {called_names}"
+    assert "last_compress_id" not in read_fields, "compress 游标已退役，不得再读"
     assert "last_dream_evolve_id" not in read_fields, \
         f"runner 入口不得再读取 dream 游标分量，实际读取 fields={read_fields}"

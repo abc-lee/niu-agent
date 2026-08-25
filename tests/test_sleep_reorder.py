@@ -2,7 +2,7 @@
 
 对应计划 docs/superpowers/plans/2026-08-24-md-relay-project4-reorder.md §3-T1 测试清单：
 1. 重序断言：context-manager 先于 entity/dream 被调（默认 usage<50%，以 cm 为序锚）
-2. ≥50% 用例单列钉 journal 位次（usage 取 [50%,70%) 窗口——≥70% 触发 _skip_compress 阈值）
+2. ≥50% 用例单列钉 journal 位次
 3. ≥50% 模式二全序 journal→cm→entity→dream + 无 post-dream 范围过滤
    + 无锚点排除（工程五七件套退役）：cm 方案中的锚点消息 update 正常应用
 4. CP1 唤醒（压缩对后）→ interrupted 且压缩已落库
@@ -114,17 +114,11 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), tokens_per_msg=100,
             "model": "test-model", "apikey": "test-key", "apibase": "https://test.example.com",
             "type": "openai", "provider": "", "reasoning_effort": "", "litellm_kwargs": {},
         }),
-        mock.patch("niu_api.compat._read_max_output_tokens", return_value=32000),
-        mock.patch("niu_api.compat._read_compress_target_tokens", return_value=1000),
-        mock.patch("niu_api.compat._read_protect_recent_count", return_value=0),
-        mock.patch("niu_api.compat._read_warning_threshold", return_value=0.8),
         mock.patch("pathlib.Path.home", return_value=home),
-        # mode-2 应用段 compress_plan 路径走 expanduser——一并隔离，杜绝触碰真实 ~/.niu
-        mock.patch("os.path.expanduser", lambda p, _h=home: str(_h / ".niu" / "compress_plan_mode2.json") if p.startswith("~") else p),
+        mock.patch("os.path.expanduser", lambda p, _h=home: str(_h / ".niu" / "t6_isolated") if p.startswith("~") else p),
         mock.patch("niu_api.compat.is_sleeping", side_effect=sleep),
         mock.patch("niu_api.chat_queue.get_chat_queue", return_value=fake_queue),
         mock.patch("niu_api.compat._acquire_chat_lock_with_retry", side_effect=_lock_ok),
-        mock.patch("niu_api.compat._wait_queue_idle_with_retry", side_effect=_lock_ok),
         mock.patch("niu_api.compat._chat_lock", mock.MagicMock()),
     ]
 
@@ -170,8 +164,8 @@ def _cursor_writes(write_mock):
 # 1. 重序断言：cm 先于 entity/dream（usage<50%）
 # ---------------------------------------------------------------------------
 
-def test_reorder_cm_called_before_entity_and_dream():
-    """新序：journal(≥50% 此处 skipped) → context-manager → entity-extractor → dream-evolver。"""
+def test_t6_order_entity_then_dream_no_cm():
+    """T6：journal(≥50% 此处 skipped) → entity-extractor → dream-evolver；cm 已退役零调用。"""
     call_mock = _keyed({
         "entity-extractor": NORMAL_JSON + PROCESSED_LINE_ALL,
         "dream-evolver": NORMAL_JSON + PROCESSED_LINE_ALL,
@@ -182,86 +176,46 @@ def test_reorder_cm_called_before_entity_and_dream():
 
     assert result.get("status") == "ok", f"睡眠全程不应打断: {result}"
     agents = _called_agents(call_mock)
-    assert agents == ["context-manager", "entity-extractor", "dream-evolver"], f"实际: {agents}"
+    assert agents == ["entity-extractor", "dream-evolver"], f"实际: {agents}"
 
 
 # ---------------------------------------------------------------------------
 # 2. ≥50%（[50%,70%) 窗口）：journal 位次钉
 # ---------------------------------------------------------------------------
 
-def test_mode2_window_journal_agent_runs_first():
-    """usage∈[50%,70%)：journal-agent 先于 context-manager 被调（压缩对内 journal 居首）。
+def test_mode2_window_journal_runs_first():
+    """usage∈[50%,70%)：journal-agent 被调且先于 entity/dream（T6 后无 cm）。
 
-    3 条 ×1500 tok / 8000 窗口 = 56.25%；cm 返 SUBAGENT_ERROR 早退即可证明位次。
+    3 条 ×1500 tok / 8000 窗口 = 56.25%。
     """
-    call_mock = _keyed({"context-manager": "SUBAGENT_ERROR:mock"})
+    call_mock = _keyed({})
     result, _w, call_mock, _store, _ctx = _run_sleep(
         call_mock, msg_ids=("m1", "m2", "m3"), tokens_per_msg=1500,
     )
 
-    assert _called_agents(call_mock)[:2] == ["journal-agent", "context-manager"], (
-        f"journal 应最先被调: {_called_agents(call_mock)}"
+    agents = _called_agents(call_mock)
+    assert agents[0] == "journal-agent" and "context-manager" not in agents, (
+        f"T6 后 journal 应最先被调且无 cm: {agents}"
     )
-    assert result.get("status") == "skipped" and "LLM error" in result.get("reason", ""), f"实际: {result}"
-
-
-# ---------------------------------------------------------------------------
-# 3. 模式二全序 + 锚点排除正向钉 + 无 post-dream 范围过滤
-# ---------------------------------------------------------------------------
-
-def test_mode2_full_order_anchor_exclusion_no_post_filter():
-    """≥50% 全序 journal→cm→entity→dream；无锚点排除（工程五七件套退役）；越界消息正常落库删除。
-
-    - 预建 last_dream_evolve.json（磁盘残留态，生产已零读取）
-    - cm 方案 keep=3：deletes=[m1,m2]、updates=[(1→m1)]
-      → m2 正常落库删除——证明范围守卫已随工程四摘除；
-        m1 因与 update 重叠从 deletes 移出、update 正常应用——证明锚点排除已退役
-    """
-    home = pathlib.Path(tempfile.mkdtemp(prefix="t4_anchor_"))
-    _write_home_cursor(home, "last_dream_evolve.json", {"last_dream_evolve_id": "m1"})
-    call_mock = _keyed({
-        "context-manager": "keep=3\nupdate=1|[摘要] 锚点更新应被排除",
-        "entity-extractor": NORMAL_JSON + PROCESSED_LINE_ALL,
-        "dream-evolver": NORMAL_JSON + PROCESSED_LINE_ALL,
-    })
-    result, write_mock, call_mock, _store, ctx = _run_sleep(
-        call_mock, msg_ids=("m1", "m2", "m3"), tokens_per_msg=1500,
-        home=home, seed_f1="m1",
-    )
-
-    assert result.get("status") == "ok", f"模式二全链应完成: {result}"
-    assert _called_agents(call_mock) == [
-        "journal-agent", "context-manager", "entity-extractor", "dream-evolver",
-    ], f"实际: {_called_agents(call_mock)}"
-
-    all_deleted = [mid for batch in ctx["deleted_batches"] for mid in batch]
-    assert "m2" in all_deleted, f"越界消息 m2 应回落库正常删除: {ctx['deleted_batches']}"
-    assert ctx["updated"] == [("m1", "[摘要] 锚点更新应被排除")], \
-        f"无锚点排除：m1 的 update 应正常应用（与 delete 重叠故从 deletes 移出）: {ctx['updated']}"
-
-    # 工程五退役反向钉：dream 循环零游标写入
-    assert [d for d in _cursor_writes(write_mock) if d.get("last_dream_evolve_id")] == []
+    assert result.get("status") == "ok", f"实际: {result}"
 
 
 # ---------------------------------------------------------------------------
 # 4. CP1 唤醒（压缩对后）→ interrupted 且压缩已落库
 # ---------------------------------------------------------------------------
 
-def test_cp1_interrupt_after_compress_pair_persists_compression():
-    """CP1（压缩对完成后）唤醒 → interrupted；cm 已执行且压缩游标推进不回滚。"""
-    calls = {"n": 0}
-
+def test_cp1_interrupt_after_journal_leg():
+    """CP1（journal 腿后）唤醒 → interrupted；entity/dream 不执行、compress 游标零写。"""
     def sleep():
-        calls["n"] += 1
-        return calls["n"] < 2  # mode-1 派发前复查仍睡眠 → CP1 断
+        return False  # 首个 is_sleeping 检查即 CP1（usage<50% journal skipped）
 
     call_mock = _keyed({})
     result, write_mock, call_mock, _store, _ctx = _run_sleep(call_mock, sleep=sleep)
 
     assert result == {"status": "interrupted", "reason": "woke_up"}
-    assert _called_agents(call_mock) == ["context-manager"], "entity/dream 不应执行"
-    compress_writes = [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")]
-    assert compress_writes, f"压缩已落库：compress 游标应已推进: {_cursor_writes(write_mock)}"
+    assert _called_agents(call_mock) == [], "usage<50% journal skipped，entity/dream 不应执行"
+    assert [d for d in _cursor_writes(write_mock) if d.get("last_compress_id")] == [], \
+        f"compress 游标已退役，零写: {_cursor_writes(write_mock)}"
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +236,7 @@ def test_gating_gone_stale_cursor_and_full_f1_proceed():
 
     assert result.get("status") == "ok", f"门控已摘除不得 skipped: {result}"
     agents = _called_agents(call_mock)
-    assert agents[0] == "context-manager" and "entity-extractor" in agents and "dream-evolver" in agents
+    assert agents[0] == "entity-extractor" and "dream-evolver" in agents and "context-manager" not in agents
 
 
 # ---------------------------------------------------------------------------
@@ -338,21 +292,22 @@ def test_entry_no_dream_cursor_read(tmp_path):
 # 8. 复位表两键清算（工程五七件套退役：_ALL_CURSOR_FILES 收缩）
 # ---------------------------------------------------------------------------
 
-def test_reset_all_cursors_clears_exactly_two_keys(tmp_path):
-    """reset 恰清两键：last_journal/last_compress 删除；dream 游标已退役出复位表。"""
-    from niu_api.compat import _reset_all_cursors
+def test_reset_all_cursors_clears_exactly_journal_key(tmp_path):
+    """reset 恰清 journal 一键（T6 压缩退役：compress 已出复位表）。"""
+    from niu_api.compat import _ALL_CURSOR_FILES, _reset_all_cursors
 
+    assert _ALL_CURSOR_FILES == ["last_journal.json"]
     home = tmp_path
     niu = home / ".niu"
     niu.mkdir(parents=True)
-    for name in ("last_journal.json", "last_compress.json"):
-        (niu / name).write_text("{}", encoding="utf-8")
+    (niu / "last_journal.json").write_text("{}", encoding="utf-8")
+    (niu / "last_compress.json").write_text("{}", encoding="utf-8")  # 盘上残留，生产不触碰
 
     with mock.patch("pathlib.Path.home", return_value=home):
         asyncio.run(_reset_all_cursors())
 
     remaining = sorted(p.name for p in niu.iterdir())
-    assert remaining == [], f"两键游标应全部删除，实际残留 {remaining}"
+    assert remaining == ["last_compress.json"], f"仅 journal 应被清，实际残留 {remaining}"
 
 
 def test_reset_all_cursors_never_touches_entity_extract_file(tmp_path):

@@ -1316,7 +1316,7 @@ class NiuHandler(BaseHandler):
                     next_prompt=f"子Agent调用失败：{error_msg}",
                 )
 
-            # 剥除 COMPACT_TRUNCATED: 前缀（截断信号已被 context-manager 路径处理，主 Agent 只需内容）
+            # 剥除 COMPACT_TRUNCATED: 前缀（截断信号由程序侧降级链消费，主 Agent 只需内容）
             if result and result.startswith("COMPACT_TRUNCATED:"):
                 result = result[len("COMPACT_TRUNCATED:"):]
 
@@ -1530,7 +1530,7 @@ class NiuHandler(BaseHandler):
         if tool_name.startswith("chat-with-"):
             agent_name = tool_name[len("chat-with-"):]
             # 系统自动管理的子Agent，禁止手动调用
-            blocked_subagents = {"context-manager", "entity-extractor", "dream-evolver"}  # 由 auto-tidy 管道自动调用，禁止主Agent手动触发
+            blocked_subagents = {"entity-extractor", "dream-evolver"}  # 由 auto-tidy 管道自动调用，禁止主Agent手动触发
             if agent_name in blocked_subagents:
                 return StepOutcome(
                     {"status": "error", "message": f"子Agent {agent_name} 已由系统自动管理，不可手动调用"},

@@ -1162,10 +1162,10 @@ ipcMain.handle('clear-chat', async (event) => {
   });
 });
 
-// 触发上下文整理（/compact 命令：调后端 /api/context/tidy）
+// 触发上下文整理（/compact 命令：调后端 /api/context/tidy，T6 后仅 compact 直达机械压实）
 ipcMain.handle('tidy-context', async (event, mode) => {
   return new Promise((resolve) => {
-    const data = JSON.stringify({ session_id: 'default', mode: mode || 'force' });
+    const data = JSON.stringify({ session_id: 'default', mode: mode || 'compact' });
     const req = http.request({
       hostname: '127.0.0.1',
       port: 9876,

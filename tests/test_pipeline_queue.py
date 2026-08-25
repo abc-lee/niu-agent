@@ -21,7 +21,6 @@ async def _clean_pipeline():
     """每个用例前复位全局队列/去重表/精灵状态（模块级全局，避免用例间串扰）。"""
     if compat._pipeline_queue is not None:
         await stop_pipeline_queue()
-    compat._active_compress_futs.clear()
     compat._SPIRIT_STATE = "idle"
     yield
     if compat._pipeline_queue is not None:
@@ -137,83 +136,6 @@ async def test_tidy_none_window_sync(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # 去重（键 = kind + skip_compress + force_protect_recent）
-# ---------------------------------------------------------------------------
-
-async def test_dedup_same_key_reuses(monkeypatch):
-    """同键在队/执行中任务复用同一 future（键相同复用）。"""
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def slow_impl(request, chat_lock_already_held=False):
-        entered.set()
-        await release.wait()
-        return {"status": "ok"}
-
-    monkeypatch.setattr(compat, "_tidy_context_impl", slow_impl)
-    start_pipeline_queue()
-    fut1 = _pipeline_enqueue("force", {"mode": "force", "session_id": "s"}, held=False)
-    await asyncio.wait_for(entered.wait(), timeout=1.0)  # worker 执行 fut1（未 done）
-    fut2 = _pipeline_enqueue("force", {"mode": "force", "session_id": "s"}, held=False)
-    assert fut1 is fut2  # 键相同 → 复用
-    release.set()
-    result = await asyncio.wait_for(asyncio.wrap_future(fut1), timeout=1.0)
-    assert result["status"] == "ok"
-    assert fut2.done()  # 复用同一 future → 一起完成
-
-
-async def test_dedup_skip_compress_independent(monkeypatch):
-    """skip_compress 是独立去重维度：同 kind 不同 skip_compress 不命中（clear_chat 语义隔离）。"""
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def slow_impl(request, chat_lock_already_held=False):
-        entered.set()
-        await release.wait()
-        return {"status": "ok"}
-
-    monkeypatch.setattr(compat, "_tidy_context_impl", slow_impl)
-    start_pipeline_queue()
-    fut1 = _pipeline_enqueue("force", {"mode": "force", "session_id": "s"}, held=False)
-    await asyncio.wait_for(entered.wait(), timeout=1.0)
-    fut2 = _pipeline_enqueue(
-        "force", {"mode": "force", "session_id": "s", "skip_compress": True}, held=False
-    )
-    assert fut1 is not fut2  # skip_compress 不同 → 不命中
-    release.set()
-    results = await asyncio.wait_for(
-        asyncio.gather(asyncio.wrap_future(fut1), asyncio.wrap_future(fut2)), timeout=1.0
-    )
-    assert [r["status"] for r in results] == ["ok", "ok"]
-
-
-async def test_dedup_kind_differs_no_hit(monkeypatch):
-    """kind 不同（force vs runner-force）不命中——可同时各 1 个在队（§7.9）。"""
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def slow_impl(request, chat_lock_already_held=False):
-        entered.set()
-        await release.wait()
-        return {"status": "ok"}
-
-    monkeypatch.setattr(compat, "_tidy_context_impl", slow_impl)
-    # 假 runner：无 _execute_force_pipeline → worker 兜底 error（不真实调 runner/LLM）
-    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: object())
-    start_pipeline_queue()
-    fut1 = _pipeline_enqueue("force", {"mode": "force", "session_id": "s"}, held=False)
-    await asyncio.wait_for(entered.wait(), timeout=1.0)
-    fut2 = _pipeline_enqueue("runner-force", {"mode": "force", "session_id": "s"}, held=False)
-    assert fut1 is not fut2  # kind 不同 → 不命中
-    release.set()
-    results = await asyncio.wait_for(
-        asyncio.gather(asyncio.wrap_future(fut1), asyncio.wrap_future(fut2)), timeout=1.0
-    )
-    assert results[0]["status"] == "ok"
-    assert results[1]["status"] == "error"  # 假 runner 无该方法 → worker 兜底（安全方向）
-
-
-# ---------------------------------------------------------------------------
-# worker 守护：异常重建 / CancelledError 不重建
 # ---------------------------------------------------------------------------
 
 async def test_worker_exception_rebuilds(monkeypatch):

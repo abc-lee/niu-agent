@@ -46,7 +46,7 @@ TOOL_SCHEMAS = {
     },
     "add_message": {
         "name": "add_message",
-        "description": "Add a message to the session. Used by context-manager to insert consolidated summaries after merging multiple messages.",
+        "description": "Add a message to the session.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -68,7 +68,7 @@ TOOL_SCHEMAS = {
     },
     "update_message": {
         "name": "update_message",
-        "description": "Update content of an existing message by ID. Used by context-manager to rewrite summaries in-place during compression.",
+        "description": "Update content of an existing message by ID.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -442,7 +442,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="add_message",
-            description="Add a message to the session. Used by context-manager to insert consolidated L0 summaries after merging multiple messages.",
+            description="Add a message to the session.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -464,7 +464,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="update_message",
-            description="Update content of an existing message by ID. Used by context-manager to rewrite L0 summaries in-place during compression.",
+            description="Update content of an existing message by ID.",
             inputSchema={
                 "type": "object",
                 "properties": {

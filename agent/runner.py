@@ -1377,117 +1377,42 @@ class NiuRunner:
 
         return result, new_cursor_id
 
-    def _dispatch_to_pipeline(self, kind: str, request: dict | None = None, held: bool = False):
-        """跨线程投递整理任务到全局队列（§3.1 跨线程投递桥：call_soon_threadsafe）。
-
-        返回 concurrent.futures.Future（调用方可 .result(timeout) 等待）；
-        队列未创建 / 主 loop 不可用（None 窗口，§3.0）→ 返回 None，调用方按 Option A
-        同步执行兜底。压缩类（force/runner-force）去重键与 _pipeline_enqueue 一致（§3.2）。
-        """
-        from concurrent.futures import Future
-
-        from niu_api import chat as _chat_module
-        from niu_api.compat import (
-            _pipeline_queue, _active_compress_futs, _drop_active_compress,
-        )
-
-        if _pipeline_queue is None:
-            return None
-        loop = _chat_module._main_loop
-        if loop is None or loop.is_closed():
-            return None
-        request = request or {}
-        fut: Future = Future()
-        if kind in ("force", "runner-force"):
-            key = (kind, bool(request.get("skip_compress")), request.get("force_protect_recent"))
-            active = _active_compress_futs.get(key)
-            if active is not None and not active.done():
-                return active
-            _active_compress_futs[key] = fut
-            fut.add_done_callback(_drop_active_compress)
-        item = {"kind": kind, "request": request, "held": held, "result": fut}
-        try:
-            loop.call_soon_threadsafe(_pipeline_queue.put_nowait, item)
-        except Exception:
-            # 投递失败：回滚去重登记（如有）→ 返回 None 让调用方同步兜底
-            if kind in ("force", "runner-force"):
-                _drop_active_compress(fut)
-            return None
-        return fut
-
     def _execute_force_pipeline(self) -> dict | None:
-        """运行完整 force 压缩管道（journal → context-manager → DB 写删）。
+        """force 管道仅剩的 journal 腿（context-manager 压缩闭包已随 T6 压缩退役整删）。
 
-        工程三摘除梦境腿（spec §5 定稿：模式三只跑压缩对）；entity 腿已于工程二摘除。
-
-        由全局整理队列 worker（§3.1 入口 8，kind="runner-force"）在后台线程调用。
-        不含转换块（dict 转换/孤立 tool 清理/system 保留/messages[:] 回写）——转换块由
-        调用方 _on_context_high_usage 在回调内执行，保证 agent_loop 的 messages 为 dict 列表契约。
-        返回 {"status": "ok"} / {"status": "skipped", "reason": ...} / {"status": "error", ...}。
+        T6 后整理队列 worker 的 runner-force 分支已删除，本方法暂无生产调用方；
+        journal 腿与游标读写按计划留待 T7（journal → scheduler 定时任务）迁移复用。
+        返回 {"status": "ok"} / {"status": "error", ...}。
         """
         from pathlib import Path as _Path
 
         from niu_api.compat import (
-            _build_compress_llm_config,
-            _build_compress_history,
-            _build_force_prompt,
             _build_incremental_msg_text,
             _build_journal_task,
             _build_plain_history,
-            _parse_idx_list,
-            _strip_analysis,
-            _write_cursor_with_lock,
-        )
-
-        from agent.subagent import (
-            _read_compress_target_tokens,
-            _read_context_window_tokens,
-            _read_protect_recent_count,
-            call_subagent_with_auto_answer,
         )
 
         try:
-            # === 读取游标 ===
+            # === 读取游标（compress 游标随 T6 退役，仅剩 journal）===
             niu_dir = _Path.home() / ".niu"
-            compress_cursor_path = niu_dir / "last_compress.json"
             journal_cursor_path = niu_dir / "last_journal.json"
 
-            last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
             last_journal_id = self._read_cursor(journal_cursor_path, "last_journal_id")
 
             # === 从 DB 读取消息 ===
             db_messages = self._sync_get_messages()
             if not db_messages:
-                logger.info("[Runner] No messages in DB, skipping compress")
+                logger.info("[Runner] No messages in DB, skipping")
                 return
-
-            msg_tokens = self._recalc_msg_stats(db_messages)
-            estimated_tokens = sum(msg_tokens)
-            message_count = len(db_messages)
-            context_window_tokens = _read_context_window_tokens()
-
-            # 优先用真实 prompt_tokens 计算 usage_percent
-            real_prompt_tokens = self.handler._last_prompt_tokens if hasattr(self.handler, '_last_prompt_tokens') else 0
-            if real_prompt_tokens > 0:
-                usage_percent = (real_prompt_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
-                display_tokens = real_prompt_tokens
-                logger.info(f"[Runner] Force compress: {message_count} messages, real_tokens={real_prompt_tokens}, est_tokens={estimated_tokens}, {usage_percent:.1f}%")
-            else:
-                usage_percent = (estimated_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
-                display_tokens = estimated_tokens
-                logger.info(f"[Runner] Force compress: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
-
 
             llm_config = self.llm_config
 
-            # === 步骤 1/2: journal-agent（force 模式，始终调用）===
+            # === journal-agent（T6 后本管道仅剩此腿）===
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
 
-            db_messages = self._sync_get_messages()
             msg_tokens = self._recalc_msg_stats(db_messages)
-
             new_journal_id = last_journal_id
             journal_force_msg_ids = []
             _ = _build_incremental_msg_text(
@@ -1516,295 +1441,6 @@ class NiuRunner:
                     return
             else:
                 logger.info("[Runner] Force: journal-agent no incremental messages")
-
-            # === 步骤 2/2: context-manager force prompt — 一轮 JSON 文件方案 ===
-            if is_stop_requested():
-                logger.warning("[Runner] Stop requested, aborting force compress")
-                return
-
-            # 模式三门控随 dream 腿摘除归零（spec §5）：force 只跑压缩对，不被梦境积压阻塞。
-
-            # 重新读取 compress 游标
-            last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
-
-            target_tokens = _read_compress_target_tokens()
-            compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
-            # 清理上次的残留计划文件
-            if os.path.exists(compress_plan_path):
-                try:
-                    os.remove(compress_plan_path)
-                except OSError:
-                    pass  # Windows 文件锁，忽略
-
-            # 构造 history 列表 + idx 映射（参考 compat.py 模式三）
-            # _build_compress_history 内部处理 exclude_protected（PROTECTED 消息不进 history、不分配 idx）
-            # out_msg_ids 是出参：函数内部 append 真实 message_id，与 history 等长同顺序
-            protect_recent_count = _read_protect_recent_count()
-            _force_msg_ids = []
-            _force_history, _f_idx_to_id = _build_compress_history(
-                db_messages, msg_tokens,
-                out_msg_ids=_force_msg_ids,
-                protect_recent=protect_recent_count,
-                exclude_protected=True,
-            )
-            # 复用上文的 target_tokens（不重复读配置）
-            prompt = _build_force_prompt(
-                display_tokens, target_tokens, usage_percent,
-                _force_history, last_compress_id,
-            )
-
-            # 压缩 LLM 配置：按知识图谱（lightrag 段）用户配置 + max_tokens（输出预算）
-            llm_config_with_max = _build_compress_llm_config()
-
-            def run_context_manager_force():
-                return call_subagent_with_auto_answer(
-                    agent_name="context-manager",
-                    task=prompt,
-                    llm_config=llm_config_with_max,
-                    mcp_client=None,
-                    context_fifo_threshold=-1,  # FIFO 保底
-                    history=_force_history,
-                    bypass_at_prefix=True,  # 一轮出方案：绕过@前缀拦截，禁止追问第二轮（防上下文溢出）
-                )
-
-            try:
-                result = run_context_manager_force()  # 同步调用，不用 asyncio.to_thread
-            except Exception as e:
-                logger.warning(f"[Runner] Force: context-manager failed: {e}")
-                result = ""
-
-            _force_halved_msg_ids = None  # 降级砍半的前半段 msg_ids
-            if is_stop_requested():
-                logger.warning("[Runner] Stop requested, aborting force compress")
-                return
-            # SUBAGENT_ERROR: context-manager LLM 错误，跳过不删消息
-            if result and result.startswith("SUBAGENT_ERROR:"):
-                error_msg = result[len("SUBAGENT_ERROR:"):]
-                logger.warning(f"[Compact] Runner: context-manager LLM error: {error_msg}")
-                return {"status": "skipped", "reason": f"LLM error: {error_msg}"}
-
-            # 截断时触发三级降级（关思考链→砍半消息→报失败）
-            if result and result.startswith("COMPACT_TRUNCATED:"):
-                logger.warning("[Compact] runner.py force output truncated, starting degradation")
-                from niu_api.compat import _compact_with_degradation_sync, _build_force_prompt as _bfp
-                result_str, actual_msg_ids, halved_msg_ids = _compact_with_degradation_sync(
-                    agent_name="context-manager",
-                    prompt=prompt,
-                    compress_history=_force_history,
-                    compress_msg_ids=_force_msg_ids,
-                    llm_config=llm_config_with_max,
-                    prompt_builder=_bfp,
-                    prompt_builder_kwargs={
-                        "display_tokens": display_tokens,
-                        "compress_target_tokens": target_tokens,
-                        "usage_percent": usage_percent,
-                        "force_history": _force_history,
-                        "last_compress_id": last_compress_id,
-                    },
-                    stop_aware=True,
-                    call_fn=call_subagent_with_auto_answer,
-                )
-                if result_str is None:
-                    return {"status": "skipped", "reason": "compress failed: output truncated after all degradation steps"}
-                # 降级成功，用返回值替代 result
-                result = result_str
-                _force_msg_ids = actual_msg_ids
-                _force_halved_msg_ids = halved_msg_ids
-                # 重建 idx→UUID 映射（砍半后 msg_ids 变化，旧映射失效）
-                _f_idx_to_id = {}
-                for _i, _mid in enumerate(_force_msg_ids):
-                    _f_idx_to_id[_i + 1] = _mid
-
-            # 正常返回，剥离 <analysis> 草稿块（在解析前）
-            logger.info(f"[Runner] Force: context-manager completed, length={len(result)}")
-            result = _strip_analysis(result)
-
-            # === 从 sub-agent 回复中解析压缩计划（idx 格式） ===
-            new_compress_id = last_compress_id
-            try:
-                keep_idxs: set[int] = set()
-                update_list: list[tuple[int, str]] = []
-                cursor_idx: int | None = None
-
-                for line in result.splitlines():
-                    line = line.strip()
-                    if line.lower().startswith("keep="):
-                        keep_idxs = _parse_idx_list(line.split("=", 1)[1].strip())
-                    elif line.lower().startswith("update="):
-                        update_str = line.split("=", 1)[1].strip()
-                        if update_str:
-                            for part in update_str.split(";"):
-                                part = part.strip()
-                                if "|" in part:
-                                    idx_str, content = part.split("|", 1)
-                                    try:
-                                        idx = int(idx_str.strip())
-                                        _c = content.strip()
-                                        if not _c.startswith('[摘要]') and not _c.startswith('[合并]'):
-                                            _c = f'[摘要] {_c}'
-                                        update_list.append((idx, _c))
-                                    except ValueError:
-                                        pass
-                    elif line.lower().startswith("cursor="):
-                        cursor_str = line.split("=", 1)[1].strip()
-                        try:
-                            cursor_idx = int(cursor_str)
-                        except ValueError:
-                            pass
-
-                if not keep_idxs:
-                    raise ValueError("No keep= line found in sub-agent reply")
-
-                # 计算删除列表
-                all_force_idxs = set(_f_idx_to_id.keys())
-                delete_idxs = all_force_idxs - keep_idxs
-
-                # 转换为 UUID
-                deletes = [_f_idx_to_id[i] for i in sorted(delete_idxs) if i in _f_idx_to_id]
-                # 砍半掉的前半段 msg_ids 加入删除列表
-                if _force_halved_msg_ids:
-                    deletes.extend(_force_halved_msg_ids)
-                updates = [
-                    {"message_id": _f_idx_to_id[idx], "content": content}
-                    for idx, content in update_list if idx in _f_idx_to_id
-                ]
-                if cursor_idx and cursor_idx in _f_idx_to_id:
-                    new_compress_id = _f_idx_to_id[cursor_idx]
-                else:
-                    logger.warning(f"[Compact] runner.py force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
-                    # new_compress_id 保持初始值（last_compress_id）
-
-                logger.info(f"[Runner] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
-
-                # 重新获取消息列表
-                fresh_messages = self._sync_get_messages()
-                existing_ids = {getattr(m, "id", "") for m in fresh_messages}
-                valid_deletes = [mid for mid in deletes if mid in existing_ids]
-                valid_deletes = list(dict.fromkeys(valid_deletes))
-                # 校验游标有效性
-                if new_compress_id and new_compress_id not in existing_ids:
-                    logger.warning(f"[Runner] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
-                    new_compress_id = last_compress_id
-                if new_compress_id and new_compress_id not in existing_ids:
-                    logger.warning(f"[Runner] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
-                    new_compress_id = ""
-
-                # 保护游标
-                cursor_ids_set = {cid for cid in [new_compress_id] if cid}
-                for cursor_id in cursor_ids_set:
-                    if cursor_id in valid_deletes:
-                        valid_deletes.remove(cursor_id)
-                        logger.warning(f"[Runner] Force: Protected cursor message {cursor_id} from deletion")
-
-                valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
-                cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
-                if cursor_updates:
-                    logger.warning(f"[Runner] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
-                    valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
-
-                # 保护最近完整用户会话段落（从最近 user 消息开始）
-                protect_recent_count = _read_protect_recent_count()
-                protected_force_ids: set[str] = set()
-                if protect_recent_count > 0:
-                    from niu_api.compat import _find_protected_range
-                    _protect_start = _find_protected_range(fresh_messages, protect_recent_count)
-                    protected_force_ids = {getattr(fresh_messages[i], "id", "") or "" for i in range(_protect_start, len(fresh_messages))}
-                    removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
-                    if removed_deletes:
-                        logger.warning(f"[Runner] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
-                        valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
-                    removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
-                    if removed_updates:
-                        logger.warning(f"[Runner] Force: Protecting {len(removed_updates)} recent messages from update")
-                        valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
-
-                # 防止 delete/update 重叠
-                update_ids = {u.get("message_id", "") for u in valid_updates}
-                overlap_ids = update_ids & set(valid_deletes)
-                if overlap_ids:
-                    logger.warning(f"[Runner] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
-                    valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
-
-                if len(valid_deletes) < len(deletes):
-                    logger.warning(f"[Runner] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
-                if len(valid_updates) < len(updates):
-                    logger.warning(f"[Runner] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
-
-                # 级联删除
-                from niu_api.compat import _cascade_tool_chain_deletes, _cascade_tool_chain_updates
-                _cascade_protected = cursor_ids_set | (protected_force_ids if protect_recent_count > 0 else set())
-                cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
-                valid_deletes = cascade_del.delete_ids
-                dangling_tc_cleanups = cascade_del.dangling_cleanups
-                cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
-                valid_updates = cascade_upd.updates
-                cascade_delete_ids = cascade_upd.cascade_delete_ids
-                if cascade_delete_ids:
-                    existing = set(valid_deletes)
-                    for cid in cascade_delete_ids:
-                        if cid not in existing:
-                            valid_deletes.append(cid)
-                            existing.add(cid)
-
-                _post_update_ids = {u.get("message_id", "") for u in valid_updates}
-                _post_overlap = _post_update_ids & set(valid_deletes)
-                if _post_overlap:
-                    logger.warning(f"[Runner] Force: Cascade created delete/update overlap: {_post_overlap}")
-                    valid_deletes = [mid for mid in valid_deletes if mid not in _post_overlap]
-
-                # 清理受保护 assistant 的悬空 tool_calls（同步 DB 操作）
-                if dangling_tc_cleanups:
-                    import sqlite3
-                    _db_path = os.path.join(os.path.expanduser("~"), ".niu", "messages.db")
-                    for cleanup in dangling_tc_cleanups:
-                        mid = cleanup["message_id"]
-                        dangling_ids = cleanup["dangling_tc_ids"]
-                        m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
-                        if m and getattr(m, "tool_calls", None):
-                            tcs = m.tool_calls
-                            if isinstance(tcs, str):
-                                tcs = json.loads(tcs)
-                            valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
-                            with sqlite3.connect(_db_path) as conn:
-                                if valid_tcs:
-                                    conn.execute("UPDATE messages SET tool_calls = ? WHERE id = ?",
-                                               (json.dumps(valid_tcs, ensure_ascii=False), mid))
-                                else:
-                                    conn.execute("UPDATE messages SET tool_calls = '[]' WHERE id = ?", (mid,))
-                                conn.commit()
-                            logger.info(f"[Runner] Force: Cleaned {len(dangling_ids)} dangling tool_calls from protected assistant {mid}")
-
-                # 执行删除
-                if valid_deletes:
-                    del_result = self._sync_delete_messages(valid_deletes)
-                    if del_result:
-                        logger.info(f"[Runner] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
-
-                # 执行更新
-                for upd in valid_updates:
-                    mid = upd.get("message_id", "")
-                    content = upd.get("content", "")
-                    if mid and content:
-                        clear_tc = upd.get("clear_tool_calls", False)
-                        ok = self._sync_update_message(mid, content, clear_tool_calls=clear_tc)
-                        if ok:
-                            logger.info(f"[Runner] Force: Updated message {mid}")
-                        else:
-                            logger.warning(f"[Runner] Force: Failed to update message {mid}")
-
-                logger.info(f"[Runner] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
-            except ValueError as e:
-                logger.error(f"[Runner] Force: Failed to parse compression plan: {e}")
-            except Exception as e:
-                logger.error(f"[Runner] Force: Failed to execute compress plan: {e}")
-
-            # 写入 compress 游标
-            if new_compress_id:
-                _write_cursor_with_lock(compress_cursor_path, {
-                    "last_compress_id": new_compress_id,
-                    "last_compress_at": datetime.now().isoformat(),
-                })
-                logger.info(f"[Runner] Force: Compress cursor updated: {new_compress_id}")
 
             return {"status": "ok"}
         except Exception as e:

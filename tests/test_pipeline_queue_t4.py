@@ -20,7 +20,6 @@ async def _clean_pipeline():
     """每个用例前复位全局队列/去重表/精灵状态/整理锁（模块级全局，避免用例间串扰）。"""
     if compat._pipeline_queue is not None:
         await stop_pipeline_queue()
-    compat._active_compress_futs.clear()
     compat._SPIRIT_STATE = "idle"
     yield
     if compat._pipeline_queue is not None:

@@ -5,8 +5,7 @@
 2. 新守则首句是 @niu-agent 提问语法（@niu-agent 整段传递——T2）
 3. 新守则结尾是 @end 退出语法（任务完成退出 + 汇报内容写在 @end 前）
 4. marker 与当前模板版本（v4）一致（强制走新模板）
-5. context-manager 仍不被注入守则（回归保护）
-6. 其他子 Agent（如 file-processor）仍被注入新守则（回归保护）
+5. 其他子 Agent（如 file-processor）仍被注入新守则（回归保护）
 """
 
 
@@ -71,14 +70,6 @@ def test_guide_marker_pinned_to_current_version():
     assert "<!-- NIU_SUBAGENT_GUIDE_v4 -->" in _SUBAGENT_ASK_GUIDE_TEMPLATE
     # 旧 marker 不应出现在新模板里
     assert "<!-- NIU_SUBAGENT_GUIDE_v1 -->" not in _SUBAGENT_ASK_GUIDE_TEMPLATE
-
-
-def test_context_manager_still_not_injected():
-    """context-manager 仍不被注入守则（回归保护）"""
-    from agent.subagent import _SUBAGENT_ASK_GUIDE_MARKER, build_subagent_system_segments
-
-    static_system, _ = build_subagent_system_segments("context-manager")
-    assert _SUBAGENT_ASK_GUIDE_MARKER not in static_system
 
 
 def test_other_subagents_still_injected_with_new_guide(tmp_path, monkeypatch):

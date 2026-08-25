@@ -145,23 +145,6 @@ def _read_warning_threshold() -> float:
     return _read_context_threshold("warningThreshold", 0.80)
 
 
-DEFAULT_PROTECT_RECENT_COUNT = 10
-
-
-def _read_protect_recent_count() -> int:
-    """Read protectRecentCount from config/user-config.json. Default 10."""
-    try:
-        config_path = _get_user_config_path()
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-        val = config.get("context", {}).get("protectRecentCount", DEFAULT_PROTECT_RECENT_COUNT)
-        if isinstance(val, int) and val >= 0:
-            return val
-    except Exception:
-        pass
-    return DEFAULT_PROTECT_RECENT_COUNT
-
-
 DEFAULT_COMPRESS_TARGET_TOKENS = 60000
 MAX_OUTPUT_TOKENS_RATIO = 0.16  # contextWindowSize × 0.16
 MAX_OUTPUT_TOKENS_CAP = 65536   # 封顶 65536
@@ -537,7 +520,7 @@ def _refresh_subagent_current_time(messages: list, turn: int) -> None:
     """会话内每轮刷新子 Agent system 的 Current Time（on_before_llm 回调）。
 
     子 Agent 的 system_message 在 call_subagent 启动时构建一次（build_subagent_system_segments
-    实时取 datetime.now），长任务（context-manager 压缩 20+ 轮、dream-evolver 跨午夜）会话内
+    实时取 datetime.now），长任务（entity/dream 多轮循环、dream-evolver 跨午夜）会话内
     Current Time 会漂移。此回调在 agent_runner_loop 每轮 LLM 前被调用，原地更新
     messages[0] 中的 Current Time 行为实时值；无匹配行时不变（安全）。
 
@@ -616,10 +599,9 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
             )
 
     # 4. 强制注入 @niu-agent/@end 守则
-    # context-manager 例外：它原设计是直接输出 keep=/update=/cursor= 让程序写数据库，
-    # 不走 @niu-agent/@end 交互通道。注入守则会污染它的输出格式，导致压缩失败。
-    # 详见 docs/superpowers/plans/2026-07-08-context-manager-bypass-at-prefix.md
-    if agent_name != "context-manager" and _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
+    # （T6 前 context-manager 曾是唯一例外——它直出 keep=/update=/cursor= 不走交互通道；
+    #   该 Agent 已随压缩体系退役删除，注入不再有例外）
+    if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
         static_system += "\n\n" + _SUBAGENT_ASK_GUIDE_TEMPLATE
 
     # 5. 动态段：Current Time
@@ -878,7 +860,7 @@ def call_subagent(
     unique_name: str | None = None,  # 阶段二新增：异步路径透传，跳过内部 register
     answer: str | None = None,  # 阶段四新增：回复路径（第三分支）用
     answer_unique_name: str | None = None,  # 阶段四新增：回复路径锁定挂起 session
-    bypass_at_prefix: bool = False,  # True=绕过@前缀拦截层（仅一轮出方案的子Agent用，如context-manager模式二/三）
+    bypass_at_prefix: bool = False,  # True=绕过@前缀拦截层（仅一轮出方案的子Agent用）
     program_triggered: bool = False,  # 程序触发子 Agent（如 entity-extractor）跳过超长写文件，保留游标标记
     max_turns: int | None = None,  # 子 Agent 轮数上限；None = 无上限（长程任务跑到底）
 ) -> str:
@@ -984,8 +966,8 @@ def call_subagent(
     # 子 Agent 标记 _is_subagent = True：工具状态走 SubagentEventBus、ask_user 拦截等
     # 主 Agent 专属行为按此分流；新增子 Agent 时必须遵守此约定
     handler._is_subagent = True
-    # @前缀拦截层绕过开关：仅一轮出方案的子 Agent（context-manager 模式二/三）由调用方
-    # 显式传 bypass_at_prefix=True 开启；模式一（多轮工具）保持默认 False，走标准 @end/FORMAT_ERROR 结束判断
+    # @前缀拦截层绕过开关：一轮出方案的子 Agent 由调用方显式传 bypass_at_prefix=True 开启；
+    # 多轮工具型子 Agent 保持默认 False，走标准 @end/FORMAT_ERROR 结束判断
     handler._bypass_at_prefix = bypass_at_prefix
     handler._program_triggered = program_triggered
 

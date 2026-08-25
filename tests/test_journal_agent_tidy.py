@@ -113,32 +113,10 @@ class TestJournalAgentSleepMode:
 
 
 class TestJournalAgentForceMode:
-    """测试 force 模式下 journal-agent 调用逻辑"""
+    """T6：force 分支已随压缩退役整删；本类仅保留与模式无关的 journal 增量/游标契约。
 
-    def test_force_mode_always_calls_journal_agent(self):
-        """force 模式始终调用 journal-agent（无 usage 阈值保护）"""
-        source = _read_source()
-        # force 模式的 journal-agent 注释
-        assert "journal-agent（force 模式，始终调用）" in source
-
-    def test_force_mode_journal_not_gated_by_usage(self):
-        """force 模式 journal-agent 不被 usage_percent 保护"""
-        source = _read_source()
-        # 在 force 分支（elif mode == "force"）内，
-        # journal-agent 调用前不应有 usage_percent 判断
-        lines = source.split("\n")
-        in_force_branch = False
-        journal_found_in_force = False
-        for line in lines:
-            if 'elif mode == "force"' in line:
-                in_force_branch = True
-            if in_force_branch and "journal-agent" in line and "force 模式" in line:
-                journal_found_in_force = True
-            # 在 force 分支的 journal-agent 之前不应有独立的 usage_percent 判断
-            if journal_found_in_force and "if usage_percent" in line:
-                break
-        assert journal_found_in_force, "journal-agent not found in force branch"
-
+    （原 force 源码文本断言×2 随分支删除一并退役）
+    """
     def test_force_mode_journal_incremental_range(self):
         """force 模式 journal-agent 使用增量消息范围（非全量）"""
         messages = make_messages(20)
@@ -174,8 +152,8 @@ class TestClearChatJournalCursorReset:
         lines = source.split("\n")
         for line in lines:
             if '"last_journal.json"' in line:
-                # 两键游标文件应在同一行，且不得残留已退役的 dream 键
-                assert '"last_compress.json"' in line
+                # T6 压缩退役后仅剩 journal 一键（compress/dream 键均已消亡）
+                assert '"last_compress.json"' not in line
                 assert '"last_dream_evolve.json"' not in line
                 break
         else:
@@ -290,34 +268,34 @@ class TestJournalIntegrationWithOtherAgents:
     """测试 journal-agent 与其他子 Agent 的集成"""
 
     def test_journal_runs_before_dream_evolver(self):
-        """验证 journal-agent 在 dream-evolver 之前执行（工程四重排：步骤 1/4 vs 4/4）"""
+        """验证 journal-agent 在 dream-evolver 之前执行（T6 重编号：步骤 1/4 vs 3/4）"""
         source = _read_source()
         lines = source.split("\n")
         dream_line = None
         journal_line = None
         for i, line in enumerate(lines):
-            if "dream-evolver" in line and "4/4" in line:
+            if "dream-evolver" in line and "3/4" in line:
                 dream_line = i
             if "journal-agent" in line and "1/4" in line:
                 journal_line = i
         assert dream_line is not None, "dream-evolver step not found"
         assert journal_line is not None, "journal-agent step not found"
-        assert journal_line < dream_line, "journal-agent should run before dream-evolver (工程四重排)"
+        assert journal_line < dream_line, "journal-agent should run before dream-evolver"
 
-    def test_journal_runs_before_context_manager(self):
-        """验证 journal-agent 在 context-manager 之前执行（工程四重排：步骤 1/4 → 2/4）"""
+    def test_journal_runs_before_entity_extractor(self):
+        """验证 journal-agent 在 entity-extractor 之前执行（T6：cm 腿退役后 entity 为第 2 步）"""
         source = _read_source()
         lines = source.split("\n")
         journal_line = None
-        context_line = None
+        entity_line = None
         for i, line in enumerate(lines):
             if "journal-agent" in line and "1/4" in line:
                 journal_line = i
-            if "context-manager" in line and "2/4" in line:
-                context_line = i
+            if "entity-extractor" in line and "2/4" in line:
+                entity_line = i
         assert journal_line is not None, "journal-agent step not found"
-        assert context_line is not None, "context-manager step not found"
-        assert journal_line < context_line, "journal-agent should run before context-manager"
+        assert entity_line is not None, "entity-extractor step not found"
+        assert journal_line < entity_line, "journal-agent should run before entity-extractor"
 
     def test_journal_uses_independent_cursor(self):
         """验证 journal-agent 使用独立游标（与 entity/dream/compress 无关）"""
