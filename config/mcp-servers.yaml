@@ -170,6 +170,8 @@ session-manager:
       visibility: hidden
     delete_messages:
       visibility: hidden
+    read_history_block:
+      visibility: hidden
 browser-server:
   command: ${PYTHON_PATH}
   args:
