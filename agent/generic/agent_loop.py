@@ -864,11 +864,14 @@ def agent_runner_loop(
                     # 主 Agent：调回调执行压缩，循环不退出
                     logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
                                 f"({usage_ratio:.1%} > {warning_threshold:.0%})")
-                    on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
-                    # 回调内部已完成压缩并原地修改 messages（messages[:] = ...）
+                    _compacted = on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
+                    # 回调内部已完成压缩并原地修改 messages（messages[:] = ...）。
+                    # 仅回调确实压实（返回 True）才进入冷却；被闸门拒绝（真值低于
+                    # 80% 触发线或同轮已被组装出口压实）时保留检测——否则真值落在
+                    # [warning, 80%) 区间会让本 loop 内后续轮次检测停摆（P2）
                     last_prompt_tokens = 0  # 重置，下轮重新获取
                     handler._last_prompt_tokens = 0
-                    _compress_cooldown = True  # 冷却：本次 agent_runner_loop 不再触发压缩
+                    _compress_cooldown = bool(_compacted)  # 冷却：本次 agent_runner_loop 不再触发压缩
                 else:
                     # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
                     target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
@@ -1105,10 +1108,11 @@ def agent_runner_loop(
                         if on_context_high_usage:
                             logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
                                         f"({usage_ratio:.1%} > {warning_threshold:.0%})")
-                            on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
+                            _compacted = on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
+                            # 同轮顶检测（P2）：仅确实压实时才冷却，被闸门拒绝保留检测
                             last_prompt_tokens = 0
                             handler._last_prompt_tokens = 0
-                            _compress_cooldown = True
+                            _compress_cooldown = bool(_compacted)
                         else:
                             # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
                             target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)

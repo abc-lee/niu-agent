@@ -525,7 +525,7 @@ preload_face_model()
   - **批量压实**：校准后估算 ≥80% 触发（AUTO_GATE 滞回 ≥80% 触发/<78% 复位，组装出口与 runner 真值回调双触发去重）、95% 应急线；保留最近 N 轮（`context.keepRecentTurns` 默认 3 可配置）；D15 三轮硬约束（工具输出占位符化→减轮）；纯机械零 LLM 秒级
   - **token 校准倍率**：每次主 Agent 响应后真值 prompt_tokens ÷ 本地估算覆盖更新倍率（`~/.niu/token_calibration.json`，默认 1.15），桥接本地估算与服务端真值
   - **journal 迁出睡眠管道**：scheduler 内置 `journal-daily` 定时任务每日 18 点直执行（导出 DB 增量为工作集文件让 journal-agent 自读；严禁经 ChatQueue enqueue 防反污染；backend-busy 避让活跃对话；游标自管）
-  - **§8 拍板落地**：journal.md 本体 /new 时保留；指针块 SQLite 单表；read_history_block 对子 Agent 开放；保留轮数默认 3 可配置
+  - **§8 拍板落地**：journal.md 本体 /new 时保留；指针块 SQLite 单表；read_history_block 不对子 Agent 开放；保留轮数默认 3 可配置
 - **交付链**（SDD 每 Task 新鲜子 Agent + spec/quality 双审，main `1af5ffab`→`5be2c087` 共 8 commits + 本条目 T9）：
   - `1af5ffab` T1 指针块存储层 + 会话单元切割器（纯函数零接线）
   - `4fa0132b` T2 get_context_for_chat 重写为索引+窗口新视图（压缩调用路径退役）

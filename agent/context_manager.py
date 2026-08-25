@@ -273,6 +273,9 @@ class ContextManager:
                     f"tools_placeholderized={stats['tools_placeholderized']}, "
                     f"usage_after={stats['usage']}"
                 )
+                # 压实成功即复位闩锁：压实后视图常落 [78%,80%)，滞回 <78% 复位线
+                # 永不满足——不复位则自动压实进程级失效（P1 修复）
+                AUTO_GATE.release()
                 return new_view
         except Exception as e:
             from agent.context_assembler import compaction as _comp

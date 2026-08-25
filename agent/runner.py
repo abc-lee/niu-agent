@@ -1233,7 +1233,7 @@ class NiuRunner:
             logger.warning(f"[Runner] sync_update_message failed: {e}")
             return False
 
-    def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
+    def _on_context_high_usage(self, messages, tokens_used, tokens_limit) -> bool:
         """主 Agent 上下文超阈值回调 — 机械压实 + 原地回写新视图
 
         Task 3 定案：调 context_assembler.compaction 压实（纯机械、零 LLM、DB 不动），
@@ -1242,6 +1242,12 @@ class NiuRunner:
         （机械压实不改 DB，重载是 no-op 假动作）。与组装出口触发共用 AUTO_GATE
         滞回闸门（≥80% 触发/<78% 复位），同一轮次双触发去重不双压。
         agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
+
+        Returns:
+            True=闸门放行且压实完成（调用方据此进入本 loop 冷却）；
+            False=闸门未放行（真值低于 80% 触发线——warningThreshold 与触发线
+            的耦合区间，或同轮已被组装出口压实）或压实异常。False 时调用方
+            不得置冷却，保留后续轮次检测（P2）。
         """
 
         logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
@@ -1262,8 +1268,15 @@ class NiuRunner:
             # 真值比率过滞回闸门：与组装出口共用同一闸门，同轮去重
             ratio_now = tokens_used / tokens_limit if tokens_limit else 1.0
             if not compaction.AUTO_GATE.try_acquire(ratio_now):
-                logger.info("[Runner] Compaction skipped: gate latched by another trigger this round")
-                return
+                if ratio_now < compaction.TRIGGER_RATIO:
+                    # warningThreshold(70%) < 触发线(80%)：真值未达线，无需压实。
+                    # 返回 False 让 agent_loop 不置冷却、保留检测（P2：真值落在
+                    # [warning, 80%) 区间时置冷却会导致本 loop 内检测停摆）
+                    logger.info(f"[Runner] Compaction deferred: truth {ratio_now:.1%} below "
+                                f"trigger line {compaction.TRIGGER_RATIO:.0%}")
+                else:
+                    logger.info("[Runner] Compaction skipped: gate latched by another trigger this round")
+                return False
             db_messages = self._sync_get_messages()
             if not db_messages:
                 logger.warning("[Runner] Compaction skipped: no DB messages available")
@@ -1275,6 +1288,9 @@ class NiuRunner:
             system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
             new_view, stats = compaction.build_compact_view(db_messages, system_msg=system_msg)
             messages[:] = new_view  # 原地回写（agent_loop 契约：messages 为 dict 列表）
+            # 压实成功即复位闩锁：压实后视图常落 [78%,80%)，滞回 <78% 复位线
+            # 永不满足——不复位则自动压实进程级失效（P1 修复）
+            compaction.AUTO_GATE.release()
             compacted = True
             usage_after = stats.get("usage")
             logger.info(f"[Runner] Compacted in-flight view: {len(messages)} entries, "
@@ -1299,6 +1315,8 @@ class NiuRunner:
                                            reset_tokens=compacted)
             except Exception:
                 pass
+        return compacted
+
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
 

@@ -247,6 +247,9 @@ def fire_and_forget_compaction(store, source: str = "chat") -> None:
             from agent.context_assembler import compaction
             notify_compact_status_sync("started", mode="compact")
             _, stats = await compaction.compact_now_detailed(store)
+            # 压实成功即复位滞回闩锁：压实后视图常落 [78%,80%)，不复位则自动
+            # 压实进程级失效（P1 修复；失败路径由各触发出口自行 release）
+            compaction.AUTO_GATE.release()
             usage = stats.get("usage")
             reset = True
         except Exception:

@@ -273,8 +273,49 @@ def test_main_agent_calls_callback_on_high_usage():
     # 回调应该被调用（第二轮开始时检测到第一轮的 170K prompt_tokens）
     assert callback_called["count"] >= 1, f"Callback should be called at least once, got {callback_called['count']}"
     assert callback_called["args"][0] == 170000, f"Expected tokens=170000, got {callback_called['args']}"
-    # 循环应该继续到第二轮
-    assert mock_client._chat_call_count[0] == 2, f"Expected 2 chat calls, got {mock_client._chat_call_count[0]}"
+def test_gate_deferred_callback_does_not_cooldown(monkeypatch):
+    """P2 回归：回调被闸门拒绝返回 False（真值低于 80% 触发线）时不得置
+    _compress_cooldown——本 loop 内后续轮次真值达线须再次触发回调。
+
+    旧行为：回调后无条件冷却 → warningThreshold(70%)<触发线(80%) 时首次
+    回调即停摆本 loop 检测，第二次 85% 永远不会被评估。
+    """
+    import agent.generic.agent_loop as loop_mod
+    monkeypatch.setattr(loop_mod, "_read_warning_threshold", lambda: 0.70)
+
+    handler = _make_handler()
+    calls = []
+
+    def my_callback(messages, tokens, limit):
+        calls.append(tokens)
+        return len(calls) == 2  # 第 1 次=闸门拒绝 False；第 2 次=过闸压实 True
+
+    tc1 = _make_tool_call(name="search", args={"q": "a"}, tid="call_1")
+    tc2 = _make_tool_call(name="search", args={"q": "b"}, tid="call_2")
+    resp1 = _make_mock_response(content="", tool_calls=[tc1])
+    resp1.usage = {"prompt_tokens": 150000, "completion_tokens": 500,
+                   "total_tokens": 150500}  # 75%：>warning(70%) <触发线(80%)
+    resp2 = _make_mock_response(content="", tool_calls=[tc2])
+    resp2.usage = {"prompt_tokens": 170000, "completion_tokens": 500,
+                   "total_tokens": 170500}  # 85%：达线
+    resp3 = _make_mock_response(content="Done", tool_calls=[])
+    resp3.usage = {"prompt_tokens": 90000, "completion_tokens": 200,
+                   "total_tokens": 90200}
+
+    mock_client = _make_client([resp1, resp2, resp3])
+
+    gen = agent_runner_loop(
+        client=mock_client, system_prompt="test", user_input="test",
+        handler=handler, tools_schema=[], max_turns=5, verbose=False,
+        context_window_tokens=200000, context_fifo_threshold=0,
+        context_target_threshold=100000, on_context_high_usage=my_callback,
+    )
+    _collect_events(gen)
+
+    assert calls == [150000, 170000], (
+        f"闸门拒绝不置冷却：两次真值均应触发回调，实际 {calls}"
+    )
+    assert mock_client._chat_call_count[0] == 3
 
 
 def test_sub_agent_fifo_pruning():

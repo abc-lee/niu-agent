@@ -94,7 +94,10 @@ def test_entry8_inline_direct_call_then_conversion_block(monkeypatch):
 
     assert calls == [(3, True)]  # 直调完成——回调返回前压实已执行完，system 原样传入
     assert enqueue_calls == [], f"不应有任何队列投递，实际 {enqueue_calls}"
-    assert result is None
+    assert result is True
+    from agent.context_assembler.compaction import AUTO_GATE
+    assert AUTO_GATE.try_acquire(0.9) is True, "压实成功须复位闩锁（P1），否则此处 False"
+    _release_auto_gate()  # 不污染后续用例
     # 回写格式契约：每条 dict + role/content 键 + system 保留在 messages[0]
     assert len(messages) == 4, "压实视图应原地回写"
     assert all(isinstance(m, dict) for m in messages)
@@ -126,7 +129,7 @@ def test_entry8_gate_latched_skips_compaction(monkeypatch):
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "old"}]
     result = runner._on_context_high_usage(messages, 190000, 200000)
 
-    assert result is None
+    assert result is False
     assert compact_spy == [], "闸门闩锁中不得重复压实"
     assert messages == [  # 未压实 → 原列表保持
         {"role": "system", "content": "sys"},
@@ -162,10 +165,41 @@ def test_entry8_no_queue_dependency(monkeypatch):
     messages = [{"role": "system", "content": "sys"}]
     result = runner._on_context_high_usage(messages, 180000, 200000)  # 真值比率 90% 过闸门
 
-    assert result is None
+    assert result is True
+    _release_auto_gate()  # 成功路径已复位，防御性再清一次
     assert broadcasts == ["started", "done"], "started/done 事件均须广播（防前端圆环卡死）"
     assert len(messages) == 3 and all(isinstance(m, dict) for m in messages)
     assert messages[0].get("role") == "system"
+
+
+def test_entry8_gate_deferred_below_trigger_keeps_detection(monkeypatch):
+    """P2：真值比率落在 [warningThreshold, 80%) 时闸门拒绝——回调返回 False
+    （agent_loop 据此不置冷却）、不压实、messages 不动、闸门保持未闩锁。"""
+    from agent.context_assembler import compaction
+    from agent.context_assembler.compaction import AUTO_GATE
+
+    _release_auto_gate()
+    runner = _make_runner()
+    compact_spy = []
+
+    def fake_compact(*a, **kw):
+        compact_spy.append(1)
+        return [], {}
+
+    monkeypatch.setattr(compaction, "build_compact_view", fake_compact)
+    runner._sync_get_messages = lambda: [_FakeDbMsg("m1", "user", "hello")]
+
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "old"}]
+    result = runner._on_context_high_usage(messages, 150000, 200000)  # 真值 75%：<80% 触发线
+
+    assert result is False, "低于触发线被闸门拒绝须返回 False（调用方保留检测）"
+    assert compact_spy == [], "未达触发线不得压实"
+    assert messages == [  # 未压实 → 原列表保持
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "old"},
+    ]
+    assert AUTO_GATE.try_acquire(0.81) is True, "拒绝路径不得置位闩锁"
+    _release_auto_gate()  # 不污染后续用例
 
 
 async def test_enqueue_failure_reraises(monkeypatch):
