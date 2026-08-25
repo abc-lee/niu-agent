@@ -273,6 +273,22 @@ async def lifespan(app: FastAPI):
         logger.warning(f"LightRAG Phase 1 检测失败（不影响启动）: {e}")
         phase1_result = {"need_repair": False, "check_ok": True}
 
+    # 6.7.0. 指针块一致性校验（spec §3.5 / Task 8）——确证不一致自动整库重建；
+    #        失败自愈 + 仅日志、不阻塞启动（检测失败≠损坏，check_blocks_integrity 语义）
+    try:
+        from agent.context_assembler.integrity import check_blocks_integrity
+        blocks_integrity = check_blocks_integrity()
+        if blocks_integrity.get("repaired"):
+            logger.warning(f"[Blocks] 检测到不一致，已整库重建: {blocks_integrity.get('issues')}")
+        elif blocks_integrity.get("check_failed"):
+            logger.warning(f"[Blocks] 一致性检测失败（不影响启动）: {blocks_integrity.get('error')}")
+        elif not blocks_integrity.get("ok"):
+            logger.error(f"[Blocks] 一致性问题且重建失败: {blocks_integrity.get('issues')}")
+        else:
+            logger.info("[Blocks] 一致性校验通过")
+    except Exception as e:
+        logger.warning(f"[Blocks] 一致性校验异常（不影响启动）: {e}")
+
     # 6.7.1. Phase 1 检测到损坏时 pause ChatQueue（worker 已启动，pause 后不消费）
     #        IM/scheduler 入队的消息只堆积在队列里，不触发 runner.chat
     from niu_api.internal.lightrag_manager import pause_chatqueue_if_corrupt

@@ -228,6 +228,8 @@ def _patch_clear_chat_env(monkeypatch, order: list[str], clear_result=5):
     monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: None)
     monkeypatch.setattr("agent.tmp_dir.cleanup_all_tmp", lambda: 0)
     monkeypatch.setattr(compat, "_reset_all_cursors", fake_reset_all_cursors)
+    # Task 8：/new 清理面派生状态复位——函数级 import，patch 包命名空间防真实删 ~/.niu 文件
+    monkeypatch.setattr("agent.context_assembler.reset_derived_state", lambda *a, **k: None)
     return FakeRequest()
 
 
