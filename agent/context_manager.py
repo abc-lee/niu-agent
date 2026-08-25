@@ -26,6 +26,7 @@ from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 
 # 原文窗口预算占上下文窗口的比例（spec D2 分区预算；校准倍率接入在 Task 3）
 _WINDOW_BUDGET_RATIO = 0.5
+_INDEX_ENTITY_MAX = 3  # 索引行实体标签上限（spec §3.3）
 
 
 class ContextManager:
@@ -141,9 +142,13 @@ class ContextManager:
             f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按块号取回原文。",
         ]
         for b in blocks:
+            # 实体标签（spec §3.3 机械成分，≤3 个；无标签时省略该段）
+            tags = list(getattr(b, "entities", ()) or ())[:_INDEX_ENTITY_MAX]
+            entity_part = " · 实体:" + "/".join(tags) if tags else ""
             lines.append(
                 f'[块#{b.id}] {ContextManager._short_date(b.time_start)}'
-                f'~{ContextManager._short_date(b.time_end)} · {b.count}条 · 首问:"{b.first_user}"'
+                f'~{ContextManager._short_date(b.time_end)} · {b.count}条{entity_part}'
+                f' · 首问:"{b.first_user}"'
             )
         return "\n".join(lines)
 

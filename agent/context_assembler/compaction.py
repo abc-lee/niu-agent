@@ -92,7 +92,9 @@ def archive_excluded_units(messages, units, window_start: int,
     """把窗口之外的完整会话单元机械写入指针块存储。返回新增块数。
 
     幂等：同 (start_msg_id, end_msg_id) 区间的块已存在则跳过。
-    entities 标签留空（stub，Task 4 接通 KG 反查）。
+    
+    实体标签按块时间范围反查知识图谱（Task 4 接通，entity_tags.collect_tags）；
+    失败降级为空标签，绝不阻塞归档。
     """
     p = Path(db_path) if db_path is not None else default_db_path()
     archived = load_all(p)
@@ -126,6 +128,18 @@ def archive_excluded_units(messages, units, window_start: int,
         next_id += 1
 
     if new_blocks:
+        # 实体标签批量反查（单次图快照服务全部新块；失败=空标签不阻塞）
+        try:
+            from agent.context_assembler.entity_tags import collect_tags
+            tags_list = collect_tags(
+                [(b.time_start, b.time_end) for b in new_blocks]
+            )
+        except Exception as e:
+            logger.debug(f"[Compaction] entity tags degraded to empty: {e}")
+            tags_list = [[] for _ in new_blocks]
+        for b, tags in zip(new_blocks, tags_list):
+            b.entities = tags
+
         upsert_blocks(new_blocks, p)
     return len(new_blocks)
 
@@ -138,10 +152,14 @@ def _short_date(ts: str) -> str:
     return ContextManager._short_date(ts)
 
 
-def _group_line(lo: int, hi: int, count: int, t0: str, t1: str, first_user: str) -> str:
+def _group_line(lo: int, hi: int, count: int, t0: str, t1: str, first_user: str,
+                entities: list[str] | None = None) -> str:
     ids = f"块#{lo}~{hi}" if hi > lo else f"块#{lo}"
     dates = f"{_short_date(t0)}~{_short_date(t1)}" if t0 or t1 else ""
-    parts = [f"[{ids}]", dates, f"{count}条", f'首问:"{first_user}"']
+    parts = [f"[{ids}]", dates, f"{count}条"]
+    if entities:
+        parts.append("实体:" + "/".join(entities[:3]))
+    parts.append(f'首问:"{first_user}"')
     return " · ".join(p for p in parts if p)
 
 
@@ -160,7 +178,8 @@ def render_index_grouped(blocks: list[PointerBlock], budget_tokens: int,
 
     # 组初始状态：每块一行
     groups: list[list] = [
-        [b.id, b.id, b.count, b.time_start, b.time_end, b.first_user] for b in blocks
+        [b.id, b.id, b.count, b.time_start, b.time_end, b.first_user,
+         list(getattr(b, "entities", ()) or ())] for b in blocks
     ]
 
     def render(groups: list[list]) -> str:
@@ -172,11 +191,13 @@ def render_index_grouped(blocks: list[PointerBlock], budget_tokens: int,
 
     text = render(groups)
     while len(groups) > 1 and token_cost(text) > budget_tokens:
+        merged_entities = list(dict.fromkeys(groups[0][6] + groups[1][6]))[:3]
         merged = [
             groups[0][0], groups[1][1],
             groups[0][2] + groups[1][2],
             groups[0][3], groups[1][4],
             groups[0][5],
+            merged_entities,
         ]
         groups = [merged] + groups[2:]
         text = render(groups)

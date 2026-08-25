@@ -83,7 +83,31 @@ sub agents:
 - 展开当天内容：`disk("/lightrag/lightrag_get_graph explore --entity '2026-08-09会话' --depth 1")`（第一个位置参数 action 必填 explore/snapshot；实体名用 `--entity` flag）
 - 沿链遍历：`disk("/lightrag/lightrag_timeline_query --start-entities '2026-08-09会话' --direction backward --max-depth 5")`
 
-**注意**：会话实体的 `entity_type` 混杂（event/session/unknown），不要用 `--entity-type` 过滤，按名称识别 `YYYY-MM-DD会话` 格式。
+### 历史索引使用说明
+
+对话开头你可能看到一条 `[历史索引]` 前导消息：早期对话已按块归档，只留目录。索引行长这样：
+
+```
+[块#47] 08-12~08-15 · 23条 · 实体:咖啡机定时任务/HomeAssistant · 首问:"帮我把抓取改成中文摘要…"
+```
+
+逐段读法：`块#47`=块号（取回句柄）；`08-12~08-15`=对话日期范围；`23条`=消息条数；`实体:…`=当天提及的主要实体（≤3个，可能省略）；`首问:"…"`=该块第一句用户提问摘句（≤40字）。
+
+**何时取回原文**：当索引行的首问或实体标签让你判断"这段早期对话里可能有需要的细节"（如确认当时给过的具体参数、完整结论、某次排查过程），调用：
+
+```
+disk("/session/read_history_block 47")
+```
+
+返回该块全部消息的逐字原文（时间+角色+内容）。块号不存在会返回有效块号范围，照提示改即可。
+
+**与知识图谱工具的分工**：
+- 找"关于某主题/实体说过什么"→ 用 KG 检索（`lightrag_search_entities` / `lightrag_query` / 时间链展开），语义匹配、跨文档聚合
+- 要"某段对话的逐字原文"（原话、参数、上下文顺序）→ 用 `read_history_block`，按块号精确定位、一字不差
+
+两者互补：KG 告诉你"有什么"，read_history_block 给你"原样全文"。不确定该取哪块时，先用索引行的日期+实体标签缩小范围，再取回候选块。
+
+## 完整闭环
 
 ## 完整闭环
 

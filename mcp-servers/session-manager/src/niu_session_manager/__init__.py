@@ -111,6 +111,24 @@ TOOL_SCHEMAS = {
             "required": ["session_id", "message_ids"],
         },
     },
+    "read_history_block": {
+        "name": "read_history_block",
+        "description": (
+            "按块号取回已归档早期对话的逐字原文。历史索引中 [块#N] 的 N 即 block_id。"
+            "返回该块时间范围内的全部原始消息（时间+角色+内容，tool 输出含 tool_call_id 归属）；"
+            "超大块自动精简（头尾保留+已精简标注，单条超长动态截断）。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "block_id": {
+                    "type": "integer",
+                    "description": "归档块号（来自历史索引行的 块#N）",
+                },
+            },
+            "required": ["block_id"],
+        },
+    },
 }
 
 
@@ -239,6 +257,146 @@ def delete_messages(session_id: str, message_ids: list, reason: str = "Context c
         return {"status": "error", "error": str(e), "deleted_count": 0, "freed_tokens": 0}
 
 
+def read_history_block(block_id: int, **kwargs) -> dict:
+    """按块号取回归档历史块的逐字原文（直接读 context_blocks.db + messages.db）。
+
+    截断策略对齐 niu read_file 行为规格：
+    - 单条消息动态截断：每条上限 min(10000, max(100, 500000//条数)) 字符，
+      截断追加 ' ... [TRUNCATED]'
+    - 总量上限：>500 条时保留头尾各 250 条并标注省略
+    """
+    try:
+        blocks_db, messages_db = _resolve_db_paths(kwargs)
+        blocks = _load_blocks(blocks_db)
+        if not blocks:
+            return {"status": "error", "error": "暂无归档历史：尚无已归档的对话块"}
+
+        try:
+            bid = int(block_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "error": f"block_id 必须是整数，收到: {block_id!r}"}
+
+        block = next((b for b in blocks if b.id == bid), None)
+        if block is None:
+            lo, hi = min(b.id for b in blocks), max(b.id for b in blocks)
+            return {
+                "status": "error",
+                "error": (
+                    f"块 #{bid} 不存在。当前有效块号范围：{lo}~{hi}"
+                    f"（共 {len(blocks)} 块），请从历史索引行复制块号"
+                ),
+            }
+
+        rows = _query_messages_by_rowid(messages_db, block.start_rowid, block.end_rowid)
+        text, stats = _format_block_text(block, rows)
+        return {
+            "status": "ok",
+            "block": {
+                "id": block.id,
+                "time_start": block.time_start,
+                "time_end": block.time_end,
+                "count": block.count,
+                "entities": list(block.entities),
+                "first_user": block.first_user,
+            },
+            "total_messages": len(rows),
+            **stats,
+            "text": text,
+        }
+    except Exception as e:
+        logger.error(f"read_history_block failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def _resolve_db_paths(kwargs: dict) -> tuple[str, str]:
+    """解析块存储与消息库路径（测试可注入，默认 ~/.niu/）。"""
+    home = os.path.expanduser("~")
+    blocks_db = kwargs.get("blocks_db_path") or os.path.join(home, ".niu", "context_blocks.db")
+    messages_db = kwargs.get("messages_db_path") or os.path.join(home, ".niu", "messages.db")
+    return str(blocks_db), str(messages_db)
+
+
+def _load_blocks(blocks_db: str) -> list:
+    """读全部指针块（复用 agent.context_assembler.blocks 单一实现）。"""
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
+    if _project_root not in _sys.path:
+        _sys.path.insert(0, _project_root)
+    from pathlib import Path as _Path2
+
+    from agent.context_assembler.blocks import load_all
+
+    return load_all(_Path2(blocks_db))
+
+
+def _query_messages_by_rowid(messages_db: str, start_rowid: int, end_rowid: int) -> list[dict]:
+    """按 rowid 闭区间拉原始消息（rowid 即写入顺序）。"""
+    import sqlite3
+
+    conn = sqlite3.connect(messages_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.execute(
+            """SELECT rowid, role, content, tool_call_id, created_at FROM messages
+               WHERE rowid >= ? AND rowid <= ? ORDER BY rowid ASC""",
+            (start_rowid, end_rowid),
+        )
+        return [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+# 截断常量（对齐 agent/handler.py read_file 行为规格）
+_BLOCK_MAX_MESSAGES = 500          # 硬上限，超出头尾保留（read_file 的 500 行上限）
+_BLOCK_CHAR_BUDGET = 500_000       # 总字符预算，按条数均分出单条上限
+
+
+def _format_block_text(block, rows: list[dict]) -> tuple[str, dict]:
+    """格式化块原文；返回 (text, 统计 dict)。"""
+    omitted = 0
+    rendered = rows
+    head_tail_truncated = False
+    if len(rows) > _BLOCK_MAX_MESSAGES:
+        half = _BLOCK_MAX_MESSAGES // 2
+        omitted = len(rows) - _BLOCK_MAX_MESSAGES
+        rendered = rows[:half] + rows[-half:]
+        head_tail_truncated = True
+
+    per_msg_cap = min(10000, max(100, _BLOCK_CHAR_BUDGET // max(1, len(rendered))))
+    lines = [
+        f"[块#{block.id}] {block.time_start} ~ {block.time_end}"
+        f" · {block.count}条 · 首问:\"{block.first_user}\""
+    ]
+    if block.entities:
+        lines.insert(1, "实体标签:" + "/".join(block.entities))
+    char_cut = 0
+    for r in rendered:
+        role = r.get("role") or "unknown"
+        content = r.get("content") or ""
+        tcid = r.get("tool_call_id") if role == "tool" else None
+        suffix = f"·{tcid}" if tcid else ""
+        prefix = f"{r.get('created_at') or ''} [{role}{suffix}] "
+        if len(content) > per_msg_cap:
+            content = content[:per_msg_cap] + " ... [TRUNCATED]"
+            char_cut += 1
+        lines.append(prefix + content)
+
+    if head_tail_truncated:
+        lines.insert(len(lines) - (_BLOCK_MAX_MESSAGES // 2),
+                     f"... [已精简：中间省略 {omitted} 条消息] ...")
+
+    stats = {
+        "head_tail_truncated": head_tail_truncated,
+        "omitted_messages": omitted,
+        "rendered_messages": len(rendered),
+        "char_truncated_messages": char_cut,
+        "per_message_char_limit": per_msg_cap,
+    }
+    return "\n".join(lines), stats
+
+
 # ============================================================================
 # HTTP API fallback (for stdio MCP mode when API server is running)
 # ============================================================================
@@ -347,6 +505,24 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["session_id", "message_ids"],
+            },
+        ),
+        Tool(
+            name="read_history_block",
+            description=(
+                "按块号取回已归档早期对话的逐字原文。历史索引中 [块#N] 的 N 即 block_id。"
+                "返回该块时间范围内的全部原始消息（时间+角色+内容，tool 输出含 tool_call_id 归属）；"
+                "超大块自动精简（头尾保留+已精简标注，单条超长动态截断）。"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "block_id": {
+                        "type": "integer",
+                        "description": "归档块号（来自历史索引行的 块#N）",
+                    },
+                },
+                "required": ["block_id"],
             },
         ),
     ]
@@ -499,6 +675,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if not result:
             return [TextContent(type="text", text="Error: Failed to delete messages")]
 
+        return [
+            TextContent(
+                type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
+            )
+        ]
+
+    elif name == "read_history_block":
+        block_id = arguments.get("block_id")
+        if block_id is None:
+            return [TextContent(type="text", text="Error: block_id is required")]
+
+        # 直读本机 DB（context_blocks.db + messages.db），stdio/同进程两模式通用
+        result = read_history_block(block_id)
         return [
             TextContent(
                 type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
