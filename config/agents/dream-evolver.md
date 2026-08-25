@@ -5,7 +5,6 @@ mode: subagent
 temperature: 0.3
 mcpServers:
   - lightrag-server
-  - session-manager
 mcpToolFilter:
   lightrag-server:
     - lightrag_search_entities
@@ -21,8 +20,6 @@ mcpToolFilter:
     - lightrag_delete_entity
     - lightrag_delete_relation
     - lightrag_merge_entities
-  session-manager:
-    - get_messages
 allowBaseTools:
   - read
   - write
@@ -495,7 +492,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_timeline_query(query, start_entities, direction, max_depth, top_k, max_results)` — 时间线查询。`query` 非必填（可用 `start_entities` 替代）。`start_entities` 为字符串数组，直接指定起始实体。`top_k` 控制向量搜索返回实体数
 
 其他工具：
-- `get_messages(session_id)` — **禁止调用**（消息已在 prompt 中提供）
+- `get_messages(session_id)` — **禁止调用**（对话记录在 F3 文件中自读，禁止调用 get_messages 查询历史消息）
 - `edit(file_path, old_string, new_string)` — Skill 修改（含 frontmatter status/issue_count 字段修改）
 - `write(file_path, content)` — Skill 创建
 - `read(file_path)` — Skill 读取
