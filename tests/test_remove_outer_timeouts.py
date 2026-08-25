@@ -177,7 +177,8 @@ async def test_tb_inline_direct_call_zero_queue_dispatch(monkeypatch):
         if compat._pipeline_queue is not None:
             await compat.stop_pipeline_queue()
 
-    assert result is None
+    assert result is True
+    _release_auto_gate()  # 成功路径已复位，防御性再清一次
     assert compact_calls == [(2, True)], "压实应被回调直接同步调用，且 system 原样传入"
     assert dispatch_calls == [], "不得有任何队列投递"
     assert enqueue_calls == [], "不得有任何队列投递"
@@ -197,7 +198,7 @@ def test_tb_none_branch_empty_db_no_raise(monkeypatch):
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
     result = runner._on_context_high_usage(messages, 100, 200000)
 
-    assert result is None
+    assert result is False
     assert messages == [  # 空 db_messages → 不回写，原列表保持
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hi"},

@@ -85,6 +85,19 @@ class TestHysteresisGate:
         assert gate.try_acquire(0.90) is True
         gate.release()
         assert gate.try_acquire(0.90) is True
+    def test_compaction_success_release_retriggers_in_hysteresis_band(self):
+        """P1 回归：压实成功后水位常落 [78%,80%)——出口 release() 契约复位闩锁。
+
+        旧行为：闩锁态下仅 <78% 才解锁，[78%,80%) 永久闩死 → 自动压实
+        进程级失效。序列：0.81 触发 → 压实后 0.79（滞回带内）→ release() →
+        再次 0.81 仍能触发。
+        """
+        gate = CompactionGate()
+        assert gate.try_acquire(0.81) is True   # 达线触发并闩锁（执行压实）
+        assert gate.try_acquire(0.79) is False  # 压实后水位落滞回带，不触发
+        gate.release()                          # 压实成功出口契约：复位闩锁
+        assert gate.try_acquire(0.79) is False  # 复位后未达线不得误触发
+        assert gate.try_acquire(0.81) is True   # 再次达线仍能触发
 
     def test_global_gate_exists(self):
         from agent.context_assembler.compaction import AUTO_GATE
