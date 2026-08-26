@@ -53,7 +53,7 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 
 **Agent 应引导用户在设置窗口完成配置**（见下方"Agent 引导用户配置指南"），不要直接替用户修改配置文件——手动改文件绕过能力探测档案与参数组合校验，是"配置了但参数无效/不生效"的主要来源。
 
-**配置文件**：`config/user-config.json`
+**配置文件**：`~/.niu/config/user-config.json`
 
 ```json
 {
@@ -171,7 +171,7 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 
 **升级后自动探测**：旧版本用户配置无 `response_format_mode` 字段。程序启动后若检测到该字段缺失，后台自动触发一次探测写入配置，不阻塞启动。
 
-**手动覆盖**：关闭程序后手动编辑 `config/user-config.json` 的 `lightrag_llm.litellm_kwargs.response_format_mode`。下次设置窗口测试保存会覆盖手动值。
+**手动覆盖**：关闭程序后手动编辑 `~/.niu/config/user-config.json` 的 `lightrag_llm.litellm_kwargs.response_format_mode`。下次设置窗口测试保存会覆盖手动值。
 
 **注意**：
 - 探测调用会消耗约 100-200 token（最坏情况测到 Tier 2）。仅"测试连接并保存"按钮触发，不引入后台定时探测（升级后首次启动除外）。
@@ -384,7 +384,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 |------|------|------|
 | 设置窗口 | `/setup` 命令或托盘"设置"打开。完整流程：填基础字段 → 探测能力 → 选档位 → 测试连接并保存 | **推荐**——唯一带能力探测与参数组合校验的入口 |
 | MCP 工具 | `set_lightrag_llm_config` / `get_lightrag_llm_config`（运行中修改，无需重启） | 仅调整入库段字段时的快捷方式 |
-| 手动编辑 `config/user-config.json` | 关闭程序后编辑 | **最后手段**——绕过探测档案驱动与 testAndSave 参数组合校验，可能写入无效组合（如 `high` + disabled → 400）；改后必须回设置窗口"测试连接并保存"验证 |
+| 手动编辑 `~/.niu/config/user-config.json` | 关闭程序后编辑 | **最后手段**——绕过探测档案驱动与 testAndSave 参数组合校验，可能写入无效组合（如 `high` + disabled → 400）；改后必须回设置窗口"测试连接并保存"验证 |
 
 **Agent 引导用户配置指南**（最佳效果）：
 

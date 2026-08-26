@@ -126,7 +126,7 @@ cd launcher
 4. 复制运行时资源到 `niu.app/Contents/Resources/`：
    - `python/`（自包含 Python 运行时，**排除 igraph/leidenalg/texttable**——GPL 依赖，用户按需手动安装）
    - `ui/main/`（Electron 前端，**排除阿朱泡泡体 ttf**——许可证存疑）
-   - `config/`（配置模板，首次启动复制到 `~/.niu/config/`）
+   - `config/`（配置模板；user-config.json 等首启复制到 `~/.niu/config/`，mcp-servers.yaml 由应用直读不复制，自定义 MCP 配置放 `~/.niu/config/mcp-servers-user.yaml`）
    - `models/`（向量模型 + 人脸识别模型，**排除 buffalo_l/*.onnx**——非商业许可，用户手动下载安装到 bundle 内）
    - `memory/`（用户记忆模板）
    - `niu_api/`、`agent/`、`mcp-servers/`（Python 模块，PYTHONPATH 引用）
@@ -164,11 +164,11 @@ ln -sf /Applications "$STAGE/Applications"      # Applications 软链，支持�
 cp -R niu.app "$STAGE/niu.app"
 
 # 生成 DMG（UDZO = zlib 压缩，3.3G bundle → 约 1.2G DMG）
-hdiutil create -volname "Niu" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 dist/Niu-0.1.0-mac-intel.dmg
+hdiutil create -volname "Niu" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 dist/Niu-<版本>-mac-intel.dmg
 rm -rf "$STAGE"
 ```
 
-产物在 `dist/Niu-0.1.0-mac-intel.dmg`，可上传到 GitHub Release。
+产物在 `dist/Niu-<版本>-mac-intel.dmg`，可上传到 GitHub Release。
 
 ### 3.6 Info.plist 关键配置
 
