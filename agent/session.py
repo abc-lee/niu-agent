@@ -246,6 +246,15 @@ class MessageStore:
 
             return messages
 
+    async def message_exists(self, message_id: str) -> bool:
+        """Check whether a message with the given id exists (anchor 存活判定)"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM messages WHERE id = ? LIMIT 1",
+                (message_id,),
+            )
+            return await cursor.fetchone() is not None
+
     async def count_messages(self) -> int:
         """Count total messages"""
         async with aiosqlite.connect(self.db_path) as db:
