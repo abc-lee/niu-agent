@@ -7,9 +7,10 @@
 4. 检测失败 → ok=True + check_failed=True，不误判损坏、不触发重建
 5. 区间重叠/倒置 → 检测 + 重建
 6. /new 清理面：reset_derived_state 删块库 + 倍率复位 + 闸门解除 + 内存状态作废
-7. compute_window_start 提取后行为（窗口装填边界）
+7. 整库重建水位线语义：重建 = 全部单元按「留最近 keepRecentTurns 轮」归档
 
-全部用临时目录 DB，隔离真实 ~/.niu；mock token 计数，禁真实 LLM/LightRAG。
+全部用临时目录 DB，隔离真实 ~/.niu；mock token 计数与保留轮数配置，
+禁真实 LLM/LightRAG。
 """
 
 import sqlite3
@@ -38,6 +39,10 @@ def _deterministic_tokens(monkeypatch):
     # staticmethod：实例访问/类访问两条路径都拿到裸函数（test_calibration.py 先例）
     monkeypatch.setattr(
         ContextManager, "count_tokens_simple", staticmethod(_fake_count_tokens)
+    )
+    # 保留轮数固定 3：整库重建语义不随真实用户配置漂移
+    monkeypatch.setattr(
+        "agent.context_assembler.compaction._read_keep_recent_turns", lambda: 3
     )
 
 
@@ -135,23 +140,16 @@ class TestDriftRebuild:
 
         _delete_row(messages_db, 2)  # 漂移：删掉块#1 的 end 端点行
 
-        result = integrity.check_blocks_integrity(
-            blocks_db, messages_db, context_window_tokens=100
-        )
+        result = integrity.check_blocks_integrity(blocks_db, messages_db)
         assert result["ok"] is True
         assert result["repaired"] is True
         assert any("不存在" in i for i in result["issues"])
         assert any("count" in i for i in result["issues"])
 
-        # 重建结果 = 当前 DB 全量重切：7 行 → 3 单元 [u1,u2,a2] [u3,a3] [u4,a4]；
-        # 预算 50（cw=100×0.5），fake 计数单元成本 54/36/36 → 窗口仅容末单元，
-        # 前两单元成块（id 从 1 重排）
+        # 重建结果（水位线语义）= 当前 DB 全量重切：7 行（删了 rowid2）→
+        # r1 与 r3 连续 user 合并同单元 → 共 3 单元 ≤ 保留轮数 3 → 零块
         rebuilt = load_all(blocks_db)
-        assert len(rebuilt) == 2
-        assert (rebuilt[0].id, rebuilt[0].start_msg_id, rebuilt[0].end_msg_id) == (1, "m1", "m4")
-        assert (rebuilt[0].start_rowid, rebuilt[0].end_rowid, rebuilt[0].count) == (1, 4, 3)
-        assert (rebuilt[1].id, rebuilt[1].start_msg_id, rebuilt[1].end_msg_id) == (2, "m5", "m6")
-        assert (rebuilt[1].start_rowid, rebuilt[1].end_rowid, rebuilt[1].count) == (5, 6, 2)
+        assert rebuilt == []
 
         # 复检一致
         recheck = integrity.check_blocks_integrity(blocks_db, messages_db)
@@ -177,17 +175,14 @@ class TestCorruptFile:
         _create_messages_db(messages_db, 4)  # 2 单元，单元成本各 36
         blocks_db.write_bytes(b"\x00garbage-not-sqlite\xff" * 64)
 
-        result = integrity.check_blocks_integrity(
-            blocks_db, messages_db, context_window_tokens=100
-        )
+        result = integrity.check_blocks_integrity(blocks_db, messages_db)
         assert result["ok"] is True
         assert result["repaired"] is True
         assert any("blocks_db_corrupt" in i for i in result["issues"])
 
-        # 预算 50 → 窗口仅容末单元，第一单元成块
+        # 水位线语义：2 单元 ≤ 保留轮数 3 → 全部保留、零块
         rebuilt = load_all(blocks_db)
-        assert len(rebuilt) == 1
-        assert (rebuilt[0].start_msg_id, rebuilt[0].end_msg_id, rebuilt[0].count) == ("m1", "m2", 2)
+        assert rebuilt == []
 
         recheck = integrity.check_blocks_integrity(blocks_db, messages_db)
         assert recheck == {"ok": True, "issues": [], "repaired": False}
@@ -224,9 +219,7 @@ class TestRangeViolations:
     def test_overlap_detected_and_rebuilt(self, blocks_db, messages_db):
         _create_messages_db(messages_db, 6)
         upsert_blocks([_block(1, 1, 3, 3), _block(2, 3, 6, 4)], blocks_db)
-        result = integrity.check_blocks_integrity(
-            blocks_db, messages_db, context_window_tokens=100
-        )
+        result = integrity.check_blocks_integrity(blocks_db, messages_db)
         assert result["repaired"] is True
         assert any("重叠" in i or "非单调" in i for i in result["issues"])
         recheck = integrity.check_blocks_integrity(blocks_db, messages_db)
@@ -235,9 +228,7 @@ class TestRangeViolations:
     def test_inverted_range_detected(self, blocks_db, messages_db):
         _create_messages_db(messages_db, 4)
         upsert_blocks([_block(1, 3, 2, 2)], blocks_db)  # start > end
-        result = integrity.check_blocks_integrity(
-            blocks_db, messages_db, context_window_tokens=100
-        )
+        result = integrity.check_blocks_integrity(blocks_db, messages_db)
         assert result["repaired"] is True
         assert any("倒置" in i for i in result["issues"])
 
@@ -280,29 +271,28 @@ class TestResetDerivedState:
 
 
 # ---------------------------------------------------------------------------
-# 7. compute_window_start（从 get_context_for_chat 提取的唯一实现）
+# 7. 整库重建水位线语义：重建 = 全部单元按「留最近 keepRecentTurns 轮」归档
 # ---------------------------------------------------------------------------
 
-class TestComputeWindowStart:
-    def _conv(self, n: int) -> list[dict]:
-        return [{"role": "user", "content": "x" * 10} for _ in range(n)]
+class TestRebuildWatermark:
+    def test_rebuild_archives_all_but_keep_turns(self, blocks_db, messages_db):
+        _create_messages_db(messages_db, 8)  # 4 单元，留 3 → 首单元归档
+        n = integrity._rebuild(blocks_db, messages_db)
 
-    def test_empty_units_returns_len(self):
-        count = ContextManager.count_tokens_simple
-        assert ContextManager.compute_window_start([], [], 10, count) == 0
-        assert ContextManager.compute_window_start(self._conv(3), [], 10, count) == 3
+        assert n == 1
+        rebuilt = load_all(blocks_db)
+        assert len(rebuilt) == 1
+        assert (rebuilt[0].start_rowid, rebuilt[0].end_rowid, rebuilt[0].count) == (1, 2, 2)
 
-    def test_budget_boundary(self):
-        count = ContextManager.count_tokens_simple
-        conv = self._conv(6)
-        units = [(0, 1), (2, 3), (4, 5)]  # 每单元成本 36
-        assert ContextManager.compute_window_start(conv, units, 36, count) == 4  # 恰容末单元
-        assert ContextManager.compute_window_start(conv, units, 72, count) == 2  # 恰容两单元
-        assert ContextManager.compute_window_start(conv, units, 10_000, count) == 0  # 全容纳
+        # 复检一致（重建产物满足全部校验项）
+        recheck = integrity.check_blocks_integrity(blocks_db, messages_db)
+        assert recheck == {"ok": True, "issues": [], "repaired": False}
 
-    def test_latest_unit_always_kept(self):
-        conv = self._conv(2)
-        # 单元成本 36 超预算 1 → 保底最新单元仍在窗内
-        assert ContextManager.compute_window_start(
-            conv, [(0, 1)], 1, ContextManager.count_tokens_simple
-        ) == 0
+    def test_rebuild_few_units_keeps_all_no_blocks(self, blocks_db, messages_db):
+        _create_messages_db(messages_db, 6)  # 3 单元 ≤ keep=3 → 零块
+        assert integrity._rebuild(blocks_db, messages_db) == 0
+        assert load_all(blocks_db) == []
+
+    def test_rebuild_empty_messages_db(self, blocks_db, messages_db):
+        _create_messages_db(messages_db, 0)
+        assert integrity._rebuild(blocks_db, messages_db) == 0

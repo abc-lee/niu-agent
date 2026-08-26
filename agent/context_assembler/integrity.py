@@ -11,7 +11,8 @@
 语义铁律（lightrag_manager.run_resilience_phase1 先例——防 launcher 闩锁误触）：
   检测失败 ≠ 损坏——校验过程自身抛异常 → ok=True + check_failed=True + error，
   绝不触发重建；确证不一致才重建（读 messages.db 全量 → slice_units →
-  窗口装填 → archive_excluded_units 归档同源逻辑 → 覆盖写块表）。
+  按「留最近 keepRecentTurns 轮」水位线归档 archive_excluded_units 同源
+  逻辑 → 覆盖写块表）。
 """
 
 from __future__ import annotations
@@ -163,16 +164,18 @@ def _detect_issues(blocks_db_path: Path, messages_db_path: Path) -> list[str]:
 # 整库重建
 # ---------------------------------------------------------------------------
 
-def _rebuild(blocks_db_path: Path, messages_db_path: Path, *,
-             context_window_tokens: int | None = None) -> int:
-    """整库重建：清算块表 → 全量重切 → 窗口外单元归档。返回重建后的块数。
+def _rebuild(blocks_db_path: Path, messages_db_path: Path) -> int:
+    """整库重建：清算块表 → 全量重切 → 按水位线语义归档。返回重建后的块数。
 
-    归档复用 compaction.archive_excluded_units（compact_now 同源逻辑）；块库文件
+    与批量压实同语义：重建 = 全部单元按「留最近 keepRecentTurns 轮」归档
+    （组装路径已是水位线模型，预算窗口装填无服务对象，故删除）。归档复用
+    compaction.archive_excluded_units（compact_now 同源逻辑）；块库文件
     损坏时 delete_all 失败 → 删文件（含 -wal/-shm 副文件）后重建。
-    窗口装填与组装出口共用 ContextManager.compute_window_start 唯一实现。
     """
-    from agent.context_assembler.compaction import archive_excluded_units
-    from agent.context_manager import ContextManager, _WINDOW_BUDGET_RATIO
+    from agent.context_assembler.compaction import (
+        _read_keep_recent_turns,
+        archive_excluded_units,
+    )
 
     if not delete_all(blocks_db_path):
         for suffix in ("", "-wal", "-shm"):
@@ -186,18 +189,13 @@ def _rebuild(blocks_db_path: Path, messages_db_path: Path, *,
     if not messages:
         return 0
     units = slice_units(messages)
-    if context_window_tokens is None:
-        from agent.subagent import _read_context_window_tokens
-        context_window_tokens = _read_context_window_tokens()
-    budget = int(context_window_tokens * _WINDOW_BUDGET_RATIO)
-    converted = [ContextManager._message_to_dict(m) for m in messages]
-    window_start = ContextManager.compute_window_start(
-        converted, units, budget, ContextManager.count_tokens_simple
-    )
-    # collect_entities=False：lifespan 段 LightRAG 尚未 eager init，get_lightrag
-    # 会触发阻塞式懒初始化——自愈路径不得阻塞启动；实体标签为可选增强，空标签降级。
-    archive_excluded_units(messages, units, window_start, blocks_db_path,
-                           collect_entities=False)
+    if units:
+        keep = min(_read_keep_recent_turns(), len(units))
+        window_start = units[len(units) - keep][0]
+        # collect_entities=False：lifespan 段 LightRAG 尚未 eager init，get_lightrag
+        # 会触发阻塞式懒初始化——自愈路径不得阻塞启动；实体标签为可选增强，空标签降级。
+        archive_excluded_units(messages, units, window_start, blocks_db_path,
+                               collect_entities=False)
     return len(load_all(blocks_db_path))
 
 
@@ -205,14 +203,12 @@ def _rebuild(blocks_db_path: Path, messages_db_path: Path, *,
 # 公开入口
 # ---------------------------------------------------------------------------
 
-def check_blocks_integrity(blocks_db_path=None, messages_db_path=None, *,
-                           context_window_tokens: int | None = None) -> dict:
+def check_blocks_integrity(blocks_db_path=None, messages_db_path=None) -> dict:
     """校验指针块与 messages.db 一致性；确证不一致时自动整库重建。
 
     Args:
         blocks_db_path: 块库路径（默认 ~/.niu/context_blocks.db）
         messages_db_path: messages.db 路径（默认 ~/.niu/messages.db）
-        context_window_tokens: 重建窗口预算基数（默认读用户配置 contextWindowSize）
 
     Returns:
         正常：{"ok": True, "issues": [], "repaired": False}
@@ -244,7 +240,7 @@ def check_blocks_integrity(blocks_db_path=None, messages_db_path=None, *,
 
     logger.warning(f"[BlocksIntegrity] 检测到 {len(issues)} 项不一致，整库重建: {issues}")
     try:
-        n_blocks = _rebuild(bpath, mpath, context_window_tokens=context_window_tokens)
+        n_blocks = _rebuild(bpath, mpath)
     except Exception as e:
         logger.error(f"[BlocksIntegrity] 整库重建失败: {e}")
         return {"ok": False, "issues": issues, "repaired": False, "error": str(e)}
