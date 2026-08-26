@@ -440,7 +440,7 @@ python/bin/python3 scripts/model_capability_probe.py \
 
 ### 1.3 上下文配置
 
-**配置文件**：`config/user-config.json` 中的 `context` 段
+**配置文件**：`~/.niu/config/user-config.json` 中的 `context` 段
 
 ```json
 {
@@ -476,7 +476,7 @@ python/bin/python3 scripts/model_capability_probe.py \
 
 **修改配置方式**：
 - **方式一（推荐）**：通过设置窗口修改（首次启动自动弹出，`contextWindowSize` 在主界面，阈值参数点"高级选项"展开）
-- **方式二**：关闭程序后，手动编辑 `config/user-config.json`
+- **方式二**：关闭程序后，手动编辑 `~/.niu/config/user-config.json`
 
 **上下文相关新增字段（2026-08-26 上下文组装器起）**：
 
