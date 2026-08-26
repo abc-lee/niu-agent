@@ -511,7 +511,7 @@ preload_face_model()
 ---
 
 ## 历史更新日志
-> 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。
+> 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。2026-08-13 前条目已压缩为摘要，完整细节见 git 历史。
 
 ### 2026-08-26
 
@@ -872,535 +872,109 @@ preload_face_model()
 
 ### 2026-08-13
 
-#### 修复：LLM 不可用启动门控（模型不通时不启动依赖 LLM 的后台组件，只等配置成功后重启）
+#### 修复：LLM 不可用启动门控——模型不通时不启动依赖 LLM 的后台组件，配置成功重启后生效
+main 7 commits：新建 niu_api/llm_ready.py（check_llm_ready 探测预算 read_timeout=120/wait_for=150，user-config llm.read_timeout≤190s 逃生口）+ lifespan 在 scheduler 前门控（llm_ready=False 跳过 scheduler/HAWatcher/IM gateway/db_monitor/脑区背景同步）+ 启动器三处对齐（test-llm 230s、preload 轮询 360→3600 防 180s 无限重启循环、settings socket 230s）。实机验证待用户执行。
 
-- **现象**：启动检测到大模型不通（配置缺失或连通性失败）→ 启动器弹配置页 → 但后端不阻塞：scheduler 在第 3 步无条件启动 → `_delayed_start` 三阶段（ready 180s → frontend_ready 60s 超时 proceed → sleep 2s → start）→ 10s 后扫描过期任务 → trigger_callback 入队 ChatQueue → runner.chat → LLM 不通 → **定时任务全部失败**
-- **根因（实证）**：配置页与后端启动进程**零耦合**——① `signal_scheduler_ready` 只被 LightRAG/脑区门控，从不被 LLM 配置门控；② scheduler Phase2 `frontend_ready_event.wait(60)` 超时 proceed-anyway 是配置页期间启动的直接使能点（settings 窗口不连 SSE、不调 /api/frontend-ready）；③ 启动器"阻塞"只发生在配置流程结束后（need_settings → 配置页 → test-llm 通过 → notify_shutdown → 退出进程），期间后端已完整启动；④ 用户记忆的"之前修过"= 启动器 LLM settings flow，只挡流程结束后的进程，不挡流程期间的后端后台组件
-- **修复（main 7 commits：5 功能 + 2 清理）**：
-  1. **compat.py 提取 `_probe_llm`**（test-llm 端点内部逻辑 → 模块级函数，read_timeout/wait_timeout 参数化，入口键名归一化）——端点与启动检测共用同一探测核心
-  2. **新建 `niu_api/llm_ready.py`**：`resolve_probe_budget`（预算解析 + **逃生口：user-config llm.read_timeout 覆盖（≤190s——wait ≤220 < 三方客户端 230s；float/bool/isfinite/非正/超上限全防护）**，check_llm_ready 与 test-llm 端点共用，>120s 慢模型全链路生效）+ `check_llm_ready`（存在性 + 真实连通性探测，**预算 read_timeout=120 / wait_for=150**——覆盖代码库显式支持的 20-120s 首响应推理模型；短预算会误杀慢首响模型 → 配置页保存被测试闸门挡 → 永久降级循环 = 回归）
-  3. **lifespan 门控**（__main__.py + lightrag_manager.py）：embedding 后、start_scheduler 前插检测——**flag 前置时序**：check_llm_ready **之前**先 `set_llm_gate_ready(False)`（慢探测窗口内 daemon 触发的 probe 全被跳过）、探测结束后置 `llm_ready`；`llm_ready=False` 时跳过 scheduler/HAWatcher/IM gateway/db_monitor/脑区 gate/signal/region 背景同步 + lightrag_sync（`auto_start=llm_ready`，保留既有 try/except）+ response_format 后台探测（lightrag_manager 模块级 `_llm_gate_ready` flag + `set_llm_gate_ready`）；**ChatQueue 照常启动不 pause**（配置页无消息源；瞬态分歧场景消息走 LLM 失败降级自愈）；**preload_complete 无条件置位**；shutdown 段零改动即安全
-  4. **启动器三处对齐**（main.rs）：test-llm 客户端超时 25s→230s（LLM 验证 + 配置页轮询）+ **preload-status 轮询迭代上限 360→3600**（实证：lifespan 阻塞时 uvicorn 不接连接、每轮 ≈0.5s，原 360 轮 ≈180s 墙钟——慢模型探测 150s+初始化会耗尽致无限重启循环；3600 轮 ≈30min）+ **settings 轮询 sleep 后 POST 前二次窗口关闭检查**（v2.6.4：关窗在 sleep 期间立即退出，消除确定性 2-3.5 分钟退出延迟；残余在途 POST 竞态 ≤230s 接受）
-  5. **settings 前端**（main.js + windows/settings/index.html）：socket 超时 100s→230s（三处含 fallback 直连）+ 过时注释更新 + **testAndSave body 合并文件 llm.read_timeout + saveConfig 写回保留**（index.html——testAndSave/saveConfig 在此文件非 main.js；existingConfig 变量；UI 保存不再抹掉逃生口覆盖）；**启动器配置页流程零改动**（既有 need_settings → settings 窗口 → 轮询 test-llm → 通过 → 退出重启已满足"配置成功后重启"）
-- **质量链**：scout 全量启动链探索 + 细节 scout → **计划审查 R1-R10 十轮双审查**（R1 双 REJECT：预算分歧 P1 + LiteLLMSession patch 目标 P1；R3 一 APPROVE 一 REJECT：read_timeout 60s 封顶误杀 60-120s 首响模型 P1 + ChatQueue 单向闩锁 P2；R4 双 REJECT：>120s 模型回归定性 + 逃生口 P2 + 瞬态分歧会话级副作用 P2；R5 双 REJECT：逃生口未闭环到端点 P1 + preload 墙钟 180s 无限重启 P1 + probe 保存闸门 P2 + llm_ready 传参 NameError P2；R6 双 REJECT：逃生口 wait 超出三方客户端封顶 P1/P2 + 端点接线零单测 P2；R7 双 REJECT：Step 4.5 改错文件 P2 + 保存腿声明与 probe 闸门矛盾 P2；R8 一 APPROVE 一 REJECT（Task 4 commit 缺 index.html P2）；**R9+R10 连续两轮零 bug 通过**）→ subagent-driven 实施（T1-T4 每 Task spec+quality 双审；实施中修复：_hang 签名（计划测试缺陷）、T2 ruff F401 + 日志常量 + 负数断言、T3 ruff F401 + global 死语法、T4 settings 轮询 P2）→ 35 新测试全绿 + 回归无新增失败 → **实机验证待用户执行**
-- **实机验证（待执行）**：配置无效（改坏 key）→ 启动 → 后端日志 `[LLMGate] LLM 连通性检测失败` + 无 `Internal scheduler started` → 配置页 → 配好 → 重启 → `Internal scheduler started` 正常；正常配置回归
-- **已知边界**：① **>120s 首字节模型**：patch 前可用、patch 后两端一致判定失败弹配置页——**逃生口：user-config llm.read_timeout 覆盖（≤190s，wait ≤220 < 三方客户端 230s）**，对门控 + 启动器验证生效；**配置页保存仍受 probe 保存闸门（⑨）限制——>10s 首字节模型经 UI testAndSave 保存必败，需手改 user-config.json**；settings UI 保存保留覆盖（v2.6）② llm_ready=False 时 `/api/scheduler` 端点用 get_store()（返回 200、任务可见但永不触发——非 500）③ 启动器 `/api/llm-status` 判空无 is_local 豁免（pre-existing——Ollama 空 apiKey 场景启动器仍弹配置页）④ lifespan 门控决策无单测（对齐 LightRAG v7 先例，靠双审查 + 实机验证）⑤ ChatQueue 不 pause 后，llm_ready=False 期间若有消息入队（理论无源）走 LLM 失败降级回复 ⑥ **瞬态分歧会话级副作用**（启动瞬间 LLM 短暂不可达 + 启动器验证前恢复）：后台组件整会话跳过、无用户可见通知——需**手动重启**恢复全量 ⑦ **挂起 provider** 弹配置页前总等待 ≈455s（默认）/ ≈445s（逃生口）——预算覆盖 20-120s 首响模型的设计取舍 ⑧ 配置页轮询 sleep 后二次窗口检查（残余在途 POST 竞态 ≤230s）⑨ **settings 保存双闸门**：testAndSave 还须 probe-response-format 返回 supported——probe 端点 read_timeout=10 → 首 chunk >10-20s 模型 probe_failed → "配置未保存"——pre-existing，遇真实慢模型场景单独扩展
-
-#### 修复：定时任务小时级 cron 当天只执行一次（last_executed_date 日期粒度缺陷 → 触发点级记账）
-
-- **症状**：定时任务 `10 9-23 * * *`（每整点后 10 分钟检查邮件）9:10 执行一次后当天再不执行——`last_executed_date` 每日去重（为日级任务防崩溃重跑设计）把"当天已执行过"当成"当天不再需要执行"，吞掉当天全部后续触发点（DB 实证：triggered_at=11:10:04 被扫描但跳过、scheduled_at 被 reschedule 到 12:10）
-- **根因**：日期粒度无法区分场景 A（日级崩溃重跑，应跳过）与场景 B（小时级当天最后触发点 23:10 到期，应执行）——两者数据形态相同（last_executed==today + 到期 + next=明天）
-- **修复**：新增 `last_executed_trigger` 列（触发点粒度，存上次执行的触发点 scheduled_at）+ try/except ALTER 迁移；跳过判断改 `scheduled_at <= last_executed_trigger`（同触发点再到期=崩溃重跑→跳过；不同触发点=当天多次→执行）——23:10 最后触发点也执行（15/15），判断不依赖当前时刻（无墙钟问题），旧数据 NULL 部署当天即自愈。**取舍**：回调在途崩溃场景从"漏执行"转向"可能重复"（at-least-once，窗口=回调期+落库间隙，对幂等任务良性）
-- **质量链**：计划 R1-R6 六轮双审查（v1 next_time.date() 方案 R1/R2 REJECT：23:10 丢失 P2 + 测试墙钟 P1×2；v2 触发点级 R3/R4 REJECT：CREATE TABLE 示例缺列 P1 + 测试 mock 缺复现形态 P1 + 索引映射 P2×2 + 验证命令问题；v3 R5/R6 双 APPROVE：R5 补 at-least-once 取舍文档 P2 + 行号/论证 P3×2，R6 补断言强化/格式不变式 P3×4——v3.1 修订后实施）；与 2026-07-31 cron 高级修饰符改造（#/L/LW，仅 cron_parser.py）修改面不相交
+#### 修复：定时任务小时级 cron 当天只执行一次——last_executed_trigger 触发点级记账取代日期粒度去重
+新增 last_executed_trigger 列：同触发点再到期=崩溃重跑跳过，不同触发点照常执行（23:10 最后触发点不丢）；取舍：崩溃恢复从"漏执行"转"可能重复"（at-least-once）。
 
 #### 修复：强制压缩链路四联问题（提示词瘦身/拒绝报告/首次停思考链/截断报错）
+commits 172146da→dde63a28：压缩 task prompt 瘦身为严格输出契约、_build_compress_llm_config 统一 4 处压缩调用点、_probe_llm 检测 finish_reason=length 显式报截断、降级链门控只判 thinking type。
 
-- **问题**：①压缩 task prompt（_build_mode2_prompt/_build_force_prompt）内联重复 system 提示词（context-manager.md）已有方法论约 120 行（三份划分/会话单元/工具级联/摘要规范/转义），指令性不足；②prompt 强制"先写 <analysis> 再输出三行"→ 模型写长报告占掉输出预算（min(contextWindow×0.16, 65536)=32000）→ keep=/update=/cursor= 在末尾被截断 → finish_reason=length；③B1 三连重试不改参数（thinking 仍开、max_tokens 不变）→ 每次重试重复截断，3 次耗尽转 COMPACT_TRUNCATED；④降级链 step1 才关思考链（"第一轮失败第二轮才停"），思考链占输出 token（doubao 实证：max_tokens=5 探测时思考链跑 ~172 token 挤压 content 至截断）
-- **修复**：①task prompt 瘦身为"任务参数 + 严格输出契约 + 禁止报告"（删方法论重复，方法论信任 system；保留 CRITICAL 门控短语（context-manager.md L194-199 用它判定模式二"一轮方案"分支）+ force 专属参数（上次压缩游标/dream 安全边界））；②新增 _build_compress_llm_config helper 统一 4 处压缩调用点（compat 模式二/模式一/force + runner force）——按知识图谱（lightrag 段）配置发送（用户配置原样 + max_tokens 输出预算；2026-08-18 用户拍板：不再程序注入 thinking disabled），B1 重试复用同一 config；③_probe_llm 检测 finish_reason=length → 报"输出被截断"（曾静默判"模型测试通过"——raw_http 实证），探测 max_tokens 5→256（thinking 模型 content 有空间，防标准 thinking 模型 50 截断误杀启动门控）；④降级链门控只判 thinking type（2026-08-18：effort 条件移除——程序不干预 effort）；lightrag 段默认 disabled → step1 不执行，直接 step2 halve history
-- **已知边界**：①流被中断吞掉 finish_reason chunk → 截断仍静默（无法可靠检测，未修）；②B1 重试对非压缩子 Agent 保持原行为（通用路径 client 重建成本高；压缩路径按知识图谱（lightrag 段）配置发送——组合可用性由 testAndSave 把关）；③context-manager.md system 提示词本身不瘦身（358 行完整方法论文档保留）；④模式一（睡眠整理非破坏性）按 lightrag 段配置发送但不走三行输出契约（工具化操作，不受影响）
-- **质量链**：计划 R1-R7 七轮双审查（v1-v6.1，连续两轮双 APPROVE 达成——R6+R7；测试定义缺陷 15+ 个经审查抓出：PEP 479/子串断言/MagicMock 自动真值/锚点漂移/魔法短语门控/第 4 调用点等）；实施 subagent-driven 每 Task spec+quality 双审（Task 1 quality 2 P2 修复、Task 4 quality 2 P2 修复）；commits 172146da→dde63a28
+#### 修复：压缩后空壳 assistant 消息残留——_cleanup_orphan_tool_messages 扩展四条件空壳判定
+commit 354581f6：content/tool_calls/tool_call_id 全空才清；原始形态（content 空但 tool_calls 非空=工具调用锚点）严格保留勿删。
 
-#### 修复：压缩后空壳 assistant 消息残留（悬空清理扩展 + 原始形态严格保留）
+#### 修复：主/子 Agent 提示词 Current Time 每轮实时刷新（原启动固定值跨午夜漂移）
+commits 12f2674b（主 Agent 每轮 datetime.now()）+ 50a57196（子 Agent _refresh_subagent_current_time 回调正则替换）。
 
-- **问题**：用户发现 messages.db 存在空记录（如 08-12 23:40 两条 content='' + tool_calls='[]' 的 assistant）。根因机制（代码实证）：压缩对 content 空的消息 clear_tool_calls（模式二/force 对受保护锚点、模式一对空 content 消息）会产生空壳（content 空 + tool_calls 空 + tool_call_id 空）——`_cleanup_orphan_tool_messages` 只清理孤立 tool 消息，不处理空壳 assistant。具体空壳的产生路径（压缩 vs 模型空响应）未完全证实——清理是条件式删除，无论来源都安全
-- **修复**：`_cleanup_orphan_tool_messages` 扩展——新增 `_is_empty_shell_assistant`（四条件严格判断：role=assistant + content 空 + tool_calls 空 + tool_call_id 空；JSON 解析失败保守保留）；三处压缩路径全覆盖（模式二/force 既有调用 + 模式一完整性检查后补调）；**原始形态（content 空但 tool_calls 非空）严格保留**（工具调用锚点——agent_loop 还原锚点、tool 消息靠 tool_call_id 归属，删除会丢失工具结果上下文）；存量 2 条空壳一次性清理（WAL 安全备份 + 精确条件删除 + 验证 4 条锚点完好——含今日活跃会话新锚点）
-- **已知边界**：原始形态不迁移（把 tool_calls 移到上一条有内容消息的方案因多消息一致性风险高不做——YAGNI，空壳清理已解决残留问题）；非压缩路径（模型空响应等）产生的空壳需等下次压缩清理
-- **质量链**：计划 R1-R4 四轮双审查（R1/R2 REJECT 含 WAL 备份/模式一缺口/根因归因/mock 形态等；R3+R4 连续两轮双 APPROVE）；实施 subagent-driven 每 Task spec/quality 双审；commits 354581f6（Task 1）+ Task 2 纯 DB 无 commit + 本条目
+#### 修复：LLM 启动探测去重——单一真相源，正常启动两次真实探测降为一次
+commits e63d38ea（llm-status 三态 ready/probe_failed/not_ready）+ a83c9868（启动器三态决策，ready 直接跳过 test-llm）。
 
-#### 修复：主/子 Agent 提示词 Current Time 每轮实时（启动固定 → 每轮 LLM 前刷新）
-
-- **问题**：主 Agent 提示词 Current Time 永远不变——`NiuRunner.__init__` 里 `datetime.now()` 只算一次存 `self.dynamic_system_prefix`（注释明文"启动时固定，不每轮更新"），`_assemble_system_message`（每轮 LLM 前由 `_on_before_llm` 调用）复用固定值——所有轮次 Current Time = 进程启动时刻；子 Agent 的 `system_message` 在 `call_subagent` 启动时构建一次（build_subagent_system_segments 实时取启动时刻），长任务（context-manager 压缩 20+ 轮、dream-evolver 跨午夜）会话内时间漂移——dream-evolver 用日期建 `YYYY-MM-DD会话` 节点，跨午夜有真实风险
-- **修复**：主 Agent——`dynamic_system_prefix` 拆出 Current Time（只留 disk_desc 启动缓存——磁盘结构运行期不变），`_assemble_system_message` 每轮 `datetime.now()` 实时生成；子 Agent——新增 `_refresh_subagent_current_time`（on_before_llm 回调，正则替换 system 的 Current Time 行，兼容 str/Claude list 两种格式），`call_subagent` 三处 `_run_agent_loop`（新任务/恢复/异步）统一传入——会话内每轮 LLM 前刷新
-- **不受影响**：prompt cache 设计（动态段本就不 cache、静态段在前字节稳定，后部变化不影响前缀命中——Claude cache_control/字符串 prefix cache 均无破坏）；`build_subagent_system_segments` 启动实时语义保留（首轮即正确）
-- **质量链**：计划 R1-R4 四轮双审查（R1 双 REJECT：_run_agent_loop 缺 on_before_llm 参数+转发；R2 双 REJECT：异步接线缺锁/红相预期；R3+R4 连续两轮双 APPROVE）+ 每 Task spec/quality 双审；commits 12f2674b（Task 1 主 Agent）+ 50a57196（Task 2 子 Agent）+ 本条目
-
-#### 修复：LLM 启动探测去重（单一真相源——正常启动从两次真实探测降为一次）
-
-- **问题**：每次正常启动触发两次真实 LLM 探测（2026-08-13 20:13/20:14 实证：lifespan check_llm_ready + 启动器 test-llm 各一次，均 max_tokens=256 "hi" 探测）——上午启动门控工程新增后端 lifespan 探测时未盘点既有启动器 test-llm 验证（6/23 d1cbb953 引入），两进程并行互不知晓、无共享状态（LLM 就绪状态无单一真相源）→ 每次启动多一次 LLM 调用 + 4-6s 延迟。十轮门控审查全部聚焦"LLM 不通时怎么办"，无人从正常启动路径审视"探测几次"——点式审查盲区实证
-- **修复**：llm-status 从"仅配置存在性"升级三态——ready（配置存在 AND lifespan 探测通过）/ probe_failed（配置存在 AND 探测失败）/ not_ready（配置缺失）——读 lightrag_manager._llm_gate_ready（新增对称 get_llm_gate_ready）；启动器决策改三态：ready 直接启动（不再 test-llm）、probe_failed 保留 test-llm 兜底（230s——配逃生口（wait≤220<230s）后慢模型可被放行；未配逃生口时 >120s 首字节慢模型后端 150s 强杀失败 → 配置页，与修复前一致）、not_ready 配置页（现状）
-- **探测次数全景**：正常 1（原 2）/ 配置缺失 0 / 探测失败（快速失败/慢模型 >120s 未配逃生口/挂起 wait_for 生效）3→配置页（原 3）/ 挂起 wait_for 失效 >230s 2→proceed-anyway（原 2）/ 逃生口 1（原 2）——唯一行为变化 = 正常启动跳过重复 test-llm，异常路径行为等价（无死循环）
-- **已知取舍（R1-A5 记录）**：正常路径从"2 次探测都有机会抓启动瞬间瞬态故障"降为"1 次"——若 lifespan 探测通过后、启动器决策前 LLM 恰好不可用（极窄窗口），修复后直接 proceed（运行期走 LLM 失败降级）——与边界⑥同族但检测窗口缩短——低概率、可接受（去重目标固有取舍）；升级兼容：新启动器+旧后端（无门控）probe_failed 缺省 false → 跳过 test-llm 失去唯一真实验证——混窗仅手工混用，文档化接受
-- **质量链**：计划 R1-R4 四轮双审查（R1 双 REJECT：patch 目标错误 P0 + 探测次数表预算语义 P2×2 + 计数方法 P1；R2 双 APPROVE 后清零：Task 3 mtime 限定 P2；R3+R4 连续两轮双 APPROVE）+ 每 Task spec/quality 双审（Task 1/2 PASS）；commits e63d38ea（Task 1 llm-status 三态）+ a83c9868（Task 2 启动器三态决策）+ 本条目
-- **实机验证（2026-08-13）**：重启后正常启动仅 1 次探测（raw_http max_tokens=256+"hi" 特征请求恰 1 个——修复前 20:13:45/20:14:37 两次实证）；异常路径未实测（改坏 key 场景可选后续抽验）
-
-#### 修复：脑区注入分级（点亮数感知熄灭加速 + 分级注入 🟢5/🟡3/⚫0 + 图遍历移除 + 会话边界清理）
-
-- **问题**：活跃脑区注入的内容"总是不太满意"（2026-08-13 21:42:46 日志实证：4 🟢 点亮但 `### [活跃脑区知识]` 5 条含 applescript——与雄安工作主题无关，对照参考知识段明显更贴题）。三层根因：① **名实脱节**——活跃脑区知识段（runner.py L3006-3013）= 衰减池 `get_top_by_source("graph_traversal", 5)` 即"向量命中实体的 1 跳图遍历邻居"全局混排——非每脑区 N 条、不检查脑区归属、无相关性排序（所有邻居同分 = 平均 hit × 0.8，top 5 实质=图遍历顺序前 5）；`activate_for_query` 构建的命中实体数据被 runner L2810 丢弃（注释"返回值丢弃（激活副作用已发生）"）——脑区激活只贡献状态图、不贡献一行知识内容 ② **图遍历 `_traverse_from_hits`（L2717）是噪声放大器**——applescript 来自组合 query 中"版本升级/技能授权"语义命中实体的邻居（实验实证：命中实体本身无噪声）③ **警告口径与 🟢 不一致**——`format_region_map` lit_count 用 >0.3（含黄灯）——警告数的是"活跃"不是"点亮"
-- **修复**：
-  1. **点亮数感知熄灭加速**（region_activation.py decay_all）：🟢 点亮数 >6 时衰减指数加速——`factor = 0.92 ** (1 + 0.15 × (lit − 6))`（lit=8 → 0.897）——亮的越多熄得越快，程序层自动收敛（警告 LLM 不关注）；`activate_regions`（命中 → 1.0）不变——当前话题脑区每轮拉回满值，加速只压"无命中持续衰减"的冗余脑区
-  2. **分级注入 🟢5/🟡3/⚫0**（region_injector.py）：`activate_for_query` 返回值扩展——region_knowledge（每脑区首条 desc）→ region_entities（region → 命中实体 dict 列表，保持相似度序）；新增 `_recent_region_entities` 最近命中缓存（**合并更新**——只覆盖本轮命中脑区、保留未命中脑区旧条目——🟡 档数据源；覆盖更新会使 🟡 恒空）；`format_region_knowledge` 按激活度分级取数（🟢 本轮命中优先、缓存回退 top 5；🟡 缓存 top 3；⚫ 跳过）——激活度 ↔ 注入量严格非减；全局上限 `_REGION_ENTRY_CAP = 26` 条逐条准入截断（防最坏 10🟢×5=50 条）；黑名单过滤（entity_type `.lower()` + entity_name case-sensitive 精确，与 runner 常量同步维护）+ seen_names 去重（与参考知识段同源）
-  3. **图遍历移除**（runner.py clean cutover）：`_traverse_from_hits` 方法 + step 4 整块（hit_distance_map + graph_traversal 衰减池注入）+ step 3 all_hits 收集删除（保留块间 stop 守卫）；decay_pool 删 `get_top_by_source`（无生产调用者）、source 注释更新；旧进程残留 graph_traversal 条目经 category 消费 ~7-13 轮出池自愈——**历史条目"动态注入四处可中断"（2026-08-10）→ 四处变三处（_traverse_from_hits 已删）**
-  4. **口径统一**：警告阈值 >0.3 → >0.7 与 🟢 统一（6 个黄灯不再虚警"点亮"）；format_region_map lit_count 与加速阈值 >6 同口径
-  5. **会话边界清理**：/api/chat/clear 原只清衰减池（`_decay_pool.clear()`）不清 injector 缓存——激活管理器为跨会话单例 → 新会话前 ~11-15 轮持续注入上一会话缓存实体（🟢 top5 + 🟡 top3 可占满 cap 26，直接复现"注入不满意"场景）——新增 `clear_recent_region_entities()` 接线 `_decay_pool.clear()` 同处（compat.py L2549-2550）
-- **实验证据**（2026-08-13 两次只读实验 /tmp/brain_inject_test.py + test2.py，真实图谱 ~/.niu/lightrag_storage，query=雄安分行/筹备组/揭牌/征迁补偿/千年秀林/智慧民生/数字人民币/指挥室）：
-  - `query_data(mode=local, top_k=5/10/20/30)` 命中实体质量**全部相关**（银企直连平台/千年秀林工程/智慧民生平台/河北分行…）——检索方法没问题
-  - 命中 20 实体 **17/20 属于脑区成员**（图谱"包含"边构建）；图遍历邻居 40 个 **36/40 属于脑区成员**且集中点亮脑区——脑区数据健康
-  - 命中实体按脑区分组：知识体系 8 / 工作事务 4 / 组织机构 2 / 文档库 2——每脑区取 top N 充足
-  - applescript 只出现在组合 query（版本升级/技能授权语义）命中实体的**邻居**——命中实体本身无噪声——图遍历邻居是噪声放大器；组合 query 本身正确（用户拍板不动——程序不做语义判断）
-  - **实验裁决**：脑区归属门控收益小（36/40 已自然属于点亮脑区，且会误杀"三农/企业网银"等无归属好内容）——不引入门控；改做图遍历删除 + 分级注入 + 熄灭加速
-- **已知取舍**：① 图遍历删除——命中实体已够好、邻居是噪声源、省一次图快照+遍历；若未来需"相关实体扩展"可重加（黑名单/排序完善后）② 加速指数系数 0.15 保守（lit=8 → 0.897 不激进），按实机效果可调参；1.0 满值 3 轮无命中掉出 🟢 属合理边界 ③ 黄灯用最近命中缓存（命中即 🟢 使"本轮命中黄灯"不可达）——缓存条目无龄期衰减，同 🟡 脑区持续注入相同 top 3 ~8-11 轮（🟡 生命周期）——接受（语义="最近相关"；掉 ⚫ 后不再服务）④ 上下文成本上限 26 条 ≈ 6.5K tokens ≈ prompt 的 12%——可接受；🟢 档与参考知识段同源，seen_names 去重后常剩排名 11-20 尾部实体——活跃脑区知识段成为参考知识段的补充视角 ⑤ 手动激活/工具强化（无本轮命中）脑区 🟢 档 0 条——接受（无命中即无相关内容可注入，不构成噪声）⑥ cap 触发时第 6+ 个 🟢 脑区截断、随后掉 🟡 时缓存可输出 3 条 > 🟢 时 1 条（短暂反转）——仅最坏场景可达，已接受
-- **质量链**：计划 R1-R34 **三十四轮双审查**（每轮 2 审查员——A 产品逻辑链 + B 测试有效性；**R33+R34 连续两轮双 APPROVE**）——关键设计缺陷演进：🟡 档生产不可达 → 最近命中缓存（R1）；覆盖更新时序恒空 → 合并更新（R2）；🟢 只读本轮命中非单调 → 缓存回退（R3）；step6 region_entries 作用域 NameError（R4）/无 try/except 惯例（R7）/desc None 逃逸（R8）；上下文预算最坏 50 条 → cap 26 全局上限（R15）+ 准入粒度与 26 恰好边界（R18/R20/R22）；**缓存无会话边界生命周期 → clear_recent_region_entities 接线（R24）+ getattr 读属性防懒初始化副作用（R25）**；测试夹具假绿窗口 12 类逐轮清零（🟡 命中置 1.0、FakePool 硬编码 []、边界值避开、断言强度不足等——R6/R16/R17/R28/R30/R31/R32）；每 Task spec/quality 双审 PASS；commits 65fd2108 + 0181aa84（Task 1 熄灭加速红相+实现）+ f7095f7a + a0709b6f（Task 2 分级注入红相+实现）+ 156d7cf2 + 485ce0d8 + 77fcf1cd + adbcec81（Task 3 接线+清理+T3-5 会话边界）+ 本条目
+#### 修复：脑区注入分级——点亮数感知熄灭加速 + 🟢5/🟡3/⚫0 分级注入 + 图遍历移除 + 会话边界清理
+R1-R34 三十四轮双审（commits 65fd2108…adbcec81）：噪声放大器 _traverse_from_hits 整体删除（动态注入四处变三处）、cap 26 全局上限、clear_recent_region_entities 接线会话清理。
 
 ### 2026-08-12
 
-#### 修复：定时任务飞书流式卡片永不终结（死路由 pre-existing + 86d6c7a2 显性化）——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
+#### 修复：定时任务飞书流式卡片永不终结——chat_queue 仅终结不投递 + adapter 死卡 pop 重建 + do_ask_user 来源闸门兜底
+commits 79952acb+dcec016b+3e551f79；死路由是 pre-existing（scheduler 通道未注册路由，回复永不 SEND）。教训："原来没问题"≠机制不存在，先 diff 实证再下结论。
 
-- **现象**：① 定时任务提醒用户不回答 → 飞书流式卡片一直"思考中"（streaming_mode 永不终结）② 下次用户说话 → 新会话流式内容追加到旧卡片（顺序混乱）③ 后续 update 报 300309 "streaming mode is closed"（im_adapter_stderr.log 11:10:33 实证）→ 新内容丢失且永不建新卡
-- **根因（改造前后 diff 实证——"动错了哪"）**：
-  1. **死路由是 pre-existing**：`git diff e77fe352 3fd648aa`——chat_queue.py/scheduler service.py/channel/__init__.py **零改动**；scheduler 通道从未注册进 ChannelRouter（__main__.py 只注册 electron/im）→ 定时任务回复路由 `router.push(reply, "scheduler", "")` no-op → **最终回复永不产生 SEND** → adapter 终结卡片唯一途径（_on_send pop state）永不触发 → streaming_mode 永不关闭
-  2. **"原来没问题"的解释**：改造前同一机制同样存在——当时无 IM 历史会话（_im_channel_id 空 → 不建卡）或旧版 chunk 替换显示下"卡死"不可见
-  3. **本次改造的直接贡献是 86d6c7a2（accumulated 累计全文）**：让"下次会话内容追加旧卡片"以字面"追加"形式显性化（改造前是替换显示）——用户症状精确对应此改动
-  4. **t0 SEND 提前消费**：trigger_callback 入队瞬间以任务文本 fire-and-forget 发 SEND → 卡片未创建 → send_markdown 普通消息；之后回复流式建卡 → 再无 SEND
-  5. **刻意设计冲突**：service.py L99-105 注释——channel="scheduler" 是刻意选择（"回复只走 SSE 前端，避免同一任务两条 IM 消息"）——修复不得把回复 push 成独立 IM 消息
-- **修复（main 3 commits：79952acb + dcec016b + 3e551f79）**：
-  1. **2.1 chat_queue 仅终结卡片不投递**：_process_with_merge 回复路由 elif 分支 scheduler 特判——`get_im_channel()` 非空时 `get_im_gateway().send_sync(im_cid, "", pop_reply_to=False)`（空 content → adapter _on_send 用 accumulated 定稿终结卡片、不新增独立消息——兼容刻意设计）；新增 `enqueue_and_wait_with_future`（返回 (result, reply_future) 元组，三返回点全元组）；watcher.py 自推条件化（读 reply_future._im_finalized 标志，遍历合并批次置位——无 TOCTOU）；无 IM 继承维持 no-op（回复只 SSE）
-  2. **2.2 adapter 死卡 pop 重建**：update_card_element 返回错误码（成功/异常 None、业务失败 resp.code）；_on_stream 死卡 pop 集 {300309, 200850, 200740, 200750} → 先 `finalize_card` 纯终结旧卡（4 参 + 完整卡片 JSON + subtitle 清空——旧卡不再永久"思考中"；跳过 _filter_media 防媒体双上传）→ 重建新卡（种子 = 旧 accumulated 已含当前 chunk 无 double-append、CardState 构造序/message_id/失败检查/ask 门控/last_content/seq=1）；瞬时错误保留 state
-  3. **2.3 do_ask_user 来源闸门兜底**：_cid 空且来源 scheduler/ha-watcher → `_gw.push_target` 兜底推问题（临时设 _current_channel_id/_im_channel_id 使注入守卫命中——回答可注入）；Electron 会话（source=user）永不触发；主路径 im_pushed=True 保留
-- **质量链**：改造前后 diff 实证（DiffAnalyzer 独立分析）→ 计划 R1-R14 十四轮双审查（每轮 2 审查员异角度、先学飞书官方手册、完整逻辑链；R13+R14 连续两轮零 bug）→ 实施 3 commits + 55 测试全绿 → 实施后重审 R15+R16 连续两轮零 bug → 轻量方案对齐审查通过（无实施遗漏、无越界改动、6 项已知偏差全部记录）
-- **已知接受边界（已记录）**：ha-watcher 降级/零 chunk 时回复仅 SSE（低频）；死卡重建 finalize 成功时两张同内容卡片（= 验收 #4 接受）；_im_channel_id 兜底残留至下条用户消息；push_target 群聊过期；跨来源合并（user IM + watcher supplement）双投递为 pre-existing 出范围
-- **实机验证待确认项**（对齐审查标注）：验收 #1 真实飞书 streaming_mode 关闭、验收 #3 下次会话开新卡——需实机确认
-- **排查教训**：①"原来没问题"≠"机制不存在"——同机制改造前后都存在，改造（86d6c7a2）让症状从不可见变可见；先 diff 实证再下结论，勿凭空想象新问题 ② 定时任务回复"死路由"是刻意设计（避免双消息）的副作用——修复必须兼容设计意图（仅终结不投递），不能简单改为投递 ③ watcher 的 future（concurrent.futures.Future）与 chat_queue 的 reply_future（asyncio.Future）是**不同对象**——跨线程共享信号必须同一对象（enqueue_and_wait_with_future 元组返回）④ "照抄可运行"伪代码标准：函数签名（finalize_card 4 参/update_card_element 返回码）、字段名（message_id 非 msg_id）、变量作用域（else 分支无 card_id 绑定）、future 对象链——每个都是实施炸点，必须审查到
-
-#### 修复：IM 推送判定收口 should_push_im() 单一入口 + scheduler 回复投递内容 + 程序消息不推 IM（工程修复记录，非用户原话）
-
-- **收口**：`runner.should_push_im()`（= bool(_im_channel_id or _im_force)）成为"是否推 IM"唯一判定入口——五消费点统一调用（compat.py chat_session 闸门 / chat_queue.py scheduler 特判 / runner.py 流式三处 L3092/L3124/L3141）；禁止内联 get_im_channel() or get_im_force() 自写判定
-- **chat_queue scheduler 特判投递回复内容**：定时任务主 Agent 回复经 should_push_im 闸门 `send_sync(im_cid, reply, pop_reply_to=False)` 投递完整回复内容（替代 08-12"仅终结不投递"）——卡片生命周期由 adapter _on_send 保证（有流式卡 → state 分支用 reply 终结；无卡 → send_markdown 独立消息，receive_id 空时 adapter 回退 _push_chat_id 广播）
-- **service.py 删除程序消息推 IM**：reminder/background_script 两分支不再 route_out 推 IM——定时提醒程序消息只写 DB（enqueue_sync 入队即写入 Message.DB）唤醒主 Agent，Chat 前端由 DB 变更 SSE 刷新显示
-- **/chat 与 /chat/sync Electron 入口锁内双清 force**：两个会话入口在 _chat_lock 内 set_im_channel("") + set_im_force(False)（排队等锁期间 scheduler 可能重臂 force，锁内清除才生效）
-- **用户语义**：定时提醒置 IM 标志为真（规则 3）、主 Agent 的话发 IM、程序消息不推 IM
+#### 修复：IM 推送判定收口 should_push_im() 单一入口 + 程序消息不推 IM
+runner.should_push_im() 五消费点唯一判定入口；service.py reminder/background_script 不再 route_out 推 IM 只写 DB；用户语义三规则置位。
 
 #### 修复：压缩后主动重算前端模型使用率（sleep 强制压缩后圆环不刷新 → 下次睡眠重复强制压缩）
-
-- **现象**：压缩前 60% → sleep 强制压缩 → 前端圆环仍显示 60% → 用户唤醒不说话（无 LLM 交互）→ 下次 sleep 判定仍见 60% → 再做一轮强制压缩
-- **根因（实证）**：① sleep/force 压缩（`_tidy_context_impl`）后 `_last_prompt_tokens` **不置 0**（旧真实 token 数残留——只有主 Agent 超阈值路径 agent_loop.py:777/1006 置 0）；② `notify_compact_status_sync` 只广播 `{type,status,mode}`，done 不带 usage；③ 前端 chat.html compact_status 'done' 分支只清 `_compacting` 标志、不刷新使用率；④ 无交互 → real_tokens 永不更新 → 下次 sleep 判定（compat.py:2631-2648 real_tokens 优先）仍见旧高值
-- **修复（8 commits：1a846726→4292cb54）**：
-  1. **compat.py `compute_context_usage_estimate(store, context_window, messages)`**——启动时 get_stats fallback 同源全量估算抽取（返回 `float|None`，失败不伪装 0%）；get_stats fallback 改调（DRY + store/窗口注入免重复读取）
-  2. **chat.py `notify_compact_status_sync`** 加 `usage`/`reset_tokens` 参数——done+reset_tokens 才置 0 旧 `_last_prompt_tokens`（用 `get_runner` 无创建副作用）；SSE 事件带 usage（6 处既有调用零改动，向后兼容）
-  3. **compat.py `_tidy_context_impl` finally**——**先无条件保底 done（无 await——CancelledError 继承 BaseException 不入 except Exception，任务取消（clear_chat wait_for 600s 超时兜底）时保底广播必须在 await 前）**→ 再 `_compute_post_compress_usage`（消息数前后对比确认实际压缩）→ 条件二次 done（usage+reset_tokens）；**skip/abort/error 路径不置 0**（保留旧值 → 70% warningThreshold-0.1 冲突避让设计保持）
-  4. **chat.html**——抽 `renderContextUsage` + **渲染代际守卫**（loadStats 用本请求局部 `fetchTs` vs `_compactUsageTs` 最近压缩 usage 渲染时间戳——主 Agent 目标受守卫丢弃"保底 done 触发、reset 前被服务端处理"的旧值响应；子 Agent 目标直渲）；done 分支 `typeof data.usage === 'number'` → 标记代际 + 渲染，else → `loadStats('')` 固定刷新主 Agent
-- **质量链**：计划 R1-R5 五轮双审查（R4+R5 连续两轮零 bug；R3 抓 CancelledError 丢 done、R4 抓保底 done 竞态旧值覆盖、T4 quality 抓守卫条件反转）→ subagent-driven 实施（T1-T4 每 Task spec+quality 双审）+ 14 新测试全绿 + 全量回归 93 passed（4 个 test_tidy_cursor PROTECTED 断言为 pre-existing 豁免）
-- **实机验证（2026-08-13）与工程结束决策**：
-  - **mode-1（低使用率 <50%）场景实测**：23% → sleep 全套整理 → 前端 done 推送正常（红色→绿色）但值不变（仍 23%）——**这是正确语义**：mode-1（非破坏性）只推进增量游标（`Compress cursor auto-advanced`），context-manager 方案文本**不落地执行**；主 LLM prompt 由 `ContextManager.load_history → store.get_messages()` **全量加载、无游标过滤**（R6 全量逻辑链双审查实证：last_compress_id 只被 nap-EMA/force prompt/tidy 增量范围消费，无一处裁剪主 prompt）→ mode-1 后 messages.db 与下次 prompt 均不变 → 使用率不变是真实行为
-  - **已知限制（待遇到再修）**：mode-2/force 的**纯 update 压缩**（0 删 N 精简——如"8 条 0 删 1 精简"）消息数对比判定漏判 → 不置 0 不推 usage；v2.5 执行段标志方案已备（plans 分支 1aadf698：mode-2/force 最终级联过滤后 `valid_deletes|valid_updates` 非空置 `_compressed`；mode-1 纯游标推进**不置**——R6 双审查 REJECT 修正；force 嵌套函数需 nonlocal）——当前无法实机验证高使用率场景，工程结束，**遇到 mode-2/force 真实压缩（删除/更新落地）时再实施验证**
-  - **前端刷新机制本体有效**：done 分支 usage 渲染/loadStats 兜底 + 渲染代际守卫（保底 done 竞态已解决）——mode-2/force 删除场景下使用率会正确刷新
-- **质量链补充（R6 全量逻辑链审查教训）**：用户要求审查必须**从用户场景出发追踪完整逻辑链 + 主动找计划外受影响位置**（不是只核对计划语句）——R6 抓出"mode-1 游标推进不构成压缩"（prompt 全量加载无游标过滤）与"测试默认 protectRecentCount=10 走不到游标推进"两个此前漏掉的真实问题——点式审查（R4/R5 漏守卫反转）已被证明无效，后续审查一律全量逻辑链
+8 commits 1a846726→4292cb54：compute_context_usage_estimate 同源估算 + compact done 事件带 usage/reset_tokens + chat.html 渲染代际守卫；mode-1 纯游标推进使用率不变是正确语义。
 
 ### 2026-08-11
 
 #### 修复：主 Agent ask_user 工具（暂停问话）+ 轮中 schema 刷新 + @ 通道反馈闭环 + 通配路由存在性检查 + cleanup 注销通知（nutritionist 事故五层修复收尾）
+教训：与用户交流必须有显式暂停工具；工具调用任何失败不得静默（无反馈=任务终止）。
 
-- **根因**：① 主 Agent 没有 ask_user 工具——想与用户交流只能输出纯文本 → 无 tool_calls → 程序判定 CURRENT_TASK_DONE → **退出工具循环**（"停下来问话"），工作流中断；② schema 刷新只在 chat() 入口执行，工具循环内新建 agent md 当轮冻结 → 主 Agent 幻觉调用不在 schema 的 chat-with-*；③ @ 通道三层静默丢失（提取正则只认 @类型-4hex 不匹配同步名、回复防护只查 content 开头、orphan 静默丢弃）；④ 通配路由容忍不存在 agent 致幻影执行
-- **修复**：
-  1. **ask_user 工具**：复用子 Agent 的 UserAskRegistry（key="main-agent"），阻塞等待用户回答期间 chat() 生成器不结束 → 不触发 cleanup；挂起子 Agent 存活，工作流不中断（暂停而非停止）
-  2. **schema 轮中刷新**：_on_turn_end 每轮 LLM 前刷新工具 schema 并返回新 schema，工具循环内新建的 agent 当轮即出现 chat-with-*
-  3. **@ 通道反馈闭环**：提取正则兼容同步名（无 hex 后缀）、无匹配打日志、回复防护查任意位置、orphan 推回主 Agent 显式报错
-  4. **通配路由存在性检查**：get_subagent_config 对不存在 agent 返回空 dict → chat-with-* 未知 agent 显式错误反馈，不再容忍执行
-  5. **cleanup 注销通知**：轮末清理挂起同步子 Agent 时通知主 Agent，注销不再静默
-- **验证**：T1-T5 单测全过（test_main_agent_ask_user 11 / test_schema_refresh_in_turn 2 / test_at_sync_name 10 / test_at_prefix_interception 27 / test_at_message_parser 9 / test_ask_user_cleanup_protection 2 / test_chat_with_unknown 4 / test_dynamic_injection / test_truncation_marker）+ 全量回归与基线一致（db_monitor 9 陈旧 patch / agent_loop 13 为 pre-existing 豁免，零新增）
-- **教训**：需要与用户交流必须给显式暂停工具（业界 ask_user / LangGraph interrupt 模式）；"停下来问话"vs"暂停问话"是工作流中断与挂起的本质区别；工具调用任何失败都不得静默（无反馈 = 任务终止）
-
-#### 修复：飞书流式卡片（打字机失效 + ask_user 问题不即时显示）——IM 抽象层内容形态错配，R1-R11 方案审查 + 6 轮实施审查收敛
-
-- **根因（官方文档定案）**：飞书 CardKit 流式更新文本 API（`PUT card-element/content`）要求**每次传元素累计全文**，平台自动算增量做打字机（新文本以旧文本为前缀 → 续打；前缀不同 → 整体替换直接显示）。本项目 IM 抽象层全链路（runner → gateway.notify_stream → feishu adapter `update_card_element`）传的是 **chunk 增量**——相邻 chunk 前缀不同 → 每次整体替换 → 卡片只显示最后一个 chunk，**打字机永不触发**；只有 route_out SEND 终结（`full_reply` 全文）才显示完整 → 用户"内容在流式里但只有结束才显示全貌、ask_user 问题看不到"。
-- **修复（main 分支 9 commits：86d6c7a2 → ca6473dc）**：  1. **adapter 累积全文**：`CardState` 加 `accumulated`（首 chunk raw 种子，后续追加）→ `update_card_element` 每次传 `_truncate_card_text(accumulated)`（字节守卫 CUT_BYTES=29500，官方卡片 ≤30KB error 200860；CJK 3B/字，17900 字符≈53KB 超限）
-  2. **ask_user 终结 + 问题独立消息**：`handler.do_ask_user` 改 `send_sync(_cid, "", pop_reply_to=False, ask_finalize=True)` 终结当前卡片（adapter 用 accumulated 定稿）→ `send_sync(_cid, f"❓ {question}", ask_finalize=True)` 问题作独立消息即时显示；`gateway` 加 `send_sync`（同步线程安全桥，透传 ask_finalize）
-  3. **重复防护 `_ask_finalized` + `_ask_finalized_content`**：ask_user 终结记标记 + 拼接记录终结内容；无 state + 标记在 + 非 ask_finalize 的 route_out SEND 仅当 `content == 记录` 才跳过（真重复，防 ask_user 终结后无新 chunk 整轮重发）；return_value 兜底文本（CONTEXT_OVERFLOW/STOPPED/错误）≠ 记录 → 正常 send_markdown（不丢）；标记清除三处（建新卡 mark 门控 pop、route_out 跳过/兜底双清、重连 clear）
-  4. **stream_error 进流式**：runner else 分支（普通 str）也 notify_stream（进 accumulated，终结含错误文本不丢）
-  5. **uuid 防跨卡冲突**：`update_card_element`/`finalize_card` 的 uuid 带 card_id 前缀（`niu-{card_id[-6:]}-...`，防 ask_user 多卡 seq 重置 uuid 复用触发 200770）
-  6. **`_build_final_body` 总预算**：有图多段终结按总 JSON ≤30KB 分摊（实测常数 wrapper 220 / md 55 / img 135 / 后缀 26 / 转义 1.08）
-- **质量链**：方案 v3→v15 十一轮双审查（R1-R11，每轮 2 审查员异角度、**必须先学飞书官方手册**——未学=审查无效；R10+R11 连续两轮零 bug 通过）；实施 9 commits + 6 轮实施审查（Spec 合规 + Quality 2 P2 + 判重生命周期 4 轮修复收敛，最终 APPROVE 92%）；测试：tests/test_feishu_adapter.py 新建（21 用例，sys.path 需加 im-adapters/feishu/src）+ ask_main_agent/gateway 系列 33 passed
-- **实测反馈修复链（2026-08-12 用户飞书实测，4 commits：f2df81ac → 8ff12548）**：
-  1. **主 Agent ask_user 双通道（ba46b949）**：`do_ask_user` 的 `if not pushed:` 门控导致 **Electron 窗口开 + 飞书 IM 双端场景 IM 推送被跳过**（Electron SSE 推成功即 pushed=True → IM 不推）→ 飞书只看到主 Agent 流式回复"现在用 ask_user 问您"，看不到 ❓ 问题内容。改：`electron_pushed` + `im_pushed` 独立，IM 无条件推（_cid 存在时），`pushed = or`
-  2. **子 Agent @user 提问补 IM 推送（f2df81ac）**：`_ask_user_impl`（subagent.py）只推 Electron（SubagentEventBus）无 IM 推送 → 双端场景子 Agent @user 提问飞书同样收不到。补：`send_sync` 终结 + 问题独立消息（同 do_ask_user 模式）
-  3. **去 ❓ 装饰前缀（2f769b25）**：ask_user 问题消息的 `❓` 红色问号纯展示（回答拦截/判重都不解析），用户认为多余——三处（handler/subagent/chat.html）同步去掉
-  4. **niu.md 同步子 Agent 反问补 ask_user 强制警告（8ff12548）**：主 Agent 提示词原无 ask_user 指导——补"反问需要用户参与时**必须用 ask_user** 转述，否则子 Agent 阻塞 → 被迫结束 → 任务失败"（含 nutritionist 示例）
-  - **验证**：用户飞书实测全链路通过（messages.db + llm_interaction 确认：子 Agent 提问 → ask_user 显示 → 飞书回答 → set_answer 注入 → 主 Agent 转述 → 子 Agent 完成；测试 44 passed）
-- **排查教训**：① **飞书功能必须先学官方机制再动手**——本工程初版靠半途子 Agent 的猜测闭门造车，v1/v2 全错被回退（`git reset --hard e77fe352`）；官方文档一句话点破："Pass the **full text content**... prefix → typewriter, different prefix → replace"；② **IM 抽象层是"内容形态"约定层**——流式推增量 vs 平台要全文，语义在层间流转必须一致（runner 推 chunk 是增量抽象，adapter 负责翻译成飞书全文契约）；③ 审查 Agent 必须先学官方手册（用户铁律），否则凭印象审查全部无效；④ 方案多轮修订会引入代码块截断/残留/块间不一致——修订后必须验证代码块配对（偶数）+ 引用一致；⑤ **双端场景（Electron+飞书同开）是 ask_user IM 推送的盲区**——`if not pushed` 门控假设"纯 IM 会话"，实际 Electron 有订阅者时 IM 被跳过；排查须看 messages.db 会话还原 + 完整读 llm_interaction（勿凭单条日志下结论）；⑥ 内容判重（accumulated vs full_reply）受 strip_at_messages 逐 chunk 归一化失配影响不可靠——状态判重（标记+记录）更稳
+#### 修复：飞书流式卡片打字机失效 + ask_user 问题不即时显示——IM 抽象层内容形态错配
+main 9 commits 86d6c7a2→ca6473dc + 实测反馈 f2df81ac→8ff12548：CardState accumulated 累计全文适配飞书流式 API（传增量打字机永不触发）；双端场景 electron_pushed/im_pushed 独立判定。教训（铁律）：飞书功能必须先学官方手册再动手。
 
 ### 2026-08-10
 
-#### 修复：主 Agent 停止立即返回（统一可中断执行层 run_interruptibly 覆盖注入检索/TTFT/工具执行盲区）
+#### 修复：主 Agent 停止立即返回——统一可中断执行层 run_interruptibly 覆盖注入检索/TTFT/工具执行盲区
+commits c7493e4c…c4c9f740；教训：Python 线程无法 OS 级强杀，最优实现=后台 daemon 执行+前台轮询放弃等待；注入检索超时 120s→15s 参数化。
 
-- **根因**：2026-08-08 停止改造只覆盖 LLM 流式读取（`_interruptible_iter`）；主 Agent 每轮 LLM 前动态注入 LightRAG 检索（skill/knowledge/脑区激活 3 处 call_async，各 120s 超时）+ LLM 调用建立（TTFT，openai SDK `send(stream=True)` 同步等响应头，上界 read_timeout 300s）+ 工具执行（exhaust 同步消费）均无停止检查 → 卡住时停止无效、只能等超时（实测"三五分钟"= 120s×3 或 300s）
-- **修复（统一可中断执行层，机制级而非逐工具补丁）**：
-  1. **新增 `agent/generic/interruptible.py`**：`run_interruptibly(fn, stop_check)`——后台 daemon 线程执行 fn + 前台 0.2s 轮询 stop_check + **启动前预检**（stop 前置到达零线程启动，端到端收敛单轮询 ~0.2s），同 `_interruptible_iter` 模式
-  2. **动态注入四处包可中断**：search_by_file_path / search_multi_lightrag / _traverse_from_hits / 脑区激活 activate_for_query（runner.py，含 block 间 stop 短路）——检索超时 120s→15s（lightrag_adapter 两方法 + query_data 加 timeout 参数透传，慢则降级空注入）
-  3. **agent_loop LLM 前新增停止检查**（agent_loop.py L828/L834）：注入放弃后立即 STOPPED，不发起 LLM 调用
-  4. **LLM 调用建立（TTFT）三处 completion 包可中断**（litellm_adapter.py L710 初始 / L773 socket fallback / L837 重试）：放弃返回空或已积累内容 MockResponse（stream_error=False）→ after-LLM 检查 STOPPED，不再等 read_timeout 300s
-  5. **工具执行 exhaust 包可中断**（agent_loop.py L1157）：stop 放弃等待，后台线程继续跑、结果丢弃——用户拍板；chat-with-* 同步子 Agent 放弃时 terminate 实例（防 clear_stop 后逃逸单击停止）
-- **验证**：T1-T4 单测 16 用例（test_interruptible_runner 7 / test_inject_interruptible 3 / test_ttft_interruptible 3 / test_agent_loop_tool_interruptible 3）+ 既有 agent_loop 测试回归
-- **教训**：① **Python 线程模型无法 OS 级强杀**（pthread_kill 信号 handler 固定主线程 / PyThreadState_SetAsyncExc 不打断阻塞等待 / 杀 API 进程 launcher 不自动重启）——"停止立即返回"的最优实现 = 统一可中断执行层（后台执行 + 前台轮询放弃等待）② **用户语义**：不要求杀后台，只要主 Agent 前台立即回——放弃等待后 daemon 线程继续跑完可接受 ③ **TTFT 同步阻塞实证**：stream=True 仅"body 惰性读取"，请求发送+响应头等待同步阻塞（openai SDK `_base_client.py` request→send(stream=True) 实证），`_interruptible_iter` 在 response 返回后才启动、覆盖不到建立窗口 ④ 动态注入检索是主 Agent 每轮 LLM 前的隐藏长阻塞（120s×3 实测超时源），超时参数化是配套；锁核查无 self-deadlock（graph_read_lock=RLock copy-only、LightRAG coro 恒在单例 loop，asyncio 锁 coroutine-bound）
-- **质量链**：计划 11 轮审查（R1-R11，R10+R11 连续两轮零 bug；R5 跨 5 轮抓出 TTFT 盲区、R6 补重试/fallback、R7 测试缺陷双审交叉、R1/R2 补 chat-with 逃逸与脑区激活第 4 处）；每 Task spec+quality 双审；提交 c7493e4c（执行器）+ 25bc4b72（注入）+ 47b357d4（脑区）+ 1b6c3258（TTFT）+ e8805557（LLM 前检查）+ c4c9f740（工具执行）
+#### 新增：macOS Cmd+Q 拦截（assistant 模式精灵/Chat/图谱 3 窗口全拒绝）
+commits b9943419+cd11d191；菜单 accelerator 条件化 + before-quit 守卫 + powerMonitor 关机放行；教训：dev 清理 SIGTERM 会被守卫拦下需 pkill -9，osascript 目标是库存二进制名 "Electron"。
 
-#### 新增：macOS Cmd+Q 拦截（阻止误退出，assistant 模式精灵/Chat/图谱 3 窗口全拒绝）
+#### 修复：定时任务重复发送——trigger_callback 改 fire-and-forget 消除等待超时重试窗口
+commits 51485133+edd42231+7c165499；教训：通知类任务"送达即完成"，等 Agent 回复判成功必引入重复窗口；enqueue_sync 必须显式 channel="scheduler" 防双 IM 消息。
 
-- **问题**：macOS 按 Cmd+Q 直接退出应用（自定义菜单"退出"项 accelerator 触发 `app.quit()`），精灵/Chat/图谱 3 窗口（同进程）都被误退出；Windows 无此问题（无强制退出快捷键），零改动
-- **修复（ui/main/main.js 单文件，三重机制）**：
-  1. **根源拦截（按模式条件化）**：macMenu（顶层 darwin 块、全模式共享）"退出"项 accelerator 改 `WINDOW_MODE === 'assistant' ? undefined : 'Cmd+Q'`——assistant 模式移除 Cmd+Q 绑定（快捷键不再触发 quit），settings/graph 保留原行为
-  2. **防御网（before-quit 守卫）**：`process.platform === 'darwin' && WINDOW_MODE === 'assistant' && !allowQuit` → `e.preventDefault()` + 日志（darwin 门控保证 Windows/Linux 零语义）；拦截一切未闩锁的 quit（AppleScript `quit app`、系统 quit、未来 `app.quit()` 路径）
-  3. **系统关机放行（powerMonitor）**：`powerMonitor.on('shutdown')`（whenReady assistant 分支，Electron 文档标注 Linux/macOS）→ `e.preventDefault()` + `allowQuit = true` + `app.quit()`——避免守卫 preventDefault 打断 macOS 关机/注销（会弹强制退出对话框）
-  4. **allowQuit 闩锁**：macMenu 退出项鼠标点击、close-all IPC 先置位再 quit；托盘"⛔ 关闭妞妞"用 `app.exit(0)`（Electron 文档：不触发 before-quit）天然绕过；闩锁不复位语义已在守卫注释声明（当前无窗口 close 拦截中止路径）
-- **验证**：自动（osascript `quit app "Electron"` → 守卫 preventDefault + `[main] quit blocked (unlatched quit: AppleScript/system?)...` 日志；settings/graph 独立模式回归不拦）+ 用户实机（3 窗口按 Cmd+Q 均不退出、菜单点击/托盘确认正常退出）
-- **排查教训**：① **SIGTERM 给 Electron 会被 Chromium 路由进退出序列 → 触发 before-quit → 被守卫拦下**（dev 清理需 SIGKILL `pkill -9`；普通 pkill 的 SIGTERM 会让进程存活 ~1 分半；Rust launcher 从不向 Electron 发信号，生产无影响）② 守卫日志文案必须准确描述真实触发面——assistant 模式真实 Cmd+Q 被菜单层消费、永不触发 before-quit，守卫只在未闩锁的非 Cmd+Q quit（AppleScript/系统）触发，文案用 "unlatched quit" 防误导 ③ 实机验证的应用名：UI 进程是库存 Electron 二进制（bundle 名 "Electron"），`niu.app`（CFBundleName="Niu"）是 Rust launcher 监督进程（无 AppleEvent handler）——osascript 必须 `quit app "Electron"`
-- **质量链**：计划 5 轮审查（R1-R5，R4+R5 连续两轮零 bug；R3 抓 osascript 应用名 P1 双审交叉）；实施 + spec 审查 ✅ + code quality ✅（1 Minor 日志文案修复）；提交 b9943419 + cd11d191
+#### 修复：子 Agent 上下文压缩两级策略（tool 输出占位符化 → FIFO 兜底）+ 删除 targetThreshold 配置
+commits 5cc3f890+a57bef47+2550d937+a0d1f671；占位符化幂等、达标即停、10 轮保护；压缩目标写死窗口 50%。
 
-#### 修复：定时任务重复发送（trigger_callback 改 fire-and-forget，消除等待超时重试窗口）
-
-- **根因**：`trigger_callback` 用 `ChatQueue.enqueue_and_wait`（120s 超时）等 Agent 回复——周报类长任务（>120s，实证 121.8s）超时后 `future.cancel()` 只取消等待、Agent 仍在处理 → 10s 重试再入队 → 同一任务内容入队两次（2026-08-10 09:00 weekly-report-reminder 实证：09:00:00 与 09:02:10 两条周报入队）
-- **修复**：① reminder + background_script 两分支改 fire-and-forget——`enqueue_sync(channel="scheduler")` 入队即完成返回 "ok"，scheduler 立即 reschedule/删除；② 蹦高 + IM 推送提前到入队后（内容 = 任务内容 prompt，不再等 agent_reply）；③ bg recurring 报错保留 3-strike DLQ（返回 None）、one-time 报错 "ok"+永久删除（防 retry_failed 无限重置）；④ **enqueue_sync 必须显式传 `channel="scheduler"`**（默认 "im" 会让 ChatQueue worker 把 Agent 回复自动 push 到 IM——叠加手动 route_out = 同一任务两条 IM 消息；"scheduler" 通道未注册 → 自动回路由 no-op）；⑤ 删除 `enqueue_and_wait`/`_try_once`/10s 重试/`import time`；⑥ 删 `test_trigger_callback_retry.py`（3 个重试测试作废）
-- **保留**：scheduler.py 零改动（in_progress/CAS 跨进程防双触发、8h 超时重置、失败计数、retry_failed）；`ChatQueue.enqueue_and_wait` 方法本身（ha_watcher 仍用，120s 等待无重试）
-- **完成语义**：入队成功 = 通知已送达 = 任务完成；Agent 处理失败由 ChatQueue 降级回复机制兜底，不再需要 scheduler 等回复判成功
-- **交付**：commits 51485133（reminder）+ edd42231（bg）+ 7c165499（删重试测试+ruff 清理）；计划 4 轮审查（R1-R4，连续两轮零 bug）；3 Task 每 Task spec+quality 双审；终审 APPROVE（0 Critical/0 Important，5 Minor 文档级取舍：scheduler.py 过期注释/_CALLBACK_TIMEOUT 注释、bg 分支 4 个测试小缺口、两分支推送代码重复——均为计划已接受项）
-- **排查教训**："等 Agent 回复判成功"的等待协议脆弱（Agent 生成耗时不可控）——通知类任务应"送达即完成"，等待+超时重试必然引入重复窗口；跨通道自动回路由（ChatQueue worker 按 channel 回推回复）是防双消息的隐性耦合点，改 channel 语义必须先查 worker 路由行为
-
-#### 修复：子 Agent 上下文压缩两级策略（tool 占位符化 → FIFO 兜底）+ 删除 targetThreshold 配置
-
-- **问题**：① 子 Agent 上下文超 80%（warningThreshold）后直接 `_fifo_prune` 整组删除——一轮的 assistant 推理文本 + 全部 tool 输出一起消失，LLM 推理链断裂，有用 tool 信息丢失导致重调工具；② `targetThreshold` 是子 Agent 专用压缩目标参数（百分比），但 `docs/manual-user-guide.md` 描述像主 Agent 的"强制压缩目标"，主 Agent 实际用 `compressTargetTokens`（绝对值 60000），参数对用户隐形且冗余。
-- **修复（两级压缩，scheduler/主 Agent 零改动）**：
-  1. **阶段 1（新增，温和）** `_placeholderize_tool_outputs`（agent/generic/agent_loop.py）：80% 触发时从最早 tool 输出开始，content 替换为 `[name 输出已裁剪]`（tool 消息自带 name，缺失回退 assistant.tool_calls 的 OpenAI 嵌套 `function.name` 匹配）；**达标即停**（token ≤ target 即停，保留尽量多上下文，防重调工具）；**10 轮保护**（最近 10 轮对话内 tool 不动，从尾部数 user 消息）；**幂等**（已占位符跳过，二次压缩不重复替换——用户拍板）
-  2. **阶段 2（保留）** 仍超 target 才 `_fifo_prune` 整组删（保护 system+初始 user 不变）
-  3. **删除 targetThreshold 配置**：`_read_target_threshold()` 删、压缩目标写死 `int(contextWindowSize × 0.50)`（用户拍板：80% 触发 → 压到 50%，参数无必要）；config-manager 模板 2 处、manual-user-guide、AGENTS.md 示例、3 个测试 patch 全链清理；settings UI 本无此字段
-  4. **保留**：warningThreshold（主/子共用触发线，配置+UI 可调）；`context_target_threshold` 内部参数（subagent.py 写死 50% 传入，runner.py 主 Agent 传 0）；主 Agent 压缩（compressTargetTokens/on_context_high_usage）零改动；首轮回退路径（context_fifo_threshold）零改动
-- **10 轮保护只约束阶段 1**：FIFO 兜底仍可删最近 10 轮内整组消息（两级设计必然，用户"10 轮内不动"仅适用于阶段 1）
-- **重复触发无害**：子 Agent 分支不设压缩冷却/不重置 last_prompt_tokens → 下轮可能重复触发占位符化，因幂等 + 达标即停为 no-op
-- **交付**：commits 5cc3f890（占位符化纯函数 TDD，10 单测）+ a57bef47（两处触发点两级串联，兜底 0.30→0.50）+ 2550d937（删 targetThreshold 全链路）+ a0d1f671（回归适配）；计划 R1-R5 审查（R4+R5 连续两轮零 bug）；每 Task spec+quality 双审；终审 APPROVE（0 Critical/0 Important）
-- **用户可见变化**：子 Agent 压缩目标从 30%（配置缺失兜底）→ 50% 窗口（更温和）；旧轮次 tool 输出可能显示为 `[工具名 输出已裁剪]`
-- **真实场景验证待触发后补（2026-08-10 用户拍板"暂时算完成"）**：占位符化触发条件苛刻（子 Agent 上下文 > 80% 且旧轮次含大量 tool 输出，需真实 LLM 长会话），当前验证止于单测（test_tool_placeholderize.py 10 例）+ 集成测试（mock 层）——真实场景端到端效果（占位符化后 Agent 推理连贯性、达标即停是否如期、是否减少 FIFO 整组删）未实测；**以后实际触发该场景时（日志见 `[ToolCrop] placeholderized N tool outputs`）需确认效果，必要时再调优**
-
-#### 修复：子 Agent 去掉轮数上限（max_turns=None 无上限）+ 未完成结果游标不推进
-
-- **事故（2026-08-10 实机）**：睡眠整理 context-manager 逐条精简 103 条消息，第 20 次 LLM 调用（raw_http 20260810/000031，finish_reason=tool_calls 要求再精简 idx:33/67/71）后撞线 `call_subagent` 硬编码 `max_turns=20`（初始化代码带入，从未有人拍板）→ `agent_runner_loop` 返回 MAX_TURNS_EXCEEDED → `call_subagent` 后处理只有 LLM_ERROR/length/CONTEXT_OVERFLOW 三分支 → 落 `return last_reply`（中间文本"再精简几个小工具输出..."）→ `_tidy_context_impl` 判非 overflow → **游标自动推进到范围末尾** → "压缩没结束但完成"；未处理消息被游标越过、下次整理不再覆盖（日志 `[Tidy] context-manager result: 再精简几个` + `Compress cursor auto-advanced` 特征）
-- **用户拍板**：**子 Agent 是智能体，不需要轮数上限**（工具循环已有重复工具调用检测等多级保护，无上限后防失控依赖 stop_predicate 三检查点 + 上下文溢出保护 + 重复检测注入）；游标误判一并修
-- **修复**：
-  1. **max_turns=None = 无上限**：`agent_runner_loop` 循环条件 `while handler.max_turns is None or turn < handler.max_turns`（agent/generic/agent_loop.py L642/L750）；`_run_agent_loop` 默认 `max_turns: int | None = None`；`call_subagent` **新增 max_turns 参数（默认 None）**，resume/异步/同步三路径透传（agent/subagent.py）；主 Agent 默认 40 轮零改动（runner.py chat 入口）；显式传小值（测试用 1/2/5）仍触发 MAX_TURNS_EXCEEDED
-  2. **incomplete JSON 契约**：call_subagent 后处理在 LLM_ERROR 之后、finish_reason=length **之前**插入分支——result in (MAX_TURNS_EXCEEDED/STOPPED/TERMINATED_BY_SUPPLEMENT) → 返回 `{"incomplete": true, "agent", "reason", "partial_result"(≤2000)}`（分支前置防 TERMINATED_BY_SUPPLEMENT+length 双重命中被 COMPACT_TRUNCATED 抢先——/stop drain 时序会走 TERMINATED_BY_SUPPLEMENT 而非 STOPPED）
-  3. **全库 11 处游标决策点**（compat 7 + runner 3 + handler 1）`or _is_subagent_incomplete(x)` → 游标不推进 + reason 日志：compat L2697/L2780/L2862/L3279/L3453/L3535/L3617、runner L1297（Nap entity）/L1378（Nap dream，**三分支重构**：overflow 1/3 fallback 专属 / incomplete 不动 / else 全量保留 processed_up_to+range-end 兜底）/L1765（_run_subagent_step）、handler L963（_update_journal_cursor）
-  4. **handler 顺序钉死**：`_update_journal_cursor` 用原始 result；incomplete JSON → 自然语言"子Agent未完成任务（reason）"只作用于返回 LLM 的显示副本（L1163/L1164）
-  5. `_run_subagent_async` 通知基于 result 判 incomplete（"未完成（被停止/轮次耗尽）"）；mode2 入口短路；`_is_subagent_incomplete` 严格 `is True` 判定
-- **存量游标修复（一次性数据操作）**：`~/.niu/last_compress.json` 回退 `6327de4d`(idx:103) → `12ba93d6`(idx:32)（未处理 idx:33/67/71 重新进入下次整理）；备份 `last_compress.json.bak-20260810-1520`；**注意 15:18 实况：代码修复前每次整理都会重演 bug 推进（回退被覆盖一次）——修复完成后才回退才有效**
-- **交付**：commits d48e2d9a（agent_loop None）+ 13b306e9（call_subagent 参数透传）+ 292268dd（incomplete JSON 分支）+ 3948eec2（11 游标点 + _is_subagent_incomplete + 测试 22 新）；计划审查 R1-R6（R5+R6 连续两轮零 bug，R2 曾抓到"Task 2 改错函数"P0、R3 抓到"PM 采纳错误行号修正"、R4 抓到规格内部矛盾）；每 Task spec+quality 双审（Spec 符合规格可交付、Quality correct 0 Critical/0 Important，5 P3 非阻塞：journal 重写时间戳 cosmetic/force-cm fail-loud 日志误导（计划已接受）/JSON 误判面低概率/无上限逃逸风险（用户拍板，建议后续加轮数看门狗）/3 处覆盖缺口）
-- **实机验证（2026-08-10 用户确认）**：修复后首次睡眠整理**压缩 5 轮自然完成**（对比事故时 20 轮撞线未完成）——修复生效的基本确认；长程大范围压缩场景待将来自然触发后验证（**下次触发时确认：无上限后长任务不被掐断、/stop 打断后游标不推进**）
-- **排查教训**：①"压缩没结束但完成"先查**子 Agent 终止路径**（max_turns/STOPPED/TERMINATED_BY_SUPPLEMENT 三 result 是否在 call_subagent 后处理全有分支），不是先怀疑超时——最后一次 LLM 调用 10 秒正常返回，超时假设不成立；②游标推进逻辑"非 overflow 即成功"会把一切未完成结果当成功，程序化终止（非正常完成）必须有显式标记；③**PM 复核审查员行号类反馈必须 grep/sed 实证**——R2-A 的"L987 实为 L980"错误信息曾被采纳（R2-8），R3-A 实证纠正
-- **排查教训**：子 Agent 触发分支（on_context_high_usage None）不设压缩冷却——与主 Agent 分支（回调后冷却）行为不同，跨轮重复触发依赖幂等兜底；测试断言"达标即停"必须用与实现同一 count 函数量 target（probe 法），不能猜字符数
-- **回归豁免清单（12 个 pre-existing 测试失败，与本工程无关，勿当新失败）**：
-  - `tests/test_context_overflow.py`：3× TestLiteLLMAdapterContextOverflow（断言查 chat 方法源码字面量 'context window'/'prompt is too long'/'maximum context length'——源码已不含）+ 3× TestSubagentFIFOThreshold（call_subagent 测试 mock 的 client.backend AttributeError）
-  - `tests/test_on_before_llm_callback.py`：3×（_make_response 未设 stream_error=False → MagicMock 自动真值 → LLM_ERROR 短路）
-  - `tests/test_llm_error_handling.py`：1× test_call_subagent_returns_subagent_error_prefix（FakeClient 无 backend）
-  - `tests/test_compress_history.py`：1× test_build_compress_history_protected_assistant_excludes_its_tool（0==3）
-  - `tests/test_sync_subagent_interaction.py`：1×（suspended_handler None）
-  - 既有已知：test_compress_quality 的 REDACTED_USER_PATH、test_tidy_cursor 4 个 PROTECTED 断言
+#### 修复：子 Agent 去掉轮数上限（max_turns=None）+ 未完成结果游标不推进
+commits d48e2d9a/13b306e9/292268dd/3948eec2；call_subagent 后处理新增 incomplete JSON 契约，全库 11 处游标决策点不推进。教训：程序化终止必须有显式标记；PM 复核审查员行号类反馈必须 grep 实证。
 
 ### 2026-08-09
 
 #### 新增：知识图谱时间链（会话日期链补全 + 主 Agent 认知 + dream-evolver 减负）
+nap/sleep/force 三管道收尾 _ensure_session_chain() 补 followed_by 日期链，只补边不建实体。
 
-- **程序补链**：`_ensure_session_chain()` 在三条 dream 管道收尾补全会话实体 `followed_by` 日期链——nap（小憩）/ sleep（睡眠兜底）/ force（手动整理），小憩与睡眠互补（一天没事小憩不触发但睡眠必触发）；只补边/断边、不建实体（当天无内容=选择性记忆正常行为）；10 日历天窗口；中间日期实体出现后断开跨越边、重建逐日链（如"昨天的事"补挂）
-- **dream-evolver 减负**：特殊节点表改为"日期实体天生存在"+ 连接示例（肯定式，无否定指令），消除其"先查再建"日期实体的动作
-- **主 Agent 教学**：niu.md 主动深挖策略加"知识图谱时间链"小节（何时用/怎么用，含 timeline_query 参数）
-- **disk 容错**：`--start-entities` 等 array 参数裸字符串自动包 JSON；get_entity_info 说明"关系用 get_graph"
-
-#### 新增：LightRAG 关系方向语义说明（图无向，方向在 description）
-
-- **事实**：LightRAG 图本质无向（nx.Graph + 读取排序 + vdb sorted 去重，上游 2025-03 起设计，fork 未改）——边的 source/target 顺序只是排序，不代表方向；**方向语义只在关系 description 文本里**（如"李磊 属于 人际关系脑区"），LLM 读描述可正确推断（红楼梦人物关系测试准的真相）
-- **修复**：① lightrag 查询工具（query/query_data/get_graph/timeline_query/get_relation_info）的 MCP Schema + disk yaml long 描述加输出契约说明"source/target 顺序仅为排序、不代表方向；方向看 description"；② **disk_navigator 目录 readme 渲染 tool.long 描述**（此前只显示 short+参数，漏 long——前天优化的 browser/config-manager/file-parser 描述与方向说明主 Agent 都看不到；readme 应为最全面的总览）
-- **排查教训**：虚拟磁盘工具说明主 Agent 实际看 `cat /<dir>/readme.txt`（动态生成，渲染 short+参数+examples，不渲染 long）——修改工具描述须确认 readme 呈现；LightRAG"方向乱"多为字典序字段与 description 混读的假象，先确认图存储/查询方向语义再下结论
+#### 新增：LightRAG 关系方向语义说明（图本质无向，方向只在关系 description 文本）
+查询工具 Schema/disk yaml 补输出契约；教训：disk_navigator readme 才渲染 tool.long，改工具描述须确认 readme 呈现。
 
 #### 新增：程序触发子 Agent 显示标签页（nap/sleep/force 全程可见）
+call_subagent_with_auto_answer 补 pre_register + subagent_started 推送 + 异常清理三件套；fa59f3ad 加固归属守卫。
 
-- **根因**：`subagent_started` 事件只有 `handler.py _call_subagent_gen`（主 Agent 工具循环 chat-with-* 路径）一个发射点；系统触发的子 Agent（nap 小憩 / sleep 睡眠整理 / force 压缩管道的 entity-extractor、dream-evolver、journal-agent、context-manager）走 `call_subagent_with_auto_answer` → 低层 `call_subagent`，从不发该事件 → 前端收不到启动通知，不建 tab、不连 SSE（详细事件堆积在 ring buffer 无人订阅）——不是有意隐藏，是事件缺失遗漏
-- **修复**：`call_subagent_with_auto_answer` 首次调用（answer is None）补三件套——① pre_register（防 SSE 404 竞态，幂等）② `subagent_started` 推送（is_sync=False，程序触发不阻塞主对话；`call_soon_threadsafe` 线程安全，调用方在 to_thread 后台线程）③ 异常/值错误清理（call_subagent 抛异常时无条件 close、register 失败返回 `[错误]` 前缀时 close——close 幂等 _closed 防双关，防 ring buffer 泄漏 + tab 卡死，同 handler 问题2c/2e 模式）
-- **前端零改动**：main.js/chat.html 对 subagent_started 零过滤，收到即建 tab；同名复用（entity-extractor 每次整理同名复用旧 tab 不堆积）；窗口关闭守卫已有
-- **不受影响**：blocked_subagents 不动；subagent_started 是顶级事件不进 LLM 上下文；skill-sync 非子 Agent；调度器 cron 任务走主 Agent 工具路径本就显示（发射点互不重叠无双推）
-- **后续状态**：① 回归豁免（既有失败与本工程无关，按计划豁免不修）——`test_tidy_cursor.py` 4 个（PROTECTED 计数断言与 `_find_protected_range` user-turn-aware 语义不符，niu_api/compat.py 既有行为）+ `test_runner_stream_events.py` 1 个（`REDACTED_USER_PATH` 字面量路径未替换，纯测试工件）；② 实机验证已通过（2026-08-09）——重启后 sleep 整理触发，entity-extractor/dream-evolver/journal-agent/context-manager 四子 Agent tab 实时显示工具调用与回复、结束后自动关闭、同名复用不堆积；③ 手册分册不专门更新——tab 渲染为既有机制（manual-general-subagent §十三 泛化描述已覆盖），本次仅补事件入口，SYSTEM_MANUAL L30"子 Agent 运行时自动创建独立标签页"修复后更准确无需改；④ 全量质量审查加固（commit fa59f3ad）——`[错误]` close 加归属守卫（`SubagentRegistry.get(agent_name) is None`，并发同名触发时不误关活跃实例 tab/ring buffer）+ 两处 close 异常吞噬（`except Exception: pass`，防 TOCTOU 掩盖原始异常/破坏契约）
-
-#### 修复：dream-evolver 自建日期节点（三层根因 + 工具契约修复）
-
-- **根因**：① 提示词日期节点行只说"天生存在"，无免查/免建指令——通用"先查再建"流程（阶段A A1 去重、实体提取规则 3）对日期节点同样生效；② 查询一致性——`search_entities` 是向量检索，日期节点不在 vdb_entities（数字+汉字日期名嵌入不可靠）必 miss，而 `insert_entity` 的精确名查重能命中——"查不到→准备建→发现又有了"三轮反复；③ **insert_relation 工具描述未说明"建链自动创建不存在实体"**（LightRAG fork 功能：insert_relation 对不存在端点自动创建占位节点 description=UNKNOWN/entity_type=unknown——图谱 08-03/08-04/08-07 会话占位节点即实证），Agent 无从得知可直接建链
-- **修复**：① MCP Schema + disk yaml 的 `insert_relation` 描述补"源/目标实体不存在时自动创建（含 `YYYY-MM-DD会话` 日期节点），无需预先查询存在性，直接建链即可"；② 提示词日期节点行改"当天日期节点由系统自动维护，建链时自动存在——不需要查询、不需要手动创建" + 连接优先原则第 3 条改"直接建链连接即可，节点自动存在"（**不提脑区**——禁止类比：脑区有注入列表而日期节点没有，类比会反向误导"没注入=不存在=要创建"）；③ manual-vector-store 工具表同步
-- **排查教训**：① 工具描述必须说明副作用类输入语义（建链自动创建）——大模型读工具描述判断行为，不写它就按最保守流程执行；② 提示词对系统固定节点要**直接陈述机制**（"建链即自动存在"），不要用类比——类比可被模型反向解读；③ 排查流程：日志还原 Agent 工具调用序列（search 的 query/top_k/返回 → 结论 → 补救动作）比读提示词更能定位真实触发点
+#### 修复：dream-evolver 自建日期节点——insert_relation 工具契约修复
+描述补"建链自动创建不存在实体"；教训：工具描述必须说明副作用语义；提示词对系统固定节点直接陈述机制、不用类比。
 
 ### 2026-04-15
 
-#### 新增：KG 数据流入 5 条渠道全部实现
-
-知识图谱（KuzuDB）从空壳变为有真实数据流入：
-
-| 渠道 | 实现方式 | 关键文件 |
-|------|---------|---------|
-| 1 文档→KG | `sync_to_kg()` 程序化调用 | `photo-server/__init__.py` |
-| 2 照片→KG | `sync_photo_to_kg()` 程序化调用 | `photo-server/__init__.py` |
-| 3 聊天→KG | dream-evolver 子Agent，睡眠时增量学习+KG写入 | `config/agents/dream-evolver.md` |
-| 4 便利贴→KG | notes API + `sync_note_to_kg()` | `niu_api/notes_api.py` |
-| 5 批量整理 | KGSync 服务，6小时周期 | `agent/injector/kg_sync.py` |
-
-#### 新增：梦境进化子 Agent（dream-evolver）
-
-从 context-manager 拆出学习/建模职责，新增 KG 实体/关系写入。
-
-- **执行顺序**：sleep → dream-evolver（增量学习+KG写入）→ context-manager（压缩删除）
-- **6 项工作**：错误经验、成功经验、工具方言、用户状态、用户画像、KG 实体/关系写入
-- **增量游标**：`~/.niu/last_dream_evolve.json`，避免重复处理 **【已随 2026-08-25 MD 中继工程五退役】**——提炼文件驱动化（F2 队列）后无重复处理问题，dream-evolver 改为自读 F3 工作集报行号、程序删 F2 前缀，无任何游标读写
-- **metadata 对齐**：工具方言→query_pattern（递归检索），经验→document（参考知识桶），状态/画像→interaction_habit（交互习惯桶）
-- **关键文件**：`config/agents/dream-evolver.md`、`niu_api/compat.py`、`config/agents/context-manager.md`
-
-#### 新增：便利贴后端 API + SQLite 持久化
-
-便利贴从纯 localStorage 迁移到后端存储：
-
-- **新建**：`niu_api/notes.py`（SQLite 数据层）、`niu_api/notes_api.py`（FastAPI 路由）
-- **端点**：POST/GET/PUT/DELETE `/api/notes`
-- **数据库**：`~/.niu/notes.db`
-- **前端迁移**：启动时从后端加载，更新时调 updateNote，批量同步实现
-- **KG 写入**：便利贴创建/编辑时写入 KG Document 节点 + 实体提取（正则规则）
-
+#### 新增：KG 数据流入 5 条渠道全部实现（KuzuDB 时代：文档/照片/聊天/便利贴/批量整理）
+#### 新增：梦境进化子 Agent dream-evolver 从 context-manager 拆出（增量游标 last_dream_evolve.json 已随 2026-08-25 MD 中继工程五退役）
+#### 新增：便利贴后端 API + SQLite 持久化（notes.py/notes_api.py，~/.niu/notes.db）
 #### 重构：context-manager 精简为压缩专用
-
-移除 5 个学习/建模章节，只保留压缩逻辑：l0/l1/l2 压缩、会话单元识别、消息删除规则、强制压缩模式。
-
----
 
 ### 2026-04-04
 
-#### 修复：NiuHandler 缺少工作记忆机制
-
-**问题**：Agent 无法"自我进化"，工具循环表现异常，代码直接显示给用户而非执行。
-
-**根因**：NiuHandler 缺少原始 GenericAgent 的核心机制：
-
-| 机制 | 作用 | 缺失状态 |
-|------|------|---------|
-| `tool_after_callback` | 每次工具调用后记录摘要到 `history_info` | ❌ |
-| `_get_anchor_prompt` | 生成工作记忆提示词注入 `next_prompt` | ❌ |
-| `next_prompt_patcher` | 周期性警告防止死循环 | ❌ |
-
-**解决方案**：
-1. 添加 `tool_after_callback`：工具调用后提取 `<summary>` 或自动生成摘要，追加到 `history_info`。
-2. 添加 `_get_anchor_prompt`：生成包含 `history_info[-20:]`、`current_turn`、`key_info` 的工作记忆提示词。
-3. 添加 `next_prompt_patcher`：每 35 轮强制 `ask_user`、每 7 轮警告禁止无效重试、每 10 轮注入全局记忆。
-4. 修改各 `do_XXX` 方法：使用 `_get_anchor_prompt()` 替代硬编码的 `"\n"`。
-5. 添加状态重置：`/new` 命令时调用 `reset_working_memory()`。
-
-**修改文件**：`agent/handler.py`、`niu_api/compat.py`。
-
-#### 修复：子 Agent 缺少 MCP 工具
-
-**问题**：子 Agent（file-processor 等）调用 MCP 工具失败。
-
-**原因**：`subagent.py` 只获取基础工具 schema，没有 MCP 工具。
-
-**解决方案**：
-- `mcp_client.py` 添加 `get_mcp_tools_for_servers()` 按 server 名称过滤工具。
-- `subagent.py` 添加 `get_subagent_mcp_tools_schema()` 根据 `mcpServers` 配置获取工具。
-
-#### 修复：空代码块显示问题
-
-**问题**：LLM 响应中的空代码块原样输出，显示为多个 ` `````` `。
-
-**解决方案**：在 `runner.py` 添加清理空代码块的正则表达式。
-
-#### 新增：动态注入架构
-
-**目标**：MCP 工具描述和 Skills 内容按语义动态注入提示词，减少基础提示词长度。
-
-**实现**：
-- `agent/injector/sync.py` — Skills 定时扫描同步到向量库（`metadata.type="skill"`）
-- `niu_api/injector.py` — API 端点手动注册 MCP 工具描述（`metadata.type="mcp_tool"`）
-- `agent/runner.py` — `_inject_dynamic_resources()` 按语义搜索并注入
-
-#### 修复：同步/异步架构冲突
-
-**问题**：GenericAgent 纯同步，MCP 客户端异步，FastAPI 异步端点，导致事件循环冲突。
-
-**解决方案**（已被同进程架构取代，保留为历史）：
-- 新增 `agent/mcp_sync_bridge.py` — 后台事件循环 + `run_coroutine_threadsafe`
-- 修改 `agent/handler.py` 的 `dispatch()` 使用 `MCPSyncBridge` 调用 MCP 工具
-- 修改 `niu_api/compat.py` 使用 `asyncio.to_thread` 运行同步 chat
-
-#### 修复：历史对话丢失
-
-**问题**：`niu_api/session.py` 将 `session_id` 当作 `limit` 参数传入。
-
-**解决方案**：修复 API 调用，移除多余的 `session_id` 参数。
-
-#### 修复：MCP 工具未挂载
-
-**问题**：`compat.py` 调用 `get_runner()` 创建新 Runner，没有 MCP 工具。
-
-**解决方案**：改用 `get_or_create_runner()` 使用预初始化的 Runner。
-
-#### 修复：人脸识别卡死
-
-**问题**：`preload_face_model()` 被注释掉，导致 InsightFace 模块在 MCP stdio 环境中动态导入卡死。
-
-**解决方案**：恢复 `preload_face_model()` 调用。
-
----
+#### 修复：NiuHandler 缺少工作记忆机制——补 tool_after_callback/_get_anchor_prompt/next_prompt_patcher（agent/handler.py）
+#### 修复：子 Agent 缺少 MCP 工具——get_mcp_tools_for_servers 按 server 过滤
+#### 修复：空代码块显示——runner.py 正则清理
+#### 新增：动态注入架构——Skills/MCP 工具描述按语义检索注入
+#### 修复：同步/异步架构冲突——MCPSyncBridge 后台事件循环（已被 MCP 同进程化取代，保留为历史）
+#### 修复：历史对话丢失（session_id 误作 limit）
+#### 修复：MCP 工具未挂载——改用 get_or_create_runner()
+#### 修复：人脸识别卡死——恢复 preload_face_model()
 
 ### 2026-04-03
 
-#### 重构：GenericAgent 整合
-
-**目标**：用 GenericAgent（~1700 行）替换 Nanobot（~53 万行），实现更简洁的 Agent 架构。
-
-| Step | 内容 | 提交 |
-|------|------|------|
-| **1** | 全量搬运 GenericAgent 核心代码到 `agent/generic/` | `06792e8` |
-| **2** | Session 隔离 + SQLite 持久化适配层 | `6c256a5` |
-| **3** | 向量检索注入（每轮对话注入，>50 分，最多 10 条） | `f388f58` |
-| **4** | Token 返回 + 思考链处理 | `b3c3ffd`, `9452d51` |
-
-**新增文件**：
-- `agent/generic/` — GenericAgent 原始代码（不修改）
-- `agent/session_adapter.py` — Session/SessionManager 类
-- `agent/runner.py` — GenericAgentRunner 整合层
-- `agent/vector_search.py` — 向量检索适配器
-- `agent/thinking_chain.py` — 思考链处理器（支持 DeepSeek/MiniMax/Qwen 等）
-
-**设计决策**：
-- 研究了 Strands Agents SDK (5.5K 星)，决定继续用 GenericAgent（小而精、可控性高）。
-- GenericAgent 作为主 Agent 循环，SubAgent 作为临时专业工人（待实现）。
-
-**思考链处理**（统一处理不同厂商格式）：
-- DeepSeek: `菏...SaveChanges` 或 `<thinking>...</thinking>`
-- MiniMax M2.5: `<FLUX>...</FLUX>`
-- Claude: API 原生 thinking block
-- OpenAI o1: `reasoning_content` 字段
-
-**Token 返回**：
-- `MockResponse` 新增 `usage` 属性。
-- `_parse_claude_sse` 返回 `(content_blocks, usage_info)`。
-
-**删除的代码**：`pkg/` 目录已清空（Nanobot Go 代码已移除）。
-
-#### 新增：/new 清空聊天记录
-
-**功能**：在聊天框输入 `/new` 清空当前会话的所有聊天记录。
-
-**实现**（历史 Go 后端实现，当前架构已迁移）：
-- `main.go` 添加 `/api/chat/clear` 端点，调用 `sessionManager.DB.DeleteMessages()`
-- `preload-chat.js` 添加 `clearChat()` API
-- `main.js` 添加 `clear-chat` IPC handler
-- `chat.html` 的 `sendMessage()` 检测 `/new` 指令
-
-#### 新增：输入框支持多行输入
-
-**问题**：粘贴带换行的文本时换行符丢失。
-
-**原因**：使用 `<input type="text">` 单行输入框。
-
-**解决方案**：改用 `<textarea>` 支持多行输入；Enter 发送，Shift+Enter 换行；自动调整高度（最大 120px）。
-
-#### 修复：主 Agent 工具丢失（历史 — Nanobot 时代）
-
-> 此条目为 Nanobot/`pkg/toolloop/toolloop.go` 时代的问题，当前架构已无此文件。
-
-**问题**：主 Agent 只显示 3 个 `chat-with-*` 子 Agent 工具，看不到 MCP Server 工具。
-
-**原因**：`pkg/toolloop/toolloop.go` 第 172 行缺少 `agent.MCPServers`。
-
-#### 修复：主 Agent 缺少系统工具（历史）
-
-> 此条目为 Nanobot 时代的问题。
-
-**问题**：bash、read、write、edit、glob、grep 等系统工具不可用。
-
-**原因**：`niu.md` 的 `mcpServers` 列表缺少 `nanobot.system`。
-
-**解决方案**：添加 `nanobot.system` 到 mcpServers 列表。
-
-#### 优化：Agent 提示词改进
-
-**问题**：Agent 收到指令后返回"执行中..."但不调用工具。
-
-**原因**：LLM 把说话当作"执行"，没有理解"执行 = 调用工具"。
-
-**解决方案**：将抽象规则改为具体操作指令，添加错误/正确示例。
-
-#### 删除：10 轮对话自动整理
-
-**问题**：正常对话过程中触发睡眠模式整理。
-
-**原因**：遗留的 10 轮对话整理代码。
-
-**解决方案**：删除自动整理逻辑。
-
----
+#### 重构：GenericAgent 整合——GenericAgent 替换 Nanobot（约 53 万行 Go），pkg/ 目录清空；commits 06792e8/6c256a5/f388f58/b3c3ffd/9452d51
+#### 新增：/new 清空聊天记录（历史 Go 后端实现，架构已迁移）
+#### 新增：输入框支持多行输入（textarea；Enter 发送、Shift+Enter 换行）
+#### 修复：主 Agent 工具丢失 + 缺少系统工具（Nanobot 时代历史）
+#### 优化：Agent 提示词改进——抽象规则改具体操作指令
+#### 删除：10 轮对话自动整理遗留代码
 
 ### 2026-04-02
 
-#### 修复：照片拖入卡死问题（历史 — stdio 时代）
-
-> 此条目为 MCP stdio 时代的问题，当前 MCP 已同进程化（ToolRegistry），此问题已不存在。
-
-**问题**：文件拖入正常，照片拖入卡死，日志显示 `photo-server stdin is closed`。
-
-**根因**：`asyncio.to_thread` + InsightFace/ONNX Runtime 在 MCP stdio 环境中存在兼容性问题。
-
-**解决方案**：
-- 将 `mcp-servers/photo-server/__init__.py` 的工具调用从 `asyncio.to_thread` 改为同步调用。
-- 添加 `preload_face_model()` 在 MCP stdio 启动前预加载 cv2 和 InsightFace 模块。
-
-**教训**：
-- **MCP 工具调用优先用同步**：`asyncio.to_thread` 在 MCP stdio 环境中可能有问题，特别是涉及 ONNX Runtime 等原生库时。
-- 不同机器表现不同，慢电脑更容易出问题。
-
-#### 新增：人脸识别模型空闲卸载
-
-**问题**：InsightFace 模型加载后占用 ~326MB 内存，永不释放。
-
-**解决方案**：
-- 后台定时器线程每 60 秒检查。
-- 空闲超过 5 分钟自动卸载模型。
-- 配置：`MODEL_IDLE_TIMEOUT_SECONDS = 300`。
-
-**教训**：
-- **不要在卸载时调用 `gc.collect()`**：可能在其他线程使用对象时释放，导致崩溃。
-- 让 Python 垃圾回收器自然回收。
-
-#### ⚠️ 关键经验：避免 gc.collect() 导致的崩溃
-
-```python
-# 错误：可能在 detect_faces() 使用模型时释放
-def unload_face_model():
-    global _face_model
-    _face_model = None
-    gc.collect()  # 危险！
-
-# 正确：让 Python 自然回收
-def unload_face_model():
-    global _face_model
-    _face_model = None
-    # 不调用 gc.collect()
-```
-
-**原因**：如果 `detect_faces()` 正在执行 `face_model.get(img)`，此时 `_face_model = None` 只是移除全局引用，但 `detect_faces()` 仍有局部引用。然而 `gc.collect()` 会立即回收没有任何引用的对象，可能导致崩溃。
-
-#### 修复：Electron 关闭时后端不退出（历史 — Go 后端时代）
-
-> 此条目为 Go 后端时代的问题，当前后端已为 Rust 启动器 + Python API。
-
-**问题**：关闭 Electron 窗口后，后端和 embedding 服务进程残留。
-
-**原因**：Electron 退出时没有通知后端关闭。
-
-**解决方案**：
-- `main.go` 添加 `/api/shutdown` 端点，调用 `cancel()` 取消 context。
-- `ui/main/main.js` 在 `close-all`、托盘关闭、`before-quit` 中调用该端点。
-
-#### 新增：聊天历史加载功能
-
-**问题**：打开聊天窗口没有历史消息，刷新也不显示。
-
-**原因**：
-- `preload-chat.js` 缺少 `getHistory` API。
-- `main.js` 缺少 `get-history` IPC handler。
-- `chat.html` 没有加载历史的代码。
-
-**解决方案**：
-- `preload-chat.js` 添加 `getHistory`、`getSessionId`、`getPendingMessages`。
-- `main.js` 添加 `get-history` IPC handler。
-- `chat.html` 添加 `loadHistory()` 和滚动加载更多逻辑。
-- `pkg/session/store.go` 的 `GetRecentMessages` 返回正序（最旧在前）。
-- 新增 `GetMessagesBefore` 支持加载更早的消息。
+#### 修复：照片拖入卡死（历史 stdio 时代）→ 已被 MCP 同进程化取代
+#### 新增：人脸识别模型空闲卸载（MODEL_IDLE_TIMEOUT_SECONDS=300）；教训：卸载时不调 gc.collect()，让 Python 自然回收（否则可能释放使用中的对象致崩溃）
+#### 修复：Electron 关闭时后端不退出（历史 Go 后端时代，现为 Rust 启动器 + /api/shutdown）
+#### 新增：聊天历史加载（getHistory IPC + loadHistory 滚动加载；消息顺序最旧在上、最新在下）
 
 **消息顺序**：最旧在上，最新在下，滚动到顶部加载更多。
