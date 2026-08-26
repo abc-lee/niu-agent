@@ -516,7 +516,7 @@ python/bin/python3 scripts/model_capability_probe.py \
 
 **入库参数配置**：LightRAG 入库参数（并发数、分片大小、补充提取次数等）可在 `~/.niu/preferences.json` 的 `lightrag` 配置段调整，详见 [知识检索运维手册](manual-vector-store.md) 第 8.5 节。
 
-**入库模型与思考链配置**：LightRAG 入库使用的模型和推理深度档位在 `config/user-config.json` 的 `lightrag_llm` 配置段设置，详见上方 1.2 节"LightRAG 知识图谱 LLM 配置"。思考链返回由 `litellm_kwargs.thinking` 独立控制（火山方舟入库配置 `thinking: {"type": "disabled"}` 关闭，防止深度思考导致入库超时）；`reasoning_effort`（推理深度档位）由模型能力探测档案驱动，默认不预设固定档位。
+**入库模型与思考链配置**：LightRAG 入库使用的模型和推理深度档位在 `~/.niu/config/user-config.json` 的 `lightrag_llm` 配置段设置，详见上方 1.2 节"LightRAG 知识图谱 LLM 配置"。思考链返回由 `litellm_kwargs.thinking` 独立控制（火山方舟入库配置 `thinking: {"type": "disabled"}` 关闭，防止深度思考导致入库超时）；`reasoning_effort`（推理深度档位）由模型能力探测档案驱动，默认不预设固定档位。
 
 **LightRAG 操作超时**（`~/.niu/preferences.json` 的 `lightrag` 段，缺省值已显式列出，首次运行按此写入）：
 
