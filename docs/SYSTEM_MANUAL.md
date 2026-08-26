@@ -92,7 +92,23 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 > `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
 > `ha-server` 为可选服务器，需配置 Home Assistant 长期访问令牌后才会启用（`optional: true`）。
-> `feishu-server` 已迁移至 `im-adapters/feishu/` IM Gateway 架构，不再是 MCP 服务器，`mcp-servers/feishu-server/` 为孤儿目录。
+
+### 2.1.1 MCP 配置双目录加载（0.3.0 起）
+
+0.3.0 起 `mcp-servers.yaml` 采用**双目录加载模型**，取代旧 copy-once 机制（首启复制到 `~/.niu/config/mcp-servers.yaml`、此后仓库侧变更永不达存量装机的设计债）：
+
+| 层 | 路径 | 角色 |
+|----|------|------|
+| bundle 权威层 | `<安装目录>/config/mcp-servers.yaml` | 内置服务器权威配置，随版本升级直读 |
+| 用户层 | `~/.niu/config/mcp-servers-user.yaml` | 用户自定义（新增 / 覆盖内置字段） |
+
+**合并语义（deep merge，用户赢）**：同名键两侧均为 dict 时递归合并；标量与 list 由用户值整体覆盖——用户只需写差异段。`server名: null` 显式禁用该内置服务器（REQUIRED/OPTIONAL 均生效；禁用核心 server 的能力缺失由用户自担）；仅顶层 server 级 null 生效，嵌套 null 只删对应键。
+
+**失败语义**：任一层缺失或解析失败 → error 日志 + 该层降级为空基座继续启动（配置解析失败从不终止启动；严格终止仅作用于模块 import/注册失败）。旧文件 `~/.niu/config/mcp-servers.yaml` 一律不读，残留时启动日志至多一条弃用 warning。
+
+**0.3.0 升级说明**：删除 `~/.niu/config/mcp-servers.yaml` 即可完成升级；自定义过该文件的用户，先把自增段挪到 `~/.niu/config/mcp-servers-user.yaml` 再删旧文件（零自动迁移）。
+
+> 配置示例（最小 diff 写法 / 外部 stdio 服务器 / 禁用内置 server）见分册 [manual-mcp-disk.md](manual-mcp-disk.md) 2.7 节。
 
 ### 2.2 工具注入机制
 
@@ -632,6 +648,6 @@ LLM 流式读取超时（`read_timeout`，默认 300s）与 LightRAG 操作超�
 | 飞书开通 | [manual-feishu-setup.md](manual-feishu-setup.md) | 飞书机器人开通全流程手册（主 Agent 通过 browser-server MCP 工具操作网页）。包含飞书开放平台创建应用、配置事件订阅、获取 App ID/Secret、写入 im-adapters/feishu 配置、Gateway 启动验证、常见开通故障排查。用户要求接入飞书消息时查这里 |
 | 高德开通 | [manual-amap-setup.md](manual-amap-setup.md) | 高德地图 API Key 获取流程手册（主 Agent 通过 browser-server 操作网页）。包含注册高德开放平台、创建应用获取 Key、写入 config/user-config.json、验证照片 EXIF 位置解析功能、常见开通故障排查。用户需要照片地点识别功能时查这里 |
 | 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 完整接入手册。包含 Docker 安装部署 HA、创建长期访问令牌、设备集成方法、智能触发配置（场景/自动化/脚本）、条件推送机制（5.1 节——订阅事件写 DB 不推 IM、主 Agent 的话经 should_push_im 投递 IM，与定时任务同通道）、ha-server MCP 服务器启用、所有已验证 API 行为和踩坑记录。用户要求接入 HA 智能家居控制时查这里 |
-| MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构与虚拟磁盘配置手册。包含新增 MCP 服务器完整步骤（目录结构 + TOOL_SCHEMAS + workdir 配置）、虚拟磁盘 YAML 配置格式与路径映射规则、校验规则和常见配置错误排查。主 Agent 可在 `~/.niu/disk/` 自建 MCP server 配置覆盖或新增。需要新增 MCP 服务器、修改虚拟磁盘路径映射、排查 disk 工具调用失败时查这里 |
+| MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构与虚拟磁盘配置手册。包含新增 MCP 服务器完整步骤（目录结构 + TOOL_SCHEMAS + workdir 配置）、MCP 配置双目录加载模型（bundle 权威层 + `~/.niu/config/mcp-servers-user.yaml` 用户层，0.3.0 升级迁移说明）、虚拟磁盘 YAML 配置格式与路径映射规则、校验规则和常见配置错误排查。主 Agent 可在 `~/.niu/disk/` 自建 MCP server 配置覆盖或新增。需要新增 MCP 服务器、修改虚拟磁盘路径映射、排查 disk 工具调用失败时查这里 |
 | IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | 面向第三方开发者的 IM 平台接入文档。包含 Gateway + Adapter 分离架构（双进程）、TCP 协议规范、配置文件格式、目录规范、开发新 Adapter（钉钉/Telegram/企业微信等）的完整步骤。需要对接新的 IM 平台或修改 IM 通信协议时查这里 |
 | 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 阶段三通用子 Agent 体系完整说明。包含配置模板（config/agent-template.md）、动态加载机制（chat 入口扫描 ~/.niu/agents/）、MCP 工具映射（mcpServers frontmatter）、主 Agent 创建子 Agent 流程、同步/异步调用模式、与阶段一+二交互能力的衔接、同步子 Agent @niu-agent 询问通道。子 Agent 标签页（动态 Tab + 独立 SSE 事件通道）、@user 用户提问机制、@end 优先级规则、同步子 Agent SSE 404 竞态修复（pre_register + is_closing）、SubagentEventBus 独立事件总线（ring buffer + epoch 机制）。需要理解或调试子 Agent 标签页、事件推送、@user 提问、SSE 竞态问题时查这里 |

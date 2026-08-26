@@ -256,7 +256,7 @@ schemas = registry.get_schemas()
 3. **配置示例**（`config/mcp-servers.yaml`）：
    ```yaml
    server-name:
-     command: ${PYTHON_PATH}  # 由 launcher/src/main.rs 的 detect_python() 自动检测
+     command: ${PYTHON_PATH}  # 装饰性字段：同进程架构下内置服务器经 ToolRegistry 直调不执行 command；仅外部 stdio 服务器消费，需写真实命令
      args:
        - "-m"
        - "niu_server_name"
@@ -355,7 +355,7 @@ schemas = registry.get_schemas()
 | `config/llm-presets.json` | LLM 预设列表 |
 | `config/agents/niu.md` | 主 Agent 定义（提示词、权限、MCP服务器） |
 | `config/agents/file-processor.md` | 子 Agent 定义（文件处理专用） |
-| `config/mcp-servers.yaml` | MCP 服务器配置 |
+| `config/mcp-servers.yaml` | MCP 服务器配置（bundle 权威层，随版本升级直读）；用户自定义放 `~/.niu/config/mcp-servers-user.yaml`（deep merge 用户赢，0.3.0 双目录模型） |
 | `config/disk/*.yaml` | MCP 虚拟磁盘配置（把 100+ MCP 工具 Schema 映射为 Unix 风格路径，解决工具爆炸问题） |
 
 **MCP 虚拟磁盘**（项目核心特色）：
@@ -549,7 +549,24 @@ preload_face_model()
   - T2 `80fcbdd8`：journal-agent.md 重写（三分支判据+七步整理流程）；handler _build_journal_task_for_handler 整删薄层化；scheduler 任务文本自理化+import 收缩（R4 抓出漏改则夜间静默 ImportError）；compat 游标链整链退役（_export/_parse_processed_up_to/JOURNAL_*/_read_write_cursor_with_lock/_ALL_CURSOR_FILES+_reset_all_cursors 四调用点）；SYSTEM_MANUAL/niu.md 同步；测试处置（grep 穷举+create=True 保零写退役反向钉）
 - **质量链**：计划 R1-R6 六轮双审（R1 P0×1 /new 清库后标记失效无恢复→D-G；R3 P1×1 mcpToolFilter 格式错误照抄即崩；R4 P2×1 import 块收缩漏点名；R5+R6 连续两轮双 APPROVE 达成门禁）+ 每 Task spec/quality 双审（T1 双 PASS、T2 双 PASS+微修闭环：dispatcher docstring 残留/SYSTEM_MANUAL「复位全部游标」虚假陈述）
 - **验证**：点名回归 150 passed；真实 load_mcp_tools 断言 journal-agent 工具面恰为 [get_messages] 且 Schema 含三新参；DiskEngine.get_schema() 零泄漏；py_compile/ruff 零新增
-- **实机验证清单（待用户执行）**：①夜间 18 点 journal_daily 触发 → 子 Agent tab 显示读库+写条目带「覆盖至」标记②对话说「记录一下」→ 只追加事件条目不动标记③人为删 messages.db（或 /new）后次日夜间 → invalid_after_id 兜底取最近 200 条并注明④报告类请求 → 聚合已有内容不动库⑤旧 last_journal.json 成为孤儿文件可手动删
+
+### 2026-08-26（续二）
+
+#### 工程：mcp-servers.yaml 双目录化——copy-once 设计债清偿（计划 v1.5 双审 R1-R5 门禁 + T1-T3 SDD 收官，版本 0.3.0）
+
+- **背景与病灶**：mcp-servers.yaml 是三配置面中唯一 copy-once 例外（launcher 首启复制到 `~/.niu/config/` 后仓库侧变更永不达存量装机）——b248c8b6 式手工修复即此类脱节；任何内置服务器的新增/参数/tools visibility 变更都卡在同一死点。关键实证：`${PYTHON_PATH}` 是装饰性字段——全仓无替换/执行代码（MCP 同进程化后内置 server 全经 ToolRegistry 直调，command 仅外部 stdio 消费），bundle 配置零机器相关值可直读。
+- **方案定案（docs/superpowers/plans/2026-08-26-mcp-servers-dual-dir.md v1.5）**：
+  - D1 bundle 权威层直读 + 用户层 `~/.niu/config/mcp-servers-user.yaml` deep merge（dict 递归合并 / 标量 list 用户赢），用户只写差异段即可给内置 server 补 tool visibility
+  - D2 同名冲突用户赢；D3 迁移=0.3.0 升级说明删旧文件、零自动迁移（范围仅此一文件，user-config.json 不碰）
+  - D4 任一层解析失败 error 降级空基座继续启动（config 解析失败从不终止启动）；D5 用户层缺失=正常态
+  - D7 删除语义：用户层 `server名: null` = 禁用该内置 server——deleted_names 集合在 REQUIRED/OPTIONAL 两条加载循环兑现 skip（不计失败不触发严格终止），嵌套 null 只删键不入集合；两调用点均解包 `(merged, deleted)` tuple
+  - D8 旧文件弃用 warning 模块级去重（双调用点共享至多一条）+ 测试重置口；D9 跨平台零新增分支（os.path.expanduser 同款先例）
+- **实施**（T1/T2 改动在工作树待提交 + 本条目 T3）：
+  - T1 Python 双源加载：_load_mcp_config 返回 (merged, deleted_names)；deep merge/null 删除/bundle 缺失降级/load_external_servers 非 dict 条目守卫；niu_api/config.py 删 _get_mcp_servers_path 惰性兜底复制；16 例合并矩阵测试 tests/test_mcp_config_dual_source.py；test_p0/test_mcp_loader.py 三处 patch 契约改 tuple
+  - T2 Rust launcher：init_niu_dir 删 mcp-servers.yaml 复制段（53 行纯删除；user-config.json 复制段保留不动）
+  - T3 文档收官：manual-mcp-disk.md L102 与 AGENTS.md L259 两处 `${PYTHON_PATH}` 失实修正 + manual-mcp-disk.md 新增 2.7 用户层配置节 + SYSTEM_MANUAL.md 新增 2.1.1 双目录加载节（含 0.3.0 升级说明，两文档交叉引用）+ 版本 bump 0.3.0（VERSION/chat.html version-label 两处同步）
+- **验证**：点名回归 test_mcp_config_dual_source.py + test_p0/test_mcp_loader.py 共 32 passed；grep 全仓 `${PYTHON_PATH}` 失实描述零残留（config/mcp-servers.yaml 内为字面量数据不受影响）
+- **实机验证清单（待用户执行）**：①删除 `~/.niu/config/mcp-servers.yaml`（先备份）后启动 → 内置 10 server 照常加载②建 mcp-servers-user.yaml 写测试 server → registry 中并存③用户层覆盖 preload/tool visibility 生效④`server名: null` 禁用 REQUIRED server → 启动 warning skip 不终止⑤旧文件残留时弃用 warning 至多一条且不影响加载⑥重打包后 launcher 启动日志无 mcp-servers.yaml 复制行
 
 ### 2026-08-25
 

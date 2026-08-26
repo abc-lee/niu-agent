@@ -10,7 +10,7 @@ MCP 服务器是 Agent 调用外部能力的核心通道。虚拟磁盘（Virtua
 
 | 层级 | 职责 | 配置文件 |
 |------|------|----------|
-| MCP 服务器 | 实现工具函数，注册到 ToolRegistry | `config/mcp-servers.yaml`、`agent/mcp_loader.py` |
+| MCP 服务器 | 实现工具函数，注册到 ToolRegistry | `config/mcp-servers.yaml`（bundle 权威层）+ `~/.niu/config/mcp-servers-user.yaml`（用户层，见 2.7 节）、`agent/mcp_loader.py` |
 | 虚拟磁盘 | 定义工具的目录、参数格式、分类，供 LLM 发现和调用 | `config/disk/*.yaml` |
 
 **同进程架构**：MCP 服务器不再通过 stdio 进程通信，而是直接在主进程内通过 ToolRegistry 调用。工具函数是普通同步 Python 函数，性能相比旧 stdio 模式提升约 40000x。
@@ -99,7 +99,7 @@ my-server:
 
 | 字段 | 说明 |
 |------|------|
-| `command` | 固定 `${PYTHON_PATH}`，由启动器自动替换 |
+| `command` | 装饰性字段——同进程架构下内置服务器经 ToolRegistry 直调，`command` 不被执行、`${PYTHON_PATH}` 无任何替换机制；仅外部 stdio 服务器（`mode: stdio`）消费，此时需写真实可执行命令 |
 | `args` | 固定 `["-m", "niu_<name>"]`，对应 Python 模块名 |
 | `workdir` | 指向 `src/` 目录，相对于项目根目录 |
 | `preload` | 当前仅作文档标记，加载器不区分 preload true/false，所有 REQUIRED_SERVERS 启动时加载 |
@@ -185,8 +185,53 @@ grep "DiskConfig" logs/api_stderr.log
 disk("ls /")              → 应出现 mydir 目录
 disk("ls /mydir")         → 应出现 my_tool 工具
 disk("cat /mydir/my_tool") → 应显示参数说明
-disk("/mydir/my_tool value1") → 应执行工具并返回结果
 ```
+
+### 2.7 用户层配置：`mcp-servers-user.yaml`（0.3.0 双目录模型）
+
+0.3.0 起 `mcp-servers.yaml` 采用**双目录加载**，取代旧的 copy-once 机制（首启复制到 `~/.niu/config/`、此后仓库侧变更永不达存量装机）：
+
+| 层 | 路径 | 角色 |
+|----|------|------|
+| bundle 权威层 | `<安装目录>/config/mcp-servers.yaml` | 内置 10 个服务器的权威配置，**随版本升级直读**（不再复制） |
+| 用户层 | `~/.niu/config/mcp-servers-user.yaml` | 用户自定义，新增服务器 / 覆盖内置字段均可 |
+
+启动时两层做 **deep merge（用户赢）**：
+
+- 同名键两侧都是 dict → 递归合并；否则（标量、list）用户值整体覆盖
+- 用户只需写差异段，不必复制内置整段配置
+- `server名: null` = **禁用该内置服务器**（REQUIRED 与 OPTIONAL 均生效；被禁用的核心 server 对应能力缺失由用户自担）。仅顶层 server 级 null 生效；嵌套 null（如 `tools` 内删单条 visibility 条目）只删除该键
+
+**示例一 — 给内置 server 补 tool visibility（最小 diff 写法）**：
+
+```yaml
+# ~/.niu/config/mcp-servers-user.yaml
+session-manager:
+  tools:
+    get_messages:
+      visibility: static   # 只写差异段，其余字段继承 bundle 配置
+```
+
+**示例二 — 新增外部 stdio 服务器**：
+
+```yaml
+my-external:
+  mode: stdio
+  command: /usr/local/bin/my-server   # 外部服务器需写真实命令
+  args: ["--port", "8080"]
+```
+
+**示例三 — 禁用内置服务器**：
+
+```yaml
+ha-server: null    # 禁用可选的 ha-server（未配置 HA 时无需等它探测失败）
+```
+
+**失败语义**：用户层文件不存在 = 正常态；yaml 语法错误或顶层非 dict → error 日志 + 跳过用户层，内置层照常加载——配置解析失败从不终止启动。旧文件 `~/.niu/config/mcp-servers.yaml` 残留无害（一律不读），启动日志至多一条弃用 warning。
+
+**0.3.0 升级说明**：删除 `~/.niu/config/mcp-servers.yaml` 即可；自定义过该文件的用户，先把自增段挪到 `~/.niu/config/mcp-servers-user.yaml` 再删旧文件。
+
+> 系统管理视角的整体机制描述见 [SYSTEM_MANUAL.md](SYSTEM_MANUAL.md) 2.1.1 节。
 
 ## 三、虚拟磁盘配置详解
 
