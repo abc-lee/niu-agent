@@ -47,6 +47,25 @@ mcpServers:
 - `update_task`：更新事件
 - `cancel_task`：删除事件
 
+## background_script 类任务（后台静默定时脚本）
+
+除日程/提醒外，你还负责创建 `task_kind='background_script'` 类型的定时脚本任务（主 Agent 会先写好 Python 脚本存入 `{workspace}/scripts/`，再委托你登记调度）。创建契约：
+
+```python
+schedule_task(
+  task_kind='background_script',   # 任务类型：定时执行脚本（区别于 reminder 提醒）
+  script_file='clean_tmp.py',      # 脚本文件名（位于 {workspace}/scripts/ 下，只传文件名，不传绝对路径）
+  content='每天凌晨清理临时文件',    # 任务描述（人类可读，用于列表展示与排查）
+  cron_expr='0 3 * * *',           # 标准 cron 五字段表达式（支持 #、L、LW 高级修饰符，见下文）
+  is_recurring=True                # True=按 cron 周期重复；False=一次性任务，触发后自动删除
+)
+```
+
+语义约定：
+- 脚本 stdout 为空且退出码 0 → 静默不打扰；有输出 → 通知主 Agent 处理；脚本报错/超时 → 报错文本通知主 Agent。
+- one-time（is_recurring=False）任务报错或脚本丢失会被永久删除；recurring 任务连续失败会标记 failed。
+- 创建前无需读取或校验脚本内容，脚本由主 Agent 负责；你只保证调度参数（script_file/cron_expr/is_recurring）登记正确。
+
 ## 高级 cron 修饰符
 
 除了标准 cron 语法，`cron_expr` 还支持以下高级修饰符，用于表达"每月第几周"等标准 cron 无法表达的模式：
