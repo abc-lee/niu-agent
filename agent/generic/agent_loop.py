@@ -871,8 +871,12 @@ def agent_runner_loop(
                     # 80% 触发线或同轮已被组装出口压实）时保留检测——否则真值落在
                     # [warning, 80%) 区间会让本 loop 内后续轮次检测停摆（P2）
                     last_prompt_tokens = 0  # 重置，下轮重新获取
-                    handler._last_prompt_tokens = 0
-                    handler._last_cached_tokens = None
+                    if _compacted:
+                        # 压实成功：旧视图 token 真值已失效，一并清零
+                        handler._last_prompt_tokens = 0
+                        handler._last_cached_tokens = None
+                    # else 闸门拒绝：保留 handler 旧真值不清零（与 skip 路径纪律一致），
+                    # 缓存命中率等 token 统计不失真；下轮响应即覆盖为新真值
                     _compress_cooldown = bool(_compacted)  # 冷却：本次 agent_runner_loop 不再触发压缩
                 else:
                     # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
@@ -1120,9 +1124,13 @@ def agent_runner_loop(
                                         f"({usage_ratio:.1%} > {warning_threshold:.0%})")
                             _compacted = on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
                             # 同轮顶检测（P2）：仅确实压实时才冷却，被闸门拒绝保留检测
-                            last_prompt_tokens = 0
-                            handler._last_prompt_tokens = 0
-                            handler._last_cached_tokens = None
+                            last_prompt_tokens = 0  # 重置，下轮重新获取
+                            if _compacted:
+                                # 压实成功：旧视图 token 真值已失效，一并清零
+                                handler._last_prompt_tokens = 0
+                                handler._last_cached_tokens = None
+                            # else 闸门拒绝：保留 handler 旧真值不清零（与 skip 路径纪律一致），
+                            # 缓存命中率等 token 统计不失真；下轮响应即覆盖为新真值
                             _compress_cooldown = bool(_compacted)
                         else:
                             # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
