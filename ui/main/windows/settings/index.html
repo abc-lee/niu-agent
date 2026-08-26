@@ -286,10 +286,10 @@
           <button class="btn btn-probe" id="llmProbeBtn" onclick="probeCapability('llm')">探测能力（对话模型）</button>
       </div>
 
-      <!-- 第三栏：上下文与压缩 -->
+      <!-- 第三栏：上下文管理 -->
       <div class="note-card mint">
-        <div class="card-title pencil-text">上下文与压缩</div>
-        <div class="card-sub">上下文窗口管理与睡眠整理参数</div>
+        <div class="card-title pencil-text">上下文管理</div>
+        <div class="card-sub">上下文窗口与批量压实参数</div>
 
         <div class="form-group">
           <label class="pencil-text">上下文窗口大小 (tokens)</label>
@@ -300,13 +300,13 @@
         <div class="form-group">
           <label class="pencil-text">溢出警告阈值</label>
           <input type="number" id="warningThreshold" placeholder="0.8" min="0.1" max="0.99" step="0.05">
-          <div class="hint">达到此比例触发压缩（默认 0.8 = 80%）</div>
+          <div class="hint">达到此比例触发批量压实（默认 0.8 = 80%，低于约 78% 复位）</div>
         </div>
 
         <div class="form-group">
-          <label class="pencil-text">压缩目标 token 数</label>
-          <input type="number" id="compressTargetTokens" placeholder="60000" min="10000" max="500000" step="5000">
-          <div class="hint">压缩后保留的 token 数（默认 60000）</div>
+          <label class="pencil-text">压实保留最近轮数</label>
+          <input type="number" id="keepRecentTurns" placeholder="3" min="1" max="20" step="1">
+          <div class="hint">批量压实后保留的最近对话轮数（默认 3）</div>
         </div>
 
         <div class="form-group">
@@ -428,7 +428,7 @@
       if (config.context) {
         document.getElementById('contextWindowSize').value = config.context.contextWindowSize || '';
         document.getElementById('warningThreshold').value = config.context.warningThreshold || '';
-        document.getElementById('compressTargetTokens').value = config.context.compressTargetTokens || '';
+        document.getElementById('keepRecentTurns').value = config.context.keepRecentTurns || '';
         document.getElementById('sleepTriggerMinutes').value = config.context.sleepTriggerMinutes || '';
       }
 
@@ -780,7 +780,7 @@
           context: {
             contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
             warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
-            compressTargetTokens: parseInt(document.getElementById('compressTargetTokens').value) || 60000,
+            keepRecentTurns: parseInt(document.getElementById('keepRecentTurns').value) || 3,
             sleepTriggerMinutes: parseInt(document.getElementById('sleepTriggerMinutes').value) || 5
           },
           storage: existingConfig.storage || {},

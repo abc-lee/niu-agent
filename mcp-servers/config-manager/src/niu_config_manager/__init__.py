@@ -406,7 +406,6 @@ def load_user_config() -> dict[str, Any]:
         "context": {
             "contextWindowSize": 200000,
             "warningThreshold": 0.8,
-            "compressTargetTokens": 60000,
             "sleepTriggerMinutes": 5,
         },
         "storage": {"documentRoot": "", "databasePath": ""},
