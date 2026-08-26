@@ -145,24 +145,8 @@ def _read_warning_threshold() -> float:
     return _read_context_threshold("warningThreshold", 0.80)
 
 
-DEFAULT_COMPRESS_TARGET_TOKENS = 60000
 MAX_OUTPUT_TOKENS_RATIO = 0.16  # contextWindowSize × 0.16
 MAX_OUTPUT_TOKENS_CAP = 65536   # 封顶 65536
-
-
-def _read_compress_target_tokens() -> int:
-    """Read compressTargetTokens from config/user-config.json. Default 60000."""
-    try:
-        config_path = _get_user_config_path()
-        with open(config_path, encoding="utf-8") as f:
-            config = json.load(f)
-        val = config.get("context", {}).get("compressTargetTokens", DEFAULT_COMPRESS_TARGET_TOKENS)
-        if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
-            return int(val)
-        logger.warning(f"Invalid compressTargetTokens {val}, using default {DEFAULT_COMPRESS_TARGET_TOKENS}")
-    except Exception:
-        pass
-    return DEFAULT_COMPRESS_TARGET_TOKENS
 
 
 def _read_max_output_tokens() -> int:

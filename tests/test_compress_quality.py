@@ -1,29 +1,11 @@
 """压缩配置读取与截断检测测试（T6：压缩管线用例随退役删除，仅保留仍存活的配置读取与子 Agent 截断检测）。"""
-import json
 from unittest.mock import patch
 
 import niu_api.llm_proxy as llm_proxy_module
 from agent.generic.llmcore import MockResponse
 from agent.subagent import (
-    _read_compress_target_tokens,
     _read_max_output_tokens,
 )
-
-
-def test_read_compress_target_tokens_default(tmp_path):
-    """配置无 compressTargetTokens 时返回默认 60000。"""
-    config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps({"context": {}}))
-    with patch("agent.subagent._get_user_config_path", return_value=config_file):
-        assert _read_compress_target_tokens() == 60000
-
-
-def test_read_compress_target_tokens_custom(tmp_path):
-    """配置有 compressTargetTokens 时返回自定义值。"""
-    config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps({"context": {"compressTargetTokens": 80000}}))
-    with patch("agent.subagent._get_user_config_path", return_value=config_file):
-        assert _read_compress_target_tokens() == 80000
 
 
 def test_read_max_output_tokens_dynamic_calc():
@@ -44,15 +26,6 @@ def test_read_max_output_tokens_dynamic_calc():
 
     with patch("agent.subagent._read_context_window_tokens", return_value=500000):
         assert _read_max_output_tokens() == 65536  # 500000 × 0.16 = 80000，封顶 65536
-
-
-def test_read_compress_target_tokens_invalid_returns_default(tmp_path):
-    """配置 compressTargetTokens 为非法值（0/负数/字符串/bool）时返回默认 60000。"""
-    config_file = tmp_path / "config.json"
-    for invalid_val in [0, -100, "60000", True, None]:
-        config_file.write_text(json.dumps({"context": {"compressTargetTokens": invalid_val}}))
-        with patch("agent.subagent._get_user_config_path", return_value=config_file):
-            assert _read_compress_target_tokens() == 60000, f"非法值 {invalid_val!r} 应返回默认 60000"
 
 
 def test_mock_response_has_finish_reason_default():

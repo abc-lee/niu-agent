@@ -58,7 +58,6 @@ def test_fallback_context_fields(fallback):
     ctx = fallback["context"]
     assert ctx["contextWindowSize"] == 200000
     assert ctx["warningThreshold"] == 0.8
-    assert ctx["compressTargetTokens"] == 60000
     # 缺省睡眠时间 5 分钟（R13：用户的 30 是个人优化，不进缺省）
     assert ctx["sleepTriggerMinutes"] == 5
 
