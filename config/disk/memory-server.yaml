@@ -32,3 +32,27 @@ tools:
     short: "查看所有记忆"
     long: "查看当前所有用户长期记忆"
     parameters: []
+
+  - name: conversation_park
+    category: write
+    short: "暂存告一段落的话题(回头再处理)"
+    long: "用户明确说「这事先告一段落/回头再说/先放着」时调用，把该话题存入暂存列表。summary=一句话说清是什么事；detail=3-5句关键上下文(讨论什么/进展到哪/卡点/下一步)。不要主动替用户决定暂存；闲聊随口「回头再聊」不要调用。"
+    parameters:
+      - name: summary
+        position: 1
+        type: string
+        required: true
+      - name: detail
+        position: 2
+        type: string
+        required: true
+
+  - name: conversation_recall
+    category: write
+    short: "召回暂存的话题(召回即从列表移除)"
+    long: "用户提起之前暂存的话题时调用，参数为提醒行里的序号(①=最新)。无法确定指哪一项时按 summary 语义匹配，仍不确定先向用户列候选确认，禁止猜序号。返回 summary+detail+锚点；锚点有效时可用 get_messages/read_history_block 回放原文。召错项时立即用返回的 detail 重新 park。"
+    parameters:
+      - name: index
+        position: 1
+        type: integer
+        required: true

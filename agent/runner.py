@@ -1007,12 +1007,42 @@ class NiuRunner:
         return self._build_dynamic_block(injection)
 
     def _build_dynamic_block(self, injection: str) -> str:
-        """构建动态块文本：框架标记头 + injection + Current Time（时间最后）。"""
+        """构建动态块文本：框架标记头 + injection + 暂存提醒 + Current Time（时间最后）。"""
         text = _DYNAMIC_BLOCK_HEADER
         if injection:
             text += "\n" + injection.strip()
+        text += self._park_reminder_line()
         text += f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         return text
+
+    def _park_reminder_line(self) -> str:
+        """读取 memory.json 的 parked 数组，生成常驻暂存提醒行（无暂存返回空串）。
+
+        锁与路径形态 R1-P1 修正（裸写 _memory_file_lock 在 runner 作用域必 NameError 且被 except 吞）：
+        镜像 _load_memory_for_prompt（runner.py L292-306）的函数内 try-import 回退
+        """
+        try:
+            # R2-A P1：一并导入路径函数，保测试隔离（test_user_memory.py L54-58 经
+            # monkeypatch MEMORY_JSON_PATH + _reset_memory_json_path 重定向）；ImportError 才回退
+            from niu_memory_server import _memory_file_lock, _get_memory_json_path
+            memory_path = _get_memory_json_path()
+        except ImportError:
+            from contextlib import nullcontext
+            _memory_file_lock = nullcontext()
+            memory_path = Path.home() / ".niu" / "memory.json"
+        if not memory_path.exists():
+            return ""  # 全新环境无 memory.json 是正常态（R2-A：缺此守卫会每轮 FileNotFoundError→warning 刷屏）
+        try:
+            with _memory_file_lock:
+                data = json.loads(memory_path.read_text(encoding="utf-8"))  # R3-A：照 runner L307 先例 read_text，避免 open().read() 不关句柄每轮 fd 泄漏
+            parked = data.get("parked") or []
+            if not parked:
+                return ""
+            items = "".join(f" {chr(0x2460+i)}〈{p.get('summary','')}〉" for i, p in enumerate(parked))
+            return f"\n[暂存事项] {len(parked)} 项：{items.strip()}——用户提起时调 disk(\"/memory/conversation_recall 序号\") 召回处理"
+        except Exception as e:
+            logger.warning(f"[暂存提醒] 读取失败（降级不显示）: {e}")  # R1：禁止静默吞——架空常驻提醒语义
+            return ""
 
     def _refresh_dynamic_user_block(self, messages: list, dynamic_text: str) -> None:
         """移除上一轮动态块并以 role=user 插入新块（最后一个 user 消息之前）。
