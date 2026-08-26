@@ -4,8 +4,9 @@
 职责：
 1. 从 MessageStore 加载全量历史消息（DB 真相源，永不删改）
 2. 转换消息格式（Message → dict）
-3. 组装「历史索引 + 近期原文窗口」视图：被挤出窗口的完整会话单元
-   机械归档为指针块（agent/context_assembler），旧压缩语义已退役
+3. 水位线组装：候选 = DB 全量中未被任何块覆盖的尾部消息——不做预算装填、
+   不在组装路径归档；归档只发生在批量压实（80% 触发）与整库重建
+   （agent/context_assembler.integrity），旧压缩语义已退役
 
 架构：
 MessageStore (持久化) → ContextManager (管理) → agent_loop (使用)
@@ -21,12 +22,9 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.context_assembler.blocks import PointerBlock, default_db_path, load_all
-from agent.context_assembler.slicer import slice_units
 from agent.session import MessageStore
 from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 
-# 原文窗口预算占上下文窗口的比例（spec D2 分区预算；校准倍率接入在 Task 3）
-_WINDOW_BUDGET_RATIO = 0.5
 _INDEX_ENTITY_MAX = 3  # 索引行实体标签上限（spec §3.3）
 _SUMMARY_MAX_CHARS = 100  # 摘要行尺寸不变式：≤100 字（spec §3.3 可选增强）
 
@@ -136,32 +134,34 @@ class ContextManager:
             return ts[5:10]
         return ""
     @staticmethod
-    def compute_window_start(converted: list, units: list[tuple[int, int]],
-                             budget: int, count_fn) -> int:
-        """窗口装填：从最新单元向前累加，装不下即止（保底最新一个单元恒在窗内）。
+    def _watermark_split(blocks: list[PointerBlock], messages) -> tuple[int, int]:
+        """水位线切割：返回 (最后一个被覆盖消息的下标, 已覆盖前缀中意外未覆盖条数)。
 
-        返回窗口起点在 converted 中的消息索引（恒为会话单元边界）。
-        组装出口与整库重建（context_assembler.integrity）共用的唯一实现。
-
-        Args:
-            converted: _message_to_dict 转换后的消息 dict 列表（元素可为 None）
-            units: slice_units 输出的闭区间单元列表
-            budget: 窗口 token 预算
-            count_fn: 单参数 token 计数器（实例方法绑定/类访问皆可——测试两种
-                mock 约定兼容的关键，test_calibration.py staticmethod 先例）
+        块表存储粒度为端点（start/end msg_id + rowid，见 blocks.py schema）——
+        会话单元内消息连续且 DB append-only，rowid ∈ [start_rowid, end_rowid]
+        的区间覆盖即成员覆盖。取舍：不补存成员 id 列表（最小改动；一致性校验
+        ③④ 的区间单调/count 核对已保证区间可靠，补列属冗余 schema 变更）。
         """
-        window_start = len(converted)
-        total = 0
-        included = 0
-        for start, end in reversed(units):
-            unit_entries = [e for e in converted[start : end + 1] if e is not None]
-            unit_cost = count_fn(unit_entries)
-            if included and total + unit_cost > budget:
-                break
-            window_start = start
-            total += unit_cost
-            included += 1
-        return window_start
+        intervals = sorted((b.start_rowid, b.end_rowid) for b in blocks)
+        merged: list[list[int]] = []
+        for lo, hi in intervals:
+            if merged and lo <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+
+        def is_covered(rowid: int) -> bool:
+            # 区间数极小，线性扫足够；bisect 无必要
+            return any(lo <= rowid <= hi for lo, hi in merged)
+
+        last_covered = -1
+        for i, m in enumerate(messages):
+            if is_covered(m.rowid):
+                last_covered = i
+        stragglers = sum(
+            1 for m in messages[: last_covered + 1] if not is_covered(m.rowid)
+        )
+        return last_covered, stragglers
 
     @staticmethod
     def _render_index(blocks: list[PointerBlock]) -> str:
@@ -188,33 +188,26 @@ class ContextManager:
             )
         return "\n".join(lines)
 
-    def _archive_excluded_units(self, messages, units, window_start: int) -> int:
-        """把窗口之外的完整会话单元机械写入指针块存储（委托 compaction 单一实现）。
-
-        幂等：同 (start_msg_id, end_msg_id) 区间的块已存在则跳过。
-        """
-        from agent.context_assembler.compaction import archive_excluded_units
-        return archive_excluded_units(
-            messages, units, window_start,
-            self._blocks_db_path or default_db_path(),
-        )
-
     def set_system_token_estimate(self, n_tokens: int) -> None:
         """记录最近一次组装的 system 消息 token 数（80% 触发判定的系统侧输入）。"""
         self._system_token_estimate = max(0, int(n_tokens))
 
     async def get_context_for_chat(self, exclude_last: bool = True) -> list[dict[str, Any]]:
         """
-        获取用于聊天的上下文（主入口）——组装器视图
+        获取用于聊天的上下文（主入口）——组装器视图（水位线模型）
 
         流程：
-        1. 读 DB 全量消息（真相源不动）；exclude_last 时排除最后一条（当前输入）
-        2. 会话单元切割 → 从最新单元向前累加装填原文窗口
-           （预算 = contextWindowSize × 50%，本期固定值，倍率接入在 Task 3）
-        3. 被挤出的完整单元机械归档为指针块（幂等）
-        4. 输出 = [索引前导 user 消息] + [窗口消息 dict 列表]；无归档块时省略索引消息
+        1. 读 DB 全量消息（真相源不动）+ 块库全量块
+        2. 候选消息 = 未被任何块覆盖的消息（append-only 保证连续位于尾部；
+           意外不连续时取最后一个被覆盖消息之后的部分并告警）
+        3. exclude_last 时排除候选末条（当前输入）
+        4. 输出 = [索引前导 user 消息（仅当有块）] + [候选消息原文]
+           ——不做预算装填、不在组装路径归档。两次压实之间上下文自然增长
+           是 D14 设计内行为，由 80% 触发压实收口（压实后水位线前移，
+           下轮组装只剩保留轮+新增量）
 
-        窗口起点恒为会话单元边界（tool_calls 配对完整）；dict 形态与 load_history 一致。
+        候选起点恒为块边界（=会话单元边界，tool_calls 配对完整）；dict 形态
+        与 load_history 一致。
 
         Args:
             exclude_last: 是否排除最后一条消息（当前用户输入）
@@ -223,28 +216,28 @@ class ContextManager:
             消息列表 [{"role": ..., "content": ..., ...}, ...]
         """
         messages = await self.store.get_messages(limit=None)
-        if exclude_last and messages:
-            messages = messages[:-1]
 
-        units = slice_units(messages)
-        converted = [self._message_to_dict(m) for m in messages]
-        budget = int(self.max_tokens * _WINDOW_BUDGET_RATIO)
+        candidates = messages
+        blocks = load_all(self._blocks_db_path or default_db_path())
+        if blocks and messages:
+            last_covered, stragglers = self._watermark_split(blocks, messages)
+            if stragglers:
+                logger.warning(
+                    f"[Context] {stragglers} 条未覆盖消息出现在已覆盖前缀中"
+                    f"（append-only 被破坏），取最后一个被覆盖消息之后的尾部为候选"
+                )
+            if last_covered >= 0:
+                candidates = messages[last_covered + 1:]
 
-        # 窗口装填：从最新单元向前累加（唯一实现见 compute_window_start，
-        # 整库重建 integrity 复用同一逻辑）
-        window_start = self.compute_window_start(
-            converted, units, budget, self.count_tokens_simple
-        )
-        # 被挤出的完整单元 → 指针块归档（幂等）
-        if units and window_start < len(messages):
-            self._archive_excluded_units(messages, units, window_start)
+        history = candidates[:-1] if exclude_last and candidates else candidates
 
-        # 输出视图：索引前导 + 窗口原文
+        # 输出视图：索引前导（仅当有归档块）+ 候选原文
         view: list[dict[str, Any]] = []
-        index_blocks = load_all(self._blocks_db_path or default_db_path())
-        if index_blocks:
-            view.append({"role": "user", "content": self._render_index(index_blocks)})
-        view.extend(e for e in converted[window_start:] if e is not None)
+        if blocks:
+            view.append({"role": "user", "content": self._render_index(blocks)})
+        view.extend(
+            e for e in (self._message_to_dict(m) for m in history) if e is not None
+        )
 
         # Task 3：组装出口 80% 触发检查——校准后总量估算 ≥80% 即地压实（D14）。
         # 滞回（≥80% 触发 / <78% 复位）与 runner 真值回调共用 AUTO_GATE，双触发去重不双压。
@@ -262,7 +255,7 @@ class ContextManager:
                     f"({usage_ratio:.1%}) >= 80%, compacting at assembly exit"
                 )
                 new_view, stats = build_compact_view(
-                    messages,
+                    history,
                     system_msg=None,
                     blocks_db_path=self._blocks_db_path,
                     context_window_tokens=self.max_tokens,

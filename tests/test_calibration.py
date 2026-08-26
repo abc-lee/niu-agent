@@ -238,15 +238,21 @@ class TestSystemEstimateBackfillGate:
         view = await cm.get_context_for_chat(exclude_last=False)
         assert view == compact_marker, "计入 system 份额后应过 80% 线触发压实"
 
-        # 反证：清零 system 份额 → est=28 <80% → 不触发，返回原视图
-        # （阶段二压实已归档出索引块，其索引行会抬高 est——此处隔离 load_all，
-        # 仅验证 system 份额是过线的决定性输入）
+        # 反证：清零 system 份额 + 剔除 DB 的 system 行（水位线模型下无块时
+        # DB 全量进视图，DB system 行本身就会顶过 80% 线——必须移出才能隔离
+        # 「runner 回填的 system 份额」这一变量）→ est=28 <80% → 不触发压实
         monkeypatch.setattr(cm_mod, "load_all", lambda db_path=None: [])
         AUTO_GATE.release()
         cm.set_system_token_estimate(0)
-        view = await cm.get_context_for_chat(exclude_last=False)
+        cm_fresh = ContextManager(
+            SimpleNamespace(get_messages=lambda limit=None: _async_list([
+                Message(id="m1", rowid=2, role="user", content=USER_TEXT,
+                        tool_calls=[], tool_call_id="", created_at="2026-08-25T10:00:01"),
+            ])),
+            max_tokens=100, blocks_db_path=tmp_path / "context_blocks_no_sys.db")
+        view = await cm_fresh.get_context_for_chat(exclude_last=False)
         assert view != compact_marker
-        # 窗口语义：store 的 system 行是独立单元且超预算出窗，正常视图仅剩 user 原文
+        # 无块全新：全量原文视图，仅剩 user 原文
         assert [m["content"] for m in view] == [USER_TEXT]
 
 
