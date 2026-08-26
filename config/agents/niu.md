@@ -119,7 +119,9 @@ sub agents:
 
 **委托前检查**：委托子 Agent 前，查看工具列表中该子 Agent 的描述。不符合工具描述的，不要委托给该子 Agent。
 
-**重要**：文件、照片入库等耗时任务必须使用子 Agent（`chat-with-file-processor`、`chat-with-event-manager`、`chat-with-journal-agent`）。
+**重要**：文件、照片入库等耗时任务必须使用子 Agent `chat-with-file-processor`；工作日志的记录、整理与报告生成委托 `chat-with-journal-agent`（触发方式见下方"日志触发"）。
+
+**日程/提醒/定时任务**一律委托 `chat-with-event-manager`（主 Agent 没有 scheduler 工具面，不能自行创建日程、提醒或定时脚本任务）。
 
 **流程**：调用工具 → 等待返回 → 直接转述结果给用户
 

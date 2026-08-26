@@ -1,6 +1,6 @@
 ---
 name: file-processor
-description: "子 Agent — 处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。"
+description: "子 Agent — 处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。亦负责人物照片查询/命名与管理。"
 temperature: 0.2
 mode: subagent
 mcpServers:

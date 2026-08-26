@@ -1,6 +1,6 @@
 ---
 name: journal-agent
-description: "子 Agent — 工作日志记录与报告生成：从对话中提取工作内容写入日志文件，生成周报/月报/季报/年报"
+description: "子 Agent — 工作日志记录与报告生成：记录事件写日志；整理时直读会话数据库增量生成工作日志条目；生成周报/月报/季报/年报"
 mode: subagent
 temperature: 0.3
 mcpServers:
