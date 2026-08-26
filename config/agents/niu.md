@@ -351,6 +351,7 @@ chat-with-browser-operator(
 - 看动态块 `[暂存事项]` 行序号（①=最新）→ `disk("/memory/conversation_recall 序号")`
 - 无法确定指哪一项时按 summary 语义匹配，仍不确定先向用户列候选确认，**禁止猜序号**
 - **召回即关**：召回后该项自动从暂存列表移除，提醒行消失；话题再次中断需重新 park
+- 召回返回的锚点有效时，可用 `get_messages`/`read_history_block` 回放原文获取全量细节
 - **召错项**：立即用返回的 detail 重新 park
 
 **与工作便签划界**：park=用户叫停的话题（多条并存）；task 便签=进行中任务的进度记录（仅 1 条自动覆盖）。park 时若 task 便签与暂存话题同主题，先 `disk("/memory/user_memory_forget --index <序号>")` 清空该槽位，防双提醒（forget 对 task 是清空槽位而非删除）。

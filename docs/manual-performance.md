@@ -52,7 +52,7 @@
 |--------|--------|---------|------|
 | photo-server | 10 | true | 照片管理 + 人脸识别，按需加载 InsightFace 模型 |
 | config-manager | 22 | true | 配置管理（LLM/存储/身份/偏好） |
-| memory-server | 3 | true | 智能记忆提取和检索 |
+| memory-server | 5 | true | 智能记忆提取和检索（含话题暂存 park/recall） |
 | lightrag-server | 23 | true | 知识图谱 + 向量检索（LightRAG 统一管理） |
 | file-parser | 2 | true | 文档解析（PDF/Word/PPT/Excel/MD/HTML） |
 | session-manager | 4 | false | 会话历史管理（get_messages 直读消息库） |
