@@ -9,6 +9,7 @@ from mcp.types import Tool, TextContent
 from loguru import logger
 import json
 import asyncio
+from datetime import datetime
 
 # 创建 MCP 服务器
 server = Server("memory-server")
@@ -63,6 +64,38 @@ TOOL_SCHEMAS = {
             "properties": {},
         },
     },
+    "conversation_park": {
+        "name": "conversation_park",
+        "description": "暂存告一段落的话题(回头再处理)。用户明确说「这事先告一段落/回头再说/先放着」时调用，把该话题存入暂存列表。summary=一句话说清是什么事；detail=3-5句关键上下文(讨论什么/进展到哪/卡点/下一步)。不要主动替用户决定暂存；闲聊随口「回头再聊」不要调用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "一句话摘要（≤50 token）",
+                },
+                "detail": {
+                    "type": "string",
+                    "description": "3-5句关键上下文：讨论什么/进展到哪/卡点/下一步（≤200 token）",
+                },
+            },
+            "required": ["summary", "detail"],
+        },
+    },
+    "conversation_recall": {
+        "name": "conversation_recall",
+        "description": "召回暂存的话题(召回即从列表移除)。用户提起之前暂存的话题时调用，参数为提醒行里的序号(①=最新)。无法确定指哪一项时按 summary 语义匹配，仍不确定先向用户列候选确认，禁止猜序号。返回 summary+detail+锚点；锚点有效时可用 get_messages/read_history_block 回放原文。召错项时立即用返回的 detail 重新 park。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "description": "暂存序号（1 起始，①=最新）",
+                },
+            },
+            "required": ["index"],
+        },
+    },
 }
 
 
@@ -115,6 +148,29 @@ def get_tool_definitions() -> list[Tool]:
                 "properties": {},
             },
         ),
+        Tool(
+            name="conversation_park",
+            description="暂存告一段落的话题(回头再处理)。用户明确说「这事先告一段落/回头再说/先放着」时调用，把该话题存入暂存列表。summary=一句话说清是什么事；detail=3-5句关键上下文(讨论什么/进展到哪/卡点/下一步)。不要主动替用户决定暂存；闲聊随口「回头再聊」不要调用。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "一句话摘要（≤50 token）"},
+                    "detail": {"type": "string", "description": "3-5句关键上下文：讨论什么/进展到哪/卡点/下一步（≤200 token）"},
+                },
+                "required": ["summary", "detail"],
+            },
+        ),
+        Tool(
+            name="conversation_recall",
+            description="召回暂存的话题(召回即从列表移除)。用户提起之前暂存的话题时调用，参数为提醒行里的序号(①=最新)。无法确定指哪一项时按 summary 语义匹配，仍不确定先向用户列候选确认，禁止猜序号。返回 summary+detail+锚点；锚点有效时可用 get_messages/read_history_block 回放原文。召错项时立即用返回的 detail 重新 park。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "暂存序号（1 起始，①=最新）"},
+                },
+                "required": ["index"],
+            },
+        ),
     ]
 
 
@@ -130,6 +186,10 @@ MAX_PERMANENT_ITEMS = 10
 MAX_TASK_ITEMS = 1
 MAX_MEMORY_ITEMS = 9  # MAX_TASK_ITEMS + MAX_MEMORY_ITEMS = MAX_PERMANENT_ITEMS
 MAX_TOKEN_PER_ITEM = 200  # ~300 Chinese chars
+
+MAX_PARKED_ITEMS = 10
+MAX_PARKED_SUMMARY_TOKENS = 50
+MAX_PARKED_DETAIL_TOKENS = 200
 
 
 def _count_tokens(text: str) -> int:
@@ -241,6 +301,46 @@ def _write_permanent_only(permanent: list):
                 existing = {}
 
         existing["permanent"] = permanent
+        # 原子写：先写 tmp，再 replace（保证 reader 永远看到完整文件）
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=path.name + ".",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
+def _write_parked_only(parked: list):
+    """Read-modify-write: update only the parked field, preserve all others.
+    Thread-safe via module-level lock (镜像 _write_permanent_only 形态).
+    """
+    import os
+    import tempfile
+
+    with _memory_file_lock:
+        path = _get_memory_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing file to preserve other fields (identity, workspace, user, permanent, etc.)
+        existing = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(existing, dict):
+                    existing = {}
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+
+        existing["parked"] = parked
         # 原子写：先写 tmp，再 replace（保证 reader 永远看到完整文件）
         fd, tmp_path = tempfile.mkstemp(
             dir=str(path.parent),
@@ -417,6 +517,136 @@ def user_memory_list_handler() -> dict:
 
 
 # ============================================================================
+# Conversation park tools (memory.json parked array)
+# 复制自 session-manager 的 _run_async/_get_store（两包间无交叉 import 先例，复制不引用）
+# ============================================================================
+
+
+def _get_store():
+    """Get or create MessageStore instance (sync wrapper)."""
+    from agent.session import get_message_store
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Already in async context — create a new event loop in a thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, get_message_store()).result()
+    else:
+        return asyncio.run(get_message_store())
+
+
+def _run_async(coro):
+    """Run an async coroutine synchronously."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
+
+def _capture_anchor_msg_id() -> str:
+    """捕获当前会话最新消息 id 作为 anchor（无消息时返回空串；失败降级不阻塞 park）"""
+    try:
+        store = _get_store()  # 内部 _run_async(get_message_store()) —— async 函数返回协程，必须 _run_async 包一层
+        msgs = _run_async(store.get_messages(limit=1))  # list[Message] dataclass，取 .id 属性不可下标
+        return msgs[0].id if msgs else ""
+    except Exception as e:
+        logger.warning(f"anchor 捕获失败: {e}")
+        return ""
+
+
+def conversation_park_handler(summary: str, detail: str) -> dict:
+    """暂存告一段落的话题到 memory.json parked 数组（新项插头部，上限 10 条）"""
+    if not summary or not summary.strip():
+        return {"status": "error", "message": "summary 不能为空"}
+    if not detail or not detail.strip():
+        return {"status": "error", "message": "detail 不能为空"}
+    # summary 单行约束：换行会破坏「常驻一行」与字节稳定语义
+    summary = summary.replace("\n", " ").strip()
+
+    data = _read_memory_json()
+    if data.get("_raw_fallback"):
+        return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
+    parked = data.get("parked") or []  # 旧 memory.json 无 parked 键兼容
+    if not isinstance(parked, list):  # 非 list 守卫（对齐 permanent 的 not-a-list 守卫）
+        logger.warning("memory.json parked is not a list, treating as empty")
+        parked = []
+
+    if _count_tokens(summary) > MAX_PARKED_SUMMARY_TOKENS:
+        return {"status": "error", "message": f"summary 过长（约{_count_tokens(summary)} token，上限{MAX_PARKED_SUMMARY_TOKENS}），请精简后重试。"}
+    if _count_tokens(detail) > MAX_PARKED_DETAIL_TOKENS:
+        return {"status": "error", "message": f"detail 过长（约{_count_tokens(detail)} token，上限{MAX_PARKED_DETAIL_TOKENS}），请精简后重试。"}
+    if len(parked) >= MAX_PARKED_ITEMS:
+        return {"status": "error", "message": f"暂存列表已满（{MAX_PARKED_ITEMS} 条），请先召回或确认关闭某项后再暂存"}
+
+    parked.insert(0, {
+        "summary": summary,
+        "detail": detail,
+        "anchor_msg_id": _capture_anchor_msg_id(),
+        "parked_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    _write_parked_only(parked)
+
+    return {"status": "success", "message": f"已暂存：「{summary}」"}
+
+
+def conversation_recall_handler(index: int) -> dict:
+    """召回暂存话题（召回即从 parked 数组移除）"""
+    data = _read_memory_json()
+    if data.get("_raw_fallback"):
+        return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
+    parked = data.get("parked") or []
+    if not isinstance(parked, list):
+        logger.warning("memory.json parked is not a list, treating as empty")
+        parked = []
+    if not parked:
+        return {"status": "error", "message": "暂存列表为空"}
+
+    if index < 1 or index > len(parked):
+        return {"status": "error", "message": f"序号超出范围(1-{len(parked)})"}
+
+    item = parked.pop(index - 1)
+    _write_parked_only(parked)
+    if not isinstance(item, dict):
+        item = {}
+
+    summary = item.get("summary", "")
+    detail = item.get("detail", "")
+    anchor_msg_id = item.get("anchor_msg_id", "")
+
+    # anchor 存活判定：空 anchor 或 DB 无该消息 → False（不报错）
+    anchor_alive = False
+    if anchor_msg_id:
+        try:
+            store = _get_store()
+            anchor_alive = bool(_run_async(store.message_exists(anchor_msg_id)))
+        except Exception as e:
+            logger.warning(f"anchor 存活判定失败: {e}")
+
+    message = f"已召回：「{summary}」"
+    if anchor_alive:
+        message += "；锚点有效，可用 get_messages/read_history_block 回放原文获取全量细节"
+    return {
+        "status": "success",
+        "summary": summary,
+        "detail": detail,
+        "anchor_msg_id": anchor_msg_id,
+        "anchor_alive": anchor_alive,
+        "message": message,
+    }
+
+
+# ============================================================================
 # Module-level aliases for ToolRegistry direct function lookup
 # (without these, ToolRegistry falls back to call_tool wrapper which returns
 #  [TextContent] instead of dict, breaking isinstance(result, dict) checks)
@@ -430,6 +660,12 @@ def user_memory_forget(**kwargs):
 
 def user_memory_list(**kwargs):
     return user_memory_list_handler(**kwargs)
+
+def conversation_park(summary: str, detail: str, **kwargs):
+    return conversation_park_handler(summary=summary, detail=detail)
+
+def conversation_recall(**kwargs):
+    return conversation_recall_handler(**kwargs)
 
 
 # ============================================================================
@@ -459,6 +695,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "user_memory_list":
             result = user_memory_list_handler()
+        elif name == "conversation_park":
+            result = conversation_park_handler(
+                summary=arguments["summary"],
+                detail=arguments["detail"],
+            )
+        elif name == "conversation_recall":
+            result = conversation_recall_handler(
+                index=arguments["index"],
+            )
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
