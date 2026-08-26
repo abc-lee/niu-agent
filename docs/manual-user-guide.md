@@ -482,8 +482,8 @@ python/bin/python3 scripts/model_capability_probe.py \
 
 | 字段 | 说明 | 默认值 |
 |------|------|--------|
+
 | `keepRecentTurns` | 压实后保留的最近会话轮数 | 3 |
-| `blockSummaryEnabled` | 归档块 LLM 摘要增强（索引行更易读；本地单路模型建议保持关闭） | false |
 | `journalScheduledEnabled` | 每日 18 点定时整理工作日志到 journal.md | true |
 
 #### 你需要知道的行为变化

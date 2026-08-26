@@ -26,7 +26,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 主 Agent ask_user 工具 | 主 Agent 想与用户交流时通过 ask_user 暂停问话（阻塞等待回答），工作流不中断——显式暂停工具，区别于"停下来问话"退出工具循环 |
 | /clear 指令 | 即时清空对话（取消清空前提炼）；忙时先停止 Agent 并唤醒在途睡眠整理（阶段边界自行退出）。支持 Electron 和 IM 通用 |
 | /compact 指令 | 手动触发批量压实：与自动触发共用同一纯机械压实函数（秒级、零 LLM、DB 不动），完成后推送新 usage 给前端圆环。仅 Electron |
-| /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（entity-extractor → dream-evolver 多轮循环 → 块摘要可选层；journal 已移出为每日定时任务）。仅 Electron |
+| /sleep 指令 | 让精灵进入睡眠状态，自动触发 sleep 模式整理（entity-extractor → dream-evolver 多轮循环；journal 已移出为每日定时任务）。仅 Electron |
 | 见缝插针 | Agent 运行期间发送的补充消息自动插入到当前对话上下文（补充在前，当前任务在后） |
 | 子 Agent 标签页 | 子 Agent 运行时自动创建独立标签页，实时展示回复/工具状态/思维链/提问；子 Agent 可通过 @user 向用户提问并阻塞等待回答 |
 | 上下文使用率圆环 | 主对话显示主 Agent 的真实上下文占用；切换到子 Agent 标签页时显示该子 Agent 的真实占用（每轮 LLM 实际 prompt_tokens / 上下文窗口），切回主对话自动恢复 |
@@ -36,7 +36,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
 - `/clear`：即时清除——① `request_stop()` 停主 Agent；② 无条件唤醒睡眠整理管道（`set_spirit_state("idle")`，在途 sleep 管道于阶段边界自行退出）；③ 无限心跳排队拿 `_chat_lock` 后直接 `clear_messages()` 清空会话 + `cleanup_all_tmp()` + 复位全部游标 + 截断 F1/F2/F3 中继文件 + 删除指针块库 + 校准倍率复位（journal.md 本体保留）。支持 Electron 和 IM 通用
 - `/compact`：调用 `POST /api/context/tidy {mode:'compact'}`，直达批量压实实现（与自动触发共用 compaction.compact_now_detailed）：纯机械秒级、零 LLM、DB 不动、不经整理队列直接执行；完成后推送新 usage 给前端圆环。阻塞式 UI（系统提示 + 禁用输入 + compact_status 圆环动画），忙时先发 `/stop`。与 `/clear` 的区别：`/clear` 即时清空会话；`/compact` 只压实视图不清空会话，历史全部可经 read_history_block 取回。前端直接 await 执行结果，秒级收敛（压实零 LLM）。**注意**：忙时 `/stop` 仅设置停止标志立即返回，不等 Agent 释放 `_chat_lock`；后端拿锁为无限心跳重试（永不超时放弃），Agent 停止慢时 `/compact` 排队等待而非失败。
-- `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（entity-extractor → dream-evolver 多轮循环 → 块摘要可选层；journal 已移出为每日 18 点定时任务——见「上下文管理」章节）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`；entity/dream 每步完成后检查，被唤醒 → `interrupted/woke_up`，已推进不回滚下次续跑。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
+- `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（entity-extractor → dream-evolver 多轮循环；journal 已移出为每日 18 点定时任务——见「上下文管理」章节）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`；entity/dream 每步完成后检查，被唤醒 → `interrupted/woke_up`，已推进不回滚下次续跑。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
 - 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
 
 **见缝插针机制**：
@@ -411,7 +411,6 @@ sleep 由闲置 5 分钟触发，投递全局整理队列单 worker 串行执行
 |------|------|------|
 | 1 | entity-extractor | 自读 F1 提炼源文件，`lightrag_insert` 入库，报 processed_line=N 后 relay 剪切 |
 | 2 | dream-evolver | 多轮循环：F2→F3 工作集精加工，covered_all 终止，成功删 F2 前缀 |
-| 3 | 块摘要增强（可选层） | 对摘要状态 pending 的归档块裸调 lightrag_llm（副模型一次一 call）生成 ≤100 字摘要行替代机械行；失败保 pending 下次重试；活跃对话期自动跳过本轮；默认关闭（`context.blockSummaryEnabled`） |
 
 journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖保持不变：先入库再精加工，防实体碎片化。文件驱动梦境链（F1/F2/F3 三文件中继，位于 `~/.niu/md/`）机制不变：F1 为 DB 镜像只增不减、F2 无限队列、F3 按 ≤64KB 软预算切分重建；组装器的指针块归档同样只动派生数据不触三文件。
 

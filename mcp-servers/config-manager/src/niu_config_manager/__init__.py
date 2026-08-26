@@ -408,7 +408,6 @@ def load_user_config() -> dict[str, Any]:
             "warningThreshold": 0.8,
             "compressTargetTokens": 60000,
             "sleepTriggerMinutes": 5,
-            "blockSummaryEnabled": False,
         },
         "storage": {"documentRoot": "", "databasePath": ""},
         "firstRun": True,

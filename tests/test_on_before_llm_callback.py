@@ -42,6 +42,7 @@ def _make_response(content="test response", tool_calls=None):
     """构造一个 mock LLM response"""
     response = MagicMock()
     response.content = content
+    response.stream_error = False  # MagicMock 自动真值会让 LLM_ERROR 早退，显式置 False
     response.tool_calls = tool_calls  # None 表示无 tool_calls
     response.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
     response.context_overflow = False

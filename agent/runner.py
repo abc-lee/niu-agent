@@ -266,7 +266,14 @@ from agent.tool_registry import get_registry  # noqa: E402
 from .generic.agent_loop import StreamEvent, agent_runner_loop  # noqa: E402
 from .handler import NiuHandler  # noqa: E402
 from .injector.sync import get_skill_sync  # noqa: E402
+
 from .decay_pool import DecayPool  # noqa: E402
+
+# 动态块框架标记头（D19）：动态注入 + Current Time 以 role=user 消息承载，
+# 全 provider 统一（中途 system 角色在国产网关无官方背书，user 载体零兼容风险）。
+# 同时作为幂等移除的识别锚——配合与上一轮注入文本全等判定，用户输入原文
+# 含此字样也不会被误删。
+_DYNAMIC_BLOCK_HEADER = "[系统动态信息]"
 
 
 def get_system_prompt() -> str:
@@ -678,9 +685,12 @@ class NiuRunner:
     def _build_static_system_prompt() -> str:
         """构建静态系统提示词段（cache 友好）。
 
+
         只包含 niu.md 正文，是 prompt cache 的前缀，字节稳定。
         memory 派生段（identity/workspace/user/permanent/firstRun）由
-        _on_before_llm 每轮从 memory.json 重读生成，作为动态段拼接。
+        _on_before_llm 每轮从 memory.json 重读生成，拼入 system 静态区（D17：
+        字节级几乎恒定，变化仅发生在记忆编辑时）；injection+Current Time 走
+        role=user 动态块（D19），不进 system。
         """
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -723,8 +733,9 @@ class NiuRunner:
         self.default_model = llm_config.get("model", "")
         project_root = os.path.dirname(os.path.dirname(__file__))
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client)
-        # 静态段：niu.md + memory（cache 友好，字节稳定）
-        # memory 段由 _on_before_llm 每轮重读，不在此缓存
+
+        # 静态段：niu.md（cache 友好，字节稳定）；memory 段由 _on_before_llm
+        # 每轮重读后拼入 system 静态区（D17）
         self.static_system_prompt = self._build_static_system_prompt()
         # base_system_prompt 将在 disk_desc 拼接完成后组装（向后兼容）
         # 阶段三：跟踪 ~/.niu/agents/ 已知子 Agent 文件集合
@@ -752,8 +763,10 @@ class NiuRunner:
         self.disk_engine = DiskEngine([bundle_disk_dir, user_disk_dir], registry=None)
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client, disk_engine=self.disk_engine)
 
-        # 动态前缀段：disk_desc（磁盘结构启动时固定，缓存）；Current Time 由
-        # _assemble_system_message 每轮实时生成（disk_desc 自带 \n\n 开头，空时为空串）
+
+        # 动态前缀段：disk_desc（磁盘结构启动时固定；disk_desc 自带 \n\n 开头，
+        # 空时为空串）。D17 起并入 system 静态区；Current Time 不再进 system，
+        # 由 _build_dynamic_block 每轮实时生成于 role=user 动态块末尾
         disk_desc = self._build_disk_description()
         self.dynamic_system_prefix = disk_desc
 
@@ -764,8 +777,11 @@ class NiuRunner:
         self._im_channel_id = ""  # IM 通道继承：记录最近真实用户消息/定时任务的 channel_id
         self._im_force = False  # IM 强制标志：定时任务/后台触发置 True；仅 Electron 用户消息置 False
         self._request_source = "user"  # 当前请求来源（scheduler/ha-watcher 触发时 chat_queue 置 "scheduler"；停止隔离用）
+
         # 首轮 resources 注入（拖入文件模式要求），_on_before_llm turn==1 时合并进 injection 后清空
         self._first_turn_extra_injection: str = ""
+        # 当前对话在途的动态块文本（D19 role=user 载体），_refresh_dynamic_user_block 幂等移除锚
+        self._active_dynamic_block: str = ""
 
         # Brain context injector chain (lazy-cached, created once per runner)
         self._brain_adapter = None      # LightRAGAdapter
@@ -933,66 +949,116 @@ class NiuRunner:
 
         return "\n".join(context_parts) if context_parts else ""
 
+
     def _assemble_system_message(
         self,
         messages: list,
         memory_section: str,
         injection: str,
         model: str,
-    ) -> None:
-        """组装 system message，根据 model 决定是否用 cache_control。
+    ) -> str:
+        """组装 system message 静态区并产出动态块文本（D17 缓存友好排布）。
 
-        原地修改 messages[0]["content"]。
+        原地修改 messages[0]["content"] 为**静态区**：static_system_prompt + disk_desc
+        + memory_section——三者均低频变化（disk 启动固定；memory 每轮重读但字节级几乎
+        恒定，变化仅发生在记忆编辑时，一次重建属可接受代价），命中段可延伸至索引区末尾。
 
-        - Claude 模型：content 改为 list 格式，静态段末尾打 cache_control breakpoint。
-          静态段（仅 niu.md）被 cache，命中后 input token 计费降至 10%。
-          动态段（memory + Current Time + disk_desc + injection）每轮重新发送。
-        - 其他模型（火山方舟/DeepSeek/Qwen 等）：content 保持字符串格式。
-          静态段在开头且字节稳定，靠服务端自动 prefix cache 命中。
+        - Claude 模型：content 为单 text 块 list 格式，末尾打 cache_control breakpoint。
+        - 其他模型（火山方舟/DeepSeek/Qwen 等）：content 保持字符串格式，
+          静态区在开头且字节稳定，靠服务端自动 prefix cache 命中。
+
+        易变内容（injection + Current Time）不再进 system：由本方法以动态块文本返回，
+        调用方经 _refresh_dynamic_user_block 以 role=user 载体插入（D19 全 provider 统一，
+        复用 supplement 注入先例；时间在块内最后）。
 
         Args:
             messages: 消息列表，messages[0] 必须是 role=system
             memory_section: 本轮从 memory.json 重读的 memory 段（identity/workspace/user/permanent/firstRun）
-            injection: 动态注入内容（skills/knowledge/brain region）
+            injection: 动态注入内容（skills/knowledge/brain region），仅用于生成动态块文本
             model: 当前模型名，用于判断是否 Claude
+
+        Returns:
+            动态块文本（「[系统动态信息]」头 + injection + Current Time）；messages[0]
+            非 system 时返回 ""。插入位置与幂等移除由调用方决定。
         """
         if not messages or messages[0].get("role") != "system":
-            return
+            return ""
 
-        # 动态段 = memory_section + Current Time（每轮实时）+ disk_desc + injection
-        dynamic_text = ""
+        # 静态区 = 静态指令 + disk_desc（dynamic_system_prefix 自带 \n\n 开头，空时为空串）
+        #          + memory_section
+        static_text = self.static_system_prompt + self.dynamic_system_prefix
         if memory_section:
-            dynamic_text += "\n\n" + memory_section
-        dynamic_text += f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        dynamic_text += self.dynamic_system_prefix
-        if injection:
-            dynamic_text += injection
+            static_text += "\n\n" + memory_section
 
         model_lower = (model or "").lower()
         if "claude" in model_lower:
-            # Claude：list 格式 + cache_control breakpoint
+            # Claude：单 text 块 list 格式 + cache_control breakpoint
             messages[0]["content"] = [
                 {
                     "type": "text",
-                    "text": self.static_system_prompt,
+                    "text": static_text,
                     "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": dynamic_text,
                 },
             ]
         else:
-            # 其他模型：字符串格式，静态段在开头
-            messages[0]["content"] = self.static_system_prompt + dynamic_text
+            # 其他模型：字符串格式，静态区在开头
+            messages[0]["content"] = static_text
+
+        return self._build_dynamic_block(injection)
+
+    def _build_dynamic_block(self, injection: str) -> str:
+        """构建动态块文本：框架标记头 + injection + Current Time（时间最后）。"""
+        text = _DYNAMIC_BLOCK_HEADER
+        if injection:
+            text += "\n" + injection.strip()
+        text += f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        return text
+
+    def _refresh_dynamic_user_block(self, messages: list, dynamic_text: str) -> None:
+        """移除上一轮动态块并以 role=user 插入新块（最后一个 user 消息之前）。
+
+        插入位取「最后一个 role=user 消息之前」：轮首当前输入在尾部 → 动态块紧贴其前
+        （[-2]=动态块 / [-1]=输入）；轮中工具循环时尾部是 tool 结果，动态块仍锚定在
+        本轮 user 输入的语义位之前。supplement/next_prompt 已在本回调之前的上一轮迭代末
+        由 agent_loop 合并追加为 user 消息（轮末统一 append），因此本回调执行时动态块
+        恰好插在它们之前。
+
+        幂等识别锚：消息 content 与上一轮注入文本**全等**且以框架标记头开头——用户输入
+        原文即使以「[系统动态信息]」开头也不含实时时间戳、不可能全等，绝不误删。
+
+        Args:
+            messages: agent_runner_loop 的消息列表引用（原地修改）
+            dynamic_text: _assemble_system_message 返回的动态块文本；空串只做移除不插入
+        """
+        prev = getattr(self, "_active_dynamic_block", "")
+        if prev:
+            for idx, m in enumerate(messages):
+                if (
+                    m.get("role") == "user"
+                    and isinstance(m.get("content"), str)
+                    and m["content"].startswith(_DYNAMIC_BLOCK_HEADER)
+                    and m["content"] == prev
+                ):
+                    del messages[idx]
+                    break
+        self._active_dynamic_block = dynamic_text
+        if not dynamic_text:
+            return
+        insert_at = len(messages)
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "user":
+                insert_at = idx
+                break
+        messages.insert(insert_at, {"role": "user", "content": dynamic_text})
+
 
     def _on_before_llm(self, messages: list, turn: int) -> None:
         """每轮 LLM 调用前重读 memory.json + 刷新动态注入。
 
         每轮从 memory.json 重新构建 memory_section（identity/workspace/user/permanent/firstRun），
         保证 Agent 写入 memory.json 后下一轮 system prompt 立即感知。
-        关键：在 client.chat 之前调，让本轮 LLM 立即读到新 system message。
-        原地修改 messages[0]，无返回值。
+        关键：在 client.chat 之前调，让本轮 LLM 立即读到新内容。
+        原地修改 messages[0]（静态区）并刷新 role=user 动态块，无返回值。
 
         Args:
             messages: agent_runner_loop 的消息列表引用
@@ -1012,17 +1078,25 @@ class NiuRunner:
             injection += self._first_turn_extra_injection
             self._first_turn_extra_injection = ""  # 清空，防跨对话泄漏
 
-        # 3. 原地修改 messages[0]，本轮 LLM 立即读到
-        self._assemble_system_message(messages, memory_section, injection, self.default_model)
+
+        # 3. 组装静态区（messages[0] = 静态指令+disk_desc+memory，D17 缓存友好排布）
+        #    并刷新动态块（injection+Current Time 以 role=user 插在最后一个 user 前，
+        #    D19 全 provider 统一；先移除上一轮旧块防叠加），本轮 LLM 立即读到
+        dynamic_text = self._assemble_system_message(messages, memory_section, injection, self.default_model)
+        self._refresh_dynamic_user_block(messages, dynamic_text)
         # 4. 回填 system token 估算（Task 3：80% 触发判定的系统侧输入）。
-        # 挂点选在 _assemble_system_message 出口：此时 messages[0] 已含本轮动态段，
-        # 尺寸即最终发送值。计数失败不阻塞对话（缺省 0=未知，首轮回退偏保守）。
+        # 挂点选在组装出口：此时静态区已写好、动态块文本已知，
+        # 计 [system]+[动态块] 尺寸即本轮注入面最终值。计数失败不阻塞对话
+        # （缺省 0=未知，首轮回退偏保守）。
         try:
             from agent import context_manager as _cm_mod
             _cm = _cm_mod.peek_context_manager()
             if _cm is not None and messages and messages[0].get("role") == "system":
+                counted = [messages[0]]
+                if dynamic_text:
+                    counted.append({"role": "user", "content": dynamic_text})
                 _cm.set_system_token_estimate(
-                    _cm_mod.ContextManager.count_tokens_simple([messages[0]])
+                    _cm_mod.ContextManager.count_tokens_simple(counted)
                 )
         except Exception as e:
             logger.debug(f"[Runner] system token estimate backfill skipped: {e}")
@@ -1828,10 +1902,12 @@ class NiuRunner:
                 if resource_lines:
                     self._first_turn_extra_injection = "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
 
-        # 组装 system message（首轮就按 model 决定格式，Claude 走 cache_control）
-        # injection="" 因为动态注入移到 _on_before_llm 首轮
-        # memory_section="" 因为 _on_before_llm 首轮会重读 memory.json 覆盖（入口先放空骨架）
-        # resources 文本在实例属性里，_on_before_llm 首轮会合并进 injection
+
+        # 组装 system message 静态区（首轮就按 model 决定格式，Claude 单块 cache_control）。
+        # D17：injection="" / memory_section="" → 空骨架只含静态指令+disk_desc，
+        # 不含任何动态文本（无 Current Time）；首轮动态块由 _on_before_llm turn=1
+        # 经 role=user 载体注入（此处忽略返回的动态块文本）。
+        # resources 文本在实例属性里，_on_before_llm 首轮会合并进 injection。
         system_message = {"role": "system", "content": ""}
         self._assemble_system_message([system_message], "", "", self.default_model)
 
