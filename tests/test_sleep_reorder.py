@@ -131,7 +131,7 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), tokens_per_msg=100,
             stack.enter_context(p)
         for p in extra_patches:
             stack.enter_context(p)
-        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
+        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock", create=True))
         stack.enter_context(mock.patch("agent.md_mirror.F2_PATH",
                                        str(pathlib.Path(tempfile.mkdtemp(prefix="t4_reorder_")) / "f2.md")))
         if seed_f1 is not None:
@@ -291,44 +291,3 @@ def test_entry_no_dream_cursor_read(tmp_path):
     assert not any("last_dream_evolve.json" in str(p) for p in recorded), \
         f"入口不得再读取 dream 游标文件（已退役），实际 recorded={recorded}"
     assert result.get("status") == "ok"
-
-# ---------------------------------------------------------------------------
-# 7. 复位表收缩（工程五七件套退役：_ALL_CURSOR_FILES 仅剩 journal 一键）
-# ---------------------------------------------------------------------------
-
-def test_reset_all_cursors_clears_exactly_journal_key(tmp_path):
-    """reset 恰清 journal 一键（T6 压缩退役：compress 已出复位表）。"""
-    from niu_api.compat import _ALL_CURSOR_FILES, _reset_all_cursors
-
-    assert _ALL_CURSOR_FILES == ["last_journal.json"]
-    home = tmp_path
-    niu = home / ".niu"
-    niu.mkdir(parents=True)
-    (niu / "last_journal.json").write_text("{}", encoding="utf-8")
-    (niu / "last_compress.json").write_text("{}", encoding="utf-8")  # 盘上残留，生产不触碰
-
-    with mock.patch("pathlib.Path.home", return_value=home):
-        asyncio.run(_reset_all_cursors())
-
-    remaining = sorted(p.name for p in niu.iterdir())
-    assert remaining == ["last_compress.json"], f"仅 journal 应被清，实际残留 {remaining}"
-
-
-def test_reset_all_cursors_never_touches_entity_extract_file(tmp_path):
-    """reset 不触碰 last_entity_extract.json——死键已移出 _ALL_CURSOR_FILES。
-
-    磁盘残留的 last_entity_extract.json 为一次性手工 rm 迁移动作（不入生产代码路径，
-    无断言载体）：生产 reset 循环对其零接触，由本测试锁定。
-    """
-    from niu_api.compat import _reset_all_cursors
-
-    home = tmp_path
-    niu = home / ".niu"
-    niu.mkdir(parents=True)
-    entity_file = niu / "last_entity_extract.json"
-    entity_file.write_text(json.dumps({"last_entity_extract_id": "legacy-id"}), encoding="utf-8")
-
-    with mock.patch("pathlib.Path.home", return_value=home):
-        asyncio.run(_reset_all_cursors())
-
-    assert entity_file.exists(), "last_entity_extract.json 不应被生产复位逻辑触碰"

@@ -122,7 +122,7 @@ def _tidy_failure_patches(subagent_result, call_mock):
         # 四个游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）。
         # compat.py 在函数内 `from pathlib import Path`，无模块级 Path，故 patch 类方法本身
         mock.patch("pathlib.Path.exists", return_value=False),
-        mock.patch("niu_api.compat._write_cursor_with_lock"),
+        mock.patch("niu_api.compat._write_cursor_with_lock", create=True),
     ]
 
 
@@ -157,7 +157,7 @@ class TestTidySleepFailureCursor:
             for p in _tidy_failure_patches(subagent_result, call_mock):
                 stack.enter_context(p)
             stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
-            write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
+            write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock", create=True))
             block = mdm.format_message_record(
                 msg_id="t7-seed-not-in-db", created_at="t", role="user", content="种子",
             )

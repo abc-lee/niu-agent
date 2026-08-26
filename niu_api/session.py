@@ -59,8 +59,6 @@ async def delete_messages(session_id: str) -> dict:
     """Clear all messages (session_id is ignored)"""
     store = await get_message_store()
     count = await store.clear_messages()
-    from niu_api.compat import _reset_all_cursors
-    await _reset_all_cursors()
     # 派生状态复位（与 clear_chat 一致——Task 8：指针块/校准倍率/内存状态）
     from agent.context_assembler import reset_derived_state
     reset_derived_state()
@@ -92,8 +90,6 @@ async def delete_session(session_id: str) -> dict:
     if runner and runner.handler:
         runner.handler._last_prompt_tokens = 0
         runner.handler._last_cached_tokens = None
-    from niu_api.compat import _reset_all_cursors
-    await _reset_all_cursors()
     # 派生状态复位（与 clear_chat 一致——Task 8：指针块/校准倍率/内存状态）
     from agent.context_assembler import reset_derived_state
     reset_derived_state()

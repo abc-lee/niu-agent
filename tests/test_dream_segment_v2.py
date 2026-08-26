@@ -123,7 +123,7 @@ def _run_sleep(call_mock, seed_ids=(), *, is_sleeping=lambda: True,
             stack.enter_context(p)
         for p in extra_patches:
             stack.enter_context(p)
-        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
+        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock", create=True))
         runner = _FakeRunner()
         stack.enter_context(mock.patch("niu_api.chat.get_or_create_runner", return_value=runner))
         if seed_f2_directly:

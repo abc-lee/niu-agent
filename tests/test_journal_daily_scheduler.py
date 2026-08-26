@@ -1,16 +1,15 @@
-"""journal_daily 定时任务测试（T7：journal 迁出睡眠管道 → scheduler 直执行）。
+"""journal_daily 定时任务测试（直读 DB 改造：日志即水位线）。
 
 覆盖：
 1. 触发分派：trigger_callback 按 task_kind=journal_daily 走直执行分支
 2. **严禁经 ChatQueue enqueue**（journal 内容写进 messages.db 会反污染上下文窗口）
 3. 配置开关 context.journalScheduledEnabled（默认开启；关闭→静默跳过返回成功语义）
-4. 游标推进：成功按 processed_up_to=N 查映射推进 / incomplete·overflow·failure 不动 /
-   兜底区间末尾 / 游标被删回退
-5. 增量导出：无增量不调子 Agent；工作集文件清理
-6. 内置任务注册：journal-daily（journal_daily）创建 + 旧 daily-journal-check 退役
+4. 自理工作流派发：任务文本含起点判定/get_messages 分页/reason 分级/空批/
+   覆盖标记/@end 协议；程序侧零游标零文件操作，failure/incomplete/overflow 仅落日志
+5. 内置任务注册：journal-daily（journal_daily）创建 + 旧 daily-journal-check 退役
 
-全 mock：call_subagent_with_auto_answer / runner / 游标文件——禁真实 LLM、禁图谱写入、
-messages.db 零新增。
+全 mock：call_subagent_with_auto_answer / runner——禁真实 LLM、禁图谱写入、
+messages.db 零新增、~/.niu 零写入。
 """
 import json
 import sys
@@ -30,53 +29,25 @@ import niu_api.internal.scheduler.service as svc
 NORMAL_JSON = json.dumps({"ok": True})
 
 
-class _Msg:
-    def __init__(self, mid, content="hello"):
-        self.id = mid
-        self.role = "user"
-        self.content = content
-        self.tool_calls = None
-        self.tool_call_id = ""
-        self.created_at = "t"
-
-
-def _real_export(messages, last_cursor_id, out_path):
-    """真实导出函数（仅路径参数已由调用方 patch 隔离）。"""
-    from niu_api.compat import _export_journal_increment as fn
-    return fn(messages, last_cursor_id, out_path)
-
-
-def _make_runner(messages):
-    runner = mock.MagicMock()
-    runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}
-    runner._sync_get_messages = lambda: messages
-    return runner
-
-
-def _run_job(monkeypatch, tmp_path, subagent_result, messages=None, cursor_value=""):
+def _run_job(monkeypatch, tmp_path, subagent_result):
     """驱动 _run_journal_daily_job 同步执行（线程体直接调，便于断言）。
 
-    返回 (call_mock, paths)。
+    返回 call_mock。全 mock：避让等待跳过、runner 假对象、子 Agent 结果注入。
     """
     from agent import subagent as subagent_module
 
-    messages = messages if messages is not None else [_Msg("m1"), _Msg("m2")]
     call_mock = mock.MagicMock(return_value=subagent_result)
-    cursor = tmp_path / "last_journal.json"
-    workset = tmp_path / "md" / "journal_workset.md"
-    if cursor_value:
-        cursor.write_text(json.dumps({"last_journal_id": cursor_value}), encoding="utf-8")
-
     monkeypatch.setattr(svc, "read_journal_scheduled_enabled", lambda: True)
     monkeypatch.setattr(svc, "_wait_backend_idle", lambda sched: None)
-    monkeypatch.setattr("niu_api.compat.JOURNAL_CURSOR_PATH", cursor)
-    monkeypatch.setattr("niu_api.compat.JOURNAL_WORKSET_PATH", workset)
-    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: _make_runner(messages))
+    monkeypatch.setattr(
+        "niu_api.chat.get_or_create_runner",
+        lambda: mock.MagicMock(llm_config={"model": "m", "apikey": "x", "apibase": "http://x"}),
+    )
     monkeypatch.setattr(subagent_module, "call_subagent_with_auto_answer", call_mock)
 
     # 直接跑线程体（锁由执行体内部持有/释放，与生产一致）
     svc._run_journal_daily_job()
-    return call_mock, {"cursor": cursor, "workset": workset}
+    return call_mock
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +87,8 @@ def test_job_skips_when_previous_run_in_progress(monkeypatch):
             called.append(1)
 
         monkeypatch.setattr(svc, "_wait_backend_idle", boom)
-        monkeypatch.setattr("niu_api.compat.JOURNAL_CURSOR_PATH", Path("/nonexistent/x.json"))
         svc._run_journal_daily_job()
-        assert called == [] and not Path("/nonexistent/x.json").exists(), "持锁期间执行体应直接跳过"
+        assert called == [], "持锁期间执行体应直接跳过"
     finally:
         svc._journal_run_lock.release()
 
@@ -153,35 +123,53 @@ def test_trigger_disabled_returns_ok_without_dispatch(monkeypatch):
     assert dispatched == []
 
 
+def test_disabled_at_run_skips_subagent(monkeypatch, tmp_path):
+    """执行时开关已关 → 跳过本轮，不调子 Agent（避让等待由 _trigger 层前置检查覆盖）。"""
+    from agent import subagent as subagent_module
+
+    call_mock = mock.MagicMock()
+    monkeypatch.setattr(svc, "read_journal_scheduled_enabled", lambda: False)
+    monkeypatch.setattr(svc, "_wait_backend_idle", lambda sched: None)
+    monkeypatch.setattr(subagent_module, "call_subagent_with_auto_answer", call_mock)
+    svc._run_journal_daily_job()
+    assert call_mock.call_count == 0, "开关关闭时不得调 journal-agent"
+
+
+def test_missing_runner_skips_subagent(monkeypatch, tmp_path):
+    """runner 未初始化 → 跳过本轮，不调子 Agent。"""
+    from agent import subagent as subagent_module
+
+    call_mock = mock.MagicMock()
+    monkeypatch.setattr(svc, "read_journal_scheduled_enabled", lambda: True)
+    monkeypatch.setattr(svc, "_wait_backend_idle", lambda sched: None)
+    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: None)
+    monkeypatch.setattr(subagent_module, "call_subagent_with_auto_answer", call_mock)
+    svc._run_journal_daily_job()
+    assert call_mock.call_count == 0
+
+
 # ---------------------------------------------------------------------------
-# 3. 游标推进（程序侧按映射推进，F1 同款模式）
+# 3. 自理工作流派发（任务文本契约 + 程序侧零游标零文件）
 # ---------------------------------------------------------------------------
 
-def test_cursor_advances_per_processed_up_to(monkeypatch, tmp_path):
-    """成功 → 解析 processed_up_to=N 查映射推进游标并写回。"""
-    result = NORMAL_JSON + "\n处理完成 @end\nprocessed_up_to=1"
-    call_mock, paths = _run_job(
-        monkeypatch, tmp_path, result,
-        messages=[_Msg("m1", "做 A"), _Msg("m2", "做 B")],
-    )
-    data = json.loads(paths["cursor"].read_text(encoding="utf-8"))
-    assert data["last_journal_id"] == "m1", "processed_up_to=1 → m1"
-    assert "last_journal_at" in data
-    # 子 Agent task 含自读指令与工作集路径
+def test_job_passes_self_managed_workflow_task(monkeypatch, tmp_path):
+    """任务文本自理：含起点判定/get_messages 分页/reason 分级/空批/覆盖标记/@end 协议。"""
+    call_mock = _run_job(monkeypatch, tmp_path, NORMAL_JSON)
+    assert call_mock.call_count == 1
+    assert call_mock.call_args.args[0] == "journal-agent"
     task_arg = call_mock.call_args.args[1]
-    assert str(paths["workset"]) in task_arg
-    assert "processed_up_to" in task_arg
+    assert "覆盖至" in task_arg, "起点判定与标记协议必须内联在任务文本"
+    assert "after_id" in task_arg and "limit=200" in task_arg, "分页拉取用法必须在场"
+    assert 'session_id="default"' in task_arg
+    assert "invalid_after_id" in task_arg and "transient" in task_arg, "reason 分级错误处理必须在场"
+    assert "无新消息" in task_arg, "空批处理必须在场"
+    assert "@end" in task_arg, "@end 结束协议必须在场"
 
 
-def test_cursor_fallback_to_range_end_without_marker(monkeypatch, tmp_path):
-    """未输出 processed_up_to → 兜底区间末尾。"""
-    result = NORMAL_JSON + "\n处理完成 @end"
-    _, paths = _run_job(
-        monkeypatch, tmp_path, result,
-        messages=[_Msg("m1"), _Msg("m2")], cursor_value="m1",
-    )
-    data = json.loads(paths["cursor"].read_text(encoding="utf-8"))
-    assert data["last_journal_id"] == "m2"
+def test_success_writes_no_cursor_and_no_file(monkeypatch, tmp_path):
+    """正常返回即成功：程序侧零游标读写、零导出文件（水位线由子 Agent 按标记自理）。"""
+    _run_job(monkeypatch, tmp_path, NORMAL_JSON)
+    assert list(tmp_path.iterdir()) == [], "程序侧不得产生任何文件"
 
 
 @pytest.mark.parametrize("bad_result", [
@@ -190,65 +178,11 @@ def test_cursor_fallback_to_range_end_without_marker(monkeypatch, tmp_path):
                 "tokens_used": 1, "tokens_limit": 2, "partial_result": ""}),
     "SUBAGENT_ERROR: llm down",
 ])
-def test_cursor_not_advanced_on_bad_results(monkeypatch, tmp_path, bad_result):
-    """incomplete/overflow/failure → 游标不动（下轮重跑同区间）。"""
-    _, paths = _run_job(
-        monkeypatch, tmp_path, bad_result,
-        messages=[_Msg("m1"), _Msg("m2")], cursor_value="m1",
-    )
-    data = json.loads(paths["cursor"].read_text(encoding="utf-8"))
-    assert data["last_journal_id"] == "m1"
-
-
-def test_cursor_reverts_when_deleted_from_db(monkeypatch, tmp_path):
-    """推进目标已被并发删除 → 回退旧游标；旧游标也消失则不写。"""
-    # m2 不在 fresh 列表（runner 二次读取只返回 m1）→ 回退 m1
-    calls = {"n": 0}
-
-    def flaky_messages():
-        calls["n"] += 1
-        return [_Msg("m1")] if calls["n"] >= 2 else [_Msg("m1"), _Msg("m2")]
-
-    result = NORMAL_JSON + "\nprocessed_up_to=2"
-    cursor = tmp_path / "last_journal.json"
-    workset = tmp_path / "md" / "journal_workset.md"
-    cursor.write_text(json.dumps({"last_journal_id": "m1"}), encoding="utf-8")
-
-    from agent import subagent as subagent_module
-    monkeypatch.setattr(svc, "read_journal_scheduled_enabled", lambda: True)
-    monkeypatch.setattr(svc, "_wait_backend_idle", lambda sched: None)
-    monkeypatch.setattr("niu_api.compat.JOURNAL_CURSOR_PATH", cursor)
-    monkeypatch.setattr("niu_api.compat.JOURNAL_WORKSET_PATH", workset)
-    runner = _make_runner(None)
-    runner._sync_get_messages = flaky_messages
-    monkeypatch.setattr("niu_api.chat.get_or_create_runner", lambda: runner)
-    monkeypatch.setattr(subagent_module, "call_subagent_with_auto_answer",
-                        mock.MagicMock(return_value=result))
-
-    svc._run_journal_daily_job()
-
-    data = json.loads(cursor.read_text(encoding="utf-8"))
-    assert data["last_journal_id"] == "m1", "m2 已删应回退 m1"
-
-
-def test_no_increment_skips_subagent(monkeypatch, tmp_path):
-    """游标已在末条 → 零增量，不调子 Agent。"""
-    call_mock, paths = _run_job(
-        monkeypatch, tmp_path, NORMAL_JSON,
-        messages=[_Msg("m1")], cursor_value="m1",
-    )
-    assert call_mock.call_count == 0, "零增量不得调 journal-agent"
-    assert not paths["workset"].exists()
-
-
-def test_workset_cleaned_after_success(monkeypatch, tmp_path):
-    """成功后清理工作集临时文件。"""
-    _, paths = _run_job(
-        monkeypatch, tmp_path,
-        NORMAL_JSON + "\nprocessed_up_to=2",
-        messages=[_Msg("m1"), _Msg("m2")],
-    )
-    assert not paths["workset"].exists()
+def test_bad_results_swallow_to_log(monkeypatch, tmp_path, bad_result):
+    """failure/incomplete/overflow 仅落日志：不抛异常、不写任何状态（下轮 cron 自然重试）。"""
+    call_mock = _run_job(monkeypatch, tmp_path, bad_result)
+    assert call_mock.call_count == 1
+    assert list(tmp_path.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +204,13 @@ def test_service_routes_journal_daily_before_reminder():
     jd_branch = source.index('task.get("task_kind") == "journal_daily"')
     enqueue_branch = source.index("q.enqueue_sync(content=prompt")
     assert jd_branch < enqueue_branch, "journal_daily 必须走直执行分支，先于任何 enqueue"
+
+
+def test_service_has_no_cursor_or_workset_references():
+    """源码钉：scheduler 服务不再引用游标/工作集符号（退役反向钉）。"""
+    source = (_root / "niu_api" / "internal" / "scheduler" / "service.py").read_text(encoding="utf-8")
+    for retired in ("_export_journal_increment", "_build_journal_file_task",
+                    "_parse_processed_up_to", "_read_cursor_with_lock",
+                    "_write_cursor_with_lock", "JOURNAL_CURSOR_PATH",
+                    "JOURNAL_WORKSET_PATH", "last_journal"):
+        assert retired not in source, f"{retired} 应已退役"

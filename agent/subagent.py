@@ -1238,7 +1238,7 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     """
     auto_answer = "无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作"
 
-    # 程序触发子 Agent：超长报告不写文件，保留 processed_up_to 游标标记
+    # 程序触发子 Agent：超长报告不写文件，结果只进回复文本
     kwargs.setdefault('program_triggered', True)
 
     # 【subagent_started 补发】程序触发路径（sleep/force 整理）此前不发 subagent_started 事件，

@@ -428,7 +428,7 @@ def _tidy_common_patches():
         mock.patch("niu_api.compat.is_sleeping", return_value=True),
         # 防 ~/.niu 既有游标文件触发真实游标写入（测试保持 hermetic；
         # T7 后 sleep 管道无 journal 腿，原 _build_incremental_msg_text 恒空 patch 缝随符号退役）
-        mock.patch("niu_api.compat._write_cursor_with_lock"),
+        mock.patch("niu_api.compat._write_cursor_with_lock", create=True),
     ]
 
 

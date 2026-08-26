@@ -79,9 +79,10 @@ def trigger_callback(task: dict) -> str | None:
     stdout 空+成功=静默返回 '(silent)'；有 stdout 或 status=error=stdout 注入主 Agent。
     脚本文件不存在=永久删除任务（避免无限重试）。
 
-    journal_daily 任务（T7）：后台线程直执行——导出 DB 增量给 journal-agent 自读，
-    日志只写 journal.md 文件、游标自管，**严禁经 ChatQueue enqueue**（journal 内容
-    写进 messages.db 会反污染上下文窗口）。派发即返回 "ok"。
+    journal_daily 任务：后台线程直执行——向 journal-agent 派发自理工作流任务文本，
+    由其经 session-manager get_messages 直读 messages.db 自取增量（journal.md 内
+    最近一条「覆盖至: <message_id>」标记即水位线），**严禁经 ChatQueue enqueue**
+    （journal 内容写进 messages.db 会反污染上下文窗口）。派发即返回 "ok"。
     """
     from niu_api.alerts import add_pending_alert
     from niu_api.chat import _main_loop
@@ -155,12 +156,13 @@ def _trigger_journal_daily(task: dict) -> str | None:
     """journal_daily 触发：派后台线程直执行，**不经 ChatQueue enqueue**。
 
     journal 内容若经 enqueue 写入 messages.db 会反污染上下文窗口（T7 铁律），
-    故本分支与 reminder/background_script 不同：日志只写 journal.md 文件，
-    游标由本分支自管（last_journal.json），对主 Agent 上下文零注入。
+    故本分支与 reminder/background_script 不同：journal-agent 经 session-manager
+    get_messages 直读 messages.db，水位线由 journal.md 内「覆盖至:」标记自理
+    （日志即水位线），对主 Agent 上下文零注入。
 
     完成语义：派发即返回 "ok"（recurring 正常 reschedule）。执行失败仅落日志，
-    游标不推进 → 下轮自动重覆盖同一增量区间（journal.md 写入侧内容去重兜底），
-    无需借 scheduler 失败计数器重试。运行中重复触发由 _run_journal_daily_job 内
+    水位线不推进 → 下轮自动重试（journal.md 写入侧内容去重兜底），无需借
+    scheduler 失败计数器重试。运行中重复触发由 _run_journal_daily_job 内
     _journal_run_lock 非阻塞去重（跳过本轮，下轮 cron 再来）。
 
     D13 避让：后台线程先复用 Scheduler 既有 backend-busy 轮询（_is_backend_busy
@@ -203,11 +205,27 @@ def _wait_backend_idle(sched: "Scheduler | None") -> None:
         time.sleep(poll)
 
 
-def _run_journal_daily_job() -> None:
-    """journal_daily 执行体：避让等待 → 导出增量 → 调 journal-agent 自读 → 推进游标。
+# 夜间整理任务文本：journal-agent 自理工作流（直读 DB、日志即水位线）。
+# 起点判定/分页/错误分流/空批/覆盖标记/@end 协议全部内联在任务文本——与
+# config/agents/journal-agent.md 提示词双保险；程序侧不再读游标、不再导出
+# 文件、不再解析推进。
+_JOURNAL_DAILY_TASK = """请执行夜间工作日志整理（走你的整理流程）：
 
-    运行中重复触发由 _journal_run_lock 非阻塞去重：抢不到锁直接跳过本轮
-    （下轮 cron 再来），锁由本函数独占持有/释放。
+1. 起点判定：读取 journal.md（不限当天），找最近一条带「覆盖至: <message_id>」标记的整理条目作为起点；整个日志找不到标记则按首次整理处理（get_messages 不传 after_id、limit=200 取最新，回复中注明首次整理）。
+2. 分页拉取：调 get_messages(session_id="default", after_id=<起点ID>, limit=200)；返回 has_more=true 时以 next_after_id 继续拉取，直到拉完。
+3. 错误分流：reason=="invalid_after_id"（起点已删，如 /new 清库）→ 按首次整理兜底；reason=="transient"（瞬时故障）→ 本轮放弃：回复失败原因即可，不写任何条目和标记，@end 结束。
+4. 空批：无新消息 → 回复「无新消息可整理」，不写条目不更新标记，@end 结束。
+5. 有新消息 → 与当天已有条目内容级去重后写整理条目（日期标题+要点归纳），条目末尾元信息行必须写「覆盖至: <本批最后一条消息的id>」。
+6. 完成后回复报告：写了什么、覆盖到几点、共处理多少条，并以 @end 结束。"""
+
+
+def _run_journal_daily_job() -> None:
+    """journal_daily 执行体：避让等待 → 调 journal-agent 自理整理（直读 DB、日志即水位线）。
+
+    journal-agent 经 session-manager get_messages 直读 messages.db，起点由
+    journal.md 内「覆盖至:」标记自判；本函数只负责避让、开关复查与派发，
+    不读游标、不导出文件、不解析推进。运行中重复触发由 _journal_run_lock
+    非阻塞去重：抢不到锁直接跳过本轮（下轮 cron 再来），锁由本函数独占持有/释放。
     """
     if not _journal_run_lock.acquire(blocking=False):
         logger.warning("[JOURNAL_DAILY] previous run still in progress, skip")
@@ -216,18 +234,11 @@ def _run_journal_daily_job() -> None:
         from agent.subagent import call_subagent_with_auto_answer
 
         from niu_api.compat import (
-            JOURNAL_CURSOR_PATH,
-            JOURNAL_WORKSET_PATH,
-            _build_journal_file_task,
-            _export_journal_increment,
             _extract_overflow_info,
             _incomplete_reason,
             _is_subagent_failure,
             _is_subagent_incomplete,
             _is_subagent_overflow,
-            _parse_processed_up_to,
-            _read_cursor_with_lock,
-            _write_cursor_with_lock,
         )
 
         # 1. D13 避让：复用既有 backend-busy 等待（scheduler 未启动时跳过避让）
@@ -242,80 +253,32 @@ def _run_journal_daily_job() -> None:
             logger.info("[JOURNAL_DAILY] disabled after idle wait, skip")
             return
 
-        # 3. 读游标（跨线程统一走 .lock helper，禁止另开 fd 嵌套加锁）
-        last_journal_id = _read_cursor_with_lock(JOURNAL_CURSOR_PATH, "last_journal_id")
-
-        # 4. 从 DB 同步读消息并导出增量工作集
+        # 3. 取 runner（llm_config 来源）
         from niu_api.chat import get_or_create_runner
 
         runner = get_or_create_runner()
         if not runner:
             logger.warning("[JOURNAL_DAILY] Runner not initialized, skip")
             return
-        messages = runner._sync_get_messages()
-        if not messages:
-            logger.info("[JOURNAL_DAILY] no messages in DB, skip")
-            return
 
-        msg_ids, idx_to_id = _export_journal_increment(
-            messages, last_journal_id, JOURNAL_WORKSET_PATH
-        )
-        if not msg_ids:
-            logger.info("[JOURNAL_DAILY] no incremental messages since cursor")
-            return
-        logger.info(f"[JOURNAL_DAILY] exported {len(msg_ids)} incremental messages")
-
-        # 5. 调 journal-agent 自读工作集（直执行；结果只写 journal.md 与回复文本）
+        # 4. 调 journal-agent 自理整理（直执行；结果只写 journal.md 与回复文本）
         result = call_subagent_with_auto_answer(
             "journal-agent",
-            _build_journal_file_task(JOURNAL_WORKSET_PATH, len(msg_ids)),
+            _JOURNAL_DAILY_TASK,
             llm_config=runner.llm_config,
             mcp_client=None,
         )
         logger.info(f"[JOURNAL_DAILY] journal-agent result: {result[:200]}")
 
-        # 6. 游标推进（程序侧按映射推进，F1 同款模式）：failure/overflow/incomplete→不动
-        new_journal_id = last_journal_id
-        if _is_subagent_overflow(result) or _is_subagent_incomplete(result) or _is_subagent_failure(result):
-            if _is_subagent_incomplete(result):
-                logger.warning(f"[JOURNAL_DAILY] incomplete ({_incomplete_reason(result)}) — cursor not advanced")
-            elif _is_subagent_overflow(result):
-                overflow_info = _extract_overflow_info(result)
-                logger.warning(f"[JOURNAL_DAILY] overflow: {overflow_info.get('turns_completed', 0)} turns — cursor not advanced")
-            else:
-                logger.warning(f"[JOURNAL_DAILY] failure: {result[:200]} — cursor not advanced")
-        else:
-            processed_idx = _parse_processed_up_to(result)
-            if processed_idx is not None and processed_idx in idx_to_id:
-                new_journal_id = idx_to_id[processed_idx]
-                logger.info(f"[JOURNAL_DAILY] cursor advanced per processed_up_to={processed_idx} -> {new_journal_id}")
-            else:
-                new_journal_id = msg_ids[-1]  # 兜底：区间末尾
-                logger.info(f"[JOURNAL_DAILY] cursor fallback to range end: {new_journal_id}")
-
-        # 7. 校验游标仍存在于 DB（防并发删除），写回
-        if new_journal_id:
-            fresh_ids = {getattr(m, "id", "") for m in runner._sync_get_messages()}
-            if new_journal_id not in fresh_ids:
-                logger.warning(f"[JOURNAL_DAILY] cursor {new_journal_id} deleted, reverting to {last_journal_id}")
-                new_journal_id = last_journal_id
-                if new_journal_id and new_journal_id not in fresh_ids:
-                    new_journal_id = ""
-
-        if new_journal_id:
-            from datetime import datetime
-
-            _write_cursor_with_lock(JOURNAL_CURSOR_PATH, {
-                "last_journal_id": new_journal_id,
-                "last_journal_at": datetime.now().isoformat(),
-            })
-            logger.info(f"[JOURNAL_DAILY] cursor updated: last_journal_id={new_journal_id}")
-
-        # 8. 清理工作集临时文件（best-effort）
-        try:
-            JOURNAL_WORKSET_PATH.unlink(missing_ok=True)
-        except Exception as e:
-            logger.debug(f"[JOURNAL_DAILY] workset cleanup failed: {e}")
+        # 5. 成功判定：正常返回即成功；failure/incomplete/overflow 仅落日志
+        #    （水位线由子 Agent 按标记协议自理，下轮 cron 自然重试）
+        if _is_subagent_failure(result):
+            logger.warning(f"[JOURNAL_DAILY] failure: {result[:200]}")
+        elif _is_subagent_incomplete(result):
+            logger.warning(f"[JOURNAL_DAILY] incomplete ({_incomplete_reason(result)})")
+        elif _is_subagent_overflow(result):
+            overflow_info = _extract_overflow_info(result)
+            logger.warning(f"[JOURNAL_DAILY] overflow: {overflow_info.get('turns_completed', 0)} turns")
     except Exception as e:
         import traceback
 

@@ -5,13 +5,9 @@
 dream 循环游标回写与 fresh_ids 校验、_build_force_prompt 安全边界行、砍半互斥、
 _ALL_CURSOR_FILES 收缩两键、入口共享读取删除。
 
-用例清单（计划 §3-T2）：
-1. force prompt 无安全边界行 / dream_idx 注入（正向退役钉）
-2. 睡眠全程无 last_dream_evolve 写入（反向钉）
-3. reset 只清两键且不触碰磁盘残留文件
-4. mode-2 对未提炼消息正常落库删除——种子含锚点 id 消息并钉其进 valid_deletes（判别力）
-5. 砍半降级无 dream_idx 互斥路径
-6. 双入口零读取反向钉——compat 入口与 runner 入口均无 last_dream_evolve 读取（对称覆盖）
+用例清单（其余计划用例已随对应退役面收敛删除）：
+1. 睡眠全程零 last_dream_evolve 游标写入（反向钉）
+2. compat 入口零读取——残留 dream 游标文件在盘也不得被读（Path.read_text spy 反向钉）
 
 全 mock：call_subagent_with_auto_answer / 游标文件 / is_sleeping / runner / chat_queue——
 禁真实 LLM、禁图谱写入、messages.db 零新增、不碰真实 ~/.niu。
@@ -22,11 +18,6 @@ import pathlib
 import tempfile
 from contextlib import ExitStack
 from unittest import mock
-
-from niu_api.compat import (
-    _ALL_CURSOR_FILES,
-    _reset_all_cursors,
-)
 
 NORMAL_JSON = json.dumps({"ok": True})
 
@@ -144,14 +135,14 @@ def _run_sleep(call_mock, *, msg_ids=("m1", "m2"), home=None,
             stack.enter_context(p)
         for p in extra_patches:
             stack.enter_context(p)
-        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
+        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock", create=True))
         result = asyncio.run(_tidy_context_impl({"mode": "sleep", "session_id": "t"},
                                                 chat_lock_already_held=True))
     return result, write_mock, ctx
 
 
 # ---------------------------------------------------------------------------
-# 1. force prompt 无安全边界行 / dream_idx 注入
+# 1. 睡眠全程零 dream 游标写入
 # ---------------------------------------------------------------------------
 
 def test_sleep_never_writes_dream_cursor():
@@ -165,33 +156,7 @@ def test_sleep_never_writes_dream_cursor():
 
 
 # ---------------------------------------------------------------------------
-# 3. reset 只清两键且不触碰残留文件
-# ---------------------------------------------------------------------------
-
-def test_reset_clears_journal_key_and_spares_residual_file(tmp_path):
-    """_ALL_CURSOR_FILES 收缩单键（T6 压缩退役）：journal 复位；盘上残留的 dream/compress 游标文件不被触碰。"""
-    assert _ALL_CURSOR_FILES == ["last_journal.json"], \
-        f"复位表应恰 journal 一键: {_ALL_CURSOR_FILES}"
-
-    niu = tmp_path / ".niu"
-    niu.mkdir(parents=True)
-    residual = niu / "last_dream_evolve.json"
-    residual.write_text(json.dumps({"last_dream_evolve_id": "legacy"}), encoding="utf-8")
-    for name in ("last_journal.json", "last_compress.json"):
-        (niu / name).write_text("{}", encoding="utf-8")
-
-    with mock.patch("pathlib.Path.home", return_value=tmp_path):
-        asyncio.run(_reset_all_cursors())
-
-    # journal 键被复位（unlink）；compress 已不在复位表——盘上残留属一次性手工清算，生产代码不触碰
-    remaining = sorted(p.name for p in niu.iterdir())
-    assert remaining == ["last_compress.json", "last_dream_evolve.json"], \
-        f"只应剩磁盘残留文件: {remaining}"
-    assert not (niu / "last_journal.json").exists()
-
-
-# ---------------------------------------------------------------------------
-# 4. mode-2 对未提炼消息正常落库删除（锚点 id 进 valid_deletes 判别力钉）
+# 2. compat 入口零 dream 游标读取
 # ---------------------------------------------------------------------------
 
 def test_compat_entry_zero_dream_cursor_read(tmp_path):

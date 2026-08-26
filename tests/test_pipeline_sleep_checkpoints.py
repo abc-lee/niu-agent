@@ -85,7 +85,7 @@ def _cp_patches(sleep_side_effect, call_mock):
         # 四个游标文件 READ 强制 cursor=''：Path.exists→False（缺失文件 → 游标留空）。
         # compat.py 在函数内 `from pathlib import Path`，无模块级 Path，故 patch 类方法本身
         mock.patch("pathlib.Path.exists", return_value=False),
-        mock.patch("niu_api.compat._write_cursor_with_lock"),
+        mock.patch("niu_api.compat._write_cursor_with_lock", create=True),
         mock.patch("niu_api.compat.is_sleeping", side_effect=sleep_side_effect),
     ]
 
@@ -126,7 +126,7 @@ def _run_sleep_tidy(sleep_side_effect, call_mock=None):
         stack.enter_context(mock.patch("niu_api.compat.get_message_store", new=mock.AsyncMock(return_value=store)))
         for p in _cp_patches(sleep_side_effect, call_mock):
             stack.enter_context(p)
-        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock"))
+        write_mock = stack.enter_context(mock.patch("niu_api.compat._write_cursor_with_lock", create=True))
         f2_path = _os.path.join(tempfile.mkdtemp(prefix="t5_cp_relay_"), "f2.md")
         stack.enter_context(mock.patch("agent.md_mirror.F2_PATH", f2_path))
         block = mdm.format_message_record(

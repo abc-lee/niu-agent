@@ -35,10 +35,10 @@ def _make_injector_with_cache() -> BrainContextInjector:
 async def test_clear_resets_brain_state(monkeypatch):
     """T3-5：clear_chat 清空脑区注入缓存（行为断言，非调用断言）。
 
-    mock 清单 7 处（R29-A P3）：request_stop / clear_stop / drain_supplements /
+    mock 清单（R29-A P3）：request_stop / clear_stop / drain_supplements /
     get_message_store / niu_api.chat.get_or_create_runner（源模块 patch——
-    test_compress_history L202 先例）/ cleanup_all_tmp / _reset_all_cursors。
-    get_message_store 与 _reset_all_cursors 是 compat 模块级绑定名——
+    test_compress_history L202 先例）/ cleanup_all_tmp。
+    get_message_store 是 compat 模块级绑定名——
     patch "niu_api.compat.<name>"（源模块 patch 对模块级 import 无效）。
     """
     injector = _make_injector_with_cache()
@@ -60,16 +60,12 @@ async def test_clear_resets_brain_state(monkeypatch):
     async def fake_get_message_store():
         return FakeStore()
 
-    async def fake_reset_all_cursors():
-        return None
-
     monkeypatch.setattr("agent.runner.request_stop", lambda: None)
     monkeypatch.setattr("agent.runner.clear_stop", lambda: None)
     monkeypatch.setattr("agent.runner.drain_supplements", lambda: None)
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
     monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: FakeRunner())
     monkeypatch.setattr("agent.tmp_dir.cleanup_all_tmp", lambda: 0)
-    monkeypatch.setattr(compat, "_reset_all_cursors", fake_reset_all_cursors)
 
     result = await compat.clear_chat(FakeRequest())
 
@@ -101,16 +97,12 @@ async def test_clear_runner_none_is_noop(monkeypatch):
     async def fake_get_message_store():
         return FakeStore()
 
-    async def fake_reset_all_cursors():
-        return None
-
     monkeypatch.setattr("agent.runner.request_stop", lambda: None)
     monkeypatch.setattr("agent.runner.clear_stop", lambda: None)
     monkeypatch.setattr("agent.runner.drain_supplements", lambda: None)
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
     monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: FakeRunner())
     monkeypatch.setattr("agent.tmp_dir.cleanup_all_tmp", lambda: 0)
-    monkeypatch.setattr(compat, "_reset_all_cursors", fake_reset_all_cursors)
 
     result = await compat.clear_chat(FakeRequest())
 
