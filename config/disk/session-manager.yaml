@@ -68,13 +68,3 @@ tools:
         cli_format: json
       - name: reason
         type: string
-
-  - name: read_history_block
-    category: read
-    short: "读取归档历史块原文"
-    long: "按块号取回已归档早期对话的逐字原文（历史索引 [块#N] 的 N 即块号）。返回该块时间范围内的全部原始消息；超大块自动精简。"
-    parameters:
-      - name: block_id
-        position: 1
-        type: integer
-        required: true

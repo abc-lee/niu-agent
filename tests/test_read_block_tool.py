@@ -114,6 +114,12 @@ class TestSchema:
     def test_schema_count_grew_to_five(self):
         assert len(TOOL_SCHEMAS) == 5
 
+    def test_schema_description_carries_index_semantics(self):
+        """通道改回 MCP static 后描述须自承载解码语义（niu.md 说明书已删）"""
+        desc = TOOL_SCHEMAS["read_history_block"]["description"]
+        assert "[历史索引]" in desc
+        assert "块#N" in desc
+        assert "精简" in desc
 
 # ============== 正常读取 ==============
 

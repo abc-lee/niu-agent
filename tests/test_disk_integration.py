@@ -10,11 +10,13 @@ pytestmark = pytest.mark.integration
 
 
 def test_no_static_or_dynamic_tools():
-    """All MCP tools must be visibility: hidden (not static or dynamic)."""
+    """MCP tools must be hidden, except tools intentionally exposed via MCP Schema."""
     config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
     with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
+    # 有意进主 Agent Schema 的 static 工具（显式 visibility: static）
+    static_exempt = {"session-manager/read_history_block"}
     violations = []
     for server_name, server_cfg in data.items():
         if not isinstance(server_cfg, dict):
@@ -25,11 +27,22 @@ def test_no_static_or_dynamic_tools():
         for tool_name, tool_cfg in tools.items():
             if not isinstance(tool_cfg, dict):
                 continue
+            if f"{server_name}/{tool_name}" in static_exempt:
+                continue
             visibility = tool_cfg.get("visibility", "static")
             if visibility in ("static", "dynamic"):
                 violations.append(f"{server_name}/{tool_name}: visibility={visibility}")
 
     assert violations == [], f"Found non-hidden tools: {violations}"
+
+
+def test_read_history_block_is_static():
+    """读块工具走 MCP Schema（static），不再经 disk 通道。"""
+    config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
+    with open(config_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    tool = data["session-manager"]["tools"]["read_history_block"]
+    assert tool["visibility"] == "static"
 
 
 class TestLightragServerYaml:

@@ -120,6 +120,27 @@ def _classify_stream_error(e) -> str:
     # 3. 默认归入 retryable（未知错误给重试机会）
     return 'retryable'
 
+def _extract_cached_tokens(usage) -> int | None:
+    """从 litellm Usage 对象提取 prompt 缓存命中 token 数。
+
+    litellm 已把各家缓存字段归一到 usage.prompt_tokens_details.cached_tokens
+    （anthropic cache_read_input_tokens / deepseek prompt_cache_hit_tokens 等）。
+    details 可能是对象或 dict；服务端未返回时返回 None（调用方据此区分"未知"与 0）。
+    """
+    try:
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is None:
+            return None
+        cached = getattr(details, "cached_tokens", None)
+        if cached is None and isinstance(details, dict):
+            cached = details.get("cached_tokens")
+        if isinstance(cached, bool) or not isinstance(cached, (int, float)):
+            return None
+        return int(cached)
+    except Exception:
+        return None
+
+
 def _sanitize_error_msg(msg: str) -> str:
     """脱敏错误信息中的敏感字段。"""
     # 脱敏 API key（key=xxx, api_key=xxx, apikey=xxx）
@@ -1182,10 +1203,13 @@ class LiteLLMSession(BaseSession):
         )
 
         if usage:
+            _cached = _extract_cached_tokens(usage)
+            mock_resp.cached_tokens = _cached
             mock_resp.usage = {
                 "prompt_tokens": getattr(usage, 'prompt_tokens', 0) or 0,
                 "completion_tokens": getattr(usage, 'completion_tokens', 0) or 0,
                 "total_tokens": getattr(usage, 'total_tokens', 0) or 0,
+                "cached_tokens": _cached,
             }
 
         # 记录完整响应

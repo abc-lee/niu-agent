@@ -1006,6 +1006,7 @@
             </circle>
           </svg>
           <span id="context-usage-text">0%</span>
+          <span id="context-cache-hit" style="font-size:11px;opacity:0.75;margin-left:2px;"></span>
         </span>
         <span class="stat">📁 <span id="file-count">0</span></span>
         <span class="stat">👤 <span id="person-count">0</span></span>
@@ -2231,10 +2232,17 @@
     let _compactUsageTs = 0;    // 最近一次压缩 usage 渲染时间戳（Date.now()）
 
     // 渲染上下文使用率圆环（loadStats 与 compact_status done 共用）
-    function renderContextUsage(usage) {
+    // cacheHit：缓存命中率 0-1；null/undefined=未知（服务端未返回）→ 隐藏缓存文本
+    function renderContextUsage(usage, cacheHit) {
       const arc = document.getElementById('context-usage-arc');
       const text = document.getElementById('context-usage-text');
       if (!arc || !text) return;
+      const hitEl = document.getElementById('context-cache-hit');
+      if (hitEl) {
+        hitEl.textContent = (typeof cacheHit === 'number' && isFinite(cacheHit))
+          ? ' 缓存 ' + Math.round(cacheHit * 100) + '%'
+          : '';
+      }
       const usageVal = usage || 0;
       const pct = Math.round(usageVal * 100);
       const circumference = 2 * Math.PI * 8; // 50.27
@@ -2269,7 +2277,7 @@
           // 更新上下文使用率（压缩 usage 代际守卫：主 Agent 目标受守卫——本请求 fetch 发起时间
           // 早于最新压缩 usage 渲染 → 跳过，防旧值覆盖；子 Agent 目标直接渲染不受守卫）
           if (target !== '' || fetchTs >= _compactUsageTs) {
-            renderContextUsage(result.context_usage);
+            renderContextUsage(result.context_usage, result.context_cache_hit);
           }
         }
         // 并行拉取脑区状态（F003: 有防并发保护，不阻塞 stats 渲染）
