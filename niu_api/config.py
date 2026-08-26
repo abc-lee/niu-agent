@@ -70,6 +70,10 @@ def _get_mcp_servers_path() -> str:
 
     主路径：Rust 启动器 init_niu_dir 在拉起 Python 之前已复制（启动即保证）。
     本函数的惰性复制是兜底：纯 Python 启动场景（不经 launcher）或 launcher 复制失败时生效。
+
+    设计债备案（2026-08-26）：本文件为 copy-once 语义——只在装机首次复制，
+    之后仓库侧 mcp-servers.yaml 的任何变更都不会到达存量装机（b248c8b6
+    即此类手工修复案例）。未来批量配置变更需考虑版本化合并机制。
     """
     home = os.path.expanduser("~")
     niu_config_dir = Path(home) / ".niu" / "config"

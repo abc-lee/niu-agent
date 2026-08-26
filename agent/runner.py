@@ -1358,7 +1358,7 @@ class NiuRunner:
                     compaction.AUTO_GATE.release()  # 早退也须解除闩锁，避免此后永不再自动触发
                 except Exception:
                     pass
-                return
+                return False
             system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
             new_view, stats = compaction.build_compact_view(db_messages, system_msg=system_msg)
             messages[:] = new_view  # 原地回写（agent_loop 契约：messages 为 dict 列表）
