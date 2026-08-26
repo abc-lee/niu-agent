@@ -22,6 +22,8 @@ from loguru import logger
 DB_NAME = "context_blocks.db"
 BUSY_TIMEOUT_MS = 5000
 
+
+# 预留扩展位，当前无写入方（D18 摘要增强已移除；字段保留供未来索引增强复用）
 SUMMARY_PENDING = "pending"
 SUMMARY_DONE = "done"
 
@@ -62,9 +64,10 @@ class PointerBlock:
     time_start: str = ""
     time_end: str = ""
     entities: list[str] = field(default_factory=list)
+
     first_user: str = ""  # ≤40 字，超长自动截断
-    summary: str | None = None
-    summary_state: str = SUMMARY_PENDING  # "pending" | "done"
+    summary: str | None = None  # 预留扩展位，当前无写入方（D18）
+    summary_state: str = SUMMARY_PENDING  # 预留扩展位，当前无写入方（D18）
     session: str = "default"  # session 维度预留列
 
     def __post_init__(self) -> None:

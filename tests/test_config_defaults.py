@@ -61,8 +61,6 @@ def test_fallback_context_fields(fallback):
     assert ctx["compressTargetTokens"] == 60000
     # 缺省睡眠时间 5 分钟（R13：用户的 30 是个人优化，不进缺省）
     assert ctx["sleepTriggerMinutes"] == 5
-    # 块摘要增强默认关闭（Task 5/D13：单路并发安全默认，机械索引行独立工作）
-    assert ctx["blockSummaryEnabled"] is False
 
 
 def test_fallback_top_level_fields(fallback):

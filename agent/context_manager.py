@@ -12,7 +12,6 @@
 MessageStore (持久化) → ContextManager (管理) → agent_loop (使用)
 """
 
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,12 +20,12 @@ from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+
 from agent.context_assembler.blocks import PointerBlock, default_db_path, load_all
 from agent.session import MessageStore
 from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 
 _INDEX_ENTITY_MAX = 3  # 索引行实体标签上限（spec §3.3）
-_SUMMARY_MAX_CHARS = 100  # 摘要行尺寸不变式：≤100 字（spec §3.3 可选增强）
 
 
 class ContextManager:
@@ -171,13 +170,6 @@ class ContextManager:
             f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按块号取回原文。",
         ]
         for b in blocks:
-            # 摘要行替代机械行（spec §3.3/D6 可选增强）：summary_state=done 且摘要
-            # 非空时用摘要行替代——块号句柄保留，≤100 字，索引区尺寸不变式仍成立；
-            # pending/失败块保持机械行（兜底主路径）
-            if getattr(b, "summary_state", "") == "done" and (b.summary or "").strip():
-                summary = re.sub(r"\s+", " ", b.summary).strip()[:_SUMMARY_MAX_CHARS]
-                lines.append(f"[块#{b.id}] {summary}")
-                continue
             # 实体标签（spec §3.3 机械成分，≤3 个；无标签时省略该段）
             tags = list(getattr(b, "entities", ()) or ())[:_INDEX_ENTITY_MAX]
             entity_part = " · 实体:" + "/".join(tags) if tags else ""

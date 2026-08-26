@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from agent.context_assembler import calibration, compaction, summarizer
+from agent.context_assembler import calibration, compaction
 from agent.context_assembler.blocks import (
     PointerBlock,
     default_db_path,
@@ -32,8 +32,9 @@ __all__ = [
     "load_by_ids",
     "reset_derived_state",
     "rowid_range_query",
+
+
     "slice_units",
-    "summarizer",
     "upsert_blocks",
 ]
 
