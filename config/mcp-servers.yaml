@@ -138,6 +138,10 @@ memory-server:
       visibility: hidden
     user_memory_list:
       visibility: hidden
+    conversation_park:
+      visibility: hidden
+    conversation_recall:
+      visibility: hidden
 scheduler-server:
   command: ${PYTHON_PATH}
   args:
