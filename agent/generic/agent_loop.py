@@ -816,6 +816,7 @@ def agent_runner_loop(
     turn = 0
     last_prompt_tokens = 0
     handler._last_prompt_tokens = 0
+    handler._last_cached_tokens = 0
     # 校准倍率本地估算基线（Task 3）：组装完成时全量计一次，此后每次响应只对新增
     # 尾部消息增量计数；列表变短（压实回写/FIFO 裁剪）时才全量重算一次——避免每响应
     # 全量重算。占位符化等原地缩短内容的替换不改变长度，会带来轻微高估（倍率偏低、
@@ -871,6 +872,7 @@ def agent_runner_loop(
                     # [warning, 80%) 区间会让本 loop 内后续轮次检测停摆（P2）
                     last_prompt_tokens = 0  # 重置，下轮重新获取
                     handler._last_prompt_tokens = 0
+                    handler._last_cached_tokens = 0
                     _compress_cooldown = bool(_compacted)  # 冷却：本次 agent_runner_loop 不再触发压缩
                 else:
                     # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
@@ -1090,6 +1092,13 @@ def agent_runner_loop(
             if isinstance(_pt, (int, float)):
                 last_prompt_tokens = int(_pt)
                 handler._last_prompt_tokens = last_prompt_tokens
+                # 缓存命中捕获：usage.cached_tokens（litellm 归一化后的 prompt 缓存命中数；
+                # 服务端未返回时置 0——get_stats 据此给 None 而非 0%）
+                _cached = u.get('cached_tokens') if isinstance(u, dict) else getattr(u, 'cached_tokens', None)
+                try:
+                    handler._last_cached_tokens = int(_cached) if isinstance(_cached, (int, float)) else 0
+                except (TypeError, ValueError):
+                    handler._last_cached_tokens = 0
                 # 校准倍率更新（Task 3/D9）：倍率=真值÷同消息集本地估算，每次响应覆盖更新。
                 # 仅主 Agent（子 Agent 可能挂副模型，混入会污染主上下文预算倍率）；
                 # 轻量 try/except——校准失败绝不影响主循环。
@@ -1112,6 +1121,7 @@ def agent_runner_loop(
                             # 同轮顶检测（P2）：仅确实压实时才冷却，被闸门拒绝保留检测
                             last_prompt_tokens = 0
                             handler._last_prompt_tokens = 0
+                            handler._last_cached_tokens = 0
                             _compress_cooldown = bool(_compacted)
                         else:
                             # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底

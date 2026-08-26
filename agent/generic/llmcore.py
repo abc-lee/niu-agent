@@ -36,6 +36,7 @@ class MockResponse:
         self.stop_reason = "tool_use" if tool_calls else stop_reason
         self.context_overflow = context_overflow
         self.usage = usage
+        self.cached_tokens = None
         self.finish_reason = finish_reason
         self.stream_error = stream_error
         self.error_type = error_type

@@ -788,6 +788,7 @@ class StatsResponse(BaseModel):
     persons: int = 0    # 人物实体数
     notes: int = 0      # 笔记/知识实体数
     context_usage: float = 0.0  # 上下文使用率 0.0-1.0
+    context_cache_hit: float | None = None  # 上下文缓存命中率 0.0-1.0；None=未知（服务端未返回 cached_tokens）
 
 
 # Track startup time
@@ -1681,9 +1682,11 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
 
     # 计算上下文使用率（优先用 LLM API 返回的真实 prompt_tokens）
     context_usage = 0.0
+    context_cache_hit = None
     try:
         context_window = _read_context_window_tokens()
         real_tokens = 0
+        cached_tokens = 0
         if agent:
             # 子 Agent：从 SubagentRegistry 读运行中 handler 的真实 prompt_tokens
             try:
@@ -1692,6 +1695,7 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
                 if instance is not None:
                     handler_ref = getattr(instance, "handler", None) or getattr(instance, "suspended_handler", None)
                     real_tokens = getattr(handler_ref, "_last_prompt_tokens", 0) or 0
+                    cached_tokens = getattr(handler_ref, "_last_cached_tokens", 0) or 0
             except Exception:
                 pass
         else:
@@ -1699,17 +1703,22 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
                 from niu_api.chat import get_or_create_runner
                 runner = get_or_create_runner()
                 real_tokens = getattr(getattr(runner, 'handler', None), '_last_prompt_tokens', 0) or 0
+                cached_tokens = getattr(getattr(runner, 'handler', None), '_last_cached_tokens', 0) or 0
             except Exception:
                 pass
         if real_tokens > 0:
             context_usage = real_tokens / context_window if context_window > 0 else 0.0
+            # 命中率仅在有真实 cached 值时给出；cached==0 无法区分「服务端未返回」与「真 0 命中」→ None
+            if cached_tokens > 0:
+                context_cache_hit = min(1.0, cached_tokens / real_tokens)
         elif not agent:
             # 主 Agent 无真实 tokens 时 fallback 估算全库消息；子 Agent 无此概念，直接 0
             context_usage = (await compute_context_usage_estimate(store=store, context_window=context_window)) or 0.0
     except Exception:
         context_usage = 0.0
 
-    return StatsResponse(messages=messages, uptime=uptime, files=files, persons=persons, notes=notes, context_usage=context_usage)
+    return StatsResponse(messages=messages, uptime=uptime, files=files, persons=persons, notes=notes,
+                         context_usage=context_usage, context_cache_hit=context_cache_hit)
 
 
 def _force_exit_after_delay():
@@ -2112,6 +2121,7 @@ async def clear_chat(request: Request) -> dict:
             if runner.handler:
                 runner.handler.reset_working_memory()
                 runner.handler._last_prompt_tokens = 0
+                runner.handler._last_cached_tokens = 0
             # 清空衰减池（新会话开始）
             runner._decay_pool.clear()
             # 清空脑区注入缓存（_recent_region_entities——防跨会话旧实体注入）
