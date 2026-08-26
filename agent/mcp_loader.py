@@ -5,6 +5,7 @@ Loads all required MCP modules at startup with strict validation.
 Any failure to load critical MCP servers will terminate the application.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -79,23 +80,114 @@ def _fold_and_cap_reason(reason: str, limit: int = 200) -> str:
 # Config Loader
 # ============================================================================
 
-def _load_mcp_config() -> dict:
-    """Load MCP server configuration from ~/.niu/config/mcp-servers.yaml"""
+# 用户层配置路径与旧 copy-once 文件路径（D9：os.path.expanduser 同款先例，
+# 正斜杠路径字符串，macOS/Linux/Windows 三平台一致）
+_LEGACY_MCP_CONFIG_PATH = "~/.niu/config/mcp-servers.yaml"
+_USER_MCP_CONFIG_PATH = "~/.niu/config/mcp-servers-user.yaml"
+
+_legacy_warned: bool = False
+
+
+def _reset_legacy_warned() -> None:
+    """重置旧文件弃用 warning 的去重标志（测试专用重置口）"""
+    global _legacy_warned
+    _legacy_warned = False
+
+
+def _deep_merge(base: dict, override: dict, deleted: set, _top: bool = True) -> dict:
+    """dict 递归 deep merge（标量/list 用户赢）；顶层 null 值收集进 deleted。
+
+    D1：同名键 dict 递归合并，list 整体覆盖（args 等），标量用户赢。
+    D7：仅顶层 server 级 null 入 deleted 集合（禁用该内置 server）；
+    嵌套 null（如 tools 内删单条 visibility 条目）只删键不入集合——
+    防工具名混入 server 名成员检查。
+    """
+    out = dict(base)
+    for k, v in override.items():
+        if v is None:
+            out.pop(k, None)
+            if _top:
+                deleted.add(k)
+        elif isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v, deleted, _top=False)
+        else:
+            out[k] = v
+    return out
+
+
+def _load_yaml_mapping(path: Path, layer: str) -> tuple[dict, bool]:
+    """读取单个 yaml 配置层，返回 (mapping, ok)。
+
+    失败语义（D4）：解析失败/顶层非 dict → error 日志 + 空映射降级，
+    从不终止启动；严格终止仅作用于模块 import/注册失败。
+    文件不存在不算异常（用户层缺失=正常态 D5），返回 ({} , False) 由调用方区分。
+    """
     import yaml
-    from niu_api.config import _get_mcp_servers_path
 
-    config_path = Path(_get_mcp_servers_path())
-
-    if not config_path.exists():
-        logger.warning(f"MCP config file not found: {config_path}")
-        return {}
+    if not path.exists():
+        return {}, False
 
     try:
-        with open(config_path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        with open(path, encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
     except Exception as e:
-        logger.warning(f"Failed to load MCP config: {e}")
-        return {}
+        logger.error(f"Failed to load {layer} MCP config {path}: {e}")
+        return {}, True
+
+    # 空文件 → 空 mapping（正常）
+    if loaded is None:
+        return {}, True
+    if not isinstance(loaded, dict):
+        logger.error(
+            f"{layer} MCP config top-level is not a mapping, skipping layer: {path}"
+        )
+        return {}, True
+    return loaded, True
+
+
+def _load_mcp_config() -> tuple[dict, set]:
+    """双源加载 MCP 配置：bundle 权威层 + 用户层 deep merge（用户赢）。
+
+    - bundle 权威层：随版本升级直读（不再 copy-once 到 ~/.niu/config/）
+    - 用户层：~/.niu/config/mcp-servers-user.yaml，新增/覆盖内置均可
+    - 旧文件 ~/.niu/config/mcp-servers.yaml 一律不读；存在时启动日志
+      warning 提示弃用（D8 模块级去重，两调用点共享至多一条）
+
+    Returns:
+        (merged_config, deleted_names)：deleted_names 为用户层以
+        ``server名: null`` 显式禁用的顶层 server 名集合（D7 删除语义，
+        加载循环据此跳过对应 server）。
+
+    失败语义（D4）：任一层缺失/解析失败均 error 日志 + 该层降级为空基座，
+    config 解析失败从不终止启动。
+    """
+    global _legacy_warned
+    from niu_api.config import _get_bundle_config_dir
+
+    # 旧 copy-once 文件在场 → 弃用提示（残留无害，不读）
+    legacy_path = Path(os.path.expanduser(_LEGACY_MCP_CONFIG_PATH))
+    if not _legacy_warned and legacy_path.exists():
+        _legacy_warned = True
+        logger.warning(
+            "检测到旧版 mcp-servers.yaml 已弃用"
+            "（0.3.0 起内置配置随版本直读，自定义请迁移至 mcp-servers-user.yaml）"
+        )
+
+    # bundle 权威层：缺失=error 降级空基座（config 解析失败从不终止启动，
+    # 已知边界：visibility 映射全丢，disk 模式下工具经磁盘访问主功能不受影响）
+    bundle_path = _get_bundle_config_dir() / "mcp-servers.yaml"
+    if not bundle_path.exists():
+        logger.error(f"Bundle MCP config not found: {bundle_path}")
+    base, _ = _load_yaml_mapping(bundle_path, "bundle")
+    user_override, user_exists = _load_yaml_mapping(
+        Path(os.path.expanduser(_USER_MCP_CONFIG_PATH)), "user"
+    )
+    if not user_exists:
+        logger.debug(f"No MCP user config (normal): {_USER_MCP_CONFIG_PATH}")
+
+    deleted: set = set()
+    merged = _deep_merge(base, user_override, deleted)
+    return merged, deleted
 
 
 def _add_server_workdirs_to_sys_path(config: dict) -> None:
@@ -151,7 +243,7 @@ def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> Too
     reset_mcp_load_failures()
 
     # Load MCP configuration and add workdirs to sys.path
-    config = _load_mcp_config()
+    config, deleted_servers = _load_mcp_config()
     # 确保项目根目录在 sys.path（MCP 服务器需要 import agent.*）
     from pathlib import Path as _Path
     _project_root = str(_Path(__file__).resolve().parent.parent)
@@ -162,16 +254,34 @@ def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> Too
 
     registry = ToolRegistry()
     failed_servers = []
+    skipped_servers = 0
 
     for server_name, module_name in servers:
+        # D7 删除语义：用户层 `server名: null` 显式禁用 → 有意跳过，
+        # 不计失败、不触发严格终止
+        if server_name in deleted_servers:
+            skipped_servers += 1
+            logger.warning(
+                f"Server {server_name} disabled by user config (null), skipping"
+            )
+            continue
+
         try:
             module = __import__(module_name, fromlist=["get_tool_schemas"])
 
             # 从配置中提取该 server 的 tools visibility 映射
+            # （tools 非 dict 守卫：list/标量 → warning+忽略该 visibility_map）
             visibility_map = None
             server_config = config.get(server_name, {})
-            if isinstance(server_config, dict) and "tools" in server_config:
-                visibility_map = server_config["tools"]
+            if isinstance(server_config, dict):
+                tools_cfg = server_config.get("tools")
+                if isinstance(tools_cfg, dict):
+                    visibility_map = tools_cfg
+                elif tools_cfg is not None:
+                    logger.warning(
+                        f"Server {server_name} 'tools' is not a mapping, "
+                        "ignoring its visibility map"
+                    )
 
             if not registry.register_server(server_name, module, visibility_map):
                 failed_servers.append(f"{server_name} (registration failed)")
@@ -188,10 +298,17 @@ def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> Too
         )
         raise RuntimeError(error_msg)
 
-    logger.info(f"All {len(servers)} servers loaded")
+    logger.info(f"All {len(servers) - skipped_servers} servers loaded")
 
     # Load optional servers (failure does not terminate startup)
     for server_name, module_name in OPTIONAL_SERVERS:
+        # D7 同款 skip：用户层显式禁用不计失败
+        if server_name in deleted_servers:
+            logger.warning(
+                f"Optional server {server_name} disabled by user config (null), skipping"
+            )
+            continue
+
         server_config = config.get(server_name, {})
         if not isinstance(server_config, dict) or not server_config:
             logger.debug(f"Optional server {server_name} not configured, skipping")
@@ -201,8 +318,15 @@ def load_mcp_tools(required_servers: list[tuple[str, str]] | None = None) -> Too
             module = __import__(module_name, fromlist=["get_tool_schemas"])
 
             visibility_map = None
-            if isinstance(server_config, dict) and "tools" in server_config:
-                visibility_map = server_config["tools"]
+            if isinstance(server_config, dict):
+                tools_cfg = server_config.get("tools")
+                if isinstance(tools_cfg, dict):
+                    visibility_map = tools_cfg
+                elif tools_cfg is not None:
+                    logger.warning(
+                        f"Server {server_name} 'tools' is not a mapping, "
+                        "ignoring its visibility map"
+                    )
 
             if registry.register_server(server_name, module, visibility_map):
                 logger.info(f"Optional server loaded: {server_name}")
@@ -262,12 +386,20 @@ async def load_external_servers(mcp_client, registry=None):
     if registry is None:
         registry = get_registry()
 
-    config = _load_mcp_config()
+    config, _deleted_servers = _load_mcp_config()
     if not config:
         logger.warning("No MCP server config found")
         return
 
     for server_name, server_config in config.items():
+        # 条目守卫：None/非 dict 条目（用户层误写标量等）在 is_external_server
+        # 之前拦截——该调用在 try 外，不拦会 AttributeError 中断整个循环
+        if not isinstance(server_config, dict):
+            logger.error(
+                f"Invalid MCP server config (not a mapping), skipping: {server_name}"
+            )
+            continue
+
         if not is_external_server(server_config):
             continue
 
