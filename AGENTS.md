@@ -537,7 +537,19 @@ preload_face_model()
   - `5be2c087` T8 一致性校验挂 lifespan（不一致整库重切重建）+ /new 清理面四端点接线
   - 本条目 T9 文档收官（SYSTEM_MANUAL 上下文管理章节重写/manual-performance 双路并发升格+KV cache 踩踏机理/manual-user-guide 用户视角/niu.md journal 自读语义修正）
 - **验证**：各 Task 点名回归全绿（T1 34/T2 17/T3 35/T4 17/T5 15/T6 322/T8 15 passed）；主链路确定性零 LLM 承重，LLM 仅做可选异步增强且失败无害
-- **实机验收清单（待用户重启执行）**：①对话至 80% 自动压实、圆环跳变回落②/compact 手动秒级生效③/new 清空彻底且 journal.md 保留④读块工具取回原文⑤重启后块一致性校验通过⑥每日 18 点 journal-daily 触发正常（活跃对话时避让）
+
+### 2026-08-26（续）
+
+#### 工程：journal 子 Agent 直读 DB——日志即水位线（计划 v1.0→v1.5 双审 R1-R6 门禁 + T1/T2 SDD 双审收敛）
+
+- **背景与病灶**：T7 后 journal 链路=程序把 DB 增量导出到 `~/.niu/md/journal_workset.md` 让子 Agent 自读+last_journal.json 程序侧游标。用户实测「日志子 Agent 无法工作」实证三病灶：①导出文件是动态中间产物（覆盖写/unlink/并发窗口）非准确历史②零增量或导出失败时任务文本无文件路径、子 Agent 无从获取消息（直接断链）③游标仅夜间推进、程序监听不到交互路径结果。组装器新架构使 messages.db 只增不改，直读 DB 的历史障碍消失。
+- **设计定案（用户逐条拍板）**：D-A 数据源唯一=messages.db；D-B 日志即水位线——每条整理条目尾带机器可读标记「覆盖至: <message_id>」，单一工件自描述，交互记录条目不带标记；D-C 分支判据=是否提取 DB 内容（记录单件事不动标记/整理类完整流程/报告类默认纯聚合不足再整理）；D-G error 归因分级（invalid_after_id→首次兜底/transient→轮空不写标记防覆盖空洞）；D-H mcpToolFilter 嵌套 dict 钉死只暴露 get_messages（平铺列表会使 subagent.py L656 AttributeError——R3 抓出）。
+- **交付链**（main 61d37700→80fcbdd8 共 2 commits，24 文件净删 539 行）：
+  - T1 `61d37700`：get_messages 四处 schema 同步扩展 after_id/limit/full_tool_output+created_at/has_more/next_after_id+reason 分级错误；折叠直接 import 复用 agent/md_mirror.truncate_tool_output（<已精简> 2000B 头60%尾40%）；stdio dispatch get_messages 分支改直调消除双实现（申报偏差，对齐 read_history_block 先例）；14 单测
+  - T2 `80fcbdd8`：journal-agent.md 重写（三分支判据+七步整理流程）；handler _build_journal_task_for_handler 整删薄层化；scheduler 任务文本自理化+import 收缩（R4 抓出漏改则夜间静默 ImportError）；compat 游标链整链退役（_export/_parse_processed_up_to/JOURNAL_*/_read_write_cursor_with_lock/_ALL_CURSOR_FILES+_reset_all_cursors 四调用点）；SYSTEM_MANUAL/niu.md 同步；测试处置（grep 穷举+create=True 保零写退役反向钉）
+- **质量链**：计划 R1-R6 六轮双审（R1 P0×1 /new 清库后标记失效无恢复→D-G；R3 P1×1 mcpToolFilter 格式错误照抄即崩；R4 P2×1 import 块收缩漏点名；R5+R6 连续两轮双 APPROVE 达成门禁）+ 每 Task spec/quality 双审（T1 双 PASS、T2 双 PASS+微修闭环：dispatcher docstring 残留/SYSTEM_MANUAL「复位全部游标」虚假陈述）
+- **验证**：点名回归 150 passed；真实 load_mcp_tools 断言 journal-agent 工具面恰为 [get_messages] 且 Schema 含三新参；DiskEngine.get_schema() 零泄漏；py_compile/ruff 零新增
+- **实机验证清单（待用户执行）**：①夜间 18 点 journal_daily 触发 → 子 Agent tab 显示读库+写条目带「覆盖至」标记②对话说「记录一下」→ 只追加事件条目不动标记③人为删 messages.db（或 /new）后次日夜间 → invalid_after_id 兜底取最近 200 条并注明④报告类请求 → 聚合已有内容不动库⑤旧 last_journal.json 成为孤儿文件可手动删
 
 ### 2026-08-25
 
