@@ -99,7 +99,7 @@ class TestMcpLoadFailureSlot:
         try:
             with patch(
                 "agent.mcp_loader._load_mcp_config",
-                return_value={"ha-server": {"preload": True}},
+                return_value=({"ha-server": {"preload": True}}, set()),
             ), patch(
                 "agent.mcp_loader.OPTIONAL_SERVERS",
                 [("ha-server", "niu_ha_server")],
@@ -125,7 +125,7 @@ class TestMcpLoadFailureSlot:
         try:
             with patch(
                 "agent.mcp_loader._load_mcp_config",
-                return_value={"ha-server": {"preload": True}},
+                return_value=({"ha-server": {"preload": True}}, set()),
             ), patch(
                 "agent.mcp_loader.OPTIONAL_SERVERS",
                 [("ha-server", "niu_ha_server")],
@@ -155,7 +155,9 @@ class TestMcpLoadFailureSlot:
         mcp_client.connect_stdio = AsyncMock(side_effect=RuntimeError("Connection refused"))
 
         registry = ToolRegistry()
-        with patch("agent.mcp_loader._load_mcp_config", return_value=config):
+        with patch(
+            "agent.mcp_loader._load_mcp_config", return_value=(config, set())
+        ):
             asyncio.run(load_external_servers(mcp_client, registry=registry))
 
         failures = get_mcp_load_failures()
