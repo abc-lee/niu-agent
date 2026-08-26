@@ -401,7 +401,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 #### 历史取回：read_history_block 工具
 
-模型看到索引中的 `[块#N]` 句柄后，调用 `read_history_block(block_id=N)` 即可取回该块的**逐字原文**（时间+角色+内容，tool 输出含 tool_call_id 归属；超大块头尾保留+精简标注）。该工具挂在 session-manager（hidden，仅模型侧使用）；解码说明书写在主 Agent 提示词（config/agents/niu.md）。索引区职责边界=模拟全量上下文的目录页，不做语义检索——图谱兜底深挖走知识图谱工具。
+模型看到索引中的 `[块#N]` 句柄后，调用 `read_history_block(block_id=N)` 即可取回该块的**逐字原文**（时间+角色+内容，tool 输出含 tool_call_id 归属；超大块头尾保留+精简标注）。该工具为 MCP 静态工具（`mcp-servers.yaml` 中 `visibility: static`），直接进主 Agent 工具列表，Schema 描述自带块语义（按块号取回逐字原文的用法即在其中，无需额外解码说明书）；不对子 Agent 开放。索引区职责边界=模拟全量上下文的目录页，不做语义检索——图谱兜底深挖走知识图谱工具。
 
 #### 睡眠管道新序
 

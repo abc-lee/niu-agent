@@ -521,7 +521,7 @@ preload_face_model()
 - **架构定案**：
   - **存储/视图分离**：messages.db 是真相源永不动；LLM 每轮只见组装视图 = [历史索引前导] + [近期原文窗口]；索引区职责边界 = 模拟全量上下文的目录页，纯时间线 FIFO 无语义注入
   - **分区预算**：原文窗口 ≤50% 窗口（完整会话单元装填，tool_calls 配对完整）；历史索引 ≤30%（每块一行机械行，超预算最老相邻块合并）
-  - **指针块**：窗口外单元归档为 SQLite 单表指针块（`~/.niu/context_blocks.db`，flock 排它锁），不向量化——模型看索引报块号，`read_history_block(block_id)` 取回逐字原文（session-manager hidden 工具 + 主 Agent 提示词解码说明书）
+  - **指针块**：窗口外单元归档为 SQLite 单表指针块（`~/.niu/context_blocks.db`，flock 排它锁），不向量化——模型看索引报块号，`read_history_block(block_id)` 取回逐字原文（MCP 静态工具直接进主 Agent 工具列表，Schema 描述自带块语义；不对子 Agent 开放）
   - **批量压实**：校准后估算 ≥80% 触发（AUTO_GATE 滞回 ≥80% 触发/<78% 复位，组装出口与 runner 真值回调双触发去重）、95% 应急线；保留最近 N 轮（`context.keepRecentTurns` 默认 3 可配置）；D15 三轮硬约束（工具输出占位符化→减轮）；纯机械零 LLM 秒级
   - **token 校准倍率**：每次主 Agent 响应后真值 prompt_tokens ÷ 本地估算覆盖更新倍率（`~/.niu/token_calibration.json`，默认 1.15），桥接本地估算与服务端真值
   - **journal 迁出睡眠管道**：scheduler 内置 `journal-daily` 定时任务每日 18 点直执行（导出 DB 增量为工作集文件让 journal-agent 自读；严禁经 ChatQueue enqueue 防反污染；backend-busy 避让活跃对话；游标自管）
