@@ -5,7 +5,7 @@
 2. 流式 chat 全链路：末 chunk usage 带/不带 cached 细节 → MockResponse.usage["cached_tokens"]
    与 mock_resp.cached_tokens 两态
 3. agent_loop 消费点：usage.cached_tokens → handler._last_cached_tokens
-4. get_stats：StatsResponse.context_cache_hit 字段（有命中→比率；cached=0/未知→None）
+4. get_stats：StatsResponse.context_cache_hit 字段（有命中→比率；未知(None)→None；cached=0→0.0 真实零命中）
 """
 import asyncio
 import os
@@ -205,13 +205,26 @@ def test_agent_loop_captures_last_cached_tokens(monkeypatch):
     assert handler._last_cached_tokens == 18000
 
 
-def test_agent_loop_missing_cached_defaults_zero(monkeypatch):
-    """usage 无 cached_tokens 键 → 置 0（不抛异常）。"""
+def test_agent_loop_missing_cached_stays_none(monkeypatch):
+    """usage 无 cached_tokens 键 → 置 None（未知），不抛异常。"""
     monkeypatch.setattr("agent.runner.is_stop_requested", lambda: False)
     monkeypatch.setattr("agent.runner.clear_stop", lambda: None)
     monkeypatch.setattr("agent.runner.drain_supplement", lambda: None)
     resp = MockResponse(thinking="", content="Done", tool_calls=[], raw="Done",
                         usage={"prompt_tokens": 3000, "completion_tokens": 5, "total_tokens": 3005})
+    handler = _run_loop(resp)
+    assert handler._last_prompt_tokens == 3000
+    assert handler._last_cached_tokens is None
+
+
+def test_agent_loop_zero_cached_is_real_zero(monkeypatch):
+    """usage.cached_tokens=0 是真实零命中 → handler 保留 0 而非 None。"""
+    monkeypatch.setattr("agent.runner.is_stop_requested", lambda: False)
+    monkeypatch.setattr("agent.runner.clear_stop", lambda: None)
+    monkeypatch.setattr("agent.runner.drain_supplement", lambda: None)
+    resp = MockResponse(thinking="", content="Done", tool_calls=[], raw="Done",
+                        usage={"prompt_tokens": 3000, "completion_tokens": 5, "total_tokens": 3005,
+                               "cached_tokens": 0})
     handler = _run_loop(resp)
     assert handler._last_prompt_tokens == 3000
     assert handler._last_cached_tokens == 0
@@ -253,10 +266,19 @@ def test_get_stats_reports_hit_ratio(monkeypatch):
     assert abs(stats.context_cache_hit - 0.9) < 1e-9
 
 
-def test_get_stats_none_when_server_returns_nothing(monkeypatch):
-    """cached=0（无法区分未返回/真 0）→ None，前端显示 --。"""
+def test_get_stats_zero_cached_is_real_zero_hit(monkeypatch):
+    """服务端真实返回 cached_tokens=0 → 0.0（真实零命中，前端显示「缓存 0%」）。"""
     from niu_api.compat import get_stats
     _patch_stats_env(monkeypatch, real_tokens=20000, cached_tokens=0)
+    stats = asyncio.run(get_stats())
+    assert stats.context_usage == 0.2
+    assert stats.context_cache_hit == 0.0
+
+
+def test_get_stats_none_when_unknown(monkeypatch):
+    """服务端未返回 cached 字段（handler 值为 None）→ None，前端隐藏元素。"""
+    from niu_api.compat import get_stats
+    _patch_stats_env(monkeypatch, real_tokens=20000, cached_tokens=None)
     stats = asyncio.run(get_stats())
     assert stats.context_usage == 0.2
     assert stats.context_cache_hit is None
