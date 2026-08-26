@@ -32,13 +32,35 @@ API_URL = os.environ.get("NIU_API_URL", "http://127.0.0.1:9876")
 TOOL_SCHEMAS = {
     "get_messages": {
         "name": "get_messages",
-        "description": "Get message list for a session with token counts. Returns messages with idx, tokens, role, and content preview.",
+        "description": (
+            "Get message list for a session with token counts. Returns messages with "
+            "idx, tokens, role, content, created_at (ISO8601). Supports incremental "
+            "paging via after_id; response ends with has_more and next_after_id."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "Session ID to get messages for",
+                    "description": "Session ID（占位参数，单会话部署填 default 即可）",
+                },
+                "after_id": {
+                    "type": "string",
+                    "description": (
+                        "只返回存储顺序中该消息 ID 之后的消息（严格大于）；"
+                        "ID 在库中找不到时报错 reason=invalid_after_id。缺省时返回末尾最新 limit 条"
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条",
+                },
+                "full_tool_output": {
+                    "type": "boolean",
+                    "description": (
+                        "默认 false：role=='tool' 的超长内容折叠为头尾摘要（含 <已精简> 标记）；"
+                        "true 返回完整原文"
+                    ),
                 },
             },
             "required": ["session_id"],
@@ -175,16 +197,83 @@ def _run_async(coro):
 # (同进程调用, no HTTP API dependency — snowball compression depends on these)
 # ============================================================================
 
-def get_messages(session_id: str, **kwargs) -> dict:
-    """Get message list with token counts via MessageStore (direct call)."""
+_DEFAULT_GET_MESSAGES_LIMIT = 200
+_MAX_GET_MESSAGES_LIMIT = 1000
+
+
+def get_messages(
+    session_id: str,
+    after_id: str | None = None,
+    limit: int = _DEFAULT_GET_MESSAGES_LIMIT,
+    full_tool_output: bool = False,
+    **kwargs,
+) -> dict:
+    """Get message list with token counts via MessageStore (direct call).
+
+    after_id: strictly-greater filter on storage order; unknown id fails loud
+      with {"reason": "invalid_after_id"} (e.g. after /new wiped the DB).
+    limit: default 200, capped at 1000; without after_id the newest N (tail).
+    full_tool_output: default false — oversized role=='tool' content folded via
+      agent.md_mirror.truncate_tool_output (reused, never duplicated).
+
+    Other failures return {"reason": "transient"} — callers treat as retryable.
+    """
     try:
         store = _get_store()
         messages = _run_async(store.get_messages())
 
+        # Locate after_id by linear scan on storage order (strictly greater)
+        seq = messages
+        base_index = 0
+        if after_id is not None:
+            start = None
+            for i, msg in enumerate(messages):
+                if getattr(msg, "id", "") == after_id:
+                    start = i + 1
+                    break
+            if start is None:
+                logger.warning(f"get_messages: after_id '{after_id}' not found")
+                return {
+                    "error": f"after_id '{after_id}' not found in session messages",
+                    "reason": "invalid_after_id",
+                }
+            seq = messages[start:]
+            base_index = start
+
+        try:
+            n = int(limit)
+        except (TypeError, ValueError):
+            n = _DEFAULT_GET_MESSAGES_LIMIT
+        n = max(1, min(n, _MAX_GET_MESSAGES_LIMIT))
+
+        if after_id is None:
+            selected = seq[-n:]  # tail: newest N
+            base_index = len(messages) - len(selected)
+        else:
+            selected = seq[:n]
+        # has_more is defined as: newer messages exist beyond this batch
+        # (tail batches end at the newest message, hence never has_more)
+        has_more = base_index + len(selected) < len(messages)
+
+        # Fold oversized tool outputs via md_mirror (single source of truth)
+        truncate = None
+        if not full_tool_output:
+            try:
+                import sys as _sys
+                from pathlib import Path as _Path
+                _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
+                if _project_root not in _sys.path:
+                    _sys.path.insert(0, _project_root)
+                from agent.md_mirror import truncate_tool_output as truncate
+            except Exception:
+                truncate = None
+
         formatted = []
         total_tokens = 0
-        for i, msg in enumerate(messages, 1):
+        for i, msg in enumerate(selected, 1):
             content = getattr(msg, "content", "") or ""
+            if truncate is not None and getattr(msg, "role", "") == "tool":
+                content = truncate(content)
             try:
                 # Ensure agent package is importable in stdio mode (project root may not be in sys.path)
                 import sys as _sys
@@ -202,20 +291,23 @@ def get_messages(session_id: str, **kwargs) -> dict:
 
             formatted.append({
                 "id": getattr(msg, "id", ""),
-                "idx": i,
+                "idx": base_index + i,
                 "tokens": tokens,
                 "role": getattr(msg, "role", "unknown"),
                 "content": content,
+                "created_at": getattr(msg, "created_at", "") or "",
             })
 
         return {
             "total_messages": len(messages),
             "total_tokens": total_tokens,
             "messages": formatted,
+            "has_more": has_more,
+            "next_after_id": formatted[-1]["id"] if formatted else None,
         }
     except Exception as e:
         logger.error(f"get_messages direct call failed: {e}")
-        return {"error": str(e), "total_messages": 0, "total_tokens": 0, "messages": []}
+        return {"error": str(e), "reason": "transient"}
 
 
 def add_message(session_id: str, role: str, content: str, **kwargs) -> dict:
@@ -429,13 +521,35 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_messages",
-            description="Get message list for a session with token counts. Returns messages with idx, tokens, role, and content preview.",
+            description=(
+                "Get message list for a session with token counts. Returns messages with "
+                "idx, tokens, role, content, created_at (ISO8601). Supports incremental "
+                "paging via after_id; response ends with has_more and next_after_id."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session_id": {
                         "type": "string",
-                        "description": "Session ID to get messages for",
+                        "description": "Session ID（占位参数，单会话部署填 default 即可）",
+                    },
+                    "after_id": {
+                        "type": "string",
+                        "description": (
+                            "只返回存储顺序中该消息 ID 之后的消息（严格大于）；"
+                            "ID 在库中找不到时报错 reason=invalid_after_id。缺省时返回末尾最新 limit 条"
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条",
+                    },
+                    "full_tool_output": {
+                        "type": "boolean",
+                        "description": (
+                            "默认 false：role=='tool' 的超长内容折叠为头尾摘要（含 <已精简> 标记）；"
+                            "true 返回完整原文"
+                        ),
                     },
                 },
                 "required": ["session_id"],
@@ -539,54 +653,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if not session_id:
             return [TextContent(type="text", text="Error: session_id is required")]
 
-        # Call main API to get messages (full content for context manager)
-        result = call_api(
-            "GET", f"/api/context/messages?session_id={session_id}&full=true&limit=100"
+        # 直读本机 DB，与同进程直调共用一份实现（read_history_block 同模式），
+        # 支持 after_id/limit/full_tool_output 新参数且四处 schema 天然一致
+        result = get_messages(
+            session_id,
+            after_id=arguments.get("after_id"),
+            limit=arguments.get("limit", _DEFAULT_GET_MESSAGES_LIMIT),
+            full_tool_output=bool(arguments.get("full_tool_output", False)),
         )
-        if not result:
-            return [TextContent(type="text", text="Error: Failed to get messages")]
-
-        # Format messages with token counts
-        messages = result.get("messages", [])
-        formatted = []
-        total_tokens = 0
-
-        for i, msg in enumerate(messages, 1):
-            content = msg.get("content", "")
-            try:
-                # Ensure agent package is importable in stdio mode (project root may not be in sys.path)
-                import sys as _sys
-                from pathlib import Path as _Path
-                _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
-                if _project_root not in _sys.path:
-                    _sys.path.insert(0, _project_root)
-                from agent.token_calculator import TokenCalculator
-                tokens = TokenCalculator.get().count_message_single(msg.get("role", "user"), content, tool_calls=msg.get("tool_calls"))
-            except Exception:
-                # Fallback: CJK ~1.5 tokens, ASCII ~0.25 tokens (conservative, same as memory-server)
-                cjk = sum(1 for c in content if '一' <= c <= '鿿')
-                tokens = max(1, int(cjk * 1.5 + (len(content) - cjk) * 0.25))
-            total_tokens += tokens
-
-            formatted.append(
-                {
-                    "id": msg.get("id", ""),
-                    "idx": i,
-                    "tokens": tokens,
-                    "role": msg.get("role", "unknown"),
-                    "content": content,  # Full content, no truncation
-                }
-            )
-
-        output = {
-            "total_messages": len(messages),
-            "total_tokens": total_tokens,
-            "messages": formatted,
-        }
 
         return [
             TextContent(
-                type="text", text=json.dumps(output, ensure_ascii=False, indent=2)
+                type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
             )
         ]
 
