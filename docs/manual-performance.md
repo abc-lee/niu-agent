@@ -40,10 +40,10 @@
 
 3. **减少 MCP 模块加载**
    ```yaml
-   # config/mcp-servers.yaml
+   # ~/.niu/config/mcp-servers-user.yaml（调优编辑用户层；内置 config/mcp-servers.yaml 随版本直读不可手改）
    # 同进程架构下，9 个 REQUIRED_SERVERS 在启动时均加载（模块导入）
    # preload: true/false 在同进程架构中仅影响是否预加载重量级资源（如模型）
-   # 不影响模块注册本身
+   # 不影响模块注册本身；deep merge 用户赢，server 置 null 可禁用内置
    ```
 
 **MCP 服务器一览（9 必需 + 1 可选）：**
@@ -55,7 +55,7 @@
 | memory-server | 3 | true | 智能记忆提取和检索 |
 | lightrag-server | 23 | true | 知识图谱 + 向量检索（LightRAG 统一管理） |
 | file-parser | 2 | true | 文档解析（PDF/Word/PPT/Excel/MD/HTML） |
-| session-manager | 4 | false | 会话管理（消息压缩） |
+| session-manager | 4 | false | 会话历史管理（get_messages 直读消息库） |
 | scheduler-server | 4 | true | 定时任务（单次/循环提醒） |
 | browser-server | 5 | false | 浏览器自动化（Chrome Extension + WSBridge） |
 | brain-region-server | 3 | true | 脑区激活控制（手动点亮/熄灭/查询状态） |
@@ -84,8 +84,9 @@
 
 2. **延迟加载非关键服务**
    ```yaml
-   # config/mcp-servers.yaml — preload: true/false 控制重量级资源的预加载
+   # ~/.niu/config/mcp-servers-user.yaml — preload: true/false 控制重量级资源的预加载（deep merge 用户赢，server 置 null 可禁用内置）
    # 同进程架构下所有模块均被注册，preload 仅影响模型等大资源的提前加载
+   # 内置 config/mcp-servers.yaml 随版本直读不可手改，调优一律在用户层文件编辑
    ```
 
 3. **Embedding 模型选择**
@@ -310,13 +311,11 @@ LightRAG 是工具数最多的 MCP 服务器（23 个工具），承担知识图
 
 | 项目 | 要求 | 原因 |
 |---|---|---|
-| 上下文窗口 | **≥128K** | F3 工作集（64KB 软预算）+ 历史原文窗口 + 系统提示词 + 工具 schema + 思考链输出需要足够余量；窗口过小会在长对话或梦境精加工时触发上下文溢出保护 |
+| 上下文窗口 | **≥128K** | 历史原文窗口 + journal 水位线 + 系统提示词 + 工具 schema + 思考链输出需要足够余量；窗口过小会在长对话或梦境精加工时触发上下文溢出保护 |
 | 思考链 | **在模型启动参数上关闭** | 很多模型不支持通过请求参数（命令）关闭思考链——思考链会占用大量输出 token 与推理时间；若模型侧无法关闭，建议换用支持关闭的模型或在启动参数中禁用 |
 | 实例数 | **双路（明确推荐）** | 主对话与后台任务（journal 定时整理）分属两个模型实例，避免 KV cache 踩踏导致的全量 prefill 反复发生（见上节机理） |
 
 ### 验证记录
-
-以下列出本次验证中修正的文档内容（原文 vs 修正后）：
 
 以下列出本次验证中修正的文档内容（原文 vs 修正后）：
 

@@ -467,10 +467,10 @@ sync.scan_and_sync()
 **数据备份：**
 ```
 重要文件（路径通过 WORKSPACE_PATH 或 ~/.niu/memory.json 中的 workspace.path 解析）：
-- {workspace}/messages.db          # 历史对话
+- ~/.niu/messages.db               # 历史对话（固定路径，不随 workspace 迁移）
 - ~/.niu/lightrag_storage/         # LightRAG 知识检索存储
 - {workspace}/scheduled_tasks.db   # 定时任务
-- {workspace}/photos.db            # 照片数据库
+- {workspace}/photos.db            # 照片数据库（默认 ~/.niu/work/photos.db）
 - ~/.niu/memory.json               # 用户记忆
 - ~/.niu/preferences.json          # 用户配置
 
@@ -591,7 +591,7 @@ typeof NiuDomTree !== 'undefined'
 | LightRAG 初始化失败 | embedding 模型加载失败 | 检查 `models/bge-base-zh-v1.5/` 目录是否完整；查看日志中 embedding 相关错误；确认 sentence_transformers 已安装 |
 | LightRAG 文档处理超时 | 文档过大或 LLM API 响应慢 | 检查 LLM API 连通性；尝试拆分大文档后重新入库；查看日志中 ainsert 超时信息 |
 | brain-region-server 工具不可用 | 模块未加载 | 检查 `agent/mcp_loader.py` 的 REQUIRED_SERVERS 是否包含 brain-region-server |
-| 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 |
+| 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 ；0.3.0 起 bundle 配置为只读权威层，自定义/覆盖检查 ~/.niu/config/mcp-servers-user.yaml（双目录 deep merge） |
 | 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
 | 脑区边被意外删除 | 衰减算法配置错误 | 检查 preferences.json 中脑区 priority 是否为新值（permanent/long/medium/short），旧值 core/category 会回退到 medium |
 | 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量） | **直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启，splash 弹窗后点"尝试修复"触发完整重建（见 1.7.1 简易指引） |
@@ -721,7 +721,7 @@ E3 工程后，知识图谱不再静默吞错——查询异常会以错误文�
 | 4 | sqlite3 data/scheduled_tasks.db ...（旧版曾修正为 ~/.niu/scheduled_tasks.db） | sqlite3 {workspace}/scheduled_tasks.db ...（默认 ~/.niu/work/scheduled_tasks.db） | service.py:42-50 优先用 {workspace}/scheduled_tasks.db，~/.niu/scheduled_tasks.db 是旧残留 |
 | 5 | 所有 REDACTED_WIN_PATH/vectors.db 硬编码路径 | vectors.db 已废弃，知识检索改用 LightRAG（~/.niu/lightrag_storage/） | vector-store 架构已移除，由 lightrag-server 统一管理知识检索 |
 | 6 | ls models/paraphrase-multilingual-MiniLM-L12-v2（向量搜索报错排查） | 默认模型 bge-base-zh-v1.5，向量搜索独立排查已移除（合并到 LightRAG 故障排查） | 默认模型已变更，独立向量搜索概念已不存在 |
-| 7 | data/messages.db, data/vectors.db, data/kg.db（数据备份列表） | {workspace}/messages.db, ~/.niu/lightrag_storage/, {workspace}/scheduled_tasks.db 等，并说明路径解析 | vectors.db 和 knowledge.kz* 已废弃，知识检索改用 LightRAG 存储 |
+| 7 | data/messages.db, data/vectors.db, data/kg.db（数据备份列表） | ~/.niu/messages.db（固定路径）, ~/.niu/lightrag_storage/, {workspace}/scheduled_tasks.db 等，并说明路径解析 | vectors.db 和 knowledge.kz* 已废弃，知识检索改用 LightRAG 存储 |
 | 8 | sqlite3 data/messages.db "DELETE ... WHERE timestamp ..." | sqlite3 ~/.niu/messages.db "DELETE ... WHERE created_at ..." | messages 表使用 created_at 列（见 agent/session.py），不是 timestamp |
 | 9 | 浏览器方法 3 使用 --user-data-dir="%USERPROFILE%\.niu\browser_ext_profile" | 使用 --disable-extensions-except，并说明默认使用用户浏览器配置文件 | launcher.py 不指定 --user-data-dir，使用用户默认 profile 共享 cookies |
 | 10 | 人脸识别故障提到 "MCP stdio 通信错误"、"ONNX Runtime stdout 污染" | 说明同进程架构后无 stdio 通信问题，无需检查 JSONRPC 解析 | MCP 已从 stdio 架构迁移到同进程直接调用 |
