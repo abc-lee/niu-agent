@@ -2232,16 +2232,17 @@
     let _compactUsageTs = 0;    // 最近一次压缩 usage 渲染时间戳（Date.now()）
 
     // 渲染上下文使用率圆环（loadStats 与 compact_status done 共用）
-    // cacheHit：缓存命中率 0-1；null/undefined=未知（服务端未返回）→ 隐藏缓存文本
+    // cacheHit：缓存命中率 0-1；null/undefined=未知（服务端未返回）→ 元素整体隐藏；0=真实零命中照常显示
     function renderContextUsage(usage, cacheHit) {
       const arc = document.getElementById('context-usage-arc');
       const text = document.getElementById('context-usage-text');
       if (!arc || !text) return;
       const hitEl = document.getElementById('context-cache-hit');
       if (hitEl) {
-        hitEl.textContent = (typeof cacheHit === 'number' && isFinite(cacheHit))
-          ? ' 缓存 ' + Math.round(cacheHit * 100) + '%'
-          : '';
+        // null/undefined=未知（服务端未返回）→ 元素整体不渲染不留空位；0=真实零命中 → 显示「缓存 0%」
+        const known = typeof cacheHit === 'number' && isFinite(cacheHit);
+        hitEl.textContent = known ? ' 缓存 ' + Math.round(cacheHit * 100) + '%' : '';
+        hitEl.style.display = known ? '' : 'none';
       }
       const usageVal = usage || 0;
       const pct = Math.round(usageVal * 100);

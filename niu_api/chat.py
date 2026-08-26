@@ -218,7 +218,7 @@ def notify_compact_status_sync(status: str, mode: str = "", usage: float | None 
             runner = get_runner()  # 无创建副作用（不存在返回 None）；勿用 get_or_create_runner
             if runner is not None and getattr(runner, "handler", None) is not None:
                 runner.handler._last_prompt_tokens = 0
-                runner.handler._last_cached_tokens = 0
+                runner.handler._last_cached_tokens = None
         except Exception:
             pass
     if _main_loop is None:
@@ -1032,7 +1032,7 @@ async def clear_session(session_id: str):
     runner = get_or_create_runner()
     if runner and runner.handler:
         runner.handler._last_prompt_tokens = 0
-        runner.handler._last_cached_tokens = 0
+        runner.handler._last_cached_tokens = None
     # 游标复位（与 clear_chat 一致，消除"清消息但游标残留"的不一致）
     from niu_api.compat import _reset_all_cursors
     await _reset_all_cursors()

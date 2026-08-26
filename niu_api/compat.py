@@ -1686,7 +1686,7 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
     try:
         context_window = _read_context_window_tokens()
         real_tokens = 0
-        cached_tokens = 0
+        cached_tokens = None
         if agent:
             # 子 Agent：从 SubagentRegistry 读运行中 handler 的真实 prompt_tokens
             try:
@@ -1695,7 +1695,7 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
                 if instance is not None:
                     handler_ref = getattr(instance, "handler", None) or getattr(instance, "suspended_handler", None)
                     real_tokens = getattr(handler_ref, "_last_prompt_tokens", 0) or 0
-                    cached_tokens = getattr(handler_ref, "_last_cached_tokens", 0) or 0
+                    cached_tokens = getattr(handler_ref, "_last_cached_tokens", None)
             except Exception:
                 pass
         else:
@@ -1703,13 +1703,13 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
                 from niu_api.chat import get_or_create_runner
                 runner = get_or_create_runner()
                 real_tokens = getattr(getattr(runner, 'handler', None), '_last_prompt_tokens', 0) or 0
-                cached_tokens = getattr(getattr(runner, 'handler', None), '_last_cached_tokens', 0) or 0
+                cached_tokens = getattr(getattr(runner, 'handler', None), '_last_cached_tokens', None)
             except Exception:
                 pass
         if real_tokens > 0:
             context_usage = real_tokens / context_window if context_window > 0 else 0.0
-            # 命中率仅在有真实 cached 值时给出；cached==0 无法区分「服务端未返回」与「真 0 命中」→ None
-            if cached_tokens > 0:
+            # 语义：None=服务端未返回（未知）；0=真实零命中——两者如实上报
+            if cached_tokens is not None:
                 context_cache_hit = min(1.0, cached_tokens / real_tokens)
         elif not agent:
             # 主 Agent 无真实 tokens 时 fallback 估算全库消息；子 Agent 无此概念，直接 0
@@ -2121,7 +2121,7 @@ async def clear_chat(request: Request) -> dict:
             if runner.handler:
                 runner.handler.reset_working_memory()
                 runner.handler._last_prompt_tokens = 0
-                runner.handler._last_cached_tokens = 0
+                runner.handler._last_cached_tokens = None
             # 清空衰减池（新会话开始）
             runner._decay_pool.clear()
             # 清空脑区注入缓存（_recent_region_entities——防跨会话旧实体注入）
