@@ -62,7 +62,7 @@ allowBaseTools:
 
 - 文档注入：`lightrag_insert(content=精炼文档)` — 整体入库，LightRAG 自动提取实体和关系；不要传 doc_id 参数
 - 查询已有文档：`lightrag_document_status()` — 检查已有精炼文档
-- 查询已有实体：`lightrag_search_entities(query, top_k)` — 语义搜索，按关键词找相关实体。需要按类型枚举时用 `lightrag_list_entities --entity-type 类型名`
+- 查询已有实体：`lightrag_search_entities(query, keywords, top_k)` — 语义搜索，按关键词找相关实体。keywords 必填，填**具体名词：实体名/专有名词/技术术语**（local 语义搜索只用低层关键词这一层），不要填宽泛主题短语（如 query="定时任务管理" → keywords=["定时任务", "任务调度"]）；不传会触发图谱内部 LLM 关键词提取，慢且浪费。需要按类型枚举时用 `lightrag_list_entities --entity-type 类型名`
 - 图遍历：`lightrag_get_graph(action="explore", entity_name, depth)`
 
 ## ⛔ 严格禁止：NIU 根节点保护
