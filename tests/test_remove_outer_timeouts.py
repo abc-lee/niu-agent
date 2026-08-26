@@ -241,11 +241,10 @@ async def test_tc_clear_chat_safe_mocks(monkeypatch):
 
     硬性 mock 清单（方案 §6 T8）：
     1. compat.get_message_store → fake store（clear_messages recorder）
-    2. compat._reset_all_cursors → no-op recorder
-    3. agent.tmp_dir.cleanup_all_tmp → no-op recorder（patch 源模块命名空间——函数级
+    2. agent.tmp_dir.cleanup_all_tmp → no-op recorder（patch 源模块命名空间——函数级
        import，patch compat 拦不住，错目标=真实 rmtree ~/.niu/tmp）
-    4. niu_api.chat.get_or_create_runner → SimpleNamespace 假 runner
-    5. agent.runner.request_stop/clear_stop → spy
+    3. niu_api.chat.get_or_create_runner → SimpleNamespace 假 runner
+    4. agent.runner.request_stop/clear_stop → spy
     """
     events = []
 
@@ -255,11 +254,6 @@ async def test_tc_clear_chat_safe_mocks(monkeypatch):
             return 5
 
     monkeypatch.setattr(compat, "get_message_store", AsyncMock(return_value=_FakeStore()))
-
-    async def fake_reset_cursors():
-        events.append("reset_cursors")
-
-    monkeypatch.setattr(compat, "_reset_all_cursors", fake_reset_cursors)
 
     def fake_cleanup_tmp():
         events.append("cleanup_tmp")
@@ -297,10 +291,9 @@ async def test_tc_clear_chat_safe_mocks(monkeypatch):
 
     assert result["success"] is True
     assert result["deleted_count"] == 5
-    # 四步各恰一次：drain_supplements → clear_messages → cleanup_tmp → reset_cursors
-    # 五步各恰一次（Task 8 新增 reset_derived_state 收尾）：drain → clear →
-    # cleanup_tmp → reset_cursors → reset_derived
-    assert events == ["drain", "clear_messages", "cleanup_tmp", "reset_cursors", "reset_derived"]
+    # 各恰一次（Task 8 新增 reset_derived_state 收尾）：drain → clear →
+    # cleanup_tmp → reset_derived（游标复位链已随 journal 直读 DB 改造退役）
+    assert events == ["drain", "clear_messages", "cleanup_tmp", "reset_derived"]
     assert stop_calls.count("request_stop") == 1  # 停主 Agent 恰一次
     assert "clear_stop" in stop_calls  # 防御性清除保留
     assert compat._SPIRIT_STATE == "idle"  # 无条件唤醒睡眠管道
@@ -414,7 +407,7 @@ def _run_sleep_tidy_tf(tokens_per_msg, sleep_side_effect, subagent_reply=None):
         }),
         # 四个游标文件 READ 强制缺失（compat 函数内 `from pathlib import Path`，patch 类方法本身）
         patch("pathlib.Path.exists", return_value=False),
-        patch("niu_api.compat._write_cursor_with_lock"),
+        patch("niu_api.compat._write_cursor_with_lock", create=True),
         patch("niu_api.compat.is_sleeping", side_effect=sleep_side_effect),
     ]
     with ExitStack() as stack:

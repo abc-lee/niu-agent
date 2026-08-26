@@ -111,7 +111,7 @@ def _patch_cursor_store(store, call_mock=None):
         # exists/read_text 用普通函数（类属性替换后仍走描述符绑定，Path 实例作首参）
         mock.patch("pathlib.Path.exists", _exists),
         mock.patch("pathlib.Path.read_text", _read_text),
-        mock.patch("niu_api.compat._write_cursor_with_lock", side_effect=store.write),
+        mock.patch("niu_api.compat._write_cursor_with_lock", side_effect=store.write, create=True),
     ]
 
 

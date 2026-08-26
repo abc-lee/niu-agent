@@ -13,7 +13,6 @@ import time
 from asyncio import sleep as _asyncio_sleep
 from concurrent.futures import Future
 from datetime import datetime
-from pathlib import Path
 from typing import TypedDict
 
 from agent.session import get_message_store
@@ -171,76 +170,6 @@ async def _cleanup_orphan_tool_messages(store):
         await store.delete_messages_by_ids(_orphan_mids)
 
 
-def _export_journal_increment(messages, last_cursor_id: str, out_path) -> tuple[list[str], dict[int, str]]:
-    """导出游标之后的增量消息到 out_path（journal-agent 自读通道，F1 同款文件自读模式）。
-
-    T7 起 journal 输入通道不再走 history 注入：调用方（scheduler journal_daily /
-    handler 交互路径）先把 DB 增量导出为临时 md 文件，journal-agent 用 read 工具
-    自读并回报 processed_up_to=N，程序按 idx_to_id 映射推进游标。
-
-    - 下界：last_cursor_id 在 messages 中的位置；找不到降级全量（与原增量语义一致）
-    - 每条记录一个块：头行 "[N] role created_at" + 正文；role=tool 超长正文按
-      md_mirror.truncate_tool_output 先例截断
-    - out_path 每次运行整体覆盖写（确定性派生文件，可随时重建）
-
-    Returns:
-        (msg_ids, idx_to_id)：msg_ids 与编号同序（游标兜底用）；idx_to_id[N]=UUID
-        供解析 processed_up_to=N 后查 UUID 推进游标。零增量时返回 ([], {})。
-    """
-    # 找到下界游标位置
-    cursor_idx = -1
-    if last_cursor_id:
-        for i, msg in enumerate(messages):
-            msg_id = getattr(msg, "id", "") or ""
-            if msg_id == last_cursor_id:
-                cursor_idx = i
-                break
-        if cursor_idx < 0:
-            logger.warning(f"[Journal] Cursor UUID {last_cursor_id} not found in message list, degrading to full processing")
-
-    start = cursor_idx + 1 if cursor_idx >= 0 else 0
-    incremental = messages[start:]
-    if not incremental:
-        return [], {}
-
-    from agent.md_mirror import truncate_tool_output
-
-    lines: list[str] = [f"# Journal 增量导出（共 {len(incremental)} 条，编号 [1]..[{len(incremental)}]）"]
-    msg_ids: list[str] = []
-    idx_to_id: dict[int, str] = {}
-    display_idx = 0
-    for msg in incremental:
-        msg_id = getattr(msg, "id", "") or ""
-        role = getattr(msg, "role", "user")
-        content = getattr(msg, "content", "") or ""
-        tool_calls = getattr(msg, "tool_calls", None) or []
-        tool_call_id = getattr(msg, "tool_call_id", "") or ""
-        created_at = getattr(msg, "created_at", "") or ""
-
-        display_idx += 1
-        msg_ids.append(msg_id)
-        idx_to_id[display_idx] = msg_id
-
-        header = f"[{display_idx}] {role} {created_at}".rstrip()
-        if tool_calls:
-            names = ", ".join(
-                (tc.get("function", {}) or {}).get("name", "?") if isinstance(tc, dict) else "?"
-                for tc in tool_calls
-            )
-            header += f" (tool_calls: {names})"
-        elif tool_call_id:
-            header += f" (answers tool_call_id={tool_call_id})"
-
-        body = truncate_tool_output(content) if role == "tool" else content
-        lines.append(header)
-        lines.append(body)
-        lines.append("")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(lines), encoding="utf-8")
-    return msg_ids, idx_to_id
-
-
 def _build_compress_history(
     messages,
     msg_tokens: list | None = None,
@@ -251,7 +180,7 @@ def _build_compress_history(
     T6 保留（R4-A 边界）：压缩退役后暂无生产调用方，与后续 history 型输入可复用
     ——只摘除 protect_recent/exclude_protected 参数。
 
-    与文件导出通道（_export_journal_increment）的区别：
+    与已退役的 journal 文件导出通道（直读 DB 改造前）的区别：
     - 输出 history 列表（role/content/tool_calls/tool_call_id 原样），而非序列化文本
     - content 开头加 `[idx:N] Ntokens ` 前缀（简易 idx，不用 UUID）
     - 单条 message 不会超限（每条就是原大小 + 前缀）
@@ -300,35 +229,6 @@ def _build_compress_history(
         history.append(entry)
 
     return history, idx_to_id
-
-
-def _parse_processed_up_to(response: str) -> int | None:
-    """从子 Agent 输出中提取 processed_up_to=N 的 N 值。
-
-    支持格式（大小写不敏感）：
-    - "processed_up_to=15"
-    - "processed_up_to: 15"
-    - "processed_up_to 15"
-    - 匹配第一个有效整数
-
-    Args:
-        response: 子 Agent 的完整输出文本
-
-    Returns:
-        N (int) 或 None（未找到或格式无效）
-    """
-    import re
-    if not response:
-        return None
-    # 大小写不敏感，支持 = / : / 空格 三种分隔
-    # 字符类 [=:\s] 同时匹配 =、: 和纯空格分隔（如 "processed_up_to 15"）
-    match = re.search(r'processed_up_to\s*[=:\s]\s*(\d+)', response, re.IGNORECASE)
-    if match:
-        try:
-            return int(match.group(1))
-        except ValueError:
-            return None
-    return None
 
 
 def _call_entity_extractor_on_f1(llm_config, f1_path=None) -> str:
@@ -391,65 +291,6 @@ def _parse_and_drop_f2(dream_result: str, f3_lines: int, f2_path=None) -> tuple[
     from agent.md_mirror import drop_f2_prefix
     return drop_f2_prefix(int(m.group(1)), max_lines=f3_lines, f2_path=f2_path)
 
-# journal 增量导出工作集（journal-agent 自读通道的临时文件；每次运行整体覆盖）
-# 并发窗口取舍（计划内）：handler 交互路径导出后不清文件，scheduler journal_daily 跑完会 unlink；
-# 两路径并发时后到的导出整体覆盖先到的工作集——由 journal.md 写入侧内容去重兜底
-JOURNAL_WORKSET_PATH = Path.home() / ".niu" / "md" / "journal_workset.md"
-
-JOURNAL_CURSOR_PATH = Path.home() / ".niu" / "last_journal.json"
-
-
-def _read_cursor_with_lock(cursor_path, field: str) -> str:
-    """带文件锁保护的游标读取 — 与 _write_cursor_with_lock 同一把 .lock 文件。
-
-    flock 纪律：本 helper 与写 helper 各自独立 open fd 顺序使用，调用方禁止在
-    持锁期间再调任一 helper（同进程嵌套 flock 同一 .lock 会自死锁）。
-    """
-    if not cursor_path.exists():
-        return ""
-    lock_path = cursor_path.with_suffix(".lock")
-    try:
-        with open(lock_path, "w") as lock_f:
-            _flock(lock_f)
-            try:
-                data = json.loads(cursor_path.read_text(encoding="utf-8"))
-                return data.get(field, "") or ""
-            except Exception as e:
-                logger.warning(f"[Journal] Failed to read cursor: {e}")
-                return ""
-            finally:
-                _funlock(lock_f)
-    except Exception as e:
-        logger.warning(f"[Journal] Cursor lock acquire failed: {e}")
-        return ""
-
-
-def _build_journal_file_task(workset_path, count: int) -> str:
-    """构建 journal-agent 自读导出文件的 task prompt。
-
-    T7 输入通道：增量消息已由程序导出到 workset_path（每条记录 [N] 编号），
-    子 Agent 用 read 工具自读后提取日志，回报 processed_up_to=N 由程序推进游标。
-    """
-    return f"""增量对话消息已导出到文件：{workset_path}（共 {count} 条）。
-
-请先用 read 工具读取该文件。文件内每条消息一个记录块：头行以 `[N]` 开头（N 为 1-based 编号，含 role 与时间），随后是消息正文。请从中识别工作内容，提取为日志条目追加写入 journal.md。
-
-处理完成后，在最终回复中包含 `@end`，最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果最后一段不是完整的对话单元（如 assistant 回复未完成、tool 调用缺少对应结果），请将 `processed_up_to` 设为你最后完整处理到的那条消息的编号，不要设到不完整的位置。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
-
-
-def _write_cursor_with_lock(cursor_path, data: dict) -> None:
-    """带文件锁保护的游标写入 — 防止 handler/compat/runner 并发竞争。"""
-    lock_path = cursor_path.with_suffix(".lock")
-    cursor_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, 'w') as lock_f:
-        _flock(lock_f)
-        try:
-            cursor_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        finally:
-            _funlock(lock_f)
-
-
-
 def truncate_message_content(content: str, max_chars: int = 500) -> str:
     """
     截断单条消息内容（用于雪球式压缩的 force 模式）。
@@ -469,27 +310,6 @@ def truncate_message_content(content: str, max_chars: int = 500) -> str:
     if len(content) <= max_chars:
         return content
     return content[:max_chars] + f"...[截断，原内容{len(content)}字符，可用get_messages查看]"
-
-def _flock(lock_f) -> None:
-    """跨平台文件锁。Unix 用 fcntl.flock，Windows 用 msvcrt.locking。"""
-    import sys
-    if sys.platform == "win32":
-        import msvcrt
-        msvcrt.locking(lock_f.fileno(), msvcrt.LK_LOCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-
-def _funlock(lock_f) -> None:
-    """跨平台文件解锁。"""
-    import sys
-    if sys.platform == "win32":
-        import msvcrt
-        msvcrt.locking(lock_f.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(lock_f, fcntl.LOCK_UN)
-
 
 def build_truncated_msg_list_text(
     messages,
@@ -2051,22 +1871,6 @@ async def add_context_message(request: dict) -> dict:
 
     return {"status": "ok", "message_id": msg_id}
 
-# 游标文件列表（清空消息后必须一并复位，否则游标指向已删除消息）
-_ALL_CURSOR_FILES = ["last_journal.json"]  # T6 压缩退役后仅剩 journal 一键；T7 定案保留——游标指向 messages.db，消息清空时必须一并复位
-
-
-async def _reset_all_cursors() -> None:
-    """删除全部增量处理游标文件（消息清空后调用，避免游标指向已删消息）。"""
-    from pathlib import Path
-    for cursor_name in _ALL_CURSOR_FILES:
-        cursor_p = Path.home() / ".niu" / cursor_name
-        try:
-            if cursor_p.exists():
-                cursor_p.unlink()
-        except OSError as e:
-            logger.warning(f"Failed to reset cursor file {cursor_name}: {e}")
-
-
 def _reset_runner_brain_state(runner) -> None:
     """会话边界清空脑区注入缓存（防跨会话旧实体注入）。
 
@@ -2090,7 +1894,7 @@ async def clear_chat(request: Request) -> dict:
     """Clear all messages (for /new and /clear commands)
 
     即时清除语义（§3.6）：取消清空前提炼——不再读取任何提炼开关字段，原「清空前先跑
-    force 整理」通道已整块删除。游标重置即管道天然终止信号。
+    force 整理」通道已整块删除。
     """
     # ① 停止主 Agent（既有）；② 唤醒睡眠管道（新增，无条件）——用户动作打断 Case 3
     from agent.runner import clear_stop, request_stop
@@ -2134,8 +1938,6 @@ async def clear_chat(request: Request) -> dict:
         # 清空临时目录（画框图片等）
         from agent.tmp_dir import cleanup_all_tmp
         cleaned_tmp = cleanup_all_tmp()
-        # 重置游标文件（消息已清空，旧游标指向不存在的消息）
-        await _reset_all_cursors()
 
         from agent.md_mirror import truncate_relay_files
         truncate_relay_files()

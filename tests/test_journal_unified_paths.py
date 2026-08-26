@@ -14,7 +14,6 @@ Journal-Agent 触发路径集成测试
 直执行分支负责，单元覆盖见 tests/test_journal_daily_scheduler.py。
 """
 
-import json
 import os
 import time
 
@@ -32,7 +31,6 @@ import requests  # noqa: E402
 API_BASE = "http://localhost:9876"
 NIU_DIR = Path.home() / ".niu"
 JOURNAL_PATH = NIU_DIR / "journal.md"
-CURSOR_PATH = NIU_DIR / "last_journal.json"
 
 
 def test_api_health():
@@ -60,8 +58,9 @@ def test_send_chat_messages():
 
 
 def test_chat_triggers_journal_via_handler():
-    """路径1：通过主Agent对话触发 journal-agent"""
-    old_cursor = json.loads(CURSOR_PATH.read_text()).get("last_journal_id", "")
+    """路径1：通过主Agent对话触发 journal-agent（直读 DB 改造后以覆盖标记验证）"""
+    old_text = JOURNAL_PATH.read_text(encoding="utf-8") if JOURNAL_PATH.exists() else ""
+    old_markers = old_text.count("覆盖至: ")
 
     resp = requests.post(
         f"{API_BASE}/chat",
@@ -72,14 +71,12 @@ def test_chat_triggers_journal_via_handler():
 
     time.sleep(30)
 
-    if CURSOR_PATH.exists():
-        new_cursor = json.loads(CURSOR_PATH.read_text()).get("last_journal_id", "")
-        if new_cursor != old_cursor:
-            print(f"[PASS] Path-1: cursor updated {old_cursor[:8]}... -> {new_cursor[:8]}...")
-        else:
-            print("[WARN] Path-1: cursor not updated (may be no new messages)")
+    new_text = JOURNAL_PATH.read_text(encoding="utf-8") if JOURNAL_PATH.exists() else ""
+    new_markers = new_text.count("覆盖至: ")
+    if new_text != old_text:
+        print(f"[PASS] Path-1: journal updated, 覆盖标记 {old_markers} -> {new_markers}")
     else:
-        print("[WARN] Path-1: cursor file missing")
+        print("[WARN] Path-1: journal not updated (may be no new messages)")
 
 
 def test_journal_format_consistency():

@@ -706,9 +706,6 @@ def test_prompt_degradation_json_result_display_layer_only(monkeypatch):
     from agent.handler import NiuHandler
 
     handler = NiuHandler(mcp_client=None)
-    # journal 任务构建 hermetic 化（T7 后返回纯 task 字符串；不读真实 last_journal.json / DB）
-    handler._build_journal_task_for_handler = lambda original_task: original_task
-    handler._sync_get_messages = lambda: []
 
     fake_runner = mock.MagicMock()
     fake_runner.llm_config = {"model": "m", "apikey": "x", "apibase": "http://x"}

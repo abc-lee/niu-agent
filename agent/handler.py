@@ -1034,64 +1034,6 @@ class NiuHandler(BaseHandler):
             if registry.get_future("main-agent") is future:
                 registry.unregister("main-agent")
 
-    def _sync_get_messages(self):
-        """同步获取消息列表 — 复用 runner 的桥接方法"""
-        from .runner import get_runner
-        runner = get_runner()
-        if runner is None:
-            return []
-        return runner._sync_get_messages()
-
-    def _build_journal_task_for_handler(self, original_task: str) -> str:
-        """为主Agent调用 journal-agent 构建自读导出文件 task（T7 输入通道）。
-
-        增量消息由程序导出到工作集文件，journal-agent 用 read 工具自读并回报
-        processed_up_to=N；游标推进统一由 scheduler journal_daily 分支负责，
-        本路径只产出输入文件，不动游标（夜间任务按同一游标重覆盖本区间，
-        journal.md 写入侧内容去重兜底）。
-        """
-        from loguru import logger
-        from niu_api.compat import (
-            JOURNAL_CURSOR_PATH,
-            JOURNAL_WORKSET_PATH,
-            _build_journal_file_task,
-            _export_journal_increment,
-            _read_cursor_with_lock,
-        )
-
-        # 报告生成指令不替换 — journal-agent 自己读 journal.md 聚合
-        report_keywords = ("周报", "月报", "季报", "年报")
-        if any(kw in original_task for kw in report_keywords):
-            return original_task
-
-        # 1. 读取游标
-        last_journal_id = _read_cursor_with_lock(JOURNAL_CURSOR_PATH, "last_journal_id")
-
-        # 2. 获取消息列表
-        messages = self._sync_get_messages()
-        if not messages:
-            return original_task
-
-        # 3. 游标为空且消息过多时，限制为最近200条（防止导出文件超限）
-        if not last_journal_id and len(messages) > 200:
-            logger.warning(f"[Handler] Journal cursor empty, {len(messages)} messages total, limiting to last 200")
-            messages = messages[-200:]
-
-        # 4. 导出增量到工作集文件（[N] 编号 + idx→UUID 映射在程序侧，游标不在此推进）
-        try:
-            journal_msg_ids, _idx_to_id = _export_journal_increment(
-                messages, last_journal_id, JOURNAL_WORKSET_PATH
-            )
-        except Exception as e:
-            logger.warning(f"[Handler] Journal workset export failed: {e}")
-            return original_task
-
-        # 无增量消息：保持原 task（journal-agent 按指令处理，无 processed_up_to 协议）
-        if not journal_msg_ids:
-            return original_task
-
-        return _build_journal_file_task(JOURNAL_WORKSET_PATH, len(journal_msg_ids))
-
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）— 同步/异步分流"""
         import json  # E4-14：函数顶部绑定——事件块内 import json 使 json 成为函数局部名，先于其执行引用会 UnboundLocalError
@@ -1104,11 +1046,6 @@ class NiuHandler(BaseHandler):
         async_mode = args.get("async_mode", False)
         answer = args.get("answer")
         unique_name_arg = args.get("unique_name")
-
-        # journal-agent 特殊处理：增量消息导出工作集文件，task 改为自读指令（T7 输入通道；
-        # 游标推进统一由 scheduler journal_daily 分支负责，本路径不写游标）
-        if agent_name == "journal-agent":
-            task = self._build_journal_task_for_handler(task)
 
         # 获取完整的 LLM 配置（从全局 runner）
         from .runner import get_runner
