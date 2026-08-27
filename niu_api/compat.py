@@ -1417,6 +1417,119 @@ async def model_capability_probe(request: Request) -> dict:
     except Exception as e:
         return {"probe_status": "failed", "error": f"探测异常: {e}"}
 
+def _fetch_models_sync(api_base: str, api_key: str, api_type: str) -> tuple[int, bytes]:
+    """同步拉取模型列表（urllib timeout=10s；经 asyncio.to_thread 调用，不阻塞事件循环）。
+
+    URL 组装：openai → {apiBase.rstrip('/')}/models；anthropic → rstrip('/') 后不以 /v1
+    结尾则补 /v1 再拼 /models（"/v1/" 结尾输入不先 rstrip 会拼出 /v1//v1/models），请求头
+    x-api-key + anthropic-version: 2023-06-01（非 Authorization）。
+    HTTPError（4xx/5xx）返回 (status, body)；其余网络异常（超时/拒绝/DNS）向上抛由调用方分类。
+    """
+    import urllib.error
+    import urllib.request
+
+    base = api_base.rstrip("/")
+    if api_type == "anthropic":
+        if not base.endswith("/v1"):
+            base += "/v1"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+    else:
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(base + "/models", headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def _extract_context_window(item: dict):
+    """单条模型条目提取上下文窗口：依次检查 context_length / max_input_tokens /
+    context_window / top_provider.context_length（OpenRouter 嵌套形），首个非空整数胜出；无则 None。
+    """
+    candidates = [item.get("context_length"), item.get("max_input_tokens"), item.get("context_window")]
+    top_provider = item.get("top_provider")
+    if isinstance(top_provider, dict):
+        candidates.append(top_provider.get("context_length"))
+    for value in candidates:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+@router.post("/api/list-models")
+async def list_models(request: Request) -> dict:
+    """在线拉取模型列表（设置页「模型名称」下拉候选源）。
+
+    纯转发探测，不落盘、不写配置。body = {apiKey, apiBase, type}（键小写归一，同
+    model_capability_probe 先例）；本地模型（localhost/127.0.0.1）免 apiKey（复用
+    is_local_api_base）。urllib 同步请求 timeout=10s 放 asyncio.to_thread。
+
+    返回形状（前端状态机依赖；任何失败都不抛 500，全部分类为结构化 status）：
+    - ok: {status, models:[{id, context_window?}], count}——OpenAI/Anthropic 均取 data[].id；
+      窗口字段仅条目自带时携带（D5 零猜测）
+    - unsupported: HTTP 404/405（网关不暴露 /models，如豆包 Plan 404）→ 前端降级手输不显示错误
+    - error: 401/403（Key 无效）/超时/网络/5xx/解析失败 → 前端提示 reason 可重试
+    """
+    from niu_api.model_probe import is_local_api_base
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = {k.lower(): v for k, v in body.items()} if body else {}
+
+    api_base_raw = body.get("apibase")
+    api_base = api_base_raw.strip() if isinstance(api_base_raw, str) else ""
+    if not api_base:
+        return {"status": "error", "reason": "API 地址未配置"}
+    api_key = body.get("apikey") or ""
+    # 本地模型（localhost/127.0.0.1）免 apiKey——同 model_capability_probe 先例
+    if not api_key and not is_local_api_base(api_base):
+        return {"status": "error", "reason": "API Key 未配置"}
+
+    api_type_raw = body.get("type")
+    api_type = api_type_raw.lower() if isinstance(api_type_raw, str) else "openai"
+    try:
+        http_status, payload = await asyncio.to_thread(_fetch_models_sync, api_base, api_key, api_type)
+    except Exception as e:
+        return {"status": "error", "reason": f"获取模型列表失败（网络/超时）: {e}"}
+
+    if http_status in (404, 405):
+        return {"status": "unsupported", "reason": "网关不支持模型列表接口"}
+    if http_status in (401, 403):
+        return {"status": "error", "reason": "API Key 无效或无权访问模型列表"}
+    if http_status >= 400:
+        return {"status": "error", "reason": f"网关返回 HTTP {http_status}，请稍后重试"}
+
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return {"status": "error", "reason": "模型列表响应解析失败"}
+    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        return {"status": "error", "reason": "模型列表响应格式非预期（缺少 data 数组）"}
+
+    models = []
+    for item in data["data"]:
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        if not isinstance(mid, str) or not mid:
+            continue
+        entry = {"id": mid}
+        window = _extract_context_window(item)
+        if window is not None:
+            entry["context_window"] = window
+        models.append(entry)
+
+    return {"status": "ok", "models": models, "count": len(models)}
+
 
 @router.get("/api/preload-status")
 async def get_preload_status():
