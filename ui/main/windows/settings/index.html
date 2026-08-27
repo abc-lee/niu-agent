@@ -16,14 +16,15 @@
         url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
     }
     .container {
-      padding: 10px 20px;
+      padding: 8px 20px;
       -webkit-app-region: no-drag;
     }
     .titlebar {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 12px 20px;
+      /* 10px：为模型框 hint 行让位（一屏放下目标，2026-08-27） */
+      padding: 10px 20px;
       background: #e7ca4a;
       border-bottom: 2px dashed rgba(0,0,0,0.1);
     }
@@ -71,7 +72,7 @@
     .note-card {
       background: #e7ca4a;
       border-radius: 4px;
-      padding: 12px 16px;
+      padding: 11px 16px;
       box-shadow: 3px 3px 8px rgba(0,0,0,0.1);
       position: relative;
     }
@@ -98,7 +99,7 @@
     .card-sub {
       font-size: 12px;
       color: #555;
-      margin-bottom: 6px;
+      margin-bottom: 5px;
       position: relative;
     }
 
@@ -138,13 +139,13 @@
 
     .btn {
       width: 100%;
-      padding: 11px;
+      padding: 9px;
       border: none;
       border-radius: 4px;
       font-size: 16px;
       font-family: 'Songti SC', 'SimSun', '宋体', serif;
       cursor: pointer;
-      margin-top: 10px;
+      margin-top: 8px;
       transition: all 0.2s;
       box-shadow: 3px 3px 8px rgba(0,0,0,0.1);
     }
@@ -242,7 +243,9 @@
 
         <div class="form-group">
           <label class="pencil-text">模型名称</label>
-          <input type="text" id="model" placeholder="gpt-4o-mini">
+          <input type="text" id="model" list="modelList" placeholder="gpt-4o-mini">
+          <datalist id="modelList"></datalist>
+          <div class="hint" id="modelHint">点击可拉取模型列表</div>
         </div>
 
         <div class="form-group">
@@ -372,6 +375,11 @@
     // 换模型后置 true（要求重新探测）；探测成功后置 false。
     // 判定依据：进入页面有配置（model 有值）→ 能点；换模型清空 → 灰；探测成功 → 亮。
     let capabilityCleared = false;
+    // ===== 模型列表拉取状态（会话级，页面重开重新拉——列表是易变数据不持久化）=====
+    const MODEL_HINT_IDLE = '点击可拉取模型列表';
+    let modelListCacheKey = null;   // 缓存键 = apiBase|apiKey|type（发起时刻实时 DOM 值）；unsupported/空列表也写缓存（R1-P1：404 是用户常态，降级必须真无感）
+    let modelListInFlight = false;  // 在途标志：mousedown+focus 同次点击双触发防并发双发（R1-P2-1）
+    let probeInFlight = false;      // 探测中标志：模块级单标志，llm/lightrag 两探测按钮共用（R2Tech-P2-4）
 
     // 检测 lightrag_llm 是否继承主 llm（model 为空 = 继承）
     function isLightragInherited(config) {
@@ -477,6 +485,106 @@
       updateTestSaveButton();
     }
 
+    // ===== 模型列表拉取（combobox 候选源，会话级缓存）=====
+
+    function setModelHint(text) {
+      const h = document.getElementById('modelHint');
+      if (h) h.textContent = text;
+    }
+
+    // 配置变更（apiKey/apiBase/apiType）→ 失效模型列表缓存 + 复位 hint 为静置文案 + 清空 datalist options
+    // （R7-P2：配置变了旧提示即失实；R8Tech-P2-3：陈旧选项跨网关滞留可选，且选中残留项
+    // 因「不在当前列表」被判手输 → D4 自动探测静默跳过——UI 暗示语义落空）
+    function invalidateModelList() {
+      modelListCacheKey = null;
+      setModelHint(MODEL_HINT_IDLE);
+      const dl = document.getElementById('modelList');
+      if (dl) dl.innerHTML = '';
+    }
+
+    // 填充 datalist：id 原样，按网关返回顺序不排序（OpenRouter 顺序有推荐语义）
+    function fillModelList(models) {
+      const dl = document.getElementById('modelList');
+      dl.innerHTML = '';
+      models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        if (m.context_window) opt.dataset.contextWindow = String(m.context_window);
+        dl.appendChild(opt);
+      });
+    }
+
+    // 拉取触发：focus/mousedown → 条件检查（apiBase 非空 + apiKey 非空或本地 + 无缓存 + 无在途）→ listModels
+    // R2-P2-4：缓存键必须在 focus/mousedown 时刻取实时 DOM 值，不得缓存「上次 change 时的键」
+    // （mousedown 先于 apiBase 的 blur-change 触发，退化实现会拿旧键命中陈旧缓存）
+    async function fetchModelList() {
+      if (modelListInFlight) return;
+      const apiBase = document.getElementById('apiBase').value;
+      const apiKey = document.getElementById('apiKey').value;
+      const type = document.getElementById('apiType').value;
+      const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(apiBase);
+      if (!apiBase || (!apiKey && !isLocal)) return; // 条件不满足 → 静默维持手输，不拉取
+      const key = apiBase + '|' + apiKey + '|' + type;
+      if (modelListCacheKey === key) return; // 本会话该配置已拉过（含 unsupported/空列表降级）
+      modelListInFlight = true;
+      setModelHint('正在获取模型列表…');
+      try {
+        const result = await window.electronAPI.listModels({ apiKey, apiBase, type });
+        // R8-P2：完成回调必须校验「发起时捕获键 === 当前实时键」，不等则丢弃结果
+        //（拉取在途期用户改配置：change 已清缓存+复位 hint，旧网关模型/旧提示不得贴回）
+        const curKey = document.getElementById('apiBase').value + '|' +
+                       document.getElementById('apiKey').value + '|' +
+                       document.getElementById('apiType').value;
+        if (curKey !== key) return;
+        if (!result || result.status === 'unsupported') {
+          modelListCacheKey = key; // unsupported 写入会话缓存（豆包 404 是用户常态，不缓存则每次 focus 重发注定失败的请求）
+          setModelHint('该网关不支持模型列表，请手动输入');
+        } else if (result.status === 'ok' && result.count > 0) {
+          fillModelList(result.models);
+          modelListCacheKey = key;
+          setModelHint(MODEL_HINT_IDLE); // R6-P2：成功路径 hint 终态钉死为静置文案，防「正在获取…」永久滞留
+        } else if (result.status === 'ok') {
+          // R1-P2-2：200 但空列表（count==0）→ 按 unsupported 同等降级提示（含会话缓存，二次 focus 不重发）
+          modelListCacheKey = key;
+          setModelHint('该网关不支持模型列表，请手动输入');
+        } else {
+          // error：hint 显示 reason，不写缓存，可下次 focus 重试。
+          // R2-P2-3/R5Tech-P2-2：同一 reason 本会话已提示过则后续 focus 静默重试——加载 hint 照常显示，
+          // 完成后恢复该 reason 文案（终态文本同前）；「静默」只作用于 reason 提示层。
+          const reason = result.reason || '获取模型列表失败';
+          setModelHint(reason);
+        }
+      } catch (e) {
+        // IPC 层异常：按 error 同等处理（不写缓存，可重试）
+        const curKey = document.getElementById('apiBase').value + '|' +
+                       document.getElementById('apiKey').value + '|' +
+                       document.getElementById('apiType').value;
+        if (curKey !== key) return;
+        setModelHint((e && e.message) ? e.message : String(e));
+      } finally {
+        modelListInFlight = false;
+      }
+    }
+
+    // D4：model change 且新值 ∈ datalist 当前 options → 视为「下拉选中」→ 上下文窗口预填 + 自动探测能力
+    // 成员判定容器钉死为 datalist 当前 options（R9Principle-P2-2：单容器与失效同步天然一致）；
+    // 手输恰好等于列表项也会触发——技术上无法区分，视为无害（探测合法模型名无副作用）
+    function maybeAutoProbeOnModelChange(newValue) {
+      const dl = document.getElementById('modelList');
+      let matched = null;
+      for (const o of dl.options) { if (o.value === newValue) { matched = o; break; } }
+      if (!matched) return; // 手输（不在列表）→ 维持现状，不自动探测
+      const cwRaw = matched.dataset.contextWindow;
+      if (cwRaw) {
+        const n = parseInt(cwRaw, 10);
+        // R1-P2-4：仅当 32000 ≤ 值 ≤ 2000000（对齐 input min/max）才预填，越界跳过；预填即可改，不锁定
+        if (!isNaN(n) && n >= 32000 && n <= 2000000) {
+          document.getElementById('contextWindowSize').value = String(n);
+        }
+      }
+      probeCapability('llm'); // 复用现有函数（含清空/loading/复写档位全套）
+    }
+
     // 换模型检测：模型名或路径变化 → 清空四个下拉框 + 禁用（要求重新探测）
     function clearCapabilityDropdowns() {
       capabilityCleared = true;
@@ -510,6 +618,8 @@
         document.getElementById('apiType').value = preset.type || 'openai';
         // 换预设 = 换模型 → 清空下拉框要求重新探测
         clearCapabilityDropdowns();
+        // 程序化赋值不触发 change → 失效同步三件套必须在此补（R8Tech-P2-1）
+        invalidateModelList();
       }
     });
 
@@ -522,8 +632,19 @@
         document.getElementById('preset').value = '';
         // 换模型名或路径 → 清空下拉框要求重新探测
         if (id === 'apiBase' || id === 'model') clearCapabilityDropdowns();
+        // 配置变更 → 失效同步三件套：清缓存 + 复位 hint 静置文案 + 清 datalist options
+        //（R2Tech-P2-3：按 id 过滤只清这三字段——model change 不得误清缓存导致下次 focus 白拉一次）
+        if (id === 'apiKey' || id === 'apiBase' || id === 'apiType') invalidateModelList();
+        // D4：下拉选中（新值 ∈ datalist options）→ 自动探测；手输维持现状不自动探
+        if (id === 'model') maybeAutoProbeOnModelChange(el.value);
       });
     });
+    // 模型列表拉取触发：mousedown+focus 同次点击双触发，在途标志防并发双发（R1-P2-1）
+    const modelInputEl = document.getElementById('model');
+    if (modelInputEl) {
+      modelInputEl.addEventListener('mousedown', () => { fetchModelList(); });
+      modelInputEl.addEventListener('focus', () => { fetchModelList(); });
+    }
 
     // 六个新控件 change 时也重置 testPassedInSession（与 preset/apiKey/apiBase/model/apiType 同款）
     ['llmThinking', 'lightragThinking', 'llmReasoningEffort', 'lightragReasoningEffort', 'lightragTemperature', 'llmMaxTokens'].forEach(id => {
@@ -586,6 +707,9 @@
     // 探测成功后用档案 supported 值刷新推理深度下拉（厂商原生档位名原样）。
     // llm 段 body=llm 段配置（档案键 |llm）；lightrag 段 body=lightrag 段配置 + lightrag:true（档案键 |lightrag）。
     async function probeCapability(scenario) {
+      // 入口守卫：已有探测在途（llm/lightrag 共用标志）→ 忽略本次触发并给反馈
+      //（R2Tech-P2-4 双按钮共用；R3-P2-1：共享标志吞掉自动探测时不能零反馈）
+      if (probeInFlight) { setStatus('探测进行中，稍后可重新探测', 'error'); return; }
       const lightrag = scenario === 'lightrag';
       // 探测第一个动作：清空四个下拉框（思考链+推理深度，llm+lightrag）+ 不可选
       // （用户拍板 2026-08-18——探测中不知道支持集，档位待探测结果复写；
@@ -600,6 +724,18 @@
       if (!model) { setStatus('请输入模型名称', 'error'); return; }
       const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(apiBase);
       if (!apiKey && !isLocal) { setStatus('请输入 API Key', 'error'); return; }
+      // R1-P1/R10：快照 (apiBase|model|type) 三元组（三个局部量入口已捕获）——各完成分支
+      // 复写前校验，不等则丢弃结果 + setStatus（探测在途期改模型/网关/类型防静默错档）
+      const snapshot = apiBase + '|' + model + '|' + type;
+      const configChanged = () =>
+        document.getElementById('apiBase').value + '|' +
+        document.getElementById('model').value + '|' +
+        document.getElementById('apiType').value !== snapshot;
+      // R4Tech-P2-1：置位点兼作二次 check-and-set——入口守卫挡常态，此处挡 await getConfig 窗口内
+      // 双击/自动+手动叠加；R5Tech-P2-1：钉死在三条 early-return 之后、btn.disabled/setInterval
+      // 侧效代码之前（被拒路径无侧效发生，_dotTimer/btn 状态零残留）
+      if (probeInFlight) { setStatus('探测进行中，稍后可重新探测', 'error'); return; }
+      probeInFlight = true;
 
       const thinkingVal = document.getElementById(lightrag ? 'lightragThinking' : 'llmThinking').value;
       const effortVal = document.getElementById(lightrag ? 'lightragReasoningEffort' : 'llmReasoningEffort').value;
@@ -631,6 +767,8 @@
       setStatus(lightrag ? '探测入库模型能力中（约 1 分钟）...' : '探测对话模型能力中（约 1 分钟）...', 'loading');
       try {
         const result = await window.electronAPI.probeCapability(body);
+        // R1-P1/R2Tech-P2-1：复写前统一校验快照——陈旧结果（成功或失败）一律丢弃 + 全局 setStatus
+        if (configChanged()) { setStatus('模型或网关已更换，请重新探测', 'error'); return; }
         if (!result || result.probe_status === 'failed') {
           const failReason = (result && (result.error || result.reason || (result.profile && result.profile.probe_fail_reason))) || '未知错误';
           setStatus('能力探测失败: ' + failReason + '（未覆盖旧档案）', 'error');
@@ -662,11 +800,14 @@
         const statusWord = result.probe_status === 'partial' ? '部分完成（个别档位不支持）' : '完成';
         setStatus('能力探测' + statusWord + '！推理深度下拉已刷新。', 'success');
       } catch (e) {
+        // R2Tech-P2-1：catch 分支同快照守卫（陈旧失败文案会显示旧模型错误——无状态损坏但误导）
+        if (configChanged()) { setStatus('模型或网关已更换，请重新探测', 'error'); return; }
         setStatus('能力探测异常: ' + e.message, 'error');
       } finally {
         clearInterval(_dotTimer);
         btn.textContent = _origText;
         btn.disabled = false;
+        probeInFlight = false; // 共用标志复位（finally 保证所有路径——含被拒/陈旧丢弃——都复位）
       }
     }
 
