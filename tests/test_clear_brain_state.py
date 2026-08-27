@@ -66,6 +66,8 @@ async def test_clear_resets_brain_state(monkeypatch):
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
     monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: FakeRunner())
     monkeypatch.setattr("agent.tmp_dir.cleanup_all_tmp", lambda: 0)
+    # Task 8：/new 清理面派生状态复位——函数级 import，patch 包命名空间防真实删 ~/.niu 文件
+    monkeypatch.setattr("agent.context_assembler.reset_derived_state", lambda *a, **k: None)
 
     result = await compat.clear_chat(FakeRequest())
 
@@ -103,6 +105,8 @@ async def test_clear_runner_none_is_noop(monkeypatch):
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
     monkeypatch.setattr(chat_module, "get_or_create_runner", lambda: FakeRunner())
     monkeypatch.setattr("agent.tmp_dir.cleanup_all_tmp", lambda: 0)
+    # Task 8：/new 清理面派生状态复位——函数级 import，patch 包命名空间防真实删 ~/.niu 文件
+    monkeypatch.setattr("agent.context_assembler.reset_derived_state", lambda *a, **k: None)
 
     result = await compat.clear_chat(FakeRequest())
 
