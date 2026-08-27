@@ -513,6 +513,27 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。2026-08-13 前条目已压缩为摘要，完整细节见 git 历史。
 
+### 2026-08-27
+
+#### 工程：设置页模型列表在线探测 + 选中自动填档（计划 v1.0→v1.15 共 16 轮双审门禁 + SDD T1-T3 双审全 PASS）
+
+- **背景**：用户质疑上下文窗口靠手填——实测三条「便宜拿」路径全败（litellm 静态表对豆包 Coding Plan 给 256000 但实际窗口实测 ~229K 二分撞出、网关 /models 404、max_tokens 边界只探出输出上限 131072）；用户拍板：在线标准方法（`GET {apiBase}/models`）探测，探到就预填，探不到维持手填；litellm 离线表禁用（打包即冻结/口径是标准产品线非 Plan 线/程序无法判断表项对错）
+- **交付**（main 00f09ae3/64ff0794/335841e6）：
+  - T1 `POST /api/list-models`（compat.py）：openai/anthropic 双类型 URL 组装、窗口字段四键提取（context_length/max_input_tokens/context_window/top_provider.context_length）、三态返回（ok/unsupported/error）永不 500、本地免 key、非字符串字段守卫；18 测试
+  - T2 IPC 通道：preload listModels + main.js list-models 转发（timeout 15s，**4 个失败出口全归一 {status, reason}**——get-config 直读文件不经 API server，server 未起时设置页可用，ECONNREFUSED 是可达主路径）
+  - T3 前端 combobox：datalist+hint（四路径终态全钉死：成功/unsupported 缓存/error 静默重试/change 复位）+ 选中自动探测（D4 datalist options 单容器判定）+ **probeCapability 快照三元组 (apiBase|model|type) 全完成分支防陈旧复写**（手动按钮路径同治）+ probeInFlight 模块级单标志（置位点钉死三条校验后侧效代码前+check-and-set 二次检查）+ 失效三件套（清缓存+复位 hint+清 datalist，preset 路径同补）+ 窗口预填 clamp 32000-2000000；13/13 mock 场景 PASS
+- **审查亮点**：16 轮双审抓出两个双审交叉级发现——探测陈旧复写竞态（探测在途 1 分钟窗口换模型，旧结果覆盖新配置）与 IPC 失败形状缝隙；R10 双审独立同发现快照维度不全（model→三元组）
+- **申报偏差**：T3 为保一屏放下做纯留白 CSS -20px（内容高 743px ≤750）；手输恰等于列表项会触发自动探测（datalist 不可区分，无害披露）
+- **实机验证（待用户执行）**：计划 §7 清单 6 条（前置纪律：设置页改动必须关窗重开）——豆包 404 降级手输/标准网关下拉+自动探测+窗口预填/手输不自动探/探测中改模型与改网关双竞态回归/保存全流程
+
+#### 修复：测试隔离漏洞——test_clear_brain_state 真删生产指针块库（commit 887b533f）
+
+- **现象**：context_blocks.db 消失仅剩 .lock，聊天历史无块号——用户质疑压缩工程失效
+- **根因**：tests/test_clear_brain_state.py 调真实 compat.clear_chat() 未 patch reset_derived_state（T8 给 clear_chat 加派生状态复位后该老测试变炸弹），08-26 14:32 测试运行真删 ~/.niu/context_blocks.db + token_calibration.json；姊妹测试（test_remove_outer_timeouts/test_pipeline_queue_t4）都有防删 patch，此文件漏网。生产端点全部排除（4 个删除点均与 clear_messages 成对，messages.db 738 条完整）
+- **修复**：补 patch（两处调用点）+ 全仓审计无其他漏网；token_calibration.json 已由校准回写自动重建
+- **教训**：给既有函数加副作用时必须穷举该函数的全部测试调用方——姊妹文件补了不代表全仓补了
+- **机制认知**：块号只在压实后出现（D16 水位线），块库误删后用量 63%<80% 触发线故视图纯原文窗口——工程是生效的，非失效；[摘要]/[合并] 行是旧压缩体系物理改写 DB 的历史遗留，组装器视 DB 为真相源原样呈现
+
 ### 2026-08-26
 
 #### 工程：上下文组装器——压缩体系退役 + 存储/视图分离的确定性组装（spec v1.3.1 + 计划 v1.5 双审 R1-R6 收敛）
