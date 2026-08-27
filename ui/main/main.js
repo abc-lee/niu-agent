@@ -1585,6 +1585,43 @@ ipcMain.handle('probe-capability', async (event, config) => {
   }
 });
 
+ipcMain.handle('list-models', async (event, config) => {
+  // POST 本机 127.0.0.1:9876/api/list-models（settings「模型名称」下拉候选拉取）
+  // body = llm 段配置 {apiKey, apiBase, type}（键小写归一，后端同 model-capability-probe 先例）
+  // socket 超时 15s — 列表接口应秒回（比 probe-capability 230s 短）
+  try {
+    const http = require('http');
+    const payload = JSON.stringify(config || {});
+    const options = {
+      hostname: '127.0.0.1',
+      port: parseInt(process.env.NIU_API_PORT || '9876', 10),  // 与 test-connection 一致，支持 launcher --port 自定义
+      path: '/api/list-models',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: 15000,  // 15s — 列表接口应秒回（比 probe-capability 230s 短）
+    };
+    return await new Promise((resolve) => {
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)); }
+          catch { resolve({ status: 'error', reason: '响应解析失败' }); }
+        });
+      });
+      req.on('error', (e) => resolve({ status: 'error', reason: e.message }));
+      req.on('timeout', () => { req.destroy(); resolve({ status: 'error', reason: 'HTTP 超时（获取模型列表超过 15s）' }); });
+      req.write(payload);
+      req.end();
+    });
+  } catch (e) {
+    return { status: 'error', reason: String(e) };
+  }
+});
+
 ipcMain.handle('close-window', () => {
   // 优先关 settings 窗口；若 assistant 模式下也调用此 IPC（虽然原 assistant 无此 handler），
   // 退化为关闭当前焦点窗口
