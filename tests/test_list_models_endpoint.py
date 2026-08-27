@@ -308,3 +308,27 @@ async def test_empty_list_passthrough():
         result = await list_models(_make_request(body))
 
     assert result == {"status": "ok", "models": [], "count": 0}
+
+
+@pytest.mark.asyncio
+async def test_user_agent_header_set():
+    """请求头包含 User-Agent: Niu/0.3.0（Cloudflare 拦截 Python 默认 UA）。"""
+    from niu_api.compat import list_models
+
+    body = {"apiKey": "sk", "apiBase": "https://api.example.com/v1"}
+    with patch("urllib.request.urlopen", return_value=_ok_response({"data": [{"id": "m1"}]})) as mock_urlopen:
+        await list_models(_make_request(body))
+        req = _sent_request(mock_urlopen)
+        assert req.get_header("User-agent") == "Niu/0.3.0"
+
+
+@pytest.mark.asyncio
+async def test_user_agent_anthropic_path():
+    """anthropic 路径同样带 User-Agent 头。"""
+    from niu_api.compat import list_models
+
+    body = {"apiKey": "sk", "apiBase": "https://api.anthropic.com", "type": "anthropic"}
+    with patch("urllib.request.urlopen", return_value=_ok_response({"data": [{"id": "claude-4"}]})) as mock_urlopen:
+        await list_models(_make_request(body))
+        req = _sent_request(mock_urlopen)
+        assert req.get_header("User-agent") == "Niu/0.3.0"
