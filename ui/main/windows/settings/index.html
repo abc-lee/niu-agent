@@ -137,6 +137,34 @@
 
     .hint { font-size: 11px; color: #666; margin-top: 3px; }
 
+    /* 自绘模型下拉（替换原生 datalist——Chromium 空值点击只聚焦不弹列表，2026-08-27 实测实证） */
+    .model-input-wrap { position: relative; }
+    .model-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      margin-top: 2px;
+      background: rgba(255,255,255,0.97);
+      border: 2px dashed rgba(0,0,0,0.15);
+      border-radius: 4px;
+      box-shadow: 3px 3px 8px rgba(0,0,0,0.12);
+      max-height: 220px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+    .model-dropdown-item {
+      padding: 6px 12px;
+      color: #333;
+      cursor: pointer;
+      word-break: break-all;
+    }
+    .model-dropdown-item:hover,
+    .model-dropdown-item.active {
+      background: rgba(120,178,190,0.3);
+    }
+
     .btn {
       width: 100%;
       padding: 9px;
@@ -243,8 +271,12 @@
 
         <div class="form-group">
           <label class="pencil-text">模型名称</label>
-          <input type="text" id="model" list="modelList" placeholder="gpt-4o-mini">
-          <datalist id="modelList"></datalist>
+          <div class="model-input-wrap">
+            <input type="text" id="model" placeholder="gpt-4o-mini">
+            <div id="modelDropdown" class="model-dropdown" hidden>
+              <div id="modelDropdownList"></div>
+            </div>
+          </div>
           <div class="hint" id="modelHint">点击可拉取模型列表</div>
         </div>
 
@@ -380,6 +412,12 @@
     let modelListCacheKey = null;   // 缓存键 = apiBase|apiKey|type（发起时刻实时 DOM 值）；unsupported/空列表也写缓存（R1-P1：404 是用户常态，降级必须真无感）
     let modelListInFlight = false;  // 在途标志：mousedown+focus 同次点击双触发防并发双发（R1-P2-1）
     let probeInFlight = false;      // 探测中标志：模块级单标志，llm/lightrag 两探测按钮共用（R2Tech-P2-4）
+    // 自绘下拉状态：items=当前选项集（D4 成员判定唯一事实源，与 fill/invalidate 同步——
+    // R9Principle-P2-2 单容器语义保留）；visible=子串过滤后当前可见项（键盘导航目标）
+    let modelDropdownItems = [];
+    let modelDropdownVisible = [];
+    let modelDropdownActiveIndex = -1; // 键盘高亮索引（-1 = 无高亮）
+    let modelInputTextPending = false; // P2-2：发生过输入但未能实时过滤（列表未就绪/下拉已关）→ 下次弹出先按输入文本过滤再渲染
 
     // 检测 lightrag_llm 是否继承主 llm（model 为空 = 继承）
     function isLightragInherited(config) {
@@ -492,26 +530,83 @@
       if (h) h.textContent = text;
     }
 
-    // 配置变更（apiKey/apiBase/apiType）→ 失效模型列表缓存 + 复位 hint 为静置文案 + 清空 datalist options
+    // 配置变更（apiKey/apiBase/apiType）→ 失效模型列表缓存 + 复位 hint 为静置文案 + 清空自绘下拉选项
     // （R7-P2：配置变了旧提示即失实；R8Tech-P2-3：陈旧选项跨网关滞留可选，且选中残留项
     // 因「不在当前列表」被判手输 → D4 自动探测静默跳过——UI 暗示语义落空）
     function invalidateModelList() {
       modelListCacheKey = null;
       setModelHint(MODEL_HINT_IDLE);
-      const dl = document.getElementById('modelList');
-      if (dl) dl.innerHTML = '';
+      modelDropdownItems = [];
+      closeModelDropdown(); // 关闭 + 清可见态与 DOM 选项（失效三件套第三件）
     }
 
-    // 填充 datalist：id 原样，按网关返回顺序不排序（OpenRouter 顺序有推荐语义）
+    // 填充自绘下拉选项集：id 原样，按网关返回顺序不排序（OpenRouter 顺序有推荐语义）
     function fillModelList(models) {
-      const dl = document.getElementById('modelList');
-      dl.innerHTML = '';
-      models.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m.id;
-        if (m.context_window) opt.dataset.contextWindow = String(m.context_window);
-        dl.appendChild(opt);
+      modelDropdownItems = models.map(m => ({
+        id: m.id,
+        contextWindow: m.context_window ? String(m.context_window) : null,
+      }));
+    }
+
+    // 渲染当前可见选项进 #modelDropdownList（active 索引高亮）
+    function renderModelDropdownList() {
+      const listEl = document.getElementById('modelDropdownList');
+      listEl.innerHTML = '';
+      modelDropdownVisible.forEach((item, idx) => {
+        const div = document.createElement('div');
+        div.className = 'model-dropdown-item' + (idx === modelDropdownActiveIndex ? ' active' : '');
+        div.textContent = item.id;
+        // mousedown 选点 + preventDefault：不抢 input 焦点（防 blur 关闭与选中竞态）
+        div.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          selectModelItem(item);
+        });
+        listEl.appendChild(div);
       });
+      // P2-3：active 项在可见区外（长列表 + ArrowDown 越过视口）→ 滚动进视野
+      if (modelDropdownActiveIndex >= 0 && listEl.children[modelDropdownActiveIndex]) {
+        listEl.children[modelDropdownActiveIndex].scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    // 不区分大小写子串过滤：空输入 → 全量；非空 → 子串匹配（弹出时过滤与输入重过滤共用）
+    function filterModelItemsByInput() {
+      const v = modelInputEl.value.trim().toLowerCase();
+      return v === '' ? modelDropdownItems.slice()
+                      : modelDropdownItems.filter(it => it.id.toLowerCase().includes(v));
+    }
+
+    // 打开自绘下拉：P2-1 焦点守卫（拉取在途期焦点移走 → 完成后不在无焦点字段上弹）；
+    // P2-2 在途期用户输入过（pending 标记）→ 先按输入文本过滤再渲染，无匹配不弹；
+    // 空列表/unsupported/error → items 为空不显示，hint 照旧
+    function openModelDropdown() {
+      if (modelDropdownItems.length === 0) return;
+      if (document.activeElement !== modelInputEl) return; // P2-1：焦点已不在输入框 → 不弹
+      modelDropdownVisible = modelInputTextPending ? filterModelItemsByInput() : modelDropdownItems.slice();
+      modelInputTextPending = false;
+      if (modelDropdownVisible.length === 0) return; // 无匹配（手输）→ 不弹
+      modelDropdownActiveIndex = -1;
+      renderModelDropdownList();
+      document.getElementById('modelDropdown').hidden = false;
+    }
+
+    function closeModelDropdown() {
+      const dd = document.getElementById('modelDropdown');
+      if (dd) dd.hidden = true;
+      const listEl = document.getElementById('modelDropdownList');
+      if (listEl) listEl.innerHTML = '';
+      modelDropdownVisible = [];
+      modelDropdownActiveIndex = -1;
+    }
+
+    // 选中选项（点击/Enter）：填值 + 关闭下拉 + 派发 change 复用现有 model 变更管线
+    //（preset 复位 / 能力清空 / D4 自动探测——与 datalist 时代原生 change 语义一致）
+    function selectModelItem(item) {
+      const el = document.getElementById('model');
+      if (el.value === item.id) { closeModelDropdown(); return; } // 重选当前值 = no-op（同值选中不产生 change）
+      el.value = item.id;
+      closeModelDropdown();
+      el.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     // 拉取触发：focus/mousedown → 条件检查（apiBase 非空 + apiKey 非空或本地 + 无缓存 + 无在途）→ listModels
@@ -539,20 +634,24 @@
         if (!result || result.status === 'unsupported') {
           modelListCacheKey = key; // unsupported 写入会话缓存（豆包 404 是用户常态，不缓存则每次 focus 重发注定失败的请求）
           setModelHint('该网关不支持模型列表，请手动输入');
+          closeModelDropdown(); // unsupported → 不显示下拉（hint 照旧）
         } else if (result.status === 'ok' && result.count > 0) {
           fillModelList(result.models);
           modelListCacheKey = key;
           setModelHint(MODEL_HINT_IDLE); // R6-P2：成功路径 hint 终态钉死为静置文案，防「正在获取…」永久滞留
+          openModelDropdown(); // 点击必弹：拉取成功且列表非空 → 立即显示自绘下拉（不再依赖键盘）
         } else if (result.status === 'ok') {
           // R1-P2-2：200 但空列表（count==0）→ 按 unsupported 同等降级提示（含会话缓存，二次 focus 不重发）
           modelListCacheKey = key;
           setModelHint('该网关不支持模型列表，请手动输入');
+          closeModelDropdown(); // 空列表 → 不显示下拉
         } else {
           // error：hint 显示 reason，不写缓存，可下次 focus 重试。
           // R2-P2-3/R5Tech-P2-2：同一 reason 本会话已提示过则后续 focus 静默重试——加载 hint 照常显示，
           // 完成后恢复该 reason 文案（终态文本同前）；「静默」只作用于 reason 提示层。
           const reason = result.reason || '获取模型列表失败';
           setModelHint(reason);
+          closeModelDropdown(); // error → 不显示下拉
         }
       } catch (e) {
         // IPC 层异常：按 error 同等处理（不写缓存，可重试）
@@ -561,22 +660,20 @@
                        document.getElementById('apiType').value;
         if (curKey !== key) return;
         setModelHint((e && e.message) ? e.message : String(e));
+        closeModelDropdown(); // IPC 异常 → 不显示下拉
       } finally {
         modelListInFlight = false;
       }
     }
 
-    // D4：model change 且新值 ∈ datalist 当前 options → 视为「下拉选中」→ 上下文窗口预填 + 自动探测能力
-    // 成员判定容器钉死为 datalist 当前 options（R9Principle-P2-2：单容器与失效同步天然一致）；
+    // D4：model change 且新值 ∈ 自绘列表当前选项集 → 视为「下拉选中」→ 上下文窗口预填 + 自动探测能力
+    // 成员判定源钉死为自绘列表当前选项集 modelDropdownItems（R9Principle-P2-2：单容器与失效同步天然一致）；
     // 手输恰好等于列表项也会触发——技术上无法区分，视为无害（探测合法模型名无副作用）
     function maybeAutoProbeOnModelChange(newValue) {
-      const dl = document.getElementById('modelList');
-      let matched = null;
-      for (const o of dl.options) { if (o.value === newValue) { matched = o; break; } }
+      const matched = modelDropdownItems.find(it => it.id === newValue);
       if (!matched) return; // 手输（不在列表）→ 维持现状，不自动探测
-      const cwRaw = matched.dataset.contextWindow;
-      if (cwRaw) {
-        const n = parseInt(cwRaw, 10);
+      if (matched.contextWindow) {
+        const n = parseInt(matched.contextWindow, 10);
         // R1-P2-4：仅当 32000 ≤ 值 ≤ 2000000（对齐 input min/max）才预填，越界跳过；预填即可改，不锁定
         if (!isNaN(n) && n >= 32000 && n <= 2000000) {
           document.getElementById('contextWindowSize').value = String(n);
@@ -632,19 +729,70 @@
         document.getElementById('preset').value = '';
         // 换模型名或路径 → 清空下拉框要求重新探测
         if (id === 'apiBase' || id === 'model') clearCapabilityDropdowns();
-        // 配置变更 → 失效同步三件套：清缓存 + 复位 hint 静置文案 + 清 datalist options
+        // 配置变更 → 失效同步三件套：清缓存 + 复位 hint 静置文案 + 清自绘下拉选项
         //（R2Tech-P2-3：按 id 过滤只清这三字段——model change 不得误清缓存导致下次 focus 白拉一次）
         if (id === 'apiKey' || id === 'apiBase' || id === 'apiType') invalidateModelList();
-        // D4：下拉选中（新值 ∈ datalist options）→ 自动探测；手输维持现状不自动探
+        // D4：下拉选中（新值 ∈ 自绘列表当前选项集）→ 自动探测；手输维持现状不自动探
         if (id === 'model') maybeAutoProbeOnModelChange(el.value);
       });
     });
     // 模型列表拉取触发：mousedown+focus 同次点击双触发，在途标志防并发双发（R1-P2-1）
+    // 自绘下拉联动：已缓存非空 → 点击即弹（不再依赖键盘）；未拉过 → 先拉取，成功回调里弹
     const modelInputEl = document.getElementById('model');
     if (modelInputEl) {
-      modelInputEl.addEventListener('mousedown', () => { fetchModelList(); });
-      modelInputEl.addEventListener('focus', () => { fetchModelList(); });
+      const activateModelDropdown = () => {
+        modelInputEl.focus(); // P2-1 配套：可信 mousedown 时 activeElement 尚未切换 → 先聚焦，否则缓存命中同步弹出会被守卫误伤
+        fetchModelList();
+        if (modelDropdownItems.length > 0) openModelDropdown();
+      };
+      modelInputEl.addEventListener('mousedown', activateModelDropdown);
+      modelInputEl.addEventListener('focus', activateModelDropdown);
+
+      // 输入字符 → 不区分大小写子串过滤并重显；无匹配（手输）→ 不弹（关闭后不再自动重开）
+      modelInputEl.addEventListener('input', () => {
+        const dd = document.getElementById('modelDropdown');
+        if (dd.hidden || modelDropdownItems.length === 0) {
+          modelInputTextPending = true; // P2-2：输入未能实时过滤 → 下次弹出先按输入文本过滤再渲染
+          return;
+        }
+        modelDropdownVisible = filterModelItemsByInput();
+        if (modelDropdownVisible.length === 0) { closeModelDropdown(); return; }
+        modelDropdownActiveIndex = -1;
+        renderModelDropdownList();
+      });
+
+      // 键盘：ArrowDown/ArrowUp 移动高亮、Enter 选中、Esc 关闭
+      modelInputEl.addEventListener('keydown', (e) => {
+        const dd = document.getElementById('modelDropdown');
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (dd.hidden) { openModelDropdown(); return; } // ArrowDown 亦可打开（与 datalist 对齐）
+          modelDropdownActiveIndex = Math.min(modelDropdownActiveIndex + 1, modelDropdownVisible.length - 1);
+          renderModelDropdownList();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (dd.hidden || modelDropdownVisible.length === 0) return;
+          modelDropdownActiveIndex = Math.max(modelDropdownActiveIndex - 1, 0);
+          renderModelDropdownList();
+        } else if (e.key === 'Enter') {
+          if (!dd.hidden && modelDropdownActiveIndex >= 0) {
+            e.preventDefault();
+            selectModelItem(modelDropdownVisible[modelDropdownActiveIndex]);
+          }
+        } else if (e.key === 'Escape') {
+          if (!dd.hidden) { e.preventDefault(); closeModelDropdown(); }
+        }
+      });
+
+      // 焦点离开 input → 关闭（选项点击已 preventDefault 不抢焦点，不会误触发）
+      modelInputEl.addEventListener('blur', () => { closeModelDropdown(); });
     }
+
+    // 点击容器外部 → 关闭自绘下拉（点 input 本身是打开路径，不在此关闭）
+    document.addEventListener('mousedown', (e) => {
+      const dd = document.getElementById('modelDropdown');
+      if (dd && !dd.hidden && e.target !== modelInputEl && !dd.contains(e.target)) closeModelDropdown();
+    });
 
     // 六个新控件 change 时也重置 testPassedInSession（与 preset/apiKey/apiBase/model/apiType 同款）
     ['llmThinking', 'lightragThinking', 'llmReasoningEffort', 'lightragReasoningEffort', 'lightragTemperature', 'llmMaxTokens'].forEach(id => {
