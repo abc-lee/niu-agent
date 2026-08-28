@@ -171,14 +171,29 @@ def test_reasoning_effort_delivered_via_extra_body():
     )
 
 
-def test_thinking_delivered_via_extra_body_and_top_level_channel_kept():
-    """thinking 入 extra_body；litellm_kwargs 顶层通道保留（验收 7），drop_params 由
-    litellm_kwargs 非空触发（既有 L866-867 语义）。"""
+def test_thinking_delivered_via_extra_body_only():
+    """thinking 仅经 extra_body 送达（顶层无 thinking，消除双通道冗余）；drop_params 由
+    litellm_kwargs 非空触发（置位逻辑不变）。"""
     call_kwargs = _chat_call_kwargs(_base_cfg(
         litellm_kwargs={"thinking": {"type": "disabled"}},
     ))
     assert call_kwargs["extra_body"]["thinking"] == {"type": "disabled"}
-    assert call_kwargs["thinking"] == {"type": "disabled"}, "顶层 thinking 通道应保留"
+    assert "thinking" not in call_kwargs, "thinking 不应再出现在顶层（统一经 extra_body 送达）"
+    assert call_kwargs["drop_params"] is True, "litellm_kwargs 非空应触发 drop_params"
+
+
+def test_thinking_excluded_from_top_level_other_kwargs_passthrough_kept():
+    """新不变式：request_params 顶层无 thinking、extra_body["thinking"] 在场；
+    allowed_openai_params 等其余 litellm_kwargs 键仍顶层透传（litellm 当 kwarg 消费）。"""
+    call_kwargs = _chat_call_kwargs(_base_cfg(
+        litellm_kwargs={
+            "thinking": {"type": "enabled"},
+            "allowed_openai_params": ["response_format"],
+        },
+    ))
+    assert "thinking" not in call_kwargs, "thinking 仅应存在于 extra_body（唯一送达通道）"
+    assert call_kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+    assert call_kwargs["allowed_openai_params"] == ["response_format"], "其余键仍顶层透传"
     assert call_kwargs["drop_params"] is True, "litellm_kwargs 非空应触发 drop_params"
 
 

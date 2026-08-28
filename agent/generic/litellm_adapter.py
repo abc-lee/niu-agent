@@ -955,10 +955,13 @@ class LiteLLMSession(BaseSession):
             request_params["response_format"] = response_format
             request_params["drop_params"] = True
         # 用户自定义 litellm_kwargs（如 thinking 等模型特定参数）非空时也启用 drop_params，
-        # 让 LiteLLM 自动丢弃不支持的参数（如 OpenAI 路由下的 thinking），避免 UnsupportedParamsError。
+        # 让 LiteLLM 自动丢弃不支持的参数，避免 UnsupportedParamsError。
         # 通用修复：不针对任何特定模型，未来任何模型特定参数都能自动适配。
+        # thinking 不进顶层——统一由 assemble_request_params 经 extra_body 送达（litellm 白名单碰不到的唯一可靠通道，
+        # 与 reasoning_effort 同策略；探测路径 model_probe._strip_thinking_key 同款单一来源纪律，该工程已实证
+        # wire body 与双通道一致、传输无损）。allowed_openai_params 等其余键保留顶层（litellm 当 kwarg 消费）。
         if self.litellm_kwargs:
-            request_params.update(self.litellm_kwargs)
+            request_params.update({k: v for k, v in self.litellm_kwargs.items() if k != "thinking"})
             request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
