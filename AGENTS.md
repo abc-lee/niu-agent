@@ -513,6 +513,19 @@ preload_face_model()
 ## 历史更新日志
 > 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。2026-08-13 前条目已压缩为摘要，完整细节见 git 历史。
 
+### 2026-08-28
+
+#### 修复：请求组装 thinking 双通道去冗余（用户看日志发现 + 双审通过，commit 1225a1a9）
+
+- **现象（用户报告）**：raw_http 日志查看器的应用层 Request Params 里 `thinking` 出现两份（顶层 + extra_body），主 Agent 与知识图谱入库路径同现；另质疑知识图谱入库请求无 response_format
+- **实证结论**：
+  - **thinking 重复**：真但无害——`chat()` 先把 `litellm_kwargs` 全量透传顶层（旧通道），`assemble_request_params` 又注入 `extra_body.thinking`（新通道）；litellm 发送时 drop_params 丢弃顶层、合并 extra_body，上线 HTTP body 只有一份（transport 层日志 16 条全核对）。远端审查对照安装版 litellm 源码实证：volcengine 路由原生就把顶层 thinking pop 进 extra_body（map_openai_params）、extra_body 合并 `data.update(extra_body)` 是全路由通用行为——修复前后 wire 完全等价
+  - **response_format 缺失**：设计行为非 bug——`_llm_model_func` 只在 `keyword_extraction=True` 调用挂 response_format（json_schema 是 high/low_level_keywords 专用结构），实体抽取（分隔符文本输出）本就不挂；用户配置的 `response_format_mode: "json_schema"` 未丢
+- **修复**：`chat()` 顶层透传剔除 thinking 单键（`{k: v for k, v in self.litellm_kwargs.items() if k != "thinking"}`），extra_body 为唯一送达通道——与 reasoning_effort 同策略、与探测路径 `model_probe._strip_thinking_key`（R13 单一来源纪律）同款；`allowed_openai_params` 等其余键保留顶层（litellm 当 kwarg 消费）；drop_params 置位逻辑不变
+- **通用性**（用户拍板：Anthropic 不管，其余厂商要通用）：openai 兼容网关（deepseek/GLM/qwen/豆包）顶层 thinking 本就被 drop_params 丢弃，extra_body 本就是唯一实际通道——任意厂商 wire 行为不变
+- **验证**：旧行为锁定测试断言反转 + 新不变式测试（顶层无 thinking/extra_body 送达/其余键透传保留），tests/test_llm_extra_body.py 16 绿；本地实施 + 远端 scout 源码级双审 APPROVE
+- **实机验证（待用户重启后观察）**：raw_http 查看器应用层 Request Params 中 thinking 只出现在 extra_body 内
+
 ### 2026-08-27
 
 #### 工程：设置页模型列表在线探测 + 选中自动填档（计划 v1.0→v1.15 共 16 轮双审门禁 + SDD T1-T3 双审全 PASS）
