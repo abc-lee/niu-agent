@@ -5,8 +5,10 @@
 """
 import asyncio
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "REDACTED_USER_PATH/tools/ai-bot")
+# 项目根目录（tests/ 的上一级）——跨平台相对路径，不硬编码绝对路径
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.session import get_message_store
 

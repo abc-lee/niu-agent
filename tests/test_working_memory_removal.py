@@ -173,7 +173,7 @@ class TestHandlerNoAnchorPromptAsNextPrompt:
     def test_get_anchor_prompt_not_used_in_step_outcomes(self):
         result = subprocess.run(
             ["grep", "-c", "next_prompt=self._get_anchor_prompt()",
-             "REDACTED_USER_PATH/tools/ai-bot/agent/handler.py"],
+             HANDLER_PATH],
             capture_output=True, text=True
         )
         count = int(result.stdout.strip()) if result.stdout.strip() else 0
@@ -198,7 +198,7 @@ class TestAllNextPromptsEmptyAfterRemoval:
 
     def test_no_non_empty_next_prompt_in_handler(self):
         result = subprocess.run(
-            ["grep", "-E", "next_prompt=\"[^\"]+\"", "REDACTED_USER_PATH/tools/ai-bot/agent/handler.py"],
+            ["grep", "-E", "next_prompt=\"[^\"]+\"", HANDLER_PATH],
             capture_output=True, text=True
         )
         lines = result.stdout.strip().split('\n') if result.stdout.strip() else []

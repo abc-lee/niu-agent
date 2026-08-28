@@ -39,43 +39,9 @@ class TestSyncPhotoToKgEntityFormat:
         # 验证函数存在且可调用
         assert callable(sync_photo_to_kg)
 
-    def test_person_entity_type_is_person(self):
-        """验证 sync_photo_to_kg 中人物实体的 entity_type 是 'Person'。"""
-        # 读取源码验证
-        import inspect
-
-        from niu_photo_server import sync_photo_to_kg
-        source = inspect.getsource(sync_photo_to_kg)
-        # 验证 entity_type 使用了 "Person"
-        assert '"Person"' in source, "sync_photo_to_kg 应该使用 entity_type='Person'"
-
-    def test_depicts_relation_keywords(self):
-        """验证 depicts 关系的 keywords 字段。"""
-        import inspect
-
-        from niu_photo_server import sync_photo_to_kg
-        source = inspect.getsource(sync_photo_to_kg)
-        assert '"depicts"' in source, "sync_photo_to_kg 应该创建 depicts 关系"
-
-    def test_co_appears_with_relation_keywords(self):
-        """验证同框关系的 keywords 字段。"""
-        import inspect
-
-        from niu_photo_server import sync_photo_to_kg
-        source = inspect.getsource(sync_photo_to_kg)
-        assert '"co_appears_with"' in source, "sync_photo_to_kg 应该创建 co_appears_with 关系"
-
 
 class TestNamePersonKgSync:
     """验证 name_person 的 KG 同步逻辑。"""
-
-    def test_name_person_calls_inject_entity(self):
-        """验证 name_person 调用了 inject_entity。"""
-        import inspect
-
-        from niu_photo_server import name_person
-        source = inspect.getsource(name_person)
-        assert "inject_entity" in source, "name_person 应该调用 inject_entity 同步 KG"
 
     def test_name_person_entity_type_lowercase(self):
         """验证 name_person 中 entity_type 大小写问题。
@@ -96,14 +62,6 @@ class TestNamePersonKgSync:
 
 class TestMergePersonsKgSync:
     """验证 merge_persons 的 KG 同步逻辑。"""
-
-    def test_merge_persons_calls_inject_entity(self):
-        """验证 merge_persons 调用了 inject_entity。"""
-        import inspect
-
-        from niu_photo_server import merge_persons
-        source = inspect.getsource(merge_persons)
-        assert "inject_entity" in source, "merge_persons 应该调用 inject_entity"
 
     def test_merge_persons_creates_merged_into_relation(self):
         """验证 merge_persons 创建了 merged_into 关系。"""

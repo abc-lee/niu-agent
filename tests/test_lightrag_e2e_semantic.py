@@ -149,7 +149,7 @@ def test_e2e_program_starts_normally(restore_real_data):
         ["./niu"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        cwd="REDACTED_USER_PATH/tools/ai-bot",
+        cwd=str(PROJECT_ROOT),
     )
     try:
         # 等 API ready
@@ -264,7 +264,7 @@ def test_e2e_repair_all_3_truth_sources_intact_via_http(restore_real_data):
         ["./niu"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        cwd="REDACTED_USER_PATH/tools/ai-bot",
+        cwd=str(PROJECT_ROOT),
     )
     try:
         # 等 API ready

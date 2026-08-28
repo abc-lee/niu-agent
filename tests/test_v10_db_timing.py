@@ -12,7 +12,7 @@ E2E Test: DB Timing — 验证 _persist_one_msg 写入 DB 后，另一个协程�
   4. 模拟 executor 线程写入 + 主循环读取的时序
 
 运行方式：
-  cd REDACTED_USER_PATH/tools/ai-bot && cd <repo_root> && python tests/test_v10_db_timing.py
+  cd <repo_root> && python tests/test_v10_db_timing.py
 
 前置条件：
   无（使用临时 DB 文件，不影响生产数据）
