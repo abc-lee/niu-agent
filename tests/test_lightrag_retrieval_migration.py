@@ -463,7 +463,8 @@ class TestInjectDynamicResourcesUsesLightRAG:
         """_on_before_llm must call _inject_dynamic_resources (which uses LightRAG).
 
         Task 2 改造后：动态注入从 _on_turn_end 移到 _on_before_llm（每轮 LLM 调用前）。
-        此测试验证新契约：_on_before_llm 必须调 _inject_dynamic_resources。
+        组装器工程后（D17/D19）：injection 不再进 messages[0] 静态区，
+        而是经 _refresh_dynamic_user_block 以 role=user 动态块插入（"injected text" 在动态块中）。
         """
         runner.base_system_prompt = "system prompt"
         runner.static_system_prompt = "system prompt"
@@ -479,7 +480,10 @@ class TestInjectDynamicResourcesUsesLightRAG:
             runner._on_before_llm(messages, turn=1)
 
             mock_inject.assert_called_once_with("context")
-            assert "injected text" in messages[0]["content"]
+            # 现役契约：注入文本落在 role=user 动态块（[系统动态信息]），静态区不含
+            user_blocks = [m["content"] for m in messages if m.get("role") == "user"]
+            assert len(user_blocks) == 1
+            assert "injected text" in user_blocks[0]
 
 
 class TestInjectorDeleteResource:

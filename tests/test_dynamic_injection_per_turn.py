@@ -43,16 +43,24 @@ def _make_client(responses):
 def _tool_call_response(tool_name="test_tool", tool_args="{}", call_id="call_001"):
     """创建包含单个工具调用的模拟响应。"""
     mock_response = Mock()
+    # 显式置假——裸 Mock 的 stream_error/context_overflow 为真值会误入 LLM_ERROR 分支（T6a 同根因）
+    mock_response.stream_error = False
+    mock_response.context_overflow = False
     mock_response.content = "执行中"
-    mock_response.tool_calls = [
-        Mock(id=call_id, function=Mock(name=tool_name, arguments=tool_args))
-    ]
+    # name 是 Mock 保留属性，不能经构造 kwargs 传入（会变子 Mock）——构造后属性赋值
+    tc = Mock()
+    tc.id = call_id
+    tc.function.name = tool_name
+    tc.function.arguments = tool_args
+    mock_response.tool_calls = [tc]
     return mock_response
 
 
 def _no_tool_response(content="任务完成"):
     """创建不包含工具调用的模拟响应。"""
     mock_response = Mock()
+    mock_response.stream_error = False
+    mock_response.context_overflow = False
     mock_response.content = content
     mock_response.tool_calls = None
     return mock_response

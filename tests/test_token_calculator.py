@@ -237,12 +237,12 @@ class TestCountMessages:
         assert count == expected
 
     def test_tool_role_without_call_id(self, calc: TokenCalculator):
-        """tool 角色消息没有 tool_call_id 时不应加额外开销。"""
+        """tool 角色消息即使缺 tool_call_id 也计 _TOOL_CALL_ID_OVERHEAD（与 count_message_single 统一口径）。"""
         messages = [
             {"role": "tool", "content": "结果"},
         ]
         count = calc.count_messages(messages)
-        expected = calc.count_text("结果") + _MSG_OVERHEAD
+        expected = calc.count_text("结果") + _MSG_OVERHEAD + _TOOL_CALL_ID_OVERHEAD
         assert count == expected
 
     def test_list_content_format(self, calc: TokenCalculator):

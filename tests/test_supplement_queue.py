@@ -113,6 +113,9 @@ def test_supplement_inserted_before_next_prompt():
         captured_messages_list.append(list(kwargs.get("messages", [])))
 
         resp = MagicMock()
+        # 显式置假——裸 MagicMock 的 stream_error/context_overflow 为真值会误入 LLM_ERROR 分支（T6a 同根因）
+        resp.stream_error = False
+        resp.context_overflow = False
         if turn == 1:
             resp.tool_calls = [tc1]
             resp.content = ""
@@ -182,6 +185,8 @@ def test_supplement_order_before_next_prompt():
         captured_messages_list.append(list(kwargs.get("messages", [])))
 
         resp = MagicMock()
+        resp.stream_error = False
+        resp.context_overflow = False
         if turn == 1:
             resp.tool_calls = [tc1]
             resp.content = ""
@@ -254,6 +259,8 @@ def test_supplement_without_next_prompt():
         captured_messages_list.append(list(kwargs.get("messages", [])))
 
         resp = MagicMock()
+        resp.stream_error = False
+        resp.context_overflow = False
         if turn == 1:
             resp.tool_calls = [tc1]
             resp.content = ""

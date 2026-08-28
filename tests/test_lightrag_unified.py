@@ -44,11 +44,18 @@ class TestPersonEntityStructure:
 
     sync_photo_to_kg now uses ToolRegistry (lightrag-server/lightrag_insert,
     lightrag-server/lightrag_insert_custom_kg) instead of LightRAGIngester.
+
+    现役契约（实体命名体系重整后）：
+    - entity_type 为小写 "person"
+    - 携带 file_path / source_id（归一化路径，用于 chunk_to_source_map 映射）
+    - description = 人名（person_id 溯源后缀，若提供 id）
+    - 照片→人物关系 keywords = "features"，同框人物间 = "co_occurs_with"
     """
 
     @patch("agent.tool_registry.get_registry")
-    def test_person_entity_has_no_file_path(self, mock_get_registry):
-        """Person entities must NOT have a file_path field."""
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=False)
+    def test_person_entity_shape(self, mock_exists, mock_get_registry):
+        """Person 实体应携带 entity_type=person + file_path/source_id（现役契约）。"""
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
@@ -68,52 +75,22 @@ class TestPersonEntityStructure:
         ]
         sync_photo_to_kg("/photos/vacation.jpg", "Beach photo", detected_persons)
 
-        # The first inject_custom_kg call contains Person entities
         inject_call = mock_insert_custom_kg.call_args_list[0]
         entities = inject_call.kwargs.get("entities") or inject_call[1].get("entities") or inject_call[0][0]
 
-        for entity in entities:
-            if entity["entity_type"] == "Person":
-                assert "file_path" not in entity, (
-                    f"Person entity {entity['entity_name']} must not have file_path, "
-                    f"but found: {entity['file_path']}"
-                )
+        person_entities = [e for e in entities if e["entity_type"] == "person"]
+        assert len(person_entities) == 1
+        person = person_entities[0]
+        assert person["entity_name"] == "Alice"
+        assert person["entity_type"] == "person"
+        assert person["description"] == "Alice（person_id=person_001）"
+        assert person["file_path"] == "/photos/vacation.jpg"
+        assert person["source_id"] == "/photos/vacation.jpg"
 
     @patch("agent.tool_registry.get_registry")
-    def test_person_entity_has_no_source_id(self, mock_get_registry):
-        """Person entities must NOT have a source_id field."""
-        mock_insert = MagicMock(return_value={"status": "ok"})
-        mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
-        mock_registry = MagicMock()
-
-        def registry_get(tool_name):
-            if tool_name == "lightrag-server/lightrag_insert":
-                return mock_insert
-            elif tool_name == "lightrag-server/lightrag_insert_custom_kg":
-                return mock_insert_custom_kg
-            return MagicMock()
-
-        mock_registry.get.side_effect = registry_get
-        mock_get_registry.return_value = mock_registry
-
-        detected_persons = [
-            {"id": "person_002", "name": "Bob", "similarity": 0.88},
-        ]
-        sync_photo_to_kg("/photos/party.jpg", "Party photo", detected_persons)
-
-        inject_call = mock_insert_custom_kg.call_args_list[0]
-        entities = inject_call.kwargs.get("entities") or inject_call[1].get("entities") or inject_call[0][0]
-
-        for entity in entities:
-            if entity["entity_type"] == "Person":
-                assert "source_id" not in entity, (
-                    f"Person entity {entity['entity_name']} must not have source_id, "
-                    f"but found: {entity['source_id']}"
-                )
-
-    @patch("agent.tool_registry.get_registry")
-    def test_person_description_is_just_name(self, mock_get_registry):
-        """Person entity description must be only the person name, not a longer phrase."""
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=False)
+    def test_person_description_contains_name_and_person_id(self, mock_exists, mock_get_registry):
+        """description = 人名（person_id=xxx）溯源后缀，不含 "detected in photo" 旧文案。"""
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
@@ -137,9 +114,9 @@ class TestPersonEntityStructure:
         entities = inject_call.kwargs.get("entities") or inject_call[1].get("entities") or inject_call[0][0]
 
         for entity in entities:
-            if entity["entity_type"] == "Person":
-                assert entity["description"] == "Charlie", (
-                    f"Person entity description should be just the name 'Charlie', "
+            if entity["entity_type"] == "person":
+                assert entity["description"] == "Charlie（person_id=person_003）", (
+                    f"Person entity description should be name + person_id suffix, "
                     f"but got: {entity['description']!r}"
                 )
                 # Also verify no "detected in photo" pattern
@@ -149,8 +126,9 @@ class TestPersonEntityStructure:
                 )
 
     @patch("agent.tool_registry.get_registry")
-    def test_person_entity_only_has_required_fields(self, mock_get_registry):
-        """Person entity must have exactly: entity_name, entity_type, description."""
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=False)
+    def test_person_entity_fields(self, mock_exists, mock_get_registry):
+        """Person 实体应含 entity_name/entity_type/description/file_path/source_id 五字段。"""
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
@@ -174,8 +152,8 @@ class TestPersonEntityStructure:
         entities = inject_call.kwargs.get("entities") or inject_call[1].get("entities") or inject_call[0][0]
 
         for entity in entities:
-            if entity["entity_type"] == "Person":
-                expected_keys = {"entity_name", "entity_type", "description"}
+            if entity["entity_type"] == "person":
+                expected_keys = {"entity_name", "entity_type", "description", "file_path", "source_id"}
                 actual_keys = set(entity.keys())
                 assert actual_keys == expected_keys, (
                     f"Person entity must have exactly {expected_keys}, "
@@ -183,7 +161,8 @@ class TestPersonEntityStructure:
                 )
 
     @patch("agent.tool_registry.get_registry")
-    def test_multiple_persons_all_clean(self, mock_get_registry):
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=False)
+    def test_multiple_persons_all_clean(self, mock_exists, mock_get_registry):
         """All Person entities across multiple detected persons must be clean."""
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
@@ -209,23 +188,25 @@ class TestPersonEntityStructure:
         inject_call = mock_insert_custom_kg.call_args_list[0]
         entities = inject_call.kwargs.get("entities") or inject_call[1].get("entities") or inject_call[0][0]
 
-        person_entities = [e for e in entities if e["entity_type"] == "Person"]
+        person_entities = [e for e in entities if e["entity_type"] == "person"]
         assert len(person_entities) == 3
 
-        expected_names = {"Eve", "Frank", "Grace"}
+        expected_descriptions = {"Eve（person_id=p1）", "Frank（person_id=p2）", "Grace（person_id=p3）"}
         actual_descriptions = {e["description"] for e in person_entities}
-        assert actual_descriptions == expected_names, (
-            f"Person descriptions must be exactly the names, got: {actual_descriptions}"
+        assert actual_descriptions == expected_descriptions, (
+            f"Person descriptions must be name + person_id suffix, got: {actual_descriptions}"
         )
 
         for entity in person_entities:
-            assert "file_path" not in entity
-            assert "source_id" not in entity
+            assert entity["entity_type"] == "person"
+            assert "file_path" in entity
+            assert "source_id" in entity
             assert "detected in photo" not in entity["description"]
 
     @patch("agent.tool_registry.get_registry")
-    def test_person_with_no_name_uses_id(self, mock_get_registry):
-        """When person has no name, description falls back to person_id."""
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=False)
+    def test_person_with_no_name_uses_auto_label(self, mock_exists, mock_get_registry):
+        """未命名人物（name 空）时 entity_name 回退 auto_label，description 含 person_id。"""
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
@@ -241,7 +222,7 @@ class TestPersonEntityStructure:
         mock_get_registry.return_value = mock_registry
 
         detected_persons = [
-            {"id": "face_xyz", "name": "", "similarity": 0.7},
+            {"id": "face_xyz", "name": "", "auto_label": "未命名人物_1", "similarity": 0.7},
         ]
         sync_photo_to_kg("/photos/unknown.jpg", "Unknown person", detected_persons)
 
@@ -249,17 +230,19 @@ class TestPersonEntityStructure:
         entities = inject_call.kwargs.get("entities") or inject_call[1].get("entities") or inject_call[0][0]
 
         for entity in entities:
-            if entity["entity_type"] == "Person":
-                # When name is empty, code falls back to person_id
-                assert entity["description"] == "face_xyz", (
-                    f"Person with no name should use id as description, got: {entity['description']!r}"
+            if entity["entity_type"] == "person":
+                # 未命名人物：entity_name 用 auto_label，description 保留 person_id 溯源
+                assert entity["entity_name"] == "未命名人物_1", (
+                    f"Person with no name should use auto_label as entity_name, got: {entity['entity_name']!r}"
                 )
-                assert "file_path" not in entity
-                assert "source_id" not in entity
+                assert entity["description"] == "未命名人物_1（person_id=face_xyz）"
+                assert "file_path" in entity
+                assert "source_id" in entity
 
     @patch("agent.tool_registry.get_registry")
-    def test_relationship_still_has_file_path(self, mock_get_registry):
-        """Relationships should still have file_path and source_id (unchanged)."""
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=False)
+    def test_relationship_keywords(self, mock_exists, mock_get_registry):
+        """关系 keywords 现役契约：照片→人物 features，同框人物间 co_occurs_with，均带 file_path/source_id。"""
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
@@ -282,13 +265,11 @@ class TestPersonEntityStructure:
         inject_call = mock_insert_custom_kg.call_args_list[0]
         relationships = inject_call.kwargs.get("relationships") or inject_call[1].get("relationships") or inject_call[0][1]
 
-        # The Photo->Person relationship should still have file_path and source_id
+        # Photo->Person features 关系应带 file_path 和 source_id
         for rel in relationships:
-            if rel["keywords"] == "depicts":
-                assert "file_path" in rel, "depicts relationship must have file_path"
-                assert "source_id" in rel, "depicts relationship must have source_id"
-
-
+            if rel["keywords"] == "features":
+                assert "file_path" in rel, "features relationship must have file_path"
+                assert "source_id" in rel, "features relationship must have source_id"
 class TestNamePersonKGSync:
     """Verify name_person uses lightrag-server tools via ToolRegistry."""
 
@@ -299,7 +280,8 @@ class TestNamePersonKGSync:
         # Setup mock DB connection
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = ("person_001", "OldName", "auto_label_001")
+        # 现役契约：persons 行含 photo_count（row[3]）；dup 检查应返回 None（无同名人物）
+        mock_cursor.fetchone.side_effect = [("person_001", "OldName", "auto_label_001", 3), None]
         mock_conn.execute.return_value = mock_cursor
         mock_conn.commit.return_value = None
         mock_get_conn.return_value = mock_conn
@@ -333,11 +315,11 @@ class TestNamePersonKGSync:
             entities=[{
                 "entity_name": "Alice",
                 "entity_type": "person",
-                "description": "Alice，原名OldName",
+                "description": "Alice",
             }],
             relationships=[],
             chunks=[],
-            source_id="rename:OldName",
+            source_id="rename_OldName",
         )
 
         # Verify the function still returns success
@@ -351,7 +333,7 @@ class TestNamePersonKGSync:
         # Setup mock DB connection
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = ("person_002", "OldName", "auto_label_002")
+        mock_cursor.fetchone.side_effect = [("person_002", "OldName", "auto_label_002", 3), None]
         mock_conn.execute.return_value = mock_cursor
         mock_conn.commit.return_value = None
         mock_get_conn.return_value = mock_conn
@@ -377,7 +359,7 @@ class TestNamePersonKGSync:
         # Setup mock DB connection
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = ("person_003", "OldName", "auto_label_003")
+        mock_cursor.fetchone.side_effect = [("person_003", "OldName", "auto_label_003", 3), None]
         mock_conn.execute.return_value = mock_cursor
         mock_conn.commit.return_value = None
         mock_get_conn.return_value = mock_conn
@@ -636,6 +618,7 @@ class TestMergePersonsKGSync:
         mock_merge_entities.assert_called_once_with(
             source_entities=["auto_b"],
             target_entity="Alice",
+            merge_strategy={"description": "concatenate"},
         )
 
         # Verify the function still returns success

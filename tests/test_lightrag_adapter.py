@@ -240,13 +240,12 @@ class TestIngesterStructuredData:
             assert result["status"] == "ok"
             call_args = mock_rag.ainsert_custom_kg.call_args
             kg = call_args[0][0]
-            assert len(kg["entities"]) == 1
-            assert kg["entities"][0]["entity_name"] == "Python"
-            assert len(kg["relationships"]) == 1
-            assert "keywords" in kg["relationships"][0]
-            assert kg["relationships"][0]["keywords"] == "has_framework"
-            assert len(kg["chunks"]) == 1
-
+            # 现役契约：实体自动生成虚拟 chunk（source_id 唯一化），chunks = 输入 1 + 实体虚拟 1
+            assert len(kg["chunks"]) == 2
+            chunk_contents = {c["content"] for c in kg["chunks"]}
+            assert "Python is versatile." in chunk_contents
+            assert "Python: Programming language" in chunk_contents
+            assert kg["entities"][0]["source_id"] == "doc-1_Python"
 
     def test_inject_relation_keywords_from_relation(self):
         """J1: 'relation' key maps to 'keywords' for backward compat."""
@@ -613,7 +612,7 @@ class TestSearchSkills:
         adapter = LightRAGAdapter()
         result = adapter.search_skills("python")
 
-        mock_filter.assert_called_once_with(mock_query_data.return_value, "skill")
+        mock_filter.assert_called_once_with(mock_query_data.return_value, "Skill")
         assert result == [{"entity_type": "skill"}]
 
     @patch.object(LightRAGAdapter, "query_data")
@@ -648,7 +647,7 @@ class TestSearchTools:
         result = adapter.search_tools("docker", top_k=5)
 
         mock_query_data.assert_called_once_with("docker", mode="local", top_k=5, keywords=None)
-        mock_filter.assert_called_once_with(mock_query_data.return_value, "tool")
+        mock_filter.assert_called_once_with(mock_query_data.return_value, "Tool")
         assert result == [{"entity_type": "tool"}]
 
 
@@ -675,8 +674,8 @@ class TestSearchKnowledge:
         result = adapter.search_knowledge("machine learning")
 
         assert mock_filter.call_count == 2
-        mock_filter.assert_any_call(mock_query_data.return_value, "knowledge")
-        mock_filter.assert_any_call(mock_query_data.return_value, "concept")
+        mock_filter.assert_any_call(mock_query_data.return_value, "Knowledge")
+        mock_filter.assert_any_call(mock_query_data.return_value, "Concept")
         assert len(result) == 2
         assert result[0]["entity_type"] == "knowledge"
         assert result[1]["entity_type"] == "concept"

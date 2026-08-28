@@ -394,8 +394,8 @@ class TestPipelineSourceSpecific:
             inserted_content = call_args[0][0]
             assert "[Photo:" in inserted_content
 
-    def test_ingest_note_adds_prefix(self):
-        """J6: Note content gets [Note: title] prefix."""
+    def test_ingest_note_no_prefix(self):
+        """J6: Note content passes through without prefix（[Note: 前缀已移除，note 与 file 同走原样透传）。"""
         from niu_api.internal.lightrag_pipeline import IngestTask, LightRAGPipeline
 
         pipeline = LightRAGPipeline()
@@ -413,7 +413,7 @@ class TestPipelineSourceSpecific:
             pipeline._process_task_sync(task)
             call_args = mock_rag.ainsert.call_args
             inserted_content = call_args[0][0]
-            assert "[Note:" in inserted_content
+            assert inserted_content == "Remember to buy groceries"
 
     def test_ingest_document_adds_prefix(self):
         """J6: Document content gets [Document: path] prefix."""
