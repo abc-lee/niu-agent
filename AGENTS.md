@@ -515,6 +515,18 @@ preload_face_model()
 
 ### 2026-08-28
 
+#### 工程：read 工具智能分页——29000 字符页预算按行截断取代行内均分截断（计划 v1.0→v1.3 四轮双审门禁 + SDD T1-T3）
+
+- **背景（用户提出）**：dream-evolver/entity-extractor 提示词"每次读取不超过 150 行"是过度保守浪费轮次——核查发现 150 行是绕开行内截断缺陷的提示词补丁（500 行/页时每行被均分预算砍到 1000 字符，静默破坏 F1/F3 tool 记录），非根治
+- **方案（用户拍板）**：500 行硬上限不变；工具自动计量内容大小，贴 29000 字符页预算**按行截断**（行边界停，永不在行中切；单行超预算才走行内截断兜底）；页长自适应省轮次
+- **交付**（main `0c29cd4e`/`4d9978d8`/`92291d0d`）：
+  - T1 read_file 重写：预算累积（每行成本=len(f"{i}|{line}")+1）+ 单行兜底（line[:预算−len(tag)−len(前缀)−1]+tag）+ 续读标记 `[Truncated at line {N}. Use offset={N+1} to read more.]` 精确行号且**移至输出末尾**（recency 利于弱模型；旧标记在 header 第 2 行且预算截断时跳行）+ 删行内均分截断四行 + schema 描述补三句；测试 45 绿（新增 6 用例：14 行/页精确断言/单行兜底/页中超长行跨页/预算不变式固定种子/tail 回归）
+  - T2 提示词配套：两子 Agent 撤 150 行指导改"工具自动分页、见末尾标记按 offset 续读"；零背景推演验收（续读链/processed_line 语义零歧义）
+  - T3 收尾：死函数 file_read 删除（46 行化石，512000 公式；工具名别名映射保留）+ session-manager 两处"对齐 read_file"失实注释自述化；回归 54 绿
+- **设计要点**：预算口径=字符（对齐下游 agent_loop 30000 字符截断，返回整体 ≤30000 永不二次截断）；标记不归因截断原因（预算/limit/500 硬顶同文案，offset 恒正确）；READ_PAGE_BUDGET_CHARS=29000 常量注释锚定 agent_loop.py:598 耦合
+- **质量链**：计划四轮双审（R1 双 CONDITIONAL 9 发现→R2 1P1+6P2→R3 双 APPROVE 3P2 文本级→R4 双 APPROVE 零阻断，连续两轮达成门禁；R2A 抓出标记位置 P1——D-8 "ends with" 与旧 header 位置矛盾）+ T1 实施后 spec/quality 双 PASS
+- **实机验证（待用户观察）**：下次睡眠管道 dream-evolver/entity-extractor 读 F3/F1 时页长自适应（短行文件一次读满 500 行），raw 日志可见 read 调用轮次减少
+
 #### 修复：请求组装 thinking 双通道去冗余（用户看日志发现 + 双审通过，commit 1225a1a9）
 
 - **现象（用户报告）**：raw_http 日志查看器的应用层 Request Params 里 `thinking` 出现两份（顶层 + extra_body），主 Agent 与知识图谱入库路径同现；另质疑知识图谱入库请求无 response_format
