@@ -466,6 +466,8 @@ def _fifo_prune(messages, target_tokens, protect_recent_count=10, is_resumed=Fal
             False 时保持现有行为（保护 messages[0]+messages[1]，即
             system + 初始 user）。
     返回删除的消息数。
+    真删（removed > 0）后在 protect_end 处插入一条可见标记消息（user 角色），
+    告知模型更早消息已被移除；返回值语义不变 = 删除条数，不含标记自身。
     """
     if len(messages) <= 2:
         return 0
@@ -515,17 +517,27 @@ def _fifo_prune(messages, target_tokens, protect_recent_count=10, is_resumed=Fal
 
         removed += batch_removed
         current_tokens = count_messages_tokens(messages)
+    if removed > 0:
+        messages.insert(protect_end, {"role": "user", "content": f"[上下文提示：更早的 {removed} 条消息已因上下文超限被移除]"})
     return removed
 
 
-_PLACEHOLDER_SUFFIX = "输出已裁剪]"
+_PLACEHOLDER_SUFFIX = "获取]"  # 新占位符后缀（带再生指引）
+_LEGACY_PLACEHOLDER_SUFFIX = "输出已裁剪]"  # 旧后缀：兼容已含旧占位符的恢复会话
 
 
 def _is_tool_placeholder(content) -> bool:
-    """判断 tool content 是否已是占位符（[name 输出已裁剪] 或 [输出已裁剪]）。幂等依据。"""
+    """判断 tool content 是否已是占位符。幂等依据。
+
+    同时认新旧两种后缀：
+    - 新：[{name} 输出已裁剪，如需原文可重新调用该工具获取] / [输出已裁剪，如需原文可重新调用对应工具获取]（后缀 "获取]"）
+    - 旧：[{name} 输出已裁剪] / [输出已裁剪]（后缀 "输出已裁剪]"，兼容已含旧占位符的恢复会话）
+    """
     if not isinstance(content, str):
         return False
-    return content.startswith("[") and content.endswith(_PLACEHOLDER_SUFFIX)
+    return content.startswith("[") and (
+        content.endswith(_PLACEHOLDER_SUFFIX) or content.endswith(_LEGACY_PLACEHOLDER_SUFFIX)
+    )
 
 
 def _find_tool_name_from_assistant(messages: list, tool_idx: int, tool_call_id: str) -> str:
@@ -550,7 +562,7 @@ def _find_tool_name_from_assistant(messages: list, tool_idx: int, tool_call_id: 
 def _placeholderize_tool_outputs(messages: list, target_tokens: int, protect_turns: int = 10) -> int:
     """阶段 1：把旧轮次 tool 输出替换为占位符，保留消息结构与 tool_call_id。
 
-    从最早的 tool 消息开始逐个替换 content 为 "[{name} 输出已裁剪]"（无 name 则 "[输出已裁剪]"），
+    从最早的 tool 消息开始逐个替换 content 为 "[{name} 输出已裁剪，如需原文可重新调用该工具获取]"（无 name 则 "[输出已裁剪，如需原文可重新调用对应工具获取]"），
     满足其一即停：
       a) count_messages_tokens(messages) <= target_tokens（达标即停，保留更多上下文）
       b) 到达保护边界：最近 protect_turns 轮对话（从尾部数 user 消息，尾部 user 算第 1 轮）内的 tool 不动
@@ -589,7 +601,7 @@ def _placeholderize_tool_outputs(messages: list, target_tokens: int, protect_tur
         name = m.get("name", "") or ""
         if not name:
             name = _find_tool_name_from_assistant(messages, i, m.get("tool_call_id", "") or "")
-        m["content"] = f"[{name} 输出已裁剪]" if name else "[输出已裁剪]"
+        m["content"] = f"[{name} 输出已裁剪，如需原文可重新调用该工具获取]" if name else "[输出已裁剪，如需原文可重新调用对应工具获取]"
         replaced += 1
         current_tokens = count_messages_tokens(messages)
     return replaced
