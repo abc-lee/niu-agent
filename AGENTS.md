@@ -531,8 +531,16 @@ preload_face_model()
   - T2 提示词配套：两子 Agent 撤 150 行指导改"工具自动分页、见末尾标记按 offset 续读"；零背景推演验收（续读链/processed_line 语义零歧义）
   - T3 收尾：死函数 file_read 删除（46 行化石，512000 公式；工具名别名映射保留）+ session-manager 两处"对齐 read_file"失实注释自述化；回归 54 绿
 - **设计要点**：预算口径=字符（对齐下游 agent_loop 30000 字符截断，返回整体 ≤30000 永不二次截断）；标记不归因截断原因（预算/limit/500 硬顶同文案，offset 恒正确）；READ_PAGE_BUDGET_CHARS=29000 常量注释锚定 agent_loop.py:598 耦合
-- **质量链**：计划四轮双审（R1 双 CONDITIONAL 9 发现→R2 1P1+6P2→R3 双 APPROVE 3P2 文本级→R4 双 APPROVE 零阻断，连续两轮达成门禁；R2A 抓出标记位置 P1——D-8 "ends with" 与旧 header 位置矛盾）+ T1 实施后 spec/quality 双 PASS
 - **实机验证（待用户观察）**：下次睡眠管道 dream-evolver/entity-extractor 读 F3/F1 时页长自适应（短行文件一次读满 500 行），raw 日志可见 read 调用轮次减少
+#### 修复：read 工具 tail 读预算方向——EOF 锚定窗口 + 反向累积（用户指出 + 四轮审查冻结，commit c96bfae5）
+
+- **背景（用户提出）**：智能分页改造只覆盖了前向读；tail 语义（offset<0 读末尾 |offset| 行）仍沿用前向预算逻辑，方向错误
+- **4 缺陷实证**：D1 tail 预算正向累积（长行处断页保留窗口头部、丢弃真正 EOF 行，tail 意图落空）；D2 单行超预算仍切行首（tail 读者要行尾）；D3 测试固化错误行为（test_tail_offset_with_budget 断言"只返回第 8 行"）；D4 limit 前向锚定（offset=-50 limit=10 返回 51-60 而非 91-100，窗口最旧 10 行）
+- **修复语义**：窗口=末尾 `min(|offset|, limit)` 行（EOF 端固定，limit 从旧端收缩起点）；预算从窗口末行向首行**反向累积**（页保留最新行，被挤掉的只能是更旧行）；窗口末行超预算保**行尾**+前导 `[TRUNCATED] ... `（16 字符镜像）；反向续读标记 `[Truncated at line {k}. Use offset={wstart} limit={k-wstart} to read lines {wstart}-{k-1}.]` 含显式区间（弱模型免相对推断）；header 报页实际首行
+- **质量链**：计划 v1.0→v1.2 三轮审查（TailReview scout 复核 + R1 双 CONDITIONAL + R2 双 CONDITIONAL + R3 本地单审 APPROVE——远端 scout 卡 stream-stalled 40 分钟重试，改本地单审收口）+ forward 零变化对拍钉死（改造前 seed=42 fixture 全页快照 tests/fixtures/read_file_forward_snapshot_seed42.json，逐字节对拍断言）
+- **验证**：TestReadFile 23 passed（改 2 增 1）+ 全文件 46 passed + 63 回归绿；smoke 直演验收 5 项 + 边界 8/9（窗口中部超长行走正向兜底、反向区间再超预算多页续读）
+- **文档同步**：SYSTEM_MANUAL §2.2.1 tail 条目扩展 + 托管技能 niu-read-tool-behavior §2/§3/§4 + tools_schema.json L21/L24/L25 + read_file/do_read docstring limit 收缩语义
+- **已知瑕疵（接受）**：tail 反向标记引导的正向补读链末端 marker 指向已读区（冗余有界，forward 契约不可为 tail 特判——read_file 无来向信息）
 
 #### 加固：子 Agent 压缩可见性两条微改造（归档机制经论证不建，commit e099e8da）
 
