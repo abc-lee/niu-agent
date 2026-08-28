@@ -17,11 +17,21 @@ from agent.generic.agent_loop import (
 # Helpers (same pattern as test_agent_loop_stream_events.py)
 # ---------------------------------------------------------------------------
 
-def _make_mock_response(content="hello", tool_calls=None):
-    """创建一个模拟的 LLM 响应对象。"""
+def _make_mock_response(content="hello", tool_calls=None, stream_error=False, context_overflow=False):
+    """创建一个模拟的 LLM 响应对象。
+
+    现役 agent_runner_loop 会检查 response.stream_error / context_overflow 的真值：
+    Mock 未显式设置的属性是自动生成的 truthy Mock，会把循环短路进
+    LLM_ERROR / CONTEXT_OVERFLOW 分支（返回 dict 无 messages key），
+    因此必须显式置 False；测试溢出路径时传 context_overflow=True。
+    """
     resp = Mock()
     resp.content = content
     resp.tool_calls = tool_calls or []
+    resp.stream_error = stream_error
+    resp.context_overflow = context_overflow
+    resp.finish_reason = "stop"
+    resp.usage = None
     return resp
 
 
@@ -83,6 +93,9 @@ def test_return_value_contains_messages_on_normal_completion():
     handler._done_hooks = []
     handler.max_turns = 40
     handler.current_turn = 1
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支，显式置 False 走主 Agent 路径
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
 
     def dispatch_no_tool(tool_name, args, response, index=0):
         yield
@@ -122,6 +135,9 @@ def test_return_value_contains_messages_on_should_exit():
     handler._done_hooks = []
     handler.max_turns = 40
     handler.current_turn = 1
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支，显式置 False 走主 Agent 路径
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
 
     def dispatch_exit(tool_name, args, response, index=0):
         yield
@@ -151,13 +167,17 @@ def test_return_value_contains_messages_on_should_exit():
 
 def test_return_value_contains_messages_on_context_overflow():
     """上下文溢出退出时 return value 应包含 messages。"""
-    resp = _make_mock_response(content="hi", tool_calls=[])
+    # CONTEXT_OVERFLOW 由 response.context_overflow 真值触发（现役契约）
+    resp = _make_mock_response(content="hi", tool_calls=[], context_overflow=True)
     client = _make_client([resp])
 
     handler = Mock()
     handler._done_hooks = []
     handler.max_turns = 40
     handler.current_turn = 1
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支，显式置 False 走主 Agent 路径
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
 
     def dispatch_no_tool(tool_name, args, response, index=0):
         yield
@@ -197,6 +217,11 @@ def test_return_value_contains_messages_on_max_turns_exceeded():
     handler._done_hooks = []
     handler.max_turns = 2  # 只允许 2 轮
     handler.current_turn = 1
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支，显式置 False 走主 Agent 路径
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
+    # next_prompt_patcher 透传（避免 Mock 对象被当作 user 消息内容注入 messages）
+    handler.next_prompt_patcher = lambda prompt, _outcome, _turn: prompt
 
     def dispatch_loop(tool_name, args, response, index=0):
         yield
@@ -298,6 +323,9 @@ def test_return_value_contains_messages_on_empty_next_prompt():
     handler._done_hooks = []
     handler.max_turns = 40
     handler.current_turn = 1
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支，显式置 False 走主 Agent 路径
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
 
     call_count = [0]
 
@@ -312,6 +340,8 @@ def test_return_value_contains_messages_on_empty_next_prompt():
             return StepOutcome(data=None, next_prompt=None, should_exit=False)
 
     handler.dispatch = dispatch_done
+    # next_prompt_patcher 透传（避免 Mock 对象被当作 user 消息内容注入 messages）
+    handler.next_prompt_patcher = lambda prompt, _outcome, _turn: prompt
 
     gen = agent_runner_loop(
         client=client,
@@ -342,6 +372,9 @@ def test_all_return_values_have_result_and_messages_keys():
     handler._done_hooks = []
     handler.max_turns = 40
     handler.current_turn = 1
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支，显式置 False 走主 Agent 路径
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
 
     def dispatch_no_tool(tool_name, args, response, index=0):
         yield
@@ -385,6 +418,9 @@ def test_messages_contains_full_conversation():
     handler._done_hooks = []
     handler.max_turns = 40
     handler.current_turn = 1
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支，显式置 False 走主 Agent 路径
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
 
     call_count = [0]
 
@@ -397,6 +433,8 @@ def test_messages_contains_full_conversation():
             return StepOutcome(data=None, next_prompt=None, should_exit=False)
 
     handler.dispatch = dispatch_tool
+    # next_prompt_patcher 透传（避免 Mock 对象被当作 user 消息内容注入 messages）
+    handler.next_prompt_patcher = lambda prompt, _outcome, _turn: prompt
 
     gen = agent_runner_loop(
         client=client,
