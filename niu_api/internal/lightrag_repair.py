@@ -263,19 +263,18 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
 
     node_ids: set of node id
     edges: list of (src, tgt, edge_source_id, edge_description, edge_keywords, edge_file_path)
-           - edge_source_id: edge 的 d10 字段（<SEP> 分隔的 chunk_id 列表）
-           - edge_description: edge 的 d8 字段（描述文本）
-           - edge_keywords: edge 的 d9 字段（关系关键词，逗号分隔，v9 用 dict.fromkeys 去重保序）
-           - edge_file_path: edge 的 d11 字段（文件路径，v9 Task 7 新增，用于 vdb_relationships meta_fields）
+           - edge_source_id: edge 的 source_id 字段（<SEP> 分隔的 chunk_id 列表）
+           - edge_description: edge 的 description 字段（描述文本）
+           - edge_keywords: edge 的 keywords 字段（关系关键词，逗号分隔，v9 用 dict.fromkeys 去重保序）
+           - edge_file_path: edge 的 file_path 字段（文件路径，v9 Task 7 新增，用于 vdb_relationships meta_fields）
     error: None 或 {"check": ..., "severity": "critical", ...}
 
-    GraphML edge key 定义（参考真实 GraphML 头部）：
-        d7=weight, d8=description, d9=keywords, d10=source_id,
-        d11=file_path, d12=created_at, d13=truncate
-
-    v9 Task 7 改动：5 元组 → 6 元组，新增 edge_file_path（d11）。
-    理由：vdb_relationships 的 meta_fields 包含 file_path（lightrag.py L722），
-    必须从 GraphML edge 的 d11 字段读取。
+    edge 字段按 <key> 定义的 attr.name 解析（不硬编码 dN）：
+        nx.write_graphml 按属性出现顺序自动编号 dN，节点/edge 属性增删时编号会整体漂移
+        （实证：某次写入给 node 增加了 `id` 属性后，edge key 从 d7-d13 漂移到 d8-d14，
+        硬编码 d8=description/d9=keywords/d10=source_id/d11=file_path 会把 weight 当描述、
+        keywords 当 source_id → chunk→doc 映射零命中，full_relations/relation_chunks
+        重建静默失败或写入错误数据）。按 attr.name 解析对任意编号布局都正确。
     """
     import xml.etree.ElementTree as ET
 
@@ -303,6 +302,19 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
     ns = "{http://graphml.graphdrawing.org/xmlns}"
     node_ids: set[str] = set()
     edges: list[tuple[str, str, str, str, str, str]] = []  # (src, tgt, edge_source_id, edge_description, edge_keywords, edge_file_path)
+
+    # 解析 <key> 定义：attr.name → key id 集合（跨 for=node/edge/all 作用域取并集；
+    # 同一 attr.name 在 node/edge 两个作用域各有一个 key id，edge 元素只会携带
+    # edge 作用域的 data，按集合成员判定不会误配）
+    edge_key_ids_by_name: dict[str, set[str]] = {}
+    for child in root:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag != "key":
+            continue
+        attr_name = child.get("attr.name") or ""
+        key_id = child.get("id") or ""
+        if attr_name and key_id:
+            edge_key_ids_by_name.setdefault(attr_name, set()).add(key_id)
 
     # 找 graph 元素
     graph = root.find(f"{ns}graph")
@@ -334,15 +346,26 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
             edge_file_path = ""
             for data in child.findall(f"{ns}data"):
                 key = data.get("key")
-                if key == "d8":
-                    edge_desc = data.text or ""
-                elif key == "d10":
+                if not key:
+                    continue
+                if key in edge_key_ids_by_name.get("source_id", ()):
                     edge_src_id = data.text or ""
-                elif key == "d9":
+                elif key in edge_key_ids_by_name.get("description", ()):
+                    edge_desc = data.text or ""
+                elif key in edge_key_ids_by_name.get("keywords", ()):
                     edge_keywords = data.text or ""
-                elif key == "d11":
+                elif key in edge_key_ids_by_name.get("file_path", ()):
                     edge_file_path = data.text or ""
             edges.append((src, tgt, edge_src_id, edge_desc, edge_keywords, edge_file_path))
+
+    if edges and not any(
+        name in edge_key_ids_by_name
+        for name in ("source_id", "description", "keywords", "file_path")
+    ):
+        logger.warning(
+            "[LightRAGRepair] GraphML 有 %d 条 edge 但无 <key> 定义，"
+            "edge 字段（source_id/description/keywords/file_path）无法解析", len(edges)
+        )
     return node_ids, edges, None
 
 
