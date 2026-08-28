@@ -1297,11 +1297,12 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     真实 cache 的 original_prompt 含 8 个 ```（4 对），只有第一对 ``` 之间是 chunk 原文。
     非贪婪正则 r"```\\s*(.+?)\\s*```" 必须正确提取第一对之间内容，不能跨多对 ```。
 
-    真实数据特征（2026-07-17 验证，主对话已手工清理 GraphML 22 孤儿引用）：
-    - 123 个活跃 chunk_id（GraphML 孤儿引用已清理：node source_id 清理 9 + edge source_id 清理 1068）
-    - cache extract + full_docs + 脑区 fallback 覆盖全部 123 个 chunk_id
-    - 0 个孤儿 chunk（清理后 GraphML 不再引用已删除的 chunk）
-    - 最终恢复 123 个，0 个 missing（无孤儿 chunk）
+    真实数据特征（断言不硬编码数量——GraphML/full_docs 随使用演变，活跃集合与
+    可恢复比例都会变；2026-07-17 曾手工清理 GraphML 孤儿引用使 lost=0，但那是
+    时点状态不是不变式）：
+    - 活跃 chunk 引用（node source_id + edge source_id 全集）> 0
+    - cache extract + full_docs + 脑区 fallback 至少恢复一部分
+    - 恢复的 chunk content 非空、不含 LLM 输出标记（正则提取正确性的核心契约）
     """
     import os
     import shutil
@@ -1328,20 +1329,21 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
 
     result = asyncio.run(repair_text_chunks())
 
-    # 真实数据（2026-07-17 验证）：
-    # - 116 个活跃 chunk_id（GraphML 节点 source_id + edge source_id 全集）
-    # - 116 个全部能从 cache + full_docs 恢复
-    # - 0 个 missing（孤儿 chunk 已在前期手工清理）
-    # 注意：active 数会随 GraphML 演变而变化，断言用关系（actual=expected-lost）而非硬编码
+    # 真实数据断言（不硬编码数量——活跃集合与可恢复比例随 GraphML/full_docs 演变）：
+    # - expected > 0（真实数据有活跃 chunk 引用）
+    # - actual == expected - lost（关系不变式：恢复 + missing = 总数）
+    # - actual > 0（至少部分 chunk 能从 cache/full_docs/脑区 fallback 恢复）
     assert result["status"] == "ok", f"repair_text_chunks 失败: {result.get('message', '')}"
     expected = result["expected"]
     lost = result["lost"]
     actual = result["actual"]
-    assert expected == 116, f"活跃 chunk 数应为 116，实际 {expected}"
+    assert expected > 0, f"真实数据应有活跃 chunk 引用，expected={expected}"
     assert actual == expected - lost, (
         f"actual 应等于 expected-lost，actual={actual}, expected={expected}, lost={lost}"
     )
-    assert lost == 0, f"清理后孤儿 chunk lost 应 0，实际 lost={lost}"
+    assert actual > 0, (
+        f"至少部分 chunk 应从 cache/full_docs/脑区 fallback 恢复，actual={actual}"
+    )
 
     # 验证 text_chunks 内容非空（每个 chunk content 必须有真实原文，不是空串）
     tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
@@ -1358,13 +1360,11 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     assert not bad_extraction, f"正则提取错误，含 LLM 输出标记: {bad_extraction[:5]}"
 
     # 验证脑区 fallback chunk 的 content + full_doc_id 格式正确
-    # 当前真实数据 0 个脑区 source_id（脑区未写入 GraphML）→ 脑区 fallback 数为 0
-    # 若未来脑区写入 GraphML 但 cache/full_docs 都没 → 走脑区直接构造 fallback
+    # 脑区写入 GraphML 但 cache/full_docs 都没有 → 走脑区直接构造 fallback（数量随时点变化，不硬编码）
     brain_fallback = [
         cid for cid, v in tc.items()
         if str(v.get("full_doc_id", "")).startswith("brain_")
     ]
-    assert len(brain_fallback) == 0, f"当前真实数据无脑区 chunk，脑区 fallback 应 0，实际 {len(brain_fallback)}"
     for cid in brain_fallback:
         v = tc[cid]
         # content = "{脑区名}: {d2 description}"
