@@ -353,7 +353,7 @@ def delete_messages(session_id: str, message_ids: list, reason: str = "Context c
 def read_history_block(block_id: int, **kwargs) -> dict:
     """按块号取回归档历史块的逐字原文（直接读 context_blocks.db + messages.db）。
 
-    截断策略对齐 niu read_file 行为规格：
+    截断策略（本函数独立规格）：
     - 单条消息动态截断：每条上限 min(10000, max(100, 500000//条数)) 字符，
       截断追加 ' ... [TRUNCATED]'
     - 总量上限：>500 条时保留头尾各 250 条并标注省略
@@ -441,8 +441,8 @@ def _query_messages_by_rowid(messages_db: str, start_rowid: int, end_rowid: int)
         conn.close()
 
 
-# 截断常量（对齐 agent/handler.py read_file 行为规格）
-_BLOCK_MAX_MESSAGES = 500          # 硬上限，超出头尾保留（read_file 的 500 行上限）
+# 截断常量（本函数独立规格）
+_BLOCK_MAX_MESSAGES = 500          # 硬上限，超出头尾保留
 _BLOCK_CHAR_BUDGET = 500_000       # 总字符预算，按条数均分出单条上限
 
 

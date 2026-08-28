@@ -270,54 +270,6 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
     return result
 
 
-def file_read(
-    path: str, start: int = 1, keyword: str = None, count: int = 200, show_linenos: bool = True
-) -> str:
-    """读取文件内容"""
-    import collections
-    import itertools
-    import os
-
-    try:
-        if os.path.isdir(path):
-            return f"Error: '{path}' is a directory, not a file. Please provide a file path, e.g. '~/.niu/skills/photo-face-display.md'"
-        with open(path, encoding="utf-8", errors="replace") as f:
-            stream = ((i, line.rstrip("\r\n")) for i, line in enumerate(f, 1))
-            stream = itertools.dropwhile(lambda x: x[0] < start, stream)
-
-            if keyword:
-                before = collections.deque(maxlen=count // 3)
-                for i, line in stream:
-                    if keyword.lower() in line.lower():
-                        res = (
-                            list(before)
-                            + [(i, line)]
-                            + list(itertools.islice(stream, count - len(before) - 1))
-                        )
-                        break
-                    before.append((i, line))
-                else:
-                    return f"Keyword '{keyword}' not found after line {start}.\n"
-            else:
-                res = list(itertools.islice(stream, count))
-
-            realcnt = len(res)
-            l_max = max(100, 512000 // realcnt) if realcnt > 0 else 100
-            tag = " ... [TRUNCATED]"
-
-            res = [(i, line if len(line) <= l_max else line[:l_max] + tag) for i, line in res]
-            result = "\n".join(f"{i}|{line}" if show_linenos else line for i, line in res)
-
-            if show_linenos:
-                result = f"[FILE] Showing {len(res)} lines from line {start}\n" + result
-
-            return result
-    except FileNotFoundError:
-        return f"Error: File not found: '{path}'. Please check the file path."
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
 def file_write(path: str, content: str, mode: str = "write") -> dict:
     """写入文件"""
     try:
