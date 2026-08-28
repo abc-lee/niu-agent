@@ -196,20 +196,22 @@ def test_stream_error_fatal_no_retry():
     assert result.content == ""
 
 
-def test_agent_loop_stream_error_returns_llm_error():
+def test_agent_loop_stream_error_returns_llm_error(monkeypatch):
     """agent_loop 检查 stream_error=True → yield error_msg + return LLM_ERROR。"""
     from agent import runner as _runner_mod
     from agent.generic import agent_loop
 
-    _runner_mod.is_stop_requested = lambda: False
-    _runner_mod.clear_stop = lambda: None
-    _runner_mod.drain_supplement = lambda: None
+    # monkeypatch 自动还原——裸赋值会把 clear_stop 换成 no-op 泄漏到后续文件
+    # （真实 stop event 再也清不掉 → test_truncation_marker 全挂 'stop'=='length'）
+    monkeypatch.setattr(_runner_mod, "is_stop_requested", lambda: False)
+    monkeypatch.setattr(_runner_mod, "clear_stop", lambda: None)
+    monkeypatch.setattr(_runner_mod, "drain_supplement", lambda: None)
 
     class _FakeValidation:
         is_valid = True
         def format_feedback(self): return ""
 
-    agent_loop.validate_references = lambda content: _FakeValidation()
+    monkeypatch.setattr(agent_loop, "validate_references", lambda content: _FakeValidation())
 
     class _FakeHandler:
         _last_prompt_tokens = 0
