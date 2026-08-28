@@ -139,23 +139,23 @@ class TestLightragInsertCall:
         assert result["lightrag"] in ("inserted", "skipped")
 
     def test_lightrag_insert_file_always_called(self, mock_registry, mock_preferences, tmp_path):
-        """lightrag_insert_file is always called, even for binary files.
+        """KG 支持扩展名的文件总是调用 lightrag_insert_file（内容不参与判定）。
 
-        Unlike the old lightrag_insert which skipped when no text content,
-        lightrag_insert_file passes the file to LightRAG which handles parsing.
+        现役契约：check_kg_supported 按扩展名白名单判定，白名单内文件
+        （即使内容是二进制噪音）也调用 lightrag_insert_file，由 LightRAG 自行解析。
         """
         from niu_photo_server import ingest_document
 
         mock_reg, mock_insert = mock_registry
 
-        # Create a binary file
-        doc = tmp_path / "source" / "binary.dat"
+        # .txt 在白名单内，写入二进制噪音内容验证调用与内容无关
+        doc = tmp_path / "source" / "binary.txt"
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_bytes(b"\x00\x01\x02\x03\xff\xfe")
 
         ingest_document(str(doc), category="其他", mode="copy")
 
-        # insert_file should be called even for binary files
+        # insert_file should be called even for binary content (supported extension)
         mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
         mock_insert.assert_called_once()
 
@@ -211,7 +211,12 @@ class TestNoVectorStoreOrKgServer:
 class TestFileTypeDetection:
     """Verify auto-detection of file type."""
 
-    def test_directory_with_photos_delegates_to_batch(self, mock_registry, mock_preferences, tmp_path):
+    def test_directory_returns_is_directory_error(self, mock_registry, mock_preferences, tmp_path):
+        """目录不再批量转发——现役契约：目录应由有状态 ingest() 处理，ingest_document 直接拒绝。
+
+        旧 ingest_photos_batch 已随入库 API 重构删除，目录处理迁移到
+        ingest(path, action="start") 状态会话。
+        """
         from niu_photo_server import ingest_document
 
         photo_dir = tmp_path / "photo_dir"
@@ -219,10 +224,9 @@ class TestFileTypeDetection:
         (photo_dir / "img1.jpg").write_bytes(b"\xff\xd8\xff\xe0")
         (photo_dir / "img2.png").write_bytes(b"\x89PNG")
 
-        with patch("niu_photo_server.ingest_photos_batch") as mock_batch:
-            mock_batch.return_value = {"status": "success", "total": 2}
-            ingest_document(str(photo_dir), category="其他", mode="copy")
-            mock_batch.assert_called_once_with(str(photo_dir), "其他")
+        result = ingest_document(str(photo_dir), category="其他", mode="copy")
+        assert result["status"] == "error"
+        assert result["error_code"] == "IS_DIRECTORY"
 
     def test_directory_without_photos_returns_error(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
@@ -233,7 +237,7 @@ class TestFileTypeDetection:
 
         result = ingest_document(str(empty_dir), category="其他", mode="copy")
         assert result["status"] == "error"
-        assert result["error_code"] == "DIRECTORY_NO_PHOTOS"
+        assert result["error_code"] == "IS_DIRECTORY"
 
     def test_photo_file_delegates_to_ingest_photo(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
@@ -244,8 +248,8 @@ class TestFileTypeDetection:
         with patch("niu_photo_server.ingest_photo") as mock_photo:
             mock_photo.return_value = {"status": "success", "action": "created"}
             ingest_document(str(photo), category="其他", mode="copy")
-            # ingest_photo is called with (path, category) — mode is not passed
-            mock_photo.assert_called_once_with(str(photo), "其他")
+            # 现役契约：ingest_photo(path, category=..., mode=...) 关键字透传
+            mock_photo.assert_called_once_with(str(photo), category="其他", mode="copy")
 
     def test_document_file_is_processed_as_document(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document

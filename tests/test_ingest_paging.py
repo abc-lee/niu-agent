@@ -132,17 +132,17 @@ class TestIngestDirectoryPaging:
             pytest.skip("ingest 尚未实现 offset 参数")
 
     def test_ingest_directory_empty_returns_error(self):
-        """空目录返回 error"""
+        """空目录返回 error（需先 action='start' 初始化会话）"""
         ingest, _ = _import_photo_server()
 
         empty_dir = self.test_dir / "empty"
         empty_dir.mkdir(exist_ok=True)
 
-        result = ingest(path=str(empty_dir))
+        result = ingest(path=str(empty_dir), action="start")
 
         assert result.get("status") == "error", f"Expected error for empty directory, got: {result}"
-        assert result.get("error_code") in ("EMPTY_DIRECTORY", "DIRECTORY_NO_PHOTOS", "NO_PHOTOS_FOUND"), (
-            f"Expected empty directory error code, got: {result}"
+        assert result.get("error_code") == "NO_FILES_FOUND", (
+            f"Expected NO_FILES_FOUND error code, got: {result}"
         )
 
     def test_ingest_directory_offset_out_of_range(self):

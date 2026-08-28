@@ -198,53 +198,20 @@ class TestRunRepairOnUserRequest:
             assert result["repaired"] is False
             assert mgr._repairing is False, "异常路径 finally 也应清 _repairing"
 
-    def test_pipeline_busy_timeout_rejects_repair(self):
-        """pipeline busy 超过 300s → 拒绝 repair，返回 message。"""
-        # _read_pipeline_busy 永远返回 True（busy）
-        # time.sleep mock 避免真实等待
-        sleep_calls = []
-        fake_time = {"value": 0.0}
-
-        def fake_sleep(seconds):
-            sleep_calls.append(seconds)
-            # 模拟时间流逝，让 while 循环能退出（300/5 = 60 次迭代）
-            # 但我们不希望真跑 60 次，用 counter 截断
-            if len(sleep_calls) >= 3:
-                # 强制让 time.monotonic 越过 deadline
-                fake_time["value"] = 999999.0
-
-        def fake_monotonic():
-            return fake_time["value"]
-
-        with patch("niu_api.kg_api._read_pipeline_busy", return_value=True), \
-             patch("niu_api.internal.lightrag_manager.time.sleep", side_effect=fake_sleep), \
-             patch("niu_api.internal.lightrag_manager.time.monotonic", side_effect=fake_monotonic), \
-             patch("niu_api.internal.lightrag_repair.repair_all") as mock_repair:
-            result = mgr.run_repair_on_user_request()
-            assert result["repaired"] is False
-            assert "pipeline busy" in result.get("message", "")
-            assert not mock_repair.called, "busy 超时不应调 repair_all"
-            assert mgr._repairing is False
-
-    def test_pipeline_busy_then_idle_proceeds_repair(self):
-        """pipeline 先 busy 后 idle → 等待后正常 repair。"""
+    def test_pipeline_busy_does_not_block_repair(self):
+        """v8 起 repair 不再等待 pipeline busy（等待机制已删除，_repairing 信号灯兜底）。"""
         call_count = [0]
 
         def busy_pattern():
             call_count[0] += 1
-            # 前 2 次 busy，第 3 次起 idle
-            return call_count[0] < 3
+            return True  # 恒 busy——v8 契约：busy 不阻塞 repair
 
-        with patch("niu_api.kg_api._read_pipeline_busy", side_effect=busy_pattern), \
-             patch("niu_api.internal.lightrag_manager.time.sleep"), \
-             patch("niu_api.internal.lightrag_repair.repair_all", return_value={}), \
-             patch("niu_api.internal.lightrag_integrity.check_all", return_value={
+        with patch("niu_api.kg_api._read_pipeline_busy", side_effect=busy_pattern),              patch("niu_api.internal.lightrag_repair.repair_all", return_value={}),              patch("niu_api.internal.lightrag_integrity.check_all", return_value={
                  "ok": True, "critical_errors": 0, "major_errors": 0, "minor_errors": 0,
-             }), \
-             patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None):
+             }),              patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None):
             result = mgr.run_repair_on_user_request()
             assert result["repaired"] is True
-            assert call_count[0] >= 3, "应多次轮询 pipeline busy"
+            assert mgr._repairing is False
 
     def test_unrecoverable_marks_repaired_false(self):
         """repair_result 含 unrecoverable=True → repaired=False。"""
@@ -283,8 +250,8 @@ class TestRunRepairOnUserRequest:
             result = mgr.run_repair_on_user_request()
             assert result["repaired"] is False
 
-    def test_recheck_major_marks_repaired_false(self):
-        """重检 check_all major>0 → repaired=False（即使 repair_result 全 ok）。"""
+    def test_recheck_major_does_not_flip_repaired(self):
+        """v8 契约：repaired 只由 repair_all 判定；重检 major>0 仅上报计数，不改 repaired。"""
         repair_result = {
             "repair_vdb_entities": {"status": "ok"},
         }
@@ -295,11 +262,11 @@ class TestRunRepairOnUserRequest:
              }), \
              patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None):
             result = mgr.run_repair_on_user_request()
-            assert result["repaired"] is False
+            assert result["repaired"] is True
             assert result["major_errors"] == 2
 
-    def test_get_lightrag_called_after_repair(self):
-        """repair 完成后应主动调 get_lightrag 触发重试初始化。"""
+    def test_get_lightrag_not_called_after_repair(self):
+        """v8 铁律 3：repair 后不调 get_lightrag/apipeline，由下次用户请求自然触发初始化。"""
         with patch("niu_api.kg_api._read_pipeline_busy", return_value=False), \
              patch("niu_api.internal.lightrag_repair.repair_all", return_value={}), \
              patch("niu_api.internal.lightrag_integrity.check_all", return_value={
@@ -307,7 +274,7 @@ class TestRunRepairOnUserRequest:
              }), \
              patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None) as mock_get:
             mgr.run_repair_on_user_request()
-            assert mock_get.called, "修复后应调 get_lightrag 触发重试"
+            assert not mock_get.called, "v8 契约：修复后不应主动调 get_lightrag（铁律 3）"
 
     def test_rag_instance_set_none_during_repair(self):
         """repair 期间应置 _rag_instance = None（避免并发写文件竞争）。"""
