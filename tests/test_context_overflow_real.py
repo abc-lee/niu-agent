@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 
+import pytest
 import requests
 
 # 项目根目录（tests/ 的上一级）
@@ -66,6 +67,7 @@ def cleanup_process(proc: subprocess.Popen, timeout: int = 10) -> None:
     print("[OK] Process cleaned up")
 
 
+@pytest.mark.e2e
 def test_api_starts_and_responds():
     """测试：API 服务能正常启动并响应聊天请求"""
     # 检查端口是否被占用
@@ -81,7 +83,7 @@ def test_api_starts_and_responds():
     print(f"[INFO] Starting API on port {TEST_PORT}...")
     proc = subprocess.Popen(
         [sys.executable, "-m", "niu_api"],
-        cwd="REDACTED_USER_PATH/tools/ai-bot",
+        cwd=PROJECT_ROOT,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -133,6 +135,7 @@ def test_api_starts_and_responds():
         cleanup_process(proc)
 
 
+@pytest.mark.e2e
 def test_fifo_threshold_configured():
     """
     测试：验证主 Agent 配置了 context_fifo_threshold
@@ -140,7 +143,7 @@ def test_fifo_threshold_configured():
     这个测试通过检查代码来验证配置，不需要启动真实程序。
     """
     # 检查 runner.py 中是否传入了 context_fifo_threshold
-    runner_path = "REDACTED_USER_PATH/tools/ai-bot/agent/runner.py"
+    runner_path = os.path.join(PROJECT_ROOT, "agent", "runner.py")
     with open(runner_path) as f:
         content = f.read()
 

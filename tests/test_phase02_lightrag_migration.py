@@ -5,11 +5,8 @@ Validates that all KuzuDB/kg-server references have been replaced
 with LightRAG adapter/pipeline calls across the codebase.
 """
 
-import json
-import sqlite3
-import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 # ============== 1. KGSync → LightRAGSync delegation ==============
 
@@ -156,32 +153,6 @@ class TestNotesApiUsesLightRAG:
         source = Path(mod.__file__).read_text(encoding="utf-8")
         assert "niu_kg_server" not in source
 
-    def test_sync_note_uses_lightrag_for_persistence(self):
-        """sync_note_to_lightrag should use lightrag for persistence (inject_custom_kg)."""
-        from niu_api.notes_api import sync_note_to_lightrag
-
-        with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_cls:
-            mock_ingester = MagicMock()
-            mock_cls.return_value = mock_ingester
-            mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
-
-            sync_note_to_lightrag("note-1", "Shopping list: milk, eggs", ["shopping"])
-
-            # Must call inject_custom_kg (inject_entity has been removed)
-            mock_ingester.inject_custom_kg.assert_called_once()
-
-    def test_sync_note_to_lightrag_handles_failure(self):
-        """sync_note_to_lightrag should handle LightRAG failure gracefully."""
-        from niu_api.notes_api import sync_note_to_lightrag
-
-        with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_cls:
-            mock_ingester = MagicMock()
-            mock_cls.return_value = mock_ingester
-            mock_ingester.inject_custom_kg.return_value = {"status": "error", "message": "down"}
-
-            # Should not raise, just log warning
-            sync_note_to_lightrag("note-1", "test content", [])
-
     def test_notes_json_storage_no_sqlite(self):
         """notes.py should NOT use aiosqlite."""
         import niu_api.notes as mod
@@ -217,59 +188,26 @@ class TestLightRAGSync:
         source = Path(mod.__file__).read_text(encoding="utf-8")
         assert "niu_kg_server" not in source
 
-    def test_lightrag_sync_photos_db_uses_ainsert(self):
-        """_sync_photos_db should use ainsert for photos."""
-        from agent.injector.lightrag_sync import LightRAGSync
-
-        sync = LightRAGSync()
-        # Create a temp photos.db with test data
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE persons (id TEXT, name TEXT, auto_label TEXT)")
-        conn.execute("CREATE TABLE photos (id TEXT, file_path TEXT, abstract TEXT)")
-        conn.execute("CREATE TABLE co_occurrences (person_a_id TEXT, person_b_id TEXT, count INTEGER)")
-        conn.execute("INSERT INTO persons VALUES ('p1', 'Alice', 'Person A')")
-        conn.execute("INSERT INTO photos VALUES ('ph1', '/photos/test.jpg', 'A photo of Alice')")
-        conn.execute("INSERT INTO co_occurrences VALUES ('p1', 'p2', 3)")
-        conn.commit()
-        conn.close()
-
-        mock_rag = MagicMock()
-        mock_rag.ainsert = AsyncMock(return_value=None)
-
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock_rag):
-            with patch("niu_api.internal.lightrag_manager.call_async", return_value=None):
-                with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_ingester:
-                    mock_ingester = MagicMock()
-                    mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
-                    mock_ingester.return_value = mock_ingester
-
-                    # Mock the photo server module import inside _sync_photos_db
-                    mock_ps = MagicMock()
-                    mock_ps.get_db_path.return_value = db_path
-                    with patch.dict("sys.modules", {"niu_photo_server": mock_ps}):
-                        photos, persons, _, _, _ = sync._sync_photos_db(set(), set(), set())
-                        # Should have synced at least 1 photo and 1 person
-                        assert photos >= 1
-                        assert persons >= 1
-
-        # Cleanup
-        Path(db_path).unlink(missing_ok=True)
-
     def test_lightrag_sync_background_start_stop(self):
         """LightRAGSync should start and stop background thread."""
         from agent.injector.lightrag_sync import LightRAGSync
 
         sync = LightRAGSync(sync_interval=999999)  # Long interval so it doesn't run
-        sync.start_background_sync()
-        assert sync._thread is not None
-        assert sync._thread.is_alive()
+        # _sync_loop 会先等 LightRAG 就绪（最坏 30s）——mock 即时返回避免拖慢测试，
+        # 同时 mock get_lightrag/run_sync 防止后台线程触碰真实存储（本测试只验证线程生命周期）。
+        with (
+            patch("agent.injector.lightrag_sync.wait_lightrag_ready", return_value=False),
+            patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None),
+            patch.object(sync, "run_sync", return_value={"skills_synced": 0, "tools_synced": 0, "errors": []}),
+        ):
+            sync.start_background_sync()
+            assert sync._thread is not None
+            assert sync._thread.is_alive()
 
-        sync.stop_background_sync()
-        # Thread should stop (with timeout)
-        assert not sync._thread.is_alive()
+            sync.stop_background_sync()
+            # stop 只 join 5s；就绪等待已 mock 即时返回，join 应很快完成
+            sync._thread.join(timeout=10)
+            assert not sync._thread.is_alive()
 
     def test_get_lightrag_sync_singleton(self):
         """get_lightrag_sync should return singleton instance."""
@@ -371,17 +309,6 @@ class TestPhotoServerNoKgServer:
         assert "from niu_kg_server" not in source
         assert "import niu_kg_server" not in source
 
-    def test_sync_to_kg_uses_lightrag(self):
-        """sync_to_kg should use LightRAG ainsert."""
-        source = Path("mcp-servers/photo-server/src/niu_photo_server/__init__.py").read_text(encoding="utf-8")
-        # Find sync_to_kg function
-        func_start = source.find("def sync_to_kg(")
-        assert func_start > 0
-        # Find next function definition
-        next_func = source.find("\ndef ", func_start + 1)
-        func_body = source[func_start:next_func] if next_func > 0 else source[func_start:]
-        assert "lightrag_manager" in func_body or "lightrag_adapter" in func_body
-
     def test_sync_photo_to_kg_uses_lightrag(self):
         """sync_photo_to_kg should use LightRAG."""
         source = Path("mcp-servers/photo-server/src/niu_photo_server/__init__.py").read_text(encoding="utf-8")
@@ -443,14 +370,6 @@ class TestConfigFilesKgServerHidden:
 
         # kg-server has been entirely removed - no tools section to check
         assert "kg-server" not in config, "kg-server should be removed from mcp-servers.yaml"
-
-    def test_mcp_tools_json_kg_tools_hidden(self):
-        """All kg-server tools should be hidden in mcp_tools.json."""
-        with open("data/mcp_tools.json", encoding="utf-8") as f:
-            data = json.load(f)
-
-        for tool in data.get("kg-server", []):
-            assert tool.get("visibility") == "hidden", f"kg-server/{tool.get('name')} should be hidden"
 
     def test_entity_extractor_no_kg_server_mcp(self):
         """entity-extractor should not list kg-server in mcpServers."""

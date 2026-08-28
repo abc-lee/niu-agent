@@ -192,80 +192,6 @@ class TestAdapterInvalidMode:
 class TestIngesterStructuredData:
     """J1, J4: Inject structured knowledge (entities + relations)."""
 
-    def test_inject_entity(self):
-        """J1: Inject a single entity into the brain graph."""
-
-        ingester = LightRAGIngester()
-        mock_rag = MagicMock()
-        mock_rag.ainsert_custom_kg = AsyncMock(return_value=None)
-
-        with patch.object(ingester, "_get_rag", return_value=mock_rag):
-            result = ingester.inject_entity(
-                name="Python",
-                entity_type="ProgrammingLanguage",
-                description="A high-level programming language",
-                source_id="doc-1",
-            )
-            assert result["status"] == "ok"
-            # Verify ainsert_custom_kg was called with correct structure
-            call_args = mock_rag.ainsert_custom_kg.call_args
-            kg = call_args[0][0]  # First positional arg
-            assert "entities" in kg
-            assert len(kg["entities"]) == 1
-            assert kg["entities"][0]["entity_name"] == "Python"
-            assert kg["entities"][0]["entity_type"] == "ProgrammingLanguage"
-
-    def test_inject_relation(self):
-        """J1: Inject a relation between two entities."""
-
-        ingester = LightRAGIngester()
-        mock_rag = MagicMock()
-        mock_rag.ainsert_custom_kg = AsyncMock(return_value=None)
-
-        with patch.object(ingester, "_get_rag", return_value=mock_rag):
-            result = ingester.inject_relation(
-                src_id="Python",
-                tgt_id="Django",
-                relation="has_framework",
-                description="Django is a Python web framework",
-                source_id="doc-1",
-            )
-            assert result["status"] == "ok"
-            call_args = mock_rag.ainsert_custom_kg.call_args
-            kg = call_args[0][0]
-            assert "relationships" in kg
-            assert len(kg["relationships"]) == 1
-            assert kg["relationships"][0]["src_id"] == "Python"
-            assert kg["relationships"][0]["tgt_id"] == "Django"
-            # LightRAG requires "keywords" (direct access, no .get() fallback)
-            assert "keywords" in kg["relationships"][0]
-            assert kg["relationships"][0]["keywords"] == "has_framework"
-            # LightRAG reads "weight" with .get() default 1.0
-            assert "weight" in kg["relationships"][0]
-            assert kg["relationships"][0]["weight"] == 1.0
-
-    def test_inject_entity_with_chunk(self):
-        """J1: Inject entity with associated chunk for vector retrieval."""
-
-        ingester = LightRAGIngester()
-        mock_rag = MagicMock()
-        mock_rag.ainsert_custom_kg = AsyncMock(return_value=None)
-
-        with patch.object(ingester, "_get_rag", return_value=mock_rag):
-            result = ingester.inject_entity(
-                name="Python",
-                entity_type="ProgrammingLanguage",
-                description="A high-level programming language",
-                source_id="doc-1",
-                chunk_content="Python is a high-level, general-purpose programming language.",
-            )
-            assert result["status"] == "ok"
-            call_args = mock_rag.ainsert_custom_kg.call_args
-            kg = call_args[0][0]
-            assert "chunks" in kg
-            assert len(kg["chunks"]) == 1
-            assert "Python is a high-level" in kg["chunks"][0]["content"]
-
     def test_inject_batch_entities(self):
         """J4: Batch inject multiple entities (kg-server migration)."""
 
@@ -436,32 +362,11 @@ class TestIngesterUnstructuredData:
 class TestIngesterErrorHandling:
     """J5: Graceful error handling for ingestion."""
 
-    def test_inject_entity_returns_error_when_no_lightrag(self):
-
-        ingester = LightRAGIngester()
-        with patch.object(ingester, "_get_rag", return_value=None):
-            result = ingester.inject_entity(
-                name="Python", entity_type="Language", description="test"
-            )
-            assert result["status"] == "error"
-
     def test_inject_document_returns_error_when_no_lightrag(self):
 
         ingester = LightRAGIngester()
         with patch.object(ingester, "_get_rag", return_value=None):
             result = ingester.inject_document(content="test")
-            assert result["status"] == "error"
-
-    def test_inject_entity_handles_exception(self):
-
-        ingester = LightRAGIngester()
-        mock_rag = MagicMock()
-        mock_rag.ainsert_custom_kg = AsyncMock(side_effect=RuntimeError("DB error"))
-
-        with patch.object(ingester, "_get_rag", return_value=mock_rag):
-            result = ingester.inject_entity(
-                name="Python", entity_type="Language", description="test"
-            )
             assert result["status"] == "error"
 
     def test_inject_document_handles_exception(self):

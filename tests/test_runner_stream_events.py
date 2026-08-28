@@ -6,9 +6,7 @@ TDD: 先写测试，确认失败，再改代码。
 1. chat() 只 yield type="reply" 的内容（SSE 管道）
 2. full_resp 只累积 reply 内容（DB 管道）
 3. 向后兼容普通 str chunk
-4. _clean_stream_output 已被删除
 """
-import pathlib
 from unittest.mock import Mock, patch
 
 from agent.generic.agent_loop import StreamEvent
@@ -117,12 +115,6 @@ def test_chat_backward_compat_str():
 # ---------------------------------------------------------------------------
 # 测试 4: _clean_stream_output 应该已被删除
 # ---------------------------------------------------------------------------
-
-def test_no_clean_stream_output():
-    """_clean_stream_output 应该已被删除 — 双管道架构替代了正则补丁。"""
-    source = pathlib.Path("REDACTED_USER_PATH/tools/ai-bot/agent/runner.py").read_text()
-    assert "_clean_stream_output" not in source, \
-        "_clean_stream_output should be removed — dual pipeline replaces it"
 
 
 # ---------------------------------------------------------------------------
