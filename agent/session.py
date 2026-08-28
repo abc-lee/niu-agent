@@ -412,13 +412,17 @@ def _extract_tmp_paths(contents: list[str]) -> list[str]:
     for content in contents:
         if not content:
             continue
-        # Match file paths (Windows or Unix style)
-        # Pattern: drive letter or /home + path containing .niu/tmp
+        # Match file paths (Windows or Unix style), optional file:// scheme
+        # (markdown 图片/链接引用形如 ![...](file:///.../.niu/tmp/x.jpg))。
+        # 文件名段用白名单 [\w.\-]：贪婪的 [^\s"'<>]+ 会吞掉 markdown 右括号等
+        # 句尾标点 → 路径不存在 → cleanup_tmp_files 永远删不中（tmp 文件泄漏）。
         found = re.findall(
-            r'(?:[A-Za-z]:[/\\]|/)[^\s"\'<>]+[/\\]\.niu[/\\]tmp[/\\][^\s"\'<>]+',
+            r'(?:file://)?(?:[A-Za-z]:[/\\]|/)[^\s"\'<>]+[/\\]\.niu[/\\]tmp[/\\][\w.\-]+',
             content,
         )
         for p in found:
+            if p.startswith("file://"):
+                p = p[len("file://"):]
             if is_tmp_file(p):
                 paths.append(p)
     return paths
