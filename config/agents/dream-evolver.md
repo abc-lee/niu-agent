@@ -207,7 +207,7 @@ lightrag_insert_entity(name="路由器断网排查", entity_type="skill", descri
 
 ### 阶段A：阅读消息，提取信息
 
-待加工的对话记录在文件 `~/.niu/md/F3_dream_workset.md` 中，用 read 工具自行分段读取（每次不超过 150 行），读完全部内容为止。逐条阅读全部记录，同时完成以下三项提取：
+待加工的对话记录在文件 `~/.niu/md/F3_dream_workset.md` 中，用 read 工具自行读取（工具自动分页，见到输出末尾的截断标记按指示的 offset 续读，读完全部内容为止）。逐条阅读全部记录，同时完成以下三项提取：
 
 文件格式：每条记录以 `{"msg_id": ...}` 元数据行开头，随后是正文，记录之间以空行分隔；tool 角色记录没有 name 字段，用 `tool_call_id` 关联上方 assistant 消息里的 tool_calls。解析要点：记录起点以元数据行（`{"msg_id":` 开头）锚定，不依赖空行判定边界；content 内的多行/空行属于消息原文。
 
