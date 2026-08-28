@@ -14,6 +14,7 @@
 
 模板包含：
 - frontmatter 字段（name / description / mode / temperature / mcpServers / mcpToolFilter / allowBaseTools / allowAsync）。工具为白名单制：MCP 工具由 mcpServers/mcpToolFilter 声明，基础工具由 allowBaseTools 声明（缺省为零）
+- **写提示词的分页纪律**：基础工具 `read` 自动分页（29000 字符页预算按行截断、500 行硬上限、输出末尾续读标记给精确 offset——详见《系统手册》§2.2.1）——子 Agent 提示词**不要写死页长/分段行数**（如"每次不超过 N 行"），只教"见到末尾截断标记按指示的 offset 续读，读完全部内容为止"
 - 提示词正文编写规则（角色职责 / 工作流程 / 输出格式 / @niu-agent content 拦截层使用时机 / 何时终止）
 - 可用 MCP 服务器清单（必需 + 可选）
 - 字段格式示例
