@@ -822,3 +822,64 @@ class TestSubagentIncompleteResult:
         data = json.loads(result)
         assert data.get("incomplete") is True
         assert len(data.get("partial_result", "")) == 2000
+
+
+class TestFifoPruneMarker:
+    """_fifo_prune 真删后在切割位置（protect_end）插入可见标记消息（user 角色）。"""
+
+    @staticmethod
+    def _mk_msgs(n_turns, with_initial_user=True):
+        msgs = [{"role": "system", "content": "sys"}]
+        if with_initial_user:
+            msgs.append({"role": "user", "content": "任务"})
+        for i in range(n_turns):
+            msgs.append({"role": "assistant", "content": f"reply{i}"})
+            msgs.append({"role": "user", "content": f"next{i}"})
+        return msgs
+
+    def test_marker_inserted_after_prune(self, monkeypatch):
+        """真删后：标记存在、位置恰在受保护头部之后（protect_end=2）、内容含删除条数。"""
+        from agent.generic import agent_loop as al
+
+        msgs = self._mk_msgs(5)  # len=12，protect_end=2 → 可删 10 条
+        monkeypatch.setattr(al, "count_messages_tokens", lambda m: 10**9)  # 恒超 target
+        removed = al._fifo_prune(msgs, 100)
+        assert removed == 10
+        # 受保护头部原样 + 标记恰在其后（index 2）
+        assert msgs[0] == {"role": "system", "content": "sys"}
+        assert msgs[1] == {"role": "user", "content": "任务"}
+        assert len(msgs) == 3  # 12 - 10 + 1（标记自身不计入返回值）
+        marker = msgs[2]
+        assert marker["role"] == "user"
+        assert marker["content"] == "[上下文提示：更早的 10 条消息已因上下文超限被移除]"
+
+    def test_no_marker_when_nothing_removed(self, monkeypatch):
+        """removed==0（token 未超 target）→ 不插标记，messages 原样。"""
+        from agent.generic import agent_loop as al
+
+        msgs = self._mk_msgs(5)
+        original = [dict(m) for m in msgs]
+        monkeypatch.setattr(al, "count_messages_tokens", lambda m: 10)  # 恒低于 target
+        removed = al._fifo_prune(msgs, 100)
+        assert removed == 0
+        assert len(msgs) == 12
+        assert msgs == original
+        assert not any(
+            isinstance(m.get("content"), str) and m["content"].startswith("[上下文提示：")
+            for m in msgs
+        )
+
+    def test_resumed_path_marker_at_protect_end(self, monkeypatch):
+        """is_resumed=True：protect_end = len - protect_recent_count，标记恰在该位置，受保护区原样。"""
+        from agent.generic import agent_loop as al
+
+        msgs = self._mk_msgs(8, with_initial_user=False)  # [system] + 8 轮 → len=17
+        head = [dict(m) for m in msgs[:12]]  # protect_end = max(2, 17-5) = 12
+        monkeypatch.setattr(al, "count_messages_tokens", lambda m: 10**9)
+        removed = al._fifo_prune(msgs, 100, protect_recent_count=5, is_resumed=True)
+        assert removed == 5  # 17 - 12，不含标记自身
+        assert msgs[:12] == head  # 受保护区原样
+        assert len(msgs) == 13  # 12 + 标记
+        marker = msgs[12]
+        assert marker["role"] == "user"
+        assert marker["content"] == "[上下文提示：更早的 5 条消息已因上下文超限被移除]"

@@ -499,7 +499,7 @@ def test_sub_agent_placeholderize_before_fifo():
         # 第 2 轮轮顶会再次触发 FIFO spy，此时 turn1 的 FIFO 已把占位符删光 + 新轮 dispatch 的
         # tool('ok') 非占位符 → 直接赋值会覆盖 flag=False。用 or 累积保证首次 True 不被覆盖。
         calls["placeholder_seen"] = calls["placeholder_seen"] or any(
-            m.get("role") == "tool" and str(m.get("content", "")).endswith("输出已裁剪]")
+            m.get("role") == "tool" and str(m.get("content", "")).endswith(("输出已裁剪]", "获取]"))
             for m in messages
         )
         return orig_fifo(messages, target_tokens, is_resumed=is_resumed)

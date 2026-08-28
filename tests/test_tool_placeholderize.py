@@ -5,7 +5,11 @@
   user 总数 = 1（初始指令）+ n_rounds；tool idx = 3, 6, 9, ...（每轮 1 个，3k 模式）。
 默认 protect_turns=10：总 user ≤ 10 → 全保护返回 0；否则最早 (user_total - 10) 轮可替换。
 """
-from agent.generic.agent_loop import _placeholderize_tool_outputs, count_messages_tokens
+from agent.generic.agent_loop import (
+    _is_tool_placeholder,
+    _placeholderize_tool_outputs,
+    count_messages_tokens,
+)
 
 
 def _tool(tcid: str, content: str, name: str = "") -> dict:
@@ -41,13 +45,13 @@ def _build_messages(n_rounds: int, tool_names: list[str] | None = None) -> list[
 
 
 def test_basic_replacement_with_name():
-    """基本替换：tool content 变 [read 输出已裁剪]，tool_call_id 保留，assistant.tool_calls 原样。"""
+    """基本替换：tool content 变 [read 输出已裁剪，如需原文可重新调用该工具获取]，tool_call_id 保留，assistant.tool_calls 原样。"""
     msgs = _build_messages(3, ["read"])
     replaced = _placeholderize_tool_outputs(msgs, 1, protect_turns=1)  # 只保护最近 1 轮
     assert replaced == 3  # 3 轮全部可替换（user=4，保护 1 轮 → 最早 3 轮）
     for m in msgs:
         if m.get("role") == "tool":
-            assert m["content"] == "[read 输出已裁剪]"
+            assert m["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"
             assert m["tool_call_id"]  # tool_call_id 保留
     # assistant.tool_calls 原样（name/arguments 未动）
     asst = [m for m in msgs if m.get("role") == "assistant"][0]
@@ -61,12 +65,12 @@ def test_stop_when_target_reached():
     msgs = _build_messages(3, ["read"])
     # 精确 target：用同一 count 函数量出"替换第 1 条后"的 token 量
     probe = copy.deepcopy(msgs)
-    probe[3]["content"] = "[read 输出已裁剪]"
+    probe[3]["content"] = "[read 输出已裁剪，如需原文可重新调用该工具获取]"
     target = count_messages_tokens(probe)
     replaced = _placeholderize_tool_outputs(msgs, target, protect_turns=1)
     assert replaced == 1
-    assert msgs[3]["content"] == "[read 输出已裁剪]"  # 最早的 tool 被替换
-    assert msgs[6]["content"] != "[read 输出已裁剪]"  # 第二条未动（达标即停）
+    assert msgs[3]["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"  # 最早的 tool 被替换
+    assert msgs[6]["content"] != "[read 输出已裁剪，如需原文可重新调用该工具获取]"  # 第二条未动（达标即停）
 
 
 def test_protect_recent_turns():
@@ -74,10 +78,10 @@ def test_protect_recent_turns():
     msgs = _build_messages(12, ["read"])
     replaced = _placeholderize_tool_outputs(msgs, 1)
     assert replaced == 3  # idx 3, 6, 9（最早 3 轮）
-    assert msgs[3]["content"] == "[read 输出已裁剪]"
-    assert msgs[6]["content"] == "[read 输出已裁剪]"
-    assert msgs[9]["content"] == "[read 输出已裁剪]"
-    assert msgs[12]["content"] != "[read 输出已裁剪]"  # 第 4 轮起保护内
+    assert msgs[3]["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"
+    assert msgs[6]["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"
+    assert msgs[9]["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"
+    assert msgs[12]["content"] != "[read 输出已裁剪，如需原文可重新调用该工具获取]"  # 第 4 轮起保护内
 
 
 def test_idempotent_skips_already_placeholderized():
@@ -88,12 +92,12 @@ def test_idempotent_skips_already_placeholderized():
     漏算 idx9 也会被替换（target=1 达不到 → 循环到 i=10 break），实际返回 2。
     """
     msgs = _build_messages(12, ["read"])
-    msgs[3]["content"] = "[read 输出已裁剪]"  # 模拟第 1 轮已被替换
+    msgs[3]["content"] = "[read 输出已裁剪]"  # 模拟第 1 轮已被旧格式占位符替换（旧后缀，幂等跳过仍生效）
     replaced = _placeholderize_tool_outputs(msgs, 1)
     assert replaced == 2  # 跳过 idx3（已占位符），替换 idx6 与 idx9
-    assert msgs[6]["content"] == "[read 输出已裁剪]"
-    assert msgs[9]["content"] == "[read 输出已裁剪]"
-    assert msgs[3]["content"] == "[read 输出已裁剪]"  # 未被二次替换
+    assert msgs[6]["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"
+    assert msgs[9]["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"
+    assert msgs[3]["content"] == "[read 输出已裁剪]"  # 旧占位符未被二次替换（原样保留）
     # 全部可替换的已占位符化 → 返回 0（幂等）
     assert _placeholderize_tool_outputs(msgs, 1) == 0
 
@@ -109,11 +113,11 @@ def test_name_fallback_from_assistant_calls():
     ]
     replaced = _placeholderize_tool_outputs(msgs, 1, protect_turns=1)
     assert replaced == 1
-    assert msgs[3]["content"] == "[grep 输出已裁剪]"
+    assert msgs[3]["content"] == "[grep 输出已裁剪，如需原文可重新调用该工具获取]"
 
 
 def test_name_match_failure_unnamed_placeholder():
-    """tool_call_id 匹配失败 → 无名占位符 [输出已裁剪]。"""
+    """tool_call_id 匹配失败 → 无名占位符 [输出已裁剪，如需原文可重新调用对应工具获取]。"""
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "任务"},
@@ -123,7 +127,7 @@ def test_name_match_failure_unnamed_placeholder():
     ]
     replaced = _placeholderize_tool_outputs(msgs, 1, protect_turns=1)
     assert replaced == 1
-    assert msgs[3]["content"] == "[输出已裁剪]"
+    assert msgs[3]["content"] == "[输出已裁剪，如需原文可重新调用对应工具获取]"
 
 
 def test_no_tool_messages_returns_zero():
@@ -141,7 +145,7 @@ def test_all_rounds_protected_returns_zero():
     """总 user 数 ≤ 10（全在保护内）→ 返回 0，任何 tool 不动。"""
     msgs = _build_messages(8, ["read"])  # user=9 ≤ 10 → 全保护
     assert _placeholderize_tool_outputs(msgs, 1) == 0
-    assert all(m["content"] != "[read 输出已裁剪]" for m in msgs if m.get("role") == "tool")
+    assert all(m["content"] != "[read 输出已裁剪，如需原文可重新调用该工具获取]" for m in msgs if m.get("role") == "tool")
 
 
 def test_eleven_users_protects_exactly_ten():
@@ -149,8 +153,8 @@ def test_eleven_users_protects_exactly_ten():
     msgs = _build_messages(10, ["read"])  # user = 1 + 10 = 11 > 10 → 最早 1 轮可替换
     replaced = _placeholderize_tool_outputs(msgs, 1)
     assert replaced == 1
-    assert msgs[3]["content"] == "[read 输出已裁剪]"  # 最早轮 tool
-    assert msgs[6]["content"] != "[read 输出已裁剪]"  # 第 2 轮起保护
+    assert msgs[3]["content"] == "[read 输出已裁剪，如需原文可重新调用该工具获取]"  # 最早轮 tool
+    assert msgs[6]["content"] != "[read 输出已裁剪，如需原文可重新调用该工具获取]"  # 第 2 轮起保护
 
 
 def test_multiple_tools_same_round():
@@ -162,5 +166,21 @@ def test_multiple_tools_same_round():
     assert replaced == 9
     round1_tools = [m for m in msgs12[2:6] if m.get("role") == "tool"]  # 最早轮 3 条
     assert [m["content"] for m in round1_tools] == [
-        "[read 输出已裁剪]", "[grep 输出已裁剪]", "[write 输出已裁剪]",
+        "[read 输出已裁剪，如需原文可重新调用该工具获取]",
+        "[grep 输出已裁剪，如需原文可重新调用该工具获取]",
+        "[write 输出已裁剪，如需原文可重新调用该工具获取]",
     ]
+
+
+def test_is_tool_placeholder_new_and_legacy_suffix():
+    """_is_tool_placeholder 对新旧两种后缀均 True（兼容恢复会话中的旧占位符），普通文本 False。"""
+    # 新格式（带再生指引）
+    assert _is_tool_placeholder("[read 输出已裁剪，如需原文可重新调用该工具获取]") is True
+    assert _is_tool_placeholder("[输出已裁剪，如需原文可重新调用对应工具获取]") is True
+    # 旧格式（恢复会话兼容）
+    assert _is_tool_placeholder("[read 输出已裁剪]") is True
+    assert _is_tool_placeholder("[输出已裁剪]") is True
+    # 普通文本 / 非字符串 → False
+    assert _is_tool_placeholder("read 输出已裁剪，如需原文可重新调用该工具获取") is False  # 无开头 [
+    assert _is_tool_placeholder("普通工具输出内容") is False
+    assert _is_tool_placeholder(None) is False
