@@ -1065,6 +1065,14 @@ def _write_graphml_v8(tmp_path: Path, nodes_data, edges_data=None):
     """
     ns = "http://graphml.graphdrawing.org/xmlns"
     root = ET.Element(f"{{{ns}}}graphml")
+    # key 定义（repair 的 edge 字段解析按 attr.name 查 <key>，必须声明）
+    for kid, attr_name in [
+        ("d1", "entity_type"), ("d2", "description"), ("d3", "source_id"),
+        ("d8", "description"), ("d9", "keywords"), ("d10", "source_id"),
+    ]:
+        ET.SubElement(root, f"{{{ns}}}key", {
+            "id": kid, "for": "all", "attr.name": attr_name, "attr.type": "string"
+        })
     graph = ET.SubElement(root, f"{{{ns}}}graph", {"edgedefault": "undirected"})
     for node_id, etype, desc, src in nodes_data:
         node = ET.SubElement(graph, f"{{{ns}}}node", {"id": node_id})
@@ -1499,8 +1507,15 @@ async def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatch):
     """GraphML 无 node → status=pending（全新用户场景）。"""
-    # GraphML 空（无 node）
-    _write_graphml_v8(tmp_path, [])
+    # GraphML 空（无 node、无 edge、无 <key> 定义——全新用户的空图不声明属性，
+    # 文件 <200 字节；repair_doc_status 用文件大小 >200 判定"有数据"）
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">'
+        '<graph id="G" edgedefault="undirected"></graph>'
+        '</graphml>',
+        encoding="utf-8",
+    )
 
     (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
         "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
@@ -3290,6 +3305,10 @@ async def test_repair_vdb_relationships_src_tgt_sorted(monkeypatch, tmp_path):
     # 验证 repair 后 src_id="A" / tgt_id="B"（sorted）
     graphml_content = """<?xml version="1.0" encoding="UTF-8"?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="d8" for="edge" attr.name="description" attr.type="string"/>
+  <key id="d9" for="edge" attr.name="keywords" attr.type="string"/>
+  <key id="d10" for="edge" attr.name="source_id" attr.type="string"/>
+  <key id="d11" for="edge" attr.name="file_path" attr.type="string"/>
   <graph id="G" edgedefault="undirected">
     <node id="a"/>
     <node id="b"/>
@@ -3353,6 +3372,10 @@ async def test_repair_vdb_relationships_keywords_dedup(monkeypatch, tmp_path):
     graphml_content = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <key id="d8" for="edge" attr.name="description" attr.type="string"/>\n'
+        '  <key id="d9" for="edge" attr.name="keywords" attr.type="string"/>\n'
+        '  <key id="d10" for="edge" attr.name="source_id" attr.type="string"/>\n'
+        '  <key id="d11" for="edge" attr.name="file_path" attr.type="string"/>\n'
         '  <graph id="G" edgedefault="undirected">\n'
         '    <node id="a"/>\n'
         '    <node id="b"/>\n'
@@ -3413,6 +3436,10 @@ async def test_repair_vdb_relationships_content_format(monkeypatch, tmp_path):
     graphml_content = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <key id="d8" for="edge" attr.name="description" attr.type="string"/>\n'
+        '  <key id="d9" for="edge" attr.name="keywords" attr.type="string"/>\n'
+        '  <key id="d10" for="edge" attr.name="source_id" attr.type="string"/>\n'
+        '  <key id="d11" for="edge" attr.name="file_path" attr.type="string"/>\n'
         '  <graph id="G" edgedefault="undirected">\n'
         '    <node id="alpha"/>\n'
         '    <node id="beta"/>\n'
@@ -3485,6 +3512,10 @@ async def test_repair_vdb_relationships_meta_fields_filter(monkeypatch, tmp_path
     graphml_content = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <key id="d8" for="edge" attr.name="description" attr.type="string"/>\n'
+        '  <key id="d9" for="edge" attr.name="keywords" attr.type="string"/>\n'
+        '  <key id="d10" for="edge" attr.name="source_id" attr.type="string"/>\n'
+        '  <key id="d11" for="edge" attr.name="file_path" attr.type="string"/>\n'
         '  <graph id="G" edgedefault="undirected">\n'
         '    <node id="entity_one"/>\n'
         '    <node id="entity_two"/>\n'
@@ -3949,6 +3980,7 @@ async def test_repair_relation_chunks_key_format(monkeypatch, tmp_path):
     graphml_content = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <key id="d10" for="edge" attr.name="source_id" attr.type="string"/>\n'
         '  <graph id="G" edgedefault="undirected">\n'
         '    <node id="alpha"/>\n'
         '    <node id="beta"/>\n'
@@ -4036,6 +4068,7 @@ async def test_repair_relation_chunks_chunk_ids_is_list(monkeypatch, tmp_path):
     graphml_content = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
+        '  <key id="d10" for="edge" attr.name="source_id" attr.type="string"/>\n'
         '  <graph id="G" edgedefault="undirected">\n'
         '    <node id="alpha"/>\n'
         '    <node id="beta"/>\n'
@@ -4614,6 +4647,86 @@ async def test_repair_full_relations_pair_always_sorted(monkeypatch, tmp_path):
     # pair 必须 sorted（["A", "Z"]，不是 ["Z", "A"]）
     assert za_pair == ["A", "Z"], f"pair 未 sorted: {za_pair}"
     assert za_pair[0] <= za_pair[1], f"pair[0] > pair[1]: {za_pair}"
+
+
+@pytest.mark.asyncio
+async def test_repair_full_relations_edge_key_layout_drift(monkeypatch, tmp_path):
+    """回归测试：GraphML edge key 编号漂移时仍按 attr.name 解析（不硬编码 dN）。
+
+    背景：nx.write_graphml 按属性出现顺序自动编号 dN。真实数据某次写入给 node
+    增加了 `id` 属性后，edge key 从 d7-d13 整体漂移到 d8-d14——旧代码硬编码
+    d8=description/d9=keywords/d10=source_id/d11=file_path，把 weight 当描述、
+    keywords 当 source_id → chunk→doc 映射零命中，full_relations 静默不重建。
+
+    本测试构造"漂移布局"：node 占 d0-d3（for=node），edge 的 source_id 在 d7
+    （for=edge）——旧硬编码映射下 d10 不存在 → 必失败；按 attr.name 解析 → 通过。
+    """
+    from niu_api.internal import lightrag_repair
+
+    tmp_storage = tmp_path / "lightrag_storage"
+    tmp_storage.mkdir(parents=True, exist_ok=True)
+
+    graphml_content = """<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="d0" for="node" attr.name="entity_id" attr.type="string"/>
+  <key id="d1" for="node" attr.name="entity_type" attr.type="string"/>
+  <key id="d2" for="node" attr.name="description" attr.type="string"/>
+  <key id="d3" for="node" attr.name="source_id" attr.type="string"/>
+  <key id="d4" for="edge" attr.name="weight" attr.type="double"/>
+  <key id="d5" for="edge" attr.name="description" attr.type="string"/>
+  <key id="d6" for="edge" attr.name="keywords" attr.type="string"/>
+  <key id="d7" for="edge" attr.name="source_id" attr.type="string"/>
+  <graph id="G" edgedefault="undirected">
+    <node id="A"/>
+    <node id="B"/>
+    <edge source="A" target="B">
+      <data key="d4">1.0</data>
+      <data key="d5">漂移布局下的关系描述</data>
+      <data key="d6">关键词X</data>
+      <data key="d7">chunk-drift-1</data>
+    </edge>
+  </graph>
+</graphml>
+"""
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
+        graphml_content, encoding="utf-8"
+    )
+    (tmp_storage / "kv_store_doc_status.json").write_text(
+        json.dumps({
+            "doc-drift": {
+                "status": "processed",
+                "chunks_count": 1,
+                "chunks_list": ["chunk-drift-1"],
+                "content_summary": "",
+                "content_length": 0,
+                "created_at": "",
+                "updated_at": "",
+                "file_path": "/drift.md",
+                "track_id": None,
+                "metadata": {},
+            }
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
+
+    result = await lightrag_repair.repair_full_relations()
+
+    assert result["status"] == "ok", f"repair 失败: {result.get('message')}"
+    # 核心断言：edge source_id（d7，漂移位置）被正确解析 → chunk→doc 命中 → 写文件
+    assert result["actual"] == 1, (
+        f"应重建 1 条（edge source_id 在 d7，按 attr.name 解析才能命中），实际 {result['actual']}"
+    )
+    fr_path = tmp_storage / "kv_store_full_relations.json"
+    assert fr_path.exists(), "full_relations.json 未生成（edge key 漂移未适配）"
+    with open(fr_path, encoding="utf-8") as f:
+        fr = json.load(f)
+    assert "doc-drift" in fr, f"doc-drift 不在 full_relations: {list(fr.keys())}"
+    pairs = fr["doc-drift"]["relation_pairs"]
+    assert ["A", "B"] in pairs, f"缺 A/B pair: {pairs}"
 
 
 @pytest.mark.asyncio
