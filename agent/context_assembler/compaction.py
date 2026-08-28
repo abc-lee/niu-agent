@@ -241,7 +241,7 @@ def _placeholderize_all_tool_outputs(messages: list[dict]) -> int:
         name = m.get("name", "") or ""
         if not name:
             name = _find_tool_name_from_assistant(messages, i, m.get("tool_call_id", "") or "")
-        m["content"] = f"[{name} 输出已裁剪]" if name else "[输出已裁剪]"
+        m["content"] = f"[{name} 输出已裁剪，如需原文可重新调用该工具获取]" if name else "[输出已裁剪，如需原文可重新调用对应工具获取]"
         replaced += 1
     return replaced
 
