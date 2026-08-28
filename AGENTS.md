@@ -57,7 +57,7 @@ MCP 服务器集群 (mcp-servers/)
 5. 代码调试过程中验证无效后，必须马上撤销调试代码，恢复原始干净代码，再增加新的调试代码。
 6. 项目代码量较大，为保护上下文窗口，无需长期记忆或大代码量的遍历工作交给子 Agent。
 7. 代码质量优先，用户不在乎 token 消耗。
-8. 版本号变更必须同步两处：根目录 `VERSION` 文件（单一真相源，对外发布用）、`ui/main/windows/assistant/chat.html` 中 `version-label` span 的文本（UI 展示用）。其他文件（Cargo.toml、package.json、Python `__version__`、pyproject.toml 等）的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
+8. 版本号变更必须同步三处：根目录 `VERSION` 文件（单一真相源，对外发布用）、`ui/main/windows/assistant/chat.html` 中 `version-label` span 的文本（UI 展示用）、`niu_api/compat.py` 中 `list_models` 的 `User-Agent: Niu/<版本号>`（Cloudflare 拦截 Python 默认 UA）。UA 改动连带 `tests/test_list_models_endpoint.py` 的 User-Agent 断言同步。其他文件（Cargo.toml、package.json、Python `__version__`、pyproject.toml 等）的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
 9. 私有文档（`docs/superpowers/` 整个目录）遵循铁律 9：在**独立 git 仓库**（`docs/superpowers/` 内层 `.git`）编写与提交（有 git 历史供多轮审查），该仓库永不推送；main 通过 `.gitignore` 排除该目录，push 天然干净。
 
 ---
@@ -511,6 +511,17 @@ preload_face_model()
 
 ### 2026-08-28
 
+#### 工程：测试债清算（T0-T7）——147 条失败全核销 + 版本 0.3.1（HEAD a57cb80a+dafa069f）
+
+- **背景**：历轮工程攒下 147 条测试失败/错误（TestDebtInventory 盘点 145 + test_photo 2 条补录）；T0 权威台账 131F + 16 excluded（触网/写图）逐条归属到 Task，无未归属条目
+- **2 真 bug（修生产代码，独立 commit）**：①repair GraphML edge 字段改按 attr.name 解析——key 编号漂移致 full_relations 静默不重建（42a4b187）②`_extract_tmp_paths` 双缺陷（file:// 前缀 + markdown 标点收尾）致 tmp 文件永不清理（a3e31fa8）；其余 8 例疑似真 bug 全部定性为假 bug（陈旧断言/mock 失配），只改测试对齐现役契约
+- **删除**：10 个死代码测试整文件删（v8 repair 体系 6 死文件 + inject_entity/inject_relation 族 + 双管道遗留 + Windows 机器绑定源码扫描）+ 生产侧 agent/tool_lifecycle.py 退役（T3，守卫测试转绿）
+- **REDACTED 全仓清零**：5 文件脱敏字面量清扫；test_context_overflow_real 标 e2e 门控 + 修相对路径
+- **测试边界纪律补（test_kg_merge_tdd 写图教训）**：盘点实证该文件绿用例写生产图谱（+2 实体/+2 chunk/+1 depicts 边，已按 lightrag-data-repair 流程恢复）→ T1 双入口 patch（get_lightrag + LightRAGIngester 直构造）+ 守卫断言根治，零写入双实证后进全量
+- **历轮「既有豁免」全部作废**：本工程核销 AGENTS.md 全部历史 pre-existing/既有失败豁免条目（test_lightrag_adapter TestIngester*/TestSearch*、test_lightrag_repair_unit 真实数据、test_tidy_cursor、test_subagent_overflow client.backend None、test_compress_*、phase02 等）——全量 3218 passed / 0 failed / 151 skipped，不再存在"已知失败"基线
+- **版本 0.3.0 → 0.3.1**：三处同步（VERSION + chat.html version-label + compat.py UA）+ test_list_models_endpoint 2 断言；工作原则 8 由「两处」改「三处」（UA 为第三处，连带测试断言）
+- **验收**：全量 3218 passed / 0 failed / 151 skipped（e2e/integration 门控 skip 除外；T0 基线 3114P/131F/156S 对拍）+ lightrag_storage 零污染
+
 #### 工程：read 工具智能分页——29000 字符页预算按行截断取代行内均分截断（计划 v1.0→v1.3 四轮双审门禁 + SDD T1-T3）
 
 - **背景（用户提出）**：dream-evolver/entity-extractor 提示词"每次读取不超过 150 行"是过度保守浪费轮次——核查发现 150 行是绕开行内截断缺陷的提示词补丁（500 行/页时每行被均分预算砍到 1000 字符，静默破坏 F1/F3 tool 记录），非根治
@@ -528,7 +539,7 @@ preload_face_model()
 - **背景**：用户提议子 Agent 模仿主 Agent 组装器做"溢出归档到 ~/.niu/tmp/ + read 召回"；讨论中用户两点实证推翻——①子 Agent 是工作 Agent（一条指令跑到尾），会话轮切割概念退化；②占位符化（80% 触发）实证全部吸收溢出，FIFO 阶段 2 零真实触发——为从未发生的路径建机制收益为零；且子 Agent 工具输出绝大多数可再生（文件/DB/图谱可重查），召回通道隐性存在。**定案：完整归档机制不建**，若日志见 `[FIFO] Proactive pruning` 频繁出现再重启（届时逻辑=归档工具输出而非轮次）
 - **落地两条微加固**：①占位符文案加再生指引 `[name 输出已裁剪，如需原文可重新调用该工具获取]`（幂等判定兼容新旧后缀，防恢复会话旧占位符被二次替换）；②`_fifo_prune` 真删时在切割位置插入可见标记消息（`[上下文提示：更早的 N 条消息已因上下文超限被移除]`）——无声丢失变有声
 - **验证**：3 测试文件 41 passed + test_subagent_overflow 44 例中 4 failed 经 stash 基线复核全部 pre-existing（3 例 client.backend None 既有豁免 + 1 例 journal 迁出睡眠管道后的陈旧源码扫描断言）；新增 4 用例全绿
-- **遗留跟进点**：`agent/context_assembler/compaction.py` L244 有主 Agent 组装器自己的旧文案占位符副本（未动）——日后主子 Agent 占位符统一口径时改这里
+- **遗留跟进点（已闭环 2026-08-28 测试债清算 T7）**：compaction.py L244 旧文案已统一为子 Agent 同款再生指引，test_compaction 断言同步
 
 #### 修复：请求组装 thinking 双通道去冗余（用户看日志发现 + 双审通过，commit 1225a1a9）
 

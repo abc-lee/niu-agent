@@ -197,7 +197,7 @@ class TestD15Order:
         assert stats["keep_turns"] < 3
         # 窗口内存在占位符文本
         assert any(
-            isinstance(e.get("content"), str) and e["content"].endswith("输出已裁剪]")
+            isinstance(e.get("content"), str) and e["content"].endswith("工具获取]")
             for e in view if e.get("role") == "tool"
         )
 
