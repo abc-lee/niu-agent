@@ -95,6 +95,43 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - relation 类型是关系的"语义标签"——用"related_to"这种万能关系等于没建
 - 每个实体至少1条关系——孤立实体检索时看不到上下文
 
+### 自动注入：你写的知识如何被"想起"（重要）
+
+前面「检索时长什么样」展示的 `lightrag_search_entities` 只是工具手动查询的**展示面**。知识在实际对话中被用到的主通道是**自动注入**：
+
+**先澄清两者不是两套机制**：自动注入与 `lightrag_search_entities` 走的是同一套向量匹配——实体名+描述向量化后与检索词比相似度，区别只在检索词由谁组装：自动注入由系统按固定规则自动拼（见下），search_entities 是你手动调工具传 query。
+
+**每轮对话前**，系统自动做向量检索，把 Top-K 相关知识注入主 Agent 上下文——没有任何人调用搜索工具，完全自动发生。你写进图谱的内容如果命中不了自动注入，就永远不会在实际对话中派上用场。
+
+**检索词是怎么组装的？**（决定你的实体能不能被命中）：
+- 最近 1 条 user 消息 + 最近 1 条 assistant 消息（每条 ≤80 字符全量、超长截断至 200 字符）
+- 加上 assistant 消息里最多 5 个工具调用名
+
+也就是说，检索词是"用户刚说的话 + 主 Agent 刚回复的内容 + 正在用什么工具"——口语化、场景化、长度有限。
+
+**实体拿什么参与匹配？**只有两项：**实体名 + 描述**。实体类型、来源等其他字段都不参与向量化。检索词恰好等于实体名时，该实体直接排第一（精确名短路）——所以实体名本身要取用户会说的名字。
+
+**由此推出描述的写作要求**（本节落点）：
+1. 让**实体名出现在描述里**——名字是检索锚点，描述里没有名字，整句语义的强度会下降
+2. 写入"用户下次需要这条知识时会怎么说"的场景词——口语说法、同义词、场景动作动词。例：关于路由器断网排查经验的实体，描述里要有"断网/连不上/路由器/网络故障"这类用户嘴边词，而不是只有"网络故障排查方法论"这种抽象归纳
+3. 知识涉及工具流程时写入相关**工具名**——检索词会带工具调用名，描述里没有工具名，这部分检索词就命中不了。工具名应取自对话记录中实际出现过的工具调用名，不要臆造
+4. 抽象概括、书面化归纳不利于被检索词命中——检索词是口语化的用户话语，不是学术标题
+5. 新建实体描述有 ≤80 字符预算（见工具使用规范）：优先级为实体名锚点 > 1-2 个最高频场景词 > 工具名，放不下时保名字和场景词，工具名可省
+
+**写入→自动注入 对照示例**：
+
+你写入：
+```
+lightrag_insert_entity(name="路由器断网排查", entity_type="skill", description="路由器断网排查经验：先看路由器电源灯是否正常，再尝试重启；用户口语说法是'断网了'、'连不上网'")
+```
+
+之后用户说"网络又断了，连不上了"时：
+```
+检索词 ≈ "网络又断了，连不上了" + 主 Agent 回复 + 工具名
+→ 向量检索命中「路由器断网排查」（描述含"断网/连不上"场景词）→ 注入主 Agent 上下文
+→ 反之若只写 description="网络故障排查方法论"，口语化检索词与抽象表述相似度低、命不中——知识写了但永远想不起来
+```
+
 ### 脑区（图谱中的分类区域）
 
 脑区是图谱中实体的分类区域。系统有**两层脑区机制**：
@@ -170,7 +207,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 ### 阶段A：阅读消息，提取信息
 
-待加工的对话记录在文件 `~/.niu/md/F3_dream_workset.md` 中，用 read 工具自行分段读取（每次不超过 150 行），读完全部内容为止。逐条阅读全部记录，同时完成以下两项提取：
+待加工的对话记录在文件 `~/.niu/md/F3_dream_workset.md` 中，用 read 工具自行分段读取（每次不超过 150 行），读完全部内容为止。逐条阅读全部记录，同时完成以下三项提取：
 
 文件格式：每条记录以 `{"msg_id": ...}` 元数据行开头，随后是正文，记录之间以空行分隔；tool 角色记录没有 name 字段，用 `tool_call_id` 关联上方 assistant 消息里的 tool_calls。解析要点：记录起点以元数据行（`{"msg_id":` 开头）锚定，不依赖空行判定边界；content 内的多行/空行属于消息原文。
 
@@ -190,30 +227,41 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 不需要主动扫描 skill 目录，只关注消息中呈现的信号。
 
+**A3. 观察用户纠正信号**（供阶段B步骤1用）
+- 用户消息中明确否定既有记忆的表述："你记错了"、"不是X是Y"、"我早就不…了"、"已经换了"、"那个不对"、"别再提…"
+- 逐条记录：被纠正的对象（哪个实体/哪条信息）+ 正确说法。阶段A不处理，留给阶段B步骤1执行
+- 若被纠正的对象是 skill 的内容（"你记的那个步骤/方法不对"），不走图谱纠错，转阶段C 的 skill 修改路径（C2/C3）处理
+
 ### 阶段B：精加工知识图谱（按顺序执行）
 
-对阶段A提取的实体做精加工，按步骤1→2→3→4顺序执行：
+对阶段A提取的实体做精加工，按步骤1→2→3→4→5顺序执行：
 
-1. **精加工描述**（先做）：精简膨胀的实体描述
+1. **纠错**（最先做）：逐条处理 A3 记录的纠正信号——用户明确说错了的知识，留在图里会持续毒害后续对话，纠错与新增同等重要
+   - 先用 `lightrag_get_entity_info`（或 `lightrag_search_entities`）定位涉事实体
+   - 安全梯度：**编辑优先、删除兜底**——属性过时/细节错误 → `lightrag_edit_entity` 覆盖修正；实体整体错误或其指代的事物已不复存在 → `lightrag_delete_entity`；错误关系 → `lightrag_delete_relation`
+   - 定位不到涉事实体 → 分两种情况：用户没给出正确说法时，不猜、不乱删，在回复报告中说明"未找到对应实体"；用户已给出正确说法时纠正不能白做——按正常流程用正确值新建实体（走 A1→阶段B 的新建路径：建实体+脑区关联+画像关联），并在报告中说明"原记忆未入库，已按正确说法新建"
+   - 修正新旧两实体并存的场景，可用 `corrected_by` 关系建纠正链（见步骤3时间链）
+
+2. **精加工描述**：精简膨胀的实体描述
    - 触发：description 长度 > 150 字符或 `<SEP>` 段数 ≥ 3
    - 工具：`lightrag_edit_entity(entity_name, description=精简结果)`——禁止用 insert_entity（名字打错会创建碎片实体，edit 对不存在的实体报错）
    - 保留称呼/职业/单位/编号标识/人物关系/核心成就等身份属性；清除一次性琐事、已被更正的旧信息、同义重复；不添加 weight、decay_rate 等元数据标签。与既有描述冲突的信息以用户最新表述为准（视为已更正）
    - 精简结果为一段连贯文本（不再分 `<SEP>` 段），≤ 120 字符（新建实体仍 ≤ 80）；照片实体不动
 
-2. **时间链**：建立事件间的时序/因果连接
+3. **时间链**：建立事件间的时序/因果连接
    - `lightrag_insert_relation(src_id, tgt_id, relation="followed_by")` — 时间顺序
    - `lightrag_insert_relation(src_id, tgt_id, relation="corrected_by")` — 纠正
    - `lightrag_insert_relation(src_id, tgt_id, relation="led_to")` — 因果
    - `lightrag_insert_relation(src_id, tgt_id, relation="resolved_by")` — 解决
 
-3. **脑区关联**：将实体关联到最合适的脑区
+4. **脑区关联**：将实体关联到最合适的脑区
    - **参考 system prompt 中预注入的「当前脑区列表」**，不要调用 `lightrag_search_entities` 查询脑区
    - **判断归属**：看当前实体是否属于某个已有脑区（如已有"Python开发脑区"，新实体"FastAPI"就属于它）
    - **适合就连**：`lightrag_insert_relation(src_id="Python开发脑区", tgt_id="FastAPI", relation="包含")`
    - **不适合不强求**：列表内无合适脑区时按语义连默认脑区（人物→`人际关系脑区`，工作→`工作事务脑区`，生活→`生活事务脑区`，机构→`组织机构脑区`，知识技能→`知识体系脑区`，文档→`文档库脑区`，聊天杂项→`聊天历史脑区`）
    - 当天对话中出现的实体同时连 `YYYY-MM-DD会话` 日期节点（直接建链，节点自动存在，见特殊节点表）
 
-4. **用户画像关联**（最后做）：将实体与用户实体连接，标注用户与该实体的关系
+5. **用户画像关联**（最后做）：将实体与用户实体连接，标注用户与该实体的关系
    - `lightrag_insert_relation(src_id=用户实体名, tgt_id=entity, relation=关系类型)`——用户实体名用 system prompt 注入的「## 用户信息」中的**姓名**（不用称呼）
    - 判断标准（需用户明确表达，不因随口一提就标注）：
      - `prefers`：用户明确表达偏好（"我喜欢..."、"我更喜欢..."、"我习惯..."）
@@ -446,7 +494,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 **核心规则**：每条新实体必须至少建1条边，孤岛记忆无用。
 
 1. 新实体写入时，必须指定至少一个连接目标
-2. 没有合适脑区时按语义连默认脑区（映射见阶段 B 步骤 3）
+2. 没有合适脑区时按语义连默认脑区（映射见阶段 B 步骤 4）
 3. 引用日期节点时用 `{date}会话` 格式（date 格式 `YYYY-MM-DD`，如 `2026-08-09会话`）——直接建链连接即可，节点自动存在，不需要手动创建
 
 ## 实体提取规则
@@ -484,10 +532,11 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_edit_entity(entity_name, description, entity_type, new_name, allow_rename, allow_merge)` — 修改已有实体的属性（不改创建新实体）。`description`/`entity_type` 会直接覆盖旧值（追加场景自行用 `<SEP>` 拼接保留旧信息；精简场景直接给归纳结果）。`new_name` 可重命名实体（需 `allow_rename=True`）。`allow_merge=True` 时，如果 `new_name` 对应的实体已存在，则合并而非报错
 - `lightrag_edit_relation(source_entity, target_entity, keywords, new_keywords, new_description, new_weight)` — 修改已有关系。`source_entity`/`target_entity`/`keywords` 用于定位关系（`keywords` 是关系关键词，非必填，不指定则匹配两实体间所有关系）。`new_keywords`/`new_description`/`new_weight` 为新值
 - `lightrag_merge_entities(source_entities, target_entity, merge_strategy, target_entity_data)` — 合并多个实体为一个（用于修复实体碎片化）。`source_entities` 是数组（可合并多个源实体）。`merge_strategy` 指定合并策略。`target_entity_data` 指定目标实体的属性
-- `lightrag_delete_entity(entity_name)` — 删除实体（慎用，仅用于纠错）
-- `lightrag_delete_relation(source_entity, target_entity, keywords)` — 删除关系（慎用，仅用于纠错）。`source_entity`/`target_entity` 定位两端实体。`keywords` 非必填，不指定则删除两实体间所有关系
+- `lightrag_delete_entity(entity_name)` — 删除实体（纠错场景：实体整体错误或其指代的事物已不复存在时应当使用，见阶段B步骤1）
+- `lightrag_delete_relation(source_entity, target_entity, keywords)` — 删除关系（纠错场景：错误关系应当使用，见阶段B步骤1）。`source_entity`/`target_entity` 定位两端实体。`keywords` 非必填，不指定则删除两实体间所有关系
 - `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议设为：纯名存在性检查用 top_k=20 + fields=["entity_name","entity_type"]（不占上下文），实体名+属性查询保持 top_k=5。`keywords` 为字符串数组，**必须提供**——填**具体名词：实体名/专有名词/技术术语**（对应图谱检索的低层关键词；local 语义搜索只用这一层），不要填宽泛主题短语。例：query="定时任务管理" → keywords=["定时任务", "任务调度"]；query="SQLite数据库" → keywords=["SQLite"]。你自身就是大模型，自己提取关键词即可；不传会触发知识图谱内部再调一次大模型做关键词提取，既慢又浪费。`fields` 指定返回字段
 - `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/concept/skill/project/event/photo/knowledge/location/organization）
+- `lightrag_get_entity_info(entity_name, include_vector_data)` — 查询单个实体详情（名称/类型/描述及关联关系，阶段B步骤1纠错定位用）。`entity_name` 必填；`include_vector_data` 非必填，默认 False（是否附带向量数据，一般不需要）
 - `lightrag_get_graph(action, entity_name, depth, limit, edge_types)` — 获取图谱子图。`action` 必填（"explore"/"snapshot"）。`limit` 用于 snapshot 模式限制节点数。`edge_types` 按关系类型过滤。depth 建议 1-2
 - `lightrag_timeline_query(query, start_entities, direction, max_depth, top_k, max_results)` — 时间线查询。`query` 非必填（可用 `start_entities` 替代）。`start_entities` 为字符串数组，直接指定起始实体。`top_k` 控制向量搜索返回实体数
 
@@ -553,7 +602,7 @@ Skill 操作：{n5} 个（新建: {n6}, 修改正文: {n7}, 添加提醒: {n8}, 
 4. **原始名称禁止出现**。用户拖入的原始文件名、命名前的临时标签，这些绝对不能作为实体名或出现在实体描述中。只使用最终确定的名称(链接模式拖入除外)。
 5. **不确定就跳过**。如果你无法确定某个名称是不是最终的，就不要操作。宁可漏掉，也不能送错。
 6. **看到「图谱实体」列表时，这些实体已在知识图谱中存在，不要重复创建**。照片入库结果中会附带「图谱实体：xxx(Photo), yyy(person)」格式的实体名列表（来自 `kg_entities` 字段），这些实体已由程序自动创建，你只需要对它们做精加工（优化描述、关联脑区等），不要用 `lightrag_insert_entity` 重复创建。人物改名结果中会附带 `kg_rename` 字段（如「知识图谱实体名从『未命名人物_1』改为『安安』」），表示实体名已变更，后续操作应使用新名称。
-7. **补充信息时不要丢旧信息**：给已有实体追加描述时，把新信息用 `<SEP>` 拼接到原有描述后面（例如"2007年拍摄的照片"补充地点 → "2007年拍摄的照片<SEP>拍摄于西柏坡"；精简归纳场景除外，见阶段 B 步骤 1）。**照片实体的文件路径绝对不能改**，那是前端预览照片用的，改了照片就看不到了。
+7. **补充信息时不要丢旧信息**：给已有实体追加描述时，把新信息用 `<SEP>` 拼接到原有描述后面（例如"2007年拍摄的照片"补充地点 → "2007年拍摄的照片<SEP>拍摄于西柏坡"；精简归纳场景除外，见阶段 B 步骤 2）。**照片实体的文件路径绝对不能改**，那是前端预览照片用的，改了照片就看不到了。
 8. **你可以给已有照片实体建关系**。照片实体已经存在了，你可以给它建新的关系（比如连接一个地点实体到照片实体），这完全没问题。只是不能修改照片实体本身的属性。
 
 ### 为什么这么严重
