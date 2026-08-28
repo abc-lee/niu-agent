@@ -14,7 +14,7 @@ import os
 
 # Ensure project root is importable
 import sys
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -639,7 +639,7 @@ class TestSubagentFIFOThreshold:
         def mock_run(client, system_prompt, user_input, handler, tools_schema,
                       max_turns=20, initial_user_content=None,
                       context_window_tokens=0, context_fifo_threshold=0,
-                      history=None):
+                      history=None, **kwargs):
             captured["context_fifo_threshold"] = context_fifo_threshold
             return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
@@ -649,8 +649,8 @@ class TestSubagentFIFOThreshold:
         monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
         import agent.runner as runner_mod
-        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
-        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
 
@@ -673,7 +673,7 @@ class TestSubagentFIFOThreshold:
         def mock_run(client, system_prompt, user_input, handler, tools_schema,
                       max_turns=20, initial_user_content=None,
                       context_window_tokens=0, context_fifo_threshold=0,
-                      history=None):
+                      history=None, **kwargs):
             captured["context_fifo_threshold"] = context_fifo_threshold
             return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
@@ -683,8 +683,8 @@ class TestSubagentFIFOThreshold:
         monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
         import agent.runner as runner_mod
-        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
-        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
 
@@ -706,7 +706,7 @@ class TestSubagentFIFOThreshold:
         def mock_run(client, system_prompt, user_input, handler, tools_schema,
                       max_turns=20, initial_user_content=None,
                       context_window_tokens=0, context_fifo_threshold=0,
-                      history=None):
+                      history=None, **kwargs):
             captured["context_fifo_threshold"] = context_fifo_threshold
             return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"}, "")
 
@@ -716,8 +716,8 @@ class TestSubagentFIFOThreshold:
         monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
         import agent.runner as runner_mod
-        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
-        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
 
