@@ -5,11 +5,12 @@ Verifies that sync_photo_to_kg constructs Person entities correctly:
 - No source_id field on Person entities
 - description contains only the person name (not "detected in photo: ...")
 """
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
-# Add photo-server source to path
-sys.path.insert(0, "E:/tools/ai-bot/mcp-servers/photo-server/src")
+# Add photo-server source to path (跨平台相对路径，防单跑 collection error)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mcp-servers", "photo-server", "src"))
 
 from niu_photo_server import sync_photo_to_kg
 
@@ -397,15 +398,15 @@ class TestNamePersonKGSync:
 
 
 class TestNoteInjectUsesLightragInsert:
-    """Verify _inject_note_to_lightrag uses lightrag-server/lightrag_insert (full-file), NOT inject_entity (per-item)."""
+    """Verify _inject_note_to_lightrag uses lightrag-server/lightrag_insert via ToolRegistry
+    (per-note content + independent doc_id note:{id}), NOT LightRAGIngester.inject_entity."""
 
     @patch("agent.tool_registry.get_registry")
-    def test_inject_note_calls_lightrag_insert_with_full_json(self, mock_get_registry):
-        """_inject_note_to_lightrag must call lightrag-server/lightrag_insert with the full notes_data JSON."""
+    def test_inject_note_calls_lightrag_insert_with_full_json(self, mock_get_registry, tmp_path):
+        """_inject_note_to_lightrag must inject each note via lightrag-server/lightrag_insert (per-note content + independent doc_id)."""
         import json
-        import sys
-        sys.path.insert(0, "E:/tools/ai-bot/agent")
-        from injector.sync import SkillSync
+
+        from agent.injector.sync import SkillSync
 
         # Setup mock ToolRegistry
         mock_insert = MagicMock(return_value={"status": "ok"})
@@ -413,7 +414,8 @@ class TestNoteInjectUsesLightragInsert:
         mock_registry.get.return_value = mock_insert
         mock_get_registry.return_value = mock_registry
 
-        sync = SkillSync(skills_dir="E:/tools/ai-bot/memory/skills", use_watchdog=False)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            sync = SkillSync(skills_dir=str(tmp_path / "skills"), use_watchdog=False)
 
         notes_data = [
             {"id": "n1", "content": "Hello", "tags": ["greeting"]},
@@ -431,30 +433,31 @@ class TestNoteInjectUsesLightragInsert:
         # Must request lightrag-server/lightrag_insert (NOT lightrag_insert_entity)
         mock_registry.get.assert_called_once_with("lightrag-server/lightrag_insert")
 
-        # Must pass the full JSON as content= parameter
-        mock_insert.assert_called_once()
-        call_kwargs = mock_insert.call_args.kwargs
-        assert "content" in call_kwargs
-        # The content should be valid JSON representing the full notes list
-        parsed = json.loads(call_kwargs["content"])
-        assert isinstance(parsed, list)
-        assert len(parsed) == 2
-        assert parsed[0]["id"] == "n1"
-        assert parsed[1]["id"] == "n2"
+        # Per-note injection: one lightrag_insert per note (content=single-note JSON + doc_id=note:{id})
+        assert mock_insert.call_count == 2
+        injected = {}
+        for call in mock_insert.call_args_list:
+            kwargs = call.kwargs
+            assert "content" in kwargs and "doc_id" in kwargs
+            parsed = json.loads(kwargs["content"])
+            assert isinstance(parsed, dict)
+            injected[parsed["id"]] = kwargs["doc_id"]
+        assert set(injected) == {"n1", "n2"}
+        assert injected["n1"] == "note:n1"
+        assert injected["n2"] == "note:n2"
 
     @patch("agent.tool_registry.get_registry")
-    def test_inject_note_does_not_call_inject_entity(self, mock_get_registry):
+    def test_inject_note_does_not_call_inject_entity(self, mock_get_registry, tmp_path):
         """_inject_note_to_lightrag must NOT call LightRAGIngester.inject_entity (old per-item pattern)."""
-        import sys
-        sys.path.insert(0, "E:/tools/ai-bot/agent")
-        from injector.sync import SkillSync
+        from agent.injector.sync import SkillSync
 
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
         mock_registry.get.return_value = mock_insert
         mock_get_registry.return_value = mock_registry
 
-        sync = SkillSync(skills_dir="E:/tools/ai-bot/memory/skills", use_watchdog=False)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            sync = SkillSync(skills_dir=str(tmp_path / "skills"), use_watchdog=False)
 
         with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_ingester_cls:
             notes_data = [{"id": "n1", "content": "Test", "tags": []}]
@@ -464,35 +467,33 @@ class TestNoteInjectUsesLightragInsert:
             mock_ingester_cls.assert_not_called()
 
     @patch("agent.tool_registry.get_registry")
-    def test_inject_note_failure_returns_false(self, mock_get_registry):
+    def test_inject_note_failure_returns_false(self, mock_get_registry, tmp_path):
         """If lightrag_insert fails, _inject_note_to_lightrag must return failed note IDs."""
-        import sys
-        sys.path.insert(0, "E:/tools/ai-bot/agent")
-        from injector.sync import SkillSync
+        from agent.injector.sync import SkillSync
 
         mock_insert = MagicMock(return_value={"status": "error", "message": "down"})
         mock_registry = MagicMock()
         mock_registry.get.return_value = mock_insert
         mock_get_registry.return_value = mock_registry
 
-        sync = SkillSync(skills_dir="E:/tools/ai-bot/memory/skills", use_watchdog=False)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            sync = SkillSync(skills_dir=str(tmp_path / "skills"), use_watchdog=False)
 
         notes_data = [{"id": "n1", "content": "Test", "tags": []}]
         result = sync._inject_note_to_lightrag(notes_data)
         assert result == {"n1"}
 
     @patch("agent.tool_registry.get_registry")
-    def test_inject_note_exception_returns_false(self, mock_get_registry):
+    def test_inject_note_exception_returns_false(self, mock_get_registry, tmp_path):
         """If ToolRegistry raises, _inject_note_to_lightrag must return all note IDs as failed."""
-        import sys
-        sys.path.insert(0, "E:/tools/ai-bot/agent")
-        from injector.sync import SkillSync
+        from agent.injector.sync import SkillSync
 
         mock_registry = MagicMock()
         mock_registry.get.side_effect = Exception("registry unavailable")
         mock_get_registry.return_value = mock_registry
 
-        sync = SkillSync(skills_dir="E:/tools/ai-bot/memory/skills", use_watchdog=False)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            sync = SkillSync(skills_dir=str(tmp_path / "skills"), use_watchdog=False)
 
         notes_data = [{"id": "n1", "content": "Test", "tags": []}]
         result = sync._inject_note_to_lightrag(notes_data)
@@ -500,12 +501,11 @@ class TestNoteInjectUsesLightragInsert:
 
     @patch("agent.tool_registry.get_registry")
     def test_scan_notes_passes_changed_notes_as_full_list(self, mock_get_registry):
-        """_scan_notes must pass changed notes as a full list to _inject_note_to_lightrag."""
+        """_scan_notes must inject each changed note via lightrag_insert (per-note content + independent doc_id)."""
         import json
         import os
-        import sys
-        sys.path.insert(0, "E:/tools/ai-bot/agent")
-        from injector.sync import SkillSync
+
+        from agent.injector.sync import SkillSync
 
         mock_insert = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
@@ -525,20 +525,24 @@ class TestNoteInjectUsesLightragInsert:
             with open(notes_file, "w", encoding="utf-8") as f:
                 json.dump(notes_data, f, ensure_ascii=False)
 
-            sync = SkillSync(skills_dir=os.path.join(tmp_ws, "skills"), use_watchdog=False)
+            import pathlib
+            with patch("pathlib.Path.home", return_value=pathlib.Path(tmp_ws)):
+                sync = SkillSync(skills_dir=os.path.join(tmp_ws, "skills"), use_watchdog=False)
             with patch.dict(os.environ, {"WORKSPACE_PATH": tmp_ws}):
                 added, updated = sync._scan_notes()
 
             # Both new notes should be counted
             assert added == 2
 
-            # lightrag_insert should have been called once with the full list
-            assert mock_insert.call_count == 1
-            call_kwargs = mock_insert.call_args.kwargs
-            parsed = json.loads(call_kwargs["content"])
-            assert len(parsed) == 2
-            assert parsed[0]["id"] == "n1"
-            assert parsed[1]["id"] == "n2"
+            # Per-note injection: one lightrag_insert per changed note, each with its own doc_id
+            assert mock_insert.call_count == 2
+            injected_ids = set()
+            for call in mock_insert.call_args_list:
+                kwargs = call.kwargs
+                parsed = json.loads(kwargs["content"])
+                injected_ids.add(parsed["id"])
+                assert kwargs["doc_id"] == f"note:{parsed['id']}"
+            assert injected_ids == {"n1", "n2"}
 
 
 class TestMergePersonsKGSync:

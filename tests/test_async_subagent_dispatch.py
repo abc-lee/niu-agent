@@ -1,11 +1,11 @@
 """验证 _dispatch_async_subagent 立即返回派单确认 + _run_subagent_async 后台跑完推完成通知到 MainAgentRequestQueue。
 
-用真实 LLM 调一个简短任务（"直接回复 OK"）。
+用离线 fake LLM 客户端（mock agent.runner.create_client）跑简短任务（"直接回复 OK"），不触网、不读真实配置。
 """
 import asyncio
-import os
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -13,18 +13,70 @@ from agent.main_agent_request_queue import get_main_agent_request_queue
 from agent.subagent_registry import SubagentRegistry
 
 
+# ---------------------------------------------------------------------------
+# 离线 fake LLM 客户端（mock agent.runner.create_client；不触网、不读真实配置）
+# ---------------------------------------------------------------------------
+
+class _FakeBackend:
+    """client.backend 占位——call_subagent 会向其设置 stop_check。"""
+
+    def __init__(self):
+        self.stop_check = None
+
+
+class _FakeSubagentResponse:
+    """纯文本响应（无工具调用），满足 agent_runner_loop 的响应属性契约。"""
+
+    def __init__(self, content="OK"):
+        self.content = content
+        self.tool_calls = []
+        self.finish_reason = "stop"
+        self.stream_error = False
+        self.usage = None
+
+
+class _OneShotResponseGen:
+    """单步迭代器：首次 next() 立即抛 StopIteration(response)。
+
+    对齐 agent_runner_loop 的消费契约——exhaust() 循环 next() 直到 StopIteration 并取其 value。
+    """
+
+    def __init__(self, response):
+        self._response = response
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise StopIteration(self._response)
+
+
+class _FakeSubagentLLMClient:
+    """确定性离线 LLM 客户端——每次 chat() 直接返回 @end 终结的 final 回复（无工具调用）。
+
+    子 Agent 协议：纯文本最终回复必须带 @end 标记，否则被拦截层判 FORMAT_ERROR 无限重试；
+    这里用 "@end OK" 确定性地走 EXIT 结束路径（_run_subagent_async 内部 call_subagent
+    不传 bypass_at_prefix，无法绕过 @end 协议）。
+    """
+
+    def __init__(self, reply_text="@end OK"):
+        self._reply_text = reply_text
+        self.last_tools = ""
+        self.backend = _FakeBackend()
+
+    def chat(self, messages=None, tools=None, **kwargs):
+        response = _FakeSubagentResponse(content=self._reply_text)
+        return _OneShotResponseGen(response)
+
+
 @pytest.fixture
 def llm_config():
-    import json
-    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "user-config.json")
-    with open(config_path) as f:
-        cfg = json.load(f)
-    llm = cfg.get("llm", {})
+    """离线占位 LLM 配置——create_client 已被 mock（见 _FakeSubagentLLMClient），不读真实配置文件。"""
     return {
-        "apikey": llm.get("apiKey") or llm.get("apikey", ""),
-        "apibase": llm.get("apiBase", ""),
-        "model": llm.get("model", ""),
-        "type": llm.get("type", "openai"),
+        "apikey": "offline-test-key",
+        "apibase": "",
+        "model": "fake-offline-model",
+        "type": "openai",
     }
 
 
@@ -52,18 +104,23 @@ def test_dispatch_async_subagent_returns_immediately_with_unique_name(llm_config
     loop_thread.start()
 
     try:
-        _, result = _dispatch_async_subagent(
-            agent_name="file-processor",
-            task="直接回复 OK，不要调用任何工具",
-            llm_config=llm_config,
-        )
+        with patch("agent.runner.create_client", return_value=_FakeSubagentLLMClient()):
+            _, result = _dispatch_async_subagent(
+                agent_name="file-processor",
+                task="直接回复 OK，不要调用任何工具",
+                llm_config=llm_config,
+            )
 
-        assert "已派出子 Agent" in result or "file-processor-" in result
-        assert "check_subagent_progress" in result
-        assert "/stop" in result
+            assert "已派出子 Agent" in result or "file-processor-" in result
+            assert "check_subagent_progress" in result
+            assert "/stop" in result
 
-        # 等子 Agent 跑完（避免影响下一个测试）
-        time.sleep(20)
+            # 等子 Agent 跑完（避免影响下一个测试）——fake client 毫秒级完成，轮询等待上限 30s
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                if not [r for r in SubagentRegistry.list_running() if r.agent_type == "file-processor"]:
+                    break
+                time.sleep(0.1)
 
         # 子 Agent 应已注销
         running = [r for r in SubagentRegistry.list_running() if r.agent_type == "file-processor"]
@@ -106,19 +163,20 @@ def test_run_subagent_async_pushes_completion_to_queue(llm_config):
     name = SubagentRegistry.register("file-processor", supplement_queue=sq, memory_context=mc, is_sync=False)
 
     try:
-        # 在 test_loop 里跑 _run_subagent_async
-        future = asyncio.run_coroutine_threadsafe(
-            _run_subagent_async(
-                unique_name=name,
-                agent_name="file-processor",
-                task="直接回复 OK，不要调用任何工具",
-                llm_config=llm_config,
-                memory_context=mc,
-                supplement_queue=sq,
-            ),
-            test_loop,
-        )
-        future.result(timeout=120)  # 等子 Agent 跑完
+        # 在 test_loop 里跑 _run_subagent_async（create_client 已 mock——离线 fake client）
+        with patch("agent.runner.create_client", return_value=_FakeSubagentLLMClient()):
+            future = asyncio.run_coroutine_threadsafe(
+                _run_subagent_async(
+                    unique_name=name,
+                    agent_name="file-processor",
+                    task="直接回复 OK，不要调用任何工具",
+                    llm_config=llm_config,
+                    memory_context=mc,
+                    supplement_queue=sq,
+                ),
+                test_loop,
+            )
+            future.result(timeout=120)  # 等子 Agent 跑完
 
         # 验证 MainAgentRequestQueue 里有完成通知（不写 db，走内存队列）
         queued_msgs = []
