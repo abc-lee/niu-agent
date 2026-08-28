@@ -274,18 +274,11 @@ def test_compat_non_llm_exception_no_notify():
 
 def _run_agent_loop_with_stream_error(verbose, error_type_name, error_msg):
     """以给定 verbose 跑 agent_runner_loop 的 stream_error 分支，返回 (yielded, return_value)。"""
-    from agent import runner as _runner_mod
     from agent.generic import agent_loop
-
-    _runner_mod.is_stop_requested = lambda: False
-    _runner_mod.clear_stop = lambda: None
-    _runner_mod.drain_supplement = lambda: None
 
     class _FakeValidation:
         is_valid = True
         def format_feedback(self): return ""
-
-    agent_loop.validate_references = lambda content: _FakeValidation()
 
     class _FakeHandler:
         _last_prompt_tokens = 0
@@ -311,25 +304,29 @@ def _run_agent_loop_with_stream_error(verbose, error_type_name, error_msg):
         def chat(self, messages, tools=None, response_format=None):
             return _fake_chat(self, messages, tools, response_format)
 
-    gen = agent_loop.agent_runner_loop(
-        client=_FakeClient(),
-        system_prompt="test",
-        user_input="test",
-        handler=_FakeHandler(),
-        tools_schema=[],
-        max_turns=1,
-        initial_user_content="test",
-        enable_supplement=False,
-        verbose=verbose,
-    )
+    with patch("agent.runner.is_stop_requested", lambda: False), \
+         patch("agent.runner.clear_stop", lambda: None), \
+         patch("agent.runner.drain_supplement", lambda: None), \
+         patch("agent.generic.agent_loop.validate_references", lambda content: _FakeValidation()):
+        gen = agent_loop.agent_runner_loop(
+            client=_FakeClient(),
+            system_prompt="test",
+            user_input="test",
+            handler=_FakeHandler(),
+            tools_schema=[],
+            max_turns=1,
+            initial_user_content="test",
+            enable_supplement=False,
+            verbose=verbose,
+        )
 
-    yielded = []
-    return_value = None
-    try:
-        while True:
-            yielded.append(next(gen))
-    except StopIteration as e:
-        return_value = e.value
+        yielded = []
+        return_value = None
+        try:
+            while True:
+                yielded.append(next(gen))
+        except StopIteration as e:
+            return_value = e.value
     return yielded, return_value
 
 
