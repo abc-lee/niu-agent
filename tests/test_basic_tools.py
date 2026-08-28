@@ -217,6 +217,142 @@ class TestReadFile:
         assert "51|line51" in result
         assert "60|line60" in result
 
+    # ---- 页预算分页（2026-08-28 read 工具智能分页）----
+
+    def test_short_lines_full_page_no_marker(self, tmp_path):
+        """①短行一次读满：200 行短行全返回、无 Truncated 标记、每行完整。"""
+        f = tmp_path / "short.txt"
+        lines = [f"line{i}" for i in range(1, 201)]
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        result = read_file(str(f))
+
+        content_lines = [l for l in result.split("\n") if "|" in l and not l.startswith("[")]
+        assert content_lines == [f"{i}|{t}" for i, t in enumerate(lines, 1)]
+        assert "TRUNCATED" not in result
+        assert "[Truncated at line" not in result
+
+    def test_budget_stops_page_at_line_boundary(self, tmp_path):
+        """②按行截断：2000 字符行×30 → 每页恒 14 行，返回行全完整无 [TRUNCATED]，标记在输出末尾且 offset=15。"""
+        f = tmp_path / "wide.txt"
+        payload = "x" * 2000
+        f.write_text("\n".join([payload] * 30) + "\n", encoding="utf-8")
+
+        result = read_file(str(f))
+        out_lines = result.split("\n")
+        assert out_lines[0] == "[FILE] Showing 14 lines from line 1 (total 30 lines)"
+        content_lines = [l for l in out_lines if "|" in l and not l.startswith("[")]
+        assert len(content_lines) == 14
+        assert "TRUNCATED" not in result
+        for i in range(1, 15):
+            assert content_lines[i - 1] == f"{i}|{payload}"
+        # 标记在输出末尾且指向 offset=15
+        assert out_lines[-1] == "[Truncated at line 14. Use offset=15 to read more.]"
+
+        # 第二页同样恒 14 行（15-28）
+        result2 = read_file(str(f), offset=15)
+        out_lines2 = result2.split("\n")
+        assert out_lines2[0] == "[FILE] Showing 14 lines from line 15 (total 30 lines)"
+        content_lines2 = [l for l in out_lines2 if "|" in l and not l.startswith("[")]
+        assert len(content_lines2) == 14
+        assert "TRUNCATED" not in result2
+        assert out_lines2[-1] == "[Truncated at line 28. Use offset=29 to read more.]"
+
+    def test_single_line_over_budget_first_line_fallback(self, tmp_path):
+        """③单行超预算：首行 40000 字符+后续 5 短行 → [TRUNCATED] 在场、本页仅此行、标记指向 offset=2；
+        另断言：单行文件（唯一行超预算）→无续读标记。"""
+        tag = " ... [TRUNCATED]"
+        f = tmp_path / "monster.txt"
+        big = "y" * 40000
+        f.write_text(big + "\n" + "\n".join(f"tail{i}" for i in range(1, 6)) + "\n", encoding="utf-8")
+
+        result = read_file(str(f))
+        out_lines = result.split("\n")
+        assert out_lines[0] == "[FILE] Showing 1 lines from line 1 (total 6 lines)"
+        content_lines = [l for l in out_lines if "|" in l and not l.startswith("[")]
+        assert len(content_lines) == 1
+        expected_cut = 29000 - len(tag) - len("1|") - 1
+        assert content_lines[0] == f"1|{big[:expected_cut]}{tag}"
+        assert out_lines[-1] == "[Truncated at line 1. Use offset=2 to read more.]"
+
+        # 单行文件（唯一行超预算）→无续读标记
+        g = tmp_path / "single.txt"
+        g.write_text("z" * 40000 + "\n", encoding="utf-8")
+        result2 = read_file(str(g))
+        assert "TRUNCATED" in result2
+        assert "[Truncated at line" not in result2
+
+    def test_over_budget_line_mid_page_defers_to_next_page(self, tmp_path):
+        """④页中遇超预算行：3 短行+1 行 29000 字符+后续短行 → 首页含前 3 行、标记指向第 4 行；
+        offset=4 续读页首行=该超长行（走兜底截断）。"""
+        tag = " ... [TRUNCATED]"
+        f = tmp_path / "mid.txt"
+        big = "w" * 29000
+        f.write_text("\n".join(["a", "b", "c", big, "d", "e"]) + "\n", encoding="utf-8")
+
+        result = read_file(str(f))
+        out_lines = result.split("\n")
+        assert out_lines[0] == "[FILE] Showing 3 lines from line 1 (total 6 lines)"
+        content_lines = [l for l in out_lines if "|" in l and not l.startswith("[")]
+        assert content_lines == ["1|a", "2|b", "3|c"]
+        assert out_lines[-1] == "[Truncated at line 3. Use offset=4 to read more.]"
+
+        result2 = read_file(str(f), offset=4)
+        out_lines2 = result2.split("\n")
+        content_lines2 = [l for l in out_lines2 if "|" in l and not l.startswith("[")]
+        assert len(content_lines2) == 1
+        expected_cut = 29000 - len(tag) - len("4|") - 1
+        assert content_lines2[0] == f"4|{big[:expected_cut]}{tag}"
+        assert out_lines2[-1] == "[Truncated at line 4. Use offset=5 to read more.]"
+
+    def test_budget_invariant_random_lengths(self, tmp_path):
+        """⑤预算不变式：随机行长文件（固定种子，行长 1~5000 混合 200 行）→
+        每页整体返回 ≤30000 字符、主内容区 ≤29000。"""
+        import random
+
+        rng = random.Random(42)
+        lines = ["m" * rng.randint(1, 5000) for _ in range(200)]
+        f = tmp_path / "rand.txt"
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        offset = 1
+        pages = 0
+        while True:
+            result = read_file(str(f), offset=offset)
+            assert len(result) <= 30000, f"page {pages}: total {len(result)} > 30000"
+            out_lines = result.split("\n")
+            body = out_lines[1:]
+            if body and body[-1].startswith("[Truncated at line"):
+                body = body[:-1]
+            content = "\n".join(body)
+            assert len(content) <= 29000, f"page {pages}: content {len(content)} > 29000"
+            pages += 1
+            if not out_lines[-1].startswith("[Truncated at line"):
+                break
+            offset = int(out_lines[-1].split("offset=")[1].split(" ")[0])
+        assert pages >= 2  # 200 行随机长度必然分页
+
+    def test_tail_offset_with_budget(self, tmp_path):
+        """⑥tail 回归：offset=-3 行为与预算组合正确（短行全返回；长行 tail 在行边界停）。"""
+        f1 = tmp_path / "tail_short.txt"
+        f1.write_text("\n".join(f"line{i}" for i in range(1, 11)) + "\n", encoding="utf-8")
+        result = read_file(str(f1), offset=-3)
+        content_lines = [l for l in result.split("\n") if "|" in l and not l.startswith("[")]
+        assert content_lines == ["8|line8", "9|line9", "10|line10"]
+        # 末返回行号=总行数 → 无续读标记
+        assert "[Truncated at line" not in result
+
+        f2 = tmp_path / "tail_wide.txt"
+        wide = [f"line{i}" for i in range(1, 8)] + ["t" * 20000, "u" * 20000, "v" * 20000]
+        f2.write_text("\n".join(wide) + "\n", encoding="utf-8")
+        result2 = read_file(str(f2), offset=-3)
+        out_lines2 = result2.split("\n")
+        content_lines2 = [l for l in out_lines2 if "|" in l and not l.startswith("[")]
+        assert len(content_lines2) == 1
+        assert content_lines2[0] == "8|" + "t" * 20000
+        # 下一行将超预算 → 页在行边界停，标记指向 offset=9
+        assert out_lines2[-1] == "[Truncated at line 8. Use offset=9 to read more.]"
+
 
 # ===================================================================
 # write_file tests

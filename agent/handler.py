@@ -71,6 +71,9 @@ def _check_chat_with_agent_exists(agent_name: str) -> tuple[bool, str]:
     return True, ""
 
 
+# 页预算（字符）——对齐下游 agent_loop.py L598 MAX_TOOL_RESULT_CHARS=30000，余量给 header+续读标记；下游值改小需同步
+READ_PAGE_BUDGET_CHARS = 29000
+
 def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
     """读取文件内容（支持 offset/limit 分页，limit 最大 500；offset 为负数时读取文件末尾 |offset| 行）"""
     import itertools
@@ -105,18 +108,30 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
                     return f"[FILE] offset={offset} exceeds total lines ({total_lines}). Use offset=1 to read from the beginning."
                 return f"[FILE] No content to display (offset={offset}, total={total_lines} lines)"
 
-            realcnt = len(res)
-            l_max = min(10000, max(100, 500000 // max(realcnt, 1)))
             tag = " ... [TRUNCATED]"
-
-            res = [(i, line if len(line) <= l_max else line[:l_max] + tag) for i, line in res]
+            page = []
+            running = 0
+            for i, line in res:
+                prefix = f"{i}|"
+                cost = len(prefix) + len(line) + 1
+                if not page and cost > READ_PAGE_BUDGET_CHARS:
+                    # 单行超预算兜底：本页首行超预算 → 截断至预算内，本页仅此行
+                    cut = READ_PAGE_BUDGET_CHARS - len(tag) - len(prefix) - 1
+                    page.append((i, line[:cut] + tag))
+                    break
+                if running + cost > READ_PAGE_BUDGET_CHARS:
+                    # 超预算行非本页首行 → 页在行边界停（留给下页）
+                    break
+                running += cost
+                page.append((i, line))
+            res = page
             result = "\n".join(f"{i}|{line}" for i, line in res)
 
             header = f"[FILE] Showing {len(res)} lines from line {offset} (total {total_lines} lines)"
-            if offset + limit - 1 < total_lines:
-                header += f"\n[Use offset={offset + limit} to read more]"
-
-            return header + "\n" + result
+            out = header + "\n" + result
+            if res[-1][0] < total_lines:
+                out += f"\n[Truncated at line {res[-1][0]}. Use offset={res[-1][0] + 1} to read more.]"
+            return out
     except FileNotFoundError:
         return f"Error: File not found: '{file_path}'"
     except Exception as e:
