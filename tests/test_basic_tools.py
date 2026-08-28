@@ -206,16 +206,14 @@ class TestReadFile:
         assert "1|line1" not in result
 
     def test_negative_offset_with_limit(self, tmp_path):
-        """limit still caps returned lines after tail positioning (51-60 of 100)."""
+        """tail 窗口 EOF 锚定：offset=-50 limit=10 → 末 10 行（100 行文件的 91-100），limit 从旧端收缩窗口。"""
         f = tmp_path / "hundred.txt"
         f.write_text("\n".join(f"line{i}" for i in range(1, 101)) + "\n", encoding="utf-8")
 
         result = read_file(str(f), offset=-50, limit=10)
 
         content_lines = [line for line in result.split("\n") if "|" in line and not line.startswith("[")]
-        assert len(content_lines) == 10
-        assert "51|line51" in result
-        assert "60|line60" in result
+        assert content_lines == [f"{i}|line{i}" for i in range(91, 101)]
 
     # ---- 页预算分页（2026-08-28 read 工具智能分页）----
 
@@ -306,8 +304,10 @@ class TestReadFile:
         assert out_lines2[-1] == "[Truncated at line 4. Use offset=5 to read more.]"
 
     def test_budget_invariant_random_lengths(self, tmp_path):
-        """⑤预算不变式：随机行长文件（固定种子，行长 1~5000 混合 200 行）→
-        每页整体返回 ≤30000 字符、主内容区 ≤29000。"""
+        """⑤预算不变式+forward 零变化对拍：随机行长文件（固定种子 seed=42，行长 1~5000 混合 200 行）→
+        每页整体返回 ≤30000 字符、主内容区 ≤29000；全页输出与改造前基线快照逐字节一致。"""
+        import json
+
         import random
 
         rng = random.Random(42)
@@ -315,25 +315,31 @@ class TestReadFile:
         f = tmp_path / "rand.txt"
         f.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+        snapshot_path = os.path.join(os.path.dirname(__file__), "fixtures", "read_file_forward_snapshot_seed42.json")
+        with open(snapshot_path, encoding="utf-8") as sf:
+            snapshot = json.load(sf)
+
         offset = 1
-        pages = 0
+        pages = []
         while True:
             result = read_file(str(f), offset=offset)
-            assert len(result) <= 30000, f"page {pages}: total {len(result)} > 30000"
+            assert len(result) <= 30000, f"page {len(pages)}: total {len(result)} > 30000"
             out_lines = result.split("\n")
             body = out_lines[1:]
             if body and body[-1].startswith("[Truncated at line"):
                 body = body[:-1]
             content = "\n".join(body)
-            assert len(content) <= 29000, f"page {pages}: content {len(content)} > 29000"
-            pages += 1
+            assert len(content) <= 29000, f"page {len(pages)}: content {len(content)} > 29000"
+            pages.append(result)
             if not out_lines[-1].startswith("[Truncated at line"):
                 break
             offset = int(out_lines[-1].split("offset=")[1].split(" ")[0])
-        assert pages >= 2  # 200 行随机长度必然分页
+        assert len(pages) >= 2  # 200 行随机长度必然分页
+        # forward 零变化：全页输出与改造前基线快照逐字节一致（seed=42 固定）
+        assert pages == snapshot["pages"]
 
     def test_tail_offset_with_budget(self, tmp_path):
-        """⑥tail 回归：offset=-3 行为与预算组合正确（短行全返回；长行 tail 在行边界停）。"""
+        """⑥tail 回归：EOF 锚定+反向预算（短行全返回无标记；长行页保留最新行，反向标记给精确补读区间）。"""
         f1 = tmp_path / "tail_short.txt"
         f1.write_text("\n".join(f"line{i}" for i in range(1, 11)) + "\n", encoding="utf-8")
         result = read_file(str(f1), offset=-3)
@@ -347,11 +353,35 @@ class TestReadFile:
         f2.write_text("\n".join(wide) + "\n", encoding="utf-8")
         result2 = read_file(str(f2), offset=-3)
         out_lines2 = result2.split("\n")
+        assert out_lines2[0] == "[FILE] Showing 1 lines from line 10 (total 10 lines)"
         content_lines2 = [l for l in out_lines2 if "|" in l and not l.startswith("[")]
-        assert len(content_lines2) == 1
-        assert content_lines2[0] == "8|" + "t" * 20000
-        # 下一行将超预算 → 页在行边界停，标记指向 offset=9
-        assert out_lines2[-1] == "[Truncated at line 8. Use offset=9 to read more.]"
+        # 反向预算：页保留最新行（末行 v），更旧的 t/u 被挤掉
+        assert content_lines2 == ["10|" + "v" * 20000]
+        # 反向续读标记：显式区间 8-9，精确 limit=2
+        assert out_lines2[-1] == "[Truncated at line 10. Use offset=8 limit=2 to read lines 8-9.]"
+
+    def test_tail_single_line_over_budget_keeps_line_tail(self, tmp_path):
+        """⑦tail 单行超预算：文件末行超预算 → 保留行尾+前导 [TRUNCATED] ... （16 字符）；
+        offset=-1 无续读标记；offset=-N（N>1）反向标记指向更旧行。"""
+        tag_head = "[TRUNCATED] ... "
+        f = tmp_path / "tail_monster.txt"
+        big = "y" * 40000
+        f.write_text("a\nb\n" + big + "\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=-1)
+        out_lines = result.split("\n")
+        content_lines = [l for l in out_lines if "|" in l and not l.startswith("[")]
+        expected_cut = 29000 - len(tag_head) - len("3|") - 1
+        assert content_lines == [f"3|{tag_head}{big[-expected_cut:]}"]
+        # offset=-1：页首行=窗口起点 → 无续读标记
+        assert "[Truncated at line" not in result
+
+        # offset=-3：末行超预算兜底后，反向标记指向更旧行 1-2
+        result2 = read_file(str(f), offset=-3)
+        out_lines2 = result2.split("\n")
+        content_lines2 = [l for l in out_lines2 if "|" in l and not l.startswith("[")]
+        assert content_lines2 == [f"3|{tag_head}{big[-expected_cut:]}"]
+        assert out_lines2[-1] == "[Truncated at line 3. Use offset=1 limit=2 to read lines 1-2.]"
 
 
 # ===================================================================

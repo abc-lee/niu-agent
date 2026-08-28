@@ -75,11 +75,11 @@ def _check_chat_with_agent_exists(agent_name: str) -> tuple[bool, str]:
 READ_PAGE_BUDGET_CHARS = 29000
 
 def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
-    """读取文件内容（支持 offset/limit 分页，limit 最大 500；offset 为负数时读取文件末尾 |offset| 行）"""
+    """读取文件内容（支持 offset/limit 分页，limit 最大 500；offset 为负数时读末尾 min(|offset|, limit) 行——EOF 端固定，limit 从旧端收缩窗口：-50 limit=10 实读末 10 行）"""
     import itertools
 
     max_limit = 500
-    # offset < 0 → tail 语义：读取文件末尾 |offset| 行（需先数总行数再换算起始行）
+    # offset < 0 → tail 语义：窗口=末尾 min(|offset|, limit) 行（EOF 端固定，limit 从旧端收缩窗口起点；需先数总行数再换算）
     tail_lines = -offset if offset < 0 else 0
     if offset < 1:
         offset = 1
@@ -97,8 +97,36 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
             if tail_lines > 0:
                 if total_lines == 0:
                     return "[FILE] No content to display (total=0 lines)"
-                # 末尾 N 行起始行 = total - N + 1；文件不足 N 行则从第 1 行开始（返回全部，不报错）
-                offset = max(1, total_lines - tail_lines + 1)
+                # 窗口 = 末尾 min(|offset|, limit) 行：EOF 端固定，limit 从旧端收缩起点 wstart；文件不足则从第 1 行开始（返回全部，不报错）
+                wstart = max(1, total_lines - min(tail_lines, limit) + 1)
+                stream = ((i, line.rstrip("\r\n")) for i, line in enumerate(f, 1))
+                window = list(itertools.dropwhile(lambda x: x[0] < wstart, stream))
+                # 预算从窗口末行向首行反向累积：页保留最靠近 EOF 的行，被挤掉的只能是更旧的行；页内升序输出
+                tag_head = "[TRUNCATED] ... "  # 16 字符前导标记（tail 单行超预算保行尾）
+                page = []
+                running = 0
+                for i, line in reversed(window):
+                    prefix = f"{i}|"
+                    cost = len(prefix) + len(line) + 1
+                    if not page and cost > READ_PAGE_BUDGET_CHARS:
+                        # 单行超预算兜底（反向累积只可能命中窗口末行=文件末行）：保留行尾，前导标记
+                        cut = READ_PAGE_BUDGET_CHARS - len(tag_head) - len(prefix) - 1
+                        page.append((i, tag_head + line[-cut:]))
+                        break
+                    if running + cost > READ_PAGE_BUDGET_CHARS:
+                        # 超预算行非窗口末行 → 页在行边界停（更旧行留给反向续读）
+                        break
+                    running += cost
+                    page.append((i, line))
+                res = list(reversed(page))
+                result = "\n".join(f"{i}|{line}" for i, line in res)
+
+                header = f"[FILE] Showing {len(res)} lines from line {res[0][0]} (total {total_lines} lines)"
+                out = header + "\n" + result
+                # 反向续读标记：页首行 k > wstart → [wstart..k-1] 被预算挤掉，显式区间引导正向补读
+                if res[0][0] > wstart:
+                    out += f"\n[Truncated at line {res[0][0]}. Use offset={wstart} limit={res[0][0] - wstart} to read lines {wstart}-{res[0][0] - 1}.]"
+                return out
             stream = ((i, line.rstrip("\r\n")) for i, line in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < offset, stream)
             res = list(itertools.islice(stream, limit))
@@ -684,7 +712,7 @@ class NiuHandler(BaseHandler):
     # ========== 文件操作 ==========
 
     def do_read(self, args: dict, response) -> StepOutcome:
-        """读取文件（新 API，兼容旧参数名 path/start/count；offset 负数 = 读取文件末尾 |offset| 行）"""
+        """读取文件（新 API，兼容旧参数名 path/start/count；offset 负数 = 读末尾 min(|offset|, limit) 行——EOF 端固定，limit 从旧端收缩窗口：-50 limit=10 实读末 10 行）"""
         raw_path = args.get("file_path") if "file_path" in args else args.get("path", "")
         file_path = self._get_abs_path(raw_path) if hasattr(self, "cwd") and self.cwd else raw_path
         raw_offset = args.get("offset") if "offset" in args else args.get("start", 1)
