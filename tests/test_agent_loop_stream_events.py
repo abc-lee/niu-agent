@@ -16,11 +16,21 @@ from agent.generic.agent_loop import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_mock_response(content="hello", tool_calls=None):
-    """创建一个模拟的 LLM 响应对象。"""
+def _make_mock_response(content="hello", tool_calls=None, stream_error=False, context_overflow=False):
+    """创建一个模拟的 LLM 响应对象。
+
+    现役 agent_runner_loop 会检查 response.stream_error / context_overflow 的真值：
+    Mock 未显式设置的属性是自动生成的 truthy Mock，会把循环短路进
+    LLM_ERROR / CONTEXT_OVERFLOW 分支（后续 StreamEvent 流不产生），
+    因此必须显式置 False。
+    """
     resp = Mock()
     resp.content = content
     resp.tool_calls = tool_calls or []
+    resp.stream_error = stream_error
+    resp.context_overflow = context_overflow
+    resp.finish_reason = "stop"
+    resp.usage = None
     return resp
 
 
@@ -64,6 +74,11 @@ def _make_handler(dispatch_fn=None):
     handler = Mock()
     handler._done_hooks = []
     handler.max_turns = 40
+    # Mock 自动真值属性会误入子 Agent @前缀拦截分支（FORMAT_ERROR 死循环），
+    # 显式置 False 走主 Agent 路径；next_prompt_patcher 透传避免 Mock 对象注入 messages
+    handler._is_subagent = False
+    handler._is_sync_subagent = False
+    handler.next_prompt_patcher = lambda prompt, _outcome, _turn: prompt
 
     if dispatch_fn:
         handler.dispatch = dispatch_fn
