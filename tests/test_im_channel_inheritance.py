@@ -105,10 +105,12 @@ class TestChatQueueForceWiring:
         assert "set_im_force(True)" in seg, "else 分支必须置 force（规则 3 定时任务置位）"
 
     def test_compat_electron_branch_clears_force(self):
-        # compat.py chat_session 的 Electron 转假入口
+        # compat.py chat_session 的 Electron 转假入口——锚定唯一文本 token「通道继承」注释：
+        # 文件内有两处 `if request.source == "electron":`（唤醒分支先命中），.index() 会落错分支
         src = Path("niu_api/compat.py").read_text(encoding="utf-8")
-        idx = src.index('if request.source == "electron":')
-        seg = src[idx:idx + 150]
+        idx = src.index("# 通道继承：Electron 用户消息清除 IM 通道")
+        seg = src[idx:idx + 300]
+        assert 'if request.source == "electron":' in seg, "通道继承注释后必须紧跟 electron 分支"
         assert "set_im_force(False)" in seg, "compat electron 分支必须清 force（规则 2 转假）"
 
 

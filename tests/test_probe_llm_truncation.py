@@ -1,6 +1,5 @@
 """_probe_llm 截断检测测试：finish_reason=length 必须报错（不再静默判通过）。"""
 import asyncio
-import inspect
 from unittest.mock import MagicMock, patch
 
 from niu_api.compat import _probe_llm  # noqa: E402
@@ -64,8 +63,26 @@ def test_normal_probe_still_passes(mock_session_cls):
     assert "通过" in msg
 
 
-def test_probe_max_tokens_is_256():
-    """探测 max_tokens 5→256：构造的 llm_config 应含 max_tokens=256（thinking 模型 content 有空间）。"""
-    src = inspect.getsource(_probe_llm)
-    assert '"max_tokens": 256' in src
-    assert '"max_tokens": 5,' not in src  # 带逗号，避免与 256 子串重叠恒挂
+@patch("agent.generic.litellm_adapter.LiteLLMSession")
+def test_probe_max_tokens_is_256(mock_session_cls):
+    """探测 max_tokens 默认 256：构造的 llm_config 应含 max_tokens=256（thinking 模型 content 有空间）。"""
+    mock_session_cls.return_value = _mock_session_with("stop")
+    asyncio.run(_probe_llm({
+        "apiKey": "k", "apiBase": "https://api.example.com",
+        "model": "m", "type": "openai",
+    }))
+    cfg = mock_session_cls.call_args.kwargs["cfg"]
+    assert cfg["litellm_kwargs"]["max_tokens"] == 256
+
+
+@patch("agent.generic.litellm_adapter.LiteLLMSession")
+def test_probe_max_tokens_user_config_wins(mock_session_cls):
+    """用户配置 max_tokens 时探测用用户值（testAndSave 顺带校验合法性）；无配置保持 256。"""
+    mock_session_cls.return_value = _mock_session_with("stop")
+    asyncio.run(_probe_llm({
+        "apiKey": "k", "apiBase": "https://api.example.com",
+        "model": "m", "type": "openai",
+        "max_tokens": 8192,
+    }))
+    cfg = mock_session_cls.call_args.kwargs["cfg"]
+    assert cfg["litellm_kwargs"]["max_tokens"] == 8192

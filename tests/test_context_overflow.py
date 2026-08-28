@@ -275,25 +275,46 @@ class TestLiteLLMAdapterContextOverflow:
         """Pattern 'context window' should also be detected."""
         import inspect
 
-        from agent.generic.litellm_adapter import LiteLLMSession
-        source = inspect.getsource(LiteLLMSession.chat)
-        assert "context window" in source.lower()
+        from agent.generic.litellm_adapter import (
+            LiteLLMSession,
+            _OVERFLOW_PATTERNS,
+            _is_context_overflow_error,
+        )
+        # 检测串现役位置：模块级常量 _OVERFLOW_PATTERNS（已移出 chat() 函数体）；
+        # chat() 经 _is_context_overflow_error 统一引用（函数名锚点，不锚行号）
+        assert any("context window" in p for p in _OVERFLOW_PATTERNS)
+        assert "_is_context_overflow_error" in inspect.getsource(LiteLLMSession.chat)
+        assert _is_context_overflow_error(Exception("context window exceeded"))
 
     def test_detects_prompt_too_long(self):
         """Pattern 'prompt is too long' should also be detected."""
         import inspect
 
-        from agent.generic.litellm_adapter import LiteLLMSession
-        source = inspect.getsource(LiteLLMSession.chat)
-        assert "prompt is too long" in source
+        from agent.generic.litellm_adapter import (
+            LiteLLMSession,
+            _OVERFLOW_PATTERNS,
+            _is_context_overflow_error,
+        )
+        assert any("prompt is too long" in p for p in _OVERFLOW_PATTERNS)
+        assert "_is_context_overflow_error" in inspect.getsource(LiteLLMSession.chat)
+        assert _is_context_overflow_error(
+            Exception("Your prompt is too long: 210000 > 200000 maximum")
+        )
 
     def test_detects_maximum_context_length(self):
         """Pattern 'maximum context length' should also be detected."""
         import inspect
 
-        from agent.generic.litellm_adapter import LiteLLMSession
-        source = inspect.getsource(LiteLLMSession.chat)
-        assert "maximum context length" in source
+        from agent.generic.litellm_adapter import (
+            LiteLLMSession,
+            _OVERFLOW_PATTERNS,
+            _is_context_overflow_error,
+        )
+        assert any("maximum context length" in p for p in _OVERFLOW_PATTERNS)
+        assert "_is_context_overflow_error" in inspect.getsource(LiteLLMSession.chat)
+        assert _is_context_overflow_error(
+            Exception("This model's maximum context length is 128000 tokens")
+        )
 
 
 # ---------------------------------------------------------------------------

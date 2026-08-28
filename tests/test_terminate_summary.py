@@ -23,10 +23,16 @@ def test_terminate_branch_has_try_except():
 
 
 def test_terminate_result_text_includes_summary():
-    """终止模式下 result_text 应含 LLM 生成的总结文本。"""
+    """终止模式下 LLM 生成的总结文本应进入 reply/persist 流（现役字段名 summary_text）。"""
     source = inspect.getsource(agent_loop)
-    # 验证终止分支内有 result_text 拼接逻辑
-    assert "result_text" in source
+    # 终止分支区间：`if supplement_terminate:` → TERMINATED_BY_SUPPLEMENT return
+    branch_start = source.find("if supplement_terminate:")
+    assert branch_start > 0, "supplement_terminate 分支未找到"
+    ret_idx = source.find('"result": "TERMINATED_BY_SUPPLEMENT"', branch_start)
+    assert ret_idx > 0, "TERMINATED_BY_SUPPLEMENT return 未找到"
+    section = source[branch_start:ret_idx]
+    # result_text 随 runner 改名消失，现役字段名 summary_text（锚唯一文本 token）
+    assert "summary_text" in section, "终止分支应含 summary_text 拼接逻辑（现役字段名）"
 
 
 def test_format_subagent_supplement_terminate_text():
