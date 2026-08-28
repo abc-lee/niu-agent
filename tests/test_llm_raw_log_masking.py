@@ -5,6 +5,7 @@ leaving plaintext api_key in ~/.niu/logs/raw_http/*_request.json.
 """
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -163,8 +164,10 @@ def test_write_raw_log_masks_before_disk(tmp_path, monkeypatch):
         "usage": {"prompt_tokens": 12, "total_tokens": 12},
     }, seq=7)
 
+    # 日期目录用 now()（生产契约 raw_http/YYYYMMDD/）——动态计算，不硬编码
+    date_dir = datetime.now().strftime("%Y%m%d")
     written = json.loads(
-        (tmp_path / "raw_http" / "20260812" / "000007_request.json").read_text(encoding="utf-8")
+        (tmp_path / "raw_http" / date_dir / "000007_request.json").read_text(encoding="utf-8")
     )
     assert written["request_params"]["api_key"] == "sk-a...890"
     assert "sk-abcdef1234567890" not in json.dumps(written)

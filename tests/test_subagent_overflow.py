@@ -492,10 +492,10 @@ class TestExtractResultFromReturnValue:
 
 
 class TestTidyFlowOrder:
-    """T6 压缩退役后睡眠管道序：journal(≥50%) → entity-extractor → dream-evolver。"""
+    """T6 压缩退役后睡眠管道序：entity-extractor(F1) → dream-evolver(F3)；journal 腿已迁 scheduler journal_daily 定时任务。"""
 
     def test_sleep_mode_calls_three_agents_in_order(self):
-        """Sleep mode should call journal-agent first, then entity-extractor, then dream-evolver."""
+        """Sleep mode should call entity-extractor first, then dream-evolver (journal 腿已出本管道)。"""
         # This is a structural test: verify the code path exists
         # by checking the source code contains agent call sites.
         # 注意：分支头注释已按新序书写（旧序文字残留会使 find 首现命中落在注释内致断言必败）。
@@ -503,18 +503,17 @@ class TestTidyFlowOrder:
 
         from niu_api import compat
         source = inspect.getsource(compat._tidy_context_impl)
-        # 按源码文本位置断言新序：journal-agent → entity-extractor → dream-evolver
-        journal_pos = source.find("journal-agent")
+        # 按源码文本位置断言现役序：entity-extractor → dream-evolver
         entity_pos = source.find("entity-extractor")
         dream_pos = source.find("dream-evolver")
-        # All three should be present（context-manager 已退役，反向钉零出现）
-        assert journal_pos > 0, "journal-agent not found in _tidy_context_impl"
+        # Both should be present（journal-agent 已迁 scheduler journal_daily、context-manager 已退役——反向钉零出现）
         assert entity_pos > 0, "entity-extractor not found in _tidy_context_impl"
         assert dream_pos > 0, "dream-evolver not found in _tidy_context_impl"
+        assert "journal-agent" not in source, "journal 腿已迁 scheduler journal_daily 定时任务，不应再出现在 _tidy_context_impl"
         assert "context-manager" not in source, "context-manager 已退役，不应再出现在 _tidy_context_impl"
-        # journal-agent must come before entity-extractor (sleep pipeline first leg)
-        assert journal_pos < entity_pos, "journal-agent must be called before entity-extractor"
-        # entity-extractor must come before dream-evolver
+        # 分支头注释应注明 journal 腿去向（自文档锚点）
+        assert "journal_daily" in source, "sleep 分支应注明 journal 腿已迁 scheduler journal_daily"
+        # entity-extractor must come before dream-evolver (sleep pipeline order)
         assert entity_pos < dream_pos, "entity-extractor must be called before dream-evolver"
 
 
