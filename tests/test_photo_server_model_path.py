@@ -1,9 +1,12 @@
-"""验证 get_face_model 不再把 bundle 内路径传给 InsightFace 的 root 参数。
+"""验证 get_face_model 从 bundle 内 models 目录加载人脸模型、且不做程序内下载。
 
-bundle 签名后不可写，root 指向 bundle 会导致首次下载失败。
-应让 InsightFace 用默认 ~/.insightface/。
+设计（f609f571，README「可选：启用照片处理」）：
+- buffalo_l 非商业许可，DMG 默认不含；用户手动装到 models_dir/models/buffalo_l/
+- 禁止程序内下载：本地没有直接返回 None（不构造 FaceAnalysis，避免下载卡死）
+- FaceAnalysis 的 root 必须指向 models_dir，InsightFace 才能找到 bundle 内模型
+  （旧设计曾让 InsightFace 用默认 ~/.insightface/ 并允许下载，571e64ba → f609f571
+  已整体替换为「bundle 内手动安装 + 不下载」，本文件随之更新）
 """
-import inspect
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -14,36 +17,52 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 
-def test_face_analysis_not_passed_bundle_root():
-    """FaceAnalysis 构造时不应传 root=bundle_path，应让 InsightFace 用默认 ~/.insightface/"""
-    source = inspect.getsource(__import__("niu_photo_server", fromlist=["get_face_model"]).get_face_model)
-    # 不应出现 root=str(models_dir) 这种把 bundle 路径传给 root 的写法
-    assert "root=str(models_dir)" not in source, (
-        "get_face_model 仍在把 bundle 内路径传给 FaceAnalysis root 参数，"
-        "这会让 InsightFace 试图下载到签名后不可写的 bundle 内路径。"
-        "应移除 root 参数，让 InsightFace 用默认 ~/.insightface/。"
-    )
+def _reset_model_cache():
+    """get_face_model 有模块级缓存，测试间必须复位。"""
+    import niu_photo_server
+
+    niu_photo_server._face_model = None
 
 
-def test_face_analysis_construction_uses_default_root():
-    """FaceAnalysis 构造调用应不含 root 参数（或 root=None）"""
-    inspect.getsource(__import__("niu_photo_server", fromlist=["get_face_model"]).get_face_model)
-    # 找到 FaceAnalysis(...) 构造调用，确认没有 root=
-    # 用 mock 实际拦截一次调用更可靠
-    # 注意：get_face_model 内是 `from insightface.app import FaceAnalysis` 函数内 import，
-    # 必须 patch 源模块 insightface.app.FaceAnalysis，不能 patch niu_photo_server.FaceAnalysis
-    # （后者会因模块命名空间无该属性而抛 AttributeError）
+def test_face_analysis_uses_models_dir_root(tmp_path, monkeypatch):
+    """模型本地存在时，FaceAnalysis 的 root 必须指向 models_dir（bundle 内模型目录）。"""
+    import niu_photo_server
+
+    _reset_model_cache()
+    models_dir = tmp_path / "models"
+    (models_dir / "models" / "buffalo_l").mkdir(parents=True)
+    (models_dir / "models" / "buffalo_l" / "det_10g.onnx").write_bytes(b"fake onnx")
+
+    monkeypatch.setenv("NIU_MODELS_PATH", str(models_dir))
     with patch("insightface.app.FaceAnalysis") as mock_fa:
-        mock_fa.return_value = MagicMock()
+        mock_model = MagicMock()
+        mock_fa.return_value = mock_model
         # 让 _detect_available_providers 返回 CPU only，避免 GPU 检测副作用
         with patch("niu_photo_server._detect_available_providers", return_value=["CPUExecutionProvider"]):
-            try:
-                __import__("niu_photo_server", fromlist=["get_face_model"]).get_face_model()
-            except Exception:
-                pass  # 模型加载会失败，但我们要看的是构造调用
-        if mock_fa.called:
-            _, kwargs = mock_fa.call_args
-            assert "root" not in kwargs or kwargs["root"] is None, (
-                f"FaceAnalysis 被传了 root={kwargs.get('root')}，"
-                "应不传 root 让 InsightFace 用默认 ~/.insightface/"
-            )
+            result = niu_photo_server.get_face_model()
+
+    _reset_model_cache()
+    assert mock_fa.called, "模型存在时 FaceAnalysis 未被构造"
+    _, kwargs = mock_fa.call_args
+    assert kwargs.get("root") == str(models_dir), (
+        f"FaceAnalysis root 应指向 models_dir（{models_dir}）以找到 bundle 内模型，"
+        f"实际: {kwargs.get('root')}"
+    )
+    assert result is mock_model
+
+
+def test_missing_model_returns_none_without_faceanalysis(tmp_path, monkeypatch):
+    """本地没有模型时直接返回 None，且不构造 FaceAnalysis（禁止程序内下载）。"""
+    import niu_photo_server
+
+    _reset_model_cache()
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+
+    monkeypatch.setenv("NIU_MODELS_PATH", str(models_dir))
+    with patch("insightface.app.FaceAnalysis") as mock_fa:
+        result = niu_photo_server.get_face_model()
+
+    _reset_model_cache()
+    assert result is None, "模型缺失时应返回 None"
+    assert not mock_fa.called, "模型缺失时不得构造 FaceAnalysis（禁止程序内下载）"
