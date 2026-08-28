@@ -527,6 +527,13 @@ preload_face_model()
 - **质量链**：计划四轮双审（R1 双 CONDITIONAL 9 发现→R2 1P1+6P2→R3 双 APPROVE 3P2 文本级→R4 双 APPROVE 零阻断，连续两轮达成门禁；R2A 抓出标记位置 P1——D-8 "ends with" 与旧 header 位置矛盾）+ T1 实施后 spec/quality 双 PASS
 - **实机验证（待用户观察）**：下次睡眠管道 dream-evolver/entity-extractor 读 F3/F1 时页长自适应（短行文件一次读满 500 行），raw 日志可见 read 调用轮次减少
 
+#### 加固：子 Agent 压缩可见性两条微改造（归档机制经论证不建，commit e099e8da）
+
+- **背景**：用户提议子 Agent 模仿主 Agent 组装器做"溢出归档到 ~/.niu/tmp/ + read 召回"；讨论中用户两点实证推翻——①子 Agent 是工作 Agent（一条指令跑到尾），会话轮切割概念退化；②占位符化（80% 触发）实证全部吸收溢出，FIFO 阶段 2 零真实触发——为从未发生的路径建机制收益为零；且子 Agent 工具输出绝大多数可再生（文件/DB/图谱可重查），召回通道隐性存在。**定案：完整归档机制不建**，若日志见 `[FIFO] Proactive pruning` 频繁出现再重启（届时逻辑=归档工具输出而非轮次）
+- **落地两条微加固**：①占位符文案加再生指引 `[name 输出已裁剪，如需原文可重新调用该工具获取]`（幂等判定兼容新旧后缀，防恢复会话旧占位符被二次替换）；②`_fifo_prune` 真删时在切割位置插入可见标记消息（`[上下文提示：更早的 N 条消息已因上下文超限被移除]`）——无声丢失变有声
+- **验证**：3 测试文件 41 passed + test_subagent_overflow 44 例中 4 failed 经 stash 基线复核全部 pre-existing（3 例 client.backend None 既有豁免 + 1 例 journal 迁出睡眠管道后的陈旧源码扫描断言）；新增 4 用例全绿
+- **遗留跟进点**：`agent/context_assembler/compaction.py` L244 有主 Agent 组装器自己的旧文案占位符副本（未动）——日后主子 Agent 占位符统一口径时改这里
+
 #### 修复：请求组装 thinking 双通道去冗余（用户看日志发现 + 双审通过，commit 1225a1a9）
 
 - **现象（用户报告）**：raw_http 日志查看器的应用层 Request Params 里 `thinking` 出现两份（顶层 + extra_body），主 Agent 与知识图谱入库路径同现；另质疑知识图谱入库请求无 response_format
