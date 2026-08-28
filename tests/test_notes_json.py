@@ -278,6 +278,10 @@ class TestSkillSyncNotes:
         notes_file = notes_dir / "notes.json"
 
         sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        # 隔离：SkillSync.__init__ 会从真实 ~/.niu/skill_sync_state.json 加载用户真实
+        # note ID 进 _last_notes_scan；全量套件里首次扫描对它们做真实删除的结果不确定
+        # → 第二次扫描 delete_document 被多调一次（"Called 2 times"）。测试须从空状态开始。
+        sync._last_notes_scan = {}
         with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
             # First scan — two notes
             notes_file.write_text(
