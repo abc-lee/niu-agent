@@ -149,7 +149,7 @@ def test_call_subagent_passes_bypass_at_prefix_to_handler(monkeypatch):
     monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
     import agent.runner as runner_mod
-    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: mock.Mock())
     monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
     monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
 
@@ -180,7 +180,7 @@ def test_call_subagent_default_bypass_at_prefix_false(monkeypatch):
     monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
     import agent.runner as runner_mod
-    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+    monkeypatch.setattr(runner_mod, "create_client", lambda cfg: mock.Mock())
     monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
     monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
 

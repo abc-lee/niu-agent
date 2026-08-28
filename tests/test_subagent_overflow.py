@@ -58,8 +58,10 @@ class TestNoPromptChunking:
         monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
         monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
+        from unittest.mock import Mock
+
         import agent.runner as runner_mod
-        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
         monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
@@ -382,8 +384,10 @@ class TestOverflowResultPropagation:
         monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
         # Patch the lazy imports inside call_subagent
+        from unittest.mock import Mock
+
         import agent.runner as runner_mod
-        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
         monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         result = subagent.call_subagent(
@@ -414,8 +418,10 @@ class TestSubagentContextWindowConfig:
         monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
 
         # Patch the lazy imports inside call_subagent
+        from unittest.mock import Mock
+
         import agent.runner as runner_mod
-        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: Mock())
         monkeypatch.setattr(runner_mod, "get_tools_schema", lambda include_main_only=False: [])
 
         monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 128000)
