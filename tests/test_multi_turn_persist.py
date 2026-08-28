@@ -14,7 +14,7 @@
 4. 结果：纯文本回复丢失。
 
 **测试要求**：
-1. 用真实 LLM API 调用
+1. 用离线 fake LLM 客户端（不触网、不读真实配置；确定性多轮：第1轮 tool_call → 第2轮纯文本）
 2. 模拟多轮对话：给 LLM 一个会触发工具调用的输入，然后 LLM 在工具执行后给出纯文本回复
 3. 验证 rv["messages"] 的结构（有 assistant(tool_calls) 但没有纯文本 assistant）
 4. 验证 reply_chunks 包含纯文本回复内容
@@ -40,28 +40,80 @@ from agent.generic.agent_loop import (  # noqa: E402
     StreamEvent,
     agent_runner_loop,
 )
-from agent.generic.litellm_adapter import create_litellm_client  # noqa: E402
 from agent.session import MessageStore  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# 配置加载
+# 离线 fake LLM 客户端（不触网、不读真实配置）
 # ---------------------------------------------------------------------------
+# 原实现经 _load_llm_config() + create_litellm_client() 调真实 LLM；user-config 迁至
+# ~/.niu/config/ 后仓库 config/user-config.json 不存在，且单测禁跑真实 LLM/触网（铁律）。
+# 改为确定性 fake client：use_tool=True → 第1次 chat() 返回 echo tool_call、
+# 后续调用返回纯文本回复；use_tool=False → 每次直接返回纯文本回复。
 
-def _load_llm_config():
-    """从 user-config.json 加载真实 LLM 配置"""
-    config_path = os.path.join(PROJECT_ROOT, "config", "user-config.json")
-    with open(config_path, encoding="utf-8") as f:
-        data = json.load(f)
-    llm = data.get("llm", {})
-    # 统一键名为小写
-    config = {}
-    for key, value in llm.items():
-        config[key.lower()] = value
-    config.setdefault("type", "openai")
-    config.setdefault("apikey", "")
-    config.setdefault("apibase", "")
-    config.setdefault("model", "")
-    return config
+class _FakeToolCallFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeToolCall:
+    def __init__(self, tc_id, name, arguments):
+        self.id = tc_id
+        self.function = _FakeToolCallFunction(name, arguments)
+
+
+class _FakeLLMResponse:
+    def __init__(self, content="", tool_calls=None, finish_reason="stop"):
+        self.content = content
+        self.tool_calls = tool_calls or []
+        self.finish_reason = finish_reason
+        self.stream_error = False
+        self.usage = None
+
+
+class _OneShotResponseGen:
+    """单步迭代器：首次 next() 立即抛 StopIteration(response)。
+
+    对齐 agent_runner_loop 的消费契约——exhaust() 循环 next() 直到 StopIteration 并取其 value；
+    verbose 路径的 yield from 同样兼容。
+    """
+
+    def __init__(self, response):
+        self._response = response
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise StopIteration(self._response)
+
+
+class _FakeLLMClient:
+    """确定性离线 LLM 客户端（满足 agent_runner_loop 的 client.chat 契约）。
+
+    chat(messages=..., tools=...) 返回迭代器，首次 next() 即返回响应对象
+    （.content/.tool_calls/.finish_reason/.stream_error）；
+    use_tool=True：第1次调用返回 echo tool_call，后续调用返回纯文本 reply；
+    use_tool=False：每次直接返回纯文本 reply（无工具调用）。
+    """
+
+    def __init__(self, echo_text="", reply_text="", use_tool=True):
+        self._echo_text = echo_text
+        self._reply_text = reply_text
+        self._use_tool = use_tool
+        self._call_count = 0
+        self.last_tools = ""
+
+    def chat(self, messages=None, tools=None, **kwargs):
+        self._call_count += 1
+        if self._use_tool and self._call_count == 1:
+            response = _FakeLLMResponse(
+                tool_calls=[_FakeToolCall("call_echo_1", "echo", json.dumps({"text": self._echo_text}))],
+            )
+        else:
+            response = _FakeLLMResponse(content=self._reply_text)
+
+        return _OneShotResponseGen(response)
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +324,11 @@ async def _do_persist_fixed(store, rv, reply_chunks):
 
 
 # ===========================================================================
-# 测试1：真实 LLM 调用 — 验证多轮对话的 rv["messages"] 结构
+# 测试1：离线 fake LLM — 验证多轮对话的 rv["messages"] 结构
 # ===========================================================================
 
 def test_multi_turn_messages_structure():
-    """测试1：用真实 LLM 验证多轮对话中 rv["messages"] 的结构。
+    """测试1：用离线 fake LLM 客户端验证多轮对话中 rv["messages"] 的结构。
 
     预期行为：
     - 第1轮：LLM 调用 echo 工具 → assistant(tool_calls) 消息被添加到 messages
@@ -288,10 +340,7 @@ def test_multi_turn_messages_structure():
     2. rv["messages"] 中没有纯文本 assistant 消息（无 tool_calls）
     3. StreamEvent("reply") 中有纯文本回复内容
     """
-    config = _load_llm_config()
-    assert config["apikey"], "API key not configured in user-config.json"
-
-    client = create_litellm_client(config)
+    client = _FakeLLMClient(echo_text="multi-turn-test", reply_text="已用 echo 返回 multi-turn-test，内容确认无误。")
     handler = EchoHandler()
 
     system_prompt = (
@@ -368,10 +417,7 @@ def test_reply_chunks_contains_plain_text():
     2. reply_chunks 的内容与 rv["messages"] 中 assistant(tool_calls) 的 content 不同
        （因为纯文本回复是第2轮的内容，不是第1轮 tool_calls 时的 content）
     """
-    config = _load_llm_config()
-    assert config["apikey"], "API key not configured in user-config.json"
-
-    client = create_litellm_client(config)
+    client = _FakeLLMClient(echo_text="reply-chunks-test", reply_text="已用 echo 返回 reply-chunks-test，纯文本回复来自第2轮。")
     handler = EchoHandler()
 
     system_prompt = (
@@ -418,14 +464,11 @@ async def test_current_persist_loses_plain_text():
     """测试3：模拟 chat.py 的 _do_persist 逻辑，验证当前代码导致纯文本回复丢失。
 
     步骤：
-    1. 用真实 LLM 获取多轮对话的 rv 和 reply_chunks
+    1. 用离线 fake LLM 客户端获取多轮对话的 rv 和 reply_chunks
     2. 用当前 _do_persist 逻辑持久化
     3. 验证数据库中只有 assistant(tool_calls) 记录，没有纯文本 assistant 记录
     """
-    config = _load_llm_config()
-    assert config["apikey"], "API key not configured in user-config.json"
-
-    client = create_litellm_client(config)
+    client = _FakeLLMClient(echo_text="persist-bug-test", reply_text="已用 echo 返回 persist-bug-test，纯文本回复未持久化（bug 场景）。")
     handler = EchoHandler()
 
     system_prompt = (
@@ -514,10 +557,7 @@ async def test_fixed_persist_saves_both_assistant_messages():
     3. 纯文本 assistant 记录的 content 与 reply_chunks 拼接后一致
     4. 两条 assistant 消息的顺序正确（tool_calls 在前，纯文本在后）
     """
-    config = _load_llm_config()
-    assert config["apikey"], "API key not configured in user-config.json"
-
-    client = create_litellm_client(config)
+    client = _FakeLLMClient(echo_text="persist-fix-test", reply_text="已用 echo 返回 persist-fix-test，两条 assistant 消息均正确持久化。")
     handler = EchoHandler()
 
     system_prompt = (
@@ -631,10 +671,7 @@ async def test_fixed_persist_plain_text_only():
 
     这是对修复的回归测试：修复不应破坏纯文本回复的持久化。
     """
-    config = _load_llm_config()
-    assert config["apikey"], "API key not configured in user-config.json"
-
-    client = create_litellm_client(config)
+    client = _FakeLLMClient(reply_text="你好！我是测试助手，很高兴为你服务。", use_tool=False)
     handler = EchoHandler()
 
     system_prompt = "你是一个测试助手。请用简短的中文回复用户。不要调用任何工具。"
