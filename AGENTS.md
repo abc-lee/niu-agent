@@ -506,8 +506,16 @@ preload_face_model()
 
 ---
 
-## 历史更新日志
-> 以下为历史记录，反映彼时状态。部分条目中的架构（Go 后端、Nanobot、MCP stdio、`pkg/` 目录）已被后续重构推翻，当前架构以本文件为准。2026-08-13 前条目已压缩为摘要，完整细节见 git 历史。
+### 2026-08-29
+
+#### 排查：飞书/HA 保活机制健康定案（结论：未失效，纯观测盲区）+ 修复：子 Agent 图谱操作结果重复回写（提示词层，commit 1f8cdcda）
+
+- **保活排查（用户质疑"飞书/HA 连接没有检测"）**：全链代码级取证——①飞书 WS：lark `_ws_connect_kwargs()` 只传 `{"proxy": None}` 未禁用 ping，websockets 15.0.1 默认 `ping_interval=20s` 生效 → 断线 ~40s 判死 → lark `_reconnect()` 无限重试；②gateway↔adapter 本地回环 TCP + gateway PING + `_adapter_watchdog` 崩溃自动重启（≤3 次，稳定 60s 重置，退出码 2 不重启）；③HA watcher：websockets 默认 ping + 30s 应用层 ping + 异常 5s 重连 + localhost 回环（本机 Docker）不受路由器重启影响。当前两连接 ESTABLISHED 健康。**定案：保活机制全部正常**
+- **观测盲区根因（用户"看不到飞书重连日志"）**：`lark_oapi/core/log.py` logger="Lark" 写死 `StreamHandler(sys.stdout)` + gateway `_launch_adapter` Popen `stdout=subprocess.DEVNULL`（**4f249fb8 6-27 子进程化起就是**，早于 7-23 日志门控 403c8dd9/328280c2）→ lark 断线/重连日志进黑洞。5-18~6-26 飞书在主进程内（6c34e4d1），lark 日志到终端可见——用户过去看到的"02:00 飞书重新连接"来自那个时代。修复方案（adapter lark logger→stderr / gateway stdout 接文件）**用户拍板不需要**（已可用非调试阶段，以后需要再开）
+- **HA 今日无推送 ≠ watcher 失效**：门锁实体 `sensor.lumi_bmcn03_4cc1_lock_action` last_changed 停在 08-28 12:55（传感器无上报，HA/zigbee 侧），watcher 订阅 state_change 事件无触发是正确行为
+- **图谱操作重复回写（用户报告，commit 1f8cdcda）**：主 Agent 经 disk() 读图谱（/lightrag/ 路径；lightrag-server 15 工具全 hidden 仅 disk 通道）→ tool 输出（图谱实体/关系/描述原文）进 messages.db → 镜像 F1/F3 → entity-extractor 当新知识提炼入库 + dream-evolver 提取实体精加工回写——**自循环**（LLM 提炼改写措辞致内容 MD5 去重失效，每次读图谱每次睡眠重复入库，图谱膨胀+检索噪声）
+- **方案定案（用户拍板：机制层封不住）**：图谱操作有前因后果——读出来必伴随分享/分析、写入前必伴随商量/讨论，这些文本是对话的有机部分，机械过滤 tool 输出切不干净（转述照样被提炼）。**只改提示词层**：entity-extractor.md 新增「⛔ 严格禁止：知识图谱操作结果重复入库」块 + dream-evolver.md 新增「A0. 跳过知识图谱操作结果（最先执行）」块——disk 工具 + `/lightrag/` 路径 = 图谱操作已完成（读类返回已有内容/写类已入库），tool 输出（tool_call_id 关联）与主 Agent 转述一律跳过不提炼/不精加工/不建链；**用户新表达的信息与纠正信号仍正常处理**（例外条款，与 A3 纠错逐字呼应）
+- **验收**：零背景 scout 四场景推演全过（图谱输出跳过/用户新偏好仍提炼/用户纠正仍触发/非图谱 disk 操作不受影响）；主 Agent 仅 disk 通道（15 工具全 hidden）覆盖完整；已知边界 2 低危点接受（tool_calls 截断致关联失败、用户确认句可能被当新信息——被无价值过滤惯例兜住）。提示词每次调用现读无需重启
 
 ### 2026-08-28
 
