@@ -146,7 +146,7 @@ def browser_navigate(
 
         if result.get("success"):
             data = result.get("data") or {}
-            data = fit_response(data)  # 精简 + 大小控制（Task 1）
+            data = fit_response(data)  # 大小控制（fit_response）
             return {
                 "status": "success",
                 "url": data.get("url", url),
@@ -208,7 +208,7 @@ def browser_interact(
 
         if result.get("success"):
             data = result.get("data") or {}
-            data = fit_response(data)  # 精简 + 大小控制（Task 1）
+            data = fit_response(data)  # 大小控制（fit_response）
             return {
                 "status": "success",
                 "message": result.get("message", "OK"),
@@ -251,7 +251,7 @@ def browser_new_tab(
 
         if result.get("success"):
             data = result.get("data") or {}
-            data = fit_response(data)  # 精简 + 大小控制（Task 1）
+            data = fit_response(data)  # 大小控制（fit_response）
             return {
                 "status": "success",
                 "url": data.get("url", url),
@@ -291,7 +291,7 @@ def browser_switch_tab(
 
         if result.get("success"):
             data = result.get("data") or {}
-            data = fit_response(data)  # 精简 + 大小控制（Task 1）
+            data = fit_response(data)  # 大小控制（fit_response）
             return {
                 "status": "success",
                 "message": f"Switched to tab {tab_id}",
