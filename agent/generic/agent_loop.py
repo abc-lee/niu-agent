@@ -1474,7 +1474,7 @@ def agent_runner_loop(
                         messages.append({
                             "role": "user",
                             "content": (
-                                f"[系统警告] 同步子 Agent 仍在挂起等待你的回答：{_names}。"
+                                f"[系统警告] 同步进程仍在挂起等待你的回答：{_names}。"
                                 "这一轮你没有调用工具，确定要退出这次的工具循环吗？这可能造成数据丢失。"
                             )
                         })
