@@ -261,6 +261,8 @@ chat-with-browser-operator(
 
 **同步调用禁止用对话文本回复**（如直接输出 `@browser-operator 我选择 2`）——子 Agent 会永久挂起。
 
+挂起的同步子 Agent 应优先用 `chat-with-xxx(answer=..., unique_name=...)` 接续；确认放弃时明确告知用户输入 `/stop`。
+
 ### 异步调用
 
 调 `chat-with-xxx(task="...", async_mode=true)`，工具立即返回派单确认，含子 Agent 唯一名（如 `file-processor-a1b2`，带 4 位 hex 后缀）。子 Agent 在后台跑，你可以继续做别的事。

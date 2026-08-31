@@ -176,7 +176,7 @@ niu [选项]
 | `/api/context/messages/add` | POST | 添加消息 |
 | `/api/context/tidy` | POST | 上下文整理（sleep/force 模式）。整理管道全局一次一个排队（单 worker 队列）：`mode:'sleep'` → 投递 + 立即返回 `{"status":"queued"}`（后端继续排队执行）；`mode:'force'` → 投递 + await 队列执行完成（前端直接 await，无整体超时——解锁真源是后端 try/finally 必释放 `_tidy_lock`，子 Agent 有 LLM read_timeout 保底必收敛）。原 force 压缩前置游标追平门控（`_cursors_caught_up`）已于 2026-08-24 工程四移除——睡眠重排为压缩在前、提炼在后且提炼文件驱动，门控失去意义，不再返回 skipped |
 | `/api/spirit-state` | POST | 精灵状态同步。body `{"state": str}`（如 `"sleep"`/`"idle"`，小写归一）；后端据此刻 `is_sleeping()` 判定 sleep 管道 CP0-CP3 状态机（睡眠整理可被唤醒打断，force 不检查） |
-| `/api/chat/clear` | POST | 即时清空当前会话。流程：无条件唤醒睡眠整理管道（`set_spirit_state("idle")`）+ `request_stop()` 停主 Agent → 无限心跳排队拿 `_chat_lock`（60s 一跳，永不超时拒绝）→ `clear_messages()` 清空 + `cleanup_all_tmp()` + 复位全部游标。**已移除 force_tidy 提炼通道**（用户拍板"取消清空前提炼"）：请求 body 的 `force_tidy` 字段被忽略，/clear 不再先跑整理 |
+| `/api/chat/clear` | POST | 即时清空当前会话。流程：无条件唤醒睡眠整理管道（`set_spirit_state("idle")`）+ `request_stop()` 停主 Agent → 无限心跳排队拿 `_chat_lock`（60s 一跳，永不超时拒绝）→ `clear_messages()` 清空 + `cleanup_all_tmp()` + 复位全部游标 + 清理挂起同步子 Agent（`cleanup_suspended_sync_subagents`，STOPPED 语义）。**已移除 force_tidy 提炼通道**（用户拍板"取消清空前提炼"）：请求 body 的 `force_tidy` 字段被忽略，/clear 不再先跑整理 |
 | `/api/chat/session` | POST | 同步对话（兼容旧 UI） |
 | `/api/shutdown` | POST | 关闭服务 |
 | `/api/preload-status` | GET | 预加载状态（Rust 启动器用） |

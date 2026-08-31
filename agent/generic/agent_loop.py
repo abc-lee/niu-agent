@@ -857,6 +857,7 @@ def agent_runner_loop(
     _max_truncation_retries = 3
     _parse_fail_count = 0  # E4-01：同一轮内连续参数解析失败计数（每轮解析循环起点重置 + 解析成功清零——触发严格限定"同一轮连续 3 次"）
     _max_parse_failures = 3
+    _sync_suspend_warned = False  # 同步子 Agent 挂起警告：每次 agent_runner_loop 调用重置，最多注入一次（2026-08-31 用户拍板）
     warning_threshold = _read_warning_threshold()
 
     while handler.max_turns is None or turn < handler.max_turns:
@@ -1458,6 +1459,29 @@ def agent_runner_loop(
 
         if len(next_prompts) == 0:
             if len(handler._done_hooks) == 0:
+                # 同步子 Agent 挂起警告（2026-08-31 用户拍板）：仅同步挂起；拦截式注入，
+                # LLM 同循环内可见；不 yield persist（依赖 persist_agent_reply role=user skip 不进 db）
+                if not getattr(handler, "_is_subagent", False) and not _sync_suspend_warned:
+                    from agent.subagent_registry import SubagentRegistry
+                    _pending_sync = [
+                        _inst for _inst in SubagentRegistry.list_running()
+                        if getattr(_inst, "is_sync", False)
+                        and getattr(_inst, "state", None) == "waiting_for_answer"
+                    ]
+                    if _pending_sync:
+                        _sync_suspend_warned = True
+                        _names = "、".join(_inst.unique_name for _inst in _pending_sync)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"[系统警告] 后台同步子 Agent 仍在挂起等待你的回答：{_names}。"
+                                "本轮你没有调用工具就准备结束工具循环——这些子 Agent 将保持挂起。"
+                                "请用 chat-with-xxx(answer='回答内容', unique_name='xxx') 回答它们，"
+                                "或明确告知用户输入 /stop 放弃。"
+                            )
+                        })
+                        logger.warning(f"[AgentLoop] 主 Agent 结束工具循环但同步子 Agent 仍挂起: {_names}")
+                        continue  # LLM 下一轮（同循环内）看到警告
                 # 纯文本回复：也要执行衰减
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)

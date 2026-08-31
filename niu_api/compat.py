@@ -2061,6 +2061,9 @@ async def clear_chat(request: Request) -> dict:
         # （F1/F2/F3 上面已截断；journal.md 本体按 §8 拍板保留）
         from agent.context_assembler import reset_derived_state
         reset_derived_state()
+        # 清理挂起同步子 Agent session（清空会话 = 显式放弃当前全部工作，与 reset_derived_state 同语义）
+        from agent.runner import cleanup_suspended_sync_subagents
+        cleanup_suspended_sync_subagents({"result": "STOPPED"})
 
         return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
     finally:
