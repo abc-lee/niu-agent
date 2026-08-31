@@ -503,8 +503,24 @@ preload_face_model()
 - `docs/design-self-evolution-system.md` — 自我进化系统设计规范
 - `docs/USAGE-self-evolution.md` — 自我进化系统使用指南
 - `docs/analysis-genericagent-evolution.md` — GenericAgent 进化机制分析
-
 ---
+
+### 2026-08-31
+
+#### 工程：Browser elements 大小控制——精简逻辑全删，elements 原样输出 + 头尾截断保护 tabSummary（计划 v1→v7 七轮双审门禁 + SDD T1-T3 双审全 PASS，main 798f06ad/a30e8666/4cdd1935）
+
+- **背景（用户质疑 get_state 大页面截断）**：京东主页 dom_tree.js 原始 elements 实测 **33,900 字符 / 1,449 行** > MAX_TOOL_RESULT_CHARS=30000 → 走 disk 工具 30K 硬截断（从开头保留）→ **tabSummary（dict 末尾）被截掉** → LLM 看不到标签页 → 无法 close_tab（初始 bug 根因链）
+- **精简方案证伪（16P 实测）**：旧 simplify_elements（正则解析去属性）在 16personalities.com 丢全部 radio 选项（`<input ... aria-label=I strongly agree />`——aria-label 带空格、无文本自闭合 `_RE_WITH_CLOSE` 不匹配）、京东 818 元素"精简"实为大量无文本元素静默丢弃——**任何"保留哪些元素"的规则都不可靠**（归纳法固有边界，换网站必遇反例）
+- **方案定案（用户拍板）**：不精简——elements **原样输出**（dom_tree.js 给什么就是什么，零格式假设）；**从我们这一端控制总大小** <30K：超预算按行边界截断 elements（**保留头部**=搜索框/导航 + **尾部 30 行**=分页/提交按钮，中间折叠）+ 折叠标记（含行数统计 + 完整内容临时文件路径）+ 全量写 `~/.niu/tmp/browser_state_*.txt` 供 read 按需查看；**tabSummary/currentTabId 是结构化字段天然在截断后**（根治尾巴丢失，不再依赖"elements 后面还有位置"）
+- **关键设计（七轮审查锤炼）**：
+  - **预算转义感知**（R-A P1）：约束是 json.dumps 大小——`\n`→`\\n`(+1)、`"`→`\"`(+1)、`\`→`\\`(+1)、`\t`/`\r`(+1)：行成本上界 = len + 转义计数 + 2（+2 为 json.dumps 包裹引号，T1 实施实证：计划代码漏计 2 字符致 test_escape_aware 必挂，按"修代码不改断言"修正）
+  - **截断路径最终校验**（R-B P1-1）：无 ≤60 行早退（40 行×800 字符长文本页会复发原 bug）；尾部行数从 30 递减直至 fit（head_budget≤0 时递减给头部腾空间）；`truncated + fold_note` 总成本超预算 → 降级最小 stub
+  - **总大小统一判断**（R-C P1-1）：elements 小但 tabSummary 巨大（>26K 数百标签页）也会超 30K——透传判断只比 `_json_size(elements)`（elements_budget 已扣 fixed_cost，双重扣减会让"本可透传"的响应走截断+虚假折叠标记）；fixed_cost 用 `_json_size(v)` 转义感知
+  - **stub 分支**（R-B P2-1）：`elements_budget ≤ 0`（fixed_cost ≥ 26K）→ elements 降级固定 stub + 文件路径；保护不可达阈值 tabSummary >~29.7K
+  - **测试尺寸全部实测复算**（R-D/E/F）：700 行 tab 实测 30.5K（stub 后 31,504 必挂）→ 600 行 26,093（stub 后 27.0K ✓）；4 元组解包全仓穷举（R-F 抓出 test_truncation_line_boundary 漏改）；京东 fixture 33,900 字符/1,449 行（browser 注入 dom_tree.js Node 侧 fs.writeFileSync 落盘，wc -c 40,239 字节证实 CJK 3 字节——校验必须用字符计数）
+- **交付链**：T1 simplify.py 重写（fit_response 纯大小控制 + `_json_size`/`_line_cost`/`_truncate_head_tail`/`write_full_elements`，删 simplify_elements 全正则）+ 13 单测 + __init__.py 4 处失实注释修正；T2 集成测试适配（4 大页面测试断言新语义 + **MD_DIR 显式 monkeypatch 隔离**——经全链路会写真实 ~/.niu/tmp）；T3 SYSTEM_MANUAL L96 更新（grep 残留零命中）
+- **验证**：13+6=19 测试全绿（单测 + 集成）；**smoke 直演**（京东真实 fixture 走 fit_response）：33,900 → 23,163 字符，总 JSON 26,039 < 30K，tabSummary/currentTabId 完整，头 `*[0]` + 尾末行双保留，折叠标记 + 临时文件就位
+- **实机验证（待用户重启）**：browser 工具打开大页面 → get_state 响应 < 30K 且 tabSummary 可见 → 主 Agent 可正常 close_tab；折叠标记含完整内容路径 → read 可查全量
 
 ### 2026-08-29
 
