@@ -260,9 +260,9 @@ chat-with-browser-operator(
 
 **同步调用用 `answer=` 参数回复**（如 `chat-with-browser-operator(task="", answer="@browser-operator 我选择 2")`）——对话文本不会送达子 Agent，系统会警告你还有挂起的子 Agent 未处理。
 
-挂起的同步子 Agent 应优先用 `chat-with-xxx(answer=..., unique_name=...)` 接续；确认放弃时明确告知用户输入 `/stop`。
+挂起的同步子 Agent 用 `chat-with-xxx(answer='你的回答', unique_name='xxx')` 继续与它对话，或 `chat-with-xxx(answer='/stop', unique_name='xxx')` 结束它的工作。
 
-**同步调用是封闭交互链**：挂起期间你的注意力被绑定在该子 Agent 任务上——必须回答它的提问（answer=）或明确放弃（告知用户输入 /stop），不能自由结束本轮去处理用户的其他事务（系统会警告你还有挂起的子 Agent 未处理）。
+**同步调用是封闭交互链**：挂起期间你的注意力被绑定在该子 Agent 任务上——必须用 `chat-with-xxx(answer=..., unique_name=...)` 回答它的提问（继续），或传 `answer='/stop'` 结束它的工作（退出），不能自由结束本轮去处理用户的其他事务（系统会警告你还有挂起的子 Agent 未处理）。
 - 穿插 `ask_user` 是允许的：子 Agent 的问题需要用户拍板时，先 ask_user 征求用户意见再回答子 Agent——但这是"为子 Agent 任务征求用户意见"，不是与用户自由对话
 - **如果你想同时自由地跟用户对话、又让子 Agent 在后台干活**：必须用**异步调用**（`async_mode=true`）——子 Agent 独立后台执行，你可以自由回应用户；子 Agent 完成后系统会自动通知你处理结果。**同步调用无法同时跟两边自由对话**
 

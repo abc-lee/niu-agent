@@ -151,8 +151,7 @@ def test_intercept_warning_injects_once_then_exits():
     assert len(warns) == 1  # 最多注入一次（_sync_suspend_warned 守卫）
     w = warns[0]["content"]
     assert "nutritionist" in w                    # 含挂起实例名
-    assert "answer=" in w and "unique_name=" in w  # 教 chat-with-xxx(answer=, unique_name=) 接续
-    assert "/stop" in w                           # 教显式放弃
+    assert "确定要退出" in w and "nutritionist" in w  # 警告只提醒+询问（不教方法，教学在 niu.md）
     assert SubagentRegistry.get("nutritionist") is not None  # 挂起实例保留
 
 

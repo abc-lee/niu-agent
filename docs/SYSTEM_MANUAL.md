@@ -386,7 +386,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 - **同步**：主 Agent 阻塞等子 Agent 跑完拿结果。适合短时任务。
 - **异步**（`allowAsync: true` + `async_mode: true`）：立即返回"已开始异步工作"，子 Agent 后台跑。适合长时任务。异步子 Agent 完成后自动 push 完成汇报，触发主 Agent 新一轮 LLM 处理（拿结果判断下一步）。
-- **同步 = 封闭交互链**：主 Agent 阻塞等子 Agent 完成，期间被绑定在该任务上——子 Agent 挂起（@niu-agent）时必须回答（answer=）或明确放弃（用户 /stop），不能自由转向用户；可穿插 ask_user 征求用户意见（任务内征求意见，非自由对话）
+- **同步 = 封闭交互链**：主 Agent 阻塞等子 Agent 完成，期间被绑定在该任务上——子 Agent 挂起（@niu-agent）时必须回答（answer= 继续）或用 answer='/stop' 结束它的工作（退出），不能自由转向用户；可穿插 ask_user 征求用户意见（任务内征求意见，非自由对话）
 - **异步 = 主 Agent 自由**：子 Agent 后台跑，主 Agent 可自由回应用户，完成通知自动触发主 Agent 新一轮处理（拿结果判断下一步）
 - **同时跟用户和子 Agent 自由交互的标准方式 = 异步调用**（同步调用无法同时跟两边自由对话）
 
