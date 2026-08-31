@@ -1463,10 +1463,13 @@ def agent_runner_loop(
                 # LLM 同循环内可见；不 yield persist（依赖 persist_agent_reply role=user skip 不进 db）
                 if not getattr(handler, "_is_subagent", False) and not _sync_suspend_warned:
                     from agent.subagent_registry import SubagentRegistry
+                    # 只警告主 Agent 自己调起的同步挂起（source="user"/"scheduler"）——程序触发子 Agent
+                    # （睡眠管道等，source="program"）挂起残留与主 Agent 无关，不警告（误警告会每轮打扰主 Agent）
                     _pending_sync = [
                         _inst for _inst in SubagentRegistry.list_running()
                         if getattr(_inst, "is_sync", False)
                         and getattr(_inst, "state", None) == "waiting_for_answer"
+                        and getattr(_inst, "source", "user") != "program"
                     ]
                     if _pending_sync:
                         _sync_suspend_warned = True

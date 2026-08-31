@@ -10,6 +10,7 @@
   T3-2 警告后 LLM 调 chat-with-xxx(answer=, unique_name=) → 走既有 answer 分支接续挂起（mock _run_agent_loop）
   T3-3 无挂起实例 → 不注入警告（首轮直接退出）
   T3-4 仅异步 running 实例（is_sync=False）→ 不注入警告
+  T3-4b 程序触发同步挂起实例（source="program"，睡眠管道等）→ 不注入警告（与主 Agent 无关）
   T3-5 子 Agent 路径（handler._is_subagent=True）→ 不注入警告
   T3-6 警告不进 db：yield 的 StreamEvent 无警告 persist；rv["messages"] 尾部 user 警告被 persist_agent_reply 跳过
   T3-7 cleanup 判定矩阵 + runner finally 接线（cleanup_suspended_sync_subagents(return_value) 传参）
@@ -249,6 +250,18 @@ def test_async_running_instance_no_warning():
 
     assert result["result"] == "CURRENT_TASK_DONE"
     assert client.chat.call_count == 1
+    assert _warnings_in(result["messages"]) == []
+
+
+def test_program_source_sync_suspended_no_warning():
+    """T3-4b：程序触发同步挂起实例（source="program"，睡眠管道 entity-extractor/dream-evolver 等）
+    → 不注入警告（与主 Agent 无关，首轮直接退出）；对照 T3-1（source 默认 user → 注入）。"""
+    _register_suspended("entity-extractor").source = "program"
+    handler = _LoopHandler(is_subagent=False)
+    client, events, result = _run_loop(handler, [_resp("任务完成")], max_turns=2)
+
+    assert result["result"] == "CURRENT_TASK_DONE"
+    assert client.chat.call_count == 1  # 首轮直接退出，无 continue
     assert _warnings_in(result["messages"]) == []
 
 
