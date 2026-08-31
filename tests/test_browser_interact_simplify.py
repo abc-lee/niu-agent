@@ -2,6 +2,11 @@
 
 import niu_browser_server 会启动 WSBridge 线程（模块级副作用，pre-existing）——
 测试用 mock _ensure_connection 隔离，不触发真实 WebSocket。
+
+新语义（2026-08-31）：elements 原样输出不精简；超预算时按行截断
+（头+尾双保留 + 折叠标记），tabSummary/currentTabId 完整保留。
+大页面测试经 __init__.py 全链路真实调用 fit_response → write_full_elements，
+必须 monkeypatch MD_DIR→tmp_path 隔离临时文件写入（禁写真实 ~/.niu/tmp）。
 """
 import json
 import os
@@ -35,8 +40,9 @@ def _mock_bridge_return(elements):
 
 
 class TestInteractSimplify:
-    def test_get_state_big_page_simplified(self):
-        """大页面 get_state → 精简 + tabSummary 保留 + 全 json<30K"""
+    def test_get_state_big_page(self, tmp_path, monkeypatch):
+        """大页面 get_state → elements 截断（大小受控）+ tabSummary 完整 + 全 json<30K"""
+        monkeypatch.setattr('niu_browser_server.simplify.MD_DIR', str(tmp_path))
         mock_result = _mock_bridge_return(_make_big_elements(1500))
 
         with patch('niu_browser_server._ensure_connection') as mc:
@@ -45,16 +51,19 @@ class TestInteractSimplify:
             result = browser_interact(action='get_state')
 
         assert result['status'] == 'success'
-        # 核心验收：全 dict JSON < 30K
-        assert len(json.dumps(result, ensure_ascii=False)) < 30000
+        # elements 被截断（大小受控）
+        assert len(result['elements']) < 30000
         # tabSummary 完整
         assert 'TabID' in result['tabSummary']
         assert result['currentTabId'] == 1
-        # elementsFile 在返回 dict 中
-        assert 'elementsFile' in result
+        # 全 dict JSON < 30K
+        assert len(json.dumps(result, ensure_ascii=False)) < 30000
+        # elementsFile 非空（截断路径触发）
+        assert result.get('elementsFile') is not None
 
-    def test_navigate_big_page_simplified(self):
-        """大页面 navigate → 同样精简（不只是 get_state）"""
+    def test_navigate_big_page(self, tmp_path, monkeypatch):
+        """大页面 navigate → 同样截断保护（不只是 get_state）"""
+        monkeypatch.setattr('niu_browser_server.simplify.MD_DIR', str(tmp_path))
         mock_result = _mock_bridge_return(_make_big_elements(1500))
 
         with patch('niu_browser_server._ensure_connection') as mc:
@@ -63,11 +72,13 @@ class TestInteractSimplify:
             result = browser_navigate(url='https://www.jd.com/')
 
         assert result['status'] == 'success'
+        assert len(result['elements']) < 30000
+        assert 'TabID' in result['tabSummary']
         assert len(json.dumps(result, ensure_ascii=False)) < 30000
-        assert 'elementsFile' in result
+        assert result.get('elementsFile') is not None
 
     def test_small_page_not_simplified(self):
-        """小页面不精简不截断"""
+        """小页面原样输出不截断"""
         small = '*[0]<a>首页 />\n*[1]<button>搜索 />'
         mock_result = _mock_bridge_return(small)
 
@@ -92,8 +103,9 @@ class TestInteractSimplify:
 
         assert result['status'] == 'success'
 
-    def test_new_tab_big_page_simplified(self):
-        """new_tab 大页面同样精简"""
+    def test_new_tab_big_page(self, tmp_path, monkeypatch):
+        """new_tab 大页面同样截断保护"""
+        monkeypatch.setattr('niu_browser_server.simplify.MD_DIR', str(tmp_path))
         mock_result = _mock_bridge_return(_make_big_elements(1500))
 
         with patch('niu_browser_server._ensure_connection') as mc:
@@ -102,10 +114,14 @@ class TestInteractSimplify:
             result = browser_new_tab(url='https://www.jd.com/')
 
         assert result['status'] == 'success'
+        assert len(result['elements']) < 30000
+        assert 'TabID' in result['tabSummary']
         assert len(json.dumps(result, ensure_ascii=False)) < 30000
+        assert result.get('elementsFile') is not None
 
-    def test_switch_tab_big_page_simplified(self):
-        """switch_tab 大页面同样精简"""
+    def test_switch_tab_big_page(self, tmp_path, monkeypatch):
+        """switch_tab 大页面同样截断保护"""
+        monkeypatch.setattr('niu_browser_server.simplify.MD_DIR', str(tmp_path))
         mock_result = _mock_bridge_return(_make_big_elements(1500))
 
         with patch('niu_browser_server._ensure_connection') as mc:
@@ -114,4 +130,7 @@ class TestInteractSimplify:
             result = browser_switch_tab(tab_id=1)
 
         assert result['status'] == 'success'
+        assert len(result['elements']) < 30000
+        assert 'TabID' in result['tabSummary']
         assert len(json.dumps(result, ensure_ascii=False)) < 30000
+        assert result.get('elementsFile') is not None
