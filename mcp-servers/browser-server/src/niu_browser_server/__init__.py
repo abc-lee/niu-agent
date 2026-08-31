@@ -22,6 +22,7 @@ from loguru import logger
 
 from .ws_bridge import WSBridge
 from .launcher import launch_browser
+from .simplify import fit_response
 
 
 # Global state
@@ -145,6 +146,7 @@ def browser_navigate(
 
         if result.get("success"):
             data = result.get("data") or {}
+            data = fit_response(data)  # 精简 + 大小控制（Task 1）
             return {
                 "status": "success",
                 "url": data.get("url", url),
@@ -153,6 +155,7 @@ def browser_navigate(
                 "pageInfo": data.get("pageInfo", {}),
                 "tabSummary": data.get("tabSummary", ""),
                 "currentTabId": data.get("currentTabId"),
+                "elementsFile": data.get("elementsFile"),
             }
         else:
             return {
@@ -205,6 +208,7 @@ def browser_interact(
 
         if result.get("success"):
             data = result.get("data") or {}
+            data = fit_response(data)  # 精简 + 大小控制（Task 1）
             return {
                 "status": "success",
                 "message": result.get("message", "OK"),
@@ -214,6 +218,7 @@ def browser_interact(
                 "pageInfo": data.get("pageInfo", {}),
                 "tabSummary": data.get("tabSummary", ""),
                 "currentTabId": data.get("currentTabId"),
+                "elementsFile": data.get("elementsFile"),
             }
         else:
             return {"status": "error", "message": result.get("message", "Unknown error")}
@@ -246,6 +251,7 @@ def browser_new_tab(
 
         if result.get("success"):
             data = result.get("data") or {}
+            data = fit_response(data)  # 精简 + 大小控制（Task 1）
             return {
                 "status": "success",
                 "url": data.get("url", url),
@@ -254,6 +260,7 @@ def browser_new_tab(
                 "pageInfo": data.get("pageInfo", {}),
                 "tabSummary": data.get("tabSummary", ""),
                 "currentTabId": data.get("currentTabId"),
+                "elementsFile": data.get("elementsFile"),
             }
         else:
             return {
@@ -284,6 +291,7 @@ def browser_switch_tab(
 
         if result.get("success"):
             data = result.get("data") or {}
+            data = fit_response(data)  # 精简 + 大小控制（Task 1）
             return {
                 "status": "success",
                 "message": f"Switched to tab {tab_id}",
@@ -293,6 +301,7 @@ def browser_switch_tab(
                 "pageInfo": data.get("pageInfo", {}),
                 "tabSummary": data.get("tabSummary", ""),
                 "currentTabId": data.get("currentTabId"),
+                "elementsFile": data.get("elementsFile"),
             }
         else:
             return {"status": "error", "message": result.get("message", "Unknown error")}
