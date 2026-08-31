@@ -529,13 +529,32 @@ async function sendToContentScriptWithRetry(tabId, msg, maxRetries = 5, delayMs 
   return { success: false, message: 'Content script not responding after ' + maxRetries + ' retries' };
 }
 
-function sendResult(id, success, message, data) {
+async function sendResult(id, success, message, data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     // 每次响应都包含标签页摘要（page-agent 模式）
     let enrichedData = data;
     if (success) {
       if (!data || typeof data !== 'object') {
         enrichedData = {};
+      }
+      // 自愈：tabs 为空时重新查询当前窗口标签页
+      if (!tabs.length) {
+        try {
+          const active = await chrome.tabs.query({ active: true, currentWindow: true });
+          const fresh = await chrome.tabs.query({ currentWindow: true });
+          const activeId = active[0]?.id;
+          for (const tab of fresh) {
+            if (isContentScriptAllowed(tab.url)) {
+              addTab({ id: tab.id, url: tab.url, title: tab.title, status: tab.status, isInitial: tab.id === activeId });
+            }
+          }
+          if (active[0]) {
+            currentTabId = activeId;
+            windowId = active[0].windowId;
+          } else if (tabs.length && !currentTabId) {
+            currentTabId = tabs[0].id;
+          }
+        } catch (e) { console.error('[NiuHub] Tab recovery failed:', e); }
       }
       enrichedData.tabSummary = summarizeTabs();
       enrichedData.currentTabId = currentTabId;
