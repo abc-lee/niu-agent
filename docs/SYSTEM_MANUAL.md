@@ -93,6 +93,8 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
 > `ha-server` 为可选服务器，需配置 Home Assistant 长期访问令牌后才会启用（`optional: true`）。
 
+**elements 精简（2026-08-31）**：get_state/navigate/new_tab/switch_tab 大页面自动精简 elements——去掉冗余属性（id/target/name/class 等），保留编号+标签+文本+placeholder，格式为 `[N] tag: text`。响应总大小超 27K 时自动截断 elements 并追加「内容已折叠」标记 + 完整列表临时文件路径（~/.niu/tmp/browser_state_*.txt）。主 Agent 需要元素详情时用 read 工具查看临时文件。
+
 ### 2.1.1 MCP 配置双目录加载（0.3.0 起）
 
 0.3.0 起 `mcp-servers.yaml` 采用**双目录加载模型**，取代旧 copy-once 机制（首启复制到 `~/.niu/config/mcp-servers.yaml`、此后仓库侧变更永不达存量装机的设计债）：
