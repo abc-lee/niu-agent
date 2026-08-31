@@ -154,22 +154,42 @@ def request_stop_all_subagents() -> None:
             logger.error(f"给子 Agent {instance.unique_name} 推 /stop 失败：{e}")
 
 
-def cleanup_suspended_sync_subagents():
-    """主 Agent 工具循环退出时清理所有挂起的同步子 Agent session。
+def cleanup_suspended_sync_subagents(return_value=None):
+    """主 Agent 工具循环结束时清理挂起的同步子 Agent session。
 
-    场景：主 Agent 调用 chat-with-xxx 后，LLM 不再调用第二次 chat-with-xxx
-    而是直接回应用户，导致同步子 Agent session 残留在 waiting_for_answer 状态。
-    主 Agent 工具循环 finally 块调用此函数清理。
-    注（2026-08-11 用户拍板）：不再推送清理通知（工具错误/orphan 反馈已告知主 Agent；
+    语义（2026-08-31 用户拍板）：同步子 Agent 挂起 = 主 Agent 未完成的工具调用，
+    主 Agent 正常结束工具循环时挂起现场必须保留（跨轮可 answer 接续）——
+    清理只发生在用户显式停止（STOPPED / TERMINATED_BY_SUPPLEMENT / 全局停止标志）。
+    注（2026-08-11 用户拍板保留）：不推送清理通知（工具错误/orphan 反馈已告知主 Agent；
     通知以 user 消息进对话流会被主 Agent 误认为用户话，造成转述混乱）。
     """
+    # 用户显式停止判定（修正自 R1-B P2）：除 return_value.result 外，还要覆盖
+    # runner 级 gen.close() 路径——用户 /stop 只置全局标志（compat.py L1709-1710），
+    # runner L2007-2010 检查 is_stop_requested() 后 gen.close() → agent_loop GeneratorExit
+    # → return_value 保持 None（L1999 初始化）。finally 时全局标志仍 True
+    # （L2082-2083 才 clear_stop），故 is_stop_requested() 在此可作兜底判定；
+    # 顺序安全：本函数在 clear_stop() 之前执行。
+    _force_exit = (
+        (return_value is not None and isinstance(return_value, dict)
+         and return_value.get("result") in ("STOPPED", "TERMINATED_BY_SUPPLEMENT"))
+        or is_stop_requested()
+    )
+    if not _force_exit:
+        pending = [
+            i for i in SubagentRegistry.list_running()
+            if getattr(i, "is_sync", False) and getattr(i, "state", None) == "waiting_for_answer"
+        ]
+        if pending:
+            logger.info(f"[CleanupSuspendedSync] 主 Agent 结束但挂起同步子 Agent 保留（跨轮可接续）: "
+                        f"{[p.unique_name for p in pending]}")
+        return
     for instance in SubagentRegistry.list_running():
         state = getattr(instance, "state", "running")
         is_sync = getattr(instance, "is_sync", False)
         if state == "waiting_for_answer" and is_sync:
             try:
                 SubagentRegistry.unregister(instance.unique_name)
-                logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}")
+                logger.info(f"[CleanupSuspendedSync] 用户显式停止，已清理挂起同步子 Agent: {instance.unique_name}")
             except Exception as e:
                 logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 失败：{e}")
 
@@ -2056,8 +2076,8 @@ class NiuRunner:
                     return_value = e.value
                     break
         finally:
-            # 清理残留挂起的同步子 Agent session（主 Agent 不再调 chat-with-xxx 时）
-            cleanup_suspended_sync_subagents()
+            # 工具循环结束时处理挂起同步子 Agent：仅用户显式停止清理，否则保留现场（见函数 docstring）
+            cleanup_suspended_sync_subagents(return_value)
             # 确保停止标志被清除（无论正常退出、停止退出还是异常退出）
             if is_stop_requested():
                 clear_stop()

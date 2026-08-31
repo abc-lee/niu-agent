@@ -63,7 +63,7 @@ def test_cleanup_unregisters_without_notify(monkeypatch):
                         staticmethod(lambda: type("_Q", (), {"push": staticmethod(lambda c: pushed.append(c))})()))
     try:
         assert SubagentRegistry.get("nutritionist") is not None
-        cleanup_suspended_sync_subagents()
+        cleanup_suspended_sync_subagents({"result": "STOPPED"})
         assert SubagentRegistry.get("nutritionist") is None  # 已注销
         assert pushed == []  # 不推送清理通知（工具错误已反馈主 Agent）
     finally:

@@ -34,7 +34,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 
 **指令机制**：
 - `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
-- `/clear`：即时清除——① `request_stop()` 停主 Agent；② 无条件唤醒睡眠整理管道（`set_spirit_state("idle")`，在途 sleep 管道于阶段边界自行退出）；③ 无限心跳排队拿 `_chat_lock` 后直接 `clear_messages()` 清空会话 + `cleanup_all_tmp()` + 截断 F1/F2/F3 中继文件 + 删除指针块库 + 校准倍率复位（journal.md 本体保留）。支持 Electron 和 IM 通用
+- `/clear`：即时清除——① `request_stop()` 停主 Agent；② 无条件唤醒睡眠整理管道（`set_spirit_state("idle")`，在途 sleep 管道于阶段边界自行退出）；③ 无限心跳排队拿 `_chat_lock` 后直接 `clear_messages()` 清空会话 + `cleanup_all_tmp()` + 截断 F1/F2/F3 中继文件 + 删除指针块库 + 校准倍率复位（journal.md 本体保留）；④ 清理挂起同步子 Agent（`cleanup_suspended_sync_subagents`，STOPPED 语义——清空会话 = 显式放弃当前全部工作）。支持 Electron 和 IM 通用
 - `/compact`：调用 `POST /api/context/tidy {mode:'compact'}`，直达批量压实实现（与自动触发共用 compaction.compact_now_detailed）：纯机械秒级、零 LLM、DB 不动、不经整理队列直接执行；完成后推送新 usage 给前端圆环。阻塞式 UI（系统提示 + 禁用输入 + compact_status 圆环动画），忙时先发 `/stop`。与 `/clear` 的区别：`/clear` 即时清空会话；`/compact` 只压实视图不清空会话，历史全部可经 read_history_block 取回。前端直接 await 执行结果，秒级收敛（压实零 LLM）。**注意**：忙时 `/stop` 仅设置停止标志立即返回，不等 Agent 释放 `_chat_lock`；后端拿锁为无限心跳重试（永不超时放弃），Agent 停止慢时 `/compact` 排队等待而非失败。
 - `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（entity-extractor → dream-evolver 多轮循环；journal 已移出为每日 18 点定时任务——见「上下文管理」章节）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`；entity/dream 每步完成后检查，被唤醒 → `interrupted/woke_up`，已推进不回滚下次续跑。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
 - 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
@@ -451,7 +451,7 @@ journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journ
 
 #### /clear 与 /new 清理面
 
-两者同端点（即时清除语义，无清空前提炼）：清空 messages.db → 截断 F1/F2/F3 中继文件 → 删除指针块库 → 校准倍率复位默认值 → 作废内存派生缓存。**journal.md 本体保留**（§8 拍板：日记是长期资产，不随会话清空）。
+两者同端点（即时清除语义，无清空前提炼）：清空 messages.db → 截断 F1/F2/F3 中继文件 → 删除指针块库 → 校准倍率复位默认值 → 作废内存派生缓存 → 清理挂起同步子 Agent（`cleanup_suspended_sync_subagents`，STOPPED 语义）。**journal.md 本体保留**（§8 拍板：日记是长期资产，不随会话清空）。
 
 ### 维护注意事项
 

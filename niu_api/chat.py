@@ -1036,4 +1036,7 @@ async def clear_session(session_id: str):
     # 派生状态复位（与 clear_chat 一致——Task 8：指针块/校准倍率/内存状态）
     from agent.context_assembler import reset_derived_state
     reset_derived_state()
+    # 清理挂起同步子 Agent session（清空会话 = 显式放弃当前全部工作，与 reset_derived_state 同语义）
+    from agent.runner import cleanup_suspended_sync_subagents
+    cleanup_suspended_sync_subagents({"result": "STOPPED"})
     return {"status": "ok", "session_id": session_id}

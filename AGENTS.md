@@ -507,6 +507,16 @@ preload_face_model()
 
 ### 2026-08-31
 
+#### 工程：同步子 Agent 挂起丢失防护——退出前拦截警告 + cleanup 现场保留 + 4 端点清理（计划 v1→v6 六轮双审门禁 + SDD T1-T4；反转 2026-08-26「同步子 Agent 随主循环退出被回收」定案）
+
+- **背景（用户报告）**：同步调起的子 Agent 中途 `@niu-agent` 提问主 Agent，主 Agent 没回答反而下一轮错误地再次调用 `chat-with-xxx(task=...)` → 第一个子 Agent 上下文被全部清空、重新从零开始
+- **根因链（全代码实证）**：子 Agent `@niu-agent` 提问 → INTERCEPTED_SYNC 拦截 → `_maybe_suspend_session` 置 state="waiting_for_answer" + 保存完整上下文，call_subagent finally 跳过 unregister → 提问文本作为 tool 结果返回主 Agent（正确做法：同轮调 `chat-with-xxx(answer=..., unique_name=...)` 接续）→ **主 Agent 本轮没调 answer** → 纯文本退出 CURRENT_TASK_DONE → runner finally 无条件调 `cleanup_suspended_sync_subagents()` unregister 所有 waiting_for_answer 同步实例 → 上下文永久丢失 → 后续 task= 调用注册表已空、register 不抛 ValueError、全新子 Agent 从零开始
+- **核心缺陷**：cleanup 把「主 Agent 本轮没来得及回答」和「主 Agent 决定放弃回答」混为一谈——同步子 Agent 挂起 = 主 Agent 未完成的工具调用，系统却静默销毁现场、把错误合法化；本应挡住错误 task= 调用的同名 register ValueError 自纠提示因实例已被清掉而失效
+- **反转 2026-08-26 定案**：旧定案「同步子 Agent 随主循环退出被回收（主 Agent 代答省无意义往返是合理体验）」反转——用户报障 + 根因链属实，旧权衡是效率压倒正确性；harness 记忆（learned.md）已同步更新
+- **方案定案（用户逐条拍板）**：① **退出前拦截警告**：主 Agent 无工具调用准备退出工具循环且存在同步挂起子 Agent（`is_sync and waiting_for_answer`）时注入一次性 user 警告 + `continue`——LLM 同一循环内看到警告，决定继续处理（调 answer=）或明确放弃（再输出纯文本则放行）；异步不警告（独立线程生命周期，警告会导致永远退不出来）；② **警告用户不可见**：role=user 消息不 yield persist，靠 persist_agent_reply 的 role=user skip 不进 db；③ **不加超时**：工具循环 7 条退出路径 + max_turns=40 硬顶无卡死点，挂起保留收敛靠既有机制（提问 tool 结果已 persist 跨轮可见 / 同名 register ValueError / 用户 /stop 全清 / 进程重启清空）；④ **cleanup 语义反转**：仅用户显式停止（STOPPED/TERMINATED_BY_SUPPLEMENT/is_stop_requested 兜底）才清理，其余结束路径一律保留现场；⑤ **4 个会话清空端点**（compat.py clear_chat / chat.py clear_session / session.py delete_messages/delete_session）均在 reset_derived_state() 旁补 `cleanup_suspended_sync_subagents({"result": "STOPPED"})`——清空会话 = 显式放弃当前全部工作
+- **交付链**：T1 agent_loop.py Path A 拦截警告（函数级 `_sync_suspend_warned` 防重复，最多注入一次）+ T2 runner.py cleanup 语义反转 + runner finally `cleanup_suspended_sync_subagents(return_value)` 接线 + 4 端点清理 + T3 tests/test_sync_subagent_exit_guard.py 14 新测试（拦截警告 / answer 接续 / 无挂起 / 异步排除 / 子 Agent 路径排除 / 警告不进 db / cleanup 判定矩阵 + finally 接线 / 不推送通知 / 4 端点）+ 既有 test_ask_user_cleanup_protection 适配（传 STOPPED 保持原断言）+ T4 文档同步（niu.md 防御纵深教学 / SYSTEM_MANUAL L37+L452 / manual-developer L179 / 本条目）
+- **验证**：16/16 全绿（test_sync_subagent_exit_guard.py 14 新 + test_ask_user_cleanup_protection.py 2 既有适配；全 mock 禁真 LLM）
+
 #### 工程：Browser elements 大小控制——精简逻辑全删，elements 原样输出 + 头尾截断保护 tabSummary（计划 v1→v7 七轮双审门禁 + SDD T1-T3 双审全 PASS，main 798f06ad/a30e8666/4cdd1935）
 
 - **背景（用户质疑 get_state 大页面截断）**：京东主页 dom_tree.js 原始 elements 实测 **33,900 字符 / 1,449 行** > MAX_TOOL_RESULT_CHARS=30000 → 走 disk 工具 30K 硬截断（从开头保留）→ **tabSummary（dict 末尾）被截掉** → LLM 看不到标签页 → 无法 close_tab（初始 bug 根因链）
