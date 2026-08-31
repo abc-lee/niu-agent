@@ -1475,9 +1475,7 @@ def agent_runner_loop(
                             "role": "user",
                             "content": (
                                 f"[系统警告] 后台同步子 Agent 仍在挂起等待你的回答：{_names}。"
-                                "本轮你没有调用工具就准备结束工具循环——这些子 Agent 将保持挂起。"
-                                "请用 chat-with-xxx(answer='回答内容', unique_name='xxx') 回答它们，"
-                                "或明确告知用户输入 /stop 放弃。"
+                                "这一轮你没有调用工具，确定要退出这次的工具循环吗？这可能造成数据丢失。"
                             )
                         })
                         logger.warning(f"[AgentLoop] 主 Agent 结束工具循环但同步子 Agent 仍挂起: {_names}")
