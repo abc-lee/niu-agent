@@ -226,6 +226,22 @@ def test_journal_daily_agent_md_carries_workflow_protocol():
     assert "@end" in md, "@end 结束协议必须在场"
     assert '"report"' in md, "report 例外通道教学必须在场"
 
+def test_journal_daily_agent_hidden_pins():
+    """hidden pin（T4 契约）：journal-daily-agent 是后台专用子 Agent，主 Agent 不可见——
+    ① frontmatter 声明 visibility: hidden（get_tools_schema 跳过 chat-with 注册）；
+    ② niu.md sub agents 名单不含它（列入=按专用子 Agent 暴露给主 Agent）。"""
+    import yaml
+
+    md = (_root / "config" / "agents" / "journal-daily-agent.md").read_text(encoding="utf-8")
+    fm = yaml.safe_load(md.split("---", 2)[1])
+    assert fm.get("visibility") == "hidden", \
+        "frontmatter 必须声明 visibility: hidden（后台专用，不注册 chat-with 工具）"
+
+    niu_md = (_root / "config" / "agents" / "niu.md").read_text(encoding="utf-8")
+    niu_fm = yaml.safe_load(niu_md.split("---", 2)[1])
+    assert "journal-daily-agent" not in (niu_fm.get("sub agents") or []), \
+        "niu.md sub agents 名单不得含 journal-daily-agent（后台专用，不暴露给主 Agent）"
+
 
 def test_success_writes_no_cursor_and_no_file(monkeypatch, tmp_path):
     """正常返回即成功：程序侧零游标读写、零导出文件（水位线由子 Agent 按标记自理）。"""
@@ -234,10 +250,17 @@ def test_success_writes_no_cursor_and_no_file(monkeypatch, tmp_path):
 
 
 def test_no_report_stays_silent(monkeypatch, tmp_path):
-    """无 report：静默零打扰——不触达 ChatQueue。"""
-    monkeypatch.setattr(svc, "get_chat_queue",
-                        lambda: (_ for _ in ()).throw(AssertionError("无 report 不得触达 ChatQueue")))
+    """无 report：静默零打扰——不触达 ChatQueue（记录式 mock 断言零调用——
+    抛 AssertionError 的 patch 会被生产两层 except Exception 吞掉，回归时恒真）。"""
+    sent = []
+    monkeypatch.setattr(
+        svc, "get_chat_queue",
+        lambda: mock.MagicMock(
+            enqueue_sync=lambda **k: sent.append(k) or mock.MagicMock(queued=True)
+        ),
+    )
     _run_job(monkeypatch, tmp_path, NORMAL_JSON)
+    assert sent == [], "无 report 不得触达 ChatQueue"
 
 
 def test_report_sink_delivered_to_main_agent(monkeypatch, tmp_path):
@@ -325,6 +348,8 @@ def test_builtin_task_def_uses_subagent_kind():
     assert '"name": "journal-daily"' in source
     assert '"task_kind": "subagent"' in source
     assert '"agent_name": "journal-daily-agent"' in source
+    assert JOURNAL_DAILY_TASK["content"] in source, \
+        "任务文本 content 必须与 __main__._system_tasks 一致（否则派发任务文本漂移）"
     assert '"task_kind": "journal_daily"' not in source, "旧 journal_daily 类型应已迁移"
     assert 'find_task_by_name("daily-journal-check")' in source, "应含旧任务一次性迁移"
     assert '"name": "daily-journal-check"' not in source, "旧 daily-journal-check 定义应删除"

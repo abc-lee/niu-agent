@@ -409,6 +409,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
     - 文件名非 kebab-case（避免工具名含空格/大写）
     - MD 文件不存在
     - frontmatter 为空或解析失败（YAML 错误）
+    - frontmatter 非 dict（纯字符串/列表等非标量值，视为无效 MD）
     - description 字段缺失（视为无效子 Agent）
     - visibility: hidden（后台专用子 Agent，不注册 chat-with 工具；程序按名直调不受影响）
 
@@ -481,11 +482,20 @@ def get_tools_schema(include_main_only: bool = True) -> list:
         except Exception as e:
             logger.warning(f"Sub-agent '{agent_name}' config parse error: {e}, skipping")
             continue
-        # 5d. visibility: hidden → 不注册 chat-with 工具（后台专用子 Agent，仅程序按名直调）
+        # 5d. frontmatter 必须是 dict（纯字符串/列表等非标量值视为无效 MD，warn+skip——
+        #     缺此守卫下方 .get() 抛 AttributeError 逃逸出循环 → get_tools_schema 整体崩溃）
+        if not isinstance(agent_config, dict):
+            logger.warning(
+                f"Sub-agent '{agent_name}' has non-dict frontmatter "
+                f"({type(agent_config).__name__}), skipping (bad MD)"
+            )
+            continue
+
+        # 5e. visibility: hidden → 不注册 chat-with 工具（后台专用子 Agent，仅程序按名直调）
         if agent_config.get("visibility") == "hidden":
             continue
 
-        # 5e. frontmatter 非空 + description 存在
+        # 5f. frontmatter 非空 + description 存在
         if not agent_config:
             logger.warning(
                 f"Sub-agent '{agent_name}' has empty/invalid frontmatter, skipping (bad MD)"
@@ -497,7 +507,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
             )
             continue
 
-        # 5f. MCP 服务器未加载 warning（不阻塞）
+        # 5g. MCP 服务器未加载 warning（不阻塞）
         mcp_servers = agent_config.get("mcpServers", []) or []
         if loaded_servers is not None:
             for s in mcp_servers:
