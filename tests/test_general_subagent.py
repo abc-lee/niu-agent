@@ -213,6 +213,54 @@ def test_get_tools_schema_skips_empty_frontmatter(tmp_path, monkeypatch):
     assert "chat-with-empty" not in tool_names
 
 
+def test_get_tools_schema_skips_hidden_agent(tmp_path, monkeypatch):
+    """visibility: hidden 的 MD 不注册 chat-with 工具（后台专用子 Agent）；普通 MD 不受影响"""
+    from agent import runner, subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "good.md").write_text(
+        "---\ndescription: good\n---\nbody"
+    )
+    (user_dir / "hidden-bg.md").write_text(
+        "---\ndescription: 后台 agent\nvisibility: hidden\n---\nbody"
+    )
+
+    project_dir = tmp_path / "project"
+    project_agents = project_dir / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    tools = runner.get_tools_schema()
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "chat-with-good" in tool_names
+    assert "chat-with-hidden-bg" not in tool_names
+
+
+def test_get_tools_schema_hidden_agent_still_readable_by_name(tmp_path, monkeypatch):
+    """hidden 只挡工具注册、不挡程序按名直调：get_subagent_config 仍能读到完整配置"""
+    from agent import subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "hidden-bg.md").write_text(
+        "---\ndescription: 后台 agent\nvisibility: hidden\n---\nbody"
+    )
+
+    project_dir = tmp_path / "project" / "config" / "agents"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    config = subagent.get_subagent_config("hidden-bg")
+    assert config["visibility"] == "hidden"
+    assert config["description"] == "后台 agent"
+
+
 def test_get_tools_schema_dedup(tmp_path, monkeypatch):
     """同名时专用子 Agent 优先，不重复生成工具"""
     from agent import runner, subagent
