@@ -1204,7 +1204,7 @@ def call_subagent(
     return _annotate_subagent_prompt_degradation(result_text)
 
 
-def call_subagent_with_auto_answer(agent_name, task, **kwargs):
+def call_subagent_with_auto_answer(agent_name, task, report_sink=None, **kwargs):
     """程序触发子 Agent 专用：自动回复 @niu-agent，遇到 @end 或正常文本才返回。
 
     与主 Agent 调用 call_subagent 不同：程序触发（force 压缩 / 手动 tidy API）
@@ -1215,6 +1215,10 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     Args:
         agent_name: 子 Agent 名（如 file-processor）
         task: 任务描述
+        report_sink: 可选出参（list）——子 Agent 最终退出时从 exit_content 尾部锚定
+            提取 @end {"report": "..."} 例外反馈（_extract_exit_report，解析失败静默），
+            提取到则 report_sink.append(report)。不传（None）零影响——既有调用方
+            （compat.py force_tidy/dream + service.py journal）不感知 report 通道。
         **kwargs: 透传给 call_subagent（如 llm_config、mcp_client、no_tools 等）
 
     Returns:
@@ -1290,6 +1294,12 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
     while True:
         unique_name = _extract_unique_name(result, agent_name)
         if unique_name is None:
+            # 子 Agent 最终退出（非 @niu-agent 提问）——report 例外通道（默认静默不用，
+            # 仅子 Agent 遇到自己解决不了、必须让主 Agent 知道的问题时 @end 带 report）。
+            if report_sink is not None:
+                report = _extract_exit_report(result)
+                if report is not None:
+                    report_sink.append(report)
             return result  # 非 @niu-agent 问题，正常返回
         result = call_subagent(
             agent_name=agent_name,
@@ -1298,6 +1308,46 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
             answer_unique_name=unique_name,
             **kwargs,
         )
+
+
+def _extract_exit_report(exit_content):
+    """从子 Agent 退出内容（exit_content）尾部锚定提取 @end {"report": "..."} 反馈。
+
+    生产形态 = `汇报正文 {"report": "xxx"}`：agent_loop _compute_exit_content 已剥 @end，
+    正文与 @end 后内容按 `before + " " + after` 拼接，report JSON 在尾部。
+    宽容降级，永不因格式错误中断退出——提取失败返回 None（静默，与无 report 一致）。
+
+    解析顺序：
+    0. 先剥离尾部降级标注行：call_subagent 返回前经 _annotate_subagent_prompt_degradation
+       可能追加 `\\n[子 Agent 提示词降级: {reason}]` 后缀，不剥离则尾部 JSON 解析失败、
+       宽松正则贪婪把标注捕进 report。字符类用 [^\\n]* 不用 [^]]*——reason 是异常消息
+       可含 ]（如 [Errno 2]），[^]]* 会失配导致 report 静默丢失；reason 含换行更罕见。
+    1. 从剥离后文本尾部找最后一个 {，对其到结尾的子串 json.loads；
+       为 dict 且含 str 类型 "report" 键 → 提取。
+    2. 宽松正则尾部锚定（JSON 畸形时降级）。
+    3. 都失败 → None（无 report，静默）。
+    """
+    if not isinstance(exit_content, str) or not exit_content:
+        return None
+    # 第 0 步：剥离尾部降级标注行
+    text = re.sub(r"\n\[子 Agent 提示词降级: [^\n]*\]\s*$", "", exit_content)
+    # 第 1 步：尾部最后一个 { 到结尾 json.loads
+    brace_idx = text.rfind("{")
+    if brace_idx != -1:
+        try:
+            parsed = json.loads(text[brace_idx:])
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and isinstance(parsed.get("report"), str):
+            return parsed["report"]
+    # 第 2 步：宽松正则尾部锚定（DOTALL）
+    m = re.search(r'\{?[^{}]*"report"\s*:\s*"(.+)"\s*\}?\s*$', text, re.DOTALL)
+    if m:
+        return m.group(1)
+    m = re.search(r"report:\s*(.+)$", text, re.DOTALL)
+    if m:
+        return m.group(1)
+    return None
 
 
 def _extract_unique_name(result, agent_name):

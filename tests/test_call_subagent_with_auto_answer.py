@@ -353,3 +353,128 @@ def test_error_prefix_does_not_close_when_same_name_instance_live():
         )
     assert result.startswith("[错误]")
     close_mock.assert_not_called()
+
+
+# ==================== report_sink 出参：@end {"report": "..."} 例外反馈通道 ====================
+
+
+def _run_helper_once(exit_content, report_sink=None):
+    """mock call_subagent 返回固定 exit_content，跑 helper 一次（无提问循环）。"""
+    from agent import subagent
+
+    with mock.patch.object(subagent, "call_subagent", return_value=exit_content):
+        return subagent.call_subagent_with_auto_answer(
+            agent_name="journal-daily-agent",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+            report_sink=report_sink,
+        )
+
+
+def test_report_sink_extracts_tail_json_report():
+    """JSON 成功：尾部 {"report": "..."} → 提取进 sink，返回值原样不变"""
+    sink = []
+    result = _run_helper_once('{"report": "整理完成，无异常"}', report_sink=sink)
+    assert sink == ["整理完成，无异常"]
+    assert result == '{"report": "整理完成，无异常"}'
+
+
+def test_report_sink_production_form_body_prefix_plus_end_json():
+    """生产形态：exit_content = `汇报正文 {"report": "xxx"}`（@end 已剥，正文+@end后 JSON 拼接）→ 提取成功"""
+    sink = []
+    result = _run_helper_once(
+        '已整理 3 条日志 {"report": "磁盘空间不足，无法写入 journal.md"}',
+        report_sink=sink,
+    )
+    assert sink == ["磁盘空间不足，无法写入 journal.md"]
+    assert result == '已整理 3 条日志 {"report": "磁盘空间不足，无法写入 journal.md"}'
+
+
+def test_report_sink_loose_regex_fallback_on_malformed_json():
+    """宽松降级：尾部 JSON 畸形（引号闭合但缺 }）json.loads 失败 → 宽松正则尾部锚定兜底"""
+    sink = []
+    _run_helper_once('汇报正文 {"report": "未闭合 JSON 的反馈"', report_sink=sink)
+    assert sink == ["未闭合 JSON 的反馈"]
+
+
+def test_report_sink_no_report_silent_and_empty():
+    """失败静默：无 report 的正常结果 → sink 保持空，返回值不变（与现状一致）"""
+    sink = []
+    result = _run_helper_once("正常结果文本，没有任何反馈", report_sink=sink)
+    assert sink == []
+    assert result == "正常结果文本，没有任何反馈"
+
+
+def test_report_sink_default_none_backward_compatible():
+    """不传 report_sink（既有 3 处调用方形态）→ 零影响：正常返回，不报错不提取"""
+    from agent import subagent
+
+    with mock.patch.object(subagent, "call_subagent",
+                           return_value='汇报正文 {"report": "不该被任何人消费"}'):
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="journal-daily-agent",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        )
+    assert result == '汇报正文 {"report": "不该被任何人消费"}'
+
+
+def test_report_sink_final_report_after_multiple_questions():
+    """多次提问后最终 report：提问轮不提取，最终退出轮的 report 进 sink"""
+    from agent import subagent
+
+    call_count = [0]
+
+    def mock_call_subagent(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "【子Agent提问·需回复】[journal-daily-agent]\n要先清理旧文件吗？"
+        return '已处理 {"report": "遇到权限问题，跳过了 2 个文件"}'
+
+    sink = []
+    with mock.patch.object(subagent, "call_subagent", side_effect=mock_call_subagent):
+        result = subagent.call_subagent_with_auto_answer(
+            agent_name="journal-daily-agent",
+            task="做 X",
+            llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+            report_sink=sink,
+        )
+    assert call_count[0] == 2
+    assert sink == ["遇到权限问题，跳过了 2 个文件"]
+    assert result == '已处理 {"report": "遇到权限问题，跳过了 2 个文件"}'
+
+
+def test_report_sink_strips_degradation_annotation_with_bracket_in_reason():
+    """降级标注后缀+report：reason 含 ]（[Errno 2] 形态）也必须剥掉标注再提取——
+
+    钉住字符类修复：剥离正则用 [^\\n]* 不用 [^]]*（[^]]* 在 reason 含 ] 时失配 →
+    标注残留 → 尾部 JSON 解析失败 → report 静默丢失）。
+    """
+    sink = []
+    _run_helper_once(
+        '汇报正文 {"report": "xxx"}\n'
+        '[子 Agent 提示词降级: 系统提示词构建失败：[Errno 2] No such file or directory]',
+        report_sink=sink,
+    )
+    assert sink == ["xxx"]
+
+
+def test_extract_exit_report_json_without_report_key_returns_none():
+    """JSON dict 但无 report 键 / report 非 str → None（不误判游标类 JSON 结果）"""
+    from agent.subagent import _extract_exit_report
+    assert _extract_exit_report('{"cursor": "abc", "status": "ok"}') is None
+    assert _extract_exit_report('{"report": 123}') is None
+
+
+def test_extract_exit_report_plain_report_colon_fallback():
+    """宽松正则第二形态：`report: xxx`（无引号无花括号）尾部锚定提取"""
+    from agent.subagent import _extract_exit_report
+    assert _extract_exit_report("汇报\nreport: 简单反馈") == "简单反馈"
+
+
+def test_extract_exit_report_non_string_and_empty_return_none():
+    """非 str / 空串 → None（防御性，永不抛异常中断退出）"""
+    from agent.subagent import _extract_exit_report
+    assert _extract_exit_report(None) is None
+    assert _extract_exit_report("") is None
+    assert _extract_exit_report(123) is None
