@@ -18,7 +18,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 知识图谱 | 自动提取实体和关系，支持图谱查询 |
 | 语义搜索 | LightRAG 统一检索（local/global/hybrid/mix/naive 模式） |
 | 人脸识别 | 拖入照片 → 自动检测人脸 → 相册管理 |
-*21|| 定时任务 | 三类：reminder（到点提醒主 Agent）+ background_script（后台静默执行 Python 脚本，无输出静默、有输出/报错才通知）+ subagent（后台静默调起指定子 Agent 执行任务文本，默认全程静默；子 Agent 遇解决不了的问题可发 report → `[后台任务「{任务名}」结束报告]` 消息）。支持循环/单次，cron 5 字段触发。推送通道（2026-08-15 起）：定时提醒程序消息只写 DB 唤醒主 Agent（不推 IM，Chat 由 DB 变更刷新）；定时提醒置 IM 标志为真，主 Agent 的话（如"该打开咖啡机了"）经 should_push_im 闸门投递 IM。智能家居订阅触发同通道 |
+| 定时任务 | 三类：reminder（到点提醒主 Agent）+ background_script（后台静默执行 Python 脚本，无输出静默、有输出/报错才通知）+ subagent（后台静默调起指定子 Agent 执行任务文本，默认全程静默；子 Agent 遇解决不了的问题可发 report → `[后台任务「{任务名}」结束报告]` 消息）。支持循环/单次，cron 5 字段触发。推送通道（2026-08-15 起）：定时提醒程序消息只写 DB 唤醒主 Agent（不推 IM，Chat 由 DB 变更刷新）；定时提醒置 IM 标志为真，主 Agent 的话（如"该打开咖啡机了"）经 should_push_im 闸门投递 IM。智能家居订阅触发同通道 |
 | 智能记忆 | 自动学习用户偏好和习惯，按脑区优先级差异化遗忘曲线 |
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
 | /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
@@ -451,7 +451,7 @@ journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖�
 
 定时任务三种类型中的第三种（`task_kind='subagent'`）：到点由后台线程静默调起指定子 Agent 执行 `content` 任务文本。**默认全程静默**——结果仅落执行日志、零打扰；严禁经 ChatQueue enqueue（治理输出写进 messages.db 会反污染上下文窗口）。创建必须传 `agent_name`（`config/agents/` 或 `~/.niu/agents/` 下须存在同名 md，创建时校验）；未知 task_kind / subagent 缺 agent_name 显式拒绝，不落 reminder 兜底。
 
-**hidden 后台子 Agent 机制**：新后台任务建议在用户层建专用后台子 Agent（`~/.niu/agents/{name}.md`），frontmatter 加 `visibility: hidden`——只挡它注册进主 Agent 工具列表（无 chat-with-xxx、主 Agent 不可见），不挡程序按名直调；report 教学也隔离在该 md 内（普通子 Agent 不知道此语法）。内置 `journal-daily-agent` 即用此机制。
+**hidden 后台子 Agent 机制**：新后台任务建议在用户层建专用后台子 Agent（`~/.niu/agents/{name}.md`），frontmatter 加 `visibility: hidden`——只挡它注册进主 Agent 工具列表（无 chat-with-xxx、主 Agent 不可见），不挡程序按名直调；report 教学也隔离在该 md 内（普通子 Agent 不知道此语法）。两条排除路径不要混淆：bundled agent（`config/agents/`）不进工具列表是因为不在 niu.md 的 `sub agents` 名单内（名单是 bundled 侧的注册开关）；`visibility: hidden` skip 保护的是 `~/.niu/agents/` 用户层自建后台 agent——用户层 *.md 自动进名单，hidden 是它们不进工具列表的唯一闸门。内置 `journal-daily-agent` 两者兼有：不在 niu.md 名单 + frontmatter `visibility: hidden`（双保险）。
 
 **report 例外通道**：后台子 Agent 默认静默；仅当遇到自己解决不了、必须让主 Agent 知道的问题，在最终退出时携带：`汇报正文 @end {"report": "内容"}`（@end 后直接跟 JSON 对象）。程序从子 Agent 退出内容尾部提取 report，以 `[后台任务「{任务名}」结束报告] {内容}` 消息送达主 Agent——单向通知（子 Agent 已退出，无需回复或接续），主 Agent 自行处置（转达用户 / 处理 / 忽略）。不带 report 退出 = 完全静默。
 
