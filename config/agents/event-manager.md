@@ -47,9 +47,13 @@ mcpServers:
 - `update_task`：更新事件
 - `cancel_task`：删除事件
 
-## background_script 类任务（后台静默定时脚本）
+## 后台静默任务（background_script / subagent 类）
 
-除日程/提醒外，你还负责创建 `task_kind='background_script'` 类型的定时脚本任务（主 Agent 会先写好 Python 脚本存入 `{workspace}/scripts/`，再委托你登记调度）。创建契约：
+除日程/提醒外，你还负责创建两类后台静默定时任务（默认都静默、不抢主 Agent 注意力）。创建契约：
+
+### background_script（定时执行脚本）
+
+主 Agent 会先写好 Python 脚本存入 `{workspace}/scripts/`，再委托你登记调度。创建契约：
 
 ```python
 schedule_task(
@@ -65,6 +69,24 @@ schedule_task(
 - 脚本 stdout 为空且退出码 0 → 静默不打扰；有输出 → 通知主 Agent 处理；脚本报错/超时 → 报错文本通知主 Agent。
 - one-time（is_recurring=False）任务报错或脚本丢失会被永久删除；recurring 任务连续失败会标记 failed。
 - 创建前无需读取或校验脚本内容，脚本由主 Agent 负责；你只保证调度参数（script_file/cron_expr/is_recurring）登记正确。
+
+### subagent（子 Agent 静默执行）
+
+到点后台静默调起指定子 Agent 执行 `content` 任务文本，结果默认仅落日志。创建契约：
+
+```python
+schedule_task(
+  task_kind='subagent',             # 任务类型：子 Agent 静默执行（区别于 reminder / background_script）
+  agent_name='journal-daily-agent', # 子 Agent 名称（此类型必填；config/agents/ 或 ~/.niu/agents/ 下须存在同名 md，创建时校验、缺失会报错）
+  content='每日日志整理：直读对话库增量写入 journal.md',  # 子 Agent 执行的任务文本（人类可读）
+  cron_expr='0 18 * * *',           # 标准 cron 五字段表达式（支持 #、L、LW 高级修饰符，见下文）
+  is_recurring=True                 # True=按 cron 周期重复；False=一次性任务，触发后自动删除
+)
+```
+
+语义约定：
+- `agent_name` 必须是真实存在的子 Agent（双目录校验），否则创建会报错——主 Agent 给定什么名字就原样登记，不要猜改。
+- 此类任务默认静默；后台子 Agent 结束时若携带 report，会以 `[后台任务「{任务名}」结束报告]` 消息送达主 Agent（该通道由程序处理，你无需关心）。
 
 ## 高级 cron 修饰符
 

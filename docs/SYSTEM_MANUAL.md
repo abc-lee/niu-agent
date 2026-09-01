@@ -18,7 +18,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 知识图谱 | 自动提取实体和关系，支持图谱查询 |
 | 语义搜索 | LightRAG 统一检索（local/global/hybrid/mix/naive 模式） |
 | 人脸识别 | 拖入照片 → 自动检测人脸 → 相册管理 |
-*21|| 定时任务 | 两类：reminder（到点提醒主 Agent）+ background_script（后台静默执行 Python 脚本，无输出静默、有输出/报错才通知）。支持循环/单次，cron 5 字段触发。推送通道（2026-08-15 起）：定时提醒程序消息只写 DB 唤醒主 Agent（不推 IM，Chat 由 DB 变更刷新）；定时提醒置 IM 标志为真，主 Agent 的话（如"该打开咖啡机了"）经 should_push_im 闸门投递 IM。智能家居订阅触发同通道 |
+*21|| 定时任务 | 三类：reminder（到点提醒主 Agent）+ background_script（后台静默执行 Python 脚本，无输出静默、有输出/报错才通知）+ subagent（后台静默调起指定子 Agent 执行任务文本，默认全程静默；子 Agent 遇解决不了的问题可发 report → `[后台任务「{任务名}」结束报告]` 消息）。支持循环/单次，cron 5 字段触发。推送通道（2026-08-15 起）：定时提醒程序消息只写 DB 唤醒主 Agent（不推 IM，Chat 由 DB 变更刷新）；定时提醒置 IM 标志为真，主 Agent 的话（如"该打开咖啡机了"）经 should_push_im 闸门投递 IM。智能家居订阅触发同通道 |
 | 智能记忆 | 自动学习用户偏好和习惯，按脑区优先级差异化遗忘曲线 |
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
 | /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
@@ -213,13 +213,14 @@ ai-bot/
 
 主 Agent 负责对话，子 Agent 负责执行特定任务。子 Agent 通过 `chat-with-{agentName}` 工具调用。
 
-**已定义的子 Agent（5个）：**
+**已定义的子 Agent（6个）：**
 
 | 子 Agent | 职责 | 触发方式 | 温度 |
 |----------|------|----------|------|
 | `file-processor` | 文件处理：复制、解析、存储、向量化 | 主 Agent 委托（文件拖入） | 0.2 |
 | `event-manager` | 事件管理：创建/查询/删除事件 | 主 Agent 委托 | 0.2 |
-| `journal-agent` | 工作日志：经 session-manager get_messages 直读对话库提取工作内容写入日志（日志即水位线） | 主 Agent 委托或 journal_daily 定时任务直执行 | 0.3 |
+| `journal-agent` | 工作日志：经 session-manager get_messages 直读对话库提取工作内容写入日志（日志即水位线） | 主 Agent 委托（交互入口「记录工作日志」+ 周报路径） | 0.3 |
+| `journal-daily-agent` | 工作日志每日整理（后台）：直读对话库增量生成日志条目，由 journal-daily 定时任务静默调起 | scheduler subagent 类任务直执行（`visibility: hidden`，主 Agent 工具列表不可见） | 0.3 |
 | `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | 睡眠管线自动调度 | 0.3 |
 | `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | 睡眠管线自动调度 | 0.3 |
 
@@ -246,6 +247,8 @@ Skills 是存储在 `~/.niu/skills/` 目录下的 Markdown 文件（`memory/skil
 1. Skills 文件通过 `agent/injector/sync.py` 定时同步到 LightRAG 向量库（entity_type = `Skill`）
 2. Agent 每轮对话时，通过 `_inject_dynamic_resources()` 按语义搜索匹配相关 Skill
 3. 匹配到的 Skill 内容动态注入到 Agent 上下文，指导 Agent 按规范执行任务
+
+> **升级注记**：启动器只复制缺失文件、不删源侧已消失的文件——升级后发现旧 skill 改名/移除而 `~/.niu/skills/` 残留旧文件（如 0.3.1 的 `background-script.md` 改写改名为 `scheduled-tasks.md`），手动删除旧文件即可；SkillSync 下次同步会自动清理其 KG 实体。
 
 **Skill 编写职责：**
 - **dream-evolver** 是 skill 生命周期的管理者——负责创建草稿、转正、降级、复活、淘汰全流程：
@@ -402,7 +405,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 同步子 Agent 调用时，主 Agent 在工具循环里阻塞等待。子 Agent 输出 `@niu-agent 问题` 时，程序拦截层识别后挂起 session，把问题包装成 `[子名] 问题` 作为工具返回值送给主 Agent。主 Agent LLM 看到 JSON 工具结果 `{"status":"success","result":"[子名] 问题"}` 后，调同一 chat-with-xxx 工具回复（task="" + answer="@子名 回答" + unique_name="子名"）。程序从 registry 拿回挂起 session，注入回答后继续跑。
 
-程序触发子 Agent（睡眠管线 / journal_daily 定时任务）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案“无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作”。
+程序触发子 Agent（睡眠管线 / subagent 类定时任务）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案“无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作”。
 
 ### 上下文管理（上下文组装器，2026-08-26 起）
 
@@ -444,9 +447,17 @@ sleep 由闲置 5 分钟触发，投递全局整理队列单 worker 串行执行
 
 journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖保持不变：先入库再精加工，防实体碎片化。文件驱动梦境链（F1/F2/F3 三文件中继，位于 `~/.niu/md/`）机制不变：F1 为 DB 镜像只增不减、F2 无限队列、F3 按 ≤64KB 软预算切分重建；组装器的指针块归档同样只动派生数据不触三文件。
 
+#### subagent 类定时任务（第三种类型：子 Agent 静默执行）
+
+定时任务三种类型中的第三种（`task_kind='subagent'`）：到点由后台线程静默调起指定子 Agent 执行 `content` 任务文本。**默认全程静默**——结果仅落执行日志、零打扰；严禁经 ChatQueue enqueue（治理输出写进 messages.db 会反污染上下文窗口）。创建必须传 `agent_name`（`config/agents/` 或 `~/.niu/agents/` 下须存在同名 md，创建时校验）；未知 task_kind / subagent 缺 agent_name 显式拒绝，不落 reminder 兜底。
+
+**hidden 后台子 Agent 机制**：新后台任务建议在用户层建专用后台子 Agent（`~/.niu/agents/{name}.md`），frontmatter 加 `visibility: hidden`——只挡它注册进主 Agent 工具列表（无 chat-with-xxx、主 Agent 不可见），不挡程序按名直调；report 教学也隔离在该 md 内（普通子 Agent 不知道此语法）。内置 `journal-daily-agent` 即用此机制。
+
+**report 例外通道**：后台子 Agent 默认静默；仅当遇到自己解决不了、必须让主 Agent 知道的问题，在最终退出时携带：`汇报正文 @end {"report": "内容"}`（@end 后直接跟 JSON 对象）。程序从子 Agent 退出内容尾部提取 report，以 `[后台任务「{任务名}」结束报告] {内容}` 消息送达主 Agent——单向通知（子 Agent 已退出，无需回复或接续），主 Agent 自行处置（转达用户 / 处理 / 忽略）。不带 report 退出 = 完全静默。
+
 #### journal 定时任务（每日 18 点直执行）
 
-journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`）：后台线程**直执行**——调 journal-agent 自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_id` 严格大于过滤），起点由 journal.md 内最近一条「覆盖至: <message_id>」标记自判（**日志即水位线**；无标记按首次整理取最新 200 条兜底），提取写入 journal.md 并在条目末尾推进标记。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。旧导出文件通道（`~/.niu/md/journal_workset.md`）与游标文件（`~/.niu/last_journal.json`，磁盘存量成孤儿不清）已整套退役。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）本轮放弃不写标记，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
+journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_id` 严格大于过滤），起点由 journal.md 内最近一条「覆盖至: <message_id>」标记自判（**日志即水位线**；无标记按首次整理取最新 200 条兜底），提取写入 journal.md 并在条目末尾推进标记。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。旧导出文件通道（`~/.niu/md/journal_workset.md`）与游标文件（`~/.niu/last_journal.json`，磁盘存量成孤儿不清）已整套退役。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）本轮放弃不写标记，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
 
 #### /compact 新语义
 
