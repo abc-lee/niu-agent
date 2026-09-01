@@ -808,6 +808,19 @@ const showDetail = (nodeId) => {
     item.addEventListener('click', () => {
       flashNode(item.dataset.nodeId);
     });
+    item.addEventListener('contextmenu', async (e) => {
+      e.preventDefault();
+      const otherId = item.dataset.nodeId;
+      if (_subgraphMode) {
+        await enterSubgraph(otherId, _subgraphDepth);
+      } else {
+        const otherNode = currentData.nodes.find(n => n.id === otherId);
+        if (otherNode && otherNode.nodeType !== 'Document') {
+          const success = await enterSubgraph(otherId, 1);
+          if (success) updateSubgraphControls();
+        }
+      }
+    });
   });
 
   // Enable/disable file buttons based on whether node has a local file URI
