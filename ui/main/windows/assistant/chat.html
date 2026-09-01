@@ -3245,8 +3245,7 @@
               window.electronAPI.connectSubagentSSE(uniqueName);
             }
           });
-          // 恢复时不自动切换，用户停留在主对话 tab（只需调一次，移到 forEach 之后）
-          switchTab('main');
+          // 恢复时不打断用户当前停留的标签页（tab+SSE 恢复仅补齐状态，不强制切回主对话 tab）
         })
         .catch(() => {});  // 后端未启动时静默失败
     }
