@@ -507,8 +507,14 @@ preload_face_model()
 
 ### 2026-09-01
 
-#### 工程：定时任务第三种类型 task_kind='subagent'——子 Agent 静默执行 + @end report 反馈通道（计划 v1.0→v2.6 八轮双审门禁 + SDD T1-T6，main 2147f9a5..90a48eb7 共 8 commits）
+#### 新增：图谱详情面板关联实体右键进子图（commit d045fb7b，用户实机验证通过）
 
+- **需求**：右侧详情面板关联实体列表此前只有左键（主图闪烁定位），右键无功能；补右键 = 以该实体为中心重绘扩散图（等同主图实体右键）
+- **实现**：renderer.js showDetail 的 .relation-item forEach 内与 click 并列加 contextmenu 监听（+13 行）——主图态 Document 守卫后 enterSubgraph(id, 1) + updateSubgraphControls()；子图态 enterSubgraph(id, _subgraphDepth) 重建中心；严格对齐主图 onNodeRightClick 写法
+- **注意**：面板场景从 currentData.nodes 取原始节点判 nodeType（无 _originalData 包装）——force-graph 回调节点才需要 _originalData 层级，两处数据形态不同勿混
+- **验证**：playwright mock 8 断言全过（脚本 /tmp/graph-rctx-test/test.mjs 可复跑）+ 用户实机关窗重开验证通过；renderer 改动关窗重开即生效
+
+#### 工程：定时任务第三种类型 task_kind='subagent'——子 Agent 静默执行 + @end report 反馈通道（计划 v1.0→v2.6 八轮双审门禁 + SDD T1-T6，main 2147f9a5..90a48eb7 共 8 commits）
 - **背景（用户质疑）**：journal-daily 直调子 Agent 是为一个子 Agent 做的特殊硬编码（写死 agent 名/任务文本/开关/锁）——「既然做这个逻辑，就应该放到台面上来，变成一种专属的定时任务调用方法」
 - **三类型并列（用户定案）**：①reminder=主 Agent 执行 ②background_script=后台脚本执行 ③subagent=子 Agent 静默执行；主 Agent 可自己 schedule_task 创建 subagent 类任务（task_kind + agent_name 参数，agent 存在性双目录校验 config/agents/+~/.niu/agents/）
 - **report 反馈通道（用户拍板替代 @niu-agent 挂起方案）**：`汇报正文 @end {"report": "内容"}`——**例外通道非每次必带**，默认全程静默（结果落日志），仅子 Agent 遇到解决不了的问题才用；提取=exit_content 尾部锚定（先剥降级标注行 `[^\n]*` 字符类——reason 可含 `]`，再尾部 JSON/宽松正则，失败静默）；送达主 Agent 格式 `[后台任务「{task_label}」结束报告] {report}`（task_label=name or content[:20]，明确标注非用户消息——用户要求）；单向通知无挂起无接续
