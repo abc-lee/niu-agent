@@ -54,8 +54,8 @@ last_tested: 2026-09-01
 ### subagent
 
 1. **确认目标子 Agent 存在**：`agent_name` 必须是 `config/agents/` 或 `~/.niu/agents/` 下真实存在的 md（创建时校验，不存在会报错）。主 Agent/用户指定什么名字就原样传，不要猜改。
-2. **新后台任务建议在用户层建专用后台子 Agent**：写 `~/.niu/agents/{name}.md`，frontmatter 加 `visibility: hidden`——
-   - 只挡它进你的工具列表（无 chat-with-xxx），不挡定时按名调起；
+2. **新后台任务建议在用户层建专用后台子 Agent**：写 `~/.niu/agents/{name}.md`，最终 frontmatter 带 `visibility: hidden`（只挡它进你的工具列表——无 chat-with-xxx，不挡定时按名调起）——
+   - **先测后藏**：先不带 `visibility: hidden` 创建，用 chat-with-{name} 交互测试任务文本；测通后再加 `visibility: hidden` 转后台。一旦 hidden 你就调不到它了（程序定时按名调起不受影响）；
    - report 例外通道教学写在该 md 里（见下节），不要写进普通子 Agent 的 md。
 3. **调 `chat-with-event-manager`**：
    ```
