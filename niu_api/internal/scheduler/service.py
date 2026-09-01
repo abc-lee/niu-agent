@@ -79,10 +79,13 @@ def trigger_callback(task: dict) -> str | None:
     stdout 空+成功=静默返回 '(silent)'；有 stdout 或 status=error=stdout 注入主 Agent。
     脚本文件不存在=永久删除任务（避免无限重试）。
 
-    journal_daily 任务：后台线程直执行——向 journal-agent 派发自理工作流任务文本，
-    由其经 session-manager get_messages 直读 messages.db 自取增量（journal.md 内
-    最近一条「覆盖至: <message_id>」标记即水位线），**严禁经 ChatQueue enqueue**
-    （journal 内容写进 messages.db 会反污染上下文窗口）。派发即返回 "ok"。
+    subagent 任务：后台线程静默直调 task["agent_name"] 执行 task["content"]——
+    全程不经 ChatQueue enqueue（治理输出写进 messages.db 会反污染上下文窗口）。
+    子 Agent 的 @end {"report": "..."} 例外反馈非空时经 ChatQueue 以
+    [后台任务「{task_label}」结束报告] 前缀送达主 Agent（单向通知）。派发即返回 "ok"。
+
+    未知 task_kind / subagent 无 agent_name：显式拒绝（logger.error + return None），
+    **不落 reminder 兜底**——治理任务误落 reminder 会把输出注入 messages.db 反污染。
     """
     from niu_api.alerts import add_pending_alert
     from niu_api.chat import _main_loop
@@ -94,9 +97,17 @@ def trigger_callback(task: dict) -> str | None:
     if task.get("task_kind") == "background_script":
         return _trigger_background_script(task, _main_loop, add_pending_alert)
 
-    # ===== journal_daily 分支（T7：journal 迁出睡眠管道后的定时直执行）=====
-    if task.get("task_kind") == "journal_daily":
-        return _trigger_journal_daily(task)
+    # ===== subagent 分支：后台静默直调子 Agent（第三种任务类型，严禁经 ChatQueue）=====
+    if task.get("task_kind") == "subagent":
+        return _trigger_subagent_task(task)
+
+    # ===== 未知 task_kind 显式拒绝（不落 reminder 兜底——反污染铁律）=====
+    if task.get("task_kind") not in (None, "reminder"):
+        logger.error(
+            f"[INTERNAL SCHEDULER] unknown task_kind={task.get('task_kind')!r} "
+            f"(task_id={task.get('id')}), reject"
+        )
+        return None
 
     # ===== reminder 分支（fire-and-forget） =====
     prompt = f"[定时任务] {task['content']}"
@@ -128,11 +139,12 @@ def trigger_callback(task: dict) -> str | None:
     return "ok"
 
 
-# ============== journal_daily 定时任务（T7：journal 直执行，严禁经 ChatQueue） ==============
+# ============== subagent 定时任务：后台静默直调子 Agent（严禁经 ChatQueue） ==============
 
-# 串行化同进程内 journal_daily 运行（防上一轮未完、下一轮触发重叠）
-_journal_run_lock = threading.Lock()
-_journal_thread: threading.Thread | None = None
+# 串行化同进程内后台子 Agent 任务（同时只跑一个——后台任务不抢资源；
+# 同名 agent 并发由 SubagentRegistry register ValueError 天然兜底）
+_subagent_task_lock = threading.Lock()
+_subagent_task_thread: threading.Thread | None = None
 
 
 def read_journal_scheduled_enabled() -> bool:
@@ -148,37 +160,51 @@ def read_journal_scheduled_enabled() -> bool:
         config = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
         return bool(config.get("context", {}).get("journalScheduledEnabled", True))
     except Exception as e:
-        logger.debug(f"[JOURNAL_DAILY] 配置读取失败，按开启处理: {e}")
+        logger.debug(f"[SUBAGENT_TASK] journalScheduledEnabled 配置读取失败，按开启处理: {e}")
         return True
 
 
-def _trigger_journal_daily(task: dict) -> str | None:
-    """journal_daily 触发：派后台线程直执行，**不经 ChatQueue enqueue**。
+def _trigger_subagent_task(task: dict) -> str | None:
+    """subagent 触发：派后台线程静默直调 task["agent_name"]，**不经 ChatQueue enqueue**。
 
-    journal 内容若经 enqueue 写入 messages.db 会反污染上下文窗口（T7 铁律），
-    故本分支与 reminder/background_script 不同：journal-agent 经 session-manager
-    get_messages 直读 messages.db，水位线由 journal.md 内「覆盖至:」标记自理
-    （日志即水位线），对主 Agent 上下文零注入。
+    通用第三种任务类型：到时间 → 后台调起指定子 Agent 执行 task["content"] 任务
+    文本 → 默认全程静默（结果落日志）。治理输出若经 enqueue 写入 messages.db 会
+    反污染上下文窗口（反污染铁律），故本分支与 reminder/background_script 不同，
+    对主 Agent 上下文零注入；子 Agent 的例外反馈经 report_sink 接出后以
+    [后台任务「{task_label}」结束报告] 前缀送达（单向通知，无挂起无接续）。
 
-    完成语义：派发即返回 "ok"（recurring 正常 reschedule）。执行失败仅落日志，
-    水位线不推进 → 下轮自动重试（journal.md 写入侧内容去重兜底），无需借
-    scheduler 失败计数器重试。运行中重复触发由 _run_journal_daily_job 内
-    _journal_run_lock 非阻塞去重（跳过本轮，下轮 cron 再来）。
+    subagent 无 agent_name = 创建契约破坏 → 显式拒绝（logger.error + return None，
+    不落 reminder 兜底）。
+
+    完成语义：派发即返回 "ok"（recurring 正常 reschedule）。执行失败仅落日志
+    （log-only，不进 3-strike DLQ），下轮 cron 自然重试。运行中重复触发由
+    _run_subagent_task 内 _subagent_task_lock 非阻塞去重（跳过本轮，下轮 cron 再来）。
+
+    开关 context.journalScheduledEnabled 仅作用于内置 journal-daily 任务
+    （按 task name 判断，不泛化）。
 
     D13 避让：后台线程先复用 Scheduler 既有 backend-busy 轮询（_is_backend_busy
     + 二次确认防抖，stagger 同款），活跃对话期等待、超时兜底放行。
     """
-    global _journal_thread
+    global _subagent_task_thread
 
-    if not read_journal_scheduled_enabled():
-        logger.info("[JOURNAL_DAILY] context.journalScheduledEnabled=false, skip")
+    agent_name = task.get("agent_name")
+    if not agent_name:
+        logger.error(
+            f"[SUBAGENT_TASK] subagent task missing agent_name "
+            f"(task_id={task.get('id')}), reject"
+        )
+        return None
+
+    if task.get("name") == "journal-daily" and not read_journal_scheduled_enabled():
+        logger.info("[SUBAGENT_TASK] journal-daily: context.journalScheduledEnabled=false, skip")
         return "ok"
 
-    _journal_thread = threading.Thread(
-        target=_run_journal_daily_job, name="journal-daily", daemon=True
+    _subagent_task_thread = threading.Thread(
+        target=_run_subagent_task, args=(task,), name=f"subagent-task-{agent_name}", daemon=True
     )
-    _journal_thread.start()
-    logger.info(f"[JOURNAL_DAILY] dispatched (task_id={task.get('id')})")
+    _subagent_task_thread.start()
+    logger.info(f"[SUBAGENT_TASK] dispatched agent={agent_name} (task_id={task.get('id')})")
     return "ok"
 
 
@@ -198,37 +224,28 @@ def _wait_backend_idle(sched: "Scheduler | None") -> None:
             time.sleep(confirm)
             if not sched._is_backend_busy():
                 return
-            logger.debug("[JOURNAL_DAILY] backend became busy during double-confirm, rewaiting")
+            logger.debug("[SUBAGENT_TASK] backend became busy during double-confirm, rewaiting")
         if time.monotonic() >= deadline:
-            logger.warning(f"[JOURNAL_DAILY] backend busy wait exceeded {sched._stagger_max_wait}s, forcing run")
+            logger.warning(f"[SUBAGENT_TASK] backend busy wait exceeded {sched._stagger_max_wait}s, forcing run")
             return
         time.sleep(poll)
 
 
-# 夜间整理任务文本：journal-agent 自理工作流（直读 DB、日志即水位线）。
-# 起点判定/分页/错误分流/空批/覆盖标记/@end 协议全部内联在任务文本——与
-# config/agents/journal-agent.md 提示词双保险；程序侧不再读游标、不再导出
-# 文件、不再解析推进。
-_JOURNAL_DAILY_TASK = """请执行夜间工作日志整理（走你的整理流程）：
+def _run_subagent_task(task: dict) -> None:
+    """subagent 执行体：避让等待 → 后台静默直调 task["agent_name"] 执行 task["content"]。
 
-1. 起点判定：读取 journal.md（不限当天），找最近一条带「覆盖至: <message_id>」标记的整理条目作为起点；整个日志找不到标记则按首次整理处理（get_messages 不传 after_id、limit=200 取最新，回复中注明首次整理）。
-2. 分页拉取：调 get_messages(session_id="default", after_id=<起点ID>, limit=200)；返回 has_more=true 时以 next_after_id 继续拉取，直到拉完。
-3. 错误分流：reason=="invalid_after_id"（起点已删，如 /new 清库）→ 按首次整理兜底；reason=="transient"（瞬时故障）→ 本轮放弃：回复失败原因即可，不写任何条目和标记，@end 结束。
-4. 空批：无新消息 → 回复「无新消息可整理」，不写条目不更新标记，@end 结束。
-5. 有新消息 → 与当天已有条目内容级去重后写整理条目（日期标题+要点归纳），条目末尾元信息行必须写「覆盖至: <本批最后一条消息的id>」。
-6. 完成后回复报告：写了什么、覆盖到几点、共处理多少条，并以 @end 结束。"""
+    本函数只负责避让、开关复查（仅内置 journal-daily）与派发。运行中重复触发
+    由 _subagent_task_lock 非阻塞去重：抢不到锁直接跳过本轮（下轮 cron 再来），
+    锁由本函数独占持有/释放。失败语义 log-only：failure/incomplete/overflow 仅
+    落日志（下轮 cron 自然重试），不进 3-strike DLQ。
 
-
-def _run_journal_daily_job() -> None:
-    """journal_daily 执行体：避让等待 → 调 journal-agent 自理整理（直读 DB、日志即水位线）。
-
-    journal-agent 经 session-manager get_messages 直读 messages.db，起点由
-    journal.md 内「覆盖至:」标记自判；本函数只负责避让、开关复查与派发，
-    不读游标、不导出文件、不解析推进。运行中重复触发由 _journal_run_lock
-    非阻塞去重：抢不到锁直接跳过本轮（下轮 cron 再来），锁由本函数独占持有/释放。
+    report 例外通道：call_subagent_with_auto_answer 的 report_sink 非空时，经
+    ChatQueue 以 [后台任务「{task_label}」结束报告] 前缀送达主 Agent（单向通知）。
     """
-    if not _journal_run_lock.acquire(blocking=False):
-        logger.warning("[JOURNAL_DAILY] previous run still in progress, skip")
+    agent_name = task["agent_name"]
+    task_label = task.get("name") or task["content"][:20]
+    if not _subagent_task_lock.acquire(blocking=False):
+        logger.warning(f"[SUBAGENT_TASK] {task_label}: previous run still in progress, skip")
         return
     try:
         from agent.subagent import call_subagent_with_auto_answer
@@ -248,9 +265,9 @@ def _run_journal_daily_job() -> None:
             sched = None
         _wait_backend_idle(sched)
 
-        # 2. LLM 调用前复查开关（避让等待期间用户可能改配置——禁用也应终止本轮）
-        if not read_journal_scheduled_enabled():
-            logger.info("[JOURNAL_DAILY] disabled after idle wait, skip")
+        # 2. LLM 调用前复查开关（仅内置 journal-daily 任务；避让等待期间用户可能改配置）
+        if task.get("name") == "journal-daily" and not read_journal_scheduled_enabled():
+            logger.info("[SUBAGENT_TASK] journal-daily disabled after idle wait, skip")
             return
 
         # 3. 取 runner（llm_config 来源）
@@ -258,33 +275,51 @@ def _run_journal_daily_job() -> None:
 
         runner = get_or_create_runner()
         if not runner:
-            logger.warning("[JOURNAL_DAILY] Runner not initialized, skip")
+            logger.warning(f"[SUBAGENT_TASK] {task_label}: Runner not initialized, skip")
             return
 
-        # 4. 调 journal-agent 自理整理（直执行；结果只写 journal.md 与回复文本）
+        # 4. 调子 Agent 静默执行（program_triggered=True 由 helper setdefault：
+        #    source="program"，auto-answer 打发 @niu-agent 保持；report_sink 接出例外反馈）
+        report_sink: list = []
         result = call_subagent_with_auto_answer(
-            "journal-agent",
-            _JOURNAL_DAILY_TASK,
+            agent_name,
+            task["content"],
+            report_sink=report_sink,
             llm_config=runner.llm_config,
             mcp_client=None,
         )
-        logger.info(f"[JOURNAL_DAILY] journal-agent result: {result[:200]}")
+        logger.info(f"[SUBAGENT_TASK] {task_label}: {agent_name} result: {result[:200]}")
 
-        # 5. 成功判定：正常返回即成功；failure/incomplete/overflow 仅落日志
-        #    （水位线由子 Agent 按标记协议自理，下轮 cron 自然重试）
+        # 5. report 例外通道：非空时送达主 Agent（前缀标注后台任务来源与任务名，
+        #    主 Agent 不会误认用户消息；单向通知，子 Agent 已退出无需回答）
+        if report_sink:
+            try:
+                enqueue_result = get_chat_queue().enqueue_sync(
+                    content=f"[后台任务「{task_label}」结束报告] {report_sink[0]}",
+                    channel="scheduler",
+                    source="scheduler",
+                    session_id="default",
+                )
+                if not enqueue_result.queued:
+                    logger.error(f"[SUBAGENT_TASK] {task_label}: report enqueue failed")
+            except Exception as e:
+                logger.error(f"[SUBAGENT_TASK] {task_label}: report enqueue error: {e}")
+
+        # 6. 成功判定：正常返回即成功；failure/incomplete/overflow 仅落日志
+        #    （log-only，下轮 cron 自然重试）
         if _is_subagent_failure(result):
-            logger.warning(f"[JOURNAL_DAILY] failure: {result[:200]}")
+            logger.warning(f"[SUBAGENT_TASK] {task_label} failure: {result[:200]}")
         elif _is_subagent_incomplete(result):
-            logger.warning(f"[JOURNAL_DAILY] incomplete ({_incomplete_reason(result)})")
+            logger.warning(f"[SUBAGENT_TASK] {task_label} incomplete ({_incomplete_reason(result)})")
         elif _is_subagent_overflow(result):
             overflow_info = _extract_overflow_info(result)
-            logger.warning(f"[JOURNAL_DAILY] overflow: {overflow_info.get('turns_completed', 0)} turns")
+            logger.warning(f"[SUBAGENT_TASK] {task_label} overflow: {overflow_info.get('turns_completed', 0)} turns")
     except Exception as e:
         import traceback
 
-        logger.error(f"[JOURNAL_DAILY] run failed: {e}\n{traceback.format_exc()}")
+        logger.error(f"[SUBAGENT_TASK] {task_label} run failed: {e}\n{traceback.format_exc()}")
     finally:
-        _journal_run_lock.release()
+        _subagent_task_lock.release()
 
 
 def _trigger_background_script(task: dict, main_loop, add_alert_fn) -> str | None:

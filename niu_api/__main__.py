@@ -74,6 +74,22 @@ def check_critical_versions() -> list[str]:
     return warnings
 
 
+def _migrate_legacy_journal_daily(ts) -> None:
+    """一次性迁移：旧 journal_daily 硬编码直执行任务 → subagent 通用任务类型。
+
+    已有 journal-daily 任务 task_kind='journal_daily' → UPDATE 为
+    task_kind='subagent' + agent_name='journal-daily-agent'。
+    只改 kind/agent_name，**保用户 cron_expr 不动**（用户可能改过执行时间）。
+    """
+    existing = ts.find_task_by_name("journal-daily")
+    if existing is not None and existing.get("task_kind") == "journal_daily":
+        ts.update_task(existing["id"], task_kind="subagent", agent_name="journal-daily-agent")
+        logger.info(
+            "Migrated legacy journal-daily task to task_kind='subagent' "
+            "(agent_name='journal-daily-agent', cron preserved)"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler"""
@@ -451,14 +467,16 @@ async def lifespan(app: FastAPI):
         # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
         set_preload_stage("正在加载系统任务")
         _system_tasks = [
-            # T7：journal 迁出睡眠管道 → scheduler 内置定时任务（journal_daily 直执行，
-            # 不经主 Agent/ChatQueue——journal 内容写进 messages.db 会反污染上下文窗口）
+            # journal 迁出睡眠管道 → scheduler 内置定时任务（subagent 静默直调
+            # journal-daily-agent，不经主 Agent/ChatQueue——journal 内容写进
+            # messages.db 会反污染上下文窗口；整理协议见 config/agents/journal-daily-agent.md）
             {
                 "name": "journal-daily",
                 "content": "每日日志整理：程序直读 DB 增量提取写入 journal.md",
                 "cron_expr": "0 18 * * *",
                 "hour": 18,
-                "task_kind": "journal_daily",
+                "task_kind": "subagent",
+                "agent_name": "journal-daily-agent",
             },
             {
                 "name": "weekly-report-reminder",
@@ -502,6 +520,7 @@ async def lifespan(app: FastAPI):
                         event_type="recurring",
                         name=task_def["name"],
                         task_kind=task_def.get("task_kind", "reminder"),
+                        agent_name=task_def.get("agent_name"),
                     )
                     logger.info(f"Created system task '{task_def['name']}' (next run: {next_time})")
                 elif existing.get("content") != task_def["content"]:
@@ -510,6 +529,8 @@ async def lifespan(app: FastAPI):
                     logger.info(f"Updated system task '{task_def['name']}' content (id={existing['id']})")
                 else:
                     logger.debug(f"System task '{task_def['name']}' already exists and up-to-date")
+            # 旧 journal_daily 硬编码任务一次性迁移为 subagent 通用类型（保用户 cron）
+            _migrate_legacy_journal_daily(ts)
             # T7 一次性迁移：旧 daily-journal-check 提醒经主 Agent 调 journal-agent（ChatQueue
             # 注入 messages.db 反污染上下文），已被内置 journal-daily 直执行任务取代
             legacy_journal = ts.find_task_by_name("daily-journal-check")
