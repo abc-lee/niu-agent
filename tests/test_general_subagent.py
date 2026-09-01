@@ -213,6 +213,33 @@ def test_get_tools_schema_skips_empty_frontmatter(tmp_path, monkeypatch):
     assert "chat-with-empty" not in tool_names
 
 
+def test_get_tools_schema_skips_non_dict_frontmatter(tmp_path, monkeypatch):
+    """非标量 frontmatter（纯字符串/列表）不崩溃 get_tools_schema 且被优雅跳过（warn+skip）。"""
+    from agent import runner, subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "good.md").write_text("---\ndescription: good\n---\nbody")
+    # 纯字符串 frontmatter：yaml.safe_load 返回 str（truthy）→ get_subagent_config 原样返回；
+    # 缺 isinstance 守卫时 .get() 抛 AttributeError 逃逸出循环 → get_tools_schema 整体崩溃
+    (user_dir / "strfm.md").write_text("---\njust a plain string frontmatter\n---\nbody")
+    (user_dir / "listfm.md").write_text("---\n- a\n- b\n---\nbody")
+
+    project_dir = tmp_path / "project"
+    project_agents = project_dir / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    tools = runner.get_tools_schema()  # 不得抛 AttributeError
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "chat-with-good" in tool_names
+    assert "chat-with-strfm" not in tool_names
+    assert "chat-with-listfm" not in tool_names
+
+
 def test_get_tools_schema_skips_hidden_agent(tmp_path, monkeypatch):
     """visibility: hidden 的 MD 不注册 chat-with 工具（后台专用子 Agent）；普通 MD 不受影响"""
     from agent import runner, subagent
