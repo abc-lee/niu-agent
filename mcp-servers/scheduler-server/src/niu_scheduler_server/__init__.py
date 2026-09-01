@@ -47,13 +47,17 @@ TOOL_SCHEMAS = {
                 "chat_id": {"type": "string", "description": "群聊 chat_id（兼容保留——定时提醒不推 IM（只写 DB），主 Agent 回复投递目标跟随当前 IM 会话，不按此字段定向）"},
                 "task_kind": {
                     "type": "string",
-                    "enum": ["reminder", "background_script"],
+                    "enum": ["reminder", "background_script", "subagent"],
                     "default": "reminder",
-                    "description": "任务类型：reminder=提醒式；background_script=后台静默脚本"
+                    "description": "任务类型：reminder=提醒式；background_script=后台静默脚本；subagent=子 Agent 静默执行"
                 },
                 "script_file": {
                     "type": "string",
                     "description": "脚本文件名（仅 background_script 用，如 clean_tmp.py）。脚本须存于 {workspace}/scripts/ 下"
+                },
+                "agent_name": {
+                    "type": "string",
+                    "description": "子 Agent 名称（仅 subagent 必填；config/agents/ 或 ~/.niu/agents/ 下须存在同名 md，如 journal-daily-agent）"
                 }
             },
             "required": ["content", "scheduled_at"]
@@ -161,6 +165,35 @@ def _get_store():
     return TaskStore(_get_db_path())
 
 
+def _check_subagent_agent_name(agent_name: str | None) -> str | None:
+    """校验 subagent 任务的 agent_name（返回错误消息；通过返回 None）。
+
+    存在性检查复用 agent.subagent._resolve_agent_md_path 的双目录语义
+    （config/agents/ + ~/.niu/agents/）；独立 stdio 模式下 agent 包不可用时，
+    回退本地等价双目录检查（与 _resolve_agent_md_path 保持同步）。
+    """
+    if not agent_name:
+        return "subagent 任务必须提供 agent_name"
+    not_found = f"子 Agent '{agent_name}' 不存在（config/agents/{agent_name}.md 与 ~/.niu/agents/{agent_name}.md 均未找到）"
+    try:
+        from agent.subagent import _resolve_agent_md_path
+    except Exception as e:
+        # 独立 stdio 模式 / agent 包不可用：本地等价双目录检查（kebab-case + 双目录）
+        logger.warning(f"[Scheduler] agent 包不可用，agent_name 校验回退本地双目录检查: {e}")
+        import re as _re
+
+        if not _re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", agent_name):
+            return f"agent_name '{agent_name}' 非法（须为 kebab-case）"
+        candidates = [Path.home() / ".niu" / "agents" / f"{agent_name}.md"]
+        try:
+            import niu_api
+            candidates.insert(0, Path(niu_api.__file__).resolve().parent.parent / "config" / "agents" / f"{agent_name}.md")
+        except ImportError:
+            pass
+        return None if any(p.exists() for p in candidates) else not_found
+    return None if _resolve_agent_md_path(agent_name) else not_found
+
+
 # ============== Tool Functions (for in-process ToolRegistry) ==============
 
 def schedule_task(
@@ -173,12 +206,17 @@ def schedule_task(
     chat_id: str = None,
     task_kind: str = "reminder",
     script_file: str = None,
+    agent_name: str = None,
 ) -> dict:
     """创建定时任务，支持单次和循环任务。"""
     if task_kind == "background_script" and not script_file:
         return {"error": "background_script 任务必须提供 script_file"}
     if script_file and ("/" in script_file or ".." in script_file or "\\" in script_file):
         return {"error": "script_file 不能含路径分隔符或 .."}
+    if task_kind == "subagent":
+        err = _check_subagent_agent_name(agent_name)
+        if err:
+            return {"error": err}
     try:
         store = _get_store()
         task_id = store.create_task(
@@ -191,6 +229,7 @@ def schedule_task(
             chat_id=chat_id,
             task_kind=task_kind,
             script_file=script_file,
+            agent_name=agent_name,
         )
         return {"status": "success", "task_id": task_id, "message": f"已创建定时任务：{content}"}
     except Exception as e:
@@ -281,13 +320,17 @@ async def run_server():
                         "chat_id": {"type": "string", "description": "群聊 chat_id（兼容保留——定时提醒不推 IM（只写 DB），主 Agent 回复投递目标跟随当前 IM 会话，不按此字段定向）"},
                         "task_kind": {
                             "type": "string",
-                            "enum": ["reminder", "background_script"],
+                            "enum": ["reminder", "background_script", "subagent"],
                             "default": "reminder",
-                            "description": "任务类型：reminder=提醒式；background_script=后台静默脚本"
+                            "description": "任务类型：reminder=提醒式；background_script=后台静默脚本；subagent=子 Agent 静默执行"
                         },
                         "script_file": {
                             "type": "string",
                             "description": "脚本文件名（仅 background_script 用，如 clean_tmp.py）。脚本须存于 {workspace}/scripts/ 下"
+                        },
+                        "agent_name": {
+                            "type": "string",
+                            "description": "子 Agent 名称（仅 subagent 必填；config/agents/ 或 ~/.niu/agents/ 下须存在同名 md，如 journal-daily-agent）"
                         }
                     },
                     "required": ["content", "scheduled_at"]
@@ -354,12 +397,18 @@ async def run_server():
             if name == "schedule_task":
                 task_kind = arguments.get("task_kind", "reminder")
                 script_file = arguments.get("script_file")
+                agent_name = arguments.get("agent_name")
                 if task_kind == "background_script" and not script_file:
                     return [TextContent(type="text", text=json.dumps(
                         {"error": "background_script 任务必须提供 script_file"}, ensure_ascii=False))]
                 if script_file and ("/" in script_file or ".." in script_file or "\\" in script_file):
                     return [TextContent(type="text", text=json.dumps(
                         {"error": "script_file 不能含路径分隔符或 .."}, ensure_ascii=False))]
+                if task_kind == "subagent":
+                    err = _check_subagent_agent_name(agent_name)
+                    if err:
+                        return [TextContent(type="text", text=json.dumps(
+                            {"error": err}, ensure_ascii=False))]
                 task_id = store.create_task(
                     content=arguments["content"],
                     scheduled_at=arguments["scheduled_at"],
@@ -369,7 +418,8 @@ async def run_server():
                     name=arguments.get("name"),
                     chat_id=arguments.get("chat_id"),
                     task_kind=task_kind,
-                    script_file=script_file
+                    script_file=script_file,
+                    agent_name=agent_name
                 )
 
                 return [TextContent(

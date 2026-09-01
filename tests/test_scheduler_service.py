@@ -1,4 +1,5 @@
 """Tests for service.py trigger_callback — ChatQueue-based implementation"""
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -321,3 +322,180 @@ class TestTriggerCallbackBackgroundScript:
             mock_cr.assert_not_called()  # 正向锁定 no-push 契约：程序消息不推 IM（防回归重新引入推送）
 
         assert result == "ok"
+
+class TestTaskStoreAgentName:
+    """T1: agent_name 列（subagent 任务类型）"""
+
+    def test_new_db_agent_name_roundtrip(self, tmp_path):
+        """新库 agent_name 可写可读（list_tasks 两分支 + get_task）"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        task_id = store.create_task(
+            content="每日日志整理", scheduled_at="2026-01-01 00:00:00",
+            name="journal-daily", task_kind="subagent", agent_name="journal-daily-agent",
+            is_recurring=True, cron_expr="0 18 * * *",
+        )
+        assert store.list_tasks()[0]["agent_name"] == "journal-daily-agent"
+        assert store.list_tasks(status="pending")[0]["agent_name"] == "journal-daily-agent"
+        assert store.get_task(task_id)["agent_name"] == "journal-daily-agent"
+
+    def test_find_and_overdue_include_agent_name(self, tmp_path):
+        """find_task_by_name / get_overdue_tasks 也返回 agent_name"""
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        store = TaskStore(str(tmp_path / "test.db"))
+        store.create_task(
+            content="每日日志整理", scheduled_at="2020-01-01 00:00:00",  # 过去时间 → overdue
+            name="journal-daily", task_kind="subagent", agent_name="journal-daily-agent",
+        )
+        assert store.find_task_by_name("journal-daily")["agent_name"] == "journal-daily-agent"
+        overdue = store.get_overdue_tasks()
+        assert len(overdue) == 1
+        assert overdue[0]["agent_name"] == "journal-daily-agent"
+
+    def test_old_db_migrates_agent_name(self, tmp_path):
+        """老库（无 agent_name 列）迁移后可读可写；update_task 可设 agent_name（D4 迁移路径）"""
+        import sqlite3
+
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        db_path = str(tmp_path / "old.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE scheduled_tasks (
+                id TEXT PRIMARY KEY, content TEXT NOT NULL,
+                scheduled_at DATETIME NOT NULL, is_recurring INTEGER DEFAULT 0,
+                cron_expr TEXT, event_type TEXT, status TEXT DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP, triggered_at DATETIME,
+                last_triggered_at DATETIME, name TEXT, chat_id TEXT,
+                task_kind TEXT DEFAULT 'reminder', script_file TEXT
+            )
+        """)
+        conn.execute("INSERT INTO scheduled_tasks (id, content, scheduled_at) VALUES ('old1', '老任务', '2026-01-01 00:00:00')")
+        conn.commit()
+        conn.close()
+
+        store = TaskStore(db_path)
+        tasks = store.list_tasks()
+        assert len(tasks) == 1
+        assert tasks[0]["agent_name"] is None
+        # D4 启动迁移路径：update_task 可设 task_kind + agent_name
+        assert store.update_task("old1", task_kind="subagent", agent_name="journal-daily-agent")
+        assert store.get_task("old1")["agent_name"] == "journal-daily-agent"
+
+
+class TestScheduleTaskSubagentValidation:
+    """T1: schedule_task subagent 类型校验（ToolRegistry 生产入口）"""
+
+    @pytest.fixture
+    def scheduler_module(self, tmp_path, monkeypatch):
+        import sys
+
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parent.parent / "mcp-servers" / "scheduler-server" / "src"
+        if str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        monkeypatch.setenv("SCHEDULER_DB_PATH", str(tmp_path / "tasks.db"))
+        import niu_scheduler_server
+
+        return niu_scheduler_server
+
+    def test_subagent_requires_agent_name(self, scheduler_module):
+        result = scheduler_module.schedule_task(
+            content="每日日志整理", scheduled_at="2026-09-01T18:00:00", task_kind="subagent"
+        )
+        assert "error" in result
+        assert "agent_name" in result["error"]
+
+    def test_subagent_rejects_unknown_agent(self, scheduler_module, monkeypatch):
+        import agent.subagent as subagent_mod
+
+        monkeypatch.setattr(subagent_mod, "_resolve_agent_md_path", lambda name: None)
+        result = scheduler_module.schedule_task(
+            content="每日日志整理", scheduled_at="2026-09-01T18:00:00",
+            task_kind="subagent", agent_name="no-such-agent",
+        )
+        assert "error" in result
+        assert "不存在" in result["error"]
+
+    def test_subagent_valid_agent_stores_agent_name(self, scheduler_module, monkeypatch):
+        import agent.subagent as subagent_mod
+
+        monkeypatch.setattr(subagent_mod, "_resolve_agent_md_path", lambda name: f"/fake/{name}.md")
+        result = scheduler_module.schedule_task(
+            content="每日日志整理", scheduled_at="2026-09-01T18:00:00",
+            task_kind="subagent", agent_name="journal-daily-agent",
+            is_recurring=True, cron_expr="0 18 * * *",
+        )
+        assert result["status"] == "success"
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        store = TaskStore(scheduler_module._get_db_path())
+        task = store.list_tasks()[0]
+        assert task["task_kind"] == "subagent"
+        assert task["agent_name"] == "journal-daily-agent"
+
+    def test_fallback_check_without_agent_package(self, scheduler_module, monkeypatch):
+        """agent 包不可用（独立 stdio）→ 回退本地双目录检查，不抛异常"""
+        import sys
+
+        monkeypatch.setitem(sys.modules, "agent", None)
+        monkeypatch.setitem(sys.modules, "agent.subagent", None)
+        # kebab-case 非法 → 明确报错
+        assert "非法" in scheduler_module._check_subagent_agent_name("Bad_Name")
+        # 合法名但双目录均无 md → 不存在错误（而非异常）
+        err = scheduler_module._check_subagent_agent_name("definitely-not-an-agent-xyz")
+        assert err is not None and "不存在" in err
+
+
+class TestRoutesSubagentValidation:
+    """T1: HTTP POST /scheduler/tasks subagent 校验"""
+
+    def _post(self, tmp_path, payload):
+        from unittest.mock import patch
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from niu_api.internal.scheduler.routes import router
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        app = FastAPI()
+        app.include_router(router)
+        store = TaskStore(str(tmp_path / "test.db"))
+        with patch("niu_api.internal.scheduler.routes.get_store", return_value=store):
+            client = TestClient(app)
+            response = client.post("/scheduler/tasks", json=payload)
+        return store, response
+
+    def test_create_subagent_without_agent_name_returns_400(self, tmp_path):
+        _, response = self._post(tmp_path, {
+            "content": "每日日志整理", "scheduled_at": "2026-09-01T18:00:00",
+            "task_kind": "subagent",
+        })
+        assert response.status_code == 400
+        assert "agent_name" in response.json()["detail"]
+
+    def test_create_subagent_unknown_agent_returns_400(self, tmp_path, monkeypatch):
+        import agent.subagent as subagent_mod
+
+        monkeypatch.setattr(subagent_mod, "_resolve_agent_md_path", lambda name: None)
+        _, response = self._post(tmp_path, {
+            "content": "每日日志整理", "scheduled_at": "2026-09-01T18:00:00",
+            "task_kind": "subagent", "agent_name": "no-such-agent",
+        })
+        assert response.status_code == 400
+        assert "不存在" in response.json()["detail"]
+
+    def test_create_subagent_valid_returns_200(self, tmp_path, monkeypatch):
+        import agent.subagent as subagent_mod
+
+        monkeypatch.setattr(subagent_mod, "_resolve_agent_md_path", lambda name: f"/fake/{name}.md")
+        store, response = self._post(tmp_path, {
+            "content": "每日日志整理", "scheduled_at": "2026-09-01T18:00:00",
+            "task_kind": "subagent", "agent_name": "journal-daily-agent",
+        })
+        assert response.status_code == 200
+        task = store.get_task(response.json()["task_id"])
+        assert task["agent_name"] == "journal-daily-agent"
