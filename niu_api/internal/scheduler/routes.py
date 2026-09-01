@@ -27,6 +27,7 @@ class CreateTaskRequest(BaseModel):
     name: str | None = None
     task_kind: str = "reminder"
     script_file: str | None = None
+    agent_name: str | None = None
 
 
 class UpdateTaskRequest(BaseModel):
@@ -51,6 +52,16 @@ async def create_task(request: CreateTaskRequest):
             raise HTTPException(status_code=400, detail="background_script 任务必须提供 script_file")
         if request.script_file and ("/" in request.script_file or ".." in request.script_file or "\\" in request.script_file):
             raise HTTPException(status_code=400, detail="script_file 不能含路径分隔符或 ..")
+        if request.task_kind == "subagent":
+            from agent.subagent import _resolve_agent_md_path
+
+            if not request.agent_name:
+                raise HTTPException(status_code=400, detail="subagent 任务必须提供 agent_name")
+            if _resolve_agent_md_path(request.agent_name) is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"子 Agent '{request.agent_name}' 不存在（config/agents/{request.agent_name}.md 与 ~/.niu/agents/{request.agent_name}.md 均未找到）"
+                )
         store = get_store()
         task_id = store.create_task(
             content=request.content,
@@ -60,7 +71,8 @@ async def create_task(request: CreateTaskRequest):
             cron_expr=request.cron_expr,
             name=request.name,
             task_kind=request.task_kind,
-            script_file=request.script_file
+            script_file=request.script_file,
+            agent_name=request.agent_name
         )
 
         logger.info(f"[SCHEDULER] Task created: {task_id} - {request.content}")
