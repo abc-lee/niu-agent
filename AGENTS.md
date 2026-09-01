@@ -505,6 +505,20 @@ preload_face_model()
 - `docs/analysis-genericagent-evolution.md` — GenericAgent 进化机制分析
 ---
 
+### 2026-09-01
+
+#### 工程：定时任务第三种类型 task_kind='subagent'——子 Agent 静默执行 + @end report 反馈通道（计划 v1.0→v2.6 八轮双审门禁 + SDD T1-T6，main 2147f9a5..90a48eb7 共 8 commits）
+
+- **背景（用户质疑）**：journal-daily 直调子 Agent 是为一个子 Agent 做的特殊硬编码（写死 agent 名/任务文本/开关/锁）——「既然做这个逻辑，就应该放到台面上来，变成一种专属的定时任务调用方法」
+- **三类型并列（用户定案）**：①reminder=主 Agent 执行 ②background_script=后台脚本执行 ③subagent=子 Agent 静默执行；主 Agent 可自己 schedule_task 创建 subagent 类任务（task_kind + agent_name 参数，agent 存在性双目录校验 config/agents/+~/.niu/agents/）
+- **report 反馈通道（用户拍板替代 @niu-agent 挂起方案）**：`汇报正文 @end {"report": "内容"}`——**例外通道非每次必带**，默认全程静默（结果落日志），仅子 Agent 遇到解决不了的问题才用；提取=exit_content 尾部锚定（先剥降级标注行 `[^\n]*` 字符类——reason 可含 `]`，再尾部 JSON/宽松正则，失败静默）；送达主 Agent 格式 `[后台任务「{task_label}」结束报告] {report}`（task_label=name or content[:20]，明确标注非用户消息——用户要求）；单向通知无挂起无接续
+- **隔离三层（用户拍板）**：①工具面：frontmatter `visibility: hidden`（复用 MCP 既有标志不新开发）→ runner get_tools_schema 跳过——只挡 chat-with 注册不挡程序直调；②提示词：report 教学只在后台子 Agent md（普通子 Agent 不知道该语法——这一类子 Agent 不能与其他子 Agent 共用，用户拍板）；③语义：送达前缀与普通 [定时任务] 区分
+- **journal 迁移**：新建 config/agents/journal-daily-agent.md（hidden，复用 journal-agent 整理协议、删交互判据与报告生成段、补静默+report 教学）+ _system_tasks 条目 kind→subagent + `_migrate_legacy_journal_daily(ts)` 独立函数（保用户 cron）+ ensure 循环 create_task 转发 agent_name（fresh-install 接线）；交互版 journal-agent.md 保留（对话入口+周报路径）
+- **关键审查发现（八轮双审锤炼）**：R1-A P1-2 report 提取源 return_value["messages"] 不可达（EXITED 不追加末轮）→ exit_content 尾部锚定；R1-A P1-1 创建点实为 5 处（模块函数是 ToolRegistry 生产入口，只改 schema 丢参数）+实施期发现第 6 处（disk yaml 声明层）；R1-A P1-3 迁移失败滞留 journal_daily 落 reminder 兜底=治理输出反污染 → 未知 kind 显式拒绝；R2-A P2-1 fresh-install 接线（ensure create_task 不传 agent_name → 静默死）；R3-B 降级标注后缀污染尾部解析；T3+T4 双审 Quality P2：hidden 检查插在 frontmatter 类型守卫前——非标量 frontmatter 使 get_tools_schema 整体崩溃（isinstance dict 守卫修复）
+- **Skill/文档**：background-script.md 改写改名 scheduled-tasks.md「创建定时任务」（三类型对照+创建方法+report 主 Agent 视角）；niu.md 静态段补 subagent 类型一句+`[后台任务「」结束报告]` 前缀识别一句（先例：[定时任务]/[智能家居] 前缀都在静态段，skill 检索注入不保证在场）；SYSTEM_MANUAL 三漂移节点+subagent 机制节+升级注记；event-manager.md 示例同步
+- **验证**：T1-T6 每 Task 双审（T3+T4 修复后复审 APPROVE）+ 收官整体审查 READY FOR DELIVERY（零发现）+ 177 点名测试全绿（豁免 test_scheduler_message_sse 1 例预存量失败——agent.context_manager 退役，基线实证非本工程引入，记入测试债台账）
+- **实机验证（待用户重启）**：①journal-daily 每日 18 点行为不变（迁移后 task_kind='subagent'）②主 Agent 可 schedule_task(task_kind='subagent', agent_name=..., content=..., cron_expr=...) 创建后台任务 ③后台子 Agent `@end {"report": "..."}` → 主 Agent 收到 [后台任务「x」结束报告] 消息 ④chat-with-journal-daily-agent 不在主 Agent 工具列表
+
 ### 2026-08-31
 
 #### 工程：同步子 Agent 挂起丢失防护——退出前拦截警告 + cleanup 现场保留 + 4 端点清理（计划 v1→v6 六轮双审门禁 + SDD T1-T4；反转 2026-08-26「同步子 Agent 随主循环退出被回收」定案）
