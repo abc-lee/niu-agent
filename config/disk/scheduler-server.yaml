@@ -30,11 +30,15 @@ tools:
       - name: task_kind
         flag: kind
         type: string
-        enum: [reminder, background_script]
+        enum: [reminder, background_script, subagent]
         default: reminder
+        description: "任务类型：reminder=提醒式；background_script=后台静默脚本；subagent=子 Agent 静默执行"
       - name: script_file
         flag: script
         type: string
+      - name: agent_name
+        type: string
+        description: "子 Agent 名称（仅 subagent 必填；config/agents/ 或 ~/.niu/agents/ 下须存在同名 md，如 journal-daily-agent）"
       - name: name
         type: string
 
