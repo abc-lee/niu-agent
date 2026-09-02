@@ -65,7 +65,7 @@ def trigger_ratio() -> float:
 
     惰性导入防环：subagent ← runner → context_assembler 链。
     """
-    from agent.subagent import _read_compaction_trigger  # noqa: E402（惰性导入防环）
+    from agent.subagent import _read_compaction_trigger
     return _read_compaction_trigger()
 
 
