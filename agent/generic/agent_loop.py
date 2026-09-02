@@ -735,7 +735,7 @@ def transform_history(messages: list[dict]) -> list[dict]:
     """history(dict 视图) → LLM 上下文消息变换（subagent_msg 跳过/空消息丢弃/
     孤儿 tool 校验跳过/valid_tcs 剥离悬空 tool_calls/_truncate_tool_content 30000 截断）。
 
-    入口 agent_runner_loop 与折叠重建（runner._on_fold_applied）共用单一变换源——
+    入口 agent_runner_loop 与工具轮重建（runner._on_tool_round_refresh）共用单一变换源——
     rebuild 必须与入口逐字节同制式（R3-A P1：悬空 tool_calls 注入会 OpenAI 400；
     不经截断会把已 cap 输出去截断回全量，缓存破口扩大+膨胀）。
     """
@@ -808,7 +808,7 @@ def agent_runner_loop(
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
     context_target_threshold=0,  # FIFO 裁剪目标 token 量
     on_context_high_usage=None,  # 主Agent超阈值回调；None=子Agent走FIFO
-    on_fold_applied=None,  # 折叠后视图刷新回调（2026-09-02）：主 Agent 传入，原地 messages[:] 替换；None=子 Agent 跳过
+    on_tool_round_refresh=None,  # 每工具轮 persist 后视图重建回调（2026-09-02）：主 Agent 传入，原地 messages[:] 替换；None=子 Agent 跳过
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
     system_message: dict | None = None,  # 已组装好的 system message（首轮即带 cache_control）
     supplement_drain=None,  # 子 Agent 传入自己的 drain 函数；None 时走全局 drain_supplement
@@ -833,7 +833,7 @@ def agent_runner_loop(
             messages = [{"role": "system", "content": system_prompt}]
 
         # Add conversation history if provided
-        # 变换逻辑抽为模块级纯函数 transform_history（折叠重建共用单一变换源——
+        # 变换逻辑抽为模块级纯函数 transform_history（工具轮重建共用单一变换源——
         # rebuild 与入口逐字节同制式，R3-A P1）；守卫与 resumed_messages else 分支结构不变
         if history:
             messages.extend(transform_history(history))
@@ -1241,7 +1241,6 @@ def agent_runner_loop(
 
         tool_results = []
         next_prompts = set()
-        _fold_occurred = False  # 折叠检测：每轮初始化（跨轮残留会让后续无折叠轮重复重建——幂等但浪费，R1-B P3）
         should_exit = None
 
         if not response.tool_calls:
@@ -1404,13 +1403,6 @@ def agent_runner_loop(
                 elif isinstance(outcome.data, str):
                     outcome.data = _truncate_tool_content(outcome.data, tool_name)
 
-            # 折叠检测（2026-09-02 视图刷新）：fold_tool_output 成功且有新折叠行才触发——
-            # 全幂等（folded:[]）/失败/非 dict 结果不触发。插在 should_exit 判定前（outcome.data 已定型）
-            if tool_name == "fold_tool_output":
-                _d = outcome.data if isinstance(outcome.data, dict) else {}
-                if _d.get("status") == "ok" and _d.get("folded"):
-                    _fold_occurred = True
-
             if outcome.should_exit:
                 # should_exit路径：补齐当前tool_result到tool_results列表
                 if tid:
@@ -1489,15 +1481,17 @@ def agent_runner_loop(
             }
             yield StreamEvent("persist", json.dumps(tool_msg, ensure_ascii=False))
 
-        # 折叠视图刷新（2026-09-02）：fold 只 UPDATE DB，内存视图不感知——本轮 persist
-        # （yield 即落库）后从 DB 重建视图并原地替换 messages。触发在 supplement drain
+        # 每工具轮视图重建（2026-09-02）：任何工具结果 persist（yield 即落库）后从 DB
+        # 全量重建视图并原地替换 messages——新输出编号/折叠态/仪表盘与 DB 同步（fold 只
+        # UPDATE DB，内存视图不感知，不刷新则同循环下轮仍见折叠前原文与旧使用率）。
+        # tool_results 守卫：纯文本轮走 no_tool 占位路径不触发；触发在 supplement drain
         # 之前（未落库 supplement 的重建盲区最小化，R1-B P3 承认边界）；子 Agent
-        # on_fold_applied=None 跳过。失败不中断循环——下轮入口组装自然自愈。
-        if _fold_occurred and on_fold_applied is not None:
+        # on_tool_round_refresh=None 跳过。失败不中断循环——下轮入口组装自然自愈。
+        if tool_results and on_tool_round_refresh is not None:
             try:
-                on_fold_applied(messages)  # 原地 messages[:] 替换（与压实回调同制式）
+                on_tool_round_refresh(messages)  # 原地 messages[:] 替换（与压实回调同制式）
             except Exception:
-                logger.exception("[AgentLoop] on_fold_applied failed, next entry assembly will self-heal")
+                logger.exception("[AgentLoop] on_tool_round_refresh failed, next entry assembly will self-heal")
 
         if len(next_prompts) == 0:
             if len(handler._done_hooks) == 0:
