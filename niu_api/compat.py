@@ -1646,8 +1646,19 @@ async def get_stats(agent: str | None = None) -> StatsResponse:
             if cached_tokens is not None:
                 context_cache_hit = min(1.0, cached_tokens / real_tokens)
         elif not agent:
-            # 主 Agent 无真实 tokens 时 fallback 估算全库消息；子 Agent 无此概念，直接 0
-            context_usage = (await compute_context_usage_estimate(store=store, context_window=context_window)) or 0.0
+            # 主 Agent 无真实 tokens：三级链（M2-F2）——优先压实后真值回填 _fold_stats["usage"]，
+            # ContextManager 未初始化/统计缺失才 fallback 估算全库消息；子 Agent 无此概念，直接 0
+            context_usage = None
+            try:
+                from agent.context_manager import peek_context_manager
+                cm = peek_context_manager()
+                fs = getattr(cm, "_fold_stats", None) if cm is not None else None
+                if fs is not None and fs.get("usage") is not None:
+                    context_usage = fs["usage"]
+            except Exception:
+                pass
+            if context_usage is None:
+                context_usage = (await compute_context_usage_estimate(store=store, context_window=context_window)) or 0.0
     except Exception:
         context_usage = 0.0
 
@@ -2136,6 +2147,16 @@ async def _compact_context_impl(request: dict) -> dict:
         store = await get_message_store()
         from agent.context_assembler import compaction
         _, stats = await compaction.compact_now_detailed(store)
+        # 压实后真值回填仪表盘缓存（M2-F2）：页面三级链/动态块改读它，不再用压实前旧估算
+        try:
+            if stats.get("usage") is not None:
+                from agent.context_manager import peek_context_manager
+                cm = peek_context_manager()
+                fs = getattr(cm, "_fold_stats", None) if cm is not None else None
+                if fs is not None:
+                    fs["usage"] = stats["usage"]
+        except Exception:
+            pass
         logger.info(f"[Compact] manual compact done: session={session_id}, "
                     f"keep_turns={stats['keep_turns']}, blocks_archived={stats['blocks_archived']}, "
                     f"tools_placeholderized={stats['tools_placeholderized']}, "

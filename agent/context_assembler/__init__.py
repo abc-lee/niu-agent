@@ -65,3 +65,4 @@ def reset_derived_state(blocks_db_path=None, calibration_path=None) -> None:
     cm = peek_context_manager()
     if cm is not None:
         cm.set_system_token_estimate(0)
+        cm._fold_stats = None  # /new 作废 fold 仪表盘缓存（M2-F2）：防陈旧 usage 被页面三级链拾取
