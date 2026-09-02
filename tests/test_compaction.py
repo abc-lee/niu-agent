@@ -31,6 +31,16 @@ def ratio_one():
     cal._cached_ratio = old
 
 
+@pytest.fixture(autouse=True)
+def _pin_trigger_default(monkeypatch):
+    """压实触发线固定默认 0.80——单测不得读真实用户配置（~/.niu），行为确定性。
+
+    配置跟随/clamp/倒置 warning 的语义在 tests/test_fold_dashboard.py 覆盖。
+    """
+    import agent.subagent as sub
+    monkeypatch.setattr(sub, "_read_compaction_trigger", lambda: 0.80)
+
+
 def msg(role, content, mid, rowid, tool_calls=None, tool_call_id=None):
     return SimpleNamespace(
         id=mid, rowid=rowid, role=role, content=content,
@@ -136,7 +146,7 @@ class TestCompactView:
         # 水位回落断言：校准后总量估算低于 80% 触发线
         after = _est(view)
         assert after < before
-        assert stats["usage"] < compaction.TRIGGER_RATIO
+        assert stats["usage"] < compaction.trigger_ratio()
         assert stats["blocks_archived"] == 2
 
     def test_no_system_first_entry_is_index(self, ratio_one, tmp_path):

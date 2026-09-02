@@ -145,6 +145,31 @@ def _read_warning_threshold() -> float:
     return _read_context_threshold("warningThreshold", 0.80)
 
 
+def _read_compaction_trigger() -> float:
+    """读压实触发线 context.compactionTriggerRatio（默认 0.80，合法区间 [0.50, 0.94]）。
+
+    越界 clamp + warning；clamp 后严格 < warningThreshold 追加倒置 warning——
+    两线构成 [warning, trigger) 提前窗口（runner deferred 分支语义），
+    触发线低于预警线会让早期检测恒判达线、deferred 变死代码。
+    相等=默认 0.80/0.80 既有常态，不误报（R2-A P2）。
+    """
+    val = _read_context_threshold("compactionTriggerRatio", 0.80)
+    if val < 0.50 or val > 0.94:
+        clamped = min(max(val, 0.50), 0.94)
+        logger.warning(
+            f"[Subagent] compactionTriggerRatio {val} out of range [0.50, 0.94], "
+            f"clamped to {clamped}"
+        )
+        val = clamped
+    warning = _read_warning_threshold()
+    if val < warning:
+        logger.warning(
+            f"[Subagent] compactionTriggerRatio {val} is below warningThreshold "
+            f"{warning}: early-warning window [warning, trigger) inverted"
+        )
+    return val
+
+
 MAX_OUTPUT_TOKENS_RATIO = 0.16  # contextWindowSize × 0.16
 MAX_OUTPUT_TOKENS_CAP = 65536   # 封顶 65536
 

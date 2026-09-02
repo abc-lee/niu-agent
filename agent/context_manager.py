@@ -27,6 +27,7 @@ from agent.session import MessageStore, fold_columns_available
 from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 
 _INDEX_ENTITY_MAX = 3  # 索引行实体标签上限（spec §3.3）
+TRIGGER_RATIO_FALLBACK = 0.80  # compaction 导入失败时的仪表盘兜底线（=compaction.TRIGGER_RATIO 默认值引用）
 
 
 def build_tc_map(messages) -> dict[str, tuple[str, str]]:
@@ -112,6 +113,9 @@ class ContextManager:
         # 最近一次组装的 system 消息 token 数（Task 3：80% 触发判定的系统侧输入；
         # 由 runner 组装 system 后回填，缺省 0=未知，首轮回退偏保守）
         self._system_token_estimate = 0
+        # fold 仪表盘缓存（spec §5）：最近一次组装的 usage + 窗口未折叠 tool 输出统计；
+        # None=尚未组装过。压实轮沿用压实前统计（高估一轮，下轮自愈——R2-A P3 记录接受）
+        self._fold_stats = None
 
     @staticmethod
     def _message_to_dict(msg, tc_map=None) -> dict[str, Any] | None:
@@ -284,6 +288,26 @@ class ContextManager:
 
         history = candidates[:-1] if exclude_last and candidates else candidates
 
+        # fold 仪表盘统计（spec §5）：n=窗口内全部未折叠 tool 消息（含 NULL pct 旧数据——
+        # 它们同样可折）；m/p=有快照者条数与合计。迁移失败降级时 n=None → 仪表盘省略该段
+        n = m = 0
+        p = 0.0
+        if fold_columns_available():
+            for msg in history:
+                if getattr(msg, "role", None) != "tool" or getattr(msg, "folded", 0):
+                    continue
+                n += 1
+                pct = getattr(msg, "output_pct", None)
+                if pct is not None:
+                    m += 1
+                    p += pct
+        self._fold_stats = {
+            "n": n if fold_columns_available() else None,
+            "m": m,
+            "p": round(p, 1),
+            "usage": None,
+        }
+
         # 输出视图：索引前导（仅当有归档块）+ 候选原文
         view: list[dict[str, Any]] = []
         if blocks:
@@ -295,20 +319,21 @@ class ContextManager:
             e for e in (self._message_to_dict(m, tc_map) for m in history) if e is not None
         )
 
-        # Task 3：组装出口 80% 触发检查——校准后总量估算 ≥80% 即地压实（D14）。
-        # 滞回（≥80% 触发 / <78% 复位）与 runner 真值回调共用 AUTO_GATE，双触发去重不双压。
+        # Task 3：组装出口触发线检查——校准后总量估算达线即地压实（D14）。
+        # 滞回（≥trigger 触发 / <trigger−0.02 复位）与 runner 真值回调共用 AUTO_GATE，双触发去重不双压。
+        base_est = self.count_tokens_simple(view) + self._system_token_estimate
+        self._fold_stats["usage"] = base_est / self.max_tokens if self.max_tokens else 0.0
         try:
             from agent.context_assembler import calibration
             from agent.context_assembler.compaction import AUTO_GATE, build_compact_view
 
-            est = calibration.estimate(
-                self.count_tokens_simple(view) + self._system_token_estimate
-            )
+            est = calibration.estimate(base_est)
             usage_ratio = est / self.max_tokens if self.max_tokens else 0.0
+            self._fold_stats["usage"] = usage_ratio
             if AUTO_GATE.try_acquire(usage_ratio):
                 logger.info(
                     f"[Context] Calibrated usage {est:.0f}/{self.max_tokens} "
-                    f"({usage_ratio:.1%}) >= 80%, compacting at assembly exit"
+                    f"({usage_ratio:.1%}) >= trigger line, compacting at assembly exit"
                 )
                 new_view, stats = build_compact_view(
                     history,
@@ -322,8 +347,8 @@ class ContextManager:
                     f"tools_placeholderized={stats['tools_placeholderized']}, "
                     f"usage_after={stats['usage']}"
                 )
-                # 压实成功即复位闩锁：压实后视图常落 [78%,80%)，滞回 <78% 复位线
-                # 永不满足——不复位则自动压实进程级失效（P1 修复）
+                # 压实成功即复位闩锁：压实后视图常落 [复位线, 触发线) 滞回带内，
+                # 不复位则自动压实进程级失效（P1 修复）
                 AUTO_GATE.release()
                 return new_view
         except Exception as e:
@@ -331,6 +356,35 @@ class ContextManager:
             _comp.AUTO_GATE.release()  # 压实失败解除闩锁，避免永久不再自动触发
             logger.warning(f"[Context] Assembly-exit compaction failed, using un-compacted view: {e}")
         return view
+
+    def get_fold_dashboard_line(self) -> str:
+        """动态块使用率仪表盘行（spec §5）：读最近一次组装缓存，无缓存返回 ""。
+
+        格式：[上下文使用率 {u}% · 强制压缩线 {t}% · 可折叠输出 {n} 条（合计 {p}%）]
+        - m==n 全有快照 →（合计 {p}%）；m<n 含 NULL 旧数据 →（其中 {m} 条合计 {p}%）
+        - n==0 或 fold_columns_available() False（迁移失败降级）→ 省略可折叠段，
+          只留使用率+压缩线——不误导 LLM 调必报错的工具（R2-B P3）
+        """
+        stats = self._fold_stats
+        if not stats:
+            return ""
+        usage = stats.get("usage") or 0.0
+        try:
+            from agent.context_assembler.compaction import trigger_ratio
+            t = trigger_ratio()
+        except Exception:
+            t = TRIGGER_RATIO_FALLBACK
+        line = f"[上下文使用率 {usage * 100:.1f}% · 强制压缩线 {t * 100:g}%"
+        n = stats.get("n")
+        if n:
+            m, p = stats["m"], stats["p"]
+            if m == n:
+                line += f" · 可折叠输出 {n} 条（合计 {p:g}%）"
+            elif m > 0:
+                line += f" · 可折叠输出 {n} 条（其中 {m} 条合计 {p:g}%）"
+            else:
+                line += f" · 可折叠输出 {n} 条（无占比快照）"
+        return line + "]"
 
 
 # 全局实例管理

@@ -1042,11 +1042,21 @@ class NiuRunner:
         return self._build_dynamic_block(injection)
 
     def _build_dynamic_block(self, injection: str) -> str:
-        """构建动态块文本：框架标记头 + injection + 暂存提醒 + Current Time（时间最后）。"""
+        """构建动态块文本：框架标记头 + injection + 暂存提醒 + 使用率仪表盘 + Current Time（时间最后）。"""
         text = _DYNAMIC_BLOCK_HEADER
         if injection:
             text += "\n" + injection.strip()
         text += self._park_reminder_line()
+        # 上下文使用率仪表盘（fold spec §5）：读最近一次组装缓存，None/空行跳过——
+        # 动态块在缓存前缀之外，允许每轮刷新；失败不影响本轮对话
+        try:
+            from agent import context_manager as _cm_mod
+            _cm = _cm_mod.peek_context_manager()
+            line = _cm.get_fold_dashboard_line() if _cm is not None else ""
+        except Exception:
+            line = ""
+        if line:
+            text += "\n" + line
         text += f"\n\nCurrent Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         return text
 
@@ -1379,7 +1389,7 @@ class NiuRunner:
         产出 [system 原样（含 cache_control）]+[索引消息]+[窗口 dict] 新视图后
         `messages[:] = new_view` 原地回写——当轮对话立即生效；不做 DB 重载
         （机械压实不改 DB，重载是 no-op 假动作）。与组装出口触发共用 AUTO_GATE
-        滞回闸门（≥80% 触发/<78% 复位），同一轮次双触发去重不双压。
+        滞回闸门（≥trigger 触发/<trigger−0.02 复位，线随配置 compactionTriggerRatio），同一轮次双触发去重不双压。
         agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
 
         Returns:
@@ -1407,12 +1417,13 @@ class NiuRunner:
             # 真值比率过滞回闸门：与组装出口共用同一闸门，同轮去重
             ratio_now = tokens_used / tokens_limit if tokens_limit else 1.0
             if not compaction.AUTO_GATE.try_acquire(ratio_now):
-                if ratio_now < compaction.TRIGGER_RATIO:
+                trigger = compaction.trigger_ratio()
+                if ratio_now < trigger:
                     # warningThreshold(70%) < 触发线(80%)：真值未达线，无需压实。
                     # 返回 False 让 agent_loop 不置冷却、保留检测（P2：真值落在
                     # [warning, 80%) 区间时置冷却会导致本 loop 内检测停摆）
                     logger.info(f"[Runner] Compaction deferred: truth {ratio_now:.1%} below "
-                                f"trigger line {compaction.TRIGGER_RATIO:.0%}")
+                                f"trigger line {trigger:.0%}")
                 else:
                     logger.info("[Runner] Compaction skipped: gate latched by another trigger this round")
                 return False
@@ -1427,8 +1438,8 @@ class NiuRunner:
             system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
             new_view, stats = compaction.build_compact_view(db_messages, system_msg=system_msg)
             messages[:] = new_view  # 原地回写（agent_loop 契约：messages 为 dict 列表）
-            # 压实成功即复位闩锁：压实后视图常落 [78%,80%)，滞回 <78% 复位线
-            # 永不满足——不复位则自动压实进程级失效（P1 修复）
+            # 压实成功即复位闩锁：压实后视图常落 [复位线, 触发线) 滞回带内，
+            # 不复位则自动压实进程级失效（P1 修复）
             compaction.AUTO_GATE.release()
             compacted = True
             usage_after = stats.get("usage")
