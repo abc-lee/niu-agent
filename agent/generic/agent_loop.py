@@ -731,6 +731,68 @@ def _enforce_message_budget(messages: list) -> list:
     return messages
 
 
+def transform_history(messages: list[dict]) -> list[dict]:
+    """history(dict 视图) → LLM 上下文消息变换（subagent_msg 跳过/空消息丢弃/
+    孤儿 tool 校验跳过/valid_tcs 剥离悬空 tool_calls/_truncate_tool_content 30000 截断）。
+
+    入口 agent_runner_loop 与折叠重建（runner._on_fold_applied）共用单一变换源——
+    rebuild 必须与入口逐字节同制式（R3-A P1：悬空 tool_calls 注入会 OpenAI 400；
+    不经截断会把已 cap 输出去截断回全量，缓存破口扩大+膨胀）。
+    """
+    # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
+    # 用于截断标记中显示工具名（DB 不存 tool_name，需从关联的 assistant 消息提取）
+    _tc_id_to_name: dict[str, str] = {}
+    # 收集所有有效的 tool_call_id（压缩可能留下孤立的 tool 消息）
+    _valid_tc_ids: set[str] = set()
+    for msg in messages:
+        role = msg.get("role", "user")
+        if role == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                tc_id = tc.get("id", "")
+                tc_name = tc.get("function", {}).get("name", "")
+                if tc_id and tc_name:
+                    _tc_id_to_name[tc_id] = tc_name
+                if tc_id:
+                    _valid_tc_ids.add(tc_id)
+
+    # 收集所有 tool 消息的 tool_call_id，用于验证 assistant tool_calls 完整性
+    _tool_response_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            _tool_response_ids.add(msg["tool_call_id"])
+
+    result: list[dict] = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        # === 过滤 subagent_msg 消息，不塞进 LLM 上下文（@ 消息仅供前端展示） ===
+        if role == "subagent_msg":
+            continue
+        content = msg.get("content", "")
+        if role in ("user", "assistant") and (content or msg.get("tool_calls")):
+            entry = {"role": role, "content": content}
+            # 还原 tool_calls（assistant 消息可能携带工具调用）
+            if msg.get("tool_calls"):
+                # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
+                valid_tcs = [tc for tc in msg["tool_calls"] if tc.get("id") in _tool_response_ids]
+                if valid_tcs:
+                    entry["tool_calls"] = valid_tcs
+                # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
+            result.append(entry)
+        elif role == "tool" and msg.get("tool_call_id") and content is not None:
+            # 跳过孤立的 tool 消息（没有对应的 assistant tool_calls）
+            if msg["tool_call_id"] not in _valid_tc_ids:
+                logger.warning(f"[AgentLoop] Skipping orphan tool message: tool_call_id={msg['tool_call_id']}")
+                continue
+            # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
+            # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
+            tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
+            entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
+            if tool_name:
+                entry["name"] = tool_name
+            result.append(entry)
+    return result
+
+
 def agent_runner_loop(
     client,
     system_prompt: str = "",  # 向后兼容（system_message 优先）
@@ -746,6 +808,7 @@ def agent_runner_loop(
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
     context_target_threshold=0,  # FIFO 裁剪目标 token 量
     on_context_high_usage=None,  # 主Agent超阈值回调；None=子Agent走FIFO
+    on_fold_applied=None,  # 折叠后视图刷新回调（2026-09-02）：主 Agent 传入，原地 messages[:] 替换；None=子 Agent 跳过
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
     system_message: dict | None = None,  # 已组装好的 system message（首轮即带 cache_control）
     supplement_drain=None,  # 子 Agent 传入自己的 drain 函数；None 时走全局 drain_supplement
@@ -770,57 +833,10 @@ def agent_runner_loop(
             messages = [{"role": "system", "content": system_prompt}]
 
         # Add conversation history if provided
+        # 变换逻辑抽为模块级纯函数 transform_history（折叠重建共用单一变换源——
+        # rebuild 与入口逐字节同制式，R3-A P1）；守卫与 resumed_messages else 分支结构不变
         if history:
-            # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
-            # 用于截断标记中显示工具名（DB 不存 tool_name，需从关联的 assistant 消息提取）
-            _tc_id_to_name: dict[str, str] = {}
-            # 收集所有有效的 tool_call_id（压缩可能留下孤立的 tool 消息）
-            _valid_tc_ids: set[str] = set()
-            for msg in history:
-                role = msg.get("role", "user")
-                if role == "assistant" and msg.get("tool_calls"):
-                    for tc in msg["tool_calls"]:
-                        tc_id = tc.get("id", "")
-                        tc_name = tc.get("function", {}).get("name", "")
-                        if tc_id and tc_name:
-                            _tc_id_to_name[tc_id] = tc_name
-                        if tc_id:
-                            _valid_tc_ids.add(tc_id)
-
-            # 收集所有 tool 消息的 tool_call_id，用于验证 assistant tool_calls 完整性
-            _tool_response_ids: set[str] = set()
-            for msg in history:
-                if msg.get("role") == "tool" and msg.get("tool_call_id"):
-                    _tool_response_ids.add(msg["tool_call_id"])
-
-            for msg in history:
-                role = msg.get("role", "user")
-                # === 过滤 subagent_msg 消息，不塞进 LLM 上下文（@ 消息仅供前端展示） ===
-                if role == "subagent_msg":
-                    continue
-                content = msg.get("content", "")
-                if role in ("user", "assistant") and (content or msg.get("tool_calls")):
-                    entry = {"role": role, "content": content}
-                    # 还原 tool_calls（assistant 消息可能携带工具调用）
-                    if msg.get("tool_calls"):
-                        # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
-                        valid_tcs = [tc for tc in msg["tool_calls"] if tc.get("id") in _tool_response_ids]
-                        if valid_tcs:
-                            entry["tool_calls"] = valid_tcs
-                        # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
-                    messages.append(entry)
-                elif role == "tool" and msg.get("tool_call_id") and content is not None:
-                    # 跳过孤立的 tool 消息（没有对应的 assistant tool_calls）
-                    if msg["tool_call_id"] not in _valid_tc_ids:
-                        logger.warning(f"[AgentLoop] Skipping orphan tool message: tool_call_id={msg['tool_call_id']}")
-                        continue
-                    # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
-                    # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
-                    tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
-                    entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
-                    if tool_name:
-                        entry["name"] = tool_name
-                    messages.append(entry)
+            messages.extend(transform_history(history))
 
         # Add current user message
         messages.append({
@@ -1225,6 +1241,7 @@ def agent_runner_loop(
 
         tool_results = []
         next_prompts = set()
+        _fold_occurred = False  # 折叠检测：每轮初始化（跨轮残留会让后续无折叠轮重复重建——幂等但浪费，R1-B P3）
         should_exit = None
 
         if not response.tool_calls:
@@ -1387,6 +1404,13 @@ def agent_runner_loop(
                 elif isinstance(outcome.data, str):
                     outcome.data = _truncate_tool_content(outcome.data, tool_name)
 
+            # 折叠检测（2026-09-02 视图刷新）：fold_tool_output 成功且有新折叠行才触发——
+            # 全幂等（folded:[]）/失败/非 dict 结果不触发。插在 should_exit 判定前（outcome.data 已定型）
+            if tool_name == "fold_tool_output":
+                _d = outcome.data if isinstance(outcome.data, dict) else {}
+                if _d.get("status") == "ok" and _d.get("folded"):
+                    _fold_occurred = True
+
             if outcome.should_exit:
                 # should_exit路径：补齐当前tool_result到tool_results列表
                 if tid:
@@ -1462,6 +1486,16 @@ def agent_runner_loop(
                 "content": tool_result["content"]
             }
             yield StreamEvent("persist", json.dumps(tool_msg, ensure_ascii=False))
+
+        # 折叠视图刷新（2026-09-02）：fold 只 UPDATE DB，内存视图不感知——本轮 persist
+        # （yield 即落库）后从 DB 重建视图并原地替换 messages。触发在 supplement drain
+        # 之前（未落库 supplement 的重建盲区最小化，R1-B P3 承认边界）；子 Agent
+        # on_fold_applied=None 跳过。失败不中断循环——下轮入口组装自然自愈。
+        if _fold_occurred and on_fold_applied is not None:
+            try:
+                on_fold_applied(messages)  # 原地 messages[:] 替换（与压实回调同制式）
+            except Exception:
+                logger.exception("[AgentLoop] on_fold_applied failed, next entry assembly will self-heal")
 
         if len(next_prompts) == 0:
             if len(handler._done_hooks) == 0:

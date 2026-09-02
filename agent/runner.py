@@ -1467,6 +1467,33 @@ class NiuRunner:
                 pass
         return compacted
 
+    def _on_fold_applied(self, messages):
+        """折叠后视图刷新（bug 修复 2026-09-02）：fold 只 UPDATE DB，内存视图不感知——
+        不刷新则同工具循环下轮仍见折叠前原文与旧使用率。从 DB 重拉 → assemble_view_sync
+        （无压实——rebuild 不得把刚折叠的目标行归档移出窗口）→ transform_history
+        （与入口同制式：subagent_msg 过滤/悬空 tool_calls 剥离/30000 截断）
+        → messages[:] 原地替换；system 保留（含 cache_control，不重建）；动态块由下轮
+        _on_before_llm 幂等重插。失败只记日志——下轮入口组装自然自愈。
+        """
+        try:
+            db_messages = self._sync_get_messages()
+            if not db_messages:
+                return
+            from agent.context_manager import peek_context_manager
+            cm = peek_context_manager()
+            if cm is None:
+                return
+            from agent.generic.agent_loop import transform_history
+            view = cm.assemble_view_sync(db_messages, exclude_last=False)
+            transformed = transform_history(view)
+            system = messages[0] if messages and messages[0].get("role") == "system" else None
+            if system is not None:
+                messages[:] = [system] + transformed
+            else:
+                messages[:] = transformed
+        except Exception as e:
+            logger.error(f"[Runner] Fold view refresh failed (self-heals at next entry assembly): {e}")
+
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
 
@@ -2017,6 +2044,7 @@ class NiuRunner:
             on_before_llm=self._on_before_llm,  # 每轮 LLM 调用前刷新动态注入
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
             on_context_high_usage=self._on_context_high_usage,  # 主 Agent 超阈值回调
+            on_fold_applied=self._on_fold_applied,  # 折叠后同循环视图刷新（子 Agent 不传 = None 跳过）
             context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值
         )
 
