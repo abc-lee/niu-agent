@@ -126,6 +126,17 @@ def test_is_tool_placeholder_recognizes_fold():
     assert _is_tool_placeholder(render_tool_content(no_pct, TC_MAP)) is True
 
 
+def test_header_plus_body_ending_suffix_not_misjudged():
+    # T2 P3：头行使窗口 tool 消息 startswith("[") 恒真——原文恰好以「获取]」收尾的未折叠
+    # 多行消息不得被误判为占位符（否则应急裁剪 _placeholderize_tool_outputs 会跳过它）
+    from agent.generic.agent_loop import _is_tool_placeholder
+    m = msg("tool", "正文…如需原文请重新调用该工具获取]", "t-105", 105,
+            tool_call_id="tc1", folded=0, output_pct=4.2)
+    rendered = render_tool_content(m, TC_MAP)
+    assert rendered.startswith("[") and rendered.endswith("获取]") and "\n" in rendered
+    assert _is_tool_placeholder(rendered) is False
+
+
 @pytest.fixture
 def ratio_one():
     """倍率固定 1.0，隔离真实持久化状态。"""
