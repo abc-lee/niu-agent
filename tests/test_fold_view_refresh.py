@@ -349,9 +349,9 @@ class TestFoldHookContract:
 
         assert result["result"] == "CURRENT_TASK_DONE"
         assert len(hook_calls) == 1
-        # 挂载点锁：turn-1 LLM → assistant persist → tool persist → hook → turn-2 LLM
-        # （末尾多一个 persist=纯文本退出轮的 V4 persist，与 hook 无关）
-        assert order[:5] == ["llm", "persist", "persist", "hook", "llm"]
+        # 挂载点锁：turn-1 LLM → assistant persist → hook → turn-2 LLM → 退出轮 persist。
+        # fold 成功结果不落库（2026-09-02）：tool persist 被跳过——本轮只有 assistant 一条 persist
+        assert order[:5] == ["llm", "persist", "hook", "llm", "persist"]
 
     @pytest.mark.parametrize("data", [
         {"status": "ok", "folded": [], "notes": ["输出#3 已折叠（幂等）"], "errors": [], "message": "m"},
