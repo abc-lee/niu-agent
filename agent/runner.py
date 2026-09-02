@@ -1047,12 +1047,20 @@ class NiuRunner:
         if injection:
             text += "\n" + injection.strip()
         text += self._park_reminder_line()
-        # 上下文使用率仪表盘（fold spec §5）：读最近一次组装缓存，None/空行跳过——
+        # 上下文使用率仪表盘（fold spec §5）：M2-F1 真值化——优先 LLM API 真值
+        # prompt_tokens（每轮响应后更新；0/缺失 → usage=None 落估算兜底），None/空行跳过。
         # 动态块在缓存前缀之外，允许每轮刷新；失败不影响本轮对话
         try:
             from agent import context_manager as _cm_mod
+            from agent.subagent import _read_context_window_tokens
             _cm = _cm_mod.peek_context_manager()
-            line = _cm.get_fold_dashboard_line() if _cm is not None else ""
+            if _cm is not None:
+                truth = getattr(getattr(self, "handler", None), "_last_prompt_tokens", 0) or 0
+                window = _read_context_window_tokens()
+                usage = (truth / window) if (truth > 0 and window and window > 0) else None
+                line = _cm.get_fold_dashboard_line(usage_override=usage)
+            else:
+                line = ""
         except Exception:
             line = ""
         if line:

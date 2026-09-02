@@ -1467,6 +1467,22 @@ def agent_runner_loop(
             }
             yield StreamEvent("persist", json.dumps(tool_msg, ensure_ascii=False))
 
+        # M2-F1 fold 清零：本轮任一 fold_tool_output 成功 → 清 LLM 真值缓存（贴压实清零先例）——
+        # fold 后旧 prompt_tokens/cached_tokens 已失效，动态块落估算兜底；rebuild hook 紧跟其后
+        # 重建 _fold_stats。content 非 JSON/非 dict/解析失败 → 跳过不清（不中断循环）。
+        for tool_result in tool_results:
+            if tool_result.get("tool_name") != "fold_tool_output":
+                continue
+            try:
+                _fr = json.loads(tool_result["content"])
+                if (isinstance(_fr, dict) and _fr.get("status") == "ok"
+                        and isinstance(_fr.get("folded"), list) and len(_fr["folded"]) > 0):
+                    handler._last_prompt_tokens = 0
+                    handler._last_cached_tokens = None
+                    logger.debug("[AgentLoop] fold_tool_output ok, cleared LLM token truth cache")
+            except Exception:
+                logger.debug("[AgentLoop] fold result unparseable, skip clearing token cache")
+
         # 每工具轮视图重建（2026-09-02）：任何工具结果 persist（yield 即落库）后从 DB
         # 全量重建视图并原地替换 messages——新输出编号/折叠态/仪表盘与 DB 同步（fold 只
         # UPDATE DB，内存视图不感知，不刷新则同循环下轮仍见折叠前原文与旧使用率）。

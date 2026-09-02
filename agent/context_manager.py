@@ -398,17 +398,24 @@ class ContextManager:
             logger.warning(f"[Context] Assembly-exit compaction failed, using un-compacted view: {e}")
         return view
 
-    def get_fold_dashboard_line(self) -> str:
+    def get_fold_dashboard_line(self, usage_override: float | None = None) -> str:
         """动态块使用率仪表盘行（spec §5）：读最近一次组装缓存，无缓存返回 ""。
 
         格式：[上下文使用率 {u}% · 强制压缩线 {t}% · 可折叠输出 {n} 条（合计 {p}%）]
         （合计只含有 output_pct 快照者）。n==0 或 fold_columns_available() False
         （迁移失败降级）→ 省略可折叠段，只留使用率+压缩线——不误导 LLM 调必报错的工具。
+
+        usage_override（M2-F1 真值化）：非 None 且 >0 时用之（LLM API 真值），否则读
+        _fold_stats["usage"]（None → 省略整行）。_fold_stats is None 最高优先返回 ""
+        （delete_messages 陈旧真值路径可达此态——spec 边界⑥，守卫保证确定性省略）。
         """
         stats = self._fold_stats
-        if not stats:
+        if stats is None:
             return ""
-        usage = stats.get("usage") or 0.0
+        usage = (usage_override if (usage_override is not None and usage_override > 0)
+                 else stats.get("usage"))
+        if usage is None:
+            return ""
         try:
             from agent.context_assembler.compaction import trigger_ratio
             t = trigger_ratio()
