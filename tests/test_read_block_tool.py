@@ -118,7 +118,7 @@ class TestSchema:
         """通道改回 MCP static 后描述须自承载解码语义（niu.md 说明书已删）"""
         desc = TOOL_SCHEMAS["read_history_block"]["description"]
         assert "[历史索引]" in desc
-        assert "块#N" in desc
+        assert "行首方括号内的数字（如 [3]）即 block_id" in desc
         assert "精简" in desc
 
 # ============== 正常读取 ==============
@@ -142,7 +142,7 @@ class TestNormalRead:
         assert result["status"] == "ok"
         assert result["total_messages"] == 4
         text = result["text"]
-        assert "[块#1]" in text and "2026-08-12T09:00:00" in text
+        assert text.startswith("[1] ") and "2026-08-12T09:00:00" in text
         assert "帮我查一下天气" in text
         # tool 输出必须带 tool_call_id 归属
         assert "[tool·tc1]" in text and "晴，26度" in text
@@ -217,7 +217,7 @@ class TestErrors:
         upsert_blocks([_block(5, 1, 2), _block(9, 3, 4)], Path(env["blocks_db_path"]))
         result = _call(env, 7)
         assert result["status"] == "error"
-        assert "块 #7 不存在" in result["error"]
+        assert "归档块 7 不存在" in result["error"]
         assert "5~9" in result["error"] and "共 2 块" in result["error"]
 
     def test_non_integer_block_id_rejected(self, env):

@@ -167,15 +167,17 @@ class ContextManager:
         """渲染索引前导消息内容（纯时间线 FIFO，spec §3.3）。"""
         lines = [
             "[历史索引]",
-            f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按块号取回原文。",
+            f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按行首方括号内数字取回原文。",
         ]
         for b in blocks:
             # 实体标签（spec §3.3 机械成分，≤3 个；无标签时省略该段）
             tags = list(getattr(b, "entities", ()) or ())[:_INDEX_ENTITY_MAX]
             entity_part = " · 实体:" + "/".join(tags) if tags else ""
+            d0 = ContextManager._short_date(b.time_start)
+            d1 = ContextManager._short_date(b.time_end)
+            date_part = d0 if d0 == d1 else f"{d0}~{d1}"  # 起止同日坍缩为单日期
             lines.append(
-                f'[块#{b.id}] {ContextManager._short_date(b.time_start)}'
-                f'~{ContextManager._short_date(b.time_end)} · {b.count}条{entity_part}'
+                f'[{b.id}] {date_part} · {b.count}条{entity_part}'
                 f' · 首问:"{b.first_user}"'
             )
         return "\n".join(lines)
