@@ -1118,6 +1118,63 @@ def call_subagent(
         instance = SubagentRegistry.get(unique_name)
         if instance is not None:
             instance.last_reply = last_reply
+
+        # ===== T1 完成态存档（异步子 Agent 续跑数据源）=====
+        # 挂点：_run_agent_loop 返回后、本函数下方公共后处理段 4 个 early return
+        # （LLM_ERROR / 未完成 / length / CONTEXT_OVERFLOW）之前——所有终态必经此处，
+        # 且先于 _run_subagent_async 的完成通知 push（时序不变式：写盘先于通知，
+        # 主 Agent 收到通知即同名重调时档必须已就绪）。
+        # 条件二：仅异步实例（is_sync=False）——同步调用 force_unique_name=agent_name
+        # 无唯一性且同类型同时仅一个，不存档（防 <agent_name>.json 跨类型污染）。
+        if instance is not None and not getattr(instance, "is_sync", True):
+            _rv_msgs = None
+            _rv_result = None
+            if isinstance(return_value, dict):
+                _rv_result = return_value.get("result")
+                _rv_msgs = return_value.get("messages")
+            if not (isinstance(_rv_msgs, list) and _rv_msgs):
+                # 条件 = messages 门控：LLM_ERROR（dict 无 messages 键）/异常形态跳过 + warning 留痕
+                logger.warning(
+                    f"[SubAgent] {unique_name}: 完成态无 messages 可存档（result={_rv_result}），跳过异步存档"
+                )
+            else:
+                _archive_ok = False
+                try:
+                    # 末轮补全：EXITED / TERMINATED_BY_SUPPLEMENT / CURRENT_TASK_DONE 三类
+                    # 纯文本终态产出只 yield/persist、从不 append 入 messages——落盘前向副本补
+                    # last_reply，否则续跑看不到子 Agent 最后陈述（工具结果推不出的结论/决策丢失）。
+                    # 守卫：非空且非"[输出被用户中断"开头（STOPPED 程序中断标记形态不补，messages 原样）。
+                    _archive_messages = list(_rv_msgs)
+                    if (
+                        _rv_result in ("EXITED", "TERMINATED_BY_SUPPLEMENT", "CURRENT_TASK_DONE")
+                        and last_reply
+                        and not last_reply.startswith("[输出被用户中断")
+                    ):
+                        _archive_messages.append({"role": "assistant", "content": last_reply})
+                    # messages 原样落盘（含 tool 调用+结果 = LLM 动作确认记忆，防续跑重复执行）
+                    from datetime import datetime as _dt
+                    from . import tmp_dir as _tmp_dir_mod
+                    _archive_ok = _tmp_dir_mod.write_archive(
+                        unique_name,
+                        {
+                            "unique_name": unique_name,
+                            "agent_type": instance.agent_type,
+                            "created_at": _dt.fromtimestamp(instance.started_at).isoformat(),
+                            "last_activity": _dt.now().isoformat(),
+                            "messages": _archive_messages,
+                        },
+                    )
+                except Exception as _archive_err:
+                    # 存档失败不破坏子 Agent 完成通知主流程：只留痕
+                    logger.error(f"[SubAgent] {unique_name}: 异步存档异常：{_archive_err}")
+                    _archive_ok = False
+                # 写盘成败记录到 registry 实例——通知组装方（_run_subagent_async）据此
+                # 条件化"可同名重调续跑"承诺（写失败必须抑制，不承诺不可用的能力）
+                instance.archive_written = _archive_ok
+                if not _archive_ok:
+                    logger.error(
+                        f"[SubAgent] {unique_name}: 完成态存档写盘失败（archive_written=False，同名续跑不可用）"
+                    )
     else:
         # 同步路径：用 agent_name 作 unique_name（避免 LLM 记随机 hex 后缀）
         if supplement_queue is None:
