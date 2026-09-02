@@ -793,6 +793,17 @@ def transform_history(messages: list[dict]) -> list[dict]:
     return result
 
 
+def _fold_result_skip_persist(tool_name: str, data) -> bool:
+    """fold_tool_output 成功结果不落库（2026-09-02）：纯程序性维护操作，
+    视图/图谱提炼/压实块都不含 fold 元操作。内存 messages 照常 append（LLM 当轮
+    可见"已折叠 N 条"确认）——只在 persist 循环跳过该条目。失败（status≠ok）
+    照常落库：LLM 需见错误自纠。DB 里 assistant 行的 fold tool_call 无配对 tool
+    结果 → 组装时 transform_history 的 valid_tcs 既有剥离机制自动清除（零新增过滤）。"""
+    if tool_name != "fold_tool_output":
+        return False
+    return isinstance(data, dict) and data.get("status") == "ok"
+
+
 def agent_runner_loop(
     client,
     system_prompt: str = "",  # 向后兼容（system_message 优先）
@@ -1416,7 +1427,10 @@ def agent_runner_loop(
                 if tid:
                     if outcome.data is not None:
                         datastr = _serialize_tool_result_data(outcome.data)
-                        tool_results.append({"tool_use_id": tid, "content": datastr, "tool_name": tool_name})
+                        _entry = {"tool_use_id": tid, "content": datastr, "tool_name": tool_name}
+                        if _fold_result_skip_persist(tool_name, outcome.data):
+                            _entry["_skip_persist"] = True  # fold 成功：persist 循环跳过（内存照常 append）
+                        tool_results.append(_entry)
                     else:
                         # E4-03：data=None → 中性占位（无错误前缀语义）
                         tool_results.append({"tool_use_id": tid, "content": "（工具已执行，无返回值）", "tool_name": tool_name})
@@ -1432,8 +1446,10 @@ def agent_runner_loop(
                     if _tn:
                         tool_msg["name"] = _tn
                     messages.append(tool_msg)
-                # V4: yield每条tool结果的persist事件
+                # V4: yield每条tool结果的persist事件（fold 成功结果跳过——纯程序性维护不落库）
                 for tool_result in tool_results:
+                    if tool_result.get("_skip_persist"):
+                        continue
                     tool_msg = {
                         "role": "tool",
                         "tool_call_id": tool_result["tool_use_id"],
@@ -1459,7 +1475,10 @@ def agent_runner_loop(
             if tid:
                 if outcome.data is not None:
                     datastr = _serialize_tool_result_data(outcome.data)
-                    tool_results.append({"tool_use_id": tid, "content": datastr, "tool_name": tool_name})
+                    _entry = {"tool_use_id": tid, "content": datastr, "tool_name": tool_name}
+                    if _fold_result_skip_persist(tool_name, outcome.data):
+                        _entry["_skip_persist"] = True  # fold 成功：persist 循环跳过（内存照常 append）
+                    tool_results.append(_entry)
                 else:
                     # E4-03：data=None → 中性占位（无错误前缀语义）
                     tool_results.append({"tool_use_id": tid, "content": "（工具已执行，无返回值）", "tool_name": tool_name})
@@ -1478,8 +1497,10 @@ def agent_runner_loop(
             if _tn:
                 tool_msg["name"] = _tn
             messages.append(tool_msg)
-        # V4: yield每条tool结果的persist事件
+        # V4: yield每条tool结果的persist事件（fold 成功结果跳过——纯程序性维护不落库）
         for tool_result in tool_results:
+            if tool_result.get("_skip_persist"):
+                continue
             tool_msg = {
                 "role": "tool",
                 "tool_call_id": tool_result["tool_use_id"],
