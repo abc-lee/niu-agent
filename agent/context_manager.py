@@ -249,42 +249,34 @@ class ContextManager:
         """记录最近一次组装的 system 消息 token 数（80% 触发判定的系统侧输入）。"""
         self._system_token_estimate = max(0, int(n_tokens))
 
-    async def get_context_for_chat(self, exclude_last: bool = True) -> list[dict[str, Any]]:
-        """
-        获取用于聊天的上下文（主入口）——组装器视图（水位线模型）
+    def assemble_view_sync(self, db_messages, exclude_last: bool = True) -> list[dict]:
+        """同步纯组装视图（入口/折叠刷新共用，单一渲染源）。
 
-        流程：
-        1. 读 DB 全量消息（真相源不动）+ 块库全量块
-        2. 候选消息 = 未被任何块覆盖的消息（append-only 保证连续位于尾部；
-           意外不连续时取最后一个被覆盖消息之后的部分并告警）
-        3. exclude_last 时排除候选末条（当前输入）
-        4. 输出 = [索引前导 user 消息（仅当有块）] + [候选消息原文]
-           ——不做预算装填、不在组装路径归档。两次压实之间上下文自然增长
-           是 D14 设计内行为，由 80% 触发压实收口（压实后水位线前移，
-           下轮组装只剩保留轮+新增量）
-
-        候选起点恒为块边界（=会话单元边界，tool_calls 配对完整）；dict 形态
-        与 load_history 一致。
+        输入 Message 对象序列 → [索引前导(有块时)]+[候选原文折叠渲染]；更新 _fold_stats
+        （usage 存校准值）。不含压实尾段——rebuild 不得触发压实（深审 P1：
+        会把刚折叠的目标行归档移出窗口）。
+        注：blocks 在本函数 load_all 一次；包装层压实尾段为取候选 Message 序列会再
+        load 一次（两 load 间无写者——单线程、压实是唯一写者且在两者之后，零漂移，
+        R4-A P3-1）。
 
         Args:
-            exclude_last: 是否排除最后一条消息（当前用户输入）
+            db_messages: DB 全量 Message 对象序列（真相源不动）
+            exclude_last: 是否排除候选末条（当前用户输入）
 
         Returns:
             消息列表 [{"role": ..., "content": ..., ...}, ...]
         """
-        messages = await self.store.get_messages(limit=None)
-
-        candidates = messages
+        candidates = db_messages
         blocks = load_all(self._blocks_db_path or default_db_path())
-        if blocks and messages:
-            last_covered, stragglers = self._watermark_split(blocks, messages)
+        if blocks and db_messages:
+            last_covered, stragglers = self._watermark_split(blocks, db_messages)
             if stragglers:
                 logger.warning(
                     f"[Context] {stragglers} 条未覆盖消息出现在已覆盖前缀中"
                     f"（append-only 被破坏），取最后一个被覆盖消息之后的尾部为候选"
                 )
             if last_covered >= 0:
-                candidates = messages[last_covered + 1:]
+                candidates = db_messages[last_covered + 1:]
 
         history = candidates[:-1] if exclude_last and candidates else candidates
 
@@ -319,17 +311,67 @@ class ContextManager:
             e for e in (self._message_to_dict(m, tc_map) for m in history) if e is not None
         )
 
+        # usage：raw → 校准覆写（R1/R4 定案：校准随计算移入本函数——rebuild 与入口同口径；
+        # 纯函数 n×get_ratio 无副作用）。降级时保留 raw + debug 一行（对齐现状可观测性）
+        base_est = self.count_tokens_simple(view) + self._system_token_estimate
+        usage = base_est / self.max_tokens if self.max_tokens else 0.0
+        try:
+            from agent.context_assembler import calibration
+            usage = calibration.estimate(base_est) / self.max_tokens if self.max_tokens else 0.0
+        except Exception as e:
+            logger.debug(f"[Context] calibration failed, usage falls back to raw: {e}")
+        self._fold_stats["usage"] = usage
+        return view
+
+    async def get_context_for_chat(self, exclude_last: bool = True) -> list[dict[str, Any]]:
+        """
+        获取用于聊天的上下文（主入口）——组装器视图（水位线模型）
+
+        流程：读 DB 全量消息 → assemble_view_sync 纯组装（水位线切分 + fold 统计
+        + 索引 + 折叠渲染 + 校准后 usage 估算）→ 压实尾段（本包装层独有，D14）。
+
+        候选消息 = 未被任何块覆盖的消息（append-only 保证连续位于尾部；意外不连续时
+        取最后一个被覆盖消息之后的部分并告警——告警在 assemble_view_sync 内发出）；
+        exclude_last 时排除候选末条（当前输入）。输出 = [索引前导 user 消息（仅当有块）]
+        + [候选消息原文]——不做预算装填、不在组装路径归档。两次压实之间上下文自然增长
+        是 D14 设计内行为，由触发线压实收口（压实后水位线前移，下轮组装只剩保留轮+新增量）。
+
+        候选起点恒为块边界（=会话单元边界，tool_calls 配对完整）；dict 形态
+        与 load_history 一致。
+
+        Args:
+            exclude_last: 是否排除最后一条消息（当前用户输入）
+
+        Returns:
+            消息列表 [{"role": ..., "content": ..., ...}, ...]
+        """
+        messages = await self.store.get_messages(limit=None)
+        view = self.assemble_view_sync(messages, exclude_last)
+
         # Task 3：组装出口触发线检查——校准后总量估算达线即地压实（D14）。
         # 滞回（≥trigger 触发 / <trigger−0.02 复位）与 runner 真值回调共用 AUTO_GATE，双触发去重不双压。
+        # 压实需候选 Message 序列：_watermark_split 无状态重算（与 assemble_view_sync 内
+        # 同源——同一 static 方法同输入零漂移，未来维护漂移有界自愈，R2-A P3a）；
+        # stragglers warning 已在 assemble_view_sync 内发出一次，此处不重复（R5-A P3-2）。
+        candidates = messages
+        blocks = load_all(self._blocks_db_path or default_db_path())
+        if blocks and messages:
+            last_covered, _stragglers = self._watermark_split(blocks, messages)
+            if last_covered >= 0:
+                candidates = messages[last_covered + 1:]
+        # exclude_last 显式切片（R2-A P2：漏切则入口压实时当前用户输入重复进 prompt）
+        history = candidates[:-1] if exclude_last and candidates else candidates
+
         base_est = self.count_tokens_simple(view) + self._system_token_estimate
-        self._fold_stats["usage"] = base_est / self.max_tokens if self.max_tokens else 0.0
         try:
             from agent.context_assembler import calibration
             from agent.context_assembler.compaction import AUTO_GATE, build_compact_view
 
+            # AUTO_GATE 判定不读 _fold_stats['usage']——try 内自行重算校准值（纯函数双调无害；
+            # 若读 _fold_stats，calibration 降级 raw 时会以 raw 调 try_acquire，破"入口行为零变化"。
+            # 现状语义保持：calibration 抛错时异常先于 try_acquire 终止、从不尝试压实）
             est = calibration.estimate(base_est)
             usage_ratio = est / self.max_tokens if self.max_tokens else 0.0
-            self._fold_stats["usage"] = usage_ratio
             if AUTO_GATE.try_acquire(usage_ratio):
                 logger.info(
                     f"[Context] Calibrated usage {est:.0f}/{self.max_tokens} "
