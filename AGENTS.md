@@ -505,6 +505,22 @@ preload_face_model()
 - `docs/analysis-genericagent-evolution.md` — GenericAgent 进化机制分析
 ---
 
+### 2026-09-02
+
+#### 工程：主 Agent 主动折叠工具输出——两列 + 头行/占位符 + fold_tool_output 软防线（spec 双审 → 计划 R1-R3 三轮双审冻结 → SDD T1-T6 每 Task 双审，main 75e4b739..6f0652a0 共 6 commits）
+
+- **背景**：窗口内工具输出（文件内容/检索结果等）可再生（重调原工具即取回）却长期占上下文，此前只有 80% 硬压实能回收——加主 Agent 可自主触发的主动折叠软防线；DB 真相源 content 永不动，folded 是元数据标志列
+- **机制三件套**：①存储=messages.db 两列 folded/output_pct（PRAGMA+ALTER 幂等迁移，失败置 `_fold_columns_available=False` 降级：无头行/无占位符/fold 工具返回明确错误文案不终止启动）②渲染=窗口 tool 消息加固化头行 `[输出#N · 工具名 · 占上下文 X%]`，folded=1 → 单行占位符以「获取]」收尾（兼容 _is_tool_placeholder 应急裁剪识别）；render_tool_content 共享 helper 常规组装与压实视图两路径同制式（R1 交叉 P1：渲染不下沉则压实当轮 folded 内容全文复活破缓存）③取回=重新调用原工具（不归档指针块库——块库是压实批次粒度）；fold_tool_output=session-manager 静态工具（7 处触点）
+- **占比口径（用户拍板）**：落库时刻 calibration.estimate(本地计数) ÷ 总窗口 contextWindowSize 算一次永久固化永不重算——分母恒为总窗口非当前用量（重算=窗口区内容漂移破前缀缓存）；None（旧数据/估算失败）渲染省略占比分句
+- **编号=rowid**：messages.db rowid（主键 id 是 TEXT uuid 不可用；messages 只增不删故 rowid 稳定）
+- **幂等语义**：已折叠进 notes 不报错；全幂等 status:ok + folded:[]；部分成功 ok + errors + 「N 条未成功」
+- **搭车纪律**：fold 必须捎在本来就要调用的工具同轮，绝不只为折叠单开一轮（全量上下文重发比省的更贵）——写入 niu.md 教学与工具 description
+- **仪表盘+触发线配置化**：动态块 Current Time 前注入 `[上下文使用率 X% · 强制压缩线 Y% · 可折叠输出 N 条（合计 Z%)]`；新配置 context.compactionTriggerRatio 默认 0.80 clamp [0.50,0.94]（严格 < warningThreshold 追加提前窗口倒置警告），HARD_BUDGET=min(0.80,trigger) / RESET=trigger−0.02 / EMERGENCY 0.95 写死不动
+- **教学**：niu.md 新节「并行工具调用与上下文折叠」（并行调用=历史欠账：agent_loop 机制层原生支持一轮多 tool_calls，niu.md 从未教过——dream-evolver 会并行因其提示词明确教过）+ SYSTEM_MANUAL 同步
+- **质量链亮点**：R1-A P1 TOOL_SCHEMAS 计数硬断言 5→6（不列则回归必红）；T3 质量审 P2 fold_tool_output 的 **kwargs 注入通道非测试环境清空（生产 kwargs 只能来自 LLM 幻觉，DB 写路径不可被重定向；pytest 在场判定保留 tmp 注入）；收官 T2 P3 修 _is_tool_placeholder 加单行条件（头行使 startswith("[") 恒真，原文以「获取]」收尾的未折叠消息会被误判为占位符跳过应急裁剪——占位符形态恒单行，commit 629233b9）
+- **验证**：104 点名回归全绿（9 skip=e2e 门 --run-e2e 未传，预存量）+ py_compile 六文件 + ruff 零新增
+- **已知边界（接受）**：①压实轮统计高估一轮——组装出口 _fold_stats 压实轮沿用压实前缓存（仅指导语义，下轮自愈，R2-A P3）②kwargs 门控依赖 pytest 在场判定（sys.modules 含 "pytest"）
+
 ### 2026-09-01
 
 #### 新增：图谱详情面板关联实体右键进子图（commit d045fb7b，用户实机验证通过）
