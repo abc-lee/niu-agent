@@ -16,7 +16,7 @@ def test_no_static_or_dynamic_tools():
         data = yaml.safe_load(f)
 
     # 有意进主 Agent Schema 的 static 工具（显式 visibility: static）
-    static_exempt = {"session-manager/read_history_block"}
+    static_exempt = {"session-manager/read_history_block", "session-manager/fold_tool_output"}
     violations = []
     for server_name, server_cfg in data.items():
         if not isinstance(server_cfg, dict):
