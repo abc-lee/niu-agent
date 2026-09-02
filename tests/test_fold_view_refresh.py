@@ -758,5 +758,60 @@ class TestCombinedRegressionLock:
         assert "[输出#4 · read_file]" in req2
 
 
+# ---------------------------------------------------------------------------
+# 9. M2-F1 fold 清零：本轮任一 fold_tool_output 成功（folded 非空）→ 清 LLM 真值缓存
+#    （贴压实清零先例——fold 后旧 prompt_tokens/cached_tokens 已失效，动态块落估算兜底）；
+#    幂等/失败/非 dict 结果 → 不清（未发生真实折叠，真值仍有效）、不崩。
+# ---------------------------------------------------------------------------
+
+class TestFoldTruthClearing:
+    @staticmethod
+    def _resp_usage(content="", tool_calls=(), prompt_tokens=None, cached_tokens=None):
+        r = mock.Mock()
+        r.content = content
+        r.stream_error = False
+        r.context_overflow = False
+        r.tool_calls = list(tool_calls)
+        r.usage = ({"prompt_tokens": prompt_tokens, "cached_tokens": cached_tokens}
+                   if prompt_tokens is not None else None)
+        r.finish_reason = "stop"
+        return r
+
+    def _client_with_truth(self):
+        """turn-1 带真值 usage（5000/4000）调 fold；turn-2 纯文本无 usage 退出。"""
+        return _FakeClient([
+            self._resp_usage("", [_tc("fold_tool_output", "call_fold", '{"output_ids": [3]}')],
+                             prompt_tokens=5000, cached_tokens=4000),
+            _resp("完成"),
+        ])
+
+    def test_fold_success_clears_truth_cache(self):
+        handler = _FakeHandler({"fold_tool_output": _fold_outcome(
+            {"status": "ok", "folded": [3], "freed_pct": 8.0,
+             "errors": [], "notes": [], "message": "已折叠 1 条输出（#3）"})})
+        client = self._client_with_truth()
+        events, result = _run_loop(client, handler)
+
+        assert result["result"] == "CURRENT_TASK_DONE"
+        # fold 成功 → 真值缓存清零（turn-2 无 usage 不覆盖，终态即清零态）
+        assert handler._last_prompt_tokens == 0
+        assert handler._last_cached_tokens is None
+
+    @pytest.mark.parametrize("data", [
+        {"status": "ok", "folded": [], "notes": ["输出#3 已折叠（幂等）"], "errors": [], "message": "m"},
+        {"status": "error", "error": "输出#9 不存在"},
+        "plain string result",
+    ], ids=["idempotent", "error", "non_dict"])
+    def test_fold_result_variants_keep_truth(self, data):
+        """幂等（folded=[]）/失败/非 dict → 未发生真实折叠 → 真值保留、循环不中断。"""
+        handler = _FakeHandler({"fold_tool_output": _fold_outcome(data)})
+        client = self._client_with_truth()
+        events, result = _run_loop(client, handler)
+
+        assert result["result"] == "CURRENT_TASK_DONE"
+        assert handler._last_prompt_tokens == 5000
+        assert handler._last_cached_tokens == 4000
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

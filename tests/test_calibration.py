@@ -4,6 +4,7 @@
 防零与异常防护 / estimate 线性换算。
 """
 
+import copy
 import json
 
 import pytest
@@ -258,3 +259,128 @@ class TestSystemEstimateBackfillGate:
 
 async def _async_list(items):
     return list(items)
+
+
+# ---------------------------------------------------------------------------
+# M1 全量回归锁：ratio 更新 local = 完整发送集（折叠后）全量 count。
+# 旧增量实现场景：入口组装（含大 tool 原文）→ fold 占位符原地改写（列表长度不变）
+# → 响应真值——local 残留折叠前旧值 → 倍率漂移偏低、触发偏晚。
+# 锁：update_ratio 收到的 local == 响应返回点发送集全量 count（非折叠前残留）。
+# ---------------------------------------------------------------------------
+
+class TestRatioFullSendSetLock:
+    def _fc(self, messages):
+        """确定性计数（与 fake TokenCalculator 同式）：len(content)+8/条。"""
+        return sum(len(m.get("content", "")) + 8 for m in messages)
+
+    def test_local_is_full_count_after_inplace_fold_rewrite(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from agent.generic.agent_loop import StepOutcome, agent_runner_loop
+
+        # 确定性计数：隔离真实 tokenizer（回退式公式，与 _fc 一致）
+        class _Calc:
+            def count_messages(self, messages):
+                return sum(len(m.get("content", "")) + 8 for m in messages)
+
+        monkeypatch.setattr("agent.token_calculator.TokenCalculator.get", lambda: _Calc())
+
+        # update_ratio spy：捕获 (truth, local)——生产调用为无参持久化，此处整体替换
+        recorded = []
+        monkeypatch.setattr(cal, "update_ratio",
+                            lambda truth, local: recorded.append((truth, local)))
+
+        BIG = "B" * 5000  # 大 tool 原文（入口组装在场）
+        history = [
+            {"role": "user", "content": "Q"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "content": "[输出#3 · read_file · 占上下文 8.0%]\n" + BIG,
+             "tool_call_id": "c1"},
+        ]
+
+        def on_refresh(messages):
+            """模拟 fold 成功后的每工具轮视图重建：大 tool 行原地改写为占位符。"""
+            for m in messages:
+                if m.get("tool_call_id") == "c1":
+                    m["content"] = ("[输出#3 已由 fold_tool_output 折叠：read_file({})，"
+                                    "本条已移出上下文（原占约 8.0%）。如需原文请重新调用原工具获取]")
+
+        class _Handler:
+            """主 Agent 路径（_is_subagent=False——倍率更新仅主 Agent 生效）。"""
+            _is_subagent = False
+
+            def __init__(self):
+                self._done_hooks = []
+                self.max_turns = None
+                self.current_turn = 0
+                self._subagent_unique_name = ""
+                self._last_prompt_tokens = 0
+                self._last_cached_tokens = None
+
+            def next_prompt_patcher(self, np, outcome, turn):
+                return np
+
+            def dispatch(self, tool_name, args, response, index=0):
+                def gen():
+                    yield
+                    return StepOutcome(
+                        data={"status": "ok", "folded": [3], "message": "已折叠 1 条输出（#3）"},
+                        next_prompt="继续", should_exit=False)
+                return gen()
+
+        resp1 = SimpleNamespace(
+            content="", tool_calls=[SimpleNamespace(
+                id="call_fold", function=SimpleNamespace(
+                    name="fold_tool_output", arguments='{"output_ids": [3]}'))],
+            usage=None, stream_error=False, context_overflow=False, finish_reason="stop")
+        resp2 = SimpleNamespace(
+            content="完成", tool_calls=[],
+            usage={"prompt_tokens": 9000},
+            stream_error=False, context_overflow=False, finish_reason="stop")
+
+        class _Client:
+            last_tools = ""
+
+            def __init__(self):
+                self.requests = []  # 每次 LLM 请求的 messages deepcopy（发送集快照）
+
+            def chat(self, messages=None, tools=None):
+                self.requests.append(copy.deepcopy(messages))
+                r = resp1 if len(self.requests) == 1 else resp2
+
+                def gen():
+                    yield r
+                    return r
+                return gen()
+
+        client = _Client()
+        events = []
+        try:
+            gen = agent_runner_loop(
+                client=client, system_prompt="SYS", user_input="Q2", handler=_Handler(),
+                tools_schema=[], verbose=False, max_turns=10, enable_supplement=False,
+                history=history, on_tool_round_refresh=on_refresh)
+            while True:
+                events.append(next(gen))
+        except StopIteration:
+            pass
+
+        # turn-1 无 usage（不调 update_ratio）；turn-2 真值 9000 → 恰一次
+        assert len(recorded) == 1, f"update_ratio 应恰调一次，实际 {len(recorded)}"
+        truth, local = recorded[0]
+        assert truth == 9000
+        # turn-2 LLM 请求即响应返回点的完整发送集（chat 调用与 update_ratio 之间 messages 无变更）
+        send_set = client.requests[1]
+        # fold 改写已进发送集：占位符在场、大原文不在场
+        assert any("已由 fold_tool_output 折叠" in (m.get("content") or "") for m in send_set)
+        assert not any(BIG in (m.get("content") or "") for m in send_set)
+        # 行为锁：local = 完整发送集（折叠后）全量 count
+        assert local == self._fc(send_set)
+        # 反证：旧增量实现 local 残留折叠前大原文 → 严格大于折叠后全量值
+        stale = copy.deepcopy(send_set)
+        for m in stale:
+            if m.get("tool_call_id") == "c1":
+                m["content"] = "[输出#3 · read_file · 占上下文 8.0%]\n" + BIG
+        assert self._fc(stale) > local
