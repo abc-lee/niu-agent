@@ -1152,10 +1152,11 @@ class NiuHandler(BaseHandler):
                 result = result[len("COMPACT_TRUNCATED:"):]
 
             # incomplete JSON → 自然语言提示（只作用于返回 LLM 的副本，游标判定已用原始 result）
+            # T4-③：同步不存档——删"已保留进度"句，不承诺进度保留/同名续跑
             display_result = result
             if result and result.strip().startswith("{") and _is_subagent_incomplete(result):
                 display_result = (
-                    f"子Agent未完成任务（{_incomplete_reason(result)}），已保留进度；"
+                    f"子Agent未完成任务（{_incomplete_reason(result)}）；"
                     f"请决定是否让子Agent继续处理。"
                 )
 
