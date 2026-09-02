@@ -1079,6 +1079,7 @@ class NiuHandler(BaseHandler):
                 task=task,
                 llm_config=llm_config,
                 mcp_client=self.mcp_client,
+                unique_name=unique_name_arg,  # T2 续跑：透传上次唯一名（同名档命中 → 携档续跑旧上下文；未命中 → 全新派发）
             )
             if unique_name is not None:
                 # 推送 subagent_started 事件到主 Agent SSE 流
