@@ -867,6 +867,7 @@ def call_subagent(
     supplement_queue: Any | None = None,
     memory_context: Any | None = None,  # 阶段二新增：异步子 Agent 进度数据
     unique_name: str | None = None,  # 阶段二新增：异步路径透传，跳过内部 register
+    resumed_messages: list | None = None,  # T2 续跑：存档清洗后的续跑上下文（agent_runner_loop resumed 分支直用 messages）
     answer: str | None = None,  # 阶段四新增：回复路径（第三分支）用
     answer_unique_name: str | None = None,  # 阶段四新增：回复路径锁定挂起 session
     bypass_at_prefix: bool = False,  # True=绕过@前缀拦截层（仅一轮出方案的子Agent用）
@@ -1108,6 +1109,7 @@ def call_subagent(
                 history=history,
                 supplement_queue=supplement_queue,  # 调用方传入
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
+                resumed_messages=resumed_messages,  # T2 续跑：命中档时透传续跑上下文（None=全新派发不启用）
                 stop_predicate=_stop_fn,  # 停止穿透：异步路径用顶部绑定（仅 terminate）
                 on_before_llm=_refresh_subagent_current_time,
             )
@@ -1666,11 +1668,56 @@ def _ask_main_agent_impl_sync(
 # ==================== 阶段二：异步子 Agent 派发与运行 ====================
 
 
+def _prepare_resume_messages(archive_messages: list) -> list | None:
+    """把完成态存档 messages 清洗为可续跑上下文（agent_runner_loop resumed_messages 直用）。
+
+    T2 续跑组装。复用 transform_history 整函数输出（纯函数 L734，无突变返回新列表）——
+    其净化语义正是续跑需要的：
+      - valid_tcs 配对剥离：档尾悬空 assistant(tool_calls)（STOPPED mid-dispatch：agent_loop
+        先 append assistant 再 dispatch，派发前停止 return——tool_calls 无配对 tool 响应）
+        被降级为纯文本 / 剔除 → 防续跑首请求注入 400（A 合并复审 P2-1）；
+      - 孤儿 tool 跳过 / subagent_msg 丢弃 / _truncate_tool_content 30000 截断（幂等——
+        档 messages 是原始全量视图，上次 LLM 实收即截断视图，续跑同制式防超发）。
+    两点修正（实读 transform_history 后）：
+      1. transform_history 只保留 user/assistant/tool，role=system 会被丢弃——而
+         agent_runner_loop resumed 分支（agent_loop.py L824-826）把 resumed_messages 整体
+         当 messages 直用、不再组装 system（同步挂起恢复同构：suspended_messages 即含
+         system[0]）→ 档首 system 还原头部。
+      2. 尾部清理：剥离后档尾残留"空 content 且无 tool_calls"的 assistant 脚手架（全悬空
+         纯工具轮的降级产物），连段剔除（空 assistant 无内容无 tool_calls 部分 provider 400）。
+
+    Returns:
+        可直接当 resumed_messages 的列表（含 system[0]）；清洗后为空 → None（调用方按未命中处理）。
+    """
+    # 函数级延迟 import：agent_loop 与本模块存在互引，模块级导入会 ImportError（先例 runner.py L1505）
+    from .generic.agent_loop import transform_history
+
+    if not isinstance(archive_messages, list) or not archive_messages:
+        return None
+    _head = archive_messages[0]
+    if isinstance(_head, dict) and _head.get("role") == "system":
+        # transform_history 会丢 system → 剥离净化后还原头部（resumed 分支需要完整 messages）
+        cleaned = [_head] + transform_history(archive_messages[1:])
+    else:
+        # 异常形态兜底（正常档首必为 system）——整表净化不补 system
+        cleaned = transform_history(archive_messages)
+    while cleaned and (
+        cleaned[-1].get("role") == "assistant"
+        and not cleaned[-1].get("content")
+        and not cleaned[-1].get("tool_calls")
+    ):
+        # 尾部空 assistant 脚手架剔除（transform_history 已把悬空 tool_calls 降级纯文本，
+        # 空 content 时产物为空 assistant 消息——连段剥除防 provider 400）
+        cleaned.pop()
+    return cleaned if cleaned else None
+
+
 def _dispatch_async_subagent(
     agent_name: str,
     task: str,
     llm_config: dict[str, Any],
     mcp_client=None,
+    unique_name: str | None = None,  # T2 续跑：非空 = 主 Agent 指定上次唯一名（同名档命中 → 携档续跑；未命中 → 全新派发）
 ) -> tuple[str | None, str]:
     """异步派子 Agent：立即返回派单确认，子 Agent 在后台 asyncio 协程跑（跨线程用 run_coroutine_threadsafe 提交到主 loop）。
 
@@ -1679,6 +1726,16 @@ def _dispatch_async_subagent(
       2. 注册到 SubagentRegistry（is_sync=False）
       3. run_coroutine_threadsafe(_run_subagent_async(...), loop) 跨线程提交到主 loop
       4. 立即返回派单确认（含唯一名 + 使用说明）
+
+    T2 续跑（unique_name 非空）：
+      - 先 register(force_unique_name=unique_name) 占名（单仲裁：占名期间防并行同名双起跑）；
+        撞运行中 ValueError → (None, "仍在运行中"错误文案)——registry 现文案写死同步路径语义
+        对异步误导，此处捕获后自定义文案覆盖。
+      - 查档 read_archive：命中（dict + agent_type 匹配 + messages 非空 + 清洗后非空）→
+        _prepare_resume_messages 剥离尾部悬空 assistant(tool_calls) + 补 user(effective_task)
+        → 携 resumed_messages 续跑（确认文本明示"已加载上轮上下文续跑"）。
+      - 未命中 / 损坏 / 跨类型 → unregister 释放占名 + 回退自动 hex 名全新派发（确认文本告知
+        实际名，不占用 agent_name 同步命名空间）+ logger.warning 留痕。
 
     Returns:
         派单确认文本（含唯一名 + 使用说明）
@@ -1689,19 +1746,70 @@ def _dispatch_async_subagent(
     from .subagent_registry import SubagentRegistry
     from .subagent_supplement import SubagentSupplementQueue
 
+    # 空串按未指定处理（LLM 对可选字段常填空串——空串占名会注册出空名实例）
+    if not unique_name:
+        unique_name = None
+
     # 创建 supplement_queue + memory_context
     sq = SubagentSupplementQueue(unique_name="")  # unique_name 注册后回填
     mc = SubagentMemoryContext()
 
-    # 注册（is_sync=False，task 稍后回填——run_coroutine_threadsafe 需要主 loop 在跑）
-    unique_name = SubagentRegistry.register(
-        agent_type=agent_name,
-        supplement_queue=sq,
-        memory_context=mc,
-        is_sync=False,
-        task=None,  # 占位，run_coroutine_threadsafe 后回填
-    )
-    sq.unique_name = unique_name  # 回填唯一名
+    # ==== T2 续跑分流：指定名 → 先占名（单仲裁防并行同名双起跑）→ 查档 ====
+    resumed_messages: list | None = None  # 非 None = 命中档，下方携档续跑
+    _resume_hit = False
+    _fallback_note = None
+    if unique_name is not None:
+        try:
+            SubagentRegistry.register(
+                agent_type=agent_name,
+                supplement_queue=sq,
+                memory_context=mc,
+                is_sync=False,
+                task=None,  # 占位，run_coroutine_threadsafe 后回填
+                force_unique_name=unique_name,
+            )
+            sq.unique_name = unique_name  # 回填唯一名（= 指定名）
+        except ValueError:
+            # 同名实例运行中（registry ValueError 文案写死"同步路径"，对异步误导）——自定义文案
+            return (None, f"[错误] {unique_name} 仍在运行中，请等待完成或先 @{unique_name} /stop")
+
+        # 查档（占名期间读取——命中即续跑；未命中/损坏/跨类型再释放占名回退全新派发）
+        from . import tmp_dir as _tmp_dir_mod
+        _archive = _tmp_dir_mod.read_archive(unique_name)
+        if isinstance(_archive, dict) and _archive.get("agent_type") == agent_name:
+            _am = _archive.get("messages")
+            if isinstance(_am, list) and _am:
+                resumed_messages = _prepare_resume_messages(_am)
+        if resumed_messages is None:
+            # 释放占名 → 回退自动 hex 名全新派发（下方统一注册点）
+            SubagentRegistry.unregister(unique_name)
+            if _archive is None:
+                _why = "无存档（未运行过 / JSON 损坏 / 非 dict）"
+            elif not isinstance(_archive, dict) or _archive.get("agent_type") != agent_name:
+                _why = f"跨类型（档 agent_type={_archive.get('agent_type')!r}，本次 {agent_name!r}）"
+            else:
+                _why = "档 messages 为空或清洗后为空"
+            logger.warning(f"[AsyncSubagent] 指定续跑名 {unique_name} 不可用（{_why}），回退全新派发")
+            _fallback_note = f"[续跑回退] 指定名 {unique_name} 无可用存档，已全新派发"
+            unique_name = None
+
+    if unique_name is None:
+        # 全新派发（现状路径 + 指定名回退）：自动生成 <agent_type>-<4位hex>（不占 agent_name 同步命名空间）
+        unique_name = SubagentRegistry.register(
+            agent_type=agent_name,
+            supplement_queue=sq,
+            memory_context=mc,
+            is_sync=False,
+            task=None,  # 占位，run_coroutine_threadsafe 后回填
+        )
+        sq.unique_name = unique_name  # 回填唯一名
+    else:
+        # 命中档续跑：剥离清洗后补当前任务 user 消息（effective_task 满足 call_subagent
+        # 入口闸门 not task and not answer；续跑实例保持指定名注册，结束由 _run_subagent_async finally 注销）
+        effective_task = task or "继续上次未完成的工作"
+        resumed_messages.append({"role": "user", "content": effective_task})
+        task = effective_task  # 同步给 call_subagent（入口闸门 + 初始指令展示）
+        _resume_hit = True
 
     # R5-P2：派发线程（主 Agent executor 线程）快照 source 到实例——
     # call_subagent 在 to_thread 线程读 runner._request_source 时主 Agent 可能已恢复默认
@@ -1728,6 +1836,7 @@ def _dispatch_async_subagent(
                 mcp_client=mcp_client,
                 memory_context=mc,
                 supplement_queue=sq,
+                resumed_messages=resumed_messages,  # T2 续跑：命中档时携档（None=全新派发）
             ),
             loop,
         )
@@ -1744,12 +1853,23 @@ def _dispatch_async_subagent(
 
     logger.info(f"[AsyncSubagent] 已派出异步子 Agent：{unique_name}")
 
-    confirmation = (
-        f"已派出子 Agent {unique_name}（类型：{agent_name}），后台运行中。\n"
-        f"你可以用 check_subagent_progress('{unique_name}') 查看进度，\n"
-        f"写 @ {unique_name} 消息给它补充上下文，\n"
-        f"写 @ {unique_name} /stop 停止它。"
-    )
+    if _resume_hit:
+        # T2 续跑：确认文本明示已加载上轮上下文（spec：同名即续跑意图，名字即意图载体）
+        confirmation = (
+            f"已加载 {unique_name} 上轮上下文续跑（子 Agent {agent_name}，后台运行中）。\n"
+            f"你可以用 check_subagent_progress('{unique_name}') 查看进度，\n"
+            f"写 @ {unique_name} 消息给它补充上下文，\n"
+            f"写 @ {unique_name} /stop 停止它。"
+        )
+    else:
+        # 全新派发（含指定名回退——确认文本告知实际名，勿用裸 agent_name 占同步命名空间）
+        _prefix = f"{_fallback_note}：\n" if _fallback_note else ""
+        confirmation = (
+            f"{_prefix}已派出子 Agent {unique_name}（类型：{agent_name}），后台运行中。\n"
+            f"你可以用 check_subagent_progress('{unique_name}') 查看进度，\n"
+            f"写 @ {unique_name} 消息给它补充上下文，\n"
+            f"写 @ {unique_name} /stop 停止它。"
+        )
     return (unique_name, confirmation)
 
 
@@ -1761,6 +1881,7 @@ async def _run_subagent_async(
     memory_context,
     supplement_queue,
     mcp_client=None,
+    resumed_messages: list | None = None,  # T2 续跑：档消息清洗后的续跑上下文（worker 内透传 call_subagent）
 ) -> None:
     """异步子 Agent 的 asyncio task 主体。
 
@@ -1791,6 +1912,7 @@ async def _run_subagent_async(
                 supplement_queue=supplement_queue,
                 memory_context=memory_context,
                 unique_name=unique_name,  # 透传 unique_name，跳过 call_subagent 内部 register
+                resumed_messages=resumed_messages,  # T2 续跑：携档透传（None=全新派发不启用）
             )
 
             # 推完成通知到 MainAgentRequestQueue 内存队列（不写 db）
