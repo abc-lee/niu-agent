@@ -446,6 +446,7 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
         kwargs = {}
     _, db_path = _resolve_db_paths(kwargs)
     folded, errors, notes, freed = [], [], [], 0.0
+    null_pct_count = 0  # 新折叠行中 output_pct NULL 的条数（升级前旧输出，无占比快照）
     try:
         with sqlite3.connect(db_path) as conn:
             for oid in output_ids:
@@ -461,6 +462,8 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
                 else:
                     conn.execute("UPDATE messages SET folded=1 WHERE rowid=?", (oid,))
                     folded.append(oid)
+                    if row[2] is None:
+                        null_pct_count += 1
                     freed += row[2] or 0.0
             conn.commit()
     except Exception as e:
@@ -473,6 +476,10 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
         return {"status": "ok", "folded": [], "notes": notes, "errors": errors,
                 "message": "；".join(notes + errors)}
     suffix = f"（{len(errors)} 条未成功）" if errors else ""
+    # 新折叠行含升级前旧输出（无占比快照，freed 少算了它们）→ 注明不计入释放估算；
+    # k>0 即追加，部分成功分支（errors 非空）同样适用（R3-B P3）
+    if null_pct_count:
+        suffix += f"（含 {null_pct_count} 条升级前旧输出，未含占比快照，不计入释放估算）"
     return {
         "status": "ok",
         "folded": folded,
