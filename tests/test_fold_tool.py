@@ -206,3 +206,19 @@ class TestEdge:
             result = fold_tool_output([10], messages_db_path=str(env["db"] / "no_such_dir" / "x.db"))
         assert result["status"] == "error"
         assert "DB 写入失败" in result["error"]
+
+    def test_non_test_env_clears_kwargs_injection(self, env, monkeypatch):
+        """T3 质量审 P2：非测试环境（无 pytest）清空注入通道——LLM 幻觉不可重定向 DB 写路径。"""
+        import sys as _sys
+        import niu_session_manager as nsm
+        monkeypatch.delitem(_sys.modules, "pytest")  # 模拟生产环境
+        captured = {}
+
+        def _rec(kw):
+            captured["kw"] = kw
+            return ("", str(env["db"]))  # 回落到 tmp 路径：仅 SELECT，无写风险
+
+        monkeypatch.setattr(nsm, "_resolve_db_paths", _rec)
+        result = fold_tool_output([999], messages_db_path=env["messages_db_path"])
+        assert captured["kw"] == {}  # 注入在路径解析前被清空
+        assert result["status"] == "error" and "不存在" in result["error"]
