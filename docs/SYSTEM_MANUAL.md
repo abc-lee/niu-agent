@@ -439,7 +439,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 - **两列**：messages.db messages 表加 `folded`/`output_pct` 列（content 永不动；占比=落库时刻本地估算×校准倍率÷总窗口，算一次永久固化不重算——保前缀缓存）
 - **头行**：视图内每条 tool 输出渲染 `[输出#N · 工具名 · 占上下文 X%]` 头行（N=messages.db rowid；旧数据无占比时省略分句），折叠后原文替换为占位符（含工具名+参数摘要，取回通道=重新调用原工具）
 - **仪表盘**：每轮动态块显示 `[上下文使用率 u% · 强制压缩线 t% · 可折叠输出 n 条（合计 p%）]`；含无占比旧数据时「其中 m 条合计 p%」，全无占比快照时「（无占比快照）」
-- **工具**：`fold_tool_output(output_ids)` MCP 静态工具按编号置 folded=1（幂等，已折叠进 notes 不报错；迁移失败降级时返回明确错误文案；新折叠行含升级前旧输出——无占比快照——时释放估算附注不计入它们）
+- **工具**：`fold_tool_output(output_ids)` MCP 静态工具按编号置 folded=1（幂等，已折叠进 notes 不报错；迁移失败降级时返回明确错误文案）
 - **搭车纪律**：折叠必须捎在本来就要调用的其他工具同一轮，绝不单开一轮（全量上下文重发比省的更贵）
 
 配置项 `context.compactionTriggerRatio`（config/user-config.json 的 context 段，默认 0.80，合法区间 [0.50,0.94]，越界 clamp+warning）：批量压实触发线从写死 0.80 改为读此配置——仪表盘显示的强制压缩线=实际触发的线；滞回复位线跟随（trigger−2%），回落预算 `min(0.80, trigger)`，应急线 95% 保持写死。
