@@ -177,6 +177,8 @@ session-manager:
     # 主 Agent 常用工具：进 MCP Schema（registry 对未列出工具默认 hidden，须显式 static）
     read_history_block:
       visibility: static
+    fold_tool_output:
+      visibility: static
 browser-server:
   command: ${PYTHON_PATH}
   args:

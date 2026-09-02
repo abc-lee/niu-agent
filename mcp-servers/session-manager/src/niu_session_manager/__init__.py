@@ -152,6 +152,25 @@ TOOL_SCHEMAS = {
             "required": ["block_id"],
         },
     },
+    "fold_tool_output": {
+        "name": "fold_tool_output",
+        "description": (
+            "折叠可再生的工具输出以释放上下文。编号=窗口内 tool 输出头行 [输出#N …] 中的 N。"
+            "搭车调用：在本来就要调用其他工具的同一轮捎带调用，绝不要只为折叠单开一轮。"
+            "折叠后如需原文，重新调用原工具即可。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "output_ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "要折叠的 tool 输出编号列表（头行 [输出#N …] 中的 N）",
+                },
+            },
+            "required": ["output_ids"],
+        },
+    },
 }
 
 
@@ -401,6 +420,66 @@ def read_history_block(block_id: int, **kwargs) -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
+    """按 rowid 折叠工具输出（置 folded=1）。messages.db 全局单库无 session 列。
+
+    幂等语义（spec §6）：已折叠进 notes 不报错；全幂等返回 status:ok + folded:[]；
+    全错误返回 status:error；部分成功 ok + errors + message 附「N 条未成功」。
+    **kwargs 是测试注入通道（tmp DB 路径），ToolRegistry 对 VAR_KEYWORD 函数不过滤参数。
+    """
+    import sqlite3  # 函数内局部导入（模块顶部无此导入，遵循既有模式）
+
+    if not output_ids:
+        return {"status": "error", "error": "output_ids 不能为空列表"}
+    try:
+        from agent.session import fold_columns_available
+        if not fold_columns_available():
+            return {"status": "error", "error": "折叠功能不可用（messages.db 迁移失败，见启动日志）"}
+    except Exception:
+        return {"status": "error", "error": "折叠功能不可用（agent.session 导入失败）"}
+
+    _, db_path = _resolve_db_paths(kwargs)
+    folded, errors, notes, freed = [], [], [], 0.0
+    try:
+        with sqlite3.connect(db_path) as conn:
+            for oid in output_ids:
+                row = conn.execute(
+                    "SELECT role, folded, output_pct FROM messages WHERE rowid=?", (oid,)
+                ).fetchone()
+                if row is None:
+                    errors.append(f"输出#{oid} 不存在（可能已归档），可用 read_history_block 查历史块")
+                elif row[0] != "tool":
+                    errors.append(f"输出#{oid} 不是工具输出")
+                elif row[1]:
+                    notes.append(f"输出#{oid} 已是折叠状态")  # 幂等提示非错误（spec §6）
+                else:
+                    conn.execute("UPDATE messages SET folded=1 WHERE rowid=?", (oid,))
+                    folded.append(oid)
+                    freed += row[2] or 0.0
+            conn.commit()
+    except Exception as e:
+        return {"status": "error", "error": f"DB 写入失败: {e}"}
+
+    if not folded and not notes:
+        return {"status": "error", "error": "；".join(errors)}
+    if not folded:
+        # 全幂等不报错（spec §6）；notes/errors 键与部分成功分支保持同构
+        return {"status": "ok", "folded": [], "notes": notes, "errors": errors,
+                "message": "；".join(notes + errors)}
+    suffix = f"（{len(errors)} 条未成功）" if errors else ""
+    return {
+        "status": "ok",
+        "folded": folded,
+        "freed_pct": round(freed, 1),
+        "errors": errors,
+        "notes": notes,
+        "message": (
+            f"已折叠 {len(folded)} 条输出（{', '.join(f'#{i}' for i in folded)}），"
+            f"释放约 {freed:.1f}% 上下文{suffix}"
+        ),
+    }
+
+
 def _resolve_db_paths(kwargs: dict) -> tuple[str, str]:
     """解析块存储与消息库路径（测试可注入，默认 ~/.niu/）。"""
     home = os.path.expanduser("~")
@@ -641,6 +720,25 @@ async def list_tools() -> list[Tool]:
                 "required": ["block_id"],
             },
         ),
+        Tool(
+            name="fold_tool_output",
+            description=(
+                "折叠可再生的工具输出以释放上下文。编号=窗口内 tool 输出头行 [输出#N …] 中的 N。"
+                "搭车调用：在本来就要调用其他工具的同一轮捎带调用，绝不要只为折叠单开一轮。"
+                "折叠后如需原文，重新调用原工具即可。"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "output_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "要折叠的 tool 输出编号列表（头行 [输出#N …] 中的 N）",
+                    },
+                },
+                "required": ["output_ids"],
+            },
+        ),
     ]
 
 
@@ -768,6 +866,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         # 直读本机 DB（context_blocks.db + messages.db），stdio/同进程两模式通用
         result = read_history_block(block_id)
+        return [
+            TextContent(
+                type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
+            )
+        ]
+
+    elif name == "fold_tool_output":
+        output_ids = arguments.get("output_ids")
+        if not output_ids:
+            return [TextContent(type="text", text="Error: output_ids is required")]
+
+        # 直写本机 DB（messages.db folded 列），stdio/同进程两模式通用
+        result = fold_tool_output(output_ids)
         return [
             TextContent(
                 type="text", text=json.dumps(result, ensure_ascii=False, indent=2)

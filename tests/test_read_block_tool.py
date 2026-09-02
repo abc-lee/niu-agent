@@ -37,7 +37,9 @@ CREATE TABLE messages (
     tool_results TEXT,
     tool_call_id TEXT,
     degraded_reason TEXT,
-    created_at TEXT
+    created_at TEXT,
+    folded INTEGER DEFAULT 0,
+    output_pct REAL DEFAULT NULL
 )
 """
 
@@ -111,8 +113,8 @@ class TestSchema:
         assert schema["input_schema"]["required"] == ["block_id"]
         assert schema["name"] == "read_history_block"
 
-    def test_schema_count_grew_to_five(self):
-        assert len(TOOL_SCHEMAS) == 5
+    def test_schema_count_grew_to_six(self):
+        assert len(TOOL_SCHEMAS) == 6
 
     def test_schema_description_carries_index_semantics(self):
         """通道改回 MCP static 后描述须自承载解码语义（niu.md 说明书已删）"""
