@@ -1,7 +1,9 @@
 """临时文件目录管理 — 存放画了人脸框的图片等数据库无法直接存储的内容"""
 import datetime
+import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 
@@ -76,3 +78,52 @@ def cleanup_old_tmp() -> int:
             except OSError:
                 pass
     return deleted
+
+
+def write_archive(unique_name: str, data: dict) -> bool:
+    """原子写子 Agent 完成态存档到 ~/.niu/tmp/<unique_name>.json。
+
+    临时文件 + os.replace 保证读侧永不看到半写内容；权限 600。
+    任何失败返回 False 不抛——调用方（子 Agent 完成通知组装）据返回值决定续跑承诺话术。
+    """
+    tmp_dir = get_tmp_dir()
+    filepath = tmp_dir / f"{unique_name}.json"
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(tmp_dir), prefix=".archive-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = None  # fdopen 接管，交由 with 关闭
+            json.dump(data, f, ensure_ascii=False)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, filepath)
+        tmp_path = None  # replace 成功，无需清理
+        return True
+    except Exception:
+        return False
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def read_archive(unique_name: str) -> dict | None:
+    """读取子 Agent 完成态存档 ~/.niu/tmp/<unique_name>.json。
+
+    不存在 / JSON 解析失败 / 非 dict 形态 → None。
+    不做类型假设：tmp 顶层可能有同名非存档 JSON，agent_type 校验由读档方负责。
+    """
+    filepath = get_tmp_dir() / f"{unique_name}.json"
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
