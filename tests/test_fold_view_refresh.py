@@ -123,9 +123,9 @@ class TestAssembleViewSyncRendering:
         assert [e["role"] for e in view] == ["user", "assistant", "tool", "assistant", "tool"]
         # 未折叠 tool：头行 + 原文（编号=rowid，pct 落库固化值）
         assert view[2]["content"] == "[输出#3 · read_file · 占上下文 5.0%]\nRAW_BODY_1"
-        # 折叠 tool：占位符含 pct 快照，以「获取]」收尾（agent_loop 识别契约）
+        # 折叠 tool：完成态占位符含"已由 fold_tool_output 折叠"+原占约 pct，以「获取]」收尾（agent_loop 识别契约）
         assert view[4]["content"] == (
-            "[输出#5 已折叠：grep({})，产生时占上下文 7.5%。如需原文请重新调用该工具获取]"
+            "[输出#5 已由 fold_tool_output 折叠，本条已移出上下文（原占约 7.5%）。如需原文请重新调用原工具获取]"
         )
 
     def test_fold_stats_and_calibrated_usage(self, fold_env):
@@ -349,9 +349,9 @@ class TestFoldHookContract:
 
         assert result["result"] == "CURRENT_TASK_DONE"
         assert len(hook_calls) == 1
-        # 挂载点锁：turn-1 LLM → assistant persist → hook → turn-2 LLM → 退出轮 persist。
-        # fold 成功结果不落库（2026-09-02）：tool persist 被跳过——本轮只有 assistant 一条 persist
-        assert order[:5] == ["llm", "persist", "hook", "llm", "persist"]
+        # 挂载点锁：turn-1 LLM → assistant persist → tool persist（fold 结果照常落库）
+        # → hook → turn-2 LLM
+        assert order[:5] == ["llm", "persist", "persist", "hook", "llm"]
 
     @pytest.mark.parametrize("data", [
         {"status": "ok", "folded": [], "notes": ["输出#3 已折叠（幂等）"], "errors": [], "message": "m"},
@@ -473,7 +473,7 @@ class TestOnFoldAppliedRebuild:
         assert [e["role"] for e in messages] == ["system", "user", "assistant", "tool", "assistant", "tool", "user"]
         # 折叠行 → 占位符；折叠前原文从视图消失（exclude_last=False 含 Q2）
         assert messages[5]["content"] == (
-            "[输出#5 已折叠：grep({})，产生时占上下文 7.5%。如需原文请重新调用该工具获取]"
+            "[输出#5 已由 fold_tool_output 折叠，本条已移出上下文（原占约 7.5%）。如需原文请重新调用原工具获取]"
         )
         assert not any("RAW_BODY_2" in (e.get("content") or "") for e in messages)
         # 未折叠行保持头行 + 原文（与入口同制式）
@@ -619,7 +619,7 @@ class TestCombinedRegressionLock:
         assert any("RAWBODY_" in (e.get("content") or "") for e in client.requests[0])
         # 修复效果：turn-2 LLM 请求含占位符、无折叠前原文
         req2 = json.dumps(client.requests[1], ensure_ascii=False)
-        assert "[输出#3 已折叠：read_file({})，产生时占上下文 8.0%。如需原文请重新调用该工具获取]" in req2
+        assert "[输出#3 已由 fold_tool_output 折叠，本条已移出上下文（原占约 8.0%）。如需原文请重新调用原工具获取]" in req2
         assert "RAWBODY_" not in req2
 
 

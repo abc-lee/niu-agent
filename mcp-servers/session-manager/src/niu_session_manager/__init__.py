@@ -445,13 +445,16 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
     if "pytest" not in sys.modules:
         kwargs = {}
     _, db_path = _resolve_db_paths(kwargs)
+    # 无快照旧行的释放占比按字符粗估（约 2 字符/token），分母=总窗口（与快照同口径）
+    from agent.subagent import _read_context_window_tokens
+    window = _read_context_window_tokens()
     folded, errors, notes, freed = [], [], [], 0.0
     null_pct_count = 0  # 新折叠行中 output_pct NULL 的条数（升级前旧输出，无占比快照）
     try:
         with sqlite3.connect(db_path) as conn:
             for oid in output_ids:
                 row = conn.execute(
-                    "SELECT role, folded, output_pct FROM messages WHERE rowid=?", (oid,)
+                    "SELECT role, folded, output_pct, content FROM messages WHERE rowid=?", (oid,)
                 ).fetchone()
                 if row is None:
                     errors.append(f"输出#{oid} 不存在（可能已归档），可用 read_history_block 查历史块")
@@ -464,7 +467,10 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
                     folded.append(oid)
                     if row[2] is None:
                         null_pct_count += 1
-                    freed += row[2] or 0.0
+                        # 无快照旧行：字符粗估计入（此前少算为 0，LLM 看不到真实释放量）
+                        freed += len(row[3] or "") / 2 / window * 100
+                    else:
+                        freed += row[2]
             conn.commit()
     except Exception as e:
         return {"status": "error", "error": f"DB 写入失败: {e}"}
@@ -476,10 +482,10 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
         return {"status": "ok", "folded": [], "notes": notes, "errors": errors,
                 "message": "；".join(notes + errors)}
     suffix = f"（{len(errors)} 条未成功）" if errors else ""
-    # 新折叠行含升级前旧输出（无占比快照，freed 少算了它们）→ 注明不计入释放估算；
+    # 新折叠行含升级前旧输出（无占比快照，按字符粗估计入 freed）→ 注明估算口径；
     # k>0 即追加，部分成功分支（errors 非空）同样适用（R3-B P3）
     if null_pct_count:
-        suffix += f"（含 {null_pct_count} 条升级前旧输出，未含占比快照，不计入释放估算）"
+        suffix += f"（含 {null_pct_count} 条升级前旧输出按字符粗估）"
     return {
         "status": "ok",
         "folded": folded,
