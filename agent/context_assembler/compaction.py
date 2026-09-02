@@ -166,8 +166,12 @@ def _short_date(ts: str) -> str:
 
 def _group_line(lo: int, hi: int, count: int, t0: str, t1: str, first_user: str,
                 entities: list[str] | None = None) -> str:
-    ids = f"块#{lo}~{hi}" if hi > lo else f"块#{lo}"
-    dates = f"{_short_date(t0)}~{_short_date(t1)}" if t0 or t1 else ""
+    ids = f"{lo}~{hi}" if hi > lo else f"{lo}"
+    if t0 or t1:
+        d0, d1 = _short_date(t0), _short_date(t1)
+        dates = d0 if d0 == d1 else f"{d0}~{d1}"  # 起止同日坍缩为单日期
+    else:
+        dates = ""
     parts = [f"[{ids}]", dates, f"{count}条"]
     if entities:
         parts.append("实体:" + "/".join(entities[:3]))
@@ -185,7 +189,7 @@ def render_index_grouped(blocks: list[PointerBlock], budget_tokens: int,
         return ""
     header = (
         f"[历史索引]\n"
-        f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按块号取回原文。"
+        f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按行首方括号内数字取回原文。"
     )
 
     # 组初始状态：每块一行

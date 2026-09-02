@@ -234,7 +234,7 @@ class TestIndexMerge:
             blocks.append(b)
         text = render_index_grouped(blocks, budget_tokens=200,
                                     count_fn=ContextManager.count_tokens_simple)
-        assert "块#1~" in text  # 最老相邻块已合并为一行
+        assert "[1~" in text  # 最老相邻块已合并为一行（无 块# 前缀）
         assert "共 20 块" in text
 
 

@@ -136,8 +136,8 @@ TOOL_SCHEMAS = {
     "read_history_block": {
         "name": "read_history_block",
         "description": (
-            "按块号取回已归档早期对话的逐字原文（时间+角色+内容，tool 输出含 tool_call_id 归属）。"
-            "对话开头的 [历史索引] 前导消息中，索引行 [块#N] 的 N 即 block_id；"
+            "按行首方括号内数字取回已归档早期对话的逐字原文（时间+角色+内容，tool 输出含 tool_call_id 归属）。"
+            "对话开头的 [历史索引] 前导消息中，每行行首方括号内的数字（如 [3]）即 block_id；"
             "当某行的日期范围、实体标签或首问提示早期对话可能含所需细节时调用。"
             "返回该块时间范围内的全部原始消息；超大块自动精简（头尾保留+已精简标注，单条超长动态截断）。"
         ),
@@ -146,7 +146,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "block_id": {
                     "type": "integer",
-                    "description": "归档块号（来自历史索引行的 块#N）",
+                    "description": "归档块号（历史索引行行首方括号内的数字，如 [3]）",
                 },
             },
             "required": ["block_id"],
@@ -375,8 +375,8 @@ def read_history_block(block_id: int, **kwargs) -> dict:
             return {
                 "status": "error",
                 "error": (
-                    f"块 #{bid} 不存在。当前有效块号范围：{lo}~{hi}"
-                    f"（共 {len(blocks)} 块），请从历史索引行复制块号"
+                    f"归档块 {bid} 不存在。当前有效块号范围：{lo}~{hi}"
+                    f"（共 {len(blocks)} 块），block_id 取历史索引行行首方括号内的数字"
                 ),
             }
 
@@ -459,7 +459,7 @@ def _format_block_text(block, rows: list[dict]) -> tuple[str, dict]:
 
     per_msg_cap = min(10000, max(100, _BLOCK_CHAR_BUDGET // max(1, len(rendered))))
     lines = [
-        f"[块#{block.id}] {block.time_start} ~ {block.time_end}"
+        f"[{block.id}] {block.time_start} ~ {block.time_end}"
         f" · {block.count}条 · 首问:\"{block.first_user}\""
     ]
     if block.entities:
@@ -625,8 +625,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="read_history_block",
             description=(
-                "按块号取回已归档早期对话的逐字原文（时间+角色+内容，tool 输出含 tool_call_id 归属）。"
-                "对话开头的 [历史索引] 前导消息中，索引行 [块#N] 的 N 即 block_id；"
+                "按行首方括号内数字取回已归档早期对话的逐字原文（时间+角色+内容，tool 输出含 tool_call_id 归属）。"
+                "对话开头的 [历史索引] 前导消息中，每行行首方括号内的数字（如 [3]）即 block_id；"
                 "当某行的日期范围、实体标签或首问提示早期对话可能含所需细节时调用。"
                 "返回该块时间范围内的全部原始消息；超大块自动精简（头尾保留+已精简标注，单条超长动态截断）。"
             ),
@@ -635,7 +635,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "block_id": {
                         "type": "integer",
-                        "description": "归档块号（来自历史索引行的 块#N）",
+                        "description": "归档块号（历史索引行行首方括号内的数字，如 [3]）",
                     },
                 },
                 "required": ["block_id"],
