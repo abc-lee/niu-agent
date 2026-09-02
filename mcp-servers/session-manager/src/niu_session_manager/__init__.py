@@ -449,7 +449,6 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
     from agent.subagent import _read_context_window_tokens
     window = _read_context_window_tokens()
     folded, errors, notes, freed = [], [], [], 0.0
-    null_pct_count = 0  # 新折叠行中 output_pct NULL 的条数（升级前旧输出，无占比快照）
     try:
         with sqlite3.connect(db_path) as conn:
             for oid in output_ids:
@@ -466,7 +465,6 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
                     conn.execute("UPDATE messages SET folded=1 WHERE rowid=?", (oid,))
                     folded.append(oid)
                     if row[2] is None:
-                        null_pct_count += 1
                         # 无快照旧行：字符粗估计入（此前少算为 0，LLM 看不到真实释放量）
                         freed += len(row[3] or "") / 2 / window * 100
                     else:
@@ -482,10 +480,6 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
         return {"status": "ok", "folded": [], "notes": notes, "errors": errors,
                 "message": "；".join(notes + errors)}
     suffix = f"（{len(errors)} 条未成功）" if errors else ""
-    # 新折叠行含升级前旧输出（无占比快照，按字符粗估计入 freed）→ 注明估算口径；
-    # k>0 即追加，部分成功分支（errors 非空）同样适用（R3-B P3）
-    if null_pct_count:
-        suffix += f"（含 {null_pct_count} 条升级前旧输出按字符粗估）"
     return {
         "status": "ok",
         "folded": folded,
