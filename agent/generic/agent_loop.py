@@ -1479,6 +1479,8 @@ def agent_runner_loop(
                         and isinstance(_fr.get("folded"), list) and len(_fr["folded"]) > 0):
                     handler._last_prompt_tokens = 0
                     handler._last_cached_tokens = None
+                    last_prompt_tokens = 0  # 同步清循环局部（FinalReview P3-2）——折叠后视图已瘦身，
+                    # 下轮 80% 检测若仍用折叠前旧真值会对无需压实视图做一次不必要 in-loop 压实
                     logger.debug("[AgentLoop] fold_tool_output ok, cleared LLM token truth cache")
             except Exception:
                 logger.debug("[AgentLoop] fold result unparseable, skip clearing token cache")
