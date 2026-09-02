@@ -425,9 +425,11 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
 
     幂等语义（spec §6）：已折叠进 notes 不报错；全幂等返回 status:ok + folded:[]；
     全错误返回 status:error；部分成功 ok + errors + message 附「N 条未成功」。
-    **kwargs 是测试注入通道（tmp DB 路径），ToolRegistry 对 VAR_KEYWORD 函数不过滤参数。
+    **kwargs 是测试注入通道（tmp DB 路径），ToolRegistry 对 VAR_KEYWORD 函数不过滤参数；
+    非测试环境（无 pytest）清空该通道——LLM 幻觉不可重定向 DB 写路径（T3 质量审 P2）。
     """
     import sqlite3  # 函数内局部导入（模块顶部无此导入，遵循既有模式）
+    import sys      # 同上（T3 质量审 P2：非测试环境门控用）
 
     if not output_ids:
         return {"status": "error", "error": "output_ids 不能为空列表"}
@@ -438,6 +440,10 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
     except Exception:
         return {"status": "error", "error": "折叠功能不可用（agent.session 导入失败）"}
 
+    # T3 质量审 P2：非测试环境清空注入通道——生产 kwargs 只能来自 LLM 幻觉，
+    # DB 写路径不可被重定向；测试经 pytest 在场判定保留 tmp 注入。
+    if "pytest" not in sys.modules:
+        kwargs = {}
     _, db_path = _resolve_db_paths(kwargs)
     folded, errors, notes, freed = [], [], [], 0.0
     try:
