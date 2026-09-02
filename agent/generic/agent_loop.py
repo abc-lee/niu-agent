@@ -851,22 +851,6 @@ def agent_runner_loop(
     last_prompt_tokens = 0
     handler._last_prompt_tokens = 0
     handler._last_cached_tokens = None
-    # 校准倍率本地估算基线（Task 3）：组装完成时全量计一次，此后每次响应只对新增
-    # 尾部消息增量计数；列表变短（压实回写/FIFO 裁剪）时才全量重算一次——避免每响应
-    # 全量重算。占位符化等原地缩短内容的替换不改变长度，会带来轻微高估（倍率偏低、
-    # 触发偏晚），方向保守且由下次全量重算自愈。
-    _calib_len = len(messages)
-    _calib_est = count_messages_tokens(messages)
-
-    def _calib_estimate() -> int:
-        nonlocal _calib_len, _calib_est
-        n = len(messages)
-        if n >= _calib_len:
-            _calib_est += count_messages_tokens(messages[_calib_len:])
-        else:
-            _calib_est = count_messages_tokens(messages)
-        _calib_len = n
-        return max(1, _calib_est)
     _compress_cooldown = False  # 回调冷却：同一轮 agent_runner_loop 只触发一次压缩
     handler._done_hooks = []
     handler.max_turns = max_turns
@@ -1139,13 +1123,15 @@ def agent_runner_loop(
                     handler._last_cached_tokens = int(_cached) if isinstance(_cached, (int, float)) else None
                 except (TypeError, ValueError):
                     handler._last_cached_tokens = None
-                # 校准倍率更新（Task 3/D9）：倍率=真值÷同消息集本地估算，每次响应覆盖更新。
+                # 校准倍率更新（Task 3/D9）：倍率=真值÷完整发送集全量 count，每次响应覆盖更新。
+                # 响应返回点 messages 即完整发送集（system/动态块/索引——_on_before_llm 原地插入），
+                # 原地改写不再漂移；每响应全量 count 一次，无增量缓存。
                 # 仅主 Agent（子 Agent 可能挂副模型，混入会污染主上下文预算倍率）；
-                # 轻量 try/except——校准失败绝不影响主循环。
-                if not getattr(handler, '_is_subagent', False):
+                # >0 守卫：服务端无 usage 时白算省掉；轻量 try/except——校准失败绝不影响主循环。
+                if not getattr(handler, '_is_subagent', False) and last_prompt_tokens > 0:
                     try:
                         from agent.context_assembler.calibration import update_ratio
-                        update_ratio(last_prompt_tokens, _calib_estimate())
+                        update_ratio(last_prompt_tokens, count_messages_tokens(messages))
                     except Exception:
                         pass
                 logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
