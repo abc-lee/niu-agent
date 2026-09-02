@@ -133,9 +133,8 @@ class TestAssembleViewSyncRendering:
         cm = _make_cm(FakeStore(msgs), 10_000, fold_env / "blocks.db")
         view = cm.assemble_view_sync(msgs, exclude_last=True)
 
-        # n=窗口未折叠 tool 数（仅 RAW_BODY_1）；m/p=有快照者条数与合计
+        # n=窗口未折叠 tool 数（仅 RAW_BODY_1）；p=output_pct 快照合计
         assert cm._fold_stats["n"] == 1
-        assert cm._fold_stats["m"] == 1
         assert cm._fold_stats["p"] == 5.0
         # usage=校准值：raw × 倍率 1.5 ÷ max_tokens（非 raw）
         base = _fake_count_tokens(view)

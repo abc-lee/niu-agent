@@ -2,7 +2,7 @@
 
 覆盖：schema 断言 / 单条与多条折叠 / 不存在 rowid / role≠tool / 已折叠幂等
 （全幂等返回 status:ok 不报错，spec §6）/ 部分成功附 errors / 空列表 /
-释放合计文案（无快照旧行按 len÷2÷window×100 字符粗估计入 freed）/ 迁移失败降级（fold_columns_available False → 明确错误文案）。
+释放合计文案（freed 只含有 output_pct 快照的行，无快照行照常折叠不贡献数值）/ 迁移失败降级（fold_columns_available False → 明确错误文案）。
 全部 tmp DB（经 kwargs 注入），无 LLM 调用、不碰真实 ~/.niu 数据。
 """
 
@@ -74,14 +74,8 @@ def _get_folded(path: Path) -> dict[int, int]:
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
-    """tmp messages.db，含 4 条消息：tool×3（一条已折叠、一条无 pct）+ user×1。
-
-    窗口固定 100_000——无快照旧行的字符粗估（len÷2÷window×100）需确定性分母
-    （真实环境读 ~/.niu/config/user-config.json，测试禁碰）。
-    """
-    import agent.subagent as subagent_mod
-    monkeypatch.setattr(subagent_mod, "_read_context_window_tokens", lambda: 100_000)
+def env(tmp_path):
+    """tmp messages.db，含 4 条消息：tool×3（一条已折叠、一条无 pct）+ user×1。"""
     db = tmp_path / "messages.db"
     _make_messages_db(db, [
         {"rowid": 10, "role": "tool", "content": "文件内容A", "output_pct": 4.2},
@@ -141,7 +135,7 @@ class TestFold:
         result = _call(env, [10, 12])
         assert result["status"] == "ok"
         assert result["folded"] == [10, 12]
-        # 12 无 pct → freed = 4.2 + 字符粗估（5 字符÷2÷100_000×100=0.0025，四舍五入后仍 4.2）
+        # 12 无 pct 快照 → freed 只含有快照的行（=4.2）
         assert result["freed_pct"] == 4.2
         folded = _get_folded(env["db"])
         assert folded[10] == 1 and folded[12] == 1
@@ -167,7 +161,7 @@ class TestFold:
         assert _get_folded(env["db"])[10] == 1
 
     def test_partial_success_with_null_pct(self, env):
-        """部分成功且新折叠行含 output_pct NULL → errors 正常追加，freed 计入字符粗估"""
+        """部分成功且新折叠行无 output_pct 快照 → errors 正常追加，无快照行不贡献释放合计"""
         result = _call(env, [12, 999])
         assert result["status"] == "ok"
         assert result["folded"] == [12]
@@ -175,21 +169,13 @@ class TestFold:
         assert "1 条未成功" in result["message"]
         assert _get_folded(env["db"])[12] == 1
 
-    def test_null_pct_estimated_from_content_length(self, tmp_path, monkeypatch):
-        """无快照旧行：freed 用 len(content)÷2÷window×100 粗估计入（此前少算为 0，
-        LLM 折 6 条看到 0.4% 而非真实 ~14.6%——循环折叠诱因之一）。"""
-        import agent.subagent as subagent_mod
-        monkeypatch.setattr(subagent_mod, "_read_context_window_tokens", lambda: 100_000)
-        db = tmp_path / "messages.db"
-        long_content = "x" * 20_000  # 20_000 字符 ÷ 2 = 10_000 token ÷ 100_000 × 100 = 10.0%
-        _make_messages_db(db, [
-            {"rowid": 5, "role": "tool", "content": long_content, "output_pct": None},
-        ])
-        result = fold_tool_output([5], messages_db_path=str(db))
+    def test_null_pct_contributes_zero_to_freed(self, env):
+        """无 output_pct 快照的行照常折叠，只是不贡献释放合计（freed 只含有快照者）"""
+        result = _call(env, [12])
         assert result["status"] == "ok"
-        assert result["folded"] == [5]
-        assert result["freed_pct"] == 10.0
-        assert "释放约 10.0%" in result["message"]
+        assert result["folded"] == [12]
+        assert result["freed_pct"] == 0.0
+        assert "释放约 0.0% 上下文" in result["message"]
 
 
 # ============== 幂等（spec §6） ==============
