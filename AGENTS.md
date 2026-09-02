@@ -327,6 +327,7 @@ schemas = registry.get_schemas()
 
 **轮次级刷新机制**：
 - 每次 LLM 调用前，`agent_runner_loop()` 调用 `on_before_llm` 回调：重读 memory.json 重建 system 静态区，并经 `_inject_dynamic_resources` 向量检索刷新动态块。
+- 每工具轮结果 persist 落库后（tool_results 非空）调用 `on_tool_round_refresh` 回调（主 Agent 专用）：从 DB 全量重建视图并原地替换 messages（`assemble_view_sync` + `transform_history`，与入口同一套组装流程——新输出编号/折叠态/仪表盘与 DB 同步；动态块由下轮 `_on_before_llm` 幂等重插）。子 Agent 不传 = None 跳过。
 - 每轮循环末尾调用 `on_turn_end` 回调：脑区激活衰减（`decay_all`）+ tools_schema 刷新（`~/.niu/agents/` 有变化时重算 base 集）。
 
 **工具生命周期（衰减-覆盖评分模式）——已退役，非迁移**：
@@ -536,6 +537,18 @@ preload_face_model()
 - **修复四件套**：①**回滚不落库**——fold 成功结果照常落库（输出极小、提炼管道不提炼无语义工具文本、排障证据链完整；87cba0d1 的 _skip_persist 打标+persist 跳过全删）②占位符改完成态「[输出#N 已由 fold_tool_output 折叠：{tool}({参数摘要≤80字符，无配对 unknown})，本条已移出上下文（原占约 X%）。如需原文请重新调用原工具获取]」——保留工具名+参数摘要=LLM 重新调用原工具的通道（spec §4），仍以「获取]」收尾兼容 _is_tool_placeholder；pct None 省略占比分句 ③freed 无快照旧行按字符粗估计入（len(content)÷2÷window×100，约 2 字符/token）+ message 注明「旧输出按字符粗估」——LLM 见真实释放量不再误判无效 ④niu.md 补教学：已折叠占位符不重复折叠；不可再生一次性数据（子 Agent 交互结果、结论性回复）不折叠
 - **关键教训**：**LLM 的动作确认记忆不能省**——不落库省了 DB 噪声却丢了 LLM 的「我做过了」证据，导致循环；自维护类工具的结果必须让 LLM 在后续轮次能看到（当轮 + 持久），否则 LLM 会重复执行
 - **验证**：108 绿 + 回归绿
+
+#### 工程：工具循环视图统一组装——每工具轮全量重建（fold hook 升级，浏览→同循环折叠场景根治；计划 v1.0→v1.2 R1-R2 双审门禁 + SDD T1-T2 双审，main 4f52e76c + tests/test_fold_view_refresh.py）
+
+- **bug（用户实测，DB 2813-2831 实证）**：浏览京东大输出（占 8.4%）→ **同一工具循环内折叠失败**——LLM 猜编号 2812/2813（实际是 assistant/user 行）连续报错"不是工具输出"；用户新消息触发新一轮（入口重组装）→ LLM 看到 `[输出#2815]` → 一把折对。**根因**：视图只在入口组装一次 + fold hook 只在 fold 轮触发——工具循环内新产生 tool 输出在 LLM 视野**无 `[输出#N]` 头行**（头行只在组装渲染），LLM 只能猜 rowid
+- **用户拍板方向**：循环内外上下文组装应**同一套流程**（全量非增量）——动态注入侧已每轮刷新（on_before_llm），缺的是消息窗口区每轮刷新
+- **方案**：fold hook **升级为每工具轮 hook** `on_tool_round_refresh`（runner._on_fold_applied 改名/语义扩展，方法体零改动）：任何工具结果 persist 落库后从 DB 全量重建视图（`assemble_view_sync` + `transform_history` + system 保留含 cache_control + `messages[:]` 原地替换）——新输出编号/折叠态/仪表盘/索引与 DB 同步；`_fold_occurred` 检测退役
+- **挂点论证（scout 双路时序实证——为什么 persist 后、而非 on_before_llm）**：persist 只写 assistant/tool 两 role；未落库引导（supplement drain 即毁不可再生/同步挂起警告 `_sync_suspend_warned` 置位不重置/截断重试对/拦截对）生命周期=N 轮 append → N+1 轮首消费。重建挂 on_before_llm 会把刚 append 的引导删掉 → supplement 丢失 + 挂起警告静默失效（回归）；重建挂 **persist 后、退出判定/引导注入前**零丢失面（不变式：重建点前本轮消息全 persist；重建点处未落库消息均已至少被 LLM 消费一次）。**tool_results 守卫必须**（R1 双审交叉 P1-1）：纯文本轮经 no_tool 占位路径也直落重建块（while 体级无 tool_calls 门控）——无守卫则每轮触发
+- **组合级回归锁**：harness 消费 persist 落库（yield 即落库同步漏斗）+ 真 `_on_tool_round_refresh`（monkeypatch _sync_get_messages + 全局 ContextManager 指同 tmp store）→ 断言**普通工具轮后下轮 LLM 请求 messages 含 `[输出#{rowid} · 工具名]` 头行**——bug 直接行为锁（req1 无头行/req2 有）；另翻转两旧语义测试（fold 幂等/失败/非 dict 轮断言 [] → 恰触发 1 次；fold 后 read_file 轮 1 次 → 2 次）+ 多 tool_calls 单响应 hook==1 契约锁（锁"轮末一次"非"逐 tool_result"）
+- **关键教训**：工具循环内新内容（新输出/折叠/仪表盘）的可见性 = 视图刷新频率问题——fold 专用 hook 治标（fold 轮才刷），每工具轮重建治本（任何 persist 都刷）；动态注入早就是每轮刷新，消息窗口区才是盲区
+- **质量链**：scout 双路行号级实证调查 → 计划 R1 双 CONDITIONAL（P1-1 纯文本轮守卫/P1-2 旧语义测试翻转/P2 压实占位复原边界/P2 文档同步面）→ v1.1 修复 → R2 双 APPROVE 门禁 → SDD T1 生产（spec APPROVE + quality CONDITIONAL 2 处文案残留修复闭环）+ T2 测试（spec/quality 双 APPROVE + 2 P3 补强）→ fold 系列 69 passed
+- **已知边界（接受）**：①**压实占位符化 view-only 复原**（R1-A P2-1）：build_compact_view 占位符化只改内存不写 DB，rebuild 复原全文 → 压实轮后工具轮膨胀再压实逐入口复发（_compress_cooldown 限每 loop ≤1 次有界；95% 应急线兜底；修=改压实写 DB 占位态违反最小改动铁律——接受）②should_exit 早退不刷新（下轮入口组装自愈）③子 Agent 无 hook（消息不入 DB）④每工具轮重建为 O(总历史) DB 读+渲染（毫秒级 vs LLM 秒级，用户拍板接受）
+- **实机验证（待用户重启）**：浏览网页后同一工具循环内折叠成功（下轮即见编号不再猜）；折叠后使用率同轮可见；长程任务中途技能注入不退出（既有行为回归确认）
 
 ### 2026-09-01
 
