@@ -533,8 +533,13 @@ def _is_tool_placeholder(content) -> bool:
     - 新：[{name} 输出已裁剪，如需原文可重新调用该工具获取] / [输出已裁剪，如需原文可重新调用对应工具获取]（后缀 "获取]"）
     - 折叠（fold 工程 spec §4）：[输出#N 已折叠：{tool}({参数摘要})，产生时占上下文 X%。如需原文请重新调用该工具获取]——同样以 "获取]" 收尾，被既有判定覆盖（识别集不扩展）
     - 旧：[{name} 输出已裁剪] / [输出已裁剪]（后缀 "输出已裁剪]"，兼容已含旧占位符的恢复会话）
+
+    单行条件：所有占位符形态均为单行；T2 后窗口 tool 消息带头行恒为多行（头行+换行+原文），
+    未折叠消息即使原文恰好以「获取]」/「输出已裁剪]」收尾也不会被误判为占位符而跳过应急裁剪。
     """
     if not isinstance(content, str):
+        return False
+    if "\n" in content:
         return False
     return content.startswith("[") and (
         content.endswith(_PLACEHOLDER_SUFFIX) or content.endswith(_LEGACY_PLACEHOLDER_SUFFIX)
