@@ -2932,7 +2932,27 @@
       if (existingTab) {
         // 旧 tab 已结束（completed）或已出错（error）或待关闭（_pendingCloseTabs）→ 清空重用于新一轮
         const isReusable = existingTab.classList.contains('completed') || existingTab.classList.contains('error') || _pendingCloseTabs.has(uniqueName);
-        if (!isReusable) return;  // 活跃 tab（仍在运行）——维持原不重复创建行为
+        if (!isReusable) {
+          // 活跃残留分支（2026-09-03 续跑根因修复）：上一轮同名任务结束后 subagent_closed
+          // 事件丢失或 3s 延迟关未触发时，旧 tab 停留在活跃态（无 completed/error、不在
+          // _pendingCloseTabs）→ 旧代码在此静默 return → 续跑 subagent_started 到达时 no-op，
+          // 新一轮事件虽流入旧容器却无任何"已重启"反馈，用户看到续跑没有标签页。
+          // 后端已挡真重复 started（运行中同名 register ValueError → 返回错误不推 started），
+          // 故此处安全：把残留 tab 重置为运行中而非放弃。
+          // 不切 tab、不清容器：残留容器保留上一轮内容可回看（旧内容之上自然追加新一轮事件）；
+          // 即便万一误判真重复，也不清空正在显示的内容。
+          existingTab.classList.remove('completed', 'error');  // 残留结束态清除（无也幂等）
+          if (!skipLoading) existingTab.classList.add('loading');
+          // 容器无消息内容（空状态占位仍在）→ 刷新占位文案；有旧消息则不动容器
+          const container = document.getElementById('messages-' + uniqueName);
+          if (container) {
+            const empty = container.querySelector('.tab-empty-state');
+            if (empty && !container.querySelector('.message')) {
+              empty.textContent = isSync ? `⏳ 子 Agent ${displayName} 工作中...` : `⏳ 子 Agent ${displayName} 正在启动...`;
+            }
+          }
+          return;
+        }
         // 取消 @end 延迟关闭 timer
         const timer = _endCloseTimers.get(uniqueName);
         if (timer) { clearTimeout(timer); _endCloseTimers.delete(uniqueName); }
