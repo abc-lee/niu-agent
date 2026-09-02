@@ -533,7 +533,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
             },
             "unique_name": {
                 "type": "string",
-                "description": "子 Agent 唯一名。同步调用（chat-with-xxx）时可省略，默认用 agent 名（如 browser-operator）；异步调用时为 agent 名+4位 hex 后缀（如 file-processor-a1b2，来自派单确认）。异步续跑：传上次派发确认中的唯一名，若 24h 内有同名完成存档则加载其上轮上下文续跑旧工作（任务中应声明与上次要求的差异）；无同名存档则全新派发",
+                "description": "子 Agent 唯一名。同步调用（chat-with-xxx）时可省略，默认用 agent 名（如 browser-operator）；异步调用时为 agent 名+4位 hex 后缀（如 file-processor-a1b2，来自派单确认）。异步续跑（仅 async_mode=true 生效；同步调用忽略 unique_name）：传上次派发确认中的唯一名，若 24h 内有同名完成存档则加载其上轮上下文续跑旧工作（任务中应声明与上次要求的差异）；无同名存档则全新派发",
             },
         }
         if allow_async:
