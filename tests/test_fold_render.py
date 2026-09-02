@@ -2,8 +2,8 @@
 
 覆盖 spec §4/§9：
 - 头行渲染（有/无 pct），格式 `[输出#{rowid} · {tool_name} · 占上下文 {pct}%]`
-- 折叠占位符（工具名+参数摘要从配对 assistant tool_calls 提取、超长截断 80 字符、
-  pct=None 变体省略占比分句），以「获取]」收尾兼容 _is_tool_placeholder 识别
+- 折叠完成态占位符（含"已由 fold_tool_output 折叠"+原占约 X%；pct=None 变体省略
+  占比分句；不含参数摘要），以「获取]」收尾兼容 _is_tool_placeholder 识别
 - 同一消息两轮渲染逐字节一致（固化不变式）
 - tc_map=None（历史回放路径）/ 迁移失败降级 → 原样返回
 - 压实路径一致性：build_compact_view 窗口段与常规组装同制式（R1 交叉 P1 回归锁）
@@ -58,31 +58,33 @@ def test_placeholder_with_pct():
     m = msg("tool", "SECRET_BODY", "t-105", 105,
             tool_call_id="tc1", folded=1, output_pct=4.2)
     assert render_tool_content(m, TC_MAP) == \
-        '[输出#105 已折叠：read_file({"path": "/x.py"})，产生时占上下文 4.2%。如需原文请重新调用该工具获取]'
+        '[输出#105 已由 fold_tool_output 折叠，本条已移出上下文（原占约 4.2%）。如需原文请重新调用原工具获取]'
 
 
 def test_placeholder_without_pct_omits_ratio_clause():
     m = msg("tool", "SECRET_BODY", "t-7", 7, tool_call_id="tc1",
             folded=1, output_pct=None)
     assert render_tool_content(m, TC_MAP) == \
-        '[输出#7 已折叠：read_file({"path": "/x.py"})。如需原文请重新调用该工具获取]'
+        '[输出#7 已由 fold_tool_output 折叠，本条已移出上下文。如需原文请重新调用原工具获取]'
 
 
-def test_args_summary_truncated_to_80_chars():
+def test_folded_placeholder_excludes_args_body():
+    # 完成态文案不含参数摘要——超长 args 不膨胀占位符（build_tc_map 仍截断 ≤80 字符）
     long_args = '{"q": "' + "a" * 200 + '"}'
     m = assistant_with_tc("tc9", "search", long_args)
     _, args = build_tc_map([m])["tc9"]
     assert len(args) <= 80 and args == long_args[:80]
     folded = msg("tool", "B", "t-9", 9, tool_call_id="tc9", folded=1)
     rendered = render_tool_content(folded, build_tc_map([m]))
-    assert rendered.endswith("获取]") and long_args[:80] in rendered
+    assert rendered.endswith("获取]") and "a" * 80 not in rendered
 
 
-def test_unknown_tool_when_no_pairing():
+def test_no_pairing_still_renders():
+    # 占位符不引用工具名——无配对 assistant tool_calls 时照常渲染
     m = msg("tool", "B", "t-3", 3, tool_call_id="tc-missing",
             folded=1, output_pct=1.5)
     assert render_tool_content(m, TC_MAP) == \
-        "[输出#3 已折叠：unknown()，产生时占上下文 1.5%。如需原文请重新调用该工具获取]"
+        "[输出#3 已由 fold_tool_output 折叠，本条已移出上下文（原占约 1.5%）。如需原文请重新调用原工具获取]"
 
 
 def test_tc_map_none_no_render_history_replay():
@@ -170,7 +172,7 @@ def test_compact_view_window_same_format(ratio_one, tmp_path):
     assert set(by_tc) == {"tc1", "tc2"}
     # 折叠条：占位符（原文 FOLDED_BODY 不得复活）
     assert by_tc["tc2"]["content"] == \
-        '[输出#8 已折叠：search({"q": "niu"})，产生时占上下文 3.0%。如需原文请重新调用该工具获取]'
+        '[输出#8 已由 fold_tool_output 折叠，本条已移出上下文（原占约 3.0%）。如需原文请重新调用原工具获取]'
     # 未折叠条：头行 + 原文
     assert by_tc["tc1"]["content"] == "[输出#5 · read_file · 占上下文 2.0%]\nOLD_BODY"
     # 与常规路径共享 helper 逐字节一致（同制式锁）

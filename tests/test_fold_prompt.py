@@ -24,6 +24,8 @@ def test_niu_md_has_fold_teaching():
     assert "搭车调用" in md, "缺搭车调用纪律"
     assert "绝不要只为折叠单开一轮" in md, "缺单开一轮禁令"
     assert "重新调用原工具即可" in md, "缺取回通道教学（重调原工具）"
+    assert "已折叠的输出（占位符形态）不要重复折叠" in md, "缺防循环折叠禁令（不重复折叠占位符）"
+    assert "不可再生的一次性数据（子 Agent 交互结果、结论性回复）不要折叠" in md, "缺不可再生数据禁折教学"
 
 
 def test_niu_md_fold_section_position():

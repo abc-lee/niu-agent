@@ -531,7 +531,7 @@ def _is_tool_placeholder(content) -> bool:
 
     同时认新旧两种后缀：
     - 新：[{name} 输出已裁剪，如需原文可重新调用该工具获取] / [输出已裁剪，如需原文可重新调用对应工具获取]（后缀 "获取]"）
-    - 折叠（fold 工程 spec §4）：[输出#N 已折叠：{tool}({参数摘要})，产生时占上下文 X%。如需原文请重新调用该工具获取]——同样以 "获取]" 收尾，被既有判定覆盖（识别集不扩展）
+    - 折叠（fold 工程 spec §4）：[输出#N 已由 fold_tool_output 折叠，本条已移出上下文（原占约 X%）。如需原文请重新调用原工具获取]——同样以 "获取]" 收尾，被既有判定覆盖（识别集不扩展）
     - 旧：[{name} 输出已裁剪] / [输出已裁剪]（后缀 "输出已裁剪]"，兼容已含旧占位符的恢复会话）
 
     单行条件：所有占位符形态均为单行；T2 后窗口 tool 消息带头行恒为多行（头行+换行+原文），
@@ -791,17 +791,6 @@ def transform_history(messages: list[dict]) -> list[dict]:
                 entry["name"] = tool_name
             result.append(entry)
     return result
-
-
-def _fold_result_skip_persist(tool_name: str, data) -> bool:
-    """fold_tool_output 成功结果不落库（2026-09-02）：纯程序性维护操作，
-    视图/图谱提炼/压实块都不含 fold 元操作。内存 messages 照常 append（LLM 当轮
-    可见"已折叠 N 条"确认）——只在 persist 循环跳过该条目。失败（status≠ok）
-    照常落库：LLM 需见错误自纠。DB 里 assistant 行的 fold tool_call 无配对 tool
-    结果 → 组装时 transform_history 的 valid_tcs 既有剥离机制自动清除（零新增过滤）。"""
-    if tool_name != "fold_tool_output":
-        return False
-    return isinstance(data, dict) and data.get("status") == "ok"
 
 
 def agent_runner_loop(
@@ -1428,8 +1417,6 @@ def agent_runner_loop(
                     if outcome.data is not None:
                         datastr = _serialize_tool_result_data(outcome.data)
                         _entry = {"tool_use_id": tid, "content": datastr, "tool_name": tool_name}
-                        if _fold_result_skip_persist(tool_name, outcome.data):
-                            _entry["_skip_persist"] = True  # fold 成功：persist 循环跳过（内存照常 append）
                         tool_results.append(_entry)
                     else:
                         # E4-03：data=None → 中性占位（无错误前缀语义）
@@ -1446,10 +1433,8 @@ def agent_runner_loop(
                     if _tn:
                         tool_msg["name"] = _tn
                     messages.append(tool_msg)
-                # V4: yield每条tool结果的persist事件（fold 成功结果跳过——纯程序性维护不落库）
+                # V4: yield每条tool结果的persist事件（fold 成功结果照常落库——LLM 需见"我折过了"记录防循环折叠）
                 for tool_result in tool_results:
-                    if tool_result.get("_skip_persist"):
-                        continue
                     tool_msg = {
                         "role": "tool",
                         "tool_call_id": tool_result["tool_use_id"],
@@ -1476,8 +1461,6 @@ def agent_runner_loop(
                 if outcome.data is not None:
                     datastr = _serialize_tool_result_data(outcome.data)
                     _entry = {"tool_use_id": tid, "content": datastr, "tool_name": tool_name}
-                    if _fold_result_skip_persist(tool_name, outcome.data):
-                        _entry["_skip_persist"] = True  # fold 成功：persist 循环跳过（内存照常 append）
                     tool_results.append(_entry)
                 else:
                     # E4-03：data=None → 中性占位（无错误前缀语义）
@@ -1497,10 +1480,8 @@ def agent_runner_loop(
             if _tn:
                 tool_msg["name"] = _tn
             messages.append(tool_msg)
-        # V4: yield每条tool结果的persist事件（fold 成功结果跳过——纯程序性维护不落库）
+        # V4: yield每条tool结果的persist事件（fold 成功结果照常落库——LLM 需见"我折过了"记录防循环折叠）
         for tool_result in tool_results:
-            if tool_result.get("_skip_persist"):
-                continue
             tool_msg = {
                 "role": "tool",
                 "tool_call_id": tool_result["tool_use_id"],
