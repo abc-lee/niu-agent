@@ -1694,6 +1694,11 @@ def _prepare_resume_messages(archive_messages: list) -> list | None:
 
     if not isinstance(archive_messages, list) or not archive_messages:
         return None
+    # FinalReview A P3-1：档被外部篡改/损坏为合法 JSON 但含非 dict 元素（如 messages=[123]）时，
+    # transform_history 逐条 .get() 会 AttributeError——此处前置校验全部元素，异常形态返 None
+    # （调用方按未命中处理：unregister + 全新派发 + warning，不泄漏占名实例）
+    if not all(isinstance(m, dict) for m in archive_messages):
+        return None
     _head = archive_messages[0]
     if isinstance(_head, dict) and _head.get("role") == "system":
         # transform_history 会丢 system → 剥离净化后还原头部（resumed 分支需要完整 messages）

@@ -506,6 +506,17 @@ preload_face_model()
 - `docs/analysis-genericagent-evolution.md` — GenericAgent 进化机制分析
 ---
 
+### 2026-09-03
+
+#### 新增：异步子 Agent 完成态存档续跑——工作结束后落盘，同名再次调用自动加载上轮上下文续跑（spec v0.1-v0.6 六轮双审 + 计划 v1.1-v1.2 双审门禁 + SDD T1-T4 PM 复核 + 收官 FinalReview 双审补位，main 2cc58291/66766307/66a88d03/6c3cc193）
+
+- **需求（用户拍板）**：异步子 Agent 完工后上下文落盘 `~/.niu/tmp/<unique_name>.json`；主 Agent 用上次唯一名再次调用（async_mode）→ 程序查 tmp 同名档，有则加载组装跑、无则全新上下文。**D1** 存档 tmp 顶层（接受 24h//clear 清理语义）；**D2 同名即续跑不加参数**（主 Agent 有意调回已完工子 Agent=续跑意图，名字即意图载体）；**D3 仅异步**（unique_name=agent_type+hex 唯一；同步 force=agent_name 无唯一性不可二次调用）；**被叫停/中断态也落盘**（"结束早了补未完成"主场景）
+- **机制**：①**T1 存档**——call_subagent 异步分支终态汇聚点（_run_agent_loop 返回后、early return 前，时序=写盘先于完成通知 push）：messages 门控（dict 非空才存；LLM_ERROR 无 messages/异常不达 → warning 跳过）、仅 is_sync=False、末轮补全三类终态（EXITED/TERMINATED_BY_SUPPLEMENT/CURRENT_TASK_DONE——纯文本轮产出从不入 messages，append last_reply 守卫非空非中断标记）、副本 append 不污染、原子写 mkstemp+chmod600+os.replace、registry `archive_written` 标志（None/True/False 通知话术门控）②**T2 续跑**——chat-with unique_name 透传 → 占名先于查档（单仲裁防并行双起跑）→ 运行中 ValueError 自定义文案 / 命中 `_prepare_resume_messages`（复用 transform_history 悬空 tool_calls 剥离——STOPPED mid-dispatch 档零配对 assistant 续跑必 400，剥离在加载侧档保持原样；+ system 头还原 + 尾部空 assistant 连剥 + 元素 dict 校验）→ effective_task=task or "继续上次未完成的工作"（空 task 撞 call_subagent L894 入口闸门）+ append user → resumed_messages 中继链（_run_subagent_async 签名/worker/call_subagent）→ 续跑完成再存档覆盖同名档（24h mtime 重置）③**T3 测试** 19 条行为锁 + 话术 cutover（test_incomplete_cursor 迁移 + overflow 3 锁）④**T4 教学**：niu.md 一句话 + schema description（限定 async_mode）+ 通知话术三处条件化（incomplete/overflow 未完成提示按 archive_written；同步删"已保留进度"）+ SYSTEM_MANUAL
+- **质量链**：spec 六轮双审（R1 承诺域裂缝→用户拍板 @end+被叫停 / R2 messages 门控+时序不变式 / R3 末轮补全扩 CURRENT_TASK_DONE 双审同发现 / R4 空 task 撞入口闸门→effective_task / R5-R8 写失败抑制锚点闭环）+ 计划双轮（R1 中继透传遗漏 / R2 悬空剥离 spec 级回修）+ SDD T1-T4 PM diff 复核 + 收官 FinalReview（A APPROVE 1×P3 元素校验 / B CONDITIONAL P2 AGENTS 条目 + 2×P3 已修/披露）——**无每 Task 双审如实记录**
+- **验证**：T3 19 + T4 cutover 25+2 + 涉改面 134 passed 全绿；fake HOME 零 ~/.niu 写实证
+- **已知边界（接受）**：①@end 报告 >2000 字符档尾为 tmp 指针文本（悬空，同享 24h 清理）②Windows chmod 600 不实际生效（与 tmp 既有内容同暴露面）③档内旧 system 跨模型家族格式失配风险未修（24h 窗 + 换模型族概率低；同步挂起同机制窗口更短）④续跑仅 async_mode=true 生效（schema 已限定）
+- **实机移交清单（待用户重启）**：①异步派发 file-processor → @end → 检查 ~/.niu/tmp/<名>.json 落盘（含末轮总结）②主 Agent 同名 async_mode 再调 → 确认文本"已加载上轮上下文续跑" + 子 Agent 记得上轮工作 ③被叫停 @名 /stop → 落盘 → 同名续跑成功 ④无档同名 → "[续跑回退]…已全新派发" + 实际名 ⑤24h 后档被 cleanup 清（续跑窗口过期语义）
+
 ### 2026-09-02
 
 #### 工程：主 Agent 主动折叠工具输出——两列 + 头行/占位符 + fold_tool_output 软防线（spec 双审 → 计划 R1-R3 三轮双审冻结 → SDD T1-T6 每 Task 双审，main 75e4b739..6f0652a0 共 6 commits）
