@@ -521,6 +521,15 @@ preload_face_model()
 - **验证**：104 点名回归全绿（9 skip=e2e 门 --run-e2e 未传，预存量）+ py_compile 六文件 + ruff 零新增
 - **已知边界（接受）**：①压实轮统计高估一轮——组装出口 _fold_stats 压实轮沿用压实前缓存（仅指导语义，下轮自愈，R2-A P3）②kwargs 门控依赖 pytest 在场判定（sys.modules 含 "pytest"）
 
+#### 修复：折叠视图刷新——DB 侧折叠同工具循环内不可见（深审全链 + 修复计划 R1-R5 双审连续双 APPROVE 门禁 + SDD T1-T3 双审，main 2be8c0d5/4ebbc644/47490513 + niu.md 教学去重 4e95f8bf）
+
+- **bug（用户实机抓出，raw_http 实证）**：fold_tool_output 折叠只 UPDATE DB，而 LLM 视图只在入口组装一次、同一工具循环内纯内存累积 append——DB 侧状态变更对同循环不可见：下轮 LLM 仍见折叠前原文与旧使用率（raw_http 实证 76.9% vs 下入口组装后 62.3%）
+- **修复三件套**：①context_manager 抽 `assemble_view_sync` 纯组装（入口/折叠刷新共用单一渲染源；**不含压实尾段**——rebuild 不得把刚折叠的目标行归档移出窗口；校准 usage 覆写移入）②agent_loop 抽模块级纯函数 `transform_history`（入口 history 变换全段：subagent_msg/空丢弃/孤儿校验/valid_tcs 剥离/30000 截断——rebuild 与入口逐字节同制式，否则悬空 tool_calls 注入会 400；去截断则回全量）+ fold 检测 hook（persist 循环后、next_prompts==0 前，每轮初始化）③runner._on_fold_applied 从 DB 重拉 → assemble_view_sync + transform_history → `messages[:]` 原地替换（贴压实回调先例——agent_loop yield persist 同步漏斗保证 yield 即落库，rebuild 从 DB 重拉必完整）
+- **关键教训**：视图只在入口组装一次 + 工具循环内存累积 = 任何 DB 侧状态变更（折叠/未来同类 MCP 工具）都不会被同循环感知——**变更 DB 即需原地回写视图**；rebuild 必须走入口同一变换源（role 过滤 + 悬空剥离 + 截断），否则注入非法 role/悬空 tool_calls 破 API
+- **质量链**：深审全链（P1 无压实 / P1 Message 契约 / P2 hook 挂载）+ 修复计划 R1-R5 双审（连续双 APPROVE 门禁）+ SDD T1-T3 双审 + 收官 READY；tests/test_fold_view_refresh.py 新增约 640 行
+- **已知边界（接受）**：①should_exit 早退不刷新（下轮入口组装自愈）②未落库 supplement 同盲区（与压实回调同先例）③子 Agent 无 hook（on_fold_applied=None 跳过，陈旧至下入口）
+- **实机验证（待用户重启）**：折叠后同轮下一条 LLM 请求即见占位符 + 折叠后使用率
+
 ### 2026-09-01
 
 #### 新增：图谱详情面板关联实体右键进子图（commit d045fb7b，用户实机验证通过）
