@@ -1451,6 +1451,16 @@ class NiuRunner:
             compaction.AUTO_GATE.release()
             compacted = True
             usage_after = stats.get("usage")
+            # 压实后真值回填仪表盘缓存（M2-F2）：页面三级链/动态块改读它，不再用压实前旧估算
+            if usage_after is not None:
+                try:
+                    from agent.context_manager import peek_context_manager
+                    cm = peek_context_manager()
+                    fs = getattr(cm, "_fold_stats", None) if cm is not None else None
+                    if fs is not None:
+                        fs["usage"] = usage_after
+                except Exception:
+                    pass
             logger.info(f"[Runner] Compacted in-flight view: {len(messages)} entries, "
                         f"keep_turns={stats['keep_turns']}, blocks_archived={stats['blocks_archived']}, "
                         f"tools_placeholderized={stats['tools_placeholderized']}, "

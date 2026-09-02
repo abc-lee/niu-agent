@@ -253,6 +253,16 @@ def fire_and_forget_compaction(store, source: str = "chat") -> None:
             compaction.AUTO_GATE.release()
             usage = stats.get("usage")
             reset = True
+            # 压实后真值回填仪表盘缓存（M2-F2）：页面三级链/动态块改读它，不再用压实前旧估算
+            if usage is not None:
+                try:
+                    from agent.context_manager import peek_context_manager
+                    cm = peek_context_manager()
+                    fs = getattr(cm, "_fold_stats", None) if cm is not None else None
+                    if fs is not None:
+                        fs["usage"] = usage
+                except Exception:
+                    pass
         except Exception:
             logger.exception(f"[{source}] Post-overflow compaction failed")
         finally:

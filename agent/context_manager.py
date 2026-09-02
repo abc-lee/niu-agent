@@ -117,7 +117,8 @@ class ContextManager:
         # 由 runner 组装 system 后回填，缺省 0=未知，首轮回退偏保守）
         self._system_token_estimate = 0
         # fold 仪表盘缓存（spec §5）：最近一次组装的 usage + 窗口未折叠 tool 输出统计；
-        # None=尚未组装过。压实轮沿用压实前统计（高估一轮，下轮自愈——R2-A P3 记录接受）
+        # None=尚未组装过。组装出口④压实后 _fold_stats['usage'] 已回填（真值未清至首响应为边界）；
+        # n/p（可折叠条数/合计）压实轮沿用压实前值，至下次 rebuild/入口组装自愈 ≤1 轮（R5-A P3-1）
         self._fold_stats = None
 
     @staticmethod
@@ -391,6 +392,13 @@ class ContextManager:
                 # 压实成功即复位闩锁：压实后视图常落 [复位线, 触发线) 滞回带内，
                 # 不复位则自动压实进程级失效（P1 修复）
                 AUTO_GATE.release()
+                # 压实后真值回填仪表盘缓存（M2-F2）：_fold_stats 同函数 assemble_view_sync 已置非 None
+                usage_after = stats.get("usage")
+                if usage_after is not None:
+                    try:
+                        self._fold_stats["usage"] = usage_after
+                    except Exception:
+                        pass
                 return new_view
         except Exception as e:
             from agent.context_assembler import compaction as _comp
