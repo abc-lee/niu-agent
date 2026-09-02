@@ -283,22 +283,18 @@ class ContextManager:
 
         history = candidates[:-1] if exclude_last and candidates else candidates
 
-        # fold 仪表盘统计（spec §5）：n=窗口内全部未折叠 tool 消息（含 NULL pct 旧数据——
-        # 它们同样可折）；m/p=有快照者条数与合计。迁移失败降级时 n=None → 仪表盘省略该段
-        n = m = 0
+        # fold 仪表盘统计（spec §5）：n=窗口内未折叠 tool 消息数；p=output_pct 快照合计。
+        # 迁移失败降级时 n=None → 仪表盘省略该段
+        n = 0
         p = 0.0
         if fold_columns_available():
             for msg in history:
                 if getattr(msg, "role", None) != "tool" or getattr(msg, "folded", 0):
                     continue
                 n += 1
-                pct = getattr(msg, "output_pct", None)
-                if pct is not None:
-                    m += 1
-                    p += pct
+                p += getattr(msg, "output_pct", None) or 0.0
         self._fold_stats = {
             "n": n if fold_columns_available() else None,
-            "m": m,
             "p": round(p, 1),
             "usage": None,
         }
@@ -406,9 +402,8 @@ class ContextManager:
         """动态块使用率仪表盘行（spec §5）：读最近一次组装缓存，无缓存返回 ""。
 
         格式：[上下文使用率 {u}% · 强制压缩线 {t}% · 可折叠输出 {n} 条（合计 {p}%）]
-        - m==n 全有快照 →（合计 {p}%）；m<n 含 NULL 旧数据 →（其中 {m} 条合计 {p}%）
-        - n==0 或 fold_columns_available() False（迁移失败降级）→ 省略可折叠段，
-          只留使用率+压缩线——不误导 LLM 调必报错的工具（R2-B P3）
+        （合计只含有 output_pct 快照者）。n==0 或 fold_columns_available() False
+        （迁移失败降级）→ 省略可折叠段，只留使用率+压缩线——不误导 LLM 调必报错的工具。
         """
         stats = self._fold_stats
         if not stats:
@@ -422,13 +417,7 @@ class ContextManager:
         line = f"[上下文使用率 {usage * 100:.1f}% · 强制压缩线 {t * 100:g}%"
         n = stats.get("n")
         if n:
-            m, p = stats["m"], stats["p"]
-            if m == n:
-                line += f" · 可折叠输出 {n} 条（合计 {p:g}%）"
-            elif m > 0:
-                line += f" · 可折叠输出 {n} 条（其中 {m} 条合计 {p:g}%）"
-            else:
-                line += f" · 可折叠输出 {n} 条（无占比快照）"
+            line += f" · 可折叠输出 {n} 条（合计 {stats['p']:g}%）"
         return line + "]"
 
 

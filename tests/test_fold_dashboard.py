@@ -1,8 +1,8 @@
 """Task 4：动态块使用率仪表盘 + 压实触发线配置化。
 
 覆盖 spec §5 / §9：
-- 仪表盘行格式（有/无可折叠输出、m==n 全有快照文案、含 NULL 旧数据"其中 m 条"文案）
-- 组装时缓存 _fold_stats（n=全部未折叠 tool 消息 / m=有 pct 快照者 / p=合计 / usage）
+- 仪表盘行格式（有/无可折叠输出，单一口径「合计 p%」）
+- 组装时缓存 _fold_stats（n=未折叠 tool 消息数 / p=output_pct 快照合计 / usage）
 - 迁移失败降级：仪表盘省略可折叠段（只留使用率+压缩线，R2-B P3）
 - trigger_ratio 默认 0.80 / 自定义配置跟随 / clamp [0.50, 0.94]
 - trigger < warningThreshold 时倒置 warning（相等不误报，R2-A P2）
@@ -44,22 +44,16 @@ class TestDashboardLineFormat:
         """同步构造：绕过 async init——直接建实例不触碰 DB（格式化纯读缓存）。"""
         return ContextManager.__new__(ContextManager)
 
-    def test_all_have_snapshot(self, tmp_path):
+    def test_foldable_section(self, tmp_path):
+        """单一口径：n=未折叠 tool 数，合计只含有 output_pct 快照者"""
         c = self._cm(tmp_path)
-        c._fold_stats = {"n": 8, "m": 8, "p": 23.4, "usage": 0.62}
+        c._fold_stats = {"n": 8, "p": 23.4, "usage": 0.62}
         assert c.get_fold_dashboard_line() == \
             "[上下文使用率 62.0% · 强制压缩线 80% · 可折叠输出 8 条（合计 23.4%）]"
 
-    def test_null_legacy_dual_caliber(self, tmp_path):
-        """m<n 含 NULL 旧数据 →「其中 m 条合计 p%」（spec §5 审查修正，防低估误导）"""
-        c = self._cm(tmp_path)
-        c._fold_stats = {"n": 8, "m": 5, "p": 23.0, "usage": 0.62}
-        assert c.get_fold_dashboard_line() == \
-            "[上下文使用率 62.0% · 强制压缩线 80% · 可折叠输出 8 条（其中 5 条合计 23%）]"
-
     def test_no_foldable_omits_section(self, tmp_path):
         c = self._cm(tmp_path)
-        c._fold_stats = {"n": 0, "m": 0, "p": 0.0, "usage": 0.62}
+        c._fold_stats = {"n": 0, "p": 0.0, "usage": 0.62}
         assert c.get_fold_dashboard_line() == "[上下文使用率 62.0% · 强制压缩线 80%]"
 
     def test_no_cache_returns_empty(self, tmp_path):
@@ -71,7 +65,7 @@ class TestDashboardLineFormat:
         """仪表盘显示的线 = 实际触发的线（配置跟随，spec §5）"""
         _set_context_cfg(_cfg, {"compactionTriggerRatio": 0.75})
         c = self._cm(tmp_path)
-        c._fold_stats = {"n": 2, "m": 2, "p": 4.2, "usage": 0.6}
+        c._fold_stats = {"n": 2, "p": 4.2, "usage": 0.6}
         assert "强制压缩线 75%" in c.get_fold_dashboard_line()
 
 
@@ -80,7 +74,7 @@ class TestDashboardLineFormat:
 
 @pytest.mark.asyncio
 async def test_assembly_populates_stats(tmp_path, _cfg):
-    """n=全部未折叠 tool 消息（含 NULL 旧数据）/ m=有快照者 / p=合计；已折叠不计。"""
+    """n=未折叠 tool 消息数 / p=output_pct 快照合计（无快照行不贡献数值）；已折叠不计。"""
     import agent.context_assembler.calibration as cal
     old = cal._cached_ratio
     cal._cached_ratio = 1.0  # 隔离真实持久化倍率
@@ -97,7 +91,7 @@ async def test_assembly_populates_stats(tmp_path, _cfg):
         await store.add_message(role="tool", content="A" * 100,
                                 tool_call_id="tc1", output_pct=4.2)
         await store.add_message(role="tool", content="B" * 100,
-                                tool_call_id="tc2")  # NULL pct（旧数据口径）
+                                tool_call_id="tc2")  # 无 output_pct 快照
         # 第三条已折叠（fold 工具置位，此处直接 SQL 模拟）——不计入 n
         await store.add_message(role="assistant", content="", tool_calls=[
             {"id": "tc3", "type": "function",
@@ -113,9 +107,9 @@ async def test_assembly_populates_stats(tmp_path, _cfg):
         c = ContextManager(store, max_tokens=100000, blocks_db_path=tmp_path / "b.db")
         await c.get_context_for_chat(exclude_last=False)
         s = c._fold_stats
-        assert s["n"] == 2 and s["m"] == 1 and s["p"] == 4.2
+        assert s["n"] == 2 and s["p"] == 4.2
         line = c.get_fold_dashboard_line()
-        assert "可折叠输出 2 条（其中 1 条合计 4.2%）" in line
+        assert "可折叠输出 2 条（合计 4.2%）" in line
         assert line.startswith("[上下文使用率 ") and line.endswith("]")
     finally:
         cal._cached_ratio = old
