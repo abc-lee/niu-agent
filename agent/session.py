@@ -31,6 +31,16 @@ from dataclasses import asdict, dataclass, field  # noqa: E402
 
 from loguru import logger  # noqa: E402
 
+# fold 存储层（2026-09-02）：folded/output_pct 两列迁移成功标志——
+# 迁移失败时降级为无两列（spec §8，R1-B P2）：不终止启动，
+# get_messages/add_message 按该标志裁剪新列。
+_fold_columns_available = True
+
+
+def fold_columns_available() -> bool:
+    """messages.db 是否具备 folded/output_pct 列（fold 工具与视图渲染层消费）。"""
+    return _fold_columns_available
+
 
 @dataclass
 class Message:
@@ -43,6 +53,8 @@ class Message:
     tool_results: list[dict] = field(default_factory=list)
     tool_call_id: str = ""  # Links tool result to assistant's tool_calls[].id
     degraded_reason: str = ""  # E4-12：降级回复错误类别（"timeout"|"internal"——旧行 NULL 读取端容错）
+    folded: int = 0  # fold 存储层：0=正常 / 1=已折叠（仅视图层语义，content 永不动；NULL 读取端容错→0）
+    output_pct: float | None = None  # fold 存储层：产生时占上下文窗口百分比快照（落库固化不重算；旧行 NULL）
     created_at: str = ""
     rowid: int = 0  # SQLite rowid, 0 = sentinel for "not loaded from DB" (real rowid starts at 1)
 
@@ -116,6 +128,32 @@ class MessageStore:
                 await db.commit()
                 logger.info("Migrated messages table: added degraded_reason column")
 
+            # Migration: add folded/output_pct columns if missing（fold 存储层，spec §3——
+            # 照 degraded_reason 先例 PRAGMA+ALTER 幂等；失败降级不终止启动（spec §8）：
+            # 置标志 False，get_messages/add_message 按标志裁剪新列）
+            try:
+                cursor = await db.execute("PRAGMA table_info(messages)")
+                columns = [row[1] for row in await cursor.fetchall()]
+                if "folded" not in columns:
+                    await db.execute(
+                        "ALTER TABLE messages ADD COLUMN folded INTEGER DEFAULT 0"
+                    )
+                    await db.commit()
+                    logger.info("Migrated messages table: added folded column")
+                if "output_pct" not in columns:
+                    await db.execute(
+                        "ALTER TABLE messages ADD COLUMN output_pct REAL DEFAULT NULL"
+                    )
+                    await db.commit()
+                    logger.info("Migrated messages table: added output_pct column")
+            except Exception as e:
+                global _fold_columns_available
+                _fold_columns_available = False
+                logger.error(
+                    f"Migrated messages table failed (folded/output_pct): {e}"
+                    "——降级为无折叠列，启动继续（fold 工具将返回不可用错误）"
+                )
+
             await db.commit()
             logger.info(f"MessageStore initialized: {self.db_path}")
 
@@ -127,6 +165,7 @@ class MessageStore:
         tool_results: list[dict] = None,
         tool_call_id: str = "",
         degraded_reason: str = "",
+        output_pct: float | None = None,
         md_path: str | None = None,
     ) -> str:
         """Add a message"""
@@ -136,12 +175,21 @@ class MessageStore:
         tool_results_json = json.dumps(tool_results or [], ensure_ascii=False)
 
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """INSERT INTO messages
-                   (id, role, content, tool_calls, tool_results, tool_call_id, degraded_reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, degraded_reason, created_at),
-            )
+            if _fold_columns_available:
+                # folded 恒写 0（置位只走 fold 工具 UPDATE）；迁移失败时裁剪新列
+                await db.execute(
+                    """INSERT INTO messages
+                       (id, role, content, tool_calls, tool_results, tool_call_id, degraded_reason, created_at, folded, output_pct)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                    (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, degraded_reason, created_at, output_pct),
+                )
+            else:
+                await db.execute(
+                    """INSERT INTO messages
+                       (id, role, content, tool_calls, tool_results, tool_call_id, degraded_reason, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, degraded_reason, created_at),
+                )
             await db.commit()
 
         # MD 镜像（best-effort，spec §3.4）：DB 提交成功才镜像；失败只告警
@@ -169,7 +217,11 @@ class MessageStore:
         Pagination uses rowid (write order), not created_at timestamp.
         before_id is resolved to its rowid for cursor-based pagination.
         """
+        # 迁移失败降级（spec §8）：标志 False 时裁剪新列——否则显式列清单 SELECT 直接抛错，
+        # 迁移失败被放大成全量历史读取失败
         _columns = "id, role, content, tool_calls, tool_results, tool_call_id, degraded_reason, created_at, rowid"
+        if _fold_columns_available:
+            _columns += ", folded, output_pct"
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -239,6 +291,8 @@ class MessageStore:
                         tool_results=_safe_json(row["tool_results"]),
                         tool_call_id=row["tool_call_id"] if "tool_call_id" in row.keys() else "",
                         degraded_reason=row["degraded_reason"] if "degraded_reason" in row.keys() else "",
+                        folded=row["folded"] if "folded" in row.keys() else 0,
+                        output_pct=row["output_pct"] if "output_pct" in row.keys() else None,
                         created_at=row["created_at"],
                         rowid=row["rowid"],
                     )

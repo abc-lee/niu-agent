@@ -2181,6 +2181,20 @@ class NiuRunner:
         content = msg_dict.get("content", "") or ""
         tool_calls = msg_dict.get("tool_calls")
         tool_call_id = msg_dict.get("tool_call_id", "")
+        # fold 存储层：tool 消息落库时算一次占比固化（spec §3——分母恒为总窗口）
+        output_pct = None
+        if role == "tool" and content:
+            try:
+                from agent.context_assembler import calibration
+                from agent.context_manager import ContextManager
+                from agent.subagent import _read_context_window_tokens
+                est = calibration.estimate(
+                    ContextManager.count_tokens_simple([{"role": "tool", "content": content}])
+                )
+                window = _read_context_window_tokens()
+                output_pct = round(est / window * 100, 1) if window else None
+            except Exception:
+                output_pct = None  # 估算失败不阻断落库
 
         # 修正版方案 1（来源处理）：主 Agent 对话流的 @ 消息在此源头剥离/提取，
         # 避免主↔子对话中间过程原样写入 DB 泄露到用户对话（000006 实证：
@@ -2212,7 +2226,8 @@ class NiuRunner:
 
         # 同步写入 DB
         msg_id = self._sync_add_message(role=role, content=content,
-                                         tool_calls=tool_calls, tool_call_id=tool_call_id)
+                                         tool_calls=tool_calls, tool_call_id=tool_call_id,
+                                         output_pct=output_pct)
         if msg_id is None:
             return None
 
@@ -2226,7 +2241,8 @@ class NiuRunner:
         return msg_id
 
     def _sync_add_message(self, role: str, content: str,
-                           tool_calls: list | None = None, tool_call_id: str = "") -> str | None:
+                           tool_calls: list | None = None, tool_call_id: str = "",
+                           output_pct: float | None = None) -> str | None:
         """从同步线程写入消息到 DB（桥接 aiosqlite）
 
         使用 asyncio.run_coroutine_threadsafe 在 FastAPI 事件循环中执行 DB 写入，
@@ -2253,7 +2269,8 @@ class NiuRunner:
             store = await get_message_store()
             return await store.add_message(
                 role=role, content=content,
-                tool_calls=tool_calls, tool_call_id=tool_call_id
+                tool_calls=tool_calls, tool_call_id=tool_call_id,
+                output_pct=output_pct
             )
 
         try:
