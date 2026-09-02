@@ -295,3 +295,80 @@ def test_get_stats_none_when_no_real_tokens(monkeypatch):
     monkeypatch.setattr(compat, "compute_context_usage_estimate", fake_estimate)
     stats = asyncio.run(get_stats())
     assert stats.context_cache_hit is None
+
+
+# ---------------------------------------------------------------------------
+# 4b. M2-F2 页面三级链：truth>0 > _fold_stats["usage"]（压实回填）> fallback 估算
+#     子 Agent（agent= 参数）无此概念 → 0
+# ---------------------------------------------------------------------------
+
+class _CmStub:
+    def __init__(self, fold_stats):
+        self._fold_stats = fold_stats
+
+
+def test_get_stats_tier2_reads_fold_stats_usage(monkeypatch):
+    """主 Agent truth=0 + _fold_stats['usage']=0.365 → context_usage==0.365（不走 fallback）。"""
+    from niu_api.compat import get_stats
+    import niu_api.compat as compat
+    import agent.context_manager as cm_mod
+    _patch_stats_env(monkeypatch, real_tokens=0, cached_tokens=None)
+    monkeypatch.setattr(cm_mod, "peek_context_manager",
+                        lambda: _CmStub({"n": 1, "p": 5.0, "usage": 0.365}))
+
+    def boom(*a, **k):
+        raise AssertionError("fallback 估算不应被调用（回填值在场）")
+
+    monkeypatch.setattr(compat, "compute_context_usage_estimate", boom)
+    stats = asyncio.run(get_stats())
+    assert stats.context_usage == 0.365
+
+
+def test_get_stats_tier2_none_stats_falls_back(monkeypatch):
+    """_fold_stats=None（CM 未初始化//new 已清）→ fallback 全库估算。"""
+    from niu_api.compat import get_stats
+    import niu_api.compat as compat
+    import agent.context_manager as cm_mod
+    _patch_stats_env(monkeypatch, real_tokens=0, cached_tokens=None)
+    monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: None)
+
+    async def fake_estimate(store=None, context_window=None, messages=None):
+        return 0.35
+
+    monkeypatch.setattr(compat, "compute_context_usage_estimate", fake_estimate)
+    stats = asyncio.run(get_stats())
+    assert stats.context_usage == 0.35
+
+
+def test_get_stats_tier2_usage_none_falls_back(monkeypatch):
+    """_fold_stats 在场但 usage=None（组装后未回填）→ fallback 估算。"""
+    from niu_api.compat import get_stats
+    import niu_api.compat as compat
+    import agent.context_manager as cm_mod
+    _patch_stats_env(monkeypatch, real_tokens=0, cached_tokens=None)
+    monkeypatch.setattr(cm_mod, "peek_context_manager",
+                        lambda: _CmStub({"n": 1, "p": 5.0, "usage": None}))
+
+    async def fake_estimate(store=None, context_window=None, messages=None):
+        return 0.35
+
+    monkeypatch.setattr(compat, "compute_context_usage_estimate", fake_estimate)
+    stats = asyncio.run(get_stats())
+    assert stats.context_usage == 0.35
+
+
+def test_get_stats_subagent_zero_without_truth(monkeypatch):
+    """子 Agent（agent= 参数）无真值 → 0（三级链不适用，不读 _fold_stats）。"""
+    from niu_api.compat import get_stats
+    import niu_api.compat as compat
+    import agent.context_manager as cm_mod
+    _patch_stats_env(monkeypatch, real_tokens=0, cached_tokens=None)
+    monkeypatch.setattr(cm_mod, "peek_context_manager",
+                        lambda: _CmStub({"n": 1, "p": 5.0, "usage": 0.365}))
+
+    def boom(*a, **k):
+        raise AssertionError("子 Agent 路径不应触发 fallback 估算")
+
+    monkeypatch.setattr(compat, "compute_context_usage_estimate", boom)
+    stats = asyncio.run(get_stats(agent="some-sub-agent"))
+    assert stats.context_usage == 0.0

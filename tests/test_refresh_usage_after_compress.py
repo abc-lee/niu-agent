@@ -1,4 +1,8 @@
-"""压缩后刷新使用率：compute_context_usage_estimate 全量估算函数"""
+"""压缩后刷新使用率：compute_context_usage_estimate 全量估算函数 +
+M2-F2 压实真值回填 _fold_stats["usage"] 四出口锁（页面/动态块统一读回填值）。"""
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from niu_api import compat
@@ -302,3 +306,245 @@ async def test_tidy_finally_no_reset_when_skipped(monkeypatch, tmp_path):
     assert done_calls[-1][1] == "sleep"
     assert done_calls[-1][2] is None      # 未压缩 → 未推 usage
     assert done_calls[-1][3] is False     # 未 reset_tokens
+
+
+# ---------------------------------------------------------------------------
+# M2-F2 压实真值回填 _fold_stats["usage"]——四出口锁（页面三级链/动态块统一读它）
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _cfg(tmp_path, monkeypatch):
+    """user-config 重定向到 tmp 文件（缺省空配置=全默认；隔离真实 ~/.niu）。"""
+    import json as _json
+    from niu_api import config as cfg_mod
+    p = tmp_path / "user-config.json"
+    p.write_text(_json.dumps({}), encoding="utf-8")
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", str(p))
+    return p
+
+
+def _cm_stub(usage=0.9):
+    """ContextManager 桩：只承载 _fold_stats（回填目标是这个 dict）。"""
+    return SimpleNamespace(_fold_stats={"n": 1, "p": 5.0, "usage": usage})
+
+
+def _stats(usage):
+    return {"keep_turns": 1, "blocks_archived": 2, "tools_placeholderized": 0,
+            "tokens_estimate": 4200, "context_window": 100000, "usage": usage}
+
+
+def test_backfill_exit1_inloop_high_usage(monkeypatch, _cfg):
+    """出口① in-loop（runner._on_context_high_usage 压实成功）→ _fold_stats['usage']==stats usage。"""
+    import agent.context_manager as cm_mod
+    from agent.context_assembler.compaction import AUTO_GATE
+    from agent.runner import NiuRunner
+
+    cm = _cm_stub()
+    monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: cm)
+    r = NiuRunner.__new__(NiuRunner)
+    monkeypatch.setattr(NiuRunner, "_sync_get_messages", lambda self, limit=None: [object(), object()])
+    new_view = [{"role": "system", "content": "S"}, {"role": "user", "content": "IDX"}]
+    monkeypatch.setattr("agent.context_assembler.compaction.build_compact_view",
+                        lambda messages, **kw: (new_view, _stats(0.42)))
+    AUTO_GATE.release()
+    try:
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "Q"}]
+        assert r._on_context_high_usage(messages, 90000, 100000) is True
+        assert cm._fold_stats["usage"] == 0.42
+        # 原地回写生效（同列表对象内容替换）
+        assert [e["content"] for e in messages] == ["S", "IDX"]
+    finally:
+        AUTO_GATE.release()
+
+
+def test_backfill_exit1_cm_none_guard(monkeypatch, _cfg):
+    """双守卫①：peek→None（ContextManager 未初始化）→ 压实路径不 TypeError、正常完成。"""
+    import agent.context_manager as cm_mod
+    from agent.context_assembler.compaction import AUTO_GATE
+    from agent.runner import NiuRunner
+
+    monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: None)
+    r = NiuRunner.__new__(NiuRunner)
+    monkeypatch.setattr(NiuRunner, "_sync_get_messages", lambda self, limit=None: [object()])
+    monkeypatch.setattr("agent.context_assembler.compaction.build_compact_view",
+                        lambda messages, **kw: ([{"role": "system", "content": "S"}], _stats(0.42)))
+    AUTO_GATE.release()
+    try:
+        assert r._on_context_high_usage([{"role": "system", "content": "S"}], 90000, 100000) is True
+    finally:
+        AUTO_GATE.release()
+
+
+def test_backfill_exit1_fold_stats_none_guard(monkeypatch, _cfg):
+    """双守卫②：_fold_stats=None（/new 已清）→ 回填跳过不 TypeError。"""
+    import agent.context_manager as cm_mod
+    from agent.context_assembler.compaction import AUTO_GATE
+    from agent.runner import NiuRunner
+
+    cm = SimpleNamespace(_fold_stats=None)
+    monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: cm)
+    r = NiuRunner.__new__(NiuRunner)
+    monkeypatch.setattr(NiuRunner, "_sync_get_messages", lambda self, limit=None: [object()])
+    monkeypatch.setattr("agent.context_assembler.compaction.build_compact_view",
+                        lambda messages, **kw: ([{"role": "system", "content": "S"}], _stats(0.42)))
+    AUTO_GATE.release()
+    try:
+        assert r._on_context_high_usage([{"role": "system", "content": "S"}], 90000, 100000) is True
+        assert cm._fold_stats is None  # 未回写僵尸值
+    finally:
+        AUTO_GATE.release()
+
+
+@pytest.mark.asyncio
+async def test_backfill_exit2_manual_compact_page_same_source(monkeypatch, _cfg):
+    """出口② 手动 /compact（_compact_context_impl）→ 回填；页面 get_stats（truth=0）读同值（R3-B P2-1）。"""
+    import niu_api.compat as compat_mod
+    import niu_api.chat as chat_mod
+    import agent.context_manager as cm_mod
+
+    cm = _cm_stub()
+    monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: cm)
+
+    class _Store:
+        async def count_messages(self):
+            return 3
+
+    async def fake_store():
+        return _Store()
+
+    monkeypatch.setattr(compat_mod, "get_message_store", fake_store)
+
+    async def fake_compact(store):
+        return ([], _stats(0.31))
+
+    monkeypatch.setattr("agent.context_assembler.compaction.compact_now_detailed", fake_compact)
+    events = []
+    monkeypatch.setattr(chat_mod, "notify_compact_status_sync",
+                        lambda status, mode="", usage=None, reset_tokens=False:
+                            events.append((status, mode, usage, reset_tokens)))
+
+    result = await compat_mod._compact_context_impl({"session_id": "s1"})
+    assert result["status"] == "ok" and result["usage"] == 0.31
+    assert cm._fold_stats["usage"] == 0.31
+    # done 广播带 usage + reset_tokens（圆环跳变协议不变）
+    assert ("done", "compact", 0.31, True) in events
+
+    # 页面同源：压实后真值已清 0（reset_tokens）→ 三级链 tier2 读回填值，不走 fallback 估算
+    monkeypatch.setattr(compat_mod, "_read_context_window_tokens", lambda: 100000)
+
+    class _Runner:
+        handler = SimpleNamespace(_last_prompt_tokens=0, _last_cached_tokens=None)
+
+    monkeypatch.setattr(chat_mod, "get_or_create_runner", lambda: _Runner())
+
+    def boom(*a, **k):
+        raise AssertionError("fallback 估算不应被调用（回填值在场）")
+
+    monkeypatch.setattr(compat_mod, "compute_context_usage_estimate", boom)
+    stats_resp = await compat_mod.get_stats()
+    assert stats_resp.context_usage == 0.31
+
+
+@pytest.mark.asyncio
+async def test_backfill_exit3_overflow_fire_and_forget(monkeypatch, _cfg):
+    """出口③ CONTEXT_OVERFLOW（fire_and_forget_compaction）→ 回填 + done 广播。"""
+    import niu_api.chat as chat_mod
+    import agent.context_manager as cm_mod
+
+    cm = _cm_stub()
+    monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: cm)
+
+    async def fake_compact(store):
+        return ([], _stats(0.27))
+
+    monkeypatch.setattr("agent.context_assembler.compaction.compact_now_detailed", fake_compact)
+    events = []
+    monkeypatch.setattr(chat_mod, "notify_compact_status_sync",
+                        lambda status, mode="", usage=None, reset_tokens=False:
+                            events.append((status, usage, reset_tokens)))
+
+    chat_mod.fire_and_forget_compaction(object(), source="test")
+    # task 调度在当前 loop——让出直至 done 到达（有界等待，禁无限轮询）
+    for _ in range(100):
+        if any(e[0] == "done" for e in events):
+            break
+        await asyncio.sleep(0)
+
+    assert cm._fold_stats["usage"] == 0.27
+    assert ("done", 0.27, True) in events
+
+
+@pytest.mark.asyncio
+async def test_backfill_exit4_assembly_exit(tmp_path, monkeypatch, _cfg):
+    """出口④ 组装出口行为锁：高水位 DB + AUTO_GATE 复位 → get_context_for_chat 压实后
+    _fold_stats['usage']==stats['usage']（页面三级链/动态块随后统一读它）。"""
+    import agent.context_manager as cm_mod
+    import agent.context_assembler.calibration as calibration
+    from agent.context_assembler.compaction import AUTO_GATE
+    from agent.context_manager import ContextManager
+    from agent.session import MessageStore
+
+    old_ratio = calibration._cached_ratio
+    calibration._cached_ratio = 1.0
+    try:
+        store = MessageStore(str(tmp_path / "m.db"))
+        await store.init_db()
+        # 高水位：est≈2008（确定性计数）> max_tokens=1000 × trigger(0.80)
+        await store.add_message(role="user", content="Q" * 2000)
+        cm = ContextManager(store, max_tokens=1000, blocks_db_path=tmp_path / "b.db")
+        monkeypatch.setattr(ContextManager, "count_tokens_simple",
+                            staticmethod(lambda messages: sum(
+                                len(m.get("content", "")) + 8 for m in messages)))
+        new_view = [{"role": "system", "content": "S"}]
+        monkeypatch.setattr("agent.context_assembler.compaction.build_compact_view",
+                            lambda messages, **kw: (new_view, _stats(0.42)))
+        AUTO_GATE.release()
+        try:
+            view = await cm.get_context_for_chat(exclude_last=False)
+            assert view == new_view  # 压实路径生效（非未压实视图）
+            assert cm._fold_stats is not None
+            assert cm._fold_stats["usage"] == 0.42
+        finally:
+            AUTO_GATE.release()
+    finally:
+        calibration._cached_ratio = old_ratio
+
+
+@pytest.mark.asyncio
+async def test_assembly_exit_fold_stats_none_guard(tmp_path, monkeypatch, _cfg):
+    """双守卫：_fold_stats=None（陈旧路径）时组装出口压实回填不 TypeError、无僵尸回写。"""
+    import agent.context_manager as cm_mod
+    import agent.context_assembler.calibration as calibration
+    from agent.context_assembler.compaction import AUTO_GATE
+    from agent.context_manager import ContextManager
+    from agent.session import MessageStore
+
+    old_ratio = calibration._cached_ratio
+    calibration._cached_ratio = 1.0
+    try:
+        store = MessageStore(str(tmp_path / "m.db"))
+        await store.init_db()
+        await store.add_message(role="user", content="Q" * 2000)
+        cm = ContextManager(store, max_tokens=1000, blocks_db_path=tmp_path / "b.db")
+        monkeypatch.setattr(ContextManager, "count_tokens_simple",
+                            staticmethod(lambda messages: sum(
+                                len(m.get("content", "")) + 8 for m in messages)))
+
+        # 模拟陈旧路径：assemble_view_sync 返回高水位视图但不置 _fold_stats（保持 None）
+        def fake_assemble(self, db_messages, exclude_last=True):
+            return [{"role": "user", "content": "V" * 2000}]
+
+        monkeypatch.setattr(cm, "assemble_view_sync", fake_assemble)
+        assert cm._fold_stats is None
+        new_view = [{"role": "system", "content": "S"}]
+        monkeypatch.setattr("agent.context_assembler.compaction.build_compact_view",
+                            lambda messages, **kw: (new_view, _stats(0.42)))
+        AUTO_GATE.release()
+        try:
+            view = await cm.get_context_for_chat(exclude_last=False)  # 不得抛 TypeError
+            assert view == new_view
+            assert cm._fold_stats is None  # 无僵尸回写
+        finally:
+            AUTO_GATE.release()
+    finally:
+        calibration._cached_ratio = old_ratio

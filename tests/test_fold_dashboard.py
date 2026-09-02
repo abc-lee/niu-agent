@@ -68,6 +68,65 @@ class TestDashboardLineFormat:
         c._fold_stats = {"n": 2, "p": 4.2, "usage": 0.6}
         assert "强制压缩线 75%" in c.get_fold_dashboard_line()
 
+    # ---- M2-F1 真值化：usage_override 三级优先（override>0 > stats.usage > 省略）----
+
+    def test_usage_override_preferred_over_stats(self, tmp_path):
+        """override>0（LLM API 真值）→ 用真值，不用 _fold_stats 估算。"""
+        c = self._cm(tmp_path)
+        c._fold_stats = {"n": 0, "p": 0.0, "usage": 0.365}
+        line = c.get_fold_dashboard_line(usage_override=0.427)
+        assert "上下文使用率 42.7%" in line
+
+    def test_no_override_reads_stats_usage(self, tmp_path):
+        """无 override（真值缺失/已清 0）→ 读 _fold_stats['usage']。"""
+        c = self._cm(tmp_path)
+        c._fold_stats = {"n": 1, "p": 5.0, "usage": 0.365}
+        assert "上下文使用率 36.5%" in c.get_fold_dashboard_line()
+
+    def test_zero_override_falls_back_to_stats(self, tmp_path):
+        """override=0（fold/压实清零后的陈旧真值）→ 不视为真值，落估算兜底。"""
+        c = self._cm(tmp_path)
+        c._fold_stats = {"n": 0, "p": 0.0, "usage": 0.365}
+        assert "上下文使用率 36.5%" in c.get_fold_dashboard_line(usage_override=0)
+
+    def test_none_stats_wins_over_override(self, tmp_path):
+        """_fold_stats=None 最高优先 → ""（即使传 override——delete_messages 陈旧真值路径）。"""
+        c = self._cm(tmp_path)
+        c._fold_stats = None
+        assert c.get_fold_dashboard_line(usage_override=0.427) == ""
+
+    def test_stats_usage_none_returns_empty(self, tmp_path):
+        """stats 在场但 usage=None（组装后未回填）且无 override → 省略整行。"""
+        c = self._cm(tmp_path)
+        c._fold_stats = {"n": 0, "p": 0.0, "usage": None}
+        assert c.get_fold_dashboard_line() == ""
+
+
+# ============== /new 清理面：reset_derived_state 作废 fold 仪表盘缓存（M2-F2） ==============
+
+
+class TestNewSessionClearsFoldStats:
+    def test_reset_derived_state_clears_fold_stats(self, tmp_path, monkeypatch):
+        """/new 后 _fold_stats=None——防陈旧 usage 被页面三级链/动态块拾取。"""
+        import agent.context_manager as cm_mod
+
+        class _Cm:
+            def __init__(self):
+                self._fold_stats = {"n": 2, "p": 5.0, "usage": 0.5}
+                self.est = -1
+
+            def set_system_token_estimate(self, n):
+                self.est = n
+
+        cm = _Cm()
+        monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: cm)
+        from agent.context_assembler import reset_derived_state
+        # 派生文件全部指向 tmp（禁碰 ~/.niu）
+        reset_derived_state(blocks_db_path=tmp_path / "blocks.db",
+                            calibration_path=tmp_path / "token_calibration.json")
+        assert cm._fold_stats is None
+        assert cm.est == 0
+
 
 # ============== 组装时缓存 _fold_stats（集成） ==============
 
