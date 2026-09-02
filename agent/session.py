@@ -132,6 +132,7 @@ class MessageStore:
             # 照 degraded_reason 先例 PRAGMA+ALTER 幂等；失败降级不终止启动（spec §8）：
             # 置标志 False，get_messages/add_message 按标志裁剪新列）
             try:
+                global _fold_columns_available
                 cursor = await db.execute("PRAGMA table_info(messages)")
                 columns = [row[1] for row in await cursor.fetchall()]
                 if "folded" not in columns:
@@ -146,8 +147,9 @@ class MessageStore:
                     )
                     await db.commit()
                     logger.info("Migrated messages table: added output_pct column")
+                # T1 P3：成功路径复位标志（同进程内先前迁移失败后重试恢复）
+                _fold_columns_available = True
             except Exception as e:
-                global _fold_columns_available
                 _fold_columns_available = False
                 logger.error(
                     f"Migrated messages table failed (folded/output_pct): {e}"

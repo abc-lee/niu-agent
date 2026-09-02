@@ -12,6 +12,7 @@
 MessageStore (持久化) → ContextManager (管理) → agent_loop (使用)
 """
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,10 +23,64 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 from agent.context_assembler.blocks import PointerBlock, default_db_path, load_all
-from agent.session import MessageStore
+from agent.session import MessageStore, fold_columns_available
 from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 
 _INDEX_ENTITY_MAX = 3  # 索引行实体标签上限（spec §3.3）
+
+
+def build_tc_map(messages) -> dict[str, tuple[str, str]]:
+    """从 assistant 消息 tool_calls 构建 tool_call_id → (工具名, 参数摘要≤80字符) 映射。
+
+    ⚠ tool_calls 是 OpenAI 嵌套格式 {id, type, function:{name, arguments}}——
+    必须读 tc["function"]["name"] / tc["function"]["arguments"]，tc["name"] 恒为 None。
+    参数摘要纯截断（≤80 字符）——固化不变式：同一消息每轮渲染逐字节一致（缓存友好）。
+    """
+    tc_map: dict[str, tuple[str, str]] = {}
+    for m in messages:
+        if getattr(m, "role", None) != "assistant":
+            continue
+        for tc in getattr(m, "tool_calls", None) or []:
+            if not isinstance(tc, dict) or not tc.get("id"):
+                continue
+            fn = tc.get("function")
+            name = fn.get("name", "") if isinstance(fn, dict) else ""
+            args = fn.get("arguments", "") if isinstance(fn, dict) else ""
+            if isinstance(args, (dict, list)):
+                try:
+                    args = json.dumps(args, ensure_ascii=False)
+                except Exception:
+                    args = str(args)
+            tc_map[tc["id"]] = (name or "", str(args)[:80])
+    return tc_map
+
+
+def render_tool_content(msg, tc_map) -> str:
+    """tool 消息 content 统一渲染（常规组装与压实路径共用，spec §4）。
+
+    - 非 tool / rowid<=0 → 原样返回
+    - tc_map is None（历史回放路径 load_history）→ 不渲染头行/占位符，原样返回
+    - fold_columns_available() False（迁移失败降级）→ 原样返回
+    - folded=1 → 占位符（工具名/参数摘要查配对，查不到用 unknown），以「获取]」收尾
+      兼容 agent_loop._is_tool_placeholder 识别（防应急 ToolCrop 覆盖）
+    - folded=0 → 头行 + 原文；编号(rowid)/工具名/pct 全部固化来源，逐字节稳定
+    """
+    content = msg.content or ""
+    if msg.role != "tool" or getattr(msg, "rowid", 0) <= 0:
+        return content
+    if tc_map is None:
+        return content
+    if not fold_columns_available():
+        return content
+    name, args = tc_map.get(msg.tool_call_id or "", ("", ""))
+    name = name or "unknown"
+    pct = getattr(msg, "output_pct", None)
+    rowid = msg.rowid
+    if getattr(msg, "folded", 0):
+        pct_part = f"，产生时占上下文 {pct}%" if pct is not None else ""
+        return f"[输出#{rowid} 已折叠：{name}({args}){pct_part}。如需原文请重新调用该工具获取]"
+    header = f"[输出#{rowid} · {name}" + (f" · 占上下文 {pct}%]" if pct is not None else "]")
+    return f"{header}\n{content}"
 
 
 class ContextManager:
@@ -59,9 +114,13 @@ class ContextManager:
         self._system_token_estimate = 0
 
     @staticmethod
-    def _message_to_dict(msg) -> dict[str, Any] | None:
-        """Message → agent_loop 消息 dict；完全空的消息返回 None。"""
-        entry = {"role": msg.role, "content": msg.content or ""}
+    def _message_to_dict(msg, tc_map=None) -> dict[str, Any] | None:
+        """Message → agent_loop 消息 dict；完全空的消息返回 None。
+
+        tool 消息 content 经 render_tool_content 处理（tc_map=None=不渲染——
+        历史回放路径；get_context_for_chat / build_compact_view 传 map 同制式）。
+        """
+        entry = {"role": msg.role, "content": render_tool_content(msg, tc_map)}
 
         # 还原 tool_calls（assistant 消息可能携带工具调用）
         if msg.tool_calls:
@@ -229,8 +288,11 @@ class ContextManager:
         view: list[dict[str, Any]] = []
         if blocks:
             view.append({"role": "user", "content": self._render_index(blocks)})
+        # fold 渲染（spec §4）：窗口 tool 消息头行/折叠占位符——tc_map 从窗口内
+        # assistant tool_calls 提取（候选起点恒为会话单元边界，配对完整）
+        tc_map = build_tc_map(history)
         view.extend(
-            e for e in (self._message_to_dict(m) for m in history) if e is not None
+            e for e in (self._message_to_dict(m, tc_map) for m in history) if e is not None
         )
 
         # Task 3：组装出口 80% 触发检查——校准后总量估算 ≥80% 即地压实（D14）。

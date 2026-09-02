@@ -31,7 +31,7 @@ from agent.context_assembler.blocks import (
     upsert_blocks,
 )
 from agent.context_assembler.slicer import slice_units
-from agent.context_manager import ContextManager
+from agent.context_manager import ContextManager, build_tc_map
 
 # 总量触发线 / 滞回复位线 / 应急警戒线（spec §3.6：95% 与 80% 间距即天然滞回）
 TRIGGER_RATIO = 0.80
@@ -276,7 +276,10 @@ def build_compact_view(messages, *, system_msg: dict | None = None,
     hard_budget = max(1, int(cw * HARD_BUDGET_RATIO))
     emergency_line = int(cw * EMERGENCY_RATIO)
 
-    converted = [ContextManager._message_to_dict(m) for m in messages]
+    # fold 渲染（spec §4，R1 交叉 P1）：压实路径不经过 get_context_for_chat——
+    # 窗口段与常规组装共用 helper 同制式，否则 folded 内容全文复活、视图抖动再破缓存
+    tc_map = build_tc_map(messages)
+    converted = [ContextManager._message_to_dict(m, tc_map) for m in messages]
     units = slice_units(messages)
     n_units = len(units)
 
