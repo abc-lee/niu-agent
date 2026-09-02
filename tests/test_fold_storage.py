@@ -86,3 +86,12 @@ async def test_fold_columns_available_flag(tmp_path):
     store = MessageStore(str(tmp_path / "m.db"))
     await store.init_db()
     assert fold_columns_available() is True
+
+
+async def test_init_db_success_resets_flag(tmp_path, monkeypatch):
+    # T1 P3：标志曾被迁移失败置 False 后，init_db 成功路径必须复位为 True（同进程恢复）
+    import agent.session as session_mod
+    monkeypatch.setattr(session_mod, "_fold_columns_available", False)
+    store = MessageStore(str(tmp_path / "m.db"))
+    await store.init_db()
+    assert session_mod.fold_columns_available() is True
