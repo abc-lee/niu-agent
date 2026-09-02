@@ -69,6 +69,15 @@ INCOMPLETE_JSON = json.dumps({
     "partial_result": "再精简几个小工具输出：idx:33",
 })
 NORMAL_JSON = json.dumps({"ok": True})  # 非 overflow / 非 incomplete 的正常返回
+# call_subagent CONTEXT_OVERFLOW 后处理返回的结构化报告（含 overflow/agent/tokens_used 特征键）
+OVERFLOW_JSON = json.dumps({
+    "overflow": True,
+    "agent": "context-manager",
+    "turns_completed": 8,
+    "tokens_used": 180000,
+    "tokens_limit": 200000,
+    "partial_result": "已处理 120/500 个",
+})
 
 
 class _FakeCalc:
@@ -212,7 +221,9 @@ class TestTidyContextImplIncomplete:
 class TestRunSubagentAsyncNotification:
     """_run_subagent_async 推送到 MainAgentRequestQueue 的通知文案分支。
 
-    incomplete JSON → "[名] 未完成（reason），已保留进度…"；
+    incomplete JSON → "[名] 未完成（reason）…"（T4-③：仅 archive_written=True 时承诺
+    24h 内可用原唯一名重新调取续跑；无存档实例则抑制，仅留中性处置建议）；
+    overflow JSON → "[名] 未完成（上下文超限）…"（不再误报"已完成"）；
     正常 result → "[名] 已完成，结果：{last_reply or result}"。
     mock call_subagent + 捕获 queue.push，不碰真实队列 / 注册表 / PendingAskRegistry。
     """
@@ -254,15 +265,48 @@ class TestRunSubagentAsyncNotification:
         return pushes, unregister
 
     def test_incomplete_result_pushes_unfinished_notification(self):
-        """incomplete JSON → 通知含「未完成（reason）」+ 已保留进度，不含「已完成」。"""
+        """incomplete JSON + 注册表无实例（archive_written=None）→ 未完成通知，抑制续跑承诺。"""
         pushes, unregister = self._run(INCOMPLETE_JSON)
         assert len(pushes) == 1
         msg = pushes[0]
         assert msg.startswith("[dream-evolver-1a2b] 未完成（TERMINATED_BY_SUPPLEMENT）"), msg
-        assert "已保留进度" in msg
+        assert "已保留进度" not in msg  # T4-③：无存档不得谎称进度已保留
+        assert "可让主 Agent 安排继续处理" in msg  # 中性处置建议保留
+        for forbidden in ("重新调取", "原唯一名", "24h", "24 小时", "同名续跑"):
+            assert forbidden not in msg, f"无存档通知不得承诺续跑: {msg}"
         assert "已完成" not in msg
         # finally 收尾：注册表注销（防泄漏）
         unregister.assert_called_once_with("dream-evolver-1a2b")
+
+    def test_incomplete_archived_offers_resume_promise(self):
+        """incomplete JSON + archive_written=True → 通知含 24h 内可原唯一名重新调取续跑承诺。"""
+        inst = mock.MagicMock()
+        inst.archive_written = True
+        pushes, _ = self._run(INCOMPLETE_JSON, registry_get=inst)
+        assert len(pushes) == 1
+        assert pushes[0] == (
+            "[dream-evolver-1a2b] 未完成（TERMINATED_BY_SUPPLEMENT），已完成进度存档，"
+            "24 小时内可用原唯一名 dream-evolver-1a2b 重新调取续跑"
+        )
+
+    def test_overflow_result_pushes_unfinished_notification(self):
+        """overflow JSON（无 incomplete 标记）→ 不误报"已完成"，按未完成（上下文超限）通知。"""
+        pushes, _ = self._run(OVERFLOW_JSON)
+        assert len(pushes) == 1
+        msg = pushes[0]
+        assert msg == "[dream-evolver-1a2b] 未完成（上下文超限）"
+        assert "已完成" not in msg
+
+    def test_overflow_archived_offers_resume_promise(self):
+        """overflow JSON + archive_written=True → 未完成（上下文超限）+ 24h 续跑承诺。"""
+        inst = mock.MagicMock()
+        inst.archive_written = True
+        pushes, _ = self._run(OVERFLOW_JSON, registry_get=inst)
+        assert len(pushes) == 1
+        assert pushes[0] == (
+            "[dream-evolver-1a2b] 未完成（上下文超限），已完成进度存档，"
+            "24 小时内可用原唯一名 dream-evolver-1a2b 重新调取续跑"
+        )
 
     def test_normal_result_prefers_last_reply_in_notification(self):
         """正常 result + 注册表实例有 last_reply → 通知用 last_reply（中间轮次不挤占最终报告）。"""
@@ -498,12 +542,15 @@ class TestHandlerCallSubagentGenDisplay:
         raise AssertionError("generator 未返回 StepOutcome")
 
     def test_incomplete_json_display_result_converted_to_natural_language(self):
-        """incomplete JSON → display_result 是自然语言提示（非 JSON），含 reason 与处置建议。"""
+        """incomplete JSON → display_result 是自然语言提示（非 JSON），含 reason 与处置建议。
+
+        T4-③：同步不存档——display 不得含"已保留进度"（不承诺进度保留/同名续跑）。
+        """
         outcome = self._drive(INCOMPLETE_JSON)
         assert outcome.data["status"] == "success"
         display = outcome.data["result"]
         assert display.startswith("子Agent未完成任务（TERMINATED_BY_SUPPLEMENT）"), display
-        assert "已保留进度" in display
+        assert "已保留进度" not in display
         assert "请决定是否让子Agent继续处理" in display
         assert not display.strip().startswith("{")  # 返回 LLM 的是自然语言，非原始 JSON
 

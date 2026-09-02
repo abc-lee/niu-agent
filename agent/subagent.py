@@ -1918,13 +1918,31 @@ async def _run_subagent_async(
             # 推完成通知到 MainAgentRequestQueue 内存队列（不写 db）
             # 用 last_reply（最后一轮输出）而非 result（所有轮次累加），避免中间过程挤占最终报告
             # incomplete 判定基于 result（last_reply 在打断时可能非空——中间文本，不可作完成依据）
-            from niu_api.compat import _is_subagent_incomplete
+            # T4-③ 话术条件化：24h 续跑承诺只随 archive_written=True（T1 写盘成功）出现；
+            # None（异常/未到写盘点）/False（写失败）一律抑制——不承诺不可用的能力。
+            from niu_api.compat import _is_subagent_incomplete, _incomplete_reason, _is_subagent_overflow
+            _inst = SubagentRegistry.get(unique_name)
+            _archive_ok = _inst is not None and getattr(_inst, "archive_written", None) is True
             if _is_subagent_incomplete(result):
-                from niu_api.compat import _incomplete_reason
                 _reason = _incomplete_reason(result)
-                completion_msg = f"[{unique_name}] 未完成（{_reason}），已保留进度，可让主 Agent 安排继续处理"
+                if _archive_ok:
+                    completion_msg = (
+                        f"[{unique_name}] 未完成（{_reason}），已完成进度存档，"
+                        f"24 小时内可用原唯一名 {unique_name} 重新调取续跑"
+                    )
+                else:
+                    # 写失败/无存档：删误导性的"已保留进度"，仅留中性处置建议（不承诺续跑）
+                    completion_msg = f"[{unique_name}] 未完成（{_reason}），可让主 Agent 安排继续处理"
+            elif _is_subagent_overflow(result):
+                # overflow JSON 无 incomplete 标记——此前误入 else 报"已完成"；上下文超限是未完成终态
+                if _archive_ok:
+                    completion_msg = (
+                        f"[{unique_name}] 未完成（上下文超限），已完成进度存档，"
+                        f"24 小时内可用原唯一名 {unique_name} 重新调取续跑"
+                    )
+                else:
+                    completion_msg = f"[{unique_name}] 未完成（上下文超限）"
             else:
-                _inst = SubagentRegistry.get(unique_name)
                 _last_reply = getattr(_inst, 'last_reply', '') if _inst else ''
                 _result_for_notify = _last_reply if _last_reply else result
                 completion_msg = f"[{unique_name}] 已完成，结果：{_result_for_notify}"
