@@ -12,8 +12,8 @@
   由启动一致性校验（integrity）自愈兜底；
 - 应急终态与 D15 减轮等降级路径叠加时无组合检测，逐层各自判定——
   极端长会话下可能连续多轮触发降级叠加，属可接受盲区；
-- 校准倍率按全集估算吸收工具输出开销，倍率漂移期间 80% 触发点存在
-  提前/滞后偏差，由滞回闸门与 95% 应急线双重兜住。
+- 校准倍率按全集估算吸收工具输出开销，倍率漂移期间触发线（默认 80%，
+  可配置 compactionTriggerRatio）存在提前/滞后偏差，由滞回闸门与 95% 应急线双重兜住。
 """
 
 from __future__ import annotations
@@ -33,11 +33,12 @@ from agent.context_assembler.blocks import (
 from agent.context_assembler.slicer import slice_units
 from agent.context_manager import ContextManager, build_tc_map
 
-# 总量触发线 / 滞回复位线 / 应急警戒线（spec §3.6：95% 与 80% 间距即天然滞回）
+# 应急警戒线写死不动（spec §5：95% 与触发线间距即天然滞回）。
+# TRIGGER_RATIO/HARD_BUDGET_RATIO 是默认值引用——实际读配置 context.compactionTriggerRatio
+# （clamp [0.50, 0.94]）走 trigger_ratio()/hard_budget_ratio()；滞回复位线跟随 =trigger−0.02。
 TRIGGER_RATIO = 0.80
-RESET_RATIO = 0.78
 EMERGENCY_RATIO = 0.95
-HARD_BUDGET_RATIO = 0.80   # D15 硬约束：压实后校准总量须回落到此线内
+HARD_BUDGET_RATIO = 0.80   # D15 硬约束：压实后校准总量须回落到 min(0.80, trigger) 线内
 INDEX_RATIO_MAX = 0.30     # 历史索引 ≤30%（D2）
 
 DEFAULT_KEEP_RECENT_TURNS = 3
@@ -59,8 +60,30 @@ def _read_keep_recent_turns() -> int:
     return DEFAULT_KEEP_RECENT_TURNS
 
 
+def trigger_ratio() -> float:
+    """压实触发线：读配置 context.compactionTriggerRatio（默认 0.80，clamp [0.50, 0.94]）。
+
+    惰性导入防环：subagent ← runner → context_assembler 链。
+    """
+    from agent.subagent import _read_compaction_trigger  # noqa: E402（惰性导入防环）
+    return _read_compaction_trigger()
+
+
+def reset_ratio() -> float:
+    """滞回复位线 = trigger − 0.02（跟随配置触发线，spec §5）。"""
+    return trigger_ratio() - 0.02
+
+
+def hard_budget_ratio() -> float:
+    """D15 硬约束线：压实后校准总量须回落到 min(0.80, trigger) 线内。
+
+    配低触发线（如 0.55）时回落预算不得高于触发线，否则压实目标自相矛盾。
+    """
+    return min(HARD_BUDGET_RATIO, trigger_ratio())
+
+
 class CompactionGate:
-    """滞回闸门：≥80% 触发并闩锁、<78% 复位——防倍率漂移在阈值附近反复触发。
+    """滞回闸门：≥trigger 触发并闩锁、<trigger−0.02 复位（线随配置 compactionTriggerRatio）——防倍率漂移在阈值附近反复触发。
 
     双触发去重：组装出口（估算驱动）与 runner 真值回调共用同一全局实例，
     同一轮次谁先拿到达线判定权谁压实，另一方被闩锁挡下。
@@ -74,10 +97,10 @@ class CompactionGate:
         """usage_ratio 达触发线且未闩锁 → True（调用方执行压实）；否则 False。"""
         with self._lock:
             if self._latched:
-                if usage_ratio < RESET_RATIO:
+                if usage_ratio < reset_ratio():
                     self._latched = False  # 水位已回落，解除闩锁
                 return False
-            if usage_ratio >= TRIGGER_RATIO:
+            if usage_ratio >= trigger_ratio():
                 self._latched = True
                 return True
             return False
@@ -273,7 +296,7 @@ def build_compact_view(messages, *, system_msg: dict | None = None,
         from agent.subagent import _read_context_window_tokens
         cw = _read_context_window_tokens()
 
-    hard_budget = max(1, int(cw * HARD_BUDGET_RATIO))
+    hard_budget = max(1, int(cw * hard_budget_ratio()))
     emergency_line = int(cw * EMERGENCY_RATIO)
 
     # fold 渲染（spec §4，R1 交叉 P1）：压实路径不经过 get_context_for_chat——
