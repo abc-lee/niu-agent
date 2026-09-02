@@ -1467,9 +1467,10 @@ class NiuRunner:
                 pass
         return compacted
 
-    def _on_fold_applied(self, messages):
-        """折叠后视图刷新（bug 修复 2026-09-02）：fold 只 UPDATE DB，内存视图不感知——
-        不刷新则同工具循环下轮仍见折叠前原文与旧使用率。从 DB 重拉 → assemble_view_sync
+    def _on_tool_round_refresh(self, messages):
+        """每工具轮视图重建（2026-09-02）：任何工具结果 persist 落库后从 DB 全量重建——
+        新输出编号/折叠态/仪表盘与 DB 同步（fold 只 UPDATE DB，内存视图不感知；
+        不刷新则同工具循环下轮仍见折叠前原文与旧使用率）。循环内外同一组装流程：从 DB 重拉 → assemble_view_sync
         （无压实——rebuild 不得把刚折叠的目标行归档移出窗口）→ transform_history
         （与入口同制式：subagent_msg 过滤/悬空 tool_calls 剥离/30000 截断）
         → messages[:] 原地替换；system 保留（含 cache_control，不重建）；动态块由下轮
@@ -1492,7 +1493,7 @@ class NiuRunner:
             else:
                 messages[:] = transformed
         except Exception as e:
-            logger.error(f"[Runner] Fold view refresh failed (self-heals at next entry assembly): {e}")
+            logger.error(f"[Runner] Tool-round view refresh failed (self-heals at next entry assembly): {e}")
 
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
@@ -2044,7 +2045,7 @@ class NiuRunner:
             on_before_llm=self._on_before_llm,  # 每轮 LLM 调用前刷新动态注入
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
             on_context_high_usage=self._on_context_high_usage,  # 主 Agent 超阈值回调
-            on_fold_applied=self._on_fold_applied,  # 折叠后同循环视图刷新（子 Agent 不传 = None 跳过）
+            on_tool_round_refresh=self._on_tool_round_refresh,  # 每工具轮 persist 后视图重建（子 Agent 不传 = None 跳过）
             context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值
         )
 
