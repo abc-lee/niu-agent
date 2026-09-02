@@ -1,9 +1,9 @@
 """折叠视图刷新修复测试（docs/superpowers/plans/2026-09-02-fold-view-refresh-fix.md v1.5）。
 
 Task 1：assemble_view_sync——无压实的纯视图组装（水位线切分 + fold 统计 + 折叠渲染 + usage 估算）。
-Task 2：transform_history 抽取 + agent_loop 折叠 hook + runner._on_fold_applied。
+Task 2：transform_history 抽取 + agent_loop 每工具轮视图重建 hook + runner._on_tool_round_refresh。
         四层测试（R3-B P2）：transform_history 行为零变化锁 / hook 契约层（stub 回调）/
-        生产接线断言（runner.chat 传真方法引用）/ _on_fold_applied DB 重建语义层 + 组合级回归锁。
+        生产接线断言（runner.chat 传真方法引用）/ _on_tool_round_refresh DB 重建语义层 + 组合级回归锁。
 
 入口行为零变化回归锁在 test_get_context_for_chat_v2.py + test_compaction.py +
 test_calibration.py（Step 4 合跑）。mock store / 校准倍率 / token 计数，
@@ -307,7 +307,7 @@ class TestTransformHistoryZeroChange:
 
 
 # ---------------------------------------------------------------------------
-# 5. hook 契约层（stub 回调）：触发条件 / 挂载点 / 每轮初始化 / 子 Agent None 不崩
+# 5. hook 契约层（stub 回调）：触发条件（每工具轮）/ 挂载点 / 纯文本轮不触发 / 子 Agent None 不崩
 # ---------------------------------------------------------------------------
 
 class TestFoldHookContract:
@@ -336,7 +336,7 @@ class TestFoldHookContract:
         gen = agent_runner_loop(
             client=client, system_prompt="SYS", user_input="Q", handler=handler,
             tools_schema=[], verbose=False, max_turns=10, enable_supplement=False,
-            on_fold_applied=on_fold)
+            on_tool_round_refresh=on_fold)
         result = None
         try:
             while True:
@@ -357,19 +357,21 @@ class TestFoldHookContract:
         {"status": "error", "error": "输出#9 不存在"},
         "plain string result",
     ], ids=["idempotent", "error", "non_dict"])
-    def test_no_trigger_on_idempotent_error_nondict(self, data):
+    def test_fold_result_variants_still_trigger_once(self, data):
+        # 新语义（2026-09-02）：任何工具轮（tool_results 非空——含 fold 幂等/失败/非 dict）
+        # persist 后 hook 恰触发一次；其后纯文本退出轮不触发
         hook_calls = []
         handler = _FakeHandler({"fold_tool_output": _fold_outcome(data)})
         client = _FakeClient([
             _resp("", [_tc("fold_tool_output", "call_fold", '{"output_ids": [3]}')]),
             _resp("完成"),
         ])
-        events, result = _run_loop(client, handler, on_fold_applied=lambda m: hook_calls.append(m))
+        events, result = _run_loop(client, handler, on_tool_round_refresh=lambda m: hook_calls.append(m))
         assert result["result"] == "CURRENT_TASK_DONE"
-        assert hook_calls == []
+        assert len(hook_calls) == 1
 
     def test_subagent_path_none_no_crash(self):
-        # 不传 on_fold_applied（子 Agent 路径默认 None）：折叠成功也不崩、正常完成
+        # 不传 on_tool_round_refresh（子 Agent 路径默认 None）：折叠成功也不崩、正常完成
         handler = _FakeHandler({"fold_tool_output": _fold_outcome(
             {"status": "ok", "folded": [3], "message": "m"})})
         client = _FakeClient([
@@ -379,8 +381,9 @@ class TestFoldHookContract:
         events, result = _run_loop(client, handler)
         assert result["result"] == "CURRENT_TASK_DONE"
 
-    def test_no_retrigger_on_nonfold_turn_after_fold(self):
-        # 每轮初始化锁（R1-B P3）：折叠轮后的无折叠轮不重复触发
+    def test_every_tool_round_triggers_once_fold_then_plain_tool(self):
+        # 新语义（2026-09-02）：每工具轮 persist 后 hook 恰触发一次——fold 轮 + read_file 轮 = 2 次；
+        # 其后纯文本退出轮不触发
         hook_calls = []
         handler = _FakeHandler({
             "fold_tool_output": _fold_outcome({"status": "ok", "folded": [3], "message": "m"}),
@@ -391,17 +394,86 @@ class TestFoldHookContract:
             _resp("", [_tc("read_file", "call_read", '{"path": "/tmp/x"}')]),
             _resp("完成"),
         ])
-        events, result = _run_loop(client, handler, on_fold_applied=lambda m: hook_calls.append(m))
+        events, result = _run_loop(client, handler, on_tool_round_refresh=lambda m: hook_calls.append(m))
+        assert result["result"] == "CURRENT_TASK_DONE"
+        assert len(hook_calls) == 2
+
+    def test_single_response_multi_tool_calls_hook_fires_once(self):
+        # P3-2 契约锁：单响应并行 tool_calls（fold + read_file）→ hook 在该工具轮末恰触发一次，
+        # 而非逐 tool_result 各一次——锁"每工具轮一次"语义（agent_loop L1490 tool_results 守卫在
+        # 全轮 persist 循环之后，非 dispatch 内）
+        order = []
+        hook_calls = []
+
+        def on_fold(messages):
+            hook_calls.append(messages)
+            order.append("hook")
+
+        handler = _FakeHandler({
+            "fold_tool_output": _fold_outcome({"status": "ok", "folded": [3], "message": "m"}),
+            "read_file": StepOutcome(data="read ok", next_prompt="继续", should_exit=False),
+        })
+        client = _FakeClient([
+            _resp("", [_tc("fold_tool_output", "call_fold", '{"output_ids": [3]}'),
+                       _tc("read_file", "call_read", '{"path": "/tmp/x"}')]),
+            _resp("完成"),
+        ])
+        orig_chat = client.chat
+
+        def chat_tracked(messages=None, tools=None):
+            order.append("llm")
+            return orig_chat(messages=messages, tools=tools)
+        client.chat = chat_tracked
+
+        gen = agent_runner_loop(
+            client=client, system_prompt="SYS", user_input="Q", handler=handler,
+            tools_schema=[], verbose=False, max_turns=10, enable_supplement=False,
+            on_tool_round_refresh=on_fold)
+        result = None
+        try:
+            while True:
+                ev = next(gen)
+                if ev.type == "persist":
+                    order.append("persist")
+        except StopIteration as e:
+            result = e.value
+
+        assert result["result"] == "CURRENT_TASK_DONE"
+        # 同轮两个 tool 结果 → persist×2（fold + read_file 各落库一次），hook 恰一次且在两者之后
+        assert len(hook_calls) == 1
+        # turn-1 LLM → assistant persist → fold tool persist → read_file tool persist → hook → turn-2 LLM
+        assert order[:6] == ["llm", "persist", "persist", "persist", "hook", "llm"]
+
+    def test_plain_tool_round_triggers_once(self):
+        # 核心锁（新语义）：非 fold 的普通工具轮 persist 后 hook 恰触发一次
+        hook_calls = []
+        handler = _FakeHandler({
+            "read_file": StepOutcome(data="read ok", next_prompt="继续", should_exit=False),
+        })
+        client = _FakeClient([
+            _resp("", [_tc("read_file", "call_read", '{"path": "/tmp/x"}')]),
+            _resp("完成"),
+        ])
+        events, result = _run_loop(client, handler, on_tool_round_refresh=lambda m: hook_calls.append(m))
         assert result["result"] == "CURRENT_TASK_DONE"
         assert len(hook_calls) == 1
 
+    def test_pure_text_turn_does_not_trigger(self):
+        # 纯文本轮（无 tool_calls → no_tool 占位，tool_results 空）不触发 hook；循环正常退出
+        hook_calls = []
+        handler = _FakeHandler({})
+        client = _FakeClient([_resp("完成")])
+        events, result = _run_loop(client, handler, on_tool_round_refresh=lambda m: hook_calls.append(m))
+        assert result["result"] == "CURRENT_TASK_DONE"
+        assert hook_calls == []
+
 
 # ---------------------------------------------------------------------------
-# 6. 生产接线断言（R4-B P2-3）：runner.chat 传 on_fold_applied=self._on_fold_applied
+# 6. 生产接线断言（R4-B P2-3）：runner.chat 传 on_tool_round_refresh=self._on_tool_round_refresh
 # ---------------------------------------------------------------------------
 
 class TestProductionWiring:
-    def test_runner_chat_passes_on_fold_applied(self):
+    def test_runner_chat_passes_on_tool_round_refresh(self):
         from agent import runner as runner_mod
 
         captured = {}
@@ -429,15 +501,15 @@ class TestProductionWiring:
              mock.patch("agent.subagent._read_context_window_tokens", return_value=0):
             list(NiuRunner.chat(self_mock, session_id="s1", user_input="hi"))
 
-        assert captured.get("on_fold_applied") is self_mock._on_fold_applied
+        assert captured.get("on_tool_round_refresh") is self_mock._on_tool_round_refresh
 
 
 # ---------------------------------------------------------------------------
-# 7. _on_fold_applied DB 重建语义层（R3-B P2-4）：真方法 + monkeypatched
+# 7. _on_tool_round_refresh DB 重建语义层（R3-B P2-4）：真方法 + monkeypatched
 #    _sync_get_messages / peek_context_manager——原地替换/占位符/同制式三防线
 # ---------------------------------------------------------------------------
 
-class TestOnFoldAppliedRebuild:
+class TestOnToolRoundRefreshRebuild:
     def _make_runner(self, monkeypatch, db_msgs, cm):
         r = NiuRunner.__new__(NiuRunner)
         monkeypatch.setattr(NiuRunner, "_sync_get_messages", lambda self, limit=None: list(db_msgs))
@@ -466,7 +538,7 @@ class TestOnFoldAppliedRebuild:
         r = self._make_runner(monkeypatch, _conversation(), cm)
         messages = self._stale_view()
         sys_entry = messages[0]
-        r._on_fold_applied(messages)
+        r._on_tool_round_refresh(messages)
         # 原地替换：同列表对象，system 保留（同一性不变——含 cache_control 不重建）
         assert messages[0] is sys_entry
         assert [e["role"] for e in messages] == ["system", "user", "assistant", "tool", "assistant", "tool", "user"]
@@ -483,7 +555,7 @@ class TestOnFoldAppliedRebuild:
         cm = _make_cm(FakeStore(db_msgs), 100_000, fold_env / "blocks.db")
         r = self._make_runner(monkeypatch, db_msgs, cm)
         messages = self._stale_view()
-        r._on_fold_applied(messages)
+        r._on_tool_round_refresh(messages)
         assert all(e["role"] != "subagent_msg" for e in messages)
 
     def test_dangling_tool_calls_stripped(self, fold_env, monkeypatch):
@@ -500,7 +572,7 @@ class TestOnFoldAppliedRebuild:
             {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "cx", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
         ]
-        r._on_fold_applied(messages)
+        r._on_tool_round_refresh(messages)
         assert all("cx" not in [tc.get("id") for tc in e.get("tool_calls", [])] for e in messages)
 
     def test_long_tool_content_still_truncated(self, fold_env, monkeypatch):
@@ -514,7 +586,7 @@ class TestOnFoldAppliedRebuild:
         cm = _make_cm(FakeStore(db_msgs), 100_000, fold_env / "blocks.db")
         r = self._make_runner(monkeypatch, db_msgs, cm)
         messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "Q"}]
-        r._on_fold_applied(messages)
+        r._on_tool_round_refresh(messages)
         tool_e = [e for e in messages if e.get("tool_call_id") == "cb"][0]
         assert len(tool_e["content"]) <= MAX_TOOL_RESULT_CHARS
         assert "[截断]" in tool_e["content"]
@@ -522,7 +594,7 @@ class TestOnFoldAppliedRebuild:
 
 # ---------------------------------------------------------------------------
 # 8. 组合级回归锁（R3-B P2-5）：harness 消费 persist 事件写真实 tmp sqlite，
-#    dispatch 调真 fold_tool_output 写 folded=1，_on_fold_applied 为真方法——
+#    dispatch 调真 fold_tool_output 写 folded=1，_on_tool_round_refresh 为真方法——
 #    断言折叠轮后第二轮 LLM 请求含占位符、不含折叠前原文
 # ---------------------------------------------------------------------------
 
@@ -593,7 +665,7 @@ class TestCombinedRegressionLock:
         gen = agent_runner_loop(
             client=client, system_prompt="SYS", user_input="Q", handler=handler,
             tools_schema=[], verbose=False, max_turns=10, enable_supplement=False,
-            history=history, on_fold_applied=r._on_fold_applied)
+            history=history, on_tool_round_refresh=r._on_tool_round_refresh)
         sink_n = [10]
 
         def persist_to_db(msg):
@@ -620,6 +692,70 @@ class TestCombinedRegressionLock:
         req2 = json.dumps(client.requests[1], ensure_ascii=False)
         assert "[输出#3 已由 fold_tool_output 折叠：read_file({})，本条已移出上下文（原占约 8.0%）。如需原文请重新调用原工具获取]" in req2
         assert "RAWBODY_" not in req2
+
+    def test_plain_tool_round_next_turn_sees_header_line(self, tmp_path, fold_env, monkeypatch):
+        # 组合级回归锁（新语义 2026-09-02）：普通工具轮（非 fold）persist → hook 从 DB 重建 →
+        # 第二轮 LLM 请求含编号头行 [输出#{rowid} · 工具名]（无 pct 快照 → 无百分比段）
+        db_path = tmp_path / "messages.db"
+        conn = self._init_db(db_path)
+        BIG = "BIGOUT_" + "y" * 40000
+        self._insert(conn, 1, "user", "Q0")
+        self._insert(conn, 2, "user", "Q")  # 当前用户输入（模拟入口端预 persist 行为，与 fold 组合测试基线对齐）
+
+        def read_db():
+            c = sqlite3.connect(str(db_path))
+            rows = c.execute(
+                "SELECT id, role, content, tool_calls, tool_call_id, folded, output_pct,"
+                " created_at, rowid FROM messages ORDER BY rowid").fetchall()
+            c.close()
+            return [Message(id=r[0], role=r[1], content=r[2] or "", tool_calls=json.loads(r[3] or "[]"),
+                            tool_call_id=r[4] or "", folded=r[5] or 0, output_pct=r[6],
+                            created_at=r[7], rowid=r[8]) for r in rows]
+
+        cm = _make_cm(FakeStore([]), 100_000, tmp_path / "blocks.db")
+        monkeypatch.setattr(NiuRunner, "_sync_get_messages", lambda self, limit=None: read_db())
+        monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: cm)
+        r = NiuRunner.__new__(NiuRunner)
+
+        handler = _FakeHandler({
+            "read_file": StepOutcome(data=BIG, next_prompt="继续", should_exit=False),
+        })
+        client = _FakeClient([
+            _resp("", [_tc("read_file", "call_read", '{"path": "/tmp/x"}')]),
+            _resp("完成"),
+        ])
+        history = [{"role": "user", "content": "Q0"}]
+
+        gen = agent_runner_loop(
+            client=client, system_prompt="SYS", user_input="Q", handler=handler,
+            tools_schema=[], verbose=False, max_turns=10, enable_supplement=False,
+            history=history, on_tool_round_refresh=r._on_tool_round_refresh)
+        sink_n = [10]
+
+        def persist_to_db(msg):
+            # 模拟 runner.chat 的 persist 处理：每条落 tmp DB（yield 即落库语义）
+            sink_n[0] += 1
+            self._insert(conn, sink_n[0], msg.get("role", ""), msg.get("content") or "",
+                         tool_calls=msg.get("tool_calls"), tool_call_id=msg.get("tool_call_id", ""))
+
+        result = None
+        try:
+            while True:
+                ev = next(gen)
+                if ev.type == "persist":
+                    persist_to_db(json.loads(ev.content))
+        except StopIteration as e:
+            result = e.value
+
+        assert result["result"] == "CURRENT_TASK_DONE"
+        # DB rowid：1=user Q0，2=user Q（预置当前输入），3=assistant(tool_calls)，4=tool(BIGOUT)，5=最终纯文本回复
+        assert conn.execute(
+            "SELECT rowid FROM messages WHERE content LIKE 'BIGOUT_%'").fetchone()[0] == 4
+        # turn-1 LLM 请求为入口视图（无头行）；turn-2（hook 重建后）含编号头行（rowid 随基线上移）
+        req1 = json.dumps(client.requests[0], ensure_ascii=False)
+        assert "[输出#" not in req1
+        req2 = json.dumps(client.requests[1], ensure_ascii=False)
+        assert "[输出#4 · read_file]" in req2
 
 
 if __name__ == "__main__":
