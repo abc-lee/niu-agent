@@ -33,6 +33,48 @@ FORMAT_ERROR = "format_error"        # 无 @ 前缀无 tool_calls，已追加格
 NO_INTERCEPTION = "no_intercept"     # 不拦截（主 Agent 或有 tool_calls）
 INTERCEPTED_ASK_USER = "intercepted_ask_user"  # @user 拦截成功
 
+# @指令跳过提示文案（2026-09-03 D1-D4）：@指令与工具调用同轮时工具优先执行、@指令被静默跳过，
+# 下轮提示要求将完整内容与指令一起单独重发——裸指令会命中空问题守卫/丢最终汇报
+_SKIPPED_AT_NIU_PROMPT = (
+    "[系统提示] 你上一轮的输出同时包含 @niu-agent 提问和工具调用——同一轮中工具调用优先执行，"
+    "@niu-agent 提问未送达主 Agent。如需提问，请在下一轮将完整提问与 @niu-agent 一起单独输出（不带工具调用）。"
+)
+_SKIPPED_AT_END_PROMPT = (
+    "[系统提示] 你上一轮的输出同时包含 @end 和工具调用——工具调用优先执行，@end 结束指令未生效。"
+    "工作完成后，请在下一轮将最终汇报与 @end 一起单独输出（不带工具调用）。"
+)
+_SKIPPED_AT_USER_PROMPT = (
+    "[系统提示] 你上一轮的输出同时包含 @user 提问和工具调用——同一轮中工具调用优先执行，"
+    "@user 提问未生效。如需向用户提问，请在下一轮将完整提问与 @user 一起单独输出（不带工具调用）。"
+)
+
+
+def _detect_skipped_at_directive(content: str) -> str | None:
+    """检测 content 中因同轮工具调用而被跳过的未转义 @指令（2026-09-03 D1，纯函数供单测直打）。
+
+    优先级 @end → @niu-agent → @user（与拦截层一致：@end 最高），命中首个即返回对应提示文案（§4），
+    无命中返回 None。@user 词边界复刻拦截层条件（后跟空白/常见标点/串尾才识别——防 @username 误判）；
+    @end/@niu-agent 无需边界（拦截层本身无边界检查，保持过匹配一致）。
+
+    Args:
+        content: LLM 本轮响应 content（可为 None/空串）
+
+    Returns:
+        命中的提示文案字符串；无未转义 @指令返回 None。
+    """
+    text = content or ""
+    if _find_unescaped_marker(text, "@end") >= 0:
+        return _SKIPPED_AT_END_PROMPT
+    if _find_unescaped_marker(text, _AT_NIU_PREFIX) >= 0:
+        return _SKIPPED_AT_NIU_PROMPT
+    at_user_idx = _find_unescaped_marker(text, _AT_USER_PREFIX)
+    if at_user_idx >= 0:
+        after_marker = at_user_idx + len(_AT_USER_PREFIX)
+        # 词边界：后跟空白/常见标点/串尾才识别（复刻拦截层条件——防 @username 误判）
+        if after_marker >= len(text) or text[after_marker] in (' ', '\t', '\n', ':', ',', '：', '，', '；', ';', '.', '。', '?', '？', '!', '！', '-', '/', ')', ']'):
+            return _SKIPPED_AT_USER_PROMPT
+    return None
+
 
 def _find_unescaped_marker(content: str, marker: str) -> int:
     """在 content 里查找未转义标记的位置（大小写不敏感——Agent 可能输出 @END/@NIU-AGENT/@USER 等大写形式）。
@@ -1274,6 +1316,14 @@ def agent_runner_loop(
                         "tool_name": tc.function.name,
                     })
                     next_prompts.add(err_text)
+
+        # @指令跳过提示（2026-09-03 D1-D4）：@指令与工具调用同轮时工具优先执行、@指令被静默跳过——
+        # 注入 next_prompts 随下轮引导块送达（截断免疫；E4-01/L1447 先例位置）。仅子 Agent 路径，
+        # _bypass_at_prefix 严格 is not True 对齐拦截层先例（宽松判断会把 MagicMock handler 误判绕过）
+        if response.tool_calls and getattr(handler, "_is_subagent", False) and getattr(handler, "_bypass_at_prefix", False) is not True:
+            skipped = _detect_skipped_at_directive(response.content)
+            if skipped:
+                next_prompts.add(skipped)
 
         # 添加assistant消息（如果有工具调用）
         if response.tool_calls:
