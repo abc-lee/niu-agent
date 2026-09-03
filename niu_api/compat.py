@@ -1441,7 +1441,7 @@ def _fetch_models_sync(api_base: str, api_key: str, api_type: str) -> tuple[int,
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-    headers.setdefault("User-Agent", "Niu/0.3.2")  # Cloudflare 拦截 Python 默认 UA（403）
+    headers.setdefault("User-Agent", "Niu/0.3.3")  # Cloudflare 拦截 Python 默认 UA（403）
     req = urllib.request.Request(base + "/models", headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
