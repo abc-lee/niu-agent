@@ -517,6 +517,13 @@ preload_face_model()
 - **已知边界（接受）**：①@end 报告 >2000 字符档尾为 tmp 指针文本（悬空，同享 24h 清理）②Windows chmod 600 不实际生效（与 tmp 既有内容同暴露面）③档内旧 system 跨模型家族格式失配风险未修（24h 窗 + 换模型族概率低；同步挂起同机制窗口更短）④续跑仅 async_mode=true 生效（schema 已限定）
 - **实机移交清单（待用户重启）**：①异步派发 file-processor → @end → 检查 ~/.niu/tmp/<名>.json 落盘（含末轮总结）②主 Agent 同名 async_mode 再调 → 确认文本"已加载上轮上下文续跑" + 子 Agent 记得上轮工作 ③被叫停 @名 /stop → 落盘 → 同名续跑成功 ④无档同名 → "[续跑回退]…已全新派发" + 实际名 ⑤24h 后档被 cleanup 清（续跑窗口过期语义）
 
+#### 修复：续跑异步子 Agent 无标签页——createSubagentTab 活跃残留静默 no-op 改重置运行中（用户实测 5s 间隔失败/23min 成功 + 全链双审，main f353c6b7/482678ba）
+- **根因**：子 Agent 完成后 subagent_closed 事件偶发丢失（per-name 连接瞬断/迟到）→ 旧 tab 停留活跃态（无 completed/error、不在 _pendingCloseTabs）→ 续跑 subagent_started 到达时 createSubagentTab `if (!isReusable) return` 静默放弃——tab 从未出现。全新派发无残留故正常。用户实测关键：5s 间隔（>3s 延迟关窗）仍失败 → 非"等 3s"时序而是 closed 丢失；23min 间隔成功=主路径无碍；用户在 tab 场景走 _pendingCloseTabs（等切走）本就复用正常——修复覆盖 closed 从未送达的残留重启（超集安全网）
+- **修复**：活跃残留分支不再静默 return → 重置为运行中（remove completed/error/waiting + dataset.sync 对齐 + loading + 空占位刷新；不切 tab 不清容器防真重复清内容）
+- **全链双审**（用户要求扩大范围证明无新 bug）：A 保留（P2 dataset.sync 遗漏）+ B 保留（3 P3）——双审独立同发现 dataset.sync/waiting 未同步（482678ba 修）+ 注释收窄（同步/程序触发 dup started 可达仅短暂视觉）+ 切走 500ms 匿名 timer 竞态有 _closeSubagentTab 守卫兜底
+- **残余边界（披露）**：closed+started 双丢（主 SSE 断连窗口）纯前端无解——需后端 started 写入 per-name ring buffer 或主 SSE 补发；遇"重试仍无 tab"走此方案
+- **验证**：node --check 通过；用户重启实测通过（2026-09-03 用户确认关闭工程）
+
 ### 2026-09-02
 
 #### 工程：主 Agent 主动折叠工具输出——两列 + 头行/占位符 + fold_tool_output 软防线（spec 双审 → 计划 R1-R3 三轮双审冻结 → SDD T1-T6 每 Task 双审，main 75e4b739..6f0652a0 共 6 commits）
