@@ -532,6 +532,15 @@ preload_face_model()
 - **验证**：46 passed（34 既有回归 + 9 纯函数 + 3 loop 级送达/负向）；messages.db 零新增
 - **已知边界**：@end 习惯性同轮弱模型可能永不分离——既有 max_turns 兜底（接受不加强制 EXIT）；工具轮中途 STOPPED 时提示随 next_prompts 丢弃（与既有语义一致）
 
+#### 优化：内容提炼子 Agent 提示词——入库机制认知 + 价值判断链 + 查重前置 + 职能边界（方案 v1.0-v1.2 三轮双审 + SDD T1-T3，main fe7d4ac4）
+- **背景（用户怀疑内容提炼必要性，深度分析实证）**：entity-extractor（162 行）只教"筛选→提炼→入库"动作清单+枚举式禁止，缺机制认知 → 机械重复提炼：定时提醒消息每天 11:00 同一条被重复提炼 8+ 份平行文档（措辞漂移躲过内容 MD5 去重）+ 图谱平行实体 6+（咖啡机提醒定时任务/咖啡机定时提醒/…）；对照 dream-evolver（628 行）教完整写入→检索机制 → 行为克制先查重建
+- **图谱侧归因（用户拍板不动）**：李磊描述 750 字符多段变体膨胀 = LightRAG fork merge 机制本身（operate.py already_description+sorted_descriptions 跨文档无条件 append、去重仅限单文档内、段数<8/token<1200 不压缩直接 <SEP> join）——到量自动触发 LLM 压缩清理，用户拍板图谱侧不调整
+- **方案（用户拍板 D1-D5，纯提示词工程）**：D1 只改 entity-extractor.md 不动代码/机制；D2 入库机制认知（教 lightrag_insert 后果：文档永久入库+LLM 抽实体/同名 append 描述/异名=永久碎片/未来经自动注入被想起）；D3 价值判断链（新事实?→查→命中评估更新/跳过→未命中才入库；例行/程序消息自判跳过不枚举——枚举追不上新类型）；D4 查重前置（search_entities 必做）；D5 职能边界（entity 只做语义综合文档；纠错/建链/画像/精简归 dream——纯纠错消息不入库留给 dream B1，防重复 LLM 处理同一知识）
+- **机制强化**：frontmatter 加 mcpToolFilter 白名单 6 工具（insert+读面），机械封死 edit/delete/merge（dream 同款 block 格式——R2 双审抓出单行嵌套 YAML ScannerError 先例）
+- **质量链**：方案 R1 双审（A 机制事实核验全准+纠错 vs edit 不可执行指令 P2；B 五场景模拟 CONDITIONAL 2P2）→ v1.1 → R2（A 抓 mcpToolFilter 单行 YAML P1 + 不传 doc_id 保留 P3；B 模拟 APPROVE）→ v1.2 → R3 双 APPROVE 门禁 → T1 重写（+54/-6）+spec 对齐审查 APPROVE → T2 零背景 scout 模拟 entity 五场景+参数变更变体 8 标准全过
+- **已知边界（接受）**：③步"更新"无单文档覆盖语义（LightRAG insert 是 append）——合法更新每次新增文档、高频更新主题仍缓慢累积，靠高门槛+保守 tie-breaker 压制；纯纠错 vs 偏好变更可提炼边界依赖模型判断（裸否定→dream/否定+新肯定→更新）
+- **实机验证（待观察）**：下次睡眠 entity 运行时——定时提醒/门锁例行消息零入库；新偏好/计划正常入库一次；纠错消息不在 entity 产物中（留给 dream）；graphml 平行实体不再新增
+
 ### 2026-09-02
 
 #### 工程：主 Agent 主动折叠工具输出——两列 + 头行/占位符 + fold_tool_output 软防线（spec 双审 → 计划 R1-R3 三轮双审冻结 → SDD T1-T6 每 Task 双审，main 75e4b739..6f0652a0 共 6 commits）
