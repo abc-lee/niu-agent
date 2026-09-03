@@ -524,6 +524,14 @@ preload_face_model()
 - **残余边界（披露）**：closed+started 双丢（主 SSE 断连窗口）纯前端无解——需后端 started 写入 per-name ring buffer 或主 SSE 补发；遇"重试仍无 tab"走此方案
 - **验证**：node --check 通过；用户重启实测通过（2026-09-03 用户确认关闭工程）
 
+#### 修复：@ 指令与工具调用同轮静默跳过——工具优先执行 + 跳过提示注入（方案 v1.0-v1.2 三轮双审 + SDD T1-T3，main b8fda761/49331860）
+- **根因（raw_http 20260903/000043 实证）**：营养师子 Agent content=@niu-agent 提问全文 + 同轮 tool_calls=[grep] → 拦截层守卫 `if not response.tool_calls:`（agent_loop.py L1020）使整个 @ 拦截块不进入——提问被当旁白丢弃；子 Agent 以为问过了（000044 继续干活/000045 @end 收尾），缺两天记录被静默绕过。**提问丢失不可见**——LLM 动作确认记忆缺口（折叠工程同族教训）
+- **方案（用户拍板 D1-D4）**：工具优先执行（@end+工具同轮="干完这票再收工"，先拦截=丢工作——用户纠正我原方案）+ next_prompts 注入跳过提示（截断免疫，不塞 tool 结果尾防 30000 截断连提示一起丢）+ 每轮单次幂等 + @end 不自动 EXIT（模型下轮自决）
+- **机制**：模块级纯函数 `_detect_skipped_at_directive`（@end→@niu-agent→@user 优先级；@user 词边界复刻拦截层 L249 防 @username 误判）+ 接线在 next_prompts=set() reset 之后（**R1 双审 P0：锚在拦截区会被 L1229 重置吞掉/首轮 UnboundLocalError**）；文案要求完整内容重发（裸 @niu-agent 命中空问题守卫 FORMAT_ERROR；裸 @end 丢最终汇报——R1 B P2）
+- **关键教训**：①用户语义直觉比我的机制方案更贴模型意图（@end+工具=工具完结束，不是先结束）②next_prompts 注入必须锚 reset 之后（L1229）——锚拦截区直接崩溃/静默失效 ③文案必须要求完整重发防裸指令（空问题守卫/exit_content 空回退）
+- **验证**：46 passed（34 既有回归 + 9 纯函数 + 3 loop 级送达/负向）；messages.db 零新增
+- **已知边界**：@end 习惯性同轮弱模型可能永不分离——既有 max_turns 兜底（接受不加强制 EXIT）；工具轮中途 STOPPED 时提示随 next_prompts 丢弃（与既有语义一致）
+
 ### 2026-09-02
 
 #### 工程：主 Agent 主动折叠工具输出——两列 + 头行/占位符 + fold_tool_output 软防线（spec 双审 → 计划 R1-R3 三轮双审冻结 → SDD T1-T6 每 Task 双审，main 75e4b739..6f0652a0 共 6 commits）
