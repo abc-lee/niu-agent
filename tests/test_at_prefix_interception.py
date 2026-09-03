@@ -843,3 +843,82 @@ def _find_marker(text: str, marker: str) -> int:
     """测试辅助：直接定位标记（复用生产 _find_unescaped_marker 语义）。"""
     from agent.generic.agent_loop import _find_unescaped_marker
     return _find_unescaped_marker(text, marker)
+
+
+# ---------------------------------------------------------------------------
+# @指令跳过提示：_detect_skipped_at_directive 纯函数（2026-09-03 D1-D4）
+# @指令与工具调用同轮时工具优先执行、@指令被静默跳过——检测命中即返回下轮提示文案
+# ---------------------------------------------------------------------------
+
+
+def test_detect_skipped_at_niu_returns_prompt():
+    """T1: content 含未转义 @niu-agent → 返回 @niu-agent 跳过提示文案。"""
+    from agent.generic import agent_loop
+
+    result = agent_loop._detect_skipped_at_directive("@niu-agent 请确认是否先补充 8/27、8/30 记录？")
+    assert result == agent_loop._SKIPPED_AT_NIU_PROMPT
+    assert "未送达主 Agent" in result
+
+
+def test_detect_skipped_at_end_returns_prompt():
+    """T2: content 含未转义 @end → 返回 @end 跳过提示文案。"""
+    from agent.generic import agent_loop
+
+    result = agent_loop._detect_skipped_at_directive("工作已完成，汇报如下 @end")
+    assert result == agent_loop._SKIPPED_AT_END_PROMPT
+    assert "未生效" in result
+
+
+def test_detect_skipped_at_user_with_boundary_returns_prompt():
+    """T3: content 含未转义 @user 且后跟空白/标点/串尾（词边界）→ 返回 @user 跳过提示文案。"""
+    from agent.generic import agent_loop
+
+    assert agent_loop._detect_skipped_at_directive("@user 请确认这份文件是否需要继续处理") == agent_loop._SKIPPED_AT_USER_PROMPT  # 后跟空白
+    assert agent_loop._detect_skipped_at_directive("上下文 @user：选哪个方案？") == agent_loop._SKIPPED_AT_USER_PROMPT  # 后跟标点
+    assert agent_loop._detect_skipped_at_directive("@user") == agent_loop._SKIPPED_AT_USER_PROMPT  # 串尾
+
+
+def test_detect_skipped_plain_text_returns_none():
+    """T4: 无 @指令的普通 content → None（回归）。"""
+    from agent.generic import agent_loop
+
+    assert agent_loop._detect_skipped_at_directive("这是一段普通的汇报，没有任何指令") is None
+
+
+def test_detect_skipped_escaped_marker_returns_none():
+    r"""T5: 转义 \@niu-agent（标记前紧邻反斜杠）→ None（unescaped 判定）。"""
+    from agent.generic import agent_loop
+
+    assert agent_loop._detect_skipped_at_directive(r"\@niu-agent 这是引用示例，不是真实提问") is None
+
+
+def test_detect_skipped_priority_end_over_niu():
+    """T6a: @niu-agent 与 @end 并存 → @end 文案（优先级 @end→@niu-agent→@user）。"""
+    from agent.generic import agent_loop
+
+    result = agent_loop._detect_skipped_at_directive("@niu-agent 问个问题 @end 顺便退出")
+    assert result == agent_loop._SKIPPED_AT_END_PROMPT
+
+
+def test_detect_skipped_priority_niu_over_user():
+    """T6b: @user 与 @niu-agent 并存 → @niu-agent 文案。"""
+    from agent.generic import agent_loop
+
+    result = agent_loop._detect_skipped_at_directive("@user 问用户的问题 @niu-agent 也问主 Agent")
+    assert result == agent_loop._SKIPPED_AT_NIU_PROMPT
+
+
+def test_detect_skipped_none_or_empty_returns_none():
+    """T7: content=None / 空串 → None（判空）。"""
+    from agent.generic import agent_loop
+
+    assert agent_loop._detect_skipped_at_directive(None) is None
+    assert agent_loop._detect_skipped_at_directive("") is None
+
+
+def test_detect_skipped_username_word_boundary_returns_none():
+    """T9: content 含 @username/@users（@user 后紧跟非空白字符）且无真 @user → None（词边界，与拦截层一致防误判）。"""
+    from agent.generic import agent_loop
+
+    assert agent_loop._detect_skipped_at_directive("@username 是子 Agent 吗") is None
+    assert agent_loop._detect_skipped_at_directive("已转发给 @users 群大家看看") is None
