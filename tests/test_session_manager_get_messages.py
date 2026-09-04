@@ -54,6 +54,11 @@ def _t(i):
     return f"2026-09-04T{i // 3600:02d}:{(i % 3600) // 60:02d}:{i % 60:02d}"
 
 
+def _t_us(i, us):
+    """_t(i) 的微秒版——真实库 created_at 恒带 6 位微秒（P1 边界用例）。"""
+    return f"{_t(i)}.{us:06d}"
+
+
 def _call(messages, **kwargs):
     with patch("niu_session_manager._get_store", return_value=_store_with(messages)):
         return get_messages("default", **kwargs)
@@ -218,6 +223,21 @@ def test_after_time_strictly_greater():
     # 水位等于 m3 的时间戳 → 严格大于，m3 被排除
     result = _call(msgs, after_time=_t(3))
     assert [m["id"] for m in result["messages"]] == ["m4", "m5", "m6"]
+
+
+def test_after_time_microsecond_boundary_excluded():
+    """P1 边界锁：真实库 created_at 恒带微秒（...21:49:12.726768），落款水位截断到秒
+    （...21:49:12）——全精度比较会使边界消息自身（前缀相等、更长者大）落入下轮窗口
+    （空批不可达/跨天重复条目）。秒粒度比较必须排除同秒边界消息。"""
+    msgs = [
+        _msg(1, created_at=_t_us(5, 123456)),  # 边界消息自身：水位同秒 + 微秒尾
+        _msg(2, created_at=_t_us(6, 0)),       # 严格之后
+    ]
+    # 水位 = _t(5)（秒级，等价于落款截断值）
+    result = _call(msgs, after_time=_t(5))
+    assert [m["id"] for m in result["messages"]] == ["m2"], (
+        "同秒微秒尾消息必须被秒粒度水位排除——否则边界消息恒被下轮重拉"
+    )
 
 
 def test_after_time_space_separator_normalized():
