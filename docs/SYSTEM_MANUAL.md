@@ -219,7 +219,7 @@ ai-bot/
 |----------|------|----------|------|
 | `file-processor` | 文件处理：复制、解析、存储、向量化 | 主 Agent 委托（文件拖入） | 0.2 |
 | `event-manager` | 事件管理：创建/查询/删除事件 | 主 Agent 委托 | 0.2 |
-| `journal-agent` | 工作日志：经 session-manager get_messages 直读对话库提取工作内容写入日志（日志即水位线） | 主 Agent 委托（交互入口「记录工作日志」+ 周报路径） | 0.3 |
+| `journal-agent` | 工作日志：经 session-manager get_messages 直读对话库提取工作内容写入日志（落款时间即水位） | 主 Agent 委托（交互入口「记录工作日志」+ 周报路径） | 0.3 |
 | `journal-daily-agent` | 工作日志每日整理（后台）：直读对话库增量生成日志条目，由 journal-daily 定时任务静默调起 | scheduler subagent 类任务直执行（`visibility: hidden`，主 Agent 工具列表不可见） | 0.3 |
 | `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | 睡眠管线自动调度 | 0.3 |
 | `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | 睡眠管线自动调度 | 0.3 |
@@ -472,7 +472,7 @@ journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖�
 
 #### journal 定时任务（每日 18 点直执行）
 
-journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_id` 严格大于过滤），起点由 journal.md 内最近一条「覆盖至: <message_id>」标记自判（**日志即水位线**；无标记按首次整理取最新 200 条兜底），提取写入 journal.md 并在条目末尾推进标记。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。旧导出文件通道（`~/.niu/md/journal_workset.md`）与游标文件（`~/.niu/last_journal.json`，磁盘存量成孤儿不清）已整套退役。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）本轮放弃不写标记，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
+journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_time` 起点，created_at 秒粒度严格大于过滤），起点由 journal.md 内最近一条整理条目的落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号）自判（**落款时间即水位**；无落款按首次整理取最新 200 条），提取写入 journal.md 并在条目末尾更新落款时间。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。旧导出文件通道（`~/.niu/md/journal_workset.md`）与游标文件（`~/.niu/last_journal.json`，磁盘存量成孤儿不清）已整套退役；旧 message_id 机器行游标格式（「覆盖至」带冒号 + uuid）亦已退役（2026-09-04 时间水位改造）。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）或分页中途 invalid_after_id（如 /new 并发清库）本轮放弃不更新落款，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
 
 #### /compact 新语义
 

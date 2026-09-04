@@ -14,7 +14,9 @@ Journal-Agent 触发路径集成测试
 直执行分支负责，单元覆盖见 tests/test_journal_daily_scheduler.py。
 """
 
+import json
 import os
+import re
 import time
 
 import pytest
@@ -30,7 +32,25 @@ import requests  # noqa: E402
 
 API_BASE = "http://localhost:9876"
 NIU_DIR = Path.home() / ".niu"
-JOURNAL_PATH = NIU_DIR / "journal.md"
+
+
+def _workspace_path() -> Path:
+    """journal.md 在 workspace 下（~/.niu/work/journal.md），路径取自 memory.json 的
+    workspace.path；解析失败时回退默认工作目录。"""
+    try:
+        mem = json.loads((NIU_DIR / "memory.json").read_text(encoding="utf-8"))
+        p = (mem.get("workspace") or {}).get("path")
+        if p:
+            return Path(p).expanduser()
+    except (OSError, ValueError):
+        pass
+    return NIU_DIR / "work"
+
+
+JOURNAL_PATH = _workspace_path() / "journal.md"
+
+# 整理条目落款（时间水位）：空格分隔、秒级；旧「带冒号 + uuid」机器行已退役
+MARKER_RE = re.compile(r"覆盖至 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
 def test_api_health():
@@ -58,9 +78,9 @@ def test_send_chat_messages():
 
 
 def test_chat_triggers_journal_via_handler():
-    """路径1：通过主Agent对话触发 journal-agent（直读 DB 改造后以覆盖标记验证）"""
+    """路径1：通过主Agent对话触发 journal-agent（时间水位改造后以落款条目计数验证）"""
     old_text = JOURNAL_PATH.read_text(encoding="utf-8") if JOURNAL_PATH.exists() else ""
-    old_markers = old_text.count("覆盖至: ")
+    old_markers = len(MARKER_RE.findall(old_text))
 
     resp = requests.post(
         f"{API_BASE}/chat",
@@ -72,9 +92,9 @@ def test_chat_triggers_journal_via_handler():
     time.sleep(30)
 
     new_text = JOURNAL_PATH.read_text(encoding="utf-8") if JOURNAL_PATH.exists() else ""
-    new_markers = new_text.count("覆盖至: ")
+    new_markers = len(MARKER_RE.findall(new_text))
     if new_text != old_text:
-        print(f"[PASS] Path-1: journal updated, 覆盖标记 {old_markers} -> {new_markers}")
+        print(f"[PASS] Path-1: journal updated, 落款条目 {old_markers} -> {new_markers}")
     else:
         print("[WARN] Path-1: journal not updated (may be no new messages)")
 
@@ -83,7 +103,6 @@ def test_journal_format_consistency():
     """验证 journal.md 格式一致性"""
     content = JOURNAL_PATH.read_text(encoding="utf-8")
 
-    import re
     date_headers = re.findall(r'^# \d{4}-\d{2}-\d{2}', content, re.MULTILINE)
     print(f"[INFO] Found {len(date_headers)} date headers: {date_headers}")
 
