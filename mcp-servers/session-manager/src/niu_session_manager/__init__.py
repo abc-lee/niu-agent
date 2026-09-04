@@ -244,7 +244,10 @@ def get_messages(
 
     after_id: strictly-greater filter on storage order; unknown id fails loud
       with {"reason": "invalid_after_id"} (e.g. after /new wiped the DB).
-    after_time: created_at watermark — only messages strictly newer are kept.
+    after_time: created_at watermark — only messages strictly newer are kept,
+      compared at SECOND precision (both sides truncated to YYYY-MM-DDTHH:MM:SS;
+      a message whose timestamp shares the watermark second is excluded — the
+      boundary message does not re-enter the next window).
       Separator-tolerant (' ' and 'T' both accepted; normalized by string
       replace, no time parsing). Coexists with after_id (both must hold); when
       set, total_messages/idx/has_more all reference the post-filter sequence
@@ -261,8 +264,14 @@ def get_messages(
         store = _get_store()
         messages = _run_async(store.get_messages())
 
-        # Normalize time watermark (' ' / 'T' separator both tolerated)
-        after_time_norm = after_time.replace(" ", "T") if after_time else None
+        # Normalize time watermark (' ' / 'T' separator both tolerated);
+        # truncate to second precision — watermark semantics = whole-second
+        # strictly-greater. Full-precision comparison would make every boundary
+        # message's own microsecond tail (> truncated watermark, prefix-equal
+        # longer string) re-enter the next window (P1, journal T2 quality review).
+        after_time_norm = (after_time.replace(" ", "T") if after_time else None)
+        if after_time_norm is not None:
+            after_time_norm = after_time_norm[:19]
 
         # Locate after_id by linear scan on storage order (strictly greater)
         start = None
@@ -289,7 +298,7 @@ def get_messages(
             # frame for total_messages / idx / has_more (same frame).
             filtered = [
                 m for m in messages
-                if (getattr(m, "created_at", "") or "") > after_time_norm
+                if (getattr(m, "created_at", "") or "")[:19] > after_time_norm
             ]
             base_index = 0
             if after_id is not None:
