@@ -22,6 +22,7 @@ use std::time::Duration;
 use std::os::windows::process::CommandExt;
 
 use clap::Parser;
+use iced::keyboard;
 use iced::widget::container;
 use iced::window;
 use iced::{Element, Font, Length, Subscription, Task, Theme};
@@ -149,6 +150,7 @@ struct Splash {
     closing: bool,
     /// Receiver for lifecycle signals from the background thread:
     /// - `SplashPhase::Closing` -> enter closing state
+    /// - `SplashPhase::Fatal(err)` -> enter fatal-error state (contract A)
     /// - `SplashPhase::CleanupDone` -> all processes reaped, call iced::exit()
     /// Wrapped in Mutex for Sync compatibility with iced's runtime.
     phase_rx: Mutex<Receiver<SplashPhase>>,
@@ -162,16 +164,24 @@ struct Splash {
     /// Current startup stage text, updated from preload-status polling.
     /// Displayed instead of the static "正在启动" label.
     stage: String,
+    /// Fatal startup error (跨域契约 A): Some = Python 进程早退且
+    /// ~/.niu/.startup_error 非空，bg 线程经 `SplashPhase::Fatal` 送达错误文本。
+    /// Fatal 态：红字错误常驻（stage 轮询不再覆盖）+ "按任意键退出程序"，
+    /// 不弹主窗口；用户按任意键后走与 CleanupDone 相同的收尾路径退出。
+    fatal_error: Option<String>,
 }
 
 /// Lifecycle signals sent from the launcher background thread to the splash
 /// window after the settings flow completes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum SplashPhase {
     /// Enter the "closing" phase — show the shutdown message.
     Closing,
     /// All child processes have been reaped — exit the application.
     CleanupDone,
+    /// Fatal startup error (跨域契约 A): payload = ~/.niu/.startup_error 的
+    /// 人读错误文本。Splash 切 Fatal 态（红字 + 暂停），等用户按任意键退出。
+    Fatal(String),
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +203,8 @@ enum SplashMessage {
     RepairResult(Result<String, String>),
     /// Exit the application (user chose "No" in the native dialog).
     ExitApp,
+    /// Keyboard event — Fatal 态下任何键 → 退出程序（契约 A）；其余状态忽略。
+    Key(keyboard::Key),
 }
 
 /// 把 /api/kg/lightrag/repair 的响应文本格式化成弹窗摘要。
@@ -413,6 +425,7 @@ impl Splash {
             missing_deps,
             stage_rx: Mutex::new(stage_rx),
             stage: "正在启动服务".to_string(),
+            fatal_error: None,
         }
     }
 
@@ -425,6 +438,12 @@ impl Splash {
                 if !self.dock_hidden && self.window_id.is_some() {
                     self.dock_hidden = true;
                     return Task::done(SplashMessage::HideDockIcon);
+                }
+
+                // Fatal 态（契约 A）：错误常驻，只等按任意键退出——跳过所有
+                // 探测/状态检查（API 进程已早退，探测必然失败且无意义）。
+                if self.fatal_error.is_some() {
+                    return Task::none();
                 }
 
                 // Probe Python API readiness on a background thread (non-blocking).
@@ -499,10 +518,17 @@ impl Splash {
                 // the settings test passes); SplashPhase::CleanupDone triggers
                 // iced::exit() once cleanup finishes. Drained greedily so we never
                 // miss a signal due to Tick scheduling.
+                let mut fatal_arrived = false;
                 loop {
                     match self.phase_rx.lock().unwrap().try_recv() {
                         Ok(SplashPhase::Closing) => {
                             self.closing = true;
+                        }
+                        Ok(SplashPhase::Fatal(err)) => {
+                            // 契约 A：Python 进程早退 + .startup_error 非空 → Fatal 态。
+                            // 错误常驻（stage 轮询不再覆盖），等用户按任意键退出。
+                            self.fatal_error = Some(err);
+                            fatal_arrived = true;
                         }
                         Ok(SplashPhase::CleanupDone) => {
                             // Cleanup finished — exit immediately regardless of
@@ -522,8 +548,20 @@ impl Splash {
                 }
                 // Drain any pending stage updates from the preload-status polling
                 // thread. Keeps the latest stage text; empties the channel each tick.
-                while let Ok(stage) = self.stage_rx.lock().unwrap().try_recv() {
-                    self.stage = stage;
+                // Fatal 态不覆盖——错误常驻显示（契约 A）。
+                if self.fatal_error.is_none() {
+                    while let Ok(stage) = self.stage_rx.lock().unwrap().try_recv() {
+                        self.stage = stage;
+                    }
+                }
+                // 新到达的 Fatal：动态加高窗口容纳红字错误区（初始窗口为 96px 单行卡片）。
+                if fatal_arrived {
+                    if let (Some(id), Some(err)) = (self.window_id, self.fatal_error.as_ref()) {
+                        return window::resize(
+                            id,
+                            iced::Size::new(CARD_WIDTH + 2.0 * SHADOW_MARGIN, fatal_window_height(err)),
+                        );
+                    }
                 }
 
                 // Non-blocking check: if the launcher thread sent the ready signal,
@@ -537,7 +575,8 @@ impl Splash {
                 // NOTE: when `closing` is true (settings flow has completed and we are
                 // waiting for child process cleanup), the splash MUST stay open to show
                 // the "正在关闭所有进程" message — skip the ready-signal close path.
-                if !self.closing {
+                // Fatal 态同样不关窗口——等用户按任意键（契约 A）。
+                if !self.closing && self.fatal_error.is_none() {
                     if !self.ready_signal_seen {
                         if self.ready_rx.lock().unwrap().try_recv().is_ok() {
                             self.ready_signal_seen = true;
@@ -565,6 +604,14 @@ impl Splash {
             SplashMessage::WindowOpened(id) => {
                 // Capture the window ID when the window opens
                 self.window_id = Some(id);
+                // Fatal 可能先于 WindowOpened 到达（此时 Tick 的 resize 因 window_id 为空被跳过且永不重试）：
+                // 补做一次加高 resize——幂等且廉价，消除该竞态。
+                if let Some(err) = self.fatal_error.as_ref() {
+                    return window::resize(
+                        id,
+                        iced::Size::new(CARD_WIDTH + 2.0 * SHADOW_MARGIN, fatal_window_height(err)),
+                    );
+                }
                 // 窗口打开后，如有缺失依赖提示，动态加大窗口高度容纳列表
                 if !self.missing_deps.is_empty() {
                     // 每条缺失项约 20px 高度 + 标题 20px + 内边距，加在卡片高度上再补四边阴影留白
@@ -856,10 +903,26 @@ impl Splash {
                 });
                 iced::exit()
             }
+            SplashMessage::Key(_key) => {
+                // Fatal 态（契约 A）：任何键 → 退出程序。此时 Python 子进程已早退，
+                // 由早退分支的 try_wait 收割——无清理阶梯；cancelled 已由 bg 线程在
+                // 发送 Fatal 前置位（此处防御性再置一次）。iced::exit() 后主线程
+                // while !cancelled 立即返回、bg_handle.join() 立即完成——与
+                // CleanupDone 相同的收尾路径。非 Fatal 态按键忽略。
+                if self.fatal_error.is_some() {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                    return iced::exit();
+                }
+                Task::none()
+            }
         }
     }
 
     fn view(&self) -> Element<'_, SplashMessage> {
+        // Fatal 态（契约 A）：红字错误 + "按任意键退出程序"，替换正常启动动画布局。
+        if let Some(err) = &self.fatal_error {
+            return self.fatal_view(err);
+        }
         let dots = match (self.dot_frame / 10) % 3 {
             0 => ".",
             1 => "..",
@@ -890,25 +953,6 @@ impl Splash {
         let top_row = iced::widget::row![label, dots_container]
             .align_y(iced::alignment::Vertical::Center);
 
-        // 卡片样式（两分支共用）：暖米白竖向微渐变 + 圆角 16 + 柔和投影。
-        let card_style = |_theme: &Theme| container::Style {
-            background: Some(iced::Background::from(
-                iced::gradient::Linear::new(std::f32::consts::FRAC_PI_2)
-                    .add_stop(0.0, iced::Color::from_rgb(1.0, 0.992, 0.969)) // #fffdf7
-                    .add_stop(1.0, iced::Color::from_rgb(0.957, 0.937, 0.886)), // #f4efe2
-            )),
-            border: iced::Border {
-                radius: 16.0.into(),
-                ..iced::Border::default()
-            },
-            shadow: iced::Shadow {
-                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.22),
-                offset: iced::Vector::new(0.0, 8.0),
-                blur_radius: 24.0,
-            },
-            ..container::Style::default()
-        };
-
         // 缺失依赖提示（如有）
         if self.missing_deps.is_empty() || self.closing {
             // 无缺失 / closing 状态（重启/关闭中）：保持原布局，不显示缺失提示
@@ -918,7 +962,7 @@ impl Splash {
                 .height(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Center)
                 .align_y(iced::alignment::Vertical::Center)
-                .style(card_style);
+                .style(splash_card_style);
             // 外层透明 container：Fill 全窗口，四边留白给阴影
             container(card)
                 .width(Length::Fill)
@@ -957,7 +1001,7 @@ impl Splash {
             .padding(8)
             .align_x(iced::alignment::Horizontal::Center)
             .align_y(iced::alignment::Vertical::Top)
-            .style(card_style);
+            .style(splash_card_style);
             // 外层透明 container：Fill 全窗口，四边留白给阴影
             container(card)
                 .width(Length::Fill)
@@ -967,12 +1011,53 @@ impl Splash {
         }
     }
 
+    /// Fatal 态布局（契约 A）：标题"启动失败" + 红字错误文本 + "按任意键退出程序"。
+    fn fatal_view(&self, err: &str) -> Element<'_, SplashMessage> {
+        let title = iced::widget::text("启动失败")
+            .size(14)
+            .font(CJK_FONT)
+            .color(iced::Color::from_rgb(0.8, 0.2, 0.2)); // 红
+        // CJK 无空格分词——Word 换行切不开长行，必须 WordOrGlyph。
+        // 固定宽度块：给 Text 有限约束才会真正换行（否则按内容撑宽被窗口裁切）。
+        let body = iced::widget::text(format_fatal_error(err))
+            .size(12)
+            .font(CJK_FONT)
+            .color(iced::Color::from_rgb(0.8, 0.2, 0.2)) // 红
+            .width(Length::Fixed(CARD_WIDTH - 28.0))
+            .align_x(iced::alignment::Horizontal::Center)
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+        let hint = iced::widget::text("按任意键退出程序")
+            .size(12)
+            .font(CJK_FONT)
+            .color(iced::Color::from_rgb(0.42, 0.39, 0.34)); // 暖中灰（与缺失依赖列表同色）
+        let column = iced::widget::column![title]
+            .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(6.0)))
+            .push(body)
+            .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(8.0)))
+            .push(hint)
+            .align_x(iced::alignment::Horizontal::Center);
+        let card = container(column)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(12)
+            .align_y(iced::alignment::Vertical::Center)
+            .style(splash_card_style);
+        // 外层透明 container：Fill 全窗口，四边留白给阴影（与正常布局同型）
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(SHADOW_MARGIN)
+            .into()
+    }
+
     fn subscription(&self) -> Subscription<SplashMessage> {
         // Use window redraw frames as a periodic tick to poll the channel
         // Also subscribe to window open events to capture the window ID
+        // Keyboard events drive the Fatal state (contract A): any key exits.
         Subscription::batch([
             window::frames().map(|_| SplashMessage::Tick),
             window::open_events().map(SplashMessage::WindowOpened),
+            keyboard::on_key_press(|key, _modifiers| Some(SplashMessage::Key(key))),
         ])
     }
 }
@@ -991,6 +1076,70 @@ fn no_window(cmd: &mut Command) {
 
 #[cfg(not(windows))]
 fn no_window(_cmd: &mut Command) {}
+
+// ---------------------------------------------------------------------------
+// 契约 A（reranker spec v1.4 §3.4）Fatal 启动错误 —— helper
+// ---------------------------------------------------------------------------
+
+/// 读 Python 写入的致命启动错误文件（~/.niu/.startup_error，UTF-8 纯文本）。
+/// 存在且非空 → Some(人读错误文本)；不存在 / 为空 / IO 错误 → None
+/// （按无文件处理——调用方走现状 CleanupDone 无声退出路径）。
+fn read_startup_error() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let text = std::fs::read_to_string(home.join(".niu").join(".startup_error")).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Fatal 错误显示上限：130 字符 ≈ 5 视觉行 × 26 字/行（字号 12、卡片正文宽 ~312px）；
+/// 截断追加"…"后共 131 字符 = 6 视觉行。
+const FATAL_MAX_CHARS: usize = 130;
+
+/// 格式化 Fatal 错误用于显示：超长截断至 FATAL_MAX_CHARS 字符并追加"…"。
+/// fatal_window_height 的行数估算基于本函数的输出串（即实际显示内容）。
+fn format_fatal_error(err: &str) -> String {
+    let trimmed = err.trim();
+    if trimmed.chars().count() <= FATAL_MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(FATAL_MAX_CHARS).collect();
+    out.push('…');
+    out
+}
+
+/// 估算 Fatal 态所需窗口高度：标题 20 + 间距 14 + 错误文本 ×16/行 + 提示 18 + padding 24。
+/// 基础卡片为单行 96px；按 format_fatal_error 输出串的字符数估算视觉行数
+/// （截断后最多 131 字符 = 6 行，上限 6，防极端内容撑爆窗口）。
+fn fatal_window_height(err: &str) -> f32 {
+    let chars = format_fatal_error(err).chars().count() as f32;
+    let lines = (chars / 26.0).ceil().clamp(1.0, 6.0);
+    f32::max(CARD_HEIGHT, 76.0 + lines * 16.0) + 2.0 * SHADOW_MARGIN
+}
+
+/// 卡片样式（正常 / 缺失依赖 / Fatal 三布局共用）：暖米白竖向微渐变 + 圆角 16 + 柔和投影。
+fn splash_card_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::Background::from(
+            iced::gradient::Linear::new(std::f32::consts::FRAC_PI_2)
+                .add_stop(0.0, iced::Color::from_rgb(1.0, 0.992, 0.969)) // #fffdf7
+                .add_stop(1.0, iced::Color::from_rgb(0.957, 0.937, 0.886)), // #f4efe2
+        )),
+        border: iced::Border {
+            radius: 16.0.into(),
+            ..iced::Border::default()
+        },
+        shadow: iced::Shadow {
+            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.22),
+            offset: iced::Vector::new(0.0, 8.0),
+            blur_radius: 24.0,
+        },
+        ..container::Style::default()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // detectPython — corresponds to Go's detectPython()
@@ -2120,7 +2269,17 @@ fn main() {
                 Ok(Some(status)) => {
                     warn!("Python API process exited early: {status} — aborting startup");
                     cancelled_bg.store(true, Ordering::SeqCst);
-                    let _ = phase_tx.send(SplashPhase::CleanupDone);
+                    // 契约 A：早退 + .startup_error 非空 → Fatal 态（Splash 红字 +
+                    // 暂停 + 按任意键退出，不弹主窗口）；无文件/空/读失败 → 现状 CleanupDone。
+                    match read_startup_error() {
+                        Some(err) => {
+                            warn!("Fatal startup error: {err}");
+                            let _ = phase_tx.send(SplashPhase::Fatal(err));
+                        }
+                        None => {
+                            let _ = phase_tx.send(SplashPhase::CleanupDone);
+                        }
+                    }
                     return;
                 }
                 _ => {}
@@ -2170,7 +2329,17 @@ fn main() {
                 Ok(Some(status)) => {
                     warn!("Python API process exited early: {status} — aborting startup");
                     cancelled_bg.store(true, Ordering::SeqCst);
-                    let _ = phase_tx.send(SplashPhase::CleanupDone);
+                    // 契约 A：早退 + .startup_error 非空 → Fatal 态（Splash 红字 +
+                    // 暂停 + 按任意键退出，不弹主窗口）；无文件/空/读失败 → 现状 CleanupDone。
+                    match read_startup_error() {
+                        Some(err) => {
+                            warn!("Fatal startup error: {err}");
+                            let _ = phase_tx.send(SplashPhase::Fatal(err));
+                        }
+                        None => {
+                            let _ = phase_tx.send(SplashPhase::CleanupDone);
+                        }
+                    }
                     return;
                 }
                 _ => {}

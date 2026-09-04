@@ -96,6 +96,9 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Niu API Server starting...")
     logger.info(f"[PROCESS-START] PID={os.getpid()} PPID={os.getppid()} started")
+    # 契约 A 清理②：预加载段开始前清陈旧 .startup_error（防上次崩溃残留误判 Fatal；
+    # ①在 main() 首行，②在 lifespan 开头——双清理覆盖 uvicorn 直启/重启路径）
+    _clear_startup_error_file()
     # 0. 版本检查（不阻止启动，仅警告）
     version_warnings = check_critical_versions()
     for w in version_warnings:
@@ -111,11 +114,15 @@ async def lifespan(app: FastAPI):
     from niu_api.notes import init_db as notes_init_db
     await notes_init_db()  # Creates notes directory if missing
 
-    # 2. Preload embedding model
+    # 2. Preload embedding model（致命级：失败 → 契约 A .startup_error 文件 + 进程退出，
+    #      Rust 启动器以「进程早退 + 文件存在且非空」判定 Fatal 红字展示）
     set_preload_stage("正在加载向量模型")
     from niu_api.internal.embedding import preload as preload_embedding
     logger.info("Preloading embedding model...")
-    preload_embedding()
+    try:
+        preload_embedding()
+    except Exception as e:
+        _handle_embedding_preload_failure(e)
     logger.info("Embedding model ready")
 
     # 2.5. LLM 配置门控：检测失败时不启动依赖 LLM 的后台组件
@@ -788,8 +795,41 @@ def _check_single_instance(port: int) -> bool:
         s.close()
 
 
+def _clear_startup_error_file() -> None:
+    """清理陈旧 .startup_error（跨域契约 A，embedding 致命错误恢复——自 reranker 工程保留）。
+
+    判定 = 进程早退 + 文件存在且非空 → Rust 启动器显示 Fatal；启动成功时文件必须不存在。
+    main() 首行与 lifespan 开头双清理（防上次崩溃残留误判）。
+    """
+    try:
+        (Path.home() / ".niu" / ".startup_error").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _handle_embedding_preload_failure(err: Exception) -> None:
+    """Embedding 预加载失败 = 致命错误（跨域契约 A，纯文件语义）。
+
+    写 ~/.niu/.startup_error（人读文案）后退出进程。退出码任意——uvicorn 把
+    lifespan 内 sys.exit/raise 吞成退出码 0，不依赖非零码；Rust 侧以
+    「进程早退 + 文件存在且非空」判定 Fatal。
+    """
+    message = f"向量模型（embedding）加载失败：{err}"
+    try:
+        niu_dir = Path.home() / ".niu"
+        niu_dir.mkdir(parents=True, exist_ok=True)
+        (niu_dir / ".startup_error").write_text(message, encoding="utf-8")
+    except OSError as e:
+        logger.error(f"写入 .startup_error 失败：{e}")
+    logger.error(f"Embedding 预加载失败，中断启动：{err}")
+    sys.exit(1)
+
+
 def main():
     """Main entry point - run with: python -m niu_api"""
+    # 契约 A 清理①：单实例端口自检之前清陈旧 .startup_error——该自检 sys.exit
+    # 早于 uvicorn.run，早退分支不得看到上次崩溃残留的文件（误判 Fatal）
+    _clear_startup_error_file()
     # 单实例自检（防线二，最后防线）：launcher kill_stale 是主防线，本检查兜底
     # 绕过 launcher 手动双起 / kill_stale 漏网的场景——防双实例并发写 vdb。
     # 端口读取上移到 main() 开头（main() 内仅保留这一处读取，保证 T2.7 env 接线断言唯一语义）
