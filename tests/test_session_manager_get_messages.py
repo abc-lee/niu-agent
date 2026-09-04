@@ -3,10 +3,14 @@
 覆盖：after_id 严格大于过滤 / invalid_after_id / transient / limit 三态
 （缺省 200、封顶 1000、无 after_id 取末尾 N 条）/ has_more 语义 /
 next_after_id / tool 折叠三例（超限折叠+<已精简>、full_tool_output=true 不折叠、
-user/assistant 不折叠）/ created_at 在场。
+user/assistant 不折叠）/ created_at 在场 /
+after_time 时间水位（严格大于边界、空格/T 跨界归一、>limit 最旧 N 条分页、
+与 after_id 共存、游标被过滤空批、无匹配空批、dispatch 转发断言）。
 全 mock store，无真实 DB / LLM / 图谱写入，messages.db 零写入。
 """
 
+import asyncio
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -39,6 +43,15 @@ def _store_with(messages):
             return list(messages)
 
     return _FakeStore()
+
+
+def _t(i):
+    """单调递增 'T' 分隔时间戳（2026-09-04T00:00:00 起第 i 秒）。
+
+    现 _msg 默认 created_at 用 i%60 分钟回绕，>60 条时非单调；
+    after_time >limit 分页用例必须用本夹具保证严格单调。
+    """
+    return f"2026-09-04T{i // 3600:02d}:{(i % 3600) // 60:02d}:{i % 60:02d}"
 
 
 def _call(messages, **kwargs):
@@ -195,3 +208,113 @@ def test_created_at_missing_attr_tolerated():
     msg = SimpleNamespace(id="m1", role="user", content="hi")  # 无 created_at
     result = _call([msg])
     assert result["messages"][0]["created_at"] == ""
+
+
+# ============== after_time 时间水位（journal 游标改造 T1） ==============
+
+
+def test_after_time_strictly_greater():
+    msgs = [_msg(i, created_at=_t(i)) for i in range(1, 7)]
+    # 水位等于 m3 的时间戳 → 严格大于，m3 被排除
+    result = _call(msgs, after_time=_t(3))
+    assert [m["id"] for m in result["messages"]] == ["m4", "m5", "m6"]
+
+
+def test_after_time_space_separator_normalized():
+    # 跨界格式：空格分隔水位 × 'T' 分隔库值。
+    # 裸比较时第 10 字节 ' '(0x20) < 'T'(0x54)，全部库值都会误判为"之后"；
+    # 归一化后只剩严格大于水位的 m3。
+    msgs = [
+        _msg(1, created_at="2026-09-04T10:59:59"),
+        _msg(2, created_at="2026-09-04T11:00:00"),
+        _msg(3, created_at="2026-09-04T11:00:01"),
+    ]
+    result = _call(msgs, after_time="2026-09-04 11:00:00")
+    assert [m["id"] for m in result["messages"]] == ["m3"]
+
+
+def test_after_time_first_page_oldest_n_and_paging():
+    # >limit 场景：过滤集 250 条取 200 → 首页最旧 200 条 + has_more；续页拉完剩余
+    msgs = [_msg(i, created_at=_t(i)) for i in range(1, 251)]
+    result = _call(msgs, after_time="2026-09-04T00:00:00", limit=200)
+    ids = [m["id"] for m in result["messages"]]
+    assert len(ids) == 200 and ids[0] == "m1" and ids[-1] == "m200"
+    assert result["has_more"] is True
+    assert result["next_after_id"] == "m200"
+    # total_messages / idx 基于过滤后序列（同参照系）
+    assert result["total_messages"] == 250
+    assert [m["idx"] for m in result["messages"]] == list(range(1, 201))
+
+    page2 = _call(msgs, after_time="2026-09-04T00:00:00", after_id="m200", limit=200)
+    assert [m["id"] for m in page2["messages"]] == [f"m{i}" for i in range(201, 251)]
+    assert page2["has_more"] is False
+    # next_after_id = 本批最后一条 id（与存量约定一致，仅空批为 None）
+    assert page2["next_after_id"] == "m250"
+    assert page2["total_messages"] == 250
+    assert [m["idx"] for m in page2["messages"]] == list(range(201, 251))
+
+
+def test_after_time_with_after_id_coexist():
+    msgs = [_msg(i, created_at=_t(i)) for i in range(1, 7)]
+    # 水位保留 m3-m6，after_id 再约束到 m3 之后 → 同时满足取交集
+    result = _call(msgs, after_time=_t(2), after_id="m3")
+    assert [m["id"] for m in result["messages"]] == ["m4", "m5", "m6"]
+
+    # after_id 比水位更靠后 → 取更严的一侧
+    result2 = _call(msgs, after_time=_t(1), after_id="m4")
+    assert [m["id"] for m in result2["messages"]] == ["m5", "m6"]
+
+
+def test_after_time_cursor_filtered_out_empty_batch():
+    msgs = [_msg(i, created_at=_t(i)) for i in range(1, 7)]
+    # after_id=m3 在全量存在但被水位排除（_t(3) ≤ _t(5)）；filtered=[m6]（_t(5) 自身
+    # 严格大于排除 m5）→ 游标在 filtered 中定位失败 → 空批。
+    # total_messages=len(filtered)=1 钉过滤后参照系（与 no_match 空批 total=0 对照）
+    result = _call(msgs, after_time=_t(5), after_id="m3")
+    assert result["messages"] == []
+    assert result["has_more"] is False
+    assert result["next_after_id"] is None
+    assert result["total_messages"] == 1
+
+
+def test_after_time_no_match_empty_batch():
+    # 水位在未来 → 无匹配，空批语义
+    msgs = [_msg(i, created_at=_t(i)) for i in range(1, 6)]
+    result = _call(msgs, after_time="2099-01-01T00:00:00")
+    assert result["messages"] == []
+    assert result["has_more"] is False
+    assert result["next_after_id"] is None
+    assert result["total_messages"] == 0
+
+
+def test_dispatch_forwards_after_time():
+    # dispatch 层断言：call_tool 必须转发 after_time。
+    # 若漏转发，get_messages 走缺省尾取返回全部 10 条，与期望的过滤后 5 条不符。
+    from niu_session_manager import call_tool as dispatch
+
+    msgs = [_msg(i, created_at=_t(i)) for i in range(1, 11)]
+    with patch("niu_session_manager._get_store", return_value=_store_with(msgs)):
+        out = asyncio.run(dispatch(
+            "get_messages",
+            {"session_id": "default", "after_time": _t(5)},
+        ))
+    payload = json.loads(out[0].text)
+    assert [m["id"] for m in payload["messages"]] == ["m6", "m7", "m8", "m9", "m10"]
+
+
+def test_mcp_tool_schema_after_time():
+    # MCPTool list_tools 手写 schema 副本与 TOOL_SCHEMAS 同步（四处同步之②）
+    from niu_session_manager import list_tools
+
+    tools = asyncio.run(list_tools())
+    gm = next(t for t in tools if t.name == "get_messages")
+    assert "after_time" in gm.inputSchema["properties"]
+    assert gm.inputSchema["properties"]["after_time"]["type"] == "string"
+
+
+def test_schema_after_time_property():
+    props = TOOL_SCHEMAS["get_messages"]["input_schema"]["properties"]
+    assert "after_time" in props
+    assert props["after_time"]["type"] == "string"
+    desc = props["after_time"]["description"]
+    assert "严格大于" in desc and "可共存" in desc
