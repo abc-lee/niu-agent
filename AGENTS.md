@@ -510,6 +510,16 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+### 2026-09-04
+
+#### 工程：journal 游标改造——uuid 机器行退役 → 落款时间水位（计划 v1.4 R4+R5 双审门禁 + SDD T1-T4）
+
+- **设计（用户拍板）**：「覆盖至: uuid」机器行整链退役 → 整理条目末尾落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号，=本批最后消息 created_at 的 T 替换空格截断秒）即水位；下次整理读最近落款自判起点——程序零游标状态机，交互/夜间双 Agent 共享 journal.md 水位天然一致
+- **T1 session-manager get_messages 新参数 after_time**：created_at 严格大于过滤（ISO 字符串比较=时间序），服务端 replace(' ','T') 分隔符归一后比较；与 after_id 可共存（分页第二页起两者都传）；分页基于过滤后序列（首页取最旧 n 条，防增量静默丢）；TOOL_SCHEMAS/MCPTool/dispatch/函数体四处同步
+- **T2 提示词改写**：journal-agent/journal-daily-agent——无落款=首次整理 limit=200；首页起点为时间不会有 invalid_after_id（删旧因果句「→按首次整理兜底」）；分页中途遇 invalid_after_id（如 /new 并发清库）归类 transient → 本轮放弃不写条目不落款、下轮自然重试；/new 清库免疫（时间是值，新消息总更大）
+- **T3 存量迁移**：journal.md 零 uuid 行，最近落款「覆盖至 2026-09-04 11:00:00」
+- **T4 测试/文档同步**：协议钉补语义钉（落款格式/after_time/next_after_id/旧句 not-in-md）；unified_paths JOURNAL_PATH 错位修复（~/.niu/journal.md → memory.json workspace.path 解析，计数改落款正则）；SYSTEM_MANUAL journal-daily 段改写
+
 ### 2026-09-03
 
 #### 新增：异步子 Agent 完成态存档续跑——工作结束后落盘，同名再次调用自动加载上轮上下文续跑（spec v0.1-v0.6 六轮双审 + 计划 v1.1-v1.2 双审门禁 + SDD T1-T4 PM 复核 + 收官 FinalReview 双审补位，main 2cc58291/66766307/66a88d03/6c3cc193）

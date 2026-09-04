@@ -216,12 +216,19 @@ def test_job_passes_self_managed_workflow_task(monkeypatch, tmp_path):
 
 def test_journal_daily_agent_md_carries_workflow_protocol():
     """协议源钉：夜间整理自理工作流协议在 config/agents/journal-daily-agent.md
-    （起点判定/get_messages 分页/reason 分级/空批/覆盖标记/@end 协议 + report 例外通道教学）。"""
+    （落款时间水位起点判定/get_messages after_time 分页/reason 分级/空批/落款格式/@end 协议 + report 例外通道教学）。"""
     md = (_root / "config" / "agents" / "journal-daily-agent.md").read_text(encoding="utf-8")
-    assert "覆盖至" in md, "起点判定与标记协议必须在场"
-    assert "after_id" in md and "limit=200" in md, "分页拉取用法必须在场"
+    # 落款格式钉（时间水位）：空格分隔、「覆盖至」后无冒号；旧「带冒号 + uuid」机器行格式已退役
+    assert "覆盖至 YYYY-MM-DD HH:MM:SS" in md, "落款格式必须在场（空格分隔无冒号）"
+    # 字符串拼接避免旧格式字面量污染全仓 grep（验收项：带冒号旧格式零命中）
+    assert ("覆盖至" + ": ") not in md, "旧「带冒号 + uuid」标记格式必须退役"
+    # 语义钉：时间起点首页不会有 invalid_after_id 错误，旧因果句已删（防回归）
+    assert "按首次整理兜底" not in md, "旧因果句「→按首次整理兜底」必须已删除"
+    # 分页拉取用法：after_time 起点 + 第二页起 next_after_id
+    assert "after_time" in md and "next_after_id" in md and "limit=200" in md, \
+        "分页拉取用法（after_time/next_after_id）必须在场"
     assert 'session_id="default"' in md
-    assert "invalid_after_id" in md and "transient" in md, "reason 分级错误处理必须在场"
+    assert "invalid_after_id" in md and "transient" in md, "reason 分级错误处理必须在场（分页中途）"
     assert "无新消息" in md, "空批处理必须在场"
     assert "@end" in md, "@end 结束协议必须在场"
     assert '"report"' in md, "report 例外通道教学必须在场"
