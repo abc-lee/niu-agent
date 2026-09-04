@@ -35,7 +35,9 @@ TOOL_SCHEMAS = {
         "description": (
             "Get message list for a session with token counts. Returns messages with "
             "idx, tokens, role, content, created_at (ISO8601). Supports incremental "
-            "paging via after_id; response ends with has_more and next_after_id."
+            "paging via after_id and time-watermark filtering via after_time "
+            "(after_time-only returns the oldest N within the filter window); "
+            "response ends with has_more and next_after_id."
         ),
         "input_schema": {
             "type": "object",
@@ -51,9 +53,19 @@ TOOL_SCHEMAS = {
                         "ID 在库中找不到时报错 reason=invalid_after_id。缺省时返回末尾最新 limit 条"
                     ),
                 },
+                "after_time": {
+                    "type": "string",
+                    "description": (
+                        "只返回 created_at 严格大于该时间之后的消息；"
+                        "与 after_id 可共存（同时满足），缺省不过滤"
+                    ),
+                },
                 "limit": {
                     "type": "integer",
-                    "description": "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条",
+                    "description": (
+                        "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条；"
+                        "仅给 after_time 时取过滤窗口内最旧 N 条"
+                    ),
                 },
                 "full_tool_output": {
                     "type": "boolean",
@@ -223,6 +235,7 @@ _MAX_GET_MESSAGES_LIMIT = 1000
 def get_messages(
     session_id: str,
     after_id: str | None = None,
+    after_time: str | None = None,
     limit: int = _DEFAULT_GET_MESSAGES_LIMIT,
     full_tool_output: bool = False,
     **kwargs,
@@ -231,6 +244,13 @@ def get_messages(
 
     after_id: strictly-greater filter on storage order; unknown id fails loud
       with {"reason": "invalid_after_id"} (e.g. after /new wiped the DB).
+    after_time: created_at watermark — only messages strictly newer are kept.
+      Separator-tolerant (' ' and 'T' both accepted; normalized by string
+      replace, no time parsing). Coexists with after_id (both must hold); when
+      set, total_messages/idx/has_more all reference the post-filter sequence
+      and first pages take the OLDEST n of the window (not the tail). An
+      after_id that exists in full but is excluded by the watermark yields an
+      empty batch (has_more=False, next_after_id=None).
     limit: default 200, capped at 1000; without after_id the newest N (tail).
     full_tool_output: default false — oversized role=='tool' content folded via
       agent.md_mirror.truncate_tool_output (reused, never duplicated).
@@ -241,11 +261,12 @@ def get_messages(
         store = _get_store()
         messages = _run_async(store.get_messages())
 
+        # Normalize time watermark (' ' / 'T' separator both tolerated)
+        after_time_norm = after_time.replace(" ", "T") if after_time else None
+
         # Locate after_id by linear scan on storage order (strictly greater)
-        seq = messages
-        base_index = 0
+        start = None
         if after_id is not None:
-            start = None
             for i, msg in enumerate(messages):
                 if getattr(msg, "id", "") == after_id:
                     start = i + 1
@@ -256,8 +277,6 @@ def get_messages(
                     "error": f"after_id '{after_id}' not found in session messages",
                     "reason": "invalid_after_id",
                 }
-            seq = messages[start:]
-            base_index = start
 
         try:
             n = int(limit)
@@ -265,14 +284,52 @@ def get_messages(
             n = _DEFAULT_GET_MESSAGES_LIMIT
         n = max(1, min(n, _MAX_GET_MESSAGES_LIMIT))
 
-        if after_id is None:
-            selected = seq[-n:]  # tail: newest N
-            base_index = len(messages) - len(selected)
+        if after_time_norm is not None:
+            # Time-watermark path: the post-filter sequence is the reference
+            # frame for total_messages / idx / has_more (same frame).
+            filtered = [
+                m for m in messages
+                if (getattr(m, "created_at", "") or "") > after_time_norm
+            ]
+            base_index = 0
+            if after_id is not None:
+                # Continuation page: locate after_id within the filtered
+                # sequence; present in full but excluded by the watermark →
+                # empty batch (cursor is stale relative to the window).
+                j = next(
+                    (k for k, m in enumerate(filtered) if getattr(m, "id", "") == after_id),
+                    None,
+                )
+                if j is None:
+                    return {
+                        "total_messages": len(filtered),
+                        "total_tokens": 0,
+                        "messages": [],
+                        "has_more": False,
+                        "next_after_id": None,
+                    }
+                base_index = j + 1
+            window = filtered[base_index:]
+            selected = window[:n]  # first page: oldest n; continuation: slice from cursor
+            has_more = len(selected) < len(window)
+            total_messages = len(filtered)
         else:
-            selected = seq[:n]
-        # has_more is defined as: newer messages exist beyond this batch
-        # (tail batches end at the newest message, hence never has_more)
-        has_more = base_index + len(selected) < len(messages)
+            # No time watermark: original path (byte-for-byte backward compat).
+            seq = messages
+            base_index = 0
+            if after_id is not None:
+                seq = messages[start:]
+                base_index = start
+
+            if after_id is None:
+                selected = seq[-n:]  # tail: newest N
+                base_index = len(messages) - len(selected)
+            else:
+                selected = seq[:n]
+            # has_more is defined as: newer messages exist beyond this batch
+            # (tail batches end at the newest message, hence never has_more)
+            has_more = base_index + len(selected) < len(messages)
+            total_messages = len(messages)
 
         # Fold oversized tool outputs via md_mirror (single source of truth)
         truncate = None
@@ -318,7 +375,7 @@ def get_messages(
             })
 
         return {
-            "total_messages": len(messages),
+            "total_messages": total_messages,
             "total_tokens": total_tokens,
             "messages": formatted,
             "has_more": has_more,
@@ -610,7 +667,9 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Get message list for a session with token counts. Returns messages with "
                 "idx, tokens, role, content, created_at (ISO8601). Supports incremental "
-                "paging via after_id; response ends with has_more and next_after_id."
+                "paging via after_id and time-watermark filtering via after_time "
+                "(after_time-only returns the oldest N within the filter window); "
+                "response ends with has_more and next_after_id."
             ),
             inputSchema={
                 "type": "object",
@@ -626,9 +685,19 @@ async def list_tools() -> list[Tool]:
                             "ID 在库中找不到时报错 reason=invalid_after_id。缺省时返回末尾最新 limit 条"
                         ),
                     },
+                    "after_time": {
+                        "type": "string",
+                        "description": (
+                            "只返回 created_at 严格大于该时间之后的消息；"
+                            "与 after_id 可共存（同时满足），缺省不过滤"
+                        ),
+                    },
                     "limit": {
                         "type": "integer",
-                        "description": "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条",
+                        "description": (
+                            "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条；"
+                            "仅给 after_time 时取过滤窗口内最旧 N 条"
+                        ),
                     },
                     "full_tool_output": {
                         "type": "boolean",
@@ -759,10 +828,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: session_id is required")]
 
         # 直读本机 DB，与同进程直调共用一份实现（read_history_block 同模式），
-        # 支持 after_id/limit/full_tool_output 新参数且四处 schema 天然一致
+        # 支持 after_id/after_time/limit/full_tool_output 新参数且四处 schema 天然一致
         result = get_messages(
             session_id,
             after_id=arguments.get("after_id"),
+            after_time=arguments.get("after_time"),
             limit=arguments.get("limit", _DEFAULT_GET_MESSAGES_LIMIT),
             full_tool_output=bool(arguments.get("full_tool_output", False)),
         )
