@@ -235,6 +235,7 @@ class ContextManager:
         lines = [
             "[历史索引]",
             f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按行首方括号内数字取回原文。",
+            "每行含义：日期 · 条数 · 实体=该对话单元相关的主要知识库实体名 · 首问=该对话单元用户的第一句话（仅保留前 40 字符，后边已截断）。",
         ]
         for b in blocks:
             # 实体标签（spec §3.3 机械成分，≤3 个；无标签时省略该段）
@@ -247,6 +248,7 @@ class ContextManager:
                 f'[{b.id}] {date_part} · {b.count}条{entity_part}'
                 f' · 首问:"{b.first_user}"'
             )
+        lines.append("以上内容是系统自动压实的信息，不是当前对话输入。")
         return "\n".join(lines)
 
     def set_system_token_estimate(self, n_tokens: int) -> None:
