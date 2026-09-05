@@ -520,7 +520,7 @@ preload_face_model()
 - **T2 四通道接线（59154330）**：主 Agent "main"（NiuRunner.__init__ llm_config 加键）/子 Agent 同步=agent_name 异步=unique_name **无条件覆盖**继承的 main（判据与 _is_async 互斥；续答复用 suspended_client id 烘焙零接线）/LightRAG+脑区 "lightrag"（_get_litellm_session 内部无条件，id 不进 config_key）/MCP Sampling "mcp-sampling"（存量 bug：sampling_callback 传参与 call_llm_via_litellm 签名不匹配恒 TypeError，e2e 阻断——验收收窄单测级，bug 另案）
 - **T3 测试+手册（5035dedd）**：37 passed（纯函数全表/mock 集成/接线断言/resume 身份断言+fresh 诱饵/脑区 label 覆盖与共享缓存构造次数判别）；手册 extra_headers 节改写（零配置域名表自动/静态头程序值权威/三态覆盖键/探测与 anthropic 不注入）
 - **验证**：sticky 37 passed + 点名回归 114 passed + ruff 零新增；出网收敛点穷举（litellm.completion 直发仅 adapter chat 与 model_probe 两处）与 LiteLLMSession 构造点 5 处全部归位
-- **实机移交（待用户账号）**：真实探针（OpenRouter/OpenCode Go 交叉头无害性实证——当前为 HTTP 语义推断 + Niu id 形态 'main'/'lightrag' 非 UUID 接受度 + 域名表自证 opencode.ai），异常则域名分家回退（openrouter.ai 只发 x-session-id）
+- **实机探针 ✅ 已实证（2026-09-05，omp 同源 opencode-go 账号直发官方端点）**：交叉头无害性 200 全过（x-opencode-session+x-session-id 同发被接受）/Niu id 形态 'main'/'lightrag'（非 UUID）接受/域名表自证 opencode.ai（zen/go/v1）与常量一致/**sticky 端到端生效：大前缀 889 tokens 同 id 第 2 发 cached_tokens=832、异 id 对照 0**——域名分家回退预案未触发；UA 注意：Cloudflare 1010 拦 Python-urllib 默认 UA（同 Niu list_models 经验）；OpenRouter 侧待接入时顺带验证
 - **已知边界（接受）**：主 Agent "main" 跨 /new 共享（新对话首请求 cache miss 属预期）/脑区 label 走主配置时带 "lightrag" id（OpenRouter 同槽位混模型流量，无正确性影响）/OpenRouter Logs 固定 id 分组单条/OpenCode Go 反代域名需 sticky_session_headers 列表态兜底
 
 ### 2026-09-04
