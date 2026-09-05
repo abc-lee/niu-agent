@@ -118,7 +118,7 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 
 **2. 会话亲和（sticky）动态注入（零配置自动）**：程序在出网 LLM 调用上自动注入每会话动态 id，支持服务商的 KV cache 亲和路由（同会话请求路由到同一后端槽位命中前缀缓存，不同会话分散到不同槽位）。**无需用户配置，默认启用**：
 
-- **启用条件**：`apiBase` 域名命中内置域名表（`openrouter.ai`/`opencode.ai`，含子域），自动注入 `x-session-id` + `x-opencode-session` 两个头，值均为当前会话 id。
+- **启用条件**：`apiBase` 域名命中内置域名表（含子域）时，自动注入该家自有 sticky 头，值为当前会话 id——`openrouter.ai` → `x-session-id`；`opencode.ai` → `x-opencode-session`。各发各的、不交叉互发。
 - **各通道会话 id**：主对话 = `main`；子 Agent = 其派发身份（同步派发为 agent 名、异步派发为 unique_name，续答复用原 client 保持原 id）；LightRAG 知识图谱（含脑区 label 生成）= `lightrag`；MCP Sampling = `mcp-sampling`。
 - **与静态头的关系**：用户配置的自定义键保留并一同发送；同键冲突时（如手动写了 `x-session-id`）**程序动态值权威**，覆盖配置里的静态值。
 
@@ -126,7 +126,7 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 
 - **探测通道不注入**：能力探测/连接测试调用没有会话 id，永不发 sticky 头。
 - **anthropic 类型不注入**：Anthropic 原生格式用 `cache_control` 显式缓存、无 sticky 路由需求，排除优先于一切（含下方覆盖键）。
-- **覆盖键 `sticky_session_headers`**（位于 `litellm_kwargs` 内，三态，仅反代/特殊网关场景使用）：`"auto"`（缺省）按域名表启用；`"off"` 完全关闭注入（即使域名命中）；字符串列表（如 `["x-session-id"]`）替换默认双头集、只发列表中键且**无条件发送**（不看域名是否命中）——用于 apiBase 不含官方域名但后端实为 OpenRouter/OpenCode 的反代场景。空列表等价 `"off"`，其他非法值按 `"off"` 处理。
+- **覆盖键 `sticky_session_headers`**（位于 `litellm_kwargs` 内，三态，仅反代/特殊网关场景使用）：`"auto"`（缺省）按域名表启用；`"off"` 完全关闭注入（即使域名命中）；字符串列表（如 `["x-session-id"]`）替换该域默认头集、只发列表中键且**无条件发送**（不看域名是否命中）——用于 apiBase 不含官方域名但后端实为 OpenRouter/OpenCode 的反代场景。空列表等价 `"off"`，其他非法值按 `"off"` 处理。
 - **与 drop_params 兼容**：`litellm_kwargs` 非空时程序自动开启 `drop_params`（厂商不支持的参数自动丢弃），实测 `extra_headers`（含注入头）不受其影响——LiteLLM 的 openai 兼容路径参数白名单原生包含它。
 - **设置窗口不提供这些字段的可视化编辑**，需手动编辑 `~/.niu/config/user-config.json`（关闭程序后编辑；改后回设置窗口"测试连接并保存"验证连通）。保存时已有键会保留（仅 thinking 被增删），`extra_headers`/`sticky_session_headers` 不会被设置窗口保存覆盖。
 

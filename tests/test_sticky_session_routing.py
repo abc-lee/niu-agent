@@ -26,14 +26,13 @@ def _resolve(api_base, sticky_config=None, api_type="openai", session_id="main")
 # ① resolve_sticky_headers 纯函数：auto 态域名表匹配
 
 
-def test_auto_openrouter_exact_domain_sends_both_headers():
-    assert _resolve("https://openrouter.ai/api/v1") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
+def test_auto_openrouter_exact_domain_sends_only_own_header():
+    """auto 态只发命中域自家头键——openrouter.ai 不发 x-opencode-session（不交叉互发）。"""
+    assert _resolve("https://openrouter.ai/api/v1") == {"x-session-id": "main"}
 
 
 def test_auto_openrouter_subdomain_hits():
-    assert _resolve("https://api.openrouter.ai/v1") is not None
+    assert _resolve("https://api.openrouter.ai/v1") == {"x-session-id": "main"}
 
 
 def test_auto_evilopenrouter_ai_does_not_hit():
@@ -42,16 +41,12 @@ def test_auto_evilopenrouter_ai_does_not_hit():
 
 
 def test_auto_uppercase_domain_variant_hits():
-    assert _resolve("https://OPENROUTER.AI/api/v1") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
+    assert _resolve("https://OPENROUTER.AI/api/v1") == {"x-session-id": "main"}
 
 
 def test_scheme_less_openrouter_hits():
     """scheme-less apiBase 先补 https:// 再解析（否则 hostname=None 静默失配）。"""
-    assert _resolve("openrouter.ai") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
+    assert _resolve("openrouter.ai") == {"x-session-id": "main"}
 
 
 def test_scheme_less_evil_domain_does_not_hit():
@@ -59,10 +54,9 @@ def test_scheme_less_evil_domain_does_not_hit():
 
 
 def test_auto_opencode_ai_and_subdomain_hit():
-    assert _resolve("https://opencode.ai/v1") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
-    assert _resolve("https://gateway.opencode.ai/v1") is not None
+    """opencode.ai 只发自家 x-opencode-session——不发 x-session-id（反向不交叉）。"""
+    assert _resolve("https://opencode.ai/v1") == {"x-opencode-session": "main"}
+    assert _resolve("https://gateway.opencode.ai/v1") == {"x-opencode-session": "main"}
 
 
 def test_auto_non_matching_domain_no_headers():
@@ -72,9 +66,7 @@ def test_auto_non_matching_domain_no_headers():
 
 def test_auto_trailing_dot_fqdn_hits():
     """尾点 FQDN（'openrouter.ai.'）rstrip('.') 归一后应命中。"""
-    assert _resolve("https://openrouter.ai.") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
+    assert _resolve("https://openrouter.ai.") == {"x-session-id": "main"}
 
 
 def test_auto_trailing_dot_evil_domain_still_does_not_hit():
@@ -102,7 +94,7 @@ def test_list_replaces_header_set_unconditionally():
 
 
 def test_list_state_does_not_send_default_headers():
-    """列表态只发列表键——默认双头不发。"""
+    """列表态只发列表键——该域默认头集不发（opencode 键出现在 openrouter 域 = 纯列表态产物）。"""
     headers = _resolve("https://openrouter.ai/api/v1", ["x-opencode-session"])
     assert headers == {"x-opencode-session": "main"}
 
@@ -126,7 +118,7 @@ def test_anthropic_excluded_before_everything():
 
 def test_custom_session_id_value_used():
     assert _resolve("https://opencode.ai/v1", session_id="file-processor") == {
-        "x-session-id": "file-processor", "x-opencode-session": "file-processor",
+        "x-opencode-session": "file-processor",
     }
 
 
@@ -164,11 +156,10 @@ def _chat_request_params(cfg):
         return mock_completion.call_args[1]
 
 
-def test_chat_matching_domain_injects_both_headers():
+def test_chat_matching_domain_injects_own_header_only():
+    """openrouter.ai 实例只注入自家 x-session-id（不交叉发 x-opencode-session）。"""
     params = _chat_request_params(_base_cfg(sticky_session_id="main"))
-    assert params.get("extra_headers") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
+    assert params.get("extra_headers") == {"x-session-id": "main"}
 
 
 def test_chat_headers_survive_with_drop_params():
@@ -178,9 +169,7 @@ def test_chat_headers_survive_with_drop_params():
         litellm_kwargs={"thinking": {"type": "disabled"}},
     ))
     assert params.get("drop_params") is True
-    assert params.get("extra_headers") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
+    assert params.get("extra_headers") == {"x-session-id": "main"}
 
 
 def test_chat_probe_construction_without_id_sends_no_headers():
@@ -218,7 +207,6 @@ def test_chat_user_static_extra_headers_coexist_same_key_overridden():
     assert params.get("extra_headers") == {
         "x-custom": "abc",
         "x-session-id": "main",
-        "x-opencode-session": "main",
     }
 
 
@@ -250,9 +238,7 @@ def test_chat_api_base_flip_between_instances():
 
     # 同 id、仅 api_base 翻转（_base_cfg 默认 apibase=openrouter.ai）
     params_or = _chat_request_params(_base_cfg(sticky_session_id="main"))
-    assert params_or.get("extra_headers") == {
-        "x-session-id": "main", "x-opencode-session": "main",
-    }
+    assert params_or.get("extra_headers") == {"x-session-id": "main"}
 
 
 def test_chat_anthropic_beta_and_sticky_headers_coexist():
@@ -265,7 +251,7 @@ def test_chat_anthropic_beta_and_sticky_headers_coexist():
     headers = params.get("extra_headers") or {}
     assert headers.get("anthropic-beta") == "prompt-caching-2024-07-31"
     assert headers.get("x-session-id") == "main"
-    assert headers.get("x-opencode-session") == "main"
+    assert "x-opencode-session" not in headers  # openrouter.ai 域不交叉发 opencode 键
 
 
 # ③ model_probe._build_probe_params：控制键不泄入直发参数
