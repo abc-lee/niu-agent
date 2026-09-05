@@ -5,11 +5,12 @@
    大小写变体、scheme-less 两用例、三态语义（auto/off/list 替换）、非法值=off、
    anthropic 排除优先于一切（含列表态）、空列表
 ② LiteLLMSession.chat() 注入集成：匹配域名带头 / drop_params 下存活 / 探测构造无 id 不发头 /
-   控制键剔除 / 用户静态 extra_headers 共存与同键覆盖 / anthropic 不发 / 非匹配域名默认不发
+   控制键剔除 / 用户静态 extra_headers 共存与同键覆盖 / anthropic 不发 / 非匹配域名默认不发 /
+   apiBase 翻转跟随实例（AC8）
 ③ model_probe._build_probe_params 控制键不泄入直发参数
 ④ create_litellm_client / runner.create_client 白名单透传行
 ⑤ T2 通道接线：四通道 id 落到实际构造实例（主/子 Agent 同步-异步/LightRAG+脑区 label/MCP sampling）
-   + 续答路径 suspended_client 复用（id 与原派发一致）
+   + 续答路径 suspended_client 复用（id 与原派发一致）+ AC8 LightRAG 重建幂等
 
 全 mock litellm.completion，禁真实 LLM / 真实 ~/.niu（日志写盘经 patch 短路）。
 """
@@ -236,6 +237,22 @@ def test_chat_non_matching_domain_auto_sends_no_headers():
         sticky_session_id="main",
     ))
     assert "extra_headers" not in params
+
+
+def test_chat_api_base_flip_between_instances():
+    """AC8：注入判定跟随实例自身 api_base——同 id "main" 两实例（ark / openrouter.ai）头集不同；
+    配置热重载重建 session 后翻转即时生效（无跨实例全局状态残留）。"""
+    params_ark = _chat_request_params(_base_cfg(
+        apibase="https://ark.cn-beijing.volces.com/api/v3",
+        sticky_session_id="main",
+    ))
+    assert "extra_headers" not in params_ark
+
+    # 同 id、仅 api_base 翻转（_base_cfg 默认 apibase=openrouter.ai）
+    params_or = _chat_request_params(_base_cfg(sticky_session_id="main"))
+    assert params_or.get("extra_headers") == {
+        "x-session-id": "main", "x-opencode-session": "main",
+    }
 
 
 def test_chat_anthropic_beta_and_sticky_headers_coexist():
@@ -483,6 +500,34 @@ def test_region_label_shares_lightrag_session_id():
         # LiteLLMSession 只构造 1 次——缓存命中不重建（is 断言无判别力：return_value 恒同对象）
         lm._get_litellm_session(main_cfg)
         assert mock_session_cls.call_count == 1
+    finally:
+        lm.reset_litellm_session_cache()
+
+
+def test_lightrag_rebuild_restores_sticky_id():
+    """AC8 重建幂等：reset_litellm_session_cache 后重建，新实例 sticky_session_id 仍=="lightrag"
+    （配置热重载不丢 id）。"""
+    from niu_api.internal import lightrag_manager as lm
+
+    cfg = {
+        "model": "gpt-4o", "apibase": "https://openrouter.ai/api/v1",
+        "apikey": "k", "type": "openai",
+    }
+    built_cfgs = []
+
+    class _FakeSession:
+        def __init__(self, cfg):  # _get_litellm_session 以 LiteLLMSession(cfg=...) 关键字构造
+            built_cfgs.append(cfg)
+
+    try:
+        with patch("agent.generic.litellm_adapter.LiteLLMSession", _FakeSession):
+            s1 = lm._get_litellm_session(cfg)
+            lm.reset_litellm_session_cache()
+            s2 = lm._get_litellm_session(cfg)
+
+        assert s1 is not s2  # reset 真的触发了重建（未重建则 built_cfgs 只有 1 条，下断言 IndexError）
+        assert built_cfgs[0]["sticky_session_id"] == "lightrag"
+        assert built_cfgs[1]["sticky_session_id"] == "lightrag"
     finally:
         lm.reset_litellm_session_cache()
 
