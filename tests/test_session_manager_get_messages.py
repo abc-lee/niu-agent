@@ -2,11 +2,8 @@
 
 覆盖：after_id 严格大于过滤 / invalid_after_id / transient / limit 三态
 （缺省 200、封顶 1000、无 after_id 取末尾 N 条）/ has_more 语义 /
-next_after_id / 便利遍历裁剪（>2000 字符 → 前 1200+<已折叠>+后 800，所有 role
-统一适用含 tool 两道都走，阈值边界、多字节安全、full_tool_output 遍历态忽略）/
-message_id 单条全量（完整原文不裁剪、invalid_message_id、dispatch 转发、
-schema 双副本同步）/ 服务端输出预算自管（超 28K 字符从尾部收缩 +
-has_more/next_after_id 分页排空全覆盖）/ created_at 在场 /
+next_after_id / tool 折叠三例（超限折叠+<已精简>、full_tool_output=true 不折叠、
+user/assistant 不折叠）/ created_at 在场 /
 after_time 时间水位（严格大于边界、空格/T 跨界归一、>limit 最旧 N 条分页、
 与 after_id 共存、游标被过滤空批、无匹配空批、dispatch 转发断言）。
 全 mock store，无真实 DB / LLM / 图谱写入，messages.db 零写入。
@@ -67,24 +64,7 @@ def _call(messages, **kwargs):
         return get_messages("default", **kwargs)
 
 
-def _drain(messages, **first_kwargs):
-    """按既有分页协议排空（has_more/next_after_id 循环），返回 (全部 id 序列, 各页 result)。
-
-    续页沿用首批 kwargs（after_time 等）并追加 after_id——与 journal 提示词
-    「分页第二页起两者都传」一致。
-    """
-    all_ids, pages, kwargs = [], [], dict(first_kwargs)
-    while True:
-        result = _call(messages, **kwargs)
-        assert "error" not in result, result
-        all_ids.extend(m["id"] for m in result["messages"])
-        pages.append(result)
-        if not result["has_more"]:
-            return all_ids, pages
-        kwargs["after_id"] = result["next_after_id"]
-
-
-_LONG = "a" * 3000  # > 2000 字节折叠阈值 & > 2000 字符裁剪阈值
+_LONG = "a" * 3000  # > 2000 字节折叠阈值
 
 
 # ============== Schema 断言 ==============
@@ -132,29 +112,22 @@ def test_store_exception_transient_reason():
 
 def test_limit_default_200_tail_without_after_id():
     msgs = [_msg(i) for i in range(1, 206)]  # 205 条
-    all_ids, pages = _drain(msgs)
-    # 无 after_id 取末尾最新 200 条（m6..m205）；输出预算自管把首批收缩到
-    # 28K 字符内，分页排空必须不重不漏覆盖全部
-    assert all_ids == [f"m{i}" for i in range(6, 206)]
-    first = pages[0]
-    assert first["messages"][0]["id"] == "m6"          # 尾取起点语义不变
-    assert len(first["messages"]) < 200                # 预算收缩生效
-    assert first["output_budget_truncated"] is True
-    assert first["has_more"] is True
-    assert first["next_after_id"] == first["messages"][-1]["id"]
-    # 末批含最新消息 → has_more False
-    assert pages[-1]["has_more"] is False
-    assert all_ids[-1] == "m205"
+    result = _call(msgs)
+    ids = [m["id"] for m in result["messages"]]
+    assert len(ids) == 200
+    # 无 after_id 取末尾最新 N 条：m6..m205
+    assert ids[0] == "m6" and ids[-1] == "m205"
+    # 本批已含最新消息 → has_more False
+    assert result["has_more"] is False
+    assert result["next_after_id"] == "m205"
 
 
 def test_limit_capped_at_1000():
     msgs = [_msg(i) for i in range(1, 1201)]  # 1200 条
-    all_ids, pages = _drain(msgs, limit=99999)
-    assert all_ids == [f"m{i}" for i in range(201, 1201)]
-    # limit 封顶 1000：尾取起点 m201；预算自管下必然跨多批
-    assert pages[0]["messages"][0]["id"] == "m201"
-    assert pages[0]["output_budget_truncated"] is True
-    assert len(pages) >= 2
+    result = _call(msgs, limit=99999)
+    ids = [m["id"] for m in result["messages"]]
+    assert len(ids) == 1000
+    assert ids[0] == "m201" and ids[-1] == "m1200"
 
 
 def test_limit_no_after_id_takes_tail_n():
@@ -193,7 +166,6 @@ def test_empty_batch_next_after_id_none():
 
 
 def test_oversized_tool_content_folded():
-    """tool 两道都走：先 truncate_tool_output 整段折叠（>2000 字节），再 2000 字符便利裁剪。"""
     msgs = [
         _msg(1, role="user"),
         _msg(2, role="assistant", content="tool call"),
@@ -202,116 +174,28 @@ def test_oversized_tool_content_folded():
     result = _call(msgs)
     folded = result["messages"][2]
     content = folded["content"]
-    assert "<已折叠>" in content
-    # 前 60%（1200 字符）在场
-    assert content.startswith(_LONG[:1200])
-    # 后 40%（800 字符）在场
-    assert content.endswith(_LONG[-800:])
-    assert len(content) == 1200 + len("<已折叠>") + 800
+    assert "<已精简>" in content
+    # 头部在场
+    assert content.startswith(_LONG[:100])
+    # 尾部在场
+    assert content.endswith(_LONG[-100:])
+    assert len(content.encode("utf-8")) < len(_LONG.encode("utf-8"))
 
 
-def test_traversal_ignores_full_tool_output():
-    """遍历态一律裁剪：full_tool_output=true 不再豁免（完整原文仅 message_id 单条查询）。"""
+def test_full_tool_output_true_not_folded():
     msgs = [_msg(1, role="tool", content=_LONG)]
     result = _call(msgs, full_tool_output=True)
-    content = result["messages"][0]["content"]
-    assert content != _LONG
-    assert "<已折叠>" in content
-    assert len(content) == 1200 + len("<已折叠>") + 800
+    assert result["messages"][0]["content"] == _LONG
 
 
-def test_all_roles_trimmed_in_traversal():
-    """便利裁剪所有 role 统一适用（含 user/assistant）。"""
+def test_user_assistant_never_folded():
     msgs = [
         _msg(1, role="user", content=_LONG),
         _msg(2, role="assistant", content=_LONG),
     ]
     result = _call(msgs)
-    expected = _LONG[:1200] + "<已折叠>" + _LONG[-800:]
-    assert result["messages"][0]["content"] == expected
-    assert result["messages"][1]["content"] == expected
-
-
-def test_content_trim_threshold_boundary():
-    """≤2000 字符原样返回；>2000 才折叠。"""
-    exact = "b" * 2000
-    over = "c" * 2001
-    msgs = [_msg(1, content=exact), _msg(2, content=over)]
-    result = _call(msgs)
-    assert result["messages"][0]["content"] == exact
-    assert result["messages"][1]["content"] == "c" * 1200 + "<已折叠>" + "c" * 800
-
-
-def test_trim_multibyte_cjk_safe():
-    """字符级切片不切多字节字符：CJK 内容按字符边界折叠，无乱码。"""
-    cjk = "".join(chr(0x4E00 + (i % 90)) for i in range(3000))  # 3000 个 CJK 字符
-    result = _call([_msg(1, content=cjk)])
-    assert result["messages"][0]["content"] == cjk[:1200] + "<已折叠>" + cjk[-800:]
-
-
-# ============== message_id 单条全量 ==============
-
-
-def test_message_id_returns_full_content():
-    """message_id 单条查询：完整原文（不折叠、不裁剪），分页参数忽略。"""
-    msgs = [_msg(i, role="tool", content=_LONG if i == 5 else f"content {i}") for i in range(1, 8)]
-    result = _call(msgs, message_id="m5", after_id="m6", limit=1)
-    assert result["status"] == "ok"
-    msg = result["message"]
-    assert msg["id"] == "m5"
-    assert msg["role"] == "tool"
-    assert msg["content"] == _LONG  # 3000 字符完整原文，未裁剪
-    assert msg["created_at"]
-
-
-def test_message_id_invalid_reason():
-    msgs = [_msg(i) for i in range(1, 6)]
-    result = _call(msgs, message_id="nonexistent")
-    assert result.get("reason") == "invalid_message_id"
-    assert "error" in result
-
-
-def test_dispatch_forwards_message_id():
-    # dispatch 层断言：call_tool 必须转发 message_id（漏转发则走遍历态返回裁剪批）。
-    from niu_session_manager import call_tool as dispatch
-
-    msgs = [_msg(1, role="tool", content=_LONG), _msg(2)]
-    with patch("niu_session_manager._get_store", return_value=_store_with(msgs)):
-        out = asyncio.run(dispatch(
-            "get_messages",
-            {"session_id": "default", "message_id": "m1"},
-        ))
-    payload = json.loads(out[0].text)
-    assert payload["status"] == "ok"
-    assert payload["message"]["content"] == _LONG
-
-
-def test_schema_message_id_both_copies():
-    # TOOL_SCHEMAS 与 list_tools 手写副本双处同步（四处同步之②），数字口径一致
-    from niu_session_manager import list_tools
-
-    props = TOOL_SCHEMAS["get_messages"]["input_schema"]["properties"]
-    assert "message_id" in props
-    assert props["message_id"]["type"] == "string"
-    desc = TOOL_SCHEMAS["get_messages"]["description"]
-    assert "2000" in desc and "<已折叠>" in desc and "message_id" in desc
-
-    tools = asyncio.run(list_tools())
-    gm = next(t for t in tools if t.name == "get_messages")
-    assert gm.inputSchema["properties"]["message_id"]["type"] == "string"
-    assert "2000" in gm.description and "<已折叠>" in gm.description
-
-
-def test_budget_shrink_long_content_paging():
-    """长内容批：预算收缩后条数远小于 limit，分页排空仍全覆盖。"""
-    msgs = [_msg(i, role="user", content="x" * 3000) for i in range(1, 51)]  # 50 条超长
-    all_ids, pages = _drain(msgs)
-    assert all_ids == [f"m{i}" for i in range(1, 51)]
-    # 每条裁剪后 ~2006 字符 → 单批远装不下 50 条
-    assert len(pages[0]["messages"]) < 15
-    assert pages[0]["output_budget_truncated"] is True
-    assert pages[0]["remaining_in_batch"] == 50 - len(pages[0]["messages"])
-    assert "after_id=" in pages[0]["message"]
+    assert result["messages"][0]["content"] == _LONG
+    assert result["messages"][1]["content"] == _LONG
 
 
 def test_created_at_present_on_every_message():
@@ -370,22 +254,24 @@ def test_after_time_space_separator_normalized():
 
 
 def test_after_time_first_page_oldest_n_and_paging():
-    # >limit 场景：过滤集 250 条，首页最旧优先 + has_more；预算自管收缩首批，
-    # 续页（after_time+after_id 同传）拉完剩余——排空必须不重不漏、idx 连续
+    # >limit 场景：过滤集 250 条取 200 → 首页最旧 200 条 + has_more；续页拉完剩余
     msgs = [_msg(i, created_at=_t(i)) for i in range(1, 251)]
-    all_ids, pages = _drain(msgs, after_time="2026-09-04T00:00:00", limit=200)
-    assert all_ids == [f"m{i}" for i in range(1, 251)]
-    first = pages[0]
-    assert first["messages"][0]["id"] == "m1"
-    assert len(first["messages"]) < 200            # 预算收缩生效
-    assert first["output_budget_truncated"] is True
-    assert first["has_more"] is True
-    assert first["next_after_id"] == first["messages"][-1]["id"]
-    # total_messages / idx 基于过滤后序列（同参照系），跨批连续
-    for p in pages:
-        assert p["total_messages"] == 250
-    idxs = [m["idx"] for p in pages for m in p["messages"]]
-    assert idxs == list(range(1, 251))
+    result = _call(msgs, after_time="2026-09-04T00:00:00", limit=200)
+    ids = [m["id"] for m in result["messages"]]
+    assert len(ids) == 200 and ids[0] == "m1" and ids[-1] == "m200"
+    assert result["has_more"] is True
+    assert result["next_after_id"] == "m200"
+    # total_messages / idx 基于过滤后序列（同参照系）
+    assert result["total_messages"] == 250
+    assert [m["idx"] for m in result["messages"]] == list(range(1, 201))
+
+    page2 = _call(msgs, after_time="2026-09-04T00:00:00", after_id="m200", limit=200)
+    assert [m["id"] for m in page2["messages"]] == [f"m{i}" for i in range(201, 251)]
+    assert page2["has_more"] is False
+    # next_after_id = 本批最后一条 id（与存量约定一致，仅空批为 None）
+    assert page2["next_after_id"] == "m250"
+    assert page2["total_messages"] == 250
+    assert [m["idx"] for m in page2["messages"]] == list(range(201, 251))
 
 
 def test_after_time_with_after_id_coexist():
