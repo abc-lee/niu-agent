@@ -308,7 +308,8 @@ class TestEntityTags:
         units = [(0, 1)]
 
         monkeypatch.setattr(
-            entity_tags, "collect_tags", lambda ranges: [["实体A"]] * len(ranges)
+            entity_tags, "collect_tags",
+            lambda ranges, first_users=None: [["实体A"]] * len(ranges),
         )
         db = tmp_path / "b.db"
         added = compaction.archive_excluded_units(messages, units, 99, db)
@@ -317,8 +318,9 @@ class TestEntityTags:
         assert load_all(db)[0].entities == ["实体A"]
 
         monkeypatch.setattr(
-            entity_tags, "collect_tags", lambda ranges: (_ for _ in ()).throw(
-                RuntimeError("boom"))
+            entity_tags, "collect_tags",
+            lambda ranges, first_users=None: (_ for _ in ()).throw(
+                RuntimeError("boom")),
         )
         db2 = tmp_path / "b2.db"
         assert compaction.archive_excluded_units(messages, units, 99, db2) == 1

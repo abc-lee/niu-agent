@@ -84,7 +84,7 @@ def isolated_calibration(monkeypatch):
     calibration._cached_ratio = 1.0
     AUTO_GATE.release()
     monkeypatch.setattr(entity_tags, "collect_tags",
-                        lambda time_ranges: [[] for _ in time_ranges])
+                        lambda time_ranges, first_users=None: [[] for _ in time_ranges])
     yield
     calibration._cached_ratio = old_ratio
     AUTO_GATE.release()
