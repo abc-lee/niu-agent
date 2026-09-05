@@ -510,6 +510,19 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+### 2026-09-05
+
+#### 工程：LLM 会话亲和路由（sticky routing）——服务商 session id 动态注入（spec v1.5 R1-R6 双审门禁 + SDD T1-T3 每 Task 双审，main 7ac00ed2/59154330/5035dedd）
+
+- **背景（OpenCode Go 09/06 起 x-opencode-session 强制邮件触发）**：调研实证 sticky 亲和路由机制（OpenCode Go 网关 createStickyTracker + header/部分模型强制 DeepSeek Flash 缺头 400；OpenRouter 官方 Provider Sticky Routing——session_id body 字段或 x-session-id header、10 分钟过期、agentic 场景 hash 回退不可靠须显式传）——**per-conversation 稳定 id → 同会话路由同槽位 → KV cache 命中；写死同值=反模式（负载倾斜+缓存互相驱逐）**
+- **对原拍板的修正（调查推翻前提）**：Niu 单会话架构无对话 session_id（agent/session.py "No session concept"/compat 硬编码 "default"）→ 主 Agent 也用固定 id；per-conversation 动态 id 需贯穿 4 层调用链而 /new 后旧前缀缓存必然被逐出——KV cache 角度零额外收益，实现极简化
+- **T1 注入机制（7ac00ed2）**：resolve_sticky_headers 模块级纯函数（lowercase+hostname 点边界匹配 h==d or endswith('.'+d)——evilopenrouter.ai 反例/scheme-less 补 https:///三态 sticky_session_headers auto|off|列表替换/非法值=off/anthropic 排除优先于列表态）+ LiteLLMSession sticky_session_id 构造键 + chat() 注入（真值守卫防 None 头/合并顺序 {**user, **headers} 程序值权威/每请求读 api_base）+ 控制键两处剔除（chat 展开 L1019 + model_probe _build_probe_params）+ create_client/create_litellm_client 白名单透传行（spec R2 抓出：固定键白名单会静默丢键）。双审修补：AC7 anthropic-beta 共存单测/尾点 FQDN rstrip('.')
+- **T2 四通道接线（59154330）**：主 Agent "main"（NiuRunner.__init__ llm_config 加键）/子 Agent 同步=agent_name 异步=unique_name **无条件覆盖**继承的 main（判据与 _is_async 互斥；续答复用 suspended_client id 烘焙零接线）/LightRAG+脑区 "lightrag"（_get_litellm_session 内部无条件，id 不进 config_key）/MCP Sampling "mcp-sampling"（存量 bug：sampling_callback 传参与 call_llm_via_litellm 签名不匹配恒 TypeError，e2e 阻断——验收收窄单测级，bug 另案）
+- **T3 测试+手册（5035dedd）**：37 passed（纯函数全表/mock 集成/接线断言/resume 身份断言+fresh 诱饵/脑区 label 覆盖与共享缓存构造次数判别）；手册 extra_headers 节改写（零配置域名表自动/静态头程序值权威/三态覆盖键/探测与 anthropic 不注入）
+- **验证**：sticky 37 passed + 点名回归 114 passed + ruff 零新增；出网收敛点穷举（litellm.completion 直发仅 adapter chat 与 model_probe 两处）与 LiteLLMSession 构造点 5 处全部归位
+- **实机移交（待用户账号）**：真实探针（OpenRouter/OpenCode Go 交叉头无害性实证——当前为 HTTP 语义推断 + Niu id 形态 'main'/'lightrag' 非 UUID 接受度 + 域名表自证 opencode.ai），异常则域名分家回退（openrouter.ai 只发 x-session-id）
+- **已知边界（接受）**：主 Agent "main" 跨 /new 共享（新对话首请求 cache miss 属预期）/脑区 label 走主配置时带 "lightrag" id（OpenRouter 同槽位混模型流量，无正确性影响）/OpenRouter Logs 固定 id 分组单条/OpenCode Go 反代域名需 sticky_session_headers 列表态兜底
+
 ### 2026-09-04
 
 #### 工程：journal 游标改造——uuid 机器行退役 → 落款时间水位（计划 v1.4 R4+R5 双审门禁 + SDD T1-T4）
