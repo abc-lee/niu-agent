@@ -187,10 +187,14 @@ def test_is_tool_placeholder_new_and_legacy_suffix():
 
 
 def test_is_tool_placeholder_fold_family():
-    """折叠族按 "[输出#" 前缀识别：新文案（无「获取」尾）True；旧文案恢复会话仍 True。"""
-    # 新文案（瘦身版，无「如需原文…获取]」尾——不再依赖后缀判定）
-    assert _is_tool_placeholder('[输出#105 已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]') is True
-    # 旧文案（含「获取]」尾，恢复会话兼容——前缀与后缀双通道均命中）
+    """折叠族判定三态：新文案（无编号）True；旧带编号恢复会话文案 True；未折叠多行渲染 False。"""
+    # 新文案（去编号瘦身版——「[已折叠：」前缀命中）
+    assert _is_tool_placeholder('[已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]') is True
+    # 旧带编号恢复会话文案（去编号前制式——"[输出#" + 前段「已折叠：」双锚命中）
+    assert _is_tool_placeholder("[输出#105 已折叠：read_file({})，原占约 8.0%。]") is True
+    # 最早版文案（…已由 fold_tool_output 折叠…获取]——由裁剪族「获取]」后缀通道照认）
     assert _is_tool_placeholder(
         "[输出#3 已由 fold_tool_output 折叠：read_file({})，本条已移出上下文（原占约 8.0%）。如需原文请重新调用原工具获取]"
     ) is True
+    # 未折叠渲染（头行+换行+原文恒多行）不误判——即使原文含「已折叠」字样
+    assert _is_tool_placeholder("[输出#5 · read_file · 占上下文 2.0%]\n正文：3 条已折叠完成") is False
