@@ -99,9 +99,11 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 | `read_timeout` | LLM 流式响应读取超时（秒），默认 `300`。模型首响应/流式 chunk 间隔超过该值判定超时并触发重试。**调小场景**：对话卡顿久等（如 `60`）；**调大场景**：知识图谱入库/大文档分析（分块分析可能数分钟，见下方 LightRAG 段）。`llm` 段控制主对话/子 Agent；知识图谱 LLM 调用默认继承 `llm` 段的 `read_timeout`，若 `lightrag_llm` 段配置了独立 `model`，则以 `lightrag_llm` 段的 `read_timeout` 为准（两段同默认 `300`） |
 | `max_tokens` | 单次回复最大输出 token 数（输出上限）。**缺省不传**（用服务端默认）。长报告/长回复被截断时调大（如 `8192`/`16384`）。**注意**：模型对 max_tokens 无感知——它是服务端硬截断线，到上限即 `finish_reason=length` 截断；思考链（thinking）与正文**共享**该预算，思考链模型尤其要调大。设置窗口"测试连接并保存"会顺带校验该值合法性（非法值服务端 400 阻断保存）。只作用于会话对话链路（主 Agent/子 Agent/知识图谱），压缩与能力探测保持程序内部固定值 |
 
-**自定义 HTTP 请求头（`litellm_kwargs.extra_headers`）**：
+**自定义 HTTP 请求头（`litellm_kwargs.extra_headers`）与会话亲和（sticky）动态注入**：
 
-`litellm_kwargs` 是通用透传通道——除 `thinking`（程序拦截走专用通道）外，任何键都原样展开进 LiteLLM 调用。LiteLLM 一等参数 `extra_headers`（自定义 HTTP 请求头）在此通道内可用，适用于服务商标明要求附加请求头的场景，例如：OpenRouter 要求的 `HTTP-Referer`/`X-Title`、企业网关要求的鉴权/溯源头。配置示例（`llm` 段或 `lightrag_llm` 段均同）：
+`litellm_kwargs` 是通用透传通道——除 `thinking`（程序拦截走专用通道）与 `sticky_session_headers`（sticky 三态控制键，见下）外，任何键都原样展开进 LiteLLM 调用。请求头分两类：
+
+**1. 静态请求头（用户配置）**：LiteLLM 一等参数 `extra_headers`（自定义 HTTP 请求头）在此通道内可用，适用于服务商标明要求附加请求头的场景，例如：OpenRouter 要求的 `HTTP-Referer`/`X-Title`、企业网关要求的鉴权/溯源头。配置示例（`llm` 段或 `lightrag_llm` 段均同）：
 
 ```json
 "litellm_kwargs": {
@@ -112,13 +114,23 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 }
 ```
 
-要点：
-- **没有变量替换机制**：配置里的值是**字面量**——写什么字符串就原样发送什么，程序不会自动填充或替换任何值。适合静态请求头（固定的 Referer、产品名、固定鉴权头）。
-- **全链路覆盖**：主对话/子 Agent（`llm` 段）与知识图谱入库/查询（`lightrag_llm` 段）的出网 LLM 调用统一走 `LiteLLMSession`，`litellm_kwargs` 同一机制透传，`extra_headers` 两段都生效。
-- **与 drop_params 兼容**：`litellm_kwargs` 非空时程序自动开启 `drop_params`（厂商不支持的参数自动丢弃），实测 `extra_headers` 不受其影响——LiteLLM 的 openai 兼容路径参数白名单原生包含它。
-- **设置窗口不提供该字段的可视化编辑**，需手动编辑 `~/.niu/config/user-config.json`（关闭程序后编辑；改后回设置窗口"测试连接并保存"验证连通）。保存时已有键会保留（仅 thinking 被增删），`extra_headers` 不会被设置窗口保存覆盖。
-- **边界——每会话动态 id 不支持**：部分服务商要求的头是**每会话动态 id**（如 OpenCode Go 的 `x-opencode-session`，语义是 stable-id-per-conversation）。该头的用途是 **KV cache 亲和路由**：同会话请求路由到同一后端槽位以命中前缀缓存，不同会话分散到不同槽位。配置层写死一个值是**反模式**——所有会话被亲和到同一槽位（负载倾斜）且不同会话前缀在有限缓存里互相驱逐，多路会话时缓存收益不升反降。动态注入需程序层支持（`LiteLLMSession` 调用层按会话合并 `{**静态头, "x-opencode-session": 会话id}`），**当前程序未实现**——真接入该服务商时由开发补上，配置层届时无需改动。
-- **Agent 引导指引**：用户要求"给模型配置加某个请求头"时，若该头是静态值（Referer、鉴权头、固定追踪头），直接引导走本节 `litellm_kwargs.extra_headers`；若是每会话动态值（会话 id 类），如实告知当前仅支持静态值、动态注入需程序层支持，不要用写死的值硬凑语义。
+配置里的值是**字面量**——没有变量替换机制，写什么字符串就原样发送什么。
+
+**2. 会话亲和（sticky）动态注入（零配置自动）**：程序在出网 LLM 调用上自动注入每会话动态 id，支持服务商的 KV cache 亲和路由（同会话请求路由到同一后端槽位命中前缀缓存，不同会话分散到不同槽位）。**无需用户配置，默认启用**：
+
+- **启用条件**：`apiBase` 域名命中内置域名表（`openrouter.ai`/`opencode.ai`，含子域），自动注入 `x-session-id` + `x-opencode-session` 两个头，值均为当前会话 id。
+- **各通道会话 id**：主对话 = `main`；子 Agent = 其派发身份（同步派发为 agent 名、异步派发为 unique_name，续答复用原 client 保持原 id）；LightRAG 知识图谱（含脑区 label 生成）= `lightrag`；MCP Sampling = `mcp-sampling`。
+- **与静态头的关系**：用户配置的自定义键保留并一同发送；同键冲突时（如手动写了 `x-session-id`）**程序动态值权威**，覆盖配置里的静态值。
+
+**边界与覆盖键**：
+
+- **探测通道不注入**：能力探测/连接测试调用没有会话 id，永不发 sticky 头。
+- **anthropic 类型不注入**：Anthropic 原生格式用 `cache_control` 显式缓存、无 sticky 路由需求，排除优先于一切（含下方覆盖键）。
+- **覆盖键 `sticky_session_headers`**（位于 `litellm_kwargs` 内，三态，仅反代/特殊网关场景使用）：`"auto"`（缺省）按域名表启用；`"off"` 完全关闭注入（即使域名命中）；字符串列表（如 `["x-session-id"]`）替换默认双头集、只发列表中键且**无条件发送**（不看域名是否命中）——用于 apiBase 不含官方域名但后端实为 OpenRouter/OpenCode 的反代场景。空列表等价 `"off"`，其他非法值按 `"off"` 处理。
+- **与 drop_params 兼容**：`litellm_kwargs` 非空时程序自动开启 `drop_params`（厂商不支持的参数自动丢弃），实测 `extra_headers`（含注入头）不受其影响——LiteLLM 的 openai 兼容路径参数白名单原生包含它。
+- **设置窗口不提供这些字段的可视化编辑**，需手动编辑 `~/.niu/config/user-config.json`（关闭程序后编辑；改后回设置窗口"测试连接并保存"验证连通）。保存时已有键会保留（仅 thinking 被增删），`extra_headers`/`sticky_session_headers` 不会被设置窗口保存覆盖。
+
+**Agent 引导指引**：用户要求"给模型配置加某个请求头"时，静态值（Referer、鉴权头、固定追踪头）直接引导走本节 `litellm_kwargs.extra_headers`；会话亲和头（`x-session-id`/`x-opencode-session`）**无需配置**——程序按域名表自动注入，不要用写死的值硬凑语义。用户网关走反代、apiBase 域名不命中时，引导用 `sticky_session_headers` 列表态显式启用。
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 

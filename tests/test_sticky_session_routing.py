@@ -8,6 +8,8 @@
    控制键剔除 / 用户静态 extra_headers 共存与同键覆盖 / anthropic 不发 / 非匹配域名默认不发
 ③ model_probe._build_probe_params 控制键不泄入直发参数
 ④ create_litellm_client / runner.create_client 白名单透传行
+⑤ T2 通道接线：四通道 id 落到实际构造实例（主/子 Agent 同步-异步/LightRAG+脑区 label/MCP sampling）
+   + 续答路径 suspended_client 复用（id 与原派发一致）
 
 全 mock litellm.completion，禁真实 LLM / 真实 ~/.niu（日志写盘经 patch 短路）。
 """
@@ -308,26 +310,32 @@ def test_runner_init_injects_main_sticky_id():
     """主 Agent：NiuRunner.__init__ 后 client 实例 sticky_session_id=="main"。"""
     from unittest.mock import Mock
 
-    with patch("agent.runner.get_system_prompt", return_value="sys"), \
-         patch("agent.runner.get_tools_schema", return_value=[]), \
-         patch("agent.runner.get_skill_sync"), \
-         patch("agent.runner.NiuHandler"), \
-         patch("niu_api.internal.disk_engine.DiskEngine") as mock_disk_cls:
-        mock_disk_instance = Mock()
-        mock_disk_instance.get_schema.return_value = {
-            "type": "function", "function": {"name": "disk"},
-        }
-        mock_disk_instance.config.servers = {}
-        mock_disk_cls.return_value = mock_disk_instance
+    from agent.tool_registry import reset_registry
 
-        from agent.runner import NiuRunner
-        runner = NiuRunner(
-            llm_config={"apikey": "test", "model": "test-model"},
-            mcp_client=None,
-        )
+    try:
+        with patch("agent.runner.get_system_prompt", return_value="sys"), \
+             patch("agent.runner.get_tools_schema", return_value=[]), \
+             patch("agent.runner.get_skill_sync"), \
+             patch("agent.runner.NiuHandler"), \
+             patch("niu_api.internal.disk_engine.DiskEngine") as mock_disk_cls:
+            mock_disk_instance = Mock()
+            mock_disk_instance.get_schema.return_value = {
+                "type": "function", "function": {"name": "disk"},
+            }
+            mock_disk_instance.config.servers = {}
+            mock_disk_cls.return_value = mock_disk_instance
 
-    assert runner.client.backend.sticky_session_id == "main"
-    assert runner.llm_config["sticky_session_id"] == "main"
+            from agent.runner import NiuRunner
+            runner = NiuRunner(
+                llm_config={"apikey": "test", "model": "test-model"},
+                mcp_client=None,
+            )
+
+        assert runner.client.backend.sticky_session_id == "main"
+        assert runner.llm_config["sticky_session_id"] == "main"
+    finally:
+        # NiuRunner.__init__ 触碰全局 ToolRegistry 单例（get_registry/set_ask_agent）——reset 防泄漏到后续测试
+        reset_registry()
 
 
 def _capture_subagent_llm_config(**call_kwargs):
@@ -372,6 +380,61 @@ def test_subagent_async_path_uses_unique_name():
     assert cfg["sticky_session_id"] == "file-processor-a1b2"
 
 
+def test_subagent_resume_reuses_suspended_client_id():
+    """续答路径（answer+answer_unique_name）：复用 suspended_client——sticky_session_id
+    与原派发一致（不重建新 client、不按 agent_name 重算 id）。"""
+    from unittest.mock import Mock
+
+    from agent.subagent import call_subagent
+    from agent.subagent_registry import SubagentRegistry
+
+    unique_name = "file-processor-r3s1"  # 原派发走异步分支：id=unique_name
+    suspended_client = Mock()
+    suspended_client.backend.sticky_session_id = unique_name
+    fresh_client = Mock()
+    fresh_client.backend.sticky_session_id = "file-processor"  # 续答新构造（agent_name）——不得被使用
+
+    SubagentRegistry.register(
+        agent_type="file-processor", supplement_queue=None, force_unique_name=unique_name,
+    )
+    inst = SubagentRegistry.get(unique_name)
+    inst.state = "waiting_for_answer"
+    inst.suspended_messages = [{"role": "user", "content": "task"}]
+    inst.suspended_handler = Mock()
+    inst.suspended_client = suspended_client
+    inst.suspended_tools_schema = []
+    inst.suspended_system_message = {"role": "system", "content": "sys"}
+
+    captured = {}
+
+    class _StopTestError(Exception):
+        pass
+
+    def fake_loop(client, **kwargs):
+        captured["client"] = client
+        raise _StopTestError()
+
+    try:
+        with patch("agent.subagent.get_subagent_config", return_value={}), \
+             patch("agent.subagent.build_subagent_system_segments", return_value=("static", "")), \
+             patch("agent.runner.create_client", return_value=fresh_client), \
+             patch("agent.subagent._run_agent_loop", side_effect=fake_loop):
+            try:
+                call_subagent(
+                    agent_name="file-processor", task="",
+                    llm_config={"model": "m", "apikey": "k", "sticky_session_id": "main"},
+                    answer="回答内容", answer_unique_name=unique_name,
+                    no_tools=True,
+                )
+            except _StopTestError:
+                pass
+        # id 延续由断言链保证：异步派发构造 id=unique_name（test_subagent_async_path_uses_unique_name）
+        # + 此处身份复用同一 client——不另加 sticky_session_id 读回相等断言（该值本测试自赋值，同义反复）
+        assert captured["client"] is suspended_client
+    finally:
+        SubagentRegistry._instances.pop(unique_name, None)
+
+
 def test_lightrag_manager_session_gets_lightrag_id():
     """LightRAG + 脑区：_get_litellm_session 构造实例 id=="lightrag"，无条件覆盖传入值。"""
     from niu_api.internal import lightrag_manager as lm
@@ -384,6 +447,42 @@ def test_lightrag_manager_session_gets_lightrag_id():
             "sticky_session_id": "brain-label",
         })
         assert session.sticky_session_id == "lightrag"
+    finally:
+        lm.reset_litellm_session_cache()
+
+
+def test_region_label_shares_lightrag_session_id():
+    """脑区 label：_call_llm_for_label 复用 _get_litellm_session——与 LightRAG 共享同一缓存实例，
+    id=="lightrag"（覆盖主配置携带的 "main"）。"""
+    from unittest.mock import Mock
+
+    from niu_api.internal import lightrag_manager as lm
+    from niu_api.internal.region_manager import RegionManager
+
+    # get_llm_config() 返回值 = 主 Agent 同款模型配置（含主通道 sticky id，须被覆盖）
+    main_cfg = {
+        "model": "gpt-4o", "apibase": "https://openrouter.ai/api/v1",
+        "apikey": "k", "type": "openai",
+        "sticky_session_id": "main",
+    }
+    try:
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=main_cfg), \
+             patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_cls:
+            mock_session = Mock()
+            mock_session.chat.return_value = iter(["编程脑区"])
+            mock_session_cls.return_value = mock_session
+
+            content = RegionManager(adapter=None, ingester=None)._call_llm_for_label(
+                "请为该社区生成标签",
+            )
+
+        assert content == "编程脑区"
+        built_cfg = mock_session_cls.call_args[1]["cfg"]
+        assert built_cfg["sticky_session_id"] == "lightrag"
+        # 共享缓存判别（构造次数）：label 通道内部一次 + 同配置显式再调一次 = 2 次取用，
+        # LiteLLMSession 只构造 1 次——缓存命中不重建（is 断言无判别力：return_value 恒同对象）
+        lm._get_litellm_session(main_cfg)
+        assert mock_session_cls.call_count == 1
     finally:
         lm.reset_litellm_session_cache()
 
