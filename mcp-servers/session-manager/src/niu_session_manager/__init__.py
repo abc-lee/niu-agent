@@ -470,17 +470,19 @@ def get_messages(
             while True:
                 dropped = formatted.pop()
                 total_tokens -= dropped["tokens"]
+                # 判长必须含收缩元数据两键：最终返回体是单形态（7 键），
+                # 按 5 键候选判长会让「恒 ≤29000」字面不成立（上界 ~29055）。
                 result = {
                     "total_messages": total_messages,
                     "total_tokens": total_tokens,
                     "messages": formatted,
                     "has_more": True,
                     "next_after_id": formatted[-1]["id"],
+                    "output_budget_truncated": True,
+                    "remaining_in_batch": batch_count - len(formatted),
                 }
                 if len(formatted) == 1 or len(json.dumps(result, ensure_ascii=False)) <= _GET_MESSAGES_CHAR_BUDGET:
                     break
-            result["output_budget_truncated"] = True
-            result["remaining_in_batch"] = batch_count - len(formatted)
 
         return result
     except Exception as e:
