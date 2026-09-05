@@ -629,6 +629,8 @@ def create_client(config: dict[str, Any]):
         cfg["max_tokens"] = config["max_tokens"]
     cfg["provider"] = config.get("provider", "")
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
+    # sticky routing id 纯管道透传（spec §3.1——白名单构造转发，零 sticky 逻辑）
+    cfg["sticky_session_id"] = config.get("sticky_session_id")
     cfg["read_timeout"] = config.get("read_timeout") or 300
 
     from .generic.litellm_adapter import create_litellm_client

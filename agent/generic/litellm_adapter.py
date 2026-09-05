@@ -14,6 +14,7 @@ from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 # 在导入 litellm 之前设置环境变量，避免远程获取 model cost map 和 aiohttp 初始化开销
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
@@ -711,6 +712,56 @@ def assemble_request_params(
     return result
 
 
+# === Sticky routing（会话亲和路由）头解析——spec 2026-09-05-session-sticky-routing-design §3.3 ===
+
+# 内置域名表（代码常量，扩展走代码不做配置暴露）。点边界匹配：h == d or h.endswith("." + d)
+_STICKY_DOMAINS = ("openrouter.ai", "opencode.ai")
+# auto 态默认头集（两头都发：OpenRouter 消费 x-session-id，OpenCode Go 消费 x-opencode-session）
+_STICKY_DEFAULT_HEADERS = ("x-session-id", "x-opencode-session")
+
+
+def resolve_sticky_headers(api_base: str | None, sticky_config, api_type: str, session_id: str) -> dict[str, str] | None:
+    """解析本请求的有效 sticky 头集（纯函数，无 I/O）。
+
+    三态语义（spec §3.3）：
+      - "auto"（缺省/None）：按内置域名表匹配 apiBase hostname 启用
+      - "off"：全关
+      - list[str]：替换默认头集，无条件发送（反代场景：apiBase 不含官方域名但后端实为 OpenRouter/OpenCode）
+      - 其他非法值（标量/畸形结构）：按 "off" 处理
+    anthropic 类型排除优先于一切（含列表态——Anthropic 用 cache_control 显式缓存，无 sticky 需求）。
+
+    scheme-less apiBase 先补 https:// 再解析 hostname（否则 urlparse hostname=None 静默失配）；
+    hostname lowercase 后点边界匹配（字面 endswith 会误中 evilopenrouter.ai）。
+
+    Returns:
+        {header_key: session_id} 或 None（不发头）。
+    """
+    if api_type == "anthropic":
+        return None
+    if isinstance(sticky_config, list):
+        keys = [k for k in sticky_config if isinstance(k, str) and k]
+        if not keys:
+            return None
+        return dict.fromkeys(keys, session_id)
+    if sticky_config is not None and sticky_config != "auto":
+        # "off" 与其他非法值一律按 off 处理（边界定死）
+        return None
+    base = api_base or ""
+    if "://" not in base:
+        base = "https://" + base
+    try:
+        host = urlparse(base).hostname
+    except ValueError:
+        return None
+    if not host:
+        return None
+    host = host.lower().rstrip(".")  # 尾点 FQDN（'openrouter.ai.'）归一后仍命中
+    for domain in _STICKY_DOMAINS:
+        if host == domain or host.endswith("." + domain):
+            return dict.fromkeys(_STICKY_DEFAULT_HEADERS, session_id)
+    return None
+
+
 class LiteLLMSession(BaseSession):
     """
     LiteLLM适配器Session
@@ -729,6 +780,9 @@ class LiteLLMSession(BaseSession):
         mt = cfg.get("max_tokens")
         if mt is not None and "max_tokens" not in self.litellm_kwargs:
             self.litellm_kwargs = {**self.litellm_kwargs, "max_tokens": mt}
+        # sticky routing id（spec §3.2）：构造时绑定实例，chat() 每请求经 resolve_sticky_headers 判定注入；
+        # None = 未接线通道（探测等）→ chat() 真值守卫不发头
+        self.sticky_session_id = cfg.get("sticky_session_id")
         # stop 检查回调：默认全局停止标志（主 Agent），call-time 解析模块全局（测试 monkeypatch 有效）；
         # 子 Agent 由 call_subagent 按来源覆盖属性（同步 user=全局 or terminate；异步 user/program/scheduler=仅 terminate）
         self.stop_check = self._default_stop_check
@@ -961,7 +1015,8 @@ class LiteLLMSession(BaseSession):
         # 与 reasoning_effort 同策略；探测路径 model_probe._strip_thinking_key 同款单一来源纪律，该工程已实证
         # wire body 与双通道一致、传输无损）。allowed_openai_params 等其余键保留顶层（litellm 当 kwarg 消费）。
         if self.litellm_kwargs:
-            request_params.update({k: v for k, v in self.litellm_kwargs.items() if k != "thinking"})
+            # 剔除控制键（同 thinking 显式排除模式）：sticky_session_headers 是程序侧三态控制键，非 litellm 参数
+            request_params.update({k: v for k, v in self.litellm_kwargs.items() if k not in ("thinking", "sticky_session_headers")})
             request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
@@ -972,6 +1027,13 @@ class LiteLLMSession(BaseSession):
             "reasoning_effort": self.reasoning_effort,
             "litellm_kwargs": self.litellm_kwargs,
         }))
+        # sticky routing 头注入（spec §3.2）：真值守卫——探测/未接线通道（id=None）不发 None 值头；
+        # 每请求读解析后的 self.api_base 判定（实例构造时固化，翻转靠实例重建）。
+        # 程序值为权威：用户自定义 extra_headers 键保留、同键静态值被动态值覆盖。
+        if self.sticky_session_id and (headers := resolve_sticky_headers(
+                self.api_base, self.litellm_kwargs.get("sticky_session_headers"),
+                self.api_type, self.sticky_session_id)):
+            request_params["extra_headers"] = {**(request_params.get("extra_headers") or {}), **headers}
 
         # 记录完整请求（全量，包含 messages）
         _write_interaction_log({
@@ -1278,6 +1340,8 @@ def create_litellm_client(config: dict[str, Any]) -> ToolClient:
         cfg["max_tokens"] = config["max_tokens"]
     cfg["provider"] = config.get("provider", "")
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
+    # sticky routing id 纯管道透传（spec §3.1——白名单构造转发，零 sticky 逻辑）
+    cfg["sticky_session_id"] = config.get("sticky_session_id")
     cfg["read_timeout"] = config.get("read_timeout") or 300
 
     # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List

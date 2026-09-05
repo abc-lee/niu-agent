@@ -352,7 +352,10 @@ def _build_probe_params(
     }
     litellm_kwargs = probe_config.get("litellm_kwargs") or {}
     if litellm_kwargs:
-        params.update(litellm_kwargs)
+        # 剔除 sticky 控制键（同 _strip_thinking_key 副本剔除模式）：sticky_session_headers 是
+        # 程序侧三态控制键，非 litellm 参数——探测直发不得整体合并泄入请求参数。
+        # thinking 由调用方经 _strip_thinking_key 预剔，此处仅剔 sticky_session_headers。
+        params.update({k: v for k, v in litellm_kwargs.items() if k != "sticky_session_headers"})
         params["drop_params"] = True
     if response_format is not None:
         params["response_format"] = response_format
