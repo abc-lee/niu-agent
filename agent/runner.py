@@ -762,6 +762,9 @@ class NiuRunner:
         niu_config = get_subagent_config("niu")
         if niu_config.get("temperature") is not None:
             llm_config = {**llm_config, "temperature": niu_config["temperature"]}
+        # sticky routing id（spec §3.1 唯一接线点）：主 Agent 固定 "main"（单用户单活跃对话）。
+        # 常量键不参与 get_or_create_runner 配置比对——无重建循环风险。
+        llm_config = {**llm_config, "sticky_session_id": "main"}
 
         self.llm_config = llm_config
         self.mcp_client = mcp_client

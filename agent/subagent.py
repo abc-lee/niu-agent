@@ -940,6 +940,12 @@ def call_subagent(
             "content": static_system + dynamic_system,
         }
 
+    # sticky routing id（spec §3.1）：同步路径（含程序触发/续答新构造）= agent_name（同名派发共享模板缓存）；
+    # 异步分支 = unique_name（每次派发独立流）。无条件覆盖 llm_config 继承的 "main"（勿 setdefault）。
+    # 续答实际复用 suspended_client（下方 resume 分支），不经过本构造——零额外接线。
+    _sticky_id = agent_name if (unique_name is None or answer is not None) else unique_name
+    llm_config = {**llm_config, "sticky_session_id": _sticky_id}
+
     # 3. 创建 LLM 客户端（统一使用 LiteLLM）
     from .runner import create_client
     client = create_client(llm_config)

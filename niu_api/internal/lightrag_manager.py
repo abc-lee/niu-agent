@@ -106,6 +106,9 @@ def _get_litellm_session(config: dict) -> Any:
         llm_config["read_timeout"] = config.get("read_timeout") or 300
         if config.get("max_tokens") is not None:
             llm_config["max_tokens"] = config["max_tokens"]
+        # sticky routing id（spec §3.1）：LightRAG 全部 LLM 操作固定 "lightrag"——无条件加，
+        # 与传入 config 无关（覆盖脑区 label 复用场景）；不进 config_key（id 常量，无收益）。
+        llm_config["sticky_session_id"] = "lightrag"
 
         _cached_session = LiteLLMSession(cfg=llm_config)
         _cached_config_key = config_key
