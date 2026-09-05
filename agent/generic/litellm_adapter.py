@@ -714,17 +714,20 @@ def assemble_request_params(
 
 # === Sticky routing（会话亲和路由）头解析——spec 2026-09-05-session-sticky-routing-design §3.3 ===
 
-# 内置域名表（代码常量，扩展走代码不做配置暴露）。点边界匹配：h == d or h.endswith("." + d)
-_STICKY_DOMAINS = ("openrouter.ai", "opencode.ai")
-# auto 态默认头集（两头都发：OpenRouter 消费 x-session-id，OpenCode Go 消费 x-opencode-session）
-_STICKY_DEFAULT_HEADERS = ("x-session-id", "x-opencode-session")
+# 内置域名表 → 各家自有 sticky 头键映射（代码常量，扩展走代码不做配置暴露）。
+# 点边界匹配：h == d or h.endswith("." + d)。auto 态只发命中域自家头键、不交叉互发
+# （OpenRouter 消费 x-session-id，OpenCode Go 消费 x-opencode-session——通用功能不绑死品牌键名）
+_STICKY_DOMAIN_HEADERS = {
+    "openrouter.ai": ("x-session-id",),
+    "opencode.ai": ("x-opencode-session",),
+}
 
 
 def resolve_sticky_headers(api_base: str | None, sticky_config, api_type: str, session_id: str) -> dict[str, str] | None:
     """解析本请求的有效 sticky 头集（纯函数，无 I/O）。
 
     三态语义（spec §3.3）：
-      - "auto"（缺省/None）：按内置域名表匹配 apiBase hostname 启用
+      - "auto"（缺省/None）：按内置域名表匹配 apiBase hostname 启用，只发命中域自家头键（不交叉互发）
       - "off"：全关
       - list[str]：替换默认头集，无条件发送（反代场景：apiBase 不含官方域名但后端实为 OpenRouter/OpenCode）
       - 其他非法值（标量/畸形结构）：按 "off" 处理
@@ -756,9 +759,9 @@ def resolve_sticky_headers(api_base: str | None, sticky_config, api_type: str, s
     if not host:
         return None
     host = host.lower().rstrip(".")  # 尾点 FQDN（'openrouter.ai.'）归一后仍命中
-    for domain in _STICKY_DOMAINS:
+    for domain, headers in _STICKY_DOMAIN_HEADERS.items():
         if host == domain or host.endswith("." + domain):
-            return dict.fromkeys(_STICKY_DEFAULT_HEADERS, session_id)
+            return dict.fromkeys(headers, session_id)
     return None
 
 
