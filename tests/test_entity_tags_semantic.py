@@ -394,3 +394,43 @@ class TestArchiveWiring:
         assert isinstance(fu, list) and len(fu) == 1
         assert len(fu) == len(captured["ranges"])      # 与 time_ranges 等长
         assert fu[0] == "帮我查一下醋溜白菜的做法"       # 非空、取自块首问
+
+
+# =============================================================================
+# ⑥ tags_for_range / _candidate_pool parity 契约（FinalReview P3-3）
+# =============================================================================
+
+class TestCandidatePoolParity:
+    """双副本同源遍历一致性：时间链 top3 == 候选池权重序前 3——防未来一处
+    演进另一处漏改，致纯时间链路径与语义候选池静默分叉。"""
+
+    def test_parity_more_than_three_entities(self):
+        """>3 实体（4 + 应排除根/会话节点）：top3 截断路径一致。"""
+        t0, t1 = _one_range()[0]
+        snapshot = _STD_GRAPH.copy()   # _graph_snapshot 形态（nx_graph.copy()）
+        pool = entity_tags._candidate_pool(snapshot, t0, t1)
+        assert len(pool) == 4          # 非平凡：根/会话节点被排除，截断真实生效
+        top3 = [n for n, _ in sorted(pool.items(), key=lambda kv: (-kv[1], kv[0]))[:3]]
+        assert top3 == entity_tags.tags_for_range(snapshot, t0, t1)
+        assert top3 == _CHAIN_TOP3
+
+    def test_parity_three_or_fewer_entities(self):
+        """≤3 实体（3）：全池权重序 == tags（无截断）。"""
+        t0, t1 = _one_range()[0]
+        snapshot = _TIE_GRAPH.copy()
+        pool = entity_tags._candidate_pool(snapshot, t0, t1)
+        assert len(pool) == 3
+        top3 = [n for n, _ in sorted(pool.items(), key=lambda kv: (-kv[1], kv[0]))[:3]]
+        assert top3 == entity_tags.tags_for_range(snapshot, t0, t1)
+        assert top3 == ["Zulu", "Alpha", "Mid"]   # 权重降序（5>4>3）
+
+    def test_parity_no_session_node_empty(self):
+        """块日期无会话节点 → 空池 {} 与 [] 一致。"""
+        graph = FakeGraph(
+            nodes={"2026-08-01会话"},
+            edges={"2026-08-01会话": {"Alpha": {"weight": 1.0}}},
+        )
+        t0, t1 = _one_range()[0]   # 2026-09-04，图里只有 2026-08-01 会话
+        snapshot = graph.copy()
+        assert entity_tags._candidate_pool(snapshot, t0, t1) == {}
+        assert entity_tags.tags_for_range(snapshot, t0, t1) == []
