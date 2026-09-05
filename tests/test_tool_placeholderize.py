@@ -184,3 +184,13 @@ def test_is_tool_placeholder_new_and_legacy_suffix():
     assert _is_tool_placeholder("read 输出已裁剪，如需原文可重新调用该工具获取") is False  # 无开头 [
     assert _is_tool_placeholder("普通工具输出内容") is False
     assert _is_tool_placeholder(None) is False
+
+
+def test_is_tool_placeholder_fold_family():
+    """折叠族按 "[输出#" 前缀识别：新文案（无「获取」尾）True；旧文案恢复会话仍 True。"""
+    # 新文案（瘦身版，无「如需原文…获取]」尾——不再依赖后缀判定）
+    assert _is_tool_placeholder('[输出#105 已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]') is True
+    # 旧文案（含「获取]」尾，恢复会话兼容——前缀与后缀双通道均命中）
+    assert _is_tool_placeholder(
+        "[输出#3 已由 fold_tool_output 折叠：read_file({})，本条已移出上下文（原占约 8.0%）。如需原文请重新调用原工具获取]"
+    ) is True
