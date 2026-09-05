@@ -512,6 +512,15 @@ preload_face_model()
 
 ### 2026-09-05
 
+- 工程：get_messages 便利遍历裁剪 + 单条全量 + 服务端自管输出预算（027 事故根治——journal 水位错乱；spec v1.0-v1.4 R1-R5 五轮双审门禁（连续双 APPROVE 收敛）+ SDD T1-T2 每 Task 双审 + FinalReview 双 APPROVE，main d78e90db/3ebe8c72/61ae844）
+  - **事故链（Windows raw_http 027 实证 + 用户逐层逼出根因）**：journal-agent 调 get_messages(after_time, limit=200) 过滤窗口 193 条消息序列化 **97275 字符** → agent_loop 工具结果通道 30000 截断 **保头丢尾**——09-05 全天 91 条（数组尾=最新消息）被静默砍掉 → 落款倒退 09-04 19:40:47、09-05 内容整段漏。根因两层：①便利遍历给全量 content（193 条整批 97KB）②服务端不知道输出会被通道砍（has_more=false 但数据实际不完整）
+  - **方案（用户拍板三要素 + 落款修正前置）**：①便利遍历每条 content 折叠 前 1200 + `<已折叠>` + 后 800（原正文 ≤2000 字符、总长 2005，全 role；tool 先经 `<已精简>` 字节级折叠再裁剪——CJK 显示 <已精简>/ASCII 长正文显示 <已折叠>）②完整内容 = message_id 单查（超通道线 → error+reason=too_large 含 content_chars，绝不静默截断）③服务端自管输出预算（Read 模式：生产单形态 `len(json.dumps(result, ensure_ascii=False))` 自查 ≤29000，超预算尾部收缩 + has_more=true/next_after_id/output_budget_truncated/remaining_in_batch 显式告知续拉，base_index 页首不变严禁按收缩后条数重算——根治"服务端 has_more=false 但数据被砍"模式）；④落款语义修正（d78e90db 前置）：覆盖至=当前整理时间（用户指正 PM 误写"最后消息时间"，journal-daily 避让机制下无漏窗口）
+  - **设计关键（五轮双审抓出）**：预算估算必须复刻生产链路单形态（stdio wrapper 双序列化仅外部模式存在——session-manager 同进程直调）；full_tool_output 参数退役（7 处清零，能力被统一裁剪覆盖）；裁剪产物 2005 超帽惯例（md_mirror 同族）；read 工具是正确范式（工具自己管理输出+显式续读告知）
+  - **质量链**：R1 双 CONDITIONAL（outer 口径 P1 系列/单查体积/归因修正）→ v1.2 → R2（A 抓出 outer 公式复刻非生产链路 P1/B APPROVE）→ R3（必挂清单 2/5 实测误判/base_index 页首公式陷阱）→ R4（A APPROVE/B 抓 T1 行残留旧措辞+AC6 缺钉）→ **R5 双 APPROVE 冻结**；T1 双审双 APPROVE（48 smoke+5 挂恰为预测必挂项）；T2 双审（两角独立同发现 AC6 pin 缺失 P1 → 修复补双 md pin/schema 深比较/tool 单查用例，63 passed）
+  - **验证**：63 passed（36 get_messages + 27 journal pin）+ ruff 零新增；判别力实证（HEAD 版重放 15 failed 恰为全部新行为测试）；e2e 排空不重不漏（两两不相交+union==窗口+末页 has_more=false+每页 ≤29000+关口恒等）
+  - **已知边界（接受）**：打包副本 niu.app 需 launcher/build.sh 刷新才生效（旧 schema 无 message_id）；too_large 单查超 ~29.5K 字符消息无法完整返回（显式报错，agent 改 read 直读）；journal 弱模型对含折叠标记条目的单查触发靠提示词教学（机制教学在场、判定留 LLM，实机观察不佳再补触发句）
+  - **实机验证（待用户）**：重新打包/源码运行后——journal 整理（Windows 机器下次 18:00 或手动）落款应为当前时间、09-05 内容不再漏、索引正常
+
 - 工程：索引实体标签语义化——时间链候选池 + 首问向量排序（用户指出同日块标签全雷同→质问为何不语义检索→拍板先测试拿数据；实测 100%→15% 后定案；spec v1.0-v1.2 R1-R3 双审门禁 + SDD T1-T2 每 Task 双审 + FinalReview 双 APPROVE，main 6c6fbc08/aa79f138）
   - **问题（用户 Windows 实机抓出 + Mac 本机复现）**：归档历史索引行实体标签现行纯时间链查表（entity_tags.py 按块时间范围找 `YYYY-MM-DD会话` 节点一跳邻居按边权重 top3）——数据源粒度是天（entity-extractor 按天挂会话节点），同日块全部反查同节点 → 相邻同日块标签 100% 雷同（Mac 实测 75/75 对），区分度零+语义误导
   - **方案（零 LLM 保留，用户定案）**：时间链管候选范围 + 语义管池内挑选——`collect_tags(time_ranges, first_users=None)` 双参（None=纯时间链逐字节保持既有）；`_candidate_pool` 池构建（tags_for_range 零改动防测试面破坏）+ 首问 `batch_encode` + `call_async(_get_vdb_snapshot, timeout=5)` 协程内建 name→vector 映射（零 await 与写方串行原子）+ 池内 dot 相似度降序/名称升序 tie-break top3 + 时间链权重序剔除已选补齐；降级链 12 行全钉（语义段任何异常→全批时间链；空标签仅图快照 None/collect_entities=False）；vdb 向量 = entity_name+description embedding（float16 解码），实体矩阵 L2 归一化
