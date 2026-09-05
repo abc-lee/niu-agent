@@ -34,10 +34,12 @@ TOOL_SCHEMAS = {
         "name": "get_messages",
         "description": (
             "Get message list for a session with token counts. Returns messages with "
-            "idx, tokens, role, content, created_at (ISO8601). Supports incremental "
-            "paging via after_id and time-watermark filtering via after_time "
+            "idx, tokens, role, content, created_at (ISO8601). 便利遍历：每条 content 折叠至 ≤2000 字符"
+            "（前 60% + 后 40% + 中缀 <已折叠>）；完整内容必须指定单条 message_id 获取。"
+            "Supports incremental paging via after_id and time-watermark filtering via after_time "
             "(after_time-only returns the oldest N within the filter window); "
-            "response ends with has_more and next_after_id."
+            "response ends with has_more and next_after_id. 本工具自管返回体积：超预算时自动收缩本批"
+            "并以 has_more/next_after_id 告知继续分页。"
         ),
         "input_schema": {
             "type": "object",
@@ -64,14 +66,21 @@ TOOL_SCHEMAS = {
                     "type": "integer",
                     "description": (
                         "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条；"
-                        "仅给 after_time 时取过滤窗口内最旧 N 条"
+                        "仅给 after_time 时取过滤窗口内最旧 N 条。实际返回条数可能因输出预算自管而更少（见 has_more）"
+                    ),
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": (
+                        "指定后只返回该消息一条且 content 为完整原文（不折叠、不裁剪）；"
+                        "遍历列出消息 id 后按需取详情。ID 在库中找不到时报错 reason=invalid_message_id"
                     ),
                 },
                 "full_tool_output": {
                     "type": "boolean",
                     "description": (
-                        "默认 false：role=='tool' 的超长内容折叠为头尾摘要（含 <已精简> 标记）；"
-                        "true 返回完整原文"
+                        "遍历态忽略本参数（所有 role 一律受 2000 字符便利裁剪，tool 先整段折叠再裁剪）；"
+                        "「返回 tool 完整原文」语义仅对 message_id 单条查询有效"
                     ),
                 },
             },
@@ -231,12 +240,55 @@ def _run_async(coro):
 _DEFAULT_GET_MESSAGES_LIMIT = 200
 _MAX_GET_MESSAGES_LIMIT = 1000
 
+# 便利遍历裁剪规格：遍历态每条 content 上限（>阈值折叠为前 60% + <已折叠> + 后 40%）
+_CONTENT_TRIM_LIMIT = 2000
+_CONTENT_TRIM_HEAD = 1200   # 前 60%
+_CONTENT_TRIM_TAIL = 800    # 后 40%
+_CONTENT_FOLD_MARKER = "<已折叠>"
+
+# 服务端自管输出预算（Read 模式）：返回体序列化超此字符数时从尾部收缩本批，
+# 并以 has_more/next_after_id 告知调用方按既有分页协议继续
+_GET_MESSAGES_CHAR_BUDGET = 28000
+# 收缩后追加的三个提示键（output_budget_truncated/remaining_in_batch/message）
+# 约增 200 字符——收缩目标预留此余量，保证最终返回体不超预算
+_HINT_RESERVE = 300
+
+
+def _trim_content(content: str) -> str:
+    """便利遍历裁剪：>2000 字符 → 前 1200 + <已折叠> + 后 800；≤2000 原样返回。
+
+    字符级切片（Python 字符串切片天然安全，不切多字节字符）。遍历态所有 role
+    统一适用（tool 先走 truncate_tool_output 整段折叠再套本裁剪，两道都走）；
+    完整原文只能经 message_id 单条查询获取。
+    """
+    if len(content) <= _CONTENT_TRIM_LIMIT:
+        return content
+    return content[:_CONTENT_TRIM_HEAD] + _CONTENT_FOLD_MARKER + content[-_CONTENT_TRIM_TAIL:]
+
+
+def _count_message_tokens(role: str, content: str, tool_calls=None) -> int:
+    """单条消息 token 计数（TokenCalculator；失败回退 CJK/ASCII 估算，与 memory-server 同口径）。"""
+    try:
+        # Ensure agent package is importable in stdio mode (project root may not be in sys.path)
+        import sys as _sys
+        from pathlib import Path as _Path
+        _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
+        if _project_root not in _sys.path:
+            _sys.path.insert(0, _project_root)
+        from agent.token_calculator import TokenCalculator
+        return TokenCalculator.get().count_message_single(role, content, tool_calls=tool_calls)
+    except Exception:
+        # Fallback: CJK ~1.5 tokens, ASCII ~0.25 tokens (conservative, same as memory-server)
+        cjk = sum(1 for c in content if '一' <= c <= '鿿')
+        return max(1, int(cjk * 1.5 + (len(content) - cjk) * 0.25))
+
 
 def get_messages(
     session_id: str,
     after_id: str | None = None,
     after_time: str | None = None,
     limit: int = _DEFAULT_GET_MESSAGES_LIMIT,
+    message_id: str | None = None,
     full_tool_output: bool = False,
     **kwargs,
 ) -> dict:
@@ -255,14 +307,53 @@ def get_messages(
       after_id that exists in full but is excluded by the watermark yields an
       empty batch (has_more=False, next_after_id=None).
     limit: default 200, capped at 1000; without after_id the newest N (tail).
-    full_tool_output: default false — oversized role=='tool' content folded via
-      agent.md_mirror.truncate_tool_output (reused, never duplicated).
+    message_id: single-message lookup — returns only that message with FULL
+      original content (no fold, no trim) as {"status": "ok", "message": {...}};
+      paging params (after_id/after_time/limit/full_tool_output) are ignored.
+      Unknown id fails loud with {"reason": "invalid_message_id"}.
+    full_tool_output: traversal mode ignores it — every role's content is
+      trimmed to ≤2000 chars (_trim_content); 'full original' semantics now
+      live exclusively in message_id single-message queries.
+    Traversal trim: >2000-char content folded to head 1200 + <已折叠> + tail 800;
+      role=='tool' first passes agent.md_mirror.truncate_tool_output (reused,
+      never duplicated), then the same trim — both stages.
+    Output budget (Read mode): if the serialized batch exceeds
+      _GET_MESSAGES_CHAR_BUDGET chars it is shrunk from the tail until it fits;
+      the result then carries has_more=True + next_after_id (last returned id)
+      plus output_budget_truncated/remaining_in_batch/message hints so callers
+      continue via the existing paging protocol.
 
     Other failures return {"reason": "transient"} — callers treat as retryable.
     """
     try:
         store = _get_store()
         messages = _run_async(store.get_messages())
+
+        # message_id 单条查询：完整原文（不折叠、不裁剪），分页参数一律忽略
+        if message_id:
+            target = next(
+                (m for m in messages if getattr(m, "id", "") == message_id), None
+            )
+            if target is None:
+                logger.warning(f"get_messages: message_id '{message_id}' not found")
+                return {
+                    "error": f"message_id '{message_id}' not found in session messages",
+                    "reason": "invalid_message_id",
+                }
+            content = getattr(target, "content", "") or ""
+            return {
+                "status": "ok",
+                "message": {
+                    "id": getattr(target, "id", ""),
+                    "tokens": _count_message_tokens(
+                        getattr(target, "role", "user"), content,
+                        getattr(target, "tool_calls", None),
+                    ),
+                    "role": getattr(target, "role", "unknown"),
+                    "content": content,
+                    "created_at": getattr(target, "created_at", "") or "",
+                },
+            }
 
         # Normalize time watermark (' ' / 'T' separator both tolerated);
         # truncate to second precision — watermark semantics = whole-second
@@ -340,18 +431,17 @@ def get_messages(
             has_more = base_index + len(selected) < len(messages)
             total_messages = len(messages)
 
-        # Fold oversized tool outputs via md_mirror (single source of truth)
+        # 遍历态：tool 先走 md_mirror 整段折叠（单一事实源），再统一套 2000 字符便利裁剪——两道都走
         truncate = None
-        if not full_tool_output:
-            try:
-                import sys as _sys
-                from pathlib import Path as _Path
-                _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
-                if _project_root not in _sys.path:
-                    _sys.path.insert(0, _project_root)
-                from agent.md_mirror import truncate_tool_output as truncate
-            except Exception:
-                truncate = None
+        try:
+            import sys as _sys
+            from pathlib import Path as _Path
+            _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
+            if _project_root not in _sys.path:
+                _sys.path.insert(0, _project_root)
+            from agent.md_mirror import truncate_tool_output as truncate
+        except Exception:
+            truncate = None
 
         formatted = []
         total_tokens = 0
@@ -359,19 +449,10 @@ def get_messages(
             content = getattr(msg, "content", "") or ""
             if truncate is not None and getattr(msg, "role", "") == "tool":
                 content = truncate(content)
-            try:
-                # Ensure agent package is importable in stdio mode (project root may not be in sys.path)
-                import sys as _sys
-                from pathlib import Path as _Path
-                _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
-                if _project_root not in _sys.path:
-                    _sys.path.insert(0, _project_root)
-                from agent.token_calculator import TokenCalculator
-                tokens = TokenCalculator.get().count_message_single(getattr(msg, "role", "user"), content, tool_calls=getattr(msg, "tool_calls", None))
-            except Exception:
-                # Fallback: CJK ~1.5 tokens, ASCII ~0.25 tokens (conservative, same as memory-server)
-                cjk = sum(1 for c in content if '一' <= c <= '鿿')
-                tokens = max(1, int(cjk * 1.5 + (len(content) - cjk) * 0.25))
+            content = _trim_content(content)  # 所有 role 统一便利裁剪（full_tool_output 仅 message_id 单条查询有意义）
+            tokens = _count_message_tokens(
+                getattr(msg, "role", "user"), content, getattr(msg, "tool_calls", None)
+            )
             total_tokens += tokens
 
             formatted.append({
@@ -383,13 +464,37 @@ def get_messages(
                 "created_at": getattr(msg, "created_at", "") or "",
             })
 
-        return {
+        result = {
             "total_messages": total_messages,
             "total_tokens": total_tokens,
             "messages": formatted,
             "has_more": has_more,
             "next_after_id": formatted[-1]["id"] if formatted else None,
         }
+
+        # 服务端自管输出预算（Read 模式）：完整 JSON 超预算 → 从尾部逐条收缩到预算内；
+        # 收缩后强制 has_more=True + next_after_id=最后一条已返回 id，调用方按既有分页协议继续。
+        # 度量口径与 MCP stdio 传输一致（indent=2, ensure_ascii=False）。
+        if formatted:
+            payload = json.dumps(result, ensure_ascii=False, indent=2)
+            dropped = 0
+            # 收缩目标 = 预算 - 提示键余量（追加提示后最终仍 ≤ 预算）
+            while len(payload) > _GET_MESSAGES_CHAR_BUDGET - _HINT_RESERVE and len(formatted) > 1:
+                formatted.pop()
+                dropped += 1
+                result["messages"] = formatted
+                result["next_after_id"] = formatted[-1]["id"] if formatted else None
+                result["has_more"] = True
+                payload = json.dumps(result, ensure_ascii=False, indent=2)
+            if dropped:
+                result["total_tokens"] = sum(m["tokens"] for m in formatted)
+                result["output_budget_truncated"] = True
+                result["remaining_in_batch"] = dropped
+                result["message"] = (
+                    f"返回体超 {_GET_MESSAGES_CHAR_BUDGET} 字符预算，本批已自动收缩为 {len(formatted)} 条"
+                    f"（另有 {dropped} 条未返回）；请继续以 after_id={result['next_after_id']} 分页取回"
+                )
+        return result
     except Exception as e:
         logger.error(f"get_messages direct call failed: {e}")
         return {"error": str(e), "reason": "transient"}
@@ -675,10 +780,12 @@ async def list_tools() -> list[Tool]:
             name="get_messages",
             description=(
                 "Get message list for a session with token counts. Returns messages with "
-                "idx, tokens, role, content, created_at (ISO8601). Supports incremental "
-                "paging via after_id and time-watermark filtering via after_time "
+                "idx, tokens, role, content, created_at (ISO8601). 便利遍历：每条 content 折叠至 ≤2000 字符"
+                "（前 60% + 后 40% + 中缀 <已折叠>）；完整内容必须指定单条 message_id 获取。"
+                "Supports incremental paging via after_id and time-watermark filtering via after_time "
                 "(after_time-only returns the oldest N within the filter window); "
-                "response ends with has_more and next_after_id."
+                "response ends with has_more and next_after_id. 本工具自管返回体积：超预算时自动收缩本批"
+                "并以 has_more/next_after_id 告知继续分页。"
             ),
             inputSchema={
                 "type": "object",
@@ -705,14 +812,21 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": (
                             "单次返回上限，默认 200，封顶 1000；无 after_id 时取末尾最新 N 条；"
-                            "仅给 after_time 时取过滤窗口内最旧 N 条"
+                            "仅给 after_time 时取过滤窗口内最旧 N 条。实际返回条数可能因输出预算自管而更少（见 has_more）"
+                        ),
+                    },
+                    "message_id": {
+                        "type": "string",
+                        "description": (
+                            "指定后只返回该消息一条且 content 为完整原文（不折叠、不裁剪）；"
+                            "遍历列出消息 id 后按需取详情。ID 在库中找不到时报错 reason=invalid_message_id"
                         ),
                     },
                     "full_tool_output": {
                         "type": "boolean",
                         "description": (
-                            "默认 false：role=='tool' 的超长内容折叠为头尾摘要（含 <已精简> 标记）；"
-                            "true 返回完整原文"
+                            "遍历态忽略本参数（所有 role 一律受 2000 字符便利裁剪，tool 先整段折叠再裁剪）；"
+                            "「返回 tool 完整原文」语义仅对 message_id 单条查询有效"
                         ),
                     },
                 },
@@ -837,12 +951,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: session_id is required")]
 
         # 直读本机 DB，与同进程直调共用一份实现（read_history_block 同模式），
-        # 支持 after_id/after_time/limit/full_tool_output 新参数且四处 schema 天然一致
+        # 支持 after_id/after_time/limit/message_id/full_tool_output 参数且四处 schema 天然一致
         result = get_messages(
             session_id,
             after_id=arguments.get("after_id"),
             after_time=arguments.get("after_time"),
             limit=arguments.get("limit", _DEFAULT_GET_MESSAGES_LIMIT),
+            message_id=arguments.get("message_id"),
             full_tool_output=bool(arguments.get("full_tool_output", False)),
         )
 
