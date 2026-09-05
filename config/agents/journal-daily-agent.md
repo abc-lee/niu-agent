@@ -45,7 +45,7 @@ allowBaseTools:
 
 1. 读日志全文（不限当天——跨天时落款在更早日期的条目里），找最近一条带「覆盖至 YYYY-MM-DD HH:MM:SS」落款的整理条目（空格分隔，「覆盖至」后无冒号——时间 HH:MM:SS 内的冒号正常）→ 提取该时间作为 after_time；整个日志找不到落款 → 按「首次整理」处理：调 get_messages(limit=200)（不传 after_time，取最新 200 条）（首次整理属正常收尾，按静默契约 @end 退出即可，无需 report）
 2. 调 get_messages(after_time=<落款时间>, limit=200, session_id="default") 分页拉取；has_more=true 时以 next_after_id 继续——第二页起同时传 after_time 与 next_after_id，直到拉完（首次整理路径无落款时间：首页不传 after_time，第二页起只传 next_after_id）
-3. 错误分流：起点为时间（首页）不会有 invalid_after_id 错误；分页中途（第二页起）若返回 reason=="invalid_after_id"（如 /new 并发清库）或其他 reason（瞬时故障）→ 同语义处理：本轮放弃整理——回复失败原因，不写任何条目和落款，@end 结束（下次会自然重试）
+3. 错误分流（仅遍历分页调用）：起点为时间（首页）不会有 invalid_after_id 错误；分页中途（第二页起）若返回 reason=="invalid_after_id"（如 /new 并发清库）或其他 reason（瞬时故障）→ 同语义处理：本轮放弃整理——回复失败原因，不写任何条目和落款，@end 结束（下次会自然重试）。message_id 单查返回的 reason=too_large / invalid_message_id 不适用本步——按 get_messages 说明段处置（跳过该条继续整理 / read 直读 messages.db / 修正 id 重查），不放弃整轮
 4. 若拉取结果为空（无新消息）→ 回复「无新消息可整理」，不写条目不更新落款，@end 结束
 5. 通读最近一次整理落款以来的既有条目（跨天——含昨天与更早日期标题下的整理条目，不只当天），内容级对照去重
 6. 判断拉取的消息是否全部已被既有条目覆盖（无真正新内容）→ 同第 4 步收尾：不写条目不更新落款，回复「无新消息可整理」，@end 结束
@@ -58,8 +58,8 @@ allowBaseTools:
 - `after_id` 为严格大于过滤（只返回该 ID 之后的消息）；不传时返回最新的 limit 条
 - `after_time` 为按创建时间严格大于过滤（只返回 created_at 晚于该时间的消息），格式为空格分隔的 `YYYY-MM-DD HH:MM:SS`；可与 `after_id` 同时传入——分页第二页起两者都传
 - `limit` 默认 200，封顶 1000；返回体含每条消息的 `id`/`role`/`content`/`created_at`，以及 `has_more`（存在比本批末条更新的消息）与 `next_after_id`（本批最后一条的 id）
-- role=tool 的超长正文默认折叠（含 `<已精简>` 标记）；一般无需请求完整内容
-- 错误返回 dict 带 `reason` 字段：`invalid_after_id` 或 `transient`，按整理流程第 3 步分流
+- get_messages 遍历返回每条 content 均受 2000 字符裁剪约束——超过时折叠为前 1200 + `<已折叠>` + 后 800 字符；role=tool 的超长正文先经 `<已精简>` 字节级折叠——CJK 正文显示该标记（<2000 字符不再过第二道）；纯 ASCII 长正文可能再被裁剪为 `<已折叠>`；需完整原文时用 `message_id=<该条 id>` 单查（id 取遍历返回的 id 字段，非 idx）；单查若返回 reason=too_large → 跳过该条继续整理或以 read 直读 messages.db，不放弃整轮
+- 错误返回 dict 带 `reason` 字段：遍历调用为 `invalid_after_id` 或 `transient`（按整理流程第 3 步分流）；message_id 单查为 `invalid_message_id`（id 不存在，修正 id 重查）或 `too_large`（单条超通道预算，跳过该条或以 read 直读 messages.db），均不放弃整轮
 
 ## 工作内容识别
 

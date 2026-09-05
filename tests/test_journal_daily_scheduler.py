@@ -233,6 +233,28 @@ def test_journal_daily_agent_md_carries_workflow_protocol():
     assert "@end" in md, "@end 结束协议必须在场"
     assert '"report"' in md, "report 例外通道教学必须在场"
 
+
+def test_journal_mds_carry_get_messages_trim_and_single_query_semantics():
+    """AC6 协议源钉（双 md）：get_messages 2000 字符裁剪 + message_id 单查完整原文语义
+    必须同时在场于 journal-agent.md 与 journal-daily-agent.md（此前 pin 只覆盖 daily，
+    journal-agent.md 全仓无 pin——两文件工作流段落同文不同源，单侧漂移静默漏防）；
+    旧句「一般无需请求完整内容」与第 3 步无条件放弃分流（无「仅遍历分页调用」限定词）
+    必须已退役。字符串拼接避免退役字面量污染全仓 grep（同上先例）。"""
+    for name in ("journal-agent.md", "journal-daily-agent.md"):
+        md = (_root / "config" / "agents" / name).read_text(encoding="utf-8")
+        # not-in-md：旧句退役（拼接防字面量自污染）
+        assert ("一般无需请求完整" + "内容") not in md, \
+            f"{name}：旧句「一般无需请求完整内容」必须已退役"
+        # not-in-md：第 3 步旧无条件放弃分流头（无「仅遍历分页调用」限定）必须已删——
+        # 新语义下 message_id 单查错误不再触发整轮放弃
+        assert ("错误分流" + "：起点为时间") not in md, \
+            f"{name}：第 3 步旧无条件放弃分流头「错误分流：」必须已退役"
+        # in-md：新语义标记（裁剪/单查/too_large/单查错误码/分流限定）
+        for token in ("message_id", "<已折叠>", "<已精简>", "too_large",
+                      "仅遍历分页调用", "invalid_message_id"):
+            assert token in md, f"{name}：新语义标记 {token!r} 必须在场"
+
+
 def test_journal_daily_agent_hidden_pins():
     """hidden pin（T4 契约）：journal-daily-agent 是后台专用子 Agent，主 Agent 不可见——
     ① frontmatter 声明 visibility: hidden（get_tools_schema 跳过 chat-with 注册）；
