@@ -165,7 +165,10 @@ def archive_excluded_units(messages, units, window_start: int,
         try:
             from agent.context_assembler.entity_tags import collect_tags
             tags_list = (
-                collect_tags([(b.time_start, b.time_end) for b in new_blocks])
+                collect_tags(
+                    [(b.time_start, b.time_end) for b in new_blocks],
+                    [b.first_user for b in new_blocks],
+                )
                 if collect_entities
                 else [[] for _ in new_blocks]
             )
