@@ -101,22 +101,24 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 
 **自定义 HTTP 请求头（`litellm_kwargs.extra_headers`）**：
 
-`litellm_kwargs` 是通用透传通道——除 `thinking`（程序拦截走专用通道）外，任何键都原样展开进 LiteLLM 调用。LiteLLM 一等参数 `extra_headers`（自定义 HTTP 请求头）在此通道内可用，适用于服务商标明要求附加请求头的场景，例如：OpenCode Go 的会话追踪头 `x-opencode-session`（2026-09 起要求）、OpenRouter 要求的 `HTTP-Referer`/`X-Title`、企业网关要求的鉴权/溯源头。配置示例（`llm` 段或 `lightrag_llm` 段均同）：
+`litellm_kwargs` 是通用透传通道——除 `thinking`（程序拦截走专用通道）外，任何键都原样展开进 LiteLLM 调用。LiteLLM 一等参数 `extra_headers`（自定义 HTTP 请求头）在此通道内可用，适用于服务商标明要求附加请求头的场景，例如：OpenRouter 要求的 `HTTP-Referer`/`X-Title`、企业网关要求的鉴权/溯源头。配置示例（`llm` 段或 `lightrag_llm` 段均同）：
 
 ```json
 "litellm_kwargs": {
   "extra_headers": {
-    "x-opencode-session": "my-session-id"
+    "HTTP-Referer": "https://example.com",
+    "X-Title": "Niu"
   }
 }
 ```
 
 要点：
+- **没有变量替换机制**：配置里的值是**字面量**——写什么字符串就原样发送什么，程序不会自动填充或替换任何值。适合静态请求头（固定的 Referer、产品名、固定鉴权头）。
 - **全链路覆盖**：主对话/子 Agent（`llm` 段）与知识图谱入库/查询（`lightrag_llm` 段）的出网 LLM 调用统一走 `LiteLLMSession`，`litellm_kwargs` 同一机制透传，`extra_headers` 两段都生效。
 - **与 drop_params 兼容**：`litellm_kwargs` 非空时程序自动开启 `drop_params`（厂商不支持的参数自动丢弃），实测 `extra_headers` 不受其影响——LiteLLM 的 openai 兼容路径参数白名单原生包含它。
 - **设置窗口不提供该字段的可视化编辑**，需手动编辑 `~/.niu/config/user-config.json`（关闭程序后编辑；改后回设置窗口"测试连接并保存"验证连通）。保存时已有键会保留（仅 thinking 被增删），`extra_headers` 不会被设置窗口保存覆盖。
-- **边界——静态值**：配置文件写入的是静态值（所有请求同一个值）。部分服务商要求的头是**每会话动态 id**（如 `x-opencode-session` 的语义是 stable-id-per-conversation），静态值与该语义不符；此类需求需要程序层按会话注入，配置层只能表达静态头。有此类需求时联系开发在 `LiteLLMSession` 调用层动态覆盖（一行合并：`{**静态头, 动态键: 会话id}`）。
-- **Agent 引导指引**：用户要求"给模型配置加某个请求头"时，若该头是静态值（Referer、鉴权头、固定追踪头），直接引导走本节 `litellm_kwargs.extra_headers`；若是每会话动态值，如实告知需程序层支持，不要用静态值硬凑。
+- **边界——每会话动态 id 不支持**：部分服务商要求的头是**每会话动态 id**（如 OpenCode Go 的 `x-opencode-session`，语义是 stable-id-per-conversation）。配置层写死一个值虽然请求不会报错，但所有会话共用同一个 id，与该头的语义不符（服务端会把所有会话当成一个）。此类需求需要程序层按会话注入（`LiteLLMSession` 调用层动态合并 `{**静态头, "x-opencode-session": 会话id}`），**当前程序未实现**——真接入该服务商时由开发补上，配置层届时无需改动。
+- **Agent 引导指引**：用户要求"给模型配置加某个请求头"时，若该头是静态值（Referer、鉴权头、固定追踪头），直接引导走本节 `litellm_kwargs.extra_headers`；若是每会话动态值（会话 id 类），如实告知当前仅支持静态值、动态注入需程序层支持，不要用写死的值硬凑语义。
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 
