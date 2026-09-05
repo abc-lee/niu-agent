@@ -33,7 +33,7 @@ allowBaseTools:
 
 ## 整理流程
 
-1. 读日志全文（不限当天——跨天时落款在更早日期的条目里），找最近一条带「覆盖至 YYYY-MM-DD HH:MM:SS」落款的整理条目（空格分隔，「覆盖至」后无冒号——时间 HH:MM:SS 内的冒号正常）→ 提取该时间作为 after_time；整个日志找不到落款 → 按「首次整理」处理：调 get_messages(limit=200)（不传 after_time，取最新 200 条），并在回复中注明首次整理
+1. 定位最近落款：日志文件是追加式编写——整理条目附在当天日期段（`# YYYY-MM-DD`）末尾，最近一次整理的落款行恒在文件末尾几行（当天没整理过则落在最近日期段的末尾，仍属文件尾区，不用从头翻全文）；读文件末尾定位最近一条带「覆盖至 YYYY-MM-DD HH:MM:SS」落款的整理条目（空格分隔，「覆盖至」后无冒号——时间 HH:MM:SS 内的冒号正常）→ 提取该时间作为 after_time；整个日志找不到落款 → 按「首次整理」处理：调 get_messages(limit=200)（不传 after_time，取最新 200 条），并在回复中注明首次整理
 2. 调 get_messages(after_time=<落款时间>, limit=200, session_id="default") 分页拉取；has_more=true 时以 next_after_id 继续——第二页起同时传 after_time 与 next_after_id，直到拉完（首次整理路径无落款时间：首页不传 after_time，第二页起只传 next_after_id）
 3. 错误分流（仅遍历分页调用）：起点为时间（首页）不会有 invalid_after_id 错误；分页中途（第二页起）若返回 reason=="invalid_after_id"（如 /new 并发清库）或其他 reason（瞬时故障）→ 同语义处理：本轮放弃整理——回复失败原因，不写任何条目和落款，@end 结束（下次会自然重试）。message_id 单查返回的 reason=too_large / invalid_message_id 不适用本步——按 get_messages 说明段处置（跳过该条继续整理 / read 直读 messages.db / 修正 id 重查），不放弃整轮
 4. 若拉取结果为空（无新消息）→ 回复「无新消息可整理」，不写条目不更新落款，@end 结束
