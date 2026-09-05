@@ -99,6 +99,25 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 | `read_timeout` | LLM 流式响应读取超时（秒），默认 `300`。模型首响应/流式 chunk 间隔超过该值判定超时并触发重试。**调小场景**：对话卡顿久等（如 `60`）；**调大场景**：知识图谱入库/大文档分析（分块分析可能数分钟，见下方 LightRAG 段）。`llm` 段控制主对话/子 Agent；知识图谱 LLM 调用默认继承 `llm` 段的 `read_timeout`，若 `lightrag_llm` 段配置了独立 `model`，则以 `lightrag_llm` 段的 `read_timeout` 为准（两段同默认 `300`） |
 | `max_tokens` | 单次回复最大输出 token 数（输出上限）。**缺省不传**（用服务端默认）。长报告/长回复被截断时调大（如 `8192`/`16384`）。**注意**：模型对 max_tokens 无感知——它是服务端硬截断线，到上限即 `finish_reason=length` 截断；思考链（thinking）与正文**共享**该预算，思考链模型尤其要调大。设置窗口"测试连接并保存"会顺带校验该值合法性（非法值服务端 400 阻断保存）。只作用于会话对话链路（主 Agent/子 Agent/知识图谱），压缩与能力探测保持程序内部固定值 |
 
+**自定义 HTTP 请求头（`litellm_kwargs.extra_headers`）**：
+
+`litellm_kwargs` 是通用透传通道——除 `thinking`（程序拦截走专用通道）外，任何键都原样展开进 LiteLLM 调用。LiteLLM 一等参数 `extra_headers`（自定义 HTTP 请求头）在此通道内可用，适用于服务商标明要求附加请求头的场景，例如：OpenCode Go 的会话追踪头 `x-opencode-session`（2026-09 起要求）、OpenRouter 要求的 `HTTP-Referer`/`X-Title`、企业网关要求的鉴权/溯源头。配置示例（`llm` 段或 `lightrag_llm` 段均同）：
+
+```json
+"litellm_kwargs": {
+  "extra_headers": {
+    "x-opencode-session": "my-session-id"
+  }
+}
+```
+
+要点：
+- **全链路覆盖**：主对话/子 Agent（`llm` 段）与知识图谱入库/查询（`lightrag_llm` 段）的出网 LLM 调用统一走 `LiteLLMSession`，`litellm_kwargs` 同一机制透传，`extra_headers` 两段都生效。
+- **与 drop_params 兼容**：`litellm_kwargs` 非空时程序自动开启 `drop_params`（厂商不支持的参数自动丢弃），实测 `extra_headers` 不受其影响——LiteLLM 的 openai 兼容路径参数白名单原生包含它。
+- **设置窗口不提供该字段的可视化编辑**，需手动编辑 `~/.niu/config/user-config.json`（关闭程序后编辑；改后回设置窗口"测试连接并保存"验证连通）。保存时已有键会保留（仅 thinking 被增删），`extra_headers` 不会被设置窗口保存覆盖。
+- **边界——静态值**：配置文件写入的是静态值（所有请求同一个值）。部分服务商要求的头是**每会话动态 id**（如 `x-opencode-session` 的语义是 stable-id-per-conversation），静态值与该语义不符；此类需求需要程序层按会话注入，配置层只能表达静态头。有此类需求时联系开发在 `LiteLLMSession` 调用层动态覆盖（一行合并：`{**静态头, 动态键: 会话id}`）。
+- **Agent 引导指引**：用户要求"给模型配置加某个请求头"时，若该头是静态值（Referer、鉴权头、固定追踪头），直接引导走本节 `litellm_kwargs.extra_headers`；若是每会话动态值，如实告知需程序层支持，不要用静态值硬凑。
+
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 
 当前内置预设包括：
