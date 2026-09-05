@@ -117,7 +117,7 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 - **全链路覆盖**：主对话/子 Agent（`llm` 段）与知识图谱入库/查询（`lightrag_llm` 段）的出网 LLM 调用统一走 `LiteLLMSession`，`litellm_kwargs` 同一机制透传，`extra_headers` 两段都生效。
 - **与 drop_params 兼容**：`litellm_kwargs` 非空时程序自动开启 `drop_params`（厂商不支持的参数自动丢弃），实测 `extra_headers` 不受其影响——LiteLLM 的 openai 兼容路径参数白名单原生包含它。
 - **设置窗口不提供该字段的可视化编辑**，需手动编辑 `~/.niu/config/user-config.json`（关闭程序后编辑；改后回设置窗口"测试连接并保存"验证连通）。保存时已有键会保留（仅 thinking 被增删），`extra_headers` 不会被设置窗口保存覆盖。
-- **边界——每会话动态 id 不支持**：部分服务商要求的头是**每会话动态 id**（如 OpenCode Go 的 `x-opencode-session`，语义是 stable-id-per-conversation）。配置层写死一个值虽然请求不会报错，但所有会话共用同一个 id，与该头的语义不符（服务端会把所有会话当成一个）。此类需求需要程序层按会话注入（`LiteLLMSession` 调用层动态合并 `{**静态头, "x-opencode-session": 会话id}`），**当前程序未实现**——真接入该服务商时由开发补上，配置层届时无需改动。
+- **边界——每会话动态 id 不支持**：部分服务商要求的头是**每会话动态 id**（如 OpenCode Go 的 `x-opencode-session`，语义是 stable-id-per-conversation）。该头的用途是 **KV cache 亲和路由**：同会话请求路由到同一后端槽位以命中前缀缓存，不同会话分散到不同槽位。配置层写死一个值是**反模式**——所有会话被亲和到同一槽位（负载倾斜）且不同会话前缀在有限缓存里互相驱逐，多路会话时缓存收益不升反降。动态注入需程序层支持（`LiteLLMSession` 调用层按会话合并 `{**静态头, "x-opencode-session": 会话id}`），**当前程序未实现**——真接入该服务商时由开发补上，配置层届时无需改动。
 - **Agent 引导指引**：用户要求"给模型配置加某个请求头"时，若该头是静态值（Referer、鉴权头、固定追踪头），直接引导走本节 `litellm_kwargs.extra_headers`；若是每会话动态值（会话 id 类），如实告知当前仅支持静态值、动态注入需程序层支持，不要用写死的值硬凑语义。
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
