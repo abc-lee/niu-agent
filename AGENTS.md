@@ -512,6 +512,8 @@ preload_face_model()
 
 ### 2026-09-05
 
+- 优化：fold 折叠占位符文案瘦身——删教学重复句（用户指出占位符尾部「如需原文请重新调用原工具获取」是 niu.md 已教内容的逐条重复征税 +「本条已移出上下文」半冗余）：新文案 `[输出#{rowid} 已折叠：{name}({args})，原占约 X%。]`（pct None 省略占比分句）——旧 45 字→新 22 字省一半，编号/工具名/参数摘要（重调原工具通道信息）零损失；配套 `_is_tool_placeholder` 折叠族判定从「获取]」尾缀锚（当初搭裁剪族判定便车）改为「单行 + [输出# 前缀」——更稳（未折叠渲染恒多行不误判），新文案与旧格式恢复会话均覆盖；点名 6 文件 95 passed（StickyT3）
+
 #### 工程：LLM 会话亲和路由（sticky routing）——服务商 session id 动态注入（spec v1.5 R1-R6 双审门禁 + SDD T1-T3 每 Task 双审，main 7ac00ed2/59154330/5035dedd）
 
 - **背景（OpenCode Go 09/06 起 x-opencode-session 强制邮件触发）**：调研实证 sticky 亲和路由机制（OpenCode Go 网关 createStickyTracker + header/部分模型强制 DeepSeek Flash 缺头 400；OpenRouter 官方 Provider Sticky Routing——session_id body 字段或 x-session-id header、10 分钟过期、agentic 场景 hash 回退不可靠须显式传）——**per-conversation 稳定 id → 同会话路由同槽位 → KV cache 命中；写死同值=反模式（负载倾斜+缓存互相驱逐）**

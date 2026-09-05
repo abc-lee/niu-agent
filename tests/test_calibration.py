@@ -304,8 +304,7 @@ class TestRatioFullSendSetLock:
             """模拟 fold 成功后的每工具轮视图重建：大 tool 行原地改写为占位符。"""
             for m in messages:
                 if m.get("tool_call_id") == "c1":
-                    m["content"] = ("[输出#3 已由 fold_tool_output 折叠：read_file({})，"
-                                    "本条已移出上下文（原占约 8.0%）。如需原文请重新调用原工具获取]")
+                    m["content"] = "[输出#3 已折叠：read_file({})，原占约 8.0%。]"
 
         class _Handler:
             """主 Agent 路径（_is_subagent=False——倍率更新仅主 Agent 生效）。"""
@@ -374,7 +373,7 @@ class TestRatioFullSendSetLock:
         # turn-2 LLM 请求即响应返回点的完整发送集（chat 调用与 update_ratio 之间 messages 无变更）
         send_set = client.requests[1]
         # fold 改写已进发送集：占位符在场、大原文不在场
-        assert any("已由 fold_tool_output 折叠" in (m.get("content") or "") for m in send_set)
+        assert any("[输出#3 已折叠" in (m.get("content") or "") for m in send_set)
         assert not any(BIG in (m.get("content") or "") for m in send_set)
         # 行为锁：local = 完整发送集（折叠后）全量 count
         assert local == self._fc(send_set)
