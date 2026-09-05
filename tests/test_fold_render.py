@@ -2,8 +2,8 @@
 
 覆盖 spec §4/§9：
 - 头行渲染（有/无 pct），格式 `[输出#{rowid} · {tool_name} · 占上下文 {pct}%]`
-- 折叠完成态占位符单行 `[输出#N 已折叠：工具名(参数摘要≤80字符，无配对 unknown)，原占约 X%。]`
-  （pct=None 变体省略占比分句），以「[输出#」前缀被 _is_tool_placeholder 识别
+- 折叠完成态占位符单行 `[已折叠：工具名(参数摘要≤80字符，无配对 unknown)，原占约 X%。]`
+  （pct=None 变体省略占比分句；不带编号），以「[已折叠：」前缀被 _is_tool_placeholder 识别
 - 同一消息两轮渲染逐字节一致（固化不变式）
 - tc_map=None（历史回放路径）/ 迁移失败降级 → 原样返回
 - 压实路径一致性：build_compact_view 窗口段与常规组装同制式（R1 交叉 P1 回归锁）
@@ -58,14 +58,14 @@ def test_placeholder_with_pct():
     m = msg("tool", "SECRET_BODY", "t-105", 105,
             tool_call_id="tc1", folded=1, output_pct=4.2)
     assert render_tool_content(m, TC_MAP) == \
-        '[输出#105 已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]'
+        '[已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]'
 
 
 def test_placeholder_without_pct_omits_ratio_clause():
     m = msg("tool", "SECRET_BODY", "t-7", 7, tool_call_id="tc1",
             folded=1, output_pct=None)
     assert render_tool_content(m, TC_MAP) == \
-        '[输出#7 已折叠：read_file({"path": "/x.py"})。]'
+        '[已折叠：read_file({"path": "/x.py"})。]'
 
 
 def test_folded_placeholder_truncates_args_summary():
@@ -84,7 +84,7 @@ def test_no_pairing_still_renders():
     m = msg("tool", "B", "t-3", 3, tool_call_id="tc-missing",
             folded=1, output_pct=1.5)
     assert render_tool_content(m, TC_MAP) == \
-        "[输出#3 已折叠：unknown()，原占约 1.5%。]"
+        "[已折叠：unknown()，原占约 1.5%。]"
 
 
 def test_tc_map_none_no_render_history_replay():
@@ -119,7 +119,7 @@ def test_fixed_invariant_two_rounds_identical():
 
 
 def test_is_tool_placeholder_recognizes_fold():
-    # 折叠族按 "[输出#" 前缀识别：折叠占位符恒单行，未折叠渲染头行+换行+原文恒多行不误判
+    # 折叠族按 "[已折叠：" 前缀识别（旧带编号文案双锚照认）：折叠占位符恒单行，未折叠渲染头行+换行+原文恒多行不误判
     from agent.generic.agent_loop import _is_tool_placeholder
     folded = msg("tool", "B", "t-105", 105, tool_call_id="tc1",
                  folded=1, output_pct=4.2)
@@ -172,7 +172,7 @@ def test_compact_view_window_same_format(ratio_one, tmp_path):
     assert set(by_tc) == {"tc1", "tc2"}
     # 折叠条：占位符（原文 FOLDED_BODY 不得复活）
     assert by_tc["tc2"]["content"] == \
-        '[输出#8 已折叠：search({"q": "niu"})，原占约 3.0%。]'
+        '[已折叠：search({"q": "niu"})，原占约 3.0%。]'
     # 未折叠条：头行 + 原文
     assert by_tc["tc1"]["content"] == "[输出#5 · read_file · 占上下文 2.0%]\nOLD_BODY"
     # 与常规路径共享 helper 逐字节一致（同制式锁）

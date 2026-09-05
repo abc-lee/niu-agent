@@ -566,7 +566,8 @@ def _fifo_prune(messages, target_tokens, protect_recent_count=10, is_resumed=Fal
 
 _PLACEHOLDER_SUFFIX = "获取]"  # 裁剪族占位符后缀（带再生指引）
 _LEGACY_PLACEHOLDER_SUFFIX = "输出已裁剪]"  # 旧后缀：兼容已含旧占位符的恢复会话
-_FOLD_PLACEHOLDER_PREFIX = "[输出#"  # 折叠族前缀：折叠占位符恒单行，未折叠渲染头行+换行+原文恒多行
+_FOLD_PLACEHOLDER_PREFIX = "[已折叠："  # 折叠族前缀：折叠占位符恒单行，未折叠渲染头行+换行+原文恒多行
+_LEGACY_FOLD_ANCHORS = ("[输出#", "已折叠：")  # 旧带编号恢复会话文案双锚：[输出#N 已折叠：…（编号为纯诱饵已去）
 
 
 def _is_tool_placeholder(content) -> bool:
@@ -575,19 +576,26 @@ def _is_tool_placeholder(content) -> bool:
     认三种形态（均单行）：
     - 裁剪族新：[{name} 输出已裁剪，如需原文可重新调用该工具获取] / [输出已裁剪，如需原文可重新调用对应工具获取]（后缀 "获取]"）
     - 裁剪族旧：[{name} 输出已裁剪] / [输出已裁剪]（后缀 "输出已裁剪]"，兼容已含旧占位符的恢复会话）
-    - 折叠族（fold 工程 spec §4）：[输出#N 已折叠：{工具名}({参数摘要≤80字符})，原占约 X%。]
-      （pct None 变体省略占比分句）；旧文案（…已由 fold_tool_output 折叠：…如需原文请重新调用原工具获取]）
-      同样以 "[输出#" 开头，恢复会话照认
+    - 折叠族（fold 工程 spec §4）：[已折叠：{工具名}({参数摘要≤80字符})，原占约 X%。]
+      （pct None 变体省略占比分句；不带编号——编号对 LLM 零功能纯诱饵）。恢复会话兼容两代旧文案：
+        ① 带编号版 [输出#N 已折叠：…]（去编号前）——双锚 "[输出#" 开头 + "已折叠：" 出现在前段（[:24]，
+           覆盖任意位数 rowid；不用裸「已折叠 in content」以免误伤含该词的普通单行工具输出）；
+        ② 最早版 [输出#N 已由 fold_tool_output 折叠：…如需原文请重新调用原工具获取]——以 "获取]" 收尾，
+           由裁剪族后缀通道覆盖
 
     单行条件：所有占位符形态均为单行；T2 后窗口 tool 消息带头行恒为多行（头行+换行+原文），
     未折叠消息即使原文恰好以「获取]」/「输出已裁剪]」收尾也不会被误判为占位符而跳过应急裁剪；
-    折叠族按 "[输出#" 前缀判定，单行条件已排除误判（未折叠渲染头行必含换行）。
+    折叠族按前缀/双锚判定，单行条件已排除误判（未折叠渲染头行必含换行）。
     """
     if not isinstance(content, str):
         return False
     if "\n" in content:
         return False
     if content.startswith(_FOLD_PLACEHOLDER_PREFIX):
+        return True
+    # 旧带编号恢复会话文案：[输出#N 已折叠：…]（双锚——前缀 + 前段「已折叠：」）
+    if (content.startswith(_LEGACY_FOLD_ANCHORS[0])
+            and _LEGACY_FOLD_ANCHORS[1] in content[:24]):
         return True
     return content.startswith("[") and (
         content.endswith(_PLACEHOLDER_SUFFIX) or content.endswith(_LEGACY_PLACEHOLDER_SUFFIX)

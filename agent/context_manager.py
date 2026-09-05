@@ -62,9 +62,10 @@ def render_tool_content(msg, tc_map) -> str:
     - 非 tool / rowid<=0 → 原样返回
     - tc_map is None（历史回放路径 load_history）→ 不渲染头行/占位符，原样返回
     - fold_columns_available() False（迁移失败降级）→ 原样返回
-    - folded=1 → 单行完成态占位符 `[输出#N 已折叠：工具名(参数摘要≤80字符，无配对 unknown)，
-      原占约 X%。]`（pct None 时省略占比分句），以「[输出#」前缀被
-      agent_loop._is_tool_placeholder 识别（防应急 ToolCrop 覆盖）——工具名+参数摘要是
+    - folded=1 → 单行完成态占位符 `[已折叠：工具名(参数摘要≤80字符，无配对 unknown)，
+      原占约 X%。]`（pct None 时省略占比分句；不带编号——编号对 LLM 零功能纯诱饵，
+      取回靠参数摘要重调原工具），以「[已折叠：」前缀被 agent_loop._is_tool_placeholder
+      识别（防应急 ToolCrop 覆盖；旧带编号文案恢复会话兼容）——工具名+参数摘要是
       LLM 重新调用原工具取回原文的通道（spec §4）
     - folded=0 → 头行 + 原文；编号(rowid)/工具名/pct 全部固化来源，逐字节稳定
     """
@@ -81,7 +82,7 @@ def render_tool_content(msg, tc_map) -> str:
     rowid = msg.rowid
     if getattr(msg, "folded", 0):
         pct_part = f"，原占约 {pct}%" if pct is not None else ""
-        return f"[输出#{rowid} 已折叠：{name}({args}){pct_part}。]"
+        return f"[已折叠：{name}({args}){pct_part}。]"
     header = f"[输出#{rowid} · {name}" + (f" · 占上下文 {pct}%]" if pct is not None else "]")
     return f"{header}\n{content}"
 
