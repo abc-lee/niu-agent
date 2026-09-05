@@ -65,14 +65,14 @@ class PointerBlock:
     time_end: str = ""
     entities: list[str] = field(default_factory=list)
 
-    first_user: str = ""  # ≤40 字，超长自动截断
+    first_user: str = ""  # ≤40 字，超长自动截断（前 39 字 + …）
     summary: str | None = None  # 预留扩展位，当前无写入方（D18）
     summary_state: str = SUMMARY_PENDING  # 预留扩展位，当前无写入方（D18）
     session: str = "default"  # session 维度预留列
 
     def __post_init__(self) -> None:
         if len(self.first_user) > 40:
-            self.first_user = self.first_user[:40]
+            self.first_user = self.first_user[:39] + "…"
 
 
 # ---------------------------------------------------------------------------

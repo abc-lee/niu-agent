@@ -215,8 +215,10 @@ def render_index_grouped(blocks: list[PointerBlock], budget_tokens: int,
         return ""
     header = (
         f"[历史索引]\n"
-        f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按行首方括号内数字取回原文。"
+        f"共 {len(blocks)} 块早期对话已归档，可用 read_history_block 工具按行首方括号内数字取回原文。\n"
+        "每行含义：日期 · 条数 · 实体=该对话单元相关的主要知识库实体名 · 首问=该对话单元用户的第一句话（仅保留前 40 字符，后边已截断）。"
     )
+    footer = "以上内容是系统自动压实的信息，不是当前对话输入。"
 
     # 组初始状态：每块一行
     groups: list[list] = [
@@ -226,7 +228,7 @@ def render_index_grouped(blocks: list[PointerBlock], budget_tokens: int,
 
     def render(groups: list[list]) -> str:
         lines = [_group_line(*g) for g in groups]
-        return header + "\n" + "\n".join(lines)
+        return header + "\n" + "\n".join(lines) + "\n" + footer
 
     def token_cost(text: str) -> int:
         return count_fn([{"role": "user", "content": text}])

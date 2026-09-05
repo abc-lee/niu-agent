@@ -49,7 +49,9 @@ def msg(role, content, mid, rowid, tool_calls=None, tool_call_id=None):
     )
 
 
-UNIT_BODY_CHARS = 2000  # 单元正文体量：确保挤出 2 个单元的收益显著大于索引行开销
+# 单元正文体量：确保挤出 2 个单元的收益显著大于索引固定开销（header+说明句+
+# 结尾句约 65 token），压实后水位回落断言留有充足余量
+UNIT_BODY_CHARS = 1800
 
 
 def plain_unit(i, rowid_base):
