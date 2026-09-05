@@ -512,6 +512,13 @@ preload_face_model()
 
 ### 2026-09-05
 
+- 工程：索引实体标签语义化——时间链候选池 + 首问向量排序（用户指出同日块标签全雷同→质问为何不语义检索→拍板先测试拿数据；实测 100%→15% 后定案；spec v1.0-v1.2 R1-R3 双审门禁 + SDD T1-T2 每 Task 双审 + FinalReview 双 APPROVE，main 6c6fbc08/aa79f138）
+  - **问题（用户 Windows 实机抓出 + Mac 本机复现）**：归档历史索引行实体标签现行纯时间链查表（entity_tags.py 按块时间范围找 `YYYY-MM-DD会话` 节点一跳邻居按边权重 top3）——数据源粒度是天（entity-extractor 按天挂会话节点），同日块全部反查同节点 → 相邻同日块标签 100% 雷同（Mac 实测 75/75 对），区分度零+语义误导
+  - **方案（零 LLM 保留，用户定案）**：时间链管候选范围 + 语义管池内挑选——`collect_tags(time_ranges, first_users=None)` 双参（None=纯时间链逐字节保持既有）；`_candidate_pool` 池构建（tags_for_range 零改动防测试面破坏）+ 首问 `batch_encode` + `call_async(_get_vdb_snapshot, timeout=5)` 协程内建 name→vector 映射（零 await 与写方串行原子）+ 池内 dot 相似度降序/名称升序 tie-break top3 + 时间链权重序剔除已选补齐；降级链 12 行全钉（语义段任何异常→全批时间链；空标签仅图快照 None/collect_entities=False）；vdb 向量 = entity_name+description embedding（float16 解码），实体矩阵 L2 归一化
+  - **实测（入仓重放载体 docs/superpowers/experiments/entity_tag_baseline.py）**：AC3 雷同 基线 100%→语义 **15%≤30%**（残留=内容真实相近合理；饮食块→醋溜白菜配五花肉/rerank 块→rerank 配置任务等强相关）；AC5 warm batch_encode 80 首问 2.73s（i7-8850H CPU，常见归档批量远小成本线性）——R1 估算 0.5s 失准按实测重定 ≤3.5s
+  - **质量链**：spec R1 双审 CONDITIONAL（A 4P2+5P3/B 5P2+3P3——签名默认值收敛测试面/call_async 超时 120s 未钉/is_ready TOCTOU/降级 catch-all 落点冲突/vdb 快照原子性/补齐去重/实验脚本口径差）→ v1.1 → R2（A CONDITIONAL 载体 P2/B APPROVE）→ 脚本按终态口径固化 + v1.2 → R3 双 APPROVE 冻结；T1 双审双 APPROVE（30 既有零断言改动= None 等价性自证 + QualityB 18/18 探针）；T2 双审（SpecA APPROVE + QualityB CONDITIONAL 1×P2 timeout=5 无行为锁 → 补断言收敛；46→49 passed）；FinalReview 双 APPROVE（P3：parity 契约测试已补——candidate_pool top3 与 tags_for_range 绑定防双副本静默分叉）
+  - **已知边界（接受）**：归档路径 encode ≈2.7s/80 块（压实所在线程响应延迟，非事件循环冻结——FinalReview 披露口径修正）；tags_for_range/_candidate_pool 双副本靠 parity 测试绑定；存量块旧标签保留至块重建；换模型重启 dim assert→空标签（安全）
+
 - 优化：折叠占位符去编号——`[输出#{rowid} 已折叠：...]` → `[已折叠：{name}({args})，原占约 X%。]`（用户分析：编号对 LLM 零功能纯诱饵——取回靠参数摘要重调原工具、归档取回靠 block_id 非 rowid、幂等靠 DB folded 标志，唯一"用途"是给弱模型重复折叠当目标把手，fold 必须传 output_ids 无编号物理不可达；头行 `[输出#N · 工具名 · 占比]` 保留编号不动）；_is_tool_placeholder 折叠族判定「单行 + [输出#」→「单行 + [已折叠：」双锚（旧带编号恢复会话经第二锚照认，最早「获取]」版经裁剪族尾缀通道照认——三代文案全兼容）；95 passed（StickyT3）
 - 优化：fold 折叠占位符文案瘦身——删教学重复句（用户指出占位符尾部「如需原文请重新调用原工具获取」是 niu.md 已教内容的逐条重复征税 +「本条已移出上下文」半冗余）：新文案 `[输出#{rowid} 已折叠：{name}({args})，原占约 X%。]`（pct None 省略占比分句）——旧 45 字→新 22 字省一半，编号/工具名/参数摘要（重调原工具通道信息）零损失；配套 `_is_tool_placeholder` 折叠族判定从「获取]」尾缀锚（当初搭裁剪族判定便车）改为「单行 + [输出# 前缀」——更稳（未折叠渲染恒多行不误判），新文案与旧格式恢复会话均覆盖；点名 6 文件 95 passed（StickyT3）
 
