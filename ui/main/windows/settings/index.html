@@ -479,13 +479,33 @@
       const llmCap = (config.llm && config.llm.litellm_kwargs) || {};
       const llmThinkingVal = (llmCap.thinking && llmCap.thinking.type) || '';
       const llmEffortVal = (config.llm && config.llm.reasoning_effort) || '';
-      document.getElementById('llmThinking').value = llmThinkingVal;
       const lightragLlm = config.lightrag_llm || {};
       const lightragKwargs = lightragLlm.litellm_kwargs || {};
       const lightragThinkingVal = (lightragKwargs.thinking && lightragKwargs.thinking.type) || '';
       const lightragEffortVal = lightragLlm.reasoning_effort || '';
-      document.getElementById('lightragThinking').value = lightragThinkingVal;
       document.getElementById('lightragTemperature').value = lightragLlm.temperature ?? 0.2;
+
+      // 思考链选项：取探测档案填充（支持的值才有选项）。有档案时存量配置值若在
+      // 支持集内 → option 存在，.value 直写保真；不在/无档案 → 只有"跟随默认"，
+      // .value 直写无匹配 option 自然回落跟随默认（不保留不支持的值——拍板语义）。
+      // lightrag 继承主 llm（model 空）时用主 llm 档案键。
+      // 先同步直写（无 option 时回落空=跟随默认），档案异步到达后重填选项再设值
+      document.getElementById('llmThinking').value = llmThinkingVal;
+      document.getElementById('lightragThinking').value = lightragThinkingVal;
+      const modelVal = document.getElementById('model').value;
+      const apiBaseVal = document.getElementById('apiBase').value;
+      (async () => {
+        const [llmProfile, lightragProfile] = await Promise.all([
+          window.electronAPI.getCapabilityProfile({ apiBase: apiBaseVal, model: modelVal, lightrag: false }),
+          window.electronAPI.getCapabilityProfile({ apiBase: apiBaseVal, model: modelVal, lightrag: true }),
+        ]);
+        // llm 段用 llm 档案；lightrag 继承（model 空）时主 llm 档案即 lightrag 场景档案
+        const lrProfile = isLightragInherited(config) ? llmProfile : lightragProfile;
+        populateThinkingOptions('llmThinking', llmProfile);
+        populateThinkingOptions('lightragThinking', lrProfile);
+        document.getElementById('llmThinking').value = llmThinkingVal;
+        document.getElementById('lightragThinking').value = lightragThinkingVal;
+      })();
 
       // 推理深度下拉初始态：未探测 → 只显示被选中项（当前配置值 + 跟随模型默认），
       // 不注入历史档案档位（用户拍板 2026-08-18——档位列表是探测结果，未探测
