@@ -729,8 +729,13 @@ async def _probe_llm(
             "reasoning_effort": config.get("reasoning_effort"),
             "provider": config.get("provider", ""),
             # 用户配置 max_tokens 时用用户值（testAndSave 顺带校验合法性：非法值 → 服务端 400 → probe 报错阻断保存）；
-            # 无配置保持 256（探测提速——max_tokens 是上限非目标，不影响 "hi" 探测速度）
-            "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": config.get("max_tokens") or 256},
+            # 无配置保持 256（探测提速——max_tokens 是上限非目标，不影响 "hi" 探测速度；
+            # 256 对思考模型只够思考链开头就 length 截断，但截断判定已改为
+            # 「无 thinking/content 才报错」，有 thinking 输出即判通过，见 _sync_test）
+            "litellm_kwargs": {
+                **config.get("litellm_kwargs", {}),
+                "max_tokens": config.get("max_tokens") or config.get("maxtokens") or 256,
+            },
             "read_timeout": read_timeout,
         }
         session = LiteLLMSession(cfg=llm_config)
@@ -752,14 +757,22 @@ async def _probe_llm(
             # stream_error=True 表示流式传输中途出错，partial content 不可信
             if mock_resp and getattr(mock_resp, "stream_error", False):
                 return "", False, False  # 无内容，触发"模型返回空响应"错误提示
-            # finish_reason=length：输出被 max_tokens 截断——必须报错（曾静默判通过）
-            if mock_resp is not None and getattr(mock_resp, "finish_reason", None) == "length":
-                truncated = True
             text = "".join(chunks)
             has_content = bool(text.strip()) or (
                 mock_resp is not None
                 and (getattr(mock_resp, "content", None) or getattr(mock_resp, "thinking", None))
             )
+            # finish_reason=length：输出被 max_tokens 截断。
+            # 真截断（无任何输出，模型没反应）→ 报错（曾静默判通过，d444b098 修）；
+            # 思考模型服务端强制思考（glm-5.3-flash @ volcengine 关不掉 thinking），探测
+            # max_tokens=256 只够思考链开头就 length 截断，但 thinking 输出=模型活着 →
+            # 判通过（2026-09-06 启动失败实证：模型能回 hi 却被误判不可用）
+            if (
+                mock_resp is not None
+                and getattr(mock_resp, "finish_reason", None) == "length"
+                and not has_content
+            ):
+                truncated = True
             return text, has_content, truncated
 
         # 外层超时给 read_timeout + 重试留余量（推理模型首响应慢）
