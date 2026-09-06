@@ -6,7 +6,7 @@ Why: 2026-07-27 首次启动 bug——缺省配置缺 thinking/reasoning_effort 
 缺省由代码内联写出；本测试锁定 config-manager 兜底字段。
 
 三处一致性的精确含义（第 1 轮审查澄清）：前端两处缺省（get-config 兜底 /
-testAndSave 常量）与本处的**核心字段**一致（thinking / reasoning_effort /
+testAndSave 常量）与本处的**核心字段**一致（reasoning_effort /
 temperature / context 四项 / logging）；storage 内部结构为
 Python 兜底特有的历史字段（向后兼容保留，JS 两处不含，已验证无害）；
 targetThreshold 为已删除的历史字段（2026-08-10 随子 Agent 压缩目标写死 50% 移除）。
@@ -47,8 +47,8 @@ def test_fallback_lightrag_llm_fields(fallback):
     assert lightrag["reasoning_effort"] == ""
     # 知识图谱模型温度（与前端 testAndSave 现有缺省一致，R14）
     assert lightrag["temperature"] == 0.2
-    # 关闭思考链返回（保证 JSON 输出干净）——探测环境=运行时环境的关键
-    assert lightrag["litellm_kwargs"]["thinking"] == {"type": "disabled"}
+    # 思考链不强制缺省（设置页按探测档案裁剪选项，"跟随模型默认"= 不配置）
+    assert "thinking" not in lightrag["litellm_kwargs"]
     assert lightrag["litellm_kwargs"]["allowed_openai_params"] == []
     # probe 成功前缺省不含 response_format_mode（失败不写文件的语义保证，R4/R5）
     assert "response_format_mode" not in lightrag["litellm_kwargs"]

@@ -1231,7 +1231,7 @@ const presetsPath = path.join(bundleConfigDir, 'llm-presets.json');  // 只读�
 // 注意：user-config.json 无模板文件设计——文件由设置窗口 save-config 创建。
 // 文件不存在时（首次启动），get-config 返回代码内联标准缺省（与 config-manager
 // load_user_config 兜底、settings testAndSave 缺省常量三处一致）——
-// 保证表单初始值和 probe 探测都拿到完整基础配置（thinking/reasoning_effort 等），
+// 保证表单初始值和 probe 探测都拿到完整基础配置（reasoning_effort 等），
 // 而不是空骨架 {llm:{}}（2026-07-27 首次启动 probe 失败根因）。
 
 ipcMain.handle('get-presets', () => {
@@ -1262,7 +1262,7 @@ ipcMain.handle('get-config', () => {
     lightrag_llm: {
       presetId: "", apiKey: "", apiBase: "", model: "", type: "openai",
       reasoning_effort: "", temperature: 0.2,
-      litellm_kwargs: { thinking: { type: "disabled" }, allowed_openai_params: [] }
+      litellm_kwargs: { allowed_openai_params: [] }
     },
     context: {
       contextWindowSize: 200000, warningThreshold: 0.8,
