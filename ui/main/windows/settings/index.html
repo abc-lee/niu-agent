@@ -298,8 +298,6 @@
             <label class="pencil-text">思考链</label>
             <select id="llmThinking">
               <option value="">跟随模型默认</option>
-              <option value="enabled">开启</option>
-              <option value="disabled">关闭</option>
             </select>
             <div class="hint">是否返回思考链；"跟随模型默认" = 不配置</div>
           </div>
@@ -361,8 +359,6 @@
             <label class="pencil-text">思考链</label>
             <select id="lightragThinking">
               <option value="">跟随模型默认</option>
-              <option value="enabled">开启</option>
-              <option value="disabled" selected>关闭</option>
             </select>
             <div class="hint">入库建议关闭思考链；"跟随模型默认" = 不配置</div>
           </div>
@@ -688,13 +684,8 @@
       ['llmThinking', 'llmReasoningEffort', 'lightragThinking', 'lightragReasoningEffort'].forEach(id => {
         const el = document.getElementById(id);
         if (el) {
-          if (id === 'llmThinking' || id === 'lightragThinking') {
-            // 思考链选项固定（跟随默认/开启/关闭）——清值保留选项，探测成功后恢复可用即可
-            el.value = '';
-          } else {
-            // 推理深度选项档案驱动——清空只留"跟随模型默认"
-            el.innerHTML = '<option value="">跟随模型默认</option>';
-          }
+          // 思考链/推理深度选项均档案驱动（探测成功后复写）——清空只留"跟随模型默认"
+          el.innerHTML = '<option value="">跟随模型默认</option>';
           el.disabled = true;
         }
       });
@@ -808,10 +799,9 @@
 
     // 标准基础配置缺省（三处一致：本处 / main.js get-config 兜底 / config-manager 兜底）。
     // Why: 首次启动 existingConfig 是空骨架，probe/save 的缺省必须自带这些
-    // 基础运行字段，保证 probe 探测环境 = 运行时环境（2026-07-27 首次启动
-    // probe 失败根因：缺 thinking:disabled，探测请求与运行时实际调用不一致）。
+    // 基础运行字段，保证 probe 探测环境 = 运行时环境。
     const DEFAULT_LLM_KWARGS = {};
-    const DEFAULT_LIGHTRAG_KWARGS = { thinking: { type: "disabled" }, allowed_openai_params: [] };
+    const DEFAULT_LIGHTRAG_KWARGS = { allowed_openai_params: [] };
 
     // 推理深度下拉选项填充：探测档案 supported 值（厂商原生档位名原样）。
     // 无档案 → 空态（仅"跟随模型默认"）；ignores_unknown → 仅"跟随模型默认"（R11，
@@ -848,6 +838,21 @@
         } else {
           hint.textContent = '未探测，请点击"探测能力"获取档位';
         }
+      }
+    }
+
+    // 思考链下拉选项填充：探测档案确认支持的值 + 恒在的"跟随模型默认"。
+    // enabled 支持→有"开启"；disabled 支持→有"关闭"；不支持→不出现；
+    // 无档案/thinking 键缺失→仅"跟随模型默认"（纯集合过滤，与模型/服务商无关）。
+    function populateThinkingOptions(selectId, profile) {
+      const sel = document.getElementById(selectId);
+      sel.innerHTML = '<option value="">跟随模型默认</option>';
+      const t = profile && profile.thinking;
+      if (t && t.enabled) {
+        const opt = document.createElement('option'); opt.value = 'enabled'; opt.textContent = '开启'; sel.appendChild(opt);
+      }
+      if (t && t.disabled) {
+        const opt = document.createElement('option'); opt.value = 'disabled'; opt.textContent = '关闭'; sel.appendChild(opt);
       }
     }
 
@@ -929,6 +934,7 @@
           profile,
           effortVal
         );
+        populateThinkingOptions(lightrag ? 'lightragThinking' : 'llmThinking', profile);
         // 探测成功后：下拉框 enabled（Task 2 状态机——探测完成才可选择值域）
         capabilityCleared = false;
         document.getElementById(lightrag ? 'lightragThinking' : 'llmThinking').disabled = false;
@@ -939,6 +945,7 @@
           // 方案：populateReasoningOptions 时用主 llm 的档案（不写 lightrag 缓存键）
           const lightragEffortVal = document.getElementById('lightragReasoningEffort').value;
           populateReasoningOptions('lightragReasoningEffort', 'lightragCapabilityHint', profile, lightragEffortVal);
+          populateThinkingOptions('lightragThinking', profile);
           // 同时启用 lightrag 下拉框（探测完成）
           document.getElementById('lightragThinking').disabled = false;
           document.getElementById('lightragReasoningEffort').disabled = false;
@@ -1041,7 +1048,7 @@
         setStatus('保存配置中...（' + probeReason + '）', 'loading');
         const existingLightragLlm = existingConfig.lightrag_llm || {};
         const existingLightragKwargs = existingLightragLlm.litellm_kwargs || {};
-        // 基础配置（thinking:disabled 等）无条件写入 + 探测结果覆盖 + 入库卡片思考链 select 覆盖
+        // 基础配置无条件写入 + 探测结果覆盖 + 入库卡片思考链 select 覆盖
         const newLitellmKwargs = {
           ...DEFAULT_LIGHTRAG_KWARGS,
           ...existingLightragKwargs,

@@ -399,7 +399,6 @@ def load_user_config() -> dict[str, Any]:
             "reasoning_effort": "",
             "temperature": 0.2,
             "litellm_kwargs": {
-                "thinking": {"type": "disabled"},
                 "allowed_openai_params": [],
             },
         },
