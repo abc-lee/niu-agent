@@ -42,6 +42,18 @@ def fold_columns_available() -> bool:
     return _fold_columns_available
 
 
+# 可见消息过滤谓词（spec 2026-09-06 历史滚动分页修复 §2）：过滤下沉 SQL，
+# limit 语义 = 可见消息条数——tool 密集段不得让分页整页滤后为空。
+# 与 /api/context/messages 原 Python 层过滤行为等价（覆盖写路径可产生的一切形态：
+# tool_calls 列 NULL/''/'null'/'[]'/合法非空 JSON；坏 JSON 不可达，见 spec §2）。
+# 常量而非用户输入，无注入面。
+_VISIBLE_WHERE = (
+    "role != 'tool' AND NOT (role = 'assistant' AND (content IS NULL OR trim(content) = '') "
+    "AND tool_calls IS NOT NULL AND tool_calls != 'null' "
+    "AND tool_calls != '' AND tool_calls != '[]')"
+)
+
+
 @dataclass
 class Message:
     """A chat message"""
@@ -213,17 +225,25 @@ class MessageStore:
         logger.debug(f"Added message: {msg_id}")
         return msg_id
 
-    async def get_messages(self, limit: int | None = None, before_id: str | None = None) -> list[Message]:
+    async def get_messages(
+        self, limit: int | None = None, before_id: str | None = None, visible_only: bool = False
+    ) -> list[Message]:
         """Get messages (chronological order by write sequence). If limit is None, return all messages.
 
         Pagination uses rowid (write order), not created_at timestamp.
         before_id is resolved to its rowid for cursor-based pagination.
+        visible_only: True 时 SQL 层过滤可见消息（剔除 tool 与空 content 带 tool_calls 的
+            assistant 占位），limit 语义 = 可见条数；默认 False 既有行为逐字节不变。
         """
         # 迁移失败降级（spec §8）：标志 False 时裁剪新列——否则显式列清单 SELECT 直接抛错，
         # 迁移失败被放大成全量历史读取失败
         _columns = "id, role, content, tool_calls, tool_results, tool_call_id, degraded_reason, created_at, rowid"
         if _fold_columns_available:
             _columns += ", folded, output_pct"
+
+        # 可见过滤片段（仅 visible_only=True 非空）：False 时均为空串，既有 SQL 逐字节不变
+        _vis_and = f" AND {_VISIBLE_WHERE}" if visible_only else ""
+        _vis_where = f"\n WHERE {_VISIBLE_WHERE}" if visible_only else ""
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -240,7 +260,7 @@ class MessageStore:
                     if limit is not None:
                         cursor = await db.execute(
                             f"""SELECT {_columns} FROM messages
-                               WHERE rowid < ?
+                               WHERE rowid < ?{_vis_and}
                                ORDER BY rowid DESC
                                LIMIT ?""",
                             (before_rowid, limit),
@@ -248,7 +268,7 @@ class MessageStore:
                     else:
                         cursor = await db.execute(
                             f"""SELECT {_columns} FROM messages
-                               WHERE rowid < ?
+                               WHERE rowid < ?{_vis_and}
                                ORDER BY rowid DESC""",
                             (before_rowid,),
                         )
@@ -256,27 +276,27 @@ class MessageStore:
                     # before_id not found, fall back to no cursor
                     if limit is not None:
                         cursor = await db.execute(
-                            f"""SELECT {_columns} FROM messages
+                            f"""SELECT {_columns} FROM messages{_vis_where}
                                ORDER BY rowid DESC
                                LIMIT ?""",
                             (limit,),
                         )
                     else:
                         cursor = await db.execute(
-                            f"""SELECT {_columns} FROM messages
+                            f"""SELECT {_columns} FROM messages{_vis_where}
                                ORDER BY rowid DESC"""
                         )
             else:
                 if limit is not None:
                     cursor = await db.execute(
-                        f"""SELECT {_columns} FROM messages
+                        f"""SELECT {_columns} FROM messages{_vis_where}
                            ORDER BY rowid DESC
                            LIMIT ?""",
                         (limit,),
                     )
                 else:
                     cursor = await db.execute(
-                        f"""SELECT {_columns} FROM messages
+                        f"""SELECT {_columns} FROM messages{_vis_where}
                            ORDER BY rowid DESC"""
                     )
 

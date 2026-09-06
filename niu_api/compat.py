@@ -1908,7 +1908,9 @@ async def get_context_messages(
         session_id: Ignored (kept for compatibility with session-manager)
     """
     store = await get_message_store()
-    messages = await store.get_messages(limit, before_id)
+    # 可见过滤下沉 SQL（spec 2026-09-06 历史滚动分页修复）：limit 语义 = 可见消息条数——
+    # 取数后 Python 层过滤会让 tool 密集段整页滤后为空，前端误判"没有更多历史"
+    messages = await store.get_messages(limit, before_id, visible_only=True)
     total = await store.count_messages()
 
     return MessagesResponse(
@@ -1917,7 +1919,6 @@ async def get_context_messages(
                 id=msg.id, role=msg.role, content=msg.content, created_at=msg.created_at
             )
             for msg in messages
-            if msg.role != "tool" and not (msg.role == "assistant" and not (msg.content or "").strip() and msg.tool_calls)  # 过滤 tool 消息 + 空 content 带 tool_calls 的 assistant 消息
         ],
         total_in_db=total,
     )
