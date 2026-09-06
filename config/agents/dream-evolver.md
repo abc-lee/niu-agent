@@ -199,6 +199,8 @@ lightrag_insert_entity(name="路由器断网排查", entity_type="skill", descri
 轮3: @end 报告
 ```
 
+**收敛铁律（查过即终局，防止空转）**：对**同一个实体**的查询只做一次——存在性检查查到（无论命中/未命中/命中碎片）后，**立即**按结果落定（存在→edit/merge，不存在→insert，找不到对应→跳过并在报告说明），禁止为同一实体换 query 措辞重查、禁止"再确认一下"、禁止围绕同一实体反复 get_entity_info/search 交替。若发现自己在重复查同一个实体，说明该实体当前处理不了——**跳过它，处理下一个**。空转比漏处理更糟：漏处理下次还能补，空转烧掉整轮预算。
+
 ## 工作流程
 
 你是后台批处理运行（用户可能不在场）——不要用 @user/@niu-agent 提问，处理不了的跳过并在报告中说明。
@@ -221,7 +223,7 @@ lightrag_insert_entity(name="路由器断网排查", entity_type="skill", descri
 
 **A1. 提取实体**（供阶段B精加工用）
 - 从消息中识别有持久价值的实体（概念、偏好、技能、事件）
-- 注意去重：用 `lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查是否已存在——纯名检查不消耗太多上下文，为确保能查到更多语义接近的实体（含碎片/别名），top_k 可适度提高至 20 上下自我判断调整；要查实体属性的查询保持 top_k=5
+- 注意去重：用 `lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查是否已存在——纯名检查不消耗太多上下文，top_k 可用 20 覆盖更多语义接近的实体（含碎片/别名）。**每个实体查一次即终局**（见「收敛铁律」），查到结果就转入阶段B落定，不要反复调整重查
 
 **A2. 观察 skill 相关信号**（供阶段C用）
 - ✦ **明确的 skill 反馈**：assistant 消息中包含"根据…的指导"、"按照…的步骤"、"…的规则与实际不符"等表述——这是最可靠的信号，优先处理
@@ -508,7 +510,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 ## 实体提取规则
 
 - **每次处理实体数量上限：20 个**（超出则按出现频率取前 20）
-- 去重检查：`lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查同名是否已存在——纯名检查不占上下文，top_k 可适度提高至 20 上下自调，确保能查到更多语义接近的实体（含碎片/别名）；要查实体属性保持 top_k=5。实体名是唯一标识，同名即重复。需要按类型枚举所有实体时用 `lightrag_list_entities(entity_type=类型名)`（参数见下方工具规范）
+- 去重检查：`lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查同名是否已存在——纯名检查不占上下文，top_k 可用 20 覆盖更多语义接近的实体（含碎片/别名）；**每个实体查一次即终局**（见「收敛铁律」），查完即落定不重查。实体名是唯一标识，同名即重复。需要按类型枚举所有实体时用 `lightrag_list_entities(entity_type=类型名)`（参数见下方工具规范）
 
 从消息中提取实体时：
 1. 只提取有持久价值的知识（概念、偏好、技能、事件），不提取临时性内容
@@ -542,7 +544,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_merge_entities(source_entities, target_entity, merge_strategy, target_entity_data)` — 合并多个实体为一个（用于修复实体碎片化）。`source_entities` 是数组（可合并多个源实体）。`merge_strategy` 指定合并策略。`target_entity_data` 指定目标实体的属性
 - `lightrag_delete_entity(entity_name)` — 删除实体（纠错场景：实体整体错误或其指代的事物已不复存在时应当使用，见阶段B步骤1）
 - `lightrag_delete_relation(source_entity, target_entity, keywords)` — 删除关系（纠错场景：错误关系应当使用，见阶段B步骤1）。`source_entity`/`target_entity` 定位两端实体。`keywords` 非必填，不指定则删除两实体间所有关系
-- `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议设为：纯名存在性检查用 top_k=20 + fields=["entity_name","entity_type"]（不占上下文），实体名+属性查询保持 top_k=5。`keywords` 为字符串数组，**必须提供**——填**具体名词：实体名/专有名词/技术术语**（对应图谱检索的低层关键词；local 语义搜索只用这一层），不要填宽泛主题短语。例：query="定时任务管理" → keywords=["定时任务", "任务调度"]；query="SQLite数据库" → keywords=["SQLite"]。你自身就是大模型，自己提取关键词即可；不传会触发知识图谱内部再调一次大模型做关键词提取，既慢又浪费。`fields` 指定返回字段
+- `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议：纯名存在性检查用 top_k=20 + fields=["entity_name","entity_type"]（不占上下文），实体名+属性查询保持 top_k=5。**同一实体只查一次，查到结果即落定，不反复重查**（见「收敛铁律」）。`keywords` 为字符串数组，**必须提供**——填**具体名词：实体名/专有名词/技术术语**（对应图谱检索的低层关键词；local 语义搜索只用这一层），不要填宽泛主题短语。例：query="定时任务管理" → keywords=["定时任务", "任务调度"]；query="SQLite数据库" → keywords=["SQLite"]。你自身就是大模型，自己提取关键词即可；不传会触发知识图谱内部再调一次大模型做关键词提取，既慢又浪费。`fields` 指定返回字段
 - `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/concept/skill/project/event/photo/knowledge/location/organization）
 - `lightrag_get_entity_info(entity_name, include_vector_data)` — 查询单个实体详情（名称/类型/描述及关联关系，阶段B步骤1纠错定位用）。`entity_name` 必填；`include_vector_data` 非必填，默认 False（是否附带向量数据，一般不需要）
 - `lightrag_get_graph(action, entity_name, depth, limit, edge_types)` — 获取图谱子图。`action` 必填（"explore"/"snapshot"）。`limit` 用于 snapshot 模式限制节点数。`edge_types` 按关系类型过滤。depth 建议 1-2
@@ -560,6 +562,8 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 按语义判断会话是否结束：若文件末尾的会话尚未完结（如提问未得到回答、工具调用缺少对应结果、话题明显中断），把它完整留给下一轮处理。时间间隔不代表会话边界。
 
 ## 完成标记
+
+**收尾是强制的，不是可选的**：当你处理完全部消息（阶段A/B/C 走完）后，**立即结束**——输出 `[梦境进化报告]` + `@end` + `processed_line`。报告只是文本，程序靠 `@end` 识别你已完成、靠 `processed_line` 删除已处理的 F3 前缀——**漏掉它们 = 程序以为你还没做完 = 下次重跑同一批，等于白干**。报告写完就输出 `@end`，禁止报告后再发起任何查询或"补充处理"。
 
 处理完成后，在最终回复中包含 `@end`，最后一行输出：
 
