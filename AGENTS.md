@@ -510,6 +510,16 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+#### 工程：slicer 嵌套切割修复——压缩三件套透视归入外层单元（用户拍板；spec v0.2 R1 双 CONDITIONAL（回看透视缺失独立同抓）→复核双 APPROVE + plan v0.2 R1 A CONDITIONAL APPROVE 2P2 吸收+B APPROVE + SDD T1 实施双审双 APPROVE，main cc5a9b3d）
+
+- **背景（压缩修复工程 eeba705a 的 FinalReview B P3-3 引出）**：三件套落库位置可能在**进行中单元中段**（自动压缩工具循环内）——现行 slicer 规则「user 且前条非 user 开新单元」使 [准备]/[完成] user 行开新单元，[完成] 吸收原任务后续全部回复 → 未来归档该单元 first_user 跳过 [系统提示] 后为空串（历史索引"首问"退化）。**用户拍板（2026-09-07）**：压缩三件套是程序机制产物（嵌套在外层用户交付工作的工具循环里），**不应成为单元边界**——应透视归入外层单元；边界约束：不要因用"系统提示"区分而扩大影响面引发大范围 bug，判据**精确匹配两条常量**。
+- **修复（回看透视算法，spec §3.1）**：slicer.slice_units 单元开启条件改——非三件套 user 行**向前跳过连续三件套**找最后非三件套 messages[j]，`j<0 or role(j)!="user"` 才开单元（与"删去三件套后应用原规则"严格等价）。判据 `_is_compression_triplet`（精确 startswith 两条常量前缀 `_COMPRESSION_TRIPLET_PREFIXES` 本地副本，保持 slicer 零依赖；parity 契约测试绑定 agent_loop 常量防漂移）。
+  - **回看透视必要性（R1 双审独立同抓 P0/P1-1）**：仅判"三件套不开单元"不够——手动场景 `[U_N][准备][总结][完成][新提问]` 中，新提问前条=[完成](user) → 规则②"连续 user 不重切" → 新对话整体粘入旧单元成巨型单元（keep 把整个新会话当 1 轮、归档首问=旧指令、话题混装）。回看透视后新提问有效前条=总结（assistant）→ 正常开新单元。
+- **消费点零改动**（A/B 双审实证）：compaction.build_compact_view/archive_excluded_units/integrity._rebuild 三处消费 slice_units 均通用逻辑无需改；context_manager 水位线模型不消费 slice_units（第四消费点不存在）。
+- **测试**：回看透视 7 用例（手动 P0 主形态/嵌套/空总结两行/连续压缩两套/首条三件套/负向锁 skipped-at/零回归）+ parity 契约（agent_loop 常量 startswith slicer 前缀，漂移必红）+ 过渡收敛（旧规则块+新切割重叠→integrity 检测→重建收敛）+ first_user 集成断言（新切割×归档组合路径，区别既有 T4 手传 units）。126 passed（含既有 200 轮随机不变式 TestInvariants 零回归自然成立——无 content 形态新判据恒 False）。
+- **已知边界（接受）**：①**过渡窗口**（spec §3.4/B P2-1）：旧规则已归档块 + 新切割 → 幂等键不命中 → 重叠块 → 下次启动 integrity._detect_issues 检出 + delete_all 整库重建自愈（无数据丢失，重建前索引重复行；部署后建议重启触发校验）②退化块（DB 以三件套开头 first_user=""）实际不可达（三件套前必有外层单元）③真实用户消息以精确压缩前缀开头会被误透视（startswith 选型接受，B P3-1 验证：落库 content 恒等常量原文、== 反而脆）④合并单元略大（一份总结量级）→ build_compact_view while 预算循环 + 95% 应急终态既有兜底正交。
+- **关键教训**：①**R1 双审独立同抓回看透视缺失是缺陷真实性强信号**（A P0/B P1-1 殊途同归——手动场景新提问粘入旧单元）②**"精确匹配常量"判据是防扩大影响面的关键**（用户明确约束：宽泛 [系统提示] 前缀会造成大范围 bug——skipped-at 系列 3 条内存注入不落库、未来新增 [系统提示] 落库形态不受影响）③**parity 契约测试是双副本常量漂移的低成本守卫**（slicer 零依赖本地副本 + agent_loop 常量，照 2026-09-05 实体标签 TestCandidatePoolParity 先例）④**摊还 O(n) 论证**（回看 while：不同非三件套 user 的扫描段互不相交，三件套行至多扫一次——注释防后人误加标记数组）。
+
 ### 2026-09-07
 
 #### 工程：压缩修复——总结请求上下文完整 + 压缩产物三件套落库（spec v1.1 R1 双 CONDITIONAL→R2 论据修正→双 APPROVE + plan v0.2 R1 双 CONDITIONAL→复核双 APPROVE + SDD T1-T6 每 Task 双审 + FinalReview A/B 双 CONDITIONAL 修复闭环，main eeba705a）
