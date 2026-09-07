@@ -1423,12 +1423,16 @@ class NiuRunner:
         except Exception as e:
             logger.error(f"[Runner] Tool-round view refresh failed (self-heals at next entry assembly): {e}")
 
-    def _on_compression_request(self, messages, turn):
+    def _on_compression_request(self, messages, turn, gate_acquired: bool = True):
         """发送前受控压缩回调（agent_runner_loop on_compression_request）。
 
         构造压缩上下文鸭子对象（R1-B P1-2 定案——不挂 NiuHandler 属性防覆盖/跨会话
         残留）：bound method 引用 runner 的 DB 访问，避免覆盖 NiuHandler 既有方法。
         executor 线程内执行（agent_loop 在 worker 线程）。
+
+        gate_acquired（B-P3-1）：门本轮是否 try_acquire 置闩——透传为
+        run_controlled_compression 的 release_on_failure（失败出口仅当本轮 acquire
+        过才解闩，防误清他轮成功压实保留的滞回闩锁）。
         """
         try:
             from types import SimpleNamespace
@@ -1442,7 +1446,9 @@ class NiuRunner:
                 _blocks_db_path=None,                          # 默认块库路径
                 _last_compacted_view=None,                     # 由 _compact_db_view 回填
             )
-            return run_controlled_compression(messages, ctx, self.client, turn)
+            return run_controlled_compression(
+                messages, ctx, self.client, turn, release_on_failure=gate_acquired,
+            )
         except Exception as e:
             logger.exception(f"[Compression] on_compression_request failed: {e}")
             return messages, False

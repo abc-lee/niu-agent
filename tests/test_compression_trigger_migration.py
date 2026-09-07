@@ -282,7 +282,7 @@ def test_manual_during_extract_cooldown_defers_no_send_loss(monkeypatch):
 
     cb_calls = []
 
-    def _cb(messages, turn):
+    def _cb(messages, turn, gate_acquired=True):
         cb_calls.append(turn)
         return messages, True
 
