@@ -510,6 +510,22 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+#### 工程：命名配置合集替代厂商预设（选择设置）——LLM 命名配置双文件模型（用户拍板 Q1-Q5 + Agent 编辑坑规避；spec v0.3 R3 终核双 APPROVE + plan v0.2 R2 复核双 APPROVE + SDD Wave1-2 + 实施双审修复闭环复核双 APPROVE，main 5934c8e4/7534eb54）
+
+- **需求（用户拍板）**：删 `config/llm-presets.json`（厂商预设用处不大）；设置页"选择预设"→"选择设置"（Q1=自绘下拉输入框同模型名称款：打字=新名/选中=加载）；测试保存时名字空→提醒必须输入，有名字→重写合集该名下配置；新建 `~/.niu/config/llm-configs.json` 记录全部命名配置（与 user-config.json 同目录）；选中调取旧配置测试保存后启用。**Agent 编辑坑（用户特别提醒）**：配置项可由主 Agent 自行编辑，文件内容比表单多——保存时多出的内容必须一并保存进合集；**手册必须强调主 Agent 修改配置要两个文件一起改**。Q2/Q3=保存所有字段（含 Agent 添加，llm+lightrag_llm 两段），以 user-config.json 为主合集为辅（合集有不同→改为与配置文档相同），前提=测试通过才写文档；Q4=presetId 就是配置名（一回事）；Q5=不做删除（文档开放主 Agent 可改，配置可覆盖）。
+- **机制**：①合并纯函数 `ui/main/lib/config-merge.js`（UMD，main.js require/index.html script src 双通道）——**两层基底**（llm/lightrag_llm 段基底=loadedNamedEntry ?? 文件，storage/logging/context/Agent 顶级段恒取文件）+ 表单覆盖 + 空值语义四枚举（max_tokens 空=删键/thinking 空=删子键/RE 空=写""/temperature NaN→基底??0.2）+ probe 产物键覆写基底 + presetId=configName；②保存链路（spec §3.2）：名字 trim 空拦截（不发请求）→ 开头重读+前端合并→测试/probe（payload=合并值，read_timeout 逃生口特判被深合并全覆盖取代）→ 通过才写：后端保存时刻重读合并→写 user-config.json→读合集单条 upsert 两段快照（损坏不写+collectionWarning+reload 恒发+警告不关窗）；③加载流程（spec §3.3）：选中时重读条目→回填（含 llmMaxTokens）→跳过 clearCapabilityDropdowns（选中即可测试保存）→loadedNamedEntry 置位（**恒 null 直至选中——init 不置位**）；④config-manager 机制化双改（spec §3.6）：preset_id=整条两段加载+归一化+跳过同步 / 逐项修改写后同步（损坏→warning 不写）/ list_llm_configs / 畸形条目 isinstance 守卫 / 包装层类型校验。
+- **质量链**：spec R1（A CONDITIONAL 3P1 / **B REJECT P0 深合并基底矛盾**——"以 user-config.json 为主"被误用为组装基底，切换场景 lightrag 永不切换+A 额外键渗入 B）→ v0.2（基底优先级=表单值>loadedNamedEntry>文件）→ R2 复核（**双 CONDITIONAL**：probe 产物归宿**双审同抓**；§3.6 段污染 A 抓+损坏保护 B 抓）→ v0.3 → R3 终核**双 APPROVE** 冻结（docs 891804a）；plan R1（A CONDITIONAL **P1 单基底签名丢文件层**/B REJECT **P0 C5 init 置位越权语义**）→ v0.2 → R2 **双 APPROVE** 冻结（docs dbbbe44）；SDD Wave1（T1 合并函数+T3 config-manager+T5 文档）→ Wave2（T2 IPC+T4 前端）→ **实施双审双审同抓 P0+P1** 修复闭环 → 复核**双 APPROVE**。
+- **实施双审 P0（跨 Task 接缝缺陷）**：T1 Node 侧把 llm-configs.json 写成**扁平** name→entry 映射，T3 Python 侧按 spec §3.1 **{"configs": {...}} 包装**——两端测试各自自洽全绿，跨端零覆盖：Node 写的文件 Python 读=空→逐项 set 触发同步**整体覆写静默销毁全部条目**；Python 写的文件 Node 读→下拉幻影"configs"条目。修复=统一包装层 + **跨端 parity 双向测试**（Python 测试 subprocess 调 node 写真库读回 / Node 读 Python 写真库断顶层键，真执行非 fixture）。**P1**：loadNamedConfig 漏回填 llmMaxTokens→保存时旧值覆写/删除条目 max_tokens（违验收 A6）。
+- **验证**：JS 39 绿（config-merge 16/named-configs 11/save-config 5/font 7 不回归）+ pytest 83 绿（named-configs-manager 16 含跨端 parity+畸形守卫+损坏四路径）；T4 browser mock 九场景（A2/A3/A6/A9/A10②/A12/A13 UI 层全过）；grep 六模式清零。
+- **关键教训**：
+  - **跨 Task 接缝缺陷只有全局审查能抓**——两端各自测试全绿 ≠ 系统正确；SDD 多 Task 并行时，跨 Task 共享的数据格式/文件结构必须在 plan 契约里钉死到字节级（本工程 plan C3 只写了 IPC 信封 {configs}，T1 误当文件格式），且必须配跨端 parity 测试。
+  - **大工程按 Wave 提交中间检查点**（用户当面指正"中间过程完全不提交不利于审查"）——全堆收官提交=回退粒度全有或全无+审查 diff 巨大；Wave 级提交让 P0 类接缝缺陷在最小 diff 下更早暴露。本工程主体 5934c8e4 是用户指正后补的检查点。
+  - **plan 层级也会越权新增语义**——C5"init 置位 loadedNamedEntry"（自以为的合理补全）被 B 角 P0 抓出：与 spec 两态矛盾+收敛方向反转+引入"打开页面直接保存丢 Agent 字段"路径（恰是立项要修的坑）。**spec 冻结后 plan/实现层零新增语义权**，拿不准回 spec 修订。
+  - **"以 X 为主"类拍板必须问清是同步方向还是组装基底**（spec R1-B P0-1 正名：以 user-config.json 为主=合集向它对齐的同步方向，不是内容组装时的基底选择）。
+  - **双审独立同抓=缺陷真实性强信号第四次验证**（spec R2 probe 产物归宿；实施双审 P0 文件格式+P1 max_tokens 同抓）。
+- **已知边界（接受/记录）**：合集跨进程无锁 lost update 残余（低频写+毫秒窗口，JS tmp 唯一名防截断已修）；probe payload 新增 temperature 字段超 plan T4 字面（方向正确——compat.py L1159 注释明示对齐运行时默认 0.2，记录在案）；set_lightrag(model="",preset_id=X) 矛盾输入清空优先（docstring 已注明）。
+- **实机验证清单（待用户）**：①设置页"选择设置"下拉（首次空）②填表单+起名→测试保存→llm-configs.json 出现条目 ③第二套配置→下拉两项→点选切换→测试保存→生效（重启对话用新配置）④主 Agent set_llm_config(preset_id=名)→切换生效；list_llm_configs 列出 ⑤名字空点保存→提醒 ⑥手工往 user-config.json llm 段加 custom_field→页面保存→字段仍在且进合集（坑规避回归）⑦手写坏 llm-configs.json→打开页面正常→保存→提示合集同步失败不关窗+坏文件保留+热更新生效。
+
 #### 工程：slicer 嵌套切割修复——压缩三件套透视归入外层单元（用户拍板；spec v0.2 R1 双 CONDITIONAL（回看透视缺失独立同抓）→复核双 APPROVE + plan v0.2 R1 A CONDITIONAL APPROVE 2P2 吸收+B APPROVE + SDD T1 实施双审双 APPROVE，main cc5a9b3d）
 
 - **背景（压缩修复工程 eeba705a 的 FinalReview B P3-3 引出）**：三件套落库位置可能在**进行中单元中段**（自动压缩工具循环内）——现行 slicer 规则「user 且前条非 user 开新单元」使 [准备]/[完成] user 行开新单元，[完成] 吸收原任务后续全部回复 → 未来归档该单元 first_user 跳过 [系统提示] 后为空串（历史索引"首问"退化）。**用户拍板（2026-09-07）**：压缩三件套是程序机制产物（嵌套在外层用户交付工作的工具循环里），**不应成为单元边界**——应透视归入外层单元；边界约束：不要因用"系统提示"区分而扩大影响面引发大范围 bug，判据**精确匹配两条常量**。
