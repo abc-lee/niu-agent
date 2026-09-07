@@ -510,6 +510,32 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+### 2026-09-07
+
+#### 工程：压缩修复——总结请求上下文完整 + 压缩产物三件套落库（spec v1.1 R1 双 CONDITIONAL→R2 论据修正→双 APPROVE + plan v0.2 R1 双 CONDITIONAL→复核双 APPROVE + SDD T1-T6 每 Task 双审 + FinalReview A/B 双 CONDITIONAL 修复闭环，main eeba705a）
+
+- **背景（Windows 实机测试 20260907-windows 实证，两缺陷）**：
+  - **缺陷 A（000038）**：手动压缩（闲时 `_run_idle_compression`）总结请求 68 条消息**全程无 system**（首条=user 历史索引）——根因：组装视图（`assemble_view_sync`）= [索引]+[候选] 不含 system（system 由 runner 每轮 `_on_before_llm` 拼），手动路径把组装视图直接喂 `run_controlled_compression` → 总结模型无角色/时间/记忆/技能注入，承上启下总结质量崩。自动路径（发送前门）messages[0] 已是完整 system，无此问题。
+  - **缺陷 B（000057）**：压缩完成提示 `[系统提示] 上下文压缩已完成。` **纯内存不落库**（spec 原拍板"纯内存注入"）——手动路径重组消息直接丢弃，提示从未发给任何模型轮、从未进 DB → 模型根本不知道"已压缩、上面有总结"，压缩后会话无法按用户拍板的承上启下语义衔接。
+- **用户拍板（压缩后指示）**：压缩完成后把 [做准备提问]+[模型回答]+[压缩完成] **三件套一并落库**，落库序尾 = 压缩完成 → 自动路径下一轮组装最后一句 = 压缩完成、原指令在其后仍最后；手动路径下次用户提问其前最后一句 = 压缩完成。手动无下一轮 → 必须"提前把下一轮要说的这句话落库"。
+- **修复**：
+  - **T1（compat._run_idle_compression）**：前置 system 占位 → `runner._on_before_llm(history, turn=0)`（turn 必须 0——turn==1 消费清空 `_first_turn_extra_injection`，R2-A P2-2）；降级覆写单条 `base_system_prompt`（恒单条 system，双行违 OpenAI 兼容→400）；空 history 守卫。
+  - **T2+T3（agent_loop）**：run_controlled_compression 时序重排（总结 LLM 仅内存 → 压实 → 三件套落库（`_triplet_messages` 共享构造，skip_mirror+bypass_at_extract，空总结跳 assistant 行）→ 重组 **Approach A**——`_last_compacted_view` 基底保占位符化、删 if summary_text 块、剥离待执行单元后追加三件套+尾引导+单元置末）；`_persist_summary_without_extract` 薄包装保留（import 点存活）；did=True 压实成功固定不翻转 + 重组异常 try/except 降级；done 两路径必推。
+  - **T2T3 双审修复闭环（A/B 独立同抓 P1）**：降级分支剥 system 行 → 门后重跑 on_before_llm 遇 messages[0] 非 system 静默空转（`_assemble_system_message` 早退）→ 该次及同 run 后续轮全程无 system（000038 同因）→ 修复为保留 system 行（on_before_llm 只原地刷新 content、从不插新行，无双 system 风险）。
+  - **T4（compaction.archive_excluded_units）**：first_user 提取跳过 `[系统提示]` 前缀 user（spec P3-4）——三件套落库后 slicer 切 [准备+总结]/[完成+续] 两单元，归档索引"首问"须跳过防污染；幂等性保持（已归档块 first_user 永不回改）。
+  - **FinalReview A/B 修复闭环**：
+    - B P2-1 **闩锁所有权透传**（B-P3-1 idle 漏网）：chat_session idle 分支 `try_acquire` 返回值曾丢弃、`_run_idle_compression` 硬编码 release_on_failure=True → 滞回闩锁期失败误清他轮闩锁 → 修复 acquired 透传 release_on_failure（未持锁则 False，与门内 manual 重试闩分支同构）。
+    - A P2-1/P2-2 测试缺失补锁：重组基底负向锁（spy 禁 DB 重跑）+ if summary_text 块已删源码断言；B P2-2 条件解闩语义 2 条行为锁（release_on_failure=False 不解闩 + idle 已闩场景闩锁保留）。
+    - B P3-1 注释漂移（`_COMPRESSION_DONE_HINT` 头注释"纯内存不落库"→"落库+内存追加双通道"）+ test_compression_compact.py 模块 docstring 同步。
+  - **T6（SYSTEM_MANUAL）**：三处压缩产物形态更新（L28/L38/L479——"纯内存注入"表述失真 → 三件套落库语义）。
+- **验证**：89 passed（compression 相关 11 文件全点名 + ruff 零新增——ruff 报错全部预存，stash 对比实证）+ py_compile；T5 MethodType 绑真实 `_on_before_llm` 策略直测 system 补全（策略 a）；变异检查证明新测试是真实行为锁（无 T1 补全则断言必失败）。
+- **已知边界（接受/记录）**：P3-2/P3-3（spec）：turn==1 达线丢 resources 首轮注入、下轮检索上下文稀释一轮（非本工程引入）；B P3-2（剥离兜底注释不符+理论双份引导，生产几乎不可达）；B P3-3（三件套落库切入进行中单元中段致归档首问退化+内存重组序与 DB 序不一致可见重排——非数据损坏，记录为归档策略再议项）；B P3-4（压缩后 usage 圆环不刷新——`notify_compact_status_sync` 的 usage/reset_tokens 参数统一压缩路径未使用，SYSTEM_MANUAL L28 承诺无代码支撑，属统一入口工程遗留非本 diff 回归）；B P3-5（进度通知 mode 硬编码 auto）；B P3-6（full_flow mock 重组）；B P3-7（前端三件套 user 行按普通气泡渲染——spec P3-4a 已接受项）。
+- **关键教训**：
+  - **spec/plan 双审抓不出用户真实意图层面的设计错误**——上一轮统一压缩入口工程 spec 拍板"纯内存注入不落库"本身是错的（用户从没拍板过，是我设计带偏），审查 Agent 逐轮核对"实现 vs plan 对齐"都对，但没人验证"压缩完成提示模型必须看到"这个用户意图。本轮 spec 把"三件套落库"作为用户直接拍板的新语义写进设计，才堵住。**审查必须验证"用户拍板意图"而非仅"实现 vs plan"**。
+  - **双审独立同发现是缺陷真实性的强信号**（降级分支 system 剥离：A 定 P2/B 定 P1；测试迁移遗漏：plan 双审同抓）——不同 Agent 独立抓到同一问题，基本可断定为真缺陷。
+  - **重组基底选择（Approach A）**：用户关切"下一轮组装是否含三件套"由 DB 落库结构性保证（水位线后恒候选），本轮可见性由内存追加保证——双通道独立；`_last_compacted_view` 基底保留占位符化成果（内存操作不落库，DB 重建会复活 tool 原文），禁 assemble_view_sync/build_compact_view 重跑（exclude_last 剥完成行/二次归档/丢占位符化）。
+  - **三件套落库时机**：压实**后**（三件套 rowid 最新 > 所有 blocks 覆盖 → 恒在候选窗口、不被本次压实归档）；压实**前**落总结会被压实当普通窗口内容处理。
+
 ### 2026-09-05
 
 - 工程：get_messages 便利遍历裁剪 + 单条全量 + 服务端自管输出预算（027 事故根治——journal 水位错乱；spec v1.0-v1.4 R1-R5 五轮双审门禁（连续双 APPROVE 收敛）+ SDD T1-T2 每 Task 双审 + FinalReview 双 APPROVE，main d78e90db/3ebe8c72/61ae844）
