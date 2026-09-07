@@ -2244,6 +2244,9 @@ class NiuRunner:
         content = msg_dict.get("content", "") or ""
         tool_calls = msg_dict.get("tool_calls")
         tool_call_id = msg_dict.get("tool_call_id", "")
+        # 统一压缩入口（spec 2026-09-06）：总结等系统产物 bypass @ 提取（纵深防御——
+        # 正常路径总结走 _sync_add_message 直写不经此链，此守卫防未来经本链落库误路由）
+        bypass_at_extract = bool(msg_dict.get("bypass_at_extract", False))
         # fold 存储层：tool 消息落库时算一次占比固化（spec §3——分母恒为总窗口）
         output_pct = None
         if role == "tool" and content:
@@ -2267,18 +2270,20 @@ class NiuRunner:
         # - 无 tool_calls：提取 @ 为 subagent_msg（轮中落库 → db_monitor 实时路由，
         #   子 Agent 挂起时即收到，不 orphan）→ strip content 的 @ 段再写 assistant
         if role == "assistant":
-            from agent.at_message_parser import extract_at_messages, format_for_db, strip_at_messages
-            if tool_calls:
-                content = strip_at_messages(content)
-            else:
-                for msg in extract_at_messages(content):
-                    db_content = format_for_db(msg)
-                    sub_msg_id = self._sync_add_message(role="subagent_msg", content=db_content)
-                    if sub_msg_id is not None:
-                        # P3-1：写成功才记录去重（subagent_msg 写失败时不记——
-                        # 否则 rv=None 兜底会误判去重跳过，导致 @ 丢失）
-                        self._extracted_at_msgs.append(db_content)
-                content = strip_at_messages(content)
+            if not bypass_at_extract:
+                from agent.at_message_parser import extract_at_messages, format_for_db, strip_at_messages
+                if tool_calls:
+                    content = strip_at_messages(content)
+                else:
+                    for msg in extract_at_messages(content):
+                        db_content = format_for_db(msg)
+                        sub_msg_id = self._sync_add_message(role="subagent_msg", content=db_content)
+                        if sub_msg_id is not None:
+                            # P3-1：写成功才记录去重（subagent_msg 写失败时不记——
+                            # 否则 rv=None 兜底会误判去重跳过，导致 @ 丢失）
+                            self._extracted_at_msgs.append(db_content)
+                    content = strip_at_messages(content)
+            # bypass_at_extract=True：总结等系统产物原样落库（不拆 @、不 strip）
             # P2-2：纯 @ 回复（strip 后为空）不写空 assistant 行（subagent_msg 已存），
             # 对齐 persist_agent_reply rv 路径 `if not content.strip(): continue` 惯例。
             # Review P1：assistant(tool_calls) 排除——即使 content 为空也是锚点行
@@ -2305,7 +2310,9 @@ class NiuRunner:
 
     def _sync_add_message(self, role: str, content: str,
                            tool_calls: list | None = None, tool_call_id: str = "",
-                           output_pct: float | None = None) -> str | None:
+                           output_pct: float | None = None,
+                           skip_mirror: bool = False,
+                           bypass_at_extract: bool = False) -> str | None:
         """从同步线程写入消息到 DB（桥接 aiosqlite）
 
         使用 asyncio.run_coroutine_threadsafe 在 FastAPI 事件循环中执行 DB 写入，
@@ -2313,6 +2320,10 @@ class NiuRunner:
 
         超时设为30秒：DB写入正常情况下<100ms，30秒足够覆盖极端情况。
         如果30秒仍超时，说明DB严重故障，此时重复写入是可接受的。
+
+        skip_mirror=True（统一压缩入口总结等产物）不镜像 F1；
+        bypass_at_extract=True 为 ctx 鸭子对象接口兼容参数——本直写路径不做
+        @ 提取（@ 提取只在 _persist_one_msg），bypass 是纵深防御标记。
 
         Returns:
             消息 ID，或 None（写入失败）
@@ -2333,7 +2344,8 @@ class NiuRunner:
             return await store.add_message(
                 role=role, content=content,
                 tool_calls=tool_calls, tool_call_id=tool_call_id,
-                output_pct=output_pct
+                output_pct=output_pct,
+                skip_mirror=skip_mirror
             )
 
         try:

@@ -897,6 +897,52 @@ def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]
     return messages, False
 
 
+# 压缩前总结 prompt（spec §提示文案定稿——承上启下，非历史抢救）
+_SUMMARY_PROMPT = (
+    "[系统提示] 上下文即将压缩，超出保留范围的早期对话将被归档移出。\n"
+    "压缩前，请你对当前工作状态做一次承上启下的总结，让压缩后的对话\n"
+    "能无缝衔接、立即继续，不被中断。总结须包含：\n"
+    "1. 当前未完成的工作：手上正在进行、尚未结束的任务，逐项列出，\n"
+    "   说明做到哪一步、下一步要做什么\n"
+    "2. 用户近期的特殊要求或特别提示：你还没做完的、或后续需要一直\n"
+    "   注意的（用户偏好、约束、待办），逐条重复\n"
+    "3. 本阶段主要完成的工作：简要归纳最近这段对话做了什么、结论是什么\n"
+    "请直接输出总结内容，不要调用工具。"
+)
+
+
+def _run_summary_llm(messages, client) -> str:
+    """调 LLM 生成承上启下总结（tools=[]）。失败/stream_error → ""。"""
+    try:
+        summary_messages = list(messages) + [{"role": "user", "content": _SUMMARY_PROMPT}]
+        gen = client.chat(messages=summary_messages, tools=[])
+        resp = exhaust(gen)
+        if resp is None:
+            return ""
+        if getattr(resp, "stream_error", False):
+            logger.warning(f"[Compression] 总结 LLM error, skip: {resp.error_msg}")
+            return ""
+        return getattr(resp, "content", "") or ""
+    except Exception as e:
+        logger.error(f"[Compression] 总结调用失败: {e}")
+        return ""
+
+
+def _persist_summary_without_extract(ctx, summary_text: str) -> str | None:
+    """总结落库：bypass @ 提取 + skip_mirror（spec §消息形态 风险 C）。
+
+    ctx = 压缩上下文鸭子对象（R1-B P1-2），须含 _sync_add_message。
+    """
+    try:
+        return ctx._sync_add_message(
+            role="assistant", content=summary_text,
+            skip_mirror=True, bypass_at_extract=True,
+        )
+    except Exception as e:
+        logger.warning(f"[Compression] 总结落库失败: {e}")
+        return None
+
+
 def _f1_has_arrears(f1_path: str | None = None) -> bool:
     """F1 是否有未提炼内容（非空且首行是记录块）。"""
     import os

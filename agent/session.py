@@ -181,6 +181,7 @@ class MessageStore:
         degraded_reason: str = "",
         output_pct: float | None = None,
         md_path: str | None = None,
+        skip_mirror: bool = False,   # 统一压缩入口（spec 2026-09-06）：压缩产物不镜像 F1（尾部加参，既有 8 参不变）
     ) -> str:
         """Add a message"""
         msg_id = str(uuid4())
@@ -206,21 +207,23 @@ class MessageStore:
                 )
             await db.commit()
 
-        # MD 镜像（best-effort，spec §3.4）：DB 提交成功才镜像；失败只告警
-        try:
-            block = format_message_record(
-                msg_id=msg_id,
-                created_at=created_at,
-                role=role,
-                content=content,
-                tool_calls=tool_calls,
-                tool_call_id=tool_call_id,
-                degraded_reason=degraded_reason,
-            )
-            if block:
-                append_record(block, md_path or F1_PATH)
-        except Exception as mirror_err:
-            logger.warning(f"[MdMirror] 镜像异常（不影响对话）: {mirror_err}")
+        # MD 镜像（best-effort，spec §3.4）：DB 提交成功才镜像；失败只告警。
+        # skip_mirror=True（压缩总结等产物）不镜像 F1——防污染提炼源（spec §消息形态）
+        if not skip_mirror:
+            try:
+                block = format_message_record(
+                    msg_id=msg_id,
+                    created_at=created_at,
+                    role=role,
+                    content=content,
+                    tool_calls=tool_calls,
+                    tool_call_id=tool_call_id,
+                    degraded_reason=degraded_reason,
+                )
+                if block:
+                    append_record(block, md_path or F1_PATH)
+            except Exception as mirror_err:
+                logger.warning(f"[MdMirror] 镜像异常（不影响对话）: {mirror_err}")
 
         logger.debug(f"Added message: {msg_id}")
         return msg_id
