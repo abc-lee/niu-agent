@@ -142,6 +142,40 @@ def test_rebuild_summary_not_duplicated_when_in_view():
     assert any(_COMPRESSION_DONE_HINT in m.get("content", "") for m in new_msgs)
 
 
+def test_rebuild_summary_in_stripped_unit_not_duplicated():
+    """P1（Task 5 quality）：生产形态——总结先落库后读 DB → 总结行在待执行单元尾
+    （窗口尾），随剥离段剥走。重组须从 stripped 抽出并置完成提示前单份，不得再
+    append 一份；末条必须是指令链尾（tool）而非总结。"""
+    compacted_view = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "[历史索引] 共 3 块…"},
+        {"role": "user", "content": "指令A"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "A 结果"},
+        {"role": "assistant", "content": "总结文本"},  # 刚落库总结 = DB 尾 = 单元尾
+    ]
+    ctx = _mk_ctx()
+    ctx._last_compacted_view = compacted_view
+    in_flight = [dict(m) for m in compacted_view]  # 生产：messages=DB 视图（含总结在尾）
+    new_msgs = _rebuild_messages_after_compact(in_flight, ctx, "总结文本")
+    # 总结只出现一次
+    sum_count = sum(1 for m in new_msgs
+                    if m.get("role") == "assistant" and (m.get("content") or "").strip() == "总结文本")
+    assert sum_count == 1
+    # 末条是指令链尾（tool），不是总结
+    assert new_msgs[-1]["role"] == "tool"
+    assert new_msgs[-2]["role"] == "assistant"
+    assert new_msgs[-2].get("tool_calls")
+    # 完成提示在总结后、指令链前
+    sum_idx = next(i for i, m in enumerate(new_msgs)
+                   if m.get("role") == "assistant" and (m.get("content") or "").strip() == "总结文本")
+    hint_idx = next(i for i, m in enumerate(new_msgs)
+                    if (m.get("content") or "").startswith(_COMPRESSION_DONE_HINT))
+    unit_start = next(i for i, m in enumerate(new_msgs)
+                      if m.get("role") == "user" and m.get("content") == "指令A")
+    assert sum_idx < hint_idx < unit_start
+
+
 def test_rebuild_tool_unit_no_guide():
     """R11 P2-B：轮间无尾引导——messages 尾 = 工具链（tool 组，无未落库 user 引导）；
     重组后工具单元在最后、完成提示在其前。"""

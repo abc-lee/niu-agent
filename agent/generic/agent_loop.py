@@ -915,7 +915,8 @@ def _rebuild_messages_after_compact(orig_messages, ctx, summary_text: str) -> li
     1. 从视图剥离**最后单元**（其 user 起点 → 尾：与 orig_messages 尾部对齐识别；
        首轮=当前 user 指令；轮间=当前 continuation 单元）
     2. 视图主体 = [system]+[索引]+[剥离后的窗口]
-    3. 追加 总结（assistant）→ 完成提示（user 纯内存）→ **待执行单元**（末）
+    3. 追加 总结（assistant，恒单份：生产路径总结先落库后在剥离段尾，从 stripped
+       抽出原文置此；否则视图主体去重后 append）→ 完成提示（user 纯内存）→ **待执行单元**（末）
     4. 未落库尾引导（supplement/next_prompt，DB 无）在待执行单元后继续补——
        但引导实际是轮末 append 在消息流中、语义上应先于待执行内容，故引导放
        完成提示后、待执行单元前（R4 修订：引导是"系统给模型的提示"，模型应先
@@ -964,12 +965,25 @@ def _rebuild_messages_after_compact(orig_messages, ctx, summary_text: str) -> li
     if system is not None:
         new_msgs.append(system)
     new_msgs.extend(window)
-    # 总结（assistant，若生成且未已在视图中）
-    if summary_text and not any(
-        m.get("role") == "assistant" and (m.get("content") or "").strip() == summary_text.strip()
-        for m in new_msgs
-    ):
-        new_msgs.append({"role": "assistant", "content": summary_text})
+    # 总结（assistant，恒单份、置完成提示前）。P1 修正（Task 5 quality）：生产路径
+    # 总结先落库再读 DB → 总结行（role=assistant）在待执行单元尾（窗口尾），随
+    # stripped 剥走——不抽出则下面会再 append 一份（双份总结），且末条变总结而非
+    # 指令链尾（破"原指令最后"不变式）。故：优先从 stripped 抽出原文（与 DB 一致）
+    # 放完成提示前；stripped 无总结时走旧逻辑（视图主体去重后 append）。
+    if summary_text:
+        _target = summary_text.strip()
+        _extracted = None
+        for i, m in enumerate(stripped):
+            if m.get("role") == "assistant" and (m.get("content") or "").strip() == _target:
+                _extracted = stripped.pop(i)
+                break
+        if _extracted is not None:
+            new_msgs.append(_extracted)  # DB 原文，单份
+        elif not any(
+            m.get("role") == "assistant" and (m.get("content") or "").strip() == _target
+            for m in new_msgs
+        ):
+            new_msgs.append({"role": "assistant", "content": summary_text})
     # 完成提示（纯内存注入，不落库）
     new_msgs.append({"role": "user", "content": _COMPRESSION_DONE_HINT})
     # 未落库尾引导（R6 修订）：orig 中 content **不在窗口**的尾部连续 user
