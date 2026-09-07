@@ -237,6 +237,8 @@
       letter-spacing: 0.5px;
     }
   </style>
+  <!-- 命名配置深合并纯函数（UMD self 分支暴露 window.ConfigMerge；契约 plan §0 C1） -->
+  <script src="../../lib/config-merge.js"></script>
 </head>
 <body>
   <div class="titlebar">
@@ -252,11 +254,14 @@
         <div class="card-sub">主对话使用的大模型配置</div>
 
         <div class="form-group">
-          <label class="pencil-text">选择预设</label>
-          <select id="preset">
-            <option value="">自定义配置</option>
-          </select>
-          <div class="hint">选预设自动填充；手动修改后变为自定义</div>
+          <label class="pencil-text">选择设置</label>
+          <div class="model-input-wrap">
+            <input type="text" id="configName" placeholder="输入配置名，或点击选择已保存配置">
+            <div id="configNameDropdown" class="model-dropdown" hidden>
+              <div id="configNameDropdownList"></div>
+            </div>
+          </div>
+          <div class="hint" id="configNameHint">选中已有配置自动填充；输入新名字保存时新增</div>
         </div>
 
         <div class="form-group">
@@ -398,7 +403,14 @@
   </div>
 
   <script>
-    let presets = [];
+    // 已加载的合集条目（null | {llm, lightrag_llm}）——恒 null 直至用户在选择设置中
+    // 选中加载（plan C5 R1-B P0-1：init 不置位，"打开页面"=未加载=基底=fileBase）；
+    // 手动修改表单字段/改名均不清空（spec §3.2/§3.3：基底跟加载动作绑定）
+    let loadedNamedEntry = null;
+    // 选择设置自绘下拉状态（复用模型下拉模式照抄适配，spec §3.4/plan C5）
+    let namedConfigItems = [];      // 合集名字数组（候选源；打开下拉时重读刷新，C3）
+    let configNameVisible = [];     // 子串过滤后当前可见项（键盘导航目标）
+    let configNameActiveIndex = -1; // 键盘高亮索引（-1 = 无高亮）
     let testPassedInSession = false;
     // 换模型后置 true（要求重新探测）；探测成功后置 false。
     // 判定依据：进入页面有配置（model 有值）→ 能点；换模型清空 → 灰；探测成功 → 亮。
@@ -443,23 +455,17 @@
     }
 
     async function init() {
-      presets = await window.electronAPI.getPresets();
       const config = await window.electronAPI.getConfig();
 
-      const presetSelect = document.getElementById('preset');
-      presets.forEach(p => {
-        const opt = document.createElement('option');
-        opt.value = p.id;
-        opt.textContent = p.name;
-        presetSelect.appendChild(opt);
-      });
+      // 选择设置候选：init 拉一次填充（打开下拉时会重新 invoke 刷新，C3/C5）；
+      // 合集损坏 → 读侧降级：configs={} + warning 提示（spec §3.1），不阻塞页面
+      refreshNamedConfigs().then(r => { if (r && r.warning) setStatus(r.warning, 'error'); });
 
       if (config.llm) {
-        // 如果配置文件的 presetId 不在预设列表中（或为空），下拉选""（自定义配置）
-        // 否则选对应预设
-        const presetId = config.llm.presetId || '';
-        const presetExists = presetId && presets.some(p => p.id === presetId);
-        document.getElementById('preset').value = presetExists ? presetId : '';
+        // config.llm.presetId 有值 → 名字框显示该名字（无论合集中是否存在——spec §3.4：
+        // 老配置 presetId="doubao" 直接显示为名字，保存时自动补录进合集）。
+        // loadedNamedEntry 恒 null 不置位（plan C5 R1-B P0-1："打开页面"=未加载=基底=fileBase）
+        document.getElementById('configName').value = config.llm.presetId || '';
         document.getElementById('apiKey').value = config.llm.apiKey || '';
         document.getElementById('apiBase').value = config.llm.apiBase || '';
         document.getElementById('model').value = config.llm.model || '';
@@ -474,12 +480,26 @@
         document.getElementById('sleepTriggerMinutes').value = config.context.sleepTriggerMinutes || '';
       }
 
-      // 能力控件回填（R7：防存量配置升级后首次保存静默丢失——reasoning_effort/thinking
-      // 必须以配置值回填新 select，否则保存时被 select 默认"跟随模型默认"覆盖）
-      const llmCap = (config.llm && config.llm.litellm_kwargs) || {};
+      // 能力控件回填 + 继承判定（init 与选择设置加载共用同一路径——值一律取自
+      // 传入配置对象，不重读 user-config，spec R2-A2 N-P2-3）
+      applyCapabilityBackfill(config);
+
+      // 名字 hint 双语义：trim 空 → 常显"保存前必须为配置输入名字"（spec §3.2 前置提示）
+      updateConfigNameHint();
+
+      // 初始调用：根据下拉框 disabled 状态设置测试并保存按钮
+      updateTestSaveButton();
+    }
+
+    // 能力控件回填（R7：防存量配置升级后首次保存静默丢失——reasoning_effort/thinking
+    // 必须以配置值回填新 select，否则保存时被 select 默认"跟随模型默认"覆盖）。
+    // init（config=user-config）与选择设置加载流程（src=loadedNamedEntry）共用同一路径
+    // （spec §3.3：与"打开页面看到已存配置"完全同态；值一律取自传入对象不重读 user-config）
+    function applyCapabilityBackfill(src) {
+      const llmCap = (src.llm && src.llm.litellm_kwargs) || {};
       const llmThinkingVal = (llmCap.thinking && llmCap.thinking.type) || '';
-      const llmEffortVal = (config.llm && config.llm.reasoning_effort) || '';
-      const lightragLlm = config.lightrag_llm || {};
+      const llmEffortVal = (src.llm && src.llm.reasoning_effort) || '';
+      const lightragLlm = src.lightrag_llm || {};
       const lightragKwargs = lightragLlm.litellm_kwargs || {};
       const lightragThinkingVal = (lightragKwargs.thinking && lightragKwargs.thinking.type) || '';
       const lightragEffortVal = lightragLlm.reasoning_effort || '';
@@ -500,7 +520,7 @@
           window.electronAPI.getCapabilityProfile({ apiBase: apiBaseVal, model: modelVal, lightrag: true }),
         ]);
         // llm 段用 llm 档案；lightrag 继承（model 空）时主 llm 档案即 lightrag 场景档案
-        const lrProfile = isLightragInherited(config) ? llmProfile : lightragProfile;
+        const lrProfile = isLightragInherited(src) ? llmProfile : lightragProfile;
         populateThinkingOptions('llmThinking', llmProfile);
         populateThinkingOptions('lightragThinking', lrProfile);
         document.getElementById('llmThinking').value = llmThinkingVal;
@@ -524,7 +544,7 @@
 
       // lightrag_llm 继承主 llm 时，隐藏 LightRAG 探测按钮（探测主 llm 即可）
       const lightragProbeBtn = document.getElementById('lightragProbeBtn');
-      if (isLightragInherited(config)) {
+      if (isLightragInherited(src)) {
         lightragProbeBtn.style.display = 'none';
         // 继承场景下入库段无探测按钮——提示文案指向对话模型探测，避免误导
         const lightragHint = document.getElementById('lightragCapabilityHint');
@@ -534,9 +554,6 @@
       } else {
         lightragProbeBtn.style.display = 'inline-block';
       }
-
-      // 初始调用：根据下拉框 disabled 状态设置测试并保存按钮
-      updateTestSaveButton();
     }
 
     // ===== 模型列表拉取（combobox 候选源，会话级缓存）=====
@@ -616,7 +633,7 @@
     }
 
     // 选中选项（点击/Enter）：填值 + 关闭下拉 + 派发 change 复用现有 model 变更管线
-    //（preset 复位 / 能力清空 / D4 自动探测——与 datalist 时代原生 change 语义一致）
+    //（能力清空 / D4 自动探测——与 datalist 时代原生 change 语义一致）
     function selectModelItem(item) {
       const el = document.getElementById('model');
       if (el.value === item.id) { closeModelDropdown(); return; } // 重选当前值 = no-op（同值选中不产生 change）
@@ -717,27 +734,167 @@
       updateTestSaveButton();
     }
 
-    document.getElementById('preset').addEventListener('change', (e) => {
-      testPassedInSession = false;
-      const preset = presets.find(p => p.id === e.target.value);
-      if (preset) {
-        document.getElementById('apiBase').value = preset.apiBase;
-        document.getElementById('model').value = preset.model;
-        document.getElementById('apiType').value = preset.type || 'openai';
-        // 换预设 = 换模型 → 清空下拉框要求重新探测
-        clearCapabilityDropdowns();
-        // 程序化赋值不触发 change → 失效同步三件套必须在此补（R8Tech-P2-1）
-        invalidateModelList();
+    // ===== 选择设置自绘下拉（复用模型下拉模式照抄适配，spec §3.4/plan C5）=====
+
+    // 重读合集刷新候选（打开下拉时调用，C3 R1-A P3-6：保存后新条目同会话可见；
+    // 成本=本地文件读）。返回 IPC 原文（含 warning）供 init 降级提示
+    async function refreshNamedConfigs() {
+      const result = await window.electronAPI.getNamedConfigs();
+      namedConfigItems = (result && result.configs) ? Object.keys(result.configs) : [];
+      return result;
+    }
+
+    // 名字 hint 双语义：trim 空 → 常显警告；非空 → 默认文案（spec §3.2 前置提示 R1-B P2-1）
+    const CONFIG_NAME_HINT_DEFAULT = '选中已有配置自动填充；输入新名字保存时新增';
+    function updateConfigNameHint() {
+      const h = document.getElementById('configNameHint');
+      if (!h) return;
+      const empty = document.getElementById('configName').value.trim() === '';
+      h.textContent = empty ? '保存前必须为配置输入名字' : CONFIG_NAME_HINT_DEFAULT;
+    }
+
+    // 渲染当前可见选项进 #configNameDropdownList（active 索引高亮）
+    function renderConfigNameDropdownList() {
+      const listEl = document.getElementById('configNameDropdownList');
+      listEl.innerHTML = '';
+      configNameVisible.forEach((name, idx) => {
+        const div = document.createElement('div');
+        div.className = 'model-dropdown-item' + (idx === configNameActiveIndex ? ' active' : '');
+        div.textContent = name;
+        // mousedown 选点 + preventDefault：不抢 input 焦点（防 blur 关闭与选中竞态）
+        div.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          selectConfigNameItem(name);
+        });
+        listEl.appendChild(div);
+      });
+      if (configNameActiveIndex >= 0 && listEl.children[configNameActiveIndex]) {
+        listEl.children[configNameActiveIndex].scrollIntoView({ block: 'nearest' });
       }
-    });
+    }
+
+    // 不区分大小写子串过滤（合集键本身大小写敏感，过滤不敏感——spec §3.4/§6）：
+    // 空输入 → 全量；非空 → 子串匹配
+    function filterConfigNameItemsByInput() {
+      const v = document.getElementById('configName').value.trim().toLowerCase();
+      return v === '' ? namedConfigItems.slice()
+                      : namedConfigItems.filter(n => n.toLowerCase().includes(v));
+    }
+
+    // 打开选择设置下拉：焦点守卫（同模型下拉 P2-1）；空合集 → 不弹（与模型下拉空列表语义一致）
+    function openConfigNameDropdown() {
+      if (namedConfigItems.length === 0) return;
+      if (document.activeElement !== document.getElementById('configName')) return;
+      configNameVisible = filterConfigNameItemsByInput();
+      if (configNameVisible.length === 0) return; // 无匹配（手输新名字）→ 不弹
+      configNameActiveIndex = -1;
+      renderConfigNameDropdownList();
+      document.getElementById('configNameDropdown').hidden = false;
+    }
+
+    function closeConfigNameDropdown() {
+      const dd = document.getElementById('configNameDropdown');
+      if (dd) dd.hidden = true;
+      const listEl = document.getElementById('configNameDropdownList');
+      if (listEl) listEl.innerHTML = '';
+      configNameVisible = [];
+      configNameActiveIndex = -1;
+    }
+
+    // 选中配置名（点击项/Enter）→ 触发加载流程（spec §3.3）
+    function selectConfigNameItem(name) {
+      closeConfigNameDropdown();
+      loadNamedConfig(name);
+    }
+
+    // 加载流程（spec §3.3）：选中时重读合集取条目（非 init 缓存——合集开放给 Agent，
+    // 页面打开期间可能被改，R1-B P1-2）；条目不存在 → 提示不加载（R1-B P2-1）；
+    // 存在 → loadedNamedEntry 置位 → 表单回填 → 能力控件回填取自条目（R2-A2 N-P2-3）
+    // → 跳过 clearCapabilityDropdowns（选中即可直接测试保存，快速切换意图）
+    async function loadNamedConfig(name) {
+      testPassedInSession = false;
+      const result = await window.electronAPI.getNamedConfigs();
+      const entry = (result && result.configs) ? result.configs[name] : undefined;
+      if (!entry) { setStatus('该配置已不存在', 'error'); return; }
+      loadedNamedEntry = entry;
+
+      // 表单回填：apiKey/apiBase/model/type/max_tokens + 名字框（= 选中名）（spec §3.3 枚举集合）
+      const llm = entry.llm || {};
+      document.getElementById('configName').value = name;
+      document.getElementById('apiKey').value = llm.apiKey || '';
+      document.getElementById('apiBase').value = llm.apiBase || '';
+      document.getElementById('model').value = llm.model || '';
+      document.getElementById('apiType').value = llm.type || 'openai';
+      document.getElementById('llmMaxTokens').value = llm.max_tokens ?? ''; // 含 max_tokens 条目回填，保存时不被旧值覆写/删除（验收 A6）
+
+      // 能力控件回填值与 lightrag 继承判定一律取自 loadedNamedEntry（与 init 同路径），
+      // 跳过 clearCapabilityDropdowns——复位 capabilityCleared 使下拉框可用（spec §3.3 定案 a：
+      // 选中即可直接测试保存；强制重探测会使验收 6 不可达）
+      capabilityCleared = false;
+      applyCapabilityBackfill(loadedNamedEntry);
+
+      // 程序化赋值不触发 change → 失效同步三件套必须在此补（R8Tech-P2-1）
+      invalidateModelList();
+      updateConfigNameHint();
+      updateTestSaveButton();
+    }
+
+    // 选择设置输入框事件（模型下拉模式照抄适配）
+    const configNameInputEl = document.getElementById('configName');
+    if (configNameInputEl) {
+      const activateConfigNameDropdown = () => {
+        configNameInputEl.focus(); // P2-1 配套：可信 mousedown 时 activeElement 尚未切换 → 先聚焦
+        // 打开下拉时重新 invoke get-named-configs 刷新候选（C3/C5），完成后弹（焦点守卫在 open 内）
+        refreshNamedConfigs().then(() => openConfigNameDropdown());
+      };
+      configNameInputEl.addEventListener('mousedown', activateConfigNameDropdown);
+      configNameInputEl.addEventListener('focus', activateConfigNameDropdown);
+
+      // 输入字符 → 不区分大小写子串过滤并重显；无匹配（手输新名字）→ 不弹；
+      // 名字 hint 双语义随输入更新（trim 空 → 常显警告）
+      configNameInputEl.addEventListener('input', () => {
+        updateConfigNameHint();
+        const dd = document.getElementById('configNameDropdown');
+        if (dd.hidden || namedConfigItems.length === 0) return;
+        configNameVisible = filterConfigNameItemsByInput();
+        if (configNameVisible.length === 0) { closeConfigNameDropdown(); return; }
+        configNameActiveIndex = -1;
+        renderConfigNameDropdownList();
+      });
+
+      // 键盘：ArrowDown/ArrowUp 移动高亮、Enter 选中、Esc 关闭
+      configNameInputEl.addEventListener('keydown', (e) => {
+        const dd = document.getElementById('configNameDropdown');
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (dd.hidden) { openConfigNameDropdown(); return; }
+          configNameActiveIndex = Math.min(configNameActiveIndex + 1, configNameVisible.length - 1);
+          renderConfigNameDropdownList();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (dd.hidden || configNameVisible.length === 0) return;
+          configNameActiveIndex = Math.max(configNameActiveIndex - 1, 0);
+          renderConfigNameDropdownList();
+        } else if (e.key === 'Enter') {
+          if (!dd.hidden && configNameActiveIndex >= 0) {
+            e.preventDefault();
+            selectConfigNameItem(configNameVisible[configNameActiveIndex]);
+          }
+        } else if (e.key === 'Escape') {
+          if (!dd.hidden) { e.preventDefault(); closeConfigNameDropdown(); }
+        }
+      });
+
+      // 焦点离开 input → 关闭（选项点击已 preventDefault 不抢焦点，不会误触发）
+      configNameInputEl.addEventListener('blur', () => { closeConfigNameDropdown(); });
+    }
 
     ['apiKey', 'apiBase', 'model', 'apiType'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', () => {
         testPassedInSession = false;
-        // 用户手动修改任何字段 → 自动变为"自定义配置"（清空 presetId）
-        // 因为表单值已不再匹配任何预设
-        document.getElementById('preset').value = '';
+        // 手动修改表单字段不清空 loadedNamedEntry 与名字框（spec §3.3：加载"豆包"后改字段
+        // 再保存 = 覆盖"豆包"条目；想新建配置 = 用户自己改名字——旧"手动修改即清空"逻辑已删）
         // 换模型名或路径 → 清空下拉框要求重新探测
         if (id === 'apiBase' || id === 'model') clearCapabilityDropdowns();
         // 配置变更 → 失效同步三件套：清缓存 + 复位 hint 静置文案 + 清自绘下拉选项
@@ -803,9 +960,11 @@
     document.addEventListener('mousedown', (e) => {
       const dd = document.getElementById('modelDropdown');
       if (dd && !dd.hidden && e.target !== modelInputEl && !dd.contains(e.target)) closeModelDropdown();
+      const cdd = document.getElementById('configNameDropdown');
+      if (cdd && !cdd.hidden && e.target !== configNameInputEl && !cdd.contains(e.target)) closeConfigNameDropdown();
     });
 
-    // 六个新控件 change 时也重置 testPassedInSession（与 preset/apiKey/apiBase/model/apiType 同款）
+    // 六个新控件 change 时也重置 testPassedInSession（与 apiKey/apiBase/model/apiType 同款）
     ['llmThinking', 'lightragThinking', 'llmReasoningEffort', 'lightragReasoningEffort', 'lightragTemperature', 'llmMaxTokens'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('change', () => { testPassedInSession = false; });
@@ -893,7 +1052,7 @@
       const apiBase = document.getElementById('apiBase').value;
       const model = document.getElementById('model').value;
       const type = document.getElementById('apiType').value;
-      if (!apiBase) { setStatus('请选择预设或填写 API 地址', 'error'); return; }
+      if (!apiBase) { setStatus('请填写 API 地址', 'error'); return; }
       if (!model) { setStatus('请输入模型名称', 'error'); return; }
       const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(apiBase);
       if (!apiKey && !isLocal) { setStatus('请输入 API Key', 'error'); return; }
@@ -986,15 +1145,55 @@
       }
     }
 
-    async function testAndSave() {
-      const existingConfig = await window.electronAPI.getConfig();
-      const presetId = document.getElementById('preset').value;
-      const apiKey = document.getElementById('apiKey').value;
-      const apiBase = document.getElementById('apiBase').value;
-      const model = document.getElementById('model').value;
-      const type = document.getElementById('apiType').value;
+    // 按 plan C1 结构组装表单值（maxTokensRaw 原字符串——校验在 testAndSave 步骤 2，
+    // merge 只 parse 不校验；thinking 原 select 值，''=删子键；temperature parse 后值，
+    // NaN→基底值??0.2 语义在 merge 内）
+    function buildFormValues() {
+      return {
+        llm: {
+          apiKey: document.getElementById('apiKey').value,
+          apiBase: document.getElementById('apiBase').value,
+          model: document.getElementById('model').value,
+          type: document.getElementById('apiType').value,
+          reasoning_effort: document.getElementById('llmReasoningEffort').value,
+          maxTokensRaw: document.getElementById('llmMaxTokens').value.trim(),
+          thinking: document.getElementById('llmThinking').value,
+        },
+        lightrag: {
+          reasoning_effort: document.getElementById('lightragReasoningEffort').value,
+          temperature: parseFloat(document.getElementById('lightragTemperature').value),
+          thinking: document.getElementById('lightragThinking').value,
+        },
+        context: {
+          contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
+          warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
+          keepRecentTurns: parseInt(document.getElementById('keepRecentTurns').value) || 3,
+          sleepTriggerMinutes: parseInt(document.getElementById('sleepTriggerMinutes').value) || 5
+        },
+      };
+    }
 
-      if (!apiBase) { setStatus('请选择预设或填写 API 地址', 'error'); return; }
+    async function testAndSave() {
+      // 步骤 0：配置名必填（spec §3.2——不发测试请求不写文件；前置提示由
+      // updateConfigNameHint 在 init/输入时常显）
+      const configName = document.getElementById('configName').value.trim();
+      if (!configName) { setStatus('必须为配置输入一个名字', 'error'); return; }
+
+      // 步骤 1：开头重读 getConfig 作 fileBase + 前端深合并（spec §3.2 R2-B2 P2-1：
+      // 与步骤 5 后端合并同一基底优先级——表单值 > loadedNamedEntry > 文件；
+      // 测试的配置 = 保存的配置。read_timeout 等表单外键随合并自然进入 payload，
+      // "测试环境=生产环境"不变式保持——原 read_timeout 单字段逃生口特判删除）
+      const fileBase = await window.electronAPI.getConfig();
+      const formValues = buildFormValues();
+      const mergedConfig = ConfigMerge.mergeConfig({
+        fileBase, namedEntry: loadedNamedEntry, formValues, probeResults: null, configName,
+      });
+
+      // 步骤 2：表单校验（apiBase/model/apiKey 既有逻辑不变）
+      const apiKey = formValues.llm.apiKey;
+      const apiBase = formValues.llm.apiBase;
+      const model = formValues.llm.model;
+      if (!apiBase) { setStatus('请填写 API 地址', 'error'); return; }
       if (!model) { setStatus('请输入模型名称', 'error'); return; }
       // Ollama 等本地模型无需 API Key（apiBase 为 localhost/127.0.0.1 时豁免）
       const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(apiBase);
@@ -1004,50 +1203,31 @@
       document.getElementById('testBtn').disabled = true;
 
       try {
-      // 能力控件值（P1-3：testAndSave 四处接线——测试/探测/保存都读新 select，
-      // 不再读 existingConfig 旧值兜底，否则存量配置升级后首次保存静默丢失）
-      const llmThinking = document.getElementById('llmThinking').value;
-      const llmReasoningEffort = document.getElementById('llmReasoningEffort').value;
-      const lightragThinking = document.getElementById('lightragThinking').value;
-      const lightragReasoningEffort = document.getElementById('lightragReasoningEffort').value;
-
-      // 第一步：测试（传表单值到请求体，不保存文件）——测试环境 = 生产环境（同参数）
-      const llmLitellmKwargs = { ...DEFAULT_LLM_KWARGS, ...(existingConfig.llm?.litellm_kwargs || {}) };
-      if (llmThinking) llmLitellmKwargs.thinking = { type: llmThinking };
-      else delete llmLitellmKwargs.thinking;
-      const config = {
-        apiKey, apiBase, model, type,
-        reasoning_effort: llmReasoningEffort,
-        litellm_kwargs: llmLitellmKwargs
-      };
-      // 输出上限 max_tokens：空 = 不传（缺省）；非空校验正整数后并入——
-      // 同一 config 对象流向 testConnection（校验合法性）/probeConfig/saveConfig 三处
-      const maxTokensRaw = document.getElementById('llmMaxTokens').value.trim();
+      // 输出上限 max_tokens 正整数校验保留在前端（merge 只 parse 不校验；空 = 删键语义在 merge 内）
+      const maxTokensRaw = formValues.llm.maxTokensRaw;
       if (maxTokensRaw !== '') {
         const mt = Number(maxTokensRaw);
         if (!Number.isInteger(mt) || mt <= 0) {
           setStatus('输出上限必须是正整数', 'error');
           return;
         }
-        config.max_tokens = mt;
       }
-      // v2.5：逃生口——合并文件已有 read_timeout（existingConfig 在本作用域已存在）
-      const existingLlm = existingConfig && existingConfig.llm;
-      if (existingLlm && existingLlm.read_timeout) config.read_timeout = existingLlm.read_timeout;
-      const result = await window.electronAPI.testConnection(config);
+
+      // 步骤 3：测试连接（payload = mergedConfig.llm——深合并后 read_timeout 等文件键自然在内）
+      const result = await window.electronAPI.testConnection(mergedConfig.llm);
 
       if (result.success) {
-        // 第一步半：测试通过后追加 response_format 探测（3 档递进）
+        // 步骤 4：测试通过后追加 response_format 探测（3 档递进）
         setStatus('探测格式化输出能力中（可能需要 1-5 分钟（三次采样 + 限流/超时重试））...', 'loading');
-        // probe 必须用知识图谱模型的运行时配置（含入库卡片思考链/推理深度 select），
-        // 保证探测环境 = 运行时环境，探测档位结果对运行时才有效（P1-3 接线 2）
-        const lightragKwargs = { ...DEFAULT_LIGHTRAG_KWARGS, ...(existingConfig.lightrag_llm?.litellm_kwargs || {}) };
-        if (lightragThinking) lightragKwargs.thinking = { type: lightragThinking };
-        else delete lightragKwargs.thinking;
+        // probe payload 组装结构照现状混合构造（R1 双审同抓 P2-2/P3-4 钉死）：
+        // llm 连接字段（probe 恒用对话模型连接，不用 mergedConfig.lightrag_llm 连接字段）
+        // + 入库 select 值/lightrag kwargs——仅 kwargs/RE 来源换合并值 mergedConfig.lightrag_llm，
+        // 保证探测环境 = 运行时环境，探测档位结果对运行时才有效
         const probeConfig = {
-          ...config,
-          reasoning_effort: lightragReasoningEffort,
-          litellm_kwargs: lightragKwargs,
+          ...mergedConfig.llm,
+          reasoning_effort: mergedConfig.lightrag_llm.reasoning_effort,
+          temperature: mergedConfig.lightrag_llm.temperature,
+          litellm_kwargs: mergedConfig.lightrag_llm.litellm_kwargs,
         };
         const probeResult = await window.electronAPI.probeResponseFormat(probeConfig);
 
@@ -1064,50 +1244,26 @@
         const allowedOpenaiParams = responseFormatMode === 'prompt_only' ? [] : ['response_format'];
         const probeReason = probeResult.reason || `格式化输出档位: ${responseFormatMode}`;
 
-        // 第二步：保存配置（仅连通性测试 + probe 探测都成功才执行到这里）
+        // 步骤 5：保存配置（仅连通性测试 + probe 探测都成功才执行到这里）——
+        // save-config C2 签名：后端保存时刻重读 fileBase + mergeConfig 同函数深合并
+        // + 写 user-config.json + 合集单条 upsert + /api/config/reload
         setStatus('保存配置中...（' + probeReason + '）', 'loading');
-        const existingLightragLlm = existingConfig.lightrag_llm || {};
-        const existingLightragKwargs = existingLightragLlm.litellm_kwargs || {};
-        // 基础配置无条件写入 + 探测结果覆盖 + 入库卡片思考链 select 覆盖
-        const newLitellmKwargs = {
-          ...DEFAULT_LIGHTRAG_KWARGS,
-          ...existingLightragKwargs,
-          response_format_mode: responseFormatMode,
-          allowed_openai_params: allowedOpenaiParams,
-        };
-        if (lightragThinking) newLitellmKwargs.thinking = { type: lightragThinking };
-        else delete newLitellmKwargs.thinking;
-        const lightragTemperature = parseFloat(document.getElementById('lightragTemperature').value);
-        const lightragLlmConfig = {
-          presetId: existingLightragLlm.presetId || "",
-          apiKey: existingLightragLlm.apiKey || "",
-          apiBase: existingLightragLlm.apiBase || "",
-          model: existingLightragLlm.model || "",
-          type: existingLightragLlm.type || "openai",
-          // 推理深度来自入库卡片 select（跟随模型默认 = ""，不再 || "high" 兜底旧值——P1-3 接线 3）
-          reasoning_effort: lightragReasoningEffort,
-          temperature: isNaN(lightragTemperature) ? (existingLightragLlm.temperature ?? 0.2) : lightragTemperature,
-          litellm_kwargs: newLitellmKwargs,
-        };
-
         const saveResult = await window.electronAPI.saveConfig({
-          llm: { ...config, presetId: presetId, reasoning_effort: llmReasoningEffort, ...(existingConfig?.llm?.read_timeout ? { read_timeout: existingConfig.llm.read_timeout } : {}) },
-          lightrag_llm: lightragLlmConfig,
-          context: {
-            contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
-            warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
-            keepRecentTurns: parseInt(document.getElementById('keepRecentTurns').value) || 3,
-            sleepTriggerMinutes: parseInt(document.getElementById('sleepTriggerMinutes').value) || 5
-          },
-          storage: existingConfig.storage || {},
-          // 保留用户已有 logging 设置；首次启动用设计缺省（关日志）
-          logging: existingConfig.logging || { enabled: false, level: "INFO" },
-          firstRun: false
+          configName,
+          formValues,
+          probeResults: { response_format_mode: responseFormatMode, allowed_openai_params: allowedOpenaiParams },
+          loadedNamedEntry,
         });
         if (saveResult.success) {
           testPassedInSession = true;
-          setStatus('模型测试通过，配置已保存！格式化输出: ' + probeReason, 'success');
-          setTimeout(() => { window.electronAPI.closeWindow(); }, 1500);
+          if (saveResult.collectionWarning) {
+            // 合集写失败保护路径（spec §3.2 步骤 5 ④/⑥）：主配置已保存但合集未同步——
+            // 提示警告 + 不启动 1.5s 自动关窗（防警告被关窗吞掉，R1-A P3-3）
+            setStatus('配置已保存，但配置合集同步失败（' + saveResult.collectionWarning + '）', 'success');
+          } else {
+            setStatus('模型测试通过，配置已保存！格式化输出: ' + probeReason, 'success');
+            setTimeout(() => { window.electronAPI.closeWindow(); }, 1500);
+          }
         } else {
           setStatus('保存失败: ' + saveResult.error, 'error');
         }

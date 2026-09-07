@@ -24,9 +24,10 @@ import niu_config_manager as ncm
 
 @pytest.fixture
 def tmp_config(monkeypatch, tmp_path):
-    """把模块级 CONFIG_DIR / USER_CONFIG_PATH 重定向到 tmp_path。"""
+    """把模块级 CONFIG_DIR / USER_CONFIG_PATH / LLM_CONFIGS_PATH 重定向到 tmp_path。"""
     monkeypatch.setattr(ncm, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(ncm, "USER_CONFIG_PATH", tmp_path / "user-config.json")
+    monkeypatch.setattr(ncm, "LLM_CONFIGS_PATH", tmp_path / "llm-configs.json")
     return tmp_path
 
 

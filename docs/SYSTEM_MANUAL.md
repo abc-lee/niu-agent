@@ -676,6 +676,16 @@ codesign --force --sign - /Applications/niu.app
 
 LLM 流式读取超时（`read_timeout`，默认 300s）与 LightRAG 操作超时（`insert_timeout` 600s / `query_timeout` 120s / `delete_timeout` 300s / `status_timeout` 30s / `merge_timeout` 300s）均可通过配置文件调整：`read_timeout` 在 `config/user-config.json` 的 `llm` 与 `lightrag_llm` 段，LightRAG 操作超时在 `~/.niu/preferences.json` 的 `lightrag` 段。缺省值已显式写入两处配置示例，详见《用户操作手册》1.2 LLM 配置与 1.4 知识图谱章节。生效方式：主对话/子 Agent 的 `read_timeout` 修改后重启生效；知识图谱 LLM 调用与 LightRAG 操作超时每次操作实时读取配置，修改后即时生效。
 
+### LLM 配置双文件模型
+
+LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，当前生效配置）+ `~/.niu/config/llm-configs.json`（**辅**，命名配置合集——键 = 配置名 = `llm.presetId`，每条目 = `llm` + `lightrag_llm` 两段快照）。
+
+- **主 Agent 修改配置时必须两个文件一起改**：改 `user-config.json` 对应段的同时，必须同步修改合集中同 `presetId` 名字的条目。
+- **config-manager 自动同步**：经 config-manager 工具（`set_llm_config` / `set_lightrag_llm_config`）修改时工具自动同步合集（机制保证，无需手工双改）；`preset_id` 加载型调用从合集整条读入 `user-config.json`；直接编辑文件时必须手工双改，否则合集条目与当前生效配置漂移。
+- **一致性收敛规则**：以 `user-config.json` 为主——设置窗口下次"测试并保存"或 config-manager 下次 set 时，合集同名条目自动对齐为 `user-config.json` 的两段内容。
+
+字段与示例详见《用户操作手册》1.2 LLM 配置。
+
 ## 分册索引
 
 > 主 Agent 遇到具体问题时按此表判断去哪个子文档查。每条说明该文档解决什么问题、包含哪些功能、什么时候应该去看。

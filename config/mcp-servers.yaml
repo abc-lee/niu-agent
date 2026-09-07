@@ -60,7 +60,7 @@ config-manager:
       visibility: hidden
     set_llm_config:
       visibility: hidden
-    list_llm_presets:
+    list_llm_configs:
       visibility: hidden
     test_llm_connection:
       visibility: hidden
