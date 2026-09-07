@@ -99,3 +99,16 @@ def test_persist_compression_triplet_row_failure_does_not_block_later_rows():
     ctx._sync_add_message = MagicMock(side_effect=[None, "msg-2", "msg-3"])
     _persist_compression_triplet(ctx, "总结文本")
     assert ctx._sync_add_message.call_count == 3  # 首行失败仍落完后续两行
+
+
+def test_triplet_prefix_parity():
+    """slicer 本地三件套前缀与 agent_loop 两条常量 startswith 绑定（双副本漂移必红）。
+
+    slicer 保持零依赖不导入 agent_loop，判据为本地常量前缀副本——本契约
+    保证任一副本改动即红（spec 2026-09-07 §4 / B P2-2）。
+    """
+    from agent.context_assembler.slicer import _COMPRESSION_TRIPLET_PREFIXES
+
+    assert len(_COMPRESSION_TRIPLET_PREFIXES) == 2
+    assert _SUMMARY_PROMPT.startswith(_COMPRESSION_TRIPLET_PREFIXES[0])
+    assert _COMPRESSION_DONE_HINT.startswith(_COMPRESSION_TRIPLET_PREFIXES[1])

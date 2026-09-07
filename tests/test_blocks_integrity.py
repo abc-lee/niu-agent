@@ -296,3 +296,66 @@ class TestRebuildWatermark:
     def test_rebuild_empty_messages_db(self, blocks_db, messages_db):
         _create_messages_db(messages_db, 0)
         assert integrity._rebuild(blocks_db, messages_db) == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. 过渡窗口（spec 2026-09-07 §3.4 / B P2-1）：旧规则归档块 + 新切割归档 →
+#    幂等键不命中产生重叠块 → _detect_issues 检出 → _rebuild 收敛无重复
+# ---------------------------------------------------------------------------
+
+class TestTransitionOverlap:
+    def test_overlap_from_old_rule_blocks_detected_and_rebuilt(
+        self, blocks_db, messages_db
+    ):
+        """旧规则块（[指令..a1] 与 [完成,a2]）+ 新切割归档（合并大单元）→ 重叠检出 → 重建收敛。"""
+        from types import SimpleNamespace
+
+        from agent.context_assembler.compaction import archive_excluded_units
+        from agent.context_assembler.slicer import slice_units
+
+        rows = [
+            ("m1", "user", "指令帮我部署服务"),
+            ("m2", "assistant", "a1"),
+            ("m3", "user", "[系统提示] 上下文即将压缩，超出保留范围的早期对话将被归档移出。"),
+            ("m4", "assistant", "总结内容"),
+            ("m5", "user", "[系统提示] 上下文压缩已完成。"),
+            ("m6", "assistant", "a2"),
+        ]
+        conn = sqlite3.connect(str(messages_db))
+        conn.execute(
+            "CREATE TABLE messages (id TEXT PRIMARY KEY, role TEXT NOT NULL, "
+            "content TEXT, created_at TEXT NOT NULL)"
+        )
+        for i, (mid, role, content) in enumerate(rows, start=1):
+            conn.execute(
+                "INSERT INTO messages (id, role, content, created_at) VALUES (?,?,?,?)",
+                (mid, role, content, f"2026-08-20T10:{i:02d}:00"),
+            )
+        conn.commit()
+        conn.close()
+
+        # 旧规则归档产物：[指令,a1] 与 [完成,a2] 两块（旧规则下自洽无重叠）
+        upsert_blocks([_block(1, 1, 2, 2), _block(2, 5, 6, 2)], blocks_db)
+        assert integrity.check_blocks_integrity(blocks_db, messages_db)["issues"] == []
+
+        # 新切割归档：三件套透视 → 单合并单元（rows 1-6），幂等键不命中 → 与旧块重叠
+        msgs = [
+            SimpleNamespace(
+                id=mid, rowid=i, role=role, content=content,
+                created_at=f"2026-08-20T10:{i:02d}:00",
+            )
+            for i, (mid, role, content) in enumerate(rows, start=1)
+        ]
+        assert slice_units(msgs) == [(0, 5)]
+        assert archive_excluded_units(
+            msgs, [(0, 5)], 99, blocks_db, collect_entities=False) == 1
+
+        # 检测检出重叠 → 整库重建收敛无重复
+        result = integrity.check_blocks_integrity(blocks_db, messages_db)
+        assert result["repaired"] is True
+        assert any("重叠" in i or "非单调" in i for i in result["issues"])
+        # 重建水位线语义：新切割单单元 ≤ keep 3 → 零块（无重复）
+        assert load_all(blocks_db) == []
+
+        recheck = integrity.check_blocks_integrity(blocks_db, messages_db)
+        assert recheck == {"ok": True, "issues": [], "repaired": False}
