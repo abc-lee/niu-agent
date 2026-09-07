@@ -325,3 +325,45 @@ class TestEntityTags:
         db2 = tmp_path / "b2.db"
         assert compaction.archive_excluded_units(messages, units, 99, db2) == 1
         assert load_all(db2)[0].entities == []
+
+    def test_archive_first_user_skips_system_prompt_lines(self, tmp_path):
+        """三件套以 [系统提示] 前缀落库，归档首问须跳过防索引污染（spec 3.4 P3-4）。"""
+        from types import SimpleNamespace
+        from agent.context_assembler.blocks import load_all
+
+        def msg(role, content, mid, rowid, created_at="2026-08-12T10:00:00"):
+            return SimpleNamespace(
+                id=mid, rowid=rowid, role=role, content=content,
+                tool_calls=None, tool_call_id=None, created_at=created_at,
+            )
+
+        # 1. 单元含 [系统提示] user + 后续真实 user → first_user = 真实 user
+        messages = [
+            msg("user", "[系统提示] 请总结当前上下文……", "u0", 1),
+            msg("assistant", "总结内容", "a1", 2),
+            msg("user", "帮我部署一下服务", "u2", 3),
+        ]
+        db = tmp_path / "b.db"
+        assert compaction.archive_excluded_units(
+            messages, [(0, 2)], 99, db, collect_entities=False) == 1
+        assert load_all(db)[0].first_user == "帮我部署一下服务"
+
+        # 2. 单元仅 [系统提示] user → first_user 空串（既有形态）
+        messages = [
+            msg("user", "[系统提示] 上下文压缩已完成。", "u1", 1),
+            msg("assistant", "好的，继续执行", "a2", 2),
+        ]
+        db = tmp_path / "b2.db"
+        assert compaction.archive_excluded_units(
+            messages, [(0, 1)], 99, db, collect_entities=False) == 1
+        assert load_all(db)[0].first_user == ""
+
+        # 3. 正常单元（无系统提示）→ first_user 不受影响（回归）
+        messages = [
+            msg("user", "原始用户问题", "u3", 1),
+            msg("assistant", "回答", "a4", 2),
+        ]
+        db = tmp_path / "b3.db"
+        assert compaction.archive_excluded_units(
+            messages, [(0, 1)], 99, db, collect_entities=False) == 1
+        assert load_all(db)[0].first_user == "原始用户问题"

@@ -1711,23 +1711,40 @@ def _is_compression_command(message: str) -> bool:
     return (message or "").strip().lower() == "/compact"
 
 
-def _run_idle_compression(runner, history) -> str:
+def _run_idle_compression(runner, history, gate_acquired: bool = True) -> str:
     """闲时 /compact：直接同步执行受控压缩（R2-A P0-1——不经 agent_runner_loop）。
 
     组装视图 + 构造 ctx（与 runner._on_compression_request 同款）→
-    run_controlled_compression(messages, ctx, client, turn=0, release_on_failure=True)：
+    run_controlled_compression(messages, ctx, client, turn=0, release_on_failure=gate_acquired)：
     完整受控压缩（提炼 → 总结 LLM → 机械压实 → 重组）内部完成，无需额外 LLM 轮。
     压缩后无真实用户指令要发——重组消息丢弃（仅压缩副作用落库/归档生效）。
 
     Args:
         runner: NiuRunner（取 client/_sync_get_messages/_sync_add_message/llm_config）
         history: 组装视图（get_context_for_chat 返回，exclude_last=False）
+        gate_acquired: 本轮是否确实 try_acquire 到闩锁（FinalReview B P2-1——chat_session
+            透传自己的 try_acquire 返回值；已闩（他轮滞回）→ False → 失败出口不解闩，
+            防误清他轮滞回闩锁致下轮冗余 auto 重压。默认 True 兼容既有直调）。
 
     Returns:
         结果文本（"compacted"/"skipped:<原因>"）供日志。
     """
     from types import SimpleNamespace
     from agent.generic.agent_loop import run_controlled_compression
+    # 手动压缩总结上下文补全（spec 3.1 / plan T1，2026-09-07）：组装视图不含 system
+    # （system 由 runner 每轮 _on_before_llm 拼），直接喂总结 LLM 会无角色/时间/记忆。
+    # 前置 system 占位后复用正常轮组装（memory + 动态注入 + 静态区 + 动态块）。
+    # turn=0 必选：turn==1 会消费清空 runner._first_turn_extra_injection（resources 文件
+    # 模式注入在压缩轮被吞，下一真实会话首轮丢指令）。_on_before_llm 末尾的
+    # set_system_token_estimate 是瞬时覆盖，下轮真实组装重设，无害。
+    if not history or history[0].get("role") != "system":
+        history = [{"role": "system", "content": ""}] + list(history)
+        try:
+            runner._on_before_llm(history, 0)
+        except Exception as e:
+            # 降级：覆写占位 content（恒单条 system——双 system 行违 OpenAI 兼容→400）
+            logger.warning(f"[ChatSession] idle on_before_llm failed, fallback to base prompt: {e}")
+            history[0]["content"] = runner.base_system_prompt
     system_msg = history[0] if history and history[0].get("role") == "system" else None
     ctx = SimpleNamespace(
         _sync_get_messages=runner._sync_get_messages,
@@ -1739,9 +1756,10 @@ def _run_idle_compression(runner, history) -> str:
         _last_compacted_view=None,
     )
     try:
-        # B-P3-1：闲时直调自己置闩（chat_session 先 try_acquire）→ 失败出口解闩传 True
+        # B-P3-1 + FinalReview B P2-1：透传 gate_acquired（chat_session 自己 try_acquire
+        # 的结果）——失败出口仅当本轮确实 acquire 到闩锁才解闩（已闩=他轮 → 不误清）
         new_msgs, did = run_controlled_compression(
-            list(history), ctx, runner.client, 0, release_on_failure=True,
+            list(history), ctx, runner.client, 0, release_on_failure=gate_acquired,
         )
         if did:
             return "compacted"
@@ -1791,14 +1809,17 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             from niu_api.chat import get_or_create_runner
             runner = get_or_create_runner()
             # R8-A P3-2：idle 直调不经门 try_acquire——先置闩（manual 语义：以触发线
-            # clamp 试闩），压后未回落则保持闩锁防用户下条消息 auto 立即重压
+            # clamp 试闩），压后未回落则保持闩锁防用户下条消息 auto 立即重压。
+            # FinalReview B P2-1：捕获返回值透传 gate_acquired——已闩（他轮滞回）→ False
+            # → 失败出口不解闩（防误清他轮滞回闩锁致下轮冗余 auto 重压）。
+            acquired = False
             try:
                 from agent.context_assembler import compaction
-                compaction.AUTO_GATE.try_acquire(compaction.trigger_ratio())
+                acquired = compaction.AUTO_GATE.try_acquire(compaction.trigger_ratio())
             except Exception:
-                pass  # 置闩失败无害（idle 直调不依赖闩锁语义）
+                acquired = False  # 置闩失败无害——未持锁，失败出口不得解闩
             result = await asyncio.to_thread(
-                _run_idle_compression, runner, history_for_runner,
+                _run_idle_compression, runner, history_for_runner, acquired,
             )
             logger.info(f"[ChatSession] /compact idle compression result: {result}")
         finally:

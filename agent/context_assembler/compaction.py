@@ -141,8 +141,14 @@ def archive_excluded_units(messages, units, window_start: int,
         pair = (messages[start].id, messages[end].id)
         if pair in existing_pairs:
             continue
+        # 三件套（准备提问/压缩完成提示）以 [系统提示] 前缀落库，归档首问须跳过防索引污染（spec 3.4 P3-4）
         first_user = next(
-            (m.content for m in messages[start : end + 1] if m.role == "user"), ""
+            (
+                m.content
+                for m in messages[start : end + 1]
+                if m.role == "user" and not (m.content or "").startswith("[系统提示]")
+            ),
+            "",
         )
         new_blocks.append(
             PointerBlock(

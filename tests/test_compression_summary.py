@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 
 from agent.generic.agent_loop import (
     _SUMMARY_PROMPT, _run_summary_llm, _persist_summary_without_extract,
+    _triplet_messages, _persist_compression_triplet, _COMPRESSION_DONE_HINT,
 )
 
 
@@ -42,3 +43,59 @@ def test_persist_summary_bypass_extract_and_skip_mirror():
         role="assistant", content="总结文本",
         skip_mirror=True, bypass_at_extract=True,
     )
+
+
+def test_triplet_messages_nonempty_summary_three_rows():
+    """三件套构造（非空总结）：序 = [user 准备提示][assistant 总结][user 完成提示]。"""
+    msgs = _triplet_messages("总结文本")
+    assert len(msgs) == 3
+    assert msgs[0] == {"role": "user", "content": _SUMMARY_PROMPT}
+    assert msgs[1] == {"role": "assistant", "content": "总结文本"}
+    assert msgs[2] == {"role": "user", "content": _COMPRESSION_DONE_HINT}
+
+
+def test_triplet_messages_empty_summary_two_rows_no_empty_assistant():
+    """空总结只两条（无 assistant 行）——防空 content="" 进 client.chat 致 provider 400。"""
+    msgs = _triplet_messages("")
+    assert len(msgs) == 2
+    assert [m["role"] for m in msgs] == ["user", "user"]
+    assert msgs[0]["content"] == _SUMMARY_PROMPT
+    assert msgs[1]["content"] == _COMPRESSION_DONE_HINT
+
+
+def test_persist_compression_triplet_three_rows_order_and_flags():
+    """三件套落库：3 次调用序 = [准备 user][总结 assistant][完成 user]，全 skip_mirror+bypass。"""
+    ctx = MagicMock()
+    ctx._sync_add_message = MagicMock(return_value="msg-1")
+    _persist_compression_triplet(ctx, "总结文本")
+    assert ctx._sync_add_message.call_count == 3
+    calls = [c.kwargs for c in ctx._sync_add_message.call_args_list]
+    assert [(c["role"], c["content"]) for c in calls] == [
+        ("user", _SUMMARY_PROMPT),
+        ("assistant", "总结文本"),
+        ("user", _COMPRESSION_DONE_HINT),
+    ]
+    for c in calls:
+        assert c["skip_mirror"] is True
+        assert c["bypass_at_extract"] is True
+
+
+def test_persist_compression_triplet_empty_summary_two_rows():
+    """空总结 → 只落两条（跳过 assistant 行）。"""
+    ctx = MagicMock()
+    ctx._sync_add_message = MagicMock(return_value="msg-1")
+    _persist_compression_triplet(ctx, "")
+    assert ctx._sync_add_message.call_count == 2
+    calls = [c.kwargs for c in ctx._sync_add_message.call_args_list]
+    assert [(c["role"], c["content"]) for c in calls] == [
+        ("user", _SUMMARY_PROMPT),
+        ("user", _COMPRESSION_DONE_HINT),
+    ]
+
+
+def test_persist_compression_triplet_row_failure_does_not_block_later_rows():
+    """单行写失败（返回 None）→ 不阻断后续行（三行非事务，warning 累积）。"""
+    ctx = MagicMock()
+    ctx._sync_add_message = MagicMock(side_effect=[None, "msg-2", "msg-3"])
+    _persist_compression_triplet(ctx, "总结文本")
+    assert ctx._sync_add_message.call_count == 3  # 首行失败仍落完后续两行

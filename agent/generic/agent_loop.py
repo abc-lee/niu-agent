@@ -866,7 +866,8 @@ def _estimate_usage_ratio(messages) -> float | None:
         return None
 
 
-# 压缩完成提示（spec §提示文案定稿——只此一句，纯内存不落库）
+# 压缩完成提示（spec §提示文案定稿——只此一句；落库 + 内存追加双通道：DB 落库序尾
+# =压缩完成，重组内存追加供本轮可见）
 _COMPRESSION_DONE_HINT = "[系统提示] 上下文压缩已完成。"
 
 
@@ -915,14 +916,13 @@ def _rebuild_messages_after_compact(orig_messages, ctx, summary_text: str) -> li
     1. 从视图剥离**最后单元**（其 user 起点 → 尾：与 orig_messages 尾部对齐识别；
        首轮=当前 user 指令；轮间=当前 continuation 单元）
     2. 视图主体 = [system]+[索引]+[剥离后的窗口]
-    3. 追加 总结（assistant，恒单份：生产路径总结先落库后在剥离段尾，从 stripped
-       抽出原文置此；否则视图主体去重后 append）→ 完成提示（user 纯内存）→ **待执行单元**（末）
-    4. 未落库尾引导（supplement/next_prompt，DB 无）在待执行单元后继续补——
-       但引导实际是轮末 append 在消息流中、语义上应先于待执行内容，故引导放
-       完成提示后、待执行单元前（R4 修订：引导是"系统给模型的提示"，模型应先
-       见提示再执行原指令）
+    3. 追加三件套（内存构造，非 DB 重读——与 T2 落库共用 _triplet_messages，
+       两侧同构）：user _SUMMARY_PROMPT → assistant summary_text（空则跳）→
+       user 完成提示。总结仅由本通道 + DB 落库通道各供一份（恒单份）
+    4. 未落库尾引导（supplement/next_prompt，DB 无）——引导实际是轮末 append 在
+       消息流中、语义上应先于待执行内容，故放三件套后、待执行单元前
 
-    顺序：[视图主体] + [总结] + [完成提示] + [未落库尾引导] + [待执行单元(最后)]
+    顺序：[视图主体] + [三件套] + [未落库尾引导] + [待执行单元(最后)]
     """
     system = orig_messages[0] if orig_messages and orig_messages[0].get("role") == "system" else None
     compacted = ctx._last_compacted_view or []
@@ -936,6 +936,9 @@ def _rebuild_messages_after_compact(orig_messages, ctx, summary_text: str) -> li
     window_user_contents = {
         m.get("content") for m in window if m.get("role") == "user"
     }
+    # 防御声明（spec 3.6）：三件套 user 行 content（_SUMMARY_PROMPT/_COMPRESSION_DONE_HINT
+    # 常量）永不得进本集合——剥离只从 _last_compacted_view 切（本就无三件套），
+    # Approach A 结构性保证；三件套在剥离**之后** append → 不可能被误当待执行单元。
     pending_start = -1
     for i in range(len(orig_messages) - 1, -1, -1):
         m = orig_messages[i]
@@ -965,27 +968,13 @@ def _rebuild_messages_after_compact(orig_messages, ctx, summary_text: str) -> li
     if system is not None:
         new_msgs.append(system)
     new_msgs.extend(window)
-    # 总结（assistant，恒单份、置完成提示前）。P1 修正（Task 5 quality）：生产路径
-    # 总结先落库再读 DB → 总结行（role=assistant）在待执行单元尾（窗口尾），随
-    # stripped 剥走——不抽出则下面会再 append 一份（双份总结），且末条变总结而非
-    # 指令链尾（破"原指令最后"不变式）。故：优先从 stripped 抽出原文（与 DB 一致）
-    # 放完成提示前；stripped 无总结时走旧逻辑（视图主体去重后 append）。
-    if summary_text:
-        _target = summary_text.strip()
-        _extracted = None
-        for i, m in enumerate(stripped):
-            if m.get("role") == "assistant" and (m.get("content") or "").strip() == _target:
-                _extracted = stripped.pop(i)
-                break
-        if _extracted is not None:
-            new_msgs.append(_extracted)  # DB 原文，单份
-        elif not any(
-            m.get("role") == "assistant" and (m.get("content") or "").strip() == _target
-            for m in new_msgs
-        ):
-            new_msgs.append({"role": "assistant", "content": summary_text})
-    # 完成提示（纯内存注入，不落库）
-    new_msgs.append({"role": "user", "content": _COMPRESSION_DONE_HINT})
+    # 三件套（Approach A——内存构造，非 DB 重读；与 T2 落库共用 _triplet_messages，
+    # 两侧同构）：user _SUMMARY_PROMPT → assistant summary_text（空则跳）→ user
+    # 完成提示。总结仅由本通道 + DB 落库通道各供一份（恒单份）。旧"从 stripped 抽
+    # 总结防双份"逻辑已删（spec 3.2 P2-1：生产路径总结恒在压实后落库，
+    # _last_compacted_view 永不含本轮总结；剥离段只从无三件套的视图切 →
+    # 结构性不会误剥/双份）。
+    new_msgs.extend(_triplet_messages(summary_text))
     # 未落库尾引导（R6 修订）：orig 中 content **不在窗口**的尾部连续 user
     # （supplement/next_prompt/动态块，DB 无）——它们可能在待执行起点之后
     # （消息流最后 append）。反向收集：遇到 content 在窗口（已 persist）的 user
@@ -1051,9 +1040,11 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
 
     调用链（回调契约）：agent_runner_loop 门内只调 on_compression_request(messages, turn)
     回调（runner 提供）；runner 的 _on_compression_request 构造 ctx 后调本函数——
-    门不经手 ctx。执行顺序：提炼前置 → 模型承上启下总结（落库 bypass+skip_mirror）
-    → 机械压实（DB 全量 build_compact_view）→ 消息重组（单元感知：待执行单元最后 +
-    完成提示纯内存注入）。各步进度通知经 notify_compact_status_sync（本函数同步不能 yield）。
+    门不经手 ctx。执行顺序：提炼前置 → 模型承上启下总结（仅内存，不落库）
+    → 机械压实（DB 全量 build_compact_view）→ 压实成功后落库三件套
+    （bypass+skip_mirror，_persist_compression_triplet）→ 消息重组（单元感知：
+    待执行单元最后 + 三件套内存追加）。各步进度通知经 notify_compact_status_sync
+    （本函数同步不能 yield）。
 
     闩锁语义（R6-A P2-1 滞回 + FinalReview B-P3-1 条件化）：失败/早退出口按
     release_on_failure 条件解闩——仅当调用方本轮确实 try_acquire 过才 release
@@ -1095,13 +1086,11 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
         _release_if_acquired()
         _notify_compact_progress("done", mode="auto")  # 终态必推，防前端圆环卡死
         return messages, False
-    # 步骤 2：模型承上启下总结
+    # 步骤 2：模型承上启下总结（仅内存——三件套落库统一在压实成功后，spec 3.2）
     summary_text = ""
     try:
         _notify_compact_progress("started", mode="summary")
         summary_text = _run_summary_llm(messages, client)
-        if summary_text:
-            _persist_summary_without_extract(ctx, summary_text)
     except Exception as e:
         logger.warning(f"[Compression] 总结步失败（跳过总结仍压实）: {e}")
     # 步骤 3：机械压实（DB 全量）
@@ -1117,6 +1106,9 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
         _release_if_acquired()  # B-P3-1：条件解闩（仅本轮 acquire 过）；成功路径不解
         _notify_compact_progress("done", mode="auto")
         return messages, False
+    # 三件套落库（spec 3.2 步骤 3——压实成功后才执行 → 落在保留窗口尾，不被本次
+    # 压实归档；压实失败已早退 → 不落，防"宣称完成但未压缩"）
+    _persist_compression_triplet(ctx, summary_text)
     # R6-A P2-1 / R7-A P1 滞回（修正）：压实成功——门在 gate_hit 时已统一
     # AUTO_GATE.try_acquire 闩锁（含 manual，见 agent_runner_loop 门）。压后估算回落
     # < 复位线才 release（供下轮重检）；仍 ≥ 触发线 → 保持闩锁，本 loop 内不再
@@ -1132,8 +1124,28 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
         # else：未回落 → 保持闩锁（本函数不 release，天然滞回）
     except Exception:
         pass  # release 失败无害（/new 兜底复位）
-    # 步骤 4：重组 messages（单元感知）
-    new_msgs = _rebuild_messages_after_compact(messages, ctx, summary_text)
+    # 步骤 4：重组 messages（单元感知）。P1-3：压实+落库已成功 → did=True 固定，
+    # 重组异常不翻转——只降级为"压实视图 + 手工完成提示"，绝不返回"未压缩"→
+    # 防门误判 manual 重设 → 下轮重复压缩双份三件套。
+    try:
+        new_msgs = _rebuild_messages_after_compact(messages, ctx, summary_text)
+    except Exception as e:
+        logger.exception(f"[Compression] 重组失败，降级为压实视图（保留 system 行）+ 完成提示: {e}")
+        # 保留 system 行在 [0]：门后重跑 on_before_llm 依赖 messages[0].role == "system"
+        # （否则 _assemble_system_message 早退返回 "" → 该次及同 run 后续轮全无 system）。
+        # on_before_llm 只原地刷新该行 content、从不插新 system 行 → 无双 system 风险。
+        new_msgs = list(ctx._last_compacted_view or [])
+        # 手工把完成提示插到最后一个 user 之前——防破"原指令最后"不变式
+        _insert_at = None
+        for i in range(len(new_msgs) - 1, -1, -1):
+            if new_msgs[i].get("role") == "user":
+                _insert_at = i
+                break
+        if _insert_at is not None:
+            new_msgs.insert(_insert_at, {"role": "user", "content": _COMPRESSION_DONE_HINT})
+        else:
+            new_msgs.append({"role": "user", "content": _COMPRESSION_DONE_HINT})
+    # done 通知两路径必推（成功与降级）——防前端圆环卡死
     _notify_compact_progress("done", mode="auto")
     return new_msgs, True
 
@@ -1169,11 +1181,54 @@ def _run_summary_llm(messages, client) -> str:
         return ""
 
 
-def _persist_summary_without_extract(ctx, summary_text: str) -> str | None:
-    """总结落库：bypass @ 提取 + skip_mirror（spec §消息形态 风险 C）。
+def _triplet_messages(summary_text: str) -> list[dict]:
+    """压缩产物三件套消息构造（T2 落库与 T3 内存追加共用——两侧同构，spec 3.6）。
 
+    序 = [user _SUMMARY_PROMPT][assistant summary_text（空则跳）][user _COMPRESSION_DONE_HINT]。
+    空总结只两条——防空 content="" assistant 行进 client.chat 致 provider 400
+    （总结失败降级场景，spec 3.4）。
+    """
+    msgs: list[dict] = [{"role": "user", "content": _SUMMARY_PROMPT}]
+    if summary_text:
+        msgs.append({"role": "assistant", "content": summary_text})
+    msgs.append({"role": "user", "content": _COMPRESSION_DONE_HINT})
+    return msgs
+
+
+def _persist_compression_triplet(ctx, summary_text: str) -> None:
+    """三件套落库（spec 3.2 步骤 3——压实成功后调用）：全行 skip_mirror + bypass_at_extract。
+
+    各行独立：单行返回 None（写失败）→ warning 累积，不阻断后续行；完成行（最后
+    一条）失败提级显著 warning（P2-3：本轮可见性由重组无条件内存追加天然满足，
+    不做条件化——DB 缺完成行仅影响下轮组装，罕见 DB 故障可接受）。
+    """
+    _rows = _triplet_messages(summary_text)
+    for i, m in enumerate(_rows):
+        try:
+            _res = ctx._sync_add_message(
+                role=m["role"], content=m["content"],
+                skip_mirror=True, bypass_at_extract=True,
+            )
+        except Exception as e:
+            logger.warning(f"[Compression] 三件套落库第 {i + 1} 行（{m['role']}）异常: {e}")
+            continue
+        if _res is None:
+            if i == len(_rows) - 1:
+                logger.warning(
+                    "[Compression] 三件套完成行（压缩完成提示）DB 写失败——本轮内存视图仍含"
+                    "完成提示，但下轮 DB 组装将缺该行（罕见 DB 故障，可接受）"
+                )
+            else:
+                logger.warning(f"[Compression] 三件套落库第 {i + 1} 行（{m['role']}）返回 None（写失败），继续后续行")
+
+
+def _persist_summary_without_extract(ctx, summary_text: str) -> str | None:
+    """总结 assistant 行落库的薄包装（T2 后生产调用点已移至 _persist_compression_triplet）。
+
+    bypass @ 提取 + skip_mirror（spec §消息形态 风险 C）。保留本函数为既有
+    import/断言引用点存活（P1-1 最小破坏）：只落 assistant 行（summary 非空时）。
     ctx = 压缩上下文鸭子对象（R1-B P1-2），须含 _sync_add_message。
-    空文本早退不落库（Task 3/4 quality P3）——空 assistant 行会污染历史视图。
+    空文本早退不落库——空 assistant 行会污染历史视图。
     """
     if not summary_text:
         return None
