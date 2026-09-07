@@ -32,13 +32,13 @@ TOOL_SCHEMAS = {
     },
     "set_llm_config": {
         "name": "set_llm_config",
-        "description": "Set LLM configuration. Use preset_id to load a preset, or provide individual values.",
+        "description": "Set LLM configuration. preset_id loads a named config from llm-configs.json: the entry's llm AND lightrag_llm sections wholly replace the current ones (a true config switch), other parameters are ignored. Without preset_id, modifies individual fields and auto-syncs the named collection entry (two-section snapshot) when llm.presetId is set; a damaged collection file is never overwritten (sync skipped with a warning).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset_id": {
                     "type": "string",
-                    "description": "Preset ID to load (e.g., 'openai', 'anthropic', 'deepseek')",
+                    "description": "Named config to load from llm-configs.json (name = llm.presetId). Loading replaces both llm and lightrag_llm sections; other parameters are ignored.",
                 },
                 "api_key": {"type": "string", "description": "API key"},
                 "api_base": {"type": "string", "description": "API base URL"},
@@ -54,9 +54,9 @@ TOOL_SCHEMAS = {
             },
         },
     },
-    "list_llm_presets": {
-        "name": "list_llm_presets",
-        "description": "List all available LLM presets.",
+    "list_llm_configs": {
+        "name": "list_llm_configs",
+        "description": "List all named LLM configs from llm-configs.json (name + model/apiBase summary). Returns an empty list with a warning if the collection file is damaged.",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -80,13 +80,13 @@ TOOL_SCHEMAS = {
     },
     "set_lightrag_llm_config": {
         "name": "set_lightrag_llm_config",
-        "description": "Set LightRAG LLM configuration. If model is set to empty string, removes the lightrag_llm section so that LightRAG falls back to the main LLM configuration.",
+        "description": "Set LightRAG LLM configuration. preset_id loads only the entry's lightrag_llm section from llm-configs.json (other parameters are ignored). Without preset_id, modifies individual fields and auto-syncs the named collection entry when llm.presetId is set (a damaged collection file is never overwritten). If model is set to empty string, removes the lightrag_llm section so that LightRAG falls back to the main LLM configuration (also synced).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset_id": {
                     "type": "string",
-                    "description": "Preset ID to load for LightRAG LLM",
+                    "description": "Named config whose lightrag_llm section to load from llm-configs.json",
                 },
                 "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
                 "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
@@ -338,10 +338,10 @@ def get_tool_schemas() -> list[dict]:
 
 # Config paths
 # user-config.json 读写 ~/.niu/config/（首次启动由 niu_api.config 复制模板）
-# llm-presets.json 只读，仍从 bundle 内读（load_presets 只读不写）
+# llm-configs.json = 用户命名配置合集（与 user-config.json 同目录；键=配置名=llm.presetId）
 CONFIG_DIR = Path(os.path.expanduser("~")) / ".niu" / "config"
 USER_CONFIG_PATH = CONFIG_DIR / "user-config.json"
-PRESETS_PATH = Path(__file__).parent.parent.parent.parent.parent / "config" / "llm-presets.json"
+LLM_CONFIGS_PATH = CONFIG_DIR / "llm-configs.json"
 
 
 # Memory paths (in user home)
@@ -464,12 +464,55 @@ def save_memory(memory: dict[str, Any]) -> None:
         raise
 
 
-def load_presets() -> list[dict[str, Any]]:
-    """Load LLM presets."""
-    if PRESETS_PATH.exists():
-        data = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
-        return data.get("presets", [])
-    return []
+def load_named_configs() -> dict[str, Any]:
+    """Load named LLM config collection (~/.niu/config/llm-configs.json).
+
+    返回 {"<配置名>": {"llm": {...}, "lightrag_llm": {...}}} 字典。
+    文件不存在 = 空合集（返回 {}）；JSON 损坏时抛异常，由调用方区分处理
+    （读侧展示降级 / 写侧跳过保护两条路径各自 catch）。
+    """
+    if not LLM_CONFIGS_PATH.exists():
+        return {}
+    data = json.loads(LLM_CONFIGS_PATH.read_text(encoding="utf-8"))
+    return data.get("configs", {})
+
+
+def _sync_named_config(config: dict[str, Any]) -> Optional[str]:
+    """写后同步：保存时刻重读合集，单条 upsert 当前 llm+lightrag_llm 两段快照。
+
+    仅当 llm.presetId 非空时同步；合集 JSON 损坏 → 跳过写并返回 warning 文案
+    （防"损坏=空合集"整体覆写销毁全部条目）；无需同步/同步成功 → None。
+    """
+    name = config.get("llm", {}).get("presetId", "")
+    if not name:
+        return None
+    try:
+        configs = load_named_configs()
+    except Exception as e:
+        logger.warning(f"llm-configs.json 损坏，跳过写后同步: {e}")
+        return "配置合集文件损坏未同步"
+    configs[name] = {
+        "llm": config.get("llm", {}),
+        "lightrag_llm": config.get("lightrag_llm", {}),
+    }
+    # 原子写：tmp + replace（reader 永远看到完整文件）
+    LLM_CONFIGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(LLM_CONFIGS_PATH.parent),
+        prefix=LLM_CONFIGS_PATH.name + ".",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"configs": configs}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, LLM_CONFIGS_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return None
 
 
 def get_llm_config() -> dict[str, Any]:
@@ -494,24 +537,52 @@ def set_llm_config(
     llm_type: str = None,
     reasoning_effort: str = None,
 ) -> dict[str, Any]:
-    """Set LLM configuration."""
-    config = load_user_config()
-    llm = config.get("llm", {})
+    """Set LLM configuration.
 
-    # If preset_id is provided, load from presets
+    preset_id 加载型：从 llm-configs.json 整条加载命名配置——条目的
+    {llm, lightrag_llm} 两段整体替换 user-config.json 对应段（真"切换配置"），
+    其余参数忽略并在结果中说明；跳过写后同步（刚读自合集，对齐是幂等 no-op）。
+    不带 preset_id = 逐项修改型：写 user-config.json 后，llm.presetId 非空时
+    写后同步——保存时刻重读合集，单条 upsert 该名条目 = 两段完整快照。
+    """
+    config = load_user_config()
+
+    # preset_id 加载型：整条加载 = 段级整体替换
     if preset_id:
-        presets = load_presets()
-        for preset in presets:
-            if preset.get("id") == preset_id:
-                llm["presetId"] = preset_id
-                llm["apiBase"] = preset.get("apiBase", "")
-                llm["model"] = preset.get("model", "")
-                llm["type"] = preset.get("type", "openai")
-                # Clear reasoning_effort when switching presets (presets don't specify this)
-                # User can re-set reasoning_effort after choosing a preset
-                if reasoning_effort is None:
-                    llm.pop("reasoning_effort", None)
-                break
+        try:
+            configs = load_named_configs()
+        except Exception as e:
+            logger.warning(f"llm-configs.json 损坏，加载失败: {e}")
+            return {"status": "error", "message": "配置合集文件损坏，无法加载"}
+        entry = configs.get(preset_id)
+        if entry is None:
+            return {"status": "error", "message": f"配置 '{preset_id}' 不存在"}
+        if not isinstance(entry, dict):
+            return {"status": "error", "message": f"配置 '{preset_id}' 格式损坏"}
+        llm = dict(entry.get("llm", {}))
+        # presetId 归一化为键值（防手工编辑的畸形条目把 user-config.presetId 带偏）
+        llm["presetId"] = preset_id
+        config["llm"] = llm
+        config["lightrag_llm"] = dict(entry.get("lightrag_llm", {}))
+        save_user_config(config)
+        result: dict[str, Any] = {"status": "updated", "llm": get_llm_config()}
+        ignored = [
+            name
+            for name, value in (
+                ("api_key", api_key),
+                ("api_base", api_base),
+                ("model", model),
+                ("llm_type", llm_type),
+                ("reasoning_effort", reasoning_effort),
+            )
+            if value is not None
+        ]
+        if ignored:
+            result["message"] = "preset_id 加载已忽略其余参数: " + ", ".join(ignored)
+        return result
+
+    # 逐项修改型
+    llm = config.get("llm", {})
 
     # Override with explicit values
     if api_key is not None:
@@ -528,7 +599,11 @@ def set_llm_config(
     config["llm"] = llm
     save_user_config(config)
 
-    return {"status": "updated", "llm": get_llm_config()}
+    result = {"status": "updated", "llm": get_llm_config()}
+    warning = _sync_named_config(config)
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def get_lightrag_llm_config() -> dict[str, Any]:
@@ -568,6 +643,7 @@ def set_lightrag_llm_config(
 
     If model is set to empty string, removes model-specific fields
     but preserves reasoning_effort 和 max_tokens（均为独立维度）.
+    model='' 清空分支优先于 preset_id 加载分支（矛盾输入时清空生效）。
     """
     config = load_user_config()
 
@@ -590,20 +666,45 @@ def set_lightrag_llm_config(
         else:
             config.pop("lightrag_llm", None)
         save_user_config(config)
-        return {"status": "cleared", "message": "LightRAG model cleared, will use main LLM model"}
+        result: dict[str, Any] = {"status": "cleared", "message": "LightRAG model cleared, will use main LLM model"}
+        warning = _sync_named_config(config)
+        if warning:
+            result["warning"] = warning
+        return result
 
-    lightrag_llm = config.get("lightrag_llm", {})
-
-    # If preset_id is provided, load from presets
+    # preset_id 加载型：只替换 lightrag_llm 段，其余参数忽略并在结果中说明；跳过写后同步
     if preset_id:
-        presets = load_presets()
-        for preset in presets:
-            if preset.get("id") == preset_id:
-                lightrag_llm["presetId"] = preset_id
-                lightrag_llm["apiBase"] = preset.get("apiBase", "")
-                lightrag_llm["model"] = preset.get("model", "")
-                lightrag_llm["type"] = preset.get("type", "openai")
-                break
+        try:
+            configs = load_named_configs()
+        except Exception as e:
+            logger.warning(f"llm-configs.json 损坏，加载失败: {e}")
+            return {"status": "error", "message": "配置合集文件损坏，无法加载"}
+        entry = configs.get(preset_id)
+        if entry is None:
+            return {"status": "error", "message": f"配置 '{preset_id}' 不存在"}
+        if not isinstance(entry, dict):
+            return {"status": "error", "message": f"配置 '{preset_id}' 格式损坏"}
+        config["lightrag_llm"] = dict(entry.get("lightrag_llm", {}))
+        save_user_config(config)
+        result = {"status": "updated", "lightrag_llm": get_lightrag_llm_config()}
+        ignored = [
+            name
+            for name, value in (
+                ("api_key", api_key),
+                ("api_base", api_base),
+                ("model", model),
+                ("llm_type", llm_type),
+                ("reasoning_effort", reasoning_effort),
+                ("max_tokens", max_tokens),
+            )
+            if value is not None
+        ]
+        if ignored:
+            result["message"] = "preset_id 加载已忽略其余参数: " + ", ".join(ignored)
+        return result
+
+    # 逐项修改型
+    lightrag_llm = config.get("lightrag_llm", {})
 
     # Override with explicit values
     if api_key is not None:
@@ -625,17 +726,36 @@ def set_lightrag_llm_config(
     config["lightrag_llm"] = lightrag_llm
     save_user_config(config)
 
-    return {"status": "updated", "lightrag_llm": get_lightrag_llm_config()}
+    result = {"status": "updated", "lightrag_llm": get_lightrag_llm_config()}
+    warning = _sync_named_config(config)
+    if warning:
+        result["warning"] = warning
+    return result
 
 
-def list_presets() -> list[dict[str, Any]]:
-    """List all available LLM presets."""
-    return load_presets()
+def list_llm_configs() -> dict[str, Any]:
+    """List all named LLM configs from the collection.
 
-
-# Alias: TOOL_SCHEMAS registers this tool as "list_llm_presets",
-# so register_server() needs a module attribute with that exact name.
-list_llm_presets = list_presets
+    返回 {"configs": [{"name", "model", "apiBase"}]}，供 Agent 发现可用配置。
+    合集损坏 → 读侧降级：空列表 + warning 字段。
+    """
+    try:
+        configs = load_named_configs()
+    except Exception as e:
+        logger.warning(f"llm-configs.json 损坏，按空合集降级: {e}")
+        return {"configs": [], "warning": "配置合集文件损坏"}
+    return {
+        "configs": [
+            {
+                "name": name,
+                "model": entry.get("llm", {}).get("model", ""),
+                "apiBase": entry.get("llm", {}).get("apiBase", ""),
+            }
+            for name, entry in configs.items()
+            # 畸形条目（手工编辑成非对象）跳过，不抛 AttributeError
+            if isinstance(entry, dict)
+        ]
+    }
 
 
 def test_llm_connection() -> dict[str, Any]:
@@ -1031,13 +1151,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="set_llm_config",
-            description="Set LLM configuration. Use preset_id to load a preset, or provide individual values.",
+            description="Set LLM configuration. preset_id loads a named config from llm-configs.json (replaces both llm and lightrag_llm sections; other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "preset_id": {
                         "type": "string",
-                        "description": "Preset ID to load (e.g., 'openai', 'anthropic', 'deepseek')",
+                        "description": "Named config to load from llm-configs.json (name = llm.presetId)",
                     },
                     "api_key": {"type": "string", "description": "API key"},
                     "api_base": {"type": "string", "description": "API base URL"},
@@ -1054,8 +1174,8 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="list_llm_presets",
-            description="List all available LLM presets.",
+            name="list_llm_configs",
+            description="List all named LLM configs from llm-configs.json (name + model/apiBase summary).",
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
@@ -1070,13 +1190,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="set_lightrag_llm_config",
-            description="Set LightRAG LLM configuration. If model='', clears the section (falls back to main llm).",
+            description="Set LightRAG LLM configuration. preset_id loads only the entry's lightrag_llm section from llm-configs.json (other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry. If model='', clears the section (falls back to main llm).",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "preset_id": {
                         "type": "string",
-                        "description": "Preset ID to load for LightRAG LLM",
+                        "description": "Named config whose lightrag_llm section to load from llm-configs.json",
                     },
                     "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
                     "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
@@ -1321,8 +1441,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 llm_type=arguments.get("llm_type"),
                 reasoning_effort=arguments.get("reasoning_effort"),
             )
-        elif name == "list_llm_presets":
-            result = list_presets()
+        elif name == "list_llm_configs":
+            result = list_llm_configs()
         elif name == "test_llm_connection":
             result = test_llm_connection()
         elif name == "get_lightrag_llm_config":

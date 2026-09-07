@@ -84,11 +84,22 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 
 **缺省值已显式列出**：系统默认 `read_timeout: 300`（秒）。首次运行时按上述示例写入即可；后续需要调整（如模型响应慢调大、卡顿调小），建议通过设置窗口操作（改后主对话/子 Agent 链路**重启 Niu** 生效；知识图谱 LLM 调用**下次操作即时生效**）。
 
+**配置双文件模型（`user-config.json` + `llm-configs.json`）**：
+
+LLM 配置由两个文件组成：
+
+- `~/.niu/config/user-config.json`（**主**，当前生效配置）——`llm` / `lightrag_llm` 两段。
+- `~/.niu/config/llm-configs.json`（**辅**，命名配置合集）——键 = 配置名（= `llm.presetId`），每条目 = `llm` + `lightrag_llm` 两段快照。
+
+**主 Agent 修改配置时必须两个文件一起改**：改 `user-config.json` 对应段的同时，必须同步修改合集中同 `presetId` 名字的条目。经 config-manager 工具（`set_llm_config` / `set_lightrag_llm_config`）修改时工具自动同步（机制保证，无需手工双改）；直接编辑文件时必须手工双改，否则合集条目与当前生效配置漂移。
+
+**一致性收敛规则**：以 `user-config.json` 为主——设置窗口下次"测试并保存"或 config-manager 下次 set 时，合集同名条目自动对齐为 `user-config.json` 的两段内容。
+
 **字段说明**：
 
 | 字段 | 说明 |
 |------|------|
-| `presetId` | 预设 ID，对应 llm-presets.json 中的预设 |
+| `presetId` | 配置名（命名配置的名字，对应 `~/.niu/config/llm-configs.json` 合集中的条目键） |
 | `apiKey` | 你的 API Key |
 | `apiBase` | API 端点基础地址（不含路径后缀，LiteLLM 会自动追加：openai 类型追加 `/chat/completions`，anthropic 类型追加 `/v1/messages`） |
 | `model` | 模型名称 |
@@ -132,28 +143,7 @@ LightRAG 继承：`lightrag_llm.model` 为空 = 继承主 llm（设置页只显�
 
 **Agent 引导指引**：用户要求"给模型配置加某个请求头"时，静态值（Referer、鉴权头、固定追踪头）直接引导走本节 `litellm_kwargs.extra_headers`；会话亲和头（`x-session-id`/`x-opencode-session`）**无需配置**——程序按域名表自动注入，不要用写死的值硬凑语义。用户网关走反代、apiBase 域名不命中时，引导用 `sticky_session_headers` 列表态显式启用。
 
-**预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
-
-当前内置预设包括：
-
-| 预设 ID | 名称 | 类型 |
-|---------|------|------|
-| `openai` | OpenAI GPT-4o Mini | openai |
-| `openai-gpt4` | OpenAI GPT-4o | openai |
-| `anthropic` | Anthropic Claude 3.5 Sonnet | anthropic |
-| `anthropic-haiku` | Anthropic Claude 3.5 Haiku | anthropic |
-| `deepseek` | DeepSeek Chat | openai |
-| `deepseek-reasoner` | DeepSeek R1 | openai |
-| `qwen` | 通义千问 | openai |
-| `qianfan` | 百度千帆 | openai |
-| `doubao` | 豆包 | openai |
-| `moonshot` | Moonshot (Kimi) | openai |
-| `glm` | 智谱 GLM-4 Flash | openai |
-| `minimax` | MiniMax M2 | openai |
-| `minimax-anthropic` | MiniMax M2.7 (Anthropic API) | anthropic |
-| `minimax-anthropic-highspeed` | MiniMax M2.7 高速版 (Anthropic API) | anthropic |
-| `ollama` | Ollama 本地 | openai |
-| `custom` | 自定义 | openai |
+**命名配置（选择设置）**：原内置模型预设表已退役删除。现在模型配置经设置窗口"选择设置"保存为**命名配置**，合集存于 `~/.niu/config/llm-configs.json`——键 = 配置名（= `llm.presetId`），每条目 = `llm` + `lightrag_llm` 两段完整快照。在"选择设置"输入框输入新名字即保存当前配置为新条目；从下拉选择已有配置名则整条加载切换（两段同时回填）。常用端点配置示例见下方"火山方舟(Ark)端点配置说明"及各厂商配置示例。
 
 **火山方舟(Ark)端点配置说明**
 
@@ -268,7 +258,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 | 字段 | 说明 | 建议值 |
 |------|------|--------|
-| `presetId` | 预设 ID，对应 llm-presets.json 中的预设 | `doubao`（豆包，轻量快速） |
+| `presetId` | 配置名（命名配置的名字，对应 `~/.niu/config/llm-configs.json` 合集中的条目键） | `doubao`（豆包，轻量快速） |
 | `apiKey` | API Key。为空时自动继承 `llm` 段的 apiKey | 空（继承主配置） |
 | `apiBase` | API 端点地址。为空时自动继承 `llm` 段的 apiBase | 空（继承主配置） |
 | `model` | 模型名称。为空时使用主 Agent 同一模型 | `doubao-seed-2.0-pro`（Coding Plan 别名）或 `doubao-seed-2-0-pro-260215`（标准端点全名） |
@@ -812,8 +802,8 @@ macOS 下构造 `niu.app` bundle（`Info.plist` 含 `LSUIElement=true`），Find
 
 | 位置 | 原文 | 修正后 |
 |------|------|--------|
-| 8.2 LLM 预设表 | `minimax` 对应模型名 "MiniMax" | 修正为 "MiniMax M2"（与 llm-presets.json 中 model 字段一致） |
-| 8.2 LLM 预设表 | `minimax-anthropic-highspeed` 描述 "MiniMax M2.7 高速版" | 修正为 "MiniMax M2.7 高速版 (Anthropic API)"（与实际 preset description 一致） |
+| 1.2 LLM 命名配置 | `minimax` 对应模型名 "MiniMax" | 修正为 "MiniMax M2"（与实际 model 字段一致；内置预设表后已退役，配置改为命名配置合集） |
+| 1.2 LLM 命名配置 | `minimax-anthropic-highspeed` 描述 "MiniMax M2.7 高速版" | 修正为 "MiniMax M2.7 高速版 (Anthropic API)"（与实际配置描述一致） |
 | 8.2 apiBase 说明 | "含 `/chat/completions` 后缀" | 补充说明：openai 类型含 `/chat/completions`，anthropic 类型含 `/v1/messages` |
 | 8.3 存储位置 | "工作目录下的 LightRAG 数据文件（由 workspace.path 决定）" | 修正为 `~/.niu/lightrag_storage/`（LightRAG 固定路径，不随 workspace 变化） |
 | 8.3 查询方式 | 仅提到"可视化界面浏览" | 补充具体 API 端点：`/api/kg/snapshot`、`/api/kg/explore` |

@@ -258,7 +258,7 @@ cd ui/main && npm install && cd ../..
 # 5. 编译并启动 Rust 启动器
 cd launcher && cargo run --release
 
-启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。支持的模型预设见 `config/llm-presets.json`，本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
+启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。模型配置经设置窗口保存为命名配置（合集存于 `~/.niu/config/llm-configs.json`），本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
 
 ### 安装说明
 

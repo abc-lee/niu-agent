@@ -12,7 +12,7 @@ tools:
   - name: set_llm_config
     category: write
     short: "设置LLM配置"
-    long: "设置LLM配置(预设或逐项)"
+    long: "设置LLM配置(preset_id 从 llm-configs.json 整条加载命名配置(llm+lightrag_llm 两段),或逐项修改并自动同步合集条目)"
     parameters:
       - name: preset_id
         flag: preset
@@ -30,10 +30,10 @@ tools:
         flag: type
         type: string
 
-  - name: list_llm_presets
+  - name: list_llm_configs
     category: read
-    short: "列出LLM预设"
-    long: "列出所有LLM预设"
+    short: "列出LLM命名配置"
+    long: "列出配置合集 llm-configs.json 中的所有命名配置"
     parameters: []
 
   - name: test_llm_connection

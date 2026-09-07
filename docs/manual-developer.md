@@ -24,7 +24,7 @@ launcher/           # Rust 启动器（clap + GUI 集成）
 mcp-servers/        # MCP 服务器集群（同进程架构，ToolRegistry 加载）
 im-adapters/        # IM Gateway 适配器（飞书等）
 ui/                 # 前端界面（assistant / settings / graph）
-config/             # 配置文件（user-config / llm-presets / agents / mcp-servers.yaml）
+config/             # 配置文件（user-config / agents / mcp-servers.yaml）
 models/             # 本地模型（bge-base-zh-v1.5 / buffalo_l）
 ```
 

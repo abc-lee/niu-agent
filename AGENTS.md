@@ -349,7 +349,6 @@ schemas = registry.get_schemas()
 | 文件 | 用途 |
 |------|------|
 | `config/user-config.json` | LLM API Key、模型选择 |
-| `config/llm-presets.json` | LLM 预设列表 |
 | `config/agents/niu.md` | 主 Agent 定义（提示词、权限、MCP服务器） |
 | `config/agents/file-processor.md` | 子 Agent 定义（文件处理专用） |
 | `config/mcp-servers.yaml` | MCP 服务器配置（bundle 权威层，随版本升级直读）；用户自定义放 `~/.niu/config/mcp-servers-user.yaml`（deep merge 用户赢，0.3.0 双目录模型） |
@@ -376,6 +375,7 @@ schemas = registry.get_schemas()
 |------|------|
 | `memory.json` | 用户记忆（身份、偏好、工作目录） |
 | `preferences.json` | 存储配置（分类、路径结构、冲突阈值） |
+| `config/llm-configs.json` | LLM 命名配置合集（选择设置保存的命名配置，键=配置名=llm.presetId，条目=llm+lightrag_llm 两段快照） |
 
 ---
 

@@ -10,6 +10,8 @@ const fs = require('fs');
 const os = require('os');
 const url = require('url');
 const http = require('http');
+const { loadNamedConfigs } = require('./lib/named-configs.js');
+const { saveConfigAndCollection } = require('./lib/save-config.js');
 
 const WINDOW_MODE = process.env.NIU_WINDOW || 'assistant';
 
@@ -1218,15 +1220,12 @@ ipcMain.on('open-settings', () => {
 
 // ---------- 来自 ui/settings/main.js（6 个） ----------
 
-// Config paths：user-config.json 写到 ~/.niu/config/（bundle 内只读）
-// llm-presets.json 只读，仍从 bundle 内读
+// Config paths：user-config.json + llm-configs.json（命名配置合集）都写到 ~/.niu/config/
 const niuConfigDir = path.join(os.homedir(), '.niu', 'config');
 if (!fs.existsSync(niuConfigDir)) {
   fs.mkdirSync(niuConfigDir, { recursive: true });
 }
-const bundleConfigDir = path.join(__dirname, '..', '..', 'config');
 const userConfigPath = path.join(niuConfigDir, 'user-config.json');
-const presetsPath = path.join(bundleConfigDir, 'llm-presets.json');  // 只读模板
 
 // 注意：user-config.json 无模板文件设计——文件由设置窗口 save-config 创建。
 // 文件不存在时（首次启动），get-config 返回代码内联标准缺省（与 config-manager
@@ -1234,14 +1233,10 @@ const presetsPath = path.join(bundleConfigDir, 'llm-presets.json');  // 只读�
 // 保证表单初始值和 probe 探测都拿到完整基础配置（reasoning_effort 等），
 // 而不是空骨架 {llm:{}}（2026-07-27 首次启动 probe 失败根因）。
 
-ipcMain.handle('get-presets', () => {
-  try {
-    const data = fs.readFileSync(presetsPath, 'utf-8');
-    return JSON.parse(data).presets;
-  } catch (e) {
-    console.error('Failed to read presets:', e);
-    return [];
-  }
+// 命名配置合集（C3）：~/.niu/config/llm-configs.json → {configs, warning?}
+// 不存在 → {configs:{}}；JSON 损坏 → {configs:{}, warning:"配置合集文件损坏"}（读侧降级）
+ipcMain.handle('get-named-configs', () => {
+  return loadNamedConfigs(niuConfigDir);
 });
 
 ipcMain.handle('get-config', () => {
@@ -1274,39 +1269,37 @@ ipcMain.handle('get-config', () => {
   };
 });
 
-ipcMain.handle('save-config', (event, config) => {
-  try {
-    // Ensure config directory exists
-    if (!fs.existsSync(path.dirname(userConfigPath))) {
-      fs.mkdirSync(path.dirname(userConfigPath), { recursive: true });
+// C2 薄壳：payload = {configName, formValues, probeResults, loadedNamedEntry}
+// 核心逻辑在 lib/save-config.js（双写 + reload 一次）；notifyReload 注入现有 HTTP fire-and-forget。
+ipcMain.handle('save-config', (event, payload) => {
+  const p = (payload && typeof payload === 'object') ? payload : {};
+  return saveConfigAndCollection({
+    niuConfigDir,
+    configName: p.configName,
+    formValues: p.formValues,
+    probeResults: p.probeResults,
+    loadedNamedEntry: p.loadedNamedEntry,
+    notifyReload: () => {
+      // 配置热更新（免重启）：通知后端清除 LLM 缓存（/api/config/reload）。
+      // fire-and-forget——后端不可达时忽略（niu --settings 独立模式），
+      // 后端侧惰性重载兜底（chat.py get_or_create_runner 配置比对 +
+      // lightrag_manager config_key 自动重建）。
+      try {
+        const http = require('http');
+        const port = parseInt(process.env.NIU_API_PORT || '9876');
+        const req = http.request({
+          hostname: '127.0.0.1', port,
+          path: '/api/config/reload', method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+          timeout: 5000
+        });
+        req.on('error', () => { /* 后端不可达——惰性重载兜底 */ });
+        req.on('timeout', () => { req.destroy(); });
+        req.write('{}');
+        req.end();
+      } catch (e) { /* 通知失败不阻塞保存 */ }
     }
-    fs.writeFileSync(userConfigPath, JSON.stringify(config, null, 2));
-    console.log('Config saved to:', userConfigPath);
-
-    // 配置热更新（免重启）：通知后端清除 LLM 缓存（/api/config/reload）。
-    // fire-and-forget——后端不可达时忽略（niu --settings 独立模式），
-    // 后端侧惰性重载兜底（chat.py get_or_create_runner 配置比对 +
-    // lightrag_manager config_key 自动重建）。
-    try {
-      const http = require('http');
-      const port = parseInt(process.env.NIU_API_PORT || '9876');
-      const req = http.request({
-        hostname: '127.0.0.1', port,
-        path: '/api/config/reload', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
-        timeout: 5000
-      });
-      req.on('error', () => { /* 后端不可达——惰性重载兜底 */ });
-      req.on('timeout', () => { req.destroy(); });
-      req.write('{}');
-      req.end();
-    } catch (e) { /* 通知失败不阻塞保存 */ }
-
-    return { success: true };
-  } catch (e) {
-    console.error('Failed to save config:', e);
-    return { success: false, error: e.message };
-  }
+  });
 });
 
 ipcMain.handle('test-connection', async (event, config) => {
