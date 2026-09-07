@@ -897,6 +897,127 @@ def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]
     return messages, False
 
 
+def _f1_has_arrears(f1_path: str | None = None) -> bool:
+    """F1 是否有未提炼内容（非空且首行是记录块）。"""
+    import os
+    from agent.md_mirror import F1_PATH
+    p = f1_path or F1_PATH
+    try:
+        return os.path.exists(p) and os.path.getsize(p) > 0
+    except OSError:
+        return False
+
+
+def _align_f1_sync(store, f1_path: str | None = None) -> None:
+    """executor 线程桥接主事件循环跑 align_f1_with_store（best-effort）。"""
+    try:
+        import asyncio
+        from niu_api.chat import _main_loop
+        from niu_api.md_alignment import align_f1_with_store
+        from agent.md_mirror import F1_PATH
+        loop = _main_loop
+        if loop is None or not loop.is_running():
+            return
+        fut = asyncio.run_coroutine_threadsafe(
+            align_f1_with_store(store, f1_path or F1_PATH), loop)
+        fut.result(timeout=30)
+    except Exception as e:
+        logger.warning(f"[Compression] align_f1 skipped: {e}")
+
+
+def _get_message_store_sync():
+    """executor 线程桥接主循环取 MessageStore（R4-A P2-3：ctx._store 恒 None 时
+    align 用）。失败返回 None（align best-effort 跳过）。"""
+    try:
+        import asyncio
+        from niu_api.chat import _main_loop
+        from agent.session import get_message_store
+        loop = _main_loop
+        if loop is None or not loop.is_running():
+            return None
+        fut = asyncio.run_coroutine_threadsafe(get_message_store(), loop)
+        return fut.result(timeout=10)
+    except Exception:
+        return None
+
+
+def _call_extractor_sync(llm_config, f1_path=None) -> str:
+    """同步调 entity-extractor 提炼 F1（复睡眠管道 _call_entity_extractor_on_f1）。"""
+    try:
+        from niu_api.compat import _call_entity_extractor_on_f1
+        return _call_entity_extractor_on_f1(llm_config, f1_path)
+    except Exception as e:
+        return f"[提炼调用异常: {e}]"
+
+
+def _extractor_guards_pass(result: str) -> bool:
+    """三守卫：overflow/incomplete/failure 任一 → False（不剪 F1）。"""
+    try:
+        from niu_api.compat import (
+            _is_subagent_overflow, _is_subagent_incomplete, _is_subagent_failure,
+        )
+        return not (
+            _is_subagent_overflow(result)
+            or _is_subagent_incomplete(result)
+            or _is_subagent_failure(result)
+        )
+    except Exception:
+        return False
+
+
+def _relay_cut_f1(result: str, f1_path=None) -> None:
+    """解析 processed_line 并剪 F1（复用 compat._parse_and_relay_f1）。"""
+    try:
+        from niu_api.compat import _parse_and_relay_f1
+        _parse_and_relay_f1(result, f1_path)
+    except Exception as e:
+        logger.warning(f"[Compression] relay cut F1 failed: {e}")
+
+
+def _extract_f1_before_compress(messages, ctx) -> bool:
+    """提炼前置（spec §受控压缩流程 a）：F1 欠账提炼入库完成才放行压实。
+
+    executor 线程内同步调用。ctx = 压缩上下文鸭子对象（含 _store/_llm_config）。
+    流程：align F1↔DB → F1 有欠账则调 entity-extractor 提炼（同步阻塞至 @end）
+    → 三守卫通过才剪 F1。
+
+    Returns:
+        True = F1 无欠账或提炼完成（可压实）；False = 提炼失败/未完成（调用方
+        冷却退避不压实——提炼未完绝不压实，防未提炼内容出窗丢失）。
+    """
+    try:
+        from agent.md_mirror import F1_PATH
+        f1_path = getattr(ctx, "_f1_path", None) or F1_PATH
+        # align（best-effort，F1 与 DB 对齐防剪错前缀）——R4-A P2-3 修订：
+        # ctx._store 恒 None（runner 无 _store 属性）时经主循环 get_message_store 取，
+        # 否则生产路径 align 从不执行 → /clear 后 F1/DB 漂移会剪错前缀（本工程要防的失效）
+        store = getattr(ctx, "_store", None)
+        if store is None:
+            try:
+                store = _get_message_store_sync()
+            except Exception as e:
+                logger.warning(f"[Compression] align store unavailable: {e}")
+                store = None
+        if store is not None:
+            _align_f1_sync(store, f1_path)
+        if not _f1_has_arrears(f1_path):
+            return True
+        llm_config = getattr(ctx, "_llm_config", None)
+        if llm_config is None:
+            logger.warning("[Compression] 无 llm_config，跳过提炼前置（按无欠账放行）")
+            return True
+        result = _call_extractor_sync(llm_config, f1_path)
+        logger.info(f"[Compression] entity-extractor result: {str(result)[:200]}")
+        if not _extractor_guards_pass(result):
+            logger.warning("[Compression] 提炼未正常完成 — F1 不剪切，不压实（残留睡眠管道补提炼）")
+            return False
+        _relay_cut_f1(result, f1_path)
+        return True
+    except Exception as e:
+        logger.exception(f"[Compression] 提炼前置异常: {e}")
+        return False
+
+
 def compaction_trigger_ratio_local() -> float:
     """压实触发线（发送前达线判定用）。惰性导入防环。"""
     try:
@@ -916,12 +1037,29 @@ def _gate_release_if_acquired(acquired: bool) -> None:
             pass
 
 
+# 提炼失败冷却（R1/R3 修订）：提炼失败后冷却期内不重试提炼——防长任务每次发送前
+# 都重试分钟级 entity-extractor（停顿风暴）。残留 F1 由睡眠管道补提炼。
+# R3-A P2-1：用 monotonic 时间而非 turn 计数——turn 每次 agent_runner_loop 归零，
+# turn 键会让失败冷却跨会话泄漏（会话B 前 N 轮全跳过压缩）；时间键随真实流逝冷却。
+_EXTRACT_RETRY_COOLDOWN_SECONDS = 600.0  # 10 分钟冷却（替代轮数制）
+import time as _time
+_extract_failed_at_ts: float = -10**18  # 模块级：上次提炼失败 monotonic 时间戳
+
+
 def _extract_cooldown_active() -> bool:
-    """提炼失败冷却是否生效（桩——Task 3 落定真实时间键实现；Task 2 先占位 False
-    使门测试可独立跑通：manual 意图测试不触发冷却分支（无提炼失败），R7-A P2 修正——
-    冷却引用从 Task 2 起就在门代码内，函数必须在 Task 2 阶段可 import）。
-    Task 3 将替换为时间键版（monotonic 10 分钟）。"""
-    return False
+    """提炼失败冷却是否生效（距上次失败 < 冷却秒数）。覆盖 Task 2 桩。"""
+    return (_time.monotonic() - _extract_failed_at_ts) < _EXTRACT_RETRY_COOLDOWN_SECONDS
+
+
+def _mark_extract_failed() -> None:
+    global _extract_failed_at_ts
+    _extract_failed_at_ts = _time.monotonic()
+
+
+def _reset_extract_cooldown() -> None:
+    """/new 复位提炼失败冷却（R3-A P2-1）：置时间戳为远过去，冷却立即失效。"""
+    global _extract_failed_at_ts
+    _extract_failed_at_ts = -10**18
 
 
 def agent_runner_loop(
