@@ -65,8 +65,8 @@ def reset_derived_state(blocks_db_path=None, calibration_path=None) -> None:
     try:
         from agent.compression_intent import reset_compression_intent
         reset_compression_intent()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[ContextAssembler] /new 压缩意图复位失败（compression_intent 导入异常）: {e}")
     # R3-A P2-1：提炼失败冷却随 /new 复位（_reset_extract_cooldown 定义于 Task 3；
     # 此处 import 在函数体运行时执行，SDD 顺序下 Task 3 已落定；Task 1 单独阶段
     # 若调用则 ImportError 被 except 吞——best-effort 安全，R6-B P2-2 归属修正）
