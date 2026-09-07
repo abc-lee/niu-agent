@@ -236,17 +236,14 @@ def test_is_context_overflow_error_all_patterns():
 # =============================================================================
 # 上下文使用率检测测试（prompt_tokens 驱动）
 # T6（统一压缩入口 spec 2026-09-06）：主 Agent 响应后压实已删——原三个主 Agent
-# on_context_high_usage 回调用例退役，新行为锁见 tests/test_compression_trigger_migration.py
-# （test_response_after_no_compact_main_agent：达线不回调）。子 Agent FIFO/占位符化
-# else 分支保留，下方对应用例继续有效。
+# on_context_high_usage 回调用例退役（参数本身也已删），新行为锁见
+# tests/test_compression_trigger_migration.py（test_response_after_no_compact_main_agent：
+# 达线不置意图、不闩 AUTO_GATE）。子 Agent FIFO/占位符化 else 分支保留，下方对应用例继续有效。
 # =============================================================================
 
 
 def test_sub_agent_fifo_pruning():
-    """子 Agent prompt_tokens > 80% → FIFO 裁剪（不调回调）
-
-    子 Agent 特征：on_context_high_usage=None
-    """
+    """子 Agent prompt_tokens > 80% → FIFO 裁剪（响应后 else 分支，按 handler._is_subagent 判定）"""
     handler = _make_handler()
 
     # 第一轮：高使用率 + 有 tool_calls
@@ -267,23 +264,18 @@ def test_sub_agent_fifo_pruning():
         client=mock_client, system_prompt="test", user_input="test",
         handler=handler, tools_schema=[], max_turns=5, verbose=False,
         context_window_tokens=200000, context_fifo_threshold=0,
-        context_target_threshold=100000, on_context_high_usage=None,
+        context_target_threshold=100000,
         history=big_history,
     )
     _collect_events(gen)
 
-    # 子Agent不调回调（on_context_high_usage=None）
     # 第二轮调用应该发生（循环没退出）
     assert mock_client._chat_call_count[0] == 2, f"Expected 2 chat calls, got {mock_client._chat_call_count[0]}"
 
 
 def test_no_pruning_when_below_warning():
-    """prompt_tokens < 80% 时不裁剪也不调回调"""
+    """prompt_tokens < 80% 时不裁剪（循环正常完成一轮）"""
     handler = _make_handler()
-    callback_called = {"count": 0}
-
-    def my_callback(messages, tokens, limit):
-        callback_called["count"] += 1
 
     # 使用率 50%（100K/200K < 80%）
     resp = _make_mock_response(content="OK", tool_calls=[])
@@ -294,12 +286,13 @@ def test_no_pruning_when_below_warning():
         client=mock_client, system_prompt="test", user_input="test",
         handler=handler, tools_schema=[], max_turns=1, verbose=False,
         context_window_tokens=200000, context_fifo_threshold=0,
-        context_target_threshold=100000, on_context_high_usage=my_callback,
+        context_target_threshold=100000,
     )
     _collect_events(gen)
 
-    # 回调不应该被调用（因为 50% < 80%）
-    assert callback_called["count"] == 0, f"Callback should not be called, got {callback_called['count']}"
+    # 一轮正常完成（未被任何裁剪/退出路径打断）
+    assert mock_client._chat_call_count[0] == 1, \
+        f"Expected 1 chat call, got {mock_client._chat_call_count[0]}"
 
 
 def test_context_overflow_still_works():
@@ -314,7 +307,7 @@ def test_context_overflow_still_works():
         client=mock_client, system_prompt="test", user_input="test",
         handler=handler, tools_schema=[], max_turns=1, verbose=False,
         context_window_tokens=200000, context_fifo_threshold=0,
-        context_target_threshold=100000, on_context_high_usage=lambda m, t, limit: None,
+        context_target_threshold=100000,
     )
     events = _collect_events(gen)
 
@@ -397,7 +390,7 @@ def test_sub_agent_placeholderize_before_fifo():
             client=mock_client, system_prompt="test", user_input="test",
             handler=handler, tools_schema=[], max_turns=5, verbose=False,
             context_window_tokens=200000, context_fifo_threshold=0,
-            context_target_threshold=100000, on_context_high_usage=None,
+            context_target_threshold=100000,
             history=history,
         )
         _collect_events(gen)

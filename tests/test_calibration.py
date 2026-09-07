@@ -172,7 +172,12 @@ def test_agent_loop_truth_capture_updates_ratio(monkeypatch, tmp_path):
 
 class TestSystemEstimateBackfillGate:
     async def test_backfill_consumed_by_80pct_gate(self, monkeypatch, tmp_path):
-        """回填的 system 份额进入组装出口 80% 判定：仅凭窗口不过线、计入 system 后过线触发压实。"""
+        """回填的 system 份额进入组装出口 80% 判定：仅凭窗口不过线、计入 system 后过线。
+
+        Task 6（Step 4b）新语义：组装出口达线**只置 auto 意图**（request_compression("auto")），
+        **不就地压实**（build_compact_view 不被调、视图原样返回）——受控压缩移交 agent_loop
+        发送前门消费。
+        """
         from types import SimpleNamespace
 
         import agent.context_manager as cm_mod
@@ -226,22 +231,35 @@ class TestSystemEstimateBackfillGate:
         runner._on_before_llm(messages, turn=1)
         assert cm._system_token_estimate == len(SYSTEM_TEXT) + 8
 
-        # 压实桩：被调用即返回标记视图（不触真实 DB 归档）
-        compact_marker = [{"role": "system", "content": "COMPACTED"}]
-        monkeypatch.setattr(
-            "agent.context_assembler.compaction.build_compact_view",
-            lambda messages, **kw: (compact_marker, {"keep_turns": 1, "blocks_archived": 0,
-                                                     "tools_placeholderized": 0, "usage": 0.86}),
-        )
+        # 意图/压实桩（Task 6 新语义）：达线应置 auto 意图、不得就地压实
+        import agent.compression_intent as intent_mod
+        intents = []
+        monkeypatch.setattr(intent_mod, "request_compression",
+                            lambda r: intents.append(r))
+        monkeypatch.setattr(intent_mod, "peek_compression", lambda: False)
+        compact_calls = []
 
-        # 阶段二：计入 system 份额 → est=86 ≥80% → 触发压实
+        def _no_compact(messages, **kw):
+            compact_calls.append(1)
+            return [{"role": "system", "content": "COMPACTED"}], {
+                "keep_turns": 1, "blocks_archived": 0,
+                "tools_placeholderized": 0, "usage": 0.86}
+
+        monkeypatch.setattr(
+            "agent.context_assembler.compaction.build_compact_view", _no_compact)
+
+        # 阶段二：计入 system 份额 → est=86 ≥80% → 置 auto 意图（不就地压实）
         AUTO_GATE.release()
         view = await cm.get_context_for_chat(exclude_last=False)
-        assert view == compact_marker, "计入 system 份额后应过 80% 线触发压实"
+        assert intents == ["auto"], \
+            f"计入 system 份额后应过 80% 线置 auto 意图，实际: {intents}"
+        assert compact_calls == [], "组装出口不得就地压实（移交发送前门）"
+        # 视图原样：仍含 user 原文（未缩水为压实产物）
+        assert USER_TEXT in [m.get("content") for m in view]
 
         # 反证：清零 system 份额 + 剔除 DB 的 system 行（水位线模型下无块时
         # DB 全量进视图，DB system 行本身就会顶过 80% 线——必须移出才能隔离
-        # 「runner 回填的 system 份额」这一变量）→ est=28 <80% → 不触发压实
+        # 「runner 回填的 system 份额」这一变量）→ est=28 <80% → 不置意图
         monkeypatch.setattr(cm_mod, "load_all", lambda db_path=None: [])
         AUTO_GATE.release()
         cm.set_system_token_estimate(0)
@@ -252,7 +270,7 @@ class TestSystemEstimateBackfillGate:
             ])),
             max_tokens=100, blocks_db_path=tmp_path / "context_blocks_no_sys.db")
         view = await cm_fresh.get_context_for_chat(exclude_last=False)
-        assert view != compact_marker
+        assert intents == ["auto"], "未达线不得追加置意图"
         # 无块全新：全量原文视图，仅剩 user 原文
         assert [m["content"] for m in view] == [USER_TEXT]
 

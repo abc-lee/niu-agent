@@ -50,7 +50,8 @@ def _patch_compat_deps():
 
 
 def test_compat_tidy_impl_emits_compact_status_force():
-    """模式2 force：_tidy_context_impl 应广播 started + done。"""
+    """mode='force' 已退役（Task 6：tidy 仅服务 mode='sleep'）——本用例实际锁的是
+    未知模式拒绝路径仍成对广播 started + done（前端圆环不卡死，与异常路径同契约）。"""
     events = []
     loop = _make_mock_loop(events)
     patches = _patch_compat_deps()

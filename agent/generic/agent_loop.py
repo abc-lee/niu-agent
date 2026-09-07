@@ -1338,7 +1338,6 @@ def agent_runner_loop(
     context_window_tokens=0,  # 0 means no limit check (backward compatible)
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
     context_target_threshold=0,  # FIFO 裁剪目标 token 量
-    on_context_high_usage=None, # 保留参数（Task 6 后主 Agent 响应后不再压实——压缩只在发送前门；无调用方传值）
     on_tool_round_refresh=None,  # 每工具轮 persist 后视图重建回调（2026-09-02）：主 Agent 传入，原地 messages[:] 替换；None=子 Agent 跳过
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
     system_message: dict | None = None,  # 已组装好的 system message（首轮即带 cache_control）
