@@ -63,9 +63,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
-  // 闲置整理上下文（不产生新记录）
-  tidyContext: () => ipcRenderer.invoke('tidy-context'),
-  
   // 获取当前聊天 session ID
   getChatSessionId: () => ipcRenderer.invoke('get-chat-session-id'),
   

@@ -2,8 +2,8 @@
 
 模块：blocks 指针块存储 / slicer 会话单元切割 / calibration token 校准倍率 /
 compaction 批量压实 / integrity 一致性校验重建。接线点在 context_manager
-（组装出口 80% 触发）、runner._on_context_high_usage（真值回调回写）、
-compat /compact 端点与 /new 清理面（reset_derived_state）。
+（组装出口达线置 auto 意图）、agent_loop 发送前压缩门（统一压缩入口，spec
+2026-09-06）、compat /compact 消息拦截与 /new 清理面（reset_derived_state）。
 """
 
 from pathlib import Path

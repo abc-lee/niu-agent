@@ -15,6 +15,7 @@ from concurrent.futures import Future
 from datetime import datetime
 from typing import TypedDict
 
+from agent.compression_intent import request_compression, consume_compression, peek_compression
 from agent.session import get_message_store
 from agent.subagent import (
     _read_context_window_tokens,
@@ -1705,6 +1706,49 @@ async def shutdown():
     return {"status": "shutting down"}
 
 
+def _is_compression_command(message: str) -> bool:
+    """压缩指令判定（/compact）。"""
+    return (message or "").strip().lower() == "/compact"
+
+
+def _run_idle_compression(runner, history) -> str:
+    """闲时 /compact：直接同步执行受控压缩（R2-A P0-1——不经 agent_runner_loop）。
+
+    组装视图 + 构造 ctx（与 runner._on_compression_request 同款）→
+    run_controlled_compression(messages, ctx, client, turn=0)：
+    完整受控压缩（提炼 → 总结 LLM → 机械压实 → 重组）内部完成，无需额外 LLM 轮。
+    压缩后无真实用户指令要发——重组消息丢弃（仅压缩副作用落库/归档生效）。
+
+    Args:
+        runner: NiuRunner（取 client/_sync_get_messages/_sync_add_message/llm_config）
+        history: 组装视图（get_context_for_chat 返回，exclude_last=False）
+
+    Returns:
+        结果文本（"compacted"/"skipped:<原因>"）供日志。
+    """
+    from types import SimpleNamespace
+    from agent.generic.agent_loop import run_controlled_compression
+    system_msg = history[0] if history and history[0].get("role") == "system" else None
+    ctx = SimpleNamespace(
+        _sync_get_messages=runner._sync_get_messages,
+        _sync_add_message=runner._sync_add_message,
+        _llm_config=runner.llm_config,
+        _store=None,  # runner 无 _store；align best-effort 跳过（提炼仍可跑）
+        _system_msg=system_msg,
+        _blocks_db_path=None,
+        _last_compacted_view=None,
+    )
+    try:
+        new_msgs, did = run_controlled_compression(list(history), ctx, runner.client, 0)
+        if did:
+            return "compacted"
+        # 压缩被跳过（提炼失败冷却/无 DB 消息）：manual 意图已被 consume，如实返回
+        return "skipped"
+    except Exception as e:
+        logger.exception(f"[ChatSession] idle compression failed: {e}")
+        return f"error: {e}"
+
+
 @router.post("/api/chat/session")
 async def chat_session(request: ChatRequest) -> ChatResponse:
     """
@@ -1712,6 +1756,64 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
     Uses runner.py which correctly imports from agent/generic/
     """
+    # --- /compact 拦截（统一压缩入口 spec 2026-09-06）：压缩 = 一条消息，后端拦截 ---
+    # 任何时刻（忙/闲）都不落库、不推 SSE 用户气泡、不污染历史——绝不把 "/compact"
+    # 文本当用户消息写入 DB 或送模型（R1-A P0-1 / B-P1-1：正常路径会 add_message 落库）。
+    if _is_compression_command(request.message):
+        request_compression("manual")
+        logger.info("[ChatSession] /compact intercepted, compression intent set")
+        if _chat_lock.locked():
+            # 忙：正在跑的 agent_loop 发送前门消费 manual 意图 → 压缩；立即返回
+            return ChatResponse(reply="压缩已排队，将在当前任务间隙执行", session_id="default")
+        # 闲：不走正常消息路径（会落库），也不进 agent_runner_loop（user_input=None 会
+        # 构造 content:None 用户消息 → API 400，R2-A P0-1）。直接同步执行受控压缩：
+        # 拿锁 → 组装 DB 视图 → 构造 ctx → run_controlled_compression（其内部已含总结
+        # LLM 调用，无需 agent_loop 再发一轮）→ 压缩完成返回。
+        try:
+            await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
+        except TimeoutError:
+            return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
+        result = ""
+        try:
+            # R4-A P3-1：取锁后复检——若等待期间另一会话抢锁运行、循环已消费 manual
+            # 意图并压缩，则本分支不再重复压缩（防重复总结行/分钟级浪费）
+            if not peek_compression():
+                return ChatResponse(reply="压缩已在任务间隙执行", session_id="default")
+            from agent.context_manager import get_context_manager
+            store = await get_message_store()
+            context_manager = await get_context_manager(store)
+            # exclude_last=False（R2-A P1-3）：闲时压缩无"刚落库的当前输入"可排除，
+            # exclude_last=True 会误剔最后一条真实历史（影响总结上下文完整性）
+            history_for_runner = await context_manager.get_context_for_chat(exclude_last=False)
+            from niu_api.chat import get_or_create_runner
+            runner = get_or_create_runner()
+            # R8-A P3-2：idle 直调不经门 try_acquire——先置闩（manual 语义：以触发线
+            # clamp 试闩），压后未回落则保持闩锁防用户下条消息 auto 立即重压
+            try:
+                from agent.context_assembler import compaction
+                compaction.AUTO_GATE.try_acquire(compaction.trigger_ratio())
+            except Exception:
+                pass  # 置闩失败无害（idle 直调不依赖闩锁语义）
+            result = await asyncio.to_thread(
+                _run_idle_compression, runner, history_for_runner,
+            )
+            logger.info(f"[ChatSession] /compact idle compression result: {result}")
+        finally:
+            # R3-A P1-1 + R4-B P2-2：consume 清意图放 finally——闲时压缩直接执行不经
+            # 门 consume；to_thread 抛 BaseException（CancelledError）也清，防意图泄漏
+            # 到下一会话首轮被门消费 → 冗余压缩。
+            consume_compression()
+            from agent.runner import clear_stop, drain_supplement
+            clear_stop()
+            drain_supplement()  # 清理残留补充消息（现名 drain_supplement，R3-B P1-3）
+            _chat_lock.release()
+        # R4-A P2-1：按结果分叉文案——skipped/error 不谎报"完成"
+        if result == "compacted":
+            return ChatResponse(reply="上下文压缩完成", session_id="default")
+        if result == "skipped":
+            return ChatResponse(reply="压缩已跳过（内容提炼冷却或无内容可压），可稍后再试", session_id="default")
+        return ChatResponse(reply=f"压缩执行异常：{result}", session_id="default")
+
     from niu_api.config import get_config
 
     config = get_config()
@@ -2116,12 +2218,13 @@ async def set_spirit_state_endpoint(request: dict):
 @router.post("/api/context/tidy")
 async def tidy_context(request: dict):
     """
-    Tidy context when entering sleep mode or forced compression
+    Tidy context when entering sleep mode
 
     Args:
         request: {
             "session_id": str,
-            "mode": "sleep" | "compact"
+            "mode": "sleep"   # 仅 sleep（compact 分支已删——/compact 改走消息通道拦截，
+                              # 统一压缩入口 spec 2026-09-06）
         }
 
     Returns:
@@ -2135,65 +2238,14 @@ async def tidy_context(request: dict):
     if (request.get("mode") or "").lower() == "sleep":
         set_spirit_state("sleep")
     mode = (request.get("mode") or "sleep").lower()
-    if mode == "compact":
-        # /compact 重定义（D12）：手动触发批量压实，与自动触发共用同一压实函数；
-        # 纯机械秒级、零 LLM、无 ChatQueue pause 门禁——直接执行不经整理队列
-        return await _compact_context_impl(request)
     if mode != "sleep":
-        return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'compact'."}
+        return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep'."}
     # 全局整理队列投递：sleep → 投递 + 立即返回 queued（result 无人消费，CP0 cancelled 依赖此）。
     # None 窗口防御（§3.0 Option A）：队列未创建时同步执行，调用方等完成。
     if _pipeline_queue is None:
         return await _tidy_context_impl(request)
     fut = _pipeline_enqueue(mode, request, held=False)
     return {"status": "queued"}
-
-
-async def _compact_context_impl(request: dict) -> dict:
-    """/compact 直达实现：调 compaction.compact_now_detailed 并回传圆环 usage。"""
-    session_id = (request or {}).get("session_id", "default")
-    from niu_api.chat import notify_compact_status_sync
-    try:
-        notify_compact_status_sync("started", mode="compact")
-    except Exception:
-        pass
-    try:
-        store = await get_message_store()
-        from agent.context_assembler import compaction
-        _, stats = await compaction.compact_now_detailed(store)
-        # 压实后真值回填仪表盘缓存（M2-F2）：页面三级链/动态块改读它，不再用压实前旧估算
-        try:
-            if stats.get("usage") is not None:
-                from agent.context_manager import peek_context_manager
-                cm = peek_context_manager()
-                fs = getattr(cm, "_fold_stats", None) if cm is not None else None
-                if fs is not None:
-                    fs["usage"] = stats["usage"]
-        except Exception:
-            pass
-        logger.info(f"[Compact] manual compact done: session={session_id}, "
-                    f"keep_turns={stats['keep_turns']}, blocks_archived={stats['blocks_archived']}, "
-                    f"tools_placeholderized={stats['tools_placeholderized']}, "
-                    f"est_usage={stats.get('usage')}")
-        try:
-            notify_compact_status_sync("done", mode="compact",
-                                       usage=stats.get("usage"), reset_tokens=True)
-        except Exception:
-            pass
-        return {
-            "status": "ok",
-            "mode": "compact",
-            "tokens_estimate": stats["tokens_estimate"],
-            "context_window": stats["context_window"],
-            "usage": stats.get("usage"),
-        }
-    except Exception as e:
-        logger.error(f"[Compact] manual compact failed: {e}")
-        try:
-            notify_compact_status_sync("done", mode="compact")
-        except Exception:
-            pass
-        return {"status": "error", "mode": "compact", "message": str(e)}
 
 
 async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False):
@@ -2384,7 +2436,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
         else:
             logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
-            return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'compact'."}
+            return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep'."}
 
     except Exception as e:
         import traceback

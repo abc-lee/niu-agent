@@ -330,13 +330,14 @@ class ContextManager:
         获取用于聊天的上下文（主入口）——组装器视图（水位线模型）
 
         流程：读 DB 全量消息 → assemble_view_sync 纯组装（水位线切分 + fold 统计
-        + 索引 + 折叠渲染 + 校准后 usage 估算）→ 压实尾段（本包装层独有，D14）。
+        + 索引 + 折叠渲染 + 校准后 usage 估算）→ 组装出口触发线检查（达线只置 auto
+        压缩意图，不就地压实——统一压缩入口 spec 2026-09-06，发送前门消费）。
 
         候选消息 = 未被任何块覆盖的消息（append-only 保证连续位于尾部；意外不连续时
         取最后一个被覆盖消息之后的部分并告警——告警在 assemble_view_sync 内发出）；
         exclude_last 时排除候选末条（当前输入）。输出 = [索引前导 user 消息（仅当有块）]
-        + [候选消息原文]——不做预算装填、不在组装路径归档。两次压实之间上下文自然增长
-        是 D14 设计内行为，由触发线压实收口（压实后水位线前移，下轮组装只剩保留轮+新增量）。
+        + [候选消息原文]——不做预算装填、不在组装路径归档。两次压缩之间上下文自然增长
+        是 D14 设计内行为，由触发线意图 → 发送前门受控压缩收口。
 
         候选起点恒为块边界（=会话单元边界，tool_calls 配对完整）；dict 形态
         与 load_history 一致。
@@ -350,62 +351,37 @@ class ContextManager:
         messages = await self.store.get_messages(limit=None)
         view = self.assemble_view_sync(messages, exclude_last)
 
-        # Task 3：组装出口触发线检查——校准后总量估算达线即地压实（D14）。
-        # 滞回（≥trigger 触发 / <trigger−0.02 复位）与 runner 真值回调共用 AUTO_GATE，双触发去重不双压。
-        # 压实需候选 Message 序列：_watermark_split 无状态重算（与 assemble_view_sync 内
-        # 同源——同一 static 方法同输入零漂移，未来维护漂移有界自愈，R2-A P3a）；
-        # stragglers warning 已在 assemble_view_sync 内发出一次，此处不重复（R5-A P3-2）。
-        candidates = messages
-        blocks = load_all(self._blocks_db_path or default_db_path())
-        if blocks and messages:
-            last_covered, _stragglers = self._watermark_split(blocks, messages)
-            if last_covered >= 0:
-                candidates = messages[last_covered + 1:]
-        # exclude_last 显式切片（R2-A P2：漏切则入口压实时当前用户输入重复进 prompt）
-        history = candidates[:-1] if exclude_last and candidates else candidates
-
+        # Task 6：组装出口触发线检查——校准后总量估算达线只置 auto 意图
+        # （统一压缩入口 spec 2026-09-06：不再就地压实，由 agent_loop 发送前门消费）。
+        # 滞回（≥trigger 触发 / <trigger−0.02 复位）与发送前门共用 AUTO_GATE，双触发去重不双压。
         base_est = self.count_tokens_simple(view) + self._system_token_estimate
         try:
             from agent.context_assembler import calibration
-            from agent.context_assembler.compaction import AUTO_GATE, build_compact_view
+            from agent.context_assembler.compaction import AUTO_GATE
 
             # AUTO_GATE 判定不读 _fold_stats['usage']——try 内自行重算校准值（纯函数双调无害；
             # 若读 _fold_stats，calibration 降级 raw 时会以 raw 调 try_acquire，破"入口行为零变化"。
-            # 现状语义保持：calibration 抛错时异常先于 try_acquire 终止、从不尝试压实）
+            # 现状语义保持：calibration 抛错时异常先于 try_acquire 终止、从不尝试置意图）
             est = calibration.estimate(base_est)
             usage_ratio = est / self.max_tokens if self.max_tokens else 0.0
             if AUTO_GATE.try_acquire(usage_ratio):
                 logger.info(
                     f"[Context] Calibrated usage {est:.0f}/{self.max_tokens} "
-                    f"({usage_ratio:.1%}) >= trigger line, compacting at assembly exit"
+                    f"({usage_ratio:.1%}) >= trigger line, setting compression intent"
                 )
-                new_view, stats = build_compact_view(
-                    history,
-                    system_msg=None,
-                    blocks_db_path=self._blocks_db_path,
-                    context_window_tokens=self.max_tokens,
-                )
-                logger.info(
-                    f"[Context] Compacted at assembly exit: keep_turns={stats['keep_turns']}, "
-                    f"blocks_archived={stats['blocks_archived']}, "
-                    f"tools_placeholderized={stats['tools_placeholderized']}, "
-                    f"usage_after={stats['usage']}"
-                )
-                # 压实成功即复位闩锁：压实后视图常落 [复位线, 触发线) 滞回带内，
-                # 不复位则自动压实进程级失效（P1 修复）
-                AUTO_GATE.release()
-                # 压实后真值回填仪表盘缓存（M2-F2）：_fold_stats 同函数 assemble_view_sync 已置非 None
-                usage_after = stats.get("usage")
-                if usage_after is not None:
-                    try:
-                        self._fold_stats["usage"] = usage_after
-                    except Exception:
-                        pass
-                return new_view
+                # 统一压缩入口（spec 2026-09-06）：组装出口不再就地压实——
+                # 达线只置 auto 意图，由 agent_loop 发送前门消费执行受控压缩。
+                # 视图超限但不立即出网：调用方喂 runner 后，agent_loop 首次
+                # client.chat 前发送前门先压后送（复审确认无 400 窗口）。
+                # R7-A P3：不覆盖在途 manual 意图（用户显式压缩优先于自动达线）
+                from agent.compression_intent import peek_compression, request_compression
+                if not peek_compression():
+                    request_compression("auto")
+                AUTO_GATE.release()  # 已转交意图，立即释放闸门（防闩锁残留）
         except Exception as e:
             from agent.context_assembler import compaction as _comp
-            _comp.AUTO_GATE.release()  # 压实失败解除闩锁，避免永久不再自动触发
-            logger.warning(f"[Context] Assembly-exit compaction failed, using un-compacted view: {e}")
+            _comp.AUTO_GATE.release()  # 失败解除闩锁，避免永久不再自动触发
+            logger.warning(f"[Context] Assembly-exit intent setting failed, using un-compacted view: {e}")
         return view
 
     def get_fold_dashboard_line(self, usage_override: float | None = None) -> str:

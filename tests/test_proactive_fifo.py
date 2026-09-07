@@ -235,87 +235,11 @@ def test_is_context_overflow_error_all_patterns():
 
 # =============================================================================
 # 上下文使用率检测测试（prompt_tokens 驱动）
+# T6（统一压缩入口 spec 2026-09-06）：主 Agent 响应后压实已删——原三个主 Agent
+# on_context_high_usage 回调用例退役，新行为锁见 tests/test_compression_trigger_migration.py
+# （test_response_after_no_compact_main_agent：达线不回调）。子 Agent FIFO/占位符化
+# else 分支保留，下方对应用例继续有效。
 # =============================================================================
-
-
-def test_main_agent_calls_callback_on_high_usage():
-    """主 Agent prompt_tokens > 80% → 调用 on_context_high_usage 回调，循环不退出
-
-    关键：第一轮必须有 tool_calls 才能继续到第二轮（无 tool_calls 会退出）。
-    所以我们让第一轮有 tool_calls，第二轮无 tool_calls（正常结束）。
-    """
-    handler = _make_handler()
-    callback_called = {"count": 0, "args": None}
-
-    def my_callback(messages, tokens, limit):
-        callback_called["count"] += 1
-        callback_called["args"] = (tokens, limit)
-
-    # 第一轮：高使用率（170K/200K = 85% > 80%）+ 有 tool_calls（继续循环）
-    tc1 = _make_tool_call(name="search", args={"q": "test"}, tid="call_1")
-    resp1 = _make_mock_response(content="", tool_calls=[tc1])
-    resp1.usage = {"prompt_tokens": 170000, "completion_tokens": 500, "total_tokens": 170500}
-
-    # 第二轮：正常使用率（90K/200K = 45% < 80%）+ 无 tool_calls（退出）
-    resp2 = _make_mock_response(content="Done", tool_calls=[])
-    resp2.usage = {"prompt_tokens": 90000, "completion_tokens": 200, "total_tokens": 90200}
-
-    mock_client = _make_client([resp1, resp2])
-
-    gen = agent_runner_loop(
-        client=mock_client, system_prompt="test", user_input="test",
-        handler=handler, tools_schema=[], max_turns=5, verbose=False,
-        context_window_tokens=200000, context_fifo_threshold=0,
-        context_target_threshold=100000, on_context_high_usage=my_callback,
-    )
-    _collect_events(gen)
-
-    # 回调应该被调用（第二轮开始时检测到第一轮的 170K prompt_tokens）
-    assert callback_called["count"] >= 1, f"Callback should be called at least once, got {callback_called['count']}"
-    assert callback_called["args"][0] == 170000, f"Expected tokens=170000, got {callback_called['args']}"
-def test_gate_deferred_callback_does_not_cooldown(monkeypatch):
-    """P2 回归：回调被闸门拒绝返回 False（真值低于 80% 触发线）时不得置
-    _compress_cooldown——本 loop 内后续轮次真值达线须再次触发回调。
-
-    旧行为：回调后无条件冷却 → warningThreshold(70%)<触发线(80%) 时首次
-    回调即停摆本 loop 检测，第二次 85% 永远不会被评估。
-    """
-    import agent.generic.agent_loop as loop_mod
-    monkeypatch.setattr(loop_mod, "_read_warning_threshold", lambda: 0.70)
-
-    handler = _make_handler()
-    calls = []
-
-    def my_callback(messages, tokens, limit):
-        calls.append(tokens)
-        return len(calls) == 2  # 第 1 次=闸门拒绝 False；第 2 次=过闸压实 True
-
-    tc1 = _make_tool_call(name="search", args={"q": "a"}, tid="call_1")
-    tc2 = _make_tool_call(name="search", args={"q": "b"}, tid="call_2")
-    resp1 = _make_mock_response(content="", tool_calls=[tc1])
-    resp1.usage = {"prompt_tokens": 150000, "completion_tokens": 500,
-                   "total_tokens": 150500}  # 75%：>warning(70%) <触发线(80%)
-    resp2 = _make_mock_response(content="", tool_calls=[tc2])
-    resp2.usage = {"prompt_tokens": 170000, "completion_tokens": 500,
-                   "total_tokens": 170500}  # 85%：达线
-    resp3 = _make_mock_response(content="Done", tool_calls=[])
-    resp3.usage = {"prompt_tokens": 90000, "completion_tokens": 200,
-                   "total_tokens": 90200}
-
-    mock_client = _make_client([resp1, resp2, resp3])
-
-    gen = agent_runner_loop(
-        client=mock_client, system_prompt="test", user_input="test",
-        handler=handler, tools_schema=[], max_turns=5, verbose=False,
-        context_window_tokens=200000, context_fifo_threshold=0,
-        context_target_threshold=100000, on_context_high_usage=my_callback,
-    )
-    _collect_events(gen)
-
-    assert calls == [150000, 170000], (
-        f"闸门拒绝不置冷却：两次真值均应触发回调，实际 {calls}"
-    )
-    assert mock_client._chat_call_count[0] == 3
 
 
 def test_sub_agent_fifo_pruning():
@@ -402,43 +326,6 @@ def test_context_overflow_still_works():
     assert "chat_idle" in system_contents, f"Expected chat_idle in system events, got {system_contents}"
 
 
-def test_callback_receives_correct_messages():
-    """回调接收的 messages 参数应该是当前消息列表"""
-    handler = _make_handler()
-    received_messages = {"msgs": None}
-
-    def my_callback(messages, tokens, limit):
-        received_messages["msgs"] = list(messages)  # 复制一份
-
-    # 第一轮：高使用率 + 有 tool_calls
-    tc1 = _make_tool_call(name="search", args={"q": "test"}, tid="call_1")
-    resp1 = _make_mock_response(content="", tool_calls=[tc1])
-    resp1.usage = {"prompt_tokens": 170000, "completion_tokens": 500, "total_tokens": 170500}
-
-    # 第二轮：正常 + 无 tool_calls
-    resp2 = _make_mock_response(content="Done", tool_calls=[])
-    resp2.usage = {"prompt_tokens": 90000, "completion_tokens": 200, "total_tokens": 90200}
-
-    mock_client = _make_client([resp1, resp2])
-
-    gen = agent_runner_loop(
-        client=mock_client, system_prompt="system prompt here", user_input="user input here",
-        handler=handler, tools_schema=[], max_turns=5, verbose=False,
-        context_window_tokens=200000, context_fifo_threshold=0,
-        context_target_threshold=100000, on_context_high_usage=my_callback,
-    )
-    _collect_events(gen)
-
-    # 回调应该被调用
-    assert received_messages["msgs"] is not None, "Callback should have been called"
-    # immediate_check 在 prompt_tokens 提取后立即触发，此时 messages 可能只有 system + user
-    # （assistant 消息在 prompt_tokens 提取后、回调前可能尚未追加）
-    msgs = received_messages["msgs"]
-    assert len(msgs) >= 2, f"Expected at least 2 messages, got {len(msgs)}"
-    # 第一条应该是 system
-    assert msgs[0]["role"] == "system", f"First message should be system, got {msgs[0]['role']}"
-
-
 def test_truncate_tool_content_with_name():
     """截断标记应包含工具名"""
     from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS, _truncate_tool_content
@@ -495,7 +382,7 @@ def test_sub_agent_placeholderize_before_fifo():
 
     def spy_fifo(messages, target_tokens, is_resumed=False):
         calls["fifo"] += 1
-        # 累积 OR：子 Agent 分支不设 _compress_cooldown、不重置 last_prompt_tokens，
+        # 累积 OR：子 Agent 分支不重置 last_prompt_tokens，
         # 第 2 轮轮顶会再次触发 FIFO spy，此时 turn1 的 FIFO 已把占位符删光 + 新轮 dispatch 的
         # tool('ok') 非占位符 → 直接赋值会覆盖 flag=False。用 or 累积保证首次 True 不被覆盖。
         calls["placeholder_seen"] = calls["placeholder_seen"] or any(

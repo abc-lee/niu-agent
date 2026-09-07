@@ -1338,7 +1338,7 @@ def agent_runner_loop(
     context_window_tokens=0,  # 0 means no limit check (backward compatible)
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
     context_target_threshold=0,  # FIFO 裁剪目标 token 量
-    on_context_high_usage=None,  # 主Agent超阈值回调；None=子Agent走FIFO
+    on_context_high_usage=None, # 保留参数（Task 6 后主 Agent 响应后不再压实——压缩只在发送前门；无调用方传值）
     on_tool_round_refresh=None,  # 每工具轮 persist 后视图重建回调（2026-09-02）：主 Agent 传入，原地 messages[:] 替换；None=子 Agent 跳过
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
     system_message: dict | None = None,  # 已组装好的 system message（首轮即带 cache_control）
@@ -1383,7 +1383,6 @@ def agent_runner_loop(
     last_prompt_tokens = 0
     handler._last_prompt_tokens = 0
     handler._last_cached_tokens = None
-    _compress_cooldown = False  # 回调冷却：同一轮 agent_runner_loop 只触发一次压缩
     handler._done_hooks = []
     handler.max_turns = max_turns
     # V4: 通知前端进入忙碌状态
@@ -1409,27 +1408,13 @@ def agent_runner_loop(
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
         # === 上下文使用率检测（prompt_tokens 驱动）===
-        if last_prompt_tokens > 0 and context_window_tokens > 0 and not _compress_cooldown:
+        # 主 Agent（_is_subagent=False）响应后不再压实——压缩已迁发送前门
+        # （spec 2026-09-06 统一压缩入口）；子 Agent 保留原处 FIFO/占位符化
+        # else 分支（唯一主动裁剪保护，R1 定案：不迁移防双裁剪）。
+        if last_prompt_tokens > 0 and context_window_tokens > 0:
             usage_ratio = last_prompt_tokens / context_window_tokens
             if usage_ratio > warning_threshold:
-                if on_context_high_usage:
-                    # 主 Agent：调回调执行压缩，循环不退出
-                    logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
-                                f"({usage_ratio:.1%} > {warning_threshold:.0%})")
-                    _compacted = on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
-                    # 回调内部已完成压缩并原地修改 messages（messages[:] = ...）。
-                    # 仅回调确实压实（返回 True）才进入冷却；被闸门拒绝（真值低于
-                    # 80% 触发线或同轮已被组装出口压实）时保留检测——否则真值落在
-                    # [warning, 80%) 区间会让本 loop 内后续轮次检测停摆（P2）
-                    last_prompt_tokens = 0  # 重置，下轮重新获取
-                    if _compacted:
-                        # 压实成功：旧视图 token 真值已失效，一并清零
-                        handler._last_prompt_tokens = 0
-                        handler._last_cached_tokens = None
-                    # else 闸门拒绝：保留 handler 旧真值不清零（与 skip 路径纪律一致），
-                    # 缓存命中率等 token 统计不失真；下轮响应即覆盖为新真值
-                    _compress_cooldown = bool(_compacted)  # 冷却：本次 agent_runner_loop 不再触发压缩
-                else:
+                if getattr(handler, "_is_subagent", False):
                     # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
                     target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
                     replaced = _placeholderize_tool_outputs(messages, target_tokens)
@@ -1443,7 +1428,7 @@ def agent_runner_loop(
                         logger.info(f"[ToolCrop] placeholderized {replaced} tool outputs, "
                                     f"now ~{count_messages_tokens(messages)} tokens (target {target_tokens})")
             # 旧 FIFO 回退：只在首轮（last_prompt_tokens==0）时执行
-        if context_fifo_threshold > 0 and len(messages) > 2 and last_prompt_tokens == 0 and not _compress_cooldown:
+        if context_fifo_threshold > 0 and len(messages) > 2 and last_prompt_tokens == 0:
             removed = _fifo_prune(messages, context_fifo_threshold, is_resumed=(resumed_messages is not None))
             if removed > 0:
                 logger.info(f"[FIFO] Fallback truncation: removed {removed} oldest messages, "
@@ -1493,7 +1478,7 @@ def agent_runner_loop(
         # === 统一压缩门（spec 2026-09-06）：发送前检查压缩意图/达线 ===
         # 主 Agent（on_compression_request 传入）才走受控压缩；子 Agent（None）
         # 保持响应后 FIFO/占位符化 else 分支（既有保护不删，R1 定案）。
-        if on_compression_request is not None and not _compress_cooldown:
+        if on_compression_request is not None:
             had_intent, _reason = consume_compression()
             ratio = _estimate_usage_ratio(messages)
             # R7-A P1 滞回统一：达线 auto 先 AUTO_GATE.try_acquire(ratio) 置闩锁——
@@ -1575,8 +1560,8 @@ def agent_runner_loop(
                             # 必须解闩防闩锁滞留导致本 loop 后续永久失效
                             logger.warning("[Compression] auto compression did not complete, releasing gate for next-round retry")
                         _gate_release_if_acquired(gate_acquired)  # 失败解闩防卡死（幂等）
-                    # R2-A P1-2：压缩成功不置 _compress_cooldown（AUTO_GATE 滞回 +
-                    # 压后回落天然防风暴）；滞回 release 由 run_controlled_compression
+                    # R2-A P1-2：压缩成功不置冷却（AUTO_GATE 滞回 +
+                    # 压后估算回落天然防风暴）；滞回 release 由 run_controlled_compression
                     # 压后估算回落决定（成功保持闩锁直至回落）
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
@@ -1755,25 +1740,14 @@ def agent_runner_loop(
                     except Exception:
                         pass
                 logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
-                # 提取后立即检测：如果超阈值，在当前轮就触发回调/FIFO
-                # （无工具调用时循环会退出，下轮顶部检测不会执行，所以此处必须检测）
-                if context_window_tokens > 0 and not _compress_cooldown:
+                # 提取后立即检测：子 Agent 超阈值在当前轮做占位符化/FIFO（无工具调用时
+                # 循环会退出，下轮顶部检测不会执行，所以此处必须检测）。
+                # 主 Agent（_is_subagent=False）不再响应后压实——压缩已迁发送前门
+                # （spec 2026-09-06 统一压缩入口）。
+                if context_window_tokens > 0:
                     usage_ratio = last_prompt_tokens / context_window_tokens
                     if usage_ratio > warning_threshold:
-                        if on_context_high_usage:
-                            logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
-                                        f"({usage_ratio:.1%} > {warning_threshold:.0%})")
-                            _compacted = on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
-                            # 同轮顶检测（P2）：仅确实压实时才冷却，被闸门拒绝保留检测
-                            last_prompt_tokens = 0  # 重置，下轮重新获取
-                            if _compacted:
-                                # 压实成功：旧视图 token 真值已失效，一并清零
-                                handler._last_prompt_tokens = 0
-                                handler._last_cached_tokens = None
-                            # else 闸门拒绝：保留 handler 旧真值不清零（与 skip 路径纪律一致），
-                            # 缓存命中率等 token 统计不失真；下轮响应即覆盖为新真值
-                            _compress_cooldown = bool(_compacted)
-                        else:
+                        if getattr(handler, "_is_subagent", False):
                             # 子 Agent：阶段 1 tool 占位符化 → 仍超才阶段 2 FIFO 兜底
                             target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
                             replaced = _placeholderize_tool_outputs(messages, target_tokens)
