@@ -82,24 +82,11 @@ async def test_tidy_sleep_returns_queued_immediately(monkeypatch):
 from unittest.mock import AsyncMock
 
 
-async def test_tidy_force_rejected_compact_direct(monkeypatch):
-    """Task 3 收编：mode='force' 随白名单收缩被拒；mode='compact' 直达机械压实
-    （不经整理队列、不触 _tidy_context_impl），并回传圆环 usage。"""
-    from agent.context_assembler import compaction
-
+async def test_tidy_force_and_compact_rejected(monkeypatch):
+    """Task 6 收敛：mode='force' 随白名单收缩被拒；mode='compact' 分支已删（/compact 改走
+    消息通道拦截，spec 2026-09-06）→ unknown-mode 错误、不触 _tidy_context_impl、不碰队列。"""
     impl_spy = AsyncMock()
-    monkeypatch.setattr(compat, "_tidy_context_impl", impl_spy)  # compact 不得经 impl
-    monkeypatch.setattr(compat, "get_message_store", AsyncMock(return_value=object()))
-    monkeypatch.setattr("niu_api.chat.notify_compact_status_sync", lambda *a, **k: None)
-
-    async def fake_compact(store, system_msg=None, **kw):
-        return [{"role": "user", "content": "[历史索引]"}], {
-            "usage": 0.35, "tokens_estimate": 3500, "context_window": 10000,
-            "keep_turns": 3, "units_total": 5, "blocks_archived": 2,
-            "blocks_total": 2, "tools_placeholderized": 0, "emergency": False,
-        }
-
-    monkeypatch.setattr(compaction, "compact_now_detailed", fake_compact)
+    monkeypatch.setattr(compat, "_tidy_context_impl", impl_spy)
 
     resp_force = await tidy_context({"session_id": "s", "mode": "force"})
     assert resp_force["status"] == "error"
@@ -110,16 +97,16 @@ async def test_tidy_force_rejected_compact_direct(monkeypatch):
     finally:
         if compat._pipeline_queue is not None:
             await compat.stop_pipeline_queue()
-    assert resp["status"] == "ok" and resp["mode"] == "compact"
-    assert resp["usage"] == 0.35
+    assert resp["status"] == "error"
+    assert "sleep" in resp["message"]  # 提示仅剩 sleep 语义
     impl_spy.assert_not_awaited()
 
 
 async def test_tidy_none_window_sync(monkeypatch):
     """None 窗口（队列未创建）：sleep 同步执行 impl，调用方等完成（§3.0 Option A）。
 
-    Task 3 注：force 分支已随白名单收缩移除——compact 不走 _tidy_context_impl，
-    同步语义由 test_tidy_force_rejected_compact_direct 覆盖。
+    Task 6 注：force/compact 分支已随白名单收缩移除——reject 语义由
+    test_tidy_force_and_compact_rejected 覆盖。
     """
     called: list[dict] = []
 

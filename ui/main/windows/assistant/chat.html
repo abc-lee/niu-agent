@@ -1025,7 +1025,6 @@
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-btn');
-    let _compactingInFlight = false;  // /compact 压缩进行中，gate chat_idle 的 UI 重置
     window._compacting = false;  // 压缩中标志，由 compact_status 事件切换
     const closeBtn = document.getElementById('close-btn');
     const header = document.getElementById('header');
@@ -1540,31 +1539,18 @@
         return;
       }
 
-      // /compact 指令 - 快速压缩：立即触发机械压实（零 LLM 秒级，T6 新语义）
+      // /compact 指令 - 统一压缩入口：压缩 = 一条消息，后端拦截（spec 2026-09-06）
+      // 不 /stop、不走独立 HTTP——复用正常消息通道 sendMessage('/compact')，
+      // 后端 chat_session 落库前拦截置意图；忙时任务间隙执行、闲时立即执行。
       if (text === '/compact') {
         userInput.value = '';
         userInput.style.height = 'auto';
-        if (isProcessing) {
-          // busy：先 /stop 停主 Agent（避免压实与在途回复交错）
-          try {
-            await window.electronAPI.sendMessage('/stop');
-          } catch (e) {
-            console.error('停止失败:', e);
-            addSystemMessage('停止失败: ' + (e.message || e));
-          }
-        }
-        _compactingInFlight = true;
-        sendBtn.disabled = true;
-        userInput.disabled = true;
-        addSystemMessage('正在强制压缩上下文，请稍候…');
+        addSystemMessage('压缩指令已发送…');
         try {
-          await compactContext();
-        } finally {
-          _compactingInFlight = false;
-          sendBtn.disabled = false;
-          userInput.disabled = false;
-          stopBtn.style.display = isProcessing ? 'flex' : 'none';
-          userInput.focus();
+          await window.electronAPI.sendMessage('/compact');
+        } catch (e) {
+          console.error('发送压缩指令失败:', e);
+          addSystemMessage('压缩指令发送失败: ' + (e.message || e));
         }
         return;
       }
@@ -1619,30 +1605,6 @@
         addMessage('system', '❌ 清空失败: ' + err.message);
       }
       userInput.focus();
-    }
-
-    // 强制压缩上下文（/compact 命令）
-    async function compactContext() {
-      try {
-          // T6 后 /compact = 机械压实（零 LLM、秒级返回）；后端 _compact_context_impl
-        // try/finally 保证必有终态响应
-        const result = await window.electronAPI.tidyContext('compact');
-        if (result && result.status === 'ok') {
-          addSystemMessage('✅ 上下文压缩完成');
-        } else if (result && result.status === 'aborted') {
-          addSystemMessage('⚠️ 压缩已中止（用户停止）');
-        } else if (result && result.status === 'skipped') {
-          addSystemMessage('⚠️ 压缩已跳过：' + (result.reason || '未知原因'));
-        } else if (result && result.status === 'success') {
-          // P1-2：无消息可整理不是失败，避免误导性错误提示
-          addSystemMessage('ℹ️ ' + (result.message || '无需压缩'));
-        } else {
-          // P1-1：后端 error 返回字段是 message 不是 error，两者都尝试
-          addSystemMessage('❌ 压缩失败：' + ((result && (result.error || result.message)) || '未知错误'));
-        }
-      } catch (err) {
-        addSystemMessage('❌ ' + err.message);
-      }
     }
 
     // ========== 路径编码预处理（括号平衡算法） ==========
@@ -2576,11 +2538,8 @@
         // Agent循环结束：重置状态机
         hideTyping();
         isProcessing = false;
-        // R3-2：/compact 进行中时，不重启用输入、不隐藏 stopBtn（对应函数结束才恢复）
-        if (!_compactingInFlight) {
-          stopBtn.style.display = 'none';
-          sendBtn.disabled = false;
-        }
+        stopBtn.style.display = 'none';
+        sendBtn.disabled = false;
         window.electronAPI.notifyBusy(false, 'chat');
       } else if (data && data.role === 'chat_busy') {
         // Agent循环开始：通知 spirit 进入忙碌状态

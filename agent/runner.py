@@ -1395,101 +1395,6 @@ class NiuRunner:
             logger.warning(f"[Runner] sync_update_message failed: {e}")
             return False
 
-    def _on_context_high_usage(self, messages, tokens_used, tokens_limit) -> bool:
-        """主 Agent 上下文超阈值回调 — 机械压实 + 原地回写新视图
-
-        Task 3 定案：调 context_assembler.compaction 压实（纯机械、零 LLM、DB 不动），
-        产出 [system 原样（含 cache_control）]+[索引消息]+[窗口 dict] 新视图后
-        `messages[:] = new_view` 原地回写——当轮对话立即生效；不做 DB 重载
-        （机械压实不改 DB，重载是 no-op 假动作）。与组装出口触发共用 AUTO_GATE
-        滞回闸门（≥trigger 触发/<trigger−0.02 复位，线随配置 compactionTriggerRatio），同一轮次双触发去重不双压。
-        agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
-
-        Returns:
-            True=闸门放行且压实完成（调用方据此进入本 loop 冷却）；
-            False=闸门未放行（真值低于 80% 触发线——warningThreshold 与触发线
-            的耦合区间，或同轮已被组装出口压实）或压实异常。False 时调用方
-            不得置冷却，保留后续轮次检测（P2）。
-        """
-
-        logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
-                     f"({tokens_used/tokens_limit:.1%})")
-
-        # 广播压缩状态 started 事件（前端圆环动画启动）
-        try:
-            from niu_api.chat import notify_compact_status_sync
-            notify_compact_status_sync("started", mode="auto")
-        except Exception:
-            pass
-
-        usage_after = None
-        compacted = False
-        try:
-            from agent.context_assembler import compaction
-
-            # 真值比率过滞回闸门：与组装出口共用同一闸门，同轮去重
-            ratio_now = tokens_used / tokens_limit if tokens_limit else 1.0
-            if not compaction.AUTO_GATE.try_acquire(ratio_now):
-                trigger = compaction.trigger_ratio()
-                if ratio_now < trigger:
-                    # warningThreshold(70%) < 触发线(80%)：真值未达线，无需压实。
-                    # 返回 False 让 agent_loop 不置冷却、保留检测（P2：真值落在
-                    # [warning, 80%) 区间时置冷却会导致本 loop 内检测停摆）
-                    logger.info(f"[Runner] Compaction deferred: truth {ratio_now:.1%} below "
-                                f"trigger line {trigger:.0%}")
-                else:
-                    logger.info("[Runner] Compaction skipped: gate latched by another trigger this round")
-                return False
-            db_messages = self._sync_get_messages()
-            if not db_messages:
-                logger.warning("[Runner] Compaction skipped: no DB messages available")
-                try:
-                    compaction.AUTO_GATE.release()  # 早退也须解除闩锁，避免此后永不再自动触发
-                except Exception:
-                    pass
-                return False
-            system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
-            new_view, stats = compaction.build_compact_view(db_messages, system_msg=system_msg)
-            messages[:] = new_view  # 原地回写（agent_loop 契约：messages 为 dict 列表）
-            # 压实成功即复位闩锁：压实后视图常落 [复位线, 触发线) 滞回带内，
-            # 不复位则自动压实进程级失效（P1 修复）
-            compaction.AUTO_GATE.release()
-            compacted = True
-            usage_after = stats.get("usage")
-            # 压实后真值回填仪表盘缓存（M2-F2）：页面三级链/动态块改读它，不再用压实前旧估算
-            if usage_after is not None:
-                try:
-                    from agent.context_manager import peek_context_manager
-                    cm = peek_context_manager()
-                    fs = getattr(cm, "_fold_stats", None) if cm is not None else None
-                    if fs is not None:
-                        fs["usage"] = usage_after
-                except Exception:
-                    pass
-            logger.info(f"[Runner] Compacted in-flight view: {len(messages)} entries, "
-                        f"keep_turns={stats['keep_turns']}, blocks_archived={stats['blocks_archived']}, "
-                        f"tools_placeholderized={stats['tools_placeholderized']}, "
-                        f"est_usage={usage_after}")
-        except Exception as e:
-            import traceback
-            logger.error(f"[Runner] Compaction failed: {e}\n{traceback.format_exc()}")
-            try:
-                from agent.context_assembler.compaction import AUTO_GATE
-                AUTO_GATE.release()  # 失败解除闩锁，避免此后永不再自动触发
-            except Exception:
-                pass
-        finally:
-            # 无论成功/失败/异常都必须广播 done，避免前端圆环卡死；
-            # reset_tokens 仅在实际压实路径为 True（未压实路径保留旧真实 token 数，
-            # 使下次判定准确——notify 协议语义不变）
-            try:
-                from niu_api.chat import notify_compact_status_sync
-                notify_compact_status_sync("done", mode="auto", usage=usage_after,
-                                           reset_tokens=compacted)
-            except Exception:
-                pass
-        return compacted
-
     def _on_tool_round_refresh(self, messages):
         """每工具轮视图重建（2026-09-02）：任何工具结果 persist 落库后从 DB 全量重建——
         新输出编号/折叠态/仪表盘与 DB 同步（fold 只 UPDATE DB，内存视图不感知；
@@ -2091,7 +1996,6 @@ class NiuRunner:
             on_turn_end=self._on_turn_end,  # 每轮结束后清理（用户记忆 + 脑区衰减）
             on_before_llm=self._on_before_llm,  # 每轮 LLM 调用前刷新动态注入
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
-            on_context_high_usage=self._on_context_high_usage,  # 主 Agent 超阈值回调
             on_tool_round_refresh=self._on_tool_round_refresh,  # 每工具轮 persist 后视图重建（子 Agent 不传 = None 跳过）
             on_compression_request=self._on_compression_request,  # 发送前受控压缩（统一压缩入口 spec 2026-09-06；子 Agent 不传 = None 走保留的响应后 FIFO/占位符化分支）
             context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值

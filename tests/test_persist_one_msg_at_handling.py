@@ -228,7 +228,6 @@ def test_persist_chunk_failure_logs_error():
             mock.patch.object(runner, "_assemble_tools_schema", return_value=[]), \
             mock.patch.object(runner, "_on_turn_end"), \
             mock.patch.object(runner, "_on_before_llm"), \
-            mock.patch.object(runner, "_on_context_high_usage"), \
             mock.patch("agent.runner.agent_runner_loop",
                        return_value=iter([StreamEvent("persist", "{invalid-json")])), \
             mock.patch("niu_api.channel.gateway.get_im_gateway", return_value=None), \
