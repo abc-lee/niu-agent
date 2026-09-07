@@ -285,7 +285,6 @@ def _run_agent_loop(
         context_window_tokens=context_window_tokens,
         context_fifo_threshold=context_fifo_threshold,
         context_target_threshold=context_target_threshold,
-        on_context_high_usage=None,
         history=history,
         enable_supplement=True,  # 子 Agent 用独立 supplement queue
         supplement_drain=supplement_queue.drain if supplement_queue is not None else None,

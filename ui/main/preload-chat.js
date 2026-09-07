@@ -77,9 +77,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 通知精灵进入睡眠（/sleep 命令：触发精灵 setState(SLEEP) → 自动 triggerTidy）
   enterSleep: () => ipcRenderer.send('enter-sleep'),
 
-  // 触发上下文整理（/compact 命令：调后端 /api/context/tidy；T6 后 mode='compact' 直达机械压实）
+  // 触发上下文整理（/sleep 命令：调后端 /api/context/tidy mode='sleep'）。
+  // T6 后 /compact 不再走此通道——改走统一消息通道 sendMessage('/compact')，
+  // 后端 chat_session 落库前拦截置 manual 意图执行受控压缩（spec 2026-09-06）。
   // 注意：preload-assistant.js 另有无参同名 tidyContext 死代码（spirit.html 用 raw fetch 直接 POST，
-  // 从不调用它）。两者共用 'tidy-context' IPC 通道，main.js handler 用 `mode || 'compact'`
+  // 从不调用它）。两者共用 'tidy-context' IPC 通道，main.js handler 用 `mode || 'sleep'`
   // 兼容无参调用，不会出错。
   tidyContext: (mode) => ipcRenderer.invoke('tidy-context', mode),
 
