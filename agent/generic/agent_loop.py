@@ -11,7 +11,7 @@ from agent.output_validator import validate_references
 from agent.subagent import _read_warning_threshold
 
 # 统一压缩入口（spec 2026-09-06）：发送前门裸用意图 API（R6-B P2-1：模块级导入防 NameError）
-from agent.compression_intent import consume_compression, request_compression, peek_compression
+from agent.compression_intent import consume_compression, request_compression, peek_compression, reset_compression_intent
 
 _VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
@@ -1017,10 +1017,13 @@ def _rebuild_messages_after_compact(orig_messages, ctx, summary_text: str) -> li
 def _gate_release() -> None:
     """AUTO_GATE 统一 release（幂等，防闩锁永久化——R2-A P1-1：任何出口都解闩）。
 
-    注（R6-A P2-1）：本函数在**失败/早退**路径无条件 release；**成功压实**路径不
-    调本函数，改按压后估算 ratio 是否回落到复位线决定 release（见
-    run_controlled_compression 成功分支）——保住滞回语义：压实后仍超线则保持闩锁，
-    本 loop 内不再重复触发分钟级压缩（防长任务每轮停顿 + DB 冗余总结累积）。
+    注（R6-A P2-1 + FinalReview B-P3-1）：**失败/早退**路径经条件包装
+    （run_controlled_compression._release_if_acquired / 门 _gate_release_if_acquired）
+    仅当本轮确实 try_acquire 过才调本函数——无条件调用会误清他轮成功压实保留的
+    滞回闩锁 → 下一轮冗余 auto 重压。**成功压实**路径不调本函数，改按压后估算
+    ratio 是否回落到复位线决定 release（见 run_controlled_compression 成功分支）
+    ——保住滞回语义：压实后仍超线则保持闩锁，本 loop 内不再重复触发分钟级压缩
+    （防长任务每轮停顿 + DB 冗余总结累积）。
     """
     try:
         from agent.context_assembler import compaction
@@ -1029,7 +1032,21 @@ def _gate_release() -> None:
         pass
 
 
-def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]:
+def _clear_compression_intent_on_abnormal_exit(handler) -> None:
+    """异常退出清理（FinalReview B-P2-1）：清未消费压缩意图，防泄漏到下一会话首轮门。
+
+    忙时 /compact 置 manual 意图后立即返回；若正在跑的 run 在再次到达发送前门之前
+    异常退出（首轮 stop 检查、LLM error、溢出），残留意图会被下一会话首轮门消费 →
+    意外压缩。正常出口（CURRENT_TASK_DONE/MAX_TURNS）不清——用户按了 /compact 就该压，
+    顺延到下一条消息首轮门 = 设计内"任务间隙执行"语义。子 Agent 不碰全局意图
+    （防误清主 Agent 在途 manual——子 Agent loop 嵌在主 Agent 工具轮内运行）。
+    """
+    if getattr(handler, "_is_subagent", False):
+        return
+    reset_compression_intent()
+
+
+def run_controlled_compression(messages, ctx, client, turn, release_on_failure: bool = True) -> tuple[list, bool]:
     """发送前受控压缩（spec §受控压缩流程）——完整体（ctx 鸭子对象，R1-B P1-2）。
 
     调用链（回调契约）：agent_runner_loop 门内只调 on_compression_request(messages, turn)
@@ -1038,9 +1055,11 @@ def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]
     → 机械压实（DB 全量 build_compact_view）→ 消息重组（单元感知：待执行单元最后 +
     完成提示纯内存注入）。各步进度通知经 notify_compact_status_sync（本函数同步不能 yield）。
 
-    闩锁语义（R6-A P2-1 滞回）：失败/早退出口无条件 _gate_release() 解闩（防永久
-    失效）；成功压实仅按压后 usage 回落 < 复位线才 release——未回落保持闩锁，本
-    loop 内不再重复触发分钟级压缩。
+    闩锁语义（R6-A P2-1 滞回 + FinalReview B-P3-1 条件化）：失败/早退出口按
+    release_on_failure 条件解闩——仅当调用方本轮确实 try_acquire 过才 release
+    （门传 gate_acquired；闲时直调自己置闩传 True）。无条件 release 会误清他轮
+    成功压实保留的滞回闩锁 → 下一轮冗余 auto 重压。成功压实仅按压后 usage 回落
+    < 复位线才 release——未回落保持闩锁，本 loop 内不再重复触发分钟级压缩。
 
     Args:
         messages: 当前待发消息列表（会被重组）
@@ -1048,23 +1067,32 @@ def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]
             _sync_get_messages() / _sync_add_message(...) / _llm_config / _store
         client: LLM client（总结调用用）
         turn: 当前轮号（进度日志/冷却）
+        release_on_failure: 失败/早退时是否解闩（B-P3-1：门传本轮 gate_acquired；
+            闲时直调自己 try_acquire 过 → True）。默认 True 兼容既有直接调用方。
 
     Returns:
         (重组后 messages, 是否执行了压缩)。失败 → 返回原样 (messages, False)，
         由调用方决定是否继续发送——绝不静默丢消息。
     """
     logger.info(f"[Compression] run_controlled_compression invoked at turn {turn}")
+
+    def _release_if_acquired() -> None:
+        # B-P3-1：仅当调用方本轮确实 try_acquire 过才解闩（release_on_failure 传入）——
+        # 无条件 release 会误清他轮成功压实保留的滞回闩锁 → 下一轮冗余 auto 重压
+        if release_on_failure:
+            _gate_release()
+
     # 步骤 1：提炼前置（硬约束——提炼未完不压实）
     if _extract_cooldown_active():
         logger.warning(f"[Compression] 提炼失败冷却期，跳过本轮压缩")
-        _gate_release()
+        _release_if_acquired()
         return messages, False
     _notify_compact_progress("started", mode="auto")
     extracted_ok = _extract_f1_before_compress(messages, ctx)
     if not extracted_ok:
         logger.warning("[Compression] F1 提炼未完成，本轮跳过压缩（防未提炼内容出窗丢失）")
         _mark_extract_failed()
-        _gate_release()
+        _release_if_acquired()
         _notify_compact_progress("done", mode="auto")  # 终态必推，防前端圆环卡死
         return messages, False
     # 步骤 2：模型承上启下总结
@@ -1086,7 +1114,7 @@ def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]
         logger.warning(f"[Compression] 压实异常: {e}")
     if not compacted:
         logger.warning("[Compression] DB 压实失败，返回原消息不重组")
-        _gate_release()  # R7-A/B P1 修正：仅失败/早退解闩（防闩锁永久化）；成功不解
+        _release_if_acquired()  # B-P3-1：条件解闩（仅本轮 acquire 过）；成功路径不解
         _notify_compact_progress("done", mode="auto")
         return messages, False
     # R6-A P2-1 / R7-A P1 滞回（修正）：压实成功——门在 gate_hit 时已统一
@@ -1404,6 +1432,7 @@ def agent_runner_loop(
             if not getattr(handler, "_is_subagent", False):
                 clear_stop()  # 主 Agent 自己消费停止意图
             # 子 Agent（_is_subagent=True）不清全局标志——被主 Agent 停止意图打断时保留给主 Agent 消费
+            _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
         # === 上下文使用率检测（prompt_tokens 驱动）===
@@ -1472,6 +1501,7 @@ def agent_runner_loop(
             logger.info("[AgentLoop] Stop requested before LLM call, exiting")
             if not getattr(handler, "_is_subagent", False):
                 clear_stop()  # 主 Agent 自己消费停止意图
+            _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
         # === 统一压缩门（spec 2026-09-06）：发送前检查压缩意图/达线 ===
@@ -1532,7 +1562,9 @@ def agent_runner_loop(
                     logger.info(f"[Compression] Pre-send gate: intent={had_intent}({_reason}) ratio={ratio}")
                     yield StreamEvent("system", "正在整理上下文，请稍候…")
                     try:
-                        messages, _compacted = on_compression_request(messages, turn)
+                        # B-P3-1：传本轮 gate_acquired——回调链透传给 run_controlled_compression
+                        # 的 release_on_failure（失败出口仅当本轮 acquire 过才解闩）
+                        messages, _compacted = on_compression_request(messages, turn, gate_acquired)
                     except Exception:
                         # P2a：回调异常防护（贴 on_before_llm 风格）——logger.exception +
                         # 解闩防闩锁滞留，继续落回原发送（不炸生成器、无 chat_idle 丢失）；
@@ -1574,6 +1606,7 @@ def agent_runner_loop(
                 yield StreamEvent("system", "chat_idle")
                 if not getattr(handler, "_is_subagent", False):
                     clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
+                _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
                 return {"result": "LLM_ERROR", "error_msg": error_msg, "error_type": getattr(response, "error_type_name", None)}
             yield StreamEvent("system", "\n\n")
         else:
@@ -1587,6 +1620,7 @@ def agent_runner_loop(
                 yield StreamEvent("system", "chat_idle")
                 if not getattr(handler, "_is_subagent", False):
                     clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
+                _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
                 return {"result": "LLM_ERROR", "error_msg": error_msg, "error_type": getattr(response, "error_type_name", None)}
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
@@ -1769,6 +1803,7 @@ def agent_runner_loop(
                 on_turn_end(messages, tools_schema, turn)
             if not getattr(handler, "_is_subagent", False):
                 clear_stop()  # 子 Agent 任何路径退出不清全局标志（防止误清主 Agent 停止意图）
+            _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
             yield StreamEvent("system", "chat_idle")
             return {
                 "result": "CONTEXT_OVERFLOW",
@@ -1815,6 +1850,7 @@ def agent_runner_loop(
             if not getattr(handler, "_is_subagent", False):
                 clear_stop()  # 主 Agent 自己消费停止意图
             # 子 Agent（_is_subagent=True）不清全局标志——被主 Agent 停止意图打断时保留给主 Agent 消费
+            _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
 
@@ -1919,6 +1955,7 @@ def agent_runner_loop(
                 if not getattr(handler, "_is_subagent", False):
                     clear_stop()  # 主 Agent 自己消费停止意图
                 # 子 Agent（_is_subagent=True）不清全局标志——被主 Agent 停止意图打断时保留给主 Agent 消费
+                _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
                 yield StreamEvent("system", "chat_idle")
                 return {"result": "STOPPED", "messages": messages}
             gen = handler.dispatch(tool_name, args, response, index=ii)
@@ -1960,6 +1997,7 @@ def agent_runner_loop(
                             logger.warning(f"[AgentLoop] Failed to terminate subagent {_agent_name}: {_e}")
                     if not getattr(handler, "_is_subagent", False):
                         clear_stop()  # 主 Agent 自己消费停止意图
+                    _clear_compression_intent_on_abnormal_exit(handler)  # B-P2-1：异常退出清未消费压缩意图
                     yield StreamEvent("system", "chat_idle")
                     return {"result": "STOPPED", "messages": messages}
                 outcome = _outcome

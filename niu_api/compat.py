@@ -1715,7 +1715,7 @@ def _run_idle_compression(runner, history) -> str:
     """闲时 /compact：直接同步执行受控压缩（R2-A P0-1——不经 agent_runner_loop）。
 
     组装视图 + 构造 ctx（与 runner._on_compression_request 同款）→
-    run_controlled_compression(messages, ctx, client, turn=0)：
+    run_controlled_compression(messages, ctx, client, turn=0, release_on_failure=True)：
     完整受控压缩（提炼 → 总结 LLM → 机械压实 → 重组）内部完成，无需额外 LLM 轮。
     压缩后无真实用户指令要发——重组消息丢弃（仅压缩副作用落库/归档生效）。
 
@@ -1739,7 +1739,10 @@ def _run_idle_compression(runner, history) -> str:
         _last_compacted_view=None,
     )
     try:
-        new_msgs, did = run_controlled_compression(list(history), ctx, runner.client, 0)
+        # B-P3-1：闲时直调自己置闩（chat_session 先 try_acquire）→ 失败出口解闩传 True
+        new_msgs, did = run_controlled_compression(
+            list(history), ctx, runner.client, 0, release_on_failure=True,
+        )
         if did:
             return "compacted"
         # 压缩被跳过（提炼失败冷却/无 DB 消息）：manual 意图已被 consume，如实返回
