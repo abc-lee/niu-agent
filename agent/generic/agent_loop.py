@@ -866,18 +866,167 @@ def _estimate_usage_ratio(messages) -> float | None:
         return None
 
 
-def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]:
-    """发送前受控压缩（spec 2026-09-06 §受控压缩流程）。
+# 压缩完成提示（spec §提示文案定稿——只此一句，纯内存不落库）
+_COMPRESSION_DONE_HINT = "[系统提示] 上下文压缩已完成。"
 
-    主 Agent 专用。调用链（回调契约）：agent_runner_loop 门内只调
-    on_compression_request(messages, turn) 回调（runner 提供）；runner 的
-    _on_compression_request 构造 ctx 后调本函数——门不经手 ctx（签名是 Task 5
-    终版，勿改）。执行顺序：
-      1. 提炼前置（Task 3 接线：F1 → entity-extractor；提炼未完不压实）
-      2. 模型承上启下总结（Task 4 接线：client.chat tools=[]，总结落库 bypass+skip_mirror）
-      3. 机械压实（Task 5 接线：compaction.build_compact_view）
-      4. 注入 "[系统提示] 上下文压缩已完成。"（纯内存，Task 4 接线）
-    各步进度通知经 notify_compact_status_sync（R1-A P2-2 修订：本函数同步不能 yield）。
+
+def _notify_compact_progress(status: str, mode: str = "auto") -> None:
+    """压缩进度通知（R1-A P2-2）：同步函数内桥接 notify_compact_status_sync。"""
+    try:
+        from niu_api.chat import notify_compact_status_sync
+        notify_compact_status_sync(status, mode=mode)
+    except Exception:
+        pass
+
+
+def _compact_db_view(ctx) -> tuple[bool, dict]:
+    """从 DB 全量消息机械压实（spec Task 5）。返回 (是否压实成功, stats)。
+
+    ctx = 压缩上下文鸭子对象（R1-B P1-2），须含 _sync_get_messages。
+    """
+    try:
+        from agent.context_assembler import compaction
+        db_messages = ctx._sync_get_messages()
+        if not db_messages:
+            return False, {}
+        system_msg = getattr(ctx, "_system_msg", None)
+        new_view, stats = compaction.build_compact_view(
+            db_messages, system_msg=system_msg,
+            blocks_db_path=getattr(ctx, "_blocks_db_path", None),
+        )
+        ctx._last_compacted_view = new_view  # 供重组消费
+        return True, stats
+    except Exception as e:
+        logger.exception(f"[Compression] DB compact failed: {e}")
+        return False, {}
+
+
+def _rebuild_messages_after_compact(orig_messages, ctx, summary_text: str) -> list:
+    """重组待发 messages：整体替换 + 待执行单元置最后 + 尾引导补（R4-A P0-1 修订）。
+
+    核心事实（R3-B + 代码实证）：
+    - compaction 只写指针块**绝不删 DB 行**；agent_loop 工具轮 persist 后经
+      _on_tool_round_refresh 从 DB 重建 messages——messages 与 DB 几乎同步。
+    - 压缩后**整体替换**为压实视图（[system]+[索引]+[窗口占位符化]）即完整正确
+      上下文，不 re-append unit 原文（防反胀/重复/孤儿 tool）。
+
+    **用户拍板不变式：原指令（待执行内容）必须是最后一条**（spec §受控压缩流程 e）。
+    压实视图窗口（keep≥1）恒含当前待执行单元原文——因此：
+    1. 从视图剥离**最后单元**（其 user 起点 → 尾：与 orig_messages 尾部对齐识别；
+       首轮=当前 user 指令；轮间=当前 continuation 单元）
+    2. 视图主体 = [system]+[索引]+[剥离后的窗口]
+    3. 追加 总结（assistant）→ 完成提示（user 纯内存）→ **待执行单元**（末）
+    4. 未落库尾引导（supplement/next_prompt，DB 无）在待执行单元后继续补——
+       但引导实际是轮末 append 在消息流中、语义上应先于待执行内容，故引导放
+       完成提示后、待执行单元前（R4 修订：引导是"系统给模型的提示"，模型应先
+       见提示再执行原指令）
+
+    顺序：[视图主体] + [总结] + [完成提示] + [未落库尾引导] + [待执行单元(最后)]
+    """
+    system = orig_messages[0] if orig_messages and orig_messages[0].get("role") == "system" else None
+    compacted = ctx._last_compacted_view or []
+    # 压实视图窗口部分（去 system）
+    window = [m for m in compacted if m.get("role") != "system"]
+    # R6-A P0-1 / B-P1-2 修正：待执行单元识别——orig_messages 尾部可能是不落库的
+    # 引导 user（supplement/next_prompt，DB 无）。真正的待执行单元起点 = orig 中
+    # **content 也出现在窗口（=已 persist 落库）的最后一个 user**；其后的尾部连续
+    # user 若不在窗口（未落库引导）则收进 tail_guides 放完成提示后、待执行单元前。
+    # 识别：从 orig 尾向前找第一个"content 在窗口 user 集合中"的 user = 待执行起点。
+    window_user_contents = {
+        m.get("content") for m in window if m.get("role") == "user"
+    }
+    pending_start = -1
+    for i in range(len(orig_messages) - 1, -1, -1):
+        m = orig_messages[i]
+        if m.get("role") == "user" and (m.get("content") or "") in window_user_contents:
+            pending_start = i
+            break
+    # 无匹配（orig 全部未落库——异常）→ 兜底：窗口最后 user 起点
+    if pending_start < 0:
+        for i in range(len(orig_messages) - 1, -1, -1):
+            if orig_messages[i].get("role") == "user":
+                pending_start = i
+                break
+    pending_unit = orig_messages[pending_start:] if pending_start >= 0 else []
+    # 从视图剥离待执行单元：窗口尾部从"与 pending_unit 起点同 content 的 user"起剥
+    stripped: list = []
+    if pending_unit:
+        pu_first_content = pending_unit[0].get("content") or ""
+        cut = None
+        for i in range(len(window) - 1, -1, -1):
+            if window[i].get("role") == "user" and (window[i].get("content") or "") == pu_first_content:
+                cut = i
+                break
+        if cut is not None:
+            stripped = window[cut:]
+            window = window[:cut]
+    new_msgs: list = []
+    if system is not None:
+        new_msgs.append(system)
+    new_msgs.extend(window)
+    # 总结（assistant，若生成且未已在视图中）
+    if summary_text and not any(
+        m.get("role") == "assistant" and (m.get("content") or "").strip() == summary_text.strip()
+        for m in new_msgs
+    ):
+        new_msgs.append({"role": "assistant", "content": summary_text})
+    # 完成提示（纯内存注入，不落库）
+    new_msgs.append({"role": "user", "content": _COMPRESSION_DONE_HINT})
+    # 未落库尾引导（R6 修订）：orig 中 content **不在窗口**的尾部连续 user
+    # （supplement/next_prompt/动态块，DB 无）——它们可能在待执行起点之后
+    # （消息流最后 append）。反向收集：遇到 content 在窗口（已 persist）的 user
+    # 停止；跳过动态块前缀（下轮 on_before_llm 幂等重插）。
+    tail_guides: list = []
+    for m in reversed(orig_messages):
+        if m.get("role") != "user":
+            if tail_guides:
+                break  # 已收集引导后遇非 user → 停止（引导是连续尾部）
+            continue  # 未开始收集时跳过非 user（窗口剥离段在尾）
+        content = m.get("content") or ""
+        if content.startswith("[系统动态信息]"):
+            if tail_guides:
+                break
+            continue  # 动态块不收（未开始收集时跳过）
+        if content in window_user_contents:
+            break  # 已 persist（视图有同文本 user）→ 待执行起点，停止
+        tail_guides.append(m)
+    tail_guides.reverse()
+    new_msgs.extend(tail_guides)
+    # 待执行单元最后（用户拍板不变式：原指令最后一条）
+    if stripped:
+        new_msgs.extend(stripped)
+    elif pending_unit:
+        new_msgs.extend(pending_unit)  # 视图无（异常）→ 用 orig 的
+    return new_msgs
+
+
+def _gate_release() -> None:
+    """AUTO_GATE 统一 release（幂等，防闩锁永久化——R2-A P1-1：任何出口都解闩）。
+
+    注（R6-A P2-1）：本函数在**失败/早退**路径无条件 release；**成功压实**路径不
+    调本函数，改按压后估算 ratio 是否回落到复位线决定 release（见
+    run_controlled_compression 成功分支）——保住滞回语义：压实后仍超线则保持闩锁，
+    本 loop 内不再重复触发分钟级压缩（防长任务每轮停顿 + DB 冗余总结累积）。
+    """
+    try:
+        from agent.context_assembler import compaction
+        compaction.AUTO_GATE.release()
+    except Exception:
+        pass
+
+
+def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]:
+    """发送前受控压缩（spec §受控压缩流程）——完整体（ctx 鸭子对象，R1-B P1-2）。
+
+    调用链（回调契约）：agent_runner_loop 门内只调 on_compression_request(messages, turn)
+    回调（runner 提供）；runner 的 _on_compression_request 构造 ctx 后调本函数——
+    门不经手 ctx。执行顺序：提炼前置 → 模型承上启下总结（落库 bypass+skip_mirror）
+    → 机械压实（DB 全量 build_compact_view）→ 消息重组（单元感知：待执行单元最后 +
+    完成提示纯内存注入）。各步进度通知经 notify_compact_status_sync（本函数同步不能 yield）。
+
+    闩锁语义（R6-A P2-1 滞回）：失败/早退出口无条件 _gate_release() 解闩（防永久
+    失效）；成功压实仅按压后 usage 回落 < 复位线才 release——未回落保持闩锁，本
+    loop 内不再重复触发分钟级压缩。
 
     Args:
         messages: 当前待发消息列表（会被重组）
@@ -887,14 +1036,64 @@ def run_controlled_compression(messages, ctx, client, turn) -> tuple[list, bool]
         turn: 当前轮号（进度日志/冷却）
 
     Returns:
-        (重组后 messages, 是否执行了压缩)。失败/无 F1 欠账 → 返回原样 (messages, False)，
+        (重组后 messages, 是否执行了压缩)。失败 → 返回原样 (messages, False)，
         由调用方决定是否继续发送——绝不静默丢消息。
     """
-    # 骨架：实际步骤 Task 3/4/5 接线；当前仅记录意图日志 + 保持消息不变
-    # （Task 2 只建执行点与测试骨架；压缩动作在后续 Task 实装）
     logger.info(f"[Compression] run_controlled_compression invoked at turn {turn}")
-    # 占位——Task 3/4/5 将在此插入提炼/总结/压实
-    return messages, False
+    # 步骤 1：提炼前置（硬约束——提炼未完不压实）
+    if _extract_cooldown_active():
+        logger.warning(f"[Compression] 提炼失败冷却期，跳过本轮压缩")
+        _gate_release()
+        return messages, False
+    _notify_compact_progress("started", mode="auto")
+    extracted_ok = _extract_f1_before_compress(messages, ctx)
+    if not extracted_ok:
+        logger.warning("[Compression] F1 提炼未完成，本轮跳过压缩（防未提炼内容出窗丢失）")
+        _mark_extract_failed()
+        _gate_release()
+        _notify_compact_progress("done", mode="auto")  # 终态必推，防前端圆环卡死
+        return messages, False
+    # 步骤 2：模型承上启下总结
+    summary_text = ""
+    try:
+        _notify_compact_progress("started", mode="summary")
+        summary_text = _run_summary_llm(messages, client)
+        if summary_text:
+            _persist_summary_without_extract(ctx, summary_text)
+    except Exception as e:
+        logger.warning(f"[Compression] 总结步失败（跳过总结仍压实）: {e}")
+    # 步骤 3：机械压实（DB 全量）
+    compacted = False
+    _stats = {}
+    try:
+        from agent.context_assembler import compaction
+        compacted, _stats = _compact_db_view(ctx)
+    except Exception as e:
+        logger.warning(f"[Compression] 压实异常: {e}")
+    if not compacted:
+        logger.warning("[Compression] DB 压实失败，返回原消息不重组")
+        _gate_release()  # R7-A/B P1 修正：仅失败/早退解闩（防闩锁永久化）；成功不解
+        _notify_compact_progress("done", mode="auto")
+        return messages, False
+    # R6-A P2-1 / R7-A P1 滞回（修正）：压实成功——门在 gate_hit 时已统一
+    # AUTO_GATE.try_acquire 闩锁（含 manual，见 agent_runner_loop 门）。压后估算回落
+    # < 复位线才 release（供下轮重检）；仍 ≥ 触发线 → 保持闩锁，本 loop 内不再
+    # 重复触发分钟级压缩（防长任务每轮停顿 + DB 冗余总结累积）。manual 同理：
+    # 用户刚手压完若仍未回落，不立即 auto 重压（R7-A 焦点 3）。
+    try:
+        from agent.context_assembler import compaction
+        _post_ratio = None
+        if _stats.get("usage") is not None:
+            _post_ratio = float(_stats.get("usage"))
+        if _post_ratio is not None and _post_ratio < compaction.reset_ratio():
+            compaction.AUTO_GATE.release()  # 已回落 → 解除闩锁（下轮可再触发）
+        # else：未回落 → 保持闩锁（本函数不 release，天然滞回）
+    except Exception:
+        pass  # release 失败无害（/new 兜底复位）
+    # 步骤 4：重组 messages（单元感知）
+    new_msgs = _rebuild_messages_after_compact(messages, ctx, summary_text)
+    _notify_compact_progress("done", mode="auto")
+    return new_msgs, True
 
 
 # 压缩前总结 prompt（spec §提示文案定稿——承上启下，非历史抢救）
@@ -932,7 +1131,10 @@ def _persist_summary_without_extract(ctx, summary_text: str) -> str | None:
     """总结落库：bypass @ 提取 + skip_mirror（spec §消息形态 风险 C）。
 
     ctx = 压缩上下文鸭子对象（R1-B P1-2），须含 _sync_add_message。
+    空文本早退不落库（Task 3/4 quality P3）——空 assistant 行会污染历史视图。
     """
+    if not summary_text:
+        return None
     try:
         return ctx._sync_add_message(
             role="assistant", content=summary_text,

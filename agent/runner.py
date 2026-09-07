@@ -1518,6 +1518,30 @@ class NiuRunner:
         except Exception as e:
             logger.error(f"[Runner] Tool-round view refresh failed (self-heals at next entry assembly): {e}")
 
+    def _on_compression_request(self, messages, turn):
+        """发送前受控压缩回调（agent_runner_loop on_compression_request）。
+
+        构造压缩上下文鸭子对象（R1-B P1-2 定案——不挂 NiuHandler 属性防覆盖/跨会话
+        残留）：bound method 引用 runner 的 DB 访问，避免覆盖 NiuHandler 既有方法。
+        executor 线程内执行（agent_loop 在 worker 线程）。
+        """
+        try:
+            from types import SimpleNamespace
+            from agent.generic.agent_loop import run_controlled_compression
+            ctx = SimpleNamespace(
+                _sync_get_messages=self._sync_get_messages,   # runner bound method
+                _sync_add_message=self._sync_add_message,     # runner bound method
+                _llm_config=self.llm_config,
+                _store=getattr(self, "_store", None),         # align 用（best-effort）
+                _system_msg=messages[0] if messages and messages[0].get("role") == "system" else None,
+                _blocks_db_path=None,                          # 默认块库路径
+                _last_compacted_view=None,                     # 由 _compact_db_view 回填
+            )
+            return run_controlled_compression(messages, ctx, self.client, turn)
+        except Exception as e:
+            logger.exception(f"[Compression] on_compression_request failed: {e}")
+            return messages, False
+
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
 
@@ -2069,6 +2093,7 @@ class NiuRunner:
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
             on_context_high_usage=self._on_context_high_usage,  # 主 Agent 超阈值回调
             on_tool_round_refresh=self._on_tool_round_refresh,  # 每工具轮 persist 后视图重建（子 Agent 不传 = None 跳过）
+            on_compression_request=self._on_compression_request,  # 发送前受控压缩（统一压缩入口 spec 2026-09-06；子 Agent 不传 = None 走保留的响应后 FIFO/占位符化分支）
             context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值
         )
 
