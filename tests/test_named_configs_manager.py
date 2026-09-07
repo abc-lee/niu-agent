@@ -308,6 +308,29 @@ def test_corrupted_collection_list_degrades(tmp_config):
     assert "warning" in result
 
 
+def test_non_dict_configs_treated_as_corrupted(tmp_config):
+    """损坏路径 ④：configs 值为非对象（列表）→ 与 JSON 损坏同判，走两条保护路径。"""
+    _write_user_config(
+        tmp_config,
+        llm={"presetId": "豆包", "apiBase": "https://a", "model": "m1", "type": "openai"},
+    )
+    _write_configs(tmp_config, ["豆包"])  # {"configs": [...]}：合法 JSON 但类型错误
+    bad_bytes = (tmp_config / "llm-configs.json").read_bytes()
+
+    # 读侧降级：list_llm_configs → 空列表 + warning（防 .items() AttributeError）
+    result = ncm.list_llm_configs()
+    assert result["configs"] == []
+    assert "warning" in result
+
+    # 写侧保护：逐项修改型 → user-config 写入成功 + warning，坏文件不被覆写
+    result = ncm.set_llm_config(model="m2")
+    assert result["status"] == "updated"
+    assert result["warning"] == "配置合集文件损坏未同步"
+    assert _read_user_config(tmp_config)["llm"]["model"] == "m2"
+    # 类型错误文件内容保留（禁"损坏=空合集"整体覆写销毁全部条目）
+    assert (tmp_config / "llm-configs.json").read_bytes() == bad_bytes
+
+
 def test_list_llm_configs_normal(tmp_config):
     """list 正常路径：返回 [{name, model, apiBase}] 摘要。"""
     _write_configs(

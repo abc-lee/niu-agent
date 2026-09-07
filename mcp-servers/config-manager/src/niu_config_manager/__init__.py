@@ -468,13 +468,19 @@ def load_named_configs() -> dict[str, Any]:
     """Load named LLM config collection (~/.niu/config/llm-configs.json).
 
     返回 {"<配置名>": {"llm": {...}, "lightrag_llm": {...}}} 字典。
-    文件不存在 = 空合集（返回 {}）；JSON 损坏时抛异常，由调用方区分处理
-    （读侧展示降级 / 写侧跳过保护两条路径各自 catch）。
+    文件不存在 = 空合集（返回 {}）；JSON 损坏或 configs 值非对象时抛异常，
+    由调用方区分处理（读侧展示降级 / 写侧跳过保护两条路径各自 catch）。
+    扁平旧格式（无 configs 顶层）data.get 返回 {} = 正常空合集语义不变。
     """
     if not LLM_CONFIGS_PATH.exists():
         return {}
     data = json.loads(LLM_CONFIGS_PATH.read_text(encoding="utf-8"))
-    return data.get("configs", {})
+    configs = data.get("configs", {})
+    if not isinstance(configs, dict):
+        raise ValueError(
+            f"配置合集文件损坏: configs 应为对象，实际为 {type(configs).__name__}"
+        )
+    return configs
 
 
 def _sync_named_config(config: dict[str, Any]) -> Optional[str]:
