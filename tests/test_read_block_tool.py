@@ -367,3 +367,39 @@ class TestEntityTags:
         assert compaction.archive_excluded_units(
             messages, [(0, 1)], 99, db, collect_entities=False) == 1
         assert load_all(db)[0].first_user == "原始用户问题"
+
+    def test_archive_first_user_real_command_with_new_slicing(self, tmp_path):
+        """新切割×归档组合路径：嵌套三件套布局 → slice_units 单单元 → 首问=真实指令。
+
+        既有 T4 测试直接手传 units 不经过 slice_units——本用例覆盖「回看透视
+        切割 × archive_excluded_units」组合（spec 2026-09-07 §3.2 / A P2-2）。
+        """
+        from types import SimpleNamespace
+
+        from agent.context_assembler.blocks import load_all
+        from agent.context_assembler.slicer import slice_units
+
+        def msg(role, content, mid, rowid, created_at="2026-08-12T10:00:00"):
+            return SimpleNamespace(
+                id=mid, rowid=rowid, role=role, content=content,
+                tool_calls=None, tool_call_id=None, created_at=created_at,
+            )
+
+        # 嵌套布局：指令单元工具循环中段落三件套 + 后续回复（自动压缩形态）
+        messages = [
+            msg("user", "帮我部署一下服务", "u1", 1),
+            msg("assistant", "a1", "a2", 2),
+            msg("tool", "t1", "t3", 3),
+            msg("user", "[系统提示] 上下文即将压缩，超出保留范围的早期对话将被归档移出。", "u4", 4),
+            msg("assistant", "总结……", "a5", 5),
+            msg("user", "[系统提示] 上下文压缩已完成。", "u6", 6),
+            msg("assistant", "a3", "a7", 7),
+            msg("tool", "t2", "t8", 8),
+        ]
+        units = slice_units(messages)
+        assert units == [(0, 7)]  # 三件套透视 → 单一大单元
+
+        db = tmp_path / "b.db"
+        assert compaction.archive_excluded_units(
+            messages, units, 99, db, collect_entities=False) == 1
+        assert load_all(db)[0].first_user == "帮我部署一下服务"
