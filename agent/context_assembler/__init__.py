@@ -61,6 +61,20 @@ def reset_derived_state(blocks_db_path=None, calibration_path=None) -> None:
         delete_all(p)
     calibration.reset(calibration_path)
     compaction.AUTO_GATE.release()
+    # 统一压缩入口（spec 2026-09-06）：/new 作废压缩意图——防残留到下一会话首轮被误消费
+    try:
+        from agent.compression_intent import reset_compression_intent
+        reset_compression_intent()
+    except Exception:
+        pass
+    # R3-A P2-1：提炼失败冷却随 /new 复位（_reset_extract_cooldown 定义于 Task 3；
+    # 此处 import 在函数体运行时执行，SDD 顺序下 Task 3 已落定；Task 1 单独阶段
+    # 若调用则 ImportError 被 except 吞——best-effort 安全，R6-B P2-2 归属修正）
+    try:
+        from agent.generic.agent_loop import _reset_extract_cooldown
+        _reset_extract_cooldown()
+    except Exception:
+        pass
     from agent.context_manager import peek_context_manager
     cm = peek_context_manager()
     if cm is not None:
