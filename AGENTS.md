@@ -531,6 +531,13 @@ preload_face_model()
 - **已知边界（接受）**：读侧不物理清理（过期条目滞留文件不可见无害，下次写入清）；跨进程锁不互斥 lost-update 窗口为既有现状（config-manager save_memory 无锁写，根治需 flock 覆盖全部写方另开工程）；带偏移手写条目读侧字符串序错排（工具路径归一化保证）。
 - **实机验证 ✅ 已通过（2026-09-08 用户实测）**：①天气脚本 weather_daily.py 建好+cron 30 6 * * * ②动态块 `[例行数据] 1 项：weather〈石家庄 强阵雨 14.9-20.5°C…〉` 正确显示 ③`ls /` 目录描述含"例行数据轻提醒" ④Skill 已同步 ~/.niu/skills/ ⑤脚本按 Skill 规范编写（sys.path 推导+返回值检查+静默纪律+expires_at<24h）。
 
+##### 方案变更：写时清理→读时清理（用户拍板 2026-09-08；plan v1.2 R1 双 REVISION→R2 双 CONDITIONAL→R3 双 APPROVE，main 202ab070，docs 8c26b40/419885d）
+
+- **变更**：清理从写侧（daily_set/daily_delete 每次调用都清理）移到读侧（_daily_reminder_line 每轮读取时物理删除过期/畸形条目）；写侧 _clean_expired_daily 删除、返回值 cleaned 字段删除；disk yaml/TOOL_SCHEMAS/Skill/SYSTEM_MANUAL 措辞统一为「到期自动清理」
+- **关键教训**：①**回写删除判据必须是三件套补集**（非 dict/缺失/不可解析/字符串序过期——只写字符串序会让畸形条目永久残留+每轮空回写，R1 双审同抓）②**清理必须先于空串返回**（`if not valid: return ""` 提前返回会导致全过期永不清理，R2-B P2 抓出）③**测试适配指令必须精确到断言形态**（复合断言删子句 vs 字典相等删键，「删该行」会误删 status/deleted 钉，R2 双审同抓）
+- **已知边界（接受）**：_memory_file_lock 进程内锁不跨进程（background_script 子进程 lost-update 窗口，低频+TTL 自愈，与 spec 既有现状对齐）
+- **验证**：28 passed（T4 测试适配后）+ A1-A5 验收全绿（cleaned/清理措辞零命中 + syntax 四文件 + 回归）
+
 #### 工程：版本号单一真相源——四处硬编码消除（用户拍板；spec v0.2 R1 双审同抓 P0（preload 文件写错）→R2 复核双 APPROVE + plan v0.2 R1 双审同抓两处→R2 双 APPROVE + SDD Wave1（T1→T2 串行+T3a 并行）+ 实施双审双 APPROVE，main dbac2fe9/a298fcb1）
 
 - **背景**：版本号手工同步四处（VERSION/chat.html/compat.py UA/测试断言）已连续两次漏同步（0.3.3→0.3.4 漏 compat.py+测试——测试钉同一旧值一直绿未暴露，0.3.5 升级才发现补）。用户拍板：改为读 VERSION（"是不是只需要改造两个地方去读 Version"→ 实际 5 个改动点已说明获批）。
