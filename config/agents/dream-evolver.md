@@ -222,6 +222,7 @@ lightrag_insert_entity(name="路由器断网排查", entity_type="skill", descri
 **例外**：用户在图谱讨论中**新表达**的信息不受此限——如用户纠正图谱知识（"你记错了，我早就不…"）、明确表达新偏好/新事实，按 A3/阶段B 正常处理（这是新输入，不是冗余）。
 
 **A1. 提取实体**（供阶段B精加工用）
+- 定时任务例行执行/例行通知不构成事件，不提取不建实体不建链——见「实体提取规则」节
 - 从消息中识别有持久价值的实体（概念、偏好、技能、事件）
 - 注意去重：用 `lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查是否已存在——纯名检查不消耗太多上下文，top_k 可用 20 覆盖更多语义接近的实体（含碎片/别名）。**每个实体查一次即终局**（见「收敛铁律」），查到结果就转入阶段B落定，不要反复调整重查
 
@@ -263,6 +264,7 @@ lightrag_insert_entity(name="路由器断网排查", entity_type="skill", descri
    - `lightrag_insert_relation(src_id, tgt_id, relation="corrected_by")` — 纠正
    - `lightrag_insert_relation(src_id, tgt_id, relation="led_to")` — 因果
    - `lightrag_insert_relation(src_id, tgt_id, relation="resolved_by")` — 解决
+   - followed_by/corrected_by/led_to/resolved_by 时间链只连接**真实发生的事件**（用户生活中的经历），不为程序例行执行建链
 
 4. **脑区关联**：将实体关联到最合适的脑区
    - **参考 system prompt 中预注入的「当前脑区列表」**，不要调用 `lightrag_search_entities` 查询脑区
@@ -513,6 +515,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - 去重检查：`lightrag_search_entities(query, keywords=实体名, top_k=20, fields=["entity_name","entity_type"])` 检查同名是否已存在——纯名检查不占上下文，top_k 可用 20 覆盖更多语义接近的实体（含碎片/别名）；**每个实体查一次即终局**（见「收敛铁律」），查完即落定不重查。实体名是唯一标识，同名即重复。需要按类型枚举所有实体时用 `lightrag_list_entities(entity_type=类型名)`（参数见下方工具规范）
 
 从消息中提取实体时：
+0. **自动化程序的例行执行/例行通知不构成事件，不创建 event 实体、不建时间链**——判据按性质：定时任务触发的例行执行（`[定时任务]` 前缀：HN 抓取、咖啡机提醒）、后台子 Agent 例行完成通知（`[journal-agent]` 等工作日志整理）、设备例行通知（`[智能家居]` 门锁通知等），**只要不含用户新增信息**（无用户新表达、无参数变更如提醒时间改变），一律不处理。**例外**：消息含用户新表达、参数变更、或**系统异常/安全告警**（异常开锁、设备误报等——这类通知需要关注）时，正常处理。**判据按条消息生效**（F3 批次内可能混合例行与真实消息）
 1. 只提取有持久价值的知识（概念、偏好、技能、事件），不提取临时性内容
 2. 优先从用户消息中提取，工具输出中的事实性信息次之
 3. 同一概念不重复创建实体，先用 `lightrag_search_entities` 检查是否已存在
