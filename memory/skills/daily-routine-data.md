@@ -11,7 +11,7 @@ created: 2026-09-08
 
 memory.json 顶层 `daily` 键是"例行数据轻提醒区"：后台定时脚本写入例行信息（如天气）→ 你每轮的动态块出现一行 `[例行数据] N 项：key〈text〉...`（只显示未过期条目）→ 过期自动退场。用户提起相关场景时你主动关联提醒，没提起时不要主动播报。
 
-本 Skill 只讲 daily 特有部分。background_script 机制本身（60s 超时、cwd=scripts/、print 语义、schedule_task 参数等）见 `memory/skills/scheduled-tasks.md`，不重复。
+本 Skill 只讲 daily 特有部分。background_script 机制本身（60s 超时、cwd=scripts/、print 语义、schedule_task 参数等）见 `~/.niu/skills/scheduled-tasks.md`，不重复。
 
 ## 两条写入通道
 
