@@ -510,6 +510,17 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+#### 工程：图谱例行事件清理 + dream-evolver 防复发（用户发现 entity/dream 行为分裂；spec v0.4 四轮双审收敛（R1 双 REVISION 7P1+4P2 / R2 双 REVISION 名单附件缺失 / R3 双 REVISION 命名精度双审同抓 / R4 A APPROVE B 1P2 大小写修正）+ plan v0.3 两轮双审（R1 双 REVISION T3 死步+重扫越权 / R2 B APPROVE A 1P2 vdb base64 判据）+ SDD T1-T3 + 实施双审 A APPROVE/B 1P2 KV 残留遗漏修复，main 827ae85e/e2dc992f，docs 23484fd/2d0e202）
+
+- **背景**：用户发现 entity-extractor（000003）正确跳过例行消息（"全部定时任务触发的例行流程、无用户新增事实→跳过"）、dream-evolver（000005-000010）把同一批例行执行建成 event 实体+followed_by 时间链——行为分裂。DreamVerify 独立验证：诊断成立且污染规模 25+/天递增（HN 每日事件 17 个名称漂移 8 种+咖啡机 7 个+journal 8 个+门锁等）。
+- **用户拍板**：时间链上例行任务事件全删（"咖啡机的提醒事件、每天的新闻，这些都是没有价值的东西"）+ 同步向量库；边界裁决：保留有真实上下文的门锁事件（回家取快递/购物回来/买蒜薹回家——B 审从 scout"generic 无上下文"误判中抓出）+ 安全告警（异常开锁）；journal 文档删。
+- **机制**：删除经 MCP `lightrag_delete_entity`（唯一正确入口——graphml 级联删边+vdb_entities/vdb_relationships 同步删，直接改 graphml 留孤儿向量不可接受）；67 个实体逐字名单冻结附件（`docs/superpowers/specs/2026-09-08-routine-event-cleanup-list.md`）；删除经 HTTP DELETE /api/inject/resource/<name>（67/67 成功 61 秒）；KV 残留清理需停 Niu（JsonKVStorage 内存覆写）；11 项任务定义实体改 type=concept（关闭 dream 先例跟随通道）。
+- **防复发**：dream-evolver.md 三处——实体提取规则新增判据（自动化例行执行/通知不构成事件，按性质：定时任务/后台子 Agent/设备例行通知前缀族，例外=用户新表达/参数变更/系统异常安全告警，按条消息生效）+ A1 指向句 + 阶段B步骤3 时间链限定（只连接真实事件）；通用化（无本地实例——用户指正 HN/咖啡机等是本机内容其他用户没有）。
+- **验证**：graphml 3167→3100 ✓ / vdb_entities 3181→3114 ✓ / vdb_relationships 5144→4893（-251 精确吻合）✓ / 三 vdb consistent ✓ / 名单残留=0 ✓ / KV 四文件清零（entity_chunks 33+relation_chunks 136+full_entities 34+full_relations 133——实施双审 B 抓出后两个文件遗漏）✓ / 备份 ~/.niu/backups/lightrag_routine-delete-20260908/（83MB）。
+- **关键教训**：①**scout 枚举清单不能直接信**——HN 39 复现不出（实际枚举 27 个 dated+~8 无日期≈35）、门锁漏 2 个、generic 定性错误（买蒜薹被误判）；删除不可恢复的操作必须名单逐字冻结+全量枚举对账。②**名称大小写陷阱**——graphml node id 小写「每日hn热点抓取」vs data 属性大写「每日HN热点抓取」，edit_entity 按 node id 匹配（A 审说改大写/B 审实证 node id 小写——两个审查结论相反时以直接验证为准）。③**执行顺序**：防复发提示词先行（截断流入），删除随后——倒置则清理后新污染继续产生。④**vdb matrix 是 base64 字符串**——一致性判据 len(matrix)==len(data)×4096，len(data)==len(matrix) 恒假。
+- **已知边界**：约 40 个新闻话题实体失边孤立（非损坏，自然归宿）；vdb 孤儿 14 个不属本工程（MCP 不可达，如需清理走 lightrag-data-repair）；KV full_entities/full_relations 已清但未来同名 insert 时会重建（惰性）。
+- **实机验证（待用户重启 Niu）**：图谱检索正常 + dream 下次运行不再建例行实体。
+
 #### 工程：例行数据 daily 区域——轻提醒注入区（用户拍板备忘 5 条+问答 4 条；spec v0.2→v0.4 三轮双审收敛（R1 双 CONDITIONAL 3P2+8P3 / R2 双 CONDITIONAL 1P2+5P3 / R3 终核双 APPROVE）+ plan v0.2 R1 双 CONDITIONAL 6P2+7P3→R2 复核双 APPROVE + SDD Wave1 三 Task 并行 + 实施双审 A APPROVE/B CONDITIONAL 1P2，main 62aad058/84236b55）
 
 - **需求（用户拍板）**：memory.json 新增 daily 区域（按数据源分 key，各槽独立）；每条带 expires_at（写入方自定保鲜期）；写时清理 lazy TTL；只动 daily 区域其余字段原样写回+原子写；动态块新增轻提醒行（只显示未过期，插在 [暂存事项] 上方）；主 Agent 提示词加一句指向 Skill。**Q1 写入通道**：新增 MCP 工具但必须隐藏，主 Agent 只能经 disk() 调用。**Q2 上限**：20 key+100 字符，Skill 讲清；大内容走指针模式（写 ~/.niu/tmp/ 临时文件、daily text 写路径指针、expires_at≤24h 因 tmp 每日清理）。**Q3 单行同构**照 [暂存事项] 行。**Q4（用户中途指正方向）**：例行数据写入由 **background_script 后台静默脚本**（主 Agent 编写，主 Agent 不能用 MCP 工具）完成——脚本经 sys.path 推导 + `from niu_memory_server import daily_set` **import 同一函数直调**（不走 MCP 协议，与 MCP 工具同一份实现），非子 Agent。
