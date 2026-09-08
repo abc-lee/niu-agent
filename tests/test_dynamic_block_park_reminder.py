@@ -9,6 +9,7 @@
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -146,13 +147,15 @@ def test_daily_reminder_shows_unexpired(memory_file):
 
 
 def test_daily_reminder_filters_expired(memory_file):
-    """过期过滤（读侧只过滤不清理）：已过期/缺失/不可解析 expires_at 剔除，未过期保留。"""
+    """读时清理：已过期/缺失/不可解析 expires_at 条目物理删除（三件套判据），未过期保留，其余字段原样。"""
     runner = _make_runner()
     past = _iso(datetime.now() - timedelta(hours=1))
     future = _iso(datetime.now() + timedelta(hours=12))
     memory_file.write_text(
         json.dumps(
             {
+                "identity": {"name": "妞妞"},
+                "parked": [],
                 "daily": {
                     "weather": _daily_entry("晴", future),
                     "stale": _daily_entry("旧数据", past),
@@ -165,9 +168,106 @@ def test_daily_reminder_filters_expired(memory_file):
     )
     line = runner._daily_reminder_line()
     assert line == "\n[例行数据] 1 项：weather〈晴〉"
-    # 只过滤不清理：文件内容不变
+    # 读时清理：过期/畸形条目物理删除，未过期保留，其余字段原样保留
     data = json.loads(memory_file.read_text(encoding="utf-8"))
-    assert set(data["daily"]) == {"weather", "stale", "no_expiry", "bad_expiry"}
+    assert set(data["daily"]) == {"weather"}
+    assert data["identity"] == {"name": "妞妞"}
+    assert data["parked"] == []
+
+
+def test_daily_reminder_read_cleanup_removes_malformed(memory_file):
+    """读时清理：过期+畸形（非 dict/expires_at 缺失/不可解析）条目物理消失，未过期保留。"""
+    runner = _make_runner()
+    past = _iso(datetime.now() - timedelta(hours=1))
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps(
+            {
+                "daily": {
+                    "alive": _daily_entry("存活", future),
+                    "expired": _daily_entry("过期", past),
+                    "junk": "not a dict",
+                    "no_expiry": {"text": "无 expires_at", "updated_at": past},
+                    "bad_expiry": _daily_entry("坏日期", "not-a-date"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    line = runner._daily_reminder_line()
+    assert line == "\n[例行数据] 1 项：alive〈存活〉"
+    data = json.loads(memory_file.read_text(encoding="utf-8"))
+    assert set(data["daily"]) == {"alive"}
+
+
+def test_daily_reminder_all_expired_still_writes_back(memory_file):
+    """全部过期仍回写：返回空串且 daily 物理清空（其余字段保留）——钉死「清理先于空串返回」。"""
+    runner = _make_runner()
+    past = _iso(datetime.now() - timedelta(hours=1))
+    memory_file.write_text(
+        json.dumps(
+            {
+                "identity": {"name": "妞妞"},
+                "daily": {
+                    "stale_a": _daily_entry("旧A", past),
+                    "stale_b": _daily_entry("旧B", past),
+                    "junk": 42,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert runner._daily_reminder_line() == ""
+    data = json.loads(memory_file.read_text(encoding="utf-8"))
+    assert data["daily"] == {}
+    assert data["identity"] == {"name": "妞妞"}
+
+
+def test_daily_reminder_no_writeback_when_all_valid(memory_file):
+    """全部未过期时不触发回写：文件内容不变（防每轮无谓写盘）。"""
+    runner = _make_runner()
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps({"daily": {"weather": _daily_entry("晴", future)}}),
+        encoding="utf-8",
+    )
+    raw_before = memory_file.read_text(encoding="utf-8")
+    assert runner._daily_reminder_line() == "\n[例行数据] 1 项：weather〈晴〉"
+    assert memory_file.read_text(encoding="utf-8") == raw_before  # 零写盘
+
+
+def test_daily_reminder_writeback_failure_degrades(memory_file, monkeypatch):
+    """回写失败降级：os.replace 抛异常 → 只过滤不删，显示不受影响，warning 记录（禁止静默吞）。"""
+    runner = _make_runner()
+    past = _iso(datetime.now() - timedelta(hours=1))
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps(
+            {
+                "daily": {
+                    "weather": _daily_entry("晴", future),
+                    "stale": _daily_entry("旧数据", past),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _raise(*args, **kwargs):
+        raise OSError("disk full (test)")
+
+    monkeypatch.setattr(os, "replace", _raise)
+    messages, sink_id = _capture_loguru()
+    try:
+        line = runner._daily_reminder_line()
+    finally:
+        from loguru import logger
+
+        logger.remove(sink_id)
+    assert line == "\n[例行数据] 1 项：weather〈晴〉"  # 显示不受影响（只过滤）
+    data = json.loads(memory_file.read_text(encoding="utf-8"))
+    assert set(data["daily"]) == {"weather", "stale"}  # 物理未删（回写失败降级）
+    assert any("清理回写失败" in m for m in messages), "回写失败应记录 warning（不静默）"
 
 
 def test_daily_reminder_empty_region(memory_file):
