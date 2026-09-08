@@ -1013,7 +1013,7 @@
         <span class="stat">📝 <span id="note-count">0</span></span>
       </div>
       <div class="status-actions">
-        <span class="version-label">v0.3.5</span>
+        <span class="version-label"></span>
         <button class="graph-btn" id="graph-btn">图谱 →</button>
       </div>
     </div>
@@ -1038,6 +1038,11 @@
     const personCount = document.getElementById('person-count');
     const noteCount = document.getElementById('note-count');
     const graphBtn = document.getElementById('graph-btn');
+
+    // 版本号填充：单一真相源=仓库根 VERSION 文件（preload-chat.js 读入暴露为 APP_VERSION；读失败兜底 dev）
+    // 锚点钉死在 body 尾部主脚本——head 内字体 IIFE 执行时 body 未解析，querySelector 会 null
+    document.querySelector('.version-label').textContent = 'v' + (window.electronAPI.APP_VERSION || 'dev');
+
     // ========== 斜杠命令下拉框 ==========
     const slashDropdown = document.getElementById('slash-dropdown');
     const slashItems = slashDropdown.querySelectorAll('.slash-dropdown-item');
