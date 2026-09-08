@@ -9,6 +9,7 @@ from mcp.types import Tool, TextContent
 from loguru import logger
 import json
 import asyncio
+import re
 from datetime import datetime
 
 # 创建 MCP 服务器
@@ -96,6 +97,42 @@ TOOL_SCHEMAS = {
             "required": ["index"],
         },
     },
+    "daily_set": {
+        "name": "daily_set",
+        "description": "写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。写入时自动清理全区域过期条目。同 key 重复调用=更新。上限 20 个 key。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "数据源名（^[a-z][a-z0-9_]{0,29}$，如 weather）",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "提醒文本（≤100字符，换行自动替换为空格）",
+                },
+                "expires_at": {
+                    "type": "string",
+                    "description": "ISO 过期时间（如 2026-09-09T07:00:00；带时区偏移会归一化为本地裸串）",
+                },
+            },
+            "required": ["key", "text", "expires_at"],
+        },
+    },
+    "daily_delete": {
+        "name": "daily_delete",
+        "description": "删除 daily 区域指定 key 的条目。key 不存在时幂等返回 deleted=false。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "数据源名",
+                },
+            },
+            "required": ["key"],
+        },
+    },
 }
 
 
@@ -171,6 +208,30 @@ def get_tool_definitions() -> list[Tool]:
                 "required": ["index"],
             },
         ),
+        Tool(
+            name="daily_set",
+            description="写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。写入时自动清理全区域过期条目。同 key 重复调用=更新。上限 20 个 key。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "数据源名（^[a-z][a-z0-9_]{0,29}$，如 weather）"},
+                    "text": {"type": "string", "description": "提醒文本（≤100字符，换行自动替换为空格）"},
+                    "expires_at": {"type": "string", "description": "ISO 过期时间（如 2026-09-09T07:00:00；带时区偏移会归一化为本地裸串）"},
+                },
+                "required": ["key", "text", "expires_at"],
+            },
+        ),
+        Tool(
+            name="daily_delete",
+            description="删除 daily 区域指定 key 的条目。key 不存在时幂等返回 deleted=false。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "数据源名"},
+                },
+                "required": ["key"],
+            },
+        ),
     ]
 
 
@@ -190,6 +251,10 @@ MAX_TOKEN_PER_ITEM = 200  # ~300 Chinese chars
 MAX_PARKED_ITEMS = 10
 MAX_PARKED_SUMMARY_TOKENS = 50
 MAX_PARKED_DETAIL_TOKENS = 200
+
+MAX_DAILY_KEYS = 20
+MAX_DAILY_TEXT_CHARS = 100
+DAILY_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,29}$")
 
 
 def _count_tokens(text: str) -> int:
@@ -647,6 +712,166 @@ def conversation_recall_handler(index: int) -> dict:
 
 
 # ============================================================================
+# Daily routine data tools (memory.json daily region, lazy TTL)
+# 双层通道同一实现：模块级函数（background_script 脚本 import 直调，主通道）
+# + MCP 工具/disk（主 Agent 手动写，次要）。spec: 2026-09-08-daily-routine-data-design §3.2
+# ============================================================================
+
+
+def _clean_expired_daily(daily: dict) -> int:
+    """按读写统一判据清理过期/畸形条目，返回清除数。
+
+    判据（spec §3.2 / plan §0）：expires_at 缺失 / 不可解析 / < 当前时刻（字符串序）→ 过期。
+    畸形条目一并清，防永久占槽。
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    cleaned = 0
+    for k in list(daily.keys()):
+        entry = daily[k]
+        exp = entry.get("expires_at") if isinstance(entry, dict) else None
+        if not isinstance(exp, str):
+            del daily[k]
+            cleaned += 1
+            continue
+        try:
+            datetime.fromisoformat(exp)
+        except ValueError:
+            del daily[k]
+            cleaned += 1
+            continue
+        if exp < now:
+            del daily[k]
+            cleaned += 1
+    return cleaned
+
+
+def _write_daily_only(mutator):
+    """Read-modify-write: update only the daily region, preserve all others.
+    Thread-safe via module-level lock (镜像 _write_parked_only 形态).
+
+    对先例的唯一偏离点（spec §3.2 双闸②）：锁内重读解析失败 raise 拒写——
+    静默 {} 回退会把损坏的 memory.json 覆写成只剩 daily 键，销毁其他区域。
+    mutator(daily) 在清理后执行；返回本次清理清除的过期条目数。
+    """
+    import os
+    import tempfile
+
+    with _memory_file_lock:
+        path = _get_memory_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing file to preserve other fields (identity, workspace, user, permanent, etc.)
+        if not path.exists():
+            existing = {}
+        else:
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as e:
+                raise ValueError("memory.json 文件损坏，请手动修复后重试") from e
+            if not isinstance(existing, dict):
+                raise ValueError("memory.json 根不是 dict，请手动修复后重试")
+
+        daily = existing.get("daily") or {}
+        if not isinstance(daily, dict):  # 非 dict 守卫（对齐 parked 的 not-a-list 守卫）
+            logger.warning("memory.json daily is not a dict, treating as empty")
+            daily = {}
+
+        cleaned = _clean_expired_daily(daily)
+        mutator(daily)
+        existing["daily"] = daily
+
+        # 原子写：先写 tmp，再 replace（保证 reader 永远看到完整文件）
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=path.name + ".",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    return cleaned
+
+
+def daily_set_handler(key: str, text: str, expires_at: str) -> dict:
+    """写入/更新一条例行数据到 memory.json daily 区域（写时清理全区域过期条目）"""
+    # 双闸①：入口拒写损坏文件（conversation_park_handler 先例）
+    data = _read_memory_json()
+    if data.get("_raw_fallback"):
+        return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
+
+    # key 格式校验：^[a-z][a-z0-9_]{0,29}$
+    if not isinstance(key, str) or not DAILY_KEY_PATTERN.match(key):
+        return {"status": "error", "message": f"key 格式非法（须匹配 ^[a-z][a-z0-9_]{{0,29}}$）：'{key}'"}
+
+    # text 非空 + 单行化（\n/\r 替换空格，防换行破坏动态块单行同构/注入伪行）
+    if not isinstance(text, str) or not text.strip():
+        return {"status": "error", "message": "text 不能为空"}
+    text = text.replace("\n", " ").replace("\r", " ")
+    if len(text) > MAX_DAILY_TEXT_CHARS:
+        return {
+            "status": "error",
+            "message": f"text 过长（{len(text)} 字符，上限{MAX_DAILY_TEXT_CHARS}），请精简后重试。"
+                       f"大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针。",
+        }
+
+    # expires_at ISO 校验 + 归一化：带时区偏移转本地时间后剥偏移存秒级裸串（保证字符串序可比）
+    try:
+        dt = datetime.fromisoformat(expires_at)
+    except (TypeError, ValueError):
+        return {"status": "error", "message": f"expires_at 不可解析为 ISO 时间：'{expires_at}'"}
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    expires_norm = dt.isoformat(timespec="seconds")
+
+    def mutator(daily):
+        # 上限 20（清理后计数）；upsert 豁免仅限清理后仍存在的 key
+        if key not in daily and len(daily) >= MAX_DAILY_KEYS:
+            raise ValueError(f"daily 区域已满（{MAX_DAILY_KEYS} 个 key），请先 daily_delete 或等过期")
+        daily[key] = {
+            "text": text,
+            "expires_at": expires_norm,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    try:
+        cleaned = _write_daily_only(mutator)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "ok", "key": key, "expires_at": expires_norm, "cleaned": cleaned}
+
+
+def daily_delete_handler(key: str) -> dict:
+    """删除 daily 区域指定 key 的条目（不存在幂等 deleted=false；写时顺带清理过期条目）"""
+    data = _read_memory_json()
+    if data.get("_raw_fallback"):
+        return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
+
+    deleted = False
+
+    def mutator(daily):
+        nonlocal deleted
+        if key in daily:
+            del daily[key]
+            deleted = True
+
+    try:
+        cleaned = _write_daily_only(mutator)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    return {"status": "ok", "deleted": deleted, "cleaned": cleaned}
+
+
+# ============================================================================
 # Module-level aliases for ToolRegistry direct function lookup
 # (without these, ToolRegistry falls back to call_tool wrapper which returns
 #  [TextContent] instead of dict, breaking isinstance(result, dict) checks)
@@ -666,6 +891,12 @@ def conversation_park(summary: str, detail: str, **kwargs):
 
 def conversation_recall(**kwargs):
     return conversation_recall_handler(**kwargs)
+
+def daily_set(key: str, text: str, expires_at: str, **kwargs):
+    return daily_set_handler(key=key, text=text, expires_at=expires_at)
+
+def daily_delete(key: str, **kwargs):
+    return daily_delete_handler(key=key)
 
 
 # ============================================================================
@@ -703,6 +934,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "conversation_recall":
             result = conversation_recall_handler(
                 index=arguments["index"],
+            )
+        elif name == "daily_set":
+            result = daily_set_handler(
+                key=arguments["key"],
+                text=arguments["text"],
+                expires_at=arguments["expires_at"],
+            )
+        elif name == "daily_delete":
+            result = daily_delete_handler(
+                key=arguments["key"],
             )
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

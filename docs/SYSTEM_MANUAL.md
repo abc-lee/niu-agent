@@ -474,6 +474,12 @@ journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖�
 
 journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_time` 起点，created_at 秒粒度严格大于过滤），起点由 journal.md 内最近一条整理条目的落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号）自判（**落款时间即水位**；无落款按首次整理取最新 200 条），提取写入 journal.md 并在条目末尾更新落款时间。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。旧导出文件通道（`~/.niu/md/journal_workset.md`）与游标文件（`~/.niu/last_journal.json`，磁盘存量成孤儿不清）已整套退役；旧 message_id 机器行游标格式（「覆盖至」带冒号 + uuid）亦已退役（2026-09-04 时间水位改造）。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）或分页中途 invalid_after_id（如 /new 并发清库）本轮放弃不更新落款，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
 
+#### 例行数据 daily 区域（轻提醒注入区，2026-09-08 起）
+
+memory.json 顶层 `daily` 键存放例行数据（如天气），机制：`background_script` 后台静默脚本经 `from niu_memory_server import daily_set`（脚本内 sys.path 推导，与 MCP 工具同一实现）写入，或主 Agent 经 `disk("/memory/daily_set key text expires_at")` 手动写入；每轮动态块显示一行 `[例行数据] N 项：key〈text〉...`（插在 `[暂存事项]` 行上方，只显示未过期条目，key 字典序），过期自动退场。条目含 `text`（≤100 字符，写入前单行化）/ `expires_at`（本地秒级无偏移 ISO 裸串）/ `updated_at`；**清理只在写侧**（写入时自动清理全区域过期条目，读侧每轮只过滤显示不写文件）；key 上限 20（upsert 已有 key 不受限）。大内容走指针模式：全文写 `~/.niu/tmp/` 临时文件，text 写路径指针（注意 tmp 24h 清理，`expires_at` ≤24h）。
+
+配置入口：`config/disk/memory-server.yaml`（daily_set/daily_delete 磁盘映射；MCP 工具默认 hidden，主 Agent 只能经 disk 调用）；主 Agent 教学在 `config/agents/niu.md`「# 例行数据轻提醒」节；完整用法与可抄脚本例子见 `memory/skills/daily-routine-data.md`。
+
 #### /compact 新语义
 
 手动 /compact 走统一消息通道（spec 2026-09-06）：一条 `/compact` 消息由后端 `chat_session` 落库前拦截置 manual 意图——受控压缩（提炼 F1 → 模型承上启下总结 → 机械压实）忙时任务间隙执行、闲时立即执行，**永不发 /stop**；压缩产物三件套（做准备提问 + 模型总结 + 「[系统提示] 上下文压缩已完成。」）压缩完成后一并落库（skip_mirror + bypass_at_extract，不进 F1），自动路径原指令继续、手动路径落库即生效——下轮组装模型必见压缩完成。其中机械压实步与自动触发共用同一函数（秒级、DB 不动）。（旧语义「force 全量 keep/update/delete 整理」及「独立 HTTP POST tidy mode:compact + 忙时先发 /stop」随统一压缩入口退役。）

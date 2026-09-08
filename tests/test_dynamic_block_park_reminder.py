@@ -10,6 +10,7 @@
 
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -119,3 +120,148 @@ def test_reminder_updates_and_order(memory_file):
     assert line2 != line1  # parked 变化后行更新
     assert "2 项" in line2
     assert line2.index("①〈新话题〉") < line2.index("②〈旧话题〉")
+
+
+# ===== daily 区域 [例行数据] 提醒行（_daily_reminder_line，spec §3.4 / plan §3）=====
+
+
+def _iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _daily_entry(text, expires_at):
+    """daily 条目结构（plan §0 契约）：text/expires_at/updated_at 三字段。"""
+    return {"text": text, "expires_at": expires_at, "updated_at": "2026-09-08T08:00:00"}
+
+
+def test_daily_reminder_shows_unexpired(memory_file):
+    """未过期条目显示：格式 \\n[例行数据] N 项：key〈text〉，text 原样内嵌。"""
+    runner = _make_runner()
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps({"daily": {"weather": _daily_entry("北京 晴 22-32°C 午后雷阵雨", future)}}),
+        encoding="utf-8",
+    )
+    assert runner._daily_reminder_line() == "\n[例行数据] 1 项：weather〈北京 晴 22-32°C 午后雷阵雨〉"
+
+
+def test_daily_reminder_filters_expired(memory_file):
+    """过期过滤（读侧只过滤不清理）：已过期/缺失/不可解析 expires_at 剔除，未过期保留。"""
+    runner = _make_runner()
+    past = _iso(datetime.now() - timedelta(hours=1))
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps(
+            {
+                "daily": {
+                    "weather": _daily_entry("晴", future),
+                    "stale": _daily_entry("旧数据", past),
+                    "no_expiry": {"text": "无 expires_at", "updated_at": past},
+                    "bad_expiry": _daily_entry("坏日期", "not-a-date"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    line = runner._daily_reminder_line()
+    assert line == "\n[例行数据] 1 项：weather〈晴〉"
+    # 只过滤不清理：文件内容不变
+    data = json.loads(memory_file.read_text(encoding="utf-8"))
+    assert set(data["daily"]) == {"weather", "stale", "no_expiry", "bad_expiry"}
+
+
+def test_daily_reminder_empty_region(memory_file):
+    """空区域空串三态：daily 键缺失 / daily 空 dict / daily 非 dict（isinstance 判据视为 {}）。"""
+    runner = _make_runner()
+    memory_file.write_text(json.dumps({"identity": {"name": "妞妞"}}), encoding="utf-8")
+    assert runner._daily_reminder_line() == ""
+
+    memory_file.write_text(json.dumps({"daily": {}}), encoding="utf-8")
+    assert runner._daily_reminder_line() == ""
+
+    memory_file.write_text(json.dumps({"daily": "not-a-dict"}), encoding="utf-8")
+    assert runner._daily_reminder_line() == ""
+
+    # 文件不存在 → 空串（全新环境正常态）
+    memory_file.unlink()
+    assert runner._daily_reminder_line() == ""
+
+
+def test_daily_reminder_drops_malformed(memory_file):
+    """畸形条目剔除：非 dict 条目跳过，其余有效条目照常显示（不拖垮整行）。"""
+    runner = _make_runner()
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps(
+            {
+                "daily": {
+                    "weather": _daily_entry("晴", future),
+                    "junk": "i am not a dict",
+                    "also_junk": 42,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert runner._daily_reminder_line() == "\n[例行数据] 1 项：weather〈晴〉"
+
+
+def test_daily_reminder_key_sorted_stable(memory_file):
+    """key 字典序稳定：写入顺序打乱，输出按字典序；两轮调用返回值全等（前缀缓存友好）。"""
+    runner = _make_runner()
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps(
+            {
+                "daily": {
+                    "weather": _daily_entry("晴", future),
+                    "hn_hot": _daily_entry("热榜", future),
+                    "a_stock": _daily_entry("股票", future),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    first = runner._daily_reminder_line()
+    second = runner._daily_reminder_line()
+    assert first == second
+    assert first == "\n[例行数据] 3 项：a_stock〈股票〉 hn_hot〈热榜〉 weather〈晴〉"
+
+
+def test_daily_reminder_corrupt_json(memory_file):
+    """损坏 JSON → warning + 空串降级（禁止静默吞）。"""
+    runner = _make_runner()
+    memory_file.write_text("{ not valid json !!!", encoding="utf-8")
+    messages, sink_id = _capture_loguru()
+    try:
+        assert runner._daily_reminder_line() == ""
+    finally:
+        from loguru import logger
+
+        logger.remove(sink_id)
+    assert any("[例行数据] 读取失败" in m for m in messages), "损坏 JSON 应记录 warning（不静默）"
+
+
+def test_dynamic_block_daily_above_park(memory_file):
+    """集成：daily 行在暂存行上方；两区均空两行皆无（index/存在性断言，非整块全等）。"""
+    runner = _make_runner()
+    future = _iso(datetime.now() + timedelta(hours=12))
+    memory_file.write_text(
+        json.dumps(
+            {
+                "daily": {"weather": _daily_entry("晴", future)},
+                "parked": [
+                    {"summary": "话题A", "detail": "d", "anchor_msg_id": "m1", "parked_at": "2026-09-08T08:00:00"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    block = runner._build_dynamic_block("")
+    assert block.index("[例行数据]") < block.index("[暂存事项]"), "daily 行应在暂存行上方"
+
+    # 两区均空 → 两行皆无
+    memory_file.write_text(json.dumps({"identity": {"name": "妞妞"}}), encoding="utf-8")
+    block2 = runner._build_dynamic_block("")
+    assert "[例行数据]" not in block2
+    assert "[暂存事项]" not in block2

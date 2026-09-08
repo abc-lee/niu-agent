@@ -1051,6 +1051,7 @@ class NiuRunner:
         text = _DYNAMIC_BLOCK_HEADER
         if injection:
             text += "\n" + injection.strip()
+        text += self._daily_reminder_line()
         text += self._park_reminder_line()
         # 上下文使用率仪表盘（fold spec §5）：M2-F1 真值化——优先 LLM API 真值
         # prompt_tokens（每轮响应后更新；0/缺失 → usage=None 落估算兜底），None/空行跳过。
@@ -1100,6 +1101,51 @@ class NiuRunner:
             return f"\n[暂存事项] {len(parked)} 项：{items.strip()}——用户提起时调 disk(\"/memory/conversation_recall 序号\") 召回处理"
         except Exception as e:
             logger.warning(f"[暂存提醒] 读取失败（降级不显示）: {e}")  # R1：禁止静默吞——架空常驻提醒语义
+            return ""
+
+    def _daily_reminder_line(self) -> str:
+        """读取 memory.json 的 daily 区域，生成例行数据轻提醒行（无未过期条目返回空串）。
+
+        与 _park_reminder_line 同构（函数内 try-import 保测试隔离；双读不合并——plan §3 表态，
+        函数职责单一，每轮多一次小文件读+解析开销可忽略）。读侧只过滤不清理（spec §3.4）：
+        过期判据=expires_at 缺失/不可解析/<当前时刻（字符串序），剔除不写回文件。
+        """
+        try:
+            from niu_memory_server import _get_memory_json_path, _memory_file_lock
+            memory_path = _get_memory_json_path()
+        except ImportError:
+            from contextlib import nullcontext
+            _memory_file_lock = nullcontext()
+            memory_path = Path.home() / ".niu" / "memory.json"
+        if not memory_path.exists():
+            return ""  # 全新环境无 memory.json 是正常态（照 _park_reminder_line 守卫先例）
+        try:
+            with _memory_file_lock:
+                data = json.loads(memory_path.read_text(encoding="utf-8"))
+            daily = data.get("daily")
+            if not isinstance(daily, dict):
+                return ""  # 非 dict（truthy 非 dict 时 or {} 不生效）→ 视为空区域，降级不显示
+            now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            valid = {}
+            for key, entry in daily.items():
+                if not isinstance(entry, dict):
+                    continue  # 畸形条目剔除
+                expires_at = entry.get("expires_at")
+                if not isinstance(expires_at, str):
+                    continue  # 缺失 → 视为过期剔除
+                try:
+                    datetime.fromisoformat(expires_at)
+                except ValueError:
+                    continue  # 不可解析 → 视为过期剔除
+                if expires_at < now:
+                    continue  # 已过期（字符串序）剔除
+                valid[key] = entry.get("text", "")
+            if not valid:
+                return ""
+            items = " ".join(f"{key}〈{valid[key]}〉" for key in sorted(valid))
+            return f"\n[例行数据] {len(valid)} 项：{items}"
+        except Exception as e:
+            logger.warning(f"[例行数据] 读取失败（降级不显示）: {e}")  # 禁止静默吞（照暂存提醒先例）
             return ""
 
     def _refresh_dynamic_user_block(self, messages: list, dynamic_text: str) -> None:
