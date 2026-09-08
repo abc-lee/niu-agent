@@ -45,7 +45,7 @@ def _past(hours=1) -> str:
 
 
 def test_daily_set_basic_write_preserves_other_fields(memory_path):
-    """基本写入：返回形状 {status,key,expires_at,cleaned} + entry 三字段 + 其余字段逐键深比较保留"""
+    """基本写入：返回形状 {status,key,expires_at} + entry 三字段 + 其余字段逐键深比较保留"""
     seed = {
         "permanent": [{"type": "memory", "content": "旧记忆"}],
         "identity": {"name": "lilei"},
@@ -57,7 +57,7 @@ def test_daily_set_basic_write_preserves_other_fields(memory_path):
 
     expires = _future()
     result = mod.daily_set("weather", "北京 晴 22-32°C", expires)
-    assert result == {"status": "ok", "key": "weather", "expires_at": expires, "cleaned": 0}, result
+    assert result == {"status": "ok", "key": "weather", "expires_at": expires}, result
 
     data = json.loads(memory_path.read_text(encoding="utf-8"))
     entry = data["daily"]["weather"]
@@ -70,54 +70,30 @@ def test_daily_set_basic_write_preserves_other_fields(memory_path):
 
 
 def test_daily_set_upsert_same_key(memory_path):
-    """同 key 重复调用=更新：不新增条目、text 覆盖、cleaned=0"""
+    """同 key 重复调用=更新：不新增条目、text 覆盖"""
     _seed(memory_path, {"permanent": []})
     assert mod.daily_set("weather", "旧文本", _future())["status"] == "ok"
     result = mod.daily_set("weather", "新文本", _future(hours=48))
-    assert result["status"] == "ok" and result["cleaned"] == 0, result
+    assert result["status"] == "ok", result
 
     data = json.loads(memory_path.read_text(encoding="utf-8"))
     assert list(data["daily"].keys()) == ["weather"]
     assert data["daily"]["weather"]["text"] == "新文本"
 
 
-def test_daily_set_write_time_cleanup_and_cleaned_count(memory_path):
-    """写时清理：过期条目物理消失 + cleaned 计数 + 未过期保留 + 其余字段逐键深比较保留"""
-    seed = {
-        "permanent": [{"type": "task", "content": "进行中任务"}],
-        "identity": {"name": "lilei"},
-        "daily": {
-            "old_weather": {"text": "过期天气", "expires_at": _past(), "updated_at": _past(hours=2)},
-            "hn_hot": {"text": "热榜指针", "expires_at": _future(), "updated_at": _past(hours=2)},
-        },
-    }
-    _seed(memory_path, seed)
-    snapshot = {k: v for k, v in seed.items() if k != "daily"}
-
-    result = mod.daily_set("weather", "北京 晴", _future())
-    assert result["status"] == "ok" and result["cleaned"] == 1, result
-
-    data = json.loads(memory_path.read_text(encoding="utf-8"))
-    assert sorted(data["daily"].keys()) == ["hn_hot", "weather"]
-    assert data["daily"]["hn_hot"]["text"] == "热榜指针"
-    for k, v in snapshot.items():
-        assert data[k] == v, f"字段 {k} 被改写"
-
-
-def test_daily_set_cleanup_malformed_entries(memory_path):
-    """清理判据统一：expires_at 缺失/不可解析条目一并物理清除（不永久占槽）"""
+def test_daily_set_no_write_time_cleanup(memory_path):
+    """写侧不再物理清理：过期条目滞留文件；上限计数只算未过期（19 有效+1 过期时新 key 写入成功）"""
     _seed(memory_path, {"permanent": [], "daily": {
-        "no_exp": {"text": "无过期时间", "updated_at": _past()},
-        "bad_exp": {"text": "畸形过期", "expires_at": "not-a-date", "updated_at": _past()},
-        "expired": {"text": "已过期", "expires_at": _past(), "updated_at": _past(hours=2)},
-        "alive": {"text": "存活", "expires_at": _future(), "updated_at": _past()},
+        **{f"k{i:02d}": {"text": "t", "expires_at": _future(), "updated_at": _past()} for i in range(19)},
+        "stale": {"text": "已过期", "expires_at": _past(), "updated_at": _past(hours=2)},
     }})
 
     result = mod.daily_set("new_key", "新条目", _future())
-    assert result["status"] == "ok" and result["cleaned"] == 3, result
+    assert result["status"] == "ok", result  # 未过期 19 < 20：过期 stale 不占槽，写入成功
 
     data = json.loads(memory_path.read_text(encoding="utf-8"))
-    assert sorted(data["daily"].keys()) == ["alive", "new_key"]
+    assert "stale" in data["daily"], "写侧不再物理清理：过期条目应滞留文件（读时清理职责）"
+    assert len(data["daily"]) == 21
 
 
 def test_daily_set_validation_rejects_without_write(memory_path):
@@ -176,7 +152,7 @@ def test_daily_set_timezone_normalization(memory_path):
 
 
 def test_daily_key_cap_and_upsert_exemption(memory_path):
-    """上限 20（清理后计数）：满时报错；upsert 豁免仅限清理后仍存在的 key"""
+    """上限 20（内存过滤未过期后计数）：满时报错；upsert 豁免仅限未过期 key"""
     full = {f"k{i:02d}": {"text": "t", "expires_at": _future(), "updated_at": _past()} for i in range(20)}
     _seed(memory_path, {"permanent": [], "daily": full})
 
@@ -186,19 +162,19 @@ def test_daily_key_cap_and_upsert_exemption(memory_path):
     data = json.loads(memory_path.read_text(encoding="utf-8"))
     assert len(data["daily"]) == 20 and "new_key" not in data["daily"]
 
-    # upsert 已有 key（清理后仍存在）→ 豁免，成功
+    # upsert 已有 key（未过期条目中已存在）→ 豁免，成功
     result = mod.daily_set("k05", "更新文本", _future())
     assert result["status"] == "ok", result
     data = json.loads(memory_path.read_text(encoding="utf-8"))
     assert data["daily"]["k05"]["text"] == "更新文本" and len(data["daily"]) == 20
 
-    # upsert 豁免边界：已过期被清掉的 key 按新 key 计
+    # upsert 豁免边界：已过期的 key 不在未过期集合中，按新 key 计（写侧不物理清理）
     _seed(memory_path, {"permanent": [], "daily": {
         **{f"k{i:02d}": {"text": "t", "expires_at": _future(), "updated_at": _past()} for i in range(19)},
         "gone": {"text": "已过期", "expires_at": _past(), "updated_at": _past(hours=2)},
     }})
     result = mod.daily_set("gone", "复活?", _future())
-    assert result["status"] == "ok" and result["cleaned"] == 1, result  # 清理后 19 < 20，按新 key 写入
+    assert result["status"] == "ok", result  # 未过期 19 < 20（过期 gone 不计入上限），按新 key 写入
     data = json.loads(memory_path.read_text(encoding="utf-8"))
     assert len(data["daily"]) == 20
 
@@ -207,23 +183,23 @@ def test_daily_key_cap_and_upsert_exemption(memory_path):
         "gone": {"text": "已过期", "expires_at": _past(), "updated_at": _past(hours=2)},
     }})
     result = mod.daily_set("gone", "复活?", _future())
-    assert result["status"] == "error" and "已满" in result["message"], result  # 清理后仍 20 → 新 key 超限
+    assert result["status"] == "error" and "已满" in result["message"], result  # 未过期 20（过期 gone 不计入豁免）→ 新 key 超限
 
 
 def test_daily_delete(memory_path):
-    """daily_delete：存在删除（顺带清理过期）/不存在幂等 deleted=false"""
+    """daily_delete：存在删除/不存在幂等 deleted=false；写侧不再物理清理，过期 stale 滞留文件"""
     _seed(memory_path, {"permanent": [], "daily": {
         "weather": {"text": "晴", "expires_at": _future(), "updated_at": _past()},
         "stale": {"text": "旧", "expires_at": _past(), "updated_at": _past(hours=2)},
     }})
 
     result = mod.daily_delete("weather")
-    assert result == {"status": "ok", "deleted": True, "cleaned": 1}, result
+    assert result == {"status": "ok", "deleted": True}, result
     data = json.loads(memory_path.read_text(encoding="utf-8"))
-    assert data["daily"] == {}
+    assert set(data["daily"].keys()) == {"stale"}  # 写侧不再物理清理：过期 stale 滞留文件（读时清理职责）
 
     result = mod.daily_delete("ghost")
-    assert result == {"status": "ok", "deleted": False, "cleaned": 0}, result
+    assert result == {"status": "ok", "deleted": False}, result
 
 
 def test_daily_corrupt_file_rejects_write(memory_path):
@@ -253,7 +229,7 @@ def test_daily_non_dict_guard(memory_path):
     _seed(memory_path, {"permanent": [{"type": "memory", "content": "旧记忆"}], "daily": ["not", "a", "dict"]})
 
     result = mod.daily_set("weather", "文本", _future())
-    assert result["status"] == "ok" and result["cleaned"] == 0, result
+    assert result["status"] == "ok", result
     data = json.loads(memory_path.read_text(encoding="utf-8"))
     assert set(data["daily"].keys()) == {"weather"}
     assert data["permanent"][0]["content"] == "旧记忆"
@@ -261,7 +237,7 @@ def test_daily_non_dict_guard(memory_path):
     # daily_delete 对非 dict 同样不卡死（幂等 deleted=false）
     memory_path.write_text(json.dumps({"daily": "still-not-dict"}, ensure_ascii=False), encoding="utf-8")
     result = mod.daily_delete("weather")
-    assert result == {"status": "ok", "deleted": False, "cleaned": 0}, result
+    assert result == {"status": "ok", "deleted": False}, result
 
 
 def test_daily_alias_returns_dict(memory_path):

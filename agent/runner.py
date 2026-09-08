@@ -12,6 +12,7 @@ import os
 import queue as _queue_module
 import re
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Generator
@@ -1107,8 +1108,9 @@ class NiuRunner:
         """读取 memory.json 的 daily 区域，生成例行数据轻提醒行（无未过期条目返回空串）。
 
         与 _park_reminder_line 同构（函数内 try-import 保测试隔离；双读不合并——plan §3 表态，
-        函数职责单一，每轮多一次小文件读+解析开销可忽略）。读侧只过滤不清理（spec §3.4）：
-        过期判据=expires_at 缺失/不可解析/<当前时刻（字符串序），剔除不写回文件。
+        函数职责单一，每轮多一次小文件读+解析开销可忽略）。读时清理：过期/畸形条目经原子回写
+        物理删除（删除集=全部 key − valid keys，三件套判据与显示过滤完全一致）；无过期条目时
+        零写零额外锁（常见路径）；回写失败降级只过滤不删（不影响显示）。
         """
         try:
             from niu_memory_server import _get_memory_json_path, _memory_file_lock
@@ -1126,22 +1128,65 @@ class NiuRunner:
             if not isinstance(daily, dict):
                 return ""  # 非 dict（truthy 非 dict 时 or {} 不生效）→ 视为空区域，降级不显示
             now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            valid = {}
-            for key, entry in daily.items():
+
+            def _is_valid(entry) -> bool:
+                """三件套判据（删除集=其补集）：dict + expires_at 存在可解析 + 未字符串序过期。"""
                 if not isinstance(entry, dict):
-                    continue  # 畸形条目剔除
+                    return False  # 畸形条目
                 expires_at = entry.get("expires_at")
                 if not isinstance(expires_at, str):
-                    continue  # 缺失 → 视为过期剔除
+                    return False  # 缺失 → 视为过期
                 try:
                     datetime.fromisoformat(expires_at)
                 except ValueError:
-                    continue  # 不可解析 → 视为过期剔除
-                if expires_at < now:
-                    continue  # 已过期（字符串序）剔除
-                valid[key] = entry.get("text", "")
+                    return False  # 不可解析 → 视为过期
+                return expires_at >= now
+
+            valid = {}
+            expired_keys = []
+            for key, entry in daily.items():
+                if _is_valid(entry):
+                    valid[key] = entry.get("text", "")
+                else:
+                    expired_keys.append(key)
+            # 读时清理（2026-09-08 plan 变更）：回写必须先于空串返回——全部过期也要清理。
+            if expired_keys:
+                try:
+                    with _memory_file_lock:
+                        fresh = json.loads(memory_path.read_text(encoding="utf-8"))
+                        fresh_daily = fresh.get("daily") if isinstance(fresh, dict) else None
+                        removed = []
+                        if isinstance(fresh_daily, dict):
+                            # 锁内重读按同一判据复评（删除集=全部 key − valid keys）：
+                            # 并发写入刚更新的未过期条目不会被误删；只写字符串序会让畸形条目永久残留
+                            removed = [k for k, e in fresh_daily.items() if not _is_valid(e)]
+                            for k in removed:
+                                del fresh_daily[k]
+                        if removed:  # 复评为空（并发已清理）→ 零写
+                            # 原子写：先写 tmp，再 replace（保证 reader 永远看到完整文件，照 _write_daily_only 先例）
+                            fd, tmp_path = tempfile.mkstemp(
+                                dir=str(memory_path.parent),
+                                prefix=memory_path.name + ".",
+                                suffix=".tmp",
+                            )
+                            try:
+                                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                    json.dump(fresh, f, ensure_ascii=False, indent=2)
+                                os.replace(tmp_path, memory_path)
+                            except Exception:
+                                try:
+                                    os.unlink(tmp_path)
+                                except OSError:
+                                    pass
+                                raise
+                            logger.warning(
+                                f"[例行数据] 读时清理删除 {len(removed)} 条过期/畸形条目: "
+                                f"{', '.join(sorted(removed))}"
+                            )
+                except Exception as e:
+                    logger.warning(f"[例行数据] 清理回写失败（降级只过滤不删）: {e}")  # 显示不受影响，禁止静默吞
             if not valid:
-                return ""
+                return ""  # 全部过期 → 不显示（清理回写已先于此处完成）
             items = " ".join(f"{key}〈{valid[key]}〉" for key in sorted(valid))
             return f"\n[例行数据] {len(valid)} 项：{items}"
         except Exception as e:

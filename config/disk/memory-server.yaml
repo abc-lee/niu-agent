@@ -60,7 +60,7 @@ tools:
   - name: daily_set
     category: write
     short: "写入/更新例行数据(轻提醒区,带过期时间)"
-    long: "写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。写入时自动清理全区域过期条目。同 key 重复调用=更新。上限 20 个 key。"
+    long: "写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。到期自动清理。同 key 重复调用=更新。上限 20 个 key。"
     parameters:
       - name: key
         position: 1

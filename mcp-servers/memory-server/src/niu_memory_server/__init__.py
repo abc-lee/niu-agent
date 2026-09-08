@@ -99,7 +99,7 @@ TOOL_SCHEMAS = {
     },
     "daily_set": {
         "name": "daily_set",
-        "description": "写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。写入时自动清理全区域过期条目。同 key 重复调用=更新。上限 20 个 key。",
+        "description": "写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。到期自动清理。同 key 重复调用=更新。上限 20 个 key。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -210,7 +210,7 @@ def get_tool_definitions() -> list[Tool]:
         ),
         Tool(
             name="daily_set",
-            description="写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。写入时自动清理全区域过期条目。同 key 重复调用=更新。上限 20 个 key。",
+            description="写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。到期自动清理。同 key 重复调用=更新。上限 20 个 key。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -718,40 +718,13 @@ def conversation_recall_handler(index: int) -> dict:
 # ============================================================================
 
 
-def _clean_expired_daily(daily: dict) -> int:
-    """按读写统一判据清理过期/畸形条目，返回清除数。
-
-    判据（spec §3.2 / plan §0）：expires_at 缺失 / 不可解析 / < 当前时刻（字符串序）→ 过期。
-    畸形条目一并清，防永久占槽。
-    """
-    now = datetime.now().isoformat(timespec="seconds")
-    cleaned = 0
-    for k in list(daily.keys()):
-        entry = daily[k]
-        exp = entry.get("expires_at") if isinstance(entry, dict) else None
-        if not isinstance(exp, str):
-            del daily[k]
-            cleaned += 1
-            continue
-        try:
-            datetime.fromisoformat(exp)
-        except ValueError:
-            del daily[k]
-            cleaned += 1
-            continue
-        if exp < now:
-            del daily[k]
-            cleaned += 1
-    return cleaned
-
-
 def _write_daily_only(mutator):
     """Read-modify-write: update only the daily region, preserve all others.
     Thread-safe via module-level lock (镜像 _write_parked_only 形态).
 
     对先例的唯一偏离点（spec §3.2 双闸②）：锁内重读解析失败 raise 拒写——
     静默 {} 回退会把损坏的 memory.json 覆写成只剩 daily 键，销毁其他区域。
-    mutator(daily) 在清理后执行；返回本次清理清除的过期条目数。
+    mutator(daily) 直接在 daily dict 上执行（写侧不物理清理；过期条目由读时清理回写）。
     """
     import os
     import tempfile
@@ -776,7 +749,6 @@ def _write_daily_only(mutator):
             logger.warning("memory.json daily is not a dict, treating as empty")
             daily = {}
 
-        cleaned = _clean_expired_daily(daily)
         mutator(daily)
         existing["daily"] = daily
 
@@ -797,11 +769,9 @@ def _write_daily_only(mutator):
                 pass
             raise
 
-    return cleaned
-
 
 def daily_set_handler(key: str, text: str, expires_at: str) -> dict:
-    """写入/更新一条例行数据到 memory.json daily 区域（写时清理全区域过期条目）"""
+    """写入/更新一条例行数据到 memory.json daily 区域（到期自动清理）"""
     # 双闸①：入口拒写损坏文件（conversation_park_handler 先例）
     data = _read_memory_json()
     if data.get("_raw_fallback"):
@@ -832,8 +802,26 @@ def daily_set_handler(key: str, text: str, expires_at: str) -> dict:
     expires_norm = dt.isoformat(timespec="seconds")
 
     def mutator(daily):
-        # 上限 20（清理后计数）；upsert 豁免仅限清理后仍存在的 key
-        if key not in daily and len(daily) >= MAX_DAILY_KEYS:
+        # 上限 20（内存过滤未过期条目后计数，不物理删）；
+        # 过期/畸形条目（非 dict / expires_at 缺失 / 不可解析 / < now）不计入上限；
+        # upsert 豁免仅限未过期条目中已存在的 key（过期的同 key 按新 key 计）
+        now = datetime.now().isoformat(timespec="seconds")
+
+        def _alive(k):
+            entry = daily.get(k)
+            if not isinstance(entry, dict):
+                return False
+            exp = entry.get("expires_at")
+            if not isinstance(exp, str):
+                return False
+            try:
+                datetime.fromisoformat(exp)
+            except ValueError:
+                return False
+            return exp >= now
+
+        alive_keys = [k for k in daily if _alive(k)]
+        if key not in alive_keys and len(alive_keys) >= MAX_DAILY_KEYS:
             raise ValueError(f"daily 区域已满（{MAX_DAILY_KEYS} 个 key），请先 daily_delete 或等过期")
         daily[key] = {
             "text": text,
@@ -842,15 +830,15 @@ def daily_set_handler(key: str, text: str, expires_at: str) -> dict:
         }
 
     try:
-        cleaned = _write_daily_only(mutator)
+        _write_daily_only(mutator)
     except ValueError as e:
         return {"status": "error", "message": str(e)}
 
-    return {"status": "ok", "key": key, "expires_at": expires_norm, "cleaned": cleaned}
+    return {"status": "ok", "key": key, "expires_at": expires_norm}
 
 
 def daily_delete_handler(key: str) -> dict:
-    """删除 daily 区域指定 key 的条目（不存在幂等 deleted=false；写时顺带清理过期条目）"""
+    """删除 daily 区域指定 key 的条目（不存在幂等 deleted=false）"""
     data = _read_memory_json()
     if data.get("_raw_fallback"):
         return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
@@ -864,11 +852,11 @@ def daily_delete_handler(key: str) -> dict:
             deleted = True
 
     try:
-        cleaned = _write_daily_only(mutator)
+        _write_daily_only(mutator)
     except ValueError as e:
         return {"status": "error", "message": str(e)}
 
-    return {"status": "ok", "deleted": deleted, "cleaned": cleaned}
+    return {"status": "ok", "deleted": deleted}
 
 
 # ============================================================================
