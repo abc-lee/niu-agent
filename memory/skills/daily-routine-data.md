@@ -29,10 +29,14 @@ from niu_memory_server import daily_set
 
 try:
     # ... 获取数据、精炼为 ≤100 字符的单行文本 ...
-    daily_set("weather", "北京 晴 22-32°C 午后雷阵雨", "2026-09-09T07:00:00")
+    r = daily_set("weather", "北京 晴 22-32°C 午后雷阵雨", "2026-09-09T07:00:00")
+    if r.get("status") != "ok":
+        print(f"写入 daily 区域失败: {r}")  # print → [定时任务] 消息通知主 Agent
 except Exception as e:
-    print(f"写入 daily 区域失败: {e}")  # print → [定时任务] 消息通知主 Agent
+    print(f"写入 daily 区域异常: {e}")  # 意外异常兜底
 ```
+
+设计内失败（key 非法/text 超长/区域写满 20 key/memory.json 损坏）不抛异常、返回 `{"status": "error", ...}` 字典——**必须检查返回值**，否则错误被静默吞掉（stdout 空 + exit 0 = 调度器判"无事静默"，写入失败永远无人知晓）。
 
 脚本头部三行是 sys.path 推导（bundle/dev 两布局通吃）：脚本进程能直接 `import niu_api`，但 `mcp-servers/` 不在 sys.path，需按 niu_api 的位置推导插入。
 
@@ -93,10 +97,12 @@ try:
 
     # 过期时间 = 明天早上 7 点（下次运行前）
     expires = (datetime.now().replace(hour=7, minute=0, second=0) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
-    daily_set("weather", text, expires)
+    r = daily_set("weather", text, expires)
+    if r.get("status") != "ok":
+        print(f"天气例行数据写入失败: {r}")  # 设计内失败是 error 字典，必须检查返回值
     # 正常路径不 print → 静默
 except Exception as e:
-    print(f"天气例行数据写入失败: {e}")  # → [定时任务] 通知主 Agent
+    print(f"天气例行数据写入异常: {e}")  # → [定时任务] 通知主 Agent
 ```
 
 手动验证：先在 scripts 目录手动跑一遍，确认下轮动态块出现 `[例行数据] 1 项：weather〈北京 晴 22-32°C 午后雷阵雨〉`。
