@@ -57,7 +57,7 @@ MCP 服务器集群 (mcp-servers/)
 5. 代码调试过程中验证无效后，必须马上撤销调试代码，恢复原始干净代码，再增加新的调试代码。
 6. 项目代码量较大，为保护上下文窗口，无需长期记忆或大代码量的遍历工作交给子 Agent。
 7. 代码质量优先，用户不在乎 token 消耗。
-8. 版本号变更必须同步三处：根目录 `VERSION` 文件（单一真相源，对外发布用）、`ui/main/windows/assistant/chat.html` 中 `version-label` span 的文本（UI 展示用）、`niu_api/compat.py` 中 `list_models` 的 `User-Agent: Niu/<版本号>`（Cloudflare 拦截 Python 默认 UA）。UA 改动连带 `tests/test_list_models_endpoint.py` 的 User-Agent 断言同步。其他文件（Cargo.toml、package.json、Python `__version__`、pyproject.toml 等）的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
+8. 版本号变更**只改根目录 `VERSION` 文件一处**（单一真相源，0.3.5 起）：`ui/main/windows/assistant/chat.html` 的版本 label 经 `preload-chat.js` 的 `APP_VERSION` 常量、`niu_api/compat.py` 的 `User-Agent: Niu/<版本号>` 经 `_read_version()`、`tests/test_list_models_endpoint.py` 的 UA 断言动态读 `VERSION`，全部自动同步。**未来新增版本号消费点一律读 `VERSION`，禁止新增硬编码副本**。Cargo.toml、package.json、pyproject.toml 等文件中的 version 字段是各子包的开发版本号，与产品版本号语义不同，**不要**强行统一。
 9. 私有文档（`docs/superpowers/` 整个目录）遵循铁律 9：在**独立 git 仓库**（`docs/superpowers/` 内层 `.git`）编写与提交（有 git 历史供多轮审查），该仓库永不推送；main 通过 `.gitignore` 排除该目录，push 天然干净。
 
 ---

@@ -135,6 +135,11 @@ if [ "$(uname)" = "Darwin" ]; then
     rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude '.DS_Store' \
         "$PROJECT_ROOT/extensions/niu-browser-ext/" "$RESOURCES_DIR/extensions/niu-browser-ext/"
 
+    # VERSION (版本号单一真相源，bundle 内 compat.py UA / preload APP_VERSION 动态读取)
+    echo "[build.sh] copying VERSION to bundle..."
+    cp "$PROJECT_ROOT/VERSION" "$RESOURCES_DIR/VERSION"
+    [ -f "$RESOURCES_DIR/VERSION" ] || { echo "[build.sh] ERROR: VERSION missing in bundle"; exit 1; }
+
     # 构造 iconset（从 ui/main/windows/assistant/icons 复制 PNG 改名 + sips 强制正方形）
     # 源 PNG 是非正方形（16x18/32x37/64x75/128x151 等），iconutil 严格校验像素必须匹配命名尺寸，
     # 否则生成失败。用 sips --resampleHeightWidth 强制到正方形像素再放 iconset。

@@ -1,12 +1,18 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const path = require('path');
 
 // 读取字体配置（同步，preload 在页面脚本前执行）
 const { loadFontConfig } = require('./lib/font-config.js');
 const _fontConfig = loadFontConfig();
 
+// 读取应用版本号（单一真相源=仓库根 VERSION 文件；读失败兜底 'dev'）
+const { readAppVersion } = require('./lib/app-version.js');
+const APP_VERSION = readAppVersion(path.join(__dirname, '..', '..'));
+
 contextBridge.exposeInMainWorld('electronAPI', {
   FONT_FACE_CSS: _fontConfig.fontFaceCss,  // @font-face CSS（无配置时为空串）
   FONT_FAMILY: _fontConfig.fontFamily,     // font-family 值（无配置时为空串，用系统默认）
+  APP_VERSION,                             // 应用版本号（单一真相源=仓库根 VERSION 文件；读失败兜底 'dev'）
   // 移动聊天窗口
   setPosition: (x, y) => ipcRenderer.send('set-chat-position', { x, y }),
   
