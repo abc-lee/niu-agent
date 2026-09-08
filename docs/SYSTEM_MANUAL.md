@@ -478,7 +478,7 @@ journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journ
 
 memory.json 顶层 `daily` 键存放例行数据（如天气），机制：`background_script` 后台静默脚本经 `from niu_memory_server import daily_set`（脚本内 sys.path 推导，与 MCP 工具同一实现）写入，或主 Agent 经 `disk("/memory/daily_set key text expires_at")` 手动写入；每轮动态块显示一行 `[例行数据] N 项：key〈text〉...`（插在 `[暂存事项]` 行上方，只显示未过期条目，key 字典序），过期自动退场。条目含 `text`（≤100 字符，写入前单行化）/ `expires_at`（本地秒级无偏移 ISO 裸串）/ `updated_at`；**清理只在写侧**（写入时自动清理全区域过期条目，读侧每轮只过滤显示不写文件）；key 上限 20（upsert 已有 key 不受限）。大内容走指针模式：全文写 `~/.niu/tmp/` 临时文件，text 写路径指针（注意 tmp 24h 清理，`expires_at` ≤24h）。
 
-配置入口：`config/disk/memory-server.yaml`（daily_set/daily_delete 磁盘映射；MCP 工具默认 hidden，主 Agent 只能经 disk 调用）；主 Agent 教学在 `config/agents/niu.md`「# 例行数据轻提醒」节；完整用法与可抄脚本例子见 `memory/skills/daily-routine-data.md`。
+配置入口：`config/disk/memory-server.yaml`（daily_set/daily_delete 磁盘映射；MCP 工具默认 hidden，主 Agent 只能经 disk 调用）；主 Agent 教学在 `config/agents/niu.md`「# 例行数据轻提醒」节；完整用法与可抄脚本例子见 `~/.niu/skills/daily-routine-data.md`（仓库源 `memory/skills/daily-routine-data.md`）。
 
 #### /compact 新语义
 
