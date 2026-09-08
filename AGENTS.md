@@ -529,7 +529,7 @@ preload_face_model()
 - **验证**：51 passed 9 skipped（T1 15+T2 10+T3 disk 8+回归 26，1 failed 为 test_disk_integration brain-region static **基线预存失败** git stash 实证与工程无关）+ ruff 零新增（stash 对比）+ A3 disk 链路同进程可调 + A4 registry.get_static_tools() 无 daily + grep mcp-servers.yaml 零条目。
 - **关键教训**：①**用户中途纠正是最贵的需求信号**——v0.1 把写入通道设计成 MCP 工具+子 Agent 是方向错误（用户原本意图=主 Agent 写 background_script 脚本，脚本不能用 MCP 工具）；subagent 路线整套推翻改双层通道。②**写 memory.json 的镜像先例有坑**：_write_parked_only 读路径静默 {} 回退，盲镜像=损坏时覆写销毁全文件——镜像先例必须读实现非读注释。③**Skill 教"静默脚本"必须教错误可见性**：设计内失败返回字典不抛异常时，可抄例子若只 try/except，脚本静默失败永远无人知晓——例子必须检查返回值。
 - **已知边界（接受）**：读侧不物理清理（过期条目滞留文件不可见无害，下次写入清）；跨进程锁不互斥 lost-update 窗口为既有现状（config-manager save_memory 无锁写，根治需 flock 覆盖全部写方另开工程）；带偏移手写条目读侧字符串序错排（工具路径归一化保证）。
-- **实机验证清单（待用户）**：①建天气脚本+background_script 定时任务 → 次日动态块出现 [例行数据] 行 ②出门场景主 Agent 主动提醒（"今天有雨"）③`ls /` 目录描述含轻提醒 ④memory/skills/daily-routine-data.md 已同步 ~/.niu/skills/（SkillSync 60s）⑤主 Agent disk("/memory/daily_set ...") 手动写一条 → 动态块立即出现。
+- **实机验证 ✅ 已通过（2026-09-08 用户实测）**：①天气脚本 weather_daily.py 建好+cron 30 6 * * * ②动态块 `[例行数据] 1 项：weather〈石家庄 强阵雨 14.9-20.5°C…〉` 正确显示 ③`ls /` 目录描述含"例行数据轻提醒" ④Skill 已同步 ~/.niu/skills/ ⑤脚本按 Skill 规范编写（sys.path 推导+返回值检查+静默纪律+expires_at<24h）。
 
 #### 工程：版本号单一真相源——四处硬编码消除（用户拍板；spec v0.2 R1 双审同抓 P0（preload 文件写错）→R2 复核双 APPROVE + plan v0.2 R1 双审同抓两处→R2 双 APPROVE + SDD Wave1（T1→T2 串行+T3a 并行）+ 实施双审双 APPROVE，main dbac2fe9/a298fcb1）
 
