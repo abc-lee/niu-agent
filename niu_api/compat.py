@@ -1431,6 +1431,21 @@ async def model_capability_probe(request: Request) -> dict:
     except Exception as e:
         return {"probe_status": "failed", "error": f"探测异常: {e}"}
 
+def _read_version() -> str:
+    """读版本号单一真相源 VERSION 文件（开发=仓库根/VERSION；bundle=Resources/VERSION）。
+
+    Path(__file__).parent.parent 两环境通吃。每次调用读文件不缓存（list_models 调用频率低，
+    无需模块级状态）；任何异常/空内容 → 'dev'（UA 仅需非 Python 默认 UA 过 Cloudflare，兜底无害）。
+    """
+    from pathlib import Path
+
+    try:
+        version = (Path(__file__).parent.parent / "VERSION").read_text(encoding="utf-8").strip()
+        return version or "dev"
+    except Exception:
+        return "dev"
+
+
 def _fetch_models_sync(api_base: str, api_key: str, api_type: str) -> tuple[int, bytes]:
     """同步拉取模型列表（urllib timeout=10s；经 asyncio.to_thread 调用，不阻塞事件循环）。
 
@@ -1455,7 +1470,7 @@ def _fetch_models_sync(api_base: str, api_key: str, api_type: str) -> tuple[int,
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-    headers.setdefault("User-Agent", "Niu/0.3.5")  # Cloudflare 拦截 Python 默认 UA（403）
+    headers.setdefault("User-Agent", f"Niu/{_read_version()}")  # Cloudflare 拦截 Python 默认 UA（403）
     req = urllib.request.Request(base + "/models", headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:

@@ -5,10 +5,14 @@ mock Request（async json()）+ patch urllib.request.urlopen（HTTP 层全 mock�
 """
 import io
 import json as _json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import urllib.error
+
+# User-Agent 断言动态拼：版本号单一真相源=仓库根 VERSION（测试在 <root>/tests/ 下，上级即仓库根）
+_EXPECTED_UA = f"Niu/{(Path(__file__).parent.parent / 'VERSION').read_text(encoding='utf-8').strip()}"
 
 
 def _make_request(body):
@@ -312,14 +316,14 @@ async def test_empty_list_passthrough():
 
 @pytest.mark.asyncio
 async def test_user_agent_header_set():
-    """请求头包含 User-Agent: Niu/0.3.5（Cloudflare 拦截 Python 默认 UA）。"""
+    """请求头包含 User-Agent: Niu/{VERSION 内容}（动态读仓库根 VERSION；Cloudflare 拦截 Python 默认 UA）。"""
     from niu_api.compat import list_models
 
     body = {"apiKey": "sk", "apiBase": "https://api.example.com/v1"}
     with patch("urllib.request.urlopen", return_value=_ok_response({"data": [{"id": "m1"}]})) as mock_urlopen:
         await list_models(_make_request(body))
         req = _sent_request(mock_urlopen)
-        assert req.get_header("User-agent") == "Niu/0.3.5"
+        assert req.get_header("User-agent") == _EXPECTED_UA
 
 
 @pytest.mark.asyncio
@@ -331,4 +335,4 @@ async def test_user_agent_anthropic_path():
     with patch("urllib.request.urlopen", return_value=_ok_response({"data": [{"id": "claude-4"}]})) as mock_urlopen:
         await list_models(_make_request(body))
         req = _sent_request(mock_urlopen)
-        assert req.get_header("User-agent") == "Niu/0.3.5"
+        assert req.get_header("User-agent") == _EXPECTED_UA
