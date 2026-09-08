@@ -1,6 +1,6 @@
 server: memory-server
 directory: memory
-description: "记忆系统 — 长期记忆存取与检索"
+description: "记忆系统 — 长期记忆存取与检索、话题暂存、例行数据轻提醒"
 
 tools:
   - name: user_memory_remember
@@ -55,4 +55,32 @@ tools:
       - name: index
         position: 1
         type: integer
+        required: true
+
+  - name: daily_set
+    category: write
+    short: "写入/更新例行数据(轻提醒区,带过期时间)"
+    long: "写入一条例行数据到 memory.json daily 区域。key=数据源名(小写字母/数字/下划线,≤30字符)；text=提醒文本(≤100字符,自动单行化;大内容请写 ~/.niu/tmp/ 临时文件并把路径写进 text 作指针,注意 tmp 24h 清理,expires_at 勿超 24h)；expires_at=ISO过期时间(如 2026-09-09T07:00:00)。写入时自动清理全区域过期条目。同 key 重复调用=更新。上限 20 个 key。"
+    parameters:
+      - name: key
+        position: 1
+        type: string
+        required: true
+      - name: text
+        position: 2
+        type: string
+        required: true
+      - name: expires_at
+        position: 3
+        type: string
+        required: true
+
+  - name: daily_delete
+    category: write
+    short: "删除例行数据(按 key)"
+    long: "删除 daily 区域指定 key 的条目。key 不存在时幂等返回 deleted=false。"
+    parameters:
+      - name: key
+        position: 1
+        type: string
         required: true
