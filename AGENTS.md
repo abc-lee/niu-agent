@@ -510,6 +510,16 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+#### 工程：版本号单一真相源——四处硬编码消除（用户拍板；spec v0.2 R1 双审同抓 P0（preload 文件写错）→R2 复核双 APPROVE + plan v0.2 R1 双审同抓两处→R2 双 APPROVE + SDD Wave1（T1→T2 串行+T3a 并行）+ 实施双审双 APPROVE，main dbac2fe9/a298fcb1）
+
+- **背景**：版本号手工同步四处（VERSION/chat.html/compat.py UA/测试断言）已连续两次漏同步（0.3.3→0.3.4 漏 compat.py+测试——测试钉同一旧值一直绿未暴露，0.3.5 升级才发现补）。用户拍板：改为读 VERSION（"是不是只需要改造两个地方去读 Version"→ 实际 5 个改动点已说明获批）。
+- **机制**：①build.sh 资源复制段加 `cp VERSION → Resources/` + fail-fast（缺失即构建失败，永久结构保证）②compat.py `_read_version()`（`Path(__file__).parent.parent/"VERSION"` 两环境通吃：开发=仓库根、bundle=Resources；每次调用读文件不缓存；失败→'dev'）③preload-chat.js 暴露 APP_VERSION 常量（照 FONT_FACE_CSS 先例）④chat.html version-label 静态清空+body 尾部主脚本 JS 填充 ⑤测试动态化+防回潮守卫（chat.html 无硬编码版本/compat.py 无 Niu/x.y 硬编码/preload-chat.js 含 APP_VERSION 接线断言）。
+- **双审同抓 P0（spec R1）**：v0.1 把 APP_VERSION 写进 preload-assistant.js——但 chat.html 由 **preload-chat.js** 服务（main.js L188 实证；assistant 只服务 spirit 窗口），按它实施 label 恒显 vdev；且 mock 注入 electronAPI 结构性抓不到接线错误 → 补 preload 接线静态断言（断言③）。
+- **plan 双审同抓**：T1/T2"并行无文件交集"与测试依赖矛盾（守卫断言①③被测对象是 T1 产物——**文件无交集≠测试无依赖**）→ T1→T2 串行；T4 把 A3③"真启动目检"加"或文件核对"降级出口——**plan 零削弱验收权**（上轮零新增语义权的对偶）→ 删。
+- **验证**：A1 grep 零命中 / A2 动态性（VERSION→9.9.9 测试绿→改回 git diff 干净）/ A3① mock（label=v9.9.9-mock）/ A4 变异必红 / A5 bundle Resources/VERSION=0.3.5+fail-fast 构建日志可见 / A7 JS 42+pytest 43 绿；实施双审双 APPROVE（零 P0-P2）。
+- **已知边界**：A3③（打包后真启动 .app 目检 label）因开发版 Niu 运行中未做——**转用户实机清单**（重启 Niu 或重开 chat 窗口看 label=v0.3.5）；Cargo.toml/package.json/pyproject.toml 子包版本号不动。
+- **skill 过时注明**：niu-version-bump-and-package 的"VERSION + chat.html 两处同步"已过时——现只改 VERSION 一处（skill 是用户文件未改，用户自行决定更新）。
+
 #### 工程：命名配置合集替代厂商预设（选择设置）——LLM 命名配置双文件模型（用户拍板 Q1-Q5 + Agent 编辑坑规避；spec v0.3 R3 终核双 APPROVE + plan v0.2 R2 复核双 APPROVE + SDD Wave1-2 + 实施双审修复闭环复核双 APPROVE，main 5934c8e4/7534eb54）
 
 - **需求（用户拍板）**：删 `config/llm-presets.json`（厂商预设用处不大）；设置页"选择预设"→"选择设置"（Q1=自绘下拉输入框同模型名称款：打字=新名/选中=加载）；测试保存时名字空→提醒必须输入，有名字→重写合集该名下配置；新建 `~/.niu/config/llm-configs.json` 记录全部命名配置（与 user-config.json 同目录）；选中调取旧配置测试保存后启用。**Agent 编辑坑（用户特别提醒）**：配置项可由主 Agent 自行编辑，文件内容比表单多——保存时多出的内容必须一并保存进合集；**手册必须强调主 Agent 修改配置要两个文件一起改**。Q2/Q3=保存所有字段（含 Agent 添加，llm+lightrag_llm 两段），以 user-config.json 为主合集为辅（合集有不同→改为与配置文档相同），前提=测试通过才写文档；Q4=presetId 就是配置名（一回事）；Q5=不做删除（文档开放主 Agent 可改，配置可覆盖）。
