@@ -1,0 +1,16 @@
+# niu-natives — maturin 构建配置（plan v0.4 T3）
+# module-name 与 src/lib.rs #[pymodule] fn niu_natives 一致。
+
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "niu-natives"
+version = "0.1.0"
+description = "Niu desktop capture/input native bindings (PyO3), ported from oh-my-pi pi-natives desktop module (MIT)"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+[tool.maturin]
+module-name = "niu_natives"

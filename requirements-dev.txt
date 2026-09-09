@@ -14,3 +14,6 @@ coverage==7.14.0
 pluggy==1.6.0                 # pytest 依赖
 iniconfig==2.3.0              # pytest 依赖
 Pygments==2.20.0              # pytest 输出彩色化（从 requirements.txt 移过来）
+
+# ============== Rust native 构建（niu-natives wheel，T3） ==============
+maturin==1.15.0               # niu-natives PyO3 crate → wheel（装进 python/ venv）
