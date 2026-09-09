@@ -1,0 +1,56 @@
+# niu-natives — Niu 桌面采集/输入 native 绑定（PyO3）
+# 源码移植自 oh-my-pi crates/pi-natives/src/desktop（MIT，can1357/oh-my-pi）。
+#
+# 【T1 状态——故意不编译】src/desktop/ 为 omp 原样搬运，仍含 napi / crate::task /
+# ax 全量引用，而本 manifest 无 napi 依赖；T2 手术（ax_lite 裁切 + PyO3 化）后才可编译。
+# 见 docs/superpowers/plans/2026-09-09-vision-phase1-niu-natives-plan.md T1/T2。
+
+[package]
+name = "niu-natives"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Niu desktop capture/input native bindings (PyO3), ported from oh-my-pi pi-natives desktop module (MIT)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# pyo3 版本 pin：crates.io 最新稳定 0.2x（maturin 1.15 配套，T3 构建链）
+pyo3 = { version = "=0.29.2", features = ["extension-module"] }
+
+# --- 公共（跨平台纯逻辑：frame/keys/error 等）---
+image = { version = "0.25", default-features = false, features = ["png"] }
+flume = "0.11"
+parking_lot = "0.12.5"
+
+# --- mac + win 双平台（与 omp 源 cfg(any) 组一致：win32/capture.rs 同样 use xcap）---
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+xcap = { version = "=0.9.6", default-features = false }
+# enigo 仅 win32 输入用；macOS 纯 CGEvent——无条件声明保跨平台可编译
+enigo = { version = "=0.6.1", default-features = false }
+
+# --- macOS ---
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"
+objc2 = "=0.6.4"
+objc2-app-kit = "=0.3.2"
+objc2-core-graphics = "=0.3.2"
+objc2-foundation = "=0.3.2"
+objc2-application-services = "=0.3.2"
+objc2-core-foundation = "=0.3.2"
+foreign-types = "=0.5.0"
+libc = "0.2"
+tempfile = "=3.27.0"
+
+# --- Windows ---
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
