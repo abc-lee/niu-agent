@@ -1,0 +1,4 @@
+# Windows 静态 CRT（plan v0.4 B P1-A：Cargo.toml [target.*] rustflags 被 cargo 静默忽略，
+# .cargo/config.toml 是唯一生效落点）
+[target.'cfg(windows)']
+rustflags = ["-C", "target-feature=+crt-static"]
