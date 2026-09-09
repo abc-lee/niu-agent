@@ -65,9 +65,44 @@ pub struct DesktopWindow {
 	pub focused: bool,
 }
 
+/// One display/region rectangle serialized over the Python wire format: the
+/// logical desktop rect (x/y/width/height) plus the corresponding rect in the
+/// composite screenshot's pixel space (pixel_*), both non-local when the frame
+/// is a region crop of a larger composite.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionWire {
+	pub x:            f64,
+	pub y:            f64,
+	pub width:        f64,
+	pub height:       f64,
+	pub pixel_x:      f64,
+	pub pixel_y:      f64,
+	pub pixel_width:  f64,
+	pub pixel_height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GeometryKindWire {
+	Desktop,
+	Window { captured_width: u32, captured_height: u32 },
+}
+
+/// A `FrameGeometry` serialized as plain data for the capture()/map_point()
+/// Python dict wire format. `width`/`height` are the frame's pixel size (the
+/// size of the returned PNG). For `Window` frames the region rect also records
+/// the window's logical position at capture time, so a geometry dict alone is
+/// enough to map capture pixels back to global logical desktop coordinates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeometryWire {
+	pub kind:    GeometryKindWire,
+	pub width:   u32,
+	pub height:  u32,
+	pub regions: Vec<RegionWire>,
+}
+
 /// Captured PNG frame plus geometry bookkeeping. Internal session payload;
-/// the Python `capture()` method currently returns the minimal dict subset
-/// (`png_bytes`/`width`/`height`/`backend` — T2b extends with geometry).
+/// the Python `capture()` method serializes it into a dict with the fields
+/// below plus a `geometry` sub-dict (T2b wire format).
 #[pyclass(skip_from_py_object)]
 #[derive(Debug, Clone)]
 pub struct DesktopCapture {
@@ -92,6 +127,9 @@ pub struct DesktopCapture {
 	pub backend:        String,
 	#[pyo3(get)]
 	pub display_server: Option<String>,
+	/// Post-caps frame geometry (kind/regions), wire-serializable; consumed by
+	/// `map_point(x, y, geometry)`.
+	pub geometry: GeometryWire,
 }
 
 #[pyclass(skip_from_py_object)]
@@ -264,6 +302,132 @@ fn required_item(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<f64> {
 		None => Err(PyTypeError::new_err(format!(
 			"DesktopPoint dict is missing required '{key}'"
 		))),
+	}
+}
+
+/// Extracts a numeric dict item as `f64` (ints and floats both accepted).
+fn numeric_item(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<f64> {
+	match dict.get_item(key)?.filter(|value| !value.is_none()) {
+		Some(value) => value.extract(),
+		None => Err(PyTypeError::new_err(format!(
+			"region/geometry dict is missing required '{key}'"
+		))),
+	}
+}
+
+/// Reads a required scalar region/geometry item (numbers or booleans/strings
+/// stay typed via `T`).
+fn required_typed<'py, T>(dict: &Bound<'py, PyDict>, key: &str) -> PyResult<T>
+where
+	for<'a> T: FromPyObject<'a, 'py, Error = PyErr>,
+{
+	match dict.get_item(key)?.filter(|value| !value.is_none()) {
+		Some(value) => value.extract(),
+		None => Err(PyTypeError::new_err(format!(
+			"region/geometry dict is missing required '{key}'"
+		))),
+	}
+}
+
+/// A region-capture rectangle in logical desktop coordinates.
+/// Python input: `(x, y, width, height)` sequence or a dict with those keys.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CaptureRegion {
+	pub x:      f64,
+	pub y:      f64,
+	pub width:  f64,
+	pub height: f64,
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for CaptureRegion {
+	type Error = PyErr;
+
+	fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+		if let Ok(dict) = obj.cast::<PyDict>() {
+			return Ok(Self {
+				x:      numeric_item(&dict, "x")?,
+				y:      numeric_item(&dict, "y")?,
+				width:  numeric_item(&dict, "width")?,
+				height: numeric_item(&dict, "height")?,
+			});
+		}
+		let values = obj
+			.extract::<Vec<f64>>()
+			.map_err(|_| PyTypeError::new_err(
+				"capture region must be a (x, y, width, height) sequence or a dict with those keys",
+			))?;
+		if values.len() != 4 {
+			return Err(PyTypeError::new_err(format!(
+				"capture region must have exactly 4 elements (x, y, width, height), got {}",
+				values.len()
+			)));
+		}
+		Ok(Self {
+			x:      values[0],
+			y:      values[1],
+			width:  values[2],
+			height: values[3],
+		})
+	}
+}
+
+impl GeometryWire {
+	/// Parses one region entry of a `geometry` dict (see `FromPyObject` for
+	/// `GeometryWire`).
+	fn region_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<RegionWire> {
+		Ok(RegionWire {
+			x:            numeric_item(dict, "x")?,
+			y:            numeric_item(dict, "y")?,
+			width:        numeric_item(dict, "width")?,
+			height:       numeric_item(dict, "height")?,
+			pixel_x:      numeric_item(dict, "pixel_x")?,
+			pixel_y:      numeric_item(dict, "pixel_y")?,
+			pixel_width:  numeric_item(dict, "pixel_width")?,
+			pixel_height: numeric_item(dict, "pixel_height")?,
+		})
+	}
+}
+
+/// A geometry dict as returned by `capture()`: `{kind, width, height, regions,
+/// [captured_width, captured_height]}` where each region is
+/// `{x, y, width, height, pixel_x, pixel_y, pixel_width, pixel_height}`.
+impl<'a, 'py> FromPyObject<'a, 'py> for GeometryWire {
+	type Error = PyErr;
+
+	fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+		let dict = obj.cast::<PyDict>().map_err(|_| {
+			PyTypeError::new_err("geometry must be the 'geometry' dict returned by capture()")
+		})?;
+		let kind = required_typed::<String>(&dict, "kind")?;
+		let width = required_typed::<u32>(&dict, "width")?;
+		let height = required_typed::<u32>(&dict, "height")?;
+		let regions_value = dict.get_item("regions")?.ok_or_else(|| {
+			PyTypeError::new_err("geometry dict is missing required 'regions'")
+		})?;
+		let regions = regions_value
+			.try_iter()
+			.map_err(|_| PyTypeError::new_err("geometry 'regions' must be a list of dicts"))?
+			.map(|item| {
+				let item = item?;
+				let region = item
+					.cast::<PyDict>()
+					.map_err(|_| PyTypeError::new_err("each geometry region must be a dict"))?;
+				Self::region_from_dict(&region)
+			})
+			.collect::<PyResult<Vec<RegionWire>>>()?;
+		let kind = match kind.as_str() {
+			"desktop" => GeometryKindWire::Desktop,
+			"window" => GeometryKindWire::Window {
+				captured_width: required_typed(&dict, "captured_width")?,
+				captured_height: required_typed(&dict, "captured_height")?,
+			},
+			other => {
+				return Err(PyTypeError::new_err(format!(
+					"geometry 'kind' must be 'desktop' or 'window', got {other:?}"
+				)))
+			},
+		};
+		Ok(Self { kind, width, height, regions })
 	}
 }
 
