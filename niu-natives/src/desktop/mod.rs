@@ -22,7 +22,7 @@ use frame::{FrameGeometry, apply_capture_caps, encode_png};
 use keys::{parse_keys, parse_modifiers};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 pub use types::*;
 
 const OPERATION_TIMEOUT: Duration = Duration::from_mins(1);
@@ -32,7 +32,6 @@ enum Response {
 	Displays(Vec<DesktopDisplay>),
 	Windows(Vec<DesktopWindow>),
 	Capture(DesktopCapture),
-	MapPoint { x: f64, y: f64 },
 	Unit,
 }
 
@@ -51,6 +50,9 @@ enum Request {
 	Capture {
 		target: Target,
 		caps:   CaptureCaps,
+		/// Logical-desktop region crop for `Target::Desktop` captures; `None`
+		/// captures the whole composite. Rejected for window targets.
+		region: Option<CaptureRegion>,
 		reply:  Reply,
 	},
 	Click {
@@ -94,12 +96,6 @@ enum Request {
 		mode:   DeliveryMode,
 		reply:  Reply,
 	},
-	MapPoint {
-		target: Target,
-		x:      f64,
-		y:      f64,
-		reply:  Reply,
-	},
 	Close {
 		reply: Reply,
 	},
@@ -118,7 +114,6 @@ impl Request {
 			| Self::Scroll { reply, .. }
 			| Self::TypeText { reply, .. }
 			| Self::KeyChord { reply, .. }
-			| Self::MapPoint { reply, .. }
 			| Self::Close { reply } => reply,
 		};
 		let _ = reply.send(result);
@@ -216,8 +211,18 @@ impl Worker {
 			},
 			Request::ListDisplays { .. } => Ok(Response::Displays(self.backend()?.displays()?)),
 			Request::ListWindows { .. } => Ok(Response::Windows(self.backend()?.windows()?)),
-			Request::Capture { target, caps, .. } => {
-				let (image, mut geometry) = self.backend()?.capture(target, caps)?;
+			Request::Capture { target, caps, region, .. } => {
+				if region.is_some() && !matches!(target, Target::Desktop) {
+					return Err(DesktopError::invalid_target(
+						"capture region is only supported for the 'desktop' target (window captures \
+						 are always full-window)",
+					));
+				}
+				let (mut image, mut geometry) = self.backend()?.capture(target, caps)?;
+				if let Some(region) = region {
+					let (x, y, width, height) = geometry.crop_to_logical_region(&region)?;
+					image = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+				}
 				let source_width = image.width();
 				let source_height = image.height();
 				let image = apply_capture_caps(image, &mut geometry, caps)?;
@@ -245,6 +250,7 @@ impl Worker {
 				};
 				let displays = geometry.display_metadata(&source);
 				let png = encode_png(image)?;
+				let geometry_wire = geometry.to_wire();
 				self.frames.insert(target.key().to_string(), geometry);
 				let capabilities = self.backend()?.capabilities();
 				*self.capabilities.lock() = capabilities.clone();
@@ -258,6 +264,7 @@ impl Worker {
 					displays,
 					backend: capabilities.backend,
 					display_server: capabilities.display_server,
+					geometry: geometry_wire,
 				}))
 			},
 			Request::Click { target, x, y, options, .. } => {
@@ -323,10 +330,6 @@ impl Worker {
 			Request::KeyChord { target, keys, mode, .. } => {
 				self.backend()?.key_chord(target, keys, *mode)?;
 				Ok(Response::Unit)
-			},
-			Request::MapPoint { target, x, y, .. } => {
-				let (x, y, _) = self.map_point(target, *x, *y)?;
-				Ok(Response::MapPoint { x, y })
 			},
 			Request::Close { .. } => Ok(Response::Unit),
 		}
@@ -439,6 +442,70 @@ fn response_unit(response: Response) -> CoreResult<()> {
 	}
 }
 
+/// Serializes one geometry region into its wire dict.
+fn region_to_dict<'py>(py: Python<'py>, region: &RegionWire) -> PyResult<Bound<'py, PyDict>> {
+	let dict = PyDict::new(py);
+	dict.set_item("x", region.x)?;
+	dict.set_item("y", region.y)?;
+	dict.set_item("width", region.width)?;
+	dict.set_item("height", region.height)?;
+	dict.set_item("pixel_x", region.pixel_x)?;
+	dict.set_item("pixel_y", region.pixel_y)?;
+	dict.set_item("pixel_width", region.pixel_width)?;
+	dict.set_item("pixel_height", region.pixel_height)?;
+	Ok(dict)
+}
+
+/// Serializes a `FrameGeometry` into the wire dict consumed by
+/// `map_point(x, y, geometry)`: `{kind, width, height, regions, ...}`.
+fn geometry_to_dict<'py>(py: Python<'py>, wire: &GeometryWire) -> PyResult<Bound<'py, PyDict>> {
+	let dict = PyDict::new(py);
+	match wire.kind {
+		GeometryKindWire::Desktop => {
+			dict.set_item("kind", "desktop")?;
+		},
+		GeometryKindWire::Window { captured_width, captured_height } => {
+			dict.set_item("kind", "window")?;
+			dict.set_item("captured_width", captured_width)?;
+			dict.set_item("captured_height", captured_height)?;
+		},
+	}
+	dict.set_item("width", wire.width)?;
+	dict.set_item("height", wire.height)?;
+	let regions = PyList::empty(py);
+	for region in &wire.regions {
+		regions.append(region_to_dict(py, region)?)?;
+	}
+	dict.set_item("regions", regions)?;
+	Ok(dict)
+}
+
+/// Serializes one display metadata entry into its wire dict.
+fn display_to_dict<'py>(py: Python<'py>, display: &DesktopDisplay) -> PyResult<Bound<'py, PyDict>> {
+	let dict = PyDict::new(py);
+	dict.set_item("id", &display.id)?;
+	dict.set_item("name", &display.name)?;
+	dict.set_item("x", display.x)?;
+	dict.set_item("y", display.y)?;
+	dict.set_item("width", display.width)?;
+	dict.set_item("height", display.height)?;
+	dict.set_item("pixel_x", display.pixel_x)?;
+	dict.set_item("pixel_y", display.pixel_y)?;
+	dict.set_item("pixel_width", display.pixel_width)?;
+	dict.set_item("pixel_height", display.pixel_height)?;
+	dict.set_item("scale", display.scale)?;
+	Ok(dict)
+}
+
+/// Serializes the displays list of a capture result dict.
+fn displays_to_list<'py>(py: Python<'py>, displays: &[DesktopDisplay]) -> PyResult<Bound<'py, PyList>> {
+	let list = PyList::empty(py);
+	for display in displays {
+		list.append(display_to_dict(py, display)?)?;
+	}
+	Ok(list)
+}
+
 /// Persistent, serialized native desktop capture/input session.
 ///
 /// All methods are synchronous: the call blocks until the native worker
@@ -502,57 +569,73 @@ impl DesktopSession {
 	/// Capture `target` (`"desktop"` or a window id from `list_windows`) and
 	/// return the PNG bytes plus frame metadata.
 	///
+	/// `region` restricts `"desktop"` captures to a rectangle of the composite
+	/// desktop — a `(x, y, width, height)` sequence (or a dict with those
+	/// keys) in logical desktop coordinates relative to the composite origin.
+	/// The crop happens before `caps` downscaling and is clamped to the
+	/// displays it overlaps (a region that overlaps no display is an error);
+	/// combining a region with a window target is an error.
+	///
 	/// Returns a dict: `{"png_bytes": bytes, "width": int, "height": int,
-	/// "backend": str}`. (The geometry/displays wire fields are added in a
-	/// later stage.)
-	#[pyo3(signature = (target, caps=None))]
+	/// "source_width": int, "source_height": int, "backend": str,
+	/// "geometry": dict, "displays": [dict, ...]}`. `geometry` carries the
+	/// frame's `kind`/`regions` in the wire format consumed by
+	/// `map_point(x, y, geometry)`; `displays` describes the monitors visible
+	/// in the frame (id/name/logical rect/pixel rect/scale).
+	#[pyo3(signature = (target, caps=None, region=None))]
 	fn capture(
 		&self,
 		py: Python<'_>,
 		target: String,
 		caps: Option<CaptureCaps>,
+		region: Option<CaptureRegion>,
 	) -> PyResult<Py<PyDict>> {
 		let core = Arc::clone(&self.core);
 		let target = Target::parse(&target);
 		let caps = caps.unwrap_or_default();
 		let result = py.detach(move || {
-			match core.call(|reply| Request::Capture { target, caps, reply }) {
+			match core.call(|reply| Request::Capture { target, caps, region, reply }) {
 				Ok(Response::Capture(capture)) => Ok(capture),
 				Ok(_) => Err(DesktopError::internal("unexpected response")),
 				Err(error) => Err(error),
 			}
 		});
 		let capture = result?;
+		let geometry = geometry_to_dict(py, &capture.geometry)?;
+		let displays = displays_to_list(py, &capture.displays)?;
 		let dict = PyDict::new(py);
 		dict.set_item("png_bytes", capture.data)?;
 		dict.set_item("width", capture.width)?;
 		dict.set_item("height", capture.height)?;
+		dict.set_item("source_width", capture.source_width)?;
+		dict.set_item("source_height", capture.source_height)?;
 		dict.set_item("backend", capture.backend)?;
+		dict.set_item("geometry", geometry)?;
+		dict.set_item("displays", displays)?;
 		Ok(dict.unbind())
 	}
 
-	/// Map capture-frame pixel coordinates (from the last capture of `target`)
-	/// to global logical desktop coordinates.
+	/// Map capture-frame pixel coordinates to global logical desktop
+	/// coordinates.
 	///
-	/// Returns a dict `{"x": float, "y": float}` in global logical desktop
-	/// pixels (window targets are re-anchored to the window's current origin).
+	/// `geometry` is the `geometry` dict returned by `capture()` (its wire
+	/// format is self-contained: kind, frame size and per-region logical +
+	/// pixel rects), so this is a pure function of the captured frame — no
+	/// session state is consulted. Region crops map back to global logical
+	/// desktop coordinates (a crop never re-anchors to its own origin), and
+	/// window frames map relative to the window position at capture time
+	/// (input methods re-anchor live windows themselves).
+	///
+	/// Returns a dict `{"x": float, "y": float}`.
 	fn map_point(
 		&self,
 		py: Python<'_>,
-		target: String,
 		x: f64,
 		y: f64,
+		geometry: GeometryWire,
 	) -> PyResult<Py<PyDict>> {
-		let core = Arc::clone(&self.core);
-		let target = Target::parse(&target);
-		let result = py.detach(move || {
-			match core.call(|reply| Request::MapPoint { target, x, y, reply }) {
-				Ok(Response::MapPoint { x, y }) => Ok((x, y)),
-				Ok(_) => Err(DesktopError::internal("unexpected response")),
-				Err(error) => Err(error),
-			}
-		});
-		let (x, y) = result?;
+		let frame = FrameGeometry::from_wire(&geometry);
+		let (x, y) = frame.map_point_static(x, y).map_err(PyErr::from)?;
 		let dict = PyDict::new(py);
 		dict.set_item("x", x)?;
 		dict.set_item("y", y)?;
@@ -684,7 +767,7 @@ impl DesktopSession {
 
 #[cfg(test)]
 mod capture_tests {
-	use image::RgbaImage;
+	use image::{Rgba, RgbaImage};
 
 	use super::*;
 	use crate::desktop::{
@@ -696,9 +779,11 @@ mod capture_tests {
 	const WAYLAND_ID: &str = "atspi::1.31:/org/a11y/atspi/accessible/1";
 
 	/// Backend that mints a composite AT-SPI window id, mirroring the Wayland
-	/// `AtSpiAx` path. Exists to exercise `Worker::process` without a display.
+	/// `AtSpiAx` path, plus a plain 1x desktop display. Exists to exercise
+	/// `Worker::process` without a real display.
 	struct FakeWaylandBackend {
-		window: DesktopWindow,
+		window:         DesktopWindow,
+		desktop_display: DesktopDisplay,
 	}
 
 	impl FakeWaylandBackend {
@@ -715,6 +800,20 @@ mod capture_tests {
 					height:  48,
 					focused: true,
 				},
+				desktop_display: DesktopDisplay {
+					id:           "1".to_string(),
+					name:         "Fake".to_string(),
+					x:            0,
+					y:            0,
+					width:        400,
+					height:       300,
+					scale:        1.0,
+					pixel_x:      0,
+					pixel_y:      0,
+					pixel_width:  400,
+					pixel_height: 300,
+					is_primary:   true,
+				},
 			}
 		}
 	}
@@ -730,7 +829,7 @@ mod capture_tests {
 		}
 
 		fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>> {
-			Ok(Vec::new())
+			Ok(vec![self.desktop_display.clone()])
 		}
 
 		fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>> {
@@ -752,7 +851,11 @@ mod capture_tests {
 				Target::Window(id) => {
 					Err(DesktopError::window_not_found(format!("Wayland window {id} not found")))
 				},
-				Target::Desktop => Err(DesktopError::capture_failed("desktop capture not exercised")),
+				Target::Desktop => {
+					let image = RgbaImage::from_pixel(400, 300, Rgba([18, 52, 86, 255]));
+					let geometry = FrameGeometry::for_displays(&[self.desktop_display.clone()]);
+					Ok((image, geometry))
+				},
 			}
 		}
 
@@ -785,7 +888,21 @@ mod capture_tests {
 
 	fn capture_request(target: Target) -> Request {
 		let (reply, _rx) = flume::bounded(1);
-		Request::Capture { target, caps: CaptureCaps::default(), reply }
+		Request::Capture { target, caps: CaptureCaps::default(), region: None, reply }
+	}
+
+	fn region_request(target: Target, region: CaptureRegion) -> Request {
+		let (reply, _rx) = flume::bounded(1);
+		Request::Capture { target, caps: CaptureCaps::default(), region: Some(region), reply }
+	}
+
+	fn caps_region_request(
+		target: Target,
+		caps: CaptureCaps,
+		region: Option<CaptureRegion>,
+	) -> Request {
+		let (reply, _rx) = flume::bounded(1);
+		Request::Capture { target, caps, region, reply }
 	}
 
 	/// Regression for #7701: a composite AT-SPI window id minted by the Wayland
@@ -804,6 +921,14 @@ mod capture_tests {
 		assert_eq!(capture.width, 64);
 		assert_eq!(capture.height, 48);
 		assert_eq!(capture.backend, "wayland");
+		// T2b wire format: window frames keep Window kind + capture-time dims.
+		assert_eq!(
+			capture.geometry.kind,
+			GeometryKindWire::Window { captured_width: 64, captured_height: 48 }
+		);
+		assert_eq!(capture.geometry.width, 64);
+		assert_eq!(capture.geometry.height, 48);
+		assert_eq!(capture.geometry.regions.len(), 1);
 	}
 
 	/// Unknown ids still fail — but as `WindowNotFound` from the backend lookup,
@@ -816,5 +941,117 @@ mod capture_tests {
 			panic!("unknown window id should fail");
 		};
 		assert_eq!(err.code, ErrorCode::WindowNotFound);
+	}
+
+	/// T2b: a desktop region capture crops the full composite raster *before*
+	/// caps; the cropped frame keeps Desktop kind, its region's logical rect is
+	/// the intersection in global logical coordinates, its pixel rect is
+	/// crop-local, and display metadata is clipped to the crop.
+	#[test]
+	fn desktop_region_capture_crops_composite_and_geometry() {
+		let mut worker = worker_with(FakeWaylandBackend::new());
+		let response = worker
+			.process(&region_request(
+				Target::Desktop,
+				CaptureRegion { x: 100.0, y: 50.0, width: 200.0, height: 150.0 },
+			))
+			.expect("region capture should succeed");
+		let Response::Capture(capture) = response else {
+			panic!("expected a capture response");
+		};
+		assert_eq!(capture.target, "desktop");
+		assert_eq!(capture.width, 200);
+		assert_eq!(capture.height, 150);
+		assert_eq!(capture.source_width, 200); // no caps — crop size is pre-caps
+		assert_eq!(capture.source_height, 150);
+		assert_eq!(capture.geometry.kind, GeometryKindWire::Desktop);
+		assert_eq!(capture.geometry.width, 200);
+		assert_eq!(capture.geometry.height, 150);
+		assert_eq!(capture.geometry.regions.len(), 1);
+		let region = &capture.geometry.regions[0];
+		assert_eq!((region.x, region.y), (100.0, 50.0));
+		assert_eq!((region.width, region.height), (200.0, 150.0));
+		assert_eq!((region.pixel_x, region.pixel_y), (0.0, 0.0));
+		assert_eq!((region.pixel_width, region.pixel_height), (200.0, 150.0));
+		assert_eq!(capture.displays.len(), 1);
+		assert_eq!(capture.displays[0].id, "1");
+		assert_eq!((capture.displays[0].pixel_x, capture.displays[0].pixel_y), (0, 0));
+		assert_eq!((capture.displays[0].pixel_width, capture.displays[0].pixel_height), (200, 150));
+		// The stored frame maps crop pixels to *global* logical coordinates
+		// (region crops never re-anchor to their own origin).
+		let frame = worker.frame(&Target::Desktop).expect("region frame should be stored");
+		assert_eq!(frame.map_point_static(100.0, 100.0).unwrap(), (200.0, 150.0));
+		assert_eq!(frame.map_point_static(199.0, 149.0).unwrap(), (299.0, 199.0));
+	}
+
+	/// T2b: region crops happen before `apply_capture_caps`, so caps downscale
+	/// the crop (not the whole composite) and `source_*` stays at crop size.
+	#[test]
+	fn desktop_region_capture_downscales_after_crop() {
+		let mut worker = worker_with(FakeWaylandBackend::new());
+		let caps = CaptureCaps { max_width: Some(200), max_height: None };
+		let response = worker
+			.process(&caps_region_request(
+				Target::Desktop,
+				caps,
+				Some(CaptureRegion { x: 0.0, y: 0.0, width: 400.0, height: 300.0 }),
+			))
+			.expect("region capture with caps should succeed");
+		let Response::Capture(capture) = response else {
+			panic!("expected a capture response");
+		};
+		assert_eq!((capture.width, capture.height), (200, 150));
+		assert_eq!((capture.source_width, capture.source_height), (400, 300));
+		assert_eq!(capture.geometry.kind, GeometryKindWire::Desktop);
+	}
+
+	/// T2b: a region fully outside every display clamps to nothing and is
+	/// rejected as InvalidTarget (region coordinates are logical desktop
+	/// coordinates; out-of-bounds parts of valid regions are clamped away).
+	#[test]
+	fn region_outside_desktop_is_rejected() {
+		let mut worker = worker_with(FakeWaylandBackend::new());
+		let Err(err) = worker.process(&region_request(
+			Target::Desktop,
+			CaptureRegion { x: 1000.0, y: 1000.0, width: 50.0, height: 50.0 },
+		)) else {
+			panic!("a region outside the desktop should fail");
+		};
+		assert_eq!(err.code, ErrorCode::InvalidTarget);
+	}
+
+	/// T2b: combining a region with a window target is invalid, and the check
+	/// fires before any backend capture runs.
+	#[test]
+	fn window_capture_rejects_region() {
+		let mut worker = worker_with(FakeWaylandBackend::new());
+		let Err(err) = worker.process(&region_request(
+			Target::Window(WAYLAND_ID.to_string()),
+			CaptureRegion { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
+		)) else {
+			panic!("window + region should fail");
+		};
+		assert_eq!(err.code, ErrorCode::InvalidTarget);
+	}
+
+	/// T2b: a plain desktop capture (no region) still reports Desktop geometry
+	/// with the full display region and matching display metadata.
+	#[test]
+	fn desktop_full_capture_reports_full_geometry() {
+		let mut worker = worker_with(FakeWaylandBackend::new());
+		let response = worker
+			.process(&capture_request(Target::Desktop))
+			.expect("desktop capture should succeed");
+		let Response::Capture(capture) = response else {
+			panic!("expected a capture response");
+		};
+		assert_eq!((capture.width, capture.height), (400, 300));
+		assert_eq!(capture.geometry.kind, GeometryKindWire::Desktop);
+		assert_eq!(capture.geometry.regions.len(), 1);
+		let region = &capture.geometry.regions[0];
+		assert_eq!((region.x, region.y), (0.0, 0.0));
+		assert_eq!((region.pixel_width, region.pixel_height), (400.0, 300.0));
+		assert_eq!(capture.displays.len(), 1);
+		assert_eq!(capture.displays[0].scale, 1.0);
 	}
 }
