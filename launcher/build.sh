@@ -28,6 +28,19 @@ if [ "$(uname)" = "Darwin" ]; then
     # --- 复制运行时资源到 Contents/Resources/ ---
     PROJECT_ROOT="$(cd .. && pwd)"
 
+    # niu-natives/（Rust 桌面采集，PyO3 wheel 装进 python/——必须先于下方 rsync --delete 复制 python/，
+    # 否则未装 wheel 的 python/ 会把 bundle 内已装好的 niu_natives 副本清掉）
+    # x86_64 声明：Intel 宿主默认构建正确（macosx_10_12_x86_64 wheel）；ARM host 需显式 --platform 防静默错配
+    [ -x "$PROJECT_ROOT/python/bin/maturin" ] || { echo "[build.sh] maturin missing: pip install -r requirements-dev.txt"; exit 1; }
+    echo "[build.sh] building niu-natives wheel + installing into python/..."
+    # rm 先于 build：清掉 target/wheels/ 累积的旧 wheel，避免 pip 装到歧义产物（与 T3 同序）
+    rm -f "$PROJECT_ROOT/niu-natives/target/wheels/"*.whl
+    cd "$PROJECT_ROOT/niu-natives"
+    maturin build --release -i ../python/bin/python
+    cd "$PROJECT_ROOT"
+    python/bin/pip install --force-reinstall niu-natives/target/wheels/*.whl
+    cd launcher
+
     # python/ (含自包含 stdlib + dylib + Resources stub)
     echo "[build.sh] copying python/ to bundle..."
     # 不用 -X：签名完全由 Step 2 codesign --force 重新打，避免 rsync -X 带入旧 xattr（含可能的 quarantine）
@@ -140,6 +153,17 @@ if [ "$(uname)" = "Darwin" ]; then
     cp "$PROJECT_ROOT/VERSION" "$RESOURCES_DIR/VERSION"
     [ -f "$RESOURCES_DIR/VERSION" ] || { echo "[build.sh] ERROR: VERSION missing in bundle"; exit 1; }
 
+    # NOTICES/LICENSE（第三方声明 + niu-natives 的 omp MIT 许可证——spec §8.5 mac 分发包义务）
+    # THIRD-PARTY-NOTICES.txt 由文档合规任务生成（cargo vendor 归集）；缺失时 warning 跳过不阻断
+    for f in THIRD-PARTY-NOTICES.txt niu-natives/LICENSE; do
+        if [ -f "$PROJECT_ROOT/$f" ]; then
+            cp "$PROJECT_ROOT/$f" "$RESOURCES_DIR/$(basename "$f")"
+            echo "[build.sh] copied $f to Resources/"
+        else
+            echo "[build.sh] WARNING: $PROJECT_ROOT/$f missing, skipped (non-fatal)"
+        fi
+    done
+
     # 构造 iconset（从 ui/main/windows/assistant/icons 复制 PNG 改名 + sips 强制正方形）
     # 源 PNG 是非正方形（16x18/32x37/64x75/128x151 等），iconutil 严格校验像素必须匹配命名尺寸，
     # 否则生成失败。用 sips --resampleHeightWidth 强制到正方形像素再放 iconset。
@@ -189,6 +213,8 @@ if [ "$(uname)" = "Darwin" ]; then
     <true/>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Niu 需要屏幕录制权限，用于桌面截图与可视化分析功能。屏幕内容仅在本地处理，不会上传。</string>
 </dict>
 </plist>
 PLIST
