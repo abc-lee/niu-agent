@@ -510,6 +510,19 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+#### 工程：可视化功能 Phase 1——niu-natives Rust crate（用户四问拍板+法律考察+三轮 spec 双审+三轮 plan 双审；main e3230788..b70dd995 7 commits，docs b7594b4 spec v0.4 冻结/7483554 plan v0.4 冻结/5e19ab1 勘误⑦⑧）
+
+- **目标**：给 Agent 加可视化——屏幕/窗口/区域抓图+浏览器截图+视觉模型解析，第一期只「看」不「操作」但架构留备。**分 Phase**：P1=niu-natives Rust crate（本条目）；P2=vision-server MCP+动态挂载+vision_llm+探测（下阶段）；P3=browser_screenshot。
+- **用户拍板（2026-09-09）**：①屏幕+窗口抓图（浏览器非文字 DOM 一期不解决）②操作能力后期要、一期不做但输入/坐标 API 随采集层一并移植暴露 ③MCP 工具 static 直挂主 Agent（不走 disk）+**解析模型=动态参数**（无视觉模型=工具不出现；有才把模型名挂 enum 主 Agent 自选）④采集方案=Rust+PyO3 复用 omp desktop（方案锁定后反推）⑤探测不加按钮（现有探测流程加一项）⑥requirements.txt 完整性+README 明谢 ⑦screenshot/analyze_image 分离 ⑧ax_lite（macos/ax.rs ~300 行聚焦子集保留——完整 ax 裁掉则 macOS 窗口聚焦输入断链，plan R1-A P1-2 实证后补拍板）。
+- **法律考察**：OMP=MIT 三层一致；18 crate crates.io API 逐个实查全宽松（xcap Apache-2.0/enigo MIT/image MIT-Apache 等，零 GPL）；NOTICES 归集 297 crate 对账零遗漏（cargo vendor 机制）；**r-efi LGPL 选项核实不进产物**（getrandom UEFI-only 传递依赖，mac/win 编译树零命中）。
+- **spec 三轮双审**（v0.4 冻结 b7594b4）：R1 双 CONDITIONAL（**双审同抓 enum 值语义矛盾**——模型名 vs 标识）；R2 双 CONDITIONAL（交互日志 base64 明文泄漏/static 注册绕过门控/nightly 构建链——R1 吸收双角验证通过）；R3 双 CONDITIONAL 零 P1/P2（§5.1 重复块自相矛盾双角同抓/vision_llm.model 空语义矛盾）。
+- **plan 三轮双审**（v0.4 冻结 7483554）：R1 A REVISION 3P1（T1 验收不可达假拆分/macOS 输入与 ax 纠缠→用户拍板 ax_lite/region 是新增实现非移植）；R2 双 REVISION（**双审同抓 task.rs 依赖断裂**——T1 保真验证改 diff 不编译）；R3 双 CONDITIONAL 零 P1（**双审同抓 xcap 平台声明缺 Windows**）。
+- **SDD**：T1 搬运（diff -r -x linux 零差异）→T2a 手术（ax_lite+PyO3——删 task::blocking 同步直调/py.detach/哨兵 build.rs/21 tests）→T2b（region 逐显示器求交混合 DPI+geometry wire+map_point 纯函数——21 passed）→T3（maturin wheel 装 python/+otool 干净）→T4（build.sh 构建步骤+Info.plist NSScreenCaptureUsageDescription+NOTICES 进 Resources）→T5（requirements.txt 注释段/README 致谢/NOTICES 297 对账/manual-dependencies）→T6 真机（map_point 4/4 PASS；TCC 权限拦截 permission_denied 正确分类——非静默黑图，印证设计）。
+- **实施双审双 CONDITIONAL→修复闭环**（b70dd995）：A 零 P0/P1；B 抓 P1 **win32/input.rs 6 处 let-chain**（edition 2024 语法 vs crate 2021——mac 构建不触达漏网，Windows 首编必炸，cargo check windows target 验证修复）+**双审同抓 Windows 署名缺口**（pack.bat /xd 排除 niu-natives/LICENSE 悬空——NOTICES 补 omp 三版权行+MIT 全文双平台覆盖）；勘误队列补⑦detach⑧AxFailed 保留。
+- **关键教训**：①**T1 保真验证用 diff 不用编译**——「删 napi 没接 PyO3」的中间态不存在（编译必然红），diff -r 零差异比 build 绿更直接证明没抄错；②**omp 的 #[napi] 绑定层是装饰不是骨架**——task::blocking 只是外层 Promise 包装，SessionCore.call 本就 flume 同步等待，删包装即同步语义（复用率 >90% 成立）；③**ax 裁切有纠缠成本**——macOS 输入的窗口前置聚焦链住在 ax 里（window_root/perform），「保留输入能力」=保留聚焦子集 ~300 行（用户拍板），不是删 3 个文件；④**双审同抓 5 次**（enum 语义/重复块/task.rs/xcap 平台/Windows 署名）——独立同抓=缺陷真实性强信号；⑤**crt-static 落点**：Cargo.toml [target.cfg.rustflags] 被 cargo 静默忽略（实测），唯一生效=niu-natives/.cargo/config.toml；⑥**派发纪律**：local-vision 用 eval agent(agent="local-vision") 代码接口，task JSON 我连续漏 agent 字段 8 次被用户抓——代码接口绕开。
+- **已知边界**：TCC 未授权终端的真机抓图闭环待用户授权后复验；Windows .pyd 构建+真机验证留 Windows 机（用户实机清单）；omp 一次性 fork 无同步机制；输入 API 仅暴露不挂 MCP（hasattr 级验证）。
+- **spec 勘误队列（Phase 2 收官随勘误 commit）**：①URL badlogiclabs→can1357 ②windows-sys 0.52→0.61 ③enigo(mac/win)→win-only ④「用户授权一次」ad-hoc 失真 ⑤ax ≈2200 行→ax_lite ~300 行 ⑥pointer 占位→四方法 ⑦detach 替代 allow_threads ⑧AxFailed 保留。
+
 #### 工程：图谱例行事件清理 + dream-evolver 防复发（用户发现 entity/dream 行为分裂；spec v0.4 四轮双审收敛（R1 双 REVISION 7P1+4P2 / R2 双 REVISION 名单附件缺失 / R3 双 REVISION 命名精度双审同抓 / R4 A APPROVE B 1P2 大小写修正）+ plan v0.3 两轮双审（R1 双 REVISION T3 死步+重扫越权 / R2 B APPROVE A 1P2 vdb base64 判据）+ SDD T1-T3 + 实施双审 A APPROVE/B 1P2 KV 残留遗漏修复，main 827ae85e/e2dc992f，docs 23484fd/2d0e202）
 
 - **背景**：用户发现 entity-extractor（000003）正确跳过例行消息（"全部定时任务触发的例行流程、无用户新增事实→跳过"）、dream-evolver（000005-000010）把同一批例行执行建成 event 实体+followed_by 时间链——行为分裂。DreamVerify 独立验证：诊断成立且污染规模 25+/天递增（HN 每日事件 17 个名称漂移 8 种+咖啡机 7 个+journal 8 个+门锁等）。
