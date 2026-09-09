@@ -36,7 +36,7 @@ if [ "$(uname)" = "Darwin" ]; then
     # rm 先于 build：清掉 target/wheels/ 累积的旧 wheel，避免 pip 装到歧义产物（与 T3 同序）
     rm -f "$PROJECT_ROOT/niu-natives/target/wheels/"*.whl
     cd "$PROJECT_ROOT/niu-natives"
-    maturin build --release -i ../python/bin/python
+    "$PROJECT_ROOT/python/bin/maturin" build --release -i ../python/bin/python
     cd "$PROJECT_ROOT"
     python/bin/pip install --force-reinstall niu-natives/target/wheels/*.whl
     cd launcher
