@@ -43,6 +43,7 @@ MCP 服务器集群 (mcp-servers/)
    - 文档仓库**永远不推送**（本地版本比对用）
    此铁律必须传达给派出去的子 Agent。
 10. **禁止用 Python/脚本直接修改任何代码或文档** — 所有文件修改（代码、配置、计划、手册）必须用 **Edit 工具**（先读后改：old_string 不匹配会显式报错，不会静默失败）。**Python 仅限只读分析**（读文件、算数据、grep 统计），禁止 `open(p,'w').write()` 写文件。`python -c 's=open(f).read().replace(...); open(f,"w").write(s)'` 一类批量静默替换**一律禁止**——`str.replace` 的 old_string 不匹配时静默跳过不报错，是"改了但没改对"的根源（2026-08-14 脑区 assign 计划 19 轮审查教训：行号漂移连续三轮、fake 结构修错、改一处漏同步，全因静默 replace）。此铁律必须传达给派出去的子 Agent。
+11. 开工前必须读项目流程 Skill（niu-plan-review-gate-and-sdd / niu-sdd-execution-flow）；Skill 必须真读真执行。记住本地Agent优先的约定，只要不需要过大上下文的操作，优先使用本地Agent。双审可以一个本地，一个远端。
 
 **违反任何一条就停下来，不要继续。**
 
@@ -58,13 +59,6 @@ MCP 服务器集群 (mcp-servers/)
 5. 用户手工配置的配置段**必须持久保留**——切换其他模型、设置页保存任何配置都不得覆盖丢
 6. 禁止项（2026-09-09 已全部回退重做，勿再犯）：设置页视觉模型 UI/表单；程序自动探测第三方视觉模型；保存链自动触发探测
 7. 动手前必须用大白话与用户对齐需求；方向做错必须立即承认并彻底回退（Phase 2 错 12+ 小时被全撤的教训）
-
-### 项目经理职责（用户多次强调，非建议）
-- 你是 PM：不改代码、不自己遍历代码；把控全局方向，减少无价值上下文占用
-- **评估子 Agent/审查员反馈的准确性——没绝对把握就派 Agent 二次核对，绝不被错误信息带偏**
-- 子 Agent 不要自行 commit，由 PM 复核后提交
-- 开工前必须读项目流程 Skill（niu-plan-review-gate-and-sdd / niu-sdd-execution-flow）；Skill 必须真读真执行
-- cancel 子 Agent 前必须查其 transcript 工具调用时间线（卡死 vs 慢而正常深入——证据链先行，cancel 是最后手段）
 
 ### 任务派发硬门禁（本地模型优先——用户连续多次提醒）
 - Niu 项目任务派发：**单 Agent = `tasks[].agent` 显式 `"local-vision"`**（自包含任务、128K 内）；**双 Agent（双审）= A 角 local-vision + B 角远端 reviewer**；禁双远端、禁双本地并行（local-vision 单槽位排队）
