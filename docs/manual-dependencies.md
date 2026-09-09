@@ -134,6 +134,34 @@ InsightFace 的 `ctx_id` 参数仅对 CUDA 有效：`ctx_id=0` 表示使用 GPU�
 
 卸载由后台守护线程定期检查（每 60 秒），不调用 `gc.collect()` 避免 ONNX Runtime 崩溃。
 
+### 1.4 Rust 原生依赖（niu-natives）
+
+桌面自动化原生扩展（屏幕/窗口/区域抓图 + 输入注入 + 多屏坐标映射），PyO3 绑定，maturin 构建 wheel 装入 `python/` 环境。
+
+**来源：** oh-my-pi（`https://github.com/can1357/oh-my-pi`，MIT）的 `crates/pi-natives/src/desktop` 模块，移植为仓内独立 crate `niu-natives/`（自带 Cargo.lock 提交；`niu-natives/LICENSE` = omp MIT 三版权行 + Niu 修改声明）。
+
+**关键 crate 与许可证**（全量 297 项含传递依赖见根目录 `THIRD-PARTY-NOTICES.txt`，零 GPL/LGPL/AGPL）：
+
+| Crate | 版本 | 许可证 | 用途 |
+|------|------|------|------|
+| `xcap` | 0.9.6 | Apache-2.0 | 屏幕/窗口采集（macOS+Windows） |
+| `enigo` | 0.6.1 | MIT | 输入注入（Windows；macOS 纯 CGEvent） |
+| `image` | 0.25.10 | MIT OR Apache-2.0 | PNG 编解码 |
+| `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | Windows 系统 API |
+| `objc2` 系 | 0.3.2 / 0.6.4 | Zlib/Apache-2.0/MIT（objc2、block2、foundation、encode 为 MIT） | macOS 系统 API |
+| `core-graphics` | 0.25.0 | MIT OR Apache-2.0 | macOS 图形 API |
+| `pyo3` | 0.29.2 | MIT OR Apache-2.0 | Python 绑定 |
+| `parking_lot` / `flume` | 0.12.5 / 0.11.1 | MIT OR Apache-2.0 | 并发原语（操作线程 + 结果通道） |
+
+**构建方式**（非 pip 安装，从仓内源码构建；`maturin` 为开发依赖见 `requirements-dev.txt`，打包流程 `launcher/build.sh` 已内嵌同步骤）：
+
+```bash
+cd niu-natives && maturin build --release -i ../python/bin/python
+cd .. && python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
+```
+
+**许可证归集：** 根目录 `THIRD-PARTY-NOTICES.txt`（cargo vendor 全量提取，含 Windows-only 与跨平台传递依赖；打包时复制进 `.app` Resources/）。
+
 ---
 
 ## 二、模型文件

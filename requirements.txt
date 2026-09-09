@@ -16,6 +16,28 @@
 #
 
 
+# ============================================
+# niu-natives（Rust PyO3 原生扩展——桌面自动化）
+# 注意：以下全部为注释说明行，不是 pip 安装行；niu-natives 不在 PyPI，
+#       克隆本仓后需从仓内源码构建 wheel（见下方构建方式），不要尝试 pip install niu-natives
+# ============================================
+# 来源：oh-my-pi（https://github.com/can1357/oh-my-pi，MIT）的
+#       crates/pi-natives/src/desktop 模块，移植为仓内独立 crate niu-natives/
+#       （自带 Cargo.lock；niu-natives/LICENSE = omp MIT 三版权行 + Niu 修改声明）
+# 构建方式（maturin 见 requirements-dev.txt；launcher/build.sh 打包流程已内嵌同步骤）：
+#   cd niu-natives && maturin build --release -i ../python/bin/python
+#   cd .. && python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
+# 关键 crate 许可证（全量 297 项含传递依赖见根 THIRD-PARTY-NOTICES.txt，零 GPL/LGPL/AGPL）：
+#   xcap 0.9.6            Apache-2.0              屏幕/窗口采集（macOS+Windows）
+#   enigo 0.6.1           MIT                     输入注入（Windows；macOS 纯 CGEvent）
+#   image 0.25.10         MIT OR Apache-2.0       PNG 编解码
+#   windows-sys 0.61.2    MIT OR Apache-2.0       Windows 系统 API
+#   objc2 系 0.3.2/0.6.4  Zlib/Apache-2.0/MIT     macOS 系统 API（objc2/block2/foundation/encode=MIT）
+#   core-graphics 0.25.0  MIT OR Apache-2.0       macOS 图形 API
+#   pyo3 0.29.2           MIT OR Apache-2.0       Python 绑定
+#   parking_lot/flume     MIT OR Apache-2.0       并发原语
+#
+
 # ============== 核心框架 ==============
 fastapi==0.136.1
 uvicorn==0.47.0
