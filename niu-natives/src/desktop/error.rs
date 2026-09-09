@@ -1,5 +1,8 @@
 use std::fmt;
 
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::PyErr;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
 	PermissionDenied,
@@ -10,8 +13,7 @@ pub enum ErrorCode {
 	InvalidTarget,
 	InvalidKey,
 	InvalidCoordinateFrame,
-	StaleRef,
-	AxUnsupported,
+	// Kept for the macOS ax_lite focus subset (window_root/perform/prepare_foreground_input).
 	AxFailed,
 	Timeout,
 	Closed,
@@ -29,8 +31,6 @@ impl ErrorCode {
 			Self::InvalidTarget => "InvalidTarget",
 			Self::InvalidKey => "InvalidKey",
 			Self::InvalidCoordinateFrame => "InvalidCoordinateFrame",
-			Self::StaleRef => "StaleRef",
-			Self::AxUnsupported => "AxUnsupported",
 			Self::AxFailed => "AxFailed",
 			Self::Timeout => "Timeout",
 			Self::Closed => "Closed",
@@ -82,14 +82,6 @@ impl DesktopError {
 		Self::new(ErrorCode::InvalidCoordinateFrame, message)
 	}
 
-	pub(crate) fn stale_ref(message: impl Into<String>) -> Self {
-		Self::new(ErrorCode::StaleRef, message)
-	}
-
-	pub(crate) fn ax_unsupported() -> Self {
-		Self::new(ErrorCode::AxUnsupported, "accessibility is unavailable on this backend")
-	}
-
 	pub(crate) fn ax_failed(message: impl Into<String>) -> Self {
 		Self::new(ErrorCode::AxFailed, message)
 	}
@@ -115,9 +107,12 @@ impl fmt::Display for DesktopError {
 
 impl std::error::Error for DesktopError {}
 
-impl From<DesktopError> for napi::Error {
+/// Maps the desktop error to a Python `RuntimeError` whose message keeps the
+/// `{code}: {message}` prefix (e.g. `PermissionDenied: ...`), so Python callers
+/// can classify failures without losing the native error code.
+impl From<DesktopError> for PyErr {
 	fn from(error: DesktopError) -> Self {
-		Self::from_reason(error.to_string())
+		PyRuntimeError::new_err(error.to_string())
 	}
 }
 

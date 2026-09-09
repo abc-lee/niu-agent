@@ -242,10 +242,10 @@ pub fn execute_chord_with<E>(
 	}
 	let mut first_error = None;
 	for &key in pressed.iter().rev() {
-		if let Err(error) = emit(key, KeyDirection::Release)
-			&& first_error.is_none()
-		{
-			first_error = Some(error);
+		if first_error.is_none() {
+			if let Err(error) = emit(key, KeyDirection::Release) {
+				first_error = Some(error);
+			}
 		}
 	}
 	first_error.map_or(Ok(()), Err)

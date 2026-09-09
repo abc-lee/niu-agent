@@ -25,7 +25,6 @@ struct FrameRegion {
 enum FrameKind {
 	Desktop,
 	Window { captured_width: u32, captured_height: u32 },
-	Identity,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,15 +84,6 @@ impl FrameGeometry {
 		}
 	}
 
-	pub(crate) const fn identity_global() -> Self {
-		Self {
-			width:   u32::MAX,
-			height:  u32::MAX,
-			regions: Vec::new(),
-			kind:    FrameKind::Identity,
-		}
-	}
-
 	pub(crate) fn map_point(
 		&self,
 		x: f64,
@@ -112,9 +102,6 @@ impl FrameGeometry {
 				 coordinates are pixels in the most recent screenshot of this target",
 				self.width, self.height
 			)));
-		}
-		if self.kind == FrameKind::Identity {
-			return Ok((x, y));
 		}
 		let region = self
 			.regions
@@ -147,7 +134,6 @@ impl FrameGeometry {
 				Ok((f64::from(current.x) + local_x, f64::from(current.y) + local_y))
 			},
 			FrameKind::Desktop => Ok((region.x + local_x, region.y + local_y)),
-			FrameKind::Identity => Ok((x, y)),
 		}
 	}
 

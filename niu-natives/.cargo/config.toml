@@ -2,3 +2,11 @@
 # .cargo/config.toml 是唯一生效落点）
 [target.'cfg(windows)']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# macOS PyO3 extension-module：pyo3-build-config 的 cdylib-link-arg 只作用于 cdylib
+# 产物；test/example 二进制仍会链接 Python C-API 符号 —— 这里对 mac 所有链接统一加
+# `-undefined dynamic_lookup`，让 cargo build 与 cargo test 都能过（纯 Rust 单测不触碰
+# Python API，符号在运行时惰性解析，永不到达）。与 build.rs 的
+# pyo3_build_config::add_extension_module_link_args() 重复但无害。
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
