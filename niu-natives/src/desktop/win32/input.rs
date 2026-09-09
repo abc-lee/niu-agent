@@ -59,10 +59,10 @@ fn with_global_modifiers(
 	let operation_result = operation(input);
 	let mut release_result = Ok(());
 	for key in held.into_iter().rev() {
-		if let Err(error) = input.key(key.to_enigo(), Direction::Release)
-			&& release_result.is_ok()
-		{
-			release_result = Err(enigo_error(error));
+		if let Err(error) = input.key(key.to_enigo(), Direction::Release) {
+			if release_result.is_ok() {
+				release_result = Err(enigo_error(error));
+			}
 		}
 	}
 	operation_result.and(release_result)
@@ -156,10 +156,10 @@ fn global_key_chord(input: &mut Enigo, keys: &[KeyName]) -> CoreResult<()> {
 	}
 	let mut result = Ok(());
 	for key in held.into_iter().rev() {
-		if let Err(error) = input.key(key.to_enigo(), Direction::Release)
-			&& result.is_ok()
-		{
-			result = Err(enigo_error(error));
+		if let Err(error) = input.key(key.to_enigo(), Direction::Release) {
+			if result.is_ok() {
+				result = Err(enigo_error(error));
+			}
 		}
 	}
 	result
@@ -512,10 +512,10 @@ mod background {
 		let operation_result = operation();
 		let mut release_result = Ok(());
 		for key in held.into_iter().rev() {
-			if let Err(error) = emitter.key(key, false)
-				&& release_result.is_ok()
-			{
-				release_result = Err(error);
+			if let Err(error) = emitter.key(key, false) {
+				if release_result.is_ok() {
+					release_result = Err(error);
+				}
 			}
 		}
 		operation_result.and(release_result)
@@ -542,10 +542,10 @@ mod background {
 		}
 		let mut result = Ok(());
 		for key in held.into_iter().rev() {
-			if let Err(error) = emitter.key(key, false)
-				&& result.is_ok()
-			{
-				result = Err(error);
+			if let Err(error) = emitter.key(key, false) {
+				if result.is_ok() {
+					result = Err(error);
+				}
 			}
 		}
 		result
@@ -745,10 +745,10 @@ mod foreground {
 		let operation_result = operation();
 		let mut release_result = Ok(());
 		for vk in held.into_iter().rev() {
-			if let Err(error) = send(key_event(vk, 0, KEYEVENTF_KEYUP))
-				&& release_result.is_ok()
-			{
-				release_result = Err(error);
+			if let Err(error) = send(key_event(vk, 0, KEYEVENTF_KEYUP)) {
+				if release_result.is_ok() {
+					release_result = Err(error);
+				}
 			}
 		}
 		operation_result.and(release_result)
@@ -782,10 +782,10 @@ mod foreground {
 		}
 		let mut result = Ok(());
 		for vk in held.into_iter().rev() {
-			if let Err(error) = send(key_event(vk, 0, KEYEVENTF_KEYUP))
-				&& result.is_ok()
-			{
-				result = Err(error);
+			if let Err(error) = send(key_event(vk, 0, KEYEVENTF_KEYUP)) {
+				if result.is_ok() {
+					result = Err(error);
+				}
 			}
 		}
 		result
