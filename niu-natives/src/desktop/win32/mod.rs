@@ -1,6 +1,4 @@
 #[cfg(target_os = "windows")]
-mod ax;
-#[cfg(target_os = "windows")]
 mod capture;
 pub mod delivery;
 #[cfg(target_os = "windows")]
@@ -12,9 +10,7 @@ use enigo::Enigo;
 use image::RgbaImage;
 
 #[cfg(target_os = "windows")]
-use self::ax::Win32Ax;
-#[cfg(target_os = "windows")]
-use super::backend::{AxBackend, Backend, DeliveryMode, PointerEvent};
+use super::backend::{Backend, DeliveryMode, PointerEvent};
 #[cfg(target_os = "windows")]
 use super::error::CoreResult;
 #[cfg(target_os = "windows")]
@@ -30,7 +26,6 @@ use super::types::{
 pub(crate) struct Win32Backend {
 	display:      DisplaySelector,
 	global_input: Enigo,
-	ax:           Win32Ax,
 }
 
 #[cfg(target_os = "windows")]
@@ -40,7 +35,7 @@ impl Win32Backend {
 		// keeping both APIs in the same per-monitor physical coordinate regime.
 		let global_input = input::create_global_input()?;
 		let _ = capture::displays(&display)?;
-		Ok(Self { display, global_input, ax: Win32Ax::new() })
+		Ok(Self { display, global_input })
 	}
 }
 
@@ -55,7 +50,9 @@ impl Backend for Win32Backend {
 			display_server: Some("win32".to_string()),
 			capture: display_count > 0,
 			input: true,
-			ax: true,
+			// ax_lite keeps only the macOS focus subset — full accessibility
+			// traversal is not exposed on Windows either.
+			ax: false,
 			background_window_input: true,
 			delivery_modes: vec!["background".to_string(), "foreground".to_string()],
 			capture_permission: if display_count > 0 {
@@ -65,7 +62,7 @@ impl Backend for Win32Backend {
 			}
 			.to_string(),
 			input_permission: "granted".to_string(),
-			ax_permission: "granted".to_string(),
+			ax_permission: "unavailable".to_string(),
 			display_count,
 		}
 	}
@@ -107,13 +104,5 @@ impl Backend for Win32Backend {
 		mode: DeliveryMode,
 	) -> CoreResult<()> {
 		input::key_chord(&mut self.global_input, target, keys, mode)
-	}
-
-	fn raise_window(&mut self, id: &str) -> CoreResult<()> {
-		input::raise_window(id)
-	}
-
-	fn ax(&mut self) -> Option<&mut dyn AxBackend> {
-		Some(&mut self.ax)
 	}
 }

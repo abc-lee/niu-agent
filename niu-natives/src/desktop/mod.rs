@@ -1,10 +1,7 @@
-mod ax;
 mod backend;
 mod error;
 mod frame;
 mod keys;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 mod types;
@@ -19,31 +16,24 @@ use std::{
 	time::Duration,
 };
 
-use ax::{AxRegistry, register_node};
 use backend::{Backend, DeliveryMode, MouseButton, PointerEvent};
 use error::{CoreResult, DesktopError};
 use frame::{FrameGeometry, apply_capture_caps, encode_png};
 use keys::{parse_keys, parse_modifiers};
-use napi::{Result, bindgen_prelude::Uint8Array};
-use napi_derive::napi;
 use parking_lot::Mutex;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
 pub use types::*;
 
-use crate::task;
-
 const OPERATION_TIMEOUT: Duration = Duration::from_mins(1);
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 enum Response {
 	Capabilities(DesktopCapabilities),
 	Displays(Vec<DesktopDisplay>),
 	Windows(Vec<DesktopWindow>),
 	Capture(DesktopCapture),
+	MapPoint { x: f64, y: f64 },
 	Unit,
-	Snapshot(AxSnapshot),
-	Nodes(Vec<AxNode>),
-	Node(Option<AxNode>),
-	Attributes(Vec<(String, String)>),
 }
 
 type Reply = flume::Sender<CoreResult<Response>>;
@@ -104,63 +94,11 @@ enum Request {
 		mode:   DeliveryMode,
 		reply:  Reply,
 	},
-	RaiseWindow {
-		id:    String,
-		reply: Reply,
-	},
-	AxSnapshot {
-		target:  Target,
-		options: AxSnapshotOptions,
-		reply:   Reply,
-	},
-	AxQuery {
-		target: Target,
-		query:  AxQuery,
-		reply:  Reply,
-	},
-	AxElementAt {
+	MapPoint {
 		target: Target,
 		x:      f64,
 		y:      f64,
 		reply:  Reply,
-	},
-	AxFocused {
-		reply: Reply,
-	},
-	AxNode {
-		reference: String,
-		reply:     Reply,
-	},
-	AxAttributes {
-		reference: String,
-		reply:     Reply,
-	},
-	AxChildren {
-		reference: String,
-		reply:     Reply,
-	},
-	AxParent {
-		reference: String,
-		reply:     Reply,
-	},
-	AxPerform {
-		reference: String,
-		action:    String,
-		reply:     Reply,
-	},
-	AxSetValue {
-		reference: String,
-		value:     String,
-		reply:     Reply,
-	},
-	AxFocus {
-		reference: String,
-		reply:     Reply,
-	},
-	AxClick {
-		reference: String,
-		options:   ParsedPointerOptions,
-		reply:     Reply,
 	},
 	Close {
 		reply: Reply,
@@ -180,19 +118,7 @@ impl Request {
 			| Self::Scroll { reply, .. }
 			| Self::TypeText { reply, .. }
 			| Self::KeyChord { reply, .. }
-			| Self::RaiseWindow { reply, .. }
-			| Self::AxSnapshot { reply, .. }
-			| Self::AxQuery { reply, .. }
-			| Self::AxElementAt { reply, .. }
-			| Self::AxFocused { reply }
-			| Self::AxNode { reply, .. }
-			| Self::AxAttributes { reply, .. }
-			| Self::AxChildren { reply, .. }
-			| Self::AxParent { reply, .. }
-			| Self::AxPerform { reply, .. }
-			| Self::AxSetValue { reply, .. }
-			| Self::AxFocus { reply, .. }
-			| Self::AxClick { reply, .. }
+			| Self::MapPoint { reply, .. }
 			| Self::Close { reply } => reply,
 		};
 		let _ = reply.send(result);
@@ -224,7 +150,6 @@ impl ParsedPointerOptions {
 
 struct Worker {
 	backend:      CoreResult<Box<dyn Backend>>,
-	registry:     AxRegistry,
 	frames:       HashMap<String, FrameGeometry>,
 	capabilities: Arc<Mutex<DesktopCapabilities>>,
 }
@@ -232,7 +157,7 @@ struct Worker {
 impl Worker {
 	fn new(selector: DisplaySelector, capabilities: Arc<Mutex<DesktopCapabilities>>) -> Self {
 		let backend = create_backend(selector);
-		Self { backend, registry: AxRegistry::default(), frames: HashMap::new(), capabilities }
+		Self { backend, frames: HashMap::new(), capabilities }
 	}
 
 	fn backend(&mut self) -> CoreResult<&mut Box<dyn Backend>> {
@@ -277,13 +202,6 @@ impl Worker {
 		};
 		let (x, y) = frame.map_point(x, y, current.as_ref())?;
 		Ok((x, y, frame))
-	}
-
-	fn ax(&mut self) -> CoreResult<&mut dyn backend::AxBackend> {
-		self
-			.backend()?
-			.ax()
-			.ok_or_else(DesktopError::ax_unsupported)
 	}
 
 	fn process(&mut self, request: &Request) -> CoreResult<Response> {
@@ -331,7 +249,7 @@ impl Worker {
 				let capabilities = self.backend()?.capabilities();
 				*self.capabilities.lock() = capabilities.clone();
 				Ok(Response::Capture(DesktopCapture {
-					data: Uint8Array::from(png),
+					data: png,
 					width,
 					height,
 					source_width,
@@ -406,185 +324,12 @@ impl Worker {
 				self.backend()?.key_chord(target, keys, *mode)?;
 				Ok(Response::Unit)
 			},
-			Request::RaiseWindow { id, .. } => {
-				self.backend()?.raise_window(id)?;
-				Ok(Response::Unit)
-			},
-			Request::AxSnapshot { target, options, .. } => {
-				let window = self.window(target)?;
-				let (backend, registry) = (&mut self.backend, &mut self.registry);
-				let ax = backend
-					.as_mut()
-					.map_err(|error| error.clone())?
-					.ax()
-					.ok_or_else(DesktopError::ax_unsupported)?;
-				Ok(Response::Snapshot(ax::snapshot(ax, registry, &window, options)?))
-			},
-			Request::AxQuery { target, query, .. } => {
-				let window = self.window(target)?;
-				let (backend, registry) = (&mut self.backend, &mut self.registry);
-				let ax = backend
-					.as_mut()
-					.map_err(|error| error.clone())?
-					.ax()
-					.ok_or_else(DesktopError::ax_unsupported)?;
-				Ok(Response::Nodes(ax::query(ax, registry, &window, query)?))
-			},
-			Request::AxElementAt { target, x, y, .. } => {
-				let (backend, registry) = (&mut self.backend, &mut self.registry);
-				let backend = backend
-					.as_mut()
-					.map_err(|error| error.clone())?
-					.ax()
-					.ok_or_else(DesktopError::ax_unsupported)?;
-				Ok(Response::Node(ax::element_at_node(backend, registry, target.key(), *x, *y)?))
-			},
-			Request::AxFocused { .. } => {
-				let handle = self.ax()?.focused_element()?;
-				let node = match handle {
-					Some(h) => {
-						let (backend, registry) = (&mut self.backend, &mut self.registry);
-						let ax = backend
-							.as_mut()
-							.map_err(|error| error.clone())?
-							.ax()
-							.ok_or_else(DesktopError::ax_unsupported)?;
-						Some(register_node(ax, registry, "desktop", h)?)
-					},
-					None => None,
-				};
-				Ok(Response::Node(node))
-			},
-			Request::AxNode { reference, .. } => {
-				let h = self.registry.resolve(reference)?;
-				let props = self.ax()?.props(&h)?;
-				Ok(Response::Node(Some(axnode(reference.clone(), props))))
-			},
-			Request::AxAttributes { reference, .. } => {
-				let h = self.registry.resolve(reference)?;
-				let mut attributes = self.ax()?.attributes(&h)?;
-				for (_, value) in &mut attributes {
-					if value.chars().count() > 200 {
-						*value = value
-							.chars()
-							.take(199)
-							.chain(std::iter::once('…'))
-							.collect();
-					}
-				}
-				Ok(Response::Attributes(attributes))
-			},
-			Request::AxChildren { reference, .. } => {
-				let h = self.registry.resolve(reference)?;
-				let target = self.registry.target(reference)?;
-				let handles = self.ax()?.children(&h)?;
-				let mut nodes = Vec::with_capacity(handles.len());
-				for h in handles {
-					let (backend, registry) = (&mut self.backend, &mut self.registry);
-					let ax = backend
-						.as_mut()
-						.map_err(|error| error.clone())?
-						.ax()
-						.ok_or_else(DesktopError::ax_unsupported)?;
-					nodes.push(register_node(ax, registry, &target, h)?);
-				}
-				Ok(Response::Nodes(nodes))
-			},
-			Request::AxParent { reference, .. } => {
-				let h = self.registry.resolve(reference)?;
-				let target = self.registry.target(reference)?;
-				let parent = self.ax()?.parent(&h)?;
-				let node = match parent {
-					Some(h) => {
-						let (backend, registry) = (&mut self.backend, &mut self.registry);
-						let ax = backend
-							.as_mut()
-							.map_err(|error| error.clone())?
-							.ax()
-							.ok_or_else(DesktopError::ax_unsupported)?;
-						Some(register_node(ax, registry, &target, h)?)
-					},
-					None => None,
-				};
-				Ok(Response::Node(node))
-			},
-			Request::AxPerform { reference, action, .. } => {
-				let h = self.registry.resolve(reference)?;
-				if action.eq_ignore_ascii_case("press") {
-					ax::ax_press(self.ax()?, &h)?;
-				} else {
-					self.ax()?.perform(&h, action)?;
-				}
-				Ok(Response::Unit)
-			},
-			Request::AxSetValue { reference, value, .. } => {
-				let h = self.registry.resolve(reference)?;
-				self.ax()?.set_value(&h, value)?;
-				Ok(Response::Unit)
-			},
-			Request::AxFocus { reference, .. } => {
-				let h = self.registry.resolve(reference)?;
-				self.ax()?.focus(&h)?;
-				Ok(Response::Unit)
-			},
-			Request::AxClick { reference, options, .. } => {
-				let h = self.registry.resolve(reference)?;
-				let bounds = self.ax()?.props(&h)?.bounds.ok_or_else(|| {
-					DesktopError::ax_failed(format!("{reference} has no clickable bounds"))
-				})?;
-				let x = bounds.x + bounds.width / 2.0;
-				let y = bounds.y + bounds.height / 2.0;
-				let windows = self.backend()?.windows()?;
-				let window = windows
-					.into_iter()
-					.find(|w| {
-						x >= f64::from(w.x)
-							&& x < f64::from(w.x + w.width as i32)
-							&& y >= f64::from(w.y)
-							&& y < f64::from(w.y + w.height as i32)
-					})
-					.ok_or_else(|| {
-						DesktopError::window_not_found(format!("no window contains {reference}"))
-					})?;
-				let target = Target::Window(window.id);
-				self.backend()?.pointer(
-					&target,
-					PointerEvent::Click {
-						x,
-						y,
-						button: options.button,
-						count: options.count,
-						modifiers: options.modifiers,
-					},
-					&FrameGeometry::identity_global(),
-					options.mode,
-				)?;
-				Ok(Response::Unit)
+			Request::MapPoint { target, x, y, .. } => {
+				let (x, y, _) = self.map_point(target, *x, *y)?;
+				Ok(Response::MapPoint { x, y })
 			},
 			Request::Close { .. } => Ok(Response::Unit),
 		}
-	}
-}
-
-fn axnode(reference: String, props: ax::AxProps) -> AxNode {
-	let (x, y, width, height) = props
-		.bounds
-		.map_or((None, None, None, None), |b| (Some(b.x), Some(b.y), Some(b.width), Some(b.height)));
-	AxNode {
-		ref_: reference,
-		role: props.role,
-		native_role: props.native_role,
-		title: props.title,
-		value: props.value,
-		description: props.description,
-		enabled: props.enabled,
-		focused: props.focused,
-		x,
-		y,
-		width,
-		height,
-		actions: (!props.actions.is_empty()).then_some(props.actions),
-		child_count: props.child_count,
 	}
 }
 
@@ -596,11 +341,7 @@ fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
 fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
 	Ok(Box::new(win32::Win32Backend::new(selector)?))
 }
-#[cfg(target_os = "linux")]
-fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
-	linux::new_backend(selector)
-}
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn create_backend(_: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
 	Err(DesktopError::capture_failed("desktop backend unavailable on this platform"))
 }
@@ -643,7 +384,7 @@ impl SessionCore {
 		let selector = self.selector.clone();
 		let caps = Arc::clone(&self.capabilities);
 		let join = thread::Builder::new()
-			.name("omp-desktop-session".into())
+			.name("niu-natives-desktop-session".into())
 			.spawn(move || {
 				let mut worker = Worker::new(selector, caps);
 				while let Ok(request) = rx.recv() {
@@ -678,31 +419,6 @@ impl SessionCore {
 			DesktopError::timeout(format!("native desktop operation did not complete: {e}"))
 		})?
 	}
-
-	fn close(&self) -> CoreResult<()> {
-		let mut lifecycle = self.lifecycle.lock();
-		lifecycle.closed = true;
-		let Some(tx) = lifecycle.tx.take() else {
-			return Ok(());
-		};
-		let (rtx, rrx) = flume::bounded(1);
-		tx.send(Request::Close { reply: rtx })
-			.map_err(|_| DesktopError::closed())?;
-		let _ = rrx.recv_timeout(CLOSE_TIMEOUT).map_err(|e| {
-			DesktopError::timeout(format!("timed out closing native desktop worker: {e}"))
-		})?;
-		if let Some(done) = lifecycle.done.take() {
-			done.recv_timeout(CLOSE_TIMEOUT).map_err(|e| {
-				DesktopError::timeout(format!("native desktop worker did not exit: {e}"))
-			})?;
-		}
-		if let Some(join) = lifecycle.join.take() {
-			join
-				.join()
-				.map_err(|_| DesktopError::internal("native desktop worker panicked during close"))?;
-		}
-		Ok(())
-	}
 }
 impl Drop for SessionCore {
 	fn drop(&mut self) {
@@ -723,355 +439,246 @@ fn response_unit(response: Response) -> CoreResult<()> {
 	}
 }
 
-/// Persistent, serialized native desktop capture/input/accessibility session.
-#[napi]
+/// Persistent, serialized native desktop capture/input session.
+///
+/// All methods are synchronous: the call blocks until the native worker
+/// replies (or the operation timeout elapses). The GIL is released for the
+/// duration of each call (`py.detach`), so concurrent Python threads stay
+/// schedulable while native capture/input runs.
+#[pyclass]
 pub struct DesktopSession {
 	core: Arc<SessionCore>,
 }
-#[napi]
+
+#[pymethods]
 impl DesktopSession {
-	#[napi(constructor)]
-	pub fn new(options: Option<DesktopSessionOptions>) -> Result<Self> {
+	/// Create a session. `options` is `None` or a dict with an optional
+	/// `"display"` key (display id or `"all"`).
+	#[new]
+	#[pyo3(signature = (options=None))]
+	fn new(options: Option<DesktopSessionOptions>) -> PyResult<Self> {
 		Ok(Self { core: SessionCore::new(DisplaySelector::parse(options.and_then(|o| o.display))) })
 	}
 
-	#[napi(getter)]
-	pub fn capabilities(&self) -> DesktopCapabilities {
-		match self.core.call(|reply| Request::Capabilities { reply }) {
-			Ok(Response::Capabilities(c)) => c,
-			_ => self.core.capabilities.lock().clone(),
-		}
+	/// Backend capabilities and permission state (never fails; falls back to
+	/// the last known snapshot while the native worker is unavailable).
+	#[getter]
+	fn capabilities(&self, py: Python<'_>) -> PyResult<Py<DesktopCapabilities>> {
+		let core = Arc::clone(&self.core);
+		let cached = Arc::clone(&core.capabilities);
+		let result: CoreResult<DesktopCapabilities> =
+			py.detach(move || match core.call(|reply| Request::Capabilities { reply }) {
+				Ok(Response::Capabilities(caps)) => Ok(caps),
+				_ => Ok(cached.lock().clone()),
+			});
+		let caps = result?;
+		Py::new(py, caps).map_err(Into::into)
 	}
 
-	#[napi]
-	pub fn list_displays(&self) -> Result<task::Promise<Vec<DesktopDisplay>>> {
-		let c = Arc::clone(&self.core);
-		Ok(task::blocking("desktop.listDisplays", (), move |_| {
-			match c.call(|reply| Request::ListDisplays { reply })? {
-				Response::Displays(v) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
-			}
-			.map_err(Into::into)
-		}))
+	/// List the monitors of the composite desktop.
+	fn list_displays(&self, py: Python<'_>) -> PyResult<Vec<Py<DesktopDisplay>>> {
+		let core = Arc::clone(&self.core);
+		let result = py.detach(move || match core.call(|reply| Request::ListDisplays { reply }) {
+			Ok(Response::Displays(displays)) => Ok(displays),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		let displays = result?;
+		displays.into_iter().map(|display| Py::new(py, display)).collect()
 	}
 
-	#[napi]
-	pub fn list_windows(&self) -> Result<task::Promise<Vec<DesktopWindow>>> {
-		let c = Arc::clone(&self.core);
-		Ok(task::blocking("desktop.listWindows", (), move |_| {
-			match c.call(|reply| Request::ListWindows { reply })? {
-				Response::Windows(v) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
-			}
-			.map_err(Into::into)
-		}))
+	/// List the top-level windows of the composite desktop.
+	fn list_windows(&self, py: Python<'_>) -> PyResult<Vec<Py<DesktopWindow>>> {
+		let core = Arc::clone(&self.core);
+		let result = py.detach(move || match core.call(|reply| Request::ListWindows { reply }) {
+			Ok(Response::Windows(windows)) => Ok(windows),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		let windows = result?;
+		windows.into_iter().map(|window| Py::new(py, window)).collect()
 	}
 
-	#[napi]
-	pub fn capture(
+	/// Capture `target` (`"desktop"` or a window id from `list_windows`) and
+	/// return the PNG bytes plus frame metadata.
+	///
+	/// Returns a dict: `{"png_bytes": bytes, "width": int, "height": int,
+	/// "backend": str}`. (The geometry/displays wire fields are added in a
+	/// later stage.)
+	#[pyo3(signature = (target, caps=None))]
+	fn capture(
 		&self,
+		py: Python<'_>,
 		target: String,
 		caps: Option<CaptureCaps>,
-	) -> Result<task::Promise<DesktopCapture>> {
-		let c = Arc::clone(&self.core);
+	) -> PyResult<Py<PyDict>> {
+		let core = Arc::clone(&self.core);
 		let target = Target::parse(&target);
-		Ok(task::blocking("desktop.capture", (), move |_| {
-			match c.call(|reply| Request::Capture { target, caps: caps.unwrap_or_default(), reply })? {
-				Response::Capture(v) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
+		let caps = caps.unwrap_or_default();
+		let result = py.detach(move || {
+			match core.call(|reply| Request::Capture { target, caps, reply }) {
+				Ok(Response::Capture(capture)) => Ok(capture),
+				Ok(_) => Err(DesktopError::internal("unexpected response")),
+				Err(error) => Err(error),
 			}
-			.map_err(Into::into)
-		}))
+		});
+		let capture = result?;
+		let dict = PyDict::new(py);
+		dict.set_item("png_bytes", capture.data)?;
+		dict.set_item("width", capture.width)?;
+		dict.set_item("height", capture.height)?;
+		dict.set_item("backend", capture.backend)?;
+		Ok(dict.unbind())
 	}
 
-	#[napi]
-	pub fn click(
+	/// Map capture-frame pixel coordinates (from the last capture of `target`)
+	/// to global logical desktop coordinates.
+	///
+	/// Returns a dict `{"x": float, "y": float}` in global logical desktop
+	/// pixels (window targets are re-anchored to the window's current origin).
+	fn map_point(
 		&self,
+		py: Python<'_>,
+		target: String,
+		x: f64,
+		y: f64,
+	) -> PyResult<Py<PyDict>> {
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		let result = py.detach(move || {
+			match core.call(|reply| Request::MapPoint { target, x, y, reply }) {
+				Ok(Response::MapPoint { x, y }) => Ok((x, y)),
+				Ok(_) => Err(DesktopError::internal("unexpected response")),
+				Err(error) => Err(error),
+			}
+		});
+		let (x, y) = result?;
+		let dict = PyDict::new(py);
+		dict.set_item("x", x)?;
+		dict.set_item("y", y)?;
+		Ok(dict.unbind())
+	}
+
+	/// Click at capture-frame pixel coordinates. `opts` may set `button`,
+	/// `count`, `modifiers` and `delivery_mode`.
+	#[pyo3(signature = (target, x, y, opts=None))]
+	fn click(
+		&self,
+		py: Python<'_>,
 		target: String,
 		x: f64,
 		y: f64,
 		opts: Option<PointerOptions>,
-	) -> Result<task::Promise<()>> {
-		let o = ParsedPointerOptions::parse(opts).map_err(napi::Error::from)?;
-		Ok(self.unit("desktop.click", move |reply| Request::Click {
-			target: Target::parse(&target),
-			x,
-			y,
-			options: o,
-			reply,
-		}))
+	) -> PyResult<()> {
+		let options = ParsedPointerOptions::parse(opts)?;
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		py.detach(move || {
+			core.call(|reply| Request::Click { target, x, y, options, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
 	}
 
-	#[napi]
-	pub fn move_mouse(
+	/// Move the mouse to capture-frame pixel coordinates.
+	#[pyo3(signature = (target, x, y, opts=None))]
+	fn move_mouse(
 		&self,
+		py: Python<'_>,
 		target: String,
 		x: f64,
 		y: f64,
 		opts: Option<PointerOptions>,
-	) -> Result<task::Promise<()>> {
-		let mode = ParsedPointerOptions::parse(opts)
-			.map_err(napi::Error::from)?
-			.mode;
-		Ok(self.unit("desktop.moveMouse", move |reply| Request::MoveMouse {
-			target: Target::parse(&target),
-			x,
-			y,
-			mode,
-			reply,
-		}))
+	) -> PyResult<()> {
+		let mode = ParsedPointerOptions::parse(opts)?.mode;
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		py.detach(move || {
+			core.call(|reply| Request::MoveMouse { target, x, y, mode, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
 	}
 
-	#[napi]
-	pub fn drag(
+	/// Drag through a path of capture-frame pixel coordinates.
+	#[pyo3(signature = (target, path, opts=None))]
+	fn drag(
 		&self,
+		py: Python<'_>,
 		target: String,
 		path: Vec<DesktopPoint>,
 		opts: Option<PointerOptions>,
-	) -> Result<task::Promise<()>> {
-		let o = ParsedPointerOptions::parse(opts).map_err(napi::Error::from)?;
-		let path = path.into_iter().map(|p| (p.x, p.y)).collect();
-		Ok(self.unit("desktop.drag", move |reply| Request::Drag {
-			target: Target::parse(&target),
-			path,
-			options: o,
-			reply,
-		}))
+	) -> PyResult<()> {
+		let options = ParsedPointerOptions::parse(opts)?;
+		let path = path.into_iter().map(|point| (point.x, point.y)).collect();
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		py.detach(move || {
+			core.call(|reply| Request::Drag { target, path, options, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
 	}
 
-	#[napi]
-	pub fn scroll(
+	/// Scroll at capture-frame pixel coordinates.
+	#[pyo3(signature = (target, x, y, dx, dy, opts=None))]
+	fn scroll(
 		&self,
+		py: Python<'_>,
 		target: String,
 		x: f64,
 		y: f64,
 		dx: f64,
 		dy: f64,
 		opts: Option<PointerOptions>,
-	) -> Result<task::Promise<()>> {
-		let mode = ParsedPointerOptions::parse(opts)
-			.map_err(napi::Error::from)?
-			.mode;
-		Ok(self.unit("desktop.scroll", move |reply| Request::Scroll {
-			target: Target::parse(&target),
-			x,
-			y,
-			dx,
-			dy,
-			mode,
-			reply,
-		}))
+	) -> PyResult<()> {
+		let mode = ParsedPointerOptions::parse(opts)?.mode;
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		py.detach(move || {
+			core.call(|reply| Request::Scroll { target, x, y, dx, dy, mode, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
 	}
 
-	#[napi]
-	pub fn type_text(
+	/// Type `text` into `target`.
+	#[pyo3(signature = (target, text, opts=None))]
+	fn type_text(
 		&self,
+		py: Python<'_>,
 		target: String,
 		text: String,
 		opts: Option<PointerOptions>,
-	) -> Result<task::Promise<()>> {
-		let mode = ParsedPointerOptions::parse(opts)
-			.map_err(napi::Error::from)?
-			.mode;
-		Ok(self.unit("desktop.typeText", move |reply| Request::TypeText {
-			target: Target::parse(&target),
-			text,
-			mode,
-			reply,
-		}))
+	) -> PyResult<()> {
+		let mode = ParsedPointerOptions::parse(opts)?.mode;
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		py.detach(move || {
+			core.call(|reply| Request::TypeText { target, text, mode, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
 	}
 
-	#[napi]
-	pub fn key_chord(
+	/// Send a keyboard chord (e.g. `["cmd", "c"]`) to `target`.
+	#[pyo3(signature = (target, keys, opts=None))]
+	fn key_chord(
 		&self,
+		py: Python<'_>,
 		target: String,
 		keys: Vec<String>,
 		opts: Option<PointerOptions>,
-	) -> Result<task::Promise<()>> {
-		let keys = parse_keys(&keys).map_err(napi::Error::from)?;
-		let mode = ParsedPointerOptions::parse(opts)
-			.map_err(napi::Error::from)?
-			.mode;
-		Ok(self.unit("desktop.keyChord", move |reply| Request::KeyChord {
-			target: Target::parse(&target),
-			keys,
-			mode,
-			reply,
-		}))
-	}
-
-	#[napi]
-	pub fn raise_window(&self, window_id: String) -> Result<task::Promise<()>> {
-		Ok(self
-			.unit("desktop.raiseWindow", move |reply| Request::RaiseWindow { id: window_id, reply }))
-	}
-
-	#[napi]
-	pub fn ax_snapshot(
-		&self,
-		target: String,
-		opts: Option<AxSnapshotOptions>,
-	) -> Result<task::Promise<AxSnapshot>> {
-		let c = Arc::clone(&self.core);
-		Ok(task::blocking("desktop.axSnapshot", (), move |_| {
-			match c.call(|reply| Request::AxSnapshot {
-				target: Target::parse(&target),
-				options: opts.unwrap_or_default(),
-				reply,
-			})? {
-				Response::Snapshot(v) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
-			}
-			.map_err(Into::into)
-		}))
-	}
-
-	#[napi]
-	pub fn ax_query(&self, target: String, query: AxQuery) -> Result<task::Promise<Vec<AxNode>>> {
-		Ok(self.nodes("desktop.axQuery", move |reply| Request::AxQuery {
-			target: Target::parse(&target),
-			query,
-			reply,
-		}))
-	}
-
-	/// Accessibility hit-test at global logical desktop coordinates; needs no
-	/// prior capture.
-	#[napi]
-	pub fn ax_element_at(
-		&self,
-		target: String,
-		x: f64,
-		y: f64,
-	) -> Result<task::Promise<Option<AxNode>>> {
-		Ok(self.node("desktop.axElementAt", move |reply| Request::AxElementAt {
-			target: Target::parse(&target),
-			x,
-			y,
-			reply,
-		}))
-	}
-
-	#[napi]
-	pub fn ax_focused(&self) -> Result<task::Promise<Option<AxNode>>> {
-		Ok(self.node("desktop.axFocused", move |reply| Request::AxFocused { reply }))
-	}
-
-	#[napi]
-	pub fn ax_node(&self, reference: String) -> Result<task::Promise<AxNode>> {
-		let c = Arc::clone(&self.core);
-		Ok(task::blocking("desktop.axNode", (), move |_| {
-			match c.call(|reply| Request::AxNode { reference, reply })? {
-				Response::Node(Some(v)) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
-			}
-			.map_err(Into::into)
-		}))
-	}
-
-	#[napi]
-	pub fn ax_attributes(&self, reference: String) -> Result<task::Promise<Vec<(String, String)>>> {
-		let c = Arc::clone(&self.core);
-		Ok(task::blocking("desktop.axAttributes", (), move |_| {
-			match c.call(|reply| Request::AxAttributes { reference, reply })? {
-				Response::Attributes(v) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
-			}
-			.map_err(Into::into)
-		}))
-	}
-
-	#[napi]
-	pub fn ax_children(&self, reference: String) -> Result<task::Promise<Vec<AxNode>>> {
-		Ok(self.nodes("desktop.axChildren", move |reply| Request::AxChildren { reference, reply }))
-	}
-
-	#[napi]
-	pub fn ax_parent(&self, reference: String) -> Result<task::Promise<Option<AxNode>>> {
-		Ok(self.node("desktop.axParent", move |reply| Request::AxParent { reference, reply }))
-	}
-
-	#[napi]
-	pub fn ax_perform(&self, reference: String, action: String) -> Result<task::Promise<()>> {
-		Ok(self.unit("desktop.axPerform", move |reply| Request::AxPerform {
-			reference,
-			action,
-			reply,
-		}))
-	}
-
-	#[napi]
-	pub fn ax_set_value(&self, reference: String, value: String) -> Result<task::Promise<()>> {
-		Ok(self.unit("desktop.axSetValue", move |reply| Request::AxSetValue {
-			reference,
-			value,
-			reply,
-		}))
-	}
-
-	#[napi]
-	pub fn ax_focus(&self, reference: String) -> Result<task::Promise<()>> {
-		Ok(self.unit("desktop.axFocus", move |reply| Request::AxFocus { reference, reply }))
-	}
-
-	#[napi]
-	pub fn ax_click(
-		&self,
-		reference: String,
-		opts: Option<PointerOptions>,
-	) -> Result<task::Promise<()>> {
-		let o = ParsedPointerOptions::parse(opts).map_err(napi::Error::from)?;
-		Ok(self.unit("desktop.axClick", move |reply| Request::AxClick {
-			reference,
-			options: o,
-			reply,
-		}))
-	}
-
-	#[napi]
-	pub fn close(&self) -> task::Promise<()> {
-		let c = Arc::clone(&self.core);
-		task::blocking("desktop.close", (), move |_| c.close().map_err(Into::into))
-	}
-}
-impl DesktopSession {
-	fn unit(
-		&self,
-		label: &'static str,
-		make: impl FnOnce(Reply) -> Request + Send + 'static,
-	) -> task::Promise<()> {
-		let c = Arc::clone(&self.core);
-		task::blocking(label, (), move |_| c.call(make).and_then(response_unit).map_err(Into::into))
-	}
-
-	fn nodes(
-		&self,
-		label: &'static str,
-		make: impl FnOnce(Reply) -> Request + Send + 'static,
-	) -> task::Promise<Vec<AxNode>> {
-		let c = Arc::clone(&self.core);
-		task::blocking(label, (), move |_| {
-			match c.call(make)? {
-				Response::Nodes(v) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
-			}
-			.map_err(Into::into)
+	) -> PyResult<()> {
+		let keys = parse_keys(&keys)?;
+		let mode = ParsedPointerOptions::parse(opts)?.mode;
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		py.detach(move || {
+			core.call(|reply| Request::KeyChord { target, keys, mode, reply })
+				.and_then(response_unit)
 		})
-	}
-
-	fn node(
-		&self,
-		label: &'static str,
-		make: impl FnOnce(Reply) -> Request + Send + 'static,
-	) -> task::Promise<Option<AxNode>> {
-		let c = Arc::clone(&self.core);
-		task::blocking(label, (), move |_| {
-			match c.call(make)? {
-				Response::Node(v) => Ok(v),
-				_ => Err(DesktopError::internal("unexpected response")),
-			}
-			.map_err(Into::into)
-		})
+		.map_err(PyErr::from)
 	}
 }
 
@@ -1081,7 +688,7 @@ mod capture_tests {
 
 	use super::*;
 	use crate::desktop::{
-		backend::{AxBackend, Backend},
+		backend::Backend,
 		error::ErrorCode,
 		keys::KeyName,
 	};
@@ -1166,20 +773,11 @@ mod capture_tests {
 		fn key_chord(&mut self, _: &Target, _: &[KeyName], _: DeliveryMode) -> CoreResult<()> {
 			unreachable!("key_chord not exercised")
 		}
-
-		fn raise_window(&mut self, _: &str) -> CoreResult<()> {
-			unreachable!("raise_window not exercised")
-		}
-
-		fn ax(&mut self) -> Option<&mut dyn AxBackend> {
-			None
-		}
 	}
 
 	fn worker_with(backend: impl Backend + 'static) -> Worker {
 		Worker {
 			backend:      Ok(Box::new(backend)),
-			registry:     AxRegistry::default(),
 			frames:       HashMap::new(),
 			capabilities: Arc::new(Mutex::new(DesktopCapabilities::unavailable())),
 		}

@@ -4,11 +4,10 @@ mod input;
 mod skylight;
 
 use image::RgbaImage;
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 
-use self::{ax::MacAx, capture::MacCapture, input::MacInput};
+use self::{capture::MacCapture, input::MacInput};
 use super::{
-	backend::{AxBackend, Backend, DeliveryMode, PointerEvent},
+	backend::{Backend, DeliveryMode, PointerEvent},
 	error::{CoreResult, DesktopError},
 	frame::FrameGeometry,
 	keys::KeyName,
@@ -20,7 +19,6 @@ use super::{
 pub struct MacosBackend {
 	capture: MacCapture,
 	input:   MacInput,
-	ax:      MacAx,
 }
 
 impl MacosBackend {
@@ -28,7 +26,6 @@ impl MacosBackend {
 		Ok(Self {
 			capture: MacCapture::new(display),
 			input:   MacInput::new()?,
-			ax:      MacAx::new(),
 		})
 	}
 
@@ -60,12 +57,14 @@ impl Backend for MacosBackend {
 			display_server: Some("Quartz WindowServer".to_string()),
 			capture: capture_permission && display_count > 0,
 			input: input_permission,
-			ax: input_permission,
+			// ax_lite keeps only the focus subset — full accessibility traversal
+			// is not exposed.
+			ax: false,
 			background_window_input: input_permission && skylight::is_available(),
 			delivery_modes: vec!["background".to_string(), "foreground".to_string()],
 			capture_permission: permission_label(capture_permission),
 			input_permission: permission_label(input_permission),
-			ax_permission: permission_label(input_permission),
+			ax_permission: "unavailable".to_string(),
 			display_count,
 		}
 	}
@@ -110,34 +109,6 @@ impl Backend for MacosBackend {
 	) -> CoreResult<()> {
 		Self::require_input_permission()?;
 		self.input.key_chord(target, keys, mode, &self.capture)
-	}
-
-	fn raise_window(&mut self, id: &str) -> CoreResult<()> {
-		Self::require_input_permission()?;
-		let window = self.capture.window(id)?;
-		self.ax.raise(&window)?;
-		let pid = window.pid.ok_or_else(|| {
-			DesktopError::input_failed(format!("window {id} has no owning process id"))
-		})?;
-		let pid = i32::try_from(pid).map_err(|_| {
-			DesktopError::input_failed(format!("window {id} has an invalid process id"))
-		})?;
-		let app =
-			NSRunningApplication::runningApplicationWithProcessIdentifier(pid).ok_or_else(|| {
-				DesktopError::window_not_found(format!(
-					"application for window '{id}' is no longer running"
-				))
-			})?;
-		if !app.activateWithOptions(NSApplicationActivationOptions::empty()) {
-			return Err(DesktopError::input_failed(format!(
-				"activation request for window '{id}' was rejected"
-			)));
-		}
-		Ok(())
-	}
-
-	fn ax(&mut self) -> Option<&mut dyn AxBackend> {
-		Some(&mut self.ax)
 	}
 }
 

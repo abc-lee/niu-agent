@@ -687,10 +687,10 @@ fn key_chord(
 	let mut first_error = None;
 	for &key in keys.iter().rev() {
 		update_modifier(&mut active, key, false);
-		if let Err(error) = post_key(source, key, false, modifier_flags(active), &mut post)
-			&& first_error.is_none()
-		{
-			first_error = Some(error);
+		if first_error.is_none() {
+			if let Err(error) = post_key(source, key, false, modifier_flags(active), &mut post) {
+				first_error = Some(error);
+			}
 		}
 		thread::sleep(Duration::from_millis(8));
 	}

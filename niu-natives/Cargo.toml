@@ -1,9 +1,9 @@
 # niu-natives — Niu 桌面采集/输入 native 绑定（PyO3）
 # 源码移植自 oh-my-pi crates/pi-natives/src/desktop（MIT，can1357/oh-my-pi）。
 #
-# 【T1 状态——故意不编译】src/desktop/ 为 omp 原样搬运，仍含 napi / crate::task /
-# ax 全量引用，而本 manifest 无 napi 依赖；T2 手术（ax_lite 裁切 + PyO3 化）后才可编译。
-# 见 docs/superpowers/plans/2026-09-09-vision-phase1-niu-natives-plan.md T1/T2。
+# 【T2a 终态】T1 原样搬运 omp 源码 → T2a 手术完成：删 omp 原生绑定层/Promise
+# 任务链/ax 全量，PyO3 #[pyclass] DesktopSession + macOS ax_lite 聚焦子集。
+# 见 docs/superpowers/plans/2026-09-09-vision-phase1-niu-natives-plan.md。
 
 [package]
 name = "niu-natives"
@@ -54,3 +54,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+# 与 pyo3 同版配套：macOS 扩展模块链接参数（-undefined dynamic_lookup）
+pyo3-build-config = "=0.29.2"
