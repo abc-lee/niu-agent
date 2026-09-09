@@ -534,6 +534,12 @@ Niu 建立在以下优秀开源项目之上：
 - **[FastAPI](https://fastapi.tiangolo.com/)** — Python Web 框架
 - **[SQLite](https://www.sqlite.org/)** — 嵌入式数据库
 
+### 桌面自动化
+
+- **[oh-my-pi](https://github.com/can1357/oh-my-pi)** — 桌面抓图/输入模块来源（MIT，niu-natives 移植自其 pi-natives desktop 模块）
+- **[xcap](https://crates.io/crates/xcap)** — 屏幕/窗口采集（Apache-2.0）
+- **[enigo](https://crates.io/crates/enigo)** — 跨平台输入注入（MIT）
+
 ## License
 
 MIT License — 欢迎自由使用、修改和分发。
