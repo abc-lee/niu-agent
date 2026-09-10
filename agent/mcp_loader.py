@@ -29,7 +29,7 @@ REQUIRED_SERVERS: list[tuple[str, str]] = [
     ("scheduler-server", "niu_scheduler_server"),
     ("browser-server", "niu_browser_server"),
     ("brain-region-server", "niu_brain_region_server"),
-    # 可视化功能（plan v0.5.2 §4-V5）：screenshot 单工具，static 直挂主 Agent；
+    # 可视化功能（plan v0.5.2 §4-V5）：screenshot + list_targets 两工具，static 直挂主 Agent；
     # niu_natives 缺失时模块内降级（import 不炸启动，见 R11）
     ("vision-server", "niu_vision_server"),
 ]
