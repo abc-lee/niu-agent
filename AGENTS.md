@@ -550,7 +550,8 @@ preload_face_model()
 - **质量链亮点（双审价值）**：R1 双审同抓 3 P1（capabilities 写冲突互抹 / 漏 lightrag_manager 致 deny 到不了 LightRAG·脑区通道且缓存不重建 / 探测参数集不含 frontmatter 温度→动机场景修不掉）；R2-B P1（lightrag 段 capabilities 无 model 键→fail-closed 永不通过 + 串模型守卫缺失）；T2 双审**同抓 P1**（temperature 候选优先级与运行时相反——用户手工把 llm.temperature 改成 1 时探测误判通过且**洗白误清正确 deny**）。双审同抓=缺陷真实性强信号（本日第三次）。
 - **验证**：T1 141 + T2 161 + 全量回归 300 passed；ruff 零新增（stash 对比）；test_lightrag_manager 2 failed=**plan §6 预录基线红**（user_info 注入 mock 绑定失效的存量测试债，非本工程）。
 - **已知边界（接受/记录）**：MCP Sampling 死路径（mcp_client.py:141 签名不匹配恒 TypeError，另案）；白名单外参数（reasoning_effort 等）若被拒机制不处理（封闭白名单设计，扩展点=白名单加一行）；探测后续段不消费本次新写 deny（plan R2-A 已接受取舍）；deny 无变化时命名配置同步已修为照跑。
-- **实机验证清单（待用户）**：①重启 Niu → 设置页点「探测能力」→ `~/.niu/config/user-config.json` llm 段 capabilities.deny 出现 `["temperature"]`（llm-configs.json 同步）②主对话正常（raw_http：请求体无 temperature 字段）③子 Agent 派发正常（frontmatter 0.2/0.3 被过滤）④lightrag 段探测后文件入库正常（不重启即生效）⑤脑区 label 正常 ⑥切回 Deepseek 重探测 → deny 清空且 vision input 不被互抹
+- **实机验证 ✅ 已通过（2026-09-10 用户实测 + PM 真实链路验证）**：①探测真实跑通（直接 `probe()` + `POST /api/model-capability-probe` 双路径 `probe_status: ok`）→ `capabilities.deny: ["temperature"]` 双落点写入（user-config + llm-configs，vision input 未互抹）②真实 adapter 调用 → **请求体无 temperature**，K3 正常返回 ③**真实 Niu 服务**（定时任务自动跑）日志 `[PARAM-DENY] deny 过滤生效 (model=k3-256k): removed=['temperature']`，子 Agent 任务成功 ④用户实测对话/截图多轮正常（raw_http：全请求无 temperature 字段）
+- **验证覆盖缺口教训（用户批评）**：本工程收官时只做 mock 单测（300 passed）+ 静态代码审查，**未做真机/真实链路验证即交付**——用户两次实验失败（当时处于 T1 已提交、T2 未实施的中间态：只有过滤器、无 deny 生产者，点探测不写 deny → 对话仍 400）。补做真实链路验证后才闭环。**教训：交付前必须自己跑真实链路（真实服务/真实 API），不能把真机验证推给用户。**
 
 #### 工程：LLM API 合规 + 工具消息顺序规整（k3-256k 400 根治；用户要求全面审计「别过几个月又告诉我别的地方还有不合规」→ 12 项全修；plan v0.1→v0.7 八轮双审门禁（R1-R6 阻断收敛 / **R7-R8 连续双 APPROVE 通过**）+ SDD T1/T2 每 Task 双审+微修复审闭环，main db745ff7/d48a9c21，docs 1d015b6 plan 冻结）
 
@@ -560,7 +561,7 @@ preload_face_model()
 - **质量链亮点（双审价值实证）**：R3-B 抓出「D5 收窄会切断截图→模型唯一图通道」（Phase 2 刚交付的核心能力险些被我自己的合规修复废掉）→ 合成 user 消息重设计；R4 双审各抓一 P1（长度不变式/档累积）同指根因「发送专用变换放在持久消息层」→ 架构修正；R5-B P0「adapter 取不到 capabilities → 图永不展开」；R6 **双审同抓**「主 Agent vision_enabled 写入点晚于会话构造」→ 派生点钉死 __init__。双审同抓=缺陷真实性强信号再验证。
 - **验证**：T1 95 + T2 224 + 全量回归 331 passed；ruff 零新增（stash 对比）；wire 级 test_llm_api_compliance 13 用例（构造级传递锁 spy create_client 防派发层接缝回归）；微修 2 轮（T1 QualityB P2 相邻 assistant 归位全局配对重写 / T2 SpecA P1 current_time fixture + P2 llmPreset 断言）均复审 CONFIRMED。
 - **已知边界（接受）**：test_lightrag_manager 2 failed + test_response_format_probe 2 failed 为预存（非本工程引入，stash 实证）；camelCase apiBase 键分支保留（QualityB 实证 llm_proxy.py get_llm_config 生产 camelCase 路径真实存在，SpecA「死代码」结论被反证——**两角结论相反时以直接验证为准**）；`_derive_provider_prefix` 域名为子串匹配（api.anthropic.com.evil.com 理论误判，apiBase 用户自配，既有行为非本 diff 引入）。
-- **实机验证清单（待用户重启 Niu）**：①k3 继续含 ask_user 历史会话不再 400 ②ask_user 交互后继续正常 ③子 Agent 派发正常 ④界面顺序不变 ⑤长会话压缩/手动 /compact 正常 ⑥截图→模型同轮见图 ⑦LightRAG 实体抽取无 400 白跑 ⑧raw_http 核验（无 name/OpenAI 协议无 cache_control·beta 头/stream=False 无 stream_options/无 subagent_msg）⑨MIME 与载荷一致 ⑩anthropic 路由 extra_body 无 reasoning_effort ⑪续跑旧档不 400、新档纯文本
+- **实机验证 ✅ 已通过（2026-09-10 用户实测 + PM 日志核验）**：①K3 含 ask_user 历史会话不再 400；②**截图→模型看图全链路**（raw_http 实证：`assistant(tool_calls) → tool(content=str "[输出#3630 · screenshot] ![截图](路径)") → user(合成消息 [text:"（以下是上一条工具结果中的图片）" + image_url 1.4MB]) → assistant("看到了！截图成功…当前时间 18:49、电量 77%、Wi-Fi")`——模型准确报出屏幕内容）；③window 模式截图同样成功；④多轮对话/子 Agent 正常；⑤**顺带完成可视化 Phase 2 遗留的 T7 真机验证**（截图工具 + 看图能力双双验证通过）
 
 #### 工程：可视化功能 Phase 1——niu-natives Rust crate（用户四问拍板+法律考察+三轮 spec 双审+三轮 plan 双审；main e3230788..b70dd995 7 commits，docs b7594b4 spec v0.4 冻结/7483554 plan v0.4 冻结/5e19ab1 勘误⑦⑧）
 
