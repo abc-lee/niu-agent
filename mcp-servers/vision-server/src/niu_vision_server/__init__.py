@@ -1,10 +1,13 @@
 """
 vision-server — 屏幕截图 MCP 服务器（可视化功能 plan v0.5.2 §4-V5）
 
-单工具 screenshot：niu_natives DesktopSession capture（desktop/window_id/region
-三形态）→ 降采样 ≤1280 宽 → 落盘 ~/.niu/tmp/screenshot_<ts>.png → 返回
-`![截图](<绝对路径>)` 标记文本 + 尺寸/显示器元数据（图片直通通道 V3 格式，
-T3 expand_image_markers 消费——主模型有视觉时当轮展开为多模态 content）。
+两工具（plan 2026-09-10-vision-aux-tools.md §3）：
+- list_targets：无参，列出当前可截取目标（显示器 + 窗口清单，含前台应用行与
+  48 个窗口截断警告）——截图前先调用它拿窗口编号。
+- screenshot：niu_natives DesktopSession capture（desktop/window_id/region
+  三形态）→ 降采样 ≤1280 宽 → 落盘 ~/.niu/tmp/screenshot_<ts>.png → 返回
+  `![截图](<绝对路径>)` 标记文本 + 尺寸/显示器元数据（图片直通通道 V3 格式，
+  T3 expand_image_markers 消费——主模型有视觉时当轮展开为多模态 content）。
 
 D-D：screenshot 是基础工具与视觉能力无关——visibility: static 无条件直挂
 主 Agent（yaml 显式 static，register_server 默认 hidden）；子 Agent 经
@@ -49,6 +52,11 @@ _session = None
 MAX_WIDTH = 1280
 
 _UNAVAILABLE_MSG = "截图能力不可用（niu_natives 未安装/平台不支持）"
+
+# 窗口列表硬上限副本——锚定 Rust 出处：niu-natives/src/desktop/{macos,win32}/capture.rs
+# 的 MAX_LISTED_WINDOWS = 48。Rust 侧达到上限后静默 break（无截断标志），Python
+# 侧只能以 len(windows) >= 48 启发式检测并显式告知 Agent，否则它以为屏幕上就这些。
+MAX_LISTED_WINDOWS = 48
 
 
 def _get_session():
@@ -151,9 +159,108 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
     return _format_result(out_path, result)
 
 
+def _target_field(obj, name, default=None):
+    """读取 DesktopWindow/DesktopDisplay 字段。
+
+    底层是 PyO3 对象（属性访问）；**刻意不做 dict 兼容**——测试 fake 必须
+    还原真实类型形态，否则 mock 与生产不一致时会静默漏测（历史 P0 教训）。
+    """
+    return getattr(obj, name, default)
+
+
+def list_targets() -> str:
+    """列出当前可截取的所有目标：显示器 + 窗口（截图前先调用拿窗口编号）。
+
+    降级分级（plan §3.1——三条互斥，不得混用）：
+    - niu_natives 缺失 → _UNAVAILABLE_MSG（该常量仅此一档使用）
+    - list_displays() 抛错/空列表 → 明确错误串（非 _UNAVAILABLE_MSG——那是
+      「整体能力不可用」语义，会误导 Agent 放弃视觉能力）
+    - list_windows() 抛错 → 明确错误串（同上）
+    - 零窗口 = 正常态（停在桌面时 Finder 桌面元素被 ExcludeDesktopElements
+      排除，列表可为空）→ 显示器照列 + 「窗口 0 个」+ 仍可截整屏提示
+
+    focused 是 PID 级语义（同 App 多窗口全部为 True）——窗口行标记用
+    [应用在前台]；无任何窗口 focused 时省略「前台应用」行（不输出 None）。
+    """
+    if niu_natives is None:
+        return _UNAVAILABLE_MSG
+
+    session = _get_session()
+    if session is None:
+        return _UNAVAILABLE_MSG
+
+    try:
+        try:
+            displays = session.list_displays()
+        except Exception as e:
+            logger.warning(f"[vision-server] list_targets list_displays failed: {e}")
+            return f"无法枚举显示器：{e}（请检查录屏/屏幕录制权限后重试）"
+        if not displays:
+            return "无法枚举显示器：系统未报告任何活动显示器（请检查显示连接或录屏权限后重试）"
+
+        try:
+            windows = session.list_windows()
+        except Exception as e:
+            logger.warning(f"[vision-server] list_targets list_windows failed: {e}")
+            return f"无法枚举窗口：{e}（请检查录屏/屏幕录制权限后重试）"
+
+        lines: List[str] = []
+
+        # 前台应用行（focused 的 app 去重取第一个；无 focused 窗口则整行省略）
+        front_apps: List[str] = []
+        for w in windows:
+            if _target_field(w, "focused"):
+                app = str(_target_field(w, "app") or "")
+                if app and app not in front_apps:
+                    front_apps.append(app)
+        if front_apps:
+            lines.append(f"前台应用: {front_apps[0]}")
+
+        # 显示器段：序号 + 名称 + 逻辑尺寸 + 缩放 + 逻辑位置 + (主屏)
+        lines.append(f"显示器 {len(displays)} 台：")
+        for i, d in enumerate(displays, start=1):
+            line = (
+                f"- [{i}] {_target_field(d, 'name')} "
+                f"{_target_field(d, 'width')}x{_target_field(d, 'height')}"
+                f" (缩放{_target_field(d, 'scale')}) 逻辑位置 ({_target_field(d, 'x')},{_target_field(d, 'y')})"
+            )
+            if _target_field(d, "is_primary"):
+                line += " (主屏)"
+            lines.append(line)
+
+        # 窗口段：id 原样输出（opaque，禁止解析/换算）
+        lines.append(f"窗口 {len(windows)} 个：")
+        for w in windows:
+            title = str(_target_field(w, "title") or "").strip() or "(无标题)"
+            line = (
+                f"- id={_target_field(w, 'id')} {_target_field(w, 'app')} \"{title}\""
+                f" {_target_field(w, 'width')}x{_target_field(w, 'height')}"
+                f" @({_target_field(w, 'x')},{_target_field(w, 'y')})"
+            )
+            if _target_field(w, "focused"):
+                line += " [应用在前台]"
+            lines.append(line)
+
+        # 尾注：零窗口 = 正常态提示；达上限 = 截断警告（Rust 侧静默 break）
+        if len(windows) == 0:
+            lines.append('（当前无窗口可截取，仍可 screenshot(target="screen") 截整屏）')
+        elif len(windows) >= MAX_LISTED_WINDOWS:
+            lines.append(
+                f'⚠️ 已达显示上限 {MAX_LISTED_WINDOWS} 个，可能还有更多窗口未列出：'
+                '可改用 screenshot(target="screen")\n'
+                "   看整屏，或请用户关闭部分窗口后重试。"
+            )
+
+        return "\n".join(lines)
+    except Exception as e:
+        # 兜底：任何未预期异常不得穿透到 MCP 层（handler 会暴露英文原始异常）
+        logger.warning(f"[vision-server] list_targets failed: {e}")
+        return f"列出可截取目标失败：{e}"
+
+
 # ============== TOOL_SCHEMAS ==============
 # 键名契约（R8）：schema name == yaml tools 键 == 模块函数名，三处逐字符一致
-# （'screenshot'）——不一致则 visibility_map 查不到，工具静默落 hidden。
+# （'screenshot' / 'list_targets'）——不一致则 visibility_map 查不到，工具静默落 hidden。
 
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "screenshot": {
@@ -196,7 +303,20 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             },
             "required": ["target"],
         },
-    }
+    },
+    "list_targets": {
+        "name": "list_targets",
+        "description": (
+            "列出当前可截取的所有目标：显示器（逻辑尺寸/位置/缩放，主屏标注）+ 窗口"
+            "（id/app/标题/尺寸/位置，前台应用标注）。无参数。截图前先调用它确认目标、"
+            "拿到窗口编号，再用 screenshot(target=\"window\", window_id=...) 截指定窗口。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 }
 
 
@@ -229,6 +349,8 @@ try:
         try:
             if name == "screenshot":
                 result = screenshot(**arguments)
+            elif name == "list_targets":
+                result = list_targets()
             else:
                 return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
