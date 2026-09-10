@@ -858,7 +858,7 @@ def _annotate_subagent_prompt_degradation(result_text: str) -> str:
 
 
 # llmPreset 支持段集合（单点真理，T4 plan §4-V4）——llm_config 覆盖侧与 has_vision 判定侧同源消费：
-# preset 不在集内 → 两侧同判据回落主配置/主档案，不查段。新增支持段只改此处（get_llm_config 需同步扩展）。
+# preset 不在集内 → 两侧同判据回落主配置/主 capabilities，不查段。新增支持段只改此处（get_llm_config 需同步扩展）。
 SUPPORTED_PRESETS = {"vision_llm"}
 
 
@@ -866,10 +866,10 @@ def _resolve_subagent_has_vision(agent_name: str, llm_config: dict | None, user_
     """子会话图片直通判定（plan §4-V3 接线④，派发层算好传入——与 call_subagent 内 T4 llmPreset 覆盖同源）。
 
     - frontmatter llmPreset ∈ SUPPORTED_PRESETS 且段 model 非空 → True（第三方模型不探测 D-F，手工测通为准）
-    - preset 不在支持集 / 无字段 / 段 model 空 / 配置读失败（user_cfg=None）→ 回落主 |llm vision.supported（R3）
+    - preset 不在支持集 / 无字段 / 段 model 空 / 配置读失败（user_cfg=None）→ 回落主 llm_config capabilities 判定（R3）
 
     user_cfg = call_subagent 预读的 user-config.json dict——与覆盖侧同一读盘结果（P2：判定侧不自读文件）。
-    None（未传入/读失败）→ 不查段直接回落主档案（fail-closed，防瞬时读失败时判定侧与覆盖侧分叉）。
+    None（未传入/读失败）→ 不查段直接回落主 llm_config capabilities 判定（fail-closed，防瞬时读失败时判定侧与覆盖侧分叉）。
     警示由覆盖侧单点留痕，判定侧不重复 log（P3）。
     """
     from .image_channel import main_has_vision, preset_section_has_vision  # 函数内解析——测试可 patch ic 属性
@@ -967,7 +967,7 @@ def call_subagent(
         llm_config = {**llm_config, "temperature": agent_config["temperature"]}
 
     # 图片直通通道（plan §4-V3 接线④）：派发层算好 has_vision——llmPreset ∈ SUPPORTED_PRESETS 且段 model 非空 → True；
-    # preset 不在支持集/无字段/段 model 空/读失败 → 主 |llm vision.supported（R3，与覆盖侧同源同判据）。
+    # preset 不在支持集/无字段/段 model 空/读失败 → 主 llm_config capabilities 判定（R3，与覆盖侧同源同判据）。
     # _user_cfg = 上方预读的同一读盘结果（P2 三检查点共用）；三路径（同步/异步/续答）同源透传。
     has_vision = _resolve_subagent_has_vision(agent_name, llm_config, _user_cfg)
 

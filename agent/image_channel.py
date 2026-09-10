@@ -5,7 +5,8 @@ expand_image_markers；本模块为纯函数 + 只读文件访问，独立模块
 （http_logger / litellm_adapter 均从本模块 import mask_image_data_uris，不得反向依赖）。
 
 判定规则（§4-V3）：
-- 主会话 = 主 llm 档案 |llm vision.supported==true（T1 探测写入；无档案/读失败 → False）
+- 主会话 = user-config.json llm 段 capabilities.input 含 "image" 且 capabilities.model
+  与当前模型一致（T1 探测写入；get_llm_config 整段小写化透传；无/不匹配/读失败 → False）
 - 子会话 = 该子 Agent frontmatter llmPreset 指向段 model 非空 → True
   （第三方模型不探测 D-F，档案无其条目——手工测通为准，不查档案）
 """
@@ -139,19 +140,19 @@ def mask_image_data_uris(obj):
 
 
 def main_has_vision(llm_config: dict | None) -> bool:
-    """主会话图片直通判定：主 llm 档案 |llm vision.supported==true（T1 探测写入）。
+    """主会话图片直通判定：llm 段 capabilities.input 含 "image" 且 capabilities.model
+    与当前模型一致（T1 探测写入 user-config.json；get_llm_config 整段小写化透传）。
 
-    无 apibase/model/无档案/读失败 → False（fail-closed，不展开图片）。
+    无 capabilities / model 不匹配（换模型后旧能力不采信）/ 读失败 → False（fail-closed，不展开图片）。
     """
     try:
-        from niu_api.model_probe import read_profile
-        api_base = (llm_config or {}).get("apibase") or ""
-        model = (llm_config or {}).get("model") or ""
-        if not api_base or not model:
+        cfg = llm_config or {}
+        caps = cfg.get("capabilities")
+        if not isinstance(caps, dict):
             return False
-        profile = read_profile(api_base, model)
-        vision = (profile or {}).get("vision") or {}
-        return vision.get("supported") is True
+        if caps.get("model") != cfg.get("model"):
+            return False
+        return "image" in (caps.get("input") or [])
     except Exception:
         return False
 

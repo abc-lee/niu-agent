@@ -63,6 +63,17 @@
     }
     llm.litellm_kwargs = buildKwargs(llmBase.litellm_kwargs, llmForm.thinking);
     llm.presetId = configName;
+    // capabilities 键仅当 fileBase.llm.capabilities.model === 合并后 llm.model 才继承
+    // （V9d 防抹除 + P2-2 模型绑定）：探测把能力绑在当时的模型上（capabilities.model），
+    // 切命名配置/换模型后 fileBase 的能力若仍属旧模型 → 继承会给未探测的新模型误判能力。
+    // 模型不一致或 fileBase 无该键 → 删键（对应模型未探测=无能力；不铺底、不从内存继承——
+    // namedEntry 是选中时刻的内存快照，不含其后探测结果）。
+    if (base.llm && typeof base.llm === 'object' && base.llm.capabilities !== undefined
+        && base.llm.capabilities.model === llm.model) {
+      llm.capabilities = base.llm.capabilities;
+    } else {
+      delete llm.capabilities;
+    }
 
     // --- lightrag_llm 段：段基底浅拷贝 + reasoning_effort/temperature 覆盖 + litellm_kwargs(thinking) + probe 产物覆写
     const ltBase = (entry && entry.lightrag_llm && typeof entry.lightrag_llm === 'object') ? entry.lightrag_llm : ((base.lightrag_llm && typeof base.lightrag_llm === 'object') ? base.lightrag_llm : {});

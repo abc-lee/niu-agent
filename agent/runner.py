@@ -2081,8 +2081,9 @@ class NiuRunner:
         from agent.subagent import _read_context_window_tokens
         context_window_tokens = _read_context_window_tokens()
 
-        # 图片直通通道（plan §4-V3 接线①）：主会话 has_vision = 主 llm 档案 |llm vision.supported
-        # （T1 探测写入；无档案/读失败 → False）。存实例属性供 _on_tool_round_refresh 同制式复用。
+        # 图片直通通道（plan §4-V3 接线①）：主会话 has_vision = user-config.json llm 段
+        # capabilities（input 含 image 且 model 匹配；T1 探测写入；无/不匹配 → False）。
+        # 存实例属性供 _on_tool_round_refresh 同制式复用。
         from agent.image_channel import main_has_vision
         self._current_has_vision = main_has_vision(self.llm_config)
 

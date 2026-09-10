@@ -708,11 +708,11 @@ Niu 的视觉能力 = `screenshot` 截图工具 + **图片直通通道**：对�
 
 ### 主模型视觉探测
 
-- 设置页「**探测能力（对话模型）**」按钮探测主模型时顺带执行 **vision 双色交叉子扫描**：发纯红/纯蓝两张 32×32 极小图各问主色，两答均命中对应色系才判 `supported=true`（单色已证伪则不再发第二张）
-- 结果记入能力档案 `~/.niu/model_capabilities.json` 的 `|llm` 键 `vision` 字段：`{supported, input: ["text","image"], probed_at}`；入库模型（`|lightrag` 键）不探测
-- vision 子扫描失败/超时 → `supported=false` 落盘，**不毒化主探测项结果**（其他档案字段照常）
+- 设置页「**探测能力（对话模型）**」按钮探测主模型时顺带执行 **vision 双色交叉子扫描**：发纯红/纯蓝两张 32×32 极小图各问主色，两答均命中对应色系才判有视觉（单色已证伪则不再发第二张）
+- 结果写入 `~/.niu/config/user-config.json` **llm 段** `capabilities` 子对象：`{model, input: ["text","image"], probed_at}`（无视觉 → `input: ["text"]`，覆盖陈旧值）；`llm.presetId` 非空时同步 upsert 命名配置合集（`llm-configs.json`）该条目三段快照——能力随模型切换跟随。入库模型（lightrag_llm 段）不探测
+- 探测失败（网络异常 / 超时重试后仍失败 / 200 但空回答）→ **不写、保持旧值**（防网络抖动把已知视觉模型降级 text-only），**不毒化主探测项结果**；`~/.niu/model_capabilities.json` 与视觉能力无关（只存 reasoning_effort/thinking 等既有探测项）
 - **主模型有视觉 = 截图后图片直通主对话**：screenshot 返回的图标记在出站前展开为多模态 content，主模型直接看图回答
-- 探测结果与预期不符（如确认模型有视觉但判了无）→ 重跑「探测能力」刷新档案即可
+- 探测结果与预期不符（如确认模型有视觉但判了无）→ 重跑「探测能力」刷新 capabilities 即可
 
 ### 第三方视觉模型配置（vision_llm 段）
 
@@ -763,7 +763,7 @@ curl http://<host>:<port>/v1/models   # 确认真实模型名与端口
 ### 主 Agent 视觉流程
 
 1. **截屏**：`screenshot` 工具——`target=screen` 整屏 / `window` 指定窗口（需 window_id）/ `region` 指定区域（x/y/width/height）。返回 `![截图](绝对路径)` 标记 + 尺寸元数据；图片落盘 `~/.niu/tmp/screenshot_<时间戳>.png`，**每日 04:00 后台任务清理 mtime 超过 24h 的文件（最坏可存活约 48h），截图建议当次使用；文件已清理需重新截屏**
-2. **主模型有视觉**（档案 `|llm` vision.supported=true）→ 图标记直通主对话，主模型自己看图回答
+2. **主模型有视觉**（`~/.niu/config/user-config.json` llm 段 `capabilities.input` 含 `"image"`）→ 图标记直通主对话，主模型自己看图回答
 3. **主模型无视觉 + 已配 vision_llm** → 派自建视觉子 Agent：任务文本里带上截图标记/路径，子 Agent 用捆绑的视觉模型看图作答
 4. **图文件缺失/已清理** → 标记留文本 + `[图片不可读]` 警示（不报错中断）——重新截屏即可
 

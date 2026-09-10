@@ -5,7 +5,7 @@
    展开（text 段 + image_url data URI，base64 与文件字节一致）/ 缺文件降级留文本+警示 /
    >4MB PIL 降采样（真路径 jpeg + 失败回落警示）/ 非本地路径保留标记文本。
 ② mask_image_data_uris 共享打码 helper——str/dict/list 递归、字节数标注、非图 URI 不动。
-③ 判定 helper——main_has_vision（read_profile mock）/ preset_section_has_vision（tmp 配置 / 预读 dict）/
+③ 判定 helper——main_has_vision（llm_config capabilities 判定：input 含 image + model 匹配）/ preset_section_has_vision（tmp 配置 / 预读 dict）/
    _resolve_subagent_has_vision（SUPPORTED_PRESETS 门控 + llmPreset 正向规则 + 回落主 llm；警示归覆盖侧单点）。
 ④ 接线五点行为锁——transform_history has_vision 展开（默认 False 零影响）/
    agent_runner_loop 入口 history+当前 user 消息展开（fake client 捕获 LLM 请求）/
@@ -293,32 +293,36 @@ class TestMaskImageDataUris:
 class TestJudgementHelpers:
     MAIN_CFG = {"apibase": "http://x/v1", "model": "m"}
 
-    def test_main_has_vision_true(self, monkeypatch):
-        import niu_api.model_probe as mp
-        monkeypatch.setattr(mp, "read_profile", lambda api_base, model: {"vision": {"supported": True}})
-        assert main_has_vision(self.MAIN_CFG) is True
+    @staticmethod
+    def _cfg_with_caps(model="m", caps_model="m", input=None):
+        cfg = dict(TestJudgementHelpers.MAIN_CFG)
+        cfg["model"] = model
+        if input is not None:
+            cfg["capabilities"] = {"model": caps_model, "input": input, "probed_at": "2026-01-01T00:00:00"}
+        return cfg
 
-    def test_main_has_vision_false_when_unsupported(self, monkeypatch):
-        import niu_api.model_probe as mp
-        monkeypatch.setattr(mp, "read_profile", lambda api_base, model: {"vision": {"supported": False}})
+    def test_main_has_vision_true_when_image_input_and_model_match(self):
+        """capabilities.input 含 image 且 capabilities.model == llm model → True。"""
+        assert main_has_vision(self._cfg_with_caps(input=["text", "image"])) is True
+
+    def test_main_has_vision_false_when_text_only_input(self):
+        """input=["text"]（探测未命中视觉）→ False。"""
+        assert main_has_vision(self._cfg_with_caps(input=["text"])) is False
+
+    def test_main_has_vision_false_when_model_mismatch(self):
+        """换模型后旧 capabilities.model 不匹配 → False（fail-closed，不采信旧能力）。"""
+        assert main_has_vision(self._cfg_with_caps(model="new-model", caps_model="m")) is False
+
+    def test_main_has_vision_false_when_no_capabilities(self):
+        # 未探测过（无 capabilities 键）/ 无配置 → False（fail-closed）
         assert main_has_vision(self.MAIN_CFG) is False
-
-    def test_main_has_vision_false_when_no_profile(self, monkeypatch):
-        import niu_api.model_probe as mp
-        monkeypatch.setattr(mp, "read_profile", lambda api_base, model: None)
-        assert main_has_vision(self.MAIN_CFG) is False
-
-    def test_main_has_vision_false_when_no_api_base(self):
-        # 无档案可查（fail-closed）——不触 read_profile
         assert main_has_vision({"model": "m"}) is False
         assert main_has_vision(None) is False
 
-    def test_main_has_vision_false_on_read_failure(self, monkeypatch):
-        import niu_api.model_probe as mp
-        monkeypatch.setattr(
-            mp, "read_profile",
-            lambda api_base, model: (_ for _ in ()).throw(RuntimeError("io")))
-        assert main_has_vision(self.MAIN_CFG) is False
+    def test_main_has_vision_false_on_bad_shape(self):
+        """capabilities 非 dict / input 缺省 → False（不抛）。"""
+        assert main_has_vision({**self.MAIN_CFG, "capabilities": "text,image"}) is False
+        assert main_has_vision({**self.MAIN_CFG, "capabilities": {"model": "m"}}) is False
 
     def test_preset_section_has_vision_model_nonempty(self, tmp_path, monkeypatch):
         import niu_api.config as niu_cfg
