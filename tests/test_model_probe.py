@@ -358,9 +358,11 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
     captured = []
     real_assemble = model_probe.assemble_request_params
 
-    def _spy(config, raw_reasoning_effort=None, raw_thinking=None):
+    def _spy(config, raw_reasoning_effort=None, raw_thinking=None, provider=None):
         captured.append((config, raw_reasoning_effort, raw_thinking))
-        return real_assemble(config, raw_reasoning_effort=raw_reasoning_effort, raw_thinking=raw_thinking)
+        return real_assemble(
+            config, raw_reasoning_effort=raw_reasoning_effort,
+            raw_thinking=raw_thinking, provider=provider)
 
     results = [_ok_response()] * 7
     results.append(_ok_response())  # 无效值探针

@@ -28,18 +28,29 @@ _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 # 出站日志打码：image data URI（base64 载荷段单独捕获用于计长）
 _DATA_URI_RE = re.compile(r"data:image/[A-Za-z0-9+.\-]+;base64,([A-Za-z0-9+/=]+)")
 
-_MIME_BY_EXT = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-    ".bmp": "image/bmp",
-}
+# HEIF/HEIC ISO BMFF ftyp brand 集（魔数第 8-12 字节）——.heic/.heif 家族
+_HEIF_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"mif1", b"msf1"}
 
 
-def _mime_for(path: str) -> str:
-    return _MIME_BY_EXT.get(Path(path).suffix.lower(), "image/png")
+def _detect_image_mime(data: bytes) -> str | None:
+    """按**实际载荷**魔数探测 media type（审计 #8——扩展名猜测会把非图片标成 image/png）。
+
+    未知/非图片 → None（调用方降级留文本+警示）。只读头部字节，不解码全文件。
+    """
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    # ISO BMFF（HEIF/HEIC）：第 4-8 字节 "ftyp" + brand 在 HEIF 集内
+    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _HEIF_BRANDS:
+        return "image/heic"
+    return None
 
 
 def _downsample_to_data_uri(p: Path) -> str | None:
@@ -66,14 +77,19 @@ def _downsample_to_data_uri(p: Path) -> str | None:
 
 
 def _image_to_data_uri(path: str) -> str | None:
-    """读图片文件 → data URI；缺文件/读失败/超限且降采样失败 → None（调用方降级留文本+警示）。"""
+    """读图片文件 → data URI；media type 按**实际载荷**魔数探测（审计 #8——扩展名不可信）；
+    缺文件/非图片/未知类型/超限且降采样失败 → None（调用方降级留文本+警示）。"""
     try:
         p = Path(path)
         if not p.is_file():
             return None
         data = p.read_bytes()
+        mime = _detect_image_mime(data[:16])
+        if mime is None:
+            # 非图片载荷（假扩展名/损坏文件）——不猜 media type，直接降级
+            return None
         if len(data) <= MAX_IMAGE_BYTES:
-            return f"data:{_mime_for(path)};base64," + base64.b64encode(data).decode("ascii")
+            return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
         return _downsample_to_data_uri(p)
     except Exception:
         return None

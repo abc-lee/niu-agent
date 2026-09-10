@@ -1,8 +1,8 @@
 """Prompt cache 实施测试。"""
 
 
-def test_claude_tools_get_cache_control():
-    """Claude 模型的 tools_schema 末尾应打 cache_control breakpoint。"""
+def test_anthropic_route_tools_get_cache_control():
+    """anthropic 路由（api.anthropic.com）的 tools_schema 末尾应打 cache_control breakpoint。"""
     from agent.generic.litellm_adapter import _convert_tools_schema
 
     tools = [
@@ -10,10 +10,11 @@ def test_claude_tools_get_cache_control():
         {"type": "function", "function": {"name": "tool2", "parameters": {}}},
     ]
 
-    converted = _convert_tools_schema(tools, model="claude-sonnet-4-6")
+    converted = _convert_tools_schema(
+        tools, model="claude-sonnet-4-6", api_base="https://api.anthropic.com/v1")
     assert len(converted) == 2
     assert converted[-1].get("cache_control") == {"type": "ephemeral"}, \
-        "Claude tools 末尾应有 cache_control breakpoint"
+        "anthropic 路由 tools 末尾应有 cache_control breakpoint"
     assert "cache_control" not in converted[0]
 
 
@@ -28,6 +29,21 @@ def test_non_claude_tools_no_cache_control():
     converted = _convert_tools_schema(tools, model="ark-code-latest")
     assert len(converted) == 1
     assert "cache_control" not in converted[0]
+
+
+def test_claude_name_openai_route_no_cache_control():
+    """审计 #6：claude 模型名 + openai 兼容端点 → OpenAI 协议请求不得携带 cache_control。"""
+    from agent.generic.litellm_adapter import _convert_tools_schema
+
+    tools = [
+        {"type": "function", "function": {"name": "tool1", "parameters": {}}},
+    ]
+
+    converted = _convert_tools_schema(
+        tools, model="claude-3-5-sonnet", api_base="https://openrouter.ai/api/v1")
+    assert len(converted) == 1
+    assert "cache_control" not in converted[0], \
+        "openai 路由不得携带 Claude 专属 cache_control"
 
 
 def test_convert_tools_schema_backward_compatible():
@@ -91,15 +107,17 @@ def test_assemble_system_message_non_claude():
     assert "skill1" in dynamic and "Current Time" in dynamic, "动态块文本应含注入与时间"
 
 
-def test_assemble_system_message_claude():
-    """Claude 模型：system content 是 list，静态段末尾打 cache_control breakpoint。"""
+def test_assemble_system_message_anthropic_route():
+    """anthropic 路由：system content 是 list，静态段打 cache_control breakpoint。"""
     from agent.runner import NiuRunner
 
     runner = NiuRunner.__new__(NiuRunner)
     runner.static_system_prompt = "STATIC_PART"
     runner.dynamic_system_prefix = "\n\n### [虚拟磁盘工具]\n...disk desc..."
     runner.default_model = "claude-sonnet-4-6"
-
+    # 判据=解析后 provider（审计 #6）：apibase 指向 anthropic 才注入 cache_control
+    runner.llm_config = {"model": "claude-sonnet-4-6",
+                         "apibase": "https://api.anthropic.com/v1", "type": "openai"}
 
     injection = "\n\n### [相关技能]\n- skill1"
     messages = [{"role": "system", "content": ""}]
@@ -107,8 +125,8 @@ def test_assemble_system_message_claude():
     dynamic = runner._assemble_system_message(messages, "", injection, model="claude-sonnet-4-6")
 
     content = messages[0]["content"]
-    assert isinstance(content, list), "Claude 模型 content 应为 list"
-    # D17：Claude 单 text 块（static+disk+memory），cache_control 打在块上
+    assert isinstance(content, list), "anthropic 路由 content 应为 list"
+    # D17：单 text 块（static+disk+memory），cache_control 打在块上
     assert len(content) == 1, "应为单块静态区"
 
     static_block = content[0]
@@ -119,6 +137,61 @@ def test_assemble_system_message_claude():
 
     assert "Current Time" not in static_block["text"], "静态区不含时间（D17）"
     assert "skill1" in dynamic and "Current Time" in dynamic, "动态块文本独立返回"
+
+
+def test_assemble_system_message_claude_name_openai_route_str_content():
+    """审计 #6：claude 模型名 + openai 兼容端点 → system content 保持字符串（无 cache_control）。"""
+    from agent.runner import NiuRunner
+
+    runner = NiuRunner.__new__(NiuRunner)
+    runner.static_system_prompt = "STATIC_PART"
+    runner.dynamic_system_prefix = ""
+    runner.default_model = "claude-3-5-sonnet"
+    runner.llm_config = {"model": "claude-3-5-sonnet",
+                         "apibase": "https://openrouter.ai/api/v1", "type": "openai"}
+
+    messages = [{"role": "system", "content": ""}]
+    runner._assemble_system_message(messages, "", "", model="claude-3-5-sonnet")
+
+    content = messages[0]["content"]
+    assert isinstance(content, str), "openai 路由 system content 应为字符串"
+    assert content == "STATIC_PART"
+
+
+def test_assemble_system_message_camelcase_config_keys():
+    """生产配置键形态（user-config.json camelCase apiBase/type）：anthropic 判据不得依赖小写键。"""
+    from agent.runner import NiuRunner
+
+    def _run(llm_cfg, model):
+        runner = NiuRunner.__new__(NiuRunner)
+        runner.static_system_prompt = "STATIC_PART"
+        runner.dynamic_system_prefix = ""
+        runner.default_model = model
+        runner.llm_config = llm_cfg
+        messages = [{"role": "system", "content": ""}]
+        runner._assemble_system_message(messages, "", "", model=model)
+        return messages[0]["content"]
+
+    # 1) 官方 anthropic 域名（camelCase apiBase）→ list + cache_control
+    content = _run({"model": "claude-sonnet-4-6",
+                    "apiBase": "https://api.anthropic.com/v1", "type": "openai"},
+                   "claude-sonnet-4-6")
+    assert isinstance(content, list), \
+        "camelCase apiBase 指向 anthropic 域名 → 必须注入 cache_control"
+
+    # 2) 第三方网关 type=anthropic（minimax-anthropic 预设形态）→ 同样注入
+    content = _run({"model": "MiniMax-M1",
+                    "apiBase": "https://api.minimaxi.com/anthropic", "type": "anthropic"},
+                   "MiniMax-M1")
+    assert isinstance(content, list), \
+        "type=anthropic（第三方网关走 anthropic 协议）→ 必须注入 cache_control"
+
+    # 3) camelCase openai 端点 + claude 模型名 → 仍 str（不泄漏）
+    content = _run({"model": "claude-3-5-sonnet",
+                    "apiBase": "https://openrouter.ai/api/v1", "type": "openai"},
+                   "claude-3-5-sonnet")
+    assert isinstance(content, str), \
+        "openai 协议请求不得携带 cache_control（camelCase 键同样适用）"
 
 
 

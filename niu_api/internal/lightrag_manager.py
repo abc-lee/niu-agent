@@ -141,6 +141,10 @@ def _build_keyword_extraction_response_format() -> dict:
     """
     from lightrag.types import GPTKeywordExtractionFormat
     schema = GPTKeywordExtractionFormat.model_json_schema()
+    # OpenAI strict 模式硬要求：object schema 必须声明 additionalProperties:false
+    # （pydantic model_json_schema 默认不产该键——缺则 OpenAI 路由必 400 后降级重发，每次白跑；
+    # 探针侧 compat.py 同形态已带此键，运行时补齐对齐）
+    schema["additionalProperties"] = False
     return {
         "type": "json_schema",
         "json_schema": {

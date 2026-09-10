@@ -53,8 +53,35 @@ def test_probe_base_params_values_match_production():
     prod_form = build_base_params(stream=True, max_tokens=8, timeout=10, **common)
     assert probe_form["stream"] is False
     assert prod_form["stream"] is True
-    for key in ("stream_options", "max_tokens", "timeout", "model", "api_base", "api_key"):
+    for key in ("max_tokens", "timeout", "model", "api_base", "api_key"):
         assert probe_form[key] == prod_form[key], f"字段 {key} 值应一致"
+
+
+def test_stream_options_only_when_streaming():
+    """审计 #9：stream_options 仅 stream=True 时携带（规范限 stream=true；
+    探测直发 stream=False 不得携带）。"""
+    from agent.generic.litellm_adapter import build_base_params
+
+    probe_form = build_base_params(stream=False, max_tokens=8, timeout=10)
+    prod_form = build_base_params(stream=True, max_tokens=8, timeout=10)
+    assert "stream_options" not in probe_form, \
+        "stream=False 形态不得携带 stream_options"
+    assert prod_form["stream_options"] == {"include_usage": True}
+
+
+def test_probe_build_params_no_stream_options():
+    """_build_probe_params（探测直发，stream=False）产出无 stream_options 键。"""
+    from niu_api.model_probe import _build_probe_params
+
+    params = _build_probe_params(
+        api_base="https://api.openai.com/v1",
+        api_key="k",
+        model="gpt-4o",
+        api_type="openai",
+        probe_config={},
+    )
+    assert params["stream"] is False
+    assert "stream_options" not in params
 
 
 # ===== 三处探测一致性（预期红相，Task 3 转绿） =====

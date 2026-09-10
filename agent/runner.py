@@ -777,7 +777,7 @@ class NiuRunner:
         self.llm_config = llm_config
         self.mcp_client = mcp_client
         self.client = create_client(llm_config)
-        # 当前模型名（用于 _assemble_system_message 判断是否 Claude 走 cache_control）
+        # 当前模型名（_assemble_system_message 经 apibase/type+model 解析 provider 判 cache_control）
         self.default_model = llm_config.get("model", "")
         project_root = os.path.dirname(os.path.dirname(__file__))
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client)
@@ -1038,8 +1038,16 @@ class NiuRunner:
         if memory_section:
             static_text += "\n\n" + memory_section
 
-        model_lower = (model or "").lower()
-        if "claude" in model_lower:
+        # cache_control 判据=解析后 provider（审计 #6）：仅 anthropic 路由注入——
+        # 「model 名含 claude」会把 Claude 专属字段泄漏进 OpenAI 协议请求。
+        # llm_config 取派发时刻配置（apibase/type）；缺失（测试 stub 构造）→ openai 默认不注入
+        from agent.generic.litellm_adapter import is_anthropic_route
+        _llm_cfg = getattr(self, "llm_config", None) or {}
+        if is_anthropic_route(
+            # 键形态与 create_litellm_client 归一化同源（camelCase 原始配置优先）
+            _llm_cfg.get("apiBase") or _llm_cfg.get("apibase") or _llm_cfg.get("api_base"),
+            model, _llm_cfg.get("type"),
+        ):
             # Claude：单 text 块 list 格式 + cache_control breakpoint
             messages[0]["content"] = [
                 {

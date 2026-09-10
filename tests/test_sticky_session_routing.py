@@ -210,13 +210,16 @@ def test_chat_user_static_extra_headers_coexist_same_key_overridden():
     }
 
 
-def test_chat_anthropic_type_sends_no_headers():
+def test_chat_anthropic_type_sends_beta_header():
+    """判据=解析后 provider（审计 #6）：api_type=anthropic（走 anthropic 协议的第三方网关）
+    → litellm 按 anthropic 驱动出网，anthropic-beta 头属该协议合法字段；
+    sticky 注入头在 anthropic 路由仍排除（不交叉发送）。"""
     params = _chat_request_params(_base_cfg(
         api_type="anthropic",
         apibase="https://openrouter.ai/api/v1",
         sticky_session_id="main",
     ))
-    assert "extra_headers" not in params
+    assert params.get("extra_headers") == {"anthropic-beta": "prompt-caching-2024-07-31"}
 
 
 def test_chat_non_matching_domain_auto_sends_no_headers():
@@ -241,17 +244,31 @@ def test_chat_api_base_flip_between_instances():
     assert params_or.get("extra_headers") == {"x-session-id": "main"}
 
 
-def test_chat_anthropic_beta_and_sticky_headers_coexist():
-    """AC7：openai 兼容端点 + claude 模型名——get_provider_params 预置的 anthropic-beta 头
-    随 provider_params 流入 build_base_params，与 sticky 注入头共存且互不覆盖。"""
+def test_chat_claude_name_openai_route_no_beta_header():
+    """AC7（判据改解析后 provider，审计 #6）：openai 兼容端点 + claude 模型名 →
+    OpenAI 协议请求不得携带 anthropic-beta 头；sticky 注入头不受影响照常发送。"""
     params = _chat_request_params(_base_cfg(
         model="claude-3-5-sonnet",
         sticky_session_id="main",
     ))
     headers = params.get("extra_headers") or {}
-    assert headers.get("anthropic-beta") == "prompt-caching-2024-07-31"
+    assert "anthropic-beta" not in headers, \
+        "openai 路由不得携带 Claude 专属 anthropic-beta 头"
     assert headers.get("x-session-id") == "main"
     assert "x-opencode-session" not in headers  # openrouter.ai 域不交叉发 opencode 键
+
+
+def test_chat_anthropic_route_sends_beta_header():
+    """AC7（正向）：anthropic 路由（api.anthropic.com）+ claude 模型 → beta 头随 sticky 头共存。"""
+    params = _chat_request_params(_base_cfg(
+        model="claude-3-5-sonnet",
+        apibase="https://api.anthropic.com/v1",
+        sticky_session_id="main",
+    ))
+    headers = params.get("extra_headers") or {}
+    assert headers.get("anthropic-beta") == "prompt-caching-2024-07-31"
+    # anthropic 域不在 sticky 域名表 → 不交叉发 x-session-id
+    assert "x-session-id" not in headers
 
 
 # ③ model_probe._build_probe_params：控制键不泄入直发参数

@@ -984,9 +984,15 @@ def call_subagent(
             static_system = f'You are {agent_name} sub-agent. Complete the task efficiently.'
         dynamic_system = ""
 
-    # 3. 组装 system message（按 model 决定格式：Claude list / 其他 str）
-    model_lower = (llm_config.get("model", "") or "").lower()
-    if "claude" in model_lower:
+    # 3. 组装 system message（按解析后 provider 决定格式：anthropic 路由 list+cache_control / 其他 str）
+    # 判据=apibase/type+model 解析路由（审计 #6——「model 名含 claude」会泄漏 Claude 专属字段进 OpenAI 协议请求）
+    from .generic.litellm_adapter import is_anthropic_route
+    # 键形态与 create_litellm_client 归一化同源（camelCase 原始配置优先）
+    _is_anthropic = is_anthropic_route(
+        llm_config.get("apiBase") or llm_config.get("apibase") or llm_config.get("api_base"),
+        llm_config.get("model", ""), llm_config.get("type"),
+    )
+    if _is_anthropic:
         system_message = {
             "role": "system",
             "content": [
