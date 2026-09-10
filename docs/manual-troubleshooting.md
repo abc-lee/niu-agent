@@ -693,8 +693,8 @@ E3 工程后，知识图谱不再静默吞错——查询异常会以错误文�
 
 **检查法**：
 1. **确认参数是否上线（extra_body 送达检查）**：查看 `logs/raw_http/{YYYYMMDD}/` 的传输层请求体（`NNNNNN.json`），检查是否含 `extra_body` → `reasoning_effort` / `thinking`。请求体没有该参数 = 未送达；有但报 400 = 值域问题（该模型不支持该值）。
-2. **换模型/换服务商后重新探测**：设置窗口"探测能力"按钮（llm 段 / lightrag 段各一个），或 CLI：`python/bin/python3 scripts/model_capability_probe.py --api-base URL --model MODEL [--lightrag]`。能力档案按 `apiBase|model|场景` 区分，**旧档案不适用新模型**；探测后下拉只显示模型实际支持的档位。
-3. **探测失败 ≠ 参数失效**：探测失败（CLI 退出码 1）会**保持旧档案**——此时需检查 API 配置/网络后重试，不要误以为参数已按旧值生效。
+2. **换模型/换服务商后重新探测**：设置窗口"探测能力"按钮（llm 段 / lightrag 段各一个），或主 Agent 用 `code_run` 跑一段（三个环境统一、无需脚本文件——代码见《用户操作手册》1.2 LLM 配置的「换模型/换服务商后必须重新探测」节，核心是 `niu_api.model_probe.probe`）。能力档案按 `apiBase|model|场景` 区分，**旧档案不适用新模型**；探测后下拉只显示模型实际支持的档位。
+3. **探测失败 ≠ 参数失效**：探测失败（`probe_status=failed`）会**保持旧档案**——此时需检查 API 配置/网络后重试，不要误以为参数已按旧值生效。
 4. **区分两个独立维度**：`reasoning_effort`（推理深度）与 `thinking`（是否返回思考链）是两个不同参数，互不替代——"关思考链"用 `litellm_kwargs.thinking`，不靠 `reasoning_effort`。
 
 ### 1.8 Chat 页面消息重复（停止后关闭重开仍重复）
