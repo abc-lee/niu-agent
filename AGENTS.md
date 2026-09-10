@@ -541,6 +541,17 @@ preload_face_model()
 
 ### 2026-09-10
 
+#### 工程：LLM 参数约束 deny 机制（K3 `invalid temperature` 400 根治；用户拍板「只 deny 不改值」——程序不做语义解释；plan v0.1→v0.3 四轮双审（R1/R2 阻断→R3+R4 连续双 APPROVE）+ SDD T1/T2 每 Task 双审+微修复审，main 45fe973c/0ece378c，docs 5cd9a97 plan 冻结）
+
+- **背景**：K3 报 `invalid temperature: only 1 is allowed for this model`（服务端拒绝、内容零生成）——temperature 来源=config/agents/niu.md frontmatter 0.6（runner.py:767 覆盖进 llm_config）。litellm SDK 实测不能兜（1.88.1 无 k3；最新 main 已收 moonshot/kimi-k3 但注册表结构只表达参数"支持与否"，表达不了值域；用户走 openai 兼容端点不触发 provider 特判）。
+- **用户拍板定案**：**只做 deny，不做改值**——程序无法解释自然语言约束（"大模型思维 vs 程序思维"教诲），只能确定性判断「发了某参数→被拒→deny」；deny 后不发该参数、模型用自身默认值（K3 默认 temperature=1）；温度调优值（0.6/0.2/0.3）全保留；全 LLM 出网点覆盖。
+- **出网点盘点（调查实证）**：生产 2 通道——A=LiteLLMSession.chat()（**7 业务点全经此**：主 Agent/子 Agent/LightRAG 文件入库/脑区 label/MCP Sampling/testAndSave/档位探测）；B=model_probe 直发（探测本体=deny 生产者，豁免）。非出网：embedding/rerank 全本地。
+- **机制**：**T1 发送过滤**——`parse_capabilities_deny`（model 绑定 fail-closed）→ chat() sticky 注入后/日志前单点过滤（含 extra_body 嵌套同名键清理 + per-session 首次 info）；capabilities 白名单原样透传（解析统一在 __init__）；lightrag_manager config_key+llm_config 补 capabilities（deny 变化触发缓存会话重建）；llm_proxy/compat 两处手工 cfg 补键（来源=落盘段经 model 绑定注入）；subagent 续跑赋值。**T2 探测扩展**——参数可用性探测段（**先于值域扫描**，避免恒发 max_tokens 被拒时早退）：候选=运行时实际发送集（**含 frontmatter 0.6 / lightrag 默认 0.2**）∩ 白名单 7 项（**response_format 排除**——静默剥离破坏 LightRAG JSON 契约，已有三档治理）→ 真实请求 → 400 定位（正则提取候选 → **累积线性移除**兜底，最坏 ≤8 请求）→ 通过时刻落盘；D2 写侧规则（合并语义保留 input/probed_at/model + 新建对象写 model+probed_at + 串模型守卫 + 双落点同步 + 清空只清本次测到且通过）；`_write_vision_capabilities` 改 merge（防 deny/vision 互抹）。
+- **质量链亮点（双审价值）**：R1 双审同抓 3 P1（capabilities 写冲突互抹 / 漏 lightrag_manager 致 deny 到不了 LightRAG·脑区通道且缓存不重建 / 探测参数集不含 frontmatter 温度→动机场景修不掉）；R2-B P1（lightrag 段 capabilities 无 model 键→fail-closed 永不通过 + 串模型守卫缺失）；T2 双审**同抓 P1**（temperature 候选优先级与运行时相反——用户手工把 llm.temperature 改成 1 时探测误判通过且**洗白误清正确 deny**）。双审同抓=缺陷真实性强信号（本日第三次）。
+- **验证**：T1 141 + T2 161 + 全量回归 300 passed；ruff 零新增（stash 对比）；test_lightrag_manager 2 failed=**plan §6 预录基线红**（user_info 注入 mock 绑定失效的存量测试债，非本工程）。
+- **已知边界（接受/记录）**：MCP Sampling 死路径（mcp_client.py:141 签名不匹配恒 TypeError，另案）；白名单外参数（reasoning_effort 等）若被拒机制不处理（封闭白名单设计，扩展点=白名单加一行）；探测后续段不消费本次新写 deny（plan R2-A 已接受取舍）；deny 无变化时命名配置同步已修为照跑。
+- **实机验证清单（待用户）**：①重启 Niu → 设置页点「探测能力」→ `~/.niu/config/user-config.json` llm 段 capabilities.deny 出现 `["temperature"]`（llm-configs.json 同步）②主对话正常（raw_http：请求体无 temperature 字段）③子 Agent 派发正常（frontmatter 0.2/0.3 被过滤）④lightrag 段探测后文件入库正常（不重启即生效）⑤脑区 label 正常 ⑥切回 Deepseek 重探测 → deny 清空且 vision input 不被互抹
+
 #### 工程：LLM API 合规 + 工具消息顺序规整（k3-256k 400 根治；用户要求全面审计「别过几个月又告诉我别的地方还有不合规」→ 12 项全修；plan v0.1→v0.7 八轮双审门禁（R1-R6 阻断收敛 / **R7-R8 连续双 APPROVE 通过**）+ SDD T1/T2 每 Task 双审+微修复审闭环，main db745ff7/d48a9c21，docs 1d015b6 plan 冻结）
 
 - **背景**：切 k3-256k（严格校验 OpenAI 消息序列）后主/子 Agent 400。病灶=ask_user 交互产生 `assistant(tool_calls)→user→tool` 顺序（DB rowid 3596/3597/3598 实证）——规范要求 tool 响应紧跟 assistant(tool_calls)。全面审计（远端，vendored SDK 类型+litellm 源码为权威）出 12 项：顺序不合规 + tool content 展开为 list（P0）/assistant 图片展开/tool 带 name 字段（三处）/压缩切片孤儿 tool/LightRAG schema 缺 additionalProperties（每次实体抽取白跑一次 400）/Claude 字段按模型名注入泄漏进 OpenAI 协议/extra_body 跨协议/MIME 按扩展名猜/stream_options 与 stream=false 同发/存量 list 污染链两链（T3 记录的"档膨胀"边界现为 400 根因）。
