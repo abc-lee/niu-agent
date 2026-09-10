@@ -734,7 +734,18 @@ Niu 的视觉能力 = `screenshot` 截图工具 + **图片直通通道**：对�
 
 ```bash
 curl http://<host>:<port>/v1/models   # 确认真实模型名与端口
+curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口（n_ctx）
 ```
+
+**上下文窗口要求：≥32K（最低底线，建议 ≥64K）**。一张 1280 宽截图（截图工具统一降采样到 ≤1280）约占 **1.2K token** 视觉编码，叠加系统提示/历史后，**8K 上下文下发图即占满 → 输出空间被挤压**，表现为模型长时间"转"不出答案、或答案被 `finish_reason=length` 截断。长会话尤其注意：实测主对话请求（含历次截图）`prompt_tokens` 可达 **70K+**（历史累积，压缩前），上下文窗口小于该量级会直接请求失败。三处保证：
+
+| 位置 | 做法 |
+|---|---|
+| **本地 llama.cpp** | 启动参数加 `-c 65536` 起（`curl http://<host>:<port>/props` 查 `n_ctx` 核实——实测参考机 131072） |
+| **云模型** | 选上下文窗口 ≥32K（建议 ≥64K）的模型版本/规格（厂商常按规格区分，勿选小上下文版） |
+| **Niu 侧** | `~/.niu/preferences.json` → `context.contextWindowSize` 设为与模型实际一致（≥32768，长会话建议 65536+）。该值决定 `max_output_tokens = contextWindowSize × 0.16`、上下文 FIFO 与压实阈值——**配得过小会连带挤压输出预算**（缺省 200000） |
+
+> 排查：视觉子 Agent/主模型看图后长时间无输出或答案截断 → 先核这三处（模型实测窗口、Niu 的 `contextWindowSize`、`vision_llm.max_tokens` 输出预算）。
 
 **字段表**（全部可省略，**空键继承主 llm 段**）：
 
