@@ -541,6 +541,21 @@ preload_face_model()
 
 ### 2026-09-10
 
+#### 工程：可视化 Phase 2（视觉能力：截图工具 + 图片直通）✅ 收官（plan v0.5.2 门禁 + SDD T1-T6 + U6 探测落点修正 + **T7 真机验证通过**；main 071b9358/306ea321/345b2e0b，docs e9402ac/aea083d/2e853a5）
+
+- **交付面**：`screenshot` 工具（vision-server MCP，static 直挂主 Agent；三形态 screen/window/region；落盘 `~/.niu/tmp/screenshot_<ts>.png` 降采样 ≤1280）+ **图片直通通道**（出站前 `![名称](路径)` 标记→多模态段；tool 图段由合成 user 消息承载）+ 主模型视觉探测（双色交叉子扫描）+ 第三方视觉模型 `vision_llm` 段 + 视觉子 Agent（llmPreset 捆绑）
+- **U6 探测落点修正（用户拍板）**：能力写**模型配置**（`user-config.json` llm 段 `capabilities{model, input, probed_at}` + `llm-configs.json` 命名配置同步），**与 `model_capabilities.json` 零关联**（后者=探测机制一次性产物；用户原话「你跟这个文件就没有半毛钱的关系」）；model 绑定 fail-closed 防换模型误判；chat.py 重建比对集补 capabilities（免重启生效）
+- **关键交互定案（用户拍板）**：主模型支持视觉 → **一次工具调用**即把图送进模型（自动，主 Agent 无需额外动作）；不支持 → 只返回路径标记文本（fail-closed）+ 可配 `vision_llm` 派视觉子 Agent
+- **T7 真机验证 ✅（2026-09-10 用户实测，raw_http 实证）**：`assistant(tool_calls) → tool(str "[输出#3630 · screenshot] ![截图](路径)") → user(合成消息 [text:"（以下是上一条工具结果中的图片）" + image_url 1.4MB]) → assistant("看到了！截图成功…当前时间 18:49、电量 77%、Wi-Fi")`——模型准确报出屏幕内容；window 模式同样成功
+- **手册**：`SYSTEM_MANUAL` 视觉能力节（主模型探测/vision_llm 字段表/**上下文窗口要求 ≥32K（建议 ≥64K）**——三处配法：本地 llama.cpp `-c`、云模型规格、Niu `contextWindowSize`；实测依据：1280 截图≈1.2K token、主对话 prompt_tokens 实测 70K+）
+
+#### 工程：设置页命名配置下拉「打开即被预填值过滤」修复（用户报障：合集有豆包+kimi 两条但下拉只见 kimi，无法切换；简易流程 plan v0.1→v0.5 四轮双审（R3+R4 连续双 APPROVE）+ T1 双审闭环，main 3de99399，docs 747a242）
+
+- **根因**：`index.html:468` 预填 `presetId`="kimi" → `openConfigNameDropdown()` 用输入框值做子串过滤 → `豆包-Deepseek` 被滤掉。**变更前对照实测**：预填后打开=1 项／清空输入后打开=2 项（因果闭环）
+- **修复**：镜像同文件**模型下拉既有先例**（`modelInputTextPending` 守卫）——新增 `configNameTypedSinceOpen`：`open` 改 `pending ? filter : slice()` + 消费清零；`input` 早退分支置位 → 程序化预填不触发 input（实测验证前提）→ 打开得**全量**；用户手输过 → 仍按输入过滤
+- **R1 阻断价值**：我首版单行改法（打开即全量）过宽、与先例语义分叉 → B 角抓出（手输后重开/ArrowDown 路径过滤语义丢失）；R2 双审同抓「验收断言序列与镜像实现语义矛盾」
+- **验证**：PM 真实鼠标/键盘 headless 实测（预填开=2 项／关闭态手输=1 项／实时过滤／选中回填／保存链跑通）+ QualityB 独立复测（镜像奇偶 4/4、预填变体 4/4 含"预填值不在合集时下拉永远打不开"最强病灶、边界 8/8、零 JS 错误）+ 截图确认
+
 #### 工程：LLM 参数约束 deny 机制（K3 `invalid temperature` 400 根治；用户拍板「只 deny 不改值」——程序不做语义解释；plan v0.1→v0.3 四轮双审（R1/R2 阻断→R3+R4 连续双 APPROVE）+ SDD T1/T2 每 Task 双审+微修复审，main 45fe973c/0ece378c，docs 5cd9a97 plan 冻结）
 
 - **背景**：K3 报 `invalid temperature: only 1 is allowed for this model`（服务端拒绝、内容零生成）——temperature 来源=config/agents/niu.md frontmatter 0.6（runner.py:767 覆盖进 llm_config）。litellm SDK 实测不能兜（1.88.1 无 k3；最新 main 已收 moonshot/kimi-k3 但注册表结构只表达参数"支持与否"，表达不了值域；用户走 openai 兼容端点不触发 provider 特判）。
