@@ -88,7 +88,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
 | `ha-server` | 智能家居（Home Assistant 设备控制/场景/自动化） | Yes（可选） |
-| `vision-server` | 屏幕截图（screenshot 工具，基于 niu_natives；.so 缺失/平台未编时降级为明确错误提示，不炸启动） | Yes |
+| `vision-server` | 屏幕截图（screenshot + list_targets 两工具，基于 niu_natives；.so 缺失/平台未编时降级为明确错误提示，不炸启动） | Yes |
 
 > `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
@@ -716,7 +716,25 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 
 ## 视觉能力（2026-09-10 起）
 
-Niu 的视觉能力 = `screenshot` 截图工具 + **图片直通通道**：对话/任务文本里的 markdown 图标记（`![名称](绝对路径)`）在出站前展开为多模态 content 段发给模型——主模型有视觉时自己看图，无需单独的"解析图片"工具。三层结构：主模型视觉探测 → 第三方视觉模型配置（`vision_llm` 段）→ 可选自建视觉子 Agent。
+Niu 的视觉能力 = `vision-server` 的两个截图工具（`screenshot` 截图 + `list_targets` 列可截目标）+ **图片直通通道**：对话/任务文本里的 markdown 图标记（`![名称](绝对路径)`）在出站前展开为多模态 content 段发给模型——主模型有视觉时自己看图，无需单独的"解析图片"工具。三层结构：主模型视觉探测 → 第三方视觉模型配置（`vision_llm` 段）→ 可选自建视觉子 Agent。
+
+### 截图辅助工具（list_targets + screenshot）
+
+两个工具均由 `vision-server` 提供、static 直挂主 Agent（无需 disk 发现），基于 `niu_natives`（.so 缺失/平台未编时返回明确错误提示，不炸启动）：
+
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `list_targets` | 无 | 一次列出当前可截取的所有目标：**显示器**（名称/逻辑尺寸/缩放/逻辑位置，主屏标 `(主屏)`）+ **窗口**（`id`/软件名/标题/尺寸/位置）。前台应用的窗口行标 `[应用在前台]`（同一 App 多窗口会同时带此标记）；无前台应用时省略「前台应用」行 |
+| `screenshot` | `target=screen/window/region` + 对应参数 | 截整屏/指定窗口/指定区域，落盘 PNG（统一降采样 ≤1280 宽），返回 `![截图](绝对路径)` 标记 + 尺寸元数据 |
+
+**推荐用法**：先 `list_targets` 拿窗口编号 → 再 `screenshot(target="window", window_id=…)`。截区域用 `region_ratio=[左,上,右,下]`（4 个 0~1 数值，**恒相对整个逻辑桌面**，即 `target=screen` 那张图；工具内部换算坐标，无需自己算）；绝对坐标 `x/y/width/height` 仍可用，与 `region_ratio` 二选一。
+
+**边界**：
+- **多显示器支持**：整屏 = 所有屏幕合成一张大图（元数据标注显示器台数）
+- **虚拟多桌面只看当前桌面**——与「用户可见、可随时接手」的语义一致
+- **窗口列表上限 48 个**：达上限会提示「可能还有更多窗口未列出」（改截整屏，或请用户关闭部分窗口）；最小化 / 小于 16px / 无标题且无软件名的窗口底层直接过滤，列不出
+- **窗口编号有时效**：`screenshot` 报窗口不存在时（期间切了应用/关了窗），先重跑 `list_targets` 拿新编号
+- **非连续多屏之间的空隙是黑区**：比例指到空隙会截出黑块或报「overlaps no display」
 
 ### 主模型视觉探测
 
@@ -785,7 +803,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 
 ### 主 Agent 视觉流程
 
-1. **截屏**：`screenshot` 工具——`target=screen` 整屏 / `window` 指定窗口（需 window_id）/ `region` 指定区域（x/y/width/height）。返回 `![截图](绝对路径)` 标记 + 尺寸元数据；图片落盘 `~/.niu/tmp/screenshot_<时间戳>.png`，**每日 04:00 后台任务清理 mtime 超过 24h 的文件（最坏可存活约 48h），截图建议当次使用；文件已清理需重新截屏**
+1. **截屏**：先 `list_targets` 选目标（拿窗口编号/显示器清单）→ 再 `screenshot`——`target=screen` 整屏 / `window` 指定窗口（`window_id` 取自 `list_targets`）/ `region` 指定区域（**推荐 `region_ratio=[左,上,右,下]` 比例写法**，0~1、相对整个逻辑桌面；绝对坐标 x/y/width/height 仍可用，二选一）。返回 `![截图](绝对路径)` 标记 + 尺寸元数据；图片落盘 `~/.niu/tmp/screenshot_<时间戳>.png`，**每日 04:00 后台任务清理 mtime 超过 24h 的文件（最坏可存活约 48h），截图建议当次使用；文件已清理需重新截屏**。窗口编号有时效——`screenshot` 报窗口不存在时先重跑 `list_targets`
 2. **主模型有视觉**（`~/.niu/config/user-config.json` llm 段 `capabilities.input` 含 `"image"`）→ 图标记直通主对话，主模型自己看图回答
 3. **主模型无视觉 + 已配 vision_llm** → 派自建视觉子 Agent：任务文本里带上截图标记/路径，子 Agent 用捆绑的视觉模型看图作答
 4. **图文件缺失/已清理** → 标记留文本 + `[图片不可读]` 警示（不报错中断）——重新截屏即可

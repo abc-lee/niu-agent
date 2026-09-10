@@ -15,7 +15,7 @@ MCP 服务器是 Agent 调用外部能力的核心通道。虚拟磁盘（Virtua
 
 **同进程架构**：MCP 服务器不再通过 stdio 进程通信，而是直接在主进程内通过 ToolRegistry 调用。工具函数是普通同步 Python 函数，性能相比旧 stdio 模式提升约 40000x。
 
-**工具展示统一由虚拟磁盘管理**：所有 MCP 工具在 `mcp-servers.yaml` 中设 `visibility: hidden`，不再通过 static/dynamic 方式注入 Agent 提示词。LLM 通过 `disk()` 工具的 ls/cat/路径调用发现和使用工具。
+**工具展示统一由虚拟磁盘管理**：除少数 static 直挂例外（见 §5.7）外，所有 MCP 工具在 `mcp-servers.yaml` 中设 `visibility: hidden`，不再通过 static/dynamic 方式注入 Agent 提示词。LLM 通过 `disk()` 工具的 ls/cat/路径调用发现和使用工具。
 
 ## 二、新增 MCP 服务器
 
@@ -92,7 +92,7 @@ my-server:
   optional: true       # 仅作文档标记，加载器不读取（可选性由 mcp_loader.py 的 OPTIONAL_SERVERS 列表控制）
   tools:
     my_tool:
-      visibility: hidden   # 所有工具必须 hidden，由虚拟磁盘管理展示
+      visibility: hidden   # 默认必须 hidden，由虚拟磁盘管理展示（static 直挂例外见 §5.7）
 ```
 
 **字段说明**：
@@ -104,7 +104,7 @@ my-server:
 | `workdir` | 指向 `src/` 目录，相对于项目根目录 |
 | `preload` | 当前仅作文档标记，加载器不区分 preload true/false，所有 REQUIRED_SERVERS 启动时加载 |
 | `optional` | 当前由 `mcp_loader.py` 的 `OPTIONAL_SERVERS` 列表控制，yaml 的 `optional` 字段仅作文档标记，加载器不读取 |
-| `tools.*.visibility` | **必须设 `hidden`**，由虚拟磁盘统一管理 |
+| `tools.*.visibility` | **默认必须设 `hidden`**，由虚拟磁盘统一管理；static 直挂例外见 §5.7 |
 
 **何时将服务器设为可选**：服务器依赖外部服务（如 ha-server 依赖 Home Assistant、feishu-server 依赖飞书 API），用户环境可能没有这些服务。核心服务器（memory-server、config-manager 等）必须放在 REQUIRED_SERVERS 中。可选性通过在 `mcp_loader.py` 中将元组从 `REQUIRED_SERVERS` 移到 `OPTIONAL_SERVERS` 列表实现（详见 2.3 节）。
 
@@ -543,6 +543,14 @@ result = tool_fn(param1="value1")
 | `config/disk/<name>.yaml` | 新建虚拟磁盘配置（主 Agent 通过此文件发现工具） |
 | `config/agents/<sub-agent>.md` | 添加到 mcpServers 列表（仅子 Agent 需要直接调用时） |
 
-### 5.7 brain-region-server 的 visibility 例外
+### 5.7 visibility: static 例外清单
 
-当前 `brain-region-server` 的工具使用 `visibility: static`（而非 `hidden`），这是因为脑区工具仍通过 static 注入方式提供给 Agent，暂未迁移到虚拟磁盘。其他所有服务器必须使用 `visibility: hidden`。
+基础配置（`config/mcp-servers.yaml`）中以下 7 个工具使用 `visibility: static`（而非 `hidden`），直接注入主 Agent 工具列表、不走虚拟磁盘发现：
+
+| 服务器 | 工具 | 说明 |
+|------|------|------|
+| `session-manager` | `read_history_block`、`fold_tool_output` | 会话管理高频工具，static 直挂 |
+| `brain-region-server` | `brain_region_activate`、`brain_region_dim`、`brain_region_status` | 脑区工具仍通过 static 注入方式提供给 Agent，暂未迁移到虚拟磁盘 |
+| `vision-server` | `screenshot`、`list_targets` | 截图辅助工具（截图 + 列可截目标），static 直挂主 Agent |
+
+除上述例外，其余工具一律使用 `visibility: hidden`。新增 static 工具时须同步更新本清单与 `tests/test_disk_integration.py` 的 `static_exempt` 白名单。
