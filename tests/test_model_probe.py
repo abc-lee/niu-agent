@@ -8,8 +8,8 @@
    high+disabled 400→high unsupported、enabled vs disabled supported 差异断言；
    **值域超时重试（R18）**：首次超时→重试成功→supported；连续两次超时→
    unsupported 继续且 probe_status 非 failed；重试遇 401→failed 终止；
-   请求总数恒 11 = 7 值域 + 2 thinking + 1 response_format + 1 tools，
-   含重试最坏 14 次）
+   请求总数 = 1 参数可用性段 + 7 值域 + 无效值探针 + 2 thinking + 1 vision，
+   含重试最坏 15 次）
 ② partial 例外（response_format 超时→partial + 值域照写 + timeout 形状；tools
    失败→partial + tools 段形状；rf 400→unsupported 形状）
 ③ thinking 剔除行为（config 含 litellm_kwargs.thinking 时探测请求 thinking 仅
@@ -151,19 +151,20 @@ def _isolate_vision_write_targets(tmp_path, monkeypatch):
 
 def test_value_domain_200_marks_supported(profile_path):
     """值域 200 → supported（7 值全收）。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile["probe_status"] == "ok"
     assert profile["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
     assert profile["reasoning_effort"]["unsupported"] == []
-    # 7 值域 + 无效值探针 + 2 thinking + 1 vision（mock 答 "OK" 非颜色名 →
+    # 1 参数可用性 + 7 值域 + 无效值探针 + 2 thinking + 1 vision（mock 答 "OK" 非颜色名 →
     # 红图即证伪短路，蓝图不发——llm 场景双色交叉子扫描）
-    assert mock_completion.call_count == 11
+    assert mock_completion.call_count == 12
 
 
 def test_value_domain_400_with_reasoning_effort_token_marks_unsupported(profile_path):
     """400 + e.body 含 "reasoning_effort" → unsupported，继续探测（值域不连续）。"""
-    results = [_ok_response()] * 2  # minimal/low
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 2  # minimal/low
     results.append(_bad_request({"error": {"message": "reasoning_effort: invalid value 'medium'"}}))
     results += [_ok_response()] * 4  # 剩余 4 个值
     results += [_ok_response()] * 2  # thinking
@@ -181,7 +182,8 @@ def test_value_domain_disabled_thinking_rejects_high_as_unsupported(profile_path
     （body 含 reasoning_effort/combination——豆包实测 "Invalid combination of
     reasoning_effort and thinking type: high + disabled"）→ high 记 unsupported，
     值域结论与生产场景一致（P1-1）。"""
-    results = [_ok_response()] * 3  # minimal/low/medium（disabled 下 200）
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 3  # minimal/low/medium（disabled 下 200）
     results.append(_bad_request({
         "error": {"message": "Invalid combination of reasoning_effort and thinking type: high + disabled"}
     }))  # high 400（与 t5_lightrag Variant A 实测同型）
@@ -193,8 +195,9 @@ def test_value_domain_disabled_thinking_rejects_high_as_unsupported(profile_path
     assert profile["reasoning_effort"]["supported"] == ["minimal", "low", "medium", "xhigh", "none", "max"]
     assert profile["reasoning_effort"]["unsupported"] == ["high"]
     assert profile["ignores_unknown"] is False  # 任一值被拒即 false（R11 同步）
-    # wire 验证：值域扫描 7 次请求均携带场景 thinking=disabled，且无顶层 thinking 键（单一来源）
-    for call in mock_completion.call_args_list[:7]:
+    # wire 验证：值域扫描 7 次请求（index 1-7，index 0 = 参数可用性段）均携带场景
+    # thinking=disabled，且无顶层 thinking 键（单一来源）
+    for call in mock_completion.call_args_list[1:8]:
         assert call.kwargs.get("extra_body", {}).get("thinking") == {"type": "disabled"}
         assert "thinking" not in call.kwargs
 
@@ -204,16 +207,17 @@ def test_value_domain_supported_differs_between_thinking_enabled_and_disabled(pr
     enabled（llm 场景）→ 7 值全 supported + 无效值探针 200 → ignores_unknown=true；
     disabled（lightrag 场景）→ high 被拒 unsupported + ignores_unknown=false。"""
     # llm 场景（thinking=enabled）：7 值全 200 + 探针 200（mock 全 _ok_response）
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:  # +1 vision
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:  # +1 参数可用性 +1 vision
         profile_enabled = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile_enabled["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
     assert profile_enabled["reasoning_effort"]["unsupported"] == []
     assert profile_enabled["ignores_unknown"] is True
-    for call in mock_completion.call_args_list[:7]:
+    for call in mock_completion.call_args_list[1:8]:  # index 0 = 参数可用性段
         assert call.kwargs.get("extra_body", {}).get("thinking") == {"type": "enabled"}
 
     # lightrag 场景（thinking=disabled）：high 400 → unsupported；其余 6 值 200
-    results = [_ok_response()] * 3
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 3
     results.append(_bad_request({
         "error": {"message": "Invalid combination of reasoning_effort and thinking type: high + disabled"}
     }))
@@ -225,7 +229,7 @@ def test_value_domain_supported_differs_between_thinking_enabled_and_disabled(pr
     assert profile_disabled["reasoning_effort"]["supported"] == ["minimal", "low", "medium", "xhigh", "none", "max"]
     assert profile_disabled["reasoning_effort"]["unsupported"] == ["high"]
     assert profile_disabled["ignores_unknown"] is False
-    for call in mock_completion.call_args_list[:7]:
+    for call in mock_completion.call_args_list[1:8]:  # index 0 = 参数可用性段
         assert call.kwargs.get("extra_body", {}).get("thinking") == {"type": "disabled"}
 
     # supported 差异断言：enabled 的 supported 真包含 disabled 的（high 仅 enabled 下可用）
@@ -237,7 +241,8 @@ def test_value_domain_400_without_token_marks_unsupported_and_continues(profile_
     """400 但 body 不含 reasoning_effort（max_tokens 过小/模型名错/限流）→ 仍
     unsupported 继续探测（R19：400 本身表明该值不被接受，body 含 token 是充分
     条件非必要条件，body 缺失不改变 400 语义）。"""
-    results = [_ok_response()]  # minimal
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 1  # minimal
     results.append(_bad_request({"error": {"message": "max_tokens must be at least 16"}}))  # low 400 无 token
     results += [_ok_response()] * 5  # medium..max
     results += [_ok_response()] * 2  # thinking
@@ -248,15 +253,16 @@ def test_value_domain_400_without_token_marks_unsupported_and_continues(profile_
     assert profile["reasoning_effort"]["supported"] == ["minimal", "medium", "high", "xhigh", "none", "max"]
     assert profile["reasoning_effort"]["unsupported"] == ["low"]
     assert profile["ignores_unknown"] is False  # low 未确认 200 → 不置位
-    # 7 值域 + 2 thinking + 1 vision（"OK" 非颜色名 → 红图即证伪短路）
-    assert mock_completion.call_count == 10
+    # 1 参数可用性 + 7 值域 + 2 thinking + 1 vision（"OK" 非颜色名 → 红图即证伪短路）
+    assert mock_completion.call_count == 11
 
 
 def test_value_domain_400_with_none_body_marks_unsupported_and_continues(profile_path):
     """400 + body=None（volcengine 路由实测——litellm 未解析 body，token 无法匹配）→
     仍 unsupported 继续探测（R19 核心场景：不再因 body 缺失误分类 failed 导致探测
     中断、只记录 minimal）。"""
-    results = [_ok_response()] * 2  # minimal/low
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 2  # minimal/low
     results.append(_bad_request(None))  # medium 400 body=None
     results += [_ok_response()] * 4  # high..max
     results += [_ok_response()] * 2  # thinking
@@ -268,7 +274,7 @@ def test_value_domain_400_with_none_body_marks_unsupported_and_continues(profile
     assert profile["reasoning_effort"]["unsupported"] == ["medium"]
     assert "vision" not in profile  # vision 结果不落档案（改写 user-config.json capabilities）
     assert profile["ignores_unknown"] is False
-    assert mock_completion.call_count == 10  # 7 值域 + 2 thinking + 1 vision
+    assert mock_completion.call_count == 11  # 1 参数可用性 + 7 值域 + 2 thinking + 1 vision
 
 
 def test_value_domain_401_fails_and_does_not_overwrite_old_profile(profile_path):
@@ -276,12 +282,12 @@ def test_value_domain_401_fails_and_does_not_overwrite_old_profile(profile_path)
     old = {"api_base": "https://api.example.com/v1", "model": "m1",
            "probe_status": "ok", "probed_at": "2026-01-01T00:00:00"}
     write_profile(dict(old))
-    results = [_ok_response(), _auth_error()]
+    results = [_ok_response(), _auth_error()]  # [0] 参数可用性段通过；[1] 值域扫描首个候选 401
     with _patch_completion(*results) as mock_completion:
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile["probe_status"] == "failed"
-    # 并行值域扫描：7 个候选已全部提交（其中 2 个用 mock 响应，其余 StopIteration 也走 failed）
-    assert mock_completion.call_count == 7
+    # 1 参数可用性 + 并行值域扫描：7 个候选已全部提交（其中 1 个用 mock 401，其余 StopIteration 也走 failed）
+    assert mock_completion.call_count == 8
     # 旧档保留（含 api_base 尾部斜杠差异也能命中——键规范化）
     saved = read_profile("https://api.example.com/v1/", "m1")
     assert saved is not None
@@ -292,7 +298,8 @@ def test_value_domain_401_fails_and_does_not_overwrite_old_profile(profile_path)
 def test_value_domain_timeout_retried_then_supported(profile_path):
     """值域候选首次超时 → 重试该候选一次 → 重试 200 → supported（超时 ≠ 值不支持，
     R18——豆包响应在 10s 边界波动，Task 5 实测 minimal 成功/low 超时即 failed 终止）。"""
-    results = [_ok_response()]  # minimal
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 1  # minimal
     results.append(_timeout_error())  # low 首次超时
     results.append(_ok_response())    # low 重试成功
     results += [_ok_response()] * 5   # medium..max
@@ -306,13 +313,14 @@ def test_value_domain_timeout_retried_then_supported(profile_path):
     assert profile["reasoning_effort"]["unsupported"] == []
     assert "vision" not in profile  # vision 结果不落档案（改写 user-config.json capabilities）；超时不毒化主探测项
     assert profile["ignores_unknown"] is True  # 探针 200 → 忽略未知参数
-    assert mock_completion.call_count == 13  # 7 值域（含 1 次重试）+ 探针 + 2 thinking + 2 vision
+    assert mock_completion.call_count == 14  # 1 参数可用性 + 7 值域（含 1 次重试）+ 探针 + 2 thinking + 2 vision
 
 
 def test_value_domain_double_timeout_marks_unsupported_and_continues(profile_path):
     """连续两次超时（重试仍超时）→ 记 unsupported（保守——无法确认支持）并继续探测，
     不 failed 终止；超时 unsupported 不参与 ignores_unknown 置位。"""
-    results = [_ok_response()] * 2  # minimal/low
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 2  # minimal/low
     results.append(_timeout_error())  # medium 首次超时
     results.append(_timeout_error())  # medium 重试仍超时
     results += [_ok_response()] * 4   # high..max
@@ -326,14 +334,15 @@ def test_value_domain_double_timeout_marks_unsupported_and_continues(profile_pat
     assert profile["reasoning_effort"]["unsupported"] == ["medium"]
     assert "vision" not in profile  # vision 结果不落档案（改写 user-config.json capabilities）；超时不毒化主探测项
     assert profile["ignores_unknown"] is False  # medium 未确认 200（超时 unsupported）→ 不置位
-    assert mock_completion.call_count == 11  # 7 值域（含 1 次重试）+ 探针 + 2 thinking + 1 vision
+    assert mock_completion.call_count == 12  # 1 参数可用性 + 7 值域（含 1 次重试）+ 探针 + 2 thinking + 1 vision
 
 
 def test_value_domain_timeout_retry_then_401_fails(profile_path):
     """超时重试仅 1 次；重试遇非值域错误（401）→ failed 终止（服务端拒绝 ≠ 慢，
     不继续重试——R18 只对 Timeout 类重试）。并行语义：7 候选全部提交，任一线程
     遇非值域错误（401/StopIteration）→ failed；supported 完成顺序不定不再断言具体值。"""
-    results = [_ok_response()]  # minimal
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 1  # minimal
     results.append(_timeout_error())  # low 首次超时
     results.append(_auth_error())     # low 重试遇 401
     with _patch_completion(*results) as mock_completion:
@@ -364,7 +373,8 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
             config, raw_reasoning_effort=raw_reasoning_effort,
             raw_thinking=raw_thinking, provider=provider)
 
-    results = [_ok_response()] * 7
+    results = [_ok_response()] * 1  # 参数可用性段首发通过（独立 builder，不走 assemble spy）
+    results += [_ok_response()] * 7
     results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2
     results += [_ok_response()] * 2  # vision 双色（"OK" 非颜色名 → 红图即证伪短路）
@@ -395,12 +405,12 @@ def test_thinking_probe_strips_config_thinking_key(profile_path):
 
 def test_thinking_probe_sends_raw_candidate_via_extra_body(profile_path):
     """thinking 探测请求 extra_body.thinking 来自 raw 候选（enabled/disabled 各一）。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:  # +1 vision
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:  # +1 参数可用性 +1 vision
         probe(**PROBE_ARGS, user_config=USER_CONFIG)
     calls = mock_completion.call_args_list
-    # 第 9、10 次（index 8/9）是 thinking 探测（index 7 = 无效值探针）
-    assert calls[8].kwargs["extra_body"]["thinking"] == {"type": "enabled"}
-    assert calls[9].kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+    # 第 10、11 次（index 9/10）是 thinking 探测（index 8 = 无效值探针；index 0 = 参数可用性段）
+    assert calls[9].kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+    assert calls[10].kwargs["extra_body"]["thinking"] == {"type": "disabled"}
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +420,8 @@ def test_thinking_probe_sends_raw_candidate_via_extra_body(profile_path):
 
 def test_thinking_aggregation_both_true_ok(profile_path):
     """双 true → probe_status=ok（R17）。"""
-    results = [_ok_response()] * 7
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 7
     results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2  # enabled 200 / disabled 200
     results += [_ok_response()] * 1  # vision（"OK" 非颜色名 → 红图即证伪短路）
@@ -422,7 +433,8 @@ def test_thinking_aggregation_both_true_ok(profile_path):
 
 def test_thinking_aggregation_one_false_partial(profile_path):
     """一 false（enabled 400 / disabled 200）→ partial + thinking 段如实记录。"""
-    results = [_ok_response()] * 7
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 7
     results.append(_ok_response())  # 无效值探针
     results.append(_bad_request({"error": {"message": "thinking param not allowed"}}))  # enabled 400
     results.append(_ok_response())  # disabled 200
@@ -435,7 +447,8 @@ def test_thinking_aggregation_one_false_partial(profile_path):
 
 def test_thinking_aggregation_both_false_partial(profile_path):
     """双 false（enabled 400 + disabled 400）→ partial（值域结果照写）。"""
-    results = [_ok_response()] * 7
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 7
     results.append(_ok_response())  # 无效值探针
     results.append(_bad_request({"error": {"message": "thinking param not allowed"}}))
     results.append(_bad_request({"error": {"message": "thinking disabled invalid"}}))
@@ -451,7 +464,8 @@ def test_thinking_aggregation_both_false_partial(profile_path):
 
 def test_thinking_records_reasoning_content(profile_path):
     """thinking 响应含 reasoning_content → returns_reasoning_content=true。"""
-    results = [_ok_response()] * 7
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 7
     results.append(_ok_response())  # 无效值探针
     results.append(_ok_response(reasoning_content="thinking..."))  # enabled 带思考链返回
     results.append(_ok_response())
@@ -468,14 +482,15 @@ def test_thinking_records_reasoning_content(profile_path):
 
 def test_ignores_unknown_true_when_all_7_values_200(profile_path):
     """7×200 且无一个 400 → ignores_unknown=true（服务端静默忽略未知参数）。"""
-    with _patch_completion(*[_ok_response()] * 11):  # +1 vision（"OK" 非颜色名短路）
+    with _patch_completion(*[_ok_response()] * 12):  # +1 参数可用性 +1 vision（"OK" 非颜色名短路）
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG)
     assert profile["ignores_unknown"] is True
 
 
 def test_ignores_unknown_false_when_partial_400(profile_path):
     """6×200 + 1×400 → ignores_unknown=false。"""
-    results = [_ok_response()] * 6
+    results = [_ok_response()] * 1  # 参数可用性段首发通过
+    results += [_ok_response()] * 6
     results.append(_bad_request({"error": {"message": "reasoning_effort: bad value"}}))
     results += [_ok_response()] * 4
     results += [_ok_response()] * 1  # vision（"OK" 非颜色名 → 红图即证伪短路）
@@ -578,17 +593,27 @@ def test_error_classification_r19_400_always_unsupported():
 def test_probe_request_transport_shape(profile_path):
     """探测请求直发 litellm.completion：前缀推导 model + build_base_params
     (stream=False, max_tokens=256, timeout=60) + 固定消息 + extra_body raw 注入。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:
         probe(**PROBE_ARGS, user_config=USER_CONFIG)
     calls = mock_completion.call_args_list
-    # 7 值域 + 无效值探针 + 2 thinking + 1 vision（"OK" 非颜色名 → 红图即证伪短路）
-    assert len(calls) == 11
+    # 1 参数可用性 + 7 值域 + 无效值探针 + 2 thinking + 1 vision（"OK" 非颜色名 → 红图即证伪短路）
+    assert len(calls) == 12
 
-    first = calls[0].kwargs
-    assert first["model"] == "openai/m1"  # 前缀推导（openai 兼容路由）
+    avail = calls[0].kwargs  # 参数可用性段：只发白名单候选集，无 extra_body/raw 注入
+    assert avail["model"] == "openai/m1"  # 前缀推导（openai 兼容路由）
+    assert avail["stream"] is False
+    assert avail["max_tokens"] == 256
+    assert "timeout" not in avail  # 探测不传 timeout（litellm 默认大超时，等模型真实响应）
+    assert avail["messages"] == [{"role": "user", "content": "OK"}]
+    assert avail["api_base"] == "https://api.example.com/v1/"
+    assert avail["api_key"] == "k-llm"
+    assert "extra_body" not in avail  # 刻意不合并 litellm_kwargs/extra_body（D3-2）
+
+    first = calls[1].kwargs  # 值域扫描首个候选
+    assert first["model"] == "openai/m1"
     assert first["stream"] is False
     assert first["max_tokens"] == 256
-    assert "timeout" not in first  # 探测不传 timeout（litellm 默认大超时，等模型真实响应）
+    assert "timeout" not in first
     assert first["messages"] == [{"role": "user", "content": "OK"}]
     assert first["api_base"] == "https://api.example.com/v1/"
     assert first["api_key"] == "k-llm"
@@ -599,21 +624,23 @@ def test_probe_request_transport_shape(profile_path):
 
 def test_probe_volces_domain_derives_volcengine_prefix(profile_path):
     """volces.com 域名 → volcengine/ 前缀（否则豆包 response_format 探测挂起）。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:  # +1 vision
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:  # +1 参数可用性 +1 vision
         probe(
             api_base="https://ark.cn-beijing.volces.com/api/plan/v3",
             api_key="k",
             model="doubao-seed-2.1-turbo",
             user_config=None,
         )
+    # 参数可用性段（index 0）与值域扫描（index 1+）同走前缀推导
     assert mock_completion.call_args_list[0].kwargs["model"] == "volcengine/doubao-seed-2.1-turbo"
+    assert mock_completion.call_args_list[1].kwargs["model"] == "volcengine/doubao-seed-2.1-turbo"
 
 
 def test_local_model_omits_api_key(profile_path):
     """本地模型（localhost）免 apiKey：api_key="" → 请求不含 api_key 键。"""
-    with _patch_completion(*[_ok_response()] * 11) as mock_completion:  # +1 vision
+    with _patch_completion(*[_ok_response()] * 12) as mock_completion:  # +1 参数可用性 +1 vision
         probe(api_base="http://localhost:11434/v1", api_key="", model="llama3", user_config=None)
-    first = mock_completion.call_args_list[0].kwargs
+    first = mock_completion.call_args_list[0].kwargs  # 参数可用性段首发
     assert "api_key" not in first
     assert first["model"] == "openai/llama3"
 
@@ -621,13 +648,16 @@ def test_local_model_omits_api_key(profile_path):
 def test_lightrag_scenario_probes_with_lightrag_section(profile_path):
     """lightrag 场景：config 取 lightrag_llm 段（thinking disabled 随生产注入），
     档案键 api_base|model|lightrag。"""
-    results = [_ok_response()] * 7
+    results = [_ok_response()] * 1  # 参数可用性段首发通过（lightrag 默认温度 0.2 入候选）
+    results += [_ok_response()] * 7
     results.append(_ok_response())  # 无效值探针
     results += [_ok_response()] * 2
     with _patch_completion(*results) as mock_completion:
         profile = probe(**PROBE_ARGS, user_config=USER_CONFIG, lightrag=True)
-    # 生产 thinking（lightrag_llm 段 disabled）随值域探测注入（与生产同参数）
-    first = mock_completion.call_args_list[0].kwargs
+    # 生产 thinking（lightrag_llm 段 disabled）随值域探测注入（与生产同参数；
+    # index 0 = 参数可用性段，不携带 extra_body.thinking）
+    first = mock_completion.call_args_list[1].kwargs
+    assert "extra_body" not in mock_completion.call_args_list[0].kwargs
     assert first["extra_body"]["thinking"] == {"type": "disabled"}
     assert profile["probe_status"] == "ok"
     assert build_profile_key(profile["api_base"], profile["model"], lightrag=True) == \

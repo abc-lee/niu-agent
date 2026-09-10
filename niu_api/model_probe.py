@@ -1,10 +1,16 @@
 """模型能力探测器核心（组件 1）。
 
 探测 reasoning_effort / thinking 两项能力（response_format/tools 不在此测——
-无档案消费点，且 rf 的探测归属"测试连接并保存"按钮的 testAndSave 流程，
+无档案消费点，且 rf 的探测归属"测试连接并保存"按钮的 testAndSave 流程；
 用户拍板 2026-08-18），输出能力档案（~/.niu/model_capabilities.json），
 供 CLI 壳（scripts/model_capability_probe.py）与 /api/model-capability-probe
 端点共用。
+
+参数可用性探测段（plan 2026-09-10-param-deny-mechanism D3，T2）：值域扫描之前
+以「运行时实际发送集 ∩ deny 白名单」发真实请求——400 定位被拒参数（错误消息
+正则提取 + 逐个累积移除），定位即写 user-config.json 对应段 capabilities.deny
+（llm/lightrag_llm 双落点 + llm-configs.json 命名配置同步）；通过后只清本次
+测到且通过的 deny 项（洗白）。response_format/连接项/必需项不入候选。
 
 探测项与成本控制（合计 ≈10 次极小请求/模型；值域候选超时重试最坏 7×2=14 次）：
   1. reasoning_effort 值域 [minimal, low, medium, high, xhigh, none, max] 按序探测，
@@ -71,6 +77,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -129,6 +136,27 @@ PROBE_MESSAGE = [{"role": "user", "content": "OK"}]
 # 探测不传 timeout（litellm 默认大超时）——显式短 timeout 会在模型深度思考
 # （豆包 high/max 档实测 8-12s）返回前主动放弃（用户拍板 2026-08-18）。
 PROBE_MAX_TOKENS = 256
+
+# ---------------------------------------------------------------------------
+# 参数可用性探测段常量（plan 2026-09-10-param-deny-mechanism D3）
+# ---------------------------------------------------------------------------
+# deny 白名单候选（D3-2）：仅这些参数可进 deny 判定；response_format 排除（R1——
+# 静默剥离会使 LightRAG 关键词抽取失去 JSON 契约，rf 已有三档探测治理）；连接项
+# （api_key/api_base/timeout）与必需项（model/messages/stream）永不入候选。
+# 封闭白名单（R9 备案：扩白名单=在此集合加一行）。顺序=累积线性移除的确定性顺序。
+DENY_CANDIDATE_WHITELIST = [
+    "temperature", "top_p", "presence_penalty", "frequency_penalty",
+    "seed", "logit_bias", "max_tokens",
+]
+# 400 错误消息参数名提取（D3-3①：已知格式，仅作候选——提取出的名字必须在当前
+# 候选集内才采信；未命中 → 回落白名单顺序逐个累积移除）。
+_DENIED_PARAM_PATTERNS = (
+    re.compile(r"\binvalid\s+(\w+)"),                    # K3: invalid temperature: only 1 is allowed for this model
+    re.compile(r"['\"](\w+)['\"]\s+does not support"),   # 'top_p' does not support ...
+)
+# lightrag 场景默认温度（lightrag_manager.py:103 config.get("temperature", 0.2) 恒发——
+# 用户配置段可能根本没有 temperature 键，探测必须含该值，否则测不到=验收失败）。
+LIGHTRAG_DEFAULT_TEMPERATURE = 0.2
 
 # ---------------------------------------------------------------------------
 # vision 双色交叉子扫描常量（plan v0.5.2 §4-V1 / R7）
@@ -414,8 +442,139 @@ def _build_probe_params(
 
 
 # ---------------------------------------------------------------------------
-# 探测项
+# 参数可用性探测段（plan 2026-09-10-param-deny-mechanism D3——deny 生产者）
 # ---------------------------------------------------------------------------
+
+
+def _collect_param_candidates(section: dict, lightrag: bool) -> dict:
+    """参数可用性候选集 = 运行时实际发送集 ∩ deny 白名单（D3-1/D3-2）。
+
+    收集方式=按运行时同一来源组装：
+      - llm 场景：niu.md frontmatter temperature（get_subagent_config("niu")——
+        runner.py:767 无条件覆盖源；用户配置段可能根本没有 temperature 键，主 Agent 仍恒发 0.6）。
+        覆盖序=运行时镜像：段显式值先入候选，frontmatter 后覆盖（litellm_kwargs 最后覆盖不变）
+      - lightrag 场景：lightrag_llm 段 + 默认 0.2 恒发（lightrag_manager.py:103）
+      - 段显式参数（白名单交集；user-config 键已小写归一）
+      - litellm_kwargs 键（白名单交集——生产经顶层合并送达）
+      - max_tokens=PROBE_MAX_TOKENS（探测请求恒发——R2-A P2：既有段恒发 max_tokens，
+        被拒时须可定位，否则以「非值域错误→failed」早退 deny 永不落盘）
+    response_format/连接项/必需项不入候选（D3-2）。返回按白名单顺序的 dict。
+    """
+    candidates: dict = {}
+    if lightrag:
+        # lightrag 场景默认 0.2 恒发（config.get("temperature", 0.2)）——段显式值优先
+        candidates["temperature"] = LIGHTRAG_DEFAULT_TEMPERATURE
+    for k in DENY_CANDIDATE_WHITELIST:
+        v = section.get(k)
+        if v is not None:
+            candidates[k] = v
+    if not lightrag:
+        # frontmatter temperature 无条件覆盖段显式值——镜像 runner.py:767 运行时覆盖序
+        # （llm_config 先取段值，niu.md frontmatter 后覆盖）。候选集必须与运行时实际发送
+        # 一致，否则用户把 llm.temperature 改为可接受值时探测仍发 0.6 → deny 漏写/误洗白。
+        from agent.subagent import get_subagent_config  # 函数内解析（测试可 patch，避免顶层依赖环）
+        try:
+            fm_temperature = get_subagent_config("niu").get("temperature")
+        except Exception:  # noqa: BLE001 - frontmatter 读取失败按无温度处理（段显式值仍入候选）
+            fm_temperature = None
+        if fm_temperature is not None:
+            candidates["temperature"] = fm_temperature
+    for k, v in (section.get("litellm_kwargs") or {}).items():
+        if k in DENY_CANDIDATE_WHITELIST and v is not None:
+            candidates[k] = v
+    candidates["max_tokens"] = PROBE_MAX_TOKENS
+    return {k: candidates[k] for k in DENY_CANDIDATE_WHITELIST if k in candidates}
+
+
+def _build_param_availability_params(
+    api_base: str, api_key: str, model: str, api_type: str, candidates: dict,
+) -> dict:
+    """参数可用性探测请求（D3-2：只发白名单候选集 + 基础参数）。
+
+    刻意不合并 litellm_kwargs/reasoning_effort/thinking/extra_body——移除循环只能
+    移除白名单参数，携带非候选参数会使 400 无法归因（D5 fail-closed）；「只发交集
+    集」（R9）。max_tokens 取自 candidates（累积移除后无键——build_base_params
+    None 不产键）。
+    """
+    params: dict = {
+        **build_base_params(
+            stream=False,
+            max_tokens=candidates.get("max_tokens"),
+            model=_derive_provider_prefix(api_base, model, api_type),
+            api_base=api_base or None,
+            api_key=api_key or None,
+        ),
+        "messages": PROBE_MESSAGE,
+    }
+    for k, v in candidates.items():
+        if k != "max_tokens":
+            params[k] = v
+    return params
+
+
+def _extract_denied_param_name(error_text: str, remaining: dict) -> str | None:
+    """从 400 错误消息提取被拒参数名（D3-3①：已知格式，仅作候选）。
+
+    提取出的名字须在当前候选集内才采信；未命中 → 回落白名单顺序取第一个剩余候选
+    （逐个累积移除的确定性顺序）。返回 None = 候选清空（调用方按 D5 无法归因处理）。
+    """
+    for pattern in _DENIED_PARAM_PATTERNS:
+        for m in pattern.finditer(error_text or ""):
+            name = m.group(1)
+            if name in remaining:
+                return name
+    for name in DENY_CANDIDATE_WHITELIST:
+        if name in remaining:
+            return name
+    return None
+
+
+def _probe_param_availability(
+    api_base: str, api_key: str, model: str, api_type: str,
+    section: dict, lightrag: bool, profile: dict,
+) -> bool:
+    """参数可用性探测段（D3）：候选集发真实请求 → 400 定位被拒参数 → 定位即写 deny。
+
+    位置 = probe() 值域扫描之前（R2-A P2）。定位算法（定死线性 + 累积移除，R2-A）：
+      ① 错误消息正则提取参数名（仅作候选——须在当前候选集内）；
+      ② 未命中/移除后仍 400 → 白名单顺序逐个移除重试（每次只移除一个，先前移除的
+         保持移除——累积语义，否则「连续两参数被拒」无法归因）。
+    直至通过或候选清空。最坏 ≤8 次请求（1 首发 + ≤7 累积移除，R2 预算）。
+
+    - 定位即写 = 通过时刻写（先于值域/thinking 等后续段，不等探测全程结束）：首个
+      400 至通过之间被移除的全部参数进 deny（线性回退归因=保守超集 R3-A P3-2——
+      可能包含先移除但实际被接受的参数；重探测全通过即洗白自愈）；同时只清本次
+      实际测到且通过的参数（remaining=成功请求实际发送集）。已写 deny 后续段失败
+      不回滚（R3-A P2-1——「探测 failed 但 deny 已正确落盘、运行时正常」是合法终态）。
+    - 返回 False = failed 终止（定位前失败，R4 fail-closed 不写 deny 保持旧值）：
+      非 400 错误（超时/401/404/5xx/网络）或候选清空后仍 400（D5：无法定位——
+      本轮移除均未获通过确认，属未证实归因，不猜、不写 deny、原样报错）。
+    """
+    candidates = _collect_param_candidates(section, lightrag)
+    remaining = dict(candidates)  # 当前发送集（累积移除：只减不增）
+    removed: list[str] = []  # 首个 400 以来被移除的参数（保守超集归因，R3-A P3-2）
+    while True:
+        params = _build_param_availability_params(api_base, api_key, model, api_type, remaining)
+        try:
+            litellm.completion(**params)
+            break  # 通过 → removed 集 = 定位出的被拒参数（定位即写）
+        except Exception as e:  # noqa: BLE001 - 分类规则覆盖全部异常
+            if _classify_value_domain_error(e, "param_availability") != "unsupported":
+                # 非 400（超时/401/404/5xx/网络）→ 定位前失败 fail-closed（R4：不写 deny）
+                profile["probe_status"] = "failed"
+                profile["probe_fail_reason"] = f"参数可用性段: {_describe_fail_reason(e)}"
+                return False
+            name = _extract_denied_param_name(str(e), remaining)
+            if name is None:
+                # 候选清空仍 400 → 无法归因（D5：不猜、不写 deny、原样报错）
+                profile["probe_status"] = "failed"
+                profile["probe_fail_reason"] = f"参数被拒但无法定位到具体参数（400）: {str(e)[:120]}"
+                return False
+            del remaining[name]
+            removed.append(name)
+    # 通过 → 定位即写：removed 全进 deny + 只清本次测到且通过的（remaining）
+    _write_param_deny(removed, list(remaining), model, lightrag)
+    return True
 
 
 def _scan_reasoning_effort(
@@ -704,14 +863,96 @@ def _atomic_write_json(path: Path, data: dict) -> bool:
     return True
 
 
+def _write_param_deny(rejected: list[str], passed: list[str], model: str, lightrag: bool) -> None:
+    """参数可用性探测结果 → user-config.json 对应段 capabilities.deny + 命名配置同步（D2）。
+
+    - 合并语义（防互抹）：只增删 capabilities.deny 键——对象已存在时保留
+      input/probed_at/model；清空=只删 deny 键且**只清本次实际测到且通过的参数**
+      （passed——不在本次发送集测不到的参数保留旧判定，R3 洗白规则）。无变化
+      （new_deny == current）→ 仅跳过主配置写盘，命名配置同步照跑（防快照漂移）。
+    - 新建对象规则（R2-B P1-a）：目标段 capabilities 不存在时新建必须写
+      model=探测 model + probed_at——否则 fail-closed 绑定（capabilities.model ==
+      当前 model）永不通过（lightrag_llm 段 capabilities 只能由 deny 写侧创建：
+      vision 扫描被 `if not lightrag` 排除）。无 rejected 且无既有对象 → 不新建空壳。
+    - 串模型守卫（R2-B P1-b，照 V8c 先例）：配置段有效 model ≠ 探测 model → 跳过
+      写入 + log（防设置页测候选模型时把候选模型的 deny 错绑当前配置）。有效 model
+      = 段自身 model；lightrag_llm 段无独立 model → 回落主 llm.model（与 get_llm_config
+      / compat _inject_persisted_capabilities 继承语义一致）。
+    - 双落点：user-config 对应段（llm/lightrag_llm 参数化）+ presetId 非空时
+      _sync_named_config_snapshot 同步（复用既有原子 upsert）。
+    - 永不抛：参数可用性段写入不得毒化主探测（同档案写纪律）。
+    """
+    path = Path(USER_CONFIG_PATH)
+    if not path.exists():
+        logger.info("[model_probe] user-config.json 不存在，跳过参数 deny 写入")
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 - 损坏不写坏文件
+        logger.warning("[model_probe] user-config.json 读取失败，跳过参数 deny 写入: %s", e)
+        return
+    if not isinstance(data, dict):
+        logger.warning("[model_probe] user-config.json 顶层非对象，跳过参数 deny 写入")
+        return
+    section_key = "lightrag_llm" if lightrag else "llm"
+    section = data.get(section_key)
+    if not isinstance(section, dict):
+        logger.warning("[model_probe] user-config.json 无 %s 段，跳过参数 deny 写入", section_key)
+        return
+
+    # 串模型守卫（R2-B P1-b）：有效 model ≠ 探测 model → 跳过写入 + log
+    sec_model = section.get("model")
+    if lightrag and not sec_model:
+        sec_model = (data.get("llm") or {}).get("model")
+    if sec_model != model:
+        logger.info(
+            "[model_probe] 配置模型 %r ≠ 探测模型 %r，跳过参数 deny 写入（串模型守卫）",
+            sec_model, model,
+        )
+        return
+
+    caps = section.get("capabilities")
+    unchanged = False
+    if isinstance(caps, dict):
+        # 对象已存在 → 只增删 deny 键（保留 input/probed_at/model——与 vision 写侧防互抹）
+        raw_deny = caps.get("deny")
+        current = [k for k in raw_deny if isinstance(k, str)] if isinstance(raw_deny, list) else []
+        new_deny = [k for k in current if k not in passed]  # 清空：只清本次测到且通过的
+        for p in rejected:
+            if p not in new_deny:
+                new_deny.append(p)
+        if new_deny == current:
+            unchanged = True  # 无变化 → 仅跳过主配置写盘；命名配置同步照跑（防快照漂移）
+        elif new_deny:
+            caps["deny"] = new_deny
+        else:
+            caps.pop("deny", None)
+    else:
+        # 新建对象规则（R2-B P1-a）：必须写 model + probed_at
+        if not rejected:
+            return  # 无拒绝且无既有对象 → 无可写内容，不新建空壳
+        section["capabilities"] = {
+            "model": model,
+            "probed_at": datetime.now().isoformat(timespec="seconds"),
+            "deny": list(rejected),
+        }
+
+    if not unchanged and not _atomic_write_json(path, data):
+        return  # 主配置写失败 → 不同步命名配置（同 vision 写纪律）
+
+    name = (data.get("llm") or {}).get("presetId", "")
+    if name:
+        _sync_named_config_snapshot(name, data)
+
+
 def _write_vision_capabilities(supported: bool, model: str) -> None:
     """vision 探测结果落 user-config.json llm 段 capabilities 子对象 + 同步命名配置。
 
     - 文件不存在 → 跳过（无模型配置无意义）；JSON 损坏/无 llm 段 → log 跳过（不写坏文件）。
     - V8c 串模型防护：llm.model ≠ 本次探测 model → 跳过写入 + log（防测候选/第三方
       模型时顶掉当前模型 capabilities）。
-    - 只改 llm.capabilities = {"model", "input", "probed_at"} 单键——其他段/字段原样保留；
-      原子写（tempfile + os.replace）。
+    - 只改 llm.capabilities 单键（merge：保留既有 deny 键——plan D2 防互抹）——
+      其他段/字段原样保留；原子写（tempfile + os.replace）。
     - capabilities.model 记探测时的模型名：读侧比对 model 一致才采信（防换模型后旧能力误判）。
     - 命名配置同步：llm.presetId 非空 → upsert llm-configs.json 该条目三段快照
       （llm/lightrag_llm/vision_llm，与 config-manager _sync_named_config 同源——
@@ -744,11 +985,17 @@ def _write_vision_capabilities(supported: bool, model: str) -> None:
         )
         return
 
-    llm["capabilities"] = {
+    # merge 语义（plan D2 / R7）：保留既有 deny 键——整对象替换会与参数可用性段
+    # deny 写侧互抹（R1 双审同抓）。旧档案无 deny 键时 merge 与替换等价，无回归。
+    caps = {
         "model": model,
         "input": ["text", "image"] if supported else ["text"],
         "probed_at": datetime.now().isoformat(timespec="seconds"),
     }
+    existing_caps = llm.get("capabilities")
+    if isinstance(existing_caps, dict) and isinstance(existing_caps.get("deny"), list):
+        caps["deny"] = [k for k in existing_caps["deny"] if isinstance(k, str)]
+    llm["capabilities"] = caps
     if not _atomic_write_json(path, data):
         return  # 主配置写失败 → 不同步命名配置
 
@@ -842,6 +1089,13 @@ def probe(
         "reasoning_effort": {"supported": [], "unsupported": []},
         "thinking": {},
     }
+
+    # 参数可用性探测段（plan 2026-09-10-param-deny-mechanism D3）：位置=值域扫描之前
+    # （R2-A P2——既有段恒发 max_tokens=256，被拒时若本段在其后则 failed 早退、deny
+    # 永不落盘）；定位即写 deny（已写不回滚——后续段失败亦保留 R3-A P2-1）；
+    # 定位前失败 → failed 终止 fail-closed（R4：不写 deny 保持旧值）。
+    if not _probe_param_availability(api_base, api_key, model, api_type, section, lightrag, profile):
+        return profile  # failed——不落盘（旧档保留）
 
     if not _scan_reasoning_effort(api_base, api_key, model, api_type, probe_config, profile):
         return profile  # failed——不落盘（旧档保留）
