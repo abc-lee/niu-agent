@@ -588,28 +588,50 @@ def _derive_provider_prefix(api_base: str | None, model: str, api_type: str | No
     return f"openai/{model}"
 
 
-def get_provider_params(model: str) -> dict[str, Any]:
+def resolved_provider(api_base: str | None, model: str, api_type: str | None = None) -> str:
+    """解析后 provider 名（anthropic/openai/volcengine）——Claude 专属字段判据单一来源。
+
+    Why: 「model 名含 claude」判据会把 cache_control/beta 头泄漏进 OpenAI 协议请求
+    （审计 #6：openai 兼容端点 + claude 模型名）。判据必须是解析后路由
+    （_derive_provider_prefix），与 chat() 实际走的路由同源。
+    """
+    return _derive_provider_prefix(api_base, model, api_type).split("/", 1)[0]
+
+
+def is_anthropic_route(api_base: str | None, model: str, api_type: str | None = None) -> bool:
+    """是否 anthropic 路由（cache_control/anthropic-beta 头唯一合法注入条件）。"""
+    return resolved_provider(api_base, model, api_type) == "anthropic"
+
+
+def get_provider_params(
+    model: str, api_base: str | None = None, api_type: str | None = None,
+) -> dict[str, Any]:
     """获取提供商特定参数。
+
+    anthropic-beta 头仅在解析后 provider=anthropic 时注入（审计 #6——按模型名判据
+    会把 Claude 专属字段泄漏进 OpenAI 协议请求）；无路由上下文 → openai 默认 → 不注入。
 
     注：reasoning_effort 不再经此函数进顶层参数——统一由 assemble_request_params
     注入 extra_body 送达（litellm 白名单碰不到，任何模型任何路由同一行为）。
     """
     params: dict[str, Any] = {}
-    model_lower = model.lower()
 
-    # Claude: 启用prompt caching
-    if "claude" in model_lower:
+    # Claude: 启用prompt caching（仅 anthropic 路由）
+    if is_anthropic_route(api_base, model, api_type):
         params["extra_headers"] = {"anthropic-beta": "prompt-caching-2024-07-31"}
 
     return params
 
 
-def _convert_tools_schema(tools: list | None, model: str = "") -> list | None:
+def _convert_tools_schema(
+    tools: list | None, model: str = "", api_base: str | None = None, api_type: str | None = None,
+) -> list | None:
     """
     将工具schema转换为LiteLLM格式（OpenAI格式）。
 
-    Claude 模型在最后一个 tool 打 cache_control breakpoint，
+    anthropic 路由在最后一个 tool 打 cache_control breakpoint，
     让 tools 也命中 prompt cache（tools_schema 稳定，每轮不变）。
+    判据=解析后 provider（审计 #6——模型名含 claude 的 openai 协议请求不得携带）。
     """
     if not tools:
         return None
@@ -645,10 +667,9 @@ def _convert_tools_schema(tools: list | None, model: str = "") -> list | None:
     if not converted:
         return None
 
-    # Claude: 最后一个 tool 打 cache_control breakpoint
+    # anthropic 路由：最后一个 tool 打 cache_control breakpoint
     # tools_schema 每轮稳定（base + static MCP + disk），可安全 cache
-    model_lower = (model or "").lower()
-    if "claude" in model_lower:
+    if is_anthropic_route(api_base, model, api_type):
         converted[-1] = {**converted[-1], "cache_control": {"type": "ephemeral"}}
 
     return converted
@@ -660,6 +681,8 @@ def build_base_params(stream=True, max_tokens=None, timeout=None, **overrides) -
     - 产出 stream/stream_options/temperature/proxies/api_base/api_key/timeout/
       extra_headers 等基础字段；None 值不产键（探测形态 max_tokens=8/timeout=10
       显式传入才有对应键，生产缺省则无）
+    - stream_options 仅 stream=True 时携带（审计 #9——规范限 stream=true，
+      探测直发 stream=False 不得携带）
     - extra_headers 来自 get_provider_params（prompt caching L565-568 保留），
       由调用方经 **overrides 传入
     - 探测用 build_base_params(stream=False, max_tokens=8, timeout=10) + 前缀推导
@@ -667,8 +690,9 @@ def build_base_params(stream=True, max_tokens=None, timeout=None, **overrides) -
     """
     params: dict[str, Any] = {
         "stream": stream,
-        "stream_options": {"include_usage": True},
     }
+    if stream:
+        params["stream_options"] = {"include_usage": True}
     if max_tokens is not None:
         params["max_tokens"] = max_tokens
     if timeout is not None:
@@ -683,6 +707,7 @@ def assemble_request_params(
     config: dict,
     raw_reasoning_effort: str | None = None,
     raw_thinking: dict | None = None,
+    provider: str | None = None,
 ) -> dict:
     """组装 extra_body/drop_params 增量——探测与生产同源参数注入（组件 3 契约）。
 
@@ -696,6 +721,9 @@ def assemble_request_params(
     - 均 None（生产）：reasoning_effort 从 config 读归一值（排除 "none"——none 不注入，
       语义由 thinking disabled 表达——豆包/zen none 400 实测）；thinking 从
       config.litellm_kwargs 读
+    - provider="anthropic"（解析后路由）且生产通道：剔除 reasoning_effort
+      （审计 #7——extra_body 直发进 anthropic body 绕过白名单必 400）；
+      raw_* 任一非 None = 探测刻意注入测值域 → 不过滤（R9）
     - extra_body 合并：用户已有 extra_body 键优先（{**注入, **用户}）——注入值不整块丢失
     - drop_params：raw 非 None / litellm_kwargs 非空 → True（触发时才返回该 key，
       不触发不含——避免增量恒 False 覆盖 chat() 对 response_format 的置 True）
@@ -710,6 +738,11 @@ def assemble_request_params(
     thinking_val = raw_thinking if raw_thinking is not None else litellm_kwargs.get("thinking")
     if thinking_val:
         injected_extra["thinking"] = thinking_val
+
+    # anthropic 路由生产通道：reasoning_effort 非 Anthropic 协议参数（审计 #7）——剔除。
+    # 探测通道（raw_* 非 None，刻意注入测值域）不过滤（R9）。
+    if provider == "anthropic" and raw_reasoning_effort is None and raw_thinking is None:
+        injected_extra.pop("reasoning_effort", None)
 
     result: dict[str, Any] = {}
     if injected_extra:
@@ -1005,10 +1038,13 @@ class LiteLLMSession(BaseSession):
         # custom_llm_provider 覆盖走 openai 路由，豆包网关报 NotFoundError）。
         custom_provider = self.provider or ("anthropic" if self.api_type == "anthropic" else "openai")
         model_with_prefix = _derive_provider_prefix(self.api_base, self.default_model, self.api_type)
+        # 解析后 provider（审计 #6/#7）：Claude 专属字段（beta 头/cache_control）与
+        # extra_body reasoning_effort 过滤的唯一判据——与实际路由同源，不按模型名猜
+        provider = model_with_prefix.split("/", 1)[0]
         # 仅保留 extra_headers（prompt caching L565-568）；reasoning_effort 不再进顶层参数——
         # 统一经 assemble_request_params 走 extra_body 送达（litellm 白名单碰不到，消除双通道冗余）
-        provider_params = get_provider_params(self.default_model)
-        litellm_tools = _convert_tools_schema(tools, self.default_model)
+        provider_params = get_provider_params(self.default_model, self.api_base, self.api_type)
+        litellm_tools = _convert_tools_schema(tools, self.default_model, self.api_base, self.api_type)
 
         # 基础组装（共享 build_base_params——探测直发与生产 chat 共用一份，杜绝两份漂移）
         request_params: dict[str, Any] = {
@@ -1045,7 +1081,7 @@ class LiteLLMSession(BaseSession):
         request_params.update(assemble_request_params({
             "reasoning_effort": self.reasoning_effort,
             "litellm_kwargs": self.litellm_kwargs,
-        }))
+        }, provider=provider))
         # sticky routing 头注入（spec §3.2）：真值守卫——探测/未接线通道（id=None）不发 None 值头；
         # 每请求读解析后的 self.api_base 判定（实例构造时固化，翻转靠实例重建）。
         # 程序值为权威：用户自定义 extra_headers 键保留、同键静态值被动态值覆盖。

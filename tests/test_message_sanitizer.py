@@ -389,9 +389,35 @@ class TestMediaType:
         blocks = _image_blocks(out[0]["content"])
         assert blocks[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
-    @pytest.mark.skip(reason="HEIC/非图片按载荷探测 + 降级属 T2 MIME 探测（plan §6：image_channel.py 魔数探测）——T1 扩展名映射不覆盖")
-    def test_heic_and_non_image_degrade(self):
-        pass
+    def test_heic_media_type_by_payload(self, tmp_path):
+        """HEIC：.heic 载荷（ISO BMFF ftyp+heic brand）→ data:image/heic（按魔数，不按扩展名）。"""
+        p = tmp_path / "s.heic"
+        p.write_bytes(b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32)
+        out = sanitize_llm_messages([{"role": "user", "content": f"![x]({p})"}], True)
+        blocks = _image_blocks(out[0]["content"])
+        assert len(blocks) == 1
+        assert blocks[0]["image_url"]["url"].startswith("data:image/heic;base64,")
+
+    def test_non_image_payload_degrades_to_text(self, tmp_path):
+        """非图片载荷（假 .png 扩展名，文本内容）→ 不猜 media type：留标记原文 + [图片不可读] 警示。"""
+        p = tmp_path / "fake.png"
+        p.write_bytes(b"this is not an image payload at all")
+        out = sanitize_llm_messages([{"role": "user", "content": f"![x]({p})"}], True)
+        content = out[0]["content"]
+        # 零图段（data URI 不产出）
+        assert _image_blocks(content if isinstance(content, list) else []) == []
+        text = content if isinstance(content, str) else "".join(
+            b.get("text", "") for b in content if isinstance(b, dict))
+        assert f"![x]({p})" in text
+        assert "图片不可读" in text
+
+    def test_mismatched_ext_png_payload_jpg_name(self, tmp_path):
+        """扩展名与载荷不符：.jpg 文件实为 PNG 字节 → media type 跟载荷走（image/png）。"""
+        p = _make_png(tmp_path / "s.jpg")
+        out = sanitize_llm_messages([{"role": "user", "content": f"![x]({p})"}], True)
+        blocks = _image_blocks(out[0]["content"])
+        assert len(blocks) == 1
+        assert blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 # ---------------------------------------------------------------------------

@@ -94,7 +94,7 @@ def test_assemble_request_params_raw_values_unconditionally_injected():
 
 def test_chat_retains_base_assembly_fields():
     """chat() 最终 request_params 保留 stream/tools/response_format/api_base/api_key/
-    timeout/extra_headers 等基础组装字段。"""
+    timeout 等基础组装字段。"""
     tools = [{
         "type": "function",
         "function": {"name": "probe_tool", "description": "d", "parameters": {"type": "object", "properties": {}}},
@@ -110,14 +110,52 @@ def test_chat_retains_base_assembly_fields():
     assert call_kwargs["api_base"] == "https://api.openai.com/v1"
     assert call_kwargs["api_key"] == "test-key"
     assert call_kwargs["timeout"] == 300  # read_timeout 默认 300
-    assert call_kwargs["extra_headers"] == {"anthropic-beta": "prompt-caching-2024-07-31"}
+    # 审计 #6：openai 路由（api.openai.com）+ claude 模型名 → 不得携带 anthropic-beta 头
+    headers = call_kwargs.get("extra_headers") or {}
+    assert "anthropic-beta" not in headers, \
+        "openai 路由不得携带 Claude 专属 anthropic-beta 头"
     assert call_kwargs["response_format"] == response_format
-    # claude 模型 _convert_tools_schema 会给最后一个 tool 打 cache_control breakpoint——
-    # 只断言工具送达（名称/参数保留），不断言逐字节相等
+    # openai 路由不打 cache_control（判据=解析后 provider，非模型名）
+    assert "cache_control" not in call_kwargs["tools"][0]
     assert call_kwargs["tools"][0]["function"]["name"] == "probe_tool"
     assert call_kwargs["messages"] == [{"role": "user", "content": "test"}]
-    # 注入也送达（claude + high）
+    # 注入也送达（openai 路由不受 anthropic reasoning_effort 过滤影响）
     assert call_kwargs["extra_body"]["reasoning_effort"] == "high"
+
+
+def test_chat_anthropic_route_extra_body_no_reasoning_effort():
+    """审计 #7：anthropic 路由生产通道 → extra_body 不含 reasoning_effort（非 Anthropic 协议参数）。"""
+    call_kwargs = _chat_call_kwargs(
+        _base_cfg(apibase="https://api.anthropic.com/v1", reasoning_effort="high"))
+    extra = call_kwargs.get("extra_body") or {}
+    assert "reasoning_effort" not in extra, \
+        f"anthropic 路由生产通道不得携带 reasoning_effort，got: {extra}"
+
+
+def test_chat_anthropic_route_probe_raw_channel_keeps_reasoning_effort():
+    """R9：探测通道（raw_reasoning_effort 非 None，刻意注入测值域）不受 anthropic 过滤。"""
+    from agent.generic.litellm_adapter import assemble_request_params
+
+    result = assemble_request_params(
+        {"reasoning_effort": None},
+        raw_reasoning_effort="none",
+        provider="anthropic",
+    )
+    assert result["extra_body"]["reasoning_effort"] == "none", \
+        "探测刻意注入值域不得被过滤"
+
+
+def test_assemble_anthropic_production_strips_reasoning_effort():
+    """审计 #7（单元）：provider=anthropic + 生产通道 → reasoning_effort 剔除；openai 保留。"""
+    from agent.generic.litellm_adapter import assemble_request_params
+
+    stripped = assemble_request_params(
+        {"reasoning_effort": "high"}, provider="anthropic")
+    assert "extra_body" not in stripped or "reasoning_effort" not in stripped["extra_body"]
+
+    kept = assemble_request_params(
+        {"reasoning_effort": "high"}, provider="openai")
+    assert kept["extra_body"]["reasoning_effort"] == "high"
 
 
 def test_chat_omits_none_base_fields():

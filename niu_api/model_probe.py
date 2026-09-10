@@ -106,6 +106,7 @@ from agent.generic.litellm_adapter import (
     _derive_provider_prefix,
     assemble_request_params,
     build_base_params,
+    resolved_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -405,6 +406,9 @@ def _build_probe_params(
         probe_config,
         raw_reasoning_effort=raw_reasoning_effort,
         raw_thinking=raw_thinking,
+        # 解析后 provider（审计 #7）：生产形态（raw_* 均 None）anthropic 路由剔
+        # reasoning_effort；探测值域扫描/场景调用（raw_* 非 None）不受过滤（R9）
+        provider=resolved_provider(api_base, model, api_type),
     ))
     return params
 

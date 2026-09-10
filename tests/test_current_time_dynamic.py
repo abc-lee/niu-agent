@@ -76,6 +76,9 @@ def test_current_time_in_dynamic_block_claude_single_static_block():
     """Claude：静态区单 text 块 cache_control；Current Time 在 user 动态块内。"""
     runner = _make_runner()
     runner.default_model = "claude-sonnet-4-6"
+    # T2 判据=解析后 provider（is_anthropic_route）：llm_config 需 anthropic 路由
+    # （api.anthropic.com 域名匹配）才注入 cache_control；缺失 → openai 默认 content=str。
+    runner.llm_config = {"apibase": "https://api.anthropic.com/v1", "model": "claude-sonnet-4-6"}
     fixed = _real_datetime(2026, 8, 13, 18, 30, 0)
     messages = [
         {"role": "system", "content": ""},
