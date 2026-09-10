@@ -1505,7 +1505,9 @@ class NiuRunner:
                 return
             from agent.generic.agent_loop import transform_history
             view = cm.assemble_view_sync(db_messages, exclude_last=False)
-            transformed = transform_history(view)
+            # 图片直通通道（plan §4-V3 接线③）：与入口同制式传 has_vision——漏则截图工具轮后
+            # 重建把已展开图还原成标记文本（R2/R3 P1 阻断项）；chat() 未启动时默认 False
+            transformed = transform_history(view, has_vision=getattr(self, "_current_has_vision", False))
             system = messages[0] if messages and messages[0].get("role") == "system" else None
             if system is not None:
                 messages[:] = [system] + transformed
@@ -2079,6 +2081,11 @@ class NiuRunner:
         from agent.subagent import _read_context_window_tokens
         context_window_tokens = _read_context_window_tokens()
 
+        # 图片直通通道（plan §4-V3 接线①）：主会话 has_vision = 主 llm 档案 |llm vision.supported
+        # （T1 探测写入；无档案/读失败 → False）。存实例属性供 _on_tool_round_refresh 同制式复用。
+        from agent.image_channel import main_has_vision
+        self._current_has_vision = main_has_vision(self.llm_config)
+
         gen = agent_runner_loop(
             client=self.client,
             system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
@@ -2096,6 +2103,7 @@ class NiuRunner:
             on_tool_round_refresh=self._on_tool_round_refresh,  # 每工具轮 persist 后视图重建（子 Agent 不传 = None 跳过）
             on_compression_request=self._on_compression_request,  # 发送前受控压缩（统一压缩入口 spec 2026-09-06；子 Agent 不传 = None 走保留的响应后 FIFO/占位符化分支）
             context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值
+            has_vision=self._current_has_vision,  # 图片直通通道（plan §4-V3 接线①）：history/当前 user 消息展开图标记
         )
 
         # 累加输出（双管道：full_resp 只含 reply 内容，用于 DB 存储）
