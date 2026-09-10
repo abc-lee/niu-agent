@@ -159,6 +159,22 @@ def default_profile_path() -> Path:
 PROFILE_PATH = default_profile_path()
 
 
+def default_user_config_path() -> Path:
+    """user-config.json 路径 ~/.niu/config/user-config.json（与 niu_api.config.CONFIG_PATH 同源）。"""
+    return Path.home() / ".niu" / "config" / "user-config.json"
+
+
+USER_CONFIG_PATH = default_user_config_path()
+
+
+def default_named_configs_path() -> Path:
+    """命名配置合集路径 ~/.niu/config/llm-configs.json（与 config-manager LLM_CONFIGS_PATH 同源）。"""
+    return Path.home() / ".niu" / "config" / "llm-configs.json"
+
+
+NAMED_CONFIGS_PATH = default_named_configs_path()
+
+
 # ---------------------------------------------------------------------------
 # 档案键与路径
 # ---------------------------------------------------------------------------
@@ -593,13 +609,16 @@ def _answer_matches_color(answer: str, words: tuple[str, ...]) -> bool:
 
 
 def _scan_vision(
-    api_base: str, api_key: str, model: str, api_type: str,
-    probe_config: dict, profile: dict,
-) -> None:
+    api_base: str, api_key: str, model: str, api_type: str, probe_config: dict,
+) -> bool | None:
     """vision 双色交叉子扫描（仅 llm 场景调用——lightrag 不探）。
 
-    发纯红/纯蓝 32×32 PNG data URI 多模态消息，各问主色；红答红系词且蓝答蓝系词
-    → vision.supported=true；任一失败/超时（重试 1 次）/未命中/异常 → supported=false。
+    三态返回（V8d）：
+    - True：探测完成且有视觉（红答红系词且蓝答蓝系词）→ 写 input=["text","image"]
+    - False：探测完成但无视觉（任一色未命中，短路）→ 写 input=["text"]
+    - None：请求失败（异常/超时重试 1 次后仍失败/网络）或 200 但空回答
+      （content None/空——reasoning 预算耗尽截断形态）→ **不写**（保持旧值——
+      防网络抖动把已知视觉模型降级 text-only；空串恒未命中色系会被误判 False）
     不抛、不改 probe_status——vision 子扫描失败不得毒化主探测项结果（plan §4-V1）。
     max_tokens=VISION_MAX_TOKENS(≥500，R7 reasoning 占预算陷阱)；timeout=45s×≤2 attempt。
     """
@@ -609,7 +628,6 @@ def _scan_vision(
     # config 副本仍剔除 thinking 键——_build_probe_params 顶层合并 litellm_kwargs，
     # 不剔则场景 thinking 会随顶层通道泄入 vision 请求（双源歧义同 R13）。
     probe_config_no_thinking = _strip_thinking_key(probe_config)
-    supported = True
     for rgb, words in ((_RED_RGB, VISION_RED_WORDS), (_BLUE_RGB, VISION_BLUE_WORDS)):
         params = _build_probe_params(
             api_base, api_key, model, api_type, probe_config_no_thinking,
@@ -626,7 +644,7 @@ def _scan_vision(
                 response = litellm.completion(**params)
                 answer = _response_text(response)
                 break
-            except Exception as e:  # noqa: BLE001 - 任何失败 → false，不毒化主探测
+            except Exception as e:  # noqa: BLE001 - 任何失败 → None，不毒化主探测
                 logger.info(
                     "[model_probe] vision 探测请求失败: rgb=%s attempt=%d error=%s %s",
                     rgb, _attempt + 1, type(e).__name__, str(e)[:200],
@@ -635,19 +653,131 @@ def _scan_vision(
                     request_failed = True
                     break
         if request_failed:
-            supported = False
-            break
+            # V8d：请求失败（异常/超时重试后仍失败）→ None——不写 capabilities，
+            # 保持旧值（防网络抖动把已知视觉模型降级 text-only）
+            return None
+        if not answer:
+            # P2-1：200 但空回答（content None/空——reasoning 预算耗尽截断形态，
+            # R7 陷阱在 max_tokens=500 下仍可能出现）→ 视同"探测未完成" → None
+            # （V8d 不写语义，保持旧值）；色名判定仅在非空回答时进行——
+            # 空串恒未命中色系会被误判 False，把已探测视觉模型降级 ["text"]
+            logger.info(
+                "[model_probe] vision 探测空回答: rgb=%s（视同请求失败，不写 capabilities）",
+                rgb,
+            )
+            return None
         if not _answer_matches_color(answer, words):
             logger.info(
                 "[model_probe] vision 探测未命中: rgb=%s answer=%r", rgb, answer[:80],
             )
-            supported = False
-            break  # 双色交叉——单色已证伪，蓝图不再发（省一次调用）
-    profile["vision"] = {
-        "supported": bool(supported),
-        "input": ["text", "image"],
+            # V8d：探测完成且无视觉 → False（写 ["text"]）；
+            # 双色交叉——单色已证伪，蓝图不再发（省一次调用）
+            return False
+    return True
+
+
+def _atomic_write_json(path: Path, data: dict) -> bool:
+    """原子 JSON 写（tempfile + os.replace——reader 永远看到完整文件）。
+
+    失败 → log 并返回 False（不抛——vision 结果写入不得毒化主探测，同档案写纪律）。
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception as e:  # noqa: BLE001 - 写失败降级为跳过，不毒化主探测
+        logger.warning("[model_probe] %s 写入失败: %s", path.name, e)
+        return False
+    return True
+
+
+def _write_vision_capabilities(supported: bool, model: str) -> None:
+    """vision 探测结果落 user-config.json llm 段 capabilities 子对象 + 同步命名配置。
+
+    - 文件不存在 → 跳过（无模型配置无意义）；JSON 损坏/无 llm 段 → log 跳过（不写坏文件）。
+    - V8c 串模型防护：llm.model ≠ 本次探测 model → 跳过写入 + log（防测候选/第三方
+      模型时顶掉当前模型 capabilities）。
+    - 只改 llm.capabilities = {"model", "input", "probed_at"} 单键——其他段/字段原样保留；
+      原子写（tempfile + os.replace）。
+    - capabilities.model 记探测时的模型名：读侧比对 model 一致才采信（防换模型后旧能力误判）。
+    - 命名配置同步：llm.presetId 非空 → upsert llm-configs.json 该条目三段快照
+      （llm/lightrag_llm/vision_llm，与 config-manager _sync_named_config 同源——
+      vision_llm 段持久保留不丢）；主配置写失败 → 不同步（防快照与主配置分叉）。
+    - 永不抛：vision 结果写入不得毒化主探测（同档案写纪律）。
+    """
+    path = Path(USER_CONFIG_PATH)
+    if not path.exists():
+        logger.info("[model_probe] user-config.json 不存在，跳过 vision capabilities 写入")
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 - 损坏不写坏文件
+        logger.warning("[model_probe] user-config.json 读取失败，跳过 vision capabilities 写入: %s", e)
+        return
+    if not isinstance(data, dict):
+        logger.warning("[model_probe] user-config.json 顶层非对象，跳过 vision capabilities 写入")
+        return
+    llm = data.get("llm")
+    if not isinstance(llm, dict):
+        logger.warning("[model_probe] user-config.json 无 llm 段，跳过 vision capabilities 写入")
+        return
+
+    # V8c 串模型防护：读到的当前模型与本次探测 model 不一致（设置页测候选模型/
+    # CLI 测第三方模型期间配置被切换）→ 跳过写入 + log，防顶掉当前模型 capabilities
+    if llm.get("model") != model:
+        logger.info(
+            "[model_probe] 配置模型 %r ≠ 探测模型 %r，跳过 vision capabilities 写入（串模型防护）",
+            llm.get("model"), model,
+        )
+        return
+
+    llm["capabilities"] = {
+        "model": model,
+        "input": ["text", "image"] if supported else ["text"],
         "probed_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if not _atomic_write_json(path, data):
+        return  # 主配置写失败 → 不同步命名配置
+
+    name = llm.get("presetId", "")
+    if name:
+        _sync_named_config_snapshot(name, data)
+
+
+def _sync_named_config_snapshot(name: str, user_data: dict) -> None:
+    """upsert 命名配置条目（llm/lightrag_llm/vision_llm 三段快照，与 config-manager
+    _sync_named_config 同款原子 upsert——复制其逻辑，不跨包 import 私有函数）。
+
+    写时刻重读合集单条 upsert；文件不存在 = 空合集；JSON 损坏/configs 非对象 →
+    跳过同步（防"损坏=空合集"整体覆写销毁全部条目）。永不抛。
+    """
+    path = Path(NAMED_CONFIGS_PATH)
+    try:
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            configs = raw.get("configs", {})
+            if not isinstance(configs, dict):
+                raise ValueError(f"配置合集文件损坏: configs 应为对象，实际为 {type(configs).__name__}")
+        else:
+            configs = {}
+    except Exception as e:  # noqa: BLE001 - 损坏跳过同步（原坏文件保留不写）
+        logger.warning("[model_probe] llm-configs.json 损坏，跳过命名配置同步: %s", e)
+        return
+    configs[name] = {
+        "llm": user_data.get("llm", {}),
+        "lightrag_llm": user_data.get("lightrag_llm", {}),
+        "vision_llm": user_data.get("vision_llm", {}),
+    }
+    _atomic_write_json(path, {"configs": configs})
 
 
 # ---------------------------------------------------------------------------
@@ -717,11 +847,14 @@ def probe(
     if not _scan_thinking(api_base, api_key, model, api_type, probe_config, profile):
         return profile  # thinking failed——不落盘（旧档保留）
 
-    # vision 双色交叉子扫描（plan v0.5.2 §4-V1：仅主 llm 场景——lightrag 不探、
-    # |lightrag 键不写 vision；失败 → supported=false 落盘覆盖陈旧 true，不毒化
-    # probe_status——主探测项结果不受 vision 子扫描影响）
+    # vision 双色交叉子扫描（plan v0.5.2 §4-V1 / v0.6 V8d：仅主 llm 场景——lightrag 不探、
+    # 不写 capabilities；三态落 user-config.json llm 段——True→["text","image"] /
+    # False（完成且无视觉）→["text"] 覆盖陈旧 ["text","image"] / None（请求失败）→
+    # 不写保持旧值；不毒化 probe_status——主探测项结果不受 vision 子扫描影响）
     if not lightrag:
-        _scan_vision(api_base, api_key, model, api_type, probe_config, profile)
+        vision_supported = _scan_vision(api_base, api_key, model, api_type, probe_config)
+        if vision_supported is not None:
+            _write_vision_capabilities(vision_supported, model)
 
     if profile["probe_status"] != "failed":
         write_profile(profile, lightrag=lightrag, profile_path=profile_path)

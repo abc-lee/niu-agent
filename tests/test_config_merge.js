@@ -217,6 +217,32 @@ describe('mergeConfig', () => {
     assert.deepEqual(probe, probeCopy, 'probeResults 未被修改');
   });
 
+  test('capabilities 继承条件（V9d 防抹除 + P2-2 模型绑定）：fileBase.llm.capabilities.model === 合并后 llm.model 才继承，否则删键', () => {
+    // ① 模型一致 → 继承文件值（内存条目旧快照不继承——选中命名配置→探测→保存不得回退旧值）
+    const freshCaps = { model: 'form-model', input: ['text', 'image'], probed_at: '2026-09-10T10:00:00' };
+    const fb1 = fileBase();
+    fb1.llm.capabilities = freshCaps;
+    const ne1 = namedEntry();
+    ne1.llm.capabilities = { model: 'entry-model', input: ['text'], probed_at: '2026-01-01T00:00:00' };
+    const out1 = mergeConfig({ fileBase: fb1, namedEntry: ne1, formValues: formValues(), probeResults: null, configName: 'my' });
+    assert.deepEqual(out1.llm.capabilities, freshCaps, '模型一致 → 继承文件值（非内存条目旧值）');
+
+    // ② fileBase 能力属旧模型 + 表单新模型 → 不继承（删键——新模型未探测=无能力）
+    const fb2 = fileBase();
+    fb2.llm.capabilities = { model: 'file-model', input: ['text', 'image'], probed_at: '2026-09-10T10:00:00' };
+    const out2 = mergeConfig({ fileBase: fb2, namedEntry: null, formValues: formValues(), probeResults: null, configName: 'my' });
+    assert.ok(!('capabilities' in out2.llm), '模型不一致 → 删键（不继承旧模型能力）');
+
+    // ③ fileBase 无 capabilities → 删键（不铺底、不从内存继承）
+    const ne3 = namedEntry();
+    ne3.llm.capabilities = { model: 'form-model', input: ['text'], probed_at: '2026-01-01T00:00:00' };
+    const out3 = mergeConfig({ fileBase: fileBase(), namedEntry: ne3, formValues: formValues(), probeResults: null, configName: 'my' });
+    assert.ok(!('capabilities' in out3.llm), 'fileBase 无键 → 删键（不从内存继承）');
+
+    // 纯函数：入参不被修改
+    assert.deepEqual(fb1.llm.capabilities, freshCaps, 'fileBase 未被修改');
+  });
+
   test('UMD：Node require 导出 mergeConfig 函数', () => {
     assert.equal(typeof mergeConfig, 'function');
   });

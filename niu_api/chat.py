@@ -615,7 +615,10 @@ def get_or_create_runner() -> Optional["NiuRunner"]:
                 runner_llm.get("type") != current.get("type") or
                 runner_llm.get("read_timeout") != current.get("read_timeout") or
                 runner_llm.get("reasoning_effort") != current.get("reasoning_effort") or
-                runner_llm.get("litellm_kwargs") != current.get("litellm_kwargs")):
+                runner_llm.get("litellm_kwargs") != current.get("litellm_kwargs") or
+                # V9c：capabilities 变更（探测写盘）也触发重建——两侧均经 _load_llm_config
+                # 键小写化，键形一致；缺键时 .get() 均为 None 不误判
+                runner_llm.get("capabilities") != current.get("capabilities")):
             # 配置已变更，重新初始化
             with runner_module._runner_lock:
                 runner_module._runner = None

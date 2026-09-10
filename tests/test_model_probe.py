@@ -136,6 +136,14 @@ def profile_path(tmp_path):
         yield path
 
 
+@pytest.fixture(autouse=True)
+def _isolate_vision_write_targets(tmp_path, monkeypatch):
+    """vision 结果落点隔离（user-config.json / llm-configs.json → tmp，文件不存在
+    → 写入跳过）——本文件测主探测项，不碰真实 ~/.niu/config/。"""
+    monkeypatch.setattr(model_probe, "USER_CONFIG_PATH", str(tmp_path / "user-config.json"))
+    monkeypatch.setattr(model_probe, "NAMED_CONFIGS_PATH", str(tmp_path / "llm-configs.json"))
+
+
 # ---------------------------------------------------------------------------
 # ① 值域判定
 # ---------------------------------------------------------------------------
@@ -258,7 +266,7 @@ def test_value_domain_400_with_none_body_marks_unsupported_and_continues(profile
     assert profile["probe_status"] == "ok"
     assert profile["reasoning_effort"]["supported"] == ["minimal", "low", "high", "xhigh", "none", "max"]
     assert profile["reasoning_effort"]["unsupported"] == ["medium"]
-    assert profile["vision"]["supported"] is False  # mock 答 "OK" 非颜色名
+    assert "vision" not in profile  # vision 结果不落档案（改写 user-config.json capabilities）
     assert profile["ignores_unknown"] is False
     assert mock_completion.call_count == 10  # 7 值域 + 2 thinking + 1 vision
 
@@ -296,7 +304,7 @@ def test_value_domain_timeout_retried_then_supported(profile_path):
     assert profile["probe_status"] == "ok"
     assert profile["reasoning_effort"]["supported"] == REASONING_EFFORT_CANDIDATES
     assert profile["reasoning_effort"]["unsupported"] == []
-    assert profile["vision"]["supported"] is False  # vision 超时不毒化主探测项
+    assert "vision" not in profile  # vision 结果不落档案（改写 user-config.json capabilities）；超时不毒化主探测项
     assert profile["ignores_unknown"] is True  # 探针 200 → 忽略未知参数
     assert mock_completion.call_count == 13  # 7 值域（含 1 次重试）+ 探针 + 2 thinking + 2 vision
 
@@ -316,7 +324,7 @@ def test_value_domain_double_timeout_marks_unsupported_and_continues(profile_pat
     assert profile["probe_status"] == "ok"  # 非 failed——值域探测完成（结果是不支持）
     assert profile["reasoning_effort"]["supported"] == ["minimal", "low", "high", "xhigh", "none", "max"]
     assert profile["reasoning_effort"]["unsupported"] == ["medium"]
-    assert profile["vision"]["supported"] is False  # vision 超时不毒化主探测项
+    assert "vision" not in profile  # vision 结果不落档案（改写 user-config.json capabilities）；超时不毒化主探测项
     assert profile["ignores_unknown"] is False  # medium 未确认 200（超时 unsupported）→ 不置位
     assert mock_completion.call_count == 11  # 7 值域（含 1 次重试）+ 探针 + 2 thinking + 1 vision
 
