@@ -8,6 +8,10 @@
   region→capture("desktop", caps, (x,y,w,h))，统一 max_width=1280 降采样
 - 落盘 ~/.niu/tmp/screenshot_<ts>.png + `![截图](绝对路径)` 标记文本返回
   （V3 图片直通通道格式）+ 尺寸/显示器元数据
+- region_ratio（plan §3.2 / 用例 7-12）：换算正确性（单屏/双屏含负坐标）、
+  target 联动（screen/window 两分支）、与绝对坐标互斥/均未给、越界退化、
+  形态非法（不抛 ValueError）、非有限值 NaN/±inf（绕过比较式越界检查）、
+  list_displays 抛错/空列表降级（非 _UNAVAILABLE_MSG）
 - niu_natives 缺失降级（R11）：import 失败分支 → 模块照常可 import +
   screenshot 返回明确错误串，不炸 Niu 启动
 - 注册契约（R8）：REQUIRED_SERVERS 含 vision-server；yaml 显式 static +
@@ -34,6 +38,8 @@ from agent import mcp_loader  # noqa: E402
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _FAKE_PNG = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+
+_UNAVAILABLE_MSG = "截图能力不可用（niu_natives 未安装/平台不支持）"
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -183,6 +189,184 @@ class TestNiuNativesMissing:
         assert m.niu_natives is None
         result = m.screenshot(target="screen")
         assert result == "截图能力不可用（niu_natives 未安装/平台不支持）"
+
+
+# ============== region_ratio 按比例截区域（plan §3.2 / §6 用例 7-12） ==============
+
+
+def _display(x=0, y=0, width=1680, height=1050):
+    """实机形态的显示器属性对象——真实 session.list_displays() 返回 PyO3
+    #[pyclass] 对象（只能属性访问），用 SimpleNamespace 忠实还原，不用 dict。"""
+    return types.SimpleNamespace(x=x, y=y, width=width, height=height)
+
+
+class TestRegionRatioConversion:
+    """用例 7：换算正确性——断言传给 capture 的绝对 region 数值。"""
+
+    def test_single_display_center_quarter(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.list_displays.return_value = [_display(0, 0, 1680, 1050)]
+        result = m.screenshot(target="region", region_ratio=[0.25, 0.25, 0.75, 0.75])
+        # W=1680 H=1050 → x=420 y=262.5 w=840 h=525
+        session.capture.assert_called_once_with(
+            "desktop", {"max_width": 1280}, (420, 262.5, 840, 525)
+        )
+        assert result.startswith("![截图](")
+
+    def test_dual_display_positive_offset(self, monkeypatch):
+        # 副屏在主屏右侧且上缘抬高：min_y=-100，合成 W=3286 H=1180
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.list_displays.return_value = [
+            _display(0, 0, 1920, 1080),
+            _display(1920, -100, 1366, 768),
+        ]
+        m.screenshot(target="region", region_ratio=[0.5, 0.5, 1.0, 1.0])
+        # x=0+0.5*3286=1643 y=-100+0.5*1180=490 w=1643 h=590
+        session.capture.assert_called_once_with(
+            "desktop", {"max_width": 1280}, (1643, 490, 1643, 590)
+        )
+
+    def test_dual_display_negative_origin(self, monkeypatch):
+        # 副屏在主屏左侧（负坐标原点）：min_x=-1920，合成 W=3840 H=1080
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.list_displays.return_value = [
+            _display(-1920, 0, 1920, 1080),
+            _display(0, 0, 1920, 1080),
+        ]
+        m.screenshot(target="region", region_ratio=[0.0, 0.0, 0.5, 1.0])
+        session.capture.assert_called_once_with(
+            "desktop", {"max_width": 1280}, (-1920, 0, 1920, 1080)
+        )
+
+
+class TestRegionRatioTargetCoupling:
+    """用例 8：region_ratio 非空且 target != region → 报错且不调 capture。"""
+
+    def test_screen_with_region_ratio_rejected_without_capture(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="screen", region_ratio=[0.1, 0.1, 0.2, 0.2])
+        assert 'target="region"' in result
+        session.capture.assert_not_called()
+        session.list_displays.assert_not_called()
+
+    def test_window_with_region_ratio_rejected_without_capture(self, monkeypatch):
+        # target=window 与 screen 走同一校验分支（P3-4）→ 同样报错且不调 capture
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="window", window_id="1", region_ratio=[0.1, 0.1, 0.2, 0.2])
+        assert 'target="region"' in result
+        session.capture.assert_not_called()
+        session.list_displays.assert_not_called()
+
+
+class TestRegionRatioExclusivity:
+    """用例 9：与绝对坐标互斥；两者均未给 → 报错文案枚举两种选项。"""
+
+    def test_ratio_and_abs_coords_mutually_exclusive(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(
+            target="region", region_ratio=[0.1, 0.1, 0.5, 0.5],
+            x=10, y=20, width=300, height=200,
+        )
+        assert "互斥" in result
+        session.capture.assert_not_called()
+
+    def test_region_with_neither_option_rejected(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="region")
+        assert "region_ratio=[左,上,右,下]" in result
+        assert "x/y/width/height" in result
+        session.capture.assert_not_called()
+
+    def test_region_with_partial_abs_coords_rejected(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="region", x=10, y=20, width=300)
+        assert "region_ratio=[左,上,右,下]" in result
+        assert "x/y/width/height" in result
+        session.capture.assert_not_called()
+
+
+class TestRegionRatioBounds:
+    """用例 10：越界/退化 → 报错。"""
+
+    @pytest.mark.parametrize("ratio", [
+        [0.5, 0.2, 0.5, 0.8],   # left == right（退化）
+        [0.6, 0.2, 0.4, 0.8],   # left > right
+        [0.1, 0.7, 0.9, 0.3],   # top > bottom
+        [0.1, 0.1, 0.5, 1.2],   # 任一项 > 1
+        [-0.1, 0.1, 0.5, 0.8],  # 任一项 < 0
+    ])
+    def test_out_of_range_or_degenerate_rejected(self, monkeypatch, ratio):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="region", region_ratio=ratio)
+        assert "0~1" in result
+        session.capture.assert_not_called()
+
+
+class TestRegionRatioShape:
+    """用例 11：形态非法 → 明确报错，不抛 ValueError。"""
+
+    @pytest.mark.parametrize("bad", [
+        [0.1, 0.1, 0.2],                       # 3 项
+        [0.1, 0.1, 0.2, 0.3, 0.4],             # 5 项
+        "0.1 0.1 0.2 0.2",                     # 非列表（字符串）
+        0.5,                                    # 非列表（数字）
+        ["0.1", "0.1", "0.2", "0.2"],          # 含字符串元素
+    ])
+    def test_malformed_shape_rejected_without_exception(self, monkeypatch, bad):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="region", region_ratio=bad)
+        assert "[左,上,右,下]" in result
+        session.capture.assert_not_called()
+
+
+class TestRegionRatioNonFinite:
+    """P3-1：NaN/±inf 非有限值——与任何数比较恒 False，会绕过 0~1 越界检查
+    （裸 NaN 字面量可经 json.loads 到达工具参数）→ 必须显式拒绝（math.isfinite），
+    报明确中文错误且不调 capture（否则穿透到原生层暴露英文原始异常）。"""
+
+    @pytest.mark.parametrize("ratio", [
+        [float("nan"), 0.1, 0.5, 0.5],   # NaN：v<0 与 v>1 均 False，越界检查全漏
+        [float("inf"), 0, 1, 1],          # +inf
+    ])
+    def test_non_finite_rejected_without_capture(self, monkeypatch, ratio):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="region", region_ratio=ratio)
+        assert "有限数值" in result
+        session.capture.assert_not_called()
+
+    @pytest.mark.parametrize("ratio", [
+        [10**400, 0, 0.5, 0.5],      # 超大正整数：isfinite 内部转 float 抛 OverflowError
+        [-10**400, 0, 1, 1],         # 超大负整数（极端）
+    ])
+    def test_huge_int_rejected_without_overflow(self, monkeypatch, ratio):
+        """P3-2：JSON 允许任意精度整数，json.loads 解析为 Python int——
+        isfinite(超大int) 抛 OverflowError 会穿透 screenshot() 暴露英文原始异常。
+        范围比较先于 isfinite 短路（int 不转 float）→ 返回中文错误串、绝不抛异常。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.screenshot(target="region", region_ratio=ratio)
+        assert isinstance(result, str)
+        assert "0~1" in result
+        session.capture.assert_not_called()
+
+
+class TestRegionRatioDisplaysFailure:
+    """用例 12：list_displays 抛错/返回空 → 明确错误串（非 _UNAVAILABLE_MSG）。"""
+
+    def test_list_displays_exception(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.list_displays.side_effect = Exception("TCC permission denied")
+        result = m.screenshot(target="region", region_ratio=[0.1, 0.1, 0.5, 0.5])
+        assert "无法枚举显示器" in result
+        assert result != _UNAVAILABLE_MSG
+        session.capture.assert_not_called()
+
+    def test_list_displays_empty(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.list_displays.return_value = []
+        result = m.screenshot(target="region", region_ratio=[0.1, 0.1, 0.5, 0.5])
+        assert "无法枚举显示器" in result
+        assert result != _UNAVAILABLE_MSG
+        session.capture.assert_not_called()
 
 
 # ============== 注册契约（R8）+ 主 Agent schema 出现（plan §8-⑤） ==============

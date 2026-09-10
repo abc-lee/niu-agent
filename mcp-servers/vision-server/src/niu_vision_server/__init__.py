@@ -20,6 +20,7 @@ niu_natives import 降级（R11）：模块级 try/except——失败 → Deskto
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -107,7 +108,57 @@ def _format_result(out_path: Path, result: dict) -> str:
 
 # ============== 工具实现 ==============
 
-def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=None, height=None) -> str:
+
+def _resolve_region_ratio(session, region_ratio):
+    """把 `[左,上,右,下]`（0~1，恒相对整个逻辑桌面）换算为绝对逻辑坐标。
+
+    无状态纯函数——不依赖「上一次截图」：以 list_displays() 求所有显示器合成
+    的逻辑范围（min_x/min_y + 宽高，与 capture_displays 的 min_x/min_y 口径一致），
+    再 x = min_x + left*W、y = min_y + top*H、width = (right-left)*W、
+    height = (bottom-top)*H。调用前已完成形态/越界校验（plan §3.2）。
+
+    成功返回 (x, y, width, height)；list_displays() 抛错/空列表、或据显示器字段
+    求逻辑范围失败（防御：真实 PyO3 字段恒在）→ 均返回明确错误串
+    （非 _UNAVAILABLE_MSG——那是「niu_natives 缺失」专属语义，误用会让 Agent
+    以为视觉能力整体损坏）。
+    """
+    try:
+        displays = session.list_displays()
+        if not displays:
+            return ("无法枚举显示器：系统未报告任何活动显示器"
+                    "（请检查显示连接或录屏权限后重试）")
+        left, top, right, bottom = region_ratio
+        min_x = min(_target_field(d, "x") for d in displays)
+        min_y = min(_target_field(d, "y") for d in displays)
+        max_x = max(_target_field(d, "x") + _target_field(d, "width") for d in displays)
+        max_y = max(_target_field(d, "y") + _target_field(d, "height") for d in displays)
+        w = max_x - min_x
+        h = max_y - min_y
+    except Exception as e:
+        logger.warning(f"[vision-server] screenshot list_displays failed: {e}")
+        return f"无法枚举显示器：{e}（请检查录屏/屏幕录制权限后重试）"
+    return (min_x + left * w, min_y + top * h, (right - left) * w, (bottom - top) * h)
+
+
+def _is_valid_ratio(v):
+    """region_ratio 单项校验：必须是 0~1 的有限数值。
+
+    先做范围比较（int 不转 float，超大整数在此短路），再判有限性
+    （NaN/inf/-inf 与任何数比较恒 False，须靠 isfinite 兜住）。
+    绝不抛异常——超大 int（如 10**400）会使 isfinite 内部转换抛 OverflowError。
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    if v < 0 or v > 1:
+        return False
+    try:
+        return math.isfinite(v)
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=None,
+               height=None, region_ratio=None) -> str:
     """截取屏幕画面，落盘 PNG 并返回 `![截图](路径)` 标记文本。
 
     三形态映射（plan §4-V5）：
@@ -116,6 +167,9 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
       （X11/Win32/macOS 为数字，Wayland 为 atspi 字符串）
     - target=region  → capture("desktop", region=(x, y, width, height))
       ——逻辑桌面坐标（左上角原点），裁剪先于降采样
+
+    region_ratio（plan §3.2）：`[左,上,右,下]` 4 个 0~1 数值，恒相对整个逻辑桌面
+    （= target=screen 那张图），无状态纯函数——换算成绝对坐标后走同一 capture 路径。
 
     全部形态统一 caps={"max_width": 1280} 降采样。
     """
@@ -130,6 +184,39 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
     if session is None:
         return _UNAVAILABLE_MSG
 
+    # ---- region_ratio 校验（plan §3.2）：全部在调用 capture 前完成，
+    # 报错返回明确中文串、不抛异常（穿透到 MCP 层会暴露英文原始异常）。----
+    has_abs_coords = any(v is not None for v in (x, y, width, height))
+    if region_ratio is not None and target != "region":
+        return (f'错误：region_ratio 只在 target="region" 时有效（当前 target={target!r}），'
+                '请改 target="region"')
+    if region_ratio is not None and has_abs_coords:
+        return ("错误：region_ratio 与 x/y/width/height 互斥，只能二选一"
+                "（推荐 region_ratio）")
+    if target == "region":
+        if region_ratio is None:
+            if not has_abs_coords or any(v is None for v in (x, y, width, height)):
+                return ("错误：target=region 需要指定区域，二选一："
+                        "region_ratio=[左,上,右,下]（0~1 比例，相对整个逻辑桌面，推荐）"
+                        "或 x/y/width/height（逻辑桌面绝对坐标，四个须齐全）")
+        else:
+            if (not isinstance(region_ratio, (list, tuple)) or len(region_ratio) != 4
+                    or any(not _is_valid_ratio(v) for v in region_ratio)):
+                return ("错误：region_ratio 必须是恰好 4 项的数值序列 [左,上,右,下]，"
+                        "每项为 0~1 之间的有限数值（示例：[0.3, 0.2, 0.6, 0.5]）")
+            left, top, right, bottom = region_ratio
+            if (any(v < 0 or v > 1 for v in (left, top, right, bottom))
+                    or left >= right or top >= bottom):
+                return ("错误：region_ratio 每项须在 0~1 之间，且 左<右、上<下"
+                        f"（收到 [左,上,右,下] = {list(region_ratio)!r}）")
+
+    # region_ratio → 绝对逻辑坐标（无状态纯函数；失败返回明确错误串）
+    abs_region = None
+    if target == "region" and region_ratio is not None:
+        abs_region = _resolve_region_ratio(session, region_ratio)
+        if isinstance(abs_region, str):
+            return abs_region
+
     caps = {"max_width": MAX_WIDTH}
     try:
         if target == "screen":
@@ -139,9 +226,8 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
                 return "错误：target=window 需要 window_id 参数（窗口 ID）"
             result = session.capture(str(window_id), caps)
         else:  # region
-            if any(v is None for v in (x, y, width, height)):
-                return "错误：target=region 需要 x/y/width/height 四个参数（逻辑桌面坐标）"
-            result = session.capture("desktop", caps, (x, y, width, height))
+            result = session.capture(
+                "desktop", caps, abs_region or (x, y, width, height))
     except Exception as e:
         logger.warning(f"[vision-server] screenshot failed (target={target}): {e}")
         return f"截图失败：{e}"
@@ -269,7 +355,9 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "截取屏幕画面（整屏/指定窗口/指定区域），图片落盘并返回 `![截图](路径)` 标记"
             "+ 尺寸元数据。当你需要看到屏幕上的内容（界面、报错、图表、用户正在看的画面）时使用。"
             "target=screen 截整个桌面；target=window 需 window_id（窗口 ID）；"
-            "target=region 需 x/y/width/height（逻辑桌面坐标，左上角原点）。"
+            "target=region 截取矩形区域：推荐用 region_ratio=[左,上,右,下]"
+            "（4 个 0~1 数值，相对整屏图按比例框选——工具内部负责换算坐标，无需自己算）；"
+            "也可用 x/y/width/height（逻辑桌面绝对坐标，左上角原点）。"
         ),
         "input_schema": {
             "type": "object",
@@ -286,19 +374,33 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 },
                 "x": {
                     "type": "number",
-                    "description": "区域左上角 x（target=region 时必填，逻辑桌面坐标）",
+                    "description": ("区域左上角 x（target=region 时使用，逻辑桌面坐标；"
+                                    "与 region_ratio 二选一，推荐用 region_ratio 比例写法）"),
                 },
                 "y": {
                     "type": "number",
-                    "description": "区域左上角 y（target=region 时必填，逻辑桌面坐标）",
+                    "description": ("区域左上角 y（target=region 时使用，逻辑桌面坐标；"
+                                    "与 region_ratio 二选一，推荐用 region_ratio 比例写法）"),
                 },
                 "width": {
                     "type": "number",
-                    "description": "区域宽度（target=region 时必填）",
+                    "description": "区域宽度（target=region 时使用；与 region_ratio 二选一，推荐用 region_ratio 比例写法）",
                 },
                 "height": {
                     "type": "number",
-                    "description": "区域高度（target=region 时必填）",
+                    "description": "区域高度（target=region 时使用；与 region_ratio 二选一，推荐用 region_ratio 比例写法）",
+                },
+                "region_ratio": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": (
+                        "按比例截取区域：恰好 4 个 0~1 数值 [左,上,右,下]，"
+                        "恒相对整个逻辑桌面（所有显示器合成的范围，即 target=screen 那张图）。"
+                        "仅在 target=region 时有效；与 x/y/width/height 互斥。"
+                        "推荐优先使用——工具内部负责换算绝对坐标，无需自己算。"
+                    ),
                 },
             },
             "required": ["target"],
