@@ -74,7 +74,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - **MCP Loader** (`agent/mcp_loader.py`)：启动时加载所有 MCP 模块，严格验证
 - 每个 MCP 服务器模块定义 `TOOL_SCHEMAS` 字典 + 工具函数
 
-**已实现的 MCP 服务器（10个）：**
+**已实现的 MCP 服务器（11个）：**
 
 | 服务器 | 功能 | 预加载 |
 |--------|------|--------|
@@ -88,6 +88,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
 | `ha-server` | 智能家居（Home Assistant 设备控制/场景/自动化） | Yes（可选） |
+| `vision-server` | 屏幕截图（screenshot 工具，基于 niu_natives；.so 缺失/平台未编时降级为明确错误提示，不炸启动） | Yes |
 
 > `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
@@ -376,6 +377,15 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 ### MCP 工具映射
 
 子 Agent 的 MCP 工具由 frontmatter `mcpServers` 字段指定（如 `mcpServers: [photo-server, lightrag-server]`）。加载时从已加载的全局 ToolRegistry 过滤，无需额外加载逻辑。如果 `mcpServers` 含未加载的服务器，对应工具缺失但不阻塞（log warning）。
+
+### 捆绑模型（llmPreset，2026-09-10 起）
+
+frontmatter 可选字段 `llmPreset: <user-config.json 顶层段名>`——让子 Agent 使用指定配置段的模型，而非一律主 llm 配置。本期支持段：`vision_llm`（第三方视觉模型，见「视觉能力」章节）。
+
+- **无字段零影响**：不写 `llmPreset` 的子 Agent 行为完全不变（不读盘、走主配置）
+- **生效条件**：字段指向的段 `model` 非空 → 该子 Agent 用此段模型（段内空键继承主 llm 段）；典型用法=视觉子 Agent 捆绑第三方视觉模型，任务文本里的图片标记直通其对话
+- **回落语义**：段 `model` 为空 / 段名不在支持集 / user-config.json 读取失败 → 回落主配置 + 日志警示（不报错、不阻塞派发）
+- bundled（`config/agents/`）与用户自建（`~/.niu/agents/`）两目录同生效
 
 ### 主 Agent 创建子 Agent 流程
 
@@ -691,6 +701,71 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 - **一致性收敛规则**：以 `user-config.json` 为主——设置窗口下次"测试并保存"或 config-manager 下次 set 时，合集同名条目自动对齐为 `user-config.json` 的两段内容。
 
 字段与示例详见《用户操作手册》1.2 LLM 配置。
+
+## 视觉能力（2026-09-10 起）
+
+Niu 的视觉能力 = `screenshot` 截图工具 + **图片直通通道**：对话/任务文本里的 markdown 图标记（`![名称](绝对路径)`）在出站前展开为多模态 content 段发给模型——主模型有视觉时自己看图，无需单独的"解析图片"工具。三层结构：主模型视觉探测 → 第三方视觉模型配置（`vision_llm` 段）→ 可选自建视觉子 Agent。
+
+### 主模型视觉探测
+
+- 设置页「**探测能力（对话模型）**」按钮探测主模型时顺带执行 **vision 双色交叉子扫描**：发纯红/纯蓝两张 32×32 极小图各问主色，两答均命中对应色系才判 `supported=true`（单色已证伪则不再发第二张）
+- 结果记入能力档案 `~/.niu/model_capabilities.json` 的 `|llm` 键 `vision` 字段：`{supported, input: ["text","image"], probed_at}`；入库模型（`|lightrag` 键）不探测
+- vision 子扫描失败/超时 → `supported=false` 落盘，**不毒化主探测项结果**（其他档案字段照常）
+- **主模型有视觉 = 截图后图片直通主对话**：screenshot 返回的图标记在出站前展开为多模态 content，主模型直接看图回答
+- 探测结果与预期不符（如确认模型有视觉但判了无）→ 重跑「探测能力」刷新档案即可
+
+### 第三方视觉模型配置（vision_llm 段）
+
+主模型无视觉时，在 `~/.niu/config/user-config.json` **顶层** `vision_llm` 段配置第三方视觉模型。**程序不自动探测第三方模型——主 Agent 自己先测通、测通了再配**。
+
+**配置前必查（实测教训）**：先用 curl 核实推理服务的真实端口/协议/模型名，照抄猜测的地址是"测不通"的首要根因（https 应为 http、漏端口号、模型名差一个字符都会失败）：
+
+```bash
+curl http://<host>:<port>/v1/models   # 确认真实模型名与端口
+```
+
+**字段表**（全部可省略，**空键继承主 llm 段**）：
+
+| 字段 | 说明 |
+|------|------|
+| `model` | 视觉模型名。**非空才生效**——空 = 回落主 llm 模型（本段仅余独立 overrides） |
+| `apiKey` | API key（空则继承主 llm；本地服务可填任意非空占位如 `sk-local`） |
+| `apiBase` | 服务地址（空则继承主 llm；本地 llama.cpp 形如 `http://192.168.3.88:8080/v1`） |
+| `type` | 服务商类型 `openai`/`anthropic`（空则继承主 llm，默认 openai） |
+| `provider` | 提供商标识（空则继承主 llm） |
+| `reasoning_effort` | 推理深度 none/low/medium/high（空 = 模型默认，不强制档位） |
+| `max_tokens` | 输出预算。**视觉请求必须 ≥500**——带 reasoning 的 qwen 类模型思考会占满小预算，返回 content 为空（看着像失败，实为预算被思考吃掉）；建议 8192 |
+| `litellm_kwargs` | thinking 等透传参数（空则继承主 llm） |
+
+> 注：`model` 为空（回落主 llm 模型）时，本段另支持 `temperature` / `read_timeout` override（仅显式配置时写入，镜像 lightrag 分支）；这两个字段在 `model` 非空时无效。
+
+配置示例（本地 llama.cpp 视觉模型）：
+
+```json
+"vision_llm": {
+  "model": "qwen38-xl",
+  "apiBase": "http://192.168.3.88:8080/v1",
+  "apiKey": "sk-local",
+  "max_tokens": 8192
+}
+```
+
+**配置途径**：直接编辑 `~/.niu/config/user-config.json` 顶层 `vision_llm` 段（与 lightrag_llm 同模式；每次子 Agent 派发实时读盘，改完下次派发即生效、无需重启）。`llm.presetId` 非空时 `vision_llm` 段随命名配置合集（`llm-configs.json`）条目快照同步（设置页保存/预设加载自动带三段）。
+
+**持久保留语义**：设置页无 vision_llm 表单；该段经任何路径的切模型 / 设置页保存 / 命名配置切换都**不丢失**（config-merge 基底透传 + save-config upsert 扩段 + 命名合集三段快照三重保护）。
+
+### 自建视觉子 Agent（可选）
+
+配好第三方视觉模型并测通后，可自建捆绑该模型的视觉子 Agent：在 `~/.niu/agents/` 建 `.md`（如 `vision-agent.md`），frontmatter 写 `llmPreset: vision_llm` + 角色提示词。注册校验：**文件名 kebab-case / description 必填 / visibility 非 hidden**——`visibility: hidden` 时静默跳过（正常行为、无 warning，后台专用子 Agent 仅程序按名直调）；其余校验失败（解析错误 / 缺 description 等）记日志 warning 后跳过。两种情况工具均不出现。创建流程见「通用子 Agent 体系」章节；下一轮对话开始时 `chat-with-vision-agent` 自动出现在主 Agent 工具列表。
+
+**边界**：子 Agent 会话无工具轮重建 hook——其**自身**调用 screenshot 的结果当轮不展开（下次派发/续跑才可见）；主 Agent 在任务文本里传入的图标记（screenshot 返回值原样转发）则正常直通。
+
+### 主 Agent 视觉流程
+
+1. **截屏**：`screenshot` 工具——`target=screen` 整屏 / `window` 指定窗口（需 window_id）/ `region` 指定区域（x/y/width/height）。返回 `![截图](绝对路径)` 标记 + 尺寸元数据；图片落盘 `~/.niu/tmp/screenshot_<时间戳>.png`，**每日 04:00 后台任务清理 mtime 超过 24h 的文件（最坏可存活约 48h），截图建议当次使用；文件已清理需重新截屏**
+2. **主模型有视觉**（档案 `|llm` vision.supported=true）→ 图标记直通主对话，主模型自己看图回答
+3. **主模型无视觉 + 已配 vision_llm** → 派自建视觉子 Agent：任务文本里带上截图标记/路径，子 Agent 用捆绑的视觉模型看图作答
+4. **图文件缺失/已清理** → 标记留文本 + `[图片不可读]` 警示（不报错中断）——重新截屏即可
 
 ## 分册索引
 

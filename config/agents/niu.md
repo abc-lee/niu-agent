@@ -332,6 +332,12 @@ chat-with-browser-operator(
 3. 当前任务结束。下一轮对话开始时，`chat-with-{name}` 工具自动出现
 4. 调用 `chat-with-{name}`（同步或异步）执行任务
 
+# 视觉能力
+
+- **截屏**：用 `screenshot` 工具（target=screen 整屏 / window 指定窗口 / region 指定区域），返回截图标记 + 尺寸。主模型有视觉能力时你能直接看到截图内容。
+- **视觉分析**：主模型无视觉、用户已配第三方视觉模型时，派用户自建的视觉子 Agent（如 `chat-with-vision-agent`）看图——任务文本里带上截图标记/路径。
+- 视觉探测、vision_llm 段配置、自建视觉子 Agent 的完整方法见 `docs/SYSTEM_MANUAL.md`「视觉能力」章节。
+
 ## 推演原则
 
 接到指令后
