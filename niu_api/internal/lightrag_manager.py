@@ -83,7 +83,9 @@ def _get_litellm_session(config: dict) -> Any:
     global _cached_session, _cached_config_key
     from agent.generic.litellm_adapter import LiteLLMSession
 
-    config_key = (config.get("model"), config.get("apibase"), config.get("apikey"), config.get("type"), config.get("reasoning_effort"), config.get("provider"), config.get("temperature", 0.2), config.get("read_timeout"), config.get("max_tokens"), tuple(sorted(config.get("litellm_kwargs", {}).items())))
+    # capabilities 进 config_key（deny 变化触发会话重建——验收④：探测写盘后不重启即生效）；
+    # dict 不可哈希 → sorted items 元组化（与 litellm_kwargs 同制式）
+    config_key = (config.get("model"), config.get("apibase"), config.get("apikey"), config.get("type"), config.get("reasoning_effort"), config.get("provider"), config.get("temperature", 0.2), config.get("read_timeout"), config.get("max_tokens"), tuple(sorted(config.get("litellm_kwargs", {}).items())), tuple(sorted((config.get("capabilities") or {}).items())))
 
     if _cached_session is not None and _cached_config_key == config_key:
         return _cached_session
@@ -101,6 +103,9 @@ def _get_litellm_session(config: dict) -> Any:
             "provider": config.get("provider", ""),
             "litellm_kwargs": config.get("litellm_kwargs", {}),
             "temperature": config.get("temperature", 0.2),
+            # 参数约束 deny（plan 2026-09-10 D4）：capabilities 透传——LightRAG/脑区缓存会话
+            # 的 chat() 据此过滤 deny 参数（缺键 → __init__ fail-closed 空集）
+            "capabilities": config.get("capabilities"),
         }
         # 透传 read_timeout（or 300 守卫：null/"" 等 falsy 值回退默认，防止 int() 崩溃）
         llm_config["read_timeout"] = config.get("read_timeout") or 300

@@ -806,6 +806,24 @@ def resolve_sticky_headers(api_base: str | None, sticky_config, api_type: str, s
     return None
 
 
+# === 参数约束 deny（plan 2026-09-10-param-deny-mechanism D4）——deny 参数集统一解析 ===
+
+def parse_capabilities_deny(capabilities, model: str) -> frozenset:
+    """从 capabilities 对象解析 deny 参数集（白名单原样透传，__init__/续跑共用本 helper）。
+
+    model 绑定 fail-closed：capabilities.model == 当前 model（且非空）才生效；
+    缺键/畸形结构/model 不匹配 → 空集。
+    """
+    if not isinstance(capabilities, dict) or not model:
+        return frozenset()
+    if capabilities.get("model") != model:
+        return frozenset()
+    deny = capabilities.get("deny")
+    if not isinstance(deny, list):
+        return frozenset()
+    return frozenset(k for k in deny if isinstance(k, str) and k)
+
+
 class LiteLLMSession(BaseSession):
     """
     LiteLLM适配器Session
@@ -834,6 +852,11 @@ class LiteLLMSession(BaseSession):
         # 显式传入（create_client 白名单透传键）——chat() 发送层 sanitize 据此决定图标记展开；
         # 缺失/False → 不展开（fail-closed）。续跑分支按 stop_check 同型先例同步覆盖本属性。
         self.vision_enabled = bool(cfg.get("vision_enabled", False))
+        # 参数约束 deny（plan 2026-09-10 D4）：白名单原样透传 capabilities 键，此处统一解析
+        # deny + model 绑定校验（fail-closed：缺/不匹配 → 空集）；chat() 据此过滤。
+        # 续跑分支按 vision_enabled 同型先例重算覆盖本属性（R8）。
+        self.capabilities_deny = parse_capabilities_deny(cfg.get("capabilities"), cfg.get("model", ""))
+        self._deny_filter_logged = False  # per-session 首次生效 info 日志标志
 
     def _default_stop_check(self):
         """默认 stop 检查：call-time 解析模块全局 is_stop_requested（monkeypatch 生效）。"""
@@ -1089,6 +1112,25 @@ class LiteLLMSession(BaseSession):
                 self.api_base, self.litellm_kwargs.get("sticky_session_headers"),
                 self.api_type, self.sticky_session_id)):
             request_params["extra_headers"] = {**(request_params.get("extra_headers") or {}), **headers}
+
+        # 参数约束 deny 过滤（plan 2026-09-10 D4）：chat() 单点——deny 在列参数从
+        # request_params 删除（含 extra_body 内同名嵌套键同步清理）；socket fallback 的
+        # {**request_params} 派生副本与 retry 均产生于本点之后，天然继承已过滤形态。
+        # per-session 首次实际移除记 info（非每轮）。
+        if self.capabilities_deny:
+            _deny_removed = [k for k in sorted(self.capabilities_deny) if k in request_params]
+            for k in _deny_removed:
+                del request_params[k]
+            _eb = request_params.get("extra_body")
+            if isinstance(_eb, dict):
+                for k in sorted(self.capabilities_deny & set(_eb)):
+                    del _eb[k]
+                    _deny_removed.append(f"extra_body.{k}")
+            if _deny_removed and not self._deny_filter_logged:
+                self._deny_filter_logged = True
+                logger.info(
+                    f"[PARAM-DENY] deny 过滤生效 (model={self.default_model}): "
+                    f"removed={_deny_removed}（模型用自身默认值）")
 
         # 记录完整请求（全量，包含 messages）
         _write_interaction_log({
@@ -1399,6 +1441,8 @@ def create_litellm_client(config: dict[str, Any]) -> ToolClient:
     cfg["sticky_session_id"] = config.get("sticky_session_id")
     # 图片直通通道（plan 2026-09-10 D1）：派发层算好的视觉能力显式键透传（缺失 → False fail-closed）
     cfg["vision_enabled"] = bool(config.get("vision_enabled", False))
+    # 参数约束 deny（plan 2026-09-10 D4）：capabilities 键原样透传（解析在 __init__ 统一做 + model 绑定校验）
+    cfg["capabilities"] = config.get("capabilities")
     cfg["read_timeout"] = config.get("read_timeout") or 300
 
     # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List

@@ -1132,6 +1132,11 @@ def call_subagent(
             # 图片直通通道（plan 2026-09-10 D1）：续答用派发时刻的 suspended_client（长驻会话），
             # 按 stop_check 同型先例同步覆盖本次 has_vision（防换模型/改配置后续跑沿用旧值）
             instance.suspended_client.backend.vision_enabled = has_vision
+            # 参数约束 deny（plan 2026-09-10 D4/R8）：续答按 vision_enabled 同型先例重算覆盖——
+            # 挂起期间探测写入新 deny 时旧会话不过滤（至多一次可见 400，失败可见非静默损坏）
+            from .generic.litellm_adapter import parse_capabilities_deny
+            instance.suspended_client.backend.capabilities_deny = parse_capabilities_deny(
+                llm_config.get("capabilities"), llm_config.get("model", ""))
             result_text, return_value, last_reply = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）

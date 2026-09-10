@@ -685,6 +685,34 @@ async def get_llm_status() -> dict:
         return {"ready": False, "probe_failed": False, "error": str(e)}
 
 
+def _inject_persisted_capabilities(llm_config: dict, section: str = "llm") -> None:
+    """参数约束 deny（plan 2026-09-10 D4 / R2-B P2）：手工 cfg 补 capabilities。
+
+    来源定死：从落盘 user-config.json 对应段（llm/lightrag_llm）读 capabilities，
+    经 `capabilities.model == 当前 model` 绑定判定后注入；不一致/缺省 → 不注入
+    （fail-closed）。表单 body 恒不含该键（config-merge.js 在保存时才继承，探测发生
+    在保存前）——不补键则 deny 写入后 testAndSave 自 400 阻断保存、rf 探测恒发
+    temperature=0.2 在 K3 下误判 model_rejected。
+    """
+    try:
+        from pathlib import Path
+        from niu_api.config import CONFIG_PATH
+        data = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
+        sec = data.get(section) or {}
+        caps = sec.get("capabilities")
+    except Exception:
+        return
+    if not isinstance(caps, dict) and section == "lightrag_llm" and not sec.get("model"):
+        # lightrag_llm 段无独立 model → 有效 model 来自主 llm（与 get_llm_config 继承语义一致）
+        # → 对应段是 llm；否则回落场景恒发 temperature=0.2 在 K3 下误判 model_rejected
+        caps = (data.get("llm") or {}).get("capabilities")
+    if not isinstance(caps, dict):
+        return
+    if caps.get("model") != llm_config.get("model"):
+        return
+    llm_config["capabilities"] = caps
+
+
 async def _probe_llm(
     config: dict,
     *,
@@ -739,6 +767,9 @@ async def _probe_llm(
             },
             "read_timeout": read_timeout,
         }
+        # 参数约束 deny（plan 2026-09-10 D4 / R2-B P2）：手工 cfg 补 capabilities——
+        # 来源=落盘 llm 段，经 model 绑定判定注入（表单 body 恒不含该键）
+        _inject_persisted_capabilities(llm_config, section="llm")
         session = LiteLLMSession(cfg=llm_config)
 
         def _sync_test():
@@ -1186,6 +1217,9 @@ async def probe_response_format(request: Request) -> dict:
         # 快速失败降级，不等 60s。推理模型首响应慢的场景由外层 wait_for(90s) 兜底。
         "read_timeout": 10,
     }
+    # 参数约束 deny（plan 2026-09-10 D4 / R2-B P2）：手工 cfg 补 capabilities——
+    # 来源=落盘 lightrag_llm 段，经 model 绑定判定注入（防恒发 temperature=0.2 误判）
+    _inject_persisted_capabilities(base_llm_config, section="lightrag_llm")
 
     messages = _build_probe_messages()
 

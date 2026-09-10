@@ -634,6 +634,8 @@ def create_client(config: dict[str, Any]):
     cfg["sticky_session_id"] = config.get("sticky_session_id")
     # 图片直通通道（plan 2026-09-10 D1）：派发层算好的视觉能力显式键透传（缺失 → False fail-closed）
     cfg["vision_enabled"] = bool(config.get("vision_enabled", False))
+    # 参数约束 deny（plan 2026-09-10 D4）：capabilities 键原样透传（解析在 __init__ 统一做 + model 绑定校验）
+    cfg["capabilities"] = config.get("capabilities")
     cfg["read_timeout"] = config.get("read_timeout") or 300
 
     from .generic.litellm_adapter import create_litellm_client

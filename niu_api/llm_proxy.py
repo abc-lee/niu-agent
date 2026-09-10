@@ -362,6 +362,9 @@ async def call_llm_via_litellm(
         "read_timeout": config.get("read_timeout") or 300,
         # sticky routing id（spec §3.1）：MCP Sampling 通道固定 "mcp-sampling"（低频，注入保一致）
         "sticky_session_id": "mcp-sampling",
+        # 参数约束 deny（plan 2026-09-10 D4）：capabilities 补键——防死路径修复后漏过滤
+        # （config 来自 get_llm_config，段内 capabilities 经小写化保留；缺键 → fail-closed 空集）
+        "capabilities": config.get("capabilities"),
     }
     if config.get("max_tokens") is not None:
         llm_config["max_tokens"] = config["max_tokens"]
