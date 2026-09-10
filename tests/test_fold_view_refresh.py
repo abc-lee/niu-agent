@@ -296,14 +296,14 @@ class TestTransformHistoryZeroChange:
         with_tcs = [e for e in out if e["role"] == "assistant" and e.get("tool_calls")]
         assert [tc["id"] for tc in with_tcs[0]["tool_calls"]] == ["ok1"]
         assert {"role": "assistant", "content": ""} in out
-        # ⑤ 截断：长度 ≤30000 带标记，name 还原
+        # ⑤ 截断：长度 ≤30000 带标记，无 name 字段（plan 2026-09-10 D8：删 tool name 注入）
         long_e = [e for e in out if e.get("tool_call_id") == "ok1b"][0]
         assert len(long_e["content"]) <= MAX_TOOL_RESULT_CHARS
         assert "[截断]" in long_e["content"]
-        assert long_e["name"] == "big_tool"
-        # 配对 tool 保留 + name 还原
+        assert "name" not in long_e
+        # 配对 tool 保留 + 无 name 字段（D8）
         ok = [e for e in out if e.get("tool_call_id") == "ok1"][0]
-        assert ok["content"] == "OK_BODY" and ok["name"] == "read_file"
+        assert ok["content"] == "OK_BODY" and "name" not in ok
 
 
 # ---------------------------------------------------------------------------

@@ -1009,6 +1009,9 @@ def call_subagent(
     # 续答实际复用 suspended_client（下方 resume 分支），不经过本构造——零额外接线。
     _sticky_id = agent_name if (unique_name is None or answer is not None) else unique_name
     llm_config = {**llm_config, "sticky_session_id": _sticky_id}
+    # 图片直通通道（plan 2026-09-10 D1）：派发层算好的 has_vision 显式键透传（先于 create_client——
+    # 会话构造时读该键；缺失 → False fail-closed）
+    llm_config = {**llm_config, "vision_enabled": has_vision}
 
     # 3. 创建 LLM 客户端（统一使用 LiteLLM）
     from .runner import create_client
@@ -1120,6 +1123,9 @@ def call_subagent(
             else:
                 # user 子 Agent 恢复（同步语义）：global or terminate
                 _stop_fn = lambda: _is_stop_global() or _inst_terminate()
+            # 图片直通通道（plan 2026-09-10 D1）：续答用派发时刻的 suspended_client（长驻会话），
+            # 按 stop_check 同型先例同步覆盖本次 has_vision（防换模型/改配置后续跑沿用旧值）
+            instance.suspended_client.backend.vision_enabled = has_vision
             result_text, return_value, last_reply = _run_agent_loop(
                 client=instance.suspended_client,
                 system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
@@ -1750,8 +1756,8 @@ def _ask_main_agent_impl_sync(
 def _prepare_resume_messages(archive_messages: list, has_vision: bool = False) -> list | None:
     """把完成态存档 messages 清洗为可续跑上下文（agent_runner_loop resumed_messages 直用）。
 
-    has_vision=True 时 transform_history 展开档内图标记（图片直通通道 plan §4-V3 接线④——
-    派发层算好传入；resumed 分支直用清洗结果不再二次展开，漏传则视觉子 Agent 停止续跑丢图）。
+    has_vision 参数保留兼容（plan 2026-09-10 D3 去展开后本层不再展开图标记——
+    档内图标记保留 str 文本形态，发送层 sanitize 负责展开）。
 
     T2 续跑组装。复用 transform_history 整函数输出（纯函数 agent/generic/agent_loop.py L794，无突变返回新列表）——
     其净化语义正是续跑需要的：
@@ -1899,9 +1905,8 @@ def _dispatch_async_subagent(
         # 命中档续跑：剥离清洗后补当前任务 user 消息（effective_task 满足 call_subagent
         # 入口闸门 not task and not answer；续跑实例保持指定名注册，结束由 _run_subagent_async finally 注销）
         effective_task = task or "继续上次未完成的工作"
-        # 图片直通通道（plan §4-V3）：续跑路径新任务消息在派发层展开——resumed 分支不二次展开
-        from .image_channel import expand_image_markers as _expand_img_markers
-        resumed_messages.append({"role": "user", "content": _expand_img_markers(effective_task, _resume_has_vision)})
+        # plan 2026-09-10 D3 去展开：直传 str（图标记保留文本形态，发送层 sanitize 负责展开）
+        resumed_messages.append({"role": "user", "content": effective_task})
         task = effective_task  # 同步给 call_subagent（入口闸门 + 初始指令展示）
         _resume_hit = True
 
