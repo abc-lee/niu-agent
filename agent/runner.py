@@ -632,6 +632,8 @@ def create_client(config: dict[str, Any]):
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
     # sticky routing id 纯管道透传（spec §3.1——白名单构造转发，零 sticky 逻辑）
     cfg["sticky_session_id"] = config.get("sticky_session_id")
+    # 图片直通通道（plan 2026-09-10 D1）：派发层算好的视觉能力显式键透传（缺失 → False fail-closed）
+    cfg["vision_enabled"] = bool(config.get("vision_enabled", False))
     cfg["read_timeout"] = config.get("read_timeout") or 300
 
     from .generic.litellm_adapter import create_litellm_client
@@ -766,6 +768,11 @@ class NiuRunner:
         # sticky routing id（spec §3.1 唯一接线点）：主 Agent 固定 "main"（单用户单活跃对话）。
         # 常量键不参与 get_or_create_runner 配置比对——无重建循环风险。
         llm_config = {**llm_config, "sticky_session_id": "main"}
+        # 图片直通通道（plan 2026-09-10 D1）：create_client 之前派生主模型视觉能力
+        # （main_has_vision：capabilities.model==model 且 input 含 image；缺失 fail-closed）——
+        # 会话构造时读该键，晚于构造写入不生效（R6 双审同抓教训）。
+        from agent.image_channel import main_has_vision
+        llm_config = {**llm_config, "vision_enabled": main_has_vision(llm_config)}
 
         self.llm_config = llm_config
         self.mcp_client = mcp_client

@@ -403,7 +403,8 @@ class TestJudgementHelpers:
 # ---------------------------------------------------------------------------
 
 class TestWiringTransformHistory:
-    def test_transform_expands_user_and_tool_markers(self, tmp_path):
+    def test_transform_keeps_str_markers(self, tmp_path):
+        """plan 2026-09-10 D3：transform 层去展开——user/tool 图标记保留 str 文本（发送层 sanitize 负责展开）。"""
         p = tmp_path / "s.png"
         _make_png(p)
         history = [
@@ -414,11 +415,15 @@ class TestWiringTransformHistory:
             {"role": "tool", "content": f"![截图]({p})", "tool_call_id": "c1"},
         ]
         out = transform_history(copy.deepcopy(history), has_vision=True)
-        assert len(_image_blocks(out[0]["content"])) == 1
+        # user：保留 str 标记文本（不展开为 list）
+        assert isinstance(out[0]["content"], str)
+        assert f"![截图]({p})" in out[0]["content"]
         # assistant 纯文本不受影响
         assert out[1]["content"] == ""
-        # tool 结果标记同样展开（截图工具轮后图不丢）
-        assert len(_image_blocks(out[2]["content"])) == 1
+        # tool：保留 str 标记文本（不展开）+ 无 name 字段（D8）
+        assert isinstance(out[2]["content"], str)
+        assert f"![截图]({p})" in out[2]["content"]
+        assert "name" not in out[2]
 
     def test_transform_default_false_unchanged(self, tmp_path):
         p = tmp_path / "s.png"
@@ -429,7 +434,8 @@ class TestWiringTransformHistory:
 
 
 class TestWiringAgentLoopEntry:
-    def test_entry_expands_history_and_current_user(self, tmp_path):
+    def test_entry_keeps_str_markers(self, tmp_path):
+        """plan 2026-09-10 D3：loop 入口去展开——history/当前 user 保留 str 标记（发送层 sanitize 负责展开）。"""
         p = tmp_path / "s.png"
         _make_png(p)
         client = _FakeClient([_resp("完成")])
@@ -440,11 +446,11 @@ class TestWiringAgentLoopEntry:
             history=history, user_input=f"当前图 ![c]({p})", has_vision=True)
         assert result["result"] == "CURRENT_TASK_DONE"
         req = client.requests[0]
-        # system + history(user) + current(user)
+        # system + history(user) + current(user)——均为 str 标记文本（不展开为 list）
         hist_user = [e for e in req if e.get("role") == "user" and _text_of(e["content"]).startswith("历史图")]
         cur_user = [e for e in req if e.get("role") == "user" and _text_of(e["content"]).startswith("当前图")]
-        assert len(hist_user) == 1 and len(_image_blocks(hist_user[0]["content"])) == 1
-        assert len(cur_user) == 1 and len(_image_blocks(cur_user[0]["content"])) == 1
+        assert len(hist_user) == 1 and isinstance(hist_user[0]["content"], str) and f"![h]({p})" in hist_user[0]["content"]
+        assert len(cur_user) == 1 and isinstance(cur_user[0]["content"], str) and f"![c]({p})" in cur_user[0]["content"]
 
     def test_entry_no_vision_keeps_marker_text(self, tmp_path):
         p = tmp_path / "s.png"
@@ -465,8 +471,8 @@ class TestWiringToolRoundRefresh:
         return cm.ContextManager(_FakeStore(db_msgs), max_tokens=100_000,
                                  blocks_db_path=tmp_path / "blocks.db")
 
-    def test_refresh_rebuild_keeps_expanded_image(self, tmp_path, monkeypatch):
-        """R2/R3 P1 阻断项：工具轮后视图重建不得把已展开图还原成标记文本。"""
+    def test_refresh_rebuild_keeps_marker_text(self, tmp_path, monkeypatch):
+        """plan 2026-09-10 D3：去展开后工具轮重建保留 str 标记文本（发送层 sanitize 负责展开）。"""
         p = tmp_path / "s.png"
         _make_png(p)
         db_msgs = [
@@ -494,10 +500,9 @@ class TestWiringToolRoundRefresh:
         assert messages[0] is sys_entry
         tool_e = [e for e in messages if e.get("tool_call_id") == "c1"]
         assert len(tool_e) == 1
-        # 工具轮重建后图仍在（展开态）——bug 态会是标记文本 str
-        blocks = _image_blocks(tool_e[0]["content"])
-        assert len(blocks) == 1
-        assert blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        # 工具轮重建后 content 为 str 标记文本（D3 去展开——transform 层不再产出展开态 list）
+        assert isinstance(tool_e[0]["content"], str)
+        assert f"![截图]({p})" in tool_e[0]["content"]
 
     def test_refresh_without_vision_flag_keeps_marker_text(self, tmp_path, monkeypatch):
         p = tmp_path / "s.png"
@@ -530,7 +535,8 @@ class _FakeStore:
 
 
 class TestWiringSubagentResume:
-    def test_prepare_resume_expands_markers(self, tmp_path):
+    def test_prepare_resume_keeps_str_markers(self, tmp_path):
+        """plan 2026-09-10 D3：resume 层去展开——档内图标记保留 str 文本（发送层 sanitize 负责展开）。"""
         import agent.subagent as sub
         p = tmp_path / "s.png"
         _make_png(p)
@@ -542,7 +548,8 @@ class TestWiringSubagentResume:
         cleaned = sub._prepare_resume_messages(archive, has_vision=True)
         assert cleaned[0]["role"] == "system"  # system 保留
         user_e = [e for e in cleaned if e.get("role") == "user"][0]
-        assert len(_image_blocks(user_e["content"])) == 1
+        assert isinstance(user_e["content"], str)
+        assert f"![截图]({p})" in user_e["content"]
 
     def test_prepare_resume_no_vision_keeps_text(self, tmp_path):
         import agent.subagent as sub
