@@ -857,20 +857,28 @@ def _annotate_subagent_prompt_degradation(result_text: str) -> str:
     return f"{result_text}\n[子 Agent 提示词降级: {reason}]"
 
 
-def _resolve_subagent_has_vision(agent_name: str, llm_config: dict | None) -> bool:
+# llmPreset 支持段集合（单点真理，T4 plan §4-V4）——llm_config 覆盖侧与 has_vision 判定侧同源消费：
+# preset 不在集内 → 两侧同判据回落主配置/主档案，不查段。新增支持段只改此处（get_llm_config 需同步扩展）。
+SUPPORTED_PRESETS = {"vision_llm"}
+
+
+def _resolve_subagent_has_vision(agent_name: str, llm_config: dict | None, user_cfg: dict | None = None) -> bool:
     """子会话图片直通判定（plan §4-V3 接线④，派发层算好传入——与 call_subagent 内 T4 llmPreset 覆盖同源）。
 
-    - frontmatter llmPreset 指向段 model 非空 → True（第三方模型不探测 D-F，手工测通为准）
-    - 无字段 / 段 model 空 → 回落主 |llm vision.supported（R3）+ warning 留痕
+    - frontmatter llmPreset ∈ SUPPORTED_PRESETS 且段 model 非空 → True（第三方模型不探测 D-F，手工测通为准）
+    - preset 不在支持集 / 无字段 / 段 model 空 / 配置读失败（user_cfg=None）→ 回落主 |llm vision.supported（R3）
+
+    user_cfg = call_subagent 预读的 user-config.json dict——与覆盖侧同一读盘结果（P2：判定侧不自读文件）。
+    None（未传入/读失败）→ 不查段直接回落主档案（fail-closed，防瞬时读失败时判定侧与覆盖侧分叉）。
+    警示由覆盖侧单点留痕，判定侧不重复 log（P3）。
     """
-    from .image_channel import main_has_vision, preset_section_has_vision
+    from .image_channel import main_has_vision, preset_section_has_vision  # 函数内解析——测试可 patch ic 属性
     # get_subagent_config 契约：MD 不存在/解析失败 → {}（不抛）
     agent_config = get_subagent_config(agent_name) or {}
     preset = agent_config.get("llmPreset")
-    if preset:
-        if preset_section_has_vision(preset):
+    if preset and preset in SUPPORTED_PRESETS and user_cfg is not None:
+        if preset_section_has_vision(preset, user_cfg):
             return True
-        logger.warning(f"[SubAgent] {agent_name}: llmPreset={preset!r} 段 model 为空，回落主模型视觉判定（R3）")
     return main_has_vision(llm_config)
 
 
@@ -922,12 +930,46 @@ def call_subagent(
 
     # 1. 获取子 Agent 提示词 + temperature
     agent_config = get_subagent_config(agent_name)
+
+    # T4（plan §4-V4）：llmPreset 捆绑模型——frontmatter llmPreset 指向 user-config.json 顶层段
+    # （如 vision_llm），llm_config 用该段配置覆盖；空键继承 llm 段由 get_llm_config 已实现。
+    # 覆盖点必须在下方 temperature merge 之前（否则 agent 预设 temperature 随原 llm_config 被丢）；
+    # 无本字段的子 Agent 零影响（缺省走主配置）。bundled（config/agents/*.md）与用户定义
+    # （~/.niu/agents/*.md）同走 get_subagent_config → 同生效。
+    # P2：CONFIG_PATH 只读一次——预读结果 _user_cfg 供覆盖侧/has_vision 判定侧/get_llm_config 三检查点共用
+    #（None = 读失败，与「段 model 空」区分警示）；无 llmPreset 字段零影响（不读盘）。
+    _llm_preset = agent_config.get("llmPreset")
+    _user_cfg = None
+    if _llm_preset:
+        from pathlib import Path as _P
+        from niu_api.config import CONFIG_PATH as _CP
+        from .image_channel import preset_section_has_vision  # 与判定侧同一 helper（函数内解析——测试可 patch）
+        try:
+            _user_cfg = json.loads(_P(_CP).read_text(encoding="utf-8"))
+            if not isinstance(_user_cfg, dict):
+                _user_cfg = None
+        except Exception:
+            _user_cfg = None
+        if _user_cfg is None:
+            # 配置读失败 → 回落主配置（不误报「段 model 为空」）
+            logger.warning(f"[SubAgent] {agent_name}: llmPreset={_llm_preset!r} user-config.json 读取失败，回落主配置")
+        elif _llm_preset not in SUPPORTED_PRESETS:
+            # 不支持段名（单点真理 SUPPORTED_PRESETS）→ 回落主配置；has_vision 判定侧同判据回落主档案
+            logger.warning(f"[SubAgent] {agent_name}: 不支持的 llmPreset={_llm_preset!r}，回落主配置")
+        elif not preset_section_has_vision(_llm_preset, _user_cfg):
+            # 段 model 空 → 回落主配置；主模型无视觉时回落语义错——警示留痕（本条件唯一警示点，判定侧不重复 P3）
+            logger.warning(f"[SubAgent] {agent_name}: llmPreset={_llm_preset!r} 段 model 为空，回落主配置（主模型无视觉时图片直通无效）")
+        else:
+            from niu_api.llm_proxy import get_llm_config as _get_llm_config
+            llm_config = _get_llm_config(use_vision_config=True, config_data=_user_cfg)
+
     if agent_config.get("temperature") is not None:
         llm_config = {**llm_config, "temperature": agent_config["temperature"]}
 
-    # 图片直通通道（plan §4-V3 接线④）：派发层算好 has_vision——llmPreset 捆绑段 model 非空 → True；
-    # 无字段/段 model 空 → 主 |llm vision.supported（R3）。三路径（同步/异步/续答）同源透传。
-    has_vision = _resolve_subagent_has_vision(agent_name, llm_config)
+    # 图片直通通道（plan §4-V3 接线④）：派发层算好 has_vision——llmPreset ∈ SUPPORTED_PRESETS 且段 model 非空 → True；
+    # preset 不在支持集/无字段/段 model 空/读失败 → 主 |llm vision.supported（R3，与覆盖侧同源同判据）。
+    # _user_cfg = 上方预读的同一读盘结果（P2 三检查点共用）；三路径（同步/异步/续答）同源透传。
+    has_vision = _resolve_subagent_has_vision(agent_name, llm_config, _user_cfg)
 
     # 2. 构建静态/动态段（cache 友好）
     try:
@@ -1826,7 +1868,8 @@ def _dispatch_async_subagent(
             _am = _archive.get("messages")
             if isinstance(_am, list) and _am:
                 # 图片直通通道（plan §4-V3 接线④）：has_vision 派发层算好传入——resumed 分支
-                # 直用清洗结果不再二次展开；判定与 call_subagent 内 llmPreset 覆盖同源
+                # 直用清洗结果不再二次展开。异步路径不应用 llmPreset 覆盖（llm_config 恒主配置），
+                # user_cfg=None fail-closed → has_vision 按主档案判定（P2-1 同源判据：实际跑的模型定视觉）。
                 _resume_has_vision = _resolve_subagent_has_vision(agent_name, llm_config)
                 resumed_messages = _prepare_resume_messages(_am, has_vision=_resume_has_vision)
         if resumed_messages is None:

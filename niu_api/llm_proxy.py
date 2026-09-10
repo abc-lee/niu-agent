@@ -191,10 +191,13 @@ def litellm_to_openai_response(
 def get_llm_config(
     use_lightrag_config: bool = False,
     use_vision_config: bool = False,
+    config_data: dict | None = None,
 ) -> dict[str, str]:
     """Read LLM config from file.
 
     Args:
+        config_data: 调用方预读的 user-config.json dict——非 None 时直接消费不再读盘
+            （子 Agent llmPreset 派发链与覆盖侧/has_vision 判定共用同一读盘结果，避免重复 IO）。
         use_lightrag_config: If True, read from 'lightrag_llm' section.
             model 为空时使用主 llm 同一模型（正常默认行为）。
             apiKey/apiBase/type 为空时从 llm 段继承。
@@ -214,11 +217,15 @@ def get_llm_config(
 
     from pathlib import Path
 
-    from niu_api.config import CONFIG_PATH
+    if config_data is None:
+        from niu_api.config import CONFIG_PATH
 
-    config_path = Path(CONFIG_PATH)
+        config_path = Path(CONFIG_PATH)
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
+        if config_data is not None:
+            data = config_data  # 调用方预读（同一读盘结果，避免重复 IO）
+        else:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
         llm = data.get("llm", {})
 
         # If requesting lightrag config, apply lightrag_llm overrides

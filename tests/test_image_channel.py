@@ -5,8 +5,8 @@
    展开（text 段 + image_url data URI，base64 与文件字节一致）/ 缺文件降级留文本+警示 /
    >4MB PIL 降采样（真路径 jpeg + 失败回落警示）/ 非本地路径保留标记文本。
 ② mask_image_data_uris 共享打码 helper——str/dict/list 递归、字节数标注、非图 URI 不动。
-③ 判定 helper——main_has_vision（read_profile mock）/ preset_section_has_vision（tmp 配置）/
-   _resolve_subagent_has_vision（llmPreset 正向规则 + 回落主 llm + 空 model 警示）。
+③ 判定 helper——main_has_vision（read_profile mock）/ preset_section_has_vision（tmp 配置 / 预读 dict）/
+   _resolve_subagent_has_vision（SUPPORTED_PRESETS 门控 + llmPreset 正向规则 + 回落主 llm；警示归覆盖侧单点）。
 ④ 接线五点行为锁——transform_history has_vision 展开（默认 False 零影响）/
    agent_runner_loop 入口 history+当前 user 消息展开（fake client 捕获 LLM 请求）/
    runner._on_tool_round_refresh 工具轮重建不丢图（R2/R3 P1 阻断项）/
@@ -349,8 +349,19 @@ class TestJudgementHelpers:
         import agent.image_channel as ic
         import agent.subagent as sub
         monkeypatch.setattr(sub, "get_subagent_config", lambda name: {"llmPreset": "vision_llm"})
-        monkeypatch.setattr(ic, "preset_section_has_vision", lambda preset: True)
-        assert sub._resolve_subagent_has_vision("vision-agent", None) is True
+        monkeypatch.setattr(ic, "preset_section_has_vision", lambda preset, config_data=None: True)
+        # user_cfg 预读 dict 传入（覆盖侧同一读盘结果）→ 段 model 非空 → True
+        assert sub._resolve_subagent_has_vision("vision-agent", None, {"vision_llm": {"model": "x"}}) is True
+
+    def test_resolve_subagent_user_cfg_none_fail_closed(self, monkeypatch):
+        """user_cfg=None（读失败/未传入）→ 不查段不自读，直接回落主档案（防与覆盖侧分叉）。"""
+        import agent.image_channel as ic
+        import agent.subagent as sub
+        monkeypatch.setattr(sub, "get_subagent_config", lambda name: {"llmPreset": "vision_llm"})
+        # 若误自读/误查段将得 True——锁死 fail-closed 按主档案 False
+        monkeypatch.setattr(ic, "preset_section_has_vision", lambda preset, config_data=None: True)
+        monkeypatch.setattr(ic, "main_has_vision", lambda llm_config: False)
+        assert sub._resolve_subagent_has_vision("vision-agent", None) is False
 
     def test_resolve_subagent_no_preset_falls_back_to_main(self, monkeypatch):
         import agent.image_channel as ic
@@ -359,17 +370,28 @@ class TestJudgementHelpers:
         monkeypatch.setattr(ic, "main_has_vision", lambda llm_config: True)
         assert sub._resolve_subagent_has_vision("plain-agent", {"apibase": "http://x/v1"}) is True
 
-    def test_resolve_subagent_preset_empty_model_falls_back_with_warning(self, monkeypatch):
+    def test_resolve_subagent_preset_empty_model_falls_back_no_duplicate_warning(self, monkeypatch):
+        """P3：段 model 空 → 回落主档案；警示由覆盖侧（call_subagent）单点留痕，判定侧不重复 log。"""
         import agent.image_channel as ic
         import agent.subagent as sub
         monkeypatch.setattr(sub, "get_subagent_config", lambda name: {"llmPreset": "vision_llm"})
-        monkeypatch.setattr(ic, "preset_section_has_vision", lambda preset: False)
         monkeypatch.setattr(ic, "main_has_vision", lambda llm_config: True)
         # subagent 用 loguru（caplog 不可见）→ 直接 stub 模块 logger
         warnings = []
         monkeypatch.setattr(sub, "logger", SimpleNamespace(warning=warnings.append))
-        assert sub._resolve_subagent_has_vision("vision-agent", None) is True
-        assert any("llmPreset" in w for w in warnings)
+        # user_cfg 预读 dict 传入（段 model 空）→ 回落主档案 True；判定侧零 warning
+        assert sub._resolve_subagent_has_vision("vision-agent", None, {"vision_llm": {}}) is True
+        assert warnings == []
+
+    def test_resolve_subagent_unsupported_preset_uses_main_profile(self, monkeypatch):
+        """P2-1：preset 不在 SUPPORTED_PRESETS → 不查段 model，直接按主档案判定。"""
+        import agent.image_channel as ic
+        import agent.subagent as sub
+        monkeypatch.setattr(sub, "get_subagent_config", lambda name: {"llmPreset": "lightrag_llm"})
+        # 若误查段（model 非空）将得 True——锁死按主档案 False
+        monkeypatch.setattr(ic, "preset_section_has_vision", lambda preset, config_data=None: True)
+        monkeypatch.setattr(ic, "main_has_vision", lambda llm_config: False)
+        assert sub._resolve_subagent_has_vision("lr-agent", None, {"lightrag_llm": {"model": "x"}}) is False
 
 
 # ---------------------------------------------------------------------------

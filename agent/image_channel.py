@@ -156,15 +156,18 @@ def main_has_vision(llm_config: dict | None) -> bool:
         return False
 
 
-def preset_section_has_vision(preset_name: str) -> bool:
+def preset_section_has_vision(preset_name: str, config_data: dict | None = None) -> bool:
     """子会话图片直通判定（正向规则）：llmPreset 指向的 user-config.json 顶层段 model 非空 → True。
 
     第三方模型不探测（D-F），档案无其条目——手工测通为准，不查档案。读失败 → False。
+    config_data=None → 自读 CONFIG_PATH（独立调用）；传入预读 dict → 直接消费
+    （子 Agent 派发链覆盖侧/判定侧共用同一读盘结果，避免重复读文件）。
     """
     try:
-        from niu_api.config import CONFIG_PATH
-        data = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
-        section = data.get(preset_name) or {}
+        if config_data is None:
+            from niu_api.config import CONFIG_PATH
+            config_data = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
+        section = config_data.get(preset_name) or {}
         return bool(section.get("model"))
     except Exception:
         return False
