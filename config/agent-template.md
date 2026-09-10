@@ -68,7 +68,7 @@ allowAsync: false        # 可选：true=允许异步调用（长时任务用）
 - `browser-server` — 浏览器自动化
 - `brain-region-server` — 脑区状态管理
 - `scheduler-server` — 定时任务调度
-- `vision-server` — 屏幕截图（screenshot；.so 缺失/平台未编时返回明确错误提示）
+- `vision-server` — 屏幕截图（screenshot + list_targets 两工具；.so 缺失/平台未编时返回明确错误提示）
 
 可选服务器（见 `agent/mcp_loader.py` 的 `OPTIONAL_SERVERS`，按需启用）：
 

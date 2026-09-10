@@ -580,7 +580,7 @@ preload_face_model()
 
 #### 工程：可视化功能 Phase 1——niu-natives Rust crate（用户四问拍板+法律考察+三轮 spec 双审+三轮 plan 双审；main e3230788..b70dd995 7 commits，docs b7594b4 spec v0.4 冻结/7483554 plan v0.4 冻结/5e19ab1 勘误⑦⑧）
 
-- **目标**：给 Agent 加可视化——屏幕/窗口/区域抓图+浏览器截图+视觉模型解析，第一期只「看」不「操作」但架构留备。**分 Phase**：P1=niu-natives Rust crate（本条目）；P2=vision-server MCP+动态挂载+vision_llm+探测（下阶段）；P3=browser_screenshot。
+- **目标**：给 Agent 加可视化——屏幕/窗口/区域抓图+视觉模型解析，第一期只「看」不「操作」但架构留备。**分 Phase**：P1=niu-natives Rust crate（本条目）；P2=vision-server MCP+动态挂载+vision_llm+探测（下阶段）；P3=截图辅助工具（list_targets + region_ratio）。
 - **用户拍板（2026-09-09）**：①屏幕+窗口抓图（浏览器非文字 DOM 一期不解决）②操作能力后期要、一期不做但输入/坐标 API 随采集层一并移植暴露 ③MCP 工具 static 直挂主 Agent（不走 disk）+**解析模型=动态参数**（无视觉模型=工具不出现；有才把模型名挂 enum 主 Agent 自选）④采集方案=Rust+PyO3 复用 omp desktop（方案锁定后反推）⑤探测不加按钮（现有探测流程加一项）⑥requirements.txt 完整性+README 明谢 ⑦screenshot/analyze_image 分离 ⑧ax_lite（macos/ax.rs ~300 行聚焦子集保留——完整 ax 裁掉则 macOS 窗口聚焦输入断链，plan R1-A P1-2 实证后补拍板）。
 - **法律考察**：OMP=MIT 三层一致；18 crate crates.io API 逐个实查全宽松（xcap Apache-2.0/enigo MIT/image MIT-Apache 等，零 GPL）；NOTICES 归集 297 crate 对账零遗漏（cargo vendor 机制）；**r-efi LGPL 选项核实不进产物**（getrandom UEFI-only 传递依赖，mac/win 编译树零命中）。
 - **spec 三轮双审**（v0.4 冻结 b7594b4）：R1 双 CONDITIONAL（**双审同抓 enum 值语义矛盾**——模型名 vs 标识）；R2 双 CONDITIONAL（交互日志 base64 明文泄漏/static 注册绕过门控/nightly 构建链——R1 吸收双角验证通过）；R3 双 CONDITIONAL 零 P1/P2（§5.1 重复块自相矛盾双角同抓/vision_llm.model 空语义矛盾）。
