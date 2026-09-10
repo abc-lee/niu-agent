@@ -68,6 +68,7 @@ allowAsync: false        # 可选：true=允许异步调用（长时任务用）
 - `browser-server` — 浏览器自动化
 - `brain-region-server` — 脑区状态管理
 - `scheduler-server` — 定时任务调度
+- `vision-server` — 屏幕截图（screenshot；.so 缺失/平台未编时返回明确错误提示）
 
 可选服务器（见 `agent/mcp_loader.py` 的 `OPTIONAL_SERVERS`，按需启用）：
 
@@ -104,6 +105,7 @@ allowAsync: false        # 可选：true=允许异步调用（长时任务用）
 - `mcpToolFilter`（可选）：按 server 分组的工具级白名单 map，见上方
 - `allowBaseTools`（可选）：基础工具白名单，见上方。不写=没有基础工具
 - `allowAsync`（可选）：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动启用 @前缀拦截层，必须用 @niu-agent/@end 表达意图）。长时任务（几十秒以上）设 true
+- `llmPreset`（可选）：**捆绑模型**——填 user-config.json 顶层段名（本期支持 `vision_llm`），该子 Agent 改用此段的模型配置（段内空键继承主 llm 段）。不写=零影响（走主配置）；段 `model` 为空/段名不支持/配置读取失败 → 回落主配置 + 日志警示。典型用法：视觉子 Agent 写 `llmPreset: vision_llm` 捆绑第三方视觉模型，任务文本里的图片标记直通其对话（见 SYSTEM_MANUAL「视觉能力」章节）
 
 ## 完整示例
 
