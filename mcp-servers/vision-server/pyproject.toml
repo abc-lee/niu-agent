@@ -1,0 +1,12 @@
+[project]
+name = "niu-vision-server"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.0.0", "loguru>=0.7.0"]
+
+[project.scripts]
+niu-vision-server = "niu_vision_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -16,7 +16,16 @@ def test_no_static_or_dynamic_tools():
         data = yaml.safe_load(f)
 
     # 有意进主 Agent Schema 的 static 工具（显式 visibility: static）
-    static_exempt = {"session-manager/read_history_block", "session-manager/fold_tool_output"}
+    # brain-region 例外见 docs/manual-mcp-disk.md §5.7；vision-server/screenshot
+    # 为可视化功能 plan v0.5.2 D-D/U2 定案（基础工具与视觉能力无关，无条件直挂）
+    static_exempt = {
+        "session-manager/read_history_block",
+        "session-manager/fold_tool_output",
+        "brain-region-server/brain_region_activate",
+        "brain-region-server/brain_region_dim",
+        "brain-region-server/brain_region_status",
+        "vision-server/screenshot",
+    }
     violations = []
     for server_name, server_cfg in data.items():
         if not isinstance(server_cfg, dict):
