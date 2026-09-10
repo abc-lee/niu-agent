@@ -7,6 +7,7 @@ from typing import Any, Callable
 from agent.tmp_dir import get_tmp_dir
 from loguru import logger
 
+from agent.image_channel import expand_image_markers
 from agent.output_validator import validate_references
 from agent.subagent import _read_warning_threshold
 
@@ -790,9 +791,12 @@ def _enforce_message_budget(messages: list) -> list:
     return messages
 
 
-def transform_history(messages: list[dict]) -> list[dict]:
+def transform_history(messages: list[dict], has_vision: bool = False) -> list[dict]:
     """history(dict 视图) → LLM 上下文消息变换（subagent_msg 跳过/空消息丢弃/
     孤儿 tool 校验跳过/valid_tcs 剥离悬空 tool_calls/_truncate_tool_content 30000 截断）。
+
+    has_vision=True 时 user/assistant/tool 文本中的 markdown 图标记展开为多模态
+    content list（图片直通通道 plan §4-V3：DB 存文本、出口展开）；默认 False 既有调用零影响。
 
     入口 agent_runner_loop 与工具轮重建（runner._on_tool_round_refresh）共用单一变换源——
     rebuild 必须与入口逐字节同制式（R3-A P1：悬空 tool_calls 注入会 OpenAI 400；
@@ -828,7 +832,8 @@ def transform_history(messages: list[dict]) -> list[dict]:
             continue
         content = msg.get("content", "")
         if role in ("user", "assistant") and (content or msg.get("tool_calls")):
-            entry = {"role": role, "content": content}
+            # 图片直通通道（§4-V3）：has_vision 时展开图标记；False 时原样返回零影响
+            entry = {"role": role, "content": expand_image_markers(content, has_vision)}
             # 还原 tool_calls（assistant 消息可能携带工具调用）
             if msg.get("tool_calls"):
                 # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
@@ -845,7 +850,9 @@ def transform_history(messages: list[dict]) -> list[dict]:
             # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
             # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
             tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
-            entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
+            # 图片直通通道（§4-V3）：先截断（标记文本短，截断对图标记是 no-op）再展开——
+            # 截图工具结果 ![截图](路径) 在 has_vision 时变 image_url 段，模型直接看到图
+            entry = {"role": role, "content": expand_image_markers(_truncate_tool_content(content, tool_name), has_vision), "tool_call_id": msg["tool_call_id"]}
             if tool_name:
                 entry["name"] = tool_name
             result.append(entry)
@@ -1430,6 +1437,7 @@ def agent_runner_loop(
     on_before_llm=None,  # Optional: callback(messages, turn) called before each LLM call; modifies messages[0] in place
     stop_predicate: Callable | None = None,  # 停止穿透：停止判定谓词（默认 None = 全局 is_stop_requested；子 Agent 由 call_subagent 传入）
     on_compression_request=None,  # 统一压缩入口（spec 2026-09-06）：主 Agent runner 传回调执行受控压缩；None=子 Agent 跳过（走保留的响应后 FIFO/占位符化 else 分支）
+    has_vision=False,  # 图片直通通道（plan §4-V3）：True 时 history/当前 user 消息展开 markdown 图标记为多模态 content list；主 Agent 由 runner 传、子 Agent 由派发层传；默认 False 零影响
 ):
     from agent.runner import clear_stop, drain_supplement, is_stop_requested
     from agent.generic.interruptible import run_interruptibly
@@ -1450,12 +1458,14 @@ def agent_runner_loop(
         # 变换逻辑抽为模块级纯函数 transform_history（工具轮重建共用单一变换源——
         # rebuild 与入口逐字节同制式，R3-A P1）；守卫与 resumed_messages else 分支结构不变
         if history:
-            messages.extend(transform_history(history))
+            messages.extend(transform_history(history, has_vision=has_vision))
 
-        # Add current user message
+        # Add current user message（图片直通通道 §4-V3 接线②：同域展开——
+        # 带截图标记的任务文本在入口即展开，resumed 分支不走此处）
+        _current_user_content = initial_user_content if initial_user_content is not None else user_input
         messages.append({
             "role": "user",
-            "content": initial_user_content if initial_user_content is not None else user_input,
+            "content": expand_image_markers(_current_user_content, has_vision),
         })
 
     # Debug info only - logging is done in ToolClient.chat where the real prompt is built

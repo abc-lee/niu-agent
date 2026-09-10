@@ -94,10 +94,14 @@ def _read_streaming_body(response: httpx.Response) -> dict:
 
 
 def _write_log_entry(seq: int, entry: dict) -> None:
-    """写入 JSON 日志文件。"""
+    """写入 JSON 日志文件（出站 image data URI 打码——plan v0.5.2 R2）。"""
     from niu_api.config import get_logging_config
     if not get_logging_config().enabled:
         return  # flag 关闭，静默跳过
+    # 唯一 writer：LoggingTransport/patched_post 三调用点（L166/L290/L339）汇聚于此——
+    # data URI 替换 [image data, N bytes]（共享 helper 落 image_channel 独立模块防循环 import）
+    from agent.image_channel import mask_image_data_uris
+    entry = mask_image_data_uris(entry)
     log_dir = _get_log_dir()
     filepath = log_dir / f"{seq:06d}.json"
     with _write_lock:

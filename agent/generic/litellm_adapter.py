@@ -385,9 +385,12 @@ def _write_raw_log(log_type: str, data: dict, seq: int | None = None) -> None:
         if seq is None:
             seq = _raw_seq_counter
             _raw_seq_counter += 1
+        # 图片直通通道（plan R2）：data URI 打码与 _mask_sensitive 同落盘前执行
+        from agent.image_channel import mask_image_data_uris
+        payload = mask_image_data_uris(_mask_sensitive(data))
         filepath = log_dir / f"{seq:06d}_{log_type}.json"
         filepath.write_text(
-            json.dumps(_mask_sensitive(data), ensure_ascii=False, indent=2, default=str),
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
     except Exception as e:
@@ -420,6 +423,10 @@ def _write_interaction_log(log_entry: dict[str, Any]):
         from niu_api.config import get_logging_config
         if not get_logging_config().enabled:
             return  # 静默跳过
+        # 图片直通通道（plan R2）：写函数入口打码（_format_request_log/_format_response_log
+        # 是 formatter——request/response content 中的 data URI 在此统一替换）
+        from agent.image_channel import mask_image_data_uris
+        log_entry = mask_image_data_uris(log_entry)
         log_dir = _get_app_log_dir()
         log_dir.mkdir(exist_ok=True)
         log_file = log_dir / f"llm_interaction_{datetime.now().strftime('%Y%m%d')}.log"
