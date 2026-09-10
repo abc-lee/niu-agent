@@ -25,6 +25,7 @@ def test_no_static_or_dynamic_tools():
         "brain-region-server/brain_region_dim",
         "brain-region-server/brain_region_status",
         "vision-server/screenshot",
+        "vision-server/list_targets",
     }
     violations = []
     for server_name, server_cfg in data.items():

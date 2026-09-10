@@ -238,3 +238,5 @@ vision-server:
     # disk，主 Agent 工具列表验收⑤挂。键名与模块 schema name/函数名逐字符一致。
     screenshot:
       visibility: static
+    list_targets:
+      visibility: static
