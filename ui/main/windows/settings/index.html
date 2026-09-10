@@ -411,6 +411,7 @@
     let namedConfigItems = [];      // 合集名字数组（候选源；打开下拉时重读刷新，C3）
     let configNameVisible = [];     // 子串过滤后当前可见项（键盘导航目标）
     let configNameActiveIndex = -1; // 键盘高亮索引（-1 = 无高亮）
+    let configNameTypedSinceOpen = false; // P2-2：程序化预填不触发 input，用户输入过才过滤 → 下次弹出先按输入文本过滤再渲染
     let testPassedInSession = false;
     // 换模型后置 true（要求重新探测）；探测成功后置 false。
     // 判定依据：进入页面有配置（model 有值）→ 能点；换模型清空 → 灰；探测成功 → 亮。
@@ -781,12 +782,15 @@
                       : namedConfigItems.filter(n => n.toLowerCase().includes(v));
     }
 
-    // 打开选择设置下拉：焦点守卫（同模型下拉 P2-1）；空合集 → 不弹（与模型下拉空列表语义一致）
+    // 打开选择设置下拉：P2-1 焦点守卫（同模型下拉）；
+    // P2-2 用户输入过（pending 标记，程序化预填不触发 input）→ 先按输入文本过滤再渲染，无匹配不弹；
+    // 空合集 → 不弹（与模型下拉空列表语义一致）
     function openConfigNameDropdown() {
       if (namedConfigItems.length === 0) return;
       if (document.activeElement !== document.getElementById('configName')) return;
-      configNameVisible = filterConfigNameItemsByInput();
-      if (configNameVisible.length === 0) return; // 无匹配（手输新名字）→ 不弹
+      configNameVisible = configNameTypedSinceOpen ? filterConfigNameItemsByInput() : namedConfigItems.slice();
+      configNameTypedSinceOpen = false;
+      if (configNameVisible.length === 0) return; // pending 分支无匹配（手输）→ 不弹
       configNameActiveIndex = -1;
       renderConfigNameDropdownList();
       document.getElementById('configNameDropdown').hidden = false;
@@ -855,7 +859,10 @@
       configNameInputEl.addEventListener('input', () => {
         updateConfigNameHint();
         const dd = document.getElementById('configNameDropdown');
-        if (dd.hidden || namedConfigItems.length === 0) return;
+        if (dd.hidden || namedConfigItems.length === 0) {
+          configNameTypedSinceOpen = true; // P2-2：输入未能实时过滤 → 下次弹出先按输入文本过滤再渲染
+          return;
+        }
         configNameVisible = filterConfigNameItemsByInput();
         if (configNameVisible.length === 0) { closeConfigNameDropdown(); return; }
         configNameActiveIndex = -1;
