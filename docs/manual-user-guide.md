@@ -307,13 +307,19 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 **换模型/换服务商后必须重新探测**（2026-08-18 起）：
 - **设置窗口"探测能力"按钮**：llm 段与 lightrag 段各一个按钮，探测成功后自动刷新推理深度下拉（档案 supported 档位）
-- **CLI**（主 Agent 可直接调用）：
-  ```bash
-  python/bin/python3 scripts/model_capability_probe.py --api-base URL --model MODEL [--api-type anthropic] [--lightrag] [--api-key KEY]
+- **主 Agent 自主探测**（三个环境统一，用 `code_run` 跑，无需脚本文件）：
+  ```python
+  import json
+  from niu_api.llm_proxy import get_llm_config
+  from niu_api.model_probe import probe
+  lightrag = False                                  # 入库场景改 True
+  cfg = get_llm_config(use_lightrag_config=lightrag)
+  user_cfg = json.loads(open('/Users/<用户名>/.niu/config/user-config.json').read())
+  prof = probe(api_base=cfg["apibase"], api_key=cfg["apikey"], model=cfg["model"],
+               api_type=cfg.get("type", "openai"), lightrag=lightrag, user_config=user_cfg)
+  print(prof.get("probe_status"), prof.get("reasoning_effort"))
   ```
-  - `--lightrag` 探测 lightrag_llm 场景（档案键后缀 `|lightrag`，apiKey 缺省从 lightrag_llm 段读）
-  - 退出码 `0` = 档案已更新；`1` = 探测失败未覆盖旧档（保持旧档案，检查配置后重试）
-  - 探测预算：单场景 ≈11 次极小请求（单次 ≤10s），值域候选超时重试最坏 ≈140s——CLI 建议 `timeout=150`；双场景（llm + lightrag）建议 `timeout=300` 或分两次调用
+  - 探测预算：单场景 ≈11 次极小请求（单次 ≤10s），值域候选超时重试最坏 ≈140s，加参数可用性段 ≈+45s——`code_run` 的 `timeout` 建议 ≥240；双场景分两次调用
 
 探测通过后，用同一文档入库并检查日志验证实际效果（见下方"入库质量检查方法"）。
 
@@ -439,27 +445,94 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 **Agent 自主评测新模型能力**：
 
-Agent 可以自己启动评测代码评估一个新模型，无需用户手动操作。评测工具 = `scripts/model_capability_probe.py`（真实 LLM 调用，按生产同参扫描模型支持的推理深度值域）：
+Agent 可以自己启动评测代码评估一个新模型，无需用户手动操作。评测核心 = `niu_api.model_probe.probe`（真实 LLM 调用，按生产同参扫描模型支持的推理深度值域）——用 `code_run` 直接跑下面这段代码即可（**无需任何脚本文件，三个环境统一**）：
 
-```bash
-python/bin/python3 scripts/model_capability_probe.py \
-  --api-base https://api.example.com/v1 \
-  --model 模型名 \
-  [--api-type anthropic]   # 默认 openai；Anthropic 原生格式才需要
-  [--api-key KEY]          # 缺省从配置文件 llm 段读
-  [--lightrag]             # 评测入库场景（档案键后缀 |lightrag，值域按入库 thinking 配置）
+```python
+import json
+from niu_api.llm_proxy import get_llm_config
+from niu_api.model_probe import probe
+
+lightrag = False                                  # 入库场景改 True
+cfg = get_llm_config(use_lightrag_config=lightrag)
+user_cfg = json.loads(open('/Users/<用户名>/.niu/config/user-config.json').read())
+prof = probe(api_base=cfg["apibase"], api_key=cfg["apikey"], model=cfg["model"],
+             api_type=cfg.get("type", "openai"), lightrag=lightrag, user_config=user_cfg)
+print(prof.get("probe_status"))                   # ok / partial / failed
+print(prof.get("reasoning_effort"))               # supported / unsupported 档位
 ```
+
+> 需评测**尚未写入配置**的候选模型时，把 `cfg[...]` 换成目标模型的 `apiBase`/`apiKey`/`model` 字符串即可；`probe` 只探测、不改配置（探测结果写 `~/.niu/model_capabilities.json` 档案；`deny` 写入仅在探测模型 == 当前配置模型时发生）。
 
 **何时评测**：用户换模型/换服务商/不确定模型支持哪些档位时；或用户要求"帮我看看这个模型能不能用/支持什么档位"。
 
 **评测流程与结果**：
 1. 先向用户确认模型名（**大小写敏感**——从服务商控制台复制原样粘贴；zen/go 包月端点模型名全小写）与 API Key 归属（避免把用户 key 用于未知端点）。
-2. 运行 CLI（llm 场景）或加 `--lightrag`（入库场景）。**评测要真实连接模型，需在目标机执行**；若 Niu 运行中且目标模型就是当前配置，也可引导用户直接用设置页"探测能力"按钮（同核心、免命令行）。
-3. 退出码 `0` = 档案已更新（`~/.niu/model_capabilities.json`，键 `apiBase|model|llm` / `|lightrag`）；`1` = 探测失败**保持旧档案**（检查 429 限流/401 认证/404 模型名后重试）。
+2. 跑上面代码（`lightrag=False` = 对话场景，`True` = 入库场景）。**评测要真实连接模型，须在目标机执行**；若 Niu 运行中且目标模型就是当前配置，也可引导用户直接用设置页"探测能力"按钮（同核心、免代码）。
+3. `probe_status`：`ok`/`partial` = 档案已更新（`~/.niu/model_capabilities.json`，键 `apiBase|model|llm` / `|lightrag`）；`failed` = 探测失败**保持旧档案**（检查 429 限流/401 认证/404 模型名后重试）。
 4. 评测后：告诉用户该模型支持的档位清单，引导在设置窗口选档位 → "测试连接并保存"完成配置；或直接 `set_lightrag_llm_config(reasoning_effort="low")` 写入（但仍建议走一次设置页校验）。
-5. 预算提示：单场景 ≈11 次极小请求，值域超时重试最坏 ≈140s——CLI 建议超时 `timeout=150`；双场景 ≈280s 建议 `timeout=300` 或分两次。
+5. 预算提示：单场景 ≈11 次极小请求，值域超时重试最坏 ≈140s，加参数可用性段 ≈+45s——`code_run` 的 `timeout` 建议 ≥240；双场景分两次调用。
 
 > **评测纪律**：①评测消耗用户 API 配额（11 次极小请求），先征得用户同意；②评测值域只对**当前场景 thinking 配置**成立（lightrag 恒 disabled、llm 按用户配置）——不要把一个场景测出的档位外推到另一个场景；③评测不是测试对话质量——档位支持 ≠ 输出质量，质量评估按上文"入库质量检查方法"或对话实测。
+
+#### 参数约束（deny，2026-09-10 起）
+
+不同模型对同一参数的**取值域**约束不同：部分模型只接受 `temperature=1`（推理模型族常见——K3、OpenAI o1/o3/gpt-5 均如此），发送其他值服务端**直接 400 拒收**（报错形如 `invalid temperature: only 1 is allowed for this model`，请求作废、零输出）。这类约束不在 OpenAI 协议规范内、litellm 注册表也不表达（注册表只描述参数"支持与否"，不描述值域），故 Niu 用「探测 + deny」自行适配。
+
+**设计原则：只 deny 不改值**——程序只做确定性判断「这个参数被拒了 → 以后不发它」（模型用自身默认值）；程序**不解析**"允许值是多少"（那属自然语言理解，非程序能力）。因此各处的温度调优值（主 Agent 0.6 / 子 Agent 0.2–0.3 / 知识图谱 0.2）**全部保留**，只对被拒的模型不发送该参数。
+
+**机制**：
+
+1. **探测（deny 生产者）**：「探测能力」流程**最前面**新增「参数可用性段」——用**当前实际会发送的参数组合**发一条真实请求；400 且能定位到具体被拒参数 → 写入该段 `capabilities.deny`，移除该参数重试，直至通过（累积移除，最坏 ≤8 次请求，探测总耗时约 +15s）
+   - 候选参数（**白名单** 7 项）：`temperature` / `top_p` / `presence_penalty` / `frequency_penalty` / `seed` / `logit_bias` / `max_tokens`
+   - 候选值 = **运行时实际发送值**（含提示词文档 frontmatter 的温度，如 `config/agents/niu.md` 的 `temperature: 0.6`）——与生产同源，"测的就是会发的"
+   - `response_format` **不在候选内**（该参数由既有三档探测治理：json_schema → json_object → prompt_only）
+   - 定位不出具体参数的 400（网关泛化报错）→ **不写 deny**、保持旧值、探测状态 `failed`（不猜）
+   - 探测段先于 `reasoning_effort` 值域扫描执行（否则该段失败会提前中断，deny 落不了盘）
+2. **存储**：`~/.niu/config/user-config.json` 对应段 `capabilities.deny: ["temperature", ...]`；`presetId` 非空时同步 upsert 命名配置合集（`llm-configs.json`）该条目快照
+3. **发送过滤**：`LiteLLMSession` 单点——请求参数组装完成后删除 `deny` 在列的参数（含 `litellm_kwargs` / `extra_body` 内同名键）。**覆盖全部 LLM 出站**：主对话、子 Agent、知识图谱入库与查询、脑区 label 生成、设置页「测试连接并保存」、档位探测
+4. **绑定与隔离**：`capabilities.model` 必须等于当前 `model` 才生效（换模型后旧 deny 不串用）；`deny` 与视觉能力 `input` 同居一个 `capabilities` 对象但**互不覆盖**（各自只增删自己的键）
+
+**两段独立（关键）**：
+
+| 场景 | 行为 |
+|---|---|
+| **统一主模型**（`lightrag_llm.model` 为空，默认） | 入库链路继承主 `llm` 段 `capabilities`——**探测主模型即覆盖入库与脑区**，无需单独探测 |
+| **入库段配独立模型**（`lightrag_llm.model` 非空） | 入库段用**自己的** `capabilities`——**必须单独探测该段**（「探测能力（入库模型）」按钮），否则其参数约束不被过滤，文件入库会被 400 拒收且无自动降级 |
+
+> `vision_llm` 段（第三方视觉模型）同理独立——其模型的参数约束也需对该段探测。
+
+**触发方式**：
+
+- **设置页**（推荐给用户）：`/setup` 打开——`llm` 段与 `lightrag_llm` 段各一个「探测能力」按钮。探测完成即更新该段 `capabilities.deny`，**无需重启**（会话按配置变化自动重建）
+- **主 Agent 自主探测**（三个环境统一——开发机 / macOS 包 / Windows 包均可）：用 `code_run` 直接跑下面这段代码（探测核心是 `niu_api.model_probe.probe`，无需任何脚本文件；`lightrag=False` 探对话场景、`True` 探入库场景）：
+
+  ```python
+  import json
+  from niu_api.llm_proxy import get_llm_config
+  from niu_api.model_probe import probe
+
+  lightrag = False                                  # 入库场景改 True
+  cfg = get_llm_config(use_lightrag_config=lightrag)
+  user_cfg = json.loads(open('/Users/<用户名>/.niu/config/user-config.json').read())
+  prof = probe(api_base=cfg["apibase"], api_key=cfg["apikey"], model=cfg["model"],
+               api_type=cfg.get("type", "openai"), lightrag=lightrag, user_config=user_cfg)
+  print(prof.get("probe_status"))                   # ok / partial / failed
+  ```
+
+  探测完成即写盘（`probe_status != failed` 时）；`failed` = 定位失败或网络问题，**保持旧值不变**。单段耗时约 15–45s，`code_run` 的 `timeout` 建议 ≥180
+- **换模型/服务商后必须重新探测**：旧模型的 deny 不适用新模型（`capabilities.model` 绑定即为此）；重探测时**上次 deny 中"本次仍发送且通过"的参数会被清出**（洗白），本次未发送到的参数保留旧判定
+
+**排查**：
+
+| 现象 | 处理 |
+|---|---|
+| 模型报 400 且消息含参数名（`invalid temperature: ...` / `'x' does not support ...`） | 对该段重新「探测能力」——探测会定位并 deny 掉它 |
+| 确认某参数是否已被 deny | 查 `~/.niu/config/user-config.json` 对应段 `capabilities.deny`；已列出则不会再发送该参数 |
+| 换了独立入库模型后文件入库报 400 | 该段未探测（见「两段独立」）——点「探测能力（入库模型）」 |
+| 换回原模型后参数又被拒 | 重探测该段（洗白机制） |
+| 白名单外参数被拒 | 不在自动处理范围（白名单设计）——`response_format` 见三档探测、`reasoning_effort`/`thinking` 见值域探测章节 |
+
+> **打包版无控制台窗口、日志不可见**——核对以上配置文件为准；终端启动运行时，每个会话首次过滤会打印 `[PARAM-DENY] deny 过滤生效 (model=...): removed=[...]`。
 
 ### 1.3 上下文配置
 
