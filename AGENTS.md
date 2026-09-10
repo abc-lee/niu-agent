@@ -539,6 +539,18 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+### 2026-09-10
+
+#### 工程：LLM API 合规 + 工具消息顺序规整（k3-256k 400 根治；用户要求全面审计「别过几个月又告诉我别的地方还有不合规」→ 12 项全修；plan v0.1→v0.7 八轮双审门禁（R1-R6 阻断收敛 / **R7-R8 连续双 APPROVE 通过**）+ SDD T1/T2 每 Task 双审+微修复审闭环，main db745ff7/d48a9c21，docs 1d015b6 plan 冻结）
+
+- **背景**：切 k3-256k（严格校验 OpenAI 消息序列）后主/子 Agent 400。病灶=ask_user 交互产生 `assistant(tool_calls)→user→tool` 顺序（DB rowid 3596/3597/3598 实证）——规范要求 tool 响应紧跟 assistant(tool_calls)。全面审计（远端，vendored SDK 类型+litellm 源码为权威）出 12 项：顺序不合规 + tool content 展开为 list（P0）/assistant 图片展开/tool 带 name 字段（三处）/压缩切片孤儿 tool/LightRAG schema 缺 additionalProperties（每次实体抽取白跑一次 400）/Claude 字段按模型名注入泄漏进 OpenAI 协议/extra_body 跨协议/MIME 按扩展名猜/stream_options 与 stream=false 同发/存量 list 污染链两链（T3 记录的"档膨胀"边界现为 400 根因）。
+- **核心架构定案（R4 双审引出的根因修正）**：合规化落点=**发送层单点 `LiteLLMSession.chat()`**（全仓唯一 litellm.completion 出口，:1080/1145/1210 三调用点）——sanitize 返回副本不回流调用方 → 长度不变式（persist `[history_len+1:]` 切片）、落库污染链、子 Agent 档续跑累积三个 P1 同时根治；transform_history 去图片展开（4 调用点清零，全链路 content 恒 str，子 Agent 档体积回落）。
+- **机制**：新模块 `agent/generic/message_sanitizer.py` 六步固定执行序（①subagent_msg 丢弃 ②孤儿 tool 丢弃（先于③防带图孤儿残留合成 user）③图片合规化 ④非 user list 降级（**system 保留**——cache_control 压平会静默废 prompt caching）⑤悬空按 tc 剥离（全悬空才整消息降级）⑥顺序规整（全局配对，合成 user 归位 tool 块后））；tool 图段→合成 user 消息承载（OpenAI 规范 tool content 仅文本；agno#7661 业界 fallback=synthetic user message）；`vision_enabled` 派发层判据经 llm_config 显式键透传（主 Agent `NiuRunner.__init__` 派生先于 create_client；子 Agent `_resolve_subagent_has_vision` 覆盖 llmPreset/vision_llm；续跑 `suspended_client.backend.vision_enabled` 赋值照 stop_check 先例）；chat() 入口重绑使 raw_http=真 wire 体（验收可核验）。
+- **质量链亮点（双审价值实证）**：R3-B 抓出「D5 收窄会切断截图→模型唯一图通道」（Phase 2 刚交付的核心能力险些被我自己的合规修复废掉）→ 合成 user 消息重设计；R4 双审各抓一 P1（长度不变式/档累积）同指根因「发送专用变换放在持久消息层」→ 架构修正；R5-B P0「adapter 取不到 capabilities → 图永不展开」；R6 **双审同抓**「主 Agent vision_enabled 写入点晚于会话构造」→ 派生点钉死 __init__。双审同抓=缺陷真实性强信号再验证。
+- **验证**：T1 95 + T2 224 + 全量回归 331 passed；ruff 零新增（stash 对比）；wire 级 test_llm_api_compliance 13 用例（构造级传递锁 spy create_client 防派发层接缝回归）；微修 2 轮（T1 QualityB P2 相邻 assistant 归位全局配对重写 / T2 SpecA P1 current_time fixture + P2 llmPreset 断言）均复审 CONFIRMED。
+- **已知边界（接受）**：test_lightrag_manager 2 failed + test_response_format_probe 2 failed 为预存（非本工程引入，stash 实证）；camelCase apiBase 键分支保留（QualityB 实证 llm_proxy.py get_llm_config 生产 camelCase 路径真实存在，SpecA「死代码」结论被反证——**两角结论相反时以直接验证为准**）；`_derive_provider_prefix` 域名为子串匹配（api.anthropic.com.evil.com 理论误判，apiBase 用户自配，既有行为非本 diff 引入）。
+- **实机验证清单（待用户重启 Niu）**：①k3 继续含 ask_user 历史会话不再 400 ②ask_user 交互后继续正常 ③子 Agent 派发正常 ④界面顺序不变 ⑤长会话压缩/手动 /compact 正常 ⑥截图→模型同轮见图 ⑦LightRAG 实体抽取无 400 白跑 ⑧raw_http 核验（无 name/OpenAI 协议无 cache_control·beta 头/stream=False 无 stream_options/无 subagent_msg）⑨MIME 与载荷一致 ⑩anthropic 路由 extra_body 无 reasoning_effort ⑪续跑旧档不 400、新档纯文本
+
 #### 工程：可视化功能 Phase 1——niu-natives Rust crate（用户四问拍板+法律考察+三轮 spec 双审+三轮 plan 双审；main e3230788..b70dd995 7 commits，docs b7594b4 spec v0.4 冻结/7483554 plan v0.4 冻结/5e19ab1 勘误⑦⑧）
 
 - **目标**：给 Agent 加可视化——屏幕/窗口/区域抓图+浏览器截图+视觉模型解析，第一期只「看」不「操作」但架构留备。**分 Phase**：P1=niu-natives Rust crate（本条目）；P2=vision-server MCP+动态挂载+vision_llm+探测（下阶段）；P3=browser_screenshot。
