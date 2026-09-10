@@ -32,13 +32,13 @@ TOOL_SCHEMAS = {
     },
     "set_llm_config": {
         "name": "set_llm_config",
-        "description": "Set LLM configuration. preset_id loads a named config from llm-configs.json: the entry's llm AND lightrag_llm sections wholly replace the current ones (a true config switch), other parameters are ignored. Without preset_id, modifies individual fields and auto-syncs the named collection entry (two-section snapshot) when llm.presetId is set; a damaged collection file is never overwritten (sync skipped with a warning).",
+        "description": "Set LLM configuration. preset_id loads a named config from llm-configs.json: the entry's llm, lightrag_llm AND vision_llm sections wholly replace the current ones (a true config switch), other parameters are ignored. Without preset_id, modifies individual fields and auto-syncs the named collection entry (three-section snapshot) when llm.presetId is set; a damaged collection file is never overwritten (sync skipped with a warning).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset_id": {
                     "type": "string",
-                    "description": "Named config to load from llm-configs.json (name = llm.presetId). Loading replaces both llm and lightrag_llm sections; other parameters are ignored.",
+                    "description": "Named config to load from llm-configs.json (name = llm.presetId). Loading replaces the llm, lightrag_llm and vision_llm sections; other parameters are ignored.",
                 },
                 "api_key": {"type": "string", "description": "API key"},
                 "api_base": {"type": "string", "description": "API base URL"},
@@ -102,6 +102,42 @@ TOOL_SCHEMAS = {
                 "max_tokens": {
                     "type": "integer",
                     "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Set larger (e.g. 8192/16384) when long reports get truncated.",
+                },
+            },
+        },
+    },
+    "get_vision_llm_config": {
+        "name": "get_vision_llm_config",
+        "description": "Get vision LLM configuration (without API key for security). Returns the vision_llm section if configured, otherwise indicates it will fall back to the llm section.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "set_vision_llm_config": {
+        "name": "set_vision_llm_config",
+        "description": "Set vision LLM configuration. preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters are ignored). Without preset_id, modifies individual fields and auto-syncs the named collection entry when llm.presetId is set (a damaged collection file is never overwritten). If model is set to empty string, removes the vision_llm section so that the vision sub-agent falls back to the main LLM configuration (also synced).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preset_id": {
+                    "type": "string",
+                    "description": "Named config whose vision_llm section to load from llm-configs.json",
+                },
+                "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
+                "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
+                "model": {"type": "string", "description": "Model name (empty string to clear and fall back to main llm)"},
+                "llm_type": {
+                    "type": "string",
+                    "description": "Provider type: 'openai' or 'anthropic'",
+                },
+                "reasoning_effort": {
+                    "type": "string",
+                    "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Vision requests need a generous budget (e.g. 8192) — small budgets get consumed by reasoning and return empty content.",
                 },
             },
         },
@@ -467,7 +503,8 @@ def save_memory(memory: dict[str, Any]) -> None:
 def load_named_configs() -> dict[str, Any]:
     """Load named LLM config collection (~/.niu/config/llm-configs.json).
 
-    返回 {"<配置名>": {"llm": {...}, "lightrag_llm": {...}}} 字典。
+    返回 {"<配置名>": {"llm": {...}, "lightrag_llm": {...}, "vision_llm": {...}}} 字典
+    （旧两段条目无 vision_llm 键 = 读取方按 {} 处理，向后兼容）。
     文件不存在 = 空合集（返回 {}）；JSON 损坏或 configs 值非对象时抛异常，
     由调用方区分处理（读侧展示降级 / 写侧跳过保护两条路径各自 catch）。
     扁平旧格式（无 configs 顶层）data.get 返回 {} = 正常空合集语义不变。
@@ -484,7 +521,7 @@ def load_named_configs() -> dict[str, Any]:
 
 
 def _sync_named_config(config: dict[str, Any]) -> Optional[str]:
-    """写后同步：保存时刻重读合集，单条 upsert 当前 llm+lightrag_llm 两段快照。
+    """写后同步：保存时刻重读合集，单条 upsert 当前 llm+lightrag_llm+vision_llm 三段快照。
 
     仅当 llm.presetId 非空时同步；合集 JSON 损坏 → 跳过写并返回 warning 文案
     （防"损坏=空合集"整体覆写销毁全部条目）；无需同步/同步成功 → None。
@@ -500,6 +537,7 @@ def _sync_named_config(config: dict[str, Any]) -> Optional[str]:
     configs[name] = {
         "llm": config.get("llm", {}),
         "lightrag_llm": config.get("lightrag_llm", {}),
+        "vision_llm": config.get("vision_llm", {}),
     }
     # 原子写：tmp + replace（reader 永远看到完整文件）
     LLM_CONFIGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -546,10 +584,11 @@ def set_llm_config(
     """Set LLM configuration.
 
     preset_id 加载型：从 llm-configs.json 整条加载命名配置——条目的
-    {llm, lightrag_llm} 两段整体替换 user-config.json 对应段（真"切换配置"），
-    其余参数忽略并在结果中说明；跳过写后同步（刚读自合集，对齐是幂等 no-op）。
+    {llm, lightrag_llm, vision_llm} 三段整体替换 user-config.json 对应段（真"切换配置"，
+    旧两段条目无 vision_llm 键 = 替换为 {}），其余参数忽略并在结果中说明；
+    跳过写后同步（刚读自合集，对齐是幂等 no-op）。
     不带 preset_id = 逐项修改型：写 user-config.json 后，llm.presetId 非空时
-    写后同步——保存时刻重读合集，单条 upsert 该名条目 = 两段完整快照。
+    写后同步——保存时刻重读合集，单条 upsert 该名条目 = 三段完整快照。
     """
     config = load_user_config()
 
@@ -570,6 +609,7 @@ def set_llm_config(
         llm["presetId"] = preset_id
         config["llm"] = llm
         config["lightrag_llm"] = dict(entry.get("lightrag_llm", {}))
+        config["vision_llm"] = dict(entry.get("vision_llm", {}))
         save_user_config(config)
         result: dict[str, Any] = {"status": "updated", "llm": get_llm_config()}
         ignored = [
@@ -733,6 +773,133 @@ def set_lightrag_llm_config(
     save_user_config(config)
 
     result = {"status": "updated", "lightrag_llm": get_lightrag_llm_config()}
+    warning = _sync_named_config(config)
+    if warning:
+        result["warning"] = warning
+    return result
+
+
+def get_vision_llm_config() -> dict[str, Any]:
+    """Get vision LLM configuration (without API key for security).
+
+    Returns the vision_llm section if configured, otherwise indicates
+    it will fall back to the llm section. Includes litellm_kwargs so the
+    main agent can inspect provider-specific params. 第三方视觉模型由主 Agent
+    手工测通后配置（见 SYSTEM_MANUAL 视觉能力节），程序不自动探测。
+    """
+    config = load_user_config()
+    vision_llm = config.get("vision_llm", {})
+    return {
+        "presetId": vision_llm.get("presetId", ""),
+        "apiBase": vision_llm.get("apiBase", ""),
+        "model": vision_llm.get("model", ""),
+        "type": vision_llm.get("type", "openai"),
+        "hasApiKey": bool(vision_llm.get("apiKey", "")),
+        "configured": bool(vision_llm.get("model", "")),
+        "reasoning_effort": vision_llm.get("reasoning_effort", "none"),
+        "max_tokens": vision_llm.get("max_tokens"),
+        "temperature": vision_llm.get("temperature", 0.2),
+        "litellm_kwargs": vision_llm.get("litellm_kwargs", {}),
+    }
+
+
+def set_vision_llm_config(
+    preset_id: str = None,
+    api_key: str = None,
+    api_base: str = None,
+    model: str = None,
+    llm_type: str = None,
+    reasoning_effort: str = None,
+    max_tokens: int = None,
+) -> dict[str, Any]:
+    """Set vision LLM configuration.
+
+    If model is set to empty string, removes model-specific fields
+    but preserves reasoning_effort 和 max_tokens（均为独立维度）.
+    model='' 清空分支优先于 preset_id 加载分支（矛盾输入时清空生效）。
+    """
+    config = load_user_config()
+
+    # If clearing the model (model=""), remove model-specific fields
+    # but preserve reasoning_effort 和 max_tokens（均为独立维度）
+    if model == "":
+        vision_llm = config.get("vision_llm", {})
+        for key in ("presetId", "apiKey", "apiBase", "model", "type"):
+            vision_llm.pop(key, None)
+        # Apply reasoning_effort even when clearing model (two independent dimensions)
+        if reasoning_effort is not None:
+            vision_llm["reasoning_effort"] = reasoning_effort
+        if max_tokens is not None:
+            if max_tokens > 0:
+                vision_llm["max_tokens"] = max_tokens
+            else:
+                vision_llm.pop("max_tokens", None)  # 0/负数 = 清除（回退不传）
+        if vision_llm:
+            config["vision_llm"] = vision_llm
+        else:
+            config.pop("vision_llm", None)
+        save_user_config(config)
+        result: dict[str, Any] = {"status": "cleared", "message": "Vision model cleared, will use main LLM model"}
+        warning = _sync_named_config(config)
+        if warning:
+            result["warning"] = warning
+        return result
+
+    # preset_id 加载型：只替换 vision_llm 段，其余参数忽略并在结果中说明；跳过写后同步
+    if preset_id:
+        try:
+            configs = load_named_configs()
+        except Exception as e:
+            logger.warning(f"llm-configs.json 损坏，加载失败: {e}")
+            return {"status": "error", "message": "配置合集文件损坏，无法加载"}
+        entry = configs.get(preset_id)
+        if entry is None:
+            return {"status": "error", "message": f"配置 '{preset_id}' 不存在"}
+        if not isinstance(entry, dict):
+            return {"status": "error", "message": f"配置 '{preset_id}' 格式损坏"}
+        config["vision_llm"] = dict(entry.get("vision_llm", {}))
+        save_user_config(config)
+        result = {"status": "updated", "vision_llm": get_vision_llm_config()}
+        ignored = [
+            name
+            for name, value in (
+                ("api_key", api_key),
+                ("api_base", api_base),
+                ("model", model),
+                ("llm_type", llm_type),
+                ("reasoning_effort", reasoning_effort),
+                ("max_tokens", max_tokens),
+            )
+            if value is not None
+        ]
+        if ignored:
+            result["message"] = "preset_id 加载已忽略其余参数: " + ", ".join(ignored)
+        return result
+
+    # 逐项修改型
+    vision_llm = config.get("vision_llm", {})
+
+    # Override with explicit values
+    if api_key is not None:
+        vision_llm["apiKey"] = api_key
+    if api_base is not None:
+        vision_llm["apiBase"] = api_base
+    if model is not None:
+        vision_llm["model"] = model
+    if llm_type is not None:
+        vision_llm["type"] = llm_type
+    if reasoning_effort is not None:
+        vision_llm["reasoning_effort"] = reasoning_effort
+    if max_tokens is not None:
+        if max_tokens > 0:
+            vision_llm["max_tokens"] = max_tokens
+        else:
+            vision_llm.pop("max_tokens", None)  # 0/负数 = 清除（回退不传）
+
+    config["vision_llm"] = vision_llm
+    save_user_config(config)
+
+    result = {"status": "updated", "vision_llm": get_vision_llm_config()}
     warning = _sync_named_config(config)
     if warning:
         result["warning"] = warning
@@ -1157,7 +1324,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="set_llm_config",
-            description="Set LLM configuration. preset_id loads a named config from llm-configs.json (replaces both llm and lightrag_llm sections; other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry.",
+            description="Set LLM configuration. preset_id loads a named config from llm-configs.json (replaces the llm, lightrag_llm and vision_llm sections; other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1218,6 +1385,39 @@ async def list_tools() -> list[Tool]:
                     "max_tokens": {
                         "type": "integer",
                         "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Set larger (e.g. 8192/16384) when long reports get truncated.",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="get_vision_llm_config",
+            description="Get vision LLM configuration. Returns model, reasoning_effort, and whether it falls back to main llm.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="set_vision_llm_config",
+            description="Set vision LLM configuration. preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry. If model='', clears the section (falls back to main llm).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "preset_id": {
+                        "type": "string",
+                        "description": "Named config whose vision_llm section to load from llm-configs.json",
+                    },
+                    "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
+                    "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
+                    "model": {"type": "string", "description": "Model name (empty string to clear)"},
+                    "llm_type": {
+                        "type": "string",
+                        "description": "Provider type: 'openai' or 'anthropic'",
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Vision requests need a generous budget (e.g. 8192) — small budgets get consumed by reasoning and return empty content.",
                     },
                 },
             },
@@ -1455,6 +1655,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = get_lightrag_llm_config()
         elif name == "set_lightrag_llm_config":
             result = set_lightrag_llm_config(
+                preset_id=arguments.get("preset_id"),
+                api_key=arguments.get("api_key"),
+                api_base=arguments.get("api_base"),
+                model=arguments.get("model"),
+                llm_type=arguments.get("llm_type"),
+                reasoning_effort=arguments.get("reasoning_effort"),
+                max_tokens=arguments.get("max_tokens"),
+            )
+        elif name == "get_vision_llm_config":
+            result = get_vision_llm_config()
+        elif name == "set_vision_llm_config":
+            result = set_vision_llm_config(
                 preset_id=arguments.get("preset_id"),
                 api_key=arguments.get("api_key"),
                 api_base=arguments.get("api_base"),

@@ -15,7 +15,7 @@ const { upsertNamedConfig } = require('./named-configs.js');
  *       ②保存时刻重读 user-config.json 作 fileBase（不存在=空对象；JSON 损坏=空对象+告警）
  *       ③mergeConfig 两层基底合并（表单值 > loadedNamedEntry > fileBase）
  *       ④写 user-config.json（JSON.stringify(x,null,2)）
- *       ⑤upsertNamedConfig 单条 upsert {llm, lightrag_llm} 两段快照；
+ *       ⑤upsertNamedConfig 单条 upsert {llm, lightrag_llm, vision_llm} 三段快照；
  *          {ok:false,warning} → collectionWarning=warning（原坏文件保留不写）；
  *          非解析类异常（磁盘满/权限）→ collectionWarning='配置合集写入失败: ...' 继续执行（不 throw）
  *       ⑥两文件处理后调 notifyReload() 一次（无论 warning——user-config.json 已落盘，主配置已变）
@@ -25,7 +25,7 @@ const { upsertNamedConfig } = require('./named-configs.js');
  * @param {string} args.configName        配置名（trim 后须非空）
  * @param {object} args.formValues        C1 formValues 结构
  * @param {?{response_format_mode: *, allowed_openai_params: *}} args.probeResults  null = 不触碰产物键
- * @param {?{llm?: object, lightrag_llm?: object}} args.loadedNamedEntry  null | 合集条目
+ * @param {?{llm?: object, lightrag_llm?: object, vision_llm?: object}} args.loadedNamedEntry  null | 合集条目
  * @param {Function} args.notifyReload    reload 通知回调（handler 注入；本函数只负责调一次）
  * @returns {{ success: true, collectionWarning?: string } | { success: false, error: string }}
  */
@@ -61,12 +61,13 @@ function saveConfigAndCollection({ niuConfigDir, configName, formValues, probeRe
     fs.writeFileSync(userConfigPath, JSON.stringify(newConfig, null, 2));
     console.log('Config saved to:', userConfigPath);
 
-    // ⑤ 合集单条 upsert（两段快照；损坏 → 跳过写 + warning；非解析类异常 → warning 继续执行）
+    // ⑤ 合集单条 upsert（三段快照；损坏 → 跳过写 + warning；非解析类异常 → warning 继续执行）
     let collectionWarning;
     try {
       const up = upsertNamedConfig(niuConfigDir, name, {
         llm: newConfig.llm,
-        lightrag_llm: newConfig.lightrag_llm
+        lightrag_llm: newConfig.lightrag_llm,
+        vision_llm: newConfig.vision_llm
       });
       if (!up.ok) collectionWarning = up.warning;
     } catch (e) {

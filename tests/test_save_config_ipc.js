@@ -63,8 +63,9 @@ describe('saveConfigAndCollection', () => {
     const collection = readJson(dir, 'llm-configs.json');
     assert.deepEqual(Object.keys(collection), ['configs'], '顶层键恒为 configs（spec §3.1 包装格式）');
     assert.ok(collection.configs.alpha, '合集应出现 alpha 条目');
-    assert.deepEqual(Object.keys(collection.configs.alpha).sort(), ['lightrag_llm', 'llm'], '条目=两段快照');
+    assert.deepEqual(Object.keys(collection.configs.alpha).sort(), ['lightrag_llm', 'llm', 'vision_llm'], '条目=三段快照（T2：新增 vision_llm）');
     assert.equal(collection.configs.alpha.llm.model, 'form-model', '条目 llm 段=user-config 写入值');
+    assert.deepEqual(collection.configs.alpha.vision_llm, {}, 'user-config 无 vision_llm 段→基底透传空对象（config-merge.js:85）');
   });
 
   test('②合集损坏→collectionWarning+原坏文件内容保留+reload 仍发一次', () => {

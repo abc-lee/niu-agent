@@ -26,12 +26,13 @@
    * 纯函数：不改任何入参，返回新对象。
    *
    * 两层基底（表单值 > namedEntry > fileBase）：
-   * - llm / lightrag_llm 段基底 = namedEntry?.段 ?? fileBase.段
+   * - llm / lightrag_llm / vision_llm 段基底 = namedEntry?.段 ?? fileBase.段
+   *   （vision_llm 无表单输入，恒为基底透传——主 Agent 手工配的段不随保存/切换丢失）
    * - storage/logging/context/Agent 等其余顶级段恒取 fileBase（全局设置不随切换丢失）
    *
    * @param {object} args
    * @param {object} args.fileBase          保存时刻重读的 user-config.json 全文（恒提供；缺段按空对象处理）
-   * @param {?{llm?: object, lightrag_llm?: object}} args.namedEntry  loadedNamedEntry：null | 合集条目
+   * @param {?{llm?: object, lightrag_llm?: object, vision_llm?: object}} args.namedEntry  loadedNamedEntry：null | 合集条目
    * @param {object} args.formValues        { llm: {apiKey, apiBase, model, type, reasoning_effort, maxTokensRaw, thinking},
    *                                          lightrag: {reasoning_effort, temperature, thinking},
    *                                          context: {contextWindowSize, warningThreshold, keepRecentTurns, sleepTriggerMinutes} }
@@ -78,6 +79,11 @@
       }
     }
 
+    // --- vision_llm 段：基底透传（namedEntry?.vision_llm ?? fileBase.vision_llm）。
+    // 设置页无 vision_llm 表单（第三方视觉模型由主 Agent 手工配置——SYSTEM_MANUAL 视觉能力节），
+    // 表单零输入 → 基底原样透传，切命名配置/设置页保存不丢该段。
+    const visionLlm = (entry && entry.vision_llm && typeof entry.vision_llm === 'object') ? { ...entry.vision_llm } : ((base.vision_llm && typeof base.vision_llm === 'object') ? { ...base.vision_llm } : {});
+
     // --- context 段：fileBase.context 浅拷贝 + 4 表单键覆盖（文件内其余键保留）
     const ctxBase = (base.context && typeof base.context === 'object') ? base.context : {};
     const context = { ...ctxBase };
@@ -88,11 +94,12 @@
     // --- 顶级组装：storage/logging/Agent 等其余段 fileBase 原样保留；firstRun 例外置 false
     const out = {};
     for (const [k, v] of Object.entries(base)) {
-      if (k === 'llm' || k === 'lightrag_llm' || k === 'context') continue;
+      if (k === 'llm' || k === 'lightrag_llm' || k === 'vision_llm' || k === 'context') continue;
       out[k] = v;
     }
     out.llm = llm;
     out.lightrag_llm = lightragLlm;
+    out.vision_llm = visionLlm;
     out.context = context;
     out.firstRun = false;
     return out;

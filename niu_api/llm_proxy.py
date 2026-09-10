@@ -188,7 +188,10 @@ def litellm_to_openai_response(
 # ============================================================================
 
 
-def get_llm_config(use_lightrag_config: bool = False) -> dict[str, str]:
+def get_llm_config(
+    use_lightrag_config: bool = False,
+    use_vision_config: bool = False,
+) -> dict[str, str]:
     """Read LLM config from file.
 
     Args:
@@ -199,7 +202,16 @@ def get_llm_config(use_lightrag_config: bool = False) -> dict[str, str]:
             仅控制推理深度，不控制思考链返回——思考链返回由 litellm_kwargs.thinking
             独立控制，两者是不同参数，不可混淆）。
             用户可在 lightrag_llm 段显式设置 reasoning_effort 覆盖默认值。
+        use_vision_config: If True, read from 'vision_llm' section（第三方视觉模型，
+            主 Agent 手工测通后配置——见 SYSTEM_MANUAL 视觉能力节）。
+            与 use_lightrag_config 互斥（同传 ValueError）。
+            model 非空 = 独立模型：apiKey/apiBase/type/provider/litellm_kwargs/max_tokens
+            为空时从 llm 段继承，reasoning_effort 默认 ""。
+            model 为空 = 回落主 llm 同一模型 + vision_llm 段独立 overrides。
     """
+    if use_lightrag_config and use_vision_config:
+        raise ValueError("use_lightrag_config 与 use_vision_config 互斥，不能同时为 True")
+
     from pathlib import Path
 
     from niu_api.config import CONFIG_PATH
@@ -249,6 +261,47 @@ def get_llm_config(use_lightrag_config: bool = False) -> dict[str, str]:
                     llm["read_timeout"] = lightrag_llm["read_timeout"]
                 if lightrag_llm.get("max_tokens") is not None:
                     llm["max_tokens"] = lightrag_llm["max_tokens"]
+
+        # If requesting vision config, apply vision_llm overrides（镜像 lightrag 分支）
+        if use_vision_config:
+            vision_llm = data.get("vision_llm", {})
+            if vision_llm.get("model"):
+                # Independent model configured: inherit missing fields from llm
+                if not vision_llm.get("apiKey"):
+                    vision_llm["apiKey"] = llm.get("apiKey", "")
+                if not vision_llm.get("apiBase"):
+                    vision_llm["apiBase"] = llm.get("apiBase", "")
+                if not vision_llm.get("type"):
+                    vision_llm["type"] = llm.get("type", "openai")
+                if not vision_llm.get("provider"):
+                    vision_llm["provider"] = llm.get("provider", "")
+                if not vision_llm.get("litellm_kwargs"):
+                    vision_llm["litellm_kwargs"] = llm.get("litellm_kwargs", {})
+                if vision_llm.get("max_tokens") is None and llm.get("max_tokens") is not None:
+                    vision_llm["max_tokens"] = llm["max_tokens"]
+                # Default reasoning_effort to "" if not explicitly set（模型默认/配置页驱动，不强制档位）
+                if not vision_llm.get("reasoning_effort"):
+                    vision_llm["reasoning_effort"] = ""
+                llm = vision_llm
+            else:
+                # Use main llm model, but independently apply vision-specific overrides
+                llm = dict(llm)
+                user_effort = vision_llm.get("reasoning_effort")
+                llm["reasoning_effort"] = user_effort if user_effort else ""
+                if vision_llm.get("provider"):
+                    llm["provider"] = vision_llm["provider"]
+                if vision_llm.get("litellm_kwargs"):
+                    llm["litellm_kwargs"] = vision_llm["litellm_kwargs"]
+                # temperature 透传：仅当用户显式配置时写入，否则由 _get_litellm_session 兜底 0.2
+                # 注意：这里 llm 是临时 dict（L288 dict(llm) 复制），不会污染主 llm 配置文件
+                # 主 Agent / 子 Agent 的 temperature 来自提示词文档（0.6/0.2），走 create_litellm_client 独立路径，与本处无关
+                user_temp = vision_llm.get("temperature")
+                if user_temp is not None:
+                    llm["temperature"] = user_temp
+                if vision_llm.get("read_timeout"):
+                    llm["read_timeout"] = vision_llm["read_timeout"]
+                if vision_llm.get("max_tokens") is not None:
+                    llm["max_tokens"] = vision_llm["max_tokens"]
 
         # 统一转换为小写键名
         config = {}
