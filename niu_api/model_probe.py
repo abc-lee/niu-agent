@@ -67,6 +67,7 @@ partial 例外（R4/R6/R7/R9/R10/R17）：
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -74,9 +75,11 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import litellm
+from PIL import Image
 
 # 跨平台文件锁（Windows 无 fcntl——探测页在 Windows 上 import 即崩，2026-08-18 实证）。
 # 对齐 compat.py _flock/_funlock 模式：Unix 用 fcntl.flock，Windows 用 msvcrt.locking。
@@ -125,6 +128,26 @@ PROBE_MESSAGE = [{"role": "user", "content": "OK"}]
 # 探测不传 timeout（litellm 默认大超时）——显式短 timeout 会在模型深度思考
 # （豆包 high/max 档实测 8-12s）返回前主动放弃（用户拍板 2026-08-18）。
 PROBE_MAX_TOKENS = 256
+
+# ---------------------------------------------------------------------------
+# vision 双色交叉子扫描常量（plan v0.5.2 §4-V1 / R7）
+# ---------------------------------------------------------------------------
+# max_tokens ≥500（R7：qwen 类 reasoning 模型 max_tokens<500 时思考占满预算、
+# content 空回答——本地 qwen38-xl 实测 finish=length，看着像失败）。
+VISION_MAX_TOKENS = 500
+# vision 请求显式短 timeout（单次 ≤45s×2 次 attempt——视觉探测是附加子扫描，
+# 不得拖长整体探测时长；与值域扫描"不传 timeout"的拍板互不冲突：那是等深度
+# 思考真实响应，这里是给附加项设预算）。
+VISION_TIMEOUT = 45
+# 双色交叉测试图：纯红 RGB(255,0,0) + 纯蓝 RGB(0,0,255)，32×32 纯色 PNG data URI。
+# 双色交叉（R1 P2-4）——单色问答可被"默认答某词"蒙混，两色全对才 supported=true。
+_RED_RGB = (255, 0, 0)
+_BLUE_RGB = (0, 0, 255)
+# 色系命中词（小写子串匹配——中文色名 + 英文色名；"只回答颜色名"提示下
+# 模型答 "红色"/"red"/"crimson" 等均须命中对应色系）。
+VISION_RED_WORDS = ("红", "red", "赤", "crimson", "scarlet")
+VISION_BLUE_WORDS = ("蓝", "blue", "azure")
+VISION_QUESTION = "这张图片是什么颜色？只回答颜色名"
 
 
 def default_profile_path() -> Path:
@@ -521,6 +544,113 @@ def _scan_thinking(
 
 
 # ---------------------------------------------------------------------------
+# vision 双色交叉子扫描（plan v0.5.2 §4-V1）
+# ---------------------------------------------------------------------------
+
+
+def _solid_png_data_uri(rgb: tuple[int, int, int], size: int = 32) -> str:
+    """纯色 PNG → base64 data URI（PIL 编码，32×32 极小图）。"""
+    buf = BytesIO()
+    Image.new("RGB", (size, size), rgb).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _vision_messages(data_uri: str) -> list[dict]:
+    """多模态探测消息（OpenAI 形态 image_url data URI——litellm openai/ 路由原样透传）。"""
+    return [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": VISION_QUESTION},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ],
+    }]
+
+
+def _response_text(response) -> str:
+    """稳健取响应文本（str content 与 list-of-parts 多模态形态均可；mock 同形）。"""
+    message = _response_message(response)
+    if message is None:
+        return ""
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+            elif isinstance(getattr(part, "text", None), str):
+                parts.append(part.text)
+        return " ".join(parts)
+    return ""
+
+
+def _answer_matches_color(answer: str, words: tuple[str, ...]) -> bool:
+    """色系命中判定（小写子串匹配）。"""
+    text = (answer or "").lower()
+    return any(w in text for w in words)
+
+
+def _scan_vision(
+    api_base: str, api_key: str, model: str, api_type: str,
+    probe_config: dict, profile: dict,
+) -> None:
+    """vision 双色交叉子扫描（仅 llm 场景调用——lightrag 不探）。
+
+    发纯红/纯蓝 32×32 PNG data URI 多模态消息，各问主色；红答红系词且蓝答蓝系词
+    → vision.supported=true；任一失败/超时（重试 1 次）/未命中/异常 → supported=false。
+    不抛、不改 probe_status——vision 子扫描失败不得毒化主探测项结果（plan §4-V1）。
+    max_tokens=VISION_MAX_TOKENS(≥500，R7 reasoning 占预算陷阱)；timeout=45s×≤2 attempt。
+    """
+    # 不注入场景 thinking（与值域/thinking 扫描不同）：纯色问答是轻量判定，
+    # thinking 结论与其无关；且 thinking+reasoning_effort 组合在部分服务端 400
+    # （豆包 high+disabled 实测），附加子扫描不应引入该耦合面。
+    # config 副本仍剔除 thinking 键——_build_probe_params 顶层合并 litellm_kwargs，
+    # 不剔则场景 thinking 会随顶层通道泄入 vision 请求（双源歧义同 R13）。
+    probe_config_no_thinking = _strip_thinking_key(probe_config)
+    supported = True
+    for rgb, words in ((_RED_RGB, VISION_RED_WORDS), (_BLUE_RGB, VISION_BLUE_WORDS)):
+        params = _build_probe_params(
+            api_base, api_key, model, api_type, probe_config_no_thinking,
+            messages=_vision_messages(_solid_png_data_uri(rgb)),
+            timeout=VISION_TIMEOUT,
+        )
+        # max_tokens 覆盖：_build_probe_params 固定 PROBE_MAX_TOKENS=256，
+        # vision 须 ≥500（R7）——参数组装后覆盖单键。
+        params["max_tokens"] = VISION_MAX_TOKENS
+        answer = ""
+        request_failed = False
+        for _attempt in range(2):  # 首次超时重试 1 次（同值域扫描 R18 模式）
+            try:
+                response = litellm.completion(**params)
+                answer = _response_text(response)
+                break
+            except Exception as e:  # noqa: BLE001 - 任何失败 → false，不毒化主探测
+                logger.info(
+                    "[model_probe] vision 探测请求失败: rgb=%s attempt=%d error=%s %s",
+                    rgb, _attempt + 1, type(e).__name__, str(e)[:200],
+                )
+                if not (_is_timeout_error(e) and _attempt == 0):
+                    request_failed = True
+                    break
+        if request_failed:
+            supported = False
+            break
+        if not _answer_matches_color(answer, words):
+            logger.info(
+                "[model_probe] vision 探测未命中: rgb=%s answer=%r", rgb, answer[:80],
+            )
+            supported = False
+            break  # 双色交叉——单色已证伪，蓝图不再发（省一次调用）
+    profile["vision"] = {
+        "supported": bool(supported),
+        "input": ["text", "image"],
+        "probed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 探测主入口
 # ---------------------------------------------------------------------------
 
@@ -586,6 +716,12 @@ def probe(
     # 探测归属"测试连接并保存"按钮的 testAndSave 流程；用户拍板 2026-08-18）
     if not _scan_thinking(api_base, api_key, model, api_type, probe_config, profile):
         return profile  # thinking failed——不落盘（旧档保留）
+
+    # vision 双色交叉子扫描（plan v0.5.2 §4-V1：仅主 llm 场景——lightrag 不探、
+    # |lightrag 键不写 vision；失败 → supported=false 落盘覆盖陈旧 true，不毒化
+    # probe_status——主探测项结果不受 vision 子扫描影响）
+    if not lightrag:
+        _scan_vision(api_base, api_key, model, api_type, probe_config, profile)
 
     if profile["probe_status"] != "failed":
         write_profile(profile, lightrag=lightrag, profile_path=profile_path)
