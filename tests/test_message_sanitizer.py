@@ -245,3 +245,14 @@ class TestCopySemantics:
     def test_empty_input(self):
         assert sanitize_llm_messages([]) == []
         assert sanitize_llm_messages(None) == []
+
+    def test_caller_list_unchanged(self):
+        msgs = [
+            {"role": "assistant", "content": "", "tool_calls": [_tc(1)]},
+            {"role": "user", "content": "Q"},
+            {"role": "assistant", "content": "A", "tool_calls": [_tc(9, "ghost")]},
+        ]
+        snapshot = copy.deepcopy(msgs)
+        out = sanitize_llm_messages(msgs)
+        assert msgs == snapshot
+        assert out is not msgs

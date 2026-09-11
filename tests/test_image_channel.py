@@ -140,6 +140,22 @@ class TestImageToDataUri:
         p.write_bytes(b"this is not an image at all")
         assert ic._image_to_data_uri(str(p)) is None
 
+    def test_heic_by_payload_not_extension(self, tmp_path):
+        """HEIC 魔数分支：扩展名 .heic + ftypheic 载荷 → image/heic（_detect_image_mime 魔数判定）。"""
+        import agent.image_channel as ic
+        p = tmp_path / "s.heic"
+        p.write_bytes(b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32)
+        uri = ic._image_to_data_uri(str(p))
+        assert uri is not None and uri.startswith("data:image/heic;base64,")
+
+    def test_extension_mismatch_follows_payload(self, tmp_path):
+        """扩展名与内容不符（.jpg 装 PNG）→ MIME 跟载荷走 image/png，不按扩展名。"""
+        import agent.image_channel as ic
+        p = tmp_path / "s.jpg"
+        _make_png(p)
+        uri = ic._image_to_data_uri(str(p))
+        assert uri is not None and uri.startswith("data:image/png;base64,")
+
     @pytest.mark.skipif(
         importlib.util.find_spec("PIL") is None,
         reason="Pillow 不可用（降采样走失败回落路径）")
