@@ -9,6 +9,7 @@ const fs = require('fs');
 const os = require('os');
 
 const { loadNamedConfigs, upsertNamedConfig, COLLECTION_FILE } = require('../ui/main/lib/named-configs.js');
+const { mergeConfig, isLightragCustomized } = require('../ui/main/lib/config-merge.js');
 
 let _tmpDir;
 function freshTmpConfigDir() {
@@ -138,5 +139,109 @@ describe('named-configs', () => {
     const leftovers = fs.readdirSync(_tmpDir).filter(f => f.startsWith(COLLECTION_FILE + '.') && f.endsWith('.tmp'));
     assert.deepEqual(leftovers, [], '.tmp 文件不残留');
     assert.ok(fs.existsSync(collectionPath(_tmpDir)), '正式文件存在');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 isLightragCustomized 判定矩阵 + mergeConfig C3/vision 恒基底
+// 契约：docs/superpowers/plans/2026-09-11-settings-vision-lightrag-fix.md §0 C1/C3 + §4 T1
+// ---------------------------------------------------------------------------
+
+const LLM = { apiKey: 'ka', apiBase: 'http://a/v1', model: 'main-m', type: 'openai' };
+const VISION_A = { apiKey: 'vk', apiBase: 'http://192.168.3.88:8080/v1', model: 'qwen38-xl' };
+const FORM_VALUES = {
+  llm: { apiKey: 'sk-form', apiBase: 'http://form/v1', model: 'form-model', type: 'openai', reasoning_effort: '', maxTokensRaw: '', thinking: '' },
+  lightrag: { reasoning_effort: '', temperature: 0.2, thinking: '' },
+  context: {}
+};
+
+describe('isLightragCustomized（C1 判定矩阵）', () => {
+  test('lightrag_llm 全空/缺失 → false', () => {
+    assert.equal(isLightragCustomized({ llm: LLM, lightrag_llm: {} }), false);
+    assert.equal(isLightragCustomized({ llm: LLM }), false, '段缺失 → false');
+    assert.equal(isLightragCustomized(null), false, 'fileBase 缺失 → false');
+  });
+
+  test('连接三键全空、页面三项有值（reasoning_effort/temperature/thinking）→ false（页面领土差异不算改过）', () => {
+    const fb = { llm: LLM, lightrag_llm: { model: '', apiKey: '', apiBase: '', reasoning_effort: 'high', temperature: 0.3, litellm_kwargs: { thinking: { type: 'enabled' } } } };
+    assert.equal(isLightragCustomized(fb), false);
+  });
+
+  test('程序产物键差异（capabilities/presetId/response_format_mode/allowed_openai_params，llm 无）→ false', () => {
+    const fb = { llm: LLM, lightrag_llm: { capabilities: { model: 'x' }, presetId: '本地', litellm_kwargs: { response_format_mode: 'json_object', allowed_openai_params: ['a'] } } };
+    assert.equal(isLightragCustomized(fb), false);
+  });
+
+  test('model 非空且 ≠ llm.model → true', () => {
+    assert.equal(isLightragCustomized({ llm: LLM, lightrag_llm: { model: 'lt-m' } }), true);
+  });
+
+  test('apiKey 非空且 ≠ llm.apiKey → true', () => {
+    assert.equal(isLightragCustomized({ llm: LLM, lightrag_llm: { apiKey: 'kl' } }), true);
+  });
+
+  test('apiBase 非空且 ≠ llm.apiBase → true', () => {
+    assert.equal(isLightragCustomized({ llm: LLM, lightrag_llm: { apiBase: 'http://l/v1' } }), true);
+  });
+
+  test('litellm_kwargs 其余子键不一致（lightrag kwargs 有 max_tokens:1000，llm 无）→ true', () => {
+    assert.equal(isLightragCustomized({ llm: LLM, lightrag_llm: { litellm_kwargs: { max_tokens: 1000 } } }), true);
+  });
+
+  test('空值归一化：lightrag.apiBase="" vs llm 有值 → false；kwargs 子键="" vs llm 缺失 → false', () => {
+    const fb = { llm: LLM, lightrag_llm: { apiBase: '', litellm_kwargs: { max_tokens: '' } } };
+    assert.equal(isLightragCustomized(fb), false);
+  });
+
+  test('嵌套深比较：extra_headers 同内容不同引用 → false', () => {
+    const fb = { llm: { ...LLM, litellm_kwargs: { extra_headers: { a: 1 } } }, lightrag_llm: { litellm_kwargs: { extra_headers: { a: 1 } } } };
+    assert.equal(isLightragCustomized(fb), false);
+  });
+
+  test('非空等值：lightrag.model 非空且 == llm.model（主 Agent 显式写同值）→ false', () => {
+    assert.equal(isLightragCustomized({ llm: LLM, lightrag_llm: { model: 'main-m' } }), false);
+  });
+
+  test('model 空但其余键非空（max_tokens=8192，llm 无）→ true（防 model-empty 特例）', () => {
+    assert.equal(isLightragCustomized({ llm: LLM, lightrag_llm: { model: '', max_tokens: 8192 } }), true);
+  });
+});
+
+describe('mergeConfig（C3 customized 透传 / vision 恒基底 / 非 customized 回归）', () => {
+  test('vision_llm 恒基底：namedEntry 带 vision_llm + fileBase 带 vision_llm → 输出 = fileBase 值', () => {
+    const out = mergeConfig({
+      fileBase: { llm: LLM, lightrag_llm: {}, vision_llm: VISION_A, context: {} },
+      namedEntry: { llm: { model: 'entry-main' }, lightrag_llm: {}, vision_llm: { model: 'entry-vision' } },
+      formValues: FORM_VALUES,
+      probeResults: null,
+      configName: '条目名'
+    });
+    assert.deepEqual(out.vision_llm, VISION_A);
+  });
+
+  test('customized 透传：customized fileBase + ltForm 三项有值 + probeResults 非 null + namedEntry.lightrag_llm 有值 → 输出 lightrag 段 = fileBase 原样', () => {
+    const ltCustom = { model: 'lt-custom', apiKey: 'kl', max_tokens: 4096, litellm_kwargs: { max_tokens: 1000 } };
+    const out = mergeConfig({
+      fileBase: { llm: LLM, lightrag_llm: ltCustom, vision_llm: {}, context: {} },
+      namedEntry: { llm: { model: 'entry-main' }, lightrag_llm: { model: 'entry-lt' } },
+      formValues: { ...FORM_VALUES, lightrag: { reasoning_effort: 'high', temperature: 0.5, thinking: 'enabled' } },
+      probeResults: { response_format_mode: 'json_object', allowed_openai_params: ['x'] },
+      configName: '条目名'
+    });
+    assert.deepEqual(out.lightrag_llm, ltCustom, '三项覆盖/probe 覆写/条目基底均不生效');
+  });
+
+  test('非 customized 回归：ltForm 覆盖 + probe 覆写 + namedEntry 基底（现状行为）', () => {
+    const out = mergeConfig({
+      fileBase: { llm: LLM, lightrag_llm: {}, context: {} },
+      namedEntry: { llm: { model: 'entry-main' }, lightrag_llm: { model: 'entry-lt', apiBase: 'http://e/v1' } },
+      formValues: { ...FORM_VALUES, lightrag: { reasoning_effort: 'high', temperature: 0.5, thinking: 'enabled' } },
+      probeResults: { response_format_mode: 'json_object' },
+      configName: '条目名'
+    });
+    assert.deepEqual(out.lightrag_llm, {
+      model: 'entry-lt', apiBase: 'http://e/v1', reasoning_effort: 'high', temperature: 0.5,
+      litellm_kwargs: { thinking: { type: 'enabled' }, response_format_mode: 'json_object' }
+    });
   });
 });

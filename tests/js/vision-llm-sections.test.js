@@ -1,6 +1,6 @@
-// vision_llm 段 JS 保护链测试（plan 2026-09-09-vision-retry.md §4-V2 / T2）。
-// 覆盖：config-merge.js mergeConfig 基底透传（namedEntry ?? fileBase，零表单输入）
-//       + save-config.js saveConfigAndCollection upsert 三段快照。
+// vision_llm 段 JS 保护链测试（plan 2026-09-11-settings-vision-lightrag-fix.md §4 T1）。
+// 覆盖：config-merge.js mergeConfig 恒基底透传（namedEntry 快照一律忽略，零表单输入）
+//       + save-config.js saveConfigAndCollection upsert 两段快照。
 // 运行：node --test tests/js/
 'use strict';
 
@@ -33,7 +33,7 @@ test('mergeConfig: fileBase.vision_llm 透传（namedEntry=null，主 Agent 手�
   assert.deepStrictEqual(out.vision_llm, VISION);
 });
 
-test('mergeConfig: namedEntry.vision_llm 优先于 fileBase（切命名配置取条目段）', () => {
+test('mergeConfig: namedEntry.vision_llm 忽略（恒基底——合集不再携带 vision_llm 段）', () => {
   const entryVision = { model: 'entry-vision', apiBase: 'http://entry/v1' };
   const out = mergeConfig({
     fileBase: { llm: {}, lightrag_llm: {}, vision_llm: VISION, context: {} },
@@ -42,13 +42,13 @@ test('mergeConfig: namedEntry.vision_llm 优先于 fileBase（切命名配置取
     probeResults: null,
     configName: '条目名'
   });
-  assert.deepStrictEqual(out.vision_llm, entryVision);
+  assert.deepStrictEqual(out.vision_llm, VISION);
 });
 
-test('mergeConfig: namedEntry 无 vision_llm 键 → 回落 fileBase（旧两段条目兼容）', () => {
+test('mergeConfig: namedEntry 有 vision_llm 键同样忽略（存量三段条目兼容）', () => {
   const out = mergeConfig({
     fileBase: { llm: {}, lightrag_llm: {}, vision_llm: VISION, context: {} },
-    namedEntry: { llm: { model: 'entry-main' }, lightrag_llm: {} },
+    namedEntry: { llm: { model: 'entry-main' }, lightrag_llm: {}, vision_llm: { model: 'legacy-vision' } },
     formValues: FORM,
     probeResults: null,
     configName: '旧条目'
@@ -67,7 +67,7 @@ test('mergeConfig: 两侧均无 vision_llm → 空对象（不引入键值噪音
   assert.deepStrictEqual(out.vision_llm, {});
 });
 
-test('saveConfigAndCollection: user-config.json 保留 vision_llm + 合集条目三段快照', () => {
+test('saveConfigAndCollection: user-config.json 保留 vision_llm + 合集条目两段快照', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'niu-vision-test-'));
   try {
     fs.writeFileSync(path.join(dir, 'user-config.json'), JSON.stringify({
@@ -92,11 +92,10 @@ test('saveConfigAndCollection: user-config.json 保留 vision_llm + 合集条目
     const saved = JSON.parse(fs.readFileSync(path.join(dir, 'user-config.json'), 'utf-8'));
     assert.deepStrictEqual(saved.vision_llm, VISION);
 
-    // ⑤ 合集条目 = {llm, lightrag_llm, vision_llm} 三段快照
+    // ⑤ 合集条目 = {llm, lightrag_llm} 两段快照（vision_llm 不入合集）
     const coll = JSON.parse(fs.readFileSync(path.join(dir, 'llm-configs.json'), 'utf-8'));
     const entry = coll.configs['本地'];
-    assert.deepStrictEqual(Object.keys(entry).sort(), ['lightrag_llm', 'llm', 'vision_llm']);
-    assert.deepStrictEqual(entry.vision_llm, VISION);
+    assert.deepStrictEqual(Object.keys(entry).sort(), ['lightrag_llm', 'llm']);
 
     // ⑥ reload 恰一次
     assert.strictEqual(reloads.length, 1);
@@ -105,7 +104,7 @@ test('saveConfigAndCollection: user-config.json 保留 vision_llm + 合集条目
   }
 });
 
-test('saveConfigAndCollection: loadedNamedEntry 带 vision_llm → 切换后 user-config 取条目段', () => {
+test('saveConfigAndCollection: loadedNamedEntry 带 vision_llm → 切换后 user-config 仍取 fileBase 顶层（条目段忽略）', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'niu-vision-test-'));
   try {
     fs.writeFileSync(path.join(dir, 'user-config.json'), JSON.stringify({
@@ -127,10 +126,10 @@ test('saveConfigAndCollection: loadedNamedEntry 带 vision_llm → 切换后 use
     assert.strictEqual(res.success, true);
 
     const saved = JSON.parse(fs.readFileSync(path.join(dir, 'user-config.json'), 'utf-8'));
-    assert.deepStrictEqual(saved.vision_llm, entryVision);
+    assert.deepStrictEqual(saved.vision_llm, VISION, 'vision_llm 恒基底——条目快照不覆盖顶层');
 
     const coll = JSON.parse(fs.readFileSync(path.join(dir, 'llm-configs.json'), 'utf-8'));
-    assert.deepStrictEqual(coll.configs['B'].vision_llm, entryVision);
+    assert.deepStrictEqual(Object.keys(coll.configs['B']).sort(), ['lightrag_llm', 'llm'], '新条目两段快照，无 vision_llm 键');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

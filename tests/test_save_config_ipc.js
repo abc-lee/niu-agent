@@ -63,9 +63,9 @@ describe('saveConfigAndCollection', () => {
     const collection = readJson(dir, 'llm-configs.json');
     assert.deepEqual(Object.keys(collection), ['configs'], '顶层键恒为 configs（spec §3.1 包装格式）');
     assert.ok(collection.configs.alpha, '合集应出现 alpha 条目');
-    assert.deepEqual(Object.keys(collection.configs.alpha).sort(), ['lightrag_llm', 'llm', 'vision_llm'], '条目=三段快照（T2：新增 vision_llm）');
+    assert.deepEqual(Object.keys(collection.configs.alpha).sort(), ['lightrag_llm', 'llm'], '条目=两段快照（vision_llm 出合集，恒在 user-config.json 顶层）');
     assert.equal(collection.configs.alpha.llm.model, 'form-model', '条目 llm 段=user-config 写入值');
-    assert.deepEqual(collection.configs.alpha.vision_llm, {}, 'user-config 无 vision_llm 段→基底透传空对象（config-merge.js:85）');
+    assert.equal(collection.configs.alpha.vision_llm, undefined, '合集条目不含 vision_llm 键（C2）');
   });
 
   test('②合集损坏→collectionWarning+原坏文件内容保留+reload 仍发一次', () => {
@@ -134,7 +134,8 @@ describe('saveConfigAndCollection', () => {
     assert.deepEqual(userCfg.Agent, fileBase.Agent, 'Agent 顶级段恒=fileBase');
     assert.equal(userCfg.llm.read_timeout, 220, 'llm 段基底=条目（额外键保留）');
     assert.equal(userCfg.llm.model, 'form-model', '表单值覆盖条目');
-    assert.equal(userCfg.lightrag_llm.temperature, 0.3, 'lightrag 表单 temperature 覆盖');
+    // fileBase.lightrag_llm.model='file-lt' ≠ llm.model → C1 customized → C3 整段透传，表单三项不触碰
+    assert.deepEqual(userCfg.lightrag_llm, { model: 'file-lt' }, 'customized lightrag 段整段透传（表单 temperature 不生效）');
   });
 
   test('⑤upsert 非解析类异常（磁盘满/权限）→ collectionWarning"配置合集写入失败: ..." + reload 仍发一次 + user-config 已落盘', () => {
@@ -172,5 +173,23 @@ describe('saveConfigAndCollection', () => {
       require.cache[ncPath] = realNcEntry;
       delete require.cache[scPath];
     }
+  });
+
+  test('⑥user-config.json 的 vision_llm 段保存后保留（恒基底透传落盘）+ 合集条目无 vision_llm', () => {
+    const dir = _tmpDir;
+    const vision = { apiKey: 'vk', apiBase: 'http://192.168.3.88:8080/v1', model: 'qwen38-xl' };
+    writeJson(dir, 'user-config.json', { llm: { apiKey: 'sk-old', model: 'old-model' }, lightrag_llm: {}, vision_llm: vision });
+
+    const result = saveConfigAndCollection({
+      niuConfigDir: dir, configName: 'alpha', formValues: FORM, probeResults: null,
+      loadedNamedEntry: null, notifyReload: () => {}
+    });
+
+    assert.equal(result.success, true);
+    const userCfg = readJson(dir, 'user-config.json');
+    assert.deepEqual(userCfg.vision_llm, vision, 'vision_llm 段恒基底透传落盘（D-B）');
+    const collection = readJson(dir, 'llm-configs.json');
+    assert.deepEqual(Object.keys(collection.configs.alpha).sort(), ['lightrag_llm', 'llm'], '条目两段快照');
+    assert.equal(collection.configs.alpha.vision_llm, undefined, '合集条目不含 vision_llm 键');
   });
 });
