@@ -106,43 +106,6 @@ TOOL_SCHEMAS = {
             },
         },
     },
-    "get_vision_llm_config": {
-        "name": "get_vision_llm_config",
-        "description": "Get vision LLM configuration (without API key for security). Returns the vision_llm section — the third-party vision model used by analyze_image when the main model has no vision capability. An empty/absent section is inactive; there is no fallback to the main llm. Also returns a sanitized models chain summary (per entry: model name + hasApiKey boolean, never API key plaintext); [] when no chain is configured.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    "set_vision_llm_config": {
-        "name": "set_vision_llm_config",
-        "description": "Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is not consulted when the main model has vision (main model takes priority). Modifies individual fields and auto-syncs the named collection entry when llm.presetId is set (a damaged collection file is never overwritten); the vision_llm section itself always lives at the top level of user-config.json, not in the collection. If model is set to empty string, removes the vision_llm section so that analyze_image will report a clear error if the main model lacks vision (also synced). Pass models (ordered array of per-model objects) to replace the whole vision model chain — each entry carries its own model/apiKey/apiBase/type/max_tokens etc. and is tried in order by analyze_image; an empty array clears the entire section; when models is provided, the individual params are ignored.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
-                "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
-                "model": {"type": "string", "description": "Model name (empty string clears this section; when cleared it is inactive — there is no fallback to main llm)"},
-                "llm_type": {
-                    "type": "string",
-                    "description": "Provider type: 'openai' or 'anthropic'",
-                },
-                "reasoning_effort": {
-                    "type": "string",
-                    "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
-                },
-                "max_tokens": {
-                    "type": "integer",
-                    "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Vision requests need a generous budget (e.g. 8192) — small budgets get consumed by reasoning and return empty content.",
-                },
-                "models": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": "Model chain, tried in order; empty array clears the whole section; when provided, other params are ignored",
-                },
-            },
-        },
-    },
     "get_storage_config": {
         "name": "get_storage_config",
         "description": "Get storage configuration (document root, database path).",
@@ -780,165 +743,6 @@ def set_lightrag_llm_config(
     return result
 
 
-def get_vision_llm_config() -> dict[str, Any]:
-    """Get vision LLM configuration (without API key for security).
-
-    Returns the vision_llm section — the third-party vision model used by
-    analyze_image when the main model has no vision capability. An empty/absent
-    section is inactive (no fallback to the llm section). Includes litellm_kwargs so the
-    main agent can inspect provider-specific params. 第三方视觉模型由主 Agent
-    手工测通后配置（见 SYSTEM_MANUAL 视觉能力节），程序不自动探测。
-
-    models 键 = 多模型链的脱敏概要：每项只含 model 名与是否有 apiKey（hasApiKey
-    布尔，**不返回 apiKey 明文**）；未配置链（models 缺失/非数组）→ []。
-    """
-    config = load_user_config()
-    vision_llm = config.get("vision_llm", {})
-    models_raw = vision_llm.get("models")
-    models_summary = (
-        [
-            {"model": item.get("model", ""), "hasApiKey": bool(item.get("apiKey", ""))}
-            for item in models_raw
-            if isinstance(item, dict)
-        ]
-        if isinstance(models_raw, list)
-        else []
-    )
-    chain_active = len(models_summary) > 0
-    return {
-        "presetId": vision_llm.get("presetId", ""),
-        "apiBase": vision_llm.get("apiBase", ""),
-        "model": vision_llm.get("model", ""),
-        "type": vision_llm.get("type", "openai"),
-        "hasApiKey": bool(vision_llm.get("apiKey", "")),
-        # configured = 段是否生效：单对象 model 非空 **或** 链非空（T2 quality 审微修——
-        # 纯链配置时单对象 model 键为空，仅判后者会误报 configured=False 误导主 Agent 巡检）
-        "configured": bool(vision_llm.get("model", "")) or chain_active,
-        "reasoning_effort": vision_llm.get("reasoning_effort", "none"),
-        "max_tokens": vision_llm.get("max_tokens"),
-        "temperature": vision_llm.get("temperature", 0.2),
-        "litellm_kwargs": vision_llm.get("litellm_kwargs", {}),
-        "models": models_summary,
-    }
-
-
-def set_vision_llm_config(
-    preset_id: str = None,
-    api_key: str = None,
-    api_base: str = None,
-    model: str = None,
-    llm_type: str = None,
-    reasoning_effort: str = None,
-    max_tokens: int = None,
-    models: list = None,
-) -> dict[str, Any]:
-    """Set vision LLM configuration.
-
-    If model is set to empty string, removes model-specific fields
-    but preserves reasoning_effort 和 max_tokens（均为独立维度）.
-    vision_llm 段恒在 user-config.json 顶层（配置合集不保存该段，无 preset_id 加载路径）。
-    preset_id 参数仅为拒绝旧调用而保留：Schema 层已不暴露该参数，但同进程
-    ToolRegistry 按签名过滤实参后会把旧调用的 preset_id 传入——函数体开头
-    显式拒绝（status=error），防止静默 no-op。
-
-    models（多模型链）优先于其余逐项参数：非空数组 = 整链替换（段内既有
-    reasoning_effort/max_tokens 等非链字段保留），空数组 = 清空整段；
-    **非空 models 时其余逐项参数被忽略**。不传 models 时行为与既有完全一致（零变化）。
-    """
-    if preset_id is not None:
-        return {
-            "status": "error",
-            "message": "preset_id 已移除：配置合集不再保存 vision_llm 段；vision 配置恒在 user-config.json 顶层，请用逐项参数直接设置",
-        }
-
-    config = load_user_config()
-
-    # models 链优先（同传时 models 赢）：空数组=清空整段，非空数组=整链替换
-    if models is not None:
-        if len(models) == 0:
-            # 清空整段（含 reasoning_effort/max_tokens——不同于 model="" 的保留独立维度）
-            config.pop("vision_llm", None)
-            save_user_config(config)
-            result = {"status": "cleared", "message": "视觉模型链已清空，analyze_image 将报错提示配置"}
-            warning = _sync_named_config(config)
-            if warning:
-                result["warning"] = warning
-            return result
-
-        for i, item in enumerate(models):
-            if (not isinstance(item, dict)
-                    or not isinstance(item.get("model"), str)
-                    or item.get("model").strip() == ""):
-                return {
-                    "status": "error",
-                    "message": f"models 每项必须是含非空 model 字段的对象（第 {i + 1} 项不合法）",
-                }
-
-        vision_llm = config.get("vision_llm", {})
-        vision_llm["models"] = list(models)
-        config["vision_llm"] = vision_llm
-        save_user_config(config)
-        result = {"status": "updated", "vision_llm": get_vision_llm_config()}
-        warning = _sync_named_config(config)
-        if warning:
-            result["warning"] = warning
-        return result
-
-    # If clearing the model (model=""), remove model-specific fields
-    # but preserve reasoning_effort 和 max_tokens（均为独立维度）
-    if model == "":
-        vision_llm = config.get("vision_llm", {})
-        for key in ("presetId", "apiKey", "apiBase", "model", "type"):
-            vision_llm.pop(key, None)
-        # Apply reasoning_effort even when clearing model (two independent dimensions)
-        if reasoning_effort is not None:
-            vision_llm["reasoning_effort"] = reasoning_effort
-        if max_tokens is not None:
-            if max_tokens > 0:
-                vision_llm["max_tokens"] = max_tokens
-            else:
-                vision_llm.pop("max_tokens", None)  # 0/负数 = 清除（回退不传）
-        if vision_llm:
-            config["vision_llm"] = vision_llm
-        else:
-            config.pop("vision_llm", None)
-        save_user_config(config)
-        result: dict[str, Any] = {"status": "cleared", "message": "Vision model cleared. The vision_llm section is now inactive (no fallback to the main model); if the main model has no vision capability, analyze_image will report an error asking you to configure a third-party vision model"}
-        warning = _sync_named_config(config)
-        if warning:
-            result["warning"] = warning
-        return result
-
-    # 逐项修改型
-    vision_llm = config.get("vision_llm", {})
-
-    # Override with explicit values
-    if api_key is not None:
-        vision_llm["apiKey"] = api_key
-    if api_base is not None:
-        vision_llm["apiBase"] = api_base
-    if model is not None:
-        vision_llm["model"] = model
-    if llm_type is not None:
-        vision_llm["type"] = llm_type
-    if reasoning_effort is not None:
-        vision_llm["reasoning_effort"] = reasoning_effort
-    if max_tokens is not None:
-        if max_tokens > 0:
-            vision_llm["max_tokens"] = max_tokens
-        else:
-            vision_llm.pop("max_tokens", None)  # 0/负数 = 清除（回退不传）
-
-    config["vision_llm"] = vision_llm
-    save_user_config(config)
-
-    result = {"status": "updated", "vision_llm": get_vision_llm_config()}
-    warning = _sync_named_config(config)
-    if warning:
-        result["warning"] = warning
-    return result
-
-
 def list_llm_configs() -> dict[str, Any]:
     """List all named LLM configs from the collection.
 
@@ -1422,40 +1226,6 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
-        Tool(
-            name="get_vision_llm_config",
-            description="Get vision LLM configuration. Returns the vision_llm section — the third-party vision model used by analyze_image when the main model has no vision; an empty/absent section is inactive (no fallback to main llm). Also returns a sanitized models chain summary (per entry: model name + hasApiKey boolean, never API key plaintext); [] when no chain is configured.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="set_vision_llm_config",
-            description="Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is inactive when the main model has vision. Modifies individual fields and auto-syncs the named collection entry (the vision_llm section itself always lives at the top level of user-config.json, not in the collection). If model='', clears the section (it becomes inactive — analyze_image will report an error if the main model lacks vision). Pass models (ordered array of per-model objects) to replace the whole vision model chain — tried in order by analyze_image; empty array clears the entire section; when models is provided, other params are ignored.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
-                    "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
-                    "model": {"type": "string", "description": "Model name (empty string to clear)"},
-                    "llm_type": {
-                        "type": "string",
-                        "description": "Provider type: 'openai' or 'anthropic'",
-                    },
-                    "reasoning_effort": {
-                        "type": "string",
-                        "description": "Reasoning depth: 'none', 'low', 'medium', 'high'. Controls reasoning depth only, NOT thinking-chain output (controlled by litellm_kwargs.thinking). Default is model default / config-page driven (不强制档位).",
-                    },
-                    "max_tokens": {
-                        "type": "integer",
-                        "description": "Max output tokens per response (output budget). Omit/0 = not set (server default). Vision requests need a generous budget (e.g. 8192) — small budgets get consumed by reasoning and return empty content.",
-                    },
-                    "models": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "Model chain, tried in order; empty array clears the whole section; when provided, other params are ignored",
-                    },
-                },
-            },
-        ),
         # Storage Configuration
         Tool(
             name="get_storage_config",
@@ -1697,21 +1467,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 reasoning_effort=arguments.get("reasoning_effort"),
                 max_tokens=arguments.get("max_tokens"),
             )
-        elif name == "get_vision_llm_config":
-            result = get_vision_llm_config()
-        elif name == "set_vision_llm_config":
-            # preset_id 拒绝统一在函数体开头（同进程 ToolRegistry 路径同样生效）
-            result = set_vision_llm_config(
-                preset_id=arguments.get("preset_id"),
-                api_key=arguments.get("api_key"),
-                api_base=arguments.get("api_base"),
-                model=arguments.get("model"),
-                llm_type=arguments.get("llm_type"),
-                reasoning_effort=arguments.get("reasoning_effort"),
-                max_tokens=arguments.get("max_tokens"),
-                models=arguments.get("models"),
-            )
-
         # Storage Configuration
         elif name == "get_storage_config":
             result = get_storage_config()

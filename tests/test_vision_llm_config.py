@@ -1,11 +1,10 @@
 """vision_llm 配置段测试（plan 2026-09-09-vision-retry.md §4-V2 / T2）。
 
 覆盖：
-① llm_proxy.get_llm_config(use_vision_config=True) 三形态——
+① llm_proxy.get_llm_config vision 形态——
    model 非空独立继承 / model 空回落主 llm + overrides / 与 use_lightrag_config 互斥 ValueError。
-② config-manager get/set_vision_llm_config 行为（镜像 lightrag 工具模式）+
-   _sync_named_config 两段快照（vision_llm 不入合集，恒在 user-config.json 顶层）+
-   函数体开头拒绝 preset_id（已移除；dispatch 与同进程直调两路径均生效）。
+② config-manager 合集两段快照语义（vision_llm 不入合集，恒在 user-config.json 顶层）：
+   逐项修改型写后同步（_sync_named_config）/ set_llm_config(preset_id) 整条加载不动 vision_llm 段。
 
 全 mock：配置路径 monkeypatch 到 tmp_path，不触碰真实 ~/.niu/config/，禁真实 LLM。
 """
@@ -29,7 +28,7 @@ sys.path.insert(
 import niu_config_manager as ncm
 
 
-# ============== llm_proxy.get_llm_config(use_vision_config) ==============
+# ============== llm_proxy.get_llm_config vision 形态 ==============
 
 
 @pytest.fixture
@@ -147,7 +146,7 @@ def test_vision_flag_does_not_affect_default_call(vision_config_file):
     assert cfg["apikey"] == "main-key"
 
 
-# ============== config-manager get/set_vision_llm_config ==============
+# ============== config-manager 合集两段快照（vision_llm 不入合集） ==============
 
 
 @pytest.fixture
@@ -163,91 +162,18 @@ def _read_config(tmp_config):
     return json.loads((tmp_config / "user-config.json").read_text(encoding="utf-8"))
 
 
-def test_set_vision_llm_config_writes_section(tmp_config):
-    """逐项修改型：写入 vision_llm 段，get 读回 configured=True。"""
-    result = ncm.set_vision_llm_config(
-        model="qwen38-xl",
-        api_base="http://192.168.3.88:8080/v1",
-        max_tokens=8192,
-    )
-    assert result["status"] == "updated"
-
-    config = _read_config(tmp_config)
-    assert config["vision_llm"]["model"] == "qwen38-xl"
-    assert config["vision_llm"]["apiBase"] == "http://192.168.3.88:8080/v1"
-    assert config["vision_llm"]["max_tokens"] == 8192
-
-    got = ncm.get_vision_llm_config()
-    assert got["configured"] is True
-    assert got["model"] == "qwen38-xl"
-    assert got["hasApiKey"] is False
-    assert got["max_tokens"] == 8192
-
-
-def test_get_vision_llm_config_unconfigured(tmp_config):
-    """未配置 → configured=False、model 空。"""
-    ncm.set_vision_llm_config(model="qwen38-xl")
-    ncm.set_vision_llm_config(model="")  # 清空
-    got = ncm.get_vision_llm_config()
-    assert got["configured"] is False
-    assert got["model"] == ""
-
-
-def test_set_vision_llm_config_clear_model(tmp_config):
-    """model='' 清空分支：移除模型键、保留 reasoning_effort/max_tokens 独立维度。"""
-    ncm.set_vision_llm_config(model="qwen38-xl", max_tokens=8192, reasoning_effort="high")
-    result = ncm.set_vision_llm_config(model="")
-    assert result["status"] == "cleared"
-
-    config = _read_config(tmp_config)
-    section = config.get("vision_llm", {})
-    assert "model" not in section
-    assert section["reasoning_effort"] == "high"
-    assert section["max_tokens"] == 8192
-
-
-def test_set_vision_llm_config_max_tokens_clear(tmp_config):
-    """max_tokens=0 清除该键（回退不传）。"""
-    ncm.set_vision_llm_config(model="m", max_tokens=8192)
-    assert _read_config(tmp_config)["vision_llm"]["max_tokens"] == 8192
-
-    ncm.set_vision_llm_config(max_tokens=0)
-    assert "max_tokens" not in _read_config(tmp_config)["vision_llm"]
-
-
-def test_set_vision_llm_config_dispatch_rejects_preset_id(tmp_config):
-    """preset_id 已移除：dispatch 显式拒绝（status=error + 「preset_id 已移除」文案），防旧调用静默 no-op。"""
-    import asyncio
-
-    out = asyncio.run(ncm.call_tool("set_vision_llm_config", {"preset_id": "本地视觉"}))
-    payload = json.loads(out[0].text)
-    assert payload["status"] == "error"
-    assert "preset_id 已移除" in payload["message"]
-
-
-def test_set_vision_llm_config_direct_call_rejects_preset_id(tmp_config):
-    """同进程 ToolRegistry 路径（按签名过滤实参后直调实现函数）：preset_id 同样拒绝且 user-config.json 不变。"""
-    ncm.set_vision_llm_config(model="stale")
-    before = (tmp_config / "user-config.json").read_bytes()
-
-    result = ncm.set_vision_llm_config(preset_id="本地视觉")
-    assert result["status"] == "error"
-    assert "preset_id 已移除" in result["message"]
-    assert (tmp_config / "user-config.json").read_bytes() == before
-
-
-def test_vision_item_modify_syncs_two_section_snapshot(tmp_config):
+def test_llm_item_modify_syncs_two_section_snapshot(tmp_config):
     """逐项修改型写后同步：合集条目 = llm+lightrag_llm 两段快照（vision_llm 不入合集）。"""
     ncm.set_llm_config(api_key="k1", api_base="https://api.main/v1", model="main-model")
     # set_llm_config 不带 presetId → 无同步；手工写 presetId 触发同步路径
     config = _read_config(tmp_config)
     config["llm"]["presetId"] = "本地"
-    config["vision_llm"] = {"model": "qwen38-xl", "apiBase": "http://192.168.3.88:8080/v1"}
+    config["vision_llm"] = {"model": "qwen38-xl", "apiBase": "http://192.168.3.88:8080/v1", "max_tokens": 8192}
     (tmp_config / "user-config.json").write_text(
         json.dumps(config, ensure_ascii=False), encoding="utf-8"
     )
 
-    result = ncm.set_vision_llm_config(max_tokens=8192)
+    result = ncm.set_llm_config(model="main-model")
     assert result["status"] == "updated"
     assert "warning" not in result
 
@@ -257,7 +183,7 @@ def test_vision_item_modify_syncs_two_section_snapshot(tmp_config):
     entry = configs["本地"]
     assert set(entry.keys()) == {"llm", "lightrag_llm"}  # vision_llm 不入合集
     assert entry["llm"]["model"] == "main-model"
-    # vision_llm 恒在 user-config.json 顶层：同步后顶层段原样保留（含本次写入的 max_tokens）
+    # vision_llm 恒在 user-config.json 顶层：同步后顶层段原样保留（铺场写入）
     assert _read_config(tmp_config)["vision_llm"] == {
         "model": "qwen38-xl",
         "apiBase": "http://192.168.3.88:8080/v1",
@@ -279,7 +205,8 @@ def test_set_llm_config_preset_load_keeps_vision_section(tmp_config):
                 "lightrag_llm": {"model": "legacy-lr"},
             },
         }}, ensure_ascii=False), encoding="utf-8")
-    ncm.set_vision_llm_config(model="stale-vision")
+    (tmp_config / "user-config.json").write_text(
+        json.dumps({"vision_llm": {"model": "stale-vision"}}, ensure_ascii=False), encoding="utf-8")
 
     result = ncm.set_llm_config(preset_id="视觉套")
     assert result["status"] == "updated"
@@ -294,94 +221,3 @@ def test_set_llm_config_preset_load_keeps_vision_section(tmp_config):
     config = _read_config(tmp_config)
     assert config["llm"]["model"] == "legacy-main"
     assert config["vision_llm"] == {"model": "stale-vision"}
-
-
-def test_vision_tools_registered_in_schemas_and_dispatch(tmp_config):
-    """四处注册 parity：TOOL_SCHEMAS 含两工具 + call_tool dispatch 可达（async）。"""
-    import asyncio
-
-    assert "get_vision_llm_config" in ncm.TOOL_SCHEMAS
-    assert "set_vision_llm_config" in ncm.TOOL_SCHEMAS
-    schemas = ncm.get_tool_schemas()
-    names = {s["name"] for s in schemas}
-    assert {"get_vision_llm_config", "set_vision_llm_config"} <= names
-
-    # dispatch 层：call_tool 走通（结果 JSON 含 vision_llm 键）
-    out = asyncio.run(ncm.call_tool("get_vision_llm_config", {}))
-    payload = json.loads(out[0].text)
-    assert "model" in payload and "configured" in payload
-
-
-# ============== T2：vision_llm.models 多模型链（plan 2026-09-11-vision-model-fallback.md §5 用例 22-24） ==============
-
-
-def test_set_vision_llm_config_models_full_chain_replace(tmp_config):
-    """用例 22：models=[…] 整链替换——段内 models 逐字写入（顺序保持），既有非链字段保留；get 返回脱敏概要。"""
-    ncm.set_vision_llm_config(model="glm-4.6v-flash", max_tokens=8192)
-    chain = [
-        {"model": "glm-4.6v-flash", "apiBase": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "k1"},
-        {"model": "qwen38-xl", "apiBase": "http://192.168.3.88:8080/v1"},
-    ]
-    result = ncm.set_vision_llm_config(models=chain)
-    assert result["status"] == "updated"
-
-    section = _read_config(tmp_config)["vision_llm"]
-    assert section["models"] == chain  # 逐字、顺序保持
-    assert section["max_tokens"] == 8192  # 非链字段保留
-
-    got = ncm.get_vision_llm_config()
-    assert got["models"] == [
-        {"model": "glm-4.6v-flash", "hasApiKey": True},
-        {"model": "qwen38-xl", "hasApiKey": False},
-    ]  # 脱敏：只含 model 名 + hasApiKey，无 apiKey 明文
-    assert got["configured"] is True  # 微修锁：纯链配置（单对象 model 键为空）也算段生效
-
-
-def test_set_vision_llm_config_models_rejects_blank_model(tmp_config):
-    """微修锁：链节 model 为纯空白字符串 → 拒绝且不写盘（读侧过滤前先在写侧拦住）。"""
-    ncm.set_vision_llm_config(model="glm-4.6v-flash")
-    before = _read_config(tmp_config)["vision_llm"]
-
-    result = ncm.set_vision_llm_config(models=[{"model": "  "}])
-    assert result["status"] == "error"
-    assert _read_config(tmp_config)["vision_llm"] == before  # 未写盘
-
-
-def test_set_vision_llm_config_models_empty_clears_whole_section(tmp_config):
-    """用例 23：models=[] 清空整段——vision_llm 整体消失（含 reasoning_effort/max_tokens，不同于 model='' 的保留独立维度）。"""
-    ncm.set_vision_llm_config(model="glm-4.6v-flash", max_tokens=8192, reasoning_effort="high")
-    result = ncm.set_vision_llm_config(models=[])
-    assert result["status"] == "cleared"
-
-    config = _read_config(tmp_config)
-    assert "vision_llm" not in config  # 整段消失，非五键移除
-
-    got = ncm.get_vision_llm_config()
-    assert got["models"] == []
-    assert got["configured"] is False
-
-
-def test_set_vision_llm_config_without_models_unchanged(tmp_config):
-    """用例 24：不传 models——既有逐项路径行为零变化（回归锁），含 model='' 清空分支保留独立维度。"""
-    ncm.set_vision_llm_config(
-        model="qwen38-xl",
-        api_base="http://192.168.3.88:8080/v1",
-        max_tokens=8192,
-        reasoning_effort="high",
-    )
-    section = _read_config(tmp_config)["vision_llm"]
-    assert section == {
-        "model": "qwen38-xl",
-        "apiBase": "http://192.168.3.88:8080/v1",
-        "max_tokens": 8192,
-        "reasoning_effort": "high",
-    }
-    assert "models" not in section  # 未传 models 不产生链键
-
-    # model='' 清空分支语义不变：移除模型键、保留 reasoning_effort/max_tokens
-    result = ncm.set_vision_llm_config(model="")
-    assert result["status"] == "cleared"
-    section = _read_config(tmp_config)["vision_llm"]
-    assert "model" not in section
-    assert section["reasoning_effort"] == "high"
-    assert section["max_tokens"] == 8192
