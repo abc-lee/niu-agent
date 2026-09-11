@@ -721,6 +721,23 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 
 > 注：该指标仅为参考信息，不影响任何功能逻辑。
 
+### 1.11 视觉识图问题（screenshot / list_targets / analyze_image）
+
+**先分清是哪一层**：截图工具（`screenshot`/`list_targets`）依赖 niu-natives 原生扩展（`python/` 内的 `.so`/`.pyd`）；`analyze_image` **不依赖**它，只看模型配置。
+
+| 现象 | 原因 | 处置 |
+|------|------|------|
+| 工具不出现（主 Agent 工具列表里没有 `screenshot`/`list_targets`） | 原生扩展缺失（如 Windows 未编译 `.pyd`、打包残包） | Windows 需在其本机 `maturin` 编译 niu-natives 后重打包；`python/bin/python -c "import niu_natives"` 直测报错即证实 |
+| `list_targets` 报错或返回「列出可截取目标失败」 | 原生扩展调用异常；或屏幕录制权限未授予（macOS） | macOS：系统设置 → 隐私与安全性 → 屏幕录制 授权给 Niu；其余情况看日志 `[vision-server]` 关键字 |
+| `screenshot` 报「窗口不存在」 | 窗口编号有时效（窗口已关闭/切换） | 重跑 `list_targets` 取新编号再截 |
+| `analyze_image` 返回「识图不可用：主模型无视觉能力，且 vision_llm 段未配置」 | 主模型未探测出视觉，且 `vision_llm` 段未生效 | 二选一：把主模型换成支持视觉的模型并重跑「探测能力」；或按 [SYSTEM_MANUAL 视觉节](SYSTEM_MANUAL.md) 配置 `vision_llm`（单对象或 `models` 链） |
+| `analyze_image` 返回全链失败 / 每模型都有原因 | 各模型各自不可用（key/余额/连接/预算） | 读返回文案逐条归因（对照 SYSTEM_MANUAL「识图失败怎么排查」表）；重试 3 次仍失败属服务端持续限流 |
+| `analyze_image` 返回「输出预算耗尽」 | 该模型 `max_tokens` 太小，思考链吃满预算 | 调大该节 `max_tokens`（建议 8192）——不要靠降级绕过 |
+| 配了 2 个模型但返回「无备用模型可降级」 | `models` 里的节 `model` 为空/非字符串被跳过（有效链只剩 1 个） | 修好该节 `model` 字段；返回文案会附「（另有 K 个配置无效被跳过）」 |
+| 大图/长会话识图变慢或失败 | 视觉模型上下文窗口不足（截图约 1.2K token + 历史可达 70K+） | 见 SYSTEM_MANUAL 视觉节「上下文窗口要求 ≥32K（建议 ≥64K）」三处配法 |
+
+**日志**：`~/.niu/logs/` 内搜 `[vision-server]`（跳过的无效链节、读盘失败、选模失败、调用异常都打在这里）。
+
 ---
 
 ## 验证记录
