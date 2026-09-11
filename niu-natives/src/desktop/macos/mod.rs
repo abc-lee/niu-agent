@@ -1,7 +1,10 @@
 mod ax;
 mod capture;
 mod input;
+mod process_type;
 mod skylight;
+
+pub(crate) use self::process_type::demote_to_background_only;
 
 use image::RgbaImage;
 

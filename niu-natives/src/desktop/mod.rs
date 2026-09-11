@@ -524,6 +524,13 @@ impl DesktopSession {
 	#[new]
 	#[pyo3(signature = (options=None))]
 	fn new(options: Option<DesktopSessionOptions>) -> PyResult<Self> {
+		// macOS: demote this process to a background-only application before any capture
+		// API call — otherwise LaunchServices promotes it to a Foreground app on first
+		// use and a Python icon appears in the Dock. Runs on the main thread, before the
+		// native worker (and hence any xcap call) is ever started; best-effort, never
+		// fails the constructor.
+		#[cfg(target_os = "macos")]
+		macos::demote_to_background_only();
 		Ok(Self { core: SessionCore::new(DisplaySelector::parse(options.and_then(|o| o.display))) })
 	}
 
