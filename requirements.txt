@@ -27,6 +27,7 @@
 # 构建方式（maturin 见 requirements-dev.txt；launcher/build.sh 打包流程已内嵌同步骤）：
 #   cd niu-natives && maturin build --release -i ../python/bin/python
 #   cd .. && python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
+#   以上为 macOS 形态（python/bin/）；Windows 命令见 README「编译 niu-natives」章节（python\Scripts\ 路径 + for %f in (...)）
 # 关键 crate 许可证（全量 297 项含传递依赖见根 THIRD-PARTY-NOTICES.txt，零 GPL/LGPL/AGPL）：
 #   xcap 0.9.6            Apache-2.0              屏幕/窗口采集（macOS+Windows）
 #   enigo 0.6.1           MIT                     输入注入（Windows；macOS 纯 CGEvent）

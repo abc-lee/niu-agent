@@ -160,6 +160,8 @@ cd niu-natives && maturin build --release -i ../python/bin/python
 cd .. && python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
 ```
 
+> 以上为 macOS 形态（`python/bin/`）；Windows 命令见 README「编译 niu-natives」章节（路径形态为 `python\Scripts\`，且须用 `for %f in (...)`，不能照抄 Unix glob）。
+
 **许可证归集：** 根目录 `THIRD-PARTY-NOTICES.txt`（cargo vendor 全量提取，含 Windows-only 与跨平台传递依赖；打包时复制进 `.app` Resources/）。
 
 ---

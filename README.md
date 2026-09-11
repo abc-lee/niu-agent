@@ -255,7 +255,14 @@ cd ui/main && npm install && cd ../..
 
 # 4. 初始化用户数据目录（见下文"用户数据目录"）
 
-# 5. 编译并启动 Rust 启动器
+# 5. 编译 niu-natives（Rust 桌面采集原生扩展 → 装进 python/）
+#    截图工具（screenshot / list_targets）依赖此扩展
+python/bin/pip install -r requirements-dev.txt
+rm -rf niu-natives/target/wheels
+python/bin/maturin build --release --manifest-path niu-natives/Cargo.toml -i python/bin/python
+python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
+
+# 6. 编译并启动 Rust 启动器
 cd launcher && cargo run --release
 
 启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。模型配置经设置窗口保存为命名配置（合集存于 `~/.niu/config/llm-configs.json`），本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
@@ -325,13 +332,14 @@ copy config\user-data\skills\*.md "$env:USERPROFILE\.niu\skills\"
 
 ## macOS .app 打包
 
-最终用户拿到的 macOS 安装包是 `niu.app`（含完整运行时：Rust 启动器 + 自包含 Python + Electron 前端 + 模型 + 配置模板）。打包流程全部由 `launcher/build.sh` 自动完成。
+最终用户拿到的 macOS 安装包是 `niu.app`（含完整运行时：Rust 启动器 + 自包含 Python + Electron 前端 + 模型 + 配置模板）。打包流程全部由 `launcher/build.sh` 自动完成（Windows 见下文『Windows 打包』）。
 
 ### 前置条件
 
 1. **python/ 自包含运行时已就位**（含 stdlib + dylib + Resources stub，install_name_tool 已改）
 2. **ui/main/node_modules 已安装**（Electron 33 + 依赖）
 3. **Rust 工具链已安装**（含 cargo + rustup target，见下一节"编译 Rust 启动器"）
+4. **maturin 已安装**（`python/bin/pip install -r requirements-dev.txt`；`build.sh` 会调它构建 niu-natives wheel）
 
 ### 打包命令
 
@@ -342,23 +350,24 @@ cd launcher
 
 `build.sh` 会自动完成：
 1. `cargo build --release` 编译 Rust 启动器
-2. 复制二进制到项目根 `niu`（开发模式裸二进制，命令行 `./niu` 用）
-3. macOS 下额外构造 `niu.app/Contents/MacOS/niu`（Finder 双击用）
-4. 复制运行时资源到 `niu.app/Contents/Resources/`：
+2. 构建 niu-natives wheel 并装进 `python/`（Rust 桌面采集原生扩展，截图工具依赖；前置见「编译 niu-natives」章）
+3. 复制二进制到项目根 `niu`（开发模式裸二进制，命令行 `./niu` 用）
+4. macOS 下额外构造 `niu.app/Contents/MacOS/niu`（Finder 双击用）
+5. 复制运行时资源到 `niu.app/Contents/Resources/`：
    - `python/`（自包含 Python 运行时）
    - `ui/main/`（Electron 前端）
    - `config/`（配置模板，首次启动复制到 `~/.niu/config/`）
    - `models/`（向量模型 + 人脸识别模型）
    - `memory/`（用户记忆模板）
    - `niu_api/`、`agent/`、`mcp-servers/`（Python 模块，PYTHONPATH 引用）
-5. 调用 `scripts/relocate_python_framework.sh` 把 stdlib + dylib + Resources stub 复制到 `python/lib/`，并用 install_name_tool 改 dylib 引用为 `@rpath` 自包含
-6. 逐个 codesign ad-hoc 签名（不用 `--deep`，自 macOS 13.3 起废弃）：
+6. 调用 `scripts/relocate_python_framework.sh` 把 stdlib + dylib + Resources stub 复制到 `python/lib/`，并用 install_name_tool 改 dylib 引用为 `@rpath` 自包含
+7. 逐个 codesign ad-hoc 签名（不用 `--deep`，自 macOS 13.3 起废弃）：
    - Python `.so` / `.dylib`（并行 4 进程）
    - `python3` 二进制
    - Electron 主二进制 + Helper + Framework + `.node`
    - 顶层 `niu.app`
-7. `lsregister -f` 注册到 LaunchServices（打 `com.apple.provenance` xattr）
-8. `xattr -w com.apple.quarantine` 主动加 quarantine（首次双击弹"无法验证开发者"对话框，用户点"打开"授权后系统记住）
+8. `lsregister -f` 注册到 LaunchServices（打 `com.apple.provenance` xattr）
+9. `xattr -w com.apple.quarantine` 主动加 quarantine（首次双击弹"无法验证开发者"对话框，用户点"打开"授权后系统记住）
 
 ### 产物
 
@@ -477,6 +486,35 @@ file niu.app/Contents/Resources/ui/main/node_modules/electron/dist/Electron.app/
 - **`lightrag-hku` 从 GitHub 源码编译**：`requirements.txt` 里的 `lightrag-hku @ git+https://github.com/abc-lee/LightRAG.git` 在 M 系列 Mac 上会编译 arm64 扩展，需要联网能访问 GitHub
 - **`torch==2.2.2` 有 arm64 wheel**：PyPI 上 `macosx_11_0_arm64` tag 可用，M 系列 Mac 上 pip 直接装，无需特殊处理
 
+## Windows 打包
+
+最终用户拿到的 Windows 安装包是绿色 7z（`dist\Niu-<VERSION>-win-x64.7z`），解压即用，无需安装程序。打包由根目录 `pack.bat` 完成。
+
+### 前置条件
+
+1. **Windows x64 + Rust MSVC 工具链**（`rustup target add x86_64-pc-windows-msvc`）+ Node.js
+2. **创建自包含 Python 运行时**：`C:\Python311\python.exe -m venv --copies python`（Windows venv 才产生 `python\Scripts\` 与 `python\Lib\` 布局）
+3. `python\Scripts\pip.exe install -r requirements.txt`（运行时依赖）
+4. `python\Scripts\pip.exe install -r requirements-dev.txt`（**提供 maturin，pack.bat 硬依赖**）
+5. `cd ui\main && npm install`（Electron，缺则 pack.bat 守卫中止）
+6. **7-Zip**（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 已改为自动探测 `C:\` 与 `E:\`，装在别处才需手工改脚本）
+
+注意 Windows 自包含运行时的路径形态与 Unix 不同：`python\Scripts\` 与 `python\Lib\`，非 `python/bin/`。
+
+### 打包命令
+
+```cmd
+cd launcher && cargo build --release
+copy target\release\niu-launcher.exe ..\niu.exe
+pack.bat
+```
+
+### 产物
+
+`dist\Niu-<VERSION>-win-x64.7z`（VERSION 从根目录 `VERSION` 文件读）。
+
+`pack.bat` 会自动构建 niu-natives wheel 并装进 `python\`（命令见「编译 niu-natives」章）；缺 maturin、`.pyd` 未落位或 `ui\main\node_modules` 缺失时**立即中止**，不产残包。
+
 ## 编译 Rust 启动器
 
 Rust 启动器需要根据目标平台编译对应架构的二进制：
@@ -504,6 +542,41 @@ cp target/release/niu-launcher ../
 编译产物位于 `target/<target>/release/niu-launcher`（Windows 为 `niu-launcher.exe`）。
 
 > **注意**：macOS 交叉编译需要 Xcode Command Line Tools。Windows 交叉编译需在 Windows 上执行或配置交叉工具链。
+
+## 编译 niu-natives（桌面采集原生扩展）
+
+`niu-natives/` 是 Niu 的桌面采集原生扩展（Rust + PyO3），MCP `vision-server` 的 `screenshot` / `list_targets` 工具的底座。
+
+**为何必须本地编译**：该 crate 不在 PyPI，产物 `.so`/`.pyd` 被 `.gitignore` 排除（不进 git）——新 clone / 换机器必须从仓内源码构建 wheel；Windows 的 `.pyd` 只能在 Windows 上编译（不可交叉编译）。
+
+**前置**：Rust 工具链（见「编译 Rust 启动器」章）+ `maturin`（来自 `requirements-dev.txt`）。
+
+macOS：
+
+```bash
+python/bin/pip install -r requirements-dev.txt
+rm -rf niu-natives/target/wheels
+python/bin/maturin build --release --manifest-path niu-natives/Cargo.toml -i python/bin/python
+python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
+```
+
+Windows（cmd）：
+
+```cmd
+python\Scripts\pip.exe install -r requirements-dev.txt
+if exist niu-natives\target\wheels rmdir /s /q niu-natives\target\wheels
+python\Scripts\maturin.exe build --release --manifest-path niu-natives\Cargo.toml -i python\Scripts\python.exe
+for %f in (niu-natives\target\wheels\niu_natives-*.whl) do python\Scripts\pip.exe install --force-reinstall "%f"
+```
+
+> 注意 Windows 不能照抄 Unix 的 glob——`cmd.exe` 不对普通命令参数展开通配符，直接写 `pip install ...\*.whl` 会把字面量传给 pip 而失败，必须用 `for %f in (...)`。
+
+验证：
+
+- macOS：`python/bin/python -c "import niu_natives; print(niu_natives.DesktopSession)"`
+- Windows：`python\Scripts\python.exe -c "import niu_natives; print(niu_natives.DesktopSession)"`
+
+**失败后果**：扩展缺失时 vision-server 走 R11 降级导入（不崩 Niu 启动），但 `screenshot` / `list_targets` 静默返回错误串——看起来像功能 bug。打包或开发前务必先构建。
 
 ## 文档
 
