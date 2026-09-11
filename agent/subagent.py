@@ -1829,7 +1829,7 @@ def _dispatch_async_subagent(
         # 命中档续跑：剥离清洗后补当前任务 user 消息（effective_task 满足 call_subagent
         # 入口闸门 not task and not answer；续跑实例保持指定名注册，结束由 _run_subagent_async finally 注销）
         effective_task = task or "继续上次未完成的工作"
-        # plan 2026-09-10 D3 去展开：直传 str（图标记保留文本形态，发送层 sanitize 负责展开）
+        # 直传 str（图标记不再自动展开；图片须经 analyze_image 显式工具送模型）
         resumed_messages.append({"role": "user", "content": effective_task})
         task = effective_task  # 同步给 call_subagent（入口闸门 + 初始指令展示）
         _resume_hit = True
