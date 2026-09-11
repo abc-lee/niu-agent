@@ -807,7 +807,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 }
 ```
 
-**配置途径**：① 直接编辑 `~/.niu/config/user-config.json` 顶层 `vision_llm` 段（与 lightrag_llm 同模式；`analyze_image` 每次调用实时读盘，改完下次调用即生效、无需重启）；② MCP 工具 `set_vision_llm_config`——逐项参数（`api_key`/`api_base`/`model`/`llm_type`/`reasoning_effort`/`max_tokens`）只改对应字段，行为与既有完全一致；**传非空 `models=[…]` = 整链替换**（此时其余逐项参数被忽略），**`models=[]` = 清空整段**（连 `model`/`reasoning_effort`/`max_tokens` 一并删除——区别于 `model=""`：后者只清单对象模型字段、保留 `reasoning_effort`/`max_tokens`）。读当前配置用 `get_vision_llm_config`（返回脱敏概要：models 各项只有 model 名 + hasApiKey 布尔，不返回 key 明文）。该段**恒在 user-config.json 顶层、不入命名配置合集**——`llm-configs.json` 条目只存 llm/lightrag_llm 两段。
+**配置途径**：直接编辑 `~/.niu/config/user-config.json` 顶层 `vision_llm` 段（与 lightrag_llm 同模式；`analyze_image` 每次调用实时读盘，改完下次调用即生效、无需重启）。该段**恒在 user-config.json 顶层、不入命名配置合集**——`llm-configs.json` 条目只存 llm/lightrag_llm 两段。
 
 **持久保留语义**：设置页无 vision_llm 表单；任何路径（切模型 / 设置页保存 / 预设加载 / 命名配置切换）都**不动该段**（config-merge 基底透传 + 合集条目两段快照不含 vision_llm）。
 
@@ -861,7 +861,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 程序不自动探测第三方模型——**先 curl 验、再写配置，不要依赖猜**：
 
 1. **逐个验证候选模型可用**（沿用本节「配置前必查」的写法）：`curl http://<host>:<port>/v1/models` 确认真实模型名与端口；本地 llama.cpp 另用 `curl http://<host>:<port>/props` 确认 `n_ctx ≥ 32768`；云模型核实 apiBase/key/模型名组合可用
-2. **写入 `models` 数组**：`set_vision_llm_config(models=[…])`（整链替换，顺序 = 尝试顺序，更可靠的放前面）或直接编辑 `user-config.json` 顶层 `vision_llm.models`
+2. **写入 `models` 数组**：用 Edit 直接改 `~/.niu/config/user-config.json` 顶层 `vision_llm.models`（数组顺序 = 尝试顺序，更可靠/更常用的放前面）
 3. **实测降级**：故意把首个条目配错（填错的 key 或模型名——属致命/未知错误，不重试、立即换下一个）→ 调 `screenshot` + `analyze_image` → 确认返回含 `（注：首模型不可用（…），已自动降级到 <第 2 个模型名>）`；若全链都错，确认汇总文案列出每个模型的原因
 4. **修正后复测**：把首个条目改回正确配置 → 再调一次 `analyze_image` → 应返回原答案且**无注记**（链首一次成功）——以此证明链首已恢复、降级链工作正常
 
