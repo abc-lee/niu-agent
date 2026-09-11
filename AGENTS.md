@@ -62,6 +62,9 @@ MCP 服务器集群 (mcp-servers/)
 
 ### 任务派发硬门禁（本地模型优先——用户连续多次提醒）
 - Niu 项目任务派发：**单 Agent = `tasks[].agent` 显式 `"local-vision"`**（自包含任务、128K 内）；**双 Agent（双审）= A 角 local-vision + B 角远端 reviewer**；禁双远端、禁双本地并行（local-vision 单槽位排队）
+- **单 Agent 工作禁止远端模型（用户 2026-09-11 当面定）**：远端无法从外部判断「在干活 vs 卡死」（实证：远端 reviewer 跑 50 分钟 41 次工具调用无输出，PM 误判卡死 hard-abort，成果全丢）；本地 local-vision 跑在局域网机器上，风扇/负载可感知。**远端仅用于双审 B 角（与 local-vision 并行，有对照）**。
+- **验证归 PM、双审归 Agent**：diff / 跑验证脚本 / grep 核对属 PM 自己的活，不派 Agent（派 Agent 的价值=独立视角找缺陷，不是复述指令）。
+- **取消 Agent 前必读 transcript 收割成果**：硬取消无法唤醒，但 jsonl transcript 保留（`~/.omp/agent/sessions/<proj>/<sess>/<name>.jsonl`）——提取 digest 喂给新 local-vision 续做，实测 2m44s 补完前任 50 分钟未成文的活。
 - 系统模板默认 scout 是远端——Niu 项目不得套模板默认；每份派发逐个 tasks[i].agent 显式写。**靠门禁不靠记忆**
 
 ### 双审方法（门禁标准）
@@ -566,7 +569,8 @@ preload_face_model()
 - **质量链亮点（双审价值）**：**R1 双角同抓 P1**——`model_probe.py:1029` 第三同步写点遗漏（探测落盘路径，我调查时漏掉）；**R2 双角同抓 P0**——C1 空值归一化写成对称规则（「一侧空一侧非空=不一致」）→ 经实测 `user-config.json`（llm.apiKey 恒非空 vs lightrag.apiKey=''）**跟随态会被全量误判变灰**=病灶的反向版（B 角用真实配置亲验）；R3-A 抓守卫缺 `scenario==='lightrag'` 条件（函数级守卫会把主模型探测也拒 = D-H 反向复现）；**R5-B 亲验纠正 R4-B 锚点方向**（同角色两轮结论相反 → PM 直接验证裁定：:129/:132 是 const 行、断言行在 :130/:133）——继 7-Zip 案后第二次「结论相反以直接验证为准」。
 - **验证（真实链路，非 mock）**：JS 真 lib + 真 fs 三场景 **11/11**（customized 透传/跟随态表单生效/旧三段条目切换 vision 恒顶层）+ Python 真模块 **10/10**（preset 加载不动 vision_llm/两段同步/直调拒绝）+ **双向 parity 2/2**；UI electron-page-mock-verify **verify.js 35 + verify-fix.js 15 ALL PASS**（含 V4 灰卡只读显示值不被探测清空）；点名测试 JS 37 + Py 31+47 passed；`test_vision_probe.py` 16 failed 经 **worktree HEAD 基线对比逐条一致**（预存红，零回归）。
 - **已知边界（接受，写入手册）**：①存量合集条目的 vision_llm 段不主动删（机制读写忽略，下次保存自然淘汰）②**type 铺底误判**——程序铺底的 `lightrag_llm.type='openai'` 遇上主模型改协议（如 anthropic）会判 customized 变灰（归因文案已中性化规避误导；恢复=主 Agent `set_lightrag_llm_config(model="")` 清空分支 pop 铺底键）③customized 跳过 response_format 探测（运行时三档治理兜底）④`set_llm_config(preset_id)` 仍整段替换 lightrag_llm（主 Agent 主动切换=明确意图，与设置页保护语义不同）⑤快照漂移：customized 态保存把当前自定义值写入条目快照。
-- **流程教训（用户当场批评 3 次）**：①**本地优先门禁违规**——单 Agent 复核派了远端 `reviewer`（50 分钟 50 工具无收敛）；②**指令不精确**——给了「全仓 grep/穷举调用点」宽带范围；③**取消前未看成果**——50 分钟产出（已实跑 3 个验证脚本）一眼没看即 cancel，浪费；④**派发对象错**——复跑 diff/脚本这类**PM 验证**本该自己做，派 Agent 属重复劳动（派 Agent 的价值是独立视角找缺陷，非复述指令）。**教训：验证归 PM，双审归 Agent；本地优先，指令收窄到行号与具体命令**。
+- **实机验收清单（待用户，详见 plan §8）**：①重启 Niu → 设置页切换命名配置 → `llm-configs.json` 条目只剩两段、`user-config.json` 顶层 `vision_llm` 未被覆盖 ②主 Agent 配独立入库模型 → 重开设置页 → 知识图谱卡片整块变灰、保存按钮能点亮（不再卡死）、保存后入库段逐字不变 ③变灰态改主模型名 → 灰卡两下拉保持显示实际值（不被清空）④主 Agent `set_vision_llm_config(preset_id=…)` → 明确报错非静默 ⑤截图 + `analyze_image` 视觉链路不回归。存量条目的 vision_llm 段机制已忽略、下次保存自然清除。
+- **流程教训（用户连续批评 4 次，已固化进「任务派发硬门禁」）**：①**单 Agent 派了远端 `reviewer`** 做小复核——50 分钟 41 次工具调用无输出、无可观测信号，用户无法判断活没活；②**指令开放式**——给了「全仓 grep/穷举调用点」宽带范围，导致发散（收窄到行号+具体命令后 1 分钟完成）；③**取消前未读 transcript**——它已跑完 3 个验证脚本（含 PM 从未跑过的 `extra-review.js`，其中**有 2 个真实 FAIL**）+ 做了 llm_proxy/niu_api/agent/main.js 消费点穷举，全被 hard-abort 沉没。**补救实证可行**：agent 无法唤醒（hard-aborted）但 jsonl transcript 保留 → 提取 digest 喂给新 local-vision **2m44s 补完全部未成文结论**（2 FAIL 定位+修复、A/B/C/D 四项 CONFIRMED、无新缺陷）；④**收官三件套缺验收清单**（plan 无 §8、AGENTS 条目无验收行）→ 已补（plan §8 + 本条目）。**纪律**：验证归 PM、双审归 Agent；单 Agent 禁远端；指令收窄到行号与命令；取消前先读 transcript。
 
 ### 2026-09-10
 
