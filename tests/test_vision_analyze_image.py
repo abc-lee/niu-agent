@@ -9,9 +9,9 @@
 覆盖（plan §6 必测项）：
 - 1 读图：真实 PNG 临时文件 → data URI（走真实 _image_to_data_uri，不 mock）；
   缺文件/非图片载荷/超限降采样失败（mock None）→ 明确中文错误串（不抛异常）
-- 2 选模型（主模型优先）：主模型有视觉 → 用主 llm 段（断言未读 vision 段、
-  未调 get_llm_config(use_vision_config=True)）；主模型无视觉 + vision_llm.model
-  非空 → 用该段；皆无 → 明确错误（含配置指引）；段判空走原始 user-config.json
+- 2 选模型（主模型优先）：主模型有视觉 → 用主 llm 段（断言未读 vision 段）；
+  主模型无视觉 + vision_llm.model 非空 → 用该段；皆无 → 明确错误（含配置指引）；
+  段判空走原始 user-config.json
 - 3 请求形态：messages = [{role:user, content:[text(question), image_url(data_uri)]}]
 - 3b Schema 文案锁：description 含两段式指引（泛问建立认知 + 聚焦追问）且不含
   「必须给具体问题」式误导措辞
@@ -57,10 +57,6 @@ MAIN_CFG_NO_VISION = {
 MAIN_CFG_WITH_VISION = {
     **MAIN_CFG_NO_VISION,
     "capabilities": {"model": "main-model", "input": ["text", "image"]},
-}
-VISION_CFG = {
-    "type": "anthropic", "apikey": "vision-key", "apibase": "http://vision/v1",
-    "model": "vision-model", "reasoning_effort": "", "provider": "", "litellm_kwargs": {},
 }
 
 
@@ -126,17 +122,12 @@ def _reset_fake_session(monkeypatch):
     monkeypatch.setattr("agent.generic.litellm_adapter.is_stop_requested", lambda: False)
 
 
-def _install_fake_llm_config(monkeypatch, main_cfg, vision_cfg=None):
-    """替换 get_llm_config（函数级 import 解析点），记录每次调用的 kwargs。"""
-    calls = []
+def _install_fake_llm_config(monkeypatch, main_cfg):
+    """替换 get_llm_config（函数级 import 解析点）。"""
 
-    def fake(use_lightrag_config=False, use_vision_config=False):
-        calls.append({"use_lightrag_config": use_lightrag_config, "use_vision_config": use_vision_config})
-        if use_vision_config:
-            return vision_cfg or main_cfg
+    def fake(use_lightrag_config=False):
         return main_cfg
 
-    fake.calls = calls
     monkeypatch.setattr("niu_api.llm_proxy.get_llm_config", fake)
     return fake
 
@@ -282,7 +273,7 @@ class TestImageLoading:
 class TestModelSelection:
     def test_main_model_with_vision_wins_over_vision_section(self, monkeypatch, tmp_path):
         """主模型有视觉 → 用主 llm 段；vision_llm.model 非空也不读（短路证明）。"""
-        fake_cfg = _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION, VISION_CFG)
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
         # vision 段故意配了 model——若实现错误地落到 vision 段，model 断言必红
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path, vision_model="vision-model"))
         png = _png_file(tmp_path)
@@ -292,12 +283,11 @@ class TestModelSelection:
 
         session = FakeLiteLLMSession.instances[0]
         assert session.cfg["model"] == "main-model"
-        assert all(c["use_vision_config"] is False for c in fake_cfg.calls)
 
     def test_main_without_vision_falls_back_to_vision_section(self, monkeypatch, tmp_path):
         """主模型无视觉 + 原始 JSON vision_llm.model 非空 → 链由该段构建（plan R-2 定案：
-        自读原始 user-config.json，不走 get_llm_config(use_vision_config=True)）；空键继承主 llm 段。"""
-        fake_cfg = _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        自读原始 user-config.json，不走 get_llm_config）；空键继承主 llm 段。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path, vision_model="vision-model"))
         png = _png_file(tmp_path)
         FakeLiteLLMSession.response = _resp("OK")
@@ -306,13 +296,12 @@ class TestModelSelection:
 
         session = FakeLiteLLMSession.instances[0]
         assert session.cfg["model"] == "vision-model"
-        # 链节点来自原始 JSON + 主段继承（而非 get_llm_config(use_vision_config=True) 会返回的 VISION_CFG 快照）
+        # 链节点来自原始 JSON + 主段继承（而非 get_llm_config 返回的快照）
         assert session.cfg["apikey"] == "main-key"
-        assert all(c["use_vision_config"] is False for c in fake_cfg.calls)
 
     def test_neither_main_nor_section_returns_error_with_guidance(self, monkeypatch, tmp_path):
         """主模型无视觉 + vision_llm.model 空 → 明确错误（含配置指引），不发起调用。"""
-        fake_cfg = _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION, VISION_CFG)
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path, vision_model=""))
         png = _png_file(tmp_path)
 
@@ -321,12 +310,11 @@ class TestModelSelection:
         assert "识图不可用" in result
         assert "vision_llm" in result  # 配置指引
         assert FakeLiteLLMSession.instances == []
-        # 段判空走原始 user-config.json——get_llm_config(use_vision_config=True) 不得用于判空
-        assert all(c["use_vision_config"] is False for c in fake_cfg.calls)
+        # 段判空走原始 user-config.json（不得用 get_llm_config 判空）
 
     def test_user_config_read_failure_degrades_to_error(self, monkeypatch, tmp_path):
         """user-config.json 读失败（主模型又无视觉）→ 错误串，不抛异常。"""
-        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION, VISION_CFG)
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", str(tmp_path / "missing.json"))
         png = _png_file(tmp_path)
 
