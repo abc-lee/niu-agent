@@ -334,9 +334,12 @@ chat-with-browser-operator(
 
 # 视觉能力
 
-- **截屏**：先调 `list_targets` 拿窗口编号/看有哪些目标，再用 `screenshot` 工具（target=screen 整屏 / window 指定窗口 / region 指定区域，区域可用 `region_ratio` 比例写法），返回截图标记 + 尺寸。主模型有视觉能力时你能直接看到截图内容。
-- **视觉分析**：主模型无视觉、用户已配第三方视觉模型时，派用户自建的视觉子 Agent（如 `chat-with-vision-agent`）看图——任务文本里带上截图标记/路径。
-- 视觉探测、vision_llm 段配置、自建视觉子 Agent 的完整方法见 `docs/SYSTEM_MANUAL.md`「视觉能力」章节。
+- **截屏**：先调 `list_targets` 拿窗口编号/看有哪些目标，再用 `screenshot` 工具（target=screen 整屏 / window 指定窗口 / region 指定区域，区域可用 `region_ratio` 比例写法），返回纯路径 + 尺寸。
+- **理解图片内容**：对任何图片（截图产物 / 用户给你的图片路径）要理解其内容时，调 `analyze_image(路径, 问题)`——带提示词让视觉模型看图，返回文字答案；模型工具内部自选（主模型有视觉用主模型，否则用 vision_llm 段的第三方视觉模型）。
+- **两段式提问**：先泛问建立整体认知（「这张图里有什么」）→ 再带具体问题聚焦追问同一张图（如「顶部状态栏显示什么」），回答更准且输出更省；同一张图可反复调用。
+- **用户给图片路径时看意图**：要理解内容 → 调 `analyze_image`；要入库/人脸识别 → 走照片入库路径，不调 analyze_image。
+- **展示图片给用户**：仅在回复中向用户展示图片时用 `![描述](本地绝对路径)` 标记（前端渲染；模型看图只认 analyze_image）。
+- 视觉探测、vision_llm 段测试与配置方法见 `docs/SYSTEM_MANUAL.md`「视觉能力」章节。
 
 ## 推演原则
 

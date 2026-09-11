@@ -793,8 +793,6 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 | `max_tokens` | 输出预算。**视觉请求必须 ≥500**——带 reasoning 的 qwen 类模型思考会占满小预算，返回 content 为空（看着像失败，实为预算被思考吃掉）；建议 8192 |
 | `litellm_kwargs` | thinking 等透传参数（空则继承主 llm） |
 
-> 注：`model` 为空（回落主 llm 模型）时，本段另支持 `temperature` / `read_timeout` override（仅显式配置时写入，镜像 lightrag 分支）；这两个字段在 `model` 非空时无效。
-
 配置示例（本地 llama.cpp 视觉模型）：
 
 ```json
@@ -806,22 +804,17 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 }
 ```
 
-**配置途径**：直接编辑 `~/.niu/config/user-config.json` 顶层 `vision_llm` 段（与 lightrag_llm 同模式；每次子 Agent 派发实时读盘，改完下次派发即生效、无需重启）。`llm.presetId` 非空时 `vision_llm` 段随命名配置合集（`llm-configs.json`）条目快照同步（设置页保存/预设加载自动带三段）。
+**配置途径**：直接编辑 `~/.niu/config/user-config.json` 顶层 `vision_llm` 段（与 lightrag_llm 同模式；`analyze_image` 每次调用实时读盘，改完下次调用即生效、无需重启）。`llm.presetId` 非空时 `vision_llm` 段随命名配置合集（`llm-configs.json`）条目快照同步（设置页保存/预设加载自动带三段）。
 
 **持久保留语义**：设置页无 vision_llm 表单；该段经任何路径的切模型 / 设置页保存 / 命名配置切换都**不丢失**（config-merge 基底透传 + save-config upsert 扩段 + 命名合集三段快照三重保护）。
 
-### 自建视觉子 Agent（可选）
-
-配好第三方视觉模型并测通后，可自建捆绑该模型的视觉子 Agent：在 `~/.niu/agents/` 建 `.md`（如 `vision-agent.md`），frontmatter 写 `llmPreset: vision_llm` + 角色提示词。注册校验：**文件名 kebab-case / description 必填 / visibility 非 hidden**——`visibility: hidden` 时静默跳过（正常行为、无 warning，后台专用子 Agent 仅程序按名直调）；其余校验失败（解析错误 / 缺 description 等）记日志 warning 后跳过。两种情况工具均不出现。创建流程见「通用子 Agent 体系」章节；下一轮对话开始时 `chat-with-vision-agent` 自动出现在主 Agent 工具列表。
-
-**边界**：子 Agent 会话无工具轮重建 hook——其**自身**调用 screenshot 的结果当轮不展开（下次派发/续跑才可见）；主 Agent 在任务文本里传入的图标记（screenshot 返回值原样转发）则正常直通。
-
 ### 主 Agent 视觉流程
 
-1. **截屏**：先 `list_targets` 选目标（拿窗口编号/显示器清单）→ 再 `screenshot`——`target=screen` 整屏 / `window` 指定窗口（`window_id` 取自 `list_targets`）/ `region` 指定区域（**推荐 `region_ratio=[左,上,右,下]` 比例写法**，0~1、相对整个逻辑桌面；绝对坐标 x/y/width/height 仍可用，二选一）。返回 `![截图](绝对路径)` 标记 + 尺寸元数据；图片落盘 `~/.niu/tmp/screenshot_<时间戳>.png`，**每日 04:00 后台任务清理 mtime 超过 24h 的文件（最坏可存活约 48h），截图建议当次使用；文件已清理需重新截屏**。窗口编号有时效——`screenshot` 报窗口不存在时先重跑 `list_targets`
-2. **主模型有视觉**（`~/.niu/config/user-config.json` llm 段 `capabilities.input` 含 `"image"`）→ 图标记直通主对话，主模型自己看图回答
-3. **主模型无视觉 + 已配 vision_llm** → 派自建视觉子 Agent：任务文本里带上截图标记/路径，子 Agent 用捆绑的视觉模型看图作答
-4. **图文件缺失/已清理** → 标记留文本 + `[图片不可读]` 警示（不报错中断）——重新截屏即可
+1. **截屏**：先 `list_targets` 选目标（拿窗口编号/显示器清单）→ 再 `screenshot`——`target=screen` 整屏 / `window` 指定窗口（`window_id` 取自 `list_targets`）/ `region` 指定区域（**推荐 `region_ratio=[左,上,右,下]` 比例写法**，0~1、相对整个逻辑桌面；绝对坐标 x/y/width/height 仍可用，二选一）。返回**纯绝对路径** + 尺寸元数据；图片落盘 `~/.niu/tmp/screenshot_<时间戳>.png`，**每日 04:00 后台任务清理 mtime 超过 24h 的文件（最坏可存活约 48h），截图建议当次使用；文件已清理需重新截屏**。窗口编号有时效——`screenshot` 报窗口不存在时先重跑 `list_targets`
+2. **要理解图片内容** → 调 `analyze_image(路径, 问题)`：传 screenshot 返回的路径（或用户给的裸图片路径）+ 要向模型提的问题；工具内部自选模型（**主模型优先**，规则见「识图工具」节），返回**文字答案**。推荐两段式：先泛问建立整体认知 → 再带具体问题聚焦追问同一张图
+3. **用户给的图片路径（裸路径）**：意图由用户指令决定——要理解内容 → 同样调 `analyze_image`；要入库/人脸识别 → 走照片入库路径（**不调** `analyze_image`）
+4. **展示图片给用户**：仅在回复中向用户展示图片时用 `![描述](本地绝对路径)` 标记（前端渲染给用户看，不会让模型看到图——模型看图只认 `analyze_image`）
+5. **图文件缺失/已清理** → `analyze_image` 返回明确错误串（不崩溃中断）——重新截屏即可
 
 ## 分册索引
 
