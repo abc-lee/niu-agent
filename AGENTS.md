@@ -557,7 +557,7 @@ preload_face_model()
 - **交付面**：①`pack.bat` 新增 7-Zip 双路径探测（`C:\` 官方默认优先、`E:\` 回退，原 `:13` 硬编码 `E:\`）+ `node_modules` fail-fast 守卫 + niu-natives 构建段（maturin 检查→清旧 wheel→build→pip install→`.pyd` `dir` 守卫，缺任一即 `exit 1` 不产残包）②README 快速开始补编译步骤 + 新增「Windows 打包」「编译 niu-natives」两章 ③`manual-installation.md` 镜像手册新增 2.4 节 + 五、Windows 打包章 ④niu-natives/README 构建段重写 ⑤AGENTS/manual-dependencies/requirements.txt/SYSTEM_MANUAL 同步（共 8 处）。
 - **质量链亮点**：**A/B 角 7-Zip 结论相反**（A 主张文档写 `E:\`、B 主张探测两路径）→ **PM 裁决采纳 B 角**（7-Zip 官方默认 `C:\`，A 案会拦住所有默认安装者）；**B 角抓出 V2 假通过风险**（`CARGO_TARGET_DIR` 下 wheel 落 `$TD/wheels/` 非 `niu-natives/target/wheels/`——后者有同名旧 wheel，按错误路径取证会假通过，已亲验两目录并存同名文件）；B 角另抓出 `manual-installation.md` 镜像手册遗漏（P1）与 `requirements.txt:28` 同一份 macOS 命令（P2）。**派发门禁违规记录**：连续 4 次漏 `tasks[].agent` 字段（K3 下易犯），用户提醒改用 `eval agent()` 代码接口绕开。
 - **验证**：V2 干净 target 从零构建 2m07s 成功（`CARGO_TARGET_DIR` 临时目录）；V3 临时目录 `pip --target` 安装 + `import niu_natives` 成功（均不碰用户运行中的 `python/`）；章号/交叉引用（`见第四章`×3、`见第三章`）全部存活；Windows 命令块 `for %f` 单百分号与 pack.bat 内 `%%f` 正确区分；旧措辞「故意不编译」清零。
-- **已知边界**：`pack.bat` 是 Windows 批处理，macOS 无法真跑——语义经 A 角三轮逐条核实（`if errorlevel` 时机 / `dir` 守卫 / `FOR` glob / `^&^&` 转义 / venv 布局 / `-i` 参数），**真机验证移交 Windows**；用户当前环境无需重新打包（niu_natives 已装）。
+- **已知边界**：`pack.bat` 是 Windows 批处理，macOS 无法真跑——语义经 A 角三轮逐条核实（`if errorlevel` 时机 / `dir` 守卫 / `FOR` glob / `^&^&` 转义 / venv 布局 / `-i` 参数）。**实机验证 ✅ 已通过（2026-09-11 用户 Windows 实测：打包通过）**；用户当前环境无需重新打包（niu_natives 已装）。
 
 ### 2026-09-10
 
