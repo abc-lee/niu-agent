@@ -99,7 +99,7 @@ def _install_fake_llm_config(monkeypatch, main_cfg, vision_cfg=None):
     """替换 get_llm_config（函数级 import 解析点），记录每次调用的 kwargs。"""
     calls = []
 
-    def fake(use_lightrag_config=False, use_vision_config=False, config_data=None):
+    def fake(use_lightrag_config=False, use_vision_config=False):
         calls.append({"use_lightrag_config": use_lightrag_config, "use_vision_config": use_vision_config})
         if use_vision_config:
             return vision_cfg or main_cfg

@@ -828,7 +828,7 @@ def transform_history(messages: list[dict]) -> list[dict]:
             continue
         content = msg.get("content", "")
         if role in ("user", "assistant") and (content or msg.get("tool_calls")):
-            # plan 2026-09-10 D3 去展开：直传 str（图标记保留文本形态，发送层 sanitize 负责展开）
+            # 直传 str（图标记不再自动展开；图片须经 analyze_image 显式工具送模型）
             entry = {"role": role, "content": content}
             # 还原 tool_calls（assistant 消息可能携带工具调用）
             if msg.get("tool_calls"):
@@ -846,8 +846,8 @@ def transform_history(messages: list[dict]) -> list[dict]:
             # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
             # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
             tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
-            # plan 2026-09-10 D3/D8：去展开（content 恒 str，图标记由发送层 sanitize 展开）；
-            # 删 name 字段注入（规范 tool 消息键集仅 role/content/tool_call_id）
+            # content 恒 str（图标记不再自动展开；图片须经 analyze_image 显式工具送模型）；
+            # 无 name 字段注入（规范 tool 消息键集仅 role/content/tool_call_id）
             entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
             result.append(entry)
     return result
