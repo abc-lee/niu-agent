@@ -690,6 +690,7 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 - **主 Agent 修改配置时必须两个文件一起改**：改 `user-config.json` 对应段的同时，必须同步修改合集中同 `presetId` 名字的条目。
 - **config-manager 自动同步**：经 config-manager 工具（`set_llm_config` / `set_lightrag_llm_config`）修改时工具自动同步合集（机制保证，无需手工双改）；`preset_id` 加载型调用从合集整条读入 `user-config.json`；直接编辑文件时必须手工双改，否则合集条目与当前生效配置漂移。
 - **一致性收敛规则**：以 `user-config.json` 为主——设置窗口下次"测试并保存"或 config-manager 下次 set 时，合集同名条目自动对齐为 `user-config.json` 的两段内容。
+- **知识图谱卡片变灰语义**：`lightrag_llm` 段被主 Agent 自定义过（判据非对称——只遍历 lightrag 侧的键：**该侧值非空且与主模型对应键不一致**才算自定义，**lightrag 侧为空/缺失 = 跟随，无论主模型是什么**；排除清单 = 页面三项 thinking/reasoning_effort/temperature + 程序产物键 `capabilities`/`presetId`/`litellm_kwargs.response_format_mode`/`litellm_kwargs.allowed_openai_params`，其余任何键——如 model/apiKey/apiBase 等连接/模型类键——非空且不一致即触发）时，设置页知识图谱卡片**整容器变灰不可编辑**（三控件禁用、探测按钮不出现），保存按钮点亮只看主模型参数选齐，保存时该段原样保留；判定每次打开页面/保存时重算，主 Agent 清空或改回一致即自动恢复可编辑。
 
 字段与示例详见《用户操作手册》1.2 LLM 配置。
 
@@ -699,7 +700,7 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 
 **原则：只 deny 不改值**——程序只做确定性判断「这个参数被拒了 → 以后不发它」（模型用自身默认值），不解析"允许值是多少"。因此各处的温度调优值（主 Agent 0.6 / 子 Agent 0.2–0.3 / 知识图谱 0.2）**全部保留**，只对被拒的模型不发送。
 
-**两段独立（关键）**：`llm` 段与 `lightrag_llm` 段各自判定——**统一主模型**（`lightrag_llm.model` 为空，默认）时入库/脑区链路继承主段，探测主模型即覆盖；**入库段配了独立模型**时该段用自己的 `capabilities`，**必须单独探测该段**（设置页「探测能力（入库模型）」按钮），否则其参数约束不被过滤。`vision_llm` 段同理。
+**两段独立（关键）**：`llm` 段与 `lightrag_llm` 段各自判定——**统一主模型**（`lightrag_llm.model` 为空，默认）时入库/脑区链路继承主段，探测主模型即覆盖；**入库段被主 Agent 自定义过**（判据同上文「知识图谱卡片变灰语义」：lightrag 侧非空且与主模型不一致——不限于 `model` 键，model 为空但其他非排除键不一致同样变灰）时设置页知识图谱卡片整容器变灰不可编辑（页面不探测、不保存该段）。注意 capabilities 接管比变灰更窄：**仅 `lightrag_llm.model` 非空**时入库链路才整体改用该段自己的 `capabilities`（model 为空则仍用主 `llm` 段）；该段参数约束由主 Agent 自行维护：`code_run` 调 `niu_api.model_probe.probe(..., lightrag=True)`，否则其 deny 不被过滤。`vision_llm` 段同理。
 
 **换模型/服务商后必须重新探测**（旧模型的 deny 不适用新模型）；探测结果写 `~/.niu/config/user-config.json` 对应段 `capabilities.deny`，发送时由 `LiteLLMSession` 单点过滤（覆盖主对话、子 Agent、知识图谱、脑区、设置页测试保存全部出站），**无需重启**。
 
@@ -754,7 +755,7 @@ Niu 的视觉能力 = `vision-server` 的三个工具（均 static 直挂主 Age
 ### 主模型视觉探测
 
 - 设置页「**探测能力（对话模型）**」按钮探测主模型时顺带执行 **vision 双色交叉子扫描**：发纯红/纯蓝两张 32×32 极小图各问主色，两答均命中对应色系才判有视觉（单色已证伪则不再发第二张）
-- 结果写入 `~/.niu/config/user-config.json` **llm 段** `capabilities` 子对象：`{model, input: ["text","image"], probed_at}`（无视觉 → `input: ["text"]`，覆盖陈旧值）；`llm.presetId` 非空时同步 upsert 命名配置合集（`llm-configs.json`）该条目三段快照——能力随模型切换跟随。入库模型（lightrag_llm 段）不探测
+- 结果写入 `~/.niu/config/user-config.json` **llm 段** `capabilities` 子对象：`{model, input: ["text","image"], probed_at}`（无视觉 → `input: ["text"]`，覆盖陈旧值）；`llm.presetId` 非空时同步 upsert 命名配置合集（`llm-configs.json`）该条目两段快照（llm/lightrag_llm，vision_llm 不入合集）——能力随模型切换跟随。入库模型（lightrag_llm 段）不探测
 - 探测失败（网络异常 / 超时重试后仍失败 / 200 但空回答）→ **不写、保持旧值**（防网络抖动把已知视觉模型降级 text-only），**不毒化主探测项结果**；`~/.niu/model_capabilities.json` 与视觉能力无关（只存 reasoning_effort/thinking 等既有探测项）
 - **主模型有视觉 = `analyze_image` 走主模型**：探测出视觉后，识图工具把图送进主 llm 段（无需任何额外配置）；无视觉则需配 `vision_llm` 段或换支持视觉的模型并重新探测
 - 探测结果与预期不符（如确认模型有视觉但判了无）→ 重跑「探测能力」刷新 capabilities 即可
@@ -804,9 +805,9 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 }
 ```
 
-**配置途径**：直接编辑 `~/.niu/config/user-config.json` 顶层 `vision_llm` 段（与 lightrag_llm 同模式；`analyze_image` 每次调用实时读盘，改完下次调用即生效、无需重启）。`llm.presetId` 非空时 `vision_llm` 段随命名配置合集（`llm-configs.json`）条目快照同步（设置页保存/预设加载自动带三段）。
+**配置途径**：直接编辑 `~/.niu/config/user-config.json` 顶层 `vision_llm` 段（与 lightrag_llm 同模式；`analyze_image` 每次调用实时读盘，改完下次调用即生效、无需重启）。该段**恒在 user-config.json 顶层、不入命名配置合集**——`llm-configs.json` 条目只存 llm/lightrag_llm 两段。
 
-**持久保留语义**：设置页无 vision_llm 表单；该段经任何路径的切模型 / 设置页保存 / 命名配置切换都**不丢失**（config-merge 基底透传 + save-config upsert 扩段 + 命名合集三段快照三重保护）。
+**持久保留语义**：设置页无 vision_llm 表单；任何路径（切模型 / 设置页保存 / 预设加载 / 命名配置切换）都**不动该段**（config-merge 基底透传 + 合集条目两段快照不含 vision_llm）。
 
 ### 主 Agent 视觉流程
 

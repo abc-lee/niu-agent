@@ -105,7 +105,7 @@ LLM 配置由两个文件组成：
 | `model` | 模型名称 |
 | `type` | 系统内部参数，用于区分 API 格式转换和认证方式：`openai`（OpenAI 兼容格式）或 `anthropic`（Anthropic 原生格式）。**不是** LiteLLM 的 custom_llm_provider |
 | `provider` | LiteLLM 路由参数，映射为 `custom_llm_provider`。常见值：`""`（空，默认由 type 决定）、`"volcengine"`（火山引擎）。填写后模型名无需加厂商前缀 |
-| `reasoning_effort` | 推理深度档位：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"` 等（取值以模型能力探测档案为准）。主 Agent 默认空；LightRAG 默认由探测档案驱动——设置窗口"探测能力"按钮（lightrag 段）探测后，下拉框只显示该模型实际支持的档位，选择即写入。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，换模型/换服务商后必须重新探测（详见下方"reasoning_effort 配置与测试指南"）。`reasoning_effort` 只控制推理深度，**不控制**思考链返回——思考链返回由 `litellm_kwargs.thinking` 独立控制 |
+| `reasoning_effort` | 推理深度档位：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"` 等（取值以模型能力探测档案为准）。主 Agent 默认空；LightRAG 默认由探测档案驱动——继承态（`lightrag_llm.model` 为空）下探测主 llm 自动填充入库段档位，下拉框只显示该模型实际支持的档位，选择即写入；入库段配了独立模型（customized 态）时设置页该卡片变灰、其探测按钮已退役，由主 Agent 用 `code_run` 探测（`probe(..., lightrag=True)`）后经 `set_lightrag_llm_config(reasoning_effort=...)` 写入。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，换模型/换服务商后必须重新探测（详见下方"reasoning_effort 配置与测试指南"）。`reasoning_effort` 只控制推理深度，**不控制**思考链返回——思考链返回由 `litellm_kwargs.thinking` 独立控制 |
 | `litellm_kwargs` | 厂商特有参数，JSON 对象格式，原样透传给 LiteLLM。用于传递各厂商 SDK 要求的额外参数（如火山引擎的 `thinking`、`allowed_openai_params` 等）。代码不做任何厂商判断，只负责透传 |
 | `read_timeout` | LLM 流式响应读取超时（秒），默认 `300`。模型首响应/流式 chunk 间隔超过该值判定超时并触发重试。**调小场景**：对话卡顿久等（如 `60`）；**调大场景**：知识图谱入库/大文档分析（分块分析可能数分钟，见下方 LightRAG 段）。`llm` 段控制主对话/子 Agent；知识图谱 LLM 调用默认继承 `llm` 段的 `read_timeout`，若 `lightrag_llm` 段配置了独立 `model`，则以 `lightrag_llm` 段的 `read_timeout` 为准（两段同默认 `300`） |
 | `max_tokens` | 单次回复最大输出 token 数（输出上限）。**缺省不传**（用服务端默认）。长报告/长回复被截断时调大（如 `8192`/`16384`）。**注意**：模型对 max_tokens 无感知——它是服务端硬截断线，到上限即 `finish_reason=length` 截断；思考链（thinking）与正文**共享**该预算，思考链模型尤其要调大。设置窗口"测试连接并保存"会顺带校验该值合法性（非法值服务端 400 阻断保存）。只作用于会话对话链路（主 Agent/子 Agent/知识图谱），压缩与能力探测保持程序内部固定值 |
@@ -264,7 +264,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 | `model` | 模型名称。为空时使用主 Agent 同一模型 | `doubao-seed-2.0-pro`（Coding Plan 别名）或 `doubao-seed-2-0-pro-260215`（标准端点全名） |
 | `type` | 类型：`openai` 或 `anthropic` | `openai` |
 | `provider` | LiteLLM 路由参数，同 `llm` 段说明。火山引擎填 `"volcengine"` | `""` 或 `"volcengine"` |
-| `reasoning_effort` | **推理深度档位（核心配置）** | 探测后从下拉选择模型实际支持的档位；未探测时留空（模型默认） |
+| `reasoning_effort` | **推理深度档位（核心配置）** | 继承态：探测主 llm 后从下拉选择模型实际支持的档位；独立模型态（customized）：设置页控件禁用，由主 Agent 用 `set_lightrag_llm_config(reasoning_effort=...)` 写入；未探测时留空（模型默认） |
 | `temperature` | LLM 采样温度。0.0 完全确定性，1.0 高随机度。为空时由系统兜底 0.2 | `0.2`（实体/关系抽取建议低温度避免 JSON 漂移） |
 | `litellm_kwargs` | 厂商特有参数，同 `llm` 段说明。火山引擎知识图谱需传 `thinking` 和 `allowed_openai_params` | `{}` 或见配置示例 |
 | `max_tokens` | 单次回复最大输出 token 数。**缺省不传**（用服务端默认）；为空时自动继承 `llm` 段的 max_tokens。入库调用一般不需要调大——结构化输出被截断（日志见 `finish_reason=length`）时再设 | 空 |
@@ -287,7 +287,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 `reasoning_effort` 的最优值与模型基础能力强相关，不存在通用最优值，且**不同厂商/模型对取值范围的接受度不同**（部分服务端对不支持的取值直接 400，部分静默忽略）。系统通过**模型能力探测器**按"生产同参"实测每个模型真实支持的值域，写入能力档案后驱动配置页动态档位：
 
-- **LightRAG 段默认档位由探测档案驱动**（2026-08-18 起，不再预设固定档位——旧版曾兜底 `"high"`）：设置窗口"探测能力"按钮（lightrag 段）探测后，推理深度下拉只显示该模型**实际支持**的档位（厂商原生档位名原样），选择即写入 `lightrag_llm.reasoning_effort`；未探测时留空（由模型默认决定）。
+- **LightRAG 段默认档位由探测档案驱动**（2026-08-18 起，不再预设固定档位——旧版曾兜底 `"high"`）：继承态（`lightrag_llm.model` 为空）下用设置窗口"探测能力"按钮探测主 llm 即自动填充入库段档位，推理深度下拉只显示该模型**实际支持**的档位（厂商原生档位名原样），选择即写入 `lightrag_llm.reasoning_effort`；入库段配了独立模型时设置页控件禁用、其探测按钮已退役——由主 Agent 用 `code_run` 探测（`probe(..., lightrag=True)`）后经 `set_lightrag_llm_config(reasoning_effort=...)` 写入。未探测时留空（由模型默认决定）。
 - **探测按场景同参**：值域扫描 `[minimal, low, medium, high, xhigh, none, max]`，请求携带当前场景的 thinking 配置（lightrag 场景恒 disabled、llm 场景按用户配置）——**值域结论只对当前场景 thinking 成立**，不得外推到其他场景（如豆包 `disabled` 场景只接受 minimal/none，`high` + disabled 直接 400）。
 - **档案位置**：`~/.niu/model_capabilities.json`，键 = `apiBase|model|llm` / `apiBase|model|lightrag`——换模型/换服务商后旧档案不适用，**必须重新探测**。
 
@@ -306,7 +306,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 3. **不同模型差异很大**：能力强的模型（如 Claude、GPT-4o）在 `none` 或 `low` 即可高质量提取；能力有限的模型可能需要 `high`，但也可能适得其反
 
 **换模型/换服务商后必须重新探测**（2026-08-18 起）：
-- **设置窗口"探测能力"按钮**：llm 段与 lightrag 段各一个按钮，探测成功后自动刷新推理深度下拉（档案 supported 档位）
+- **设置窗口"探测能力"按钮**：仅 llm 段（对话模型）一个按钮，探测成功后自动刷新推理深度下拉（档案 supported 档位）。入库段按钮已退役（两态恒隐藏）——继承态下探测主 llm 自动填充入库段；入库段配独立模型时由主 Agent 用 `code_run` 探测（`probe(..., lightrag=True)`）后经 `set_lightrag_llm_config(reasoning_effort=...)` 写入
 - **主 Agent 自主探测**（三个环境统一，用 `code_run` 跑，无需脚本文件）：
   ```python
   import json
@@ -438,8 +438,8 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
    - 完全自定义：`set_lightrag_llm_config(api_key="…", api_base="https://ark.cn-beijing.volces.com/api/v3", model="doubao-seed-2-0-pro-260215", llm_type="openai")`
    - 输出上限：`set_lightrag_llm_config(max_tokens=8192)`；`max_tokens=0` 清除（回退不传）；读回确认用 `get_lightrag_llm_config`
    - 回退继承：`set_lightrag_llm_config(model="")`（清除独立模型，reasoning_effort 和 max_tokens 保留——均独立维度）
-2. **探测档位**：入库模型配好后，让用户在设置窗口点"探测能力（入库模型）"按钮（此刻非继承，按钮显示）——探测写入 `|lightrag` 档案并刷新档位下拉。
-3. **校验保存**：引导用户选档位后点"测试连接并保存"——程序按入库段配置真实探测 + 参数组合校验，通过才落盘。
+2. **探测档位**：入库模型配好后该卡片整容器变灰，设置页的入库段探测按钮已下线（不再显示）——需要探测时由主 Agent 用 `code_run` 跑 `niu_api.model_probe.probe(..., lightrag=True)`（代码见下文「Agent 自主评测新模型能力」），探测写入 `|lightrag` 档案。
+3. **校验保存**：customized 态下入库卡片三控件（思考链/推理深度/温度）全部禁用——用户无法在页面选入库档位，程序也不对入库段做探测；点"测试连接并保存"只测主模型连通性（保存按钮点亮只看主模型字段选齐），`lightrag_llm` 段原样透传、随主配置一并落盘。入库档位本身由主 Agent 在第 2 步 `code_run` 探测后直接经 `set_lightrag_llm_config(reasoning_effort=...)` 写入，不依赖设置页保存。
 
 > 独立入库模型建议：轻量快速（如豆包标准端点 `doubao-seed-2-0-pro-260215`），`thinking: {"type": "disabled"}` 关闭思考链（入库建议），`temperature` 建议 0.2 或更低；若用火山方舟，必须用**标准端点**（含 `/api/v3`）——Coding Plan 端点 400 拒绝 response_format，入库无法工作。
 
@@ -467,9 +467,9 @@ print(prof.get("reasoning_effort"))               # supported / unsupported 档�
 
 **评测流程与结果**：
 1. 先向用户确认模型名（**大小写敏感**——从服务商控制台复制原样粘贴；zen/go 包月端点模型名全小写）与 API Key 归属（避免把用户 key 用于未知端点）。
-2. 跑上面代码（`lightrag=False` = 对话场景，`True` = 入库场景）。**评测要真实连接模型，须在目标机执行**；若 Niu 运行中且目标模型就是当前配置，也可引导用户直接用设置页"探测能力"按钮（同核心、免代码）。
+2. 跑上面代码（`lightrag=False` = 对话场景，`True` = 入库场景）。**评测要真实连接模型，须在目标机执行**；若 Niu 运行中且目标是当前配置的**对话模型**（llm 段），可引导用户直接用设置页"探测能力"按钮（同核心、免代码）；**入库段**（`lightrag=True`）的页面探测按钮已退役——一律走 `code_run`。
 3. `probe_status`：`ok`/`partial` = 档案已更新（`~/.niu/model_capabilities.json`，键 `apiBase|model|llm` / `|lightrag`）；`failed` = 探测失败**保持旧档案**（检查 429 限流/401 认证/404 模型名后重试）。
-4. 评测后：告诉用户该模型支持的档位清单，引导在设置窗口选档位 → "测试连接并保存"完成配置；或直接 `set_lightrag_llm_config(reasoning_effort="low")` 写入（但仍建议走一次设置页校验）。
+4. 评测后：告诉用户该模型支持的档位清单——llm 段（或继承态入库段）引导在设置窗口选档位 → "测试连接并保存"完成配置；入库段配了独立模型时页面无下拉可选，直接 `set_lightrag_llm_config(reasoning_effort="low")` 写入。
 5. 预算提示：单场景 ≈11 次极小请求，值域超时重试最坏 ≈140s，加参数可用性段 ≈+45s——`code_run` 的 `timeout` 建议 ≥240；双场景分两次调用。
 
 > **评测纪律**：①评测消耗用户 API 配额（11 次极小请求），先征得用户同意；②评测值域只对**当前场景 thinking 配置**成立（lightrag 恒 disabled、llm 按用户配置）——不要把一个场景测出的档位外推到另一个场景；③评测不是测试对话质量——档位支持 ≠ 输出质量，质量评估按上文"入库质量检查方法"或对话实测。
@@ -497,13 +497,13 @@ print(prof.get("reasoning_effort"))               # supported / unsupported 档�
 | 场景 | 行为 |
 |---|---|
 | **统一主模型**（`lightrag_llm.model` 为空，默认） | 入库链路继承主 `llm` 段 `capabilities`——**探测主模型即覆盖入库与脑区**，无需单独探测 |
-| **入库段配独立模型**（`lightrag_llm.model` 非空） | 入库段用**自己的** `capabilities`——**必须单独探测该段**（「探测能力（入库模型）」按钮），否则其参数约束不被过滤，文件入库会被 400 拒收且无自动降级 |
+| **入库段配独立模型**（`lightrag_llm.model` 非空） | 入库段用**自己的** `capabilities`——设置页的入库段探测按钮已下线（该段被主 Agent 自定义后整卡片变灰），须由主 Agent 用 `code_run` 跑 `niu_api.model_probe.probe(..., lightrag=True)` **单独探测该段**，否则其参数约束不被过滤，文件入库会被 400 拒收且无自动降级 |
 
 > `vision_llm` 段（第三方视觉模型）同理独立——其模型的参数约束也需对该段探测。
 
 **触发方式**：
 
-- **设置页**（推荐给用户）：`/setup` 打开——`llm` 段与 `lightrag_llm` 段各一个「探测能力」按钮。探测完成即更新该段 `capabilities.deny`，**无需重启**（会话按配置变化自动重建）
+- **设置页**（推荐给用户）：`/setup` 打开——只保留 `llm` 段（对话模型）一个「探测能力」按钮，入库段探测按钮已退役（两态恒隐藏）；入库段探测走下面「主 Agent 自主探测」（`code_run` + `probe(..., lightrag=True)`）。探测完成即更新该段 `capabilities.deny`，**无需重启**（会话按配置变化自动重建）
 - **主 Agent 自主探测**（三个环境统一——开发机 / macOS 包 / Windows 包均可）：用 `code_run` 直接跑下面这段代码（探测核心是 `niu_api.model_probe.probe`，无需任何脚本文件；`lightrag=False` 探对话场景、`True` 探入库场景）：
 
   ```python
@@ -526,9 +526,9 @@ print(prof.get("reasoning_effort"))               # supported / unsupported 档�
 
 | 现象 | 处理 |
 |---|---|
-| 模型报 400 且消息含参数名（`invalid temperature: ...` / `'x' does not support ...`） | 对该段重新「探测能力」——探测会定位并 deny 掉它 |
+| 模型报 400 且消息含参数名（`invalid temperature: ...` / `'x' does not support ...`） | llm 段（对话模型）用设置页「探测能力」按钮重新探测；入库段由主 Agent 用 `code_run` 跑 `niu_api.model_probe.probe(..., lightrag=True)` 重探该段——探测会定位并 deny 掉它 |
 | 确认某参数是否已被 deny | 查 `~/.niu/config/user-config.json` 对应段 `capabilities.deny`；已列出则不会再发送该参数 |
-| 换了独立入库模型后文件入库报 400 | 该段未探测（见「两段独立」）——点「探测能力（入库模型）」 |
+| 换了独立入库模型后文件入库报 400 | 该段未探测（见「两段独立」）——设置页的入库段探测按钮已下线，由主 Agent 用 `code_run` 跑 `niu_api.model_probe.probe(..., lightrag=True)` 探测该段 |
 | 换回原模型后参数又被拒 | 重探测该段（洗白机制） |
 | 白名单外参数被拒 | 不在自动处理范围（白名单设计）——`response_format` 见三档探测、`reasoning_effort`/`thinking` 见值域探测章节 |
 
