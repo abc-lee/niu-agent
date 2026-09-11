@@ -570,10 +570,10 @@
       const lightragProbeBtn = document.getElementById('lightragProbeBtn');
       if (lightragCustomized) {
         lightragProbeBtn.style.display = 'none';
-        // customized 场景入库段由主 Agent 管理——替换提示文案（D-G：页面不可编辑）
+        // customized 场景入库段独立于主模型——替换提示文案（D-G：页面不可编辑）
         const lightragHint = document.getElementById('lightragCapabilityHint');
         if (lightragHint) {
-          lightragHint.textContent = '入库模型已由主 Agent 自定义配置，页面不可编辑';
+          lightragHint.textContent = '入库模型已独立于主模型配置（存在非空项与主模型不一致），页面不可编辑';
         }
       } else if (isLightragInherited(fileBase)) {
         lightragProbeBtn.style.display = 'none';
@@ -747,10 +747,15 @@
       probeCapability('llm'); // 复用现有函数（含清空/loading/复写档位全套）
     }
 
-    // 换模型检测：模型名或路径变化 → 清空四个下拉框 + 禁用（要求重新探测）
+    // 换模型检测：模型名或路径变化 → 清空下拉框 + 禁用（要求重新探测）
+    // customized 态：lightragThinking/lightragReasoningEffort 是只读镜像（非页面所有），
+    // 跳过重置——保持回填的 fileBase 显示值供用户比对；llm 两下拉照常清空
     function clearCapabilityDropdowns() {
       capabilityCleared = true;
-      ['llmThinking', 'llmReasoningEffort', 'lightragThinking', 'lightragReasoningEffort'].forEach(id => {
+      const ids = lightragCustomizedState
+        ? ['llmThinking', 'llmReasoningEffort']
+        : ['llmThinking', 'llmReasoningEffort', 'lightragThinking', 'lightragReasoningEffort'];
+      ids.forEach(id => {
         const el = document.getElementById(id);
         if (el) {
           // 思考链/推理深度选项均档案驱动（探测成功后复写）——清空只留"跟随模型默认"
@@ -765,7 +770,7 @@
       // P2：customized 态 lightrag 探测按钮恒隐藏——重置为「未探测…」与状态机矛盾；
       // 按模块态镜像（applyCapabilityBackfill 同步）选文案
       if (h2) h2.textContent = lightragCustomizedState
-        ? '入库模型已由主 Agent 自定义配置，页面不可编辑'
+        ? '入库模型已独立于主模型配置（存在非空项与主模型不一致），页面不可编辑'
         : '未探测，请点击下方"探测能力"';
       updateTestSaveButton();
     }
@@ -1096,7 +1101,7 @@
       // （必须在 clearCapabilityDropdowns 之前，否则误清 llm 两下拉致保存按钮熄灭——A P2-1）
       const existingConfig = await window.electronAPI.getConfig();
       if (lightrag && !isLightragInherited(existingConfig)) {
-        setStatus('入库模型已由主 Agent 自定义，页面不探测', 'error');
+        setStatus('入库模型已独立于主模型配置（存在非空项与主模型不一致），页面不探测', 'error');
         return;
       }
       // 探测第一个动作：清空四个下拉框（思考链+推理深度，llm+lightrag）+ 不可选

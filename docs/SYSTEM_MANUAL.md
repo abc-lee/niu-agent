@@ -690,7 +690,7 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 - **主 Agent 修改配置时必须两个文件一起改**：改 `user-config.json` 对应段的同时，必须同步修改合集中同 `presetId` 名字的条目。
 - **config-manager 自动同步**：经 config-manager 工具（`set_llm_config` / `set_lightrag_llm_config`）修改时工具自动同步合集（机制保证，无需手工双改）；`preset_id` 加载型调用从合集整条读入 `user-config.json`；直接编辑文件时必须手工双改，否则合集条目与当前生效配置漂移。
 - **一致性收敛规则**：以 `user-config.json` 为主——设置窗口下次"测试并保存"或 config-manager 下次 set 时，合集同名条目自动对齐为 `user-config.json` 的两段内容。
-- **知识图谱卡片变灰语义**：`lightrag_llm` 段被主 Agent 自定义过（判据非对称——只遍历 lightrag 侧的键：**该侧值非空且与主模型对应键不一致**才算自定义，**lightrag 侧为空/缺失 = 跟随，无论主模型是什么**；排除清单 = 页面三项 thinking/reasoning_effort/temperature + 程序产物键 `capabilities`/`presetId`/`litellm_kwargs.response_format_mode`/`litellm_kwargs.allowed_openai_params`，其余任何键——如 model/apiKey/apiBase 等连接/模型类键——非空且不一致即触发）时，设置页知识图谱卡片**整容器变灰不可编辑**（三控件禁用、探测按钮不出现），保存按钮点亮只看主模型参数选齐，保存时该段原样保留；判定每次打开页面/保存时重算，主 Agent 清空或改回一致即自动恢复可编辑。
+- **知识图谱卡片变灰语义**：`lightrag_llm` 段被主 Agent 自定义过（判据非对称——只遍历 lightrag 侧的键：**该侧值非空且与主模型对应键不一致**才算自定义，**lightrag 侧为空/缺失 = 跟随，无论主模型是什么**；排除清单 = 页面三项 thinking/reasoning_effort/temperature + 程序产物键 `capabilities`/`presetId`/`litellm_kwargs.response_format_mode`/`litellm_kwargs.allowed_openai_params`，其余任何键——如 model/apiKey/apiBase 等连接/模型类键——非空且不一致即触发）时，设置页知识图谱卡片**整容器变灰不可编辑**（三控件禁用、探测按钮不出现），保存按钮点亮只看主模型参数选齐，保存时该段原样保留；判定每次打开页面/保存时重算，主 Agent 清空或改回一致即自动恢复可编辑。**边界（type 铺底误判）**：若 `lightrag_llm.type` 等键是程序铺底的默认值（如 'openai'）而主模型 type 已改为其它协议，也会判定为「自定义」使卡片变灰——此时页面说明文案对该场景归因不准确（并非主 Agent 真正改过入库段），属已知边界；数据零损失，恢复办法=由主 Agent 执行 `set_lightrag_llm_config(model="")`（清空分支会一并清除 type 等铺底键）或把 `llm_type` 对齐主模型。
 
 字段与示例详见《用户操作手册》1.2 LLM 配置。
 
