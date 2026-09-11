@@ -37,7 +37,8 @@ objc2 = "=0.6.4"
 objc2-app-kit = "=0.3.2"
 objc2-core-graphics = "=0.3.2"
 objc2-foundation = "=0.3.2"
-objc2-application-services = "=0.3.2"
+# Processes feature: HIServices::TransformProcessType（后台降级，阻止 Dock 出现 Python 图标）
+objc2-application-services = { version = "=0.3.2", features = ["Processes"] }
 objc2-core-foundation = "=0.3.2"
 foreign-types = "=0.5.0"
 libc = "0.2"
