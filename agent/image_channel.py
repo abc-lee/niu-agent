@@ -1,30 +1,25 @@
-"""图片直通通道（plan v0.5.2 §4-V3）：markdown 图标记 → 多模态 content list + 出站日志 data URI 打码。
+"""图片工具共享 helper（plan 2026-09-11-vision-channel-refactor：图片直通通道退役后保留项）。
 
-设计（R1）：DB 存文本、出口展开——transform_history / 当前 user 消息组装调用
-expand_image_markers；本模块为纯函数 + 只读文件访问，独立模块防循环 import
+- MIME 魔数探测 / >4MB 降采样 → data URI（analyze_image 读图复用）
+- mask_image_data_uris：出站日志 data URI 打码（raw_http / 交互日志不落 base64 明文）
+- main_has_vision：analyze_image 选模型守卫
+
+设计：纯函数 + 只读文件访问，独立模块防循环 import
 （http_logger / litellm_adapter 均从本模块 import mask_image_data_uris，不得反向依赖）。
 
-判定规则（§4-V3）：
-- 主会话 = user-config.json llm 段 capabilities.input 含 "image" 且 capabilities.model
-  与当前模型一致（T1 探测写入；get_llm_config 整段小写化透传；无/不匹配/读失败 → False）
-- 子会话 = 该子 Agent frontmatter llmPreset 指向段 model 非空 → True
-  （第三方模型不探测 D-F，档案无其条目——手工测通为准，不查档案）
+main_has_vision 判定：user-config.json llm 段 capabilities.input 含 "image" 且 capabilities.model
+与当前模型一致（探测写入；get_llm_config 整段小写化透传；无/不匹配/读失败 → False，fail-closed）。
 """
 
 from __future__ import annotations
 
 import base64
-import json
-import os
 import re
 from io import BytesIO
 from pathlib import Path
 
 MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 单图上限；超限 → PIL 降采样，仍超限/解码失败 → 留文本+警示
 
-# markdown 图标记 ![名称](目标)——目标为不含 ')' 的串（[^)]+）：内嵌空格接受
-# （含空格路径如 CJK 目录名正常展开），仅 strip() 首尾空白；不支持 <...>/百分号解码
-_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 # 出站日志打码：image data URI（base64 载荷段单独捕获用于计长）
 _DATA_URI_RE = re.compile(r"data:image/[A-Za-z0-9+.\-]+;base64,([A-Za-z0-9+/=]+)")
 
@@ -95,50 +90,6 @@ def _image_to_data_uri(path: str) -> str | None:
         return None
 
 
-def expand_image_markers(content, has_vision: bool = False):
-    """消息文本中 markdown 图标记 `![名称](绝对路径)` → 多模态 content list（纯函数）。
-
-    - has_vision=False / 非 str / 无标记 → 原样返回（默认 False 既有调用零影响）
-    - 文件存在且 ≤4MB → text 段 + image_url data URI 段（alt 文本非空时前置为 text 段）
-    - 文件 >4MB → PIL 降采样；仍超限/解码失败 → 留标记原文 + [图片不可读] 警示
-    - 缺文件/读失败 → 留标记原文 + [图片不可读] 警示（R5：tmp 24h 清理语义）
-    - 非本地路径（http(s)://、data:、相对路径）→ 留标记原文，不展开不警示
-
-    Returns: str（未展开）或 list[dict]（OpenAI 多模态 content；Claude list 兼容先例）。
-    """
-    if not has_vision or not isinstance(content, str):
-        return content
-    matches = list(_MD_IMAGE_RE.finditer(content))
-    if not matches:
-        return content
-    parts: list[dict] = []
-    pos = 0
-    for m in matches:
-        before = content[pos:m.start()]
-        if before:
-            parts.append({"type": "text", "text": before})
-        name, target = m.group(1), m.group(2).strip()
-        if not os.path.isabs(target) or target.startswith(("http://", "https://", "data:")):
-            # 非本地绝对路径 → 原样保留（web 图/data URI 不是截图落盘产物）
-            parts.append({"type": "text", "text": content[m.start():m.end()]})
-        else:
-            data_uri = _image_to_data_uri(target)
-            if data_uri is not None:
-                if name:
-                    parts.append({"type": "text", "text": name})
-                parts.append({"type": "image_url", "image_url": {"url": data_uri}})
-            else:
-                parts.append({
-                    "type": "text",
-                    "text": f"{content[m.start():m.end()]} [图片不可读，无法显示: {target}]",
-                })
-        pos = m.end()
-    tail = content[pos:]
-    if tail:
-        parts.append({"type": "text", "text": tail})
-    return parts
-
-
 def mask_image_data_uris(obj):
     """递归替换 dict/list/str 中 image data URI 为 `[image data, N bytes]`（出站日志打码，plan R2）。
 
@@ -156,10 +107,10 @@ def mask_image_data_uris(obj):
 
 
 def main_has_vision(llm_config: dict | None) -> bool:
-    """主会话图片直通判定：llm 段 capabilities.input 含 "image" 且 capabilities.model
-    与当前模型一致（T1 探测写入 user-config.json；get_llm_config 整段小写化透传）。
+    """analyze_image 选模型守卫：llm 段 capabilities.input 含 "image" 且 capabilities.model
+    与当前模型一致（探测写入 user-config.json；get_llm_config 整段小写化透传）。
 
-    无 capabilities / model 不匹配（换模型后旧能力不采信）/ 读失败 → False（fail-closed，不展开图片）。
+    无 capabilities / model 不匹配（换模型后旧能力不采信）/ 读失败 → False（fail-closed，不采信旧能力）。
     """
     try:
         cfg = llm_config or {}
@@ -169,22 +120,5 @@ def main_has_vision(llm_config: dict | None) -> bool:
         if caps.get("model") != cfg.get("model"):
             return False
         return "image" in (caps.get("input") or [])
-    except Exception:
-        return False
-
-
-def preset_section_has_vision(preset_name: str, config_data: dict | None = None) -> bool:
-    """子会话图片直通判定（正向规则）：llmPreset 指向的 user-config.json 顶层段 model 非空 → True。
-
-    第三方模型不探测（D-F），档案无其条目——手工测通为准，不查档案。读失败 → False。
-    config_data=None → 自读 CONFIG_PATH（独立调用）；传入预读 dict → 直接消费
-    （子 Agent 派发链覆盖侧/判定侧共用同一读盘结果，避免重复读文件）。
-    """
-    try:
-        if config_data is None:
-            from niu_api.config import CONFIG_PATH
-            config_data = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
-        section = config_data.get(preset_name) or {}
-        return bool(section.get("model"))
     except Exception:
         return False

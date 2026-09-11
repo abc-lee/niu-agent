@@ -88,7 +88,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
 | `ha-server` | 智能家居（Home Assistant 设备控制/场景/自动化） | Yes（可选） |
-| `vision-server` | 屏幕截图（screenshot + list_targets 两工具，基于 niu_natives；.so 缺失/平台未编时降级为明确错误提示，不炸启动） | Yes |
+| `vision-server` | 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图三工具；前两者基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动；analyze_image 不依赖 niu_natives） | Yes |
 
 > `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
@@ -377,15 +377,6 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 ### MCP 工具映射
 
 子 Agent 的 MCP 工具由 frontmatter `mcpServers` 字段指定（如 `mcpServers: [photo-server, lightrag-server]`）。加载时从已加载的全局 ToolRegistry 过滤，无需额外加载逻辑。如果 `mcpServers` 含未加载的服务器，对应工具缺失但不阻塞（log warning）。
-
-### 捆绑模型（llmPreset，2026-09-10 起）
-
-frontmatter 可选字段 `llmPreset: <user-config.json 顶层段名>`——让子 Agent 使用指定配置段的模型，而非一律主 llm 配置。本期支持段：`vision_llm`（第三方视觉模型，见「视觉能力」章节）。
-
-- **无字段零影响**：不写 `llmPreset` 的子 Agent 行为完全不变（不读盘、走主配置）
-- **生效条件**：字段指向的段 `model` 非空 → 该子 Agent 用此段模型（段内空键继承主 llm 段）；典型用法=视觉子 Agent 捆绑第三方视觉模型，任务文本里的图片标记直通其对话
-- **回落语义**：段 `model` 为空 / 段名不在支持集 / user-config.json 读取失败 → 回落主配置 + 日志警示（不报错、不阻塞派发）
-- bundled（`config/agents/`）与用户自建（`~/.niu/agents/`）两目录同生效
 
 ### 主 Agent 创建子 Agent 流程
 
@@ -716,7 +707,9 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 
 ## 视觉能力（2026-09-10 起）
 
-Niu 的视觉能力 = `vision-server` 的两个截图工具（`screenshot` 截图 + `list_targets` 列可截目标）+ **图片直通通道**：对话/任务文本里的 markdown 图标记（`![名称](绝对路径)`）在出站前展开为多模态 content 段发给模型——主模型有视觉时自己看图，无需单独的"解析图片"工具。三层结构：主模型视觉探测 → 第三方视觉模型配置（`vision_llm` 段）→ 可选自建视觉子 Agent。
+Niu 的视觉能力 = `vision-server` 的三个工具（均 static 直挂主 Agent，无需 disk 发现）：`list_targets` 列可截目标 + `screenshot` 截图（返回**纯文件路径** + 尺寸元数据，不返回图标记）+ `analyze_image(image_path, question)` 识图——**带提示词**把图片送进一个有视觉能力的模型、返回**文字答案**。工具内部自选模型：**主模型优先**（主模型探测出视觉 → 用主模型；否则用 `vision_llm` 段的第三方视觉模型；皆无 → 明确错误含配置指引）。两层结构：主模型视觉探测（决定 `analyze_image` 能否走主模型）→ 第三方视觉模型配置（`vision_llm` 段）。
+
+> 设计沿革（2026-09-11 重构）：此前「markdown 图标记出站前自动展开」的图片直通通道与「自建视觉子 Agent（llmPreset 捆绑）」路线已整体退役——隐式展开塞不进提示词、且弱模型曾因路径被消费死循环读图。看图统一走 `analyze_image` 显式工具调用（行为在日志里可见、可带提示词反复问同一张图）。
 
 ### 截图辅助工具（list_targets + screenshot）
 
@@ -725,7 +718,7 @@ Niu 的视觉能力 = `vision-server` 的两个截图工具（`screenshot` 截�
 | 工具 | 参数 | 说明 |
 |------|------|------|
 | `list_targets` | 无 | 一次列出当前可截取的所有目标：**显示器**（名称/逻辑尺寸/缩放/逻辑位置，主屏标 `(主屏)`）+ **窗口**（`id`/软件名/标题/尺寸/位置）。前台应用的窗口行标 `[应用在前台]`（同一 App 多窗口会同时带此标记）；无前台应用时省略「前台应用」行 |
-| `screenshot` | `target=screen/window/region` + 对应参数 | 截整屏/指定窗口/指定区域，落盘 PNG（统一降采样 ≤1280 宽），返回 `![截图](绝对路径)` 标记 + 尺寸元数据 |
+| `screenshot` | `target=screen/window/region` + 对应参数 | 截整屏/指定窗口/指定区域，落盘 PNG（统一降采样 ≤1280 宽），返回**纯绝对路径**（首行 `截图已保存: <路径>`）+ 尺寸/显示器元数据——不返回图标记（与用户发图同形；要理解画面内容调 `analyze_image`） |
 
 **推荐用法**：先 `list_targets` 拿窗口编号 → 再 `screenshot(target="window", window_id=…)`。截区域用 `region_ratio=[左,上,右,下]`（4 个 0~1 数值，**恒相对整个逻辑桌面**，即 `target=screen` 那张图；工具内部换算坐标，无需自己算）；绝对坐标 `x/y/width/height` 仍可用，与 `region_ratio` 二选一。
 
@@ -737,12 +730,33 @@ Niu 的视觉能力 = `vision-server` 的两个截图工具（`screenshot` 截�
 - **非连续多屏之间的空隙是黑区**：比例指到空隙会截出黑块或报「overlaps no display」
 - **窗口截图尺寸可能等于整屏**：若目标窗口本身占满全屏（如全屏的终端/浏览器），截出的图尺寸与整屏相同——这是正常的（视网膜屏 2 倍缩放，如 1680×1050 逻辑 → 3360×2100 物理），不是 window_id 失效、也不是 window 模式退化成整屏，无需重试
 
+### 识图工具（analyze_image）
+
+`analyze_image(image_path, question)`：把指定图片 + **提示词**送进一个有视觉能力的模型，返回**文字答案**（不返回图片/图标记）。两个参数均必填：
+
+| 参数 | 说明 |
+|------|------|
+| `image_path` | 图片**绝对路径**——截图产物 / 用户拖入的图 / 任意本地图片均可 |
+| `question` | **要向模型提的问题**——决定模型看图时关注什么、输出什么（提示词是核心参数，不是可选装饰） |
+
+**两段式提问法（实测依据，推荐流程）**：
+1. **先泛问建立整体认知**：问宽泛的（如「这张图里有什么」）——模型给出整体描述。注意：密集界面可能因输出预算只覆盖一部分，**没提到的内容不代表没看到**
+2. **再带具体问题聚焦追问同一张图**：看完第一遍才知道有什么可问（如「顶部状态栏显示什么」）——聚焦提问让模型只看那一处，回答更准且**输出更省**（实测同一张图：泛问 1129 token，聚焦问 77 token）
+3. **同一张图可以带不同问题反复调用**——每次都是独立会话（无多轮上下文），追问靠「同图 + 新问题」实现
+
+**模型选择规则（工具内部自动，主模型优先）**：
+- 主模型探测出视觉（llm 段 `capabilities.input` 含 `"image"`）→ **用主模型**（不读 vision_llm 段，主模型自身参数全保留）
+- 主模型无视觉 + `vision_llm` 段 `model` 非空 → 用该段的第三方视觉模型
+- 两者皆无 → 返回明确错误（指引：把主模型换成支持视觉的模型并探测，或配置 `vision_llm` 段——见下节），不崩溃
+
+**边界**：文件缺失/非图片 → 明确中文错误串；输出预算耗尽（思考型视觉模型推理占满小预算、content 为空）→ 错误串提示调大 `max_tokens` 或收窄问题重试；请求中的 data URI 在 raw_http/交互日志中打码。本工具**不依赖 niu_natives**（Windows 无 `.pyd` 也可用）。
+
 ### 主模型视觉探测
 
 - 设置页「**探测能力（对话模型）**」按钮探测主模型时顺带执行 **vision 双色交叉子扫描**：发纯红/纯蓝两张 32×32 极小图各问主色，两答均命中对应色系才判有视觉（单色已证伪则不再发第二张）
 - 结果写入 `~/.niu/config/user-config.json` **llm 段** `capabilities` 子对象：`{model, input: ["text","image"], probed_at}`（无视觉 → `input: ["text"]`，覆盖陈旧值）；`llm.presetId` 非空时同步 upsert 命名配置合集（`llm-configs.json`）该条目三段快照——能力随模型切换跟随。入库模型（lightrag_llm 段）不探测
 - 探测失败（网络异常 / 超时重试后仍失败 / 200 但空回答）→ **不写、保持旧值**（防网络抖动把已知视觉模型降级 text-only），**不毒化主探测项结果**；`~/.niu/model_capabilities.json` 与视觉能力无关（只存 reasoning_effort/thinking 等既有探测项）
-- **主模型有视觉 = 截图后图片直通主对话**：screenshot 返回的图标记在出站前展开为多模态 content，主模型直接看图回答
+- **主模型有视觉 = `analyze_image` 走主模型**：探测出视觉后，识图工具把图送进主 llm 段（无需任何额外配置）；无视觉则需配 `vision_llm` 段或换支持视觉的模型并重新探测
 - 探测结果与预期不符（如确认模型有视觉但判了无）→ 重跑「探测能力」刷新 capabilities 即可
 
 ### 第三方视觉模型配置（vision_llm 段）
@@ -764,13 +778,13 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 | **云模型** | 选上下文窗口 ≥32K（建议 ≥64K）的模型版本/规格（厂商常按规格区分，勿选小上下文版） |
 | **Niu 侧** | `~/.niu/preferences.json` → `context.contextWindowSize` 设为与模型实际一致（≥32768，长会话建议 65536+）。该值决定 `max_output_tokens = contextWindowSize × 0.16`、上下文 FIFO 与压实阈值——**配得过小会连带挤压输出预算**（缺省 200000） |
 
-> 排查：视觉子 Agent/主模型看图后长时间无输出或答案截断 → 先核这三处（模型实测窗口、Niu 的 `contextWindowSize`、`vision_llm.max_tokens` 输出预算）。
+> 排查：`analyze_image` 看图后长时间无输出或答案截断 → 先核这三处（模型实测窗口、Niu 的 `contextWindowSize`、`vision_llm.max_tokens` 输出预算）。
 
 **字段表**（全部可省略，**空键继承主 llm 段**）：
 
 | 字段 | 说明 |
 |------|------|
-| `model` | 视觉模型名。**非空才生效**——空 = 回落主 llm 模型（本段仅余独立 overrides） |
+| `model` | 视觉模型名。**非空才被 `analyze_image` 使用**——该字段为空时本段不生效（主模型也无视觉则 `analyze_image` 返回明确错误提示配置本段） |
 | `apiKey` | API key（空则继承主 llm；本地服务可填任意非空占位如 `sk-local`） |
 | `apiBase` | 服务地址（空则继承主 llm；本地 llama.cpp 形如 `http://192.168.3.88:8080/v1`） |
 | `type` | 服务商类型 `openai`/`anthropic`（空则继承主 llm，默认 openai） |

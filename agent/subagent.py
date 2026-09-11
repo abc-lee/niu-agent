@@ -242,7 +242,6 @@ def _run_agent_loop(
     resumed_messages: list | None = None,  # 阶段四新增：断点续传消息列表
     stop_predicate: Any | None = None,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
     on_before_llm: Any | None = None,  # 每轮 LLM 前回调（Current Time 刷新），透传给 agent_runner_loop
-    has_vision: bool = False,  # 图片直通通道（plan §4-V3）：派发层算好传入，透传给 agent_runner_loop
 ) -> tuple[str, Any, str]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -293,7 +292,6 @@ def _run_agent_loop(
         resumed_messages=resumed_messages,  # 阶段四新增：透传给 agent_runner_loop
         stop_predicate=stop_predicate,  # 停止穿透：子 Agent 循环层停止谓词（LLM 层 stop_check 同源）
         on_before_llm=on_before_llm,  # 每轮 LLM 前刷新 Current Time（透传）
-        has_vision=has_vision,  # 图片直通通道（plan §4-V3）：history/当前 user 消息展开图标记
     )
     result = ""
     last_reply = ""  # 只记录最后一次 reply 的内容（完成通知用）
@@ -857,31 +855,6 @@ def _annotate_subagent_prompt_degradation(result_text: str) -> str:
     return f"{result_text}\n[子 Agent 提示词降级: {reason}]"
 
 
-# llmPreset 支持段集合（单点真理，T4 plan §4-V4）——llm_config 覆盖侧与 has_vision 判定侧同源消费：
-# preset 不在集内 → 两侧同判据回落主配置/主 capabilities，不查段。新增支持段只改此处（get_llm_config 需同步扩展）。
-SUPPORTED_PRESETS = {"vision_llm"}
-
-
-def _resolve_subagent_has_vision(agent_name: str, llm_config: dict | None, user_cfg: dict | None = None) -> bool:
-    """子会话图片直通判定（plan §4-V3 接线④，派发层算好传入——与 call_subagent 内 T4 llmPreset 覆盖同源）。
-
-    - frontmatter llmPreset ∈ SUPPORTED_PRESETS 且段 model 非空 → True（第三方模型不探测 D-F，手工测通为准）
-    - preset 不在支持集 / 无字段 / 段 model 空 / 配置读失败（user_cfg=None）→ 回落主 llm_config capabilities 判定（R3）
-
-    user_cfg = call_subagent 预读的 user-config.json dict——与覆盖侧同一读盘结果（P2：判定侧不自读文件）。
-    None（未传入/读失败）→ 不查段直接回落主 llm_config capabilities 判定（fail-closed，防瞬时读失败时判定侧与覆盖侧分叉）。
-    警示由覆盖侧单点留痕，判定侧不重复 log（P3）。
-    """
-    from .image_channel import main_has_vision, preset_section_has_vision  # 函数内解析——测试可 patch ic 属性
-    # get_subagent_config 契约：MD 不存在/解析失败 → {}（不抛）
-    agent_config = get_subagent_config(agent_name) or {}
-    preset = agent_config.get("llmPreset")
-    if preset and preset in SUPPORTED_PRESETS and user_cfg is not None:
-        if preset_section_has_vision(preset, user_cfg):
-            return True
-    return main_has_vision(llm_config)
-
-
 def call_subagent(
     agent_name: str,
     task: str,
@@ -931,45 +904,8 @@ def call_subagent(
     # 1. 获取子 Agent 提示词 + temperature
     agent_config = get_subagent_config(agent_name)
 
-    # T4（plan §4-V4）：llmPreset 捆绑模型——frontmatter llmPreset 指向 user-config.json 顶层段
-    # （如 vision_llm），llm_config 用该段配置覆盖；空键继承 llm 段由 get_llm_config 已实现。
-    # 覆盖点必须在下方 temperature merge 之前（否则 agent 预设 temperature 随原 llm_config 被丢）；
-    # 无本字段的子 Agent 零影响（缺省走主配置）。bundled（config/agents/*.md）与用户定义
-    # （~/.niu/agents/*.md）同走 get_subagent_config → 同生效。
-    # P2：CONFIG_PATH 只读一次——预读结果 _user_cfg 供覆盖侧/has_vision 判定侧/get_llm_config 三检查点共用
-    #（None = 读失败，与「段 model 空」区分警示）；无 llmPreset 字段零影响（不读盘）。
-    _llm_preset = agent_config.get("llmPreset")
-    _user_cfg = None
-    if _llm_preset:
-        from pathlib import Path as _P
-        from niu_api.config import CONFIG_PATH as _CP
-        from .image_channel import preset_section_has_vision  # 与判定侧同一 helper（函数内解析——测试可 patch）
-        try:
-            _user_cfg = json.loads(_P(_CP).read_text(encoding="utf-8"))
-            if not isinstance(_user_cfg, dict):
-                _user_cfg = None
-        except Exception:
-            _user_cfg = None
-        if _user_cfg is None:
-            # 配置读失败 → 回落主配置（不误报「段 model 为空」）
-            logger.warning(f"[SubAgent] {agent_name}: llmPreset={_llm_preset!r} user-config.json 读取失败，回落主配置")
-        elif _llm_preset not in SUPPORTED_PRESETS:
-            # 不支持段名（单点真理 SUPPORTED_PRESETS）→ 回落主配置；has_vision 判定侧同判据回落主档案
-            logger.warning(f"[SubAgent] {agent_name}: 不支持的 llmPreset={_llm_preset!r}，回落主配置")
-        elif not preset_section_has_vision(_llm_preset, _user_cfg):
-            # 段 model 空 → 回落主配置；主模型无视觉时回落语义错——警示留痕（本条件唯一警示点，判定侧不重复 P3）
-            logger.warning(f"[SubAgent] {agent_name}: llmPreset={_llm_preset!r} 段 model 为空，回落主配置（主模型无视觉时图片直通无效）")
-        else:
-            from niu_api.llm_proxy import get_llm_config as _get_llm_config
-            llm_config = _get_llm_config(use_vision_config=True, config_data=_user_cfg)
-
     if agent_config.get("temperature") is not None:
         llm_config = {**llm_config, "temperature": agent_config["temperature"]}
-
-    # 图片直通通道（plan §4-V3 接线④）：派发层算好 has_vision——llmPreset ∈ SUPPORTED_PRESETS 且段 model 非空 → True；
-    # preset 不在支持集/无字段/段 model 空/读失败 → 主 llm_config capabilities 判定（R3，与覆盖侧同源同判据）。
-    # _user_cfg = 上方预读的同一读盘结果（P2 三检查点共用）；三路径（同步/异步/续答）同源透传。
-    has_vision = _resolve_subagent_has_vision(agent_name, llm_config, _user_cfg)
 
     # 2. 构建静态/动态段（cache 友好）
     try:
@@ -1015,9 +951,6 @@ def call_subagent(
     # 续答实际复用 suspended_client（下方 resume 分支），不经过本构造——零额外接线。
     _sticky_id = agent_name if (unique_name is None or answer is not None) else unique_name
     llm_config = {**llm_config, "sticky_session_id": _sticky_id}
-    # 图片直通通道（plan 2026-09-10 D1）：派发层算好的 has_vision 显式键透传（先于 create_client——
-    # 会话构造时读该键；缺失 → False fail-closed）
-    llm_config = {**llm_config, "vision_enabled": has_vision}
 
     # 3. 创建 LLM 客户端（统一使用 LiteLLM）
     from .runner import create_client
@@ -1129,10 +1062,7 @@ def call_subagent(
             else:
                 # user 子 Agent 恢复（同步语义）：global or terminate
                 _stop_fn = lambda: _is_stop_global() or _inst_terminate()
-            # 图片直通通道（plan 2026-09-10 D1）：续答用派发时刻的 suspended_client（长驻会话），
-            # 按 stop_check 同型先例同步覆盖本次 has_vision（防换模型/改配置后续跑沿用旧值）
-            instance.suspended_client.backend.vision_enabled = has_vision
-            # 参数约束 deny（plan 2026-09-10 D4/R8）：续答按 vision_enabled 同型先例重算覆盖——
+            # 参数约束 deny（plan 2026-09-10 D4/R8）：续答按 stop_check 同型先例重算覆盖——
             # 挂起期间探测写入新 deny 时旧会话不过滤（至多一次可见 400，失败可见非静默损坏）
             from .generic.litellm_adapter import parse_capabilities_deny
             instance.suspended_client.backend.capabilities_deny = parse_capabilities_deny(
@@ -1151,7 +1081,6 @@ def call_subagent(
                 supplement_queue=instance.supplement_queue,
                 stop_predicate=_stop_fn,  # 停止穿透：恢复路径重建谓词（闭包实例 E1 + 按实例 source 区分）
                 on_before_llm=_refresh_subagent_current_time,
-                has_vision=has_vision,  # 图片直通通道（§4-V3）：suspended_messages 已展开，此处保同源
             )
             _maybe_suspend_session(
                 unique_name=answer_unique_name,
@@ -1200,7 +1129,6 @@ def call_subagent(
                 resumed_messages=resumed_messages,  # T2 续跑：命中档时透传续跑上下文（None=全新派发不启用）
                 stop_predicate=_stop_fn,  # 停止穿透：异步路径用顶部绑定（仅 terminate）
                 on_before_llm=_refresh_subagent_current_time,
-                has_vision=has_vision,  # 图片直通通道（§4-V3）：全新派发入口展开；续跑档已清洗展开
             )
         finally:
             # 异步路径不在这里 unregister（_run_subagent_async 的 finally 负责）
@@ -1236,12 +1164,6 @@ def call_subagent(
                     # last_reply，否则续跑看不到子 Agent 最后陈述（工具结果推不出的结论/决策丢失）。
                     # 守卫：非空且非"[输出被用户中断"开头（STOPPED 程序中断标记形态不补，messages 原样）。
                     _archive_messages = list(_rv_msgs)
-                    # 边界（双审 A 角 P2 接受）：has_vision=True 时 _rv_msgs 可能含已展开的
-                    # 多模态 content list（data URI），存档原样落盘——档是 tmp 文件（write_archive）
-                    # 非 DB，与 §4-V3「DB 存标记文本、出口展开」不冲突；续跑幂等（list 段经
-                    # transform_history 透传 / str 标记按 has_vision 再展开）；档膨胀上限可接受
-                    # （单图 ≤4MB 降采样封顶）。注意：has_vision 翻 False 时已存档图片仍会以
-                    # data URI 发出（list 透传不受 has_vision 门控，无去展开路径）——接受为边界。
                     if (
                         _rv_result in ("EXITED", "TERMINATED_BY_SUPPLEMENT", "CURRENT_TASK_DONE")
                         and last_reply
@@ -1307,7 +1229,6 @@ def call_subagent(
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
                 stop_predicate=_stop_fn,  # 停止穿透：同步路径用顶部绑定（user = global or terminate / 非 user = 仅 terminate）
                 on_before_llm=_refresh_subagent_current_time,
-                has_vision=has_vision,  # 图片直通通道（§4-V3）：带截图标记的任务文本入口即展开
             )
             # §5.5 后处理：必须在 try 块内、finally 之前执行（异常时跳过，直接进 finally）
             _maybe_suspend_session(
@@ -1764,11 +1685,8 @@ def _ask_main_agent_impl_sync(
 # ==================== 阶段二：异步子 Agent 派发与运行 ====================
 
 
-def _prepare_resume_messages(archive_messages: list, has_vision: bool = False) -> list | None:
+def _prepare_resume_messages(archive_messages: list) -> list | None:
     """把完成态存档 messages 清洗为可续跑上下文（agent_runner_loop resumed_messages 直用）。
-
-    has_vision 参数保留兼容（plan 2026-09-10 D3 去展开后本层不再展开图标记——
-    档内图标记保留 str 文本形态，发送层 sanitize 负责展开）。
 
     T2 续跑组装。复用 transform_history 整函数输出（纯函数 agent/generic/agent_loop.py L794，无突变返回新列表）——
     其净化语义正是续跑需要的：
@@ -1801,10 +1719,10 @@ def _prepare_resume_messages(archive_messages: list, has_vision: bool = False) -
     _head = archive_messages[0]
     if isinstance(_head, dict) and _head.get("role") == "system":
         # transform_history 会丢 system → 剥离净化后还原头部（resumed 分支需要完整 messages）
-        cleaned = [_head] + transform_history(archive_messages[1:], has_vision=has_vision)
+        cleaned = [_head] + transform_history(archive_messages[1:])
     else:
         # 异常形态兜底（正常档首必为 system）——整表净化不补 system
-        cleaned = transform_history(archive_messages, has_vision=has_vision)
+        cleaned = transform_history(archive_messages)
     while cleaned and (
         cleaned[-1].get("role") == "assistant"
         and not cleaned[-1].get("content")
@@ -1862,7 +1780,6 @@ def _dispatch_async_subagent(
     resumed_messages: list | None = None  # 非 None = 命中档，下方携档续跑
     _resume_hit = False
     _fallback_note = None
-    _resume_has_vision = False  # 图片直通通道（§4-V3 接线④）：命中档时派发层算好，清洗+补任务消息同源
     if unique_name is not None:
         try:
             SubagentRegistry.register(
@@ -1884,11 +1801,7 @@ def _dispatch_async_subagent(
         if isinstance(_archive, dict) and _archive.get("agent_type") == agent_name:
             _am = _archive.get("messages")
             if isinstance(_am, list) and _am:
-                # 图片直通通道（plan §4-V3 接线④）：has_vision 派发层算好传入——resumed 分支
-                # 直用清洗结果不再二次展开。异步路径不应用 llmPreset 覆盖（llm_config 恒主配置），
-                # user_cfg=None fail-closed → has_vision 按主档案判定（P2-1 同源判据：实际跑的模型定视觉）。
-                _resume_has_vision = _resolve_subagent_has_vision(agent_name, llm_config)
-                resumed_messages = _prepare_resume_messages(_am, has_vision=_resume_has_vision)
+                resumed_messages = _prepare_resume_messages(_am)
         if resumed_messages is None:
             # 释放占名 → 回退自动 hex 名全新派发（下方统一注册点）
             SubagentRegistry.unregister(unique_name)

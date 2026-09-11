@@ -632,8 +632,6 @@ def create_client(config: dict[str, Any]):
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
     # sticky routing id 纯管道透传（spec §3.1——白名单构造转发，零 sticky 逻辑）
     cfg["sticky_session_id"] = config.get("sticky_session_id")
-    # 图片直通通道（plan 2026-09-10 D1）：派发层算好的视觉能力显式键透传（缺失 → False fail-closed）
-    cfg["vision_enabled"] = bool(config.get("vision_enabled", False))
     # 参数约束 deny（plan 2026-09-10 D4）：capabilities 键原样透传（解析在 __init__ 统一做 + model 绑定校验）
     cfg["capabilities"] = config.get("capabilities")
     cfg["read_timeout"] = config.get("read_timeout") or 300
@@ -770,11 +768,6 @@ class NiuRunner:
         # sticky routing id（spec §3.1 唯一接线点）：主 Agent 固定 "main"（单用户单活跃对话）。
         # 常量键不参与 get_or_create_runner 配置比对——无重建循环风险。
         llm_config = {**llm_config, "sticky_session_id": "main"}
-        # 图片直通通道（plan 2026-09-10 D1）：create_client 之前派生主模型视觉能力
-        # （main_has_vision：capabilities.model==model 且 input 含 image；缺失 fail-closed）——
-        # 会话构造时读该键，晚于构造写入不生效（R6 双审同抓教训）。
-        from agent.image_channel import main_has_vision
-        llm_config = {**llm_config, "vision_enabled": main_has_vision(llm_config)}
 
         self.llm_config = llm_config
         self.mcp_client = mcp_client
@@ -1522,9 +1515,7 @@ class NiuRunner:
                 return
             from agent.generic.agent_loop import transform_history
             view = cm.assemble_view_sync(db_messages, exclude_last=False)
-            # 图片直通通道（plan §4-V3 接线③）：与入口同制式传 has_vision——漏则截图工具轮后
-            # 重建把已展开图还原成标记文本（R2/R3 P1 阻断项）；chat() 未启动时默认 False
-            transformed = transform_history(view, has_vision=getattr(self, "_current_has_vision", False))
+            transformed = transform_history(view)
             system = messages[0] if messages and messages[0].get("role") == "system" else None
             if system is not None:
                 messages[:] = [system] + transformed
@@ -2098,12 +2089,6 @@ class NiuRunner:
         from agent.subagent import _read_context_window_tokens
         context_window_tokens = _read_context_window_tokens()
 
-        # 图片直通通道（plan §4-V3 接线①）：主会话 has_vision = user-config.json llm 段
-        # capabilities（input 含 image 且 model 匹配；T1 探测写入；无/不匹配 → False）。
-        # 存实例属性供 _on_tool_round_refresh 同制式复用。
-        from agent.image_channel import main_has_vision
-        self._current_has_vision = main_has_vision(self.llm_config)
-
         gen = agent_runner_loop(
             client=self.client,
             system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
@@ -2121,7 +2106,6 @@ class NiuRunner:
             on_tool_round_refresh=self._on_tool_round_refresh,  # 每工具轮 persist 后视图重建（子 Agent 不传 = None 跳过）
             on_compression_request=self._on_compression_request,  # 发送前受控压缩（统一压缩入口 spec 2026-09-06；子 Agent 不传 = None 走保留的响应后 FIFO/占位符化分支）
             context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值
-            has_vision=self._current_has_vision,  # 图片直通通道（plan §4-V3 接线①）：history/当前 user 消息展开图标记
         )
 
         # 累加输出（双管道：full_resp 只含 reply 内容，用于 DB 存储）

@@ -848,13 +848,9 @@ class LiteLLMSession(BaseSession):
         # stop 检查回调：默认全局停止标志（主 Agent），call-time 解析模块全局（测试 monkeypatch 有效）；
         # 子 Agent 由 call_subagent 按来源覆盖属性（同步 user=全局 or terminate；异步 user/program/scheduler=仅 terminate）
         self.stop_check = self._default_stop_check
-        # 图片直通通道（plan 2026-09-10 D1）：派发层算好 has_vision、经 llm_config.vision_enabled
-        # 显式传入（create_client 白名单透传键）——chat() 发送层 sanitize 据此决定图标记展开；
-        # 缺失/False → 不展开（fail-closed）。续跑分支按 stop_check 同型先例同步覆盖本属性。
-        self.vision_enabled = bool(cfg.get("vision_enabled", False))
         # 参数约束 deny（plan 2026-09-10 D4）：白名单原样透传 capabilities 键，此处统一解析
         # deny + model 绑定校验（fail-closed：缺/不匹配 → 空集）；chat() 据此过滤。
-        # 续跑分支按 vision_enabled 同型先例重算覆盖本属性（R8）。
+        # 续跑分支按 stop_check 同型先例重算覆盖本属性（R8）。
         self.capabilities_deny = parse_capabilities_deny(cfg.get("capabilities"), cfg.get("model", ""))
         self._deny_filter_logged = False  # per-session 首次生效 info 日志标志
 
@@ -1048,7 +1044,7 @@ class LiteLLMSession(BaseSession):
         # 发送层合规化（plan 2026-09-10 D1）：入口即重绑——早于 request_params 组装与
         # _write_interaction_log/_write_raw_log 两处日志落盘 → raw_http 记录 = 真 wire 体。
         # sanitize 返回副本，调用方列表零变化（长度不变式保持；产物不回流 DB/档/UI）。
-        messages = sanitize_llm_messages(messages, self.vision_enabled)
+        messages = sanitize_llm_messages(messages)
         # 从 apiBase 自动推导 LiteLLM provider 前缀，加到 model 名上。
         # Why: 豆包网关对 openai 路由的 response_format 请求挂起不响应（json_schema/json_object 都挂起），
         # 必须走 volcengine 路由才正常。custom_llm_provider 参数对豆包无效（实测卡死），
@@ -1439,8 +1435,6 @@ def create_litellm_client(config: dict[str, Any]) -> ToolClient:
     cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
     # sticky routing id 纯管道透传（spec §3.1——白名单构造转发，零 sticky 逻辑）
     cfg["sticky_session_id"] = config.get("sticky_session_id")
-    # 图片直通通道（plan 2026-09-10 D1）：派发层算好的视觉能力显式键透传（缺失 → False fail-closed）
-    cfg["vision_enabled"] = bool(config.get("vision_enabled", False))
     # 参数约束 deny（plan 2026-09-10 D4）：capabilities 键原样透传（解析在 __init__ 统一做 + model 绑定校验）
     cfg["capabilities"] = config.get("capabilities")
     cfg["read_timeout"] = config.get("read_timeout") or 300
