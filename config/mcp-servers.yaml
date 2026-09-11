@@ -240,3 +240,5 @@ vision-server:
       visibility: static
     list_targets:
       visibility: static
+    analyze_image:
+      visibility: static

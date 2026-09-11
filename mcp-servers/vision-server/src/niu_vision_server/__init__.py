@@ -1,17 +1,21 @@
 """
-vision-server — 屏幕截图 MCP 服务器（可视化功能 plan v0.5.2 §4-V5）
+vision-server — 屏幕截图 + 识图 MCP 服务器（可视化功能 plan v0.5.2 §4-V5 /
+2026-09-11-vision-channel-refactor.md）
 
-两工具（plan 2026-09-10-vision-aux-tools.md §3）：
+三工具（plan 2026-09-11-vision-channel-refactor.md §3）：
 - list_targets：无参，列出当前可截取目标（显示器 + 窗口清单，含前台应用行与
   48 个窗口截断警告）——截图前先调用它拿窗口编号。
 - screenshot：niu_natives DesktopSession capture（desktop/window_id/region
   三形态）→ 降采样 ≤1280 宽 → 落盘 ~/.niu/tmp/screenshot_<ts>.png → 返回
-  `![截图](<绝对路径>)` 标记文本 + 尺寸/显示器元数据（图片直通通道 V3 格式，
-  T3 expand_image_markers 消费——主模型有视觉时当轮展开为多模态 content）。
+  **纯绝对路径** + 尺寸/显示器元数据（不返回图标记——与用户发图同形；
+  要理解画面内容调 analyze_image）。
+- analyze_image(image_path, question)：把指定图片 + 提示词送进视觉模型，
+  返回**文字答案**。模型内部自选（主模型优先：主模型有视觉 → 用主模型；
+  否则用 vision_llm 段；皆无 → 明确错误含配置指引）。不依赖 niu_natives。
 
-D-D：screenshot 是基础工具与视觉能力无关——visibility: static 无条件直挂
-主 Agent（yaml 显式 static，register_server 默认 hidden）；子 Agent 经
-frontmatter `mcpServers: [vision-server]` 声明即用。
+D-D：screenshot/analyze_image 是基础工具与视觉能力无关——visibility: static
+无条件直挂主 Agent（yaml 显式 static，register_server 默认 hidden）；子 Agent
+经 frontmatter `mcpServers: [vision-server]` 声明即用。
 
 niu_natives import 降级（R11）：模块级 try/except——失败 → DesktopSession=None
 + logger.warning，screenshot 返回明确错误串，服务器正常加载（.so 缺失/跨平台
@@ -20,6 +24,7 @@ niu_natives import 降级（R11）：模块级 try/except——失败 → Deskto
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -90,10 +95,9 @@ def _save_png(png_bytes: bytes) -> Path:
 
 
 def _format_result(out_path: Path, result: dict) -> str:
-    """组装返回文本：`![截图](<绝对路径>)` 标记 + 尺寸/显示器元数据。
+    """组装返回文本：`截图已保存: <绝对路径>` + 尺寸/显示器元数据（纯路径，无图标记）。
 
-    标记独占首行——T3 expand_image_markers 按 markdown 图标记解析，
-    主模型有视觉时整段展开为多模态 content（文件缺失/超限时降级留文本）。
+    路径独占首行——与用户发图同形（裸路径）；要理解画面内容调 analyze_image。
     """
     w, h = result.get("width"), result.get("height")
     sw, sh = result.get("source_width"), result.get("source_height")
@@ -103,7 +107,7 @@ def _format_result(out_path: Path, result: dict) -> str:
     backend = result.get("backend") or "unknown"
     displays = result.get("displays") or []
     meta += f" · 后端: {backend} · 显示器: {len(displays)} 台"
-    return f"![截图]({out_path})\n{meta}"
+    return f"截图已保存: {out_path}\n{meta}"
 
 
 # ============== 工具实现 ==============
@@ -159,7 +163,7 @@ def _is_valid_ratio(v):
 
 def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=None,
                height=None, region_ratio=None) -> str:
-    """截取屏幕画面，落盘 PNG 并返回 `![截图](路径)` 标记文本。
+    """截取屏幕画面，落盘 PNG 并返回纯路径 + 尺寸/显示器元数据（要理解内容调 analyze_image）。
 
     三形态映射（plan §4-V5）：
     - target=screen  → capture("desktop")
@@ -344,16 +348,161 @@ def list_targets() -> str:
         return f"列出可截取目标失败：{e}"
 
 
+# ============== analyze_image（plan 2026-09-11-vision-channel-refactor §3.2） ==============
+
+
+def _load_image_data_uri(image_path: str):
+    """读图片文件 → data URI（复用 agent.image_channel helper：魔数 MIME 探测 /
+    >4MB 降采样）。失败（缺文件/非图/超限且降采样失败）→ None。
+
+    函数级 import（plan R5——独立 MCP server 进程与 Niu 主进程同构，仓库既有先例）。
+    """
+    from agent.image_channel import _image_to_data_uri
+    return _image_to_data_uri(image_path)
+
+
+def _pick_vision_llm_config():
+    """选模型（D-D 主模型优先）：
+
+    - 主模型有视觉（main_has_vision，fail-closed 三条件）→ 用主 llm 段原配置
+      （不读 vision 段——主模型自身 reasoning_effort 等参数全保留）；
+    - 否则读**原始 user-config.json** 判 vision_llm.model 非空 → get_llm_config(use_vision_config=True)
+      （不能用该调用的返回值判空——段 model 空时它继承主 llm model，返回恒非空，
+      判据成死代码；plan §3.2 步骤 2 / R2-A P2）；
+    - 皆无 → None（调用方返回含配置指引的明确错误）。
+
+    任何读盘/解析失败 → None（降级为「未配置」语义，不抛异常）。
+    """
+    from niu_api.llm_proxy import get_llm_config
+    from niu_api.config import CONFIG_PATH
+    from agent.image_channel import main_has_vision
+
+    try:
+        cfg = get_llm_config()
+        if main_has_vision(cfg):
+            return cfg
+        data = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        vision_model = (data.get("vision_llm") or {}).get("model")
+        if not vision_model:
+            return None
+        return get_llm_config(use_vision_config=True)
+    except Exception as e:
+        logger.warning(f"[vision-server] analyze_image 选模型失败: {e}")
+        return None
+
+
+def _call_vision_model(cfg: dict, data_uri: str, question: str) -> str:
+    """把图 + 提示词送进视觉模型，同步驱动 LiteLLMSession，返回文字答案。
+
+    cfg 键映射照 niu_api/llm_proxy.py call_llm_via_litellm 先例：get_llm_config
+    返回全小写键且类型键名为 "type"，而 LiteLLMSession 读 "api_type"——直传会
+    静默丢 type、api_type 恒 openai（plan R1-B P2）。
+    """
+    from agent.generic.litellm_adapter import LiteLLMSession
+
+    llm_config = {
+        "api_type": cfg.get("type", "openai"),
+        "apikey": cfg["apikey"],
+        "apibase": cfg["apibase"],
+        "model": cfg["model"],
+        "reasoning_effort": cfg.get("reasoning_effort"),
+        "provider": cfg.get("provider", ""),
+        "litellm_kwargs": cfg.get("litellm_kwargs", {}),
+        "read_timeout": cfg.get("read_timeout") or 300,
+        # 独立 sticky id（plan R1-A P3）：防与主对话/其它通道串扰（"mcp-sampling" 先例）
+        "sticky_session_id": "analyze-image",
+        # 参数约束 deny 补键（config 来自 get_llm_config，段内 capabilities 经小写化保留；缺键 → fail-closed 空集）
+        "capabilities": cfg.get("capabilities"),
+    }
+    if cfg.get("max_tokens") is not None:
+        llm_config["max_tokens"] = cfg["max_tokens"]
+
+    session = LiteLLMSession(cfg=llm_config)
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ],
+    }]
+
+    # chat() 返回 generator：yield str chunks，StopIteration.value 携带 MockResponse
+    # （照 llm_proxy.py sync_call——for 循环会吞掉 StopIteration 返回值，必须 next()）
+    gen = session.chat(messages=messages)
+    mock_response = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        mock_response = e.value
+
+    if mock_response is None:
+        return "识图失败：模型未返回响应"
+    if getattr(mock_response, "stream_error", False):
+        err = getattr(mock_response, "error_msg", None) or "未知错误"
+        return f"识图失败（模型调用出错）：{err}"
+    content = mock_response.content or ""
+    if not content.strip():
+        # 空回答细分（plan R2-B P2 / §1.6 实验 A）：思考型视觉模型 + 低 max_tokens →
+        # 推理链耗尽预算，finish_reason=length——与「模型失败」不得混同
+        if getattr(mock_response, "finish_reason", None) == "length":
+            return ("识图失败：输出预算耗尽（思考型模型的推理链占满了 max_tokens，正文无输出）。"
+                    "请调大该模型配置的 max_tokens 后重试，或收窄问题范围")
+        return "识图失败：模型返回空内容"
+    return content
+
+
+def analyze_image(image_path: str, question: str) -> str:
+    """把指定图片 + 提示词送进视觉模型，返回文字答案（不返回图标记——D-C）。
+
+    执行流程（plan §3.2）：读图（魔数 MIME 探测 / 超限降采样 → data URI）→
+    选模型（主模型优先：主模型有视觉用主模型，否则 vision_llm 段；皆无 →
+    含配置指引的明确错误）→ LiteLLMSession 同步调用 → 纯文本。
+
+    停止语义归属 agent_loop 外层放弃等待（所有工具执行被统一包装）——
+    本工具内不做独立 stop 包装（plan R2-B P1）。一切失败返回明确中文错误串，
+    不抛异常（穿透到 MCP 层会暴露英文原始异常）。
+    """
+    image_path = str(image_path or "").strip()
+    question = str(question or "").strip()
+    if not image_path:
+        return "错误：image_path 必填（图片的绝对路径）"
+    if not os.path.isabs(image_path):
+        return f"错误：image_path 必须是绝对路径（收到 {image_path!r}）"
+    if not question:
+        return ("错误：question 必填——要向模型提的问题，决定模型看图时关注什么、输出什么")
+
+    data_uri = _load_image_data_uri(image_path)
+    if data_uri is None:
+        return (f"读图失败：{image_path} 不存在，或不是受支持的图片"
+                "（支持 PNG/JPEG/GIF/WebP/BMP/HEIC），或超限后降采样仍解码失败")
+
+    cfg = _pick_vision_llm_config()
+    if cfg is None:
+        return ("识图不可用：主模型无视觉能力，且 vision_llm 段未配置。"
+                "请把主模型换成支持视觉的模型并完成能力探测（设置页），"
+                "或在 vision_llm 段配置第三方视觉模型（见 SYSTEM_MANUAL 视觉能力节）")
+
+    try:
+        return _call_vision_model(cfg, data_uri, question)
+    except Exception as e:
+        logger.warning(f"[vision-server] analyze_image failed: {e}")
+        return f"识图失败：{e}"
+
+
 # ============== TOOL_SCHEMAS ==============
 # 键名契约（R8）：schema name == yaml tools 键 == 模块函数名，三处逐字符一致
-# （'screenshot' / 'list_targets'）——不一致则 visibility_map 查不到，工具静默落 hidden。
+# （'screenshot' / 'list_targets' / 'analyze_image'）——不一致则 visibility_map 查不到，工具静默落 hidden。
 
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "screenshot": {
         "name": "screenshot",
         "description": (
-            "截取屏幕画面（整屏/指定窗口/指定区域），图片落盘并返回 `![截图](路径)` 标记"
-            "+ 尺寸元数据。当你需要看到屏幕上的内容（界面、报错、图表、用户正在看的画面）时使用。"
+            "截取屏幕画面（整屏/指定窗口/指定区域），图片落盘并返回纯绝对路径 + 尺寸元数据"
+            "（不返回图标记）。当你需要看到屏幕上的内容（界面、报错、图表、用户正在看的画面）时使用；"
+            "要理解截到的画面内容，拿到路径后调 analyze_image(路径, 问题)。"
             "target=screen 截整个桌面；target=window 需 window_id（窗口 ID）；"
             "target=region 截取矩形区域：推荐用 region_ratio=[左,上,右,下]"
             "（4 个 0~1 数值，相对整屏图按比例框选——工具内部负责换算坐标，无需自己算）；"
@@ -419,6 +568,34 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "required": [],
         },
     },
+    "analyze_image": {
+        "name": "analyze_image",
+        "description": (
+            "用视觉模型解读图片内容并返回文字结论（不返回图片）。"
+            "`question` 是你要向模型提的问题——它决定模型关注什么、输出什么："
+            "- 想了解整体：问宽泛的（如「这张图里有什么」）——模型会给出整体描述"
+            "（密集界面可能因输出预算只覆盖一部分，没提到的内容不代表没看到）。"
+            "- 想知道某个细节：带着具体问题再问一次同一张图（如「顶部状态栏显示什么」）——"
+            "聚焦提问会让模型只看那一处，回答更准且输出更省（实测同一张图：泛问 1129 token，"
+            "聚焦问 77 token）。"
+            "- 同一张图可以带不同问题反复调用——第一次的回答往往能告诉你「还有什么可问」。"
+            "模型内部自动选择（主模型有视觉用主模型，否则用 vision_llm 段），无需指定。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "image_path": {
+                    "type": "string",
+                    "description": "图片的绝对路径（截图产物 / 用户拖入的图 / 任意本地图片）",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "要向模型提的问题——决定模型看图时关注什么、输出什么",
+                },
+            },
+            "required": ["image_path", "question"],
+        },
+    },
 }
 
 
@@ -453,6 +630,8 @@ try:
                 result = screenshot(**arguments)
             elif name == "list_targets":
                 result = list_targets()
+            elif name == "analyze_image":
+                result = analyze_image(**arguments)
             else:
                 return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
