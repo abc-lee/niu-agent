@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -348,7 +349,34 @@ def list_targets() -> str:
         return f"列出可截取目标失败：{e}"
 
 
-# ============== analyze_image（plan 2026-09-11-vision-channel-refactor §3.2） ==============
+# ============== analyze_image（plan 2026-09-11-vision-channel-refactor §3.2 /
+#                 2026-09-11-vision-model-fallback 链式选模 + 自动降级） ==============
+
+# --- 错误分类表（D-D；语义与 litellm_adapter.py:87-107 对齐，但自带字符串元组——
+# 不 import 适配层私有常量，避免依赖私有 API；R-8）---
+# ServiceUnavailableError 有意不列入可重试（适配层归 uncertain；本表语义是「不重试」）。
+_VISION_RETRYABLE_EXC = ("RateLimitError", "Timeout", "APIConnectionError")
+_VISION_FATAL_EXC = ("AuthenticationError", "PermissionDeniedError",
+                     "BudgetExceededError", "ContentPolicyViolationError")
+
+# 文本兜底关键词（小写匹配）：重试提示 / 认证·欠费·配额类
+_VISION_RETRY_HINTS = ("retry after", "try again in", "rate limit",
+                       "overloaded", "too many requests")
+_VISION_FATAL_HINTS = ("authentication", "unauthorized", "invalid api key",
+                       "permission denied", "forbidden", "quota", "billing",
+                       "payment required", "insufficient balance", "credit",
+                       "401", "402", "403")
+
+# 重试节奏（D-F）：3 次退避；错误文本含 retry after N / try again in N → 覆盖本次等待（上限 15s）
+_VISION_RETRY_DELAYS = (2, 5, 10)
+_VISION_RETRY_AFTER_CAP = 15
+
+# 总预算（D-F）：每次新调用/重试前检查累计耗时，超此值停止降级并返回「预算中断」文案；
+# 预算不 gate in-flight 调用（已发出的请求不打断，read_timeout 默认 300s）。
+_VISION_CHAIN_BUDGET_SECONDS = 600
+
+# D-E 汇总文案中每条原因的长度上限
+_VISION_REASON_MAX_CHARS = 120
 
 
 def _load_image_data_uri(image_path: str):
@@ -361,40 +389,168 @@ def _load_image_data_uri(image_path: str):
     return _image_to_data_uri(image_path)
 
 
-def _pick_vision_llm_config():
-    """选模型（D-D 主模型优先）：
+def _normalize_vision_node(node: dict, main_cfg: dict) -> dict:
+    """归一化 vision_llm 链节/单对象段（D-A / R-2：独立重实现 get_llm_config 的空键继承，
+    仅 6 个键——避免为单点扩公共 API 造成回归面）。
 
-    - 主模型有视觉（main_has_vision，fail-closed 三条件）→ 用主 llm 段原配置
-      （不读 vision 段——主模型自身 reasoning_effort 等参数全保留）；
-    - 否则读**原始 user-config.json** 判 vision_llm.model 非空 → get_llm_config(use_vision_config=True)
-      （不能用该调用的返回值判空——段 model 空时它继承主 llm model，返回恒非空，
-      判据成死代码；plan §3.2 步骤 2 / R2-A P2）；
-    - 皆无 → None（调用方返回含配置指引的明确错误）。
+    空键继承主 llm 段：apiKey/apiBase/type/provider/litellm_kwargs/max_tokens；
+    reasoning_effort 缺省 ""。节自己的 model 保留（model 空的节由调用方过滤，
+    **不**继承主 llm model——那会变成「拿主模型当视觉模型」的静默错误端点）。
+    返回与 get_llm_config 同形的小写键 dict（_call_vision_model 直接可消费）。
+    """
+    cfg = {str(k).lower(): v for k, v in node.items()}
+    if not cfg.get("apikey"):
+        cfg["apikey"] = main_cfg.get("apikey", "")
+    if not cfg.get("apibase"):
+        cfg["apibase"] = main_cfg.get("apibase", "")
+    if not cfg.get("type"):
+        cfg["type"] = main_cfg.get("type", "openai")
+    if not cfg.get("provider"):
+        cfg["provider"] = main_cfg.get("provider", "")
+    if not cfg.get("litellm_kwargs"):
+        cfg["litellm_kwargs"] = main_cfg.get("litellm_kwargs", {})
+    if cfg.get("max_tokens") is None and main_cfg.get("max_tokens") is not None:
+        cfg["max_tokens"] = main_cfg["max_tokens"]
+    if not cfg.get("reasoning_effort"):
+        cfg["reasoning_effort"] = ""
+    return cfg
 
-    任何读盘/解析失败 → None（降级为「未配置」语义，不抛异常）。
+
+def _vision_chain():
+    """构建视觉模型链（D-A / D-C）→ (chain: list[dict], skipped: int)。
+
+    - 主模型有视觉（main_has_vision，fail-closed 三条件）→ 链首 = 主 llm 段
+      （C-1 用户已拍板：主模型入链，失败自动降级到 vision_llm.models）；
+    - vision_llm.models 非空数组 → 逐节归一化追加（空键继承主 llm 段；
+      model 为空/非字符串/纯空白或非对象节 → 跳过 + skipped+1，不继承主 llm model）；
+    - models 非数组或空数组 → 兼容回退单对象 vision_llm.model（视作链长 1，既有装机零迁移）；
+      残留组合（models==[] 且旧 model 键仍在）→ 告警一次（不阻断，D-A R2-A P3-1）；
+    - 读盘/解析失败 → ([], 0)（降级为「未配置」语义，调用方返回含配置指引的明确错误）。
     """
     from niu_api.llm_proxy import get_llm_config
     from niu_api.config import CONFIG_PATH
     from agent.image_channel import main_has_vision
 
     try:
-        cfg = get_llm_config()
-        if main_has_vision(cfg):
-            return cfg
         data = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return None
-        vision_model = (data.get("vision_llm") or {}).get("model")
-        if not vision_model:
-            return None
-        return get_llm_config(use_vision_config=True)
     except Exception as e:
-        logger.warning(f"[vision-server] analyze_image 选模型失败: {e}")
+        logger.warning(f"[vision-server] 读视觉模型链配置失败: {e}")
+        return [], 0
+    if not isinstance(data, dict):
+        return [], 0
+
+    main_cfg = get_llm_config()
+    chain: List[dict] = []
+    skipped = 0
+    if main_has_vision(main_cfg):
+        chain.append(main_cfg)
+
+    vision_llm = data.get("vision_llm")
+    if not isinstance(vision_llm, dict):
+        vision_llm = {}
+    models = vision_llm.get("models")
+    legacy_model = vision_llm.get("model")
+    has_legacy = isinstance(legacy_model, str) and bool(legacy_model.strip())
+
+    if isinstance(models, list) and len(models) > 0:
+        for node in models:
+            if not isinstance(node, dict):
+                skipped += 1
+                logger.warning(f"[vision-server] vision_llm.models 节非对象，跳过: {node!r}")
+                continue
+            model = node.get("model")
+            if not isinstance(model, str) or not model.strip():
+                # 链节有效性（D-A R1-B P2-5）：空 model 不继承主 llm model
+                skipped += 1
+                logger.warning(f"[vision-server] vision_llm.models 节 model 为空，跳过: {node!r}")
+                continue
+            chain.append(_normalize_vision_node(node, main_cfg))
+    else:
+        if models is not None and not isinstance(models, list):
+            logger.warning(f"[vision-server] vision_llm.models 非数组（{type(models).__name__}），"
+                           "忽略并按单对象 model 回退")
+        elif models == [] and has_legacy:
+            # 残留组合（手工编辑遗留）：空数组 + 旧单对象键仍在——按兼容规则回退单对象；
+            # 主模型有视觉时静默成 [主模型, legacy] 双链。告警一次不阻断（D-A R2-A P3-1）。
+            logger.warning("[vision-server] vision_llm.models 为空数组但旧单对象 model 键仍在，"
+                           "按兼容规则回退单对象；建议删整段或同时删 model 键")
+        if has_legacy:
+            chain.append(_normalize_vision_node(dict(vision_llm), main_cfg))
+    return chain, skipped
+
+
+def _classify_error_text(text: str) -> str:
+    """文本兜底分类（D-D）：重试提示 → retryable；认证/欠费/配额类关键词 → fatal；其余 unknown。"""
+    t = (text or "").lower()
+    if any(h in t for h in _VISION_RETRY_HINTS):
+        return "retryable"
+    if any(h in t for h in _VISION_FATAL_HINTS):
+        return "fatal"
+    return "unknown"
+
+
+def _extract_retry_after(text: str):
+    """从错误文本提取服务端要求的重试等待秒数（D-F）：
+    retry after N / try again in N（含小数取整），上限 15s；无则 None。"""
+    if not text:
         return None
+    m = (re.search(r"retry after (\d+(?:\.\d+)?)", text, re.IGNORECASE)
+         or re.search(r"try again in (\d+(?:\.\d+)?)", text, re.IGNORECASE))
+    if not m:
+        return None
+    return min(int(float(m.group(1))), _VISION_RETRY_AFTER_CAP)
 
 
-def _call_vision_model(cfg: dict, data_uri: str, question: str) -> str:
-    """把图 + 提示词送进视觉模型，同步驱动 LiteLLMSession，返回文字答案。
+def _classify_vision_error(exc=None, mock_resp=None):
+    """视觉模型错误分类（D-D 双通道）→ (kind, type_name, msg, retry_after)。
+
+    kind ∈ {"retryable", "fatal", "unknown", "stopped"}：
+    - **A 裸异常**（exc 非 None，适配层初始建连失败 re-raise）：按异常类名查自带常量表，
+      未归类 → 文本兜底；
+    - **B MockResponse**（mock_resp 非 None）：判据是 error_type 字段——fatal/stopped 直判；
+      retry_exhausted 须文本含重试提示才算 retryable（否则 unknown）；None → 文本兜底
+      （stream_error 且 error_msg 含限流提示时仍可归 retryable）。
+      **不得用 error_type_name 判 fatal**（fatal 路径下它不可靠，plan v0.2 亲验）。
+    """
+    type_name = ""
+    msg = ""
+    if exc is not None:
+        type_name = type(exc).__name__
+        msg = str(exc) or type_name
+        if type_name in _VISION_RETRYABLE_EXC:
+            kind = "retryable"
+        elif type_name in _VISION_FATAL_EXC:
+            kind = "fatal"
+        else:
+            kind = _classify_error_text(msg)
+    elif mock_resp is not None:
+        error_type = getattr(mock_resp, "error_type", None)
+        type_name = getattr(mock_resp, "error_type_name", None) or ""
+        msg = getattr(mock_resp, "error_msg", None) or ""
+        if error_type == "fatal":
+            kind = "fatal"
+        elif error_type == "stopped":
+            kind = "stopped"
+        elif error_type == "retry_exhausted":
+            t = (msg or "").lower()
+            kind = "retryable" if any(h in t for h in _VISION_RETRY_HINTS) else "unknown"
+        else:
+            kind = _classify_error_text(msg)
+    else:
+        kind = "unknown"
+    return kind, type_name, msg, _extract_retry_after(msg)
+
+
+def _call_vision_model(cfg: dict, data_uri: str, question: str):
+    """把图 + 提示词送进视觉模型，同步驱动 LiteLLMSession。
+
+    返回 (answer, error)：成功 → (content, None)；失败 → (None, error_dict)。
+    error_dict = {"kind", "type_name", "msg", "retry_after", "reason"}——kind 来自
+    _classify_vision_error（D-D），reason 是中文原因（供 D-E 文案组装）。
+
+    四种失败形态归一：无响应 / stream_error / 空 content（含 finish_reason=length
+    细分，plan R2-B P2）/ 调用抛异常（适配层初始建连失败直接 re-raise——D-D 通道 A，
+    本层 try/except 捕获）。
 
     cfg 键映射照 niu_api/llm_proxy.py call_llm_via_litellm 先例：get_llm_config
     返回全小写键且类型键名为 "type"，而 LiteLLMSession 读 "api_type"——直传会
@@ -419,50 +575,185 @@ def _call_vision_model(cfg: dict, data_uri: str, question: str) -> str:
     if cfg.get("max_tokens") is not None:
         llm_config["max_tokens"] = cfg["max_tokens"]
 
-    session = LiteLLMSession(cfg=llm_config)
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": question},
-            {"type": "image_url", "image_url": {"url": data_uri}},
-        ],
-    }]
-
-    # chat() 返回 generator：yield str chunks，StopIteration.value 携带 MockResponse
-    # （照 llm_proxy.py sync_call——for 循环会吞掉 StopIteration 返回值，必须 next()）
-    gen = session.chat(messages=messages)
-    mock_response = None
     try:
-        while True:
-            next(gen)
-    except StopIteration as e:
-        mock_response = e.value
+        session = LiteLLMSession(cfg=llm_config)
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ],
+        }]
+
+        # chat() 返回 generator：yield str chunks，StopIteration.value 携带 MockResponse
+        # （照 llm_proxy.py sync_call——for 循环会吞掉 StopIteration 返回值，必须 next()）
+        gen = session.chat(messages=messages)
+        mock_response = None
+        try:
+            while True:
+                next(gen)
+        except StopIteration as e:
+            mock_response = e.value
+    except Exception as e:
+        # 初始建连/调用异常（401/429/404 等适配层直接 re-raise）→ D-D 通道 A
+        kind, type_name, msg, retry_after = _classify_vision_error(exc=e)
+        return None, {"kind": kind, "type_name": type_name, "msg": msg,
+                      "retry_after": retry_after,
+                      "reason": f"调用异常（{type_name}）：{msg or '未知错误'}"}
 
     if mock_response is None:
-        return "识图失败：模型未返回响应"
+        return None, {"kind": "unknown", "type_name": "", "msg": "", "retry_after": None,
+                      "reason": "模型未返回响应"}
     if getattr(mock_response, "stream_error", False):
-        err = getattr(mock_response, "error_msg", None) or "未知错误"
-        return f"识图失败（模型调用出错）：{err}"
+        kind, type_name, msg, retry_after = _classify_vision_error(mock_resp=mock_response)
+        return None, {"kind": kind, "type_name": type_name, "msg": msg,
+                      "retry_after": retry_after,
+                      "reason": msg or "模型调用出错（未知错误）"}
     content = mock_response.content or ""
     if not content.strip():
         # 空回答细分（plan R2-B P2 / §1.6 实验 A）：思考型视觉模型 + 低 max_tokens →
-        # 推理链耗尽预算，finish_reason=length——与「模型失败」不得混同
+        # 推理链耗尽预算，finish_reason=length——与「模型失败」不得混同；归 unknown 不重试（R-5）
         if getattr(mock_response, "finish_reason", None) == "length":
-            return ("识图失败：输出预算耗尽（思考型模型的推理链占满了 max_tokens，正文无输出）。"
-                    "请调大该模型配置的 max_tokens 后重试，或收窄问题范围")
-        return "识图失败：模型返回空内容"
-    return content
+            return None, {"kind": "unknown", "type_name": "", "msg": "", "retry_after": None,
+                          "reason": ("输出预算耗尽（思考型模型的推理链占满了 max_tokens，正文无输出）。"
+                                     "请调大该模型配置的 max_tokens 后重试，或收窄问题范围")}
+        return None, {"kind": "unknown", "type_name": "", "msg": "", "retry_after": None,
+                      "reason": "模型返回空内容"}
+    return content, None
+
+
+def _clip_reason(text: str) -> str:
+    """D-E：汇总/注记文案中每条原因截断 ≤120 字符。"""
+    t = str(text or "").strip()
+    return t[:_VISION_REASON_MAX_CHARS] if len(t) > _VISION_REASON_MAX_CHARS else t
+
+
+def _skipped_note(skipped: int) -> str:
+    """D-E：失败文案追加跳过节注记（防「配了 N 项却报无备用」的观感误导）。"""
+    return f"（另有 {skipped} 个配置无效被跳过）" if skipped > 0 else ""
+
+
+def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question: str) -> str:
+    """链式降级循环（D-B / D-D / D-E / D-F），返回最终给工具的文字。
+
+    每模型：可重试错误最多重试 len(_VISION_RETRY_DELAYS) 次（退避 2/5/10s，服务端
+    retry after N 覆盖、上限 15s）；致命/未知直接换下一个；已停止不重试不降级。
+    stop 检查点四处：循环顶 / 每次重试前 / 每次调用返回后（全局 is_stop_requested——
+    vision-server 同进程与主循环共享同一 Event，函数级 import 照 :403 先例）。
+    总预算：每次新调用/重试前查累计耗时，超 _VISION_CHAIN_BUDGET_SECONDS 停止降级
+    并返回「预算中断」文案（不 gate in-flight 调用）。
+    """
+    from agent.generic.litellm_adapter import is_stop_requested
+
+    start = time.monotonic()
+    failures: List[tuple] = []  # [(模型名, 原因)]——实际发起过调用的模型（D-E N 口径）
+    last_error = None           # 当前节最近一次错误（供预算文案计数，每节重置）
+    section_tried = False       # 当前节是否已发起过至少一次调用
+
+    def _over_budget() -> bool:
+        return (time.monotonic() - start) >= _VISION_CHAIN_BUDGET_SECONDS
+
+    def _budget_msg() -> str:
+        """D-E「预算中断」：M=1（仅链首被调用，未发生降级）时不含「已自动降级」。
+        当前节可能已发起调用但尚未写入 failures（重试等待期命中预算）——单独计入。"""
+        listed = list(failures)
+        if section_tried and last_error is not None and (not listed or listed[-1][0] != name):
+            listed.append((name, last_error["reason"]))
+        tried = len(listed)
+        k = len(chain) - tried
+        tail = f"，因累计耗时超 {_VISION_CHAIN_BUDGET_SECONDS}s 停止继续降级"
+        if k > 0:
+            tail += f"（尚有 {k} 个模型未尝试）"
+        if tried >= 2:
+            first_name, first_reason = listed[0]
+            return (f"识图失败：{first_name} 不可用（{_clip_reason(first_reason)}），"
+                    f"已自动降级尝试 {tried} 个模型均失败{tail}" + _skipped_note(skipped))
+        if tried == 1:
+            first_name, first_reason = listed[0]
+            return (f"识图失败：{first_name} 不可用（{_clip_reason(first_reason)}）"
+                    f"{tail}" + _skipped_note(skipped))
+        # 理论不可达（预算在链首首次调用前耗尽）——防御性兜底
+        return f"识图失败：因累计耗时超 {_VISION_CHAIN_BUDGET_SECONDS}s 停止继续降级" \
+            + _skipped_note(skipped)
+
+    for idx, cfg in enumerate(chain):
+        name = str(cfg.get("model") or "未知模型")
+        section_tried = False
+        if is_stop_requested():
+            return "识图已停止"
+        if _over_budget():
+            return _budget_msg()
+
+        last_error = None
+        # attempt 0 = 首次调用；1..3 = 重试（重试配额每模型独立，D-D）
+        for attempt in range(1 + len(_VISION_RETRY_DELAYS)):
+            if attempt > 0:
+                r = attempt - 1
+                delay = (last_error or {}).get("retry_after")
+                time.sleep(delay if delay else _VISION_RETRY_DELAYS[r])
+            if is_stop_requested():
+                return "识图已停止"
+            if _over_budget():
+                return _budget_msg()
+
+            answer, error = _call_vision_model(cfg, data_uri, question)
+            section_tried = True  # 预算文案计数：该节已发起过调用
+            # 调用返回后再查 stop（R3-A P2：末位模型调用中 stop 时适配层返回空响应，
+            # 仅靠 error_type 会被误判「未知」而误报「无备用模型可降级」）
+            if is_stop_requested():
+                return "识图已停止"
+            if error is None:
+                if idx == 0 and attempt == 0:
+                    return answer  # 链首一次成功：零附加提示
+                if idx == 0:
+                    # 链首重试后成功（D-E / C-2）：实际未降级，不写「已自动降级」
+                    return (f"{answer}\n\n"
+                            f"（注：首模型曾报错（{_clip_reason(last_error['reason'])}），重试后恢复）")
+                # 非链首成功（D-E / U-5）：只提首模型原因
+                first_name, first_reason = failures[0]
+                return (f"{answer}\n\n"
+                        f"（注：首模型不可用（{_clip_reason(first_reason)}），已自动降级到 {name}）")
+
+            last_error = error
+            if error["kind"] == "stopped":
+                return "识图已停止"  # 不重试、不降级（D-D）
+            if error["kind"] != "retryable":
+                break  # fatal/unknown → 不重试，直接换下一个模型（U-4）
+
+        failures.append((name, last_error["reason"]))
+
+    n = len(failures)
+    if n == 1:
+        # D-E「单模型失败」（N=1 划界：未发生降级，有意偏离 U-5 字面）
+        name, reason = failures[0]
+        return f"识图失败：{name} 不可用：{_clip_reason(reason)}（无备用模型可降级）" + _skipped_note(skipped)
+
+    # D-E「全链失败」（N≥2）：每条原因截断 ≤120；>3 个只列前 3 + 「等 N 个」
+    first_name, first_reason = failures[0]
+    marks = "①②③④⑤⑥⑦⑧⑨"
+    items = []
+    for i, (mname, mreason) in enumerate(failures[:3]):
+        mark = marks[i] if i < len(marks) else f"{i + 1}."
+        items.append(f"{mark}{mname}：{_clip_reason(mreason)}")
+    if n > 3:
+        items.append(f"等 {n} 个")
+    return (f"识图失败：首模型不可用（{first_name}：{_clip_reason(first_reason)}），"
+            f"已自动降级尝试 {n} 个模型均失败：" + "；".join(items)
+            + _skipped_note(skipped))
 
 
 def analyze_image(image_path: str, question: str) -> str:
     """把指定图片 + 提示词送进视觉模型，返回文字答案（不返回图标记——D-C）。
 
-    执行流程（plan §3.2）：读图（魔数 MIME 探测 / 超限降采样 → data URI）→
-    选模型（主模型优先：主模型有视觉用主模型，否则 vision_llm 段；皆无 →
-    含配置指引的明确错误）→ LiteLLMSession 同步调用 → 纯文本。
+    执行流程（plan §3.2 / vision-model-fallback D-B）：读图（魔数 MIME 探测 /
+    超限降采样 → data URI）→ 构建视觉模型链（主模型有视觉作链首，其后接
+    vision_llm.models / 单对象回退；皆无 → 含配置指引的明确错误）→
+    _call_with_fallback 按序调用（可重试错误带退避重试、致命/未知直接降级、
+    stop/总预算中断即停）→ 纯文本。
 
     停止语义归属 agent_loop 外层放弃等待（所有工具执行被统一包装）——
-    本工具内不做独立 stop 包装（plan R2-B P1）。一切失败返回明确中文错误串，
+    本工具内不做独立 stop 包装（plan R2-B P1），只在调用间隙查全局
+    is_stop_requested 决定「继续降级还是立即返回」。一切失败返回明确中文错误串，
     不抛异常（穿透到 MCP 层会暴露英文原始异常）。
     """
     image_path = str(image_path or "").strip()
@@ -479,14 +770,15 @@ def analyze_image(image_path: str, question: str) -> str:
         return (f"读图失败：{image_path} 不存在，或不是受支持的图片"
                 "（支持 PNG/JPEG/GIF/WebP/BMP/HEIC），或超限后降采样仍解码失败")
 
-    cfg = _pick_vision_llm_config()
-    if cfg is None:
+    chain, skipped = _vision_chain()
+    if not chain:
         return ("识图不可用：主模型无视觉能力，且 vision_llm 段未配置。"
                 "请把主模型换成支持视觉的模型并完成能力探测（设置页），"
-                "或在 vision_llm 段配置第三方视觉模型（见 SYSTEM_MANUAL 视觉能力节）")
+                "或在 vision_llm 段配置第三方视觉模型（见 SYSTEM_MANUAL 视觉能力节）；"
+                "也可配置 vision_llm.models 多模型链实现自动降级")
 
     try:
-        return _call_vision_model(cfg, data_uri, question)
+        return _call_with_fallback(chain, skipped, data_uri, question)
     except Exception as e:
         logger.warning(f"[vision-server] analyze_image failed: {e}")
         return f"识图失败：{e}"
@@ -580,6 +872,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "聚焦问 77 token）。"
             "- 同一张图可以带不同问题反复调用——第一次的回答往往能告诉你「还有什么可问」。"
             "模型内部自动选择（主模型有视觉用主模型，否则用 vision_llm 段），无需指定。"
+            "工具内部按配置的多个视觉模型依次尝试，首个不可用时自动降级（重试、退避、总预算内），"
+            "返回结果会标注是否发生降级。"
         ),
         "input_schema": {
             "type": "object",
