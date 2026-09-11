@@ -416,6 +416,10 @@
     // 换模型后置 true（要求重新探测）；探测成功后置 false。
     // 判定依据：进入页面有配置（model 有值）→ 能点；换模型清空 → 灰；探测成功 → 亮。
     let capabilityCleared = false;
+    // C4/D-G：lightrag customized 态镜像（applyCapabilityBackfill 每次运行时同步）——
+    // clearCapabilityDropdowns 重置 lightragCapabilityHint 时按此选文案：customized 态
+    // 探测按钮恒隐藏，重置为「未探测…」会与状态机矛盾，须用「页面不可编辑」文案
+    let lightragCustomizedState = false;
     // ===== 模型列表拉取状态（会话级，页面重开重新拉——列表是易变数据不持久化）=====
     const MODEL_HINT_IDLE = '点击可拉取模型列表';
     let modelListCacheKey = null;   // 缓存键 = apiBase|apiKey|type（发起时刻实时 DOM 值）；unsupported/空列表也写缓存（R1-P1：404 是用户常态，降级必须真无感）
@@ -428,29 +432,25 @@
     let modelDropdownActiveIndex = -1; // 键盘高亮索引（-1 = 无高亮）
     let modelInputTextPending = false; // P2-2：发生过输入但未能实时过滤（列表未就绪/下拉已关）→ 下次弹出先按输入文本过滤再渲染
 
-    // 检测 lightrag_llm 是否继承主 llm（model 为空 = 继承）
+    // 检测 lightrag_llm 是否继承主 llm（customized=false = 继承）——C1 规则：
+    // 只遍历 lightrag_llm 段键集，任一非排除项与主模型不一致 = 被主 Agent 自定义过。
+    // 判定基底恒为 fileBase（user-config.json 全文），永不基于 namedEntry（C4）。
     function isLightragInherited(config) {
-      const lightragLlm = config.lightrag_llm || {};
-      return !lightragLlm.model || lightragLlm.model === '';
+      return !ConfigMerge.isLightragCustomized(config);
     }
 
     // 参数选齐后启用测试并保存（Task 2 状态机）
     // 注意：选齐条件 = 下拉框 enabled（有配置或探测完成）——disabled 表示未探测，不能测
     async function updateTestSaveButton() {
       // 先 await 再读 DOM（D7：DOM 读取必须在 await 之后，避免过期状态点亮按钮）
-      const existingConfig = await window.electronAPI.getConfig();
+      await window.electronAPI.getConfig();
       const llmThinkingEl = document.getElementById('llmThinking');
       const llmReasoningEffortEl = document.getElementById('llmReasoningEffort');
-      const lightragThinkingEl = document.getElementById('lightragThinking');
-      const lightragReasoningEffortEl = document.getElementById('lightragReasoningEffort');
 
-      // 选齐条件：下拉框 enabled（有配置或探测完成，用户可以选择）
+      // 选齐条件只看主模型（D-H：两态统一——customized 时 lightrag 三控件恒 disabled，
+      // 若纳入判定保存按钮永远点不亮；跟随态 lightrag 随主模型自动填充亦无需独立选齐）
       const llmComplete = !llmThinkingEl.disabled && !llmReasoningEffortEl.disabled;
-      const lightragComplete = !lightragThinkingEl.disabled && !lightragReasoningEffortEl.disabled;
-
-      // 如果 lightrag_llm 继承主 llm，只需要 LLM 参数选齐
-      const inherited = isLightragInherited(existingConfig);
-      const allComplete = inherited ? llmComplete : (llmComplete && lightragComplete);
+      const allComplete = llmComplete;
 
       document.getElementById('testBtn').disabled = !allComplete;
     }
@@ -482,8 +482,9 @@
       }
 
       // 能力控件回填 + 继承判定（init 与选择设置加载共用同一路径——值一律取自
-      // 传入配置对象，不重读 user-config，spec R2-A2 N-P2-3）
-      applyCapabilityBackfill(config);
+      // 传入配置对象，不重读 user-config，spec R2-A2 N-P2-3）。
+      // init 路径 fileBase 即 config（user-config.json 全文）
+      applyCapabilityBackfill(config, config);
 
       // 名字 hint 双语义：trim 空 → 常显"保存前必须为配置输入名字"（spec §3.2 前置提示）
       updateConfigNameHint();
@@ -495,12 +496,19 @@
     // 能力控件回填（R7：防存量配置升级后首次保存静默丢失——reasoning_effort/thinking
     // 必须以配置值回填新 select，否则保存时被 select 默认"跟随模型默认"覆盖）。
     // init（config=user-config）与选择设置加载流程（src=loadedNamedEntry）共用同一路径
-    // （spec §3.3：与"打开页面看到已存配置"完全同态；值一律取自传入对象不重读 user-config）
-    function applyCapabilityBackfill(src) {
+    // （spec §3.3：与"打开页面看到已存配置"完全同态；值一律取自传入对象不重读 user-config）。
+    // fileBase = user-config.json 全文（调用点传入，init 即 config 本身）——C4：lightrag
+    // customized 判定恒基于 fileBase 永不基于 src=entry；customized 时生效入库段 =
+    // fileBase.lightrag_llm（mergeConfig C3 整段透传），回填值亦取 fileBase 实际值。
+    function applyCapabilityBackfill(src, fileBase) {
       const llmCap = (src.llm && src.llm.litellm_kwargs) || {};
       const llmThinkingVal = (llmCap.thinking && llmCap.thinking.type) || '';
       const llmEffortVal = (src.llm && src.llm.reasoning_effort) || '';
-      const lightragLlm = src.lightrag_llm || {};
+      // C4：customized 时条目快照可能过期，入库段显示值取 fileBase 实际值（= 保存/运行时生效值）
+      const lightragCustomized = !isLightragInherited(fileBase);
+      // P2：同步模块态镜像——clearCapabilityDropdowns（换模型/探测入口）据此选 hint 重置文案
+      lightragCustomizedState = lightragCustomized;
+      const lightragLlm = lightragCustomized ? (fileBase.lightrag_llm || {}) : (src.lightrag_llm || {});
       const lightragKwargs = lightragLlm.litellm_kwargs || {};
       const lightragThinkingVal = (lightragKwargs.thinking && lightragKwargs.thinking.type) || '';
       const lightragEffortVal = lightragLlm.reasoning_effort || '';
@@ -520,8 +528,9 @@
           window.electronAPI.getCapabilityProfile({ apiBase: apiBaseVal, model: modelVal, lightrag: false }),
           window.electronAPI.getCapabilityProfile({ apiBase: apiBaseVal, model: modelVal, lightrag: true }),
         ]);
-        // llm 段用 llm 档案；lightrag 继承（model 空）时主 llm 档案即 lightrag 场景档案
-        const lrProfile = isLightragInherited(src) ? llmProfile : lightragProfile;
+        // llm 段用 llm 档案；lightrag 继承（跟随主模型）时主 llm 档案即 lightrag 场景档案。
+        // C4：继承判定基底 = fileBase（src=entry 不作判定基底——A P2-3）
+        const lrProfile = isLightragInherited(fileBase) ? llmProfile : lightragProfile;
         populateThinkingOptions('llmThinking', llmProfile);
         populateThinkingOptions('lightragThinking', lrProfile);
         document.getElementById('llmThinking').value = llmThinkingVal;
@@ -540,20 +549,42 @@
       const llmHasCapability = hasModel && !capabilityCleared;
       document.getElementById('llmThinking').disabled = !llmHasCapability;
       document.getElementById('llmReasoningEffort').disabled = !llmHasCapability;
-      document.getElementById('lightragThinking').disabled = !llmHasCapability;
-      document.getElementById('lightragReasoningEffort').disabled = !llmHasCapability;
 
-      // lightrag_llm 继承主 llm 时，隐藏 LightRAG 探测按钮（探测主 llm 即可）
+      // lightrag 三控件（C4/D-G）：customized（判定基底恒为 fileBase）→ 整段变灰不可编辑，
+      // 探测/保存都不动该段数据；非 customized → 随主模型状态机（现状不变）
+      if (lightragCustomized) {
+        document.getElementById('lightragThinking').disabled = true;
+        document.getElementById('lightragReasoningEffort').disabled = true;
+        document.getElementById('lightragTemperature').disabled = true;
+      } else {
+        document.getElementById('lightragThinking').disabled = !llmHasCapability;
+        document.getElementById('lightragReasoningEffort').disabled = !llmHasCapability;
+        document.getElementById('lightragTemperature').disabled = false;
+      }
+
+      // lightrag 探测按钮：新状态机下两态恒隐藏（C4/D-G）——
+      // customized → 隐藏 + hint 替换（页面不探测，该段由主 Agent 管理）；
+      // 继承主 llm（非 customized ⟺ model 空，即本 else-if 分支）→ 隐藏（探测主 llm 即可）。
+      // 不存在应显示的第三态——原 else 显示分支已删（永不可达死代码）。
+      // 元素保留不删：控制台直调 probeCapability('lightrag') 会走到 btn 引用行，删元素会 null 炸。
       const lightragProbeBtn = document.getElementById('lightragProbeBtn');
-      if (isLightragInherited(src)) {
+      if (lightragCustomized) {
         lightragProbeBtn.style.display = 'none';
-        // 继承场景下入库段无探测按钮——提示文案指向对话模型探测，避免误导
+        // customized 场景入库段由主 Agent 管理——替换提示文案（D-G：页面不可编辑）
         const lightragHint = document.getElementById('lightragCapabilityHint');
-        if (lightragHint && lightragHint.textContent.includes('探测能力')) {
+        if (lightragHint) {
+          lightragHint.textContent = '入库模型已由主 Agent 自定义配置，页面不可编辑';
+        }
+      } else if (isLightragInherited(fileBase)) {
+        lightragProbeBtn.style.display = 'none';
+        // 继承场景下入库段无探测按钮——提示文案指向对话模型探测，避免误导。
+        // P3-2：守卫改按模块态变量判定——customized→跟随会话内迁移时 hint 可能残留
+        // 「页面不可编辑」文案（不含「探测能力」，旧 includes 守卫会漏替换）；
+        // 非 customized 且 hint 非继承文案 → 一律替换为继承文案
+        const lightragHint = document.getElementById('lightragCapabilityHint');
+        if (lightragHint && !lightragCustomizedState && lightragHint.textContent !== '继承对话模型——探测对话模型后自动填充') {
           lightragHint.textContent = '继承对话模型——探测对话模型后自动填充';
         }
-      } else {
-        lightragProbeBtn.style.display = 'inline-block';
       }
     }
 
@@ -731,7 +762,11 @@
       const h1 = document.getElementById('llmCapabilityHint');
       const h2 = document.getElementById('lightragCapabilityHint');
       if (h1) h1.textContent = '未探测，请点击下方"探测能力"';
-      if (h2) h2.textContent = '未探测，请点击下方"探测能力"';
+      // P2：customized 态 lightrag 探测按钮恒隐藏——重置为「未探测…」与状态机矛盾；
+      // 按模块态镜像（applyCapabilityBackfill 同步）选文案
+      if (h2) h2.textContent = lightragCustomizedState
+        ? '入库模型已由主 Agent 自定义配置，页面不可编辑'
+        : '未探测，请点击下方"探测能力"';
       updateTestSaveButton();
     }
 
@@ -831,11 +866,15 @@
       document.getElementById('apiType').value = llm.type || 'openai';
       document.getElementById('llmMaxTokens').value = llm.max_tokens ?? ''; // 含 max_tokens 条目回填，保存时不被旧值覆写/删除（验收 A6）
 
-      // 能力控件回填值与 lightrag 继承判定一律取自 loadedNamedEntry（与 init 同路径），
-      // 跳过 clearCapabilityDropdowns——复位 capabilityCleared 使下拉框可用（spec §3.3 定案 a：
-      // 选中即可直接测试保存；强制重探测会使验收 6 不可达）
+      // 能力控件回填（与 init 同路径），跳过 clearCapabilityDropdowns——复位
+      // capabilityCleared 使下拉框可用（spec §3.3 定案 a：选中即可直接测试保存；
+      // 强制重探测会使验收 6 不可达）。
+      // C4：lightrag 区按 fileBase（此刻重读 user-config）的 customized 状态刷新——
+      // customized 时容器恒变灰（即使 entry.lightrag_llm.model 非空），回填显示
+      // fileBase 实际值；entry 快照不作判定基底（A P2-3）
       capabilityCleared = false;
-      applyCapabilityBackfill(loadedNamedEntry);
+      const fileBase = await window.electronAPI.getConfig();
+      applyCapabilityBackfill(loadedNamedEntry, fileBase);
 
       // 程序化赋值不触发 change → 失效同步三件套必须在此补（R8Tech-P2-1）
       invalidateModelList();
@@ -1050,11 +1089,20 @@
       //（R2Tech-P2-4 双按钮共用；R3-P2-1：共享标志吞掉自动探测时不能零反馈）
       if (probeInFlight) { setStatus('探测进行中，稍后可重新探测', 'error'); return; }
       const lightrag = scenario === 'lightrag';
+      // C5 守卫：先读 fileBase 判定再清空——customized 时页面不探测入库模型（该段由
+      // 主 Agent 管理，且本按钮连接字段读的是主模型表单，探测对象牛头不对马嘴）。
+      // 条件钉死 lightrag 场景（R3-A P2：缺 lightrag 条件则 customized 态连 probeCapability('llm')
+      // 也被拒 → llm 下拉永禁、保存按钮永不点亮 = D-H 反向复现）；拒绝路径零副作用
+      // （必须在 clearCapabilityDropdowns 之前，否则误清 llm 两下拉致保存按钮熄灭——A P2-1）
+      const existingConfig = await window.electronAPI.getConfig();
+      if (lightrag && !isLightragInherited(existingConfig)) {
+        setStatus('入库模型已由主 Agent 自定义，页面不探测', 'error');
+        return;
+      }
       // 探测第一个动作：清空四个下拉框（思考链+推理深度，llm+lightrag）+ 不可选
       // （用户拍板 2026-08-18——探测中不知道支持集，档位待探测结果复写；
       // 探测中不可选，防止用户选到旧档位）
       clearCapabilityDropdowns();
-      const existingConfig = await window.electronAPI.getConfig();
       const apiKey = document.getElementById('apiKey').value;
       const apiBase = document.getElementById('apiBase').value;
       const model = document.getElementById('model').value;
@@ -1224,41 +1272,50 @@
       const result = await window.electronAPI.testConnection(mergedConfig.llm);
 
       if (result.success) {
-        // 步骤 4：测试通过后追加 response_format 探测（3 档递进）
-        setStatus('探测格式化输出能力中（可能需要 1-5 分钟（三次采样 + 限流/超时重试））...', 'loading');
-        // probe payload 组装结构照现状混合构造（R1 双审同抓 P2-2/P3-4 钉死）：
-        // llm 连接字段（probe 恒用对话模型连接，不用 mergedConfig.lightrag_llm 连接字段）
-        // + 入库 select 值/lightrag kwargs——仅 kwargs/RE 来源换合并值 mergedConfig.lightrag_llm，
-        // 保证探测环境 = 运行时环境，探测档位结果对运行时才有效
-        const probeConfig = {
-          ...mergedConfig.llm,
-          reasoning_effort: mergedConfig.lightrag_llm.reasoning_effort,
-          temperature: mergedConfig.lightrag_llm.temperature,
-          litellm_kwargs: mergedConfig.lightrag_llm.litellm_kwargs,
-        };
-        const probeResult = await window.electronAPI.probeResponseFormat(probeConfig);
+        // C5：customized（判定基底 = 步骤 1 重读的 fileBase）→ 跳过 response_format 探测、
+        // probeResults 传 null（mergeConfig C3 整段透传，探测产物不覆写自定义段；
+        // R4 风险备案：运行时三档治理兜底）。status 文案同步省略 probeReason 后缀——
+        // customized 路径无探测结果，不得出现「(undefined)」（R3-A P3-c）
+        const lightragCustomized = !isLightragInherited(fileBase);
+        let probeResults = null;
+        let probeReason = '';
+        if (!lightragCustomized) {
+          // 步骤 4：测试通过后追加 response_format 探测（3 档递进）
+          setStatus('探测格式化输出能力中（可能需要 1-5 分钟（三次采样 + 限流/超时重试））...', 'loading');
+          // probe payload 组装结构照现状混合构造（R1 双审同抓 P2-2/P3-4 钉死）：
+          // llm 连接字段（probe 恒用对话模型连接，不用 mergedConfig.lightrag_llm 连接字段）
+          // + 入库 select 值/lightrag kwargs——仅 kwargs/RE 来源换合并值 mergedConfig.lightrag_llm，
+          // 保证探测环境 = 运行时环境，探测档位结果对运行时才有效
+          const probeConfig = {
+            ...mergedConfig.llm,
+            reasoning_effort: mergedConfig.lightrag_llm.reasoning_effort,
+            temperature: mergedConfig.lightrag_llm.temperature,
+            litellm_kwargs: mergedConfig.lightrag_llm.litellm_kwargs,
+          };
+          const probeResult = await window.electronAPI.probeResponseFormat(probeConfig);
 
-        // probe_failed（限流/超时/基础设施错误）：不写文件，提示重试。
-        // Why（用户核心原则）：测试失败不写文件，测试成功才写。失败时写文件会
-        // 产生缺 response_format_mode 的不完整配置，知识图谱运行时拿不到
-        // Response 格式档位。不自动关窗，让用户决定重试或放弃。
-        if (probeResult.result !== 'supported') {
-          setStatus('格式化输出探测失败（' + (probeResult.reason || '未知错误') + '），配置未保存。请稍后点击按钮重试。', 'error');
-          return;
+          // probe_failed（限流/超时/基础设施错误）：不写文件，提示重试。
+          // Why（用户核心原则）：测试失败不写文件，测试成功才写。失败时写文件会
+          // 产生缺 response_format_mode 的不完整配置，知识图谱运行时拿不到
+          // Response 格式档位。不自动关窗，让用户决定重试或放弃。
+          if (probeResult.result !== 'supported') {
+            setStatus('格式化输出探测失败（' + (probeResult.reason || '未知错误') + '），配置未保存。请稍后点击按钮重试。', 'error');
+            return;
+          }
+
+          const responseFormatMode = probeResult.mode || 'prompt_only';
+          probeResults = { response_format_mode: responseFormatMode, allowed_openai_params: responseFormatMode === 'prompt_only' ? [] : ['response_format'] };
+          probeReason = probeResult.reason || `格式化输出档位: ${responseFormatMode}`;
         }
-
-        const responseFormatMode = probeResult.mode || 'prompt_only';
-        const allowedOpenaiParams = responseFormatMode === 'prompt_only' ? [] : ['response_format'];
-        const probeReason = probeResult.reason || `格式化输出档位: ${responseFormatMode}`;
 
         // 步骤 5：保存配置（仅连通性测试 + probe 探测都成功才执行到这里）——
         // save-config C2 签名：后端保存时刻重读 fileBase + mergeConfig 同函数深合并
         // + 写 user-config.json + 合集单条 upsert + /api/config/reload
-        setStatus('保存配置中...（' + probeReason + '）', 'loading');
+        setStatus(lightragCustomized ? '保存配置中...' : '保存配置中...（' + probeReason + '）', 'loading');
         const saveResult = await window.electronAPI.saveConfig({
           configName,
           formValues,
-          probeResults: { response_format_mode: responseFormatMode, allowed_openai_params: allowedOpenaiParams },
+          probeResults,
           loadedNamedEntry,
         });
         if (saveResult.success) {
@@ -1268,7 +1325,7 @@
             // 提示警告 + 不启动 1.5s 自动关窗（防警告被关窗吞掉，R1-A P3-3）
             setStatus('配置已保存，但配置合集同步失败（' + saveResult.collectionWarning + '）', 'success');
           } else {
-            setStatus('模型测试通过，配置已保存！格式化输出: ' + probeReason, 'success');
+            setStatus(lightragCustomized ? '模型测试通过，配置已保存！' : '模型测试通过，配置已保存！格式化输出: ' + probeReason, 'success');
             setTimeout(() => { window.electronAPI.closeWindow(); }, 1500);
           }
         } else {
