@@ -1,10 +1,6 @@
-"""vision_llm 配置段测试（plan 2026-09-09-vision-retry.md §4-V2 / T2）。
+"""config-manager 合集两段快照语义测试（vision_llm 不入合集，恒在 user-config.json 顶层）。
 
-覆盖：
-① llm_proxy.get_llm_config vision 形态——
-   model 非空独立继承 / model 空回落主 llm + overrides / 与 use_lightrag_config 互斥 ValueError。
-② config-manager 合集两段快照语义（vision_llm 不入合集，恒在 user-config.json 顶层）：
-   逐项修改型写后同步（_sync_named_config）/ set_llm_config(preset_id) 整条加载不动 vision_llm 段。
+覆盖：逐项修改型写后同步（_sync_named_config）/ set_llm_config(preset_id) 整条加载不动 vision_llm 段。
 
 全 mock：配置路径 monkeypatch 到 tmp_path，不触碰真实 ~/.niu/config/，禁真实 LLM。
 """
@@ -26,124 +22,6 @@ sys.path.insert(
 )
 
 import niu_config_manager as ncm
-
-
-# ============== llm_proxy.get_llm_config vision 形态 ==============
-
-
-@pytest.fixture
-def vision_config_file(tmp_path, monkeypatch):
-    """把 CONFIG_PATH 指向 tmp 文件，返回写配置的辅助函数。"""
-    import niu_api.config as niu_cfg
-
-    path = tmp_path / "user-config.json"
-    monkeypatch.setattr(niu_cfg, "CONFIG_PATH", str(path))
-
-    def _write(data):
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-
-    return _write
-
-
-MAIN_LLM = {
-    "apiKey": "main-key",
-    "apiBase": "https://api.main/v1",
-    "model": "main-model",
-    "type": "openai",
-    "provider": "openai",
-    "litellm_kwargs": {"thinking": {"type": "enabled"}},
-    "max_tokens": 4096,
-}
-
-
-def test_vision_independent_model_inherits_missing_fields(vision_config_file):
-    """model 非空 = 独立模型：apiKey/apiBase/type/provider/litellm_kwargs/max_tokens 全继承，reasoning_effort 默认 ""。"""
-    from niu_api.llm_proxy import get_llm_config
-
-    vision_config_file({
-        "llm": dict(MAIN_LLM),
-        "vision_llm": {"model": "qwen38-xl"},
-    })
-    cfg = get_llm_config(use_vision_config=True)
-    assert cfg["model"] == "qwen38-xl"
-    assert cfg["apikey"] == "main-key"
-    assert cfg["apibase"] == "https://api.main/v1"
-    assert cfg["type"] == "openai"
-    assert cfg["provider"] == "openai"
-    assert cfg["litellm_kwargs"] == {"thinking": {"type": "enabled"}}
-    assert cfg["max_tokens"] == 4096
-    assert cfg["reasoning_effort"] == ""
-
-
-def test_vision_independent_model_own_values_win(vision_config_file):
-    """独立模型已配字段不被继承覆盖（只填空键）。"""
-    from niu_api.llm_proxy import get_llm_config
-
-    vision_config_file({
-        "llm": dict(MAIN_LLM),
-        "vision_llm": {
-            "model": "qwen38-xl",
-            "apiKey": "vision-key",
-            "apiBase": "http://192.168.3.88:8080/v1",
-            "max_tokens": 8192,
-        },
-    })
-    cfg = get_llm_config(use_vision_config=True)
-    assert cfg["apikey"] == "vision-key"
-    assert cfg["apibase"] == "http://192.168.3.88:8080/v1"
-    assert cfg["max_tokens"] == 8192
-
-
-def test_vision_empty_model_falls_back_to_main_llm(vision_config_file):
-    """model 空 = 回落主 llm 同一模型 + vision_llm 段独立 overrides（reasoning_effort/temperature/max_tokens）。"""
-    from niu_api.llm_proxy import get_llm_config
-
-    vision_config_file({
-        "llm": dict(MAIN_LLM),
-        "vision_llm": {
-            "reasoning_effort": "high",
-            "temperature": 0.5,
-            "max_tokens": 8192,
-        },
-    })
-    cfg = get_llm_config(use_vision_config=True)
-    assert cfg["model"] == "main-model"
-    assert cfg["apikey"] == "main-key"
-    assert cfg["reasoning_effort"] == "high"
-    assert cfg["temperature"] == 0.5
-    assert cfg["max_tokens"] == 8192
-
-
-def test_vision_empty_model_no_section_falls_back_plain(vision_config_file):
-    """vision_llm 段整体缺失 = 纯主 llm 回落（reasoning_effort 置 ""）。"""
-    from niu_api.llm_proxy import get_llm_config
-
-    vision_config_file({"llm": dict(MAIN_LLM)})
-    cfg = get_llm_config(use_vision_config=True)
-    assert cfg["model"] == "main-model"
-    assert cfg["reasoning_effort"] == ""
-
-
-def test_vision_and_lightrag_mutually_exclusive(vision_config_file):
-    """use_lightrag_config 与 use_vision_config 同传 → ValueError。"""
-    from niu_api.llm_proxy import get_llm_config
-
-    vision_config_file({"llm": dict(MAIN_LLM), "vision_llm": {"model": "m"}})
-    with pytest.raises(ValueError):
-        get_llm_config(use_lightrag_config=True, use_vision_config=True)
-
-
-def test_vision_flag_does_not_affect_default_call(vision_config_file):
-    """默认调用（两 flag 均 False）不受 vision_llm 段影响。"""
-    from niu_api.llm_proxy import get_llm_config
-
-    vision_config_file({
-        "llm": dict(MAIN_LLM),
-        "vision_llm": {"model": "qwen38-xl", "apiKey": "vk"},
-    })
-    cfg = get_llm_config()
-    assert cfg["model"] == "main-model"
-    assert cfg["apikey"] == "main-key"
 
 
 # ============== config-manager 合集两段快照（vision_llm 不入合集） ==============
