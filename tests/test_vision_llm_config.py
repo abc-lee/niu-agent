@@ -4,7 +4,8 @@
 ① llm_proxy.get_llm_config(use_vision_config=True) 三形态——
    model 非空独立继承 / model 空回落主 llm + overrides / 与 use_lightrag_config 互斥 ValueError。
 ② config-manager get/set_vision_llm_config 行为（镜像 lightrag 工具模式）+
-   _sync_named_config 三段快照 + set_llm_config preset 加载含 vision_llm 段替换。
+   _sync_named_config 两段快照（vision_llm 不入合集，恒在 user-config.json 顶层）+
+   函数体开头拒绝 preset_id（已移除；dispatch 与同进程直调两路径均生效）。
 
 全 mock：配置路径 monkeypatch 到 tmp_path，不触碰真实 ~/.niu/config/，禁真实 LLM。
 """
@@ -214,28 +215,29 @@ def test_set_vision_llm_config_max_tokens_clear(tmp_config):
     assert "max_tokens" not in _read_config(tmp_config)["vision_llm"]
 
 
-def test_set_vision_llm_config_preset_loads_only_vision_section(tmp_config):
-    """preset_id 加载型：只替换 vision_llm 段，llm/lightrag_llm 不动。"""
-    (tmp_config / "llm-configs.json").write_text(
-        json.dumps({"configs": {
-            "本地视觉": {
-                "llm": {"model": "entry-main"},
-                "lightrag_llm": {"model": "entry-lr"},
-                "vision_llm": {"model": "qwen38-xl", "apiBase": "http://192.168.3.88:8080/v1"},
-            }
-        }}, ensure_ascii=False), encoding="utf-8")
-    ncm.set_vision_llm_config(model="old-vision")
+def test_set_vision_llm_config_dispatch_rejects_preset_id(tmp_config):
+    """preset_id 已移除：dispatch 显式拒绝（status=error + 「preset_id 已移除」文案），防旧调用静默 no-op。"""
+    import asyncio
+
+    out = asyncio.run(ncm.call_tool("set_vision_llm_config", {"preset_id": "本地视觉"}))
+    payload = json.loads(out[0].text)
+    assert payload["status"] == "error"
+    assert "preset_id 已移除" in payload["message"]
+
+
+def test_set_vision_llm_config_direct_call_rejects_preset_id(tmp_config):
+    """同进程 ToolRegistry 路径（按签名过滤实参后直调实现函数）：preset_id 同样拒绝且 user-config.json 不变。"""
+    ncm.set_vision_llm_config(model="stale")
+    before = (tmp_config / "user-config.json").read_bytes()
 
     result = ncm.set_vision_llm_config(preset_id="本地视觉")
-    assert result["status"] == "updated"
-
-    config = _read_config(tmp_config)
-    assert config["vision_llm"]["model"] == "qwen38-xl"
-    assert config["vision_llm"]["apiBase"] == "http://192.168.3.88:8080/v1"
+    assert result["status"] == "error"
+    assert "preset_id 已移除" in result["message"]
+    assert (tmp_config / "user-config.json").read_bytes() == before
 
 
-def test_vision_item_modify_syncs_three_section_snapshot(tmp_config):
-    """逐项修改型写后同步：合集条目 = llm+lightrag_llm+vision_llm 三段快照。"""
+def test_vision_item_modify_syncs_two_section_snapshot(tmp_config):
+    """逐项修改型写后同步：合集条目 = llm+lightrag_llm 两段快照（vision_llm 不入合集）。"""
     ncm.set_llm_config(api_key="k1", api_base="https://api.main/v1", model="main-model")
     # set_llm_config 不带 presetId → 无同步；手工写 presetId 触发同步路径
     config = _read_config(tmp_config)
@@ -253,17 +255,18 @@ def test_vision_item_modify_syncs_three_section_snapshot(tmp_config):
         (tmp_config / "llm-configs.json").read_text(encoding="utf-8")
     )["configs"]
     entry = configs["本地"]
-    assert set(entry.keys()) == {"llm", "lightrag_llm", "vision_llm"}
-    assert entry["vision_llm"] == {
+    assert set(entry.keys()) == {"llm", "lightrag_llm"}  # vision_llm 不入合集
+    assert entry["llm"]["model"] == "main-model"
+    # vision_llm 恒在 user-config.json 顶层：同步后顶层段原样保留（含本次写入的 max_tokens）
+    assert _read_config(tmp_config)["vision_llm"] == {
         "model": "qwen38-xl",
         "apiBase": "http://192.168.3.88:8080/v1",
         "max_tokens": 8192,
     }
-    assert entry["llm"]["model"] == "main-model"
 
 
-def test_set_llm_config_preset_load_replaces_vision_section(tmp_config):
-    """set_llm_config(preset_id) 整条加载：vision_llm 段一并替换（旧两段条目无该键 → {}）。"""
+def test_set_llm_config_preset_load_keeps_vision_section(tmp_config):
+    """set_llm_config(preset_id) 整条加载：llm/lightrag_llm 替换，vision_llm 段不动（条目里的 vision_llm 键被忽略）。"""
     (tmp_config / "llm-configs.json").write_text(
         json.dumps({"configs": {
             "视觉套": {
@@ -282,12 +285,15 @@ def test_set_llm_config_preset_load_replaces_vision_section(tmp_config):
     assert result["status"] == "updated"
     config = _read_config(tmp_config)
     assert config["llm"]["model"] == "entry-main"
-    assert config["vision_llm"] == {"model": "qwen38-xl"}
+    # vision_llm 段不动：条目里的旧快照不覆盖顶层段
+    assert config["vision_llm"] == {"model": "stale-vision"}
 
-    # 旧两段条目（无 vision_llm 键）→ 替换为 {}，不报错
+    # 旧两段条目（无 vision_llm 键）→ 正常加载，vision_llm 同样不动
     result = ncm.set_llm_config(preset_id="旧两段")
     assert result["status"] == "updated"
-    assert _read_config(tmp_config)["vision_llm"] == {}
+    config = _read_config(tmp_config)
+    assert config["llm"]["model"] == "legacy-main"
+    assert config["vision_llm"] == {"model": "stale-vision"}
 
 
 def test_vision_tools_registered_in_schemas_and_dispatch(tmp_config):

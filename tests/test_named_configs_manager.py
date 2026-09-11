@@ -98,7 +98,7 @@ def test_load_named_configs_missing_returns_empty(tmp_config):
 
 
 def test_set_llm_config_preset_loads_both_sections(tmp_config):
-    """整条加载：llm+lightrag_llm 两段整体替换 + presetId 归一化为键值 + 跳过同步（合集条目不变）。"""
+    """整条加载：llm+lightrag_llm 两段整体替换 + presetId 归一化为键值 + 跳过同步（合集条目不变）；vision_llm 恒在 user-config.json 顶层，加载不动。"""
     _write_configs(tmp_config, {"豆包": ENTRY_DOUBAO})
     _write_user_config(
         tmp_config,
@@ -112,6 +112,12 @@ def test_set_llm_config_preset_loads_both_sections(tmp_config):
         },
         lightrag_llm={"model": "old-lr", "apiBase": "https://old"},
     )
+    # user-config.json 顶层 vision_llm（主 Agent 手工配置形态）——整条加载不得改动
+    user = _read_user_config(tmp_config)
+    user["vision_llm"] = {"apiKey": "vk", "apiBase": "http://192.168.3.88:8080/v1", "model": "qwen38-xl"}
+    (tmp_config / "user-config.json").write_text(
+        json.dumps(user, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     result = ncm.set_llm_config(preset_id="豆包")
     assert result["status"] == "updated"
@@ -122,6 +128,8 @@ def test_set_llm_config_preset_loads_both_sections(tmp_config):
     expected_llm["presetId"] = "豆包"  # 归一化为键值（畸形条目不带偏）
     assert config["llm"] == expected_llm
     assert config["lightrag_llm"] == ENTRY_DOUBAO["lightrag_llm"]
+    # vision_llm 段不动（加载前后不变——恒在 user-config.json 顶层，不入合集）
+    assert config["vision_llm"] == {"apiKey": "vk", "apiBase": "http://192.168.3.88:8080/v1", "model": "qwen38-xl"}
 
     # 加载型跳过写后同步：合集条目原样（畸形 presetId 不被刷正）
     assert _read_configs(tmp_config)["豆包"] == ENTRY_DOUBAO
@@ -169,8 +177,8 @@ def test_preset_mixed_with_params_ignores_rest(tmp_config):
     assert config["llm"]["apiKey"] == "k1"
 
 
-def test_item_modify_syncs_three_section_snapshot(tmp_config):
-    """逐项修改型：llm.presetId 非空时写后同步，单条 upsert 三段快照（llm+lightrag_llm+vision_llm），其它条目不动。"""
+def test_item_modify_syncs_two_section_snapshot(tmp_config):
+    """逐项修改型：llm.presetId 非空时写后同步，单条 upsert 两段快照（llm+lightrag_llm）；user-config 有 vision_llm 也不入快照，其它条目不动。"""
     _write_user_config(
         tmp_config,
         llm={
@@ -183,7 +191,7 @@ def test_item_modify_syncs_three_section_snapshot(tmp_config):
         },
         lightrag_llm={"model": "doubao-lite", "max_tokens": 8192},
     )
-    # user-config.json 手工补 vision_llm 段（主 Agent 手工配置形态）——须入快照
+    # user-config.json 手工补 vision_llm 段（主 Agent 手工配置形态）——不入快照
     user = _read_user_config(tmp_config)
     user["vision_llm"] = {"apiKey": "vk", "apiBase": "http://192.168.3.88:8080/v1", "model": "qwen38-xl"}
     (tmp_config / "user-config.json").write_text(
@@ -206,8 +214,10 @@ def test_item_modify_syncs_three_section_snapshot(tmp_config):
     assert configs["豆包"] == {
         "llm": user["llm"],
         "lightrag_llm": user["lightrag_llm"],
-        "vision_llm": user["vision_llm"],  # vision_llm 段入三段快照（手工配置持久化）
     }
+    # vision_llm 恒在 user-config.json 顶层（不入合集）——user-config 有也不入快照，顶层段不动
+    assert "vision_llm" not in configs["豆包"]
+    assert user["vision_llm"]["model"] == "qwen38-xl"
     assert configs["豆包"]["llm"]["model"] == "doubao-pro-max"
     assert configs["豆包"]["llm"]["custom_agent_field"] == "keep-me"  # Agent 额外键入快照
     # 其它条目不动（同步只 upsert 当前 presetId 条目；旧两段条目保持原样向后兼容）

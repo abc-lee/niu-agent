@@ -954,9 +954,9 @@ def _write_vision_capabilities(supported: bool, model: str) -> None:
     - 只改 llm.capabilities 单键（merge：保留既有 deny 键——plan D2 防互抹）——
       其他段/字段原样保留；原子写（tempfile + os.replace）。
     - capabilities.model 记探测时的模型名：读侧比对 model 一致才采信（防换模型后旧能力误判）。
-    - 命名配置同步：llm.presetId 非空 → upsert llm-configs.json 该条目三段快照
-      （llm/lightrag_llm/vision_llm，与 config-manager _sync_named_config 同源——
-      vision_llm 段持久保留不丢）；主配置写失败 → 不同步（防快照与主配置分叉）。
+    - 命名配置同步：llm.presetId 非空 → upsert llm-configs.json 该条目两段快照
+      （llm/lightrag_llm；vision_llm 恒在 user-config.json 顶层，不入合集——
+      与 config-manager _sync_named_config 同源）；主配置写失败 → 不同步（防快照与主配置分叉）。
     - 永不抛：vision 结果写入不得毒化主探测（同档案写纪律）。
     """
     path = Path(USER_CONFIG_PATH)
@@ -1005,8 +1005,9 @@ def _write_vision_capabilities(supported: bool, model: str) -> None:
 
 
 def _sync_named_config_snapshot(name: str, user_data: dict) -> None:
-    """upsert 命名配置条目（llm/lightrag_llm/vision_llm 三段快照，与 config-manager
-    _sync_named_config 同款原子 upsert——复制其逻辑，不跨包 import 私有函数）。
+    """upsert 命名配置条目（llm/lightrag_llm 两段快照——vision_llm 恒在
+    user-config.json 顶层，不入合集；与 config-manager _sync_named_config 同款
+    原子 upsert——复制其逻辑，不跨包 import 私有函数）。
 
     写时刻重读合集单条 upsert；文件不存在 = 空合集；JSON 损坏/configs 非对象 →
     跳过同步（防"损坏=空合集"整体覆写销毁全部条目）。永不抛。
@@ -1026,7 +1027,6 @@ def _sync_named_config_snapshot(name: str, user_data: dict) -> None:
     configs[name] = {
         "llm": user_data.get("llm", {}),
         "lightrag_llm": user_data.get("lightrag_llm", {}),
-        "vision_llm": user_data.get("vision_llm", {}),
     }
     _atomic_write_json(path, {"configs": configs})
 

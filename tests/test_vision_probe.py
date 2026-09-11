@@ -10,7 +10,7 @@
 ⑤ max_tokens 传参断言：vision 请求 =500（R7），非 vision 请求 =256；timeout=45
 ⑥ capabilities 子对象结构 {model, input, probed_at}；陈旧 ["text","image"] 被 ["text"] 覆盖
 ⑦ lightrag 场景不跑 vision 扫描（无多模态请求、user-config llm 段不被触碰）
-⑧ 命名配置同步：presetId 非空 → llm-configs.json upsert 三段快照（含 capabilities）；
+⑧ 命名配置同步：presetId 非空 → llm-configs.json upsert 两段快照（llm/lightrag_llm，含 capabilities；vision_llm 不入合集）；
    presetId 空 → 不建文件；合集损坏 → 跳过同步不写坏
 ⑨ V8c 串模型防护：配置 llm.model ≠ 本次探测 model → 跳过写入保持旧值
 ⑩ P2-1 空回答语义：200 但 content None/空（reasoning 截断形态）→ 三态 None 不写，
@@ -495,9 +495,9 @@ def _probe_with_preset(probe_env, preset_id):
 
 
 def test_named_config_upserted_with_capabilities_snapshot(profile_path, probe_env):
-    """presetId 非空 → llm-configs.json upsert 该条目三段快照（llm 段含新 capabilities，
-    lightrag_llm/vision_llm 段一并入快照），其他条目不动。"""
-    other_entry = {"llm": {"model": "other"}, "lightrag_llm": {}, "vision_llm": {}}
+    """presetId 非空 → llm-configs.json upsert 该条目两段快照（llm 段含新 capabilities；
+    vision_llm 不入合集——恒在 user-config.json 顶层），其他条目不动。"""
+    other_entry = {"llm": {"model": "other"}, "lightrag_llm": {}}
     probe_env["named_configs"].write_text(
         json.dumps({"configs": {"其他配置": other_entry}}, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -505,11 +505,11 @@ def test_named_config_upserted_with_capabilities_snapshot(profile_path, probe_en
 
     data = json.loads(probe_env["named_configs"].read_text(encoding="utf-8"))
     entry = data["configs"]["豆包"]
-    assert set(entry.keys()) == {"llm", "lightrag_llm", "vision_llm"}
+    assert set(entry.keys()) == {"llm", "lightrag_llm"}  # vision_llm 不入合集
     caps = entry["llm"]["capabilities"]
     assert caps["model"] == PROBE_ARGS["model"]
     assert caps["input"] == ["text", "image"]
-    # 三段快照与主配置一致（含 capabilities 随条目走）
+    # 两段快照与主配置一致（含 capabilities 随条目走）
     user_cfg = _read_user_config(probe_env)
     assert entry["llm"] == user_cfg["llm"]
     assert entry["lightrag_llm"] == user_cfg["lightrag_llm"]
