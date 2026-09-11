@@ -180,13 +180,14 @@ python -m niu_api
 ```cmd
 pack.bat
 ```
-Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（`C:\Program Files\7-Zip\7z.exe`）。打包前需已完成：Rust 编译（`launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建。
+Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 自动探测 `C:\` 与 `E:\`）。打包前需已完成：Rust 编译（`launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建、`pip install -r requirements-dev.txt`（提供 maturin）。
 
 `pack.bat` 会：
-1. 自动清理 `launcher/target/`、`__pycache__/`、`*.pyc`（不进 7z，也不需要保留）
-2. 用 robocopy 复制文件到临时目录，排除 `.git/`、`backup/`、缓存目录等
-3. 用 7-Zip 压缩（LZMA2 -mx=9，压缩率高于 zip）
-4. 产物在 `dist/Niu-<VERSION>-win-x64.7z`，VERSION 从根目录 `VERSION` 文件读
+1. 构建 niu-natives wheel 装进 `python\`（缺 `.pyd`/`node_modules` 即中止，不产残包）
+2. 自动清理 `launcher/target/`、`__pycache__/`、`*.pyc`（不进 7z，也不需要保留）
+3. 用 robocopy 复制文件到临时目录，排除 `.git/`、`backup/`、缓存目录等
+4. 用 7-Zip 压缩（LZMA2 -mx=9，压缩率高于 zip）
+5. 产物在 `dist/Niu-<VERSION>-win-x64.7z`，VERSION 从根目录 `VERSION` 文件读
 
 ### 测试
 
