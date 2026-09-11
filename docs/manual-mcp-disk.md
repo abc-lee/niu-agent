@@ -545,12 +545,12 @@ result = tool_fn(param1="value1")
 
 ### 5.7 visibility: static 例外清单
 
-基础配置（`config/mcp-servers.yaml`）中以下 7 个工具使用 `visibility: static`（而非 `hidden`），直接注入主 Agent 工具列表、不走虚拟磁盘发现：
+基础配置（`config/mcp-servers.yaml`）中以下 8 个工具使用 `visibility: static`（而非 `hidden`），直接注入主 Agent 工具列表、不走虚拟磁盘发现：
 
 | 服务器 | 工具 | 说明 |
 |------|------|------|
 | `session-manager` | `read_history_block`、`fold_tool_output` | 会话管理高频工具，static 直挂 |
 | `brain-region-server` | `brain_region_activate`、`brain_region_dim`、`brain_region_status` | 脑区工具仍通过 static 注入方式提供给 Agent，暂未迁移到虚拟磁盘 |
-| `vision-server` | `screenshot`、`list_targets` | 截图辅助工具（截图 + 列可截目标），static 直挂主 Agent |
+| `vision-server` | `screenshot`、`list_targets`、`analyze_image` | 视觉能力三工具（截图 + 列可截目标 + 识图），static 直挂主 Agent |
 
 除上述例外，其余工具一律使用 `visibility: hidden`。新增 static 工具时须同步更新本清单与 `tests/test_disk_integration.py` 的 `static_exempt` 白名单。

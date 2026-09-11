@@ -539,6 +539,16 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+### 2026-09-11
+
+#### 工程：识图通道重构——screenshot 返回纯路径 + 显式识图工具 analyze_image + 图片直通通道/视觉子 Agent 路线整体退役（plan v0.3.4，R5+R6 连续双 APPROVE 门禁；SDD T1/T2/T3）
+
+- **背景（三次失败实证）**：①主 Agent `bash`+`screencapture` 截图后看不了图（stdout 文本非图标记，直通永不触发）②切视觉模型仍看不了（capabilities 未探测 → `main_has_vision` fail-closed 静默关通道）③视觉子 Agent 读图死循环（9 次字节级相同 read——标记展开消费路径后弱模型编造路径）。用户拍板 D-A~D-H：截图返纯路径 / 新识图工具 Schema 明确提示词位置 / **工具内部自选模型、主模型优先** / 回退子 Agent 全部代码与文档 / 用户发图保持裸路径（意图由主 Agent 判断）/ 提示词来自迭代。
+- **交付面**：①`screenshot` 返回纯路径 + 尺寸元数据（不返图标记，与用户发图同形）②新增 `analyze_image(image_path, question)`——两段式提示词教学进 Schema、主模型优先选模（主模型有视觉→主 llm 段；否则读原始 user-config.json 判 vision_llm.model 非空→该段；皆无→含配置指引的明确错误）、LiteLLMSession 同步驱动 + 独立 sticky id `analyze-image`、`finish_reason=length` 空回答细分、data URI 打码保留 ③回退图片直通链（expand_image_markers/sanitizer 步骤③/has_vision 形参链）+ llmPreset 机制整体删除（SUPPORTED_PRESETS 仅 vision_llm 一个成员，专为退役路线而造）④文档同步（SYSTEM_MANUAL 视觉节——**保留「测试+配置 vision_llm」教学段、只删自建视觉子 Agent 教学**；niu.md/agent-template/manual-mcp-disk static 清单 7→8/config-manager 工具描述）。
+- **§1.6 原理实证（决定 Schema 写法）**：本地 qwen38-xl A/B——无提示词也能看图（空 content 是思考吃光 max_tokens 预算，非能力缺陷）；提示词价值=决定关注点/输出 + 省上下文（泛问 1129 token vs 聚焦问 77）；密集界面泛问可能因预算只覆盖一部分——**未输出 ≠ 没看到** → Schema 教两段式（先泛问建认知→带问题追问同图），禁止写「必须给具体问题」。
+- **验证**：T1 spec/quality 双审双 APPROVE + PM 真实链路验证（三工具 static 注册/纯路径落盘/负向错误串/正向走通 vision_llm 段 glm-4.6v-flash 且打码生效/限流正确转中文错误串，main 679bb51c）；T2 按 plan §3.4/§4.1 回退清单执行（验收=已删符号全仓 grep 零残留 + import 冒烟）。实机验收清单（待用户）见 plan §9：analyze_image 三场景（主模型优先/vision_llm 段/皆无错误，raw_http 核对归属段）+ 同图换问题再问。
+- **已知边界**：主模型有视觉时工具调用=多一次往返（用户知悉拍板）；反复问=每次重读文件+重编码 data URI（不做缓存）；每次调用独立会话（追问靠同图+新问题，非对话历史）；screenshot/list_targets 在 Windows 仍需 .pyd、analyze_image 不依赖 Rust 可立即用；用户既有 `~/.niu/agents/vision-agent.md` 的 llmPreset 字段变未知字段被忽略（建议删除该文件）。
+
 ### 2026-09-10
 
 #### 工程：可视化 Phase 3——截图辅助工具（用户拍板 2 工具整合；plan v0.1→v0.7 六轮双审（**R5+R6 连续双 APPROVE 门禁**）+ SDD T1/T2/T3 每 Task 双审+微修闭环 + 收官整体审查双 APPROVE，main 67e7621b/25155c85/eb3a7ad9/36fd48e4）

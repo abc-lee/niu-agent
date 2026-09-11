@@ -108,7 +108,7 @@ TOOL_SCHEMAS = {
     },
     "get_vision_llm_config": {
         "name": "get_vision_llm_config",
-        "description": "Get vision LLM configuration (without API key for security). Returns the vision_llm section if configured, otherwise indicates it will fall back to the llm section.",
+        "description": "Get vision LLM configuration (without API key for security). Returns the vision_llm section — the third-party vision model used by analyze_image when the main model has no vision capability. An empty/absent section is inactive; there is no fallback to the main llm.",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -116,7 +116,7 @@ TOOL_SCHEMAS = {
     },
     "set_vision_llm_config": {
         "name": "set_vision_llm_config",
-        "description": "Set vision LLM configuration. preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters are ignored). Without preset_id, modifies individual fields and auto-syncs the named collection entry when llm.presetId is set (a damaged collection file is never overwritten). If model is set to empty string, removes the vision_llm section so that the vision sub-agent falls back to the main LLM configuration (also synced).",
+        "description": "Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is not consulted when the main model has vision (main model takes priority). preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters are ignored). Without preset_id, modifies individual fields and auto-syncs the named collection entry when llm.presetId is set (a damaged collection file is never overwritten). If model is set to empty string, removes the vision_llm section so that analyze_image will report a clear error if the main model lacks vision (also synced).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -126,7 +126,7 @@ TOOL_SCHEMAS = {
                 },
                 "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
                 "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
-                "model": {"type": "string", "description": "Model name (empty string to clear and fall back to main llm)"},
+                "model": {"type": "string", "description": "Model name (empty string clears this section; when cleared it is inactive — there is no fallback to main llm)"},
                 "llm_type": {
                     "type": "string",
                     "description": "Provider type: 'openai' or 'anthropic'",
@@ -782,8 +782,9 @@ def set_lightrag_llm_config(
 def get_vision_llm_config() -> dict[str, Any]:
     """Get vision LLM configuration (without API key for security).
 
-    Returns the vision_llm section if configured, otherwise indicates
-    it will fall back to the llm section. Includes litellm_kwargs so the
+    Returns the vision_llm section — the third-party vision model used by
+    analyze_image when the main model has no vision capability. An empty/absent
+    section is inactive (no fallback to the llm section). Includes litellm_kwargs so the
     main agent can inspect provider-specific params. 第三方视觉模型由主 Agent
     手工测通后配置（见 SYSTEM_MANUAL 视觉能力节），程序不自动探测。
     """
@@ -839,7 +840,7 @@ def set_vision_llm_config(
         else:
             config.pop("vision_llm", None)
         save_user_config(config)
-        result: dict[str, Any] = {"status": "cleared", "message": "Vision model cleared, will use main LLM model"}
+        result: dict[str, Any] = {"status": "cleared", "message": "Vision model cleared. The vision_llm section is now inactive (no fallback to the main model); if the main model has no vision capability, analyze_image will report an error asking you to configure a third-party vision model"}
         warning = _sync_named_config(config)
         if warning:
             result["warning"] = warning
@@ -1391,12 +1392,12 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_vision_llm_config",
-            description="Get vision LLM configuration. Returns model, reasoning_effort, and whether it falls back to main llm.",
+            description="Get vision LLM configuration. Returns the vision_llm section — the third-party vision model used by analyze_image when the main model has no vision; an empty/absent section is inactive (no fallback to main llm).",
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="set_vision_llm_config",
-            description="Set vision LLM configuration. preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry. If model='', clears the section (falls back to main llm).",
+            description="Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is inactive when the main model has vision. preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry. If model='', clears the section (it becomes inactive — analyze_image will report an error if the main model lacks vision).",
             inputSchema={
                 "type": "object",
                 "properties": {
