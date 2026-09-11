@@ -32,13 +32,13 @@ TOOL_SCHEMAS = {
     },
     "set_llm_config": {
         "name": "set_llm_config",
-        "description": "Set LLM configuration. preset_id loads a named config from llm-configs.json: the entry's llm, lightrag_llm AND vision_llm sections wholly replace the current ones (a true config switch), other parameters are ignored. Without preset_id, modifies individual fields and auto-syncs the named collection entry (three-section snapshot) when llm.presetId is set; a damaged collection file is never overwritten (sync skipped with a warning).",
+        "description": "Set LLM configuration. preset_id loads a named config from llm-configs.json: the entry's llm and lightrag_llm sections wholly replace the current ones (a true config switch), other parameters are ignored; vision_llm is always kept at the top level of user-config.json and is not affected. Without preset_id, modifies individual fields and auto-syncs the named collection entry (two-section snapshot) when llm.presetId is set; a damaged collection file is never overwritten (sync skipped with a warning).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "preset_id": {
                     "type": "string",
-                    "description": "Named config to load from llm-configs.json (name = llm.presetId). Loading replaces the llm, lightrag_llm and vision_llm sections; other parameters are ignored.",
+                    "description": "Named config to load from llm-configs.json (name = llm.presetId). Loading replaces the llm and lightrag_llm sections; other parameters are ignored.",
                 },
                 "api_key": {"type": "string", "description": "API key"},
                 "api_base": {"type": "string", "description": "API base URL"},
@@ -116,14 +116,10 @@ TOOL_SCHEMAS = {
     },
     "set_vision_llm_config": {
         "name": "set_vision_llm_config",
-        "description": "Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is not consulted when the main model has vision (main model takes priority). preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters are ignored). Without preset_id, modifies individual fields and auto-syncs the named collection entry when llm.presetId is set (a damaged collection file is never overwritten). If model is set to empty string, removes the vision_llm section so that analyze_image will report a clear error if the main model lacks vision (also synced).",
+        "description": "Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is not consulted when the main model has vision (main model takes priority). Modifies individual fields and auto-syncs the named collection entry when llm.presetId is set (a damaged collection file is never overwritten); the vision_llm section itself always lives at the top level of user-config.json, not in the collection. If model is set to empty string, removes the vision_llm section so that analyze_image will report a clear error if the main model lacks vision (also synced).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "preset_id": {
-                    "type": "string",
-                    "description": "Named config whose vision_llm section to load from llm-configs.json",
-                },
                 "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
                 "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
                 "model": {"type": "string", "description": "Model name (empty string clears this section; when cleared it is inactive — there is no fallback to main llm)"},
@@ -503,8 +499,9 @@ def save_memory(memory: dict[str, Any]) -> None:
 def load_named_configs() -> dict[str, Any]:
     """Load named LLM config collection (~/.niu/config/llm-configs.json).
 
-    返回 {"<配置名>": {"llm": {...}, "lightrag_llm": {...}, "vision_llm": {...}}} 字典
-    （旧两段条目无 vision_llm 键 = 读取方按 {} 处理，向后兼容）。
+    返回 {"<配置名>": {"llm": {...}, "lightrag_llm": {...}}} 字典（两段；
+    vision_llm 段不入合集——恒在 user-config.json 顶层；旧三段条目若带
+    vision_llm 键，读取原样返回、写侧同步时自然淘汰）。
     文件不存在 = 空合集（返回 {}）；JSON 损坏或 configs 值非对象时抛异常，
     由调用方区分处理（读侧展示降级 / 写侧跳过保护两条路径各自 catch）。
     扁平旧格式（无 configs 顶层）data.get 返回 {} = 正常空合集语义不变。
@@ -521,7 +518,8 @@ def load_named_configs() -> dict[str, Any]:
 
 
 def _sync_named_config(config: dict[str, Any]) -> Optional[str]:
-    """写后同步：保存时刻重读合集，单条 upsert 当前 llm+lightrag_llm+vision_llm 三段快照。
+    """写后同步：保存时刻重读合集，单条 upsert 当前 llm+lightrag_llm 两段快照
+    （vision_llm 恒在 user-config.json 顶层，不入合集）。
 
     仅当 llm.presetId 非空时同步；合集 JSON 损坏 → 跳过写并返回 warning 文案
     （防"损坏=空合集"整体覆写销毁全部条目）；无需同步/同步成功 → None。
@@ -537,7 +535,6 @@ def _sync_named_config(config: dict[str, Any]) -> Optional[str]:
     configs[name] = {
         "llm": config.get("llm", {}),
         "lightrag_llm": config.get("lightrag_llm", {}),
-        "vision_llm": config.get("vision_llm", {}),
     }
     # 原子写：tmp + replace（reader 永远看到完整文件）
     LLM_CONFIGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -584,11 +581,11 @@ def set_llm_config(
     """Set LLM configuration.
 
     preset_id 加载型：从 llm-configs.json 整条加载命名配置——条目的
-    {llm, lightrag_llm, vision_llm} 三段整体替换 user-config.json 对应段（真"切换配置"，
-    旧两段条目无 vision_llm 键 = 替换为 {}），其余参数忽略并在结果中说明；
+    {llm, lightrag_llm} 两段整体替换 user-config.json 对应段（真"切换配置"，
+    vision_llm 恒在 user-config.json 顶层、不受切换影响），其余参数忽略并在结果中说明；
     跳过写后同步（刚读自合集，对齐是幂等 no-op）。
     不带 preset_id = 逐项修改型：写 user-config.json 后，llm.presetId 非空时
-    写后同步——保存时刻重读合集，单条 upsert 该名条目 = 三段完整快照。
+    写后同步——保存时刻重读合集，单条 upsert 该名条目 = 两段完整快照。
     """
     config = load_user_config()
 
@@ -609,7 +606,6 @@ def set_llm_config(
         llm["presetId"] = preset_id
         config["llm"] = llm
         config["lightrag_llm"] = dict(entry.get("lightrag_llm", {}))
-        config["vision_llm"] = dict(entry.get("vision_llm", {}))
         save_user_config(config)
         result: dict[str, Any] = {"status": "updated", "llm": get_llm_config()}
         ignored = [
@@ -817,8 +813,17 @@ def set_vision_llm_config(
 
     If model is set to empty string, removes model-specific fields
     but preserves reasoning_effort 和 max_tokens（均为独立维度）.
-    model='' 清空分支优先于 preset_id 加载分支（矛盾输入时清空生效）。
+    vision_llm 段恒在 user-config.json 顶层（配置合集不保存该段，无 preset_id 加载路径）。
+    preset_id 参数仅为拒绝旧调用而保留：Schema 层已不暴露该参数，但同进程
+    ToolRegistry 按签名过滤实参后会把旧调用的 preset_id 传入——函数体开头
+    显式拒绝（status=error），防止静默 no-op。
     """
+    if preset_id is not None:
+        return {
+            "status": "error",
+            "message": "preset_id 已移除：配置合集不再保存 vision_llm 段；vision 配置恒在 user-config.json 顶层，请用逐项参数直接设置",
+        }
+
     config = load_user_config()
 
     # If clearing the model (model=""), remove model-specific fields
@@ -844,37 +849,6 @@ def set_vision_llm_config(
         warning = _sync_named_config(config)
         if warning:
             result["warning"] = warning
-        return result
-
-    # preset_id 加载型：只替换 vision_llm 段，其余参数忽略并在结果中说明；跳过写后同步
-    if preset_id:
-        try:
-            configs = load_named_configs()
-        except Exception as e:
-            logger.warning(f"llm-configs.json 损坏，加载失败: {e}")
-            return {"status": "error", "message": "配置合集文件损坏，无法加载"}
-        entry = configs.get(preset_id)
-        if entry is None:
-            return {"status": "error", "message": f"配置 '{preset_id}' 不存在"}
-        if not isinstance(entry, dict):
-            return {"status": "error", "message": f"配置 '{preset_id}' 格式损坏"}
-        config["vision_llm"] = dict(entry.get("vision_llm", {}))
-        save_user_config(config)
-        result = {"status": "updated", "vision_llm": get_vision_llm_config()}
-        ignored = [
-            name
-            for name, value in (
-                ("api_key", api_key),
-                ("api_base", api_base),
-                ("model", model),
-                ("llm_type", llm_type),
-                ("reasoning_effort", reasoning_effort),
-                ("max_tokens", max_tokens),
-            )
-            if value is not None
-        ]
-        if ignored:
-            result["message"] = "preset_id 加载已忽略其余参数: " + ", ".join(ignored)
         return result
 
     # 逐项修改型
@@ -1325,7 +1299,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="set_llm_config",
-            description="Set LLM configuration. preset_id loads a named config from llm-configs.json (replaces the llm, lightrag_llm and vision_llm sections; other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry.",
+            description="Set LLM configuration. preset_id loads a named config from llm-configs.json (replaces the llm and lightrag_llm sections; other parameters ignored; vision_llm is always kept at the top level of user-config.json); without preset_id, modifies individual fields and auto-syncs the named collection entry.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1397,14 +1371,10 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="set_vision_llm_config",
-            description="Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is inactive when the main model has vision. preset_id loads only the entry's vision_llm section from llm-configs.json (other parameters ignored); without preset_id, modifies individual fields and auto-syncs the named collection entry. If model='', clears the section (it becomes inactive — analyze_image will report an error if the main model lacks vision).",
+            description="Set vision LLM configuration. The vision_llm section is the third-party vision model used by analyze_image when the main model has no vision capability; it is inactive when the main model has vision. Modifies individual fields and auto-syncs the named collection entry (the vision_llm section itself always lives at the top level of user-config.json, not in the collection). If model='', clears the section (it becomes inactive — analyze_image will report an error if the main model lacks vision).",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "preset_id": {
-                        "type": "string",
-                        "description": "Named config whose vision_llm section to load from llm-configs.json",
-                    },
                     "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
                     "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
                     "model": {"type": "string", "description": "Model name (empty string to clear)"},
@@ -1667,6 +1637,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "get_vision_llm_config":
             result = get_vision_llm_config()
         elif name == "set_vision_llm_config":
+            # preset_id 拒绝统一在函数体开头（同进程 ToolRegistry 路径同样生效）
             result = set_vision_llm_config(
                 preset_id=arguments.get("preset_id"),
                 api_key=arguments.get("api_key"),
