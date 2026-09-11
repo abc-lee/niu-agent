@@ -790,12 +790,9 @@ def _enforce_message_budget(messages: list) -> list:
     return messages
 
 
-def transform_history(messages: list[dict], has_vision: bool = False) -> list[dict]:
+def transform_history(messages: list[dict]) -> list[dict]:
     """history(dict 视图) → LLM 上下文消息变换（subagent_msg 跳过/空消息丢弃/
     孤儿 tool 校验跳过/valid_tcs 剥离悬空 tool_calls/_truncate_tool_content 30000 截断）。
-
-    has_vision 参数保留兼容（plan 2026-09-10 D3 去展开后本层不再展开图标记——
-    全链路消息 content 恒 str，与 DB 语义一致；图片展开由发送层 sanitize 承担）。
 
     入口 agent_runner_loop 与工具轮重建（runner._on_tool_round_refresh）共用单一变换源——
     rebuild 必须与入口逐字节同制式（R3-A P1：悬空 tool_calls 注入会 OpenAI 400；
@@ -1434,7 +1431,6 @@ def agent_runner_loop(
     on_before_llm=None,  # Optional: callback(messages, turn) called before each LLM call; modifies messages[0] in place
     stop_predicate: Callable | None = None,  # 停止穿透：停止判定谓词（默认 None = 全局 is_stop_requested；子 Agent 由 call_subagent 传入）
     on_compression_request=None,  # 统一压缩入口（spec 2026-09-06）：主 Agent runner 传回调执行受控压缩；None=子 Agent 跳过（走保留的响应后 FIFO/占位符化 else 分支）
-    has_vision=False, # 图片直通通道参数保留兼容（plan 2026-09-10 D3 去展开后本层不再展开图标记）；主 Agent 由 runner 传、子 Agent 由派发层传
 ):
     from agent.runner import clear_stop, drain_supplement, is_stop_requested
     from agent.generic.interruptible import run_interruptibly
@@ -1455,9 +1451,9 @@ def agent_runner_loop(
         # 变换逻辑抽为模块级纯函数 transform_history（工具轮重建共用单一变换源——
         # rebuild 与入口逐字节同制式，R3-A P1）；守卫与 resumed_messages else 分支结构不变
         if history:
-            messages.extend(transform_history(history, has_vision=has_vision))
+            messages.extend(transform_history(history))
 
-        # Add current user message（plan 2026-09-10 D3 去展开：直传 str——图标记保留文本形态，发送层 sanitize 负责展开；resumed 分支不走此处）
+        # Add current user message（直传 str；resumed 分支不走此处）
         _current_user_content = initial_user_content if initial_user_content is not None else user_input
         messages.append({
             "role": "user",
