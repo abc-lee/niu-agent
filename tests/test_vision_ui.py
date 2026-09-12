@@ -15,7 +15,7 @@ types.SimpleNamespace **属性对象**还原 PyO3 #[pyclass] 形态（只能属�
 - 找元素：命中 / 0 命中 / 多命中 / find 非 dict / limit 映射
 - 动作分发：press→ax_perform、set_value→ax_set_value、focus→ax_focus、click→ax_click
   （断言调了哪个方法、传了什么参）
-- 焦点元素：有 → 格式化；None → 「当前没有焦点元素」文案
+- 焦点元素：有 → 格式化（标注来源=系统级 AXFocusedUIElement）；None → 说明与 find 的 focused 标记不同源
 - 错误映射：Rust RuntimeError("{code}: …") → 中文文案（StaleRef/PermissionDenied/
   AxUnsupported/WindowNotFound 兜底/无 code 兜底），异常不穿透 MCP 层
 """
@@ -106,7 +106,7 @@ class TestUsageDiscrimination:
         m, session = _install_fake_niu_natives(monkeypatch)
         session.ax_focused.return_value = _node()
         result = m.ui(action="focused_element")
-        assert "当前焦点元素" in result
+        assert "系统级焦点元素" in result
         session.ax_focused.assert_called_once_with()
 
     def test_focused_element_with_target_rejected(self, monkeypatch):
@@ -236,7 +236,7 @@ class TestReadStructure:
         session.ax_snapshot.return_value = types.SimpleNamespace(
             node_count=3, truncated=False, text="Window \"Niu\" [ref=e0]\n  Button")
         result = m.ui(target="w1")
-        assert result == "节点数: 3\nWindow \"Niu\" [ref=e0]\n  Button"
+        assert result == "已读 3 个节点\nWindow \"Niu\" [ref=e0]\n  Button"
         session.ax_snapshot.assert_called_once_with("w1", None)
 
     def test_depth_limit_mapped_to_opts(self, monkeypatch):
@@ -251,7 +251,7 @@ class TestReadStructure:
         session.ax_snapshot.return_value = types.SimpleNamespace(
             node_count=800, truncated=True, text="Window")
         result = m.ui(target="w1", depth=2)
-        assert "已截断" in result
+        assert "树被截断" in result
 
     def test_bad_depth_rejected(self, monkeypatch):
         m, session = _install_fake_niu_natives(monkeypatch)
@@ -311,7 +311,7 @@ class TestActionDispatch:
     def test_press_dispatches_ax_perform(self, monkeypatch):
         m, session = _install_fake_niu_natives(monkeypatch)
         result = m.ui(ref="e1", action="press")
-        assert result == "已对元素 e1 执行动作 press。"
+        assert result.startswith("已调用 press(ref=e1)") and "控件接受" in result
         session.ax_perform.assert_called_once_with("e1", "press")
 
     def test_set_value_dispatches_ax_set_value(self, monkeypatch):
@@ -339,8 +339,81 @@ class TestActionDispatch:
         m, session = _install_fake_niu_natives(monkeypatch)
         result = m.ui(ref="e1", action="press", value="x")
         assert "value 仅 set_value 可用" in result
-        assert "已对元素" not in result
+        assert "已调用" not in result
         session.ax_perform.assert_not_called()
+
+
+class TestActionHonestyAndReadback:
+    """语义核实（P4-Semantics-Audit）：AX 调用无异常 ≠ 界面已变。
+
+    - set_value：读回 AXValue 核对（一致/不一致/读不到 → 三种结论，不得默认成功）
+    - press/click/focus：文案只声明「控件接受了调用」，不宣称界面已变
+    """
+
+    def test_set_value_readback_match(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_attributes.return_value = [("AXRole", "AXTextField"), ("AXValue", "hi")]
+        result = m.ui(ref="e1", action="set_value", value="hi")
+        assert '读回确认 AXValue="hi"' in result
+        session.ax_set_value.assert_called_once_with("e1", "hi")
+
+    def test_set_value_readback_mismatch_not_silent(self, monkeypatch):
+        """控件拒绝/格式化时不得报成功——必须把读到的真实值写出来。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_attributes.return_value = [("AXValue", "旧值")]
+        result = m.ui(ref="e1", action="set_value", value="hi")
+        assert "不一致" in result and "旧值" in result
+
+    def test_set_value_readback_unavailable_states_unverified(self, monkeypatch):
+        """元素未暴露 AXValue → 明说未验证，不得默认成功。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_attributes.return_value = [("AXRole", "AXGroup")]
+        result = m.ui(ref="e1", action="set_value", value="hi")
+        assert "未验证" in result
+
+    def test_set_value_readback_attr_failure_states_unverified(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_attributes.side_effect = RuntimeError("StaleRef: gone")
+        result = m.ui(ref="e1", action="set_value", value="hi")
+        assert "未验证" in result
+
+    def test_press_does_not_claim_ui_changed(self, monkeypatch):
+        """press 文案不得声称界面已变（AX 动作 ok ≠ 状态改变）。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        result = m.ui(ref="e1", action="press")
+        assert "已调用 press(ref=e1)" in result
+        assert "控件接受" in result
+        session.ax_attributes.assert_not_called()   # press 不做读回（无通用可核对属性）
+
+    def test_truncated_wording_says_more_not_read(self, monkeypatch):
+        """截断文案不得暗示『总共就这么多节点』（真机曾误导出错判）。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_snapshot.return_value = types.SimpleNamespace(
+            node_count=1, truncated=True, text='- window "x" [ref=e1]')
+        result = m.ui(target="w1")
+        assert result.startswith("已读 1 个节点")
+        assert "还有更多节点没读出" in result
+
+    def test_find_hits_at_limit_flagged(self, monkeypatch):
+        """命中数触顶（默认 100）时必须说明可能有更多，不能把下限当总数。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_query.return_value = [_node(ref=f"e{i}") for i in range(100)]
+        result = m.ui(target="w1", find={"role": "Button"})
+        assert "已达上限 100" in result
+
+    def test_find_hits_below_limit_not_flagged(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_query.return_value = [_node(ref="e1")]
+        result = m.ui(target="w1", find={"role": "Button"})
+        assert "已达上限" not in result
+
+    def test_ref_lifecycle_note_states_real_mechanism(self, monkeypatch):
+        """ref 失效机制必须写实：再读结构 2 次才失效（不是『结构变化就过期』）。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.ax_query.return_value = [_node()]
+        result = m.ui(target="w1", find={"role": "Button"})
+        assert "再读结构 2 次" in result
+        assert "结构变化后过期" not in result
 
 
 # ============== 用法④：焦点元素（ax_focused） ==============
@@ -351,13 +424,13 @@ class TestFocusedElement:
         m, session = _install_fake_niu_natives(monkeypatch)
         session.ax_focused.return_value = _node(focused=True)
         result = m.ui(action="focused_element")
-        assert result == "当前焦点元素：\n- " + _NODE_LINE
+        assert result == "系统级焦点元素（AXFocusedUIElement）：\n- " + _NODE_LINE
 
     def test_focused_none_message(self, monkeypatch):
         m, session = _install_fake_niu_natives(monkeypatch)
         session.ax_focused.return_value = None
         result = m.ui(action="focused_element")
-        assert "当前没有焦点元素" in result
+        assert "AXFocusedUIElement 为空" in result and "不同源" in result
 
 
 # ============== 错误映射（Rust RuntimeError("{code}: …") → 中文文案） ==============
