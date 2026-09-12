@@ -50,8 +50,8 @@ impl Backend for Win32Backend {
 			display_server: Some("win32".to_string()),
 			capture: display_count > 0,
 			input: true,
-			// ax_lite keeps only the macOS focus subset — full accessibility
-			// traversal is not exposed on Windows either.
+			// The Win32 UIA backend lands in T1b; until `Backend::ax` returns a
+			// real implementation the accessibility methods report AxUnsupported.
 			ax: false,
 			background_window_input: true,
 			delivery_modes: vec!["background".to_string(), "foreground".to_string()],
