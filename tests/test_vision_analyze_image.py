@@ -27,15 +27,21 @@
 
 (2026-09-11-vision-model-fallback plan §5——多模型链自动降级)：
 - 用例 1 链构建（数组顺序 / 单对象回退 / 空数组 / 非数组 / 空 model 节 / 残留组合告警 / 主模型入链首）
-- 用例 2-10、16、17、20 降级行为（一次成功无注记 / 重试后恢复 / fatal 直降 / 裸异常通道 /
-  重试耗尽降级 / 多跳独立配额 / 主模型入链 / 单模型文案 / 全链汇总 / 跳过节注记 / 零回归 / 未知不重试）
-- 用例 12 重试退避 2/5/10 + retry after N 覆盖；用例 13/14 stop（error_type / 调用期间置位含单模型变体）
+- 用例 2-10、16、17、20 降级行为（一次成功无注记 / fatal 直降 / 裸异常通道 /
+  主模型入链 / 单模型文案 / 全链汇总 / 跳过节注记 / 零回归 / 未知不重试）
+- 用例 13/14 stop（error_type / 调用期间置位含单模型变体）
 - 用例 15/21 总预算中断（M≥2 / M=1 特例文案）；用例 19 全部失败/注记文案不含 `![`
 - 用例 18 = 改写既有锁测试 test_implementation_has_no_stop_wrapping；用例 22-24 在 tests/test_vision_llm_config.py（T2）
 
-(2026-09-12-vision-retry-policy-fix plan §5——F-1 重试收窄)：
-- 用例 1-7 分类（Timeout/APIConnectionError 不重试 / RateLimit·ServiceUnavailable 重试 3 次 /
-  未归类含 retry after N 文本重试 / 未归类无忙信号不重试 / 认证·配额回归锁）
+(2026-09-12-vision-retry-policy-fix plan §5——F-1 分类收窄)：
+- 裸异常通道分类回归锁（Timeout/APIConnectionError/未归类无忙信号直接降级 / 认证·配额回归锁）
+
+(2026-09-12-vision-model-memory plan §5——F-8 重试全交 SDK + F-9 连接超时 + F-5 记忆)：
+- F-8：本层不再自做重试——任何错误每模型恰一次调用、无退避 sleep（重试次数交 SDK）
+- F-9：litellm_kwargs 恒含 max_retries=3 与 httpx.Timeout(connect=5/read=300/write=30/pool=5)；
+  用户自带 max_retries 被覆盖
+- F-5：多模型链记住 30 分钟内成功过的模型作本轮起点（命中 / 轮转折回 / 过期回链首 /
+  全失败清 / stop·预算不清 / 单模型不写不读 / 起点成功零注记正向锁）
 """
 
 import json
@@ -43,6 +49,7 @@ import sys
 import types
 from pathlib import Path
 
+import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mcp-servers" / "vision-server" / "src"))
@@ -68,7 +75,7 @@ class FakeLiteLLMSession:
     """还原真实 LiteLLMSession 契约：chat() 返回 generator（yield str chunks），
     StopIteration.value 携带 MockResponse（真实 llmcore.MockResponse）。
 
-    script：按实例行为队列（新实例创建时按序消费）——多模型链 / 重试序列；
+    script：按实例行为队列（新实例创建时按序消费）——多模型链 / 逐模型调用序列；
     条目为 MockResponse 或 Exception 实例（后者在 chat() 内直接抛出 = 建连阶段
     裸异常，D-D 通道 A）。空则回退类属性 response/raise_exc 语义（既有测试不变）。
     on_chunk：gen() 内 yield 之后的回调——「调用期间」置位 stop（plan §5 用例 14）。"""
@@ -120,6 +127,8 @@ def _reset_fake_session(monkeypatch):
     FakeLiteLLMSession.response = None
     FakeLiteLLMSession.raise_exc = None
     FakeLiteLLMSession.on_chunk = None
+    # F-5 记忆隔离：清「最近成功模型」（防跨用例污染——前例成功写记忆会让本例轮转起点偏移）
+    niu_vision_server._VISION_LAST_SUCCESS.clear()
     monkeypatch.setattr("agent.generic.litellm_adapter.LiteLLMSession", FakeLiteLLMSession)
     # stop 状态隔离：默认「未停止」（plan §5 用例 14 autouse 清旗防跨测试泄漏）；
     # 单测可再 patch agent.generic.litellm_adapter.is_stop_requested 为自己的 flag。
@@ -166,12 +175,6 @@ class MysteryWeirdError(Exception):
 def _models_section(*names):
     """vision_llm.models 数组段（各节只给 model，其余空键继承主 llm 段）。"""
     return {"models": [{"model": n} for n in names]}
-
-
-def _r429():
-    """retryable 形态（适配层内部重试耗尽后的真实形状：retry_exhausted + 文本含 rate limit）。"""
-    return _resp(stream_error=True, error_type="retry_exhausted",
-                 error_msg="Error code: 429 - rate limit exceeded")
 
 
 def _fatal(msg):
@@ -444,7 +447,8 @@ class TestStopSemanticsAndEmptyResponse:
 
 class TestErrorPaths:
     def test_stream_error_returns_chinese_error(self, monkeypatch, tmp_path):
-        """stream_error + 429 文本 → retryable：带退避重试 3 次（time.sleep 打桩，勿真等）后单模型失败文案。"""
+        """stream_error + 429 文本 → retryable 分类；F-8：本层不再重试——每模型恰一次调用、
+        无退避 sleep（time.sleep 打桩记录），单模型失败文案。"""
         _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
         png = _png_file(tmp_path)
@@ -454,9 +458,9 @@ class TestErrorPaths:
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
         assert "识图失败" in result and "429" in result
-        assert "无备用模型可降级" in result  # 单模型链：重试耗尽后无备用
-        assert len(FakeLiteLLMSession.instances) == 4  # 首调 + 3 次重试
-        assert sleeps == [2, 5, 10]
+        assert "无备用模型可降级" in result  # 单模型链：失败后无备用
+        assert len(FakeLiteLLMSession.instances) == 1  # F-8：每模型一次（无本层重试，重试交 SDK）
+        assert sleeps == []
 
     def test_chat_exception_returns_chinese_error_not_raise(self, monkeypatch, tmp_path):
         _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
@@ -557,7 +561,7 @@ class TestChainBuilding:
 # ============== plan §5 用例 2-10、16、17、20：降级行为 ==============
 
 class TestFallbackBehavior:
-    """链首成功无注记 / 重试后恢复 / fatal 直降 / 裸异常通道 / 重试耗尽 / 多跳独立配额 /
+    """链首成功无注记 / fatal 直降 / 裸异常通道 /
     主模型入链 / 单模型文案 / 全链汇总 / 跳过节注记 / 零回归 / 未知不重试。"""
 
     def test_first_success_no_note(self, monkeypatch, tmp_path):
@@ -573,24 +577,6 @@ class TestFallbackBehavior:
 
         assert result == "答案A"  # 零附加
         assert len(FakeLiteLLMSession.instances) == 1
-
-    def test_retryable_then_success_recovered_note(self, monkeypatch, tmp_path):
-        """用例 3：链首 retryable → 重试后成功：含「重试后恢复」，不含「已自动降级」（D-E 新行 / C-2）。"""
-        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
-        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
-        png = _png_file(tmp_path)
-        sleeps = _stub_time(monkeypatch)
-        FakeLiteLLMSession.script.extend([
-            _resp(stream_error=True, error_msg="HTTP 429 rate limited"),  # 文本兜底 → retryable
-            _resp("答案A"),
-        ])
-
-        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
-
-        assert result == "答案A\n\n（注：首模型曾报错（HTTP 429 rate limited），重试后恢复）"
-        assert "已自动降级" not in result
-        assert len(FakeLiteLLMSession.instances) == 2  # 调用计数 = 2
-        assert sleeps == [2]
 
     def test_fatal_no_retry_direct_degrade(self, monkeypatch, tmp_path):
         """用例 4：链首 fatal（error_type='fatal'）→ 不重试，直接降级到第二个。"""
@@ -623,49 +609,6 @@ class TestFallbackBehavior:
         assert "调用异常（AuthenticationError）" in result  # reason 来自通道 A
         assert len(FakeLiteLLMSession.instances) == 2
         assert sleeps == []
-
-    def test_retry_exhausted_then_degrade(self, monkeypatch, tmp_path):
-        """用例 6：链首 retryable 重试 3 次耗尽 → 降级到第二个并成功。
-        首模型调用次数 = 首次 + 3 次重试 = 4（plan「call count=4」指首模型），加第二个一次成功共 5。"""
-        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
-        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
-                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
-        png = _png_file(tmp_path)
-        sleeps = _stub_time(monkeypatch)
-        FakeLiteLLMSession.script.extend([_r429()] * 4 + [_resp("答案A")])
-
-        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
-
-        assert "已自动降级到 m2" in result
-        inst = FakeLiteLLMSession.instances
-        assert len(inst) == 5
-        assert [i.cfg["model"] for i in inst] == ["m1", "m1", "m1", "m1", "m2"]
-        assert sleeps == [2, 5, 10]
-
-    def test_multi_hop_degrade_independent_quota(self, monkeypatch, tmp_path):
-        """用例 7：多跳降级——首模型耗尽自己的重试配额（首次+3 重试均 429）、第二个模型
-        同样拿满 3 次退避后失败、第三个成功。注记只提首模型原因；第二个的重试配额
-        独立（切换后重置）——若实现为链级全局累计配额，m2 至多再得 2 次重试、第 4 次
-        调用直接降级，model 序列与 sleeps 两条断言必红。"""
-        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
-        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
-                            _write_user_config(tmp_path, vision=_models_section("m1", "m2", "m3")))
-        png = _png_file(tmp_path)
-        sleeps = _stub_time(monkeypatch)
-        FakeLiteLLMSession.script.extend(
-            [_r429()] * 4
-            + [_resp(stream_error=True, error_type="retry_exhausted",
-                     error_msg="m2 rate limit")] * 4
-            + [_resp("答案A")])
-
-        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
-
-        assert result == ("答案A\n\n（注：首模型不可用（Error code: 429 - rate limit exceeded），"
-                          "已自动降级到 m3）")
-        assert "m2 rate limit" not in result  # 最终成功；注记只提首模型原因，不得带第二模型的失败原因
-        inst = FakeLiteLLMSession.instances
-        assert [i.cfg["model"] for i in inst] == ["m1"] * 4 + ["m2"] * 4 + ["m3"]
-        assert sleeps == [2, 5, 10, 2, 5, 10]  # 两个模型各拿满 3 次退避：配额每模型独立
 
     def test_main_model_in_chain_degrades(self, monkeypatch, tmp_path):
         """用例 8：主模型入链（C-1）——主模型有视觉但失败 → 降级到 models[0]。"""
@@ -783,47 +726,11 @@ class TestFallbackBehavior:
         assert sleeps == []
 
 
-# ============== plan §5 用例 12：重试节奏（退避 / retry-after 覆盖） ==============
-
-class TestRetryTiming:
-    def test_backoff_delays_2_5_10(self, monkeypatch, tmp_path):
-        """用例 12：retryable 重试 3 次耗尽 → time.sleep 调用参数恰为 2/5/10（打桩，勿真等）。"""
-        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
-        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
-        png = _png_file(tmp_path)
-        sleeps = _stub_time(monkeypatch)
-        FakeLiteLLMSession.script.extend(
-            [_resp(stream_error=True, error_msg="HTTP 429 rate limited")] * 4)
-
-        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
-
-        assert sleeps == [2, 5, 10]
-        assert len(FakeLiteLLMSession.instances) == 4
-        assert "识图失败" in result  # 单模型：耗尽后单模型失败文案
-
-    def test_retry_after_overrides_delay(self, monkeypatch, tmp_path):
-        """用例 12：错误文本含「retry after 7」→ 该次等待覆盖为 7s（上限 15s），后续回退避序列。"""
-        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
-        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
-        png = _png_file(tmp_path)
-        sleeps = _stub_time(monkeypatch)
-        FakeLiteLLMSession.script.extend([
-            _resp(stream_error=True, error_msg="HTTP 429 rate limited, retry after 7 seconds"),
-            _resp(stream_error=True, error_msg="HTTP 429 rate limited"),
-            _resp(stream_error=True, error_msg="HTTP 429 rate limited"),
-            _resp(stream_error=True, error_msg="HTTP 429 rate limited"),
-        ])
-
-        niu_vision_server.analyze_image(str(png), "这张图里有什么")
-
-        assert sleeps == [7, 5, 10]
-
-
 # ============== plan §5 用例 13/14：stop 三条路径 ==============
 
 class TestStopPaths:
     def test_error_type_stopped_no_retry_no_degrade(self, monkeypatch, tmp_path):
-        """用例 13：重试间隙 stop（error_type='stopped'）→ 不重试、不降级，返回「识图已停止」。"""
+        """用例 13：调用返回时 stop（error_type='stopped'）→ 不降级，返回「识图已停止」。"""
         _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH",
                             _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
@@ -862,7 +769,7 @@ class TestStopPaths:
 
     def test_stop_during_call_single_model_variant(self, monkeypatch, tmp_path):
         """用例 14 变体：单模型链（存量默认形态）——锁「每次调用返回后」检查点
-        （若只查循环顶/重试前，会误报「无备用模型可降级」而非「识图已停止」）。"""
+        （若只查循环顶/调用后，会误报「无备用模型可降级」而非「识图已停止」）。"""
         self._setup_stop_during_call(monkeypatch)
         _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
@@ -881,13 +788,14 @@ class TestStopPaths:
 class TestChainBudget:
     def test_budget_interrupt_multi_model(self, monkeypatch, tmp_path):
         """用例 15：累计耗时超 600s → 停止降级，返回「预算中断」文案（M=2，含「尚有 K 个模型未尝试」），
-        非全链失败模板。monotonic 每次调用前进 130s：前两个模型各失败一次（累计 <600s），
-        第三个模型循环顶检查时累计 650s → 中断。"""
+        非全链失败模板。tick 模型（F-8 后每模型只剩循环顶一查）：start 1 tick + 每模型循环顶 1 tick；
+        monotonic 每次调用前进 200s：m1/m2 各失败一次（累计 200/400s <600s），
+        m3 循环顶检查时累计 600s → 中断。"""
         _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH",
                             _write_user_config(tmp_path, vision=_models_section("m1", "m2", "m3")))
         png = _png_file(tmp_path)
-        _stub_time(monkeypatch, step=130)
+        _stub_time(monkeypatch, step=200)
         FakeLiteLLMSession.script.extend([_fatal(f"boom-{i}") for i in (1, 2, 3)])
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
@@ -899,12 +807,14 @@ class TestChainBudget:
 
     def test_budget_interrupt_m1_special_wording(self, monkeypatch, tmp_path):
         """用例 21：链首即预算耗尽（未发生降级）→ M=1 特例文案，不含「已自动降级」。
-        monotonic 每次前进 250s：链首次调用失败后，第二个模型循环顶检查累计 750s → 中断。"""
+        tick 模型（F-8 后每模型只剩循环顶一查）：start 1 tick + 每模型循环顶 1 tick；
+        monotonic 每次前进 300s：m1 循环顶检查（累计 300s <600s）后调用失败，
+        m2 循环顶检查时累计 600s → 中断。"""
         _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH",
                             _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
         png = _png_file(tmp_path)
-        _stub_time(monkeypatch, step=250)
+        _stub_time(monkeypatch, step=300)
         FakeLiteLLMSession.script.extend([_fatal("boom-1"), _resp("答案A")])
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
@@ -912,27 +822,6 @@ class TestChainBudget:
         assert result == "识图失败：m1 不可用（boom-1），因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）"
         assert "已自动降级" not in result
         assert len(FakeLiteLLMSession.instances) == 1
-
-    def test_budget_hit_during_retry_wait_counts_pending_section(self, monkeypatch, tmp_path):
-        """用例 15b：首模型重试等待期命中预算——该节已发起过调用但 failures 尚未写入
-        （_budget_msg 的补计分支），文案必须含 m1 名与原因；若落到「理论不可达」兜底串
-        会丢失模型名与原因（回归时现测全绿）。monotonic 每次前进 250s：首次调用失败 →
-        第 2 次退避 sleep(2) 已记录 → 重试前检查累计 750s ≥ 600s → 中断。"""
-        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
-        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
-                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
-        png = _png_file(tmp_path)
-        sleeps = _stub_time(monkeypatch, step=250)
-        FakeLiteLLMSession.script.extend([_r429(), _resp("答案A")])
-
-        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
-
-        assert result == ("识图失败：m1 不可用（Error code: 429 - rate limit exceeded），"
-                          "因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）")
-        assert not result.startswith("识图失败：因累计耗时超")  # 非兜底串形态（兜底会丢模型名与原因）
-        assert len(FakeLiteLLMSession.instances) == 1  # 仅首次调用发起，第 2 次重试未发出
-        assert sleeps == [2]  # 已进入第 2 次退避等待期后命中预算检查
-
 
 # ============== plan §5 用例 19：文案格式锁（不含 ![） ==============
 
@@ -944,12 +833,10 @@ class TestWordingFormat:
         _stub_time(monkeypatch)  # step=0：禁用预算、记录 sleep
 
         scenarios = [
-            # (vision 段, script, expected 子串)——覆盖 D-E：降级成功 / 重试后恢复 / 单模型失败 /
+            # (vision 段, script, expected 子串)——覆盖 D-E：降级成功 / 单模型失败 /
             # 全链失败 / stopped；expected 子串使「走了哪条分支」本身成为断言（防任一场景
             # 提前短路也照样绿的空跑通过）
             (_models_section("m1", "m2"), [_fatal("boom-1"), _resp("答案A")], "已自动降级到 m2"),
-            (_models_section("m1"), [_resp(stream_error=True, error_msg="HTTP 429 rate limited"),
-                                     _resp("答案A")], "重试后恢复"),
             ({"model": "legacy"}, [_resp(stream_error=True, error_msg="mystery failure")],
              "无备用模型可降级"),
             (_models_section("m1", "m2"), [_fatal("boom-1"), _fatal("boom-2")],
@@ -965,8 +852,9 @@ class TestWordingFormat:
             assert expected in result, f"未走预期分支（期望含 {expected!r}）: {result!r}"
             assert "![" not in result, f"文案含图片标记: {result!r}"
 
-        # 预算中断文案（需 step>0 的时间 stub）
-        _stub_time(monkeypatch, step=130)
+        # 预算中断文案（需 step>0 的时间 stub；tick 模型同 test_budget_interrupt_multi_model：
+        # start 1 tick + 每模型循环顶 1 tick，step=200 → m3 循环顶检查时累计 600s 命中）
+        _stub_time(monkeypatch, step=200)
         FakeLiteLLMSession.instances.clear()
         FakeLiteLLMSession.script.extend([_fatal("boom-1"), _fatal("boom-2")])
         monkeypatch.setattr("niu_api.config.CONFIG_PATH",
@@ -976,30 +864,31 @@ class TestWordingFormat:
         assert "![" not in result
 
 
-# ============== plan 2026-09-12-vision-retry-policy-fix §5 用例 1-7：F-1 重试收窄 ==============
+# ============== plan 2026-09-12-vision-model-memory §5：裸异常通道分类回归锁（F-8：本层不再自做重试） ==============
 
 class Timeout(Exception):
-    """类名与 litellm 超时异常一致——D-D 通道 A 按 type(e).__name__ 查表（F-2：不重试）。"""
+    """类名与 litellm 超时异常一致——D-D 通道 A 按 type(e).__name__ 查表 → unknown（F-8：直接降级）。"""
 
 
 class APIConnectionError(Exception):
-    """类名与 litellm 连接异常一致——F-2：连接失败不重试。"""
+    """类名与 litellm 连接异常一致——D-D 通道 A 查表 → unknown（F-8：直接降级）。"""
 
 
 class RateLimitError(Exception):
-    """类名与 litellm 429 限流异常一致——F-1：服务端说忙 → 可重试。"""
+    """类名与 litellm 429 限流异常一致——D-D 通道 A 分类 retryable（F-8：本层不重试，重试交 SDK）。"""
 
 
 class ServiceUnavailableError(Exception):
-    """类名与 litellm 503 暂不可用异常一致——F-1：加载中/暂不可用 → 可重试（R-5 翻转锁）。"""
+    """类名与 litellm 503 暂不可用异常一致——D-D 通道 A 分类 retryable（R-5 翻转锁；F-8：本层不重试）。"""
 
 
 class BudgetExceededError(Exception):
-    """类名与 litellm 配额/欠费异常一致——fatal 表，不重试（回归锁）。"""
+    """类名与 litellm 配额/欠费异常一致——fatal 表（回归锁）。"""
 
 
 class TestRetryPolicyF1:
-    """2026-09-12 plan §5 用例 1-7：只有服务端明确说忙/暂不可用才重试，其余一律直接降级（F-1/F-2）。"""
+    """裸异常通道（D-D 通道 A）分类回归锁——F-8（2026-09-12-vision-model-memory）后本层不再自做重试：
+    任何错误每模型恰一次调用、sleeps == []，重试次数交 SDK（litellm_kwargs max_retries=3）。"""
 
     def test_timeout_no_retry_direct_degrade(self, monkeypatch, tmp_path):
         """用例 1（用户本次场景）：Timeout 裸异常 → 不重试（调用计数=1）→ 直接降级。"""
@@ -1031,50 +920,50 @@ class TestRetryPolicyF1:
         assert len(FakeLiteLLMSession.instances) == 2
         assert sleeps == []
 
-    def test_rate_limit_error_retries_3_times(self, monkeypatch, tmp_path):
-        """用例 3：RateLimitError（429 忙）→ 重试 3 次（计数=4），退避 [2,5,10]。"""
+    def test_rate_limit_error_single_call_no_self_retry(self, monkeypatch, tmp_path):
+        """用例 3（F-8 改写）：RateLimitError（429 忙）裸异常 → 分类 retryable 但本层不重试——
+        每模型恰一次调用、无退避 sleep，单模型失败文案（重试交 SDK：max_retries=3）。"""
         _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
         png = _png_file(tmp_path)
         sleeps = _stub_time(monkeypatch)
-        FakeLiteLLMSession.script.extend([RateLimitError("Error code: 429 - rate limit exceeded")] * 4)
+        FakeLiteLLMSession.script.append(RateLimitError("Error code: 429 - rate limit exceeded"))
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
-        assert len(FakeLiteLLMSession.instances) == 4
-        assert sleeps == [2, 5, 10]
-        assert "识图失败" in result  # 单模型：耗尽后单模型失败文案
+        assert len(FakeLiteLLMSession.instances) == 1  # F-8：每模型一次（无本层重试）
+        assert sleeps == []
+        assert "识图失败" in result  # 单模型：单模型失败文案
 
-    def test_service_unavailable_error_retries_3_times(self, monkeypatch, tmp_path):
-        """用例 4：ServiceUnavailableError（503 加载中）→ 重试 3 次（计数=4）——R-5 翻转锁。"""
+    def test_service_unavailable_error_single_call_no_self_retry(self, monkeypatch, tmp_path):
+        """用例 4（F-8 改写）：ServiceUnavailableError（503 加载中）裸异常 → 分类 retryable
+        （R-5 翻转锁）但本层不重试——每模型恰一次调用、无退避 sleep，单模型失败文案。"""
         _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
         png = _png_file(tmp_path)
         sleeps = _stub_time(monkeypatch)
-        FakeLiteLLMSession.script.extend(
-            [ServiceUnavailableError("503 service unavailable: loading model")] * 4)
+        FakeLiteLLMSession.script.append(ServiceUnavailableError("503 service unavailable: loading model"))
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
-        assert len(FakeLiteLLMSession.instances) == 4
-        assert sleeps == [2, 5, 10]
+        assert len(FakeLiteLLMSession.instances) == 1  # F-8：每模型一次（无本层重试）
+        assert sleeps == []
         assert "识图失败" in result
 
-    def test_unclassified_with_retry_after_text_retries(self, monkeypatch, tmp_path):
-        """用例 5：未归类异常但文本含 retry after 7 → 文本兜底 retryable，首次等待 = 7s。"""
+    def test_unclassified_with_retry_after_text_single_call(self, monkeypatch, tmp_path):
+        """用例 5（F-8 改写）：未归类异常但文本含「retry after N」→ 分类 retryable 但本层不重试——
+        每模型恰一次调用、无退避 sleep（旧断言「首次等待 = 7s」随 F-8 删除）。"""
         _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
         monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
         png = _png_file(tmp_path)
         sleeps = _stub_time(monkeypatch)
-        # 首错带 retry after 7（覆盖首次等待）；后续错误只含忙信号无退避秒数 → 回退避序列
-        FakeLiteLLMSession.script.extend(
-            [MysteryWeirdError("server busy, retry after 7 seconds")]
-            + [MysteryWeirdError("HTTP 429 rate limited")] * 3)
+        FakeLiteLLMSession.script.append(MysteryWeirdError("server busy, retry after 7 seconds"))
 
-        niu_vision_server.analyze_image(str(png), "这张图里有什么")
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
-        assert len(FakeLiteLLMSession.instances) == 4
-        assert sleeps == [7, 5, 10]  # 首次等待被 retry after 覆盖为 7s
+        assert len(FakeLiteLLMSession.instances) == 1  # F-8：每模型一次（无本层重试）
+        assert sleeps == []
+        assert "识图失败" in result  # 单模型：单模型失败文案
 
     def test_unclassified_without_busy_text_no_retry(self, monkeypatch, tmp_path):
         """用例 6：未归类异常且文本无忙信号 → 不重试，直接降级。"""
@@ -1106,8 +995,219 @@ class TestRetryPolicyF1:
 
         FakeLiteLLMSession.script.clear()
         FakeLiteLLMSession.instances.clear()
+        # 两段是独立回归锁：第一段成功后已写 F-5 记忆（m2），清掉再跑第二段，
+        # 否则第二段命中记忆从 m2 起轮转，「m1 仍只调一次」断言会被破坏
+        niu_vision_server._VISION_LAST_SUCCESS.clear()
         FakeLiteLLMSession.script.extend([BudgetExceededError("402 billing: insufficient balance"), _resp("答案A")])
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
         assert "已自动降级到 m2" in result
         assert len(FakeLiteLLMSession.instances) == 2  # m1 仍只调一次（无重试）
         assert sleeps == []
+
+
+# ============== plan 2026-09-12-vision-model-memory §5 测试点 1-3：F-8/F-9 参数锁 ==============
+
+class TestNoSelfRetryAndParams:
+    """F-8（每模型恰一次调用、无本层重试）+ F-9（litellm_kwargs 恒含 max_retries=3 与全分量 httpx.Timeout）。"""
+
+    def test_retryable_kind_single_call_no_sleep(self, monkeypatch, tmp_path):
+        """测试点 1：模型失败（retryable 类）→ 该模型恰被调用一次、sleeps == []。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        FakeLiteLLMSession.script.extend([
+            _resp(stream_error=True, error_msg="HTTP 429 rate limited"),  # 文本兜底 → retryable
+            _resp("答案A"),
+        ])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert [i.cfg["model"] for i in FakeLiteLLMSession.instances] == ["m1", "m2"]
+        assert sleeps == []  # F-8：无退避 sleep（重试交 SDK）
+        assert "已自动降级到 m2" in result
+
+    def test_litellm_kwargs_carries_max_retries_and_timeout(self, monkeypatch, tmp_path):
+        """测试点 2：litellm_kwargs 恒含 max_retries=3 与 httpx.Timeout(connect=5/read=300/write=30/pool=5)。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1")))
+        png = _png_file(tmp_path)
+        FakeLiteLLMSession.response = _resp("OK")
+
+        niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        kwargs = FakeLiteLLMSession.instances[0].cfg["litellm_kwargs"]
+        assert kwargs["max_retries"] == 3
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == (5.0, 300.0, 30.0, 5.0)
+
+    def test_user_max_retries_overridden(self, monkeypatch, tmp_path):
+        """测试点 3：用户自带 litellm_kwargs.max_retries=5 → 被覆盖为 3（F-8 单元注入）。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(
+            tmp_path, vision={"models": [{"model": "m1", "litellm_kwargs": {"max_retries": 5333}}]}))
+        png = _png_file(tmp_path)
+        FakeLiteLLMSession.response = _resp("OK")
+
+        niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert FakeLiteLLMSession.instances[0].cfg["litellm_kwargs"]["max_retries"] == 3
+
+
+# ============== plan 2026-09-12-vision-model-memory §5 测试点 4-13：F-5 记忆行为锁 ==============
+
+class TestVisionModelMemory:
+    """F-5（多模型链记住 30 分钟内成功过的模型作本轮起点）+ stop/预算不清记忆边界。"""
+
+    def _preset_memory(self, model, ts=None):
+        """预置 F-5 记忆（ts 缺省取代码所读时钟的当前值）。"""
+        if ts is None:
+            ts = niu_vision_server.time.monotonic()
+        niu_vision_server._VISION_LAST_SUCCESS["model"] = model
+        niu_vision_server._VISION_LAST_SUCCESS["ts"] = ts
+
+    def test_memory_hit_starts_at_m2(self, monkeypatch, tmp_path):
+        """测试点 5：记忆命中 → 首调直达 m2；成功后 ts 刷新。
+        不用 _stub_time（计划 §5 点名）：TTL - elapsed 必须显著为正，step=0 的冻结时钟会让它 ≈0。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        self._preset_memory("m2")
+        ts_before = niu_vision_server._VISION_LAST_SUCCESS["ts"]
+        FakeLiteLLMSession.script.append(_resp("答案B"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert FakeLiteLLMSession.instances[0].cfg["model"] == "m2"  # 起点是 m2，非链首
+        assert len(FakeLiteLLMSession.instances) == 1
+        assert result == "答案B"  # 起点成功 → 零注记（正向断言）
+        assert niu_vision_server._VISION_LAST_SUCCESS["ts"] > ts_before  # 成功后 ts 刷新
+
+    def test_memory_hit_then_wrap_around(self, monkeypatch, tmp_path):
+        """测试点 6+8：记忆命中 m2；m2 失败、m3 失败、再折回链首 m1 成功 → 顺序 [m2,m3,m1]，
+        注记「首模型不可用（起点原因）」，记忆更新为 m1。
+        （用 3 模型链：若实现「起点失败就直接跳回链首」而漏掉中间模型，本测必红。）"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2", "m3")))
+        png = _png_file(tmp_path)
+        self._preset_memory("m2")
+        FakeLiteLLMSession.script.extend([_fatal("boom-m2"), _fatal("boom-m3"), _resp("答案A")])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert [i.cfg["model"] for i in FakeLiteLLMSession.instances] == ["m2", "m3", "m1"]
+        assert result == "答案A\n\n（注：首模型不可用（boom-m2），已自动降级到 m1）"
+        assert niu_vision_server._VISION_LAST_SUCCESS["model"] == "m1"  # 记忆更新为新成功模型
+
+    def test_memory_start_success_zero_note(self, monkeypatch, tmp_path):
+        """测试点 7（正向断言必须实做）：记忆起点一次成功 → result == 答案原文、零注记。
+        防 pos(=idx) 在失败表为空时 IndexError——若 analyze_image 的 except 吞成
+        「识图失败：list index out of range」，本测必红。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        self._preset_memory("m2")
+        FakeLiteLLMSession.script.append(_resp("答案B"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert result == "答案B"
+        assert "首模型不可用" not in result
+        assert "注：" not in result
+
+    def test_memory_expired_starts_from_head(self, monkeypatch, tmp_path):
+        """测试点 9：记忆 ts 旧 31 分钟（取自代码所读时钟）→ 超 TTL，从链首重新开始。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        _stub_time(monkeypatch, step=0)  # 冻结时钟：ts 与代码读同一口钟
+        self._preset_memory("m2", ts=niu_vision_server.time.monotonic() - 31 * 60)
+        FakeLiteLLMSession.script.append(_resp("答案A"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert FakeLiteLLMSession.instances[0].cfg["model"] == "m1"  # 过期 → 链首
+        assert len(FakeLiteLLMSession.instances) == 1
+        assert result == "答案A"
+
+    def test_all_failed_clears_memory(self, monkeypatch, tmp_path):
+        """测试点 10：记忆命中但全链失败 → 记忆清空；第二次调用从链首开始。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        self._preset_memory("m2")
+        FakeLiteLLMSession.script.extend([_fatal("boom-m2"), _fatal("boom-m1")])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+        assert "已自动降级尝试 2 个模型均失败" in result
+        assert niu_vision_server._VISION_LAST_SUCCESS == {}  # 全失败清记忆
+
+        FakeLiteLLMSession.instances.clear()
+        FakeLiteLLMSession.script.clear()
+        FakeLiteLLMSession.script.append(_resp("答案A"))
+        result2 = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+        assert FakeLiteLLMSession.instances[0].cfg["model"] == "m1"  # 记忆已清 → 从链首
+        assert result2 == "答案A"
+
+    def test_single_model_no_memory_write_or_read(self, monkeypatch, tmp_path):
+        """测试点 11：单模型链 → 记忆不写不读（与工程 len(chain)>1 守卫一致）。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)  # 无 vision 段 → 单模型链 [main-model]
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
+        png = _png_file(tmp_path)
+        self._preset_memory("ghost")
+        mem_before = dict(niu_vision_server._VISION_LAST_SUCCESS)
+
+        FakeLiteLLMSession.response = _resp("答案A")
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+        assert result == "答案A"
+        assert niu_vision_server._VISION_LAST_SUCCESS == mem_before  # 成功后不写
+
+        FakeLiteLLMSession.response = _resp(stream_error=True, error_msg="mystery failure")
+        result2 = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+        assert "无备用模型可降级" in result2  # 单模型失败文案
+        assert niu_vision_server._VISION_LAST_SUCCESS == mem_before  # 全失败也不清（单模型不碰记忆）
+
+    def test_stop_does_not_clear_memory(self, monkeypatch, tmp_path):
+        """测试点 12：stop（error_type='stopped'）→ 返回「识图已停止」，不清记忆。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        _stub_time(monkeypatch, step=0)
+        self._preset_memory("m2")
+        FakeLiteLLMSession.script.append(
+            _resp(stream_error=True, error_type="stopped", error_msg="stop requested"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert result == "识图已停止"
+        assert len(FakeLiteLLMSession.instances) == 1
+        assert niu_vision_server._VISION_LAST_SUCCESS["model"] == "m2"  # 记忆未被清
+
+    def test_budget_interrupt_keeps_memory(self, monkeypatch, tmp_path):
+        """测试点 13：预算中断（预置记忆）→ 返回预算文案，不清记忆（边界 5）。
+        tick 模型：start 1 + 记忆读取 1 + 每模型循环顶 1；step=200 → m2 失败后（累计 400s <600s），
+        m1 循环顶检查累计 600s → 中断。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        _stub_time(monkeypatch, step=200)
+        self._preset_memory("m2")  # ts = 200（stub 时钟第一 tick）
+        mem_before = dict(niu_vision_server._VISION_LAST_SUCCESS)
+        FakeLiteLLMSession.script.extend([_fatal("boom-m2"), _resp("答案A")])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert result == ("识图失败：m2 不可用（boom-m2），"
+                          "因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）")
+        assert len(FakeLiteLLMSession.instances) == 1
+        assert niu_vision_server._VISION_LAST_SUCCESS == mem_before  # 预算中断不清记忆
