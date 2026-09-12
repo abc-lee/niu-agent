@@ -103,6 +103,9 @@ impl FrameGeometry {
 		y: f64,
 		current_window: Option<&DesktopWindow>,
 	) -> CoreResult<(f64, f64)> {
+		// 有意分歧（v0.5）：上游对 Identity 帧也做范围检查（无条件拒 x<0），但 Identity 帧代表
+		// 全局逻辑桌面坐标，多显示器位于主屏左侧/上方时该坐标为负且合法 → 此处对 Identity 帧豁免
+		// 范围检查（保留 is_finite）。影响面仅 Identity 帧；回退到上游语义会误拒合法的 AX 点击坐标。
 		if !x.is_finite()
 			|| !y.is_finite()
 			|| (self.kind != FrameKind::Identity
