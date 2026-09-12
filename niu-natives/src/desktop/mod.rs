@@ -1,3 +1,4 @@
+mod ax;
 mod backend;
 mod error;
 mod frame;
@@ -778,7 +779,7 @@ mod capture_tests {
 
 	use super::*;
 	use crate::desktop::{
-		backend::Backend,
+		backend::{AxBackend, Backend},
 		error::ErrorCode,
 		keys::KeyName,
 	};
@@ -882,6 +883,10 @@ mod capture_tests {
 
 		fn key_chord(&mut self, _: &Target, _: &[KeyName], _: DeliveryMode) -> CoreResult<()> {
 			unreachable!("key_chord not exercised")
+		}
+
+		fn ax(&mut self) -> Option<&mut dyn AxBackend> {
+			None
 		}
 	}
 

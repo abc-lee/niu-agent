@@ -28,6 +28,7 @@ struct FrameRegion {
 enum FrameKind {
 	Desktop,
 	Window { captured_width: u32, captured_height: u32 },
+	Identity,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +88,15 @@ impl FrameGeometry {
 		}
 	}
 
+	pub(crate) const fn identity_global() -> Self {
+		Self {
+			width:   u32::MAX,
+			height:  u32::MAX,
+			regions: Vec::new(),
+			kind:    FrameKind::Identity,
+		}
+	}
+
 	pub(crate) fn map_point(
 		&self,
 		x: f64,
@@ -95,16 +105,17 @@ impl FrameGeometry {
 	) -> CoreResult<(f64, f64)> {
 		if !x.is_finite()
 			|| !y.is_finite()
-			|| x < 0.0
-			|| y < 0.0
-			|| x >= f64::from(self.width)
-			|| y >= f64::from(self.height)
+			|| (self.kind != FrameKind::Identity
+				&& (x < 0.0 || y < 0.0 || x >= f64::from(self.width) || y >= f64::from(self.height)))
 		{
 			return Err(DesktopError::invalid_coordinate_frame(format!(
 				"coordinate ({x}, {y}) is outside the last capture frame ({}x{} px); pointer/hit-test \
 				 coordinates are pixels in the most recent screenshot of this target",
 				self.width, self.height
 			)));
+		}
+		if self.kind == FrameKind::Identity {
+			return Ok((x, y));
 		}
 		let region = self
 			.regions
@@ -137,6 +148,7 @@ impl FrameGeometry {
 				Ok((f64::from(current.x) + local_x, f64::from(current.y) + local_y))
 			},
 			FrameKind::Desktop => Ok((region.x + local_x, region.y + local_y)),
+			FrameKind::Identity => Ok((x, y)),
 		}
 	}
 
@@ -198,6 +210,12 @@ impl FrameGeometry {
 				FrameKind::Window { captured_width, captured_height } => {
 					GeometryKindWire::Window { captured_width, captured_height }
 				},
+				// Identity frames are Rust-side sentinels for AX element clicks
+				// (coordinates are already global desktop coordinates); they are
+				// passed straight to the backend and never cross the Python wire.
+				// `GeometryKindWire` has no identity variant, so this arm is
+				// unreachable by construction.
+				FrameKind::Identity => unreachable!("identity frames never cross the Python wire"),
 			},
 			width:   self.width,
 			height:  self.height,
@@ -516,6 +534,19 @@ mod tests {
 	fn moved_window_is_reanchored() {
 		let f = FrameGeometry::for_window(&window(10, 20), 800, 600);
 		assert_eq!(f.map_point(400.0, 300.0, Some(&window(110, 220))).unwrap(), (310.0, 370.0));
+	}
+	/// Identity frame: coordinates are already global logical desktop
+	/// coordinates (AX element bounds), so map_point passes them through
+	/// verbatim — no region lookup (works with empty regions) and negative
+	/// multi-display coordinates stay valid.
+	#[test]
+	fn identity_global_maps_coordinates_verbatim() {
+		let f = FrameGeometry::identity_global();
+		assert_eq!((f.width, f.height), (u32::MAX, u32::MAX));
+		assert!(f.regions.is_empty());
+		assert_eq!(f.map_point(-100.0, 42.5, None).unwrap(), (-100.0, 42.5));
+		assert_eq!(f.map_point(0.0, 0.0, None).unwrap(), (0.0, 0.0));
+		assert_eq!(f.map_point(3_800.0, 2_160.0, None).unwrap(), (3_800.0, 2_160.0));
 	}
 	#[test]
 	fn cap_scaling_adjusts_geometry() {

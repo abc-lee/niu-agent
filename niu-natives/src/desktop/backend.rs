@@ -1,6 +1,7 @@
 use image::RgbaImage;
 
 use super::{
+	ax::{AxHandle, AxProps},
 	error::{CoreResult, DesktopError},
 	frame::FrameGeometry,
 	keys::KeyName,
@@ -97,6 +98,20 @@ pub trait Backend: Send {
 	fn type_text(&mut self, target: &Target, text: &str, mode: DeliveryMode) -> CoreResult<()>;
 	fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode)
 	-> CoreResult<()>;
+	fn ax(&mut self) -> Option<&mut dyn AxBackend>;
+}
+
+pub trait AxBackend {
+	fn window_root(&mut self, win: &DesktopWindow) -> CoreResult<AxHandle>;
+	fn props(&mut self, h: &AxHandle) -> CoreResult<AxProps>;
+	fn children(&mut self, h: &AxHandle) -> CoreResult<Vec<AxHandle>>;
+	fn parent(&mut self, h: &AxHandle) -> CoreResult<Option<AxHandle>>;
+	fn perform(&mut self, h: &AxHandle, action: &str) -> CoreResult<()>;
+	fn set_value(&mut self, h: &AxHandle, value: &str) -> CoreResult<()>;
+	fn focus(&mut self, h: &AxHandle) -> CoreResult<()>;
+	fn element_at(&mut self, x: f64, y: f64) -> CoreResult<Option<AxHandle>>;
+	fn focused_element(&mut self) -> CoreResult<Option<AxHandle>>;
+	fn attributes(&mut self, h: &AxHandle) -> CoreResult<Vec<(String, String)>>;
 }
 
 #[cfg(test)]

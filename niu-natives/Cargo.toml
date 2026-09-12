@@ -55,6 +55,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# UIA 语义树（desktop/ax.rs 的 Uia 变体）；与上游 pi-natives 同 pin
+uiautomation = "=0.25.0"
 
 [build-dependencies]
 # 与 pyo3 同版配套：macOS 扩展模块链接参数（-undefined dynamic_lookup）
