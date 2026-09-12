@@ -13,6 +13,8 @@ pub enum ErrorCode {
 	InvalidTarget,
 	InvalidKey,
 	InvalidCoordinateFrame,
+	StaleRef,
+	AxUnsupported,
 	// Kept for the macOS ax_lite focus subset (window_root/perform/prepare_foreground_input).
 	AxFailed,
 	Timeout,
@@ -31,6 +33,8 @@ impl ErrorCode {
 			Self::InvalidTarget => "InvalidTarget",
 			Self::InvalidKey => "InvalidKey",
 			Self::InvalidCoordinateFrame => "InvalidCoordinateFrame",
+			Self::StaleRef => "StaleRef",
+			Self::AxUnsupported => "AxUnsupported",
 			Self::AxFailed => "AxFailed",
 			Self::Timeout => "Timeout",
 			Self::Closed => "Closed",
@@ -80,6 +84,14 @@ impl DesktopError {
 
 	pub(crate) fn invalid_coordinate_frame(message: impl Into<String>) -> Self {
 		Self::new(ErrorCode::InvalidCoordinateFrame, message)
+	}
+
+	pub(crate) fn stale_ref(message: impl Into<String>) -> Self {
+		Self::new(ErrorCode::StaleRef, message)
+	}
+
+	pub(crate) fn ax_unsupported() -> Self {
+		Self::new(ErrorCode::AxUnsupported, "accessibility is unavailable on this backend")
 	}
 
 	pub(crate) fn ax_failed(message: impl Into<String>) -> Self {
