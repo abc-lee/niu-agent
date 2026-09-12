@@ -1350,8 +1350,6 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "③ 对元素动作 ui(ref=\"e12\", action=\"press\"|\"set_value\"|\"focus\"|\"click\", value=?)——set_value 需 value；"
             "④ 焦点元素 ui(action=\"focused_element\")（无 target、无 ref）→ 当前焦点元素。"
             "target 仅 ①/② 必填（**窗口 ID**，先用 list_targets 取）；③/④ 必不传 target。"
-            "⚠️ target **不接受 \"desktop\"**：无法可靠判断「当前窗口」该读哪个（macOS 的 focused 是进程级，"
-            "同一 App 的多个窗口无法区分，自动挑会误选菜单栏小图标窗）；传它会返回候选窗口清单并指引用窗口 id。"
             "读结构先于动作：先用 ①/② 拿到 ref，再用 ③ 操作；ref 在结构变化后过期（StaleRef 时重新读取）。"
             "开关/勾选框（checkbox/switch）用 press；文本输入框用 set_value；移动键盘焦点用 focus；"
             "click = AX 元素点击（用于没有可用 AX action 的元素），优先 press。"
@@ -1364,10 +1362,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": ("操作对象（用法①/② 必填；③/④ 禁传）：**窗口 ID**（先调 list_targets 取）。"
-                                    "不接受 \"desktop\"——无法可靠判断「当前窗口」该读哪个"
-                                    "（macOS 的 focused 是进程级，同一 App 多窗口无法区分）；"
-                                    "传它会返回候选窗口清单并指引用窗口 ID。"),
+                    "description": ("操作对象（用法①/② 必填；③/④ 禁传）：**窗口 ID**——先调 list_targets 取。"),
                 },
                 "find": {
                     "type": "object",
@@ -1419,8 +1414,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "时效纪律：屏幕内容可能变化时（滚动/动画/弹层/页面跳转），先重新 screenshot 再给坐标"
             "——已有帧不会因内容变化而失效，旧坐标会静默点错位置。"
             "坐标空间与 ui 不可混用：ui 找元素返回的 bounds 是全局逻辑坐标，不要喂给 input。"
-            "target=\"desktop\" = 整屏帧（坐标是整张截图上的像素）；窗口 ID = 该窗口帧"
-            "（ui 不接受 desktop，读界面须传窗口 ID）。"
+            "target=\"desktop\" = 整屏帧（坐标是整张截图上的像素）；窗口 ID = 该窗口帧。"
             "delivery 默认 background（不抢用户焦点/鼠标/窗口顺序）；做不到时按错误提示改 foreground。"
             "type/key 无坐标：投递到目标窗口，或 desktop 目标下的当前键盘焦点——"
             "desktop 目标下无焦点校验，先确认目标在前台（或用 ui 的 focus 把焦点放对）。"
@@ -1433,8 +1427,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": ('操作对象：窗口 ID（来自 list_targets）或 "desktop"（整屏帧；'
-                                    'ui 不接受 desktop，读界面须传窗口 ID）。'),
+                    "description": '操作对象：窗口 ID（来自 list_targets）或 "desktop"（整屏帧）。',
                 },
                 "action": {
                     "type": "string",
