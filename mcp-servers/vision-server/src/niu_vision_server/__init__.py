@@ -355,7 +355,7 @@ def list_targets() -> str:
 # --- 错误分类表（D-D；语义与 litellm_adapter.py:87-107 对齐，但自带字符串元组——
 # 不 import 适配层私有常量，避免依赖私有 API；R-8）---
 # F-8（2026-09-12 用户定案）：本层不再重试任何错误——重试由底层 SDK 执行。
-# 以下分类仅用于错误文案与 stopped 判定（retryable/fatal/unknown 不再驱动控制流）。
+# 以下分类结果仅供 stopped 判定消费（retryable/fatal/unknown 不再驱动任何控制流，也不进文案）。
 _VISION_RETRYABLE_EXC = ("RateLimitError", "ServiceUnavailableError")
 _VISION_FATAL_EXC = ("AuthenticationError", "PermissionDeniedError",
                      "BudgetExceededError", "ContentPolicyViolationError")
@@ -638,7 +638,7 @@ def _call_vision_model(cfg: dict, data_uri: str, question: str):
     content = mock_response.content or ""
     if not content.strip():
         # 空回答细分（plan R2-B P2 / §1.6 实验 A）：思考型视觉模型 + 低 max_tokens →
-        # 推理链耗尽预算，finish_reason=length——与「模型失败」不得混同；归 unknown 不重试（R-5）
+        # 推理链耗尽预算，finish_reason=length——与「模型失败」不得混同；归 unknown，由 SDK 决定重试，本层不额外处理
         if getattr(mock_response, "finish_reason", None) == "length":
             return None, {"kind": "unknown", "type_name": "", "msg": "",
                           "reason": ("输出预算耗尽（思考型模型的推理链占满了 max_tokens，正文无输出）。"
