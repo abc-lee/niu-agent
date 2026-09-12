@@ -2,7 +2,7 @@
 vision-server — 屏幕截图 + 识图 MCP 服务器（可视化功能 plan v0.5.2 §4-V5 /
 2026-09-11-vision-channel-refactor.md）
 
-三工具（plan 2026-09-11-vision-channel-refactor.md §3）：
+四工具（plan 2026-09-11-vision-channel-refactor.md §3 三工具 + Phase 4 桌面语义操作 spec §3.3 的 ui）：
 - list_targets：无参，列出当前可截取目标（显示器 + 窗口清单，含前台应用行与
   48 个窗口截断警告）——截图前先调用它拿窗口编号。
 - screenshot：niu_natives DesktopSession capture（desktop/window_id/region
@@ -12,6 +12,9 @@ vision-server — 屏幕截图 + 识图 MCP 服务器（可视化功能 plan v0.
 - analyze_image(image_path, question)：把指定图片 + 提示词送进视觉模型，
   返回**文字答案**。模型内部自选（主模型优先：主模型有视觉 → 用主模型；
   否则用 vision_llm 段；皆无 → 明确错误含配置指引）。不依赖 niu_natives。
+- ui(target/find/ref/action/value/depth/limit)：语义桌面操作（AX/UIA），四用法恰好一种——
+  ① 读结构（target）② 找元素（target+find）③ 对元素动作（ref+action）
+  ④ 焦点元素（action="focused_element"）。不依赖截图与坐标；失败一律中文错误串。
 
 D-D：screenshot/analyze_image 是基础工具与视觉能力无关——visibility: static
 无条件直挂主 Agent（yaml 显式 static，register_server 默认 hidden）；子 Agent
@@ -793,9 +796,173 @@ def analyze_image(image_path: str, question: str) -> str:
         return f"识图失败：{e}"
 
 
+# ============== ui（Phase 4 桌面语义操作，spec §3.3） ==============
+# 四用法恰好一种（判别表 spec §3.3），其余组合一律中文错误；Rust 抛
+# RuntimeError("{code}: {message}") → 按前缀识别转中文文案，异常不穿透 MCP 层。
+
+_UI_USAGE_ERROR = ('ui 需要恰好一种用法：① target ② target+find ③ ref+action '
+                   '④ action="focused_element"。')
+_UI_PERMISSION_MSG = "需要系统权限：请在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 Niu，然后重启程序。"
+_UI_STALE_REF_MSG = "该元素引用已过期（结构已变化），请重新调用 ui 读取结构后再操作。"
+_UI_NO_FOCUS_MSG = "当前没有焦点元素（焦点可能在桌面，或该系统元素未暴露）。"
+_UI_UNSUPPORTED_MSG = ("目标不支持无障碍（AX/UIA），无法读取语义结构或对元素执行动作。"
+                       "请改用 screenshot + input 走像素操作。")
+
+
+def _ui_ax_error(e) -> str:
+    """Rust RuntimeError("{code}: {message}") → 中文文案（保留原始 code 便于排查）。"""
+    msg = str(e)
+    if msg.startswith("PermissionDenied"):
+        return _UI_PERMISSION_MSG
+    if msg.startswith("StaleRef"):
+        return _UI_STALE_REF_MSG
+    if msg.startswith("AxUnsupported"):
+        return _UI_UNSUPPORTED_MSG
+    return f"ui 操作失败：{msg}"
+
+
+def _format_ax_node(node) -> str:
+    """单个 AxNode 格式化为一行文本：role "title" [ref=eN] enabled/focused bounds。
+
+    bounds 是**全局逻辑坐标**（非截图帧像素）——必须标注，防被直接喂给 input
+    （spec §3.4：两套坐标空间严禁混用）。
+    """
+    parts = [str(getattr(node, "role", "?"))]
+    title = getattr(node, "title", None)
+    if title:
+        parts.append(f'"{title}"')
+    ref = getattr(node, "ref", "")
+    if ref:
+        parts.append(f"[ref={ref}]")
+    flags = ["enabled" if getattr(node, "enabled", True) else "disabled"]
+    if getattr(node, "focused", False):
+        flags.append("focused")
+    parts.extend(flags)
+    x, y, w, h = (getattr(node, k, None) for k in ("x", "y", "width", "height"))
+    if None not in (x, y, w, h):
+        parts.append(f"bounds=({x:g}, {y:g}, {w:g}x{h:g}) 全局逻辑坐标")
+    actions = getattr(node, "actions", None)
+    if actions:
+        parts.append("actions=" + ",".join(actions))
+    return " ".join(parts)
+
+
+def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, limit=None) -> str:
+    """语义桌面操作（AX/UIA）：读结构 / 找元素 / 对元素动作 / 查焦点元素。
+
+    四用法判别（spec §3.3 表，恰好一种；其余组合 → 中文错误）：
+    - ① 读结构：target（±depth/limit）→ ax_snapshot
+    - ② 找元素：target + find → ax_query
+    - ③ 对元素动作：ref + action(press/set_value/focus/click) →
+      ax_perform / ax_set_value / ax_focus / ax_click
+    - ④ 焦点元素：action="focused_element"（无 target、无 ref）→ ax_focused
+
+    参数名映射（spec #27）：depth→max_depth；limit→max_nodes（快照）/ limit（查询）。
+    全部失败转中文串，不抛异常。
+    """
+    if action == "focused_element":
+        if target is not None or ref is not None or find is not None:
+            return _UI_USAGE_ERROR
+        usage = 4
+    elif ref is not None and action in ("press", "set_value", "focus", "click"):
+        if target is not None or find is not None:
+            return _UI_USAGE_ERROR
+        usage = 3
+    elif target is not None:
+        usage = 2 if find is not None else 1
+    else:
+        # ui() / ui(depth=2) / ref 无 action / 未知 action / find 无 target …
+        return _UI_USAGE_ERROR
+
+    session = _get_session()
+    if session is None:
+        return "ui 能力不可用（niu_natives 未安装/平台不支持）"
+
+    try:
+        if usage == 1:
+            # 读结构：ax_snapshot(target, {max_depth, max_nodes})
+            if ref is not None or action is not None or value is not None:
+                return _UI_USAGE_ERROR
+            opts = {}
+            if depth is not None:
+                if not isinstance(depth, int) or depth <= 0:
+                    return "错误：depth 须为正整数（读树深度，默认 24）"
+                opts["max_depth"] = depth
+            if limit is not None:
+                if not isinstance(limit, int) or limit <= 0:
+                    return "错误：limit 须为正整数（节点数上限，默认 800，最大 5000）"
+                if limit > 5000:
+                    return "错误：limit 不能超过 5000（注册表上限），请调小"
+                opts["max_nodes"] = limit
+            snap = session.ax_snapshot(str(target), opts or None)
+            head = f"节点数: {snap.node_count}"
+            if snap.truncated:
+                head += "（已截断——超出 depth/limit，可加大后重读）"
+            return head + "\n" + snap.text
+
+        if usage == 2:
+            # 找元素：ax_query(target, {role, title, value, limit})
+            if (ref is not None or action is not None or value is not None
+                    or depth is not None):
+                return _UI_USAGE_ERROR
+            if not isinstance(find, dict):
+                return "错误：find 须为 dict（可用键：role/title/value/limit）"
+            query = {}
+            for key in ("role", "title", "value"):
+                v = find.get(key)
+                if v is not None:
+                    query[key] = str(v)
+            q_limit = find.get("limit")
+            if q_limit is None:
+                q_limit = limit  # 顶层 limit 同为用法②的命中数上限（spec #27）
+            if q_limit is not None:
+                if not isinstance(q_limit, int) or q_limit <= 0 or q_limit > 5000:
+                    return "错误：find.limit 须为正整数（≤5000）"
+                query["limit"] = q_limit
+            nodes = session.ax_query(str(target), query or None)
+            if not nodes:
+                return f"未找到匹配的元素（target={target!r}, find={find}）。"
+            lines = [f"命中 {len(nodes)} 个："]
+            for n in nodes:
+                lines.append("- " + _format_ax_node(n))
+            lines.append("注：bounds 是全局逻辑坐标，不是截图帧像素，不可直接喂给 input；"
+                         "ref 在结构变化后过期（操作前请重读）。")
+            return "\n".join(lines)
+
+        if usage == 3:
+            # 对元素动作（spec Q4：click = AX 元素点击，不依赖截图帧）
+            if find is not None or depth is not None or limit is not None:
+                return _UI_USAGE_ERROR
+            if action != "set_value" and value is not None:
+                return "错误：value 仅 set_value 可用（press/focus/click 不接受 value）。"
+            if action == "set_value":
+                if value is None:
+                    return "错误：set_value 需要 value 参数（要写入输入框的文本）"
+                session.ax_set_value(ref, str(value))
+            elif action == "press":
+                session.ax_perform(ref, "press")
+            elif action == "focus":
+                session.ax_focus(ref)
+            else:  # click
+                session.ax_click(ref)
+            return f"已对元素 {ref} 执行动作 {action}。"
+
+        # usage == 4：焦点元素
+        if value is not None or depth is not None or limit is not None:
+            return _UI_USAGE_ERROR
+        node = session.ax_focused()
+        if node is None:
+            return _UI_NO_FOCUS_MSG
+        return "当前焦点元素：\n- " + _format_ax_node(node)
+    except Exception as e:
+        logger.warning(f"[vision-server] ui failed (usage={usage}): {e}")
+        return _ui_ax_error(e)
+
+
 # ============== TOOL_SCHEMAS ==============
 # 键名契约（R8）：schema name == yaml tools 键 == 模块函数名，三处逐字符一致
-# （'screenshot' / 'list_targets' / 'analyze_image'）——不一致则 visibility_map 查不到，工具静默落 hidden。
+# （'screenshot' / 'list_targets' / 'analyze_image' / 'ui'）——不一致则 visibility_map
+# 查不到，工具静默落 hidden。
 
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "screenshot": {
@@ -900,6 +1067,72 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "required": ["image_path", "question"],
         },
     },
+    "ui": {
+        "name": "ui",
+        "description": (
+            "语义桌面操作（AX/UIA）：读界面结构 / 按语义找元素 / 对元素执行动作——不依赖截图与坐标。"
+            "四种用法，恰好传一种（混填返回错误）："
+            "① 读结构 ui(target=<窗口ID|\"desktop\">, depth=?, limit=?) → 缩进文本树（每行带 [ref=eN]）+ 节点数 + 截断标志；"
+            "② 找元素 ui(target=…, find={\"role\":…,\"title\":…,\"value\":…,\"limit\":…}) → 命中清单（role/title/ref/enabled/focused/bounds）；"
+            "③ 对元素动作 ui(ref=\"e12\", action=\"press\"|\"set_value\"|\"focus\"|\"click\", value=?)——set_value 需 value；"
+            "④ 焦点元素 ui(action=\"focused_element\")（无 target、无 ref）→ 当前焦点元素。"
+            "target 仅 ①/② 必填（窗口 ID 来自 list_targets，或 \"desktop\"）；③/④ 必不传 target。"
+            "⚠️ target=\"desktop\" = 当前焦点窗口的结构（不是全桌面 AX 树——不存在这种能力；无焦点窗口时报错）；"
+            "与 input(target=\"desktop\")=整屏帧 不同。"
+            "读结构先于动作：先用 ①/② 拿到 ref，再用 ③ 操作；ref 在结构变化后过期（StaleRef 时重新读取）。"
+            "开关/勾选框（checkbox/switch）用 press；文本输入框用 set_value；移动键盘焦点用 focus；"
+            "click = AX 元素点击（用于没有可用 AX action 的元素），优先 press。"
+            "结果中的 bounds 是全局逻辑坐标，不是截图帧像素——不可直接喂给 input"
+            "（input 的 x/y 是该 target 最近一次 screenshot 图上的像素）。"
+            "ui 覆盖不到（游戏/canvas/自绘界面）或缺权限时，改用 screenshot + input。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": ("操作对象（用法①/② 必填；③/④ 禁传）：窗口 ID（来自 list_targets）或 \"desktop\"。"
+                                    "\"desktop\" = 当前焦点窗口的结构（不是全桌面 AX 树；无焦点窗口时报错）。"),
+                },
+                "find": {
+                    "type": "object",
+                    "properties": {
+                        "role": {"type": "string", "description": "按角色过滤（如 button/textfield/checkbox）"},
+                        "title": {"type": "string", "description": "按标题文本过滤"},
+                        "value": {"type": "string", "description": "按值文本过滤"},
+                        "limit": {"type": "integer", "description": "命中数上限（≤5000）"},
+                    },
+                    "description": "用法② 找元素的语义过滤条件（role/title/value/limit 任意子集）",
+                },
+                "ref": {
+                    "type": "string",
+                    "description": ("元素引用（如 \"e12\"），来自用法①/② 输出中的 [ref=eN]；用法③ 必填。"
+                                    "结构变化后过期——操作前请重读。"),
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["press", "set_value", "focus", "click", "focused_element"],
+                    "description": ("用法③ 元素动作：press（开关/勾选框）/ set_value（文本输入框，需 value）/"
+                                    "focus（移动键盘焦点）/ click（AX 元素点击，优先 press）；"
+                                    "用法④：focused_element（查当前焦点元素，无 target/ref）。"),
+                },
+                "value": {
+                    "type": "string",
+                    "description": "set_value 要写入的文本（action=set_value 时必填）",
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "用法① 读树深度（默认 24）",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": ("节点数上限：用法① 快照节点数（默认 800，最大 5000）；"
+                                    "用法② 命中数上限（≤5000）"),
+                },
+            },
+            "required": [],
+        },
+    },
 }
 
 
@@ -936,6 +1169,8 @@ try:
                 result = list_targets()
             elif name == "analyze_image":
                 result = analyze_image(**arguments)
+            elif name == "ui":
+                result = ui(**arguments)
             else:
                 return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
