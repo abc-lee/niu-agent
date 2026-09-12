@@ -17,6 +17,7 @@ use std::{
 	time::Duration,
 };
 
+use ax::{AxRegistry, register_node};
 use backend::{Backend, DeliveryMode, MouseButton, PointerEvent};
 use error::{CoreResult, DesktopError};
 use frame::{FrameGeometry, apply_capture_caps, encode_png};
@@ -34,6 +35,10 @@ enum Response {
 	Windows(Vec<DesktopWindow>),
 	Capture(DesktopCapture),
 	Unit,
+	Snapshot(AxSnapshot),
+	Nodes(Vec<AxNode>),
+	Node(Option<AxNode>),
+	Attributes(Vec<(String, String)>),
 }
 
 type Reply = flume::Sender<CoreResult<Response>>;
@@ -97,6 +102,60 @@ enum Request {
 		mode:   DeliveryMode,
 		reply:  Reply,
 	},
+	AxSnapshot {
+		target:  Target,
+		options: AxSnapshotOptions,
+		reply:   Reply,
+	},
+	AxQuery {
+		target: Target,
+		query:  AxQuery,
+		reply:  Reply,
+	},
+	AxElementAt {
+		target: Target,
+		x:      f64,
+		y:      f64,
+		reply:  Reply,
+	},
+	AxFocused {
+		reply: Reply,
+	},
+	AxNode {
+		reference: String,
+		reply:     Reply,
+	},
+	AxAttributes {
+		reference: String,
+		reply:     Reply,
+	},
+	AxChildren {
+		reference: String,
+		reply:     Reply,
+	},
+	AxParent {
+		reference: String,
+		reply:     Reply,
+	},
+	AxPerform {
+		reference: String,
+		action:    String,
+		reply:     Reply,
+	},
+	AxSetValue {
+		reference: String,
+		value:     String,
+		reply:     Reply,
+	},
+	AxFocus {
+		reference: String,
+		reply:     Reply,
+	},
+	AxClick {
+		reference: String,
+		options:   ParsedPointerOptions,
+		reply:     Reply,
+	},
 	Close {
 		reply: Reply,
 	},
@@ -115,6 +174,18 @@ impl Request {
 			| Self::Scroll { reply, .. }
 			| Self::TypeText { reply, .. }
 			| Self::KeyChord { reply, .. }
+			| Self::AxSnapshot { reply, .. }
+			| Self::AxQuery { reply, .. }
+			| Self::AxElementAt { reply, .. }
+			| Self::AxFocused { reply }
+			| Self::AxNode { reply, .. }
+			| Self::AxAttributes { reply, .. }
+			| Self::AxChildren { reply, .. }
+			| Self::AxParent { reply, .. }
+			| Self::AxPerform { reply, .. }
+			| Self::AxSetValue { reply, .. }
+			| Self::AxFocus { reply, .. }
+			| Self::AxClick { reply, .. }
 			| Self::Close { reply } => reply,
 		};
 		let _ = reply.send(result);
@@ -146,6 +217,7 @@ impl ParsedPointerOptions {
 
 struct Worker {
 	backend:      CoreResult<Box<dyn Backend>>,
+	registry:     AxRegistry,
 	frames:       HashMap<String, FrameGeometry>,
 	capabilities: Arc<Mutex<DesktopCapabilities>>,
 }
@@ -153,7 +225,7 @@ struct Worker {
 impl Worker {
 	fn new(selector: DisplaySelector, capabilities: Arc<Mutex<DesktopCapabilities>>) -> Self {
 		let backend = create_backend(selector);
-		Self { backend, frames: HashMap::new(), capabilities }
+		Self { backend, registry: AxRegistry::default(), frames: HashMap::new(), capabilities }
 	}
 
 	fn backend(&mut self) -> CoreResult<&mut Box<dyn Backend>> {
@@ -198,6 +270,13 @@ impl Worker {
 		};
 		let (x, y) = frame.map_point(x, y, current.as_ref())?;
 		Ok((x, y, frame))
+	}
+
+	fn ax(&mut self) -> CoreResult<&mut dyn backend::AxBackend> {
+		self
+			.backend()?
+			.ax()
+			.ok_or_else(DesktopError::ax_unsupported)
 	}
 
 	fn process(&mut self, request: &Request) -> CoreResult<Response> {
@@ -332,8 +411,181 @@ impl Worker {
 				self.backend()?.key_chord(target, keys, *mode)?;
 				Ok(Response::Unit)
 			},
+			Request::AxSnapshot { target, options, .. } => {
+				let window = self.window(target)?;
+				let (backend, registry) = (&mut self.backend, &mut self.registry);
+				let ax = backend
+					.as_mut()
+					.map_err(|error| error.clone())?
+					.ax()
+					.ok_or_else(DesktopError::ax_unsupported)?;
+				Ok(Response::Snapshot(ax::snapshot(ax, registry, &window, options)?))
+			},
+			Request::AxQuery { target, query, .. } => {
+				let window = self.window(target)?;
+				let (backend, registry) = (&mut self.backend, &mut self.registry);
+				let ax = backend
+					.as_mut()
+					.map_err(|error| error.clone())?
+					.ax()
+					.ok_or_else(DesktopError::ax_unsupported)?;
+				Ok(Response::Nodes(ax::query(ax, registry, &window, query)?))
+			},
+			Request::AxElementAt { target, x, y, .. } => {
+				let (backend, registry) = (&mut self.backend, &mut self.registry);
+				let backend = backend
+					.as_mut()
+					.map_err(|error| error.clone())?
+					.ax()
+					.ok_or_else(DesktopError::ax_unsupported)?;
+				Ok(Response::Node(ax::element_at_node(backend, registry, target.key(), *x, *y)?))
+			},
+			Request::AxFocused { .. } => {
+				let handle = self.ax()?.focused_element()?;
+				let node = match handle {
+					Some(h) => {
+						let (backend, registry) = (&mut self.backend, &mut self.registry);
+						let ax = backend
+							.as_mut()
+							.map_err(|error| error.clone())?
+							.ax()
+							.ok_or_else(DesktopError::ax_unsupported)?;
+						Some(register_node(ax, registry, "desktop", h)?)
+					},
+					None => None,
+				};
+				Ok(Response::Node(node))
+			},
+			Request::AxNode { reference, .. } => {
+				let h = self.registry.resolve(reference)?;
+				let props = self.ax()?.props(&h)?;
+				Ok(Response::Node(Some(axnode(reference.clone(), props))))
+			},
+			Request::AxAttributes { reference, .. } => {
+				let h = self.registry.resolve(reference)?;
+				let mut attributes = self.ax()?.attributes(&h)?;
+				for (_, value) in &mut attributes {
+					if value.chars().count() > 200 {
+						*value = value
+							.chars()
+							.take(199)
+							.chain(std::iter::once('…'))
+							.collect();
+					}
+				}
+				Ok(Response::Attributes(attributes))
+			},
+			Request::AxChildren { reference, .. } => {
+				let h = self.registry.resolve(reference)?;
+				let target = self.registry.target(reference)?;
+				let handles = self.ax()?.children(&h)?;
+				let mut nodes = Vec::with_capacity(handles.len());
+				for h in handles {
+					let (backend, registry) = (&mut self.backend, &mut self.registry);
+					let ax = backend
+						.as_mut()
+						.map_err(|error| error.clone())?
+						.ax()
+						.ok_or_else(DesktopError::ax_unsupported)?;
+					nodes.push(register_node(ax, registry, &target, h)?);
+				}
+				Ok(Response::Nodes(nodes))
+			},
+			Request::AxParent { reference, .. } => {
+				let h = self.registry.resolve(reference)?;
+				let target = self.registry.target(reference)?;
+				let parent = self.ax()?.parent(&h)?;
+				let node = match parent {
+					Some(h) => {
+						let (backend, registry) = (&mut self.backend, &mut self.registry);
+						let ax = backend
+							.as_mut()
+							.map_err(|error| error.clone())?
+							.ax()
+							.ok_or_else(DesktopError::ax_unsupported)?;
+						Some(register_node(ax, registry, &target, h)?)
+					},
+					None => None,
+				};
+				Ok(Response::Node(node))
+			},
+			Request::AxPerform { reference, action, .. } => {
+				let h = self.registry.resolve(reference)?;
+				if action.eq_ignore_ascii_case("press") {
+					ax::ax_press(self.ax()?, &h)?;
+				} else {
+					self.ax()?.perform(&h, action)?;
+				}
+				Ok(Response::Unit)
+			},
+			Request::AxSetValue { reference, value, .. } => {
+				let h = self.registry.resolve(reference)?;
+				self.ax()?.set_value(&h, value)?;
+				Ok(Response::Unit)
+			},
+			Request::AxFocus { reference, .. } => {
+				let h = self.registry.resolve(reference)?;
+				self.ax()?.focus(&h)?;
+				Ok(Response::Unit)
+			},
+			Request::AxClick { reference, options, .. } => {
+				let h = self.registry.resolve(reference)?;
+				let bounds = self.ax()?.props(&h)?.bounds.ok_or_else(|| {
+					DesktopError::ax_failed(format!("{reference} has no clickable bounds"))
+				})?;
+				let x = bounds.x + bounds.width / 2.0;
+				let y = bounds.y + bounds.height / 2.0;
+				let windows = self.backend()?.windows()?;
+				let window = windows
+					.into_iter()
+					.find(|w| {
+						x >= f64::from(w.x)
+							&& x < f64::from(w.x + w.width as i32)
+							&& y >= f64::from(w.y)
+							&& y < f64::from(w.y + w.height as i32)
+					})
+					.ok_or_else(|| {
+						DesktopError::window_not_found(format!("no window contains {reference}"))
+					})?;
+				let target = Target::Window(window.id);
+				self.backend()?.pointer(
+					&target,
+					PointerEvent::Click {
+						x,
+						y,
+						button: options.button,
+						count: options.count,
+						modifiers: options.modifiers,
+					},
+					&FrameGeometry::identity_global(),
+					options.mode,
+				)?;
+				Ok(Response::Unit)
+			},
 			Request::Close { .. } => Ok(Response::Unit),
 		}
+	}
+}
+
+fn axnode(reference: String, props: ax::AxProps) -> AxNode {
+	let (x, y, width, height) = props
+		.bounds
+		.map_or((None, None, None, None), |b| (Some(b.x), Some(b.y), Some(b.width), Some(b.height)));
+	AxNode {
+		ref_: reference,
+		role: props.role,
+		native_role: props.native_role,
+		title: props.title,
+		value: props.value,
+		description: props.description,
+		enabled: props.enabled,
+		focused: props.focused,
+		x,
+		y,
+		width,
+		height,
+		actions: (!props.actions.is_empty()).then_some(props.actions),
+		child_count: props.child_count,
 	}
 }
 
@@ -893,6 +1145,7 @@ mod capture_tests {
 	fn worker_with(backend: impl Backend + 'static) -> Worker {
 		Worker {
 			backend:      Ok(Box::new(backend)),
+			registry:     AxRegistry::default(),
 			frames:       HashMap::new(),
 			capabilities: Arc::new(Mutex::new(DesktopCapabilities::unavailable())),
 		}
