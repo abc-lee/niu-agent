@@ -27,6 +27,8 @@ def test_no_static_or_dynamic_tools():
         "vision-server/screenshot",
         "vision-server/list_targets",
         "vision-server/analyze_image",
+        "vision-server/ui",
+        "vision-server/input",
     }
     violations = []
     for server_name, server_cfg in data.items():
