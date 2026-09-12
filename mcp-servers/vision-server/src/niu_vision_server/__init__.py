@@ -429,9 +429,11 @@ def _load_image_data_uri(image_path: str):
 
 def _normalize_vision_node(node: dict, main_cfg: dict) -> dict:
     """归一化 vision_llm 链节/单对象段（D-A / R-2：独立重实现 get_llm_config 的空键继承，
-    仅 6 个键——避免为单点扩公共 API 造成回归面）。
+    仅 5 个键——避免为单点扩公共 API 造成回归面）。
 
-    空键继承主 llm 段：apiKey/apiBase/type/provider/litellm_kwargs/max_tokens；
+    空键继承主 llm 段：apiKey/apiBase/type/provider/litellm_kwargs；
+    **max_tokens 不继承**：省略即不下发，由模型/服务端自决（写死小值会让思考型模型
+    推理链耗尽预算 → 正文空 + finish_reason=length）。
     reasoning_effort 缺省 ""。节自己的 model 保留（model 空的节由调用方过滤，
     **不**继承主 llm model——那会变成「拿主模型当视觉模型」的静默错误端点）。
     返回与 get_llm_config 同形的小写键 dict（_call_vision_model 直接可消费）。
@@ -447,8 +449,6 @@ def _normalize_vision_node(node: dict, main_cfg: dict) -> dict:
         cfg["provider"] = main_cfg.get("provider", "")
     if not cfg.get("litellm_kwargs"):
         cfg["litellm_kwargs"] = main_cfg.get("litellm_kwargs", {})
-    if cfg.get("max_tokens") is None and main_cfg.get("max_tokens") is not None:
-        cfg["max_tokens"] = main_cfg["max_tokens"]
     if not cfg.get("reasoning_effort"):
         cfg["reasoning_effort"] = ""
     return cfg
