@@ -543,6 +543,18 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+### 2026-09-12
+
+#### 修复：视觉降级重试策略（用户实测严重 bug：关掉本地模型后白耗 3 分钟；plan v0.1→v0.10 经 **R9+R10 连续两轮双 APPROVE 门禁**；SDD T1/T3 双审闭环，main `8e7c6674`/`40f37f1a`）
+
+- **用户报障（原话）**：「我都把本地模型关闭了，它在重试什么？而且还有延时的在重试。白白消耗了 3 分钟？哪有这种程序？一个不存在的服务器，不是瞬间就能测出来吗？」+ 定案原则：「**下层说不可达 → 上层立刻以失败返回，不自己再试、不等内核默认超时**」「**只有服务端明确说忙/稍后重试才允许重试**」。
+- **病灶（实测取证）**：①**重试判据错**——我把 `Timeout` / `APIConnectionError` 列为「可重试」（`_VISION_RETRYABLE_EXC`），它们其实是「没响应/连不上」= **未知**，不是「忙」→ 重试 3 次 + 2/5/10s 退避；②**未设应用层连接超时**——macOS `net.inet.tcp.keepinit = 75000`（实测 connect 到无主机地址 **75.0s / errno 60 ETIMEDOUT**），发现"服务不在"要等内核 75 秒。两者叠加 = 用户看到的 3 分钟。
+- **修复（用户口径）**：①**D-1 重试只限服务端明确说忙**：`RateLimitError`(429) + `ServiceUnavailableError`(503 `Loading model`) + 8 条文本信号；**超时/连接失败/不可达/认证/配额/欠费/空回答/一切未归类 → 一律不重试**，直接换下一个模型（F-2）。②**D-2 调用前 TCP 可达性预检（5s）**：`_probe_reachable` 自行 `getaddrinfo` 遍历 + `monotonic` deadline 兜总时长 + 逐地址 `close` + **整函数 fail-open**（预检自身异常绝不断链）；不可达 → 直接降级（实测 **0.0s** 判死）。③**共享层零改动**（`agent/generic/litellm_adapter.py` 未动——放弃适配层 `httpx.Timeout` 方案，因 litellm 对非 openai/azure/bedrock provider 会静默丢弃 connect 分量，B 角实测）。
+- **质量链亮点**：**plan 经 10 轮双审**，每轮都抓到"按字面实施必炸"的真问题——R1-B 抓 `connect_timeout` **属性名冲突**（`llmcore.py:63` 已有同名属性 → 会把全通道改成 10s）+ litellm provider 白名单限制；R3-B 抓 `socket.create_connection` **无法实现 deadline**（逐地址同 timeout，无递减钩子）；R5-B 抓 `socket.socket` 创建异常穿透 + 契约缺「跳过」态；R6-B 抓 **`UnicodeError` 不是 `OSError` 子类**（实测 False）→ IDNA 非法 host 穿透；R7-B 抓 `finally: s.close()` 的 **`UnboundLocalError`** + `urlsplit().port` 的 `ValueError` 穿透（**均实测复现**）；R8 双角同抓「创建失败被误判不可达（fail-CLOSED）」；**R7 的根因总结促成设计简化**——逐个枚举异常类型漏不完 → 改为**整函数 fail-open**（`except Exception`），一劳永逸。R9-B 亲跑 11 组场景（含真实链路：不可达 IP 5s 内收敛、300 次探测 fd 增量 0）。
+- **验证**：`test_vision_analyze_image.py` **65 passed**（原 52，+13；含 F-1 分类、不重试回归锁、预检四场景、fail-open、deadline 递减）；变异验证（把 `Timeout` 加回可重试 → 用例 1 变红）；`agent/generic/litellm_adapter.py` **零改动**。**PM 真实链路验证（真 API）**：链首不可达 → **预检 0.0s 判死 → 直接降级** → 真模型返回答案 +「（注：首模型不可用（连接失败：192.168.3.201:8080 不可达），已自动降级到 glm-4.6v-flash）」（总 27.2s = 纯推理）；单模型不可达 **0.0s** 返回「连接失败…（无备用模型可降级）」（修复前为 3 分钟级）。
+- **已知边界（接受）**：①预检的 5s deadline **只约束 connect 循环**，`getaddrinfo` 本身不受其上界（DNS 极慢时可能超 5s；修法需线程化解析，与 F-4「不引入新机制」相悖）；②适配层内部对流中错误另有自带重试（共享层未改），"忙"类总尝试次数可能多于 3 次（手册已注明）。
+- **更正旧条目**：下方「视觉模型自动降级」条目里 U-2 写的「可重试（**限流/超时**）」有误——**超时不属于"忙"**，按用户口径已改为不重试；该条目的其余内容（链式选型/文案/预算）仍有效。
+
 ### 2026-09-11
 
 #### 工程：清理我自造且无人使用的 vision 代码（用户拍板「没有用的全部删了；没经过我同意造的工具全部删掉」；plan v0.1→v0.6 经 **R4+R5 连续两轮双 APPROVE 门禁**；SDD T1/T2/T3 每 Task 双审+微修闭环，main 95bd310d/7b9c1ad0/b61a6fac）
