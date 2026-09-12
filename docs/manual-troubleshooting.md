@@ -287,13 +287,13 @@ conn.close()
 - 向量是 512 维 float32 的 BLOB（2048 字节），`length(embedding)` 应为 2048
 - `confidence` 低于 0.6 的人脸向量可能是误检测，需特别关注
 - 直接修改数据库后需重启程序使缓存失效
-- `auto_label` 编号由 `get_next_auto_label()` 分配，已修复字符串排序 bug（2026-07-30），现在 `_10` 以后会正常递增到 `_11`、`_12`…
+- `auto_label` 编号由 `get_next_auto_label()` 分配，`_10` 以后正常递增到 `_11`、`_12`…
 
 ### 1.3 定时任务问题
 
 #### 问题：创建提醒后没有收到通知
 
-**通知形态（2026-08-15 起）**：定时提醒到点后——①Chat 页面显示提醒消息（程序写 Message.DB，前端由 DB 变更 SSE 刷新）；②蹦高本地通知；③主 Agent 被唤醒后的话（如"该打开咖啡机了"）推送到 IM（经 should_push_im 闸门——定时提醒置 IM 标志为真）。若 IM 端没收到，是主 Agent 的话没发出（检查 IM 连接与主 Agent 处理），定时提醒本身不直接推 IM。
+**通知形态**：定时提醒到点后——①Chat 页面显示提醒消息（程序写 Message.DB，前端由 DB 变更 SSE 刷新）；②蹦高本地通知；③主 Agent 被唤醒后的话（如"该打开咖啡机了"）推送到 IM（经 should_push_im 闸门——定时提醒置 IM 标志为真）。若 IM 端没收到，是主 Agent 的话没发出（检查 IM 连接与主 Agent 处理），定时提醒本身不直接推 IM。
 
 **可能原因：**
 - Scheduler 未启动
@@ -599,15 +599,13 @@ typeof NiuDomTree !== 'undefined'
 
 #### 1.7.1 知识图谱损坏修复故障排查
 
-启动时检测到知识图谱损坏（v2：仅 3 真相源 corrupt 或 vdb 与 GraphML 数据不一致），splash 会显示损坏提示 + "尝试修复"按钮。用户点修复后触发 `run_repair_on_user_request`。
+启动时检测到知识图谱损坏（仅 3 真相源 corrupt 或 vdb 与 GraphML 数据不一致），splash 会显示损坏提示 + "尝试修复"按钮。用户点修复后触发 `run_repair_on_user_request`。
 
-**v2 检测逻辑变更**（2026-07-28）：
-- 派生 kv_store 文件缺失**不再判为损坏**（脑区/Skills 路径下本来就不写这些文件）
-- partial 真相源状态（GraphML 有 + full_docs/cache 缺）**不再判为 unrecoverable**
-- 真损坏判定改为**数据一致性检查**：GraphML node/edge 在 vdb 缺对应向量 → major
-
-**v3 检测与自动修复**（2026-08-14）：
-- 新增 vdb 文件内部一致性检测（`_check_vdb_internal`）：vdb_entities/vdb_relationships/vdb_chunks 的 matrix 行数 vs data 条数不一致 → major（vdb_matrix_mismatch）——孤儿向量导致查询越界崩溃
+**检测与自动修复**：
+- 派生 kv_store 文件缺失**不判为损坏**（脑区/Skills 路径下本来就不写这些文件）
+- partial 真相源状态（GraphML 有 + full_docs/cache 缺）**不判为 unrecoverable**
+- 真损坏判定为**数据一致性检查**：GraphML node/edge 在 vdb 缺对应向量 → major
+- vdb 文件内部一致性检测（`_check_vdb_internal`）：vdb_entities/vdb_relationships/vdb_chunks 的 matrix 行数 vs data 条数不一致 → major（vdb_matrix_mismatch）——孤儿向量导致查询越界崩溃
 - **vdb_matrix_mismatch 启动自动修复，不弹窗**：启动自检检测到后自动从 data.vector 重建 matrix → 重跑检测 → 正常启动
 - 用户可观察症状：依赖知识图谱的回答准确度下降（变模糊、答非所问、漏关键信息）；搜索功能匹配度降低（搜相关话题搜不到、搜出无关内容）；显式"查询失败"报错只在极端场景出现——**先重启程序，绝大多数情况自动修复**
 - 重启后仍异常（vdb 文件缺失等场景）才走下方"用户简易修复指引"（删 3 个 vdb 文件）
@@ -616,17 +614,17 @@ typeof NiuDomTree !== 'undefined'
 
 | 症状 | 可能原因 | 排查方法 |
 |------|---------|---------|
-| 修复后 3 真相源 sha256 变了 | RegionSync 守护线程没真正停 / 其他守护线程写真相源 | 1. 查日志 "RegionSync 已停止" 是否出现；2. 查日志是否还有 "Sync complete"（说明守护线程没停）；3. 检查 `lightrag_manager.py` finally 块是否还在调 `start_background_sync()`（v9 已删除该调用） |
+| 修复后 3 真相源 sha256 变了 | RegionSync 守护线程没真正停 / 其他守护线程写真相源 | 1. 查日志 "RegionSync 已停止" 是否出现；2. 查日志是否还有 "Sync complete"（说明守护线程没停）；3. 确认 `lightrag_manager.py` finally 块中 `start_background_sync()` 调用不存在（不应再出现该调用） |
 | 修复报 unrecoverable | 3 真相源之一 corrupt（GraphML XML 解析失败 / full_docs 或 cache JSON 解析失败） | 1. 查 repair_result 里 `_unrecoverable_reason` 字段，看哪个真相源损坏；2. 手工验证对应文件是否能解析；3. 真相源 corrupt 无法自动修复，需从备份恢复 |
 | 修复后 vdb 仍缺向量 | repair_vdb_entities / repair_vdb_relationships 失败 | 1. 查 repair_result 里对应函数的 status 字段（ok/error）；2. 查 message 字段看失败原因；3. 重新触发修复 |
 | 修复后查询知识图谱报错 | 派生文件格式跟 LightRAG 原生不一致 | 1. 对比重建的派生文件跟 LightRAG 原生格式（字段名/类型）；2. 确认修复走的是 storage.upsert 接口（不是直接写 JSON）；3. 检查 vdb_* 文件的 matrix 是否 L2 归一化 |
 | 修复期间程序卡死 | RegionSync stop_background_sync_blocking join 超时 | 1. 查日志是否有 "RegionSync 守护线程在 60s 后仍在运行"；2. 检查 RegionSync _run_sync_impl 是否有死循环；3. 强制 kill 进程后重启 |
 | 修复后脑区节点消失 | GraphML 被改写（脑区节点被删） | 1. 对比修复前后 GraphML 的 node 数量；2. 查 RegionSync 是否在修复期间跑了 sync；3. 从备份恢复 GraphML |
-| 启动时弹修复窗但用户认为数据正常 | 脑区+Skills 注入后 partial 状态（v2 已修复）| v2 之前 partial 误判为损坏，v2 后合法状态不弹窗。如仍弹窗，检查 vdb 是否真缺向量（`check_all` 输出的 major_errors 应为 0） |
+| 启动时弹修复窗但用户认为数据正常 | 脑区+Skills 注入后 partial 状态 | 该合法状态不弹窗。如仍弹窗，检查 vdb 是否真缺向量（`check_all` 输出的 major_errors 应为 0） |
 
 **用户简易修复指引**（推荐主 Agent 告知用户）：
 
-**兜底路径**（v3 自动修复不适用时——vdb 文件缺失、GraphML-vdb 不一致等场景）：删除 3 个 vdb 文件后重启程序，系统会自动触发修复流程重建向量索引：
+**兜底路径**（自动修复不适用时——vdb 文件缺失、GraphML-vdb 不一致等场景）：删除 3 个 vdb 文件后重启程序，系统会自动触发修复流程重建向量索引：
 
 ```bash
 # 1. 退出程序
@@ -660,21 +658,21 @@ shasum -a 256 ~/.niu/lightrag_storage/graph_chunk_entity_relation.graphml \
 - 不会自动备份 3 真相源（用户应自己定期备份）
 - 不会修复 3 真相源内容（真相源 corrupt 只能从备份恢复）
 - 不会重启 RegionSync（修复后必须重启程序让正常启动流程触发）
-- 不会增量修复（v9 只做全量重建，删 9 派生全部重建）
+- 不会增量修复（只做全量重建，删 9 派生全部重建）
 - 不会重建空派生文件（脑区/Skills 路径下 full_docs 缺失时，doc_status 等派生走"不写空文件"分支，符合 LightRAG 原生行为）
 
 详细机制见 [manual-vector-store.md 第九章](manual-vector-store.md#九知识图谱损坏检测与自愈修复)。
 
-#### 1.7.2 知识图谱错误分类与修复方法（E3，2026-08-16）
+#### 1.7.2 知识图谱错误分类与修复方法
 
-E3 工程后，知识图谱不再静默吞错——查询异常会以错误文本/dict 形式暴露到前端、API 与 LLM 注入段，用户可据此定位并修复。**错误形态 → 修复动作**映射表：
+知识图谱不静默吞错——查询异常会以错误文本/dict 形式暴露到前端、API 与 LLM 注入段，用户可据此定位并修复。**错误形态 → 修复动作**映射表：
 
 | # | 错误形态（用户可见） | 可能原因 | 修复动作 |
 |---|---------------------|---------|---------|
 | ① | 前端图谱页显示"知识图谱不可用" | `get_lightrag` 初始化门控拒绝（修复中/损坏/冷却） | 按启动日志结果分支：发现 `[LightRAG] 核心数据损坏（N critical errors），拒绝初始化` / `[LightRAG] 数据不一致（N major errors），拒绝初始化` 等 warning → 按下方 1.7.1 修复流程处理（删 3 个 vdb 文件重启触发修复）；无此类 warning（修复中/冷却态静默返回——冷却为初始化失败后 `_INIT_RETRY_SECONDS=60` 重试窗口）→ 修复中等待修复完成、冷却等待 60s 自动重试（勿删 vdb） |
 | ② | API/日志出现"一致性检测失败"（`get_lightrag_status` 返回的 `integrity.check_failed=true` + `integrity.error` 字段） | `run_resilience_phase1` / `get_lightrag_status` 即时检查时 `check_all` 抛异常——检测未完成，不等于数据损坏 | 查 `logs/api_stderr.log` 定位检测异常（如 vdb 文件不可解析）→ 重试或重启程序；若持续 → 按 1.7.1 全量重建 |
 | ③ | LLM 注入段出现标注"`[知识检索失败，本轮无参考知识注入]`"（本轮对话没有参考知识注入） | 知识图谱服务不可用（检索 raise → runner except 标注，LLM 感知"检索失败"而非假装无知识） | 检查图谱服务状态（`curl http://127.0.0.1:9876/api/kg/stats`）→ 按门控三态（修复中/损坏/冷却）对应动作：修复中 → 等待修复完成；损坏 → 按 1.7.1 重建；冷却 → 等待 60s 自动重试；恢复后标注自然消失 |
-| ④ | adapter 错误文本"知识图谱不可用（初始化门控拒绝）"（对话/工具返回中可见） | `get_lightrag` 返回 None（门控拒绝）——adapter 不再静默返回空结果，改报通用文案 | 按门控三态对应动作（同 ①③）：损坏 → 按 1.7.1 删 vdb 重建；修复中 → 等待修复完成；冷却 → 等待 60s 自动重试 |
+| ④ | adapter 错误文本"知识图谱不可用（初始化门控拒绝）"（对话/工具返回中可见） | `get_lightrag` 返回 None（门控拒绝）——adapter 不静默返回空结果，报通用文案 | 按门控三态对应动作（同 ①③）：损坏 → 按 1.7.1 删 vdb 重建；修复中 → 等待修复完成；冷却 → 等待 60s 自动重试 |
 
 **要点**：
 
@@ -688,7 +686,7 @@ E3 工程后，知识图谱不再静默吞错——查询异常会以错误文�
 
 **根因**：
 1. **顶层参数通道被 litellm 白名单静默丢弃**：`reasoning_effort`/`thinking` 经顶层参数传递时，litellm 按模型能力白名单过滤，白名单外的参数被 `drop_params` **静默 pop（无任何告警）**——产生**假 200**（服务端从未收到该参数，"测试通过"不代表参数送达）。
-2. **参数必须走 extra_body 通道**：litellm 白名单不拦 extra_body 内键。Niu 统一由 `assemble_request_params` 把 `reasoning_effort`/`thinking` 注入 `extra_body` 送达（2026-08-18 模型能力探测器工程）。
+2. **参数必须走 extra_body 通道**：litellm 白名单不拦 extra_body 内键。Niu 统一由 `assemble_request_params` 把 `reasoning_effort`/`thinking` 注入 `extra_body` 送达。
 3. **取值超出模型实际支持范围**：不同模型值域不同（如豆包 `disabled` 场景只接受 minimal/none，`high` + disabled 直接 400），且值域与场景 thinking 配置强耦合。
 
 **检查法**：
@@ -701,13 +699,13 @@ E3 工程后，知识图谱不再静默吞错——查询异常会以错误文�
 
 **原因**：停止场景下 `persist_agent_reply` 兜底路径（rv=None）无条件写 full_reply，与 V4 逐条持久化（已写同轮 assistant）重复入库。
 
-**解决**：已修复（2026-08-08）——兜底路径加 persisted_msgs 前缀去重（@ 对齐 + `<tool_use>` 剥除 + 双侧 strip 后前缀比对，命中跳过）。升级后新对话不再重复；历史已重复的消息需手动清理或 /clear。
+**解决**：兜底路径有 persisted_msgs 前缀去重（@ 对齐 + `<tool_use>` 剥除 + 双侧 strip 后前缀比对，命中跳过）。新对话不再重复；历史已重复的消息需手动清理或 /clear。
 
 ### 1.9 停止后异步子 Agent 被终止（同步子 Agent 结束后异步也停了）
 
 **原因**：旧版全局停止标志无隔离——单击 /stop 会打断所有正在流式的子 Agent LLM（含异步、程序触发的），子 Agent 退出时还可能清掉主 Agent 的停止意图。
 
-**解决**：已修复（2026-08-08）——停止语义下沉为按子 Agent 来源绑定的谓词：单击只终止同步 user 子 Agent，异步与程序触发子 Agent 不受影响；子 Agent 退出不再清全局停止标志。
+**解决**：停止语义为按子 Agent 来源绑定的谓词：单击只终止同步 user 子 Agent，异步与程序触发子 Agent 不受影响；子 Agent 退出不清全局停止标志。
 
 ### 1.10 缓存命中率显示 0% 或无该字段
 
@@ -737,7 +735,7 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 
 - **本层不做任何重试与退避**：重试权完全交给底层 SDK（vision-server 注入 `max_retries=3`），我们这层只负责「这个模型不行就换下一个」。
 - **请求连接超时 5 秒**（`connect=5s`；读取超时仍取该节的 `read_timeout`，默认 300s）——服务器不存在/局域网不通时，底层的 4 次尝试合计约 **20~24 秒**结束，不会等到内核默认的 75 秒级超时。边界：该连接上界**仅对 openai / azure / bedrock 路由生效**（litellm 白名单）；`volces.com` 或 `api_type=anthropic` 的链节会退回内核超时。
-- 适配层对**流式阶段**的错误另有自带重试（共享层，本工程未改），故「忙」类错误在流式阶段的总尝试次数可能多于 4 次。
+- 适配层对**流式阶段**的错误另有自带重试（共享层），故「忙」类错误在流式阶段的总尝试次数可能多于 4 次。
 - **可用模型记忆**：多模型链成功调用后**在内存中记住该模型 30 分钟**（不落盘、重启即忘）；下次调用**直接从它开始**，走到链尾后折回链首——**一轮内每个模型恰好试一次**。一轮全部失败 → 清空记忆，下次仍从链首开始；**预算中断 / 用户停止不清记忆**。**单模型链不做这套逻辑**（每次就用它）。
 - **总预算 600 秒**：每个模型发起调用**前**检查累计耗时，超预算即停止降级并返回「预算中断」文案（如 `识图失败：… 因累计耗时超 600s 停止继续降级（尚有 K 个模型未尝试）`）；已发出的请求不打断。
 - **`max_tokens` 不足**（思考型视觉模型推理占满小预算、content 为空）→ 直接换下一个——这种情况应调大该节 `max_tokens`，而不是依赖降级。
@@ -762,27 +760,4 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 
 **日志**：`~/.niu/logs/` 内搜 `[vision-server]`（跳过的无效链节、读盘失败、选模失败、调用异常都打在这里）。
 
----
 
-## 验证记录
-
-| 序号 | 原文 | 修正后 | 原因 |
-|------|------|--------|------|
-| 1 | 向量模型 466MB，手动下载 paraphrase-multilingual-MiniLM-L12-v2 | 默认模型约 400MB，当前默认 bge-base-zh-v1.5，支持多模型切换 | 默认嵌入模型已从 paraphrase-multilingual-MiniLM-L12-v2 切换为 BAAI/bge-base-zh-v1.5（见 niu_api/internal/embedding.py DEFAULT_MODEL） |
-| 2 | 人脸识别需要 ~500MB 内存 | 人脸识别需要约 326MB 内存 | CLAUDE.md 和 photo-server 代码均记录为约 326MB |
-| 3 | 检查日志：应看到 "[INTERNAL SCHEDULER] Started"（旧版曾修正为 "delayed 10s"） | 应看到 "[INTERNAL SCHEDULER] Scheduled to start (waiting for system_ready signal)"，调度器等待 system_ready 信号后启动（最长 60 秒超时回退 + 2 秒安全延迟） | service.py:145 + scheduler.py:92-121，start_delayed 实际为等待 _ready_event 信号而非固定延迟 |
-| 4 | sqlite3 data/scheduled_tasks.db ...（旧版曾修正为 ~/.niu/scheduled_tasks.db） | sqlite3 {workspace}/scheduled_tasks.db ...（默认 ~/.niu/work/scheduled_tasks.db） | service.py:42-50 优先用 {workspace}/scheduled_tasks.db，~/.niu/scheduled_tasks.db 是旧残留 |
-| 5 | 所有 REDACTED_WIN_PATH/vectors.db 硬编码路径 | vectors.db 已废弃，知识检索改用 LightRAG（~/.niu/lightrag_storage/） | vector-store 架构已移除，由 lightrag-server 统一管理知识检索 |
-| 6 | ls models/paraphrase-multilingual-MiniLM-L12-v2（向量搜索报错排查） | 默认模型 bge-base-zh-v1.5，向量搜索独立排查已移除（合并到 LightRAG 故障排查） | 默认模型已变更，独立向量搜索概念已不存在 |
-| 7 | data/messages.db, data/vectors.db, data/kg.db（数据备份列表） | ~/.niu/messages.db（固定路径）, ~/.niu/lightrag_storage/, {workspace}/scheduled_tasks.db 等，并说明路径解析 | vectors.db 和 knowledge.kz* 已废弃，知识检索改用 LightRAG 存储 |
-| 8 | sqlite3 data/messages.db "DELETE ... WHERE timestamp ..." | sqlite3 ~/.niu/messages.db "DELETE ... WHERE created_at ..." | messages 表使用 created_at 列（见 agent/session.py），不是 timestamp |
-| 9 | 浏览器方法 3 使用 --user-data-dir="%USERPROFILE%\.niu\browser_ext_profile" | 使用 --disable-extensions-except，并说明默认使用用户浏览器配置文件 | launcher.py 不指定 --user-data-dir，使用用户默认 profile 共享 cookies |
-| 10 | 人脸识别故障提到 "MCP stdio 通信错误"、"ONNX Runtime stdout 污染" | 说明同进程架构后无 stdio 通信问题，无需检查 JSONRPC 解析 | MCP 已从 stdio 架构迁移到同进程直接调用 |
-| 11 | 浏览器故障提到 "Playwright 选择器失效"、检查 "playwright\|browser" 日志 | 改为 WSBridge + Chrome Extension 架构，NiuDomTree 通过 content.js 注入 | browser-server 从 Playwright 迁移到 WSBridge + Extension 架构 |
-| 12 | 工具数量 73 个，按旧服务器分类（kg-server:14, vector-store:7, photo-server:16） | 约 70 个，按新服务器分类（lightrag-server:15, photo-server:15, brain-region-server:3, browser-server:3） | kg-server + vector-store 合并为 lightrag-server，各服务器工具数量随版本变化 |
-| 13 | MCP 加载故障提到手动启动各 MCP 服务器进程测试 | 改为同进程架构下直接测试模块导入（python -c "from niu_xxx import get_tool_schemas"） | MCP 同进程架构无需启动独立进程 |
-| 14 | 1.1 节仅用 Windows 命令（netstat/findstr、niu.exe） | 补充 macOS 命令（lsof -i :9876、./niu），并补充进程结构（Rust 启动器 + Python API + Electron 前端）和日志路径（llm_interaction_YYYYMMDD.log + raw_http 两层架构 + api_stderr.log + im_adapter_stderr.log） | 项目实际部署在 macOS，CLAUDE.md 记录从 Electron 迁移至 Iced/Rust 启动器 |
-| 15 | 1.2 节检查 ls models/buffalo_l/det_10g.onnx | 改为 ls models/models/buffalo_l/det_10g.onnx（双层目录） | photo-server __init__.py:972 加载路径为 get_models_dir()/"models"/"buffalo_l"，实际为 models/models/buffalo_l/ |
-| 16 | 1.2 节未提预加载机制 | 补充 preload_face_model() 说明（只导入 cv2/InsightFace 模块代码，不加载模型本身） | __init__.py:4163 preload_face_model 注释明确"只导入模块，不加载模型" |
-| 17 | 1.5 节恢复命令 cp -r backup/data/* data/ | 改为 cp -r backup/niu/* ~/.niu/ | 项目无 data/ 目录，数据在 ~/.niu/ 和 ~/.niu/work/ |
-| 18 | 1.5 节末尾"从项目安装目录的 config/user-data/ 拷贝" | 改为"从安装包重新解压模板文件"（config/user-data/ 目录不存在） | 启动器 init_niu_dir 从安装包内 config/ 模板拷贝 memory.json/preferences.json，无 config/user-data/ 目录 |

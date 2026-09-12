@@ -18,7 +18,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 知识图谱 | 自动提取实体和关系，支持图谱查询 |
 | 语义搜索 | LightRAG 统一检索（local/global/hybrid/mix/naive 模式） |
 | 人脸识别 | 拖入照片 → 自动检测人脸 → 相册管理 |
-| 定时任务 | 三类：reminder（到点提醒主 Agent）+ background_script（后台静默执行 Python 脚本，无输出静默、有输出/报错才通知）+ subagent（后台静默调起指定子 Agent 执行任务文本，默认全程静默；子 Agent 遇解决不了的问题可发 report → `[后台任务「{任务名}」结束报告]` 消息）。支持循环/单次，cron 5 字段触发。推送通道（2026-08-15 起）：定时提醒程序消息只写 DB 唤醒主 Agent（不推 IM，Chat 由 DB 变更刷新）；定时提醒置 IM 标志为真，主 Agent 的话（如"该打开咖啡机了"）经 should_push_im 闸门投递 IM。智能家居订阅触发同通道 |
+| 定时任务 | 三类：reminder（到点提醒主 Agent）+ background_script（后台静默执行 Python 脚本，无输出静默、有输出/报错才通知）+ subagent（后台静默调起指定子 Agent 执行任务文本，默认全程静默；子 Agent 遇解决不了的问题可发 report → `[后台任务「{任务名}」结束报告]` 消息）。支持循环/单次，cron 5 字段触发。推送通道：定时提醒程序消息只写 DB 唤醒主 Agent（不推 IM，Chat 由 DB 变更刷新）；定时提醒置 IM 标志为真，主 Agent 的话（如"该打开咖啡机了"）经 should_push_im 闸门投递 IM。智能家居订阅触发同通道 |
 | 智能记忆 | 自动学习用户偏好和习惯，按脑区优先级差异化遗忘曲线 |
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
 | /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
@@ -35,7 +35,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 **指令机制**：
 - `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
 - `/clear`：即时清除——① `request_stop()` 停主 Agent；② 无条件唤醒睡眠整理管道（`set_spirit_state("idle")`，在途 sleep 管道于阶段边界自行退出）；③ 无限心跳排队拿 `_chat_lock` 后直接 `clear_messages()` 清空会话 + `cleanup_all_tmp()` + 截断 F1/F2/F3 中继文件 + 删除指针块库 + 校准倍率复位（journal.md 本体保留）；④ 清理挂起同步子 Agent（`cleanup_suspended_sync_subagents`，STOPPED 语义——清空会话 = 显式放弃当前全部工作）。支持 Electron 和 IM 通用
-- `/compact`：统一压缩入口（spec 2026-09-06）——走正常消息通道（`sendMessage('/compact')`，非独立 HTTP），后端 `chat_session` 在落库前拦截置 manual 意图，绝不把 "/compact" 文本当用户消息落库或送模型。受控压缩流程：提炼 F1（硬前置）→ 模型承上启下总结 → 机械压实 → 压缩产物三件套一并落库（做准备提问 user / 总结 assistant / 完成提示 user「[系统提示] 上下文压缩已完成。」；skip_mirror + bypass_at_extract 全链；DB 落库序尾 = 压缩完成）→ 自动路径原指令作最后一条继续执行（本轮重组消息 + 下轮 DB 组装均可见）；手动闲时无下一轮——落库即生效，下次用户消息前最后一句 = 压缩完成。手动路径总结请求经 `_run_idle_compression` 前置 system 补全（角色/时间/记忆完整）。**忙/闲分叉**：忙时意图由 agent_loop 发送前门在任务间隙消费执行；闲时直调受控压缩（`_run_idle_compression`）。**永不发 /stop**（压缩与停止解耦）。compact_status 圆环动画 + 完成后推送新 usage 给前端圆环。与 `/clear` 的区别：`/clear` 即时清空会话；`/compact` 只压缩视图不清空会话，历史全部可经 read_history_block 取回。
+- `/compact`：统一压缩入口——走正常消息通道（`sendMessage('/compact')`，非独立 HTTP），后端 `chat_session` 在落库前拦截置 manual 意图，绝不把 "/compact" 文本当用户消息落库或送模型。受控压缩流程：提炼 F1（硬前置）→ 模型承上启下总结 → 机械压实 → 压缩产物三件套一并落库（做准备提问 user / 总结 assistant / 完成提示 user「[系统提示] 上下文压缩已完成。」；skip_mirror + bypass_at_extract 全链；DB 落库序尾 = 压缩完成）→ 自动路径原指令作最后一条继续执行（本轮重组消息 + 下轮 DB 组装均可见）；手动闲时无下一轮——落库即生效，下次用户消息前最后一句 = 压缩完成。手动路径总结请求经 `_run_idle_compression` 前置 system 补全（角色/时间/记忆完整）。**忙/闲分叉**：忙时意图由 agent_loop 发送前门在任务间隙消费执行；闲时直调受控压缩（`_run_idle_compression`）。**永不发 /stop**（压缩与停止解耦）。compact_status 圆环动画 + 完成后推送新 usage 给前端圆环。与 `/clear` 的区别：`/clear` 即时清空会话；`/compact` 只压缩视图不清空会话，历史全部可经 read_history_block 取回。
 - `/sleep`：通过 IPC `enter-sleep` 通知精灵 `setState(SLEEP)`，后者自动触发 `triggerTidy()` → `POST /api/context/tidy {mode:'sleep'}`（entity-extractor → dream-evolver 多轮循环；journal 已移出为每日 18 点定时任务——见「上下文管理」章节）。**与空闲自动睡眠完全同路径**：同走全局整理队列（投递后立即返回 `{"status":"queued"}`），worker 串行执行；精灵播放睡眠动画，用户发消息时自动唤醒（`onUserActivity` SLEEP→IDLE）。**睡眠状态机检查（仅 sleep）**：排队唤醒时非睡眠 → `cancelled/woke_up`；entity/dream 每步完成后检查，被唤醒 → `interrupted/woke_up`，已推进不回滚下次续跑。**忙碌守卫**：Agent 运行时（精灵 BUSY）忽略 `/sleep`——chat.html 检查 `isProcessing` 提示用户，spirit.html `onEnterSleep` 检查 `currentState === State.BUSY || busyCount > 0` 兜底忽略（`busyCount` 覆盖 ALERT 期间 `onBusyState` 只计数不切态的场景，是忙碌的权威判据），防止 Agent 完成后 `chat_idle` 把精灵从 SLEEP 强制唤醒回 IDLE 的状态冲突。**已知边缘**：非 chat 来源忙碌（如拖文件到精灵窗口入库中，`busyCount>0` 但 chat 的 `isProcessing=false`）时，`/sleep` 会显示「💤 精灵已进入睡眠」提示但精灵兜底忽略——fire-and-forget IPC 模式（同 `notify-busy`）的固有权衡，无状态损坏，入库完成后再发一次即可。
 - 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
 
@@ -90,15 +90,15 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `ha-server` | 智能家居（Home Assistant 设备控制/场景/自动化） | Yes（可选） |
 | `vision-server` | 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图三工具；前两者基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动；analyze_image 不依赖 niu_natives） | Yes |
 
-> `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
+> `kg-server`、`vector-store`、`embedding-service` 不存在，知识检索统一由 `lightrag-server` 承担；`mcp-servers/embedding-service/` 目录仍残留但不加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
 > `ha-server` 为可选服务器，需配置 Home Assistant 长期访问令牌后才会启用（`optional: true`）。
 
-**elements 大小控制（2026-08-31）**：get_state/navigate/new_tab/switch_tab 返回的 elements 原样输出（不精简不解析）。响应总大小接近 30K 时自动截断 elements（保留页面头部 + 尾部 30 行），追加「内容已折叠」标记 + 完整列表临时文件路径（~/.niu/tmp/browser_state_*.txt）。tabSummary/currentTabId 等关键字段始终完整返回。主 Agent 需要完整元素详情时用 read 工具查看临时文件。
+**elements 大小控制**：get_state/navigate/new_tab/switch_tab 返回的 elements 原样输出（不精简不解析）。响应总大小接近 30K 时自动截断 elements（保留页面头部 + 尾部 30 行），追加「内容已折叠」标记 + 完整列表临时文件路径（~/.niu/tmp/browser_state_*.txt）。tabSummary/currentTabId 等关键字段始终完整返回。主 Agent 需要完整元素详情时用 read 工具查看临时文件。
 
-### 2.1.1 MCP 配置双目录加载（0.3.0 起）
+### 2.1.1 MCP 配置双目录加载
 
-0.3.0 起 `mcp-servers.yaml` 采用**双目录加载模型**，取代旧 copy-once 机制（首启复制到 `~/.niu/config/mcp-servers.yaml`、此后仓库侧变更永不达存量装机的设计债）：
+`mcp-servers.yaml` 采用**双目录加载模型**：
 
 | 层 | 路径 | 角色 |
 |----|------|------|
@@ -143,7 +143,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 
 > 所有 entity_type 和 keywords 统一使用小写存储和比较（写入时 `.lower()`，查询时 `.lower()` 匹配），消除大小写不一致导致的重复实体和 Counter 投票分裂问题。
 
-### 2.2.1 基础工具 read 智能分页（2026-08-28 起）
+### 2.2.1 基础工具 read 智能分页
 
 `read`（`agent/handler.py` `read_file`，全 Agent 共享基础工具）自动按双上限分页，LLM 无需在提示词里写死页长：
 
@@ -225,7 +225,7 @@ ai-bot/
 | `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | 睡眠管线自动调度 | 0.3 |
 | `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | 睡眠管线自动调度 | 0.3 |
 
-> `context-manager` 子 Agent 已随压缩体系退役（2026-08-26）；上下文管理由确定性组装器接管，见「上下文管理」章节。
+> 上下文管理由确定性组装器实现，见「上下文管理」章节。
 
 **屏蔽机制：**
 
@@ -346,7 +346,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 **report-skill 触发条件：** 当 Agent 编写或整理用户日志、生成周报/月报等报告时，向量检索会自动匹配并注入 `report-skill.md`，Agent 按其中定义的聚合规则和模板生成报告。
 
-## 通用子 Agent 体系（阶段三）
+## 通用子 Agent 体系
 
 ### 设计目标
 
@@ -395,13 +395,13 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 - **同时跟用户和子 Agent 自由交互的标准方式 = 异步调用**（同步调用无法同时跟两边自由对话）
 - **异步存档续跑**：仅异步子 Agent 结束（含未完成/上下文超限）后其工作上下文自动落盘存档（`~/.niu/tmp/<唯一名>.json`，24h 内有效；同步调用不落盘）。24h 内主 Agent 用派发确认/结束通知中的原唯一名再次异步调用（`async_mode=true` + `unique_name=原唯一名`）即自动加载存档续跑上次工作（任务文本应声明与上次要求的差异）；无同名有效存档（写盘失败/已过期/不记得名字）则全新派发。完成通知按存档成功与否明示"24 小时内可用原唯一名重新调取续跑"
 
-### 与阶段一+二的衔接
+### 交互能力衔接
 
-- 阶段一：主子 Agent 通信通道（@消息路由、/stop 终止、双击停止）
-- 阶段二：异步调用 + ask_main_agent 内存队列 + check_subagent_progress + 5 死锁约束
-- 阶段三：通用子 Agent 动态创建 + 加载 + @前缀 content 拦截层（@niu-agent 询问 / @end 结束）
+- 通信通道：@消息路由、/stop 终止、双击停止
+- 异步调用：ask_main_agent 内存队列 + check_subagent_progress + 5 条死锁约束
+- 通用子 Agent：动态创建 + 加载 + @前缀 content 拦截层（@niu-agent 询问 / @end 结束）
 
-通用子 Agent 完整复用阶段一+二的全部交互能力。
+通用子 Agent 完整复用主/子 Agent 交互能力。
 
 ### 同步子 Agent @niu-agent 交互通道
 
@@ -409,13 +409,13 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 程序触发子 Agent（睡眠管线 / subagent 类定时任务）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案“无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作”。
 
-### 上下文管理（上下文组装器，2026-08-26 起）
+### 上下文管理（上下文组装器）
 
-> 压缩体系（keep/update/delete、模式一二三、context-manager 子 Agent、保护 N 轮、compress 游标）已整体退役。取而代之的是**存储/视图分离**的确定性组装器：messages.db 是真相源永不动，LLM 每轮看到的只是组装视图；主链路零 LLM 承重。
+> 上下文管理由**存储/视图分离**的确定性组装器实现：messages.db 是真相源永不动，LLM 每轮看到的只是组装视图；主链路零 LLM 承重。
 
 #### 组装视图：水位线模型
 
-每次对话开始，`get_context_for_chat` 从 DB 全量读消息并按**水位线**组装视图（D16）；**工具循环内每轮工具结果落库后同源重建**（`on_tool_round_refresh`，2026-09-02 起——任何工具输出 persist 后从 DB 全量重建视图并原地替换，循环内外同一套组装流程，新输出编号/折叠态/仪表盘即时可见，浏览→同循环折叠可行）：
+每次对话开始，`get_context_for_chat` 从 DB 全量读消息并按**水位线**组装视图（D16）；**工具循环内每轮工具结果落库后同源重建**（`on_tool_round_refresh`——任何工具输出 persist 后从 DB 全量重建视图并原地替换，循环内外同一套组装流程，新输出编号/折叠态/仪表盘即时可见，浏览→同循环折叠可行）：
 
 - **视图组成** = [system 静态区] + [历史索引前导 user 消息（仅当有归档块）] + [未被块库覆盖的尾部消息逐字原文]。候选起点恒为块边界（= 会话单元边界，tool_calls 配对完整）
 - **压实是唯一归档者**：只有压实（校准总量 ≥80% 自动触发 / `/compact` 手动）才把保留轮（`context.keepRecentTurns`，默认 3）之外的完整会话单元写入指针块；组装路径纯只读，不做预算装填、不做归档
@@ -426,9 +426,9 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 #### token 校准倍率
 
-本地 TokenCalculator 估算与服务端真值存在中英文比例漂移，程序维护校准倍率桥接：每次主 Agent 响应后用 `usage.prompt_tokens` 真值 ÷ **同一完整发送集（含 system/动态块/索引）的全量本地估算**覆盖更新倍率（仅主 Agent，子 Agent 副模型不混入）——**全量无增量缓存**（2026-09-02 修正：原增量缓存被原地改写如折叠/重建/截断污染）；倍率持久化在 `~/.niu/token_calibration.json`，默认 1.15，越界（0.2~10 之外）自动回退。80%/95% 触发判定均基于**校准后估算**。
+本地 TokenCalculator 估算与服务端真值存在中英文比例漂移，程序维护校准倍率桥接：每次主 Agent 响应后用 `usage.prompt_tokens` 真值 ÷ **同一完整发送集（含 system/动态块/索引）的全量本地估算**覆盖更新倍率（仅主 Agent，子 Agent 副模型不混入）——**全量无增量缓存**；倍率持久化在 `~/.niu/token_calibration.json`，默认 1.15，越界（0.2~10 之外）自动回退。80%/95% 触发判定均基于**校准后估算**。
 
-**使用率展示口径（2026-09-02 起）**：全量展示（动态块仪表盘/页面圆环）**直接用服务端返回的真值**（`prompt_tokens ÷ 窗口`，每轮 LLM 响应后更新）——不自算全量；估算×倍率只用于**逐条**（每条 tool 输出无服务端真值：output_pct 固化、折叠释放量）。fold/压实成功清零真值缓存（"清零即失效"），至下轮响应前显示压实后估算（`_fold_stats`，四压实出口已回填）——估算窗口为接受边界。
+**使用率展示口径**：全量展示（动态块仪表盘/页面圆环）**直接用服务端返回的真值**（`prompt_tokens ÷ 窗口`，每轮 LLM 响应后更新）——不自算全量；估算×倍率只用于**逐条**（每条 tool 输出无服务端真值：output_pct 固化、折叠释放量）。fold/压实成功清零真值缓存（"清零即失效"），至下轮响应前显示压实后估算（`_fold_stats`，四压实出口已回填）——估算窗口为接受边界。
 
 #### 批量压实：纯机械、零 LLM、秒级
 
@@ -436,7 +436,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 - **动作**：保留最近 N 个会话单元（`context.keepRecentTurns`，默认 3）→ 其余单元全量转指针块 → 索引行合并（超 30% 预算合并最老相邻块）→ D15 三轮硬约束（压实后校准总量仍超 80% 则先占位符化保留轮内旧工具输出，仍超减轮 3→2→1）
 - **无损性**：messages.db 真相源一字不动；任何历史内容可随时经 read_history_block 取回或从 DB 全量重建
 
-#### 主动折叠工具输出（fold_tool_output，2026-09-02 起）
+#### 主动折叠工具输出（fold_tool_output）
 
 压实是硬防线，折叠是软防线：主 Agent 可主动释放窗口内**可再生**的工具输出（文件内容、检索结果等——重新调用原工具即可拿回），把 80% 压实的触发点往后推。机制一段式：
 
@@ -473,9 +473,9 @@ journal 已移出睡眠管道（见下节）。entity → dream 的顺序依赖�
 
 #### journal 定时任务（每日 18 点直执行）
 
-journal-agent 不再进睡眠管道，改为 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_time` 起点，created_at 秒粒度严格大于过滤），起点由 journal.md 内最近一条整理条目的落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号）自判（**落款时间即水位**；无落款按首次整理取最新 200 条），提取写入 journal.md 并在条目末尾更新落款时间。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。旧导出文件通道（`~/.niu/md/journal_workset.md`）与游标文件（`~/.niu/last_journal.json`，磁盘存量成孤儿不清）已整套退役；旧 message_id 机器行游标格式（「覆盖至」带冒号 + uuid）亦已退役（2026-09-04 时间水位改造）。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）或分页中途 invalid_after_id（如 /new 并发清库）本轮放弃不更新落款，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
+journal 走 scheduler 内置定时任务 `journal-daily`（cron `0 18 * * *`，`task_kind='subagent'`、`agent_name='journal-daily-agent'`）：后台线程**直执行**——静默调起后台子 Agent `journal-daily-agent`（`visibility: hidden`）自理整理：经 session-manager `get_messages` 直读 messages.db 分页拉取新消息（`after_time` 起点，created_at 秒粒度严格大于过滤），起点由 journal.md 内最近一条整理条目的落款「覆盖至 YYYY-MM-DD HH:MM:SS」（空格分隔、「覆盖至」后无冒号）自判（**落款时间即水位**；无落款按首次整理取最新 200 条），提取写入 journal.md 并在条目末尾更新落款时间。**严禁经 ChatQueue enqueue**——日志内容写进 messages.db 会反污染上下文窗口。避让纪律：活跃对话期复用 scheduler backend-busy 轮询等待（二次确认防抖、超时兜底放行）；运行中重复触发去重跳过；get_messages 瞬时故障（reason=transient）或分页中途 invalid_after_id（如 /new 并发清库）本轮放弃不更新落款，下轮自然重试。可通过 `context.journalScheduledEnabled=false` 关闭（默认开启）。
 
-#### 例行数据 daily 区域（轻提醒注入区，2026-09-08 起）
+#### 例行数据 daily 区域（轻提醒注入区）
 
 memory.json 顶层 `daily` 键存放例行数据（如天气），机制：`background_script` 后台静默脚本经 `from niu_memory_server import daily_set`（脚本内 sys.path 推导，与 MCP 工具同一实现）写入，或主 Agent 经 `disk("/memory/daily_set key text expires_at")` 手动写入；每轮动态块显示一行 `[例行数据] N 项：key〈text〉...`（插在 `[暂存事项]` 行上方，只显示未过期条目，key 字典序），到期自动清理。条目含 `text`（≤100 字符，写入前单行化）/ `expires_at`（本地秒级无偏移 ISO 裸串）/ `updated_at`；key 上限 20（upsert 已有 key 不受限）。大内容走指针模式：全文写 `~/.niu/tmp/` 临时文件，text 写路径指针（注意 tmp 24h 清理，`expires_at` ≤24h）。
 
@@ -483,7 +483,7 @@ memory.json 顶层 `daily` 键存放例行数据（如天气），机制：`back
 
 #### /compact 新语义
 
-手动 /compact 走统一消息通道（spec 2026-09-06）：一条 `/compact` 消息由后端 `chat_session` 落库前拦截置 manual 意图——受控压缩（提炼 F1 → 模型承上启下总结 → 机械压实）忙时任务间隙执行、闲时立即执行，**永不发 /stop**；压缩产物三件套（做准备提问 + 模型总结 + 「[系统提示] 上下文压缩已完成。」）压缩完成后一并落库（skip_mirror + bypass_at_extract，不进 F1），自动路径原指令继续、手动路径落库即生效——下轮组装模型必见压缩完成。其中机械压实步与自动触发共用同一函数（秒级、DB 不动）。（旧语义「force 全量 keep/update/delete 整理」及「独立 HTTP POST tidy mode:compact + 忙时先发 /stop」随统一压缩入口退役。）
+手动 /compact 走统一消息通道：一条 `/compact` 消息由后端 `chat_session` 落库前拦截置 manual 意图——受控压缩（提炼 F1 → 模型承上启下总结 → 机械压实）忙时任务间隙执行、闲时立即执行，**永不发 /stop**；压缩产物三件套（做准备提问 + 模型总结 + 「[系统提示] 上下文压缩已完成。」）压缩完成后一并落库（skip_mirror + bypass_at_extract，不进 F1），自动路径原指令继续、手动路径落库即生效——下轮组装模型必见压缩完成。其中机械压实步与自动触发共用同一函数（秒级、DB 不动）。（压缩没有独立 HTTP 入口——不要发 `POST /api/context/tidy {mode:'compact'}`，tidy 只支持 sleep 模式。）
 
 #### /clear 与 /new 清理面
 
@@ -694,7 +694,7 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 
 字段与示例详见《用户操作手册》1.2 LLM 配置。
 
-## LLM 参数约束（deny，2026-09-10 起）
+## LLM 参数约束（deny）
 
 不同模型对同一参数的**取值域**约束不同：部分模型只接受 `temperature=1`（推理模型族常见——K3、OpenAI o1/o3/gpt-5 均如此），发送其他值服务端**直接 400 拒收**（请求作废、零输出）。这类约束不在 OpenAI 协议规范内、litellm 注册表也不表达（注册表只描述参数"支持与否"，不描述值域），故 Niu 用「探测 + deny」自行适配。
 
@@ -706,11 +706,9 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 
 机制细节、配置字段、主 Agent 自主探测方法（`code_run` 跑 `niu_api.model_probe.probe`，三个环境统一、无需脚本文件）与排查指引详见《用户操作手册》1.2 LLM 配置的「参数约束（deny）」节。
 
-## 视觉能力（2026-09-10 起）
+## 视觉能力
 
 Niu 的视觉能力 = `vision-server` 的三个工具（均 static 直挂主 Agent，无需 disk 发现）：`list_targets` 列可截目标 + `screenshot` 截图（返回**纯文件路径** + 尺寸元数据，不返回图标记）+ `analyze_image(image_path, question)` 识图——**带提示词**把图片送进一个有视觉能力的模型、返回**文字答案**。工具内部自选模型：**主模型优先**（主模型探测出视觉 → 用主模型；否则用 `vision_llm` 段的第三方视觉模型；皆无 → 明确错误含配置指引）。两层结构：主模型视觉探测（决定 `analyze_image` 能否走主模型）→ 第三方视觉模型配置（`vision_llm` 段）。
-
-> 设计沿革（2026-09-11 重构）：此前「markdown 图标记出站前自动展开」的图片直通通道与「自建视觉子 Agent（llmPreset 捆绑）」路线已整体退役——隐式展开塞不进提示词、且弱模型曾因路径被消费死循环读图。看图统一走 `analyze_image` 显式工具调用（行为在日志里可见、可带提示词反复问同一张图）。
 
 ### 截图辅助工具（list_targets + screenshot）
 
@@ -811,7 +809,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 
 **持久保留语义**：设置页无 vision_llm 表单；任何路径（切模型 / 设置页保存 / 预设加载 / 命名配置切换）都**不动该段**（config-merge 基底透传 + 合集条目两段快照不含 vision_llm）。
 
-### 多视觉模型自动降级（vision_llm.models，2026-09-11 起）
+### 多视觉模型自动降级（vision_llm.models）
 
 **一句话机制**：`analyze_image` 按 `vision_llm.models` 数组顺序依次尝试模型，前一个不可用自动降级到下一个；主模型有视觉时它自己就是链首。**重试由底层 SDK 执行，本层只负责换模型**。主 Agent 只调一次 `analyze_image`，降级在工具内部完成。
 
@@ -847,16 +845,16 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 | 分册 | 文件 | 内容 |
 |------|------|------|
 | 安装部署 | [manual-installation.md](manual-installation.md) | 从零到能运行的 Niu 全流程。覆盖下载安装（DMG 直装）、可选组件（脑区 igraph/leidenalg、人脸 buffalo_l 模型——交叉引用主手册）、源码构建（venv --copies + requirements.txt）、niu-natives 编译（Rust 桌面采集原生扩展，maturin 构建 wheel 装进 python/）、macOS .app 打包（build.sh 9 步流程 + DMG 生成 + Info.plist）、Windows 打包（pack.bat + niu-natives wheel 自动构建与守卫）、跨架构打包（M 系列 Mac 完整步骤）、Rust 启动器编译（含交叉编译 4 目标）。README 的安装/打包信息已纳入本手册，用户问"怎么装""怎么打包""为什么某个组件不工作"时查这里 |
-| 知识检索运维 | [manual-vector-store.md](manual-vector-store.md) | LightRAG 统一架构（取代旧 vector-store + kg-server）的完整运维手册。包含实体类型与 keywords 规范、5 种检索模式（local/global/hybrid/mix/naive）的选用、文档入库流程与参数调优、3 真相源 + 9 派生文件的存储关系图谱、GraphML 损坏检测与 v9 自愈修复机制（第九章）。v2 检测逻辑（2026-07-28）：派生缺失不是损坏，真损坏判定靠 vdb 与 GraphML 数据一致性。**v3（2026-08-14）**：新增 vdb 文件内部一致性检测（matrix/data 行数），不一致时启动自动修复——用户遇到知识图谱回答准确度下降/搜索匹配度降低时**先重启程序**（v3 启动自检自动修复，无需删文件）；重启后仍异常，再删 3 个 vdb 文件重启触发完整重建（9.9 节兜底路径）。遇到知识图谱查询异常、入库失败、存储文件损坏、检索效果差等问题先查这里 |
+| 知识检索运维 | [manual-vector-store.md](manual-vector-store.md) | LightRAG 统一架构的完整运维手册。包含实体类型与 keywords 规范、5 种检索模式（local/global/hybrid/mix/naive）的选用、文档入库流程与参数调优、3 真相源 + 9 派生文件的存储关系图谱、GraphML 损坏检测与自愈修复机制（第九章）。检测逻辑：派生缺失不是损坏，真损坏判定靠 vdb 与 GraphML 数据一致性；另含 vdb 文件内部一致性检测（matrix/data 行数），不一致时启动自动修复——用户遇到知识图谱回答准确度下降/搜索匹配度降低时**先重启程序**（启动自检自动修复，无需删文件）；重启后仍异常，再删 3 个 vdb 文件重启触发完整重建（9.9 节兜底路径）。遇到知识图谱查询异常、入库失败、存储文件损坏、检索效果差等问题先查这里 |
 | 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 所有功能模块的故障排查指引。覆盖启动问题、人脸识别（含 1.2 节人脸数据直查：误合并拆分、向量归属确认、SQLite 直查语句）、定时任务（reminder 不通知 + background_script 静默/报错/永久删除排查——通知形态说明：定时提醒写 DB Chat 显示 + 蹦高 + 主 Agent 的话推 IM，IM 没收到是主 Agent 的话没发出；含 task_kind/script_file 数据库直查）、知识检索、数据存储、浏览器插件、知识图谱损坏修复（1.7.1 专项，含"删 3 个 vdb 文件重启触发修复"简易指引）等场景的诊断步骤和恢复方法。出现报错、功能不工作、数据异常时先查这里找对应模块的排查路径 |
 | 性能优化 | [manual-performance.md](manual-performance.md) | 系统性能调优手册。包含 InsightFace 内存优化（5 分钟空闲自动卸载）、启动速度优化策略、GPU 加速方案（CUDA / DirectML）。遇到内存占用过高、启动慢、人脸识别卡顿等性能问题时查这里 |
 | 依赖与模型 | [manual-dependencies.md](manual-dependencies.md) | Python 依赖清单与模型文件管理。包含 agent / 各 MCP 服务器 / 开发依赖的完整列表（numpy<2 + opencv<4.12 隐性约束）、GPU 支持策略（CUDA / DirectML / CPU）、InsightFace buffalo_l 与 bge-base-zh-v1.5 模型用途、国内下载镜像配置。需要重装依赖、确认版本约束、迁移模型文件时查这里 |
 | 用户操作 | [manual-user-guide.md](manual-user-guide.md) | 程序启动后用户能做的所有操作指南。包含首次启动流程、LLM 配置（含 `/setup` 设置窗口入口、配置逻辑总览、能力探测档案驱动档位、max_tokens 输出上限配置、火山方舟深度思考模型 + 工具调用配置、reasoning_effort 实测指南、格式化输出能力自动探测、Agent 引导用户配置指南）、上下文窗口阈值、知识图谱查询、记忆管理（长期记忆 + 语义记忆两层）、文件格式支持、常见问题（数据存储位置、离线使用、备份、GPU 加速、卸载）、日志开关与级别配置。遇到用户操作类问题先查这里 |
-| 开发者参考 | [manual-developer.md](manual-developer.md) | 面向开发者的工程参考。包含本地开发环境搭建、调试技巧（日志位置、SSE 事件追踪）、API 端点清单、环境变量、版本更新日志。需要改代码、调试 API、查看历史变更时查这里 |
+| 开发者参考 | [manual-developer.md](manual-developer.md) | 面向开发者的工程参考。包含本地开发环境搭建、调试技巧（日志位置、SSE 事件追踪）、API 端点清单、环境变量。需要改代码、调试 API 时查这里 |
 | 文件格式支持 | [manual-file-formats.md](manual-file-formats.md) | 详细说明三种入库能力（文件存储 / 知识图谱 / 照片）的格式支持矩阵。包含 PDF/Word/Excel/PPT/MD/HTML 等格式细节、不支持知识图谱入库的格式（.doc/.xls/.ppt 旧版二进制 + WPS 假 .docx）及原因、照片格式（JPEG/PNG/GIF/BMP/WebP/HEIC）的人脸识别支持。判断某文件能不能入库、为什么入库失败时查这里 |
 | 飞书开通 | [manual-feishu-setup.md](manual-feishu-setup.md) | 飞书机器人开通全流程手册（主 Agent 通过 browser-server MCP 工具操作网页）。包含飞书开放平台创建应用、配置事件订阅、获取 App ID/Secret、写入 im-adapters/feishu 配置、Gateway 启动验证、常见开通故障排查。用户要求接入飞书消息时查这里 |
 | 高德开通 | [manual-amap-setup.md](manual-amap-setup.md) | 高德地图 API Key 获取流程手册（主 Agent 通过 browser-server 操作网页）。包含注册高德开放平台、创建应用获取 Key、写入 config/user-config.json、验证照片 EXIF 位置解析功能、常见开通故障排查。用户需要照片地点识别功能时查这里 |
 | 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 完整接入手册。包含 Docker 安装部署 HA、创建长期访问令牌、设备集成方法、智能触发配置（场景/自动化/脚本）、条件推送机制（5.1 节——订阅事件写 DB 不推 IM、主 Agent 的话经 should_push_im 投递 IM，与定时任务同通道）、ha-server MCP 服务器启用、所有已验证 API 行为和踩坑记录。用户要求接入 HA 智能家居控制时查这里 |
 | MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构与虚拟磁盘配置手册。包含新增 MCP 服务器完整步骤（目录结构 + TOOL_SCHEMAS + workdir 配置）、MCP 配置双目录加载模型（bundle 权威层 + `~/.niu/config/mcp-servers-user.yaml` 用户层，0.3.0 升级迁移说明）、虚拟磁盘 YAML 配置格式与路径映射规则、校验规则和常见配置错误排查。主 Agent 可在 `~/.niu/disk/` 自建 MCP server 配置覆盖或新增。需要新增 MCP 服务器、修改虚拟磁盘路径映射、排查 disk 工具调用失败时查这里 |
 | IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | 面向第三方开发者的 IM 平台接入文档。包含 Gateway + Adapter 分离架构（双进程）、TCP 协议规范、配置文件格式、目录规范、开发新 Adapter（钉钉/Telegram/企业微信等）的完整步骤。需要对接新的 IM 平台或修改 IM 通信协议时查这里 |
-| 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 阶段三通用子 Agent 体系完整说明。包含配置模板（config/agent-template.md）、动态加载机制（chat 入口扫描 ~/.niu/agents/）、MCP 工具映射（mcpServers frontmatter）、主 Agent 创建子 Agent 流程、同步/异步调用模式、与阶段一+二交互能力的衔接、同步子 Agent @niu-agent 询问通道。子 Agent 标签页（动态 Tab + 独立 SSE 事件通道）、@user 用户提问机制、@end 优先级规则、同步子 Agent SSE 404 竞态修复（pre_register + is_closing）、SubagentEventBus 独立事件总线（ring buffer + epoch 机制）。需要理解或调试子 Agent 标签页、事件推送、@user 提问、SSE 竞态问题时查这里 |
+| 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 通用子 Agent 体系完整说明。包含配置模板（config/agent-template.md）、动态加载机制（chat 入口扫描 ~/.niu/agents/）、MCP 工具映射（mcpServers frontmatter）、主 Agent 创建子 Agent 流程、同步/异步调用模式、交互能力衔接（通信通道 + 异步调用）、同步子 Agent @niu-agent 询问通道。子 Agent 标签页（动态 Tab + 独立 SSE 事件通道）、@user 用户提问机制、@end 优先级规则、同步子 Agent SSE 404 竞态修复（pre_register + is_closing）、SubagentEventBus 独立事件总线（ring buffer + epoch 机制）。需要理解或调试子 Agent 标签页、事件推送、@user 提问、SSE 竞态问题时查这里 |

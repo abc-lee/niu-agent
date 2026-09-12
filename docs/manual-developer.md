@@ -1,6 +1,6 @@
 # 开发者参考手册
 
-> 本文档从 SYSTEM_MANUAL.md 拆分而来，包含开发者指南、附录和更新日志。
+> 本文档从 SYSTEM_MANUAL.md 拆分而来，包含开发者指南和附录。
 > 如需系统概述和架构信息，请参阅 [SYSTEM_MANUAL.md](SYSTEM_MANUAL.md)。
 
 ## 一、开发者指南
@@ -37,7 +37,7 @@ cd agent && pip install -e .
 cd ../mcp-servers/photo-server && pip install -e .
 cd ../mcp-servers/lightrag-server && pip install -e .
 # ... 安装其他 MCP 服务器（config-manager, memory-server, file-parser 等）
-# 注意：kg-server 和 vector-store 已废弃，由 lightrag-server 替代
+# 注意：知识检索由 lightrag-server 承担
 
 # 2. 启动 API
 python -m niu_api
@@ -174,7 +174,7 @@ niu [选项]
 | `/api/context/messages/delete` | POST | 按 ID 删除消息 |
 | `/api/context/messages/update` | POST | 更新单条消息内容 |
 | `/api/context/messages/add` | POST | 添加消息 |
-| `/api/context/tidy` | POST | 上下文整理（sleep/force 模式）。整理管道全局一次一个排队（单 worker 队列）：`mode:'sleep'` → 投递 + 立即返回 `{"status":"queued"}`（后端继续排队执行）；`mode:'force'` → 投递 + await 队列执行完成（前端直接 await，无整体超时——解锁真源是后端 try/finally 必释放 `_tidy_lock`，子 Agent 有 LLM read_timeout 保底必收敛）。原 force 压缩前置游标追平门控（`_cursors_caught_up`）已于 2026-08-24 工程四移除——睡眠重排为压缩在前、提炼在后且提炼文件驱动，门控失去意义，不再返回 skipped |
+| `/api/context/tidy` | POST | 上下文整理（sleep/force 模式）。整理管道全局一次一个排队（单 worker 队列）：`mode:'sleep'` → 投递 + 立即返回 `{"status":"queued"}`（后端继续排队执行）；`mode:'force'` → 投递 + await 队列执行完成（前端直接 await，无整体超时——解锁真源是后端 try/finally 必释放 `_tidy_lock`，子 Agent 有 LLM read_timeout 保底必收敛）。无 force 压缩前置游标追平门控（`_cursors_caught_up`）——睡眠为压缩在前、提炼在后且提炼文件驱动，不返回 skipped |
 | `/api/spirit-state` | POST | 精灵状态同步。body `{"state": str}`（如 `"sleep"`/`"idle"`，小写归一）；后端据此刻 `is_sleeping()` 判定 sleep 管道 CP0-CP3 状态机（睡眠整理可被唤醒打断，force 不检查） |
 | `/api/chat/clear` | POST | 即时清空当前会话。流程：无条件唤醒睡眠整理管道（`set_spirit_state("idle")`）+ `request_stop()` 停主 Agent → 无限心跳排队拿 `_chat_lock`（60s 一跳，永不超时拒绝）→ `clear_messages()` 清空 + `cleanup_all_tmp()` + 复位全部游标 + 清理挂起同步子 Agent（`cleanup_suspended_sync_subagents`，STOPPED 语义）。**已移除 force_tidy 提炼通道**（用户拍板"取消清空前提炼"）：请求 body 的 `force_tidy` 字段被忽略，/clear 不再先跑整理 |
 | `/api/chat/session` | POST | 同步对话（兼容旧 UI） |
@@ -235,78 +235,3 @@ Copyright (c) 2026
 - LightRAG: MIT License
 ```
 
----
-
-## 三、更新日志
-
-### v0.6.0 (2026-06-30)
-
-**重大变更：**
-- MCP 同进程架构（ToolRegistry）：MCP 工具由 stdio 通信改为同进程直接调用，性能提升约 40000x
-- Go → Rust 启动器迁移：launcher/ 改为 Rust + clap 实现，前端 GUI 集成在 Rust 启动器中
-- Electron → Iced 迁移（部分）：splash/启动画面迁移至 Iced GPU GUI，主交互界面仍基于 Electron + Rust 启动器
-- skill 三级降级机制：active → deprecated → `.trash/`，自动归档失效 skill
-- 睡眠触发修复：preload.js 注入 `IDLE_TIMEOUT`，spirit.html 通过 electronAPI 读取
-- requirements 清理：删除 14 个冗余依赖包
-
-### v0.5.0 (2026-04-30)
-
-**重大变更：**
-- KG 实体架构重构：人物实体只存名字，文档入库全自动
-- LightRAG 替代向量库作为主要知识检索引擎
-- 脑图系统（Brain Graph）：记忆存取（store/recall via LightRAG）
-- 脑区（Brain Region）：社区检测 + 区域节点刷新
-- 上下文整理管道升级：entity-extractor + dream-evolver + context-manager + journal-agent 四游标机制 + 小憩模式主动触发（entity-extractor → dream-evolver）
-- 子 Agent 新增：entity-extractor、dream-evolver
-
-### v0.4.0 (2026-04-09)
-
-**重大变更：**
-- 新增交互习惯库（Interaction Habits）
-
-**交互习惯库（Interaction Habits）：**
-- 三类内容：工具方言、用户状态、用户画像
-- 置信度机制：success_count/fail_count，自动删除低置信度记录（fail_count >= 3）
-- context-manager 梦境整理时学习个性化内容
-- 主 Agent 可读取和应用 Interaction Habits
-- 工具调用成功后自动更新对应 dialect 的置信度
-
-### v0.3.0 (2026-04-09)
-
-**重大变更：**
-- 新增向量库系统文档（第三章）（已废弃，由 LightRAG 替代）
-- L1规范统一（spec-L1-summary.md）
-- 递归查询机制文档（design-vector-recursive-query.md）（已废弃）
-- 新增向量库故障排查（5.4节）（已废弃，由 LightRAG 故障排查替代）
-
-**向量库系统：**（已废弃，由 LightRAG 替代）
-- 4类文档：mcp_tool, query_pattern, skill, document
-- 统一metadata结构：level, category, language
-- L2归一化（标准行为）
-- 递归查询机制（is_recursive标志）
-
-**辅助脚本：**（服务于已废弃的向量库系统）
-- `export_all_mcp_tools.py` - 导出工具到JSON
-- `register_all_mcp_tools_from_json.py` - 从JSON注册
-- `check_mcp_tools_in_db.py` - 检查向量库状态（已删除）
-
-### v0.2.0 (2026-04-06)
-
-**重大变更：**
-- 单进程架构：整合 embedding 和 scheduler 到主进程
-- GPU 自动检测：自动选择 CUDA/CPU
-- 依赖打包：所有依赖预下载，无网络要求
-
-**新增功能：**
-- 动态技能系统（watchdog 监控）
-- 定时任务优化（延迟启动避免时序问题）
-- 完整的系统说明书
-
-**修复问题：**
-- 移除重复日志
-- 修复依赖声明缺失
-- 优化启动速度
-
-**已知问题：**
-- macOS/Linux 版本未测试
-- 多用户支持未实现

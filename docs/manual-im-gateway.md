@@ -538,7 +538,7 @@ Adapter 收到 PUSH
              └── P2P 消息发送成功后，更新 push_target 到 preferences.json
 ```
 
-> **定时任务说明（2026-08-15 起）**：定时提醒**程序消息不推 IM**——trigger 时只写 Message.DB 唤醒主 Agent（Chat 页面由 DB 变更 SSE 刷新显示，前端逻辑），不走 ChannelRouter.push()。主 Agent 收到提醒后的话由 chat_queue scheduler 特判经 should_push_im 闸门 send_sync 投递（STREAM 流式卡 + SEND 终结，见上节出方向），不经过 PUSH。
+> **定时任务说明**：定时提醒**程序消息不推 IM**——trigger 时只写 Message.DB 唤醒主 Agent（Chat 页面由 DB 变更 SSE 刷新显示，前端逻辑），不走 ChannelRouter.push()。主 Agent 收到提醒后的话由 chat_queue scheduler 特判经 should_push_im 闸门 send_sync 投递（STREAM 流式卡 + SEND 终结，见上节出方向），不经过 PUSH。
 
 **push 目标优先级**：`override_id`（PUSH 指令中的 channel_id）→ `open_id` → `chat_id`。open_id 发送失败时自动回退到 chat_id，确保推送可达。当用户首次与 Adapter 交互后，Adapter 会将有效的 open_id 写回 `preferences.json` 的 `push_target` 字段，供后续 PUSH 使用。
 

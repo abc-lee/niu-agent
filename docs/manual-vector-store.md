@@ -4,7 +4,7 @@
 
 ## 一、架构概述
 
-LightRAG 统一了知识图谱 + 语义检索，取代了旧的 vector-store + kg-server 双存储架构。
+LightRAG 统一了知识图谱 + 语义检索。
 
 | 项目 | 说明 |
 |------|------|
@@ -205,7 +205,7 @@ photo-server/ingest_document
 - self_writing 过滤：写入后 2 秒内的修改事件被忽略
 - 状态持久化：`~/.niu/skill_sync_state.json`，进程重启后不会误判已有 skill 为"新增"
 - 注入/删除成功才更新状态文件，失败则下次扫描重试
-- 无变化不写盘（2026-07-19 修复）：`scan_and_sync` 入口快照 `_last_scan` + `_last_notes_scan`，出口对比是否变化，无变化跳过 `_save_state`。覆盖 watchdog 并发新增 + KG ghost cleanup 失败塞空值两个边界（added/updated/deleted 全 0 但状态确实变化的场景）。watchdog `_execute` 路径不受影响（文件变化触发，本身就是"有变化"）
+- 无变化不写盘：`scan_and_sync` 入口快照 `_last_scan` + `_last_notes_scan`，出口对比是否变化，无变化跳过 `_save_state`。覆盖 watchdog 并发新增 + KG ghost cleanup 失败塞空值两个边界（added/updated/deleted 全 0 但状态确实变化的场景）。watchdog `_execute` 路径不受影响（文件变化触发，本身就是"有变化"）
 
 **Skill 实体格式**：
 
@@ -297,7 +297,7 @@ source_id = "skill://{skill_name}"
 - 总边数 == 1（只剩这一条边） → 保底冻结，权重不低于 0.1
 - total_degree >= 2 → 允许正常衰减，低于 0.1 时删除边（permanent 与非 permanent 一致）
 
-**永久脑区边衰减规则**（2026-07-18 修复）：
+**永久脑区边衰减规则**：
 
 永久脑区（permanent 优先级，如文档库/人际关系/组织机构）与普通脑区的**唯一区别**是：脑区节点本身不被 `dissolve_shrunk_regions` 删除。**实体归属边的衰减逻辑与普通脑区完全一致**：
 
@@ -305,15 +305,15 @@ source_id = "skill://{skill_name}"
 - weight > FLOOR_WEIGHT → 正常衰减
 - total_degree <= 1（孤立实体）→ 保底保护
 
-旧版本的"永久脑区归属边永久保底永不删除"逻辑是 bug，已修复。NIU 根节点（entity_type=other）不在脑区循环内，其与脑区的边天然不受衰减影响。
+NIU 根节点（entity_type=other）不在脑区循环内，其与脑区的边天然不受衰减影响。
 
 **永久脑区空壳状态**：永久脑区即使所有归属边被删除，脑区节点本身仍保留（is_default_region 跳过 dissolve）。下次有新文档入库会重新建立归属边。
 
-**脑区 dissolve 阈值**（2026-07-19 恢复 + 孤岛保护）：
+**脑区 dissolve 阈值**：
 
 `dissolve_shrunk_regions` 默认 `shrink_threshold=100`——成员数 < 100 才判萎缩，连续 3 轮（`shrink_rounds=3`）后执行 dissolve。
 
-**孤岛保护**（2026-07-19 新增）：dissolve 执行前会检查所有成员的 `total_degree`：
+**孤岛保护**：dissolve 执行前会检查所有成员的 `total_degree`：
 - 所有成员 `degree >= 2` → 安全，执行 dissolve（成员挪给最相似邻居脑区 + 删除脑区节点）
 - 有任何一个成员 `degree <= 1` → **取消本次 dissolve**，`shrink_count` 继续累加（+1）后持久化，下轮重新扫
 
@@ -321,9 +321,7 @@ source_id = "skill://{skill_name}"
 
 **缺省脑区保护**：`is_default_region` 跳过 `~/.niu/preferences.json` 配置的缺省脑区，永远不会被 dissolve（即使 0 成员）。
 
-**历史**：2026-07-13 commit `4f03f10d` 曾越权把 `shrink_threshold` 从 100 改成 10，2026-07-19 恢复。
-
-**社区重算输入范围**（2026-07-18 扩展）：
+**社区重算输入范围**：
 
 社区重算（每 24 小时一次）参与资格规则：
 
@@ -524,7 +522,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 - **has_content**：文件存在且有内容（至少 1 个 node / 1 个 entry）
 - **corrupt**：文件存在但 JSON/XML 解析失败
 
-判定规则（v2 修复 2026-07-28）：
+判定规则：
 - 3 文件全部 absent/empty → 全新用户合法（intact=True，还没导入文档）
 - 3 文件全部 has_content 且无 corrupt → 完好（intact=True）
 - 部分文件 has_content 部分 absent/empty → **合法中间状态**（intact=True）
@@ -532,19 +530,19 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
   - GraphML 有内容 + full_docs/cache absent 是正常状态（用户未入库文档）
 - 任一文件 corrupt → 损坏（intact=False，unrecoverable）
 
-**vdb 数据一致性检测**（`_check_vdb_missing`，v2 启用）：
+**vdb 数据一致性检测**（`_check_vdb_missing`）：
 - GraphML 有 node 但 `vdb_entities` 无对应向量 → major（数据不一致，真损坏）
 - GraphML 有 edge 但 `vdb_relationships` 无对应向量 → major
-- 这是 v2 的核心改进：真损坏判定从"文件存在性"改为"数据一致性"
+- 真损坏判定基于"数据一致性"而非"文件存在性"
 
-**vdb 文件内部一致性检测**（`_check_vdb_internal`，v3 新增 2026-08-14）：
+**vdb 文件内部一致性检测**（`_check_vdb_internal`）：
 - 检测 vdb_entities / vdb_relationships / vdb_chunks 的 matrix 行数 vs data 条数是否一致（孤儿向量）
 - 不一致 → major（vdb_matrix_mismatch）
 - 成因：跨进程并发 upsert 导致 matrix 与 data 不同步（LightRAG fork 注释警告 "Only one process should updating the storage at a time"）
 - 后果：nano-vectordb 查询时孤儿向量行号越界崩溃——多数时候不显式报错，仅表现为回答准确度下降/搜索匹配度降低；极端场景（top_k 恰好命中孤儿向量）才显式报错
-- 与 v2 的区别：v2 只查 GraphML⊆vdb 单向（防数据丢失）；v3 查 vdb 文件内部 matrix 行数 vs data 条数（孤儿向量）——行数比对不检测等行数的内容级错位；修复重建（从 data.vector 重建 matrix）可一并消除尾部错位
+- 两种检测互补：前者只查 GraphML⊆vdb 单向（防数据丢失）；本项查 vdb 文件内部 matrix 行数 vs data 条数（孤儿向量）——行数比对不检测等行数的内容级错位；修复重建（从 data.vector 重建 matrix）可一并消除尾部错位
 
-**派生 kv_store 文件缺失**（`_check_derived_missing`，v2 改为不报错）：
+**派生 kv_store 文件缺失**（`_check_derived_missing`）：
 - `kv_store_doc_status` / `entity_chunks` / `relation_chunks` / `full_entities` / `full_relations` 缺失不是损坏
 - LightRAG `JsonKVStorage.initialize` 把缺失文件当空 dict，运行时按需 upsert
 - 缺失时记 INFO 日志保留知情权，不阻断启动，不主动重建，不写空文件
@@ -564,7 +562,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 
 用户点击"尝试修复"后，调 `/api/kg/lightrag/repair` → `run_repair_on_user_request` 进入修复流程。
 
-**v3 例外（自动修复不弹窗，2026-08-14）**：`vdb_matrix_mismatch`（vdb 文件内部 matrix/data 行数不一致）→ **启动自检自动修复**——从 data.vector 重建 matrix（秒级、不删任何数据）→ 重跑检测 → 通过后正常启动，**不弹窗、无需用户操作**。其他损坏（真相源 corrupt / vdb_missing 文件缺失）仍走阻断 + "尝试修复"弹窗路径。
+**例外（自动修复不弹窗）**：`vdb_matrix_mismatch`（vdb 文件内部 matrix/data 行数不一致）→ **启动自检自动修复**——从 data.vector 重建 matrix（秒级、不删任何数据）→ 重跑检测 → 通过后正常启动，**不弹窗、无需用户操作**。其他损坏（真相源 corrupt / vdb_missing 文件缺失）仍走阻断 + "尝试修复"弹窗路径。
 
 ### 9.4 修复流程（run_repair_on_user_request）
 
@@ -583,7 +581,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
    - 让其他线程的 get_lightrag() 返回 None（兜底防御）
 3. 调 repair_all：
    3.1 检测 3 真相源完好性（_check_truth_sources_intact）
-       - v2 修复：partial 状态（GraphML 有 + full_docs/cache 缺）不再判 unrecoverable
+       - partial 状态（GraphML 有 + full_docs/cache 缺）不判 unrecoverable
        - 只有 corrupt（JSON/XML 解析失败）才 unrecoverable
        - corrupt → 不删派生（保留现场让用户排查）
    3.2 删除 9 派生文件
@@ -600,7 +598,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 
 **为什么修复后不重启 RegionSync**：RegionSync 守护线程跑 `_sync_loop` → `_run_sync_impl` → `_manage_region_nodes` → `create_region_nodes` 会写 GraphML（创建/合并脑区节点）。守护线程有"距上次同步超 21.6h 立即跑首次同步"逻辑，修复后立即重启会触发 sync 写真相源。修复程序必须让用户重启程序，由正常启动流程在 check 通过后才启动 RegionSync。
 
-### 9.5 走 LightRAG storage.upsert 接口（v9 关键改进）
+### 9.5 走 LightRAG storage.upsert 接口
 
 9 个派生文件重建走 LightRAG 原生 storage 接口的 `upsert` 方法，**不绕过直接写 JSON 文件**：
 
@@ -627,15 +625,15 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 
 | 场景 | 模拟操作 | 预期结果 |
 |------|---------|---------|
-| 1. vdb_entities 缺失 | 删 vdb_entities.json | v2：检测报 major（数据不一致），repair 重建 vdb_entities，3 真相源不变 |
-| 2. 9 派生全缺失 | 删全部 9 派生文件 | v2：派生 kv_store 缺失不报 major（合法状态）；vdb 缺向量报 major 触发 repair；repair 重建 vdb + 必要派生，3 真相源不变 |
+| 1. vdb_entities 缺失 | 删 vdb_entities.json | 检测报 major（数据不一致），repair 重建 vdb_entities，3 真相源不变 |
+| 2. 9 派生全缺失 | 删全部 9 派生文件 | 派生 kv_store 缺失不报 major（合法状态）；vdb 缺向量报 major 触发 repair；repair 重建 vdb + 必要派生，3 真相源不变 |
 | 3. GraphML 损坏 | 写损坏 GraphML（如 `<invalid xml`） | unrecoverable，9 派生文件未被删（保留现场） |
 | 4. full_docs 损坏 | 写损坏 full_docs JSON | unrecoverable |
 | 5. cache 损坏 | 写损坏 cache JSON | unrecoverable |
 | 6. 已删实体不复活 | GraphML 含已删实体引用 | 重建后派生文件不含已删实体 |
 | 7. weight 衰减值保留 | GraphML 含 weight=0.5 | 重建后 GraphML 的 weight 不变（GraphML 没被修改） |
 
-**v2 新增场景**（脑区/Skills 路径合法状态）：
+**附加场景**（脑区/Skills 路径合法状态）：
 - GraphML 有 node + full_docs/cache absent + 5 派生 kv_store 缺失 → 检测 ok=True（合法中间状态，不弹窗不修复）
 
 ### 9.7 修复合格判定
@@ -675,7 +673,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 
 ### 9.9 用户简易修复指引（重启自动修复优先，删 vdb 为兜底）
 
-**v3 优先路径（重启即自动修复，无需删文件）**：
+**优先路径（重启即自动修复，无需删文件）**：
 
 当 vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量）时，**直接重启程序即可自动修复**：
 1. 退出程序
@@ -690,7 +688,7 @@ LightRAG 存储目录 `~/.niu/lightrag_storage/` 下有 12 个文件，分两类
 - 显式"查询失败"报错只在极端场景出现（检索恰好命中损坏的向量），多数时候不报错，只是结果错乱
 - 以上症状出现时，先重启程序——绝大多数情况重启后自动修复，无需做其他操作
 
-**兜底路径**（v3 自动修复不适用时——vdb 文件缺失、GraphML-vdb 不一致等场景）：删除 3 个 vdb 文件后重启程序，系统会自动触发修复流程重建向量索引：
+**兜底路径**（优先路径的自动修复不适用时——vdb 文件缺失、GraphML-vdb 不一致等场景）：删除 3 个 vdb 文件后重启程序，系统会自动触发修复流程重建向量索引：
 
 ```bash
 # 1. 退出程序（确保没有 niu 进程在运行）
