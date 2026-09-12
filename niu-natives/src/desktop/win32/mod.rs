@@ -10,7 +10,7 @@ use enigo::Enigo;
 use image::RgbaImage;
 
 #[cfg(target_os = "windows")]
-use super::backend::{Backend, DeliveryMode, PointerEvent};
+use super::backend::{AxBackend, Backend, DeliveryMode, PointerEvent};
 #[cfg(target_os = "windows")]
 use super::error::CoreResult;
 #[cfg(target_os = "windows")]
@@ -104,5 +104,9 @@ impl Backend for Win32Backend {
 		mode: DeliveryMode,
 	) -> CoreResult<()> {
 		input::key_chord(&mut self.global_input, target, keys, mode)
+	}
+
+	fn ax(&mut self) -> Option<&mut dyn AxBackend> {
+		None // T1b replaces with Some(&mut self.ax) once the Win32 UIA backend lands
 	}
 }

@@ -8,9 +8,9 @@ pub(crate) use self::process_type::demote_to_background_only;
 
 use image::RgbaImage;
 
-use self::{capture::MacCapture, input::MacInput};
+use self::{ax::MacAx, capture::MacCapture, input::MacInput};
 use super::{
-	backend::{Backend, DeliveryMode, PointerEvent},
+	backend::{AxBackend, Backend, DeliveryMode, PointerEvent},
 	error::{CoreResult, DesktopError},
 	frame::FrameGeometry,
 	keys::KeyName,
@@ -22,6 +22,7 @@ use super::{
 pub struct MacosBackend {
 	capture: MacCapture,
 	input:   MacInput,
+	ax:      MacAx,
 }
 
 impl MacosBackend {
@@ -29,6 +30,7 @@ impl MacosBackend {
 		Ok(Self {
 			capture: MacCapture::new(display),
 			input:   MacInput::new()?,
+			ax:      MacAx::new(),
 		})
 	}
 
@@ -112,6 +114,10 @@ impl Backend for MacosBackend {
 	) -> CoreResult<()> {
 		Self::require_input_permission()?;
 		self.input.key_chord(target, keys, mode, &self.capture)
+	}
+
+	fn ax(&mut self) -> Option<&mut dyn AxBackend> {
+		Some(&mut self.ax)
 	}
 }
 
