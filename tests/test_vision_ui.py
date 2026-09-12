@@ -140,6 +140,84 @@ class TestUsageDiscrimination:
         assert m.ui(action="hover") == m._UI_USAGE_ERROR
 
 
+class TestTargetMustBeWindowId:
+    """v0.7 修正（真机实证）：ui 不再自己挑「当前窗口」。
+
+    根因：macOS 的 focused 是**进程级**（同一 App 多窗口全为 true），自动挑会选中
+    32x24 的菜单栏小图标窗（无 AX 窗口）→ 真机 `AxFailed`。改为要求明确窗口 id，
+    并在缺失时给出候选清单 + 下一步指引（不猜、不静默）。
+    """
+
+    @staticmethod
+    def _win(wid, app, title, w, h, focused=False):
+        return types.SimpleNamespace(
+            id=wid, app=app, title=title, width=w, height=h, focused=focused)
+
+    @staticmethod
+    def _disp():
+        return types.SimpleNamespace(
+            name="Built-in Retina Display", width=1680, height=1050,
+            scale=2.0, x=0, y=0, is_primary=True)
+
+    def _install(self, monkeypatch, windows):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.list_displays.return_value = [self._disp()]
+        session.list_windows.return_value = windows
+        return m, session
+
+    def test_desktop_rejected_and_never_calls_snapshot(self, monkeypatch):
+        m, session = self._install(monkeypatch, [
+            self._win("22688", "Electron", "Item-0", 32, 24, focused=True),
+            self._win("22686", "Electron", "妞妞聊天", 1680, 1050, focused=True),
+        ])
+        result = m.ui(target="desktop")
+        assert "需要明确的窗口 id" in result
+        assert "list_targets" in result
+        session.ax_snapshot.assert_not_called()
+
+    def test_desktop_rejected_for_find_usage_too(self, monkeypatch):
+        m, session = self._install(monkeypatch, [self._win("1", "App", "w", 100, 100)])
+        result = m.ui(target="desktop", find={"role": "button"})
+        assert "需要明确的窗口 id" in result
+        session.ax_query.assert_not_called()
+
+    def test_candidates_front_app_first_then_area(self, monkeypatch):
+        m, _ = self._install(monkeypatch, [
+            self._win("1", "Electron", "Item-0", 32, 24),                  # 最小
+            self._win("2", "Other", "背景大窗", 1600, 1000),                # 最大但非前台
+            self._win("3", "Safari浏览器", "百度", 1680, 1050, focused=True),  # 前台 + 最大
+        ])
+        lines = [ln for ln in m.ui(target="desktop").splitlines() if ln.startswith("- id=")]
+        assert lines[0].startswith("- id=3")   # 前台应用优先
+        assert lines[1].startswith("- id=2")   # 其次按面积降序
+        assert lines[2].startswith("- id=1")
+
+    def test_candidates_capped_at_eight(self, monkeypatch):
+        m, _ = self._install(
+            monkeypatch, [self._win(str(i), "App", f"w{i}", 100 + i, 100) for i in range(12)])
+        lines = [ln for ln in m.ui(target="desktop").splitlines() if ln.startswith("- id=")]
+        assert len(lines) == 8
+
+    def test_title_containing_dimensions_does_not_break_ranking(self, monkeypatch):
+        """标题里自带尺寸字样（常见于截图类窗口）不得影响按面积排序。"""
+        m, _ = self._install(monkeypatch, [
+            self._win("1", "App", "2000x2000 假标题", 100, 100),   # 标题大、实际小
+            self._win("2", "App", "真大窗", 1600, 1000),
+        ])
+        lines = [ln for ln in m.ui(target="desktop").splitlines() if ln.startswith("- id=")]
+        assert lines[0].startswith("- id=2")
+
+    def test_window_id_still_reads_structure(self, monkeypatch):
+        """回归锁：传窗口 id 的正常路径不得被守卫误伤。"""
+        m, session = self._install(
+            monkeypatch, [self._win("22686", "Electron", "妞妞聊天", 1680, 1050, focused=True)])
+        session.ax_snapshot.return_value = types.SimpleNamespace(
+            node_count=2, truncated=False, text="- window \"x\" [ref=e1]")
+        result = m.ui(target="22686")
+        assert "[ref=e1]" in result
+        session.ax_snapshot.assert_called_once_with("22686", None)
+
+
 class TestUsage2ValueRegression:
     def test_find_with_value_rejected(self, monkeypatch):
         """回归锁：用法②漏判 value——target+find+value 必须报用法错误，不得查询。"""

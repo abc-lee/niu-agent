@@ -851,6 +851,44 @@ def _format_ax_node(node) -> str:
     return " ".join(parts)
 
 
+# v0.7 修正（真机实证）：不再让 ui 自己挑「当前窗口」——macOS 的 focused 是**进程级**，
+# 同一 App 的多个窗口全都被标记为焦点，结果选中 32x24 的菜单栏小图标窗（没有 AX 窗口）
+# → AxFailed。改为**要求明确窗口 id**，缺失时给出候选清单与下一步指引（不猜、不静默）。
+_UI_NEED_WINDOW_ID = ("ui 需要明确的窗口 id（无法可靠判断「当前窗口」该读哪个：macOS 的 focused 是"
+                      "进程级，同一 App 的多个窗口都会被标记为焦点，会误选菜单栏小图标窗）。"
+                      '请先调用 list_targets 取窗口 id，再 ui(target="<id>")。')
+
+
+def _ui_require_window_id(target) -> str | None:
+    """target 必须是明确窗口 id；返回中文错误（含候选清单）或 None。"""
+    t = str(target).strip()
+    if t and t.lower() != "desktop":
+        return None
+    lines = [_UI_NEED_WINDOW_ID]
+    try:
+        cands = [ln for ln in list_targets().splitlines() if ln.startswith("- id=")]
+
+        def _rank(line: str):
+            front = 0 if "[应用在前台]" in line else 1
+            area = 0
+            # 从行尾找尺寸 token：窗口行格式 `- id=… App "标题" WxH @(x,y)`——
+            # 标题里可能自带 "1680x1050" 之类字样，从尾部找可避开
+            for tok in reversed(line.split()):
+                a, _, b = tok.partition("x")
+                if a.isdigit() and b.isdigit():
+                    area = int(a) * int(b)
+                    break
+            return (front, -area)
+
+        cands.sort(key=_rank)
+        if cands:
+            lines.append("当前候选窗口（最多 8 个，优先应用在前台的）：")
+            lines.extend(cands[:8])
+    except Exception as e:  # 候选清单只是辅助信息，取不到不影响报错
+        logger.debug(f"[vision-server] ui candidate list unavailable: {e}")
+    return "\n".join(lines)
+
+
 def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, limit=None) -> str:
     """语义桌面操作（AX/UIA）：读结构 / 找元素 / 对元素动作 / 查焦点元素。
 
@@ -861,6 +899,8 @@ def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, li
       ax_perform / ax_set_value / ax_focus / ax_click
     - ④ 焦点元素：action="focused_element"（无 target、无 ref）→ ax_focused
 
+    target 必须是**明确窗口 id**（list_targets 取）；传 "desktop" 返回可执行错误 —— 不自动挑窗口
+    （v0.7：macOS 的 focused 是进程级，自动挑会误选菜单栏小图标窗）。
     参数名映射（spec #27）：depth→max_depth；limit→max_nodes（快照）/ limit（查询）。
     全部失败转中文串，不抛异常。
     """
@@ -877,6 +917,11 @@ def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, li
     else:
         # ui() / ui(depth=2) / ref 无 action / 未知 action / find 无 target …
         return _UI_USAGE_ERROR
+
+    if usage in (1, 2):
+        _err = _ui_require_window_id(target)
+        if _err is not None:
+            return _err
 
     session = _get_session()
     if session is None:
@@ -1300,13 +1345,13 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": (
             "语义桌面操作（AX/UIA）：读界面结构 / 按语义找元素 / 对元素执行动作——不依赖截图与坐标。"
             "四种用法，恰好传一种（混填返回错误）："
-            "① 读结构 ui(target=<窗口ID|\"desktop\">, depth=?, limit=?) → 缩进文本树（每行带 [ref=eN]）+ 节点数 + 截断标志；"
+            "① 读结构 ui(target=<窗口ID>, depth=?, limit=?) → 缩进文本树（每行带 [ref=eN]）+ 节点数 + 截断标志；"
             "② 找元素 ui(target=…, find={\"role\":…,\"title\":…,\"value\":…,\"limit\":…}) → 命中清单（role/title/ref/enabled/focused/bounds）；"
             "③ 对元素动作 ui(ref=\"e12\", action=\"press\"|\"set_value\"|\"focus\"|\"click\", value=?)——set_value 需 value；"
             "④ 焦点元素 ui(action=\"focused_element\")（无 target、无 ref）→ 当前焦点元素。"
-            "target 仅 ①/② 必填（窗口 ID 来自 list_targets，或 \"desktop\"）；③/④ 必不传 target。"
-            "⚠️ target=\"desktop\" = 当前焦点窗口的结构（不是全桌面 AX 树——不存在这种能力；无焦点窗口时报错）；"
-            "与 input(target=\"desktop\")=整屏帧 不同。"
+            "target 仅 ①/② 必填（**窗口 ID**，先用 list_targets 取）；③/④ 必不传 target。"
+            "⚠️ target **不接受 \"desktop\"**：无法可靠判断「当前窗口」该读哪个（macOS 的 focused 是进程级，"
+            "同一 App 的多个窗口无法区分，自动挑会误选菜单栏小图标窗）；传它会返回候选窗口清单并指引用窗口 id。"
             "读结构先于动作：先用 ①/② 拿到 ref，再用 ③ 操作；ref 在结构变化后过期（StaleRef 时重新读取）。"
             "开关/勾选框（checkbox/switch）用 press；文本输入框用 set_value；移动键盘焦点用 focus；"
             "click = AX 元素点击（用于没有可用 AX action 的元素），优先 press。"
@@ -1319,8 +1364,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": ("操作对象（用法①/② 必填；③/④ 禁传）：窗口 ID（来自 list_targets）或 \"desktop\"。"
-                                    "\"desktop\" = 当前焦点窗口的结构（不是全桌面 AX 树；无焦点窗口时报错）。"),
+                    "description": ("操作对象（用法①/② 必填；③/④ 禁传）：**窗口 ID**（先调 list_targets 取）。"
+                                    "不接受 \"desktop\"——无法可靠判断「当前窗口」该读哪个"
+                                    "（macOS 的 focused 是进程级，同一 App 多窗口无法区分）；"
+                                    "传它会返回候选窗口清单并指引用窗口 ID。"),
                 },
                 "find": {
                     "type": "object",
@@ -1373,7 +1420,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "——已有帧不会因内容变化而失效，旧坐标会静默点错位置。"
             "坐标空间与 ui 不可混用：ui 找元素返回的 bounds 是全局逻辑坐标，不要喂给 input。"
             "target=\"desktop\" = 整屏帧（坐标是整张截图上的像素）；窗口 ID = 该窗口帧"
-            "（注意与 ui 的 \"desktop\"=当前焦点窗口 不同）。"
+            "（ui 不接受 desktop，读界面须传窗口 ID）。"
             "delivery 默认 background（不抢用户焦点/鼠标/窗口顺序）；做不到时按错误提示改 foreground。"
             "type/key 无坐标：投递到目标窗口，或 desktop 目标下的当前键盘焦点——"
             "desktop 目标下无焦点校验，先确认目标在前台（或用 ui 的 focus 把焦点放对）。"
@@ -1386,8 +1433,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": ('操作对象：窗口 ID（来自 list_targets）或 "desktop"（整屏帧——'
-                                    '注意与 ui 的 "desktop"=当前焦点窗口 不同）。'),
+                    "description": ('操作对象：窗口 ID（来自 list_targets）或 "desktop"（整屏帧；'
+                                    'ui 不接受 desktop，读界面须传窗口 ID）。'),
                 },
                 "action": {
                     "type": "string",
