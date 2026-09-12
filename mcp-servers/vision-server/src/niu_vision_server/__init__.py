@@ -28,10 +28,8 @@ import json
 import math
 import os
 import re
-import socket
 import sys
 import time
-import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -383,43 +381,6 @@ _VISION_CHAIN_BUDGET_SECONDS = 600
 # D-E 汇总文案中每条原因的长度上限
 _VISION_REASON_MAX_CHARS = 120
 
-# F-3 可达性预检：每模型首次调用前的 TCP 连接总时长上界（不依赖内核默认 ~75s）
-_VISION_CONNECT_TIMEOUT_SECONDS = 5
-
-
-def _probe_reachable(api_base: str) -> tuple[bool, str]:
-    """快速可达性预检（F-3）。语义：
-    - 确定不可达（DNS 失败 / 所有候选地址 connect 失败）→ (False, "<host:port> 不可达")
-    - 其它一切情况（解析不出 host、apiBase 为空、预检自身异常）→ (True, "") 不阻断，
-      交由真实调用去暴露问题（fail-open；R-6 / 用例 10）"""
-    try:
-        parts = urllib.parse.urlsplit(api_base or "")
-        host = parts.hostname
-        if not host:
-            return True, ""                      # 解析不出 → 跳过预检
-        port = parts.port or (443 if parts.scheme == "https" else 80)   # 非法端口抛 ValueError → 外层 fail-open
-        deadline = time.monotonic() + _VISION_CONNECT_TIMEOUT_SECONDS
-        try:
-            infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
-        except OSError:                           # gaierror ⊂ OSError → 确定不可达
-            return False, f"{host}:{port} 不可达"  # （UnicodeError/其它 → 落外层 fail-open）
-        for af, socktype, proto, _, sa in infos:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break                             # 总时长耗尽
-            s = socket.socket(af, socktype, proto)  # v0.9：创建失败即逃到外层 fail-open（不误判不可达）
-            try:
-                s.settimeout(max(0.001, remaining))
-                s.connect(sa)
-                return True, ""
-            except (OSError, UnicodeError):
-                continue                          # 该地址连不上 → 换下一个候选
-            finally:
-                s.close()                         # 创建成功即必被关闭（无需哨兵）
-        return False, f"{host}:{port} 不可达"      # 所有候选都连不上 → 确定不可达
-    except Exception:                             # v0.8：fail-open——预检自身异常绝不断链
-        return True, ""
-
 
 def _load_image_data_uri(image_path: str):
     """读图片文件 → data URI（复用 agent.image_channel helper：魔数 MIME 探测 /
@@ -678,18 +639,17 @@ def _skipped_note(skipped: int) -> str:
 def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question: str) -> str:
     """链式降级循环（D-B / D-D / D-E / D-F），返回最终给工具的文字。
 
-    每模型：首次调用前 TCP 可达性预检（5s 上界，F-3）——不可达零调用直接判失败并降级；
     可重试错误（F-1：服务端明确说忙/限流/暂不可用）最多重试 len(_VISION_RETRY_DELAYS) 次
     （退避 2/5/10s，服务端 retry after N 覆盖、上限 15s）；致命/未知直接换下一个；已停止不重试不降级。
     stop 检查点四处：循环顶 / 每次重试前 / 每次调用返回后（全局 is_stop_requested——
-    vision-server 同进程与主循环共享同一 Event，函数级 import 照 :403 先例）。
+    vision-server 同进程与主循环共享同一 Event）。
     总预算：每次新调用/重试前查累计耗时，超 _VISION_CHAIN_BUDGET_SECONDS 停止降级
     并返回「预算中断」文案（不 gate in-flight 调用）。
     """
     from agent.generic.litellm_adapter import is_stop_requested
 
     start = time.monotonic()
-    failures: List[tuple] = []  # [(模型名, 原因)]——失败的模型（含预检失败零调用者，D-E N 口径）
+    failures: List[tuple] = []  # [(模型名, 原因)]——失败的模型
     last_error = None           # 当前节最近一次错误（供预算文案计数，每节重置）
     section_tried = False       # 当前节是否已发起过至少一次调用
 
@@ -734,16 +694,6 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
                 r = attempt - 1
                 delay = (last_error or {}).get("retry_after")
                 time.sleep(delay if delay else _VISION_RETRY_DELAYS[r])
-            else:
-                # F-3：每模型首次调用前预检 TCP 可达性（5s 上界，不依赖内核默认 ~75s）
-                reachable, probe_reason = _probe_reachable(cfg.get("apibase"))
-                if not reachable:
-                    # 预检失败：零调用直接判失败 → 不进重试分支；break 落到 failures.append
-                    # 换下一个模型（F-2；预检失败零调用也入列）
-                    last_error = {"kind": "unknown", "type_name": "", "msg": "",
-                                  "retry_after": None,
-                                  "reason": f"连接失败：{probe_reason}"}
-                    break
             if is_stop_requested():
                 return "识图已停止"
             if _over_budget():
