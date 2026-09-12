@@ -1,4 +1,6 @@
 #[cfg(target_os = "windows")]
+mod ax;
+#[cfg(target_os = "windows")]
 mod capture;
 pub mod delivery;
 #[cfg(target_os = "windows")]
@@ -9,6 +11,8 @@ use enigo::Enigo;
 #[cfg(target_os = "windows")]
 use image::RgbaImage;
 
+#[cfg(target_os = "windows")]
+use self::ax::Win32Ax;
 #[cfg(target_os = "windows")]
 use super::backend::{AxBackend, Backend, DeliveryMode, PointerEvent};
 #[cfg(target_os = "windows")]
@@ -26,6 +30,7 @@ use super::types::{
 pub(crate) struct Win32Backend {
 	display:      DisplaySelector,
 	global_input: Enigo,
+	ax:           Win32Ax,
 }
 
 #[cfg(target_os = "windows")]
@@ -35,7 +40,7 @@ impl Win32Backend {
 		// keeping both APIs in the same per-monitor physical coordinate regime.
 		let global_input = input::create_global_input()?;
 		let _ = capture::displays(&display)?;
-		Ok(Self { display, global_input })
+		Ok(Self { display, global_input, ax: Win32Ax::new() })
 	}
 }
 
@@ -50,9 +55,7 @@ impl Backend for Win32Backend {
 			display_server: Some("win32".to_string()),
 			capture: display_count > 0,
 			input: true,
-			// The Win32 UIA backend lands in T1b; until `Backend::ax` returns a
-			// real implementation the accessibility methods report AxUnsupported.
-			ax: false,
+			ax: true,
 			background_window_input: true,
 			delivery_modes: vec!["background".to_string(), "foreground".to_string()],
 			capture_permission: if display_count > 0 {
@@ -62,7 +65,7 @@ impl Backend for Win32Backend {
 			}
 			.to_string(),
 			input_permission: "granted".to_string(),
-			ax_permission: "unavailable".to_string(),
+			ax_permission: "granted".to_string(),
 			display_count,
 		}
 	}
@@ -107,6 +110,6 @@ impl Backend for Win32Backend {
 	}
 
 	fn ax(&mut self) -> Option<&mut dyn AxBackend> {
-		None // T1b replaces with Some(&mut self.ax) once the Win32 UIA backend lands
+		Some(&mut self.ax)
 	}
 }
