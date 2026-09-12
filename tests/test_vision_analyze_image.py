@@ -1211,3 +1211,47 @@ class TestVisionModelMemory:
                           "因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）")
         assert len(FakeLiteLLMSession.instances) == 1
         assert niu_vision_server._VISION_LAST_SUCCESS == mem_before  # 预算中断不清记忆
+
+
+# ============== 补锁：链首多跳降级路径 + read_timeout 配置分量（既有用例删除后该路径无锁） ==============
+
+class TestChainHeadMultiHopAndReadTimeout:
+    """无记忆从链首起连续两败后第三模型成功的路径锁 + litellm_kwargs timeout.read 取自节内 read_timeout。"""
+
+    def test_multi_hop_from_chain_head_degrade_note(self, monkeypatch, tmp_path):
+        """清空记忆（起点必为链首）：m1 fatal、m2 未归类裸异常、m3 成功 → 结果以「答案C」开头
+        且含「已自动降级到 m3」；三模型各恰被调用一次（F-8：无本层重试）。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2", "m3")))
+        png = _png_file(tmp_path)
+        niu_vision_server._VISION_LAST_SUCCESS.clear()  # 清空记忆：起点必为链首 m1
+        FakeLiteLLMSession.script.extend([
+            _fatal("boom-m1"),              # m1 fatal → 直降（不重试）
+            MysteryWeirdError("weird"),     # m2 未归类裸异常（D-D 通道 A）→ unknown，直降
+            _resp("答案C"),                 # m3 成功
+        ])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert [i.cfg["model"] for i in FakeLiteLLMSession.instances] == ["m1", "m2", "m3"]  # 各恰一次
+        assert len(FakeLiteLLMSession.instances) == 3
+        assert result.startswith("答案C")
+        assert "已自动降级到 m3" in result
+
+    def test_litellm_kwargs_read_timeout_from_config(self, monkeypatch, tmp_path):
+        """read 分量取自该节 read_timeout（120）而非常量 300；connect 仍恒 5。
+        与 test_litellm_kwargs_carries_max_retries_and_timeout 同路径
+        （analyze_image → _call_vision_model 构造 litellm_kwargs）。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(
+            tmp_path, vision={"models": [{"model": "m1", "read_timeout": 120}]}))
+        png = _png_file(tmp_path)
+        FakeLiteLLMSession.response = _resp("OK")
+
+        niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        timeout = FakeLiteLLMSession.instances[0].cfg["litellm_kwargs"]["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read == 120.0   # 取自节内 read_timeout，非常量 300
+        assert timeout.connect == 5.0  # connect 恒 5（F-9）
