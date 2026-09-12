@@ -244,3 +244,5 @@ vision-server:
       visibility: static
     ui:
       visibility: static
+    input:
+      visibility: static
