@@ -257,6 +257,109 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PointerOptions {
 	}
 }
 
+/// One node of an accessibility tree snapshot: a stable `ref` handle plus role,
+/// text and geometry metadata. Python output object.
+#[pyclass(skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct AxNode {
+	#[pyo3(get, name = "ref")]
+	pub ref_:        String,
+	#[pyo3(get)]
+	pub role:        String,
+	#[pyo3(get)]
+	pub native_role: String,
+	#[pyo3(get)]
+	pub title:       Option<String>,
+	#[pyo3(get)]
+	pub value:       Option<String>,
+	#[pyo3(get)]
+	pub description: Option<String>,
+	#[pyo3(get)]
+	pub enabled:     bool,
+	#[pyo3(get)]
+	pub focused:     bool,
+	#[pyo3(get)]
+	pub x:           Option<f64>,
+	#[pyo3(get)]
+	pub y:           Option<f64>,
+	#[pyo3(get)]
+	pub width:       Option<f64>,
+	#[pyo3(get)]
+	pub height:      Option<f64>,
+	#[pyo3(get)]
+	pub actions:     Option<Vec<String>>,
+	#[pyo3(get)]
+	pub child_count: u32,
+}
+
+/// A rendered accessibility tree snapshot. Python output object.
+#[pyclass(skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct AxSnapshot {
+	#[pyo3(get)]
+	pub text:       String,
+	#[pyo3(get)]
+	pub node_count: u32,
+	#[pyo3(get)]
+	pub truncated:  bool,
+}
+
+/// Accessibility snapshot options. Python input: `None` or a dict with optional
+/// `"max_depth"` / `"max_nodes"` / `"all"` keys.
+#[derive(Debug, Clone, Default)]
+pub struct AxSnapshotOptions {
+	pub max_depth: Option<u32>,
+	pub max_nodes: Option<u32>,
+	pub all:       Option<bool>,
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for AxSnapshotOptions {
+	type Error = PyErr;
+
+	fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+		if obj.is_none() {
+			return Ok(Self::default());
+		}
+		let dict = obj.cast::<PyDict>().map_err(|_| {
+			PyTypeError::new_err("AxSnapshotOptions must be None or a dict")
+		})?;
+		Ok(Self {
+			max_depth: optional_item(&dict, "max_depth")?,
+			max_nodes: optional_item(&dict, "max_nodes")?,
+			all:       optional_item(&dict, "all")?,
+		})
+	}
+}
+
+/// Accessibility query filters. Python input: `None` or a dict with optional
+/// `"role"` / `"title"` / `"value"` / `"limit"` keys.
+#[derive(Debug, Clone, Default)]
+pub struct AxQuery {
+	pub role:  Option<String>,
+	pub title: Option<String>,
+	pub value: Option<String>,
+	pub limit: Option<u32>,
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for AxQuery {
+	type Error = PyErr;
+
+	fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+		if obj.is_none() {
+			return Ok(Self::default());
+		}
+		let dict = obj.cast::<PyDict>().map_err(|_| {
+			PyTypeError::new_err("AxQuery must be None or a dict")
+		})?;
+		Ok(Self {
+			role:  optional_item(&dict, "role")?,
+			title: optional_item(&dict, "title")?,
+			value: optional_item(&dict, "value")?,
+			limit: optional_item(&dict, "limit")?,
+		})
+	}
+}
+
 /// A point in capture-frame pixel coordinates (drag path element).
 /// Python input: a dict with `"x"`/`"y"` keys, or a 2-sequence.
 #[derive(Debug, Clone, Copy)]
