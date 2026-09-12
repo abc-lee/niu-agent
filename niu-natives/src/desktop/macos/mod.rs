@@ -62,14 +62,14 @@ impl Backend for MacosBackend {
 			display_server: Some("Quartz WindowServer".to_string()),
 			capture: capture_permission && display_count > 0,
 			input: input_permission,
-			// ax_lite keeps only the focus subset — full accessibility traversal
-			// is not exposed.
-			ax: false,
+			// The full AX backend (macos::ax) is gated on the same Accessibility
+			// trust as native input.
+			ax: input_permission,
 			background_window_input: input_permission && skylight::is_available(),
 			delivery_modes: vec!["background".to_string(), "foreground".to_string()],
 			capture_permission: permission_label(capture_permission),
 			input_permission: permission_label(input_permission),
-			ax_permission: "unavailable".to_string(),
+			ax_permission: permission_label(input_permission),
 			display_count,
 		}
 	}

@@ -1023,6 +1023,174 @@ impl DesktopSession {
 		})
 		.map_err(PyErr::from)
 	}
+
+	/// Snapshot the accessibility tree of `target` (`"desktop"` = the focused
+	/// window, or a window id from `list_windows`) as an indented text tree
+	/// whose lines carry stable `[ref=eN]` handles for the reference-based
+	/// methods below. Re-snapshotting invalidates previous refs (a stale ref
+	/// is reported as a `StaleRef` error).
+	///
+	/// `opts` may set `"max_depth"`, `"max_nodes"` and `"all"`.
+	#[pyo3(signature = (target, opts=None))]
+	fn ax_snapshot(
+		&self,
+		py: Python<'_>,
+		target: String,
+		opts: Option<AxSnapshotOptions>,
+	) -> PyResult<Py<AxSnapshot>> {
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		let options = opts.unwrap_or_default();
+		let result = py.detach(move || match core.call(|reply| Request::AxSnapshot { target, options, reply }) {
+			Ok(Response::Snapshot(snapshot)) => Ok(snapshot),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		let snapshot = result?;
+		Py::new(py, snapshot).map_err(Into::into)
+	}
+
+	/// Query the accessibility nodes of `target` matching `query` — a dict
+	/// with optional `"role"` / `"title"` / `"value"` / `"limit"` keys (or
+	/// `None` for no filter). Returns the matching nodes, each carrying a
+	/// stable `ref` handle.
+	fn ax_query(&self, py: Python<'_>, target: String, query: AxQuery) -> PyResult<Vec<Py<AxNode>>> {
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		let result = py.detach(move || match core.call(|reply| Request::AxQuery { target, query, reply }) {
+			Ok(Response::Nodes(nodes)) => Ok(nodes),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		let nodes = result?;
+		nodes.into_iter().map(|node| Py::new(py, node)).collect()
+	}
+
+	/// Accessibility hit-test at global logical desktop coordinates (not
+	/// capture-frame pixels); needs no prior capture. Returns the deepest
+	/// element under the point, or `None`.
+	fn ax_element_at(&self, py: Python<'_>, target: String, x: f64, y: f64) -> PyResult<Option<Py<AxNode>>> {
+		let core = Arc::clone(&self.core);
+		let target = Target::parse(&target);
+		let result = py.detach(move || match core.call(|reply| Request::AxElementAt { target, x, y, reply }) {
+			Ok(Response::Node(node)) => Ok(node),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		match result? {
+			Some(node) => Py::new(py, node).map(Some),
+			None => Ok(None),
+		}
+	}
+
+	/// The currently focused accessibility element of the desktop, if any.
+	fn ax_focused(&self, py: Python<'_>) -> PyResult<Option<Py<AxNode>>> {
+		let core = Arc::clone(&self.core);
+		let result = py.detach(move || match core.call(|reply| Request::AxFocused { reply }) {
+			Ok(Response::Node(node)) => Ok(node),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		match result? {
+			Some(node) => Py::new(py, node).map(Some),
+			None => Ok(None),
+		}
+	}
+
+	/// Re-read one node by its `ref` handle (from `ax_snapshot` / `ax_query` /
+	/// child/parent navigation). Fails with a `StaleRef` error once the ref's
+	/// snapshot generation is gone.
+	fn ax_node(&self, py: Python<'_>, reference: String) -> PyResult<Py<AxNode>> {
+		let core = Arc::clone(&self.core);
+		let result = py.detach(move || match core.call(|reply| Request::AxNode { reference, reply }) {
+			Ok(Response::Node(Some(node))) => Ok(node),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		let node = result?;
+		Py::new(py, node).map_err(Into::into)
+	}
+
+	/// The raw accessibility attributes of a node as `(name, value)` pairs.
+	fn ax_attributes(&self, py: Python<'_>, reference: String) -> PyResult<Vec<(String, String)>> {
+		let core = Arc::clone(&self.core);
+		py.detach(move || match core.call(|reply| Request::AxAttributes { reference, reply }) {
+			Ok(Response::Attributes(attributes)) => Ok(attributes),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		})
+		.map_err(PyErr::from)
+	}
+
+	/// The direct children of a node, each carrying its own `ref` handle.
+	fn ax_children(&self, py: Python<'_>, reference: String) -> PyResult<Vec<Py<AxNode>>> {
+		let core = Arc::clone(&self.core);
+		let result = py.detach(move || match core.call(|reply| Request::AxChildren { reference, reply }) {
+			Ok(Response::Nodes(nodes)) => Ok(nodes),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		let nodes = result?;
+		nodes.into_iter().map(|node| Py::new(py, node)).collect()
+	}
+
+	/// The parent of a node, or `None` for the root.
+	fn ax_parent(&self, py: Python<'_>, reference: String) -> PyResult<Option<Py<AxNode>>> {
+		let core = Arc::clone(&self.core);
+		let result = py.detach(move || match core.call(|reply| Request::AxParent { reference, reply }) {
+			Ok(Response::Node(node)) => Ok(node),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		match result? {
+			Some(node) => Py::new(py, node).map(Some),
+			None => Ok(None),
+		}
+	}
+
+	/// Perform a named accessibility action on a node (e.g. `"press"`); the
+	/// node's `actions` list names what it supports.
+	fn ax_perform(&self, py: Python<'_>, reference: String, action: String) -> PyResult<()> {
+		let core = Arc::clone(&self.core);
+		py.detach(move || {
+			core.call(|reply| Request::AxPerform { reference, action, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
+	}
+
+	/// Set the value of a value-carrying node (e.g. a text field).
+	fn ax_set_value(&self, py: Python<'_>, reference: String, value: String) -> PyResult<()> {
+		let core = Arc::clone(&self.core);
+		py.detach(move || {
+			core.call(|reply| Request::AxSetValue { reference, value, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
+	}
+
+	/// Move keyboard focus to a node.
+	fn ax_focus(&self, py: Python<'_>, reference: String) -> PyResult<()> {
+		let core = Arc::clone(&self.core);
+		py.detach(move || {
+			core.call(|reply| Request::AxFocus { reference, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
+	}
+
+	/// Click the center of a node's bounds. `opts` may set `button`,
+	/// `count`, `modifiers` and `delivery_mode`.
+	#[pyo3(signature = (reference, opts=None))]
+	fn ax_click(&self, py: Python<'_>, reference: String, opts: Option<PointerOptions>) -> PyResult<()> {
+		let options = ParsedPointerOptions::parse(opts)?;
+		let core = Arc::clone(&self.core);
+		py.detach(move || {
+			core.call(|reply| Request::AxClick { reference, options, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
+	}
 }
 
 #[cfg(test)]
