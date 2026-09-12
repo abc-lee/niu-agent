@@ -649,7 +649,7 @@ def _call_vision_model(cfg: dict, data_uri: str, question: str):
         if getattr(mock_response, "finish_reason", None) == "length":
             return None, {"kind": "unknown", "type_name": "", "msg": "",
                           "reason": ("输出预算耗尽（思考型模型的推理链占满了 max_tokens，正文无输出）。"
-                                     "请调大该模型配置的 max_tokens 后重试，或收窄问题范围")}
+                                     "请删掉该模型配置的 max_tokens（缺省即由模型自决）后重试，或收窄问题范围")}
         return None, {"kind": "unknown", "type_name": "", "msg": "",
                       "reason": "模型返回空内容"}
     return content, None

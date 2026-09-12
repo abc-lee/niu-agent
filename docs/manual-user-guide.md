@@ -873,12 +873,12 @@ macOS 下构造 `niu.app` bundle（`Info.plist` 含 `LSUIElement=true`），Find
 
 #### 配置格式
 
-`models` 是对象数组，**数组顺序 = 尝试顺序**；每项空键独立继承主 llm 段（继承规则与 SYSTEM_MANUAL「第三方视觉模型配置」字段表相同——如 `apiKey`/`apiBase` 为空则继承）——所以只需写各模型不同的字段（通常只有 `model`/`apiBase`/`apiKey`）。`max_tokens` 建议 **8192**（视觉请求必须 ≥500——思考型模型推理会占满小预算，返回 content 为空）：
+`models` 是对象数组，**数组顺序 = 尝试顺序**；每项空键独立继承主 llm 段（继承仅限 `apiKey`/`apiBase`/`type`/`provider`/`litellm_kwargs`——为空则继承）——所以只需写各模型不同的字段（通常只有 `model`/`apiBase`/`apiKey`）。`max_tokens` **不继承、不写就是不限制**（思考型模型的推理链与正文共享该预算，写死小值会让正文为空；确需硬性上限时才设，且不得小于 500）：
 
 ```json
 "vision_llm": {
   "models": [
-    { "model": "glm-4.6v-flash", "apiBase": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-…", "max_tokens": 8192 },
+    { "model": "glm-4.6v-flash", "apiBase": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-…" },
     { "model": "qwen38-xl", "apiBase": "http://192.168.3.88:8080/v1", "apiKey": "sk-local" }
   ]
 }

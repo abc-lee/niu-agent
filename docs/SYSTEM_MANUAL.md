@@ -748,7 +748,7 @@ Niu 的视觉能力 = `vision-server` 的五个工具（均 static 直挂主 Age
 - 主模型无视觉 + `vision_llm` 段 `models` 为非空数组 → 按链顺序依次尝试；否则单对象 `model` 非空 → 用该第三方视觉模型（视为链长 1）
 - 两者皆无 → 返回明确错误（指引：把主模型换成支持视觉的模型并探测，或配置 `vision_llm` 段——见下节），不崩溃
 
-**边界**：文件缺失/非图片 → 明确中文错误串；输出预算耗尽（思考型视觉模型推理占满小预算、content 为空）→ 错误串提示调大 `max_tokens` 或收窄问题重试；请求中的 data URI 在 raw_http/交互日志中打码。本工具**不依赖 niu_natives**（Windows 无 `.pyd` 也可用）。
+**边界**：文件缺失/非图片 → 明确中文错误串；输出预算耗尽（思考型视觉模型推理占满小预算、content 为空）→ **去掉** `max_tokens`（缺省即由模型自决）/ 收窄问题重试；请求中的 data URI 在 raw_http/交互日志中打码。本工具**不依赖 niu_natives**（Windows 无 `.pyd` 也可用）。
 
 ### 主模型视觉探测
 
@@ -777,9 +777,9 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 | **云模型** | 选上下文窗口 ≥32K（建议 ≥64K）的模型版本/规格（厂商常按规格区分，勿选小上下文版） |
 | **Niu 侧** | `~/.niu/preferences.json` → `context.contextWindowSize` 设为与模型实际一致（≥32768，长会话建议 65536+）。该值决定 `max_output_tokens = contextWindowSize × 0.16`、上下文 FIFO 与压实阈值——**配得过小会连带挤压输出预算**（缺省 200000） |
 
-> 排查：`analyze_image` 看图后长时间无输出或答案截断 → 先核这三处（模型实测窗口、Niu 的 `contextWindowSize`、`vision_llm.max_tokens` 输出预算）。
+> 排查：`analyze_image` 看图后长时间无输出或答案截断 → 先核这三处（模型实测窗口、Niu 的 `contextWindowSize`；该节若配了 `max_tokens` 则**去掉**——缺省即由模型自决）。
 
-**字段表**（全部可省略，**空键继承主 llm 段**）：
+**字段表**（全部可省略；**空键继承主 llm 段仅限 apiKey/apiBase/type/provider/litellm_kwargs；`max_tokens` 例外——不继承、不写即不限制**）：
 
 | 字段 | 说明 |
 |------|------|
@@ -789,7 +789,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 | `type` | 服务商类型 `openai`/`anthropic`（空则继承主 llm，默认 openai） |
 | `provider` | 提供商标识（空则继承主 llm） |
 | `reasoning_effort` | 推理深度 none/low/medium/high（空 = 模型默认，不强制档位） |
-| `max_tokens` | 输出预算。**视觉请求必须 ≥500**——带 reasoning 的 qwen 类模型思考会占满小预算，返回 content 为空（看着像失败，实为预算被思考吃掉）；建议 8192 |
+| `max_tokens` | 输出预算。**缺省不传**——由模型/服务端自决。**不要配置**：思考型模型的推理链与正文共享该预算，写死小值会让正文为空（`finish_reason=length`）。确需硬性上限时才设，且不得小于 500 |
 | `litellm_kwargs` | thinking 等透传参数（空则继承主 llm） |
 
 除上述单对象字段外还有 **`models` 数组字段（多模型链）**：每项是结构同上表的对象，**各项独立按同一继承规则走**（某项的 `apiKey` 为空只影响该项）。`models` 为非空数组时**优先于单对象字段**（整链生效）；缺失/非数组/空数组则回退单对象（`model` 等），视为链长 1。详见下节「多视觉模型自动降级」。
@@ -800,8 +800,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 "vision_llm": {
   "model": "qwen38-xl",
   "apiBase": "http://192.168.3.88:8080/v1",
-  "apiKey": "sk-local",
-  "max_tokens": 8192
+  "apiKey": "sk-local"
 }
 ```
 
@@ -816,7 +815,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 ```json
 "vision_llm": {
   "models": [
-    { "model": "glm-4.6v-flash", "apiBase": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-…", "max_tokens": 8192 },
+    { "model": "glm-4.6v-flash", "apiBase": "https://open.bigmodel.cn/api/paas/v4", "apiKey": "sk-…" },
     { "model": "qwen38-xl", "apiBase": "http://192.168.3.88:8080/v1", "apiKey": "sk-local" }
   ]
 }
