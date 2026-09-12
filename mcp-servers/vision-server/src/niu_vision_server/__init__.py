@@ -807,8 +807,11 @@ def analyze_image(image_path: str, question: str) -> str:
 _UI_USAGE_ERROR = ('ui 需要恰好一种用法：① target ② target+find ③ ref+action '
                    '④ action="focused_element"。')
 _UI_PERMISSION_MSG = "需要系统权限：请在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 Niu，然后重启程序。"
-_UI_STALE_REF_MSG = "该元素引用已过期（结构已变化），请重新调用 ui 读取结构后再操作。"
-_UI_NO_FOCUS_MSG = "当前没有焦点元素（焦点可能在桌面，或该系统元素未暴露）。"
+_UI_STALE_REF_MSG = ("该元素引用已过期（对同一窗口再读结构会作废旧引用），"
+                     "请重新调用 ui 读取结构后再操作。")
+_UI_NO_FOCUS_MSG = ("系统级没有报告焦点元素（AXFocusedUIElement 为空）。"
+                    "注意：这与查找结果里元素的 focused 标记**不同源**"
+                    "（那个读的是元素自身的 AXFocused 属性），两者可能不一致。")
 _UI_UNSUPPORTED_MSG = ("目标不支持无障碍（AX/UIA），无法读取语义结构或对元素执行动作。"
                        "请改用 screenshot + input 走像素操作。")
 
@@ -889,6 +892,27 @@ def _ui_require_window_id(target) -> str | None:
     return "\n".join(lines)
 
 
+def _ui_verify_set_value(session, ref, expected: str) -> str:
+    """set_value 后读回元素属性做验证（用 ax_attributes，不新增工具契约）。
+
+    语义核实（P4-Semantics-Audit）：AX 调用无异常 ≠ 值已写入——必须读回核对；
+    读不到该属性时**明说未验证**，不得默认成功。
+    """
+    try:
+        pairs = session.ax_attributes(ref) or []
+        attrs = {str(k): str(v) for k, v in pairs}
+    except Exception as e:
+        return f"（未验证：读回属性失败——{e}）"
+    got = attrs.get("AXValue")
+    if got is None:
+        got = attrs.get("AXSelectedText")
+    if got is None:
+        return "（未验证：该元素未暴露 AXValue/AXSelectedText，无法读回核对）"
+    if got == expected:
+        return f'，读回确认 AXValue="{got}"'
+    return f'，但读回 AXValue="{got}"（与写入的 "{expected}" 不一致——可能被控件拒绝或做了格式化）'
+
+
 def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, limit=None) -> str:
     """语义桌面操作（AX/UIA）：读结构 / 找元素 / 对元素动作 / 查焦点元素。
 
@@ -944,9 +968,11 @@ def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, li
                     return "错误：limit 不能超过 5000（注册表上限），请调小"
                 opts["max_nodes"] = limit
             snap = session.ax_snapshot(str(target), opts or None)
-            head = f"节点数: {snap.node_count}"
+            # 语义核实（P4-Semantics-Audit）：node_count = **写进树文本的节点数**（过滤后），
+            # 不是应用的总节点数；truncated 表示还有更多没读出（depth 或 limit 触顶）。
+            head = f"已读 {snap.node_count} 个节点"
             if snap.truncated:
-                head += "（已截断——超出 depth/limit，可加大后重读）"
+                head += "（树被截断：还有更多节点没读出——加大 depth/limit 后重读）"
             return head + "\n" + snap.text
 
         if usage == 2:
@@ -971,11 +997,16 @@ def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, li
             nodes = session.ax_query(str(target), query or None)
             if not nodes:
                 return f"未找到匹配的元素（target={target!r}, find={find}）。"
+            # 语义核实：Rust 侧 query 默认 limit=100（触顶时返回的是下限，不是总数）
+            eff_limit = query.get("limit") or 100
             lines = [f"命中 {len(nodes)} 个："]
+            if len(nodes) >= eff_limit:
+                lines[0] += f"（已达上限 {eff_limit}，可能有更多——加大 find.limit 后重查）"
             for n in nodes:
                 lines.append("- " + _format_ax_node(n))
             lines.append("注：bounds 是全局逻辑坐标，不是截图帧像素，不可直接喂给 input；"
-                         "ref 在结构变化后过期（操作前请重读）。")
+                         "ref 在「对同一窗口再读结构 2 次」后失效（读一次仍有效）——"
+                         "报「元素引用已过期」时重新读结构即可。")
             return "\n".join(lines)
 
         if usage == 3:
@@ -988,13 +1019,17 @@ def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, li
                 if value is None:
                     return "错误：set_value 需要 value 参数（要写入输入框的文本）"
                 session.ax_set_value(ref, str(value))
+                # 语义核实（P4-Semantics-Audit）：ax 调用无异常 ≠ 界面已变 → 读回属性验证
+                return f"已调用 set_value(ref={ref})" + _ui_verify_set_value(session, ref, str(value))
             elif action == "press":
                 session.ax_perform(ref, "press")
             elif action == "focus":
                 session.ax_focus(ref)
             else:  # click
                 session.ax_click(ref)
-            return f"已对元素 {ref} 执行动作 {action}。"
+            # 语义核实：AX 动作返回 ok 只代表「控件接受/无异常」，不代表界面已按预期变化
+            return (f"已调用 {action}(ref={ref})——控件接受了这次调用；"
+                    f"是否真的改变了界面需自行核对（重读该窗口结构，或对元素读属性）。")
 
         # usage == 4：焦点元素
         if value is not None or depth is not None or limit is not None:
@@ -1002,7 +1037,7 @@ def ui(target=None, find=None, ref=None, action=None, value=None, depth=None, li
         node = session.ax_focused()
         if node is None:
             return _UI_NO_FOCUS_MSG
-        return "当前焦点元素：\n- " + _format_ax_node(node)
+        return "系统级焦点元素（AXFocusedUIElement）：\n- " + _format_ax_node(node)
     except Exception as e:
         logger.warning(f"[vision-server] ui failed (usage={usage}): {e}")
         return _ui_ax_error(e)
@@ -1350,7 +1385,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "③ 对元素动作 ui(ref=\"e12\", action=\"press\"|\"set_value\"|\"focus\"|\"click\", value=?)——set_value 需 value；"
             "④ 焦点元素 ui(action=\"focused_element\")（无 target、无 ref）→ 当前焦点元素。"
             "target 仅 ①/② 必填（**窗口 ID**，先用 list_targets 取）；③/④ 必不传 target。"
-            "读结构先于动作：先用 ①/② 拿到 ref，再用 ③ 操作；ref 在结构变化后过期（StaleRef 时重新读取）。"
+            "读结构先于动作：先用 ①/② 拿到 ref，再用 ③ 操作；ref 在「对同一窗口再读结构 2 次」后失效（读一次仍有效）。"
             "开关/勾选框（checkbox/switch）用 press；文本输入框用 set_value；移动键盘焦点用 focus；"
             "click = AX 元素点击（用于没有可用 AX action 的元素），优先 press。"
             "结果中的 bounds 是全局逻辑坐标，不是截图帧像素——不可直接喂给 input"
@@ -1377,7 +1412,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "ref": {
                     "type": "string",
                     "description": ("元素引用（如 \"e12\"），来自用法①/② 输出中的 [ref=eN]；用法③ 必填。"
-                                    "结构变化后过期——操作前请重读。"),
+                                    "失效条件：对同一窗口再读结构 2 次（读一次仍有效）。"),
                 },
                 "action": {
                     "type": "string",
