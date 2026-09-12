@@ -88,7 +88,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
 | `ha-server` | 智能家居（Home Assistant 设备控制/场景/自动化） | Yes（可选） |
-| `vision-server` | 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图三工具；前两者基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动；analyze_image 不依赖 niu_natives） | Yes |
+| `vision-server` | 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图 + ui 语义桌面操作 + input 像素兜底输入五工具；除 analyze_image 外均基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动） | Yes |
 
 > `kg-server`、`vector-store`、`embedding-service` 不存在，知识检索统一由 `lightrag-server` 承担；`mcp-servers/embedding-service/` 目录仍残留但不加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
@@ -108,8 +108,6 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 **合并语义（deep merge，用户赢）**：同名键两侧均为 dict 时递归合并；标量与 list 由用户值整体覆盖——用户只需写差异段。`server名: null` 显式禁用该内置服务器（REQUIRED/OPTIONAL 均生效；禁用核心 server 的能力缺失由用户自担）；仅顶层 server 级 null 生效，嵌套 null 只删对应键。
 
 **失败语义**：任一层缺失或解析失败 → error 日志 + 该层降级为空基座继续启动（配置解析失败从不终止启动；严格终止仅作用于模块 import/注册失败）。旧文件 `~/.niu/config/mcp-servers.yaml` 一律不读，残留时启动日志至多一条弃用 warning。
-
-**0.3.0 升级说明**：删除 `~/.niu/config/mcp-servers.yaml` 即可完成升级；自定义过该文件的用户，先把自增段挪到 `~/.niu/config/mcp-servers-user.yaml` 再删旧文件（零自动迁移）。
 
 > 配置示例（最小 diff 写法 / 外部 stdio 服务器 / 禁用内置 server）见分册 [manual-mcp-disk.md](manual-mcp-disk.md) 2.7 节。
 
@@ -249,7 +247,7 @@ Skills 是存储在 `~/.niu/skills/` 目录下的 Markdown 文件（`memory/skil
 2. Agent 每轮对话时，通过 `_inject_dynamic_resources()` 按语义搜索匹配相关 Skill
 3. 匹配到的 Skill 内容动态注入到 Agent 上下文，指导 Agent 按规范执行任务
 
-> **升级注记**：启动器只复制缺失文件、不删源侧已消失的文件——升级后发现旧 skill 改名/移除而 `~/.niu/skills/` 残留旧文件（如 0.3.1 的 `background-script.md` 改写改名为 `scheduled-tasks.md`），手动删除旧文件即可；SkillSync 下次同步会自动清理其 KG 实体。
+> **注记**：启动器只复制缺失文件、不删源侧已消失的文件——skill 改名/移除后 `~/.niu/skills/` 会残留旧文件，手动删除即可；SkillSync 下次同步会自动清理其 KG 实体。
 
 **Skill 编写职责：**
 - **dream-evolver** 是 skill 生命周期的管理者——负责创建草稿、转正、降级、复活、淘汰全流程：
@@ -708,7 +706,9 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 
 ## 视觉能力
 
-Niu 的视觉能力 = `vision-server` 的三个工具（均 static 直挂主 Agent，无需 disk 发现）：`list_targets` 列可截目标 + `screenshot` 截图（返回**纯文件路径** + 尺寸元数据，不返回图标记）+ `analyze_image(image_path, question)` 识图——**带提示词**把图片送进一个有视觉能力的模型、返回**文字答案**。工具内部自选模型：**主模型优先**（主模型探测出视觉 → 用主模型；否则用 `vision_llm` 段的第三方视觉模型；皆无 → 明确错误含配置指引）。两层结构：主模型视觉探测（决定 `analyze_image` 能否走主模型）→ 第三方视觉模型配置（`vision_llm` 段）。
+Niu 的视觉能力 = `vision-server` 的五个工具（均 static 直挂主 Agent，无需 disk 发现）：`list_targets` 列可截目标 + `screenshot` 截图（返回**纯文件路径** + 尺寸元数据，不返回图标记）+ `analyze_image(image_path, question)` 识图——**带提示词**把图片送进一个有视觉能力的模型、返回**文字答案** + `ui` 语义桌面操作（读界面结构 → 按语义找元素 → 对元素执行动作，不依赖截图与坐标）+ `input` 像素兜底输入（click/type/scroll 等七动作，x/y = **该目标最近一次截图的像素**）。工具内部自选模型：**主模型优先**（主模型探测出视觉 → 用主模型；否则用 `vision_llm` 段的第三方视觉模型；皆无 → 明确错误含配置指引）。两层结构：主模型视觉探测（决定 `analyze_image` 能否走主模型）→ 第三方视觉模型配置（`vision_llm` 段）。
+
+桌面操作（`ui`/`input`）的用法、macOS 授权（辅助功能/录屏为两个独立权限）与常见现象排查详见《用户操作手册》1.11「桌面操作」与《故障排查手册》1.11。
 
 ### 截图辅助工具（list_targets + screenshot）
 
@@ -828,7 +828,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 - **可用模型记忆**：多模型链记住 30 分钟内成功过的模型，下次直接从它开始（纯内存、重启即忘；全失败清空；单模型链不启用）。
 - **降级会体现在返回文案里**——发生降级时注记会说明降到了哪个模型；**零注记只表示本轮起点一次成功**（起点可能是记忆命中的模型，未必是配置链首）。返回文案表见《用户操作手册》1.10。
 
-配置与自测流程见《用户操作手册》〈视觉模型配置与自测〉（[manual-user-guide.md](manual-user-guide.md)）；机制细节、边界与排查见《故障排查》1.11 视觉识图问题（[manual-troubleshooting.md](manual-troubleshooting.md)）。
+配置与自测流程见《用户操作手册》〈视觉模型配置与自测〉（[manual-user-guide.md](manual-user-guide.md)）；机制细节、边界与排查见《故障排查》1.11 视觉与桌面操作问题（[manual-troubleshooting.md](manual-troubleshooting.md)）。
 
 ### 主 Agent 视觉流程
 
@@ -855,6 +855,6 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 | 飞书开通 | [manual-feishu-setup.md](manual-feishu-setup.md) | 飞书机器人开通全流程手册（主 Agent 通过 browser-server MCP 工具操作网页）。包含飞书开放平台创建应用、配置事件订阅、获取 App ID/Secret、写入 im-adapters/feishu 配置、Gateway 启动验证、常见开通故障排查。用户要求接入飞书消息时查这里 |
 | 高德开通 | [manual-amap-setup.md](manual-amap-setup.md) | 高德地图 API Key 获取流程手册（主 Agent 通过 browser-server 操作网页）。包含注册高德开放平台、创建应用获取 Key、写入 config/user-config.json、验证照片 EXIF 位置解析功能、常见开通故障排查。用户需要照片地点识别功能时查这里 |
 | 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 完整接入手册。包含 Docker 安装部署 HA、创建长期访问令牌、设备集成方法、智能触发配置（场景/自动化/脚本）、条件推送机制（5.1 节——订阅事件写 DB 不推 IM、主 Agent 的话经 should_push_im 投递 IM，与定时任务同通道）、ha-server MCP 服务器启用、所有已验证 API 行为和踩坑记录。用户要求接入 HA 智能家居控制时查这里 |
-| MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构与虚拟磁盘配置手册。包含新增 MCP 服务器完整步骤（目录结构 + TOOL_SCHEMAS + workdir 配置）、MCP 配置双目录加载模型（bundle 权威层 + `~/.niu/config/mcp-servers-user.yaml` 用户层，0.3.0 升级迁移说明）、虚拟磁盘 YAML 配置格式与路径映射规则、校验规则和常见配置错误排查。主 Agent 可在 `~/.niu/disk/` 自建 MCP server 配置覆盖或新增。需要新增 MCP 服务器、修改虚拟磁盘路径映射、排查 disk 工具调用失败时查这里 |
+| MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构与虚拟磁盘配置手册。包含新增 MCP 服务器完整步骤（目录结构 + TOOL_SCHEMAS + workdir 配置）、MCP 配置双目录加载模型（bundle 权威层 + `~/.niu/config/mcp-servers-user.yaml` 用户层）、虚拟磁盘 YAML 配置格式与路径映射规则、校验规则和常见配置错误排查。主 Agent 可在 `~/.niu/disk/` 自建 MCP server 配置覆盖或新增。需要新增 MCP 服务器、修改虚拟磁盘路径映射、排查 disk 工具调用失败时查这里 |
 | IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | 面向第三方开发者的 IM 平台接入文档。包含 Gateway + Adapter 分离架构（双进程）、TCP 协议规范、配置文件格式、目录规范、开发新 Adapter（钉钉/Telegram/企业微信等）的完整步骤。需要对接新的 IM 平台或修改 IM 通信协议时查这里 |
 | 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 通用子 Agent 体系完整说明。包含配置模板（config/agent-template.md）、动态加载机制（chat 入口扫描 ~/.niu/agents/）、MCP 工具映射（mcpServers frontmatter）、主 Agent 创建子 Agent 流程、同步/异步调用模式、交互能力衔接（通信通道 + 异步调用）、同步子 Agent @niu-agent 询问通道。子 Agent 标签页（动态 Tab + 独立 SSE 事件通道）、@user 用户提问机制、@end 优先级规则、同步子 Agent SSE 404 竞态修复（pre_register + is_closing）、SubagentEventBus 独立事件总线（ring buffer + epoch 机制）。需要理解或调试子 Agent 标签页、事件推送、@user 提问、SSE 竞态问题时查这里 |

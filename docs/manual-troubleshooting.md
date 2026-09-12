@@ -591,7 +591,7 @@ typeof NiuDomTree !== 'undefined'
 | LightRAG 初始化失败 | embedding 模型加载失败 | 检查 `models/bge-base-zh-v1.5/` 目录是否完整；查看日志中 embedding 相关错误；确认 sentence_transformers 已安装 |
 | LightRAG 文档处理超时 | 文档过大或 LLM API 响应慢 | 检查 LLM API 连通性；尝试拆分大文档后重新入库；查看日志中 ainsert 超时信息 |
 | brain-region-server 工具不可用 | 模块未加载 | 检查 `agent/mcp_loader.py` 的 REQUIRED_SERVERS 是否包含 brain-region-server |
-| 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 ；0.3.0 起 bundle 配置为只读权威层，自定义/覆盖检查 ~/.niu/config/mcp-servers-user.yaml（双目录 deep merge） |
+| 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 ；bundle 配置为只读权威层，自定义/覆盖检查 ~/.niu/config/mcp-servers-user.yaml（双目录 deep merge） |
 | 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
 | 脑区边被意外删除 | 衰减算法配置错误 | 检查 preferences.json 中脑区 priority 是否为新值（permanent/long/medium/short），旧值 core/category 会回退到 medium |
 | 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量） | **直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启，splash 弹窗后点"尝试修复"触发完整重建（见 1.7.1 简易指引） |
@@ -719,9 +719,9 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 
 > 注：该指标仅为参考信息，不影响任何功能逻辑。
 
-### 1.11 视觉识图问题（screenshot / list_targets / analyze_image）
+### 1.11 视觉与桌面操作问题（screenshot / list_targets / analyze_image / ui / input）
 
-**先分清是哪一层**：截图工具（`screenshot`/`list_targets`）依赖 niu-natives 原生扩展（`python/` 内的 `.so`/`.pyd`）；`analyze_image` **不依赖**它，只看模型配置。
+**先分清是哪一层**：截图与桌面操作工具（`screenshot`/`list_targets`/`ui`/`input`）依赖 niu-natives 原生扩展（`python/` 内的 `.so`/`.pyd`，缺失时返回明确错误提示、不崩启动）；`analyze_image` **不依赖**它，只看模型配置。
 
 #### 降级机制与边界（多模型链）
 
@@ -757,6 +757,15 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 | 文案含「因累计耗时超 600s 停止继续降级」 | 链上模型普遍超时，预算耗尽 | 检查首个模型连通性；必要时精简链（只留可用模型） |
 | 配了 2 个模型但返回「无备用模型可降级」/ 文案含「（另有 K 个配置无效被跳过）」 | `models` 里的节 `model` 为空/非字符串被跳过（有效链只剩 1 个） | 修好该节 `model` 字段，或删掉该节 |
 | 大图/长会话识图变慢或失败 | 视觉模型上下文窗口不足（截图约 1.2K token + 历史可达 70K+） | 见 SYSTEM_MANUAL 视觉节「上下文窗口要求 ≥32K（建议 ≥64K）」三处配法 |
+
+#### 桌面操作（ui / input）四类现象
+
+| 现象 | 原因 | 处置 |
+|------|------|------|
+| 报"需要系统权限：请在「系统设置 → 隐私与安全性 → 辅助功能」中勾选 Niu，然后重启程序" | macOS 辅助功能未授权（或授权后未重启） | 按提示授权后**重启程序**生效；截图另需录屏权限（两个独立权限） |
+| 报「该元素引用已过期（结构已变化）」 | 界面结构变化导致 ref 代际失效（只有重新读结构才升代，每代只保留当前+上一代） | 重新调用 `ui` 读结构/找元素拿新 ref 后再操作 |
+| 报「无法在不打扰你的前提下投递」 | 背景投递不可用（目标窗口在全屏空间或多窗口应用） | 改用 `ui` 的语义操作；或重试时传 `delivery="foreground"`（会短暂激活目标窗口，用户可随时接手） |
+| 报「该目标还没有截图（或截图已失效）」 | 未对该目标截图 / 窗口尺寸变化使帧失效 / 屏幕内容已变 | 先重新 `screenshot`，再按**新图**的像素坐标操作；屏幕内容可能变化时（滚动/动画/弹层）每次给坐标前先重截 |
 
 **日志**：`~/.niu/logs/` 内搜 `[vision-server]`（跳过的无效链节、读盘失败、选模失败、调用异常都打在这里）。
 

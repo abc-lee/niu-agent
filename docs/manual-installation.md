@@ -90,7 +90,7 @@ python/bin/pip install -r requirements.txt
 
 ### 2.4 编译 niu-natives（桌面采集原生扩展）
 
-`niu-natives/` 是 Niu 的桌面采集原生扩展（Rust + PyO3），MCP `vision-server` 的 `screenshot` / `list_targets` 工具的底座。
+`niu-natives/` 是 Niu 的桌面采集与操作原生扩展（Rust + PyO3），MCP `vision-server` 的 `screenshot` / `list_targets` / `ui` / `input` 工具的底座。
 
 **为何必须本地编译**：该 crate 不在 PyPI，产物 `.so`/`.pyd` 被 `.gitignore` 排除（不进 git）——新 clone / 换机器必须从仓内源码构建 wheel；Windows 的 `.pyd` 只能在 Windows 上编译（不可交叉编译）。
 
@@ -121,7 +121,7 @@ for %f in (niu-natives\target\wheels\niu_natives-*.whl) do python\Scripts\pip.ex
 - macOS：`python/bin/python -c "import niu_natives; print(niu_natives.DesktopSession)"`
 - Windows：`python\Scripts\python.exe -c "import niu_natives; print(niu_natives.DesktopSession)"`
 
-**失败后果**：扩展缺失时 vision-server 走 R11 降级导入（不崩 Niu 启动），但 `screenshot` / `list_targets` 静默返回错误串——看起来像功能 bug。打包或开发前务必先构建。
+**失败后果**：扩展缺失时 vision-server 走 R11 降级导入（不崩 Niu 启动），但 `screenshot` / `list_targets` / `ui` / `input` 均返回明确错误提示（功能不可用、看起来像功能 bug）。打包或开发前务必先构建。
 
 ### 2.5 编译并启动 Rust 启动器
 
