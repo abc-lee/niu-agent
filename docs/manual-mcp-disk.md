@@ -187,9 +187,9 @@ disk("ls /mydir")         → 应出现 my_tool 工具
 disk("cat /mydir/my_tool") → 应显示参数说明
 ```
 
-### 2.7 用户层配置：`mcp-servers-user.yaml`（0.3.0 双目录模型）
+### 2.7 用户层配置：`mcp-servers-user.yaml`（双目录模型）
 
-0.3.0 起 `mcp-servers.yaml` 采用**双目录加载**，取代旧的 copy-once 机制（首启复制到 `~/.niu/config/`、此后仓库侧变更永不达存量装机）：
+`mcp-servers.yaml` 采用**双目录加载**（bundle 权威层随版本升级直读，用户自定义放 `~/.niu/config/mcp-servers-user.yaml`，deep merge 用户层优先）：
 
 | 层 | 路径 | 角色 |
 |----|------|------|
@@ -228,8 +228,6 @@ ha-server: null    # 禁用可选的 ha-server（未配置 HA 时无需等它探
 ```
 
 **失败语义**：用户层文件不存在 = 正常态；yaml 语法错误或顶层非 dict → error 日志 + 跳过用户层，内置层照常加载——配置解析失败从不终止启动。旧文件 `~/.niu/config/mcp-servers.yaml` 残留无害（一律不读），启动日志至多一条弃用 warning。
-
-**0.3.0 升级说明**：删除 `~/.niu/config/mcp-servers.yaml` 即可；自定义过该文件的用户，先把自增段挪到 `~/.niu/config/mcp-servers-user.yaml` 再删旧文件。
 
 > 系统管理视角的整体机制描述见 [SYSTEM_MANUAL.md](SYSTEM_MANUAL.md) 2.1.1 节。
 
@@ -545,12 +543,12 @@ result = tool_fn(param1="value1")
 
 ### 5.7 visibility: static 例外清单
 
-基础配置（`config/mcp-servers.yaml`）中以下 8 个工具使用 `visibility: static`（而非 `hidden`），直接注入主 Agent 工具列表、不走虚拟磁盘发现：
+基础配置（`config/mcp-servers.yaml`）中以下 10 个工具使用 `visibility: static`（而非 `hidden`），直接注入主 Agent 工具列表、不走虚拟磁盘发现：
 
 | 服务器 | 工具 | 说明 |
 |------|------|------|
 | `session-manager` | `read_history_block`、`fold_tool_output` | 会话管理高频工具，static 直挂 |
 | `brain-region-server` | `brain_region_activate`、`brain_region_dim`、`brain_region_status` | 脑区工具仍通过 static 注入方式提供给 Agent，暂未迁移到虚拟磁盘 |
-| `vision-server` | `screenshot`、`list_targets`、`analyze_image` | 视觉能力三工具（截图 + 列可截目标 + 识图），static 直挂主 Agent |
+| `vision-server` | `screenshot`、`list_targets`、`analyze_image`、`ui`、`input` | 视觉能力五工具（截图 + 列可截目标 + 识图 + 语义桌面操作 + 像素兜底输入），static 直挂主 Agent |
 
 除上述例外，其余工具一律使用 `visibility: hidden`。新增 static 工具时须同步更新本清单与 `tests/test_disk_integration.py` 的 `static_exempt` 白名单。
