@@ -342,25 +342,3 @@ BUFFALO_L_MIRRORS = [
     "https://sourceforge.net/projects/insightface.mirror/files/v0.7/buffalo_l.zip/download",
 ]
 ```
-
----
-
-## 验证记录
-
-| 序号 | 原文 | 修正后 | 原因 |
-|------|------|--------|------|
-| 1 | 核心依赖表仅列 6 项（insightface/onnxruntime/sentence-transformers/fastapi/mcp/litellm） | 拆分为"agent 核心"、"API 服务"、"人脸识别"三组，补充 aiosqlite/pydantic/httpx/loguru/watchdog/uvicorn/numpy/opencv-python-headless/Pillow | 各 pyproject.toml 依赖项与原文不一致，缺少多个实际依赖 |
-| 2 | 向量模型为 paraphrase-multilingual-MiniLM-L12-v2（384d, 466MB） | 默认模型改为 bge-base-zh-v1.5（768d, ~391MB），增加支持模型列表 | `niu_api/internal/embedding.py` 中 `DEFAULT_MODEL = "bge-base-zh-v1.5"` |
-| 3 | 向量模型文件路径 `models/paraphrase-multilingual-MiniLM-L12-v2/` | 当前默认 `models/bge-base-zh-v1.5/`，minilm-l12 保留为可选 | 实际 models 目录内容 |
-| 4 | 向量模型许可 Apache 2.0 | bge-base-zh-v1.5 为 MIT 许可 | BAAI 模型采用 MIT 许可 |
-| 5 | buffalo_l 文件路径 `models/buffalo_l/` | `models/models/buffalo_l/`（两层 models 目录） | 代码 `local_model_path = models_dir / "models" / "buffalo_l"` 及实际目录结构 |
-| 6 | buffalo_l 含 `3d68.onnx` | 实际文件名为 `1k3d68.onnx`（~137MB） | 实际目录内容 |
-| 7 | buffalo_l 列出 `README.txt` | 删除，目录中无此文件 | 实际目录内容 |
-| 8 | `_detect_available_providers` 用列表推导 `selected = [p for p in priority if p in available]` | 改为循环 + 空列表回退逻辑 | 实际代码实现 |
-| 9 | `ctx_id=0 if use_gpu else -1` | `ctx_id = 0 if "CUDAExecutionProvider" in providers else -1`，并补充 DirectML 说明 | 实际代码逻辑，DirectML 场景下 ctx_id 仍为 -1 |
-| 10 | 向量模型加载代码示例（固定模型名） | 改为配置驱动（SUPPORTED_MODELS + DEFAULT_MODEL），补充运行时切换 | `embedding.py` 实际实现 |
-| 11 | 模型路径优先级 4 级（含 `~/.niu/models`） | 仅 2 级：NIU_MODELS_PATH 环境变量、项目根目录推导 | `get_models_dir()` 实际实现 |
-| 12 | 预加载描述 "10秒" | 移除具体秒数，说明只预加载模块代码不加载模型 | `preload_face_model()` 实际实现 |
-| 13 | 卸载逻辑无细节 | 补充：后台守护线程每 60 秒检查，不调用 gc.collect() | `_start_model_unload_timer()` 实际实现 |
-| 14 | 向量模型下载仅写"自动下载" | 补充 HuggingFace 下载地址和 HF_ENDPOINT 镜像配置 | 实际下载方式 |
-| 15 | 性能对比表（具体秒数） | 移除，数值无实测依据 | 文档应避免无实测数据的具体数值 |

@@ -1,6 +1,6 @@
 # 通用子 Agent 分册
 
-> 阶段三实现的通用子 Agent 体系。主 Agent 可通过参考模板自定义新子 Agent 配置（MD 文件），动态加载，由主 Agent 同步或异步调用完成长时复杂任务。
+> 通用子 Agent 体系。主 Agent 可通过参考模板自定义新子 Agent 配置（MD 文件），动态加载，由主 Agent 同步或异步调用完成长时复杂任务。
 
 ## 一、设计目标
 
@@ -105,17 +105,17 @@ mcpToolFilter:
 - db_monitor 链路 A 检测主 Agent 空闲 → 推 SSE → 前端调 /api/chat/session → 主 Agent 新一轮 LLM
 - 主 Agent 拿结果判断下一步（继续 / 向用户汇报）
 
-## 九、与阶段一+二的衔接
+## 九、交互能力衔接
 
-通用子 Agent 完整复用阶段一+二的全部交互能力：
+通用子 Agent 完整复用主/子 Agent 交互能力：
 
-### 阶段一能力（主子 Agent 通信通道）
+### 通信通道（@消息路由与停止）
 - 主 Agent 通过 @子名 给子 Agent 发消息
 - /stop 终止子 Agent：**单击**停止按钮（或 /stop 命令）终止**同步 user 子 Agent**（LLM 流式 ≤0.2s 穿透打断，直接退出）；**异步子 Agent 不受单击影响**（该跑跑，完成异步汇报）
 - **双击**停止按钮：向**用户对话派生的**所有子 Agent（同步+异步）推 /stop 并置终止信号（terminate_event，可穿透 LLM 阻塞 ≤0.2s），立即返回
 - **程序触发（睡眠整理管道、定时任务静默脚本）派生的子 Agent 不受停止按钮任何影响**（单击不打断、双击不推 /stop）
 
-### 阶段二能力（异步交互 + ask）
+### 异步交互与查询
 - 子 Agent 主动询问主 Agent（@niu-agent content 拦截层，仅异步子 Agent 自动启用）
 - 主 Agent 查询子 Agent 进度（`check_subagent_progress` 工具）
 - 异步子 Agent 完成汇报（push 到 MainAgentRequestQueue）
@@ -149,14 +149,7 @@ mcpToolFilter:
 | `agent/runner.py` | `get_tools_schema` / `_refresh_base_tools_schema_if_dirty` / `_KEBAB_CASE_RE` |
 | `config/agents/niu.md` | 主 Agent 提示词（含通用子 Agent 说明段） |
 
-## 十二、相关文档
-
-- 阶段一+二设计：`docs/superpowers/specs/2026-07-02-main-subagent-interaction-design.md`
-- 阶段三设计：`docs/superpowers/specs/2026-07-04-general-subagent-stage3-design.md`
-- 阶段三实施计划：`docs/superpowers/plans/2026-07-04-general-subagent-stage3.md`
-
-
-## 十三、子 Agent 标签页与事件通道
+## 十二、子 Agent 标签页与事件通道
 
 > 动态子 Agent 标签页机制：主 Agent SSE 流推送 `subagent_started` 事件 → 前端自动创建 tab → tab 建立独立 SSE 连接实时展示子 Agent 的回复、工具状态、思考链和提问。子 Agent 可通过 `@user` 向用户提问，用户在 tab 内回答，实现子 Agent 与用户的直接双向交流。
 
@@ -259,8 +252,3 @@ mcpToolFilter:
 | `ui/main/windows/assistant/chat.html` | tab CSS + thinking CSS（L749-879）+ 子 Agent tab JS（L2640-3091） |
 | `ui/main/main.js` | SubagentSSEManager + subagent_started 处理（L1809-1965） |
 | `ui/main/preload-chat.js` | 5 个新增 IPC 接口 |
-
-### 相关文档
-
-- 动态子 Agent 标签页设计：`docs/superpowers/specs/2026-08-03-dynamic-subagent-tabs-design.md`
-- 子 Agent 标签页前端 UI 设计：`docs/superpowers/specs/2026-08-04-subagent-tabs-frontend-ui-design.md`
