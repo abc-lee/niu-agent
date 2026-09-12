@@ -24,10 +24,10 @@ niu_natives import 降级（R11）：模块级 try/except——失败 → Deskto
 
 from __future__ import annotations
 
+import httpx
 import json
 import math
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -354,9 +354,8 @@ def list_targets() -> str:
 
 # --- 错误分类表（D-D；语义与 litellm_adapter.py:87-107 对齐，但自带字符串元组——
 # 不 import 适配层私有常量，避免依赖私有 API；R-8）---
-# F-1（2026-09-12 用户定案）：只有服务端明确说「忙/稍后可用」才重试——429 忙/限流
-# （RateLimitError）+ 503 暂不可用/正在加载模型（ServiceUnavailableError，R-5 翻转：原有意排除）。
-# 其余一切（超时/连接失败/认证/配额/未知）→ 不重试，直接换下一个模型（F-2）。
+# F-8（2026-09-12 用户定案）：本层不再重试任何错误——重试由底层 SDK 执行。
+# 以下分类仅用于错误文案与 stopped 判定（retryable/fatal/unknown 不再驱动控制流）。
 _VISION_RETRYABLE_EXC = ("RateLimitError", "ServiceUnavailableError")
 _VISION_FATAL_EXC = ("AuthenticationError", "PermissionDeniedError",
                      "BudgetExceededError", "ContentPolicyViolationError")
@@ -370,16 +369,45 @@ _VISION_FATAL_HINTS = ("authentication", "unauthorized", "invalid api key",
                        "payment required", "insufficient balance", "credit",
                        "401", "402", "403")
 
-# 重试节奏（D-F）：3 次退避；错误文本含 retry after N / try again in N → 覆盖本次等待（上限 15s）
-_VISION_RETRY_DELAYS = (2, 5, 10)
-_VISION_RETRY_AFTER_CAP = 15
-
-# 总预算（D-F）：每次新调用/重试前检查累计耗时，超此值停止降级并返回「预算中断」文案；
+# 总预算（D-F）：每次新调用（每模型一查）前检查累计耗时，超此值停止降级并返回「预算中断」文案；
 # 预算不 gate in-flight 调用（已发出的请求不打断，read_timeout 默认 300s）。
 _VISION_CHAIN_BUDGET_SECONDS = 600
 
 # D-E 汇总文案中每条原因的长度上限
 _VISION_REASON_MAX_CHARS = 120
+
+# --- F-5（2026-09-12 用户定案）：多模型链的「最近成功模型」记忆 ---
+# 纯进程内（不落盘、重启即忘）；30 分钟内有效；**仅多模型链使用**（单模型不做任何记忆逻辑）。
+_VISION_SUCCESS_TTL_SECONDS = 30 * 60
+_VISION_LAST_SUCCESS: Dict[str, Any] = {}   # {"model": <模型名>, "ts": <time.monotonic()>}
+
+
+def _remembered_start(chain: List[dict]) -> int:
+    """F-5：本轮起点下标。命中「30 分钟内成功过的模型」→ 该模型下标；否则 0（链首）。
+    单模型链（len < 2）恒 0；无记忆/ts 缺失/超 TTL/名字不在链中 → 0。"""
+    if len(chain) < 2:
+        return 0
+    model = str(_VISION_LAST_SUCCESS.get("model") or "")
+    ts = _VISION_LAST_SUCCESS.get("ts") or 0
+    if not model or (time.monotonic() - ts) > _VISION_SUCCESS_TTL_SECONDS:
+        return 0
+    for i, cfg in enumerate(chain):
+        if str(cfg.get("model") or "") == model:
+            return i
+    return 0
+
+
+def _remember_vision_success(chain: List[dict], name: str) -> None:
+    """F-5：仅多模型链记录本次成功的模型。"""
+    if len(chain) > 1:
+        _VISION_LAST_SUCCESS["model"] = name
+        _VISION_LAST_SUCCESS["ts"] = time.monotonic()
+
+
+def _forget_vision_success(chain: List[dict]) -> None:
+    """F-5：一轮全失败 → 清记忆（下次仍从链首重新开始）。仅多模型链。"""
+    if len(chain) > 1:
+        _VISION_LAST_SUCCESS.clear()
 
 
 def _load_image_data_uri(image_path: str):
@@ -492,20 +520,8 @@ def _classify_error_text(text: str) -> str:
     return "unknown"
 
 
-def _extract_retry_after(text: str):
-    """从错误文本提取服务端要求的重试等待秒数（D-F）：
-    retry after N / try again in N（含小数取整），上限 15s；无则 None。"""
-    if not text:
-        return None
-    m = (re.search(r"retry after (\d+(?:\.\d+)?)", text, re.IGNORECASE)
-         or re.search(r"try again in (\d+(?:\.\d+)?)", text, re.IGNORECASE))
-    if not m:
-        return None
-    return min(int(float(m.group(1))), _VISION_RETRY_AFTER_CAP)
-
-
 def _classify_vision_error(exc=None, mock_resp=None):
-    """视觉模型错误分类（D-D 双通道）→ (kind, type_name, msg, retry_after)。
+    """视觉模型错误分类（D-D 双通道）→ (kind, type_name, msg)。
 
     kind ∈ {"retryable", "fatal", "unknown", "stopped"}：
     - **A 裸异常**（exc 非 None，适配层初始建连失败 re-raise）：按异常类名查自带常量表，
@@ -541,14 +557,14 @@ def _classify_vision_error(exc=None, mock_resp=None):
             kind = _classify_error_text(msg)
     else:
         kind = "unknown"
-    return kind, type_name, msg, _extract_retry_after(msg)
+    return kind, type_name, msg
 
 
 def _call_vision_model(cfg: dict, data_uri: str, question: str):
     """把图 + 提示词送进视觉模型，同步驱动 LiteLLMSession。
 
     返回 (answer, error)：成功 → (content, None)；失败 → (None, error_dict)。
-    error_dict = {"kind", "type_name", "msg", "retry_after", "reason"}——kind 来自
+    error_dict = {"kind", "type_name", "msg", "reason"}——kind 来自
     _classify_vision_error（D-D），reason 是中文原因（供 D-E 文案组装）。
 
     四种失败形态归一：无响应 / stream_error / 空 content（含 finish_reason=length
@@ -561,6 +577,15 @@ def _call_vision_model(cfg: dict, data_uri: str, question: str):
     """
     from agent.generic.litellm_adapter import LiteLLMSession
 
+    # F-9（2026-09-12 用户定案）：请求级连接超时 5s——SDK 的 except Exception 兜底不区分
+    # 「服务器不存在」与「暂时连不上」，不加连接上界 → 不可达主机 = 4 × 内核超时（≈75s）。
+    # 四个分量必须全部显式给出（httpx 语义：未指定分量不继承默认值 → 变「无超时」）。
+    timeout = httpx.Timeout(connect=5.0, read=float(cfg.get("read_timeout") or 300),
+                            write=30.0, pool=5.0)
+    # F-8（2026-09-12 用户定案）：重试全交 SDK（max_retries=3 = 首次 1 次 + 重试 3 次），
+    # 本层不再自做退避；用户自带 litellm_kwargs 的 max_retries/timeout 被覆盖。
+    litellm_kwargs = {**(cfg.get("litellm_kwargs") or {}), "max_retries": 3, "timeout": timeout}
+
     llm_config = {
         "api_type": cfg.get("type", "openai"),
         "apikey": cfg["apikey"],
@@ -568,7 +593,7 @@ def _call_vision_model(cfg: dict, data_uri: str, question: str):
         "model": cfg["model"],
         "reasoning_effort": cfg.get("reasoning_effort"),
         "provider": cfg.get("provider", ""),
-        "litellm_kwargs": cfg.get("litellm_kwargs", {}),
+        "litellm_kwargs": litellm_kwargs,
         "read_timeout": cfg.get("read_timeout") or 300,
         # 独立 sticky id（plan R1-A P3）：防与主对话/其它通道串扰（"mcp-sampling" 先例）
         "sticky_session_id": "analyze-image",
@@ -599,28 +624,26 @@ def _call_vision_model(cfg: dict, data_uri: str, question: str):
             mock_response = e.value
     except Exception as e:
         # 初始建连/调用异常（401/429/404 等适配层直接 re-raise）→ D-D 通道 A
-        kind, type_name, msg, retry_after = _classify_vision_error(exc=e)
+        kind, type_name, msg = _classify_vision_error(exc=e)
         return None, {"kind": kind, "type_name": type_name, "msg": msg,
-                      "retry_after": retry_after,
                       "reason": f"调用异常（{type_name}）：{msg or '未知错误'}"}
 
     if mock_response is None:
-        return None, {"kind": "unknown", "type_name": "", "msg": "", "retry_after": None,
+        return None, {"kind": "unknown", "type_name": "", "msg": "",
                       "reason": "模型未返回响应"}
     if getattr(mock_response, "stream_error", False):
-        kind, type_name, msg, retry_after = _classify_vision_error(mock_resp=mock_response)
+        kind, type_name, msg = _classify_vision_error(mock_resp=mock_response)
         return None, {"kind": kind, "type_name": type_name, "msg": msg,
-                      "retry_after": retry_after,
                       "reason": msg or "模型调用出错（未知错误）"}
     content = mock_response.content or ""
     if not content.strip():
         # 空回答细分（plan R2-B P2 / §1.6 实验 A）：思考型视觉模型 + 低 max_tokens →
         # 推理链耗尽预算，finish_reason=length——与「模型失败」不得混同；归 unknown 不重试（R-5）
         if getattr(mock_response, "finish_reason", None) == "length":
-            return None, {"kind": "unknown", "type_name": "", "msg": "", "retry_after": None,
+            return None, {"kind": "unknown", "type_name": "", "msg": "",
                           "reason": ("输出预算耗尽（思考型模型的推理链占满了 max_tokens，正文无输出）。"
                                      "请调大该模型配置的 max_tokens 后重试，或收窄问题范围")}
-        return None, {"kind": "unknown", "type_name": "", "msg": "", "retry_after": None,
+        return None, {"kind": "unknown", "type_name": "", "msg": "",
                       "reason": "模型返回空内容"}
     return content, None
 
@@ -639,29 +662,25 @@ def _skipped_note(skipped: int) -> str:
 def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question: str) -> str:
     """链式降级循环（D-B / D-D / D-E / D-F），返回最终给工具的文字。
 
-    可重试错误（F-1：服务端明确说忙/限流/暂不可用）最多重试 len(_VISION_RETRY_DELAYS) 次
-    （退避 2/5/10s，服务端 retry after N 覆盖、上限 15s）；致命/未知直接换下一个；已停止不重试不降级。
-    stop 检查点四处：循环顶 / 每次重试前 / 每次调用返回后（全局 is_stop_requested——
+    每模型一次调用（F-8 2026-09-12 用户定案：重试全交 SDK，本层不再自做退避）；
+    致命/未知直接换下一个模型；已停止（stopped）不降级、立即返回。
+    stop 检查点三处：循环顶 / 每次调用返回后 / stopped-kind（全局 is_stop_requested——
     vision-server 同进程与主循环共享同一 Event）。
-    总预算：每次新调用/重试前查累计耗时，超 _VISION_CHAIN_BUDGET_SECONDS 停止降级
+    总预算：每模型一查（新调用前）累计耗时，超 _VISION_CHAIN_BUDGET_SECONDS 停止降级
     并返回「预算中断」文案（不 gate in-flight 调用）。
+    F-5：多模型链记住 30 分钟内成功过的模型作本轮起点；一轮全失败清记忆。
     """
     from agent.generic.litellm_adapter import is_stop_requested
 
     start = time.monotonic()
     failures: List[tuple] = []  # [(模型名, 原因)]——失败的模型
-    last_error = None           # 当前节最近一次错误（供预算文案计数，每节重置）
-    section_tried = False       # 当前节是否已发起过至少一次调用
 
     def _over_budget() -> bool:
         return (time.monotonic() - start) >= _VISION_CHAIN_BUDGET_SECONDS
 
     def _budget_msg() -> str:
-        """D-E「预算中断」：M=1（仅链首被调用，未发生降级）时不含「已自动降级」。
-        当前节可能已发起调用但尚未写入 failures（重试等待期命中预算）——单独计入。"""
+        """D-E「预算中断」：M=1（仅链首被调用，未发生降级）时不含「已自动降级」。"""
         listed = list(failures)
-        if section_tried and last_error is not None and (not listed or listed[-1][0] != name):
-            listed.append((name, last_error["reason"]))
         tried = len(listed)
         k = len(chain) - tried
         tail = f"，因累计耗时超 {_VISION_CHAIN_BUDGET_SECONDS}s 停止继续降级"
@@ -679,51 +698,37 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
         return f"识图失败：因累计耗时超 {_VISION_CHAIN_BUDGET_SECONDS}s 停止继续降级" \
             + _skipped_note(skipped)
 
-    for idx, cfg in enumerate(chain):
+    order = list(range(len(chain)))
+    start_idx = _remembered_start(chain)
+    if start_idx:
+        order = order[start_idx:] + order[:start_idx]
+
+    for pos, idx in enumerate(order):
+        cfg = chain[idx]
         name = str(cfg.get("model") or "未知模型")
-        section_tried = False
         if is_stop_requested():
             return "识图已停止"
         if _over_budget():
             return _budget_msg()
 
-        last_error = None
-        # attempt 0 = 首次调用；1..3 = 重试（重试配额每模型独立，D-D）
-        for attempt in range(1 + len(_VISION_RETRY_DELAYS)):
-            if attempt > 0:
-                r = attempt - 1
-                delay = (last_error or {}).get("retry_after")
-                time.sleep(delay if delay else _VISION_RETRY_DELAYS[r])
-            if is_stop_requested():
-                return "识图已停止"
-            if _over_budget():
-                return _budget_msg()
+        answer, error = _call_vision_model(cfg, data_uri, question)
+        # 调用返回后再查 stop（R3-A P2：末位模型调用中 stop 时适配层返回空响应，
+        # 仅靠 error_type 会被误判「未知」而误报「无备用模型可降级」）
+        if is_stop_requested():
+            return "识图已停止"
+        if error is None:
+            if pos == 0:
+                _remember_vision_success(chain, name)
+                return answer  # 本轮起点一次成功：零附加提示
+            # 非起点模型成功（D-E / U-5）：只提首模型原因
+            first_name, first_reason = failures[0]
+            _remember_vision_success(chain, name)
+            return (f"{answer}\n\n"
+                    f"（注：首模型不可用（{_clip_reason(first_reason)}），已自动降级到 {name}）")
 
-            answer, error = _call_vision_model(cfg, data_uri, question)
-            section_tried = True  # 预算文案计数：该节已发起过调用
-            # 调用返回后再查 stop（R3-A P2：末位模型调用中 stop 时适配层返回空响应，
-            # 仅靠 error_type 会被误判「未知」而误报「无备用模型可降级」）
-            if is_stop_requested():
-                return "识图已停止"
-            if error is None:
-                if idx == 0 and attempt == 0:
-                    return answer  # 链首一次成功：零附加提示
-                if idx == 0:
-                    # 链首重试后成功（D-E / C-2）：实际未降级，不写「已自动降级」
-                    return (f"{answer}\n\n"
-                            f"（注：首模型曾报错（{_clip_reason(last_error['reason'])}），重试后恢复）")
-                # 非链首成功（D-E / U-5）：只提首模型原因
-                first_name, first_reason = failures[0]
-                return (f"{answer}\n\n"
-                        f"（注：首模型不可用（{_clip_reason(first_reason)}），已自动降级到 {name}）")
-
-            last_error = error
-            if error["kind"] == "stopped":
-                return "识图已停止"  # 不重试、不降级（D-D）
-            if error["kind"] != "retryable":
-                break  # fatal/unknown → 不重试，直接换下一个模型（U-4）
-
-        failures.append((name, last_error["reason"]))
+        if error["kind"] == "stopped":
+            return "识图已停止"  # 不降级（D-D）
+        failures.append((name, error["reason"]))
 
     n = len(failures)
     if n == 1:
@@ -740,6 +745,7 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
         items.append(f"{mark}{mname}：{_clip_reason(mreason)}")
     if n > 3:
         items.append(f"等 {n} 个")
+    _forget_vision_success(chain)
     return (f"识图失败：首模型不可用（{first_name}：{_clip_reason(first_reason)}），"
             f"已自动降级尝试 {n} 个模型均失败：" + "；".join(items)
             + _skipped_note(skipped))
@@ -751,8 +757,8 @@ def analyze_image(image_path: str, question: str) -> str:
     执行流程（plan §3.2 / vision-model-fallback D-B）：读图（魔数 MIME 探测 /
     超限降采样 → data URI）→ 构建视觉模型链（主模型有视觉作链首，其后接
     vision_llm.models / 单对象回退；皆无 → 含配置指引的明确错误）→
-    _call_with_fallback 按序调用（可重试错误带退避重试、致命/未知直接降级、
-    stop/总预算中断即停）→ 纯文本。
+    _call_with_fallback 按序调用（每模型一次、重试交 SDK，致命/未知直接降级、
+    stop/总预算中断即停；多模型链记忆 30 分钟内成功过的模型作本轮起点）→ 纯文本。
 
     停止语义归属 agent_loop 外层放弃等待（所有工具执行被统一包装）——
     本工具内不做独立 stop 包装（plan R2-B P1），只在调用间隙查全局
@@ -875,8 +881,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "聚焦问 77 token）。"
             "- 同一张图可以带不同问题反复调用——第一次的回答往往能告诉你「还有什么可问」。"
             "模型内部自动选择（主模型有视觉用主模型，否则用 vision_llm 段），无需指定。"
-            "工具内部按配置的多个视觉模型依次尝试，首个不可用时自动降级到下一个（仅当服务端明确说"
-            "「忙/限流/暂不可用」时才带退避重试最多 3 次；超时/连接失败等其它错误直接换下一个模型；总预算内），"
+            "工具内部按配置的多个视觉模型依次尝试，首个不可用时自动降级到下一个（重试由底层 SDK 执行，"
+            "最多重试 3 次；仍失败则换下一个模型；总预算内），"
             "返回结果会标注是否发生降级。"
         ),
         "input_schema": {
