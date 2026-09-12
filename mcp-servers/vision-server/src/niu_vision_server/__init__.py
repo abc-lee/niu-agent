@@ -28,8 +28,10 @@ import json
 import math
 import os
 import re
+import socket
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -354,14 +356,17 @@ def list_targets() -> str:
 
 # --- 错误分类表（D-D；语义与 litellm_adapter.py:87-107 对齐，但自带字符串元组——
 # 不 import 适配层私有常量，避免依赖私有 API；R-8）---
-# ServiceUnavailableError 有意不列入可重试（适配层归 uncertain；本表语义是「不重试」）。
-_VISION_RETRYABLE_EXC = ("RateLimitError", "Timeout", "APIConnectionError")
+# F-1（2026-09-12 用户定案）：只有服务端明确说「忙/稍后可用」才重试——429 忙/限流
+# （RateLimitError）+ 503 暂不可用/正在加载模型（ServiceUnavailableError，R-5 翻转：原有意排除）。
+# 其余一切（超时/连接失败/认证/配额/未知）→ 不重试，直接换下一个模型（F-2）。
+_VISION_RETRYABLE_EXC = ("RateLimitError", "ServiceUnavailableError")
 _VISION_FATAL_EXC = ("AuthenticationError", "PermissionDeniedError",
                      "BudgetExceededError", "ContentPolicyViolationError")
 
-# 文本兜底关键词（小写匹配）：重试提示 / 认证·欠费·配额类
+# 文本兜底关键词（小写匹配）：F-1 两类文本信号（忙/暂不可用） / 认证·欠费·配额类
 _VISION_RETRY_HINTS = ("retry after", "try again in", "rate limit",
-                       "overloaded", "too many requests")
+                       "overloaded", "too many requests",
+                       "loading model", "service unavailable", "temporarily unavailable")
 _VISION_FATAL_HINTS = ("authentication", "unauthorized", "invalid api key",
                        "permission denied", "forbidden", "quota", "billing",
                        "payment required", "insufficient balance", "credit",
@@ -377,6 +382,43 @@ _VISION_CHAIN_BUDGET_SECONDS = 600
 
 # D-E 汇总文案中每条原因的长度上限
 _VISION_REASON_MAX_CHARS = 120
+
+# F-3 可达性预检：每模型首次调用前的 TCP 连接总时长上界（不依赖内核默认 ~75s）
+_VISION_CONNECT_TIMEOUT_SECONDS = 5
+
+
+def _probe_reachable(api_base: str) -> tuple[bool, str]:
+    """快速可达性预检（F-3）。语义：
+    - 确定不可达（DNS 失败 / 所有候选地址 connect 失败）→ (False, "<host:port> 不可达")
+    - 其它一切情况（解析不出 host、apiBase 为空、预检自身异常）→ (True, "") 不阻断，
+      交由真实调用去暴露问题（fail-open；R-6 / 用例 10）"""
+    try:
+        parts = urllib.parse.urlsplit(api_base or "")
+        host = parts.hostname
+        if not host:
+            return True, ""                      # 解析不出 → 跳过预检
+        port = parts.port or (443 if parts.scheme == "https" else 80)   # 非法端口抛 ValueError → 外层 fail-open
+        deadline = time.monotonic() + _VISION_CONNECT_TIMEOUT_SECONDS
+        try:
+            infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+        except OSError:                           # gaierror ⊂ OSError → 确定不可达
+            return False, f"{host}:{port} 不可达"  # （UnicodeError/其它 → 落外层 fail-open）
+        for af, socktype, proto, _, sa in infos:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break                             # 总时长耗尽
+            s = socket.socket(af, socktype, proto)  # v0.9：创建失败即逃到外层 fail-open（不误判不可达）
+            try:
+                s.settimeout(max(0.001, remaining))
+                s.connect(sa)
+                return True, ""
+            except (OSError, UnicodeError):
+                continue                          # 该地址连不上 → 换下一个候选
+            finally:
+                s.close()                         # 创建成功即必被关闭（无需哨兵）
+        return False, f"{host}:{port} 不可达"      # 所有候选都连不上 → 确定不可达
+    except Exception:                             # v0.8：fail-open——预检自身异常绝不断链
+        return True, ""
 
 
 def _load_image_data_uri(image_path: str):
@@ -636,8 +678,9 @@ def _skipped_note(skipped: int) -> str:
 def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question: str) -> str:
     """链式降级循环（D-B / D-D / D-E / D-F），返回最终给工具的文字。
 
-    每模型：可重试错误最多重试 len(_VISION_RETRY_DELAYS) 次（退避 2/5/10s，服务端
-    retry after N 覆盖、上限 15s）；致命/未知直接换下一个；已停止不重试不降级。
+    每模型：首次调用前 TCP 可达性预检（5s 上界，F-3）——不可达零调用直接判失败并降级；
+    可重试错误（F-1：服务端明确说忙/限流/暂不可用）最多重试 len(_VISION_RETRY_DELAYS) 次
+    （退避 2/5/10s，服务端 retry after N 覆盖、上限 15s）；致命/未知直接换下一个；已停止不重试不降级。
     stop 检查点四处：循环顶 / 每次重试前 / 每次调用返回后（全局 is_stop_requested——
     vision-server 同进程与主循环共享同一 Event，函数级 import 照 :403 先例）。
     总预算：每次新调用/重试前查累计耗时，超 _VISION_CHAIN_BUDGET_SECONDS 停止降级
@@ -646,7 +689,7 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
     from agent.generic.litellm_adapter import is_stop_requested
 
     start = time.monotonic()
-    failures: List[tuple] = []  # [(模型名, 原因)]——实际发起过调用的模型（D-E N 口径）
+    failures: List[tuple] = []  # [(模型名, 原因)]——失败的模型（含预检失败零调用者，D-E N 口径）
     last_error = None           # 当前节最近一次错误（供预算文案计数，每节重置）
     section_tried = False       # 当前节是否已发起过至少一次调用
 
@@ -691,6 +734,16 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
                 r = attempt - 1
                 delay = (last_error or {}).get("retry_after")
                 time.sleep(delay if delay else _VISION_RETRY_DELAYS[r])
+            else:
+                # F-3：每模型首次调用前预检 TCP 可达性（5s 上界，不依赖内核默认 ~75s）
+                reachable, probe_reason = _probe_reachable(cfg.get("apibase"))
+                if not reachable:
+                    # 预检失败：零调用直接判失败 → 不进重试分支；break 落到 failures.append
+                    # 换下一个模型（F-2；预检失败零调用也入列）
+                    last_error = {"kind": "unknown", "type_name": "", "msg": "",
+                                  "retry_after": None,
+                                  "reason": f"连接失败：{probe_reason}"}
+                    break
             if is_stop_requested():
                 return "识图已停止"
             if _over_budget():
@@ -872,7 +925,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "聚焦问 77 token）。"
             "- 同一张图可以带不同问题反复调用——第一次的回答往往能告诉你「还有什么可问」。"
             "模型内部自动选择（主模型有视觉用主模型，否则用 vision_llm 段），无需指定。"
-            "工具内部按配置的多个视觉模型依次尝试，首个不可用时自动降级（重试、退避、总预算内），"
+            "工具内部按配置的多个视觉模型依次尝试，首个不可用时自动降级到下一个（仅当服务端明确说"
+            "「忙/限流/暂不可用」时才带退避重试最多 3 次；超时/连接失败等其它错误直接换下一个模型；总预算内），"
             "返回结果会标注是否发生降级。"
         ),
         "input_schema": {

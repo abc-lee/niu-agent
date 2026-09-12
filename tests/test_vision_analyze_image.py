@@ -32,9 +32,15 @@
 - 用例 12 重试退避 2/5/10 + retry after N 覆盖；用例 13/14 stop（error_type / 调用期间置位含单模型变体）
 - 用例 15/21 总预算中断（M≥2 / M=1 特例文案）；用例 19 全部失败/注记文案不含 `![`
 - 用例 18 = 改写既有锁测试 test_implementation_has_no_stop_wrapping；用例 22-24 在 tests/test_vision_llm_config.py（T2）
+
+(2026-09-12-vision-retry-policy-fix plan §5——F-1 重试收窄 + F-3 可达性预检)：
+- 用例 1-7 分类（Timeout/APIConnectionError 不重试 / RateLimit·ServiceUnavailable 重试 3 次 /
+  未归类含 retry after N 文本重试 / 未归类无忙信号不重试 / 认证·配额回归锁）
+- 用例 8-11 预检（不可达零调用降级 / 成功路径 + close / 解析失败跳过 / 创建异常 fail-open / deadline 递减）
 """
 
 import json
+import socket
 import sys
 import types
 from pathlib import Path
@@ -109,6 +115,25 @@ def _resp(content="", finish_reason="stop", stream_error=False, error_msg=None,
     )
 
 
+class _FakeProbeSocket:
+    """F-3 预检假 socket（autouse 打桩）：connect 默认成功 → 预检通过 (True, "")；
+    close() 被记录——fd 泄漏锁（条件式断言：仅当本用例真的创建过预检 socket）。"""
+    instances: list = []
+
+    def __init__(self, af=None, socktype=None, proto=None):
+        self.closed = False
+        _FakeProbeSocket.instances.append(self)
+
+    def settimeout(self, value):
+        pass
+
+    def connect(self, sa):
+        pass  # 默认成功（autouse getaddrinfo 打桩给出的候选地址）
+
+    def close(self):
+        self.closed = True
+
+
 @pytest.fixture(autouse=True)
 def _reset_fake_session(monkeypatch):
     FakeLiteLLMSession.instances.clear()
@@ -116,10 +141,22 @@ def _reset_fake_session(monkeypatch):
     FakeLiteLLMSession.response = None
     FakeLiteLLMSession.raise_exc = None
     FakeLiteLLMSession.on_chunk = None
+    _FakeProbeSocket.instances.clear()
     monkeypatch.setattr("agent.generic.litellm_adapter.LiteLLMSession", FakeLiteLLMSession)
     # stop 状态隔离：默认「未停止」（plan §5 用例 14 autouse 清旗防跨测试泄漏）；
     # 单测可再 patch agent.generic.litellm_adapter.is_stop_requested 为自己的 flag。
     monkeypatch.setattr("agent.generic.litellm_adapter.is_stop_requested", lambda: False)
+    # F-3 预检打桩（2026-09-12 plan v0.10 实施要求①）：夹具主机 main 走真实 DNS 会解析失败 →
+    # 判不可达 → 零调用 → 约 20 处 len(instances) 断言连锁全红。同时打桩两个入口
+    # socket.getaddrinfo + socket.socket（用例 8/10b 可在测试内覆盖）；close 断言条件式——
+    # 仅当本用例真的创建过预检 socket（未进降级循环的用例不得误红）。
+    monkeypatch.setattr(
+        niu_vision_server.socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))])
+    monkeypatch.setattr(niu_vision_server.socket, "socket", _FakeProbeSocket)
+    yield
+    for s in _FakeProbeSocket.instances:
+        assert s.closed, "预检 socket 未显式 close（fd 泄漏）"
 
 
 def _install_fake_llm_config(monkeypatch, main_cfg):
@@ -883,6 +920,8 @@ class TestChainBudget:
                             _write_user_config(tmp_path, vision=_models_section("m1", "m2", "m3")))
         png = _png_file(tmp_path)
         _stub_time(monkeypatch, step=130)
+        # step>0 使预检 deadline 恒负 → 显式打桩恒通过（v0.5 定案；预检路径由用例 9/10/11 覆盖）
+        monkeypatch.setattr(niu_vision_server, "_probe_reachable", lambda api_base: (True, ""))
         FakeLiteLLMSession.script.extend([_fatal(f"boom-{i}") for i in (1, 2, 3)])
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
@@ -900,6 +939,8 @@ class TestChainBudget:
                             _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
         png = _png_file(tmp_path)
         _stub_time(monkeypatch, step=250)
+        # step>0 使预检 deadline 恒负 → 显式打桩恒通过（v0.5 定案；预检路径由用例 9/10/11 覆盖）
+        monkeypatch.setattr(niu_vision_server, "_probe_reachable", lambda api_base: (True, ""))
         FakeLiteLLMSession.script.extend([_fatal("boom-1"), _resp("答案A")])
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
@@ -918,6 +959,8 @@ class TestChainBudget:
                             _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
         png = _png_file(tmp_path)
         sleeps = _stub_time(monkeypatch, step=250)
+        # step>0 使预检 deadline 恒负 → 显式打桩恒通过（v0.5 定案；预检路径由用例 9/10/11 覆盖）
+        monkeypatch.setattr(niu_vision_server, "_probe_reachable", lambda api_base: (True, ""))
         FakeLiteLLMSession.script.extend([_r429(), _resp("答案A")])
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
@@ -960,8 +1003,9 @@ class TestWordingFormat:
             assert expected in result, f"未走预期分支（期望含 {expected!r}）: {result!r}"
             assert "![" not in result, f"文案含图片标记: {result!r}"
 
-        # 预算中断文案（需 step>0 的时间 stub）
+        # 预算中断文案（需 step>0 的时间 stub；step>0 使预检 deadline 恒负 → 显式打桩恒通过）
         _stub_time(monkeypatch, step=130)
+        monkeypatch.setattr(niu_vision_server, "_probe_reachable", lambda api_base: (True, ""))
         FakeLiteLLMSession.instances.clear()
         FakeLiteLLMSession.script.extend([_fatal("boom-1"), _fatal("boom-2")])
         monkeypatch.setattr("niu_api.config.CONFIG_PATH",
@@ -969,3 +1013,266 @@ class TestWordingFormat:
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
         assert "因累计耗时超 600s 停止继续降级" in result  # 走了预算中断分支
         assert "![" not in result
+
+
+# ============== plan 2026-09-12-vision-retry-policy-fix §5 用例 1-7：F-1 重试收窄 ==============
+
+class Timeout(Exception):
+    """类名与 litellm 超时异常一致——D-D 通道 A 按 type(e).__name__ 查表（F-2：不重试）。"""
+
+
+class APIConnectionError(Exception):
+    """类名与 litellm 连接异常一致——F-2：连接失败不重试。"""
+
+
+class RateLimitError(Exception):
+    """类名与 litellm 429 限流异常一致——F-1：服务端说忙 → 可重试。"""
+
+
+class ServiceUnavailableError(Exception):
+    """类名与 litellm 503 暂不可用异常一致——F-1：加载中/暂不可用 → 可重试（R-5 翻转锁）。"""
+
+
+class BudgetExceededError(Exception):
+    """类名与 litellm 配额/欠费异常一致——fatal 表，不重试（回归锁）。"""
+
+
+class TestRetryPolicyF1:
+    """2026-09-12 plan §5 用例 1-7：只有服务端明确说忙/暂不可用才重试，其余一律直接降级（F-1/F-2）。"""
+
+    def test_timeout_no_retry_direct_degrade(self, monkeypatch, tmp_path):
+        """用例 1（用户本次场景）：Timeout 裸异常 → 不重试（调用计数=1）→ 直接降级。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        FakeLiteLLMSession.script.extend([Timeout("Request timed out"), _resp("答案A")])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert "已自动降级到 m2" in result
+        assert len(FakeLiteLLMSession.instances) == 2  # 首模型只调一次（无重试）
+        assert sleeps == []
+
+    def test_api_connection_error_no_retry(self, monkeypatch, tmp_path):
+        """用例 2：APIConnectionError（连接失败/不可达）→ 不重试，直接降级。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        FakeLiteLLMSession.script.extend([APIConnectionError("connect failed"), _resp("答案A")])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert "已自动降级到 m2" in result
+        assert len(FakeLiteLLMSession.instances) == 2
+        assert sleeps == []
+
+    def test_rate_limit_error_retries_3_times(self, monkeypatch, tmp_path):
+        """用例 3：RateLimitError（429 忙）→ 重试 3 次（计数=4），退避 [2,5,10]。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        FakeLiteLLMSession.script.extend([RateLimitError("Error code: 429 - rate limit exceeded")] * 4)
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert len(FakeLiteLLMSession.instances) == 4
+        assert sleeps == [2, 5, 10]
+        assert "识图失败" in result  # 单模型：耗尽后单模型失败文案
+
+    def test_service_unavailable_error_retries_3_times(self, monkeypatch, tmp_path):
+        """用例 4：ServiceUnavailableError（503 加载中）→ 重试 3 次（计数=4）——R-5 翻转锁。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        FakeLiteLLMSession.script.extend(
+            [ServiceUnavailableError("503 service unavailable: loading model")] * 4)
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert len(FakeLiteLLMSession.instances) == 4
+        assert sleeps == [2, 5, 10]
+        assert "识图失败" in result
+
+    def test_unclassified_with_retry_after_text_retries(self, monkeypatch, tmp_path):
+        """用例 5：未归类异常但文本含 retry after 7 → 文本兜底 retryable，首次等待 = 7s。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        # 首错带 retry after 7（覆盖首次等待）；后续错误只含忙信号无退避秒数 → 回退避序列
+        FakeLiteLLMSession.script.extend(
+            [MysteryWeirdError("server busy, retry after 7 seconds")]
+            + [MysteryWeirdError("HTTP 429 rate limited")] * 3)
+
+        niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert len(FakeLiteLLMSession.instances) == 4
+        assert sleeps == [7, 5, 10]  # 首次等待被 retry after 覆盖为 7s
+
+    def test_unclassified_without_busy_text_no_retry(self, monkeypatch, tmp_path):
+        """用例 6：未归类异常且文本无忙信号 → 不重试，直接降级。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        FakeLiteLLMSession.script.extend([MysteryWeirdError("total nonsense"), _resp("答案A")])
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert "已自动降级到 m2" in result
+        assert len(FakeLiteLLMSession.instances) == 2
+        assert sleeps == []
+
+    def test_auth_and_quota_errors_no_retry(self, monkeypatch, tmp_path):
+        """用例 7：认证/配额（AuthenticationError / BudgetExceededError）→ 不重试（回归锁）。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+
+        FakeLiteLLMSession.script.extend([AuthenticationError("401 invalid api key"), _resp("答案A")])
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+        assert "已自动降级到 m2" in result
+        assert len(FakeLiteLLMSession.instances) == 2
+
+        FakeLiteLLMSession.script.clear()
+        FakeLiteLLMSession.instances.clear()
+        FakeLiteLLMSession.script.extend([BudgetExceededError("402 billing: insufficient balance"), _resp("答案A")])
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+        assert "已自动降级到 m2" in result
+        assert len(FakeLiteLLMSession.instances) == 2  # m1 仍只调一次（无重试）
+        assert sleeps == []
+
+
+# ============== plan 2026-09-12-vision-retry-policy-fix §5 用例 8-11：F-3 可达性预检 ==============
+
+class TestReachabilityProbe:
+    """预检失败零调用降级 / 成功路径 + close / 解析失败跳过 / 创建异常 fail-open / deadline 递减。"""
+
+    def test_probe_unreachable_zero_calls_degrades(self, monkeypatch, tmp_path):
+        """用例 8：预检 connect 失败（打桩 socket.socket，不打桩 _probe_reachable）→ 该模型零调用 →
+        直接降级；文案含「不可达」。键名误写 apiBase 时本用例必红（预检恒跳过 → m1 会被调用）。"""
+
+        probe_calls = {"n": 0}
+
+        class _Unreachable(_FakeProbeSocket):
+            def connect(self, sa):
+                probe_calls["n"] += 1
+                if probe_calls["n"] == 1:
+                    raise OSError("connection refused")  # 仅首模型（m1）不可达；m2 预检通过
+
+        monkeypatch.setattr(niu_vision_server.socket, "socket", _Unreachable)
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1", "m2")))
+        png = _png_file(tmp_path)
+        sleeps = _stub_time(monkeypatch)
+        FakeLiteLLMSession.script.append(_resp("答案A"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert "不可达" in result
+        assert "已自动降级到 m2" in result
+        inst = FakeLiteLLMSession.instances
+        assert [i.cfg["model"] for i in inst] == ["m2"]  # m1 零调用
+        assert sleeps == []
+
+    def test_probe_success_normal_call_and_close(self, monkeypatch, tmp_path):
+        """用例 9：预检成功 → 正常调用（计数=1），不改变成功路径；预检 socket 被显式 close()。"""
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_WITH_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", _write_user_config(tmp_path))
+        png = _png_file(tmp_path)
+        FakeLiteLLMSession.script.append(_resp("答案A"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert result == "答案A"
+        assert len(FakeLiteLLMSession.instances) == 1
+        assert _FakeProbeSocket.instances, "预检未创建 socket（预检被跳过？）"
+        assert all(s.closed for s in _FakeProbeSocket.instances)
+
+    def test_probe_parse_failure_skips_precheck(self):
+        """用例 10：apiBase 空串 / 无 scheme / 非法端口 / 未闭合 IPv6 → 跳过预检（fail-open 不阻断）。"""
+        for bad in ("", "not-a-url", "http://h:70000/v1", "http://[::1"):
+            assert niu_vision_server._probe_reachable(bad) == (True, ""), bad
+
+    def test_probe_skipped_when_no_apibase_still_calls(self, monkeypatch, tmp_path):
+        """用例 10（集成）：链节无 apiBase → 跳过预检（不创建 socket），仍发起真实调用。"""
+        main_cfg = {**MAIN_CFG_NO_VISION, "apibase": ""}
+        _install_fake_llm_config(monkeypatch, main_cfg)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1")))
+        png = _png_file(tmp_path)
+        FakeLiteLLMSession.script.append(_resp("答案A"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
+
+        assert result == "答案A"
+        assert len(FakeLiteLLMSession.instances) == 1
+        assert _FakeProbeSocket.instances == []  # 预检被跳过（未创建 socket）
+
+    def test_probe_socket_creation_failure_fail_open(self, monkeypatch, tmp_path):
+        """用例 10b：socket.socket 创建即抛 OSError（EMFILE 场景）→ fail-open (True, "")：
+        ①不抛 UnboundLocalError ②不阻断 ③后续真实调用照常发生。"""
+
+        def _boom(*args, **kwargs):
+            raise OSError("Too many open files")
+
+        monkeypatch.setattr(niu_vision_server.socket, "socket", _boom)
+
+        assert niu_vision_server._probe_reachable("http://main/v1") == (True, "")  # ①②
+
+        _install_fake_llm_config(monkeypatch, MAIN_CFG_NO_VISION)
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH",
+                            _write_user_config(tmp_path, vision=_models_section("m1")))
+        png = _png_file(tmp_path)
+        FakeLiteLLMSession.script.append(_resp("答案A"))
+
+        result = niu_vision_server.analyze_image(str(png), "这张图里有什么")  # ③
+
+        assert result == "答案A"
+        assert len(FakeLiteLLMSession.instances) == 1
+
+    def test_probe_deadline_decrements_per_address(self, monkeypatch):
+        """用例 11（时钟联动）：首个候选吃 4s 后失败 → 第二个拿剩余 ≤1s（真递减，非恒 5s）。"""
+        clock = [0.0]
+        stub = types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: None)
+        monkeypatch.setattr(niu_vision_server, "time", stub)
+
+        timeouts = []
+        connects = {"n": 0}
+
+        class _ProbeSock:
+            def __init__(self, *a, **k):
+                pass
+
+            def settimeout(self, v):
+                timeouts.append(v)
+
+            def connect(self, sa):
+                connects["n"] += 1
+                if connects["n"] == 1:
+                    clock[0] += 4.0  # 首个候选吃 4s 后失败
+                    raise OSError("first candidate unreachable")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(niu_vision_server.socket, "socket", _ProbeSock)
+        monkeypatch.setattr(
+            niu_vision_server.socket, "getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("10.0.0.1", 80)), (2, 1, 6, "", ("10.0.0.2", 80))])
+
+        ok, reason = niu_vision_server._probe_reachable("http://main/v1")
+
+        assert (ok, reason) == (True, "")
+        assert timeouts[0] == 5.0          # 首尝试拿满 5s
+        assert timeouts[1] <= 1.0          # 第二次拿的是剩余时间（可区分「递减」与「恒 5s」）
