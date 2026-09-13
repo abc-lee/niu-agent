@@ -736,7 +736,7 @@ Niu 的视觉能力 = `vision-server` 的三个工具（均 static 直挂主 Age
 
 **权限与能力查询**：
 - macOS 有**两个独立权限**：辅助功能（`computer` 的语义操作/AX/输入需要）与屏幕录制（截图需要）。先用 `desktop.capabilities()` 查 capture/input/ax 的运行时状态——不要假设；未授权时的授予步骤见《用户操作手册》1.11
-- Windows 无额外授权要求
+- Windows 无额外授权要求；但 AX 可读性取决于**目标应用是否实现 UIA provider**（Chromium/Electron 系默认惰性，提权窗口受 UIPI 限制）——Niu 自身界面已开启无障碍暴露，可被读取
 
 **输入投递（delivery）**：
 - 默认 `delivery: "background"`——把输入送到目标窗口，不打扰用户的焦点、指针与窗口顺序
