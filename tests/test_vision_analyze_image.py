@@ -12,7 +12,7 @@
 - 2 选模型（主模型优先）：主模型有视觉 → 用主 llm 段（断言未读 vision 段）；
   主模型无视觉 + vision_llm.model 非空 → 用该段；皆无 → 明确错误（含配置指引）；
   段判空走原始 user-config.json
-- 3 请求形态：messages = [{role:user, content:[text(question), image_url(data_uri)]}]
+- 3 请求形态：messages = [system(位置格式标准，T2 S3), {role:user, content:[text(question), image_url(data_uri)]}]
 - 3b Schema 文案锁：description 含两段式指引（泛问建立认知 + 聚焦追问）且不含
   「必须给具体问题」式误导措辞
 - 3c cfg 键映射锁：api_type == 配置 type（非恒 openai）
@@ -59,6 +59,16 @@ import niu_vision_server  # noqa: E402,F401
 from agent.generic.llmcore import MockResponse  # noqa: E402  (真实返回形态，禁自造 fake)
 
 _FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64  # PNG 魔数 + 任意载荷（<4MB 走直编码，无需 PIL）
+
+# T2 S3：位置格式标准 system 文本钉进测试——源文本日后漂移即红（禁引模块常量自证）。
+_POSITION_FORMAT_SYSTEM_EXPECTED = (
+    "回答中若涉及位置或坐标：只输出 2 元素中心点比例 [[rx, ry]]"
+    "（0–1，相对整图宽高），不要输出 4 元素边框（如 [[xmin,ymin,xmax,ymax]]），"
+    "不要输出绝对像素。与本要求无关的问题照常回答。"
+)
+
+# T2 S4：失败文案尾部重试提示——必须拼在 _skipped_note 之后、不被 _clip_reason 截断。
+_RETRY_HINT = "（可降低 vision.capture_max_width / capture_max_height 后重试）"
 
 # ---- 配置样本（get_llm_config 的小写键返回形态）----
 MAIN_CFG_NO_VISION = {
@@ -222,7 +232,8 @@ class TestImageLoading:
 
         assert result == "图中是一个计算器。"
         session = FakeLiteLLMSession.instances[0]
-        url = session.last_messages[0]["content"][1]["image_url"]["url"]
+        # T2 S3：system 占头，user 消息在 [1]
+        url = session.last_messages[1]["content"][1]["image_url"]["url"]
         assert url.startswith("data:image/png;base64,")
 
     def test_missing_file_returns_chinese_error(self, monkeypatch, tmp_path):
@@ -346,8 +357,14 @@ class TestRequestAndResponse:
         niu_vision_server.analyze_image(str(png), question)
 
         msgs = FakeLiteLLMSession.instances[0].last_messages
-        assert len(msgs) == 1 and msgs[0]["role"] == "user"
-        text_seg, img_seg = msgs[0]["content"]
+        # T2 S3：[system(固定文本), user(text + image_url)]——system 文本钉死（漂移即红）
+        assert len(msgs) == 2
+        sys_msg, user_msg = msgs
+        assert sys_msg["role"] == "system"
+        assert isinstance(sys_msg["content"], str)  # 字符串 content（非 list）
+        assert sys_msg["content"] == _POSITION_FORMAT_SYSTEM_EXPECTED
+        assert user_msg["role"] == "user"
+        text_seg, img_seg = user_msg["content"]
         assert text_seg == {"type": "text", "text": question}
         assert img_seg["type"] == "image_url"
         assert img_seg["image_url"]["url"].startswith("data:image/png;base64,")
@@ -635,7 +652,8 @@ class TestFallbackBehavior:
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
-        assert result == "识图失败：main-model 不可用：mystery failure（无备用模型可降级）"
+        # T2 S4：尾部重试提示（完整未被截断）
+        assert result == "识图失败：main-model 不可用：mystery failure（无备用模型可降级）" + _RETRY_HINT
         assert len(FakeLiteLLMSession.instances) == 1
 
     def test_full_chain_failure_summary(self, monkeypatch, tmp_path):
@@ -649,8 +667,9 @@ class TestFallbackBehavior:
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
+        # T2 S4：尾部重试提示（完整未被截断）
         assert result == ("识图失败：首模型不可用（m1：boom-1），已自动降级尝试 3 个模型均失败："
-                          "①m1：boom-1；②m2：boom-2；③m3：boom-3")
+                          "①m1：boom-1；②m2：boom-2；③m3：boom-3" + _RETRY_HINT)
         assert len(FakeLiteLLMSession.instances) == 3
 
     def test_full_chain_failure_over_three_truncates(self, monkeypatch, tmp_path):
@@ -679,7 +698,9 @@ class TestFallbackBehavior:
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
-        assert result == "识图失败：ok-m 不可用：boom（无备用模型可降级）（另有 1 个配置无效被跳过）"
+        # T2 S4：提示拼在 _skipped_note 之后（尾部）
+        assert result == ("识图失败：ok-m 不可用：boom（无备用模型可降级）（另有 1 个配置无效被跳过）"
+                          + _RETRY_HINT)
 
     def test_zero_regression_single_object_success(self, monkeypatch, tmp_path):
         """用例 17：零回归——单对象 vision_llm.model 形态（主模型无视觉）成功路径与工程前一致。"""
@@ -800,8 +821,9 @@ class TestChainBudget:
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
+        # T2 S4：预算中断尾部重试提示
         assert result == ("识图失败：m1 不可用（boom-1），已自动降级尝试 2 个模型均失败，"
-                          "因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）")
+                          "因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）" + _RETRY_HINT)
         assert "首模型不可用" not in result  # 与全链失败模板区分
         assert len(FakeLiteLLMSession.instances) == 2  # 第三个模型未被调用
 
@@ -819,7 +841,9 @@ class TestChainBudget:
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
-        assert result == "识图失败：m1 不可用（boom-1），因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）"
+        # T2 S4：预算中断尾部重试提示
+        assert result == ("识图失败：m1 不可用（boom-1），因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）"
+                          + _RETRY_HINT)
         assert "已自动降级" not in result
         assert len(FakeLiteLLMSession.instances) == 1
 
@@ -1207,8 +1231,9 @@ class TestVisionModelMemory:
 
         result = niu_vision_server.analyze_image(str(png), "这张图里有什么")
 
+        # T2 S4：预算中断尾部重试提示
         assert result == ("识图失败：m2 不可用（boom-m2），"
-                          "因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）")
+                          "因累计耗时超 600s 停止继续降级（尚有 1 个模型未尝试）" + _RETRY_HINT)
         assert len(FakeLiteLLMSession.instances) == 1
         assert niu_vision_server._VISION_LAST_SUCCESS == mem_before  # 预算中断不清记忆
 

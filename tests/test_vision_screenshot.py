@@ -5,7 +5,8 @@
 
 覆盖：
 - 三形态映射：screen→capture("desktop") / window→capture(window_id) /
-  region→capture("desktop", caps, (x,y,w,h))，统一 max_width=1280 降采样
+  region→capture("desktop", caps, (x,y,w,h))，统一 capture_caps() 两维降采样
+  （autouse fixture 注入临时 user-config.json、无 vision 段 → 断默认 2560×1600）
 - 落盘 ~/.niu/tmp/screenshot_<ts>.png + 纯绝对路径返回（无图标记，
   plan 2026-09-11-vision-channel-refactor D-A）+ 尺寸/显示器元数据
 - region_ratio（plan §3.2 / 用例 7-12）：换算正确性（单屏/双屏含负坐标）、
@@ -40,6 +41,23 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _FAKE_PNG = b"\x89PNG\r\n\x1a\nfake-png-bytes"
 
 _UNAVAILABLE_MSG = "截图能力不可用（niu_natives 未安装/平台不支持）"
+
+# capture_caps() 的默认值期望（临时配置无 vision 段 → 按单键各自回默认；
+# 真值来源 agent.image_channel，此处为测试侧断言常量）
+_DEFAULT_CAPS = {"max_width": 2560, "max_height": 1600}
+
+
+@pytest.fixture(autouse=True)
+def _caps_config_injected(monkeypatch, tmp_path):
+    """注入临时 user-config.json（无 vision 段）→ capture_caps() 回默认，两维都传。
+
+    capture_caps() 每次调用现读配置——不注入就会读到开发机真实
+    ~/.niu/config/user-config.json，断言不可复现。
+    """
+    import niu_api.config as niu_cfg
+    cfg = tmp_path / "user-config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(niu_cfg, "CONFIG_PATH", str(cfg))
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -98,25 +116,25 @@ class TestCaptureMapping:
     def test_screen_maps_to_desktop_capture(self, monkeypatch):
         m, session = _install_fake_niu_natives(monkeypatch)
         m.screenshot(target="screen")
-        session.capture.assert_called_once_with("desktop", {"max_width": 1280})
+        session.capture.assert_called_once_with("desktop", _DEFAULT_CAPS)
 
     def test_window_maps_to_window_id_capture(self, monkeypatch):
         # int（X11/Win32/macOS 数字窗口 ID）→ str 归一化
         m, session = _install_fake_niu_natives(monkeypatch)
         m.screenshot(target="window", window_id=12345)
-        session.capture.assert_called_once_with("12345", {"max_width": 1280})
+        session.capture.assert_called_once_with("12345", _DEFAULT_CAPS)
 
         # str（Wayland atspi 复合 ID）→ 原样透传
         m, session = _install_fake_niu_natives(monkeypatch)
         wayland_id = "atspi::1.31:/org/a11y/atspi/accessible/1"
         m.screenshot(target="window", window_id=wayland_id)
-        session.capture.assert_called_once_with(wayland_id, {"max_width": 1280})
+        session.capture.assert_called_once_with(wayland_id, _DEFAULT_CAPS)
 
     def test_region_maps_to_desktop_capture_with_tuple(self, monkeypatch):
         m, session = _install_fake_niu_natives(monkeypatch)
         m.screenshot(target="region", x=10, y=20, width=300, height=200)
         session.capture.assert_called_once_with(
-            "desktop", {"max_width": 1280}, (10, 20, 300, 200)
+            "desktop", _DEFAULT_CAPS, (10, 20, 300, 200)
         )
 
 
@@ -210,7 +228,7 @@ class TestRegionRatioConversion:
         result = m.screenshot(target="region", region_ratio=[0.25, 0.25, 0.75, 0.75])
         # W=1680 H=1050 → x=420 y=262.5 w=840 h=525
         session.capture.assert_called_once_with(
-            "desktop", {"max_width": 1280}, (420, 262.5, 840, 525)
+            "desktop", _DEFAULT_CAPS, (420, 262.5, 840, 525)
         )
         assert result.startswith("截图已保存: ")
 
@@ -224,7 +242,7 @@ class TestRegionRatioConversion:
         m.screenshot(target="region", region_ratio=[0.5, 0.5, 1.0, 1.0])
         # x=0+0.5*3286=1643 y=-100+0.5*1180=490 w=1643 h=590
         session.capture.assert_called_once_with(
-            "desktop", {"max_width": 1280}, (1643, 490, 1643, 590)
+            "desktop", _DEFAULT_CAPS, (1643, 490, 1643, 590)
         )
 
     def test_dual_display_negative_origin(self, monkeypatch):
@@ -236,7 +254,7 @@ class TestRegionRatioConversion:
         ]
         m.screenshot(target="region", region_ratio=[0.0, 0.0, 0.5, 1.0])
         session.capture.assert_called_once_with(
-            "desktop", {"max_width": 1280}, (-1920, 0, 1920, 1080)
+            "desktop", _DEFAULT_CAPS, (-1920, 0, 1920, 1080)
         )
 
 

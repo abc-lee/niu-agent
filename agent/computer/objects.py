@@ -21,7 +21,8 @@
 会话单例不在本模块创建：`get_desktop_session()` 复用 vision-server 的
 `_get_session()`（同进程 MCP 内部服务器，模块级单例）——帧缓存 / AX ref 登记都在
 那个会话内，两套会话会把帧锚定拆开。截图落盘与回执同样复用 `_save_png` /
-`_format_result`；降采样上限复用同一 `MAX_WIDTH` 口径。
+`_format_result`；降采样上限走共享读取点 `agent.image_channel.capture_caps()`
+（两维都生效，按 user-config.json vision 段现读）。
 
 成员状态（已实现 / BLOCKED）见 docs/superpowers/refs/2026-09-13-computer-objectmap.md。
 """
@@ -37,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+from ..image_channel import capture_caps
 
 
 # ============== 错误（上游 ToolError / nativeError，worker.ts:130-142） ==============
@@ -153,12 +156,12 @@ def capture_screenshot(session: Any, context: RunContext, target: str,
                        options: Optional[dict] = None) -> dict:
     """worker.ts:180-217：capture → 落盘 → 记 screenshots →（非 silent）推回执 → 返回 {path,width,height}。
 
-    Niu 适配：落盘/回执复用 vision-server `_save_png` / `_format_result`；降采样上限
-    复用同一 `MAX_WIDTH`（=1280）口径。上游的 per-run snapshot.captureMaxWidth/Height
-    （computer.ts 默认 1280×896）在 C1 统一为共享常量。
+    Niu 适配：落盘/回执复用 vision-server `_save_png` / `_format_result`；降采样上限走
+    `capture_caps()`（两维都生效，按 user-config.json vision 段现读，默认 2560×1600）。
+    上游的 per-run snapshot.captureMaxWidth/Height 在 C1 统一为该共享读取点。
     """
     vs = _vision_server()
-    caps = {"max_width": vs.MAX_WIDTH}
+    caps = capture_caps()
     frame = native_call(lambda: session.capture(target, caps))
     out_path = vs._save_png(frame["png_bytes"])
     context.screenshots.append({

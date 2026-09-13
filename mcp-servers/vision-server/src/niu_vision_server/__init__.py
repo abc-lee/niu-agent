@@ -6,7 +6,8 @@ vision-server — 屏幕截图 + 识图 MCP 服务器（可视化功能 plan v0.
 - list_targets：无参，列出当前可截取目标（显示器 + 窗口清单，含前台应用行与
   48 个窗口截断警告）——截图前先调用它拿窗口编号。
 - screenshot：niu_natives DesktopSession capture（desktop/window_id/region
-  三形态）→ 降采样 ≤1280 宽 → 落盘 ~/.niu/tmp/screenshot_<ts>.png → 返回
+  三形态）→ 按 `vision.capture_max_*` 配置降采样（默认 2560×1600，两维都生效）
+  → 落盘 ~/.niu/tmp/screenshot_<ts>.png → 返回
   **纯绝对路径** + 尺寸/显示器元数据（不返回图标记——与用户发图同形；
   要理解画面内容调 analyze_image）。
 - analyze_image(image_path, question)：把指定图片 + 提示词送进视觉模型，
@@ -63,9 +64,6 @@ _session = None
 # **并发首触**——无锁 check-then-set 会创建两个 DesktopSession，败者连同其原生
 # worker 线程泄漏，且帧缓存 / AX ref 登记分裂（InvalidCoordinateFrame/StaleRef）。
 _session_lock = threading.Lock()
-
-# 降采样上限：≤1280 宽（plan §4-V5；多模态 token 成本与视觉模型输入限制）
-MAX_WIDTH = 1280
 
 _UNAVAILABLE_MSG = "截图能力不可用（niu_natives 未安装/平台不支持）"
 
@@ -192,7 +190,8 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
     region_ratio（plan §3.2）：`[左,上,右,下]` 4 个 0~1 数值，恒相对整个逻辑桌面
     （= target=screen 那张图），无状态纯函数——换算成绝对坐标后走同一 capture 路径。
 
-    全部形态统一 caps={"max_width": 1280} 降采样。
+    全部形态统一 capture_caps()（按 `vision.capture_max_*` 配置，默认 2560×1600，
+    两维都生效）降采样。
     """
     if niu_natives is None:
         return _UNAVAILABLE_MSG
@@ -238,7 +237,9 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
         if isinstance(abs_region, str):
             return abs_region
 
-    caps = {"max_width": MAX_WIDTH}
+    # 函数级 import（R5 先例）；capture_caps() 每次现读配置 → 两维都生效、热生效
+    from agent.image_channel import capture_caps
+    caps = capture_caps()
     try:
         if target == "screen":
             result = session.capture("desktop", caps)
@@ -397,6 +398,18 @@ _VISION_CHAIN_BUDGET_SECONDS = 600
 # D-E 汇总文案中每条原因的长度上限
 _VISION_REASON_MAX_CHARS = 120
 
+# T2 S3：位置格式标准——注入 _call_vision_model 的 messages 头部（system，字符串 content）。
+# 放这里而非 analyze_image 外层拼一次：_call_with_fallback 降级链每个节点都收到。
+_POSITION_FORMAT_SYSTEM = (
+    "回答中若涉及位置或坐标：只输出 2 元素中心点比例 [[rx, ry]]"
+    "（0–1，相对整图宽高），不要输出 4 元素边框（如 [[xmin,ymin,xmax,ymax]]），"
+    "不要输出绝对像素。与本要求无关的问题照常回答。"
+)
+
+# T2 S4：失败文案重试提示。**纪律：必须拼在最终字符串尾部**（_skipped_note 之后）；
+# **绝不可先拼进 reason 再交给 _clip_reason**（120 字符会把它吃掉）。
+_VISION_RETRY_HINT = "（可降低 vision.capture_max_width / capture_max_height 后重试）"
+
 # --- F-5（2026-09-12 用户定案）：多模型链的「最近成功模型」记忆 ---
 # 纯进程内（不落盘、重启即忘）；30 分钟内有效；**仅多模型链使用**（单模型不做任何记忆逻辑）。
 _VISION_SUCCESS_TTL_SECONDS = 30 * 60
@@ -432,8 +445,9 @@ def _forget_vision_success(chain: List[dict]) -> None:
 
 
 def _load_image_data_uri(image_path: str):
-    """读图片文件 → data URI（复用 agent.image_channel helper：魔数 MIME 探测 /
-    >4MB 降采样）。失败（缺文件/非图/超限且降采样失败）→ None。
+    """读图片文件 → (data URI, meta)（复用 agent.image_channel helper：魔数 MIME 探测 /
+    >4MB 降采样；meta = {"w","h","format","bytes","downsampled"}）。
+    失败（缺文件/非图/超限且降采样失败）→ None。
 
     函数级 import（plan R5——独立 MCP server 进程与 Niu 主进程同构，仓库既有先例）。
     """
@@ -626,13 +640,19 @@ def _call_vision_model(cfg: dict, data_uri: str, question: str):
 
     try:
         session = LiteLLMSession(cfg=llm_config)
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": question},
-                {"type": "image_url", "image_url": {"url": data_uri}},
-            ],
-        }]
+        # T2 S3：位置格式标准注入 messages 头部（system，字符串 content——message_sanitizer
+        # 对 system 原样保留；勿用 list content）。降级链每个节点都经本函数构造 messages，
+        # 故每节点统一收到。
+        messages = [
+            {"role": "system", "content": _POSITION_FORMAT_SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            },
+        ]
 
         # chat() 返回 generator：yield str chunks，StopIteration.value 携带 MockResponse
         # （照 llm_proxy.py sync_call——for 循环会吞掉 StopIteration 返回值，必须 next()）
@@ -707,17 +727,20 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
         tail = f"，因累计耗时超 {_VISION_CHAIN_BUDGET_SECONDS}s 停止继续降级"
         if k > 0:
             tail += f"（尚有 {k} 个模型未尝试）"
+        # T2 S4：提示拼在最终字符串尾部（_skipped_note 之后）——绝不先拼进 reason
+        # 再交给 _clip_reason（120 字符会吃掉它）。
         if tried >= 2:
             first_name, first_reason = listed[0]
             return (f"识图失败：{first_name} 不可用（{_clip_reason(first_reason)}），"
-                    f"已自动降级尝试 {tried} 个模型均失败{tail}" + _skipped_note(skipped))
+                    f"已自动降级尝试 {tried} 个模型均失败{tail}" + _skipped_note(skipped)
+                    + _VISION_RETRY_HINT)
         if tried == 1:
             first_name, first_reason = listed[0]
             return (f"识图失败：{first_name} 不可用（{_clip_reason(first_reason)}）"
-                    f"{tail}" + _skipped_note(skipped))
+                    f"{tail}" + _skipped_note(skipped) + _VISION_RETRY_HINT)
         # 理论不可达（预算在链首首次调用前耗尽）——防御性兜底
         return f"识图失败：因累计耗时超 {_VISION_CHAIN_BUDGET_SECONDS}s 停止继续降级" \
-            + _skipped_note(skipped)
+            + _skipped_note(skipped) + _VISION_RETRY_HINT
 
     order = list(range(len(chain)))
     start_idx = _remembered_start(chain)
@@ -754,8 +777,10 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
     n = len(failures)
     if n == 1:
         # D-E「单模型失败」（N=1 划界：未发生降级，有意偏离 U-5 字面）
+        # T2 S4：提示拼在最终字符串尾部（_skipped_note 之后），不进 reason/不经过 _clip_reason。
         name, reason = failures[0]
-        return f"识图失败：{name} 不可用：{_clip_reason(reason)}（无备用模型可降级）" + _skipped_note(skipped)
+        return (f"识图失败：{name} 不可用：{_clip_reason(reason)}（无备用模型可降级）"
+                + _skipped_note(skipped) + _VISION_RETRY_HINT)
 
     # D-E「全链失败」（N≥2）：每条原因截断 ≤120；>3 个只列前 3 + 「等 N 个」
     first_name, first_reason = failures[0]
@@ -767,9 +792,10 @@ def _call_with_fallback(chain: List[dict], skipped: int, data_uri: str, question
     if n > 3:
         items.append(f"等 {n} 个")
     _forget_vision_success(chain)
+    # T2 S4：提示拼在最终字符串尾部（_skipped_note 之后），不进 reason/不经过 _clip_reason。
     return (f"识图失败：首模型不可用（{first_name}：{_clip_reason(first_reason)}），"
             f"已自动降级尝试 {n} 个模型均失败：" + "；".join(items)
-            + _skipped_note(skipped))
+            + _skipped_note(skipped) + _VISION_RETRY_HINT)
 
 
 def analyze_image(image_path: str, question: str) -> str:
@@ -795,10 +821,11 @@ def analyze_image(image_path: str, question: str) -> str:
     if not question:
         return ("错误：question 必填——要向模型提的问题，决定模型看图时关注什么、输出什么")
 
-    data_uri = _load_image_data_uri(image_path)
-    if data_uri is None:
+    loaded = _load_image_data_uri(image_path)
+    if loaded is None:
         return (f"读图失败：{image_path} 不存在，或不是受支持的图片"
                 "（支持 PNG/JPEG/GIF/WebP/BMP/HEIC），或超限后降采样仍解码失败")
+    data_uri, meta = loaded
 
     chain, skipped = _vision_chain()
     if not chain:
@@ -808,10 +835,18 @@ def analyze_image(image_path: str, question: str) -> str:
                 "也可配置 vision_llm.models 多模型链实现自动降级")
 
     try:
-        return _call_with_fallback(chain, skipped, data_uri, question)
+        result = _call_with_fallback(chain, skipped, data_uri, question)
     except Exception as e:
         logger.warning(f"[vision-server] analyze_image failed: {e}")
         return f"识图失败：{e}"
+    # T2 S2：送模型载荷 meta 记日志；仅 downsampled=True 时在**成功**返回文本尾部追加注记
+    # （该路径同时覆盖用户照片与截图，文案对两者都成立）；失败路径（「识图失败…」/
+    # 「识图已停止」）不拼——全链失败文案里说「已降采样」语义别扭。
+    logger.info(f"[vision-server] analyze_image 送模型: {meta['w']}x{meta['h']} "
+                f"{meta['format']} {meta['bytes']} bytes downsampled={meta['downsampled']}")
+    if meta["downsampled"] and result != "识图已停止" and not result.startswith("识图失败"):
+        result += f"\n（图片已降采样至 {meta['w']}x{meta['h']} JPEG 后送模型）"
+    return result
 
 
 # ============== TOOL_SCHEMAS ==============
