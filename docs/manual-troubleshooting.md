@@ -767,6 +767,7 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 | 错误含 `BackgroundUnavailable` | 背景投递不可用（目标窗口在全屏空间或多窗口应用） | 改用 AX 动作；或按 `desktop.capabilities()` 列出的 delivery mode 重试（如 `delivery: "foreground"`，会短暂激活目标窗口，用户可随时接手） |
 | 错误含 `InvalidCoordinateFrame` | 未对该目标截图 / 帧已失效（窗口尺寸变化等） | 先对该 target 重新截图，再按**新图**的像素坐标重试；屏幕内容可能变化时（滚动/动画/弹层）每次给坐标前先重截 |
 | 错误含 `WindowNotFound` / `InvalidTarget` | 窗口 id 已失效或参数无效 | 用 `desktop.windows()` 重新取最新窗口列表，改用新 id |
+| 错误含 `Computer worker is busy`（可能伴随 `previous run hung — session requires restart`） | 上一次 `computer` 运行仍在执行中（同一次运行尚未结束）；若文案带 `previous run hung`，说明它已远超自身预算且卡在无法中断的调用里——此时重试无意义 | 等当前运行结束再试；出现 `previous run hung` 时**重启 Niu** 恢复（会话的窗口句柄、截图帧、AX ref 随进程重建），不要反复重试 |
 
 **日志**：`~/.niu/logs/` 内搜 `[vision-server]`（跳过的无效链节、读盘失败、选模失败、调用异常都打在这里）。
 
