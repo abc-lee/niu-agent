@@ -136,22 +136,28 @@ InsightFace 的 `ctx_id` 参数仅对 CUDA 有效：`ctx_id=0` 表示使用 GPU�
 
 ### 1.4 Rust 原生依赖（niu-natives）
 
-桌面自动化原生扩展（屏幕/窗口/区域抓图 + 输入注入 + 多屏坐标映射），PyO3 绑定，maturin 构建 wheel 装入 `python/` 环境。
+桌面自动化原生扩展（屏幕/窗口/区域抓图 + 输入注入 + 多屏坐标映射 + Windows UIA 语义树），PyO3 绑定，maturin 构建 wheel 装入 `python/` 环境；既服务 MCP `vision-server` 的 `screenshot` / `list_targets` 工具，也是内置 `computer` 工具（对象模型桌面操作）的底座。
 
 **来源：** oh-my-pi（`https://github.com/can1357/oh-my-pi`，MIT）的 `crates/pi-natives/src/desktop` 模块，移植为仓内独立 crate `niu-natives/`（自带 Cargo.lock 提交；`niu-natives/LICENSE` = omp MIT 三版权行 + Niu 修改声明）。
 
-**关键 crate 与许可证**（全量 297 项含传递依赖见根目录 `THIRD-PARTY-NOTICES.txt`，零 GPL/LGPL/AGPL）：
+**关键 crate 与许可证**（与 `niu-natives/Cargo.toml` 声明一一对应；全量 303 项含传递依赖见根目录 `THIRD-PARTY-NOTICES.txt`，零 GPL/LGPL/AGPL）：
 
 | Crate | 版本 | 许可证 | 用途 |
 |------|------|------|------|
+| `pyo3` | 0.29.2 | MIT OR Apache-2.0 | Python 绑定（extension module） |
+| `image` | 0.25.10 | MIT OR Apache-2.0 | PNG 编解码 |
+| `flume` | 0.11.1 | MIT OR Apache-2.0 | 结果通道（并发原语） |
+| `parking_lot` | 0.12.5 | MIT OR Apache-2.0 | 锁（并发原语） |
 | `xcap` | 0.9.6 | Apache-2.0 | 屏幕/窗口采集（macOS+Windows） |
 | `enigo` | 0.6.1 | MIT | 输入注入（Windows；macOS 纯 CGEvent） |
-| `image` | 0.25.10 | MIT OR Apache-2.0 | PNG 编解码 |
+| `core-graphics` | 0.25.0 | MIT OR Apache-2.0 | macOS 图形 API（CGEvent 输入） |
+| `objc2` 系 | objc2 0.6.4；app-kit / core-graphics / foundation / application-services / core-foundation 均 0.3.2 | Zlib/Apache-2.0/MIT（objc2 为 MIT，其余 5 个三许可、源码无 license 文件——见清单 Part 2） | macOS 系统 API（`application-services` Processes feature：`TransformProcessType` 后台降级） |
+| `foreign-types` | 0.5.0 | MIT/Apache-2.0 | CF/CG FFI 对象封装（macOS） |
+| `libc` | 0.2.189 | MIT OR Apache-2.0 | C ABI（pid 类型、私有框架动态加载/符号查找） |
+| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | macOS 采集路径临时文件 |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | Windows 系统 API |
-| `objc2` 系 | 0.3.2 / 0.6.4 | Zlib/Apache-2.0/MIT（objc2、block2、foundation、encode 为 MIT） | macOS 系统 API |
-| `core-graphics` | 0.25.0 | MIT OR Apache-2.0 | macOS 图形 API |
-| `pyo3` | 0.29.2 | MIT OR Apache-2.0 | Python 绑定 |
-| `parking_lot` / `flume` | 0.12.5 / 0.11.1 | MIT OR Apache-2.0 | 并发原语（操作线程 + 结果通道） |
+| `uiautomation` | 0.25.0 | Apache-2.0（源码无 license 文件——见清单 Part 2） | Windows UIA 语义树（`desktop/ax.rs` Uia 变体） |
+| `pyo3-build-config` | 0.29.2 | MIT OR Apache-2.0 | 构建依赖：macOS 扩展模块链接参数 |
 
 **构建方式**（非 pip 安装，从仓内源码构建；`maturin` 为开发依赖见 `requirements-dev.txt`，打包流程 `launcher/build.sh` 已内嵌同步骤）：
 
