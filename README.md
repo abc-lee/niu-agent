@@ -97,6 +97,7 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 | 定时任务 | 自然语言创建提醒，支持循环任务 |
 | /stop /clear 指令 | 通用停止/清空指令，桌面端和 IM 端通用 |
 | 浏览器辅助 | 基于 page-agent 二次开发的浏览器插件 + Playwright 自动化 |
+| 桌面操作 | 内置 `computer` 工具：对象模型窗口/元素操作（点击、输入、取值等），详见[系统手册](docs/SYSTEM_MANUAL.md)「桌面操作（computer 工具）」节 |
 | IM 接入 | 飞书远程使用：手机拍照、转发文件、远程问答 |
 | 智能家居 | 可选 ha-server，控制 Home Assistant 设备 |
 
@@ -255,8 +256,8 @@ cd ui/main && npm install && cd ../..
 
 # 4. 初始化用户数据目录（见下文"用户数据目录"）
 
-# 5. 编译 niu-natives（Rust 桌面采集原生扩展 → 装进 python/）
-#    截图工具（screenshot / list_targets）依赖此扩展
+# 5. 编译 niu-natives（Rust 桌面自动化原生扩展 → 装进 python/）
+#    截图工具（screenshot / list_targets）与内置 computer 工具都依赖此扩展
 python/bin/pip install -r requirements-dev.txt
 rm -rf niu-natives/target/wheels
 python/bin/maturin build --release --manifest-path niu-natives/Cargo.toml -i python/bin/python
@@ -266,6 +267,8 @@ python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*
 cd launcher && cargo run --release
 
 启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。模型配置经设置窗口保存为命名配置（合集存于 `~/.niu/config/llm-configs.json`），本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
+
+> macOS 注意：截图与桌面操作（`computer` 工具）需要**两个独立权限**——辅助功能与屏幕录制，未授予时相关工具不可用；授予步骤见《用户操作手册》1.11。
 
 ### 安装说明
 
@@ -545,7 +548,7 @@ cp target/release/niu-launcher ../
 
 ## 编译 niu-natives（桌面采集原生扩展）
 
-`niu-natives/` 是 Niu 的桌面采集原生扩展（Rust + PyO3），MCP `vision-server` 的 `screenshot` / `list_targets` 工具的底座。
+`niu-natives/` 是 Niu 的桌面自动化原生扩展（Rust + PyO3），既服务 MCP `vision-server` 的 `screenshot` / `list_targets` 工具，也是内置 `computer` 工具（对象模型桌面操作）的底座。
 
 **为何必须本地编译**：该 crate 不在 PyPI，产物 `.so`/`.pyd` 被 `.gitignore` 排除（不进 git）——新 clone / 换机器必须从仓内源码构建 wheel；Windows 的 `.pyd` 只能在 Windows 上编译（不可交叉编译）。
 
