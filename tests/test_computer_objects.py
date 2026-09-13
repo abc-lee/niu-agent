@@ -9,6 +9,8 @@
 - `desktop.window(...)` → Win 句柄对象（属性访问 + 可调方法，跨 run 存活）。
 """
 import json
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -237,3 +239,92 @@ def test_el_and_win_repr_readable(monkeypatch):
         assert w.id == "w1" and el.ref == "e1"
     finally:
         objects._run_context_var.reset(token)
+
+
+# ============== run-scope 重注入（P1-2）：误写后下一 run 自愈 ==============
+
+def test_run_scope_reinjected_after_overwrite(monkeypatch):
+    """用户代码覆写 desktop/display → 下一 run 重注入 pristine 对象（上游 setRunScope，
+    runtime.ts:237-240）。修复前：一次误写后后续所有 run 全部 AttributeError，直到重启。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    cs.run("desktop = 42")                              # 误写：覆写 desktop 句柄
+    out = cs.run("desktop.windows()[0]['id']")          # 修复前：AttributeError 永久
+    assert out.strip() == "w1"
+    cs.run("display = 7")                               # 误写：覆写 display
+    out = cs.run("display('hi'); 'ok'")
+    assert "hi" in out and "ok" in out
+
+
+# ============== wait 预算约束（P1-3）+ busy 事实文案 ==============
+
+def test_numeric_wait_clamped_to_run_budget(monkeypatch):
+    """数字 wait(ms) 受 run 预算上限约束。修复前：无上限 sleep → join 超时抛错，
+    后台线程持锁继续睡满（会话永久 busy）。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    t0 = time.monotonic()
+    out = cs.run("wait(60_000)", timeout=1)   # 预算 1s → wait 被 clamp 到 budget_bound≈1ms
+    assert time.monotonic() - t0 < 0.9        # 修复前：抛 "timed out after 1000ms"
+    assert out == ""
+
+
+def test_busy_message_reports_facts_and_hang_escalation(monkeypatch):
+    """挂死 run 持锁 → busy 错误文本带事实（已运行时长/预算）；显著超阈值
+    （≥5× 预算且 ≥30s）→ 升级为"需重启"文案。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    cs._ensure_namespace()
+    assert cs._lock.acquire(blocking=False)   # 模拟挂死 run 持锁
+    try:
+        # 未超阈值：只报事实，不升级（2s 前启动、预算 300s）
+        cs._active_run = (threading.current_thread(), time.monotonic() - 2.0, 300.0)
+        with pytest.raises(objects.ComputerToolError) as exc:
+            cs.run("desktop.windows()", timeout=1)
+        msg = str(exc.value)
+        assert "Computer worker is busy" in msg
+        assert "running for 2s" in msg and "budget 300s" in msg
+        assert "restart" not in msg
+        # 显著超阈值（40s > max(30s, 5×1s)）：升级重启文案
+        cs._active_run = (threading.current_thread(), time.monotonic() - 40.0, 1.0)
+        with pytest.raises(objects.ComputerToolError) as exc:
+            cs.run("desktop.windows()", timeout=1)
+        msg = str(exc.value)
+        assert "running for 40s" in msg and "budget 1s" in msg
+        assert "previous run hung — session requires restart (Niu 重启后可恢复)" in msg
+    finally:
+        cs._lock.release()
+
+
+# ============== 末尾赋值返回值（P2-5） ==============
+
+def test_run_trailing_assignment_returns_value(monkeypatch):
+    """末尾单目标赋值 → returnValue（上游 JS `w = 42` 是 ExpressionStatement 会返回值；
+    修复前 Python Assign 不是 Expr → run("w = 42") 返回空）。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    assert cs.run("w = 42").strip() == "42"        # 修复前：空
+    assert cs.run("w: int = 7").strip() == "7"     # AnnAssign
+    assert cs.run("a, b = 1, 2") == ""             # 多目标/解包不处理 → 无 returnValue
+
+
+# ============== wait 垃圾值回退默认（P2-8） ==============
+
+def test_wait_garbage_timeout_falls_back_to_default(monkeypatch):
+    """wait(predicate, timeout=负数/NaN/非数值) → 按省略处理回退默认再 clamp 预算。
+    修复前：min(-5, budget) → 立即抛 "timed out after -5ms"（上游 resolvePredicateTimeout
+    :320-325 对垃圾值回退默认）。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    with pytest.raises(objects.ComputerToolError) as exc:
+        cs.run("wait(lambda: False, timeout=-5)", timeout=1)   # 预算 1s → budget_bound≈1ms
+    assert "timed out after -5ms" not in str(exc.value)
+    assert "timed out after 1ms" in str(exc.value)             # 回退默认后 clamp 预算
+    for bad in ("float('nan')", "'60'"):                       # NaN/非数值同样回退（修复前泄漏 TypeError）
+        with pytest.raises(objects.ComputerToolError):
+            cs.run(f"wait(lambda: False, timeout={bad})", timeout=1)

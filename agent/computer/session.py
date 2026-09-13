@@ -78,15 +78,24 @@ def _exec_code(code: str, namespace: Dict[str, Any]) -> Tuple[str, Any]:
     """在持久命名空间执行 code，返回 (stdout 文本, returnValue)。
 
     - 末尾的表达式语句单独 eval → returnValue（JS "最后表达式即返回值" 语义）；
+    - 末尾的单目标赋值（`w = 42` / `w: int = 7`）同样产生 returnValue：上游 JS 里
+      `w = …` 是 ExpressionStatement 会返回值，Python Assign 不是 Expr → exec 后按
+      target 名取 namespace 值；多目标/解包赋值不处理（保持简单）；
     - print() 经 sys.stdout 重定向捕获（上游 onText hook 对应物）。
     """
     tree = ast.parse(code)
     return_expr: Optional[ast.expr] = None
+    return_name: Optional[str] = None
     if tree.body:
         last = tree.body[-1]
         if isinstance(last, ast.Expr):
             return_expr = last.value
             tree.body.pop()
+        else:
+            targets = (last.targets if isinstance(last, ast.Assign)
+                       else [last.target] if isinstance(last, ast.AnnAssign) else [])
+            if len(targets) == 1 and isinstance(targets[0], ast.Name):
+                return_name = targets[0].id
     module = ast.Module(body=tree.body, type_ignores=[])
 
     buf = io.StringIO()
@@ -98,6 +107,8 @@ def _exec_code(code: str, namespace: Dict[str, Any]) -> Tuple[str, Any]:
         if return_expr is not None:
             return_value = eval(
                 compile(ast.Expression(return_expr), "<computer-run>", "eval"), namespace)
+        elif return_name is not None:
+            return_value = namespace.get(return_name)
     finally:
         sys.stdout = old_stdout
     return buf.getvalue(), return_value
@@ -106,13 +117,15 @@ def _exec_code(code: str, namespace: Dict[str, Any]) -> Tuple[str, Any]:
 def _make_wait(budget_ms: Optional[float]) -> Callable[..., Any]:
     """上游 run-scope.ts `waitForRun`（:336-359）+ `resolvePredicateTimeout`（:320-325）移植。
 
-    - `wait(ms)`：睡 ms 毫秒（上游 :341-345）。
+    - `wait(ms)`：睡 ms 毫秒（上游 :341-345）；受 run 预算上限约束——Python 线程不可
+      kill，无上限 sleep 会持 busy 锁永久挂死会话（fail-loud 替代上游 untilAborted）。
     - `wait(predicate, timeout=?, interval=?)`：轮询至 truthy 并返回该值；超时抛
       ToolError（消息照抄 :358）。predicate 异常向上传播（:332 注释 "Predicate errors propagate"）。
     - predicate 超时解析（上游 computer worker 经 resolvePredicateTimeout，worker.ts:531）：
       budget_bound = max(1, run_budget_ms - 1000)（CELL_BUDGET_SLACK_MS，:301）；
       显式 timeout>0 → min(timeout, budget_bound)；timeout=0/inf → budget_bound；
-      省略 → min(30_000, budget_bound)（DEFAULT_PREDICATE_TIMEOUT_MS，:304）。无 run 预算 → inf。
+      省略或垃圾值（负数/NaN/非数值）→ min(30_000, budget_bound)
+      （DEFAULT_PREDICATE_TIMEOUT_MS，:304；上游对垃圾值回退默认）。无 run 预算 → inf。
     - interval：max(interval ?? 100, 10) ms（:355）。
     """
     if budget_ms is None:
@@ -123,17 +136,21 @@ def _make_wait(budget_ms: Optional[float]) -> Callable[..., Any]:
     def wait(ms_or_fn: Any, timeout: Optional[float] = None,
              interval: Optional[float] = None) -> Any:
         if isinstance(ms_or_fn, (int, float)):
-            time.sleep(ms_or_fn / 1000.0)
+            # 受 run 预算上限约束（同谓词口径）：无上限 sleep 会持 busy 锁永久挂死会话
+            time.sleep(min(float(ms_or_fn), budget_bound) / 1000.0)
             return None
         if not callable(ms_or_fn):
             raise ComputerToolError(
                 "wait(...) expects milliseconds (number) or a predicate function to poll")
-        if timeout is None:
+        if timeout == 0:
+            eff_timeout = budget_bound
+        elif not isinstance(timeout, (int, float)) or not (timeout > 0):
+            # 省略或垃圾值（负数/NaN/非数值）→ 回退默认（上游 resolvePredicateTimeout :320-325）
             eff_timeout = min(30_000, budget_bound)
-        elif timeout == 0 or timeout == float("inf"):
+        elif timeout == float("inf"):
             eff_timeout = budget_bound
         else:
-            eff_timeout = min(timeout, budget_bound)
+            eff_timeout = min(float(timeout), budget_bound)
         eff_interval = max(interval if interval is not None else 100, 10)
         deadline = time.monotonic() + eff_timeout / 1000.0
         while True:
@@ -154,7 +171,12 @@ class ComputerSession:
 
     def __init__(self):
         self._namespace: Optional[Dict[str, Any]] = None
+        # run-scope 名的 pristine 对象（每 run 重注入，上游 setRunScope，runtime.ts:237-240）
+        self._run_scope: Dict[str, Any] = {}
         self._lock = threading.Lock()
+        # 活动 run 事实（线程, 启动时刻 monotonic, 预算秒）——busy 错误文本用；
+        # 在 _run_sync 拿到锁之后写入，挂死 run 期间持续可查
+        self._active_run: Optional[Tuple[threading.Thread, float, Optional[float]]] = None
 
     def _ensure_namespace(self) -> Dict[str, Any]:
         """上游 #ensureSession + #ensureRuntime（worker.ts:443-465）：首次 run 惰性构建。"""
@@ -163,10 +185,30 @@ class ComputerSession:
         session = get_desktop_session()
         if session is None:
             raise ComputerToolError("desktop session unavailable (niu_natives missing or platform unsupported)")
+        desktop_obj = Desktop(session)
         # display = print 别名（上游 JsRuntime prelude 短别名，eval/js/shared/prelude.txt——
         # 两者同走 run 文本输出通道；Python 里 print 经 stdout 重定向捕获）
-        self._namespace = {"desktop": Desktop(session), "display": print}
+        self._namespace = {"desktop": desktop_obj, "display": print}
+        # pristine 副本：用户代码覆写 desktop/display 后，下一 run 重注入自愈
+        self._run_scope = {"desktop": desktop_obj, "display": print}
         return self._namespace
+
+    def _busy_message(self) -> str:
+        """busy 错误文本带事实（fail-loud）：活动 run 已运行多长、其预算；显著超阈值
+        （≥5× 该 run 预算且 ≥30s）→ 升级为"需重启"文案。Python 线程不可 kill，挂死 run
+        会永久持锁——给模型/用户可行动的事实而非裸 busy（上游等价物是杀 worker 重建）。"""
+        base = "Computer worker is busy"
+        active = self._active_run
+        if not active:
+            return base
+        _thread, started, budget_s = active
+        elapsed = time.monotonic() - started
+        msg = f"{base} — previous run has been running for {elapsed:.0f}s"
+        if budget_s is not None:
+            msg += f" (budget {int(budget_s)}s)"
+            if elapsed >= max(30.0, 5.0 * budget_s):
+                msg += "; previous run hung — session requires restart (Niu 重启后可恢复)"
+        return msg
 
     def run(self, code: str, timeout: Optional[float] = None, read_only: bool = False) -> str:
         """执行一段代码并返回文本：stdout + 截图回执（按序）+ 字符串化 returnValue。
@@ -214,10 +256,16 @@ class ComputerSession:
                   read_only: bool = False) -> str:
         """执行一段代码并返回文本：stdout + 截图回执（按序）+ 字符串化 returnValue。"""
         if not self._lock.acquire(blocking=False):
-            raise ComputerToolError("Computer worker is busy")
+            raise ComputerToolError(self._busy_message())
         try:
+            # 活动 run 事实：拿到锁之后才写（挂死 run 持锁期间，后续 busy 报错读到的是它）
+            self._active_run = (threading.current_thread(), time.monotonic(),
+                                budget_ms / 1000.0 if budget_ms is not None else None)
             namespace = self._ensure_namespace()
-            # wait 是 per-run scope（上游 setRunScope，worker.ts:524-536）：携带本 run 的预算
+            # 每 run 重注入 run-scope 名（上游 setRunScope，runtime.ts:237-240：每次 run 前
+            # Object.assign(globalThis, {desktop, assert, wait})）——上一 run 覆写
+            # desktop/display 后本 run 自愈；wait 是 per-run scope（worker.ts:524-536）携带预算
+            namespace.update(self._run_scope)
             namespace["wait"] = _make_wait(budget_ms)
             context = RunContext(read_only=read_only)
             token = _run_context_var.set(context)
