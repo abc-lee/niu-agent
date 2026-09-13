@@ -336,7 +336,14 @@ impl Worker {
 				let displays = geometry.display_metadata(&source);
 				let png = encode_png(image)?;
 				let geometry_wire = geometry.to_wire();
-				self.frames.insert(target.key().to_string(), geometry);
+				// Region crops are for viewing only: they must NOT overwrite the
+				// target's stored frame, because pointer coordinates belong to the
+				// most recent *full* capture of that target. Storing a cropped
+				// geometry here would remap subsequent input pixels against the
+				// crop size and silently land clicks in the wrong place.
+				if region.is_none() {
+					self.frames.insert(target.key().to_string(), geometry);
+				}
 				let capabilities = self.backend()?.capabilities();
 				*self.capabilities.lock() = capabilities.clone();
 				Ok(Response::Capture(DesktopCapture {
@@ -1434,11 +1441,60 @@ mod capture_tests {
 		assert_eq!(capture.displays[0].id, "1");
 		assert_eq!((capture.displays[0].pixel_x, capture.displays[0].pixel_y), (0, 0));
 		assert_eq!((capture.displays[0].pixel_width, capture.displays[0].pixel_height), (200, 150));
-		// The stored frame maps crop pixels to *global* logical coordinates
-		// (region crops never re-anchor to their own origin).
-		let frame = worker.frame(&Target::Desktop).expect("region frame should be stored");
-		assert_eq!(frame.map_point_static(100.0, 100.0).unwrap(), (200.0, 150.0));
-		assert_eq!(frame.map_point_static(199.0, 149.0).unwrap(), (299.0, 199.0));
+		// Region crops are for viewing only: a crop alone must not store a frame,
+		// because pointer coordinates belong to the most recent *full* capture.
+		let Err(err) = worker.frame(&Target::Desktop) else {
+			panic!("a region crop must not store a frame");
+		};
+		assert_eq!(err.code, ErrorCode::InvalidCoordinateFrame);
+	}
+
+	/// Frame semantics: a region crop never overwrites the target's stored
+	/// frame, while a full capture (with or without caps) does. The stored
+	/// `desktop` frame is always the most recent full composite, so pointer
+	/// input after a region screenshot still maps against the full screen.
+	#[test]
+	fn region_capture_does_not_overwrite_fullscreen_frame() {
+		let mut worker = worker_with(FakeWaylandBackend::new());
+
+		// Full desktop capture with caps: stored frame is the downsampled 200x150.
+		worker
+			.process(&caps_region_request(
+				Target::Desktop,
+				CaptureCaps { max_width: Some(200), max_height: None },
+				None,
+			))
+			.expect("full desktop capture should succeed");
+		let frame = worker.frame(&Target::Desktop).expect("full capture stores a frame");
+		let wire = frame.to_wire();
+		assert_eq!((wire.width, wire.height), (200, 150));
+		assert_eq!(frame.map_point_static(99.0, 74.0).unwrap(), (198.0, 148.0));
+
+		// Region crop: the returned geometry describes the crop (100x75), but the
+		// stored frame is untouched — still the full downsampled composite.
+		let response = worker
+			.process(&region_request(
+				Target::Desktop,
+				CaptureRegion { x: 0.0, y: 0.0, width: 100.0, height: 75.0 },
+			))
+			.expect("region capture should succeed");
+		let Response::Capture(capture) = response else {
+			panic!("expected a capture response");
+		};
+		assert_eq!((capture.width, capture.height), (100, 75));
+		let frame = worker.frame(&Target::Desktop).expect("region crop must not drop the frame");
+		let wire = frame.to_wire();
+		assert_eq!((wire.width, wire.height), (200, 150));
+		assert_eq!(frame.map_point_static(99.0, 74.0).unwrap(), (198.0, 148.0));
+
+		// A later full capture updates the stored frame again.
+		worker
+			.process(&capture_request(Target::Desktop))
+			.expect("full desktop capture should succeed");
+		let frame = worker.frame(&Target::Desktop).expect("full capture stores a frame");
+		let wire = frame.to_wire();
+		assert_eq!((wire.width, wire.height), (400, 300));
+		assert_eq!(frame.map_point_static(399.0, 299.0).unwrap(), (399.0, 299.0));
 	}
 
 	/// T2b: region crops happen before `apply_capture_caps`, so caps downscale
