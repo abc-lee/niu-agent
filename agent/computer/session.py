@@ -74,6 +74,24 @@ class _RunScopedStdout(io.TextIOBase):
         return getattr(self._real, "encoding", None)
 
 
+def _check_assert_misuse(tree: ast.AST) -> None:
+    """AST 守卫：拒绝 JS 式 `assert(cond, 'msg')`。
+
+    Python 里它解析为 `assert (cond, 'msg')`——非空元组恒真，断言**静默通过**
+    （上游 assert 是函数，会抛 ToolError；本仓是 Python 语句，无运行时兜底）。
+    判据：ast.Assert 的 test 是 Tuple/List 字面量且元素 ≥2（括号调用被解析成元组）；
+    递归遍历整树（含函数体内）。正确 Python 写法：`assert cond, "msg"`（语句，不加括号）。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assert):
+            test = node.test
+            if isinstance(test, (ast.Tuple, ast.List)) and len(test.elts) >= 2:
+                raise ComputerToolError(
+                    "assert(False, 'msg') is JS-style misuse: in Python it parses as the "
+                    "tuple (False, 'msg'), which is always truthy — the assertion silently "
+                    "passes. Correct Python form: assert cond, \"msg\" (a statement, no parentheses)")
+
+
 def _exec_code(code: str, namespace: Dict[str, Any]) -> Tuple[str, Any]:
     """在持久命名空间执行 code，返回 (stdout 文本, returnValue)。
 
@@ -84,6 +102,7 @@ def _exec_code(code: str, namespace: Dict[str, Any]) -> Tuple[str, Any]:
     - print() 经 sys.stdout 重定向捕获（上游 onText hook 对应物）。
     """
     tree = ast.parse(code)
+    _check_assert_misuse(tree)
     return_expr: Optional[ast.expr] = None
     return_name: Optional[str] = None
     if tree.body:
