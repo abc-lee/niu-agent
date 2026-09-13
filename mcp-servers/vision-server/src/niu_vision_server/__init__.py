@@ -254,7 +254,12 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
         logger.warning(f"[vision-server] screenshot 落盘失败: {e}")
         return f"截图失败（落盘）：{e}"
 
-    return _format_result(out_path, result)
+    text = _format_result(out_path, result)
+    if target == "region":
+        # 事实性提示：区域图是裁剪图，其像素坐标与整屏指针输入坐标系不同。
+        text += ("\n注意：该图是屏幕区域裁剪图，其像素坐标不能用作指针输入坐标"
+                 "（指针输入需同 target 的整屏截图 target=screen）")
+    return text
 
 
 def _target_field(obj, name, default=None):
