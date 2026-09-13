@@ -25,6 +25,7 @@ use clap::Parser;
 use iced::keyboard;
 use iced::widget::container;
 use iced::window;
+use iced::window::Mode;
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
 use tracing::{debug, error, info, warn};
@@ -139,6 +140,10 @@ struct Splash {
     window_id: Option<window::Id>,
     /// Whether Dock icon has been hidden
     dock_hidden: bool,
+    /// Whether the splash window has been hidden (ready signal + status check done).
+    /// Once hidden, `subscription()` stops subscribing to window frames so the
+    /// iced/winit event loop stays alive without driving redraws.
+    hidden: bool,
     /// Animation frame counter for the "..." dots (0..3 cycles)
     dot_frame: u8,
     /// Whether the one-shot LightRAG status check has been dispatched.
@@ -449,6 +454,7 @@ impl Splash {
             ready_rx: Mutex::new(ready_rx),
             window_id: None,
             dock_hidden: false,
+            hidden: false,
             dot_frame: 0,
             status_checked: false,
             niu_api_ready: false,
@@ -621,14 +627,15 @@ impl Splash {
                         }
                     }
                     if self.ready_signal_seen && self.status_check_completed {
-                        // 检测完成且健康，可以关 splash
+                        // 检测完成且健康，隐藏 splash（窗口对象存活，事件循环不退出）
+                        self.hidden = true;
                         if let Some(id) = self.window_id {
-                            return window::close(id);
+                            return window::change_mode(id, Mode::Hidden);
                         } else {
-                            // Fallback: get the oldest window ID and close it
+                            // Fallback: get the oldest window ID and hide it
                             return window::get_oldest().then(|oldest_id| {
                                 if let Some(id) = oldest_id {
-                                    window::close::<SplashMessage>(id)
+                                    window::change_mode::<SplashMessage>(id, Mode::Hidden)
                                 } else {
                                     Task::none()
                                 }
@@ -1092,11 +1099,16 @@ impl Splash {
         // Use window redraw frames as a periodic tick to poll the channel
         // Also subscribe to window open events to capture the window ID
         // Keyboard events drive the Fatal state (contract A): any key exits.
-        Subscription::batch([
-            window::frames().map(|_| SplashMessage::Tick),
+        // 隐藏后静默：frames()（驱动重绘的 Tick 源）仅在未隐藏时订阅；
+        // open_events / key_press 常驻。
+        let mut subs = vec![
             window::open_events().map(SplashMessage::WindowOpened),
             keyboard::on_key_press(|key, _modifiers| Some(SplashMessage::Key(key))),
-        ])
+        ];
+        if !self.hidden {
+            subs.insert(0, window::frames().map(|_| SplashMessage::Tick));
+        }
+        Subscription::batch(subs)
     }
 }
 
@@ -2620,6 +2632,22 @@ fn main() {
             }
         }
 
+        // RAII 收尾守卫：bg 线程闭包正常跑完（清理阶梯结束）时 drop → 结束整个进程。
+        // main() 阻塞在 iced::run 不会自行返回，必须显式 exit。具名绑定——`let _ =`
+        // 会立即 drop。
+        struct ExitGuard;
+        impl Drop for ExitGuard {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    info!("Niu launcher shutdown complete (bg thread panicked)");
+                    std::process::exit(101);
+                }
+                info!("Niu launcher shutdown complete");
+                std::process::exit(0);
+            }
+        }
+        let _exit_guard = ExitGuard;
+
         // Keep the api_server_child alive until the process exits or we get cancelled
         // Wait for cancellation or child exit
         loop {
@@ -2719,10 +2747,15 @@ fn main() {
 
         // All child processes have been reaped. Notify the splash window so it
         // can call iced::exit() and let the main thread return. In the normal
-        // (non-settings) flow the splash has already been closed via
-        // splash_tx — phase_tx.send will return Err (receiver dropped), which
-        // we ignore. In the settings flow the splash is still open showing
-        // "正在关闭所有进程..." and needs this signal to exit.
+        // (non-settings) flow the splash has already been hidden (not closed)
+        // via splash_tx — the phase_rx receiver is still alive, so this send
+        // returns Ok; but once hidden the frames() subscription is removed,
+        // Tick no longer fires, and nobody drains phase_rx in the normal flow
+        // (the CleanupDone -> iced::exit() path is unreachable there). Normal-
+        // flow exit is handled by the ExitGuard above (exit(0)). In the Fatal
+        // and settings flows the window is still visible and Tick keeps
+        // firing, so this signal is still drained and drives iced::exit() as
+        // before.
         let _ = phase_tx.send(SplashPhase::CleanupDone);
     });
 
