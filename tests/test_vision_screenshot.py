@@ -379,7 +379,7 @@ class TestRegistrationContract:
 
     def test_yaml_entry_explicit_static_and_key_names_consistent(self):
         """R8 键名契约：yaml server 段键 == REQUIRED server_name；
-        tools 键 == 模块 schema name == 模块函数名（三处逐字符一致，五工具）。"""
+        tools 键 == 模块 schema name == 模块函数名（三处逐字符一致，三工具）。"""
         cfg = yaml.safe_load(
             (_REPO_ROOT / "config" / "mcp-servers.yaml").read_text(encoding="utf-8")
         )
@@ -392,16 +392,11 @@ class TestRegistrationContract:
         assert server_name == "niu_vision_server"
         assert entry["tools"]["list_targets"]["visibility"] == "static"  # 显式 static
         assert entry["tools"]["analyze_image"]["visibility"] == "static"  # 显式 static
-        assert entry["tools"]["ui"]["visibility"] == "static"  # 显式 static
-        assert entry["tools"]["input"]["visibility"] == "static"  # 显式 static
         schemas = {s["name"] for s in niu_vision_server.get_tool_schemas()}
-        assert set(entry["tools"]) == {"screenshot", "list_targets", "analyze_image",
-                                       "ui", "input"} == schemas
+        assert set(entry["tools"]) == {"screenshot", "list_targets", "analyze_image"} == schemas
         assert callable(getattr(niu_vision_server, "screenshot"))
         assert callable(getattr(niu_vision_server, "list_targets"))
         assert callable(getattr(niu_vision_server, "analyze_image"))
-        assert callable(getattr(niu_vision_server, "ui"))
-        assert callable(getattr(niu_vision_server, "input"))
 
     def test_screenshot_enters_registry_static_tools(self):
         """真实 ToolRegistry.register_server → screenshot 进 get_static_tools——

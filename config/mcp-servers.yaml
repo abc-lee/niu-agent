@@ -242,7 +242,3 @@ vision-server:
       visibility: static
     analyze_image:
       visibility: static
-    ui:
-      visibility: static
-    input:
-      visibility: static
