@@ -88,7 +88,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
 | `ha-server` | 智能家居（Home Assistant 设备控制/场景/自动化） | Yes（可选） |
-| `vision-server` | 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图 + ui 语义桌面操作 + input 像素兜底输入五工具；除 analyze_image 外均基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动） | Yes |
+| `vision-server` | 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图三工具；除 analyze_image 外均基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动） | Yes |
 
 > `kg-server`、`vector-store`、`embedding-service` 不存在，知识检索统一由 `lightrag-server` 承担；`mcp-servers/embedding-service/` 目录仍残留但不加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
@@ -706,9 +706,9 @@ LLM 配置由两个文件组成：`~/.niu/config/user-config.json`（**主**，�
 
 ## 视觉能力
 
-Niu 的视觉能力 = `vision-server` 的五个工具（均 static 直挂主 Agent，无需 disk 发现）：`list_targets` 列可截目标 + `screenshot` 截图（返回**纯文件路径** + 尺寸元数据，不返回图标记）+ `analyze_image(image_path, question)` 识图——**带提示词**把图片送进一个有视觉能力的模型、返回**文字答案** + `ui` 语义桌面操作（读界面结构 → 按语义找元素 → 对元素执行动作，不依赖截图与坐标）+ `input` 像素兜底输入（click/type/scroll 等七动作，x/y = **该目标最近一次截图的像素**）。工具内部自选模型：**主模型优先**（主模型探测出视觉 → 用主模型；否则用 `vision_llm` 段的第三方视觉模型；皆无 → 明确错误含配置指引）。两层结构：主模型视觉探测（决定 `analyze_image` 能否走主模型）→ 第三方视觉模型配置（`vision_llm` 段）。
+Niu 的视觉能力 = `vision-server` 的三个工具（均 static 直挂主 Agent，无需 disk 发现）：`list_targets` 列可截目标 + `screenshot` 截图（返回**纯文件路径** + 尺寸元数据，不返回图标记）+ `analyze_image(image_path, question)` 识图——**带提示词**把图片送进一个有视觉能力的模型、返回**文字答案**。工具内部自选模型：**主模型优先**（主模型探测出视觉 → 用主模型；否则用 `vision_llm` 段的第三方视觉模型；皆无 → 明确错误含配置指引）。两层结构：主模型视觉探测（决定 `analyze_image` 能否走主模型）→ 第三方视觉模型配置（`vision_llm` 段）。
 
-桌面操作（`ui`/`input`）的用法、macOS 授权（辅助功能/录屏为两个独立权限）与常见现象排查详见《用户操作手册》1.11「桌面操作」与《故障排查手册》1.11。
+桌面操作由内置 `computer` 工具承担（对象模式的桌面控制工具，方法名与语义见其工具描述）；用法、macOS 授权（辅助功能/录屏为两个独立权限）与常见现象排查详见《用户操作手册》1.11「桌面操作」与《故障排查手册》1.11。
 
 ### 截图辅助工具（list_targets + screenshot）
 

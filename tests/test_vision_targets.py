@@ -12,7 +12,7 @@ _install_fake_niu_natives + reload 恢复。
   list_displays 抛错/空列表 → 明确错误串且非 _UNAVAILABLE_MSG；
   list_windows 抛错 → 明确中文错误串、不抛异常
 - 无前台应用（focused 全 False）→ 省略「前台应用」行、不输出 None、不崩
-- 注册契约：yaml tools 键 == 模块 schema name == 函数名（五工具）；
+- 注册契约：yaml tools 键 == 模块 schema name == 函数名（三工具）；
   ToolRegistry.register_server → get_static_tools 含 vision-server/list_targets
 """
 
@@ -284,22 +284,17 @@ class TestRealShapeObjects:
 
 class TestRegistrationContract:
     def test_yaml_tools_match_schemas_and_functions(self):
-        """R8 键名契约：yaml tools 键 == 模块 schema name == 函数名（五工具）。"""
+        """R8 键名契约：yaml tools 键 == 模块 schema name == 函数名（三工具）。"""
         cfg = yaml.safe_load(
             (_REPO_ROOT / "config" / "mcp-servers.yaml").read_text(encoding="utf-8")
         )
         entry = cfg["vision-server"]
         assert entry["tools"]["list_targets"]["visibility"] == "static"  # 显式 static
-        assert entry["tools"]["ui"]["visibility"] == "static"  # 显式 static
-        assert entry["tools"]["input"]["visibility"] == "static"  # 显式 static
 
         schemas = {s["name"] for s in niu_vision_server.get_tool_schemas()}
-        assert set(entry["tools"]) == {"screenshot", "list_targets", "analyze_image",
-                                       "ui", "input"} == schemas
+        assert set(entry["tools"]) == {"screenshot", "list_targets", "analyze_image"} == schemas
         assert callable(getattr(niu_vision_server, "list_targets"))
         assert callable(getattr(niu_vision_server, "analyze_image"))
-        assert callable(getattr(niu_vision_server, "ui"))
-        assert callable(getattr(niu_vision_server, "input"))
 
     def test_list_targets_enters_registry_static_tools(self):
         """真实 ToolRegistry.register_server → list_targets 进 get_static_tools——

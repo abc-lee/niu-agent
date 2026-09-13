@@ -68,7 +68,7 @@ allowAsync: false        # 可选：true=允许异步调用（长时任务用）
 - `browser-server` — 浏览器自动化
 - `brain-region-server` — 脑区状态管理
 - `scheduler-server` — 定时任务调度
-- `vision-server` — 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图 + ui 语义桌面操作 + input 像素兜底输入五工具；除 analyze_image 外均基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动）
+- `vision-server` — 视觉能力（screenshot 截图 + list_targets 列可截目标 + analyze_image 识图三工具；除 analyze_image 外均基于 niu_natives，.so 缺失/平台未编时降级为明确错误提示、不炸启动）
 
 可选服务器（见 `agent/mcp_loader.py` 的 `OPTIONAL_SERVERS`，按需启用）：
 
