@@ -42,10 +42,11 @@
 | D3 | 描述补 Win/El **字段清单**两句 | 取自上游 `docs/tools/computer.md:69/:95`（上游把字段写在文档而非提示词里） |
 | D4 | `win.bounds` 是字段（`w.bounds`）、`El.bounds()` 是方法 | 与上游一致（`worker.ts:317` / `:256`），非偏离 |
 | D5 | 入参未加 `additionalProperties:false` → 改为 `do_computer` 显式拒绝未知键 | 上游 `"+": "reject"` 的等价落地（Niu schema 层无严格模式） |
-| D6 | 捕捉上限只传 `max_width`（上游另有 `max_height` 896 坐标安全上限） | 与 vision-server 同口径（1280），见原生台账 |
+| D6 | 捕捉上限**两维都传、配置驱动**（`vision.capture_max_width`/`capture_max_height`，默认 2560×1600）；字节上限 4MB 保持 | 上游默认 3840×2400、仅当传输层会改图时才钳到坐标安全值；本仓视觉链走用户自配的第三方模型（传输中可能缩图），取可配置折中值且两维同时传（原生 ratio 只在传了上限的维度生效） |
 | D7 | 无 `protocol.ts` 的 artifact 落盘 / `computer-renderer` | Niu 走 30K 全局截断 + `analyze_image`，不落 artifact |
 | D8 | `assert` 括号写法反守卫 | Python 语句语义差异，运行时纠错（见 §2②） |
 | D9 | 描述坐标规则行追加一句：视觉模型/看图来的坐标先要**相对比例**再乘该图宽高 | 本仓视觉链是用户自配的第三方模型，传输中可能缩图（上游把截图内联给模型，无此问题）；等比缩放不改变相对位置，绝对像素不可靠 |
+| D10 | 每次视觉调用在 `messages[0]` **注入 system**：位置类回答只输出 2 元素中心点比例 `[[rx, ry]]`（0–1，相对整图宽高），不出 4 元素边框/绝对像素；`analyze_image` 描述与手册同步此标准 | **上游无此物**——上游把截图内联进模型上下文、坐标直接可用，无需格式约定；本仓视觉链是用户自配的第三方模型（传输中可能缩图），位置格式必须在注入层定死而非靠调用方自觉。**跟版时不得被覆盖**（S5 逐行重放只重写源自上游的行；涉及位置格式见 §3 S8 与 §5 第 7 点） |
 
 ## 3. 上游升级流程（跟版照做）
 
@@ -126,6 +127,7 @@ python3 -c "import re,pathlib,sys;sys.path.insert(0,'$R');from agent.computer.er
 **S8 手册同步**（纯文档变更也走这里）
 - `docs/SYSTEM_MANUAL.md` 桌面操作节（对象模型清单/最短流程/坐标与帧规则/delivery/安全边界/提示词包）
 - `docs/manual-troubleshooting.md` 1.11（错误码处置）、`docs/manual-user-guide.md` 1.11（macOS 两独立权限）
+- **涉及位置格式**（`[[rx, ry]]` 标准）→ 见 §2 D10：本仓新增、上游无此物，**跟版时不得被覆盖**
 - 门禁：`grep -n '自动显示\|全分辨率\|maxDepth\|doubleClick\|setValue(' docs/SYSTEM_MANUAL.md docs/manual-*.md` → 零命中
 
 **S9 验收清单（每项要有产出证据）**
@@ -137,7 +139,7 @@ python3 -c "import re,pathlib,sys;sys.path.insert(0,'$R');from agent.computer.er
 
 ## 4. 允许保留 vs 必须一致（判据）
 
-**允许保留**：语言/绑定适配（JS→Python、camelCase→snake_case、async→sync）、无审批体系、无独立 worker、无 `read`/`write`/`tool.*` helper、截图不 inline 图像（走 `analyze_image`）、§2 已登记的 D1–D9、原生层的 A/B/C/D 四类。
+**允许保留**：语言/绑定适配（JS→Python、camelCase→snake_case、async→sync）、无审批体系、无独立 worker、无 `read`/`write`/`tool.*` helper、截图不 inline 图像（走 `analyze_image`）、§2 已登记的 D1–D10、原生层的 A/B/C/D 四类。
 
 **必须一致（或显式登记理由）**：14 个错误码名集合、恢复文案语义、`read_only` 覆盖面与文案、坐标/帧规则（指针=同 target 最近截图；AX=全局桌面坐标；两套空间禁混）、对象成员名与语义、Rules 各行、安全段文本。
 
@@ -148,7 +150,8 @@ python3 -c "import re,pathlib,sys;sys.path.insert(0,'$R');from agent.computer.er
 3. `assert` 护栏形态（现为运行时反守卫，见 D8）；
 4. 是否引入 worker/进程隔离（解决挂死 run 无法回收）；
 5. Linux 平台是否纳入；
-6. 截图是否给模型 inline 图像（需重建图片直投通道）。
+6. 截图是否给模型 inline 图像（需重建图片直投通道）；
+7. 位置格式标准（现为 `[[rx, ry]]` system 注入，见 D10）——上游若引入类似坐标约定机制，先对照 D10 再决定合并或保留本仓版本。
 
 ## 6. 风险与陷阱（历次实证）
 
