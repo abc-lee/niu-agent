@@ -328,3 +328,57 @@ def test_wait_garbage_timeout_falls_back_to_default(monkeypatch):
     for bad in ("float('nan')", "'60'"):                       # NaN/非数值同样回退（修复前泄漏 TypeError）
         with pytest.raises(objects.ComputerToolError):
             cs.run(f"wait(lambda: False, timeout={bad})", timeout=1)
+
+
+# ============== assert 括号写法 AST 守卫 ==============
+
+def test_assert_paren_misuse_rejected_by_ast_guard(monkeypatch):
+    """JS 式 `assert(False, 'boom')` → Python 解析为非空元组恒真（断言静默通过）。
+    修复前：run 正常返回（仅 stderr SyntaxWarning）；修复后：AST 守卫抛 ComputerToolError。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    with pytest.raises(objects.ComputerToolError) as exc:
+        cs.run("assert(False, 'boom')")
+    msg = str(exc.value)
+    assert "tuple" in msg and "assert cond" in msg   # 文案说明元组恒真 + 正确写法
+
+
+def test_assert_guard_catches_nested_function_body(monkeypatch):
+    """守卫递归遍历（含函数体内）——不依赖 f() 被调用。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    with pytest.raises(objects.ComputerToolError):
+        cs.run("def f():\n    assert(False, 'x')\nf()")
+
+
+def test_assert_statement_forms_still_work(monkeypatch):
+    """正确 Python 写法不受守卫影响：语句式 `assert False, 'boom'` 照常抛 AssertionError；
+    真断言不报错。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    with pytest.raises(AssertionError):
+        cs.run("assert False, 'boom'")
+    assert cs.run("assert 1 == 1") == ""
+
+
+# ============== do_computer 未知参数拒绝（上游 schema "+": "reject"）==============
+
+def test_do_computer_rejects_unknown_parameters(monkeypatch):
+    """未知参数（如 readonly）→ 修复前静默忽略照常执行；修复后明确报错列出未知键 + 合法键。
+    _index（框架注入）放行，合法参数照常工作。"""
+    import agent.handler as handler_mod
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    dummy = SimpleNamespace(_get_computer_session=lambda: cs)
+    outcome = handler_mod.NiuHandler.do_computer(
+        dummy, {"code": "1", "readonly": True}, None)
+    data = str(outcome.data)
+    assert "Unknown" in data and "readonly" in data       # 点名未知键
+    assert "code" in data and "read_only" in data         # 给出合法键
+    ok = handler_mod.NiuHandler.do_computer(
+        dummy, {"code": "1", "_index": 3}, None)
+    assert str(ok.data).strip() == "1"                    # _index 放行，正常执行

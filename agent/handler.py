@@ -824,7 +824,18 @@ class NiuHandler(BaseHandler):
         worker.ts:154-178）：true = inspection only，输入/变更抛错。
         错误（busy / 原生错误码+恢复句 / wait 超时 / run 超时）抛 ComputerToolError →
         E1 统一兜底转 TOOL_ERROR（dispatch wrapper，本文件 :1285-1331），工具循环不死亡。
+
+        未知参数拒绝（上游 computer.ts schema "+": "reject"）：模型写错参数名
+        （如 readonly/timeoutt）必须报错而非静默忽略——否则模型以为已生效。
+        _index 是框架注入，放行。
         """
+        unknown = sorted(k for k in args if k not in ("code", "read_only", "timeout", "_index"))
+        if unknown:
+            return StepOutcome(
+                "[Error] Unknown computer parameter(s): " + ", ".join(unknown)
+                + ". Valid parameters: code (required, Python string), read_only (bool), timeout (seconds). "
+                "Example: computer(code=\"desktop.windows()\", read_only=False, timeout=120)",
+                next_prompt="")
         code = args.get("code", "")
         # 先转换后 clamp：模型传 "60"/null 等非数值时给干净参数错误（不泄漏裸 TypeError）
         try:
