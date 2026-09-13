@@ -314,10 +314,10 @@ impl AxBackend for Win32Ax {
 		];
 		let mut attributes = Vec::with_capacity(properties.len());
 		for property in properties {
-			if let Ok(value) = element.get_property_value(property)
-				&& !value.is_null()
-			{
-				attributes.push((property.to_string(), truncate(value)));
+			if let Ok(value) = element.get_property_value(property) {
+				if !value.is_null() {
+					attributes.push((property.to_string(), truncate(value)));
+				}
 			}
 		}
 		Ok(attributes)

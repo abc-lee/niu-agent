@@ -109,6 +109,10 @@ impl Backend for Win32Backend {
 		input::key_chord(&mut self.global_input, target, keys, mode)
 	}
 
+	fn raise_window(&mut self, id: &str) -> CoreResult<()> {
+		input::raise_window(id)
+	}
+
 	fn ax(&mut self) -> Option<&mut dyn AxBackend> {
 		Some(&mut self.ax)
 	}

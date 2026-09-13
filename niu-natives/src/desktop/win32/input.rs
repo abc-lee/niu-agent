@@ -846,3 +846,20 @@ pub(super) fn key_chord(
 		Target::Window(id) => foreground::key_chord(id, keys),
 	}
 }
+
+pub(super) fn raise_window(id: &str) -> CoreResult<()> {
+	use windows_sys::Win32::UI::WindowsAndMessaging::{
+		IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+	};
+	let hwnd = background::hwnd(id)?;
+	// SAFETY: hwnd was validated; these functions do not retain borrowed state.
+	unsafe {
+		if IsIconic(hwnd) != 0 {
+			ShowWindow(hwnd, SW_RESTORE);
+		}
+		if SetForegroundWindow(hwnd) == 0 {
+			return Err(DesktopError::input_failed(format!("failed to raise Win32 window {id}")));
+		}
+	}
+	Ok(())
+}
