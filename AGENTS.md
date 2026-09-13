@@ -34,7 +34,7 @@ MCP 服务器集群 (mcp-servers/)
    find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
    find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;
    ```
-8. **Rust 启动器编译必须用 `launcher/build.sh`，禁止直接 `cargo build`** — `cargo build` 只输出到 `launcher/target/debug/`，不会复制到项目根目录的 `niu`，导致测试用旧二进制。`launcher/build.sh` 编译后自动 `cp target/release/niu-launcher ../niu`。每次改 Rust 代码（`launcher/src/`）后必须跑 `./launcher/build.sh`。此铁律必须传达给派出去的子 Agent。
+8. **Rust 启动器编译必须用 `bash launcher/build.sh`，禁止直接 `cargo build`** — `cargo build` 只输出到 `launcher/target/debug/`，不会复制到项目根目录的 `niu`，导致测试用旧二进制。`bash launcher/build.sh` 编译后自动 `cp target/release/niu-launcher ../niu`（并刷新/重签 `niu.app`、重装 `niu-natives` wheel、把 `VERSION` 拷进 bundle）。每次改 Rust 代码（`launcher/src/`）后必须跑它。**注意必须带 `bash` 前缀**：`launcher/build.sh` 无执行位（`-rw-r--r--`，2026-09-13 实测），写成 `./launcher/build.sh` 会 `permission denied`。此铁律必须传达给派出去的子 Agent。
 9. **方案/计划等私有文档（`docs/superpowers/` 整个目录）在独立 git 仓库管理（2026-08-16 起，替代原 plans 分支机制——分支切换会导致运行中 Niu 服务的延迟导入读到旧代码，事故实证 2026-08-16）**：
    - `docs/superpowers/` 是**独立 git 仓库**（内层 `.git/`）——外层 main 仓库的 `.gitignore` 排除该目录（push 天然干净、pull 不删除、`git status` 零干扰）
    - **写方案/计划直接在 `docs/superpowers/` 内提交**：`cd docs/superpowers && git add -A && git commit`——不切分支、无 plans 分支、Niu 服务运行中写文档零影响
@@ -153,16 +153,16 @@ python -m niu_api
 
 ### 打包发布
 
-**macOS .app + DMG 打包**（由 `launcher/build.sh` 自动完成）：
+**macOS .app + DMG 打包**（由 `launcher/build.sh` 自动完成；**脚本无执行位，必须用 `bash` 前缀**）：
 ```bash
-./launcher/build.sh          # 只打 .app bundle（开发调试用）
-./launcher/build.sh --dmg    # 打 .app bundle + DMG 安装包（发布用）
+bash launcher/build.sh          # 只打 .app bundle（开发调试用）
+bash launcher/build.sh --dmg    # 打 .app bundle + DMG 安装包（发布用）
 ```
 
 `build.sh` 会：cargo build → 构造 `niu.app/`（复制资源 + 签名 + LaunchServices 注册 + quarantine）→ 可选生成 DMG（`dist/Niu-${VERSION}-mac-intel.dmg`）。
 
 **关键约束**：
-- 必须用 `launcher/build.sh`，禁止直接 `cargo build`（铁律 8）。
+- 必须用 `bash launcher/build.sh`，禁止直接 `cargo build`（铁律 8；脚本无执行位）。
 - 重打 DMG 前必须先 `rm -rf niu.app`——rsync `--delete --exclude` 会保护被 exclude 的旧文件不删除（许可证合规排除的 igraph/buffalo_l onnx/字体 ttf 等），删掉重打才干净。
 - DMG 产物在 `dist/Niu-<VERSION>-mac-intel.dmg`，VERSION 从根目录 `VERSION` 文件读。
 - M 系列 Mac 打包：必须在 arm64 host 上 `pip install` / `npm install`（不能 cross-compile），详见 `docs/manual-installation.md`。
@@ -183,7 +183,7 @@ python -m niu_api
 ```cmd
 pack.bat
 ```
-Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 自动探测 `C:\` 与 `E:\`）。打包前需已完成：Rust 编译（`launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建、`pip install -r requirements-dev.txt`（提供 maturin）。
+Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 自动探测 `C:\` 与 `E:\`）。打包前需已完成：Rust 编译（`bash launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建、`pip install -r requirements-dev.txt`（提供 maturin）。
 
 `pack.bat` 会：
 1. 构建 niu-natives wheel 装进 `python\`（缺 `.pyd`/`node_modules` 即中止，不产残包）
@@ -542,6 +542,18 @@ preload_face_model()
 ## 工程历史归档
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
+
+### 2026-09-13
+
+#### 修复：启动器"未响应"根治——主线程事件服务（方案 B：隐藏 Splash + 静默 + 收尾守卫；spec **R4+R5** 连续双 APPROVE、plan **R7+R8** 连续双 APPROVE、SDD T1 spec/quality 双 APPROVE + 微修闭环，main `1b558182` + `1fdc7f3a`(0.4.2)）
+
+- **用户报障**：活动监视器把 `niu`（Rust 启动器）标成**未响应**（红字），用户担心真实用户误判死进程而强杀。前一轮补丁（`597fd009` 的 `TransformProcessType` 降级为 BackgroundOnly）实测 `ApplicationType=BackgroundOnly` 已生效但**红标照旧**——降级改的是 LaunchServices 语义，不改"进程仍持 GUI 连接且主线程不服务事件队列"。
+- **根因（取证）**：启动器兼两角色——Splash 是 GUI（`:2764` iced 事件循环 → 进程持 WindowServer 连接），守护是非 GUI（`:2777-2779` `while !cancelled { thread::sleep(100ms) }`）。**Splash 一关，主线程就 park**，不再服务 AppKit 事件队列 → 判定超时。`sample` 证据：Electron 主线程在 `-[NSApplication run] → _DPSNextEvent`（正常），启动器主线程在 `nanosleep`（设计如此）。时间线与用户观察一致（刚启动正常 → 一会必红）。
+- **关键取证（否掉两条错路）**：①**"循环结束后手动泵 AppKit 事件"不可行**（R2 双角同抓）：winit 在主 run loop 注册**永久 CFRunLoop observer**（`observer.rs:132`），回调走 `ApplicationDelegate::get` 的 `.expect`（`app_state.rs:174-177`），而 delegate 被 NSApp **弱引用**、强引用随 `EventLoop` 释放（`event_loop.rs:189-193`）；且 **AppKit 事件等待本身会跑 CFRunLoop** → 泵一次即 panic + 二次 abort；另 `sendEvent:` 被 winit **进程级 swizzle**（`app.rs:69-101`）→ 派发同样炸；Apple Event 也不经 `sendEvent:`。②**"让 iced 循环保活"不可能**：`iced_winit/program.rs:945-956` 非 daemon 应用在**最后一个窗口销毁时强制退出**（与 `exit_on_close_request` 无关）；纯保活需周期唤醒源，而 `iced::time::every` 仅存在于 tokio/async-std/smol 后端（`cargo tree` 实测本仓 `iced_futures` 为 **thread-pool**，其 `time` 为空）。
+- **交付面（`launcher/src/main.rs`，+44/−11，零新依赖/零新 FFI/`Cargo.toml` 未动）**：①**隐藏而非关闭**——启动完成分支 `window::close` → `window::change_mode(id, Mode::Hidden)`（主分支 + `get_oldest` fallback 两处）→ 窗口对象存活（`ChangeMode` → `set_visible(false)`，`iced_winit:1331-1338`）→ 事件循环**全程存活**，主线程持续服务事件队列；②**隐藏后静默**——`struct Splash` 新增 `hidden: bool`，`subscription()` 仅在 `!self.hidden` 时含 `window::frames()`（断开"每消息 `request_redraw` → frames → Tick"自持重绘；`queue_redraw` **不看可见性**、`BeforeWaiting` 无条件派发，`app_state.rs:297-303/384-390`）；③**收尾段 RAII `ExitGuard`**——两处 Python 早退 `return` 之后、wait 循环紧邻之前（非循环体）：正常 `exit(0)`、该段 panic 展开 `exit(101)`；**具名绑定**（`let _ =` 会立即 drop）。主线程不再 park（`main` 阻塞在 iced 循环内，由 bg 守卫结束进程）。
+- **真机验证（PM 亲测）**：**AC-1** `sample` 主线程栈 = `main → iced_winit::program::run → winit EventLoop::run → -[NSApplication run] → _nextEventMatchingEventMask:… → _DPSNextEvent`（旧态是 `nanosleep`）；**AC-2** 10×60s 采样 **10/10 主线程 sleep 命中 = 0**，且**用户确认活动监视器不再标红**（权威判据）；**AC-3-c** 用 `NIU_MODELS_PATH` 指空模型目录（离线、零数据风险）制造 Fatal → 红字 + 按任意键退出**正常**（证明守卫没提前杀进程）；**AC-4** `cargo check --target x86_64-pc-windows-msvc` 通过、后端仍 thread-pool；**AC-5** 在屏窗口数 **0**、60s cputime 零增量、均值 0.4%。产物取证：根 `niu` 12,323,548 B、`strings` 命中新增字面量、bundle `Resources/VERSION`=**0.4.2**、`codesign --verify --deep` PASS、未产 DMG。
+- **已知边界（如实披露）**：①**AC-3-a/b**（关窗/Ctrl-C 的退出码与孤儿核对）**未跑**——用户收工即转 Windows 测试；②Windows/Linux **未真机验证**（改动无平台特定 API，Windows 目标编译通过；两平台行为=同一逻辑，用户可见行为一致）；③**Quit Apple Event** 改动后会正常派发 → `terminate:` 直接退出、绕过清理阶梯（与今日"用户强杀"后果同级；彻底拦截需新 FFI，另开工程）；④`demote_to_background_only()` 在正常流程**不可达**（`run_with` 不返回），Dock 归属由既有 `HideDockIcon` 的 Accessory policy 承担；⑤`CleanupDone → iced::exit()` 在正常流程不可达（终止由守卫承担，有意设计）。
+- **过程教训（方案写法，已写进两份设计文档）**：本项目 spec 5 轮、plan **8 轮**双审，**前 5 轮 plan 判 REVISION 的原因全部是计划写法而非设计**——①我在 plan 里手写**文本级 grep/awk 判据**（自造机制）→ 每修一次就生一批新边界（假红/假绿、锚点自相矛盾、同行/间距/循环体）；②plan **复述 spec 语义**致两份文本漂移；③对"代码写在哪一行"**下处方**；④**易腐数据**（行号/测试计数/bundle 版本）入条款；⑤**环境事实**（脚本权限、签名基线、端口）混进设计条款。**结构性重写（plan v1.0）后两轮即通过**：判据改**行为级不变量 + 人工读 diff**、语义只引用 spec、易腐数据入"取证注记"、环境事实入"前置与恢复"。另附两条实测事实：`launcher/build.sh` **无执行位**（必须 `bash launcher/build.sh`，AGENTS 铁律 8 与打包章已同步修正）；`codesign --verify --deep --strict niu.app` **基线即 rc=1**（既有未签嵌套/坏软链）→ 判据用 `--deep`。
 
 ### 2026-09-12
 
