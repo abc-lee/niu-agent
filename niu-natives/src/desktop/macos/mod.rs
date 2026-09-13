@@ -7,6 +7,7 @@ mod skylight;
 pub(crate) use self::process_type::demote_to_background_only;
 
 use image::RgbaImage;
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 
 use self::{ax::MacAx, capture::MacCapture, input::MacInput};
 use super::{
@@ -114,6 +115,30 @@ impl Backend for MacosBackend {
 	) -> CoreResult<()> {
 		Self::require_input_permission()?;
 		self.input.key_chord(target, keys, mode, &self.capture)
+	}
+
+	fn raise_window(&mut self, id: &str) -> CoreResult<()> {
+		Self::require_input_permission()?;
+		let window = self.capture.window(id)?;
+		self.ax.raise(&window)?;
+		let pid = window.pid.ok_or_else(|| {
+			DesktopError::input_failed(format!("window {id} has no owning process id"))
+		})?;
+		let pid = i32::try_from(pid).map_err(|_| {
+			DesktopError::input_failed(format!("window {id} has an invalid process id"))
+		})?;
+		let app =
+			NSRunningApplication::runningApplicationWithProcessIdentifier(pid).ok_or_else(|| {
+				DesktopError::window_not_found(format!(
+					"application for window '{id}' is no longer running"
+				))
+			})?;
+		if !app.activateWithOptions(NSApplicationActivationOptions::empty()) {
+			return Err(DesktopError::input_failed(format!(
+				"activation request for window '{id}' was rejected"
+			)));
+		}
+		Ok(())
 	}
 
 	fn ax(&mut self) -> Option<&mut dyn AxBackend> {

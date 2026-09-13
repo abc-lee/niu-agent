@@ -98,6 +98,7 @@ pub trait Backend: Send {
 	fn type_text(&mut self, target: &Target, text: &str, mode: DeliveryMode) -> CoreResult<()>;
 	fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode)
 	-> CoreResult<()>;
+	fn raise_window(&mut self, id: &str) -> CoreResult<()>;
 	fn ax(&mut self) -> Option<&mut dyn AxBackend>;
 }
 

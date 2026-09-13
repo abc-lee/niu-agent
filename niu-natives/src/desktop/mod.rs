@@ -102,6 +102,10 @@ enum Request {
 		mode:   DeliveryMode,
 		reply:  Reply,
 	},
+	RaiseWindow {
+		id:    String,
+		reply: Reply,
+	},
 	AxSnapshot {
 		target:  Target,
 		options: AxSnapshotOptions,
@@ -174,6 +178,7 @@ impl Request {
 			| Self::Scroll { reply, .. }
 			| Self::TypeText { reply, .. }
 			| Self::KeyChord { reply, .. }
+			| Self::RaiseWindow { reply, .. }
 			| Self::AxSnapshot { reply, .. }
 			| Self::AxQuery { reply, .. }
 			| Self::AxElementAt { reply, .. }
@@ -409,6 +414,10 @@ impl Worker {
 			},
 			Request::KeyChord { target, keys, mode, .. } => {
 				self.backend()?.key_chord(target, keys, *mode)?;
+				Ok(Response::Unit)
+			},
+			Request::RaiseWindow { id, .. } => {
+				self.backend()?.raise_window(id)?;
 				Ok(Response::Unit)
 			},
 			Request::AxSnapshot { target, options, .. } => {
@@ -1024,6 +1033,17 @@ impl DesktopSession {
 		.map_err(PyErr::from)
 	}
 
+	/// Bring window `window_id` to the front: restore it if minimized, then
+	/// make its application foreground.
+	fn raise_window(&self, py: Python<'_>, window_id: String) -> PyResult<()> {
+		let core = Arc::clone(&self.core);
+		py.detach(move || {
+			core.call(|reply| Request::RaiseWindow { id: window_id, reply })
+				.and_then(response_unit)
+		})
+		.map_err(PyErr::from)
+	}
+
 	/// Snapshot the accessibility tree of `target` (`"desktop"` = the focused
 	/// window, or a window id from `list_windows`) as an indented text tree
 	/// whose lines carry stable `[ref=eN]` handles for the reference-based
@@ -1303,6 +1323,10 @@ mod capture_tests {
 
 		fn key_chord(&mut self, _: &Target, _: &[KeyName], _: DeliveryMode) -> CoreResult<()> {
 			unreachable!("key_chord not exercised")
+		}
+
+		fn raise_window(&mut self, _: &str) -> CoreResult<()> {
+			unreachable!("raise_window not exercised")
 		}
 
 		fn ax(&mut self) -> Option<&mut dyn AxBackend> {

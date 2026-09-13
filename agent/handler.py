@@ -805,6 +805,39 @@ class NiuHandler(BaseHandler):
         result = code_run(code, code_type=code_type, timeout=timeout, cwd=self.cwd)
         return StepOutcome(result, next_prompt="")
 
+    def _get_computer_session(self):
+        """惰性持久 computer 会话（上游对应物：每 agent session 一个 supervisor/worker，
+        worker 跨调用存活——窗口句柄 / 截图帧 / AX ref 随之存活）。"""
+        if getattr(self, "_computer_session", None) is None:
+            from .computer import ComputerSession
+            self._computer_session = ComputerSession()
+        return self._computer_session
+
+    def do_computer(self, args: dict, response) -> StepOutcome:
+        """Host desktop control（上游 OMP computer 工具移植）：持久 Python 会话，
+        对象模型 desktop → Win → El。入参 schema 见 tools_schema.json（description =
+        上游 prompts/tools/computer.md 逐句移植）。
+
+        timeout 默认 120s、clamp [1, 300]（上游 docs/tools/computer.md Inputs 表：
+        "default 120, minimum 1, maximum 300 after the shared tool-timeout clamp"）。
+        read_only 透传 session.run → per-run 只读闸门（上游 computer.ts 入参，
+        worker.ts:154-178）：true = inspection only，输入/变更抛错。
+        错误（busy / 原生错误码+恢复句 / wait 超时 / run 超时）抛 ComputerToolError →
+        E1 统一兜底转 TOOL_ERROR（dispatch wrapper，本文件 :1285-1331），工具循环不死亡。
+        """
+        code = args.get("code", "")
+        timeout = max(1, min(args.get("timeout", 120), 300))
+        read_only = bool(args.get("read_only", False))
+
+        if not code:
+            return StepOutcome("[Error] Code missing.", next_prompt="")
+
+        result = self._get_computer_session().run(code, timeout=timeout, read_only=read_only)
+        # 上游 computer.ts:168-169：无显示输出且无返回值 → "Ran computer code"
+        if not result.strip():
+            result = "Ran computer code"
+        return StepOutcome(result, next_prompt="")
+
     # ========== 无工具调用 ==========
 
     def do_no_tool(self, args: dict, response) -> StepOutcome:
