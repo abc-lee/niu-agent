@@ -7,10 +7,10 @@ from agent import subagent
 
 
 def _make_base_tools():
-    """构造 6 个基础工具的 schema（与 agent/generic/assets/tools_schema.json 一致）。"""
+    """构造 7 个基础工具的 schema（与 agent/generic/assets/tools_schema.json 一致）。"""
     return [
         {"type": "function", "function": {"name": n, "description": "", "parameters": {}}}
-        for n in ["bash", "code_run", "read", "write", "edit", "grep"]
+        for n in ["bash", "code_run", "read", "write", "edit", "grep", "computer"]
     ]
 
 
@@ -34,12 +34,18 @@ def test_allowBaseTools_whitelist():
     assert sorted(result) == ["read", "write"]
 
 
-def test_allowBaseTools_all_six():
-    """allowBaseTools 声明全部 6 个基础工具。"""
+def test_allowBaseTools_all_seven():
+    """allowBaseTools 声明全部 7 个基础工具（含 computer——桌面操作子 Agent opt-in 入口）。"""
     result = _run_filter(
-        {"allowBaseTools": ["bash", "code_run", "read", "write", "edit", "grep"]}
+        {"allowBaseTools": ["bash", "code_run", "read", "write", "edit", "grep", "computer"]}
     )
-    assert sorted(result) == ["bash", "code_run", "edit", "grep", "read", "write"]
+    assert sorted(result) == ["bash", "code_run", "computer", "edit", "grep", "read", "write"]
+
+
+def test_computer_opt_in_only():
+    """computer 在基础工具全集内但缺省不给：声明 allowBaseTools: ["computer"] 才有。"""
+    assert _run_filter({}) == []                      # 缺省零基础工具（computer 不在）
+    assert _run_filter({"allowBaseTools": ["computer"]}) == ["computer"]
 
 
 def test_allowBaseTools_unknown_name_ignored_with_warning():

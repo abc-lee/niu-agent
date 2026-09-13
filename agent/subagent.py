@@ -20,9 +20,9 @@ DEFAULT_CONTEXT_WINDOW_SIZE = 200000
 MIN_CONTEXT_WINDOW_SIZE = 32000    # 32K 最小合理值
 MAX_CONTEXT_WINDOW_SIZE = 2000000  # 2M 上限
 
-# 基础工具全集（agent/generic/assets/tools_schema.json 定义的 6 个系统工具）
+# 基础工具全集（agent/generic/assets/tools_schema.json 定义的 7 个系统工具）
 # 子 Agent 白名单制：缺省没有任何基础工具，frontmatter allowBaseTools 声明哪个有哪个
-_BASE_TOOL_NAMES = {"bash", "code_run", "read", "write", "edit", "grep"}
+_BASE_TOOL_NAMES = {"bash", "code_run", "read", "write", "edit", "grep", "computer"}
 
 
 def _filter_base_tools(agent_config: dict, tools_schema: list) -> tuple:

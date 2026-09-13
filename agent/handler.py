@@ -826,7 +826,11 @@ class NiuHandler(BaseHandler):
         E1 统一兜底转 TOOL_ERROR（dispatch wrapper，本文件 :1285-1331），工具循环不死亡。
         """
         code = args.get("code", "")
-        timeout = max(1, min(args.get("timeout", 120), 300))
+        # 先转换后 clamp：模型传 "60"/null 等非数值时给干净参数错误（不泄漏裸 TypeError）
+        try:
+            timeout = max(1, min(float(args.get("timeout", 120)), 300))
+        except (TypeError, ValueError):
+            return StepOutcome("[Error] timeout must be a number.", next_prompt="")
         read_only = bool(args.get("read_only", False))
 
         if not code:
