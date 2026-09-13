@@ -29,7 +29,7 @@
 　→ 跟版注意：上游若改 supervisar 语义或 `RESTART_MESSAGE` 文案，只评估是否同步 busy/超时文案，不引入进程模型。
 
 ② **`code` 是 Python 而非 JS**：方法名与语义不变，语法适配（async→sync、camelCase→snake_case、无 `await`、`raise()`→`raise_()`）。
-　→ 后果：上游 JS 里"末尾 `w = …` 作为表达式返回值"在本仓通过 AST 特判实现；`assert` 是 Python 语句（**括号写法 `assert(x, y)` 会被当成恒真元组**，运行时守卫会报错并提示正确写法）。
+　→ 后果：上游 JS 里"末尾 `w = …` 作为表达式返回值"在本仓通过 AST 特判实现（仅**单目标 Name** 的 `Assign`/`AnnAssign`）；末尾 `Subscript`（`d['x']=5`）/`Attribute`（`a.x=7`）/`AugAssign`（`w+=1`）/多目标·解包赋值**不产生返回值**（上游 JS 会返回，已知语义差异，见 `_exec_code` docstring）；`assert` 是 Python 语句（**括号写法 `assert(x, y)` 会被当成恒真元组**，运行时守卫会报错并提示正确写法）。
 
 ③ **无审批体系**：上游 `computerApproval` 把 `read_only: true` 映射到 `read` 审批级；本仓无审批基建，只保留 `worker.ts:154-157` 的**运行时闸门**（`read_only` 时一切输入/变更方法拒绝）。描述中 "lighter approval" 已删。
 

@@ -96,9 +96,13 @@ def _exec_code(code: str, namespace: Dict[str, Any]) -> Tuple[str, Any]:
     """在持久命名空间执行 code，返回 (stdout 文本, returnValue)。
 
     - 末尾的表达式语句单独 eval → returnValue（JS "最后表达式即返回值" 语义）；
-    - 末尾的单目标赋值（`w = 42` / `w: int = 7`）同样产生 returnValue：上游 JS 里
-      `w = …` 是 ExpressionStatement 会返回值，Python Assign 不是 Expr → exec 后按
-      target 名取 namespace 值；多目标/解包赋值不处理（保持简单）；
+    - **支持范围**：末尾**单目标 Name** 的 `Assign`/`AnnAssign`（`w = 42` /
+      `w: int = 7`）也产生 returnValue——上游 JS 里 `w = …` 是 ExpressionStatement
+      会返回值，Python Assign 不是 Expr → exec 后按 target 名取 namespace 值；
+    - **不返回**（与上游 JS 语义不同，已知语言差异，登记于 UPSTREAM.md §2②）：
+      末尾 `Subscript` 赋值（`d['x'] = 5`）、`Attribute` 赋值（`a.x = 7`）、
+      `AugAssign`（`w += 1`）、多目标/解包赋值——均正常执行但不产生 returnValue
+      （变量在下一 run 可读）；不扩展返回值逻辑以避免 eval RHS 的复杂度与副作用；
     - print() 经 sys.stdout 重定向捕获（上游 onText hook 对应物）。
     """
     tree = ast.parse(code)
