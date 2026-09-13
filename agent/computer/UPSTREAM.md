@@ -45,6 +45,7 @@
 | D6 | 捕捉上限只传 `max_width`（上游另有 `max_height` 896 坐标安全上限） | 与 vision-server 同口径（1280），见原生台账 |
 | D7 | 无 `protocol.ts` 的 artifact 落盘 / `computer-renderer` | Niu 走 30K 全局截断 + `analyze_image`，不落 artifact |
 | D8 | `assert` 括号写法反守卫 | Python 语句语义差异，运行时纠错（见 §2②） |
+| D9 | 描述坐标规则行追加一句：视觉模型/看图来的坐标先要**相对比例**再乘该图宽高 | 本仓视觉链是用户自配的第三方模型，传输中可能缩图（上游把截图内联给模型，无此问题）；等比缩放不改变相对位置，绝对像素不可靠 |
 
 ## 3. 上游升级流程（跟版照做）
 
@@ -136,7 +137,7 @@ python3 -c "import re,pathlib,sys;sys.path.insert(0,'$R');from agent.computer.er
 
 ## 4. 允许保留 vs 必须一致（判据）
 
-**允许保留**：语言/绑定适配（JS→Python、camelCase→snake_case、async→sync）、无审批体系、无独立 worker、无 `read`/`write`/`tool.*` helper、截图不 inline 图像（走 `analyze_image`）、§2 已登记的 D1–D8、原生层的 A/B/C/D 四类。
+**允许保留**：语言/绑定适配（JS→Python、camelCase→snake_case、async→sync）、无审批体系、无独立 worker、无 `read`/`write`/`tool.*` helper、截图不 inline 图像（走 `analyze_image`）、§2 已登记的 D1–D9、原生层的 A/B/C/D 四类。
 
 **必须一致（或显式登记理由）**：14 个错误码名集合、恢复文案语义、`read_only` 覆盖面与文案、坐标/帧规则（指针=同 target 最近截图；AX=全局桌面坐标；两套空间禁混）、对象成员名与语义、Rules 各行、安全段文本。
 
