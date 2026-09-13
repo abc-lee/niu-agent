@@ -4,8 +4,10 @@
 ① mask_image_data_uris 共享打码 helper——str/dict/list 递归、字节数标注、非图 URI 不动。
 ② main_has_vision 判定 helper（analyze_image 选模守卫）——llm_config capabilities 判定：
    input 含 image + model 匹配；无/不匹配/坏形状 → False（fail-closed）。
-③ 读图 helper _image_to_data_uri——MIME 按载荷魔数（非图片 → None）/ >4MB PIL 降采样
-   （jpeg 产物受预算约束 / 降采样失败 → None 由调用方降级）。
+③ 读图 helper _image_to_data_uri——返回 (data URI, meta)（T2 S1：meta = {"w","h","format",
+   "bytes","downsampled"}；直读 downsampled=False / 降采样 True）；MIME 按载荷魔数
+   （非图片 → None）/ 超 max_image_bytes()（默认 4MB，配置现读；测试注入无 vision 段
+   临时配置）PIL 降采样（jpeg 产物受预算约束 / 降采样失败 → None 由调用方降级）。
 ④ 出站打码三写函数——http_logger._write_log_entry / litellm_adapter._write_raw_log /
    _write_interaction_log：落盘文件无长 base64，[image data, N bytes] 在场。
 
@@ -119,19 +121,38 @@ class TestJudgementHelpers:
 
 
 # ---------------------------------------------------------------------------
-# ③ 读图 helper：MIME 魔数 + >4MB 降采样（analyze_image 复用 _image_to_data_uri）
+# ③ 读图 helper：MIME 魔数 + 超 max_image_bytes()（默认 4MB）降采样（analyze_image 复用 _image_to_data_uri）
 # ---------------------------------------------------------------------------
 
 class TestImageToDataUri:
+    @pytest.fixture(autouse=True)
+    def _no_vision_config(self, monkeypatch, tmp_path):
+        """注入临时 user-config.json（无 vision 段）→ max_image_bytes() 回默认 4MB。
+
+        _image_to_data_uri 的预算现读配置——不注入会读到开发机真实
+        ~/.niu/config/user-config.json，断言不可复现。
+        """
+        import niu_api.config as niu_cfg
+        cfg = tmp_path / "user-config.json"
+        cfg.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(niu_cfg, "CONFIG_PATH", str(cfg))
+
     def test_small_png_media_type_and_bytes(self, tmp_path):
-        """小图直读：media type 按载荷魔数（png），base64 与文件字节一致。"""
+        """小图直读：media type 按载荷魔数（png），base64 与文件字节一致；
+        meta 直读路径 downsampled=False + 真实 w/h/format/bytes。"""
         import agent.image_channel as ic
         p = tmp_path / "s.png"
         _make_png(p)
-        uri = ic._image_to_data_uri(str(p))
-        assert uri is not None
+        out = ic._image_to_data_uri(str(p))
+        assert out is not None
+        uri, meta = out
         assert uri.startswith("data:image/png;base64,")
         assert base64.b64decode(uri.split(",", 1)[1]) == Path(p).read_bytes()
+        # T2 S1：直读路径 meta——downsampled=False，w/h/format/bytes 为真实值
+        assert meta["downsampled"] is False
+        assert meta["w"] == 8 and meta["h"] == 8  # _make_png 默认 8x8
+        assert meta["format"] == "png"
+        assert meta["bytes"] == len(Path(p).read_bytes())
 
     def test_non_image_payload_returns_none(self, tmp_path):
         """非图片载荷（假扩展名）→ None——MIME 按魔数判定，不按扩展名猜。"""
@@ -145,16 +166,25 @@ class TestImageToDataUri:
         import agent.image_channel as ic
         p = tmp_path / "s.heic"
         p.write_bytes(b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32)
-        uri = ic._image_to_data_uri(str(p))
-        assert uri is not None and uri.startswith("data:image/heic;base64,")
+        out = ic._image_to_data_uri(str(p))
+        assert out is not None
+        uri, meta = out
+        assert uri.startswith("data:image/heic;base64,")
+        # T2 S1：直读路径 downsampled=False；PIL 解不开的 HEIC 载荷 w/h 为 None（不失败）
+        assert meta["downsampled"] is False and meta["format"] == "heic"
+        assert meta["w"] is None and meta["h"] is None
 
     def test_extension_mismatch_follows_payload(self, tmp_path):
         """扩展名与内容不符（.jpg 装 PNG）→ MIME 跟载荷走 image/png，不按扩展名。"""
         import agent.image_channel as ic
         p = tmp_path / "s.jpg"
         _make_png(p)
-        uri = ic._image_to_data_uri(str(p))
-        assert uri is not None and uri.startswith("data:image/png;base64,")
+        out = ic._image_to_data_uri(str(p))
+        assert out is not None
+        uri, meta = out
+        assert uri.startswith("data:image/png;base64,")
+        # T2 S1：MIME 跟载荷走 → meta.format 也是 png，downsampled=False
+        assert meta["format"] == "png" and meta["downsampled"] is False
 
     @pytest.mark.skipif(
         importlib.util.find_spec("PIL") is None,
@@ -167,11 +197,20 @@ class TestImageToDataUri:
         img = Image.frombytes("RGB", (3000, 2000), os.urandom(3000 * 2000 * 3))
         img.save(str(p), format="PNG")
         assert p.stat().st_size > MAX_IMAGE_BYTES
-        uri = _image_to_data_uri(str(p))
+        out = _image_to_data_uri(str(p))
         # 降采样产物为 jpeg，且总长受预算约束（base64 膨胀 4/3 + 头部余量）
-        assert uri is not None
+        assert out is not None
+        uri, meta = out
         assert uri.startswith("data:image/jpeg;base64,")
         assert len(uri) <= MAX_IMAGE_BYTES * 4 // 3 + 1024
+        # T2 S1：降采样路径 meta——downsampled=True，记**最终**尺寸/格式/字节数
+        assert meta["downsampled"] is True
+        assert meta["format"] == "jpeg"
+        payload = base64.b64decode(uri.split(",", 1)[1])
+        assert meta["bytes"] == len(payload)
+        # 3000x2000 半尺寸 ×≤3 → 最终边长 ≤1500/1000，且为正整数
+        assert isinstance(meta["w"], int) and isinstance(meta["h"], int)
+        assert meta["w"] <= 1500 and meta["h"] <= 1000 and meta["w"] > 0 and meta["h"] > 0
 
     def test_oversize_downsample_failure_returns_none(self, tmp_path, monkeypatch):
         import agent.image_channel as ic
