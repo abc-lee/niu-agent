@@ -45,6 +45,44 @@ const CJK_FONT: Font = Font::with_name("Microsoft YaHei");
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const CJK_FONT: Font = Font::with_name("Noto Sans CJK SC");
 
+// ---------------------------------------------------------------------------
+// Background demotion (macOS) — 活动监视器"未响应"修复
+// ---------------------------------------------------------------------------
+
+/// macOS 专用：把本进程降级为后台应用（BackgroundOnly）。
+///
+/// Why: Splash 窗口创建后，LaunchServices 会把启动器登记为 GUI 应用。Splash 关闭后
+/// 主线程进入 `while !cancelled { sleep }` 守护循环，不再跑 AppKit 事件循环；
+/// 活动监视器对"是否响应"的探测因此永远超时，把启动器标成"未响应"，用户容易误以为
+/// 是死进程而杀掉它。Splash 关闭后调用 `TransformProcessType(kProcessTransformToBackgroundApplication)`
+/// 把进程降级为后台应用，macOS 不再按 GUI 应用探测它的响应性（子进程/API 均不受影响）。
+#[cfg(target_os = "macos")]
+fn demote_to_background_only() {
+    use objc2_application_services::{kCurrentProcess, kProcessTransformToBackgroundApplication, TransformProcessType};
+
+    // C-ABI mirror of HIServices' `ProcessSerialNumber`（两个 u32 的 repr(C) 结构）。
+    // 生成的绑定里该结构是 crate-private 且字段私有，故镜像布局并 cast 指针。
+    #[repr(C)]
+    struct Psn {
+        high_long_of_psn: u32,
+        low_long_of_psn: u32,
+    }
+
+    // PSN `{ .highLongOfPSN = 0, .lowLongOfPSN = kCurrentProcess }` 指向本进程。
+    let psn = Psn { high_long_of_psn: 0, low_long_of_psn: kCurrentProcess as u32 };
+    // `.cast()` 把指针重解释为 `*const ProcessSerialNumber`（布局相同）。
+    let status = unsafe {
+        TransformProcessType((&psn as *const Psn).cast(), kProcessTransformToBackgroundApplication)
+    };
+    // Best-effort：0 == noErr，非零（例如已是后台应用）一律忽略——降级是表面行为，
+    // 绝不能因此影响启动流程。
+    let _ = status;
+}
+
+/// 非 macOS 平台空实现，调用点无需 cfg 门控。
+#[cfg(not(target_os = "macos"))]
+fn demote_to_background_only() {}
+
 // Splash 卡片视觉常量：暖米白圆角卡片 + 柔和投影 + 真透明窗口。
 // 窗口实际尺寸 = 卡片 + 四边 SHADOW_MARGIN 留白（容纳 blur 24 + offset 8 的阴影）。
 const CARD_WIDTH: f32 = 340.0;
@@ -2727,6 +2765,10 @@ fn main() {
     {
         warn!("Splash window error (non-fatal): {}", e);
     }
+
+    // Splash 已关闭，此后启动器不再有任何 UI（唯一的原生对话框在 Splash 期间）。
+    // macOS：降级为后台应用，避免活动监视器把"不跑事件循环的守护进程"标成未响应。
+    demote_to_background_only();
 
     // --- After splash closes: wait for Electron window to close or Ctrl-C ---
     info!("Splash window closed, waiting for Electron window to close...");
