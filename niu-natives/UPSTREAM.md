@@ -68,7 +68,7 @@ grep -rn -Pzo 'if let [^\n]*\n\s*&&' niu-natives/src | tr '\0' '\n'
 
 | # | 位置 | 内容 | 来源 |
 |---|---|---|---|
-| D1 | `types.rs`：`CaptureRegion`/`GeometryWire`/`GeometryKindWire`/`RegionWire`；`frame.rs`：`crop_to_logical_region`；`mod.rs`：`Request::Capture{region}` + 仅 `Target::Desktop` 允许 + `to_wire()` | 逻辑桌面区域裁剪（`screenshot(region_ratio=[…])`） | 用户 Phase 3 需求；**上游无对应实现**（`grep` 零命中）→ `frame.rs` 289→714、`types.rs` 206→573 的增长几乎全来自此。**语义约束（2026-09-13 用户拍板，跟版勿删）**：region 裁剪仅用于看图——捕获路径的 `frames.insert` 仅在无 region 时执行，`Target::Desktop` 的帧恒为最近一次**整屏**捕获；指针坐标换算（`map_point`）以整屏帧为基准，裁剪图不得改写该帧。测试锚点：`mod.rs` capture_tests `region_capture_does_not_overwrite_fullscreen_frame` |
+| D1 | `types.rs`：`CaptureRegion`/`GeometryWire`/`GeometryKindWire`/`RegionWire`；`frame.rs`：`crop_to_logical_region`；`mod.rs`：`Request::Capture{region}` + 仅 `Target::Desktop` 允许 + `to_wire()` | 逻辑桌面区域裁剪（`screenshot(region_ratio=[…])`） | 用户 Phase 3 需求；**上游无对应实现**（`grep` 零命中）→ `frame.rs` 289→714、`types.rs` 206→573 的增长几乎全来自此。**语义约束（2026-09-13 用户拍板 fail-loud，跟版勿删）**：region 裁剪仅用于看图——捕获路径中 **region 捕获使该 target 的整屏帧失效**（`frames.remove`），整屏捕获才写帧；裁剪图是不同视口，其像素不是该 target 的有效指针坐标，若保留旧整屏帧会让模型拿裁剪图像素静默点错，故失效后坐标输入报 `InvalidCoordinateFrame`（提示先整屏截图）直至下一次整屏捕获。测试锚点：`mod.rs` capture_tests `region_capture_invalidates_fullscreen_frame` |
 | D2 | `macos/process_type.rs` + `macos/mod.rs:4,7-8` | `demote_to_background_only()`（`TransformProcessType` 降级），在 `DesktopSession::new` 早期调用 | 修 macOS Dock 出现 Python 火箭图标；**上游无对应**（上游宿主是原生进程，无此问题） |
 
 ## 3. 上游已有、本仓因裁剪而未暴露的能力

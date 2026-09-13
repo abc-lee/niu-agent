@@ -336,12 +336,18 @@ impl Worker {
 				let displays = geometry.display_metadata(&source);
 				let png = encode_png(image)?;
 				let geometry_wire = geometry.to_wire();
-				// Region crops are for viewing only: they must NOT overwrite the
-				// target's stored frame, because pointer coordinates belong to the
-				// most recent *full* capture of that target. Storing a cropped
-				// geometry here would remap subsequent input pixels against the
-				// crop size and silently land clicks in the wrong place.
-				if region.is_none() {
+				// Frame semantics (fail-loud, 2026-09-13): pointer coordinates
+				// belong to the most recent *full* capture of this target. A
+				// region crop is a different viewport — its pixels are NOT valid
+				// pointer coordinates for the target. Keeping the old full frame
+				// after a crop would let a model feed crop pixels into input and
+				// silently click the wrong place, so the crop invalidates the
+				// stored frame: coordinate input fails with
+				// InvalidCoordinateFrame ("take a screenshot of this target
+				// first") until a fresh full capture is taken.
+				if region.is_some() {
+					self.frames.remove(target.key());
+				} else {
 					self.frames.insert(target.key().to_string(), geometry);
 				}
 				let capabilities = self.backend()?.capabilities();
@@ -1449,15 +1455,18 @@ mod capture_tests {
 		assert_eq!(err.code, ErrorCode::InvalidCoordinateFrame);
 	}
 
-	/// Frame semantics: a region crop never overwrites the target's stored
-	/// frame, while a full capture (with or without caps) does. The stored
-	/// `desktop` frame is always the most recent full composite, so pointer
-	/// input after a region screenshot still maps against the full screen.
+	/// Frame semantics (fail-loud): a region crop invalidates the target's
+	/// stored frame — the crop is a different viewport whose pixels are not
+	/// valid pointer coordinates, so keeping the old full frame would let a
+	/// model feed crop pixels into input and silently click the wrong place.
+	/// Coordinate input after a crop fails with InvalidCoordinateFrame until
+	/// a fresh full capture re-stores the frame.
 	#[test]
-	fn region_capture_does_not_overwrite_fullscreen_frame() {
+	fn region_capture_invalidates_fullscreen_frame() {
 		let mut worker = worker_with(FakeWaylandBackend::new());
 
-		// Full desktop capture with caps: stored frame is the downsampled 200x150.
+		// Full desktop capture with caps: stored frame is the downsampled 200x150,
+		// and coordinate input maps against it.
 		worker
 			.process(&caps_region_request(
 				Target::Desktop,
@@ -1466,12 +1475,10 @@ mod capture_tests {
 			))
 			.expect("full desktop capture should succeed");
 		let frame = worker.frame(&Target::Desktop).expect("full capture stores a frame");
-		let wire = frame.to_wire();
-		assert_eq!((wire.width, wire.height), (200, 150));
 		assert_eq!(frame.map_point_static(99.0, 74.0).unwrap(), (198.0, 148.0));
 
-		// Region crop: the returned geometry describes the crop (100x75), but the
-		// stored frame is untouched — still the full downsampled composite.
+		// Region crop: the returned geometry describes the crop (100x75), but it
+		// must NOT be usable for pointer input — the stored frame is gone.
 		let response = worker
 			.process(&region_request(
 				Target::Desktop,
@@ -1482,18 +1489,18 @@ mod capture_tests {
 			panic!("expected a capture response");
 		};
 		assert_eq!((capture.width, capture.height), (100, 75));
-		let frame = worker.frame(&Target::Desktop).expect("region crop must not drop the frame");
-		let wire = frame.to_wire();
-		assert_eq!((wire.width, wire.height), (200, 150));
-		assert_eq!(frame.map_point_static(99.0, 74.0).unwrap(), (198.0, 148.0));
 
-		// A later full capture updates the stored frame again.
+		// Coordinate input fails loudly: the crop invalidated the frame.
+		let Err(err) = worker.map_point(&Target::Desktop, 50.0, 37.0) else {
+			panic!("coordinate input after a region crop must fail");
+		};
+		assert_eq!(err.code, ErrorCode::InvalidCoordinateFrame);
+
+		// A later full capture restores the frame and coordinate input again.
 		worker
 			.process(&capture_request(Target::Desktop))
 			.expect("full desktop capture should succeed");
 		let frame = worker.frame(&Target::Desktop).expect("full capture stores a frame");
-		let wire = frame.to_wire();
-		assert_eq!((wire.width, wire.height), (400, 300));
 		assert_eq!(frame.map_point_static(399.0, 299.0).unwrap(), (399.0, 299.0));
 	}
 
