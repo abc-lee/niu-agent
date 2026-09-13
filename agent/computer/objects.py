@@ -36,7 +36,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 # ============== 错误（上游 ToolError / nativeError，worker.ts:130-142） ==============
@@ -395,6 +395,28 @@ class Clipboard:
             raise ComputerToolError("clipboard write unsupported on this platform")
 
 
+# ============== 值类型转换（napi→PyO3 绑定适配，唯一允许偏差类别） ==============
+#
+# 上游 napi 把 Rust 结构体自动序列化为 JS 普通对象——`desktop.windows()` 在模型眼里
+# 就是 `[{id, app, title, ...}]`（worker.ts:669-674，工具描述照抄）。PyO3 返回的是活
+# 对象（属性访问），直接泄漏给模型 → `w["id"]` 必然 TypeError。判据：结果是**数据**
+# （值类型）→ JSON 原生 dict/list；结果还能调方法（句柄 Win/El）→ 保持对象。
+# 键名严格取 types.rs 的 wire 字段名（与工具描述一致），不改名、不增删字段。
+
+_WINDOW_FIELDS = ("id", "app", "title", "pid", "x", "y", "width", "height", "focused")
+_DISPLAY_FIELDS = ("id", "name", "x", "y", "width", "height", "scale",
+                   "pixel_x", "pixel_y", "pixel_width", "pixel_height", "is_primary")
+_CAPABILITIES_FIELDS = ("backend", "display_server", "capture", "input", "ax",
+                        "background_window_input", "delivery_modes",
+                        "capture_permission", "input_permission", "ax_permission",
+                        "display_count")
+
+
+def _as_value(obj: Any, fields: Tuple[str, ...]) -> dict:
+    """PyO3 值对象 → JSON 原生 dict（键名 = types.rs wire 字段，逐字）。"""
+    return {name: getattr(obj, name) for name in fields}
+
+
 # ============== desktop facade（上游 worker.ts:641-737 #createDesktopScope） ==============
 
 _DESKTOP_WINDOW = SimpleNamespace(
@@ -412,26 +434,27 @@ class Desktop:
         self._desktop_target = Win(session, _DESKTOP_WINDOW)
         self.clipboard = Clipboard()
 
-    def capabilities(self) -> Any:
-        """worker.ts:656-663：原生 getter（永不失败，worker 不可用时回退最近快照）。"""
+    def capabilities(self) -> dict:
+        """worker.ts:656-663：原生 getter（永不失败，worker 不可用时回退最近快照）。
+        值类型 → JSON 原生 dict（上游 napi 自动序列化为普通对象；键名 = types.rs
+        DesktopCapabilities wire 字段）。"""
         current_run_context()
-        try:
-            return self._session.capabilities
-        except ComputerToolError:
-            raise
-        except Exception as e:
-            raise ComputerToolError(str(e)) from e
+        caps = native_call(lambda: self._session.capabilities)
+        return _as_value(caps, _CAPABILITIES_FIELDS)
 
-    def displays(self) -> List[Any]:
-        """worker.ts:665-668。"""
+    def displays(self) -> List[dict]:
+        """worker.ts:665-668。值类型 → dict 列表（键名 = types.rs DesktopDisplay wire 字段）。"""
         current_run_context()
-        return native_call(lambda: self._session.list_displays())
+        displays = native_call(lambda: self._session.list_displays())
+        return [_as_value(d, _DISPLAY_FIELDS) for d in displays]
 
-    def windows(self, filter: Optional[dict] = None) -> List[Any]:
-        """worker.ts:669-674：listWindows + matchesFilter（上游参数名就叫 filter）。"""
+    def windows(self, filter: Optional[dict] = None) -> List[dict]:
+        """worker.ts:669-674：listWindows + matchesFilter（上游参数名就叫 filter）。
+        值类型 → dict 列表 `[{id, app, title, pid, x, y, width, height, focused}]`
+        （与工具描述逐字一致；模型可 `w["id"]` 下标访问）。"""
         current_run_context()
         windows = native_call(lambda: self._session.list_windows())
-        return [w for w in windows if matches_filter(w, filter)]
+        return [_as_value(w, _WINDOW_FIELDS) for w in windows if matches_filter(w, filter)]
 
     def window(self, selector: Union[str, dict]) -> "Win":
         """worker.ts:675-690：字符串=精确 id 匹配；对象=app/title 子串过滤。
