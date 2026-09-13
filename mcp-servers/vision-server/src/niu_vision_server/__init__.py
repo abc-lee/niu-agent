@@ -33,6 +33,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -58,6 +59,10 @@ except Exception as e:  # ImportError 或 pyo3 初始化失败等
 # DesktopSession 实例惰性创建（首次 screenshot 调用时）——import 期不启动
 # native worker 线程（REQUIRED_SERVERS 启动即 import 全部模块）。
 _session = None
+# 单例创建锁：主 Agent 的 computer run 与异步子 Agent 的 MCP screenshot 可能
+# **并发首触**——无锁 check-then-set 会创建两个 DesktopSession，败者连同其原生
+# worker 线程泄漏，且帧缓存 / AX ref 登记分裂（InvalidCoordinateFrame/StaleRef）。
+_session_lock = threading.Lock()
 
 # 降采样上限：≤1280 宽（plan §4-V5；多模态 token 成本与视觉模型输入限制）
 MAX_WIDTH = 1280
@@ -71,12 +76,19 @@ MAX_LISTED_WINDOWS = 48
 
 
 def _get_session():
-    """惰性获取/创建 DesktopSession 单例。"""
+    """惰性获取/创建 DesktopSession 单例（线程安全）。
+
+    double-checked locking：无锁读快路径，未创建才持 `_session_lock` 二次判空后
+    创建——并发首触时所有调用者拿到同一实例（构造恰好一次）。不变式：每次调用
+    返回同一对象；不在导入期创建（避免启动期副作用）。
+    """
     global _session
     if niu_natives is None:
         return None
     if _session is None:
-        _session = niu_natives.DesktopSession()
+        with _session_lock:
+            if _session is None:
+                _session = niu_natives.DesktopSession()
     return _session
 
 
