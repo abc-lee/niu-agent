@@ -146,3 +146,94 @@ def test_run_value_subscript_and_handle_survival(monkeypatch):
     out = cs.run("display(w.id, w.app); callable(w.click)")
     # returnValue 走 JSON.stringify 语义（computer.ts:195-201）→ 小写 true
     assert "w2 Terminal" in out and "true" in out
+
+
+# ============== 误用形态：可读 ComputerToolError（errors report surface failure） ==============
+
+def _fake_ax_node(ref="e1", role="AXButton", title="Save"):
+    return SimpleNamespace(ref=ref, role=role, native_role=role, title=title,
+                           description=None, enabled=True, focused=False, child_count=0)
+
+
+def test_windows_string_filter_rejected_with_usage(desktop):
+    with pytest.raises(objects.ComputerToolError) as exc:
+        desktop.windows("iTerm")   # 字符串当过滤器 → 不再泄漏 AttributeError
+    msg = str(exc.value)
+    assert "filter must be a dict" in msg
+    assert "desktop.windows({'app': ...})" in msg   # 消息含正确写法示例
+
+
+def test_windows_keyword_args_rejected_with_usage(desktop):
+    with pytest.raises(objects.ComputerToolError) as exc:
+        desktop.windows(app="iTerm")   # 关键字形式 → 不再泄漏 TypeError
+    msg = str(exc.value)
+    assert "no keyword arguments" in msg
+    assert "desktop.windows({'app': 'Safari'})" in msg
+
+
+def test_window_bad_selector_type_rejected_with_usage(desktop):
+    with pytest.raises(objects.ComputerToolError) as exc:
+        desktop.window(1.5)   # 既非 id 也非过滤器的类型 → 说明接受形态
+    msg = str(exc.value)
+    assert "selector must be a window id (str or int)" in msg
+    assert "filter dict" in msg
+
+
+def test_window_kwargs_only_rejected_with_usage(desktop):
+    """只传关键字：selector 可选化后误用进得了函数体 → 守卫报错（不再泄漏 TypeError）。"""
+    with pytest.raises(objects.ComputerToolError) as exc:
+        desktop.window(app="iTerm")
+    msg = str(exc.value)
+    assert "no keyword arguments" in msg
+    assert "desktop.window('21021')" in msg   # 两种正确形态都点出（id / 过滤对象）
+    assert "desktop.window({'app': ...})" in msg
+
+
+def test_window_missing_selector_rejected_with_usage(desktop):
+    with pytest.raises(objects.ComputerToolError) as exc:
+        desktop.window()   # 缺参 → 说明两种正确形态
+    msg = str(exc.value)
+    assert "requires a window id (str or int)" in msg
+    assert "desktop.window('21021')" in msg and "desktop.window({'app': ...})" in msg
+
+
+def test_window_int_id_normalized(monkeypatch):
+    """int id 按 str() 归一后继续（list_targets 输出裸数字 id，模型抄数字是高频真实路径）。"""
+    fake = FakeSession()
+    fake._windows.append(_fake_window(id="21021", app="iTerm", title="zsh", pid=9, focused=False))
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    token = objects._run_context_var.set(objects.RunContext())
+    try:
+        d = objects.Desktop(fake)
+        w = d.window(21021)
+        assert isinstance(w, objects.Win) and w.id == "21021" and w.app == "iTerm"
+    finally:
+        objects._run_context_var.reset(token)
+
+
+def test_run_misuse_surfaces_readable_error(monkeypatch):
+    """误用经 run(code) 端到端浮现：ComputerToolError 原样上抛（无原生码前缀 → 恢复句不追加）。"""
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    cs = computer_session.ComputerSession()
+    with pytest.raises(objects.ComputerToolError) as exc:
+        cs.run("desktop.windows('iTerm')")
+    assert "filter must be a dict" in str(exc.value)
+
+
+# ============== 句柄 repr：可读身份摘要（display(e) 不再打印 object at 0x…） ==============
+
+def test_el_and_win_repr_readable(monkeypatch):
+    fake = FakeSession()
+    monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+    token = objects._run_context_var.set(objects.RunContext())
+    try:
+        d = objects.Desktop(fake)
+        w = d.window("w1")
+        assert repr(w) == "Win(id='w1', app='Safari', title='Niu')"
+        el = objects.El(fake, _fake_ax_node())
+        assert repr(el) == "El(role='AXButton', title='Save', ref='e1')"
+        # 属性真实类型不变（repr 只是显示层）
+        assert w.id == "w1" and el.ref == "e1"
+    finally:
+        objects._run_context_var.reset(token)
