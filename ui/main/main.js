@@ -1770,6 +1770,12 @@ ipcMain.handle('show-item-in-folder', async (event, filePath) => {
 
 // === Step 10: app.whenReady + 模式分支 ===
 app.whenReady().then(() => {
+  // 显式开启无障碍支持（app 级，须在 ready 之后调用）：
+  // Windows 上 Chromium/Electron 的无障碍树默认惰性——不启用则 UIA/屏幕阅读器读不到界面结构；
+  // macOS 上本就能读，此调用与既有行为等价。设为 app 级而非按窗口设置，一处即覆盖全部窗口
+  // （assistant / settings / graph / sticky / spirit）。依据：Windows 可读性 + 无障碍友好。
+  app.setAccessibilitySupportEnabled(true);
+
   if (WINDOW_MODE === 'assistant') {
     // macOS: 隐藏 Dock 图标，只保留系统托盘图标
     // 仅 assistant 模式调（settings/graph 不调，否则窗口不显示）
