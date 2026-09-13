@@ -191,6 +191,11 @@ class El:
         self.focused = node.focused
         self.child_count = node.child_count
 
+    def __repr__(self) -> str:
+        """可读身份摘要（上游 JS 对象经 JSON.stringify 打印自身属性；Python print/display
+        回落到 __repr__）：role/title/ref 是重定位活元素的三要素。"""
+        return f"El(role={self.role!r}, title={self.title!r}, ref={self.ref!r})"
+
     def value(self) -> Optional[str]:
         """worker.ts:245-248：axNode(ref).value（重读，非缓存）。"""
         return native_call(lambda: self._session.ax_node(self.ref)).value
@@ -268,6 +273,11 @@ class Win:
         self.pid = window.pid
         self.bounds = {"x": window.x, "y": window.y, "width": window.width, "height": window.height}
         self.focused = window.focused
+
+    def __repr__(self) -> str:
+        """可读身份摘要（上游 JS 对象经 JSON.stringify 打印自身属性；Python print/display
+        回落到 __repr__）：id/app/title 是重定位窗口的三要素。"""
+        return f"Win(id={self.id!r}, app={self.app!r}, title={self.title!r})"
 
     def screenshot(self, options: Optional[dict] = None) -> dict:
         """worker.ts:333-335：captureScreenshot(target=win.id)。截图是读动作，read-only 放行。"""
@@ -448,18 +458,52 @@ class Desktop:
         displays = native_call(lambda: self._session.list_displays())
         return [_as_value(d, _DISPLAY_FIELDS) for d in displays]
 
-    def windows(self, filter: Optional[dict] = None) -> List[dict]:
+    def windows(self, filter: Optional[dict] = None, **kwargs: Any) -> List[dict]:
         """worker.ts:669-674：listWindows + matchesFilter（上游参数名就叫 filter）。
         值类型 → dict 列表 `[{id, app, title, pid, x, y, width, height, focused}]`
-        （与工具描述逐字一致；模型可 `w["id"]` 下标访问）。"""
+        （与工具描述逐字一致；模型可 `w["id"]` 下标访问）。
+
+        误用形态守卫（errors report surface failure）：filter 只接受 dict/None，
+        不接受关键字参数——上游对象参数 `{app?, title?}` 形态在 Python 里就是 dict。"""
         current_run_context()
+        if kwargs:
+            raise ComputerToolError(
+                "desktop.windows() takes no keyword arguments — pass the filter as an object, "
+                f"e.g. desktop.windows({{'app': 'Safari'}}) (got {', '.join(kwargs)})")
+        if filter is not None and not isinstance(filter, dict):
+            raise ComputerToolError(
+                "desktop.windows() filter must be a dict like {'app': 'Safari', 'title': 'Notes'} or None — "
+                f"the filter is an object, not a string: got {type(filter).__name__} ({filter!r}), "
+                "use desktop.windows({'app': ...})")
         windows = native_call(lambda: self._session.list_windows())
         return [_as_value(w, _WINDOW_FIELDS) for w in windows if matches_filter(w, filter)]
 
-    def window(self, selector: Union[str, dict]) -> "Win":
+    def window(self, selector: Optional[Union[str, int, dict]] = None, **kwargs: Any) -> "Win":
         """worker.ts:675-690：字符串=精确 id 匹配；对象=app/title 子串过滤。
-        0 命中 / 多命中 → ToolError（消息照抄，多命中列出候选 `id app "title"`）。"""
+        0 命中 / 多命中 → ToolError（消息照抄，多命中列出候选 `id app "title"`）。
+
+        绑定层容错（非新语义）：int 按 str() 归一后继续——另一工具 list_targets 的输出里
+        id 是不带引号的数字，模型从那里抄数字是高频真实路径；两处 id 同一原生 id 空间，
+        归一不会指错目标。
+
+        selector 可选（默认 None）只为让误用进得了函数体：只传关键字时 Python 在入参前就抛
+        TypeError，守卫无机会执行——None/缺参/关键字统一转可读 ToolError（errors report surface failure）。"""
         current_run_context()
+        if kwargs:
+            raise ComputerToolError(
+                "desktop.window() takes no keyword arguments — call it with a window id, "
+                f"e.g. desktop.window('21021'), or a filter object, e.g. desktop.window({{'app': ...}}) "
+                f"(got {', '.join(kwargs)})")
+        if selector is None:
+            raise ComputerToolError(
+                "desktop.window() requires a window id (str or int), e.g. desktop.window('21021'), "
+                "or a filter object, e.g. desktop.window({'app': ...})")
+        if isinstance(selector, int):
+            selector = str(selector)
+        if not isinstance(selector, (str, dict)):
+            raise ComputerToolError(
+                "desktop.window() selector must be a window id (str or int), or a filter dict like "
+                f"{{'app': 'Safari'}} — got {type(selector).__name__} ({selector!r})")
         windows = native_call(lambda: self._session.list_windows())
         if isinstance(selector, str):
             matches = [w for w in windows if w.id == selector]
