@@ -543,6 +543,18 @@ preload_face_model()
 
 日志区仅保留近期工程与仍在引用的终态（原样节）与压缩索引行。完整历史在 `docs/AGENTS-HISTORY.md`（压缩移出）与 git 历史——查旧工程/旧 commit 链 grep `docs/AGENTS-HISTORY.md` 或 `git log -- AGENTS.md`。
 
+### 2026-09-14
+
+#### 工程：远控桌面就绪——原生解除屏保 + 唤醒显示器 + 锁定判定（方案 **v0.8**，R1–R9 八轮双审后 **R10+R11 连续两轮双 APPROVE 门禁通过**；SDD T1/T2/T3 每 Task 双审 + 微修闭环，main `28917408`/`a18f98e7`/`86955cb5`，docs 仓方案仓多轮至 `a597d08`）
+
+- **需求（用户拍板）**：用户在"不在家也要操控家里电脑"的诉求下发现锁屏/休眠让 computer use 失效。口径：①平台有原生标准做法就走 Rust 原生，**computer 每次调用先确保桌面就绪**；②没有标准做法才用提示词兜底；③手册教 Agent 与用户谈远控配置——**密码保护必须关**（唯一硬要求）、屏保可留、显示器节能可留、系统睡眠关（插电）。
+- **关键取证（实验驱动，全部为实测）**：①**抓图失败的唯一成因是"显示器休眠"**——锁屏/屏保下抓图**不报错**，只给锁屏/屏保画面（14KB vs 桌面 67–82KB）→ "抓图成功≠能看到桌面"；②macOS 屏保启动即置 `CGSSessionScreenIsLocked=True`、**且这个标志连息屏都置 True**（分不清息屏与真锁屏）→ 实现必须"先解除/唤醒再读"；③解除屏保的有效路径 = **AppKit `NSRunningApplication.terminate()`**（bundle `com.apple.ScreenSaver.Engine`）——`caffeinate -u` 声明用户活动**不能**解除屏保、`kill -TERM` 也不够（进程死了锁屏界面还在）；④唤醒显示器 = IOKit `IOPMAssertionDeclareUserActivity`（实测有效）；⑤**真锁屏不可绕过**（唤醒后登录界面仍在、抓到的是锁屏画面）→ 程序不尝试解锁。
+- **交付面**：①**niu-natives** `Backend::session_ready()`（屏保解除/显示器唤醒/锁定判定/生效等待 ≤1.5s；macOS = AppKit terminate + IOKit 手动 FFI（CFString 断言名、复用 assertion ID）+ CoreGraphics `CGSessionCopyCurrentDictionary` 读未文档化 SPI 键；Windows = `SPI_GETSCREENSAVERRUNNING` + `SendInput` 1px + 一次性 `SetThreadExecutionState(ES_DISPLAY_REQUIRED)` + `OpenInputDesktop` 判 secure desktop）+ 抓图两臂（`Capture`/`ListDisplays`）失败后先结构化探测显示器可用性 → 就绪 → 恰好重试一次；②**computer / screenshot / list_targets 三入口**每次调用先就绪，未就绪（`dismiss_failed`/`still_asleep`/`locked=true`）→ 明确报"桌面未就绪…需要用户手动处理"并**停止动作**（locked 过渡态豁免只在解除屏保后的复查窗内）；③提示词一句兜底（computer 描述 Rules 段）；④手册新节「远控 / 离开时的桌面可操控性」+ 故障排查一条；⑤台账 niu-natives **D3** / computer **D11**。
+- **审查链价值（历轮抓出、逐条修复）**：R1 抓 Windows 唤醒必须一次性（`ES_CONTINUOUS` 会让显示器永不睡）+ `locked` 没有实现来源 + `Response` 枚举漏列；R3 抓**重试判据过宽**（`CaptureFailed` 码被"窗口已关/空图/解码失败"共用，按它会对无关失败发合成输入）+ **Windows 锁定判据 P1**（`UOI_NAME` 返回桌面对象自身名 `default`/`Winlogon` 而非 `WinSta0\Default` 全名，照错写会恒判锁定、Windows 侧整体停摆）；R5/R6 抓**负路径判据按字面不可执行**（入口恒就绪 → 断言"未调用"必假红；载体是空集——`computer` 的 code_run 暴露的就是同一个 `DesktopSession` 单例）→ 载体点名 code_run 直调原生 + 计数判别力下沉 L1。T1 双审抓 **FFI 把断言名当 C 字符串**（实为 `CFStringRef`，IOKit 按 CF 对象读 → 运行时不工作）+ **枚举值 1→0**（`kIOPMUserActiveLocal` 是枚举首项）。
+- **真机验收（L2 全过）**：①Niu 进程树解除屏保成功（TCC 未拦，R1 风险证伪）②屏保态调 computer → 自动解除 → 抓到正常桌面（视觉确认）③`pmset displaysleepnow` 造休眠（4→1）→ 调用后唤醒（1→4）+ 抓屏成功（修过的 FFI 真机有效）④真锁屏（密码=立即，用户临时开启）→ 闸门报"会话处于锁定状态…不执行代码不抓图"、不绕过 ⑤负路径（不存在窗口 id）→ 原错误 `WindowNotFound` 逐字返回、不误触发。L1：`cargo test` 35 passed（含两臂计数断言）+ macOS/Windows 双目标 `cargo check` 0 error；Python 点名 83 passed。
+- **已知边界**：①**Windows 侧未真机验证**（`SendInput` 解屏保、一次性唤醒、`OpenInputDesktop` 判锁定均按 MSDN 语义实现，待 Windows 机编译 `.pyd` 后实测）②**"永不锁屏"是用户取舍**——人在外时机器可被操作（手册已写明）③headless（无显示器）唤醒无意义（手册诚实边界）④带密码的机器上"唤醒后登录界面仍在"是今晨实证，新闸门在该配置下的完整链路依赖 L2④（已通过）。
+- **过程事故（如实记录）**：①PM 回退 Python 违规改动时误用 `git checkout -- 整个文件`，把已用 Edit 做好的 v0.8 三处正文修订一并回退，只重做了版本头 → R8 双审同抓"头注与正文自相矛盾"，已纠正恢复（教训：`git checkout` 前必须确认工作区无其它未提交改动）；②两次在 task JSON 里漏 `agent` 字段被派成远端 → 改用 eval `agent(agent="local-vision")` 接口后稳定。
+
 ### 2026-09-13
 
 #### 修复：启动器"未响应"根治——主线程事件服务（方案 B：隐藏 Splash + 静默 + 收尾守卫；spec **R4+R5** 连续双 APPROVE、plan **R7+R8** 连续双 APPROVE、SDD T1 spec/quality 双 APPROVE + 微修闭环，main `1b558182` + `1fdc7f3a`(0.4.2)）
