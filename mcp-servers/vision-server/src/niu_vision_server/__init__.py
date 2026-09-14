@@ -90,6 +90,52 @@ def _get_session():
     return _session
 
 
+def _session_not_ready_reason(state):
+    """D-D：判定 `session_ready()` 返回的状态字典 → 未就绪时返回明确原因串，就绪时 None。
+
+    三个值均为字符串（niu-natives `DesktopSession.session_ready`，
+    plan 2026-09-14-remote-desktop-session-ready §3 D-A）：
+    - screensaver=dismiss_failed / display=still_asleep → 未生效，需用户手动处理；
+    - locked=true → 会话锁定（程序不绕过锁屏，需用户解锁）；
+    - locked=unknown 不拦截（fail-open）。
+    """
+    screensaver = str(state.get("screensaver", ""))
+    display = str(state.get("display", ""))
+    locked = str(state.get("locked", ""))
+    if screensaver == "dismiss_failed":
+        return ("桌面未就绪：屏保未能自动解除，需要用户手动处理"
+                "（请用户在电脑上退出屏保后重试）")
+    if display == "still_asleep":
+        return ("桌面未就绪：显示器唤醒失败（仍休眠），需要用户手动处理"
+                "（请用户点亮显示器后重试）")
+    if locked == "true":
+        return ("桌面未就绪：会话处于锁定状态，需要用户手动解锁"
+                "（程序不会绕过锁屏）")
+    return None
+
+
+def _ensure_session_ready(session):
+    """D-D：screenshot/list_targets 入口先确保桌面就绪（幂等，与 computer 入口对称）。
+
+    未就绪 → 返回明确原因串（调用方拼「截图失败：」/「列出可截取目标失败：」前缀
+    返回，不抓图、不做盲重试）；就绪或 locked=unknown（fail-open）→ None。
+    locked 过渡态豁免：本次刚解除屏保（screensaver=dismissed）时 locked 可能短暂
+    仍为 true → ~500ms 后复查一次，仍 true 才按真锁定处理。
+    """
+    try:
+        state = session.session_ready()
+        reason = _session_not_ready_reason(state)
+        if (reason is not None
+                and str(state.get("screensaver")) == "dismissed"
+                and str(state.get("locked")) == "true"):
+            time.sleep(0.5)   # locked 过渡态豁免：刚解除屏保，复查一次
+            state = session.session_ready()
+            reason = _session_not_ready_reason(state)
+        return reason
+    except Exception as e:
+        return f"桌面就绪检查失败：{e}"
+
+
 def _tmp_dir() -> Path:
     """截图落盘目录 ~/.niu/tmp（不存在则创建）。"""
     d = Path.home() / ".niu" / "tmp"
@@ -204,6 +250,12 @@ def screenshot(target: str = "screen", window_id=None, x=None, y=None, width=Non
     if session is None:
         return _UNAVAILABLE_MSG
 
+    # D-D：入口先确保桌面就绪（幂等；与 computer 入口对称）——未就绪返回明确错误串，
+    # 不抓图、不做盲重试。
+    reason = _ensure_session_ready(session)
+    if reason is not None:
+        return f"截图失败：{reason}"
+
     # ---- region_ratio 校验（plan §3.2）：全部在调用 capture 前完成，
     # 报错返回明确中文串、不抛异常（穿透到 MCP 层会暴露英文原始异常）。----
     has_abs_coords = any(v is not None for v in (x, y, width, height))
@@ -301,6 +353,12 @@ def list_targets() -> str:
     session = _get_session()
     if session is None:
         return _UNAVAILABLE_MSG
+
+    # D-D：入口先确保桌面就绪（幂等；与 computer 入口对称）——未就绪返回明确错误串，
+    # 不枚举、不做盲重试。
+    reason = _ensure_session_ready(session)
+    if reason is not None:
+        return f"列出可截取目标失败：{reason}"
 
     try:
         try:

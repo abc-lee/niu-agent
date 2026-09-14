@@ -50,6 +50,11 @@ class FakeSession:
             _fake_window(id="w2", app="Terminal", title="zsh", pid=7, focused=False),
         ]
         self._displays = [_fake_display()]
+        # D-C 就绪状态（真实 session_ready() 返回三字符串键 dict；默认恒就绪）。
+        # 用例可替换为多元素列表模拟"首次→复查"序列。
+        self.ready_states = [{"screensaver": "none", "display": "awake",
+                              "locked": "false"}]
+        self.session_ready_calls = 0
 
     @property
     def capabilities(self):
@@ -60,6 +65,12 @@ class FakeSession:
 
     def list_displays(self):
         return list(self._displays)
+
+    def session_ready(self):
+        self.session_ready_calls += 1
+        state = self.ready_states[
+            min(self.session_ready_calls - 1, len(self.ready_states) - 1)]
+        return dict(state)
 
 
 @pytest.fixture
@@ -382,3 +393,79 @@ def test_do_computer_rejects_unknown_parameters(monkeypatch):
     ok = handler_mod.NiuHandler.do_computer(
         dummy, {"code": "1", "_index": 3}, None)
     assert str(ok.data).strip() == "1"                    # _index 放行，正常执行
+
+
+# ============== D-C 桌面就绪闸门（plan 2026-09-14-remote-desktop-session-ready）==============
+
+def _ready_state(**kw):
+    base = {"screensaver": "none", "display": "awake", "locked": "false"}
+    base.update(kw)
+    return base
+
+
+class TestSessionReadyGate:
+    """run() 在同步/超时分叉之前先 session_ready()：未就绪 → 明确报错并停止，
+    绝不继续执行代码或抓图；locked=unknown fail-open。"""
+
+    def _make(self, monkeypatch):
+        fake = FakeSession()
+        monkeypatch.setattr(computer_session, "get_desktop_session", lambda: fake)
+        return computer_session.ComputerSession(), fake
+
+    def test_dismiss_failed_stops_run_without_exec(self, monkeypatch):
+        cs, fake = self._make(monkeypatch)
+        fake.ready_states = [_ready_state(screensaver="dismiss_failed")]
+        executed = []
+        cs._run_sync = lambda *a, **k: executed.append(1) or ""
+        with pytest.raises(objects.ComputerToolError) as exc:
+            cs.run("w = 1")
+        msg = str(exc.value)
+        assert "屏保" in msg and "手动处理" in msg
+        assert not executed                            # 代码未执行
+        assert fake.session_ready_calls == 1           # dismiss_failed 不触发复查
+
+    def test_still_asleep_stops_run(self, monkeypatch):
+        cs, fake = self._make(monkeypatch)
+        fake.ready_states = [_ready_state(display="still_asleep")]
+        with pytest.raises(objects.ComputerToolError) as exc:
+            cs.run("w = 1")
+        assert "显示器" in str(exc.value) and "手动处理" in str(exc.value)
+        assert fake.session_ready_calls == 1
+
+    def test_locked_true_after_recheck_stops_run(self, monkeypatch):
+        """locked=true 且本次刚解除屏保 → ~500ms 复查一次；仍 true → 按真锁定停止。"""
+        cs, fake = self._make(monkeypatch)
+        fake.ready_states = [
+            _ready_state(screensaver="dismissed", locked="true"),
+            _ready_state(screensaver="dismissed", locked="true"),
+        ]
+        monkeypatch.setattr(computer_session.time, "sleep", lambda s: None)
+        with pytest.raises(objects.ComputerToolError) as exc:
+            cs.run("w = 1")
+        assert "锁定" in str(exc.value) and "手动解锁" in str(exc.value)
+        assert fake.session_ready_calls == 2           # 首次 + 复查一次
+
+    def test_locked_transient_after_dismiss_proceeds(self, monkeypatch):
+        """过渡态豁免：刚解除屏保后 locked 短暂仍 true → 复查变 false → 正常执行。"""
+        cs, fake = self._make(monkeypatch)
+        fake.ready_states = [
+            _ready_state(screensaver="dismissed", locked="true"),
+            _ready_state(locked="false"),
+        ]
+        monkeypatch.setattr(computer_session.time, "sleep", lambda s: None)
+        assert cs.run("w = 42").strip() == "42"
+        assert fake.session_ready_calls == 2
+
+    def test_locked_unknown_fail_open(self, monkeypatch):
+        """locked=unknown（状态判不出）→ 不拦截，run 照常执行。"""
+        cs, _fake = self._make(monkeypatch)
+        _fake.ready_states = [_ready_state(locked="unknown")]
+        assert cs.run("1 + 1").strip() == "2"
+
+    def test_timeout_mode_also_gated(self, monkeypatch):
+        """超时分支同样在分叉前被就绪闸门拦截（不是只拦同步路径）。"""
+        cs, fake = self._make(monkeypatch)
+        fake.ready_states = [_ready_state(screensaver="dismiss_failed")]
+        with pytest.raises(objects.ComputerToolError) as exc:
+            cs.run("w = 1", timeout=5)
+        assert "屏保" in str(exc.value)
