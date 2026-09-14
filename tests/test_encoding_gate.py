@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import ast
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -281,6 +284,14 @@ def _py_files() -> list[str]:
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py"],
         cwd=REPO_ROOT, capture_output=True, encoding="utf-8", errors="replace",
     )
+    if proc.returncode != 0:
+        # fail-closed：非 git 工作树（导出源码包 / 构建环境无 .git）或 .git 损坏时
+        # git 以非零码退出、stdout 为空——绝不能把"没扫到文件"当成"零违规"。
+        raise RuntimeError(
+            f"编码门禁无法枚举仓库文件：git ls-files 退出码 {proc.returncode}"
+            f"（stderr: {proc.stderr.strip() or '<无输出>'}）——当前不在有效 git 工作树内"
+            "或 .git 已损坏，拒绝以空文件列表静默放行。"
+        )
     files: list[str] = []
     for name in proc.stdout.splitlines():
         name = name.strip()
@@ -290,6 +301,12 @@ def _py_files() -> list[str]:
         if name.startswith(("python/", "niu.app/", "node_modules/")):
             continue
         files.append(name)
+    if not files:
+        # fail-closed：git 成功但一个 .py 都没有 = 异常环境（空集恒绿），必须判失败。
+        raise RuntimeError(
+            "编码门禁无法枚举仓库文件：git ls-files 成功但返回 0 个 .py 文件"
+            "（异常环境），拒绝以空文件列表静默放行。"
+        )
     return files
 
 
@@ -423,3 +440,51 @@ def test_encoding_none_counts_as_missing() -> None:
     """encoding=None = 用 locale 默认 → 视为缺失：open R1、subprocess R5。"""
     assert _rules('open("p", "w", encoding=None)') == ["R1"]
     assert _rules('import subprocess\nsubprocess.run(["x"], text=True, encoding=None)\n') == ["R5"]
+
+
+# ---------------------------------------------------------------------------
+# 门禁自身可信度自测：文件枚举（_py_files）必须 fail-closed，
+# git 不可用 / 返回空列表时不得静默判绿。不依赖真实 git 环境。
+# ---------------------------------------------------------------------------
+
+def test_py_files_fails_when_git_unavailable(monkeypatch) -> None:
+    """git ls-files rc=128（非 git 工作树 / .git 损坏）→ 门禁必须失败，信息含退出码与原因。"""
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=128, stdout="",
+            stderr="fatal: not a git repository (or any of the parent directories): .git",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as excinfo:
+        _py_files()
+    msg = str(excinfo.value)
+    assert "128" in msg                      # 退出码必须可见
+    assert "not a git repository" in msg     # git 给出的原因必须透传
+
+
+def test_py_files_fails_when_file_list_empty(monkeypatch) -> None:
+    """git 成功但返回 0 个 .py（异常环境）→ 门禁必须失败，杜绝"空集恒绿"。"""
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as excinfo:
+        _py_files()
+    assert "0" in str(excinfo.value)
+
+
+def test_collect_violations_scans_listed_files(monkeypatch, tmp_path) -> None:
+    """门禁必须真的扫描 git 返回的文件列表（防"无视文件列表直接绿"）。"""
+    (tmp_path / "agent").mkdir()
+    (tmp_path / "agent" / "x.py").write_text('open("p", "w")\n', encoding="utf-8")
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="agent/x.py\n", stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", tmp_path)
+    violations = collect_violations()
+    assert [t[2] for t in violations] == ["R1"]
