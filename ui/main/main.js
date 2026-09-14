@@ -365,6 +365,8 @@ function createStickyWindow() {
   stickyWindow.on('show', () => {
     if (stickyWindow && !stickyWindow.isDestroyed()) {
       stickyWindow.setAlwaysOnTop(true, 'floating');
+      // 窗口每次显示时通知渲染进程重新从后端拉取便签（同步 REST 外部写入）
+      stickyWindow.webContents.send('notes-changed');
     }
   });
 

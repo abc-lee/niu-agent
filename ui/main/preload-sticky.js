@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 隐藏便签窗口
   hideSticky: () => ipcRenderer.send('hide-sticky'),
+
+  // 窗口显示时重新从后端拉取便签（main.js 在 on('show') 里发 'notes-changed'）
+  onNotesChanged: (cb) => ipcRenderer.on('notes-changed', () => cb()),
   
   // 便签 CRUD 操作
   createNote: (note) => ipcRenderer.invoke('create-note', note),
