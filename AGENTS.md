@@ -549,6 +549,17 @@ preload_face_model()
 
 ### 2026-09-14
 
+#### 工程：全仓文本编码统一——locale 依赖清零 + 进程级 UTF-8 模式（用户 Windows 报障驱动，要求"凡依赖进程 locale 的文本 IO 全量改"；方案 **v1.0 冻结**：R1–R8 八轮双审 + 微修×3；SDD **T1–T6**，main `a30106bd`→`bfc6d29c` 共 7 笔）
+
+- **报障与根因**：Windows 上 `computer` 的 `clipboard.read()` 读中文剪贴板报 `UnicodeDecodeError`——`subprocess.run(..., text=True)` **未给 `encoding=`** → Python 按进程 locale（该机 ANSI code page=cp1252）解码 PowerShell 输出的 UTF-8 字节；上游 Bun 的 `new Response(...).text()` 是无条件 UTF-8，移植时丢了该保证。**用户不接受只修这一处**：要求全量排查同类面。
+- **清点（机器化 AST，535 个 git 跟踪 `.py`）**：真违规 **327 处**（生产 6：剪贴板 3 + 锁文件 2 + devnull 1；脚本 13；测试 308）。其余命中为字节/句柄 API（`os.open`/`Image.open`，加 `encoding` 反而 `TypeError`）或已显式 `encoding`（生产侧 145 处）。
+- **交付七笔**：①`a30106bd` **AST 编码门禁**（8 条命中形态、内置豁免表按调用点局部名+别名展开含函数内 import、人工白名单目标空、解析失败即失败、git 跟踪面含未提交新文件）+ 修一处 3.12 语法脚本；②`3900589b` 边界显式编码（剪贴板 3 处 + 锁文件/devnull + scripts 13）+ `code_run` PowerShell 输出编码前缀（含脚本级指令守卫）；③`2d38478c` 测试面 26 文件 308 处铺场（+308/−308）；④`6fc6a22f` **运行期 stdio 强制**（`reconfigure(utf-8, replace)` 就地改不替换对象 + 留痕 `utf8_mode=<bool>`；scheduler-server 内联副本零 `niu_api` 依赖）；⑤`99344ca7` **launcher**：注入 `PYTHONUTF8=1`+`PYTHONIOENCODING=utf-8:replace`（与既有附加变量同集合、晚于环境继承）+ 日志读取遇非 UTF-8 行**跳过而非中断**（原实现 `break` 会让读线程永久退出 → 管道写满 → API 假死）；⑥`552b9dc5` 文档（手册「文本编码」节 + 排查 1.12 + AGENTS 约定）；⑦`bfc6d29c` 门禁 fail-closed（git 不可用/列表为空时失败，不静默判绿）。
+- **门禁（防退化）**：`tests/test_encoding_gate.py`（18 用例）——基线 327 → 交付后 **0**；变异验证亲跑（新建未提交文件造违规 → 红并报 `文件:行号[规则]` → 删除 → 绿）。
+- **关键实证**：`PYTHONIOENCODING` **优先于** UTF-8 模式（`PYTHONUTF8=1` 下 stdio 仍 cp1252）→ 运行期强制这层必需；无该层时 stderr 中文写成 `\u4e2d\u6587`（CPython `backslashreplace`），有则正常；loguru 在 `add()` 时快照 sink `encoding`（只影响回溯**诊断边框**，与中文转义无关）；MCP SDK 给 stdio 子进程的环境是**白名单**（不含 `PYTHON*`）。
+- **已知限制（已写手册）**：`code_run` 的 PowerShell 脚本以脚本级指令（`param(`/`using`/`[CmdletBinding]`/`[Parameter`）开头时**不加**编码前缀（指令必须居首，加了会破坏解析）→ 该形态中文可能乱码；`<# ... #>` 块注释与指令**同一行**的形态同理（规避：块注释独占一行）。**外部 stdio MCP 服务器**不在覆盖内（需在其 `env:` 显式声明）。
+- **审查与过程教训**：①方案审查抓出 **9 条 P1/P2 + 十余条 P3**，其中 **3 条是我自己写错的"事实"**（loguru 无 encoding 引用 / `\uXXXX` 归因 / MCP stdout 走 `sys.stdout`）——均被实测纠正；②`code_run` 前缀最初用"逐行括号配平插入指令块之后"的启发式，质量审查实测出三类**静默改写用户脚本**的误插 → 废弃启发式，改为"要么不加前缀、要么原样"的保守两分支；③T5 的远端质量审查员跑 ~30 分钟未收敛（后段 21 分钟无动作）→ 按纪律**先读 transcript 收割**（关键证据已入库）再取消，其 transcript 里的 `I/O operation on closed file` 经 PM 干净进程复跑证伪；④**逐 Task 双审有缺口**：T3/T4 只派了单角、T5 的 quality 角卡死被取消、T6 仅 PM 自核——收官补做**工程级**两项审查（方案对齐 + 整体 diff 质量）才补齐；⑤门禁自身也犯了本工程要防的错（fail-open：git 不可用即静默判绿），由工程级审查抓出后修为 fail-closed。
+- **未验收项（待用户 Windows 机）**：剪贴板中文往返、`code_run` PowerShell 中文输出、日志混入非 UTF-8 字节不丢行不阻塞、既有数据读取正常、启动留痕 `utf8_mode=True`；launcher 改动需重建二进制（`bash launcher/build.sh`，**先停 Niu**），Windows 侧需在其机器重编 `niu.exe`。
+
 #### 工程：远控桌面就绪——原生解除屏保 + 唤醒显示器 + 锁定判定（方案 **v0.8**，R1–R9 八轮双审后 **R10+R11 连续两轮双 APPROVE 门禁通过**；SDD T1/T2/T3 每 Task 双审 + 微修闭环，main `28917408`/`a18f98e7`/`86955cb5`，docs 仓方案仓多轮至 `a597d08`）
 
 - **需求（用户拍板）**：用户在"不在家也要操控家里电脑"的诉求下发现锁屏/休眠让 computer use 失效。口径：①平台有原生标准做法就走 Rust 原生，**computer 每次调用先确保桌面就绪**；②没有标准做法才用提示词兜底；③手册教 Agent 与用户谈远控配置——**密码保护必须关**（唯一硬要求）、屏保可留、显示器节能可留、系统睡眠关（插电）。
