@@ -910,6 +910,22 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 4. **展示图片给用户**：仅在回复中向用户展示图片时用 `![描述](本地绝对路径)` 标记（前端渲染给用户看，不会让模型看到图——模型看图只认 `analyze_image`）
 5. **图文件缺失/已清理** → `analyze_image` 返回明确错误串（不崩溃中断）——重新截屏即可
 
+## 文本编码
+
+**现象**：Windows 上工具输出/剪贴板读写的中文乱码、日志出现 `UnicodeDecodeError`、或日志里中文被转义成 `\uXXXX`。根源是 Python 默认文本编码跟随系统 locale（Windows = ANSI code page），解不了 UTF-8 的中文字节——cp1252 机器直接报错，cp936 机器静默乱码（更隐蔽）。
+
+**机制**：API 进程启动即固定为 UTF-8、与宿主 locale 无关——①启动器拉起 Python 进程时注入 `PYTHONUTF8=1` + `PYTHONIOENCODING=utf-8:replace`（晚于环境变量继承生效，用户 shell 里的同名变量覆盖不了）；②API 入口在任何处理之前把 stdout/stderr 就地重配为 UTF-8。`~/.niu/` 下数据文件一律按 UTF-8 读写；code_run 等子进程继承该环境。
+
+**怎么查**：
+1. **启动留痕**：API 进程 stderr 第一行输出 `utf8_mode=True|False`（`logging.enabled=false` 时也可见）。为 `False` 时查外部环境变量是否覆盖。
+2. **日志编码**：`~/.niu/logs/` 的日志行应能按 UTF-8 读出；中文乱码先确认写日志的进程是在什么 locale 下跑的（Windows cp936 控制台手跑 `python -m niu_api` 时控制台中文显示可能乱码——只是观感问题，打包版无控制台、不受影响）。启动器读子进程输出遇到非 UTF-8 字节的行会跳过该行继续读，不会中断日志。
+3. **工具输出**：`computer` 剪贴板读写、`code_run` PowerShell 输出的中文字段乱码时，先看启动留痕；`utf8_mode=True` 仍乱码见下条已知限制。
+
+**已知限制**（Windows `code_run` PowerShell 分支）：
+- 脚本以**脚本级指令**开头（`param(`/`using`/`[CmdletBinding]`/`[Parameter`）时不加 UTF-8 编码前缀（指令必须居首，加了会破坏解析），该形态下中文输出可能乱码。
+- `<# ... #>` 块注释与指令写在**同一行**的形态同样不处理（如 `<# hi #> param(...)`，可能乱码或解析失败）——规避写法：把块注释改写为独占一行，脚本即可正常解析。
+- 必须以指令开头又要输出中文的脚本，在脚本自身开头设置 `[Console]::OutputEncoding = [Text.Encoding]::UTF8`。
+
 ## 分册索引
 
 > 主 Agent 遇到具体问题时按此表判断去哪个子文档查。每条说明该文档解决什么问题、包含哪些功能、什么时候应该去看。
@@ -918,7 +934,7 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 |------|------|------|
 | 安装部署 | [manual-installation.md](manual-installation.md) | 从零到能运行的 Niu 全流程。覆盖下载安装（DMG 直装）、可选组件（脑区 igraph/leidenalg、人脸 buffalo_l 模型——交叉引用主手册）、源码构建（venv --copies + requirements.txt）、niu-natives 编译（Rust 桌面采集原生扩展，maturin 构建 wheel 装进 python/）、macOS .app 打包（build.sh 9 步流程 + DMG 生成 + Info.plist）、Windows 打包（pack.bat + niu-natives wheel 自动构建与守卫）、跨架构打包（M 系列 Mac 完整步骤）、Rust 启动器编译（含交叉编译 4 目标）。README 的安装/打包信息已纳入本手册，用户问"怎么装""怎么打包""为什么某个组件不工作"时查这里 |
 | 知识检索运维 | [manual-vector-store.md](manual-vector-store.md) | LightRAG 统一架构的完整运维手册。包含实体类型与 keywords 规范、5 种检索模式（local/global/hybrid/mix/naive）的选用、文档入库流程与参数调优、3 真相源 + 9 派生文件的存储关系图谱、GraphML 损坏检测与自愈修复机制（第九章）。检测逻辑：派生缺失不是损坏，真损坏判定靠 vdb 与 GraphML 数据一致性；另含 vdb 文件内部一致性检测（matrix/data 行数），不一致时启动自动修复——用户遇到知识图谱回答准确度下降/搜索匹配度降低时**先重启程序**（启动自检自动修复，无需删文件）；重启后仍异常，再删 3 个 vdb 文件重启触发完整重建（9.9 节兜底路径）。遇到知识图谱查询异常、入库失败、存储文件损坏、检索效果差等问题先查这里 |
-| 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 所有功能模块的故障排查指引。覆盖启动问题、人脸识别（含 1.2 节人脸数据直查：误合并拆分、向量归属确认、SQLite 直查语句）、定时任务（reminder 不通知 + background_script 静默/报错/永久删除排查——通知形态说明：定时提醒写 DB Chat 显示 + 蹦高 + 主 Agent 的话推 IM，IM 没收到是主 Agent 的话没发出；含 task_kind/script_file 数据库直查）、知识检索、数据存储、浏览器插件、知识图谱损坏修复（1.7.1 专项，含"删 3 个 vdb 文件重启触发修复"简易指引）等场景的诊断步骤和恢复方法。出现报错、功能不工作、数据异常时先查这里找对应模块的排查路径 |
+| 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 所有功能模块的故障排查指引。覆盖启动问题、人脸识别（含 1.2 节人脸数据直查：误合并拆分、向量归属确认、SQLite 直查语句）、定时任务（reminder 不通知 + background_script 静默/报错/永久删除排查——通知形态说明：定时提醒写 DB Chat 显示 + 蹦高 + 主 Agent 的话推 IM，IM 没收到是主 Agent 的话没发出；含 task_kind/script_file 数据库直查）、知识检索、数据存储、浏览器插件、文本编码（中文乱码 / UnicodeDecodeError）、知识图谱损坏修复（1.7.1 专项，含"删 3 个 vdb 文件重启触发修复"简易指引）等场景的诊断步骤和恢复方法。出现报错、功能不工作、数据异常时先查这里找对应模块的排查路径 |
 | 性能优化 | [manual-performance.md](manual-performance.md) | 系统性能调优手册。包含 InsightFace 内存优化（5 分钟空闲自动卸载）、启动速度优化策略、GPU 加速方案（CUDA / DirectML）。遇到内存占用过高、启动慢、人脸识别卡顿等性能问题时查这里 |
 | 依赖与模型 | [manual-dependencies.md](manual-dependencies.md) | Python 依赖清单与模型文件管理。包含 agent / 各 MCP 服务器 / 开发依赖的完整列表（numpy<2 + opencv<4.12 隐性约束）、GPU 支持策略（CUDA / DirectML / CPU）、InsightFace buffalo_l 与 bge-base-zh-v1.5 模型用途、国内下载镜像配置。需要重装依赖、确认版本约束、迁移模型文件时查这里 |
 | 用户操作 | [manual-user-guide.md](manual-user-guide.md) | 程序启动后用户能做的所有操作指南。包含首次启动流程、LLM 配置（含 `/setup` 设置窗口入口、配置逻辑总览、能力探测档案驱动档位、max_tokens 输出上限配置、火山方舟深度思考模型 + 工具调用配置、reasoning_effort 实测指南、格式化输出能力自动探测、Agent 引导用户配置指南）、上下文窗口阈值、知识图谱查询、记忆管理（长期记忆 + 语义记忆两层）、文件格式支持、常见问题（数据存储位置、离线使用、备份、GPU 加速、卸载）、日志开关与级别配置。遇到用户操作类问题先查这里 |
