@@ -151,6 +151,8 @@ python -m niu_api
 # API 端口默认 9876，可通过环境变量 NIU_API_PORT 修改
 ```
 
+Windows 开发环境注意：不要在 shell 里设置 `PYTHONIOENCODING`——它优先于 UTF-8 模式（`PYTHONUTF8`），会把 stdio 错误处理收紧成 strict；启动器已注入正确取值，手动启动保持默认即可。
+
 ### 打包发布
 
 **macOS .app + DMG 打包**（由 `launcher/build.sh` 自动完成；**脚本无执行位，必须用 `bash` 前缀**）：
@@ -197,6 +199,8 @@ Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置�
 ```bash
 cd agent && pytest
 ```
+
+Windows（或非 UTF-8 locale 环境）下跑测试建议以 UTF-8 模式运行：`PYTHONUTF8=1 pytest`——未显式指定 encoding 的文本 IO 跟随进程默认编码，ANSI code page 下中文内容会解错。
 
 ### 代码检查
 

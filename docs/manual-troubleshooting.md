@@ -774,4 +774,10 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 
 **日志**：`~/.niu/logs/` 内搜 `[vision-server]`（跳过的无效链节、读盘失败、选模失败、调用异常都打在这里）。
 
+### 1.12 文本编码问题（中文乱码 / UnicodeDecodeError / 日志 \uXXXX）
+
+**现象**：Windows 上工具输出或剪贴板读写的中文乱码；日志出现 `UnicodeDecodeError`；日志文件里中文显示为 `\uXXXX` 转义。
+**快速判据**：①看 API 进程 stderr 启动留痕 `utf8_mode=True|False`——为 `False` 说明外部环境变量覆盖了 UTF-8 模式，查 shell 里的 `PYTHONUTF8`/`PYTHONIOENCODING`；②Windows cp936 控制台手跑 `python -m niu_api` 时控制台中文乱码只是观感问题（打包版无控制台、不受影响）。
+**处置**：确认 `utf8_mode=True`；`code_run` PowerShell 输出乱码时，查脚本是否以指令开头（`param(`/`using`/`[CmdletBinding]`/`[Parameter`）或块注释与指令同行——这些形态不加编码前缀，规避写法见 [SYSTEM_MANUAL「文本编码 · 已知限制」](SYSTEM_MANUAL.md)。
+
 
