@@ -134,7 +134,7 @@ def stub_bash(command: str) -> str:
     if re.search(r"rm\s|mv\s|>|>>|mkfs|dd\s", command):
         return json.dumps({"status": "error", "message": "[stub] 写命令已拒绝（harness）"}, ensure_ascii=False)
     try:
-        r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10)
+        r = subprocess.run(command, shell=True, capture_output=True, text=True, encoding="utf-8", timeout=10)
         return json.dumps({"status": "ok", "stdout": r.stdout[:500], "stderr": r.stderr[:200]}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)

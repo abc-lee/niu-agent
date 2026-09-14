@@ -353,7 +353,7 @@ def _load_user_llm_config() -> dict | None:
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "user-config.json")
     if not os.path.exists(config_path):
         return None
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
     lightrag_llm = cfg.get("lightrag_llm", {})
     llm = cfg.get("llm", {})
@@ -382,7 +382,7 @@ def _load_glm_llm_config() -> dict | None:
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "user-config - glm.json")
     if not os.path.exists(config_path):
         return None
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
     lightrag_llm = cfg.get("lightrag_llm", {})
     llm = cfg.get("llm", {})

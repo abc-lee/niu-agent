@@ -51,7 +51,7 @@ def _write_vdb(path: Path, entries: list[dict], matrix: np.ndarray | None = None
     payload: dict = {"embedding_dim": DIM, "data": entries}
     if matrix is not None:
         payload["matrix"] = _encode_matrix(matrix)
-    path.write_text(json.dumps(payload, ensure_ascii=False))
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def _make_matrix(rows: int, seed: int = 0) -> np.ndarray:
@@ -132,7 +132,7 @@ def test_check_internal_empty_matrix_field_mismatch(storage_dir):
     """matrix 键存在但为空串（0 行）+ 非空 data → mismatch（R3-P3 盲区钉住，R4-P3 补测）。"""
     entries = [_make_entry(f"e{i}", [0.1] * DIM) for i in range(3)]
     path = storage_dir / "vdb_entities.json"
-    path.write_text(json.dumps({"embedding_dim": DIM, "data": entries, "matrix": ""}))
+    path.write_text(json.dumps({"embedding_dim": DIM, "data": entries, "matrix": ""}), encoding="utf-8")
     errors = _check_vdb_internal(storage_dir)
     assert len(errors) == 1
     assert errors[0]["check"] == "vdb_matrix_mismatch"
@@ -290,7 +290,7 @@ def test_check_internal_matrix_format_error(storage_dir):
     bad_matrix = np.array([0.1] * (DIM * 2 + 1), dtype=np.float32).tobytes()
     payload = {"embedding_dim": DIM, "data": entries,
                "matrix": base64.b64encode(bad_matrix).decode()}
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps(payload), encoding="utf-8")
     errors = _check_vdb_internal(storage_dir)
     assert len(errors) == 1
     assert errors[0]["check"] == "vdb_matrix_format"
@@ -311,7 +311,7 @@ def test_repair_empty_data_clears_matrix(storage_dir):
     """data 空 + matrix 非空（孤儿 matrix）→ 修复清空 matrix 为 (0, dim)（R2-P3 修正）。"""
     path = storage_dir / "vdb_entities.json"
     payload = {"embedding_dim": DIM, "data": [], "matrix": _encode_matrix(_make_matrix(3, seed=12))}
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps(payload), encoding="utf-8")
     r = _repair_vdb_matrix_inplace(path)
     assert r["status"] == "ok"
     assert r["data_count"] == 0

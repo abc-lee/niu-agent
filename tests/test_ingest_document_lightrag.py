@@ -233,7 +233,7 @@ class TestFileTypeDetection:
 
         empty_dir = tmp_path / "empty_dir"
         empty_dir.mkdir()
-        (empty_dir / "notes.txt").write_text("Just a text file.")
+        (empty_dir / "notes.txt").write_text("Just a text file.", encoding="utf-8")
 
         result = ingest_document(str(empty_dir), category="其他", mode="copy")
         assert result["status"] == "error"

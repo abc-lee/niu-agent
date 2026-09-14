@@ -74,10 +74,10 @@ def generate():
     }
 
     (FIXTURE_DIR / "kv_store_full_docs.json").write_text(
-        json.dumps(docs, ensure_ascii=False, indent=2)
+        json.dumps(docs, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (FIXTURE_DIR / "kv_store_llm_response_cache.json").write_text(
-        json.dumps(cache, ensure_ascii=False, indent=2)
+        json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(f"生成 fixture 到 {FIXTURE_DIR}")
 

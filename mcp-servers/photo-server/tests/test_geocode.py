@@ -80,7 +80,7 @@ def test_reverse_geocode_api_call():
         cache_path = os.path.join(tmpdir, "geocode_cache.db")
         # 写入含 amap key 的 preferences.json
         tmp_prefs = os.path.join(tmpdir, "preferences.json")
-        with open(tmp_prefs, "w") as f:
+        with open(tmp_prefs, "w", encoding="utf-8") as f:
             json.dump({"amap": {"api_key": "test_key"}}, f)
 
         geocode._cache_db_path = cache_path
@@ -121,7 +121,7 @@ def test_reverse_geocode_no_api_key():
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_path = os.path.join(tmpdir, "geocode_cache.db")
         tmp_prefs = os.path.join(tmpdir, "preferences.json")
-        with open(tmp_prefs, "w") as f:
+        with open(tmp_prefs, "w", encoding="utf-8") as f:
             json.dump({"version": "1.0"}, f)
 
         geocode._cache_db_path = cache_path
@@ -158,7 +158,7 @@ def test_reverse_geocode_municipality():
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_path = os.path.join(tmpdir, "geocode_cache.db")
         tmp_prefs = os.path.join(tmpdir, "preferences.json")
-        with open(tmp_prefs, "w") as f:
+        with open(tmp_prefs, "w", encoding="utf-8") as f:
             json.dump({"amap": {"api_key": "test_key"}}, f)
 
         geocode._cache_db_path = cache_path
@@ -196,7 +196,7 @@ def test_reverse_geocode_empty_arrays():
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_path = os.path.join(tmpdir, "geocode_cache.db")
         tmp_prefs = os.path.join(tmpdir, "preferences.json")
-        with open(tmp_prefs, "w") as f:
+        with open(tmp_prefs, "w", encoding="utf-8") as f:
             json.dump({"amap": {"api_key": "test_key"}}, f)
 
         geocode._cache_db_path = cache_path

@@ -41,7 +41,7 @@ def tmp_config_dir(tmp_path):
                 "args": [],
             },
         },
-    }))
+    }), encoding="utf-8")
 
     # memory-server config
     (config_dir / "memory-server.yaml").write_text(yaml.dump({
@@ -59,7 +59,7 @@ def tmp_config_dir(tmp_path):
                 ],
             },
         },
-    }))
+    }), encoding="utf-8")
 
     return config_dir
 
@@ -129,7 +129,7 @@ class TestLoading:
             "directory": "kg",
             "description": "test",
             "tools": {},
-        }))
+        }), encoding="utf-8")
         cfg = DiskConfig(str(config_dir))
         assert "kg-server" in cfg.servers
         assert "kg" in cfg.directory_map
@@ -138,13 +138,13 @@ class TestLoading:
         """If a user still keeps a disk.yaml around, it is skipped (warning), not an error."""
         config_dir = tmp_path / "disk"
         config_dir.mkdir()
-        (config_dir / "disk.yaml").write_text("version: 1\nexclude_tools: []\n")
+        (config_dir / "disk.yaml").write_text("version: 1\nexclude_tools: []\n", encoding="utf-8")
         (config_dir / "kg-server.yaml").write_text(yaml.dump({
             "server": "kg-server",
             "directory": "kg",
             "description": "test",
             "tools": {},
-        }))
+        }), encoding="utf-8")
         cfg = DiskConfig(str(config_dir))
         assert "kg-server" in cfg.servers
 
@@ -152,13 +152,13 @@ class TestLoading:
         """Per-yaml syntax errors are skipped (warning), no longer block startup."""
         config_dir = tmp_path / "disk"
         config_dir.mkdir()
-        (config_dir / "broken.yaml").write_text("server: [invalid")
+        (config_dir / "broken.yaml").write_text("server: [invalid", encoding="utf-8")
         (config_dir / "kg-server.yaml").write_text(yaml.dump({
             "server": "kg-server",
             "directory": "kg",
             "description": "test",
             "tools": {},
-        }))
+        }), encoding="utf-8")
         # Should not raise — broken.yaml skipped, kg-server.yaml loaded.
         cfg = DiskConfig(str(config_dir))
         assert "kg-server" in cfg.servers
@@ -171,7 +171,7 @@ class TestLoading:
 class TestValidation:
     def _write_config(self, config_dir, server_yaml_content, disk_yaml=None):
         """Helper: write a single server config. disk_yaml arg is ignored (legacy)."""
-        (config_dir / "kg-server.yaml").write_text(yaml.dump(server_yaml_content))
+        (config_dir / "kg-server.yaml").write_text(yaml.dump(server_yaml_content), encoding="utf-8")
         # disk.yaml is no longer used — ignored for backward compatibility with
         # any callers that still pass disk_yaml=...
 
@@ -180,10 +180,10 @@ class TestValidation:
         config_dir.mkdir()
         (config_dir / "kg-server.yaml").write_text(yaml.dump({
             "server": "kg-server", "directory": "data", "description": "test", "tools": {},
-        }))
+        }), encoding="utf-8")
         (config_dir / "memory-server.yaml").write_text(yaml.dump({
             "server": "memory-server", "directory": "data", "description": "test", "tools": {},
-        }))
+        }), encoding="utf-8")
         with pytest.raises(ValidationError, match="Duplicate directory"):
             DiskConfig(str(config_dir))
 
@@ -328,11 +328,11 @@ class TestLookup:
     def test_list_visible_tools_excludes_hidden(self, tmp_config_dir):
         # Add a hidden tool to kg-server
         kg_yaml = tmp_config_dir / "kg-server.yaml"
-        data = yaml.safe_load(kg_yaml.read_text())
+        data = yaml.safe_load(kg_yaml.read_text(encoding="utf-8"))
         data["tools"]["hidden_tool"] = {
             "summary": "hidden", "description": "hidden", "hidden": True, "args": [],
         }
-        kg_yaml.write_text(yaml.dump(data))
+        kg_yaml.write_text(yaml.dump(data), encoding="utf-8")
         config = DiskConfig(str(tmp_config_dir))
         tools = config.list_visible_tools("kg")
         names = [t.name for t in tools]
@@ -369,7 +369,7 @@ class TestMultiDirectoryScan:
                     "args": [],
                 },
             },
-        }))
+        }), encoding="utf-8")
 
     def test_user_dir_overrides_bundle(self, tmp_path):
         """User dir yaml with same server_name replaces bundle version."""
@@ -395,7 +395,7 @@ class TestMultiDirectoryScan:
                     "args": [],
                 },
             },
-        }))
+        }), encoding="utf-8")
 
         cfg = DiskConfig([str(bundle), str(user)])
         assert "server-a" in cfg.servers
@@ -445,13 +445,13 @@ class TestMultiDirectoryScan:
 
         user = tmp_path / "user"
         user.mkdir()
-        (user / "broken.yaml").write_text("server: [invalid")
+        (user / "broken.yaml").write_text("server: [invalid", encoding="utf-8")
         (user / "server-b.yaml").write_text(yaml.dump({
             "server": "server-b",
             "directory": "bdir",
             "description": "user-added server b",
             "tools": {},
-        }))
+        }), encoding="utf-8")
 
         cfg = DiskConfig([str(bundle), str(user)])
         # Both bundle server-a and user-added server-b should load
@@ -468,7 +468,7 @@ class TestMultiDirectoryScan:
             "directory": "samedir",
             "description": "bundle a",
             "tools": {},
-        }))
+        }), encoding="utf-8")
 
         user = tmp_path / "user"
         user.mkdir()
@@ -479,7 +479,7 @@ class TestMultiDirectoryScan:
             "directory": "samedir",
             "description": "user b",
             "tools": {},
-        }))
+        }), encoding="utf-8")
 
         with pytest.raises(ValidationError, match="Duplicate directory"):
             DiskConfig([str(bundle), str(user)])

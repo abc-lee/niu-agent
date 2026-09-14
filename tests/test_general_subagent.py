@@ -11,8 +11,8 @@ def test_resolve_agent_md_path_project_priority(tmp_path, monkeypatch):
     user_dir.mkdir(parents=True)
 
     # 两个目录都有同名文件
-    (project_dir / "foo.md").write_text("---\ndescription: project\n---\nproject body")
-    (user_dir / "foo.md").write_text("---\ndescription: user\n---\nuser body")
+    (project_dir / "foo.md").write_text("---\ndescription: project\n---\nproject body", encoding="utf-8")
+    (user_dir / "foo.md").write_text("---\ndescription: user\n---\nuser body", encoding="utf-8")
 
     # patch 模块级常量（不依赖 __file__，更稳健）
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
@@ -31,7 +31,7 @@ def test_resolve_agent_md_path_user_fallback(tmp_path, monkeypatch):
     project_dir.mkdir(parents=True)
     user_dir.mkdir(parents=True)
 
-    (user_dir / "bar.md").write_text("---\ndescription: user\n---\nuser body")
+    (user_dir / "bar.md").write_text("---\ndescription: user\n---\nuser body", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -63,7 +63,7 @@ def test_get_subagent_config_from_user_dir(tmp_path, monkeypatch):
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "my-agent.md").write_text(
-        "---\ndescription: my agent\nmcpServers: [photo-server]\n---\nbody"
+        "---\ndescription: my agent\nmcpServers: [photo-server]\n---\nbody", encoding="utf-8"
     )
 
     # 项目目录指向空目录（让 _resolve_agent_md_path 回退到用户目录）
@@ -84,7 +84,7 @@ def test_get_subagent_prompt_from_user_dir(tmp_path, monkeypatch):
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "my-agent.md").write_text(
-        "---\ndescription: my agent\n---\nYou are my agent."
+        "---\ndescription: my agent\n---\nYou are my agent.", encoding="utf-8"
     )
 
     project_dir = tmp_path / "project" / "config" / "agents"
@@ -118,16 +118,16 @@ def test_get_tools_schema_includes_user_agents(tmp_path, monkeypatch):
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "photo-organizer.md").write_text(
-        "---\ndescription: 整理照片\nmcpServers: [photo-server]\nallowAsync: true\n---\nbody"
+        "---\ndescription: 整理照片\nmcpServers: [photo-server]\nallowAsync: true\n---\nbody", encoding="utf-8"
     )
     (user_dir / "doc-summarizer.md").write_text(
-        "---\ndescription: 总结文档\nmcpServers: [file-parser]\n---\nbody"
+        "---\ndescription: 总结文档\nmcpServers: [file-parser]\n---\nbody", encoding="utf-8"
     )
 
     project_dir = tmp_path / "project"
     project_agents = project_dir / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -145,16 +145,16 @@ def test_get_tools_schema_skips_bad_md(tmp_path, monkeypatch):
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "good.md").write_text(
-        "---\ndescription: good\nmcpServers: []\n---\nbody"
+        "---\ndescription: good\nmcpServers: []\n---\nbody", encoding="utf-8"
     )
     (user_dir / "bad.md").write_text(
-        "---\ndescription: : invalid yaml\n---\nbody"
+        "---\ndescription: : invalid yaml\n---\nbody", encoding="utf-8"
     )
 
     project_dir = tmp_path / "project"
     project_agents = project_dir / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -171,14 +171,14 @@ def test_get_tools_schema_skips_non_kebab_name(tmp_path, monkeypatch):
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "good-agent.md").write_text("---\ndescription: good\n---\nbody")
-    (user_dir / "bad agent.md").write_text("---\ndescription: bad space\n---\nbody")
-    (user_dir / "BadCase.md").write_text("---\ndescription: bad case\n---\nbody")
+    (user_dir / "good-agent.md").write_text("---\ndescription: good\n---\nbody", encoding="utf-8")
+    (user_dir / "bad agent.md").write_text("---\ndescription: bad space\n---\nbody", encoding="utf-8")
+    (user_dir / "BadCase.md").write_text("---\ndescription: bad case\n---\nbody", encoding="utf-8")
 
     project_dir = tmp_path / "project"
     project_agents = project_dir / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -196,13 +196,13 @@ def test_get_tools_schema_skips_empty_frontmatter(tmp_path, monkeypatch):
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "good.md").write_text("---\ndescription: good\n---\nbody")
-    (user_dir / "empty.md").write_text("---\n---\nbody")
+    (user_dir / "good.md").write_text("---\ndescription: good\n---\nbody", encoding="utf-8")
+    (user_dir / "empty.md").write_text("---\n---\nbody", encoding="utf-8")
 
     project_dir = tmp_path / "project"
     project_agents = project_dir / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -219,16 +219,16 @@ def test_get_tools_schema_skips_non_dict_frontmatter(tmp_path, monkeypatch):
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "good.md").write_text("---\ndescription: good\n---\nbody")
+    (user_dir / "good.md").write_text("---\ndescription: good\n---\nbody", encoding="utf-8")
     # 纯字符串 frontmatter：yaml.safe_load 返回 str（truthy）→ get_subagent_config 原样返回；
     # 缺 isinstance 守卫时 .get() 抛 AttributeError 逃逸出循环 → get_tools_schema 整体崩溃
-    (user_dir / "strfm.md").write_text("---\njust a plain string frontmatter\n---\nbody")
-    (user_dir / "listfm.md").write_text("---\n- a\n- b\n---\nbody")
+    (user_dir / "strfm.md").write_text("---\njust a plain string frontmatter\n---\nbody", encoding="utf-8")
+    (user_dir / "listfm.md").write_text("---\n- a\n- b\n---\nbody", encoding="utf-8")
 
     project_dir = tmp_path / "project"
     project_agents = project_dir / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -247,16 +247,16 @@ def test_get_tools_schema_skips_hidden_agent(tmp_path, monkeypatch):
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "good.md").write_text(
-        "---\ndescription: good\n---\nbody"
+        "---\ndescription: good\n---\nbody", encoding="utf-8"
     )
     (user_dir / "hidden-bg.md").write_text(
-        "---\ndescription: 后台 agent\nvisibility: hidden\n---\nbody"
+        "---\ndescription: 后台 agent\nvisibility: hidden\n---\nbody", encoding="utf-8"
     )
 
     project_dir = tmp_path / "project"
     project_agents = project_dir / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -274,7 +274,7 @@ def test_get_tools_schema_hidden_agent_still_readable_by_name(tmp_path, monkeypa
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "hidden-bg.md").write_text(
-        "---\ndescription: 后台 agent\nvisibility: hidden\n---\nbody"
+        "---\ndescription: 后台 agent\nvisibility: hidden\n---\nbody", encoding="utf-8"
     )
 
     project_dir = tmp_path / "project" / "config" / "agents"
@@ -296,15 +296,15 @@ def test_get_tools_schema_dedup(tmp_path, monkeypatch):
     project_agents = project_dir / "config" / "agents"
     project_agents.mkdir(parents=True)
     (project_agents / "shared.md").write_text(
-        "---\ndescription: project shared\n---\nproject body"
+        "---\ndescription: project shared\n---\nproject body", encoding="utf-8"
     )
     (project_agents / "niu.md").write_text(
-        "---\nsub agents: [shared]\n---\nniu prompt"
+        "---\nsub agents: [shared]\n---\nniu prompt", encoding="utf-8"
     )
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "shared.md").write_text(
-        "---\ndescription: user shared\n---\nuser body"
+        "---\ndescription: user shared\n---\nuser body", encoding="utf-8"
     )
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
@@ -324,14 +324,14 @@ def test_niu_runner_init_known_user_subagents(tmp_path, monkeypatch):
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
-    (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody")
+    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody", encoding="utf-8")
+    (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody", encoding="utf-8")
     # 非法名文件不应计入（但此处只验证集合内容，跳过校验是 get_tools_schema 的事）
-    (user_dir / "_skip.md").write_text("---\ndescription: skip\n---\nbody")
+    (user_dir / "_skip.md").write_text("---\ndescription: skip\n---\nbody", encoding="utf-8")
 
     project_agents = tmp_path / "project" / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -356,7 +356,7 @@ def test_niu_runner_init_known_user_subagents_no_dir(tmp_path, monkeypatch):
 
     project_agents = tmp_path / "project" / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt", encoding="utf-8")
 
     # 用户目录指向不存在的路径
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
@@ -380,11 +380,11 @@ def test_refresh_base_tools_schema_if_dirty_no_change(tmp_path, monkeypatch):
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
+    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody", encoding="utf-8")
 
     project_agents = tmp_path / "project" / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -410,11 +410,11 @@ def test_refresh_base_tools_schema_if_dirty_new_file(tmp_path, monkeypatch):
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
+    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody", encoding="utf-8")
 
     project_agents = tmp_path / "project" / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt", encoding="utf-8")
 
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
@@ -429,7 +429,7 @@ def test_refresh_base_tools_schema_if_dirty_new_file(tmp_path, monkeypatch):
 
     original_len = len(r.base_tools_schema)
     # 新建一个 MD 文件
-    (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody")
+    (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody", encoding="utf-8")
 
     r._refresh_base_tools_schema_if_dirty()
     tool_names = [t["function"]["name"] for t in r.base_tools_schema]
@@ -447,7 +447,7 @@ def test_refresh_base_tools_schema_if_dirty_no_dir(tmp_path, monkeypatch):
 
     project_agents = tmp_path / "project" / "config" / "agents"
     project_agents.mkdir(parents=True)
-    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt", encoding="utf-8")
 
     # 用户目录指向不存在的路径
     monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
@@ -508,7 +508,7 @@ def test_build_subagent_system_segments_injects_guide_for_all_subagents(tmp_path
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "my-agent.md").write_text("---\ndescription: my agent\n---\nYou are my agent.")
+    (user_dir / "my-agent.md").write_text("---\ndescription: my agent\n---\nYou are my agent.", encoding="utf-8")
 
     project_dir = tmp_path / "project" / "config" / "agents"
     project_dir.mkdir(parents=True)
@@ -529,7 +529,7 @@ def test_build_subagent_system_segments_no_duplicate_injection(tmp_path, monkeyp
     user_dir.mkdir(parents=True)
     (user_dir / "my-agent.md").write_text(
         "---\ndescription: my agent\n---\nYou are my agent.\n\n"
-        + subagent._SUBAGENT_ASK_GUIDE_MARKER + "\n已有守则"
+        + subagent._SUBAGENT_ASK_GUIDE_MARKER + "\n已有守则", encoding="utf-8"
     )
 
     project_dir = tmp_path / "project" / "config" / "agents"

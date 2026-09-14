@@ -26,7 +26,7 @@ def llm_config():
     # "LLM API key not configured" skip 分支（真 LLM 测试，无 key 不跑）
     if not os.path.exists(config_path):
         return {"apikey": "", "apibase": "", "model": "", "type": "openai"}
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
     llm = cfg.get("llm", {})
     return {

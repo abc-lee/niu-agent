@@ -428,7 +428,7 @@ def test_cross_end_node_write_python_read(tmp_config):
         "  lightrag_llm: {}"
         "});"
     )
-    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")
 
     configs = ncm.load_named_configs()
     assert configs == {
@@ -483,4 +483,4 @@ def test_cross_end_python_write_node_read(tmp_config):
         "  console.error('entry mismatch: ' + JSON.stringify(e)); process.exit(1);"
         "}"
     )
-    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+    subprocess.run([node, "-e", script], check=True, capture_output=True, text=True, encoding="utf-8")

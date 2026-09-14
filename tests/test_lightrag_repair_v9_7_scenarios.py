@@ -256,7 +256,7 @@ def _make_synthetic_fixture(tmp_path: Path) -> None:
         },
     }
     (tmp_path / "kv_store_full_docs.json").write_text(
-        json.dumps(docs, ensure_ascii=False)
+        json.dumps(docs, ensure_ascii=False), encoding="utf-8"
     )
 
     # cache：5 条 extract entry（含 1 个已删实体的脏 entry + 1 个旧版本 chunk 的 entry）
@@ -296,7 +296,7 @@ def _make_synthetic_fixture(tmp_path: Path) -> None:
         },
     }
     (tmp_path / "kv_store_llm_response_cache.json").write_text(
-        json.dumps(cache, ensure_ascii=False)
+        json.dumps(cache, ensure_ascii=False), encoding="utf-8"
     )
 
     # 9 个派生文件初始为空（repair_all 会重建）
@@ -308,14 +308,14 @@ def _make_synthetic_fixture(tmp_path: Path) -> None:
         "kv_store_full_entities.json",
         "kv_store_full_relations.json",
     ]:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
     for fname in [
         "vdb_chunks.json",
         "vdb_entities.json",
         "vdb_relationships.json",
     ]:
         (tmp_path / fname).write_text(
-            '{"data": [], "embedding_dim": 0, "matrix": ""}'
+            '{"data": [], "embedding_dim": 0, "matrix": ""}', encoding="utf-8"
         )
 
 
@@ -364,7 +364,7 @@ async def test_scenario_1_delete_vdb_entities_repair(tmp_path, monkeypatch):
 
     # 断言 2：vdb_entities.json 重建（含 __id__ hash）
     assert vdb_e_path.exists(), "vdb_entities.json 应被重建"
-    vdb_data = json.loads(vdb_e_path.read_text())
+    vdb_data = json.loads(vdb_e_path.read_text(encoding="utf-8"))
     assert "data" in vdb_data, "vdb_entities 应有 data 字段"
     assert isinstance(vdb_data["data"], list)
     assert len(vdb_data["data"]) > 0, "真实数据应至少有 1 个 entity"
@@ -500,7 +500,7 @@ async def test_scenario_3_graphml_corrupt_unrecoverable(tmp_path, monkeypatch):
 
     # 写损坏 GraphML（非合法 XML）
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
-        "corrupt <<< not valid xml"
+        "corrupt <<< not valid xml", encoding="utf-8"
     )
 
     from niu_api.internal.lightrag_repair import _repair_all_async
@@ -583,7 +583,7 @@ async def test_scenario_4_full_docs_corrupt_unrecoverable(tmp_path, monkeypatch)
 
     # 写损坏 full_docs（非合法 JSON）
     (tmp_storage / "kv_store_full_docs.json").write_text(
-        "corrupt not valid json <<<"
+        "corrupt not valid json <<<", encoding="utf-8"
     )
 
     from niu_api.internal.lightrag_repair import _repair_all_async
@@ -656,7 +656,7 @@ async def test_scenario_5_cache_corrupt_unrecoverable(tmp_path, monkeypatch):
 
     # 写损坏 cache（非合法 JSON）
     (tmp_storage / "kv_store_llm_response_cache.json").write_text(
-        "corrupt not valid json <<<"
+        "corrupt not valid json <<<", encoding="utf-8"
     )
 
     from niu_api.internal.lightrag_repair import _repair_all_async
@@ -748,7 +748,7 @@ async def test_scenario_6_no_reanimate_deleted_and_old(tmp_path, monkeypatch):
     # 断言 2：text_chunks 真正重建了活跃 chunk（证明非空，不是意外通过）
     tc_path = tmp_storage / "kv_store_text_chunks.json"
     assert tc_path.exists(), "text_chunks.json 应被重建"
-    tc = json.loads(tc_path.read_text())
+    tc = json.loads(tc_path.read_text(encoding="utf-8"))
     assert chunk_id_1 in tc, (
         "活跃 chunk 应被重建（证明 text_chunks 非空，不是意外通过）"
     )
@@ -766,7 +766,7 @@ async def test_scenario_6_no_reanimate_deleted_and_old(tmp_path, monkeypatch):
         if not path.exists():
             # 全新用户场景部分派生文件可能不写盘（v9 跟 LightRAG 一致），跳过
             continue
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         assert "deleted-entity" not in content, (
             f"{fname} 不应含 deleted-entity（已删实体不复活）"
         )
@@ -777,19 +777,19 @@ async def test_scenario_6_no_reanimate_deleted_and_old(tmp_path, monkeypatch):
     # 断言 5：单独强校验 entity_chunks / full_entities / vdb_entities 不含这两个实体
     ec_path = tmp_storage / "kv_store_entity_chunks.json"
     if ec_path.exists():
-        ec = json.loads(ec_path.read_text())
+        ec = json.loads(ec_path.read_text(encoding="utf-8"))
         assert "deleted-entity" not in ec, "entity_chunks 不应含 deleted-entity"
         assert "old-entity" not in ec, "entity_chunks 不应含 old-entity"
 
     fe_path = tmp_storage / "kv_store_full_entities.json"
     if fe_path.exists():
-        fe = json.loads(fe_path.read_text())
+        fe = json.loads(fe_path.read_text(encoding="utf-8"))
         assert "deleted-entity" not in fe, "full_entities 不应含 deleted-entity"
         assert "old-entity" not in fe, "full_entities 不应含 old-entity"
 
     vdb_e_path = tmp_storage / "vdb_entities.json"
     assert vdb_e_path.exists(), "vdb_entities.json 应被重建"
-    vdb_e = json.loads(vdb_e_path.read_text())
+    vdb_e = json.loads(vdb_e_path.read_text(encoding="utf-8"))
     vdb_e_names = {
         entry.get("entity_name") for entry in vdb_e.get("data", [])
     }
@@ -864,7 +864,7 @@ async def test_scenario_7_weight_preserved_graphml_untouched(
     # 断言 4：vdb_relationships 不含 weight 字段（meta_fields 不含 weight）
     vdb_rel_path = tmp_storage / "vdb_relationships.json"
     assert vdb_rel_path.exists(), "vdb_relationships.json 应被重建"
-    vdb_rel = json.loads(vdb_rel_path.read_text())
+    vdb_rel = json.loads(vdb_rel_path.read_text(encoding="utf-8"))
     assert len(vdb_rel.get("data", [])) > 0, (
         "合成 fixture 有 1 条 edge，vdb_relationships 应有 1 条向量"
     )

@@ -34,7 +34,7 @@ def _load_llm_config():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "config", "user-config.json",
     )
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         data = json.load(f)
     llm = data["llm"]
     # create_client 期望的字段名

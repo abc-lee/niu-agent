@@ -40,11 +40,11 @@ def _write_graphml(path: Path, nodes: list[tuple[str, str]] | None = None,
         edge = ET.SubElement(graph, "{{{}}}edge".format(nsmap["g"]))
         edge.set("source", src)
         edge.set("target", tgt)
-    path.write_text(ET.tostring(root, encoding="unicode"))
+    path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
 
 
 def _write_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False))
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
 def _write_vdb(path: Path, entries: list[dict]) -> None:
@@ -217,7 +217,7 @@ def test_scenario_5_vdb_relationships_missing_is_real_corruption(storage_dir):
 def test_scenario_6_graphml_corrupt_is_critical(storage_dir):
     """GraphML XML 解析失败 → critical（真损坏，不可恢复）。"""
     (storage_dir / "graph_chunk_entity_relation.graphml").write_text(
-        "<?xml version='1.0'?><not-valid-graphml><broken"
+        "<?xml version='1.0'?><not-valid-graphml><broken", encoding="utf-8"
     )
     result = check_all()
     assert result["ok"] is False
@@ -236,7 +236,7 @@ def test_scenario_7_full_docs_corrupt_is_critical(storage_dir):
     _write_vdb(storage_dir / "vdb_entities.json", [_make_vdb_entity("entity_1")])
     _write_vdb(storage_dir / "vdb_chunks.json", [])
     _write_vdb(storage_dir / "vdb_relationships.json", [])
-    (storage_dir / "kv_store_full_docs.json").write_text("{not valid json")
+    (storage_dir / "kv_store_full_docs.json").write_text("{not valid json", encoding="utf-8")
     result = check_all()
     assert result["ok"] is False
     assert result["critical_errors"] >= 1
