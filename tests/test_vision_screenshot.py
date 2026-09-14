@@ -103,6 +103,10 @@ def _install_fake_niu_natives(monkeypatch):
         "geometry": {"kind": "desktop"},
         "displays": [{"id": "display-1"}],
     }
+    # D-D 就绪默认态：真实 session_ready() 返回三字符串键 dict——fake 同形态，
+    # 未就绪用例自行覆盖 return_value。
+    session.session_ready.return_value = {
+        "screensaver": "none", "display": "awake", "locked": "false"}
     fake_mod.DesktopSession = MagicMock(name="DesktopSession-class", return_value=session)
     monkeypatch.setitem(sys.modules, "niu_natives", fake_mod)
     m = importlib.reload(niu_vision_server)
@@ -208,6 +212,42 @@ class TestNiuNativesMissing:
         assert m.niu_natives is None
         result = m.screenshot(target="screen")
         assert result == "截图能力不可用（niu_natives 未安装/平台不支持）"
+
+
+# ============== D-D 桌面就绪闸门（plan 2026-09-14-remote-desktop-session-ready）==============
+
+
+class TestSessionReadyGate:
+    """screenshot() 入口先 session_ready()：未就绪 → 明确中文错误串、不抓图、
+    不做盲重试；就绪/locked=unknown（fail-open）→ 照常。"""
+
+    def test_locked_true_returns_error_without_capture(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.session_ready.return_value = {
+            "screensaver": "none", "display": "awake", "locked": "true"}
+        result = m.screenshot(target="screen")
+        assert result.startswith("截图失败：")
+        assert "锁定" in result and "手动解锁" in result
+        session.capture.assert_not_called()
+        session.session_ready.assert_called_once()   # 非 dismissed → 不触发复查
+
+    def test_dismiss_failed_returns_error_without_capture(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.session_ready.return_value = {
+            "screensaver": "dismiss_failed", "display": "awake", "locked": "false"}
+        result = m.screenshot(target="screen")
+        assert result.startswith("截图失败：")
+        assert "屏保" in result and "手动处理" in result
+        session.capture.assert_not_called()
+
+    def test_still_asleep_returns_error_without_capture(self, monkeypatch):
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.session_ready.return_value = {
+            "screensaver": "none", "display": "still_asleep", "locked": "false"}
+        result = m.screenshot(target="screen")
+        assert result.startswith("截图失败：")
+        assert "显示器" in result and "手动处理" in result
+        session.capture.assert_not_called()
 
 
 # ============== region_ratio 按比例截区域（plan §3.2 / §6 用例 7-12） ==============

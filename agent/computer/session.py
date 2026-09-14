@@ -189,6 +189,52 @@ def _make_wait(budget_ms: Optional[float]) -> Callable[..., Any]:
     return wait
 
 
+def _session_not_ready_reason(state):
+    """D-C：判定 `session_ready()` 返回的状态字典 → 未就绪时返回明确原因串，就绪时 None。
+
+    三个值均为字符串（niu-natives `DesktopSession.session_ready`，
+    plan 2026-09-14-remote-desktop-session-ready §3 D-A）：
+    - screensaver=dismiss_failed / display=still_asleep → 未生效，需用户手动处理；
+    - locked=true → 会话锁定（程序不绕过锁屏，需用户解锁）；
+    - locked=unknown 不拦截（fail-open）。
+    """
+    screensaver = str(state.get("screensaver", ""))
+    display = str(state.get("display", ""))
+    locked = str(state.get("locked", ""))
+    if screensaver == "dismiss_failed":
+        return ("桌面未就绪：屏保未能自动解除，需要用户手动处理"
+                "（请用户在电脑上退出屏保后重试）；本次不执行代码、不抓图。")
+    if display == "still_asleep":
+        return ("桌面未就绪：显示器唤醒失败（仍休眠），需要用户手动处理"
+                "（请用户点亮显示器后重试）；本次不执行代码、不抓图。")
+    if locked == "true":
+        return ("桌面未就绪：会话处于锁定状态，需要用户手动解锁"
+                "（程序不会绕过锁屏）；本次不执行代码、不抓图。")
+    return None
+
+
+def _ensure_session_ready(session):
+    """D-C：每次 run 前确保桌面就绪（幂等；read_only 运行同样就绪）。
+
+    未就绪 → 返回明确原因串（调用方抛 ComputerToolError 并停止后续动作）；
+    就绪或 locked=unknown（fail-open）→ None。locked 过渡态豁免：本次刚解除屏保
+    （screensaver=dismissed）时 locked 可能短暂仍为 true → ~500ms 后复查一次，
+    仍 true 才按真锁定处理。
+    """
+    try:
+        state = session.session_ready()
+        reason = _session_not_ready_reason(state)
+        if (reason is not None
+                and str(state.get("screensaver")) == "dismissed"
+                and str(state.get("locked")) == "true"):
+            time.sleep(0.5)   # locked 过渡态豁免：刚解除屏保，复查一次
+            state = session.session_ready()
+            reason = _session_not_ready_reason(state)
+        return reason
+    except Exception as e:
+        return f"桌面就绪检查失败：{e}"
+
+
 class ComputerSession:
     """一个持久 computer 会话（对应上游一个 worker）。"""
 
@@ -251,9 +297,18 @@ class ComputerSession:
 
         原生错误（`{code}: {message}`）抛出前经 errors.annotate_error 附中文恢复句
         （docs/tools/computer.md "Errors and recovery"）；未识别码原文不变。
+
+        D-C（plan 2026-09-14-remote-desktop-session-ready）：同步/超时分叉之前先
+        `session_ready()` 确保桌面就绪（幂等；read_only 运行同样就绪）。屏保/锁定
+        未解除 → 抛明确 ComputerToolError 并停止，绝不继续执行代码或抓图。
         """
         if timeout is not None:
             timeout = max(1.0, min(float(timeout), 300.0))
+        session = get_desktop_session()
+        if session is not None:
+            reason = _ensure_session_ready(session)
+            if reason is not None:
+                raise ComputerToolError(reason)
         if timeout is None:
             return self._run_sync(code, read_only=read_only)
         result: Dict[str, Any] = {}

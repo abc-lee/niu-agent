@@ -66,6 +66,10 @@ def _install_fake_niu_natives(monkeypatch):
     """
     fake_mod = types.ModuleType("niu_natives")
     session = MagicMock(name="DesktopSession-instance")
+    # D-D 就绪默认态：真实 session_ready() 返回三字符串键 dict——fake 同形态，
+    # 未就绪用例自行覆盖 return_value。
+    session.session_ready.return_value = {
+        "screensaver": "none", "display": "awake", "locked": "false"}
     fake_mod.DesktopSession = MagicMock(name="DesktopSession-class", return_value=session)
     monkeypatch.setitem(sys.modules, "niu_natives", fake_mod)
     m = importlib.reload(niu_vision_server)
@@ -216,6 +220,19 @@ class TestDegradation:
 
         assert "无法枚举窗口" in result
         assert "permission denied" in result
+
+    def test_not_ready_returns_error_without_listing(self, monkeypatch):
+        """D-D：未就绪（屏保解除失败）→ 明确中文错误串、不枚举、不做盲重试。"""
+        m, session = _install_fake_niu_natives(monkeypatch)
+        session.session_ready.return_value = {
+            "screensaver": "dismiss_failed", "display": "awake", "locked": "false"}
+
+        result = m.list_targets()  # 不抛异常
+
+        assert result.startswith("列出可截取目标失败：")
+        assert "屏保" in result and "手动处理" in result
+        session.list_displays.assert_not_called()
+        session.list_windows.assert_not_called()
 
 
 # ============== 无前台应用（plan §6 用例 6） ==============
