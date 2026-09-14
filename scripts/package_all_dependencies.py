@@ -139,7 +139,7 @@ class DependencyPackager:
         print(f"执行: {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=600)
 
             if result.returncode == 0:
                 print(f"✅ Python 包已下载到: {self.python_packages_dir}")

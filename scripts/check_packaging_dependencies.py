@@ -61,6 +61,7 @@ def check_dependencies():
         [sys.executable, "-m", "pip", "list", "--format=freeze"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
     installed = {}

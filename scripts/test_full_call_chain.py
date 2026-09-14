@@ -23,7 +23,7 @@ def test_openai_sdk_direct():
     from openai import OpenAI
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     # 使用 LLM Proxy 作为 base_url
@@ -73,7 +73,7 @@ def test_async_openai_sdk():
     from openai import AsyncOpenAI
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
 
     proxy_url = "http://localhost:9876/llm/v1"
     print(f"  Proxy URL: {proxy_url}")

@@ -61,7 +61,7 @@ def _save(ratio: float, path: Path | None = None) -> None:
     lock_path = p.with_suffix(p.suffix + ".lock")
     tmp_path = p.with_suffix(p.suffix + ".tmp")
     try:
-        with open(lock_path, "w") as lock_f:
+        with open(lock_path, "w", encoding="utf-8") as lock_f:
             _flock(lock_f)
             try:
                 payload = {"ratio": ratio, "updated_at": datetime.now().isoformat()}

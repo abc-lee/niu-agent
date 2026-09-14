@@ -28,7 +28,7 @@ def test_litellm_with_detailed_timing():
 
     # 从配置读取
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     model = llm.get("model", "")
@@ -117,7 +117,7 @@ def test_httpx_direct():
     import httpx
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     api_base = llm.get("apiBase", "")
@@ -196,7 +196,7 @@ def test_litellm_non_stream():
     litellm.suppress_debug_info = True
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     model = llm.get("model", "")

@@ -5,7 +5,7 @@ import urllib.request
 import json
 
 # Load config
-with open('<repo-root>/config/user-config.json') as f:
+with open('<repo-root>/config/user-config.json', encoding='utf-8') as f:
     config = json.load(f)
 
 llm = config['llm']

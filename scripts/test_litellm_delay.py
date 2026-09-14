@@ -23,7 +23,7 @@ def test_direct_litellm():
     # 从配置读取
     import json
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     model = llm.get("model", "")
@@ -84,7 +84,7 @@ def test_litellm_session():
 
     import json
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     session = LiteLLMSession(cfg={

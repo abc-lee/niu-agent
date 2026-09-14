@@ -367,13 +367,20 @@ class Clipboard:
     Get-Clipboard -Raw（:209-264）；写 = OSC52(TTY) + arboard（:98-137）。
 
     Niu 适配（语义相同，机制按平台 CLI）：Niu 是守护进程——无 TTY（OSC52 分支不适用）、
-    niu_natives 无 arboard 绑定 → 写走 pbcopy / PowerShell Set-Clipboard。"""
+    niu_natives 无 arboard 绑定 → 写走 pbcopy / PowerShell Set-Clipboard。
+
+    解码协议统一 UTF-8（对齐上游 Bun Response.text() 的无条件 UTF-8 语义）：
+    文本模式子进程调用一律显式 encoding="utf-8"，读取侧 errors="replace"（永不抛），
+    **禁止退回 locale 默认**——Windows 上 locale = ANSI code page，会按 cp1252/cp936
+    解码 CLI 输出的 UTF-8 字节（中文 → UnicodeDecodeError 或静默乱码）。"""
 
     def read(self) -> str:
         """worker.ts:715-723 → readTextFromClipboard()；失败 → ""（上游同语义）。"""
         current_run_context()
         if sys.platform == "darwin":
-            proc = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
+            proc = subprocess.run(
+                ["pbpaste"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=5)
             return proc.stdout if proc.returncode == 0 else ""
         if sys.platform == "win32":
             script = (
@@ -383,7 +390,8 @@ class Clipboard:
             )
             proc = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True, text=True, timeout=8)
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=8)
             if proc.returncode != 0:
                 return ""
             return proc.stdout.replace("\r\n", "\n")
@@ -394,7 +402,9 @@ class Clipboard:
         context = current_run_context()
         guard_run(context, "clipboard.write")
         if sys.platform == "darwin":
-            subprocess.run(["pbcopy"], input=text, text=True, check=True, timeout=5)
+            subprocess.run(
+                ["pbcopy"], input=text, text=True, encoding="utf-8",
+                check=True, timeout=5)
         elif sys.platform == "win32":
             b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
             script = (

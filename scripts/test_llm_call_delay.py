@@ -28,7 +28,7 @@ def test_1_httpx_direct():
     import httpx
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     api_base = llm.get("apiBase", "")
@@ -82,7 +82,7 @@ def test_2_litellm_direct():
     litellm.suppress_debug_info = True
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     model = llm.get("model", "")
@@ -129,7 +129,7 @@ def test_3_litellm_session():
     from agent.generic.litellm_adapter import LiteLLMSession
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding="utf-8"))
     llm = config.get("llm", {})
 
     llm_config = {
