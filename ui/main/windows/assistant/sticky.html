@@ -548,13 +548,17 @@
         const resp = await fetch('http://127.0.0.1:9876/api/notes');
         const data = await resp.json();
         if (data.status === 'ok' && data.notes) {
-          // 后端有数据，转换为前端格式写入内存缓存
-          const backendNotes = data.notes.map(n => ({
-            id: n.id,
-            content: n.content,
-            createdAt: new Date(n.createdAt).getTime(),
-            updatedAt: n.updatedAt ? new Date(n.updatedAt).getTime() : undefined
-          }));
+          // 后端有数据，转换为前端格式写入内存缓存。
+          // 按 createdAt 降序（最新在前）：与本地 unshift 约定一致，page 0 = 最新、滚轮向下 = 更旧；不依赖后端返回顺序
+          const backendNotes = data.notes.map(n => {
+            const t = new Date(n.created_at).getTime();
+            return {
+              id: n.id,
+              content: n.content,
+              createdAt: Number.isFinite(t) ? t : 0,
+              updatedAt: n.updated_at ? new Date(n.updated_at).getTime() : undefined
+            };
+          }).sort((a, b) => b.createdAt - a.createdAt);
           notesCache = backendNotes;
           console.log(`从后端加载了 ${backendNotes.length} 条便签`);
           return;
@@ -563,8 +567,9 @@
         console.log('后端便签加载失败:', e.message);
       }
 
-      // 后端无数据或加载失败，内存缓存为空
-      notesCache = [];
+      // 拉取失败（后端不可达/500）：保留现有内存缓存，避免把当前显示的列表清空。
+      // 后端正常返回时（含空列表 []）已在上方分支写入 notesCache 并 return。
+      console.log('便签加载未成功，保留现有缓存');
     }
 
     function init() {
@@ -580,6 +585,19 @@
         }).catch(() => {
           applySize();
           renderOldSticky();
+        });
+      });
+    }
+
+    // ========== 窗口显示时刷新（同步 REST 外部写入） ==========
+    if (window.electronAPI && window.electronAPI.onNotesChanged) {
+      window.electronAPI.onNotesChanged(() => {
+        // 用户正在编辑旧便签时不刷新，避免把正在输入的内容冲掉
+        if (document.activeElement === oldContent) return;
+        loadNotesFromBackend().then(() => {
+          currentPage = Math.min(currentPage, Math.max(0, notesCache.length - 1));
+          renderOldSticky();
+          updatePageHint();
         });
       });
     }
