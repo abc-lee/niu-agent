@@ -1012,7 +1012,7 @@ def get_face_model():
             @contextlib.contextmanager
             def suppress_stdout():
                 """临时抑制 stdout（ONNX Runtime 会污染 stdout）"""
-                devnull = open(os.devnull, 'w')
+                devnull = open(os.devnull, 'w', encoding='utf-8')
                 old_stdout = os.dup(1)
                 try:
                     os.dup2(devnull.fileno(), 1)

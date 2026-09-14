@@ -344,6 +344,42 @@ def file_patch(path: str, old_content: str, new_content: str) -> dict:
         return {"status": "error", "msg": str(e)}
 
 
+# PowerShell 输出编码前缀（code_run nt 分支）：强制向管道写 UTF-8 字节，与
+# stream_reader 的 utf-8 解码协议一致（不加则中文按控制台 ANSI code page 输出 → 乱码）。
+_PS_UTF8_PREFIX = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+
+
+def _ps_command_body(code: str) -> str:
+    """组装 code_run PowerShell 分支的 -Command 体（编码前缀 + 脚本内容）。
+
+    守卫：PowerShell 要求脚本级指令（param/using/[CmdletBinding]/[Parameter]）必须居首，
+    直接前置会让它们不再居首 → 解析失败。这些指令必须居首，故对这些形态放弃加前缀
+    （退回改动前行为；已知限制由 T6 文档记录）。
+
+    判据：逐行跳过空行、# 注释行（含 #Requires）与块注释 <# ... #>，取首条真实语句判断——
+    仅看 code.lstrip() 开头会让「注释/空行 + param」被误判为普通语句而前置失败；
+    关键字后空白种类也需容忍（using/param 后用 Tab 分隔同样是指令形态）。
+
+    已知限制：同一行的 `<# ... #> param(...)` 这类同义微形态不处理（由 T6 文档记录）。
+    """
+    in_block = False
+    for line in code.split("\n"):
+        s = line.strip()
+        if in_block:
+            in_block = "#>" not in s   # 块注释内部行：直到 #> 出现才结束
+            continue
+        if s.startswith("<#"):
+            in_block = "#>" not in s   # 块注释起始行（单行 <# ... #> 在此即闭合）
+            continue
+        if not s or s.startswith("#"):
+            continue
+        tok = s.split(None, 1)[0].lower()   # split(None) 容忍任意空白（含 Tab）
+        if tok == "using" or tok.startswith("param") or tok.startswith(("[cmdletbinding", "[parameter")):
+            return code                  # 指令必须居首 → 放弃加前缀
+        break
+    return _PS_UTF8_PREFIX + code
+
+
 def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str = None) -> dict:
     """执行代码"""
     preview = (code[:60].replace("\n", " ") + "...") if len(code) > 60 else code.strip()
@@ -362,7 +398,12 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
         cmd = [sys.executable, "-X", "utf8", "-u", tmp_path]
     elif code_type in ["powershell", "bash"]:
         if os.name == "nt":
-            cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", code]
+            # 输出编码前缀：强制 PowerShell 向管道写 UTF-8 字节，与 stream_reader
+            # 的 utf-8 解码协议一致（不加则中文按控制台 ANSI code page 输出 → 乱码）。
+            # _ps_command_body 内含守卫：脚本级指令（param/using/[CmdletBinding]）必须居首，
+            # 指令形态放弃加前缀、退回改动前行为（见该函数 docstring）。
+            cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                   _ps_command_body(code)]
         else:
             cmd = ["bash", "-c", code]
     else:

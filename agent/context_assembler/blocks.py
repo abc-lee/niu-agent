@@ -110,7 +110,7 @@ def _block_lock(db_path: Path):
     """写操作统一文件锁。锁文件与 DB 同目录：context_blocks.db.lock。"""
     lock_path = db_path.with_suffix(db_path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as lock_f:
+    with open(lock_path, "w", encoding="utf-8") as lock_f:
         _flock(lock_f)
         try:
             yield
