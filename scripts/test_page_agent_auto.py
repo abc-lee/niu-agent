@@ -199,12 +199,13 @@ async def test_page_agent():
             failed = sum(1 for t in results["tests"] if t["status"] == "FAIL")
             errors = sum(1 for t in results["tests"] if t["status"] == "ERROR")
 
+            total_tests = len(results["tests"])
             results["summary"] = {
-                "total": len(results["tests"]),
+                "total": total_tests,
                 "passed": passed,
                 "failed": failed,
                 "errors": errors,
-                "success_rate": f"{(passed / len(results["tests"]) * 100):.1f}%" if results["tests"] else "0%"
+                "success_rate": f"{(passed / total_tests * 100):.1f}%" if total_tests else "0%"
             }
 
         except Exception as e:
