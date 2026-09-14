@@ -10,7 +10,26 @@ import json
 import logging
 import asyncio
 import os
+import sys
 from pathlib import Path
+
+
+def _ensure_utf8_stdio() -> None:
+    """内联副本（本包 standalone，不得 import niu_api 的任何模块）：
+    把 sys.stdout/sys.stderr 就地 reconfigure 为 UTF-8。
+
+    主受益面是 stderr——非 UTF-8 locale 下 CPython 的 backslashreplace 会把
+    中文日志/回溯转义成 \\uXXXX；stdout 为零成本防御性冗余（MCP SDK 自建
+    UTF-8 wrapper）。流为 None 或无 reconfigure 方法时跳过，异常一律吞掉。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
@@ -495,6 +514,7 @@ async def run_server():
 
 def main():
     """Main entry point - run as MCP server"""
+    _ensure_utf8_stdio()  # 必须早于 basicConfig：logging 的 StreamHandler 按 stdio 编码落盘
     logging.basicConfig(level=logging.INFO)
     logger.info("Starting scheduler-server in MCP mode")
     asyncio.run(run_server())

@@ -16,6 +16,31 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
+def ensure_utf8_stdio() -> None:
+    """运行期 stdio 强制（方案层 3）：把 sys.stdout/sys.stderr 就地 reconfigure 为 UTF-8。
+
+    只用 reconfigure，禁止替换对象——loguru 在 logger.add() 时快照 sink 的
+    encoding（用于异常格式化器），替换对象会与已注册 sink 脱钩。
+    能力守卫：流为 None 或无 reconfigure 方法（如 StringIO）时跳过；
+    reconfigure 抛任何异常都吞掉，绝不因守卫失败让 API 起不来。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None and hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+# 层 3：必须早于 niu_api.* 导入链、且早于下方 loguru 的 add(sys.stderr) sink。
+ensure_utf8_stdio()
+# 启动留痕（排障一眼看出进程 UTF-8 模式）。落点选日志配置之前用 print(file=sys.stderr)：
+# 既有 loguru sink 受 config/logging.enabled 门控（缺省 False → logger.disable("")），
+# 若走 loguru 留痕，默认配置下永远不可见，失去排障意义；此时 stderr 已被 reconfigure
+# 为 utf-8/replace，在 cp1252 locale 机器上输出中文也不会抛。
+print(f"utf8_mode={bool(sys.flags.utf8_mode)}", file=sys.stderr)
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
