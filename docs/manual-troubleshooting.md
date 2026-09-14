@@ -770,6 +770,7 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 | 错误含 `Computer worker is busy`（可能伴随 `previous run hung — session requires restart`） | 上一次 `computer` 运行仍在执行中（同一次运行尚未结束）；若文案带 `previous run hung`，说明它已远超自身预算且卡在无法中断的调用里——此时重试无意义 | 等当前运行结束再试；出现 `previous run hung` 时**重启 Niu** 恢复（会话的窗口句柄、截图帧、AX ref 随进程重建），不要反复重试 |
 | 点击落点偏移 / 点不到目标 | 坐标来自被缩放过的图，或属于另一个 target 的帧 | 让视觉模型按 **2 元素中心点比例 `[[rx, ry]]`（0–1）**回答位置（乘该图宽高得像素；若返回 4 元素边框则取其中心）；确认坐标属于该 target **最近一次**截图；AX 覆盖得到时优先用 AX（`find`/`press`，不经图像通道） |
 | Windows 上 `win.ax()` 读不到某应用的界面结构（返回空/极少节点） | 该应用未暴露 UIA provider——Win32 标准控件类应用正常（如资源管理器）；**Chromium/Electron 系默认惰性**（需应用自身开启无障碍）；提权窗口（UIPI）非提权进程读不到；自绘/游戏类常无 provider | 改用像素路径（`win.screenshot()` + 指针动作，坐标按 `[[rx, ry]]` 比例换算）；或对该应用单独处理（如以开启无障碍的方式启动目标应用）；先 `desktop.capabilities()` 确认 `ax` 可用（那是「我们能不能调 UIA」，与「该窗口有没有树」是两件事） |
+| 抓图只拿到屏保/登录画面（`screenshot`/`list_targets`/`computer` 都可能），或错误含 `CaptureFailed: Quartz reported no active displays`（macOS）/ `CaptureFailed: Win32 reported no active displays`（Windows），或返回「桌面未就绪：…」 | 会话锁定、显示器休眠或屏保运行中——OS 安全设定，不是权限或工具故障；抓图「成功」也可能只是屏保/锁屏画面 | 程序会自动解除屏保、唤醒显示器；仍报「桌面未就绪：…」时请用户解锁会话/点亮屏幕后重试。远控场景按 [SYSTEM_MANUAL「远控 / 离开时的桌面可操控性」](SYSTEM_MANUAL.md) 节配置（唯一硬要求：关屏保密码保护）；真锁屏程序不绕过 |
 
 **日志**：`~/.niu/logs/` 内搜 `[vision-server]`（跳过的无效链节、读盘失败、选模失败、调用异常都打在这里）。
 
