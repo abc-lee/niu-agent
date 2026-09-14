@@ -558,7 +558,7 @@ preload_face_model()
 - **关键实证**：`PYTHONIOENCODING` **优先于** UTF-8 模式（`PYTHONUTF8=1` 下 stdio 仍 cp1252）→ 运行期强制这层必需；无该层时 stderr 中文写成 `\u4e2d\u6587`（CPython `backslashreplace`），有则正常；loguru 在 `add()` 时快照 sink `encoding`（只影响回溯**诊断边框**，与中文转义无关）；MCP SDK 给 stdio 子进程的环境是**白名单**（不含 `PYTHON*`）。
 - **已知限制（已写手册）**：`code_run` 的 PowerShell 脚本以脚本级指令（`param(`/`using`/`[CmdletBinding]`/`[Parameter`）开头时**不加**编码前缀（指令必须居首，加了会破坏解析）→ 该形态中文可能乱码；`<# ... #>` 块注释与指令**同一行**的形态同理（规避：块注释独占一行）。**外部 stdio MCP 服务器**不在覆盖内（需在其 `env:` 显式声明）。
 - **审查与过程教训**：①方案审查抓出 **9 条 P1/P2 + 十余条 P3**，其中 **3 条是我自己写错的"事实"**（loguru 无 encoding 引用 / `\uXXXX` 归因 / MCP stdout 走 `sys.stdout`）——均被实测纠正；②`code_run` 前缀最初用"逐行括号配平插入指令块之后"的启发式，质量审查实测出三类**静默改写用户脚本**的误插 → 废弃启发式，改为"要么不加前缀、要么原样"的保守两分支；③T5 的远端质量审查员跑 ~30 分钟未收敛（后段 21 分钟无动作）→ 按纪律**先读 transcript 收割**（关键证据已入库）再取消，其 transcript 里的 `I/O operation on closed file` 经 PM 干净进程复跑证伪；④**逐 Task 双审有缺口**：T3/T4 只派了单角、T5 的 quality 角卡死被取消、T6 仅 PM 自核——收官补做**工程级**两项审查（方案对齐 + 整体 diff 质量）才补齐；⑤门禁自身也犯了本工程要防的错（fail-open：git 不可用即静默判绿），由工程级审查抓出后修为 fail-closed。
-- **未验收项（待用户 Windows 机）**：剪贴板中文往返、`code_run` PowerShell 中文输出、日志混入非 UTF-8 字节不丢行不阻塞、既有数据读取正常、启动留痕 `utf8_mode=True`；launcher 改动需重建二进制（`bash launcher/build.sh`，**先停 Niu**），Windows 侧需在其机器重编 `niu.exe`。
+- **真机验收（2026-09-14 用户 Windows 机，全通过）**：剪贴板中文往返、`code_run` PowerShell 中文输出、日志含中文行可读且不丢行、既有数据读取正常、启动留痕 `utf8_mode=True`。本机 macOS 侧已 `bash launcher/build.sh` 重建（根 `niu` 与 bundle 均含 `PYTHONUTF8`/`PYTHONIOENCODING`/`utf-8:replace` 与 `InvalidData` 分支；VERSION 0.4.2；`codesign --verify --deep` PASS）；未由 harness 启动用户 GUI 应用（按既有约定）。
 
 #### 工程：远控桌面就绪——原生解除屏保 + 唤醒显示器 + 锁定判定（方案 **v0.8**，R1–R9 八轮双审后 **R10+R11 连续两轮双 APPROVE 门禁通过**；SDD T1/T2/T3 每 Task 双审 + 微修闭环，main `28917408`/`a18f98e7`/`86955cb5`，docs 仓方案仓多轮至 `a597d08`）
 
