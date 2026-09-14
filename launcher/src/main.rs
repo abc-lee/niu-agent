@@ -2005,6 +2005,56 @@ fn log_fatal_error(msg: &str) {
         .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
 }
 
+/// Append `(key, value)` to the child-env list, replacing any earlier entry
+/// with the same key. The list is applied in order via `Command::env`
+/// (last-wins per key), so "pinned after inherited" is a property of the data,
+/// not of spawn-time ordering.
+fn push_env_var(env: &mut Vec<(String, String)>, key: &str, value: &str) {
+    env.retain(|(k, _)| k != key);
+    env.push((key.to_string(), value.to_string()));
+}
+
+/// Build the final environment for the Python API child process.
+///
+/// Inherited vars come first, then Niu-pinned overrides are appended
+/// (last-wins per key). The pins MUST stay after inheritance: a user-shell
+/// `PYTHONUTF8=0` or stale `PYTHONIOENCODING` must not win — and
+/// `PYTHONIOENCODING` takes precedence over UTF-8 mode, so inheriting it would
+/// silently re-tighten stdio error handling.
+fn build_api_env(inherited: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = inherited.into_iter().collect();
+    push_env_var(&mut env, "PYTHONUNBUFFERED", "1");
+    push_env_var(&mut env, "LITELLM_LOCAL_MODEL_COST_MAP", "True");
+    push_env_var(&mut env, "LITELLM_NO_AIOHTTP_TRANSPORT", "True");
+    // Process-wide UTF-8 mode: Python's default text encoding follows the
+    // process locale (Windows = ANSI code page) → pin to UTF-8 regardless of
+    // host locale. `:replace` keeps stdio non-fatal; bare `utf-8` would
+    // tighten errors to strict.
+    push_env_var(&mut env, "PYTHONUTF8", "1");
+    push_env_var(&mut env, "PYTHONIOENCODING", "utf-8:replace");
+    env
+}
+
+/// Read `reader` line by line, forwarding each valid UTF-8 line to `sink`.
+///
+/// `BufRead::lines()` returns `Err(InvalidData)` for a non-UTF-8 line (the
+/// whole line is already consumed on error). Skipping such a line keeps the
+/// drain alive — otherwise the thread exits, the pipe fills, and the child
+/// blocks on write (API hangs silently). Any other IO error keeps the old
+/// semantics: stop draining.
+fn drain_lines<R: BufRead>(reader: R, mut sink: impl FnMut(&str)) {
+    for line in reader.lines() {
+        match line {
+            Ok(text) => sink(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                warn!("niu_api log line skipped (non-UTF-8 bytes): {}", e);
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // main — corresponds to Go's main()
 // ---------------------------------------------------------------------------
@@ -2166,15 +2216,11 @@ fn main() {
     let llm_config_failed = Arc::new(AtomicBool::new(false));
     let llm_config_failed_bg = llm_config_failed.clone();
 
-    // Build environment vars for Python API (computed on main thread for simplicity)
-    let mut env_vars: Vec<(String, String)> = Vec::new();
-    env_vars.push((
-        "NIU_API_PORT".to_string(),
-        args.port.to_string(),
-    ));
-    env_vars.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
-    env_vars.push(("LITELLM_LOCAL_MODEL_COST_MAP".to_string(), "True".to_string()));
-    env_vars.push(("LITELLM_NO_AIOHTTP_TRANSPORT".to_string(), "True".to_string()));
+    // Build environment vars for Python API (computed on main thread for simplicity).
+    // build_api_env merges the inherited env with Niu-pinned overrides — pins are
+    // appended AFTER inheritance so a user-shell PYTHONUTF8/PYTHONIOENCODING can't win.
+    let mut env_vars = build_api_env(env::vars());
+    push_env_var(&mut env_vars, "NIU_API_PORT", &args.port.to_string());
 
     if !workspace_path.is_empty() {
         if !PathBuf::from(&workspace_path).exists() {
@@ -2186,7 +2232,7 @@ fn main() {
         }
     }
     if !workspace_path.is_empty() {
-        env_vars.push(("WORKSPACE_PATH".to_string(), workspace_path.clone()));
+        push_env_var(&mut env_vars, "WORKSPACE_PATH", &workspace_path);
         info!("Setting WORKSPACE_PATH for Python API: {}", workspace_path);
     }
 
@@ -2217,12 +2263,10 @@ fn main() {
         #[cfg(windows)]
         api_server_cmd.creation_flags(0x08000000);
 
-        // Set environment: inherit current env first, then override with our vars
-        // IMPORTANT: env::vars() must come BEFORE PYTHONHOME, otherwise inherited
+        // Set environment: env_vars already carries the inherited env first and
+        // Niu-pinned overrides after (build_api_env). IMPORTANT: PYTHONHOME /
+        // PYTHONPATH below must stay AFTER this loop, otherwise an inherited
         // PYTHONHOME (e.g. from user shell) would override our bundle-internal path.
-        for (key, value) in env::vars() {
-            api_server_cmd.env(&key, &value);
-        }
         for (key, value) in &env_vars_bg {
             api_server_cmd.env(key, value);
         }
@@ -2258,46 +2302,36 @@ fn main() {
         // stdout thread
         if let Some(stdout) = api_server_child.stdout.take() {
             thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    match line {
-                        Ok(text) => info!("niu_api output: {}", text),
-                        Err(_) => break,
-                    }
-                }
+                drain_lines(BufReader::new(stdout), |text| {
+                    info!("niu_api output: {}", text)
+                });
             });
         }
 
         // stderr thread
         if let Some(stderr) = api_server_child.stderr.take() {
             thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    match line {
-                        Ok(line_text) => {
-                            // Filter tqdm progress bar lines (Batches:, \r lines)
-                            if line_text.starts_with("Batches:") || line_text.starts_with('\r') {
-                                continue;
-                            }
-                            // Skip lines that are only ANSI escape sequences (tqdm control chars)
-                            let stripped = line_text.replace('\x1b', "");
-                            if stripped.is_empty() {
-                                continue;
-                            }
-                            // Route log level based on Python logger markers
-                            if line_text.contains("| INFO") || line_text.contains("| DEBUG") {
-                                info!("niu_api stderr: {}", line_text);
-                            } else if line_text.contains("| WARNING") || line_text.contains("| WARN") || line_text.contains(":WARNING") || line_text.contains(":WARN") {
-                                warn!("niu_api stderr: {}", line_text);
-                            } else if line_text.contains("| ERROR") || line_text.contains("| CRITICAL") || line_text.contains("Error") || line_text.contains("Exception") || line_text.contains("Traceback") {
-                                error!("niu_api stderr: {}", line_text);
-                            } else {
-                                info!("niu_api stderr: {}", line_text);
-                            }
-                        }
-                        Err(_) => break,
+                drain_lines(BufReader::new(stderr), |line_text| {
+                    // Filter tqdm progress bar lines (Batches:, \r lines)
+                    if line_text.starts_with("Batches:") || line_text.starts_with('\r') {
+                        return;
                     }
-                }
+                    // Skip lines that are only ANSI escape sequences (tqdm control chars)
+                    let stripped = line_text.replace('\x1b', "");
+                    if stripped.is_empty() {
+                        return;
+                    }
+                    // Route log level based on Python logger markers
+                    if line_text.contains("| INFO") || line_text.contains("| DEBUG") {
+                        info!("niu_api stderr: {}", line_text);
+                    } else if line_text.contains("| WARNING") || line_text.contains("| WARN") || line_text.contains(":WARNING") || line_text.contains(":WARN") {
+                        warn!("niu_api stderr: {}", line_text);
+                    } else if line_text.contains("| ERROR") || line_text.contains("| CRITICAL") || line_text.contains("Error") || line_text.contains("Exception") || line_text.contains("Traceback") {
+                        error!("niu_api stderr: {}", line_text);
+                    } else {
+                        info!("niu_api stderr: {}", line_text);
+                    }
+                });
             });
         }
 
@@ -2992,5 +3026,75 @@ mod tests {
         bg.join().expect("bg thread join");
         // ⑥ within the 5s budget a later probe must observe ConnectionRefused.
         assert!(wait_for_port_free(port, Duration::from_secs(5)));
+    }
+
+    // ------------------------------------------------------------------
+    // UTF-8 unification T4: build_api_env (层 1) + drain_lines (层 4)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_build_api_env_pins_utf8_vars() {
+        let env = build_api_env(Vec::new());
+        assert!(
+            env.iter().any(|(k, v)| k == "PYTHONUTF8" && v == "1"),
+            "PYTHONUTF8=1 missing from pinned env: {:?}",
+            env
+        );
+        assert!(
+            env.iter().any(|(k, v)| k == "PYTHONIOENCODING" && v == "utf-8:replace"),
+            "PYTHONIOENCODING=utf-8:replace missing from pinned env: {:?}",
+            env
+        );
+    }
+
+    #[test]
+    fn test_build_api_env_overrides_inherited_pythonutf8() {
+        let inherited = vec![
+            ("A_CUSTOM_VAR".to_string(), "x".to_string()),
+            ("PYTHONUTF8".to_string(), "0".to_string()),
+            ("PYTHONIOENCODING".to_string(), "cp1252".to_string()),
+        ];
+        let env = build_api_env(inherited);
+        // Last-wins per key: exactly one PYTHONUTF8 entry, and it is our pin —
+        // the inherited 0 must not survive (order invariant).
+        let utf8: Vec<&(String, String)> = env
+            .iter()
+            .filter(|(k, _)| k == "PYTHONUTF8")
+            .collect();
+        assert_eq!(utf8.len(), 1);
+        assert_eq!(utf8[0].1, "1");
+        // Same for PYTHONIOENCODING: inherited cp1252 would re-tighten stdio.
+        let ioenc: Vec<&(String, String)> = env
+            .iter()
+            .filter(|(k, _)| k == "PYTHONIOENCODING")
+            .collect();
+        assert_eq!(ioenc.len(), 1);
+        assert_eq!(ioenc[0].1, "utf-8:replace");
+        // Inherited vars are preserved, and every pin lands AFTER them.
+        let custom_idx = env
+            .iter()
+            .position(|(k, _)| k == "A_CUSTOM_VAR")
+            .expect("inherited var dropped");
+        let utf8_idx = env
+            .iter()
+            .position(|(k, _)| k == "PYTHONUTF8")
+            .expect("pin missing");
+        assert!(utf8_idx > custom_idx);
+    }
+
+    #[test]
+    fn test_drain_lines_skips_invalid_utf8_line_and_continues() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"line one\n");
+        // Invalid UTF-8 line (0xFF is never valid): lines() reports InvalidData
+        // after consuming the whole line.
+        bytes.extend_from_slice(&[0xFF, 0xFE, b'x', b'\n']);
+        bytes.extend_from_slice(b"line three\n");
+        let reader = std::io::Cursor::new(bytes);
+        let mut seen: Vec<String> = Vec::new();
+        drain_lines(reader, |text| seen.push(text.to_string()));
+        // The line AFTER the bad one must still be delivered and the function
+        // must return normally (no early break).
+        assert_eq!(seen, vec!["line one".to_string(), "line three".to_string()]);
     }
 }
