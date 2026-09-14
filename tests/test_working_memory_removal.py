@@ -174,7 +174,7 @@ class TestHandlerNoAnchorPromptAsNextPrompt:
         result = subprocess.run(
             ["grep", "-c", "next_prompt=self._get_anchor_prompt()",
              HANDLER_PATH],
-            capture_output=True, text=True
+            capture_output=True, text=True, encoding="utf-8"
         )
         count = int(result.stdout.strip()) if result.stdout.strip() else 0
         assert count == 0, f"Found {count} uses of _get_anchor_prompt() as next_prompt"
@@ -199,7 +199,7 @@ class TestAllNextPromptsEmptyAfterRemoval:
     def test_no_non_empty_next_prompt_in_handler(self):
         result = subprocess.run(
             ["grep", "-E", "next_prompt=\"[^\"]+\"", HANDLER_PATH],
-            capture_output=True, text=True
+            capture_output=True, text=True, encoding="utf-8"
         )
         lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
         non_dispatch_lines = [line for line in lines if 'bad_json' not in line and '未知工具' not in line and 'Unknown tool' not in line]

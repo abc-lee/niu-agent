@@ -87,7 +87,7 @@ def test_api_starts_and_responds():
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=True, encoding="utf-8",
     )
 
     try:
@@ -144,7 +144,7 @@ def test_fifo_threshold_configured():
     """
     # 检查 runner.py 中是否传入了 context_fifo_threshold
     runner_path = os.path.join(PROJECT_ROOT, "agent", "runner.py")
-    with open(runner_path) as f:
+    with open(runner_path, encoding="utf-8") as f:
         content = f.read()
 
     # 检查是否有 context_fifo_threshold 参数传入

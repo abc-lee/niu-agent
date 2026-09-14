@@ -78,7 +78,7 @@ def test_other_subagents_still_injected_with_new_guide(tmp_path, monkeypatch):
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    (user_dir / "my-agent.md").write_text("---\ndescription: my agent\n---\nYou are my agent.")
+    (user_dir / "my-agent.md").write_text("---\ndescription: my agent\n---\nYou are my agent.", encoding="utf-8")
 
     project_dir = tmp_path / "project" / "config" / "agents"
     project_dir.mkdir(parents=True)

@@ -124,7 +124,7 @@ class TestTriggerCallbackBackgroundScript:
         # workspace = tmp_path, scripts/clean.py 存在
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        (scripts_dir / "clean.py").write_text("import os\nprint('', end='')\n")
+        (scripts_dir / "clean.py").write_text("import os\nprint('', end='')\n", encoding="utf-8")
 
         # get_db_path 返回 tmp_path 下，使 workspace=tmp_path
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
@@ -150,7 +150,7 @@ class TestTriggerCallbackBackgroundScript:
 
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        (scripts_dir / "clean.py").write_text("print('有垃圾')\n")
+        (scripts_dir / "clean.py").write_text("print('有垃圾')\n", encoding="utf-8")
 
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "有垃圾", "exit_code": 0})
@@ -181,7 +181,7 @@ class TestTriggerCallbackBackgroundScript:
 
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        (scripts_dir / "clean.py").write_text("raise Exception('boom')\n")
+        (scripts_dir / "clean.py").write_text("raise Exception('boom')\n", encoding="utf-8")
 
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "error", "stdout": "Traceback...boom", "exit_code": 1})
@@ -211,7 +211,7 @@ class TestTriggerCallbackBackgroundScript:
 
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        (scripts_dir / "clean.py").write_text("raise Exception('boom')\n")
+        (scripts_dir / "clean.py").write_text("raise Exception('boom')\n", encoding="utf-8")
 
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "error", "stdout": "Traceback", "exit_code": 1})
@@ -272,7 +272,7 @@ class TestTriggerCallbackBackgroundScript:
 
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        (scripts_dir / "clean.py").write_text("print('x'*5000)\n")
+        (scripts_dir / "clean.py").write_text("print('x'*5000)\n", encoding="utf-8")
 
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "x"*5000, "exit_code": 0})
@@ -304,7 +304,7 @@ class TestTriggerCallbackBackgroundScript:
 
         scripts_dir = tmp_path / "scripts"
         scripts_dir.mkdir()
-        (scripts_dir / "clean.py").write_text("print('有垃圾')\n")
+        (scripts_dir / "clean.py").write_text("print('有垃圾')\n", encoding="utf-8")
 
         monkeypatch.setattr(service, "get_db_path", lambda: str(tmp_path / "scheduled_tasks.db"))
         monkeypatch.setattr(service, "code_run", lambda *a, **kw: {"status": "success", "stdout": "有垃圾", "exit_code": 0})

@@ -206,7 +206,7 @@ class TestStatusFileIO:
         """Loading from corrupt file returns empty dict."""
         sync = RegionSync(sync_interval=86400)
         sync._status_file = tmp_path / "corrupt.json"
-        sync._status_file.write_text("not valid json{{{")
+        sync._status_file.write_text("not valid json{{{}", encoding="utf-8")
 
         loaded = sync._load_status()
         assert loaded == {}
@@ -351,7 +351,7 @@ def test_sync_loop_skips_first_sync_when_recently_synced(tmp_path):
     sync._status_file.write_text(json.dumps({
         "last_sync": recent_time,
         "stats": {"regions_created": 0},
-    }))
+    }), encoding="utf-8")
 
     run_sync_called = []
     sync.run_sync = mock.Mock(side_effect=lambda: run_sync_called.append(True))
@@ -387,7 +387,7 @@ def test_sync_loop_handles_future_last_sync(tmp_path):
     sync._status_file.write_text(json.dumps({
         "last_sync": future_time,
         "stats": {},
-    }))
+    }), encoding="utf-8")
 
     run_sync_called = []
     sync.run_sync = mock.Mock(side_effect=lambda: run_sync_called.append(True))

@@ -31,7 +31,7 @@ def test_first_run_true_includes_prompt(memory_file):
     memory_file.write_text(json.dumps({
         "identity": {"name": "妞妞"},
         "firstRun": True,
-    }))
+    }), encoding="utf-8")
     section = _load_memory_for_prompt()
     assert "## 首次使用" in section
     assert "工作目录想放在哪里" in section
@@ -42,7 +42,7 @@ def test_first_run_false_excludes_prompt(memory_file):
     memory_file.write_text(json.dumps({
         "identity": {"name": "妞妞"},
         "firstRun": False,
-    }))
+    }), encoding="utf-8")
     section = _load_memory_for_prompt()
     assert "## 首次使用" not in section
 
@@ -53,7 +53,7 @@ def test_first_run_removed_after_write(memory_file):
     memory_file.write_text(json.dumps({
         "identity": {"name": "妞妞"},
         "firstRun": True,
-    }))
+    }), encoding="utf-8")
     section1 = _load_memory_for_prompt()
     assert "## 首次使用" in section1
 
@@ -62,7 +62,7 @@ def test_first_run_removed_after_write(memory_file):
         "identity": {"name": "妞妞"},
         "workspace": {"path": "/Users/li/work"},
         "firstRun": False,
-    }))
+    }), encoding="utf-8")
     section2 = _load_memory_for_prompt()
     assert "## 首次使用" not in section2
     assert "/Users/li/work" in section2  # 工作目录段出现
@@ -79,7 +79,7 @@ def test_user_fields_placeholder_to_real(memory_file):
             "occupation": "请询问用户职业",
             "organization": "请询问用户工作单位",
         },
-    }))
+    }), encoding="utf-8")
     section1 = _load_memory_for_prompt()
     assert "## 用户信息" not in section1  # 占位符不出现
 
@@ -92,7 +92,7 @@ def test_user_fields_placeholder_to_real(memory_file):
             "occupation": "软件工程师",
             "organization": "ACME",
         },
-    }))
+    }), encoding="utf-8")
     section2 = _load_memory_for_prompt()
     assert "## 用户信息" in section2
     assert "李雷" in section2
@@ -104,7 +104,7 @@ def test_permanent_updates_reflect_immediately(memory_file):
     memory_file.write_text(json.dumps({
         "identity": {"name": "妞妞"},
         "permanent": [],
-    }))
+    }), encoding="utf-8")
     section1 = _load_memory_for_prompt()
     # 空 permanent 应该没有 section 或显示 0 条
     assert "先做后说" not in section1
@@ -114,7 +114,7 @@ def test_permanent_updates_reflect_immediately(memory_file):
         "permanent": [
             {"type": "memory", "content": "座右铭：先做后说"}
         ],
-    }))
+    }), encoding="utf-8")
     section2 = _load_memory_for_prompt()
     assert "先做后说" in section2
 
@@ -132,7 +132,7 @@ def test_workspace_placeholder_not_shown(memory_file):
     memory_file.write_text(json.dumps({
         "identity": {"name": "妞妞"},
         "workspace": {"path": "请询问用户指定工作目录"},
-    }))
+    }), encoding="utf-8")
     section = _load_memory_for_prompt()
     assert "## 工作目录" not in section
 
@@ -142,7 +142,7 @@ def test_workspace_real_path_shown(memory_file):
     memory_file.write_text(json.dumps({
         "identity": {"name": "妞妞"},
         "workspace": {"path": "/Users/li/knowledge"},
-    }))
+    }), encoding="utf-8")
     section = _load_memory_for_prompt()
     assert "## 工作目录" in section
     assert "/Users/li/knowledge" in section
@@ -156,7 +156,7 @@ def test_integration_second_turn_reflects_write(memory_file, monkeypatch):
     memory_file.write_text(json.dumps({
         "identity": {"name": "妞妞"},
         "firstRun": True,
-    }))
+    }), encoding="utf-8")
 
     # 用 __new__ 绕过 __init__（避免真实 ~/.niu 副作用 + LightRAG 初始化）
     runner = NiuRunner.__new__(NiuRunner)
@@ -184,7 +184,7 @@ def test_integration_second_turn_reflects_write(memory_file, monkeypatch):
         "identity": {"name": "妞妞"},
         "workspace": {"path": "/Users/li/work"},
         "firstRun": False,
-    }))
+    }), encoding="utf-8")
 
     # 第 2 轮：firstRun=false，memory_section 不应包含"## 首次使用"
     messages2 = [{"role": "system", "content": ""}, {"role": "user", "content": "next"}]

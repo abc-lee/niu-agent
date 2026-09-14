@@ -57,16 +57,16 @@ def _make_storage_with_zombie_cache(tmp_path: Path):  # pyright: ignore[reportUn
         },
     }
     (tmp_path / "kv_store_llm_response_cache.json").write_text(
-        json.dumps(cache, ensure_ascii=False)
+        json.dumps(cache, ensure_ascii=False), encoding="utf-8"
     )
 
     for fname in ["kv_store_full_docs.json", "kv_store_text_chunks.json",
                   "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
                   "kv_store_full_entities.json", "kv_store_full_relations.json",
                   "kv_store_doc_status.json"]:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
     for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
-        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
+        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}', encoding="utf-8")
 
 
 def test_check_all_vdb_missing_but_graphml_intact_returns_major(tmp_path, monkeypatch):
@@ -74,8 +74,8 @@ def test_check_all_vdb_missing_but_graphml_intact_returns_major(tmp_path, monkey
     # 2 真相源完好
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
 
     # GraphML 完好（有 node）
     ns = "http://graphml.graphdrawing.org/xmlns"
@@ -107,8 +107,8 @@ def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
     """3 真相源 + 9 派生文件全部完好 → ok=True（v4 简化后派生文件按 missing 粒度检测）。"""
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
 
     # GraphML（有 node）
     ns = "http://graphml.graphdrawing.org/xmlns"
@@ -135,14 +135,14 @@ def test_check_all_truth_sources_intact_returns_ok(tmp_path, monkeypatch):
     ]
     vdb_e = {"data": [{"__id__": "ent-test-entity", "entity_name": "test-entity", "vector": "AAAAAA=="}],
              "file_hash": "fake", "embedding_dim": 8}
-    (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e, ensure_ascii=False))
+    (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e, ensure_ascii=False), encoding="utf-8")
     for fname in _derived_files_list:
         if fname == "vdb_entities.json":
             continue
         if fname.startswith("vdb_"):
-            (tmp_path / fname).write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False))
+            (tmp_path / fname).write_text(json.dumps({"data": [], "embedding_dim": 8, "matrix": ""}, ensure_ascii=False), encoding="utf-8")
         else:
-            (tmp_path / fname).write_text("{}")
+            (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
@@ -163,9 +163,9 @@ def test_get_lightrag_status_total_errors_correct(tmp_path, monkeypatch):
     # 准备损坏现场：GraphML 有 node 但 vdb_entities 不存在（major：数据一致性真损坏）
     # v2 检测逻辑：3 真相源缺失视为全新用户合法（不报 critical），
     # 真损坏由 _check_vdb_missing 检测（GraphML 有 node 但 vdb 缺向量）。
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")  # 空 dict（全新用户合法）
+    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")  # 空 dict（全新用户合法）
     (tmp_path / "kv_store_llm_response_cache.json").write_text(
-        json.dumps({"x": {"return": "y", "cache_type": "extract", "chunk_id": "chunk-x"}}, ensure_ascii=False)
+        json.dumps({"x": {"return": "y", "cache_type": "extract", "chunk_id": "chunk-x"}}, ensure_ascii=False), encoding="utf-8"
     )
     # 写 GraphML（有 node）+ 不写 vdb_entities → _check_vdb_missing 报 major
     _write_graphml(tmp_path, [("test-entity", "desc", "chunk-x")])
@@ -206,8 +206,8 @@ def test_run_repair_on_user_request_repaired_based_on_unrecoverable_flag(tmp_pat
     # 准备真相源（最小合法存储，repair_all 能成功重建）
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
 
     monkeypatch.setattr(lightrag_manager, "_integrity_result", None)
     monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
@@ -250,8 +250,8 @@ def test_run_repair_on_user_request_repaired_true_when_unrecoverable_false_but_c
     # 准备真相源（最小合法存储）
     docs = {"doc-x": {"content": "test", "file_path": "x.md"}}
     cache = {"default:extract:k1": {"return": "entity", "cache_type": "extract", "chunk_id": "chunk-x"}}
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
 
     monkeypatch.setattr(lightrag_manager, "_integrity_result", None)
     monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
@@ -334,7 +334,7 @@ def test_check_vdb_missing_uses_sorted_pair(tmp_path, monkeypatch):
     <edge source="zebra" target="apple"/>
   </graph>
 </graphml>'''
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text(graphml_content)
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text(graphml_content, encoding="utf-8")
 
     # 构造 vdb_relationships：1 条向量，src_id/tgt_id 用 sorted（跟 repair 一致）
     vdb_r = {
@@ -342,7 +342,7 @@ def test_check_vdb_missing_uses_sorted_pair(tmp_path, monkeypatch):
         "data": [{"__id__": "r1", "src_id": "apple", "tgt_id": "zebra", "content": "test"}],
         "matrix": ""
     }
-    (tmp_path / "vdb_relationships.json").write_text(json.dumps(vdb_r))
+    (tmp_path / "vdb_relationships.json").write_text(json.dumps(vdb_r), encoding="utf-8")
 
     # 构造 vdb_entities：2 个向量（覆盖 2 个 node）
     vdb_e = {
@@ -353,7 +353,7 @@ def test_check_vdb_missing_uses_sorted_pair(tmp_path, monkeypatch):
         ],
         "matrix": ""
     }
-    (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e))
+    (tmp_path / "vdb_entities.json").write_text(json.dumps(vdb_e), encoding="utf-8")
 
     errors = lightrag_integrity._check_vdb_missing(tmp_path)
 
@@ -375,8 +375,8 @@ def test_check_vdb_missing_uses_sorted_pair(tmp_path, monkeypatch):
 def test_check_truth_sources_intact_all_intact(tmp_path, monkeypatch):
     """3 真相源全部完好时返回 intact=True。"""
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
-    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}')
+    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}', encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}', encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
@@ -391,9 +391,9 @@ def test_check_truth_sources_intact_all_intact(tmp_path, monkeypatch):
 
 def test_check_truth_sources_intact_graphml_corrupt(tmp_path, monkeypatch):
     """GraphML 损坏时返回 intact=False + graphml.intact=False。"""
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt <<<")
-    (tmp_path / "kv_store_full_docs.json").write_text('{}')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt <<<", encoding="utf-8")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}', encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}', encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
@@ -407,8 +407,8 @@ def test_check_truth_sources_intact_graphml_corrupt(tmp_path, monkeypatch):
 def test_check_truth_sources_intact_full_docs_corrupt(tmp_path, monkeypatch):
     """full_docs 损坏时返回 intact=False + full_docs.intact=False。"""
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
-    (tmp_path / "kv_store_full_docs.json").write_text("corrupt")
-    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt", encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}', encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
@@ -422,8 +422,8 @@ def test_check_truth_sources_intact_full_docs_corrupt(tmp_path, monkeypatch):
 def test_check_truth_sources_intact_cache_corrupt(tmp_path, monkeypatch):
     """cache 损坏时返回 intact=False + cache.intact=False。"""
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
-    (tmp_path / "kv_store_full_docs.json").write_text('{}')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}', encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
@@ -507,7 +507,7 @@ def _make_synthetic_fixture(tmp_path: Path):
         "doc-v1": {"content": doc_v1_content, "file_path": "v1.md", "create_time": 1000},
         "doc-v2": {"content": doc_v2_content, "file_path": "v2.md", "create_time": 2000},
     }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
 
     # cache：5 条 extract entry（含 1 个已删实体的脏 entry + 1 个旧版本 chunk 的 entry）
     cache = {
@@ -534,15 +534,15 @@ def _make_synthetic_fixture(tmp_path: Path):
             "return": "summary", "cache_type": "summary", "chunk_id": None, "create_time": 1700,
         },
     }
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
 
     # 9 个派生文件初始为空（repair_all 会重建）
     for fname in ["kv_store_text_chunks.json", "kv_store_doc_status.json",
                   "kv_store_entity_chunks.json", "kv_store_relation_chunks.json",
                   "kv_store_full_entities.json", "kv_store_full_relations.json"]:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
     for fname in ["vdb_chunks.json", "vdb_entities.json", "vdb_relationships.json"]:
-        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}')
+        (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0, "matrix": ""}', encoding="utf-8")
 
 
 # ============================================================
@@ -567,8 +567,8 @@ def _write_intact_truth_sources(tmp_path: Path):
     """写 3 真相源（全部完好）。"""
     # GraphML：1 个实体
     _write_graphml(tmp_path, [("entity-x", "desc X", "chunk-x")])
-    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}')
+    (tmp_path / "kv_store_full_docs.json").write_text('{"doc-1": {"content": "x"}}', encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{"k": {"return": "x"}}', encoding="utf-8")
 
 
 def test_check_all_3_truth_sources_all_intact(tmp_path, monkeypatch):
@@ -577,16 +577,16 @@ def test_check_all_3_truth_sources_all_intact(tmp_path, monkeypatch):
     # GraphML 有 node "entity-x"（_write_intact_truth_sources 写的）
     # vdb_entities.json 必须含该 node 对应向量，否则 _check_vdb_missing 报 major
     (tmp_path / "vdb_entities.json").write_text(
-        json.dumps({"data": [{"entity_name": "entity-x"}], "embedding_dim": 0}, ensure_ascii=False)
+        json.dumps({"data": [{"entity_name": "entity-x"}], "embedding_dim": 0}, ensure_ascii=False), encoding="utf-8"
     )
     # 其他派生文件：vdb_chunks/vdb_relationships 无对应 GraphML edge → 空 vdb 不报错
     for fname in _DERIVED_FILES_FOR_TEST:
         if fname == "vdb_entities.json":
             continue  # 上面已写
         if fname.startswith("vdb_"):
-            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}', encoding="utf-8")
         else:
-            (tmp_path / fname).write_text("{}")
+            (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
@@ -601,11 +601,11 @@ def test_check_all_3_truth_sources_all_intact(tmp_path, monkeypatch):
 
 def test_check_all_graphml_corrupt_is_critical(tmp_path, monkeypatch):
     """GraphML 损坏 → critical_errors=1 + ok=False。"""
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
-    (tmp_path / "kv_store_full_docs.json").write_text('{}')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<", encoding="utf-8")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}', encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}', encoding="utf-8")
     for fname in _DERIVED_FILES_FOR_TEST:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
@@ -624,9 +624,9 @@ def test_check_all_full_docs_corrupt_is_critical(tmp_path, monkeypatch):
     """full_docs 损坏（非 dict JSON）→ critical_errors>=1。"""
     _write_intact_truth_sources(tmp_path)
     # 覆盖 full_docs 为损坏
-    (tmp_path / "kv_store_full_docs.json").write_text("corrupt not json")
+    (tmp_path / "kv_store_full_docs.json").write_text("corrupt not json", encoding="utf-8")
     for fname in _DERIVED_FILES_FOR_TEST:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
@@ -642,9 +642,9 @@ def test_check_all_full_docs_corrupt_is_critical(tmp_path, monkeypatch):
 def test_check_all_cache_corrupt_is_critical(tmp_path, monkeypatch):
     """cache 损坏（非 dict JSON）→ critical_errors>=1。"""
     _write_intact_truth_sources(tmp_path)
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt not json")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("corrupt not json", encoding="utf-8")
     for fname in _DERIVED_FILES_FOR_TEST:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
@@ -675,9 +675,9 @@ def test_check_all_kvstore_derived_missing_is_not_major(tmp_path, monkeypatch):
         if fname == "vdb_entities.json":
             continue  # 故意不写
         if fname.startswith("vdb_"):
-            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}', encoding="utf-8")
         else:
-            (tmp_path / fname).write_text("{}")
+            (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
 
@@ -758,9 +758,9 @@ def test_get_lightrag_status_returns_3_severity_fields(tmp_path, monkeypatch):
     _write_intact_truth_sources(tmp_path)
     for fname in _DERIVED_FILES_FOR_TEST:
         if fname.startswith("vdb_"):
-            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}')
+            (tmp_path / fname).write_text('{"data": [], "embedding_dim": 0}', encoding="utf-8")
         else:
-            (tmp_path / fname).write_text("{}")
+            (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
@@ -799,7 +799,7 @@ def test_run_repair_on_user_request_repaired_true_on_success(tmp_path, monkeypat
     """repair_all 成功（无 _unrecoverable）→ repaired=True。"""
     _write_intact_truth_sources(tmp_path)
     for fname in _DERIVED_FILES_FOR_TEST:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
@@ -834,7 +834,7 @@ def test_run_repair_on_user_request_repaired_false_on_unrecoverable(tmp_path, mo
     """repair_all 返回 _unrecoverable=True → repaired=False。"""
     _write_intact_truth_sources(tmp_path)
     for fname in _DERIVED_FILES_FOR_TEST:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
@@ -869,7 +869,7 @@ def test_run_repair_on_user_request_repaired_false_on_step_error(tmp_path, monke
     """
     _write_intact_truth_sources(tmp_path)
     for fname in _DERIVED_FILES_FOR_TEST:
-        (tmp_path / fname).write_text("{}")
+        (tmp_path / fname).write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_manager.STORAGE_DIR", tmp_path)
@@ -1127,7 +1127,7 @@ def test_repair_text_chunks_cache_original_prompt_priority(tmp_path, monkeypatch
     _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", "chunk-active")])
 
     # text_chunks 为空（强制走 cache 提取路径）
-    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}", encoding="utf-8")
 
     # cache：1 个 extract entry，chunk_id=chunk-active，original_prompt 含 chunk 原文
     cache = {
@@ -1139,10 +1139,10 @@ def test_repair_text_chunks_cache_original_prompt_priority(tmp_path, monkeypatch
             "create_time": 1781930000,
         }
     }
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache), encoding="utf-8")
 
     # full_docs 空（验证 cache 优先于 full_docs）
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1155,7 +1155,7 @@ def test_repair_text_chunks_cache_original_prompt_priority(tmp_path, monkeypatch
     assert result["actual"] == 1
     assert result["lost"] == 0
 
-    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
     assert "chunk-active" in tc_after
     assert tc_after["chunk-active"]["content"] == chunk_content
     # llm_cache_list 应包含 cache_key
@@ -1168,8 +1168,8 @@ def test_repair_text_chunks_cache_multiple_entries_take_latest_create_time(tmp_p
     chunk_v2 = "v2 chunk 原文"
     _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", "chunk-active")])
 
-    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
 
     cache = {
         "cache-key-old": {
@@ -1187,7 +1187,7 @@ def test_repair_text_chunks_cache_multiple_entries_take_latest_create_time(tmp_p
             "create_time": 1781930999,  # 更大
         },
     }
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache))
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1197,7 +1197,7 @@ def test_repair_text_chunks_cache_multiple_entries_take_latest_create_time(tmp_p
     result = asyncio.run(repair_text_chunks())
 
     assert result["status"] == "ok"
-    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
     # 应取 create_time=1781930999 的 entry（v2）
     assert tc_after["chunk-active"]["content"] == chunk_v2
 
@@ -1211,9 +1211,9 @@ def test_repair_text_chunks_full_docs_fallback_when_cache_miss(tmp_path, monkeyp
 
     _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", expected_chunk_id)])
 
-    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}", encoding="utf-8")
     # cache 空（强制走 full_docs fallback）
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     # full_docs：1 个 doc，content 经 chunking 后产生 expected_chunk_id
     docs = {
@@ -1223,7 +1223,7 @@ def test_repair_text_chunks_full_docs_fallback_when_cache_miss(tmp_path, monkeyp
             "create_time": 1781930000,
         }
     }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1234,7 +1234,7 @@ def test_repair_text_chunks_full_docs_fallback_when_cache_miss(tmp_path, monkeyp
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["lost"] == 0
-    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
     assert expected_chunk_id in tc_after
     assert tc_after[expected_chunk_id]["content"] == chunk_content
     assert tc_after[expected_chunk_id]["full_doc_id"] == "doc-1"
@@ -1247,9 +1247,9 @@ def test_repair_text_chunks_brainregion_direct_construction(tmp_path, monkeypatc
         ("文档库脑区", "brainregion", brain_desc, "chunk-brain-1"),
     ])
 
-    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")  # 脑区不在 full_docs
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")  # 脑区也不在 cache
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")  # 脑区不在 full_docs
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")  # 脑区也不在 cache
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1260,7 +1260,7 @@ def test_repair_text_chunks_brainregion_direct_construction(tmp_path, monkeypatc
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["lost"] == 0
-    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
     assert "chunk-brain-1" in tc_after
     # content = "文档库脑区: {d2 description}"
     assert tc_after["chunk-brain-1"]["content"] == f"文档库脑区: {brain_desc}"
@@ -1274,9 +1274,9 @@ def test_repair_text_chunks_missing_when_three_sources_all_miss(tmp_path, monkey
         ("entity-x", "person", "desc X", "chunk-not-found-anywhere"),
     ])
 
-    (tmp_path / "kv_store_text_chunks.json").write_text("{}")
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_path / "kv_store_text_chunks.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1346,7 +1346,7 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     )
 
     # 验证 text_chunks 内容非空（每个 chunk content 必须有真实原文，不是空串）
-    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
     empty_content = [cid for cid, v in tc.items() if not v.get("content", "").strip()]
     assert not empty_content, f"以下 chunk content 为空: {empty_content[:5]}"
 
@@ -1397,11 +1397,11 @@ async def test_repair_doc_status_brainregion_chunks_list_attached(tmp_path, monk
             "full_doc_id": "brain_文档库脑区",
             "llm_cache_list": [],
         }
-    }))
+    }), encoding="utf-8")
     # full_docs：1 个普通 doc（脑区不在 full_docs）
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
         "doc-1": {"content": "doc content", "file_path": "x.md"},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1413,7 +1413,7 @@ async def test_repair_doc_status_brainregion_chunks_list_attached(tmp_path, monk
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["expected"] == 1, f"expected 1 (full_docs 条数), got {result['expected']}"
     assert result["actual"] == 1
-    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text(encoding="utf-8"))
     # full_docs 只有 doc-1 → doc_status 只含 doc-1（brain_文档库脑区 不在 full_docs 不进 doc_status）
     assert "doc-1" in ds
     assert "brain_文档库脑区" not in ds, "脑区 full_doc_id 不应进 doc_status（不在 full_docs）"
@@ -1440,11 +1440,11 @@ async def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
             "llm_cache_list": [],
         }
     }
-    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc))
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc), encoding="utf-8")
     # full_docs：1 个 doc-1（应进 doc_status，但 chunks_list 为空）
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
         "doc-1": {"content": "doc1", "file_path": "1.md"},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1454,7 +1454,7 @@ async def test_repair_doc_status_skip_empty_full_doc_id(tmp_path, monkeypatch):
     result = await repair_doc_status()
 
     assert result["status"] == "ok"
-    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text(encoding="utf-8"))
     # doc_status 应有 doc-1 条目（来自 full_docs）
     assert "doc-1" in ds
     # 但 doc-1 的 chunks_list 应为空（chunk-active 的 full_doc_id 为空被跳过）
@@ -1478,11 +1478,11 @@ async def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatc
         "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-c": {"content": "c", "full_doc_id": "doc-2", "llm_cache_list": []},
     }
-    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc))
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps(tc), encoding="utf-8")
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
         "doc-1": {"content": "doc1", "file_path": "1.md"},
         "doc-2": {"content": "doc2", "file_path": "2.md"},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1493,7 +1493,7 @@ async def test_repair_doc_status_chunks_list_grouped_by_doc(tmp_path, monkeypatc
 
     assert result["status"] == "ok"
     assert result["actual"] == 2  # doc-1 + doc-2
-    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text(encoding="utf-8"))
     # chunks_list 按 full_doc_id 分组 + sorted
     assert set(ds["doc-1"]["chunks_list"]) == {"chunk-a", "chunk-b"}
     assert ds["doc-1"]["chunks_count"] == 2
@@ -1519,10 +1519,10 @@ async def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatc
 
     (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
         "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
-    }))
+    }), encoding="utf-8")
     (tmp_path / "kv_store_full_docs.json").write_text(json.dumps({
         "doc-1": {"content": "doc1", "file_path": "1.md"},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1532,7 +1532,7 @@ async def test_repair_doc_status_pending_when_graphml_empty(tmp_path, monkeypatc
     result = await repair_doc_status()
 
     assert result["status"] == "ok"
-    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text())
+    ds = json.loads((tmp_path / "kv_store_doc_status.json").read_text(encoding="utf-8"))
     # GraphML 无数据 → status=pending
     assert ds["doc-1"]["status"] == "pending"
 
@@ -1564,7 +1564,7 @@ async def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
     (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
         "chunk-a": {"content": "content a", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-deleted": {"content": "content deleted", "full_doc_id": "doc-1", "llm_cache_list": []},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1581,7 +1581,7 @@ async def test_repair_vdb_entities_only_graphml_nodes(tmp_path, monkeypatch):
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["expected"] == 1
     assert result["actual"] == 1
-    vdb_e = json.loads((tmp_path / "vdb_entities.json").read_text())
+    vdb_e = json.loads((tmp_path / "vdb_entities.json").read_text(encoding="utf-8"))
     # 只含 entity-active，不含已删实体（防复活）
     assert len(vdb_e.get("data", [])) == 1
     assert vdb_e["data"][0]["entity_name"] == "entity-active"
@@ -1609,7 +1609,7 @@ async def test_repair_vdb_relationships_no_weight_in_data(tmp_path, monkeypatch)
         "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-rel": {"content": "rel", "full_doc_id": "doc-1", "llm_cache_list": []},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1625,7 +1625,7 @@ async def test_repair_vdb_relationships_no_weight_in_data(tmp_path, monkeypatch)
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1
-    vdb_r = json.loads((tmp_path / "vdb_relationships.json").read_text())
+    vdb_r = json.loads((tmp_path / "vdb_relationships.json").read_text(encoding="utf-8"))
     for item in vdb_r.get("data", []):
         # 任何层级都不应有 weight 字段（v9 走 storage 接口，meta_fields 不含 weight）
         assert "weight" not in item, f"vdb_relationships item 不应含 weight: {item}"
@@ -1655,7 +1655,7 @@ async def test_repair_vdb_chunks_only_text_chunks(tmp_path, monkeypatch):
     # text_chunks 只含 chunk-active（chunk-orphan 已丢失）
     (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
         "chunk-active": {"content": "active content", "full_doc_id": "doc-1", "llm_cache_list": []},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1671,7 +1671,7 @@ async def test_repair_vdb_chunks_only_text_chunks(tmp_path, monkeypatch):
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1  # 只 chunk-active
-    vdb_c = json.loads((tmp_path / "vdb_chunks.json").read_text())
+    vdb_c = json.loads((tmp_path / "vdb_chunks.json").read_text(encoding="utf-8"))
     chunk_ids_in_vdb = [d.get("__id__", "") for d in vdb_c.get("data", [])]
     # 只含 chunk-active，不含 chunk-orphan（防孤儿）
     assert any("chunk-active" == cid for cid in chunk_ids_in_vdb) or len(chunk_ids_in_vdb) == 1
@@ -1703,7 +1703,7 @@ async def test_repair_entity_chunks_only_graphml_source(tmp_path, monkeypatch):
         "chunk-a": {"content": "a", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-deleted": {"content": "deleted", "full_doc_id": "doc-1", "llm_cache_list": []},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1714,7 +1714,7 @@ async def test_repair_entity_chunks_only_graphml_source(tmp_path, monkeypatch):
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1  # 只 entity-active
-    ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text())
+    ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text(encoding="utf-8"))
     # v9 实现：value = {"chunk_ids": [...], "count": int, "_id": ..., "create_time": ..., "update_time": ...}
     assert "entity-active" in ec
     assert set(ec["entity-active"]["chunk_ids"]) == {"chunk-a", "chunk-b"}
@@ -1746,7 +1746,7 @@ async def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch)
         "chunk-b": {"content": "b", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-rel1": {"content": "r1", "full_doc_id": "doc-1", "llm_cache_list": []},
         "chunk-rel2": {"content": "r2", "full_doc_id": "doc-1", "llm_cache_list": []},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1759,7 +1759,7 @@ async def test_repair_relation_chunks_only_graphml_source(tmp_path, monkeypatch)
 
     assert result["status"] == "ok", f"expected ok, got {result}"
     assert result["actual"] == 1
-    rc = json.loads((tmp_path / "kv_store_relation_chunks.json").read_text())
+    rc = json.loads((tmp_path / "kv_store_relation_chunks.json").read_text(encoding="utf-8"))
     # edge 的 key 是 sorted((src, tgt)) join GRAPH_FIELD_SEP
     # entity-a, entity-b sorted 后还是 ("entity-a", "entity-b")
     expected_key = GRAPH_FIELD_SEP.join(sorted(("entity-a", "entity-b")))
@@ -1789,7 +1789,7 @@ async def test_repair_full_entities_reverse_mapping(tmp_path, monkeypatch):
     # doc_status 提供 chunk→doc 映射（chunk-a, chunk-b → doc-1）
     (tmp_path / "kv_store_doc_status.json").write_text(json.dumps({
         "doc-1": {"status": "processed", "chunks_list": ["chunk-a", "chunk-b"], "chunks_count": 2},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1799,7 +1799,7 @@ async def test_repair_full_entities_reverse_mapping(tmp_path, monkeypatch):
     result = await repair_full_entities()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
-    fe = json.loads((tmp_path / "kv_store_full_entities.json").read_text())
+    fe = json.loads((tmp_path / "kv_store_full_entities.json").read_text(encoding="utf-8"))
     # v8 LightRAG 原生格式：{doc_id: {"entity_names": [...], "count": N}}
     # entity-x 的 source_id 含 chunk-a, chunk-b 都映射到 doc-1 → doc-1: [entity-x]
     assert "doc-1" in fe
@@ -1826,7 +1826,7 @@ async def test_repair_full_relations_reverse_mapping(tmp_path, monkeypatch):
     # doc_status：chunk-rel → doc-1
     (tmp_path / "kv_store_doc_status.json").write_text(json.dumps({
         "doc-1": {"status": "processed", "chunks_list": ["chunk-rel"], "chunks_count": 1},
-    }))
+    }), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1836,7 +1836,7 @@ async def test_repair_full_relations_reverse_mapping(tmp_path, monkeypatch):
     result = await repair_full_relations()
 
     assert result["status"] == "ok", f"expected ok, got {result}"
-    fr = json.loads((tmp_path / "kv_store_full_relations.json").read_text())
+    fr = json.loads((tmp_path / "kv_store_full_relations.json").read_text(encoding="utf-8"))
     # v8 LightRAG 原生格式：{doc_id: {"relation_pairs": [[src, tgt], ...], "count": N}}
     # edge (entity-a, entity-b) source_id=chunk-rel → doc-1
     assert "doc-1" in fr
@@ -2105,8 +2105,8 @@ async def test_repair_text_chunks_empty_user(monkeypatch, tmp_path):
     # graphml 不创建（_load_graphml_nodes 把"文件不存在"当合法空 GraphML；
     # 不能写空字符串 ""，因为 ET.parse("") 会 ParseError → unrecoverable）
     # full_docs/cache 写空 dict（_check_truth_sources_intact 把空 dict 当 empty=合法）
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -2138,7 +2138,7 @@ async def test_repair_text_chunks_cache_corrupt_unrecoverable(monkeypatch, tmp_p
     _copy_truth_sources(tmp_storage, real_storage)
 
     # 破坏 cache（写非法 JSON）
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{不是合法JSON")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{不是合法JSON", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -2326,9 +2326,9 @@ async def test_repair_doc_status_empty_user(monkeypatch, tmp_path):
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
     # 全新用户合法状态：3 真相源全 absent/empty
-    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("")
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("", encoding="utf-8")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -2360,7 +2360,7 @@ async def test_repair_doc_status_full_docs_corrupt(monkeypatch, tmp_path):
     _copy_truth_sources(tmp_storage, real_storage)
 
     # 破坏 full_docs（写非法 JSON）
-    (tmp_storage / "kv_store_full_docs.json").write_text("{不是合法JSON")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{不是合法JSON", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -2520,9 +2520,9 @@ async def test_repair_vdb_chunks_empty_user(monkeypatch, tmp_path):
     tmp_storage = tmp_path / "lightrag_storage"
     tmp_storage.mkdir(parents=True, exist_ok=True)
     # 全新用户合法状态：3 真相源全 absent/empty
-    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("")
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("", encoding="utf-8")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -2880,8 +2880,8 @@ async def test_repair_vdb_entities_empty_user(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         empty_graphml, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -2953,8 +2953,8 @@ async def test_repair_vdb_entities_id_is_hash(monkeypatch, tmp_path):
         graphml_content, encoding="utf-8"
     )
     # 真相源其他文件保持空（repair_vdb_entities 只依赖 GraphML）
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -3034,8 +3034,8 @@ async def test_repair_vdb_entities_meta_fields_filter(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -3265,8 +3265,8 @@ async def test_repair_vdb_relationships_empty_user(monkeypatch, tmp_path):
         '</graphml>\n',
         encoding="utf-8",
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -3324,8 +3324,8 @@ async def test_repair_vdb_relationships_src_tgt_sorted(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -3391,8 +3391,8 @@ async def test_repair_vdb_relationships_keywords_dedup(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -3455,8 +3455,8 @@ async def test_repair_vdb_relationships_content_format(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -3531,8 +3531,8 @@ async def test_repair_vdb_relationships_meta_fields_filter(monkeypatch, tmp_path
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     fake_model = _FakeEmbedModel(dim=768)
     monkeypatch.setattr(niu_embedding, "get_model", lambda: fake_model)
@@ -3683,8 +3683,8 @@ async def test_repair_entity_chunks_empty_user(monkeypatch, tmp_path):
         '</graphml>\n',
         encoding="utf-8",
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -3732,8 +3732,8 @@ async def test_repair_entity_chunks_chunk_ids_is_list(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -3807,8 +3807,8 @@ async def test_repair_entity_chunks_count_field(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -3938,8 +3938,8 @@ async def test_repair_relation_chunks_empty_user(monkeypatch, tmp_path):
         '</graphml>\n',
         encoding="utf-8",
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -3998,8 +3998,8 @@ async def test_repair_relation_chunks_key_format(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -4084,8 +4084,8 @@ async def test_repair_relation_chunks_chunk_ids_is_list(monkeypatch, tmp_path):
     (tmp_storage / "graph_chunk_entity_relation.graphml").write_text(
         graphml_content, encoding="utf-8"
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -4232,8 +4232,8 @@ async def test_repair_full_entities_empty_user(monkeypatch, tmp_path):
         '</graphml>\n',
         encoding="utf-8",
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -4498,8 +4498,8 @@ async def test_repair_full_relations_empty_user(monkeypatch, tmp_path):
         '</graphml>\n',
         encoding="utf-8",
     )
-    (tmp_storage / "kv_store_full_docs.json").write_text("{}")
-    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_storage / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_storage / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -4741,7 +4741,7 @@ async def test_repair_full_entities_graphml_corrupt_unrecoverable(monkeypatch, t
     tmp_storage = tmp_path / "lightrag_storage"
     _copy_truth_sources(tmp_storage, real_storage)
 
-    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("<not valid xml")
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("<not valid xml", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -4764,7 +4764,7 @@ async def test_repair_full_relations_graphml_corrupt_unrecoverable(monkeypatch, 
     tmp_storage = tmp_path / "lightrag_storage"
     _copy_truth_sources(tmp_storage, real_storage)
 
-    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("<not valid xml")
+    (tmp_storage / "graph_chunk_entity_relation.graphml").write_text("<not valid xml", encoding="utf-8")
 
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(tmp_storage))
 
@@ -4834,8 +4834,8 @@ def test_repair_all_async_returns_flat_structure(tmp_path, monkeypatch):
             "create_time": 1,
         }
     }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
     # 写最小 GraphML（含 1 个 node，让 _check_truth_sources_intact 通过）
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
 
@@ -4965,12 +4965,12 @@ def test_repair_all_async_9_derived_files_rebuilt_via_storage(tmp_path, monkeypa
     # 9 派生文件全部存在 + 是 dict 格式
     for fname in _DERIVED_FILES_V9:
         assert (tmp_path / fname).exists(), f"{fname} 未被重建"
-        data = json.loads((tmp_path / fname).read_text())
+        data = json.loads((tmp_path / fname).read_text(encoding="utf-8"))
         assert isinstance(data, dict), f"{fname} 不是 dict"
 
     # 验证 storage 自动注入字段（v8 _atomic_write_json 不会注入这些字段）
     # 1. text_chunks: 每条 chunk 含 _id / create_time / update_time（JsonKVStorage 自动注入）
-    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text())
+    tc = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
     if tc:  # 全新用户可能为空
         for chunk_id, chunk_value in tc.items():
             assert "_id" in chunk_value, f"text_chunks 缺 _id（storage 没注入）: {chunk_id}"
@@ -4978,7 +4978,7 @@ def test_repair_all_async_9_derived_files_rebuilt_via_storage(tmp_path, monkeypa
             assert "update_time" in chunk_value, f"text_chunks 缺 update_time: {chunk_id}"
 
     # 2. vdb_chunks: 每条 chunk 含 __id__ / __created_at__ / vector（NanoVectorDBStorage 自动注入）
-    vdb_chunks = json.loads((tmp_path / "vdb_chunks.json").read_text())
+    vdb_chunks = json.loads((tmp_path / "vdb_chunks.json").read_text(encoding="utf-8"))
     if vdb_chunks.get("data"):
         for item in vdb_chunks["data"]:
             assert "__id__" in item, f"vdb_chunks 缺 __id__: {item}"
@@ -4986,14 +4986,14 @@ def test_repair_all_async_9_derived_files_rebuilt_via_storage(tmp_path, monkeypa
             assert "vector" in item, f"vdb_chunks 缺 vector: {item}"
 
     # 3. vdb_entities: 同上
-    vdb_entities = json.loads((tmp_path / "vdb_entities.json").read_text())
+    vdb_entities = json.loads((tmp_path / "vdb_entities.json").read_text(encoding="utf-8"))
     if vdb_entities.get("data"):
         for item in vdb_entities["data"]:
             assert "__id__" in item, f"vdb_entities 缺 __id__: {item}"
             assert "vector" in item, f"vdb_entities 缺 vector: {item}"
 
     # 4. entity_chunks: 每条含 _id / create_time / update_time
-    ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text())
+    ec = json.loads((tmp_path / "kv_store_entity_chunks.json").read_text(encoding="utf-8"))
     if ec:
         for entity_name, ec_value in ec.items():
             assert "_id" in ec_value, f"entity_chunks 缺 _id: {entity_name}"
@@ -5019,8 +5019,8 @@ def test_repair_all_async_breaks_on_unrecoverable(tmp_path, monkeypatch):
             "create_time": 1,
         }
     }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
@@ -5079,12 +5079,12 @@ def test_repair_all_async_no_rollback_on_unrecoverable(tmp_path, monkeypatch):
             "create_time": 1,
         }
     }
-    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False))
-    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False))
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
     _write_graphml(tmp_path, [("entity-x", "desc", "chunk-x")])
 
     # 预置派生文件（让 _deleted 能记录删除）
-    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "data"}')
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "data"}', encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -5151,10 +5151,10 @@ def test_repair_all_async_new_user_empty_dict_truth_sources_ok(tmp_path, monkeyp
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n'
         '  <graph id="G" edgedefault="undirected"></graph>\n'
-        '</graphml>\n'
+        '</graphml>\n', encoding="utf-8"
     )
-    (tmp_path / "kv_store_full_docs.json").write_text("{}")
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
+    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -5175,9 +5175,9 @@ def test_repair_all_async_unrecoverable_when_truth_source_broken(tmp_path, monke
     v9 验证 async 桥接下真相源损坏检测仍正常。
     """
     # full_docs 存在但 JSON 损坏
-    (tmp_path / "kv_store_full_docs.json").write_text('{"corrupt": this is not valid JSON')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}")
-    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}')
+    (tmp_path / "kv_store_full_docs.json").write_text('{"corrupt": this is not valid JSON', encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"old": "保留"}', encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -5187,15 +5187,15 @@ def test_repair_all_async_unrecoverable_when_truth_source_broken(tmp_path, monke
 
     assert result.get("_unrecoverable") is True
     # 不应删除任何文件（真相源损坏，没进到删除阶段）
-    assert (tmp_path / "kv_store_text_chunks.json").read_text() == '{"old": "保留"}'
+    assert (tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8") == '{"old": "保留"}'
 
 
 def test_repair_all_async_unrecoverable_when_graphml_corrupt(tmp_path, monkeypatch):
     """GraphML 损坏（XML 解析失败）→ unrecoverable，不删除任何派生文件。"""
-    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<")
-    (tmp_path / "kv_store_full_docs.json").write_text('{}')
-    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}')
-    (tmp_path / "kv_store_text_chunks.json").write_text('{"chunk-x": {}}')
+    (tmp_path / "graph_chunk_entity_relation.graphml").write_text("corrupt xml <<<", encoding="utf-8")
+    (tmp_path / "kv_store_full_docs.json").write_text('{}', encoding="utf-8")
+    (tmp_path / "kv_store_llm_response_cache.json").write_text('{}', encoding="utf-8")
+    (tmp_path / "kv_store_text_chunks.json").write_text('{"chunk-x": {}}', encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -5207,7 +5207,7 @@ def test_repair_all_async_unrecoverable_when_graphml_corrupt(tmp_path, monkeypat
     # 派生文件未被删除
     assert (tmp_path / "kv_store_text_chunks.json").exists()
     # 真相源未被修改
-    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text() == "corrupt xml <<<"
+    assert (tmp_path / "graph_chunk_entity_relation.graphml").read_text(encoding="utf-8") == "corrupt xml <<<"
 
 
 def test_repair_all_async_derived_metadata_diff(tmp_path, monkeypatch):
@@ -5270,8 +5270,8 @@ def test_repair_all_async_derived_metadata_diff(tmp_path, monkeypatch):
         if not native_path.exists():
             continue  # native 没有这个文件，跳过
 
-        repair_data = json.loads(repair_path.read_text())
-        native_data = json.loads(native_path.read_text())
+        repair_data = json.loads(repair_path.read_text(encoding="utf-8"))
+        native_data = json.loads(native_path.read_text(encoding="utf-8"))
 
         # 对比每个 key 的字段集合（忽略时间戳/embedding 字段）
         repair_keys = set(repair_data.keys()) if isinstance(repair_data, dict) else set()

@@ -506,7 +506,7 @@ def run_worker(f1_path: str, max_turns: int, tmp: Path) -> dict:
     log(f"[main] worker: {' '.join(cmd)}")
     proc = subprocess.Popen(
         cmd, env=env, stdout=subprocess.PIPE, stderr=None,  # stderr 直通显示每轮进度
-        text=True, bufsize=1,
+        text=True, encoding="utf-8", bufsize=1,
     )
     try:
         out, _ = proc.communicate(timeout=WORKER_TIMEOUT_S)
@@ -536,7 +536,7 @@ def run_rollback(storage_dir: Path) -> dict:
     env["PYTHONPATH"] = os.pathsep.join(pp)
     proc = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), "--_rollback"],
-        env=env, stdout=subprocess.PIPE, text=True, timeout=600,
+        env=env, stdout=subprocess.PIPE, text=True, encoding="utf-8", timeout=600,
     )
     lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
     if not lines:

@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 def llm_config():
     import json
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "user-config.json")
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
     llm = cfg.get("llm", {})
     return {

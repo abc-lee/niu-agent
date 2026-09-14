@@ -32,7 +32,7 @@ def config_dir(tmp_path):
                 "args": [],
             },
         },
-    }))
+    }), encoding="utf-8")
 
     (d / "memory-server.yaml").write_text(yaml.dump({
         "server": "memory-server", "directory": "memory", "description": "记忆系统",
@@ -46,7 +46,7 @@ def config_dir(tmp_path):
                 ],
             },
         },
-    }))
+    }), encoding="utf-8")
 
     return d
 

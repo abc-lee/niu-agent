@@ -60,7 +60,7 @@ def config(tmp_path):
                 ],
             },
         },
-    }))
+    }), encoding="utf-8")
     (config_dir / "memory-server.yaml").write_text(yaml.dump({
         "server": "memory-server", "directory": "memory", "description": "记忆",
         "tools": {
@@ -73,7 +73,7 @@ def config(tmp_path):
                 ],
             },
         },
-    }))
+    }), encoding="utf-8")
     return DiskConfig(str(config_dir))
 
 

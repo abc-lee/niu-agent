@@ -128,12 +128,12 @@ class TestCleanupOldTmp:
         from agent.tmp_dir import cleanup_old_tmp
         # 创建一个旧文件（修改时间设为2天前）
         old_file = tmp_dir_fixture / "old.txt"
-        old_file.write_text("old")
+        old_file.write_text("old", encoding="utf-8")
         old_time = time.time() - (2 * 24 * 3600)  # 2天前
         os.utime(old_file, (old_time, old_time))
         # 创建一个新文件
         new_file = tmp_dir_fixture / "new.txt"
-        new_file.write_text("new")
+        new_file.write_text("new", encoding="utf-8")
         deleted = cleanup_old_tmp()
         assert deleted == 1
         assert not old_file.exists()
@@ -146,7 +146,7 @@ class TestCleanupOldTmp:
         subdir = tmp_dir_fixture / "subdir"
         subdir.mkdir()
         old_file = subdir / "old_sub.txt"
-        old_file.write_text("old in subdir")
+        old_file.write_text("old in subdir", encoding="utf-8")
         old_time = time.time() - (2 * 24 * 3600)
         os.utime(old_file, (old_time, old_time))
         deleted = cleanup_old_tmp()
@@ -160,7 +160,7 @@ class TestCleanupOldTmp:
         deep_dir = tmp_dir_fixture / "a" / "b" / "c"
         deep_dir.mkdir(parents=True)
         old_file = deep_dir / "deep_old.txt"
-        old_file.write_text("deep old")
+        old_file.write_text("deep old", encoding="utf-8")
         old_time = time.time() - (2 * 24 * 3600)
         os.utime(old_file, (old_time, old_time))
         deleted = cleanup_old_tmp()
@@ -174,7 +174,7 @@ class TestCleanupOldTmp:
         subdir = tmp_dir_fixture / "empty_after_cleanup"
         subdir.mkdir()
         old_file = subdir / "old.txt"
-        old_file.write_text("old")
+        old_file.write_text("old", encoding="utf-8")
         old_time = time.time() - (2 * 24 * 3600)
         os.utime(old_file, (old_time, old_time))
         deleted = cleanup_old_tmp()
@@ -189,12 +189,12 @@ class TestCleanupOldTmp:
         subdir.mkdir()
         # 旧文件会被删除
         old_file = subdir / "old.txt"
-        old_file.write_text("old")
+        old_file.write_text("old", encoding="utf-8")
         old_time = time.time() - (2 * 24 * 3600)
         os.utime(old_file, (old_time, old_time))
         # 新文件保留
         new_file = subdir / "new.txt"
-        new_file.write_text("new")
+        new_file.write_text("new", encoding="utf-8")
         cleanup_old_tmp()
         assert subdir.exists(), "有新文件的目录不应被删除"
         assert new_file.exists()
@@ -203,7 +203,7 @@ class TestCleanupOldTmp:
         """24小时内的文件不被删除"""
         from agent.tmp_dir import cleanup_old_tmp
         recent_file = tmp_dir_fixture / "recent.txt"
-        recent_file.write_text("recent")
+        recent_file.write_text("recent", encoding="utf-8")
         deleted = cleanup_old_tmp()
         assert deleted == 0
         assert recent_file.exists()
@@ -220,7 +220,7 @@ class TestCleanupOldTmp:
         from agent.tmp_dir import cleanup_old_tmp
         # 23小时前的文件 — 不应删除
         recent_file = tmp_dir_fixture / "23h.txt"
-        recent_file.write_text("recent")
+        recent_file.write_text("recent", encoding="utf-8")
         recent_time = time.time() - (23 * 3600)
         os.utime(recent_file, (recent_time, recent_time))
         deleted = cleanup_old_tmp()
