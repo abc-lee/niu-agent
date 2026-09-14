@@ -79,6 +79,77 @@ pub enum PointerEvent {
 	},
 }
 
+/// Screensaver phase reported by [`Backend::session_ready`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreensaverState {
+	/// No screensaver was running.
+	None,
+	/// A screensaver was running and its dismissal was verified.
+	Dismissed,
+	/// A screensaver was running but could not be verified as dismissed.
+	DismissFailed,
+}
+
+impl ScreensaverState {
+	pub(crate) const fn as_str(self) -> &'static str {
+		match self {
+			Self::None => "none",
+			Self::Dismissed => "dismissed",
+			Self::DismissFailed => "dismiss_failed",
+		}
+	}
+}
+
+/// Display wake phase reported by [`Backend::session_ready`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayWakeState {
+	/// Displays were already available.
+	Awake,
+	/// Displays were unavailable and a wake was verified as effective.
+	Woken,
+	/// Displays were unavailable and a wake could not be verified as effective.
+	StillAsleep,
+}
+
+impl DisplayWakeState {
+	pub(crate) const fn as_str(self) -> &'static str {
+		match self {
+			Self::Awake => "awake",
+			Self::Woken => "woken",
+			Self::StillAsleep => "still_asleep",
+		}
+	}
+}
+
+/// Session lock state reported by [`Backend::session_ready`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLockState {
+	Unlocked,
+	Locked,
+	/// The lock state could not be determined; callers must treat this as
+	/// "not locked" (fail-open) — only [`Self::Locked`] triggers user-facing
+	/// unlock requests.
+	Unknown,
+}
+
+impl SessionLockState {
+	pub(crate) const fn as_str(self) -> &'static str {
+		match self {
+			Self::Unlocked => "false",
+			Self::Locked   => "true",
+			Self::Unknown  => "unknown",
+		}
+	}
+}
+
+/// Facts about the desktop session after a readiness pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionReadyState {
+	pub screensaver: ScreensaverState,
+	pub display:   DisplayWakeState,
+	pub locked:    SessionLockState,
+}
+
 pub trait Backend: Send {
 	fn capabilities(&mut self) -> DesktopCapabilities;
 	fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>>;
@@ -99,6 +170,11 @@ pub trait Backend: Send {
 	fn key_chord(&mut self, target: &Target, keys: &[KeyName], mode: DeliveryMode)
 	-> CoreResult<()>;
 	fn raise_window(&mut self, id: &str) -> CoreResult<()>;
+	/// Ensure the desktop session is ready for capture/input: dismiss a running
+	/// screensaver, wake an asleep display (bounded wait for effect), and report
+	/// the lock state. Never fails — it returns facts only; a real lock screen is
+	/// reported (`locked`), never bypassed.
+	fn session_ready(&mut self) -> SessionReadyState;
 	fn ax(&mut self) -> Option<&mut dyn AxBackend>;
 }
 

@@ -18,7 +18,7 @@ use std::{
 };
 
 use ax::{AxRegistry, register_node};
-use backend::{Backend, DeliveryMode, MouseButton, PointerEvent};
+use backend::{Backend, DeliveryMode, MouseButton, PointerEvent, SessionReadyState};
 use error::{CoreResult, DesktopError};
 use frame::{FrameGeometry, apply_capture_caps, encode_png};
 use keys::{parse_keys, parse_modifiers};
@@ -34,6 +34,7 @@ enum Response {
 	Displays(Vec<DesktopDisplay>),
 	Windows(Vec<DesktopWindow>),
 	Capture(DesktopCapture),
+	SessionReady(SessionReadyState),
 	Unit,
 	Snapshot(AxSnapshot),
 	Nodes(Vec<AxNode>),
@@ -104,6 +105,9 @@ enum Request {
 	},
 	RaiseWindow {
 		id:    String,
+		reply: Reply,
+	},
+	SessionReady {
 		reply: Reply,
 	},
 	AxSnapshot {
@@ -179,6 +183,7 @@ impl Request {
 			| Self::TypeText { reply, .. }
 			| Self::KeyChord { reply, .. }
 			| Self::RaiseWindow { reply, .. }
+			| Self::SessionReady { reply }
 			| Self::AxSnapshot { reply, .. }
 			| Self::AxQuery { reply, .. }
 			| Self::AxElementAt { reply, .. }
@@ -284,6 +289,116 @@ impl Worker {
 			.ok_or_else(DesktopError::ax_unsupported)
 	}
 
+	/// D-B: a capture failure may be caused by an inactive display (asleep or
+	/// headless). Only the *structured* "no active displays" verdict — display
+	/// enumeration failed or returned empty — triggers session readiness and
+	/// exactly one retry; unrelated failures (window gone, decode error, ...)
+	/// pass through untouched. The probe deliberately lives here rather than
+	/// inside `displays()` (self-recursion).
+	fn capture_with_readiness(
+		&mut self,
+		target: &Target,
+		caps: &CaptureCaps,
+		region: Option<CaptureRegion>,
+	) -> CoreResult<Response> {
+		let mut result = self.capture_once(target, caps, region);
+		if result.is_err() && !self.displays_available() {
+			// A broken backend also reads as "no displays" — in that case the
+			// original error stands (readiness cannot help).
+			if let Ok(backend) = self.backend() {
+				backend.session_ready();
+				result = self.capture_once(target, caps, region);
+			}
+		}
+		result
+	}
+
+	/// Structured "no active displays" probe (D-B): enumeration failure or an
+	/// empty list both mean the display side is down.
+	fn displays_available(&mut self) -> bool {
+		self
+			.backend()
+			.ok()
+			.and_then(|backend| backend.displays().ok())
+			.is_some_and(|displays| !displays.is_empty())
+	}
+
+	/// One capture attempt (no readiness logic — see `capture_with_readiness`).
+	fn capture_once(
+		&mut self,
+		target: &Target,
+		caps: &CaptureCaps,
+		region: Option<CaptureRegion>,
+	) -> CoreResult<Response> {
+		if region.is_some() && !matches!(target, Target::Desktop) {
+			return Err(DesktopError::invalid_target(
+				"capture region is only supported for the 'desktop' target (window captures \
+				 are always full-window)",
+			));
+		}
+		let (mut image, mut geometry) = self.backend()?.capture(target, caps)?;
+		if let Some(region) = region {
+			let (x, y, width, height) = geometry.crop_to_logical_region(&region)?;
+			image = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+		}
+		let source_width = image.width();
+		let source_height = image.height();
+		let image = apply_capture_caps(image, &mut geometry, caps)?;
+		let width = image.width();
+		let height = image.height();
+		let source = match target {
+			Target::Desktop => self.backend()?.displays()?,
+			Target::Window(_) => {
+				let w = self.window(target)?;
+				vec![DesktopDisplay {
+					id:           w.id,
+					name:         format!("{} — {}", w.app, w.title),
+					x:            w.x,
+					y:            w.y,
+					width:        w.width,
+					height:       w.height,
+					scale:        f64::from(width) / f64::from(w.width.max(1)),
+					pixel_x:      0,
+					pixel_y:      0,
+					pixel_width:  width,
+					pixel_height: height,
+					is_primary:   false,
+				}]
+			},
+		};
+		let displays = geometry.display_metadata(&source);
+		let png = encode_png(image)?;
+		let geometry_wire = geometry.to_wire();
+		// Frame semantics (fail-loud, 2026-09-13): pointer coordinates
+		// belong to the most recent *full* capture of this target. A
+		// region crop is a different viewport — its pixels are NOT valid
+		// pointer coordinates for the target. Keeping the old full frame
+		// after a crop would let a model feed crop pixels into input and
+		// silently click the wrong place, so the crop invalidates the
+		// stored frame: coordinate input fails with
+		// InvalidCoordinateFrame ("take a screenshot of this target
+		// first") until a fresh full capture is taken.
+		if region.is_some() {
+			self.frames.remove(target.key());
+		} else {
+			self.frames.insert(target.key().to_string(), geometry);
+		}
+		let capabilities = self.backend()?.capabilities();
+		*self.capabilities.lock() = capabilities.clone();
+		Ok(Response::Capture(DesktopCapture {
+			data: png,
+			width,
+			height,
+			source_width,
+			source_height,
+			target: target.key().to_string(),
+			displays,
+			backend: capabilities.backend,
+			display_server: capabilities.display_server,
+			geometry: geometry_wire,
+		}))
+	}
+
 	fn process(&mut self, request: &Request) -> CoreResult<Response> {
 		match request {
 			Request::Capabilities { .. } => {
@@ -294,77 +409,27 @@ impl Worker {
 				*self.capabilities.lock() = caps.clone();
 				Ok(Response::Capabilities(caps))
 			},
-			Request::ListDisplays { .. } => Ok(Response::Displays(self.backend()?.displays()?)),
+			Request::ListDisplays { .. } => {
+				let mut result = self.backend()?.displays();
+				// D-B: in this arm the call itself is the probe — an
+				// enumeration failure or an empty list both mean "no active
+				// displays" (same verdict as the Capture arm): ready the
+				// session, then retry exactly once.
+				let no_active_displays = match &result {
+					Err(_) => true,
+					Ok(displays) => displays.is_empty(),
+				};
+				if no_active_displays {
+					self.backend()?.session_ready();
+					result = self.backend()?.displays();
+				}
+				Ok(Response::Displays(result?))
+			},
 			Request::ListWindows { .. } => Ok(Response::Windows(self.backend()?.windows()?)),
 			Request::Capture { target, caps, region, .. } => {
-				if region.is_some() && !matches!(target, Target::Desktop) {
-					return Err(DesktopError::invalid_target(
-						"capture region is only supported for the 'desktop' target (window captures \
-						 are always full-window)",
-					));
-				}
-				let (mut image, mut geometry) = self.backend()?.capture(target, caps)?;
-				if let Some(region) = region {
-					let (x, y, width, height) = geometry.crop_to_logical_region(&region)?;
-					image = image::imageops::crop_imm(&image, x, y, width, height).to_image();
-				}
-				let source_width = image.width();
-				let source_height = image.height();
-				let image = apply_capture_caps(image, &mut geometry, caps)?;
-				let width = image.width();
-				let height = image.height();
-				let source = match target {
-					Target::Desktop => self.backend()?.displays()?,
-					Target::Window(_) => {
-						let w = self.window(target)?;
-						vec![DesktopDisplay {
-							id:           w.id,
-							name:         format!("{} — {}", w.app, w.title),
-							x:            w.x,
-							y:            w.y,
-							width:        w.width,
-							height:       w.height,
-							scale:        f64::from(width) / f64::from(w.width.max(1)),
-							pixel_x:      0,
-							pixel_y:      0,
-							pixel_width:  width,
-							pixel_height: height,
-							is_primary:   false,
-						}]
-					},
-				};
-				let displays = geometry.display_metadata(&source);
-				let png = encode_png(image)?;
-				let geometry_wire = geometry.to_wire();
-				// Frame semantics (fail-loud, 2026-09-13): pointer coordinates
-				// belong to the most recent *full* capture of this target. A
-				// region crop is a different viewport — its pixels are NOT valid
-				// pointer coordinates for the target. Keeping the old full frame
-				// after a crop would let a model feed crop pixels into input and
-				// silently click the wrong place, so the crop invalidates the
-				// stored frame: coordinate input fails with
-				// InvalidCoordinateFrame ("take a screenshot of this target
-				// first") until a fresh full capture is taken.
-				if region.is_some() {
-					self.frames.remove(target.key());
-				} else {
-					self.frames.insert(target.key().to_string(), geometry);
-				}
-				let capabilities = self.backend()?.capabilities();
-				*self.capabilities.lock() = capabilities.clone();
-				Ok(Response::Capture(DesktopCapture {
-					data: png,
-					width,
-					height,
-					source_width,
-					source_height,
-					target: target.key().to_string(),
-					displays,
-					backend: capabilities.backend,
-					display_server: capabilities.display_server,
-					geometry: geometry_wire,
-				}))
+				self.capture_with_readiness(target, caps, *region)
 			},
+			Request::SessionReady { .. } => Ok(Response::SessionReady(self.backend()?.session_ready())),
 			Request::Click { target, x, y, options, .. } => {
 				let (x, y, frame) = self.map_point(target, *x, *y)?;
 				self.backend()?.pointer(
@@ -897,6 +962,30 @@ impl DesktopSession {
 		Ok(dict.unbind())
 	}
 
+	/// Ensure the desktop session is ready for capture/input: dismiss a running
+	/// screensaver, wake an asleep display (bounded wait for effect), and report
+	/// the lock state. Never fails — it returns facts only; a real lock screen
+	/// is reported (`locked`), never bypassed.
+	///
+	/// Returns a dict: `{"screensaver": "none"|"dismissed"|"dismiss_failed",
+	/// "display": "awake"|"woken"|"still_asleep",
+	/// "locked": "false"|"true"|"unknown"}`. `"locked"` is `"unknown"` when the
+	/// state could not be determined — treat that as "not locked".
+	fn session_ready(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+		let core = Arc::clone(&self.core);
+		let result = py.detach(move || match core.call(|reply| Request::SessionReady { reply }) {
+			Ok(Response::SessionReady(state)) => Ok(state),
+			Ok(_) => Err(DesktopError::internal("unexpected response")),
+			Err(error) => Err(error),
+		});
+		let state = result?;
+		let dict = PyDict::new(py);
+		dict.set_item("screensaver", state.screensaver.as_str())?;
+		dict.set_item("display", state.display.as_str())?;
+		dict.set_item("locked", state.locked.as_str())?;
+		Ok(dict.unbind())
+	}
+
 	/// Map capture-frame pixel coordinates to global logical desktop
 	/// coordinates.
 	///
@@ -1239,16 +1328,39 @@ mod capture_tests {
 
 	const WAYLAND_ID: &str = "atspi::1.31:/org/a11y/atspi/accessible/1";
 
+	/// Call counters for D-B readiness-retry assertions (shared with tests).
+	#[derive(Clone, Default)]
+	struct FakeCounts {
+		capture:       u32,
+		displays:      u32,
+		session_ready: u32,
+	}
+
+	/// `displays()` behavior switch for the "no active displays" scenarios.
+	enum DisplaysMode {
+		Normal, // one display (default — existing tests)
+		Empty,  // Ok(vec![])
+		Failed, // Err(CaptureFailed)
+	}
+
 	/// Backend that mints a composite AT-SPI window id, mirroring the Wayland
 	/// `AtSpiAx` path, plus a plain 1x desktop display. Exists to exercise
 	/// `Worker::process` without a real display.
 	struct FakeWaylandBackend {
-		window:         DesktopWindow,
+		window:          DesktopWindow,
 		desktop_display: DesktopDisplay,
+		counts:          Arc<Mutex<FakeCounts>>,
+		displays_mode:   DisplaysMode,
+		/// When set, `capture()` fails with this error before anything else.
+		capture_error:   Option<DesktopError>,
 	}
 
 	impl FakeWaylandBackend {
 		fn new() -> Self {
+			Self::with_counts(Arc::new(Mutex::new(FakeCounts::default())))
+		}
+
+		fn with_counts(counts: Arc<Mutex<FakeCounts>>) -> Self {
 			Self {
 				window: DesktopWindow {
 					id:      WAYLAND_ID.to_string(),
@@ -1275,7 +1387,21 @@ mod capture_tests {
 					pixel_height: 300,
 					is_primary:   true,
 				},
+				counts,
+				displays_mode: DisplaysMode::Normal,
+				capture_error: None,
 			}
+		}
+
+		fn with_displays_mode(mut self, mode: DisplaysMode) -> Self {
+			self.displays_mode = mode;
+			self
+		}
+
+		/// Make `capture()` fail (display-down scenario).
+		fn failing_capture(mut self) -> Self {
+			self.capture_error = Some(DesktopError::capture_failed("fake display down"));
+			self
 		}
 	}
 
@@ -1290,7 +1416,12 @@ mod capture_tests {
 		}
 
 		fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>> {
-			Ok(vec![self.desktop_display.clone()])
+			self.counts.lock().displays += 1;
+			match self.displays_mode {
+				DisplaysMode::Normal => Ok(vec![self.desktop_display.clone()]),
+				DisplaysMode::Empty => Ok(Vec::new()),
+				DisplaysMode::Failed => Err(DesktopError::capture_failed("fake display down")),
+			}
 		}
 
 		fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>> {
@@ -1302,6 +1433,10 @@ mod capture_tests {
 			target: &Target,
 			_caps: &CaptureCaps,
 		) -> CoreResult<(RgbaImage, FrameGeometry)> {
+			self.counts.lock().capture += 1;
+			if let Some(error) = &self.capture_error {
+				return Err(error.clone());
+			}
 			match target {
 				Target::Window(id) if id == &self.window.id => {
 					let image = RgbaImage::new(self.window.width, self.window.height);
@@ -1340,6 +1475,15 @@ mod capture_tests {
 
 		fn raise_window(&mut self, _: &str) -> CoreResult<()> {
 			unreachable!("raise_window not exercised")
+		}
+
+		fn session_ready(&mut self) -> SessionReadyState {
+			self.counts.lock().session_ready += 1;
+			SessionReadyState {
+				screensaver: backend::ScreensaverState::None,
+				display:   backend::DisplayWakeState::Awake,
+				locked:    backend::SessionLockState::Unlocked,
+			}
 		}
 
 		fn ax(&mut self) -> Option<&mut dyn AxBackend> {
@@ -1573,5 +1717,79 @@ mod capture_tests {
 		assert_eq!((region.pixel_width, region.pixel_height), (400.0, 300.0));
 		assert_eq!(capture.displays.len(), 1);
 		assert_eq!(capture.displays[0].scale, 1.0);
+	}
+
+	/// D-B scenario 1 (Capture arm): an unrelated capture failure (window gone)
+	/// must NOT trigger session readiness — the probe succeeds with displays
+	/// present, so no wake is attempted and the original error passes through.
+	#[test]
+	fn capture_unrelated_failure_skips_session_ready() {
+		let counts = Arc::new(Mutex::new(FakeCounts::default()));
+		let mut worker = worker_with(FakeWaylandBackend::with_counts(counts.clone()));
+		let Err(err) = worker.process(&capture_request(Target::Window("does-not-exist".to_string())))
+		else {
+			panic!("unknown window id should fail");
+		};
+		assert_eq!(err.code, ErrorCode::WindowNotFound);
+		let counts = counts.lock().clone();
+		assert_eq!(counts.capture, 1);
+		assert_eq!(counts.session_ready, 0);
+	}
+
+	/// D-B scenario 2 (Capture arm): a "no active displays" verdict (displays()
+	/// returns empty) plus a failing capture -> exactly one readiness pass and
+	/// exactly one retry; the original error is returned.
+	#[test]
+	fn capture_no_active_display_triggers_readiness_retry() {
+		let counts = Arc::new(Mutex::new(FakeCounts::default()));
+		let mut worker = worker_with(
+			FakeWaylandBackend::with_counts(counts.clone())
+				.with_displays_mode(DisplaysMode::Empty)
+				.failing_capture(),
+		);
+		let Err(err) = worker.process(&capture_request(Target::Window(WAYLAND_ID.to_string()))) else {
+			panic!("failing capture should fail");
+		};
+		assert_eq!(err.code, ErrorCode::CaptureFailed);
+		let counts = counts.lock().clone();
+		assert_eq!(counts.session_ready, 1);
+		assert_eq!(counts.capture, 2); // original attempt + exactly one retry
+	}
+
+	/// D-B scenario 2 (ListDisplays arm): the call itself is the probe — any
+	/// enumeration failure means "no active displays": ready, then retry once.
+	#[test]
+	fn list_displays_failure_triggers_readiness_retry() {
+		let counts = Arc::new(Mutex::new(FakeCounts::default()));
+		let mut worker = worker_with(
+			FakeWaylandBackend::with_counts(counts.clone()).with_displays_mode(DisplaysMode::Failed),
+		);
+		let (reply, _rx) = flume::bounded(1);
+		let Err(err) = worker.process(&Request::ListDisplays { reply }) else {
+			panic!("failing displays should fail");
+		};
+		assert_eq!(err.code, ErrorCode::CaptureFailed);
+		let counts = counts.lock().clone();
+		assert_eq!(counts.session_ready, 1);
+		assert_eq!(counts.displays, 2); // original attempt + exactly one retry
+	}
+
+	/// D-B scenario 2 (ListDisplays arm): an empty enumeration is the same
+	/// "no active displays" verdict as a failure — ready once, retry once, and
+	/// the (still empty) list passes through.
+	#[test]
+	fn list_displays_empty_triggers_readiness_retry() {
+		let counts = Arc::new(Mutex::new(FakeCounts::default()));
+		let mut worker = worker_with(
+			FakeWaylandBackend::with_counts(counts.clone()).with_displays_mode(DisplaysMode::Empty),
+		);
+		let (reply, _rx) = flume::bounded(1);
+		let Ok(Response::Displays(displays)) = worker.process(&Request::ListDisplays { reply }) else {
+			panic!("empty displays should still succeed");
+		};
+		assert!(displays.is_empty());
+		let counts = counts.lock().clone();
+		assert_eq!(counts.session_ready, 1);
+		assert_eq!(counts.displays, 2); // original attempt + exactly one retry
 	}
 }
