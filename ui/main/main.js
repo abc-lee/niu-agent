@@ -62,7 +62,7 @@ const defaultConfig = {
   stickySize: 80,
   // 迷你模式（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md D7）
   // y = 构件底边的屏幕 y 坐标（底边锚定，恢复时 bottom=y、顶边=bottom−height）；无 height 键（手动高度不跨会话记忆）
-  chatMini: { x: null, y: null, width: 380, idleOpacity: 0.1, hoverOpacity: 0.3, maxHeightRatio: 0.5 },
+  chatMini: { x: null, y: null, width: 380, idleOpacity: 0.1, hoverOpacity: 0.3, idleContentOpacity: 0.35, maxHeightRatio: 0.5 },
 };
 
 // 加载配置
@@ -662,6 +662,7 @@ function getChatMiniConfig() {
     width: m.width ?? 380,
     idleOpacity: m.idleOpacity ?? 0.1,
     hoverOpacity: m.hoverOpacity ?? 0.3,
+    idleContentOpacity: m.idleContentOpacity ?? 0.35,
     maxHeightRatio: m.maxHeightRatio ?? 0.5,
   };
 }
