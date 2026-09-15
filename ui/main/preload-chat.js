@@ -21,6 +21,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 关闭聊天窗口
   close: () => ipcRenderer.send('close-chat'),
+
+  // 迷你模式（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md）
+  enterMiniMode: () => ipcRenderer.send('chat-mini-enter'),
+  exitMiniMode: () => ipcRenderer.send('chat-mini-exit'),
+  // 渲染端测量后上报内容高度 / 上沿拖拽调高（主进程底边锚定）
+  setMiniHeight: (height) => ipcRenderer.send('chat-mini-set-height', { height }),
+  getMiniConfig: () => ipcRenderer.invoke('chat-mini-get-config'),
   
   // 发送消息到后端
   sendMessage: (message, source) => ipcRenderer.invoke('send-message', message, source),

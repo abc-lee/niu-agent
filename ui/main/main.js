@@ -60,6 +60,9 @@ const defaultConfig = {
   chat: { x: null, y: null, width: 400, height: 500 },
   sticky: { x: null, y: null },
   stickySize: 80,
+  // 迷你模式（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md D7）
+  // y = 构件底边的屏幕 y 坐标（底边锚定，恢复时 bottom=y、顶边=bottom−height）；无 height 键（手动高度不跨会话记忆）
+  chatMini: { x: null, y: null, width: 380, idleOpacity: 0.1, hoverOpacity: 0.3, maxHeightRatio: 0.5 },
 };
 
 // 加载配置
@@ -126,6 +129,13 @@ function createSpiritWindow() {
   spiritWindow.loadFile(path.join(__dirname, 'windows', 'assistant', 'spirit.html'));
   spiritWindow.setBackgroundColor('#00000000');
 
+  // D8：小女孩常驻所有桌面空间（含全屏程序独占空间），保证任何桌面都能点到她。
+  // 仅 darwin（Windows 无空间概念）；skipTransformProcessType 必须带——该 API 默认每次调用做
+  // UIElement↔Foreground 进程类型转换并短暂隐藏窗口/Dock（与本仓 launcher TransformProcessType 敏感区相交）。
+  if (process.platform === 'darwin') {
+    spiritWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  }
+
   // 窗口显示时重新确保置顶状态（修复Electron sometimes loses alwaysOnTop state）
   spiritWindow.on('show', () => {
     if (spiritWindow && !spiritWindow.isDestroyed()) {
@@ -152,7 +162,25 @@ function createSpiritWindow() {
 // === Step 4: createChatWindow（来自 ui/assistant/main.js） ===
 function createChatWindow() {
   if (chatWindow && !chatWindow.isDestroyed()) {
-    chatWindow.show();
+    // 迷你模式跳过 D9 召回开关：迷你窗本就挂着全空间可见（I4），
+    // 若走开→关技巧会把该特权摘掉、迷你窗失去桌面空间跟随。直接 show/focus 即可。
+    if (miniActive) {
+      chatWindow.show();
+      chatWindow.focus();
+      return chatWindow;
+    }
+    // D9 候选 A 召回（仅 darwin）：窗口钉死在创建时的空间、不跟随当前空间——
+    // show/focus 前用 setVisibleOnAllWorkspaces 开→关开关技巧把窗口拽回当前活跃桌面。
+    // 所有调用（含 false 摘掉）一律带 skipTransformProcessType（见 D8 注释）。
+    // 已知限制：在原生全屏空间内召回时，摘掉后大窗结构性落不进该全屏空间，
+    // 会落在某个普通桌面、用户需手动切回可见（Electron 无程序化切空间 API；AC8 裁定候选 A/B）。
+    if (process.platform === 'darwin') {
+      chatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+      chatWindow.show();
+      chatWindow.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true });
+    } else {
+      chatWindow.show();
+    }
     chatWindow.focus();
     return chatWindow;
   }
@@ -180,6 +208,7 @@ function createChatWindow() {
     minWidth: 300,
     minHeight: 400,
     frame: false,
+    transparent: true,  // I3：透明仅创建期可定；正常模式仍为不透明棉纸底（setBackgroundColor('#faf8f0')），仅迷你模式切透明
     alwaysOnTop: false,  // 聊天窗口是普通窗口，不置顶
     resizable: true,
     skipTaskbar: true,
@@ -245,17 +274,30 @@ function createChatWindow() {
   });
 
   // 窗口移动时保存位置
+  // I2①：程序化 setBounds 抑制态（moved 经消息循环异步送达）命中不写盘；
+  // 抑制态被竞态提前清掉的漏网 moved 因 miniActive 已先翻转而写入正确侧，且值恰为 setBounds 目标值，无害。
   chatWindow.on('moved', () => {
     if (!chatWindow) return;
+    if (suppressBoundsWrite) return;
     const [posX, posY] = chatWindow.getPosition();
-    config.chat.x = posX;
-    config.chat.y = posY;
+    if (miniActive) {
+      // I10：迷你模式整窗移动（构件容器 app-region:drag 原生拖拽）写 chatMini；
+      // x 直接写，y 写底边值 = 窗口 top + height（D7 锚点语义：y = 构件底边的屏幕 y 坐标）
+      config.chatMini = config.chatMini || {};
+      config.chatMini.x = posX;
+      config.chatMini.y = posY + chatWindow.getSize()[1];
+    } else {
+      config.chat.x = posX;
+      config.chat.y = posY;
+    }
     saveConfig(config);
   });
 
   // 窗口大小变化时保存
   chatWindow.on('resized', () => {
     if (!chatWindow) return;
+    if (suppressBoundsWrite) return;  // I2①：程序化 setBounds 抑制态不写盘
+    if (miniActive) return;           // I2②：迷你模式 resized 一律不写盘（chatMini 无 height 键）
     const [w, h] = chatWindow.getSize();
     config.chat.width = w;
     config.chat.height = h;
@@ -265,6 +307,8 @@ function createChatWindow() {
   // 窗口显示/获得焦点时通知前端同步状态（如停止按钮的可见性）
   chatWindow.on('show', () => {
     if (chatWindow && !chatWindow.isDestroyed()) {
+      // R4：Electron 偶发丢 alwaysOnTop——show 钩子重设（spirit/sticky 同款先例），迷你模式期间恢复 floating 置顶
+      if (miniActive) chatWindow.setAlwaysOnTop(true, 'floating');
       chatWindow.webContents.send('sync-state');
     }
   });
@@ -276,6 +320,9 @@ function createChatWindow() {
 
   chatWindow.on('closed', () => {
     SubagentSSEManager.disconnectAll();  // 用户关闭窗口：断开所有子 Agent SSE 连接
+    miniActive = false;                 // 迷你态复位（D9：迷你中关闭=销毁，不记忆迷你态，再点小女孩重建为大窗）
+    miniBoundsSnapshot = null;
+    suppressBoundsWrite = false;
     chatWindow = null;
     // P2-3b：窗口在 ask_user 等待期间关闭（卡片已渲染后）——主 Agent 会一直阻塞 600s，
     // 回执 UNAVAILABLE 让 do_ask_user 走错误分支；无 pending ask 时端点返回 no pending ask，无害
@@ -589,6 +636,119 @@ ipcMain.on('close-chat', () => {
 
 ipcMain.on('open-chat', () => {
   createChatWindow();
+});
+
+// ========== Chat 迷你模式（2026-09-15） ==========
+// plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md（D1-D9 / I1-I10）
+// 同一 chatWindow 变形：enter=窗口级 API + 渲染端 body.mini；exit=还原。零重建、不重载页面（I1）。
+
+let miniActive = false;          // 模式标志：先于一切 setBounds 翻转（I2 判据），兜底吸收 moved 竞态
+let miniBoundsSnapshot = null;   // I1：enter 时大窗 bounds 内存快照；exit 还原快照（不读 config.chat——其 x/y 可能为 null 缺省）
+let suppressBoundsWrite = false; // I2①：程序化 bounds 写盘抑制态（moved 异步送达，setImmediate 后清）
+let suppressedBounds = null;     // I2①：抑制期间记录的期望 bounds（= setBounds 目标值）
+
+// D3 缺省高度两常数：真值单一来源是 chat.html 的 CSS——#mini-pill（输入条高）与 #mini-panel（最小消息块高），
+// 改这两个构件的尺寸时须同步此处。每次 enter 先给缺省高，渲染端 body.mini 就位测量后经 chat-mini-set-height 上报。
+const MINI_PILL_HEIGHT = 56;       // #mini-pill 输入条高
+const MINI_PANEL_MIN_HEIGHT = 90;  // #mini-panel 最小消息块高
+const MINI_DEFAULT_HEIGHT = MINI_PILL_HEIGHT + MINI_PANEL_MIN_HEIGHT;
+
+// D7：chatMini 段读取（loadConfig 是浅合并，各键一律 ?? 缺省兜底；用户手改 config 值优先生效）
+function getChatMiniConfig() {
+  const m = config.chatMini || {};
+  return {
+    x: m.x ?? null,
+    y: m.y ?? null,
+    width: m.width ?? 380,
+    idleOpacity: m.idleOpacity ?? 0.1,
+    hoverOpacity: m.hoverOpacity ?? 0.3,
+    maxHeightRatio: m.maxHeightRatio ?? 0.5,
+  };
+}
+
+// I2①：程序化 setBounds 套抑制守卫。调用前 miniActive 必须已翻转到目标模式（时序由 enter/exit 保证）。
+// 禁 animate:true（I2④：animate 才程序化触发 resized，且动画变形可能留残影）。
+function applyBoundsWithSuppression(bounds) {
+  suppressBoundsWrite = true;
+  suppressedBounds = bounds;
+  chatWindow.setBounds(bounds);
+  setImmediate(() => { suppressBoundsWrite = false; suppressedBounds = null; });
+}
+
+// I6：enter 落位——底边锚定 + 所在屏 workArea clamp（screen.getDisplayMatching）
+function computeMiniEnterBounds() {
+  const mini = getChatMiniConfig();
+  const [winX, winY] = chatWindow.getPosition();
+  const [winW, winH] = chatWindow.getSize();
+  let x, bottom;
+  if (mini.x != null && mini.y != null) {
+    // 有存值用存值（y=底边值），同样 clamp 进所在屏 workArea，防副屏断开后出生屏外
+    x = mini.x;
+    bottom = mini.y;
+  } else {
+    // 首次 enter：底边=大窗当前底边、水平居中于大窗（视觉=大窗原地抽成小条）
+    x = winX + Math.floor((winW - mini.width) / 2);
+    bottom = winY + winH;
+  }
+  const display = screen.getDisplayMatching({ x, y: bottom - MINI_DEFAULT_HEIGHT, width: mini.width, height: MINI_DEFAULT_HEIGHT });
+  const wa = display.workArea;
+  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - mini.width));           // 水平不出屏
+  bottom = Math.max(wa.y + MINI_DEFAULT_HEIGHT, Math.min(bottom, wa.y + wa.height)); // 顶缘不推出 workArea 上沿
+  return { x: Math.round(x), y: Math.round(bottom - MINI_DEFAULT_HEIGHT), width: mini.width, height: MINI_DEFAULT_HEIGHT };
+}
+
+// I4/D6：enter——先翻模式标志 → setMinimumSize 调小（必须先于迷你 setBounds，否则被创建项 minHeight:400 钳住）→ 抑制态+落位 → 透明底 → floating 置顶 → darwin 全空间可见
+ipcMain.on('chat-mini-enter', () => {
+  if (!chatWindow || chatWindow.isDestroyed() || miniActive) return;
+  miniBoundsSnapshot = chatWindow.getBounds();  // I1：内存快照大窗 bounds（exit 还原用）
+  miniActive = true;                            // I2①：模式标志先于一切 setBounds 翻转
+  chatWindow.setMinimumSize(240, 64);           // I2③：调小最小尺寸，先于迷你 setBounds（与 exit 还原成对）
+  applyBoundsWithSuppression(computeMiniEnterBounds());
+  chatWindow.setBackgroundColor('#00000000');   // I3：仅迷你模式期间切透明（exit 还原 #faf8f0）
+  chatWindow.setAlwaysOnTop(true, 'floating');  // D6：普通置顶（spirit/sticky 先例级别）
+  if (process.platform === 'darwin') {          // I4：全空间可见（含全屏独占空间），开启调用带全选项；非 darwin 不得调用 workspace API
+    chatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  }
+});
+
+// I4：exit——先翻模式标志 → darwin 摘全空间（false 调用同样带 skipTransformProcessType）→ 取消置顶 → 还原棉纸底 → setMinimumSize 还原 → 抑制态还原快照 bounds
+ipcMain.on('chat-mini-exit', () => {
+  if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
+  miniActive = false;                           // I2①：模式标志先翻转（漏网 moved 写回 config.chat 正确侧）
+  if (process.platform === 'darwin') {
+    chatWindow.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true });
+  }
+  chatWindow.setAlwaysOnTop(false);             // I4：严格还原
+  chatWindow.setBackgroundColor('#faf8f0');     // I3：还原不透明棉纸底（与 enter 成对）
+  if (miniBoundsSnapshot) {
+    applyBoundsWithSuppression(miniBoundsSnapshot);  // I1：还原快照（不读 config.chat）。
+    // 先于 setMinimumSize 还原：快照恒≥300×400 不会被钳；若先调大 minimum，迷你小窗会被新下限瞬态撑高、产生无谓 moved
+  }
+  miniBoundsSnapshot = null;
+  chatWindow.setMinimumSize(300, 400);          // I2③：还原为创建项现状值（与 enter 调小成对）
+});
+
+// I6/I10：高度调整 IPC（渲染端内容测量上报 / 上沿拖拽调高）。底边锚定：y = bottom − newHeight，
+// 顶缘 clamp 不出窗口当前所在屏 workArea 上沿；高度上限按所在屏 workArea × maxHeightRatio 封顶（AC3 半高封顶）。
+ipcMain.on('chat-mini-set-height', (event, { height } = {}) => {
+  if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
+  const h = Math.round(Number(height));
+  if (!Number.isFinite(h) || h <= 0) return;
+  const bounds = chatWindow.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  const wa = display.workArea;
+  const mini = getChatMiniConfig();
+  const capped = Math.min(h, Math.floor(wa.height * (mini.maxHeightRatio ?? 0.5)));
+  const bottom = bounds.y + bounds.height;      // 底边锚定：任何高度变化保持 y+height 不变
+  let newY = bottom - capped;
+  if (newY < wa.y) newY = wa.y;                 // 顶缘不得推出 workArea 上沿
+  applyBoundsWithSuppression({ x: bounds.x, y: Math.round(newY), width: bounds.width, height: capped });
+  chatWindow.invalidateShadow();                // R6：透明窗变形后可能留残影——预案调用点
+});
+
+// D7：渲染端读取 chatMini 段（含缺省兜底）
+ipcMain.handle('chat-mini-get-config', () => {
+  return getChatMiniConfig();
 });
 
 ipcMain.on('show-sticky', () => {
