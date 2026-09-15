@@ -938,8 +938,12 @@
       /* D2：系统默认字体，不继承 Chat 页可变字体（用户拍板） */
       font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
       color: #1a1a1a;
-      /* I10：整窗移动 = 构件容器原生拖拽（输入框/按钮/上沿拖条标 no-drag） */
-      -webkit-app-region: drag;
+      /* I10 修订（2026-09-15）：摘除 -webkit-app-region: drag。官方文档 tutorial/custom-window-interactions.md（v33.4.11）：
+         "draggable areas ignore all pointer events. For example, a button element that overlaps a draggable region will not
+         emit mouse clicks or mouse enter/exit events" → inset:0 整窗 drag 区吞掉全部指针事件，渲染端收不到 enter/move，
+         hover 点亮/点击穿透都无法驱动（"只有输入框才点亮"的根因：全窗无事件，仅 no-drag 构件有事件）。
+         窗口移动改由 #mini-panel 顶部不可见拖拽带 #mini-move-band + chat-mini-move IPC（屏幕增量 setBounds）实现；
+         下方各 no-drag 标记保留，无副作用。 */
     }
     body.mini #mini-bar { display: flex; }
     /* 文字跟随透明（2026-09-15 用户口径）：idle 时整个构件含文字/描边/控件一起淡（--mini-content-opacity），
@@ -979,8 +983,19 @@
       width: 56px; height: 5px; border-radius: 3px;
       background: rgba(0, 0, 0, .18); cursor: ns-resize;
       -webkit-app-region: no-drag;
+      z-index: 2;   /* 高于 #mini-move-band（z-index:1）：与拖拽带重叠区域（顶部中央）优先 = 拖高，其余带区 = 拖动窗口 */
     }
     #mini-resize-handle:hover { background: rgba(0, 0, 0, .35); }
+    /* 顶部不可见拖拽带（2026-09-15，I10 修订）：替代 -webkit-app-region: drag（官方依据见 #mini-bar 注释——
+       drag 区吞掉全部指针事件，整窗 drag 导致渲染端无法做 hover 命中/穿透翻转）。
+       与面板同宽贴面板顶缘，z 高于消息内容、低于居中 5px 调高把手；无背景/边框 = 不可见。
+       mousedown 记录屏幕坐标 → mousemove 屏幕增量经 chat-mini-move IPC 移窗（渲染端逻辑见下方 JS）。 */
+    #mini-move-band {
+      position: absolute; top: 0; left: 0; right: 0; height: 18px;
+      z-index: 1;
+      cursor: move;
+    }
+    #mini-move-band.mini-move-dragging { cursor: grabbing; }
 
     /* 输入条 = 原型 #pill 逐字：真胶囊（圆角=高度一半）。
        适配：①高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊"
@@ -1185,6 +1200,7 @@
        仅 body.mini 下显示；底边锚定、窗高由主进程管；消息块稍窄于输入条（像从输入条向上抽出） -->
   <div id="mini-bar">
     <div id="mini-panel">
+      <div id="mini-move-band" title="按住拖动窗口"></div>
       <div id="mini-resize-handle" title="拖拽调高度 / 双击恢复自动"></div>
       <div id="mini-message" class="mini-state">暂无新消息</div>
     </div>
@@ -1819,9 +1835,57 @@
     const miniCloseBtn = document.getElementById('mini-close-btn');
     const miniResizeHandle = document.getElementById('mini-resize-handle');
 
-    // 文字跟随透明（2026-09-15 用户口径）：悬停时背景 alpha 与内容透明度（--mini-content-opacity）一起切到完全清晰
-    miniBar.addEventListener('mouseenter', () => miniBar.classList.add('mini-hover'));
-    miniBar.addEventListener('mouseleave', () => miniBar.classList.remove('mini-hover'));
+    // 文字跟随透明（2026-09-15 用户口径）：悬停时背景 alpha 与内容透明度（--mini-content-opacity）一起切到完全清晰。
+    // 修订（2026-09-15）：点亮判定从 #mini-bar（inset:0 整窗）mouseenter/mouseleave 改为**构件盒并集命中**
+    // （#mini-panel ∪ #mini-pill，40px 透明留白带不计）——旧判定把留白带也算悬停，且整窗 drag 区无指针事件
+    // （官方 docs：draggable areas ignore all pointer events），只能靠 no-drag 构件局部点亮。
+    // 指针事件源 = document mousemove：穿透态（setIgnoreMouseEvents(true,{forward:true})）下 Chromium 仍收到
+    // 转发来的 mousemove（官方 docs browser-window.md：forward "enabling mouse related events such as mouseleave"），
+    // 故穿透态下鼠标一移动即按命中自动翻转回可交互。
+    let miniHoverInside = false;      // 最近一次指针命中判定（true = 指针在构件盒内）
+    let miniPassThrough = false;      // 主进程当前是否处于 setIgnoreMouseEvents(true, {forward:true})
+    let miniFocusLock = false;        // 构件内焦点（输入框/按钮）→ 强制保持亮态（用户口径：输入框聚焦期间不变暗）
+    let miniMouseMoveSeen = false;    // enter 后是否收到过 mousemove（600ms 兜底判定用）
+    let miniHoverFallbackTimer = null;
+
+    function miniPointerInside(e) {
+      // 构件盒并集命中：#mini-panel ∪ #mini-pill（getBoundingClientRect 视口坐标，与 clientX/clientY 同系）
+      const pr = miniPanel.getBoundingClientRect();
+      if (e.clientX >= pr.left && e.clientX <= pr.right && e.clientY >= pr.top && e.clientY <= pr.bottom) return true;
+      const rr = miniPill.getBoundingClientRect();
+      return e.clientX >= rr.left && e.clientX <= rr.right && e.clientY >= rr.top && e.clientY <= rr.bottom;
+    }
+    // 亮态 = 指针在构件盒内 OR 构件内焦点（focus lock）；仅状态变化时切 class
+    function miniApplyHover() {
+      miniBar.classList.toggle('mini-hover', miniFocusLock || miniHoverInside);
+    }
+    // 点击穿透：指针在盒内 = 可交互，盒外 = 穿透（forward 保鼠标事件回流）；仅在状态翻转时发 IPC（绝不进 enter 帧）
+    function miniApplyPassThrough(inside) {
+      const want = !inside;
+      if (want === miniPassThrough) return;
+      miniPassThrough = want;
+      window.electronAPI.setMiniHover(inside);
+    }
+    document.addEventListener('mousemove', (e) => {
+      if (!miniActive || miniMoveDragging || miniDragging) return;  // 拖拽期间不做 hover/穿透翻转
+      miniMouseMoveSeen = true;
+      const inside = miniPointerInside(e);
+      if (inside === miniHoverInside) return;  // 无翻转不重复处理
+      miniHoverInside = inside;
+      miniApplyHover();
+      miniApplyPassThrough(inside);
+    });
+    // 输入框（或任意图件）聚焦 → 强制保持亮态；失焦 → 按当前（最近一次）指针位置重新判定
+    miniBar.addEventListener('focusin', () => {
+      if (!miniActive) return;
+      miniFocusLock = true;
+      miniApplyHover();
+    });
+    miniBar.addEventListener('focusout', () => {
+      if (!miniActive) return;
+      miniFocusLock = false;
+      miniApplyHover();
+    });
 
     // I7/I10：上沿拖拽调高——走迷你专用新 IPC（setPosition/resizeWindow 主进程无 handler，是死通道，不得复用）
     let miniDragging = false;
@@ -1852,6 +1916,38 @@
       miniManualLocked = false;  // I7：双击恢复自动
       scheduleMiniUpdate();
     });
+
+    // 顶部不可见拖拽带：移动窗口（I10 修订，替代 -webkit-app-region: drag；官方依据见 #mini-bar CSS 注释）。
+    // mousedown 记录屏幕坐标 → mousemove 以屏幕坐标增量发 chat-mini-move IPC → 主进程 setBounds(cur+delta)。
+    // 主进程不加写盘抑制：用户真实拖动 → 既有 moved 处理器按迷你分支写 chatMini.x/y 落盘（D7 底边锚点语义）。
+    // 拖拽期间 hover/穿透不翻转（上方 mousemove 处理器以 miniMoveDragging 短路）。
+    const miniMoveBand = document.getElementById('mini-move-band');
+    let miniMoveDragging = false;
+    let miniMoveLastX = 0;
+    let miniMoveLastY = 0;
+    miniMoveBand.addEventListener('mousedown', (e) => {
+      if (!miniActive || e.button !== 0) return;
+      e.preventDefault();
+      miniMoveDragging = true;
+      miniMoveLastX = e.screenX;
+      miniMoveLastY = e.screenY;
+      miniMoveBand.classList.add('mini-move-dragging');
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!miniMoveDragging) return;
+      const dx = e.screenX - miniMoveLastX;
+      const dy = e.screenY - miniMoveLastY;
+      miniMoveLastX = e.screenX;
+      miniMoveLastY = e.screenY;
+      if (dx !== 0 || dy !== 0) window.electronAPI.moveMini(dx, dy);
+    });
+    function endMiniMove() {
+      if (!miniMoveDragging) return;
+      miniMoveDragging = false;
+      miniMoveBand.classList.remove('mini-move-dragging');
+    }
+    document.addEventListener('mouseup', endMiniMove);
+    window.addEventListener('blur', endMiniMove);  // 失焦（点到别的窗口）也结束拖拽
 
     // P1（2026-09-15 审查）：enter 时 body.mini 先在大窗旧视口宽下就位，首测按旧宽折行——大窗窄于构件时测偏高、
     // 宽于构件时测偏短（消息被裁）。主进程 setBounds 缩/放窗口后 resize 事件触发重测一次即收敛
@@ -1950,6 +2046,22 @@
       miniManualLocked = false;   // I7：再 enter 恢复自动
       _miniBusySince = null;
       _miniReportedH = 0;
+      // hover/穿透状态机复位（重载自愈路径同样走到这里）。窗口级穿透态惰性建立：
+      // enter 帧绝不发 setIgnoreMouseEvents（窗口级调用打进 enter 合成帧会破坏透明合成——白窗根因），
+      // 等首次指针翻转或下方 600ms 兜底才建立。
+      miniHoverInside = false;
+      miniPassThrough = false;
+      miniFocusLock = false;
+      miniMouseMoveSeen = false;
+      miniMoveDragging = false;
+      miniMoveBand.classList.remove('mini-move-dragging');
+      clearTimeout(miniHoverFallbackTimer);
+      miniHoverFallbackTimer = setTimeout(() => {
+        // enter 兜底：~600ms 从未收到 mousemove（指针静止在窗外/未动过）→ 按"未命中"处理
+        // （安全默认：窗口转穿透，鼠标一移动经 forward 收到 mousemove 即自动翻回可交互）
+        if (!miniActive || miniMouseMoveSeen) return;
+        miniApplyPassThrough(false);
+      }, 600);
       document.documentElement.style.background = 'transparent';  // I3：清页面层 html 背景（exit 成对还原）
       document.body.classList.add('mini');
       updateMiniMessage();
@@ -1996,7 +2108,18 @@
       miniActive = false;
       miniManualLocked = false;   // 迷你态不记忆：退出再进恢复自动
       miniDragging = false;
+      miniMoveDragging = false;
+      miniMoveBand.classList.remove('mini-move-dragging');
+      miniFocusLock = false;
+      miniHoverInside = false;
+      miniPassThrough = false;
+      miniMouseMoveSeen = false;
+      clearTimeout(miniHoverFallbackTimer);
       miniBar.classList.remove('mini-hover');
+      // exit 还原点击穿透：setIgnoreMouseEvents(false)。必须先于 exitMiniMode 发——主进程 chat-mini-hover
+      // 有 miniActive 守卫，exit IPC 落地后（主进程 miniActive 翻转）再发会被守卫丢弃。
+      // 主进程 chat-mini-exit handler 锁定与基线逐字一致（结构门禁）不含窗口级调用，故此为还原唯一通道。
+      window.electronAPI.setMiniHover(true);
       document.body.classList.remove('mini');
       document.documentElement.style.background = '';  // I3：还原（棉纸底回 CSS 默认）
       window.electronAPI.exitMiniMode();

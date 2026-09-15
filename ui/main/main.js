@@ -312,7 +312,7 @@ function createChatWindow() {
     if (Date.now() < suppressUntil) return;
     const [posX, posY] = chatWindow.getPosition();
     if (miniActive) {
-      // I10：迷你模式整窗移动（构件容器 app-region:drag 原生拖拽）写 chatMini；
+      // I10：迷你模式整窗移动（2026-09-15 修订后 = 渲染端 #mini-move-band 拖动 → chat-mini-move 增量 setBounds）写 chatMini；
       // x/y 是构件（圆柱）坐标 = 窗口坐标 ∓ M 留白带（D7 锚点语义：y = 圆柱底边的屏幕 y 坐标）
       config.chatMini = config.chatMini || {};
       config.chatMini.x = posX + MINI_MARGIN;
@@ -814,6 +814,32 @@ ipcMain.on('chat-mini-set-height', (event, { height } = {}) => {
 // D7：渲染端读取 chatMini 段（含缺省兜底）
 ipcMain.handle('chat-mini-get-config', () => {
   return getChatMiniConfig();
+});
+
+// I10 修订（2026-09-15）：迷你态摘除 -webkit-app-region: drag（官方 docs tutorial/custom-window-interactions.md：
+// "draggable areas ignore all pointer events"——drag 区吞掉全部指针事件，渲染端收不到 enter/move，无法驱动
+// hover 点亮/点击穿透）。窗口移动改由渲染端 #mini-move-band 以屏幕坐标增量经本通道上报。
+// 不加写盘抑制：用户真实拖动 → 既有 moved 处理器按迷你分支写 chatMini.x/y 落盘（D7 底边锚点语义）。
+ipcMain.on('chat-mini-move', (event, { dx, dy } = {}) => {
+  if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
+  const ddx = Math.round(Number(dx));
+  const ddy = Math.round(Number(dy));
+  if (!Number.isFinite(ddx) || !Number.isFinite(ddy)) return;
+  const b = chatWindow.getBounds();
+  chatWindow.setBounds({ x: b.x + ddx, y: b.y + ddy, width: b.width, height: b.height });
+});
+
+// 点击穿透（2026-09-15）：渲染端按构件盒命中（#mini-panel ∪ #mini-pill）翻转，仅状态翻转时发本 IPC。
+// 官方 docs api/browser-window.md：setIgnoreMouseEvents(ignore, { forward })——
+// "Makes the window ignore all mouse events. All mouse events happened in this window will be passed to the
+// window below this window, but if this window has focus, it will still receive keyboard events."；
+// forward（macOS/Windows）："If true, forwards mouse move messages to Chromium, enabling mouse related events
+// such as mouseleave. Only used when ignore is true." → 穿透态仍收到 mousemove，渲染端据此自动翻回可交互。
+// 惰性建立：本通道只在首帧后的指针翻转/600ms 兜底/exit 时被调用，绝不进 enter 合成帧
+// （enter 帧新增窗口级调用会打乱透明合成——真机白窗根因；chat-mini-enter handler 锁定与基线逐字一致）。
+ipcMain.on('chat-mini-hover', (event, { inside } = {}) => {
+  if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
+  chatWindow.setIgnoreMouseEvents(!inside, { forward: true });
 });
 
 ipcMain.on('show-sticky', () => {
