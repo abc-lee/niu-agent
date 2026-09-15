@@ -755,6 +755,10 @@ ipcMain.on('chat-mini-enter', () => {
   chatWindow.setMinimumSize(240, 64);           // I2③：调小最小尺寸，先于迷你 setBounds（与 exit 还原成对）
   applyBoundsWithSuppression(computeMiniEnterBounds());
   chatWindow.setBackgroundColor('#00000000');   // I3：仅迷你模式期间切透明（exit 还原 #faf8f0）
+  // 窗口比构件大 M=40 留白带 → macOS 给整个窗口矩形画系统阴影 + 边缘亮线（真机像素取证 /tmp/mini_bug.png：
+  // 左右缘亮线亮度 66 vs 背景 24、外侧一圈 24→20 渐暗光晕），把"比构件大一圈的矩形"勾出来。
+  // 迷你态关掉窗口级系统阴影（构件自身 CSS 阴影在窗口内部照常渲染，不受影响）。
+  chatWindow.setHasShadow(false);
   chatWindow.setAlwaysOnTop(true, 'floating');  // D6：普通置顶（spirit/sticky 先例级别）
   // 迷你跟随桌面空间（用户核心需求）——仅 darwin（Windows 无空间概念），只用普通全空间可见。
   // visibleOnFullScreen 因真机回归摘除（2026-09-15：全屏独占空间标志把焦点链拽乱、被拽入全屏空间），
@@ -774,6 +778,7 @@ ipcMain.on('chat-mini-exit', () => {
     chatWindow.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true });
   }
   chatWindow.setBackgroundColor('#faf8f0');     // I3：还原不透明棉纸底（与 enter 成对）
+  chatWindow.setHasShadow(true);                // 与 enter setHasShadow(false) 成对：还原大窗系统阴影
   if (miniBoundsSnapshot) {
     applyBoundsWithSuppression(miniBoundsSnapshot);  // I1：还原快照（不读 config.chat）。
     // 先于 setMinimumSize 还原：快照恒≥300×400 不会被钳；若先调大 minimum，迷你小窗会被新下限瞬态撑高、产生无谓 moved
