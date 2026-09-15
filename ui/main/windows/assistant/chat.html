@@ -915,6 +915,9 @@
     #mini-bar {
       --mini-pill-h: 56px;
       --mini-panel-min-h: 90px;
+      /* 透明留白带（2026-09-15）：玻璃构件阴影被透明窗口 bounds 裁切 → 窗口四周加留白、内容居中/底部贴齐。
+         单一真源 = 本变量，锚定 main.js MINI_MARGIN=40；改它须同步双端（与 56/90 同款）。阴影最大外延 8+28=36px + 余量 */
+      --mini-margin: 40px;
       --mini-idle-opacity: 0.1;   /* 缺省兜底；enter 时 JS 用 window-config.json chatMini 值覆盖 */
       --mini-hover-opacity: 0.3;
       --mini-glass-alpha: var(--mini-idle-opacity);
@@ -924,8 +927,12 @@
       display: none;
       position: fixed;
       inset: 0;
+      padding: var(--mini-margin);   /* 透明留白带：阴影不被窗口边界裁切 */
       overflow: hidden;
       flex-direction: column;
+      justify-content: flex-end;     /* 底部贴齐：构件底边 = 窗口底 − M（圆柱底边锚定） */
+      /* 水平：默认 stretch——圆柱/面板填满内容盒（窗口宽−2M=构件宽，main.js 窗口宽=mini.width+2M 保证；
+         不用 align-items:center——那会让无显式宽的 flex 子项收缩到内容宽而非撑满） */
       z-index: 9999;
       user-select: none;   /* 原型 #mini 逐字 */
       /* D2：系统默认字体，不继承 Chat 页可变字体（用户拍板） */
@@ -1819,11 +1826,12 @@
     let miniDragging = false;
     let miniDragStartY = 0;
     let miniDragStartH = 0;
-    // 构件最小总高 = 输入条 + 消息块最小高（读 CSS 变量真值，防拖到输入条被裁出窗口）
+    // 窗口最小总高 = 输入条 + 消息块最小高 + 2M 留白带（读 CSS 变量真值，防拖到输入条被裁出窗口）
     function miniMinHeight() {
       const panelMinH = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-panel-min-h')) || 90;
       const overlap = Math.min(0, parseFloat(getComputedStyle(miniPill).marginTop) || 0);
-      return (miniPill.offsetHeight || 56) + panelMinH + overlap;
+      const m = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-margin')) || 40;
+      return (miniPill.offsetHeight || 56) + panelMinH + overlap + 2 * m;
     }
     miniResizeHandle.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -1844,7 +1852,7 @@
       scheduleMiniUpdate();
     });
 
-    // D3：构件实际总高 = 输入条（固定） + 消息块（最小高与内容高取大）。
+    // D3：窗口总高 = 构件（输入条固定 + 消息块最小高与内容高取大）+ 2M 透明留白带。
     // 尺寸一律读 CSS 变量 / 实测布局（单一真源），不写死数字；上限封顶由主进程按所在屏 workArea 处理。
     function measureMiniHeight() {
       // 构件总高 = 输入条 + max(面板最小高, 消息区实际) + 叠合量（margin-top 现为 0；若将来重引入负叠合 margin，此处自动扣减）。
@@ -1856,7 +1864,10 @@
         + parseFloat(cs.borderTopWidth) + (parseFloat(cs.borderBottomWidth) || 0)
         + miniMessageEl.scrollHeight;
       const overlap = Math.min(0, parseFloat(getComputedStyle(miniPill).marginTop) || 0);
-      return Math.round(pillH + Math.max(panelMinH, contentH) + overlap);
+      // 返回值 = 窗口总高（含 2M 留白带；主进程底边锚定逻辑不变，圆柱底边 = 窗口底 − M）
+      const m = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-margin')) || 40;
+      _miniPanelAtMin = contentH <= panelMinH;  // 面板未长出最小高 → 上报值 == 主进程缺省窗高（不改几何）
+      return Math.round(pillH + Math.max(panelMinH, contentH) + overlap + 2 * m);
     }
 
     // I9：迷你消息区三态渲染
@@ -1901,6 +1912,7 @@
 
     let _miniUpdatePending = false;
     let _miniReportedH = 0;
+    let _miniPanelAtMin = false;  // measureMiniHeight 副产物：面板是否停在最小高（enter 合成坑判断用）
     function scheduleMiniUpdate() {
       if (!miniActive || _miniUpdatePending) return;
       _miniUpdatePending = true;
@@ -1936,9 +1948,22 @@
       window.electronAPI.enterMiniMode();
       // D3：body.mini 就位后测量构件实际总高上报（主进程先按缺省高入场，测量纠正——每次 enter 都走）
       requestAnimationFrame(() => {
-        if (miniActive && !miniManualLocked) {
-          _miniReportedH = measureMiniHeight();
-          window.electronAPI.setMiniHeight(_miniReportedH);
+        if (!miniActive || miniManualLocked) return;
+        const h = measureMiniHeight();
+        _miniReportedH = h;
+        window.electronAPI.setMiniHeight(h);
+        // macOS 合成坑（2026-09-15 真窗口 harness 实证）：enter 的 setBounds 与 setBackgroundColor('#00000000')
+        // 同帧提交时，原生 backing 保留旧不透明底（棉纸色），直到下一次真实几何变化才重合成——
+        // invalidateShadow / webContents.invalidate 均无效。若本次面板停在最小高（上报值不改窗几何），
+        // 补一次 +1/-1 微动强制重合成；否则占位态首次入场会显示不透明条而非玻璃（直到首条消息长高才变透）。
+        if (_miniPanelAtMin) {
+          window.electronAPI.setMiniHeight(h + 1);
+          setTimeout(() => {
+            // 期间若有新消息改过上报值 / 手动锁定 / 已退出 → 不回收（窗口高度以最新上报为准）
+            if (miniActive && !miniManualLocked && _miniReportedH === h) {
+              window.electronAPI.setMiniHeight(h);
+            }
+          }, 150);
         }
       });
     }
