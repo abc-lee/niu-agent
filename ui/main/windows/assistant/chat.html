@@ -927,6 +927,7 @@
       overflow: hidden;
       flex-direction: column;
       z-index: 9999;
+      user-select: none;   /* 原型 #mini 逐字 */
       /* D2：系统默认字体，不继承 Chat 页可变字体（用户拍板） */
       font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
       color: #1a1a1a;
@@ -976,7 +977,6 @@
     /* 输入条 = 原型 #pill 逐字：真胶囊（圆角=高度一半）、margin-top:-6px 叠合贴住消息块（原型 gap=-6）。
        唯一适配：高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊" */
     #mini-pill {
-      position: relative;
       flex: none;
       height: var(--mini-pill-h);
       margin-top: -6px;
@@ -992,19 +992,9 @@
       opacity: var(--mini-content-opacity);   /* 文字跟随透明 */
     }
 
-    /* D5 文字策略：固定深色 + 反色 text-shadow 多向描边（4 方向，非单偏移）——深/浅壁纸下均可读 */
-    #mini-message,
-    #mini-input,
-    .icon-btn {
-      text-shadow:
-        1px 0 0 rgba(255, 255, 255, 0.85),
-        -1px 0 0 rgba(255, 255, 255, 0.85),
-        0 1px 0 rgba(255, 255, 255, 0.85),
-        0 -1px 0 rgba(255, 255, 255, 0.85);
-    }
-
-    #mini-message {   /* padding/font-size/line-height/color 跟原型挂 #mini-panel */
-      flex: 1 1 auto;
+    #mini-message {   /* padding/font-size/line-height/color 跟原型挂 #mini-panel；纯色无描边（2026-09-15 用户口径：取消全部 text-shadow）。
+       不设 flex-grow（原型 #msgText 就是普通块级子元素）：flex:1 会把消息盒撑到面板高，scrollHeight 随之报"窗口尺寸"而非内容高，
+       measureMiniHeight 陷入固定点、窗高永远收敛不到内容高（2026-09-15 真窗口 harness 实证）。 */
       word-wrap: break-word;
       white-space: normal;
     }
