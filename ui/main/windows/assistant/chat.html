@@ -2996,6 +2996,7 @@
           stopBtn.style.display = 'flex';
           isProcessing = true;
           sendBtn.disabled = true;
+          scheduleMiniUpdate();  // 迷你三态：兜底轮询改写了 isProcessing，同步迷你区（SSE 漏事件时不滞后）
         } else {
           stopBtn.style.display = 'none';
           isProcessing = false;
@@ -3003,6 +3004,7 @@
           // SSE 断连修复：后端报告空闲，但 spirit busyCount 可能因 chat_idle 丢失而卡 >0
           // 强制重置 spirit 引用计数，让小女孩回到 IDLE
           window.electronAPI.resetBusy();
+          scheduleMiniUpdate();  // 迷你三态：兜底轮询改写了 isProcessing，同步迷你区（SSE 漏事件时不滞后）
         }
       } catch (e) {
         console.error('Failed to sync chat status:', e);

@@ -305,11 +305,11 @@ function createChatWindow() {
   });
 
   // 窗口移动时保存位置
-  // I2①：程序化 setBounds 抑制态（moved 经消息循环异步送达）命中不写盘；
-  // 抑制态被竞态提前清掉的漏网 moved 因 miniActive 已先翻转而写入正确侧，且值恰为 setBounds 目标值，无害。
+  // I2①：程序化 setBounds 抑制期（时间戳截止）内 moved 不写盘；
+  // 抑制窗过期后的漏网 moved 因 miniActive 已先翻转而写入正确侧，且值恰为 setBounds 目标值，无害。
   chatWindow.on('moved', () => {
     if (!chatWindow) return;
-    if (suppressBoundsWrite) return;
+    if (Date.now() < suppressUntil) return;
     const [posX, posY] = chatWindow.getPosition();
     if (miniActive) {
       // I10：迷你模式整窗移动（构件容器 app-region:drag 原生拖拽）写 chatMini；
@@ -327,7 +327,7 @@ function createChatWindow() {
   // 窗口大小变化时保存
   chatWindow.on('resized', () => {
     if (!chatWindow) return;
-    if (suppressBoundsWrite) return;  // I2①：程序化 setBounds 抑制态不写盘
+    if (Date.now() < suppressUntil) return;  // I2①：程序化 setBounds 抑制期内不写盘
     if (miniActive) return;           // I2②：迷你模式 resized 一律不写盘（chatMini 无 height 键）
     const [w, h] = chatWindow.getSize();
     config.chat.width = w;
@@ -353,7 +353,7 @@ function createChatWindow() {
     SubagentSSEManager.disconnectAll();  // 用户关闭窗口：断开所有子 Agent SSE 连接
     miniActive = false;                 // 迷你态复位（D9：迷你中关闭=销毁，不记忆迷你态，再点小女孩重建为大窗）
     miniBoundsSnapshot = null;
-    suppressBoundsWrite = false;
+    suppressUntil = 0;
     chatWindow = null;
     // P2-3b：窗口在 ask_user 等待期间关闭（卡片已渲染后）——主 Agent 会一直阻塞 600s，
     // 回执 UNAVAILABLE 让 do_ask_user 走错误分支；无 pending ask 时端点返回 no pending ask，无害
@@ -675,8 +675,9 @@ ipcMain.on('open-chat', () => {
 
 let miniActive = false;          // 模式标志：先于一切 setBounds 翻转（I2 判据），兜底吸收 moved 竞态
 let miniBoundsSnapshot = null;   // I1：enter 时大窗 bounds 内存快照；exit 还原快照（不读 config.chat——其 x/y 可能为 null 缺省）
-let suppressBoundsWrite = false; // I2①：程序化 bounds 写盘抑制态（moved 异步送达，保持 SUPPRESS_WRITE_MS 后清；见 applyBoundsWithSuppression）
-const SUPPRESS_WRITE_MS = 250;   // 写盘抑制窗口：覆盖 moved 异步送达延迟（超时自然失效，不依赖定时器精确性）
+let suppressUntil = 0;           // I2①：程序化 bounds 写盘抑制截止时间戳（单调；moved 异步送达期间一律不写盘）
+const SUPPRESS_WRITE_MS = 250;   // 抑制窗长：覆盖 moved 异步送达延迟。时间戳自然过期，无需清理定时器——
+                                 // 原「布尔 + 独立 setTimeout」在快速 enter→exit 下两个定时器互相清标志，会提前解除后一次抑制
 
 // D3 缺省高度两常数：真值单一来源是 chat.html 的 CSS——#mini-pill（输入条高）与 #mini-panel（最小消息块高），
 // 改这两个构件的尺寸时须同步此处。每次 enter 先给缺省高，渲染端 body.mini 就位测量后经 chat-mini-set-height 上报。
@@ -709,9 +710,9 @@ function getChatMiniConfig() {
 // 故保持 ~250ms 覆盖送达延迟（取舍：250ms 内手动拖拽不写盘，可接受）；
 // 过期后的漏网 moved 由 miniActive 先翻转兜底（写回正确侧）。
 function applyBoundsWithSuppression(bounds) {
-  suppressBoundsWrite = true;
+  // 截止时间取最晚：连续调用（快速 enter→exit）的 moved 全部被同一抑制窗覆盖，不会互相提前解除
+  suppressUntil = Date.now() + SUPPRESS_WRITE_MS;
   chatWindow.setBounds(bounds);
-  setTimeout(() => { suppressBoundsWrite = false; }, SUPPRESS_WRITE_MS);
 }
 
 // I6：enter 落位——底边锚定 + 所在屏 workArea clamp（screen.getDisplayMatching）
@@ -763,7 +764,7 @@ ipcMain.on('chat-mini-enter', () => {
   }
 });
 
-// exit——先翻模式标志 → 取消置顶 → 摘全空间可见（与 enter 成对）→ 还原棉纸底 → setMinimumSize 还原 → 抑制态还原快照 bounds
+// exit——先翻模式标志 → 取消置顶 → 摘全空间可见（与 enter 成对）→ 还原棉纸底 → 抑制态还原快照 bounds → setMinimumSize 还原
 ipcMain.on('chat-mini-exit', () => {
   if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
   miniActive = false;                           // I2①：模式标志先翻转（漏网 moved 写回 config.chat 正确侧）
@@ -791,7 +792,9 @@ ipcMain.on('chat-mini-set-height', (event, { height } = {}) => {
   const display = screen.getDisplayMatching(bounds);
   const wa = display.workArea;
   const mini = getChatMiniConfig();
-  const capped = Math.min(h, Math.floor(wa.height * (mini.maxHeightRatio ?? 0.5)));
+  // 下限 = 渲染端最小总高（MINI_DEFAULT_HEIGHT，即 输入条+最小消息块+2M）：workArea 极矮或 maxHeightRatio 被调很小时，
+  // 封顶值不得低于构件最小高，否则 #mini-bar overflow:hidden 把输入条裁掉
+  const capped = Math.max(MINI_DEFAULT_HEIGHT, Math.min(h, Math.floor(wa.height * (mini.maxHeightRatio ?? 0.5))));
   const bottom = bounds.y + bounds.height;      // 底边锚定：任何高度变化保持 y+height 不变
   let newY = bottom - capped;
   if (newY < wa.y) newY = wa.y;                 // 顶缘不得推出 workArea 上沿
