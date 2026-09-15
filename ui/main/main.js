@@ -804,7 +804,11 @@ ipcMain.on('chat-mini-set-height', (event, { height } = {}) => {
   let newY = bottom - capped;
   if (newY < wa.y) newY = wa.y;                 // 顶缘不得推出 workArea 上沿
   applyBoundsWithSuppression({ x: bounds.x, y: Math.round(newY), width: bounds.width, height: capped });
-  chatWindow.invalidateShadow();                // R6：透明窗变形后可能留残影——预案调用点
+  // R6：透明窗变形后可能留残影——预案调用点。invalidateShadow 是 darwin 专属 API（Electron 官方
+  // d.ts 标注 @platform darwin），Windows 上方法不存在会抛 TypeError 崩主进程（真机报错实证）。
+  if (process.platform === 'darwin' && typeof chatWindow.invalidateShadow === 'function') {
+    chatWindow.invalidateShadow();
+  }
 });
 
 // D7：渲染端读取 chatMini 段（含缺省兜底）
