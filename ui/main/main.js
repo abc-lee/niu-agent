@@ -64,7 +64,7 @@ const defaultConfig = {
   // y = 构件底边的屏幕 y 坐标（底边锚定，恢复时 bottom=y、顶边=bottom−height）；无 height 键（手动高度不跨会话记忆）
   // width = 面板宽 + 2×胶囊半径：#mini-panel 左右内缩 calc(--mini-pill-h/2)（= 胶囊圆弧起点），
   // 面板侧边垂线恰好落在胶囊直线段边缘（352 + 2×28 = 408，2026-09-15 用户几何口径）
-  chatMini: { x: null, y: null, width: 408, idleOpacity: 0.1, hoverOpacity: 0.3, idleContentOpacity: 0.35, maxHeightRatio: 0.5 },
+  chatMini: { x: null, y: null, width: 408, idleOpacity: 0.3, hoverOpacity: 0.6, idleContentOpacity: 0.35, maxHeightRatio: 0.5 },
 };
 
 // 加载配置
@@ -80,10 +80,52 @@ function loadConfig() {
   return { ...defaultConfig };
 }
 
-// 保存配置
+// 保存配置（读-改-写）
+// 用户原则（2026-09-15）：文件不存在才置初始值；存在就永远以磁盘为准——
+// 整对象覆写曾把用户手改的 chatMini.idleOpacity/hoverOpacity 冲回缺省（任何一次保存即覆盖）。
+// 运行时只"拥有"位置/尺寸类键（RUNTIME_KEYS）：保存时先读磁盘，仅覆盖拥有的键，
+// 其余键（chatMini.width/idleOpacity/hoverOpacity/idleContentOpacity/maxHeightRatio，
+// 以及用户自加的任何键、任何段内的自定义键）一律以磁盘为准原样保留。
+// 磁盘文件不存在或 JSON 损坏 → fallback 以内存为准整对象写入。
+const RUNTIME_KEYS = {
+  spirit: ['x', 'y'],
+  chat: ['x', 'y', 'width', 'height'],
+  sticky: ['x', 'y'],
+  stickySize: null,      // 标量键：运行时整体拥有
+  chatSessionId: null,   // 标量键：运行时整体拥有
+  chatMini: ['x', 'y'],  // 只拥有 x/y（构件坐标）；段在磁盘不存在时只写 {x,y}——缺省键不落盘，靠 getChatMiniConfig 的 ?? 兜底
+};
+
 function saveConfig(config) {
   try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    let disk = null;
+    if (fs.existsSync(configPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) disk = parsed;
+      } catch (e) { /* 磁盘 JSON 损坏 → fallback 以内存为准 */ }
+    }
+    let out;
+    if (!disk) {
+      out = config;  // 文件不存在/损坏：置初始值（内存整对象）
+    } else {
+      out = { ...disk };
+      for (const [key, owned] of Object.entries(RUNTIME_KEYS)) {
+        const mem = config[key];
+        if (mem === undefined || mem === null) continue;
+        if (owned === null) {
+          out[key] = mem;  // 标量：运行时拥有
+        } else {
+          const base = disk[key] && typeof disk[key] === 'object' ? disk[key] : {};
+          const merged = { ...base };
+          for (const sub of owned) {
+            if (mem[sub] !== undefined) merged[sub] = mem[sub];
+          }
+          out[key] = merged;  // 段内其余键以磁盘为准
+        }
+      }
+    }
+    fs.writeFileSync(configPath, JSON.stringify(out, null, 2));
   } catch (e) {
     console.error('保存配置失败:', e);
   }
@@ -666,8 +708,8 @@ function getChatMiniConfig() {
     x: m.x ?? null,
     y: m.y ?? null,
     width: m.width ?? 408,
-    idleOpacity: m.idleOpacity ?? 0.1,
-    hoverOpacity: m.hoverOpacity ?? 0.3,
+    idleOpacity: m.idleOpacity ?? 0.3,
+    hoverOpacity: m.hoverOpacity ?? 0.6,
     idleContentOpacity: m.idleContentOpacity ?? 0.35,
     maxHeightRatio: m.maxHeightRatio ?? 0.5,
   };
