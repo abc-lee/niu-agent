@@ -284,10 +284,10 @@ function createChatWindow() {
     const [posX, posY] = chatWindow.getPosition();
     if (miniActive) {
       // I10：迷你模式整窗移动（构件容器 app-region:drag 原生拖拽）写 chatMini；
-      // x 直接写，y 写底边值 = 窗口 top + height（D7 锚点语义：y = 构件底边的屏幕 y 坐标）
+      // x/y 是构件（圆柱）坐标 = 窗口坐标 ∓ M 留白带（D7 锚点语义：y = 圆柱底边的屏幕 y 坐标）
       config.chatMini = config.chatMini || {};
-      config.chatMini.x = posX;
-      config.chatMini.y = posY + chatWindow.getSize()[1];
+      config.chatMini.x = posX + MINI_MARGIN;
+      config.chatMini.y = posY + chatWindow.getSize()[1] - MINI_MARGIN;
     } else {
       config.chat.x = posX;
       config.chat.y = posY;
@@ -653,7 +653,11 @@ let suppressedBounds = null;     // I2①：抑制期间记录的期望 bounds�
 // 改这两个构件的尺寸时须同步此处。每次 enter 先给缺省高，渲染端 body.mini 就位测量后经 chat-mini-set-height 上报。
 const MINI_PILL_HEIGHT = 56;       // #mini-pill 输入条高
 const MINI_PANEL_MIN_HEIGHT = 90;  // #mini-panel 最小消息块高
-const MINI_DEFAULT_HEIGHT = MINI_PILL_HEIGHT + MINI_PANEL_MIN_HEIGHT;
+// 透明留白带（2026-09-15）：玻璃构件阴影被透明窗口 bounds 裁切 → 窗口四周加留白、内容居中/底部贴齐。
+// 单一真源 = chat.html --mini-margin；改它须同步此处（与 56/90 同款双端锚定）。阴影最大外延 8+28=36px + 余量。
+const MINI_MARGIN = 40;            // #mini-bar padding / 窗口留白带宽
+// 窗口缺省总高 = 构件（输入条 + 最小消息块）+ 2M 留白带
+const MINI_DEFAULT_HEIGHT = MINI_PILL_HEIGHT + MINI_PANEL_MIN_HEIGHT + 2 * MINI_MARGIN;
 
 // D7：chatMini 段读取（loadConfig 是浅合并，各键一律 ?? 缺省兜底；用户手改 config 值优先生效）
 function getChatMiniConfig() {
@@ -679,25 +683,29 @@ function applyBoundsWithSuppression(bounds) {
 }
 
 // I6：enter 落位——底边锚定 + 所在屏 workArea clamp（screen.getDisplayMatching）
+// 坐标换算：chatMini.x/y = 构件（圆柱）左/底边 → 窗口 = 构件 + 2M 留白带（x−M、bottom+M）
 function computeMiniEnterBounds() {
   const mini = getChatMiniConfig();
   const [winX, winY] = chatWindow.getPosition();
   const [winW, winH] = chatWindow.getSize();
-  let x, bottom;
+  let compX, compBottom;
   if (mini.x != null && mini.y != null) {
-    // 有存值用存值（y=底边值），同样 clamp 进所在屏 workArea，防副屏断开后出生屏外
-    x = mini.x;
-    bottom = mini.y;
+    // 有存值用存值（y=圆柱底边值），同样 clamp 进所在屏 workArea，防副屏断开后出生屏外
+    compX = mini.x;
+    compBottom = mini.y;
   } else {
-    // 首次 enter：底边=大窗当前底边、水平居中于大窗（视觉=大窗原地抽成小条）
-    x = winX + Math.floor((winW - mini.width) / 2);
-    bottom = winY + winH;
+    // 首次 enter：圆柱底边=大窗当前底边、水平居中于大窗（视觉=大窗原地抽成小条）
+    compX = winX + Math.floor((winW - mini.width) / 2);
+    compBottom = winY + winH;
   }
-  const display = screen.getDisplayMatching({ x, y: bottom - MINI_DEFAULT_HEIGHT, width: mini.width, height: MINI_DEFAULT_HEIGHT });
+  const width = mini.width + 2 * MINI_MARGIN;   // 窗口宽 = 构件宽 + 2M（构件宽不变，留白给阴影）
+  let x = compX - MINI_MARGIN;                  // 窗口 x = 构件 x − M
+  let bottom = compBottom + MINI_MARGIN;        // 窗口底边 = 构件底边 + M（圆柱底边 = 窗口底 − M）
+  const display = screen.getDisplayMatching({ x, y: bottom - MINI_DEFAULT_HEIGHT, width, height: MINI_DEFAULT_HEIGHT });
   const wa = display.workArea;
-  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - mini.width));           // 水平不出屏
-  bottom = Math.max(wa.y + MINI_DEFAULT_HEIGHT, Math.min(bottom, wa.y + wa.height)); // 顶缘不推出 workArea 上沿
-  return { x: Math.round(x), y: Math.round(bottom - MINI_DEFAULT_HEIGHT), width: mini.width, height: MINI_DEFAULT_HEIGHT };
+  x = Math.max(wa.x, Math.min(x, wa.x + wa.width - width));                    // 窗口水平不出屏（含留白带）
+  bottom = Math.max(wa.y + MINI_DEFAULT_HEIGHT, Math.min(bottom, wa.y + wa.height)); // 窗口顶缘不推出 workArea 上沿
+  return { x: Math.round(x), y: Math.round(bottom - MINI_DEFAULT_HEIGHT), width, height: MINI_DEFAULT_HEIGHT };
 }
 
 // I4/D6：enter——先翻模式标志 → setMinimumSize 调小（必须先于迷你 setBounds，否则被创建项 minHeight:400 钳住）→ 抑制态+落位 → 透明底 → floating 置顶 → darwin 全空间可见
@@ -731,7 +739,7 @@ ipcMain.on('chat-mini-exit', () => {
   chatWindow.setMinimumSize(300, 400);          // I2③：还原为创建项现状值（与 enter 调小成对）
 });
 
-// I6/I10：高度调整 IPC（渲染端内容测量上报 / 上沿拖拽调高）。底边锚定：y = bottom − newHeight，
+// I6/I10：高度调整 IPC（渲染端内容测量上报 / 上沿拖拽调高）。h = 窗口总高（含 2M 留白带，渲染端已含）。底边锚定：y = bottom − newHeight，
 // 顶缘 clamp 不出窗口当前所在屏 workArea 上沿；高度上限按所在屏 workArea × maxHeightRatio 封顶（AC3 半高封顶）。
 ipcMain.on('chat-mini-set-height', (event, { height } = {}) => {
   if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
