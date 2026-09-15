@@ -1970,7 +1970,6 @@
       const overlap = Math.min(0, parseFloat(getComputedStyle(miniPill).marginTop) || 0);
       // 返回值 = 窗口总高（含 2M 留白带；主进程底边锚定逻辑不变，圆柱底边 = 窗口底 − M）
       const m = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-margin')) || 40;
-      _miniPanelAtMin = contentH <= panelMinH;  // 面板未长出最小高 → 上报值 == 主进程缺省窗高（不改几何）
       return Math.round(pillH + Math.max(panelMinH, contentH) + overlap + 2 * m);
     }
 
@@ -2016,7 +2015,6 @@
 
     let _miniUpdatePending = false;
     let _miniReportedH = 0;
-    let _miniPanelAtMin = false;  // measureMiniHeight 副产物：面板是否停在最小高（enter 合成坑判断用）
     function scheduleMiniUpdate() {
       if (!miniActive || _miniUpdatePending) return;
       _miniUpdatePending = true;
@@ -2074,25 +2072,17 @@
         const h = measureMiniHeight();
         _miniReportedH = h;
         window.electronAPI.setMiniHeight(h);
-        // macOS 合成坑（2026-09-15 真窗口 harness 实证）：enter 的 setBounds 与 setBackgroundColor('#00000000')
-        // 同帧提交时，原生 backing 保留旧不透明底（棉纸色），直到下一次真实几何变化才重合成——
-        // invalidateShadow / webContents.invalidate 均无效。若本次面板停在最小高（上报值不改窗几何），
-        // 补一次 +1/-1 微动强制重合成；否则占位态首次入场会显示不透明条而非玻璃（直到首条消息长高才变透）。
-        if (_miniPanelAtMin) {
-          window.electronAPI.setMiniHeight(h + 1);
-          setTimeout(() => {
-            // 期间若有新消息改过上报值 / 手动锁定 / 已退出 → 不回收（窗口高度以最新上报为准）
-            if (miniActive && !miniManualLocked && _miniReportedH === h) {
-              window.electronAPI.setMiniHeight(h);
-            }
-          }, 150);
-        }
+        // 几何未变时的强制重合成已由主进程 maybeForceRecompose 兜底（2026-09-15 白窗修复：
+        // 渲染端微动 hack 退役——主进程对无几何变化路径统一做 1px 往返）
       });
     }
 
     async function enterMini() {
       if (miniActive) return;
       await applyMiniDom();
+      // 双 rAF：确保 body.mini 的透明化已完成一帧绘制之后，主进程落位抓到的新帧才是透明内容
+      // （同帧提交时 macOS 合成层仍是旧不透明帧——白窗根因；落位看门狗 2s 兜底渲染端失声）
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       window.electronAPI.enterMiniMode();
       reportMiniHeight();
     }

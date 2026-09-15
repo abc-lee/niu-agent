@@ -239,7 +239,8 @@ function createChatWindow() {
     minWidth: 300,
     minHeight: 400,
     frame: false,
-    transparent: true,  // I3：透明仅创建期可定；正常模式仍为不透明棉纸底（setBackgroundColor('#faf8f0')），仅迷你模式切透明
+    transparent: true,  // I3：透明仅创建期可定；正常模式不透明底由页面 CSS 提供（运行时不再切窗口背景色）
+    backgroundColor: '#00000000',  // 官方：alpha 仅在 transparent 为真时受支持；缺省 #FFF 白——只给 transparent 不给背景色，窗口底色就是不透明白（白窗根因）
     alwaysOnTop: false,  // 聊天窗口是普通窗口，不置顶
     resizable: true,
     skipTaskbar: true,
@@ -253,7 +254,6 @@ function createChatWindow() {
   });
 
   chatWindow.loadFile(path.join(__dirname, 'windows', 'assistant', 'chat.html'));
-  chatWindow.setBackgroundColor('#faf8f0');
 
   // F12 打开开发者工具（调试用）
   chatWindow.webContents.on('before-input-event', (event, input) => {
@@ -310,6 +310,7 @@ function createChatWindow() {
   chatWindow.on('moved', () => {
     if (!chatWindow) return;
     if (Date.now() < suppressUntil) return;
+    if (miniBoundsPending) return;  // 落位间隙窗口仍是大窗几何：此刻写盘会把大窗几何按迷你公式持久化进 chatMini（M10）
     const [posX, posY] = chatWindow.getPosition();
     if (miniActive) {
       // I10：迷你模式整窗移动（2026-09-15 修订后 = 渲染端 #mini-move-band 拖动 → chat-mini-move 增量 setBounds）写 chatMini；
@@ -354,6 +355,11 @@ function createChatWindow() {
     miniActive = false;                 // 迷你态复位（D9：迷你中关闭=销毁，不记忆迷你态，再点小女孩重建为大窗）
     miniBoundsSnapshot = null;
     suppressUntil = 0;
+    // M11：与 chat-mini-exit 同款复位——看门狗/回位定时器残留会在窗口重建后操作新窗或误判
+    miniBoundsPending = false;
+    miniEnterCfgSnapshot = null;
+    clearTimeout(miniLandTimer); miniLandTimer = null;
+    clearTimeout(recomposeTimer); recomposeTimer = null;
     chatWindow = null;
     // P2-3b：窗口在 ask_user 等待期间关闭（卡片已渲染后）——主 Agent 会一直阻塞 600s，
     // 回执 UNAVAILABLE 让 do_ask_user 走错误分支；无 pending ask 时端点返回 no pending ask，无害
@@ -676,6 +682,11 @@ ipcMain.on('open-chat', () => {
 let miniActive = false;          // 模式标志：先于一切 setBounds 翻转（I2 判据），兜底吸收 moved 竞态
 let miniBoundsSnapshot = null;   // I1：enter 时大窗 bounds 内存快照；exit 还原快照（不读 config.chat——其 x/y 可能为 null 缺省）
 let suppressUntil = 0;           // I2①：程序化 bounds 写盘抑制截止时间戳（单调；moved 异步送达期间一律不写盘）
+let miniBoundsPending = false;   // 进迷你后等待渲染端首报（页面绘制之后）再落位；2s 看门狗兜底（M9）
+let miniEnterCfgSnapshot = null; // enter 时的 chatMini 配置快照（防落位间隙写盘污染锚点）
+let miniLandTimer = null;        // 落位看门狗（M9）
+let recomposeTimer = null;       // 回位定时器（M7，M11 清理）
+let boundsToken = 0;             // 每次 applyBoundsWithSuppression 自增（M7 回位接管判定）
 const SUPPRESS_WRITE_MS = 250;   // 抑制窗长：覆盖 moved 异步送达延迟。时间戳自然过期，无需清理定时器——
                                  // 原「布尔 + 独立 setTimeout」在快速 enter→exit 下两个定时器互相清标志，会提前解除后一次抑制
 
@@ -712,15 +723,45 @@ function getChatMiniConfig() {
 function applyBoundsWithSuppression(bounds) {
   // 截止时间取最晚：连续调用（快速 enter→exit）的 moved 全部被同一抑制窗覆盖，不会互相提前解除
   suppressUntil = Date.now() + SUPPRESS_WRITE_MS;
+  boundsToken++;   // 自增：maybeForceRecompose 回位前比对，期间被别的 setBounds 接管则不回位
   chatWindow.setBounds(bounds);
+}
+
+// M7：强制重合成原语——页面透明化后 macOS 不重合成旧帧；能刷出新帧的是几何变化。
+// 自门控：本次施力真产生了几何变化 → 本来就会出新帧，不动作；否则（几何未变）做一次 1px 往返
+// 强制重合成：mini 底边固定（1px 落在 40px 透明留白带内）、big 顶边固定（大窗底缘 1px）。
+// 回位走 setTimeout + token 比对：期间被别的 setBounds 接管、或第三方已改到别处 → 不覆盖。
+// 回位回调不依赖 miniActive（exit 首句已把它置 false）。
+function maybeForceRecompose(mode, before) {
+  if (!chatWindow || chatWindow.isDestroyed() || !before) return;
+  const cur = chatWindow.getBounds();
+  // 自门控：本次施力真产生了几何变化 → 本来就会出新帧，不动作
+  if (cur.x !== before.x || cur.y !== before.y || cur.width !== before.width || cur.height !== before.height) return;
+  const mid = mode === 'mini'
+    ? { x: cur.x, y: cur.y - 1, width: cur.width, height: cur.height + 1 }  // 底边固定（1px 落在 40px 透明留白带内）
+    : { x: cur.x, y: cur.y, width: cur.width, height: cur.height + 1 };     // 顶边固定（大窗底缘 1px）
+  if (recomposeTimer) { clearTimeout(recomposeTimer); recomposeTimer = null; }
+  applyBoundsWithSuppression(mid);
+  const baseToken = boundsToken;                 // 必须在中间态 setBounds 之后再读基线
+  recomposeTimer = setTimeout(() => {
+    recomposeTimer = null;
+    if (!chatWindow || chatWindow.isDestroyed()) return;
+    if (boundsToken !== baseToken) return;       // 期间被别的 setBounds 接管 → 不回位
+    const now = chatWindow.getBounds();
+    const isMid = now.x === mid.x && now.y === mid.y && now.width === mid.width && now.height === mid.height;
+    const isCur = now.x === cur.x && now.y === cur.y && now.width === cur.width && now.height === cur.height;
+    if (!isMid && !isCur) return;                // 已被第三方改到别处 → 不覆盖
+    applyBoundsWithSuppression(cur);
+  }, 150);
 }
 
 // I6：enter 落位——底边锚定 + 所在屏 workArea clamp（screen.getDisplayMatching）
 // 坐标换算：chatMini.x/y = 构件（圆柱）左/底边 → 窗口 = 构件 + 2M 留白带（x−M、bottom+M）
-function computeMiniEnterBounds() {
-  const mini = getChatMiniConfig();
-  const [winX, winY] = chatWindow.getPosition();
-  const [winW, winH] = chatWindow.getSize();
+// 纯函数（M6b）：窗口几何与 chatMini 配置均由调用点显式传入（enter 落位用 enter 时快照，防间隙写盘污染）。
+function computeMiniEnterBounds(winBounds, miniCfg) {
+  const mini = miniCfg;   // 调用点显式传入（enter 落位 = enter 时快照；set-height 落位同理）
+  const [winX, winY] = [winBounds.x, winBounds.y];
+  const [winW, winH] = [winBounds.width, winBounds.height];
   let compX, compBottom;
   if (mini.x != null && mini.y != null) {
     // 有存值用存值（y=圆柱底边值），同样 clamp 进所在屏 workArea，防副屏断开后出生屏外
@@ -753,8 +794,21 @@ ipcMain.on('chat-mini-enter', () => {
   miniBoundsSnapshot = chatWindow.getBounds();  // I1：内存快照大窗 bounds（exit 还原用）
   miniActive = true;                            // I2①：模式标志先于一切 setBounds 翻转
   chatWindow.setMinimumSize(240, 64);           // I2③：调小最小尺寸，先于迷你 setBounds（与 exit 还原成对）
-  applyBoundsWithSuppression(computeMiniEnterBounds());
-  chatWindow.setBackgroundColor('#00000000');   // I3：仅迷你模式期间切透明（exit 还原 #faf8f0）
+  // 几何落位不在此刻做：此刻页面透明化尚未合成绘制完成，同拍 setBounds 抓到的仍是旧不透明帧（白窗根因）。
+  // 改为等渲染端 body.mini 就位后首个 chat-mini-set-height 上报（页面绘制之后）再落位（miniBoundsPending）。
+  miniEnterCfgSnapshot = getChatMiniConfig();   // enter 时配置快照：防落位间隙写盘污染锚点
+  miniBoundsPending = true;
+  clearTimeout(miniLandTimer);
+  miniLandTimer = setTimeout(() => {            // M9：落位看门狗——渲染端 2s 内无上报（崩溃/卡死）则按缺省高强制落位
+    miniLandTimer = null;
+    if (!chatWindow || chatWindow.isDestroyed()) return;
+    if (!miniBoundsPending) return;             // 已正常落位 → 看门狗作废
+    const before = chatWindow.getBounds();
+    // x/底边沿用当前窗口位置（不用过期快照），宽高用与 computeMiniEnterBounds 同一组常量
+    applyBoundsWithSuppression({ x: before.x, y: before.y + before.height - MINI_DEFAULT_HEIGHT, width: getChatMiniConfig().width + 2 * MINI_MARGIN, height: MINI_DEFAULT_HEIGHT });
+    miniBoundsPending = false;
+    maybeForceRecompose('mini', before);        // M8②
+  }, 2000);
   // 窗口比构件大 M=40 留白带 → macOS 给整个窗口矩形画系统阴影 + 边缘亮线（真机像素取证 /tmp/mini_bug.png：
   // 左右缘亮线亮度 66 vs 背景 24、外侧一圈 24→20 渐暗光晕），把"比构件大一圈的矩形"勾出来。
   // 迷你态关掉窗口级系统阴影（构件自身 CSS 阴影在窗口内部照常渲染，不受影响）。
@@ -772,17 +826,24 @@ ipcMain.on('chat-mini-enter', () => {
 ipcMain.on('chat-mini-exit', () => {
   if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
   miniActive = false;                           // I2①：模式标志先翻转（漏网 moved 写回 config.chat 正确侧）
+  // M11：先清迷你态待办与计时器——① 防落位看门狗在退出后把窗口拉回迷你几何；
+  // ② 防本次 exit 自己排的回位定时器被后面误杀（maybeForceRecompose 会新排一个，必须在清理之后）
+  miniBoundsPending = false;
+  miniEnterCfgSnapshot = null;
+  clearTimeout(miniLandTimer); miniLandTimer = null;
+  clearTimeout(recomposeTimer); recomposeTimer = null;
   chatWindow.setAlwaysOnTop(false);             // D6：严格还原
   // 对称摘全空间可见（仅 darwin；false 调用同样必须带 skip）——摘掉空间特权先行，先于恢复背景色
   if (process.platform === 'darwin') {
     chatWindow.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true });
   }
-  chatWindow.setBackgroundColor('#faf8f0');     // I3：还原不透明棉纸底（与 enter 成对）
   chatWindow.setHasShadow(true);                // 与 enter setHasShadow(false) 成对：还原大窗系统阴影
+  const before = chatWindow.getBounds();        // 施力前快照（M7 判据：还原是否真产生几何变化）
   if (miniBoundsSnapshot) {
     applyBoundsWithSuppression(miniBoundsSnapshot);  // I1：还原快照（不读 config.chat）。
     // 先于 setMinimumSize 还原：快照恒≥300×400 不会被钳；若先调大 minimum，迷你小窗会被新下限瞬态撑高、产生无谓 moved
   }
+  maybeForceRecompose('big', before);           // M8④：还原后仍无几何变化（如快照==当前）则 1px 往返强制重合成
   miniBoundsSnapshot = null;
   chatWindow.setMinimumSize(300, 400);          // I2③：还原为创建项现状值（与 enter 调小成对）
 });
@@ -793,6 +854,15 @@ ipcMain.on('chat-mini-set-height', (event, { height } = {}) => {
   if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
   const h = Math.round(Number(height));
   if (!Number.isFinite(h) || h <= 0) return;
+  const before = chatWindow.getBounds();        // 施力前快照（M7 判据：本次施力是否产生几何变化）
+  if (miniBoundsPending) {
+    // M6：渲染端首个上报 = body.mini 已就位并绘制 → 此刻才落位（页面绘制之后，新帧才是透明内容）。
+    // 用 enter 时的配置快照（防 2s 间隙内用户改了 chatMini 宽度）；非法值早退时 pending 由看门狗兜底。
+    applyBoundsWithSuppression(computeMiniEnterBounds(before, miniEnterCfgSnapshot));
+    miniBoundsPending = false;
+    clearTimeout(miniLandTimer); miniLandTimer = null;
+  }
+  // 落位后重新取值（不得复用 before）
   const bounds = chatWindow.getBounds();
   const display = screen.getDisplayMatching(bounds);
   const wa = display.workArea;
@@ -809,6 +879,7 @@ ipcMain.on('chat-mini-set-height', (event, { height } = {}) => {
   if (process.platform === 'darwin' && typeof chatWindow.invalidateShadow === 'function') {
     chatWindow.invalidateShadow();
   }
+  maybeForceRecompose('mini', before);           // M8③：施力后几何未变（如上报值==当前窗高）则 1px 往返强制重合成
 });
 
 // D7：渲染端读取 chatMini 段（含缺省兜底）
