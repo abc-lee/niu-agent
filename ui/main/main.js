@@ -68,32 +68,41 @@ const defaultConfig = {
 };
 
 // 加载配置
+// 用户原则（2026-09-15）："这个文件在第一次运行的时候是没有的，你只有在文件没有的时候，
+// 你才能置初始值。只要它存在，你就不能再重新置它了。"——所以：文件不存在 → 立即把完整
+// defaultConfig 写入磁盘（含 chatMini 全部键的默认值，用户要在文件里看得到、改得了），再返回；
+// 文件存在但损坏 → 不重置（存在就不能再置），本次以内存缺省兜底。
 function loadConfig() {
-  try {
-    if (fs.existsSync(configPath)) {
+  if (fs.existsSync(configPath)) {
+    try {
       const data = fs.readFileSync(configPath, 'utf-8');
       return { ...defaultConfig, ...JSON.parse(data) };
+    } catch (e) {
+      console.error('加载配置失败:', e);
+      return { ...defaultConfig };  // 文件存在但损坏：不重置，本次以内存缺省兜底
     }
-  } catch (e) {
-    console.error('加载配置失败:', e);
   }
+  // 文件不存在（第一次运行）：置初始值——立即把完整缺省写盘，用户此后可在文件里看到并修改
+  saveConfig({ ...defaultConfig });
   return { ...defaultConfig };
 }
 
-// 保存配置（读-改-写）
-// 用户原则（2026-09-15）：文件不存在才置初始值；存在就永远以磁盘为准——
-// 整对象覆写曾把用户手改的 chatMini.idleOpacity/hoverOpacity 冲回缺省（任何一次保存即覆盖）。
-// 运行时只"拥有"位置/尺寸类键（RUNTIME_KEYS）：保存时先读磁盘，仅覆盖拥有的键，
+// 保存配置（读-改-写 + 缺键补齐）
+// 用户原则（2026-09-15）："这个文件在第一次运行的时候是没有的，你只有在文件没有的时候，
+// 你才能置初始值。只要它存在，你就不能再重新置它了。"——整对象覆写曾把用户手改的
+// chatMini.idleOpacity/hoverOpacity 冲回缺省（任何一次保存即覆盖）。
+// 运行时只"拥有"位置/尺寸类键（RUNTIME_KEYS）：保存时先读磁盘，仅覆盖拥有的键；
 // 其余键（chatMini.width/idleOpacity/hoverOpacity/idleContentOpacity/maxHeightRatio，
-// 以及用户自加的任何键、任何段内的自定义键）一律以磁盘为准原样保留。
-// 磁盘文件不存在或 JSON 损坏 → fallback 以内存为准整对象写入。
+// 以及用户自加的任何键、任何段内的自定义键）以磁盘为准。
+// 缺键补齐（fill-missing）：磁盘缺失的 chatMini 键用默认值补齐落盘（一次性物化）；
+// 磁盘已存在的键永远不覆盖。磁盘文件不存在或 JSON 损坏 → fallback 以内存整对象写入。
 const RUNTIME_KEYS = {
   spirit: ['x', 'y'],
   chat: ['x', 'y', 'width', 'height'],
   sticky: ['x', 'y'],
   stickySize: null,      // 标量键：运行时整体拥有
   chatSessionId: null,   // 标量键：运行时整体拥有
-  chatMini: ['x', 'y'],  // 只拥有 x/y（构件坐标）；段在磁盘不存在时只写 {x,y}——缺省键不落盘，靠 getChatMiniConfig 的 ?? 兜底
+  chatMini: ['x', 'y'],  // 只拥有 x/y（构件坐标）；其余键以磁盘为准，缺失的补齐默认值落盘
 };
 
 function saveConfig(config) {
@@ -124,6 +133,8 @@ function saveConfig(config) {
           out[key] = merged;  // 段内其余键以磁盘为准
         }
       }
+      // 缺键补齐：磁盘缺失的 chatMini 键用默认值补齐落盘（一次性物化）；已存在的键永远不覆盖
+      out.chatMini = { ...defaultConfig.chatMini, ...(out.chatMini || {}) };
     }
     fs.writeFileSync(configPath, JSON.stringify(out, null, 2));
   } catch (e) {
@@ -173,13 +184,6 @@ function createSpiritWindow() {
   spiritWindow.loadFile(path.join(__dirname, 'windows', 'assistant', 'spirit.html'));
   spiritWindow.setBackgroundColor('#00000000');
 
-  // D8：小女孩常驻所有桌面空间（含全屏程序独占空间），保证任何桌面都能点到她。
-  // 仅 darwin（Windows 无空间概念）；skipTransformProcessType 必须带——该 API 默认每次调用做
-  // UIElement↔Foreground 进程类型转换并短暂隐藏窗口/Dock（与本仓 launcher TransformProcessType 敏感区相交）。
-  if (process.platform === 'darwin') {
-    spiritWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
-  }
-
   // 窗口显示时重新确保置顶状态（修复Electron sometimes loses alwaysOnTop state）
   spiritWindow.on('show', () => {
     if (spiritWindow && !spiritWindow.isDestroyed()) {
@@ -206,25 +210,13 @@ function createSpiritWindow() {
 // === Step 4: createChatWindow（来自 ui/assistant/main.js） ===
 function createChatWindow() {
   if (chatWindow && !chatWindow.isDestroyed()) {
-    // 迷你模式跳过 D9 召回开关：迷你窗本就挂着全空间可见（I4），
-    // 若走开→关技巧会把该特权摘掉、迷你窗失去桌面空间跟随。直接 show/focus 即可。
+    // 迷你模式直接 show/focus（保留分支）
     if (miniActive) {
       chatWindow.show();
       chatWindow.focus();
       return chatWindow;
     }
-    // D9 候选 A 召回（仅 darwin）：窗口钉死在创建时的空间、不跟随当前空间——
-    // show/focus 前用 setVisibleOnAllWorkspaces 开→关开关技巧把窗口拽回当前活跃桌面。
-    // 所有调用（含 false 摘掉）一律带 skipTransformProcessType（见 D8 注释）。
-    // 已知限制：在原生全屏空间内召回时，摘掉后大窗结构性落不进该全屏空间，
-    // 会落在某个普通桌面、用户需手动切回可见（Electron 无程序化切空间 API；AC8 裁定候选 A/B）。
-    if (process.platform === 'darwin') {
-      chatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
-      chatWindow.show();
-      chatWindow.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true });
-    } else {
-      chatWindow.show();
-    }
+    chatWindow.show();
     chatWindow.focus();
     return chatWindow;
   }
@@ -750,7 +742,7 @@ function computeMiniEnterBounds() {
   return { x: Math.round(x), y: Math.round(bottom - MINI_DEFAULT_HEIGHT), width, height: MINI_DEFAULT_HEIGHT };
 }
 
-// I4/D6：enter——先翻模式标志 → setMinimumSize 调小（必须先于迷你 setBounds，否则被创建项 minHeight:400 钳住）→ 抑制态+落位 → 透明底 → floating 置顶 → darwin 全空间可见
+// D6：enter——先翻模式标志 → setMinimumSize 调小（必须先于迷你 setBounds，否则被创建项 minHeight:400 钳住）→ 抑制态+落位 → 透明底 → floating 置顶 → 全空间可见（不含全屏独占空间）
 ipcMain.on('chat-mini-enter', () => {
   if (!chatWindow || chatWindow.isDestroyed() || miniActive) return;
   miniBoundsSnapshot = chatWindow.getBounds();  // I1：内存快照大窗 bounds（exit 还原用）
@@ -759,19 +751,23 @@ ipcMain.on('chat-mini-enter', () => {
   applyBoundsWithSuppression(computeMiniEnterBounds());
   chatWindow.setBackgroundColor('#00000000');   // I3：仅迷你模式期间切透明（exit 还原 #faf8f0）
   chatWindow.setAlwaysOnTop(true, 'floating');  // D6：普通置顶（spirit/sticky 先例级别）
-  if (process.platform === 'darwin') {          // I4：全空间可见（含全屏独占空间），开启调用带全选项；非 darwin 不得调用 workspace API
-    chatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  // 迷你跟随桌面空间（用户核心需求）——仅 darwin（Windows 无空间概念），只用普通全空间可见。
+  // visibleOnFullScreen 因真机回归摘除（2026-09-15：全屏独占空间标志把焦点链拽乱、被拽入全屏空间），
+  // 待 harness 验证后再议。skipTransformProcessType 必须带（防进程类型转换短暂隐藏窗口/Dock）。
+  if (process.platform === 'darwin') {
+    chatWindow.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true });
   }
 });
 
-// I4：exit——先翻模式标志 → darwin 摘全空间（false 调用同样带 skipTransformProcessType）→ 取消置顶 → 还原棉纸底 → setMinimumSize 还原 → 抑制态还原快照 bounds
+// exit——先翻模式标志 → 取消置顶 → 摘全空间可见（与 enter 成对）→ 还原棉纸底 → setMinimumSize 还原 → 抑制态还原快照 bounds
 ipcMain.on('chat-mini-exit', () => {
   if (!chatWindow || chatWindow.isDestroyed() || !miniActive) return;
   miniActive = false;                           // I2①：模式标志先翻转（漏网 moved 写回 config.chat 正确侧）
+  chatWindow.setAlwaysOnTop(false);             // D6：严格还原
+  // 对称摘全空间可见（仅 darwin；false 调用同样必须带 skip）——摘掉空间特权先行，先于恢复背景色
   if (process.platform === 'darwin') {
     chatWindow.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true });
   }
-  chatWindow.setAlwaysOnTop(false);             // I4：严格还原
   chatWindow.setBackgroundColor('#faf8f0');     // I3：还原不透明棉纸底（与 enter 成对）
   if (miniBoundsSnapshot) {
     applyBoundsWithSuppression(miniBoundsSnapshot);  // I1：还原快照（不读 config.chat）。
