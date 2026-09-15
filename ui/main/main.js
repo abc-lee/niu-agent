@@ -675,7 +675,8 @@ ipcMain.on('open-chat', () => {
 
 let miniActive = false;          // 模式标志：先于一切 setBounds 翻转（I2 判据），兜底吸收 moved 竞态
 let miniBoundsSnapshot = null;   // I1：enter 时大窗 bounds 内存快照；exit 还原快照（不读 config.chat——其 x/y 可能为 null 缺省）
-let suppressBoundsWrite = false; // I2①：程序化 bounds 写盘抑制态（moved 异步送达，保持 ~250ms 后清；见 applyBoundsWithSuppression）
+let suppressBoundsWrite = false; // I2①：程序化 bounds 写盘抑制态（moved 异步送达，保持 SUPPRESS_WRITE_MS 后清；见 applyBoundsWithSuppression）
+const SUPPRESS_WRITE_MS = 250;   // 写盘抑制窗口：覆盖 moved 异步送达延迟（超时自然失效，不依赖定时器精确性）
 
 // D3 缺省高度两常数：真值单一来源是 chat.html 的 CSS——#mini-pill（输入条高）与 #mini-panel（最小消息块高），
 // 改这两个构件的尺寸时须同步此处。每次 enter 先给缺省高，渲染端 body.mini 就位测量后经 chat-mini-set-height 上报。
@@ -710,7 +711,7 @@ function getChatMiniConfig() {
 function applyBoundsWithSuppression(bounds) {
   suppressBoundsWrite = true;
   chatWindow.setBounds(bounds);
-  setTimeout(() => { suppressBoundsWrite = false; }, 250);
+  setTimeout(() => { suppressBoundsWrite = false; }, SUPPRESS_WRITE_MS);
 }
 
 // I6：enter 落位——底边锚定 + 所在屏 workArea clamp（screen.getDisplayMatching）
@@ -741,7 +742,13 @@ function computeMiniEnterBounds() {
 
 // D6：enter——先翻模式标志 → setMinimumSize 调小（必须先于迷你 setBounds，否则被创建项 minHeight:400 钳住）→ 抑制态+落位 → 透明底 → floating 置顶 → 全空间可见（不含全屏独占空间）
 ipcMain.on('chat-mini-enter', () => {
-  if (!chatWindow || chatWindow.isDestroyed() || miniActive) return;
+  if (!chatWindow || chatWindow.isDestroyed()) return;
+  if (miniActive) {
+    // 迷你态 webContents 重载自愈（devtools reload / 崩溃自动重载）：渲染端丢 body.mini 而主进程仍 miniActive →
+    // 通知渲染端重新应用迷你 DOM 态 + 重测上报（免用户点两次）
+    chatWindow.webContents.send('mini-state-sync');
+    return;
+  }
   miniBoundsSnapshot = chatWindow.getBounds();  // I1：内存快照大窗 bounds（exit 还原用）
   miniActive = true;                            // I2①：模式标志先于一切 setBounds 翻转
   chatWindow.setMinimumSize(240, 64);           // I2③：调小最小尺寸，先于迷你 setBounds（与 exit 还原成对）

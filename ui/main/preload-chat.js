@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 渲染端测量后上报内容高度 / 上沿拖拽调高（主进程底边锚定）
   setMiniHeight: (height) => ipcRenderer.send('chat-mini-set-height', { height }),
   getMiniConfig: () => ipcRenderer.invoke('chat-mini-get-config'),
+  // 迷你态 webContents 重载自愈：主进程 enter 命中「已激活」早退时通知（渲染端重新应用 body.mini + 重测上报）
+  onMiniStateSync: (callback) => ipcRenderer.on('mini-state-sync', (_event) => callback()),
   
   // 发送消息到后端
   sendMessage: (message, source) => ipcRenderer.invoke('send-message', message, source),
