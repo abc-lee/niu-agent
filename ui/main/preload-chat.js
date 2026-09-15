@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 渲染端测量后上报内容高度 / 上沿拖拽调高（主进程底边锚定）
   setMiniHeight: (height) => ipcRenderer.send('chat-mini-set-height', { height }),
   getMiniConfig: () => ipcRenderer.invoke('chat-mini-get-config'),
+  // 迷你态移动窗口（I10 修订：替代 -webkit-app-region: drag，渲染端拖拽带屏幕坐标增量）
+  moveMini: (dx, dy) => ipcRenderer.send('chat-mini-move', { dx, dy }),
+  // hover 点亮/点击穿透（渲染端构件盒命中翻转；inside=true → setIgnoreMouseEvents(false) 可交互，
+  // inside=false → setIgnoreMouseEvents(true, {forward:true}) 穿透但鼠标事件仍回流）
+  setMiniHover: (inside) => ipcRenderer.send('chat-mini-hover', { inside }),
   // 迷你态 webContents 重载自愈：主进程 enter 命中「已激活」早退时通知（渲染端重新应用 body.mini + 重测上报）
   onMiniStateSync: (callback) => ipcRenderer.on('mini-state-sync', (_event) => callback()),
   
