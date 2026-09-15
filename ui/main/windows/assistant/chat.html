@@ -906,6 +906,159 @@
       50%      { box-shadow: 0 0 8px 2px rgba(255, 193, 7, 0.4); }
     }
     /* ===== 子 Agent Tab 样式结束 ===== */
+
+    /* ===== 迷你模式（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md） ===== */
+    /* 玻璃幕墙（甲路线 I8）：纯 CSS rgba 半透明，禁 backdrop-filter（它模糊不到系统桌面）。
+       构件尺寸/透明度用 CSS 变量定义 = 单一真源，供 JS 测量与 hover 切换共用。
+       --mini-pill-h / --mini-panel-min-h 锚定 main.js 的 MINI_PILL_HEIGHT=56 / MINI_PANEL_MIN_HEIGHT=90
+       （缺省高度两常数），改这两个构件尺寸时必须同步 main.js。 */
+    #mini-bar {
+      --mini-pill-h: 56px;
+      --mini-panel-min-h: 90px;
+      --mini-idle-opacity: 0.1;   /* 缺省兜底；enter 时 JS 用 window-config.json chatMini 值覆盖 */
+      --mini-hover-opacity: 0.3;
+      --mini-glass-alpha: var(--mini-idle-opacity);
+      display: none;
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      flex-direction: column;
+      z-index: 9999;
+      /* D2：系统默认字体，不继承 Chat 页可变字体（用户拍板） */
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: #1a1a1a;
+      /* I10：整窗移动 = 构件容器原生拖拽（输入框/按钮/上沿拖条标 no-drag） */
+      -webkit-app-region: drag;
+    }
+    body.mini #mini-bar { display: flex; }
+    /* D5：悬停只切背景 alpha（CSS 变量），文字/控件不动；禁用窗口级 setOpacity */
+    #mini-bar.mini-hover { --mini-glass-alpha: var(--mini-hover-opacity); }
+
+    /* I3：body.mini 清页面层背景（html 背景由 JS 成对清除/还原；此处清 body + .container 整页背景） */
+    body.mini { background: transparent !important; }
+    body.mini .container { display: none; background: transparent !important; background-image: none !important; }
+
+    /* 消息块：稍窄（左右内缩），视觉上像从输入条里向上抽出；底边锚定/长高由主进程管窗口 */
+    #mini-panel {
+      flex: 1 1 auto;
+      min-height: var(--mini-panel-min-h);
+      display: flex;
+      flex-direction: column;
+      margin: 0 16px;
+      background: rgba(255, 255, 255, var(--mini-glass-alpha));
+      border-radius: 14px 14px 8px 8px;
+      box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.12);
+      transition: background-color 0.15s ease;
+    }
+    /* 上沿拖拽条（I7 调高走迷你专用新 IPC；I10 no-drag） */
+    #mini-resize-handle {
+      flex: none;
+      height: 6px;
+      cursor: ns-resize;
+      -webkit-app-region: no-drag;
+    }
+    /* 消息区滚动容器：高度上限（主进程半屏封顶）超出部分内部滚动 */
+    #mini-scroll { flex: 1 1 auto; overflow-y: auto; }
+
+    /* 输入条：玻璃圆柱，稍宽（占满窗宽） */
+    #mini-pill {
+      flex: none;
+      height: var(--mini-pill-h);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      background: rgba(255, 255, 255, var(--mini-glass-alpha));
+      border-radius: 16px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+      transition: background-color 0.15s ease;
+    }
+
+    /* D5 文字策略：固定深色 + 反色 text-shadow 多向描边（4 方向，非单偏移）——深/浅壁纸下均可读 */
+    #mini-message,
+    #mini-input,
+    #mini-send-btn,
+    .mini-round-btn {
+      text-shadow:
+        1px 0 0 rgba(255, 255, 255, 0.85),
+        -1px 0 0 rgba(255, 255, 255, 0.85),
+        0 1px 0 rgba(255, 255, 255, 0.85),
+        0 -1px 0 rgba(255, 255, 255, 0.85);
+    }
+
+    #mini-message {
+      padding: 14px 14px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      word-wrap: break-word;
+      white-space: normal;
+    }
+    /* 三态：处理中状态文本 / 空闲占位（斜体灰） */
+    #mini-message.mini-state { color: #444; font-style: italic; }
+    #mini-message p { margin: 0 0 6px; }
+    #mini-message pre,
+    #mini-message code { background: rgba(0, 0, 0, 0.08); border-radius: 3px; font-size: 12px; }
+    #mini-message pre { padding: 6px 8px; overflow-x: auto; }
+    #mini-message a { color: #1a5276; }
+
+    /* 控件自带固定底（不随 hover 变量变），任何悬停态下保持可读 */
+    #mini-input {
+      flex: 1;
+      min-width: 0;
+      height: 36px;
+      padding: 0 12px;
+      border: none;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.45);
+      font-size: 14px;
+      color: #1a1a1a;
+      outline: none;
+      -webkit-app-region: no-drag;
+    }
+    #mini-send-btn {
+      flex: none;
+      height: 32px;
+      padding: 0 14px;
+      border: none;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.55);
+      color: #1a1a1a;
+      font-size: 13px;
+      cursor: pointer;
+      -webkit-app-region: no-drag;
+    }
+    #mini-send-btn:hover { background: rgba(255, 255, 255, 0.8); }
+    .mini-round-btn {
+      flex: none;
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.55);
+      color: #1a1a1a;
+      font-size: 14px;
+      cursor: pointer;
+      -webkit-app-region: no-drag;
+    }
+    .mini-round-btn:hover { background: rgba(255, 255, 255, 0.8); }
+
+    /* 标题栏迷你按钮（正常模式入口，镜像 close-btn 样式） */
+    .mini-btn {
+      background: #ffe3a3;
+      border: none;
+      color: #000;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 12px;
+      box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+      -webkit-app-region: no-drag;
+    }
+    .mini-btn:hover {
+      transform: scale(1.1);
+      box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
+    }
   </style>
     <!-- 字体配置动态注入：无配置时不注入（用浏览器系统默认字体），有配置时注入 @font-face + 覆盖 font-family -->
     <script>
@@ -930,6 +1083,7 @@
         <img src="icons/icon-32.png" class="avatar" />
         <span>妞妞</span>
       </div>
+      <button class="mini-btn" id="mini-btn" title="迷你模式">▫</button>
       <button class="close-btn" id="close-btn">×</button>
     </div>
 
@@ -1018,6 +1172,23 @@
       </div>
     </div>
     <div class="resize-handle" id="resize-handle"></div>
+  </div>
+
+  <!-- 迷你模式玻璃幕墙（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md）：
+       仅 body.mini 下显示；底边锚定、窗高由主进程管；消息块稍窄于输入条（像从输入条向上抽出） -->
+  <div id="mini-bar">
+    <div id="mini-panel">
+      <div id="mini-resize-handle" title="拖拽调高度 / 双击恢复自动"></div>
+      <div id="mini-scroll">
+        <div id="mini-message" class="mini-state">暂无新消息</div>
+      </div>
+    </div>
+    <div id="mini-pill">
+      <input id="mini-input" type="text" placeholder="说点什么..." />
+      <button id="mini-send-btn">发送</button>
+      <button class="mini-round-btn" id="mini-restore-btn" title="还原大窗">▢</button>
+      <button class="mini-round-btn" id="mini-close-btn" title="关闭">×</button>
+    </div>
   </div>
 
   <script>
@@ -1366,11 +1537,13 @@
       }
       bubble.textContent = text || '正在思考...';
       messages.scrollTop = messages.scrollHeight;
+      scheduleMiniUpdate();  // 迷你三态：typing 气泡出现 → 处理中状态文本
     }
 
     function hideTyping() {
       const bubble = document.getElementById('status-bubble');
       if (bubble) bubble.remove();
+      scheduleMiniUpdate();  // 迷你三态：typing 气泡消失 → 回显最后一条 Agent 消息
     }
 
     // 便捷函数：添加系统消息
@@ -1393,6 +1566,7 @@
         bubble.textContent = '✅ ' + data.tool_name + ' 完成，正在思考...';
       }
       messages.scrollTop = messages.scrollHeight;
+      scheduleMiniUpdate();  // 迷你三态：工具状态文本同步镜像
     }
     
     // 重试发送消息（自动重连）
@@ -1490,10 +1664,22 @@
         return;  // early return：不走主对话逻辑
       }
 
+      // I9（plan 2026-09-15-chat-mini-mode）：取值/清空/focus 留在调用点——主输入框在此清空，
+      // 再整体复用主对话路径；迷你模式传自有文本、自管清空与 focus
+      userInput.value = '';
+      userInput.style.height = 'auto';
+      const tookNormalPath = await sendMainMessage(text);
+      if (tookNormalPath) userInput.focus();  // 原版只在普通消息路径（finally）focus，命令路径不 focus——保持行为等价
+    }
+
+    // I9：抽出单元 = 子 tab 早退之后的主对话路径整体（命令路由 + 普通消息尾段）。
+    // 以 text 为参；迷你模式传自有文本直接调用本函数即强制 main 路由（跳过子 tab 早退段）。
+    // 返回 true = 走了普通消息路径（调用点据此决定是否 focus）；命令分支均 return false。
+    // 取值/清空/focus 等 DOM 副作用一律留在各调用点——防迷你发送抹掉大窗未发草稿、
+    // 防 focus 拉回已隐藏的主输入框。
+    async function sendMainMessage(text) {
       // /stop 指令 - 停止当前 Agent 工作（允许在 isProcessing=true 时执行）
       if (text === '/stop') {
-        userInput.value = '';
-        userInput.style.height = 'auto';
         sendBtn.disabled = false;
         try {
           await window.electronAPI.sendMessage('/stop');
@@ -1501,55 +1687,47 @@
           console.error('停止失败:', e);
           addSystemMessage('停止失败: ' + (e.message || e));
         }
-        return;
+        return false;
       }
 
       // /clear 指令 - 已随压缩体系退役（T6）：等价 /new，直接清空不再先整理
       // /new 指令 - 清空聊天记录
       if (text === '/clear' || text === '/new') {
-        userInput.value = '';
-        userInput.style.height = 'auto';
         stopBtn.style.display = 'none';
         sendBtn.disabled = false;
         await clearChat();
-        return;
+        return false;
       }
 
       // /setup 指令 - 打开设置页面
       if (text === '/setup') {
-        userInput.value = '';
-        userInput.style.height = 'auto';
         if (window.electronAPI && window.electronAPI.openSettings) {
           window.electronAPI.openSettings();
         }
         sendBtn.disabled = false;
-        return;
+        return false;
       }
 
       // /sleep 指令 - 让精灵进入睡眠（触发睡眠整理流程）
       if (text === '/sleep') {
-        userInput.value = '';
-        userInput.style.height = 'auto';
         sendBtn.disabled = false;
         // isProcessing 检查（P2-1 主防线）：Agent 忙碌时精灵处于 BUSY 状态，
         // 此时进入睡眠会导致 Agent 完成后 chat_idle 把精灵从 SLEEP 强制唤醒回 IDLE
         // 的状态冲突（整理还在后端跑但精灵已显示 IDLE）。忙碌时提示用户，不发 IPC。
         // spirit.html 侧的 BUSY 守卫是兜底（防御直接 IPC 调用）。
         if (isProcessing) {
-          addSystemMessage('⚠️ 精灵忙碌中，请先 /stop 停止当前任务再让它睡觉');
-          return;
+          addSystemMessage('⚠️ 精灵正忙，请先 /stop 当前任务再让它睡觉');
+          return false;
         }
         addSystemMessage('💤 精灵已进入睡眠，开始整理…');
         window.electronAPI.enterSleep();
-        return;
+        return false;
       }
 
       // /compact 指令 - 统一压缩入口：压缩 = 一条消息，后端拦截（spec 2026-09-06）
       // 不 /stop、不走独立 HTTP——复用正常消息通道 sendMessage('/compact')，
       // 后端 chat_session 落库前拦截置意图；忙时任务间隙执行、闲时立即执行。
       if (text === '/compact') {
-        userInput.value = '';
-        userInput.style.height = 'auto';
         addSystemMessage('压缩指令已发送…');
         try {
           await window.electronAPI.sendMessage('/compact');
@@ -1557,15 +1735,14 @@
           console.error('发送压缩指令失败:', e);
           addSystemMessage('压缩指令发送失败: ' + (e.message || e));
         }
-        return;
+        return false;
       }
 
       // 铁律1：用户触发的 → 先刷新页面（即时反馈）
       const userMsg = addMessage('user', text);
-      if (!userMsg) { return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
+      if (!userMsg) { return false; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
 
-      userInput.value = '';
-      userInput.style.height = 'auto';
+      _miniBusySince = Date.now();  // 迷你三态：本轮处理开始标记（新 assistant 消息到达前状态文本优先于旧消息）
       showTyping();
       window.electronAPI.notifyBusy(true, 'chat');
 
@@ -1588,8 +1765,8 @@
         window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
         loadStats();
-        userInput.focus();
       }
+      return true;  // 走了普通消息路径（命令分支均 return false）
     }
     
     // 清空聊天记录
@@ -1603,6 +1780,10 @@
           _brainStateInitialized = false;
           oldestMessageId = null;
           addMessage('system', '✅ 聊天记录已清空');
+          // I9：/clear 同步清空迷你消息区（重填由后续 DB 刷新/历史重建的 addMessage 钩子完成）
+          miniLastAssistant = null;
+          _miniBusySince = null;
+          scheduleMiniUpdate();
         } else {
           addMessage('system', '❌ 清空失败: ' + (result.error || '未知错误'));
         }
@@ -1611,6 +1792,182 @@
       }
       userInput.focus();
     }
+
+    // ========== 迷你模式（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md） ==========
+    // 同一窗口变形：enter = 窗口级 API + body.mini；exit = 还原。零重建、不重载页面（I1）。
+    // 消息同步（I5）：在 addMessage 按消息源 role 捕获主对话最后一条 role=assistant 消息（钩子见 addMessage），
+    //   覆盖 addMessageWithId / refreshFromDB / loadHistory 全部追加汇合点；三态：
+    //   有 Agent 消息 → 显示之；处理中 → 镜像主窗状态气泡一行文本；空闲无消息 → 占位。
+    let miniActive = false;          // 渲染端模式标志（与 body.mini class 成对）
+    let miniManualLocked = false;    // I7：拖过上沿后本次迷你会话自动长高停止；双击恢复 / 再 enter 复位
+    let miniLastAssistant = null;    // { text, ts } 主对话最后一条 role=assistant（按源 role 捕获，非 DOM class）
+    let _miniBusySince = null;       // 当前处理轮开始时间戳（新 assistant 消息到达前状态文本优先于旧消息）
+    let _inSubagentRender = false;   // addSubagentMessage 渲染中（其回退路径调 addMessage('assistant')，不得被迷你捕获）
+    const miniBar = document.getElementById('mini-bar');
+    const miniPanel = document.getElementById('mini-panel');
+    const miniPill = document.getElementById('mini-pill');
+    const miniMessageEl = document.getElementById('mini-message');
+    const miniScrollEl = document.getElementById('mini-scroll');
+    const miniInput = document.getElementById('mini-input');
+    const miniSendBtn = document.getElementById('mini-send-btn');
+    const miniRestoreBtn = document.getElementById('mini-restore-btn');
+    const miniCloseBtn = document.getElementById('mini-close-btn');
+    const miniResizeHandle = document.getElementById('mini-resize-handle');
+
+    // D5：悬停只切背景 alpha（CSS 变量 --mini-glass-alpha），文字/控件不动
+    miniBar.addEventListener('mouseenter', () => miniBar.classList.add('mini-hover'));
+    miniBar.addEventListener('mouseleave', () => miniBar.classList.remove('mini-hover'));
+
+    // I7/I10：上沿拖拽调高——走迷你专用新 IPC（setPosition/resizeWindow 主进程无 handler，是死通道，不得复用）
+    let miniDragging = false;
+    let miniDragStartY = 0;
+    let miniDragStartH = 0;
+    // 构件最小总高 = 输入条 + 消息块最小高（读 CSS 变量真值，防拖到输入条被裁出窗口）
+    function miniMinHeight() {
+      const panelMinH = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-panel-min-h')) || 90;
+      return (miniPill.offsetHeight || 56) + panelMinH;
+    }
+    miniResizeHandle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      miniDragging = true;
+      miniDragStartY = e.screenY;
+      miniDragStartH = window.innerHeight;
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!miniDragging || !miniActive) return;
+      const dy = miniDragStartY - e.screenY;  // 向上拖 → 变高
+      if (Math.abs(dy) > 2) miniManualLocked = true;  // I7：拖过即本次迷你会话锁手动高度（自动重测停止）
+      _miniReportedH = 0;  // 窗高已被手动改变，解锁重测时即使数值相同也要上报
+      window.electronAPI.setMiniHeight(Math.max(miniMinHeight(), miniDragStartH + dy));
+    });
+    document.addEventListener('mouseup', () => { miniDragging = false; });
+    miniResizeHandle.addEventListener('dblclick', () => {
+      miniManualLocked = false;  // I7：双击恢复自动
+      scheduleMiniUpdate();
+    });
+
+    // D3：构件实际总高 = 输入条（固定） + 消息块（最小高与内容高取大）。
+    // 尺寸一律读 CSS 变量 / 实测布局（单一真源），不写死数字；上限封顶由主进程按所在屏 workArea 处理。
+    function measureMiniHeight() {
+      const panelMinH = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-panel-min-h')) || 90;
+      const pillH = miniPill.offsetHeight || 56;
+      const contentH = miniResizeHandle.offsetHeight + miniMessageEl.scrollHeight;
+      return Math.round(pillH + Math.max(panelMinH, contentH));
+    }
+
+    // I9：迷你消息区三态渲染
+    function renderMiniMarkdown(text) {
+      try {
+        const safeText = encodeLocalPaths(text);
+        const html = typeof DOMPurify !== 'undefined'
+          ? DOMPurify.sanitize(marked.parse(safeText), {
+              ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|file):|\/|[A-Za-z]:\\|[a-z+.-]+(?:[^a-z+.-:]))(?:[^"<>]|$)/i
+            })
+          : marked.parse(safeText);
+        // 迷你不做图片/链接后处理：img 直接移除；<a> 中性化为纯文本。
+        // 原因：迷你没有点击拦截器（链接拦截只挂在 #messages 上），本地路径链接点击会走默认导航成 file://，
+        // main.js will-navigate 放行 file:// → 整个 chat webContents 被导航走、会话 UI/SSE 全毁。完整交互请还原大窗。
+        return html.replace(/<img[^>]*>/gi, '')
+                   .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, '$1');
+      } catch (e) {
+        return escapeHtml(text);
+      }
+    }
+    function updateMiniMessage() {
+      if (!miniActive) return;
+      const bubble = document.getElementById('status-bubble');
+      const typingActive = !!bubble || isProcessing;
+      if (typingActive && _miniBusySince == null) _miniBusySince = Date.now();
+      if (typingActive && (!miniLastAssistant || miniLastAssistant.ts < _miniBusySince)) {
+        // 处理中：镜像主窗状态气泡语义（首条流式到达即由状态切消息）
+        miniMessageEl.classList.add('mini-state');
+        miniMessageEl.textContent = (bubble && bubble.textContent) || '正在思考...';
+        return;
+      }
+      if (miniLastAssistant) {
+        miniMessageEl.classList.remove('mini-state');
+        miniMessageEl.innerHTML = renderMiniMarkdown(miniLastAssistant.text);
+        miniScrollEl.scrollTop = miniScrollEl.scrollHeight;
+        return;
+      }
+      // 空闲无消息：占位文本
+      miniMessageEl.classList.add('mini-state');
+      miniMessageEl.textContent = '暂无新消息';
+    }
+
+    let _miniUpdatePending = false;
+    let _miniReportedH = 0;
+    function scheduleMiniUpdate() {
+      if (!miniActive || _miniUpdatePending) return;
+      _miniUpdatePending = true;
+      requestAnimationFrame(() => {
+        _miniUpdatePending = false;
+        if (!miniActive) return;
+        updateMiniMessage();
+        // D3：内容变化（新消息/清空）重测上报；手动锁定期间停止自动重测（I7）
+        const h = measureMiniHeight();
+        if (!miniManualLocked && h !== _miniReportedH) {
+          _miniReportedH = h;
+          window.electronAPI.setMiniHeight(h);
+        }
+      });
+    }
+
+    async function enterMini() {
+      if (miniActive) return;
+      try {
+        const cfg = await window.electronAPI.getMiniConfig();
+        miniBar.style.setProperty('--mini-idle-opacity', String(cfg.idleOpacity ?? 0.1));
+        miniBar.style.setProperty('--mini-hover-opacity', String(cfg.hoverOpacity ?? 0.3));
+      } catch (e) { /* 兜底：CSS 缺省 0.1/0.3 */ }
+      miniActive = true;
+      miniManualLocked = false;   // I7：再 enter 恢复自动
+      _miniBusySince = null;
+      _miniReportedH = 0;
+      document.documentElement.style.background = 'transparent';  // I3：清页面层 html 背景（exit 成对还原）
+      document.body.classList.add('mini');
+      updateMiniMessage();
+      window.electronAPI.enterMiniMode();
+      // D3：body.mini 就位后测量构件实际总高上报（主进程先按缺省高入场，测量纠正——每次 enter 都走）
+      requestAnimationFrame(() => {
+        if (miniActive && !miniManualLocked) {
+          _miniReportedH = measureMiniHeight();
+          window.electronAPI.setMiniHeight(_miniReportedH);
+        }
+      });
+    }
+
+    function exitMini() {
+      if (!miniActive) return;
+      miniActive = false;
+      miniManualLocked = false;   // 迷你态不记忆：退出再进恢复自动
+      miniDragging = false;
+      miniBar.classList.remove('mini-hover');
+      document.body.classList.remove('mini');
+      document.documentElement.style.background = '';  // I3：还原（棉纸底回 CSS 默认）
+      window.electronAPI.exitMiniMode();
+    }
+
+    // I9：迷你发送——复用主输入命令分支链（sendMainMessage），强制 main 路由；取值/清空/focus 自管
+    async function miniSendMessage() {
+      const text = miniInput.value.trim();
+      if (!text) return;
+      miniInput.value = '';
+      await sendMainMessage(text);
+      miniInput.focus();
+    }
+    miniSendBtn.addEventListener('click', miniSendMessage);
+    miniInput.addEventListener('keydown', (e) => {
+      window.electronAPI.notifyActivity();
+      if (e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault();
+        miniSendMessage();
+      }
+    });
+
+    document.getElementById('mini-btn').addEventListener('click', enterMini);
+    miniRestoreBtn.addEventListener('click', exitMini);
+    miniCloseBtn.addEventListener('click', () => window.electronAPI.close());  // D4：关闭语义 = 现有 close（销毁窗口）
 
     // ========== 路径编码预处理（括号平衡算法） ==========
     // 修复：文件路径中的括号（如 硅基银行项目 (2).docx）被 Markdown 语法截断
@@ -1716,7 +2073,12 @@
       if (role === 'tool') return null;
       // === 新增：subagent_msg 特殊渲染（主↔子 Agent 对话，区别于用户↔主 Agent） ===
       if (role === 'subagent_msg') {
-        return addSubagentMessage(text, skipAppend, createdAt);
+        _inSubagentRender = true;  // I5：标记子 Agent 渲染中——其不可解析时回退 addMessage('assistant')，不得被迷你捕获
+        try {
+          return addSubagentMessage(text, skipAppend, createdAt);
+        } finally {
+          _inSubagentRender = false;
+        }
       }
       const div = document.createElement('div');
       div.className = `message ${role}`;
@@ -1832,6 +2194,13 @@
       if (!skipAppend) {
         messages.appendChild(div);
         messages.scrollTop = messages.scrollHeight;
+      }
+      // I5：迷你消息同步——按消息源 role 捕获主对话最后一条 role=assistant（钩挂在既有追加路径汇合点，
+      // addMessageWithId / refreshFromDB / loadHistory 均经此）。禁止按渲染后 DOM class 过滤：
+      // subagent_msg 不可解析时回退 addMessage('assistant')，按 DOM 类取数会误捞子 Agent 内容。
+      if (role === 'assistant' && !_inSubagentRender && !skipAppend) {
+        miniLastAssistant = { text: text || '', ts: Date.now() };
+        scheduleMiniUpdate();
       }
       return div;
     }
@@ -2543,14 +2912,18 @@
         // Agent循环结束：重置状态机
         hideTyping();
         isProcessing = false;
+        _miniBusySince = null;  // 迷你三态：本轮处理结束，回显最后一条 Agent 消息
         stopBtn.style.display = 'none';
         sendBtn.disabled = false;
         window.electronAPI.notifyBusy(false, 'chat');
+        scheduleMiniUpdate();
       } else if (data && data.role === 'chat_busy') {
         // Agent循环开始：通知 spirit 进入忙碌状态
         isProcessing = true;
+        _miniBusySince = Date.now();  // 迷你三态：SSE 驱动的处理轮开始（自动触发场景，无本地 showTyping）
         stopBtn.style.display = 'flex';
         window.electronAPI.notifyBusy(true, 'chat');
+        scheduleMiniUpdate();
       } else {
         // 普通消息通知 → 从DB刷新渲染
         refreshFromDB();
