@@ -210,12 +210,7 @@ function createSpiritWindow() {
 // === Step 4: createChatWindow（来自 ui/assistant/main.js） ===
 function createChatWindow() {
   if (chatWindow && !chatWindow.isDestroyed()) {
-    // 迷你模式直接 show/focus（保留分支）
-    if (miniActive) {
-      chatWindow.show();
-      chatWindow.focus();
-      return chatWindow;
-    }
+    // 迷你态也走同一路径（show/focus，无特判）
     chatWindow.show();
     chatWindow.focus();
     return chatWindow;
@@ -680,8 +675,7 @@ ipcMain.on('open-chat', () => {
 
 let miniActive = false;          // 模式标志：先于一切 setBounds 翻转（I2 判据），兜底吸收 moved 竞态
 let miniBoundsSnapshot = null;   // I1：enter 时大窗 bounds 内存快照；exit 还原快照（不读 config.chat——其 x/y 可能为 null 缺省）
-let suppressBoundsWrite = false; // I2①：程序化 bounds 写盘抑制态（moved 异步送达，setImmediate 后清）
-let suppressedBounds = null;     // I2①：抑制期间记录的期望 bounds（= setBounds 目标值）
+let suppressBoundsWrite = false; // I2①：程序化 bounds 写盘抑制态（moved 异步送达，保持 ~250ms 后清；见 applyBoundsWithSuppression）
 
 // D3 缺省高度两常数：真值单一来源是 chat.html 的 CSS——#mini-pill（输入条高）与 #mini-panel（最小消息块高），
 // 改这两个构件的尺寸时须同步此处。每次 enter 先给缺省高，渲染端 body.mini 就位测量后经 chat-mini-set-height 上报。
@@ -709,11 +703,14 @@ function getChatMiniConfig() {
 
 // I2①：程序化 setBounds 套抑制守卫。调用前 miniActive 必须已翻转到目标模式（时序由 enter/exit 保证）。
 // 禁 animate:true（I2④：animate 才程序化触发 resized，且动画变形可能留残影）。
+// I2①：程序化 setBounds 写盘抑制。macOS 的 moved 异步送达——setImmediate 单轮清不掉，
+// enter→exit 极快时漏网 moved 可能在 miniActive 翻回后把迷你几何写进 config.chat；
+// 故保持 ~250ms 覆盖送达延迟（取舍：250ms 内手动拖拽不写盘，可接受）；
+// 过期后的漏网 moved 由 miniActive 先翻转兜底（写回正确侧）。
 function applyBoundsWithSuppression(bounds) {
   suppressBoundsWrite = true;
-  suppressedBounds = bounds;
   chatWindow.setBounds(bounds);
-  setImmediate(() => { suppressBoundsWrite = false; suppressedBounds = null; });
+  setTimeout(() => { suppressBoundsWrite = false; }, 250);
 }
 
 // I6：enter 落位——底边锚定 + 所在屏 workArea clamp（screen.getDisplayMatching）
