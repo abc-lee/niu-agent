@@ -951,7 +951,8 @@
       position: relative;
       flex: 1 1 auto;
       min-height: var(--mini-panel-min-h);
-      margin: 0 14px;   /* 原型 panelW=352 vs pillW=380 → 左右各内缩 14px */
+      margin: 0 calc(var(--mini-pill-h) / 2);   /* 几何（2026-09-15 用户口径）：内缩=胶囊半径 R=pill高/2，
+         面板侧边垂线恰好落在胶囊圆弧起点（直线段边缘），不落在圆弧上；跟随 --mini-pill-h 不写死 */
       display: flex;
       flex-direction: column;
       background: rgba(255, 255, 255, var(--mini-glass-alpha));
@@ -974,12 +975,13 @@
     }
     #mini-resize-handle:hover { background: rgba(0, 0, 0, .35); }
 
-    /* 输入条 = 原型 #pill 逐字：真胶囊（圆角=高度一半）、margin-top:-6px 叠合贴住消息块（原型 gap=-6）。
-       唯一适配：高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊" */
+    /* 输入条 = 原型 #pill 逐字：真胶囊（圆角=高度一半）。
+       适配：①高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊"
+       ②margin-top:0——原型的 -6px 叠合按用户口径去掉（面板与圆柱不重合，2026-09-15） */
     #mini-pill {
       flex: none;
       height: var(--mini-pill-h);
-      margin-top: -6px;
+      margin-top: 0;
       display: flex;
       align-items: center;
       padding: 0 8px 0 18px;
@@ -1845,7 +1847,7 @@
     // D3：构件实际总高 = 输入条（固定） + 消息块（最小高与内容高取大）。
     // 尺寸一律读 CSS 变量 / 实测布局（单一真源），不写死数字；上限封顶由主进程按所在屏 workArea 处理。
     function measureMiniHeight() {
-      // 构件总高 = 输入条 + max(面板最小高, 消息区实际) - 叠合量（原型 margin-top:-6px）。
+      // 构件总高 = 输入条 + max(面板最小高, 消息区实际) + 叠合量（margin-top 现为 0；若将来重引入负叠合 margin，此处自动扣减）。
       // 面板实际高含自身 padding/border（box-sizing:border-box），从 computed style 读，不硬编码。
       const panelMinH = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-panel-min-h')) || 90;
       const pillH = miniPill.offsetHeight || 56;
