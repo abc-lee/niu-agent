@@ -1853,6 +1853,13 @@
       scheduleMiniUpdate();
     });
 
+    // P1（2026-09-15 审查）：enter 时 body.mini 先在大窗旧视口宽下就位，首测按旧宽折行——大窗窄于构件时测偏高、
+    // 宽于构件时测偏短（消息被裁）。主进程 setBounds 缩/放窗口后 resize 事件触发重测一次即收敛
+    // （_miniReportedH 去重，几何不再变化即停）；上沿拖拽期间跳过（拖拽本身实时驱动 setMiniHeight）
+    window.addEventListener('resize', () => {
+      if (miniActive && !miniDragging) scheduleMiniUpdate();
+    });
+
     // D3：窗口总高 = 构件（输入条固定 + 消息块最小高与内容高取大）+ 2M 透明留白带。
     // 尺寸一律读 CSS 变量 / 实测布局（单一真源），不写死数字；上限封顶由主进程按所在屏 workArea 处理。
     function measureMiniHeight() {
@@ -1930,8 +1937,8 @@
       });
     }
 
-    async function enterMini() {
-      if (miniActive) return;
+    // 共享「重新应用迷你 DOM 态」路径：enter 与 mini-state-sync（重载自愈）都走它，幂等
+    async function applyMiniDom() {
       try {
         const cfg = await window.electronAPI.getMiniConfig();
         miniBar.style.setProperty('--mini-idle-opacity', String(cfg.idleOpacity ?? 0.4));
@@ -1946,8 +1953,10 @@
       document.documentElement.style.background = 'transparent';  // I3：清页面层 html 背景（exit 成对还原）
       document.body.classList.add('mini');
       updateMiniMessage();
-      window.electronAPI.enterMiniMode();
-      // D3：body.mini 就位后测量构件实际总高上报（主进程先按缺省高入场，测量纠正——每次 enter 都走）
+    }
+
+    // D3：body.mini 就位后测量构件实际总高上报（主进程先按缺省高入场，测量纠正——每次 enter 都走）
+    function reportMiniHeight() {
       requestAnimationFrame(() => {
         if (!miniActive || miniManualLocked) return;
         const h = measureMiniHeight();
@@ -1967,6 +1976,19 @@
           }, 150);
         }
       });
+    }
+
+    async function enterMini() {
+      if (miniActive) return;
+      await applyMiniDom();
+      window.electronAPI.enterMiniMode();
+      reportMiniHeight();
+    }
+
+    // 迷你态 webContents 重载自愈（devtools reload / 崩溃自动重载）：渲染端丢 body.mini 而主进程仍 miniActive →
+    // 主进程 chat-mini-enter 命中「已激活」早退时发该事件；重新应用迷你 DOM 态 + 重测上报（免用户点两次，幂等去重）
+    if (window.electronAPI.onMiniStateSync) {
+      window.electronAPI.onMiniStateSync(() => { applyMiniDom().then(reportMiniHeight); });
     }
 
     function exitMini() {
