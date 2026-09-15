@@ -198,8 +198,9 @@
     const MIN_SIZE = 60;
     const MAX_SIZE = 250;
     const WHEEL_NOTCH_MIN = 90;    // |deltaY|>=该值=鼠标一格，立刻走一步（Windows 不变）；否则为触控板小增量
-    const WHEEL_MIN_ACC = 40;      // 触控板翻页：手势内累计 |deltaY| 满该值才走一步——调大 = 翻页更迟钝（防误触）
-    const WHEEL_GESTURE_GAP = 150; // 两次 wheel 事件间隔超过该毫秒数 → 新手势（可再走一步）
+    const WHEEL_STEP_DELTA = 12;   // 触控板翻页：累计 |deltaY| 满该 px 即可走一步——调大 = 更迟钝
+    const WHEEL_STEP_INTERVAL = 200; // 触控板翻页：两次走步最小间隔 ms（限速，防惯性/连续事件爆冲）——调大 = 连续翻页更慢
+    const WHEEL_GESTURE_GAP = 150; // 两次 wheel 事件间隔超过该毫秒数 → 新手势（清空累计余量）
     const ZOOM_STEP = 5;           // Ctrl+滚轮每步缩放像素
     const ZOOM_ACC_STEP = 60;      // 触控板缩放：累计 60px 走一步（ZOOM_STEP px），一次捏合可连走多步——调大 = 缩放更迟钝
 
@@ -231,7 +232,7 @@
     // ========== 状态 ==========
     let currentPage = 0; // 当前显示的旧便签索引（0 = 最新）
     let stickySize = DEFAULT_SIZE;
-    let wheelAcc = 0, wheelUsed = false, wheelGestureTimer = null; // 触控板手势：累计量 / 本手势是否已走步 / 复位定时器（超 WHEEL_GESTURE_GAP ms 无事件 → 新手势）
+    let wheelAcc = 0, lastStepAt = 0, wheelGestureTimer = null; // 触控板翻页：累计量 / 上次走步时刻(ms) / 手势复位定时器（超 WHEEL_GESTURE_GAP ms 无事件 → 清空累计）
     let currentNoteId = null; // 当前显示的旧便签 ID
     let notesCache = []; // 内存缓存，后端为唯一数据源
 
@@ -446,7 +447,7 @@
         `第 ${currentPage + 1}/${Math.min(total, 99)} 条 | 滚轮翻页 | Ctrl+滚轮缩放`;
     }
 
-    // ========== 滚轮翻页/缩放（翻页一次手势一步，缩放按累计量走步；向下滚 = 更旧 / 变小） ==========
+    // ========== 滚轮翻页/缩放（翻页低阈值+限速，缩放按累计量走步；向下滚 = 更旧 / 变小） ==========
     function applyWheelStep(steps, e) {   // 翻页/缩放共用的"走一步"
       if (e.ctrlKey) {
         e.preventDefault();
@@ -461,21 +462,25 @@
     }
 
     document.addEventListener('wheel', (e) => {
-      // 手势结束（WHEEL_GESTURE_GAP ms 无事件）后复位：下次手势可再走一步
+      // 手势结束（WHEEL_GESTURE_GAP ms 无事件）后复位：清空累计余量，抬手后不会再跳页
       if (wheelGestureTimer) clearTimeout(wheelGestureTimer);
-      wheelGestureTimer = setTimeout(() => { wheelAcc = 0; wheelUsed = false; }, WHEEL_GESTURE_GAP);
+      wheelGestureTimer = setTimeout(() => { wheelAcc = 0; }, WHEEL_GESTURE_GAP);
       // 鼠标：一格一个事件 → 立刻走一步，Windows 行为不变
-      if (Math.abs(e.deltaY) >= WHEEL_NOTCH_MIN) { wheelAcc = 0; wheelUsed = false; return applyWheelStep(e.deltaY > 0 ? 1 : -1, e); }
+      if (Math.abs(e.deltaY) >= WHEEL_NOTCH_MIN) { wheelAcc = 0; return applyWheelStep(e.deltaY > 0 ? 1 : -1, e); }
       // 触控板小增量：先累计，再按用途走步
       wheelAcc += e.deltaY;
       if (e.ctrlKey) {
-        // 缩放：按累计量比例走步（每 ZOOM_ACC_STEP px 一步），不受"一次手势一步"限制——一次捏合可连缩若干步
+        // 缩放：按累计量比例走步（每 ZOOM_ACC_STEP px 一步），不限速——一次捏合可连缩若干步
         const steps = Math.trunc(wheelAcc / ZOOM_ACC_STEP);
         if (steps !== 0) { wheelAcc -= steps * ZOOM_ACC_STEP; applyWheelStep(steps, e); }
-      } else if (!wheelUsed && Math.abs(wheelAcc) >= WHEEL_MIN_ACC) {
-        // 翻页：一次手势最多一步——累计确认意图，走步后忽略其余直到下次手势
-        wheelUsed = true;
-        applyWheelStep(Math.sign(wheelAcc), e);
+      } else {
+        // 翻页：低阈值（满 WHEEL_STEP_DELTA 即有反应）+ 限速（距上次走步 ≥ WHEEL_STEP_INTERVAL 才走，只消费一步的量）
+        if (Math.trunc(wheelAcc / WHEEL_STEP_DELTA) !== 0 && performance.now() - lastStepAt >= WHEEL_STEP_INTERVAL) {
+          const dir = Math.sign(wheelAcc);
+          lastStepAt = performance.now();
+          wheelAcc -= dir * WHEEL_STEP_DELTA;
+          applyWheelStep(dir, e);
+        }
       }
     }, { passive: false });
 
