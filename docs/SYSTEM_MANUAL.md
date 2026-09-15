@@ -14,6 +14,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 功能 | 说明 |
 |------|------|
 | 对话助手 | 多模型支持（OpenAI/Claude/DeepSeek/Qwen/Ollama） |
+| 迷你模式 | 主对话窗一键收缩为悬浮玻璃条：始终置顶、跟随当前桌面、点击穿透（不挡其它窗口操作）、幕布随消息向上长高/可手拖调高、悬停点亮、可拖动。外观与位置参数见 `~/.niu/window-config.json` 的 `chatMini` 段（分册：窗口与界面配置） |
 | 文档入库 | 拖入文档自动入库；部分格式（.doc/.xls/.ppt）仅支持存储，不支持知识图谱 |
 | 知识图谱 | 自动提取实体和关系，支持图谱查询 |
 | 语义搜索 | LightRAG 统一检索（local/global/hybrid/mix/naive 模式） |
@@ -945,4 +946,4 @@ curl http://<host>:<port>/props      # 本地 llama.cpp：确认上下文窗口�
 | 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 完整接入手册。包含 Docker 安装部署 HA、创建长期访问令牌、设备集成方法、智能触发配置（场景/自动化/脚本）、条件推送机制（5.1 节——订阅事件写 DB 不推 IM、主 Agent 的话经 should_push_im 投递 IM，与定时任务同通道）、ha-server MCP 服务器启用、所有已验证 API 行为和踩坑记录。用户要求接入 HA 智能家居控制时查这里 |
 | MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构与虚拟磁盘配置手册。包含新增 MCP 服务器完整步骤（目录结构 + TOOL_SCHEMAS + workdir 配置）、MCP 配置双目录加载模型（bundle 权威层 + `~/.niu/config/mcp-servers-user.yaml` 用户层）、虚拟磁盘 YAML 配置格式与路径映射规则、校验规则和常见配置错误排查。主 Agent 可在 `~/.niu/disk/` 自建 MCP server 配置覆盖或新增。需要新增 MCP 服务器、修改虚拟磁盘路径映射、排查 disk 工具调用失败时查这里 |
 | IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | 面向第三方开发者的 IM 平台接入文档。包含 Gateway + Adapter 分离架构（双进程）、TCP 协议规范、配置文件格式、目录规范、开发新 Adapter（钉钉/Telegram/企业微信等）的完整步骤。需要对接新的 IM 平台或修改 IM 通信协议时查这里 |
-| 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 通用子 Agent 体系完整说明。包含配置模板（config/agent-template.md）、动态加载机制（chat 入口扫描 ~/.niu/agents/）、MCP 工具映射（mcpServers frontmatter）、主 Agent 创建子 Agent 流程、同步/异步调用模式、交互能力衔接（通信通道 + 异步调用）、同步子 Agent @niu-agent 询问通道。子 Agent 标签页（动态 Tab + 独立 SSE 事件通道）、@user 用户提问机制、@end 优先级规则、同步子 Agent SSE 404 竞态修复（pre_register + is_closing）、SubagentEventBus 独立事件总线（ring buffer + epoch 机制）。需要理解或调试子 Agent 标签页、事件推送、@user 提问、SSE 竞态问题时查这里 |
+| 窗口与界面配置 | [manual-window-config.md](manual-window-config.md) | 桌面窗口位置/尺寸/外观配置手册。包含 `~/.niu/window-config.json` 全键语义（`spirit` / `chat` / `sticky` / `chatMini` 段）、迷你窗外观参数（背景不透明度、内容不透明度、宽度、高度上限、底边锚点坐标）、写盘规则（程序只写位置尺寸、用户手改的外观键永不被覆盖、首次启动写入完整默认值）、**主 Agent 调窗口观感时的操作路径（改哪个键 + 必须提示重启 Niu）**、迷你模式使用说明（进入退出、自动长高/手拖调高、顶部隐形拖拽带移动窗口、悬停点亮、点击穿透、输入框聚焦保持清晰、桌面跟随）、常见问题（发白、被描边、拖不动、幕布点不亮、透明度不生效、Windows 打开报错）。用户要求调整窗口透明度或迷你窗观感、迷你窗挡住其它窗口/拖不动/发白时查这里 |
