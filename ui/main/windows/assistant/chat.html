@@ -918,6 +918,9 @@
       --mini-idle-opacity: 0.1;   /* 缺省兜底；enter 时 JS 用 window-config.json chatMini 值覆盖 */
       --mini-hover-opacity: 0.3;
       --mini-glass-alpha: var(--mini-idle-opacity);
+      /* 文字跟随透明（2026-09-15 用户口径）：idle 时整个构件含文字/描边/控件淡到该值，hover 恒 1.0 */
+      --mini-idle-content-opacity: 0.35;
+      --mini-content-opacity: var(--mini-idle-content-opacity);
       display: none;
       position: fixed;
       inset: 0;
@@ -931,54 +934,68 @@
       -webkit-app-region: drag;
     }
     body.mini #mini-bar { display: flex; }
-    /* D5：悬停只切背景 alpha（CSS 变量），文字/控件不动；禁用窗口级 setOpacity */
-    #mini-bar.mini-hover { --mini-glass-alpha: var(--mini-hover-opacity); }
+    /* 文字跟随透明（2026-09-15 用户口径）：idle 时整个构件含文字/描边/控件一起淡（--mini-content-opacity），
+       hover 恒完全清晰；背景 alpha 仍只由 --mini-glass-alpha 管（idleOpacity/hoverOpacity 键不变） */
+    #mini-bar.mini-hover { --mini-glass-alpha: var(--mini-hover-opacity); --mini-content-opacity: 1; }
 
     /* I3：body.mini 清页面层背景（html 背景由 JS 成对清除/还原；此处清 body + .container 整页背景） */
     body.mini { background: transparent !important; }
     body.mini .container { display: none; background: transparent !important; background-image: none !important; }
 
-    /* 消息块：稍窄（左右内缩），视觉上像从输入条里向上抽出；底边锚定/长高由主进程管窗口 */
+    /* 消息块 = 原型 #msgPanel 逐字移植（/tmp/mini-proto.html，2026-09-15 用户铁律）：
+       padding/圆角/边框/阴影/内缩全部跟原型；仅 4 处适配：①id 用契约名 ②透明度走 CSS 变量
+       ③不搬 backdrop-filter（甲路线无模糊）④下两角=0（用户口径：帘子从底部长出、接触面平，上角跟原型 18px）。
+       原型 --panelH（内联高）→ 契约：窗高由主进程管，构件 flex + min-height。 */
     #mini-panel {
+      position: relative;
       flex: 1 1 auto;
       min-height: var(--mini-panel-min-h);
+      margin: 0 14px;   /* 原型 panelW=352 vs pillW=380 → 左右各内缩 14px */
       display: flex;
       flex-direction: column;
-      margin: 0 16px;
       background: rgba(255, 255, 255, var(--mini-glass-alpha));
-      border-radius: 14px 14px 8px 8px;
-      box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.12);
-      transition: background-color 0.15s ease;
+      border: 1px solid rgba(255, 255, 255, calc(var(--mini-glass-alpha) * 0.9));
+      border-radius: 18px 18px 0 0;   /* 例外④：底边锚定接触面平 */
+      border-bottom: none;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, calc(var(--mini-glass-alpha) * 0.18));
+      padding: 12px 14px 10px;
+      font-size: 13px; line-height: 1.65; color: #222;
+      overflow-y: auto;   /* 高度上限（主进程半屏封顶）超出部分内部滚动 */
+      transition: background .25s, box-shadow .25s, opacity .25s;
+      opacity: var(--mini-content-opacity);   /* 文字跟随透明 */
     }
-    /* 上沿拖拽条（I7 调高走迷你专用新 IPC；I10 no-drag） */
+    /* 上沿拖拽条 = 原型 #dragHandle 逐字（顶部中央小横条，absolute 不占布局）；I7 调高走迷你专用新 IPC；I10 no-drag */
     #mini-resize-handle {
-      flex: none;
-      height: 6px;
-      cursor: ns-resize;
+      position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+      width: 56px; height: 5px; border-radius: 3px;
+      background: rgba(0, 0, 0, .18); cursor: ns-resize;
       -webkit-app-region: no-drag;
     }
-    /* 消息区滚动容器：高度上限（主进程半屏封顶）超出部分内部滚动 */
-    #mini-scroll { flex: 1 1 auto; overflow-y: auto; }
+    #mini-resize-handle:hover { background: rgba(0, 0, 0, .35); }
 
-    /* 输入条：玻璃圆柱，稍宽（占满窗宽） */
+    /* 输入条 = 原型 #pill 逐字：真胶囊（圆角=高度一半）、margin-top:-6px 叠合贴住消息块（原型 gap=-6）。
+       唯一适配：高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊" */
     #mini-pill {
+      position: relative;
       flex: none;
       height: var(--mini-pill-h);
+      margin-top: -6px;
       display: flex;
       align-items: center;
+      padding: 0 8px 0 18px;
       gap: 8px;
-      padding: 0 12px;
       background: rgba(255, 255, 255, var(--mini-glass-alpha));
-      border-radius: 16px;
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-      transition: background-color 0.15s ease;
+      border: 1px solid rgba(255, 255, 255, calc(var(--mini-glass-alpha) * 0.9));
+      border-radius: 28px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, calc(var(--mini-glass-alpha) * 0.22));
+      transition: background .25s, box-shadow .25s, opacity .25s;
+      opacity: var(--mini-content-opacity);   /* 文字跟随透明 */
     }
 
     /* D5 文字策略：固定深色 + 反色 text-shadow 多向描边（4 方向，非单偏移）——深/浅壁纸下均可读 */
     #mini-message,
     #mini-input,
-    #mini-send-btn,
-    .mini-round-btn {
+    .icon-btn {
       text-shadow:
         1px 0 0 rgba(255, 255, 255, 0.85),
         -1px 0 0 rgba(255, 255, 255, 0.85),
@@ -986,10 +1003,8 @@
         0 -1px 0 rgba(255, 255, 255, 0.85);
     }
 
-    #mini-message {
-      padding: 14px 14px 12px;
-      font-size: 13px;
-      line-height: 1.5;
+    #mini-message {   /* padding/font-size/line-height/color 跟原型挂 #mini-panel */
+      flex: 1 1 auto;
       word-wrap: break-word;
       white-space: normal;
     }
@@ -1001,48 +1016,30 @@
     #mini-message pre { padding: 6px 8px; overflow-x: auto; }
     #mini-message a { color: #1a5276; }
 
-    /* 控件自带固定底（不随 hover 变量变），任何悬停态下保持可读 */
+    /* 输入框 = 原型 #pill input 逐字：透明（无内嵌白盒） */
     #mini-input {
       flex: 1;
-      min-width: 0;
-      height: 36px;
-      padding: 0 12px;
       border: none;
-      border-radius: 18px;
-      background: rgba(255, 255, 255, 0.45);
-      font-size: 14px;
-      color: #1a1a1a;
       outline: none;
-      -webkit-app-region: no-drag;
-    }
-    #mini-send-btn {
-      flex: none;
-      height: 32px;
-      padding: 0 14px;
-      border: none;
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.55);
-      color: #1a1a1a;
-      font-size: 13px;
-      cursor: pointer;
-      -webkit-app-region: no-drag;
-    }
-    #mini-send-btn:hover { background: rgba(255, 255, 255, 0.8); }
-    .mini-round-btn {
-      flex: none;
-      width: 28px;
-      height: 28px;
-      border: none;
-      border-radius: 50%;
-      background: rgba(255, 255, 255, 0.55);
-      color: #1a1a1a;
+      background: transparent;
       font-size: 14px;
-      cursor: pointer;
+      color: #111;
+      height: 100%;
       -webkit-app-region: no-drag;
     }
-    .mini-round-btn:hover { background: rgba(255, 255, 255, 0.8); }
+    #mini-input::placeholder { color: rgba(0, 0, 0, .4); }
+    /* 圆形图标按钮 = 原型 .icon-btn 逐字（↑ 发送 / ⤢ 还原大窗 / ✕ 关闭，无"发送"文字按钮） */
+    .icon-btn {
+      width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
+      background: rgba(0, 0, 0, .07); color: #333; font-size: 15px;
+      display: flex; align-items: center; justify-content: center; flex: none;
+      -webkit-app-region: no-drag;
+    }
+    .icon-btn:hover { background: rgba(0, 0, 0, .16); }
 
-    /* 标题栏迷你按钮（正常模式入口，镜像 close-btn 样式） */
+    /* 标题栏右侧按钮组：迷你+关闭包一层，加迷你按钮后关闭不被挤到左缘 */
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    /* 标题栏迷你按钮（正常模式入口）：CSS 画白底黑框小方块——系统字体下 ▫ 字符太小/可能缺字形，画出来最可靠 */
     .mini-btn {
       background: #ffe3a3;
       border: none;
@@ -1051,9 +1048,18 @@
       height: 24px;
       border-radius: 50%;
       cursor: pointer;
-      font-size: 12px;
       box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
       -webkit-app-region: no-drag;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mini-btn::before {
+      content: '';
+      width: 9px;
+      height: 9px;
+      border: 2px solid #000;
+      border-radius: 2px;
     }
     .mini-btn:hover {
       transform: scale(1.1);
@@ -1083,8 +1089,10 @@
         <img src="icons/icon-32.png" class="avatar" />
         <span>妞妞</span>
       </div>
-      <button class="mini-btn" id="mini-btn" title="迷你模式">▫</button>
-      <button class="close-btn" id="close-btn">×</button>
+      <div class="header-actions">
+        <button class="mini-btn" id="mini-btn" title="迷你模式"></button>
+        <button class="close-btn" id="close-btn">×</button>
+      </div>
     </div>
 
     <!-- 子 Agent 标签栏（新增：位于 header 和 messages 之间，tab 无 × 按钮不可手动关闭） -->
@@ -1179,15 +1187,13 @@
   <div id="mini-bar">
     <div id="mini-panel">
       <div id="mini-resize-handle" title="拖拽调高度 / 双击恢复自动"></div>
-      <div id="mini-scroll">
-        <div id="mini-message" class="mini-state">暂无新消息</div>
-      </div>
+      <div id="mini-message" class="mini-state">暂无新消息</div>
     </div>
     <div id="mini-pill">
       <input id="mini-input" type="text" placeholder="说点什么..." />
-      <button id="mini-send-btn">发送</button>
-      <button class="mini-round-btn" id="mini-restore-btn" title="还原大窗">▢</button>
-      <button class="mini-round-btn" id="mini-close-btn" title="关闭">×</button>
+      <button class="icon-btn" id="mini-send-btn" title="发送">↑</button>
+      <button class="icon-btn" id="mini-restore-btn" title="还原大窗">⤢</button>
+      <button class="icon-btn" id="mini-close-btn" title="关闭">✕</button>
     </div>
   </div>
 
@@ -1807,14 +1813,13 @@
     const miniPanel = document.getElementById('mini-panel');
     const miniPill = document.getElementById('mini-pill');
     const miniMessageEl = document.getElementById('mini-message');
-    const miniScrollEl = document.getElementById('mini-scroll');
     const miniInput = document.getElementById('mini-input');
     const miniSendBtn = document.getElementById('mini-send-btn');
     const miniRestoreBtn = document.getElementById('mini-restore-btn');
     const miniCloseBtn = document.getElementById('mini-close-btn');
     const miniResizeHandle = document.getElementById('mini-resize-handle');
 
-    // D5：悬停只切背景 alpha（CSS 变量 --mini-glass-alpha），文字/控件不动
+    // 文字跟随透明（2026-09-15 用户口径）：悬停时背景 alpha 与内容透明度（--mini-content-opacity）一起切到完全清晰
     miniBar.addEventListener('mouseenter', () => miniBar.classList.add('mini-hover'));
     miniBar.addEventListener('mouseleave', () => miniBar.classList.remove('mini-hover'));
 
@@ -1825,7 +1830,8 @@
     // 构件最小总高 = 输入条 + 消息块最小高（读 CSS 变量真值，防拖到输入条被裁出窗口）
     function miniMinHeight() {
       const panelMinH = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-panel-min-h')) || 90;
-      return (miniPill.offsetHeight || 56) + panelMinH;
+      const overlap = Math.min(0, parseFloat(getComputedStyle(miniPill).marginTop) || 0);
+      return (miniPill.offsetHeight || 56) + panelMinH + overlap;
     }
     miniResizeHandle.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -1849,10 +1855,16 @@
     // D3：构件实际总高 = 输入条（固定） + 消息块（最小高与内容高取大）。
     // 尺寸一律读 CSS 变量 / 实测布局（单一真源），不写死数字；上限封顶由主进程按所在屏 workArea 处理。
     function measureMiniHeight() {
+      // 构件总高 = 输入条 + max(面板最小高, 消息区实际) - 叠合量（原型 margin-top:-6px）。
+      // 面板实际高含自身 padding/border（box-sizing:border-box），从 computed style 读，不硬编码。
       const panelMinH = parseFloat(getComputedStyle(miniBar).getPropertyValue('--mini-panel-min-h')) || 90;
       const pillH = miniPill.offsetHeight || 56;
-      const contentH = miniResizeHandle.offsetHeight + miniMessageEl.scrollHeight;
-      return Math.round(pillH + Math.max(panelMinH, contentH));
+      const cs = getComputedStyle(miniPanel);
+      const contentH = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+        + parseFloat(cs.borderTopWidth) + (parseFloat(cs.borderBottomWidth) || 0)
+        + miniMessageEl.scrollHeight;
+      const overlap = Math.min(0, parseFloat(getComputedStyle(miniPill).marginTop) || 0);
+      return Math.round(pillH + Math.max(panelMinH, contentH) + overlap);
     }
 
     // I9：迷你消息区三态渲染
@@ -1887,7 +1899,7 @@
       if (miniLastAssistant) {
         miniMessageEl.classList.remove('mini-state');
         miniMessageEl.innerHTML = renderMiniMarkdown(miniLastAssistant.text);
-        miniScrollEl.scrollTop = miniScrollEl.scrollHeight;
+        miniPanel.scrollTop = miniPanel.scrollHeight;   // 消息块自身滚动（原型结构：无独立滚动容器）
         return;
       }
       // 空闲无消息：占位文本
@@ -1919,6 +1931,8 @@
         const cfg = await window.electronAPI.getMiniConfig();
         miniBar.style.setProperty('--mini-idle-opacity', String(cfg.idleOpacity ?? 0.1));
         miniBar.style.setProperty('--mini-hover-opacity', String(cfg.hoverOpacity ?? 0.3));
+        // 文字跟随透明（2026-09-15 用户口径）：idle 时含文字/描边/控件整体淡到该值；缺键兜底 CSS 缺省 0.35
+        miniBar.style.setProperty('--mini-idle-content-opacity', String(cfg.idleContentOpacity ?? 0.35));
       } catch (e) { /* 兜底：CSS 缺省 0.1/0.3 */ }
       miniActive = true;
       miniManualLocked = false;   // I7：再 enter 恢复自动
