@@ -9,6 +9,20 @@
 ---
 
 
+### 2026-09-15
+
+#### Chat 迷你模式（悬浮玻璃幕墙）
+
+- 需求（用户拍板）：Computer Use/浏览器自动化时主窗遮挡目标窗口，且动主窗会改变焦点与层级——把 Chat 窗口变形为"迷你玻璃条"：底部胶囊输入条 + 上方稍窄消息玻璃块（底边锚定、向上长高、零交叠、面板侧边落胶囊直线段起点）、悬停透明度（0.4/0.6，字随玻璃一起淡）、只显最新一条 Agent 消息 + 输入 + 还原/关闭、floating 置顶、迷你态跟随普通桌面空间、参数入 `~/.niu/window-config.json` 的 `chatMini` 段。
+- 计划：`docs/superpowers/plans/2026-09-15-chat-mini-mode.md`（v1.0；R1-R7 七轮双审，R6+R7 连续两轮双 APPROVE 过门禁；后续按真机反馈持续修订）。
+- 实施（SDD T1/T2 + 多轮微修）：`09c82e18` 主进程（enter/exit/setHeight/getConfig IPC、透明创建、抑制写盘、最小尺寸成对、底边锚定 clamp）、`7e21f6f2` 渲染端（玻璃构件、三态、抽纸高度、消息钩、命令链抽参复用）、`320c0c6d`→`a09ad232`→`5314e01d`→`426dfd95` 视觉/几何/留白带三轮复刻原型、`cb097154`+`48971d1c`+`1a81e68f` 配置纪律与空间跟随口径、`7f8cebbe`+`e62435ee`+`c18d86e4` 审计与工程审收尾。
+- 真机回归与回退（重要教训）：**空间跟随的"开→关"开关偏方**（setVisibleOnAllWorkspaces(true)→show()→(false)）在真机拽乱 macOS 焦点链——回主桌面被瞬间拽回第二屏且该屏前台应用被连坐激活（用户实证"第二屏必须有应用接焦点否则永远回不去"）。**已全数回退**；查证苹果官方机制：跟随=canJoinAllSpaces（原文"The menu bar behaves this way"）、召回正路=moveToActiveSpace（Electron 未暴露，要做需走原生模块）、fullScreenAuxiliary（Electron visibleOnFullScreen）为最激进特权禁用。迷你跟随保留为**普通全空间可见**（不含 visibleOnFullScreen）。
+- 配置写盘纪律（用户当面原则）："文件不存在才置初始值；存在就永远以磁盘为准"——`loadConfig` 首启（文件不存在）物化完整默认值落盘；`saveConfig` 读-改-写 + `RUNTIME_KEYS` 白名单（运行时只拥有位置/尺寸键）+ 缺键一次性补齐；用户手改键永不覆盖（实证：整对象覆写曾把手改 0.3/0.6 冲回缺省，该 bug 对所有段成立，一并修）。
+- 等价性审计（新增标准动作）：模型重写老代码（`sendMessage` 抽取为 `sendMainMessage`）静默引入 2 处不等价——**P1 异常路径 focus 丢失**（sendMessageWithRetry 抛错时原 finally 恒 focus）、**P3 用户可见文案被润色**（/sleep 忙碌提示）。两道机器关抓出并修复：①**规范化逐句 diff**（去注释/空白后按 `;{}` 切段，SequenceMatcher 比 opcodes；9 处改动面逐条判定：7 处逐句等价、2 处设计内改动）②**行为对拍**（真窗口 harness 同时加载基线页与新页，mock 层记录 electronAPI 调用序列 + DOM 状态；11 场景修复后 11/11 PASS）。附带发现：文案集合机器比对（338 条旧字符串仅 1 条被动过）是廉价高效的第三道网。
+- 工程级收官审查（A=本地/B=远端）抓到：**P1 迷你态高度测量竞态**（enter 时渲染端视口宽还是旧值：400 宽首报 465 偏高 107px、900 宽首报 337 偏短被裁；加 window resize 重测后两条路径均收敛 358）、重载自愈（`mini-state-sync`）、抑制窗单调时间戳、set-height 封顶下限、兜底轮询改 isWriting 后未通知迷你三态等，全部修复。
+- 其他实证（可复用）：透明窗 CSS `box-shadow` 会被窗口边界裁切 → 窗口比构件大一圈透明留白带 M=40（阴影最大外延 36px）；`#mini-message` 带 `flex:1` 时 `scrollHeight` 报窗口尺寸而非内容高 → 自动长高陷固定点（锁死半屏 471px）；enter 时 `setBounds`+`setBackgroundColor` 同帧提交 macOS 原生 backing 保留旧底色（invalidate/invalidateShadow 无效），1px 几何微动强制重合成；vibrancy 桌面真模糊生效但铺满整个窗口矩形（无形状/无透空）→ 形状玻璃只能纯 CSS rgba（甲路线），丙路线（napi-rs + maskImage / Windows DWM 区域模糊）留后路。
+- 用户偏好（三次纠正）：**原型是验收过的规格，实施必须逐字节复刻原型 CSS/DOM**（只许文档化的适配点），禁"等效改写"；不要自创视觉元素（描边等）；动画/透明度"字要跟着玻璃一起淡"。
+
 
 ### 2026-09-14
 
