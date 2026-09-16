@@ -1093,6 +1093,15 @@
       transform: scale(1.1);
       box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
     }
+    /* 磨砂模糊 D9 白纱罩层（2026-09-16，plan: docs/superpowers/plans/2026-09-16-winfx-integration.md §4）：
+       #mini-blur-veil = 观测层运行时注入的罩层容器（内联样式 fixed、恒 0×0、无背景、
+       pointer-events:none、z-index 9998 低于 #mini-bar 9999）；容器下挂"每 region 一个"的
+       绝对定位子块（背景 rgba(255,255,255,blur.hoverOpacity)、border-radius 随 region 圆角、
+       left/top/width/height 由观测层每帧按 region 几何设置）——容器无背景，子块逐块铺圆角，
+       不再按 regions 并集包围盒铺无圆角大矩形。display 作用于容器，子块随容器整树显隐；
+       仅 body.blur-on（模糊点亮态）时可见。新增覆盖规则，既有元素样式声明一律不动。 */
+    #mini-blur-veil { display: none; }   /* 默认隐藏（2026-09-16 T3 修正：隐藏态走样式表规则而非内联 display——内联优先于普通声明会顶掉下方 blur-on 规则致罩层永不显示）；与下条 blur-on 规则构成"类名驱动"配对 */
+    body.blur-on #mini-blur-veil { display: block; }
   </style>
     <!-- 字体配置动态注入：无配置时不注入（用浏览器系统默认字体），有配置时注入 @font-face + 覆盖 font-family -->
     <script>
@@ -3917,5 +3926,7 @@
 
     // ===== 子 Agent Tab 管理结束 =====
   </script>
+  <!-- 磨砂模糊观测层（2026-09-16，plan: docs/superpowers/plans/2026-09-16-winfx-integration.md §4）：只读观测 + IPC 上报 -->
+  <script src="mini-blur-observer.js"></script>
 </body>
 </html>
