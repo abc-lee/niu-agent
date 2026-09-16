@@ -942,7 +942,8 @@
          "draggable areas ignore all pointer events. For example, a button element that overlaps a draggable region will not
          emit mouse clicks or mouse enter/exit events" → inset:0 整窗 drag 区吞掉全部指针事件，渲染端收不到 enter/move，
          hover 点亮/点击穿透都无法驱动（"只有输入框才点亮"的根因：全窗无事件，仅 no-drag 构件有事件）。
-         窗口移动改由 #mini-panel 顶部不可见拖拽带 #mini-move-band + chat-mini-move IPC（屏幕增量 setBounds）实现；
+         窗口移动 = 渲染端 JS 拖动：mousedown on #mini-panel ∪ #mini-pill（排除 input/button/#mini-resize-handle）
+         → 屏幕增量经 chat-mini-move IPC 移窗（setBounds）；
          下方各 no-drag 标记保留，无副作用。 */
     }
     body.mini #mini-bar { display: flex; }
@@ -974,6 +975,7 @@
       padding: 12px 14px 10px;
       font-size: 13px; line-height: 1.65; color: #222;
       overflow-y: auto;   /* 高度上限（主进程半屏封顶）超出部分内部滚动 */
+      cursor: move;   /* 全域拖动面（2026-09-16）：幕墙空白区可拖窗口；input/按钮/调高把手保持原光标 */
       transition: background .25s, box-shadow .25s, opacity .25s;
       opacity: var(--mini-content-opacity);   /* 文字跟随透明 */
     }
@@ -983,20 +985,9 @@
       width: 56px; height: 5px; border-radius: 3px;
       background: rgba(0, 0, 0, .18); cursor: ns-resize;
       -webkit-app-region: no-drag;
-      z-index: 2;   /* 高于 #mini-move-band（z-index:1）：与拖拽带重叠区域（顶部中央）优先 = 拖高，其余带区 = 拖动窗口 */
+      z-index: 2;   /* 高于幕墙内容：顶部中央重叠区拖拽调高优先于拖动窗口 */
     }
     #mini-resize-handle:hover { background: rgba(0, 0, 0, .35); }
-    /* 顶部不可见拖拽带（2026-09-15，I10 修订）：替代 -webkit-app-region: drag（官方依据见 #mini-bar 注释——
-       drag 区吞掉全部指针事件，整窗 drag 导致渲染端无法做 hover 命中/穿透翻转）。
-       与面板同宽贴面板顶缘，z 高于消息内容、低于居中 5px 调高把手；无背景/边框 = 不可见。
-       mousedown 记录屏幕坐标 → mousemove 屏幕增量经 chat-mini-move IPC 移窗（渲染端逻辑见下方 JS）。 */
-    #mini-move-band {
-      position: absolute; top: 0; left: 0; right: 0; height: 18px;
-      z-index: 1;
-      cursor: move;
-    }
-    #mini-move-band.mini-move-dragging { cursor: grabbing; }
-
     /* 输入条 = 原型 #pill 逐字：真胶囊（圆角=高度一半）。
        适配：①高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊"
        ②margin-top:0——原型的 -6px 叠合按用户口径去掉（面板与圆柱不重合，2026-09-15） */
@@ -1012,6 +1003,7 @@
       border: 1px solid rgba(255, 255, 255, calc(var(--mini-glass-alpha) * 0.9));
       border-radius: calc(var(--mini-pill-h) / 2);   /* 胶囊圆角 = 高度一半（走变量，消除衍生常量漂移） */
       box-shadow: 0 8px 28px rgba(0, 0, 0, calc(var(--mini-glass-alpha) * 0.22));
+      cursor: move;   /* 全域拖动面（2026-09-16）：胶囊空白区可拖窗口；输入框/按钮保持原光标 */
       transition: background .25s, box-shadow .25s, opacity .25s;
       opacity: var(--mini-content-opacity);   /* 文字跟随透明 */
     }
@@ -1200,7 +1192,6 @@
        仅 body.mini 下显示；底边锚定、窗高由主进程管；消息块稍窄于输入条（像从输入条向上抽出） -->
   <div id="mini-bar">
     <div id="mini-panel">
-      <div id="mini-move-band" title="按住拖动窗口"></div>
       <div id="mini-resize-handle" title="拖拽调高度 / 双击恢复自动"></div>
       <div id="mini-message" class="mini-state">暂无新消息</div>
     </div>
@@ -1847,13 +1838,17 @@
     let miniFocusLock = false;        // 构件内焦点（输入框/按钮）→ 强制保持亮态（用户口径：输入框聚焦期间不变暗）
     let miniMouseMoveSeen = false;    // enter 后是否收到过 mousemove（600ms 兜底判定用）
     let miniHoverFallbackTimer = null;
+    let lastPointerX = null, lastPointerY = null;  // 最近指针坐标（client 系 = 布局几何同原）；首条 mousemove 前 = 未初始化（按盒外处理）
 
-    function miniPointerInside(e) {
-      // 构件盒并集命中：#mini-panel ∪ #mini-pill（getBoundingClientRect 视口坐标，与 clientX/clientY 同系）
-      const pr = miniPanel.getBoundingClientRect();
-      if (e.clientX >= pr.left && e.clientX <= pr.right && e.clientY >= pr.top && e.clientY <= pr.bottom) return true;
-      const rr = miniPill.getBoundingClientRect();
-      return e.clientX >= rr.left && e.clientX <= rr.right && e.clientY >= rr.top && e.clientY <= rr.bottom;
+    // 命中盒 = 可见构件（T1 目标态恒含面板：面板常驻可见；T2 再按幕墙开合切换目标态）。
+    // 逐元素 OR（胶囊盒 ∨ 幕墙盒），一律取布局几何（offsetLeft/offsetTop/offsetWidth/offsetHeight，
+    // offsetParent = #mini-bar fixed inset:0，与 client 系同原）；禁止对 #mini-panel 取 getBoundingClientRect——
+    // T2 幕墙 translateY(100%) 收折后 BCR 会把底部 40px 透明留白带算成热区、动画期逐帧翻转。
+    function miniPointerInside(x, y) {
+      const pl = miniPanel.offsetLeft, pt = miniPanel.offsetTop;
+      if (x >= pl && x <= pl + miniPanel.offsetWidth && y >= pt && y <= pt + miniPanel.offsetHeight) return true;
+      const ql = miniPill.offsetLeft, qt = miniPill.offsetTop;
+      return x >= ql && x <= ql + miniPill.offsetWidth && y >= qt && y <= qt + miniPill.offsetHeight;
     }
     // 亮态 = 指针在构件盒内 OR 构件内焦点（focus lock）；仅状态变化时切 class
     function miniApplyHover() {
@@ -1867,9 +1862,10 @@
       window.electronAPI.setMiniHover(inside);
     }
     document.addEventListener('mousemove', (e) => {
+      lastPointerX = e.clientX; lastPointerY = e.clientY;  // 首行记录（短路之前）：拖动/拖高期间坐标不陈旧，供 mouseup 重判
       if (!miniActive || miniMoveDragging || miniDragging) return;  // 拖拽期间不做 hover/穿透翻转
       miniMouseMoveSeen = true;
-      const inside = miniPointerInside(e);
+      const inside = miniPointerInside(e.clientX, e.clientY);
       if (inside === miniHoverInside) return;  // 无翻转不重复处理
       miniHoverInside = inside;
       miniApplyHover();
@@ -1917,22 +1913,24 @@
       scheduleMiniUpdate();
     });
 
-    // 顶部不可见拖拽带：移动窗口（I10 修订，替代 -webkit-app-region: drag；官方依据见 #mini-bar CSS 注释）。
-    // mousedown 记录屏幕坐标 → mousemove 以屏幕坐标增量发 chat-mini-move IPC → 主进程 setBounds(cur+delta)。
+    // 全域拖动：移动窗口（替代原顶部 18px 隐形拖拽带；不恢复原生 drag 的官方依据见 #mini-bar CSS 注释）。
+    // mousedown on #mini-panel ∪ #mini-pill（排除 input/button/#mini-resize-handle）记录屏幕坐标
+    // → mousemove 以屏幕坐标增量发 chat-mini-move IPC → 主进程 setBounds(cur+delta)。
     // 主进程不加写盘抑制：用户真实拖动 → 既有 moved 处理器按迷你分支写 chatMini.x/y 落盘（D7 底边锚点语义）。
     // 拖拽期间 hover/穿透不翻转（上方 mousemove 处理器以 miniMoveDragging 短路）。
-    const miniMoveBand = document.getElementById('mini-move-band');
     let miniMoveDragging = false;
     let miniMoveLastX = 0;
     let miniMoveLastY = 0;
-    miniMoveBand.addEventListener('mousedown', (e) => {
+    const startMiniMove = (e) => {
       if (!miniActive || e.button !== 0) return;
+      if (e.target.closest('input, button, #mini-resize-handle')) return;  // 交互元素保持原行为（调高/输入/按钮）
       e.preventDefault();
       miniMoveDragging = true;
       miniMoveLastX = e.screenX;
       miniMoveLastY = e.screenY;
-      miniMoveBand.classList.add('mini-move-dragging');
-    });
+    };
+    miniPanel.addEventListener('mousedown', startMiniMove);
+    miniPill.addEventListener('mousedown', startMiniMove);
     document.addEventListener('mousemove', (e) => {
       if (!miniMoveDragging) return;
       const dx = e.screenX - miniMoveLastX;
@@ -1941,13 +1939,20 @@
       miniMoveLastY = e.screenY;
       if (dx !== 0 || dy !== 0) window.electronAPI.moveMini(dx, dy);
     });
+    // 拖动结束：mouseup 按最后指针坐标（lastPointerX/Y）重判点亮/穿透；
+    // blur 路径（点到别的窗口）只清拖动标志、不重判坐标（OS 级失焦重判归 T2 状态机）。
     function endMiniMove() {
       if (!miniMoveDragging) return;
       miniMoveDragging = false;
-      miniMoveBand.classList.remove('mini-move-dragging');
+      if (lastPointerX === null) return;  // 首条 mousemove 之前：按盒外处理（保守），保持现状
+      const inside = miniPointerInside(lastPointerX, lastPointerY);
+      if (inside === miniHoverInside) return;
+      miniHoverInside = inside;
+      miniApplyHover();
+      miniApplyPassThrough(inside);
     }
     document.addEventListener('mouseup', endMiniMove);
-    window.addEventListener('blur', endMiniMove);  // 失焦（点到别的窗口）也结束拖拽
+    window.addEventListener('blur', () => { miniMoveDragging = false; });  // 失焦（点到别的窗口）也结束拖拽；不重判坐标
 
     // P1（2026-09-15 审查）：enter 时 body.mini 先在大窗旧视口宽下就位，首测按旧宽折行——大窗窄于构件时测偏高、
     // 宽于构件时测偏短（消息被裁）。主进程 setBounds 缩/放窗口后 resize 事件触发重测一次即收敛
@@ -2052,7 +2057,6 @@
       miniFocusLock = false;
       miniMouseMoveSeen = false;
       miniMoveDragging = false;
-      miniMoveBand.classList.remove('mini-move-dragging');
       clearTimeout(miniHoverFallbackTimer);
       miniHoverFallbackTimer = setTimeout(() => {
         // enter 兜底：~600ms 从未收到 mousemove（指针静止在窗外/未动过）→ 按"未命中"处理
@@ -2099,7 +2103,6 @@
       miniManualLocked = false;   // 迷你态不记忆：退出再进恢复自动
       miniDragging = false;
       miniMoveDragging = false;
-      miniMoveBand.classList.remove('mini-move-dragging');
       miniFocusLock = false;
       miniHoverInside = false;
       miniPassThrough = false;
