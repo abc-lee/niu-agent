@@ -910,10 +910,10 @@
     /* ===== 迷你模式（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md） ===== */
     /* 玻璃幕墙（甲路线 I8）：纯 CSS rgba 半透明，禁 backdrop-filter（它模糊不到系统桌面）。
        构件尺寸/透明度用 CSS 变量定义 = 单一真源，供 JS 测量与 hover 切换共用。
-       --mini-pill-h / --mini-panel-min-h 锚定 main.js 的 MINI_PILL_HEIGHT=56 / MINI_PANEL_MIN_HEIGHT=90
+       --mini-pill-h / --mini-panel-min-h 锚定 main.js 的 MINI_PILL_HEIGHT=46 / MINI_PANEL_MIN_HEIGHT=90
        （缺省高度两常数），改这两个构件尺寸时必须同步 main.js。 */
     #mini-bar {
-      --mini-pill-h: 56px;
+      --mini-pill-h: 46px;
       --mini-panel-min-h: 90px;
       /* 透明留白带（2026-09-15）：玻璃构件阴影被透明窗口 bounds 裁切 → 窗口四周加留白、内容居中/底部贴齐。
          单一真源 = 本变量，锚定 main.js MINI_MARGIN=40；改它须同步双端（与 56/90 同款）。阴影最大外延 8+28=36px + 余量 */
