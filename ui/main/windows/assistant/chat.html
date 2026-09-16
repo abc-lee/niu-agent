@@ -2233,6 +2233,13 @@
       // 主进程 chat-mini-exit handler 锁定与基线逐字一致（结构门禁）不含窗口级调用，故此为还原唯一通道。
       window.electronAPI.setMiniHover(true);
       document.body.classList.remove('mini');
+      // exit 后主列表滚回底部（2026-09-16 真机反馈）：迷你期 .container display:none 期间新增消息的
+      // 滚底是 no-op（无布局盒），退出后停在旧底部。双 rAF 等布局回来再滚；主列表 + 当前活动的子 Agent 列表一并回底。
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        messages.scrollTop = messages.scrollHeight;
+        const activeSub = document.querySelector('.messages-subagent.active');
+        if (activeSub) activeSub.scrollTop = activeSub.scrollHeight;
+      }));
       document.documentElement.style.background = '';  // I3：还原（棉纸底回 CSS 默认）
       window.electronAPI.exitMiniMode();
     }
