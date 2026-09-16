@@ -144,3 +144,7 @@ sessions/
 /docs/kg-dev-dictionary.md
 /docs/lightrag-plans/
 /docs/superpowers/
+
+# niu-winfx 原生模块（node-gyp）：构建产物与落地的 .node（构建/打包时再生成）
+native/niu-winfx/build/
+ui/main/native/*.node
