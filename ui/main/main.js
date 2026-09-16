@@ -2488,6 +2488,11 @@ function startMessageEventStream() {
                   content: event.content,
                   source: event.source
                 });
+              } else if ((event.role === 'chat_busy' || event.role === 'chat_idle') && spiritWindow && !spiritWindow.isDestroyed()) {
+                // Chat 关闭时精灵忙碌信号兜底（2026-09-16 真机报障：飞书/定时任务触发的工作能干完但精灵不唤醒——
+                // chat_busy/chat_idle 被 chatWindow 守卫整包丢弃，notify-busy 通道断链）。
+                // chatWindow 在时仍由 chat.html 的 notifyBusy 驱动——必须互斥，否则 busyCount 双计数卡死 BUSY。
+                spiritWindow.webContents.send('busy-state', event.role === 'chat_busy', 'sse');
               }
               // 用户发消息时取消 spirit 的 ALERT 状态
               // 用户发消息代表已看到报警内容，无论本地还是飞书都应取消
