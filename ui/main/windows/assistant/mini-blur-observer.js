@@ -12,7 +12,6 @@
 
   var RADIUS_PILL = 23;    // 胶囊区域圆角 = --mini-pill-h(46px)/2（chat.html:916 + :1024 border-radius:calc(var(--mini-pill-h)/2)）
   var RADIUS_PANEL = 18;   // 面板（幕墙）顶角圆角（chat.html #mini-panel border-radius:18px 18px 0 0；底角直角）
-  var LEAD = 40;           // T0 坑③：mask 前沿领先幕墙视觉前沿 ~40px（初段 1-2 帧瞬时滞后）
   var ANIM_TIMEOUT = 400;  // 幕墙 clip-path transition .2s；跟随循环 400ms 余量兜底结束
   var ARM_TIMEOUT = 2000;  // 扣留释放：首个 window resize 或 2s 超时（自愈路径无 resize，防永锁）
   var POLL_MS = 100;       // 稳态轮询（类名/几何变化检测）
@@ -56,7 +55,7 @@
     } catch (e) { return 0; }
   }
 
-  // 区域集合：胶囊矩形 + 幕墙矩形（裁剪至幕前缘 − LEAD 余量）
+  // 区域集合：胶囊矩形 + 幕墙矩形（顶缘 = offsetTop + clip 前沿，无任何余量）
   function computeRegions(includePill) {
     var regions = [];
     var pill = $('mini-pill');
@@ -65,21 +64,20 @@
     if (panel && panel.offsetHeight > 0) {
       var top = panel.offsetTop, h = panel.offsetHeight;
       var inset = clipTopInsetPx();
-      var y = clamp(top + inset - LEAD, top, top + h - 1);
+      // 幕墙任何时刻 = clip-path inset(... round 18px 18px 0 0)：可见区恒带 18px 顶圆角（与 border-radius 同源），
+      // 顶缘 y = offsetTop + inset（无 LEAD 余量），与磨砂"两层一模一样"对齐。
+      var y = clamp(top + inset, top, top + h);
       var hh = top + h - y;
       if (hh > 0) {
-        // 矩形分解（原生端每矩形仅支持单一 r，且 r 按轴缩放 min(r,w/2)×min(r,h/2)——带高必须 ≥2r 才得正圆角）：
-        // 全开（inset=0）→ 顶部高 36px 圆角带（h=2×18，r=18，顶角为 18px 正圆弧，与 CSS 18px 18px 0 0 一致；
-        // 带底缘圆弧凹口被下方方块补回）+ 下方方块（r=0，自 y+18 起，底角直角）；
-        // 裁剪/动画中（inset>0）→ 可见幕墙顶缘是 clip 直线 → 单矩形 r=0。
+        // 矩形分解（原生端每矩形仅支持单一 r，且 r 按轴缩放 min(r,w/2)×min(r,h/2)——带高 ≥2r 才得正圆角，
+        // 带高 <2r 时原生自动等比缩 r，恰与 clip-path 半径收缩行为一致）：
+        // 「顶带 r=18（h=2×18，顶角 18px 圆弧，带底缘圆弧凹口由下方方块补回）+ 方块 r=0（自顶带y+18 起，底角直角）」
+        // 全时刻一致（含动画中/稳态全开）；hh≤18（极短可见边缘，动画末段瞬态帧）→ 仅顶带、无方块。
         // band 标记仅供罩层子块用（子块高取 r、圆角只顶角 → 与下方方块零重叠补形，重叠半透明叠加会双浓度）；
         // 原生端 setRegions 只读 x/y/w/h/r，忽略该字段。
-        var fullOpen = inset <= 0;
-        if (fullOpen && hh > RADIUS_PANEL * 2) {
-          regions.push({ x: panel.offsetLeft, y: y, w: panel.offsetWidth, h: RADIUS_PANEL * 2, r: RADIUS_PANEL, band: true });
+        regions.push({ x: panel.offsetLeft, y: y, w: panel.offsetWidth, h: Math.min(RADIUS_PANEL * 2, Math.round(hh)), r: RADIUS_PANEL, band: true });
+        if (hh > RADIUS_PANEL) {
           regions.push({ x: panel.offsetLeft, y: y + RADIUS_PANEL, w: panel.offsetWidth, h: Math.round(hh - RADIUS_PANEL), r: 0 });
-        } else {
-          regions.push({ x: panel.offsetLeft, y: y, w: panel.offsetWidth, h: Math.round(hh), r: fullOpen ? RADIUS_PANEL : 0 });
         }
       }
     }
@@ -179,7 +177,7 @@
     if (rafId) { try { if (window.cancelAnimationFrame) window.cancelAnimationFrame(rafId); } catch (e) { } rafId = 0; }
   }
 
-  // 跟随模式：rAF 逐帧读 clip-path（百分比→px 换算 + 40px 前沿余量）；胶囊矩形首帧瞬开、末帧瞬闭（D10）
+  // 跟随模式：rAF 逐帧读 clip-path（百分比→px 换算，顶缘无余量）；胶囊矩形首帧瞬开、末帧瞬闭（D10）
   function animFrame() {
     rafId = 0;
     if (!enabled || !armed) { stopAnim(); return; }

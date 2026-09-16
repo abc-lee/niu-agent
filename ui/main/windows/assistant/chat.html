@@ -981,7 +981,7 @@
          opacity 专供幕墙动画；内容透明度已下移到 background/border/box-shadow 的 alpha
          与 #mini-message / #mini-resize-handle 的子级 opacity（同乘 --mini-content-opacity）。
          visibility 延迟 .2s = 淡出完成后再隐藏；展开态覆盖 transition-delay:0s（visibility 立即生效）。 */
-      clip-path: inset(100% 0 0 0);
+      clip-path: inset(100% 0 0 0 round 18px 18px 0 0);   /* round 与 border-radius(18px 18px 0 0) 同源：动画全程顶缘为圆弧，停稳前不出现直角切割 */
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
@@ -991,7 +991,7 @@
     /* 幕墙展开态（2026-09-16 T2）：class 仅由 miniCurtainApply() 切换（单一求值入口），
        且是目标命中盒的唯一真源（open = 胶囊 ∪ 幕墙 / 收起 = 仅胶囊） */
     #mini-bar.mini-curtain-open #mini-panel {
-      clip-path: inset(0 0 0 0);
+      clip-path: inset(0 0 0 0 round 18px 18px 0 0);   /* round 与 border-radius(18px 18px 0 0) 同源：收折/展开全程顶缘圆弧 */
       opacity: 1;
       visibility: visible;
       pointer-events: auto;
