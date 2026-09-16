@@ -967,17 +967,35 @@
          面板侧边垂线恰好落在胶囊圆弧起点（直线段边缘），不落在圆弧上；跟随 --mini-pill-h 不写死 */
       display: flex;
       flex-direction: column;
-      background: rgba(255, 255, 255, var(--mini-glass-alpha));
-      border: 1px solid rgba(255, 255, 255, calc(var(--mini-glass-alpha) * 0.9));
+      background: rgba(255, 255, 255, calc(var(--mini-glass-alpha) * var(--mini-content-opacity)));
+      border: 1px solid rgba(255, 255, 255, calc(var(--mini-glass-alpha) * 0.9 * var(--mini-content-opacity)));
       border-radius: 18px 18px 0 0;   /* 例外④：底边锚定接触面平 */
       border-bottom: none;
-      box-shadow: 0 6px 24px rgba(0, 0, 0, calc(var(--mini-glass-alpha) * 0.18));
+      box-shadow: 0 6px 24px rgba(0, 0, 0, calc(var(--mini-glass-alpha) * 0.18 * var(--mini-content-opacity)));
       padding: 12px 14px 10px;
       font-size: 13px; line-height: 1.65; color: #222;
       overflow-y: auto;   /* 高度上限（主进程半屏封顶）超出部分内部滚动 */
       cursor: move;   /* 全域拖动面（2026-09-16）：幕墙空白区可拖窗口；input/按钮/调高把手保持原光标 */
-      transition: background .25s, box-shadow .25s, opacity .25s;
-      opacity: var(--mini-content-opacity);   /* 文字跟随透明 */
+      /* 幕墙收起态（2026-09-16，plan 2026-09-16-chat-mini-curtain §2.2）：藏在胶囊后方
+         （translateY(100%) + 透明 + 不可见 + 不收指针事件）；展开态见下方 .mini-curtain-open 覆盖。
+         opacity 专供幕墙动画；内容透明度已下移到 background/border/box-shadow 的 alpha
+         与 #mini-message / #mini-resize-handle 的子级 opacity（同乘 --mini-content-opacity）。
+         visibility 延迟 .2s = 淡出完成后再隐藏；展开态覆盖 transition-delay:0s（visibility 立即生效）。 */
+      transform: translateY(100%);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: background .25s, box-shadow .25s, border-color .25s,
+                  transform .2s cubic-bezier(.22, .61, .36, 1), opacity .18s ease-out, visibility 0s linear .2s;
+    }
+    /* 幕墙展开态（2026-09-16 T2）：class 仅由 miniCurtainApply() 切换（单一求值入口），
+       且是目标命中盒的唯一真源（open = 胶囊 ∪ 幕墙 / 收起 = 仅胶囊） */
+    #mini-bar.mini-curtain-open #mini-panel {
+      transform: translateY(0);
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transition-delay: 0s;
     }
     /* 上沿拖拽条 = 原型 #dragHandle 逐字（顶部中央小横条，absolute 不占布局）；I7 调高走迷你专用新 IPC；I10 no-drag */
     #mini-resize-handle {
@@ -986,12 +1004,16 @@
       background: rgba(0, 0, 0, .18); cursor: ns-resize;
       -webkit-app-region: no-drag;
       z-index: 2;   /* 高于幕墙内容：顶部中央重叠区拖拽调高优先于拖动窗口 */
+      opacity: var(--mini-content-opacity);   /* 内容透明度下移（2026-09-16）：面板 opacity 专供幕墙动画 */
+      transition: opacity .25s;
     }
     #mini-resize-handle:hover { background: rgba(0, 0, 0, .35); }
     /* 输入条 = 原型 #pill 逐字：真胶囊（圆角=高度一半）。
        适配：①高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊"
        ②margin-top:0——原型的 -6px 叠合按用户口径去掉（面板与圆柱不重合，2026-09-15） */
     #mini-pill {
+      position: relative;
+      z-index: 1;   /* 胶囊盖在幕墙之上（2026-09-16）：幕墙从胶囊后面抽出，展开 0.2s 内胶囊/按钮点击不被吞 */
       flex: none;
       height: var(--mini-pill-h);
       margin-top: 0;
@@ -1013,6 +1035,8 @@
        measureMiniHeight 陷入固定点、窗高永远收敛不到内容高（2026-09-15 真窗口 harness 实证）。 */
       word-wrap: break-word;
       white-space: normal;
+      opacity: var(--mini-content-opacity);   /* 内容透明度下移（2026-09-16）：面板 opacity 专供幕墙动画，内容淡出在子级 */
+      transition: opacity .25s;
     }
     /* 三态：处理中状态文本 / 空闲占位（斜体灰） */
     #mini-message.mini-state { color: #444; font-style: italic; }
@@ -1189,7 +1213,9 @@
   </div>
 
   <!-- 迷你模式玻璃幕墙（2026-09-15，plan: docs/superpowers/plans/2026-09-15-chat-mini-mode.md）：
-       仅 body.mini 下显示；底边锚定、窗高由主进程管；消息块稍窄于输入条（像从输入条向上抽出） -->
+       仅 body.mini 下显示；底边锚定、窗高由主进程管；消息块稍窄于输入条（像从输入条向上抽出）。
+       幕墙（#mini-panel）默认收起在胶囊后方，点亮/窗口聚焦/新消息 3s 自动弹出时从胶囊后面抽出
+       （2026-09-16，plan: docs/superpowers/plans/2026-09-16-chat-mini-curtain.md） -->
   <div id="mini-bar">
     <div id="mini-panel">
       <div id="mini-resize-handle" title="拖拽调高度 / 双击恢复自动"></div>
@@ -1826,33 +1852,67 @@
     const miniCloseBtn = document.getElementById('mini-close-btn');
     const miniResizeHandle = document.getElementById('mini-resize-handle');
 
-    // 文字跟随透明（2026-09-15 用户口径）：悬停时背景 alpha 与内容透明度（--mini-content-opacity）一起切到完全清晰。
-    // 修订（2026-09-15）：点亮判定从 #mini-bar（inset:0 整窗）mouseenter/mouseleave 改为**构件盒并集命中**
-    // （#mini-panel ∪ #mini-pill，40px 透明留白带不计）——旧判定把留白带也算悬停，且整窗 drag 区无指针事件
-    // （官方 docs：draggable areas ignore all pointer events），只能靠 no-drag 构件局部点亮。
+    // 文字跟随透明（2026-09-15 用户口径）：点亮时背景 alpha 与内容透明度（--mini-content-opacity）一起切到完全清晰。
+    // 修订（2026-09-16，plan 2026-09-16-chat-mini-curtain §2.3）：点亮判定 = **可见构件目标盒命中**
+    // （#mini-pill ∪ #mini-panel，40px 透明留白带不计；旧"整窗 hover"判定早已废弃——drag 区无指针事件，
+    // 官方 docs：draggable areas ignore all pointer events）+ 构件焦点锁 + 窗口焦点 + 幕墙机构；
+    // 幕墙（面板）默认收起，命中盒按目标态（mini-curtain-open class）取值：收起 = 仅胶囊，展开 = 胶囊 ∪ 幕墙。
     // 指针事件源 = document mousemove：穿透态（setIgnoreMouseEvents(true,{forward:true})）下 Chromium 仍收到
     // 转发来的 mousemove（官方 docs browser-window.md：forward "enabling mouse related events such as mouseleave"），
     // 故穿透态下鼠标一移动即按命中自动翻转回可交互。
-    let miniHoverInside = false;      // 最近一次指针命中判定（true = 指针在构件盒内）
+    let pointerInBox = false;         // 最近一次指针命中判定（true = 指针在目标命中盒内）；首条 mousemove 前 = 盒外（保守）
     let miniPassThrough = false;      // 主进程当前是否处于 setIgnoreMouseEvents(true, {forward:true})
     let miniFocusLock = false;        // 构件内焦点（输入框/按钮）→ 强制保持亮态（用户口径：输入框聚焦期间不变暗）
+    let windowFocused = false;        // 窗口焦点态（2026-09-16）：只认 window focus/blur 翻转；
+                                      //   applyMiniDom() 复位为 false、不做 document.hasFocus() 初始化
+                                      //   （enter 由点击 mini-btn 触发 ⇒ 窗口必已聚焦，初始化 true 会让幕墙进迷你即弹）
+    let autoPeekUntil = 0;            // 新消息自动弹出截止时间戳（ms；now < 该值 = 自动弹出保持中）
+    let peekTimer = null;             // 3s 自动收回定时器（新消息武装时重排）
+    let miniPeekLastTs = 0;           // autoPeek 基线：ts > 该值的消息才算"新"（同一消息不重复武装）；
+                                      //   applyMiniDom()/exitMini() 按播种规则置 miniLastAssistant ? ts : Date.now()
     let miniMouseMoveSeen = false;    // enter 后是否收到过 mousemove（600ms 兜底判定用）
     let miniHoverFallbackTimer = null;
-    let lastPointerX = null, lastPointerY = null;  // 最近指针坐标（client 系 = 布局几何同原）；首条 mousemove 前 = 未初始化（按盒外处理）
+    let lastPointerX = null, lastPointerY = null;  // 指针坐标唯一数据源（client 系 = 布局几何同原）；
+                                                    //   mousemove 处理器首行（短路之前）更新；首条 mousemove 前 = 未初始化（按盒外处理）
 
-    // 命中盒 = 可见构件（T1 目标态恒含面板：面板常驻可见；T2 再按幕墙开合切换目标态）。
-    // 逐元素 OR（胶囊盒 ∨ 幕墙盒），一律取布局几何（offsetLeft/offsetTop/offsetWidth/offsetHeight，
-    // offsetParent = #mini-bar fixed inset:0，与 client 系同原）；禁止对 #mini-panel 取 getBoundingClientRect——
-    // T2 幕墙 translateY(100%) 收折后 BCR 会把底部 40px 透明留白带算成热区、动画期逐帧翻转。
+    // 目标命中盒（2026-09-16 T2）：按幕墙目标态（mini-curtain-open class = 唯一真源）取值——
+    // 展开 = 胶囊 ∪ 幕墙（布局几何），收起 = 仅胶囊。逐元素 OR（胶囊盒 ∨ 幕墙盒），
+    // 一律取布局几何（offsetLeft/offsetTop/offsetWidth/offsetHeight，offsetParent = #mini-bar fixed inset:0，
+    // 与 client 系同原）；禁止对 #mini-panel 取 getBoundingClientRect——幕墙 translateY(100%) 收折后
+    // BCR 会把底部 40px 透明留白带算成热区、动画期逐帧翻转。
     function miniPointerInside(x, y) {
-      const pl = miniPanel.offsetLeft, pt = miniPanel.offsetTop;
-      if (x >= pl && x <= pl + miniPanel.offsetWidth && y >= pt && y <= pt + miniPanel.offsetHeight) return true;
+      if (miniBar.classList.contains('mini-curtain-open')) {
+        const pl = miniPanel.offsetLeft, pt = miniPanel.offsetTop;
+        if (x >= pl && x <= pl + miniPanel.offsetWidth && y >= pt && y <= pt + miniPanel.offsetHeight) return true;
+      }
       const ql = miniPill.offsetLeft, qt = miniPill.offsetTop;
       return x >= ql && x <= ql + miniPill.offsetWidth && y >= qt && y <= qt + miniPill.offsetHeight;
     }
-    // 亮态 = 指针在构件盒内 OR 构件内焦点（focus lock）；仅状态变化时切 class
-    function miniApplyHover() {
-      miniBar.classList.toggle('mini-hover', miniFocusLock || miniHoverInside);
+    // 统一重判 pointerInBox：按最后指针坐标（lastPointerX/Y）+ 当前目标盒；首条 mousemove 前（未初始化）= 盒外（保守）
+    function miniRejudgePointer() {
+      pointerInBox = lastPointerX === null ? false : miniPointerInside(lastPointerX, lastPointerY);
+    }
+    // 单一求值入口（2026-09-16 幕墙）：open = 指针在目标盒内 OR 构件焦点 OR 窗口聚焦 OR 窗口移动拖动中
+    // OR 上沿拖高中 OR 新消息自动弹出未到期；点亮（mini-hover）= open；只切 class、不排队、不补间。
+    // 穿透 IPC 不经过本函数：miniApplyPassThrough 只在指针/焦点翻转点单独调用，
+    // 且 applyMiniDom()/exitMini() 复位路径豁免（enter 帧绝不发 chat-mini-hover——白窗根因）。
+    // 幕墙开合翻转后目标盒变化（收起=仅胶囊 / 展开=胶囊∪幕墙）：按新盒重判 pointerInBox 再求值一次——
+    // 指针正在刚抽出的幕墙上 ⇒ 保持展开；两盒为子集关系，重判不会振荡。
+    function miniCurtainApply() {
+      const isOpen = () => pointerInBox || miniFocusLock || windowFocused
+        || miniMoveDragging || miniDragging || Date.now() < autoPeekUntil;
+      let shouldOpen = isOpen();
+      const wasOpen = miniBar.classList.contains('mini-curtain-open');
+      miniBar.classList.toggle('mini-curtain-open', shouldOpen);
+      miniBar.classList.toggle('mini-hover', shouldOpen);
+      if (shouldOpen !== wasOpen) {
+        miniRejudgePointer();
+        shouldOpen = isOpen();
+        if (shouldOpen !== miniBar.classList.contains('mini-curtain-open')) {
+          miniBar.classList.toggle('mini-curtain-open', shouldOpen);
+          miniBar.classList.toggle('mini-hover', shouldOpen);
+        }
+      }
     }
     // 点击穿透：指针在盒内 = 可交互，盒外 = 穿透（forward 保鼠标事件回流）；仅在状态翻转时发 IPC（绝不进 enter 帧）
     function miniApplyPassThrough(inside) {
@@ -1862,25 +1922,30 @@
       window.electronAPI.setMiniHover(inside);
     }
     document.addEventListener('mousemove', (e) => {
-      lastPointerX = e.clientX; lastPointerY = e.clientY;  // 首行记录（短路之前）：拖动/拖高期间坐标不陈旧，供 mouseup 重判
-      if (!miniActive || miniMoveDragging || miniDragging) return;  // 拖拽期间不做 hover/穿透翻转
+      lastPointerX = e.clientX; lastPointerY = e.clientY;  // 首行记录（短路之前）：拖动/拖高期间坐标不陈旧，供 mouseup/blur 重判
+      if (!miniActive || miniMoveDragging || miniDragging) return;  // 拖拽期间不做 hover/穿透翻转（结束点 mouseup/blur 统一重判）
       miniMouseMoveSeen = true;
-      const inside = miniPointerInside(e.clientX, e.clientY);
-      if (inside === miniHoverInside) return;  // 无翻转不重复处理
-      miniHoverInside = inside;
-      miniApplyHover();
-      miniApplyPassThrough(inside);
+      const inside = miniPointerInside(lastPointerX, lastPointerY);  // 目标盒按当前幕墙态取值
+      if (inside === pointerInBox) return;  // 无翻转不重复处理
+      pointerInBox = inside;
+      miniCurtainApply();
+      miniApplyPassThrough(pointerInBox);
     });
-    // 输入框（或任意图件）聚焦 → 强制保持亮态；失焦 → 按当前（最近一次）指针位置重新判定
+    // 构件焦点锁（2026-09-16 R6 保留）：输入框（或任意图件）聚焦 → 强制保持亮态；失焦 → 按最后指针位置重判。
+    // OS 级失焦不触发 focusout ⇒ miniFocusLock 的兜底清除归 window blur 状态机（见下），防残留 true 使 open 恒真。
     miniBar.addEventListener('focusin', () => {
       if (!miniActive) return;
       miniFocusLock = true;
-      miniApplyHover();
+      miniRejudgePointer();
+      miniCurtainApply();
+      miniApplyPassThrough(pointerInBox);
     });
     miniBar.addEventListener('focusout', () => {
       if (!miniActive) return;
       miniFocusLock = false;
-      miniApplyHover();
+      miniRejudgePointer();
+      miniCurtainApply();
+      miniApplyPassThrough(pointerInBox);
     });
 
     // I7/I10：上沿拖拽调高——走迷你专用新 IPC（setPosition/resizeWindow 主进程无 handler，是死通道，不得复用）
@@ -1907,7 +1972,13 @@
       _miniReportedH = 0;  // 窗高已被手动改变，解锁重测时即使数值相同也要上报
       window.electronAPI.setMiniHeight(Math.max(miniMinHeight(), miniDragStartH + dy));
     });
-    document.addEventListener('mouseup', () => { miniDragging = false; });
+    document.addEventListener('mouseup', () => {
+      if (!miniDragging) return;
+      miniDragging = false;
+      miniRejudgePointer();  // R7：上沿拖高结束 = 状态翻转点，按最后指针坐标 + 目标盒统一重判并求值
+      miniCurtainApply();
+      miniApplyPassThrough(pointerInBox);
+    });
     miniResizeHandle.addEventListener('dblclick', () => {
       miniManualLocked = false;  // I7：双击恢复自动
       scheduleMiniUpdate();
@@ -1939,20 +2010,36 @@
       miniMoveLastY = e.screenY;
       if (dx !== 0 || dy !== 0) window.electronAPI.moveMini(dx, dy);
     });
-    // 拖动结束：mouseup 按最后指针坐标（lastPointerX/Y）重判点亮/穿透；
-    // blur 路径（点到别的窗口）只清拖动标志、不重判坐标（OS 级失焦重判归 T2 状态机）。
+    // 拖动结束：mouseup 按最后指针坐标（lastPointerX/Y）+ 目标盒统一重判 pointerInBox 并求值（R7）；
+    // 首条 mousemove 之前（未初始化）= 盒外（保守）。
     function endMiniMove() {
       if (!miniMoveDragging) return;
       miniMoveDragging = false;
-      if (lastPointerX === null) return;  // 首条 mousemove 之前：按盒外处理（保守），保持现状
-      const inside = miniPointerInside(lastPointerX, lastPointerY);
-      if (inside === miniHoverInside) return;
-      miniHoverInside = inside;
-      miniApplyHover();
-      miniApplyPassThrough(inside);
+      miniRejudgePointer();
+      miniCurtainApply();
+      miniApplyPassThrough(pointerInBox);
     }
     document.addEventListener('mouseup', endMiniMove);
-    window.addEventListener('blur', () => { miniMoveDragging = false; });  // 失焦（点到别的窗口）也结束拖拽；不重判坐标
+    // 窗口焦点翻转（2026-09-16 幕墙 §2.3）：focus → 弹出、点亮；blur → 写死次序复位后重判求值。
+    // blur 先清状态位：OS 级失焦不触发 focusout，miniFocusLock 必须显式清除（否则残留 true 使 open 恒真，
+    // "失去焦点 ⇒ 收回"失效）；两个拖动标志同理（点到别的窗口 = 拖拽必然结束）。
+    window.addEventListener('focus', () => {
+      if (!miniActive) return;
+      windowFocused = true;
+      miniRejudgePointer();
+      miniCurtainApply();
+      miniApplyPassThrough(pointerInBox);
+    });
+    window.addEventListener('blur', () => {
+      if (!miniActive) return;
+      windowFocused = false;
+      miniFocusLock = false;
+      miniMoveDragging = false;
+      miniDragging = false;
+      miniRejudgePointer();  // 按最后指针坐标 + 目标盒重判（首条 mousemove 前 = 盒外）
+      miniCurtainApply();
+      miniApplyPassThrough(pointerInBox);
+    });
 
     // P1（2026-09-15 审查）：enter 时 body.mini 先在大窗旧视口宽下就位，首测按旧宽折行——大窗窄于构件时测偏高、
     // 宽于构件时测偏短（消息被裁）。主进程 setBounds 缩/放窗口后 resize 事件触发重测一次即收敛
@@ -2011,6 +2098,21 @@
         miniMessageEl.classList.remove('mini-state');
         miniMessageEl.innerHTML = renderMiniMarkdown(miniLastAssistant.text);
         miniPanel.scrollTop = miniPanel.scrollHeight;   // 消息块自身滚动（原型结构：无独立滚动容器）
+        // autoPeek 边沿触发（2026-09-16 幕墙 §2.3）：仅当本条消息 ts > 播种基线（enter/重载自愈/exit 时置）
+        // 才武装并更新基线——同一消息不重复武装，scheduleMiniUpdate/轮询重入不续期。
+        // 武装 = 清旧定时器 + 置 3s 截止 + 立即求值（否则指针不在窗内时无人驱动，到期时条件已过期、幕墙永不弹出）
+        // + 重排 3s 自动收回定时器。
+        if (miniLastAssistant.ts > miniPeekLastTs) {
+          miniPeekLastTs = miniLastAssistant.ts;
+          clearTimeout(peekTimer);
+          autoPeekUntil = Date.now() + 3000;
+          miniCurtainApply();
+          peekTimer = setTimeout(() => {
+            // 3s 到期 = 状态翻转点：按最后指针坐标 + 目标盒统一重判（R7）
+            miniRejudgePointer();
+            miniCurtainApply();
+          }, 3000);
+        }
         return;
       }
       // 空闲无消息：占位文本
@@ -2049,14 +2151,24 @@
       miniManualLocked = false;   // I7：再 enter 恢复自动
       _miniBusySince = null;
       _miniReportedH = 0;
-      // hover/穿透状态机复位（重载自愈路径同样走到这里）。窗口级穿透态惰性建立：
-      // enter 帧绝不发 setIgnoreMouseEvents（窗口级调用打进 enter 合成帧会破坏透明合成——白窗根因），
-      // 等首次指针翻转或下方 600ms 兜底才建立。
-      miniHoverInside = false;
-      miniPassThrough = false;
+      // 幕墙状态机复位（2026-09-16 plan §2.3 复位清单；重载自愈路径同样走到这里，幂等）：
+      // 状态位 + 指针坐标 + autoPeek（清定时器并复位 autoPeekUntil）+ 展开 class；
+      // autoPeek 基线播种（必须在本函数末尾 updateMiniMessage() 调用之前）：
+      // 有历史 Agent 消息 = 其 ts（enter 首帧/重载自愈不误弹），空会话 = now（首条消息 ts 恒大于播种值 ⇒ 正常弹出）。
+      // 窗口级穿透态惰性建立：enter 帧绝不发 setIgnoreMouseEvents（窗口级调用打进 enter 合成帧会破坏透明合成——白窗根因），
+      // 等首次指针翻转或下方 600ms 兜底才建立；本复位段不调 miniApplyPassThrough（穿透 IPC 豁免）。
+      pointerInBox = false;
+      lastPointerX = null;
+      lastPointerY = null;
+      windowFocused = false;
       miniFocusLock = false;
+      miniPassThrough = false;
       miniMouseMoveSeen = false;
       miniMoveDragging = false;
+      autoPeekUntil = 0;
+      clearTimeout(peekTimer);
+      miniPeekLastTs = miniLastAssistant ? miniLastAssistant.ts : Date.now();
+      miniBar.classList.remove('mini-curtain-open');
       clearTimeout(miniHoverFallbackTimer);
       miniHoverFallbackTimer = setTimeout(() => {
         // enter 兜底：~600ms 从未收到 mousemove（指针静止在窗外/未动过）→ 按"未命中"处理
@@ -2101,14 +2213,24 @@
       if (!miniActive) return;
       miniActive = false;
       miniManualLocked = false;   // 迷你态不记忆：退出再进恢复自动
+      // 幕墙状态机复位（2026-09-16 plan §2.3 复位清单）：状态位 + 指针坐标 + autoPeek（清定时器并复位）
+      // + 基线播种 + 展开 class。本复位段不调 miniApplyPassThrough（穿透 IPC 豁免）：
+      // 穿透还原仍由下方既有 setMiniHover(true) 唯一负责。
       miniDragging = false;
       miniMoveDragging = false;
+      pointerInBox = false;
+      lastPointerX = null;
+      lastPointerY = null;
+      windowFocused = false;
       miniFocusLock = false;
-      miniHoverInside = false;
       miniPassThrough = false;
       miniMouseMoveSeen = false;
+      autoPeekUntil = 0;
+      clearTimeout(peekTimer);
+      miniPeekLastTs = miniLastAssistant ? miniLastAssistant.ts : Date.now();  // 播种（退出后 miniActive=false 已停用武装）
       clearTimeout(miniHoverFallbackTimer);
       miniBar.classList.remove('mini-hover');
+      miniBar.classList.remove('mini-curtain-open');
       // exit 还原点击穿透：setIgnoreMouseEvents(false)。必须先于 exitMiniMode 发——主进程 chat-mini-hover
       // 有 miniActive 守卫，exit IPC 落地后（主进程 miniActive 翻转）再发会被守卫丢弃。
       // 主进程 chat-mini-exit handler 锁定与基线逐字一致（结构门禁）不含窗口级调用，故此为还原唯一通道。
