@@ -692,7 +692,7 @@ const SUPPRESS_WRITE_MS = 250;   // 抑制窗长：覆盖 moved 异步送达延�
 
 // D3 缺省高度两常数：真值单一来源是 chat.html 的 CSS——#mini-pill（输入条高）与 #mini-panel（最小消息块高），
 // 改这两个构件的尺寸时须同步此处。每次 enter 先给缺省高，渲染端 body.mini 就位测量后经 chat-mini-set-height 上报。
-const MINI_PILL_HEIGHT = 56;       // #mini-pill 输入条高
+const MINI_PILL_HEIGHT = 46;       // #mini-pill 输入条高
 const MINI_PANEL_MIN_HEIGHT = 90;  // #mini-panel 最小消息块高
 // 透明留白带（2026-09-15）：玻璃构件阴影被透明窗口 bounds 裁切 → 窗口四周加留白、内容居中/底部贴齐。
 // 单一真源 = chat.html --mini-margin；改它须同步此处（与 56/90 同款双端锚定）。阴影最大外延 8+28=36px + 余量。
