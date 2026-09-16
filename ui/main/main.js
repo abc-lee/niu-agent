@@ -312,17 +312,17 @@ function createChatWindow() {
     if (!chatWindow) return;
     if (Date.now() < suppressUntil) return;
     if (miniBoundsPending) return;  // 落位间隙窗口仍是大窗几何：此刻写盘会把大窗几何按迷你公式持久化进 chatMini（M10）
-    const [posX, posY] = chatWindow.getPosition();
     if (miniActive) {
       // I10：迷你模式整窗移动（2026-09-15 修订后 = 渲染端 #mini-move-band 拖动 → chat-mini-move 增量 setBounds）写 chatMini；
-      // x/y 是构件（圆柱）坐标 = 窗口坐标 ∓ M 留白带（D7 锚点语义：y = 圆柱底边的屏幕 y 坐标）
-      config.chatMini = config.chatMini || {};
-      config.chatMini.x = posX + MINI_MARGIN;
-      config.chatMini.y = posY + chatWindow.getSize()[1] - MINI_MARGIN;
-    } else {
-      config.chat.x = posX;
-      config.chat.y = posY;
+      // x/y 是构件（圆柱）坐标 = 窗口坐标 ∓ M 留白带（D7 锚点语义：y = 圆柱底边的屏幕 y 坐标）。
+      // 2026-09-16：改走 scheduleMiniPosSave 去抖落盘——macOS 下 moved 是 move 的别名（拖动中每事件都触发），
+      // 原实现每事件同步写一次 config；去抖后一次拖动只落盘一次，且落盘读 fire 时刻实时几何（语义不变）。
+      scheduleMiniPosSave();
+      return;
     }
+    const [posX, posY] = chatWindow.getPosition();
+    config.chat.x = posX;
+    config.chat.y = posY;
     saveConfig(config);
   });
 
