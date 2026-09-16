@@ -65,7 +65,7 @@ const defaultConfig = {
   // y = 构件底边的屏幕 y 坐标（底边锚定，恢复时 bottom=y、顶边=bottom−height）；无 height 键（手动高度不跨会话记忆）
   // width = 面板宽 + 2×胶囊半径：#mini-panel 左右内缩 calc(--mini-pill-h/2)（= 胶囊圆弧起点），
   // 面板侧边垂线恰好落在胶囊直线段边缘（352 + 2×28 = 408，2026-09-15 用户几何口径）
-  chatMini: { x: null, y: null, width: 408, idleOpacity: 0.4, hoverOpacity: 0.6, idleContentOpacity: 0.35, maxHeightRatio: 0.5 },
+  chatMini: { x: null, y: null, width: 408, idleOpacity: 0.4, hoverOpacity: 0.5, idleContentOpacity: 0.35, maxHeightRatio: 0.5 },
 };
 
 // 加载配置
@@ -325,6 +325,10 @@ function createChatWindow() {
     }
     saveConfig(config);
   });
+
+  // 位置变化事件（无平台限制，"Emitted when the window is being moved to a new position"）：
+  // 覆盖非拖动路径的位置变化（底边锚定的高度变化、系统/未来原生移动）；miniActive=false 时完全不介入大窗写盘路径。
+  chatWindow.on('move', () => { if (miniActive && !miniBoundsPending) scheduleMiniPosSave(); });
 
   // 窗口大小变化时保存
   chatWindow.on('resized', () => {
@@ -709,10 +713,33 @@ function getChatMiniConfig() {
     y: m.y ?? null,
     width: m.width ?? 408,
     idleOpacity: m.idleOpacity ?? 0.4,
-    hoverOpacity: m.hoverOpacity ?? 0.6,
+    hoverOpacity: m.hoverOpacity ?? 0.5,
     idleContentOpacity: m.idleContentOpacity ?? 0.35,
     maxHeightRatio: m.maxHeightRatio ?? 0.5,
   };
+}
+
+// ── 迷你位置落盘（跨平台）：不依赖原生 moved 事件语义。
+// 官方 api/browser-window.md：Event 'moved' 标 darwin,win32，注「On macOS this event is an alias of move」——
+//   macOS 下程序化 setBounds 也触发（既有 moved 处理器因此生效）；
+//   Windows 下 moved 是与 move 不同的独立事件（用户拖动结束才触发），而迷你窗拖动是渲染端 IPC
+//   chat-mini-move → 程序化 setBounds（见下方 handler）→ Windows 永不触发 moved
+//   → chatMini.x/y 恒为初始 null（用户真机实测：Windows 端 window-config.json 的 x/y 恒 null）。
+// 修法：用户拖动路径 + 位置变化事件统一走去抖落盘；落盘时**实时读窗几何**（不读事件载荷），
+//   故不存在"迟到事件把过期几何写进 chatMini"的问题（M10 关切在去抖+实时读下天然成立）。
+let miniPosSaveTimer = null;
+function saveMiniPositionNow() {
+  if (!chatWindow || chatWindow.isDestroyed() || !miniActive || miniBoundsPending) return;
+  const [posX, posY] = chatWindow.getPosition();
+  config.chatMini = config.chatMini || {};
+  config.chatMini.x = posX + MINI_MARGIN;                            // D7：x = 构件（圆柱）x
+  config.chatMini.y = posY + chatWindow.getSize()[1] - MINI_MARGIN;  // D7：y = 圆柱底边（窗口底 − M）
+  saveConfig(config);
+}
+function scheduleMiniPosSave() {
+  if (!miniActive || miniBoundsPending) return;   // 落位间隙窗口仍是大窗几何 → 不排程
+  clearTimeout(miniPosSaveTimer);
+  miniPosSaveTimer = setTimeout(() => { miniPosSaveTimer = null; saveMiniPositionNow(); }, 200);
 }
 
 // I2①：程序化 setBounds 套抑制守卫。调用前 miniActive 必须已翻转到目标模式（时序由 enter/exit 保证）。
@@ -899,6 +926,7 @@ ipcMain.on('chat-mini-move', (event, { dx, dy } = {}) => {
   if (!Number.isFinite(ddx) || !Number.isFinite(ddy)) return;
   const b = chatWindow.getBounds();
   chatWindow.setBounds({ x: b.x + ddx, y: b.y + ddy, width: b.width, height: b.height });
+  scheduleMiniPosSave();
 });
 
 // 点击穿透（2026-09-15）：渲染端按构件盒命中（#mini-panel ∪ #mini-pill）翻转，仅状态翻转时发本 IPC。

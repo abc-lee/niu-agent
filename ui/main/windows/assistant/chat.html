@@ -919,7 +919,7 @@
          单一真源 = 本变量，锚定 main.js MINI_MARGIN=40；改它须同步双端（与 56/90 同款）。阴影最大外延 8+28=36px + 余量 */
       --mini-margin: 40px;
       --mini-idle-opacity: 0.4;   /* 缺省兜底；enter 时 JS 用 window-config.json chatMini 值覆盖 */
-      --mini-hover-opacity: 0.6;
+      --mini-hover-opacity: 0.5;
       --mini-glass-alpha: var(--mini-idle-opacity);
       /* 文字跟随透明（2026-09-15 用户口径）：idle 时整个构件含文字/描边/控件淡到该值，hover 恒 1.0 */
       --mini-idle-content-opacity: 0.35;
@@ -2149,10 +2149,10 @@
       try {
         const cfg = await window.electronAPI.getMiniConfig();
         miniBar.style.setProperty('--mini-idle-opacity', String(cfg.idleOpacity ?? 0.4));
-        miniBar.style.setProperty('--mini-hover-opacity', String(cfg.hoverOpacity ?? 0.6));
+        miniBar.style.setProperty('--mini-hover-opacity', String(cfg.hoverOpacity ?? 0.5));
         // 文字跟随透明（2026-09-15 用户口径）：idle 时含文字/描边/控件整体淡到该值；缺键兜底 CSS 缺省 0.35
         miniBar.style.setProperty('--mini-idle-content-opacity', String(cfg.idleContentOpacity ?? 0.35));
-      } catch (e) { /* 兜底：CSS 缺省 0.4/0.6 */ }
+      } catch (e) { /* 兜底：CSS 缺省 0.4/0.5 */ }
       miniActive = true;
       miniManualLocked = false;   // I7：再 enter 恢复自动
       _miniBusySince = null;
