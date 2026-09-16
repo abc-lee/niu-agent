@@ -12,6 +12,7 @@ const url = require('url');
 const http = require('http');
 const { loadNamedConfigs } = require('./lib/named-configs.js');
 const { saveConfigAndCollection } = require('./lib/save-config.js');
+require('./mini-blur-driver'); // 磨砂模糊驱动层（T2 新增，自解析窗口，main.js 零其他改动）
 
 const WINDOW_MODE = process.env.NIU_WINDOW || 'assistant';
 

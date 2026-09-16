@@ -35,6 +35,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setMiniHover: (inside) => ipcRenderer.send('chat-mini-hover', { inside }),
   // 迷你态 webContents 重载自愈：主进程 enter 命中「已激活」早退时通知（渲染端重新应用 body.mini + 重测上报）
   onMiniStateSync: (callback) => ipcRenderer.on('mini-state-sync', (_event) => callback()),
+  // 磨砂模糊观测层上行（2026-09-16，plan: docs/superpowers/plans/2026-09-16-winfx-integration.md）：
+  // 上报 {open, regions:[{x,y,w,h,r}], viewW, viewH, openSince, seq}
+  reportBlurState: (payload) => ipcRenderer.send('chat-mini-blur-state', payload),
+  // 磨砂模糊驱动层下行：启用态 {available, enabled, hoverOpacity}（启用态唯一来源；收不到 = 观测层零副作用）
+  onBlurConfig: (callback) => ipcRenderer.on('chat-mini-blur-config', (_event, cfg) => callback(cfg)),
   
   // 发送消息到后端
   sendMessage: (message, source) => ipcRenderer.invoke('send-message', message, source),
