@@ -976,22 +976,22 @@
       font-size: 13px; line-height: 1.65; color: #222;
       overflow-y: auto;   /* 高度上限（主进程半屏封顶）超出部分内部滚动 */
       cursor: move;   /* 全域拖动面（2026-09-16）：幕墙空白区可拖窗口；input/按钮/调高把手保持原光标 */
-      /* 幕墙收起态（2026-09-16，plan 2026-09-16-chat-mini-curtain §2.2）：藏在胶囊后方
-         （translateY(100%) + 透明 + 不可见 + 不收指针事件）；展开态见下方 .mini-curtain-open 覆盖。
+      /* 幕墙收起态（2026-09-16，plan 2026-09-16-chat-mini-curtain §2.2）：底边锚定（胶囊上沿）、顶边向上生长（clip-path inset 揭示），
+         无位移无变形；透明 + 不可见 + 不收指针事件；展开态见下方 .mini-curtain-open 覆盖。
          opacity 专供幕墙动画；内容透明度已下移到 background/border/box-shadow 的 alpha
          与 #mini-message / #mini-resize-handle 的子级 opacity（同乘 --mini-content-opacity）。
          visibility 延迟 .2s = 淡出完成后再隐藏；展开态覆盖 transition-delay:0s（visibility 立即生效）。 */
-      transform: translateY(100%);
+      clip-path: inset(100% 0 0 0);
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
       transition: background .25s, box-shadow .25s, border-color .25s,
-                  transform .2s cubic-bezier(.22, .61, .36, 1), opacity .18s ease-out, visibility 0s linear .2s;
+                  clip-path .2s cubic-bezier(.22, .61, .36, 1), opacity .18s ease-out, visibility 0s linear .2s;
     }
     /* 幕墙展开态（2026-09-16 T2）：class 仅由 miniCurtainApply() 切换（单一求值入口），
        且是目标命中盒的唯一真源（open = 胶囊 ∪ 幕墙 / 收起 = 仅胶囊） */
     #mini-bar.mini-curtain-open #mini-panel {
-      transform: translateY(0);
+      clip-path: inset(0 0 0 0);
       opacity: 1;
       visibility: visible;
       pointer-events: auto;
@@ -1012,8 +1012,6 @@
        适配：①高度用契约常数 56px（main.js 锚定，原型 52）→ radius=28px 保持"真胶囊"
        ②margin-top:0——原型的 -6px 叠合按用户口径去掉（面板与圆柱不重合，2026-09-15） */
     #mini-pill {
-      position: relative;
-      z-index: 1;   /* 胶囊盖在幕墙之上（2026-09-16）：幕墙从胶囊后面抽出，展开 0.2s 内胶囊/按钮点击不被吞 */
       flex: none;
       height: var(--mini-pill-h);
       margin-top: 0;
@@ -1878,8 +1876,7 @@
     // 目标命中盒（2026-09-16 T2）：按幕墙目标态（mini-curtain-open class = 唯一真源）取值——
     // 展开 = 胶囊 ∪ 幕墙（布局几何），收起 = 仅胶囊。逐元素 OR（胶囊盒 ∨ 幕墙盒），
     // 一律取布局几何（offsetLeft/offsetTop/offsetWidth/offsetHeight，offsetParent = #mini-bar fixed inset:0，
-    // 与 client 系同原）；禁止对 #mini-panel 取 getBoundingClientRect——幕墙 translateY(100%) 收折后
-    // BCR 会把底部 40px 透明留白带算成热区、动画期逐帧翻转。
+    // 与 client 系同原）；命中一律取布局几何（offset*，与 client 同原）；幕墙收折已改 clip-path（无 transform 位移），此约定仅作统一纪律保留。
     function miniPointerInside(x, y) {
       if (miniBar.classList.contains('mini-curtain-open')) {
         const pl = miniPanel.offsetLeft, pt = miniPanel.offsetTop;
