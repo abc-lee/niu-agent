@@ -220,7 +220,11 @@ public sealed partial class MainWindow : Window
                  ") s=" + s.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                  " SetWindowPos=" + z + (z ? "" : " err=" + Marshal.GetLastWin32Error()));
         ReassertZ(250);
-        return "attach";
+        // fail-loud: z-order assert failed (e.g. host hwnd stale → ERROR_INVALID_WINDOW_HANDLE)
+        // → encode as 'attach-fail:<err>' on stdout; 'attach' is returned ONLY on success.
+        // (hwnd=0 sentinel: SetWindowPos(hWndInsertAfter=NULL) is a no-z-op that SUCCEEDS,
+        //  so preheat attach still answers 'attach'.)
+        return z ? "attach" : "attach-fail:" + Marshal.GetLastWin32Error();
     }
 
     private string DoGeom(JsonElement e)
