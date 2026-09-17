@@ -42,6 +42,10 @@ function withWindow(fn) {
 }
 
 module.exports = {
+  // 驱动层探针（§5.2 迁移）：= 原驱动双段探针（require .node + m.isAvailable()===true）逐条等价——
+  // 本模块加载期已执行同两段（失败 → mod=null），故探针通过 ⇔ mod 非空。行为零变化。
+  isAvailable() { return mod !== null; },
+
   // 驱动层注入"实时解析当前 chat 窗"函数（驱动不缓存窗口，窗口重建后自动跟随）
   attach(fn) { resolveWin = typeof fn === 'function' ? fn : () => null; },
 
