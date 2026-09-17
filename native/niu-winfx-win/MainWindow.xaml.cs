@@ -210,7 +210,7 @@ public sealed partial class MainWindow : Window
         }
 
         // Stacking: hWndInsertAfter = the host window's hwnd puts us DIRECTLY BELOW it.
-        // (Measured: the (HWND)-3 sentinel is rejected on Win11 26200 with
+        // (Measured: the raw value (HWND)-3 is rejected on Win11 26200 with
         //  ERROR_INVALID_WINDOW_HANDLE(1400); a real target hwnd works in every form.
         //  Note: HWND_BOTTOM is actually (HWND)1 — what was tried here is -3, not HWND_BOTTOM;
         //  1400 merely says -3 is an invalid window handle.)

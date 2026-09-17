@@ -106,13 +106,16 @@ echo [pack.bat] winfx native component ready in ui\main\native\winfx\
 
 REM === 复制需要打包的文件到临时目录 ===
 REM 排除: 编译产物、.git、缓存、备份、开发工具配置
-REM winfx 三个目录用绝对路径排除：/xd 裸目录名 bin/obj/publish 会误伤仓库里其它合法 bin 目录（如 python\Lib\site-packages\torch\bin），运行时缺文件
+REM robocopy /xd /xf 只按目录名/文件名匹配：相对子路径（如 docs\superpowers）会被当作完整名字、
+REM 匹配不到任何目录而静默失效（私有方案/审查文档被打进发布 7z）；裸目录名又会误伤仓库里其它
+REM 同名合法目录（如 /xd bin 会排除 python\Lib\site-packages\torch\bin，运行时缺文件）。
+REM 故需精确定位的目录/文件一律用绝对路径排除：winfx 三个目录 + docs 私有文档/方案目录/词典。
 echo [pack.bat] Copying files...
 robocopy . "!STAGE!" /E ^
     /xd .git backup temp_pack_stage dist .pytest_cache .ruff_cache .sisyphus .playwright-mcp .claude target niu-natives ^
-        docs\lightrag-plans docs\superpowers ^
+        "%CD%\docs\lightrag-plans" "%CD%\docs\superpowers" ^
         "%CD%\native\niu-winfx-win\bin" "%CD%\native\niu-winfx-win\obj" "%CD%\native\niu-winfx-win\publish" ^
-    /xf *.pyc niu.exe~ *.bak .DS_Store docs\kg-dev-dictionary.md
+    /xf *.pyc niu.exe~ *.bak .DS_Store "%CD%\docs\kg-dev-dictionary.md"
 
 REM 暂存目录完整性校验：关键文件齐了才准压缩
 if not exist "!STAGE!\niu.exe" (
