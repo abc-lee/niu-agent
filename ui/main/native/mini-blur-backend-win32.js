@@ -88,6 +88,9 @@ function onClosed(win) {
     if (subWin !== win) return;   // 旧实例迟到的 closed：已被新实例接管，忽略
     subWin = null;
     attached = false;
+    // 窗已销毁：在途真实 attach 的回包必然是 stale-hwnd 失败（attach-fail:1400），
+    // 不应消耗 warnOnce('attachfail') 一次性槽位（否则后续真实 z 序失败全静默）
+    attachReplyPending = false;
     if (!ready || dead) return;
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     cmd({ cmd: 'rects', rects: [], viewW: 0, viewH: 0 });
@@ -209,7 +212,9 @@ function startPrewarm() {
     const tail = stderrTail.trim().split('\n').pop();
     onGone(`预热握手超时（${HANDSHAKE_MS}ms）` + (tail ? `（stderr 末行：${tail}）` : ''));
   }, HANDSHAKE_MS);
-  // 握手 = off-screen attach（hwnd=0 哨兵：不变 z 序、窗外停靠，零像素）；其后归零区域 + 回隐藏态
+  // 握手 = off-screen attach（hwnd=0 哨兵：hWndInsertAfter=NULL 即 HWND_TOP((HWND)0)，是合法值
+  // → SetWindowPos 必成功；真实效果 = 把材质窗抬到 topmost 带顶，随后 onReady 的真实 attach
+  // （after=宿主窗）将其贴回宿主窗正下方；停靠位在窗外（-3000,-3000）故零像素）；其后归零区域 + 回隐藏态
   cmd({ cmd: 'attach', hwnd: 0, rect: { x: -3000, y: -3000, w: 488, h: 216 } });
 }
 
@@ -227,16 +232,26 @@ function onStdout(data) {
       if (o.ok && !ready && !dead) {
         onPreheatMsg(o.msg);
       } else if (ready) {
-        // 就绪后 fail-loud：真实 attach 回包必须是 'attach'（原生 DoAttach 的 z 序失败编码为
-        // 'attach-fail:<err>'；rects 的功能性失败编码为 'rects:<...>'，均无独立 error 行）；
+        // 就绪后 fail-loud（覆盖两条轴）：
+        // ① attach 的 z 序轴：真实 attach 回包必须是 'attach'（原生 DoAttach 的 z 序失败编码为
+        //    'attach-fail:<err>'，无独立 error 行）→ warnOnce('attachfail')；
+        // ② rects 的区域构建轴：'SetWindowRgn=0'（区域未生效）/ 'create-rgn-fail' / 'combine-fail'
+        //    → 独立键 warnOnce('rectsfail')（不与 ① 共用一次性槽位）；'SetWindowRgn=1' 是成功，不判。
         // 其余命令回包出现 'attach-fail:'/'error:' 或非法 msg 同样记一条，绝不再静默（旧版 JS 完全不看回包）。
+        // 注：attach-fail: 到达时在途标记已清 = 前一条 attach 回包已裁决，本条属重复/陈旧失败，仍记一条便于定位。
         if (attachReplyPending) {
           attachReplyPending = false;
           if (o.msg.startsWith('error:') || o.msg !== 'attach') {
             warnOnce('attachfail', `真实 attach 回包异常："${o.msg}" → 材质窗未贴宿主窗下方（z 序/几何失效）`);
           }
-        } else if (o.msg.startsWith('error:')) {
-          warnOnce('attachfail', `材质窗回包 error："${o.msg}"`);
+        } else if (o.msg.startsWith('error:') || o.msg.startsWith('attach-fail:')) {
+          warnOnce('attachfail', `材质窗回包 error/attach-fail："${o.msg}"`);
+        }
+        // ② rects 轴：原生 DoRects 回包 "SetWindowRgn=… GetWindowRgn=…"，功能性失败 =
+        // SetWindowRgn 返回 0 / 区域创建失败 / 区域并集失败（旧原型曾静默刷 336 行 combine-fail，
+        // 全展开态幕墙无材质而无人发现）
+        if (o.msg.includes('SetWindowRgn=0') || o.msg.includes('create-rgn-fail') || o.msg.includes('combine-fail')) {
+          warnOnce('rectsfail', `材质窗 rects 回包功能性失败："${o.msg}" → 区域裁剪未生效（材质窗未按区域显隐）`);
         }
       }
     } catch (e) { /* stdout 只承载协议行，非协议行忽略 */ }
