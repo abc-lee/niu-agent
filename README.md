@@ -253,17 +253,27 @@ python/bin/pip install -r requirements.txt
 
 # 3. 安装 Electron 前端依赖
 cd ui/main && npm install && cd ../..
+```
 
-# 4. 初始化用户数据目录（见下文"用户数据目录"）
+# 4. 编译磨砂模糊原生件（仅 Windows；需 .NET 8 SDK；macOS 跳过）
 
-# 5. 编译 niu-natives（Rust 桌面自动化原生扩展 → 装进 python/）
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File native\niu-winfx-win\build.ps1
+```
+
+产物：`ui\main\native\winfx\WinFx.exe`——自包含（.NET 8 与 Windows App SDK 运行时随包；`Microsoft.WindowsAppSDK 2.4.0` 由 `dotnet` 首次构建自动从 NuGet 还原，需联网一次；最终用户无需预装任何运行时）。磨砂模糊仅对 Windows 11 22H2（build 22621）及以上生效，更低版本无模糊。**此步可跳过**：缺原生件时磨砂模糊全 no-op，其余功能正常、不崩。
+
+```bash
+# 5. 初始化用户数据目录（见下文"用户数据目录"）
+
+# 6. 编译 niu-natives（Rust 桌面自动化原生扩展 → 装进 python/）
 #    截图工具（screenshot / list_targets）与内置 computer 工具都依赖此扩展
 python/bin/pip install -r requirements-dev.txt
 rm -rf niu-natives/target/wheels
 python/bin/maturin build --release --manifest-path niu-natives/Cargo.toml -i python/bin/python
 python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
 
-# 6. 编译并启动 Rust 启动器
+# 7. 编译并启动 Rust 启动器
 cd launcher && cargo run --release
 
 启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。模型配置经设置窗口保存为命名配置（合集存于 `~/.niu/config/llm-configs.json`），本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
@@ -501,6 +511,7 @@ file niu.app/Contents/Resources/ui/main/node_modules/electron/dist/Electron.app/
 4. `python\Scripts\pip.exe install -r requirements-dev.txt`（**提供 maturin，pack.bat 硬依赖**）
 5. `cd ui\main && npm install`（Electron，缺则 pack.bat 守卫中止）
 6. **7-Zip**（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 已改为自动探测 `C:\` 与 `E:\`，装在别处才需手工改脚本）
+7. **.NET 8 SDK**（`pack.bat` 硬依赖，用于构建 `native\niu-winfx-win` 磨砂模糊原生件；缺 dotnet 时立即中止）
 
 注意 Windows 自包含运行时的路径形态与 Unix 不同：`python\Scripts\` 与 `python\Lib\`，非 `python/bin/`。
 
@@ -597,6 +608,7 @@ Niu 建立在以下优秀开源项目之上：
 - **[Model Context Protocol](https://modelcontextprotocol.io/)** — Agent 工具协议标准
 - **[InsightFace](https://github.com/deepinsight/insightface)** — 本地人脸识别
 - **[bge-base-zh-v1.5](https://huggingface.co/BAAI/bge-base-zh-v1.5)** — 中文向量模型
+- **[Microsoft Windows App SDK 2.4.0](https://learn.microsoft.com/windows/apps/windows-app-sdk/)** — Windows 磨砂模糊原生件（`dotnet` 首次构建自动从 NuGet 还原，已随包自包含）
 
 ### 前端与可视化
 

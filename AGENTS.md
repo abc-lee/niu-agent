@@ -103,6 +103,7 @@ MCP 服务器集群 (mcp-servers/)
 - **Node.js**: 用于 Electron 前端（`ui/main/`），建议 LTS。
 - **Python**: 3.11+（Agent 和 MCP 服务器）。
 - **SQLite**: 会话持久化。
+- **.NET 8 SDK**（Windows 构建磨砂模糊原生件 `native/niu-winfx-win` 用；最终用户不需要——产物自包含，随 7z 包分发）
 
 ### 安装依赖
 
@@ -185,7 +186,7 @@ bash launcher/build.sh --dmg    # 打 .app bundle + DMG 安装包（发布用）
 ```cmd
 pack.bat
 ```
-Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 自动探测 `C:\` 与 `E:\`）。打包前需已完成：Rust 编译（`bash launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建、`pip install -r requirements-dev.txt`（提供 maturin）。
+Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 自动探测 `C:\` 与 `E:\`）。打包前需已完成：Rust 编译（`bash launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建、`pip install -r requirements-dev.txt`（提供 maturin）、.NET 8 SDK 安装（`dotnet --version` 可用，供 `pack.bat` 调用 `native\niu-winfx-win\build.ps1` 构建磨砂模糊原生件——`pack.bat` 硬依赖 dotnet，缺则立即中止）。
 
 `pack.bat` 会：
 1. 构建 niu-natives wheel 装进 `python\`（缺 `.pyd`/`node_modules` 即中止，不产残包）

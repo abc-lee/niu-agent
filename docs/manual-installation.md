@@ -45,6 +45,7 @@
 - **Rust 工具链**（用于启动器，见第四章）
 - **Node.js LTS**（用于 Electron 前端，建议 20.x）
 - **SQLite**（用于会话持久化）
+- **.NET 8 SDK**（仅 Windows 且需要磨砂模糊时用：构建 `native/niu-winfx-win` 材质窗原生件；最终用户与 macOS 开发者都不需要）
 
 > Python 依赖版本约束（numpy<2 + opencv<4.12 等隐性约束）详见**依赖与模型手册**，此处不重复。
 
@@ -123,7 +124,22 @@ for %f in (niu-natives\target\wheels\niu_natives-*.whl) do python\Scripts\pip.ex
 
 **失败后果**：扩展缺失时 vision-server 走 R11 降级导入（不崩 Niu 启动），但 `screenshot` / `list_targets` / `ui` / `input` 均返回明确错误提示（功能不可用、看起来像功能 bug）。打包或开发前务必先构建。
 
-### 2.5 编译并启动 Rust 启动器
+### 2.5 编译磨砂模糊原生件（仅 Windows）
+
+磨砂模糊（材质窗）效果由 `native/niu-winfx-win` 原生件（C# / WinUI，dotnet 构建）提供。仅 Windows 开发者需要执行本步；macOS 与不需要磨砂模糊的 Windows 使用者可直接跳过（见本节末尾的降级说明）。
+
+**命令**（项目根目录执行）：
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File native\niu-winfx-win\build.ps1
+```
+
+- **前置**：需 `.NET 8 SDK` 可用（`dotnet --version`）；`Microsoft.WindowsAppSDK 2.4.0` 由 `WinFx.csproj` 声明，`dotnet` 首次构建时自动从 NuGet 还原（需联网一次），无需手工安装。
+- **产物**：`ui\main\native\winfx\`（含 `WinFx.exe`），**自包含**——.NET 8 与 Windows App SDK 运行时随包分发，客户机无需预装 .NET 8 / Windows App SDK；脚本自带「缺件即中止」守卫，不会静默漏过半成品。
+- **平台下限**：磨砂模糊仅对 Windows 11 22H2（build 22621）及以上生效；更低版本系统 = 无模糊（其余功能不受影响）。
+- **跳过此步同样能跑**：缺 `ui\main\native\winfx\WinFx.exe` 时后端探针不过，磨砂模糊全部 no-op——只是没有磨砂，其余功能正常，不崩。
+
+### 2.6 编译并启动 Rust 启动器
 
 ```bash
 cd launcher && cargo run --release
@@ -357,6 +373,7 @@ cp target/release/niu-launcher ../
 4. `python\Scripts\pip.exe install -r requirements-dev.txt`（**提供 maturin，pack.bat 硬依赖**）
 5. `cd ui\main && npm install`（Electron，缺则 pack.bat 守卫中止）
 6. **7-Zip**（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 已改为自动探测 `C:\` 与 `E:\`，装在别处才需手工改脚本）
+7. **.NET 8 SDK**（`dotnet --version` 可用）——`pack.bat` 会调用 `native\niu-winfx-win\build.ps1` 构建磨砂模糊原生件，缺 dotnet 时立即中止
 
 注意 Windows 自包含运行时的路径形态与 Unix 不同：`python\Scripts\` 与 `python\Lib\`，非 `python/bin/`。
 
@@ -372,7 +389,7 @@ pack.bat
 
 `dist\Niu-<VERSION>-win-x64.7z`（VERSION 从根目录 `VERSION` 文件读）。
 
-`pack.bat` 会自动构建 niu-natives wheel 并装进 `python\`（命令见 2.4 节）；缺 maturin、`.pyd` 未落位或 `ui\main\node_modules` 缺失时**立即中止**，不产残包。
+`pack.bat` 会自动构建 niu-natives wheel 并装进 `python\`（命令见 2.4 节），并调用 `native\niu-winfx-win\build.ps1` 构建磨砂模糊原生件（2.5 节）；缺 maturin、`.pyd` 未落位、`ui\main\node_modules` 缺失、winfx 原生件构建失败或其 `WinFx.exe` 未进入暂存区时**立即中止**，不产残包。pack.bat 会把 `ui\main\native\winfx\WinFx.exe` 作为暂存区完整性校验的一项。
 
 ---
 
