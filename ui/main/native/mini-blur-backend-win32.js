@@ -33,35 +33,18 @@ function warnOnce(key, msg) {
 // ── isAvailable() 预检（同步、不 spawn）：
 // ① Windows build ≥ 22621（Win11 22H2，DesktopAcrylicController 官方下限）
 // ② WinFx.exe 产物存在（缺失 = no-op，绝不 spawn 炸掉）
-// ③ Windows App Runtime 2.x 可见（unpackaged bootstrap 的运行时）：
-//    机器级 %ProgramFiles%\WindowsApps / 用户级 %LOCALAPPDATA%\Microsoft\WindowsApps 存在性探测；
-//    非提权时机器级目录通常 ACL 拒绝 → 不确定（运行时可能装在机器级）→ 放行，
-//    真实可用性由 5s 预热握手裁决（运行时缺失 = WinFx 起不来 = 超时全 no-op，行为一致）。
+// ③ 自包含产物：WinFx.exe 自带 .NET 8 + Windows App SDK，无需机器级 App Runtime；
+//    真实可用性由 5s 预热握手裁决（WinFx 起不来 = 超时 = 本会话全 no-op，行为一致）。
 function winBuild() {
   const m = String(os.release()).match(/(\d{3,})/);
   return m ? Number(m[1]) : 0;
-}
-
-function runtimeVisible() {
-  const hit = (names) => Array.isArray(names) && names.some(n => /^Microsoft\.WindowsAppRuntime\.2\./.test(n));
-  let machineReadable = false;
-  try {
-    const pf = process.env.ProgramFiles || 'C:\\Program Files';
-    if (hit(fs.readdirSync(path.join(pf, 'WindowsApps')))) return true;
-    machineReadable = true;
-  } catch (e) { /* ACL 拒绝 → 不确定 */ }
-  try {
-    if (hit(fs.readdirSync(path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'WindowsApps')))) return true;
-    if (machineReadable) return false;   // 两侧均可枚举且皆空 = 确定性缺失
-  } catch (e) { /* 不确定 */ }
-  return null;   // 不确定 → 放行，握手裁决
 }
 
 function isAvailable() {
   if (process.platform !== 'win32') return false;
   if (winBuild() < 22621) return false;
   try { if (!fs.existsSync(WINFX_EXE)) return false; } catch (e) { return false; }
-  return runtimeVisible() !== false;
+  return true;
 }
 
 // ── 状态
@@ -77,6 +60,7 @@ let hideTimer = null;
 let geomTimer = null;
 let geomPending = false;
 let preheatStage = 0;          // 0=attach已发 1=rects已发 2=hide已发 → 就绪
+let attachReplyPending = false; // 真实 attach 已发、回包未裁决（fail-loud，见 onStdout）
 let outBuf = '';
 let stderrTail = '';
 
@@ -94,6 +78,20 @@ function cmd(obj) {
 
 // ── 窗口解析 + 实例订阅（不缓存窗口引用；实例变了重新订阅并重 attach，§5.3）
 function onGeo() { scheduleGeom(); }
+
+// 实例销毁（Alt+F4/点关闭；渲染端不发 chat-mini-exit）→ 与 dispose 同一套效果：
+// 区域归零 + hide + attached=false，材质窗不留在旧位置/可见态。
+function onClosed(win) {
+  try {
+    if (subWin !== win) return;   // 旧实例迟到的 closed：已被新实例接管，忽略
+    subWin = null;
+    attached = false;
+    if (!ready || dead) return;
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    cmd({ cmd: 'rects', rects: [], viewW: 0, viewH: 0 });
+    cmd({ cmd: 'hide' });
+  } catch (e) { warnOnce('closed', e && e.message); }
+}
 function liveWin() {
   let win = null;
   try { win = resolveWin(); } catch (e) { return null; }
@@ -103,13 +101,28 @@ function liveWin() {
     try {
       if (subWin) {
         try {
-          if (!subWin.isDestroyed()) { subWin.removeListener('move', onGeo); subWin.removeListener('resize', onGeo); }
+          if (!subWin.isDestroyed()) {
+            subWin.removeListener('move', onGeo);
+            subWin.removeListener('resize', onGeo);
+            subWin.removeListener('show', onGeo);
+            subWin.removeListener('hide', onGeo);
+            subWin.removeListener('minimize', onGeo);
+            subWin.removeListener('closed', onClosed);
+          }
         } catch (e) { /* 旧实例已销毁：监听随其失效 */ }
       }
     } catch (e) { /* ignore */ }
     subWin = win;
     attached = false;   // 新实例 → hwnd 变化，必须重 attach
-    try { win.on('move', onGeo); win.on('resize', onGeo); } catch (e) { warnOnce('sub', e && e.message); }
+    try {
+      // 订阅随实例走（§5.3）：move/resize/show/hide/minimize → 几何现取重同步；closed → dispose 同效
+      win.on('move', onGeo);
+      win.on('resize', onGeo);
+      win.on('show', onGeo);
+      win.on('hide', onGeo);
+      win.on('minimize', onGeo);
+      win.on('closed', onClosed);
+    } catch (e) { warnOnce('sub', e && e.message); }
   }
   return win;
 }
@@ -137,14 +150,19 @@ function flushGeom() {
 }
 function attachNow(win) {
   const b = win.getBounds();
+  // getNativeWindowHandle() 返回 Buffer：Number(buffer) 会走 toString()（UTF-8）→ NaN →
+  // JSON.stringify 写成 null，原生 DoAttach 只接受 JSON 数字/十进制字符串（long.Parse），
+  // 遇 null 抛 InvalidOperationException → _attachHwnd 恒为 Zero（实测：材质窗压到迷你窗之上）。
+  // 必须 readBigUInt64LE 转十进制字符串下发。
   cmd({
     cmd: 'attach',
-    hwnd: Number(win.getNativeWindowHandle()),
+    hwnd: win.getNativeWindowHandle().readBigUInt64LE(0).toString(),
     rect: { x: b.x, y: b.y, w: b.width, h: b.height },
     scaleFactor: winScale(win),
   });
   attached = true;
   scaleSent = winScale(win);
+  attachReplyPending = true;   // 真实 attach 的回包 fail-loud 检查（onStdout）
 }
 function pushGeom(win) {
   const scale = winScale(win);
@@ -201,7 +219,21 @@ function onStdout(data) {
     if (!t) continue;
     try {
       const o = JSON.parse(t);
-      if (o && o.ok && !ready && !dead) onPreheatMsg(o.msg);
+      if (!o || typeof o.msg !== 'string') continue;
+      if (o.ok && !ready && !dead) {
+        onPreheatMsg(o.msg);
+      } else if (ready) {
+        // 就绪后 fail-loud：真实 attach 回包必须是 'attach'（原生 DoAttach 失败只回 error 行，不抛异常）；
+        // 其余命令回包出现 error 行同样记一条，绝不再静默（旧版 JS 完全不看回包）。
+        if (attachReplyPending) {
+          attachReplyPending = false;
+          if (o.msg.startsWith('error:') || o.msg !== 'attach') {
+            warnOnce('attachfail', `真实 attach 回包异常："${o.msg}" → 材质窗未贴宿主窗下方（z 序/几何失效）`);
+          }
+        } else if (o.msg.startsWith('error:')) {
+          warnOnce('attachfail', `材质窗回包 error："${o.msg}"`);
+        }
+      }
     } catch (e) { /* stdout 只承载协议行，非协议行忽略 */ }
   }
 }

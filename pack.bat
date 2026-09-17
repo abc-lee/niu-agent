@@ -106,10 +106,12 @@ echo [pack.bat] winfx native component ready in ui\main\native\winfx\
 
 REM === 复制需要打包的文件到临时目录 ===
 REM 排除: 编译产物、.git、缓存、备份、开发工具配置
+REM winfx 三个目录用绝对路径排除：/xd 裸目录名 bin/obj/publish 会误伤仓库里其它合法 bin 目录（如 python\Lib\site-packages\torch\bin），运行时缺文件
 echo [pack.bat] Copying files...
 robocopy . "!STAGE!" /E ^
     /xd .git backup temp_pack_stage dist .pytest_cache .ruff_cache .sisyphus .playwright-mcp .claude target niu-natives ^
         docs\lightrag-plans docs\superpowers ^
+        "%CD%\native\niu-winfx-win\bin" "%CD%\native\niu-winfx-win\obj" "%CD%\native\niu-winfx-win\publish" ^
     /xf *.pyc niu.exe~ *.bak .DS_Store docs\kg-dev-dictionary.md
 
 REM 暂存目录完整性校验：关键文件齐了才准压缩
