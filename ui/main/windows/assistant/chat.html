@@ -100,9 +100,13 @@
       height: 24px;
       border-radius: 50%;
       cursor: pointer;
-      font-size: 16px;
+      font-size: 16px;  /* 原为字符字形 × 的字号声明，保留但不再承担定尺寸职责：按钮内容已改内联 SVG，尺寸由 svg width/height(16) 决定（用户规则 2026-09-17） */
       box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
       -webkit-app-region: no-drag;
+      /* flex 三件套与 icon-btn/mini-btn 同制式：保证 svg 墨迹中心=按钮几何中心，边距四边各 4px 整数（1× DPR 不摊半像素） */
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     .close-btn:hover { 
       transform: scale(1.1);
@@ -503,8 +507,13 @@
     .local-file-link:hover {
       color: #40a9ff;
     }
-    .local-file-link::before {
-      content: '📎 ';
+    /* 原为 emoji 📎（CSS content:'📎 ' 注入）：emoji 跨平台字体/度量/颜色不一致 → 改内联 SVG 图形（用户规则 2026-09-17）；
+       图形在 JS 生成处直接插入（比 content:url(data:) 干净，无 xmlns/颜色转义问题）；尺寸由 svg width/height(14) 定，不依赖 font-size；
+       原 content 尾部空格由 margin-right 补回；inline-block 消除字符基线空隙，vertical-align 对齐文字视觉中线 */
+    .local-file-link svg {
+      display: inline-block;
+      vertical-align: -2px;
+      margin-right: 3px;
     }
 
     /* ========== 拖放上传 ========== */
@@ -1071,7 +1080,7 @@
        说明：① SVG 用 HTML5 内联写法，不写 xmlns（chat.html 是 text/html，HTML 解析器自带命名空间）；
        ② stroke="currentColor" 继承 .icon-btn 的 color:#333；③ display:block 消掉 inline 图形的基线间隙。
        语义不变：↑ 发送 / ⤢ 还原大窗 / ✕ 关闭，仅绘制方式从字符改为图形。 */
-    .icon-btn svg, .mini-btn svg { display: block; }  /* 两族均改内联 SVG 绘制：block 化消除 inline 基线空隙的亚像素偏移（mini-btn 与 icon-btn 共享此规则，不再另立重复规则） */
+    .icon-btn svg, .mini-btn svg, .close-btn svg { display: block; }  /* 三族均改内联 SVG 绘制：block 化消除 inline 基线空隙的亚像素偏移（mini-btn / icon-btn / close-btn 共享此规则，不再另立重复规则） */
 
     /* 标题栏右侧按钮组：迷你+关闭包一层，加迷你按钮后关闭不被挤到左缘 */
     .header-actions { display: flex; align-items: center; gap: 8px; }
@@ -1136,7 +1145,9 @@
       </div>
       <div class="header-actions">
         <button class="mini-btn" id="mini-btn" title="迷你模式"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#000" stroke-width="2"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
-        <button class="close-btn" id="close-btn">×</button>
+        <!-- 原为字符字形 ×：跨平台字体/字号不一致会导致墨迹中心漂移 → 改内联 SVG 图形绘制（用户规则 2026-09-17）；
+             尺寸 16×16，按钮 24×24 ⇒ 四边边距各 4px（整数，1× DPR 下不摊半像素） -->
+        <button class="close-btn" id="close-btn"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6 18 18"/><path d="M18 6 6 18"/></svg></button>
       </div>
     </div>
 
@@ -2484,6 +2495,20 @@
                 a.setAttribute('data-file-path', href);
                 a.setAttribute('href', '#');
                 a.classList.add('local-file-link');
+                // 原为 emoji 📎（CSS content 注入）→ 在 JS 生成处直接插入内联 SVG（比 content:url(data:) 干净：无 xmlns、无需 %23 转义颜色、颜色走 currentColor 跟随链接色）
+                // 必须用 createElementNS 建 SVG 元素：document.createElement('svg') 在 HTML 文档里建出的是 XHTML 命名空间元素
+                // （namespaceURI=http://www.w3.org/1999/xhtml，子元素 <path> 也是 xhtml），浏览器不按图形渲染——实测 bbox 宽 0、像素零墨迹，
+                // 且 setAttribute('viewBox') 在 HTML 元素上会被小写成 'viewbox'，导致图标完全不显示
+                const clip = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                clip.setAttribute('viewBox', '0 0 24 24');
+                clip.setAttribute('width', '14');   // 与原 emoji（约 14px 文字尺寸）视觉相当
+                clip.setAttribute('height', '14');
+                clip.setAttribute('fill', 'none');
+                clip.setAttribute('stroke', 'currentColor');
+                clip.setAttribute('stroke-width', '2');
+                clip.setAttribute('stroke-linecap', 'round');
+                clip.innerHTML = '<path d="M8 12V7a2.5 2.5 0 0 1 5 0v9a4.5 4.5 0 0 1-9 0V8" stroke-linejoin="round"/>';
+                a.insertBefore(clip, a.firstChild);
                 a.addEventListener('click', (e) => {
                   e.preventDefault();
                   const filePath = a.getAttribute('data-file-path');
