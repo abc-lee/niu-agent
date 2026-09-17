@@ -42,16 +42,23 @@
       height: 28px;
       border-radius: 50%;
       cursor: pointer;
-      font-size: 16px;
+      font-size: 16px;  /* 原为字符字形 × 的字号声明，保留但不再承担定尺寸职责：按钮内容已改内联 SVG，尺寸由 svg width/height(16) 决定（用户规则 2026-09-17） */
       font-family: 'Songti SC', 'SimSun', '宋体', serif;
       box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
       transition: transform 0.2s;
       -webkit-app-region: no-drag;
+      /* flex 三件套：保证 svg 墨迹中心=按钮几何中心，边距四边各 6px 整数（1× DPR 不摊半像素） */
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     .close-btn:hover {
       transform: scale(1.1);
       box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
     }
+    /* 原为字符字形 ×（靠 font-size 定大小，跨平台字体/字号不一致 → 墨迹中心漂移）→ 改内联 SVG 图形（用户规则 2026-09-17）；
+       尺寸由 svg width/height(16) 决定（.close-btn 已加 flex 三件套居中）；display:block 再消掉 inline 基线空隙 */
+    .close-btn svg { display: block; }
 
     /* 横屏三栏布局 */
     .columns {
@@ -242,8 +249,11 @@
 </head>
 <body>
   <div class="titlebar">
-    <h1 class="pencil-text">🤖 妞妞设置</h1>
-    <button class="close-btn">×</button>
+    <!-- 标题原为 🤖 妞妞设置：emoji 是装饰不是图标，跨平台字体差异最大（Apple Color Emoji vs Segoe UI Emoji，度量与颜色都不同）→ 去掉 emoji，只留文字（用户规则 2026-09-17） -->
+    <h1 class="pencil-text">妞妞设置</h1>
+    <!-- 原为字符字形 ×：跨平台字体/字号不一致会导致墨迹中心漂移 → 改内联 SVG 图形绘制（用户规则 2026-09-17）；
+         尺寸 16×16，按钮 28×28 ⇒ 四边边距各 6px（整数，1× DPR 下不摊半像素） -->
+    <button class="close-btn"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6 18 18"/><path d="M18 6 6 18"/></svg></button>
   </div>
 
   <div class="container">

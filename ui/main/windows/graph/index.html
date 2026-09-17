@@ -34,7 +34,10 @@
   <div class="toolbar">
     <div class="search-wrapper">
       <div class="search-box">
-        <span class="search-icon">🔍</span>
+        <!-- 原为 emoji 🔍：跨平台字体度量/颜色不一致 → 改内联 SVG 图形（用户规则 2026-09-17）；
+             尺寸 14×14 与原 font-size:14px 视觉相当（.search-icon 的 font-size 已不再承担定尺寸职责）；
+             .search-box 为 flex + align-items:center，svg 与原字符同容器同对齐，垂直不偏移 -->
+        <span class="search-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15 20 20"/></svg></span>
         <input type="text" id="searchInput" placeholder="输入关键词，回车搜索...">
       </div>
     </div>
@@ -82,7 +85,9 @@
   <div id="detail-panel" class="detail-panel hidden">
     <div class="detail-header">
       <h2 id="detail-title"></h2>
-      <button id="close-detail" class="close-btn">×</button>
+      <!-- 原为字符字形 ×：跨平台字体/字号不一致会导致墨迹中心漂移 → 改内联 SVG 图形绘制（用户规则 2026-09-17）；
+           尺寸 16×16，按钮 28×28（.close-btn 为 flex 居中、padding:0）⇒ 四边边距各 6px（整数，1× DPR 下不摊半像素） -->
+      <button id="close-detail" class="close-btn"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6 18 18"/><path d="M18 6 6 18"/></svg></button>
     </div>
     <div class="detail-content" id="detail-content"></div>
     <div class="detail-actions">

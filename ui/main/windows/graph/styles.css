@@ -41,8 +41,20 @@ body {
 }
 
 .search-icon {
-  font-size: 14px;
+  /* 原为 emoji 🔍 靠 font-size:14px 撑尺寸 → 改内联 SVG（用户规则 2026-09-17），尺寸由 svg width/height(14) 决定，font-size 不再承担定尺寸职责。
+     原 svg 为 inline ⇒ 参与行盒基线对齐，被 16px 字体撑出的 18px 行盒基线顶起 1px（svg 占 span 内 y=1..15，墨迹中心 y=8，而输入框 #searchInput 中心 y=9）。
+     改 flex 三件套：14px svg 在 18px 行盒内上下各 2px 整数居中，墨迹中心 = 行中心 = 输入框中心（y=9），1px 上偏消除。
+     min-height:18px 锁回原 inline 行盒高度（font-size:16px 的 line-height≈18px），保证 svg 成为 flex 容器后行高/搜索框尺寸不变，仅图标归位。
+     配 .search-icon svg { display:block } 消 inline 基线参与（graph 窗自有规则，不放进跨窗口共享 CSS）。 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
   opacity: 0.5;
+}
+
+.search-icon svg {
+  display: block;
 }
 
 #searchInput {

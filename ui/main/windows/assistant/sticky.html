@@ -186,7 +186,9 @@
     <!-- 下便利贴（旧便签 - 可编辑） -->
     <div id="old-sticky" class="sticky 黄色">
       <div class="content" contenteditable="true" spellcheck="false"></div>
-      <button class="delete-btn" title="删除">×</button>
+      <!-- 原为字符字形 ×：跨平台字体/字号不一致会导致墨迹中心漂移 → 改内联 SVG 图形绘制（用户规则 2026-09-17）；
+           尺寸 12×12，按钮 18×18（#old-sticky .delete-btn 为 flex 居中）⇒ 四边边距各 3px（整数，1× DPR 下不摊半像素） -->
+      <button class="delete-btn" title="删除"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6 18 18"/><path d="M18 6 6 18"/></svg></button>
     </div>
     <div class="page-hint">滚轮翻页 | Ctrl+滚轮缩放</div>
   </div>
