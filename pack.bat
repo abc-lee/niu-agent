@@ -26,6 +26,14 @@ if not exist "ui\main\node_modules\electron" (
     exit /b 1
 )
 
+REM 检查 dotnet SDK（构建 ui\main\native\winfx 原生件必需）
+dotnet --version >nul 2>&1
+if errorlevel 1 (
+    echo [pack.bat] ERROR: dotnet SDK not found
+    echo [pack.bat] Install .NET 8 SDK: https://dotnet.microsoft.com/download/dotnet/8.0
+    exit /b 1
+)
+
 REM 读取 VERSION
 set /p VERSION=<VERSION
 set DIST_DIR=dist
@@ -80,6 +88,22 @@ if errorlevel 1 (
 )
 echo [pack.bat] niu-natives installed into python\
 
+REM === 构建 winfx 原生件（WinUI 3 材质窗口 → ui\main\native\winfx\）===
+REM 与 niu-natives 同构：产物不进 git，clone 后必须本机构建。build.ps1 自己跑 dotnet publish
+REM 并把产物拷进 ui\main\native\winfx\；缺件时它会 exit 1，这里再复核 errorlevel + 关键 exe，
+REM 任一缺失即中止，绝不打出缺原生件的包。
+echo [pack.bat] Building winfx native component...
+powershell -NoProfile -ExecutionPolicy Bypass -File "native\niu-winfx-win\build.ps1"
+if errorlevel 1 (
+    echo [pack.bat] ERROR: winfx native build failed
+    exit /b 1
+)
+if not exist "ui\main\native\winfx\WinFx.exe" (
+    echo [pack.bat] ERROR: ui\main\native\winfx\WinFx.exe missing
+    exit /b 1
+)
+echo [pack.bat] winfx native component ready in ui\main\native\winfx\
+
 REM === 复制需要打包的文件到临时目录 ===
 REM 排除: 编译产物、.git、缓存、备份、开发工具配置
 echo [pack.bat] Copying files...
@@ -88,9 +112,13 @@ robocopy . "!STAGE!" /E ^
         docs\lightrag-plans docs\superpowers ^
     /xf *.pyc niu.exe~ *.bak .DS_Store docs\kg-dev-dictionary.md
 
-REM 确保 niu.exe 在根目录
+REM 暂存目录完整性校验：关键文件齐了才准压缩
 if not exist "!STAGE!\niu.exe" (
     echo [pack.bat] ERROR: niu.exe not found. Run launcher/build.sh first.
+    exit /b 1
+)
+if not exist "!STAGE!\ui\main\native\winfx\WinFx.exe" (
+    echo [pack.bat] ERROR: ui\main\native\winfx\WinFx.exe missing (winfx 原生件未进暂存目录)
     exit /b 1
 )
 
