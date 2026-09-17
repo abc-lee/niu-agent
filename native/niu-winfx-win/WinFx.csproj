@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>WinFx</RootNamespace>
+    <AssemblyName>WinFx</AssemblyName>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+  </ItemGroup>
+
+  <!--
+    The WinUI 2.3.6 targets copy the generated XAML (App.xbf / MainWindow.xbf / <name>.pri)
+    to the build output only — `dotnet publish` drops them, and without them the XAML runtime
+    aborts at startup (STATUS_INVALID_CRUNTIME_PARAMETER in Microsoft.UI.Xaml.dll). Mirror
+    them into the publish output after Publish so the published folder is complete and
+    self-runnable (required: this folder is the distributable artifact, ui/main/native/winfx/).
+  -->
+  <Target Name="NiWinfxCopyXamlRuntimeToPublish" AfterTargets="Publish" Condition="'$(PublishDir)' != ''">
+    <ItemGroup>
+      <_NiWinfxXamlRuntime Include="$(XamlGeneratedOutputPath)*.xbf" />
+      <_NiWinfxXamlRuntime Include="$(OutDir)$(AssemblyName).pri" Condition="Exists('$(OutDir)$(AssemblyName).pri')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_NiWinfxXamlRuntime)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
