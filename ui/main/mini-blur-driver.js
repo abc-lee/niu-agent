@@ -32,7 +32,8 @@ try {
 
 // ── 启动探针（§5.2 迁移）：require + isAvailable 双段已下移到后端——darwin 后端 isAvailable()
 // = 原探针两段（require .node + m.isAvailable()===true）逐条等价；win32 后端 isAvailable() =
-// 同步预检（build ≥ 22621 + WinFx.exe 存在 + App Runtime 2.x 可见性）。
+// 同步预检（build ≥ 22621 + WinFx.exe 产物存在；产物自包含 .NET 8 + Windows App SDK，
+// 不要求机器级 App Runtime；真实可用性由 5s 预热握手裁决）。
 // 门禁一：blurEnabled=false → 不加载后端（零进程零副作用）；门禁二：探针不过 → 后端置空（全 no-op，
 // 反向通道除外，仍下发 {available:false}）。probeOk 消费点（反向通道 payload、IPC 守卫）不变。
 let probeOk = false;

@@ -55,6 +55,8 @@ let dead = false;              // 握手失败/超时/进程退出 → 本会话
 let attached = false;          // 已发真实 attach（hwnd + 几何 + scaleFactor）
 let scaleSent = 0;             // 真实 attach 所用 scaleFactor（DPI 变化 → 重 attach）
 let subWin = null;             // 已订阅的窗口实例（订阅随实例走，§5.3）
+let closedFn = null;           // 绑定在 subWin 上的 'closed' 监听闭包（Electron 的 'closed' 事件零参数，
+                                // 实例只能靠闭包捕获）；绑定/退订/重订阅复用同一引用，防 removeListener 拿不到
 let handshakeTimer = null;
 let hideTimer = null;
 let geomTimer = null;
@@ -107,7 +109,7 @@ function liveWin() {
             subWin.removeListener('show', onGeo);
             subWin.removeListener('hide', onGeo);
             subWin.removeListener('minimize', onGeo);
-            subWin.removeListener('closed', onClosed);
+            if (closedFn) subWin.removeListener('closed', closedFn);   // 退订用绑定时的同一引用
           }
         } catch (e) { /* 旧实例已销毁：监听随其失效 */ }
       }
@@ -121,7 +123,9 @@ function liveWin() {
       win.on('show', onGeo);
       win.on('hide', onGeo);
       win.on('minimize', onGeo);
-      win.on('closed', onClosed);
+      // 'closed' 事件零参数（Electron API），闭包捕获实例后存入 closedFn；换实例时闭包随之重建
+      closedFn = () => onClosed(win);
+      win.on('closed', closedFn);
     } catch (e) { warnOnce('sub', e && e.message); }
   }
   return win;
@@ -223,8 +227,9 @@ function onStdout(data) {
       if (o.ok && !ready && !dead) {
         onPreheatMsg(o.msg);
       } else if (ready) {
-        // 就绪后 fail-loud：真实 attach 回包必须是 'attach'（原生 DoAttach 失败只回 error 行，不抛异常）；
-        // 其余命令回包出现 error 行同样记一条，绝不再静默（旧版 JS 完全不看回包）。
+        // 就绪后 fail-loud：真实 attach 回包必须是 'attach'（原生 DoAttach 的 z 序失败编码为
+        // 'attach-fail:<err>'；rects 的功能性失败编码为 'rects:<...>'，均无独立 error 行）；
+        // 其余命令回包出现 'attach-fail:'/'error:' 或非法 msg 同样记一条，绝不再静默（旧版 JS 完全不看回包）。
         if (attachReplyPending) {
           attachReplyPending = false;
           if (o.msg.startsWith('error:') || o.msg !== 'attach') {
