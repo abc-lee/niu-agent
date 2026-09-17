@@ -1071,11 +1071,11 @@
        说明：① SVG 用 HTML5 内联写法，不写 xmlns（chat.html 是 text/html，HTML 解析器自带命名空间）；
        ② stroke="currentColor" 继承 .icon-btn 的 color:#333；③ display:block 消掉 inline 图形的基线间隙。
        语义不变：↑ 发送 / ⤢ 还原大窗 / ✕ 关闭，仅绘制方式从字符改为图形。 */
-    .icon-btn svg { display: block; }
+    .icon-btn svg, .mini-btn svg { display: block; }  /* 两族均改内联 SVG 绘制：block 化消除 inline 基线空隙的亚像素偏移（mini-btn 与 icon-btn 共享此规则，不再另立重复规则） */
 
     /* 标题栏右侧按钮组：迷你+关闭包一层，加迷你按钮后关闭不被挤到左缘 */
     .header-actions { display: flex; align-items: center; gap: 8px; }
-    /* 标题栏迷你按钮（正常模式入口）：CSS 画白底黑框小方块——系统字体下 ▫ 字符太小/可能缺字形，画出来最可靠 */
+    /* 标题栏迷你按钮（正常模式入口）：小方块改内联 SVG 整数几何重画——原 CSS 画方块（::before 9px + 2px 边框 = 13px 外框，奇数尺寸在 24px 按钮 flex 居中下边距 5.5px 非整数 ⇒ 1× DPR 半像素抗锯齿，视觉"偏心"）；现外框 12px、四边边距 6px 整数，像素级对齐 */
     .mini-btn {
       background: #ffe3a3;
       border: none;
@@ -1093,13 +1093,9 @@
       align-items: center;
       justify-content: center;
     }
-    .mini-btn::before {
-      content: '';
-      width: 9px;
-      height: 9px;
-      border: 2px solid #000;
-      border-radius: 2px;
-    }
+    /* 方块改内联 SVG 整数几何重画（见 #mini-btn DOM 内 svg）：viewBox 24×24 与按钮 1:1，
+       rect x=7/w=10 + stroke 2 ⇒ 外框占 6..18 = 12px，相对 24px 按钮四边边距均 6px（整数）；
+       rx=2 与原 border-radius:2px 视觉一致。display 统一走下方 .icon-btn/.mini-btn svg 规则。 */
     .mini-btn:hover {
       transform: scale(1.1);
       /* 与基础态同风格：水平对称，仅保留下沉量（见基础态注释） */
@@ -1139,7 +1135,7 @@
         <span>妞妞</span>
       </div>
       <div class="header-actions">
-        <button class="mini-btn" id="mini-btn" title="迷你模式"></button>
+        <button class="mini-btn" id="mini-btn" title="迷你模式"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#000" stroke-width="2"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
         <button class="close-btn" id="close-btn">×</button>
       </div>
     </div>
