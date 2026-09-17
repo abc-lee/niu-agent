@@ -19,13 +19,6 @@ function warnOnce(key, msg) {
   try { console.error('[mini-blur-driver]', key, msg); } catch (e) { /* 无控制台时忽略 */ }
 }
 
-// ── 启动探针：require + isAvailable 双段，任一段失败 → 全 no-op（反向通道除外，仍下发 {available:false}）
-let probeOk = false;
-try {
-  const m = require(`./native/niu-winfx.${process.platform}-${process.arch}.node`);
-  if (m && m.isAvailable && m.isAvailable() === true) probeOk = true;
-} catch (e) { warnOnce('probe', `原生模块探针失败：${e && e.message}`); }
-
 // ── 配置：驱动自读 ~/.niu/window-config.json 顶层 blur 段（新读取路径，不复用既有 getChatMiniConfig）
 // enabled 默认 true（false = 完全回到现状观感）；hoverOpacity 默认 0.08（用户真机拍板的 8% 白纱）。改后需重启。
 let blurEnabled = true;
@@ -37,19 +30,33 @@ try {
   if (typeof blur.hoverOpacity === 'number') blurHoverOpacity = blur.hoverOpacity;
 } catch (e) { /* 文件缺失/损坏 → 全默认 */ }
 
-// ── 后端选择表：唯一平台分叉点（darwin = 本工程实现；win32 = 占位，另路方案实施时补真实现）
+// ── 启动探针（§5.2 迁移）：require + isAvailable 双段已下移到后端——darwin 后端 isAvailable()
+// = 原探针两段（require .node + m.isAvailable()===true）逐条等价；win32 后端 isAvailable() =
+// 同步预检（build ≥ 22621 + WinFx.exe 存在 + App Runtime 2.x 可见性）。
+// 门禁一：blurEnabled=false → 不加载后端（零进程零副作用）；门禁二：探针不过 → 后端置空（全 no-op，
+// 反向通道除外，仍下发 {available:false}）。probeOk 消费点（反向通道 payload、IPC 守卫）不变。
+let probeOk = false;
+
+// ── 后端选择表：唯一平台分叉点（darwin = NSVisualEffectView 原生件；win32 = WinFx.exe 材质窗，真实现）
 const BACKENDS = {
   darwin: () => require('./native/mini-blur-backend-darwin.js'),
   win32: () => require('./native/mini-blur-backend-win32.js'),
 };
 let backend = null;
-if (probeOk && blurEnabled) {
+if (blurEnabled) {
   const load = BACKENDS[process.platform];
   if (load) {
     try { backend = load(); } catch (e) { warnOnce('backend', `后端加载失败：${e && e.message}`); }
   } else {
     warnOnce('backend', `平台 ${process.platform} 无后端，全 no-op`);
   }
+  if (backend && typeof backend.isAvailable === 'function') {
+    try { probeOk = backend.isAvailable() === true; } catch (e) { probeOk = false; }
+    if (!probeOk) backend = null;         // 探针不过 → 后端置空（全 no-op）
+  }
+}
+if (blurEnabled && !probeOk) {
+  warnOnce('probe', `原生探针失败（后端 isAvailable 未通过，平台 ${process.platform}）→ 全 no-op（反向通道除外）`);
 }
 
 // ── 窗口解析：实时取当前 chat 窗（file:// …/windows/assistant/chat.html），不缓存引用
