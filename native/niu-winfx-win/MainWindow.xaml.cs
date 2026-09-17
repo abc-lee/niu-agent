@@ -211,8 +211,12 @@ public sealed partial class MainWindow : Window
 
         // Stacking: hWndInsertAfter = the host window's hwnd puts us DIRECTLY BELOW it.
         // (Measured: the -3 HWND_BOTTOM sentinel is rejected on Win11 26200 with
-        //  ERROR_INVALID_WINDOW_HANDLE(1400); a real target hwnd works in every form.
-        //  hwnd=0 is a valid no-z-order-change sentinel, used when no host window exists.)
+        //  ERROR_INVALID_WINDOW_HANDLE(1400); a real target hwnd works in every form.)
+        // hwnd=0 sentinel (preheat attach, no host window yet): hWndInsertAfter=NULL is
+        // HWND_TOP((HWND)0) — a LEGAL value, so SetWindowPos always succeeds. Real effect:
+        // this window is raised to the TOP of the topmost band; the preheated off-screen
+        // park position (-3000,-3000) + the following rects:[]/hide keep it zero-pixel,
+        // and the real attach (onReady, after=host hwnd) then docks it directly below host.
         AppWindow.MoveAndResize(new RectInt32(x, y, w, hh));
         ShowWindow(_hwnd, SW_SHOWNA);
         bool z = SetWindowPos(_hwnd, _attachHwnd, x, y, w, hh, SWP_NOACTIVATE);
@@ -222,8 +226,8 @@ public sealed partial class MainWindow : Window
         ReassertZ(250);
         // fail-loud: z-order assert failed (e.g. host hwnd stale → ERROR_INVALID_WINDOW_HANDLE)
         // → encode as 'attach-fail:<err>' on stdout; 'attach' is returned ONLY on success.
-        // (hwnd=0 sentinel: SetWindowPos(hWndInsertAfter=NULL) is a no-z-op that SUCCEEDS,
-        //  so preheat attach still answers 'attach'.)
+        // (hwnd=0 sentinel: HWND_TOP((HWND)0) is a legal hWndInsertAfter value, so the
+        //  preheat SetWindowPos always succeeds and preheat attach still answers 'attach'.)
         return z ? "attach" : "attach-fail:" + Marshal.GetLastWin32Error();
     }
 
