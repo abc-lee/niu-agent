@@ -210,13 +210,17 @@ public sealed partial class MainWindow : Window
         }
 
         // Stacking: hWndInsertAfter = the host window's hwnd puts us DIRECTLY BELOW it.
-        // (Measured: the -3 HWND_BOTTOM sentinel is rejected on Win11 26200 with
-        //  ERROR_INVALID_WINDOW_HANDLE(1400); a real target hwnd works in every form.)
+        // (Measured: the (HWND)-3 sentinel is rejected on Win11 26200 with
+        //  ERROR_INVALID_WINDOW_HANDLE(1400); a real target hwnd works in every form.
+        //  Note: HWND_BOTTOM is actually (HWND)1 — what was tried here is -3, not HWND_BOTTOM;
+        //  1400 merely says -3 is an invalid window handle.)
         // hwnd=0 sentinel (preheat attach, no host window yet): hWndInsertAfter=NULL is
         // HWND_TOP((HWND)0) — a LEGAL value, so SetWindowPos always succeeds. Real effect:
         // this window is raised to the TOP of the topmost band; the preheated off-screen
-        // park position (-3000,-3000) + the following rects:[]/hide keep it zero-pixel,
-        // and the real attach (onReady, after=host hwnd) then docks it directly below host.
+        // park position (-3000,-3000) + the following rects:[]/hide keep it zero-pixel;
+        // when a host window exists, the real attach (onReady, after=host hwnd) then docks
+        // it directly below host; if the host window does not exist yet, docking is deferred
+        // to the driver's next lighting frame (the regular setRegions/show path re-attaches).
         AppWindow.MoveAndResize(new RectInt32(x, y, w, hh));
         ShowWindow(_hwnd, SW_SHOWNA);
         bool z = SetWindowPos(_hwnd, _attachHwnd, x, y, w, hh, SWP_NOACTIVATE);

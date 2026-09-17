@@ -62,7 +62,7 @@ let hideTimer = null;
 let geomTimer = null;
 let geomPending = false;
 let preheatStage = 0;          // 0=attach已发 1=rects已发 2=hide已发 → 就绪
-let attachReplyPending = false; // 真实 attach 已发、回包未裁决（fail-loud，见 onStdout）
+let attachReplyPending = false; // 真实 attach 已发、回包未裁决（fail-loud：仅 'attach'/'attach-fail:'/'error:' 裁决，见 onStdout）
 let outBuf = '';
 let stderrTail = '';
 
@@ -88,9 +88,11 @@ function onClosed(win) {
     if (subWin !== win) return;   // 旧实例迟到的 closed：已被新实例接管，忽略
     subWin = null;
     attached = false;
-    // 窗已销毁：复位在途标记（在途回包可能尚未被裁决）。迟到的陈旧回包不得算到后续
-    // 新 attach 头上（会在「在途」分支误报 warnOnce('attachfail')，即真实在途的一次性槽位）；
-    // 它们落非在途的独立键 'attachfail-late'（onStdout），槽位由 late 分支独立记账、互不消耗。
+    // 窗已销毁：复位在途标记（在途回包可能尚未被裁决），使旧 attach 的陈旧回包通常不会算到
+    // 后续新 attach 头上：若它在下次 attach 之前被读到，落非在途的独立键 'attachfail-late'
+    // （onStdout），槽位由 late 分支独立记账、互不消耗。边界（不改行为）：若陈旧回包拖到
+    // 下次 attach 已下发（pending 重新为 true）之后才被读到，陈旧 'attach-fail:' 仍走「在途」分支、
+    // 烧掉 'attachfail' 槽位，真实在途失败则落 'attachfail-late'——两键语义互换（不静默，但归属误导）。
     attachReplyPending = false;
     if (!ready || dead) return;
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
@@ -214,8 +216,9 @@ function startPrewarm() {
     onGone(`预热握手超时（${HANDSHAKE_MS}ms）` + (tail ? `（stderr 末行：${tail}）` : ''));
   }, HANDSHAKE_MS);
   // 握手 = off-screen attach（hwnd=0 哨兵：hWndInsertAfter=NULL 即 HWND_TOP((HWND)0)，是合法值
-  // → SetWindowPos 必成功；真实效果 = 把材质窗抬到 topmost 带顶，随后 onReady 的真实 attach
-  // （after=宿主窗）将其贴回宿主窗正下方；停靠位在窗外（-3000,-3000）故零像素）；其后归零区域 + 回隐藏态
+  // → SetWindowPos 必成功；真实效果 = 把材质窗抬到 topmost 带顶；宿主窗存在时由 onReady 的真实 attach
+  // （after=宿主窗）将其贴回宿主窗正下方；窗尚不存在时延后到驱动下一帧的点亮路径
+  // （点亮帧到达时窗必已存在，由常规 setRegions/show 路径接管）；停靠位在窗外（-3000,-3000）故零像素）；其后归零区域 + 回隐藏态
   cmd({ cmd: 'attach', hwnd: 0, rect: { x: -3000, y: -3000, w: 488, h: 216 } });
 }
 
@@ -236,6 +239,9 @@ function onStdout(data) {
         // 就绪后 fail-loud（覆盖两条轴）：
         // ① attach 的 z 序轴：真实 attach 回包必须是 'attach'（原生 DoAttach 的 z 序失败编码为
         //    'attach-fail:<err>'，无独立 error 行）→ warnOnce('attachfail')。
+        //    在途分支先校验行身份：先前命令（geom/rects/show/hide）的回包可能在同一 stdout 管道里
+        //    晚到，不校验会被当成 attach 回包 → 误报失败并烧掉唯一的 'attachfail' 槽位；
+        //    attach 回包只可能是 'attach' / 'attach-fail:' / 'error:' 三种形态（判定见下方分支）。
         //    两键分工：'attachfail' = 真实在途 attach 的 z 序/几何失败（一次性）；
         //    'attachfail-late' = 非在途时期到达的 'attach-fail:'/'error:'（陈旧/迟到/其它命令回包，
         //    一次性但独立，不消耗在途 'attachfail' 槽位——否则一次良性陈旧失败吃掉唯一告警后，
@@ -243,21 +249,31 @@ function onStdout(data) {
         // ② rects 的区域构建轴：'create-rgn-fail' / 'combine-fail' → 独立键 warnOnce('rectsfail')
         //    （不与 ① 共用一次性槽位）。'SetWindowRgn=0' 不判：未点亮稳态时材质窗处于隐藏（hide 后），
         //    原生 SetWindowRgn 恒返回 0 且区域更新丢失（由 show 时 DoShow 重放缓存区域补偿）= 预期行为；
-        //    而驱动点亮顺序为「先 setRegions 后 setVisible(true)」，点亮后首个 rects 回包必命中该串 → 误报。
+        //    而驱动点亮顺序为「先 setRegions 后 setVisible(true)」，未点亮稳态（已 attach 且处于 hide 之后）时
+        //    点亮后首个 rects 回包命中该串 → 误报（若该次点亮前刚发生重 attach（新实例/onClosed/DPI 变化），
+        //    DoAttach 的 ShowWindow(SW_SHOWNA) 已使其可见，紧随 rects 包回包为 SetWindowRgn=1、不含该串）。
+        //    可见（点亮）态同样不判：若区域更新真丢失，DoShow 只在 show 时刻重放补偿，点亮态失败仍静默
+        //    （有意收窄的代价；触发需 GDI 耗尽/句柄失效，罕见）。
         // msg 非字符串的行在上游 continue 丢弃、不会被记；本分支只判 'error:'/'attach-fail:' 两个前缀并记一条（late 键），绝不再静默。
         // 注：非在途回包到达时在途标记可能已清（回包已被裁决，或被 onClosed 复位），本条属重复/陈旧失败，记独立键便于定位。
         if (attachReplyPending) {
-          attachReplyPending = false;
-          if (o.msg.startsWith('error:') || o.msg !== 'attach') {
-            warnOnce('attachfail', `真实 attach 回包异常："${o.msg}" → 材质窗未贴宿主窗下方（z 序/几何失效）`);
+          // 只把 'attach' / 'attach-fail:' / 'error:' 三种形态当作 attach 回包（裁决：清在途标记、
+          // 非 'attach' 即告警）；其余形态（先前命令 geom/rects/show/hide 的晚到回包等）不清标记、
+          // 不告警、直接放过——保持 in-flight 等真正的 attach 回包（理由见上方 ① 说明）。
+          if (o.msg === 'attach' || o.msg.startsWith('attach-fail:') || o.msg.startsWith('error:')) {
+            attachReplyPending = false;
+            if (o.msg !== 'attach') {
+              warnOnce('attachfail', `真实 attach 回包异常："${o.msg}" → 材质窗未贴宿主窗下方（z 序/几何失效）`);
+            }
           }
         } else if (o.msg.startsWith('error:') || o.msg.startsWith('attach-fail:')) {
           warnOnce('attachfail-late', `材质窗回包 error/attach-fail（非在途）："${o.msg}"`);
         }
         // ② rects 轴：原生 DoRects 回包 "SetWindowRgn=… GetWindowRgn=…"，功能性失败 =
         // 区域创建失败 / 区域并集失败（旧原型曾静默刷 336 行 combine-fail，全展开态幕墙无材质而无人发现）。
-        // 'SetWindowRgn=0' 不判——隐藏态区域更新丢失由 show 重放补偿，属预期行为（见上方 ② 说明），
-        // 每次点亮的首个 rects 回包必命中该串，纳入判据会误报并烧掉一次性槽位。
+        // 'SetWindowRgn=0' 不判——隐藏态区域更新丢失由 show 重放补偿属预期行为；点亮态同样不判
+        // （仅 DoShow 在 show 时刻重放补偿，见上方 ② 说明）。未点亮稳态（已 attach 且处于 hide 之后）时
+        // 点亮的首个 rects 回包命中该串，纳入判据会误报并烧掉一次性槽位。
         if (o.msg.includes('create-rgn-fail') || o.msg.includes('combine-fail')) {
           warnOnce('rectsfail', `材质窗 rects 回包功能性失败："${o.msg}" → 区域裁剪未生效（材质窗未按区域显隐）`);
         }
