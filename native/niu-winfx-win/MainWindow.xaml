@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="WinFx.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:local="using:WinFx">
+
+    <!-- Hard constraints (T0-verified, do not relax):
+         * parent container MUST be a Grid (a Canvas makes the material fall back to solid)
+         * exactly ONE SystemBackdropElement in the whole window
+         * zero content: no text/buttons/any UI — the element stretches to fill the window;
+           geometry, regions and material parameters arrive over the stdin NDJSON protocol -->
+    <Grid x:Name="Root">
+        <controls:SystemBackdropElement x:Name="BackdropEl"
+                                        HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+            <controls:SystemBackdropElement.SystemBackdrop>
+                <local:AcrylicBackdrop x:Name="Acrylic" />
+            </controls:SystemBackdropElement.SystemBackdrop>
+        </controls:SystemBackdropElement>
+    </Grid>
+</Window>

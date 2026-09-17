@@ -148,3 +148,9 @@ sessions/
 # niu-winfx 原生模块（node-gyp）：构建产物与落地的 .node（构建/打包时再生成）
 native/niu-winfx/build/
 ui/main/native/*.node
+
+# niu-winfx-win 原生件（路线 A 零内容材质窗）：build.ps1 构建产物落点（构建/打包时再生成）
+ui/main/native/winfx/
+native/niu-winfx-win/bin/
+native/niu-winfx-win/obj/
+native/niu-winfx-win/publish/
