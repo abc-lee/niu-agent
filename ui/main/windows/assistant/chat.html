@@ -1065,6 +1065,14 @@
     }
     .icon-btn:hover { background: rgba(0, 0, 0, .16); }
 
+    /* 按钮图标改为图形绘制（2026-09-17）：原字符字形（↑/⤢/✕）的墨迹中心会随平台字体/字号漂移——
+       实测 macOS 上视觉正常、Windows（Arial 15px）上 ↑ 墨迹中心偏低 2.0px、⤢ 偏高 0.5px；
+       改用内联 SVG 后由 .icon-btn 的 flex 居中直接精确居中图形，几何与字体无关、跨平台一致。
+       说明：① SVG 用 HTML5 内联写法，不写 xmlns（chat.html 是 text/html，HTML 解析器自带命名空间）；
+       ② stroke="currentColor" 继承 .icon-btn 的 color:#333；③ display:block 消掉 inline 图形的基线间隙。
+       语义不变：↑ 发送 / ⤢ 还原大窗 / ✕ 关闭，仅绘制方式从字符改为图形。 */
+    .icon-btn svg { display: block; }
+
     /* 标题栏右侧按钮组：迷你+关闭包一层，加迷你按钮后关闭不被挤到左缘 */
     .header-actions { display: flex; align-items: center; gap: 8px; }
     /* 标题栏迷你按钮（正常模式入口）：CSS 画白底黑框小方块——系统字体下 ▫ 字符太小/可能缺字形，画出来最可靠 */
@@ -1076,7 +1084,10 @@
       height: 24px;
       border-radius: 50%;
       cursor: pointer;
-      box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+      /* 阴影对称化（2026-09-17）：方块几何居中已实测（::before 中心与按钮中心 dx=dy=0.00px），
+         原 2px/2px 偏移会把阴影推向右下、造成视觉重心偏右下，产生"不在正中间"的观感；
+         改为水平 0 偏移、仅留极小下沉量，水平方向完全对称。 */
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12);
       -webkit-app-region: no-drag;
       display: flex;
       align-items: center;
@@ -1091,7 +1102,8 @@
     }
     .mini-btn:hover {
       transform: scale(1.1);
-      box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
+      /* 与基础态同风格：水平对称，仅保留下沉量（见基础态注释） */
+      box-shadow: 0 1px 6px rgba(0,0,0,0.15);
     }
     /* 磨砂模糊 D9 白纱罩层（2026-09-16，plan: docs/superpowers/plans/2026-09-16-winfx-integration.md §4）：
        #mini-blur-veil = 观测层运行时注入的罩层容器（内联样式 fixed、恒 0×0、无背景、
@@ -1230,9 +1242,9 @@
     </div>
     <div id="mini-pill">
       <input id="mini-input" type="text" placeholder="说点什么..." />
-      <button class="icon-btn" id="mini-send-btn" title="发送">↑</button>
-      <button class="icon-btn" id="mini-restore-btn" title="还原大窗">⤢</button>
-      <button class="icon-btn" id="mini-close-btn" title="关闭">✕</button>
+      <button class="icon-btn" id="mini-send-btn" title="发送"><svg viewBox="0 0 15 15" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 12.8V2.6"/><path d="M3.1 6.9 7.5 2.5l4.4 4.4"/></svg></button>
+      <button class="icon-btn" id="mini-restore-btn" title="还原大窗"><svg viewBox="0 0 15 15" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.4 2.6h3v3"/><path d="M12.4 2.6 8.3 6.7"/><path d="M5.6 12.4h-3v-3"/><path d="M2.6 12.4l4.1-4.1"/></svg></button>
+      <button class="icon-btn" id="mini-close-btn" title="关闭"><svg viewBox="0 0 15 15" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.6 3.6 11.4 11.4"/><path d="M11.4 3.6 3.6 11.4"/></svg></button>
     </div>
   </div>
 

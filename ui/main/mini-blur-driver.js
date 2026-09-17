@@ -48,16 +48,18 @@ if (blurEnabled) {
   const load = BACKENDS[process.platform];
   if (load) {
     try { backend = load(); } catch (e) { warnOnce('backend', `后端加载失败：${e && e.message}`); }
+    if (backend && typeof backend.isAvailable === 'function') {
+      try { probeOk = backend.isAvailable() === true; } catch (e) { probeOk = false; }
+      if (!probeOk) backend = null;         // 探针不过 → 后端置空（全 no-op）
+    }
+    // "原生探针失败"只收进确实加载过后端的分支（含加载抛错/缺 isAvailable，均按探针未过记）；
+    // 无后端平台走 else 分支只记"无后端"一条——backend 为 null 时根本没跑 isAvailable，不得误记成探针失败
+    if (!probeOk) {
+      warnOnce('probe', `原生探针失败（后端 isAvailable 未通过，平台 ${process.platform}）→ 全 no-op（反向通道除外）`);
+    }
   } else {
     warnOnce('backend', `平台 ${process.platform} 无后端，全 no-op`);
   }
-  if (backend && typeof backend.isAvailable === 'function') {
-    try { probeOk = backend.isAvailable() === true; } catch (e) { probeOk = false; }
-    if (!probeOk) backend = null;         // 探针不过 → 后端置空（全 no-op）
-  }
-}
-if (blurEnabled && !probeOk) {
-  warnOnce('probe', `原生探针失败（后端 isAvailable 未通过，平台 ${process.platform}）→ 全 no-op（反向通道除外）`);
 }
 
 // ── 窗口解析：实时取当前 chat 窗（file:// …/windows/assistant/chat.html），不缓存引用

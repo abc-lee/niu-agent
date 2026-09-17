@@ -52,6 +52,7 @@ let resolveWin = () => null;   // 驱动层 attach 注入「实时解析当前 c
 let proc = null;               // WinFx.exe 常驻进程
 let ready = false;             // 预热握手完成
 let dead = false;              // 握手失败/超时/进程退出 → 本会话全 no-op（不重启，§5.7）
+let quitting = false;          // will-quit 已置位：正常退出引发的进程 exit 不是异常事件（仅影响日志层）
 let attached = false;          // 已发真实 attach（hwnd + 几何 + scaleFactor）
 let scaleSent = 0;             // 真实 attach 所用 scaleFactor（DPI 变化 → 重 attach）
 let subWin = null;             // 已订阅的窗口实例（订阅随实例走，§5.3）
@@ -216,7 +217,7 @@ function startPrewarm() {
     onGone(`预热握手超时（${HANDSHAKE_MS}ms）` + (tail ? `（stderr 末行：${tail}）` : ''));
   }, HANDSHAKE_MS);
   // 握手 = off-screen attach（hwnd=0 哨兵：hWndInsertAfter=NULL 即 HWND_TOP((HWND)0)，是合法值
-  // → SetWindowPos 必成功；真实效果 = 把材质窗抬到 topmost 带顶；宿主窗存在时由 onReady 的真实 attach
+  // → NULL 为合法值故不失败；万一失败由 5s 握手超时兜底（有日志，会话 no-op）；真实效果 = 把材质窗抬到 topmost 带顶；宿主窗存在时由 onReady 的真实 attach
   // （after=宿主窗）将其贴回宿主窗正下方；窗尚不存在时延后到驱动下一帧的点亮路径
   // （点亮帧到达时窗必已存在，由常规 setRegions/show 路径接管）；停靠位在窗外（-3000,-3000）故零像素）；其后归零区域 + 回隐藏态
   cmd({ cmd: 'attach', hwnd: 0, rect: { x: -3000, y: -3000, w: 488, h: 216 } });
@@ -237,8 +238,10 @@ function onStdout(data) {
         onPreheatMsg(o.msg);
       } else if (ready) {
         // 就绪后 fail-loud（覆盖两条轴）：
-        // ① attach 的 z 序轴：真实 attach 回包必须是 'attach'（原生 DoAttach 的 z 序失败编码为
-        //    'attach-fail:<err>'，无独立 error 行）→ warnOnce('attachfail')。
+        // ① attach 的 z 序轴：真实 attach 回包必须是 'attach'（z 序失败编码为 'attach-fail:<err>'，
+        //    无独立 z 失败行）；handler 异常另出 'error:<msg>'——'error:' 是全命令共享的通用异常通道，
+        //    在途期读到它未必来自 attach；保留判它是为兜住抛异常的 attach，代价是陈旧 'error:' 可能归属互换
+        //    → warnOnce('attachfail')。
         //    在途分支先校验行身份：先前命令（geom/rects/show/hide）的回包可能在同一 stdout 管道里
         //    晚到，不校验会被当成 attach 回包 → 误报失败并烧掉唯一的 'attachfail' 槽位；
         //    attach 回包只可能是 'attach' / 'attach-fail:' / 'error:' 三种形态（判定见下方分支）。
@@ -247,11 +250,11 @@ function onStdout(data) {
         //    一次性但独立，不消耗在途 'attachfail' 槽位——否则一次良性陈旧失败吃掉唯一告警后，
         //    后续真实 z 序失败全静默）。
         // ② rects 的区域构建轴：'create-rgn-fail' / 'combine-fail' → 独立键 warnOnce('rectsfail')
-        //    （不与 ① 共用一次性槽位）。'SetWindowRgn=0' 不判：未点亮稳态时材质窗处于隐藏（hide 后），
-        //    原生 SetWindowRgn 恒返回 0 且区域更新丢失（由 show 时 DoShow 重放缓存区域补偿）= 预期行为；
-        //    而驱动点亮顺序为「先 setRegions 后 setVisible(true)」，未点亮稳态（已 attach 且处于 hide 之后）时
-        //    点亮后首个 rects 回包命中该串 → 误报（若该次点亮前刚发生重 attach（新实例/onClosed/DPI 变化），
-        //    DoAttach 的 ShowWindow(SW_SHOWNA) 已使其可见，紧随 rects 包回包为 SetWindowRgn=1、不含该串）。
+        //    （不与 ① 共用一次性槽位）。'SetWindowRgn=0' 不判，两种情况分开看：未点亮稳态（attach 后 hide、
+        //    窗隐藏）时原生 SetWindowRgn 恒返回 0 且区域更新丢失（由 show 时 DoShow 重放缓存区域补偿）= 预期行为，
+        //    此时 rects 回包先于 show 到达，纳入判据会以 'SetWindowRgn=0' 命中该串 → 会误报。
+        //    仅当点亮前刚发生重 attach（新实例/onClosed/DPI 变化，DoAttach 的 ShowWindow(SW_SHOWNA) 已使窗可见）时，
+        //    同条回包为 'SetWindowRgn=1'、不含该串，不会误报。
         //    可见（点亮）态同样不判：若区域更新真丢失，DoShow 只在 show 时刻重放补偿，点亮态失败仍静默
         //    （有意收窄的代价；触发需 GDI 耗尽/句柄失效，罕见）。
         // msg 非字符串的行在上游 continue 丢弃、不会被记；本分支只判 'error:'/'attach-fail:' 两个前缀并记一条（late 键），绝不再静默。
@@ -332,7 +335,11 @@ function onGone(why) {
   if (p) {
     try { if (p.exitCode === null && !p.killed) p.kill(); } catch (e) { /* 已退出 */ }
   }
-  warnOnce('gone', `材质窗${why} → 本会话全 no-op（不重启，§5.7）`);
+  // 行为收敛照做（dead=true，余下命令全 no-op）；仅日志层区分：will-quit 正常退出（quit 命令/
+  // 300ms 回收 kill）触发的 exit 不是异常事件，不打"进程退出 → 本会话全 no-op"降级日志。
+  if (!quitting) {
+    warnOnce('gone', `材质窗${why} → 本会话全 no-op（不重启，§5.7）`);
+  }
 }
 
 function sendRects(rects, radius, win) {
@@ -364,6 +371,7 @@ function scheduleHide(ms) {
 try {
   app.on('will-quit', () => {
     try {
+      quitting = true;   // 正常退出：随后 quit/kill 触发的进程 exit → onGone 不再打降级日志
       if (proc && proc.exitCode === null) {
         try { proc.stdin.write(JSON.stringify({ cmd: 'quit' }) + '\n'); } catch (e) { /* ignore */ }
         setTimeout(() => {
@@ -402,7 +410,7 @@ module.exports = {
     } catch (e) { warnOnce('rects', e && e.message); }
   },
 
-  // visible=true → show（当帧活显，区域随 show 重放）；visible=false → ms 后 hide（宿主常驻）。
+  // visible=true → show（当帧活显，区域随 show 重放）；visible=false → 区域立即归零（当帧"视觉消失"，无 alpha 通道）+ ms 后 hide 回驻留态（宿主常驻）。
   setVisible(visible, fadeMs) {
     const ms = Math.max(0, Number.isFinite(fadeMs) ? fadeMs : 0);
     snap.visible = !!visible;
@@ -417,6 +425,11 @@ module.exports = {
         ensureAttached(win);
         cmd({ cmd: 'show' });
       } else {
+        // win32 无 alpha 通道（材质淡不出"无材质"态）→ 区域归零才是"视觉消失"；
+        // 驱动在观测层末帧（幕墙落地）才发熄灭 → 归零时点 = 幕墙落地时点。
+        // 若等到 ms 后才归零，幕墙落底后胶囊区还会多留 200ms 模糊（实测看着不舒服）；
+        // ms 后的 hide 仅回驻留隐藏态，不改变视觉。
+        cmd({ cmd: 'rects', rects: [], viewW: 0, viewH: 0 });
         scheduleHide(ms);
       }
     } catch (e) { warnOnce('vis', e && e.message); }
