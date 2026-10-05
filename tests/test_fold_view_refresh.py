@@ -10,6 +10,7 @@ test_calibration.py（Step 4 合跑）。mock store / 校准倍率 / token 计�
 禁真实 LLM；tmp DB 禁碰 ~/.niu。
 """
 
+import contextlib
 import copy
 import json
 import sqlite3
@@ -38,6 +39,8 @@ from agent.runner import NiuRunner
 from agent.session import Message
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "mcp-servers" / "session-manager" / "src"))
+
+import niu_session_manager as nsm  # noqa: E402  视野门单点 patch 目标（见 visible helper）
 from niu_session_manager import fold_tool_output  # noqa: E402
 
 
@@ -108,6 +111,19 @@ def fold_env(monkeypatch, tmp_path):
 
 def _make_cm(store, max_tokens, blocks_db):
     return ContextManager(store, max_tokens=max_tokens, blocks_db_path=blocks_db)
+
+
+@contextlib.contextmanager
+def visible(rowids):
+    """注入视野：rowids=None=视野未建立；set=视野内工具 rowid。
+
+    单点 patch 入口——与 tests/test_fold_tool.py / tests/test_fold_view_gate.py 的
+    `visible(...)` 同签名同机制（patch niu_session_manager._current_visible_tool_rowids）。
+    组合级用例走真 fold_tool_output 时必须经此注入：折叠工具有视野门，
+    视野未建立则一律拒折（宁拒不错折）。
+    """
+    with mock.patch.object(nsm, "_current_visible_tool_rowids", return_value=rowids):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -644,9 +660,12 @@ class TestCombinedRegressionLock:
         r = NiuRunner.__new__(NiuRunner)
 
         def fold_dispatch(args):
-            # 真工具写 folded=1 进 tmp DB（**kwargs 测试注入通道）
-            return StepOutcome(data=fold_tool_output([3], messages_db_path=str(db_path)),
-                               next_prompt="继续", should_exit=False)
+            # 真工具写 folded=1 进 tmp DB（**kwargs 测试注入通道）。
+            # 视野门（T2b-2）：接受集 ⊆ 当前上下文视野——经 visible({3}) 注入
+            # 视野（与 test_fold_tool.py 同机制），被折的 rowid 在视野内才折。
+            with visible({3}):
+                return StepOutcome(data=fold_tool_output([3], messages_db_path=str(db_path)),
+                                   next_prompt="继续", should_exit=False)
 
         handler = _FakeHandler({"fold_tool_output": fold_dispatch})
         client = _FakeClient([
