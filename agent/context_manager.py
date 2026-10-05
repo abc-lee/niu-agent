@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.context_assembler.blocks import PointerBlock, default_db_path, load_all
 from agent.session import MessageStore, fold_columns_available
-from agent.subagent import _read_context_window_tokens, _read_warning_threshold
+from agent.subagent import _read_context_window_tokens
 
 _INDEX_ENTITY_MAX = 3  # 索引行实体标签上限（spec §3.3）
 TRIGGER_RATIO_FALLBACK = 0.80  # compaction 导入失败时的仪表盘兜底线（=compaction.TRIGGER_RATIO 默认值引用）
@@ -106,12 +106,10 @@ class ContextManager:
             max_tokens: 最大 token 数量（0 表示从配置读取）
             blocks_db_path: 指针块存储 DB 路径（默认 ~/.niu/context_blocks.db，测试可注入临时路径）
         """
-        if max_tokens <= 0:
-            max_tokens = _read_context_window_tokens()
+        # 窗口不做实例冻结：构造参数 >0 仅供测试/调用方显式覆盖，0 = 每次用时现读配置
+        self._max_tokens_override = max_tokens if max_tokens > 0 else 0
         self.store = message_store
         self.max_messages = max_messages
-        self.max_tokens = max_tokens
-        self._warning_threshold = _read_warning_threshold()
         self._blocks_db_path = Path(blocks_db_path) if blocks_db_path is not None else None
         # 最近一次组装的 system 消息 token 数（Task 3：80% 触发判定的系统侧输入；
         # 由 runner 组装 system 后回填，缺省 0=未知，首轮回退偏保守）
@@ -255,6 +253,10 @@ class ContextManager:
         """记录最近一次组装的 system 消息 token 数（80% 触发判定的系统侧输入）。"""
         self._system_token_estimate = max(0, int(n_tokens))
 
+    def _window_tokens(self) -> int:
+        """窗口 token 数——每次用时现读配置（构造参数 >0 时作为显式覆盖）。"""
+        return self._max_tokens_override or _read_context_window_tokens()
+
     def assemble_view_sync(self, db_messages, exclude_last: bool = True) -> list[dict]:
         """同步纯组装视图（入口/折叠刷新共用，单一渲染源）。
 
@@ -316,10 +318,11 @@ class ContextManager:
         # usage：raw → 校准覆写（R1/R4 定案：校准随计算移入本函数——rebuild 与入口同口径；
         # 纯函数 n×get_ratio 无副作用）。降级时保留 raw + debug 一行（对齐现状可观测性）
         base_est = self.count_tokens_simple(view) + self._system_token_estimate
-        usage = base_est / self.max_tokens if self.max_tokens else 0.0
+        window = self._window_tokens()
+        usage = base_est / window if window else 0.0
         try:
             from agent.context_assembler import calibration
-            usage = calibration.estimate(base_est) / self.max_tokens if self.max_tokens else 0.0
+            usage = calibration.estimate(base_est) / window if window else 0.0
         except Exception as e:
             logger.debug(f"[Context] calibration failed, usage falls back to raw: {e}")
         self._fold_stats["usage"] = usage
@@ -363,10 +366,11 @@ class ContextManager:
             # 若读 _fold_stats，calibration 降级 raw 时会以 raw 调 try_acquire，破"入口行为零变化"。
             # 现状语义保持：calibration 抛错时异常先于 try_acquire 终止、从不尝试置意图）
             est = calibration.estimate(base_est)
-            usage_ratio = est / self.max_tokens if self.max_tokens else 0.0
+            window = self._window_tokens()
+            usage_ratio = est / window if window else 0.0
             if AUTO_GATE.try_acquire(usage_ratio):
                 logger.info(
-                    f"[Context] Calibrated usage {est:.0f}/{self.max_tokens} "
+                    f"[Context] Calibrated usage {est:.0f}/{window} "
                     f"({usage_ratio:.1%}) >= trigger line, setting compression intent"
                 )
                 # 统一压缩入口（spec 2026-09-06）：组装出口不再就地压实——
