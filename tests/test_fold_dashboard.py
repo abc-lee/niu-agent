@@ -113,19 +113,31 @@ class TestNewSessionClearsFoldStats:
         class _Cm:
             def __init__(self):
                 self._fold_stats = {"n": 2, "p": 5.0, "usage": 0.5}
+                self._visible_tool_rowids = {3}  # 视野已建立（/new 后应被 invalidate 清空）
                 self.est = -1
 
             def set_system_token_estimate(self, n):
                 self.est = n
 
+            def visible_tool_rowids(self):
+                """与真 ContextManager 同语义：返回内部集合的**副本**；None=视野未建立。"""
+                rows = self._visible_tool_rowids
+                return None if rows is None else set(rows)
+
+            def invalidate_visible_tool_rowids(self):
+                """与真类同语义：置 None=视野未建立（/new 经此入口作废可见集）。"""
+                self._visible_tool_rowids = None
+
         cm = _Cm()
         monkeypatch.setattr(cm_mod, "peek_context_manager", lambda: cm)
+        assert cm.visible_tool_rowids() == {3}  # 前置：视野已建立（/new 须经 invalidate 入口作废）
         from agent.context_assembler import reset_derived_state
         # 派生文件全部指向 tmp（禁碰 ~/.niu）
         reset_derived_state(blocks_db_path=tmp_path / "blocks.db",
                             calibration_path=tmp_path / "token_calibration.json")
         assert cm._fold_stats is None
         assert cm.est == 0
+        assert cm.visible_tool_rowids() is None  # /new 走锁保护入口作废视野集（防陈旧 rowid 被折叠消费）
 
 
 # ============== 组装时缓存 _fold_stats（集成） ==============
