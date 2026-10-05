@@ -63,14 +63,15 @@ def render_tool_content(msg, tc_map) -> str:
     - 非 tool / rowid<=0 → 原样返回
     - tc_map is None（历史回放路径 load_history）→ 不渲染头行/占位符，原样返回
     - fold_columns_available() False（迁移失败降级）→ 原样返回
-    - folded=1 → 单行完成态占位符 `[输出#{rowid} 已折叠：工具名(参数摘要≤80字符，无配对 unknown)，
-      原占约 X%。]`（pct None 时省略占比分句）——**带 rowid 编号**，与未折叠头行
-      `[输出#N · 工具名 · 占上下文 X%]` 同编号体系，模型据此辨识窗口内哪些输出属于
-      同一批可折叠/已折叠对象；以双锚（`[输出#` 开头 + 前段 `已折叠：`）被
-      agent_loop._is_tool_placeholder 识别（防应急 ToolCrop 覆盖）——取回仍靠参数摘要
-      重调原工具（编号不是取回通道），工具名+参数摘要是 LLM 重新调用原工具取回原文的
-      通道（spec §4）
-    - folded=0 → 头行 + 原文；编号(rowid)/工具名/pct 全部固化来源，逐字节稳定
+    - folded=0 → 头行 + 原文。头行 `[可折叠编号 {rowid} · 工具名 · 占上下文 X%]`
+      （pct None 时省略占比分句）——**可折叠编号 = messages.db rowid（DB 主键，即消息表
+      行号），不是序号**；取名「可折叠编号」只为让模型把窗口内可折叠对象与编号对上，
+      不暗示「第 N 条」。编号(rowid)/工具名/pct 全部固化来源，逐字节稳定
+    - folded=1 → 单行完成态占位符 `[已折叠：工具名(参数摘要≤80字符，无配对 unknown)，
+      原占约 X%。]`（pct None 时省略占比分句）——**不带编号**（用户定案：已折叠行回到
+      无编号原形态）；以「[已折叠：」前缀被 agent_loop._is_tool_placeholder 识别
+      （防应急 ToolCrop 覆盖）——取回仍靠参数摘要重调原工具（编号不是取回通道），
+      工具名+参数摘要是 LLM 重新调用原工具取回原文的通道（spec §4）
     """
     content = msg.content or ""
     if msg.role != "tool" or getattr(msg, "rowid", 0) <= 0:
@@ -85,8 +86,8 @@ def render_tool_content(msg, tc_map) -> str:
     rowid = msg.rowid
     if getattr(msg, "folded", 0):
         pct_part = f"，原占约 {pct}%" if pct is not None else ""
-        return f"[输出#{rowid} 已折叠：{name}({args}){pct_part}。]"
-    header = f"[输出#{rowid} · {name}" + (f" · 占上下文 {pct}%]" if pct is not None else "]")
+        return f"[已折叠：{name}({args}){pct_part}。]"
+    header = f"[可折叠编号 {rowid} · {name}" + (f" · 占上下文 {pct}%]" if pct is not None else "]")
     return f"{header}\n{content}"
 
 
@@ -440,7 +441,7 @@ class ContextManager:
     def get_fold_dashboard_line(self, usage_override: float | None = None) -> str:
         """动态块使用率仪表盘行（spec §5）：读最近一次组装缓存，无缓存返回 ""。
 
-        格式：[上下文使用率 {u}% · 强制压缩线 {t}% · 可折叠输出 {n} 条（合计 {p}%）]
+        格式：[上下文使用率 {u}% · 强制压缩线 {t}% · 可折叠工具输出 {n} 条（合计 {p}%）]
         （合计只含有 output_pct 快照者）。n==0 或 fold_columns_available() False
         （迁移失败降级）→ 省略可折叠段，只留使用率+压缩线——不误导 LLM 调必报错的工具。
 
@@ -463,7 +464,7 @@ class ContextManager:
         line = f"[上下文使用率 {usage * 100:.1f}% · 强制压缩线 {t * 100:g}%"
         n = stats.get("n")
         if n:
-            line += f" · 可折叠输出 {n} 条（合计 {stats['p']:g}%）"
+            line += f" · 可折叠工具输出 {n} 条（合计 {stats['p']:g}%）"
         return line + "]"
 
 

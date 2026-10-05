@@ -26,7 +26,7 @@ _BASE_TOOL_NAMES = {"bash", "code_run", "read", "write", "edit", "grep", "comput
 
 # 子 Agent 折叠禁门——装配层（用户定案：视野集只属于主 Agent 视图）
 #
-# fold_tool_output 的编号取自主 Agent 视图里的工具输出头行 `[输出#N …]`。子 Agent
+# fold_tool_output 的编号取自主 Agent 视图里的工具输出头行 `[可折叠编号 N …]`。子 Agent
 # 拿不到那套编号，调折叠只会猜 rowid、写坏 DB。因此子 Agent 工具表**无条件**剔除
 # 该工具（裸名 fold_tool_output 与 server 前缀名 server/fold_tool_output 都剔）。
 # 双保险：装配层（本模块两个出口）排除 + 派发层（agent/handler._dispatch_impl

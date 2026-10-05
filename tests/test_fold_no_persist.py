@@ -27,7 +27,7 @@ from agent.generic.agent_loop import (  # noqa: E402
 
 
 # fold_tool_output 全拒文案（与实现逐字对齐，同 test_fold_view_gate.py 约定）：
-# 视野门生效后，报错不再是「输出#N 不存在」，而是「不在当前上下文视野内或不是
+# 视野门生效后，报错不再是「输出#N 不存在」（legacy 编号形态），而是「不在当前上下文视野内或不是
 # 工具输出」——本文件只关心落库行为，文案常量同源对齐即可。
 NO_FOLDABLE_ERROR = (
     "没有可折叠的输出：指定编号不在当前上下文视野内或不是工具输出"
@@ -114,7 +114,7 @@ def _run_loop(client, handler, **kw):
 def _fold_ok():
     return StepOutcome(
         data={"status": "ok", "folded": [3], "freed_pct": 8.0,
-              "errors": [], "notes": [], "message": "已折叠 1 条输出（#3）"},
+              "errors": [], "notes": [], "message": "已折叠 1 条输出（编号 3）"},
         next_prompt="继续", should_exit=False)
 
 
@@ -157,7 +157,7 @@ class TestFoldPersistBehavior:
         # fold 成功结果照常落库；同轮其他工具同样落库
         fold_persist = [m for m in tool_persists if m.get("tool_call_id") == "call_fold"]
         assert len(fold_persist) == 1
-        assert "已折叠 1 条输出（#3）" in fold_persist[0]["content"]
+        assert "已折叠 1 条输出（编号 3）" in fold_persist[0]["content"]
         assert any(m.get("tool_call_id") == "call_read" for m in tool_persists)
         # assistant(tool_calls) 行落库（含 fold tool_call，与配对 tool 结果成对入库）
         asst = [m for m in persisted if m.get("role") == "assistant" and m.get("tool_calls")]
@@ -210,12 +210,12 @@ class TestFoldResultInViewAndPersist:
         req2 = client.requests[1]
         fold_msg = [m for m in req2 if m.get("tool_call_id") == "call_fold"]
         assert len(fold_msg) == 1
-        assert "已折叠 1 条输出（#3）" in fold_msg[0]["content"]
+        assert "已折叠 1 条输出（编号 3）" in fold_msg[0]["content"]
 
         # 同一确认落库（persist 事件在场，内容含折叠文案）
         fold_persist = [m for m in persisted if m.get("tool_call_id") == "call_fold"]
         assert len(fold_persist) == 1
-        assert "已折叠 1 条输出（#3）" in fold_persist[0]["content"]
+        assert "已折叠 1 条输出（编号 3）" in fold_persist[0]["content"]
 
         # tool_results 内部键不外泄——所有 LLM 请求与最终 messages 均无该键
         for req in client.requests:
@@ -250,7 +250,7 @@ class TestAssemblyKeepsFoldResult:
         # fold 的 tool 结果成对在场（非孤儿，不被跳过）
         fold_tool = [e for e in out if e.get("tool_call_id") == "call_fold"]
         assert len(fold_tool) == 1
-        assert "已折叠 1 条输出（#3）" in fold_tool[0]["content"]
+        assert "已折叠 1 条输出（编号 3）" in fold_tool[0]["content"]
 
 
 if __name__ == "__main__":

@@ -182,10 +182,9 @@ TOOL_SCHEMAS = {
     "fold_tool_output": {
         "name": "fold_tool_output",
         "description": (
-            "折叠可再生的工具输出以释放上下文。编号=当前上下文里 tool 输出头行 [输出#N …] 中的 N。"
-            "只可折叠**当前上下文中带 [输出#N …] 编号**且**尚未折叠**的工具输出；已折叠的不需再折。"
-            "不在当前上下文中的编号不会被折叠——请只从上文实际看到的 [输出#N …] 头行取编号。"
-            "搭车调用：在本来就要调用其他工具的同一轮捎带调用，绝不要只为折叠单开一轮。"
+            "可折叠的工具输出在上下文里长这样：[可折叠编号 4806 · read_file · 占上下文 3.2%]，它下面跟着这条输出的原文。"
+            "折叠时把其中的编号传给我（例如 4806）。已经折叠的不需要再折。"
+            "搭车调用：在本来就要调用其他工具的同一轮捎上，绝不只为折叠单开一轮。"
             "折叠后如需原文，重新调用原工具即可。"
         ),
         "input_schema": {
@@ -195,8 +194,7 @@ TOOL_SCHEMAS = {
                     "type": "array",
                     "items": {"type": "integer"},
                     "description": (
-                        "要折叠的 tool 输出编号列表（取自当前上下文头行 [输出#N …] 中的 N，"
-                        "仅限尚未折叠者）"
+                        "要折叠的工具输出编号列表（取自当前上下文里 [可折叠编号 N] 中的 N）"
                     ),
                 },
             },
@@ -624,7 +622,7 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
     """按 rowid 折叠工具输出（置 folded=1）。messages.db 全局单库无 session 列。
 
     视野门优先于幂等（T2b-2 用户定案）：接受集 ⊆ 当前上下文视野——热上下文里
-    只有工具输出带 `[输出#N]` 编号，模型只能折叠视野内（带编号）的行；视野未建立
+    只有工具输出带 `[可折叠编号 N]` 编号，模型只能折叠视野内（带编号）的行；视野未建立
     或编号不在视野内一律拒绝，不看 folded、不写库、不累加 freed。
     幂等语义（spec §6）：视野内已折叠进 notes 不报错；全幂等返回 status:ok + folded:[]；
     全拒返回 status:error；部分成功 ok + errors + message 附「N 条未成功」。
@@ -668,7 +666,7 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
                 if row is None or row[0] != "tool":
                     refused += 1  # 视野内但不是可折叠的工具输出（并发归档竞态等）
                 elif row[1]:
-                    notes.append(f"输出#{oid} 已是折叠状态")  # 幂等提示非错误（spec §6）
+                    notes.append(f"编号 {oid} 已是折叠状态")  # 幂等提示非错误（spec §6）
                 else:
                     conn.execute("UPDATE messages SET folded=1 WHERE rowid=?", (oid,))
                     folded.append(oid)
@@ -693,7 +691,7 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
         "errors": errors,
         "notes": notes,
         "message": (
-            f"已折叠 {len(folded)} 条输出（{', '.join(f'#{i}' for i in folded)}），"
+            f"已折叠 {len(folded)} 条输出（{', '.join(f'编号 {i}' for i in folded)}），"
             f"释放约 {freed:.1f}% 上下文{suffix}"
         ),
     }
@@ -953,10 +951,9 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="fold_tool_output",
             description=(
-                "折叠可再生的工具输出以释放上下文。编号=当前上下文里 tool 输出头行 [输出#N …] 中的 N。"
-                "只可折叠**当前上下文中带 [输出#N …] 编号**且**尚未折叠**的工具输出；已折叠的不需再折。"
-                "不在当前上下文中的编号不会被折叠——请只从上文实际看到的 [输出#N …] 头行取编号。"
-                "搭车调用：在本来就要调用其他工具的同一轮捎带调用，绝不要只为折叠单开一轮。"
+                "可折叠的工具输出在上下文里长这样：[可折叠编号 4806 · read_file · 占上下文 3.2%]，它下面跟着这条输出的原文。"
+                "折叠时把其中的编号传给我（例如 4806）。已经折叠的不需要再折。"
+                "搭车调用：在本来就要调用其他工具的同一轮捎上，绝不只为折叠单开一轮。"
                 "折叠后如需原文，重新调用原工具即可。"
             ),
             inputSchema={
@@ -966,8 +963,7 @@ async def list_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "integer"},
                         "description": (
-                            "要折叠的 tool 输出编号列表（取自当前上下文头行 [输出#N …] 中的 N，"
-                            "仅限尚未折叠者）"
+                            "要折叠的工具输出编号列表（取自当前上下文里 [可折叠编号 N] 中的 N）"
                         ),
                     },
                 },

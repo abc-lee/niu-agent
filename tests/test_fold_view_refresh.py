@@ -138,10 +138,10 @@ class TestAssembleViewSyncRendering:
         # 无块 → 无索引前导；history=前 5 条（Q2 被排除）
         assert [e["role"] for e in view] == ["user", "assistant", "tool", "assistant", "tool"]
         # 未折叠 tool：头行 + 原文（编号=rowid，pct 落库固化值）
-        assert view[2]["content"] == "[输出#3 · read_file · 占上下文 5.0%]\nRAW_BODY_1"
-        # 折叠 tool：完成态占位符单行「[输出#N 已折叠：工具名(参数摘要)，原占约 X%。]」带编号（与未折叠头行同体系；agent_loop 按双锚识别）
+        assert view[2]["content"] == "[可折叠编号 3 · read_file · 占上下文 5.0%]\nRAW_BODY_1"
+        # 折叠 tool：完成态占位符单行「[已折叠：工具名(参数摘要)，原占约 X%。]」不带编号（用户定案；agent_loop 按「[已折叠：」前缀识别）
         assert view[4]["content"] == (
-            "[输出#5 已折叠：grep({})，原占约 7.5%。]"
+            "[已折叠：grep({})，原占约 7.5%。]"
         )
 
     def test_fold_stats_and_calibrated_usage(self, fold_env):
@@ -337,7 +337,7 @@ class TestFoldHookContract:
 
         handler = _FakeHandler({"fold_tool_output": _fold_outcome(
             {"status": "ok", "folded": [3], "freed_pct": 8.0,
-             "errors": [], "notes": [], "message": "已折叠 1 条输出（#3）"})})
+             "errors": [], "notes": [], "message": "已折叠 1 条输出（编号 3）"})})
         client = _FakeClient([
             _resp("", [_tc("fold_tool_output", "call_fold", '{"output_ids": [3]}')]),
             _resp("完成"),
@@ -369,8 +369,8 @@ class TestFoldHookContract:
         assert order[:5] == ["llm", "persist", "persist", "hook", "llm"]
 
     @pytest.mark.parametrize("data", [
-        {"status": "ok", "folded": [], "notes": ["输出#3 已折叠（幂等）"], "errors": [], "message": "m"},
-        {"status": "error", "error": "输出#9 不存在"},
+        {"status": "ok", "folded": [], "notes": ["编号 3 已是折叠状态"], "errors": [], "message": "m"},
+        {"status": "error", "error": "编号 9 不是工具输出"},
         "plain string result",
     ], ids=["idempotent", "error", "non_dict"])
     def test_fold_result_variants_still_trigger_once(self, data):
@@ -540,11 +540,11 @@ class TestOnToolRoundRefreshRebuild:
             {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "c1", "type": "function",
                  "function": {"name": "read_file", "arguments": "{\"path\": \"a\"}"}}]},
-            {"role": "tool", "content": "[输出#3 · read_file · 占上下文 5.0%]\nRAW_BODY_1",
+            {"role": "tool", "content": "[可折叠编号 3 · read_file · 占上下文 5.0%]\nRAW_BODY_1",
              "tool_call_id": "c1", "name": "read_file"},
             {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "c2", "type": "function", "function": {"name": "grep", "arguments": "{}"}}]},
-            {"role": "tool", "content": "[输出#5 · grep · 占上下文 7.5%]\nRAW_BODY_2",
+            {"role": "tool", "content": "[可折叠编号 5 · grep · 占上下文 7.5%]\nRAW_BODY_2",
              "tool_call_id": "c2", "name": "grep"},
             {"role": "user", "content": "Q2"},
         ]
@@ -560,11 +560,11 @@ class TestOnToolRoundRefreshRebuild:
         assert [e["role"] for e in messages] == ["system", "user", "assistant", "tool", "assistant", "tool", "user"]
         # 折叠行 → 占位符；折叠前原文从视图消失（exclude_last=False 含 Q2）
         assert messages[5]["content"] == (
-            "[输出#5 已折叠：grep({})，原占约 7.5%。]"
+            "[已折叠：grep({})，原占约 7.5%。]"
         )
         assert not any("RAW_BODY_2" in (e.get("content") or "") for e in messages)
         # 未折叠行保持头行 + 原文（与入口同制式）
-        assert messages[3]["content"] == "[输出#3 · read_file · 占上下文 5.0%]\nRAW_BODY_1"
+        assert messages[3]["content"] == "[可折叠编号 3 · read_file · 占上下文 5.0%]\nRAW_BODY_1"
 
     def test_subagent_msg_rows_dropped(self, fold_env, monkeypatch):
         db_msgs = _conversation() + [_msg(9, "subagent_msg", "@user hi")]
@@ -677,7 +677,7 @@ class TestCombinedRegressionLock:
             {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
             # 入口视图：头行 + 全文（agent_runner_loop 的 transform_history 自行截断）
-            {"role": "tool", "content": "[输出#3 · read_file · 占上下文 8.0%]\n" + RAW_FULL,
+            {"role": "tool", "content": "[可折叠编号 3 · read_file · 占上下文 8.0%]\n" + RAW_FULL,
              "tool_call_id": "c1"},
         ]
 
@@ -709,12 +709,12 @@ class TestCombinedRegressionLock:
         assert any("RAWBODY_" in (e.get("content") or "") for e in client.requests[0])
         # 修复效果：turn-2 LLM 请求含占位符、无折叠前原文
         req2 = json.dumps(client.requests[1], ensure_ascii=False)
-        assert "[输出#3 已折叠：read_file({})，原占约 8.0%。]" in req2
+        assert "[已折叠：read_file({})，原占约 8.0%。]" in req2
         assert "RAWBODY_" not in req2
 
     def test_plain_tool_round_next_turn_sees_header_line(self, tmp_path, fold_env, monkeypatch):
         # 组合级回归锁（新语义 2026-09-02）：普通工具轮（非 fold）persist → hook 从 DB 重建 →
-        # 第二轮 LLM 请求含编号头行 [输出#{rowid} · 工具名]（无 pct 快照 → 无百分比段）
+        # 第二轮 LLM 请求含可折叠编号头行 [可折叠编号 {rowid} · 工具名]（无 pct 快照 → 无百分比段）
         db_path = tmp_path / "messages.db"
         conn = self._init_db(db_path)
         BIG = "BIGOUT_" + "y" * 40000
@@ -772,9 +772,9 @@ class TestCombinedRegressionLock:
             "SELECT rowid FROM messages WHERE content LIKE 'BIGOUT_%'").fetchone()[0] == 4
         # turn-1 LLM 请求为入口视图（无头行）；turn-2（hook 重建后）含编号头行（rowid 随基线上移）
         req1 = json.dumps(client.requests[0], ensure_ascii=False)
-        assert "[输出#" not in req1
+        assert "[可折叠编号" not in req1
         req2 = json.dumps(client.requests[1], ensure_ascii=False)
-        assert "[输出#4 · read_file]" in req2
+        assert "[可折叠编号 4 · read_file]" in req2
 
 
 # ---------------------------------------------------------------------------
@@ -807,7 +807,7 @@ class TestFoldTruthClearing:
     def test_fold_success_clears_truth_cache(self):
         handler = _FakeHandler({"fold_tool_output": _fold_outcome(
             {"status": "ok", "folded": [3], "freed_pct": 8.0,
-             "errors": [], "notes": [], "message": "已折叠 1 条输出（#3）"})})
+             "errors": [], "notes": [], "message": "已折叠 1 条输出（编号 3）"})})
         client = self._client_with_truth()
         events, result = _run_loop(client, handler)
 
@@ -817,8 +817,8 @@ class TestFoldTruthClearing:
         assert handler._last_cached_tokens is None
 
     @pytest.mark.parametrize("data", [
-        {"status": "ok", "folded": [], "notes": ["输出#3 已折叠（幂等）"], "errors": [], "message": "m"},
-        {"status": "error", "error": "输出#9 不存在"},
+        {"status": "ok", "folded": [], "notes": ["编号 3 已是折叠状态"], "errors": [], "message": "m"},
+        {"status": "error", "error": "编号 9 不是工具输出"},
         "plain string result",
     ], ids=["idempotent", "error", "non_dict"])
     def test_fold_result_variants_keep_truth(self, data):
