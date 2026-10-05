@@ -2,8 +2,9 @@
 
 覆盖 spec §4/§9：
 - 头行渲染（有/无 pct），格式 `[输出#{rowid} · {tool_name} · 占上下文 {pct}%]`
-- 折叠完成态占位符单行 `[已折叠：工具名(参数摘要≤80字符，无配对 unknown)，原占约 X%。]`
-  （pct=None 变体省略占比分句；不带编号），以「[已折叠：」前缀被 _is_tool_placeholder 识别
+- 折叠完成态占位符单行 `[输出#{rowid} 已折叠：工具名(参数摘要≤80字符，无配对 unknown)，原占约 X%。]`
+  （pct=None 变体省略占比分句；带 rowid 编号，与未折叠头行同编号体系），以双锚
+  「[输出# 开头 + 前段 已折叠：」被 _is_tool_placeholder 识别（旧无编号文案照认）
 - 同一消息两轮渲染逐字节一致（固化不变式）
 - tc_map=None（历史回放路径）/ 迁移失败降级 → 原样返回
 - 压实路径一致性：build_compact_view 窗口段与常规组装同制式（R1 交叉 P1 回归锁）
@@ -58,14 +59,14 @@ def test_placeholder_with_pct():
     m = msg("tool", "SECRET_BODY", "t-105", 105,
             tool_call_id="tc1", folded=1, output_pct=4.2)
     assert render_tool_content(m, TC_MAP) == \
-        '[已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]'
+        '[输出#105 已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]'
 
 
 def test_placeholder_without_pct_omits_ratio_clause():
     m = msg("tool", "SECRET_BODY", "t-7", 7, tool_call_id="tc1",
             folded=1, output_pct=None)
     assert render_tool_content(m, TC_MAP) == \
-        '[已折叠：read_file({"path": "/x.py"})。]'
+        '[输出#7 已折叠：read_file({"path": "/x.py"})。]'
 
 
 def test_folded_placeholder_truncates_args_summary():
@@ -84,7 +85,36 @@ def test_no_pairing_still_renders():
     m = msg("tool", "B", "t-3", 3, tool_call_id="tc-missing",
             folded=1, output_pct=1.5)
     assert render_tool_content(m, TC_MAP) == \
-        "[已折叠：unknown()，原占约 1.5%。]"
+        "[输出#3 已折叠：unknown()，原占约 1.5%。]"
+
+
+@pytest.mark.parametrize("rowid", [3, 105, 1_234_567])
+def test_folded_placeholder_carries_rowid_number(rowid):
+    """已折叠占位符带 rowid 编号（与未折叠头行 `[输出#N · …]` 同编号体系）：
+    模型据此辨识窗口里哪些输出是「可折叠/已折叠」的同一批对象；
+    取回原文仍靠参数摘要重调原工具（编号不是取回通道）。"""
+    m = msg("tool", "SECRET_BODY", f"t-{rowid}", rowid,
+            tool_call_id="tc1", folded=1, output_pct=4.2)
+    rendered = render_tool_content(m, TC_MAP)
+    assert rendered.startswith(f"[输出#{rowid} 已折叠：")
+    assert 'read_file({"path": "/x.py"})' in rendered          # 工具名 + 参数摘要（重调通道）
+    assert rendered == f'[输出#{rowid} 已折叠：read_file({{"path": "/x.py"}})，原占约 4.2%。]'
+    assert "SECRET_BODY" not in rendered                        # 原文不复活
+
+
+def test_is_tool_placeholder_round_trip_with_rendered_fold():
+    """渲染→判定往返锁：带编号折叠占位符 True（防应急 ToolCrop 重复折叠），
+    未折叠渲染（头行+换行+原文）恒多行 → False，旧无编号文案（去编号期恢复会话）仍 True。"""
+    from agent.generic.agent_loop import _is_tool_placeholder
+    folded = msg("tool", "B", "t-105", 105, tool_call_id="tc1",
+                 folded=1, output_pct=4.2)
+    rendered = render_tool_content(folded, TC_MAP)
+    assert rendered.startswith("[输出#105 已折叠：") and "\n" not in rendered
+    assert _is_tool_placeholder(rendered) is True
+    # 未折叠渲染：头行+换行+原文恒多行，不误判为占位符
+    assert _is_tool_placeholder(render_tool_content(TOOL_105, TC_MAP)) is False
+    # 旧无编号文案（去编号期落库，恢复会话兼容）
+    assert _is_tool_placeholder("[已折叠：read_file({})，原占约 8.0%。]") is True
 
 
 def test_tc_map_none_no_render_history_replay():
@@ -119,7 +149,8 @@ def test_fixed_invariant_two_rounds_identical():
 
 
 def test_is_tool_placeholder_recognizes_fold():
-    # 折叠族按 "[已折叠：" 前缀识别（旧带编号文案双锚照认）：折叠占位符恒单行，未折叠渲染头行+换行+原文恒多行不误判
+    # 折叠族当前形态按双锚识别（"[输出#" 开头 + 前段「已折叠：」；旧无编号前缀文案照认）：
+    # 折叠占位符恒单行，未折叠渲染头行+换行+原文恒多行不误判
     from agent.generic.agent_loop import _is_tool_placeholder
     folded = msg("tool", "B", "t-105", 105, tool_call_id="tc1",
                  folded=1, output_pct=4.2)
@@ -172,7 +203,7 @@ def test_compact_view_window_same_format(ratio_one, tmp_path):
     assert set(by_tc) == {"tc1", "tc2"}
     # 折叠条：占位符（原文 FOLDED_BODY 不得复活）
     assert by_tc["tc2"]["content"] == \
-        '[已折叠：search({"q": "niu"})，原占约 3.0%。]'
+        '[输出#8 已折叠：search({"q": "niu"})，原占约 3.0%。]'
     # 未折叠条：头行 + 原文
     assert by_tc["tc1"]["content"] == "[输出#5 · read_file · 占上下文 2.0%]\nOLD_BODY"
     # 与常规路径共享 helper 逐字节一致（同制式锁）
