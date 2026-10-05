@@ -80,3 +80,6 @@ def reset_derived_state(blocks_db_path=None, calibration_path=None) -> None:
     if cm is not None:
         cm.set_system_token_estimate(0)
         cm._fold_stats = None  # /new 作废 fold 仪表盘缓存（M2-F2）：防陈旧 usage 被页面三级链拾取
+        # /new 作废视图内工具 rowid 可见集（T2b-1）：与 fold 仪表盘缓存同一内存态
+        # 作废通道——新会话的 rowid 空间与旧会话无交集，陈旧集合不得被折叠工具消费
+        cm._visible_tool_rowids = None
