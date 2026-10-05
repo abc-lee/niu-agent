@@ -209,7 +209,7 @@ def test_compact_view_window_same_format(ratio_one, tmp_path):
         msg("tool", "FOLDED_BODY", "t2", 8, tool_call_id="tc2",
             folded=1, output_pct=3.0),
     ]
-    view, _stats = build_compact_view(
+    view, _stats, _rowids = build_compact_view(
         messages, system_msg=None, keep_turns=2,
         blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
     )

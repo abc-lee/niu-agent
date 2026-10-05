@@ -20,6 +20,7 @@ rowid 猜测值）一律拒绝，不查 DB、不看 folded、不累加 freed；�
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -320,11 +321,12 @@ class TestTextDiscipline:
 
 
 
-# ============== ⑦ 组合：视野作废后（压实归档 / 删行）折叠一律拒绝 ==============
+# ============== ⑦ 组合：压实后可见集按新窗口重建——显号必可折、窗口外必拒 ==============
 # 真 ContextManager + 真 assemble_view_sync 建视野 + 真 compaction.build_compact_view
 # 走压实路径 + 真 fold_tool_output 消费；禁真实 LLM/DB（块库、校准、messages.db
 # 全部 tmp 注入），agent_loop 只桩提炼/总结/三件套落库/进度通知——机械压实与
-# 视野作废跑真逻辑。
+# 可见集重建跑真逻辑。不变量：压实后视图里出现的每个可折叠编号都可折
+# （旧视图的集合是脏点，新视图的集合按窗口重算写入）。
 
 import agent.context_assembler.calibration as calibration  # noqa: E402
 import agent.context_assembler.compaction as compaction_mod  # noqa: E402
@@ -366,10 +368,11 @@ def _tc(name, tc_id, args="{}"):
 
 
 def _long_conversation():
-    """四个会话单元（Q1..Q4，各含 1 个工具输出）；当前输入在 Q4 之后落库为末条。
+    """五个会话单元：Q1..Q4（各含 1 个工具输出）+ 末单元（Q5 + assistant/tool）。
 
-    Q1/Q2 的工具行会被 keep_recent_turns=1 的压实归档出窗口（rowid 2、6），
-    Q4 的工具行 rowid 10 仍在新窗口内。
+    工具行 rowid = {3, 6, 9, 12, 15}。keep_recent_turns=1 的压实只保留**末单元**
+    （Q5 → assistant → tool rowid 15）——Q1..Q4 的工具行归档出窗口，新窗口内唯一的
+    工具行 rowid 15 压实后仍在视图里带 `[可折叠编号 15 · …]` 头行（模型看得见）。
     """
     msgs = []
     for i, q in enumerate(("Q1", "Q2", "Q3", "Q4")):
@@ -381,13 +384,19 @@ def _long_conversation():
             _msg(base + 2, "tool", f"RAW_BODY_{i}", tool_call_id=f"c{i}",
                  output_pct=5.0 + i),
         ]
-    msgs.append(_msg(12, "user", "Q5"))  # 当前输入
+    # 末单元 = 当前待执行轮（user → assistant+tool）：keep=1 的压实窗口即此单元
+    msgs += [
+        _msg(12, "user", "Q5"),
+        _msg(13, "assistant", "",
+             tool_calls=[_tc("grep", "c4", '{"q": "x"}')]),
+        _msg(14, "tool", "RAW_BODY_4", tool_call_id="c4", output_pct=2.5),
+    ]
     return msgs
 
 
 @pytest.fixture
 def view_env(monkeypatch, tmp_path):
-    """真 CM + tmp messages.db：四个工具行 rowid {3,6,9,12} 可折，末条为 user 行。"""
+    """真 CM + tmp messages.db：工具行 rowid {3,6,9,12,15} 可折，末单元含工具行。"""
     blocks_db = tmp_path / "blocks.db"
     old_ratio = calibration._cached_ratio
     calibration._cached_ratio = 1.0
@@ -418,9 +427,10 @@ def view_env(monkeypatch, tmp_path):
 class _FakeCompactionCtx:
     """压缩上下文鸭子对象——_sync_get_messages 返回测试 db_messages。"""
 
-    def __init__(self, db_messages):
+    def __init__(self, db_messages, blocks_db=None):
         self._db_messages = db_messages
         self._last_compacted_view = None
+        self._blocks_db_path = blocks_db  # tmp 块库（禁碰 ~/.niu）
 
     def _sync_get_messages(self, limit=None):
         return list(self._db_messages)
@@ -431,16 +441,16 @@ class _FakeCompactionCtx:
     _llm_config = None
     _store = None
     _system_msg = None
-    _blocks_db_path = None
 
 
-def _run_real_compression(db_messages, messages, rebuild_raises: bool = False):
-    """走真 run_controlled_compression（真机械压实 + 真重组 + 真视野作废）；
+def _run_real_compression(db_messages, messages, rebuild_raises: bool = False,
+                          blocks_db=None):
+    """走真 run_controlled_compression（真机械压实 + 真重建可见集 + 真重组）；
     只桩提炼/总结/三件套落库/进度通知（禁真实 LLM 与真实落库）。
 
     rebuild_raises=True → 桩掉重组（抛异常）走降级分支，两条路径共用同一合流点。
     """
-    ctx = _FakeCompactionCtx(db_messages)
+    ctx = _FakeCompactionCtx(db_messages, blocks_db=blocks_db)
     rebuild = patch.object(agent_loop, "_rebuild_messages_after_compact",
                            side_effect=RuntimeError("rebuild boom")) \
         if rebuild_raises else patch.object(agent_loop,
@@ -457,83 +467,106 @@ def _run_real_compression(db_messages, messages, rebuild_raises: bool = False):
     return ctx, new_msgs, did
 
 
-class TestViewInvalidatedByCompaction:
-    def test_compaction_invalidates_then_next_assembly_restores(self, view_env):
-        """三合一：压实作废 → 折原视野内编号被拒（零写库）→ 再组装又能折。"""
+_FOLDABLE_ID_RE = re.compile(r"\[可折叠编号 (\d+)")
+
+
+class TestViewRebuiltByCompaction:
+    def test_compaction_rebuilds_visible_set_to_new_window(self, view_env):
+        """压实后可见集 = **新窗口**的工具 rowid 集（不作废为 None）：
+        折新窗口内编号必须成功、折旧视图（窗口外）编号必须拒绝且零写库。"""
         cm, msgs = view_env["cm"], view_env["msgs"]
         kwargs = view_env["kwargs"]
 
-        # 组装（exclude_last=False = 入口形态）→ 原视野 {3,6,9,12}（工具行 rowid）
+        # 组装（exclude_last=False = 入口形态）→ 视野 {3,6,9,12,15}（工具行 rowid）
         cm.assemble_view_sync(msgs, exclude_last=False)
-        assert cm.visible_tool_rowids() == {3, 6, 9, 12}
+        assert cm.visible_tool_rowids() == {3, 6, 9, 12, 15}
         # 真消费通道读到的就是这份集合（不注入假视野）
-        assert nsm._current_visible_tool_rowids() == {3, 6, 9, 12}
+        assert nsm._current_visible_tool_rowids() == {3, 6, 9, 12, 15}
 
-        # 真压实（keep=1 轮 → Q1..Q3 归档出窗口）：待发视图 = 组装窗口 + system
+        # 真压实（keep=1 单元 → Q1..Q4 归档出窗口）：待发视图 = 组装窗口 + system
         pending = [{"role": "system", "content": "sys"}]
         pending += cm.assemble_view_sync(msgs, exclude_last=True)
-        _ctx, new_msgs, did = _run_real_compression(msgs, pending)
+        _ctx, new_msgs, did = _run_real_compression(
+            msgs, pending, blocks_db=view_env["blocks_db"])
         assert did is True
         assert any(agent_loop._COMPRESSION_DONE_HINT in (m.get("content") or "")
                    for m in new_msgs)  # 真重组走完（完成提示在场）
-        # 作废：视野未建立 → 宁拒不错折（折原视野内编号被拒）
-        assert cm.visible_tool_rowids() is None
+        # 重建：新窗口 = 末单元（Q5 → assistant → tool 15）→ 集合 {15}
+        assert cm.visible_tool_rowids() == {15}
 
+        # 窗口外（旧视图）编号：一律拒绝、零写库
         before = _snapshot(view_env["db"])
-        with visible(None):
-            result = _call(kwargs, [12])
-        assert result == {"status": "error", "error": NO_FOLDABLE_ERROR}
-        assert _snapshot(view_env["db"]) == before, "视野未建立时不得写任何行"
+        refused = _call(kwargs, [3, 9, 12])
+        assert refused == {"status": "error", "error": NO_FOLDABLE_ERROR}
+        assert _snapshot(view_env["db"]) == before, "窗口外编号不得写任何行"
 
-        # 再组装自愈 → 同一编号又能折
-        cm.assemble_view_sync(msgs, exclude_last=False)
-        healed = cm.visible_tool_rowids()
-        assert 12 in healed
-        with visible(healed):
-            result = _call(kwargs, [12])
-        assert result["status"] == "ok" and result["folded"] == [12]
+        # 窗口内编号：真工具折叠成功
+        result = _call(kwargs, [15])
+        assert result["status"] == "ok" and result["folded"] == [15]
+        assert result["freed_pct"] == 2.5
+        assert _by_rowid(_snapshot(view_env["db"]))[15][3] == 1
+        if os.environ.get("FOLD_EVIDENCE"):
+            print(f"\n[EVIDENCE] 压实后可见集={sorted(cm.visible_tool_rowids() or [])}\n"
+                  f"[EVIDENCE] 窗口外 [3,9,12] → {refused}\n"
+                  f"[EVIDENCE] 窗口内 [15] → {result}")
 
-    def test_compact_db_view_generation_point_invalidates(self, view_env):
-        """**第一处**（压实视图生成点，_compact_db_view）独立作废：真压实跑完
-        _compact_db_view 后、重组尚未发生时视野已失效——锁住"视图一被整体替换
-        即刻作废"（不等重组合流点）。"""
-        cm, msgs = view_env["cm"], view_env["msgs"]
-        cm.assemble_view_sync(msgs, exclude_last=False)
-        ctx = _FakeCompactionCtx(msgs)
-        assert cm.visible_tool_rowids() == {3, 6, 9, 12}
-
-        ok, stats = agent_loop._compact_db_view(ctx)  # 真机械压实（仅此一步）
-        assert ok is True and isinstance(stats, dict)
-        assert ctx._last_compacted_view, "压实视图已生成"
-        assert cm.visible_tool_rowids() is None, "视图生成点未作废可见集"
-
-    def test_both_compaction_invalidation_points_present(self):
-        """源码级锁：压实路径**两处** invalidate 都在（第一处=压实视图生成点、
-        第二处=重组成功/降级合流）。第二处的行为级证明被第一处遮蔽（两点之间
-        无人重建视野，删掉任一处行为都绿），故以源码结构断言锁住"不多不少
-        两点"——删任一处必红。"""
-        import inspect
-
-        compact_src = inspect.getsource(agent_loop._compact_db_view)
-        assert "_invalidate_visible_tool_rowids(ctx)" in compact_src, \
-            "第一处（压实视图生成点）缺失"
-
-        body = inspect.getsource(agent_loop.run_controlled_compression)
-        merge_body = body.split("步骤 4：重组 messages", 1)[-1]
-        assert "_invalidate_visible_tool_rowids(ctx)" in merge_body, \
-            "第二处（重组成功/降级合流）缺失"
-        assert body.count("_invalidate_visible_tool_rowids(ctx)") == 1, \
-            "run_controlled_compression 内应恰有一处（合流点）"
-
-    def test_archived_rowids_refused_after_compaction(self, view_env):
-        """压实归档出窗口的行即使还留在陈旧集合里，折叠时也因 DB 已无该行而
-        拒绝且零写库——证明拒绝路径不做 SELECT 之外任何写、不虚报释放量。"""
+    def test_degrade_branch_keeps_new_window_set(self, view_env):
+        """降级分支（重组抛异常）消费的也是同一个 `_last_compacted_view`——集合在
+        生成点已按新窗口写好，合流不再作废：压实后折窗口内编号照旧成功。"""
         cm, msgs = view_env["cm"], view_env["msgs"]
         cm.assemble_view_sync(msgs, exclude_last=False)
         pending = [{"role": "system", "content": "sys"}]
         pending += cm.assemble_view_sync(msgs, exclude_last=True)
-        _run_real_compression(msgs, pending)
-        assert cm.visible_tool_rowids() is None  # 作废生效
+        _ctx, new_msgs, did = _run_real_compression(
+            msgs, pending, rebuild_raises=True, blocks_db=view_env["blocks_db"])
+        assert did is True  # 降级 ≠ 未压缩
+        assert any(agent_loop._COMPRESSION_DONE_HINT in (m.get("content") or "")
+                   for m in new_msgs)  # 降级分支手工插完成提示
+        assert cm.visible_tool_rowids() == {15}
+        got = _call(view_env["kwargs"], [15])
+        assert got["status"] == "ok" and got["folded"] == [15]
+
+    def test_compact_db_view_generation_point_rebuilds_set(self, view_env):
+        """视图生成点（_compact_db_view）按新窗口重建可见集：真压实跑完该步、
+        重组尚未发生时，集合已与新视图一致（不是置 None）——旧视图的集合才是
+        脏点，新视图的集合可算。"""
+        cm, msgs = view_env["cm"], view_env["msgs"]
+        cm.assemble_view_sync(msgs, exclude_last=False)
+        assert cm.visible_tool_rowids() == {3, 6, 9, 12, 15}
+
+        ctx = _FakeCompactionCtx(msgs, blocks_db=view_env["blocks_db"])
+        ok, stats = agent_loop._compact_db_view(ctx)  # 真机械压实（仅此一步）
+        assert ok is True and isinstance(stats, dict)
+        assert ctx._last_compacted_view, "压实视图已生成"
+        assert cm.visible_tool_rowids() == {15}, \
+            "视图生成点未按新窗口重建可见集"
+
+    def test_compaction_path_writes_set_exactly_once(self):
+        """源码级锁（新语义）：压实路径只在视图生成点写集合——`_compact_db_view`
+        消费 build_compact_view 的第三返回值（窗口 rowid 集）并写入；
+        重组成功/降级合流**不再**作废（两分支消费的都是同一个
+        `_last_compacted_view`，集合已由生成点按新窗口写好）。"""
+        import inspect
+
+        compact_src = inspect.getsource(agent_loop._compact_db_view)
+        assert "window_rowids" in compact_src or "rowids" in compact_src, \
+            "视图生成点未消费 build_compact_view 回传的窗口 rowid 集"
+        assert "set_visible_tool_rowids" in compact_src, \
+            "视图生成点未写入新窗口可见集"
+
+        body = inspect.getsource(agent_loop.run_controlled_compression)
+        assert "_invalidate_visible_tool_rowids" not in body, \
+            "合流点不得再作废（矛盾源头：视图显号却拒折）"
+
+    def test_archived_rowids_refused_after_compaction(self, view_env):
+        """压实重建后的集合只含新窗口编号：旧视图（已归档出窗口）的编号即使还在
+        DB 里也一律拒绝且零写库；窗口内编号照折（同一轮内折得动）。"""
+        cm, msgs = view_env["cm"], view_env["msgs"]
+        cm.assemble_view_sync(msgs, exclude_last=False)
+        pending = [{"role": "system", "content": "sys"}]
+        pending += cm.assemble_view_sync(msgs, exclude_last=True)
+        _run_real_compression(msgs, pending, blocks_db=view_env["blocks_db"])
+        assert cm.visible_tool_rowids() == {15}  # 新窗口编号集
 
         # 归档把窗口外的行移出块覆盖范围——模拟其已被移走的陈旧编号
         import sqlite3 as _sq
@@ -543,21 +576,21 @@ class TestViewInvalidatedByCompaction:
         conn.close()
 
         before = _snapshot(view_env["db"])
-        with visible({3, 6, 12}):  # 陈旧集合：仍含已归档编号 3/6
-            result = _call(view_env["kwargs"], [3, 6, 12])
-        assert result["status"] == "ok"
-        assert result["folded"] == [12]  # 只有视野内且 DB 仍在的行被折
-        assert result["errors"] == [aggregate_error(2)]
-        assert result["freed_pct"] == 8.0  # 只累加成功行
+        result = _call(view_env["kwargs"], [3, 6, 12])  # 全是旧视图编号（窗口外）
+        assert result == {"status": "error", "error": NO_FOLDABLE_ERROR}
+        assert _snapshot(view_env["db"]) == before
         after = _by_rowid(_snapshot(view_env["db"]))
         before_rows = _by_rowid(before)
         assert after.get(3) is None and before_rows.get(3) is None, "已归档行不在表内"
         assert after.get(6) is None and before_rows.get(6) is None
-        assert after[12][3] == 1  # rowid 12 折叠成功
 
-    def test_deleted_row_out_of_view_refused_zero_db_write(self, view_env):
-        """行被删（messages.db 无该 rowid）→ 拒绝且零写库：整表逐行快照比对，
-        证明 SELECT/UPDATE 都没落到别的行上、freed 未虚报。"""
+        # 窗口内编号 15：仍可折（集合与视图同刻一致，无「显号却拒折」窗口）
+        ok = _call(view_env["kwargs"], [15])
+        assert ok["status"] == "ok" and ok["folded"] == [15]
+        assert _by_rowid(_snapshot(view_env["db"]))[15][3] == 1
+
+    def test_view_row_missing_in_db_refused_zero_extra_write(self, view_env):
+        """视野集里有、DB 里没有该行（并发归档竞态）→ 拒绝，其余照折、释放量不虚报。"""
         cm, msgs = view_env["cm"], view_env["msgs"]
         cm.assemble_view_sync(msgs, exclude_last=False)
         cm.invalidate_visible_tool_rowids()
@@ -570,9 +603,45 @@ class TestViewInvalidatedByCompaction:
         conn.commit()
         conn.close()
 
-        before = _snapshot(view_env["db"])
-        with visible({3, 6, 9, 12}):  # 陈旧集合：含已被删的 rowid 12
-            result = _call(view_env["kwargs"], [12])
-        assert result == {"status": "error", "error": NO_FOLDABLE_ERROR}
-        assert "freed_pct" not in result
-        assert _snapshot(view_env["db"]) == before
+        with visible({12, 15}):  # 陈旧集合：含已被删的 rowid 12
+            result = _call(view_env["kwargs"], [12, 15])
+        assert result["status"] == "ok"
+        assert result["folded"] == [15]
+        assert result["errors"] == [aggregate_error(1)]
+        assert result["freed_pct"] == 2.5, "被拒行不得贡献释放量"
+        after = _by_rowid(_snapshot(view_env["db"]))
+        assert after.get(12) is None and after[15][3] == 1
+
+    def test_every_number_in_compacted_view_is_foldable(self, view_env):
+        """**不变量锁**：压实后那一轮视图里出现的每个可折叠编号，经真工具调用
+        逐个验证都可折——不出现「视图显号但被拒」（用户报障的复现面）；
+        集合与视图显号逐一致（不是压实前的仪表盘快照/旧集合）。"""
+        cm, msgs = view_env["cm"], view_env["msgs"]
+        kwargs = view_env["kwargs"]
+        pending = [{"role": "system", "content": "sys"}]
+        pending += cm.assemble_view_sync(msgs, exclude_last=True)
+        ctx, _new_msgs, did = _run_real_compression(
+            msgs, pending, blocks_db=view_env["blocks_db"])
+        assert did is True
+
+        # 模型该轮看见的压实视图 → 其中渲染出的全部可折叠编号
+        displayed: set[int] = set()
+        for m in ctx._last_compacted_view or []:
+            for sid in _FOLDABLE_ID_RE.findall(m.get("content") or ""):
+                displayed.add(int(sid))
+        assert displayed == {15}, "用例前提：压实视图里恰有 1 个可折叠编号"
+
+        # 视图显号 ⇒ 必可折（先折后比集合：RED 时此处直接暴露"显号却拒折"的工具回执）
+        for rid in sorted(displayed):
+            got = _call(kwargs, [rid])
+            assert got["status"] == "ok", f"视图显号 {rid} 却被拒: {got}"
+            assert got["folded"] == [rid] or any(
+                f"编号 {rid}" in n for n in got.get("notes", [])), got
+            assert not got["errors"], got
+
+        assert cm.visible_tool_rowids() == displayed, \
+            "可见集与视图显号必须逐一致（否则等于把用户报障复现一轮）"
+        if os.environ.get("FOLD_EVIDENCE"):
+            print(f"\n[EVIDENCE] 压实视图显号={sorted(displayed)} "
+                  f"可见集={sorted(cm.visible_tool_rowids() or [])} "
+                  f"逐个真工具折叠回执={got}")

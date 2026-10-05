@@ -12,6 +12,8 @@ fold_tool_output。本步只建立「当前视图内工具 rowid 集合」及其
    ——末条为 user 行与末条为 tool 行**两种情况都恒等**（按构造：集合取自
    组装窗口切片，不分叉于 exclude_last）
 5. 作废入口 invalidate_visible_tool_rowids() → None；再组装自愈重建；幂等
+5b. 重建入口 set_visible_tool_rowids(集合) → 一次性换引用（入参先拷贝），
+   与组装路径共用同一引用、互不干扰（后写者生效）
 6. 访问器返回副本——外部误改返回值不污染内部
 7. 负向锁：被组装丢弃的消息（完全空）不进集合
 
@@ -238,6 +240,56 @@ class TestInvalidateVisibleRowids:
         cm.invalidate_visible_tool_rowids()
         cm.invalidate_visible_tool_rowids()
         assert cm.visible_tool_rowids() is None
+
+
+# ---------------------------------------------------------------------------
+# 4c：重建入口——set_visible_tool_rowids（压实路径按新窗口一次性换引用）
+# ---------------------------------------------------------------------------
+
+
+class TestSetVisibleRowids:
+    def test_set_replaces_and_copies_both_ways(self, visible_env):
+        """写入后访问器返回新集合的副本；入参先拷贝（写后改原集合不污染内部），
+        返回的副本被改同样不污染内部。"""
+        cm = _make_cm(_conversation(), visible_env / "blocks.db")
+        cm.set_visible_tool_rowids({10, 20})
+        assert cm.visible_tool_rowids() == {10, 20}
+
+        src = {41}
+        cm.set_visible_tool_rowids(src)
+        src.add(99)  # 入参后续被改：不得污染内部
+        assert cm.visible_tool_rowids() == {41}
+
+        got = cm.visible_tool_rowids()
+        got.clear()  # 返回值后续被改：不得污染内部
+        assert cm.visible_tool_rowids() == {41}
+
+    def test_set_and_assembly_share_one_reference(self, visible_env):
+        """set（压实路径重建）与组装路径写入共用同一引用：后写者生效、再组装
+        自愈回窗口全集——不存在两份并行集合，读侧恒只见一个。"""
+        msgs = _conversation()
+        cm = _make_cm(msgs, visible_env / "blocks.db")
+        cm.assemble_view_sync(msgs, exclude_last=True)
+        assert cm.visible_tool_rowids() == EXPECTED_TOOL_ROWIDS
+
+        cm.set_visible_tool_rowids({1234})  # 压实重建（新窗口）
+        assert cm.visible_tool_rowids() == {1234}
+
+        cm.assemble_view_sync(msgs, exclude_last=True)  # 组装自愈
+        assert cm.visible_tool_rowids() == EXPECTED_TOOL_ROWIDS
+
+    def test_set_after_invalidate_reestablishes_view(self, visible_env):
+        """作废（None=视野未建立）后写入重建；空集合（视野已建立但窗口内无工具
+        行）与 None 语义可区分。"""
+        cm = _make_cm(_conversation(), visible_env / "blocks.db")
+        cm.invalidate_visible_tool_rowids()
+        assert cm.visible_tool_rowids() is None
+
+        cm.set_visible_tool_rowids(set())
+        assert cm.visible_tool_rowids() == set()
+
+        cm.set_visible_tool_rowids({7})
+        assert cm.visible_tool_rowids() == {7}
 
 
 # ---------------------------------------------------------------------------
