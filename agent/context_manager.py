@@ -14,6 +14,7 @@ MessageStore (持久化) → ContextManager (管理) → agent_loop (使用)
 
 import json
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,22 @@ class ContextManager:
         # None=尚未组装过。组装出口④压实后 _fold_stats['usage'] 已回填（真值未清至首响应为边界）；
         # n/p（可折叠条数/合计）压实轮沿用压实前值，至下次 rebuild/入口组装自愈 ≤1 轮（R5-A P3-1）
         self._fold_stats = None
+
+        # 当前视图内工具 rowid 可见集（T2b-1）：最近一次组装渲染出的全部
+        # role==tool 且 rowid>0 的消息 rowid（含已折叠行）；None=尚未组装过。
+        # 折叠工具判定的可见性地基——本步只建集合与生命周期，不改工具行为。
+        self._visible_tool_rowids: set[int] | None = None
+        self._visible_rowids_lock = threading.Lock()
+
+    def visible_tool_rowids(self) -> set[int] | None:
+        """当前视图内工具 rowid 集合的**副本**；None=尚未组装过。
+
+        返回副本而非内部引用——消费方（工具判定、动态块文案）不得就地修改
+        实例状态，写入口只允许组装循环一处。
+        """
+        with self._visible_rowids_lock:
+            rowids = self._visible_tool_rowids
+            return None if rowids is None else set(rowids)
 
     @staticmethod
     def _message_to_dict(msg, tc_map=None) -> dict[str, Any] | None:
@@ -268,6 +285,10 @@ class ContextManager:
         注：blocks 在本函数 load_all 一次；包装层压实尾段为取候选 Message 序列会再
         load 一次（两 load 间无写者——单线程、压实是唯一写者且在两者之后，零漂移，
         R4-A P3-1）。
+        不变量：可见工具 rowid 集（visible_tool_rowids）恒等——入口组装
+        （exclude_last=False）与每工具轮组装（exclude_last=True）得到的集合
+        完全相同：两者 exclude_last 差异恒为当前 user 行（role!=tool），
+        不影响任何 tool 行的取舍。
 
         Args:
             db_messages: DB 全量 Message 对象序列（真相源不动）
@@ -313,9 +334,23 @@ class ContextManager:
         # fold 渲染（spec §4）：窗口 tool 消息头行/折叠占位符——tc_map 从窗口内
         # assistant tool_calls 提取（候选起点恒为会话单元边界，配对完整）
         tc_map = build_tc_map(history)
-        view.extend(
-            e for e in (self._message_to_dict(m, tc_map) for m in history) if e is not None
-        )
+        # 当前视图内工具 rowid 可见集（T2b-1）：与渲染同循环收集——
+        # 集合成员恒等「真正进入 view 的 tool 消息」（e is not None 才计入，
+        # 被组装丢弃的空消息不进）；已折叠行同样在场（模型可见编号）。
+        # 循环后一次性原子赋值（先局部 set 后整体换引用，读侧只拿副本）。
+        # 不变量：入口组装与每工具轮组装得到的集合恒等——两者 exclude_last
+        # 不同，但被排除的恒为当前 user 行（role!=tool）。
+        visible_rowids: set[int] = set()
+        for m in history:
+            e = self._message_to_dict(m, tc_map)
+            if e is None:
+                continue
+            view.append(e)
+            rowid = getattr(m, "rowid", 0)
+            if e["role"] == "tool" and rowid > 0:
+                visible_rowids.add(rowid)
+        with self._visible_rowids_lock:
+            self._visible_tool_rowids = visible_rowids
 
         # usage：raw → 校准覆写（R1/R4 定案：校准随计算移入本函数——rebuild 与入口同口径；
         # 纯函数 n×get_ratio 无副作用）。降级时保留 raw + debug 一行（对齐现状可观测性）
