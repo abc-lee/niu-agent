@@ -9,8 +9,11 @@ fold_tool_output。本步只建立「当前视图内工具 rowid 集合」及其
 2. 未组装前 = None（尚未组装过 ≠ 空集合）
 3. reset_derived_state 后 = None（/new 内存态作废同处，不另建清理路径）
 4. 不变量：exclude_last=False（入口）与 exclude_last=True（每工具轮）两集合恒等
-5. 访问器返回副本——外部误改返回值不污染内部
-6. 负向锁：被组装丢弃的消息（完全空）不进集合
+   ——末条为 user 行与末条为 tool 行**两种情况都恒等**（按构造：集合取自
+   组装窗口切片，不分叉于 exclude_last）
+5. 作废入口 invalidate_visible_tool_rowids() → None；再组装自愈重建；幂等
+6. 访问器返回副本——外部误改返回值不污染内部
+7. 负向锁：被组装丢弃的消息（完全空）不进集合
 
 基建沿用 tests/test_fold_view_refresh.py / tests/test_context_window_live_read.py
 同款：FakeStore + 确定性 token 计数 + 校准钉 1.0 + tmp 块库；禁真实 LLM、
@@ -186,6 +189,55 @@ class TestExcludeLastInvariant:
         per_tool_round = cm.visible_tool_rowids()
 
         assert at_entry == per_tool_round == EXPECTED_TOOL_ROWIDS
+
+    def test_both_assembly_modes_yield_same_set_when_tail_is_tool(self, visible_env):
+        """末条是 **tool** 行时恒等仍成立——不变量按构造（窗口切片）成立，
+        不依赖"候选末条恒为 user 行"这一假设（改前：exclude_last=True 采渲染
+        循环会漏掉末条 tool 行、入口组装则采到 → 两集合不等）。"""
+        msgs = _conversation() + [
+            _msg(8, "assistant", "", tool_calls=[_tc("read_file", "c4", '{"path": "c"}')]),
+            _msg(9, "tool", "RAW_BODY_4", tool_call_id="c4", output_pct=4.0),
+        ]
+        expected = EXPECTED_TOOL_ROWIDS | {10}  # rowid = idx+1 = 10
+        cm = _make_cm(msgs, visible_env / "blocks.db")
+
+        cm.assemble_view_sync(msgs, exclude_last=False)  # 入口
+        at_entry = cm.visible_tool_rowids()
+        cm.assemble_view_sync(msgs, exclude_last=True)  # 每工具轮
+        per_tool_round = cm.visible_tool_rowids()
+
+        assert msgs[-1].role == "tool"  # 用例前提
+        assert at_entry == per_tool_round == expected
+
+
+# ---------------------------------------------------------------------------
+# 4b：作废入口——置 None（视野未建立），下次组装自愈重建
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidateVisibleRowids:
+    def test_invalidate_sets_none_then_reassembly_heals(self, visible_env):
+        """invalidate_visible_tool_rowids() → 访问器 None（宁拒不错折）；
+        再组装 → 集合自愈重建为窗口全集。"""
+        msgs = _conversation()
+        cm = _make_cm(msgs, visible_env / "blocks.db")
+        cm.assemble_view_sync(msgs, exclude_last=True)
+        assert cm.visible_tool_rowids() == EXPECTED_TOOL_ROWIDS
+
+        cm.invalidate_visible_tool_rowids()
+        assert cm.visible_tool_rowids() is None
+
+        cm.assemble_view_sync(msgs, exclude_last=True)
+        assert cm.visible_tool_rowids() == EXPECTED_TOOL_ROWIDS
+
+    def test_invalidate_is_idempotent(self, visible_env):
+        """重复作废无害（压实两处都调，幂等——不推理谁覆盖谁）。"""
+        msgs = _conversation()
+        cm = _make_cm(msgs, visible_env / "blocks.db")
+        cm.assemble_view_sync(msgs, exclude_last=True)
+        cm.invalidate_visible_tool_rowids()
+        cm.invalidate_visible_tool_rowids()
+        assert cm.visible_tool_rowids() is None
 
 
 # ---------------------------------------------------------------------------

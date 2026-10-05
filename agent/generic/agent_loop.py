@@ -882,6 +882,28 @@ def _notify_compact_progress(status: str, mode: str = "auto") -> None:
         pass
 
 
+def _invalidate_visible_tool_rowids(ctx) -> None:
+    """作废折叠工具的「当前视图内工具 rowid」可见集（压实路径专用）。
+
+    压实把窗口外的工具行归档移出窗口并整体替换视图——此时陈旧可见集会让
+    fold_tool_output 错折视野外的行（既放不出释放量又写坏 DB）。压实两处
+    （视图生成点 + 成功/降级合流）都调本 helper，幂等、不推理谁覆盖谁；
+    下次组装自愈重建（宁拒不错折：None = 视野未建立 → 折叠工具一律拒绝）。
+
+    ctx 是压缩上下文鸭子对象（不挂 ContextManager 属性，R1-B P1-2）——全局
+    单例经 peek_context_manager 取；取不到或调用异常只记 debug（作废失败
+    不阻断压实主路径）。
+    """
+    try:
+        from agent.context_manager import peek_context_manager
+
+        cm = peek_context_manager()
+        if cm is not None:
+            cm.invalidate_visible_tool_rowids()
+    except Exception as e:
+        logger.debug(f"[Compression] 可见集作废失败（不影响压实）: {e}")
+
+
 def _compact_db_view(ctx) -> tuple[bool, dict]:
     """从 DB 全量消息机械压实（spec Task 5）。返回 (是否压实成功, stats)。
 
@@ -898,6 +920,7 @@ def _compact_db_view(ctx) -> tuple[bool, dict]:
             blocks_db_path=getattr(ctx, "_blocks_db_path", None),
         )
         ctx._last_compacted_view = new_view  # 供重组消费
+        _invalidate_visible_tool_rowids(ctx)  # 压实视图整体替换 + 归档行移出窗口
         return True, stats
     except Exception as e:
         logger.exception(f"[Compression] DB compact failed: {e}")
@@ -1147,6 +1170,10 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
             new_msgs.insert(_insert_at, {"role": "user", "content": _COMPRESSION_DONE_HINT})
         else:
             new_msgs.append({"role": "user", "content": _COMPRESSION_DONE_HINT})
+    # 压实成功/降级合流：待发视图已被压实视图整体替换（窗口外的工具行已归档），
+    # 可见集一律作废（幂等——两处都作废不推理谁覆盖谁）；下次组装自愈重建
+    # （宁拒不错折：视野未建立期间折叠工具一律拒绝）。
+    _invalidate_visible_tool_rowids(ctx)
     # done 通知两路径必推（成功与降级）——防前端圆环卡死
     _notify_compact_progress("done", mode="auto")
     return new_msgs, True

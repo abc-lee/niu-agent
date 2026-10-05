@@ -26,6 +26,14 @@ from agent.generic.agent_loop import (  # noqa: E402
 )
 
 
+# fold_tool_output 全拒文案（与实现逐字对齐，同 test_fold_view_gate.py 约定）：
+# 视野门生效后，报错不再是「输出#N 不存在」，而是「不在当前上下文视野内或不是
+# 工具输出」——本文件只关心落库行为，文案常量同源对齐即可。
+NO_FOLDABLE_ERROR = (
+    "没有可折叠的输出：指定编号不在当前上下文视野内或不是工具输出"
+    "（只可折叠编号出现在当前上下文中的工具输出）"
+)
+
 # ---------------------------------------------------------------------------
 # harness（同 test_fold_view_refresh.py / test_agent_loop_tool_results.py 约定）
 # ---------------------------------------------------------------------------
@@ -157,9 +165,11 @@ class TestFoldPersistBehavior:
         assert {tc["id"] for tc in asst[0]["tool_calls"]} == {"call_fold", "call_read"}
 
     def test_fold_failure_still_persisted(self):
+        """压实路径视野门生效后，折叠失败的报错文案变为「不在当前上下文视野内
+        或不是工具输出」——桩文案随之同步（落库行为断言不变）。"""
         handler = _FakeHandler({
             "fold_tool_output": StepOutcome(
-                data={"status": "error", "error": "输出#9 不存在"},
+                data={"status": "error", "error": NO_FOLDABLE_ERROR},
                 next_prompt="继续", should_exit=False),
         })
         client = _client_fold_only()
@@ -170,7 +180,7 @@ class TestFoldPersistBehavior:
         # 失败照常落库（LLM 需见错误自纠）
         fold_persist = [m for m in tool_persists if m.get("tool_call_id") == "call_fold"]
         assert len(fold_persist) == 1
-        assert "输出#9 不存在" in fold_persist[0]["content"]
+        assert NO_FOLDABLE_ERROR in fold_persist[0]["content"]
 
     def test_fold_non_dict_result_still_persisted(self):
         handler = _FakeHandler({
