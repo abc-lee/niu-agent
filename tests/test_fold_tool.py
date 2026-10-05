@@ -3,9 +3,16 @@
 覆盖：schema 断言 / 单条与多条折叠 / 不存在 rowid / role≠tool / 已折叠幂等
 （全幂等返回 status:ok 不报错，spec §6）/ 部分成功附 errors / 空列表 /
 释放合计文案（freed 只含有 output_pct 快照的行，无快照行照常折叠不贡献数值）/ 迁移失败降级（fold_columns_available False → 明确错误文案）。
+
+T2b-2 视野门：接受集 ⊆ 当前上下文视野——逐例经 `visible(...)` 单点注入视野
+（注入机制与 tests/test_fold_view_gate.py 同款 helper），视野门自身的语义
+（视野未建立 / 视野外拒 / 文案不回显编号）在 test_fold_view_gate.py 覆盖。
+既有用例的断言一条未删：拒绝分支的文案从「输出#N 不存在/不是工具输出」改为
+视野门统一文案（不回显编号）——这是本次定案要求的文案变更，非语义放松。
 全部 tmp DB（经 kwargs 注入），无 LLM 调用、不碰真实 ~/.niu 数据。
 """
 
+import contextlib
 import os
 import sqlite3
 import sys
@@ -20,7 +27,29 @@ sys.path.insert(
     0, os.path.join(_PROJECT_ROOT, "mcp-servers", "session-manager", "src")
 )
 
+import niu_session_manager as nsm  # noqa: E402
 from niu_session_manager import TOOL_SCHEMAS, fold_tool_output  # noqa: E402
+
+# ============== 视野注入（T2b-2 视野门） ==============
+
+# 全拒文案（与实现逐字对齐——拒绝不回显坏编号、不发清单）
+NO_FOLDABLE_ERROR = (
+    "没有可折叠的输出：指定编号不在当前上下文视野内或不是工具输出"
+    "（只可折叠编号出现在当前上下文中的工具输出）"
+)
+
+
+@contextlib.contextmanager
+def visible(rowids):
+    """注入视野：rowids=None=视野未建立；set=视野内工具 rowid。
+
+    单点 patch 入口——真实实现只在一个函数里查 ContextManager，测试只改这一个点。
+    （与 tests/test_fold_view_gate.py 同签名 helper，同一套注入机制）
+    """
+    with patch.object(nsm, "_current_visible_tool_rowids", return_value=rowids):
+        yield
+
+
 
 
 # ============== 测试 DB 构造 ==============
@@ -110,12 +139,13 @@ class TestSchema:
         assert len(TOOL_SCHEMAS) == 6
 
     def test_description_carries_piggyback_teaching(self):
-        """description 含搭车调用教学（计划 Task 3 Step 3 原文）"""
+        """description 含搭车调用教学 + 视野口径（T2b-2：编号只取自当前上下文）"""
         desc = TOOL_SCHEMAS["fold_tool_output"]["description"]
-        assert "编号=窗口内 tool 输出头行" in desc
+        assert "编号=当前上下文里 tool 输出头行" in desc
         assert "搭车调用" in desc
         assert "绝不要只为折叠单开一轮" in desc
         assert "重新调用原工具" in desc
+        assert "不在当前上下文中的编号不会被折叠" in desc
 
 
 # ============== 正常折叠 ==============
@@ -123,7 +153,8 @@ class TestSchema:
 
 class TestFold:
     def test_single_fold(self, env):
-        result = _call(env, [10])
+        with visible({10}):
+            result = _call(env, [10])
         assert result["status"] == "ok"
         assert result["folded"] == [10]
         assert result["freed_pct"] == 4.2
@@ -132,7 +163,8 @@ class TestFold:
         assert _get_folded(env["db"])[10] == 1
 
     def test_multiple_folds(self, env):
-        result = _call(env, [10, 12])
+        with visible({10, 12}):
+            result = _call(env, [10, 12])
         assert result["status"] == "ok"
         assert result["folded"] == [10, 12]
         # 12 无 pct 快照 → freed 只含有快照的行（=4.2）
@@ -141,19 +173,22 @@ class TestFold:
         assert folded[10] == 1 and folded[12] == 1
 
     def test_nonexistent_rowid(self, env):
-        result = _call(env, [999])
-        assert result["status"] == "error"
-        assert "输出#999 不存在" in result["error"]
-        assert "read_history_block" in result["error"]
+        """视野内的编号但 DB 无此行 → 拒绝（不回显编号、不发清单）"""
+        with visible({10, 999}):
+            result = _call(env, [999])
+        assert result == {"status": "error", "error": NO_FOLDABLE_ERROR}
+        assert "999" not in str(result)
 
     def test_non_tool_role(self, env):
-        result = _call(env, [11])
-        assert result["status"] == "error"
-        assert "输出#11 不是工具输出" in result["error"]
+        """视野内但 role≠tool 的行 → 拒绝，且不写库"""
+        with visible({11}):
+            result = _call(env, [11])
+        assert result == {"status": "error", "error": NO_FOLDABLE_ERROR}
         assert _get_folded(env["db"])[11] == 0
 
     def test_partial_success_reports_errors(self, env):
-        result = _call(env, [10, 999])
+        with visible({10, 999}):
+            result = _call(env, [10, 999])
         assert result["status"] == "ok"
         assert result["folded"] == [10]
         assert len(result["errors"]) == 1
@@ -162,7 +197,8 @@ class TestFold:
 
     def test_partial_success_with_null_pct(self, env):
         """部分成功且新折叠行无 output_pct 快照 → errors 正常追加，无快照行不贡献释放合计"""
-        result = _call(env, [12, 999])
+        with visible({12, 999}):
+            result = _call(env, [12, 999])
         assert result["status"] == "ok"
         assert result["folded"] == [12]
         assert len(result["errors"]) == 1
@@ -171,7 +207,8 @@ class TestFold:
 
     def test_null_pct_contributes_zero_to_freed(self, env):
         """无 output_pct 快照的行照常折叠，只是不贡献释放合计（freed 只含有快照者）"""
-        result = _call(env, [12])
+        with visible({12}):
+            result = _call(env, [12])
         assert result["status"] == "ok"
         assert result["folded"] == [12]
         assert result["freed_pct"] == 0.0
@@ -183,7 +220,8 @@ class TestFold:
 
 class TestIdempotent:
     def test_already_folded_is_note_not_error(self, env):
-        result = _call(env, [13])
+        with visible({13}):
+            result = _call(env, [13])
         assert result["status"] == "ok"
         assert result["folded"] == []
         assert any("输出#13 已是折叠状态" in n for n in result.get("notes", []))
@@ -191,7 +229,8 @@ class TestIdempotent:
 
     def test_all_idempotent_returns_ok(self, env):
         """全幂等 → status:ok + folded:[]，不报错（spec §6）"""
-        result = _call(env, [13, 13])
+        with visible({13}):
+            result = _call(env, [13, 13])
         assert result["status"] == "ok"
         assert result["folded"] == []
         assert len(result.get("notes", [])) == 2
@@ -202,7 +241,8 @@ class TestIdempotent:
 
 class TestEdge:
     def test_empty_list(self, env):
-        result = _call(env, [])
+        with visible({10}):
+            result = _call(env, [])
         assert result["status"] == "error"
         assert "不能为空列表" in result["error"]
 
@@ -220,14 +260,14 @@ class TestEdge:
     def test_db_write_failure_returns_error(self, env):
         """sqlite3 写块异常 → status:error（不抛给调用方）"""
         with patch("agent.session.fold_columns_available", return_value=True):
-            result = fold_tool_output([10], messages_db_path=str(env["db"] / "no_such_dir" / "x.db"))
+            with visible({10}):
+                result = fold_tool_output([10], messages_db_path=str(env["db"] / "no_such_dir" / "x.db"))
         assert result["status"] == "error"
         assert "DB 写入失败" in result["error"]
 
     def test_non_test_env_clears_kwargs_injection(self, env, monkeypatch):
         """T3 质量审 P2：非测试环境（无 pytest）清空注入通道——LLM 幻觉不可重定向 DB 写路径。"""
         import sys as _sys
-        import niu_session_manager as nsm
         monkeypatch.delitem(_sys.modules, "pytest")  # 模拟生产环境
         captured = {}
 
@@ -236,6 +276,9 @@ class TestEdge:
             return ("", str(env["db"]))  # 回落到 tmp 路径：仅 SELECT，无写风险
 
         monkeypatch.setattr(nsm, "_resolve_db_paths", _rec)
-        result = fold_tool_output([999], messages_db_path=env["messages_db_path"])
+        with visible({999}):
+            result = fold_tool_output([999], messages_db_path=env["messages_db_path"])
         assert captured["kw"] == {}  # 注入在路径解析前被清空
-        assert result["status"] == "error" and "不存在" in result["error"]
+        # 注入清空后走真实 DB（tmp 回落），视野内但无此行 → 拒绝（不回显编号）
+        assert result == {"status": "error", "error": NO_FOLDABLE_ERROR}
+        assert "999" not in str(result)
