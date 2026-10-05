@@ -20,7 +20,7 @@ def test_niu_md_has_fold_teaching():
     """折叠教学：仪表盘信号 + 可再生判定 + fold_tool_output + 搭车纪律。"""
     md = NIU_MD.read_text(encoding="utf-8")
     assert "fold_tool_output" in md, "缺 fold 工具名教学"
-    assert "[输出#N · 工具名 · 占比]" in md, "缺头行标记形态教学"
+    assert "[可折叠编号 N · 工具名 · 占比]" in md, "缺头行标记形态教学"
     assert "搭车调用" in md, "缺搭车调用纪律"
     assert "绝不要只为折叠单开一轮" in md, "缺单开一轮禁令"
     assert "重新调用原工具即可" in md, "缺取回通道教学（重调原工具）"

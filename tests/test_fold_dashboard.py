@@ -1,7 +1,7 @@
 """Task 4：动态块使用率仪表盘 + 压实触发线配置化。
 
 覆盖 spec §5 / §9：
-- 仪表盘行格式（有/无可折叠输出，单一口径「合计 p%」）
+- 仪表盘行格式（有/无可折叠工具输出，单一口径「合计 p%」）
 - 组装时缓存 _fold_stats（n=未折叠 tool 消息数 / p=output_pct 快照合计 / usage）
 - 迁移失败降级：仪表盘省略可折叠段（只留使用率+压缩线，R2-B P3）
 - trigger_ratio 默认 0.80 / 自定义配置跟随 / clamp [0.50, 0.94]
@@ -49,7 +49,7 @@ class TestDashboardLineFormat:
         c = self._cm(tmp_path)
         c._fold_stats = {"n": 8, "p": 23.4, "usage": 0.62}
         assert c.get_fold_dashboard_line() == \
-            "[上下文使用率 62.0% · 强制压缩线 80% · 可折叠输出 8 条（合计 23.4%）]"
+            "[上下文使用率 62.0% · 强制压缩线 80% · 可折叠工具输出 8 条（合计 23.4%）]"
 
     def test_no_foldable_omits_section(self, tmp_path):
         c = self._cm(tmp_path)
@@ -180,7 +180,7 @@ async def test_assembly_populates_stats(tmp_path, _cfg):
         s = c._fold_stats
         assert s["n"] == 2 and s["p"] == 4.2
         line = c.get_fold_dashboard_line()
-        assert "可折叠输出 2 条（合计 4.2%）" in line
+        assert "可折叠工具输出 2 条（合计 4.2%）" in line
         assert line.startswith("[上下文使用率 ") and line.endswith("]")
     finally:
         cal._cached_ratio = old
@@ -202,7 +202,7 @@ async def test_degraded_omits_fold_section(tmp_path, _cfg, monkeypatch):
     c = ContextManager(store, max_tokens=100000, blocks_db_path=tmp_path / "b.db")
     await c.get_context_for_chat(exclude_last=False)
     line = c.get_fold_dashboard_line()
-    assert "可折叠输出" not in line
+    assert "可折叠工具输出" not in line
     assert line.startswith("[上下文使用率 ") and "强制压缩线 80%" in line
 
 

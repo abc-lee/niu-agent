@@ -266,7 +266,7 @@ class TestMixed:
         assert result["errors"] == [aggregate_error(1)]
         assert result["freed_pct"] == 1.5
         text = json.dumps(result, ensure_ascii=False)
-        assert f"#{good}" in text, "成功编号应保留在 message 里"
+        assert f"编号 {good}" in text, "成功编号应保留在 message 里"
         assert str(bad) not in text, f"错误文案泄露了坏编号 {bad}"
         assert _snapshot(db)[1][3] == 0, "视野外行不得被写"
 
@@ -307,11 +307,13 @@ class TestTextDiscipline:
         assert "read_history_block" not in src
 
     def test_schema_description_teaches_current_view_only(self):
-        """模型面向描述只教正确用法：当前上下文 + 尚未折叠 + 视野外会被拒绝。"""
+        """模型面向描述只教正确用法：样例教学 + 已折叠的不需再折 + 编号取自当前上下文。"""
         desc = nsm.TOOL_SCHEMAS["fold_tool_output"]["description"]
-        assert "当前上下文" in desc
-        assert "尚未折叠" in desc and "已折叠的不需再折" in desc
-        assert "不会被折叠" in desc
+        oid_desc = nsm.TOOL_SCHEMAS["fold_tool_output"]["input_schema"]["properties"]["output_ids"]["description"]
+        assert "它下面跟着这条输出的原文" in desc
+        assert "折叠时把其中的编号传给我" in desc
+        assert "已经折叠的不需要再折" in desc
+        assert "取自当前上下文里 [可折叠编号 N] 中的 N" in oid_desc
         # 不得写入报错细节/实现机制
         assert "read_history_block" not in desc
         assert "rowid" not in desc and "sqlite" not in desc.lower()

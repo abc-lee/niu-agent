@@ -7,7 +7,7 @@
 T2b-2 视野门：接受集 ⊆ 当前上下文视野——逐例经 `visible(...)` 单点注入视野
 （注入机制与 tests/test_fold_view_gate.py 同款 helper），视野门自身的语义
 （视野未建立 / 视野外拒 / 文案不回显编号）在 test_fold_view_gate.py 覆盖。
-既有用例的断言一条未删：拒绝分支的文案从「输出#N 不存在/不是工具输出」改为
+既有用例的断言一条未删：拒绝分支的文案从「输出#N 不存在/不是工具输出」（legacy 编号形态）改为
 视野门统一文案（不回显编号）——这是本次定案要求的文案变更，非语义放松。
 全部 tmp DB（经 kwargs 注入），无 LLM 调用、不碰真实 ~/.niu 数据。
 """
@@ -139,13 +139,20 @@ class TestSchema:
         assert len(TOOL_SCHEMAS) == 6
 
     def test_description_carries_piggyback_teaching(self):
-        """description 含搭车调用教学 + 视野口径（T2b-2：编号只取自当前上下文）"""
+        """description 样例教学式（用户定案）：给一段真实样例 + 搭车调用，不堆训诫句。"""
         desc = TOOL_SCHEMAS["fold_tool_output"]["description"]
-        assert "编号=当前上下文里 tool 输出头行" in desc
+        # 样例教学：把「长什么样」直接摊给模型看
+        assert "可折叠的工具输出在上下文里长这样" in desc
+        assert "[可折叠编号 4806 · read_file · 占上下文 3.2%]" in desc
+        assert "它下面跟着这条输出的原文" in desc
+        assert "折叠时把其中的编号传给我" in desc
+        assert "已经折叠的不需要再折" in desc
         assert "搭车调用" in desc
-        assert "绝不要只为折叠单开一轮" in desc
-        assert "重新调用原工具" in desc
-        assert "不在当前上下文中的编号不会被折叠" in desc
+        assert "绝不只为折叠单开一轮" in desc
+        assert "重新调用原工具即可" in desc
+        # 编号口径：取自当前上下文里的 [可折叠编号 N]（output_ids 参数描述）
+        oid_desc = TOOL_SCHEMAS["fold_tool_output"]["input_schema"]["properties"]["output_ids"]["description"]
+        assert "取自当前上下文里 [可折叠编号 N] 中的 N" in oid_desc
 
 
 # ============== 正常折叠 ==============
@@ -158,7 +165,7 @@ class TestFold:
         assert result["status"] == "ok"
         assert result["folded"] == [10]
         assert result["freed_pct"] == 4.2
-        assert "已折叠 1 条输出（#10）" in result["message"]
+        assert "已折叠 1 条输出（编号 10）" in result["message"]
         assert "释放约 4.2%" in result["message"]
         assert _get_folded(env["db"])[10] == 1
 
@@ -224,7 +231,7 @@ class TestIdempotent:
             result = _call(env, [13])
         assert result["status"] == "ok"
         assert result["folded"] == []
-        assert any("输出#13 已是折叠状态" in n for n in result.get("notes", []))
+        assert any("编号 13 已是折叠状态" in n for n in result.get("notes", []))
         assert not result.get("errors")
 
     def test_all_idempotent_returns_ok(self, env):

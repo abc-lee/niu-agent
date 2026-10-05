@@ -1,6 +1,6 @@
 """T2b-3：子 Agent 折叠禁门（装配层无条件排除 + 派发层入口拦截，双保险）。
 
-用户定案：**视野集只属于主 Agent 视图**——子 Agent 拿不到 [输出#N …] 头行编号，
+用户定案：**视野集只属于主 Agent 视图**——子 Agent 拿不到 [可折叠编号 N …] 头行编号，
 调 fold_tool_output 只会猜 rowid、写坏 DB。因此两层都堵：
 
 1. 装配层（agent/subagent.py）：`get_subagent_mcp_tools_schema` 与

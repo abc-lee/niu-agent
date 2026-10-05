@@ -1,10 +1,11 @@
 """Task 2（视图渲染）：窗口头行 + 折叠占位符共享 helper。
 
 覆盖 spec §4/§9：
-- 头行渲染（有/无 pct），格式 `[输出#{rowid} · {tool_name} · 占上下文 {pct}%]`
-- 折叠完成态占位符单行 `[输出#{rowid} 已折叠：工具名(参数摘要≤80字符，无配对 unknown)，原占约 X%。]`
-  （pct=None 变体省略占比分句；带 rowid 编号，与未折叠头行同编号体系），以双锚
-  「[输出# 开头 + 前段 已折叠：」被 _is_tool_placeholder 识别（旧无编号文案照认）
+- 头行渲染（有/无 pct），格式 `[可折叠编号 {rowid} · {tool_name} · 占上下文 {pct}%]`
+  （可折叠编号 = messages.db rowid，非序号）
+- 折叠完成态占位符单行 `[已折叠：工具名(参数摘要≤80字符，无配对 unknown)，原占约 X%。]`
+  （pct=None 变体省略占比分句；**不带编号**——用户定案），以「[已折叠：」前缀
+  被 _is_tool_placeholder 识别（旧带编号 `[输出#N 已折叠：…]` 与更早旧文案作兼容锚照认）
 - 同一消息两轮渲染逐字节一致（固化不变式）
 - tc_map=None（历史回放路径）/ 迁移失败降级 → 原样返回
 - 压实路径一致性：build_compact_view 窗口段与常规组装同制式（R1 交叉 P1 回归锁）
@@ -47,26 +48,26 @@ TC_MAP = build_tc_map([
 
 def test_header_line_with_pct():
     assert render_tool_content(TOOL_105, TC_MAP) == \
-        "[输出#105 · read_file · 占上下文 4.2%]\nORIGINAL_BODY"
+        "[可折叠编号 105 · read_file · 占上下文 4.2%]\nORIGINAL_BODY"
 
 
 def test_header_line_without_pct():
     m = msg("tool", "BODY", "t-7", 7, tool_call_id="tc1", output_pct=None)
-    assert render_tool_content(m, TC_MAP) == "[输出#7 · read_file]\nBODY"
+    assert render_tool_content(m, TC_MAP) == "[可折叠编号 7 · read_file]\nBODY"
 
 
 def test_placeholder_with_pct():
     m = msg("tool", "SECRET_BODY", "t-105", 105,
             tool_call_id="tc1", folded=1, output_pct=4.2)
     assert render_tool_content(m, TC_MAP) == \
-        '[输出#105 已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]'
+        '[已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]'
 
 
 def test_placeholder_without_pct_omits_ratio_clause():
     m = msg("tool", "SECRET_BODY", "t-7", 7, tool_call_id="tc1",
             folded=1, output_pct=None)
     assert render_tool_content(m, TC_MAP) == \
-        '[输出#7 已折叠：read_file({"path": "/x.py"})。]'
+        '[已折叠：read_file({"path": "/x.py"})。]'
 
 
 def test_folded_placeholder_truncates_args_summary():
@@ -85,36 +86,50 @@ def test_no_pairing_still_renders():
     m = msg("tool", "B", "t-3", 3, tool_call_id="tc-missing",
             folded=1, output_pct=1.5)
     assert render_tool_content(m, TC_MAP) == \
-        "[输出#3 已折叠：unknown()，原占约 1.5%。]"
+        "[已折叠：unknown()，原占约 1.5%。]"
 
 
 @pytest.mark.parametrize("rowid", [3, 105, 1_234_567])
-def test_folded_placeholder_carries_rowid_number(rowid):
-    """已折叠占位符带 rowid 编号（与未折叠头行 `[输出#N · …]` 同编号体系）：
-    模型据此辨识窗口里哪些输出是「可折叠/已折叠」的同一批对象；
+def test_folded_placeholder_carries_no_number(rowid):
+    """已折叠占位符**不带编号**（用户定案：占位符回到无编号原形态）：
+    模型只需看到「已折叠」形态即知不必重复折叠；
     取回原文仍靠参数摘要重调原工具（编号不是取回通道）。"""
     m = msg("tool", "SECRET_BODY", f"t-{rowid}", rowid,
             tool_call_id="tc1", folded=1, output_pct=4.2)
     rendered = render_tool_content(m, TC_MAP)
-    assert rendered.startswith(f"[输出#{rowid} 已折叠：")
+    assert rendered.startswith("[已折叠：")
+    assert not rendered.startswith("[输出#") and f"#{rowid}" not in rendered  # legacy 兼容锚形态不得出现
     assert 'read_file({"path": "/x.py"})' in rendered          # 工具名 + 参数摘要（重调通道）
-    assert rendered == f'[输出#{rowid} 已折叠：read_file({{"path": "/x.py"}})，原占约 4.2%。]'
+    assert rendered == '[已折叠：read_file({"path": "/x.py"})，原占约 4.2%。]'
     assert "SECRET_BODY" not in rendered                        # 原文不复活
 
 
 def test_is_tool_placeholder_round_trip_with_rendered_fold():
-    """渲染→判定往返锁：带编号折叠占位符 True（防应急 ToolCrop 重复折叠），
-    未折叠渲染（头行+换行+原文）恒多行 → False，旧无编号文案（去编号期恢复会话）仍 True。"""
+    """渲染→判定往返锁：无编号折叠占位符 True（防应急 ToolCrop 重复折叠），
+    未折叠渲染（头行+换行+原文）恒多行 → False，旧带编号/无编号兼容锚仍 True。"""
     from agent.generic.agent_loop import _is_tool_placeholder
     folded = msg("tool", "B", "t-105", 105, tool_call_id="tc1",
                  folded=1, output_pct=4.2)
     rendered = render_tool_content(folded, TC_MAP)
-    assert rendered.startswith("[输出#105 已折叠：") and "\n" not in rendered
+    assert rendered.startswith("[已折叠：") and "\n" not in rendered
     assert _is_tool_placeholder(rendered) is True
     # 未折叠渲染：头行+换行+原文恒多行，不误判为占位符
     assert _is_tool_placeholder(render_tool_content(TOOL_105, TC_MAP)) is False
-    # 旧无编号文案（去编号期落库，恢复会话兼容）
-    assert _is_tool_placeholder("[已折叠：read_file({})，原占约 8.0%。]") is True
+    # 旧带编号形态（兼容锚，恢复会话兼容）：legacy [输出#N 已折叠：…] 仍 True
+    assert _is_tool_placeholder("[输出#105 已折叠：read_file({})，原占约 4.2%。]") is True  # legacy 兼容锚
+
+
+def test_new_header_label_not_misjudged_as_placeholder():
+    """新标签未折叠头行（`[可折叠编号 ` 开头、含换行）不得被判成占位符：
+    占位符通道恒为「[已折叠：」前缀，兼容锚恒以「[输出#」开头——两条都不吃新头行。"""
+    from agent.generic.agent_loop import _is_tool_placeholder
+    m = msg("tool", "正文：已折叠：这是普通输出", "t-105", 105,
+            tool_call_id="tc1", folded=0, output_pct=4.2)
+    rendered = render_tool_content(m, TC_MAP)
+    assert rendered.startswith("[可折叠编号 105 · read_file · 占上下文 4.2%]\n")
+    assert _is_tool_placeholder(rendered) is False
+    # 单行截断（无换行）同样不误判——新标签既非「[已折叠：」前缀也非「[输出#」兼容锚
+    assert _is_tool_placeholder("[可折叠编号 105 · read_file · 占上下文 4.2%]") is False
 
 
 def test_tc_map_none_no_render_history_replay():
@@ -144,12 +159,12 @@ def test_fixed_invariant_two_rounds_identical():
     # 固化不变式：编号/工具名/pct 全部稳定来源，两轮渲染逐字节一致；DB 原文不动
     r1 = ContextManager._message_to_dict(TOOL_105, TC_MAP)
     r2 = ContextManager._message_to_dict(TOOL_105, TC_MAP)
-    assert r1 == r2 and r1["content"].startswith("[输出#105 · read_file")
+    assert r1 == r2 and r1["content"].startswith("[可折叠编号 105 · read_file")
     assert TOOL_105.content == "ORIGINAL_BODY"  # 真相源 content 永不动
 
 
 def test_is_tool_placeholder_recognizes_fold():
-    # 折叠族当前形态按双锚识别（"[输出#" 开头 + 前段「已折叠：」；旧无编号前缀文案照认）：
+    # 折叠族当前形态按「[已折叠：」前缀识别；旧带编号 `[输出#N 已折叠：…]` 作兼容锚照认：
     # 折叠占位符恒单行，未折叠渲染头行+换行+原文恒多行不误判
     from agent.generic.agent_loop import _is_tool_placeholder
     folded = msg("tool", "B", "t-105", 105, tool_call_id="tc1",
@@ -203,9 +218,9 @@ def test_compact_view_window_same_format(ratio_one, tmp_path):
     assert set(by_tc) == {"tc1", "tc2"}
     # 折叠条：占位符（原文 FOLDED_BODY 不得复活）
     assert by_tc["tc2"]["content"] == \
-        '[输出#8 已折叠：search({"q": "niu"})，原占约 3.0%。]'
+        '[已折叠：search({"q": "niu"})，原占约 3.0%。]'
     # 未折叠条：头行 + 原文
-    assert by_tc["tc1"]["content"] == "[输出#5 · read_file · 占上下文 2.0%]\nOLD_BODY"
+    assert by_tc["tc1"]["content"] == "[可折叠编号 5 · read_file · 占上下文 2.0%]\nOLD_BODY"
     # 与常规路径共享 helper 逐字节一致（同制式锁）
     tc_map = build_tc_map(messages)
     for m in messages:
@@ -228,4 +243,4 @@ async def test_get_context_for_chat_renders_header(tmp_path):
     view = await cm.get_context_for_chat(exclude_last=False)
     tool_entries = [e for e in view if e.get("role") == "tool"]
     assert len(tool_entries) == 1
-    assert tool_entries[0]["content"] == "[输出#3 · read_file · 占上下文 2.5%]\nTOOLBODY"
+    assert tool_entries[0]["content"] == "[可折叠编号 3 · read_file · 占上下文 2.5%]\nTOOLBODY"
