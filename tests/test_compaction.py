@@ -128,7 +128,7 @@ class TestCompactView:
         full_view = [system_msg] + [ContextManager._message_to_dict(m) for m in messages]
         before = _est(full_view)
 
-        view, stats = build_compact_view(
+        view, stats, _rowids = build_compact_view(
             messages, system_msg=system_msg, keep_turns=3,
             blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
         )
@@ -155,7 +155,7 @@ class TestCompactView:
         messages = []
         for i in range(4):
             messages.extend(plain_unit(i, i * 10))
-        view, stats = build_compact_view(
+        view, stats, _rowids = build_compact_view(
             messages, system_msg=None, keep_turns=2,
             blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
         )
@@ -168,7 +168,7 @@ class TestCompactView:
         messages = []
         for i in range(5):
             messages.extend(tool_unit(i, i * 10))
-        view, _stats = build_compact_view(
+        view, _stats, _rowids = build_compact_view(
             messages, system_msg=None, keep_turns=3,
             blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
         )
@@ -181,12 +181,12 @@ class TestCompactView:
         messages = []
         for i in range(4):
             messages.extend(plain_unit(i, i * 10))
-        _, s1 = build_compact_view(
+        _, s1, _r1 = build_compact_view(
             messages, system_msg=None, keep_turns=2,
             blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
         )
         assert s1["blocks_archived"] == 2
-        _, s2 = build_compact_view(
+        _, s2, _r2 = build_compact_view(
             messages, system_msg=None, keep_turns=2,
             blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
         )
@@ -199,7 +199,7 @@ class TestD15Order:
         messages = []
         for i in range(4):
             messages.extend(tool_unit(i, i * 10, tool_chars=30000))
-        view, stats = build_compact_view(
+        view, stats, _rowids = build_compact_view(
             messages, system_msg=None, keep_turns=3,
             blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
         )
@@ -224,7 +224,7 @@ class TestD15Order:
             logged = {}
             mp.setattr(compaction.logger, "error",
                        lambda m, *a, **k: logged.setdefault("emergency", str(m)))
-            view, stats = build_compact_view(
+            view, stats, _rowids = build_compact_view(
                 messages, system_msg=None, keep_turns=3,
                 blocks_db_path=tmp_path / "b.db", context_window_tokens=CW,
             )
@@ -268,7 +268,7 @@ class TestSharedEntrySpy:
                 "usage": 0.3, "tokens_estimate": 1500, "context_window": CW,
                 "keep_turns": 3, "units_total": 1, "blocks_archived": 0,
                 "blocks_total": 0, "tools_placeholderized": 0, "emergency": False,
-            }
+            }, set()  # 第三返回值=窗口内工具行 rowid 集（替身视图无工具行 → 空集）
 
         monkeypatch.setattr(compaction, "build_compact_view", spy)
         store = FakeStore([msg("user", "hi", "u0", 0)])

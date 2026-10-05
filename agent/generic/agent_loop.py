@@ -584,7 +584,9 @@ def _is_tool_placeholder(content) -> bool:
       前缀命中。未折叠渲染头行 [可折叠编号 {rowid} · 工具名 · 占上下文 X%] + 换行 + 原文恒多行，
       由单行条件排除误判。
       兼容锚（旧带编号形态仍须认）：`[输出#N 已折叠：…]`——双锚 "[输出#" 开头 + "已折叠：" 出现在
-      前段（[:24]，覆盖任意位数 rowid；不用裸「已折叠 in content」以免误伤含该词的普通单行工具输出）。
+      前段（[:24] 覆盖 ≤15 位编号：`[输出#` 4 字符 + N 位 + 空格 + 锚 4 字符须落在前 24 字符内；
+      SQLite rowid 上限 19 位会漏检——messages.db 实际 rowid 远不到该量级，物理不可达；
+      不用裸「已折叠 in content」以免误伤含该词的普通单行工具输出）。
       恢复会话兼容更早旧文案：
         ① 无编号版 [已折叠：…]（与当前形态同前缀）；
         ② 兼容锚最早版 [输出#N 已由 fold_tool_output 折叠：…如需原文请重新调用原工具获取]——以 "获取]" 收尾，
@@ -885,26 +887,33 @@ def _notify_compact_progress(status: str, mode: str = "auto") -> None:
         pass
 
 
-def _invalidate_visible_tool_rowids(ctx) -> None:
-    """作废折叠工具的「当前视图内工具 rowid」可见集（压实路径专用）。
+def _set_visible_tool_rowids(ctx, rowids: set[int]) -> None:
+    """按压实窗口重建折叠工具的「当前视图内工具 rowid」可见集（压实路径专用）。
 
-    压实把窗口外的工具行归档移出窗口并整体替换视图——此时陈旧可见集会让
-    fold_tool_output 错折视野外的行（既放不出释放量又写坏 DB）。压实两处
-    （视图生成点 + 成功/降级合流）都调本 helper，幂等、不推理谁覆盖谁；
-    下次组装自愈重建（宁拒不错折：None = 视野未建立 → 折叠工具一律拒绝）。
+    压实替换视图**并**移出窗口外的行——旧视图的集合是脏点，新视图的集合可算：
+    build_compact_view 随新视图回传新窗口的工具行 rowid 集，这里一次换引用。
+    压实后的那一轮视图里带 `[可折叠编号 N]` 的都是新窗口行，故模型眼前看到什么
+    编号就能折什么（不作废：新视图显号却拒折正是用户报障的复现面）。
+    异常路径不调用本 helper（视图未替换 → 旧集合仍对旧视图有效）。
 
     ctx 是压缩上下文鸭子对象（不挂 ContextManager 属性，R1-B P1-2）——全局
-    单例经 peek_context_manager 取；取不到或调用异常只记 debug（作废失败
-    不阻断压实主路径）。
+    单例经 peek_context_manager 取；取不到只记 debug；写入本身异常则退回作废
+    （宁拒不错折）——两者都不阻断压实主路径。
     """
+    cm = None
     try:
         from agent.context_manager import peek_context_manager
 
         cm = peek_context_manager()
         if cm is not None:
-            cm.invalidate_visible_tool_rowids()
+            cm.set_visible_tool_rowids(rowids)
     except Exception as e:
-        logger.debug(f"[Compression] 可见集作废失败（不影响压实）: {e}")
+        logger.debug(f"[Compression] 可见集重建失败（不影响压实）: {e}")
+        if cm is not None:
+            try:
+                cm.invalidate_visible_tool_rowids()  # 宁拒不错折
+            except Exception:
+                pass
 
 
 def _compact_db_view(ctx) -> tuple[bool, dict]:
@@ -918,12 +927,14 @@ def _compact_db_view(ctx) -> tuple[bool, dict]:
         if not db_messages:
             return False, {}
         system_msg = getattr(ctx, "_system_msg", None)
-        new_view, stats = compaction.build_compact_view(
+        new_view, stats, window_rowids = compaction.build_compact_view(
             db_messages, system_msg=system_msg,
             blocks_db_path=getattr(ctx, "_blocks_db_path", None),
         )
         ctx._last_compacted_view = new_view  # 供重组消费
-        _invalidate_visible_tool_rowids(ctx)  # 压实视图整体替换 + 归档行移出窗口
+        # 压实视图整体替换 + 归档行移出窗口 → 可见集按**新窗口**重建（不作废：
+        # 视图里带编号，作废会让新一轮显号却拒折）
+        _set_visible_tool_rowids(ctx, window_rowids)
         return True, stats
     except Exception as e:
         logger.exception(f"[Compression] DB compact failed: {e}")
@@ -1173,10 +1184,10 @@ def run_controlled_compression(messages, ctx, client, turn, release_on_failure: 
             new_msgs.insert(_insert_at, {"role": "user", "content": _COMPRESSION_DONE_HINT})
         else:
             new_msgs.append({"role": "user", "content": _COMPRESSION_DONE_HINT})
-    # 压实成功/降级合流：待发视图已被压实视图整体替换（窗口外的工具行已归档），
-    # 可见集一律作废（幂等——两处都作废不推理谁覆盖谁）；下次组装自愈重建
-    # （宁拒不错折：视野未建立期间折叠工具一律拒绝）。
-    _invalidate_visible_tool_rowids(ctx)
+    # 可见集不在此处动：重组（成功与降级两支）消费的都是同一个
+    # ctx._last_compacted_view，其窗口工具行 rowid 集已由 _compact_db_view
+    # 写入（_set_visible_tool_rowids）——再作废会让压实后那一轮「视图显号却拒折」
+    # （用户报障的复现面）。
     # done 通知两路径必推（成功与降级）——防前端圆环卡死
     _notify_compact_progress("done", mode="auto")
     return new_msgs, True

@@ -284,15 +284,36 @@ def _placeholderize_all_tool_outputs(messages: list[dict]) -> int:
     return replaced
 
 
+def _window_tool_rowids(messages, start_idx: int) -> set[int]:
+    """窗口内工具行 rowid 集 = `messages[start_idx:]` 里 role==tool 且 rowid>0。
+
+    真相源直取（不解析渲染文本头行）——压实后的那一轮视图与集合同源同刻，
+    供调用方（agent_loop 压实路径）重建折叠工具的「当前视图内工具 rowid」可见集。
+    完全空消息（渲染层丢弃）会被一并收进集合，方向安全：多出的编号在视图里看不到，
+    模型无从引用它折叠。
+    """
+    out: set[int] = set()
+    for m in messages[start_idx:]:
+        if getattr(m, "role", None) != "tool":
+            continue
+        rowid = getattr(m, "rowid", 0)
+        if rowid and rowid > 0:
+            out.add(int(rowid))
+    return out
+
+
 def build_compact_view(messages, *, system_msg: dict | None = None,
                        keep_turns: int | None = None,
                        blocks_db_path=None,
                        context_window_tokens: int | None = None):
-    """对消息全集做批量压实，返回 (新视图 dict 列表, 统计 dict)。
+    """对消息全集做批量压实，返回 (新视图 dict 列表, 统计 dict, 窗口工具行 rowid 集)。
 
     新视图组成（R2-A P1 定案）：[system 消息原样（可含 cache_control）]
     + [索引前导 user 消息] + [窗口消息 dict 列表]。system_msg=None 时省略首段
     （组装出口场景由 agent_loop 自行拼装 system）。
+
+    第三返回值 = 最终窗口（保留 keep 个会话单元）内工具行的 rowid 集——压实后
+    视图里带 `[可折叠编号 N]` 头行的正是这些行，调用方据此重建可见集，不解析文本。
 
     messages 为 Message 对象序列（需 id/rowid/role/content/tool_calls/
     tool_call_id/created_at），与 MessageStore.get_messages 输出一致。
@@ -380,9 +401,12 @@ def build_compact_view(messages, *, system_msg: dict | None = None,
 
     # 收敛后按最终窗口起点归档（幂等）；再取全量块渲染索引（含合并）
     archived_count = 0
+    window_start = units[n_units - keep][0] if n_units else 0
     if n_units:
-        window_start = units[n_units - keep][0]
         archived_count = archive_excluded_units(messages, units, window_start, db_path)
+
+    # 窗口内工具行 rowid 集（T2 压实重建可见集）：取最终窗口起点之后的真源消息行
+    window_rowids = _window_tool_rowids(messages, window_start) if n_units else set()
 
     blocks = load_all(db_path)
     index_text = render_index_grouped(blocks, int(cw * INDEX_RATIO_MAX),
@@ -408,7 +432,7 @@ def build_compact_view(messages, *, system_msg: dict | None = None,
         "tools_placeholderized": tools_replaced,
         "emergency": est >= emergency_line if cw else False,
     }
-    return view, stats
+    return view, stats, window_rowids
 
 
 async def compact_now(store, system_msg: dict | None = None, *,
@@ -432,9 +456,15 @@ async def compact_now_detailed(store, system_msg: dict | None = None, *,
                                keep_turns: int | None = None,
                                blocks_db_path=None,
                                context_window_tokens: int | None = None):
-    """同 compact_now，另返回统计 dict（usage/blocks/tools 等）。"""
+    """同 compact_now，另返回统计 dict（usage/blocks/tools 等）。
+
+    build_compact_view 的第三返回值（窗口工具行 rowid 集）只服务压实路径的可见集
+    重建（agent_loop._compact_db_view）；本入口的调用方（手动 /compact、圆环 usage）
+    不需要，故不透传，公开签名保持二元组。
+    """
     messages = await store.get_messages(limit=None)
-    return build_compact_view(
+    view, stats, _rowids = build_compact_view(
         messages, system_msg=system_msg, keep_turns=keep_turns,
         blocks_db_path=blocks_db_path, context_window_tokens=context_window_tokens,
     )
+    return view, stats

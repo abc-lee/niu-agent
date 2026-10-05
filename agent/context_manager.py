@@ -125,7 +125,8 @@ class ContextManager:
 
         # 当前视图内工具 rowid 可见集（T2b-1）：最近一次组装**窗口内**的全部
         # role==tool 且 rowid>0 的消息 rowid（含已折叠行）；None=视野未建立
-        # （尚未组装过，或视图被整体替换/行被归档后已作废）。
+        # （尚未组装过，或视图被删除/清空后已作废）。压实替换视图时按新窗口
+        # 重建（set_visible_tool_rowids），不作废。
         # 折叠工具判定的可见性地基——本步只建集合与生命周期，不改工具行为。
         self._visible_tool_rowids: set[int] | None = None
         self._visible_rowids_lock = threading.Lock()
@@ -134,15 +135,28 @@ class ContextManager:
         """当前视图内工具 rowid 集合的**副本**；None=视野未建立（尚未组装/已作废）。
 
         返回副本而非内部引用——消费方（工具判定、动态块文案）不得就地修改
-        实例状态；写入口只允许组装循环与 invalidate_visible_tool_rowids 两处。
+        实例状态；写入口只允许组装循环与 set_visible_tool_rowids /
+        invalidate_visible_tool_rowids 两个显式入口。
         """
         with self._visible_rowids_lock:
             rowids = self._visible_tool_rowids
             return None if rowids is None else set(rowids)
 
+    def set_visible_tool_rowids(self, rowids: set[int]) -> None:
+        """整体替换视图内工具 rowid 可见集（压实路径按新窗口重建用）。
+
+        入参**先拷贝后一次换引用**（持同一把锁）——写侧不把外部集合的引用挂进实例，
+        读侧在同一锁下要么拿到旧引用要么拿到新引用，不出现半更新的中间态。
+        唯一非组装写入方：agent_loop 压实视图生成点传入新窗口的 rowid 集；
+        视图未被替换的路径（压实异常）不得调用（旧集合仍对旧视图有效）。
+        """
+        with self._visible_rowids_lock:
+            self._visible_tool_rowids = set(rowids)
+
     def invalidate_visible_tool_rowids(self) -> None:
-        """作废可见集（置 None = 视野未建立）——视图被整体替换/行被归档后必须调用；
-        下次组装自愈重建（宁拒不错折）。"""
+        """作废可见集（置 None = 视野未建立）——视图被删除/清空（/new、删行）后调用；
+        下次组装自愈重建（宁拒不错折）。压实路径**不再**走作废：新窗口的集合可算，
+        由 set_visible_tool_rowids 重建（作废会让带编号的新视图当轮折不动）。"""
         with self._visible_rowids_lock:
             self._visible_tool_rowids = None
 
@@ -295,9 +309,12 @@ class ContextManager:
         R4-A P3-1）。
         不变量（改按构造成立）：可见工具 rowid 集（visible_tool_rowids）=
         **本次组装窗口切片**（candidates，水位线切分后、exclude_last 剔除之前）
-        内 role==tool 且 rowid>0 的全部行；collect 不在渲染循环内按 exclude_last
-        分叉，故入口组装（exclude_last=False）与每工具轮组装（exclude_last=True）
-        的集合按构造恒等，不再依赖"候选末条恒为 user 行"的假设。
+        内 role==tool 且 rowid>0 的全部行；集合与 exclude_last 取值无关——实测
+        各调用点 True/False 都有（chat.py、compat.py 有 True；chat_queue.py、
+        compat.py、runner.py 有 False），入口与工具轮两侧都出现两种取值，
+        无「入口=False／工具轮=True」的映射；collect 不在渲染循环内按
+        exclude_last 分叉，故两次组装的集合按构造恒等，不依赖"候选末条恒为
+        user 行"的假设。
 
         Args:
             db_messages: DB 全量 Message 对象序列（真相源不动）

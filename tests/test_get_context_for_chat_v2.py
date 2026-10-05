@@ -211,7 +211,7 @@ class TestWatermarkAssembly:
         store = FakeStore(msgs)
 
         # /compact：留最近 2 轮 → 前 3 个单元归档为块
-        _, stats = build_compact_view(
+        _, stats, _rowids = build_compact_view(
             msgs, system_msg=None, keep_turns=2,
             blocks_db_path=db, context_window_tokens=5000,
         )
@@ -385,7 +385,7 @@ class TestEndToEndUserScenario:
 
         # ① 大 DB 全量视图 vs /compact 后
         full_size = len(await cm.get_context_for_chat(exclude_last=False))
-        compact_view, stats = build_compact_view(
+        compact_view, stats, _rowids = build_compact_view(
             store.messages, keep_turns=3, blocks_db_path=db,
             context_window_tokens=5000,
         )
@@ -409,7 +409,7 @@ class TestEndToEndUserScenario:
         assert any(c.startswith("Q8") for c in tail_contents)
 
         # ④ 再次 compact 正常：块数增加、统计齐全、视图合法
-        view3, stats2 = build_compact_view(
+        view3, stats2, _rowids2 = build_compact_view(
             store.messages, keep_turns=3, blocks_db_path=db,
             context_window_tokens=5000,
         )
