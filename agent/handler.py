@@ -1421,6 +1421,21 @@ class NiuHandler(BaseHandler):
 
     def _dispatch_impl(self, tool_name: str, args, response, index=0):
         """dispatch 原始函数体（被外层统一异常包裹兜底）。"""
+        # 子 Agent 折叠禁门（派发层·入口拦截，兜底防绕过装配层）
+        # 用户定案：视野集只属于主 Agent 视图——编号取自主 Agent 工具输出头行
+        # [输出#N …]，子 Agent 拿不到，调折叠只会猜 rowid/写坏 DB。装配层已无条件
+        # 排除该工具（agent/subagent.py 两个出口），此处按**实例标志**再拦一次：
+        # 裸名 fold_tool_output 与 server 前缀名（session-manager/fold_tool_output）
+        # 两种到达形态都拦。不走任何工具、不碰工具表。
+        # 刻意不用 ContextVar——本仓在 asyncio.to_thread 下会反向失效（同 ask_user 先例）。
+        if getattr(self, "_is_subagent", False) and tool_name.rsplit("/", 1)[-1] == "fold_tool_output":
+            logger.warning(
+                f"[SubAgent] 拦截折叠工具调用（该能力仅主 Agent 可用）: {tool_name}"
+            )
+            return StepOutcome(
+                {"status": "error", "msg": "子 Agent 不可折叠输出：该能力仅主 Agent 可用"},
+                next_prompt="",
+            )
 
         # 统一路径参数展开（~/ → 实际 home 目录）
         expand_path_args(args)

@@ -24,6 +24,38 @@ MAX_CONTEXT_WINDOW_SIZE = 2000000  # 2M 上限
 # 子 Agent 白名单制：缺省没有任何基础工具，frontmatter allowBaseTools 声明哪个有哪个
 _BASE_TOOL_NAMES = {"bash", "code_run", "read", "write", "edit", "grep", "computer"}
 
+# 子 Agent 折叠禁门——装配层（用户定案：视野集只属于主 Agent 视图）
+#
+# fold_tool_output 的编号取自主 Agent 视图里的工具输出头行 `[输出#N …]`。子 Agent
+# 拿不到那套编号，调折叠只会猜 rowid、写坏 DB。因此子 Agent 工具表**无条件**剔除
+# 该工具（裸名 fold_tool_output 与 server 前缀名 server/fold_tool_output 都剔）。
+# 双保险：装配层（本模块两个出口）排除 + 派发层（agent/handler._dispatch_impl
+# 入口按实例标志 _is_subagent 拦截）——防绕过装配层 / 表被别处改写。
+_FOLD_TOOL_BARE_NAME = "fold_tool_output"
+
+
+def _is_fold_tool_name(name: str) -> bool:
+    """工具名是否折叠工具（裸名或 server 前缀名皆算）。"""
+    return bool(name) and name.rsplit("/", 1)[-1] == _FOLD_TOOL_BARE_NAME
+
+
+def _drop_fold_tools(tools_schema: list, source: str) -> list:
+    """从子 Agent 工具表剔除折叠工具，返回新表（无可剔除项时原样返回，零拷贝）。"""
+    kept, dropped = [], []
+    for t in tools_schema:
+        name = t.get("function", {}).get("name", "")
+        if _is_fold_tool_name(name):
+            dropped.append(name)
+        else:
+            kept.append(t)
+    if dropped:
+        logger.debug(
+            f"[SubAgent] 折叠工具排除（视野集仅主 Agent 可用）: "
+            f"source={source}, dropped={dropped}"
+        )
+        return kept
+    return tools_schema
+
 
 def _filter_base_tools(agent_config: dict, tools_schema: list) -> tuple:
     """根据 agent_config 的 allowBaseTools 白名单过滤基础工具。
@@ -676,7 +708,11 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> list[dict]:
                     })
 
         logger.info(f"[SubAgent] {agent_name}: Found {len(schema)} MCP tools for servers {mcp_servers}")
-        return schema
+        # 折叠禁门（装配层第一道）：即使 mcpServers 声明了 session-manager，
+        # 折叠工具也不进子 Agent 工具表——视野集只属于主 Agent 视图，
+        # 子 Agent 调折叠只会猜编号/写坏 DB。双保险：此处 + _build_subagent_tools_schema
+        # 出口 + 派发层 _dispatch_impl 入口拦截。
+        return _drop_fold_tools(schema, source=f"mcp:{agent_name}")
     except Exception as e:
         logger.error(f"[SubAgent] {agent_name}: MCP 工具 schema 加载失败——返回空列表（预期能力不完整）: {e}")
         return []
@@ -803,6 +839,13 @@ def _build_subagent_tools_schema(
         logger.info(f"[SubAgent] {agent_name}: {len(tools_schema)} tools ({len(mcp_tools_schema)} MCP)")
     else:
         logger.warning(f"[SubAgent] {agent_name}: {len(tools_schema)} tools (0 MCP - WARNING: No MCP tools loaded!)")
+
+    # 折叠禁门（装配层第二道·**最终出口无条件过滤**，不只在 mcp_tools_schema is None
+    # 分支里做）：无论折叠工具来自 base tools 白名单、还是 caller 显式传入的
+    # mcp_tools_schema（call_subagent 已取的那份），一律剔除——视野集只属于主 Agent
+    # 视图，子 Agent 调折叠只会猜编号/写坏 DB。双保险：本处 + 派发层 _dispatch_impl
+    # 入口按实例标志 _is_subagent 拦截（防绕过装配层 / 表被别处改写）。
+    tools_schema = _drop_fold_tools(tools_schema, source=f"build:{agent_name}")
 
     # 列出关键工具（调试）
     tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
