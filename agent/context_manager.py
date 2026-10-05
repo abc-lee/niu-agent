@@ -122,21 +122,28 @@ class ContextManager:
         # n/p（可折叠条数/合计）压实轮沿用压实前值，至下次 rebuild/入口组装自愈 ≤1 轮（R5-A P3-1）
         self._fold_stats = None
 
-        # 当前视图内工具 rowid 可见集（T2b-1）：最近一次组装渲染出的全部
-        # role==tool 且 rowid>0 的消息 rowid（含已折叠行）；None=尚未组装过。
+        # 当前视图内工具 rowid 可见集（T2b-1）：最近一次组装**窗口内**的全部
+        # role==tool 且 rowid>0 的消息 rowid（含已折叠行）；None=视野未建立
+        # （尚未组装过，或视图被整体替换/行被归档后已作废）。
         # 折叠工具判定的可见性地基——本步只建集合与生命周期，不改工具行为。
         self._visible_tool_rowids: set[int] | None = None
         self._visible_rowids_lock = threading.Lock()
 
     def visible_tool_rowids(self) -> set[int] | None:
-        """当前视图内工具 rowid 集合的**副本**；None=尚未组装过。
+        """当前视图内工具 rowid 集合的**副本**；None=视野未建立（尚未组装/已作废）。
 
         返回副本而非内部引用——消费方（工具判定、动态块文案）不得就地修改
-        实例状态，写入口只允许组装循环一处。
+        实例状态；写入口只允许组装循环与 invalidate_visible_tool_rowids 两处。
         """
         with self._visible_rowids_lock:
             rowids = self._visible_tool_rowids
             return None if rowids is None else set(rowids)
+
+    def invalidate_visible_tool_rowids(self) -> None:
+        """作废可见集（置 None = 视野未建立）——视图被整体替换/行被归档后必须调用；
+        下次组装自愈重建（宁拒不错折）。"""
+        with self._visible_rowids_lock:
+            self._visible_tool_rowids = None
 
     @staticmethod
     def _message_to_dict(msg, tc_map=None) -> dict[str, Any] | None:
@@ -285,10 +292,11 @@ class ContextManager:
         注：blocks 在本函数 load_all 一次；包装层压实尾段为取候选 Message 序列会再
         load 一次（两 load 间无写者——单线程、压实是唯一写者且在两者之后，零漂移，
         R4-A P3-1）。
-        不变量：可见工具 rowid 集（visible_tool_rowids）恒等——入口组装
-        （exclude_last=False）与每工具轮组装（exclude_last=True）得到的集合
-        完全相同：两者 exclude_last 差异恒为当前 user 行（role!=tool），
-        不影响任何 tool 行的取舍。
+        不变量（改按构造成立）：可见工具 rowid 集（visible_tool_rowids）=
+        **本次组装窗口切片**（candidates，水位线切分后、exclude_last 剔除之前）
+        内 role==tool 且 rowid>0 的全部行；collect 不在渲染循环内按 exclude_last
+        分叉，故入口组装（exclude_last=False）与每工具轮组装（exclude_last=True）
+        的集合按构造恒等，不再依赖"候选末条恒为 user 行"的假设。
 
         Args:
             db_messages: DB 全量 Message 对象序列（真相源不动）
@@ -334,20 +342,24 @@ class ContextManager:
         # fold 渲染（spec §4）：窗口 tool 消息头行/折叠占位符——tc_map 从窗口内
         # assistant tool_calls 提取（候选起点恒为会话单元边界，配对完整）
         tc_map = build_tc_map(history)
-        # 当前视图内工具 rowid 可见集（T2b-1）：与渲染同循环收集——
-        # 集合成员恒等「真正进入 view 的 tool 消息」（e is not None 才计入，
-        # 被组装丢弃的空消息不进）；已折叠行同样在场（模型可见编号）。
-        # 循环后一次性原子赋值（先局部 set 后整体换引用，读侧只拿副本）。
-        # 不变量：入口组装与每工具轮组装得到的集合恒等——两者 exclude_last
-        # 不同，但被排除的恒为当前 user 行（role!=tool）。
-        visible_rowids: set[int] = set()
         for m in history:
             e = self._message_to_dict(m, tc_map)
-            if e is None:
+            if e is not None:
+                view.append(e)
+        # 当前视图内工具 rowid 可见集（T2b-1）：按**窗口切片**收集——遍历
+        # candidates（水位线切分后、exclude_last 剔除之前），故 exclude_last
+        # True/False 两次组装的集合按构造恒等（不依赖"候选末条必为 user 行"）。
+        # 剔除判据与渲染层 _message_to_dict 同款：完全空消息进不了 view，
+        # 也不入集合；其余形态与渲染结果一一对应。
+        # 循环后一次性原子赋值（先局部 set 后整体换引用，读侧只拿副本）。
+        visible_rowids: set[int] = set()
+        for m in candidates:
+            if getattr(m, "role", None) != "tool":
                 continue
-            view.append(e)
+            if not (m.content or m.tool_calls or m.tool_call_id):
+                continue  # 完全空消息 → 渲染层丢弃 → 不在视图内
             rowid = getattr(m, "rowid", 0)
-            if e["role"] == "tool" and rowid > 0:
+            if rowid > 0:
                 visible_rowids.add(rowid)
         with self._visible_rowids_lock:
             self._visible_tool_rowids = visible_rowids
