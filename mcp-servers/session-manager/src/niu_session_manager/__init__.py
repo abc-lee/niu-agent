@@ -27,6 +27,22 @@ server = Server("niu-session-manager")
 # Main API URL (fallback for stdio mode)
 API_URL = os.environ.get("NIU_API_URL", "http://127.0.0.1:9876")
 
+
+# ============== 折叠视野门文案（T2b-2） ==============
+
+# 全拒文案：只回一行规则——不回显坏编号、不发编号清单、不提其它工具
+# （模型要的是「规则」不是「哪几个错了」：坏编号来自猜，回显等于喂幻觉）
+NO_FOLDABLE_ERROR = (
+    "没有可折叠的输出：指定编号不在当前上下文视野内或不是工具输出"
+    "（只可折叠编号出现在当前上下文中的工具输出）"
+)
+
+
+def aggregate_refused_error(n: int) -> str:
+    """部分成功分支里的拒项聚合文案（只报条数）。"""
+    return f"{n} 条编号不在当前上下文视野内或不是工具输出（未折叠）"
+
+
 # ============== Tool Schemas ==============
 
 TOOL_SCHEMAS = {
@@ -166,7 +182,9 @@ TOOL_SCHEMAS = {
     "fold_tool_output": {
         "name": "fold_tool_output",
         "description": (
-            "折叠可再生的工具输出以释放上下文。编号=窗口内 tool 输出头行 [输出#N …] 中的 N。"
+            "折叠可再生的工具输出以释放上下文。编号=当前上下文里 tool 输出头行 [输出#N …] 中的 N。"
+            "只可折叠**当前上下文中带 [输出#N …] 编号**且**尚未折叠**的工具输出；已折叠的不需再折。"
+            "不在当前上下文中的编号不会被折叠——请只从上文实际看到的 [输出#N …] 头行取编号。"
             "搭车调用：在本来就要调用其他工具的同一轮捎带调用，绝不要只为折叠单开一轮。"
             "折叠后如需原文，重新调用原工具即可。"
         ),
@@ -176,7 +194,10 @@ TOOL_SCHEMAS = {
                 "output_ids": {
                     "type": "array",
                     "items": {"type": "integer"},
-                    "description": "要折叠的 tool 输出编号列表（头行 [输出#N …] 中的 N）",
+                    "description": (
+                        "要折叠的 tool 输出编号列表（取自当前上下文头行 [输出#N …] 中的 N，"
+                        "仅限尚未折叠者）"
+                    ),
                 },
             },
             "required": ["output_ids"],
@@ -581,11 +602,33 @@ def read_history_block(block_id: int, **kwargs) -> dict:
         return {"status": "error", "error": str(e)}
 
 
+def _current_visible_tool_rowids() -> set[int] | None:
+    """当前上下文视野内的工具 rowid 集合；None=视野未建立（尚未组装过）。
+
+    循环导入自愈序：先 import agent.context_assembler 再取 context_manager
+    （既有约定：`import agent.context_assembler` 后才可 import agent.context_manager）。
+    任何异常 → 返回 None（宁拒不错折）。
+    """
+    try:
+        import agent.context_assembler  # noqa: F401  先装配块层再取 CM——打破导入环
+        from agent.context_manager import peek_context_manager
+
+        cm = peek_context_manager()
+        return None if cm is None else cm.visible_tool_rowids()
+    except Exception as e:
+        logger.warning(f"[SessionManager] 视野集不可用，折叠一律拒绝: {e}")
+        return None
+
+
 def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
     """按 rowid 折叠工具输出（置 folded=1）。messages.db 全局单库无 session 列。
 
-    幂等语义（spec §6）：已折叠进 notes 不报错；全幂等返回 status:ok + folded:[]；
-    全错误返回 status:error；部分成功 ok + errors + message 附「N 条未成功」。
+    视野门优先于幂等（T2b-2 用户定案）：接受集 ⊆ 当前上下文视野——热上下文里
+    只有工具输出带 `[输出#N]` 编号，模型只能折叠视野内（带编号）的行；视野未建立
+    或编号不在视野内一律拒绝，不看 folded、不写库、不累加 freed。
+    幂等语义（spec §6）：视野内已折叠进 notes 不报错；全幂等返回 status:ok + folded:[]；
+    全拒返回 status:error；部分成功 ok + errors + message 附「N 条未成功」。
+    报错不回显坏编号、不发编号清单（模型只需知道规则）——聚合为一条文案。
     **kwargs 是测试注入通道（tmp DB 路径），ToolRegistry 对 VAR_KEYWORD 函数不过滤参数；
     非测试环境（无 pytest）清空该通道——LLM 幻觉不可重定向 DB 写路径（T3 质量审 P2）。
     """
@@ -606,18 +649,24 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
     if "pytest" not in sys.modules:
         kwargs = {}
     _, db_path = _resolve_db_paths(kwargs)
+    # 判定序②：视野先于幂等——视野未建立（尚未组装过 / 取不到 CM）时一律拒绝，
+    # 绝不逐条尝试折叠（宁拒不错折：错折窗口外的行既放不出释放量又写坏 DB）。
+    vis = _current_visible_tool_rowids()
+    if vis is None:
+        return {"status": "error", "error": NO_FOLDABLE_ERROR}
     # freed 只计有 output_pct 快照的行（无快照行照常折叠，不贡献释放数值）
-    folded, errors, notes, freed = [], [], [], 0.0
+    folded, refused, notes, freed = [], 0, [], 0.0
     try:
         with sqlite3.connect(db_path) as conn:
             for oid in output_ids:
+                if oid not in vis:  # 视野外：连 SELECT 都不做——无写、无释放量
+                    refused += 1
+                    continue
                 row = conn.execute(
                     "SELECT role, folded, output_pct FROM messages WHERE rowid=?", (oid,)
                 ).fetchone()
-                if row is None:
-                    errors.append(f"输出#{oid} 不存在（可能已归档），可用 read_history_block 查历史块")
-                elif row[0] != "tool":
-                    errors.append(f"输出#{oid} 不是工具输出")
+                if row is None or row[0] != "tool":
+                    refused += 1  # 视野内但不是可折叠的工具输出（并发归档竞态等）
                 elif row[1]:
                     notes.append(f"输出#{oid} 已是折叠状态")  # 幂等提示非错误（spec §6）
                 else:
@@ -628,8 +677,10 @@ def fold_tool_output(output_ids: list[int], **kwargs) -> dict:
     except Exception as e:
         return {"status": "error", "error": f"DB 写入失败: {e}"}
 
+    # 拒项聚合成一条文案：只报条数不回显编号、不发清单（模型改用视野内编号重试）
+    errors = [aggregate_refused_error(refused)] if refused else []
     if not folded and not notes:
-        return {"status": "error", "error": "；".join(errors)}
+        return {"status": "error", "error": NO_FOLDABLE_ERROR}
     if not folded:
         # 全幂等不报错（spec §6）；notes/errors 键与部分成功分支保持同构
         return {"status": "ok", "folded": [], "notes": notes, "errors": errors,
@@ -902,7 +953,9 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="fold_tool_output",
             description=(
-                "折叠可再生的工具输出以释放上下文。编号=窗口内 tool 输出头行 [输出#N …] 中的 N。"
+                "折叠可再生的工具输出以释放上下文。编号=当前上下文里 tool 输出头行 [输出#N …] 中的 N。"
+                "只可折叠**当前上下文中带 [输出#N …] 编号**且**尚未折叠**的工具输出；已折叠的不需再折。"
+                "不在当前上下文中的编号不会被折叠——请只从上文实际看到的 [输出#N …] 头行取编号。"
                 "搭车调用：在本来就要调用其他工具的同一轮捎带调用，绝不要只为折叠单开一轮。"
                 "折叠后如需原文，重新调用原工具即可。"
             ),
@@ -912,7 +965,10 @@ async def list_tools() -> list[Tool]:
                     "output_ids": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "要折叠的 tool 输出编号列表（头行 [输出#N …] 中的 N）",
+                        "description": (
+                            "要折叠的 tool 输出编号列表（取自当前上下文头行 [输出#N …] 中的 N，"
+                            "仅限尚未折叠者）"
+                        ),
                     },
                 },
                 "required": ["output_ids"],
