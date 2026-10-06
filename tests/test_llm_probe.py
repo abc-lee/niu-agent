@@ -215,3 +215,23 @@ async def test_probe_llm_respects_short_timeout(base_config):
         success, message = await _probe_llm(base_config, read_timeout=1.0, wait_timeout=1.0)
     assert success is False
     assert "超时" in message
+
+
+@pytest.mark.asyncio
+async def test_probe_llm_sets_sticky_session_id(base_config):
+    """能力探测构造 LiteLLMSession 时 cfg 必须带 sticky_session_id="probe-capability"。
+
+    Why（病根锁）：opencode zen go 路径要求 x-opencode-session 头，否则网关
+    400 MissingSessionID；探测不发头 → go 路径必 400。探测必须与生产同口径
+    （litellm_adapter 只在 sticky_session_id 非空时注入头）。
+    """
+    from niu_api.compat import _probe_llm
+
+    with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_cls:
+        mock_session = MagicMock()
+        mock_session.chat.return_value = iter(["hi"])
+        mock_session_cls.return_value = mock_session
+        await _probe_llm(base_config)
+
+    cfg = mock_session_cls.call_args.kwargs["cfg"]
+    assert cfg.get("sticky_session_id") == "probe-capability"
