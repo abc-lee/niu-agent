@@ -64,6 +64,20 @@ def test_auto_non_matching_domain_no_headers():
     assert _resolve("https://ark.cn-beijing.volces.com/api/v3") is None
 
 
+def test_auto_opencode_zen_go_path_resolves_probe_session():
+    """opencode zen go 子路径（/zen/go/v1）auto 态必须解析出 x-opencode-session。
+
+    Why（注入链锁）：生产/探测使用 opencode.ai/zen/go/v1 时网关要求
+    x-opencode-session（否则 400 MissingSessionID）；本条防域名表被改坏
+    （hostname 匹配 opencode.ai 后缀即命中）。
+    """
+    from agent.generic.litellm_adapter import resolve_sticky_headers
+
+    assert resolve_sticky_headers(
+        "https://opencode.ai/zen/go/v1", "auto", "openai", "probe"
+    ) == {"x-opencode-session": "probe"}
+
+
 def test_auto_trailing_dot_fqdn_hits():
     """尾点 FQDN（'openrouter.ai.'）rstrip('.') 归一后应命中。"""
     assert _resolve("https://openrouter.ai.") == {"x-session-id": "main"}

@@ -1025,3 +1025,41 @@ async def test_probe_default_256_without_user_max_tokens():
     assert success is True
     cfg = mock_session_class.call_args.kwargs["cfg"]
     assert cfg["litellm_kwargs"]["max_tokens"] == 256
+
+
+@pytest.mark.asyncio
+async def test_probe_response_format_sets_sticky_session_id():
+    """response_format（schema/工具）探测构造 LiteLLMSession 时 cfg 必须带
+    sticky_session_id="probe-response-format"（与能力探测 "probe-capability" 区别）。
+
+    Why（病根锁）：同 test_probe_llm_sets_sticky_session_id——opencode zen go
+    路径要求 x-opencode-session 头，探测不发头 → 400 MissingSessionID。
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import Request
+
+    from niu_api.compat import probe_response_format
+
+    mock_request = AsyncMock(spec=Request)
+    mock_request.json = AsyncMock(return_value={})
+
+    with patch("niu_api.llm_proxy.get_llm_config") as mock_get_config:
+        mock_get_config.return_value = {
+            "apikey": "test-key",
+            "apibase": "https://test.example.com",
+            "model": "test-model",
+            "type": "openai",
+            "litellm_kwargs": {},
+        }
+
+        with patch("agent.generic.litellm_adapter.LiteLLMSession") as mock_session_class:
+            mock_session = MagicMock()
+            mock_session.chat.side_effect = RuntimeError("boom")
+            mock_session_class.return_value = mock_session
+
+            with patch("niu_api.compat._asyncio_sleep", new_callable=AsyncMock):
+                await probe_response_format(mock_request)
+
+    cfg = mock_session_class.call_args.kwargs["cfg"]
+    assert cfg.get("sticky_session_id") == "probe-response-format"
