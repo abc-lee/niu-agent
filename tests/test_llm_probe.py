@@ -219,11 +219,12 @@ async def test_probe_llm_respects_short_timeout(base_config):
 
 @pytest.mark.asyncio
 async def test_probe_llm_sets_sticky_session_id(base_config):
-    """能力探测构造 LiteLLMSession 时 cfg 必须带 sticky_session_id="probe-capability"。
+    """测试连接构造 LiteLLMSession 时 cfg 必须带 sticky_session_id="probe-test-llm"。
 
     Why（病根锁）：opencode zen go 路径要求 x-opencode-session 头，否则网关
     400 MissingSessionID；探测不发头 → go 路径必 400。探测必须与生产同口径
-    （litellm_adapter 只在 sticky_session_id 非空时注入头）。
+    （litellm_adapter 只在 sticky_session_id 非空时注入头）。id 与能力探测
+    （model_probe 直发旁路的 "probe-capability"）区分，日志可归因。
     """
     from niu_api.compat import _probe_llm
 
@@ -234,4 +235,4 @@ async def test_probe_llm_sets_sticky_session_id(base_config):
         await _probe_llm(base_config)
 
     cfg = mock_session_cls.call_args.kwargs["cfg"]
-    assert cfg.get("sticky_session_id") == "probe-capability"
+    assert cfg.get("sticky_session_id") == "probe-test-llm"

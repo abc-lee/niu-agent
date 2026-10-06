@@ -309,6 +309,88 @@ def test_probe_params_strip_sticky_control_key():
     assert params.get("drop_params") is True
 
 
+def test_probe_params_inject_sticky_header_on_opencode_zen_go():
+    """病根锁：直发 litellm 的探测参数在 opencode zen go 路径必须带 x-opencode-session。
+
+    探测绕过适配层（不经 LiteLLMSession.chat）→ 头注入必须由探测侧复用同一纯函数完成，
+    否则网关 400 MissingSessionID。会话 id 固定 "probe-capability"。
+    """
+    from niu_api.model_probe import _build_probe_params
+
+    params = _build_probe_params(
+        api_base="https://opencode.ai/zen/go/v1",
+        api_key="k",
+        model="space-bunny-free",
+        api_type="openai",
+        probe_config={"litellm_kwargs": {}},
+    )
+    assert params["extra_headers"]["x-opencode-session"] == "probe-capability"
+
+
+def test_probe_params_no_sticky_header_on_non_matching_domain():
+    """不误伤：非命中域名（api.openai.com）不得出现任何 sticky 头。"""
+    from niu_api.model_probe import _build_probe_params
+
+    params = _build_probe_params(
+        api_base="https://api.openai.com/v1",
+        api_key="k",
+        model="gpt-4o",
+        api_type="openai",
+        probe_config={"litellm_kwargs": {}},
+    )
+    headers = params.get("extra_headers") or {}
+    assert "x-opencode-session" not in headers
+    assert "x-session-id" not in headers
+
+
+def test_probe_params_sticky_off_disables_header():
+    """三态 off：命中域名也不发头。"""
+    from niu_api.model_probe import _build_probe_params
+
+    params = _build_probe_params(
+        api_base="https://opencode.ai/zen/go/v1",
+        api_key="k",
+        model="space-bunny-free",
+        api_type="openai",
+        probe_config={"litellm_kwargs": {"sticky_session_headers": "off"}},
+    )
+    assert "x-opencode-session" not in (params.get("extra_headers") or {})
+
+
+def test_probe_params_sticky_list_sends_listed_keys():
+    """列表态：非命中域名也按列表无条件发（反代场景），键集=列表。"""
+    from niu_api.model_probe import _build_probe_params
+
+    params = _build_probe_params(
+        api_base="https://api.openai.com/v1",
+        api_key="k",
+        model="gpt-4o",
+        api_type="openai",
+        probe_config={"litellm_kwargs": {"sticky_session_headers": ["x-session-id"]}},
+    )
+    assert params["extra_headers"] == {"x-session-id": "probe-capability"}
+
+
+def test_param_availability_params_inject_sticky_header_on_opencode():
+    """第二个直发点（值域扫描的候选集组装）同样必须带头——两个组装点都锁。"""
+    from niu_api.model_probe import _build_param_availability_params
+
+    params = _build_param_availability_params(
+        "https://opencode.ai/zen/go/v1", "k", "space-bunny-free", "openai", {"max_tokens": 256},
+    )
+    assert params["extra_headers"]["x-opencode-session"] == "probe-capability"
+
+
+def test_param_availability_params_sticky_off_no_header():
+    from niu_api.model_probe import _build_param_availability_params
+
+    params = _build_param_availability_params(
+        "https://opencode.ai/zen/go/v1", "k", "space-bunny-free", "openai",
+        {"max_tokens": 256}, sticky_config="off",
+    )
+    assert "extra_headers" not in params
+
+
 # ④ 白名单构造透传行
 
 
