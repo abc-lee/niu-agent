@@ -113,6 +113,7 @@ from agent.generic.litellm_adapter import (
     _derive_provider_prefix,
     assemble_request_params,
     build_base_params,
+    resolve_sticky_headers,
     resolved_provider,
 )
 
@@ -438,6 +439,17 @@ def _build_probe_params(
         # reasoning_effort；探测值域扫描/场景调用（raw_* 非 None）不受过滤（R9）
         provider=resolved_provider(api_base, model, api_type),
     ))
+    # sticky routing 头注入：探测直发 litellm 也不得漏头（opencode zen go 路径
+    # 缺 x-opencode-session → 400 MissingSessionID）。复用适配层同一纯函数
+    # （域名表白名单 + 点边界 + 三态），会话 id 固定 "probe-capability" 便于日志归因。
+    sticky_headers = resolve_sticky_headers(
+        api_base,
+        (probe_config.get("litellm_kwargs") or {}).get("sticky_session_headers"),
+        api_type,
+        "probe-capability",
+    )
+    if sticky_headers:
+        params["extra_headers"] = {**(params.get("extra_headers") or {}), **sticky_headers}
     return params
 
 
@@ -488,6 +500,7 @@ def _collect_param_candidates(section: dict, lightrag: bool) -> dict:
 
 def _build_param_availability_params(
     api_base: str, api_key: str, model: str, api_type: str, candidates: dict,
+    *, sticky_config=None,
 ) -> dict:
     """参数可用性探测请求（D3-2：只发白名单候选集 + 基础参数）。
 
@@ -495,6 +508,10 @@ def _build_param_availability_params(
     移除白名单参数，携带非候选参数会使 400 无法归因（D5 fail-closed）；「只发交集
     集」（R9）。max_tokens 取自 candidates（累积移除后无键——build_base_params
     None 不产键）。
+
+    sticky 控制键例外：sticky_session_headers 是程序侧三态控制键（非 litellm
+    参数），经同一纯函数 resolve_sticky_headers 解析为 extra_headers 注入——
+    直发 litellm 的两条探测路径都不得漏头（否则 opencode zen go 路径 400）。
     """
     params: dict = {
         **build_base_params(
@@ -509,6 +526,9 @@ def _build_param_availability_params(
     for k, v in candidates.items():
         if k != "max_tokens":
             params[k] = v
+    sticky_headers = resolve_sticky_headers(api_base, sticky_config, api_type, "probe-capability")
+    if sticky_headers:
+        params["extra_headers"] = {**(params.get("extra_headers") or {}), **sticky_headers}
     return params
 
 
@@ -553,8 +573,11 @@ def _probe_param_availability(
     candidates = _collect_param_candidates(section, lightrag)
     remaining = dict(candidates)  # 当前发送集（累积移除：只减不增）
     removed: list[str] = []  # 首个 400 以来被移除的参数（保守超集归因，R3-A P3-2）
+    sticky_config = (section.get("litellm_kwargs") or {}).get("sticky_session_headers")
     while True:
-        params = _build_param_availability_params(api_base, api_key, model, api_type, remaining)
+        params = _build_param_availability_params(
+            api_base, api_key, model, api_type, remaining, sticky_config=sticky_config,
+        )
         try:
             litellm.completion(**params)
             break  # 通过 → removed 集 = 定位出的被拒参数（定位即写）

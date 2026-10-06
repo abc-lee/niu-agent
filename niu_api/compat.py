@@ -31,8 +31,10 @@ _SPIRIT_STATE = "idle"  # 默认非睡眠（安全方向）
 # 探测会话 sticky id：opencode zen go 路径（/zen/go/...）要求 x-opencode-session 头，
 # 否则网关返回 400 MissingSessionID——litellm_adapter 仅在 cfg["sticky_session_id"] 非空时
 # 注入该头，探测必须与生产同口径，否则 go 路径探测必 400（"去掉 go 才成功"的假象）。
-# 两个构造点用可辨识的值（能力探测 / response_format schema·工具探测）便于日志归因。
-_PROBE_STICKY_SESSION_ID_CAPABILITY = "probe-capability"
+# 两个构造点用可辨识的值（测试连接 / response_format schema·工具探测）便于日志归因。
+# 能力探测（/api/model-capability-probe）走 model_probe.py 直发 litellm 旁路，
+# 其 id 为 "probe-capability"——此处不得复用，否则日志无法归因。
+_PROBE_STICKY_SESSION_ID_TEST_LLM = "probe-test-llm"
 _PROBE_STICKY_SESSION_ID_RESPONSE_FORMAT = "probe-response-format"
 
 
@@ -779,7 +781,7 @@ async def _probe_llm(
         _inject_persisted_capabilities(llm_config, section="llm")
         # opencode zen go 路径要求 x-opencode-session（否则 400 MissingSessionID）；
         # 直接赋值（非 setdefault，防外部配置置空），使探测与生产同口径。
-        llm_config["sticky_session_id"] = _PROBE_STICKY_SESSION_ID_CAPABILITY
+        llm_config["sticky_session_id"] = _PROBE_STICKY_SESSION_ID_TEST_LLM
         session = LiteLLMSession(cfg=llm_config)
 
         def _sync_test():
