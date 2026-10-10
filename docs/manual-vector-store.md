@@ -13,7 +13,7 @@ LightRAG 统一了知识图谱 + 语义检索。
 | LLM 调用 | 通过 `/llm/v1/` 代理路由到用户配置的模型（LiteLLM -> user-config.json） |
 | Embedding 调用 | 直接 Python 函数调用（`niu_api.internal.embedding`），零 HTTP 开销 |
 | Reranker | 直接 Python 函数调用（`niu_api.internal.reranker`），可选 |
-| 默认向量模型 | `bge-base-zh-v1.5`（768 维，512 tokens，中文优化） |
+| 默认向量模型 | `embeddinggemma-2`（EmbeddingGemma 2，768 维，8192 tokens，llama.cpp GGUF Q8_0 推理） |
 
 **LightRAG 实例管理**（`niu_api.internal.lightrag_manager`）：
 - 懒初始化：首次 `get_lightrag()` 调用时创建
@@ -364,18 +364,26 @@ ls -lh ~/.niu/lightrag_storage/kv_store_*.json
 
 ### 8.2 重建知识库
 
+重建 = 只删 3 个向量索引文件（`vdb_*.json`），重启后由修复流程从知识图谱真相源自动重建。
+**绝不删 `~/.niu/lightrag_storage/` 整个目录** —— 那会连同 3 个真相源
+（`graph_chunk_entity_relation.graphml`、`kv_store_full_docs.json`、`kv_store_llm_response_cache.json`）
+一起毁掉，不可再生。步骤与 README「从 0.4.x 升级（必做）」一致：
+
 ```bash
-# 1. 删除存储目录
-rm -rf ~/.niu/lightrag_storage/
+# 1. 只删 3 个向量索引文件（vdb_*.json 是从 GraphML 派生的数据，删除不丢原始内容）
+rm ~/.niu/lightrag_storage/vdb_entities.json
+rm ~/.niu/lightrag_storage/vdb_relationships.json
+rm ~/.niu/lightrag_storage/vdb_chunks.json
 
 # 2. 清理同步状态缓存（否则 SkillSync/RegionSync 会跳过重新注入）
 rm -f ~/.niu/skill_sync_state.json
 rm -f ~/.niu/last_lightrag_sync.json
 rm -f ~/.niu/last_region_sync.json
 
-# 3. 重启应用
-# LightRAG 会在首次 get_lightrag() 调用时自动初始化空图谱
-# SkillSync/RegionSync 会在后台自动重新注入所有 Skills 和脑区
+# 3. 重启应用，splash 弹出「检测到数据一致性问题」，点「尝试修复」
+#    注意：重启后加载的是已有的旧知识图谱（GraphML 真相源），不是空图谱；
+#    修复用当前向量模型从图谱重建 3 个 vdb 索引
+#    SkillSync/RegionSync 会在后台自动重新注入所有 Skills 和脑区
 ```
 
 ### 8.3 检查文档处理状态
@@ -404,7 +412,7 @@ LightRAG 入库参数从 `~/.niu/preferences.json` 的 `lightrag` 配置段读�
     "chunk_token_size": 1200,
     "chunk_overlap_token_size": 50,
     "max_gleaning": 1,
-    "embedding_model": "bge-base-zh-v1.5",
+    "embedding_model": "embeddinggemma-2",
     "reranker_model": "none"
   }
 }
@@ -416,7 +424,7 @@ LightRAG 入库参数从 `~/.niu/preferences.json` 的 `lightrag` 配置段读�
 | `chunk_token_size` | 1200 | 文档分片大小（token 数）。值越大则分片越少，单次 LLM 调用输入越长 |
 | `chunk_overlap_token_size` | 50 | 分片重叠 token 数。增加重叠可减少跨片实体丢失 |
 | `max_gleaning` | 1 | 补充提取次数。每次 gleaning 会额外调用一次 LLM 来找出遗漏实体；设为 0 跳过补充提取 |
-| `embedding_model` | `bge-base-zh-v1.5` | 向量模型名称（见 8.6 向量模型切换） |
+| `embedding_model` | `embeddinggemma-2` | 向量模型名称（见 8.6 向量模型切换） |
 | `reranker_model` | `none` | 重排序模型，`none` 表示关闭 |
 
 #### LightRAG 思考链与模型配置
@@ -476,11 +484,12 @@ LightRAG 官方明确建议不要使用带思考链的模型做入库。
 
 | 模型 | 维度 | 最大序列长度 | 说明 |
 |------|------|-------------|------|
-| `bge-base-zh-v1.5` | 768 | 512 | 默认，中文优化 |
-| `bge-m3` | 1024 | 8192 | 多语言，2.2GB |
-| `minilm-l12` | 384 | 128 | 旧版默认，轻量 |
+| `embeddinggemma-2` | 768 | 8192 | 默认，EmbeddingGemma 2，llama.cpp GGUF Q8_0 推理 |
 
-切换模型后需重建知识库（删除 `~/.niu/lightrag_storage/` 后重启）。
+当前只有这一个模型（llama.cpp 后端）。更换向量模型后必须重建向量索引，做法与 8.2 相同：
+只删 3 个 `vdb_*.json` 后重启，走「尝试修复」从知识图谱重建——**不要**删
+`~/.niu/lightrag_storage/` 整个目录（会毁掉 3 个真相源）。从 0.4.x（bge 模型）升级上来的
+完整迁移步骤见 README「从 0.4.x 升级（必做）」。
 
 ## 九、知识图谱损坏检测与自愈修复
 

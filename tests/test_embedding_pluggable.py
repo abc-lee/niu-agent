@@ -18,16 +18,10 @@ class TestSupportedModels:
 
     def test_contains_required_models(self):
         from niu_api.internal.embedding import SUPPORTED_MODELS
-        assert "bge-m3" in SUPPORTED_MODELS
-        assert "minilm-l12" in SUPPORTED_MODELS
-
-    def test_bge_m3_has_correct_dim(self):
-        from niu_api.internal.embedding import SUPPORTED_MODELS
-        assert SUPPORTED_MODELS["bge-m3"]["dim"] == 1024
-
-    def test_minilm_l12_has_correct_dim(self):
-        from niu_api.internal.embedding import SUPPORTED_MODELS
-        assert SUPPORTED_MODELS["minilm-l12"]["dim"] == 384
+        assert "embeddinggemma-2" in SUPPORTED_MODELS
+        assert "bge-base-zh-v1.5" not in SUPPORTED_MODELS
+        assert "bge-m3" not in SUPPORTED_MODELS
+        assert "minilm-l12" not in SUPPORTED_MODELS
 
     def test_each_model_has_required_keys(self):
         from niu_api.internal.embedding import SUPPORTED_MODELS
@@ -35,14 +29,6 @@ class TestSupportedModels:
         for name, info in SUPPORTED_MODELS.items():
             for key in required_keys:
                 assert key in info, f"Model {name} missing key {key}"
-
-    def test_bge_m3_local_dir_matches(self):
-        from niu_api.internal.embedding import SUPPORTED_MODELS
-        assert SUPPORTED_MODELS["bge-m3"]["local_dir"] == "bge-m3"
-
-    def test_minilm_l12_local_dir_matches_existing(self):
-        from niu_api.internal.embedding import SUPPORTED_MODELS
-        assert SUPPORTED_MODELS["minilm-l12"]["local_dir"] == "paraphrase-multilingual-MiniLM-L12-v2"
 
 
 # ============== Config Reading Tests ==============
@@ -56,7 +42,7 @@ class TestConfigReading:
         with patch("pathlib.Path.home", return_value=Path("/nonexistent")):
             result = _get_embedding_model_name()
             assert result == DEFAULT_MODEL
-            assert result == "bge-base-zh-v1.5"
+            assert result == "embeddinggemma-2"
 
     def test_default_when_no_lightrag_section(self):
         from niu_api.internal.embedding import _get_embedding_model_name
@@ -72,27 +58,27 @@ class TestConfigReading:
                     # Make Path(...) constructor work normally for other calls
                     mock_path.side_effect = lambda x: Path(x)
                     result = _get_embedding_model_name()
-                    assert result == "bge-base-zh-v1.5"
+                    assert result == "embeddinggemma-2"
 
     def test_returns_configured_model(self):
         from niu_api.internal.embedding import _get_embedding_model_name
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"
             prefs_path.parent.mkdir(parents=True)
-            prefs = {"lightrag": {"embedding_model": "bge-base-zh-v1.5"}}
+            prefs = {"lightrag": {"embedding_model": "embeddinggemma-2"}}
             prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
             with patch("niu_api.internal.embedding.Path") as mock_path:
                 mock_path.home.return_value = Path(tmp)
                 mock_path.side_effect = lambda x: Path(x)
                 result = _get_embedding_model_name()
-                assert result == "bge-base-zh-v1.5"
+                assert result == "embeddinggemma-2"
 
     def test_falls_back_on_unknown_model(self):
         from niu_api.internal.embedding import DEFAULT_MODEL, _get_embedding_model_name
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"
             prefs_path.parent.mkdir(parents=True)
-            prefs = {"lightrag": {"embedding_model": "unknown-model"}}
+            prefs = {"lightrag": {"embedding_model": "legacy-bge"}}
             prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
             with patch("niu_api.internal.embedding.Path") as mock_path:
                 mock_path.home.return_value = Path(tmp)
@@ -128,7 +114,7 @@ class TestGetEmbeddingDim:
 
     def test_dim_matches_configured_model(self):
         from niu_api.internal.embedding import get_embedding_dim
-        with patch("niu_api.internal.embedding._get_embedding_model_name", return_value="bge-base-zh-v1.5"):
+        with patch("niu_api.internal.embedding._get_embedding_model_name", return_value="embeddinggemma-2"):
             dim = get_embedding_dim()
             assert dim == 768
 
@@ -150,7 +136,7 @@ class TestGetCurrentModelInfo:
     def test_default_model_info(self):
         from niu_api.internal.embedding import get_current_model_info
         info = get_current_model_info()
-        assert info["name"] == "bge-base-zh-v1.5"
+        assert info["name"] == "embeddinggemma-2"
         assert info["dim"] == 768
         # loaded may be True if another test loaded the model
         assert isinstance(info["loaded"], bool)
@@ -164,108 +150,19 @@ class TestGetCurrentModelInfo:
                 assert info["loaded"] is True
 
 
-# ============== switch_model Tests ==============
-
-
-class TestSwitchModel:
-    """Test switch_model() runtime model switching."""
-
-    def test_rejects_unknown_model(self):
-        from niu_api.internal.embedding import switch_model
-        result = switch_model("nonexistent-model")
-        assert result["status"] == "error"
-        assert "Unknown model" in result["message"]
-
-    def test_switches_to_valid_model(self):
-        from niu_api.internal.embedding import switch_model
-        with tempfile.TemporaryDirectory() as tmp:
-            # Create a preferences.json in the temp dir
-            prefs_path = Path(tmp) / ".niu" / "preferences.json"
-            prefs_path.parent.mkdir(parents=True)
-            prefs_path.write_text(json.dumps({"version": "1.0"}), encoding="utf-8")
-
-            with patch("niu_api.internal.embedding.Path") as mock_path:
-                mock_path.home.return_value = Path(tmp)
-                mock_path.side_effect = lambda x: Path(x)
-
-                # Default is bge-base-zh-v1.5 (768d), switch to minilm-l12 (384d)
-                result = switch_model("minilm-l12")
-                assert result["status"] == "switched"
-                assert result["new_model"] == "minilm-l12"
-                assert result["new_dim"] == 384
-                assert result["needs_reindex"] is True  # 768 → 384
-
-    def test_same_dim_no_reindex_needed(self):
-        from niu_api.internal.embedding import switch_model
-        # Switching from bge-base-zh-v1.5 to bge-base-zh-v1.5 (same dim)
-        with tempfile.TemporaryDirectory() as tmp:
-            prefs_path = Path(tmp) / ".niu" / "preferences.json"
-            prefs_path.parent.mkdir(parents=True)
-            prefs = {"lightrag": {"embedding_model": "bge-base-zh-v1.5"}}
-            prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
-
-            with patch("niu_api.internal.embedding.Path") as mock_path:
-                mock_path.home.return_value = Path(tmp)
-                mock_path.side_effect = lambda x: Path(x)
-
-                result = switch_model("bge-base-zh-v1.5")
-                assert result["needs_reindex"] is False
-
-    def test_updates_preferences_json(self):
-        from niu_api.internal.embedding import switch_model
-        with tempfile.TemporaryDirectory() as tmp:
-            prefs_path = Path(tmp) / ".niu" / "preferences.json"
-            prefs_path.parent.mkdir(parents=True)
-            prefs_path.write_text(json.dumps({"version": "1.0"}), encoding="utf-8")
-
-            with patch("niu_api.internal.embedding.Path") as mock_path:
-                mock_path.home.return_value = Path(tmp)
-                mock_path.side_effect = lambda x: Path(x)
-
-                switch_model("minilm-l12")
-
-                # Verify preferences.json was updated
-                updated_prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-                assert updated_prefs["lightrag"]["embedding_model"] == "minilm-l12"
-
-    def test_forces_model_unload(self):
-        import niu_api.internal.embedding as emb_module
-        from niu_api.internal.embedding import switch_model
-
-        with tempfile.TemporaryDirectory() as tmp:
-            prefs_path = Path(tmp) / ".niu" / "preferences.json"
-            prefs_path.parent.mkdir(parents=True)
-            prefs_path.write_text(json.dumps({"version": "1.0"}), encoding="utf-8")
-
-            with patch("niu_api.internal.embedding.Path") as mock_path:
-                mock_path.home.return_value = Path(tmp)
-                mock_path.side_effect = lambda x: Path(x)
-
-                # After switch, model should be unloaded
-                switch_model("minilm-l12")
-                with emb_module._model_lock:
-                    assert emb_module._model is None
-                    assert emb_module._model_name is None
-
-
 # ============== Backward Compatibility Tests ==============
 
 
 class TestBackwardCompat:
     """Test backward compatibility with existing vector store."""
 
-    def test_default_model_is_bge_base_zh(self):
+    def test_default_model_is_embeddinggemma_2(self):
         from niu_api.internal.embedding import DEFAULT_MODEL
-        assert DEFAULT_MODEL == "bge-base-zh-v1.5"
+        assert DEFAULT_MODEL == "embeddinggemma-2"
 
     def test_default_dim_is_768(self):
         from niu_api.internal.embedding import get_embedding_dim
         assert get_embedding_dim() == 768
-
-    def test_existing_model_dir_name_preserved(self):
-        from niu_api.internal.embedding import SUPPORTED_MODELS
-        # The local_dir must match the existing directory on disk
-        assert SUPPORTED_MODELS["minilm-l12"]["local_dir"] == "paraphrase-multilingual-MiniLM-L12-v2"
 
 
 # ============== Core Functions Tests ==============

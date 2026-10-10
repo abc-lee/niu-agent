@@ -49,7 +49,7 @@
     }
   },
   "lightrag": {
-    "embedding_model": "bge-base-zh-v1.5",
+    "embedding_model": "embeddinggemma-2",
     "reranker_model": "none"
   },
   "brain_regions": {

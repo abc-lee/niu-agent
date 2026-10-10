@@ -1854,7 +1854,7 @@ import numpy as np  # noqa: E402
 
 
 class _FakeEmbedModel:
-    """假 embedding 模型（替代真实 bge-base-zh-v1.5，避免测试加载 ~400MB 模型）。
+    """假 embedding 模型（替代真实 embeddinggemma-2，避免测试起 llama-server）。
 
     encode(texts) 返回固定 shape 的随机向量（dim=768），用于验证：
     - RepairEmbeddingFunc.__call__ 返回 np.ndarray
@@ -1934,10 +1934,10 @@ async def test_repair_embedding_func_dimension(monkeypatch):
     """验证 embedding_dim 属性可读（NanoVectorDBStorage 会读这个属性）。"""
     from niu_api.internal import lightrag_repair
 
-    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768)
+    embed_func = lightrag_repair.RepairEmbeddingFunc(embedding_dim=768, model_name="fake-embed-test")
     assert embed_func.embedding_dim == 768
     # 验证 model_name 字段也设置正确（BaseVectorStorage._generate_collection_suffix 会读）
-    assert embed_func.model_name == "bge-base-zh-v1.5"
+    assert embed_func.model_name == "fake-embed-test"
 
 
 @pytest.mark.asyncio

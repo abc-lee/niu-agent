@@ -176,7 +176,7 @@ class TestEmbeddingDimForLightRAG:
     def test_default_is_bge_base_zh(self):
         from niu_api.internal.lightrag_manager import _get_embedding_dim_for_lightrag
         dim = _get_embedding_dim_for_lightrag()
-        # Default model is bge-base-zh-v1.5 (768d)
+        # Default model is embeddinggemma-2 (768d)
         assert dim == 768
 
 
