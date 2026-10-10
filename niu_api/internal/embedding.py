@@ -18,26 +18,9 @@ from loguru import logger
 
 # ============== Model Config ==============
 
-# Supported models: (local_dir_name, huggingface_id, default_dim)
+# Supported models: (local_dir_name, huggingface_id, default_dim, backend)
+# embeddinggemma-2 走 llama.cpp GGUF 后端（llama-server 子进程），非 sentence-transformers
 SUPPORTED_MODELS = {
-    "bge-base-zh-v1.5": {
-        "local_dir": "bge-base-zh-v1.5",
-        "hf_id": "BAAI/bge-base-zh-v1.5",
-        "dim": 768,
-        "desc": "BAAI/bge-base-zh-v1.5 (768d, 512 tokens, Chinese optimized)",
-    },
-    "bge-m3": {
-        "local_dir": "bge-m3",
-        "hf_id": "BAAI/bge-m3",
-        "dim": 1024,
-        "desc": "BAAI/bge-m3 multilingual (1024d, 8192 tokens, 2.2GB)",
-    },
-    "minilm-l12": {
-        "local_dir": "paraphrase-multilingual-MiniLM-L12-v2",
-        "hf_id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        "dim": 384,
-        "desc": "paraphrase-multilingual-MiniLM-L12-v2 (384d, legacy default)",
-    },
     "embeddinggemma-2": {
         "local_dir": "llama.cpp",          # 产物由 S1 的 embedding_artifacts 定位
         "hf_id": "ggml-org/embeddinggemma-2-GGUF",
@@ -47,7 +30,7 @@ SUPPORTED_MODELS = {
     },
 }
 
-DEFAULT_MODEL = "bge-base-zh-v1.5"  # BAAI/bge-base-zh-v1.5 (768d, 512 tokens, ~400MB)
+DEFAULT_MODEL = "embeddinggemma-2"  # EmbeddingGemma 2 via llama.cpp GGUF Q8_0 (768d, 8192 ctx)
 
 
 def _get_embedding_model_name() -> str:

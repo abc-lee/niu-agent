@@ -28,24 +28,30 @@
 #### 问题：启动时卡在 "Preloading embedding model..."
 
 **可能原因：**
-- 正在下载向量模型（首次启动，默认模型约 400MB）
-- GPU 驱动问题
+- 本地向量模型产物缺失或位置不对（GGUF 权重 / llama-server 二进制没放到指定路径）
+- llama-server 二进制下载残损或没有可执行位（macOS）
 
 **解决方案：**
 ```bash
-# 1. 检查网络
-ping huggingface.co
+# 1. 查看缺失清单——程序会把缺失产物写成 .startup_error，逐条点名具体文件路径。
+#    等价于手动运行（以实际输出为准）：
+python -c "from niu_api.internal.embedding_artifacts import describe_missing; print(describe_missing())"
+#    正常情况下应备好两个产物：
+#      - models/embeddinggemma-2-Q8_0.gguf          （GGUF Q8_0 权重，309855456 字节）
+#      - models/llama.cpp/darwin-x64/llama-server   （当前平台的 llama.cpp 二进制）
+#        Windows 为 models/llama.cpp/win32-x64/llama-server.exe
+#    缺失时报错文案以上述 describe_missing() 的实际输出为准。
 
-# 2. 查看当前配置的模型
-# 默认模型为 bge-base-zh-v1.5，可在 ~/.niu/preferences.json 的 lightrag.embedding_model 中切换
-# 支持的模型：bge-base-zh-v1.5（默认）、bge-m3、minilm-l12
+# 2. 手动放置 / 校验产物
+#    校验 GGUF 是否完整（按字节数粗校，防下到半截/错误文件）：
+python -c "from niu_api.internal.embedding_artifacts import verify_gguf, gguf_path; print(verify_gguf(gguf_path()))"
+#    macOS 需给二进制可执行位：
+chmod +x models/llama.cpp/darwin-x64/llama-server
 
-# 3. 手动下载模型（以默认模型为例）
-python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-base-zh-v1.5').save('models/bge-base-zh-v1.5')"
+# 3. 或用供模型脚本一键下载（推荐）
+python scripts/package_all_dependencies.py
 
-# 4. 禁用 GPU（如果驱动有问题）
-export CUDA_VISIBLE_DEVICES=-1   # macOS/Linux
-set CUDA_VISIBLE_DEVICES=-1       # Windows
+# 4. 重启
 ./niu                             # macOS/Linux（Windows 用 niu.exe）
 ```
 
@@ -412,9 +418,14 @@ ls -la ~/.niu/lightrag_storage/
 
 **解决方案：**
 ```bash
-# 删除损坏的存储后重启，重新导入文档
-rm -rf ~/.niu/lightrag_storage/
-# 重启程序后重新导入文档
+# 只删 3 个向量索引文件（vdb_*.json 是从 GraphML 真相源派生的数据，删除不丢原始内容）
+rm ~/.niu/lightrag_storage/vdb_entities.json
+rm ~/.niu/lightrag_storage/vdb_relationships.json
+rm ~/.niu/lightrag_storage/vdb_chunks.json
+# 重启程序，splash 显示损坏提示，点"尝试修复"，索引从知识图谱自动重建
+# 绝不要删 graph_chunk_entity_relation.graphml、kv_store_full_docs.json、
+# kv_store_llm_response_cache.json —— 那是 3 个真相源，删了不可再生
+# （见 9.1 真相源与派生文件；换模型迁移场景见 README「从 0.4.x 升级（必做）」）
 ```
 
 #### 问题：文档入库失败（格式不支持）
@@ -499,8 +510,8 @@ sqlite3 ~/.niu/messages.db "DELETE FROM messages WHERE created_at < datetime('no
 sqlite3 ~/.niu/messages.db "VACUUM;"
 
 # 3. 重建知识检索索引
-# 删除 LightRAG 存储后重启，重新导入文档
-# rm -rf ~/.niu/lightrag_storage/
+# 只删 3 个 vdb_*.json 后重启，走"尝试修复"自动重建（勿删整个 lightrag_storage/，
+# 那会毁掉 3 个真相源）
 ```
 
 #### 问题：用户数据文件丢失或损坏
@@ -588,13 +599,13 @@ typeof NiuDomTree !== 'undefined'
 | 文档入库后查不到实体 | ainsert 失败 | 查看 API 日志中 `lightrag` 相关错误 |
 | 知识图谱响应极慢 | 数据量过大或模型未加载 | 检查 `~/.niu/lightrag_storage/` 大小；确认 embedding 模型已加载 |
 | lightrag-server 工具不可用 | 模块未加载 | 检查 `agent/mcp_loader.py` 的 REQUIRED_SERVERS 是否包含 lightrag-server |
-| LightRAG 初始化失败 | embedding 模型加载失败 | 检查 `models/bge-base-zh-v1.5/` 目录是否完整；查看日志中 embedding 相关错误；确认 sentence_transformers 已安装 |
+| LightRAG 初始化失败 | embedding 模型加载失败 | 查看日志中 embedding 相关错误；若为产物缺失，按 `embedding_artifacts.describe_missing()` 的输出把 GGUF 权重与 llama-server 放到指定路径（放置/校验步骤见 1.1 节「启动时卡在 Preloading embedding model...」）；确认 `models/llama.cpp/<平台>/` 下二进制有可执行位（macOS） |
 | LightRAG 文档处理超时 | 文档过大或 LLM API 响应慢 | 检查 LLM API 连通性；尝试拆分大文档后重新入库；查看日志中 ainsert 超时信息 |
 | brain-region-server 工具不可用 | 模块未加载 | 检查 `agent/mcp_loader.py` 的 REQUIRED_SERVERS 是否包含 brain-region-server |
 | 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 ；bundle 配置为只读权威层，自定义/覆盖检查 ~/.niu/config/mcp-servers-user.yaml（双目录 deep merge） |
 | 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
 | 脑区边被意外删除 | 衰减算法配置错误 | 检查 preferences.json 中脑区 priority 是否为新值（permanent/long/medium/short），旧值 core/category 会回退到 medium |
-| 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量） | **直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启，splash 弹窗后点"尝试修复"触发完整重建（见 1.7.1 简易指引） |
+| 知识图谱回答准确度下降/搜索匹配度降低（回答变模糊、答非所问、漏关键信息；搜相关话题搜不到、搜出无关内容）；极端场景才见"查询失败"报错 | vdb 文件内部不一致（matrix/data 行数不匹配、孤儿向量）；或从 0.4.x 升级后没删 3 个 vdb | **若是刚升级上来的，优先按 README「从 0.4.x 升级（必做）」删 3 个 vdb_*.json 后重启走修复重建**（新旧向量混在同一索引里没有任何提示，只会让检索变差）；否则**直接重启程序即可自动修复**（启动自检自动重建 matrix，无需删文件）；若重启后仍异常，删 3 个 vdb 文件重启，splash 弹窗后点"尝试修复"触发完整重建（见 1.7.1 简易指引） |
 | 更换模型/服务商后推理深度或思考链参数不生效（`reasoning_effort`/`thinking` 配置后无效果、报 400、或"测试通过"但请求体没带参数） | 参数未送达（顶层通道被 litellm 白名单静默丢弃，假 200）/ 取值超出该模型支持范围 / 旧能力档案不适用新模型 | ① 检查 `logs/raw_http/{YYYYMMDD}/` 请求体是否含 `extra_body.reasoning_effort` / `extra_body.thinking`（**顶层参数会被 drop_params 静默丢弃**，参数必须走 extra_body 通道）② 设置窗口"探测能力"按钮重新探测（换模型/换服务商后旧档案不适用），下拉只选档案支持的档位 ③ 详见下方 1.7.2 |
 
 #### 1.7.1 知识图谱损坏修复故障排查

@@ -8,21 +8,23 @@
 **不用 importlib.reload**——reload 会让 lightrag_adapter 等其他模块持有旧 get_lightrag 引用，
 导致 e2e 断言崩溃。
 
-**前置条件**：需要 bge-base-zh-v1.5 模型（约 390MB）。模型不存在时自动 skip。
+**前置条件**：需要 llama.cpp embedding 产物（GGUF 权重 + llama-server 可执行文件）。
+产物不齐时自动 skip。
 """
 import shutil
-from pathlib import Path
 
 import pytest
 
+from niu_api.internal.embedding_artifacts import artifacts_ready
+
 pytestmark = pytest.mark.e2e
 
-# 前置条件检查：bge-base-zh-v1.5 模型必须存在，否则 skip 整个模块
-_MODELS_DIR = Path(__file__).parent.parent / "models" / "bge-base-zh-v1.5"
-if not _MODELS_DIR.exists():
+# 前置条件检查：embedding 产物（models/embeddinggemma-2-Q8_0.gguf + llama-server）必须就绪，
+# 否则 skip 整个模块
+if not artifacts_ready():
     pytest.skip(
-        f"bge-base-zh-v1.5 模型未下载（{_MODELS_DIR} 不存在），跳过 e2e 测试。"
-        f"参考 R9 风险点：模型需先下载到 models/bge-base-zh-v1.5/。",
+        "embedding 产物未就绪（models/embeddinggemma-2-Q8_0.gguf 或 llama-server 缺失），"
+        "跳过 e2e 测试。",
         allow_module_level=True,
     )
 

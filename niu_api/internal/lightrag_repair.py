@@ -116,7 +116,7 @@ class RepairEmbeddingFunc(EmbeddingFunc):
     func: Callable[..., Any] | None = None  # 在 __post_init__ 中设为 _embed_async
     max_token_size: int | None = None
     send_dimensions: bool = False
-    model_name: str | None = "bge-base-zh-v1.5"
+    model_name: str | None = "fake-embed-test"
 
     def __post_init__(self):
         """注入 _embed_async 作为 func，然后跑基类 __post_init__ 做维度校验。"""

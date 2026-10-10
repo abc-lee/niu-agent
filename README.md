@@ -112,7 +112,7 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 | LLM 调用 | litellm（统一 OpenAI/Claude/DeepSeek/Qwen/Ollama） |
 | 知识图谱 | LightRAG + 向量检索（local/global/hybrid/mix/naive） |
 | 人脸识别 | InsightFace + ONNX Runtime |
-| 向量模型 | BAAI/bge-base-zh-v1.5 |
+| 向量模型 | EmbeddingGemma 2（GGUF Q8_0，llama.cpp 推理） |
 | 图谱可视化 | force-graph |
 | 浏览器扩展 | 基于 alibaba/page-agent 二次开发 |
 | 浏览器自动化 | Playwright |
@@ -238,6 +238,38 @@ codesign --force --sign - /Applications/niu.app
 ### 方式二：从源码构建（适合开发者）
 
 见下文“快速开始”。
+
+## 从 0.4.x 升级（必做）
+
+0.5.0 把向量模型从 BAAI/bge-base-zh-v1.5 换成了 EmbeddingGemma 2（GGUF，经 llama.cpp 推理）。
+新旧模型产生的向量**不兼容**，升级后**必须先删掉旧索引，再启动**。
+
+> ⚠️ **这一步不能跳，也没有任何程序会提醒你。** 新旧模型的向量维度都是 768，
+> 所以程序无法从文件里分辨索引是新模型还是旧模型编码的——它只会照常用。
+> 跳过这一步的后果是：新旧两套向量被混在同一个索引里，**不会报错、不会弹窗**，
+> 但检索结果会明显变差，且没有任何提示。请务必按下面 3 步做完再启动。
+
+1. **退出 Niu**（完全退出，不是关窗口）
+2. **删掉 3 个向量索引文件**（它们是从知识图谱自动重建的派生数据，删除不会丢任何原始内容）：
+   - macOS 或 Linux：
+     ```bash
+     rm ~/.niu/lightrag_storage/vdb_entities.json \
+        ~/.niu/lightrag_storage/vdb_relationships.json \
+        ~/.niu/lightrag_storage/vdb_chunks.json
+     ```
+   - Windows（PowerShell，路径按你的用户目录）：
+     ```powershell
+     Remove-Item "$env:USERPROFILE\.niu\lightrag_storage\vdb_entities.json",
+                   "$env:USERPROFILE\.niu\lightrag_storage\vdb_relationships.json",
+                   "$env:USERPROFILE\.niu\lightrag_storage\vdb_chunks.json"
+     ```
+3. **启动 Niu**。首次启动会弹「检测到数据一致性问题」——这是预期的，点是「尝试修复」，
+   程序会用新模型从知识图谱重建索引（节点/关系越多越久，请耐心等）。
+4. 旧模型权重目录 `models/bge-base-zh-v1.5/`（约 400 MB）已不再需要，可手动删除。
+
+> 不要删 `~/.niu/lightrag_storage/` 下的另外三个文件 —— `graph_chunk_entity_relation.graphml`、
+> `kv_store_full_docs.json`、`kv_store_llm_response_cache.json`。它们是知识图谱的原始真相源，
+> 上面的重建全靠它们。
 
 ## 快速开始
 
@@ -607,7 +639,12 @@ Niu 建立在以下优秀开源项目之上：
 - **[litellm](https://github.com/BerriAI/litellm)** — 统一 LLM 调用层，支持 100+ 模型
 - **[Model Context Protocol](https://modelcontextprotocol.io/)** — Agent 工具协议标准
 - **[InsightFace](https://github.com/deepinsight/insightface)** — 本地人脸识别
-- **[bge-base-zh-v1.5](https://huggingface.co/BAAI/bge-base-zh-v1.5)** — 中文向量模型
+- **[EmbeddingGemma 2](https://huggingface.co/ggml-org/embeddinggemma-2-GGUF)** — 本地向量模型
+  - 项目与来源：EmbeddingGemma 2，GGUF 转换版 `ggml-org/embeddinggemma-2-GGUF`（源自 google-deepmind）
+  - 许可证：Apache License 2.0
+  - 许可证全文：<https://www.apache.org/licenses/LICENSE-2.0>
+  - 原始 COPYRIGHT 归 Google DeepMind；上游仓库无 NOTICE 文件
+  - 修改说明：权重转换为 GGUF（Q8_0）后经 llama.cpp 加载推理，未改动模型权重
 - **[Microsoft Windows App SDK 2.4.0](https://learn.microsoft.com/windows/apps/windows-app-sdk/)** — Windows 磨砂模糊原生件（`dotnet` 首次构建自动从 NuGet 还原，已随包自包含）
 
 ### 前端与可视化
