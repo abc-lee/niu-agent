@@ -84,6 +84,10 @@ models/bge-base-zh-v1.5/
 models/models/buffalo_l/*.onnx
 models/all-MiniLM-L6-v2/model.safetensors
 models/paraphrase-multilingual-MiniLM-L12-v2/model.safetensors
+# EmbeddingGemma 2 产物（S1）：llama.cpp 预编译二进制 + GGUF 权重 + 下载临时文件
+models/llama.cpp/
+models/*.gguf
+models/*.part
 
 # Keep model config files
 !models/**/*.json

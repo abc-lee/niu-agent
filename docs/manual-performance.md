@@ -192,12 +192,13 @@
 
 **问题 1：首次启动慢（需下载模型）**
 
-**原因**：首次启动需要下载 Embedding 模型（bge-base-zh-v1.5 ~400MB）
+**原因**：首次启动需要准备向量模型产物 —— GGUF 权重约 310MB + llama.cpp 预编译二进制约 11–18MB（按平台）
 
 **解决**：
 ```bash
-# 预下载模型到 models/bge-base-zh-v1.5/ 目录
-python scripts/download_model.py
+# 预下载 EmbeddingGemma 2 产物到 models/（GGUF 落 models/ 根，llama-server 落 models/llama.cpp/<platform>/）
+# 每次也会把向量产物缺失检查做一遍；重复执行时已就位的产物直接跳过，不会重复下载
+python scripts/package_all_dependencies.py
 ```
 
 **问题 2：人脸识别后内存不释放**

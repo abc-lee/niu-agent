@@ -33,6 +33,7 @@ MCP 服务器集群 (mcp-servers/)
    ```bash
    find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
    find ui/*/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;
+   find models/llama.cpp -type f -name "llama-server*" ! -perm -u+x -exec chmod +x {} \;
    ```
 8. **Rust 启动器编译必须用 `bash launcher/build.sh`，禁止直接 `cargo build`** — `cargo build` 只输出到 `launcher/target/debug/`，不会复制到项目根目录的 `niu`，导致测试用旧二进制。`bash launcher/build.sh` 编译后自动 `cp target/release/niu-launcher ../niu`（并刷新/重签 `niu.app`、重装 `niu-natives` wheel、把 `VERSION` 拷进 bundle）。每次改 Rust 代码（`launcher/src/`）后必须跑它。**注意必须带 `bash` 前缀**：`launcher/build.sh` 无执行位（`-rw-r--r--`，2026-09-13 实测），写成 `./launcher/build.sh` 会 `permission denied`。此铁律必须传达给派出去的子 Agent。
 9. **方案/计划等私有文档（`docs/superpowers/` 整个目录）在独立 git 仓库管理（2026-08-16 起，替代原 plans 分支机制——分支切换会导致运行中 Niu 服务的延迟导入读到旧代码，事故实证 2026-08-16）**：
