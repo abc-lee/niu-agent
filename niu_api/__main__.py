@@ -716,6 +716,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug(f"HAWatcher stop skipped: {e}")
 
+    # 停 llama-server 子进程（S2：向量编码后端；不随进程退出会成孤儿）
+    try:
+        from niu_api.internal import llama_server
+
+        llama_server.stop()
+    except Exception as e:  # noqa: BLE001 —— 收尾失败不得阻断整体停机
+        logger.warning(f"llama-server 停止失败: {e}")
+
     logger.info("Niu API Server shutdown complete")
 
 
