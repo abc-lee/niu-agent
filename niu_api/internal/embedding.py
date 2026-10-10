@@ -38,6 +38,13 @@ SUPPORTED_MODELS = {
         "dim": 384,
         "desc": "paraphrase-multilingual-MiniLM-L12-v2 (384d, legacy default)",
     },
+    "embeddinggemma-2": {
+        "local_dir": "llama.cpp",          # 产物由 S1 的 embedding_artifacts 定位
+        "hf_id": "ggml-org/embeddinggemma-2-GGUF",
+        "dim": 768,
+        "backend": "llama-cpp",            # 新字段：标识走 llama-server 后端
+        "desc": "EmbeddingGemma 2 via llama.cpp (768d, 8192 ctx, GGUF Q8_0)",
+    },
 }
 
 DEFAULT_MODEL = "bge-base-zh-v1.5"  # BAAI/bge-base-zh-v1.5 (768d, 512 tokens, ~400MB)
@@ -78,6 +85,9 @@ def get_embedding_max_seq_length() -> int:
         return 8192
     if model_name == "minilm-l12":
         return 128
+    # 新增：llama 后端未加载时给真实上限，不再落入下面那个 512
+    if SUPPORTED_MODELS.get(model_name, {}).get("backend") == "llama-cpp":
+        return _LlamaCppAdapter.max_seq_length
     return 512  # bge-base-zh-v1.5
 
 
@@ -112,6 +122,60 @@ def get_device():
     return "cpu"
 
 
+class _LlamaCppAdapter:
+    """把 llama-server 的 HTTP 接口包装成 SentenceTransformer 的调用面。
+
+    之所以要适配而不是改所有调用点：现有 6 类消费方依赖 SentenceTransformer 的
+    调用形态（见 B1/B2）。本类只模拟被真实用到的部分，不追求完整等价。
+    """
+
+    # LightRAG 的 EmbeddingFunc.max_token_size 消费它（经 get_embedding_max_seq_length）
+    max_seq_length = 8192
+
+    def __init__(self) -> None:
+        from niu_api.internal import llama_server
+
+        self._server = llama_server
+
+    def encode(
+        self,
+        input,  # noqa: A002 —— 故意与 SentenceTransformer.encode 同名同参
+        convert_to_numpy: bool = True,
+        show_progress_bar: bool = False,
+        **_: object,
+    ):
+        """编码单条（str）或批量（list[str]）。
+
+        契约（由现有调用点反推，改任一一条都会炸）：
+        - `convert_to_numpy=True` → 返回 numpy.ndarray（LightRAG 校验 result.size）
+        - 不传该 kwarg     → 返回可迭代对象（lightrag_repair 逐行 map(float)）
+        - 单条 str         → 1 维；list[str] → 2 维
+        - `show_progress_bar` 被接受但忽略（HTTP 批量无进度条概念）
+        """
+        import numpy as np
+
+        single = isinstance(input, str)
+        texts = [input] if single else list(input)
+        if not texts:
+            raise ValueError("encode() 收到空输入")
+
+        vecs = self._server.encode_batch(texts)
+        arr = np.asarray(vecs, dtype=np.float32)
+        # R1-B P3：必须同时校验宽度。只校验行数时，(n, k≠768) 会通过检查，
+        # 流入以 embedding_dim=768 构建的 LightRAG EmbeddingFunc，维度不匹配
+        # 延后到存储层才暴露（S3 换模型场景恰是此类错误高发点）。
+        if arr.ndim != 2 or arr.shape != (len(texts), 768):
+            raise RuntimeError(f"编码结果形状异常: {arr.shape}, 期望 ({len(texts)}, 768)")
+        if single:
+            arr = arr[0]
+        if convert_to_numpy:
+            return arr
+        return arr.tolist()
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return 768
+
+
 def get_model():
     """Get or load the embedding model. Config-driven, local first, GPU priority."""
     global _model, _model_name
@@ -128,6 +192,19 @@ def get_model():
             logger.info(f"Switching embedding model: {_model_name} → {requested_model}")
             _model = None
             _model_name = None
+
+        info = SUPPORTED_MODELS.get(requested_model)
+        if info is None:
+            raise ValueError(f"未知的 embedding 模型: {requested_model}")
+
+        # llama.cpp 后端：不加载 SentenceTransformer，改为确保子进程就绪并返回适配器
+        if info.get("backend") == "llama-cpp":
+            from niu_api.internal import llama_server
+
+            llama_server.start()          # 产物缺失/起不来 → 抛异常 → 契约 A
+            _model = _LlamaCppAdapter()
+            _model_name = requested_model
+            return _model
 
         try:
             from sentence_transformers import SentenceTransformer
