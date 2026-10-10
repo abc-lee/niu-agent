@@ -734,3 +734,28 @@
 - **验证**：新测试 3 passed；adapter 套件 9 failed 与基线完全一致（pre-existing 陈旧测试）；实施后双审 APPROVE（唯一 P3 = 本条日志补录）
 - **已知边界**：11:08 被吞内容不补救（游标已推进，内容价值低且部分过时）；同内容提炼仍会被合理去重（MD5 撞车=设计语义）；file-processor/主 Agent 经 disk 仍可传 doc_id（未教学、行为=修复前，接受）；撞车保持不可观测（程序调用方无法解释错误——用户拍板）
 - **实机验证（待用户）**：新对话产生游标后新消息 → 自然睡眠或 /sleep → doc_status 出现 `doc-xxxx` 新条目（content_summary 含"记忆提炼"）且 status=processed；图谱前端 changelog 无空 id 伪节点
+
+---
+
+### 2026-10-10 ~ 2026-10-11
+
+#### 向量模型替换与迁移：bge-base-zh-v1.5 → EmbeddingGemma 2（llama.cpp + GGUF）
+
+- **背景**：Intel macOS 的 torch 天花板 2.2.2 使 transformers 5.x（EmbeddingGemma 官方封装要求）不可用 → 走 llama.cpp + GGUF 绕过，且天然双平台。
+- **工程划分**：工程一「替换与迁移」S1-S5 + 工程二「多媒体入库」（后者被显式挡在工程一整体验收之后，未启动）。
+- **用户 2026-10-11 关键拍板（直接砍掉半个工程）**：「不需要写迁移程序，README 里边告诉他如何迁移，把这 3 个 VDB 直接删掉重新启动就完了，程序自带修复功能不动，只是换个模型，没有这么复杂。」→ 原 S3「指纹与迁移闭环」（manifest / `check_all` 集成 / 迁移探测 / 真相源备份 / 迁移弹窗）**整版取消**。
+- **已落地**：
+  - `fe38c47d` S1：产物分发与供模型（`niu_api/internal/embedding_artifacts.py` 单一真相源 + `.gitignore` 规则 + 供模型脚本）
+  - `1c897e13` S2：llama.cpp 编码后端（`niu_api/internal/llama_server.py` 起 llama-server 子进程 + HTTP + `_LlamaCppAdapter` 包装成 SentenceTransformer 调用面；+77/−0，4 hunk，**不碰 6 类既有消费方**）
+  - `2cbeae63` S3'：`SUPPORTED_MODELS` 删 3 个 legacy 条目只留 `embeddinggemma-2` + `DEFAULT_MODEL` 切换 + README 升级小节（双平台命令 + Apache 2.0 署名 5 条）+ 三份文档内容级扫雷
+- **关键技术事实（实测定死，勿重测）**：
+  - `_get_embedding_model_name()` 既有 `if model_name in SUPPORTED_MODELS` 守卫 → 旧 key **自动落默认值**，无需兼容层（PM 实测 11 种 prefs 输入全落 `embeddinggemma-2`）
+  - 768 维 / L2=1.0 / 48 ms 条 / RSS 338 MB；llama.cpp `b11540`，端口 19878，`-c 8192 -ub 2048`
+  - `nano_vector_db_impl` 对 `model_name` **零消费**（只有 qdrant/postgres 用 `_generate_collection_suffix`）→ 改 `RepairEmbeddingFunc.model_name` 默认值行为惰性
+  - 产物路径解析**相对包根**（worktree 下也找得到），非硬编码真仓路径
+- **真机迁移（S3' AC-4/5）**：备份 3 真相源（15.6 MB，sha256 校验）→ 删 3 个 vdb → repair 用新模型重建，`repaired=True`/`check_ok=True`/三级错误全 0，**耗时 1032.5 s（17 分钟）**；真相源事后 sha256 与备份一致（repair 未动真相源）。
+- **必须知道的既有数据事实**：真相源 `kv_store_full_docs.json` **本来就只有 179 篇文档** → 旧索引 3,911 个 chunk 向量中有 **3,676 个是"有向量、无源文本"的孤儿向量**（修复后 chunks 235 / entities 3,940 / relationships 6,492）。**这不是本次迁移造成的**，是"vdb 从坏掉状态恢复出来"的历史痕迹；补救只能重新导入缺失源文档。
+- **S4 前缀分离（进行中）**：EmbeddingGemma 2 官方为非对称（query=`task: search result | query: ` / doc=`title: none | text: `，一手源已从 hf-mirror 复核）。**判别机制被证伪**：`lightrag.py:632-638` 用 `priority_limit_async_func_call` 包装我们的 func，`utils.py:967` 的 `wait_func` 把 `_priority` 当具名参数吃掉 → 回调 kwargs 恒为 `{}`；contextvar 也穿不过队列 worker。→ 改为**两侧统一加同一前缀、零判别**，PM 实测判别间隔 +0.1482→**+0.2007**（优于官方非对称的 +0.1954）。代价是存量索引需再重编码一次（**待用户拍板**）。
+- **流程侧教训（PM 自犯，两次同类）**：审查期间改被审文档（S3pC、S4B 各中一次）→ 已立零容忍规矩：双审派出后，被审文档在最后一个审查员返回前一个字节都不许改。
+- **验证方法论教训**：① grep 穷举必须先确认覆盖面（PM 曾只 grep 3 个文件漏掉 `utils.py`/`lightrag.py` 得到假阴性，据此错误"修正"了子 Agent 的正确侦察）；② 验证第三方库行为必须在其**真实装配路径**上测（PM 直调 `EmbeddingFunc.__call__` 单件绕过包装层，得到假阳性）。
+- **已知边界**：`requirements.txt` 仍含 sentence-transformers/torch（PM 已核实 insightface **不**依赖 torch，可整组摘除省约 2.5 GB，但属收尾任务、需单独验证）；`lightrag_repair.py` 有孤儿注释 `# bge-base-zh-v1.5 推荐批量`；README 升级节警告写「按下面 3 步」但列表编号到 4（可选步骤）。

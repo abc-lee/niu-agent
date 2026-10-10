@@ -403,10 +403,14 @@ schemas = registry.get_schemas()
 
 | 目录 | 大小 | 用途 |
 |------|------|------|
-| `models/bge-base-zh-v1.5/` | ~390 MB | BAAI/bge-base-zh-v1.5 中文向量模型（768d） |
+| `models/embeddinggemma-2-Q8_0.gguf` | ~310 MB | EmbeddingGemma 2 向量模型（768d，8192 ctx，GGUF Q8_0，经 llama.cpp 推理） |
+| `models/llama.cpp/<platform>/` | ~5 MB | llama-server 可执行体（darwin-x64 / win32-x64 等） |
 | `models/models/buffalo_l/` | ~326 MB | InsightFace 人脸识别 |
 
-**加载逻辑**：优先从本地加载，本地没有才下载。
+**加载逻辑**：EmbeddingGemma 2 走 llama.cpp 子进程（`llama-server`），产物路径由
+`niu_api/internal/embedding_artifacts.py` 单一定义；`embedding.py` 的 `SUPPORTED_MODELS`
+现只剩 `embeddinggemma-2` 一项，`DEFAULT_MODEL` 亦为它。旧 bge-minilm 系列已移除，
+存量 `~/.niu/preferences.json` 里的旧 `embedding_model` 值会被既有守卫自动回落。
 
 ### 用户目录 `~/.niu/`
 
