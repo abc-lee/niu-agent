@@ -41,6 +41,13 @@ _UBATCH = 2048
 _STARTUP_TIMEOUT = 60.0   # 冷启动读取 310MB 权重的预算
 _HTTP_TIMEOUT = 120.0
 
+# 编码串行化锁（与下面的 _lock 分工：_lock 管进程生命周期，本锁管 HTTP 编码请求）。
+# 根因：llama-server 是单实例推理服务，会把并发请求在内部串行化；客户端并发发 N 批，
+# 每批的单请求延迟就被顶到约 N × 单批耗时 —— PM 实测 8 批并发总耗时 119.9s，
+# 恰好压在 _HTTP_TIMEOUT=120.0s 边界上，导致 repair 的 vdb_chunks 重建必现 timed out。
+# 串行化后单批约 21.4s（235 条真实 chunk 实测），既不超时也不让服务端空转排队。
+_encode_lock = threading.Lock()
+
 _lock = threading.Lock()
 _proc: subprocess.Popen | None = None
 
@@ -190,8 +197,11 @@ def encode_batch(texts: list[str]) -> list[list[float]]:
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
-        data = json.loads(resp.read())
+    # 串行化：单实例 llama-server 会把并发请求内部排队，客户端并发只会把单请求延迟
+    # 顶到 HTTP 超时（实测 8 批并发 ≈119.9s vs 超时 120.0s，必现 timed out）。
+    with _encode_lock:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+            data = json.loads(resp.read())
     items = data.get("data") or []
     if len(items) != len(texts):
         raise RuntimeError(
