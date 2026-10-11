@@ -271,6 +271,39 @@ codesign --force --sign - /Applications/niu.app
 > `kv_store_full_docs.json`、`kv_store_llm_response_cache.json`。它们是知识图谱的原始真相源，
 > 上面的重建全靠它们。
 
+## 已在 0.5.0 上迁移过？需要再迁一次（必做）
+
+**为什么又要迁：编码口径又变了一次（这次统一加了任务前缀）。** 上面那次迁移解决的是
+「换模型」，而向量模型不变、只是编码时统一加上了 EmbeddingGemma 2 的任务前缀
+（`task: search result | query: `）。带前缀和裸编码算出来的向量**同样互不兼容**，
+所以已经按上面步骤迁过一次的用户，索引仍然需要重建一次。
+
+> ⚠️ **这一步不能跳，也没有任何程序会提醒你。** 两种口径产物的向量维度都是 768，
+> 所以程序无法从文件里分辨索引是哪种口径编码的——它只会照常用。
+> 跳过这一步的后果是：新旧两套向量被混在同一个索引里，**不会报错、不会弹窗**，
+> 但检索结果会明显变差，且没有任何提示。请务必按下面 3 步做完再启动。
+
+1. **退出 Niu**（完全退出，不是关窗口）
+2. **删掉 3 个向量索引文件**（它们是从知识图谱自动重建的派生数据，删除不会丢任何原始内容）：
+   - macOS 或 Linux：
+     ```bash
+     rm ~/.niu/lightrag_storage/vdb_entities.json \
+        ~/.niu/lightrag_storage/vdb_relationships.json \
+        ~/.niu/lightrag_storage/vdb_chunks.json
+     ```
+   - Windows（PowerShell，路径按你的用户目录）：
+     ```powershell
+     Remove-Item "$env:USERPROFILE\.niu\lightrag_storage\vdb_entities.json",
+                  "$env:USERPROFILE\.niu\lightrag_storage\vdb_relationships.json",
+                  "$env:USERPROFILE\.niu\lightrag_storage\vdb_chunks.json"
+     ```
+3. **启动 Niu**。首次启动会弹「检测到数据一致性问题」——这是预期的，点是「尝试修复」，
+   程序会用新口径从知识图谱重建索引（节点/关系越多越久，请耐心等）。
+
+> 不要删 `~/.niu/lightrag_storage/` 下的另外三个文件 —— `graph_chunk_entity_relation.graphml`、
+> `kv_store_full_docs.json`、`kv_store_llm_response_cache.json`。它们是知识图谱的原始真相源，
+> 上面的重建全靠它们。
+
 ## 快速开始
 
 ```bash
