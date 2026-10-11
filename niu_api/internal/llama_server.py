@@ -33,10 +33,19 @@ LLAMA_PORT = 19878
 _HOST = "127.0.0.1"
 
 # 保守上下文：GGUF 元数据 context_length=262144 与 model card 的 8192 差 32 倍，
-# 未做长文本质量验证前取 8192。-ub 2048 为实测可用值（512 会触发
-# cap image_max_tokens 告警，虽属 Phase 2 但同一进程）。
+# 未做长文本质量验证前取 8192。
+#
+# -b / -ub 必须同时给够：llama-server 单条输入的 token 上限 = min(逻辑批 -b, 物理批 -ub)，
+# 二者任一不足都会让超限输入直接 500（报文：input (N tokens) is too large to process.
+# increase the physical batch size (current batch size: X)，其中 X 报的是不足的那一侧）。
+# 历史坑（2026-10-11 实测）：原先只写 -ub 2048、-b 取默认值 2048 ⇒ 实际上限 2048，
+# 而 Niu 对 LightRAG 声明的 max_seq_length 是 8192 —— 任何 >2048 token 的文本（中文长文
+# 尤甚）编码必 500 → 整条 LightRAG 注入回滚 → SkillSync 每分钟重试且永不成功
+# （miaodong 2118 tok / scheduled-tasks 2087 tok 两个 skill 卡死即此因）。
+# 实测对照：-ub 8192 单独改无效；-b 8192 单独改无效；-b 8192 -ub 8192 方可通过。
 _CTX_SIZE = 8192
-_UBATCH = 2048
+_BATCH = 8192
+_UBATCH = 8192
 
 _STARTUP_TIMEOUT = 60.0   # 冷启动读取 310MB 权重的预算
 _HTTP_TIMEOUT = 120.0
@@ -72,6 +81,7 @@ def _build_argv() -> list[str]:
         "--port", str(LLAMA_PORT),
         "--host", _HOST,
         "-c", str(_CTX_SIZE),
+        "-b", str(_BATCH),
         "-ub", str(_UBATCH),
     ]
     return argv
