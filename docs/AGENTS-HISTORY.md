@@ -963,6 +963,8 @@ added_tokens 818，实测 `TokenCalculator` 已加载且计数正常）；`.giti
    三问有一答否就是漏洞。本次审计结论：`models/` 下唯一漏网的就是 tokenizer，
    其余大文件（gguf / llama.cpp 二进制 / buffalo_l）都有脚本或文档兜底。
 
+
+
 ### 2026-10-12
 
 #### S8：skill 入库改为只入描述 + 标准 Skills 目录支持 + custom-KG 嵌入护栏（`fa9aa51d`）
@@ -981,3 +983,32 @@ added_tokens 818，实测 `TokenCalculator` 已加载且计数正常）；`.giti
 - **验收**：点名回归 **190 passed**；既有失败经 pristine 对照证明与本改动无关（跨文件污染 2、环境依赖 2、MCP 层 2、无关测试 1）；ruff 零新增并消除 1 个既有 F401；真机 25/25 skill 实体描述级在位、正文 chunk 恒 0、llama 日志 5366 B 零增长。
 - **已知残留（本期不实施，需用户决策）**：**R-9** doc 路径分词器口径背离（最坏 48x，建议「分段与嵌入 tokenizer 同源」，影响 LLM 摘要口径需单独立项）；R-8 merge concatenate 结果；R-10 级联 O(边数) 成本。
 
+
+### 2026-10-12（续）
+
+#### S9：launcher 收 SIGTERM 不走优雅关闭、留孤儿（`8274c773`）
+
+- **现象**（S8 真机验收时意外发现）：直接 `kill -TERM <launcher>` 后 launcher 立即退出，
+  Python API 被过继给 PID 1、llama-server 成孤儿继续占 19878 → 下次启动撞单写者契约。
+  用 pristine 代码对照确认是**既有缺陷**，非本工程引入。
+- **PM 初诊被实施证据纠正（教训）**：我下结论「launcher 没注册任何信号处理」**不准确**——
+  我只测了 SIGTERM。实测发现 **SIGINT 一直由 `ctrlc` 正常工作**（走完整阶梯、端口全关、无残留）。
+  真正坏的只有 SIGTERM：`ctrlc` 3.5.2 对 SIGTERM/SIGHUP 的支持被其 `termination`
+  feature 门控而本 crate 未启用 → 处置恒为 `SIG_DFL`；且原
+  `pthread_sigmask(SIG_BLOCK,SIGTERM)` + 专用 `sigwait` 线程是**死代码**——
+  `ctrlc` 内部先于阻塞前创建的 `"ctrl-c"` 线程未阻塞 SIGTERM，信号被内核投给它后
+  按默认处置直接终结进程，`sigwait` 线程从未轮到（全程无日志）。
+  **教训：看到一个症状就推断根因，没有横测同族信号，会把问题范围说宽一倍。**
+- **修法**：模块级 `AtomicBool` + `extern "C"` 处理器只做一次原子写（async-signal-safe）；
+  nix `sigaction` 装 SIGTERM 与 SIGINT，安装点在 bg 线程启动前、失败只 warn 不 panic；
+  bg 主等待循环 `|| SIGNAL_RECEIVED` 与 `cancelled_bg` 同权，break 后**复用既有
+  Step 1-6 阶梯**（未新写关闭逻辑）；日志打在 bg 线程内；删除失效的 sigwait 机制并注释原因；
+  Windows 走 `#[cfg(not(unix))]` 空实现，Ctrl-C 仍由既有 ctrlc 承接。
+- **验证（PM 亲自复验）**：SIGTERM → 优雅关闭日志 + 完整阶梯（约 3.4 s）、双端口关闭、
+  无 llama 残留、llama_server.log 5366 B 零增长；SIGINT 回归同过；Rust 23 passed；
+  Cargo.toml/lock 零改动、未新增 crate；唯一 unsafe 是包裹两次 sigaction 的块。
+- **环境副作用（必须披露，不在仓库内）**：构建期间机器出现系统级「未签名二进制 exec 卡死」
+  事件（疑由实施者 attach lldb 触发 SecurityAgent 授权流所致）。实施者用 ad-hoc 签名恢复构建，
+  被签名的都是 **git-ignored/未跟踪**文件（rustup 工具链、cargo、115 个 build-script 二进制、
+  llama-server、Electron.app）；`git status` 确认仓库跟踪内容零改动。后续机器自愈，
+  cargo test 无需再签名即可跑。**工具链二进制现带无害 ad-hoc 签名，保留。**
