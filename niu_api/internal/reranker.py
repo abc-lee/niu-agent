@@ -7,6 +7,13 @@ Supports pluggable models via ~/.niu/preferences.json lightrag config.
 Reranker improves retrieval quality by re-scoring candidate documents
 against the query with a cross-encoder model (more accurate but slower
 than bi-encoder embedding similarity).
+
+【2026-10-11 本期停用】
+用户实测结论：rerank 收益很小、GPU/内存资源耗费很大，与本期待解决目标无关，
+故生产侧已不再把它接进 LightRAG（见 lightrag_manager.py 的 reranker_func = None）。
+本模块的模型加载/切换/调用逻辑整条保留原样，将来要恢复只需改那一行。
+注意：`preferences.json` 里的 `reranker_model` 停在 `"none"` 即可；
+若误配成具体模型名，本模块仍会尝试加载（依赖已在 requirements 中保留）。
 """
 
 import json

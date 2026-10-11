@@ -8,14 +8,17 @@
 # ============================================
 #
 # !! 关键版本约束（违反会导致崩溃）!!
-# 1. numpy<2 — insightface 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃
-#    （2026-10-11 起 torch 已摘除，numpy<2 的约束来源只剩 insightface/onnxruntime）
-# 2. lightrag-hku — 必须从 Fork 安装（git+https://github.com/abc-lee/LightRAG.git），不能用 PyPI 版本（缺 PR#2990 修复）
-# 3. opencv-python-headless==4.11.0.86 — 禁止升到 4.12+（METADATA 声明 numpy>=2）
+# 1. numpy<2 — torch 2.2.2 和 insightface 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃
+# 2. torch==2.2.2 — 项目固定版本，不要升级（GPU 能力由 get_device() 运行时检测，
+#    不靠"装没装"决定用不用 GPU）
+# 3. transformers>=4.41,<5.0 — transformers 5.x 要求 torch>=2.4，与 torch 2.2.2 不兼容
+# 4. lightrag-hku — 必须从 Fork 安装（git+https://github.com/abc-lee/LightRAG.git），不能用 PyPI 版本（缺 PR#2990 修复）
+# 5. sentence-transformers==5.5.1 — 依赖 transformers<5，与 torch 2.2.2 兼容
 #
-# 已摘除（2026-10-11，向量模型迁到 llama.cpp + GGUF）：
-#   torch / transformers / sentence-transformers / accelerate
-#   —— PM 已用 importlib.metadata 逐包核算反向依赖（区分核心依赖与 extra）后确认可摘。
+# 说明：2026-10-11 起【向量模型】走 llama.cpp + GGUF（EmbeddingGemma 2，见
+# embedding.py 的 backend=llama-cpp 分支）。但 torch/transformers/
+# sentence-transformers/accelerate 仍然必须安装——本仓是自包含完整 Python 运行时，
+# 依赖须全部装进 bundle，且 GPU/CPU 由运行时按机器能力判断（详见 PyTorch 小节说明）。
 #
 
 
@@ -73,17 +76,25 @@ tokenizers==0.21.4
 fastuuid==0.14.0
 jiter==0.15.0
 
-# ============== 向量编码（llama.cpp + GGUF，无 PyTorch） ==============
-# 2026-10-11：向量模型已从 sentence-transformers/bge-base-zh-v1.5 迁到 llama.cpp + GGUF 的
-# EmbeddingGemma 2（见 niu_api/internal/llama_server.py 与 embedding.py）。因此整套
-# torch/transformers/sentence-transformers/accelerate 依赖链已摘除——PM 已用
-# importlib.metadata 逐包核算反向依赖（区分核心依赖与 extra）：torch 的唯一"依赖方"
-# 是 albumentations 的 `extra == "pytorch"` 可选依赖，不触发；其余四个包零核心依赖方。
-# 打包体积收益约 2.5 GB（torch 为大头）。
-numpy==1.26.4                       # !! numpy<2 仍是铁律：insightface 0.7.3 / onnxruntime C 扩展用 numpy 1.x ABI !!
-huggingface_hub==0.36.2             # litellm 有可选 import 路径，保留（体积可忽略）
+# ============== PyTorch 与向量搜索 ==============
+# torch 必须固定 2.2.2，升级会破坏 insightface C 扩展和 transformers 兼容性
+#
+# !! 为什么曾经想摘除而又恢复（2026-10-11 用户纠正，重要）!!
+# 向量模型本身已迁到 llama.cpp + GGUF（embedding.py 的 backend=llama-cpp 分支），
+# 于是 PM 以"反向依赖分析无核心依赖方"为由摘掉了这四件套——**那个论据是错的**：
+# 1. 本仓是【自包含完整 Python 运行时】，所有依赖必须装进 bundle。
+# 2. GPU / CPU 是**运行时按机器能力判断**的（get_device() 检测 torch.cuda），
+#    不是"没装就用 CPU"——摘掉依赖会让有 GPU 的机器被静默降级到 CPU。
+# 3. macOS 打包后不能再补装依赖（会触发重签名问题），所以必须在打包前装齐。
+# 4. reranker 虽已本期停用（见 lightrag_manager.py 1262 起的停用说明），
+#    但那不是保留依赖的理由；保留依赖的理由就是上面 3 条。
+torch==2.2.2
+numpy==1.26.4                       # !! numpy<2 是铁律，见顶部说明 !!
+sentence-transformers==5.5.1
+transformers==4.51.0                # !! transformers<5 是铁律，5.x 要求 torch>=2.4 !!
+huggingface_hub==0.36.2                 # !! huggingface_hub<1 是铁律，1.x 与 sentence-transformers 不兼容
 hf-xet==1.5.1
-safetensors==0.7.0                  # onnxruntime 可能读取，保留（体积可忽略）
+safetensors==0.7.0
 ml_dtypes==0.5.4               # onnx 模型 dtype 支持
 simsimd==6.5.16                # albucore SIMD 向量距离
 filelock==3.29.3
@@ -91,6 +102,7 @@ fsspec==2026.4.0
 sympy==1.14.0
 networkx==3.6.1
 Jinja2==3.1.6
+accelerate==0.34.2             # sentence-transformers 加载模型需要 init_empty_weights（macOS 间接装了，Windows 缺失）
 
 # ============== 科学计算（insightface 依赖链） ==============
 scipy==1.17.1

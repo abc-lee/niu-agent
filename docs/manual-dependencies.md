@@ -9,17 +9,24 @@
 
 #### 关键版本约束（铁律）
 
-以下 3 条版本约束来自 `requirements.txt` 顶部，**违反任意一条都会导致崩溃**：
+以下 5 条版本约束来自 `requirements.txt` 顶部，**违反任意一条都会导致崩溃**：
 
 | 序号 | 约束 | 原因 |
 |------|------|------|
-| 1 | `numpy<2` | insightface / onnxruntime 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃（2026-10-11 起 torch 已摘除，约束来源只剩这两个） |
-| 2 | `opencv-python-headless==4.11.0.86` | 4.12 起 METADATA 声明 numpy>=2，与 numpy 铁律冲突 |
-| 3 | `lightrag-hku` 必须从 Fork 安装 | `git+https://github.com/abc-lee/LightRAG.git`，不能用 PyPI 版本（缺 PR#2990 修复） |
+| 1 | `numpy<2` | torch 2.2.2 和 insightface 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃 |
+| 2 | `torch==2.2.2` | 项目固定版本，不要升级；GPU 能力由 `get_device()` **运行时检测**，不是"没装就用 CPU" |
+| 3 | `transformers>=4.41,<5.0` | transformers 5.x 要求 torch>=2.4，与 torch 2.2.2 不兼容 |
+| 4 | `huggingface_hub<1` | 1.x 与 sentence-transformers 不兼容 |
+| 5 | `lightrag-hku` 必须从 Fork 安装 | `git+https://github.com/abc-lee/LightRAG.git`，不能用 PyPI 版本（缺 PR#2990 修复） |
 
-> 2026-10-11 已摘除：`torch` / `transformers` / `sentence-transformers` / `accelerate`
-> —— 向量模型迁到 llama.cpp + GGUF，PM 已用 importlib.metadata 逐包核算反向依赖
-> （区分核心依赖与 extra）确认无核心依赖方。打包体积收益约 2.5 GB。
+> 2026-10-11 **曾一度摘除 torch / transformers / sentence-transformers / accelerate，
+> 当日即回滚**。回滚理由（用户纠正，PM 原论据有误）：本仓是**自包含完整 Python 运行时**，
+> 依赖必须全部装进 bundle；**GPU / CPU 由运行时按机器能力判断**（`get_device()` 检测
+> `torch.cuda`），不是"没装就用 CPU"——摘依赖会让有 GPU 的机器被静默降级；
+> 且 macOS 打包后不能再补装依赖（触发重签名）。
+> 另：reranker 本期已停用（见 `lightrag_manager.py` 的 `reranker_func = None`），
+> 但**停用 reranker 不是保留依赖的理由**，保留依赖的理由就是上面几条。
+> 向量模型本身已走 llama.cpp + GGUF，这一层与 torch 无关。
 
 #### 核心依赖（agent 核心）
 
@@ -41,6 +48,7 @@
 | `uvicorn` | ==0.47.0 | ASGI 服务器 |
 | `numpy` | ==1.26.4 | 数值计算 |
 | `nano-vectordb` | ==0.0.4.3 | 轻量向量库（LightRAG 同进程默认后端） |
+| `sentence-transformers` | ==5.5.1 | 依赖须随 bundle 安装（GPU/CPU 运行时判断）；reranker 本期停用但模块保留 |
 
 **人脸识别依赖（photo-server）：**
 
