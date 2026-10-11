@@ -25,7 +25,7 @@ mcp-servers/        # MCP 服务器集群（同进程架构，ToolRegistry 加�
 im-adapters/        # IM Gateway 适配器（飞书等）
 ui/                 # 前端界面（assistant / settings / graph）
 config/             # 配置文件（user-config / agents / mcp-servers.yaml）
-models/             # 本地模型（bge-base-zh-v1.5 / buffalo_l）
+models/             # 本地模型（embeddinggemma-2 GGUF / llama.cpp 二进制 / buffalo_l）
 ```
 
 **启动开发环境：**
