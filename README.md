@@ -247,7 +247,7 @@ codesign --force --sign - /Applications/niu.app
 > ⚠️ **这一步不能跳，也没有任何程序会提醒你。** 新旧模型的向量维度都是 768，
 > 所以程序无法从文件里分辨索引是新模型还是旧模型编码的——它只会照常用。
 > 跳过这一步的后果是：新旧两套向量被混在同一个索引里，**不会报错、不会弹窗**，
-> 但检索结果会明显变差，且没有任何提示。请务必按下面 3 步做完再启动。
+> 但检索结果会明显变差，且没有任何提示。请务必按下面 **1–3 步**做完再启动（第 4 步是可选清理）。
 
 1. **退出 Niu**（完全退出，不是关窗口）
 2. **删掉 3 个向量索引文件**（它们是从知识图谱自动重建的派生数据，删除不会丢任何原始内容）：
@@ -264,7 +264,8 @@ codesign --force --sign - /Applications/niu.app
                    "$env:USERPROFILE\.niu\lightrag_storage\vdb_chunks.json"
      ```
 3. **启动 Niu**。首次启动会弹「检测到数据一致性问题」——这是预期的，点是「尝试修复」，
-   程序会用新模型从知识图谱重建索引（节点/关系越多越久，请耐心等）。
+   程序会用新模型从知识图谱重建索引（节点/关系越多越久：1 万向量量级实测约 **二十几分钟**，
+   期间请勿强制退出——退出会让重建半途而废、下次重启再触发）。
 4. 旧模型权重目录 `models/bge-base-zh-v1.5/`（约 400 MB）已不再需要，可手动删除。
 
 > 不要删 `~/.niu/lightrag_storage/` 下的另外三个文件 —— `graph_chunk_entity_relation.graphml`、
@@ -298,7 +299,7 @@ codesign --force --sign - /Applications/niu.app
                   "$env:USERPROFILE\.niu\lightrag_storage\vdb_chunks.json"
      ```
 3. **启动 Niu**。首次启动会弹「检测到数据一致性问题」——这是预期的，点是「尝试修复」，
-   程序会用新口径从知识图谱重建索引（节点/关系越多越久，请耐心等）。
+   程序会用新口径从知识图谱重建索引（实测约 **二十几分钟**，期间请勿强制退出）。
 
 > 不要删 `~/.niu/lightrag_storage/` 下的另外三个文件 —— `graph_chunk_entity_relation.graphml`、
 > `kv_store_full_docs.json`、`kv_store_llm_response_cache.json`。它们是知识图谱的原始真相源，
