@@ -1,7 +1,9 @@
 """
 Skill Sync
 
-Skills 目录同步服务。定时扫描 ~/.niu/skills/ 目录，同步变化到 LightRAG 知识图谱。
+Skills 目录同步服务。定时扫描 skills 目录集合（默认 ~/.niu/skills/，可在
+~/.niu/config/user-config.json 的 skills.dirs 追加标准 Skills 目录），
+同步变化到 LightRAG 知识图谱。
 通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
 """
 
@@ -46,6 +48,95 @@ if WATCHDOG_AVAILABLE:
     _SkillFileHandlerBase = FileSystemEventHandler
 else:
     _SkillFileHandlerBase = object  # type: ignore[misc]
+
+
+# ============== Skills 目录集合（配置化多目录，S8 D-2） ==============
+#
+# 目录集合的唯一决策序（I-7）：按**配置的目录顺序**，逐目录内「平铺优先、
+# 目录式次之」，第一个命中的目录即为该 skill 的唯一来源。扫描（scan_and_sync）、
+# 反查（_skill_file_for_name）、事件解析（_skill_name_for_event）与 runner 渲染
+# （agent/runner.py::_skill_display_path）四处共用本节的 find_skill_file /
+# resolve_skills_dirs，禁止任何一处另立规则。
+#
+# 缺省集合恒为 [~/.niu/skills]（改动前后逐字节等价），标准 Skills 目录
+# （~/.claude/skills、~/.codex/skills 等）由用户在配置里显式追加。
+
+def configured_skills_dirs() -> list[str]:
+    """读取用户配置的 skills 目录集合（有序，未去重）。
+
+    配置来源：~/.niu/config/user-config.json 的 ``skills.dirs`` 段
+    （字符串数组，支持 ``~`` 前缀；单字符串也接受）。缺省 / 文件不存在 /
+    损坏 / 类型不符 → ``[str(Path.home() / ".niu" / "skills")]``，
+    即与配置化之前的单目录行为一致（不凭空改变装机行为）。
+
+    每次现读（不缓存成模块常量）：改配置即时生效，无需重启。
+    """
+    dirs: list[str] = []
+    try:
+        # 函数内 import：让测试可 monkeypatch niu_api.config.CONFIG_PATH
+        from niu_api.config import CONFIG_PATH
+        data = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
+        raw = (data.get("skills") or {}).get("dirs") if isinstance(data, dict) else None
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    dirs.append(os.path.expanduser(item.strip()))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"[SkillSync] Failed to read configured skills dirs, using default: {e}")
+
+    if not dirs:
+        dirs.append(str(Path.home() / ".niu" / "skills"))
+    return dirs
+
+
+def resolve_skills_dirs(
+    skills_dir: str | None = None,
+    skills_dirs: list[str] | None = None,
+) -> list[Path]:
+    """归一化 skills 目录集合为**保序去重**的 Path 列表。
+
+    优先级：显式 ``skills_dirs`` > 显式 ``skills_dir``（单个，保持
+    ``SkillSync(skills_dir=str)`` 构造入参可用，R-5）> 用户配置缺省集合。
+
+    显式传入时不读配置（测试与既有调用方以字符串构造时不引入配置副作用）。
+    """
+    if skills_dirs:
+        candidates = [str(d) for d in skills_dirs]
+    elif skills_dir:
+        candidates = [str(skills_dir)]
+    else:
+        candidates = configured_skills_dirs()
+
+    seen: set[Path] = set()
+    resolved: list[Path] = []
+    for candidate in candidates:
+        path = Path(candidate).expanduser()
+        if path not in seen:
+            seen.add(path)
+            resolved.append(path)
+    return resolved
+
+
+def find_skill_file(name: str, skills_dirs: list[Path]) -> Path | None:
+    """按 skill 名反查磁盘文件——I-7 唯一决策序的实现点。
+
+    按目录集合顺序遍历，逐目录内「平铺 ``<name>.md`` 优先、目录式
+    ``<name>/SKILL.md`` 次之」，第一个命中的目录为唯一来源。
+    （目录名以 .md 结尾时 exists() 会把目录误判为平铺文件，故平铺分支
+    必须用 is_file()。）
+    """
+    for root in skills_dirs:
+        flat = root / f"{name}.md"
+        if flat.is_file():
+            return flat
+        sub = root / name / "SKILL.md"
+        if sub.exists():
+            return sub
+    return None
 
 
 class SkillFileHandler(_SkillFileHandlerBase):  # type: ignore[misc]
@@ -116,7 +207,7 @@ class SkillFileHandler(_SkillFileHandlerBase):  # type: ignore[misc]
             self._pending.pop(path, None)
 
         try:
-            name = self._sync._skill_name_from_path(Path(path), self._sync.skills_dir)
+            name = self._sync._skill_name_for_event(Path(path))
             if name is None:
                 return  # 非 skill 文件（深层 .md / 非 SKILL.md），忽略
             if action == "sync":
@@ -159,15 +250,29 @@ class SkillSync:
     """
     Skills 目录同步服务
 
-    扫描 ~/.niu/skills/ 目录，检测文件变化，同步到 LightRAG 知识图谱。
+    扫描 skills 目录集合（默认 ~/.niu/skills/，可经配置追加标准 Skills 目录），
+    检测文件变化，同步到 LightRAG 知识图谱。
     通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
+
+    重名 skill 的决策序（唯一，I-7）：按目录集合顺序，逐目录内「平铺优先、
+    目录式次之」，第一个命中的目录为唯一来源。
 
     变化检测基于文件内容哈希（SHA256），状态持久化到 ~/.niu/skill_sync_state.json，
     进程重启后不会误判已有 skill 为"新增"。mtime 变但内容不变则跳过。
     """
 
-    def __init__(self, skills_dir: str | None = None, scan_interval: int = 60, use_watchdog: bool = True):
-        self.skills_dir = Path(skills_dir or self._default_skills_dir())
+    def __init__(
+        self,
+        skills_dir: str | None = None,
+        scan_interval: int = 60,
+        use_watchdog: bool = True,
+        skills_dirs: list[str] | None = None,
+    ):
+        # skills 目录集合（S8 D-2）：显式 skills_dir 仍是单目录构造入参（R-5），
+        # 解析为等价的单元素集合；两者都缺省时取用户配置（默认仅 ~/.niu/skills）。
+        self.skills_dirs: list[Path] = resolve_skills_dirs(skills_dir, skills_dirs)
+        # 单目录锚点的兼容视图：集合内第一个目录（含 first-wins 的语义源头）
+        self.skills_dir = self.skills_dirs[0]
         self.scan_interval = scan_interval
         self.use_watchdog = use_watchdog and WATCHDOG_AVAILABLE
 
@@ -199,11 +304,6 @@ class SkillSync:
         # self_writing 检测
         self._last_write_times: dict[str, float] = {}  # path -> mtime
         self._self_write_window = 2.0  # 秒，自己写入后的冷却时间
-
-    @staticmethod
-    def _default_skills_dir() -> str:
-        """默认 skills 目录"""
-        return str(Path.home() / ".niu" / "skills")
 
     def _is_self_write(self, path: str, mtime: float) -> bool:
         """
@@ -263,13 +363,21 @@ class SkillSync:
         return None
 
     def _skill_file_for_name(self, name: str) -> Path | None:
-        """按 skill 名称反查磁盘文件路径（平铺优先，目录式次之）。"""
-        flat = self.skills_dir / f"{name}.md"
-        if flat.is_file():
-            return flat
-        sub = self.skills_dir / name / "SKILL.md"
-        if sub.exists():
-            return sub
+        """按 skill 名称反查磁盘文件路径（I-7 唯一决策序，见 find_skill_file）。"""
+        return find_skill_file(name, self.skills_dirs)
+
+    def _skill_name_for_event(self, skill_file: Path) -> str | None:
+        """watchdog 事件路径 → skill 名称。
+
+        规则本身仍由 _skill_name_from_path 承担（平铺=stem、目录式=目录名），
+        此处只是把它套到**每一个**所配目录上（S8 D-2 第三处单目录锚点）：
+        事件落在任一目录内都能解析出 name；目录外/深层 .md 仍返回 None。
+        跨目录命中顺序 = self.skills_dirs 顺序，与反查/扫描同源（I-7）。
+        """
+        for root in self.skills_dirs:
+            name = self._skill_name_from_path(skill_file, root)
+            if name is not None:
+                return name
         return None
 
     def _load_state(self) -> dict[str, str]:
@@ -337,12 +445,14 @@ class SkillSync:
             (added, updated, deleted) 计数；若 LightRAG 不可用返回 (-1, -1, -1)
             表示"未真正扫描"，调用方据此不触发 _first_scan_complete。
         """
-        if not self.skills_dir.exists():
-            logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dir}")
+        # 存在性门（S8 §5.2）：语义为「任一所配目录存在」——默认目录缺失但
+        # 标准目录存在时仍必须扫描；两者都不存在才按原行为返回并告警。
+        if not any(root.exists() for root in self.skills_dirs):
+            logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dirs}")
             return 0, 0, 0
 
         # 入口快照：scan 之前的 _last_scan + _last_notes_scan 状态
-        # 位置：在 skills_dir 检查之后、LightRAG 可用性检查（L286-293）之前
+        # 位置：在目录存在性门之后、LightRAG 可用性检查之前
         # 出口对比是否变化，无变化跳过 _save_state
         # 注意：LightRAG 不可用提前 return -1 时不做快照也无副作用（不写盘就行）
         with self._lock:
@@ -366,32 +476,34 @@ class SkillSync:
         with self._lock:
             known_skills = dict(self._last_scan)
 
-        # 2. 扫描 skills 目录，计算当前 current_hashes = {name: hash}
-        #    支持平铺 *.md 与目录式 */SKILL.md（仅下一级目录）
-        #    同名冲突（foo.md 与 foo/SKILL.md 并存）：平铺优先——
-        #    先扫平铺（记录 name），目录式遇到同名跳过，保证 hash 源与
-        #    内容源一致（_skill_file_for_name 平铺优先，runner 路径行平铺优先）
+        # 2. 扫描 skills 目录集合，计算当前 current_hashes = {name: hash}
+        #    每个目录内支持平铺 *.md 与目录式 */SKILL.md（仅下一级目录）
+        #    同名冲突决策序（I-7，唯一）：按 self.skills_dirs 顺序，逐目录内
+        #    「平铺优先、目录式次之」，第一个命中的目录即该 name 的唯一来源——
+        #    name 已被记录则后续目录的同名副本直接跳过，保证 hash 源与内容源
+        #    一致（_skill_file_for_name 同序，runner 路径行同序）
         current_hashes: dict[str, str] = {}
-        for skill_file in self.skills_dir.glob("*.md"):
-            name = self._skill_name_from_path(skill_file, self.skills_dir)
-            if name is None:
-                continue
-            try:
-                content_hash = self._compute_file_hash(skill_file)
-            except OSError as e:
-                logger.error(f"[SkillSync] Cannot read skill file {name}: {e}")
-                continue
-            current_hashes[name] = content_hash
-        for skill_file in self.skills_dir.glob("*/SKILL.md"):
-            name = self._skill_name_from_path(skill_file, self.skills_dir)
-            if name is None or name in current_hashes:
-                continue
-            try:
-                content_hash = self._compute_file_hash(skill_file)
-            except OSError as e:
-                logger.error(f"[SkillSync] Cannot read skill file {name}: {e}")
-                continue
-            current_hashes[name] = content_hash
+        for root in self.skills_dirs:
+            for skill_file in root.glob("*.md"):
+                name = self._skill_name_from_path(skill_file, root)
+                if name is None or name in current_hashes:
+                    continue
+                try:
+                    content_hash = self._compute_file_hash(skill_file)
+                except OSError as e:
+                    logger.error(f"[SkillSync] Cannot read skill file {name}: {e}")
+                    continue
+                current_hashes[name] = content_hash
+            for skill_file in root.glob("*/SKILL.md"):
+                name = self._skill_name_from_path(skill_file, root)
+                if name is None or name in current_hashes:
+                    continue
+                try:
+                    content_hash = self._compute_file_hash(skill_file)
+                except OSError as e:
+                    logger.error(f"[SkillSync] Cannot read skill file {name}: {e}")
+                    continue
+                current_hashes[name] = content_hash
 
         added, updated, deleted = 0, 0, 0
         # 最终写入状态文件的 dict，初始值为 known_skills 的副本
@@ -670,15 +782,16 @@ class SkillSync:
                 "weight": 1.0,
             }]
 
-            chunks = [{
-                "content": f"Skill: {skill_name}\n\n{content}",
-                "source_id": source_id,
-            }]
-
+            # 只入描述、不入正文（S8 D-1）：chunks 传空列表。
+            # adapter 的虚拟块生成路径会自动为该实体生成内容为
+            # "{name}: {description}" 的 chunk（source_id="skill://<name>_<name>"），
+            # skill 在 chunk 桶的检索面由它承担，此处不得自行另造块。
+            # 正文 chunk 不被动态注入链路消费，只会撑爆嵌入上限、让 chunks_vdb
+            # 无限膨胀并在 chunk 桶互相抢语义（S8 §1.3）。
             result = ingester.inject_custom_kg(
                 entities=entities,
                 relationships=relationships,
-                chunks=chunks,
+                chunks=[],
                 source_id=source_id,
             )
             if isinstance(result, dict) and result.get("status") == "ok":
@@ -892,8 +1005,11 @@ class SkillSync:
         if not self.use_watchdog or self._observer:
             return
 
-        if not self.skills_dir.exists():
-            logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dir}")
+        # 存在性门（S8 §5.2）：语义为「任一所配目录存在」——默认目录缺失但
+        # 标准目录存在时 watchdog 仍须监听，否则那些目录的事件永远收不到。
+        watched = [root for root in self.skills_dirs if root.exists()]
+        if not watched:
+            logger.warning(f"[SkillSync] Skills directories not found: {self.skills_dirs}")
             return
 
         try:
@@ -902,10 +1018,12 @@ class SkillSync:
                 logger.error("[SkillSync] Observer not available, cannot start watchdog")
                 return
             observer = Observer()
-            observer.schedule(handler, str(self.skills_dir), recursive=True)
+            # 单个 Observer 上按目录集合逐个 schedule（S8 D-2 第二处单目录锚点）
+            for root in watched:
+                observer.schedule(handler, str(root), recursive=True)
             observer.start()
             self._observer = observer
-            logger.info(f"[SkillSync] Started watchdog monitoring: {self.skills_dir}")
+            logger.info(f"[SkillSync] Started watchdog monitoring: {[str(r) for r in watched]}")
         except Exception as e:
             logger.error(f"[SkillSync] Failed to start watchdog: {e}")
             self._observer = None

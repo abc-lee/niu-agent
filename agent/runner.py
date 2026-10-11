@@ -29,24 +29,66 @@ from agent.subagent_registry import SubagentRegistry
 _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
-def _skill_display_path(display_name: str, skills_dir: Path | None = None) -> str:
+def _skill_display_dir(path: Path) -> str:
+    """目录路径的可读形态：位于 home 之下时以 `~` 缩写，否则原样（POSIX 分隔符）。
+
+    默认单目录（~/.niu/skills）装配下，输出与改动前逐字节等价——
+    仍旧带 `~` 前缀（S8 D-2.1 / I-8）。跨平台同形态（as_posix 恒用 `/`，
+    不会在 Windows 上退化成反斜杠）。
+    """
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _active_skills_dirs() -> list[Path]:
+    """渲染期生效的 skills 目录集合。
+
+    优先取运行中的 SkillSync 实例持有的目录集合——与扫描、反查、事件解析
+    共用**同一份**目录与同一决策序（I-7 要求四处不得各自定义）。
+    实例不可得（未启动/被 mock）时回退到默认目录，行为与改动前一致。
+    """
+    try:
+        return list(get_skill_sync(auto_start=False).skills_dirs)
+    except Exception:
+        return [Path.home() / ".niu" / "skills"]
+
+
+def _skill_display_path(
+    display_name: str,
+    skills_dir: Path | None = None,
+    skills_dirs: list[Path] | None = None,
+) -> str:
     """构造 skill 注入时的可读路径行（LLM 按此路径读取 skill 全文）。
 
-    平铺: ~/.niu/skills/<name>.md
-    目录式: ~/.niu/skills/<name>/SKILL.md
-    同名冲突与两处都不存在（旧数据/幽灵实体）: 平铺形式（与 _skill_file_for_name
-    平铺优先一致，保证 LLM 读取的路径与注入内容同源）
+    路径基于**真实解析到的目录**返回（S8 D-2.1，不硬编码 `~/.niu/skills/`
+    前缀）：按目录集合顺序，逐目录内「平铺 <name>.md 优先、目录式
+    <name>/SKILL.md 次之」，第一个命中的目录即来源——与 SkillSync 的
+    I-7 决策序同序。全部缺失（旧数据/幽灵实体）时取第一个目录的平铺形式
+    兜底（与 _skill_file_for_name 平铺优先一致，保证 LLM 读取的路径与
+    注入内容同源）。
 
     注意：平铺分支用 is_file() 而非 exists()——目录名以 .md 结尾
     （~/.niu/skills/foo.md/）时 exists() 会把目录误判为平铺文件
     （T1 同类缺陷 R12-P3 修复的一致性要求）。
     """
-    root = skills_dir or (Path.home() / ".niu" / "skills")
-    flat = root / f"{display_name}.md"
-    sub = root / display_name / "SKILL.md"
-    if sub.exists() and not flat.is_file():
-        return f"~/.niu/skills/{display_name}/SKILL.md"
-    return f"~/.niu/skills/{display_name}.md"
+    if skills_dirs is None:
+        roots = [Path(skills_dir).expanduser()] if skills_dir is not None else _active_skills_dirs()
+    else:
+        roots = [Path(d).expanduser() for d in skills_dirs]
+    if not roots:
+        roots = [Path.home() / ".niu" / "skills"]
+
+    for root in roots:
+        flat = root / f"{display_name}.md"
+        if flat.is_file():
+            return _skill_display_dir(flat)
+        sub = root / display_name / "SKILL.md"
+        if sub.exists():
+            return _skill_display_dir(sub)
+
+    return _skill_display_dir(roots[0] / f"{display_name}.md")
 
 # 主 Agent 专用工具集合（子 Agent 不可见）
 # check_subagent_progress 是主 Agent 查子 Agent 进度的工具，子 Agent 不该有
@@ -1740,7 +1782,9 @@ class NiuRunner:
             else:
                 lines.append(f"{added + 1}. **{display_name}**")
             if is_skill_section:
-                lines.append(f"   路径: {_skill_display_path(display_name)}")
+                # 路径行按当前生效的 skills 目录集合解析真实位置（S8 D-2.1 / I-8）：
+                # 不再硬编码 ~/.niu/skills/ 前缀，标准目录下的 skill 也能给出可读路径
+                lines.append(f"   路径: {_skill_display_path(display_name, skills_dirs=_active_skills_dirs())}")
                 if description.startswith("[草稿]"):
                     lines.append("   ⚠️ 草稿skill — 使用后反馈效果")
                 elif description.startswith("[待观察]"):
