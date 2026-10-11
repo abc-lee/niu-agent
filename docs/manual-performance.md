@@ -12,11 +12,11 @@
 | 组件 | 内存占用 | 说明 |
 |------|---------|------|
 | 基础进程 | ~200MB | Python + FastAPI |
-| Embedding 模型 | ~400MB | 默认 bge-base-zh-v1.5，常驻内存；bge-m3 约 2.2GB |
+| Embedding（llama-server 子进程） | **~350MB** | EmbeddingGemma 2 GGUF Q8_0 ~310MB 权重 + llama.cpp 运行时（PM 实测 RSS 338MB）；子进程独立，主进程不承载 |
 | 人脸识别模型 | ~326MB | 按需加载，空闲 5 分钟自动卸载 |
 | 向量数据库 | ~100MB | 取决于数据量，由 LightRAG 管理 |
 | MCP 模块 | ~50MB × 9 | 同进程架构，无独立进程开销 |
-| **总计** | ~1.5GB | 使用 bge-base-zh-v1.5；若用 bge-m3 则约 3.3GB，推荐内存：8GB+ |
+| **总计** | **~1.0GB** | 2026-10-11 起不再含 torch / sentence-transformers（省约 2.5GB 装包体积、内存大头） |
 
 **优化策略：**
 
@@ -29,13 +29,11 @@
    # 模型按需加载（首次调用时才加载 ~326MB buffalo_l 模型），不预加载模型本身
    ```
 
-2. **Embedding 模型选择**
+2. **Embedding 后端**
    ```python
-   # niu_api/internal/embedding.py — 通过 preferences.json 配置
-   # 默认: bge-base-zh-v1.5 (~400MB, 768d, 512 tokens, 中文优化)
-   # 可选: bge-m3 (~2.2GB, 1024d, 8192 tokens, 多语言)
-   #       minilm-l12 (~466MB, 384d, legacy)
-   # 内存不足时使用默认 bge-base-zh-v1.5
+   # niu_api/internal/embedding.py — 2026-10-11 起唯一后端
+   # embeddinggemma-2 (~310MB GGUF Q8_0, 768d, 8192 tokens, 多语言) 经 llama.cpp 推理
+   # llama-server 子进程，端口 19878；主进程不承载模型权重
    ```
 
 3. **减少 MCP 模块加载**
@@ -68,7 +66,7 @@
 | 阶段 | 时间 | 说明 |
 |------|------|------|
 | Session 初始化 | <1秒 | SQLite 初始化 |
-| Embedding 模型加载 | ~10秒 GPU / ~30秒 CPU | bge-base-zh-v1.5 (~400MB) |
+| Embedding 模型加载 | **~3–6秒** | llama-server 起子进程 + 读 310MB GGUF（PM 实测就绪约 2.6–5.8s）；无 torch 导入 |
 | Scheduler 启动 | <1秒 | 后台线程 |
 | MCP 工具加载 | ~2秒 | 同进程模块导入，9 个必需服务器 |
 | **总计** | ~15秒 GPU / ~35秒 CPU | 首次启动需下载模型 |
@@ -91,12 +89,10 @@
 
 3. **Embedding 模型选择**
    ```json
-   // ~/.niu/preferences.json — 通过 lightrag.embedding_model 配置
+   // ~/.niu/preferences.json — 2026-10-11 起仅接受 embeddinggemma-2
    {
      "lightrag": {
-       "embedding_model": "bge-base-zh-v1.5"  // 默认 ~400MB，中文优化
-       // "embedding_model": "bge-m3"          // ~2.2GB，多语言长文本
-       // "embedding_model": "minilm-l12"      // ~466MB，legacy
+       "embedding_model": "embeddinggemma-2"  // 唯一值；写旧模型名会被守卫自动回落
      }
    }
    ```

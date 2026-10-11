@@ -9,15 +9,17 @@
 
 #### 关键版本约束（铁律）
 
-以下 5 条版本约束来自 `requirements.txt` 顶部，**违反任意一条都会导致崩溃**：
+以下 3 条版本约束来自 `requirements.txt` 顶部，**违反任意一条都会导致崩溃**：
 
 | 序号 | 约束 | 原因 |
 |------|------|------|
-| 1 | `numpy<2` | torch 2.2.2 和 insightface 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃 |
-| 2 | `torch==2.2.2` | 项目固定版本，不要升级 |
-| 3 | `transformers>=4.41,<5.0` | transformers 5.x 要求 torch>=2.4，与 torch 2.2.2 不兼容 |
-| 4 | `huggingface_hub<1` | 1.x 与 sentence-transformers 不兼容 |
-| 5 | `lightrag-hku` 必须从 Fork 安装 | `git+https://github.com/abc-lee/LightRAG.git`，不能用 PyPI 版本（缺 PR#2990 修复） |
+| 1 | `numpy<2` | insightface / onnxruntime 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃（2026-10-11 起 torch 已摘除，约束来源只剩这两个） |
+| 2 | `opencv-python-headless==4.11.0.86` | 4.12 起 METADATA 声明 numpy>=2，与 numpy 铁律冲突 |
+| 3 | `lightrag-hku` 必须从 Fork 安装 | `git+https://github.com/abc-lee/LightRAG.git`，不能用 PyPI 版本（缺 PR#2990 修复） |
+
+> 2026-10-11 已摘除：`torch` / `transformers` / `sentence-transformers` / `accelerate`
+> —— 向量模型迁到 llama.cpp + GGUF，PM 已用 importlib.metadata 逐包核算反向依赖
+> （区分核心依赖与 extra）确认无核心依赖方。打包体积收益约 2.5 GB。
 
 #### 核心依赖（agent 核心）
 
@@ -37,8 +39,8 @@
 |------|------|------|
 | `fastapi` | ==0.136.1 | Web 框架 |
 | `uvicorn` | ==0.47.0 | ASGI 服务器 |
-| `sentence-transformers` | ==5.5.1 | 向量模型加载与推理 |
 | `numpy` | ==1.26.4 | 数值计算 |
+| `nano-vectordb` | ==0.0.4.3 | 轻量向量库（LightRAG 同进程默认后端） |
 
 **人脸识别依赖（photo-server）：**
 
@@ -229,27 +231,30 @@ def get_face_model():
 
 向量模型（embedding）的路径逻辑相同，代码在 `niu_api/internal/embedding.py`。
 
-### 2.2 向量模型（可配置，默认 bge-base-zh-v1.5）
+### 2.2 向量模型（EmbeddingGemma 2，经 llama.cpp + GGUF）
 
-**支持模型列表：**
+**唯一支持模型：**
 
-| 配置名 | HuggingFace ID | 维度 | max_seq_length | 说明 |
-|--------|---------------|------|----------------|------|
-| `bge-base-zh-v1.5`（默认） | BAAI/bge-base-zh-v1.5 | 768 | 512 | 中文优化，~391MB |
-| `bge-m3` | BAAI/bge-m3 | 1024 | 8192 | 多语言，~2.2GB |
-| `minilm-l12` | sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | 384 | 128 | 多语言（旧默认） |
+| 配置名 | 来源 | 维度 | max_seq_length | 说明 |
+|--------|------|------|----------------|------|
+| `embeddinggemma-2`（默认，唯一） | `ggml-org/embeddinggemma-2-GGUF`（源自 `google-deepmind`） | 768 | 8192 | 中文/多语言，GGUF Q8_0 ~310MB，经 llama.cpp 推理 |
+
+> 2026-10-11 起，旧模型 `bge-base-zh-v1.5` / `bge-m3` / `minilm-l12` 已从
+> `SUPPORTED_MODELS` 移除，sentence-transformers 依赖链一并摘除。
+> 存量 `~/.niu/preferences.json` 里的旧 `embedding_model` 值会被既有守卫
+> （`if model_name in SUPPORTED_MODELS`）自动回落，**无需手动改配置**。
 
 **当前默认模型信息：**
 
 | 属性 | 值 |
 |------|-----|
-| **名称** | bge-base-zh-v1.5 |
-| **来源** | BAAI/bge-base-zh-v1.5 |
-| **大小** | ~391MB |
+| **名称** | embeddinggemma-2 |
+| **来源** | `ggml-org/embeddinggemma-2-GGUF`（Google DeepMind 的 EmbeddingGemma 2，GGUF Q8_0 转换） |
+| **大小** | ~310MB（另需 `models/llama.cpp/<platform>/llama-server` ~5MB） |
 | **维度** | 768 |
-| **max_seq_length** | 512 |
-| **语言** | 中文优化（英文也支持） |
-| **许可** | MIT |
+| **max_seq_length** | 8192 |
+| **许可** | **Apache 2.0**（官方 LICENSE 为标准 Apache 2.0、无附加条款、无 NOTICE 文件） |
+| **推理后端** | llama.cpp `llama-server` 子进程，HTTP `127.0.0.1:19878`（避开 uvicorn 9876 与 IM adapter 19877） |
 
 **用途：**
 - 文档语义搜索
@@ -257,59 +262,53 @@ def get_face_model():
 - 技能匹配
 - MCP 工具描述检索
 
+**前缀（非对称模型的统一口径）：**
+
+EmbeddingGemma 2 官方为非对称用法（query 侧 `task: search result | query: `、
+doc 侧 `title: none | text: `），但 LightRAG 1.4.19 的 embedding 调用链上
+**没有任何 query/doc 判别信号**（`_priority` 被 `wait_func` 吃掉、contextvar 穿不过
+优先级队列 worker）。故 Niu 采用**两侧统一加 `task: search result | query: `**：
+PM 实测判别间隔由 +0.1482 提升到 +0.2007（优于官方非对称用法的 +0.1954）。
+该前缀在 `niu_api/internal/embedding.py` 的 `EMBEDDING_PREFIX` 单一真相源定义，
+由 `_LlamaCppAdapter.encode` 统一施加（全后端唯一注入点）。
+
 **模型配置：**
 
-通过 `~/.niu/preferences.json` 的 `lightrag.embedding_model` 字段配置，值为上表中的配置名（如 `"bge-base-zh-v1.5"`、`"bge-m3"`、`"minilm-l12"`）。
+`~/.niu/preferences.json` 的 `lightrag.embedding_model` 字段。**该字段在 0.5.0 之后
+只接受 `embeddinggemma-2`**；写其它值（含旧模型名）会由守卫自动回落，并可按
+`config-manager` MCP 工具修改。
 
 **加载逻辑：**
 
 ```python
-# niu_api/internal/embedding.py
+# niu_api/internal/embedding.py（2026-10-11 起）
 
 SUPPORTED_MODELS = {
-    "bge-base-zh-v1.5": {
-        "local_dir": "bge-base-zh-v1.5",
-        "hf_id": "BAAI/bge-base-zh-v1.5",
+    "embeddinggemma-2": {
+        "local_dir": "llama.cpp",          # 产物路径由 embedding_artifacts 定位
+        "hf_id": "ggml-org/embeddinggemma-2-GGUF",
         "dim": 768,
-    },
-    "bge-m3": {
-        "local_dir": "bge-m3",
-        "hf_id": "BAAI/bge-m3",
-        "dim": 1024,
-    },
-    "minilm-l12": {
-        "local_dir": "paraphrase-multilingual-MiniLM-L12-v2",
-        "hf_id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        "dim": 384,
+        "backend": "llama-cpp",            # 走 llama-server，不走 sentence-transformers
     },
 }
 
-DEFAULT_MODEL = "bge-base-zh-v1.5"
+DEFAULT_MODEL = "embeddinggemma-2"
 
 def get_model():
-    """加载向量模型（配置驱动，本地优先，GPU 优先）"""
-    requested_model = _get_embedding_model_name()  # 从 preferences.json 读取
-    models_dir = get_models_dir()
-    model_info = SUPPORTED_MODELS[requested_model]
-    local_path = models_dir / model_info["local_dir"]
-
-    if local_path.exists():
-        model = SentenceTransformer(str(local_path))
-    else:
-        # 自动下载（需要网络）
-        model = SentenceTransformer(model_info["hf_id"])
-        model.save(str(local_path))
-
-    # GPU 加速（如果可用）
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = model.to(device)
-
-    return model
+    """加载向量模型（llama.cpp 后端：确保 llama-server 就绪并返回适配器）。"""
+    requested_model = _get_embedding_model_name()  # 从 preferences.json 读取，旧值自动回落
+    info = SUPPORTED_MODELS[requested_model]
+    if info.get("backend") == "llama-cpp":
+        llama_server.start()          # 产物缺失/起不来 → 抛异常 → 契约 A
+        return _LlamaCppAdapter()
+    ...
 ```
 
-**运行时切换：**
-
-可通过 `switch_model(new_model)` 函数运行时切换模型，自动更新 `preferences.json` 并在下一次 `get_model()` 调用时加载新模型。若维度不同，需重建 LightRAG 知识库（删除 ~/.niu/lightrag_storage/ 后重新导入）。
+**运行时切换：** 0.5.0 起只有一个模型，`switch_model()` 已无第二个可切目标
+（函数保留但无生产调用方）。若将来真的换模型，**不要删整个
+`~/.niu/lightrag_storage/`** —— 那会连 3 个真相源（GraphML / full_docs / cache）
+一起毁掉。正确做法：**只删 3 个 `vdb_*.json`** 后重启，程序走既有修复链用新模型重建索引
+（详见 README「从 0.4.x 升级（必做）」与「已在 0.5.0 上迁移过？」两节）。
 
 ### 2.3 模型下载
 
@@ -322,18 +321,27 @@ python scripts/package_all_dependencies.py
 # 自动下载：
 # - Python 依赖包 → python_packages/
 # - 人脸识别模型 → models/models/buffalo_l/
-# - 向量模型 → models/bge-base-zh-v1.5/（默认）
+# - 向量模型产物 → models/embeddinggemma-2-Q8_0.gguf + models/llama.cpp/<platform>/llama-server
 ```
 
-> ⚠️ `scripts/package_all_dependencies.py` 尚未更新，仍下载旧默认模型（minilm-l12）。buffalo_l 现在禁止程序内下载，用户需手动下载放到 `models/models/buffalo_l/`（开发环境）或 `niu.app/Contents/Resources/models/models/buffalo_l/`（打包后），见 README「可选：启用照片处理」。
+> ⚠️ `scripts/package_all_dependencies.py` 尚需核对是否已按新口径下载
+> `embeddinggemma-2-Q8_0.gguf` 与 `llama-server`（S1 的重写以
+> `niu_api/internal/embedding_artifacts.py` 为单一真相源，这里是人工说明，**以该模块为准**）。
+> buffalo_l 禁止程序内下载，用户需手动放到 `models/models/buffalo_l/`（开发环境）或
+> `niu.app/Contents/Resources/models/models/buffalo_l/`（打包后），见 README「可选：启用照片处理」。
 
 **手动下载（备选）：**
 
-| 模型 | 下载地址 |
+| 产物 | 下载地址 |
 |------|---------|
+| **EmbeddingGemma 2 GGUF Q8_0**（309,855,456 字节，须校验大小） | https://huggingface.co/ggml-org/embeddinggemma-2-GGUF |
+| **llama.cpp `llama-server`**（按平台：darwin-x64 / win32-x64 等） | https://github.com/ggml-org/llama.cpp/releases |
 | **buffalo_l** | https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip |
-| **bge-base-zh-v1.5** | https://huggingface.co/BAAI/bge-base-zh-v1.5 |
-| **bge-m3** | https://huggingface.co/BAAI/bge-m3 |
+
+> 产物落盘后可用 `niu_api/internal/embedding_artifacts.py` 自检：
+> `missing_artifacts()` 列出缺哪个、`artifacts_ready()` 判齐备、`verify_gguf(path)` 校验大小。
+> **HuggingFace 国内不可达时用镜像** `HF_ENDPOINT=https://hf-mirror.com`；
+> GitHub release 直连慢时可用 `https://gh-proxy.com/` 前缀。
 
 **下载镜像（国内用户）：**
 

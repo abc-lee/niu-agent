@@ -629,7 +629,7 @@ print(prof.get("reasoning_effort"))               # supported / unsupported æ¡£ä
 ```json
 {
   "lightrag": {
-    "embedding_model": "bge-base-zh-v1.5",
+    "embedding_model": "embeddinggemma-2",
     "reranker_model": "none",
     "insert_timeout": 600,
     "query_timeout": 120,
