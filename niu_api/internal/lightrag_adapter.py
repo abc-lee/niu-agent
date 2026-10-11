@@ -11,12 +11,16 @@ call_async() for the async/sync bridge.
 """
 
 import re
-import time
 from typing import Any
 
 from loguru import logger
 
-from niu_api.internal.lightrag_manager import call_async, get_lightrag, lightrag_timeout
+from niu_api.internal.lightrag_manager import (
+    call_async,
+    get_lightrag,
+    graph_read_lock,
+    lightrag_timeout,
+)
 
 # Valid query modes for LightRAG
 VALID_MODES = {"naive", "local", "global", "hybrid", "mix", "bypass"}
@@ -34,6 +38,409 @@ _LIGHTRAG_ERROR_MARKERS = ("not able to provide", "[no-context]")
 
 # 门控拒绝通用文案（D5：不细分修复中/损坏/冷却原因——门控 warning 日志已含具体原因）
 _GRAPH_UNAVAILABLE_MSG = "知识图谱不可用（初始化门控拒绝）"
+
+# ── T3：custom-KG 入库超限守卫（方案 2026-10-11-s8，§2 D-3/D-3.1）──────────────
+# 病灶：LightRAG 结构化写入会把三类文本都嵌入 vdb（chunk 正文 / 实体描述 /
+# 关系描述），全部经 encode_batch → llama-server（Gemma，单条上限 8192 token）。
+# 超限文本此前只能靠 S7 护栏在嵌入时按比例截断——内容静默丢失。本守卫把失败形态
+# 前移到入库前：chunk 分段、description fail-loud。
+
+# llama-server 单条输入 token 上限（-b 8192 -ub 8192）。与 llama_server._TOKEN_LIMIT
+# 同源；改这里必须同步改那边，否则两侧口径分裂。
+EMBED_TOKEN_LIMIT = 8192
+
+# 字符预筛阈值：≤ 该长度的组合串直接放行、不做权威计量。依据（方案 §5 R-3）：
+# Gemma 分词器最坏密度 4.000 token/字符（未分配码位 2.000；CJK 扩展 B/C 4.000；
+# UTF-8 每字符最多 4 字节，故 4.0 是可辩护上界）。2000 × 4.000 = 8000 < 8192。
+# **抬高该阈值必须同步重新评估此上界**（7000 字符 × 4.0 = 28000 已超限，
+# v1.2 双审 B-P3 实测证实 7000 不安全）。
+_GUARD_CHAR_PREFILTER = 2000
+
+# 分段子块字符预算：每子块 ≤ 1500 字符 ⇒ 最坏 1500 × 4.000 = 6000 token < 8192，
+# 切分后的子块无需再次计量。
+_GUARD_SPLIT_CHAR_BUDGET = 1500
+
+# 实体名长度上界（D-3.1 快速失败层）：实体名没有任何长度/格式校验（代码里的
+# kebab 正则只用于 agent 名），却会原样进入嵌入串（create/edit 的
+# `name + "\n" + desc`，以及改名级联里复制进每条关联关系的 src/tgt）。实体名
+# 没有正当理由长到几百字符，设保守上界先挡明显异常输入；级联边数极多时它比
+# 逐条计量更廉价。**它与主层（逐条计量级联串）叠加生效、不互相替代**——
+# 只实现它挡不住"短实体名 + 长存储侧描述"（方案 §4 I-13）。
+_ENTITY_NAME_MAX_CHARS = 200
+
+
+class EmbedLimitError(RuntimeError):
+    """T3 守卫 fail-loud：实际嵌入组合串超出 llama-server 8192 token 上限。
+
+    拆分单一实体/关系在语义上不成立；静默截断会直接抹掉路由信号（动态注入消费的
+    正是 description）。故直接 raise（报文带实体名/关系名 + 真实 token 数，I-10），
+    让调用方（Agent / region 管理器）自己修输入。
+    """
+
+
+# ── T3 覆盖白名单（方案 §4 I-12 ／ §6 Task-4）──────────────────────────────────
+# 裁定方式：人工读 diff 逐条比对下面两组名单与方案 D-3 覆盖表；不用 grep 推导
+# （v1.4 已废弃 grep 判据：rag.a* 会命中只读查询与删除，按字面不可满足）。
+#
+# ① 入口调用 _guard_embed_text 的六个写入方法（= D-3 覆盖表全集，无第七个）：
+#    1. LightRAGIngester.inject_custom_kg —— chunk 分段 + 实体侧
+#       `entity_name + "\n" + description` + 关系侧
+#       `keywords + "\t" + src_id + "\n" + tgt_id + "\n" + description`
+#    2. LightRAGAdapter.create_entity —— `entity_name + "\n" + description`
+#    3. LightRAGAdapter.create_relation ——
+#       `keywords + "\t" + src + "\n" + tgt + "\n" + description`
+#    4. LightRAGAdapter.edit_entity —— 直接输入 `entity_name + "\n" + description`
+#       （改名时用新名、合流分支同时按旧名）+ allow_rename 改名时逐条计量每条
+#       关联关系的级联重嵌串
+#    5. LightRAGAdapter.edit_relation ——
+#       `source + "\t" + target + "\n" + keywords + "\n" + description`
+#       （keywords 在第三段，与 1/3 不同，v1.6 双审 A-P1）
+#    6. LightRAGAdapter.merge_entities —— `target_entity + "\n" + description`
+#       + 源/目标两侧实体每条关系的重嵌
+#       `keywords + "\t" + src + "\n" + tgt + "\n" + description`
+#
+# ② 不设守卫的三个 doc 路径方法：LightRAGIngester.lightrag_insert /
+#    inject_document / inject_documents。它们**不是已豁免、不是已安全**，而是
+#    **本期未处置的已知残留，见方案 §5 R-9**。摘要：LightRAG 分段按 tiktoken
+#    （gpt-4o-mini 的 o200k_base，chunk_token_size=1200 token），llama-server
+#    嵌入按 Gemma（上限 8192 token），PM 全词表穷尽扫描实测最坏偏离比 48.0x
+#    （o200k id 106378 = 16 个 U+3000：tiktoken 记 1 token、Gemma 记 48 token），
+#    1200 token 的 chunk 最坏可达 57,600 Gemma token，会被 S7 护栏静默截断；
+#    doc 路径上的 LLM 抽取描述（summary_max_tokens=1200，同一 tiktoken 口径）
+#    背离同型。本方案不为它背书，施工时不得跳过它的防护设计。
+def _guard_embed_text(kind: str, name: str, text: str) -> list[str] | None:
+    """唯一守卫：预筛 2000 字符 → /tokenize 权威计量 → 超限按 kind 分治。
+
+    Args:
+        kind: "chunk"（正文，可分段）／"entity"／"relation"（description 类，
+            拆分无意义，fail-loud）。
+        name: 实体名/关系名，仅用于超限报文（I-10 要求报文带名字）。
+        text: **实际被嵌入的组合字符串**（逐路径公式见上方白名单注释与各调用点），
+            不是裸 description——"长 name/keywords + 短 description"同样能超限。
+
+    Returns:
+        None = 放行（未超限，或串太短无需计量）；kind="chunk" 且超限时返回
+        分段子块内容列表（调用方负责 source_id / chunk_order_index 归属）。
+
+    Raises:
+        EmbedLimitError: description 类超限（I-10 fail-loud），报文含 name 与
+            真实 token 数。
+    """
+    if len(text) <= _GUARD_CHAR_PREFILTER:
+        # ≤ 2000 字符 ⇒ 最坏 2000 × 4.000 = 8000 token < 8192，无需计量。
+        return None
+    tokens = _count_embed_tokens(text)
+    if tokens is None:
+        # 量不到（llama-server 未就绪等）⇒ 不猜、不吞：放行，由下游 S7 护栏兜底。
+        # 此时嵌入同样不可能成功（encode_batch 会先抛"未就绪"），不会产生新的
+        # 静默截断窗口；方案 AC-0 的前置条件即依赖 llama-server 就绪。
+        logger.warning(
+            f"[embed-guard] {kind} 权威计量不可用（>{_GUARD_CHAR_PREFILTER} 字符），"
+            f"放行由 S7 兜底: name={name!r} chars={len(text)}"
+        )
+        return None
+    if tokens <= EMBED_TOKEN_LIMIT:
+        return None
+    if kind == "chunk":
+        segments = _split_for_embed(text)
+        logger.warning(
+            f"[embed-guard] chunk 超限分段: source_id={name!r} tokens={tokens} > "
+            f"{EMBED_TOKEN_LIMIT}（{len(text)} 字符）→ {len(segments)} 子块"
+        )
+        return segments
+    raise EmbedLimitError(
+        f"{kind} 嵌入内容超限（fail-loud，方案 S8 D-3）：{name!r} 实际嵌入串 "
+        f"{tokens} token > 上限 {EMBED_TOKEN_LIMIT}（{len(text)} 字符）。"
+        f"拆分单一{kind}在语义上不成立，请调用方自行缩短名称/描述后重试。"
+    )
+
+
+def _count_embed_tokens(text: str) -> int | None:
+    """经 llama-server /tokenize 权威计量 token 数（Gemma 口径）。
+
+    与嵌入同一个实例、同一个分词器 ⇒ 计量口径即真实嵌入口径。**不能**改用
+    lightrag_repair_tokenizer 的 TiktokenTokenizer（gpt-4o-mini）：那是 LightRAG
+    分段口径，与 Gemma 嵌入口径偏离可达 48 倍（方案 R-9）。量不到返回 None——不猜。
+    """
+    try:
+        from niu_api.internal import llama_server
+
+        return llama_server._tokenize_count(text)  # noqa: SLF001 —— S7 同源计量入口
+    except Exception as e:  # noqa: BLE001 —— 量不到就说量不到，交由调用方照旧放行
+        logger.debug(f"[embed-guard] /tokenize 计量失败: {e}")
+        return None
+
+
+# 段落边界（空行）与句子边界标点，split 时保留分隔符本身，保证子块依次拼接可还原原文。
+_PARA_SPLIT_RE = re.compile(r"(\n\n)")
+_SENT_SPLIT_RE = re.compile(r"([。！？；!?;\n])")
+
+
+def _split_for_embed(text: str) -> list[str]:
+    """把超限文本按语义边界切分为均不超过 _GUARD_SPLIT_CHAR_BUDGET 字符的子块。
+
+    边界优先级：段落（空行）→ 句子（。！？；.!?; 与换行）→ 按预算硬切。分隔符作为
+    独立单元参与打包（不额外插入字符），故所有子块依次拼接可还原原文。
+    每个子块 ≤ 1500 字符 ⇒ 最坏 6000 token < 8192，无需再次计量。
+    """
+    units: list[str] = []
+
+    def _hard_split(s: str) -> None:
+        for i in range(0, len(s), _GUARD_SPLIT_CHAR_BUDGET):
+            units.append(s[i : i + _GUARD_SPLIT_CHAR_BUDGET])
+
+    for part in _PARA_SPLIT_RE.split(text):
+        if not part:
+            continue
+        if len(part) <= _GUARD_SPLIT_CHAR_BUDGET:
+            units.append(part)
+            continue
+        # 单个段落仍超预算 → 按句子边界再切；单句仍超预算 → 硬切
+        for piece in _SENT_SPLIT_RE.split(part):
+            if not piece:
+                continue
+            if len(piece) <= _GUARD_SPLIT_CHAR_BUDGET:
+                units.append(piece)
+            else:
+                _hard_split(piece)
+
+    segments: list[str] = []
+    buf = ""
+    for unit in units:
+        if buf and len(buf) + len(unit) > _GUARD_SPLIT_CHAR_BUDGET:
+            segments.append(buf)
+            buf = unit
+        else:
+            buf += unit
+    if buf:
+        segments.append(buf)
+    return segments
+
+
+def _check_entity_name_length(name: str) -> None:
+    """D-3.1 快速失败层：实体名长度上界，超界直接 raise（不进入 LightRAG）。"""
+    if name and len(name) > _ENTITY_NAME_MAX_CHARS:
+        raise EmbedLimitError(
+            f"实体名长度超限（fail-loud，方案 S8 D-3.1 快速失败层）："
+            f"{name[:64]!r}…（共 {len(name)} 字符 > 上界 {_ENTITY_NAME_MAX_CHARS}）。"
+            f"实体名无正当理由长到几百字符，且它会原样进入嵌入串并被改名级联复制到"
+            f"每条关联关系。"
+        )
+
+
+def _graph_for_guard(rag):
+    """取只读 NetworkX 图句柄（lightrag_manager 同款取法；不复制全图，O(度数)
+    读取在 graph_read_lock 内进行）。拿不到返回 None。"""
+    graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+    if graph_obj is None:
+        return None
+    nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+    return nx_graph
+
+
+def _has_node_for_guard(nx_graph, node_id: str) -> bool:
+    """节点存在性（node_id 须已小写化；NetworkXStorage 以 lower 归一化节点 ID）。"""
+    if nx_graph is None:
+        return False
+    try:
+        with graph_read_lock():
+            return bool(nx_graph.has_node(node_id))
+    except Exception as e:  # noqa: BLE001 —— 判不到就按不存在，交由下游照常报错
+        logger.debug(f"[embed-guard] has_node 失败: {e}")
+        return False
+
+
+def _node_embed_edges(nx_graph, node_id: str) -> list[tuple[str, str, dict]]:
+    """返回 node_id 的全部关联边 (src, tgt, edge_data)（只读，O(度数)。
+
+    供守卫枚举级联重嵌串（D-3.1 主层）。节点不存在/图不可用返回 []。
+    """
+    if nx_graph is None:
+        return []
+    try:
+        with graph_read_lock():
+            if not nx_graph.has_node(node_id):
+                return []
+            return [
+                (u, v, dict(nx_graph.get_edge_data(u, v) or {}))
+                for u, v in nx_graph.edges(node_id)
+            ]
+    except Exception as e:  # noqa: BLE001 —— 读不到边只降级跳过，编辑本身随后会失败
+        logger.warning(f"[embed-guard] 关联边读取失败，跳过级联计量: {e}")
+        return []
+
+
+def _guard_edit_entity_entry(
+    rag,
+    entity_name: str,
+    updated_data: dict,
+    allow_rename: bool,
+    allow_merge: bool,
+) -> None:
+    """edit_entity 入口守卫（D-3/D-3.1）。必须在方法外层 try **之前**调用：
+    该方法末尾有 `except Exception → {"status": "error"}` 兜底，raise 落在 try 内
+    会被吞掉，I-10 不成立。
+
+    覆盖（逐路径公式与 utils_graph.py 实际拼接一一对应）：
+    - 非改名：第 401 行嵌入 `entity_name + "\\n" + description`；
+    - 改名分支直接输入：`new_entity_name + "\\n" + description`；
+    - 改名分支级联：每条关联关系重嵌
+      `normalized_src + "\\t" + normalized_tgt + "\\n" + keywords + "\\n" + description`
+      （src/tgt 含新名，keywords/description 取存储侧，utils_graph.py:374）；
+    - 合流分支（新名已存在 + allow_merge=True，utils_graph.py:645-668）：
+      non_name_updates 先以**旧名**走一遍 _edit_entity_impl 并嵌入
+      `旧名 + "\\n" + description`，之后才 merge 删源；merge 再以
+      `keywords + "\\t" + normalized_src + "\\n" + normalized_tgt + "\\n" + description`
+      重嵌源（旧）与目标（新）两侧实体的每条关系（utils_graph.py:1474）。
+    """
+    _check_entity_name_length(entity_name)
+    new_name = updated_data.get("entity_name")
+    description = str(updated_data.get("description") or "")
+    is_rename = isinstance(new_name, str) and bool(new_name) and new_name != entity_name
+    if not is_rename:
+        _guard_embed_text("entity", entity_name, f"{entity_name}\n{description}")
+        return
+
+    _check_entity_name_length(new_name)
+    # 改名分支直接输入（Embedding 串 = 新名 + 描述）
+    _guard_embed_text("entity", new_name, f"{new_name}\n{description}")
+    if not allow_rename:
+        # aedit_entity 在任何写入前即 raise（未允许改名），无嵌入发生，
+        # 级联串不可能被生成，无需继续计量。
+        return
+
+    nx_graph = _graph_for_guard(rag)
+    if nx_graph is None:
+        logger.warning(
+            f"[embed-guard] 图不可用，edit_entity 级联重嵌计量跳过: {entity_name!r}"
+        )
+        return
+    old_key = entity_name.lower()
+    new_key = new_name.lower()
+
+    if _has_node_for_guard(nx_graph, new_key):
+        if not allow_merge:
+            # aedit_entity 在任何写入前即 raise（新名已存在且不允许 merge），
+            # 无嵌入发生，无需继续计量。
+            return
+        # 合流分支：先以旧名嵌入（v1.9 双审 B-P2：只量新名会漏掉这一串）
+        _guard_embed_text("entity", entity_name, f"{entity_name}\n{description}")
+        # merge 重嵌源（旧）与目标（新）两侧实体的每条关系
+        seen: set[tuple[str, str]] = set()
+        for node in (old_key, new_key):
+            for src, tgt, data in _node_embed_edges(nx_graph, node):
+                new_src = new_name if src.lower() == old_key else src
+                new_tgt = new_name if tgt.lower() == old_key else tgt
+                if new_src == new_tgt:
+                    continue  # merge 跳过自环，不重嵌
+                nsrc, ntgt = sorted((new_src, new_tgt))
+                if (nsrc, ntgt) in seen:
+                    continue  # 归一化同 key 的去重路径只 upsert 一次（拼接残留见 R-8）
+                seen.add((nsrc, ntgt))
+                content = (
+                    f"{data.get('keywords') or ''}\t{nsrc}\n{ntgt}\n"
+                    f"{data.get('description') or ''}"
+                )
+                _guard_embed_text("relation", f"{nsrc}|{ntgt}", content)
+        return
+
+    # 纯改名分支：对被改名实体的每条关联关系逐条计量级联重嵌串
+    for src, tgt, data in _node_embed_edges(nx_graph, old_key):
+        new_src = new_name if src.lower() == old_key else src
+        new_tgt = new_name if tgt.lower() == old_key else tgt
+        nsrc, ntgt = sorted((new_src, new_tgt))
+        content = (
+            f"{nsrc}\t{ntgt}\n{data.get('keywords') or ''}\n"
+            f"{data.get('description') or ''}"
+        )
+        _guard_embed_text("relation", f"{nsrc}|{ntgt}", content)
+
+
+def _guard_merge_entities_entry(
+    resolved_sources: list[str],
+    resolved_target: str,
+    target_entity_data: dict | None,
+    nx_graph,
+) -> None:
+    """merge_entities 入口守卫（D-3）。必须在方法外层 try 之前调用。
+
+    覆盖（公式与 _merge_entities_impl 实际拼接一一对应）：
+    - 实体侧：`target_entity + "\\n" + description`（description 取自
+      target_entity_data 输入；merge_strategy=concatenate 的累加**结果**在
+      LightRAG 内部生成、不加钩子，残留见 R-8）；
+    - 关系侧重嵌：源与目标两侧实体的每条关系各重嵌一次
+      `keywords + "\\t" + normalized_src + "\\n" + normalized_tgt + "\\n" + description`
+      （utils_graph.py:1474；关系描述拼接只在归一化同 key 的去重路径发生）。
+    """
+    target_desc = str((target_entity_data or {}).get("description") or "")
+    _guard_embed_text("entity", resolved_target, f"{resolved_target}\n{target_desc}")
+
+    source_keys = {s.lower() for s in resolved_sources}
+    seen: set[tuple[str, str]] = set()
+    for node in [*resolved_sources, resolved_target]:
+        for src, tgt, data in _node_embed_edges(nx_graph, node.lower()):
+            new_src = resolved_target if src.lower() in source_keys else src
+            new_tgt = resolved_target if tgt.lower() in source_keys else tgt
+            if new_src == new_tgt:
+                continue  # merge 跳过自环，不重嵌
+            nsrc, ntgt = sorted((new_src, new_tgt))
+            if (nsrc, ntgt) in seen:
+                continue  # 去重路径只 upsert 一次（拼接残留见 R-8）
+            seen.add((nsrc, ntgt))
+            content = (
+                f"{data.get('keywords') or ''}\t{nsrc}\n{ntgt}\n"
+                f"{data.get('description') or ''}"
+            )
+            _guard_embed_text("relation", f"{nsrc}|{ntgt}", content)
+
+
+def _guard_inject_custom_kg_inputs(
+    entities: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+    chunks: list[dict[str, Any]],
+    source_id: str,
+) -> list[dict[str, Any]]:
+    """inject_custom_kg 入口守卫（D-3）。返回替换用的 chunks 列表。
+
+    - 实体侧逐条计量 `entity_name + "\\n" + description`（lightrag.py:2564 实际
+      嵌入串），关系侧逐条计量
+      `keywords + "\\t" + src_id + "\\n" + tgt_id + "\\n" + description`
+      （lightrag.py:2575）——均 description 类，超限 fail-loud；
+    - chunk 正文超限走分段（chunk 语义合法）：返回新列表，**不就地修改调用方
+      传入的 chunks 列表**（I-6）。首个子块保留调用方原 source_id（不加后缀，
+      I-11）与原 chunk_order_index，其余子块带唯一后缀并按原文顺序递增（I-5）。
+    """
+    for entity in entities:
+        name = entity.get("entity_name") or entity.get("name", "Other")
+        desc = str(entity.get("description") or "")
+        _guard_embed_text("entity", str(name), f"{name}\n{desc}")
+    for rel in relationships:
+        keywords = str(rel.get("keywords") or rel.get("relation") or "")
+        src = str(rel.get("src_id") or "")
+        tgt = str(rel.get("tgt_id") or "")
+        desc = str(rel.get("description") or "")
+        _guard_embed_text("relation", f"{src}->{tgt}", f"{keywords}\t{src}\n{tgt}\n{desc}")
+
+    guarded: list[dict[str, Any]] = []
+    for chunk in chunks:
+        content = str(chunk.get("content") or "")
+        base_sid = chunk.get("source_id", source_id)
+        order = chunk.get("chunk_order_index", 0)
+        segments = _guard_embed_text("chunk", str(base_sid), content)
+        if segments is None:
+            guarded.append(chunk)
+            continue
+        for idx, seg in enumerate(segments):
+            guarded.append({
+                "content": seg,
+                # I-11：首块保留原 source_id（调用方引用它的关系不会退化为 UNKNOWN），
+                # 其余子块带唯一后缀（I-5：不得共用 source_id 撞 chunk_to_source_map）。
+                # 后缀带原 order，避免同 source_id 的不同 chunk 分段后互相撞名。
+                "source_id": base_sid if idx == 0 else f"{base_sid}_part{order}_{idx}",
+                "file_path": chunk.get("file_path", "custom_kg"),
+                "chunk_order_index": order + idx,
+            })
+    return guarded
 
 
 def _sanitize_graph_error(text: str) -> str:
@@ -1372,6 +1779,9 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
+        # T3 守卫（外层 try 之前，I-10）：覆盖直接输入（改名/合流分支新旧两个名字）
+        # 与 allow_rename 派生的级联重嵌逐条计量，公式见 _guard_edit_entity_entry。
+        _guard_edit_entity_entry(rag, entity_name, updated_data, allow_rename, allow_merge)
         try:
             result = call_async(rag.aedit_entity(entity_name, updated_data, allow_rename=allow_rename, allow_merge=allow_merge), timeout)
             # Clean <SEP> from description in returned data
@@ -1399,6 +1809,18 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
+        # T3 守卫（外层 try 之前，I-10）：aedit_relation 实际嵌入
+        # `source + "\t" + target + "\n" + keywords + "\n" + description`
+        # （utils_graph.py:824，keywords 在第三段——与 create_relation /
+        # inject_custom_kg 的第一段形态不同，v1.6 双审 A-P1）。
+        # keywords/description 未提供的字段取存储侧（历史写入已受守卫约束），
+        # 这里只计量调用方本次传入的部分。
+        _guard_embed_text(
+            "relation",
+            f"{source_entity}->{target_entity}",
+            f"{source_entity}\t{target_entity}\n"
+            f"{updated_data.get('keywords') or ''}\n{updated_data.get('description') or ''}",
+        )
         try:
             result = call_async(rag.aedit_relation(source_entity, target_entity, updated_data), timeout)
             # Clean <SEP> from description in returned data
@@ -1502,6 +1924,11 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
+        # T3 守卫（外层 try 之前，I-10）：acreate_entity 实际嵌入
+        # `entity_name + "\n" + description`（utils_graph.py:994）；实体名另过
+        # D-3.1 快速失败层。
+        _check_entity_name_length(entity_name)
+        _guard_embed_text("entity", entity_name, f"{entity_name}\n{description or ''}")
         try:
             entity_data = {"entity_type": entity_type, "description": description, "source_id": source_id, "file_path": file_path}
             result = call_async(rag.acreate_entity(entity_name, entity_data), timeout)
@@ -1529,6 +1956,14 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
+        # T3 守卫（外层 try 之前，I-10）：acreate_relation 实际嵌入
+        # `keywords + "\t" + src + "\n" + tgt + "\n" + description`
+        # （utils_graph.py:1135，src/tgt 为排序后的端点，token 数与顺序无关）。
+        _guard_embed_text(
+            "relation",
+            f"{source_entity}->{target_entity}",
+            f"{keywords or ''}\t{source_entity}\n{target_entity}\n{description or ''}",
+        )
         try:
             relation_data = {"keywords": keywords, "description": description, "weight": weight, "source_id": source_id, "file_path": file_path}
             result = call_async(rag.acreate_relation(source_entity, target_entity, relation_data), timeout)
@@ -1806,6 +2241,13 @@ class LightRAGAdapter:
                 target_entity, resolved_target,
             )
 
+        # T3 守卫（外层 try 之前，I-10）：覆盖目标实体侧
+        # `target_entity + "\n" + description` 与源/目标两侧关系的重嵌，公式见
+        # _guard_merge_entities_entry。nx_graph 为上面已取得的只读快照。
+        _guard_merge_entities_entry(
+            resolved_sources, resolved_target, target_entity_data, nx_graph
+        )
+
         try:
             # call_async runs in LightRAG's asyncio loop (serialized there),
             # so concurrent writes are impossible. No write lock needed —
@@ -1899,6 +2341,12 @@ class LightRAGIngester:
         rag = self._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
+
+        # T3 守卫：必须在下面外层 try **之前**（本方法末尾有
+        # `except Exception → {"status": "error"}` 兜底，raise 落在 try 内会被吞，
+        # I-10 不成立）。返回的 chunks 列表已含超限 chunk 的分段子块；调用方传入的
+        # chunks 列表本身不被就地修改（I-6）。
+        chunks = _guard_inject_custom_kg_inputs(entities, relationships, chunks, source_id)
 
         try:
             # Build custom_kg dict matching LightRAG's expected structure
