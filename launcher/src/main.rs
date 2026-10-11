@@ -2227,6 +2227,70 @@ fn drain_lines<R: BufRead>(reader: R, mut sink: impl FnMut(&str)) {
 }
 
 // ---------------------------------------------------------------------------
+// SIGTERM / SIGINT → 优雅关闭（进程级信号接收）
+//
+// 为什么信号处理器只置位：信号在异步上下文里投递，那里不能安全地分配内存、
+// 拿锁或打日志（async-signal-safety）。处理器只做一次原子写；真正的收尾
+// 全部由 bg 线程执行——绝不在这里 process::exit（那等于绕过清理）。
+//
+// 为什么复用既有阶梯：清理阶梯已有界（HTTP notify → sleep 2s → SIGTERM →
+// 5s 超时转 SIGKILL → reap），末尾 ExitGuard::drop 再兜底
+// kill_stale_llama_server 并退出进程。新写一套关闭逻辑只会得到第二份语义
+// 会漂移的收尾路径。
+//
+// 不处理的后果：launcher 被默认处置立即打死时，Python API 子进程被过继给
+// PID 1、llama-server 沦为孤儿继续占着 19878 端口——下次启动单写者契约
+// （端口 19878 / 9876 必须可绑）直接撞上，且飞行中的请求没有 drain 机会。
+static SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+/// 异步信号安全的信号处理器：只置位 SIGNAL_RECEIVED，不做任何重活
+/// （不打日志、不分配、不加锁）。由 bg 等待循环消费该标志。
+//
+// unix 之外（Windows）没有任何安装点调用它；保留定义是为了让 bg 等待循环
+// 的 `|| SIGNAL_RECEIVED` 条件跨平台一致（恒 false，行为不变）。
+#[cfg_attr(not(unix), allow(dead_code))]
+extern "C" fn handle_shutdown_signal(_sig: i32) {
+    SIGNAL_RECEIVED.store(true, Ordering::SeqCst);
+}
+
+/// 为 SIGTERM 与 SIGINT 安装 handle_shutdown_signal。
+///
+/// 安装点必须在 bg 线程启动之前：信号到达时接收标志与 bg 等待循环必须已经
+/// 就位，否则信号按默认处置直接终止进程（不走阶梯、留孤儿）。
+/// 安装失败只 warn 并继续——最坏退回默认处置（等价于修复前），绝不 panic。
+#[cfg(unix)]
+fn install_signal_handlers() {
+    use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
+
+    let action = SigAction::new(
+        SigHandler::Handler(handle_shutdown_signal),
+        // SA_RESTART：被信号打断的可重启系统调用自动重跑，不把 EINTR 透给调用方。
+        SaFlags::SA_RESTART,
+        SigSet::empty(),
+    );
+    // SAFETY: nix 的 sigaction 是 unsafe fn——安装信号处置本身是 syscall 边界。
+    // `action` 为函数内局部 SigAction 的引用，生命周期覆盖调用；handler 是
+    // `extern "C"` 静态函数指针，MG::Handler 契约要求它异步信号安全（已满足：
+    // 只做一次原子写）。除此之外本文件未新增任何 unsafe。
+    unsafe {
+        if let Err(e) = sigaction(Signal::SIGTERM, &action) {
+            warn!("Failed to install SIGTERM handler: {e} — falling back to default disposition");
+        }
+        if let Err(e) = sigaction(Signal::SIGINT, &action) {
+            warn!("Failed to install SIGINT handler: {e} — falling back to default disposition");
+        }
+    }
+}
+
+/// Windows 平台差异：Windows 没有 Unix 意义上的 SIGTERM/SIGINT 异步投递语义
+/// （Ctrl-C 走 SetConsoleCtrlHandler；关窗/任务管理器结束根本不发这两个信号），
+/// 而本启动器的常规形态是无控制台的 GUI 运行。这里给空实现——SIGNAL_RECEIVED
+/// 恒为 false，bg 等待循环沿用原有 cancelled_bg 条件，Windows 行为与本改动
+/// 前完全一致（Ctrl-C 仍由既有的 ctrlc crate 处理器接手）。
+#[cfg(not(unix))]
+fn install_signal_handlers() {}
+
+// ---------------------------------------------------------------------------
 // main — corresponds to Go's main()
 // ---------------------------------------------------------------------------
 
@@ -2260,28 +2324,21 @@ fn main() {
     })
     .expect("Failed to set Ctrl-C handler");
 
-    // Also handle SIGTERM on Unix (ctrlc only handles SIGINT)
-    #[cfg(unix)]
-    {
-        use nix::sys::signal::{self, Signal};
-        // Block SIGTERM in the main thread BEFORE spawning any threads.
-        // All subsequently created threads inherit this blocked mask,
-        // so the kernel can only deliver SIGTERM to the sigwait thread below.
-        let mut sigset = signal::SigSet::empty();
-        sigset.add(Signal::SIGTERM);
-        signal::pthread_sigmask(signal::SigmaskHow::SIG_BLOCK, Some(&sigset), None).unwrap();
-
-        let cancelled_term = cancelled.clone();
-        thread::spawn(move || {
-            // SIGTERM is already blocked (inherited from main thread).
-            // sigwait will synchronously catch it.
-            let mut sigset = signal::SigSet::empty();
-            sigset.add(Signal::SIGTERM);
-            sigset.wait().unwrap();
-            info!("Shutdown signal received (SIGTERM)");
-            cancelled_term.store(true, Ordering::SeqCst);
-        });
-    }
+    // SIGTERM/SIGINT → 优雅关闭：安装进程级信号处理器（定义见文件前半部
+    // install_signal_handlers）。安装点早于 bg 线程启动——信号到达时接收
+    // 标志与 bg 等待循环必须已就位，否则进程被默认处置直接打死。
+    //
+    // 此处原有的 pthread_sigmask(SIG_BLOCK, SIGTERM) + 专用 sigwait 线程
+    // 方案已整段移除。真机实测该方案收不到 SIGTERM：kill -TERM 后进程仍被
+    // 默认处置立即终止、sigwait 线程无任何日志、孤儿进程与端口残留照旧。
+    // 根因：SIGTERM 从来就是默认处置（ctrlc 仅在启用 termination feature
+    // 时才注册 SIGTERM/SIGHUP 处理器，本 crate 未启用）；且 ctrc 在
+    // set_handler 内部先于上面的 pthread_sigmask 创建了自己的 "ctrl-c"
+    // 线程——该线程不继承阻塞掩码，是进程内唯一未阻塞 SIGTERM 的线程，
+    // 进程级 kill 的信号被内核投递给它，按默认处置直接终结进程，sigwait
+    // 线程根本没轮到。改用 SIGTERM/SIGINT 双信号的 sigaction 处理器后，
+    // SIGTERM 与已验证可用的 SIGINT 同机制投递、同路径收尾。
+    install_signal_handlers();
 
     info!("Niu launcher starting...");
 
@@ -2774,7 +2831,13 @@ fn main() {
                     // 轮询：直到 settings 测试通过 OR settings 窗口被关闭
                     // 删除 reopen_count>3 重开死循环——settings 一关就 break
                     loop {
-                        if cancelled_bg.load(Ordering::SeqCst) { break; }
+                        // 与主等待循环同权：收到 SIGTERM/SIGINT 也立即 break，
+                        // 汇入下方同一套收尾（cancelled + notify + 阶梯）。
+                        if cancelled_bg.load(Ordering::SeqCst)
+                            || SIGNAL_RECEIVED.load(Ordering::SeqCst)
+                        {
+                            break;
+                        }
                         // settings 窗口退出？
                         if let Ok(Some(exit_status)) = settings_child.try_wait() {
                             info!("Settings window closed (exit_status={})", exit_status);
@@ -2786,7 +2849,12 @@ fn main() {
                         // 顶部检查，启动器仍会阻塞在慢 POST 上，延迟 notify_shutdown/重启
                         // 2-3.5 分钟。这里在 sleep 之后、POST 之前再查一次窗口退出，
                         // 消除确定性退出延迟（残余竞态：POST 在途时关窗，最坏仍 ≤220s）。
-                        if cancelled_bg.load(Ordering::SeqCst) { break; }
+                        // sleep 期间到达的信号在此同样收口。
+                        if cancelled_bg.load(Ordering::SeqCst)
+                            || SIGNAL_RECEIVED.load(Ordering::SeqCst)
+                        {
+                            break;
+                        }
                         if let Ok(Some(exit_status)) = settings_child.try_wait() {
                             info!("Settings window closed (exit_status={})", exit_status);
                             break;
@@ -2876,7 +2944,11 @@ fn main() {
         // Keep the api_server_child alive until the process exits or we get cancelled
         // Wait for cancellation or child exit
         loop {
-            if cancelled_bg.load(Ordering::SeqCst) {
+            // 信号（SIGTERM/SIGINT）与窗口关闭/子进程退出同权：任一发生即 break
+            // 进入下方既有 Step 1-6 关闭阶梯（见 install_signal_handlers 注释）。
+            if cancelled_bg.load(Ordering::SeqCst)
+                || SIGNAL_RECEIVED.load(Ordering::SeqCst)
+            {
                 break;
             }
             // Try non-blocking wait on the child
@@ -2895,6 +2967,12 @@ fn main() {
                 }
             }
             thread::sleep(Duration::from_millis(100));
+        }
+
+        // 信号取消在此收口。日志只打在 bg 线程——信号处理器里严禁打日志
+        // （async-signal-safety，见 install_signal_handlers 注释）。
+        if SIGNAL_RECEIVED.load(Ordering::SeqCst) {
+            info!("收到 SIGTERM/SIGINT，走优雅关闭");
         }
 
         // If we're here because of cancellation (not child exit), do the shutdown
