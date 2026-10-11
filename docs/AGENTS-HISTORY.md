@@ -877,8 +877,7 @@ Windows 语义匹配四条判据（真实 cmdline 命中 / 无点形态不中 / 
 **真机 AC-1~AC-7 待用户执行**（清单见 `docs/superpowers/plans/2026-10-11-s6-shutdown-hygiene.md` §6，
 其中 AC-3 的 Windows 等价验证需在有 Windows 的机器上做）。
 
-**教训（三条，都已写进方案修订记录）**：
-1. **跨层转义类代码，审查必须做"用真实数据跑一遍匹配"的语义验证。** Windows 正则 P1
+**教训（三条，都已写进方案修订记录）**：1. **跨层转义类代码，审查必须做"用真实数据跑一遍匹配"的语义验证。** Windows 正则 P1
    从方案 v1.1 就在，R1/R2/R3 三轮共 10 名审查员**全部只验证了三层转义正确**
    （R1-B 甚至用 rustc 实编并打印了终串），**没人拿正则去比对真实 argv**。
    语法正确 ≠ 语义匹配。Windows 分支在 mac 上永远不被执行，只能靠这类比对兜住——
@@ -929,3 +928,37 @@ AC-5（孤儿占 19878 → 重启）✅ SIGKILL → 0.5s 后端口 free → 新�
 `pgrep` + Electron + 端口**。另有一轮 AC-1 我自己先 `kill -9` 了 llama-server，
 导致 Rust 兜底报"No orphan"——那是**空转假绿**，不是有效验证；判断"测试是否真的
 测到了东西"要先确认前置状态。
+
+#### 上线前审计：DeepSeek-V3 tokenizer 漏出版本库（`702acc32`，用户验收发现）
+
+**缺陷**：`models/tokenizers/deepseek-v3/tokenizer.json`（7,847,652 B）**从未入 git**。
+它是 `agent/token_calculator.py` 固定加载的**本地 token 计数真相源**（上下文百分比、
+压缩时机判断全靠这个数）。缺失时**不崩溃**，仅一条
+`[TokenCalculator] failed to load tokenizer ... falling back to litellm` WARNING，
+然后静默降级成 litellm 粗估 —— 极易漏看。装机量越大影响面越大。
+
+**根因（规则互相打架，不是手误）**：`.gitignore` 里 `models/tokenizers/` 被 ignore，
+而 `!models/**/*.json` 又把该 tokenizer.json 放出来 —— 净效果是"文件**可以 add**
+但**从来没人 add**"。再叠加三条：没有下载脚本、没有文档说明、没有备份，
+于是它只存在于打包机的工作树里，Clone 出来的树没有 → 打出的安装包缺文件。
+
+**证据链（证明不是本次工程删的）**：目录 mtime 停在 2026-10-10 19:14（macOS 删文件会
+更新父目录 mtime，若是当日删除会是 10-11）；当日重建的 bundle/DMG 里也没有该文件
+（bundle 由 `build.sh` 从 `models/` rsync 复制 → 反推构建时源目录已空）；
+`~/.niu/logs` 里从来没有 `loaded tokenizer` 成功记录（说明缺文件的状态早于本次工程）。
+
+**修复**：文件入 git（取自 oh-my-pi 项目同款 DeepSeek-V3 tokenizer，vocab 128000 +
+added_tokens 818，实测 `TokenCalculator` 已加载且计数正常）；`.gitignore` 改成显式
+注释"该目录必须入 git、不要给它加 ignore 规则"并要求 `git ls-files models/tokenizers/`
+自检；README「安装向量模型产物」、troubleshooting、`manual-dependencies` 2.3 三处补文档。
+**注意**：修复过程中曾误加 `models/tokenizers/**` 想"保护"它，那反而会让以后新增文件
+也被 ignore —— 已自我纠正为纯注释。
+
+**教训（新增第 5、6 条）**：
+5. **"未被 ignore"不等于"已入 git"。** 判断一个文件是否真的进了版本库，唯一可靠的是
+   `git ls-files <path>` 有输出；`git status` 干净、`git check-ignore` 没命中都不算数。
+   negation 规则（`!xxx`）会让文件"看起来该被跟踪"，实际却躺在工作树里。
+6. **装机类项目上线前必须做一次"全新 Clone 可用么"审计**：把运行期要读的本地文件
+   （模型/tokenizer/配置模板）逐个问三句——入 git 了吗？有下载脚本吗？文档写了吗？
+   三问有一答否就是漏洞。本次审计结论：`models/` 下唯一漏网的就是 tokenizer，
+   其余大文件（gguf / llama.cpp 二进制 / buffalo_l）都有脚本或文档兜底。
