@@ -1750,6 +1750,16 @@ def _force_exit_after_delay():
     os._exit(0)
 
 
+def _start_force_exit_fallback() -> None:
+    """启动兜底退出线程：3 秒后强制 os._exit(0)。
+
+    提取成函数（R2-B P2）纯粹为了测试可观测性：测试需 patch 本符号以阻止真实
+    os._exit 杀掉 pytest 进程。不得把本函数调用挪进异步任务/后台线程/条件分支
+    ——那会破坏 I-1 的"文本位置保证"。
+    """
+    threading.Thread(target=_force_exit_after_delay, daemon=True).start()
+
+
 @router.post("/api/shutdown")
 async def shutdown():
     """Shutdown the server gracefully"""
@@ -1762,9 +1772,27 @@ async def shutdown():
     from niu_api.internal.lightrag_manager import shutdown_pending_futures
     await asyncio.to_thread(shutdown_pending_futures, timeout=1.5)
 
+    # 2026-10-11（S6）：在兜底线程的 os._exit 之前，同步停 llama-server。
+    # 既有三层机制在本路径上全部落空（见 plan §1 三层表）：
+    #   ① uvicorn lifespan shutdown 里已有 llama_server.stop()（__main__.py），
+    #      但 uvicorn 只在正常退出时跑 shutdown，被下面 ③ 抢先；
+    #   ② llama_server.py 的 atexit.register(stop)，被 ③ 的 os._exit 跳过；
+    #   ③ 兜底线程正是凶手：os._exit 立即终止解释器，跳过 lifespan/atexit/finally。
+    # 故此处必须是显式调用，且必须早于 _start_force_exit_fallback()（I-1）。
+    # stop() 阻塞最坏约 10s，用 to_thread 避免阻塞 event loop。
+    from niu_api.internal import llama_server
+
+    def _stop_llama_server_for_shutdown() -> None:
+        try:
+            llama_server.stop()
+        except Exception as e:  # noqa: BLE001 —— 停机清理失败不得阻断关机流程
+            logger.error(f"[shutdown] 停 llama-server 失败: {e}")
+
+    await asyncio.to_thread(_stop_llama_server_for_shutdown)
+
     # 启动兜底退出线程：3秒后强制 os._exit(0)，
     # 给 Go 启动器足够时间收到 HTTP 响应后再终止进程
-    threading.Thread(target=_force_exit_after_delay, daemon=True).start()
+    _start_force_exit_fallback()
 
     logger.info("Python API ready for shutdown")
     return {"status": "shutting down"}
