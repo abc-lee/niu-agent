@@ -888,3 +888,44 @@ Windows 语义匹配四条判据（真实 cmdline 命中 / 无点形态不中 / 
    实际 guard 绑定在闭包后段（:2716）、早退 return 在 :2400/:2460，guard 从未构造。
 3. **修改文件必须用 Edit 工具。** 本日 PM 三次用 `python3` 改状态行（均只改一行、
    有 assert + git diff 验证净变更），违反铁律 10。教训：顺手的一次也会成习惯。
+
+#### S6 真机 AC 抓出第二个 P1：兜底 pkill 不发 SIGKILL 杀不掉忙着的 llama-server（`cf707b34`）
+
+**PM 真机 AC-2 实测失败**：`kill -9 <python>` → launcher 早退分支调
+`kill_stale_llama_server()` → 日志打 `Killed orphan llama-server via pkill`
+（pkill 返回 success）→ **llama-server 仍存活**，一分钟后复查它还在处理推理请求。
+
+**根因（三环相扣）**：① unix 分支写 `pkill -f`（默认发 **SIGTERM**）；② llama.cpp 的
+llama-server **忙于推理时不响应 SIGTERM**——同源现象在主路径已见
+（`_stop_locked` 的 `proc.terminate()` 等了 5s 才超时升级 kill）；③ pkill 只发信号、
+**不等待不确认**，发完即返回 success；紧接着 launcher `process::exit(0)` 退出，
+再没人等它 → **孤儿永存、端口 19878 永远占着**。
+
+**修法**：`pkill -f` → `pkill -9 -f`（SIGKILL），并新增
+`llama_server_pkill_args_unix()` 返回 `["-9","-f",pattern]` 让信号级别成为显式契约、
+被单测直接断言（删 `-9` 编译失败、改 `-15` 测试 FAILED，子 Agent 已演示）。
+日志措辞同步改如实：`Killed` → `Sent SIGKILL to`（pkill 不确认死亡，不得宣称已杀成）。
+**为何兜底就该一击必杀**：优雅停机在 Python 侧 `_stop_locked`（完整阶梯），
+本函数是**无人等待的兜底**，调用方随即退进程。Windows 的 `Stop-Process -Force`
+本就是 SIGKILL 语义，不受影响。
+
+**真机 AC 全通过（PM 亲自跑）**：AC-2（kill python → 兜底）✅ 立即无残留；
+AC-1（关窗 → launcher 取消链）✅ 主路径 `停止子进程`→terminate 5s 超时→kill→`No orphan`；
+AC-5（孤儿占 19878 → 重启）✅ SIGKILL → 0.5s 后端口 free → 新实例正常起
+（**原"每次重启契约 A Fatal"症状已消除**）。
+
+**新教训（第 4 条）**：
+4. **"发信号"不等于"进程死了"。** 审查里 R1-R4 全在看"有没有调 kill、模式对不对"，
+   没人问过"这个 kill 用的什么信号、目标忙的时候理不理"。真机一跑就现形：
+   pkill 返回 success 而进程活着。**凡是"发完就退出进程"的清理路径，信号必须
+   一击必杀（SIGKILL），且不能信任信号发送方的返回值作为"已清理"的证据。**
+   同类判据要扩成：读 diff 时盯 `pkill`/`kill`/`terminate` 的**默认信号语义**，
+   以及调用方在信号发出后是否还有机会等待。
+
+**PM 测试方法失误（已改正）**：AC-1 首轮用 `curl -X POST /api/shutdown` 直接打 Python
+接口，**绕过了 launcher 的正常关机链**，导致 launcher 退出时没关聊天窗，
+6 个 Electron 进程残留到后台（用户发现并指出）。正确做法是让被测系统走自己的退出
+路径（后来改用杀 Electron 主进程来忠实复现"用户关窗"），且**测完必须复查
+`pgrep` + Electron + 端口**。另有一轮 AC-1 我自己先 `kill -9` 了 llama-server，
+导致 Rust 兜底报"No orphan"——那是**空转假绿**，不是有效验证；判断"测试是否真的
+测到了东西"要先确认前置状态。
