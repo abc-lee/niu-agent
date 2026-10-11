@@ -25,6 +25,45 @@
 | `logs/api_stderr.log` | Python API stderr 输出 |
 | `logs/im_adapter_stderr.log` | IM 适配器（飞书等）stderr 输出 |
 
+#### 问题：启动报 llama-server 端口 19878 被占用 / 反复提示"未在 60s 内就绪"
+
+**可能原因：**
+- 上一次 Niu 被强杀（`kill -9` / 任务管理器结束 / 断电），留下 **llama-server 孤儿进程**占着 19878
+- 你自己跑的 llama-server / 别的程序占了同一个端口
+
+**解决方案：**
+
+```bash
+# macOS / Linux —— 查是谁占着
+lsof -ti:19878
+pgrep -fl llama-server
+
+# Windows（PowerShell）—— 查是谁占着
+netstat -ano | findstr :19878
+tasklist | findstr llama-server
+```
+
+- **杀确认是本程序的孤儿后重启即可**：0.5.0 起启动器会按「产物路径 + 端口」双重限定
+  自动清理上次泄漏的孤儿（`models/llama.cpp/<平台>/llama-server` + `--port 19878`），
+  并在确认端口释放后才放行启动——**正常重启一次就好，不需要手动杀**。
+- 只有重启后仍卡住才需手动清：
+  ```bash
+  # macOS / Linux
+  pkill -9 -f "llama.cpp/.*llama-server.*--port 19878"
+  # Windows（PowerShell，按命令行匹配，避免误伤）
+  Get-CimInstance Win32_Process -Filter "Name like 'llama-server%'" |
+    Where-Object { $_.CommandLine -match 'llama[\\/]cpp[\\/].*llama-server.*--port 19878' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+  ```
+  > ⚠️ 上面两条按**路径 + 端口双重限定**，不会误杀你自己跑的 llama-server；
+  > 不要用裸 `pkill -9 llama-server` / `taskkill /IM llama-server.exe`，那个会误杀。
+
+#### 问题：关掉 Niu 后 llama-server 还在跑
+
+0.5.0 起正常关闭会由 Python 侧先停子进程、Rust 启动器再按路径+端口兜底清理，
+两条路都走完不会有残留。若仍然残留，按上一条手动清，并检查是否用了 0.4.x 及更早的版本
+（那些版本没有 Rust 侧兜底，强杀必留孤儿）。
+
 #### 问题：启动时卡在 "Preloading embedding model..."
 
 **可能原因：**

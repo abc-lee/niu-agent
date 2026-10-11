@@ -506,6 +506,12 @@ copy config\user-data\skills\*.md "$env:USERPROFILE\.niu\skills\"
 
 ### 前置条件
 
+> ⛔ **第 0 步**：先下载向量模型产物（`models/llama.cpp/` 与 `*.gguf` 都不入 git，
+> 而 `build.sh` 不会自己下；漏了这步打出的 bundle 不含模型，用户启动即卡契约 A）：
+> ```bash
+> python scripts/package_all_dependencies.py
+> ```
+
 1. **python/ 自包含运行时已就位**（含 stdlib + dylib + Resources stub，install_name_tool 已改）
 2. **ui/main/node_modules 已安装**（Electron 33 + 依赖）
 3. **Rust 工具链已安装**（含 cargo + rustup target，见下一节"编译 Rust 启动器"）
@@ -661,6 +667,16 @@ file niu.app/Contents/Resources/ui/main/node_modules/electron/dist/Electron.app/
 最终用户拿到的 Windows 安装包是绿色 7z（`dist\Niu-<VERSION>-win-x64.7z`），解压即用，无需安装程序。打包由根目录 `pack.bat` 完成。
 
 ### 前置条件
+
+> ⛔ **第 0 步（最容易漏，漏了就是废包）**：先下载向量模型产物。
+> `models/llama.cpp/` 在 `.gitignore` 里、`models/embeddinggemma-2-Q8_0.gguf` 也未入 git，
+> **全新克隆上一个都没有**，而 `pack.bat` 自己不会下载。跳过这步打出来的 7z
+> **不含向量模型**，用户装上直接卡「向量模型产物缺失，程序无法启动」。
+> ```cmd
+> python scripts\package_all_dependencies.py
+> ```
+> 该脚本按当前平台下载 GGUF（约 310 MB，带完整性校验）与 llama.cpp 二进制，
+> 落到 `models\` 与 `models\llama.cpp\win32-x64\`。
 
 1. **Windows x64 + Rust MSVC 工具链**（`rustup target add x86_64-pc-windows-msvc`）+ Node.js
 2. **创建自包含 Python 运行时**：`C:\Python311\python.exe -m venv --copies python`（Windows venv 才产生 `python\Scripts\` 与 `python\Lib\` 布局）
