@@ -1635,6 +1635,88 @@ fn wait_for_port_free(port: u16, timeout: Duration) -> bool {
     }
 }
 
+/// llama-server 固定端口，与 niu_api/internal/llama_server.py 的 LLAMA_PORT 同源。
+/// 打包期固定值；将来端口若可配，两处必须同步，否则会漏杀。
+const LLAMA_PORT: u16 = 19878;
+
+/// 生成 unix 侧 pkill -f 的 ERE：产物路径段 + 可执行名 + 端口，三者缺一不可。
+/// 跨平台目录名不同（darwin-x64 / win32-x64），用 `.*` 覆盖，不得写死。
+fn llama_server_kill_pattern_unix(port: u16) -> String {
+    format!("llama\\.cpp/.*llama-server.*--port {port}")
+}
+
+/// 生成 Windows 侧 PowerShell 脚本。
+/// - 必须用 Get-CimInstance Win32_Process：PS 5.1 的 Get-Process 没有 CommandLine
+///   属性，按 CommandLine 过滤会恒空、什么都杀不到（本文件既有注释记载的血泪坑）。
+/// - `[\\/]` 是跨平台路径分隔符字符类（Rust 字符串 `[\\\\/]` → PowerShell 单引号
+///   字面量 `[\\/]` → .NET 正则字符类：反斜杠或正斜杠）。
+/// - Name 过滤只缩小扫描面；真正限定靠 CommandLine -match。
+/// - 输出 KILLED<n>/NONE：PowerShell 空管道退出码仍为 0，光看 exit code 无法区分
+///   「真杀了」与「无可杀」（R1-A P3）。Windows 侧必须像 unix 的 exit 1 一样可判。
+// 本函数在所有平台上编译（T4 单测需在 mac 上断言 Windows 脚本文本，部分关闭
+// Windows 盲区），但生产调用点只在 #[cfg(windows)] 分支 → 非 Windows 构建里
+// 标记为 dead；Windows 构建保持严格 lint。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn llama_server_kill_script_windows(port: u16) -> String {
+    format!(
+        "$p = Get-CimInstance Win32_Process -Filter \"Name like 'llama-server%'\" \
+         | Where-Object {{ $_.CommandLine -match 'llama[\\\\/]cpp[\\\\/].*llama-server.*--port {port}' }}; \
+         if ($p) {{ $p | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}; \
+         \"KILLED \" + $p.Count }} else {{ \"NONE\" }}"
+    )
+}
+
+/// 清理由本项目拉起的 llama-server（跨平台）。
+///
+/// 为什么需要：Python 侧三层清理（lifespan stop / atexit / shutdown 处理器显式 stop）
+/// 都有覆盖不到的场景（见 plan §1 缺口表）；且 llama-server 是 Python 的孙进程，
+/// 不在本启动器的 Child 句柄上，清理阶梯 Step 1-6 管不到它。
+///
+/// 匹配必须【同时】限定产物路径与端口，仅按进程名匹配会误杀用户自有的
+/// llama-server，属绝对禁区（I-4）。
+fn kill_stale_llama_server() {
+    let port = LLAMA_PORT;
+
+    #[cfg(unix)]
+    {
+        // exit 1（无匹配）= 常态，info；success = 真杀到了；其余 = 真失败，warn。
+        let pattern = llama_server_kill_pattern_unix(port);
+        match Command::new("pkill").args(["-f", &pattern]).status() {
+            Ok(status) if status.success() => {
+                info!("Killed orphan llama-server (port={}) via pkill", port);
+            }
+            Ok(status) if status.code() == Some(1) => {
+                info!("No orphan llama-server found (port={})", port);
+            }
+            _ => {
+                warn!("pkill llama-server failed (may already be gone)");
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let script = llama_server_kill_script_windows(port);
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &script]);
+        no_window(&mut cmd);
+        // 用 output() 取 stdout 区分 KILLED/NONE —— 空管道 exit code 仍为 0。
+        match cmd.output() {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains("KILLED") {
+                    info!("Killed orphan llama-server (port={}) via PowerShell: {}", port, stdout.trim());
+                } else {
+                    info!("No orphan llama-server found (port={})", port);
+                }
+            }
+            _ => {
+                warn!("PowerShell llama-server kill failed (may already be gone)");
+            }
+        }
+    }
+}
+
 /// killStaleAPIProcess checks if the API port is occupied and kills the stale process
 fn kill_stale_api_process(port: u16) {
     // --- Step 1: best-effort graceful shutdown (drain in-flight vdb writes) ---
@@ -1737,6 +1819,13 @@ fn kill_stale_api_process(port: u16) {
         // self-check is the backstop).
         warn!("Port {} still occupied after process cleanup — proceeding anyway", port);
     }
+
+    // --- Step 6: llama-server stale cleanup (S6 覆盖点 ③) ---
+    // 上次泄漏的孤儿 llama-server 占着 19878 且不应答 /health：新实例 start()
+    // 判 _health_ok() 假 → 二次 Popen 绑端口失败 → 提前退出 → 契约 A Fatal，
+    // 每次重启复现。kill_stale_api_process 只匹配 python.*niu_api，管不到孙进程。
+    // 匹配模式与退出时完全相同（同路径同端口），复用同一个函数。
+    kill_stale_llama_server();
 }
 
 // ---------------------------------------------------------------------------
@@ -2397,6 +2486,13 @@ fn main() {
                             let _ = phase_tx.send(SplashPhase::CleanupDone);
                         }
                     }
+                    // S6 覆盖点 ①：llama-server 兜底清理（与 ExitGuard::drop 同函数）。
+                    // 本 return 在 guard 绑定之前（guard 在 bg 闭包后段才构造），
+                    // 早退路径上 guard 从未 drop → 必须在此显式调用。
+                    // 两处早退分支（health 轮询 / preload 轮询）同型插入，形态一致。
+                    // 不得改为提前绑定 ExitGuard：其 drop 含 process::exit(0)，
+                    // 会让早退路径立即退进程，破坏 Fatal/红字 splash 契约。
+                    kill_stale_llama_server();
                     return;
                 }
                 _ => {}
@@ -2457,6 +2553,13 @@ fn main() {
                             let _ = phase_tx.send(SplashPhase::CleanupDone);
                         }
                     }
+                    // S6 覆盖点 ①：llama-server 兜底清理（与 ExitGuard::drop 同函数）。
+                    // 本 return 在 guard 绑定之前（guard 在 bg 闭包后段才构造），
+                    // 早退路径上 guard 从未 drop → 必须在此显式调用。
+                    // 两处早退分支（health 轮询 / preload 轮询）同型插入，形态一致。
+                    // 不得改为提前绑定 ExitGuard：其 drop 含 process::exit(0)，
+                    // 会让早退路径立即退进程，破坏 Fatal/红字 splash 契约。
+                    kill_stale_llama_server();
                     return;
                 }
                 _ => {}
@@ -2705,6 +2808,12 @@ fn main() {
         struct ExitGuard;
         impl Drop for ExitGuard {
             fn drop(&mut self) {
+                // llama-server 兜底清理放在这里（覆盖点 ②）：Trigger 于清理阶梯
+                // Step 1-6 正常跑完、以及 bg 线程 panic 时的 drop。
+                // 注意本 guard 绑定在 bg 闭包后段，两处启动期早退 return 在它之前
+                // → 早退路径 guard 从未构造，那两处由 T2-e 显式调用覆盖。
+                // 必须先于 process::exit：它不走任何收尾钩子。
+                kill_stale_llama_server();
                 if std::thread::panicking() {
                     info!("Niu launcher shutdown complete (bg thread panicked)");
                     std::process::exit(101);
@@ -3129,5 +3238,37 @@ mod tests {
         // The line AFTER the bad one must still be delivered and the function
         // must return normally (no early break).
         assert_eq!(seen, vec!["line one".to_string(), "line three".to_string()]);
+    }
+
+    // ------------------------------------------------------------------
+    // S6: llama-server 兜底清理 —— 只断言生成的匹配串文本，绝不真杀进程
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_llama_server_kill_pattern_unix() {
+        let p = llama_server_kill_pattern_unix(LLAMA_PORT);
+        // I-4 三重限定：产物路径段、可执行名、端口，缺一不可
+        assert!(p.contains("llama\\.cpp/"), "unix 模式必须含产物路径段");
+        assert!(p.contains("llama-server"), "unix 模式必须含可执行名");
+        assert!(p.contains(&format!("--port {LLAMA_PORT}")), "unix 模式必须含端口");
+        // 不得写死平台目录名（跨平台不同：darwin-x64 / win32-x64）
+        assert!(!p.contains("darwin-x64") && !p.contains("win32-x64"),
+                "unix 模式不得写死平台目录");
+    }
+
+    #[test]
+    fn test_llama_server_kill_script_windows() {
+        let s = llama_server_kill_script_windows(LLAMA_PORT);
+        // 必须用 Get-CimInstance：PS 5.1 的 Get-Process 无 CommandLine 属性
+        assert!(s.contains("Get-CimInstance Win32_Process"));
+        // Stop-Process -Force = SIGKILL 语义
+        assert!(s.contains("Stop-Process -Id"));
+        // 跨平台路径分隔符字符类
+        assert!(s.contains("[\\\\/]cpp[\\\\/]"), "路径分隔符必须是跨平台字符类");
+        // 端口限定
+        assert!(s.contains(&format!("--port {LLAMA_PORT}")));
+        // R1-A P3：必须能区分「真杀了」与「无可杀」
+        assert!(s.contains("KILLED") && s.contains("NONE"),
+                "Windows 侧必须可判空匹配");
     }
 }
