@@ -1641,6 +1641,9 @@ const LLAMA_PORT: u16 = 19878;
 
 /// 生成 unix 侧 pkill -f 的 ERE：产物路径段 + 可执行名 + 端口，三者缺一不可。
 /// 跨平台目录名不同（darwin-x64 / win32-x64），用 `.*` 覆盖，不得写死。
+// 与 llama_server_kill_script_windows 对称：本函数在所有平台上编译（单测需在
+// 各平台断言），生产调用点只在 #[cfg(unix)] 分支 → 非 unix 构建标记为 dead。
+#[cfg_attr(not(unix), allow(dead_code))]
 fn llama_server_kill_pattern_unix(port: u16) -> String {
     format!("llama\\.cpp/.*llama-server.*--port {port}")
 }
@@ -1648,8 +1651,10 @@ fn llama_server_kill_pattern_unix(port: u16) -> String {
 /// 生成 Windows 侧 PowerShell 脚本。
 /// - 必须用 Get-CimInstance Win32_Process：PS 5.1 的 Get-Process 没有 CommandLine
 ///   属性，按 CommandLine 过滤会恒空、什么都杀不到（本文件既有注释记载的血泪坑）。
-/// - `[\\/]` 是跨平台路径分隔符字符类（Rust 字符串 `[\\\\/]` → PowerShell 单引号
-///   字面量 `[\\/]` → .NET 正则字符类：反斜杠或正斜杠）。
+/// - `llama\.cpp[\\/]` 中 `\.` 是字面点（真实命令行 `<models>/llama.cpp/<platform>/...`
+///   里 `llama.cpp` 中间是点，分隔符在点之后），`[\\/]` 是跨平台路径分隔符
+///   字符类（Rust 字符串 `[\\\\/]` → PowerShell 单引号字面量 `[\\/]` →
+///   .NET 正则字符类：反斜杠或正斜杠）。
 /// - Name 过滤只缩小扫描面；真正限定靠 CommandLine -match。
 /// - 输出 KILLED<n>/NONE：PowerShell 空管道退出码仍为 0，光看 exit code 无法区分
 ///   「真杀了」与「无可杀」（R1-A P3）。Windows 侧必须像 unix 的 exit 1 一样可判。
@@ -1660,7 +1665,7 @@ fn llama_server_kill_pattern_unix(port: u16) -> String {
 fn llama_server_kill_script_windows(port: u16) -> String {
     format!(
         "$p = Get-CimInstance Win32_Process -Filter \"Name like 'llama-server%'\" \
-         | Where-Object {{ $_.CommandLine -match 'llama[\\\\/]cpp[\\\\/].*llama-server.*--port {port}' }}; \
+         | Where-Object {{ $_.CommandLine -match 'llama\\.cpp[\\\\/].*llama-server.*--port {port}' }}; \
          if ($p) {{ $p | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}; \
          \"KILLED \" + $p.Count }} else {{ \"NONE\" }}"
     )
@@ -1826,6 +1831,17 @@ fn kill_stale_api_process(port: u16) {
     // 每次重启复现。kill_stale_api_process 只匹配 python.*niu_api，管不到孙进程。
     // 匹配模式与退出时完全相同（同路径同端口），复用同一个函数。
     kill_stale_llama_server();
+    // pkill/Stop-Process 只发信号不等待：孤儿可能还没退出、19878 仍被占着，
+    // 此时新实例 llama_server.start() 会二次 Popen 绑端口失败 → _wait_ready
+    // 失败 → RuntimeError（契约 A Fatal）。与 Step 5 同款范式确认端口已释放。
+    if wait_for_port_free(LLAMA_PORT, Duration::from_secs(3)) {
+        info!("llama-server port {} is free, safe to start", LLAMA_PORT);
+    } else {
+        warn!(
+            "llama-server port {} still occupied after cleanup — proceeding anyway",
+            LLAMA_PORT
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3254,6 +3270,9 @@ mod tests {
         // 不得写死平台目录名（跨平台不同：darwin-x64 / win32-x64）
         assert!(!p.contains("darwin-x64") && !p.contains("win32-x64"),
                 "unix 模式不得写死平台目录");
+        // 防回归：unix 分支不该出现 Windows 侧的分隔符字符类 `[\\/]`
+        // （曾错把 `llama[\\/]cpp` 形式移植到 unix，此处钉死）。
+        assert!(!p.contains("[\\\\/]"), "unix 分支不得出现 Windows 字符类");
     }
 
     #[test]
@@ -3263,8 +3282,12 @@ mod tests {
         assert!(s.contains("Get-CimInstance Win32_Process"));
         // Stop-Process -Force = SIGKILL 语义
         assert!(s.contains("Stop-Process -Id"));
-        // 跨平台路径分隔符字符类
-        assert!(s.contains("[\\\\/]cpp[\\\\/]"), "路径分隔符必须是跨平台字符类");
+        // 产物路径段必须是 `llama\.cpp`（字面点）+ 跨平台分隔符字符类：
+        // 真实命令行 `llama.cpp/<platform>/llama-server.exe` 里点在先、分隔符在后。
+        // Rust 源码 `llama\\.cpp[\\\\/]` → PowerShell 收到的 `llama\.cpp[\\/]`。
+        assert!(s.contains("llama\\.cpp[\\\\/]"), "路径段必须含字面点再跟分隔符字符类");
+        // 分隔符字符类本身仍须是反斜杠/正斜杠两类
+        assert!(s.contains("[\\\\/]"), "路径分隔符必须是跨平台字符类");
         // 端口限定
         assert!(s.contains(&format!("--port {LLAMA_PORT}")));
         // R1-A P3：必须能区分「真杀了」与「无可杀」
