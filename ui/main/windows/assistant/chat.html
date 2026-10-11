@@ -9,6 +9,12 @@
   <!-- HTML 净化 — 防止 XSS (marked 不自带 sanitize) -->
   <script src="../../node_modules/dompurify/dist/purify.js"></script>
   <script>
+    // Windows 平台判定（2026-10-11，圆角修复）：Chat 窗是 frame:false + transparent:true（迷你模式 T1 引入），
+    // Windows 的 DWM 不为透明窗做圆角（macOS 由 Electron roundedCorners 默认提供，且仅 macOS 有此选项）
+    // ⇒ Windows 下由页面自绘外壳圆角（见下方 html.plat-win 规则）。必须在首帧前打上，否则会闪一下直角。
+    if (/Windows/.test(navigator.userAgent)) {
+      document.documentElement.classList.add('plat-win');
+    }
     // 配置 marked：保留换行，启用 GFM
     if (typeof marked !== 'undefined' && marked.setOptions) {
       marked.setOptions({ breaks: true, gfm: true });
@@ -39,6 +45,14 @@
       /* 棉纸纹理 */
       background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
     }
+
+    /* Windows 圆角外壳（2026-10-11）：Chat 窗为 frame:false + transparent:true，Windows 的 DWM 不给透明窗
+       做圆角 ⇒ 页面自绘。html/body 必须一起透明，圆角之外的窗口区域才透出桌面（否则仍是整块不透明矩形）。
+       .container 已有 overflow:hidden，子元素自动跟着裁成圆角。
+       macOS 由 Electron roundedCorners（默认 true、仅 macOS）提供系统圆角，故用 .plat-win 门控，
+       避免页面圆角与系统圆角叠加。半径 10px 对齐 macOS 系统窗圆角，两端观感一致。 */
+    html.plat-win, html.plat-win body { background: transparent; }
+    html.plat-win .container { border-radius: 10px; }
     
     /* 调整大小手柄 */
     .resize-handle {
