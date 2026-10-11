@@ -813,3 +813,78 @@ chunks 235）。
 **不改的归档**：`docs/lightrag-plans/`（05 有 44 处旧模型引用，但是历史计划归档，状态
 "方案已讨论确认"、2026-04-22、未被 README/SYSTEM_MANUAL 索引）与 `docs/superpowers/`
 同为归档，改写会让它们失去存档价值。
+
+#### 依赖摘除被用户否决并回滚 + reranker 本期停用（`6cda6dd6`）
+
+**上面"依赖瘦身约 2.5 GB"那条是错误决定，用户 2026-10-11 否决并已回滚，勿再摘。**
+PM 当时的论据是"用 importlib.metadata 逐包核算反向依赖、无核心依赖方"。用户纠正：
+> 这些依赖应该都装到我们的 Python 环境里。它加载和不加载是根据自己电脑的能力去判断的,
+> 它没有 GPU 可用,它就用 CPU,而不是说你不安装这个依赖,它就用 CPU。
+
+**正确原则（自包含 bundle）**：
+1. 本仓是**自包含完整 Python 运行时**，依赖必须全部装进 bundle。
+2. GPU / CPU 是**运行时按机器能力判断**的（`get_device()` 检测 `torch.cuda`），
+   不是"没装就用 CPU"——摘依赖会让有 GPU 的机器被**静默降级**。
+3. macOS 打包后不能再补装依赖（会触发重签名问题）。
+PM 的**方法错误**：把"没有包依赖它"当成了"可以删"。部署形态（自包含）与依赖关系
+（反向拓扑）是两个维度，混为一谈。还把 `get_device()` 缺 torch 时降级 cpu 当成
+"摘除安全的证据"——那个降级恰恰是缺陷本身。
+
+**reranker 本期停用**（用户实测「收益很小、GPU/内存耗费很大，与本期待解决目标无关」）：
+- 只在**接线层**停用：`niu_api/internal/lightrag_manager.py` 里 `reranker_func = None`
+  （原本是 `make_lightrag_reranker_callable()`），`reranker.py` 整条模块逻辑原样保留，
+  恢复只需改那一行。选接线层而非删模块：代价一行、恢复也一行。
+- 注意：停用 reranker **不是**保留依赖的理由；保留依赖的理由就是上面那 3 条。
+
+#### S6：llama-server 退出泄漏修复（用户验收发现，`a9682304` + 微修 `bc72dc7e`）
+
+**缺陷**：用户停掉 Niu 后 `pgrep -fl llama-server` 仍有 PID 24494 存活、端口 19878
+仍被占（PM 临时 `kill -9` 清孤儿，非修复）。
+
+**根因**：既有三层清理全部落空——① `niu_api/__main__.py` 的 lifespan shutdown **已有**
+`llama_server.stop()`（S2 时就考虑过孤儿），但 uvicorn 只在正常退出时跑 shutdown；
+② `llama_server.py` 的 `atexit.register(stop)` 被 ③ 跳过；③ 凶手是
+`niu_api/compat.py` `/api/shutdown` 处理器末段 3 秒兜底线程的 `os._exit(0)`——
+立即终止解释器，跳过 lifespan/atexit/finally。llama-server 是 Python 的**孙进程**，
+Rust 清理阶梯（HTTP→2s→SIGTERM→5s→SIGKILL）只管得到 `Child` 句柄上的 Python。
+
+**修法**：
+- **主路径**：把既有 `threading.Thread(target=_force_exit_after_delay, ...).start()`
+  两行提取为 `_start_force_exit_fallback()`，在它**之前**显式
+  `await asyncio.to_thread(_stop_llama_server_for_shutdown)`。
+  提取 wrapper 是为测试可观测性：不提取则测试要么 patch `threading.Thread` 让
+  `asyncio.to_thread` 永久挂死，要么不 patch 让真实 daemon 3 秒后 `os._exit(0)`
+  杀掉 pytest 进程且**退出码 0、CI 读作成功**。
+- **Rust 兜底**（3 类插入位置 / 4 次调用，按「产物路径 + 端口」双重限定，跨平台）：
+  unix `pkill -f` / Windows `Get-CimInstance Win32_Process` + `Stop-Process`（**不能**
+  用 `Get-Process`：PS 5.1 无 CommandLine 属性，按命令行过滤会恒空）+ `no_window`。
+  ① 两处启动期早退分支 `return` 前显式调用；② `ExitGuard::drop` 内、`process::exit`
+  之前；③ `kill_stale_api_process()` 末尾（启动前 stale 清理）。
+- **两处关键修正（审查抓出，PM 亲核）**：
+  - **Windows 正则从 unix 模式"翻译"错了**：写成「llama 与 cpp 之间必须夹路径分隔符」，
+    而真实 cmdline 是 `models\llama.cpp\win32-x64\llama-server.exe`——`llama.cpp`
+    中间是**字面点**、分隔符在点之后 → **Windows 四条调用点全部静默失效**。
+    正解：字面点在前、字符类在后。
+  - **启动前 stale 清理杀完不确认端口释放**：既有 Step 5 用 `wait_for_port_free`
+    确认 9876 释放，新 Step 6 只发信号就返回；孤儿未释放 19878 时新实例绑端口失败
+    → 契约 A Fatal，正是本补丁要消除的症状。正解：Step 6 后复用同款
+    `wait_for_port_free(LLAMA_PORT, 3s)`。
+
+**验证（PM 亲自跑）**：Python 回归 185 passed / 2 skipped（含 4 条新测试）；
+`cargo test` 14 + 4 + 4 全过、零本 crate warning；`bash launcher/build.sh` EXIT=0。
+Windows 语义匹配四条判据（真实 cmdline 命中 / 无点形态不中 / 他端口不误杀 / unix 分支
+不含 Windows 字符类）。
+**真机 AC-1~AC-7 待用户执行**（清单见 `docs/superpowers/plans/2026-10-11-s6-shutdown-hygiene.md` §6，
+其中 AC-3 的 Windows 等价验证需在有 Windows 的机器上做）。
+
+**教训（三条，都已写进方案修订记录）**：
+1. **跨层转义类代码，审查必须做"用真实数据跑一遍匹配"的语义验证。** Windows 正则 P1
+   从方案 v1.1 就在，R1/R2/R3 三轮共 10 名审查员**全部只验证了三层转义正确**
+   （R1-B 甚至用 rustc 实编并打印了终串），**没人拿正则去比对真实 argv**。
+   语法正确 ≠ 语义匹配。Windows 分支在 mac 上永远不被执行，只能靠这类比对兜住——
+   这正是"必须考虑 Windows 兼容"的落点。
+2. **验证"某收尾机制覆盖 X 路径"必须核对机制绑定点与目标路径的代码先后顺序。**
+   v1.1 曾断言 `ExitGuard::drop` 覆盖启动期早退分支，只因读了它所在的代码段；
+   实际 guard 绑定在闭包后段（:2716）、早退 return 在 :2400/:2460，guard 从未构造。
+3. **修改文件必须用 Edit 工具。** 本日 PM 三次用 `python3` 改状态行（均只改一行、
+   有 assert + git diff 验证净变更），违反铁律 10。教训：顺手的一次也会成习惯。
