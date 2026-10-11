@@ -1648,6 +1648,25 @@ fn llama_server_kill_pattern_unix(port: u16) -> String {
     format!("llama\\.cpp/.*llama-server.*--port {port}")
 }
 
+/// 生成 unix 侧 pkill 的完整参数（含信号级别）。
+///
+/// 为什么是 `-9`（SIGKILL）而不是默认 SIGTERM：本调用链是孤儿兜底清理，
+/// 不是优雅停机——优雅停机在 Python 侧 `_stop_locked`（terminate→wait(5s)→kill
+/// 完整阶梯）。兜底调用方（launcher 早退分支）发完信号随即 `process::exit(0)`，
+/// 无人再等待、无人升级信号；而 llama-server 忙于推理时实测不理会 SIGTERM
+/// （同源现象：主路径 terminate 等 5s 超时才升级 kill）。pkill 默认只发
+/// SIGTERM 且不等待、不确认死亡，发完即返回 success → 孤儿永存。兜底语义
+/// 就该一击必杀：llama-server 是无状态 HTTP 推理进程，SIGKILL 只丢在途请求，
+/// 无数据损失。Windows 侧 `Stop-Process -Force` 本就是 SIGKILL 语义，不需要
+/// 显式信号参数。
+// 信号级别是行为契约：单测需在各平台断言 `-9` 在场（删掉即回归），故所有
+// 平台编译；生产调用点只在 #[cfg(unix)] 分支 → 非 unix 构建标记为 dead。
+#[cfg_attr(not(unix), allow(dead_code))]
+fn llama_server_pkill_args_unix(port: u16) -> [String; 3] {
+    let pattern = llama_server_kill_pattern_unix(port);
+    ["-9".to_string(), "-f".to_string(), pattern]
+}
+
 /// 生成 Windows 侧 PowerShell 脚本。
 /// - 必须用 Get-CimInstance Win32_Process：PS 5.1 的 Get-Process 没有 CommandLine
 ///   属性，按 CommandLine 过滤会恒空、什么都杀不到（本文件既有注释记载的血泪坑）。
@@ -1684,11 +1703,15 @@ fn kill_stale_llama_server() {
 
     #[cfg(unix)]
     {
-        // exit 1（无匹配）= 常态，info；success = 真杀到了；其余 = 真失败，warn。
-        let pattern = llama_server_kill_pattern_unix(port);
-        match Command::new("pkill").args(["-f", &pattern]).status() {
+        // exit 1（无匹配）= 常态，info；success = SIGKILL 已发出（pkill 不等待、不
+        // 确认死亡，故不得宣称已杀成）；其余 = 真失败，warn。
+        // 为什么必须 -9：见 llama_server_pkill_args_unix 的文档注释。
+        match Command::new("pkill")
+            .args(llama_server_pkill_args_unix(port))
+            .status()
+        {
             Ok(status) if status.success() => {
-                info!("Killed orphan llama-server (port={}) via pkill", port);
+                info!("Sent SIGKILL to orphan llama-server (port={}) via pkill", port);
             }
             Ok(status) if status.code() == Some(1) => {
                 info!("No orphan llama-server found (port={})", port);
@@ -3273,6 +3296,20 @@ mod tests {
         // 防回归：unix 分支不该出现 Windows 侧的分隔符字符类 `[\\/]`
         // （曾错把 `llama[\\/]cpp` 形式移植到 unix，此处钉死）。
         assert!(!p.contains("[\\\\/]"), "unix 分支不得出现 Windows 字符类");
+    }
+
+    #[test]
+    fn test_llama_server_pkill_args_unix() {
+        let args = llama_server_pkill_args_unix(LLAMA_PORT);
+        // 信号级别是行为契约：孤儿兜底路径必须 SIGKILL 一击必杀。若有人删掉 -9，
+        // pkill 退回默认 SIGTERM——llama-server 忙时不响应、launcher 随即退出无人
+        // 等待 → 孤儿永存（AC-2 实测回归）。此断言即该回归的守门测试。
+        assert_eq!(args.len(), 3, "pkill 参数必须恰好 3 个：-9 -f <pattern>");
+        assert_eq!(args[0], "-9", "unix 兜底清理必须显式 -9 (SIGKILL)");
+        assert_eq!(args[1], "-f", "必须按完整命令行匹配 (-f)");
+        // pattern 仍受 I-4 三重限定（与 test_llama_server_kill_pattern_unix 同源）
+        assert_eq!(args[2], llama_server_kill_pattern_unix(LLAMA_PORT),
+                   "第三个参数必须是 I-4 三重限定的匹配 pattern");
     }
 
     #[test]
