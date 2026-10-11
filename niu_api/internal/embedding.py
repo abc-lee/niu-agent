@@ -142,6 +142,8 @@ class _LlamaCppAdapter:
         if not texts:
             raise ValueError("encode() 收到空输入")
 
+        texts = _apply_unified_prefix(texts)  # S4：统一前缀，全后端唯一施加点
+
         vecs = self._server.encode_batch(texts)
         arr = np.asarray(vecs, dtype=np.float32)
         # R1-B P3：必须同时校验宽度。只校验行数时，(n, k≠768) 会通过检查，
@@ -157,6 +159,23 @@ class _LlamaCppAdapter:
 
     def get_sentence_embedding_dimension(self) -> int:
         return 768
+
+
+# ============== EmbeddingGemma 2 统一前缀 ==============
+# 逐字取自 google/embeddinggemma-2 config_sentence_transformers.json 的 "query"
+# prompt_name（PM 从 hf-mirror 复核一手源）。本地 GGUF 元数据不自带前缀模板。
+#
+# 为什么不按官方非对称用法给 query/doc 分别加：LightRAG 1.4.19 的 embedding 调用链上
+# 没有任何 query/doc 判别信号（_priority 被 wait_func 吃掉、contextvar 穿不过队列），
+# 见方案 §2。PM 实测「两侧统一加本前缀」判别间隔 +0.2007，优于官方非对称的 +0.1954。
+EMBEDDING_PREFIX = "task: search result | query: "
+
+
+def _apply_unified_prefix(texts: list[str]) -> list[str]:
+    """给每条文本加统一前缀。幂等：已带该前缀不重复加。"""
+    if not EMBEDDING_PREFIX:
+        return list(texts)
+    return [t if t.startswith(EMBEDDING_PREFIX) else EMBEDDING_PREFIX + t for t in texts]
 
 
 def get_model():
