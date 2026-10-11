@@ -1260,8 +1260,12 @@ def _create_lightrag_instance():
     )
 
     # Build reranker callable (direct, no proxy)
-    from niu_api.internal.reranker import make_lightrag_reranker_callable
-    reranker_func = make_lightrag_reranker_callable()
+    # 2026-10-11：reranker 本期停用（用户拍板）。实测结论：重排收益很小、GPU/内存
+    # 资源耗费很大，与本期待解决目标无关，故强制视为 none，不接进 LightRAG。
+    # reranker.py 的模型加载/切换逻辑整条保留原样，将来要恢复只需改下一行。
+    reranker_func = None  # 停用 reranker：原本是 make_lightrag_reranker_callable()
+    if reranker_func is None:
+        logger.info("LightRAG reranker disabled (本期停用，见 reranker.py 说明)")
 
     # Create LightRAG instance
     # Custom entity_types: constrain LLM extraction to these categories.
