@@ -332,9 +332,12 @@ python scripts/package_all_dependencies.py
 # - 向量模型产物 → models/embeddinggemma-2-Q8_0.gguf + models/llama.cpp/<platform>/llama-server
 ```
 
-> ⚠️ `scripts/package_all_dependencies.py` 尚需核对是否已按新口径下载
-> `embeddinggemma-2-Q8_0.gguf` 与 `llama-server`（S1 的重写以
-> `niu_api/internal/embedding_artifacts.py` 为单一真相源，这里是人工说明，**以该模块为准**）。
+> ✅ **已核对（2026-10-11）**：`scripts/package_all_dependencies.py` **已按新口径**下载
+> `embeddinggemma-2-Q8_0.gguf` 与 `llama-server`——它以 `niu_api/internal/embedding_artifacts.py`
+> 为单一真相源（平台目录、资产名、下载 URL、sha256 校验都从该模块取），
+> 并按平台选对 `darwin-x64` / `win32-x64` 的产物。此前挂于此处的「尚需核对」待办已关闭。
+> ⛔ **`build.sh` / `pack.bat` 都不会自动跑它**，打包前必须手动执行一次，
+> 否则产出没有向量模型的安装包（用户启动即卡契约 A）。
 > buffalo_l 禁止程序内下载，用户需手动放到 `models/models/buffalo_l/`（开发环境）或
 > `niu.app/Contents/Resources/models/models/buffalo_l/`（打包后），见 README「可选：启用照片处理」。
 

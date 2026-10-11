@@ -122,13 +122,18 @@ disk("/memory/user_memory_remember 用户喜欢 Python")  → 直接调用
 
 ### 方式一：直接下载（推荐普通用户）
 
-从 GitHub Release 下载最新的安装包：
+从 GitHub Release 下载最新的安装包（**当前版本 0.5.0**）：
 
 | 平台 | 下载链接 | 说明 |
 |------|---------|------|
-| macOS（Intel CPU） | [Niu-0.2.1-mac-intel.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.2.1/Niu-0.2.1-mac-intel.dmg) | 适用于 Intel 芯片的 Mac（约 934 MB） |
-| macOS（Apple M 系列） | [Niu-0.1.6-mac-apple-silicon.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.1.6/Niu-0.1.6-mac-apple-silicon.dmg) | 适用于 M系列 芯片的 Mac（约 905 MB） |
-| Windows x64 | [Niu-0.2.1-win-x64.7z](https://github.com/abc-lee/niu-agent/releases/download/v0.2.1/Niu-0.2.1-win-x64.7z) | 绿色安装，解压即用（约 460 MB） |
+| macOS（Intel CPU） | [Niu-0.5.0-mac-intel.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.5.0/Niu-0.5.0-mac-intel.dmg) | 适用于 Intel 芯片的 Mac；含 EmbeddingGemma 2 向量模型 + llama.cpp + 自包含 Python（含 torch）；**实测 1005 MB** |
+| macOS（Apple M 系列） | [Niu-0.5.0-mac-apple-silicon.dmg](https://github.com/abc-lee/niu-agent/releases/download/v0.5.0/Niu-0.5.0-mac-apple-silicon.dmg) | 适用于 M 系列芯片的 Mac（须在 arm64 主机上打出，不能交叉编译）；体积以发布页为准 |
+| Windows x64 | [Niu-0.5.0-win-x64.7z](https://github.com/abc-lee/niu-agent/releases/download/v0.5.0/Niu-0.5.0-win-x64.7z) | 绿色安装，解压即用；含上述全部产物；体积以发布页为准 |
+
+> ⚠️ **不要用 0.4.x 及更早的安装包**：0.5.0 起向量模型换成 EmbeddingGemma 2（经 llama.cpp 推理），
+> 旧包里既没有该模型的 GGUF 权重，也没有 llama.cpp 二进制，装上会直接卡在
+> 「向量模型产物缺失」。下载页认准 `v0.5.0` 与 `Niu-0.5.0-*` 文件名。
+> 已装了旧版的人按下面「[从 0.4.x 升级（必做）](#从-04x-升级必做)」走完整迁移。
 
 **macOS 安装步骤**：
 
@@ -239,6 +244,82 @@ codesign --force --sign - /Applications/niu.app
 
 见下文“快速开始”。
 
+## 安装向量模型产物（EmbeddingGemma 2 + llama.cpp）
+
+> **什么情况下需要看这一节**：启动时如果弹「**向量模型产物缺失，程序无法启动。缺少：…**」，
+> 就是缺这里的东西。正常情况下 0.5.0 的安装包**已经自带**这两个产物，只有以下情况需要手动补：
+> ① 从源码构建、没跑模型下载脚本；② 手动删过 `models/` 下的东西；③ 用了不含模型的旧包。
+
+**这两个产物是核心必需，不是可选功能**——缺了程序直接起不来（检索/知识图谱都依赖它）：
+
+| 产物 | 体积 | 说明 |
+|---|---|---|
+| `models/embeddinggemma-2-Q8_0.gguf` | 约 310 MB | EmbeddingGemma 2 向量模型权重（768 维，Apache 2.0） |
+| `models/llama.cpp/<平台目录>/llama-server` | 约 25 MB | llama.cpp 推理服务二进制（`darwin-x64` / `win32-x64`） |
+
+**方式一：让脚本自动下（推荐）**
+
+程序自带的下载脚本会按当前平台下载到正确位置，并校验完整性：
+
+```bash
+# macOS（路径以 /Applications/niu.app 为例）
+/Applications/niu.app/Contents/Resources/python/bin/python3 \
+  /Applications/niu.app/Contents/Resources/scripts/package_all_dependencies.py
+
+# Windows（路径以解压目录为例，如 D:\Niu）
+.\python\Scripts\python.exe scripts\package_all_dependencies.py
+```
+
+**方式二：手动放文件**
+
+1. GGUF 权重：从 [ggml-org/embeddinggemma-2-GGUF](https://huggingface.co/ggml-org/embeddinggemma-2-GGUF)
+   取 `embeddinggemma-2-Q8_0.gguf`（Q8_0 量化，约 310 MB），放到 `models/` 下。
+   - 官方站不可达时用镜像 `https://hf-mirror.com/ggml-org/embeddinggemma-2-GGUF`。
+2. llama.cpp 二进制：从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases)
+   取对应平台的 `llama-<build>-bin-<os>-<arch>.<ext>`（macOS 是 `tar.gz`，Windows 是 `zip`），
+   解压后把里面的 `llama-server`（Windows 是 `llama-server.exe`）放到
+   `models/llama.cpp/<平台目录>/` 下：
+   - macOS：`models/llama.cpp/darwin-x64/llama-server`
+   - Windows：`models/llama.cpp/win32-x64\llama-server.exe`
+3. **macOS 必须补可执行位并重签名**（Windows 无此步骤）：
+   ```bash
+   # 二进制通常不带执行位，不补会报 permission denied
+   chmod +x "/Applications/niu.app/Contents/Resources/models/llama.cpp/darwin-x64/llama-server"
+   # 向 niu.app 内写了新文件就要重签，否则 dlopen/exec 被 macOS 拒绝
+   # （逐个签 .so/.dylib 与新增二进制，再签 bundle 顶层；codesign --deep 自 macOS 13.3 起已废弃）
+   # 具体命令见上文「可选：启用脑区功能」里的重签名示例
+   ```
+4. 重启 Niu。启动日志出现 `[llama-server] 就绪 http://127.0.0.1:19878` 即成功。
+
+> 📋 **模型与许可证**：EmbeddingGemma 2 来自 google-deepmind，GGUF 转换版权归
+> ggml-org，采用 **Apache 2.0**；llama.cpp 为 MIT。两者均可随安装包分发，
+> 不像 igraph/opencv 那样需要用户自行安装，详见文末「[致谢](#致谢)」。
+
+> ⚠️ **端口固定 19878**（避开 uvicorn 9876、IM adapter 19877）。若该端口被占用，
+> 程序启动会失败并提示；`kill -9` 强杀 Niu 可能留下 llama-server 孤儿占着它，
+> 重启即可自动清理（程序会按「路径 + 端口」双重限定杀掉旧实例，不会误伤你自己跑的 llama-server）。
+
+## 全流程升级总清单（0.4.x → 0.5.0，照着做即可）
+
+> 这一节把散在上面各处的内容**按顺序串成一条线**，Windows 与 macOS 都适用。
+> 想理解每一步为什么，看对应小节的详细说明。
+
+| # | 步骤 | Windows 怎么做 | macOS 怎么做 | 参考 |
+|---|---|---|---|---|
+| 0 | **完全退出旧版 Niu** | 任务管理器确认没有 `niu.exe` / `niu_api` 残留 | 活动监视器确认 `niu` 与 `niu_api` 已退出 | — |
+| 1 | **删掉 3 个向量索引文件** | PowerShell `Remove-Item "$env:USERPROFILE\.niu\lightrag_storage\vdb_entities.json"`（另两个同目录：`vdb_relationships.json`、`vdb_chunks.json`） | `rm ~/.niu/lightrag_storage/vdb_entities.json`（另两个同目录） | [从 0.4.x 升级](#从-04x-升级必做) |
+| 2 | **装新包（内含模型与依赖，无需另装）** | 解压 `Niu-0.5.0-win-x64.7z` 到任意目录，双击 `niu.exe` | 挂载 `Niu-0.5.0-mac-intel.dmg`，拖 `niu.app` 进 `Applications` | [下载安装](#下载安装) |
+| 3 | **启动，点是「尝试修复」** | 弹「检测到数据一致性问题」→ 点「尝试修复」→ 用新模型重建索引（1 万向量量级实测**二十几分钟**） | 同左 | [从 0.4.x 升级](#从-04x-升级必做) |
+| 4 | 若提示「**向量模型产物缺失**」 | 极少见（0.5.0 包内自带）；按[安装向量模型产物](#安装向量模型产物embeddinggemma-2--llamacpp)补 | 同左，macOS 还须补可执行位并重签名 | [安装向量模型产物](#安装向量模型产物embeddinggemma-2--llamacpp) |
+| 5 | **可选清理**：旧模型权重目录 | 删除 `models/bge-base-zh-v1.5/`（约 400 MB，已不用） | 同左 | [从 0.4.x 升级](#从-04x-升级必做) |
+| 6 | 确认收尾：`pgrep`/任务管理器无 `llama-server` 残留，端口 19878 空闲 | `tasklist \| findstr llama-server` 应为空 | `pgrep -fl llama-server` 应为空 | — |
+
+> ⛔ **不要删** `~/.niu/lightrag_storage/` 下的 `graph_chunk_entity_relation.graphml`、
+> `kv_store_full_docs.json`、`kv_store_llm_response_cache.json` —— 这是知识图谱的**原始真相源**，
+> 索引重建全靠它们。删了就是真丢数据。
+>
+> ⛔ **不要**整目录 `rm -rf ~/.niu/lightrag_storage/`。
+
 ## 从 0.4.x 升级（必做）
 
 0.5.0 把向量模型从 BAAI/bge-base-zh-v1.5 换成了 EmbeddingGemma 2（GGUF，经 llama.cpp 推理）。
@@ -339,10 +420,20 @@ rm -rf niu-natives/target/wheels
 python/bin/maturin build --release --manifest-path niu-natives/Cargo.toml -i python/bin/python
 python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
 
+# 6.5 下载向量模型产物（EmbeddingGemma 2 GGUF + llama.cpp，缺了程序起不来）
+#    models/llama.cpp/ 与 *.gguf 都不入 git，全新克隆上一个都没有
+python scripts/package_all_dependencies.py
+
 # 7. 编译并启动 Rust 启动器
 cd launcher && cargo run --release
 
-启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。模型配置经设置窗口保存为命名配置（合集存于 `~/.niu/config/llm-configs.json`），本地模型（向量模型、人脸识别模型）会在首次使用时自动从 `models/` 目录加载，无需手动下载。
+启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。模型配置经设置窗口保存为命名配置（合集存于 `~/.niu/config/llm-configs.json`）。
+
+> ⚠️ **本地模型文件要预先就位**：向量模型（EmbeddingGemma 2 GGUF）与人脸识别模型
+> （buffalo_l 的 onnx）不在 git 里，需要各自放到位——向量模型跑上面的
+> `scripts/package_all_dependencies.py` 即可（它会按平台下 GGUF + llama.cpp 二进制）；
+> buffalo_l 因许可证禁止程序内下载，需按「可选：启用照片处理」一节手动放置。
+> 缺向量模型时启动会直接报「向量模型产物缺失，程序无法启动」，不是自动下载的。
 
 > macOS 注意：截图与桌面操作（`computer` 工具）需要**两个独立权限**——辅助功能与屏幕录制，未授予时相关工具不可用；授予步骤见《用户操作手册》1.11。
 
