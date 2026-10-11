@@ -46,6 +46,8 @@ MCP 服务器集群 (mcp-servers/)
 10. **禁止用 Python/脚本直接修改任何代码或文档** — 所有文件修改（代码、配置、计划、手册）必须用 **Edit 工具**（先读后改：old_string 不匹配会显式报错，不会静默失败）。**Python 仅限只读分析**（读文件、算数据、grep 统计），禁止 `open(p,'w').write()` 写文件。`python -c 's=open(f).read().replace(...); open(f,"w").write(s)'` 一类批量静默替换**一律禁止**——`str.replace` 的 old_string 不匹配时静默跳过不报错，是"改了但没改对"的根源（2026-08-14 脑区 assign 计划 19 轮审查教训：行号漂移连续三轮、fake 结构修错、改一处漏同步，全因静默 replace）。此铁律必须传达给派出去的子 Agent。
 11. 开工前必须读项目流程 Skill（niu-plan-review-gate-and-sdd / niu-sdd-execution-flow）；Skill 必须真读真执行。记住本地Agent优先的约定，只要不需要过大上下文的操作，优先使用本地Agent。双审可以一个本地，一个远端。
 
+12. **发布前必做「全新 Clone 可用么」审计**（2026-10-11 实证教训）：把运行期要读的**本地文件**（模型权重 / tokenizer / 配置模板）逐个问三句 —— **入 git 了吗？有下载脚本吗？文档写了吗？** 三问有一答否就是漏洞。唯一可靠判据是 `git ls-files <path>` **有输出**；`git status` 干净、`git check-ignore` 未命中都不算数（negation 规则 `!xxx` 会让文件"看起来该被跟踪"，实际却躺在工作树里）。已实证踩坑：`models/tokenizers/deepseek-v3/tokenizer.json` 被「目录 ignore + `!models/**/*.json` 兜着但没人 add」的组合漏出版本库，装机端 token 计数静默降级、只有一条易漏 WARNING。**审计完必须重打安装包并挂载验证产物在位。**
+
 **违反任何一条就停下来，不要继续。**
 
 ---
