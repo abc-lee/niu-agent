@@ -158,6 +158,14 @@ Windows 开发环境注意：不要在 shell 里设置 `PYTHONIOENCODING`——�
 ### 打包发布
 
 **macOS .app + DMG 打包**（由 `launcher/build.sh` 自动完成；**脚本无执行位，必须用 `bash` 前缀**）：
+
+> ⛔ **打包前必做：先下模型产物**（`build.sh` 自己不会下）。`models/llama.cpp/` 在
+> `.gitignore` 里、`models/embeddinggemma-2-Q8_0.gguf` 也未入 git → 全新克隆上一个都没有。
+> 跳过这步会产出**没有向量模型的 bundle**，用户启动直接卡契约 A。
+> ```bash
+> python scripts/package_all_dependencies.py
+> ```
+
 ```bash
 bash launcher/build.sh          # 只打 .app bundle（开发调试用）
 bash launcher/build.sh --dmg    # 打 .app bundle + DMG 安装包（发布用）
@@ -184,6 +192,17 @@ bash launcher/build.sh --dmg    # 打 .app bundle + DMG 安装包（发布用）
 - `ui/main/` 排除阿朱泡泡体 ttf（许可证存疑）
 
 **Windows 绿色包打包**（由 `pack.bat` 完成）：
+
+> ⛔ **打包前必做：先下模型产物**（`pack.bat` 自己不会下）。`models/llama.cpp/` 在
+> `.gitignore` 里、`models/embeddinggemma-2-Q8_0.gguf` 也未入 git → **全新克隆上一个都没有**。
+> 跳过这步会产出**没有向量模型的 7z**，用户装上直接卡在契约 A「向量模型产物缺失，
+> 程序无法启动」。
+> ```cmd
+> python scripts\package_all_dependencies.py
+> ```
+> 按当前平台下载 GGUF（约 310 MB，含 sha256 校验）+ llama.cpp 二进制，落到
+> `models\` 与 `models\llama.cpp\win32-x64\`。macOS 打包同样要先跑这条（见上一小节）。
+
 ```cmd
 pack.bat
 ```
