@@ -3,6 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <title>Niu 设置</title>
+  <script>
+    // Windows 平台判定（2026-10-11，圆角修复）：设置窗与 Chat 窗同款（frame:false + transparent:true），
+    // Windows 的 DWM 不为透明窗做圆角（macOS 由 Electron roundedCorners 默认提供，且仅 macOS 有此选项）
+    // ⇒ Windows 下由页面自绘圆角（见下方 html.plat-win 规则）。必须在首帧前打上，否则会闪一下直角。
+    if (/Windows/.test(navigator.userAgent)) {
+      document.documentElement.classList.add('plat-win');
+    }
+  </script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -15,6 +23,26 @@
       background-image:
         url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
     }
+
+    /* Windows 圆角外壳（2026-10-11，与 chat.html 同源）：设置窗为 frame:false + transparent:true，
+       Windows 的 DWM 不给透明窗做圆角 ⇒ 页面自绘。
+       注意本页纸底原本挂在 body 上：html 背景透明时 body 背景会「传播」到画布并按画布尺寸绘制，
+       那样 body 的 border-radius 管不住它（圆角失效）—— 故 plat-win 下先清掉 html/body 背景，
+       改由固定定位（position:fixed）的 body::before 画纸底：fixed ⇒ 页面滚动时也恒覆盖视口。
+       标题栏是不透明黄条、模态遮罩是全窗覆盖层，二者一并跟随圆角，否则会把角"方"回去。
+       macOS 由 Electron roundedCorners（默认 true、仅 macOS）提供系统圆角，故用 .plat-win 门控，避免叠加。 */
+    html.plat-win, html.plat-win body { background: transparent; }
+    html.plat-win body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background: #faf8f0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
+      border-radius: 10px;
+    }
+    html.plat-win .titlebar { border-radius: 10px 10px 0 0; }
+    html.plat-win #confirmModal { border-radius: 10px; }
     .container {
       padding: 8px 20px;
       -webkit-app-region: no-drag;
