@@ -25,6 +25,30 @@
 | `logs/api_stderr.log` | Python API stderr 输出 |
 | `logs/im_adapter_stderr.log` | IM 适配器（飞书等）stderr 输出 |
 
+#### 问题：上下文百分比显示不准 / 日志有 `[TokenCalculator] failed to load tokenizer ... falling back to litellm`
+
+**可能原因：**
+- `models/tokenizers/deepseek-v3/tokenizer.json` 缺失（约 7.8 MB 的 DeepSeek-V3 tokenizer）
+
+**影响：** **不会崩**，但 token 计数从"与 DeepSeek API 完全一致的本地计数"降级成 litellm 的粗略估算，
+上下文百分比、压缩触发时机会随之偏一点。这条只有一条 WARNING，极容易漏。
+
+**解决方案：**
+
+```bash
+# 1. 确认文件在不在（正常应输出 7847652）
+ls -l models/tokenizers/deepseek-v3/tokenizer.json
+
+# 2. 确认能否被程序加载（应输出 loaded tokenizer: ... 或 True）
+python -c "from agent.token_calculator import TokenCalculator; t=TokenCalculator(); print(bool(getattr(t,'_tokenizer',None)))"
+```
+
+- **从源码构建**：这个文件**在 git 里**（`models/tokenizers/deepseek-v3/tokenizer.json`），
+  `git clone` 就能拿到，无需额外下载。若 `git ls-files models/tokenizers/` 无输出，
+  说明版本库漏了它——从别处补回后必须 `git add`（见 `.gitignore` 里关于该目录的说明）。
+- **用安装包**：0.5.0 及以后的安装包已内置该文件。若你手上的包没有（早期构建漏掉），
+  从 git 仓取该文件放到上述路径即可，放完重启 Niu。
+
 #### 问题：启动报 llama-server 端口 19878 被占用 / 反复提示"未在 60s 内就绪"
 
 **可能原因：**

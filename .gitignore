@@ -94,6 +94,15 @@ models/*.part
 !models/**/*.txt
 !models/**/*.md
 
+# ⛔ models/tokenizers/ 下的文件【必须入 git】——不要给这个目录加 ignore 规则。
+# DeepSeek-V3 tokenizer（agent/token_calculator.py 固定加载 models/tokenizers/deepseek-v3/tokenizer.json）
+# 是 token 计数的本地真相源：它没有下载脚本、体积仅 7.8 MB，曾因
+# 「目录被 ignore + !models/**/*.json negation 兜着但没人 add」的组合而漏出版本库，
+# 导致打出的安装包缺文件、token 计数静默降级成 litellm 估算。
+# 新增/更换 tokenizer 后必须 git add 并确认 `git ls-files models/tokenizers/` 有输出。
+# 大文件（*.gguf / llama.cpp 二进制 / buffalo_l）仍由 scripts/package_all_dependencies.py
+# 下载或按 README 手动放置，那些才有理由 ignore。
+
 # User config files with API keys
 config/user-config*.json
 /data/mcp_tools.json
