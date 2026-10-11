@@ -733,13 +733,21 @@ impl Splash {
                                         i.total_errors
                                     }
                                 });
-                            let message = if status.init_failed {
+                            // total_errors 已在紧邻上方用同一模式算出（main.rs:720 起；v1.3 曾写 721，实测 off-by-one），
+                            // 此处只加一行取 critical
+                            let critical_errors = status
+                                .integrity
+                                .as_ref()
+                                .map_or(0, |i| i.critical_errors);
+                            let message = if critical_errors > 0 {
+                                // 真相源损坏：不可重建，会丢数据
                                 format!(
-                                    "LightRAG 初始化失败\n\n检测到数据损坏，请选择：\n\n是 - 尝试修复（修复未必成功，可能会丢失数据）\n否 - 直接退出（请自行从备份恢复）"
+                                    "检测到知识图谱原始数据损坏（{} 个严重问题）\n\n原始数据（图谱/文档/缓存）已受损，无法自动重建。\n\n是 - 尝试修复（可能无法完全恢复）\n否 - 直接退出（请自行从备份恢复）",
+                                    critical_errors
                                 )
                             } else {
                                 format!(
-                                    "检测到 {} 个数据一致性问题\n\n请选择：\n\n是 - 尝试修复（修复未必成功，可能会丢失数据）\n否 - 直接退出（请自行从备份恢复）",
+                                    "检测到 {} 个数据一致性问题\n\n若是刚升级版本：向量索引与当前模型口径不一致，需要重建。\n\n是 - 尝试修复：若知识图谱原始数据完好，将用当前模型重建索引\n  （取决于数据量，可能需要二十几分钟，请勿强制退出）\n否 - 直接退出（请自行从备份恢复）",
                                     total_errors
                                 )
                             };
@@ -1071,12 +1079,32 @@ impl Splash {
             .width(Length::Fixed(CARD_WIDTH - 28.0))
             .align_x(iced::alignment::Horizontal::Center)
             .wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+        // S5：向量模型产物缺失归因（仅显示层）。句柄恒为 describe_missing() 首行，
+        // 与 Python 侧字节级一致；非产物报文（如 llama-server 启动超时）不命中，
+        // 不会误提示"安装模型产物"。
+        let artifact_note = err.contains(MISSING_ARTIFACTS_HANDLE);
+        let mut column = iced::widget::column![title]
+            .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(6.0)));
+        if artifact_note {
+            column = column
+                .push(
+                    iced::widget::text(
+                        "这是向量模型产物缺失，不是知识图谱数据问题；请按 README 安装模型产物。",
+                    )
+                    .size(11)
+                    .font(CJK_FONT)
+                    .color(iced::Color::from_rgb(0.60, 0.42, 0.04)) // #9a6a0a 深琥珀（与缺失依赖标题同色）
+                    .width(Length::Fixed(CARD_WIDTH - 28.0))
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                )
+                .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(6.0)));
+        }
         let hint = iced::widget::text("按任意键退出程序")
             .size(12)
             .font(CJK_FONT)
             .color(iced::Color::from_rgb(0.42, 0.39, 0.34)); // 暖中灰（与缺失依赖列表同色）
-        let column = iced::widget::column![title]
-            .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(6.0)))
+        let column = column
             .push(body)
             .push(iced::widget::Space::new(Length::Fixed(0.0), Length::Fixed(8.0)))
             .push(hint)
@@ -1144,6 +1172,11 @@ fn read_startup_error() -> Option<String> {
         Some(trimmed.to_string())
     }
 }
+
+/// 源自 niu_api/internal/embedding_artifacts.py 的 describe_missing() 首行，
+/// 须与 Python 侧字节级一致（含中文全角标点）。这是 Rust 侧唯一副本：
+/// 改 Python 首行必须同步改这里。
+const MISSING_ARTIFACTS_HANDLE: &str = "向量模型产物缺失，程序无法启动。缺少：";
 
 /// Fatal 错误显示上限：130 字符 ≈ 5 视觉行 × 26 字/行（字号 12、卡片正文宽 ~312px）；
 /// 截断追加"…"后共 131 字符 = 6 视觉行。
