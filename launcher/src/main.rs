@@ -1466,8 +1466,18 @@ fn load_memory() -> Option<serde_json::Value> {
 
 /// notifyShutdown sends shutdown request to Python API
 fn notify_shutdown(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    // 8s (not 2s): the /api/shutdown handler first waits for LightRAG pending
+    // futures (1.5s timeout), then explicitly stops llama-server; when
+    // llama-server is busy, terminate waits the full 5s before escalating to
+    // kill (measured on real hardware), so the handler takes ~5.1s. A 2s
+    // client timeout always fired first, logging a spurious
+    // "Failed to notify Python API shutdown" WARN on every normal shutdown and
+    // wasting an extra sleep→SIGTERM stage (measured 16.7s total). 8s lets a
+    // normal shutdown receive the response, drop that WARN, and finish in ~8s.
+    // Worst case (terminate 5s + kill 5s) can still time out; the existing
+    // fallback ladder then runs and functionality is unaffected.
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(8))
         .build()?;
     let url = format!("http://127.0.0.1:{}/api/shutdown", port);
     client.post(&url).header("Content-Type", "application/json").send()?;
