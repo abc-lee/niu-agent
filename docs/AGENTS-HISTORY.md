@@ -759,3 +759,57 @@
 - **流程侧教训（PM 自犯，两次同类）**：审查期间改被审文档（S3pC、S4B 各中一次）→ 已立零容忍规矩：双审派出后，被审文档在最后一个审查员返回前一个字节都不许改。
 - **验证方法论教训**：① grep 穷举必须先确认覆盖面（PM 曾只 grep 3 个文件漏掉 `utils.py`/`lightrag.py` 得到假阴性，据此错误"修正"了子 Agent 的正确侦察）；② 验证第三方库行为必须在其**真实装配路径**上测（PM 直调 `EmbeddingFunc.__call__` 单件绕过包装层，得到假阳性）。
 - **已知边界**：`requirements.txt` 仍含 sentence-transformers/torch（PM 已核实 insightface **不**依赖 torch，可整组摘除省约 2.5 GB，但属收尾任务、需单独验证）；`lightrag_repair.py` 有孤儿注释 `# bge-base-zh-v1.5 推荐批量`；README 升级节警告写「按下面 3 步」但列表编号到 4（可选步骤）。
+
+---
+
+### 2026-10-11（续）
+
+#### 工程一收官：S1–S5 全部落地 + 实机验证 + 依赖瘦身
+
+**提交链**：`fe38c47d`(S1) → `1c897e13`(S2) → `2cbeae63`(S3' 换模型+README迁移说明) →
+`cd5787ab`(S4 统一前缀) → `555418a6`(S5 Rust 启动器文案) → `6ef0929c`(修复 repair 必现超时) →
+`165c071b`(requirements 摘 torch 四件套) → `324ac47f`(7 份活文档口径) →
+`f0fad9f5`(README 步骤计数+耗时 + VERSION 0.5.0)
+
+**用户 2026-10-11 两次关键拍板（各砍掉半个工程的方案）**：
+1. 「我们不需要写迁移程序，我们只是在 README 里边告诉他如何迁移，就是把这 3 个 VDB 直接删掉，
+   重新启动就完了。我们现在的程序自带修复功能，你也不需要动它，你只是给它换个模型。没有这么复杂。」
+   → 原 S3「指纹与迁移闭环」（manifest / `check_all` 集成 / 迁移探测 / 真相源备份 / 迁移弹窗）
+   **整版取消**，只保留 embedding.py 两处编辑 + README 迁移说明。
+2. 「必须做的你就做呀，但是数据要不要修复，那个无所谓，反正最后你都得总量的修复一遍，要不启动不了。」
+   → 确认做二次迁移；3,676 个孤儿 chunk 不追（它们源文本本就不在真相源里）。
+
+**用户实机验收（PM 已取证）**：「启动成功，目前看日志，所有的动态注入机制都正常，说明向量查询没有问题。」
+证据：`llama_server.log` 刚处理 task 110/111（`n_tokens=66`，带前缀短查询量级吻合）；
+`raw_http/20261011/` 51 个请求；`llm_interaction` 日志 10 次 `[系统动态信息]` 注入块全部正常。
+意义：动态注入本质是「用户输入做向量查询→召回实体→注入上下文」，10 次全正常即证明
+① 模型切换生效 ② S4 统一前缀口径在真实查询路径上一致 ③ 编码串行化修复在真实负载下稳定。
+
+**过程中修掉的存量缺陷（都不是本次改动引入，但被本次迁移暴露）**：
+- **repair 重建必现 `timed out`**（`6ef0929c`）：LightRAG `nano_vector_db_impl.py:123` 用
+  `asyncio.gather` 并发发全部批次，而 llama-server 单实例会把并发请求内部串行化 →
+  单请求延迟被顶到约 120s，**恰好压在 `_HTTP_TIMEOUT=120.0` 边界上**（PM 实测 8 批并发总耗时
+  119.9s）。S4 加前缀使文本变长约 35 字符，把这条 S2 时期潜伏的缺陷推过阈值
+  （S3' 首次迁移时还没过线，所以当时"侥幸"成功）。修法：`encode_batch` 加串行化锁，
+  修后客户端仍并发发 8 批、8/8 成功 0 失败（总耗时不变——llama.cpp 本来就要串行算）。
+- **7 份活文档里的危险残留**：`manual-dependencies.md` 原写「需重建 LightRAG 知识库
+  （删除 `~/.niu/lightrag_storage/` 后重新导入）」——那会连 3 个真相源一起毁掉。
+  已改为「只删 3 个 `vdb_*.json` 后重启走修复链」。
+
+**依赖瘦身（`165c071b`，约 2.5 GB）**：摘除 torch / transformers / sentence-transformers /
+accelerate。PM 用 importlib.metadata 逐包核算反向依赖，**并区分核心依赖与 extra 依赖**：
+torch 的唯一"依赖方"是 `albumentations` 的 `torch; extra == "pytorch"` 可选依赖，不触发。
+**误判防护**：第一版脚本把 extra 依赖也当核心依赖，曾得出"torch 被 albumentations 依赖、
+须保留"的错误结论；改为区分后才确认可摘。保守保留（体积可忽略但有可选 import 路径或易误伤）：
+huggingface_hub / hf-xet / safetensors / filelock / fsspec / sympy / networkx / Jinja2 /
+ml_dtypes / simsimd / tokenizers。`numpy==1.26.4` 铁律保留，约束来源改为仅 insightface/onnxruntime。
+
+**实测基线（勿重测）**：GGUF 309,855,456 B；768 维 / L2=1.0；llama-server 端口 19878、
+`-c 8192 -ub 2048`；冷启动就绪 2.6–5.8s；单条 encode 48 ms；子进程 RSS 338 MB；
+真机 repair 1032.5s / 1299.3s（17.2 / 21.7 分钟）；判别间隔 +0.1482 → **+0.2007**
+（优于官方非对称用法的 +0.1954）；现索引 10,667 向量（entities 3,940 / relationships 6,492 /
+chunks 235）。
+
+**不改的归档**：`docs/lightrag-plans/`（05 有 44 处旧模型引用，但是历史计划归档，状态
+"方案已讨论确认"、2026-04-22、未被 README/SYSTEM_MANUAL 索引）与 `docs/superpowers/`
+同为归档，改写会让它们失去存档价值。
