@@ -257,6 +257,13 @@ codesign --force --sign - /Applications/niu.app
 | `models/embeddinggemma-2-Q8_0.gguf` | 约 310 MB | EmbeddingGemma 2 向量模型权重（768 维，Apache 2.0） |
 | `models/llama.cpp/<平台目录>/llama-server` | 约 25 MB | llama.cpp 推理服务二进制（`darwin-x64` / `win32-x64`） |
 
+> 📌 **还有一个容易漏的：`models/tokenizers/deepseek-v3/tokenizer.json`（约 7.8 MB）**。
+> 它是 **DeepSeek-V3 tokenizer**，给 `agent/token_calculator.py` 做**本地 token 计数**用
+> （上下文百分比、压缩判断都依赖这个数）。**它已随安装包内置、也已入 git**，正常情况下无需任何操作。
+> 缺了它**不会崩**，但会静默降级成 litellm 的粗略估算 —— 上下文百分比会不准，且日志里只有一条
+> `[TokenCalculator] failed to load tokenizer ... falling back to litellm` 的 WARNING，很容易被忽略。
+> 从源码构建的人：这个文件在 git 里，`git clone` 就能拿到，不需要额外下载。
+
 **方式一：让脚本自动下（推荐）**
 
 程序自带的下载脚本会按当前平台下载到正确位置，并校验完整性：

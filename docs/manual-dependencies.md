@@ -318,7 +318,25 @@ def get_model():
 一起毁掉。正确做法：**只删 3 个 `vdb_*.json`** 后重启，程序走既有修复链用新模型重建索引
 （详见 README「从 0.4.x 升级（必做）」与「已在 0.5.0 上迁移过？」两节）。
 
-### 2.3 模型下载
+### 2.3 Token 计数 tokenizer（DeepSeek-V3）
+
+**文件：** `models/tokenizers/deepseek-v3/tokenizer.json`（7,847,652 B，**必须入 git**）
+
+**用途：** `agent/token_calculator.py` 固定加载它做**本地 token 计数**（上下文百分比、
+压缩时机判断都依赖这个数）。DeepSeek-V3 的 BPE 对中文最准确，计数结果与 DeepSeek API 一致。
+
+**为什么单列一节（2026-10-11 教训）：** 它曾因 `.gitignore` 里
+「`models/tokenizers/` 被 ignore + `!models/**/*.json` negation 兜着但**从来没人 add**」
+这一规则组合而漏出版本库 —— 结果是打包机 Clone 出来的树里没有它，打出的安装包缺文件，
+用户端 token 计数静默降级成 litellm 估算，而日志只有一条极易漏看的 WARNING。
+**现已在 `.gitignore` 显式注明该目录必须入 git，且文件已跟踪。**
+
+**缺失时的表现：** 不崩溃；`logger.warning("[TokenCalculator] failed to load tokenizer: ..., falling back to litellm")`。
+排查见 troubleshooting「上下文百分比显示不准」条。
+
+**新增/更换 tokenizer 后必须自检：** `git ls-files models/tokenizers/` 要有输出。
+
+### 2.4 模型下载
 
 **打包时预下载：**
 
