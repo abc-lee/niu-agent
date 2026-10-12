@@ -1024,3 +1024,63 @@ added_tokens 818，实测 `TokenCalculator` 已加载且计数正常）；`.giti
   被签名的都是 **git-ignored/未跟踪**文件（rustup 工具链、cargo、115 个 build-script 二进制、
   llama-server、Electron.app）；`git status` 确认仓库跟踪内容零改动。后续机器自愈，
   cargo test 无需再签名即可跑。**工具链二进制现带无害 ad-hoc 签名，保留。**
+
+#### S11：Gemma `decode()` 在多字节字符边界产出 U+FFFD 污染 chunk（修复 S10 自己引入的缺陷）
+
+- **现象**：S10 换 Gemma 口径后，真机 AC-2 入库一篇含 3000 个 `U+3000` 的文档，
+  其 chunk 内容出现 **`U+FFFD`（替换字符）**；源头 `full_docs` 里 U+3000 完好，污染发生在
+  `full_docs → text_chunks` 之间。
+- **根因（PM 实测实锤）**：Gemma 对 `U+3000` 等走 **byte-level BPE 回退**——
+  一个字符 = 3 个 token（`<0xE3><0x80><0x80>`），且 **3 个 token 共享同一 offset**。
+  LightRAG `chunking_by_token_size` 按 **token 下标**切片后 `decode(tokens[start:end])`，
+  边界落在字符组中间时解出的字节不构成合法 UTF-8 → `tokenizers` 吐 U+FFFD。
+  因 `chunk_key = compute_mdhash_id(content)` 是**内容哈希**，污染 → **chunk id 漂移**。
+  **纯短样本测不出**（不跨切片边界），故 S10 的 23 个单测全绿而真机暴露。
+- **上游状态（子 Agent 逐版本核实）**：**1.5.0–1.5.7 与 main 均未修**
+  （`chunker/token_size.py` 仍是 raw decode）；上游 main 的 `_token_window_source_span`
+  docstring 已明写 "byte-level BPE decode is non-concatenative at a multi-byte UTF-8 boundary"，
+  但**只用于 span 定位降级，不净化 chunk 内容**。HKUDS/LightRAG 无相关 issue。
+- **修法（S11 定案）**：**只改我们自己的仓** `niu_api/internal/gemma_tokenizer.py`
+  的 `decode()`——**不改 LightRAG wheel**（site-packages 不进 git；fork 改动需 push+升 pin+重装）。
+  - D-1：`__init__` **eager** 建 byte-token 表（256 项 `<0x??>`；**必须接受大写 hex**，
+    写成 `[0-9a-f]{2}` 会只匹配 100 项 → 表不合法 → **修复静默失效**）。
+    **`__init__` 内绝不能再取 `_cache_lock`**（非可重入，会自锁死——实测 `get_tokenizer()` 25 s 不返回）。
+  - D-2：**快速路径**——raw 结果不含 U+FFFD 则原样返回（干净输入**逐字节不变**）。
+  - D-3：慢路径剥离头/尾的孤儿续字节与残缺字符（各 ≤3）；**空 byte-run 必须显式短路**
+    （否则取 `run[-1]` 会 IndexError）；`head+tail >= len` 的退化片返回**空串**
+    （**不是归零**——归零会把 U+FFFD 放回去）；残留一律 **WARNING（永不 ERROR**，
+    因源文本本身可含 U+FFFD）。**`encode()` 与 token 计数零改动**（S10 前提）。
+- **验证（PM 亲自在真实数据上）**：全库 181 篇 / 242 片 `U+FFFD` 残留 **0**、非空白片被清空 **0**；
+  AC-2 文档末片 `[1150:1152]` 修复前 `'��'` → 修复后 `''`；109 个干净切片**逐字节零差异**；幂等 ✅。
+  新增 42 个用例（`tests/test_gemma_tokenizer.py` 共 65 passed），并给出逐条 pre-fix 归因。
+  点名回归 128 例：**126 passed + 2 既有环境依赖失败**（pristine 对照完全复现，与本次无关——
+  `test_lightrag_manager` 的两个 user-info 测试 patch 了**源模块**而生产侧是模块级 import，
+  mock 打不中消费方命名空间 → 读到真实 `~/.niu/memory.json`）。
+- **存量污染处置（D-8，负面结论）**：**repair 不会清理存量污染块**——实测
+  `_is_valid_text_chunk_entry` 对 3 个含 U+FFFD 的块**全返回 True**（判为"有效"原样保留）。
+  强行清理更糟：重切产出干净内容 → **不同 chunk_id**，而 GraphML 的 `source_id` 仍引用旧 id
+  → **只删不恢复**。故本机处置 = 用户删除那篇测试文档后重新入库；**S11 不新增清理逻辑**。
+- **修正一个广为流传的误解**：**知识图谱切片全程无 LLM 参与**。
+  `lightrag.py:1956` 调 `self.chunking_func(tokenizer, content, split_by_character,
+  split_by_character_only, overlap, size)` —— **无 LLM 参数**；默认值即机械的
+  `chunking_by_token_size`（`lightrag.py:338`），我们全仓未覆盖 `chunking_func`。
+  LLM 只在**切完之后**逐片做实体抽取。**1200 是窗口大小（也是上限），按 token 等分切，
+  不按自然段**。
+- **测试设计教训（用户指出，成立）**：AC-2 用的那篇文档 **90% 是全角空格**，
+  是**病态输入**——切片（机械）没问题，但下游实体抽取的 LLM 拿到的是一堆空格，
+  抽不出东西，图谱里只剩碎片。**用病态文档验不出真实场景**；已补 **AC-11：必须用真实文档
+  （含稀疏全角缩进）验收，断言 U+FFFD=0 且能抽出真实实体**。
+- **过程与成本（本人失误，记在此处）**：
+  - 一个 ~40 行单文件修复跑了 **6 轮双审**；R4 与 R6 两轮双 APPROVE，其间多为**文本措辞类**
+    发现（正是 skill 里"计划写法的反模式"）。门禁判定与"字面连续两轮"的偏差已在方案里留痕。
+  - **远端收费模型上失控**：某审查 agent 自写了个 O(12·n²) 的全库全窗口枚举脚本，
+    烧 **33 分钟 CPU** 且在重复他人已报的结论；PM 直到用户提醒才去查进程。
+    此前还有一次**误停了一个快跑完的 agent**。**两头都错**：既未设预算，也在该查时没查。
+  - **本地单槽位纪律**：明知 `local-vision` 是单槽位，仍一次派两个 → 第二个纯排队。
+    **正确做法：一次只派一个，返回后再派下一个。**
+  - **花费**：本会话收费模型合计 **$0.2023（≈¥1.5）**，大头是廉价 cacheRead；
+    真正浪费的是返工与空转，不是单价。
+  - **后续纪律**：派发提示词**必须带硬预算**（脚本数、单脚本秒数、总计算量上限）；
+    "用真实文档验证"这类开放要求要同时给**规模上限**，否则子 Agent 会做全量枚举。
+- **文档同步**：`docs/manual-dependencies.md` §2.3.1 增补「多字节边界的 decode 安全性」段；
+  方案 `docs/superpowers/plans/2026-10-12-s11-gemma-decode-utf8-boundary.md`（v1.9）。
