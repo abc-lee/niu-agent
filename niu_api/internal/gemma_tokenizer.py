@@ -84,6 +84,45 @@ class GemmaTokenizer:
 
     def __init__(self, tokenizer: Any) -> None:
         self._tokenizer = tokenizer
+        # S11 D-1：构造期 eager 建 byte-token 表（禁惰性：get_tokenizer() 的单例在持
+        # _cache_lock（非可重入）期间构造实例，__init__ 绝不能再碰锁（自锁死）；惰性
+        # 构建则无锁竞态 → 双重建表/半成品表，见方案 §5 D-1）。表挂在实例上，
+        # reset_cache() 后新实例重建，无模块级表。
+        # 表形失败（≠256 项 / 解析异常）→ 置空表 + 恰好一次 WARNING + decode()
+        # 退回原路径（INV-4 / AC-6）；实例本身仍可用并被缓存。
+        try:
+            table = self._build_byte_token_table()
+        except Exception:  # noqa: BLE001 —— INV-4：decode 主路径绝不抛异常
+            table = {}
+            logger.warning("[GemmaTokenizer] byte-token 表构建失败，decode() 退回原行为")
+        else:
+            count = len(table)
+            if count != 256:
+                table = {}
+                logger.warning(
+                    f"[GemmaTokenizer] byte-token 表形非法（应 256 项，实得 {count} 项），"
+                    "decode() 退回原行为"
+                )
+        self._byte_token_table = table
+
+    def _build_byte_token_table(self) -> dict[int, int]:
+        """S11 D-1：扫描词表，收集字节回退 token，建 token_id → 字节值表。
+
+        形如 ``<0x??>``（长度 6、前 3 字符 ``<0x``、尾字符 ``>``）的 token 恰好
+        256 个，覆盖全部字节值（如 U+3000 的组是 ``<0xE3><0x80><0x80>``）。
+        两位十六进制实测全为大写（如 ``<0xFE>``）——解析**必须接受大写**
+        （``int(s, 16)`` 大小写皆收）；若写成只收小写的正则 ``[0-9a-f]{2}``
+        只会匹配出 100 项，漏掉含 A–F 的 156 项，表被判 ≠256 而置空 →
+        修复静默失效（S11 §5 D-1）。合法表必须恰好 256 项，否则由调用方
+        （``__init__``）降级为空表。
+        """
+        table: dict[int, int] = {}
+        for token_id in range(self._tokenizer.get_vocab_size()):
+            text = self._tokenizer.id_to_token(token_id)
+            if text is None or len(text) != 6 or text[:3] != "<0x" or text[-1] != ">":
+                continue
+            table[token_id] = int(text[3:5], 16)
+        return table
 
     @property
     def tokenizer_id(self) -> str:
@@ -99,8 +138,92 @@ class GemmaTokenizer:
 
         返回 str（不是 List[str]）：块内容经此重建后参与 compute_mdhash_id，
         类型错了就是数据损坏。
+
+        S11 D-2/D-3：快速路径在 raw 结果不含 U+FFFD 时原样返回（INV-1，
+        与修复前逐字节相同）；慢路径对头/尾连续 byte-token 段剥离孤儿续字节
+        与残缺字符（各 ≤3 token，INV-3），使切片边界落在字节回退字符组
+        中间（如 U+3000 = 3 个共享同一 offset 的 token）时，tokenizers 吐出的
+        U+FFFD 不再污染 chunk 内容。退化切片（head + tail >= len(tokens)，
+        整片全由残缺/孤儿字节构成）→ 返回空串（不是归零——归零会把 U+FFFD
+        放回去）。剥离后仍残留 U+FFFD → 一律 WARNING（永不 ERROR：源文本
+        本身可含 U+FFFD，方案 R-8），携带 head/tail/raw_count/out_count。
         """
-        return self._tokenizer.decode(list(tokens))
+        toks = list(tokens)
+        raw = self._tokenizer.decode(toks)
+        if "\ufffd" not in raw:
+            return raw  # D-2 快速路径：绝大多数切片走这里，字节级零变化
+
+        table = self._byte_token_table
+        if not table:
+            return raw  # INV-4：表形失败 → 退回原行为
+
+        head = self._leading_orphan_count(toks)
+        tail = self._trailing_orphan_count(toks)
+        if head + tail >= len(toks):
+            return ""  # 退化切片：空串（方案 D-3 / R-9）
+
+        out = self._tokenizer.decode(toks[head : len(toks) - tail])
+        if "\ufffd" in out:
+            logger.warning(
+                f"[GemmaTokenizer] decode 边缘剥离后仍含 U+FFFD: "
+                f"head={head} tail={tail} "
+                f"raw_count={raw.count(chr(0xFFFD))} out_count={out.count(chr(0xFFFD))}"
+            )
+        return out
+
+    def _leading_orphan_count(self, toks: list[int]) -> int:
+        """D-3 头部：数 tokens 开头连续 byte-token 段中前导的续字节（0x80–0xBF）。
+
+        这些是切片从字符中间截断留下的孤儿续字节。段为空（首 token 不是
+        byte-token）→ 显式短路返回 0。
+        """
+        table = self._byte_token_table
+        i = 0
+        while i < len(toks) and toks[i] in table:
+            if not 0x80 <= table[toks[i]] <= 0xBF:
+                break
+            i += 1
+        return i
+
+    def _trailing_orphan_count(self, toks: list[int]) -> int:
+        """D-3 尾部：UTF-8 残缺字符应剥离的 token 数（INV-3：≤3）。
+
+        - 段为空（末 token 不是 byte-token）→ 0（必须显式短路，否则
+          按"整段都是续字节"分支取 run[-1] 会 IndexError，方案 R-4）；
+        - 整段都是续字节 → 全剥（孤儿前导，如 U+3000 末片 ``[0x80,0x80]``）；
+        - 否则看前一个 lead 字节声明的字符长度 L（0x00–0x7F→1、0xC0–0xDF→2、
+          0xE0–0xEF→3、0xF0–0xF7→4，非法 lead 记 L=0）：1 + 续字节数 < L
+          → 该字符残缺 → 剥离 lead + 续字节；否则尾部完整 → 剥 0。
+          续字节数超过 L-1 的"过冲"分支（仅手造切片可达，``encode()`` 产物
+          不可达，方案 R-12）不剥离，靠 decode 的 WARNING 兜底。
+        """
+        table = self._byte_token_table
+        n = len(toks)
+        i = n - 1
+        while i >= 0 and toks[i] in table:
+            i -= 1
+        run_len = n - 1 - i
+        if run_len == 0:
+            return 0
+        c = 0
+        while c < run_len and 0x80 <= table[toks[n - 1 - c]] <= 0xBF:
+            c += 1
+        if c == run_len:
+            return c  # 整段都是孤儿续字节
+        lead = table[toks[n - c - 1]]
+        if 0x00 <= lead <= 0x7F:
+            length = 1
+        elif 0xC0 <= lead <= 0xDF:
+            length = 2
+        elif 0xE0 <= lead <= 0xEF:
+            length = 3
+        elif 0xF0 <= lead <= 0xF7:
+            length = 4
+        else:
+            length = 0  # 非法 lead：0xF8–0xFF（0x80–0xBF 已计入续字节）
+        if length == 0 or 1 + c < length:
+            return 1 + c
+        return 0
 
 
 # 单例缓存（tokenizer.json 33MB，每次调用重新加载不可接受）+ 失败原因缓存

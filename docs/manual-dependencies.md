@@ -375,6 +375,19 @@ Rust 扩展），mac/Windows 均有官方 wheel；同版本 + 同 tokenizer.json
 传播到 operate.py 的 7 处 LLM 预算消费点，替换后 LLM 摘要/提示词/实体关系/gleaning/
 QA 的 token 预算口径一并改变（实测 Gemma/tiktoken 中位 0.9789、范围 0.860–1.401）。
 
+**多字节边界的 decode 安全性（S11）：** Gemma 对 `U+3000` 等字符走 **byte-level BPE 回退**
+（一个字符 = 2~4 个 token，共享同一 offset）。LightRAG 的 `chunking_by_token_size`
+按 **token 下标**切片后调 `decode(tokens[start:end])`，边界落在字符组中间时
+`tokenizers` 解出的字节不构成合法 UTF-8 → 输出 **`U+FFFD`（替换字符）**，
+污染 chunk 内容；因 `chunk_key = compute_mdhash_id(content)` 是**内容哈希**，
+污染会让 chunk id 漂移。S11 在 `GemmaTokenizer.decode()` 内做了**边界安全剥离**：
+快速路径（raw 结果不含 U+FFFD）**逐字节不变**；慢路径剥离头/尾连续的孤儿续字节
+与残缺字符（各 ≤3 token），整片残缺则返回空串，残留一律记 **WARNING（永不 ERROR**，
+因源文本本身可含 U+FFFD）。**`encode()` 与 token 计数完全不受影响**（口径仍与
+llama-server 一致）。注意副作用：若一个 chunk 内容全是全角空格，LightRAG 的
+`chunk_content.strip()` 会把它抹成空串（既有行为，非本次引入）。
+上游 LightRAG（含 1.5.x 与 main）**至今未修**此问题；详见 S11 方案与 AGENTS-HISTORY。
+
 **新增/更换后必须自检：** `git ls-files models/tokenizers/embeddinggemma-2/` 要有
 三个文件。
 
