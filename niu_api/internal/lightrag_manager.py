@@ -1222,19 +1222,100 @@ def _make_local_embedding_func():
     return _embed
 
 
-def _create_lightrag_instance():
-    """Create a LightRAG instance with our proxy and local models.
+# ============== S10：分段 tokenizer 口径对齐（Gemma） ==============
 
-    This is called lazily on first access. LightRAG must be installed
-    (pip install lightrag-hku).
+# 启动自检（_integrity_result）里本项错误的 check 名（去重键 + 检索键）。
+_TOKENIZER_CHECK_NAME = "gemma_tokenizer_unavailable"
+
+
+def _apply_chunk_tokenizer(rag_params: dict[str, Any]) -> str | None:
+    """把 Gemma tokenizer 注入 rag_params（方案 §2 D-1/D-3）。
+
+    tokenizer.json 可用 → ``rag_params["tokenizer"] = GemmaTokenizer`` 实例，
+    LightRAG ``__post_init__``（lightrag.py:584）的 ``if self.tokenizer is
+    None:`` 不再装配 tiktoken；不可用 → **不传该参数**，LightRAG 走自己的
+    tiktoken 默认（可用性优先），由本函数记 error 日志并向启动自检报一条
+    ERR（_report_tokenizer_selfcheck_error），绝不静默用错口径。
+
+    注意（D-1.1）：tokenizer 同时经 ``global_config = asdict(self)`` 传播到
+    operate.py 的 7 处 LLM 预算消费点（摘要/提示词/实体/关系截断、gleaning
+    输入预算、QA 块预算）——这是本方案显式接受的披露项（漂移已实测：中文
+    文档 Gemma/tiktoken 中位 0.97x、范围 0.91–1.40x），不是无影响。
+
+    Returns:
+        None = 注入成功；str = 失败原因（未注入）。
     """
-    try:
-        from lightrag.lightrag import LightRAG
-    except ImportError:
-        raise ImportError(
-            "LightRAG is not installed. Run: pip install lightrag-hku"
-        ) from None
+    from niu_api.internal.gemma_tokenizer import (
+        TOKENIZER_ID,
+        get_load_error,
+        get_tokenizer,
+    )
 
+    tokenizer = get_tokenizer()
+    if tokenizer is not None:
+        rag_params["tokenizer"] = tokenizer
+        logger.info(
+            f"[LightRAG] 分段 tokenizer = {TOKENIZER_ID}"
+            "（models/tokenizers/embeddinggemma-2/tokenizer.json，"
+            "与 llama-server /tokenize 口径一致）"
+        )
+        return None
+
+    reason = get_load_error() or "tokenizer.json 加载失败（详见 gemma_tokenizer error 日志）"
+    logger.error(
+        f"[LightRAG] Gemma tokenizer 不可用（{reason}），分段 tokenizer 退回 "
+        "tiktoken（LightRAG 默认）。分段口径与 llama-server 嵌入口径可能背离"
+        "（R-9 病灶：最坏 48 倍，超限 chunk 会被嵌入侧截断）"
+    )
+    _report_tokenizer_selfcheck_error(reason)
+    return reason
+
+
+def _report_tokenizer_selfcheck_error(reason: str) -> None:
+    """向启动自检（_integrity_result）报一条 ERR，让 splash 弹窗看得见（D-3）。
+
+    严重级别取 **minor**：本项不影响可用性（LightRAG 已退回 tiktoken），取
+    major/critical 会被 get_lightrag 三级门控拒初始化，与"退回 tiktoken 继续
+    跑"直接矛盾。minor 仍令 ``integrity.ok=False`` → launcher splash 的
+    StatusCheckResult 据此弹窗（main.rs 读 integrity.ok）。
+    """
+    global _integrity_result
+    if _integrity_result is None:
+        # 理论上 Phase 1（run_resilience_phase1）先于 eager init 跑过；
+        # None 只可能出现在测试/非常规调用路径，补一个最小结构不抛。
+        _integrity_result = {
+            "ok": True,
+            "critical_errors": 0,
+            "major_errors": 0,
+            "minor_errors": 0,
+            "errors": [],
+        }
+
+    errors = _integrity_result.setdefault("errors", [])
+    if any(e.get("check") == _TOKENIZER_CHECK_NAME for e in errors):
+        return  # 已报过（初始化重试不重复叠加）
+
+    errors.append({
+        "check": _TOKENIZER_CHECK_NAME,
+        "severity": "minor",
+        "msg": (
+            f"Gemma tokenizer 不可用（{reason}），分段口径退回 tiktoken，"
+            "与 llama-server 嵌入口径可能背离（R-9 病灶形态）"
+        ),
+    })
+    _integrity_result["minor_errors"] = _integrity_result.get("minor_errors", 0) + 1
+    _integrity_result["ok"] = False
+
+
+def _build_rag_params() -> dict[str, Any]:
+    """构建 LightRAG 构造参数（S10 从 _create_lightrag_instance 拆出）。
+
+    拆出原因：①tokenizer 注入点（_apply_chunk_tokenizer）可单测；②方案 §5 第 5 条
+    （I-5a）要拿生产同款 rag_params 构造 LightRAG 实例、对实例属性断言六项预算
+    取值，而不是照文件行号猜（实测该区间只设 2 项，其余是上游 dataclass 默认值）。
+    预算取值一律来自 preferences.json lightrag 段 + 上游 dataclass 默认值，
+    本函数不改任何预算配置（D-4：chunk_token_size 维持 1200 不动）。
+    """
     config = _get_lightrag_config()
     embedding_dim = _get_embedding_dim_for_lightrag()
 
@@ -1312,6 +1393,32 @@ def _create_lightrag_instance():
         logger.info("LightRAG reranker enabled")
     else:
         logger.info("LightRAG reranker disabled")
+
+    return rag_params
+
+
+def _create_lightrag_instance():
+    """Create a LightRAG instance with our proxy and local models.
+
+    This is called lazily on first access. LightRAG must be installed
+    (pip install lightrag-hku).
+    """
+    try:
+        from lightrag.lightrag import LightRAG
+    except ImportError:
+        raise ImportError(
+            "LightRAG is not installed. Run: pip install lightrag-hku"
+        ) from None
+
+    rag_params = _build_rag_params()
+
+    # S10（方案 2026-10-12-s10-tokenizer-alignment §2 D-1/D-3）：分段 tokenizer
+    # 与 llama-server 嵌入口径对齐（都是 Gemma，上限 8192；tiktoken 口径最坏
+    # 48 倍背离会被 S7 静默截断）。tokenizer.json 可用 → 注入 GemmaTokenizer
+    # （lightrag.py:584 `if self.tokenizer is None:` 不再装配 tiktoken）；
+    # 不可用 → **不传该参数**（LightRAG 走自己的 tiktoken 默认，可用性优先），
+    # 同时 error 日志 + 启动自检 ERR 让人看得见，绝不静默用错口径。
+    _apply_chunk_tokenizer(rag_params)
 
     rag = LightRAG(**rag_params)
     # lightrag-hku 1.4.15 requires explicit storage initialization

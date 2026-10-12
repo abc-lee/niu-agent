@@ -8,6 +8,18 @@
 
 ---
 
+### 2026-10-12
+
+#### 工程：S10 —— LightRAG 分段 tokenizer 与嵌入口径对齐（R-9 根治；方案 v1.6 七轮双审门禁通过）
+
+- **病灶（PM 全链实证）**：LightRAG 入库分段用 tiktoken（o200k_base，`chunk_token_size=1200`），llama-server 嵌入用 Gemma（上限 8192）。两把尺子最坏差 **48 倍**（o200k id `106378` 解码为 16×U+3000：tiktoken 记 1 token、Gemma 记 48 token，全词表穷尽扫描确认上界），1200 tiktoken token 的 chunk 最坏可达 57,600 Gemma token，被 S7 护栏静默截断（丢内容）。S7/S8 只能拦不能治，本期换尺子。
+- **方案**：`docs/superpowers/plans/2026-10-12-s10-tokenizer-alignment.md` v1.6（R1–R7 七轮双审，v1.6 起连续两轮双 APPROVE 零 P1/P2 门禁通过）。两轮 P1 的教训已固化在方案里：①**tokenizer 用途远不止分段**——`global_config = asdict(self)` 把注入实例传播到 operate.py 7 处 LLM 预算消费点（摘要/提示词/实体关系截断/gleaning 输入预算/QA 块预算），v1.0 曾断言"不影响 LLM 预算"被两角同抓证伪；②**"全局单值口径标记"被实测证伪**——同篇 5000 字中文文档两口径切出的块 ID 集合完全不同，首次新口径写入后标记翻转会让旧口径块永久无法复现 → 改为 repair **双口径各切一遍并合并**（块 ID 内容寻址，时序矛盾自然消失）。
+- **交付**：①新增 `niu_api/internal/gemma_tokenizer.py`——LightRAG `TokenizerInterface` 实现（签名与上游逐字一致：`encode(content)->List[int]` / **`decode(tokens: List[int])->str`**；写成 List[str] 是双审 B-P2 判定的损坏级错误：块内容会变 list、`compute_mdhash_id` 全错），`tokenizers==0.23.1` 原生 Rust 扩展加载 `models/tokenizers/embeddinggemma-2/tokenizer.json`，`add_special_tokens=False` 与 llama-server `/tokenize` 口径一致（B 角实测 5 样本×两态 + 6000 字文档共 3186 token 逐 ID 相同）；单例 + 失败返回 None 不抛 + error 日志 + `get_load_error()` 暴露原因；模块级 `TOKENIZER_ID="gemma-2"` 与 I-2a 冻结基线样本集（11 样本含最坏 16×U+3000=48）。②`lightrag_manager.py`——拆出 `_build_rag_params()`（I-5a 六项取值的可测接缝），构造 LightRAG 前 `_apply_chunk_tokenizer()`：可用则注入、不可用**不传该参数**（走 LightRAG tiktoken 默认）+ error 日志 + `_report_tokenizer_selfcheck_error()` 向启动自检报一条 **minor** ERR（splash 弹窗可见；取 minor 而非 major/critical 是因为后者会被三级门控拒初始化，与"退回 tiktoken 继续跑"矛盾）。③`lightrag_repair.py`——`full_docs_chunk_map` 改双口径合并：tiktoken 通道失效仍 fail-loud（存量全靠它，该 return 触发 `_repair_all_async` 整链 break 不得放宽），gemma 通道失效只 warning 跳过（三项内容：失败原因/被跳过的 full_docs 条数/"missing 中可能含 gemma 口径代的块、恢复后重跑 repair 可追回"）。④`models/tokenizers/embeddinggemma-2/` 三文件入 git（33.4MB tokenizer.json + 两配套小文件，`.gitignore:93` `!models/**/*.json` 兜底）。⑤`chunk_token_size` 等配置一律不动（D-4：由查询预算决定，与嵌入口径无关）。
+- **测试（全 mock）**：`tests/test_gemma_tokenizer.py`（23 例：往返/身份/冻结基线/decode 返回 str/降级不抛）、`tests/test_s10_repair_dual_chunking.py`（5 例：双口径合并含两代块 ID[compute_mdhash_id 间谍直取合并 map key 集]/混合代命中/降级 warning 三项[tiktoken 代仍命中、gemma 代如实进 missing]/tiktoken 通道失效仍 unrecoverable）、`tests/test_lightrag_manager.py` 追加 S10 两类（注入 I-1/降级自检 ERR/minor 不拒初始化；I-5a 六项对**构造后实例属性**断言——非文件行区间，v1.4 曾错把六项说成集中在 1283-1294 行，实测该区间只设 2 项）。**warning 断言必须用 loguru sink 捕获不是 caplog**（loguru 不进 stdlib logging，v1.4 写 caplog 会让断言静默落空即 R5 那个 P2；conftest 无共享 helper、仓库约 16 个测试 per-file 复制，新文件自带 `_capture_loguru`）。
+- **回归**：既有 6 个 repair 测试文件 134 passed/2 skipped；skill sync/region sync 68 passed；startup/integrity/vdb 57 passed/7 skipped；adapter/unified/server 148 passed + 2 既有失败（HEAD 工作树复跑同失败，与本工程无关）；manager 35 passed + 2 既有失败（`test_user_info_injection_*`，HEAD 复跑同失败，环境依赖真实用户 profile）。真实 `~/.niu/lightrag_storage` 86MB 副本对拍：HEAD 基线与本工程 counts 逐项相同（expected=2316 / repaired=228 / skipped_already_valid=195 / missing=2075 / final=423），副本含提示词示例文本 228 → **0**；真实 `~/.niu` 全程零写入。
+- **已知披露（D-1.1，禁止声称"不影响 LLM 预算"）**：替换后 LLM 摘要/提示词/实体关系/gleaning/QA 的 token 预算口径一并改变——全量 180 篇 Gemma/tiktoken 比值中位 **0.9789**、实际最小 **0.860**、抽样最大 **1.401**（同名目预算覆盖字符数中位约 102%、最坏约 71%）。作为真机 AC-2c 复测：中位偏离基线 ±0.05 以上或出现 >1.45 样本必须处置（调预算/块大小）后重测，不得只记一行放行。
+- **已知残留（本期明确不做）**：图谱悬空引用清理（另一工程）；向量库格式转换工具（另一工程，且需先解决"程序无法判断当前向量库口径"）；reranker 仍停用。
+
 ### 2026-10-06
 
 #### 工程：上下文使用率算错 + 折叠工具长期失败（用户实报两缺陷，10 笔提交 `b8e4d19f`→`c6b001fc`）

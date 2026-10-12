@@ -336,6 +336,48 @@ def get_model():
 
 **新增/更换 tokenizer 后必须自检：** `git ls-files models/tokenizers/` 要有输出。
 
+### 2.3.1 分段 tokenizer（EmbeddingGemma 2 / Gemma）
+
+**文件：** `models/tokenizers/embeddinggemma-2/tokenizer.json`（33,385,008 B，**必须入 git**）
++ `added_tokens.json` + `special_tokens_map.json`（配套小文件，一并入）
+
+**用途：** S10 起 LightRAG **知识图谱文档分段**的 token 口径。加载器
+`niu_api/internal/gemma_tokenizer.py` 实现 LightRAG `TokenizerInterface`
+（`encode(content)->List[int]` / `decode(tokens: List[int])->str`，签名与上游
+逐字一致），经 `tokenizers==0.23.1`（原生 Rust 扩展 `tokenizers.abi3.so`）加载，
+`add_special_tokens=False` 与 llama-server `/tokenize` 口径一致（双审 B 角实测
+逐 token ID 相同）。在 `niu_api/internal/lightrag_manager.py` 构造 LightRAG 时注入。
+
+**为什么换口径（病灶）：** 分段原用 tiktoken（o200k_base）、嵌入用 Gemma（上限
+8192），两把尺子最坏差 48 倍（16×U+3000：tiktoken 记 1、Gemma 记 48），
+1200 tiktoken token 的 chunk 最坏可达 57,600 Gemma token，被 S7 护栏静默截断。
+换成 Gemma 后「chunk ≤ 1200 Gemma token」天然满足「≤ 8192」，余量 6.8 倍。
+
+**来源（R-3 披露）：** 社区镜像 `mlx-community/embeddinggemma-300m-8bit`
+（官方 `google/embeddinggemma-300m` 为 gated 需登录接受许可）。两者 tokenizer 与
+llama-server 计数一致已实测；若日后怀疑镜像与官方漂移，按 I-2b 重新对拍。
+
+**双平台（R-5）：** `tokenizers` 不是纯 Python wheel（自包含 python 内是原生
+Rust 扩展），mac/Windows 均有官方 wheel；同版本 + 同 tokenizer.json 下 token
+计数确定性一致，由 I-2a 冻结基线在两个平台各自跑同一基线守护。
+
+**修复侧的配套（D-2）：** `niu_api/internal/lightrag_repair.py` 重建
+`full_docs_chunk_map` 时用 tiktoken / gemma **两种口径各切一遍并合并**（块 ID 内容
+寻址，两代块 ID 不相交），存量数据不掉 missing。gemma 通道加载失败只 warning
+跳过（warning 含失败原因 / 被跳过的 full_docs 条数 / 追回提示），tiktoken 通道
+仍 fail-loud。
+
+**缺失时的表现（D-3）：** 不崩溃；`niu_api/internal/gemma_tokenizer.py` 记 error
+日志，`lightrag_manager` 向启动自检报一条 minor ERR（splash 弹窗可见），分段
+退回 tiktoken 继续可用。
+
+**已知披露（D-1.1，不是无影响）：** tokenizer 同时经 `global_config = asdict(self)`
+传播到 operate.py 的 7 处 LLM 预算消费点，替换后 LLM 摘要/提示词/实体关系/gleaning/
+QA 的 token 预算口径一并改变（实测 Gemma/tiktoken 中位 0.9789、范围 0.860–1.401）。
+
+**新增/更换后必须自检：** `git ls-files models/tokenizers/embeddinggemma-2/` 要有
+三个文件。
+
 ### 2.4 模型下载
 
 **打包时预下载：**
