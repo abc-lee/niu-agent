@@ -646,3 +646,180 @@ class TestLlmModelFunc:
 
         history_msg = [m for m in captured_messages if m["content"] == ""]
         assert len(history_msg) >= 1, f"Expected a message with empty content, got: {captured_messages}"
+
+
+# ============== S10：分段 tokenizer 口径对齐（Gemma）==============
+
+
+class TestChunkTokenizerInjection:
+    """S10（方案 §2 D-1/D-3）：构造 LightRAG 时注入 Gemma tokenizer 与降级。
+
+    全 mock：不跑 _create_lightrag_instance 全链（不碰 LiteLLM/embedding/真实
+    ~/.niu），只测注入点 _apply_chunk_tokenizer + 自检报错 + I-5a 六项取值。
+    断言 I-1（可用时 tokenizer 不是 TiktokenTokenizer）与 I-4（不可用→退回
+    tiktoken 仍可初始化）。
+    """
+
+    def test_injected_when_tokenizer_json_available(self):
+        """tokenizer.json 可用 → 注入 GemmaTokenizer（I-1：不是 TiktokenTokenizer）。"""
+        from lightrag.utils import TiktokenTokenizer
+
+        import niu_api.internal.lightrag_manager as lm
+        from niu_api.internal.gemma_tokenizer import TOKENIZER_ID, GemmaTokenizer
+
+        params: dict = {}
+        reason = lm._apply_chunk_tokenizer(params)
+
+        assert reason is None
+        assert "tokenizer" in params
+        assert isinstance(params["tokenizer"], GemmaTokenizer)
+        # I-1：不是 tiktoken（LightRAG __post_init__ 的 if self.tokenizer is None 不会再装配）
+        assert not isinstance(params["tokenizer"], TiktokenTokenizer)
+        assert params["tokenizer"].tokenizer_id == TOKENIZER_ID == "gemma-2"
+        assert callable(params["tokenizer"].encode)
+        assert callable(params["tokenizer"].decode)
+
+    def test_not_injected_when_tokenizer_json_missing(self, tmp_path, monkeypatch):
+        """tokenizer.json 不存在 → 不传 tokenizer 参数（LightRAG 走 tiktoken 默认）、
+        返回失败原因、记 error 日志（D-3：绝不静默用错口径）。"""
+        from loguru import logger
+
+        import niu_api.internal.gemma_tokenizer as gt
+        import niu_api.internal.lightrag_manager as lm
+
+        monkeypatch.setattr(gt, "TOKENIZER_JSON_PATH", tmp_path / "nope.json")
+        gt.reset_cache()
+        lm._integrity_result = None
+        try:
+            messages = []
+            sink_id = logger.add(lambda m: messages.append(str(m)), level="ERROR")
+            try:
+                params: dict = {}
+                reason = lm._apply_chunk_tokenizer(params)
+            finally:
+                logger.remove(sink_id)
+
+            assert isinstance(reason, str) and reason, "不可用必须返回失败原因"
+            assert "tokenizer" not in params, "不可用不得注入 tokenizer（让 LightRAG 走 tiktoken 默认）"
+            assert any("退回 tiktoken" in m for m in messages), f"应有 error 日志: {messages}"
+
+            # 启动自检报一条 ERR（D-3：让人在弹窗看得见）
+            result = lm._integrity_result
+            assert result is not None
+            assert result["ok"] is False
+            assert result["minor_errors"] == 1
+            entry = result["errors"][0]
+            assert entry["check"] == "gemma_tokenizer_unavailable"
+            assert entry["severity"] == "minor"  # minor：不影响可用性（已退回 tiktoken）
+            assert reason in entry["msg"]
+
+            # 不重复叠加（初始化重试）
+            lm._apply_chunk_tokenizer(params)
+            assert lm._integrity_result["minor_errors"] == 1
+            assert len(lm._integrity_result["errors"]) == 1
+        finally:
+            gt.reset_cache()
+            lm._integrity_result = None
+
+    def test_minor_tokenizer_error_still_allows_init(self, monkeypatch):
+        """自检 minor 错误（tokenizer 降级）下 get_lightrag 仍能初始化
+        （可用性优先；major/critical 才会被三级门控拒绝）。"""
+        import niu_api.internal.lightrag_manager as mgr
+
+        integrity = {
+            "ok": False,
+            "critical_errors": 0,
+            "major_errors": 0,
+            "minor_errors": 1,
+            "errors": [{"check": "gemma_tokenizer_unavailable", "severity": "minor", "msg": "x"}],
+        }
+        fake_rag = object()
+        with mgr._rag_lock:
+            old_instance = mgr._rag_instance
+            old_integrity = mgr._integrity_result
+            mgr._rag_instance = None
+            mgr._integrity_result = integrity
+        try:
+            with patch(
+                "niu_api.internal.lightrag_manager._create_lightrag_instance",
+                return_value=fake_rag,
+            ):
+                result = mgr.get_lightrag()
+            assert result is fake_rag, "minor（tokenizer 降级）不得拒绝初始化"
+        finally:
+            with mgr._rag_lock:
+                mgr._rag_instance = old_instance
+                mgr._integrity_result = old_integrity
+
+
+class TestChunkConfigUnchangedI5a:
+    """I-5a：方案 §5 第 5 条——六项预算配置取值不变。
+
+    断言对象是**构造后的 LightRAG 实例属性**（不是文件行区间）：用生产同款
+    _build_rag_params() + _apply_chunk_tokenizer() 构造实例，逐项断言。
+    """
+
+    def test_six_budget_values_unchanged(self, tmp_path, monkeypatch):
+        from lightrag.constants import (
+            DEFAULT_MAX_ENTITY_TOKENS,
+            DEFAULT_MAX_EXTRACT_INPUT_TOKENS,
+            DEFAULT_MAX_RELATION_TOKENS,
+            DEFAULT_MAX_TOTAL_TOKENS,
+            DEFAULT_SUMMARY_MAX_TOKENS,
+        )
+        from lightrag.lightrag import LightRAG
+
+        import niu_api.internal.lightrag_manager as lm
+
+        # 隔离：working_dir 指 tmp、跳过后台探测、配置与 embedding 维度可控
+        monkeypatch.setattr(lm, "STORAGE_DIR", tmp_path / "storage")
+        monkeypatch.setattr(lm, "_trigger_background_probe_if_needed", lambda: None)
+        monkeypatch.setattr(lm, "_get_lightrag_config", lambda: {})
+        monkeypatch.setattr(lm, "_get_embedding_dim_for_lightrag", lambda: 768)
+
+        params = lm._build_rag_params()
+        lm._apply_chunk_tokenizer(params)
+
+        rag = LightRAG(**params)
+
+        # I-5a 六项：取值 == 上游 dataclass 默认值（本仓 grep 零匹配，不得被改动）
+        assert rag.summary_max_tokens == DEFAULT_SUMMARY_MAX_TOKENS == 1200
+        assert rag.max_total_tokens == DEFAULT_MAX_TOTAL_TOKENS == 30000
+        assert rag.max_entity_tokens == DEFAULT_MAX_ENTITY_TOKENS == 6000
+        assert rag.max_relation_tokens == DEFAULT_MAX_RELATION_TOKENS == 8000
+        assert rag.max_extract_input_tokens == DEFAULT_MAX_EXTRACT_INPUT_TOKENS == 20480
+        # D-4：chunk_token_size 维持 1200（由查询预算决定，与嵌入口径无关）
+        assert rag.chunk_token_size == 1200
+        # rag_params 里也不得夹带这六项（注入后只多 tokenizer 一个键）
+        assert "tokenizer" in params
+        for forbidden in (
+            "summary_max_tokens", "max_total_tokens", "max_entity_tokens",
+            "max_relation_tokens", "max_extract_input_tokens",
+        ):
+            assert forbidden not in params, f"rag_params 不得夹带 {forbidden}（取值必须走上游默认）"
+
+        # I-1 实例级确认：注入的 tokenizer 生效（不是 LightRAG 自装的 tiktoken）
+        from lightrag.utils import TiktokenTokenizer
+
+        from niu_api.internal.gemma_tokenizer import GemmaTokenizer
+
+        assert isinstance(rag.tokenizer, GemmaTokenizer)
+        assert not isinstance(rag.tokenizer, TiktokenTokenizer)
+
+    def test_chunk_size_from_config_is_used(self, tmp_path, monkeypatch):
+        """chunk_token_size 来自 preferences.json lightrag 段（D-4：不动取值）。"""
+        from lightrag.lightrag import LightRAG
+
+        import niu_api.internal.lightrag_manager as lm
+
+        monkeypatch.setattr(lm, "STORAGE_DIR", tmp_path / "storage")
+        monkeypatch.setattr(lm, "_trigger_background_probe_if_needed", lambda: None)
+        monkeypatch.setattr(lm, "_get_lightrag_config", lambda: {"chunk_token_size": 1200, "chunk_overlap_token_size": 50})
+        monkeypatch.setattr(lm, "_get_embedding_dim_for_lightrag", lambda: 768)
+
+        params = lm._build_rag_params()
+        lm._apply_chunk_tokenizer(params)
+        rag = LightRAG(**params)
+
+        assert rag.chunk_token_size == 1200
+        assert rag.chunk_overlap_token_size == 50

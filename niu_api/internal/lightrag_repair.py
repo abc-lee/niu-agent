@@ -647,6 +647,11 @@ async def repair_text_chunks() -> dict[str, Any]:
     3. await storage.initialize()（读已有 kv_store_text_chunks.json 到内存）
     4. 解析 GraphML 提活跃 chunk_id + 识别脑区节点（v8 逻辑保留）
     5. full_docs 优先：full_docs chunking 反查（补 full_doc_id + tokens + chunk_order_index + file_path）
+       ——S10（方案 §2 D-2）：tiktoken 与 gemma 两种口径各切一遍、按内容哈希合并进同一个
+       full_docs_chunk_map。块 ID 内容寻址，两代口径切出的块 ID 不相交；合并后
+       无论数据是哪一代口径产生的都能复现（不需要写入时序标记）。gemma 通道
+       加载失败只 warning 跳过该通道（D-2.1），tiktoken 通道仍可覆盖存量数据；
+       仅两通道全失效才 fail-loud。
     6. full_docs 没有则脑区节点直接构造；三处都没有 → missing
     7. 逐条判定后只 upsert 需要新建/修复的条目：
        - 已存在且内容有效（_is_valid_text_chunk_entry）→ 原样保留，不动
@@ -700,7 +705,10 @@ async def repair_text_chunks() -> dict[str, Any]:
     - GraphML 损坏 → unrecoverable
     - cache 损坏（JSON 解析失败）→ unrecoverable
     - full_docs 损坏 → unrecoverable
-    - tokenizer 加载失败 → unrecoverable
+    - tiktoken 通道 tokenizer 加载失败 → unrecoverable（存量数据全靠它；
+      该 return 会触发 _repair_all_async 整链 break，不得放宽）
+    - gemma 通道 tokenizer 加载失败 → 仅 warning 跳过该通道（S10 D-2.1），
+      不返回 error，repair 照常完成
     - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
     storage_dir = _storage_dir()
@@ -915,6 +923,10 @@ async def repair_text_chunks() -> dict[str, Any]:
     # 用于脑区/cache-derived chunks 现算 tokens 时复用 tokenizer
     tokenizer: Any = None
     if full_docs:
+        # S10（方案 §2 D-2/D-2.1）：tiktoken 与 gemma 两通道**独立加载**。
+        # tiktoken 通道失效仍 fail-loud——存量数据全靠它，且该 return 会触发
+        # _repair_all_async 整链 break（不得放宽）；gemma 通道失效只 warning
+        # 并跳过，不让整个 repair 失败（存量数据 tiktoken 通道可覆盖）。
         tokenizer = _get_tokenizer()
         if tokenizer is None:
             return {
@@ -926,6 +938,28 @@ async def repair_text_chunks() -> dict[str, Any]:
                 "message": "TiktokenTokenizer 加载失败，无法 chunking",
                 "unrecoverable": True,
             }
+        # gemma 通道：独立 try（铁律 3 同款隔离，不调 get_lightrag）。块 ID 是
+        # 内容寻址，两种口径切出的块 ID 集合不相交，必须两代都重建才能让图谱
+        # 引用不掉 missing；单一口径会让另一代块永久 missing（v1.1 证伪的
+        # "全局单值口径标记"同款病灶）。
+        gemma_tokenizer: Any = None
+        gemma_error = ""
+        try:
+            from niu_api.internal.gemma_tokenizer import (
+                get_load_error as _get_gemma_load_error,
+            )
+            from niu_api.internal.gemma_tokenizer import (
+                get_tokenizer as _get_gemma_tokenizer,
+            )
+
+            gemma_tokenizer = _get_gemma_tokenizer()
+            if gemma_tokenizer is None:
+                gemma_error = (
+                    _get_gemma_load_error() or "gemma tokenizer 返回 None（tokenizer.json 缺失或加载失败）"
+                )
+        except Exception as e:  # noqa: BLE001
+            gemma_error = f"{type(e).__name__}: {e}"
+
         chunk_token_size, chunk_overlap = _get_chunk_config()
 
         from lightrag.operate import chunking_by_token_size
@@ -936,6 +970,8 @@ async def repair_text_chunks() -> dict[str, Any]:
             reverse=True,
         )
 
+        # 待重切文档清单（两通道共用；gemma 通道失效时用于报"被跳过的条数"）
+        chunkable_docs: list[tuple[str, str, str, int]] = []
         for doc_id, doc_data in sorted_docs:
             if not isinstance(doc_data, dict):
                 continue
@@ -944,24 +980,43 @@ async def repair_text_chunks() -> dict[str, Any]:
                 continue
             file_path = doc_data.get("file_path", "") or "unknown_source"
             create_time = doc_data.get("create_time", 0)
+            chunkable_docs.append((doc_id, content, file_path, create_time))
 
-            chunks = chunking_by_token_size(
-                tokenizer, content,
-                chunk_token_size=chunk_token_size,
-                chunk_overlap_token_size=chunk_overlap,
+        if gemma_tokenizer is None:
+            # D-2.1：warning 三项缺一不可测——①失败原因 ②被跳过的 full_docs
+            # 文档条数 ③"missing 中可能含 gemma 口径代的块、恢复后重跑可追回"。
+            logger.warning(
+                f"[LightRAGRepair] gemma 口径通道加载失败（{gemma_error}），"
+                f"本次跳过 {len(chunkable_docs)} 篇 full_docs 的 gemma 口径重切，"
+                "仅用 tiktoken 口径重建；记入 missing 的块中可能包含 gemma 口径代的块，"
+                "恢复该通道后重跑 repair 可追回"
             )
-            for chunk in chunks:
-                chunk_content = chunk["content"]
-                cid = compute_mdhash_id(chunk_content, prefix="chunk-")
-                if cid not in full_docs_chunk_map:
-                    full_docs_chunk_map[cid] = (
-                        create_time,
-                        doc_id,
-                        chunk_content,
-                        file_path,
-                        chunk.get("tokens", 0),
-                        chunk.get("chunk_order_index", 0),
-                    )
+
+        # 口径顺序：tiktoken 先、gemma 后。同内容 → 同 cid 已去重（下面
+        # `if cid not in full_docs_chunk_map`）；两口径边界不同 → 内容不同 →
+        # 不同 key，属不同块而非重复（双审 B 角复核：合并只为让两代块都能被
+        # 图谱引用命中，repair 只为活跃 ID 落盘，不会造成数据膨胀）。
+        for chunk_tokenizer in (tokenizer, gemma_tokenizer):
+            if chunk_tokenizer is None:
+                continue
+            for doc_id, content, file_path, create_time in chunkable_docs:
+                chunks = chunking_by_token_size(
+                    chunk_tokenizer, content,
+                    chunk_token_size=chunk_token_size,
+                    chunk_overlap_token_size=chunk_overlap,
+                )
+                for chunk in chunks:
+                    chunk_content = chunk["content"]
+                    cid = compute_mdhash_id(chunk_content, prefix="chunk-")
+                    if cid not in full_docs_chunk_map:
+                        full_docs_chunk_map[cid] = (
+                            create_time,
+                            doc_id,
+                            chunk_content,
+                            file_path,
+                            chunk.get("tokens", 0),
+                            chunk.get("chunk_order_index", 0),
+                        )
 
     # 9. 遍历活跃 chunk_id，逐条判定：已存在且有效 → 保留；否则有源则重建/修复。
     #    来源优先级：full_docs（chunk 原文真相源）→ 脑区直接构造 → missing。

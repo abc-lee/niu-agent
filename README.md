@@ -264,6 +264,22 @@ codesign --force --sign - /Applications/niu.app
 > `[TokenCalculator] failed to load tokenizer ... falling back to litellm` 的 WARNING，很容易被忽略。
 > 从源码构建的人：这个文件在 git 里，`git clone` 就能拿到，不需要额外下载。
 
+> 📌 **还有一个：`models/tokenizers/embeddinggemma-2/tokenizer.json`（约 33 MB）**。
+> 它是 **Gemma 官方 tokenizer**，给 LightRAG **知识图谱分段**用（S10 起分段的 token
+> 口径与 llama-server 嵌入一致，都是 Gemma）。**它已随安装包内置、也已入 git**
+> （铁律十二：运行时要读必须入 git），正常情况下无需任何操作。来源为社区镜像
+> `mlx-community/embeddinggemma-300m-8bit`（官方 `google/embeddinggemma-300m` 为
+> gated 需登录接受许可；两者 tokenizer 与 llama-server 计数逐 token ID 一致已实测）。
+> 缺了它**不会崩**：启动日志记 error、启动自检弹窗报一条 ERR，分段自动退回
+> tiktoken（LightRAG 默认口径）继续可用——但分段口径与嵌入口径可能背离
+> （最坏 48 倍，超限 chunk 会被嵌入侧截断）。
+>
+> ⚠️ **已知披露（不影响可用性）**：分段 tokenizer 换 Gemma 后，LLM 侧的 token 预算
+> 口径（摘要/提示词/实体关系截断/gleaning 输入/QA 块预算）一并改变——同名目预算
+> 覆盖字符数中位约 102%，个别文档最大约 71%（实测全量 180 篇 Gemma/tiktoken 比值
+> 中位 0.9789、最小 0.860、抽样最大 1.401）。这是换取 48 倍病理消失的显式取舍，
+> 详见 `docs/superpowers/plans/2026-10-12-s10-tokenizer-alignment.md` §2 D-1.1。
+
 **方式一：让脚本自动下（推荐）**
 
 程序自带的下载脚本会按当前平台下载到正确位置，并校验完整性：
