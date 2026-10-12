@@ -563,9 +563,12 @@ def _check_truth_sources_intact() -> dict[str, Any]:
 
 
 async def repair_text_chunks() -> dict[str, Any]:
-    """v9：从 GraphML 提活跃 chunk_id + cache original_prompt 优先 + full_docs fallback。
+    """v9：从 GraphML 提活跃 chunk_id + full_docs 优先 + 脑区直接构造 + cache 仅提供 llm_cache_list。
 
-    真相源：GraphML（活跃 chunk_id）+ kv_store_llm_response_cache.json（chunk 原文）+ kv_store_full_docs.json（fallback）
+    真相源：GraphML（活跃 chunk_id）+ kv_store_full_docs.json（chunk 原文）+
+            脑区 GraphML 节点（脑区 chunk 直接构造）+
+            kv_store_llm_response_cache.json（仅 llm_cache_list 列表信息 + 损坏检测，
+            不作为 chunk 内容来源）
     派生：kv_store_text_chunks.json（通过 JsonKVStorage.upsert 写）
 
     走 storage 接口的好处：
@@ -578,11 +581,24 @@ async def repair_text_chunks() -> dict[str, Any]:
     2. 实例化 JsonKVStorage(namespace=text_chunks, embedding_func=None)
     3. await storage.initialize()（读已有 kv_store_text_chunks.json 到内存）
     4. 解析 GraphML 提活跃 chunk_id + 识别脑区节点（v8 逻辑保留）
-    5. cache original_prompt 优先（正则提取 ``` 之间内容，多条取 create_time 最大）
-    6. cache 没有则 full_docs chunking 反查（v8 逻辑保留）
+    5. full_docs 优先：full_docs chunking 反查（补 full_doc_id / tokens / chunk_order_index / file_path）
+    6. full_docs 没有则脑区节点直接构造；三处都没有 → missing
     7. 调 await storage.upsert(new_tc) + await storage.index_done_callback()
     8. 全新用户（GraphML 无活跃 chunk）→ upsert({}) 会被 storage 跳过，需手动写空文件
        （LightRAG 正常启动全新用户时 text_chunks.json 是 {}，不是不存在）
+
+    为什么不从 cache original_prompt 抠 chunk 原文（旧 9.1 路径，已真删，勿回退）：
+    - cache entry 的 original_prompt 是**完整提示词**，不是文档原文；
+    - gleaning 轮（补充抽取遗漏实体的后续轮）提示词结构为
+      ---Task---/---Instructions---/---Role---/---Instructions---/---Examples---，
+      没有 ---Data to be Processed--- 段，整条不含文档原文，只有少样本示例
+      （"while Alex clenched his jaw..."）；
+    - 每个 chunk 会被 LLM 调多次（首次抽取 + 若干 gleaning 轮），按 create_time
+      最大取 entry 极易取到 gleaning 轮；
+    - 实测：536 条缓存中 234 条的 original_prompt 第一个三反引号块是示例文本，
+      0 条是文档原文（对照：full_docs 180 篇全部是真实文档，0 篇含示例文本）；
+    - 因此"抠第一个三反引号块当 chunk 原文"结构上不可靠，已删除该路径（不是加
+      if 绕过），cache 只保留 llm_cache_list 与损坏检测两个用途。
 
     异常处理：
     - GraphML 损坏 → unrecoverable
@@ -591,8 +607,6 @@ async def repair_text_chunks() -> dict[str, Any]:
     - tokenizer 加载失败 → unrecoverable
     - storage.initialize / upsert / index_done_callback 异常 → error（不写文件）
     """
-    import re
-
     storage_dir = _storage_dir()
     full_docs_path = storage_dir / "kv_store_full_docs.json"
     cache_path = storage_dir / "kv_store_llm_response_cache.json"
@@ -711,7 +725,7 @@ async def repair_text_chunks() -> dict[str, Any]:
             "message": "GraphML 无活跃 chunk_id，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
         }
 
-    # 5. 读 cache（主补充源）
+    # 5. 读 cache（仅用于损坏检测 + llm_cache_list 列表信息，不作为 chunk 内容来源）
     cache: dict[str, Any] = {}
     cache_corrupt = False
     if cache_path.exists():
@@ -742,9 +756,11 @@ async def repair_text_chunks() -> dict[str, Any]:
         elif loaded is None and full_docs_path.exists():
             full_docs_corrupt = True
 
-    # 7. 构建 cache 的 chunk_id -> [(create_time, original_prompt, cache_key)] 映射
-    cache_by_chunk_id: dict[str, list[tuple[int, str, str]]] = {}
-    cache_pattern = re.compile(r"```\s*(.+?)\s*```", re.DOTALL)
+    # 7. 构建 cache 的 chunk_id -> [(create_time, cache_key)] 映射（只供 llm_cache_list 用）
+    #    已知坑（P0 修复，勿回退）：不要顺手抠 entry 的 original_prompt 当 chunk 原文——
+    #    那是完整提示词不是原文，gleaning 轮提示词第一个三反引号块永远是少样本示例
+    #    （实测 536 条缓存 234 条如此、0 条是原文），详见函数 docstring。
+    cache_by_chunk_id: dict[str, list[tuple[int, str]]] = {}
     for cache_key, entry in cache.items():
         if not isinstance(entry, dict):
             continue
@@ -754,8 +770,7 @@ async def repair_text_chunks() -> dict[str, Any]:
         if not cid:
             continue
         ct = entry.get("create_time", 0)
-        op = entry.get("original_prompt", "")
-        cache_by_chunk_id.setdefault(cid, []).append((ct, op, cache_key))
+        cache_by_chunk_id.setdefault(cid, []).append((ct, cache_key))
 
     for cid in cache_by_chunk_id:
         cache_by_chunk_id[cid].sort(key=lambda x: x[0], reverse=True)
@@ -827,41 +842,15 @@ async def repair_text_chunks() -> dict[str, Any]:
                     )
 
     # 9. 遍历活跃 chunk_id 构建 new_tc
+    #    来源优先级：full_docs（chunk 原文真相源）→ 脑区直接构造 → missing。
+    #    已删除的 9.1（cache original_prompt 抠原文）：那是完整提示词不是原文，
+    #    gleaning 轮提示词不含文档输入段，第一个三反引号块永远是少样本示例——
+    #    结构上不可靠，勿以任何形式回退（详见函数 docstring）。
     new_tc: dict[str, dict[str, Any]] = {}
     missing_chunks: list[str] = []
 
     for cid in active_chunk_ids:
-        # 9.1 cache original_prompt 提取（取 create_time 最大的 entry）
-        if cid in cache_by_chunk_id:
-            latest_entry = cache_by_chunk_id[cid][0]
-            _, op, _ = latest_entry
-            m = cache_pattern.search(op)
-            if m:
-                chunk_content = m.group(1)
-                # 反查 full_docs_chunk_map 补 full_doc_id / tokens / chunk_order_index / file_path
-                doc_id = ""
-                tokens = 0
-                chunk_order_index = 0
-                file_path = "unknown_source"
-                if cid in full_docs_chunk_map:
-                    _, doc_id, _, file_path, tokens, chunk_order_index = full_docs_chunk_map[cid]
-                else:
-                    # cache 有但 full_docs 没：tokens 用 tokenizer 现算
-                    if tokenizer is not None:
-                        try:
-                            tokens = len(tokenizer.encode(chunk_content))
-                        except Exception:  # noqa: BLE001
-                            tokens = 0
-                new_tc[cid] = {
-                    "content": chunk_content,
-                    "full_doc_id": doc_id,
-                    "tokens": tokens,
-                    "chunk_order_index": chunk_order_index,
-                    "file_path": file_path,
-                    "llm_cache_list": [e[2] for e in cache_by_chunk_id[cid]],
-                }
-                continue
-        # 9.2 full_docs fallback
+        # 9.1 full_docs 优先（chunking 反查，chunk 原文）
         if cid in full_docs_chunk_map:
             _, doc_id, content, file_path, tokens, chunk_order_index = full_docs_chunk_map[cid]
             new_tc[cid] = {
@@ -870,10 +859,10 @@ async def repair_text_chunks() -> dict[str, Any]:
                 "tokens": tokens,
                 "chunk_order_index": chunk_order_index,
                 "file_path": file_path,
-                "llm_cache_list": [e[2] for e in cache_by_chunk_id.get(cid, [])],
+                "llm_cache_list": [e[1] for e in cache_by_chunk_id.get(cid, [])],
             }
             continue
-        # 9.3 脑区直接构造（fallback）
+        # 9.2 脑区直接构造（脑区 chunk 不在 full_docs）
         if cid in brainregion_chunks:
             content, full_doc_id = brainregion_chunks[cid]
             # 脑区 content 用 tokenizer 算 tokens
@@ -889,10 +878,11 @@ async def repair_text_chunks() -> dict[str, Any]:
                 "tokens": tokens,
                 "chunk_order_index": 0,
                 "file_path": "unknown_source",
-                "llm_cache_list": [e[2] for e in cache_by_chunk_id.get(cid, [])],
+                "llm_cache_list": [e[1] for e in cache_by_chunk_id.get(cid, [])],
             }
             continue
-        # 9.4 三处都没有 → missing
+        # 9.3 full_docs/脑区/cache 三处都没有可作原文的源 → missing
+        #    （cache 的 original_prompt 是提示词不是原文，不能当来源）
         missing_chunks.append(cid)
 
     # 10. 调 storage.upsert + index_done_callback
@@ -914,7 +904,7 @@ async def repair_text_chunks() -> dict[str, Any]:
     actual = len(new_tc)
     logger.info(
         f"[LightRAGRepair] 重建 text_chunks: {actual}/{len(active_chunk_ids)} 条 "
-        f"(cache original_prompt 优先 + full_docs fallback + 脑区直接构造，"
+        f"(full_docs 优先 + 脑区直接构造，"
         f"missing={len(missing_chunks)})"
     )
     return {
@@ -2772,7 +2762,7 @@ _DERIVED_FILES = [
 # 跟 v8 _REBUILD_ORDER 内容相同，但所有 repair_xxx 已改为 async def（Task 3-9），
 # 调用方必须用 await（在 repair_all 内部用 asyncio.run 桥接）。
 # 依赖链：
-#   text_chunks（独立，从 GraphML + cache + full_docs 重建）
+#   text_chunks（独立，从 GraphML + full_docs + 脑区重建；cache 仅提供 llm_cache_list）
 #   → doc_status（依赖 text_chunks：chunks_list 反查）
 #   → vdb_chunks（依赖 text_chunks：content + full_doc_id + file_path）
 #   → vdb_entities（独立，从 GraphML nodes 重建）

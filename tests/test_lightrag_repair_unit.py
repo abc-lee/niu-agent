@@ -1098,7 +1098,12 @@ def _write_graphml_v8(tmp_path: Path, nodes_data, edges_data=None):
 
 
 def _build_cache_prompt(chunk_content: str) -> str:
-    """构造 cache original_prompt（含 ``` 包裹的 chunk 原文 + LLM 输出示例）。"""
+    """构造 cache original_prompt（提示词，不是文档原文）。
+
+    生成首次抽取形态的提示词：``` 包裹的文档段 + LLM 输出示例。repair 已不再把
+    它当内容来源（P0：gleaning 轮提示词的第一个 ``` 块永远是少样本示例），
+    仅用于验证"prompt 文本不会泄漏进 chunk content"。
+    """
     return f"""---Task---
 Extract entities and relationships from the input text.
 
@@ -1120,29 +1125,46 @@ Then output relationship list:
 """
 
 
-def test_repair_text_chunks_cache_original_prompt_priority(tmp_path, monkeypatch):
-    """repair_text_chunks 应优先从 cache original_prompt 提取 chunk 原文。"""
-    chunk_content = "测试 chunk 原文 cache 优先"
-    # GraphML：1 个实体引用 chunk-active
-    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", "chunk-active")])
+def test_repair_text_chunks_full_docs_priority_over_cache_prompt(tmp_path, monkeypatch):
+    """P0 修复：cache original_prompt 不再作为 chunk 内容来源，full_docs 第一优先。
 
-    # text_chunks 为空（强制走 cache 提取路径）
+    旧实现（已删）从 original_prompt 抠第一个三反引号块当 chunk 原文——但那其实是
+    提示词文本，gleaning 轮抠出来的永远是少样本示例（"while Alex clenched his
+    jaw..."）。现在即使 cache entry 的 prompt 含可提取的 ``` 块，内容也必须来自
+    full_docs；cache 只提供 llm_cache_list。
+    """
+    from lightrag.utils import compute_mdhash_id
+
+    chunk_content = "测试 chunk 原文 full_docs 优先"
+    expected_chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
+
+    # GraphML：1 个实体引用 full_docs chunking 产生的 chunk id
+    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", expected_chunk_id)])
+
+    # text_chunks 为空（强制走重建路径）
     (tmp_path / "kv_store_text_chunks.json").write_text("{}", encoding="utf-8")
 
-    # cache：1 个 extract entry，chunk_id=chunk-active，original_prompt 含 chunk 原文
+    # cache：extract entry，original_prompt 含 ``` 包裹内容（旧实现会错误提取它）
     cache = {
         "cache-key-1": {
             "return": "entity<|#|>名字<|#|>person<|#|>描述",
             "cache_type": "extract",
-            "chunk_id": "chunk-active",
-            "original_prompt": _build_cache_prompt(chunk_content),
+            "chunk_id": expected_chunk_id,
+            "original_prompt": _build_cache_prompt("提示词里的内容不是 chunk 原文"),
             "create_time": 1781930000,
         }
     }
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache), encoding="utf-8")
 
-    # full_docs 空（验证 cache 优先于 full_docs）
-    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
+    # full_docs：真实文档（chunk 原文真相源）
+    docs = {
+        "doc-1": {
+            "content": chunk_content,
+            "file_path": "test.md",
+            "create_time": 1781930000,
+        }
+    }
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1156,38 +1178,56 @@ def test_repair_text_chunks_cache_original_prompt_priority(tmp_path, monkeypatch
     assert result["lost"] == 0
 
     tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
-    assert "chunk-active" in tc_after
-    assert tc_after["chunk-active"]["content"] == chunk_content
-    # llm_cache_list 应包含 cache_key
-    assert "cache-key-1" in tc_after["chunk-active"]["llm_cache_list"]
+    assert expected_chunk_id in tc_after
+    # 内容必须来自 full_docs，不是 original_prompt 抠出来的提示词文本
+    assert tc_after[expected_chunk_id]["content"] == chunk_content
+    assert tc_after[expected_chunk_id]["content"] != "提示词里的内容不是 chunk 原文"
+    assert tc_after[expected_chunk_id]["full_doc_id"] == "doc-1"
+    # llm_cache_list 仍应从 cache 取（保留缓存列表信息）
+    assert "cache-key-1" in tc_after[expected_chunk_id]["llm_cache_list"]
 
 
-def test_repair_text_chunks_cache_multiple_entries_take_latest_create_time(tmp_path, monkeypatch):
-    """同 chunk_id 多条 cache entry，取 create_time 最大的。"""
-    chunk_v1 = "v1 chunk 原文"
-    chunk_v2 = "v2 chunk 原文"
-    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", "chunk-active")])
+def test_repair_text_chunks_cache_multiple_entries_only_feed_llm_cache_list(tmp_path, monkeypatch):
+    """同 chunk_id 多条 cache entry：create_time 只影响 llm_cache_list 顺序，绝不影响 content。
+
+    旧实现按 create_time 最大取 entry 的 prompt 内容（P0 缺陷）。现在 content 只来自
+    full_docs/脑区，cache 多条目全部进 llm_cache_list，更新 create_time 也不能把
+    提示词文本塞进 content（防回退到"按时间取 gleaning 轮"）。
+    """
+    from lightrag.utils import compute_mdhash_id
+
+    chunk_content = "full_docs 唯一原文"
+    expected_chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
+    _write_graphml_v8(tmp_path, [("entity-x", "person", "desc X", expected_chunk_id)])
 
     (tmp_path / "kv_store_text_chunks.json").write_text("{}", encoding="utf-8")
-    (tmp_path / "kv_store_full_docs.json").write_text("{}", encoding="utf-8")
 
     cache = {
         "cache-key-old": {
             "return": "v1 extraction",
             "cache_type": "extract",
-            "chunk_id": "chunk-active",
-            "original_prompt": _build_cache_prompt(chunk_v1),
+            "chunk_id": expected_chunk_id,
+            "original_prompt": _build_cache_prompt("v1 chunk 原文"),
             "create_time": 1781930000,
         },
         "cache-key-new": {
             "return": "v2 extraction",
             "cache_type": "extract",
-            "chunk_id": "chunk-active",
-            "original_prompt": _build_cache_prompt(chunk_v2),
-            "create_time": 1781930999,  # 更大
+            "chunk_id": expected_chunk_id,
+            "original_prompt": _build_cache_prompt("v2 chunk 原文"),
+            "create_time": 1781930999,  # 更大——旧实现会错误地取这条的 prompt 内容
         },
     }
     (tmp_path / "kv_store_llm_response_cache.json").write_text(json.dumps(cache), encoding="utf-8")
+
+    docs = {
+        "doc-1": {
+            "content": chunk_content,
+            "file_path": "test.md",
+            "create_time": 1781930000,
+        }
+    }
+    (tmp_path / "kv_store_full_docs.json").write_text(json.dumps(docs), encoding="utf-8")
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
     monkeypatch.setattr("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path)
@@ -1197,9 +1237,13 @@ def test_repair_text_chunks_cache_multiple_entries_take_latest_create_time(tmp_p
     result = asyncio.run(repair_text_chunks())
 
     assert result["status"] == "ok"
+    assert result["lost"] == 0
     tc_after = json.loads((tmp_path / "kv_store_text_chunks.json").read_text(encoding="utf-8"))
-    # 应取 create_time=1781930999 的 entry（v2）
-    assert tc_after["chunk-active"]["content"] == chunk_v2
+    # create_time 更大的 cache entry 也不能改变 content（P0 防回归）
+    assert tc_after[expected_chunk_id]["content"] == chunk_content
+    # 两条 cache entry 都进 llm_cache_list
+    assert "cache-key-old" in tc_after[expected_chunk_id]["llm_cache_list"]
+    assert "cache-key-new" in tc_after[expected_chunk_id]["llm_cache_list"]
 
 
 def test_repair_text_chunks_full_docs_fallback_when_cache_miss(tmp_path, monkeypatch):
@@ -1292,17 +1336,19 @@ def test_repair_text_chunks_missing_when_three_sources_all_miss(tmp_path, monkey
 
 
 def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
-    """v8 核心验证（I3）：用真实 cache 数据验证正则提取 chunk 原文正确性。
+    """真实数据验证：full_docs 优先 + 脑区 fallback，cache 提示词文本绝不泄漏进 content。
 
-    真实 cache 的 original_prompt 含 8 个 ```（4 对），只有第一对 ``` 之间是 chunk 原文。
-    非贪婪正则 r"```\\s*(.+?)\\s*```" 必须正确提取第一对之间内容，不能跨多对 ```。
+    P0 修复前这里验证"正则从 original_prompt 提取 chunk 原文正确性"；修复后
+    repair 不再读 original_prompt 当内容来源，本测试改为真实数据守卫：
+    content 只能来自 full_docs/脑区，绝不能是提示词文本（少样本示例 /
+    LLM 输出标记均不得出现）。
 
     真实数据特征（断言不硬编码数量——GraphML/full_docs 随使用演变，活跃集合与
     可恢复比例都会变；2026-07-17 曾手工清理 GraphML 孤儿引用使 lost=0，但那是
     时点状态不是不变式）：
     - 活跃 chunk 引用（node source_id + edge source_id 全集）> 0
-    - cache extract + full_docs + 脑区 fallback 至少恢复一部分
-    - 恢复的 chunk content 非空、不含 LLM 输出标记（正则提取正确性的核心契约）
+    - full_docs + 脑区至少恢复一部分
+    - 恢复的 chunk content 非空、不含 LLM 输出标记（真相源保真度的核心契约）
     """
     import os
     import shutil
@@ -1332,7 +1378,7 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     # 真实数据断言（不硬编码数量——活跃集合与可恢复比例随 GraphML/full_docs 演变）：
     # - expected > 0（真实数据有活跃 chunk 引用）
     # - actual == expected - lost（关系不变式：恢复 + missing = 总数）
-    # - actual > 0（至少部分 chunk 能从 cache/full_docs/脑区 fallback 恢复）
+    # - actual > 0（至少部分 chunk 能从 full_docs/脑区恢复）
     assert result["status"] == "ok", f"repair_text_chunks 失败: {result.get('message', '')}"
     expected = result["expected"]
     lost = result["lost"]
@@ -1342,7 +1388,7 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
         f"actual 应等于 expected-lost，actual={actual}, expected={expected}, lost={lost}"
     )
     assert actual > 0, (
-        f"至少部分 chunk 应从 cache/full_docs/脑区 fallback 恢复，actual={actual}"
+        f"至少部分 chunk 应从 full_docs/脑区恢复，actual={actual}"
     )
 
     # 验证 text_chunks 内容非空（每个 chunk content 必须有真实原文，不是空串）
@@ -1350,14 +1396,15 @@ def test_repair_text_chunks_real_cache_extraction(tmp_path, monkeypatch):
     empty_content = [cid for cid, v in tc.items() if not v.get("content", "").strip()]
     assert not empty_content, f"以下 chunk content 为空: {empty_content[:5]}"
 
-    # 验证至少有 1 个 chunk 是从 cache 提取的（非脑区 chunk 占多数）
+    # 验证至少有 1 个 chunk 来自 full_docs（非脑区 chunk）
     non_brain = [cid for cid, v in tc.items() if not str(v.get("full_doc_id", "")).startswith("brain_")]
-    assert len(non_brain) > 0, "应有非脑区 chunk 从 cache/full_docs 提取"
+    assert len(non_brain) > 0, "应有非脑区 chunk 从 full_docs 重建"
 
-    # 验证正则没把 LLM 输出示例（后续 3 对 ``` 之间的内容）当 chunk 原文：
-    # 如果正则贪婪匹配跨多对 ```，chunk content 会含 "entity<|#|>" 等 LLM 输出标记
+    # 验证 cache 提示词文本没有泄漏进 content（P0 核心契约）：
+    # 若回退到"抠 original_prompt 第一个 ``` 块"，gleaning 轮会带入少样本示例，
+    # 或残留 "entity<|#|>" 等 LLM 输出标记
     bad_extraction = [cid for cid, v in tc.items() if "<|#|>" in v.get("content", "")]
-    assert not bad_extraction, f"正则提取错误，含 LLM 输出标记: {bad_extraction[:5]}"
+    assert not bad_extraction, f"提示词文本泄漏，含 LLM 输出标记: {bad_extraction[:5]}"
 
     # 验证脑区 fallback chunk 的 content + full_doc_id 格式正确
     # 脑区写入 GraphML 但 cache/full_docs 都没有 → 走脑区直接构造 fallback（数量随时点变化，不硬编码）
