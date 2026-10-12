@@ -80,3 +80,12 @@ def _isolate_md_mirror(tmp_path, monkeypatch):
     if hasattr(sess, "F1_PATH"):
         monkeypatch.setattr(sess, "F1_PATH", fake)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_niu_log_dir(tmp_path, monkeypatch):
+    """修复报告日志目录全局指向临时目录——防止任何测试把 repair-report-*.json
+    写进用户真实 ~/.niu/logs/（与 _isolate_md_mirror 同范式）。
+    需要特定路径的测试可在用例内 monkeypatch.setenv 覆盖本 fixture。"""
+    monkeypatch.setenv("NIU_LOG_DIR", str(tmp_path / "isolated-niu-logs"))
+    yield

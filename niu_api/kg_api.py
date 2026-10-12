@@ -1135,7 +1135,10 @@ async def repair_lightrag_storage(target: str = "all") -> dict:
         target: 只支持 "all"（其他值返回 400）
 
     Returns:
-        {"status": "ok", "result": {"repaired": bool, "check_ok": bool, ...}}
+        {"status": "ok", "result": {"repaired": bool, "check_ok": bool, ...,
+            "report_path": str}}  # report_path = 完整报告落盘路径
+            （~/.niu/logs/repair-report-*.json），落盘失败为空串；
+            launcher 弹窗据此告知用户"可能无法完全恢复"+ 报告位置。
     """
     import asyncio
 

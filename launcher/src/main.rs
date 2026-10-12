@@ -253,10 +253,15 @@ enum SplashMessage {
 /// 把 /api/kg/lightrag/repair 的响应文本格式化成弹窗摘要。
 ///
 /// 响应格式：{"status":"ok","result":{"repaired":bool,"check_ok":bool,
-///   "repair_result":{"vdb_entities.json":{"status":"ok","rebuilt_count":5,...},...}}}
+///   "report_path":str,"repair_result":{"vdb_entities.json":{"status":"ok","rebuilt_count":5,...},...}}}
 ///
 /// 列出每个 vdb 的 status/message/rebuilt_count，并提示用户程序将退出。
 /// 解析失败时退回原始文本（截断到 500 字符避免超长）。
+///
+/// 收尾固定追加（用户要求）："本次修复可能无法完全恢复，部分数据可能丢失"；
+/// result.report_path 非空时再追加一行完整报告路径（~/.niu/logs/repair-report-*.json），
+/// 空串/缺字段（旧版 Python 或落盘失败）时只保留丢失提示。路径原样透传，
+/// Windows/macOS 分隔符都能正确显示。
 ///
 /// vdb_relationships.json 走截断修复（source=vdb_truncate_repair）时，
 /// 追加数据丢失风险提示（断点后的 relationship 永久丢失，GraphML 有但 vdb 无，
@@ -287,6 +292,15 @@ fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String)
                 .and_then(|r| r.get("minor_errors"))
                 .and_then(|m| m.as_u64())
                 .unwrap_or(0);
+            // report_path（可选）：Python run_repair_on_user_request 把完整修复结果
+            // 落盘到 ~/.niu/logs/repair-report-YYYYMMDD-HHMMSS.json 后返回的绝对路径。
+            // 旧版 Python/落盘失败时字段缺失或为空串 → 弹窗只提示数据丢失风险、
+            // 不编造路径。Windows/macOS 路径分隔符直接透传，不做任何拼接转换。
+            let report_path = result
+                .and_then(|r| r.get("report_path"))
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .to_string();
 
             // 检测是否存在不可恢复项：
             // 1) 顶层 _unrecoverable（Python 端 run_repair_on_user_request 显式提升，
@@ -419,6 +433,17 @@ fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String)
 
             lines.push(String::new());
             lines.push("确定后程序将完全退出，请重新启动程序。".to_string());
+
+            // 收尾必读提示（用户明确要求）：
+            // 1) 明确告知"本次修复可能无法完全恢复，部分数据可能丢失"——
+            //    无论成败都必须显示（修复成功也不等于 100% 无损恢复）；
+            // 2) report_path 非空时给出完整报告路径，空串（旧版 Python/落盘失败）
+            //    时只保留丢失提示、不提路径。路径直接透传，不拼不转。
+            lines.push(String::new());
+            lines.push("注意：本次修复可能无法完全恢复，部分数据可能丢失。".to_string());
+            if !report_path.is_empty() {
+                lines.push(format!("完整报告已保存到：{}", report_path));
+            }
 
             (title, level, lines.join("\n"))
         }
@@ -3418,5 +3443,94 @@ mod tests {
         // R1-A P3：必须能区分「真杀了」与「无可杀」
         assert!(s.contains("KILLED") && s.contains("NONE"),
                 "Windows 侧必须可判空匹配");
+    }
+
+    // ------------------------------------------------------------------
+    // format_repair_summary：数据丢失提示 + report_path 展示（用户要求）
+    // 直接测真函数（不复制定义），零漂移。
+    // ------------------------------------------------------------------
+
+    /// 构造 /api/kg/lightrag/repair 成功响应 JSON（repaired=true, minor=0 → 修复成功）。
+    /// `Some(p)`：带 report_path（空串 = 落盘失败场景）；`None`：缺字段（旧版 Python）。
+    fn repair_resp_with(report_path: Option<&str>) -> String {
+        let mut resp = serde_json::json!({
+            "status": "ok",
+            "result": {
+                "repaired": true,
+                "check_ok": true,
+                "critical_errors": 0,
+                "major_errors": 0,
+                "minor_errors": 0,
+                "repair_result": {
+                    "vdb_entities.json": {"status": "ok", "rebuilt_count": 5}
+                }
+            }
+        });
+        if let Some(p) = report_path {
+            resp["result"]["report_path"] = serde_json::Value::String(p.to_string());
+        }
+        resp.to_string()
+    }
+
+    #[test]
+    fn test_format_repair_summary_shows_report_path_macos() {
+        // report_path 非空：body 必须含路径 + 丢失提示（macOS 风格路径原样透传）
+        let resp = repair_resp_with(Some(
+            "/Users/test/.niu/logs/repair-report-20261012-101010.json",
+        ));
+        let (title, level, body) = format_repair_summary(&resp);
+        assert_eq!(title, "修复成功");
+        assert!(matches!(level, rfd::MessageLevel::Info));
+        assert!(
+            body.contains("/Users/test/.niu/logs/repair-report-20261012-101010.json"),
+            "body 必须展示 report_path，实际 body:\n{body}"
+        );
+        assert!(body.contains("可能无法完全恢复"), "必须提示可能无法完全恢复");
+        assert!(body.contains("部分数据可能丢失"), "必须提示部分数据可能丢失");
+    }
+
+    #[test]
+    fn test_format_repair_summary_shows_report_path_windows() {
+        // Windows 反斜杠路径：JSON 转义后解析出的反斜杠必须原样显示（不拼不转分隔符）
+        let resp = repair_resp_with(Some(
+            r"C:\Users\test\.niu\logs\repair-report-20261012-101010.json",
+        ));
+        let (_title, _level, body) = format_repair_summary(&resp);
+        assert!(
+            body.contains(r"C:\Users\test\.niu\logs\repair-report-20261012-101010.json"),
+            "Windows 路径必须原样透传，实际 body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn test_format_repair_summary_missing_report_path_still_warns() {
+        // 旧版 Python 无 report_path 字段：不含路径，但仍必须提示"可能无法完全恢复"
+        let resp = repair_resp_with(None);
+        let (_title, _level, body) = format_repair_summary(&resp);
+        assert!(body.contains("可能无法完全恢复"), "缺 report_path 也必须提示丢失风险");
+        assert!(!body.contains("完整报告已保存到"), "无路径时不得编造报告路径");
+    }
+
+    #[test]
+    fn test_format_repair_summary_empty_report_path_no_path_shown() {
+        // 落盘失败：Python 返回空串 → 只保留丢失提示，不提路径
+        let resp = repair_resp_with(Some(""));
+        let (_title, _level, body) = format_repair_summary(&resp);
+        assert!(body.contains("可能无法完全恢复"), "空 report_path 也必须提示丢失风险");
+        assert!(!body.contains("完整报告已保存到"), "空 report_path 时不得展示路径段");
+    }
+
+    #[test]
+    fn test_format_repair_summary_unrecoverable_body_contains_warning_and_path() {
+        // 不可恢复场景（顶层 _unrecoverable）：丢失提示 + 路径同样必须在 body 末尾
+        let resp = r#"{"status":"ok","result":{"repaired":false,"check_ok":false,
+            "critical_errors":1,"major_errors":0,"minor_errors":0,"_unrecoverable":true,
+            "report_path":"/Users/test/.niu/logs/repair-report-20261012-120000.json",
+            "repair_result":{"vdb_entities.json":{"status":"error","unrecoverable":true,"message":"无可用数据源"}}}}"#;
+        let (title, level, body) = format_repair_summary(&resp);
+        assert_eq!(title, "修复失败（不可恢复）");
+        assert!(matches!(level, rfd::MessageLevel::Error));
+        assert!(body.contains("可能无法完全恢复"));
+        assert!(body.contains("/Users/test/.niu/logs/repair-report-20261012-120000.json"));
     }
 }

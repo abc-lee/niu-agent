@@ -1596,6 +1596,40 @@ def cancel_scheduler_delayed_start_if_corrupt(phase1_result: dict) -> None:
             logger.warning(f"[LightRAG] Failed to cancel scheduler delayed start: {e}")
 
 
+def _write_repair_report(result: dict) -> str:
+    """把本次修复的完整结果落盘到 ~/.niu/logs/repair-report-YYYYMMDD-HHMMSS.json。
+
+    背景：修复结果原来只存在于 rfd 弹窗里，用户关掉弹窗后什么都不剩，出问题
+    无法追溯。现在把完整结果（repair_result 各子项、missing 数、
+    skipped_already_valid、repaired、removed_polluted 等）写成 JSON 报告，
+    与 llama_server.log、llm_interaction 同目录，launcher 弹窗告知路径。
+
+    - 路径：默认 ~/.niu/logs/；可用环境变量 NIU_LOG_DIR 覆盖（与 NIU_STORAGE_DIR
+      同范式，空字符串视为未设置；测试/调试用）。文件名带本地时间戳。
+    - 内容：完整结果 JSON（ensure_ascii=False 保中文可读，indent=2 便于排查，
+      default=str 兜底不可序列化值保证一定能落盘）。
+    - 落盘失败只记 error 日志并返回空串，绝不影响修复主流程与返回值状态。
+
+    Returns:
+        报告文件的绝对路径（str）；落盘失败返回空串。
+    """
+    try:
+        _raw_log_dir = os.environ.get("NIU_LOG_DIR", "").strip()
+        log_dir = Path(_raw_log_dir) if _raw_log_dir else Path.home() / ".niu" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        report_path = log_dir / f"repair-report-{stamp}.json"
+        report_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        logger.info(f"[LightRAG] 修复报告已保存: {report_path}")
+        return str(report_path)
+    except Exception as e:
+        logger.error(f"[LightRAG] 保存修复报告失败（不影响修复结果）: {e}")
+        return ""
+
+
 def run_repair_on_user_request() -> dict:
     """用户在弹窗点'尝试修复'后调用（通过 /api/kg/lightrag/repair 触发）。
 
@@ -1630,6 +1664,8 @@ def run_repair_on_user_request() -> dict:
             "repair_result": dict,
             "check_result": dict,
             "_unrecoverable": bool,
+            "report_path": str,  # 完整报告落盘路径（~/.niu/logs/repair-report-*.json）；
+                                 # 落盘失败为空串。launcher 弹窗据此告知用户报告位置。
         }
     """
     global _integrity_result, _rag_instance, _repairing
@@ -1714,7 +1750,7 @@ def run_repair_on_user_request() -> dict:
             f"重检: critical={critical}, major={major}, minor={minor}"
         )
 
-        return {
+        result = {
             "repaired": repaired,
             "check_ok": check_result.get("ok", True),
             "critical_errors": critical,
@@ -1724,9 +1760,13 @@ def run_repair_on_user_request() -> dict:
             "_unrecoverable": bool(repair_result.get("_unrecoverable", False)),
             "check_result": check_result,
         }
+        # 完整报告落盘（~/.niu/logs/repair-report-*.json），供用户事后追溯；
+        # 落盘失败只记日志、report_path 为空串，不影响上面的修复状态。
+        result["report_path"] = _write_repair_report(result)
+        return result
     except Exception as e:
         logger.error(f"[LightRAG] 修复失败: {e}")
-        return {
+        result = {
             "repaired": False,
             "check_ok": False,
             "critical_errors": 0,
@@ -1735,6 +1775,9 @@ def run_repair_on_user_request() -> dict:
             "repair_result": {"error": str(e)},
             "check_result": _integrity_result,
         }
+        # 异常路径同样落盘报告（含 error 现场），失败不连锁抛异常
+        result["report_path"] = _write_repair_report(result)
+        return result
     finally:
         # v9 修复：finally 块不重启 RegionSync
         # 之前 finally 调 rs.start_background_sync() 会在 repair 刚结束时立即重启守护线程，
