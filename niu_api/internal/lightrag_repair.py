@@ -34,6 +34,12 @@
     "message": str,
     "unrecoverable": bool,  # 可选，True 表示无法修复
   }
+
+repair_text_chunks 是补缺不是重建，额外返回（详见其 docstring）：
+  skipped_already_valid / rebuilt / repaired / removed_polluted / final_count
+  ——"没重建"（skipped_already_valid，原样保留）不等于"丢失"（lost）。
+  结构化注入路径（skill/脑区/照片/人物）没有 full_docs 副本，text_chunks 是其
+  原文唯一载体，已有有效条目必须原样保留，禁止"清空 + 重写"。
 """
 from __future__ import annotations
 
@@ -562,6 +568,65 @@ def _check_truth_sources_intact() -> dict[str, Any]:
 # =============================================================================
 
 
+# ---------------------------------------------------------------------------
+# text_chunks 条目有效性判定（repair 补缺语义用，勿引入复杂启发式）
+# ---------------------------------------------------------------------------
+
+# LightRAG LLM 抽取提示词的段落标记（prompt 模板分隔符）。
+# P0 缺陷（已修）背景：repair 曾把 cache 的 original_prompt（完整提示词）当 chunk
+# 原文写进 text_chunks。gleaning 轮（补漏抽取）提示词没有文档输入段，第一个三反引号
+# 块永远是少样本示例（"while Alex clenched his jaw..."）——这些标记用于识别
+# "content 其实是指令/示例文本"的已知污染形态。
+_PROMPT_SECTION_MARKERS: tuple[str, ...] = (
+    "---Task---",
+    "---Instructions---",
+    "---Role---",
+    "---Examples---",
+    "---Data to be Processed---",
+)
+
+# gleaning 提示词 Examples 段的少样本示例开头（LightRAG prompt 模板 few-shot 示例）。
+# 单独列出来兜底：content 就是示例文本本身、但不含段落标记的形态。
+_PROMPT_EXAMPLE_MARKERS: tuple[str, ...] = (
+    "while Alex clenched his jaw",
+)
+
+
+def _is_prompt_polluted_content(content: Any) -> bool:
+    """content 是否是 LLM 提示词/少样本示例文本（已知污染形态，可精确判定）。
+
+    判定标准只用可确证的标记，不做相似度/统计式启发式：
+    - content 含抽取提示词段落标记（---Task---/---Instructions---/---Role---/
+      ---Examples---/---Data to be Processed---）之一；
+    - 或含 gleaning 提示词 Examples 段的少样本示例开头。
+    """
+    if not isinstance(content, str):
+        return True
+    if any(marker in content for marker in _PROMPT_SECTION_MARKERS):
+        return True
+    return any(marker in content for marker in _PROMPT_EXAMPLE_MARKERS)
+
+
+def _is_valid_text_chunk_entry(value: Any) -> bool:
+    """既有 text_chunks 条目是否"内容有效、无需重建"。
+
+    有效 = dict 且 content 是非空字符串、content 不含提示词污染标记、
+    tokens 是正整数。无效（content 为空 / content 是提示词示例文本 /
+    tokens 缺失或为 0）→ 走重建；无源可重建时才删除。
+    """
+    if not isinstance(value, dict):
+        return False
+    if _is_prompt_polluted_content(value.get("content")):
+        return False
+    content = value.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return False
+    tokens = value.get("tokens")
+    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+        return False
+    return True
+
+
 async def repair_text_chunks() -> dict[str, Any]:
     """v9：从 GraphML 提活跃 chunk_id + full_docs 优先 + 脑区直接构造 + cache 仅提供 llm_cache_list。
 
@@ -576,16 +641,47 @@ async def repair_text_chunks() -> dict[str, Any]:
     - text_chunks namespace 自动补 llm_cache_list=[]（L167-169）
     - index_done_callback 统一写盘 + sanitization
 
-    算法：
+    算法（补缺，不是重建）：
     1. initialize_share_data(workers=1) + set_default_workspace("")
     2. 实例化 JsonKVStorage(namespace=text_chunks, embedding_func=None)
     3. await storage.initialize()（读已有 kv_store_text_chunks.json 到内存）
     4. 解析 GraphML 提活跃 chunk_id + 识别脑区节点（v8 逻辑保留）
-    5. full_docs 优先：full_docs chunking 反查（补 full_doc_id / tokens / chunk_order_index / file_path）
+    5. full_docs 优先：full_docs chunking 反查（补 full_doc_id + tokens + chunk_order_index + file_path）
     6. full_docs 没有则脑区节点直接构造；三处都没有 → missing
-    7. 调 await storage.upsert(new_tc) + await storage.index_done_callback()
-    8. 全新用户（GraphML 无活跃 chunk）→ upsert({}) 会被 storage 跳过，需手动写空文件
-       （LightRAG 正常启动全新用户时 text_chunks.json 是 {}，不是不存在）
+    7. 逐条判定后只 upsert 需要新建/修复的条目：
+       - 已存在且内容有效（_is_valid_text_chunk_entry）→ 原样保留，不动
+       - 内容已知污染（提示词/示例文本/空 content/tokens=0）且有源 → 覆盖修复
+       - 不在 text_chunks 且有源 → 新建
+       - 无源可重建（且既有条目是污染内容）→ 精确删除该 key
+    8. 调 await storage.delete(污染且无源的 key) + await storage.upsert(new_tc)
+       + await storage.index_done_callback()
+    9. 全新用户（GraphML 无活跃 chunk）→ 不写派生文件（upsert({}) 也会被 storage 跳过）
+
+    补缺语义与数据安全（P0 数据丢失修复，勿回退）：
+    - repair 是补缺不是重建：已存在于 text_chunks 且内容有效的条目原样保留；
+    - 结构化注入路径（LightRAG ainsert_custom_kg，lightrag/lightrag.py）只写
+      chunks_vdb + text_chunks，**不写 full_docs**——skill/脑区/照片/人物这些
+      数据的原文唯一载体就是 text_chunks。因此绝不能用"full_docs 重建不了"当
+      理由删掉这些条目：它们不在任何可重建来源里，删了就是永久丢失。
+    - 判定"已知是污染内容"只用可确证标记（_is_valid_text_chunk_entry）：
+      content 为空、content 含 LLM 提示词段落标记/少样本示例文本、tokens 为 0。
+
+    共享内存残留的处理（替代旧的整个 storage._data.clear()）：
+    旧实现先 storage._data.clear() 再只 upsert 本次能重建的条目——等价于
+    "清空 + 重写"，本次没重建的已有有效条目全部丢失（PM 实测 423 → 236）。
+    残留问题（_shared_dicts 跨进程/跨调用保留上一个 storage 目录的数据）
+    仍然要解决，新做法以磁盘文件为准、按 key 精确处理，详见下方代码注释。
+
+    返回值（status=ok 时）：
+    - expected: GraphML 活跃 chunk_id 数
+    - actual: 本次 upsert 写入的条数（新建 + 覆盖修复），**不含**原样保留的条目
+    - skipped_already_valid: 已存在且内容有效、原样保留（没动它）的条数
+      ——"没重建"不等于"丢失"，这个计数让人能直接看出多少条本来就好
+    - rebuilt / repaired: 本次新建 / 覆盖修复的条数
+    - removed_polluted: 已知污染且无源可重建、被精确删除的条数
+    - lost / missing_chunks: 无源可重建的活跃 chunk（cache 的 original_prompt
+      是提示词不是原文，不能当来源）
+    - final_count: 修复后 text_chunks 总条数（既有保留 + 本次写入）
 
     为什么不从 cache original_prompt 抠 chunk 原文（旧 9.1 路径，已真删，勿回退）：
     - cache entry 的 original_prompt 是**完整提示词**，不是文档原文；
@@ -649,16 +745,37 @@ async def repair_text_chunks() -> dict[str, Any]:
             "unrecoverable": True,
         }
 
-    # v9 Task 3 修复：清空 storage._data 内存 dict
-    # 原因：JsonKVStorage 用全局 _shared_dicts["text_chunks"] 共享内存（shared_storage.py:1481），
-    # 跨进程/跨调用会保留上一次的 chunk 数据。repair 必须从空开始重建
-    # （v8 是直接覆盖写文件，相当于"清空 + 重写"）。
-    # storage.initialize() 只在首次调用时从文件加载（try_initialize_namespace 返回 True），
-    # 后续调用 try_initialize_namespace 返回 False 不会重新加载——所以即便文件不存在，
-    # _data 也可能含上次的残留数据。这里强制 clear 保证语义正确。
-    # 注意：clear 后调 upsert 时所有 key 都是新 key → create_time + update_time 都被注入。
-    if storage._data is not None:
-        storage._data.clear()
+    # 共享内存残留：以磁盘文件为准、按 key 精确处理（P0 数据丢失修复，
+    # 替代旧的"整个 storage._data.clear()"，勿回退成 clear/全表重写）。
+    #
+    # 为什么不能整个 clear：JsonKVStorage._data 是进程级共享 dict
+    # （shared_storage.py _shared_dicts["text_chunks"]），storage.initialize()
+    # 只在进程内首次从文件加载，后续调用不重新加载。旧实现先 clear 整个 _data、
+    # 再只 upsert 本次能重建的条目——等价于"清空 + 重写"，本目录已有有效条目
+    # （结构化注入的 skill/脑区/照片/人物块，full_docs 无副本、text_chunks 是其
+    # 原文唯一载体）只要本次没重建就全部丢失（PM 实测 423 → 236，少的 187 条
+    # 绝大部分是结构化注入短块）。
+    #
+    # 残留问题仍然要解决（同进程先初始化过别的 storage 目录，如测试 tmp_path、
+    # 上一次 repair 的旧目录时，_data 会残留那些 key，会被写进本目录文件）。
+    # 新做法不丢任何已有数据，按 key 精确处理：
+    #   1) _data 里不在磁盘文件中的 key = 跨目录/跨调用残留 → 精确 delete；
+    #   2) 磁盘有而 _data 没有的 key（别的进程更新过文件）→ 补齐进 _data 当基准。
+    # 磁盘上的条目之后还会逐条走 _is_valid_text_chunk_entry 判定：有效原样保留，
+    # 已知污染才有源重建/无源删除——所以这里"以磁盘为准"不会放进坏数据。
+    on_disk = _load_json_dict(Path(storage._file_name))
+    if on_disk is None:
+        # text_chunks.json 损坏：磁盘基准按空处理（_data 里的内容同样不可信），
+        # 之后由 GraphML/full_docs/脑区重建能重建的部分。
+        on_disk = {}
+    residue_keys = [k for k in list(storage._data) if k not in on_disk]
+    if residue_keys:
+        await storage.delete(residue_keys)
+    absent_from_memory = [k for k in on_disk if k not in storage._data]
+    if absent_from_memory:
+        # 别的进程写过文件、本进程 _data 还没加载到的 key，补齐为基准
+        # （只补 key，不碰已有条目，因此不影响"原样保留"语义）。
+        storage._data.update({k: on_disk[k] for k in absent_from_memory})
 
     # 3. 解析 GraphML 提取活跃 chunk_id 集合 + 识别脑区节点
     nodes, nodes_err = _load_graphml_nodes()
@@ -722,6 +839,11 @@ async def repair_text_chunks() -> dict[str, Any]:
             "actual": 0,
             "lost": 0,
             "source": "GraphML + cache + full_docs",
+            "skipped_already_valid": 0,
+            "rebuilt": 0,
+            "repaired": 0,
+            "removed_polluted": 0,
+            "final_count": len(on_disk),
             "message": "GraphML 无活跃 chunk_id，全新用户不写派生文件（跟 LightRAG 原生首次启动一致）",
         }
 
@@ -841,26 +963,47 @@ async def repair_text_chunks() -> dict[str, Any]:
                         chunk.get("chunk_order_index", 0),
                     )
 
-    # 9. 遍历活跃 chunk_id 构建 new_tc
+    # 9. 遍历活跃 chunk_id，逐条判定：已存在且有效 → 保留；否则有源则重建/修复。
     #    来源优先级：full_docs（chunk 原文真相源）→ 脑区直接构造 → missing。
     #    已删除的 9.1（cache original_prompt 抠原文）：那是完整提示词不是原文，
     #    gleaning 轮提示词不含文档输入段，第一个三反引号块永远是少样本示例——
     #    结构上不可靠，勿以任何形式回退（详见函数 docstring）。
     new_tc: dict[str, dict[str, Any]] = {}
     missing_chunks: list[str] = []
+    # 已知污染且无源可重建的 key（精确删除，绝不连带别的条目）
+    drop_chunk_ids: list[str] = []
+    # 计数：把"没重建"和"丢失"分开报
+    skipped_already_valid = 0  # 已存在且内容有效、原样保留（没动它）的条数
+    rebuilt_count = 0  # 本次新建（此前不在 text_chunks）的条数
+    repaired_count = 0  # 本次覆盖修复（此前存在但内容污染/无效）的条数
+    removed_polluted_count = 0  # 已知污染且无源 → 精确删除的条数
 
-    for cid in active_chunk_ids:
+    def _mark_rebuilt(cid: str, entry: dict[str, Any]) -> None:
+        nonlocal rebuilt_count, repaired_count
+        if cid in on_disk:
+            repaired_count += 1
+        else:
+            rebuilt_count += 1
+        new_tc[cid] = entry
+
+    for cid in sorted(active_chunk_ids):
+        # 9.0 已存在且内容有效 → 原样保留，不 upsert（绝不用"full_docs 重建不了"
+        #     当理由删它：结构化注入路径没有 full_docs 副本，text_chunks 是其
+        #     原文唯一载体；不动它还能保证重复 repair 幂等）
+        if cid in on_disk and _is_valid_text_chunk_entry(on_disk[cid]):
+            skipped_already_valid += 1
+            continue
         # 9.1 full_docs 优先（chunking 反查，chunk 原文）
         if cid in full_docs_chunk_map:
             _, doc_id, content, file_path, tokens, chunk_order_index = full_docs_chunk_map[cid]
-            new_tc[cid] = {
+            _mark_rebuilt(cid, {
                 "content": content,
                 "full_doc_id": doc_id,
                 "tokens": tokens,
                 "chunk_order_index": chunk_order_index,
                 "file_path": file_path,
                 "llm_cache_list": [e[1] for e in cache_by_chunk_id.get(cid, [])],
-            }
+            })
             continue
         # 9.2 脑区直接构造（脑区 chunk 不在 full_docs）
         if cid in brainregion_chunks:
@@ -872,21 +1015,41 @@ async def repair_text_chunks() -> dict[str, Any]:
                     tokens = len(tokenizer.encode(content))
                 except Exception:  # noqa: BLE001
                     tokens = 0
-            new_tc[cid] = {
+            _mark_rebuilt(cid, {
                 "content": content,
                 "full_doc_id": full_doc_id,
                 "tokens": tokens,
                 "chunk_order_index": 0,
                 "file_path": "unknown_source",
                 "llm_cache_list": [e[1] for e in cache_by_chunk_id.get(cid, [])],
-            }
+            })
             continue
         # 9.3 full_docs/脑区/cache 三处都没有可作原文的源 → missing
         #    （cache 的 original_prompt 是提示词不是原文，不能当来源）
         missing_chunks.append(cid)
+        if cid in on_disk:
+            # 既有的已知污染内容（提示词示例文本/空 content/tokens=0）且无源可重建
+            # → 只删这一条，不碰其他任何条目
+            drop_chunk_ids.append(cid)
+            removed_polluted_count += 1
 
-    # 10. 调 storage.upsert + index_done_callback
+    # 9.4 不在活跃集合但已存在于 text_chunks 的条目（结构化注入主力：skill/脑区/
+    #     照片/人物，它们不在 GraphML 活跃集合里）：
+    #     有效 → 原样保留；已知污染 → 精确删除。结构化注入路径没有 full_docs
+    #     副本，这里是这些原文的唯一载体，绝不能按"重建不了"整批丢掉。
+    for cid, entry in on_disk.items():
+        if cid in active_chunk_ids:
+            continue  # 已按活跃路径处理过
+        if _is_valid_text_chunk_entry(entry):
+            skipped_already_valid += 1
+        else:
+            drop_chunk_ids.append(cid)
+            removed_polluted_count += 1
+
+    # 10. 精确删除污染条目（仅这些 key）+ upsert 新建/修复条目 + 写盘
     try:
+        if drop_chunk_ids:
+            await storage.delete(drop_chunk_ids)
         await storage.upsert(new_tc)
         await storage.index_done_callback()
     except Exception as e:
@@ -901,11 +1064,16 @@ async def repair_text_chunks() -> dict[str, Any]:
             "unrecoverable": True,
         }
 
+    # actual = 本次 upsert 写入条数（新建 + 覆盖修复），不含原样保留的条目
     actual = len(new_tc)
+    # final_count = 修复后 text_chunks 总条数：既有保留（扣掉精确删除的污染条目）
+    # 与本次写入的并集（repaired 的 key 本就在已有集合里，不能重复计）
+    final_count = len((set(on_disk) - set(drop_chunk_ids)) | set(new_tc))
     logger.info(
-        f"[LightRAGRepair] 重建 text_chunks: {actual}/{len(active_chunk_ids)} 条 "
-        f"(full_docs 优先 + 脑区直接构造，"
-        f"missing={len(missing_chunks)})"
+        f"[LightRAGRepair] 补缺修复 text_chunks: 写入 {actual}/{len(active_chunk_ids)} 条 "
+        f"(skipped_already_valid={skipped_already_valid}, rebuilt={rebuilt_count}, "
+        f"repaired={repaired_count}, removed_polluted={removed_polluted_count}, "
+        f"missing={len(missing_chunks)}, final={final_count})"
     )
     return {
         "status": "ok",
@@ -914,7 +1082,17 @@ async def repair_text_chunks() -> dict[str, Any]:
         "lost": len(missing_chunks),
         "source": "GraphML + cache + full_docs",
         "missing_chunks": missing_chunks[:10],
-        "message": f"重建 {actual}/{len(active_chunk_ids)} 个 chunk，missing {len(missing_chunks)} 个",
+        "skipped_already_valid": skipped_already_valid,
+        "rebuilt": rebuilt_count,
+        "repaired": repaired_count,
+        "removed_polluted": removed_polluted_count,
+        "final_count": final_count,
+        "message": (
+            f"补缺修复 {actual}/{len(active_chunk_ids)} 个 chunk"
+            f"（skipped_already_valid={skipped_already_valid}，rebuilt={rebuilt_count}，"
+            f"repaired={repaired_count}，removed_polluted={removed_polluted_count}），"
+            f"missing {len(missing_chunks)} 个，修复后共 {final_count} 条"
+        ),
     }
 
 
