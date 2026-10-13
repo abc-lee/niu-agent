@@ -11,8 +11,10 @@ Popen 拉起、看门狗探活、terminate→wait→kill 收尾、仅监听 127.
 from __future__ import annotations
 
 import atexit
+import base64
 import collections
 import json
+import mimetypes
 import re
 import subprocess
 import sys
@@ -21,6 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
+from pathlib import Path
 from loguru import logger
 
 from niu_api.internal.embedding_artifacts import (
@@ -29,6 +32,13 @@ from niu_api.internal.embedding_artifacts import (
     llama_needs_exec_bit,
     llama_server_path,
 )
+
+from niu_api.internal.media_artifacts import (
+    describe_missing_media,
+    media_artifacts_ready,
+    mmproj_path,
+)
+from niu_api.internal.media_ingest_config import media_ingest_enabled
 
 # 端口避开既有：uvicorn 9876、IM adapter 19877
 LLAMA_PORT = 19878
@@ -51,6 +61,24 @@ _UBATCH = 8192
 
 _STARTUP_TIMEOUT = 60.0   # 冷启动读取 310MB 权重的预算
 _HTTP_TIMEOUT = 120.0
+
+# ── 媒体向量（图片 → 768 维）：图片 token 预算 + 独立媒体超时（T1）─────────
+# 模板 token 开销：一次性真机实测（2026-10-13 实施取证）——仓库 GGUF 的
+# chat_template 为全 -%} 裁剪的纯透传（内容原样拼出，零静态包裹 token），
+# 用户生产实例 /tokenize 开/关模板对照实测 200 字输入均为 100 token ⇒ 开销 0。
+# ⚠️ 本值绑定**当前模型**的 chat_template：换模型必须对新模板重测模板 token 开销
+#（/tokenize 开/关模板对照），再更新本值——照搬旧值会让图片 token 预算静默错位。
+_TEMPLATE_TOKENS = 0
+# 边界安全余量：单次输入总长 = 图片 token(≤N) + 模板(0) 必须**严格** < min(-b, -ub)
+# = 8192，否则服务端 500（C9）。N 取"最大可行值"，不压小（审查 A9：压小 = 大照片
+# 重度降采样入库，检索质量静默变差，且没有任何测试能发现）。
+_IMAGE_MARGIN = 64
+_IMAGE_MAX_TOKENS = _UBATCH - _TEMPLATE_TOKENS - _IMAGE_MARGIN   # 8128，严格 < 8192
+# 媒体编码独立超时：图片按 0.09 s/token 最坏吞吐定量（C4 实测上界：976–1019 token
+# → 53.9–70.2 s），复用 _HTTP_TIMEOUT=120.0 会让大图（N≳1300–2000）必然客户端超时
+# 降级（审查 B8）；+300 s 余量覆盖单实例串行排队（前序文本批，二阶伤害）与数十 MB
+# base64 请求体传输。文本编码仍走 _HTTP_TIMEOUT，互不影响（I-7 允许新增常量）。
+_MEDIA_HTTP_TIMEOUT = _IMAGE_MAX_TOKENS * 0.09 + 300.0
 
 # ── S7-T2：单条输入 token 上限 + 超限护栏参数 ───────────────────────────
 # 上限来源即上面的 -b/-ub 8192：llama-server 单条输入的 token 上限 = min(-b, -ub)。
@@ -76,6 +104,12 @@ _encode_lock = threading.Lock()
 
 _lock = threading.Lock()
 _proc: subprocess.Popen | None = None
+# 本进程拉起的实例是否以 --mmproj 加载（T1）。media_ready() = 本旗标 ∧ 健康——
+# **不是**"开关开 ∧ 健康"（那是静默降级，审查 P2）。旗标在**三处**复位：start() 的
+# 新实例路径按 argv 置位/复位；_stop_locked 收尾（含自行崩溃后经它复位）；start()
+# 的复用分支发现本模块实例已死时（P2①：自行崩溃旗标未复位 + 外部纯文本实例占
+# 19878 ⇒ 只看"健康 ∧ 旗标"会假真）。复用分支在本实例存活/从未拉起时不动旗标。
+_mmproj_loaded: bool = False
 
 # ── S7-T1：llama-server 子进程 stderr 的有界内存排障缓冲 ──────────────────
 # 日志文件已关（~/.niu/logs/llama_server.log 不再生成：verbosity 3 每个 embed
@@ -111,6 +145,14 @@ def _build_argv() -> list[str]:
         "-b", str(_BATCH),
         "-ub", str(_UBATCH),
     ]
+    if media_ingest_enabled():
+        # 开关开：挂 mmproj 并把图片 token 收窄到 -ub 以内（C9：不设该参数时图片
+        # token 不受 -ub 约束，大照片会超 8192 ⇒ 服务端 500 ⇒ 静默空转）。
+        argv += ["--mmproj", str(mmproj_path()), "--image-max-tokens", str(_IMAGE_MAX_TOKENS)]
+    else:
+        # 开关关：**主动**禁 mmproj —— build 11540 --help 实证：不给参数时服务端可能
+        # 自附共置 mmproj，只"不传 --mmproj"挡不住静默加载（D-4 / I-1）。
+        argv += ["--no-mmproj"]
     return argv
 
 
@@ -201,9 +243,23 @@ def start() -> None:
     产物缺失时抛 RuntimeError（文案来自 describe_missing，指名具体文件），
     由调用方走契约 A（.startup_error + sys.exit）——不做静默降级。
     """
-    global _proc
+    global _proc, _mmproj_loaded
     with _lock:
         if _health_ok():
+            # 先判本模块实例死活（审查 P2①）：--mmproj 实例自行崩溃/OOM（未走 stop ⇒
+            # 旗标不复位）后，外部纯文本实例占用 19878（健康真）时，只看"健康 ∧ 旗标"
+            # ⇒ media_ready() 假真 ⇒ data: URI 被 POST 到纯文本实例（反向静默降级）。
+            # _proc 非 None 且已退出 ⇒ 活体是外部的 ⇒ 先复位旗标，再走开关/旗标判定。
+            if _proc is not None and _proc.poll() is not None:
+                _mmproj_loaded = False
+            # 有活体实例（本模块所拉或用户手起）：开关开而实例未加载 mmproj（旗标假）
+            # ⇒ fail-loud 指向重启处置 —— 绝不静默按文本模式继续（spec §5.4 🔴）。
+            if media_ingest_enabled() and not _mmproj_loaded:
+                raise RuntimeError(
+                    "media_ingest.enabled 已开，但当前 llama-server 实例未加载 mmproj"
+                    "（旗标为假：实例未以 --mmproj 拉起，或外部实例占用了 19878）。"
+                    "请按手册停掉现有实例并重启 Niu，使 llama-server 带 --mmproj 重新拉起。"
+                )
             logger.info("[llama-server] 已有实例在跑，复用")
             return
 
@@ -211,24 +267,39 @@ def start() -> None:
         if missing:
             raise RuntimeError(missing)
 
+        # 新实例前置检查（spawn 之前）：开关开而 mmproj 产物缺失 ⇒ fail-loud（I-2）——
+        # 不拉起一个必然编码不了的纯文本实例，让调用方在编码期才发现。报文必须指名
+        # 缺失产物路径：describe_missing_media 在真实路径已就位时会返回空串（测试会
+        # 把本模块的 mmproj_path 指向不存在的临时路径），此时以本模块的产物路径兜底。
+        if media_ingest_enabled() and not media_artifacts_ready():
+            raise RuntimeError(
+                describe_missing_media()
+                or f"mmproj 产物缺失: {mmproj_path()}（请按手册安装后重启 llama-server）"
+            )
+
         server = llama_server_path()
         if llama_needs_exec_bit() and not (server.stat().st_mode & 0o111):
             # 没跑铁律 7 的 chmod 修复时不静默失败，自己补一次
             logger.warning("[llama-server] 二进制缺可执行位，自动补 chmod +x")
             server.chmod(server.stat().st_mode | 0o111)
 
-        logger.info(f"[llama-server] 启动: {' '.join(_build_argv())}")
+        argv = _build_argv()
+        logger.info(f"[llama-server] 启动: {' '.join(argv)}")
         # T1：日志文件已关（stdout 直接丢弃，stderr 接 PIPE 进有界内存缓冲）。
         # 不建 ~/.niu/logs、不再追加 llama_server.log——verbosity 3 每个 embed
         # 请求打 4+ 行、只增不减且无人看；排障靠 _recent_stderr 环形缓冲。
         _proc = subprocess.Popen(
-            _build_argv(),
+            argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             **_popen_flags(),
         )
         _start_stderr_drain(_proc)
+        # 新实例旗标显式置位/复位（argv 无 --mmproj 的拉起 ⇒ False）：幂等复用路径
+        # 不动旗标，只有真正换了实例才更新它（Interfaces：旗标只在 --mmproj 新实例
+        # 路径置位）。
+        _mmproj_loaded = "--mmproj" in argv
 
         # 注册兜底退出钩子（防 lifespan shutdown 未覆盖的退出路径留下孤儿进程）
         atexit.register(stop)
@@ -251,7 +322,12 @@ def start() -> None:
 
 def _stop_locked() -> None:
     """停止子进程。**调用方必须已持有 `_lock`**（start() 的失败路径在锁内）。"""
-    global _proc
+    global _proc, _mmproj_loaded
+    # 旗标复位必须在**提前返回之前**（审查 B7）：mmproj 实例自行崩溃（未走停止流程）
+    # 时若按函数尾部自然写法放复位行，会被 `poll() is not None` 的提前返回跳过 ⇒
+    # 旗标残留 True ⇒ 外部纯文本实例占用 19878 时 media_ready() 假真 ⇒
+    # data: URI 被 POST 到纯文本实例 ⇒ 反向静默降级。
+    _mmproj_loaded = False
     proc, _proc = _proc, None
     if proc is None or proc.poll() is not None:
         return
@@ -282,6 +358,67 @@ def stop() -> None:
 
 def is_alive() -> bool:
     return _health_ok()
+
+def media_ready() -> bool:
+    """运行实例是否**真实**加载了 mmproj 且健康（T1）。
+
+    旗标 ∧ 健康 —— **不是**"开关开 ∧ 健康"（那是静默降级：开关热翻转为开而实例
+    是纯文本形态时会漏过，审查 P2）。旗标只在 start() 的新实例路径按 argv 置位，
+    复位有三处：_stop_locked 收尾（含自行崩溃后经它）、start() 的复用分支发现
+    本模块实例已死时（P2①）、以及新实例路径按 argv 复位。
+    """
+    return _mmproj_loaded and _health_ok()
+
+
+def _post_media(data_uri: str) -> list[float]:
+    """媒体（`data:` base64 URI）**单次发送**到 /v1/embeddings。
+
+    与 _post_embeddings 同型，但用独立的 _MEDIA_HTTP_TIMEOUT（大图编码 470–700 s，
+    复用 120 s 必然超时，审查 B8）。**不复用 _encode_one 的文本截断护栏**：data:
+    URI 是数十 MB 的 base64 长串，护栏会把图片从中间截断 ⇒ 服务端 400 或产出垃圾
+    向量（审查 B6）。
+    """
+    payload = json.dumps({"input": [data_uri], "encoding_format": "float"}).encode()
+    req = urllib.request.Request(
+        f"{_base_url()}/v1/embeddings",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=_MEDIA_HTTP_TIMEOUT) as resp:
+        data = json.loads(resp.read())
+    items = data.get("data") or []
+    if len(items) != 1:
+        raise RuntimeError(f"llama-server 返回条数不符：期望 1，实得 {len(items)}")
+    return list(map(float, items[0]["embedding"]))
+
+
+def encode_media(abs_path: str) -> list[float]:
+    """单张图片 → 768 维向量（与文本同一空间，C1/C8）。
+
+    前置检查**先于**任何发送：健康检查失败或实例未加载 mmproj（旗标假）⇒ 抛错，
+    绝不静默按文本模式继续（子情形 d：开关热翻转为开而运行实例是纯文本形态）。
+    图片按落盘文件的**真实扩展名**取 MIME 前缀（审查 A7：.jpg/.jpeg → image/jpeg、
+    .png → image/png，其余按 mimetypes 推断，不得一律写死 image/jpeg）。
+    发送走 _encode_lock 串行化：llama-server 单实例会把并发请求内部排队，媒体大图
+    编码期间文本编码排队并可能超时 —— 该二阶伤害在手册披露，本锁是既有串行约定。
+    """
+    if not _health_ok():
+        raise RuntimeError("llama-server 未就绪（health 检查失败）")
+    # 本守卫只查旗标、**不查开关**（调用方只在需要媒体时才会调用本函数），
+    # 措辞因此不得宣称"开关已开"——开关状态与本守卫无关。
+    if not _mmproj_loaded:
+        raise RuntimeError(
+            "当前 llama-server 实例未加载 mmproj（纯文本形态或产物缺失），"
+            "无法编码媒体。请按手册重启 llama-server 使其带 --mmproj 拉起。"
+        )
+    path = Path(abs_path)
+    if not path.is_file():
+        raise RuntimeError(f"图片文件不存在: {abs_path}")
+    mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+    uri = f"data:{mime};base64,{b64}"
+    with _encode_lock:
+        return _post_media(uri)
 
 
 def _post_embeddings(texts: list[str]) -> list[list[float]]:

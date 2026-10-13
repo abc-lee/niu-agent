@@ -1,0 +1,359 @@
+"""T1：llama-server 条件加载 mmproj + 媒体编码入口（方案 Task 1 Step 5 的四个子情形）。
+
+全 mock、禁真实进程 / 禁真实 HTTP（绝不碰用户正在用的 19878）：
+  (a) 开关关 → argv 含 `--no-mmproj`（元素级成员判断，`--no-mmproj` 自身带
+      `--mmproj` 子串，子串写法会自伤）、不含 `--mmproj`（I-1：必须主动禁，
+      服务端不给参数时可能自附共置 mmproj）。
+  (b) 开关开+产物在 → argv 含 `--mmproj`（值=家目录 mmproj_path）+ `--image-max-tokens`
+      （N 严格 < -ub；且 N × 0.09 < _MEDIA_HTTP_TIMEOUT，0.09 s/token 是文档化
+      最坏吞吐常数，测试只引用、不现场测）。
+  (c) 开关开+产物缺 → start() 在 spawn 之前抛错、报文含产物路径。🔴 必须
+      monkeypatch `_health_ok` → False（否则走幂等复用直接返回，前置检查执行不到，
+      用例因错因恒红）；且必须 patch 产物面（mmproj_path → 不存在的临时路径 +
+      describe_missing_media → 空串），把"真实产物是否就位"从测试前提里彻底拿掉
+      （P2②：靠真 describe_missing_media 在本机产物已就位时返回空串兜底，在产物
+      缺失的机器上会假红，且锅指向产品代码）。
+  (d) 产物在 + 运行实例无 mmproj + 开关热翻转为开 → encode_media() 必须在前置
+      检查处抛错（发送点未被调用），绝不静默按文本模式继续。precondition 用旗标
+      `_mmproj_loaded = False` 直接构造（不走 start()）；发送点 patch 掉，绝不把
+      media 编码 POST 到真实 19878（那是用户活体的纯文本实例，会 400 或污染）。
+
+patch 目标一律是**消费方命名空间** `llama_server.<name>`：llama_server.py 对
+media_artifacts / media_ingest_config 用 `from … import …`（与既有 embedding_artifacts
+惯例一致），patch 源头模块对消费方命名空间无效。
+
+测试运行中出现的 `[llama-server]` 行与 loguru teardown 时的输出是 loguru 的
+stderr 输出（所有用例全 mock、绝未拉起真实服务），属已知无关噪声，非测试失败信号。
+"""
+import pathlib
+import types
+
+import pytest
+
+from niu_api.internal import llama_server
+
+
+class _FakeProc:
+    """鸭子类型子进程：poll() 返回 None（活着），stderr=None（drain 线程直接结束）。"""
+
+    stderr = None
+    def __init__(self):
+        self.terminated = 0
+        self.killed = 0
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminated += 1
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):
+        self.killed += 1
+
+
+class _DeadProc(_FakeProc):
+    """自行崩溃的实例（未走 stop）—— B7 反向静默降级的触发形态。"""
+
+    def poll(self):
+        return 1
+
+
+def _patch_popen(monkeypatch, on_popen):
+    """把 llama_server 命名空间里的 subprocess 整个换成桩（Popen 进 on_popen，
+    其余属性指向真模块，_stop_locked 的 TimeoutExpired 分支不受影响）。"""
+    import subprocess as real_subprocess
+
+    fake_sp = types.SimpleNamespace(
+        Popen=on_popen,
+        DEVNULL=real_subprocess.DEVNULL,
+        PIPE=real_subprocess.PIPE,
+        TimeoutExpired=real_subprocess.TimeoutExpired,
+    )
+    monkeypatch.setattr(llama_server, "subprocess", fake_sp)
+
+
+# ============== 子情形 (a)/(b)：_build_argv 的返回值（纯函数，无需 mock）=============
+
+
+class TestBuildArgv:
+    def test_disabled_appends_no_mmproj(self, monkeypatch):
+        """I-1：开关关 → 主动追加 --no-mmproj，且无 --mmproj。"""
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: False)
+        argv = llama_server._build_argv()
+        assert "--no-mmproj" in argv
+        assert "--mmproj" not in argv
+
+    def test_disabled_with_real_empty_config(self, monkeypatch, tmp_path):
+        """走真实配置读取面（CONFIG_PATH 注入空配置）——验证接线，不只信被 patch 的假开关。"""
+        cfg = tmp_path / "user-config.json"
+        cfg.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", str(cfg))
+        argv = llama_server._build_argv()
+        assert "--no-mmproj" in argv
+        assert "--mmproj" not in argv
+
+    def test_enabled_appends_mmproj_and_image_max_tokens(self, monkeypatch, tmp_path):
+        """I-11 + 审查 A8/B7/A9：--mmproj 的值必须是家目录产物；--image-max-tokens
+        的 N 严格 < -ub（留出模板预算），且 N × 0.09 < 媒体超时（时间维不反噬）。"""
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: True)
+        fake_home = tmp_path / "home"
+        monkeypatch.setattr(pathlib.Path, "home", staticmethod(lambda: fake_home))
+        (fake_home / ".niu" / "models").mkdir(parents=True)
+        mmproj = fake_home / ".niu" / "models" / "mmproj-embeddinggemma-2-Q8_0.gguf"
+        mmproj.write_bytes(b"x")
+
+        argv = llama_server._build_argv()
+        assert "--no-mmproj" not in argv
+        i = argv.index("--mmproj")
+        assert argv[i + 1] == str(mmproj), "--mmproj 的值必须是家目录产物（I-11）"
+        j = argv.index("--image-max-tokens")
+        n = int(argv[j + 1])
+        assert 0 < n < llama_server._UBATCH, "N 必须严格小于 -ub（单输入总长预算）"
+        assert n * 0.09 < llama_server._MEDIA_HTTP_TIMEOUT, (
+            "最坏编码时长（N × 0.09 s/token，C4 实测上界）必须小于媒体超时，"
+            "否则大图必然客户端超时降级（审查 B8）"
+        )
+
+
+class TestStartPreflight:
+    def test_enabled_missing_artifact_raises_before_spawn(self, monkeypatch, tmp_path):
+        """I-2：开关开而产物缺 ⇒ 前置检查先于 spawn 抛错，报文含产物路径。
+
+        P2②：patch describe_missing_media → 空串，强制走模块级兜底报文——
+        "真实产物是否就位"从此与用例红绿无关（在任何机器上都恒绿）。"""
+        missing = tmp_path / "home" / ".niu" / "models" / "mmproj-embeddinggemma-2-Q8_0.gguf"
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: False)  # 不走复用短路
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: True)
+        monkeypatch.setattr(llama_server, "mmproj_path", lambda: missing)
+        monkeypatch.setattr(llama_server, "media_artifacts_ready", lambda: False)
+        monkeypatch.setattr(llama_server, "describe_missing", lambda: "")  # 文本产物齐备
+        monkeypatch.setattr(llama_server, "describe_missing_media", lambda: "")  # P2②：切断本机产物状态依赖
+        popped = []
+
+        def _fake_popen(argv, **kw):
+            popped.append(argv)
+            raise AssertionError("Popen 不得被调用（前置检查必须先抛错）")
+
+        _patch_popen(monkeypatch, _fake_popen)
+        with pytest.raises(RuntimeError) as ei:
+            llama_server.start()
+        assert str(missing) in str(ei.value), "报文必须指名缺失的产物路径"
+        assert "重启" in str(ei.value), "fail-loud 报文必须指向重启处置（spec §5.4）"
+        assert not popped, "spawn 之前必须已抛错"
+
+    def test_reuse_branch_switch_on_flag_false_raises(self, monkeypatch):
+        """spec §5.4：开关开而活体实例未加载 mmproj（旗标假）⇒ 复用分支也 fail-loud，
+        绝不静默按文本模式继续。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", False)
+        with pytest.raises(RuntimeError):
+            llama_server.start()
+
+    def test_reuse_branch_switch_on_flag_true_returns(self, monkeypatch):
+        """旗标真（本模块以 --mmproj 拉起的实例）⇒ 复用不报错，旗标保持不动。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        llama_server.start()
+        assert llama_server._mmproj_loaded is True
+
+    def test_reuse_branch_switch_off_flag_false_returns(self, monkeypatch):
+        """开关关 ⇒ 幂等复用直接返回，旗标不动（Interfaces：复用路径不置位不复位）。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: False)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", False)
+        llama_server.start()
+        assert llama_server._mmproj_loaded is False
+
+    def test_reuse_dead_module_instance_switch_on_raises(self, monkeypatch):
+        """P2①：本模块拉起的 --mmproj 实例自行崩溃（未走 stop ⇒ 旗标残留真）+
+        外部纯文本实例占用 19878（健康真）⇒ start() 复用分支必须先判本模块实例
+        死活、复位旗标再报错——否则 media_ready() 假真，data: URI 会被 POST 到
+        纯文本实例（反向静默降级）。必须真经 start() 的复用分支（不得直调 _stop_locked）。"""
+        monkeypatch.setattr(llama_server, "_proc", _DeadProc())
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)   # 陈旧旗标
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)  # 外部实例健康
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: True)
+        with pytest.raises(RuntimeError):
+            llama_server.start()
+        assert llama_server._mmproj_loaded is False, "复用分支必须先复位陈旧旗标"
+        assert llama_server.media_ready() is False, "假真即反向静默降级"
+
+    def test_reuse_dead_module_instance_switch_off_resets_stale_flag(self, monkeypatch):
+        """开关关 + 本实例已死（陈旧旗标真）+ 外部实例健康 ⇒ 幂等复用正常返回，
+        但陈旧旗标必须被复位（media_ready() 随之为假，旗标不再说谎）。"""
+        monkeypatch.setattr(llama_server, "_proc", _DeadProc())
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: False)
+        llama_server.start()
+        assert llama_server._mmproj_loaded is False
+        assert llama_server.media_ready() is False
+
+    def test_cold_start_switch_on_artifact_present(self, monkeypatch, tmp_path):
+        """开关开+产物在+冷启动 ⇒ 新实例 argv 含 --mmproj，start() 成功后旗位置真。"""
+        fake_home = tmp_path / "home"
+        (fake_home / ".niu" / "models").mkdir(parents=True)
+        mmproj = fake_home / ".niu" / "models" / "mmproj-embeddinggemma-2-Q8_0.gguf"
+        mmproj.write_bytes(b"x")
+        monkeypatch.setattr(pathlib.Path, "home", staticmethod(lambda: fake_home))
+
+        states = {"ready": False}
+
+        def _health():
+            return states["ready"]
+
+        monkeypatch.setattr(llama_server, "_health_ok", _health)
+        monkeypatch.setattr(llama_server, "media_ingest_enabled", lambda: True)
+        monkeypatch.setattr(llama_server, "mmproj_path", lambda: mmproj)
+        monkeypatch.setattr(llama_server, "media_artifacts_ready", lambda: True)
+        monkeypatch.setattr(llama_server, "describe_missing", lambda: "")
+        monkeypatch.setattr(llama_server, "llama_server_path", lambda: tmp_path / "llama-server")
+        monkeypatch.setattr(llama_server, "llama_needs_exec_bit", lambda: False)
+        monkeypatch.setattr(llama_server, "_STARTUP_TIMEOUT", 0.2)
+        # 测试隔离（P3-4）：atexit 打桩——spawn 路径会 atexit.register(stop)，
+        # 不打桩会在全局 atexit 注册表留一条测试遗留的钩子；_stderr_thread 预先
+        # 钉 None，monkeypatch 测试后自动还原，桩进程（stderr=None，drain 线程
+        # 即刻自然结束）的引用不残留在模块全局。
+        monkeypatch.setattr(
+            llama_server, "atexit", types.SimpleNamespace(register=lambda *a, **k: None)
+        )
+        monkeypatch.setattr(llama_server, "_stderr_thread", None)
+        spawned = []
+
+        def _fake_popen(argv, **kw):
+            spawned.append(argv)
+            states["ready"] = True  # 首个 _health_ok 为假（走 spawn 路径），之后为真（就绪）
+            return _FakeProc()
+
+        _patch_popen(monkeypatch, _fake_popen)
+        llama_server.start()
+        assert len(spawned) == 1
+        argv = spawned[0]
+        assert "--mmproj" in argv and "--no-mmproj" not in argv
+        assert argv[argv.index("--mmproj") + 1] == str(mmproj)
+        assert "--image-max-tokens" in argv
+        assert llama_server._mmproj_loaded is True, "新实例路径必须按 argv 置位旗标"
+
+
+# ============== media_ready：旗标 ∧ 健康（不是"开关开 ∧ 健康"）==============
+
+
+class TestMediaReady:
+    def test_flag_true_and_healthy(self, monkeypatch):
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        assert llama_server.media_ready() is True
+
+    def test_flag_true_but_unhealthy(self, monkeypatch):
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: False)
+        assert llama_server.media_ready() is False
+
+    def test_healthy_but_flag_false_is_not_ready(self, monkeypatch):
+        """审查 P2 鉴别器：纯文本实例健康 ≠ 能编图 —— "开关开 ∧ 健康"的写法在此翻车。"""
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", False)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        assert llama_server.media_ready() is False
+
+
+# ============== 子情形 (d)：实例无 mmproj ⇒ encode_media 前置抛错、不发送 ========
+
+
+class TestEncodeMedia:
+    def _jpg(self, tmp_path):
+        p = tmp_path / "photo.jpg"
+        p.write_bytes(b"\xff\xd8\xff\xe0fakejpeg")
+        return p
+
+    def test_d_switch_on_instance_without_mmproj_raises_before_send(self, monkeypatch, tmp_path):
+        """I-2：旗标假（实例是纯文本形态）⇒ 抛错且发送点未被调用，绝不按文本模式硬编码。"""
+        jpg = self._jpg(tmp_path)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", False)
+        sent = []
+        monkeypatch.setattr(
+            llama_server, "_post_media", lambda uri: sent.append(uri) or [0.0] * 768
+        )
+        with pytest.raises(RuntimeError) as ei:
+            llama_server.encode_media(str(jpg))
+        assert not sent, "前置检查必须先于任何发送"
+        assert "mmproj" in str(ei.value)
+
+    def test_unhealthy_raises_before_send(self, monkeypatch, tmp_path):
+        jpg = self._jpg(tmp_path)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: False)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        sent = []
+        monkeypatch.setattr(
+            llama_server, "_post_media", lambda uri: sent.append(uri) or [0.0] * 768
+        )
+        with pytest.raises(RuntimeError):
+            llama_server.encode_media(str(jpg))
+        assert not sent
+
+    def test_missing_file_raises(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        sent = []
+        monkeypatch.setattr(
+            llama_server, "_post_media", lambda uri: sent.append(uri) or [0.0] * 768
+        )
+        with pytest.raises(RuntimeError):
+            llama_server.encode_media(str(tmp_path / "nope.jpg"))
+        assert not sent
+
+    def test_success_sends_jpeg_data_uri(self, monkeypatch, tmp_path):
+        """审查 A7：MIME 前缀按落盘文件真实扩展名取（.jpg → image/jpeg）。"""
+        jpg = self._jpg(tmp_path)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        sent = []
+
+        def _fake_post(uri):
+            sent.append(uri)
+            return [0.5] * 768
+
+        monkeypatch.setattr(llama_server, "_post_media", _fake_post)
+        out = llama_server.encode_media(str(jpg))
+        assert len(sent) == 1
+        assert sent[0].startswith("data:image/jpeg;base64,")
+        assert out == [0.5] * 768
+
+    def test_success_uses_png_mime_for_png(self, monkeypatch, tmp_path):
+        png = tmp_path / "pic.png"
+        png.write_bytes(b"\x89PNGfake")
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        sent = []
+        monkeypatch.setattr(
+            llama_server, "_post_media", lambda uri: sent.append(uri) or [0.0] * 768
+        )
+        llama_server.encode_media(str(png))
+        assert sent[0].startswith("data:image/png;base64,")
+
+
+# ============== B7：旗标复位必须在 _stop_locked 的提前返回之前 =================
+
+
+class TestStopResetsFlag:
+    def test_crashed_proc_flag_reset_before_early_return(self, monkeypatch):
+        """mmproj 实例自行崩溃（未走 stop）后，_stop_locked 的提前返回**不得**跳过复位——
+        否则旗标残留 True ⇒ 外部纯文本实例占用 19878 时 media_ready() 假真 ⇒
+        反向静默降级。本用例即"复位行若放函数尾部"时翻红的红用例。"""
+        monkeypatch.setattr(llama_server, "_proc", _DeadProc())
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        llama_server._stop_locked()
+        assert llama_server._mmproj_loaded is False
+
+    def test_live_proc_stopped_and_flag_reset(self, monkeypatch):
+        fake = _FakeProc()
+        monkeypatch.setattr(llama_server, "_proc", fake)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        llama_server._stop_locked()
+        assert fake.terminated == 1
+        assert llama_server._mmproj_loaded is False
