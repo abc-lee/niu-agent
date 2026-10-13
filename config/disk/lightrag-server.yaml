@@ -471,3 +471,17 @@ tools:
         position: 1
         type: string
         required: true
+
+  - name: search_media
+    category: query
+    short: "图片语义检索"
+    long: "按自然语言文字在独立媒体向量库内检索照片（独立计分，不与知识检索得分混合）。命中项的 file_path/description 查询时从图谱节点解析（节点缺失 ⇒ 空值 + degraded 标记，命中不丢）。库空返回空结果。查询要写具体画面内容描述，不要写宽泛类别词。命中多且图谱后端假死时可能长时间无响应（逐项解析节点，每项最长约 30s）。"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: top_k
+        flag: top-k
+        type: integer
+        default: 5

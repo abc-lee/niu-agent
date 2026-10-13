@@ -326,6 +326,29 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         },
     },
 
+    "search_media": {
+        "name": "search_media",
+        "description": (
+            "独立媒体检索工具（按自然语言找图片）：在独立媒体向量库内做文字搜图，"
+            "独立计分、不与知识检索的任何得分融合。命中项的 file_path/description 在查询时"
+            "从图谱节点解析（节点缺失 ⇒ 空值 + degraded 标记，命中不丢）；库空返回空结果。"
+            "命中多且图谱后端假死时本工具可能长时间无响应（逐命中项解析节点，每项最长 ~30s）。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "想找的画面描述（自然语言）"},
+                "top_k": {
+                    "type": "integer",
+                    "description": "最多返回几条结果（默认5，最多50条）",
+                    "default": 5,
+                    "maximum": 50,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+
     # --- Insert Group ---
     "lightrag_insert": {
         "name": "lightrag_insert",
@@ -830,6 +853,94 @@ def lightrag_timeline_query(
     except Exception as e:
         logger.error(f"lightrag_timeline_query failed: {e}")
         return {"status": "error", "message": str(e), "timeline": []}
+
+
+def search_media(query: str, top_k: int = 5) -> dict:
+    """独立媒体检索工具（spec D-13/D-14/D-23/D-28；磁盘面 /lightrag/search_media）。
+
+    - 计分与排序只发生在独立媒体库内部（I-4/D-13），不与任何知识检索分数融合/比较；
+    - 命中项的路径与描述**查询时从图谱节点解析**（D-23：不复制、防漂移）——
+      经既有 LightRAGAdapter.get_entity_info 取节点的 file_path/description；
+      节点缺失 / adapter 不可用 / 异常 ⇒ 空值 + ``degraded`` 可辨标记（命中不丢、不整体报错）；
+    - 回退条件只有"库空"（search 对空库/文件不存在返回 []，不抛）⇒ {"status": "ok", "results": []}；
+    - 入口守卫：空/全空白 query、top_k 非正整数 → {status: error, message}；
+      top_k 转成整数后按 min(top_k, 50) 封顶（防巨大值把全库灌进 LLM）；
+    - 编码面与存储面严格分离（except 作用域各包一段，I-6 同款纪律）：
+      文本编码不需要 mmproj（encode_batch 纯文本）⇒ 未加载 mmproj 时，库里已有向量
+      仍可被文本命中；编码面异常转明确 status:error，不得静默成空结果；
+      存储面（媒体库文件损坏等）单独捕获并转 status:error，报文写明是存储面。
+    """
+    if not query or not str(query).strip():
+        return {"status": "error", "message": "query 不能为空"}
+    try:
+        top_k = int(top_k)
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "top_k 必须是正整数"}
+    if top_k < 1:
+        return {"status": "error", "message": "top_k 必须是正整数"}
+    top_k = min(top_k, 50)
+
+    try:
+        # 函数级 import：测试 patch niu_api.internal.llama_server.encode_batch 即生效（同型先例）
+        from niu_api.internal.llama_server import encode_batch
+
+        vectors = encode_batch([query])
+        if not vectors:
+            raise RuntimeError("encode_batch 返回空列表：查询文本未产生向量")
+        query_vector = vectors[0]
+    except Exception as e:
+        logger.warning(f"[SEARCH_MEDIA] Query encode failed: {e}")
+        return {
+            "status": "error",
+            "message": f"媒体查询文本编码失败（{type(e).__name__}）: {e}",
+        }
+
+    from niu_api.internal import media_vectors
+
+    try:
+        hits = media_vectors.search(query_vector, top_k)
+    except Exception as e:
+        logger.warning(f"[SEARCH_MEDIA] Media store search failed: {e}")
+        return {
+            "status": "error",
+            "message": f"媒体库检索失败（存储面：库文件可能损坏，需检查/修复存储，不是编码后端问题）: {e}",
+        }
+
+    results = []
+    for hit in hits:
+        item = {
+            "entity_name": hit["entity_name"],
+            "media_type": hit["media_type"],
+            "score": hit["score"],
+        }
+        file_path, description, degraded = _resolve_media_node_fields(hit["entity_name"])
+        item["file_path"] = file_path
+        item["description"] = description
+        if degraded:
+            item["degraded"] = True  # 可辨降级标记（D-23）：命中不丢，Agent 可据此改走 analyze_image/提示用户
+        results.append(item)
+    return {"status": "ok", "results": results}
+
+
+def _resolve_media_node_fields(entity_name: str) -> tuple[str, str, bool]:
+    """从图谱节点取路径与描述（D-23：不复制、防漂移；节点是唯一仍在被维护的位置事实）。
+
+    节点缺失 / LightRAG 不可用 / 异常 ⇒ ("", "", True)：命中项仍返回（向量与实体名的
+    绑定不受影响），空值 + 可辨降级标记，不静默吞掉、也不整体报错（R17）。
+    """
+    try:
+        adapter = _get_adapter()
+        result = adapter.get_entity_info(entity_name)
+        if result.get("status") == "ok":
+            graph_data = result.get("data", {}).get("graph_data", {}) or {}
+            file_path = str(graph_data.get("file_path", "") or "")
+            description = str(graph_data.get("description", "") or "")
+            if file_path or description:
+                return file_path, description, False
+            return "", "", True  # 节点在但无位置/描述字段：同样按降级处理（可辨）
+        return "", "", True
+    except Exception:
+        return "", "", True
 
 
 def lightrag_insert(
@@ -1630,6 +1741,7 @@ _TOOL_FUNCTIONS = {
     "lightrag_query_data": lightrag_query_data,
     "lightrag_search_entities": lightrag_search_entities,
     "lightrag_get_graph": lightrag_get_graph,
+    "search_media": search_media,
     "lightrag_insert": lightrag_insert,
     "lightrag_insert_file": lightrag_insert_file,
     "lightrag_insert_custom_kg": lightrag_insert_custom_kg,
