@@ -40,7 +40,7 @@ TOOL_SCHEMAS = {
 - path: 必填，文件路径或目录路径
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 - category: 分类目录（文档需要分类时传入，照片不需要）
-- action: start | interact | abort，默认空字符串
+- media_vector: True（本次存媒体向量）| False（本次跳过）| 不传（跟随 media_ingest.enabled 配置开关）；仅对照片生效
 
 三阶段交互模式（目录入库）:
 1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
@@ -83,6 +83,10 @@ TOOL_SCHEMAS = {
                     "enum": ["", "start", "interact", "abort"],
                     "default": "",
                     "description": "会话动作：start=初始化会话，interact/空=继续交互，abort=中止会话",
+                },
+                "media_vector": {
+                    "type": "boolean",
+                    "description": "本次入库是否为照片保存媒体向量：不传=跟随 media_ingest.enabled 配置开关，true/false=本次强制。向量只进独立媒体库（供 search_media 检索），永不进知识图谱；编码失败时照片仍照常入库",
                 },
             },
             "required": ["path"],
@@ -2026,7 +2030,7 @@ def handle_photo_conflict(target_path: Path) -> str:
     return str(new_path)
 
 
-def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy") -> dict:
+def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy", media_vector: bool | None = None) -> dict:
     """Ingest photo with face detection and person matching."""
     conn = None
     final_path = None  # Track for cleanup on failure
@@ -2243,7 +2247,7 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
             f"[INGEST_PHOTO] Completed: photo_id={photo_id}, persons={len(detected_persons)}"
         )
 
-        return {
+        result = {
             "status": "success",
             "photo_id": photo_id,
             "file_path": str(Path(final_path).resolve()),
@@ -2255,6 +2259,37 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
             "lightrag_sync": kg_result,
             "kg_entities": kg_entities,
         }
+
+        # 10. 媒体向量（T3；spec §5.1 D-2/D-3、§5.3 D-12/D-16）
+        #     三态语义：None 跟随 media_ingest.enabled 配置开关；True/False 本次强制。
+        #     I-6：编码/写库在照片入库事务（上面 _db_write_lock 块）之外、不持有
+        #     llama_server._lock 的路径上进行；失败只记 WARNING、不抛异常，照片照常入库。
+        #     I-3：只写独立媒体库（media_vectors），永不进 LightRAG vdb_*。
+        #     I-8：只带状态；reason 只含编码/存储的机械原因，不含任何图片内容。
+        #     绑定键与图谱侧 photo_entity_name 逐字一致：落盘后路径归一化
+        #     （正斜杠+小写）后的 stem —— 不得用入参 file_path 的 stem（copy 模式
+        #     会重命名，用源 stem 会产生静默错键）。
+        effective_media_vector = media_vector
+        if effective_media_vector is None:
+            from niu_api.internal.media_ingest_config import media_ingest_enabled
+            effective_media_vector = media_ingest_enabled()
+        if effective_media_vector:
+            try:
+                from niu_api.internal.llama_server import encode_media
+                from . import media_vectors
+
+                entity_name = Path(final_path_resolved.replace("\\", "/").lower()).stem
+                media_vectors.add(
+                    entity_name, "image", encode_media(final_path_resolved), final_path_resolved
+                )
+                result["media_vector"] = {"saved": True, "reason": ""}
+            except Exception as e:
+                logger.warning(
+                    f"[INGEST_PHOTO] Media vector failed for {final_path_resolved}: {e}"
+                )
+                result["media_vector"] = {"saved": False, "reason": str(e)}
+
+        return result
 
     except Exception as e:
         logger.exception(f"[INGEST_PHOTO] Failed: {e}")
@@ -3252,6 +3287,7 @@ def _process_next_file(session: dict, category: str = "") -> dict:
     all_files = session["all_files"]
     mode = session["mode"]
     auto_category = session.get("auto_category", "")
+    media_vector = session.get("media_vector")
 
     # 循环处理文件，直到遇到 need_category 或全部完成
     while True:
@@ -3276,7 +3312,7 @@ def _process_next_file(session: dict, category: str = "") -> dict:
                     continue
                 # 照片不需要分类判断，始终自动继续
                 session["offset"] = next_idx + 1  # 先推进 offset，防止 append 失败导致重复处理
-                result = ingest_photo(current["path"], category=None, mode=mode)
+                result = ingest_photo(current["path"], category=None, mode=mode, media_vector=media_vector)
                 session["processed"].append({"file": current["path"], "type": "image", "result": result})
                 # 继续循环处理下一个文件
                 continue
@@ -3350,7 +3386,7 @@ def _process_next_file(session: dict, category: str = "") -> dict:
             continue
 
 
-def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") -> dict:
+def ingest(path: str, category: str = "", mode: str = "copy", action: str = "", media_vector: bool | None = None) -> dict:
     """有状态统一入库工具
     
     单文件：无状态，直接入库
@@ -3368,7 +3404,7 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
     # 单文件：无状态直接入库
     if source.is_file():
         if is_photo(str(source)):
-            return ingest_photo(str(source), category=category or None, mode=mode)
+            return ingest_photo(str(source), category=category or None, mode=mode, media_vector=media_vector)
         else:
             return ingest_document(file_path=str(source), category=category, mode=mode)
     
@@ -3433,6 +3469,7 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
             "processed": [],
             "mode": mode,
             "auto_category": category,  # 初始化时的分类，非空表示全量自动循环
+            "media_vector": media_vector,  # D-8：随 start 记录，目录逐文件透传（None=跟随配置）
         }
         _ingest_sessions[session_key] = session
         
@@ -3788,6 +3825,7 @@ async def list_tools() -> list[Tool]:
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 - category: 分类目录（文档需要分类时传入，照片不需要）
 - action: start | interact | abort，默认空字符串
+- media_vector: True（本次存媒体向量）| False（本次跳过）| 不传（跟随 media_ingest.enabled 配置开关）；仅对照片生效
 
 三阶段交互模式（目录入库）:
 1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
@@ -3814,6 +3852,10 @@ async def list_tools() -> list[Tool]:
                         "enum": ["", "start", "interact", "abort"],
                         "default": "",
                         "description": "会话动作：start=初始化会话，interact/空=继续交互，abort=中止会话",
+                    },
+                    "media_vector": {
+                        "type": "boolean",
+                        "description": "本次入库是否为照片保存媒体向量：不传=跟随 media_ingest.enabled 配置开关，true/false=本次强制。向量只进独立媒体库（供 search_media 检索），永不进知识图谱；编码失败时照片仍照常入库",
                     },
                 },
                 "required": ["path"],
@@ -4083,6 +4125,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 category=arguments.get("category", ""),
                 mode=arguments.get("mode", "copy"),
                 action=arguments.get("action", ""),
+                media_vector=arguments.get("media_vector"),
             )
         elif name == "ingest_document":
             result = ingest_document(
