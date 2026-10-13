@@ -261,7 +261,7 @@ def test_09_ingest_single_file_passthrough(photo_env, tmp_path):
 
 def test_10_ingest_directory_pure_images(photo_env, tmp_path):
     """⑩ 纯图片临时目录 + ingest(dir, action='start')：start 一次把所有照片
-    处理完（照片分支恒自动循环），每张都进媒体库。不再发 interact。"""
+    处理完（照片分支恒自动循环），每张都进媒体库（逐张核对绑定键），不再发 interact。"""
     d = tmp_path / "photos"
     d.mkdir()
     for i in range(3):
@@ -272,6 +272,11 @@ def test_10_ingest_directory_pure_images(photo_env, tmp_path):
     assert r["photos"] == 3
     assert len(r["details"]["photos"]) == 3
     assert photo_env["encode"].call_count == 3
+    # 逐张绑定键断言：目录层整批错绑（3 张→3 个不同错键）时计数不变、照样绿
+    for entry in r["details"]["photos"]:
+        assert media_vectors.has(_expected_entity(entry["result"]["file_path"])), (
+            f"绑定键缺失: {entry['file']}"
+        )
     assert media_vectors.count() == 3
 
 
@@ -335,3 +340,15 @@ def test_11_disk_surface_config_on_no_param_still_saves(photo_env, tmp_path):
     photo_env["encode"].assert_called_once()
     assert result.value["media_vector"]["saved"] is True
     assert media_vectors.count() == 1
+
+    # 守仓库真实配置：photo-server.yaml 的 media_vector 参数不得带 default 键——
+    # 磁盘层 _apply_defaults 会把"未传参"注入成显式 False ⇒ 配置开关被架空。
+    # 上面自建 yaml 只守执行器路径，读不到仓库文件；此处读真仓库文件做内容级断言。
+    repo_yaml = Path(__file__).resolve().parent.parent / "config" / "disk" / "photo-server.yaml"
+    repo_cfg = yaml.safe_load(repo_yaml.read_text(encoding="utf-8"))
+    ingest_tool = next(t for t in repo_cfg["tools"] if t["name"] == "ingest")
+    mv_param = next(p for p in ingest_tool["parameters"] if p["name"] == "media_vector")
+    assert "default" not in mv_param, (
+        f"仓库 {repo_yaml} 给 media_vector 写了 default={mv_param.get('default')!r} ⇒ "
+        "磁盘层会把未传参注入成显式 False，配置开关被架空"
+    )
