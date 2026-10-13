@@ -71,7 +71,7 @@ def _image_size(path: str) -> tuple[int, int] | None:
             if head[:4] == b"RIFF" and head[8:12] == b"WEBP":  # WEBP：三种帧
                 head64 = head
                 if head64[12:16] == b"VP8 ":
-                    if head64[22:24] == b"\x9d\x01\x2a":
+                    if head64[23:26] == b"\x9d\x01\x2a":
                         return (
                             struct.unpack("<H", head64[26:28])[0] & 0x3FFF,
                             struct.unpack("<H", head64[28:30])[0] & 0x3FFF,

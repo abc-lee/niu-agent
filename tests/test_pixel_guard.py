@@ -1,4 +1,4 @@
-"""像素护栏行为套件（plan §5 S4a，spec D-26）：双阈值分判 + total 函数回归 + 两种拒收原因可辨。
+"""像素护栏行为套件（plan §5 S4a，spec D-26）：双阈值分判（含 VP8/VP8L 正向尺寸解码）+ total 函数回归 + 两种拒收原因可辨 + WARNING 契约。
 
 全部用临时合成文件（图头按格式规范构造，只保证 64 字节窗口内可解析），不碰真实图片。
 total 函数回归覆盖第一轮 P1-B 的四个复现输入（20B 截断 PNG 头 / 截断 VP8X / SOF0 后截断的
@@ -59,6 +59,33 @@ def _webp_vp8x(w: int, h: int, truncate: bool = False) -> bytes:
     )
 
 
+def _webp_vp8(w: int, h: int) -> bytes:
+    """合成 WEBP（VP8 有损关键帧）：起始码 0x9D012A 在偏移 23（实测真实 Pillow 有损 WebP 头），宽高低 14 位在偏移 26/28。"""
+    out = bytearray(64)
+    out[0:4] = b"RIFF"
+    out[8:12] = b"WEBP"
+    out[12:16] = b"VP8 "
+    out[23:26] = b"\x9d\x01\x2a"                        # 关键帧起始码（3 字节，偏移 23；实测对齐）
+    out[26:28] = struct.pack("<H", w & 0x3FFF)           # 宽（低 14 位）
+    out[28:30] = struct.pack("<H", h & 0x3FFF)           # 高（低 14 位）
+    return bytes(out)
+
+
+def _webp_vp8l(w: int, h: int) -> bytes:
+    """合成 WEBP（VP8L 无损）：签名 0x2F 在偏移 20，W-1/H-1 按 14 位位打包在偏移 21/22/23/24（WebP 规范）。"""
+    out = bytearray(64)
+    out[0:4] = b"RIFF"
+    out[8:12] = b"WEBP"
+    out[12:16] = b"VP8L"
+    out[20] = 0x2F                                       # 无损签名
+    wm1, hm1 = w - 1, h - 1
+    out[21] = wm1 & 0xFF                                 # 宽-1 低 8 位
+    out[22] = ((wm1 >> 8) & 0x3F) | ((hm1 & 0x3) << 6)   # 宽-1 高 6 位 + 高-1 低 2 位
+    out[23] = (hm1 >> 2) & 0xFF                          # 高-1 中 8 位
+    out[24] = (hm1 >> 10) & 0x0F                         # 高-1 高 4 位
+    return bytes(out)
+
+
 # ── ① 双阈值分判 ──────────────────────────────────────────────
 
 
@@ -108,6 +135,33 @@ def test_rejects_over_byte_budget_even_if_dims_within_budget(tmp_path):
     assert "超护栏预算" in reason
 
 
+def test_rejects_vp8_over_pixel_budget(tmp_path):
+    """WEBP VP8（有损关键帧）4000×4000（16MP，超预算）⇒ 拒收——守护 VP8 正向尺寸解码路径（P3-2）。"""
+    p = tmp_path / "big_vp8.webp"
+    p.write_bytes(_webp_vp8(4000, 4000))
+    ok, reason = pixel_guard.check(str(p))
+    assert ok is False
+    assert "4000×4000" in reason and "超像素预算" in reason
+
+
+def test_rejects_vp8l_over_pixel_budget(tmp_path):
+    """WEBP VP8L（无损）4000×4000（16MP，超预算）⇒ 拒收——VP8L 的 14 位位打包解码正确（P3-2）。"""
+    p = tmp_path / "big_vp8l.webp"
+    p.write_bytes(_webp_vp8l(4000, 4000))
+    ok, reason = pixel_guard.check(str(p))
+    assert ok is False
+    assert "4000×4000" in reason and "超像素预算" in reason
+
+
+def test_rejects_extreme_aspect_ratio_png(tmp_path):
+    """PNG 100000×100（10MP，极端长宽比）⇒ 拒收——struct ">I" 支持 >65535 的 PNG 宽（P3-3）。"""
+    p = tmp_path / "wide.png"
+    p.write_bytes(_png_header(100000, 100))
+    ok, reason = pixel_guard.check(str(p))
+    assert ok is False
+    assert "100000×100" in reason and "超像素预算" in reason
+
+
 # ── ② total 函数回归（第一轮 P1-B 复现用例入库）────────────────
 
 
@@ -135,7 +189,8 @@ def test_total_function_never_raises(tmp_path, monkeypatch, name, build):
     """任何畸形/未知输入 ⇒ ``check`` 零抛异常、按契约放行（True, ""）——绝不崩 tick。"""
     if name in ("nul_in_path", "missing_file"):
         target = str(tmp_path / "nul\0path.png") if name == "nul_in_path" else str(tmp_path / "does_not_exist.png")
-        pixel_guard.check(target)  # 不抛即通过
+        ok, reason = pixel_guard.check(target)  # 不抛即通过
+        assert ok is True and reason == ""
         return
     path = tmp_path / f"{name}.bin"
     path.write_bytes(build())
@@ -158,3 +213,21 @@ def test_two_rejection_reasons_are_distinguishable(tmp_path):
     _, r_by = pixel_guard.check(str(by))
     assert "超像素预算" in r_px and "超护栏预算" not in r_px
     assert "超护栏预算" in r_by and "超像素预算" not in r_by
+
+# ── ④ WARNING 契约（P2-1）────────────────────────────────────────────
+
+
+def test_warning_emitted_when_header_unreadable(tmp_path):
+    """契约：图头读不出 ⇒ 放行 + WARNING。本用例把契约的「WARNING 半」钉住：两行 ``logger.warning``
+    被删掉时套件照样全绿，须以一条断言 ``[PixelGuard]`` 告警前缀的用例作回归防线（P2-1）。"""
+    from loguru import logger
+    captured = []
+    sink_id = logger.add(captured.append, level="WARNING")
+    try:
+        p = tmp_path / "trunc.png"
+        p.write_bytes(_png_header(4000, 4000)[:20])  # 20B 截断头
+        ok, reason = pixel_guard.check(str(p))
+        assert ok is True and reason == ""
+        assert any("[PixelGuard]" in m for m in captured), "未捕获 [PixelGuard] WARNING"
+    finally:
+        logger.remove(sink_id)
