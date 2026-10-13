@@ -44,6 +44,7 @@ allowAsync: true
 - `mode`：copy（复制，默认）、move（移动）、reference（引用）
 - `category`：分类目录，文档需要分类时传入
 - `action`：start（初始化目录会话）、interact 或空字符串（继续交互）、abort（中止）
+- `media_vector`：True（本次存媒体向量）| False（本次跳过）| 不传（跟随 media_ingest.enabled 配置开关）；仅对照片生效。用户明确要求"这张照片也要能被搜到/按图搜图"时传 True；未提及则不传（跟配置）
 
 **ingest_document** 参数：
 - `file_path`（必填）：文档文件路径

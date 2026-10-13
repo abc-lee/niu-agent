@@ -23,6 +23,8 @@ tools:
         type: string
         enum: ["", start, interact, abort]
         default: ""
+      - name: media_vector
+        type: boolean
 
   - name: name_person
     category: write
