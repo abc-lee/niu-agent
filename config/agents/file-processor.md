@@ -44,23 +44,11 @@ allowAsync: true
 - `mode`：copy（复制，默认）、move（移动）、reference（引用）
 - `category`：分类目录，文档需要分类时传入
 - `action`：start（初始化目录会话）、interact 或空字符串（继续交互）、abort（中止）
-- `media_vector`：True（本次存媒体向量）| False（本次跳过）| 不传（跟随 media_ingest.enabled 配置开关）；仅对照片生效。**你看到不了图片内容**——只按任务文本写明的值传；任务文本没写就不传（跟配置）
 
 **ingest_document** 参数：
 - `file_path`（必填）：文档文件路径
 - `category`：分类目录，不传则返回内容预览供判断分类
 - `mode`：copy（复制，默认）、move（移动）、reference（引用）
-
-### 媒体向量入库
-
-`media_vector` 决定入库时是否为照片额外生成**媒体向量**。生成后照片可被文字描述检索命中，但向量**只供查、不吐画面内容**——它不会告诉你照片里有什么。
-
-**传参规则**（你看到不了图片内容，不得按题材/文件名自己决定，只按任务文本）：
-- 任务文本写明 `media_vector=True` 或 `media_vector=False` → 照做，传该值
-- 任务文本没写 → 不传（跟随 `media_ingest.enabled` 配置开关）
-- 别猜"总是传/总是不传"：三态各有意，猜错会改变入库行为（多生成/漏生成媒体向量）
-
-目录入库时该参数在**会话开始前写死**（`action=start` 时写入会话），**整批同值、不能逐张变**。
 
 ### 单文件入库
 

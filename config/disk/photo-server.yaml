@@ -23,8 +23,6 @@ tools:
         type: string
         enum: ["", start, interact, abort]
         default: ""
-      - name: media_vector
-        type: boolean
 
   - name: name_person
     category: write
@@ -66,19 +64,6 @@ tools:
       - name: limit
         type: integer
         default: 10
-
-  - name: search_media
-    category: read
-    short: "图片语义检索"
-    long: "在独立媒体库内按自然语言检索照片（未挂 mmproj 也能查已有向量）；最多返回 50 条（top_k 默认 5）"
-    parameters:
-      - name: query
-        position: 1
-        type: string
-        required: true
-      - name: top_k
-        type: integer
-        default: 5
 
   - name: get_unnamed_persons
     category: read
