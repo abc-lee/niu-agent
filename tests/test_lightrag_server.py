@@ -47,11 +47,11 @@ class TestToolSchemas:
     """Test TOOL_SCHEMAS structure and completeness."""
 
     def test_schemas_count(self):
-        """Should have exactly 23 tool schemas."""
+        """Should have exactly 24 tool schemas (23 既有 + S2 新增 search_media)."""
         # E3 契约 #8 核正：TOOL_SCHEMAS 实为 23 键（lightrag_insert_entity L415 是 8 空格
-        # 缩进顶层键、有完整 schema——陈旧断言 16 核正）
+        # 缩进顶层键、有完整 schema——陈旧断言 16 核正）；S2 新增 search_media ⇒ 24
         mod = _import_module()
-        assert len(mod.TOOL_SCHEMAS) == 23
+        assert len(mod.TOOL_SCHEMAS) == 24
 
     def test_all_tools_have_required_fields(self):
         """Each schema must have name, description, input_schema."""
@@ -90,12 +90,12 @@ class TestToolSchemas:
         assert "chunks" in props
 
     def test_get_tool_schemas_returns_list(self):
-        """get_tool_schemas() must return a list of 23 schemas."""
-        # E3 契约 #8b 核正：同 #8——陈旧断言 16 核正为 23
+        """get_tool_schemas() must return a list of 24 schemas."""
+        # E3 契约 #8b 核正：同 #8——陈旧断言 16 核正为 23；S2 新增 search_media ⇒ 24
         mod = _import_module()
         schemas = mod.get_tool_schemas()
         assert isinstance(schemas, list)
-        assert len(schemas) == 23
+        assert len(schemas) == 24
 
 
 # ============== Tool Functions ==============
@@ -670,7 +670,7 @@ class TestCallTool:
         )
 
     def test_all_tools_dispatchable(self):
-        """All 23 tool names should be dispatchable via call_tool."""
+        """All 24 tool names should be dispatchable via call_tool."""
         mod = _import_module()
         for name in mod.TOOL_SCHEMAS:
             assert name in mod._TOOL_FUNCTIONS, f"{name} not in _TOOL_FUNCTIONS"
