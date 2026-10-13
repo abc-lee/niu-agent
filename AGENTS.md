@@ -70,6 +70,7 @@ MCP 服务器集群 (mcp-servers/)
 - **取消 Agent 前必读 transcript 收割成果**：硬取消无法唤醒，但 jsonl transcript 保留（`~/.omp/agent/sessions/<proj>/<sess>/<name>.jsonl`）——提取 digest 喂给新 local-vision 续做，实测 2m44s 补完前任 50 分钟未成文的活。
 - 系统模板默认 scout 是远端——Niu 项目不得套模板默认；每份派发逐个 tasks[i].agent 显式写。**靠门禁不靠记忆**
 - **给 local-vision 派单不得强制任何输出格式（2026-10-13 实测确认）**：NInfer 服务器**只支持 `response_format:{"type":"text"}`**，`json_object` / `json_schema` 一律被拒（`response_format_not_supported`："requires constrained output, which NInfer cannot guarantee"）—— 它不做约束解码。⇒ 一旦在任务书/prompt 里要求"必须按某格式返回 / 必须给结构化结论"，请求被拒、Agent 交白卷（实证：同一份 spec 审查连开两轮，两轮都只 yield 一行元信息或畸形空壳，看着像"模型笨"，实为服务器能力所限）。**做法：要它审查/分析就用自然语言分节自由写**；需要结构化结果时**由 PM 事后抽取**，或改用支持约束输出的模型。这也意味着 **给 local-vision 设 `outputSchema` 是无效且有害的**。
+- **更稳的做法：让审查/分析类任务把结论直接落盘（2026-10-13 用户提，采纳为默认做法）** ⇒ 派单里写明"把结论用自由 markdown 写到 `docs/superpowers/reviews/<YYYY-MM-DD>-<topic>.md`（目录不存在就建），**yield 只回一行文件路径**"。好处：① **工具调用不受约束输出限制**，彻底绕开上面的服务器限制；② 内容在任务中途就落盘 ⇒ 即便最终 yield 仍是空的，成果也不丢（优于事后收割 transcript）；③ 报告进 `docs/superpowers/` 独立仓，**留痕可复查可 diff**；④ PM 用 `read` 读文件做裁决，不依赖任何结构化返回。**审查类、调研类、多轮分析类任务一律这么派。**
 
 ### 双审方法（门禁标准）
 - 每轮 2 个异角度审查并行（A=设计/逻辑链场景走查；B=技术可行性/事实核查）
