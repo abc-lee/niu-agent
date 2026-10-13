@@ -2262,8 +2262,9 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
 
         # 10. 媒体向量（T3；spec §5.1 D-2/D-3、§5.3 D-12/D-16）
         #     三态语义：None 跟随 media_ingest.enabled 配置开关；True/False 本次强制。
-        #     I-6：编码/写库在照片入库事务（上面 _db_write_lock 块）之外、不持有
-        #     llama_server._lock 的路径上进行；失败只记 WARNING、不抛异常，照片照常入库。
+        #     I-6：读配置、编码、写库全在降级围栏内（照片入库事务（上面 _db_write_lock 块）之外、
+        #     不持有 llama_server._lock 的路径上）；任一步失败只记 WARNING、按不产向量处理、
+        #     不抛异常，照片照常入库。
         #     I-3：只写独立媒体库（media_vectors），永不进 LightRAG vdb_*。
         #     I-8：只带状态；reason 只含编码/存储的机械原因，不含任何图片内容。
         #     绑定键与图谱侧 photo_entity_name 逐字一致：落盘后路径归一化
@@ -2271,8 +2272,14 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
         #     会重命名，用源 stem 会产生静默错键）。
         effective_media_vector = media_vector
         if effective_media_vector is None:
-            from niu_api.internal.media_ingest_config import media_ingest_enabled
-            effective_media_vector = media_ingest_enabled()
+            try:
+                from niu_api.internal.media_ingest_config import media_ingest_enabled
+                effective_media_vector = media_ingest_enabled()
+            except Exception as e:
+                logger.warning(
+                    f"[INGEST_PHOTO] Media vector config read failed, treated as off: {e}"
+                )
+                effective_media_vector = False
         if effective_media_vector:
             try:
                 from niu_api.internal.llama_server import encode_media
@@ -4138,6 +4145,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 file_path=arguments["file_path"],
                 category=arguments.get("category"),
                 mode=arguments.get("mode", "copy"),
+                media_vector=arguments.get("media_vector"),
             )
         elif name == "name_person":
             result = name_person(
