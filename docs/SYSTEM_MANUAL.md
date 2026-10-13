@@ -446,7 +446,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 - **工具**：`fold_tool_output(output_ids)` MCP 静态工具按编号置 folded=1（幂等，已折叠进 notes 不报错；迁移失败降级时返回明确错误文案）；**接受集 ⊆ 当前上下文视野**——只可折叠当前上下文视野内（带可折叠编号）且尚未折叠的工具输出，视野外编号一律拒绝且不回显（压实后按新窗口重算视野，视图里显号即可折）。
 - **搭车纪律**：折叠必须捎在本来就要调用的其他工具同一轮，绝不单开一轮（全量上下文重发比省的更贵）
 
-配置项 `context.compactionTriggerRatio`（config/user-config.json 的 context 段，默认 0.80，合法区间 [0.50,0.94]，越界 clamp+warning）：批量压实触发线从写死 0.80 改为读此配置——仪表盘显示的强制压缩线=实际触发的线；滞回复位线跟随（trigger−2%），回落预算 `min(0.80, trigger)`，应急线 95% 保持写死。
+配置项 `context.compactionTriggerRatio`（`~/.niu/config/user-config.json` 的 context 段，默认 0.80，合法区间 [0.50,0.94]，越界 clamp+warning）：批量压实触发线从写死 0.80 改为读此配置——仪表盘显示的强制压缩线=实际触发的线；滞回复位线跟随（trigger−2%），回落预算 `min(0.80, trigger)`，应急线 95% 保持写死。
 
 #### 历史取回：read_history_block 工具
 
@@ -766,7 +766,7 @@ mmproj 是 embeddinggemma-2 的多模态投影矩阵（Q8_0 量化，554,821,024
 
 ## LLM 调用与知识图谱超时配置
 
-LLM 流式读取超时（`read_timeout`，默认 300s）与 LightRAG 操作超时（`insert_timeout` 600s / `query_timeout` 120s / `delete_timeout` 300s / `status_timeout` 30s / `merge_timeout` 300s）均可通过配置文件调整：`read_timeout` 在 `config/user-config.json` 的 `llm` 与 `lightrag_llm` 段，LightRAG 操作超时在 `~/.niu/preferences.json` 的 `lightrag` 段。缺省值已显式写入两处配置示例，详见《用户操作手册》1.2 LLM 配置与 1.4 知识图谱章节。生效方式：主对话/子 Agent 的 `read_timeout` 修改后重启生效；知识图谱 LLM 调用与 LightRAG 操作超时每次操作实时读取配置，修改后即时生效。
+LLM 流式读取超时（`read_timeout`，默认 300s）与 LightRAG 操作超时（`insert_timeout` 600s / `query_timeout` 120s / `delete_timeout` 300s / `status_timeout` 30s / `merge_timeout` 300s）均可通过配置文件调整：`read_timeout` 在 `~/.niu/config/user-config.json` 的 `llm` 与 `lightrag_llm` 段，LightRAG 操作超时在 `~/.niu/preferences.json` 的 `lightrag` 段。缺省值已显式写入两处配置示例，详见《用户操作手册》1.2 LLM 配置与 1.4 知识图谱章节。生效方式：主对话/子 Agent 的 `read_timeout` 修改后重启生效；知识图谱 LLM 调用与 LightRAG 操作超时每次操作实时读取配置，修改后即时生效。
 
 ### LLM 配置双文件模型
 
