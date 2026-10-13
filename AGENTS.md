@@ -69,6 +69,7 @@ MCP 服务器集群 (mcp-servers/)
 - **验证归 PM、双审归 Agent**：diff / 跑验证脚本 / grep 核对属 PM 自己的活，不派 Agent（派 Agent 的价值=独立视角找缺陷，不是复述指令）。
 - **取消 Agent 前必读 transcript 收割成果**：硬取消无法唤醒，但 jsonl transcript 保留（`~/.omp/agent/sessions/<proj>/<sess>/<name>.jsonl`）——提取 digest 喂给新 local-vision 续做，实测 2m44s 补完前任 50 分钟未成文的活。
 - 系统模板默认 scout 是远端——Niu 项目不得套模板默认；每份派发逐个 tasks[i].agent 显式写。**靠门禁不靠记忆**
+- **给 local-vision 派单不得强制任何输出格式（2026-10-13 实测确认）**：NInfer 服务器**只支持 `response_format:{"type":"text"}`**，`json_object` / `json_schema` 一律被拒（`response_format_not_supported`："requires constrained output, which NInfer cannot guarantee"）—— 它不做约束解码。⇒ 一旦在任务书/prompt 里要求"必须按某格式返回 / 必须给结构化结论"，请求被拒、Agent 交白卷（实证：同一份 spec 审查连开两轮，两轮都只 yield 一行元信息或畸形空壳，看着像"模型笨"，实为服务器能力所限）。**做法：要它审查/分析就用自然语言分节自由写**；需要结构化结果时**由 PM 事后抽取**，或改用支持约束输出的模型。这也意味着 **给 local-vision 设 `outputSchema` 是无效且有害的**。
 
 ### 双审方法（门禁标准）
 - 每轮 2 个异角度审查并行（A=设计/逻辑链场景走查；B=技术可行性/事实核查）
