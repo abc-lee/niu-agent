@@ -338,6 +338,11 @@ from .decay_pool import DecayPool  # noqa: E402
 # 含此字样也不会被误删。
 _DYNAMIC_BLOCK_HEADER = "[系统动态信息]"
 
+# D-29（v3.3）媒体能力两态提示词文本（用户原话，逐字，不得改写）：
+# 由代码现读开关投影生成——LLM 只见结果状态，永不出现「开关」概念（INV-1）。
+_MEDIA_PROMPT_OFF = "媒体向量入库与查询能力未开启，如有需求，参照系统管理手册，与用户协商是否安装。"
+_MEDIA_PROMPT_ON = "照片入库后，系统会异步计算向量并入库。你可以使用自然语言查找已入库的照片。举例:disk(\"/lightrag/search_media '<具体画面描述>'\")"
+
 
 def get_system_prompt() -> str:
     """获取系统提示词（向后兼容：静态段 + Current Time）。
@@ -1131,6 +1136,9 @@ class NiuRunner:
             text += "\n" + injection.strip()
         text += self._daily_reminder_line()
         text += self._park_reminder_line()
+        # D-29（v3.3）：媒体两态行——与块同生死（块恒非空：Current Time 行恒在），
+        # 不新增第二条 role=user 消息；行内容随开关每轮现读、热翻转
+        text += "\n" + self._media_ingest_prompt_line()
         # 上下文使用率仪表盘（fold spec §5）：M2-F1 真值化——优先 LLM API 真值
         # prompt_tokens（每轮响应后更新；0/缺失 → usage=None 落估算兜底），None/空行跳过。
         # 动态块在缓存前缀之外，允许每轮刷新；失败不影响本轮对话
@@ -1269,6 +1277,20 @@ class NiuRunner:
         except Exception as e:
             logger.warning(f"[例行数据] 读取失败（降级不显示）: {e}")  # 禁止静默吞（照暂存提醒先例）
             return ""
+
+    def _media_ingest_prompt_line(self) -> str:
+        """媒体能力两态文本行（D-29，v3.3）：代码现读开关投影，LLM 只见结果状态。
+
+        状态源 = 唯一读取模块 media_ingest_enabled()（A14/M6：函数级 import、每次现读、
+        坏输入回默认 False、绝不抛）——改配置开关免重启、下一轮即生效（热翻转）。
+        读取失败兜底 = 未开启态：同一函数同时 gating mmproj 加载/工作者起停/队列写入，
+        读取失败时系统本就按「关」运行，兜底态与事实一致，不向 LLM 呈现虚假的「已开启」。
+        """
+        try:
+            from niu_api.internal.media_ingest_config import media_ingest_enabled
+            return _MEDIA_PROMPT_ON if media_ingest_enabled() else _MEDIA_PROMPT_OFF
+        except Exception:  # 读取模块 import 失败等一切异常 ⇒ 未开启态，绝不炸动态块
+            return _MEDIA_PROMPT_OFF
 
     def _refresh_dynamic_user_block(self, messages: list, dynamic_text: str) -> None:
         """移除上一轮动态块并以 role=user 插入新块（最后一个 user 消息之前）。
