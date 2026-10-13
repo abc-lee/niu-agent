@@ -260,10 +260,10 @@ async def test_repair_isolates_media_store_and_never_leaks_media_vectors(tmp_pat
     # ── 种子：LightRAG 自包含夹具 + 媒体库两条向量 ───────────────────────────
     _make_synthetic_lightrag_fixture(tmp_storage)
 
-    from niu_photo_server import media_vectors
+    from niu_api.internal import media_vectors
 
-    media_vectors.add(MEDIA_ENTITY, "image", _MEDIA_VEC_1, MEDIA_PATH_1)
-    media_vectors.add(MEDIA_ENTITY_2, "image", _MEDIA_VEC_2, MEDIA_PATH_2)
+    media_vectors.add(MEDIA_ENTITY, "image", _MEDIA_VEC_1)
+    media_vectors.add(MEDIA_ENTITY_2, "image", _MEDIA_VEC_2)
     assert media_vectors.count() == 2
 
     media_sha_before = _sha256(media_store)

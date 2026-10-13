@@ -28,7 +28,6 @@ from loguru import logger
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
-from . import media_vectors
 
 # ============== Tool Schemas ==============
 
@@ -41,7 +40,6 @@ TOOL_SCHEMAS = {
 - path: 必填，文件路径或目录路径
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 - category: 分类目录（文档需要分类时传入，照片不需要）
-- media_vector: True（本次存媒体向量）| False（本次跳过）| 不传（跟随 media_ingest.enabled 配置开关）；仅对照片生效
 
 三阶段交互模式（目录入库）:
 1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
@@ -84,10 +82,6 @@ TOOL_SCHEMAS = {
                     "enum": ["", "start", "interact", "abort"],
                     "default": "",
                     "description": "会话动作：start=初始化会话，interact/空=继续交互，abort=中止会话",
-                },
-                "media_vector": {
-                    "type": "boolean",
-                    "description": "本次入库是否为照片保存媒体向量：不传=跟随 media_ingest.enabled 配置开关，true/false=本次强制。向量只进独立媒体库（供 search_media 检索），永不进知识图谱；编码失败时照片仍照常入库",
                 },
             },
             "required": ["path"],
@@ -194,38 +188,6 @@ TOOL_SCHEMAS = {
                     "type": "integer",
                     "description": "返回数量",
                     "default": 10,
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    "search_media": {
-        "name": "search_media",
-        "description": """独立媒体检索工具（按自然语言找图片）
-
-参数:
-- query: 必填，想找的画面描述（自然语言，如"日落时分的海滩"）
-- top_k: 最多返回几条结果（默认5，最多50条）
-
-返回:
-- status: ok | error
-- results: [{entity_name, media_type, file_path, score}]
-  - entity_name: 图谱绑定实体名（也是沿图谱走边的入口键）
-  - media_type: 媒体类型（image）
-  - file_path: 照片文件路径
-  - score: 与查询的相似度（只在独立媒体库内计分排序，与知识检索分数互不相关）
-- 空库: {status: ok, results: []}（不算错误）
-- 空/全空白 query: {status: error, message}
-- 错误: {status: error, message}（如媒体查询文本编码失败（异常类型）: 异常文本）""",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "想找的画面描述（自然语言）"},
-                "top_k": {
-                    "type": "integer",
-                    "description": "最多返回几条结果（默认5，最多50条）",
-                    "default": 5,
-                    "maximum": 50,
                 },
             },
             "required": ["query"],
@@ -2075,8 +2037,7 @@ def handle_photo_conflict(target_path: Path) -> str:
     logger.info(f"[PHOTO_CONFLICT] 重名，改为: {new_path}")
     return str(new_path)
 
-
-def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy", media_vector: bool | None = None) -> dict:
+def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy") -> dict:
     """Ingest photo with face detection and person matching."""
     conn = None
     final_path = None  # Track for cleanup on failure
@@ -2305,42 +2266,6 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
             "lightrag_sync": kg_result,
             "kg_entities": kg_entities,
         }
-
-        # 10. 媒体向量（T3；spec §5.1 D-2/D-3、§5.3 D-12/D-16）
-        #     三态语义：None 跟随 media_ingest.enabled 配置开关；True/False 本次强制。
-        #     I-6：读配置、编码、写库全在降级围栏内（照片入库事务（上面 _db_write_lock 块）之外、
-        #     不持有 llama_server._lock 的路径上）；任一步失败只记 WARNING、按不产向量处理、
-        #     不抛异常，照片照常入库。
-        #     I-3：只写独立媒体库（media_vectors），永不进 LightRAG vdb_*。
-        #     I-8：只带状态；reason 只含编码/存储的机械原因，不含任何图片内容。
-        #     绑定键与图谱侧 photo_entity_name 逐字一致：落盘后路径归一化
-        #     （正斜杠+小写）后的 stem —— 不得用入参 file_path 的 stem（copy 模式
-        #     会重命名，用源 stem 会产生静默错键）。
-        effective_media_vector = media_vector
-        if effective_media_vector is None:
-            try:
-                from niu_api.internal.media_ingest_config import media_ingest_enabled
-                effective_media_vector = media_ingest_enabled()
-            except Exception as e:
-                logger.warning(
-                    f"[INGEST_PHOTO] Media vector config read failed, treated as off: {e}"
-                )
-                effective_media_vector = False
-        if effective_media_vector:
-            try:
-                from niu_api.internal.llama_server import encode_media
-                from . import media_vectors
-
-                entity_name = Path(final_path_resolved.replace("\\", "/").lower()).stem
-                media_vectors.add(
-                    entity_name, "image", encode_media(final_path_resolved), final_path_resolved
-                )
-                result["media_vector"] = {"saved": True, "reason": ""}
-            except Exception as e:
-                logger.warning(
-                    f"[INGEST_PHOTO] Media vector failed for {final_path_resolved}: {e}"
-                )
-                result["media_vector"] = {"saved": False, "reason": str(e)}
 
         return result
 
@@ -3340,7 +3265,6 @@ def _process_next_file(session: dict, category: str = "") -> dict:
     all_files = session["all_files"]
     mode = session["mode"]
     auto_category = session.get("auto_category", "")
-    media_vector = session.get("media_vector")
 
     # 循环处理文件，直到遇到 need_category 或全部完成
     while True:
@@ -3365,7 +3289,7 @@ def _process_next_file(session: dict, category: str = "") -> dict:
                     continue
                 # 照片不需要分类判断，始终自动继续
                 session["offset"] = next_idx + 1  # 先推进 offset，防止 append 失败导致重复处理
-                result = ingest_photo(current["path"], category=None, mode=mode, media_vector=media_vector)
+                result = ingest_photo(current["path"], category=None, mode=mode)
                 session["processed"].append({"file": current["path"], "type": "image", "result": result})
                 # 继续循环处理下一个文件
                 continue
@@ -3438,8 +3362,7 @@ def _process_next_file(session: dict, category: str = "") -> dict:
             session["offset"] = next_idx + 1
             continue
 
-
-def ingest(path: str, category: str = "", mode: str = "copy", action: str = "", media_vector: bool | None = None) -> dict:
+def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") -> dict:
     """有状态统一入库工具
     
     单文件：无状态，直接入库
@@ -3457,7 +3380,7 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "", 
     # 单文件：无状态直接入库
     if source.is_file():
         if is_photo(str(source)):
-            return ingest_photo(str(source), category=category or None, mode=mode, media_vector=media_vector)
+            return ingest_photo(str(source), category=category or None, mode=mode)
         else:
             return ingest_document(file_path=str(source), category=category, mode=mode)
     
@@ -3522,7 +3445,6 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "", 
             "processed": [],
             "mode": mode,
             "auto_category": category,  # 初始化时的分类，非空表示全量自动循环
-            "media_vector": media_vector,  # D-8：随 start 记录，目录逐文件透传（None=跟随配置）
         }
         _ingest_sessions[session_key] = session
         
@@ -3860,79 +3782,6 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
         }
 
 
-def search_media(query: str, top_k: int = 5) -> dict:
-    """独立媒体检索工具（spec §5.3.1 / D-13/D-14）：自然语言查询 → 独立媒体库内的图片命中。
-
-    返回 {"status": "ok", "results": [{entity_name, media_type, file_path, score}]}：
-    - entity_name 是图谱绑定键（D-16），也是 Agent 沿图谱走边的入口，保留返回（不是 KG 计分字段）；
-    - 计分与排序只发生在媒体库内部（I-4），不与任何知识检索分数融合/比较；
-    - 回退条件只有"库空"（文件不存在 → search 直接返 []，不抛）→ {"status": "ok", "results": []}；
-    - 入口守卫：空/全空白 query、top_k 非正整数 → {status: error, message}；
-      top_k 转成整数后按 min(top_k, 50) 封顶（防巨大值把全库灌进 LLM）；
-    - 错误形状 {status: error, message}（跟随本模块既有约定，不用 reason）。
-
-    入口守卫先于编码面/存储面执行：空 query 不再产生退化向量污染命中，
-    字符串 top_k 的 TypeError 不再落入存储面 except 被误报成"库文件损坏"。
-
-    编码面与存储面严格分离（except 作用域只包该段，I-6 同款纪律）：
-    - 文本编码：llama-server 未起/挂掉时 encode_batch 先抛 RuntimeError（走不到 urlopen），
-      宽捕获 Exception 转成编码面工具错误，报文带异常类型与文本（S7 截断失败、服务未起、
-      HTTP 错可分辨），不得静默成空结果；
-    - 取 vectors[0] 与空列表判定归编码面：encode 真返空列表按编码失败报错，
-      不让 IndexError 落进存储面 except 被误标"库文件可能损坏"；
-    - 存储面（媒体库文件损坏等）：单独捕获并转 status:error，报文写明是存储面，
-      不得吞成"编码后端不可用"误导用户去重启 llama-server 而不是修存储。
-
-    未挂 mmproj 只挡入库时的图片编码（encode_media），不挡查询时的文本编码
-    （encode_batch 纯文本、不需要 mmproj）⇒ 未加载 mmproj 时，库里已有向量仍可被
-    文本命中；查询路径不以任何就绪态探测作门控或诊断。
-    """
-    # 入口守卫①：空/全空白 query 直接报错（空串照跑 encode_batch 会产出退化向量，
-    # 把 top_k 条噪声命中当"正常结果"回给 LLM = 静默错答案）。
-    if not query or not str(query).strip():
-        return {"status": "error", "message": "query 不能为空"}
-    # 入口守卫②：top_k 归一化。字符串/None 等不可转整数 → 报错（不让 TypeError
-    # 落进存储面 except 被误报"库文件可能损坏"）；<1 报错；上界 50。
-    try:
-        top_k = int(top_k)
-    except (TypeError, ValueError):
-        return {"status": "error", "message": "top_k 必须是正整数"}
-    if top_k < 1:
-        return {"status": "error", "message": "top_k 必须是正整数"}
-    top_k = min(top_k, 50)
-
-    try:
-        # 函数级 import（与 ingest_photo 的 encode_media 同型）：调用时从源模块重新
-        # 解析属性，测试 patch niu_api.internal.llama_server.encode_batch 即生效。
-        from niu_api.internal.llama_server import encode_batch
-
-        vectors = encode_batch([query])
-        # 取首个向量 + 空列表判定归编码面：encode 返空列表按编码失败报错，
-        # 不让 vectors[0] 的 IndexError 落进存储面 except 被误标"库文件可能损坏"。
-        if not vectors:
-            raise RuntimeError("encode_batch 返回空列表：查询文本未产生向量")
-        query_vector = vectors[0]
-    except Exception as e:
-        logger.warning(f"[SEARCH_MEDIA] Query encode failed: {e}")
-        return {
-            "status": "error",
-            "message": f"媒体查询文本编码失败（{type(e).__name__}）: {e}",
-        }
-
-    try:
-        # 不再预检 count()（会二次全量加载整库）：search() 对空库/文件不存在返回 []
-        # （不抛），库文件损坏则从 search → _load_store 抛出，落入本 except，报文同前。
-        results = media_vectors.search(query_vector, top_k)
-    except Exception as e:
-        logger.warning(f"[SEARCH_MEDIA] Media store search failed: {e}")
-        return {
-            "status": "error",
-            "message": f"媒体库检索失败（存储面：库文件可能损坏，需检查/修复存储，不是编码后端问题）: {e}",
-        }
-
-    return {"status": "ok", "results": results}
-
-
 # ============== MCP Server ==============
 
 server = Server("niu-photo-server")
@@ -3951,7 +3800,6 @@ async def list_tools() -> list[Tool]:
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 - category: 分类目录（文档需要分类时传入，照片不需要）
 - action: start | interact | abort，默认空字符串
-- media_vector: True（本次存媒体向量）| False（本次跳过）| 不传（跟随 media_ingest.enabled 配置开关）；仅对照片生效
 
 三阶段交互模式（目录入库）:
 1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
@@ -3978,10 +3826,6 @@ async def list_tools() -> list[Tool]:
                         "enum": ["", "start", "interact", "abort"],
                         "default": "",
                         "description": "会话动作：start=初始化会话，interact/空=继续交互，abort=中止会话",
-                    },
-                    "media_vector": {
-                        "type": "boolean",
-                        "description": "本次入库是否为照片保存媒体向量：不传=跟随 media_ingest.enabled 配置开关，true/false=本次强制。向量只进独立媒体库（供 search_media 检索），永不进知识图谱；编码失败时照片仍照常入库",
                     },
                 },
                 "required": ["path"],
@@ -4140,38 +3984,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="search_media",
-            description="""独立媒体检索工具（按自然语言找图片）
-
-参数:
-- query: 必填，想找的画面描述（自然语言，如"日落时分的海滩"）
-- top_k: 最多返回几条结果（默认5，最多50条）
-
-返回:
-- status: ok | error
-- results: [{entity_name, media_type, file_path, score}]
-  - entity_name: 图谱绑定实体名（也是沿图谱走边的入口键）
-  - media_type: 媒体类型（image）
-  - file_path: 照片文件路径
-  - score: 与查询的相似度（只在独立媒体库内计分排序，与知识检索分数互不相关）
-- 空库: {status: ok, results: []}（不算错误）
-- 空/全空白 query: {status: error, message}
-- 错误: {status: error, message}（如媒体查询文本编码失败（异常类型）: 异常文本）""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "想找的画面描述（自然语言）"},
-                    "top_k": {
-                        "type": "integer",
-                        "description": "最多返回几条结果（默认5，最多50条）",
-                        "default": 5,
-                        "maximum": 50,
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
             name="get_unnamed_persons",
             description="""获取所有未命名人物
 
@@ -4283,7 +4095,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 category=arguments.get("category", ""),
                 mode=arguments.get("mode", "copy"),
                 action=arguments.get("action", ""),
-                media_vector=arguments.get("media_vector"),
             )
         elif name == "ingest_document":
             result = ingest_document(
@@ -4296,7 +4107,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 file_path=arguments["file_path"],
                 category=arguments.get("category"),
                 mode=arguments.get("mode", "copy"),
-                media_vector=arguments.get("media_vector"),
             )
         elif name == "name_person":
             result = name_person(
@@ -4322,11 +4132,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "query": arguments["query"],
                 "results": persons,
             }
-        elif name == "search_media":
-            result = search_media(
-                query=arguments["query"],
-                top_k=arguments.get("top_k", 5),
-            )
         elif name == "get_unnamed_persons":
             persons = get_unnamed_persons()
             result = {"status": "success", "count": len(persons), "persons": persons}
