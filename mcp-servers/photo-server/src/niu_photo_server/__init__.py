@@ -2267,6 +2267,54 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
             "kg_entities": kg_entities,
         }
 
+        # 10. 媒体向量队列写入点（v3.0；spec D-20/D-24，全系统**唯一**写队列的代码路径——
+        #     存量补算是主 Agent 按手册手写队列文件，不经代码路径，D-25）。
+        #     ⚠️ 该手写入口**不受**下方 `append_record` 的 O_APPEND + 排它锁纪律保护，只接受**追加**语义
+        #     （主 Agent 的 `write` 工具须用 `mode="append"`）：默认 `mode="overwrite"` 是整文件截断重写、
+        #     `edit` 是无锁读-改-重写、`read` 分页 500 行——三者都会抹掉既有积压行，且工作者
+        #     下一次 `f4_drop_prefix(1)` 不校验队首内容、会删掉新写的第一行（静默丢行，第四轮 P2；
+        #     S6 手册补算指引已钉死同口径的写入纪律）。
+        #     控制面只有全局开关 media_ingest.enabled（D-19，没有每次调用的参数）。
+        #     时机 = 知识图谱入库成功之后（D-20）：lightrag_sync 的 status ∈ success/skipped
+        #     （skipped = 已同步、节点已在图谱，视同成功）⇒ 追加一行；error ⇒ 不写（用户会
+        #     重复入库，重入库成功时自然补上队列行——提前写队列 = 白白消耗算力）。
+        #     队列行三键（D-24）：entity_name = 落盘后路径归一化（正斜杠+小写）的 stem
+        #     ——与图谱侧 Photo 实体名同一把键（不得用入参路径的 stem，copy 模式会重命名）；
+        #     file_path = 落盘后绝对路径（入队时刻的路径；入队后文件被移动/删除 ⇒ 工作者
+        #     编码时按文件缺失失败，属 D-21 的失败原因之一，走有界重试、弃单原因可辨）；
+        #     ts = 入队时刻（仅诊断用、无消费语义）。
+        #     D-7 精神（升级为不变量）：队列写入失败**只告警、绝不阻断**照片入库。
+        #     返回体字段 media_queue **仅开关开时出现**（AC-2：开关关时返回体与 v2.x 之前逐字节一致）。
+        try:
+            from niu_api.internal.media_ingest_config import media_ingest_enabled
+            if media_ingest_enabled():
+                sync_status = str(kg_result.get("status", "")) if isinstance(kg_result, dict) else ""
+                if sync_status in ("success", "skipped"):
+                    from agent.md_mirror import MEDIA_QUEUE_PATH, append_record
+
+                    line = json.dumps(
+                        {
+                            "entity_name": Path(final_path_resolved.replace("\\", "/").lower()).stem,
+                            "file_path": final_path_resolved,
+                            "ts": datetime.now().isoformat(),
+                        },
+                        ensure_ascii=False,
+                    )
+                    if append_record(line + "\n", md_path=MEDIA_QUEUE_PATH):
+                        result["media_queue"] = {"queued": True}
+                    else:
+                        logger.warning(
+                            f"[INGEST_PHOTO] Media queue append failed (does not block ingestion): {final_path_resolved}"
+                        )
+                        result["media_queue"] = {"queued": False, "reason": "队列文件写入失败（照片已正常入库）"}
+                else:
+                    result["media_queue"] = {
+                        "queued": False,
+                        "reason": f"图谱同步为 {sync_status or 'unknown'}，未入队（重复入库成功后会补上队列行）",
+                    }
+        except Exception as e:  # 队列侧任何异常都不得传播进返回体
+            logger.warning(f"[INGEST_PHOTO] Media queue write exception (does not block ingestion): {e}")
+            result["media_queue"] = {"queued": False, "reason": f"队列写入异常: {e}"}
         return result
 
     except Exception as e:
