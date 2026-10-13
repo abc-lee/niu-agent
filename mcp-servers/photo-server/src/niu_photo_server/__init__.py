@@ -1938,7 +1938,13 @@ def generate_l0_abstract(person_names: list[str], taken_at: str | None) -> str:
     - 0 人：`未检测到人物`（无脸 ≠ 单人——没检出脸可能是风景/物品/截图）；
     - 1 人：直接写人名（单人也不是「合影」）；
     - ≥2 人：`A、B合影`。
+
+    入口先按名字保序去重：同一人物会被同一张照片里的多张脸分别命中
+    （`detected_persons` 按脸追加、无去重），不去重会拼出「张三、张三合影」。
+    去重按名字而非 person_id，是有意的取舍：两个不同人同名时会被并成
+    一人——显示串里同名并列（如「张三、张三合影」）比错断「合影」更难接受。
     """
+    person_names = list(dict.fromkeys(person_names))
     parts = []
 
     if len(person_names) >= 2:
