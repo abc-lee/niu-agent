@@ -25,6 +25,7 @@ media_artifacts / media_ingest_config 用 `from … import …`（与既有 embe
 测试运行中出现的 `[llama-server]` 行与 loguru teardown 时的输出是 loguru 的
 stderr 输出（所有用例全 mock、绝未拉起真实服务），属已知无关噪声，非测试失败信号。
 """
+import json
 import pathlib
 import types
 
@@ -335,6 +336,51 @@ class TestEncodeMedia:
         )
         llama_server.encode_media(str(png))
         assert sent[0].startswith("data:image/png;base64,")
+
+    def test_post_media_sends_three_level_nesting(self, monkeypatch, tmp_path):
+        """结构断言：/v1/embeddings 的载荷必须是三层嵌套
+        input[0].content[0].image_url.url = data: URI（前缀保留）。
+
+        为什么加这条（2026-10-13 真机验收才拓出）：旧测试只断言"我们自己发出的
+        形状"（URI 前缀/MIME），永远捉不住"服务端不接受我们发出的形状"——旧载荷
+        `{"input": [data_uri]}` 的 input 字符串槽是文本专用，裸 data: URI 被整串
+        当文本分词（数十 MB base64 ⇒ 超 -ub 8192 ⇒ HTTP 500，真机入库 saved:false
+        即此）。服务端只认 input[].content[].image_url.url 三层嵌套（与
+        gemma2-sandbox mm_test.py 的 img_emb() 同型）；少一层 content 会被 400 拒。
+        本用例把发送层 patch 到 urlopen（不再 mock 掉 _post_media），直接捕获
+        实际发出的 JSON body 并钉死结构：若日后有人把嵌套"简化"回裸字符串，本用
+        例立即翻红——URI 前缀断言对此毫无抵抗力（简化后 URI 仍会照发）。
+        """
+        jpg = self._jpg(tmp_path)
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        captured = {}
+
+        class _FakeResp:
+            def read(self):
+                return json.dumps({"data": [{"embedding": [0.5] * 768}]}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def _fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            captured["timeout"] = timeout
+            return _FakeResp()
+
+        # patch 到 urlopen 层（而非 mock 掉 _post_media）：才能看到真正发出的 body
+        monkeypatch.setattr(llama_server.urllib.request, "urlopen", _fake_urlopen)
+        out = llama_server.encode_media(str(jpg))
+        assert len(out) == 768 and out[0] == 0.5
+        body = captured["body"]
+        assert body.get("encoding_format") == "float"
+        assert len(body["input"]) == 1
+        content = body["input"][0]["content"][0]
+        assert content["type"] == "image_url"
+        assert content["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
 # ============== B7：旗标复位必须在 _stop_locked 的提前返回之前 =================

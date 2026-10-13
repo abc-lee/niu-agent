@@ -377,8 +377,23 @@ def _post_media(data_uri: str) -> list[float]:
     复用 120 s 必然超时，审查 B8）。**不复用 _encode_one 的文本截断护栏**：data:
     URI 是数十 MB 的 base64 长串，护栏会把图片从中间截断 ⇒ 服务端 400 或产出垃圾
     向量（审查 B6）。
+
+    **为什么必须三层嵌套**（`input[0].content[0].image_url.url`，勿再"简化"）：
+    /v1/embeddings 的 `input` 字符串槽是**文本专用**，裸 data: URI 会被当文本分词
+    （数十 MB base64 ⇒ 数十万 token ⇒ 超 -ub 8192 ⇒ HTTP 500）；服务端只认三层
+    嵌套里的 image_url 形态并在此解析图片，且 **`data:` 前缀必须保留**（与
+    gemma2-sandbox mm_test.py 的 img_emb() 同型）。2026-10-13 真机实测：旧形状
+    `{"input": [data_uri]}` 500（≈91 万 token 超物理批）；本形状 200/768 维/1.5 s；
+    少一层 content（`{"input": [{"type": "image_url", ...}]}`）被服务端 400 拒。
     """
-    payload = json.dumps({"input": [data_uri], "encoding_format": "float"}).encode()
+    payload = json.dumps(
+        {
+            "input": [
+                {"content": [{"type": "image_url", "image_url": {"url": data_uri}}]}
+            ],
+            "encoding_format": "float",
+        }
+    ).encode()
     req = urllib.request.Request(
         f"{_base_url()}/v1/embeddings",
         data=payload,
