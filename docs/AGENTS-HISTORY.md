@@ -1084,3 +1084,11 @@ added_tokens 818，实测 `TokenCalculator` 已加载且计数正常）；`.giti
     "用真实文档验证"这类开放要求要同时给**规模上限**，否则子 Agent 会做全量枚举。
 - **文档同步**：`docs/manual-dependencies.md` §2.3.1 增补「多字节边界的 decode 安全性」段；
   方案 `docs/superpowers/plans/2026-10-12-s11-gemma-decode-utf8-boundary.md`（v1.9）。
+
+### 2026-10-13
+
+#### 媒体向量入库 T5：提示词、手册与文档（仅文档/提示词面）
+
+- **提示词（两个 Agent，同一套入库路由规则）**：`config/agents/niu.md` 在「知识系统架构 → 数据入库与知识沉淀」下新增「照片媒体向量入库」节（入库路由：人脸+EXIF 抓不到画面内容的照片——风景/物品/带文字标识——传 `media_vector=True`；纯人物照不必；拿不准不传、跟配置开关；委托 file-processor 时须在任务文本写明）并修正视觉能力节"入库不调 analyze_image"的旧表述为"入库不代替看图，入库中需要知道画面内容时仍可调 analyze_image"，消除与"知道画面走 analyze_image"的矛盾。`config/agents/file-processor.md` 补上**同一套路由规则**新小节（它是真正干入库的执行者，漏它 ⇒ 子 Agent 路径永不传参、静默跟配置）；其 `media_vector` 参数行**按内容定位确认已存在**（`**ingest** 参数：`块内、`action` 行之后、`**ingest_document** 参数：`标题之前——T3 已补），故按计划跳过参数行、只加规则。
+- **手册**：`docs/SYSTEM_MANUAL.md` 新增 `## 媒体向量入库` 章（置于「可选组件安装」之后），含方案 Step 2 全部 10 条：四件套（URL `hf-mirror.com/.../mmproj-embeddinggemma-2-Q8_0.gguf` / sha256 `c4a8a5...aab64f` / 放置路径 `~/.niu/models/` / 开关 `media_ingest.enabled` 改 true 后**重启**）；🔴 前置顺序"先装产物、再开开关"（fail-loud 链准确表述：嵌入模型获取无条件先拉起 llama-server，产物缺在此抛错；`encode_batch` 只查健康——开关开着产物缺时**全部文本嵌入**都报错）；代价按尺寸分档（小图 ≤1000 token **64–103 s/张**；大图 ≈ `N × 0.09 s`，N 上限 `--image-max-tokens`=8128 ⇒ 最坏 ≈**730 s/张、12 分钟级**，以实测为准）+ 二阶影响（单实例串行 ⇒ 文本嵌入排队、各自 120 s 超时失败，知识检索面窗口内不可用）+ RSS ~1.8 GB（小配置实测 1,829 MB / 更大配置上界 ~3.6 GB）；两工具分工（入库走 `ingest`——`media_vector` 只挂其上；`ingest_document` 由配置级开关决定；检索走 `search_media`，查询要具体，给 ❌宽泛词/✅画面元素正反例）；结果解读（不是 OCR、无阈值按排名最近、路径是"入库那一刻记录"、只查不能读、存量照片无向量）；已知限制（同进程复用致 stdio 形态误报"未加载 mmproj"——已知限制非 bug；后端不可用 N×5 s 放大；编码失败不阻断入库）。另在 1.2 功能列表补一行、修正「主 Agent 视觉流程」第 3 条同款旧表述（与 niu.md 同法）。
+- **AGENTS.md 正文未改**：入库路由规则写在两个 Agent 提示词文件里（Agent 实际读取处），代价/开关/用法细节在手册（主 Agent 按需查，现有「系统管理」节已指引），均不构成"仍生效且每次会话都需要"的约定 ⇒ 按惯例只记本日期节。
