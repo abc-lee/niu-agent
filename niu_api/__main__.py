@@ -57,6 +57,7 @@ from niu_api.http_log_api import router as http_log_router
 from niu_api.injector import router as injector_router
 from niu_api.kg_api import router as kg_router
 from niu_api.llm_proxy import router as llm_proxy_router
+from niu_api.media_api import router as media_router
 from niu_api.notes_api import router as notes_router
 from niu_api.session import router as session_router
 
@@ -753,6 +754,7 @@ app.include_router(chat_router)
 app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
 app.include_router(kg_router)  # Knowledge Graph API
+app.include_router(media_router)  # Media Vector API (Chat 页第二根横条轮询端点，与知识图谱同一服务)
 app.include_router(brain_region_router)  # Brain Region API
 app.include_router(notes_router)  # Notes API
 app.include_router(llm_proxy_router)

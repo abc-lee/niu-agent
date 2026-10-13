@@ -141,6 +141,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收入库完成通知（SSE推送）
   onIngestCompleted: (callback) => ipcRenderer.on('ingest-completed', callback),
 
+  // 接收媒体入库开始通知（v3.0，D-27：Chat 页第二根横条）
+  onMediaIngestStarted: (callback) => ipcRenderer.on('media-ingest-started', (_event, data) => callback(data)),
+
+  // 接收媒体入库完成通知（成功/失败都发，ok 字段区分）
+  onMediaIngestCompleted: (callback) => ipcRenderer.on('media-ingest-completed', (_event, data) => callback(data)),
+
   // 获取当前 Agent 是否忙碌（窗口恢复时同步停止按钮状态）
   getChatStatus: () => ipcRenderer.invoke('get-chat-status'),
 

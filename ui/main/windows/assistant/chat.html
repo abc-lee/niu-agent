@@ -499,6 +499,18 @@
       min-width: 40px;
       text-align: right;
     }
+
+    /* 媒体向量入库横条（v3.0，D-27）：异色（琥珀 #e0a458，与知识图谱的 #78b2be 明确区分），结构照抄 .progress-bar 家族 */
+    .media-progress-bar {
+      display: none;
+      padding: 4px 12px;
+      background: white;
+      border-bottom: 1px solid #e9ecef;
+    }
+    .media-progress-bar.show { display: flex; align-items: center; gap: 8px; }
+    .media-progress-bar .media-progress-track { flex: 1; height: 4px; background: #e9ecef; border-radius: 2px; overflow: hidden; }
+    .media-progress-bar .media-progress-fill { height: 100%; width: 100%; background: #e0a458; }
+    .media-progress-bar .media-progress-text { min-width: 40px; text-align: right; }
     
     /* ========== 图片显示 ========== */
     .chat-image {
@@ -1193,6 +1205,14 @@
         <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
       </div>
       <span class="progress-text" id="progress-percent">0%</span>
+    </div>
+
+    <!-- 媒体向量入库横条（v3.0，D-27）：同模式、异色，可与知识图谱横条并存两根 -->
+    <div class="media-progress-bar" id="media-progress-bar">
+      <span id="media-progress-text">媒体入库中…</span>
+      <div class="media-progress-track">
+        <div class="media-progress-fill" id="media-progress-fill"></div>
+      </div>
     </div>
     
     <div class="input-area">
@@ -3084,6 +3104,77 @@
       stopIngestPolling();
       loadStats();
     });
+
+    // ===== MEDIA_POLLING_JS_BEGIN =====
+    // 以下整块被 tests/test_media_polling.js 逐字提取进 node vm 上下文做行为探针
+    //（「轮询永不停止」断言：off/idle 分支处理后 mediaPollTimer 仍存活、clearInterval 零调用）——
+    // 改动本块时先跑该测试，断言钉死的是行为不是文本。
+    // ========== 媒体向量横条（v3.0，D-27）：异色、同模式，可与知识图谱横条并存 ==========
+    const MEDIA_PROGRESS_API = 'http://127.0.0.1:9876/api/media/pipeline_status';
+    const MEDIA_POLL_INTERVAL = 3000;
+    let mediaPollTimer = null;
+    const mediaProgressBar = document.getElementById('media-progress-bar');
+    const mediaProgressText = document.getElementById('media-progress-text');
+
+    function showMediaBar(text) {
+      mediaProgressText.textContent = text;
+      mediaProgressBar.classList.add('show');
+    }
+    function hideMediaBar() {
+      mediaProgressBar.classList.remove('show');
+    }
+
+    async function pollMediaStatus() {
+      try {
+        const resp = await fetch(MEDIA_PROGRESS_API);
+        const data = await resp.json();
+        if (data.status === 'encoding') {
+          const label = data.entity ? `媒体入库：${data.entity}` : '媒体入库中…';
+          showMediaBar(data.queue_depth > 0 ? `${label}（队列 ${data.queue_depth}）` : label);
+        } else if (data.status === 'stalled' || data.status === 'scheduler-stopped') {
+          // 有积压但没在跑：给可辨提示、不显示假进度（R14）
+          // queue_depth = -1 哨兵 = 队列文件读不出（行数未知）：显示「未知」，绝不误报「0 行」
+          const depth = data.queue_depth < 0 ? '未知' : data.queue_depth;
+          showMediaBar(`队列积压 ${depth} 行，未运行：${data.reason || ''}`);
+        } else if (data.status === 'off') {
+          // 开关关：横条自动隐藏且永不显示（D-27 只约束横条显隐）；轮询**不停**——页面在开关关时
+          // 加载后，用户免重启热翻转开关 + 零事件形态下，横条仍能被低频轮询发现（第三轮 P2 修正）
+          hideMediaBar();
+        } else {
+          // idle：隐藏横条但保持低频轮询（端点纯读毫秒级）——「调度器从未启动、零事件」
+          // 形态下，横条仍能靠轮询在页面加载后出现（第二轮 P1 修正）
+          hideMediaBar();
+        }
+      } catch (e) {
+        // 后端不可达：不显示假状态，等下一轮
+      }
+    }
+
+    function startMediaPolling() {
+      if (mediaPollTimer) return;
+      pollMediaStatus();
+      mediaPollTimer = setInterval(pollMediaStatus, MEDIA_POLL_INTERVAL);
+    }
+
+    window.electronAPI.onMediaIngestStarted(() => {
+      // SSE 事件降级为加速触发源（不是生命周期管理者）：只触发一次立即复查 + 轮询兜底启动；
+      // 横条显隐只由 pollMediaStatus 结果决定，轮询生命周期不随事件启停（第二轮 P1 修正）
+      console.log('[Chat] media-ingest-started SSE event received');
+      pollMediaStatus();
+      startMediaPolling(); // 幂等：轮询已在跑则不重复启动
+    });
+
+    window.electronAPI.onMediaIngestCompleted((data) => {
+      // 失败走临时系统提示通道（onSystemNotice，不落库、刷新即消失）——横条不常驻显示错误（D-27）
+      console.log('[Chat] media-ingest-completed SSE event received', data);
+      pollMediaStatus(); // 立即复查一次：队列里可能还有下一条；无活可干时横条自动隐藏
+      // （轮询不由事件停止——轮询永不停止，off 时只隐藏横条）
+    });
+
+    // 页面加载初始轮询：chat.html 内联脚本在前置 DOM 构建后执行（已实测），在此直接启动一次即可
+    //（同知识图谱横条的模式）——「调度器从未启动、零 SSE 事件」形态下横条也能在页面加载后出现
+    startMediaPolling();
+    // ===== MEDIA_POLLING_JS_END =====
 
     // 主 Agent ask_user 提问：消息式显示（assistant 消息），用户用主输入框回答——
     // 回答经 /api/chat/session 见缝插针分支直接注入 set_answer（不走补充队列，无卡片/DOM 输入框）

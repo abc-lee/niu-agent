@@ -2580,8 +2580,10 @@ function startMessageEventStream() {
                 apiRequest('POST', '/api/chat/ask-answer', { answer: '__UNAVAILABLE__' })
                   .catch((e) => console.error('[ask_user] report-unavailable failed', e));
               }
-            } else if (event.type === 'ingest-started' || event.type === 'ingest-completed') {
+            } else if (event.type === 'ingest-started' || event.type === 'ingest-completed' ||
+                       event.type === 'media-ingest-started' || event.type === 'media-ingest-completed') {
               // 转发入库进度事件到 spirit 和 chat 窗口
+              // （v3.0：媒体向量入库事件同型转发——spirit 窗口无媒体订阅，无监听即静默丢弃，无副作用）
               if (spiritWindow && !spiritWindow.isDestroyed()) {
                 spiritWindow.webContents.send(event.type);
               }
