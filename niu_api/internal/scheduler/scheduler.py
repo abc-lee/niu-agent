@@ -74,6 +74,10 @@ class Scheduler:
         # in_progress 任务超时阈值（小时）：超过则重置为 pending
         # 防止任务执行中崩溃或跨进程竞态导致状态卡死
         self._stale_timeout_hours = 8
+        # 媒体向量后台工作者钩子（v3.0，D-22/R20）：缺省 None ⇒ 未绑定时循环体无媒体事务、
+        # stop() 无停止钩子——行为与今天逐字节一致（缺省零代价；由 start_scheduler() 绑定）。
+        self._media_tick: Optional[Callable[[], None]] = None
+        self._media_stop_hook: Optional[Callable[[], None]] = None
 
         # Recover orphaned in_progress tasks from crashes
         self._recover_orphaned_tasks()
@@ -179,6 +183,12 @@ class Scheduler:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
         self._executor.shutdown(wait=False)
+        # 媒体工作者停止钩子（R20）：有在途时主动中断在途编码（终止编码子进程 ⇒ 退出有界）；行未删 ⇒ 下次启动重放
+        if self._media_stop_hook is not None:
+            try:
+                self._media_stop_hook()
+            except Exception as e:
+                logger.warning(f"[SCHEDULER] media stop hook failed: {e}")
         logger.info("[SCHEDULER] Stopped")
 
     def _run_loop(self):
@@ -193,6 +203,15 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"[SCHEDULER] Error in check_and_trigger: {e}")
 
+            # 媒体队列事务（v3.0，D-22）：在 check_and_trigger **之外**——它在无到期任务时
+            # 提前返回且整段持 _check_lock，挂其内部会静默永不运行、队列一直涨（R14）。
+            # 循环线程只做毫秒级扫描/收敛，编码提交线程池且不等待 ⇒ 按构造不给循环线程
+            # 新增阻塞（§5.5 / AC-12；线程池共享的延迟方向恒为「媒体等任务」，R19）。
+            if self._media_tick is not None:
+                try:
+                    self._media_tick()
+                except Exception as e:
+                    logger.error(f"[SCHEDULER] Error in media tick: {e}")
             # Sleep in small chunks so stop() can interrupt quickly
             for _ in range(10):
                 with self._lock:

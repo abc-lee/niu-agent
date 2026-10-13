@@ -17,7 +17,9 @@ fake submit 按 plan 钉死的**捕获异常版**：同步执行回调、``BaseE
 ③ 在途不取新行；④ 在途超时与排队上报（判定只计「编码已开始」时段 / 排队段报可辨状态 /
   三拍断言：开跑后改回 encoding）；⑤ 像素护栏拒收（encoder 打桩成 AssertionError 证明永不被发送）；
 ⑥ 队列空短路（不探活，v3.2 条件求值顺序）；⑦ 开关热翻转（开→关：在途收敛后 off、不再取新行）；
-⑧ 坏行弃除（醒目告警 + 合法行继续处理）；⑩ 护栏 total（截断图头 / 桩抛异常都不穿透 tick）；
+⑧ 坏行弃除（醒目告警 + 合法行继续处理）；
+⑨ on_stop 有界退出（R20，S4c 追加：有在途 ⇒ 主动中断编码〔桩 llama_server.stop 记调用〕、在途复位、状态 off、
+⑩ 护栏 total（截断图头 / 桩抛异常都不穿透 tick）；
 ⑪ 读队列 total（非 UTF-8 ⇒ stalled + queue_depth=-1 哨兵；PermissionError 同族；坏行删不掉停取）；
 ⑫ 池不可提交（submit 抛 RuntimeError ⇒ 兜底 stalled、在途未发布、下轮同样兜住）；
 ⑬ ①/④ 逃逸兜底（switch 抛异常 ⇒ 先收敛在途再报可辨 stalled；ready_check 抛异常 ⇒ stalled 且队首行保留）；
@@ -595,7 +597,7 @@ def test_ready_check_exception_stalls_keeps_head(tmp_path):
 # ⑭ 成功路径删行失败（第四轮 P2-1 回归）：stalled + 保留在途 + 下轮重试收敛，绝不静默永停 encoding
 # ---------------------------------------------------------------------------
 
-def test_success_path_drop_failure_stalls_then_recovers(tmp_path):
+def test_success_path_drop_failure_stalls_then_recovers(tmp_path, monkeypatch):
     q = tmp_path / "queue.md"
     write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
     calls = []
@@ -609,7 +611,7 @@ def test_success_path_drop_failure_stalls_then_recovers(tmp_path):
     assert mw.get_state()["status"] == "encoding"
 
     real_drop = mw.f4_drop_prefix
-    mw.f4_drop_prefix = lambda n=1, queue_path=None: 0  # 打桩恒返 0（删行失败）
+    monkeypatch.setattr(mw, "f4_drop_prefix", lambda n=1, queue_path=None: 0)  # 恒返 0（删行失败）；函数域 monkeypatch，中途断言失败也不把 stub 泄漏进模块（级联假红）
     mw.tick(env)  # 收敛：删行失败 ⇒ stalled + 保留在途，不抛异常
     st = mw.get_state()
     assert st["status"] == "stalled"
@@ -620,9 +622,44 @@ def test_success_path_drop_failure_stalls_then_recovers(tmp_path):
     st2 = mw.get_state()
     assert st2["status"] == "stalled"
     assert "编码完成但删行失败" in st2["reason"]
-    mw.f4_drop_prefix = real_drop  # 恢复真值
+    monkeypatch.setattr(mw, "f4_drop_prefix", real_drop)  # 恢复真值
     mw.tick(env)  # 收敛删行成功
     st3 = mw.get_state()
     assert st3["status"] == "idle"
     assert mw._inflight is None
     assert queue_lines(q) == 0
+
+
+# ---------------------------------------------------------------------------
+# ⑨ on_stop 有界退出（R20，S4c 审查面）：有在途编码 ⇒ 主动中断（终止编码子进程 ⇒ 在途 urlopen
+# 即刻失败 ⇒ 池 worker 即刻返回 ⇒ 退出有界——线程池 join 先于普通 atexit，2026-10-13 本机探针实证），
+# 在途复位、状态 off、行未删（重放语义，R15）；对照：无在途 ⇒ llama_server.stop 不被调用。
+# 桩 llama_server.stop 记录调用，避免测试里真终止子进程。
+# ---------------------------------------------------------------------------
+
+def test_on_stop_with_inflight_interrupts_encoding(tmp_path, monkeypatch):
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+    submit, _ = make_submit_pending()  # 未完成假 future：编码真实在途（回调永不执行）
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                  store_add=lambda e, m, v: None, submit=submit)
+    mw.tick(env)  # 提交拍：在途记录已发布、状态 encoding、行未删
+    assert mw._inflight is not None
+    assert mw.get_state()["status"] == "encoding"
+    stop_calls = []
+    monkeypatch.setattr(mw.llama_server, "stop", lambda: stop_calls.append(1))  # 桩：不真终止子进程
+    mw.on_stop()
+    assert len(stop_calls) == 1  # 有在途 ⇒ 主动中断编码（R20 有界退出的真中断手段，不是只记日志）
+    assert mw._inflight is None  # 在途记录复位
+    assert mw.get_state()["status"] == "off"
+    assert queue_lines(q) == 1  # 行未删 ⇒ 下次启动重放（R15 至少一次语义不变）
+
+
+def test_on_stop_without_inflight_does_not_interrupt(tmp_path, monkeypatch):
+    stop_calls = []
+    monkeypatch.setattr(mw.llama_server, "stop", lambda: stop_calls.append(1))
+    mw.on_stop()
+    assert stop_calls == []  # 无在途 ⇒ 不碰编码子进程
+    assert mw.get_state()["status"] == "off"
+    assert mw._inflight is None

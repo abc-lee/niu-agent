@@ -440,6 +440,14 @@ def start_scheduler():
             trigger_callback=trigger_callback,
             store_factory=get_store,  # 传入 factory，让 Scheduler 动态获取 store
         )
+        # 媒体向量后台工作者（v3.0，D-22）：tick 挂调度器既有循环、编码提交调度器既有
+        # 线程池（R19：媒体等任务，绝不任务等媒体）；工作者与调度器同生死（调度器未起
+        # 时这里根本不会执行 ⇒ 工作者随之不起，R16 的结构性原因）。
+        from niu_api.internal import media_worker
+
+        media_worker.bind_executor(_scheduler._executor)
+        _scheduler._media_tick = media_worker.tick
+        _scheduler._media_stop_hook = media_worker.on_stop
         # 延迟启动，等待系统就绪信号后再开始扫描任务
         _scheduler.start_delayed()
 
