@@ -1932,14 +1932,21 @@ def detect_faces(file_path: str) -> list[dict]:
 
 
 def generate_l0_abstract(person_names: list[str], taken_at: str | None) -> str:
-    """Generate L0 abstract for photo."""
+    """生成照片 L0 摘要。
+
+    只描述真正知道的事实（检出几个人、叫什么、拍摄日期），不断言场景：
+    - 0 人：`未检测到人物`（无脸 ≠ 单人——没检出脸可能是风景/物品/截图）；
+    - 1 人：直接写人名（单人也不是「合影」）；
+    - ≥2 人：`A、B合影`。
+    """
     parts = []
 
-    if person_names:
-        persons_str = "、".join(person_names)
-        parts.append(f"{persons_str}合影")
+    if len(person_names) >= 2:
+        parts.append("、".join(person_names) + "合影")
+    elif len(person_names) == 1:
+        parts.append(person_names[0])
     else:
-        parts.append("单人照片")
+        parts.append("未检测到人物")
 
     if taken_at:
         # Try to format the date nicely
