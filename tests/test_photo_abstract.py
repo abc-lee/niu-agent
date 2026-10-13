@@ -67,3 +67,28 @@ def test_one_person_with_valid_date():
     """1 人 + 合法日期 → 人名 + `，` + 日期。"""
     out = niu_photo_server.generate_l0_abstract(["张三"], "2008:07:03 10:42:20")
     assert out == "张三，2008年07月03日"
+
+
+def test_same_person_twice_is_single():
+    """现场重现：同一人两张脸 → ['张三','张三'] → 恰为 `张三`，不含 `合影`。"""
+    out = niu_photo_server.generate_l0_abstract(["张三", "张三"], None)
+    assert out == "张三"
+    assert "合影" not in out
+
+
+def test_three_faces_two_people_preserves_order():
+    """保序去重：['张三','李四','张三'] → 按首次出现顺序拼 `A、B合影`。"""
+    assert (
+        niu_photo_server.generate_l0_abstract(["张三", "李四", "张三"], None)
+        == "张三、李四合影"
+    )
+
+
+def test_unnamed_same_person_twice():
+    """未命名人物同理：['未命名人物_1','未命名人物_1','未命名人物_2'] → 两人合影。"""
+    assert (
+        niu_photo_server.generate_l0_abstract(
+            ["未命名人物_1", "未命名人物_1", "未命名人物_2"], None
+        )
+        == "未命名人物_1、未命名人物_2合影"
+    )
