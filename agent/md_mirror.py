@@ -130,7 +130,7 @@ def append_record(block: str, md_path: str | None = None) -> bool:
             os.close(fd)
         return True
     except Exception as e:  # best-effort：镜像故障绝不影响对话
-        logger.warning(f"[MdMirror] F1 追加失败（不影响对话）: {e}")
+        logger.warning(f"[MdMirror] 向 {os.path.basename(path)} 追加失败（不影响主流程）: {e}")
         return False
 
 
@@ -371,6 +371,128 @@ def drop_f2_prefix(n_lines, max_lines=None, f2_path=None) -> tuple[int, str]:
     except Exception as e:
         logger.warning(f"[MdMirror] drop_f2_prefix 失败: {e}")
         return (0, "")
+    finally:
+        _unlock_fd(fd)
+        os.close(fd)
+
+
+# ============== F4 媒体向量队列（v3.0：一行一条记录，spec D-21/D-24） ==============
+MEDIA_QUEUE_NAME = "media_vector_queue.md"
+MEDIA_QUEUE_PATH = os.path.join(MD_DIR, MEDIA_QUEUE_NAME)
+
+#: 队列行记录的必填键（D-24：三键固定 entity_name/file_path/ts；ts 仅诊断用、消费不依赖，
+#: 故强制校验只卡前两键——多键容忍、忽略）。
+F4_REQUIRED_KEYS = ("entity_name", "file_path")
+
+
+class F4HeadCorruptError(Exception):
+    """队首坏行（非 JSON / 缺必填键）。消费者（tick）必须醒目告警 + f4_drop_prefix 弃行：
+    坏行留着会永久卡死队首，弃掉才是安全行为（D-24）。携带行内容与原因。"""
+
+    def __init__(self, line: str, reason: str):
+        super().__init__(f"队列队首坏行（{reason}）: {line[:200]!r}")
+        self.line = line
+        self.reason = reason
+
+
+def f4_take_head(queue_path: str | None = None) -> dict | None:
+    """原子读队首记录（**不删行**）：处理成功后由调用方删行（至少一次语义，D-21）。
+
+    文件缺失 / 空文件 / 仅空行 → None（无活可干）。记录边界 = 一整行（行即记录边界，
+    空行不是记录，D-24）；尾行若无换行符 = O_APPEND 写了一半的撕裂行，不是完整记录，跳过。
+    坏行（非 JSON / 缺必填键）→ 抛 F4HeadCorruptError（调用方醒目告警后弃行）。
+    锁纪律：排它锁贯穿读取全程（与 F2 同协议的姊妹原语，不直接复用 drop_f2_prefix——
+    它的边界吸附与 msg_id 提取是针对 F2 消息记录的）。
+    """
+    p = queue_path or MEDIA_QUEUE_PATH
+    try:
+        fd = os.open(p, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    try:
+        _lock_fd(fd)
+        with os.fdopen(os.dup(fd), "r", encoding="utf-8") as f:
+            content = f.read()
+    finally:
+        _unlock_fd(fd)
+        os.close(fd)
+    if not content:
+        return None
+    lines = content.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # 末尾换行的伪影
+    elif not content.endswith("\n"):
+        lines.pop()  # 尾行无换行 = 写了一半，不是完整记录
+    for line in lines:
+        if not line.strip():
+            continue  # 空行不是记录（D-24）
+        try:
+            rec = json.loads(line)
+        except (ValueError, TypeError):
+            raise F4HeadCorruptError(line, "非 JSON")
+        if not isinstance(rec, dict) or any(not rec.get(k) for k in F4_REQUIRED_KEYS):
+            raise F4HeadCorruptError(line, f"缺必填键 {F4_REQUIRED_KEYS}")
+        return rec
+    return None
+
+
+def f4_drop_prefix(n_lines: int = 1, queue_path: str | None = None) -> int:
+    """删除队首 n_lines 条记录行（整行边界：绝不删撕裂的尾部不完整行）。
+
+    与 drop_f2_prefix 同型（同一跨平台锁协议 + 前缀删除 + 失败自动恢复原文），
+    但边界吸附按「行」而非 F2 的 msg_id 记录边界。开 O_RDWR + 排它锁 → 读全文 →
+    重写剩余（truncate + 写满）→ 失败自动恢复原文。返回删除的行数；
+    任何校验失败返回 0 且文件保持原样。
+    """
+    p = queue_path or MEDIA_QUEUE_PATH
+    if not isinstance(n_lines, int) or n_lines <= 0:
+        return 0
+    try:
+        fd = os.open(p, os.O_RDWR)
+    except FileNotFoundError:
+        return 0
+    except Exception as e:
+        logger.warning(f"[MdMirror] f4_drop_prefix 打开失败: {e}")
+        return 0
+    try:
+        _lock_fd(fd)
+        with os.fdopen(os.dup(fd), "r", encoding="utf-8") as f:
+            content = f.read()
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        if n_lines > len(lines):
+            logger.warning(f"[MdMirror] f4_drop_prefix 越界: {n_lines} > {len(lines)}")
+            return 0
+        # 整行边界：尾行是撕裂的不完整行（无换行符）时，删除范围不得触及它
+        if not content.endswith("\n") and n_lines >= len(lines):
+            logger.warning("[MdMirror] f4_drop_prefix 触及撕裂尾部不完整行，拒删")
+            return 0
+        rest = "".join(ln + "\n" for ln in lines[n_lines:])
+        original = content.encode("utf-8")
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            view = memoryview(rest.encode("utf-8"))
+            while view:
+                n = os.write(fd, view)
+                view = view[n:]
+        except Exception:
+            try:  # 重写失败自动恢复原文（同 drop_f2_prefix 的恢复语义）
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.ftruncate(fd, 0)
+                view = memoryview(original)
+                while view:
+                    n = os.write(fd, view)
+                    view = view[n:]
+                logger.warning("[MdMirror] f4_drop_prefix 重写失败，已恢复原队列文本")
+            except Exception as e2:
+                logger.error(f"[MdMirror] 队列恢复失败（数据可能丢失，需人工检查）: {e2}")
+            return 0
+        return n_lines
+    except Exception as e:
+        logger.warning(f"[MdMirror] f4_drop_prefix 失败: {e}")
+        return 0
     finally:
         _unlock_fd(fd)
         os.close(fd)
