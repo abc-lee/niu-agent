@@ -141,6 +141,50 @@ body {
   font-size: 13px;
   color: #888;
 }
+/* 搜索两段栏（2026-10-14：知识图谱 + 照片（媒体）分格，I-3） */
+.search-dropdown-section-title {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  letter-spacing: 0.4px;
+}
+
+.search-dropdown-section-title:first-child {
+  padding-top: 8px;
+}
+
+.search-dropdown-section {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.search-dropdown-section:last-child {
+  border-bottom: none;
+}
+
+.search-dropdown-section .search-dropdown-item:last-child {
+  border-bottom: none; /* 段内末条不留双线（既有 :last-child 规则只管整个下拉的末条） */
+}
+
+.search-dropdown-section-note {
+  padding: 6px 12px 10px;
+  font-size: 12px;
+  color: #aaa;
+}
+
+.search-dropdown-section-note--error {
+  color: #c0392b;
+}
+
+/* 可辨降级（I-6）：图谱里无节点的媒体条目——灰化 + 标签，点击只关下拉 */
+.search-dropdown-item--degraded {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.search-dropdown-item--degraded:hover {
+  background-color: transparent;
+}
 
 /* Perspective buttons */
 .perspective-btns {
