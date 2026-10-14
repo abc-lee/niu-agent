@@ -1,20 +1,20 @@
-"""像素护栏（v3.0 新增，spec D-26）：编码发送前的**唯一关口**。
+"""像素护栏（v3.0 新增，spec D-26；2026-10-13 HANDOVER D 机制演进为「客户端门槛 + 缩放」）：
+编码发送前的**唯一关口**。只读图头（不解码全图）取 W×H，返回**三动作**：
 
-只读图头取 W×H（不解码全图），双阈值判定：
-- W×H 超 ``GUARD_MAX_PIXELS`` → 拒收：超大图 base64 请求体数十 MB + 十分钟级编码窗口整段
-  持锁堵死文本嵌入的最坏情形被挡在服务端之外（§1.6 事故形态出不了门）；
-- 文件体积超 ``GUARD_MAX_BYTES`` → 拒收：data: URI 的 body = base64(原文件)，字节数直接
-  决定传输与解码成本。
-被拒图片**永不发给** llama-server（记录为降级：弃行 + 带原因的 WARNING，D-26）。
+- `"pass"`（直送候选）：W×H ≤ 直送门槛 ⇒ 原图字节直送候选；图头读不出（未知格式/缺失/截断）⇒
+  放行 + WARNING（护栏级 fail-open；随后由 dispatcher 做**白名单分判**：白名单内读不出 ⇒
+  原图直送、HEIC 依 `pillow-heif` 可选插件在位与否、白名单外 ⇒ 拦截——不再一律直送）；
+- `"downscale"`（缩放）：W×H 超直送门槛 ⇒ 客户端内存中缩放到目标长边后发送（原图照旧
+  入库、不落临时文件）——超门槛从「拒收」变为「缩放」，正是本演进的核心（D 节口径）；
+- `"reject"`（病态拒收）：**仅**文件体积超体积预算——把「数十 MB 请求体 + 十分钟级编码
+  窗口整段持锁堵死文本嵌入」的最坏情形挡在服务端之外（§1.6 事故形态出不了门）；拒收
+  永不发送，记录为降级（弃行 + 带原因的 WARNING）。
 
-它不解决什么（如实披露，R1）：护栏**之内**的图片编码窗口内，文本嵌入仍排队、可能超时
-失败——只能披露、不能在本工程消除（消除 = 双实例或锁重构，超范围）。
-阈值是启发式（R18）：初值取保守侧，且**低于已知最坏件**——§1.6 事故的 8.7MP 照片
-（编码 17 分钟未完成 + 机器进 swap + 文本嵌入全堵）；S6 标定步用真照片实测 W×H→编码耗时
-曲线后覆盖为终值并写进手册（易腐数据，§12；按曲线可升可降）。
-图头读不出（未知格式/文件缺失/头截断）⇒ **放行 + WARNING**（自述契约；全函数是 total：
-任何异常同样放行）——服务端 ``--image-max-tokens`` 是最后防线（超限 500 时按 D-6 的失败
-路径有界重试），宁可付一次长编码窗口，不可白丢向量。
+直送门槛是**配置项**（`media_ingest.max_pixels`，经唯一读取点现读、缺省保守初值、改配置
+免重启生效）；体积预算仍是模块常量（保守侧，病态闸）。阈值是启发式（R18）：只追求把
+最坏情形挡在门外，不追求精确；「损失能不能承担」由 Agent 跟用户按手册标定流程判定。
+本模块全部函数是 **total**：任何异常 ⇒ `("pass", "", None)`，绝不外抛（调用方是 tick 的
+循环线程，异常外抛会把队首行钉死、队列永久冻结，R14 症状）。
 """
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ import struct
 
 from loguru import logger
 
-#: 初始像素预算（保守侧）：**低于已知最坏件** 8.7MP 事故照片（2026-10-13 事故：编码 17 分钟未完成 + 进 swap + 文本嵌入全堵）；S6 标定步以实测覆盖（易腐数据，不写进条款）。
-GUARD_MAX_PIXELS = 8_000_000
-#: 初始文件体积预算（保守侧）：30MB（base64 体最多 ≈ 40MB）。
+#: 直送门槛缺省（保守侧，同改动前初值；`media_ingest.max_pixels` 配置值优先，见
+#: ``media_ingest_config.media_ingest_max_pixels``）。
+DEFAULT_MAX_PIXELS = 8_000_000
+#: 体积预算（保守侧，病态闸）：超限 ⇒ 无论两分支一律拒收。
 GUARD_MAX_BYTES = 30 * 1024 * 1024
 
 
@@ -55,10 +56,10 @@ def _jpeg_size(f) -> tuple[int, int] | None:
 
 def _image_size(path: str) -> tuple[int, int] | None:
     """只读图头取 (宽, 高)；**total 函数**：读不出（未知格式/文件缺失/头截断/切片越界）
-    → None，绝不抛异常向外——调用方是 tick 的循环线程，异常外抛会把队首行钉死（见 ``check``）。"""
+    → None，绝不抛异常向外（见 ``classify``）。识别面：JPEG / PNG / WEBP（VP8/VP8L/VP8X）/ GIF。"""
     try:
         f = open(path, "rb")
-    except (OSError, ValueError):  # ValueError = 路径含 NUL（open 抛它、不是 OSError）——让「绝不抛异常向外」对一切路径形态为真
+    except (OSError, ValueError):  # ValueError = 路径含 NUL（open 抛它、不是 OSError）
         return None
     with f:
         try:
@@ -96,27 +97,34 @@ def _image_size(path: str) -> tuple[int, int] | None:
     return None
 
 
-def check(path: str) -> tuple[bool, str]:
-    """护栏检查（同步、毫秒级）：返回 (是否放行, 原因)。**total 函数：绝不向外抛异常**——
-    任何异常（getsize 的 OSError/ValueError、图头解析的 struct.error/IndexError）⇒ 放行 +
-    WARNING（自述契约：图头读不出 ⇒ 放行）。调用方 = tick 的循环线程：异常外抛会崩掉本轮
-    tick，同一队首行每 10s 一轮崩一次、行永不删除、状态永不更新 ⇒ 媒体队列永久冻结（R14 症状）。
+def classify(path: str) -> tuple[str, str, tuple[int, int] | None]:
+    """护栏判定（同步、毫秒级，**total 函数：绝不向外抛异常**）：
+    返回 `(action, reason, dims)`，`action ∈ "pass" | "downscale" | "reject"`。
 
-    文件缺失 ⇒ 放行：让编码端按「文件缺失」失败（D-24 的显式失败原因，走有界重试、
-    弃单原因可辨）——护栏不代替存在性判定。
+    判定次序（I-6）：体积预算**先判**（超 ⇒ reject，两分支同判的保守闸），再像素门槛
+    （现读 `media_ingest.max_pixels`，配置缺省 `DEFAULT_MAX_PIXELS`）：读得出且超 ⇒
+    `"downscale"`（不再拒收，HANDOVER D 机制）；读得出且在 ⇒ `"pass"`；图头读不出 ⇒
+    `"pass"`（护栏级 fail-open：WARNING 自述 + 服务端 `--image-max-tokens` 最后防线 + 下游
+    dispatcher 的白名单分判：白名单内 ⇒ 直送/HEIC 转换、白名单外 ⇒ 拦截）。任何异常（getsize 的 OSError/ValueError、图头解析的
+    struct.error/IndexError）⇒ `("pass", "", None)`——调用方是 tick 的循环线程：异常外抛
+    会崩本轮 tick、同一队首行每轮崩一次、队列永久冻结（R14 症状）。文件缺失 ⇒ 放行：
+    让编码端按「文件缺失」失败（D-24 的显式失败原因），护栏不代替存在性判定。
     """
+    from niu_api.internal.media_ingest_config import media_ingest_max_pixels  # 函数级 import（同开关配方）
+
     try:
         size = os.path.getsize(path)
         if size > GUARD_MAX_BYTES:
-            return False, f"文件 {size / 1048576:.0f}MB 超护栏预算 {GUARD_MAX_BYTES / 1048576:.0f}MB"
+            return "reject", f"文件 {size / 1048576:.0f}MB 超体积预算 {GUARD_MAX_BYTES / 1048576:.0f}MB", None
         dims = _image_size(path)
         if dims is None:
             logger.warning(f"[PixelGuard] 图头读不出，放行（服务端 --image-max-tokens 是最后防线）: {path}")
-            return True, ""
+            return "pass", "", None
         w, h = dims
-        if w * h > GUARD_MAX_PIXELS:
-            return False, f"{w}×{h} = {w * h / 1e6:.0f}MP 超像素预算 {GUARD_MAX_PIXELS / 1e6:.0f}MP"
-        return True, ""
+        threshold = media_ingest_max_pixels()
+        if w * h > threshold:
+            return "downscale", f"{w}×{h} = {w * h / 1e6:.0f}MP 超直送门槛 {threshold / 1e6:.0f}MP", dims
+        return "pass", "", dims
     except Exception as e:
         logger.warning(f"[PixelGuard] 护栏检查异常，放行（服务端 --image-max-tokens 是最后防线）: {path}: {type(e).__name__}: {e}")
-        return True, ""
+        return "pass", "", None

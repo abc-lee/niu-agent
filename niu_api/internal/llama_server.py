@@ -436,6 +436,22 @@ def encode_media(abs_path: str) -> list[float]:
         return _post_media(uri)
 
 
+def encode_media_bytes(data: bytes, mime: str = "image/jpeg") -> list[float]:
+    """内存字节 → 768 维向量（与文本同一空间）。客户端缩放路径（HANDOVER D 机制）经此
+    发送缩放后的 JPEG；前置检查与 `encode_media` 同型（健康 + mmproj 旗标，先于任何
+    发送），发送同走 `_encode_lock` 串行 + `_post_media` 的三层嵌套形态。"""
+    if not _health_ok():
+        raise RuntimeError("llama-server 未就绪（health 检查失败）")
+    if not _mmproj_loaded:
+        raise RuntimeError(
+            "当前 llama-server 实例未加载 mmproj（纯文本形态或产物缺失），"
+            "无法编码媒体。请按手册重启 llama-server 使其带 --mmproj 拉起。"
+        )
+    uri = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    with _encode_lock:
+        return _post_media(uri)
+
+
 def _post_embeddings(texts: list[str]) -> list[list[float]]:
     """打一次 /v1/embeddings，返回与输入等长的向量列表（条数不符照旧抛）。"""
     payload = json.dumps({"input": texts, "encoding_format": "float"}).encode()
