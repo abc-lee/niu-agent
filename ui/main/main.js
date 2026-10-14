@@ -2057,6 +2057,11 @@ ipcMain.handle('kg-search-entities', async (event, query, topK) => {
   return apiRequest('GET', `/api/kg/search_entities?${params}`);
 });
 
+ipcMain.handle('media-search', async (event, query, topK) => {
+  const params = new URLSearchParams({ query: query || '', top_k: topK || 20 });
+  return apiRequest('GET', `/api/media/search?${params}`);
+});
+
 ipcMain.handle('kg-concepts', async (event, limit) => {
   return apiRequest('GET', `/api/kg/concepts?limit=${limit || 100}`);
 });
