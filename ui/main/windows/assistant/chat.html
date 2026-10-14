@@ -505,12 +505,31 @@
       display: none;
       padding: 4px 12px;
       background: white;
-      border-bottom: 1px solid #e9ecef;
+      border-bottom: 1px dashed rgba(0,0,0,0.08);
+      font-size: 13px;
+      color: #000;
     }
-    .media-progress-bar.show { display: flex; align-items: center; gap: 8px; }
-    .media-progress-bar .media-progress-track { flex: 1; height: 4px; background: #e9ecef; border-radius: 2px; overflow: hidden; }
-    .media-progress-bar .media-progress-fill { height: 100%; width: 100%; background: #e0a458; }
-    .media-progress-bar .media-progress-text { min-width: 40px; text-align: right; }
+    .media-progress-bar.show {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .media-progress-bar .media-progress-track {
+      flex: 1;
+      height: 4px;
+      background: #e9ecef;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .media-progress-bar .media-progress-fill {
+      height: 100%;
+      background: #e0a458;
+      transition: width 0.3s ease;
+    }
+    .media-progress-bar .media-progress-text {
+      min-width: 40px;
+      text-align: right;
+    }
     
     /* ========== 图片显示 ========== */
     .chat-image {
@@ -1211,8 +1230,9 @@
     <div class="media-progress-bar" id="media-progress-bar">
       <span id="media-progress-text">媒体入库中…</span>
       <div class="media-progress-track">
-        <div class="media-progress-fill" id="media-progress-fill"></div>
+        <div class="media-progress-fill" id="media-progress-fill" style="width: 0%"></div>
       </div>
+      <span class="media-progress-text" id="media-progress-percent">0%</span>
     </div>
     
     <div class="input-area">
@@ -3107,17 +3127,30 @@
 
     // ===== MEDIA_POLLING_JS_BEGIN =====
     // 以下整块被 tests/test_media_polling.js 逐字提取进 node vm 上下文做行为探针
-    //（「轮询永不停止」断言：off/idle 分支处理后 mediaPollTimer 仍存活、clearInterval 零调用）——
+    //（「轮询永不停止」断言：off 分支处理后 mediaPollTimer 仍存活、clearInterval 零调用；
+    // v3.5 新增「全部完成 ⇒ dismiss + 关条，轮询仍存活」「dismiss 被拒 ⇒ 横条不关」断言）——
     // 改动本块时先跑该测试，断言钉死的是行为不是文本。
-    // ========== 媒体向量横条（v3.0，D-27）：异色、同模式，可与知识图谱横条并存 ==========
+    // ========== 媒体向量横条（v3.5：真进度 + 页面删文件责任，D-27 + 口径②③④⑤/丁） ==========
+    // 真进度（口径②）：百分比 = 已完成 / 总条数（queue_done / queue_total）——文件里完成行 +
+    // 未完成行并存，刷新/中途打开都准；queue_depth 只数未完成行（口径④-4），-1 哨兵 = 文件读不出。
+    // 页面删文件（口径③/丁）：页面开着就不删；观察到全部完成 ⇒ 先调 dismiss 端点（锁内复核，
+    // 存在未完成行会拒删）再关条；dismiss 被拒（观察与删除之间新追加了行）⇒ 保留横条、下一轮
+    // 轮询重试。窗口关掉 = **延后到下次打开**（不是缺陷）：下次页面加载的初始轮询照旧读队列——
+    // 还有未完成行 ⇒ 继续显示（真进度）；全完成 ⇒ 关条 + 删文件。长期无人开页面 ⇒ 文件留着
+    // （完成行累积，有意设计，手册已披露）——本块不加任何清理逻辑、不设任何定时器。
     const MEDIA_PROGRESS_API = 'http://127.0.0.1:9876/api/media/pipeline_status';
+    const MEDIA_DISMISS_API = 'http://127.0.0.1:9876/api/media/queue/dismiss';
     const MEDIA_POLL_INTERVAL = 3000;
     let mediaPollTimer = null;
     const mediaProgressBar = document.getElementById('media-progress-bar');
     const mediaProgressText = document.getElementById('media-progress-text');
+    const mediaProgressFill = document.getElementById('media-progress-fill');
+    const mediaProgressPercent = document.getElementById('media-progress-percent');
 
-    function showMediaBar(text) {
+    function showMediaBar(text, percent, percentLabel) {
       mediaProgressText.textContent = text;
+      mediaProgressFill.style.width = percent + '%';
+      mediaProgressPercent.textContent = percentLabel != null ? percentLabel : Math.round(percent) + '%';
       mediaProgressBar.classList.add('show');
     }
     function hideMediaBar() {
@@ -3128,23 +3161,49 @@
       try {
         const resp = await fetch(MEDIA_PROGRESS_API);
         const data = await resp.json();
+        if (data.status === 'off') {
+          // 开关关：横条自动隐藏且永不显示（D-27 只约束横条显隐）；轮询**不停**——页面在开关关时
+          // 加载后，用户免重启热翻转开关 + 零事件形态下，横条仍能被低频轮询发现（第三轮 P2 修正，I-10）
+          hideMediaBar();
+          return;
+        }
+        const total = Number(data.queue_total || 0);
+        const done = Number(data.queue_done || 0);
+        const depth = data.queue_depth; // 未完成行数；-1 哨兵 = 队列文件读不出（行数未知）
+        if (total <= 0 && (!depth || depth === 0)) {
+          // 无任何记录行（文件不存在/空/只有空行）：无活可干，隐藏横条但保持低频轮询——
+          // 「调度器从未启动、零事件」形态下横条仍能靠轮询在页面加载后出现（第二轮 P1 修正）
+          hideMediaBar();
+          return;
+        }
+        if (total > 0 && done >= total) {
+          // 全部完成（口径③/丁）：页面删文件责任——先 dismiss 再关条；dismiss 被拒（观察与删除
+          // 之间新追加了未完成行 / 在途行尚未标注）⇒ 保留横条（不显示错误数字，下一轮轮询用新
+          // 数据重渲）；dismiss 成功 ⇒ 关条（文件已删，口径丁：关窗只是延后到这里，不是缺陷）
+          try {
+            const r = await fetch(MEDIA_DISMISS_API, { method: 'POST' });
+            const j = await r.json();
+            if (j.dismissed) { hideMediaBar(); return; }
+          } catch (e) { /* dismiss 失败不影响轮询：下一轮轮询重试 */ }
+          showMediaBar('全部完成，队列文件删除中…', 100, '100%');
+          return;
+        }
+        if (depth < 0) {
+          // queue_depth = -1 哨兵 = 队列文件读不出（行数未知）：显示「未知」，绝不误报「0 行」
+          showMediaBar(`队列积压未知，未运行：${data.reason || ''}`, 0, '');
+          return;
+        }
+        const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+        let label;
         if (data.status === 'encoding') {
-          const label = data.entity ? `媒体入库：${data.entity}` : '媒体入库中…';
-          showMediaBar(data.queue_depth > 0 ? `${label}（队列 ${data.queue_depth}）` : label);
+          label = data.entity ? `媒体入库：${data.entity}` : '媒体入库中…';
         } else if (data.status === 'stalled' || data.status === 'scheduler-stopped') {
           // 有积压但没在跑：给可辨提示、不显示假进度（R14）
-          // queue_depth = -1 哨兵 = 队列文件读不出（行数未知）：显示「未知」，绝不误报「0 行」
-          const depth = data.queue_depth < 0 ? '未知' : data.queue_depth;
-          showMediaBar(`队列积压 ${depth} 行，未运行：${data.reason || ''}`);
-        } else if (data.status === 'off') {
-          // 开关关：横条自动隐藏且永不显示（D-27 只约束横条显隐）；轮询**不停**——页面在开关关时
-          // 加载后，用户免重启热翻转开关 + 零事件形态下，横条仍能被低频轮询发现（第三轮 P2 修正）
-          hideMediaBar();
+          label = `队列积压 ${depth} 行，未运行：${data.reason || ''}`;
         } else {
-          // idle：隐藏横条但保持低频轮询（端点纯读毫秒级）——「调度器从未启动、零事件」
-          // 形态下，横条仍能靠轮询在页面加载后出现（第二轮 P1 修正）
-          hideMediaBar();
+          label = `队列积压 ${depth} 行，等待开始`;
         }
+        showMediaBar(label, percent, `${percent}%`);
       } catch (e) {
         // 后端不可达：不显示假状态，等下一轮
       }
@@ -3165,14 +3224,15 @@
     });
 
     window.electronAPI.onMediaIngestCompleted((data) => {
-      // 失败走临时系统提示通道（onSystemNotice，不落库、刷新即消失）——横条不常驻显示错误（D-27）
+      // 失败走临时系统提示通道（onSystemNotice，不落库、刷新即消失）——横条不常驻显示错误（D-27/口径乙）
       console.log('[Chat] media-ingest-completed SSE event received', data);
       pollMediaStatus(); // 立即复查一次：队列里可能还有下一条；无活可干时横条自动隐藏
       // （轮询不由事件停止——轮询永不停止，off 时只隐藏横条）
     });
 
     // 页面加载初始轮询：chat.html 内联脚本在前置 DOM 构建后执行（已实测），在此直接启动一次即可
-    //（同知识图谱横条的模式）——「调度器从未启动、零 SSE 事件」形态下横条也能在页面加载后出现
+    //（同知识图谱横条的模式）——「调度器从未启动、零 SSE 事件」形态下横条也能在页面加载后出现；
+    // 口径丁「下次打开」形态的入口 = 这个初始轮询（关窗期间全完成 ⇒ 下次打开即 dismiss + 关条）
     startMediaPolling();
     // ===== MEDIA_POLLING_JS_END =====
 
