@@ -2272,7 +2272,7 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
         #     ⚠️ 该手写入口**不受**下方 `append_record` 的 O_APPEND + 排它锁纪律保护，只接受**追加**语义
         #     （主 Agent 的 `write` 工具须用 `mode="append"`）：默认 `mode="overwrite"` 是整文件截断重写、
         #     `edit` 是无锁读-改-重写、`read` 分页 500 行——三者都会抹掉既有积压行，且工作者
-        #     下一次 `f4_drop_prefix(1)` 不校验队首内容、会删掉新写的第一行（静默丢行，第四轮 P2；
+        #     下一次标注/弃行重写不校验队首内容、会重写新写的第一行（静默丢行，第四轮 P2；
         #     S6 手册补算指引已钉死同口径的写入纪律）。
         #     控制面只有全局开关 media_ingest.enabled（D-19，没有每次调用的参数）。
         #     时机 = 知识图谱入库成功之后（D-20）：lightrag_sync 的 status ∈ success/skipped
