@@ -1,10 +1,7 @@
-"""像素护栏行为套件（plan §5 S4a，spec D-26）：双阈值分判（含 VP8/VP8L 正向尺寸解码）+ total 函数回归 + 两种拒收原因可辨 + WARNING 契约。
-
-全部用临时合成文件（图头按格式规范构造，只保证 64 字节窗口内可解析），不碰真实图片。
-total 函数回归覆盖第一轮 P1-B 的四个复现输入（20B 截断 PNG 头 / 截断 VP8X / SOF0 后截断的
-JPEG / 路径含 NUL）及其余形态（空文件 / 文件缺失 / 8 字节 PNG / 截断 GIF / HEIC 未知头）：
-任何此类输入 ``check`` 零抛异常、按契约放行 + WARNING。
-"""
+"""像素护栏行为套件（plan §2 T1，spec D-26 演进版）：三动作分判（pass / downscale /
+reject）+ 配置现读（缺键/类型错/坏 JSON 回保守默认）+ total 函数回归 + 拒收原因可辨 +
+WARNING 契约。只读图头、不解码像素（夹具全是「图头 + 垃圾体」，体字节只为撑体积预算）。"""
+import json
 import struct
 
 import pytest
@@ -86,83 +83,140 @@ def _webp_vp8l(w: int, h: int) -> bytes:
     return bytes(out)
 
 
-# ── ① 双阈值分判 ──────────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _empty_config(monkeypatch, tmp_path):
+    """缺省配置（无 media_ingest 段）⇒ 门槛取模块默认 8MP；需要覆盖门槛的用例自行重写该文件。"""
+    p = tmp_path / "user-config.json"
+    p.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("niu_api.config.CONFIG_PATH", str(p))
+    yield p
 
 
-def test_rejects_png_over_pixel_budget(tmp_path):
-    """PNG 4000×4000（16MP，超 8MP 初值预算）⇒ 拒收，原因含「超像素预算」。"""
-    p = tmp_path / "big.png"
+# ── ① 三动作分判（默认门槛 8MP）──────────────────────────────
+
+
+def test_downscale_png_over_threshold(tmp_path, _empty_config):
+    """PNG 4000×4000（16MP > 8MP）⇒ downscale，reason 含「超直送门槛」，dims 如实。"""
+    p = tmp_path / "a.png"
     p.write_bytes(_png_header(4000, 4000))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is False
-    assert "超像素预算" in reason
+    action, reason, dims = pixel_guard.classify(str(p))
+    assert (action, dims) == ("downscale", (4000, 4000))
+    assert "超直送门槛" in reason
 
 
-def test_allows_png_under_pixel_budget(tmp_path):
-    """PNG 2828×2828（≈7.99MP，预算内）⇒ 放行。"""
-    p = tmp_path / "ok.png"
+def test_pass_png_under_threshold(tmp_path, _empty_config):
+    """PNG 2828×2828（≈7.99MP，预算内）⇒ pass。"""
+    p = tmp_path / "b.png"
     p.write_bytes(_png_header(2828, 2828))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is True
-    assert reason == ""
+    action, reason, dims = pixel_guard.classify(str(p))
+    assert (action, reason, dims) == ("pass", "", (2828, 2828))
 
 
-def test_rejects_jpeg_incident_dims_with_exif_prefix(tmp_path):
-    """JPEG 3861×2252（8.69MP，2026-10-13 事故件尺寸）+ 长 EXIF 前缀 ⇒ 拒收——
-    尺寸段在 EXIF 段之后，护栏须逐段跳过 EXIF 仍读出 W×H（不吃固定窗口）。"""
-    p = tmp_path / "incident.jpg"
+def test_downscale_jpeg_incident_dims_with_exif_prefix(tmp_path, _empty_config):
+    """JPEG 3861×2252（8.69MP，2026-10-13 事故件尺寸）+ 长 EXIF 前缀 ⇒ downscale（不再拒收）。"""
+    p = tmp_path / "c.jpg"
     p.write_bytes(_jpeg(3861, 2252, exif_payload=b"\xa5" * 512))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is False
-    assert "超像素预算" in reason
+    action, reason, _dims = pixel_guard.classify(str(p))
+    assert action == "downscale" and "超直送门槛" in reason
 
 
-def test_allows_jpeg_under_budget(tmp_path):
-    """JPEG 3000×2000（6MP，预算内，无 EXIF）⇒ 放行。"""
-    p = tmp_path / "ok.jpg"
+def test_pass_jpeg_under_threshold(tmp_path, _empty_config):
+    """JPEG 3000×2000（6MP，预算内，无 EXIF）⇒ pass。"""
+    p = tmp_path / "d.jpg"
     p.write_bytes(_jpeg(3000, 2000))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is True
-    assert reason == ""
+    action, reason, _dims = pixel_guard.classify(str(p))
+    assert (action, reason) == ("pass", "")
 
 
-def test_rejects_over_byte_budget_even_if_dims_within_budget(tmp_path):
-    """文件体积 >30MB（W×H 在预算内）⇒ 拒收，原因含「超护栏预算」。"""
-    p = tmp_path / "fat.png"
+def test_reject_over_byte_budget_within_pixel_budget(tmp_path, _empty_config):
+    """体积 > 30MiB（= 30×1024×1024 B，与 `GUARD_MAX_BYTES` 同口径；W×H 在预算内）⇒ reject（病态闸，I-6），原因含「超体积预算」。"""
+    p = tmp_path / "e.png"
     p.write_bytes(_png_header(100, 100) + b"\x00" * (31 * 1024 * 1024))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is False
-    assert "超护栏预算" in reason
+    action, reason, _dims = pixel_guard.classify(str(p))
+    assert action == "reject" and "超体积预算" in reason
 
 
-def test_rejects_vp8_over_pixel_budget(tmp_path):
-    """WEBP VP8（有损关键帧）4000×4000（16MP，超预算）⇒ 拒收——守护 VP8 正向尺寸解码路径（P3-2）。"""
-    p = tmp_path / "big_vp8.webp"
+def test_reject_byte_budget_wins_over_pixel(tmp_path, _empty_config):
+    """体积超限 + 像素超门槛 ⇒ 体积闸先判 ⇒ reject（不再是 downscale），原因只含体积文案。"""
+    p = tmp_path / "f.png"
+    p.write_bytes(_png_header(4000, 4000) + b"\x00" * (31 * 1024 * 1024))
+    action, reason, _dims = pixel_guard.classify(str(p))
+    assert action == "reject" and "超体积预算" in reason and "超直送门槛" not in reason
+
+
+def test_downscale_vp8_over_threshold(tmp_path, _empty_config):
+    """WEBP VP8 4000×4000 ⇒ downscale——守护 VP8 正向尺寸解码路径（起始码偏移 23–25）。"""
+    p = tmp_path / "g.webp"
     p.write_bytes(_webp_vp8(4000, 4000))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is False
-    assert "4000×4000" in reason and "超像素预算" in reason
+    action, reason, dims = pixel_guard.classify(str(p))
+    assert action == "downscale" and "4000×4000" in reason and dims == (4000, 4000)
 
 
-def test_rejects_vp8l_over_pixel_budget(tmp_path):
-    """WEBP VP8L（无损）4000×4000（16MP，超预算）⇒ 拒收——VP8L 的 14 位位打包解码正确（P3-2）。"""
-    p = tmp_path / "big_vp8l.webp"
+def test_downscale_vp8l_over_threshold(tmp_path, _empty_config):
+    """WEBP VP8L 4000×4000 ⇒ downscale——VP8L 的 14 位位打包解码正确。"""
+    p = tmp_path / "h.webp"
     p.write_bytes(_webp_vp8l(4000, 4000))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is False
-    assert "4000×4000" in reason and "超像素预算" in reason
+    action, reason, _dims = pixel_guard.classify(str(p))
+    assert action == "downscale" and "4000×4000" in reason
 
 
-def test_rejects_extreme_aspect_ratio_png(tmp_path):
-    """PNG 100000×100（10MP，极端长宽比）⇒ 拒收——struct ">I" 支持 >65535 的 PNG 宽（P3-3）。"""
-    p = tmp_path / "wide.png"
+def test_downscale_extreme_aspect_ratio_png(tmp_path, _empty_config):
+    """PNG 100000×100（10MP，极端长宽比）⇒ downscale——struct ">I" 支持 >65535 的 PNG 宽。"""
+    p = tmp_path / "i.png"
     p.write_bytes(_png_header(100000, 100))
-    ok, reason = pixel_guard.check(str(p))
-    assert ok is False
-    assert "100000×100" in reason and "超像素预算" in reason
+    action, reason, _dims = pixel_guard.classify(str(p))
+    assert action == "downscale" and "100000×100" in reason
 
 
-# ── ② total 函数回归（第一轮 P1-B 复现用例入库）────────────────
+def test_reject_unreadable_header_over_byte_budget(tmp_path, _empty_config):
+    """图头读不出 + 体积超限 ⇒ reject（病态，I-6 矩阵角元）。"""
+    p = tmp_path / "junk.xyz"
+    p.write_bytes(b"\x00\x01" * (31 * 1024 * 1024 // 2 + 1))
+    action, reason, dims = pixel_guard.classify(str(p))
+    assert (action, dims) == ("reject", None) and "超体积预算" in reason
+
+
+def test_pass_unreadable_header_within_budget(tmp_path, _empty_config):
+    """图头读不出 + 体积在预算内 ⇒ pass（fail-open，WARNING 见下）。"""
+    p = tmp_path / "junk2.xyz"
+    p.write_bytes(b"\x00\x01" * 100)
+    action, reason, dims = pixel_guard.classify(str(p))
+    assert (action, reason, dims) == ("pass", "", None)
+
+
+# ── ② 配置现读与兼底（I-5）────────────────────────────────────
+
+
+def test_threshold_config_drives_downscale(tmp_path, _empty_config):
+    """门槛调到极高 ⇒ 16MP 变 pass；调到极低 ⇒ 小图变 downscale（现读、热生效）。"""
+    p = tmp_path / "a.png"
+    p.write_bytes(_png_header(4000, 4000))
+    _empty_config.write_text(json.dumps({"media_ingest": {"max_pixels": 100_000_000}}), encoding="utf-8")
+    assert pixel_guard.classify(str(p))[0] == "pass"
+    _empty_config.write_text(json.dumps({"media_ingest": {"max_pixels": 1_000_000}}), encoding="utf-8")
+    assert pixel_guard.classify(str(p))[0] == "downscale"
+
+
+@pytest.mark.parametrize("bad", ["8000000", 8000000.5, True, 0, -3, None, [], {"x": 1}])
+def test_threshold_wrong_type_falls_back_to_default(tmp_path, _empty_config, bad):
+    """门槛类型错（含布尔——isinstance(True, int) 的坑）⇒ 回默认 8MP ⇒ 16MP 图仍是 downscale。"""
+    p = tmp_path / "a.png"
+    p.write_bytes(_png_header(4000, 4000))
+    _empty_config.write_text(json.dumps({"media_ingest": {"max_pixels": bad}}), encoding="utf-8")
+    assert pixel_guard.classify(str(p))[0] == "downscale"
+
+
+def test_broken_config_falls_back_to_default(tmp_path, _empty_config):
+    """坏 JSON ⇒ 默认 8MP（16MP ⇒ downscale；7.99MP ⇒ pass）。"""
+    big, small = tmp_path / "big.png", tmp_path / "small.png"
+    big.write_bytes(_png_header(4000, 4000))
+    small.write_bytes(_png_header(2828, 2828))
+    _empty_config.write_text("{不是JSON", encoding="utf-8")
+    assert pixel_guard.classify(str(big))[0] == "downscale"
+    assert pixel_guard.classify(str(small))[0] == "pass"
+
+
+# ── ③ total 函数回归（任何畸形输入零外抛，队列永不冻结）──────
 
 
 @pytest.mark.parametrize(
@@ -186,48 +240,47 @@ def test_rejects_extreme_aspect_ratio_png(tmp_path):
     ],
 )
 def test_total_function_never_raises(tmp_path, monkeypatch, name, build):
-    """任何畸形/未知输入 ⇒ ``check`` 零抛异常、按契约放行（True, ""）——绝不崩 tick。"""
-    if name in ("nul_in_path", "missing_file"):
-        target = str(tmp_path / "nul\0path.png") if name == "nul_in_path" else str(tmp_path / "does_not_exist.png")
-        ok, reason = pixel_guard.check(target)  # 不抛即通过
-        assert ok is True and reason == ""
+    """任何畸形/未知输入 ⇒ ``classify`` 零抛异常、按契约放行 (pass, "", None)——绝不崩 tick。"""
+    if name == "missing_file":
+        action, reason, _dims = pixel_guard.classify(str(tmp_path / "does_not_exist.png"))
+        assert (action, reason) == ("pass", "")
+        return
+    if name == "nul_in_path":
+        action, reason, _dims = pixel_guard.classify(str(tmp_path / "nul\0path.png"))
+        assert (action, reason) == ("pass", "")
         return
     path = tmp_path / f"{name}.bin"
     path.write_bytes(build())
-    ok, reason = pixel_guard.check(str(path))  # 不抛即通过
-    assert ok is True
-    assert reason == ""
+    action, reason, _dims = pixel_guard.classify(str(path))  # 不抛即通过
+    assert (action, reason) == ("pass", "")
 
 
-# ── ③ 两种拒收原因可辨 ─────────────────────────────────────────
+# ── ④ 拒收原因可辨 + WARNING 契约 ─────────────────────────────
 
 
-def test_two_rejection_reasons_are_distinguishable(tmp_path):
-    """像素超限与体积超限的 reason 文案不同（拒收提示/SSE 事件原样透传 reason，
-    用户看到的拒收原因与拒绝分支一一对应）。"""
-    px = tmp_path / "big.png"
+def test_two_reasons_are_distinguishable(tmp_path, _empty_config):
+    """拒收（体积）与缩放（像素）的 reason 文案不同（拒收提示/SSE 事件原样透传 reason）。"""
+    px = tmp_path / "px.png"
     px.write_bytes(_png_header(4000, 4000))
-    by = tmp_path / "fat.png"
+    by = tmp_path / "by.png"
     by.write_bytes(_png_header(100, 100) + b"\x00" * (31 * 1024 * 1024))
-    _, r_px = pixel_guard.check(str(px))
-    _, r_by = pixel_guard.check(str(by))
-    assert "超像素预算" in r_px and "超护栏预算" not in r_px
-    assert "超护栏预算" in r_by and "超像素预算" not in r_by
-
-# ── ④ WARNING 契约（P2-1）────────────────────────────────────────────
+    _a_px, r_px = pixel_guard.classify(str(px))[:2]
+    _a_by, r_by = pixel_guard.classify(str(by))[:2]
+    assert "超直送门槛" in r_px and "超体积预算" not in r_px
+    assert "超体积预算" in r_by and "超直送门槛" not in r_by
 
 
-def test_warning_emitted_when_header_unreadable(tmp_path):
-    """契约：图头读不出 ⇒ 放行 + WARNING。本用例把契约的「WARNING 半」钉住：两行 ``logger.warning``
-    被删掉时套件照样全绿，须以一条断言 ``[PixelGuard]`` 告警前缀的用例作回归防线（P2-1）。"""
+def test_warning_emitted_when_header_unreadable(tmp_path, _empty_config):
+    """契约：图头读不出 ⇒ 放行 + WARNING。本用例把契约的「WARNING 半」钉住。"""
     from loguru import logger
+
+    sink_id = logger.add(lambda m: captured.append(m), level="WARNING")
     captured = []
-    sink_id = logger.add(captured.append, level="WARNING")
     try:
         p = tmp_path / "trunc.png"
         p.write_bytes(_png_header(4000, 4000)[:20])  # 20B 截断头
-        ok, reason = pixel_guard.check(str(p))
-        assert ok is True and reason == ""
+        action, reason, _dims = pixel_guard.classify(str(p))
+        assert (action, reason) == ("pass", "")
         assert any("[PixelGuard]" in m for m in captured), "未捕获 [PixelGuard] WARNING"
     finally:
         logger.remove(sink_id)

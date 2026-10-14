@@ -382,6 +382,40 @@ class TestEncodeMedia:
         assert content["type"] == "image_url"
         assert content["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
+    def test_encode_media_bytes_success_sends_jpeg_uri(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        sent = []
+
+        def _fake_post(uri):
+            sent.append(uri)
+            return [0.5] * 768
+
+        monkeypatch.setattr(llama_server, "_post_media", _fake_post)
+        out = llama_server.encode_media_bytes(b"\xff\xd8\xff\xdbfake", "image/jpeg")
+        assert len(sent) == 1 and sent[0].startswith("data:image/jpeg;base64,")
+        assert len(out) == 768
+
+    def test_encode_media_bytes_without_mmproj_raises_without_sending(self, monkeypatch):
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", False)
+        sent = []
+        monkeypatch.setattr(llama_server, "_post_media", lambda uri: sent.append(uri) or [0.5] * 768)
+        with pytest.raises(RuntimeError, match="mmproj"):
+            llama_server.encode_media_bytes(b"x")
+        assert not sent  # 前置检查必须先于任何发送（与 encode_media 同契约）
+
+    def test_encode_media_bytes_unhealthy_raises_before_send(self, monkeypatch):
+        """`encode_media` 健康闸用例（`test_unhealthy_raises_before_send`）的 bytes 入口镜像：
+        `_health_ok()==False` ⇒ 抛可辨错误且**零发送**（健康闸先于任何发送，bytes 入口与 path 入口同契约）。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: False)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        sent = []
+        monkeypatch.setattr(llama_server, "_post_media", lambda uri: sent.append(uri) or [0.0] * 768)
+        with pytest.raises(RuntimeError):
+            llama_server.encode_media_bytes(b"\xff\xd8fake")
+        assert not sent
+
 
 # ============== B7：旗标复位必须在 _stop_locked 的提前返回之前 =================
 
