@@ -875,8 +875,18 @@ focusNodeBtn.addEventListener('click', () => {
 });
 
 // ===== Search =====
+// 两段式搜索（2026-10-14 口径：同时搜知识图谱 + 媒体向量库，结果分格栏：上 = 知识图谱、下 = 照片（媒体））。
+// 时序纪律（I-10）：两路并行——图谱段按图谱响应一到即落定（媒体段保持「媒体搜索中…」占位）；
+// 媒体段在响应到达或 renderer 侧超时（MEDIA_SEARCH_TIMEOUT_MS）后落定。最坏情形（编码后端被媒体入库
+// 编码占忙、文本查询排在编码队尾；或图谱后端假死时逐命中节点解析每命中可达数十秒）由 renderer 超时
+// 截断；IPC 的 30s 硬超时与路由本身不变。媒体链路的任何失败只落在媒体段（可辨行），图谱段结果照常
+// 渲染（I-9）。陈旧响应守卫（I-10）：_searchRequestId 每轮搜索 +1，所有 DOM 写入先对 ID——超时竞态
+// 的落败方迟到解析、新一轮搜索、清空/Esc 关闭后到的旧响应，一律不碰 DOM。
 const searchInput = document.getElementById('searchInput');
 const searchDropdown = document.getElementById('search-dropdown');
+
+const MEDIA_SEARCH_TIMEOUT_MS = 12000; // renderer 侧媒体搜索超时（I-10）：截断最坏编码排队等待
+let _searchRequestId = 0; // 每轮搜索 +1：本轮所有 DOM 写入以它为界，陈旧响应丢弃
 
 // 关闭下拉列表
 function closeSearchDropdown() {
@@ -892,6 +902,100 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.search-wrapper') && !e.target.closest('#search-dropdown')) {
     closeSearchDropdown();
   }
+});
+
+// SENTINEL-Begin buildSearchSectionModel
+// 两段渲染的纯决策函数（无 DOM 依赖；tests/graph_search_media_ui.js 按哨兵注释提取后驱动断言）。
+// kgState / mediaState ∈ {kind: 'pending'|'items'|'empty'|'error', pending?, items?, message?}（pending 占位文案 = 显式 pending 字段，v1.1 F4：不再按标题字符串硬匹配）
+//   items（图谱段）= [{name, type}]（形状同既有下拉项）；items（媒体段）= [{name, mediaType, degraded}]
+// 返回 [图谱段, 媒体段]：{title, kind, message?, items?}——两段恒同时存在（空段也占位，一眼分清来源，I-3）。
+function buildSearchSectionModel(kgState, mediaState) {
+  const section = (title, st) => {
+    if (st.kind === 'items' && st.items && st.items.length > 0) {
+      return { title, kind: 'items', items: st.items };
+    }
+    if (st.kind === 'error') {
+      return { title, kind: 'error', message: st.message || title + ' 不可用' };
+    }
+    if (st.kind === 'pending') {
+      return { title, kind: 'pending', message: st.pending };
+    }
+    return { title, kind: 'empty', message: '无结果' }; // 空 = 占位行，不是失败（I-4）
+  };
+  return [section('知识图谱', kgState), section('照片（媒体）', mediaState)];
+}
+// SENTINEL-End buildSearchSectionModel
+// SENTINEL-Begin mediaTypeLabel
+// 媒体段类型标签（I-3）：photo→照片 / video→视频 / image→图片，其余原样显示 media_type
+function mediaTypeLabel(mediaType) {
+  const labels = { photo: '照片', video: '视频', image: '图片' };
+  return labels[mediaType] || mediaType || '';
+}
+// SENTINEL-End mediaTypeLabel
+
+// SENTINEL-Begin buildSearchItemHtml
+// 单条下拉条目 HTML 装配（无 DOM 依赖，探针可断言）：KG 段与既有模板逐字同；媒体段用 mediaTypeLabel；
+// degraded 条目 = 灰化类 + data-degraded="1" + 「无图谱节点」标签（I-3/I-6）。
+function buildSearchItemHtml(sectionKey, item) {
+  if (sectionKey === 'media' && item.degraded) {
+    return `<div class="search-dropdown-item search-dropdown-item--degraded" data-section="media" data-degraded="1" data-name="${escapeHtml(item.name)}"><span class="entity-name">${escapeHtml(item.name)}</span><span class="entity-type">无图谱节点</span></div>`;
+  }
+  const typeText = sectionKey === 'media' ? mediaTypeLabel(item.mediaType) : (item.type || '');
+  return `<div class="search-dropdown-item" data-section="${sectionKey}" data-name="${escapeHtml(item.name)}"><span class="entity-name">${escapeHtml(item.name)}</span><span class="entity-type">${escapeHtml(typeText)}</span></div>`;
+}
+// SENTINEL-End buildSearchItemHtml
+
+const _sectionStates = { kg: { kind: 'pending', pending: '搜索中…' }, media: { kind: 'pending', pending: '媒体搜索中…' } };
+
+// 单段写入（薄 DOM 装配：条目 HTML 装配全部委托 buildSearchItemHtml 哨兵纯函数——探针可断言；
+// KG 段条目模板与既有逐字一致——I-3/I-5；降级条目可辨形态——I-6）
+function paintSection(sectionKey, state) {
+  _sectionStates[sectionKey] = state;
+  const model = buildSearchSectionModel(_sectionStates.kg, _sectionStates.media);
+  const sec = model[sectionKey === 'kg' ? 0 : 1];
+  const body = searchDropdown.querySelector(`.search-dropdown-section-body[data-body="${sectionKey}"]`);
+  if (!body) return; // 骨架未建立 / 下拉已关闭（清空/Esc）——!body 空守卫：放锁后媒体腿的迟到写**与 Esc / 点外部关闭下拉后的迟到写**（Esc 不递增 `_searchRequestId`，此守卫是唯一拦截者）都在此被挡（I-10）
+  if (sec.kind === 'items') {
+    let html = '';
+    sec.items.forEach(item => {
+      html += buildSearchItemHtml(sectionKey, item);
+    });
+    body.innerHTML = html;
+  } else if (sec.kind === 'error') {
+    body.innerHTML = `<div class="search-dropdown-section-note search-dropdown-section-note--error">${escapeHtml(sec.message || '')}</div>`;
+  } else {
+    // pending / empty：占位行（搜索中… / 媒体搜索中… / 无结果）
+    body.innerHTML = `<div class="search-dropdown-section-note">${escapeHtml(sec.message || '')}</div>`;
+  }
+}
+
+// 两段骨架：搜索开始即建立（两段独立落定；未落定的段保持占位行——一眼分清哪一路来源还在等）
+function ensureSectionSkeleton() {
+  _sectionStates.kg = { kind: 'pending', pending: '搜索中…' };
+  _sectionStates.media = { kind: 'pending', pending: '媒体搜索中…' };
+  searchDropdown.innerHTML =
+    '<div class="search-dropdown-section" data-section="kg">' +
+    '<div class="search-dropdown-section-title">知识图谱</div>' +
+    '<div class="search-dropdown-section-body" data-body="kg"><div class="search-dropdown-section-note">搜索中…</div></div>' +
+    '</div>' +
+    '<div class="search-dropdown-section" data-section="media">' +
+    '<div class="search-dropdown-section-title">照片（媒体）</div>' +
+    '<div class="search-dropdown-section-body" data-body="media"><div class="search-dropdown-section-note">媒体搜索中…</div></div>' +
+    '</div>';
+}
+
+// 点击 = 事件委托（容器上绑一次，innerHTML 重写后仍有效）：两段非降级条目都走既有选中语义
+// selectSearchEntity——实体名即图谱节点 id（kg_api 侧 id = name；D-15/D-16 媒体向量按实体名绑定
+// 既有图谱节点）⇒ 开子图并聚焦 ⇒ 点节点弹详情页（详情页早有照片预览，无新增 UI，I-5）；
+// 降级的媒体条目（图谱里无节点）只关下拉，不进子图（I-6）。
+searchDropdown.addEventListener('click', (e) => {
+  const item = e.target.closest('.search-dropdown-item[data-section]');
+  if (!item) return;
+  if (item.dataset.degraded === '1') {
+    closeSearchDropdown();
+    return;
+  }
+  selectSearchEntity({ id: item.dataset.name, name: item.dataset.name });
 });
 
 // 搜索框键盘事件：Enter 搜索，Escape 关闭下拉
@@ -913,47 +1017,103 @@ searchInput.addEventListener('keydown', async (e) => {
   if (_searchInProgress) return;
   _searchInProgress = true;
 
-  // 显示加载状态
-  searchDropdown.innerHTML = '<div class="search-dropdown-loading">搜索中...</div>';
-  searchDropdown.classList.remove('hidden');
-  // Position dropdown below the search input (body-level element)
-  const inputRect = searchInput.getBoundingClientRect();
-  searchDropdown.style.left = inputRect.left + 'px';
-  searchDropdown.style.top = (inputRect.bottom + 4) + 'px';
-  searchDropdown.style.minWidth = inputRect.width + 'px';
+  const mySearchId = ++_searchRequestId; // 陈旧响应守卫（I-10）
+  const stillCurrent = () => mySearchId === _searchRequestId;
 
   try {
-    const result = await window.electronAPI.searchEntities(query, 20);
-    if (isGraphError(result)) {
-      // E3 D7：检索失败显式分支——不再把 error 伪装成"未找到匹配实体"
-      markGraphUnavailable('检索失败');
-      searchDropdown.innerHTML = '<div class="search-dropdown-empty">检索失败</div>';
-      return;
+    // 显示两段加载状态（段占位行即可辨：上 = 图谱搜索中、下 = 媒体搜索中）
+    ensureSectionSkeleton();
+    searchDropdown.classList.remove('hidden');
+    // Position dropdown below the search input (body-level element)
+    const inputRect = searchInput.getBoundingClientRect();
+    searchDropdown.style.left = inputRect.left + 'px';
+    searchDropdown.style.top = (inputRect.bottom + 4) + 'px';
+    searchDropdown.style.minWidth = inputRect.width + 'px';
+
+    // 两路并行（I-10）：媒体路 = 响应与 renderer 侧超时竞态；两路各自捕获，失败只落在各自动段（I-9）
+    let kgPromise;
+    try {
+      kgPromise = window.electronAPI.searchEntities(query, 20)
+        .catch(err => { console.error('Search entities failed:', err); return { __netError: String((err && err.message) || err) }; });
+    } catch (e) {
+      // preload 半程偏斜（旧 preload / 手工半回滚）下同步 throw 不逃逸：转本腿可辨失败值（走「搜索失败」分支），另一腿照常（I-9/I-10）
+      kgPromise = Promise.resolve({ __netError: String((e && e.message) || e) });
     }
-    const entities = result.entities || [];
-
-    if (entities.length === 0) {
-      const msg = result.error ? `搜索出错` : '未找到匹配实体';
-      searchDropdown.innerHTML = `<div class="search-dropdown-empty">${msg}</div>`;
-      return;
+    let mediaTimeout = null; // 超时定时器句柄：竞态落定后统一 clearTimeout，IPC 先胜出也不留空跑计时器（v1.1 F5）
+    let mediaPromise;
+    try {
+      mediaPromise = Promise.race([
+        window.electronAPI.searchMedia(query, 20)
+          .catch(err => ({ status: 'error', message: `媒体搜索不可用（${String((err && err.message) || err)}）` })),
+        new Promise(resolve => {
+          mediaTimeout = setTimeout(() => resolve({ status: 'error', message: '媒体搜索不可用（超时：编码后端可能被媒体入库编码占忙）' }), MEDIA_SEARCH_TIMEOUT_MS);
+        }),
+      ]).then(r => {
+        if (mediaTimeout) { clearTimeout(mediaTimeout); mediaTimeout = null; } // 竞态落定即清定时器（超时已触发则为空操作）
+        return r;
+      });
+    } catch (e) {
+      // 同上：媒体腿可辨失败行（I-9）
+      mediaPromise = Promise.resolve({ status: 'error', message: `媒体搜索不可用（${String((e && e.message) || e)}）` });
     }
 
-    // 搜索结果展示成功 = 图谱后端可用——撤掉状态角标（后续成功操作清除角标）
-    clearGraphUnavailable();
+    // —— 媒体段：按自身响应或超时落定（**不排在图谱腿之后**——I-10 的 12s 截断行必须
+    //    在图谱腿仍挂起时也按时出现；失败只落在媒体段，图谱段无论已落定或仍在占位都不受影响，I-9/I-10）——
+    const paintMedia = (mediaResult) => {
+      if (!stillCurrent()) return;
+      if (mediaResult && mediaResult.status === 'ok') {
+        const results = mediaResult.results || [];
+        if (results.length > 0) {
+          paintSection('media', {
+            kind: 'items',
+            items: results.map(it => ({ name: it.entity_name, mediaType: it.media_type || '', degraded: it.degraded === true })),
+          });
+        } else {
+          paintSection('media', { kind: 'empty' });
+        }
+      } else {
+        paintSection('media', { kind: 'error', message: (mediaResult && mediaResult.message) || '媒体搜索不可用' });
+      }
+    };
+    // 媒体腿落定即绘——**注册在 `await kgPromise` 之前**，回调挂点与图谱腿 settle 时刻完全无关（v1.3 G1：v1.2 的 F15 曾把注册留在 await 续延内，属结构性空转：媒体先落定时 12s 超时行仍迟到至多 18s）
+    mediaPromise.then(paintMedia);
 
-    searchDropdown.innerHTML = '';
-    entities.forEach(ent => {
-      const item = document.createElement('div');
-      item.className = 'search-dropdown-item';
-      item.innerHTML = `<span class="entity-name">${escapeHtml(ent.name)}</span><span class="entity-type">${escapeHtml(ent.entityType || '')}</span>`;
-      item.addEventListener('click', () => selectSearchEntity(ent));
-      searchDropdown.appendChild(item);
-    });
-  } catch (err) {
-    console.error('Search entities failed:', err);
-    searchDropdown.innerHTML = '<div class="search-dropdown-empty">搜索失败</div>';
-  } finally {
+    // —— 图谱段：按其自身响应落定（既有成功/失败纪律原样保留；失败分支文案与分支形态逐字同旧搜索块，不透后端原始报文）——
+    const kgResult = await kgPromise;
+    if (stillCurrent()) {
+      if (kgResult && kgResult.__netError) {
+        // 网络层失败（IPC reject）：既有「搜索失败」分支——不弹状态角标（与旧块 catch 分支一致）
+        paintSection('kg', { kind: 'error', message: '搜索失败' });
+      } else if (isGraphError(kgResult)) {
+        // E3 D7：检索失败显式分支——不再把 error 伪装成"未找到匹配实体"（文案同旧块，不透后端原始报文）
+        markGraphUnavailable('检索失败');
+        paintSection('kg', { kind: 'error', message: '检索失败' });
+      } else if (kgResult && kgResult.error) {
+        // 既有「搜索出错」分支（search_entities 异常 dict）
+        paintSection('kg', { kind: 'error', message: '搜索出错' });
+      } else {
+        const entities = (kgResult && kgResult.entities) || [];
+        if (entities.length > 0) {
+          // 搜索结果展示成功 = 图谱后端可用——撤掉状态角标（后续成功操作清除角标）
+          clearGraphUnavailable();
+          paintSection('kg', { kind: 'items', items: entities.map(ent => ({ name: ent.name, type: ent.entityType || '' })) });
+        } else {
+          paintSection('kg', { kind: 'empty' }); // 空 ≠ 失败：不动状态角标（I-4）
+        }
+      }
+    }
+    // 图谱段落定即放锁（等价旧搜索块的 finally 放锁点：图谱落定后再次搜索立即可发，不被媒体腿拖至多 12s）；
+    // 媒体腿在**自身落定时**渲染（`mediaPromise.then`，不排在 `await kgPromise` 之后）——靠 stillCurrent() 挡新轮开始后的迟到落定、靠 paintSection 的 !body 空守卫
+    // 挡关下拉后的迟到写。try/finally 兜底（v1.1 F2）：放锁后任何同步异常（ensureSectionSkeleton/paintSection
+    // 内 throw、renderer 与 preload 版本偏斜时 searchMedia 为 undefined 的同步 TypeError）不致搜索框永久锁死。
     _searchInProgress = false;
+
+    // 竞态的落败方（超时定时器或迟到 IPC）仍在后台解析——其结果过 stillCurrent 守卫后丢弃，永不碰 DOM（I-10）
+  } finally {
+    // v1.3 G2：本轮仍是当前轮才放锁——主放锁点（`_searchInProgress = false;`）之前任何 throw 路径上本轮仍持锁
+    // （新一轮的锁检查 `if (_searchInProgress) return;` 必被挡下）⇒ stillCurrent() 必为真，兜底不失效；
+    // 本轮已被新轮取代则不碰新轮的锁位（v1.2 的无条件 finally 会抹掉新轮锁位）
+    if (stillCurrent()) _searchInProgress = false;
   }
 });
 
