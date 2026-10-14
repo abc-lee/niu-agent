@@ -102,6 +102,51 @@ _TOKEN_COUNT_RE = re.compile(r"input\s*\((\d+)\s*tokens?\)", re.IGNORECASE)
 # 串行化后单批约 21.4s（235 条真实 chunk 实测），既不超时也不让服务端空转排队。
 _encode_lock = threading.Lock()
 
+# ── 交互向量活跃度（媒体编码让路门，D-31；用户口径①②）───────────────────
+# 媒体工作者以「交互向量闲置 ≥ VECTOR_IDLE_GATE_SECONDS ∧ 交互编码不在途」为启动新编码的
+# 前置条件（media_worker.tick ⑤）。只记录/计数**文本/交互**编码（encode_batch——LightRAG 检索/
+# 入库/命名/搜索的嵌入全经它）；媒体自身编码（encode_media*）既不**打点**也不计在途——否则
+# 连编会把自己的下一项越推越晚，排空被卡成每项间隔 30s（用户口径①）。
+_activity_lock = threading.Lock()
+_last_text_encode_at: float | None = None
+_text_inflight = 0
+
+
+def _mark_text_encode() -> None:
+    global _last_text_encode_at
+    with _activity_lock:
+        _last_text_encode_at = time.monotonic()
+
+
+def _begin_text_encode() -> None:
+    """文本编码在途 +1（**含等待 _encode_lock 的排队段**——「不抢」判据靠它）。"""
+    global _text_inflight
+    with _activity_lock:
+        _text_inflight += 1
+
+
+def _end_text_encode() -> None:
+    global _text_inflight
+    with _activity_lock:
+        _text_inflight -= 1
+
+
+def vector_idle_seconds() -> float:
+    """距最近一次**文本编码完成**的秒数；进程内从未发生过 ⇒ inf（视为一直闲置、立即放行）。
+    纯内存读、零探活、零阻塞——供媒体工作者逐拍查询（tick 由调度循环每 10s 调一次）。"""
+    with _activity_lock:
+        ts = _last_text_encode_at
+    if ts is None:
+        return float("inf")
+    return time.monotonic() - ts
+
+
+def text_encode_busy() -> bool:
+    """是否有文本/交互编码在途（含排队等锁段）。媒体门据此「不抢」（用户口径②）。"""
+    with _activity_lock:
+        return _text_inflight > 0
+
+
 _lock = threading.Lock()
 _proc: subprocess.Popen | None = None
 # 本进程拉起的实例是否以 --mmproj 加载（T1）。media_ready() = 本旗标 ∧ 健康——
@@ -587,11 +632,17 @@ def encode_batch(texts: list[str]) -> list[list[float]]:
     # 串行化：单实例 llama-server 会把并发请求内部排队，客户端并发只会把单请求延迟
     # 顶到 HTTP 超时（实测 8 批并发 ≈119.9s vs 超时 120.0s，必现 timed out）。
     # 拆批/量 token/截断重试全在锁内；护栏重试有上界，不会无限阻塞调用方。
-    with _encode_lock:
-        try:
-            return _post_embeddings(texts)
-        except urllib.error.HTTPError as err:
-            if _over_limit_tokens(err, texts) is None:
-                raise
-        # 护栏：先拆批逐条救回（避免一条拖垮全批），仍超限的那条在 _encode_one 内截断
-        return [_encode_one(text) for text in texts]
+    _begin_text_encode()
+    try:
+        with _encode_lock:
+            try:
+                result = _post_embeddings(texts)
+            except urllib.error.HTTPError as err:
+                if _over_limit_tokens(err, texts) is None:
+                    raise
+                # 护栏：先拆批逐条救回（避免一条拖垮全批），仍超限的那条在 _encode_one 内截断
+                result = [_encode_one(text) for text in texts]
+    finally:
+        _end_text_encode()
+    _mark_text_encode()   # 仅成功路径打点（失败/异常不打点，保守）
+    return result

@@ -85,6 +85,8 @@ class TickEnv:
     queue_path: Optional[str] = None  # 队列文件（缺省 F4 默认路径；测试用临时文件）
     switch: Optional[Callable[[], bool]] = None  # 开关读取（缺省 media_ingest_enabled，每轮现读）
     ready_check: Optional[Callable[[], bool]] = None  # 实例就绪（缺省 llama_server.media_ready）
+    vector_idle_seconds: Optional[Callable[[], float]] = None  # 交互向量闲置秒数（缺省 llama_server.vector_idle_seconds）
+    text_encode_busy: Optional[Callable[[], bool]] = None      # 交互编码是否在途（缺省 llama_server.text_encode_busy）
     encoder: Optional[Callable[[str], list]] = None  # 绝对路径 → 768 维向量（缺省 media_downscale.encode_media_any）
     guard: Optional[Callable[[str], tuple]] = None  # 路径 → (动作, 原因, 尺寸)；动作 ∈ "pass"|"downscale"|"reject"（缺省 pixel_guard.classify）
     store_add: Optional[Callable] = None  # (entity_name, media_type, vector)（缺省 media_vectors.add）
@@ -94,6 +96,10 @@ class TickEnv:
 #: 调度器既有 ThreadPoolExecutor（start_scheduler 经 bind_executor 绑定一次；R19：与到期任务
 #: 回调共享，延迟方向恒为「媒体等任务」——循环线程永不等待池内结果）。
 _executor: Optional[Any] = None
+
+#: 媒体编码让路门（D-31；用户口径①②）：媒体编码只在「交互/前端向量闲置 ≥ 本值（秒）」
+#: 时才启动**新**项。时钟只由文本/交互编码（encode_batch）驱动，媒体自身编码不计。
+VECTOR_IDLE_GATE_SECONDS = 30.0
 
 _state_lock = threading.Lock()
 #: 状态只报「最后一次 tick 观测到的事实」；状态端点纯读它、不付新探活（R14 的三种"未运行"
@@ -320,7 +326,7 @@ def _default_submit(fn: Callable[[], None]):
 def _read_first_pending_or_sweep(env: TickEnv) -> tuple[str, Any]:
     """取「第一条未完成记录」，**total 函数**：返回 (kind, payload)，kind ∈ "head" | "empty"
     | "swept" | "unreadable"。
-    - "head"：payload = (行号, 记录)（tick 继续 ④–⑥）。
+    - "head"：payload = (行号, 记录)（tick 继续 ④–⑦）。
     - "empty"：无活可干（文件缺失/空/仅空行与已完成行）⇒ tick 报 idle（完成行不是「活」，I-2/I-3）。
     - "swept"：单轮弃坏行上限（32）耗尽，本轮停取（刻意取舍：报 idle + 醒目 ERROR，v3.0 原条款）。
     - "unreadable"：遇到的坏行**弃不掉**（``f4_drop_line`` 返回 "failed"——排它锁竞争/IO 失败/
@@ -362,7 +368,7 @@ def tick(env: Optional[TickEnv] = None) -> None:
 
     循环线程代价：常态（无未完成行——含「只剩完成行」形态）在第一条件短路，毫秒级、零探活；
     有未完成行时至多付一次有界 5s 的探活（唯一阻塞上界，如实披露）。编码永不发生在循环线程
-    （提交池）。条件链①–⑥与 v3.0 同构，仅 ③ 取件与 ⑥ 在途记录构造按 v3.5 语义
+    （提交池）。条件链①–⑦与 v3.0 同构，仅 ③ 取件与 ⑦ 在途记录构造按 v3.5 语义
     （第一条未完成 + 行号）。
     """
     global _inflight
@@ -416,9 +422,42 @@ def tick(env: Optional[TickEnv] = None) -> None:
         _set_state(status="stalled", reason="实例未加载 mmproj 或编码后端不可用（队列只增不耗）", entity=None, started_at=None, **_counts(env.queue_path))
         return
 
-    # ⑤ 像素护栏（同步、毫秒级、D-26 唯一关口、total 函数）：拒收（病态：体积超预算）= 确定性
+    # ⑤ 向量闲置门（D-31，让路；有意放在就绪检查之后——后端未加载 mmproj/进程已死时照旧由 ④
+    #    报 stalled，fail-loud 诊断不被等待态掩盖，审查 R1-A P1-1）。两条件全真才允许启动新项：
+    #    (a) 交互向量闲置 ≥ VECTOR_IDLE_GATE_SECONDS——时钟**只由文本/交互编码**打点驱动，
+    #        媒体自身编码从不打点（否则连编自我推迟，N 张白等 N×30s；用户口径①）；
+    #    (b) 交互编码**不在途**（含排队等锁段）——不与前端并排抢 _encode_lock（用户口径②）。
+    #    （无「1 秒缓冲」：官方架构确认单槽请求按到达顺序串行 = FIFO ⇒ 前端已排队的请求天然
+    #     排在我们前面；用户口径「FIFO 就不需要等那一秒」。）
+    #    任一条不满足 ⇒ 本轮不启动、如实报 idle（前端既有 else 分支渲染「队列积压 N 行，等待
+    #    开始」；reason 仅诊断用、前端不渲染），下一拍再查。探针异常/非数值按「不可开」保守
+    #    处理，绝不外抛崩 tick（与 ①④⑥⑦ 同型的保护性 try）。
+    #    门只管**启动新编码项**：取件/sweep/维护照常（③ 取件在门之前执行，坏行弃除不受门影响）。
+    idle_probe = env.vector_idle_seconds or llama_server.vector_idle_seconds
+    busy_probe = env.text_encode_busy or llama_server.text_encode_busy
+    try:
+        # float() 强转也在 try 内：桩/契约漂移返回 None 等非数值时走保守分支，而不是让
+        # `None < 30.0` 抛 TypeError 崩掉本轮 tick。
+        idle_seconds = float(idle_probe())
+        busy_val = busy_probe()
+        if not isinstance(busy_val, bool):
+            raise TypeError(f"text_encode_busy 探针返回非 bool：{type(busy_val).__name__}（{busy_val!r}）")
+        text_busy = busy_val
+    except Exception as e:
+        logger.warning(f"[MediaWorker] 向量活跃探针异常，本轮停取: {type(e).__name__}: {e}")
+        idle_seconds, text_busy = 0.0, True
+    if idle_seconds < VECTOR_IDLE_GATE_SECONDS or text_busy:
+        gate_detail = "交互编码在途" if text_busy else f"交互向量活跃（闲置 {idle_seconds:.0f}s < {VECTOR_IDLE_GATE_SECONDS:.0f}s）"
+        _set_state(
+            status="idle",
+            reason=f"{gate_detail}，媒体编码让路等待",
+            entity=None, started_at=None, **_counts(env.queue_path),
+        )
+        return
+
+    # ⑥ 像素护栏（同步、毫秒级、D-26 唯一关口、total 函数）：拒收（病态：体积超预算）= 确定性
     # 失败、重试无意义 ⇒ **标完成**（口径乙：拒收也算「过了」）+ 醒目 WARNING + 临时提示；pass /
-    # downscale 都放行到 ⑥（downscale 的实际缩放在池 worker 的编码器分派里，循环线程不解码任何
+    # downscale 都放行到 ⑦（downscale 的实际缩放在池 worker 的编码器分派里，循环线程不解码任何
     # 像素——I-11）。保护性 try 是第二道防线：动作按放行处理、绝不崩本轮 tick。
     try:
         action, reason, _dims = guard(rec["file_path"])
@@ -443,14 +482,14 @@ def tick(env: Optional[TickEnv] = None) -> None:
             logger.warning(f"[MediaWorker] 护栏拒收但标注失败，下轮重试: {rec['file_path']}: {reason}")
             _set_state(status="stalled", reason=f"护栏拒收但标注失败（下轮重试）：{reason}", entity=rec["entity_name"], started_at=None, **_counts(env.queue_path))
         return
-    # pass / downscale ⇒ 落入 ⑥ 提交池（downscale 的缩放在 _process_one 的分派器内执行）
+    # pass / downscale ⇒ 落入 ⑦ 提交池（downscale 的缩放在 _process_one 的分派器内执行）
 
-    # ⑥ 提交池（循环线程不等结果）；在途记录**先创建**（带行号，future 暂未赋值）再 submit、
+    # ⑦ 提交池（循环线程不等结果）；在途记录**先创建**（带行号，future 暂未赋值）再 submit、
     # 回填 future——记录引用经 lambda 传入 worker 线程（其内回写 started/started_at）；done() 的
     # 严格语义保证「future 未赋值」绝不会被当成完成。
     # submit 是 tick 内最后一个外部调用点（第三轮 P2）：池未绑定 / 已 shutdown / 线程创建失败都会抛
     # RuntimeError——一抛，在途记录不发布、状态不发布、下一轮同一行在同一处再抛 ⇒ 与 P1-B/P1-1 同族的
-    # 永久冻结。保护性 try（与 ⑤ 同型）：异常 ⇒ 本轮停取 + 报可辨 stalled，绝不外抛崩 tick。
+    # 永久冻结。保护性 try（与 ⑥ 同型）：异常 ⇒ 本轮停取 + 报可辨 stalled，绝不外抛崩 tick。
     submit = env.submit or _default_submit
     inflight = _Inflight(entity_name=rec["entity_name"], file_path=rec["file_path"], line_index=line_index, started_at=time.time(), future=None)
     try:
@@ -460,7 +499,7 @@ def tick(env: Optional[TickEnv] = None) -> None:
         _set_state(status="stalled", reason=f"媒体线程池不可提交，本轮停取：{type(e).__name__}: {e}", entity=None, started_at=None, **_counts(env.queue_path))
         return
     _inflight = inflight
-    # tick ⑥：一个状态更新只读一遍文件（I-8）——日志 / 状态发布 / SSE 广播共用同一 `_counts` 快照
+    # tick ⑦：一个状态更新只读一遍文件（I-8）——日志 / 状态发布 / SSE 广播共用同一 `_counts` 快照
     _c6 = _counts(env.queue_path)
     logger.info(f"[MediaWorker] 开始编码: {rec['entity_name']}（未完成 {_c6['queue_depth']} 行 / 总 {_c6['queue_total']}）")
     _set_state(status="encoding", reason="", entity=rec["entity_name"], started_at=_inflight.started_at, **_c6)
