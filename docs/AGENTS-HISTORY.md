@@ -1152,3 +1152,22 @@ added_tokens 818，实测 `TokenCalculator` 已加载且计数正常）；`.giti
   2. **两角独立同抓的 P3 按阻断修**（R2 实证）；
   3. 另三条已记录（见本日期前一小节）：改稿前置＝无在飞审查；细节一律引原文不转述（含 UI/现状描述）；给本地 Agent 派大文件写作必须分片段落盘。
 - **状态**：方案 v1.4 门禁关门落定（1350 行）；SDD T1–T6 全部交付、工程侧收口、两仓干净；AC-L5…L9 待用户机器真机执行。
+
+#### 图谱搜索框联动媒体向量库（第三件媒体工程）：方案 v1.0→v1.4 过门禁、SDD T1–T4 收官、真机 AC 待用户
+
+- **门禁账本（方案 v1.0→v1.4，两角审查 R1–R6）**：R1 ✗（A 0/1/1/7 + B 0/2/2/1）⇒ R2 ✗（A 0/0/0/4 + B 0/0/1/3：**P2 = 媒体段绘制排在 `await kgPromise` 之后 ⇒ 12s 超时行迟到至多 18s，I-10 自相矛盾**）⇒ R3 ✗（A 0/1/1/0 + B 0/0/1/0：**两角独立同抓 v1.2 的 F15 是「结构性空转」**——`mediaPromise.then(paintMedia)` 注册藏在 await 续延内，与 v1.1 逐秒同态；A 另报 P2 = 旧轮 finally 抹新轮锁位）⇒ R4 ✓✓（两角各 0/0/0/1 = v1.3 上干净轮#1）⇒ R5 ✓✓、R6 ✓✓（v1.4 上连续两轮两角零 P0/P1/P2 ⇒ **门禁关门**）——两轮之间**零漂移有机械证明**（T3 块 md5 `ab7dd560…` 三方同值 / 45 结构标记行号全对 / mtime 取证）。**关键机理（本工程门禁主教训）**：注册位置写在 `await kgPromise` **之后**等于挂在 await 恢复路径上（结构性空转）；必须前移到 await **之前**——两角各用桩 DOM harness 做**差分实证**（v1.2 对照复红 / v1.3 转绿）。
+- **SDD 交付（每 Task：新鲜本地 Agent 实施 + 两阶段审查（T3 的 quality 走远端 ★）+ 微修闭环 + PM 变异验证 + PM 亲核后提交）**：
+  - **T1**（`623ea7dc`）：`niu_api/media_api.py` 尾部新增只读面 `GET /api/media/search`（**与 `search_media` 工具逐协议同口径**：守卫 / top_k 封顶 50 / `encode_batch` 只读不拉起后端 / `media_vectors.search` / 逐命中节点解析三态降级）+ `_get_adapter` 双检锁单例 + `_resolve_media_node_fields`；既有两路由与 `internal/*` 零 diff；`tests/test_media_search_route.py` 新建 12 用例；spec+quality 均 APPROVE（微修 2×P3：EOF 换行 + `top_k` 边界钉死）；**变异 M-A（封顶 50⇒10 红 `assert 10 == 50`）/ M-B（守卫报文红）均红后 md5 `6633593d…` 还原**。
+  - **T2**（`154d17cd`）：`preload-graph.js` +1 行 `searchMedia` + `main.js` +5 行 `media-search` handler（`URLSearchParams{query,top_k}` → `apiRequest('GET','/api/media/search?…')`），**全新增 6 行零删改**；合并审查 PASS 0/0/0/0；`node --check` 两文件通过。
+  - **T3**（`3d4326dd`）：`renderer.js` 搜索块 :877-958 整块替换为 242 行新块（两段骨架 / 并行两路 / 12s 超时+PaintMedia 自身落定 / ID 守卫 / !body 守卫 / 放锁前移+条件化 finally / `mediaTypeLabel` / `buildSearchItemHtml` 哨兵）+ `styles.css` +44 纯新增；`tests/graph_search_media_ui.js` 新建（哨兵提取驱动 9 组断言）；spec APPROVE（两侧字节级证明：块前 HEAD :1-876 与块后 :959-1139 与工作区对应区 0 差异）+ quality〔远端 ★〕correct 0/0/0/1；**两角独立同抓 P3（探针三条哨兵正则 `\n` 对 CRLF 脆断）当阻断修**为 `\r?\n`；变异 M-A（标签映射 `image:'图片'⇒'img'` 探针必红 @:80）/ M-B（/tmp 全 CRLF 副本仍绿 = `\r?\n` 容错成立）/ 反证（`\n` 版对 CRLF 必红）；终态 md5 `c4e4ef92…` / `3128ffdd…` 复原一致。
+  - **T4**（`91ae397c`）：手册（§1.2「知识图谱」行追加分格检索句 / 「检索走 search_media」✅ 示例之后新增「图谱窗口搜索框也是检索入口」同级 bullet（❌/✅ 子项归属不变）/ 小节标题「两个工具：何时用哪个」⇒「三个入口：何时用哪个」）+ spec D-30 / v3.6 + README 一句；合并审查 APPROVE 0/0/0/1；零机器数值自查通过。
+- **PM 收官门禁（亲跑）**：`py_compile` OK；pytest **12 文件 242 passed**；`node --test tests/graph_search_media_ui.js` 横幅全绿；`node --test tests/test_media_polling.js` **8/8**；`node --check` ×3。
+- **勘误（5 处，均 PM 裁决接受）**：① 方案 T1 测试块 `_vec(i % DIM, 1.0)` 缺括号（落盘按元组形修正，先例 `test_search_media.py:253`）；② T3 落盘把 3 条 `// SENTINEL-Begin` 行改成 LF（**必要**：探针正则 `…\n(` 对 CRLF 失配——两角独立实验 `LF true / CRLF false`）；③ 该探针正则加固为 `\r?\n`（两角独立同抓的 P3 ⇒ 按规矩当阻断修）；④ D-30 行第三格方案未给文本，按表内惯例补「2026-10-14 用户口径」；⑤ spec 顶部状态行 v3.5⇒v3.6（方案 T4 漏列，按上一工程 T6 先例补）。
+- **遗留**：两仓干净；真机 **AC-1…AC-6 待用户执行**（第 0 步整应用重启；含 AC-6「无媒体库形态」＝用户 H1 口径：搜不搜媒体只看数据、不读开关，库缺失 ⇒ 空结果不报错）。
+- **本轮新增流程教训（本工程实证）**：
+  1. **同一文件的多处 `edit` 必须串行**——并行会互相整文件覆盖（本例第 3 处被覆盖，最终靠复查发现）；
+  2. **`edit` 在混合行尾文件上会把未触及行的行尾也归一化**（本例：内容还原 ≠ 字节还原，必须用字节级快照兜底复原 md5）；
+  3. **脚本改文件是铁律禁项**——T3 实施者用 `perl` 剥 `\r`（虽为必要修正）仍属违规；正确姿势＝停下来回报、由 PM 裁决替代方案（本例最终解法是「修探针正则容错」）；
+  4. **未验证的结论不许写进派单**——PM 凭直觉断言「探针正则对 CRLF 兼容」并入派单，实测 `match: false` 翻案，被迫向两个在飞审查员发更正；
+  5. **两角独立同抓的 P3 当阻断修**（再次实证：探针 CRLF 脆断）；
+  6. **大文件落盘分段协议再次实证有效**（T3 的 242 行整块替换＝先删旧块再分 2–3 段插入，逐字 diff 自证零差异）。
