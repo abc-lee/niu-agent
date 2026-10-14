@@ -39,6 +39,10 @@ queue_done，防漏字段：I-8）。撕裂尾行（文件尾无换行、写了�
 ⑫ 护栏 total / downscale / 缺省解析（截断图头 / 桩抛异常 / downscale 动作 / 缺省绑定
    pixel_guard.classify）；
 ⑬ on_stop 有界退出（R20：有在途 ⇒ 主动中断、状态 off、行未标注 ⇒ 重放；无在途 ⇒ 不碰编码子进程）。
+⑭ 向量闲置门（D-31，让路）：关门拍（就绪检查仍先执行、不 submit、idle + 让路 reason + 计数如实）/
+   后端未就绪不被等待态掩盖（stalled）/ 开门拍与既有路径逐字同效 / 边界恰 30.0 放行、29.999 等待 /
+   探针异常与非 bool 保守等待（不外抛）/ 交互在途等待 / 逐项之间重判 / 自家编码不自我推迟 / 缺省接线
+   llama_server / 关门拍仍弃坏行 / ①② 与空队列短都在门之前 / 双条件同时不满足仍等待。
 """
 import json
 import time
@@ -164,6 +168,15 @@ def _reset_worker_state(monkeypatch, tmp_path):
     mw._fail_counts.clear()
     mw._set_state(status="idle", reason="", entity=None, started_at=None,
                   queue_depth=0, queue_total=0, queue_done=0)
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_vector_gate(monkeypatch):
+    """缺省探针固定「长期闲置 ∧ 不在途」（= 新进程的真实初值）。真实探针是**进程全局**状态：
+    同进程里其他测试文件调用过 encode_batch 就会污染它，本文件用例会随执行顺序假红/假绿。
+    要测门本身的用例显式注入 TickEnv.vector_idle_seconds / text_encode_busy。"""
+    monkeypatch.setattr(mw.llama_server, "vector_idle_seconds", lambda: float("inf"), raising=False)
+    monkeypatch.setattr(mw.llama_server, "text_encode_busy", lambda: False, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +515,7 @@ def test_guard_reject_marks_done_without_encoding(tmp_path, monkeypatch):
 def test_guard_reject_mark_failure_stalls(tmp_path, monkeypatch):
     """拒收但标注失败（返 "failed"）：行仍未标注——报可辨 stalled、保留失败计数（如有），下轮重试
     该行（再拒收、仍无通知）；退回「清零计数 + 报 idle」⇒ 同一行每轮重复触发拒收 + 提示 = 10s 级
-    通知风暴。回归方向：tick ⑤ reject 分支 else 分支。"""
+    通知风暴。回归方向：tick ⑥ reject 分支 else 分支。"""
     q = tmp_path / "queue.md"
     write_queue(q, [rec("a/big.jpg", str(tmp_path / "big.jpg"))])
     events = []
@@ -1071,3 +1084,366 @@ def test_on_stop_without_inflight_does_not_interrupt(tmp_path, monkeypatch):
     assert st["status"] == "off"
     assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 0, 0)
     assert mw._inflight is None
+
+
+# ---------------------------------------------------------------------------
+# ⑭ 向量闲置门（D-31，让路）：交互/前端向量闲置 ≥30s ∧ 交互编码不在途才允许启动新编码项；任一
+# 不满足 ⇒ 本轮不启动、如实报 idle 让路等待（前端 else 分支渲染「等待开始」），下一拍再查。
+# 门插在 ④ 就绪检查之后、⑥ 像素护栏之前（③/④ 短在门之前；每项之间重判）。缺省探针由 autouse
+# 夹具 _neutralize_vector_gate 钉成 inf/False；门本身的用例显式注入 TickEnv 两探针。
+# ---------------------------------------------------------------------------
+
+class _RecordingLogger:
+    """loguru logger 的同形替身（只收 warning）——断言「探针异常走保守分支、可辨告警、不外抛」。"""
+
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message, *args, **kwargs):
+        self.warnings.append(str(message))
+
+
+def test_gate_closed_tick_skips_submit_and_reports_idle(tmp_path):
+    """关门拍（交互向量闲置 5.0s < 30s）：就绪检查**仍先执行**（门在 ④ 之后、不插队到 ④ 之前——
+    R1-A P1-1 的位置语义），随后门判「不开」⇒ 不 submit、行不动、如实报 idle + 让路 reason（前端
+    既有 else 分支渲染「队列积压 N 行，等待开始」），计数如实（未完成 1 行绝不误报排空）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+    ready_calls = []
+    submit, futures = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True,
+                  ready_check=lambda: (ready_calls.append(1), True)[1],
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None, submit=submit,
+                  vector_idle_seconds=lambda: 5.0, text_encode_busy=lambda: False)
+    mw.tick(env)
+    assert ready_calls == [1]  # 就绪检查在门之前执行（R1-A P1-1）
+    st = mw.get_state()
+    assert st["status"] == "idle"  # 等待态（不是 stalled / off）
+    assert "交互向量活跃" in st["reason"] and "让路" in st["reason"]
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)  # 计数如实
+    assert futures == []  # 零 submit（门拦在提交池之前）
+    assert queue_lines(q) == 1  # 行未动（门只管启动新编码项）
+
+
+def test_gate_closed_but_backend_not_ready_still_stalls(tmp_path):
+    """fail-loud 不被等待态掩盖（R1-A P1-1 回归）：后端未就绪 ∧ 关门 ⇒ 报 stalled（reason 点明
+    编码后端），**不是**让路 idle——后端诊断信息绝不因等待态丢失。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+    submit, futures = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: False,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None, submit=submit,
+                  vector_idle_seconds=lambda: 5.0, text_encode_busy=lambda: False)
+    mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "stalled"
+    assert "编码后端不可用" in st["reason"]
+    assert "让路" not in st["reason"]  # 不是等待态掩盖
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
+    assert futures == [] and queue_lines(q) == 1
+
+
+def test_gate_open_tick_behaves_like_before(tmp_path):
+    """开门拍（闲置 inf ∧ 不在途 = 新进程真实初值）：与加门之前的既有路径逐字同效——提交、编码、
+    写库、标注、计数全同构；门对「一直闲置」的进程零影响。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/img-0001.jpg", str(tmp_path / "1.jpg"))])
+    calls = []
+    submit, _ = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: calls.append(e), submit=submit,
+                  vector_idle_seconds=lambda: float("inf"), text_encode_busy=lambda: False)
+    mw.tick(env)
+    assert calls == ["a/img-0001.jpg"]
+    st = mw.get_state()
+    assert st["status"] == "encoding"
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
+    mw.tick(env)  # 收敛拍：行标注完成
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 1, 1)
+    assert queue_records(q)[0]["done"] is True
+
+
+def test_gate_boundary_exactly_threshold_passes(tmp_path):
+    """边界钉死判定符：恰 30.0s ⇒ 放行（`<` 判定而非 `<=`）；29.999s ⇒ 等待（差 1ms 也不启动）。"""
+    # (a) 恰 30.0：放行
+    qa = tmp_path / "queue_a.md"
+    write_queue(qa, [rec("a/a.jpg", "/tmp/fake/a.jpg")])
+    submit_a, futures_a = make_submit_pending()
+    env_a = TickEnv(queue_path=str(qa), switch=lambda: True, ready_check=lambda: True,
+                    encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                    store_add=lambda e, m, v: None, submit=submit_a,
+                    vector_idle_seconds=lambda: 30.0, text_encode_busy=lambda: False)
+    mw.tick(env_a)
+    assert len(futures_a) == 1  # 恰达阈值即放行
+    assert mw.get_state()["status"] == "encoding"
+
+    # (b) 29.999：等待
+    mw._inflight = None
+    mw._fail_counts.clear()
+    mw._set_state(status="idle", reason="", entity=None, started_at=None,
+                  queue_depth=0, queue_total=0, queue_done=0)
+    qb = tmp_path / "queue_b.md"
+    write_queue(qb, [rec("a/b.jpg", "/tmp/fake/b.jpg")])
+    submit_b, futures_b = make_submit_sync()
+    env_b = TickEnv(queue_path=str(qb), switch=lambda: True, ready_check=lambda: True,
+                    encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                    store_add=lambda e, m, v: None, submit=submit_b,
+                    vector_idle_seconds=lambda: 29.999, text_encode_busy=lambda: False)
+    mw.tick(env_b)
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert "让路" in st["reason"]
+    assert futures_b == []  # 严格小于：差 1ms 也不启动
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
+
+
+def test_gate_probe_failure_waits_conservatively(tmp_path, monkeypatch):
+    """探针异常 / 非数值 ⇒ 按「不可开」保守等待 + WARNING，绝不外抛崩 tick（异常逃出 = 每轮崩在
+    同一处、状态永不更新 = 永久冻结，R14 症状）。含 A1 契约漂移：busy 探针返非 bool 不得被静默
+    当成 False（那会把「在途」误判成「不在途」= 真去抢锁）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+
+    def boom():
+        raise RuntimeError("探针接线炸了")
+
+    def none_idle():
+        return None  # float(None) 抛 TypeError ⇒ 保守分支
+
+    def not_bool_busy():
+        return 1  # int 不是 bool ⇒ 显式 TypeError ⇒ 保守分支
+
+    cases = [
+        ("探针抛异常", boom, lambda: False),
+        ("闲置返 None", none_idle, lambda: False),
+        ("在途返非 bool", lambda: float("inf"), not_bool_busy),
+    ]
+    for label, idle_stub, busy_stub in cases:
+        recorder = _RecordingLogger()
+        monkeypatch.setattr(mw, "logger", recorder)
+        submit, futures = make_submit_sync()
+        env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                      encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                      store_add=lambda e, m, v: None, submit=submit,
+                      vector_idle_seconds=idle_stub, text_encode_busy=busy_stub)
+        mw.tick(env)  # 不得抛异常
+        st = mw.get_state()
+        assert st["status"] == "idle", label
+        assert "让路" in st["reason"], label
+        assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0), label
+        assert futures == [], label  # 保守 = 不启动
+        assert recorder.warnings, label  # 告警可辨（不外抛也不静默）
+        assert queue_lines(q) == 1, label
+
+
+def test_gate_text_encode_busy_waits_even_when_idle(tmp_path):
+    """用户口径②「不抢」：交互编码在途（含排队等锁段）∧ 闲置 inf ⇒ 仍不启动——绝不与前端并排抢
+    _encode_lock。reason 点明「在途」（A2：按实际命中条件拼装，不是拿「闲置 inf」凑话术）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+    submit, futures = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None, submit=submit,
+                  vector_idle_seconds=lambda: float("inf"), text_encode_busy=lambda: True)
+    mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert "交互编码在途" in st["reason"] and "让路" in st["reason"]
+    assert futures == []
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
+
+
+def test_gate_reevaluates_between_items(tmp_path):
+    """门在**每项之间**重判（非一次性）：第一项启动时探针 inf；其完成后探针翻 1.0s（交互侧又来
+    编码）⇒ 第二项**不启动**、如实报让路等待；第一项本身不受影响（已在途）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/i1.jpg", str(tmp_path / "1.jpg")),
+                    rec("a/i2.jpg", str(tmp_path / "2.jpg"))])
+    submit, futures = make_submit_pending()
+    base = dict(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                store_add=lambda e, m, v: None, submit=submit)
+    env_open = TickEnv(vector_idle_seconds=lambda: float("inf"), text_encode_busy=lambda: False, **base)
+    mw.tick(env_open)  # 第一项启动（门开）
+    assert len(futures) == 1
+    assert mw.get_state()["status"] == "encoding"
+    futures[0].set_result(None)
+    mw.tick(env_open)  # 收敛：第一项标注完成
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 2, 1)
+    env_closed = TickEnv(vector_idle_seconds=lambda: 1.0, text_encode_busy=lambda: False, **base)
+    mw.tick(env_closed)  # 交互向量又活跃（闲置 1s）⇒ 第二项不启动
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert "让路" in st["reason"]
+    assert len(futures) == 1  # 零新提交
+    assert queue_lines(q) == 2  # 第一项已标注、第二项原样等待
+    assert queue_records(q)[1].get("done") is not True
+
+
+def test_gate_own_encoding_does_not_self_defer(tmp_path):
+    """用户口径①：时钟只由**交互/文本**编码打点，媒体自家编码从不打点 ⇒ 完成一项后探针仍 inf
+    ⇒ 下一拍连续取下一项——排空不被自家编码卡成每项间隔 30s（N 张 = 白等 N×30s）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/i1.jpg", str(tmp_path / "1.jpg")),
+                    rec("a/i2.jpg", str(tmp_path / "2.jpg")),
+                    rec("a/i3.jpg", str(tmp_path / "3.jpg"))])
+    submit, futures = make_submit_pending()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None, submit=submit,
+                  vector_idle_seconds=lambda: float("inf"), text_encode_busy=lambda: False)
+    mw.tick(env)  # 第一项启动
+    futures[0].set_result(None)
+    mw.tick(env)  # 收敛第一项（探针仍 inf：自家编码不打点）
+    mw.tick(env)  # 第二项立即启动（不等 30s）
+    assert len(futures) == 2
+    assert mw.get_state()["status"] == "encoding"
+    futures[1].set_result(None)
+    mw.tick(env)  # 收敛第二项
+    mw.tick(env)  # 第三项立即启动
+    assert len(futures) == 3
+    assert mw.get_state()["status"] == "encoding"
+    futures[2].set_result(None)
+    mw.tick(env)  # 收敛第三项 ⇒ 排空
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 3, 3)
+
+
+def test_gate_default_resolves_to_llama_server_functions(tmp_path, monkeypatch):
+    """缺省接线：TickEnv 不注入两探针 ⇒ tick 前言必须解析到 ``llama_server.vector_idle_seconds`` /
+    ``text_encode_busy``（误删 `or` 子句 ⇒ 探针为 None ⇒ 保护性 try 吞成保守等待，门永远开不了）。
+    本用例把两个模块函数分别钉成「关门」值、TickEnv 不注入 ⇒ 只能经缺省路径生效。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+
+    # (a) 缺省 vector_idle_seconds → 0.0 ⇒ 等待
+    monkeypatch.setattr(mw.llama_server, "vector_idle_seconds", lambda: 0.0, raising=False)
+    submit_a, futures_a = make_submit_sync()
+    env_a = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                    encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                    store_add=lambda e, m, v: None, submit=submit_a)  # 两探针刻意不注入
+    mw.tick(env_a)
+    st = mw.get_state()
+    assert st["status"] == "idle" and "让路" in st["reason"]
+    assert "交互向量活跃" in st["reason"]      # 判别：真探针命中（非保守分支的「交互编码在途」）
+    assert futures_a == []
+
+    # (b) 闲置恢复 inf，缺省 text_encode_busy → True ⇒ 等待
+    monkeypatch.setattr(mw.llama_server, "vector_idle_seconds", lambda: float("inf"), raising=False)
+    monkeypatch.setattr(mw.llama_server, "text_encode_busy", lambda: True, raising=False)
+    submit_b, futures_b = make_submit_sync()
+    env_b = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                    encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                    store_add=lambda e, m, v: None, submit=submit_b)
+    mw.tick(env_b)
+    st = mw.get_state()
+    assert st["status"] == "idle" and "让路" in st["reason"]
+    assert futures_b == []
+    assert queue_lines(q) == 1  # 两拍都未启动、行未动
+
+
+def test_gate_closed_still_sweeps_bad_lines(tmp_path):
+    """R1-A P2-2：门只管**启动新编码项**——取件/sweep/维护照常（③ 取件在门之前执行）。队首坏行 +
+    关门 ⇒ 坏行照旧被弃除，随后如实报让路等待（绝不把坏行留到门开后才弃）。"""
+    q = tmp_path / "queue.md"
+    q.write_text("not-json\n" + json.dumps(rec("a/x.jpg", "/tmp/fake/x.jpg"),
+                                          ensure_ascii=False) + "\n", encoding="utf-8")
+    submit, futures = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None, submit=submit,
+                  vector_idle_seconds=lambda: 5.0, text_encode_busy=lambda: False)
+    mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert "让路" in st["reason"]
+    assert queue_lines(q) == 1  # 坏行已被弃除（sweep 不受门影响）
+    recs = queue_records(q)
+    assert recs[0]["entity_name"] == "a/x.jpg"  # 好行原样、未被处置
+    assert recs[0].get("done") is not True
+    assert futures == []  # 好行也未启动（门拦启动，不拦 sweep）
+
+
+def test_gate_probes_untouched_when_switch_off_or_inflight(tmp_path):
+    """顺序不变式：① 开关、② 在途收敛都在门**之前**——开关关 ⇒ 报 off（门不参与）；有在途 ⇒ 只
+    收敛、不取新行（门不参与）。两形态下门探针**零调用**（注入「被调用即炸」桩 ⇒ 不抛即证明）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+
+    def boom_probe():
+        raise AssertionError("①② 短路时门探针不得被调用")
+
+    # (a) 开关关 + 关门 ⇒ off，探针零调用
+    env_off = TickEnv(queue_path=str(q), switch=lambda: False, ready_check=lambda: True,
+                      encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                      store_add=lambda e, m, v: None,
+                      vector_idle_seconds=boom_probe, text_encode_busy=boom_probe)
+    mw.tick(env_off)  # 不得抛异常
+    st = mw.get_state()
+    assert st["status"] == "off"
+    assert "开关关" in st["reason"]
+
+    # (b) 有在途 + 关门探针 ⇒ 只收敛、不取新行，探针零调用
+    submit, futures = make_submit_pending()
+    ok_base = dict(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                   encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                   store_add=lambda e, m, v: None, submit=submit)
+    mw.tick(TickEnv(**ok_base))  # 先提交第一项（在途未完成）
+    assert mw._inflight is not None
+    boom_env = TickEnv(**{**ok_base, "vector_idle_seconds": boom_probe,
+                          "text_encode_busy": boom_probe})
+    mw.tick(boom_env)  # ② 在途短路：只收敛 ⇒ 门探针零调用（不抛 AssertionError）
+    assert mw._inflight is not None  # future 未完成 ⇒ 记录保持在途
+    assert len(futures) == 1  # 零新提交
+    assert mw.get_state()["status"] == "encoding"
+
+
+def test_gate_both_conditions_fail_still_waits(tmp_path):
+    """钉 `or` 语义：闲置 5.0s ∧ 在途**同时**不满足 ⇒ 仍只报一次让路等待（不启动、不崩溃）；
+    reason 按实际命中条件拼装（busy ⇒ 「交互编码在途」）。下一拍稳定等待。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
+    submit, futures = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None, submit=submit,
+                  vector_idle_seconds=lambda: 5.0, text_encode_busy=lambda: True)
+    mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert "交互编码在途" in st["reason"] and "让路" in st["reason"]
+    assert futures == []
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
+    mw.tick(env)  # 再跑一拍：稳定等待（不崩、不误启动）
+    st2 = mw.get_state()
+    assert st2["status"] == "idle" and "让路" in st2["reason"]
+    assert futures == []
+
+
+def test_gate_empty_queue_shorts_before_gate(tmp_path):
+    """钉 ③ 在 ⑤ 之前：队列为空（无活可干）+ 关门 ⇒ 报**空 reason** 的 idle（「无活可干」型），
+    不是「让路」reason——没有未完成行时门根本不参与（探针零调用，注入「被调用即炸」桩）。"""
+    q = tmp_path / "queue.md"
+    q.write_text("", encoding="utf-8")
+
+    def boom_probe():
+        raise AssertionError("无未完成行时门探针不得被调用（③ 在 ⑤ 之前）")
+
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None,
+                  vector_idle_seconds=boom_probe, text_encode_busy=boom_probe)
+    mw.tick(env)  # 不得抛异常
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert st["reason"] == ""  # 「无活可干」型 idle：空 reason（不是「让路」）
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 0, 0)

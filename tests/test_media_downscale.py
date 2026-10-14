@@ -144,7 +144,7 @@ def test_hot_config_change_takes_effect_without_restart(tmp_path, _patch_encoder
 
 def test_reject_action_raises_with_distinguishable_reason(tmp_path, _patch_encoders):
     """I-6/I-8：体积超预算（读得出图头、像素在门槛内）⇒ dispatcher 直达时抛 RuntimeError（安全网，
-    生产上 tick ⑤ 已先弃行），reason 可辨。"""
+    生产上 tick ⑥ 已先弃行），reason 可辨。"""
     p = tmp_path / "huge.bin"
     p.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR" + struct_pack_ih(100, 100) + b"\x00" * (31 * 1024 * 1024))
     with pytest.raises(RuntimeError, match="护栏拒收"):

@@ -4,6 +4,11 @@
 逐一核验现有 6 类消费方的调用契约不被破坏（这是本方案的最大回归面）。
 """
 
+import io
+import threading
+import time
+import urllib.error
+
 import numpy as np
 import pytest
 
@@ -212,3 +217,128 @@ class TestLifecycle:
     def test_encode_batch_empty_returns_empty(self, monkeypatch):
         monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
         assert llama_server.encode_batch([]) == []
+
+
+@pytest.fixture(autouse=True)
+def _reset_vector_activity(monkeypatch):
+    """复位进程全局的向量活跃度状态（R1-A P2-3）：真实探针是全进程共享的，同进程里
+    任何用例调过 encode_batch 都会污染它，使「初始 inf ∧ 不在途」类用例随执行顺序
+    假红/假绿。本文件所有用例一律从「从未文本编码、无在途」的干净初态出发。"""
+    monkeypatch.setattr(llama_server, "_last_text_encode_at", None)
+    monkeypatch.setattr(llama_server, "_text_inflight", 0)
+
+
+class TestVectorIdleGateAccounting:
+    """向量闲置门打点侧（D-31）：encode_batch 计数在途+完成打点，encode_media* 两者皆无。
+
+    媒体工作者的门（D-31）查的就是 vector_idle_seconds() / text_encode_busy()，
+    打点侧语义必须逐条钉死：只记**文本**编码；媒体自身编码绝不打点——否则连编会把自己
+    的下一项越推越晚，排空被卡成每项间隔 30s（用户口径①）。
+    """
+
+    def test_initial_state_idle_inf_and_not_busy(self):
+        """新进程（从未文本编码）：闲置 inf ⇒ 零白等（AC-4），且不在途。"""
+        assert llama_server.vector_idle_seconds() == float("inf")
+        assert llama_server.text_encode_busy() is False
+
+    def test_text_encode_marks_and_counts_inflight(self, monkeypatch):
+        """文本编码：在途期间计数 1（**含等待 _encode_lock 的排队段**），完成后打点。
+        桩内读 busy 断言的是「编码执行当下」，不是事后残值。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        seen_busy = []
+
+        def fake_post(texts):
+            seen_busy.append(llama_server.text_encode_busy())
+            return [[1.0] * 768 for _ in texts]
+
+        monkeypatch.setattr(llama_server, "_post_embeddings", fake_post)
+        out = llama_server.encode_batch(["a", "b"])
+        assert len(out) == 2 and all(len(v) == 768 for v in out)
+        assert seen_busy == [True]              # 桩内（编码执行中）在途计数为真
+        assert llama_server.text_encode_busy() is False
+        assert llama_server.vector_idle_seconds() < 5.0   # 刚完成打点 ⇒ 闲置近 0
+
+    def test_media_encode_never_marks_nor_counts(self, monkeypatch):
+        """媒体自身编码不打点、不计在途（用户口径①）：连编完一项，闲置时钟原封不动。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        monkeypatch.setattr(llama_server, "_mmproj_loaded", True)
+        seen_busy = []
+
+        def fake_post_media(uri):
+            seen_busy.append(llama_server.text_encode_busy())
+            return [0.5] * 768
+
+        monkeypatch.setattr(llama_server, "_post_media", fake_post_media)
+        out = llama_server.encode_media_bytes(b"fake-jpeg", "image/jpeg")
+        assert len(out) == 768
+        assert seen_busy == [False]             # 桩内（媒体编码执行中）也不在途
+        assert llama_server.vector_idle_seconds() == float("inf")   # 未打点 ⇒ 仍「从未文本编码」
+        assert llama_server.text_encode_busy() is False
+
+    def test_failure_path_no_mark_and_inflight_back_to_zero(self, monkeypatch):
+        """失败路径（非 HTTPError 异常穿透）不打点，且在途计数 finally 归零。
+        计数泄漏 = busy 永远为真 = 门永久关闭，是最保守也最危险的不变量。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+
+        def fake_post(texts):
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(llama_server, "_post_embeddings", fake_post)
+        with pytest.raises(urllib.error.URLError):
+            llama_server.encode_batch(["a"])
+        assert llama_server.vector_idle_seconds() == float("inf")   # 失败不打点
+        assert llama_server.text_encode_busy() is False             # 计数已归零
+
+    def test_empty_input_no_mark_nor_inflight(self, monkeypatch):
+        """空输入在计数/打点之前 return []（披露路径钉住，R1-A P3-2）：
+        若空输入也打点，任何空探测都会把门误关 30s。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: False)   # 连健康检查都不该走到
+        boom = []
+        explode = lambda: boom.append(1)                                # noqa: E731
+        monkeypatch.setattr(llama_server, "_begin_text_encode", explode)
+        monkeypatch.setattr(llama_server, "_mark_text_encode", explode)
+        assert llama_server.encode_batch([]) == []
+        assert not boom                                          # 打点/计数函数从未被调
+        assert llama_server.vector_idle_seconds() == float("inf")
+        assert llama_server.text_encode_busy() is False
+
+    def test_guardrail_split_path_inflight_balances(self, monkeypatch):
+        """护栏（超限 → 拆批救回）路径：整批虽被服务端拒绝，但救回后正常返回 ⇒
+        在途计数同样必须归零（计数泄漏 = 门永久关闭；审查 P3 增补）。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        body = b"input (99999 tokens) is too large to process. increase the physical batch size (current batch size: 8192)"
+
+        def fake_post(texts):
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1:19878/v1/embeddings", 500, "too large", {}, io.BytesIO(body)
+            )
+
+        monkeypatch.setattr(llama_server, "_post_embeddings", fake_post)
+        monkeypatch.setattr(llama_server, "_encode_one", lambda text: [2.0] * 768)
+        out = llama_server.encode_batch(["a" * 8000, "short"])
+        assert len(out) == 2 and len(out[0]) == 768     # 拆批救回真的发生了
+        assert llama_server.text_encode_busy() is False   # 护栏路径的计数也归零
+
+    def test_two_overlapping_text_batches_count_two_then_zero(self, monkeypatch):
+        """两次 encode_batch 计数配平：并发在途时计数到达 2，全部结束后归 0
+        （桩内读计数：两调用重叠在途 ⇒ 峰值 2；不配平 = 泄漏，门永久关闭）。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: True)
+        peak = []
+
+        def fake_post(texts):
+            time.sleep(0.3)   # 拉长编码段，让第二个调用也在途（排队等锁段同样计入）
+            with llama_server._activity_lock:
+                peak.append(llama_server._text_inflight)
+            return [[1.0] * 768 for _ in texts]
+
+        monkeypatch.setattr(llama_server, "_post_embeddings", fake_post)
+        threads = [
+            threading.Thread(target=llama_server.encode_batch, args=(["a"],)),
+            threading.Thread(target=llama_server.encode_batch, args=(["b"],)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+        assert peak and max(peak) == 2                 # 重叠在途时计数确实到 2
+        assert llama_server.text_encode_busy() is False   # 全部结束后归 0

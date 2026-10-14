@@ -6,7 +6,7 @@ v1.1 HEIC/白名单口径——用户 2026-10-13 拍板）。
 **不试送、不尝试转换**。
 
 分派规则（`encode_media_any`，工作者的缺省编码入口）：
-- 护栏判 `reject`（体积超预算的病态件）⇒ 生产上 tick ⑤ 已弃行，dispatcher 直接调到时
+- 护栏判 `reject`（体积超预算的病态件）⇒ 生产上 tick ⑥ 已弃行，dispatcher 直接调到时
   抛 RuntimeError（走既有失败归类，原因可辨，I-6）；
 - 护栏判 `downscale`（W×H 超门槛；HEIC 图头护栏读不出，此分支只可能是内置白名单格式）⇒
   **内存中缩放**到 `media_ingest.downscale_long_side` 长边后发送（EXIF 方向转正 → 转 RGB →
@@ -171,7 +171,7 @@ def encode_media_any(path: str) -> list[float]:
       可按手册选装，绝不直送、不 fail-open）；
     - 「HEIC 转码失败」——HEIC + pillow-heif 在位但转码失败（解码错误等）⇒ 该条处置为失败
       （服务端不解 HEIC，原图直送必败 ⇒ 不降级原图直送，原图照旧入库）；
-    `reject` 动作抛 RuntimeError（生产上不可达——tick ⑤ 已弃行，直达只可能来自
+    `reject` 动作抛 RuntimeError（生产上不可达——tick ⑥ 已弃行，直达只可能来自
     测试或未来调用方，走既有失败归类，原因可辨）。
     """
     from niu_api.internal import llama_server, pixel_guard
