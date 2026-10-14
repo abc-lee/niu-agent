@@ -1,8 +1,8 @@
 // T3 探针：从 renderer.js 按哨兵注释提取 buildSearchSectionModel 与 buildSearchItemHtml，驱动断言。
-// 覆盖（v1.1 校准，与实现相符）：两段决策表四象限 + pending/empty 占位文案（显式 pending 字段）
-// + 条目 HTML 装配（降级条目灰化类 / data-degraded / 「无图谱节点」标签、媒体类型标签映射、
-// KG 条目模板与既有逐字同）+ 段恒存在——纯函数层行为断言，不是文本级 grep；
-// DOM 时序 / 事件委托 / 陈旧写守卫层不在探针范围（由 §3.3 真机 AC 承接）。
+// 覆盖（v1.5 校准，与实现相符）：两段决策表四象限 + pending/empty 占位文案（显式 pending 字段）
+// + 模型层降级命中过滤（含降级命中的输入 ⇒ 输出 items 不含降级项；命中全降级 ⇒ 空段「无结果」）
+// + 条目 HTML 装配（媒体类型标签映射、KG 条目模板与既有逐字同；降级条目无渲染分支——构造/模型层过滤，v1.5）
+// + 段恒存在——纯函数层行为断言，不是文本级 grep；DOM 时序 / 事件委托 / 陈旧写守卫层不在探针范围（由 §3.3 真机 AC 承接）。
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -32,17 +32,18 @@ const item = new Function(`${escapeHtml.toString()}\n${mLabel[1].trim()}\n${mIte
 const KG = '知识图谱';
 const MD = '照片（媒体）';
 
-// ① 两段都有结果：段标题/条目原样透传（含 degraded 标记）
+// ① 两段都有结果：段标题/正常条目原样透传；降级条目被模型层过滤、不进输出 items（v1.5 I-6）
 let [kg, md] = build(
   { kind: 'items', items: [{ name: 'a', type: 'person' }, { name: 'b', type: '' }] },
-  { kind: 'items', items: [{ name: 'p1', mediaType: 'photo', degraded: false }, { name: 'p2', mediaType: 'video', degraded: true }] },
+  { kind: 'items', items: [{ name: 'p1', mediaType: 'photo' }, { name: 'p2', mediaType: 'video', degraded: true }] },
 );
 assert.strictEqual(kg.title, KG);
 assert.strictEqual(kg.kind, 'items');
 assert.strictEqual(kg.items.length, 2);
 assert.strictEqual(md.title, MD);
 assert.strictEqual(md.kind, 'items');
-assert.strictEqual(md.items[1].degraded, true);
+assert.strictEqual(md.items.length, 1); // 降级 p2 被模型层过滤，不进输出 items（v1.5）
+assert.strictEqual(md.items[0].name, 'p1');
 
 // ② 两段皆空 ⇒ 各占位「无结果」（不是失败，I-4）
 [kg, md] = build({ kind: 'empty' }, { kind: 'empty' });
@@ -70,16 +71,19 @@ assert.strictEqual(md.message, '媒体搜索中…');
 // ⑥ 两段恒同时存在（任一段 error 也不缺段，I-3）
 assert.strictEqual(kg.title, KG);
 assert.strictEqual(md.title, MD);
-
-// ⑦ 降级条目可辨形态（I-6；v1.1 F11/F12）：灰化类 + data-degraded + 「无图谱节点」标签
-const deg = item('media', { name: 'p2', mediaType: 'image', degraded: true });
-assert.ok(deg.includes('search-dropdown-item--degraded'));
-assert.ok(deg.includes('data-degraded="1"'));
-assert.ok(deg.includes('无图谱节点'));
-// ⑧ 媒体类型标签映射（I-3；v1.1 F3）：非降级 image ⇒ 图片、photo ⇒ 照片，其余原样
-assert.ok(item('media', { name: 'p1', mediaType: 'image', degraded: false }).includes('图片'));
+// ⑦ 给模型喂含降级命中的媒体段输入 ⇒ 输出 items 不含降级项（v1.5；取代原 ⑦ 降级形态断言）
+[kg, md] = build({ kind: 'empty' }, { kind: 'items', items: [{ name: 'q1', mediaType: 'photo' }, { name: 'q2', mediaType: 'video', degraded: true }] });
+assert.strictEqual(md.kind, 'items');
+assert.strictEqual(md.items.length, 1);
+assert.strictEqual(md.items[0].name, 'q1');
+// ⑧ 命中全为降级 ⇒ 该段 kind:'empty'（「无结果」，不是失败行，v1.5）
+[kg, md] = build({ kind: 'empty' }, { kind: 'items', items: [{ name: 'q3', mediaType: 'photo', degraded: true }] });
+assert.strictEqual(md.kind, 'empty');
+assert.strictEqual(md.message, '无结果');
+// ⑨ 媒体类型标签映射（I-3；v1.1 F3）：image ⇒ 图片、photo ⇒ 照片，其余原样
+assert.ok(item('media', { name: 'p1', mediaType: 'image' }).includes('图片'));
 assert.ok(item('media', { name: 'p3', mediaType: 'photo' }).includes('照片'));
-// ⑨ KG 条目模板与既有逐字同（I-3/I-5）：内层 span 模板逐字同旧块 :948，外层为带 data-section/data-name 的 div
+// ⑩ KG 条目模板与既有逐字同（I-3/I-5）：内层 span 模板逐字同旧块 :948，外层为带 data-section/data-name 的 div
 assert.strictEqual(
   item('kg', { name: 'a', type: 'person' }),
   '<div class="search-dropdown-item" data-section="kg" data-name="a"><span class="entity-name">a</span><span class="entity-type">person</span></div>',

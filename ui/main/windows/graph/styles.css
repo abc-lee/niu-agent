@@ -176,16 +176,6 @@ body {
   color: #c0392b;
 }
 
-/* 可辨降级（I-6）：图谱里无节点的媒体条目——灰化 + 标签，点击只关下拉 */
-.search-dropdown-item--degraded {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.search-dropdown-item--degraded:hover {
-  background-color: transparent;
-}
-
 /* Perspective buttons */
 .perspective-btns {
   display: flex;

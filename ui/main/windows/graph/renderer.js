@@ -907,12 +907,16 @@ document.addEventListener('click', (e) => {
 // SENTINEL-Begin buildSearchSectionModel
 // 两段渲染的纯决策函数（无 DOM 依赖；tests/graph_search_media_ui.js 按哨兵注释提取后驱动断言）。
 // kgState / mediaState ∈ {kind: 'pending'|'items'|'empty'|'error', pending?, items?, message?}（pending 占位文案 = 显式 pending 字段，v1.1 F4：不再按标题字符串硬匹配）
-//   items（图谱段）= [{name, type}]（形状同既有下拉项）；items（媒体段）= [{name, mediaType, degraded}]
-// 返回 [图谱段, 媒体段]：{title, kind, message?, items?}——两段恒同时存在（空段也占位，一眼分清来源，I-3）。
+//   items（图谱段）= [{name, type}]（形状同既有下拉项）；items（媒体段）= [{name, mediaType}]（降级命中不进 items——构造处已过滤，本函数带同构过滤兜底，v1.5）
+// 返回 [图谱段, 媒体段]：{title, kind, message?, items?}——两段恒同时存在（空段也占位，一眼分清来源，I-3）；命中全被过滤 ⇒ kind:'empty'「无结果」（I-6 v1.5）。
 function buildSearchSectionModel(kgState, mediaState) {
   const section = (title, st) => {
-    if (st.kind === 'items' && st.items && st.items.length > 0) {
-      return { title, kind: 'items', items: st.items };
+    if (st.kind === 'items') {
+      const items = (st.items || []).filter(it => !it || it.degraded !== true); // 降级命中不进下拉（v1.5 I-6）
+      if (items.length > 0) {
+        return { title, kind: 'items', items };
+      }
+      return { title, kind: 'empty', message: '无结果' }; // 命中全被过滤（全降级）⇒ 按空段处理，不是失败（I-6 v1.5）
     }
     if (st.kind === 'error') {
       return { title, kind: 'error', message: st.message || title + ' 不可用' };
@@ -935,11 +939,8 @@ function mediaTypeLabel(mediaType) {
 
 // SENTINEL-Begin buildSearchItemHtml
 // 单条下拉条目 HTML 装配（无 DOM 依赖，探针可断言）：KG 段与既有模板逐字同；媒体段用 mediaTypeLabel；
-// degraded 条目 = 灰化类 + data-degraded="1" + 「无图谱节点」标签（I-3/I-6）。
+// 降级命中在构造/模型层已被过滤、不进 items（v1.5 I-6）——本函数只装配正常条目（无降级条目的渲染分支）。
 function buildSearchItemHtml(sectionKey, item) {
-  if (sectionKey === 'media' && item.degraded) {
-    return `<div class="search-dropdown-item search-dropdown-item--degraded" data-section="media" data-degraded="1" data-name="${escapeHtml(item.name)}"><span class="entity-name">${escapeHtml(item.name)}</span><span class="entity-type">无图谱节点</span></div>`;
-  }
   const typeText = sectionKey === 'media' ? mediaTypeLabel(item.mediaType) : (item.type || '');
   return `<div class="search-dropdown-item" data-section="${sectionKey}" data-name="${escapeHtml(item.name)}"><span class="entity-name">${escapeHtml(item.name)}</span><span class="entity-type">${escapeHtml(typeText)}</span></div>`;
 }
@@ -948,7 +949,7 @@ function buildSearchItemHtml(sectionKey, item) {
 const _sectionStates = { kg: { kind: 'pending', pending: '搜索中…' }, media: { kind: 'pending', pending: '媒体搜索中…' } };
 
 // 单段写入（薄 DOM 装配：条目 HTML 装配全部委托 buildSearchItemHtml 哨兵纯函数——探针可断言；
-// KG 段条目模板与既有逐字一致——I-3/I-5；降级条目可辨形态——I-6）
+// KG 段条目模板与既有逐字一致——I-3/I-5；降级命中在构造/模型层已过滤、零渲染——I-6 v1.5）
 function paintSection(sectionKey, state) {
   _sectionStates[sectionKey] = state;
   const model = buildSearchSectionModel(_sectionStates.kg, _sectionStates.media);
@@ -984,17 +985,13 @@ function ensureSectionSkeleton() {
     '</div>';
 }
 
-// 点击 = 事件委托（容器上绑一次，innerHTML 重写后仍有效）：两段非降级条目都走既有选中语义
+// 点击 = 事件委托（容器上绑一次，innerHTML 重写后仍有效）：两段条目都走既有选中语义
 // selectSearchEntity——实体名即图谱节点 id（kg_api 侧 id = name；D-15/D-16 媒体向量按实体名绑定
 // 既有图谱节点）⇒ 开子图并聚焦 ⇒ 点节点弹详情页（详情页早有照片预览，无新增 UI，I-5）；
-// 降级的媒体条目（图谱里无节点）只关下拉，不进子图（I-6）。
+// 降级的媒体条目（图谱里无节点等）不进下拉（构造/模型层已过滤，无行可点，I-6 v1.5）。
 searchDropdown.addEventListener('click', (e) => {
   const item = e.target.closest('.search-dropdown-item[data-section]');
   if (!item) return;
-  if (item.dataset.degraded === '1') {
-    closeSearchDropdown();
-    return;
-  }
   selectSearchEntity({ id: item.dataset.name, name: item.dataset.name });
 });
 
@@ -1062,13 +1059,16 @@ searchInput.addEventListener('keydown', async (e) => {
     const paintMedia = (mediaResult) => {
       if (!stillCurrent()) return;
       if (mediaResult && mediaResult.status === 'ok') {
-        const results = mediaResult.results || [];
+        // v1.5（I-6）：降级命中（图谱无节点 / 节点字段空 / 解析异常，三者同源）不进下拉——构造处过滤；
+        // 纯函数层 buildSearchSectionModel 带同构过滤兜底
+        const results = (mediaResult.results || []).filter(it => it.degraded !== true);
         if (results.length > 0) {
           paintSection('media', {
             kind: 'items',
-            items: results.map(it => ({ name: it.entity_name, mediaType: it.media_type || '', degraded: it.degraded === true })),
+            items: results.map(it => ({ name: it.entity_name, mediaType: it.media_type || '' })),
           });
         } else {
+          // 过滤后为空（含命中全为降级）⇒ 空段口径「无结果」（v1.5）
           paintSection('media', { kind: 'empty' });
         }
       } else {
