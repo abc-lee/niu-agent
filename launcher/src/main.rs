@@ -2050,6 +2050,11 @@ fn detect_resources_root() -> PathBuf {
 /// 不查用户家目录（~/.insightface/）——程序内禁止下载，本地没有直接报错，
 /// 用户按 README 把包和模型装到 bundle 内 + 重签名。
 ///
+/// 例外：媒体模型（mmproj）查**家目录** `~/.niu/models/`、不查 bundle（不进 DMG 打包，
+/// 见 media_artifacts.py 方案 D-11）。路径与文件名的唯一权威 = niu_api/internal/media_artifacts.py
+/// 的 MMPROJ_FILENAME / mmproj_path()（跨语言同步纪律同 MISSING_ARTIFACTS_HANDLE：
+/// 改 Python 侧必须同步改这里）。
+///
 /// 注意：本列表只查主包目录（cv2/insightface/easydict/pillow_heif/igraph/leidenalg），
 /// 不需要与 build.sh 的 rsync --exclude 完全一致——exclude 还含 texttable（igraph 依赖）、
 /// _pillow_heif*.so（松散 .so）、*-*.dist-info（元数据）等，此处不查。
@@ -2131,6 +2136,17 @@ fn check_missing_deps(resources_root: &Path) -> Vec<String> {
     if !has_onnx(&bundle_model) {
         missing.push(
             "人脸识别模型（缺 buffalo_l 模型，见 README\"可选：启用照片处理\"）".to_string(),
+        );
+    }
+
+    // 照片向量化（媒体向量）：mmproj 产物按设计放**家目录** ~/.niu/models/（与上面几项不同：
+    // 不查 bundle 内）。路径与文件名的唯一权威 = niu_api/internal/media_artifacts.py 的
+    // MMPROJ_FILENAME / mmproj_path()（改 Python 侧必须同步改这里，同 MISSING_ARTIFACTS_HANDLE 先例）
+    let mmproj = dirs::home_dir()
+        .map(|h| h.join(".niu").join("models").join("mmproj-embeddinggemma-2-Q8_0.gguf"));
+    if !mmproj.map(|p| p.exists()).unwrap_or(false) {
+        missing.push(
+            "照片向量化（缺媒体模型 mmproj-embeddinggemma-2-Q8_0.gguf，见《系统管理手册》\"媒体向量入库\"）".to_string(),
         );
     }
 
