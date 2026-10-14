@@ -138,7 +138,7 @@ def test_fifo_two_lines_submit_then_converge(tmp_path):
     calls = []
     submit, _ = make_submit_sync()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                   store_add=lambda e, m, v: calls.append(e), submit=submit)
     mw.tick(env)  # tick#1 提交拍：行 1 的 store_add 已收到、行未删、状态 encoding
     assert calls == ["a/img-0001.jpg"]
@@ -181,7 +181,7 @@ def test_store_add_failure_bounded_retry_then_drop(tmp_path, monkeypatch):
         return f
 
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                   store_add=boom_store_add, submit=submit)
 
     mw.tick(env)  # tick#1 提交（store_add 抛错 → 异常进 future），行未删、状态 encoding
@@ -221,7 +221,7 @@ def test_inflight_blocks_new_head_until_converged(tmp_path):
     calls = []
     submit, futures = make_submit_pending()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                   store_add=lambda e, m, v: calls.append(e), submit=submit)
 
     mw.tick(env)  # tick#1 提交行 1（未完成 future）
@@ -257,7 +257,7 @@ def test_inflight_timeout_and_pool_saturation_reporting(tmp_path, monkeypatch):
     write_queue(qa, [rec("a/t1.jpg", "/tmp/fake/t1.jpg")])
     submit_a, _ = make_submit_pending()
     env_a = TickEnv(queue_path=str(qa), switch=lambda: True, ready_check=lambda: True,
-                    encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                    encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                     store_add=lambda e, m, v: None, submit=submit_a)
     mw.tick(env_a)
     assert mw._inflight is not None
@@ -280,7 +280,7 @@ def test_inflight_timeout_and_pool_saturation_reporting(tmp_path, monkeypatch):
     write_queue(qb, [rec("a/t2.jpg", "/tmp/fake/t2.jpg")])
     submit_b, futures_b = make_submit_pending()
     env_b = TickEnv(queue_path=str(qb), switch=lambda: True, ready_check=lambda: True,
-                    encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                    encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                     store_add=lambda e, m, v: None, submit=submit_b)
     mw.tick(env_b)  # 提交（started_at = 提交时刻）
     assert mw._inflight is not None
@@ -323,24 +323,74 @@ def test_guard_reject_drops_line_without_encoding(tmp_path, monkeypatch):
     notices = []
     monkeypatch.setattr(mw, "_broadcast", events.append)
     monkeypatch.setattr(mw, "_notify_failure", notices.append)
-    encoder_calls = []
+    calls = []
+    never_encoded = []
 
     def never_encode(p):
-        encoder_calls.append(p)
-        raise AssertionError("护栏拒收后编码发送点绝不应被调用（AC-8）")
+        # 具名编码器探针（旧版语义）：先记录、再抛——「拒收误提交池」回归下，抛出的异常会被
+        # make_submit_sync 吞进假 future，但记录吞不掉 ⇒ 零调用断言独立证明「真的没发」
+        never_encoded.append(p)
+        raise AssertionError("拒收不得编码")
 
+    submit, _ = make_submit_sync()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=never_encode, guard=lambda p: (False, "12MP 超像素预算 8MP"),
-                  store_add=lambda e, m, v: None)
+                  encoder=never_encode,
+                  guard=lambda p: ("reject", "文件 31MB 超体积预算 30MB", None),
+                  store_add=lambda e, m, v: calls.append(e), submit=submit)
     mw.tick(env)
     st = mw.get_state()
     assert st["status"] == "idle"
     assert queue_lines(q) == 0  # 行已弃除
-    assert encoder_calls == []  # 永不被发送
+    assert never_encoded == []  # 编码器入口从未被调用（具名探针的独立信号）
+    assert calls == []  # store_add 零调用 ⇒ 未进写库路径
     rejects = [e for e in events if e.get("type") == "media-ingest-completed" and not e.get("ok")]
-    assert rejects and "超像素预算" in rejects[0]["message"]
-    assert notices and "超像素预算" in notices[-1]
+    assert rejects and "超体积预算" in rejects[0]["message"]
+    assert notices and "超体积预算" in notices[-1]   # 拒收原因口径随 I-6 更新
 
+
+def test_guard_reject_drop_failure_stalls_and_stays_silent(tmp_path, monkeypatch):
+    """拒收 + 删行失败（drop 返 0 / 抛异常）：行仍在队首、报可辨 stalled 原因、**不**发
+    「拒收」通知——每轮重复提示会成 10s 级通知风暴；下一轮重试该行（再拒收、仍无通知）。
+    回归方向：stalled 分支退回发提示 / 清零失败计数 / 报 idle ⇒ 下列断言各自转红
+    （tick ⑤ reject 分支 else 分支）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/big.jpg", str(tmp_path / "big.jpg"))])
+    events = []
+    notices = []
+    monkeypatch.setattr(mw, "_broadcast", events.append)
+    monkeypatch.setattr(mw, "_notify_failure", notices.append)
+    drop_calls = []
+    monkeypatch.setattr(mw, "f4_drop_prefix",
+                       lambda n=1, queue_path=None: (drop_calls.append(n), 0)[1])  # 删行恒失败（锁/IO/撕裂尾行形态）
+    guard_calls = []
+
+    def rejecting_guard(p):
+        guard_calls.append(p)
+        return ("reject", "文件 31MB 超体积预算 30MB", None)
+
+    submit, _ = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: (_ for _ in ()).throw(AssertionError("拒收不得编码")),
+                  guard=rejecting_guard,
+                  store_add=lambda e, m, v: None, submit=submit)
+    mw._fail_counts["a/big.jpg"] = 1  # 预置失败计数：删行失败路径必须保留（退回清零 ⇒ 红）
+    mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "stalled"
+    assert "拒收但删行失败" in st["reason"]  # reason 可辨
+    assert st["entity"] == "a/big.jpg"
+    assert st["queue_depth"] == 1  # 行仍在队首
+    assert queue_lines(q) == 1
+    assert drop_calls == [1]  # 尝试过删行，失败
+    assert events == [] and notices == []  # 不发「拒收」类通知（不重复提示）
+    assert mw._fail_counts["a/big.jpg"] == 1  # 失败计数保留
+    mw.tick(env)  # 下一轮：重试该行
+    st = mw.get_state()
+    assert st["status"] == "stalled" and "拒收但删行失败" in st["reason"]
+    assert guard_calls == [str(tmp_path / "big.jpg")] * 2  # 两轮都取到该行（重试行为）
+    assert drop_calls == [1, 1]
+    assert events == [] and notices == []  # 每轮仍不重复提示
+    assert queue_lines(q) == 1
 
 # ---------------------------------------------------------------------------
 # ⑥ 队列空短路：不探活、不判就绪（v3.2 条件求值顺序）
@@ -354,7 +404,7 @@ def test_empty_queue_never_probes(tmp_path):
         raise AssertionError("队列空时绝不应调 ready_check（不探活，v3.2 条件求值顺序）")
 
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=boom,
-                  guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                   store_add=lambda e, m, v: None)
     mw.tick(env)  # 不得抛异常
     st = mw.get_state()
@@ -373,7 +423,7 @@ def test_switch_hot_flip_keeps_remaining_lines(tmp_path):
     calls = []
     submit, futures = make_submit_pending()
     base = dict(queue_path=str(q), ready_check=lambda: True,
-                encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                 store_add=lambda e, m, v: calls.append(e), submit=submit)
     env_on = TickEnv(switch=lambda: True, **base)
     mw.tick(env_on)  # 开关开：取行 1（在途未完成）
@@ -402,7 +452,7 @@ def test_bad_head_line_swept_good_line_processed(tmp_path):
     calls = []
     submit, _ = make_submit_sync()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                   store_add=lambda e, m, v: calls.append(e), submit=submit)
     mw.tick(env)  # 坏行弃除 + 合法行取走（同步 fake 已执行编码/写库桩）
     assert mw.get_state()["status"] == "encoding"
@@ -426,7 +476,7 @@ def test_guard_total_truncated_header_passes_without_exception(tmp_path):
     calls = []
     submit, _ = make_submit_sync()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=lambda p: [0.1] * 768, guard=pixel_guard.check,
+                  encoder=lambda p: [0.1] * 768, guard=pixel_guard.classify,
                   store_add=lambda e, m, v: calls.append(e), submit=submit)
     mw.tick(env)  # 不得抛异常（护栏按契约「图头读不出 ⇒ 放行 + WARNING」）
     assert calls == ["a/trunc.jpg"]  # encoder 被调用 ⇒ 异常不再穿透 tick
@@ -456,6 +506,56 @@ def test_guard_stub_exception_treated_as_pass(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# T2 新增：downscale 动作 / guard 缺省路径（P0 回归）
+# ---------------------------------------------------------------------------
+
+def test_downscale_action_submits_like_pass(tmp_path):
+    """护栏判 downscale（超门槛、非病态）⇒ 不弃行、正常提交编码（缩放由分派器完成，I-2）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec()])
+    calls = []
+    submit, _futures = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("downscale", "4000×4000 超直送门槛 8MP", (4000, 4000)),
+                  store_add=lambda e, m, v: calls.append(e), submit=submit)
+    mw.tick(env)
+    mw.tick(env)  # 收敛拍
+    assert calls == ["a/img-0001.jpg"] and queue_lines(q) == 0  # 行被消费，未被拒收
+
+
+def test_guard_default_resolves_to_classify(tmp_path, monkeypatch):
+    """TickEnv 不注入 guard ⇒ tick 前言的缺省绑定必须解析到 `pixel_guard.classify`
+    （`check` 移除后 tick 不得抛 AttributeError——否则媒体队列永不被消费；存量用例全部
+    注入 guard=，此路径此前无覆盖）。spy `classify` 钉死缺省绑定「确实解析到 classify 且被
+    调用」的方向（误删 `or` 子句 ⇒ guard=None ⇒ 保护性 try 吞成 pass ⇒ 下列断言转红）。
+    队列行的 file_path 指向不存在的文件 ⇒ classify 按契约放行（文件缺失 ⇒ pass，total
+    函数），随后照常提交注入的 encoder。"""
+    from niu_api.internal import pixel_guard
+
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec()])  # rec() 缺省 file_path=/tmp/fake/img.jpg 不存在 ⇒ classify 放行
+    guard_calls = []
+    real_classify = pixel_guard.classify
+
+    def spy_classify(p):
+        guard_calls.append(p)
+        return real_classify(p)  # 委托生产真值护栏，spy 只记录不改行为
+
+    monkeypatch.setattr(pixel_guard, "classify", spy_classify)
+    calls = []
+    submit, _futures = make_submit_sync()
+    env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=lambda p: [0.1] * 768,  # 注入 encoder 旁路生产分派器
+                  store_add=lambda e, m, v: calls.append(e), submit=submit)  # guard 刻意不注入
+    mw.tick(env)  # 不得抛 AttributeError（缺省绑定 = pixel_guard.classify，三动作解构成立）
+    assert guard_calls == ["/tmp/fake/img.jpg"]  # guard 确实解析到 classify 且被调用（误删 `or` 子句 ⇒ guard=None ⇒ pass ⇒ 红）
+    assert calls == ["a/img-0001.jpg"]  # encoder 被调用 ⇒ 行按 pass 分支照常提交
+    mw.tick(env)
+    assert mw.get_state()["status"] == "idle" and queue_lines(q) == 0
+
+
+# ---------------------------------------------------------------------------
 # ⑪ 读队列 total（第二轮 P1-1 回归）：任何读异常绝不外抛崩 tick，绝不永久冻结
 # ---------------------------------------------------------------------------
 
@@ -464,7 +564,7 @@ def test_unreadable_queue_non_utf8_stalls_with_depth_sentinel(tmp_path):
     q.write_bytes(b"\xff\xfe" + "photos/img-0001.jpg".encode("utf-16-le"))  # 非 UTF-8 字节
     before = q.read_bytes()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                   store_add=lambda e, m, v: None)
     mw.tick(env)  # 不抛异常
     st = mw.get_state()
@@ -487,7 +587,7 @@ def test_unreadable_queue_permission_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mw, "f4_take_head", deny)
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                   store_add=lambda e, m, v: None)
     mw.tick(env)
     st = mw.get_state()
@@ -510,7 +610,7 @@ def test_bad_head_undroppable_stalls_without_burning_sweep_budget(tmp_path, monk
     monkeypatch.setattr(mw, "f4_take_head", counting_take)
     monkeypatch.setattr(mw, "f4_drop_prefix", lambda n=1, queue_path=None: (drops.append(n), 0)[1])
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                   store_add=lambda e, m, v: None)
     mw.tick(env)
     st = mw.get_state()
@@ -532,7 +632,7 @@ def test_submit_rejected_stalls_and_stays_stable(tmp_path):
         raise RuntimeError("池已 shutdown")
 
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                   store_add=lambda e, m, v: None, submit=dead_submit)
     mw.tick(env)  # 不抛异常
     st = mw.get_state()
@@ -556,7 +656,7 @@ def test_switch_exception_converges_inflight_first(tmp_path):
     write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
     submit, futures = make_submit_pending()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                   store_add=lambda e, m, v: None, submit=submit)
     mw.tick(env)  # 预置一条在途记录（未完成）
     assert mw._inflight is not None
@@ -566,7 +666,7 @@ def test_switch_exception_converges_inflight_first(tmp_path):
         raise ValueError("配置读取失败")
 
     env_bad = TickEnv(queue_path=str(q), switch=broken_switch, ready_check=lambda: True,
-                      guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                      guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                       store_add=lambda e, m, v: None, submit=submit)
     mw.tick(env_bad)  # 不抛异常：先收敛在途（行删掉），再报可辨 stalled
     st = mw.get_state()
@@ -584,7 +684,7 @@ def test_ready_check_exception_stalls_keeps_head(tmp_path):
         raise AssertionError("就绪检查桩抛异常")
 
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=boom_ready,
-                  guard=lambda p: (True, ""), encoder=lambda p: [0.1] * 768,
+                  guard=lambda p: ("pass", "", None), encoder=lambda p: [0.1] * 768,
                   store_add=lambda e, m, v: None)
     mw.tick(env)  # 不抛异常
     st = mw.get_state()
@@ -603,7 +703,7 @@ def test_success_path_drop_failure_stalls_then_recovers(tmp_path, monkeypatch):
     calls = []
     submit, _ = make_submit_sync()
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                   store_add=lambda e, m, v: calls.append(e), submit=submit)
     mw.tick(env)  # 提交成功：store_add 已收到该行、_inflight 非空、状态 encoding
     assert mw._inflight is not None
@@ -642,7 +742,7 @@ def test_on_stop_with_inflight_interrupts_encoding(tmp_path, monkeypatch):
     write_queue(q, [rec("a/x.jpg", "/tmp/fake/x.jpg")])
     submit, _ = make_submit_pending()  # 未完成假 future：编码真实在途（回调永不执行）
     env = TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
-                  encoder=lambda p: [0.1] * 768, guard=lambda p: (True, ""),
+                  encoder=lambda p: [0.1] * 768, guard=lambda p: ("pass", "", None),
                   store_add=lambda e, m, v: None, submit=submit)
     mw.tick(env)  # 提交拍：在途记录已发布、状态 encoding、行未删
     assert mw._inflight is not None

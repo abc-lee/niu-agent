@@ -41,7 +41,7 @@ from loguru import logger
 
 from agent.md_mirror import F4HeadCorruptError, f4_drop_prefix, f4_take_head  # S3 交付
 from agent.md_mirror import MEDIA_QUEUE_PATH as F4_DEFAULT_QUEUE
-from niu_api.internal import llama_server, media_vectors, pixel_guard
+from niu_api.internal import llama_server, media_downscale, media_vectors, pixel_guard
 from niu_api.internal.media_ingest_config import media_ingest_enabled
 
 #: 同一队列行的连续失败上限：达到即弃单（D-21：D-21 明示的边界，不算丢记录）；
@@ -83,8 +83,8 @@ class TickEnv:
     queue_path: Optional[str] = None  # 队列文件（缺省 F4 默认路径；测试用临时文件）
     switch: Optional[Callable[[], bool]] = None  # 开关读取（缺省 media_ingest_enabled，每轮现读）
     ready_check: Optional[Callable[[], bool]] = None  # 实例就绪（缺省 llama_server.media_ready）
-    encoder: Optional[Callable[[str], list]] = None  # 绝对路径 → 768 维向量（缺省 encode_media）
-    guard: Optional[Callable[[str], tuple]] = None  # 路径 → (放行?, 原因)（缺省 pixel_guard.check）
+    encoder: Optional[Callable[[str], list]] = None  # 绝对路径 → 768 维向量（缺省 media_downscale.encode_media_any）
+    guard: Optional[Callable[[str], tuple]] = None  # 路径 → (动作, 原因, 尺寸)；动作 ∈ "pass"|"downscale"|"reject"（缺省 pixel_guard.classify）
     store_add: Optional[Callable] = None  # (entity_name, media_type, vector)（缺省 media_vectors.add）
     submit: Optional[Callable] = None  # 零参回调 → Future（缺省调度器池；测试注入「同步执行、异常捕进假 future」版）
 
@@ -263,7 +263,7 @@ def _process_one(env: TickEnv, record: dict, inflight: _Inflight) -> None:
     任何异常（编码失败 / 文件缺失 / 写库失败）都传播进 future，由 tick 的收敛按原因归类。"""
     inflight.started = True
     inflight.started_at = time.time()
-    encoder = env.encoder or llama_server.encode_media
+    encoder = env.encoder or media_downscale.encode_media_any
     store_add = env.store_add or (lambda en, mt, vec: media_vectors.add(en, mt, vec))
     vector = encoder(record["file_path"])  # 文件缺失 ⇒ FileNotFoundError（D-24 的显式失败原因）
     store_add(record["entity_name"], "image", vector)
@@ -322,7 +322,7 @@ def tick(env: Optional[TickEnv] = None) -> None:
     env = env or TickEnv()
     switch = env.switch or media_ingest_enabled
     ready_check = env.ready_check or llama_server.media_ready
-    guard = env.guard or pixel_guard.check
+    guard = env.guard or pixel_guard.classify
 
     # ① 开关关：只收敛在途（热翻转开→关：在途条完成并处理掉，不再取新行，AC-12），然后短路。
     # switch 自身是 total（media_ingest_enabled 对坏配置一律返 False）；保护性 try 是第二道防线
@@ -368,15 +368,16 @@ def tick(env: Optional[TickEnv] = None) -> None:
         _set_state(status="stalled", reason="实例未加载 mmproj 或编码后端不可用（队列只增不耗）", entity=None, started_at=None, queue_depth=_queue_depth(env.queue_path))
         return
 
-    # ⑤ 像素护栏（同步、毫秒级、D-26 唯一关口、total 函数）：拒收 = 确定性失败，重试无意义 ⇒ 弃行 + WARNING；
-    # 保护性 try 是第二道防线——check 若再抛（或注入的 guard 抛异常），按放行处理、绝不崩本轮 tick：
-    # 异常外抛会每 10s 一轮崩在同一队首行上，行永不删除、状态永不更新 ⇒ 媒体队列永久冻结（R14 症状）。
+    # ⑤ 像素护栏（同步、毫秒级、D-26 唯一关口、total 函数）：拒收（病态：体积超预算）= 确定性
+    # 失败，重试无意义 ⇒ 弃行 + WARNING；pass / downscale 都放行到 ⑥（downscale 的实际缩放
+    # 发生在池 worker 的编码器分派里，循环线程不解码任何像素——I-11）。保护性 try 是第二道
+    # 防线：动作按放行处理、绝不崩本轮 tick。
     try:
-        ok, reason = guard(head["file_path"])
+        action, reason, _dims = guard(head["file_path"])
     except Exception as e:
         logger.warning(f"[MediaWorker] 护栏调用异常，按放行处理（服务端 --image-max-tokens 是最后防线）: {e}")
-        ok, reason = True, ""
-    if not ok:
+        action, reason, _dims = "pass", "", None
+    if action == "reject":
         try:
             dropped = f4_drop_prefix(1, queue_path=env.queue_path)
         except Exception as e:  # f4_drop_prefix 是结构性 total（整段 try/except + finally 释放锁），此 try 是双保险
@@ -384,16 +385,17 @@ def tick(env: Optional[TickEnv] = None) -> None:
             dropped = 0
         if dropped:
             _fail_counts.pop(head["entity_name"], None)
-            logger.warning(f"[MediaWorker] 像素护栏拒收（未发送、不产生向量）: {head['file_path']}: {reason}")
+            logger.warning(f"[MediaWorker] 护栏病态拒收（未发送、不产生向量）: {head['file_path']}: {reason}")
             _broadcast({"type": "media-ingest-completed", "entity": head["entity_name"], "ok": False, "message": f"护栏拒收: {reason}"})
-            _notify_failure(f"大图被像素护栏拒收（不产生向量，为保护检索面做的取舍）：{head['file_path']}（{reason}）")
+            _notify_failure(f"图片被护栏拒收（不产生向量，为保护检索面做的取舍）：{head['file_path']}（{reason}）")
             _set_state(status="idle", reason="", entity=None, started_at=None, queue_depth=_queue_depth(env.queue_path))
         else:
             # 删行失败（锁/IO/撕裂尾行）：行仍在队首——保留失败计数（如有）、报 stalled、下轮重试拒收；
             # 清零 + 报 idle 会让同一行每轮重复触发「拒收 + 提示」。
-            logger.warning(f"[MediaWorker] 像素护栏拒收但删行失败，下轮重试: {head['file_path']}: {reason}")
+            logger.warning(f"[MediaWorker] 护栏拒收但删行失败，下轮重试: {head['file_path']}: {reason}")
             _set_state(status="stalled", reason=f"护栏拒收但删行失败（下轮重试）：{reason}", entity=head["entity_name"], started_at=None, queue_depth=_queue_depth(env.queue_path))
         return
+    # pass / downscale ⇒ 落入 ⑥ 提交池（downscale 的缩放在 _process_one 的分派器内执行）
 
     # ⑥ 提交池（循环线程不等结果）；在途记录**先创建**（future 暂未赋值）再 submit、回填 future——
     # 记录引用经 lambda 传入 worker 线程（其内回写 started/started_at）；done() 的严格语义保证
@@ -424,6 +426,9 @@ def on_stop() -> None:
     池 worker 线程即刻返回 ⇒ 解释器的线程池 join（先于普通 atexit 执行——2026-10-13 本机探针
     实证：60s 在途任务下进程挂到超时被杀，普通 atexit 处理器一行未跑，依赖 atexit 注册的
     子进程关停切不断在途 HTTP）迅速完成 ⇒ 进程退出**不被拖到编码自身超时（≈17 分钟）**。
+    在途**解码段**（超门槛大图的客户端全图解码，跑在池 worker 进程内）**不被杀子进程打断**——解码跑完才在
+    健康检查处失败 ⇒ 停止时若在解码大图，退出拖尾以解码剩余时长为界（大图可达数十秒级）；在途**发送段**
+    仍被杀子进程即刻打断（原语义不变）。
     行不删 ⇒ 下次启动重放（至少一次语义不变，R15）：向量可能已写库（同键覆盖幂等），也可能
     未写（行留队列）。
     边角情形（如实披露于手册）：编码后端是**外部实例**占用 19878 端口（非本进程子进程，
