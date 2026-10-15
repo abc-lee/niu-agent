@@ -1392,8 +1392,8 @@ fn copy_seeds(template_dir: &Path, niu_dir: &Path, os: &str) {
         warn!("未适配的平台 {}，跳过平台种子（该功能将降级）", os);
     }
     for entry in SEEDS {
-        if entry.os != os_suffix {
-            continue; // 平台相关条目只对自己的 OS 生效
+        if entry.os.is_some() && entry.os != os_suffix {
+            continue; // 平台相关条目只对自己的 OS 生效；平台无关条目任何 OS 都拷
         }
         copy_seed(
             &template_dir.join(entry.src),
