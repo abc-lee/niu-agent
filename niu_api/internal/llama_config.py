@@ -241,7 +241,7 @@ def default_command() -> str:
         parts += ["--mmproj", str(mmproj_path()), "--image-max-tokens", "8128"]
     else:
         parts.append("--no-mmproj")
-    return " ".join(parts)
+    return " ".join(shlex.quote(p) for p in parts)
 
 
 def command_line() -> str:
