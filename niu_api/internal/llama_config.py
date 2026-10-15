@@ -222,6 +222,11 @@ def default_command() -> str:
     布局路径**惰性 import**（函数内）：`embedding_artifacts.llama_server_path()` /
     `embedding_artifacts.gguf_path()` / `media_artifacts.mmproj_path()`；多模态支路跟随
     `media_ingest.enabled` 功能开关（它不是 llama.cpp 参数，只是选缺省行两支的开关）。
+    引号策略按平台（矩阵实测选定，勿拍脑袋改回单一策略）：POSIX 分支 `shlex.quote`
+    逐字不变；win32 消费链（非 posix 分词 + 剥配对引号，`argv()`）不认 POSIX 三段转义
+    （含单引号的路径被撕碎、首词截断、启动报"可执行体不存在"），改为**词含空白或单引号
+    时用双引号包裹、否则裸词**：非 posix 分词把引号词当整体（引号保留），剥配对引号后
+    整词还原；裸词在反斜杠/双引号/`&`/`(` 上无特殊义（非 posix 分词里皆是词字符），逐字保留。
     """
     from niu_api.internal.embedding_artifacts import gguf_path, llama_server_path
     from niu_api.internal.media_artifacts import mmproj_path
@@ -241,6 +246,13 @@ def default_command() -> str:
         parts += ["--mmproj", str(mmproj_path()), "--image-max-tokens", "8128"]
     else:
         parts.append("--no-mmproj")
+    if sys.platform == "win32":
+        # win32 消费侧（非 posix 分词 + 剥配对引号）不认 POSIX 三段转义 `'…'"'"'…'`
+        # （含单引号的路径被撕碎）⇒ 词含空白或单引号时用双引号包裹、否则裸词。
+        return " ".join(
+            f'"{p}"' if (any(ch.isspace() for ch in p) or "'" in p) else p
+            for p in parts
+        )
     return " ".join(shlex.quote(p) for p in parts)
 
 
