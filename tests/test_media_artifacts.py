@@ -7,10 +7,12 @@
 
 T2b1（方案 v1.7 口径）：程序**零下载**——下载 URL 函数 / sha256 常量 / 源清单从本模块
 删除，缺失文案只含"缺哪个文件 + 兼容性要求（§4'.2 口径简述）+ 见《系统管理手册》
-『可选组件安装』"，不得出现 URL / sha256 / 构建号 / 平台名 / 脚本名；`llama_cpp.mmproj_path`
-非空时 `mmproj_path()` 直接指向它（任意量化/任意位置），为空时维持家目录布局缺省。
+『可选组件安装』"，不得出现 URL / sha256 / 构建号 / 平台名 / 脚本名；换 mmproj
+文件（任意量化/任意位置）＝改配置里那一行 `llama_cpp.command` 的 `--mmproj` 指向，
+本模块只返家目录布局缺省。
 """
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,20 +21,44 @@ from niu_api import config as cfg_mod
 from niu_api.internal import embedding_artifacts as ea
 from niu_api.internal import media_artifacts as ma
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _platform_seed_suffix() -> str:
+    """当前 OS 对应的种子文件名后缀（与启动器 platform_seed_suffix 同口径）。"""
+    return "win32" if sys.platform == "win32" else "darwin"
+
+
+def _standard_layout() -> dict:
+    """包内随附的平台种子内容（与启动器首启拷入 ~/.niu/llama-layout.json 的那份同源）。"""
+    return json.loads(
+        (REPO_ROOT / "memory" / f"llama-layout.{_platform_seed_suffix()}.json")
+        .read_text(encoding="utf-8")
+    )
+
+
+def _point_layout(monkeypatch, tmp_path, payload=None):
+    """把家目录布局文件指向 tmp 文件（payload=None ⇒ 该文件缺失）。"""
+    d = tmp_path / "home-layout"
+    d.mkdir(exist_ok=True)
+    p = d / "llama-layout.json"
+    if payload is not None:
+        p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(ea, "_layout_path", lambda: p)
+
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch, tmp_path):
-    """user-config 重定向 tmp（CONFIG_PATH 注入，先例 test_llama_layout_config.py）；
-    布局用户层重定向 tmp 不存在文件（防读真实 ~/.niu/config/llama-layout-user.json）；
-    清空布局缓存与一次性告警标记，防跨用例状态泄漏。"""
+    """user-config / 布局 / HOME 全指向 tmp（布局＝包内平台种子的 tmp 拷贝，先例
+    test_llama_config_read.py）；清空布局缓存与一次性告警标记，防跨用例状态泄漏。"""
     p = tmp_path / "user-config.json"
     p.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(cfg_mod, "CONFIG_PATH", str(p))
-    monkeypatch.setattr(ea, "_user_layout_path", lambda: tmp_path / "absent-layout.json")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     ea._LAYOUT_CACHE = None
     ea._LAYOUT_CACHE_KEY = None
     ea._WARNED_REASONS.clear()
-
+    _point_layout(monkeypatch, tmp_path, _standard_layout())
 
 @pytest.fixture
 def fake_home(monkeypatch, tmp_path):
@@ -44,17 +70,9 @@ def fake_home(monkeypatch, tmp_path):
     return home
 
 
-def _write_llama_section(monkeypatch, payload: dict) -> None:
-    """把 `llama_cpp` 段写进 CONFIG_PATH 指向的 tmp 文件（不碰真实 user-config.json）。"""
-    Path(cfg_mod.CONFIG_PATH).write_text(
-        json.dumps({"llama_cpp": payload}, ensure_ascii=False), encoding="utf-8"
-    )
-
-
-def _bundled_mmproj_filename() -> str:
-    """bundle 随附布局数据里的 mmproj 文件名（缺省形态的真相源，须在重定向前读）。"""
-    layout = json.loads(ea._bundle_layout_path().read_text(encoding="utf-8"))
-    return layout["mmproj"]["filename"]
+def _standard_mmproj_filename() -> str:
+    """包内平台种子里的 mmproj 文件名（缺省形态的真相源）。"""
+    return _standard_layout()["mmproj"]["filename"]
 
 
 class TestHomeDirResolution:
@@ -62,9 +80,9 @@ class TestHomeDirResolution:
         assert ma.media_models_dir() == fake_home / ".niu" / "models"
 
     def test_mmproj_path_under_home(self, fake_home):
-        # 缺省文件名跟随布局数据（bundle 随附），落点仍是家目录 models/
+        # 缺省文件名跟随布局数据（包内种子），落点仍是家目录 models/
         p = ma.mmproj_path()
-        assert p == fake_home / ".niu" / "models" / _bundled_mmproj_filename()
+        assert p == fake_home / ".niu" / "models" / _standard_mmproj_filename()
         assert p.suffix == ".gguf"
 
     def test_ignores_niu_models_path_env(self, fake_home, monkeypatch, tmp_path):
@@ -118,27 +136,3 @@ class TestReadyAndDescribe:
     def test_describe_empty_when_present(self, fake_home):
         ma.mmproj_path().write_bytes(b"x")
         assert ma.describe_missing_media() == ""
-
-
-class TestMmprojPathOverride:
-    def test_config_key_wins_over_home_layout(self, fake_home, monkeypatch, tmp_path):
-        """llama_cpp.mmproj_path 非空 ⇒ mmproj_path() 直接指向它（任意位置，不拼家目录布局）。"""
-        custom = tmp_path / "custom" / "my-mmproj.gguf"
-        custom.parent.mkdir(parents=True)
-        _write_llama_section(monkeypatch, {"mmproj_path": str(custom)})
-        assert ma.mmproj_path() == custom
-        # 就绪判定跟随覆盖路径
-        assert not ma.media_artifacts_ready()
-        custom.write_bytes(b"x")
-        assert ma.media_artifacts_ready()
-
-    def test_absent_key_falls_back_to_home_layout(self, fake_home, monkeypatch, tmp_path):
-        """不配新键 ⇒ 维持家目录布局缺省（D-4 零缺省漂移）。"""
-        _write_llama_section(monkeypatch, {})
-        assert ma.mmproj_path().parent == fake_home / ".niu" / "models"
-
-    def test_null_empty_bad_type_all_ignored(self, fake_home, monkeypatch, tmp_path):
-        """键为 null / 空串 / 非字符串 ⇒ 一律视同未配置（坏输入回缺省，绝不抛）。"""
-        for payload in ({"mmproj_path": None}, {"mmproj_path": ""}, {"mmproj_path": 123}):
-            _write_llama_section(monkeypatch, payload)
-            assert ma.mmproj_path().parent == fake_home / ".niu" / "models"
