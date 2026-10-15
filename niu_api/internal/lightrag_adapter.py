@@ -2156,21 +2156,21 @@ class LightRAGAdapter:
             return entity_name
 
         logger.warning(
-            "Entity '%s' not found in graph, trying case-insensitive match",
+            "Entity '{}' not found in graph, trying case-insensitive match",
             entity_name,
         )
         entity_name_lower = entity_name.lower()
         for node_name in nx_graph.nodes():
             if node_name.lower() == entity_name_lower:
                 logger.info(
-                    "Case-insensitive match: '%s' resolved to '%s'",
+                    "Case-insensitive match: '{}' resolved to '{}'",
                     entity_name,
                     node_name,
                 )
                 return node_name
 
         logger.error(
-            "Entity '%s' not found in graph (case-insensitive also failed)",
+            "Entity '{}' not found in graph (case-insensitive also failed)",
             entity_name,
         )
         return None
@@ -2214,7 +2214,7 @@ class LightRAGAdapter:
                 unresolved_sources.append(src)
             elif resolved != src:
                 logger.info(
-                    "Source entity '%s' resolved to '%s' (case-insensitive)",
+                    "Source entity '{}' resolved to '{}' (case-insensitive)",
                     src, resolved,
                 )
                 resolved_sources.append(resolved)
@@ -2243,7 +2243,7 @@ class LightRAGAdapter:
             }
         if resolved_target != target_entity:
             logger.info(
-                "Target entity '%s' resolved to '%s' (case-insensitive)",
+                "Target entity '{}' resolved to '{}' (case-insensitive)",
                 target_entity, resolved_target,
             )
 

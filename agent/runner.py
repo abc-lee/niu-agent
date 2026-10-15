@@ -1720,7 +1720,7 @@ class NiuRunner:
                                 logger.error("[BrainInjector] forced sync completed but activation_mgr still None")
                                 self._last_forced_sync_fail_time = time.time()
                         except Exception as e:
-                            logger.error("[BrainInjector] Forced RegionSync failed: %s", e)
+                            logger.error("[BrainInjector] Forced RegionSync failed: {}", e)
                             # 记录失败时间，启动 5 分钟冷却
                             self._last_forced_sync_fail_time = time.time()
                         finally:

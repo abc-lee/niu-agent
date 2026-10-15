@@ -102,11 +102,11 @@ def build_dynamic_brain_region_prompt() -> str:
     try:
         brain_regions = get_brain_regions()
     except Exception as e:
-        logger.debug("get_brain_regions failed: %s, using fallback", e)
+        logger.debug("get_brain_regions failed: {}, using fallback", e)
         brain_regions = []
 
     if brain_regions:
-        logger.debug("Found %d brain regions from graph: %s", len(brain_regions), brain_regions)
+        logger.debug("Found {} brain regions from graph: {}", len(brain_regions), brain_regions)
         region_str = "、".join(brain_regions)
         return f"当前图谱中的脑区：\n{region_str}"
     else:

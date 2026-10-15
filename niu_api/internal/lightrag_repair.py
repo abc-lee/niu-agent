@@ -369,7 +369,7 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
         for name in ("source_id", "description", "keywords", "file_path")
     ):
         logger.warning(
-            "[LightRAGRepair] GraphML 有 %d 条 edge 但无 <key> 定义，"
+            "[LightRAGRepair] GraphML 有 {} 条 edge 但无 <key> 定义，"
             "edge 字段（source_id/description/keywords/file_path）无法解析", len(edges)
         )
     return node_ids, edges, None

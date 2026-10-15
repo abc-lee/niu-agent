@@ -174,7 +174,7 @@ def update_region_activations(req: RegionUpdateRequest) -> dict[str, Any]:
             if activation_mgr.set_activation(item.label, item.activation):
                 updated += 1
 
-        logger.info("[Brain Region API] Updated %d region activations", updated)
+        logger.info("[Brain Region API] Updated {} region activations", updated)
 
         return {
             "status": "ok",
@@ -184,7 +184,7 @@ def update_region_activations(req: RegionUpdateRequest) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("[Brain Region API] update_region_activations failed: %s", e)
+        logger.error("[Brain Region API] update_region_activations failed: {}", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -234,7 +234,7 @@ def consolidate_brain_regions(
             try:
                 removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result, dry_run=True)
             except Exception as e:
-                logger.error("[Consolidate] cleanup detection failed: %s", e)
+                logger.error("[Consolidate] cleanup detection failed: {}", e)
                 removed, drifted, drifted_cids = [], [], set()
                 cleanup_ok = False
 
@@ -244,7 +244,7 @@ def consolidate_brain_regions(
             try:
                 created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
             except Exception as e:
-                logger.error("[Consolidate] create_region_nodes failed: %s", e)
+                logger.error("[Consolidate] create_region_nodes failed: {}", e)
                 create_ok = False
 
             # Step 4: Execute cleanup only if create didn't throw and dry_run succeeded (Phase 3)
@@ -255,7 +255,7 @@ def consolidate_brain_regions(
                     removed = actual_removed
                     drifted = actual_drifted
                 except Exception as e:
-                    logger.error("[Consolidate] cleanup execution failed: %s", e)
+                    logger.error("[Consolidate] cleanup execution failed: {}", e)
             elif not cleanup_ok:
                 logger.warning("[Consolidate] dry_run failed, skipping cleanup execution")
             else:
@@ -268,9 +268,9 @@ def consolidate_brain_regions(
                 result = update_default_region_sizes(adapter)
                 updated = result.get("updated", 0)
                 if updated > 0:
-                    logger.info("[Consolidate] Updated %d default region sizes", updated)
+                    logger.info("[Consolidate] Updated {} default region sizes", updated)
             except Exception as e:
-                logger.debug("[Consolidate] update_default_region_sizes skipped: %s", e)
+                logger.debug("[Consolidate] update_default_region_sizes skipped: {}", e)
 
             # Step 4.6: Update region summaries (exclude created and drifted)
             try:
@@ -281,7 +281,7 @@ def consolidate_brain_regions(
                                 if r.name not in created_set and r.name not in drifted_set]
                 region_mgr.update_region_summaries(region_names)
             except Exception as e:
-                logger.debug("[Consolidate] update_region_summaries skipped: %s", e)
+                logger.debug("[Consolidate] update_region_summaries skipped: {}", e)
 
             # Step 5: Initialize activation manager (with D-12 empty list protection)
             activation_mgr = _get_activation_mgr()
@@ -297,7 +297,7 @@ def consolidate_brain_regions(
                         try:
                             region.members = lightrag_get_region_members(region.name)
                         except Exception as exc:
-                            logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
+                            logger.warning("Failed to fetch members for region {}: {}", region.name, exc)
                     activation_mgr.initialize_from_regions(regions)
                     from niu_api.internal.region_neighbors import build_neighbor_map
                     neighbor_map = build_neighbor_map([
@@ -305,7 +305,7 @@ def consolidate_brain_regions(
                         for r in regions
                     ])
                     activation_mgr.set_region_neighbors(neighbor_map)
-                    logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
+                    logger.info("构建脑区邻居映射: {} 个区域有邻居", len(neighbor_map))
 
             # Step 6: Merge co-activated regions
             regions_merged = 0
@@ -336,13 +336,13 @@ def consolidate_brain_regions(
                                     regions_merged += 1
                                     activation_mgr.merge_region_into(source_id, target_id)
                                     logger.info(
-                                        "[Consolidate] 合并脑区: %s -> %s",
+                                        "[Consolidate] 合并脑区: {} -> {}",
                                         source_state.label, target_state.label,
                                     )
                             except Exception as e:
-                                logger.debug("[Consolidate] merge_entities failed: %s", e)
+                                logger.debug("[Consolidate] merge_entities failed: {}", e)
             except Exception as e:
-                logger.debug("[Consolidate] Merge check skipped: %s", e)
+                logger.debug("[Consolidate] Merge check skipped: {}", e)
 
             # Step 7: Dissolve shrunk regions
             regions_dissolved = 0
@@ -362,7 +362,7 @@ def consolidate_brain_regions(
                         except Exception:
                             pass
             except Exception as e:
-                logger.debug("[Consolidate] Dissolve check skipped: %s", e)
+                logger.debug("[Consolidate] Dissolve check skipped: {}", e)
 
             # Step 8: Decay structural edges
             edges_disconnected = 0
@@ -370,7 +370,7 @@ def consolidate_brain_regions(
                 decay_result = region_mgr.decay_structural_edges()
                 edges_disconnected = decay_result.get("deleted", 0)
             except Exception as e:
-                logger.debug("[Consolidate] Edge decay skipped: %s", e)
+                logger.debug("[Consolidate] Edge decay skipped: {}", e)
 
             return {
                 "status": "ok",
