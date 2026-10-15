@@ -118,7 +118,7 @@ python scripts/package_all_dependencies.py
 ./niu                             # macOS/Linux（Windows 用 niu.exe）
 ```
 
-#### 问题：启动时卡在 "Importing InsightFace..."（超过 30 秒）
+#### 问题：启动时卡在 "Importing InsightFace..." 迟迟不结束
 
 **可能原因：**
 - ONNX Runtime 初始化慢
@@ -196,7 +196,7 @@ python scripts/package_all_dependencies.py
 
 **预加载机制说明：**
 
-`preload_face_model()`（`mcp-servers/photo-server/src/niu_photo_server/__init__.py:4163`）在 MCP 启动前调用，**只导入 cv2 和 InsightFace 模块代码，不加载模型本身**。模型按需加载（首次调用 `get_face_model` 时才加载到内存，约 326MB；空闲 5 分钟自动卸载）。如果 "Importing InsightFace..." 卡住超过 30 秒，说明是模块导入阶段的问题，而非模型加载。
+`preload_face_model()`（`mcp-servers/photo-server/src/niu_photo_server/__init__.py:4163`）在 MCP 启动前调用，**只导入 cv2 和 InsightFace 模块代码，不加载模型本身**。模型按需加载（首次调用 `get_face_model` 时才加载到内存，约 326MB；空闲 5 分钟自动卸载）。如果 "Importing InsightFace..." 长时间卡住（迟迟不结束），说明是模块导入阶段的问题，而非模型加载。
 
 #### 问题：人脸识别速度很慢（明显慢于平时的处理节奏）
 
