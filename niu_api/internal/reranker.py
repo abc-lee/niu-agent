@@ -72,6 +72,17 @@ def _get_reranker_model_name() -> str:
     return "none"
 
 
+def validate_reranker_model_config() -> str:
+    """启动期一次性校验入口：读当前 reranker_model 配置值。
+
+    本期 reranker 停用，加载路径不会被执行 ⇒ 由启动方显式调用它，
+    使不受支持的旧值仍能"响亮 + 自愈"（见 _get_reranker_model_name）。
+    语义与其完全一致：受支持 / 键缺失 ⇒ 不告警不写回；不受支持 ⇒ WARNING
+    + 进程内一次原子写回。返回生效值。
+    """
+    return _get_reranker_model_name()
+
+
 def _heal_stale_reranker_model(stale_name: str, prefs_path: Path, prefs: dict) -> None:
     """对不受支持的 reranker_model 配置值告警，并原子写回生效值（进程内一次）。"""
     global _stale_reranker_healed

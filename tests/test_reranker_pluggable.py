@@ -452,3 +452,44 @@ class TestStaleRerankerSelfHeal:
         result = _call_get_model_name_with_home(str(tmp_path))  # 不得抛
         assert result == "none"
         assert prefs_path.read_text(encoding="utf-8") == "{ broken json }}}", "读失败不得写回"
+
+
+# ============== Disabled-branch Validation Call-site Tests ==============
+
+
+class TestDisabledBranchValidation:
+    """停用分支（_build_rag_params 的 reranker_func=None 分支）的调用点：
+    必须显式调用 reranker.validate_reranker_model_config，且校验抛异常时不阻断构建。
+
+    调用点抽成了极小函数 lightrag_manager._validate_disabled_reranker ——
+    直接调用 _build_rag_params 会拖入 LLM session / 后台探测 / 嵌入模型等重依赖，
+    对"启动方确实在停用分支调了校验入口"这一行为而言过重。
+    """
+
+    def test_calls_validate_reranker_model_config(self, monkeypatch):
+        """停用分支确实调用了 validate_reranker_model_config（lazy import 取到打桩版本）。"""
+        import niu_api.internal.lightrag_manager as lm
+        from niu_api.internal import reranker as reranker_mod
+
+        calls = []
+
+        def _stub():
+            calls.append(1)
+            return "none"
+
+        monkeypatch.setattr(reranker_mod, "validate_reranker_model_config", _stub)
+        result = lm._validate_disabled_reranker()
+        assert calls == [1], "停用分支必须显式调用 validate_reranker_model_config"
+        assert result == "none"
+
+    def test_validation_exception_does_not_block_build(self, monkeypatch):
+        """校验抛异常时不向上抛（不阻断 LightRAG 构建），降级返回生效值 'none'。"""
+        import niu_api.internal.lightrag_manager as lm
+        from niu_api.internal import reranker as reranker_mod
+
+        def _boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(reranker_mod, "validate_reranker_model_config", _boom)
+        result = lm._validate_disabled_reranker()  # 不得抛
+        assert result == "none"
