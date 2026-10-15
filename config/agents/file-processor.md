@@ -236,6 +236,7 @@ name_person 工具返回 JSON 格式的结果，你必须**原样返回**，禁�
 
 - 查询未命名人物：`get_unnamed_persons()`
 - 按名字搜索：`search_persons(query="张三")`
+- 返回 `status:error`（如 `PERSON_SEARCH_FAILED`）时**必须如实告知“查询失败”**，**禁止**据此回答“没有这个人”——查询失败与“确实没有”是两件事。
 
 返回结果原样返回。
 

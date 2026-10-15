@@ -55,7 +55,7 @@ tools:
   - name: search_persons
     category: read
     short: "搜索人物"
-    long: "按名字模糊搜索人物"
+    long: "按名字模糊搜索人物（成功返回 status:success + results；查询失败返回 status:error + error_code=PERSON_SEARCH_FAILED，此时不得回答“没有此人”）"
     parameters:
       - name: query
         position: 1
