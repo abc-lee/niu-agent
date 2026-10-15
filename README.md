@@ -250,7 +250,7 @@ codesign --force --sign - /Applications/niu.app
 
 > **什么情况下需要看这一节**：启动时如果弹「**向量模型产物缺失，程序无法启动。缺少：…**」，
 > 就是缺这里的东西。正常情况下 0.5.0 的安装包**已经自带**这两个产物，只有以下情况需要手动补：
-> ① 从源码构建、没跑模型下载脚本；② 手动删过 `models/` 下的东西；③ 用了不含模型的旧包。
+> ① 从源码构建、产物未就位；② 手动删过 `models/` 下的东西；③ 用了不含模型的旧包。
 
 **这两个产物是核心必需，不是可选功能**——缺了程序直接起不来（检索/知识图谱都依赖它）：
 
@@ -282,31 +282,12 @@ codesign --force --sign - /Applications/niu.app
 > 中位 0.9789、最小 0.860、抽样最大 1.401）。这是换取 48 倍病理消失的显式取舍，
 > 详见 `docs/superpowers/plans/2026-10-12-s10-tokenizer-alignment.md` §2 D-1.1。
 
-**方式一：让脚本自动下（推荐）**
+**按需自备、放到指定位置**（从哪获取、选哪个构建由你自己定——本页不列下载地址、不列平台变体、不提构建号）：
 
-程序自带的下载脚本会按当前平台下载到正确位置，并校验完整性：
-
-```bash
-# macOS（路径以 /Applications/niu.app 为例）
-/Applications/niu.app/Contents/Resources/python/bin/python3 \
-  /Applications/niu.app/Contents/Resources/scripts/package_all_dependencies.py
-
-# Windows（路径以解压目录为例，如 D:\Niu）
-.\python\Scripts\python.exe scripts\package_all_dependencies.py
-```
-
-**方式二：手动放文件**
-
-1. GGUF 权重：从 [ggml-org/embeddinggemma-2-GGUF](https://huggingface.co/ggml-org/embeddinggemma-2-GGUF)
-   取 `embeddinggemma-2-Q8_0.gguf`（Q8_0 量化，约 310 MB），放到 `models/` 下。
-   - 官方站不可达时用镜像 `https://hf-mirror.com/ggml-org/embeddinggemma-2-GGUF`。
-2. llama.cpp 二进制：从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases)
-   取对应平台的 `llama-<build>-bin-<os>-<arch>.<ext>`（macOS 是 `tar.gz`，Windows 是 `zip`），
-   解压后把里面的 `llama-server`（Windows 是 `llama-server.exe`）放到
-   `models/llama.cpp/<平台目录>/` 下：
-   - macOS：`models/llama.cpp/darwin-x64/llama-server`
-   - Windows：`models/llama.cpp/win32-x64\llama-server.exe`
-3. **macOS 必须补可执行位并重签名**（Windows 无此步骤）：
+1. GGUF 权重放到 `models/embeddinggemma-2-Q8_0.gguf`（Q8_0 量化，详见上表）。
+2. llama.cpp 可执行体：从你自己选定的 llama.cpp 构建里取出 `llama-server` 可执行体，放到
+   `models/llama.cpp/<平台目录>/` 下。
+   **macOS 必须补可执行位并重签名**（Windows 无此步骤）：
    ```bash
    # 二进制通常不带执行位，不补会报 permission denied
    chmod +x "/Applications/niu.app/Contents/Resources/models/llama.cpp/darwin-x64/llama-server"
@@ -314,6 +295,8 @@ codesign --force --sign - /Applications/niu.app
    # （逐个签 .so/.dylib 与新增二进制，再签 bundle 顶层；codesign --deep 自 macOS 13.3 起已废弃）
    # 具体命令见上文「可选：启用脑区功能」里的重签名示例
    ```
+3. 自检：先在终端手跑 llama-server 那一行，三条都过（`--help` 比对 + 三条 curl）再重启 Niu。
+   怎么写 / 怎么验证，见依赖手册「2.5 llama-server 启动方式」节。
 4. 重启 Niu。启动日志出现 `[llama-server] 就绪 http://127.0.0.1:19878` 即成功。
 
 > 📋 **模型与许可证**：EmbeddingGemma 2 来自 google-deepmind，GGUF 转换版权归
@@ -474,18 +457,18 @@ rm -rf niu-natives/target/wheels
 python/bin/maturin build --release --manifest-path niu-natives/Cargo.toml -i python/bin/python
 python/bin/pip install --force-reinstall niu-natives/target/wheels/niu_natives-*.whl
 
-# 6.5 下载向量模型产物（EmbeddingGemma 2 GGUF + llama.cpp，缺了程序起不来）
+# 6.5 放置向量模型产物（EmbeddingGemma 2 GGUF + llama.cpp，缺了程序起不来）
 #    models/llama.cpp/ 与 *.gguf 都不入 git，全新克隆上一个都没有
-python scripts/package_all_dependencies.py
+#    按需自备并放到位（要求 / 自检 / 放哪：依赖手册「2.4 模型下载」；
+#    llama-server 那一行怎么写 / 怎么验证：依赖手册「2.5 llama-server 启动方式」）
 
 # 7. 编译并启动 Rust 启动器
 cd launcher && cargo run --release
 
 启动后在 `config/user-config.json` 中配置你的 LLM API Key 即可开始使用。模型配置经设置窗口保存为命名配置（合集存于 `~/.niu/config/llm-configs.json`）。
 
-> ⚠️ **本地模型文件要预先就位**：向量模型（EmbeddingGemma 2 GGUF）与人脸识别模型
-> （buffalo_l 的 onnx）不在 git 里，需要各自放到位——向量模型跑上面的
-> `scripts/package_all_dependencies.py` 即可（它会按平台下 GGUF + llama.cpp 二进制）；
+> ⚠️ **本地模型文件要预先就位**：向量模型（EmbeddingGemma 2 GGUF + llama.cpp 可执行体）与人脸识别模型
+> （buffalo_l 的 onnx）不在 git 里，需要各自放到位——向量模型按需自备并放到位（要求 / 自检 / 放哪见依赖手册「2.4 模型下载」）；
 > buffalo_l 因许可证禁止程序内下载，需按「可选：启用照片处理」一节手动放置。
 > 缺向量模型时启动会直接报「向量模型产物缺失，程序无法启动」，不是自动下载的。
 

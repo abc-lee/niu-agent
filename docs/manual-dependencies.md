@@ -391,55 +391,25 @@ llama-server 一致）。注意副作用：若一个 chunk 内容全是全角空
 **新增/更换后必须自检：** `git ls-files models/tokenizers/embeddinggemma-2/` 要有
 三个文件。
 
-### 2.4 模型下载
+### 2.4 模型下载（要求 / 自检 / 放哪）
 
-**打包时预下载：**
+**要求**——Niu 需要什么（从哪获取、选哪个平台构建、选哪个构建号：由你自己按需自备，本手册不列下载地址、不列平台变体）：
 
-```bash
-# 运行依赖打包脚本
-python scripts/package_all_dependencies.py
+| 产物 | 要求 | 放哪 |
+|------|------|------|
+| 向量模型权重 `embeddinggemma-2-Q8_0.gguf` | 768 维 GGUF（模型本身见 2.2） | `<models 根目录>/embeddinggemma-2-Q8_0.gguf` |
+| llama.cpp 可执行体 `llama-server` | 满足 2.5 的 6 条兼容性要求、两级自检都过 | `<models 根目录>/llama.cpp/<平台>/` |
+| mmproj 投影矩阵 | 仅「媒体向量入库」开关开时需要（见 2.5 与《系统管理手册》「媒体向量入库」章） | 家目录 `~/.niu/models/` |
+| 人脸识别 `buffalo_l` | 禁止程序内下载 | 开发环境 `models/models/buffalo_l/`；打包后 `niu.app/Contents/Resources/models/models/buffalo_l/`（见 README「可选：启用照片处理」） |
 
-# 自动下载：
-# - Python 依赖包 → python_packages/
-# - 人脸识别模型 → models/models/buffalo_l/
-# - 向量模型产物 → models/embeddinggemma-2-Q8_0.gguf + models/llama.cpp/<platform>/llama-server
-```
+**自检**（两级都要过，方法在 2.5）：
 
-> ✅ **已核对（2026-10-11）**：`scripts/package_all_dependencies.py` **已按新口径**下载
-> `embeddinggemma-2-Q8_0.gguf` 与 `llama-server`——它以 `niu_api/internal/embedding_artifacts.py`
-> 为单一真相源（平台目录、资产名、下载 URL、sha256 校验都从该模块取），
-> 并按平台选对 `darwin-x64` / `win32-x64` 的产物。此前挂于此处的「尚需核对」待办已关闭。
-> ⛔ **`build.sh` / `pack.bat` 都不会自动跑它**，打包前必须手动执行一次，
-> 否则产出没有向量模型的安装包（用户启动即卡契约 A）。
-> buffalo_l 禁止程序内下载，用户需手动放到 `models/models/buffalo_l/`（开发环境）或
-> `niu.app/Contents/Resources/models/models/buffalo_l/`（打包后），见 README「可选：启用照片处理」。
+1. 产物在位：`niu_api/internal/embedding_artifacts.py`——`missing_artifacts()` 列出缺哪个、`artifacts_ready()` 判齐备、`verify_gguf(path)` 校验 GGUF 大小；
+2. 可执行体与 HTTP 面：`--help` 比对 + 三条 curl（见 2.5「怎么验证」）。
 
-**手动下载（备选）：**
+**放哪**：按上表「放哪」一列。就位后，llama-server 那一行启动命令怎么写 / 怎么验证 / 放哪，全部在「2.5 llama-server 启动方式」节。
 
-| 产物 | 下载地址 |
-|------|---------|
-| **EmbeddingGemma 2 GGUF Q8_0**（309,855,456 字节，须校验大小） | https://huggingface.co/ggml-org/embeddinggemma-2-GGUF |
-| **llama.cpp `llama-server`**（按平台：darwin-x64 / win32-x64 等） | https://github.com/ggml-org/llama.cpp/releases |
-| **buffalo_l** | https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip |
-
-> 产物落盘后可用 `niu_api/internal/embedding_artifacts.py` 自检：
-> `missing_artifacts()` 列出缺哪个、`artifacts_ready()` 判齐备、`verify_gguf(path)` 校验大小。
-> **HuggingFace 国内不可达时用镜像** `HF_ENDPOINT=https://hf-mirror.com`；
-> GitHub release 直连慢时可用 `https://gh-proxy.com/` 前缀。
-
-**下载镜像（国内用户）：**
-
-如果 GitHub/HuggingFace 下载失败，可设置镜像：
-```bash
-# HuggingFace 镜像（推荐）
-export HF_ENDPOINT=https://hf-mirror.com
-
-# buffalo_l GitHub 镜像备选
-BUFFALO_L_MIRRORS = [
-    "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
-    "https://sourceforge.net/projects/insightface.mirror/files/v0.7/buffalo_l.zip/download",
-]
-```
+**维护者打包面**（不是用户获取入口）：上述产物的预下载由 `scripts/package_all_dependencies.py` 完成（以 `niu_api/internal/embedding_artifacts.py` 为单一真相源：平台目录、资产名、下载 URL、sha256 校验都从该模块取）。`build.sh` / `pack.bat` 都不会自动跑它，维护者打包前必须手动执行一次，否则产出的安装包没有向量模型。
 
 ### 2.5 llama-server 启动方式：配置里那一行（怎么写 / 怎么验证 / 放哪）
 

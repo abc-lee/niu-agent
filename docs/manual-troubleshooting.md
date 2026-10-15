@@ -111,8 +111,8 @@ python -c "from niu_api.internal.embedding_artifacts import verify_gguf, gguf_pa
 #    macOS 需给二进制可执行位：
 chmod +x models/llama.cpp/darwin-x64/llama-server
 
-# 3. 或用供模型脚本一键下载（推荐）
-python scripts/package_all_dependencies.py
+# 3. 产物缺失就按需自备、放到布局目录（要求 / 自检 / 放哪见依赖手册「2.4 模型下载」），
+#    并按依赖手册「2.5 llama-server 启动方式」节验证（先在终端手跑那一行，三条 curl 都过）
 
 # 4. 重启
 ./niu                             # macOS/Linux（Windows 用 niu.exe）
@@ -190,8 +190,7 @@ niu.exe
 ls models/models/buffalo_l/det_10g.onnx
 ls models/models/buffalo_l/w600k_r50.onnx
 
-# 3. 重新下载模型
-python scripts/package_all_dependencies.py
+# 3. 文件缺失就按需自备 buffalo_l 文件并放到位（获取与放置见 README「可选：启用照片处理」）
 ```
 
 **预加载机制说明：**
@@ -264,9 +263,9 @@ pip install insightface>=0.7.3
 **处置**：
 
 ```bash
-# 1. 模型缺失（最常见）
+# 1. 模型缺失（最常见）：检查产物是否在位，缺失就按需自备并放到位
 ls models/models/buffalo_l/*.onnx      # 注意是双层 models/models/ 目录
-python scripts/package_all_dependencies.py
+# 文件缺失就自备 buffalo_l 文件放到位（获取与放置见 README「可选：启用照片处理」）
 
 # 2. 图片读不出：改用 JPG/PNG/WebP/BMP，或重新导出该文件
 

@@ -183,16 +183,11 @@
 
 ### 1.5 常见性能问题
 
-**问题 1：首次启动慢（需下载模型）**
+**问题 1：首次启动慢（向量模型产物未就位）**
 
-**原因**：首次启动需要准备向量模型产物 —— GGUF 权重约 310MB + llama.cpp 预编译二进制约 11–18MB（按平台）
+**原因**：首次启动需要向量模型产物就位——GGUF 权重在 `models/embeddinggemma-2-Q8_0.gguf`、llama.cpp 可执行体在 `models/llama.cpp/<平台>/`
 
-**解决**：
-```bash
-# 预下载 EmbeddingGemma 2 产物到 models/（GGUF 落 models/ 根，llama-server 落 models/llama.cpp/<platform>/）
-# 每次也会把向量产物缺失检查做一遍；重复执行时已就位的产物直接跳过，不会重复下载
-python scripts/package_all_dependencies.py
-```
+**解决**：按需自备、放到布局目录（要求 / 自检 / 放哪，见依赖手册「2.4 模型下载」）；llama-server 那一行怎么写、怎么验证，见依赖手册「2.5 llama-server 启动方式」节。
 
 **问题 2：人脸识别后内存不释放**
 
