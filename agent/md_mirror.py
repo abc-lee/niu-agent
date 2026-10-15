@@ -591,12 +591,17 @@ def f4_drop_line(line_index: int, queue_path: str | None = None) -> str:
 
 
 def f4_dismiss_if_all_done(queue_path: str | None = None) -> bool:
-    """Chat 页面删文件原语（v3.5，I-3/口径丁）：持排它锁，复核「**每条记录行都带完成标记，
-    或文件没有任何记录行**」⇒ 删文件返 True；**只要存在未完成行 ⇒ False 且文件保持原样**
-    （堵「页面观察到全部完成、删除前写入方新追加一行」的竞态：复核与删除在同一锁区间内完成，
+    """Chat 页面清空文件原语（v3.5，I-3/口径丁）：持排它锁，复核「**每条记录行都带完成标记，
+    或文件没有任何记录行**」⇒ **清空文件（截断到 0），文件本身保留，返 True**；**只要存在未完成行 ⇒ False 且文件保持原样**
+    （堵「页面观察到全部完成、清空前写入方新追加一行」的竞态：复核与清空在同一锁区间内完成，
     写入方的 append_record 排它锁会挡住并发追加）。文件缺失 ⇒ True（本来就没有，视为已清；
-    「下次打开」形态里文件已被上一次删除/从未写过 ⇒ 同样视为已清）。坏行（非 JSON 等）
-    **不算**完成 ⇒ 不删（坏行先由工作者的弃除路径处置）。
+    「下次打开」形态里文件已被上一次清空/从未写过 ⇒ 同样视为已清）。坏行（非 JSON 等）
+    **不算**完成 ⇒ 不清空（坏行先由工作者的弃除路径处置）。
+    **清空而非删除**：Windows 不允许跨进程删除被其他进程持有的文件（本队列文件常被 worker 或入库
+    MCP 工具持有）⇒ os.remove 抛 PermissionError 被吞 ⇒ 页面状态条永远关不掉；Chat 页面本就对
+    「文件缺失/空/只有空行」一律按「无活可干」隐藏状态条，故清空语义在页面侧完全同型。截断复用
+    既有 ``os.ftruncate(fd, 0)`` 原语（同 truncate_relay_files）；失败走下方 except 如实返 False
+    并告警（不再静默吞）。
     """
     p = queue_path or MEDIA_QUEUE_PATH
     try:
@@ -608,7 +613,7 @@ def f4_dismiss_if_all_done(queue_path: str | None = None) -> bool:
         with os.fdopen(os.dup(fd), "r", encoding="utf-8") as f:
             content = f.read()
         if not content:
-            os.remove(p)
+            os.ftruncate(fd, 0)  # 空文件：截断为无害 no-op，保持与主路径同一原语
             return True
         lines, _torn = _f4_split_records(content)
         for line in lines:
@@ -617,10 +622,10 @@ def f4_dismiss_if_all_done(queue_path: str | None = None) -> bool:
             try:
                 rec = json.loads(line)
             except (ValueError, TypeError):
-                return False  # 坏行不是「已完成」⇒ 不删
+                return False  # 坏行不是「已完成」⇒ 不清空
             if not isinstance(rec, dict) or rec.get(F4_DONE_KEY) is not True:
-                return False  # 未完成行 ⇒ 拒删
-        os.remove(p)
+                return False  # 未完成行 ⇒ 拒清空
+        os.ftruncate(fd, 0)  # 全部完成 ⇒ 清空文件，文件本身保留（Windows 形态：跨进程删除会被挡）
         return True
     except Exception as e:
         logger.warning(f"[MdMirror] f4_dismiss_if_all_done 失败: {e}")
