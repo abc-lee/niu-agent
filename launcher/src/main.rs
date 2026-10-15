@@ -1733,17 +1733,92 @@ fn wait_for_port_free(port: u16, timeout: Duration) -> bool {
     }
 }
 
-/// llama-server 固定端口，与 niu_api/internal/llama_server.py 的 LLAMA_PORT 同源。
-/// 打包期固定值；将来端口若可配，两处必须同步，否则会漏杀。
+/// llama-server 内置兜底端口：真源是 ~/.niu/config/user-config.json 的
+/// `llama_cpp.command` 里的 `--port`（本启动器与 Python 侧从同一条命令行解析，
+/// 见 parse_llama_port）；仅当 command 为 null 或解析不到时回退 19878。
+/// 两侧回退值必须一致，否则端口释放检查会查错端口。
 const LLAMA_PORT: u16 = 19878;
 
-/// 生成 unix 侧 pkill -f 的 ERE：产物路径段 + 可执行名 + 端口，三者缺一不可。
-/// 跨平台目录名不同（darwin-x64 / win32-x64），用 `.*` 覆盖，不得写死。
+/// 布局派生锚点段（command 为 null 时的兜底，与旧行为逐字节一致）：产物路径段
+/// `llama\.cpp/` + 可执行名，跨平台目录名（darwin-x64 / win32-x64）用 `.*`
+/// 覆盖、不得写死。unix 与 Windows 侧分隔符写法不同（正斜杠 vs `[\\/]` 字符
+/// 类），故两个常量。
+const LAYOUT_ANCHOR_UNIX: &str = r"llama\.cpp/.*llama-server";
+const LAYOUT_ANCHOR_WINDOWS: &str = r"llama\.cpp[\\/].*llama-server";
+
+/// 读 ~/.niu/config/user-config.json 的 `llama_cpp.command`（一条完整命令行）。
+/// 先例同 should_enable_logging：文件缺失 / 解析失败 / 值为 null / 非字符串
+/// 一律返回 None（None ⇒ 端口回退 LLAMA_PORT + WARN，锚点回退布局段）。
+fn read_llama_cpp_command() -> Option<String> {
+    let config_path = detect_niu_home().ok()?.join("config").join("user-config.json");
+    let content = std::fs::read_to_string(&config_path).ok()?;
+    let v = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    v.get("llama_cpp")
+        .and_then(|c| c.get("command"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+}
+
+/// 从命令行解析 llama-server 监听端口：`--port 19878` 与 `--port=19878`
+/// 两种写法都认；command 为 null / 无 --port / 值非数字 ⇒ None
+/// （调用方回退 LLAMA_PORT + WARN）。
+fn parse_llama_port(command: Option<&str>) -> Option<u16> {
+    let words: Vec<&str> = command?.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i];
+        if let Some(v) = w.strip_prefix("--port=") {
+            return v.parse().ok();
+        }
+        if w == "--port" {
+            return words.get(i + 1)?.parse().ok();
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 杀孤儿匹配用的可执行体锚点：命令行第一个词，原样做 regex 转义（`.exe`
+/// 里的点、ERE 与 .NET 正则里都是通配的 `\` 必须转义，否则会误配别的东西）。
+/// 首词无路径分隔符时即裸名，basename 就是它本身。command 为 null/空 / 无首词
+/// ⇒ None，调用方回退布局派生段。锚点只是双重限定之一：pattern 必须永远再配
+/// `--port <port>`（I-4 绝对禁区：不得只按进程名匹配，否则误杀用户自有的
+/// llama-server）。
+fn llama_server_exec_anchor(command: Option<&str>) -> Option<String> {
+    let word = command?.split_whitespace().next().filter(|s| !s.is_empty())?;
+    Some(
+        word.chars()
+            .map(|c| {
+                if r"\.*+?^$()[]{}|".contains(c) {
+                    format!("\\{c}")
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Windows 侧 Win32_Process Name 过滤前缀：首词的 basename 去掉扩展名
+/// （配 `Name like 'X%'`；Windows 进程 Name 含扩展名）。Name 过滤只缩小
+/// 扫描面，真正限定靠 CommandLine -match 的双重限定。None（command 为
+/// null/空）⇒ 调用方用布局默认 'llama-server%'。
+fn llama_command_name_prefix(command: Option<&str>) -> Option<String> {
+    let word = command?.split_whitespace().next().filter(|s| !s.is_empty())?;
+    let base = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let name = base.split_once('.').map(|(stem, _)| stem).unwrap_or(base);
+    Some(name.to_string())
+}
+
+/// 生成 unix 侧 pkill -f 的 ERE：可执行体锚点 + 端口，双重限定缺一不可
+/// （I-4）。锚点要么布局派生段（command 为 null）要么命令行首词转义。
 // 与 llama_server_kill_script_windows 对称：本函数在所有平台上编译（单测需在
 // 各平台断言），生产调用点只在 #[cfg(unix)] 分支 → 非 unix 构建标记为 dead。
 #[cfg_attr(not(unix), allow(dead_code))]
-fn llama_server_kill_pattern_unix(port: u16) -> String {
-    format!("llama\\.cpp/.*llama-server.*--port {port}")
+fn llama_server_kill_pattern_unix(command: Option<&str>, port: u16) -> String {
+    let anchor = llama_server_exec_anchor(command)
+        .unwrap_or_else(|| LAYOUT_ANCHOR_UNIX.to_string());
+    format!("{anchor}.*--port {port}")
 }
 
 /// 生成 unix 侧 pkill 的完整参数（含信号级别）。
@@ -1760,44 +1835,71 @@ fn llama_server_kill_pattern_unix(port: u16) -> String {
 // 信号级别是行为契约：单测需在各平台断言 `-9` 在场（删掉即回归），故所有
 // 平台编译；生产调用点只在 #[cfg(unix)] 分支 → 非 unix 构建标记为 dead。
 #[cfg_attr(not(unix), allow(dead_code))]
-fn llama_server_pkill_args_unix(port: u16) -> [String; 3] {
-    let pattern = llama_server_kill_pattern_unix(port);
+fn llama_server_pkill_args_unix(command: Option<&str>, port: u16) -> [String; 3] {
+    let pattern = llama_server_kill_pattern_unix(command, port);
     ["-9".to_string(), "-f".to_string(), pattern]
 }
 
 /// 生成 Windows 侧 PowerShell 脚本。
 /// - 必须用 Get-CimInstance Win32_Process：PS 5.1 的 Get-Process 没有 CommandLine
 ///   属性，按 CommandLine 过滤会恒空、什么都杀不到（本文件既有注释记载的血泪坑）。
-/// - `llama\.cpp[\\/]` 中 `\.` 是字面点（真实命令行 `<models>/llama.cpp/<platform>/...`
+/// - 布局派生段 `llama\.cpp[\\/]` 中 `\.` 是字面点（真实命令行 `<models>/llama.cpp/<platform>/...`
 ///   里 `llama.cpp` 中间是点，分隔符在点之后），`[\\/]` 是跨平台路径分隔符
 ///   字符类（Rust 字符串 `[\\\\/]` → PowerShell 单引号字面量 `[\\/]` →
 ///   .NET 正则字符类：反斜杠或正斜杠）。
-/// - Name 过滤只缩小扫描面；真正限定靠 CommandLine -match。
+/// - 命令行首词锚点同样做了 regex 转义（反斜杠、点）；首词里的 `'` 按 PS 单引号
+///   字面量语义双写转义，防畸形路径把脚本文本撑破。
+/// - Name 过滤只缩小扫描面（首词 basename 去扩展名；command 为 null 时布局
+///   默认 'llama-server%'）；真正限定靠 CommandLine -match 的双重限定。
 /// - 输出 KILLED<n>/NONE：PowerShell 空管道退出码仍为 0，光看 exit code 无法区分
 ///   「真杀了」与「无可杀」（R1-A P3）。Windows 侧必须像 unix 的 exit 1 一样可判。
 // 本函数在所有平台上编译（T4 单测需在 mac 上断言 Windows 脚本文本，部分关闭
 // Windows 盲区），但生产调用点只在 #[cfg(windows)] 分支 → 非 Windows 构建里
 // 标记为 dead；Windows 构建保持严格 lint。
 #[cfg_attr(not(windows), allow(dead_code))]
-fn llama_server_kill_script_windows(port: u16) -> String {
+fn llama_server_kill_script_windows(command: Option<&str>, port: u16) -> String {
+    let anchor = llama_server_exec_anchor(command)
+        .unwrap_or_else(|| LAYOUT_ANCHOR_WINDOWS.to_string());
+    // PS 单引号字面量里 ' 用 '' 转义。
+    let anchor_ps = anchor.replace('\'', "''");
+    let name = llama_command_name_prefix(command)
+        .unwrap_or_else(|| "llama-server".to_string());
     format!(
-        "$p = Get-CimInstance Win32_Process -Filter \"Name like 'llama-server%'\" \
-         | Where-Object {{ $_.CommandLine -match 'llama\\.cpp[\\\\/].*llama-server.*--port {port}' }}; \
+        "$p = Get-CimInstance Win32_Process -Filter \"Name like '{name}%'\" \
+         | Where-Object {{ $_.CommandLine -match '{anchor_ps}.*--port {port}' }}; \
          if ($p) {{ $p | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}; \
          \"KILLED \" + $p.Count }} else {{ \"NONE\" }}"
     )
 }
 
-/// 清理由本项目拉起的 llama-server（跨平台）。
+/// 清理由本项目拉起的 llama-server（跨平台）。返回解析出的端口，供调用方
+/// 在发完信号后确认端口确实释放。
 ///
 /// 为什么需要：Python 侧三层清理（lifespan stop / atexit / shutdown 处理器显式 stop）
 /// 都有覆盖不到的场景（见 plan §1 缺口表）；且 llama-server 是 Python 的孙进程，
 /// 不在本启动器的 Child 句柄上，清理阶梯 Step 1-6 管不到它。
 ///
-/// 匹配必须【同时】限定产物路径与端口，仅按进程名匹配会误杀用户自有的
-/// llama-server，属绝对禁区（I-4）。
-fn kill_stale_llama_server() {
-    let port = LLAMA_PORT;
+/// 端口真源是 ~/.niu/config/user-config.json 的 `llama_cpp.command`（与 Python 侧
+/// 同一条命令行，见 parse_llama_port）；command 为 null / 解析不到 --port ⇒
+/// 回退 LLAMA_PORT（19878）+ WARN。
+/// 匹配必须【同时】限定可执行体（命令行首词，或 command 为 null 时的布局段）
+/// 与端口，仅按进程名匹配会误杀用户自有的 llama-server，属绝对禁区（I-4）。
+fn kill_stale_llama_server() -> u16 {
+    let command = read_llama_cpp_command();
+    let port = match parse_llama_port(command.as_deref()) {
+        Some(p) => p,
+        None => {
+            warn!(
+                "llama_cpp.command={} 无可用 --port，回退默认端口 {}",
+                command
+                    .as_deref()
+                    .map(|c| format!("\"{c}\""))
+                    .unwrap_or_else(|| "null".to_string()),
+                LLAMA_PORT
+            );
+            LLAMA_PORT
+        }
+    };
 
     #[cfg(unix)]
     {
@@ -1805,7 +1907,7 @@ fn kill_stale_llama_server() {
         // 确认死亡，故不得宣称已杀成）；其余 = 真失败，warn。
         // 为什么必须 -9：见 llama_server_pkill_args_unix 的文档注释。
         match Command::new("pkill")
-            .args(llama_server_pkill_args_unix(port))
+            .args(llama_server_pkill_args_unix(command.as_deref(), port))
             .status()
         {
             Ok(status) if status.success() => {
@@ -1822,7 +1924,7 @@ fn kill_stale_llama_server() {
 
     #[cfg(windows)]
     {
-        let script = llama_server_kill_script_windows(port);
+        let script = llama_server_kill_script_windows(command.as_deref(), port);
         let mut cmd = Command::new("powershell");
         cmd.args(["-NoProfile", "-Command", &script]);
         no_window(&mut cmd);
@@ -1841,6 +1943,7 @@ fn kill_stale_llama_server() {
             }
         }
     }
+    port
 }
 
 /// killStaleAPIProcess checks if the API port is occupied and kills the stale process
@@ -1947,20 +2050,21 @@ fn kill_stale_api_process(port: u16) {
     }
 
     // --- Step 6: llama-server stale cleanup (S6 覆盖点 ③) ---
-    // 上次泄漏的孤儿 llama-server 占着 19878 且不应答 /health：新实例 start()
-    // 判 _health_ok() 假 → 二次 Popen 绑端口失败 → 提前退出 → 契约 A Fatal，
-    // 每次重启复现。kill_stale_api_process 只匹配 python.*niu_api，管不到孙进程。
-    // 匹配模式与退出时完全相同（同路径同端口），复用同一个函数。
-    kill_stale_llama_server();
-    // pkill/Stop-Process 只发信号不等待：孤儿可能还没退出、19878 仍被占着，
+    // 上次泄漏的孤儿 llama-server 占着 llama-server 端口（真源为 llama_cpp.command
+    // 的 --port，默认 19878）且不应答 /health：新实例 start() 判 _health_ok() 假 →
+    // 二次 Popen 绑端口失败 → 提前退出 → 契约 A Fatal，每次重启复现。
+    // kill_stale_api_process 只匹配 python.*niu_api，管不到孙进程。
+    // 匹配模式与退出时完全相同（同命令行 → 同锚点、同端口），复用同一个函数。
+    let llama_port = kill_stale_llama_server();
+    // pkill/Stop-Process 只发信号不等待：孤儿可能还没退出、端口仍被占着，
     // 此时新实例 llama_server.start() 会二次 Popen 绑端口失败 → _wait_ready
     // 失败 → RuntimeError（契约 A Fatal）。与 Step 5 同款范式确认端口已释放。
-    if wait_for_port_free(LLAMA_PORT, Duration::from_secs(3)) {
-        info!("llama-server port {} is free, safe to start", LLAMA_PORT);
+    if wait_for_port_free(llama_port, Duration::from_secs(3)) {
+        info!("llama-server port {} is free, safe to start", llama_port);
     } else {
         warn!(
             "llama-server port {} still occupied after cleanup — proceeding anyway",
-            LLAMA_PORT
+            llama_port
         );
     }
 }
@@ -2343,8 +2447,9 @@ fn drain_lines<R: BufRead>(reader: R, mut sink: impl FnMut(&str)) {
 // 会漂移的收尾路径。
 //
 // 不处理的后果：launcher 被默认处置立即打死时，Python API 子进程被过继给
-// PID 1、llama-server 沦为孤儿继续占着 19878 端口——下次启动单写者契约
-// （端口 19878 / 9876 必须可绑）直接撞上，且飞行中的请求没有 drain 机会。
+// PID 1、llama-server 沦为孤儿继续占着 llama-server 端口（默认 19878）——
+// 下次启动单写者契约（llama-server 端口 / 9876 必须可绑）直接撞上，且飞行
+// 中的请求没有 drain 机会。
 static SIGNAL_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 /// 异步信号安全的信号处理器：只置位 SIGNAL_RECEIVED，不做任何重活
@@ -3473,12 +3578,35 @@ mod tests {
 
     // ------------------------------------------------------------------
     // S6: llama-server 兜底清理 —— 只断言生成的匹配串文本，绝不真杀进程
+    // 端口真源 = user-config.json 的 llama_cpp.command；command 为 null ⇒
+    // 端口回退 LLAMA_PORT、锚点回退布局派生段（与旧行为逐字节一致）。
     // ------------------------------------------------------------------
 
     #[test]
+    fn test_parse_llama_port_variants() {
+        // --port <n> 与 --port=<n> 两种写法都认
+        assert_eq!(parse_llama_port(Some("llama-server --port 19878 --ctx-size 4096")),
+                   Some(19878), "空格形态必须解析出端口");
+        assert_eq!(parse_llama_port(Some("llama-server --port=19878")),
+                   Some(19878), "等号形态必须解析出端口");
+        // command 为 null / 无 --port / 值非数字 / --port 缺值 ⇒ None
+        // （调用方回退 LLAMA_PORT + WARN）
+        assert_eq!(parse_llama_port(None), None, "null command ⇒ None");
+        assert_eq!(parse_llama_port(Some("llama-server --ctx-size 4096")), None,
+                   "无 --port ⇒ None");
+        assert_eq!(parse_llama_port(Some("llama-server --port abc")), None,
+                   "非数字端口 ⇒ None");
+        assert_eq!(parse_llama_port(Some("llama-server --port")), None,
+                   "--port 缺值 ⇒ None");
+    }
+
+    #[test]
     fn test_llama_server_kill_pattern_unix() {
-        let p = llama_server_kill_pattern_unix(LLAMA_PORT);
-        // I-4 三重限定：产物路径段、可执行名、端口，缺一不可
+        // 布局派生锚点（command 为 null 的兜底）：产物路径段 + 可执行名 + 端口
+        let p = llama_server_kill_pattern_unix(None, LLAMA_PORT);
+        // 与旧行为逐字节一致（防布局兜底分支漂移）
+        assert_eq!(p, format!("llama\\.cpp/.*llama-server.*--port {LLAMA_PORT}"),
+                   "布局锚点 pattern 必须与旧行为逐字节一致");
         assert!(p.contains("llama\\.cpp/"), "unix 模式必须含产物路径段");
         assert!(p.contains("llama-server"), "unix 模式必须含可执行名");
         assert!(p.contains(&format!("--port {LLAMA_PORT}")), "unix 模式必须含端口");
@@ -3492,36 +3620,110 @@ mod tests {
 
     #[test]
     fn test_llama_server_pkill_args_unix() {
-        let args = llama_server_pkill_args_unix(LLAMA_PORT);
+        let args = llama_server_pkill_args_unix(None, LLAMA_PORT);
         // 信号级别是行为契约：孤儿兜底路径必须 SIGKILL 一击必杀。若有人删掉 -9，
         // pkill 退回默认 SIGTERM——llama-server 忙时不响应、launcher 随即退出无人
         // 等待 → 孤儿永存（AC-2 实测回归）。此断言即该回归的守门测试。
         assert_eq!(args.len(), 3, "pkill 参数必须恰好 3 个：-9 -f <pattern>");
         assert_eq!(args[0], "-9", "unix 兜底清理必须显式 -9 (SIGKILL)");
         assert_eq!(args[1], "-f", "必须按完整命令行匹配 (-f)");
-        // pattern 仍受 I-4 三重限定（与 test_llama_server_kill_pattern_unix 同源）
-        assert_eq!(args[2], llama_server_kill_pattern_unix(LLAMA_PORT),
-                   "第三个参数必须是 I-4 三重限定的匹配 pattern");
+        // pattern 受 I-4 双重限定（布局锚点 + 端口，与 test_llama_server_kill_pattern_unix 同源）
+        assert_eq!(args[2], llama_server_kill_pattern_unix(None, LLAMA_PORT),
+                   "第三个参数必须是 I-4 双重限定的匹配 pattern");
     }
 
     #[test]
     fn test_llama_server_kill_script_windows() {
-        let s = llama_server_kill_script_windows(LLAMA_PORT);
+        let s = llama_server_kill_script_windows(None, LLAMA_PORT);
         // 必须用 Get-CimInstance：PS 5.1 的 Get-Process 无 CommandLine 属性
         assert!(s.contains("Get-CimInstance Win32_Process"));
         // Stop-Process -Force = SIGKILL 语义
         assert!(s.contains("Stop-Process -Id"));
-        // 产物路径段必须是 `llama\.cpp`（字面点）+ 跨平台分隔符字符类：
+        // 布局派生路径段必须是 `llama\.cpp`（字面点）+ 跨平台分隔符字符类：
         // 真实命令行 `llama.cpp/<platform>/llama-server.exe` 里点在先、分隔符在后。
         // Rust 源码 `llama\\.cpp[\\\\/]` → PowerShell 收到的 `llama\.cpp[\\/]`。
         assert!(s.contains("llama\\.cpp[\\\\/]"), "路径段必须含字面点再跟分隔符字符类");
         // 分隔符字符类本身仍须是反斜杠/正斜杠两类
         assert!(s.contains("[\\\\/]"), "路径分隔符必须是跨平台字符类");
-        // 端口限定
-        assert!(s.contains(&format!("--port {LLAMA_PORT}")));
+        // 布局锚点整段（含端口）必须原样出现在 -match 里（与旧行为逐字节一致）
+        assert!(s.contains(&format!("'llama\\.cpp[\\\\/].*llama-server.*--port {LLAMA_PORT}'")),
+                "command 为 null 时 Windows 脚本必须与旧行为一致");
+        // Name 过滤的布局默认前缀
+        assert!(s.contains("Name like 'llama-server%'"));
         // R1-A P3：必须能区分「真杀了」与「无可杀」
         assert!(s.contains("KILLED") && s.contains("NONE"),
                 "Windows 侧必须可判空匹配");
+    }
+
+    #[test]
+    fn test_kill_anchor_escaped_first_word() {
+        // 首词是含 Windows 反斜杠、`.` 等正则元字符的绝对路径：必须逐字符转义、
+        // 仍含端口限定、不得再出现布局段 `llama\.cpp/`（斜杠形态）。
+        let cmd = r#"C:\Tools\llama.cpp\win32-x64\llama-server.exe --port 19878"#;
+        let p = llama_server_kill_pattern_unix(Some(cmd), LLAMA_PORT);
+        assert!(p.contains(r"C:\\Tools\\llama\.cpp\\win32-x64\\llama-server\.exe"),
+                "首词必须 regex 转义（\\ 与 .），实际 pattern: {p}");
+        assert!(p.contains(&format!("--port {LLAMA_PORT}")), "pattern 必须含端口");
+        assert!(!p.contains("llama\\.cpp/"),
+                "command 在场时不得出现布局段（斜杠形态）");
+        // unix 绝对路径：`.` 转义、`/` 原样
+        let cmd2 = "/opt/llama.cpp/darwin-x64/llama-server --port=19878";
+        let p2 = llama_server_kill_pattern_unix(Some(cmd2), LLAMA_PORT);
+        assert!(p2.contains("/opt/llama\\.cpp/darwin-x64/llama-server"),
+                "unix 绝对路径首词必须转义后原样出现，实际 pattern: {p2}");
+    }
+
+    #[test]
+    fn test_kill_anchor_layout_fallback_null_command() {
+        // command 为 null ⇒ 走布局派生分支，行为与今天完全一致（两侧均断言）
+        let p = llama_server_kill_pattern_unix(None, LLAMA_PORT);
+        assert_eq!(p, format!("llama\\.cpp/.*llama-server.*--port {LLAMA_PORT}"),
+                   "unix 布局兜底必须与旧 pattern 逐字节一致");
+        let s = llama_server_kill_script_windows(None, LLAMA_PORT);
+        assert!(s.contains("llama\\.cpp[\\\\/]"), "Windows 布局兜底必须保留分隔符字符类");
+        assert!(s.contains("Name like 'llama-server%'"), "Name 过滤必须回到布局默认");
+        // 空白 command 同样落入布局兜底（无首词可取）
+        assert_eq!(llama_server_exec_anchor(Some("   ")), None);
+    }
+
+    #[test]
+    fn test_kill_pattern_always_double_qualified() {
+        // I-4 防回归：生成的 pattern 必须【同时】含可执行体片段与 --port <port>，
+        // 缺任何一项都意味着退化成"只按进程名匹配"（会误杀用户自有的 llama-server）
+        let cases: [Option<&str>; 3] = [
+            None,
+            Some("/opt/llama.cpp/darwin-x64/llama-server --port 19878"),
+            Some(r#"C:\Tools\llama.cpp\win32-x64\llama-server.exe --port=19878"#),
+        ];
+        for cmd in cases {
+            let p = llama_server_kill_pattern_unix(cmd, LLAMA_PORT);
+            let anchor = llama_server_exec_anchor(cmd)
+                .unwrap_or_else(|| LAYOUT_ANCHOR_UNIX.to_string());
+            assert!(p.contains(&anchor), "pattern 必须含可执行体片段: {p}");
+            assert!(p.contains(&format!("--port {LLAMA_PORT}")),
+                    "pattern 必须含端口限定: {p}");
+        }
+        // Windows 侧同样双重限定：CommandLine -match 里锚点与端口缺一不可
+        let s = llama_server_kill_script_windows(
+            Some(r#"C:\Tools\llama.cpp\win32-x64\llama-server.exe --port=19878"#),
+            LLAMA_PORT,
+        );
+        assert!(s.contains(r"C:\\Tools\\llama\.cpp\\win32-x64\\llama-server\.exe.*--port 19878"),
+                "Windows -match 必须含转义锚点 + 端口，实际脚本: {s}");
+        assert!(s.contains("Name like 'llama-server%'"));
+    }
+
+    #[test]
+    fn test_llama_command_name_prefix() {
+        // Windows Name 过滤前缀：basename 去扩展名；command 为 null/空白 ⇒ None
+        assert_eq!(llama_command_name_prefix(Some(r"C:\Tools\llama-server.exe")),
+                   Some("llama-server".to_string()));
+        assert_eq!(llama_command_name_prefix(Some("llama-server")),
+                   Some("llama-server".to_string()), "无分隔符首词即自身");
+        assert_eq!(llama_command_name_prefix(Some("tools/llama-server")),
+                   Some("llama-server".to_string()), "带分隔符取 basename");
+        assert_eq!(llama_command_name_prefix(None), None);
+        assert_eq!(llama_command_name_prefix(Some("   ")), None);
     }
 
     // ------------------------------------------------------------------
