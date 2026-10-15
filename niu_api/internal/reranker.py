@@ -12,13 +12,14 @@ than bi-encoder embedding similarity).
 用户实测结论：rerank 收益很小、GPU/内存资源耗费很大，与本期待解决目标无关，
 故生产侧已不再把它接进 LightRAG（见 lightrag_manager.py 的 reranker_func = None）。
 本模块的模型加载/切换/调用逻辑整条保留原样，将来要恢复只需改那一行。
-注意：`preferences.json` 里的 `reranker_model` 停在 `"none"` 即可；
-若误配成具体模型名，本模块仍会尝试加载（依赖已在 requirements 中保留）。
+若误配成不受支持的值，本模块会响亮告警并自愈写回 "none"（进程内一次），不会尝试加载；
+表内的具体模型名仍会尝试加载（依赖已在 requirements 中保留）。
 """
 
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 from loguru import logger
@@ -44,8 +45,19 @@ SUPPORTED_RERANKERS = {
 }
 
 
+# 陈旧配置值自愈：reranker_model 读到不受支持的值时，进程内最多写回一次生效值，
+# 避免 get_reranker / make_lightrag_reranker_callable / 诊断查询等每次调用都写盘。
+_stale_reranker_healed = False
+_stale_reranker_heal_lock = threading.Lock()
+
+
 def _get_reranker_model_name() -> str:
-    """Read reranker model name from preferences.json, fallback to 'none'."""
+    """Read reranker model name from preferences.json.
+
+    - 值受支持 / 键缺失或为空：原样返回，不告警、不写回（与旧行为一致）。
+    - 值不受支持（有值但不在 SUPPORTED_RERANKERS）：响亮 WARNING（带路径与键名），
+      原子写回生效值 "none"（进程内一次）；写回失败绝不抛——告警后继续用生效值。
+    """
     try:
         prefs_path = Path.home() / ".niu" / "preferences.json"
         if prefs_path.exists():
@@ -53,9 +65,30 @@ def _get_reranker_model_name() -> str:
             model_name = prefs.get("lightrag", {}).get("reranker_model", "")
             if model_name and model_name in SUPPORTED_RERANKERS:
                 return model_name
+            if model_name:  # 有值但不受支持：响亮告警 + 自愈写回
+                _heal_stale_reranker_model(model_name, prefs_path, prefs)
     except Exception as e:
         logger.debug(f"Failed to read reranker model from preferences: {e}")
     return "none"
+
+
+def _heal_stale_reranker_model(stale_name: str, prefs_path: Path, prefs: dict) -> None:
+    """对不受支持的 reranker_model 配置值告警，并原子写回生效值（进程内一次）。"""
+    global _stale_reranker_healed
+    logger.warning(
+        f"preferences.json ({prefs_path}) 的 lightrag.reranker_model 配置值 "
+        f"{stale_name!r} 不受支持，已改用 'none'（当前支持："
+        f"{', '.join(sorted(SUPPORTED_RERANKERS))}）"
+    )
+    with _stale_reranker_heal_lock:
+        if _stale_reranker_healed:
+            return  # 本进程已尝试过写回（含失败），不再重复写盘
+        _stale_reranker_healed = True
+    try:
+        prefs.setdefault("lightrag", {})["reranker_model"] = "none"
+        _atomic_write_json(prefs_path, prefs)
+    except Exception as e:
+        logger.warning(f"reranker_model 自愈写回失败：{e}；继续使用 'none'")
 
 
 # ============== Model Loading ==============

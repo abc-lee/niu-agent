@@ -431,7 +431,11 @@ class TestStaleModelSelfHeal:
 
 
 class TestTemplatePreferencesConsistency:
-    """模板一致性门禁：memory/preferences.json（安装/重置模板）与代码支持表不许漂移。"""
+    """模板一致性门禁：memory/preferences.json（安装/重置模板）与代码支持表不许漂移。
+
+    覆盖 lightrag.embedding_model（SUPPORTED_MODELS）与 lightrag.reranker_model
+    （SUPPORTED_RERANKERS，跨模块）两个键。
+    """
 
     def test_template_embedding_model_in_supported_models(self):
         from niu_api.internal.embedding import SUPPORTED_MODELS
@@ -442,5 +446,20 @@ class TestTemplatePreferencesConsistency:
         model = data.get("lightrag", {}).get("embedding_model", "")
         assert model in SUPPORTED_MODELS, (
             f"模板 lightrag.embedding_model={model!r} 不在代码支持表 {sorted(SUPPORTED_MODELS)} 内——"
+            f"模板与代码再次漂移"
+        )
+
+    def test_template_reranker_model_in_supported_rerankers(self):
+        from niu_api.internal.reranker import SUPPORTED_RERANKERS
+
+        template = Path(__file__).resolve().parent.parent / "memory" / "preferences.json"
+        assert template.exists(), "memory/preferences.json 模板缺失"
+        data = json.loads(template.read_text(encoding="utf-8"))
+        reranker_model = data.get("lightrag", {}).get("reranker_model", "")
+        if not reranker_model:
+            # 模板没有 lightrag.reranker_model 键 ⇒ 无值可校验，跳过断言（缺键不视为漂移）。
+            return
+        assert reranker_model in SUPPORTED_RERANKERS, (
+            f"模板 lightrag.reranker_model={reranker_model!r} 不在代码支持表 {sorted(SUPPORTED_RERANKERS)} 内——"
             f"模板与代码再次漂移"
         )
