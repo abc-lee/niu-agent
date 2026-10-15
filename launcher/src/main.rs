@@ -1317,6 +1317,92 @@ fn detect_python() -> String {
 // initNiuDir — corresponds to Go's initNiuDir()
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 出厂缺省种子清单 —— 包内只读种子 → 家目录副本
+// （seed 机制：memory/ 是首启必需的出厂缺省；启动器不在才拷、在绝不覆盖；
+//   程序只读家目录那份，永不读包内原件、永不写包内）
+// ---------------------------------------------------------------------------
+
+/// 种子条目：`src` 是包内 `memory/` 目录的相对路径，`dst` 是 `~/.niu/` 的相对路径；
+/// `os` = None 表示平台无关（任何系统都拷）；`Some(suffix)` 表示平台相关，仅当前 OS
+/// 映射到该后缀时才拷（目标名去掉平台后缀）。
+struct SeedEntry {
+    src: &'static str,
+    dst: &'static str,
+    os: Option<&'static str>,
+}
+
+/// 出厂缺省种子清单（布局事实按平台拆分；目标名去后缀）。
+const SEEDS: &[SeedEntry] = &[
+    SeedEntry { src: "memory.json", dst: "memory.json", os: None },
+    SeedEntry { src: "preferences.json", dst: "preferences.json", os: None },
+    SeedEntry { src: "llama-layout.darwin.json", dst: "llama-layout.json", os: Some("darwin") },
+    SeedEntry { src: "llama-layout.win32.json", dst: "llama-layout.json", os: Some("win32") },
+];
+
+/// std::env::consts::OS 取值 → 平台种子后缀：macOS（"macos"，兼容 "darwin"）→ "darwin"，
+/// Windows（"windows"）→ "win32"；其它 OS 无平台种子（None ⇒ 该功能降级，仅 WARN，不拒启）。
+fn platform_seed_suffix(os: &str) -> Option<&'static str> {
+    match os {
+        "macos" | "darwin" => Some("darwin"),
+        "windows" => Some("win32"),
+        _ => None,
+    }
+}
+
+/// 拷贝单个种子。铁律：目标已存在 ⇒ 跳过、绝不覆盖（保护用户副本）；源缺失 ⇒ WARN
+/// 后继续（平台种子缺失时注明"该功能将降级"，不拒启）；写失败 ⇒ ERROR 后继续。
+/// 绝不 panic。返回 true 当且仅当实际发生了拷贝。
+fn copy_seed(src: &Path, dst: &Path, platform: bool) -> bool {
+    if dst.exists() {
+        return false;
+    }
+    let data = match fs::read(src) {
+        Ok(d) => d,
+        Err(e) => {
+            if platform {
+                warn!("平台种子缺失，跳过（该功能将降级）: {} ({})", src.display(), e);
+            } else {
+                warn!("Template file not found, skipping: {} ({})", src.display(), e);
+            }
+            return false;
+        }
+    };
+    // 目标父目录可能尚不存在（~/.niu 已在 init_niu_dir 头部建好；直调时兜底）
+    if let Some(parent) = dst.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(e) = fs::write(dst, &data) {
+        error!(
+            "Failed to write seed: {} -> {}, error={}",
+            src.display(),
+            dst.display(),
+            e
+        );
+        return false;
+    }
+    info!("Copied seed: {} -> {}", src.display(), dst.display());
+    true
+}
+
+/// 按种子清单拷贝所有适用条目（`os` = std::env::consts::OS 当前值）。
+fn copy_seeds(template_dir: &Path, niu_dir: &Path, os: &str) {
+    let os_suffix = platform_seed_suffix(os);
+    if os_suffix.is_none() {
+        warn!("未适配的平台 {}，跳过平台种子（该功能将降级）", os);
+    }
+    for entry in SEEDS {
+        if entry.os != os_suffix {
+            continue; // 平台相关条目只对自己的 OS 生效
+        }
+        copy_seed(
+            &template_dir.join(entry.src),
+            &niu_dir.join(entry.dst),
+            entry.os.is_some(),
+        );
+    }
+}
+
 /// initNiuDir ensures ~/.niu/ directory exists and copies template files if needed
 fn init_niu_dir(project_root: &str) {
     let home_dir = match dirs::home_dir() {
@@ -1335,35 +1421,12 @@ fn init_niu_dir(project_root: &str) {
         return;
     }
 
-    // Template files to copy if they don't exist in ~/.niu/
-    let template_files = ["memory.json", "preferences.json"];
+    // 出厂缺省种子：不在 ~/.niu/ 对应位置才拷（绝不覆盖已存在的）。包内 memory/ 原件
+    // 只读，仅启动器复制时读；程序只读家目录那份。
+    // 必须在 skills 段之前：skills 段带全函数提前退出（目录缺失即 return），种子放其后
+    // 会"skills 模板缺失 ⇒ 种子没拷 ⇒ 首启起不来"。
     let template_dir = PathBuf::from(project_root).join("memory");
-
-    for filename in &template_files {
-        let dst_path = niu_dir.join(filename);
-        // Only copy if destination doesn't exist
-        if dst_path.exists() {
-            continue;
-        }
-        let src_path = template_dir.join(filename);
-        let src_data = match fs::read(&src_path) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("Template file not found, skipping: {} ({})", filename, e);
-                continue;
-            }
-        };
-        if let Err(e) = fs::write(&dst_path, &src_data) {
-            error!(
-                "Failed to copy template file: src={}, dst={}, error={}",
-                src_path.display(),
-                dst_path.display(),
-                e
-            );
-            continue;
-        }
-        info!("Copied template file: {} -> {}", filename, dst_path.display());
-    }
+    copy_seeds(&template_dir, &niu_dir, env::consts::OS);
 
     // Copy skills/ directory (individual .md files, don't overwrite existing)
     // Triggered when: dir missing / dir exists but empty / specific .md missing
@@ -1376,8 +1439,7 @@ fn init_niu_dir(project_root: &str) {
             "Template skills directory not found, skipping: {}",
             src_skills_dir.display()
         );
-        return;
-    }
+    } else {
 
     if let Err(e) = fs::create_dir_all(&dst_skills_dir) {
         error!(
@@ -1469,6 +1531,7 @@ fn init_niu_dir(project_root: &str) {
         skipped_count,
         dst_skills_dir.display()
     );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3549,4 +3612,115 @@ mod tests {
         assert!(body.contains("可能无法完全恢复"));
         assert!(body.contains("/Users/test/.niu/logs/repair-report-20261012-120000.json"));
     }
+    // ------------------------------------------------------------------
+    // 出厂缺省种子清单 —— OS 选型 / 绝不覆盖 / 缺种子不 panic（seed 机制）
+    // ------------------------------------------------------------------
+
+    /// 建一个临时工作区：memory/（种子源）+ niu/（目标），tag 保证用例间不串。
+    fn seed_workspace(tag: &str, seeds: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+        let root = env::temp_dir().join(format!("niu-seed-test-{}-{}", std::process::id(), tag));
+        let _ = fs::remove_dir_all(&root);
+        let template_dir = root.join("memory");
+        let niu_dir = root.join("niu");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::create_dir_all(&niu_dir).unwrap();
+        for (name, content) in seeds {
+            fs::write(template_dir.join(name), content).unwrap();
+        }
+        (template_dir, niu_dir)
+    }
+
+    #[test]
+    fn test_platform_seed_suffix_maps_os_constants() {
+        // std::env::consts::OS 口径：macOS 是 "macos"（→ darwin 种子），Windows 是 "windows"（→ win32 种子）
+        assert_eq!(platform_seed_suffix("macos"), Some("darwin"));
+        assert_eq!(platform_seed_suffix("darwin"), Some("darwin"));
+        assert_eq!(platform_seed_suffix("windows"), Some("win32"));
+        assert_eq!(platform_seed_suffix("linux"), None);
+        assert_eq!(platform_seed_suffix("android"), None);
+    }
+
+    #[test]
+    fn test_seed_macos_picks_darwin_seed_and_strips_suffix() {
+        let (td, niu) = seed_workspace(
+            "darwin",
+            &[
+                ("llama-layout.darwin.json", r#"{"platforms":{"darwin-x64":{"binary":"llama-server"}}"#),
+                ("llama-layout.win32.json", r#"{"platforms":{"win32-x64":{"binary":"llama-server.exe"}}"#),
+                ("memory.json", r#"{}"#),
+            ],
+        );
+        copy_seeds(&td, &niu, "macos");
+        let dst = niu.join("llama-layout.json");
+        assert!(dst.exists(), "macOS 必须选 darwin 那份，目标名去掉 .darwin 后缀");
+        let got = fs::read_to_string(&dst).unwrap();
+        assert!(got.contains("darwin-x64") && !got.contains("win32-x64"));
+        assert!(niu.join("memory.json").exists(), "平台无关种子随同拷入");
+        assert!(!td.join("llama-layout.json").exists(), "绝不写包内 memory/（程序永不写包内）");
+    }
+
+    #[test]
+    fn test_seed_windows_picks_win32_seed() {
+        let (td, niu) = seed_workspace(
+            "windows",
+            &[
+                ("llama-layout.darwin.json", r#"{"platforms":{"darwin-x64":{"binary":"llama-server"}}"#),
+                ("llama-layout.win32.json", r#"{"platforms":{"win32-x64":{"binary":"llama-server.exe"}}"#),
+            ],
+        );
+        copy_seeds(&td, &niu, "windows");
+        let got = fs::read_to_string(niu.join("llama-layout.json")).unwrap();
+        assert!(got.contains("win32-x64") && !got.contains("darwin-x64"));
+    }
+
+    #[test]
+    fn test_seed_existing_target_never_overwritten() {
+        let (td, niu) = seed_workspace(
+            "existing",
+            &[
+                ("llama-layout.darwin.json", r#"{"platforms":{"darwin-x64":{}}}"#),
+                ("memory.json", r#"{"seed":1}"#),
+            ],
+        );
+        // 预置用户副本（内容不同），字节级验证"绝不覆盖"
+        fs::write(niu.join("llama-layout.json"), "USER-LAYOUT").unwrap();
+        fs::write(niu.join("memory.json"), "USER-MEMORY").unwrap();
+        copy_seeds(&td, &niu, "macos");
+        assert_eq!(
+            fs::read_to_string(niu.join("llama-layout.json")).unwrap(),
+            "USER-LAYOUT",
+            "目标已存在 ⇒ 跳过、绝不覆盖"
+        );
+        assert_eq!(fs::read_to_string(niu.join("memory.json")).unwrap(), "USER-MEMORY");
+    }
+
+    #[test]
+    fn test_seed_missing_platform_seed_warns_and_continues() {
+        // 当前 OS 无对应种子（只有 win32 那份，跑在 macOS 上）：WARN + 继续，不 panic，
+        // 且平台无关种子不受影响（不得阻塞启动）
+        let (td, niu) = seed_workspace(
+            "no-seed",
+            &[("llama-layout.win32.json", r#"{"platforms":{"win32-x64":{}}}"#), ("memory.json", r#"{}"#)],
+        );
+        copy_seeds(&td, &niu, "macos");
+        assert!(!niu.join("llama-layout.json").exists(), "缺平台种子 ⇒ 不生成目标文件");
+        assert!(niu.join("memory.json").exists(), "平台种子缺失不得阻塞其它种子");
+    }
+
+    #[test]
+    fn test_seed_unknown_os_copies_only_generic_seeds() {
+        // 无平台种子的 OS（如 linux）：平台相关条目全跳过、平台无关照拷、不 panic
+        let (td, niu) = seed_workspace(
+            "linux",
+            &[
+                ("llama-layout.darwin.json", r#"{}"#),
+                ("llama-layout.win32.json", r#"{}"#),
+                ("memory.json", r#"{}"#),
+            ],
+        );
+        copy_seeds(&td, &niu, "linux");
+        assert!(!niu.join("llama-layout.json").exists());
+        assert!(niu.join("memory.json").exists());
+    }
+
 }

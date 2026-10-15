@@ -2,8 +2,6 @@
   "schema_version": 1,
   "dirname": "llama.cpp",
   "platforms": {
-    "darwin-x64": { "binary": "llama-server" },
-    "darwin-arm64": { "binary": "llama-server" },
     "win32-x64": { "binary": "llama-server.exe" }
   },
   "gguf": {
