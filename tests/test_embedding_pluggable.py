@@ -267,3 +267,180 @@ class TestLifecycle:
             result = get_models_dir()
             # Windows uses backslashes, compare using Path equality
             assert result == Path("/custom/models")
+
+
+# ============== Stale Model Self-Heal Tests ==============
+
+
+def _capture_loguru(level="WARNING"):
+    """loguru sink 捕获（embedding 用 loguru 而非 stdlib logging，pytest caplog 捕获不到——
+    同 test_md_f3.py / test_gemma_tokenizer.py 的 per-file 复制模式）。"""
+    from loguru import logger
+
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level=level)
+    return messages, sink_id
+
+
+def _write_prefs(tmp, prefs):
+    """在 tmp/.niu/preferences.json 写入 prefs（conftest 已建 tmp/.niu）。"""
+    prefs_path = Path(tmp) / ".niu" / "preferences.json"
+    prefs_path.parent.mkdir(parents=True, exist_ok=True)
+    prefs_path.write_text(json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+    return prefs_path
+
+
+def _call_get_model_name_with_home(home_dir):
+    """把 embedding 模块的 Path.home 指到 home_dir 后调 _get_embedding_model_name。"""
+    from niu_api.internal.embedding import _get_embedding_model_name
+
+    with patch("niu_api.internal.embedding.Path") as mock_path:
+        mock_path.home.return_value = Path(home_dir)
+        mock_path.side_effect = lambda x: Path(x)
+        return _get_embedding_model_name()
+
+
+class TestStaleModelSelfHeal:
+    """陈旧 embedding_model 配置值：响亮告警 + 原子写回（进程内一次）+ 绝不抛。"""
+
+    def test_stale_value_warns_and_heals_file(self, tmp_path, monkeypatch):
+        """①返回生效值 ②有 WARNING ③文件键被改成生效值 ④其它字段未动。"""
+        import niu_api.internal.embedding as emb
+        from niu_api.internal.embedding import DEFAULT_MODEL
+
+        monkeypatch.setattr(emb, "_stale_model_healed", False)
+        prefs = {
+            "version": "1.0",
+            "lightrag": {"embedding_model": "bge-base-zh-v1.5", "reranker_model": "none"},
+            "feishu": {"enabled": True, "app_id": "cli-abc"},
+        }
+        prefs_path = _write_prefs(str(tmp_path), prefs)
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == DEFAULT_MODEL, "不受支持值必须落到生效值"
+        assert any("bge-base-zh-v1.5" in m and "embedding_model" in m and "不受支持" in m for m in msgs), (
+            f"必须响亮告警并带配置值/键名，实际: {msgs}"
+        )
+        healed = json.loads(prefs_path.read_text(encoding="utf-8"))
+        assert healed["lightrag"]["embedding_model"] == DEFAULT_MODEL, "自愈必须把键改成生效值"
+        # 其它字段原样保留
+        assert healed["version"] == "1.0"
+        assert healed["lightrag"]["reranker_model"] == "none"
+        assert healed["feishu"] == {"enabled": True, "app_id": "cli-abc"}
+
+    def test_writeback_only_once_per_process(self, tmp_path, monkeypatch):
+        """进程内已尝试过写回（含成功）⇒ 再次遇到陈旧值只告警、不再写盘。"""
+        import niu_api.internal.embedding as emb
+        from niu_api.internal.embedding import DEFAULT_MODEL
+
+        monkeypatch.setattr(emb, "_stale_model_healed", True)  # 模拟本进程已尝试过
+        prefs_path = _write_prefs(str(tmp_path), {"lightrag": {"embedding_model": "legacy-bge"}})
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == DEFAULT_MODEL
+        assert any("legacy-bge" in m for m in msgs), "已尝试过写回仍要响亮告警"
+        assert json.loads(prefs_path.read_text(encoding="utf-8"))["lightrag"]["embedding_model"] == "legacy-bge", (
+            "进程内只写一次：已尝试过 ⇒ 不得再写盘"
+        )
+
+    def test_write_failure_warns_and_keeps_effective(self, tmp_path, monkeypatch):
+        """写回失败（只读/权限/坏 JSON）⇒ 告警说明，不抛，行为不变（仍用生效值）。"""
+        import niu_api.internal.embedding as emb
+        from niu_api.internal.embedding import DEFAULT_MODEL
+
+        monkeypatch.setattr(emb, "_stale_model_healed", False)
+
+        def _boom(path, data):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(emb, "_atomic_write_json", _boom)
+        prefs_path = _write_prefs(str(tmp_path), {"lightrag": {"embedding_model": "bge-base-zh-v1.5"}})
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))  # 不得抛
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == DEFAULT_MODEL
+        assert any("写回失败" in m for m in msgs), f"写回失败必须告警说明，实际: {msgs}"
+        assert json.loads(prefs_path.read_text(encoding="utf-8"))["lightrag"]["embedding_model"] == "bge-base-zh-v1.5"
+
+    def test_missing_key_no_warning_no_writeback(self, tmp_path, monkeypatch):
+        """键缺失 ⇒ 现状零变：不告警、不写回。"""
+        import niu_api.internal.embedding as emb
+        from niu_api.internal.embedding import DEFAULT_MODEL
+
+        monkeypatch.setattr(emb, "_stale_model_healed", False)
+        prefs_path = _write_prefs(str(tmp_path), {"version": "1.0"})
+        original = prefs_path.read_text(encoding="utf-8")
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == DEFAULT_MODEL
+        assert msgs == [], f"键缺失不得告警：{msgs}"
+        assert prefs_path.read_text(encoding="utf-8") == original, "键缺失不得写回"
+
+    def test_supported_value_no_warning_no_writeback(self, tmp_path, monkeypatch):
+        """值受支持 ⇒ 原样返回，不告警、不写回（现状零变）。"""
+        import niu_api.internal.embedding as emb
+        from niu_api.internal.embedding import DEFAULT_MODEL
+
+        monkeypatch.setattr(emb, "_stale_model_healed", False)
+        prefs_path = _write_prefs(str(tmp_path), {"lightrag": {"embedding_model": "embeddinggemma-2"}})
+        original = prefs_path.read_text(encoding="utf-8")
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == "embeddinggemma-2" == DEFAULT_MODEL
+        assert msgs == []
+        assert prefs_path.read_text(encoding="utf-8") == original
+
+    def test_corrupt_json_returns_default_without_crash(self, tmp_path, monkeypatch):
+        """坏 JSON 读失败 ⇒ 仍返回生效值、不抛、不写回。"""
+        import niu_api.internal.embedding as emb
+        from niu_api.internal.embedding import DEFAULT_MODEL
+
+        monkeypatch.setattr(emb, "_stale_model_healed", False)
+        prefs_path = _write_prefs(str(tmp_path), {})
+        prefs_path.write_text("{ broken json }}}", encoding="utf-8")
+        result = _call_get_model_name_with_home(str(tmp_path))  # 不得抛
+        assert result == DEFAULT_MODEL
+        assert prefs_path.read_text(encoding="utf-8") == "{ broken json }}}", "读失败不得写回"
+
+
+# ============== Template Consistency Gate ==============
+
+
+class TestTemplatePreferencesConsistency:
+    """模板一致性门禁：memory/preferences.json（安装/重置模板）与代码支持表不许漂移。"""
+
+    def test_template_embedding_model_in_supported_models(self):
+        from niu_api.internal.embedding import SUPPORTED_MODELS
+
+        template = Path(__file__).resolve().parent.parent / "memory" / "preferences.json"
+        assert template.exists(), "memory/preferences.json 模板缺失"
+        data = json.loads(template.read_text(encoding="utf-8"))
+        model = data.get("lightrag", {}).get("embedding_model", "")
+        assert model in SUPPORTED_MODELS, (
+            f"模板 lightrag.embedding_model={model!r} 不在代码支持表 {sorted(SUPPORTED_MODELS)} 内——"
+            f"模板与代码再次漂移"
+        )

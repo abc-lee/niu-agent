@@ -33,8 +33,19 @@ SUPPORTED_MODELS = {
 DEFAULT_MODEL = "embeddinggemma-2"  # EmbeddingGemma 2 via llama.cpp GGUF Q8_0 (768d, 8192 ctx)
 
 
+# 陈旧配置值自愈：embedding_model 读到不受支持的值时，进程内最多写回一次生效值，
+# 避免 preload / get_embedding_dim / get_model 等每次调用都写盘。
+_stale_model_healed = False
+_stale_model_heal_lock = threading.Lock()
+
+
 def _get_embedding_model_name() -> str:
-    """Read embedding model name from preferences.json, fallback to default."""
+    """Read embedding model name from preferences.json.
+
+    - 值受支持 / 键缺失或为空：原样返回，不告警、不写回（与旧行为一致）。
+    - 值不受支持（有值但不在 SUPPORTED_MODELS）：响亮 WARNING（带路径与键名），
+      原子写回生效值（进程内一次）；写回失败绝不抛——告警后继续用生效值。
+    """
     try:
         prefs_path = Path.home() / ".niu" / "preferences.json"
         if prefs_path.exists():
@@ -42,9 +53,30 @@ def _get_embedding_model_name() -> str:
             model_name = prefs.get("lightrag", {}).get("embedding_model", "")
             if model_name and model_name in SUPPORTED_MODELS:
                 return model_name
+            if model_name:  # 有值但不受支持：响亮告警 + 自愈写回
+                _heal_stale_embedding_model(model_name, prefs_path, prefs)
     except Exception as e:
         logger.debug(f"Failed to read embedding model from preferences: {e}")
     return DEFAULT_MODEL
+
+
+def _heal_stale_embedding_model(stale_name: str, prefs_path: Path, prefs: dict) -> None:
+    """对不受支持的 embedding_model 配置值告警，并原子写回生效值（进程内一次）。"""
+    global _stale_model_healed
+    logger.warning(
+        f"preferences.json ({prefs_path}) 的 lightrag.embedding_model 配置值 "
+        f"{stale_name!r} 不受支持，已改用 {DEFAULT_MODEL!r}（当前支持："
+        f"{', '.join(sorted(SUPPORTED_MODELS))}）"
+    )
+    with _stale_model_heal_lock:
+        if _stale_model_healed:
+            return  # 本进程已尝试过写回（含失败），不再重复写盘
+        _stale_model_healed = True
+    try:
+        prefs.setdefault("lightrag", {})["embedding_model"] = DEFAULT_MODEL
+        _atomic_write_json(prefs_path, prefs)
+    except Exception as e:
+        logger.warning(f"embedding_model 自愈写回失败：{e}；继续使用 {DEFAULT_MODEL!r}")
 
 
 def get_embedding_dim() -> int:
@@ -56,22 +88,17 @@ def get_embedding_dim() -> int:
 def get_embedding_max_seq_length() -> int:
     """Get the max_seq_length of the loaded embedding model.
 
-    Returns the model's actual max_seq_length (e.g. 512 for bge-base-zh-v1.5).
-    If model is not loaded yet, returns the default from SUPPORTED_MODELS config.
+    返回模型的实时 max_seq_length；模型尚未加载时按后端给真实上限
+    （llama-cpp → 8192），仅对无法识别的模型退回 512 安全缺省。
     """
     with _model_lock:
         if _model is not None:
             return _model.max_seq_length
-    # Model not loaded yet — return a safe default based on model config
+    # 模型未加载——按模型后端配置给真实上限
     model_name = _get_embedding_model_name()
-    if model_name == "bge-m3":
-        return 8192
-    if model_name == "minilm-l12":
-        return 128
-    # 新增：llama 后端未加载时给真实上限，不再落入下面那个 512
     if SUPPORTED_MODELS.get(model_name, {}).get("backend") == "llama-cpp":
         return _LlamaCppAdapter.max_seq_length
-    return 512  # bge-base-zh-v1.5
+    return 512  # 无法识别模型的安全缺省（真实函数只会返回 SUPPORTED_MODELS 内的值）
 
 
 # ============== Model Loading ==============
