@@ -440,3 +440,73 @@ BUFFALO_L_MIRRORS = [
     "https://sourceforge.net/projects/insightface.mirror/files/v0.7/buffalo_l.zip/download",
 ]
 ```
+
+### 2.5 llama-server 启动方式：配置里那一行（怎么写 / 怎么验证 / 放哪）
+
+向量模型经 llama.cpp `llama-server` 子进程推理。**llama-server 的启动方式就是配置里的一整条命令行**——写在哪：`~/.niu/config/user-config.json` 的 `llama_cpp.command`。
+
+- **`command` 为 `null` 或删掉这个键 ⇒ 回内置缺省行**（按当前产物布局与「媒体向量入库」开关自动派生：开关关 ⇒ 带 `--no-mmproj`，开关开 ⇒ 带 `--mmproj … --image-max-tokens …`；行为与今天逐字一致）；
+- **写了 `command` ⇒ 这一行完全归你**：程序原样执行、一字不改，并把生效行逐字打进启动日志；
+- **改完需重启才生效**：改完 `command`（或开关）后重启 Niu，程序会停掉旧实例、按新行拉起 llama-server。
+
+**这一行怎么写**：下面一行就是当前出厂缺省行（开关关形态），逐段说明可删可加——
+
+```
+<models 根目录>/llama.cpp/<平台>/<可执行体> -m <models 根目录>/embeddinggemma-2-Q8_0.gguf --embedding --port 19878 --host 127.0.0.1 -c 8192 -b 8192 -ub 8192 --no-mmproj
+```
+
+| 段 | 含义 | 怎么改 |
+|---|---|---|
+| 第一个词（可执行体） | llama.cpp 构建的可执行文件，缺省放在 `<models 根目录>/llama.cpp/<平台>/` 布局里 | **换 GPU/AMD 构建＝换第一个词**：指向你自己下载解压好的构建的可执行体，程序只检查该文件存在 |
+| `-m <模型文件>` | 向量模型权重（GGUF） | **换量化＝换 `-m` 指向的文件**：官方仓库与社区仓库各有不同量化档；换量化不改向量维度、上下文大小与分词器，**无需重建索引** |
+| `--embedding` | 嵌入模式，Niu 的向量面全走它 | 保留，不删 |
+| `--port 19878 --host 127.0.0.1` | llama-server 的监听地址 | 程序按**行里写明的**地址端口探活与编码；行里不写 ⇒ 按 `127.0.0.1:19878` 探（见下方约束）。改监听地址时"怎么验证"里三条 curl 的地址端口也要跟着改 |
+| `-c 8192 -b 8192 -ub 8192` | 上下文大小 / 批 / 子批 | 按需调整；注意与 `--image-max-tokens` 的大小关系（见下方约束） |
+| `--no-mmproj` 或 `--mmproj <mmproj 文件> --image-max-tokens 8128` | 多模态投影矩阵挂不挂（缺省行随「媒体向量入库」开关自动选这两支之一） | **二者必须选一个**：要照片向量化就带 `--mmproj …`，不要就带 `--no-mmproj`；都不写 ⇒ 实例"未声明多模态"，媒体链不可用且状态端点如实报 |
+| 其余参数 | GPU 等扩展参数 | **加参数＝直接加**：GPU 构建需要的加速参数（参数名与取值按你所用构建的说明）追加在行尾即可，程序不解释、不拦截 |
+
+> 路径必须真实存在：第一个词不存在、或 `-m` 指向的文件不存在 ⇒ 启动前如实报错、指名缺的文件。产物放哪：llama.cpp 构建与 GGUF 放 `<models 根目录>`（缺省布局如上），mmproj 放家目录 `~/.niu/models/`（见「媒体向量入库」章的开启方法）。
+
+**怎么验证：先在终端手跑这一行，三条都过再填进配置**
+
+```bash
+# ① 健康检查：要返回 status:"ok"（只返回 200 不算——Niu 看的是字段）
+curl -s http://127.0.0.1:19878/health
+# ② 嵌入接口：要返回向量（data[].embedding 是浮点数组，条数与输入等长）
+curl -s -X POST http://127.0.0.1:19878/v1/embeddings \
+     -H 'Content-Type: application/json' -d '{"input":["test"],"encoding_format":"float"}'
+# ③ 分词接口：要返回 tokens 数组
+curl -s -X POST http://127.0.0.1:19878/tokenize \
+     -H 'Content-Type: application/json' -d '{"content":"test"}'
+```
+
+三条 curl 里的地址端口按你那一行实际绑定的替换。三条都过，把这一行写进 `llama_cpp.command`，重启 Niu。
+
+**对 llama.cpp 的 6 条兼容性要求**（平台无关——你选哪份构建都行，但它必须逐条满足，缺任一条即不兼容）：
+
+| # | 要求 |
+|---|---|
+| 1 | 支持**嵌入模式**：认 `--embedding`；`POST /v1/embeddings` 接受 `{"input":[...],"encoding_format":"float"}` 并返回 `data[].embedding`（条数与输入等长） |
+| 2 | **带多模态（MTMD）**：认 `--mmproj` **与 `--image-max-tokens`**；能接受图片输入（`data:` base64，三层嵌套形） |
+| 3 | 构建**够新**：能加载 **EmbeddingGemma 2 的 GGUF**；认 `--no-mmproj` |
+| 4 | `GET /health` 返回 JSON 且 **`status == "ok"`**（只回 200 不够——Niu 看的是字段） |
+| 5 | `POST /tokenize` 返回 **`tokens` 数组**（超限截断护栏的备用计量通道；缺则超限恢复链失效，退回"整批回滚"） |
+| 6 | 认基础 flag：`-m` / `--port` / `--host` / `-c` / `-b` / `-ub` |
+
+**自检分两级**（一条 `--help` 验不了 HTTP 侧，两级都要过）：
+
+```bash
+# ① flag 面：对着你准备放进那一行的构建跑，输出里四个 flag 都要在
+<可执行体> --help | grep -E -- '--embedding|--mmproj|--image-max-tokens|--no-mmproj'
+# ② HTTP 面：按上面"怎么验证"把这一行起一次，三条 curl 逐条过
+```
+
+① 验要求 1/2/3 的 flag 存在性；② 验要求 4/5/1 的实际行为。**其余（平台/变体/构建号/来源）一律不管**——按你机器自己定。
+
+**约束（违反即出故障）**：
+
+- **`--image-max-tokens` 严格小于你的 `-b`/`-ub`**（缺省行就是 `8128 < 8192`，留的就是这点余量）——否则图片编码会 500。
+- **行里要写 `--port`/`--host`**：程序按行里写明的地址端口探活与编码；漏写 ⇒ 程序按 `127.0.0.1:19878` 探活与编码——你的服务若绑在别处 ⇒ 探不到 ⇒ 按启动超时判"起不来"。
+- **`--mmproj` 与 `--no-mmproj` 必须选一个**（都不写 ⇒ "未声明多模态"，见上表）。
+- **带空格的值用分写形态**：`-m "路径"`（引号只包住值本身）——不要写 `-m="路径"` 这种等号+引号形态：在 Windows 上带空格的值会被切散。
+- 改了 `command` 后**重启 Niu**：程序先停掉旧实例、再按新行拉起；只改行内内容（监听地址、模型文件）不重启 ⇒ 新行不生效、旧实例还占着旧地址。
