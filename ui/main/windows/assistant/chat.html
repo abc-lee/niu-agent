@@ -3185,7 +3185,7 @@
             const j = await r.json();
             if (j.dismissed) { hideMediaBar(); return; }
           } catch (e) { /* dismiss 失败不影响轮询：下一轮轮询重试 */ }
-          showMediaBar('全部完成，队列文件删除中…', 100, '100%');
+          showMediaBar('全部完成，正在清空队列状态…', 100, '100%');
           return;
         }
         if (depth < 0) {

@@ -151,7 +151,7 @@ describe('媒体横条轮询策略（行为探针）', () => {
     assert.ok(await pollTimerAlive(rig.context), 'dismiss 关条后 mediaPollTimer 仍存活（轮询永不停止）');
   });
 
-  test('全部完成但 dismiss 被拒：横条保持显示「删除中」文案、轮询仍存活（竞态：观察后新追加行，下一轮重试）', async () => {
+  test('全部完成但 dismiss 被拒：横条保持显示完成态文案、轮询仍存活（竞态：观察后新追加行，下一轮重试）', async () => {
     const rig = runMediaBlock(
       [{ status: 'idle', reason: '', queue_total: 2, queue_done: 2, queue_depth: 0 }],
       { dismissed: false },
@@ -159,7 +159,11 @@ describe('媒体横条轮询策略（行为探针）', () => {
     await settle(rig.context);
     const bar = rig.elements.get('media-progress-bar');
     assert.ok(bar.classList.contains('show'), 'dismiss 被拒时横条不得关闭');
-    assert.equal(rig.elements.get('media-progress-text').textContent, '全部完成，队列文件删除中…');
+    // 不逐字钉文案（9d23299c 后队列文件语义为「清空、文件保留」，文案措辞可随时微调）：
+    // 只断言稳定行为面——完成态文案非空且同时含「完成」「队列」。
+    const doneText = rig.elements.get('media-progress-text').textContent;
+    assert.ok(doneText.length > 0, '完成态文案非空');
+    assert.ok(doneText.includes('完成') && doneText.includes('队列'), '完成态文案须同时表明队列与完成');
     assert.equal(rig.elements.get('media-progress-percent').textContent, '100%');
     assert.equal(rig.clearCalls.length, 0, 'dismiss 被拒不得清除任何轮询计时器');
     assert.ok(await pollTimerAlive(rig.context), 'dismiss 被拒后 mediaPollTimer 仍存活（下一轮轮询重试）');
