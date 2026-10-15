@@ -235,7 +235,8 @@ def _append_under_lock(path: str, text: str) -> None:
 
 
 def _f3_max_bytes() -> int:
-    """读 ~/.niu/preferences.json 的 context.dreamWorksetBytes（int 且 >0 才采用）；缺失/非法回退 64KB。"""
+    """读 ~/.niu/preferences.json 的 context.dreamWorksetBytes（int 且 >0 才采用）；
+    键缺失（用户没配）静默回退 64KB，非法值/文件读取失败留 logger.warning 后同样回退。"""
     try:
         pref = os.path.join(os.path.expanduser("~"), ".niu", "preferences.json")
         with open(pref, encoding="utf-8") as f:
@@ -243,8 +244,18 @@ def _f3_max_bytes() -> int:
         v = data.get("context", {}).get("dreamWorksetBytes")
         if isinstance(v, int) and not isinstance(v, bool) and v > 0:
             return v
-    except Exception:
-        pass
+        if v is not None:
+            # 配置了该键但值非法（非 int / bool / <=0）：留痕后回退缺省，行为不变
+            logger.warning(
+                "context.dreamWorksetBytes 非法值: {!r}（非 int 或 <=0），回退缺省 {} 字节",
+                v, F3_MAX_BYTES_DEFAULT,
+            )
+    except Exception as e:
+        # preferences.json 缺失或 JSON 损坏等异常态：留痕后回退缺省
+        logger.warning(
+            "preferences.json 读取失败（{}），context.dreamWorksetBytes 回退缺省 {} 字节",
+            e, F3_MAX_BYTES_DEFAULT,
+        )
     return F3_MAX_BYTES_DEFAULT
 
 

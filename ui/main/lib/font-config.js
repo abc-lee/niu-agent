@@ -23,9 +23,9 @@ const DEFAULT_FONT_FAMILY = "";
  * @returns {{ fontFaceCss: string, fontFamily: string }}
  */
 function loadFontConfig(niuDirOverride) {
+  const niuDir = niuDirOverride || path.join(os.homedir(), '.niu');
+  const prefsPath = path.join(niuDir, 'preferences.json');
   try {
-    const niuDir = niuDirOverride || path.join(os.homedir(), '.niu');
-    const prefsPath = path.join(niuDir, 'preferences.json');
     if (!fs.existsSync(prefsPath)) {
       return { fontFaceCss: '', fontFamily: DEFAULT_FONT_FAMILY };
     }
@@ -41,6 +41,8 @@ function loadFontConfig(niuDirOverride) {
     }
     const fontFile = path.join(niuDir, 'fonts', fontCfg.file);
     if (!fs.existsSync(fontFile)) {
+      // 配置里明确指定了字体文件但文件缺失（正常未配置态不会走到这里）→ 留痕，仍用系统默认字体
+      console.warn(`[font-config] 字体文件缺失，退回系统默认字体：字体名 "${fontCfg.name}"，期望文件 ${fontFile}`);
       return { fontFaceCss: '', fontFamily: DEFAULT_FONT_FAMILY };
     }
     // 文件存在，读为 base64 生成 @font-face（data URI 内联，绕开 file:// CORS）
@@ -56,7 +58,8 @@ function loadFontConfig(niuDirOverride) {
     const fontFamily = `'${fontCfg.name}', serif`;
     return { fontFaceCss, fontFamily };
   } catch (e) {
-    // JSON 损坏或其他异常 → 兜底
+    // JSON 损坏或其他异常 → 兜底（留痕，行为不变）
+    console.warn(`[font-config] 读取 ${prefsPath} 失败，使用默认字体：${e && e.message ? e.message : e}`);
     return { fontFaceCss: '', fontFamily: DEFAULT_FONT_FAMILY };
   }
 }
