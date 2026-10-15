@@ -115,8 +115,8 @@ InsightFace 的 `ctx_id` 参数仅对 CUDA 有效：`ctx_id=0` 表示使用 GPU�
 
 | 用户环境 | 自动选择 | 性能 |
 |---------|---------|------|
-| 有 NVIDIA GPU + CUDA | CUDA | 最快（10倍加速） |
-| Windows + 任意 GPU | DirectML | 快（3倍加速） |
+| 有 NVIDIA GPU + CUDA | CUDA | 最快（明显快于 CPU） |
+| Windows + 任意 GPU | DirectML | 快（快于 CPU） |
 | 无 GPU 或未安装 CUDA | CPU | 慢但可用 |
 
 ### 1.3 模型加载时机

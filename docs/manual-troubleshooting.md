@@ -198,21 +198,21 @@ python scripts/package_all_dependencies.py
 
 `preload_face_model()`（`mcp-servers/photo-server/src/niu_photo_server/__init__.py:4163`）在 MCP 启动前调用，**只导入 cv2 和 InsightFace 模块代码，不加载模型本身**。模型按需加载（首次调用 `get_face_model` 时才加载到内存，约 326MB；空闲 5 分钟自动卸载）。如果 "Importing InsightFace..." 卡住超过 30 秒，说明是模块导入阶段的问题，而非模型加载。
 
-#### 问题：人脸识别速度很慢（超过 10 秒/张）
+#### 问题：人脸识别速度很慢（明显慢于平时的处理节奏）
 
 **可能原因：**
 - 使用 CPU 模式（无 GPU 或未安装 CUDA）
 - 照片分辨率太高
 - 检测到多张人脸
 
-**性能优化：**
+**性能优化（以下都是机制方向；实际快慢取决于你的机器，本手册不给数值）：**
 
 | 方案 | 效果 | 说明 |
 |------|------|------|
-| **安装 onnxruntime-gpu** | 🚀 10倍加速 | 需要 NVIDIA GPU + CUDA |
-| **安装 onnxruntime-directml** | ⚡ 3倍加速 | Windows 专用，无需 CUDA |
-| **降低照片分辨率** | ✅ 2倍加速 | 提前缩小到 1920x1080 |
-| **批量处理** | ✅ 1.5倍加速 | 一次拖入多张照片 |
+| **安装 onnxruntime-gpu** | 明显加速（幅度最大） | 需要 NVIDIA GPU + CUDA |
+| **安装 onnxruntime-directml** | 明显加速 | Windows 专用，无需 CUDA |
+| **降低照片分辨率** | 有加速 | 提前缩小到 1920x1080 或更小 |
+| **批量处理** | 有加速 | 一次拖入多张照片 |
 
 **安装 GPU 版本：**
 ```bash

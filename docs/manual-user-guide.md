@@ -269,7 +269,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 | `litellm_kwargs` | 厂商特有参数，同 `llm` 段说明。火山引擎知识图谱需传 `thinking` 和 `allowed_openai_params` | `{}` 或见配置示例 |
 | `max_tokens` | 单次回复最大输出 token 数。**缺省不传**（用服务端默认）；为空时自动继承 `llm` 段的 max_tokens。入库调用一般不需要调大——结构化输出被截断（日志见 `finish_reason=length`）时再设 | 空 |
 
-> **重要**：LightRAG 官方建议入库时不要使用带思考链的模型。思考链会导致实体提取超时（单次调用可达 198 秒）。是否返回思考链由 `litellm_kwargs.thinking` 独立控制（与 `reasoning_effort` 是两个不同参数，互不替代）——火山方舟入库场景配置 `thinking: {"type": "disabled"}` 关闭思考链返回。`reasoning_effort` 只控制推理深度档位，默认由模型能力探测档案驱动（不预设固定档位，见下方"reasoning_effort 配置与测试指南"），即使主 Agent 使用思考链模型，只要入库段 thinking disabled + 探测出的合理档位，入库也不受影响。
+> **重要**：LightRAG 官方建议入库时不要使用带思考链的模型。思考链会大幅拉长单次实体提取耗时（甚至直接触发超时）。是否返回思考链由 `litellm_kwargs.thinking` 独立控制（与 `reasoning_effort` 是两个不同参数，互不替代）——火山方舟入库场景配置 `thinking: {"type": "disabled"}` 关闭思考链返回。`reasoning_effort` 只控制推理深度档位，默认由模型能力探测档案驱动（不预设固定档位，见下方"reasoning_effort 配置与测试指南"），即使主 Agent 使用思考链模型，只要入库段 thinking disabled + 探测出的合理档位，入库也不受影响。
 
 > **温度值说明**：LightRAG 调 LLM 时如果不配 `temperature` 字段，系统兜底默认 `0.2`。这是为实体抽取、关系抽取等结构化任务优化的低温度值，避免高随机度导致 JSON 格式漂移、实体名不一致。如果需要更稳定的输出可设 `0.0`，需要更多创造性可设 `0.5~0.7`，但不建议超过 `1.0`。主 Agent / 子 Agent 的温度值在提示词文档里独立配置（主 Agent 0.6、子 Agent 多数 0.2），与此处的 `lightrag_llm.temperature` 完全独立，互不影响。
 
