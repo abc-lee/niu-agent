@@ -8,7 +8,7 @@
    `port()` 仍是 19878、三个字符护栏仍是 7000 / 2000 / 1500（未被旧键影响）、
    一条废弃 WARNING；文件**未被改回**（读回逐字节比对）。
 ③ 缺段补写：配置里没有 `llama_cpp` 段（其它段在）⇒ `get()` 后文件出现**恰四个键**
-   的缺省段（`command` = `default_command()` 展开后的生效命令行），其它段一字不变；
+   的缺省段（`command: null` ⇒ 内置缺省行；生效命令行由启动日志逐字打印），其它段一字不变；
    反向：段已存在（哪怕只写一个键）⇒ 文件**逐字节不变**（单个缺键也不补）。
 ④ `command` 原样生效：自定义行 ⇒ `command_line()` 逐字返回（程序一个字都不加工）。
 
@@ -199,7 +199,7 @@ class TestMissingSectionMaterialized:
     """③ 缺段补写（存量装机）：段缺失 ⇒ 原子补写四键缺省段；段已存在 ⇒ 文件一个字都不动。"""
 
     def test_missing_section_materialized_exactly_four_keys(self, monkeypatch, tmp_path):
-        """其它段在、无 `llama_cpp` ⇒ 补写后段恰为四键，`command` 是展开后的生效行，其它段原样。"""
+        """其它段在、无 `llama_cpp` ⇒ 补写后段恰为四键，`command` 为 null（⇒ 内置缺省行），其它段原样。"""
         media = {"enabled": True}
         misc = {"note": "keep-me", "n": 3}
         path = _point_config(monkeypatch, tmp_path, json.dumps({"media_ingest": media, "misc": misc}))
@@ -209,8 +209,7 @@ class TestMissingSectionMaterialized:
         assert data["media_ingest"] == media and data["misc"] == misc, "其它段一字不得变"
         sec = data["llama_cpp"]
         assert set(sec) == {"command", "startup_timeout", "http_timeout", "media_http_timeout"}
-        assert isinstance(sec["command"], str) and sec["command"], "`command` 必须是非空字符串"
-        assert sec["command"] == lc.default_command(), "补写的 `command` ＝展开后的生效命令行"
+        assert sec["command"] is None, "补写是 command: null ⇒ 内置缺省行（生效行由启动日志逐字打印，分支不冻结）"
         assert (sec["startup_timeout"], sec["http_timeout"], sec["media_http_timeout"]) == (60.0, 120.0, 1031.52)
 
     def test_existing_section_never_touched_even_partial(self, monkeypatch, tmp_path):
