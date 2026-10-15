@@ -100,13 +100,15 @@ def _atomic_write_json(path: Path, data: dict) -> bool:
 
     失败 → 降级并返回 False（绝不抛——缺段补写不得毒化调用方，同 model_probe 写纪律）：
     前置（建目录 / 建临时文件）也在 try 内，目录不可写 / 磁盘满同样降级跳过。
+    前置失败与写失败告警用两个独立 reason（`atomic_write_pre` / `atomic_write`），
+    同进程内两条各可达一次——写失败不再被先发生的前置失败永久吞掉。
     """
     payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     except OSError:
-        _warn_once("atomic_write", "[llama_config] 原子写 user-config.json 前置失败（目录不可写/磁盘满）")
+        _warn_once("atomic_write_pre", "[llama_config] 原子写 user-config.json 前置失败（目录不可写/磁盘满）")
         return False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -254,7 +256,14 @@ def command_line() -> str:
 def argv() -> list[str]:
     """生效行分词：POSIX 用 shell 规则（`shlex.split`）；Windows 路径含反斜杠，
     禁用以 posix 语义（`\\U`、`\\n` 会被当转义符吃掉 ⇒ 绝对路径神秘损坏），改为非 posix
-    （反斜杠保留）+ 手工剥配对引号；两分支解析失败 ⇒ 按空白分词 + WARNING，**不改行**。"""
+    （反斜杠保留）+ 剥引号与引号值回接（`_win32_unquote`）；两分支解析失败 ⇒ 按空白分词
+    + WARNING，**不改行**。
+
+    残留边界（win32 专属，防后人误判）：非 posix shlex **不认词内引号** ⇒ `-m="带空格 路径"`
+    会先被切成 `-m="带空格` + `路径"` 两段，`=` 后的值段随后剥配对引号并按空白回接；
+    回接不到闭引号（如引号不配对）则保留原样、按空白分词降级。**带空格的值请用分写形态
+    `-m "路径"`**（实测正常，POSIX 分支天然如此，不依赖回接）。POSIX 分支一字不改。
+    """
     line = command_line()
     if sys.platform == "win32":
         try:
@@ -262,12 +271,47 @@ def argv() -> list[str]:
         except ValueError:
             _warn_once("shlex", f"[llama_config] command 行分词失败，退空白分词（行未改）: {line}")
             toks = line.split()
-        return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in toks]
+        return _win32_unquote(toks)
     try:
         return shlex.split(line)
     except ValueError:
         _warn_once("shlex", f"[llama_config] command 行引号不配平等，shlex 解析失败，退空白分词（行未改）: {line}")
         return line.split()
+
+
+def _win32_unquote(toks: list[str]) -> list[str]:
+    """win32 专用后处理：对每个 token 先 `head, sep, tail = t.partition("=")`，若 `sep and head`
+    ⇒ 值段是 `tail`，否则整词是值段；值段剥配对引号——修 `--port="8128"` / `--host="0.0.0.0"` /
+    `-m="…"` 三类等号+引号形态（非 posix shlex 不剥词内引号，引号原样留在值段 ⇒ 旧代码下
+    `port()` 回缺省、`host()` 静默返回带引号串、带空格路径在空白处截断）。
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(toks):
+        head, sep, tail = toks[i].partition("=")
+        value = tail if (sep and head) else toks[i]
+        value, i = _unquote_win32_value(toks, i, value)
+        out.append(head + sep + value if sep and head else value)
+    return out
+
+
+def _unquote_win32_value(toks: list[str], i: int, value: str) -> tuple[str, int]:
+    """剥值段成对的首尾引号；开引号悬空（非 posix shlex 把带空格引号值切在空白处，
+    `-m="a b"` ⇒ `-m="a` + `b"`）⇒ 向前回接后续 token 直到首个以同类闭引号结尾的 token，
+    再剥首尾引号；回接不到闭引号（引号不配对等）⇒ 保留原样，交调用方按坏行降级。
+    返回 `(值, 下一 token 下标)`。"""
+    if len(value) > 1 and value[0] in "\"'":
+        q = value[0]
+        if value.endswith(q):
+            return value[1:-1], i + 1
+        j = i + 1
+        while j < len(toks) and not toks[j].endswith(q):
+            value += " " + toks[j]
+            j += 1
+        if j < len(toks):
+            value += " " + toks[j]
+            return value[1:-1], j + 1
+    return value, i + 1
 
 
 def _scan_value(tokens: list[str], names: tuple[str, ...]) -> str | None:
@@ -335,7 +379,9 @@ def embed_token_limit() -> int:
     """llama-server 单条输入 token 上限 = 生效行里的 `-c` 上下文大小。
 
     v2：旧 `min(batch,ubatch)` 语义随结构化键一并消失，输入改为行里的 `-c`
-    （§5'.3：解析不到 ⇒ 回缺省 8192，零漂移）。两侧共用（`lightrag_adapter.EMBED_TOKEN_LIMIT` 同源值）。
+    （§5'.3：解析不到 ⇒ 回缺省 8192，零漂移）。`llama_server` 侧已改调本模块函数
+    （旧同名常量已删）；lightrag 侧将在 T3a2-2 改为调 `char_prefilter_adapter()` /
+    `split_char_budget_adapter()`。
     """
     return context_size()
 
@@ -345,7 +391,7 @@ def char_prefilter_server() -> int:
 
     两侧系数各自独立（R5 N1：**不得合并**成一个函数——lightrag 侧缺省 2000 恰是被实测
     判死前值，7000 恰是被实测判死的值，合并会把一侧放宽 3.5 倍）。
-    供 `llama_server._CHAR_PREFILTER`。
+    供 `llama_server` 侧预筛（该侧已改调本函数，旧 `_CHAR_PREFILTER` 常量已删）。
     """
     return int(embed_token_limit() * 7000 / 8192)
 
