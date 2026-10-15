@@ -195,3 +195,74 @@ def _isolate_niu_config(tmp_path, monkeypatch):
     embedding_artifacts._LAYOUT_CACHE_KEY = None
     embedding_artifacts._WARNED_REASONS.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_import_time_niu_paths(tmp_path, monkeypatch):
+    """「import 期就把 ~/.niu 路径绑死成模块常量」的全局隔离——_isolate_niu_config 的
+    结构性补强（同范式）。
+
+    为什么需要：HOME 重定向（_isolate_niu_config）只对「调用期现算」的路径有效
+    （expanduser / Path.home 在函数里）。一批模块在 import 期就把 ~/.niu 路径求值
+    成模块级常量（STORAGE_DIR / _db_path / _USER_AGENTS_DIR / CONFIG_PATH /
+    MEDIA_QUEUE_PATH…），import 一旦发生过，重定向 HOME 再也罩不住它们——昨夜
+    测试污染真实 ~/.niu 的事故正是这类「import 期绑定」常量经手写入的。
+    本 fixture 双管齐下：
+    ① 设 NIU_STORAGE_DIR env 指向 tmp——给「尚未 import」的模块兜底（lightrag_manager
+       的 STORAGE_DIR 在 import 期读该 env）；
+    ② 对已在 sys.modules 里的模块逐一 monkeypatch.setattr 模块常量指向 tmp 路径；
+       未 import 的模块不强行 import（保持轻量，import 期 env 兜底接住）。
+
+    纳入的常量（全仓 grep `^\w+.*=.*expanduser|Path\.home` 的模块级赋值 + 顶层
+    re-import 绑定，逐条复核过消费点）：
+    - lightrag_manager.STORAGE_DIR（import 期读 NIU_STORAGE_DIR env 或 Path.home）
+    - lightrag_integrity._STORAGE_DIR / lightrag_repair._STORAGE_DIR（Path.home 现算后
+      绑死；repair 的 run_full_repair 运行期会把这个值反向同步到另两个模块，三处
+      同指 tmp 保持一致）
+    - db_monitor._db_path（messages.db 路径，import 期 expanduser）
+    - subagent._USER_AGENTS_DIR（~/.niu/agents）
+    - ha_watcher.watcher.CONFIG_PATH（~/.niu/ha-config.json；包 __init__ 只重导出
+      函数、不重导出该常量，patch watcher 模块即覆盖）
+    - md_mirror.MD_DIR / MEDIA_QUEUE_PATH（~/.niu/md/…；F1/F2/F3 由专用
+      _isolate_md_mirror 覆盖，此处只补 MD_DIR 与媒体队列文件）
+    - media_worker.F4_DEFAULT_QUEUE（顶层 `from agent.md_mirror import MEDIA_QUEUE_PATH
+      as F4_DEFAULT_QUEUE` 的 re-import 绑定——patch md_mirror 属性够不到它，须单独
+      patch，与 _isolate_md_mirror 同时 patch sess.F1_PATH 同理）
+
+    不纳入（调用期现算 expanduser / Path.home，_isolate_niu_config 的 HOME 重定向
+    已覆盖）：compat 的 .startup_stage、__main__ 的 .startup_error、http_log_api /
+    gateway 的日志目录、embedding_artifacts 布局文件、media_artifacts 的 models 目录、
+    media_vectors（另有 NIU_MEDIA_STORE env 接缝）、region_manager 的 last_region_sync.json、
+    brain_region_prompt 的 memory.json。lightrag_manager._raw_storage_dir 仅是
+    import 期 env 的原始记录、无下游消费点，不 patch。
+
+    tmp 布局镜像真实 ~/.niu（tmp/.niu/{lightrag_storage,agents,md,…}），使
+    「路径里含 .niu」的断言（如 test_lightrag_manager 的 STORAGE_DIR 位置断言）
+    在隔离下仍成立；真实 ~/.niu 指纹由会话级 _guard_real_niu_data 兜底核验。"""
+    niu_root = tmp_path / ".niu"
+    storage = niu_root / "lightrag_storage"
+    agents_dir = niu_root / "agents"
+    md_dir = niu_root / "md"
+    for d in (storage, agents_dir, md_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    # 尚未 import 的模块兜底：lightrag_manager import 期读该 env 求值 STORAGE_DIR
+    monkeypatch.setenv("NIU_STORAGE_DIR", str(storage))
+
+    queue_file = md_dir / "media_vector_queue.md"
+    _PATCH_TARGETS = (
+        ("niu_api.internal.lightrag_manager", "STORAGE_DIR", storage),
+        ("niu_api.internal.lightrag_integrity", "_STORAGE_DIR", storage),
+        ("niu_api.internal.lightrag_repair", "_STORAGE_DIR", storage),
+        ("niu_api.db_monitor", "_db_path", str(niu_root / "messages.db")),
+        ("agent.subagent", "_USER_AGENTS_DIR", str(agents_dir)),
+        ("niu_api.internal.ha_watcher.watcher", "CONFIG_PATH", str(niu_root / "ha-config.json")),
+        ("agent.md_mirror", "MD_DIR", str(md_dir)),
+        ("agent.md_mirror", "MEDIA_QUEUE_PATH", str(queue_file)),
+        ("niu_api.internal.media_worker", "F4_DEFAULT_QUEUE", str(queue_file)),
+    )
+    for modname, attr, value in _PATCH_TARGETS:
+        mod = sys.modules.get(modname)
+        if mod is not None and hasattr(mod, attr):
+            monkeypatch.setattr(mod, attr, value)
+    yield
