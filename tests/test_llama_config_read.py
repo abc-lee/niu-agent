@@ -17,6 +17,7 @@
 与启动器首启拷入那份同源）、HOME 重定向 tmp——绝不读写真实 ~/.niu，不联网，不加载模型。
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -243,3 +244,57 @@ class TestCommandVerbatim:
         cfg = lc.get()
         assert cfg.command is None
         assert lc.command_line() == lc.default_command()
+
+
+class TestAtomicWriteWarningReasonsSplit:
+    """⑥ 原子写两条告警 reason 错开（D2 修复）：前置失败 `atomic_write_pre`、写失败
+    `atomic_write`——同进程内两条各可达一次，写失败不再被先发生的前置失败永久吞掉。"""
+
+    def test_readonly_dir_missing_section_degrades_with_pre_reason(self, monkeypatch, tmp_path):
+        """只读目录 + 缺段 ⇒ `get()` 不抛、回缺省，告警 reason 是前置失败那条。"""
+        ro = tmp_path / "ro"
+        ro.mkdir()
+        p = ro / "user-config.json"
+        p.write_text(json.dumps({"media_ingest": {"enabled": True}}), encoding="utf-8")
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", str(p))
+        msgs, sink_id = _capture_warning()
+        os.chmod(ro, 0o500)  # 目录只读 ⇒ mkstemp 必 PermissionError ⇒ 前置失败
+        try:
+            cfg = lc.get()  # 绝不抛
+        finally:
+            os.chmod(ro, 0o700)  # 恢复，别毒化 tmp 清理
+            logger.remove(sink_id)
+        _assert_all_defaults(cfg)
+        assert "atomic_write_pre" in lc._warned_reasons, "前置失败必须用自己的 reason"
+        assert any("前置失败" in m for m in msgs), f"前置失败告警文案不得与写失败混：{msgs}"
+
+    def test_write_failure_alert_reachable_after_pre_failure(self, monkeypatch, tmp_path):
+        """同进程先发生前置失败，后发生写失败（os.replace 抛 OSError）⇒ 写失败告警仍能出。"""
+        ro = tmp_path / "ro"
+        ro.mkdir()
+        ro_cfg = ro / "user-config.json"
+        ro_cfg.write_text(json.dumps({"media_ingest": {"enabled": True}}), encoding="utf-8")
+        # 相位一：只读目录 + 缺段 ⇒ 前置失败告警先发生（reason=atomic_write_pre）
+        monkeypatch.setattr("niu_api.config.CONFIG_PATH", str(ro_cfg))
+        os.chmod(ro, 0o500)
+        try:
+            lc.get()  # 降级不抛
+        finally:
+            os.chmod(ro, 0o700)
+        assert "atomic_write_pre" in lc._warned_reasons
+        # 相位二：可写目录 + os.replace 抛 OSError ⇒ 写失败告警必须仍能出（D2 前被吞）
+        path = _write_llama(monkeypatch, tmp_path, {"command": "srv --port 1"})  # 有段，避免补写
+        msgs, sink_id = _capture_warning()
+
+        def _boom(*_a, **_kw):
+            raise OSError("boom")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        try:
+            got = lc._atomic_write_json(Path(path), {"llama_cpp": {"command": None}})
+        finally:
+            logger.remove(sink_id)
+        assert got is False
+        assert any("原子写 user-config.json 失败" in m for m in msgs), \
+            f"写失败告警被前置失败吞掉了（reason 未错开）：{msgs}"
+        assert "atomic_write" in lc._warned_reasons, "写失败 reason 未被前置失败占用"

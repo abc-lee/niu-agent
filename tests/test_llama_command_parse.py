@@ -256,3 +256,41 @@ class TestPlatformTokenization:
                              "--port", "19878", "--no-mmproj"]
         assert lc.executable() == "/opt/llama-server"
         assert lc.model_path() == "/models/q.gguf"
+
+
+class TestWin32EqualsQuotedValues:
+    """⑧ win32 等号+引号形态（D1 修复）：非 posix shlex 不剥词内引号，`=` 后的值段需
+    本模块补剥——`--port="8128"` / `--host="0.0.0.0"` / `-m="…"` 三类都要正常取值。"""
+
+    def test_win32_equals_quoted_port_host_model(self, monkeypatch, tmp_path):
+        """等号+引号：port / host / model 三键各自剥掉引号后正常取值。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        _write_llama(monkeypatch, tmp_path, {"command":
+            r'C:\srv\llama-server.exe -m="C:\models\x.gguf" --port="8128" --host="0.0.0.0"'})
+        assert lc.port() == 8128, "win32 --port=引号形态必须剥引号后取到 8128"
+        assert lc.host() == "0.0.0.0", "win32 --host=引号形态必须剥引号（不得静默带引号）"
+        assert lc.model_path() == r"C:\models\x.gguf", "win32 -m=引号形态必须剥引号后取完整路径"
+
+    def test_win32_equals_quoted_model_with_space(self, monkeypatch, tmp_path):
+        """等号+引号+值含空格：非 posix shlex 会按空白切碎引号值，win32 分支须回接后剥引号。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        _write_llama(monkeypatch, tmp_path, {"command":
+            r'C:\srv\llama-server.exe -m="C:\models\my model.gguf" --port="8128"'})
+        assert lc.model_path() == r"C:\models\my model.gguf", \
+            "win32 等号+引号+空格路径切碎后须回接成完整路径"
+
+    def test_win32_space_separated_quoted_model_still_works(self, monkeypatch, tmp_path):
+        """分写形态（推荐写法）：`-m "带空格 路径"` 剥整词引号后正常。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        _write_llama(monkeypatch, tmp_path, {"command":
+            r'C:\srv\llama-server.exe -m "C:\models\my model.gguf"'})
+        assert lc.model_path() == r"C:\models\my model.gguf"
+
+    def test_win32_backslash_no_quote_unchanged(self, monkeypatch, tmp_path):
+        """无引号反斜杠路径逐字保留（回归：D1 不得碰反斜杠保真）。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        _write_llama(monkeypatch, tmp_path, {"command":
+            r'C:\srv\llama-server.exe -m C:\m.gguf --port 19879 --host=0.0.0.0'})
+        assert lc.executable() == r"C:\srv\llama-server.exe"
+        assert (lc.port(), lc.host()) == (19879, "0.0.0.0")
+        assert lc.model_path() == r"C:\m.gguf"
