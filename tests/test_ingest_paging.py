@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from unittest.mock import MagicMock
 
 # 添加 photo-server 模块到 sys.path
 PHOTO_SERVER_SRC = str(Path(__file__).parent.parent / "mcp-servers" / "photo-server" / "src")
@@ -40,6 +41,61 @@ def _skip_if_lightrag_error(result: dict):
         pytest.skip("LightRAG 未初始化")
 
 
+def _reset_photo_module_state():
+    """复位模块级缓存：连接缓存不复位会指向真实 photos.db，
+    会话缓存不复位会让目录用例串状态（先例 test_photo_media_ingest.py）。"""
+    import niu_photo_server
+
+    niu_photo_server._conn = None
+    niu_photo_server._db_path_failed = False
+    niu_photo_server._ingest_sessions.clear()
+
+
+@pytest.fixture(autouse=True)
+def photo_env(tmp_path, monkeypatch):
+    """全套 mock 面（先例 tests/test_photo_media_ingest.py::photo_env）：临时工作区/
+    照片库/队列文件/用户配置 + get_preferences、sync_photo_to_kg、detect_faces 打桩。
+
+    TestIngestPhotoMode 三用例直调真 ingest_photo；TestIngestDirectoryPaging /
+    TestIngestNeedCategory 同样调真 ingest（照片写行 + 落盘文件）——不隔离则每跑
+    一次都写用户真实照片库与工作区。本 autouse fixture 覆盖本文件全部用例。
+    TestIngestNeedCategory 的 available_categories 断言取自 prefs 的 documents
+    列表，故打桩保留一个文档分类。detect_faces 保持既有 [] 打桩不还原真函数。
+    """
+    import agent.md_mirror as mdm
+    import niu_photo_server
+
+    _reset_photo_module_state()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db_file = tmp_path / "photos.db"
+    queue_file = tmp_path / "md" / "media_vector_queue.md"
+    config_file = tmp_path / "user-config.json"
+    config_file.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("NIU_DB_PATH", str(db_file))
+    monkeypatch.setenv("WORKSPACE_PATH", str(workspace))
+    monkeypatch.setattr("niu_api.config.CONFIG_PATH", str(config_file))
+    monkeypatch.setattr(mdm, "MEDIA_QUEUE_PATH", str(queue_file))
+
+    fake_prefs = {
+        "categories": {"photos": ["生活"], "documents": ["其他"]},
+        "storage": {"structure": {"photos": "{year}"}},
+    }
+    monkeypatch.setattr(niu_photo_server, "get_preferences", lambda: fake_prefs)
+    monkeypatch.setattr(niu_photo_server, "detect_faces", lambda file_path: [])
+    monkeypatch.setattr(
+        niu_photo_server, "sync_photo_to_kg",
+        MagicMock(return_value={"status": "success", "kg_entities": []}),
+    )
+
+    yield {
+        "workspace": workspace,
+        "db_file": db_file,
+        "queue_file": queue_file,
+    }
+    _reset_photo_module_state()
 class TestIngestDirectoryPaging:
     """测试 ingest 目录分页式返回"""
 
