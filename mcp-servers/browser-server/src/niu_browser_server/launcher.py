@@ -56,7 +56,8 @@ def launch_browser(url: Optional[str] = None, browser_exe: Optional[str] = None)
     If browser is already running, this will fail - user must manually load extension.
 
     Args:
-        url: Optional initial URL. If None, opens about:blank.
+        url: Optional initial page. If None/empty, no page argument is passed —
+             the browser opens the user's own configured homepage.
         browser_exe: Optional browser executable path. If None, auto-detects default browser.
 
     Returns:
@@ -86,8 +87,11 @@ def launch_browser(url: Optional[str] = None, browser_exe: Optional[str] = None)
         f"--load-extension={extension_path}",
         "--no-first-run",
         "--no-default-browser-check",
-        url or "https://www.bing.com",
     ]
+    # Only pass a page argument when a URL is provided; otherwise the browser
+    # opens the user's own configured homepage (no hardcoded default page).
+    if url:
+        args.append(url)
 
     # Windows: create detached process so browser survives Python exit
     if sys.platform == "win32":
