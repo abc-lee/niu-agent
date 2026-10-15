@@ -1,5 +1,6 @@
 """布局文件（~/.niu/llama-layout.json，启动器首启自包内种子拷入的家目录那份）读取 /
-故障降级 —— 方案 §9.1 第 1 行五用例（seed 机制版）。
+故障降级 —— 方案 §9.1 第 1 行四用例（seed 机制版；原用例④ `binary_path` 配置覆盖
+已随配置键删减作废）。
 
 全部离线、不碰真实 ~/.niu：user-config 重定向 tmp，布局文件写 tmp 后经
 monkeypatch `_layout_path` 指向（先例 test_context_window_live_read.py 的 CONFIG_PATH
@@ -140,25 +141,6 @@ class TestZeroDefaultDrift:
         _point_layout(monkeypatch, tmp_path, tampered)
         assert ea.gguf_path() == tmp_path / "tampered.gguf"
         assert ea.llama_server_path().parent == tmp_path / "third-party" / ea.current_platform()
-
-
-class TestBinaryPathOverride:
-    def test_binary_path_wins_and_binary_check_skipped(self, monkeypatch, tmp_path):
-        """④ llama_cpp.binary_path 非空 ⇒ llama_server_path() 返回它，
-        missing_artifacts() 跳过布局二进制检查（只检 GGUF）。"""
-        monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
-        custom = tmp_path / "my-llama-server"  # 故意不创建文件
-        (tmp_path / "user-config.json").write_text(
-            json.dumps({"llama_cpp": {"binary_path": str(custom)}}), encoding="utf-8"
-        )
-        _point_layout(monkeypatch, tmp_path, _standard_layout())
-        assert ea.llama_server_path() == custom
-        # GGUF 齐 + 布局二进制不在 + 用户二进制未放 ⇒ 二进制检查被跳过，判齐备
-        ea.gguf_path().write_bytes(b"x")
-        assert ea.artifacts_ready()
-        # GGUF 缺 ⇒ 清单只有 GGUF，绝不含二进制项
-        ea.gguf_path().unlink()
-        assert ea.missing_artifacts() == [ea.gguf_path()]
 
 
 class TestPlatformKeyInLayout:
