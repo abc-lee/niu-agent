@@ -1,0 +1,54 @@
+{
+  "_comment": "维护者工具的下载规格数据文件——**仅供 scripts/package_all_dependencies.py 使用**（及其测试）；运行时代码（niu_api/、agent/）永不读本文件：运行时布局事实只读家目录 ~/.niu/llama-layout.json（启动器首启时从包内只读种子 memory/llama-layout.<os>.json 拷入）。换构建/资产/下载源/量化只改本文件；把 URL、资产名、构建号写回任何代码都是实施错误（门禁 scripts/check_no_hardcoded_artifacts.py 会拦运行时代码）。模板字段：asset/top_dir 里的 {build} 是占位符，消费方用 llama_cpp.build 展开。",
+  "schema_version": 1,
+  "llama_cpp": {
+    "build": "b11540",
+    "dirname": "llama.cpp",
+    "sources": [
+      "https://github.com/ggml-org/llama.cpp/releases/download/",
+      "https://gh-proxy.com/https://github.com/ggml-org/llama.cpp/releases/download/"
+    ],
+    "platforms": {
+      "darwin-x64": {
+        "cpu": { "asset": "llama-{build}-bin-macos-x64.tar.gz", "top_dir": "llama-{build}", "binary": "llama-server" }
+      },
+      "darwin-arm64": {
+        "cpu": { "asset": "llama-{build}-bin-macos-arm64.tar.gz", "top_dir": "llama-{build}", "binary": "llama-server" }
+      },
+      "win32-x64": {
+        "cpu": { "asset": "llama-{build}-bin-win-cpu-x64.zip", "top_dir": null, "binary": "llama-server.exe" }
+      }
+    }
+  },
+  "gguf": {
+    "filename": "embeddinggemma-2-Q8_0.gguf",
+    "size": 309855456,
+    "sha256": null,
+    "sources": [
+      "https://hf-mirror.com/ggml-org/embeddinggemma-2-GGUF/resolve/main/embeddinggemma-2-Q8_0.gguf"
+    ]
+  },
+  "mmproj": {
+    "filename": "mmproj-embeddinggemma-2-Q8_0.gguf",
+    "sha256": "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f",
+    "sources": [
+      "https://hf-mirror.com/ggml-org/embeddinggemma-2-GGUF/resolve/main/mmproj-embeddinggemma-2-Q8_0.gguf"
+    ]
+  },
+  "face": {
+    "name": "buffalo_l",
+    "archive": "buffalo_l.zip",
+    "top_dir": "buffalo_l",
+    "install_subdir": "models/buffalo_l",
+    "files": [
+      "1k3d68.onnx",
+      "2d106det.onnx",
+      "det_10g.onnx",
+      "genderage.onnx",
+      "w600k_r50.onnx"
+    ],
+    "sources": [
+      "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
+    ]
+  }
+}
