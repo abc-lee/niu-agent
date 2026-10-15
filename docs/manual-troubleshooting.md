@@ -884,4 +884,29 @@ Chat 页面上下文使用率圆环处的缓存命中率显示异常时，先区
 **快速判据**：①看 API 进程 stderr 启动留痕 `utf8_mode=True|False`——为 `False` 说明外部环境变量覆盖了 UTF-8 模式，查 shell 里的 `PYTHONUTF8`/`PYTHONIOENCODING`；②Windows cp936 控制台手跑 `python -m niu_api` 时控制台中文乱码只是观感问题（打包版无控制台、不受影响）。
 **处置**：确认 `utf8_mode=True`；`code_run` PowerShell 输出乱码时，查脚本是否以指令开头（`param(`/`using`/`[CmdletBinding]`/`[Parameter`）或块注释与指令同行——这些形态不加编码前缀，规避写法见 [SYSTEM_MANUAL「文本编码 · 已知限制」](SYSTEM_MANUAL.md)。
 
+### 1.13 人物查询问题
+
+#### 问题：人物查询报"照片库查询失败"（`PERSON_SEARCH_FAILED`）
+
+`search_persons`（按名字找人）返回**失败信封**时：`status:error` + `error_code=PERSON_SEARCH_FAILED`，`message` 形如「照片库查询失败（database is locked 等），这不代表库里没有这个人；请稍后重试」。
+
+**错误码与原因：**
+
+| error_code | 含义 |
+|---|---|
+| `PERSON_SEARCH_FAILED` | 照片库读不到（库被锁/损坏/不可读）——查询**没跑成**，不是"查无此人" |
+
+**与「查无此人」的区别（关键）**：真正"没有这个人"是 `status:success` + `results:[]`——查询正常跑完、库里确实没匹配任何人，那是**正常结果**，可照实回答"没有这个人"；而 `PERSON_SEARCH_FAILED` 只是**照片库查不动**（库被锁/损坏/不可读），此时**不可**回答"没有这个人"，必须如实告知"查询失败"——查询失败与"确实没有"是两件事。
+
+**处置**：
+
+```bash
+# 1. 稍后重试——库被锁（如照片入库/人脸检测正在进行）多为瞬态，重试即恢复
+# 2. 看日志里的 [SEARCH_PERSONS] 记录（带完整堆栈，可定位具体原因）
+grep -n 'SEARCH_PERSONS' ~/.niu/logs/*.log
+# 3. 检查照片库文件是否存在、可读（workspace 自定义时换成 {workspace}/photos.db）
+ls -l ~/.niu/work/photos.db
+# 4. 仍不恢复：按数据问题排查（库文件损坏、路径配置错误等），必要时重建照片库
+```
+
 
