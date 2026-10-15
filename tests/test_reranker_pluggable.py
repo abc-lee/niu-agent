@@ -300,3 +300,155 @@ class TestSwitchReranker:
                 switch_reranker("bge-reranker-v2-m3")
                 assert reranker_module._reranker_model is None
                 assert reranker_module._reranker_name is None
+
+
+# ============== Stale Reranker Self-Heal Tests ==============
+
+
+def _capture_loguru(level="WARNING"):
+    """loguru sink 捕获（reranker 用 loguru 而非 stdlib logging，pytest caplog 捕获不到——
+    与 test_embedding_pluggable.py 同范式的 per-file 复制）。"""
+    from loguru import logger
+
+    messages = []
+    sink_id = logger.add(lambda m: messages.append(str(m)), level=level)
+    return messages, sink_id
+
+
+def _write_prefs(tmp, prefs):
+    """在 tmp/.niu/preferences.json 写入 prefs。"""
+    prefs_path = Path(tmp) / ".niu" / "preferences.json"
+    prefs_path.parent.mkdir(parents=True, exist_ok=True)
+    prefs_path.write_text(json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+    return prefs_path
+
+
+def _call_get_model_name_with_home(home_dir):
+    """把 reranker 模块的 Path.home 指到 home_dir 后调 _get_reranker_model_name。"""
+    from niu_api.internal.reranker import _get_reranker_model_name
+
+    with patch("niu_api.internal.reranker.Path") as mock_path:
+        mock_path.home.return_value = Path(home_dir)
+        mock_path.side_effect = lambda x: Path(x)
+        return _get_reranker_model_name()
+
+
+class TestStaleRerankerSelfHeal:
+    """陈旧 reranker_model 配置值：响亮告警 + 原子写回（进程内一次）+ 绝不抛。"""
+
+    def test_stale_value_warns_and_heals_file(self, tmp_path, monkeypatch):
+        """①返回生效值 ②有 WARNING ③文件键被改成生效值 ④其它字段未动。"""
+        import niu_api.internal.reranker as reranker_mod
+
+        monkeypatch.setattr(reranker_mod, "_stale_reranker_healed", False)
+        prefs = {
+            "version": "1.0",
+            "lightrag": {"embedding_model": "embeddinggemma-2", "reranker_model": "bge-reranker-v1.5"},
+            "feishu": {"enabled": True, "app_id": "cli-abc"},
+        }
+        prefs_path = _write_prefs(str(tmp_path), prefs)
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == "none", "不受支持值必须落到生效值 'none'"
+        assert any("bge-reranker-v1.5" in m and "reranker_model" in m and "不受支持" in m for m in msgs), (
+            f"必须响亮告警并带配置值/键名，实际: {msgs}"
+        )
+        healed = json.loads(prefs_path.read_text(encoding="utf-8"))
+        assert healed["lightrag"]["reranker_model"] == "none", "自愈必须把键改成生效值 'none'"
+        # 其它字段原样保留
+        assert healed["version"] == "1.0"
+        assert healed["lightrag"]["embedding_model"] == "embeddinggemma-2"
+        assert healed["feishu"] == {"enabled": True, "app_id": "cli-abc"}
+
+    def test_writeback_only_once_per_process(self, tmp_path, monkeypatch):
+        """进程内已尝试过写回（含成功）⇒ 再次遇到陈旧值只告警、不再写盘。"""
+        import niu_api.internal.reranker as reranker_mod
+
+        monkeypatch.setattr(reranker_mod, "_stale_reranker_healed", True)  # 模拟本进程已尝试过
+        prefs_path = _write_prefs(str(tmp_path), {"lightrag": {"reranker_model": "legacy-reranker"}})
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == "none"
+        assert any("legacy-reranker" in m for m in msgs), "已尝试过写回仍要响亮告警"
+        assert json.loads(prefs_path.read_text(encoding="utf-8"))["lightrag"]["reranker_model"] == "legacy-reranker", (
+            "进程内只写一次：已尝试过 ⇒ 不得再写盘"
+        )
+
+    def test_write_failure_warns_and_keeps_effective(self, tmp_path, monkeypatch):
+        """写回失败（只读/权限）⇒ 告警说明，不抛，行为不变（仍用生效值 'none'）。"""
+        import niu_api.internal.reranker as reranker_mod
+
+        monkeypatch.setattr(reranker_mod, "_stale_reranker_healed", False)
+
+        def _boom(path, data):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(reranker_mod, "_atomic_write_json", _boom)
+        prefs_path = _write_prefs(str(tmp_path), {"lightrag": {"reranker_model": "bge-reranker-v1.5"}})
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))  # 不得抛
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == "none"
+        assert any("写回失败" in m for m in msgs), f"写回失败必须告警说明，实际: {msgs}"
+        assert json.loads(prefs_path.read_text(encoding="utf-8"))["lightrag"]["reranker_model"] == "bge-reranker-v1.5"
+
+    def test_missing_key_no_warning_no_writeback(self, tmp_path, monkeypatch):
+        """键缺失 ⇒ 现状零变：不告警、不写回。"""
+        import niu_api.internal.reranker as reranker_mod
+
+        monkeypatch.setattr(reranker_mod, "_stale_reranker_healed", False)
+        prefs_path = _write_prefs(str(tmp_path), {"version": "1.0", "lightrag": {"embedding_model": "embeddinggemma-2"}})
+        original = prefs_path.read_text(encoding="utf-8")
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == "none"
+        assert msgs == [], f"键缺失不得告警：{msgs}"
+        assert prefs_path.read_text(encoding="utf-8") == original, "键缺失不得写回"
+
+    def test_supported_value_no_warning_no_writeback(self, tmp_path, monkeypatch):
+        """值受支持 ⇒ 原样返回，不告警、不写回（现状零变）。"""
+        import niu_api.internal.reranker as reranker_mod
+
+        monkeypatch.setattr(reranker_mod, "_stale_reranker_healed", False)
+        prefs_path = _write_prefs(str(tmp_path), {"lightrag": {"reranker_model": "bge-reranker-v2-m3"}})
+        original = prefs_path.read_text(encoding="utf-8")
+        msgs, sink_id = _capture_loguru()
+        try:
+            result = _call_get_model_name_with_home(str(tmp_path))
+        finally:
+            from loguru import logger
+            logger.remove(sink_id)
+
+        assert result == "bge-reranker-v2-m3"
+        assert msgs == []
+        assert prefs_path.read_text(encoding="utf-8") == original
+
+    def test_corrupt_json_returns_none_without_crash(self, tmp_path, monkeypatch):
+        """坏 JSON 读失败 ⇒ 仍返回生效值 'none'、不抛、不写回。"""
+        import niu_api.internal.reranker as reranker_mod
+
+        monkeypatch.setattr(reranker_mod, "_stale_reranker_healed", False)
+        prefs_path = _write_prefs(str(tmp_path), {})
+        prefs_path.write_text("{ broken json }}}", encoding="utf-8")
+        result = _call_get_model_name_with_home(str(tmp_path))  # 不得抛
+        assert result == "none"
+        assert prefs_path.read_text(encoding="utf-8") == "{ broken json }}}", "读失败不得写回"
