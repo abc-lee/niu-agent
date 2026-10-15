@@ -1,75 +1,188 @@
-"""EmbeddingGemma 2 产物解析与缺失检测 —— 产物位置的唯一真相源（S1）。
+"""EmbeddingGemma 2 产物解析与缺失检测 —— 产物位置的唯一真相源（S1，方案 §4'）。
 
 只回答三件事：产物在哪、缺没缺、缺的时候怎么说人话。
-**不含加载与编码**（那是 S2 的 llama.cpp 后端职责）。
+**不含加载与编码**（那是 llama-server 后端的职责），且**零下载能力**（方案 §4'.1：
+程序不做下载，获取产物是《系统管理手册》『可选组件安装』节的事）。
+
+布局事实（目录名 / 各平台二进制名 / GGUF 文件名与体积 / mmproj 文件名）全部来自
+数据文件，不在代码里：bundle 权威层 `config/llama-layout.json` + 用户覆盖层
+`~/.niu/config/llama-layout-user.json`（deep merge，用户赢；定位照 niu_api/config.py
+双模式，合并语义照 agent/mcp_loader.py 双目录先例）。
 
 消费方：
-- `scripts/package_all_dependencies.py`（供模型：往这些路径填产物）
-- 运行时缺失自检（S2 接入：缺失时经 `_handle_embedding_preload_failure` 写 .startup_error）
+- 运行时缺失自检（llama-server 拉起前，缺失时经 describe_missing() 写 .startup_error）
+- 手册自检命令（manual-troubleshooting.md：describe_missing / verify_gguf / gguf_path）
 
-无 torch / 无网络 / 无模型加载。注意：本模块经 `get_models_dir` 传递依赖
-`niu_api.internal.embedding` 的模块级 import（numpy、loguru），二者本是 niu_api 的既有硬依赖，
-不新增额外依赖；**但不等于零依赖**，供模型脚本在无 numpy/loguru 的环境仍会 ImportError。
+无 torch / 无网络 / 无模型加载。经 `get_models_dir` 传递依赖 numpy、loguru（niu_api
+既有硬依赖，非新增）。**故障路径**：布局数据缺失不致命——WARNING 后按内置回退布局名
+继续派生路径（缺文件清单仍可读），只有"产物真缺"才产出 Fatal 文案。
 """
 
 from __future__ import annotations
 
+import json
+import os
 import platform
 import sys
 from pathlib import Path
 
+from loguru import logger
+
 from niu_api.internal.embedding import get_models_dir
 
-# ---------------- 产物单一真相源 ----------------
+# ---------------- 布局数据（"用"产物所需的事实，不是下载规格） ----------------
 
-GGUF_FILENAME = "embeddinggemma-2-Q8_0.gguf"
-GGUF_SIZE = 309_855_456  # 字节；hf-mirror x-linked-size，2026-10-10 实测
-GGUF_HF_REPO = "ggml-org/embeddinggemma-2-GGUF"
+_LAYOUT_FILENAME = "llama-layout.json"
+_USER_LAYOUT_FILENAME = "llama-layout-user.json"
 
-LLAMA_CPP_BUILD = "b11540"  # llama.cpp nightly tag，2026-10-10 实测含 gemma-embedding2
-LLAMA_CPP_DIRNAME = "llama.cpp"
+# 布局数据缺失/坏掉时的回退布局事实——仅在该降级态生效，防止"清单文件丢了就什么
+# 都算不出"。这些是产品自身稳定的摆放名（不含上游构建号/压缩包名）。
+_FALLBACK_DIRNAME = "llama.cpp"
+_FALLBACK_GGUF_FILENAME = "embeddinggemma-2-Q8_0.gguf"
 
-# 平台键 -> (发布资产名, 是否需要赋予可执行位)
-# tarball/zip 内二进制统一位于单一顶层目录 llama-<build>/
-_PLATFORM_ASSETS: dict[str, tuple[str, bool]] = {
-    "darwin-x64": (f"llama-{LLAMA_CPP_BUILD}-bin-macos-x64.tar.gz", True),
-    "darwin-arm64": (f"llama-{LLAMA_CPP_BUILD}-bin-macos-arm64.tar.gz", True),
-    "win32-x64": (f"llama-{LLAMA_CPP_BUILD}-bin-win-cpu-x64.zip", False),
-}
-
-# 二进制下载源候选（按序尝试）：GitHub 直连优先，第三方镜像仅作回落。
-# 单列第三方代理有供应链风险，故不作为唯一来源。
-_LLAMA_SOURCES: tuple[str, ...] = (
-    "https://github.com/ggml-org/llama.cpp/releases/download/",
-    "https://gh-proxy.com/https://github.com/ggml-org/llama.cpp/releases/download/",
-)
-
-_GGUF_SOURCES: tuple[str, ...] = (
-    f"https://hf-mirror.com/{GGUF_HF_REPO}/resolve/main/{GGUF_FILENAME}",
+# 《系统管理手册》『可选组件安装』对 llama.cpp 的兼容性要求（方案 §4'.2，完整 6 条，
+# 平台无关）——缺失文案只含"缺哪些文件 + 这些要求 + 手册指引"，不提平台名/构建号/
+# 脚本名/启动方式。
+_COMPAT_REQUIREMENTS: tuple[str, ...] = (
+    "支持嵌入模式：认 --embedding；POST /v1/embeddings 接受 "
+    '{"input":[...],"encoding_format":"float"} 并返回 data[].embedding（条数与输入等长）',
+    "带多模态（MTMD）：认 --mmproj 与 --image-max-tokens；能接受图片输入（data: base64）",
+    "构建够新：能加载 EmbeddingGemma 2 的 GGUF；认 --no-mmproj",
+    'GET /health 返回 JSON 且 status 为 "ok"（只回 200 不算就绪——看的是字段）',
+    "POST /tokenize 返回 tokens 数组（超限截断护栏的备用计量通道）",
+    "认基础 flag：-m / --port / --host / -c / -b / -ub",
 )
 
 
 class UnsupportedPlatformError(NotImplementedError):
-    """平台不在 _PLATFORM_ASSETS 中 —— 显式失败，禁止静默回退到错误架构的二进制。"""
+    """OS 层真不支持（非 darwin/win32）——显式失败，禁止静默回退到错误架构的二进制。
+
+    平台键是否在布局数据声明的清单里是另一层校验：布局数据在而未声明该平台 ⇒
+    仅 WARNING、按派生路径继续；布局数据缺 ⇒ 跳过校验（WARNING 由布局加载处发出）。
+    """
+
+
+# 布局数据进程内缓存（仅当两层文件 stat 变化才重读）+ 每进程一次告警
+_LAYOUT_CACHE: dict | None = None
+_LAYOUT_CACHE_KEY: tuple | None = None
+_WARNED_REASONS: set[str] = set()
+
+
+def _warn_once(reason: str, msg: str) -> None:
+    if reason not in _WARNED_REASONS:
+        _WARNED_REASONS.add(reason)
+        logger.warning(msg)
+
+
+def _bundle_layout_path() -> Path:
+    """bundle 权威层布局数据文件（dev：项目根 config/；bundle：Resources/config/）。
+
+    定位照 niu_api/config.py 的 _get_bundle_config_dir；函数级 import 是测试注入点。
+    """
+    from niu_api.config import _get_bundle_config_dir
+    return _get_bundle_config_dir() / _LAYOUT_FILENAME
+
+
+def _user_layout_path() -> Path:
+    """用户覆盖层：~/.niu/config/llama-layout-user.json（存在即参与合并，缺失=缺省形态，静默）。"""
+    return Path(os.path.expanduser("~")) / ".niu" / "config" / _USER_LAYOUT_FILENAME
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """dict 递归合并，非 dict 值或键冲突时 override 赢（用户层语义照 agent/mcp_loader）。"""
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _layout_stat_key(p: Path) -> tuple:
+    try:
+        st = p.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return ()
+
+
+def _layout_raw() -> dict | None:
+    """读合并后的布局数据（bundle 权威层 + 用户覆盖层 deep merge，用户赢）。
+
+    用户层缺失＝正常缺省形态（静默）；bundle 层缺失/两层全坏 ⇒ WARNING（每进程
+    一次）并返回 None——调用方按回退布局降级，绝不抛。稳态进程内缓存：仅当任一层
+    文件 stat 变化才重读。
+    """
+    global _LAYOUT_CACHE, _LAYOUT_CACHE_KEY
+    bundle = _bundle_layout_path()
+    user = _user_layout_path()
+    key = _layout_stat_key(bundle) + _layout_stat_key(user)
+    if key == _LAYOUT_CACHE_KEY:
+        return _LAYOUT_CACHE
+    merged: dict = {}
+    any_layer = False
+    for p in (bundle, user):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        except ValueError:
+            _warn_once(f"parse:{p.name}", f"布局数据 {p} 解析失败，该层按缺失降级")
+            continue
+        if not isinstance(data, dict):
+            continue
+        any_layer = True
+        merged = _deep_merge(merged, data)
+    if not any_layer:
+        _warn_once(
+            "no-layout",
+            "布局数据缺失（config/llama-layout.json 未找到）：产物路径按内置回退名派生，"
+            "请按《系统管理手册》『可选组件安装』补齐布局与产物",
+        )
+    _LAYOUT_CACHE_KEY = key
+    _LAYOUT_CACHE = merged if any_layer else None
+    return _LAYOUT_CACHE
+
+
+# ---------------- 布局事实访问器 ----------------
+
+
+def layout_dirname() -> str:
+    """产物目录名（布局数据 dirname；数据缺失时回退 llama.cpp）。"""
+    v = (_layout_raw() or {}).get("dirname")
+    return v if isinstance(v, str) and v else _FALLBACK_DIRNAME
+
+
+def gguf_filename() -> str:
+    """GGUF 权重文件名（布局数据 gguf.filename；数据缺失时回退产品默认名）。"""
+    v = ((_layout_raw() or {}).get("gguf") or {}).get("filename")
+    return v if isinstance(v, str) and v else _FALLBACK_GGUF_FILENAME
+
+
+def supported_platforms() -> list[str]:
+    """布局数据声明的平台键清单（布局数据缺失 ⇒ 空清单，调用方跳过成员校验）。"""
+    plats = (_layout_raw() or {}).get("platforms") or {}
+    return sorted(plats) if isinstance(plats, dict) else []
+
+
+# ---------------- 平台与路径 ----------------
 
 
 def current_platform() -> str:
-    """返回 `<sys.platform>-<arch>` 平台键。
+    """返回 `<sys.platform>-<arch>` 平台键——纯由 OS/架构派生，不依赖任何布局数据。
 
-    未适配平台必须抛错：静默回退会让 x64 机器拿 arm64 二进制，
-    报错信息难归因（"file not found" 而非"架构不符"）。
+    OS 层非 darwin/win32 必须抛错（UnsupportedPlatformError）：静默回退会让 x64
+    机器拿 arm64 二进制，报错信息难归因。平台键是否在布局数据清单里由调用路径
+    另行校验（未声明仅 WARNING，不抛）。
     """
     if sys.platform not in ("darwin", "win32"):
         raise UnsupportedPlatformError(
-            f"EmbeddingGemma 2 后端未适配平台 {sys.platform!r}；"
-            f"已适配：{sorted(_PLATFORM_ASSETS)}"
+            f"EmbeddingGemma 2 后端未适配操作系统 {sys.platform!r}（仅 darwin/win32）"
         )
     machine = platform.machine().lower()
     arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
-    key = f"{sys.platform}-{arch}"
-    if key not in _PLATFORM_ASSETS:
-        raise UnsupportedPlatformError(f"未适配的平台组合 {key!r}；已适配：{sorted(_PLATFORM_ASSETS)}")
-    return key
+    return f"{sys.platform}-{arch}"
 
 
 def models_dir() -> Path:
@@ -77,55 +190,93 @@ def models_dir() -> Path:
     return get_models_dir()
 
 
+def _platform_declared() -> bool:
+    """当前平台键是否在布局数据声明的清单里（布局缺失 ⇒ 视同已声明，告警已在加载处发）。"""
+    layout = _layout_raw()
+    if layout is None:
+        return True
+    plats = layout.get("platforms") or {}
+    if not isinstance(plats, dict):
+        return True
+    key = current_platform()
+    if key not in plats:
+        _warn_once(
+            f"platform:{key}",
+            f"布局数据未声明平台 {key!r}：按其派生路径继续（自备构建请同时配置 llama_cpp.binary_path）",
+        )
+        return False
+    return True
+
+
 def platform_dir() -> Path:
-    """当前平台的 llama.cpp 产物目录：`<models>/llama.cpp/<platform>/`。"""
-    return models_dir() / LLAMA_CPP_DIRNAME / current_platform()
+    """当前平台的 llama.cpp 产物目录：`<models>/<dirname>/<platform>/`。"""
+    _platform_declared()
+    return models_dir() / layout_dirname() / current_platform()
 
 
 def gguf_path() -> Path:
-    return models_dir() / GGUF_FILENAME
+    return models_dir() / gguf_filename()
 
 
 def llama_server_name() -> str:
-    """llama-server 可执行文件名 —— **调用期**求值。
+    """llama-server 可执行文件名——布局数据优先，**调用期**求值。
 
-    不得做成 import 期常量：测试需 monkeypatch `sys.platform` 来验证 Windows
-    分支，import 期冻结的常量无法被回头重绑，会让该测试在 macOS 上恒失败
-    （实测教训：R1 双审两角独立命中）。
+    布局数据声明的当前平台二进制名为准；布局缺失/未声明时按 OS 回退（Windows
+    为 .exe）。不得做成 import 期常量：测试需 monkeypatch `sys.platform` 验证
+    Windows 分支，import 期冻结的值无法被回头重绑。
     """
+    layout = _layout_raw()
+    plats = (layout or {}).get("platforms") or {}
+    entry = plats.get(current_platform()) if isinstance(plats, dict) else None
+    name = entry.get("binary") if isinstance(entry, dict) else None
+    if isinstance(name, str) and name:
+        return name
     return "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
 
+def llama_needs_exec_bit() -> bool:
+    """当前平台的二进制是否需要显式赋予可执行位（Windows 无此概念）。
+
+    方案 §4'.3 死链裁决③：重定义为 `sys.platform != "win32"`——不再依赖已删除的
+    资产表（可执行位是 OS 语义，与布局数据无关）。
+    """
+    return sys.platform != "win32"
+
+
+def _binary_path_override() -> str | None:
+    """用户自备二进制路径（user-config 的 llama_cpp.binary_path）；函数级 import 是测试注入点。"""
+    from niu_api.internal.llama_config import get as _llama_cpp_get
+    return _llama_cpp_get().binary_path
+
+
 def llama_server_path() -> Path:
+    """llama-server 二进制路径（调用期求值）。
+
+    `llama_cpp.binary_path` 非空 ⇒ 直接返回它（用户自备 GPU/AMD 变体，程序不再找
+    布局路径）；否则布局派生路径 `<models>/<dirname>/<platform>/<二进制名>`。
+    """
+    override = _binary_path_override()
+    if override:
+        return Path(override)
     return platform_dir() / llama_server_name()
 
 
-def llama_asset_name() -> str:
-    """当前平台应下载的发布资产名。"""
-    return _PLATFORM_ASSETS[current_platform()][0]
-
-
-def llama_needs_exec_bit() -> bool:
-    """当前平台的二进制是否需要显式赋予可执行位（Windows 无此概念）。"""
-    return _PLATFORM_ASSETS[current_platform()][1]
-
-
-def llama_download_urls() -> list[str]:
-    asset = llama_asset_name()
-    return [f"{base}{LLAMA_CPP_BUILD}/{asset}" for base in _LLAMA_SOURCES]
-
-
-def gguf_download_urls() -> list[str]:
-    return list(_GGUF_SOURCES)
+# ---------------- 缺失检测与文案 ----------------
 
 
 def missing_artifacts() -> list[Path]:
-    """当前平台缺失的必需产物；顺序固定：权重在前、二进制在后。"""
+    """当前平台缺失的必需产物；顺序固定：权重在前、二进制在后。
+
+    只检 GGUF 权重 + llama-server 二进制（mmproj 由 media_artifacts 单独管，不折入）；
+    `llama_cpp.binary_path` 非空时跳过布局二进制检查（自备二进制的存在性由启动期
+    可执行性校验负责）。
+    """
     missing: list[Path] = []
     if not gguf_path().is_file():
         missing.append(gguf_path())
-    if not llama_server_path().is_file():
-        missing.append(llama_server_path())
+    if not _binary_path_override():
+        if not llama_server_path().is_file():
+            missing.append(llama_server_path())
     return missing
 
 
@@ -134,31 +285,37 @@ def artifacts_ready() -> bool:
 
 
 def describe_missing() -> str:
-    """把缺失产物写成人读、可行动的文案（供 S2 写进 .startup_error）。
+    """把缺失产物写成人读、可行动的文案（供 llama-server 拉起前写 .startup_error）。
 
-    硬约束：每条必须指名**具体文件路径**；禁止"模型缺失"这类无法行动的话。
-    产物齐备时返回空串。
+    硬约束：每条必须指名**具体文件路径**（布局数据缺失时按回退名派生，清单仍可读）；
+    只含"缺哪些文件 + 兼容性要求（方案 §4'.2 六条）+ 见《系统管理手册》『可选组件安装』"，
+    不提平台名/构建号/脚本名/启动方式。产物齐备时返回空串。
+    首行与 launcher 的 MISSING_ARTIFACTS_HANDLE 字节级一致（改首行必须同步 Rust）。
     """
     missing = missing_artifacts()
     if not missing:
         return ""
     lines = ["向量模型产物缺失，程序无法启动。缺少："]
     lines.extend(f"  - {p}" for p in missing)
-    lines.append(
-        "获取方式：运行 scripts/package_all_dependencies.py"
-        f"（下载 GGUF 权重与 llama.cpp {LLAMA_CPP_BUILD} 预编译二进制），"
-        "或手动把文件放到上述路径。"
-    )
+    lines.append("对 llama.cpp 的兼容性要求（平台无关，须同时满足；自检办法见手册）：")
+    lines.extend(f"  {n}. {req}" for n, req in enumerate(_COMPAT_REQUIREMENTS, 1))
+    lines.append("获取与自检办法见《系统管理手册》『可选组件安装』。")
     return "\n".join(lines)
 
 
 def verify_gguf(path: Path) -> bool:
     """按体积粗校 GGUF（防下到半截/错误文件）。
 
-    只校验字节数，不做哈希——镜像站给出的 x-linked-size 已可拦截绝大多数
-    下载残损；强校验留给后续如需引入时再加，不在 S1 扩大范围。
+    只校验字节数，不做哈希。期望体积取自布局数据 `gguf.size`（手册的手动自检命令
+    因此继续可用）；布局数据缺失致期望体积不可得 ⇒ WARNING 后返回 False
+    （无法校验即未通过）。
     """
+    gguf = (_layout_raw() or {}).get("gguf") or {}
+    size = gguf.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        _warn_once("gguf-size", "布局数据缺可用的 gguf.size：verify_gguf 无法做体积粗校，按 False 处理")
+        return False
     try:
-        return path.is_file() and path.stat().st_size == GGUF_SIZE
+        return path.is_file() and path.stat().st_size == size
     except OSError:
         return False
