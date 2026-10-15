@@ -1307,6 +1307,21 @@ def _report_tokenizer_selfcheck_error(reason: str) -> None:
     _integrity_result["ok"] = False
 
 
+def _validate_disabled_reranker() -> str:
+    """停用分支的校验调用点（极小函数，可单测）。
+
+    停用分支不加载 reranker 模型 ⇒ reranker._get_reranker_model_name 永不触发，
+    不受支持的旧 reranker_model 值将永不告警/自愈（真机实证：embedding_model 自愈
+    写回成功、reranker_model 原样不动）。故在停用分支显式调一次校验入口。
+    校验抛异常不得阻断 LightRAG 构建 —— 降级为 "none"。
+    """
+    try:
+        from niu_api.internal.reranker import validate_reranker_model_config
+        return validate_reranker_model_config()
+    except Exception as e:
+        logger.warning(f"reranker 配置校验失败（不阻断构建）：{e}")
+        return "none"
+
 def _build_rag_params() -> dict[str, Any]:
     """构建 LightRAG 构造参数（S10 从 _create_lightrag_instance 拆出）。
 
@@ -1346,7 +1361,13 @@ def _build_rag_params() -> dict[str, Any]:
     # reranker.py 的模型加载/切换逻辑整条保留原样，将来要恢复只需改下一行。
     reranker_func = None  # 停用 reranker：原本是 make_lightrag_reranker_callable()
     if reranker_func is None:
-        logger.info("LightRAG reranker disabled (本期停用，见 reranker.py 说明)")
+        # 显式调一次校验入口：本分支不加载模型 ⇒ _get_reranker_model_name 永不触发，
+        # 不受支持的旧 reranker_model 值将永不告警/自愈（真机实证）。失败降级，不阻断构建。
+        effective_reranker_model = _validate_disabled_reranker()
+        logger.info(
+            "LightRAG reranker disabled (本期停用，reranker_model={}，见 reranker.py 说明)",
+            effective_reranker_model,
+        )
 
     # Create LightRAG instance
     # Custom entity_types: constrain LLM extraction to these categories.
