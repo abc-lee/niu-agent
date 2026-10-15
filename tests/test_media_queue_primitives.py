@@ -9,11 +9,12 @@
   标注/弃除最后一条完整行 + 撕裂尾行在场 ⇒ 拼合后收敛（完成行消失、无活可干，取舍见
   _f4_rewrite_line docstring）；越界 / 指向空行 → failed 不动文件；内容护栏不符 → failed
   文件不动；重写失败自动恢复原文（打桩 os.write 首次写失败，恢复写成功 ⇒ 文件内容 == 原文）；
-  文件缺失 → "missing"（Chat 页面已删文件，I-3/口径丁 的竞态形态）。
+  文件缺失 → "missing"（Chat 页面已清空文件，I-3/口径丁 的竞态形态）。
 - f4_drop_line：坏行夹在已完成行与未完成行之间，按行号弃除；撕裂尾行绝不被触及（触及 ⇒
   越界拒动）；重写失败恢复原文；文件缺失 → "missing"。
-- f4_dismiss_if_all_done：全部记录行带完成标记（或无任何记录行）⇒ 删文件返 True；
-  存在未完成行 ⇒ False 且文件原样；坏行不算完成 ⇒ 不删；文件缺失 ⇒ True。
+- f4_dismiss_if_all_done：全部记录行带完成标记（或无任何记录行）⇒ 清空文件（截断到 0），文件保留、
+  返 True；存在未完成行 ⇒ False 且文件逐字节不变；坏行不算完成 ⇒ 不清空；文件缺失 ⇒ True。
+  Windows 形态（os.remove 被 OS 拒绝 PermissionError）⇒ 清空不依赖删除，仍返 True、文件存在长度为 0。
 """
 
 import json
@@ -343,18 +344,18 @@ def test_drop_line_missing_file_returns_missing(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_dismiss_all_done_removes_file(tmp_path):
+def test_dismiss_all_done_truncates_file(tmp_path):
     p = tmp_path / "q.md"
     _write(p, _rec_done() + "\n" + _rec_done(entity_name="x/2024/b.jpg", file_path="/tmp/b.jpg") + "\n")
     assert mdm.f4_dismiss_if_all_done(str(p)) is True
-    assert not p.exists(), "全部记录行已完成 ⇒ 删文件"
+    assert p.exists() and p.stat().st_size == 0, "全部记录行已完成 ⇒ 清空文件（文件保留、长度为 0）"
 
 
 def test_dismiss_with_pending_line_keeps_file_unchanged(tmp_path):
     p = tmp_path / "q.md"
     original = _rec_done() + "\n" + _rec() + "\n"
     _write(p, original)
-    assert mdm.f4_dismiss_if_all_done(str(p)) is False, "存在未完成行 ⇒ 拒删"
+    assert mdm.f4_dismiss_if_all_done(str(p)) is False, "存在未完成行 ⇒ 拒清空"
     assert p.read_text(encoding="utf-8") == original, "文件保持原样"
 
 
@@ -362,7 +363,7 @@ def test_dismiss_with_bad_line_keeps_file(tmp_path):
     p = tmp_path / "q.md"
     original = _rec_done() + "\n" + "这不是 JSON\n"
     _write(p, original)
-    assert mdm.f4_dismiss_if_all_done(str(p)) is False, "坏行不是「已完成」⇒ 不删（坏行先由工作者弃除路径处置）"
+    assert mdm.f4_dismiss_if_all_done(str(p)) is False, "坏行不是「已完成」⇒ 不清空（坏行先由工作者弃除路径处置）"
     assert p.read_text(encoding="utf-8") == original
 
 
@@ -370,26 +371,26 @@ def test_dismiss_missing_file_true(tmp_path):
     assert mdm.f4_dismiss_if_all_done(str(tmp_path / "nope.md")) is True
 
 
-def test_dismiss_blank_and_done_only_removes_file(tmp_path):
+def test_dismiss_blank_and_done_only_truncates_file(tmp_path):
     p = tmp_path / "q.md"
     _write(p, "\n" + _rec_done() + "\n\n")
     assert mdm.f4_dismiss_if_all_done(str(p)) is True
-    assert not p.exists(), "无任何记录行（仅空行与完成行）⇒ 视为已清，删文件"
+    assert p.exists() and p.stat().st_size == 0, "无任何记录行（仅空行与完成行）⇒ 视为已清，清空文件（保留、长度 0）"
 
 
-def test_dismiss_empty_file_removed_true(tmp_path):
+def test_dismiss_empty_file_truncated_true(tmp_path):
     p = tmp_path / "q.md"
     _write(p, "")
     assert mdm.f4_dismiss_if_all_done(str(p)) is True
-    assert not p.exists()
+    assert p.exists() and p.stat().st_size == 0, "空文件清空为无害 no-op，文件保留"
 
 
 def test_dismiss_inflight_writer_append_recheck_refuses_delete(tmp_path, monkeypatch):
     """竞态拦截（确定性注入，不用真并发/sleep）：页面此前观察到「全完成」；dismiss 复核之前，
     写入方已在同一 inode 追加了一条未完成行（真实竞态里锁使写入方的追加完成于页面的持锁重读之前
     ⇒ 重读内容必含该行）。此手法把该行注入 dismiss 复核的唯一行分类入口 _f4_split_records，与真实
-    重读内容同构。若 dismiss 信任陈旧观察、跳过复核直接删文件，该行会随文件被删、静默丢未完成活。
-    ⇒ 必须返回 False 且文件原样（False 路径无任何写/删动作）。"""
+    重读内容同构。若 dismiss 信任陈旧观察、跳过复核直接清空，该行会随清空丢失、静默丢未完成活。
+    ⇒ 必须返回 False 且文件原样（False 路径无任何写/清空动作）。"""
     p = tmp_path / "q.md"
     _write(p, _rec_done(entity_name="a", file_path="/x") + "\n")
     original = p.read_text(encoding="utf-8")
@@ -400,5 +401,33 @@ def test_dismiss_inflight_writer_append_recheck_refuses_delete(tmp_path, monkeyp
         return lines + [_rec(entity_name="b", file_path="/y")], torn  # 写入方刚追加的未完成行
 
     monkeypatch.setattr(mdm, "_f4_split_records", racing_split)
-    assert mdm.f4_dismiss_if_all_done(str(p)) is False, "复核见到新追加的未完成行 ⇒ 拒删"
+    assert mdm.f4_dismiss_if_all_done(str(p)) is False, "复核见到新追加的未完成行 ⇒ 拒清空"
     assert p.exists() and p.read_text(encoding="utf-8") == original, "文件保持原样"
+
+
+def test_dismiss_windows_shape_remove_blocked_still_succeeds(tmp_path, monkeypatch):
+    """模拟 Windows 形态：跨进程删除被 OS 拒绝（PermissionError，队列文件被 worker/入库 MCP 工具
+    持有）。新语义 dismiss 不再走 os.remove ⇒ 清空不受删除阻塞影响，仍返 True，文件保留且长度为 0。
+    若实现仍在成功路径调用 os.remove，此 monkeypatch 会抛 PermissionError ⇒ dismiss 落入 except
+    返 False，本用例判红（防回退到删除语义）。"""
+    p = tmp_path / "q.md"
+    _write(p, _rec_done() + "\n")
+
+    def _blocked(*args, **kwargs):
+        raise PermissionError(32, "另一个程序正在使用此文件", str(p))
+
+    monkeypatch.setattr(mdm.os, "remove", _blocked)
+    assert mdm.f4_dismiss_if_all_done(str(p)) is True, "清空不依赖 os.remove"
+    assert p.exists() and p.stat().st_size == 0, "文件保留且长度为 0"
+
+
+def test_dismiss_pending_line_rejects_truncate_bytes_unchanged(tmp_path):
+    """存在未完成行 ⇒ 拒清空：返回 False，文件内容逐字节不变、mtime 不变（False 路径无任何写动作）。"""
+    p = tmp_path / "q.md"
+    original = _rec_done(entity_name="a", file_path="/x") + "\n" + _rec(entity_name="b", file_path="/y") + "\n"
+    _write(p, original)
+    before_bytes = p.read_bytes()
+    before_mtime = p.stat().st_mtime_ns
+    assert mdm.f4_dismiss_if_all_done(str(p)) is False, "存在未完成行 ⇒ 拒清空"
+    assert p.read_bytes() == before_bytes, "文件内容逐字节不变"
+    assert p.stat().st_mtime_ns == before_mtime, "无任何写动作"

@@ -25,8 +25,8 @@ md_path=临时队列文件)`` 写行（S3 的唯一队列写入路径——既�
 ⑥ ``get_scheduler`` 抛 RuntimeError + 队列文件写入非 UTF-8 字节（调度器未起 × 文件读不出叠加形态）
    ⇒ ``status == "scheduler-stopped"`` + reason 含「队列文件读不出」+ 三计数全 ``-1``
    （-1 哨兵：行数未知，绝不误报 0 行，第三轮 P3 合并回归）；
-⑦ 页面删文件端点：全部完成 ⇒ 删文件（文件消失）/ 文件缺失 ⇒ 视为已清；存在未完成行 ⇒ 拒删、文件
-   逐字节不变（页面保留横条，下一轮轮询重试）；坏行（非 JSON）⇒ 拒删（坏行只由工作者的弃除路径消费，I-3）。
+⑦ 页面清空文件端点：全部完成 ⇒ 清空文件（文件保留、长度 0）/ 文件缺失 ⇒ 视为已清；存在未完成行 ⇒ 拒清空、
+   文件逐字节不变（页面保留横条，下一轮轮询重试）；坏行（非 JSON）⇒ 拒清空（坏行只由工作者的弃除路径消费，I-3）。
 
 SSE 事件广播断言在 ``tests/test_media_worker.py``（``media_worker._broadcast`` 注入收集器）；
 UI 轮询策略断言（「轮询永不停止」）在 ``tests/test_media_polling.js``（node vm 行为探针）。
@@ -224,20 +224,20 @@ def test_scheduler_absent_with_unreadable_queue_file_reports_minus_one(sandbox, 
 
 
 # ---------------------------------------------------------------------------
-# ⑦ 页面删文件端点（v3.5 口径③/丁）：全完成删文件 / 缺失视为已清 / 未完成与坏行拒删
+# ⑦ 页面清空文件端点（v3.5 口径③/丁）：全完成清空文件 / 缺失视为已清 / 未完成与坏行拒清空
 # ---------------------------------------------------------------------------
 
-def test_dismiss_all_done_removes_file(sandbox):
-    """队列两行都带完成标记 ⇒ 每条记录行都带完成标记 ⇒ 删文件、dismissed: true、文件消失。"""
+def test_dismiss_all_done_truncates_file(sandbox):
+    """队列两行都带完成标记 ⇒ 每条记录行都带完成标记 ⇒ 清空文件、dismissed: true、文件保留且长度为 0。"""
     write_done_queue_line(sandbox)
     write_done_queue_line(sandbox)
     r = media_queue_dismiss()
     assert r["dismissed"] is True
-    assert not sandbox.exists()
+    assert sandbox.exists() and sandbox.stat().st_size == 0
 
 
 def test_dismiss_pending_line_keeps_file(sandbox):
-    """存在无 done 的行（未完成）⇒ 拒删、文件内容逐字节不变（页面保留横条，下一轮轮询重试）。"""
+    """存在无 done 的行（未完成）⇒ 拒清空、文件内容逐字节不变（页面保留横条，下一轮轮询重试）。"""
     write_queue_line(sandbox)
     before = sandbox.read_bytes()
     r = media_queue_dismiss()
@@ -252,8 +252,8 @@ def test_dismiss_missing_file_reports_true():
 
 
 def test_dismiss_bad_line_keeps_file(sandbox):
-    """队列含坏行（非 JSON）⇒ 坏行不算「已完成」⇒ 拒删、文件逐字节不变——坏行只由工作者的弃除
-    路径消费，页面不删文件（I-3）。"""
+    """队列含坏行（非 JSON）⇒ 坏行不算「已完成」⇒ 拒清空、文件逐字节不变——坏行只由工作者的弃除
+    路径消费，页面不清空文件（I-3）。"""
     sandbox.write_text("{not valid json}\n", encoding="utf-8")
     before = sandbox.read_bytes()
     r = media_queue_dismiss()
