@@ -269,3 +269,137 @@ def test_search_entities_error_dict_missing_message_defaults(monkeypatch):
 
     assert resp.status_code == 500
     assert resp.json() == {"status": "error", "message": "知识图谱检索失败"}
+
+
+# ---------------------------------------------------------------------------
+# score 透传：distance → score（数值透传 / 缺失·非数值·NaN ⇒ None）
+# （photo-search-cutoff T1 追加；既有用例一字未改）
+# ---------------------------------------------------------------------------
+
+
+def test_search_entities_score_numeric_passthrough(monkeypatch):
+    """search_entities: distance 为数值 ⇒ 响应 score 为该数值，且既有字段原样保留。"""
+    fake = _FakeAdapter(query_data={
+        "status": "success",
+        "data": {"entities": [
+            {"entity_name": "行驶证", "entity_type": "Document", "description": "a<SEP>b", "distance": 0.742},
+            {"entity_name": "身份证", "entity_type": "Document", "description": "c", "distance": 0.61},
+        ]},
+    })
+    _patch_adapter(monkeypatch, fake)
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "证件", "top_k": 20})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["entities"][0] == {
+        "id": "行驶证",
+        "name": "行驶证",
+        "entityType": "Document",
+        "description": "a b",
+        "score": 0.742,
+    }
+    assert body["entities"][1] == {
+        "id": "身份证",
+        "name": "身份证",
+        "entityType": "Document",
+        "description": "c",
+        "score": 0.61,
+    }
+
+
+def test_search_entities_score_missing_is_none(monkeypatch):
+    """search_entities: 实体无 distance（合成置顶行 / fields 剥离）⇒ score 是 None。"""
+    fake = _FakeAdapter(query_data={
+        "status": "success",
+        "data": {"entities": [
+            {"entity_name": "李磊", "entity_type": "Person", "description": "person"},
+        ]},
+    })
+    _patch_adapter(monkeypatch, fake)
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "李磊", "top_k": 20})
+
+    assert resp.status_code == 200
+    entity = resp.json()["entities"][0]
+    assert entity["score"] is None
+    # 既有字段不受 score 键影响
+    assert entity["id"] == "李磊"
+    assert entity["name"] == "李磊"
+    assert entity["entityType"] == "Person"
+    assert entity["description"] == "person"
+
+
+def test_search_entities_score_non_numeric_is_none(monkeypatch):
+    """search_entities: distance 非数值（"abc"）⇒ score 是 None（float 转换失败，不 500）。"""
+    fake = _FakeAdapter(query_data={
+        "status": "success",
+        "data": {"entities": [
+            {"entity_name": "a", "entity_type": "T", "description": "", "distance": "abc"},
+        ]},
+    })
+    _patch_adapter(monkeypatch, fake)
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "a", "top_k": 20})
+
+    assert resp.status_code == 200
+    entity = resp.json()["entities"][0]
+    assert entity["score"] is None
+    assert entity["id"] == "a"
+
+
+def test_search_entities_score_nan_is_none(monkeypatch):
+    """search_entities: distance 为 NaN ⇒ score 是 None（math.isfinite 护栏，不泄漏 NaN 到 JSON）。"""
+    fake = _FakeAdapter(query_data={
+        "status": "success",
+        "data": {"entities": [
+            {"entity_name": "n", "entity_type": "T", "description": "", "distance": float("nan")},
+        ]},
+    })
+    _patch_adapter(monkeypatch, fake)
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "n", "top_k": 20})
+
+    assert resp.status_code == 200
+    entity = resp.json()["entities"][0]
+    assert entity["score"] is None
+    assert entity["id"] == "n"
+def test_search_entities_score_inf_is_none(monkeypatch):
+    """search_entities: distance 为 Inf ⇒ score 是 None（math.isfinite 护栏，与 NaN 用例同构）。"""
+    fake = _FakeAdapter(query_data={
+        "status": "success",
+        "data": {"entities": [
+            {"entity_name": "i", "entity_type": "T", "description": "", "distance": float("inf")},
+        ]},
+    })
+    _patch_adapter(monkeypatch, fake)
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "i", "top_k": 20})
+
+    assert resp.status_code == 200
+    entity = resp.json()["entities"][0]
+    assert entity["score"] is None
+    assert entity["id"] == "i"
+
+
+def test_search_entities_dedup_and_top_k_truncation_unchanged(monkeypatch):
+    """search_entities: 加 score 键后去重（entity_name 首个保留）与 top_k 截断行为不变。"""
+    fake = _FakeAdapter(query_data={
+        "status": "success",
+        "data": {"entities": [
+            {"entity_name": "a", "entity_type": "T", "description": "", "distance": 0.9},
+            {"entity_name": "a", "entity_type": "T", "description": "", "distance": 0.5},  # 重复，丢弃
+            {"entity_name": "b", "entity_type": "T", "description": "", "distance": 0.8},
+            {"entity_name": "c", "entity_type": "T", "description": "", "distance": 0.7},
+        ]},
+    })
+    _patch_adapter(monkeypatch, fake)
+
+    resp = _make_client().get("/api/kg/search_entities", params={"query": "x", "top_k": 2})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # 去重后 top_k=2 截断：保留首个 a 与 b（c 被截断）
+    assert [e["name"] for e in body["entities"]] == ["a", "b"]
+    assert body["entities"][0]["score"] == 0.9   # 保留的是首个重复项的 distance
+    assert body["entities"][1]["score"] == 0.8

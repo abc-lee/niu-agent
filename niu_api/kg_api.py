@@ -525,6 +525,23 @@ def _graph_error_response(message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"status": "error", "message": message})
 
 
+def _distance_to_score(distance) -> float | None:
+    """LightRAG 实体项的 ``distance``（cosine 相似度，越大越像）→ 可 JSON 序列化的分数。
+
+    缺失 / 非数值 / NaN / Inf ⇒ ``None``。``None`` 的语义是"这条没有分数"
+    （如精确名短路的**合成置顶行**，``lightrag_adapter.py:840-848``；同函数的"向量结果内重排"
+    分支 ``:857-858`` **保留** ``distance``），与"分数为 0"区分开——
+    前端据此**不渲染**徽标，而不是渲染 0.00。
+    """
+    import math
+
+    try:
+        value = float(distance)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 # ============== Endpoints ==============
 # NOTE: All endpoints use `def` (not `async def`) because LightRAGAdapter.query()
 # and _shared_dicts reads are blocking.  FastAPI runs regular def endpoints in a
@@ -1188,6 +1205,7 @@ def search_entities(query: str = Query(default=""), top_k: int = Query(default=2
                     "name": name,
                     "entityType": ent.get("entity_type", ""),
                     "description": ((ent.get("description", "") or "").replace("<SEP>", " "))[:120],
+                    "score": _distance_to_score(ent.get("distance")),  # 新增：透传相似度（缺失 ⇒ None）
                 })
 
         return {"entities": entities[:top_k]}
