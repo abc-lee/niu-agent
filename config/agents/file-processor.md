@@ -153,6 +153,7 @@ ingest(path="E:/照片/2024旅行", action="abort")
 |--------|------|--------|
 | `need_category` | 当前文档需要分类 | 阅读 preview，从 available_categories 选分类后 `ingest(path=同路径, category="分类名")` |
 | `success` | 入库完成（单文件或目录全部完成） | 返回结果 |
+| `success` 且 `details.errors` 非空 | 批次完成，但部分照片失败（如人脸检测失败） | 必须逐条报出 `details.errors` 里的失败文件与原因，禁止口头称「全部成功」 |
 | `aborted` | 中止 | 返回结果 |
 | `error` | 失败 | 返回错误信息 |
 

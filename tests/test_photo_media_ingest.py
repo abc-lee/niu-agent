@@ -252,3 +252,162 @@ def test_06_directory_mode_writes_per_file(photo_env, tmp_path):
     stems = [rec["entity_name"] for rec in lines]
     assert len(set(stems)) == 3, "三张照片落到三个不同的实体键"
     assert not _llama.encode_media.called and not _llama.encode_batch.called
+
+
+# ---------------------------------------------------------------------------
+# 人脸检测失败语义（方案 v1.9 §6）：
+# 组 ① 上层语义——整体打桩 detect_faces（先例 :112）
+# 组 ② 真实分支可观测——只打桩依赖（get_face_model）、真跑 detect_faces，
+#       三例均不加载 InsightFace/ONNX
+# ---------------------------------------------------------------------------
+
+# 捕获真实 detect_faces（photo_env 桩会顶掉模块属性，组 ② 需还原真函数）
+_REAL_DETECT_FACES = niu_photo_server.detect_faces
+
+
+def _table_counts(db_file: Path) -> dict:
+    """photos/faces 表行数（文件不存在 ⇒ 连接从未建立 ⇒ 全零）。"""
+    if not db_file.exists():
+        return {"photos": 0, "faces": 0}
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_file))
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        return {
+            t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] if t in tables else 0
+            for t in ("photos", "faces")
+        }
+    finally:
+        conn.close()
+
+
+# 用例组 ①
+
+@pytest.mark.parametrize(
+    "code",
+    ["FACE_MODEL_UNAVAILABLE", "FACE_IMAGE_UNDECODABLE", "FACE_DETECTION_ERROR"],
+)
+def test_07_face_detection_error_honored(photo_env, tmp_path, monkeypatch, code):
+    """①-1 打桩 detect_faces 抛 FaceDetectionError(code) ⇒ status=error 且码如实透出
+    （不得折成 UNKNOWN_ERROR——V2 守护）；终止该张 ⇒ 零残留：photos/faces 表无新行、
+    队列文件无新行（B2/B3/B4）。"""
+    _set_media_ingest(photo_env["config_file"], True)  # 开关开也要在失败时零写入
+    src = _make_photo(tmp_path)
+
+    def _raise(file_path):
+        raise niu_photo_server.FaceDetectionError(code, "stub failure")
+
+    monkeypatch.setattr(niu_photo_server, "detect_faces", _raise)
+    r = niu_photo_server.ingest_photo(str(src))
+
+    assert r["status"] == "error", "检测失败必须报错，不得写成『没有人』（V1 守护）"
+    assert r["error_code"] == code, "错误码不得被折成 UNKNOWN_ERROR"
+    counts = _table_counts(photo_env["db_file"])
+    assert counts["photos"] == 0 and counts["faces"] == 0, "终止该张 ⇒ 无照片行/无人脸行"
+    assert _queue_lines(photo_env["queue_file"]) == [], "失败不写队列行"
+
+
+def test_08_zero_faces_still_success(photo_env, tmp_path, monkeypatch):
+    """①-2 真 0 脸 ⇒ 照常入库为无人物照片（守护 §1.1，防"顺手把 0 脸也判成错误"）。"""
+    monkeypatch.setattr(niu_photo_server, "detect_faces", lambda file_path: [])
+    src = _make_photo(tmp_path)
+    r = niu_photo_server.ingest_photo(str(src))
+
+    assert r["status"] == "success", "真 0 脸是正常结果，不是错误、不重试"
+    # fixture 的 taken_at 会追加日期 ⇒ 禁字面全等（R1 P3-1）
+    assert r["abstract"].startswith("未检测到人物"), f"abstract 以『未检测到人物』开头：{r['abstract']}"
+    counts = _table_counts(photo_env["db_file"])
+    assert counts["photos"] == 1 and counts["faces"] == 0, "照片行照写、人脸行 0 条"
+
+
+def test_09_batch_second_photo_failed_others_succeed(photo_env, tmp_path, monkeypatch):
+    """①-3 目录 3 张、仅第 2 张检测失败 ⇒ errors==1、photos==2，error_code 不落丢，
+    第 1/3 张照常成功入库（守护 §1.3：只终止这一张，不终止整批）。"""
+    _set_media_ingest(photo_env["config_file"], True)
+    d = tmp_path / "photos"
+    d.mkdir()
+    for i in range(3):
+        _make_photo(d, f"P_{i}.jpg")
+
+    def _fail_second(file_path):
+        if "P_1.jpg" in file_path:
+            raise niu_photo_server.FaceDetectionError("FACE_DETECTION_ERROR", "stub: 仅第 2 张失败")
+        return []
+
+    monkeypatch.setattr(niu_photo_server, "detect_faces", _fail_second)
+    r = niu_photo_server.ingest(str(d), action="start")
+
+    assert r["status"] == "success", "逐张成败不中断整批，批次返回 success"
+    assert r["errors"] == 1
+    assert r["photos"] == 2, "失败张不计入 photos 计数"
+    assert r["details"]["errors"][0]["error_code"] != "", "error_code 键必须保留（V3 守护）"
+    assert r["details"]["errors"][0]["file"] == "P_1.jpg"
+    originals = {Path(e["result"]["original_path"]).name for e in r["details"]["photos"]}
+    assert originals == {"P_0.jpg", "P_2.jpg"}, "第 1/3 张照常入库"
+
+
+# 用例组 ②（只打桩依赖、真跑 detect_faces）
+
+def test_10_real_detect_faces_model_unavailable(photo_env, tmp_path, monkeypatch):
+    """②-4 真跑 detect_faces，仅打桩 get_face_model⇒None ⇒ 抛 FACE_MODEL_UNAVAILABLE，
+    再经 ingest_photo 端到端断言返回码（B2/B13，V5 守护：A 码不得被兜底折成 C 码）。"""
+    monkeypatch.setattr(niu_photo_server, "detect_faces", _REAL_DETECT_FACES)
+    monkeypatch.setattr(niu_photo_server, "get_face_model", lambda: None)
+    src = _make_photo(tmp_path)
+
+    with pytest.raises(niu_photo_server.FaceDetectionError) as exc:
+        _REAL_DETECT_FACES(str(src))
+    assert exc.value.code == "FACE_MODEL_UNAVAILABLE", "A 码保真：不得被外层兜底折成 FACE_DETECTION_ERROR"
+
+    r = niu_photo_server.ingest_photo(str(src))
+    assert r["status"] == "error"
+    assert r["error_code"] == "FACE_MODEL_UNAVAILABLE"
+    counts = _table_counts(photo_env["db_file"])
+    assert counts["photos"] == 0 and counts["faces"] == 0
+
+
+def test_11_real_detect_faces_inference_error(photo_env, tmp_path, monkeypatch):
+    """②-5 真跑 detect_faces：替身模型 .get() 抛 RuntimeError + 真可解码小 JPEG
+    ⇒ 抛 FACE_DETECTION_ERROR（B4）。假 JPEG 字节会被 cv2 判 None 而掉进 B 分支
+    （R2 P3-1），故现场用 PIL 生成真 JPEG。"""
+    monkeypatch.setattr(niu_photo_server, "detect_faces", _REAL_DETECT_FACES)
+
+    class _BoomModel:
+        def get(self, img):
+            raise RuntimeError("stub inference boom")
+
+    monkeypatch.setattr(niu_photo_server, "get_face_model", lambda: _BoomModel())
+
+    from PIL import Image
+    src = tmp_path / "real.jpg"
+    Image.new("RGB", (64, 64)).save(src)
+
+    with pytest.raises(niu_photo_server.FaceDetectionError) as exc:
+        _REAL_DETECT_FACES(str(src))
+    assert exc.value.code == "FACE_DETECTION_ERROR"
+
+    r = niu_photo_server.ingest_photo(str(src))
+    assert r["status"] == "error"
+    assert r["error_code"] == "FACE_DETECTION_ERROR"
+
+
+def test_12_real_detect_faces_undecodable_image(photo_env, tmp_path, monkeypatch):
+    """②-6 真跑 detect_faces：替身模型 + 非图片字节（.jpg 扩展名）⇒ cv2 判 None 且
+    Pillow 也抛 ⇒ 抛 FACE_IMAGE_UNDECODABLE（B3，V4 守护：B 路径不得改回 return []）。"""
+    monkeypatch.setattr(niu_photo_server, "detect_faces", _REAL_DETECT_FACES)
+
+    class _AnyModel:
+        def get(self, img):
+            raise AssertionError("图片居然解码成功，B 路径未触发")
+
+    monkeypatch.setattr(niu_photo_server, "get_face_model", lambda: _AnyModel())
+    src = _make_photo(tmp_path)  # 假 JPEG 字节：cv2 None + Pillow 抛
+
+    with pytest.raises(niu_photo_server.FaceDetectionError) as exc:
+        _REAL_DETECT_FACES(str(src))
+    assert exc.value.code == "FACE_IMAGE_UNDECODABLE"
+
+    r = niu_photo_server.ingest_photo(str(src))
+    assert r["status"] == "error"
+    assert r["error_code"] == "FACE_IMAGE_UNDECODABLE"
