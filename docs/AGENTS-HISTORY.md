@@ -8,6 +8,31 @@
 
 ---
 
+### 2026-10-16
+
+#### 工程：第三方依赖「去写死」——夜间推进段（SDD T3a1–T5 全链，用户睡着期间连续推进）
+
+- **前提**：用户 23:4x 关闭 Niu 去睡，明确"能往前干就往前赶；必须找我的等明早"。夜间纪律＝**不启动他的应用、不碰真实数据、不跑全量 pytest**；每步前后核 `~/.niu/config/user-config.json` md5（基线 `2bfd1504…`）与 `lightrag_storage/**` 指纹。
+- **交付主线（main 仓，19 笔）**：`89718f58` `llama_config` v2（**一条完整命令行**：四键 `command`/三超时；`default_command()`/`command_line()`/`argv()`；解析 `--port`/`--host`/`-c`（含 `=` 形态）；多模态三态；三个分侧字符护栏各自独立；旧 11 结构键只警告不生效；**缺段补写写 `null`**）＋删三条作废覆盖链 → `99a1eff8`/`976eea06`/`75376ec3` 测试同步（含 `test_extra_argv_guard.py` 删除、布局注入点改 `ea._layout_path`）→ `4df1ff32` `llama_server.py` 原样执行配置行（日志逐字、三态取自该行、F5 预检分叉）→ `de682af0` launcher 端口/杀孤儿锚点跟随配置行（Windows Name 前缀随首词）→ `79a385d0` **铁律 13** → `cadbed97`/`cb0bea21` 两个防复发门禁脚本 → `03ad9f00` 手册数字清扫（命中 240→197）→ `e6c65508` "跑打包脚本"退出用户获取入口 → `ec88027c`/`671969b8` 打包工具改读 `scripts/artifacts.json` + F9 人脸双层落点 → `4e133478` 提示词"耗时任务"改中性 → `782ef162` 端口文案去硬编码。
+- **审查链（远端 + PM 亲验，四轮）**：① `89718f58` 实施后审查判需修订（F1 win32 `shlex` 吃反斜杠 / F2 物化前置调用抛 `PermissionError` / F3 物化写展开行会**冻结 `media_ingest.enabled` 分支**）⇒ 全采纳（`7033ccaa`）；② 复验判 F1–F4 修好，**新抓 D1**（win32 下 `--port="8128"` 等号+引号坏）**/D2**（两条告警共用 reason 互相吞）⇒ 已修（`60471343`）；③ `4df1ff32` 实施后审查判需修订：**#1（P2）缺省行未 shell 引用 ⇒ 布局目录含空格时 `argv()[0]` 被切断**（PM 亲验复现）/ #2 空 argv 抛 IndexError / #3 两个测试缺口 ⇒ 已修（`e3738881`）；④ shard C 复验在跑（本次无最终输出，按教训**不硬取消**）。
+
+#### 工程：测试污染真实配置事故 + 结构性堵漏（本轮最重要教训）
+
+- **事故**：用户真配置 `~/.niu/config/user-config.json` 于 **23:01** 多出 `llama_cpp` 缺省段。**根因＝我方派出的 `tests/test_llama_server_mmproj.py` 缺 `CONFIG_PATH` 隔离**（v2 新增"缺段补写"后，凡调 `llama_config.get()` 的用例都会写真实配置）。**定性方法**：写探针在**临时 HOME 副本**（副本故意去掉 `llama_cpp` 段）下逐个跑 8 个可疑文件 ⇒ 仅该文件 `LEAK`。**损失＝0**（写入内容纯缺省、用户 8 个段一字未动、KG 12 个文件 mtime 逐一相同）。
+- **堵漏（两层，`477cb37a` + `05e9a15e`）**：① `tests/conftest.py` 级 autouse 隔离——`CONFIG_PATH` 指向 tmp 副本、`HOME` 指向 tmp、**并把 import 期绑定的真实 `~/.niu` 常量一并 patch**（`lightrag_manager.STORAGE_DIR`/`lightrag_integrity._STORAGE_DIR`/`lightrag_repair._STORAGE_DIR`/`db_monitor._db_path`/`subagent._USER_AGENTS_DIR`/`ha_watcher.CONFIG_PATH`/`md_mirror.MD_DIR`+`MEDIA_QUEUE_PATH`/**`media_worker.F4_DEFAULT_QUEUE`（re-import 绑定，patch 源模块够不到）**）；② 会话级"真实用户数据被改"指纹探针（`user-config.json`/`preferences.json`/`photos.db`/`lightrag_storage/**`；**只报不杀**，区分"测试泄漏 vs Niu 正在干活"）。
+- **教训**：**测试隔离必须结构化（conftest 级 autouse），不能靠每个测试文件自觉**——事故正是"任务书里写了'必须隔离'，但没有任何机制兜住"造成的；且**"隔离"要覆盖 import 期绑定与 re-import 绑定**（`from X import Y` 与 `from X import CONST` 是两类）。
+
+#### 教训：门禁脚本首跑就抓出真问题（这就是它的价值）
+
+- **门禁①（运行时代码零写死产物/下载源）**首跑抓出 **2 处硬编码第三方主机**：`browser-server/launcher.py:89` 的 `https://www.bing.com` 回退导航地址、`photo-server/geocode.py:191` 的 `https://restapi.amap.com/v3/geocode/regeo?` 逆地理端点 ⇒ 登记为方案 §7 S4 的 **F12/F13（待用户拍板是否配置化）**，脚本内以 `EXEMPT_PENDING` **显式豁免并每次打印**（不许悄悄放过）。
+- **门禁②（手册数字只报不杀）**首跑抓出**上一轮清扫漏掉的一批机器数字**（`manual-dependencies:279` 判别间隔实测值、`manual-ha-setup` 延迟约2秒、`SYSTEM_MANUAL:27` 与 `manual-general-subagent:114/115` 的 `≤0.2s`、`manual-user-guide:174` 采样统计、reasoning_effort 实测表等）⇒ 已清（保留程序常量/模型固有尺寸/平台规则）。
+
+#### 其它实证
+
+- **`scripts/package_all_dependencies.py` 此前实际是坏的**：T2a 删掉 `embedding_artifacts` 里的构建号/资产表后，该脚本的函数级 import 一调用就 ImportError（"T2a 零下载"**当场打断了维护者工具**）⇒ T2b2 修复（规格搬 `scripts/artifacts.json`）。
+- **本地 Agent 交白卷复现一次**：`scripts/` 两个门禁脚本的首派任务把 `write` 工具调用**写成正文文本**、盘上零文件；**切成"一个文件一件事"后 1 分钟建成**。⇒ 派单粒度＝可靠性。
+- **PM 两次把 Markdown 小标题吞掉**（`### N.3` 被 edit 的 `new_string` 末尾漏掉），均当场补回——文档编辑必须在 `new_string` 里显式保留被替换的锚点行。
+
 ### 2026-10-15
 
 #### 向量闲置门（D-31）交付：门禁三连 + AC-5 并发实测 + 四条实施期勘误（2026-10-14 夜 ~ 10-15 凌晨）
