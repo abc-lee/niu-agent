@@ -246,9 +246,15 @@ class TestIngestPhotoMode:
         if self.test_dir.exists():
             shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_ingest_photo_copy_mode(self):
+    def test_ingest_photo_copy_mode(self, monkeypatch):
         """copy 模式断言 success + 源文件存在"""
         _, ingest_photo = _import_photo_server()
+
+        # 打桩人脸检测（先例 tests/test_photo_media_ingest.py）：无脸模机器上真跑
+        # detect_faces 会抛 FaceDetectionError，使本用例与脸模是否存在无关
+        import niu_photo_server
+
+        monkeypatch.setattr(niu_photo_server, "detect_faces", lambda file_path: [])
 
         # 当前实现默认是 copy 模式
         result = ingest_photo(str(self.photo_path))
@@ -259,9 +265,14 @@ class TestIngestPhotoMode:
         # copy 模式下源文件应该仍然存在
         assert self.photo_path.exists(), "Source file should still exist in copy mode"
 
-    def test_ingest_photo_move_mode(self):
+    def test_ingest_photo_move_mode(self, monkeypatch):
         """move 模式断言 success + 源文件消失"""
         _, ingest_photo = _import_photo_server()
+
+        # 打桩人脸检测（先例 tests/test_photo_media_ingest.py）
+        import niu_photo_server
+
+        monkeypatch.setattr(niu_photo_server, "detect_faces", lambda file_path: [])
 
         # 检查当前实现是否支持 mode 参数
         import inspect
@@ -285,9 +296,14 @@ class TestIngestPhotoMode:
         # move 模式下源文件应该消失
         assert not self.photo_path.exists(), "Source file should not exist in move mode"
 
-    def test_ingest_photo_reference_mode(self):
+    def test_ingest_photo_reference_mode(self, monkeypatch):
         """reference 模式断言 success + 源文件存在"""
         _, ingest_photo = _import_photo_server()
+
+        # 打桩人脸检测（先例 tests/test_photo_media_ingest.py）
+        import niu_photo_server
+
+        monkeypatch.setattr(niu_photo_server, "detect_faces", lambda file_path: [])
 
         # 检查当前实现是否支持 mode 参数
         import inspect

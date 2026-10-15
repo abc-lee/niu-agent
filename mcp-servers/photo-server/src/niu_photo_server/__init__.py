@@ -1816,6 +1816,14 @@ def update_person_center(person_id: str, new_embedding: np.ndarray, increment_co
     # 不在此处 commit，由调用者控制事务原子性
 
 
+class FaceDetectionError(RuntimeError):
+    """人脸检测**失败**（≠「这张照片没有人脸」）。code 供上层如实回报，message 为中文原因。"""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
 def detect_faces(file_path: str) -> list[dict]:
     """Detect faces in photo using InsightFace."""
     import sys
@@ -1833,7 +1841,7 @@ def detect_faces(file_path: str) -> list[dict]:
         face_model = get_face_model()
         if face_model is None:
             logger.warning("[DETECT_FACES] Face model not available")
-            return []
+            raise FaceDetectionError("FACE_MODEL_UNAVAILABLE", "人脸模型不可用（模型文件缺失或 insightface 未就绪）")
         logger.info("[DETECT_FACES] Importing cv2...")
         print("[DETECT_FACES] Importing cv2...", file=sys.stderr, flush=True)
         import cv2
@@ -1860,7 +1868,7 @@ def detect_faces(file_path: str) -> list[dict]:
                 img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
             except Exception as e:
                 logger.error(f"[DETECT_FACES] Cannot read image (cv2 + Pillow fallback failed): {file_path}, error: {e}")
-                return []
+                raise FaceDetectionError("FACE_IMAGE_UNDECODABLE", f"图片无法解码（cv2 与 Pillow 均失败）：{e}")
 
         logger.info(f"[DETECT_FACES] Image decoded, shape: {img.shape}")
 
@@ -1885,9 +1893,11 @@ def detect_faces(file_path: str) -> list[dict]:
         logger.info(f"[DETECT_FACES] Detected {len(results)} faces in {file_path}")
         return results
 
+    except FaceDetectionError:
+        raise  # A/B 自报的码原样上抛，禁止被兜底折成 FACE_DETECTION_ERROR
     except Exception as e:
         logger.exception(f"[DETECT_FACES] Face detection failed: {e}")
-        return []
+        raise FaceDetectionError("FACE_DETECTION_ERROR", str(e)) from e
     finally:
         with _model_lock:
             _model_in_use = False
@@ -2075,9 +2085,18 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
         exif = extract_exif(file_path)
         logger.info(f"[INGEST_PHOTO] EXIF: {exif}")
 
-        # 2. Detect faces
+        # 2. Detect faces（失败 ⇒ 该张不入库；此处早于文件搬运 / DB 写入 / KG 同步 / 队列写入）
         logger.info("[INGEST_PHOTO] Detecting faces...")
-        faces = detect_faces(file_path)
+        try:
+            faces = detect_faces(file_path)
+        except FaceDetectionError as e:
+            logger.error(f"[INGEST_PHOTO] Face detection failed ({e.code}): {e.message}")
+            return {
+                "status": "error",
+                "error_code": e.code,
+                "message": f"人脸检测失败（{e.message}），该照片未入库",
+                "kg_entities": [],
+            }
         logger.info(f"[INGEST_PHOTO] Found {len(faces)} faces")
 
         # 3. Match/create persons
@@ -3289,7 +3308,9 @@ def _build_success_summary(all_files: list[dict], processed: list[dict]) -> dict
             "photos": [{"file": Path(p["file"]).name, "result": p["result"]} for p in photos],
             "documents": [{"file": Path(p["file"]).name, "result": p["result"]} for p in documents],
             "skipped": [{"file": Path(f["path"]).name, "reason": f.get("reason", "")} for f in skipped],
-            "errors": [{"file": Path(p["file"]).name, "message": p["result"].get("message", "")} for p in errors],
+            "errors": [{"file": Path(p["file"]).name,
+                        "error_code": p["result"].get("error_code", ""),
+                        "message": p["result"].get("message", "")} for p in errors],
         },
     }
 
