@@ -45,15 +45,17 @@ WHITELIST = [
     re.compile(r"^http://localhost:8123"),
     # https://example.com：IANA 保留示例域，仅作 prompt/文档示例，非真实第三方源
     re.compile(r"^https://example\.com"),
+    # 高德逆地理编码服务端点（厂商 API 契约地址，稳定、不随上游发版变；
+    # API Key 与开关走配置 ~/.niu/preferences.json 的 amap 段——已核）
+    re.compile(r"^https://restapi\.amap\.com/"),
+    # 浏览器工具的回退默认导航地址（产品默认值，性质同"--port 19878"这类缺省；非一次性产物）
+    re.compile(r"^https://www\.bing\.com/?$"),
 ]
 
 # 待处置豁免：白名单外的真命中，方案 §7 S4 处置前显式放行（不悄悄放过，运行时各打一行提示）
-EXEMPT_PENDING = [
-    # ⏳ 待处置（方案 §7 S4 新增行：浏览器回退导航地址，建议改为工具参数/配置缺省）
-    ("mcp-servers/browser-server/src/niu_browser_server/launcher.py", "https://www.bing.com"),
-    # ⏳ 待处置（方案 §7 S4 新增行：第三方逆地理端点，建议移入 user-config.json 的 amap 段）
-    ("mcp-servers/photo-server/src/niu_photo_server/geocode.py", "https://restapi.amap.com/v3/geocode/regeo?"),
-]
+# 当前为空：原两条（bing 回退地址 / 高德端点）经 PM 复核判定**不属**铁律 13 禁用类
+# （禁用类＝随上游发版而变的一次性下载产物名/构建号/第三方启动方式），已降为上方白名单。
+EXEMPT_PENDING: list[tuple[str, str]] = []
 
 
 def die(msg):
