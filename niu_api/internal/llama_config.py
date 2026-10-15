@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,11 +98,16 @@ def _load_section() -> tuple[dict | None, bool]:
 def _atomic_write_json(path: Path, data: dict) -> bool:
     """原子 JSON 写（tempfile + os.replace——reader 永远看到完整文件）。
 
-    失败 → log 并返回 False（不抛——缺段补写不得毒化调用方，同 model_probe 写纪律）。
+    失败 → 降级并返回 False（绝不抛——缺段补写不得毒化调用方，同 model_probe 写纪律）：
+    前置（建目录 / 建临时文件）也在 try 内，目录不可写 / 磁盘满同样降级跳过。
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    except OSError:
+        _warn_once("atomic_write", "[llama_config] 原子写 user-config.json 前置失败（目录不可写/磁盘满）")
+        return False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(payload)
@@ -114,13 +120,13 @@ def _atomic_write_json(path: Path, data: dict) -> bool:
             os.unlink(tmp)
         except OSError:
             pass
-        logger.warning("[llama_config] 原子写 user-config.json 失败", exc_info=True)
+        _warn_once("atomic_write", "[llama_config] 原子写 user-config.json 失败")
         return False
 
 
 def _materialize_default_section() -> None:
     """缺段补写（存量装机）：`llama_cpp` 段**不存在** ⇒ 原子写入缺省段（四个键，
-    `command` 为展开后的生效命令行）+ 日志一行；**段已存在 ⇒ 文件一个字都不动**（单个缺键也不补）。
+    `command: null` ⇒ 内置缺省行；生效命令行由启动日志逐字打印）+ 日志一行；**段已存在 ⇒ 文件一个字都不动**（单个缺键也不补）。
 
     纪律照 model_probe._write_vision_capabilities：文件缺失（首启 seed 的事）/ 坏 JSON /
     顶级非对象 ⇒ 跳过写入（不写坏文件）；只改 `llama_cpp` 单键，其余段 / 字段原样保留；
@@ -139,13 +145,13 @@ def _materialize_default_section() -> None:
     if not isinstance(data, dict) or "llama_cpp" in data:
         return
     data["llama_cpp"] = {
-        "command": default_command(),
+        "command": None,
         "startup_timeout": DEFAULT_STARTUP_TIMEOUT,
         "http_timeout": DEFAULT_HTTP_TIMEOUT,
         "media_http_timeout": DEFAULT_MEDIA_HTTP_TIMEOUT,
     }
     if _atomic_write_json(path, data):
-        logger.info("[llama_config] 已写入缺省 `llama_cpp` 段（含展开后的生效命令行），便于查看/修改")
+        logger.info("[llama_config] 已写入缺省 `llama_cpp` 段（段可见、可改；`command` 为 null ⇒ 内置缺省行，生效命令行由启动日志逐字打印）")
 
 
 def get() -> LlamaCppConfig:
@@ -246,8 +252,17 @@ def command_line() -> str:
 
 
 def argv() -> list[str]:
-    """生效行按 shell 规则分词（`shlex.split`；解析失败 ⇒ 按空白分词 + WARNING，**不改行**）。"""
+    """生效行分词：POSIX 用 shell 规则（`shlex.split`）；Windows 路径含反斜杠，
+    禁用以 posix 语义（`\\U`、`\\n` 会被当转义符吃掉 ⇒ 绝对路径神秘损坏），改为非 posix
+    （反斜杠保留）+ 手工剥配对引号；两分支解析失败 ⇒ 按空白分词 + WARNING，**不改行**。"""
     line = command_line()
+    if sys.platform == "win32":
+        try:
+            toks = shlex.split(line, posix=False)
+        except ValueError:
+            _warn_once("shlex", f"[llama_config] command 行分词失败，退空白分词（行未改）: {line}")
+            toks = line.split()
+        return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in toks]
     try:
         return shlex.split(line)
     except ValueError:
@@ -275,7 +290,7 @@ def port() -> int:
     `19878` + 一条 WARNING（每进程只警告一次）。"""
     raw = _scan_value(argv(), ("--port",))
     if raw is None:
-        _warn_once("port", "[llama_config] 行内未解析到 --port，回缺省 19878（要自定义端口请在行里写 --port）")
+        _warn_once("port", "[llama_config] 行内未解析到 --port ⇒ 程序按 127.0.0.1:19878 探活与编码；请确保这一行绑定同一地址端口，或在这一行里显式写上 --port")
         return DEFAULT_PORT
     try:
         v = int(raw)
@@ -293,7 +308,7 @@ def host() -> str:
     `127.0.0.1` + 一条 WARNING（每进程只警告一次）。"""
     raw = _scan_value(argv(), ("--host",))
     if raw is None or not raw.strip():
-        _warn_once("host", "[llama_config] 行内未解析到 --host，回缺省 127.0.0.1（要自定义请在行里写 --host）")
+        _warn_once("host", "[llama_config] 行内未解析到 --host ⇒ 程序按 127.0.0.1:19878 探活与编码；请确保这一行绑定同一地址端口，或在这一行里显式写上 --host")
         return DEFAULT_HOST
     return raw.strip()
 

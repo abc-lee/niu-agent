@@ -1,6 +1,6 @@
 """T3a1：`llama_cpp` 配置段 v2 命令行解析与派生量契约测试（方案 §5'.2 / §5'.5，2026-10-15 定稿）。
 
-六组用例：
+七组用例：
 ① 缺省行等价：不写 `command` ⇒ `llama_config.argv()` 与旧实现 `llama_server._build_argv()`
    **逐元素相等**（`media_ingest.enabled` 开 / 关两分支各一例，同一隔离环境里算）；
 ② `--port` / `--host` 解析：空格与等号两种形态都识别；行里没写 ⇒ `19878` / `127.0.0.1`；
@@ -12,6 +12,8 @@
    两者都无 ⇒ `None`（未声明，绝不静默当 True）；
 ⑥ 首词与模型路径：`executable()` ＝ `argv()[0]`；`-m` / `--model`（空格与等号两形态）取值；
    行里没有 ⇒ `None`。
+⑦ 分词随平台：win32 ⇒ 非 posix 分词（反斜杠逐字保留）+ 手工剥配对引号，POSIX 语义不变；
+   只验证 `argv()` / `executable()` / `model_path()`（用户行非空 ⇒ 不触发 `default_command()`）。
 
 隔离（写法照 test_llama_config_read.py）：user-config / 布局 / HOME 全指向 tmp，清空布局缓存
 与一次性告警标记——绝不读写真实 ~/.niu，不联网，不加载模型。`llama_server` 仅作旧实现
@@ -221,3 +223,36 @@ class TestExecutableAndModelPath:
     def test_model_path_absent_is_none(self, monkeypatch, tmp_path):
         _write_llama(monkeypatch, tmp_path, {"command": "/opt/llama-server --embedding --port 19878"})
         assert lc.model_path() is None
+
+
+class TestPlatformTokenization:
+    """⑦ 分词随平台：win32 走非 posix（反斜杠保留）+ 手工剥配对引号，POSIX 语义不变。
+
+    只测 `argv()` / `executable()` / `model_path()`：用例均写非空用户行 ⇒ 生效行直接
+    来自用户行，不会触发 `default_command()`（`current_platform()` 也读 `sys.platform`）。
+    """
+
+    WIN_LINE = (r"C:\Users\niu\models\llama.cpp\win32-x64\llama-server.exe "
+                r'-m "C:\Users\niu\models\my model.gguf" --embedding --port 19878 --no-mmproj')
+
+    def test_win32_backslashes_preserved(self, monkeypatch, tmp_path):
+        """win32：绝对路径反斜杠逐字保留（posix 语义会当转义符吃掉），带空格引号路径剥引号后原样。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        _write_llama(monkeypatch, tmp_path, {"command": self.WIN_LINE})
+        argv = lc.argv()
+        assert lc.executable() == r"C:\Users\niu\models\llama.cpp\win32-x64\llama-server.exe", \
+            "win32：首词反斜杠必须逐字保留"
+        assert lc.model_path() == r"C:\Users\niu\models\my model.gguf", \
+            "win32：带空格引号路径剥引号后反斜杠保留"
+        assert argv[0] == r"C:\Users\niu\models\llama.cpp\win32-x64\llama-server.exe"
+        assert argv[2] == r"C:\Users\niu\models\my model.gguf"
+
+    def test_darwin_posix_semantics_unchanged(self, monkeypatch, tmp_path):
+        """darwin：POSIX 分词语义不变（无引号路径原样，shell 规则分词）。"""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        _write_llama(monkeypatch, tmp_path,
+                     {"command": "/opt/llama-server -m /models/q.gguf --embedding --port 19878 --no-mmproj"})
+        assert lc.argv() == ["/opt/llama-server", "-m", "/models/q.gguf", "--embedding",
+                             "--port", "19878", "--no-mmproj"]
+        assert lc.executable() == "/opt/llama-server"
+        assert lc.model_path() == "/models/q.gguf"
