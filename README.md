@@ -297,13 +297,13 @@ codesign --force --sign - /Applications/niu.app
    ```
 3. 自检：先在终端手跑 llama-server 那一行，三条都过（`--help` 比对 + 三条 curl）再重启 Niu。
    怎么写 / 怎么验证，见依赖手册「2.5 llama-server 启动方式」节。
-4. 重启 Niu。启动日志出现 `[llama-server] 就绪 http://127.0.0.1:19878` 即成功。
+4. 重启 Niu。启动日志出现 `[llama-server] 就绪` 即成功（缺省为 `http://127.0.0.1:19878`；改过配置行的就是你那一行绑定的地址端口）。
 
 > 📋 **模型与许可证**：EmbeddingGemma 2 来自 google-deepmind，GGUF 转换版权归
 > ggml-org，采用 **Apache 2.0**；llama.cpp 为 MIT。两者均可随安装包分发，
 > 不像 igraph/opencv 那样需要用户自行安装，详见文末「[致谢](#致谢)」。
 
-> ⚠️ **端口固定 19878**（避开 uvicorn 9876、IM adapter 19877）。若该端口被占用，
+> ⚠️ **缺省端口 19878**（避开 uvicorn 9876、IM adapter 19877；改过配置行的就是你那一行的端口）。若该端口被占用，
 > 程序启动会失败并提示；`kill -9` 强杀 Niu 可能留下 llama-server 孤儿占着它，
 > 重启即可自动清理（程序会按「路径 + 端口」双重限定杀掉旧实例，不会误伤你自己跑的 llama-server）。
 
@@ -320,7 +320,7 @@ codesign --force --sign - /Applications/niu.app
 | 3 | **启动，点是「尝试修复」** | 弹「检测到数据一致性问题」→ 点「尝试修复」→ 用新模型重建索引（1 万向量量级实测**二十几分钟**） | 同左 | [从 0.4.x 升级](#从-04x-升级必做) |
 | 4 | 若提示「**向量模型产物缺失**」 | 极少见（0.5.0 包内自带）；按[安装向量模型产物](#安装向量模型产物embeddinggemma-2--llamacpp)补 | 同左，macOS 还须补可执行位并重签名 | [安装向量模型产物](#安装向量模型产物embeddinggemma-2--llamacpp) |
 | 5 | **可选清理**：旧模型权重目录 | 删除 `models/bge-base-zh-v1.5/`（约 400 MB，已不用） | 同左 | [从 0.4.x 升级](#从-04x-升级必做) |
-| 6 | 确认收尾：`pgrep`/任务管理器无 `llama-server` 残留，端口 19878 空闲 | `tasklist \| findstr llama-server` 应为空 | `pgrep -fl llama-server` 应为空 | — |
+| 6 | 确认收尾：`pgrep`/任务管理器无 `llama-server` 残留，端口空闲（缺省 19878，以你配置行里的 `--port` 为准） | `tasklist \| findstr llama-server` 应为空 | `pgrep -fl llama-server` 应为空 | — |
 
 > ⛔ **不要删** `~/.niu/lightrag_storage/` 下的 `graph_chunk_entity_relation.graphml`、
 > `kv_store_full_docs.json`、`kv_store_llm_response_cache.json` —— 这是知识图谱的**原始真相源**，

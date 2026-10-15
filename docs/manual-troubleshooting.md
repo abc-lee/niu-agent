@@ -49,34 +49,36 @@ python -c "from agent.token_calculator import TokenCalculator; t=TokenCalculator
 - **用安装包**：0.5.0 及以后的安装包已内置该文件。若你手上的包没有（早期构建漏掉），
   从 git 仓取该文件放到上述路径即可，放完重启 Niu。
 
-#### 问题：启动报 llama-server 端口 19878 被占用 / 反复提示"未在 60s 内就绪"
+#### 问题：启动报 llama-server 端口被占用 / 反复提示"未在 60s 内就绪"
 
 **可能原因：**
-- 上一次 Niu 被强杀（`kill -9` / 任务管理器结束 / 断电），留下 **llama-server 孤儿进程**占着 19878
+- 上一次 Niu 被强杀（`kill -9` / 任务管理器结束 / 断电），留下 **llama-server 孤儿进程**占着该端口（没改过配置行就是缺省 19878）
 - 你自己跑的 llama-server / 别的程序占了同一个端口
 
 **解决方案：**
 
+端口以你配置里那一行为准（`~/.niu/config/user-config.json` 的 `llama_cpp.command` 行里的 `--port`；没改过就是缺省 19878），下面命令里的 `<你配置的端口>` 就是它。
+
 ```bash
 # macOS / Linux —— 查是谁占着
-lsof -ti:19878
+lsof -ti:<你配置的端口>
 pgrep -fl llama-server
 
 # Windows（PowerShell）—— 查是谁占着
-netstat -ano | findstr :19878
+netstat -ano | findstr :<你配置的端口>
 tasklist | findstr llama-server
 ```
 
 - **杀确认是本程序的孤儿后重启即可**：0.5.0 起启动器会按「产物路径 + 端口」双重限定
-  自动清理上次泄漏的孤儿（`models/llama.cpp/<平台>/llama-server` + `--port 19878`），
+  自动清理上次泄漏的孤儿（`models/llama.cpp/<平台>/llama-server` + 你配置行里的 `--port`；没改过就是缺省 19878），
   并在确认端口释放后才放行启动——**正常重启一次就好，不需要手动杀**。
 - 只有重启后仍卡住才需手动清：
   ```bash
   # macOS / Linux
-  pkill -9 -f "llama.cpp/.*llama-server.*--port 19878"
+  pkill -9 -f "llama.cpp/.*llama-server.*--port <你配置的端口>"
   # Windows（PowerShell，按命令行匹配，避免误伤）
   Get-CimInstance Win32_Process -Filter "Name like 'llama-server%'" |
-    Where-Object { $_.CommandLine -match 'llama[\\/]cpp[\\/].*llama-server.*--port 19878' } |
+    Where-Object { $_.CommandLine -match 'llama[\\/]cpp[\\/].*llama-server.*--port <你配置的端口>' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
   ```
   > ⚠️ 上面两条按**路径 + 端口双重限定**，不会误杀你自己跑的 llama-server；
