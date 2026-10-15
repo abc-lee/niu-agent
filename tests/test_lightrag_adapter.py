@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester, _strip_brain_meta
 
 # ============== LightRAGAdapter Tests ==============
 
@@ -286,6 +286,117 @@ class TestIngesterStructuredData:
             call_args = mock_rag.ainsert_custom_kg.call_args
             kg = call_args[0][0]
             assert kg["entities"][0]["entity_name"] == "Python"
+
+
+class TestVirtualChunkStableContent:
+    """虚拟 chunk 内容稳定性：易变 brain_meta_* 字段不得进入 chunk 内容。
+
+    背景：虚拟 chunk 编号 = 内容哈希（上游 compute_mdhash_id），写入是
+    upsert 只覆盖不删旧编号。脑区 description 含每次同步都变的
+    brain_meta_size / brain_meta_updated_at 字段 ⇒ 不剔除则编号每次漂移、
+    chunk 条数只增不减（实测每次启动 +7 条）。剔除后同一脑区的虚拟
+    chunk 内容跨同步不变 ⇒ 编号稳定 ⇒ 泄漏停止。
+    """
+
+    @staticmethod
+    def _run_inject(entities, source_id="brain"):
+        """以 mock rag 跑 inject_custom_kg，返回 custom_kg dict。"""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        ingester = LightRAGIngester()
+        mock_rag = MagicMock()
+        mock_rag.ainsert_custom_kg = AsyncMock(return_value=None)
+        with patch.object(ingester, "_get_rag", return_value=mock_rag):
+            result = ingester.inject_custom_kg(
+                entities=entities, relationships=[], chunks=[], source_id=source_id,
+            )
+        assert result["status"] == "ok"
+        return mock_rag.ainsert_custom_kg.call_args[0][0]
+
+    def test_mutable_brain_meta_fields_do_not_change_virtual_chunk_content(self):
+        """同一脑区两次注入仅 size/updated_at 不同 ⇒ 虚拟 chunk 内容完全相同。"""
+        from niu_api.internal.region_manager import _encode_description
+
+        summary = "编程开发类知识的汇聚脑区"
+        desc_v1 = _encode_description(summary, "dev", 12, "代码库", 1760000000, priority="high")
+        desc_v2 = _encode_description(summary, "dev", 987, "代码库", 1760999999, priority="high")
+        assert desc_v1 != desc_v2  # 前置：确实只有易变字段在变
+
+        name = "编程开发脑区"
+        kg1 = self._run_inject([{"entity_name": name, "entity_type": "brainregion", "description": desc_v1}])
+        kg2 = self._run_inject([{"entity_name": name, "entity_type": "brainregion", "description": desc_v2}])
+
+        assert len(kg1["chunks"]) == 1 and len(kg2["chunks"]) == 1
+        c1, c2 = kg1["chunks"][0], kg2["chunks"][0]
+        # 内容完全相同 ⇒ 内容哈希（chunk 编号）稳定 ⇒ upsert 覆盖同一编号，不再新增
+        assert c1["content"] == c2["content"]
+        # 易变字段未泄漏进 chunk 内容；人读 summary 保留
+        assert "brain_meta_size:" not in c1["content"]
+        assert "brain_meta_updated_at:" not in c1["content"]
+        assert c1["content"] == f"{name}: {summary}"
+
+    def test_entity_description_still_keeps_brain_meta(self):
+        """剔除只发生在虚拟 chunk 投影；实体写图的 description 一字不改。"""
+        from niu_api.internal.region_manager import _encode_description
+
+        desc = _encode_description("生活事务类知识", "life", 3, "日程", 1760000000, priority="medium")
+        kg = self._run_inject([{"entity_name": "生活事务脑区", "entity_type": "brainregion", "description": desc}])
+
+        # 图节点 description 原样保留全部 brain_meta_* 字段（priority 衰减 /
+        # shrink_count / size 面板等下游消费方从图节点读取，不能丢）
+        assert kg["entities"][0]["description"] == desc
+        for token in ("brain_meta_region_id:life", "brain_meta_size:3",
+                      "brain_meta_updated_at:1760000000", "brain_meta_priority:medium"):
+            assert token in desc  # 判据自检：原始描述里确有这些段
+
+    def test_non_region_entity_chunk_content_byte_identical(self):
+        """非脑区实体（description 不含 brain_meta_）：剔除是 no-op，逐字节一致。"""
+        # 覆盖 <SEP> 与 | 两种分隔形态，均无 brain_meta_ 段
+        for desc in (
+            "王五，某公司工程师，爱好摄影",
+            "王五 | 某公司工程师",
+            "王五<SEP>某公司工程师<SEP>爱好摄影",
+            "无描述段仅含 | 管道 | 的普通文本",
+        ):
+            name = "王五"
+            kg = self._run_inject([{"entity_name": name, "entity_type": "Person", "description": desc}])
+            assert len(kg["chunks"]) == 1
+            # 改前公式 f"{name}: {desc}" 逐字节复现（no-op 断言）
+            assert kg["chunks"][0]["content"] == f"{name}: {desc}"
+
+    def test_empty_summary_degrades_to_entity_name(self):
+        """description 只有 brain_meta_* 段（summary 为空）⇒ content 退化为 entity_name。"""
+        from niu_api.internal.region_manager import _encode_description
+
+        # summary 空串 → 全部段都是 brain_meta_*
+        desc = _encode_description("", "empty", 0, "", 1760000000)
+        assert "brain_meta_region_id:empty" in desc
+
+        name = "空摘要脑区"
+        kg = self._run_inject([{"entity_name": name, "entity_type": "brainregion", "description": desc}])
+        assert kg["chunks"][0]["content"] == name
+
+    # ---- _strip_brain_meta 单元行为（不依赖 LightRAG / 真实数据）----
+
+    def test_strip_matches_parse_description(self):
+        """剔除口径与既有解析器 region_manager._parse_description 一致。"""
+        from niu_api.internal.region_manager import _encode_description, _parse_description
+
+        desc = _encode_description("知识汇聚<SEP>多段摘要", "dev", 5, "代码库", 1760000000, priority="core")
+        parsed = _parse_description(desc)
+        assert _strip_brain_meta(desc) == parsed["summary"]
+
+    def test_strip_noop_when_no_brain_meta(self):
+        """无 brain_meta_ 的任意描述原样返回（None → 空串）。"""
+        assert _strip_brain_meta(None) == ""
+        assert _strip_brain_meta("") == ""
+        for s in ("plain", "a | b", "a<SEP>b", "含 brain_meta 字样但非记账段: x brain_meta y"):
+            assert _strip_brain_meta(s) == s
+
+    def test_strip_removes_all_brain_meta_segments(self):
+        """brain_meta_* 段全部剔除，其余段按 <SEP> 拼回。"""
+        desc = "摘要一<SEP>brain_meta_size:1<SEP>brain_meta_updated_at:1760000000<SEP>摘要二"
+        assert _strip_brain_meta(desc) == "摘要一<SEP>摘要二"
 
 
 class TestIngesterUnstructuredData:

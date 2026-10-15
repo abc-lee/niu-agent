@@ -549,6 +549,36 @@ def _clean_description(desc: str | None, entity_type: str | None = None) -> str:
     return desc.replace("<SEP>", " ")
 
 
+def _strip_brain_meta(desc: str | None) -> str:
+    """从脑区 description 中剔除 brain_meta_* 记账段，只留 summary 部分。
+
+    脑区实体 description 里含每次同步都变的 brain_meta_* 字段（size /
+    representative / updated_at，见 region_manager._encode_description）。
+    虚拟 chunk 的编号是内容哈希（上游 ainsert_custom_kg 的
+    compute_mdhash_id(chunk_content)），且写入是 upsert、从不删除旧编号——
+    description 一变，编号漂移、旧编号永不回收，chunk 条数只增不减
+    （实测每次启动 +7 条脑区记账块）。把投影进虚拟 chunk 的文本收敛为
+    人读 summary 后内容跨同步不变 ⇒ 编号稳定 ⇒ upsert 覆盖同一编号，
+    泄漏停止。实体图节点 description 原样保留（brain_meta_* 的下游消费方
+    ——priority 衰减 / shrink_count 解散 / size 面板——全部读图节点，
+    不读 chunk）。
+
+    切分/拼接口径与 region_manager._parse_description 完全一致：按
+    <SEP> 与 | 切分，丢弃 brain_meta_<key>: 段，其余段按 <SEP> 拼回。
+    description 不含 brain_meta_* 的实体（人物/照片/技能等）原样返回，
+    逐字节 no-op。
+    """
+    if not desc or "brain_meta_" not in desc:
+        return desc if desc else ""
+    parts = re.split(r"<SEP>|\s\|\s", desc)
+    summary_parts: list[str] = []
+    for part in parts:
+        part = part.strip()
+        if not re.match(r"brain_meta_(\w+):(.*)", part):
+            summary_parts.append(part)
+    return "<SEP>".join(summary_parts)
+
+
 def _clean_sep_in_query_result(result):
     """Clean <SEP> from description fields in query_data results.
 
@@ -2386,8 +2416,14 @@ class LightRAGIngester:
                 if unique_source_id not in covered_source_ids:
                     entity_name = entity.get("entity_name") or entity.get("name", "Other")
                     entity_desc = entity.get("description", "")
+                    # 虚拟 chunk 编号 = 内容哈希（上游 compute_mdhash_id），upsert 只覆盖不删旧编号。
+                    # 脑区 description 含每次同步都变的 brain_meta_* 字段 ⇒ 不剔除会导致
+                    # 编号每次漂移、chunk 条数只增不减（每次启动 +7 条）。剔除后内容稳定。
+                    # 仅改虚拟 chunk 的投影文本；实体图节点 description 原样保留（见
+                    # custom_kg["entities"]），brain_meta_* 下游消费方读图节点不受影响。
+                    stripped = _strip_brain_meta(entity_desc)
                     custom_kg["chunks"].append({
-                        "content": f"{entity_name}: {entity_desc}" if entity_desc else entity_name,
+                        "content": f"{entity_name}: {stripped}" if stripped else entity_name,
                         "source_id": unique_source_id,
                         "file_path": entity.get("file_path", "custom_kg"),
                         "chunk_order_index": 0,
