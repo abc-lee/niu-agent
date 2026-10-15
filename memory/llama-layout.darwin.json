@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "dirname": "llama.cpp",
+  "platforms": {
+    "darwin-x64": { "binary": "llama-server" },
+    "darwin-arm64": { "binary": "llama-server" }
+  },
+  "gguf": {
+    "filename": "embeddinggemma-2-Q8_0.gguf",
+    "size": 309855456
+  },
+  "mmproj": {
+    "filename": "mmproj-embeddinggemma-2-Q8_0.gguf"
+  }
+}

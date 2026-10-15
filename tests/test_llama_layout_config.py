@@ -1,15 +1,21 @@
-"""布局数据（config/llama-layout.json）读取 / 用户层合并 / 故障降级 —— 方案 §9.1 第 1 行五用例。
+"""布局文件（~/.niu/llama-layout.json，启动器首启自包内种子拷入的家目录那份）读取 /
+故障降级 —— 方案 §9.1 第 1 行五用例（seed 机制版）。
 
-全部离线、不碰真实 ~/.niu：user-config 重定向 tmp，布局两层一律写 tmp 后经
-monkeypatch 指向（先例 test_context_window_live_read.py 的 CONFIG_PATH 注入）。
-标准布局内容直接读 bundle 随附文件，保证"零缺省漂移"的基线与分发文件同源。
+全部离线、不碰真实 ~/.niu：user-config 重定向 tmp，布局文件写 tmp 后经
+monkeypatch `_layout_path` 指向（先例 test_context_window_live_read.py 的 CONFIG_PATH
+注入）。标准布局内容直接读包内平台种子（memory/llama-layout.<os>.json），保证
+"零缺省漂移"的基线与启动器首启拷入的分发文件同源。
 """
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
 from niu_api.internal import embedding_artifacts as ea
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -25,32 +31,36 @@ def _isolated(monkeypatch, tmp_path):
     ea._WARNED_REASONS.clear()
 
 
+def _platform_seed_suffix() -> str:
+    """当前 OS 对应的种子文件名后缀（与启动器 platform_seed_suffix 同口径：
+    macOS → darwin，Windows → win32）。"""
+    return "win32" if sys.platform == "win32" else "darwin"
+
+
 def _standard_layout() -> dict:
-    """bundle 随附布局数据文件的内容（必须在 monkeypatch 布局路径之前取）。"""
-    return json.loads(ea._bundle_layout_path().read_text(encoding="utf-8"))
+    """包内随附的平台种子内容（与启动器首启拷入 ~/.niu/llama-layout.json 的那份同源）。"""
+    return json.loads(
+        (REPO_ROOT / "memory" / f"llama-layout.{_platform_seed_suffix()}.json")
+        .read_text(encoding="utf-8")
+    )
 
 
-def _point_layout(monkeypatch, tmp_path, bundle_payload=None, user_payload=None):
-    """把布局两层指向 tmp 文件（payload=None ⇒ 该层缺失）。"""
-    bdir = tmp_path / "bundle-layout"
-    udir = tmp_path / "user-layout"
-    bdir.mkdir(exist_ok=True)
-    udir.mkdir(exist_ok=True)
-    bp = bdir / "llama-layout.json" if bundle_payload is not None else bdir / "absent.json"
-    if bundle_payload is not None:
-        bp.write_text(json.dumps(bundle_payload, ensure_ascii=False), encoding="utf-8")
-    up = udir / "llama-layout-user.json" if user_payload is not None else udir / "absent.json"
-    if user_payload is not None:
-        up.write_text(json.dumps(user_payload, ensure_ascii=False), encoding="utf-8")
-    monkeypatch.setattr(ea, "_bundle_layout_path", lambda: bp)
-    monkeypatch.setattr(ea, "_user_layout_path", lambda: up)
+def _point_layout(monkeypatch, tmp_path, payload=None):
+    """把家目录布局文件指向 tmp 文件（payload=None ⇒ 该文件缺失）。"""
+    d = tmp_path / "home-layout"
+    d.mkdir(exist_ok=True)
+    p = d / "llama-layout.json"
+    if payload is not None:
+        p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(ea, "_layout_path", lambda: p)
 
 
 class TestLayoutMissingDegrades:
     def test_layout_missing_no_fatal_and_list_readable(self, monkeypatch, tmp_path):
-        """① 布局数据缺失 ⇒ 不 Fatal：文案降级（缺产物 + 去手册），缺文件清单仍可读。"""
+        """① 家目录布局文件缺失 ⇒ 不 Fatal：文案降级（缺产物 + 去手册），
+        缺文件清单仍可读（按内置回退名派生）。"""
         monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
-        _point_layout(monkeypatch, tmp_path, None, None)
+        _point_layout(monkeypatch, tmp_path, None)
         msg = ea.describe_missing()  # 不得抛异常
         assert msg
         # 清单仍可读：按回退布局名派生出具体文件路径
@@ -61,9 +71,9 @@ class TestLayoutMissingDegrades:
         assert not ea.artifacts_ready()
 
     def test_layout_missing_but_artifacts_present_is_not_fatal(self, monkeypatch, tmp_path):
-        """产物齐 + 布局缺失 ⇒ 仅 WARNING：describe_missing() 空串，artifacts_ready() True。"""
+        """产物齐 + 布局文件缺失 ⇒ 仅 WARNING：describe_missing() 空串，artifacts_ready() True。"""
         monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
-        _point_layout(monkeypatch, tmp_path, None, None)
+        _point_layout(monkeypatch, tmp_path, None)
         ea.gguf_path().write_bytes(b"x")
         binary = ea.llama_server_path()
         binary.parent.mkdir(parents=True, exist_ok=True)
@@ -71,41 +81,52 @@ class TestLayoutMissingDegrades:
         assert ea.artifacts_ready()
         assert ea.describe_missing() == ""
 
+    def test_layout_file_unparseable_degrades_to_fallback(self, monkeypatch, tmp_path):
+        """布局文件存在但 JSON 坏掉 ⇒ 按缺失降级（WARNING），不抛、不 Fatal。"""
+        monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
+        d = tmp_path / "home-layout"
+        d.mkdir(exist_ok=True)
+        p = d / "llama-layout.json"
+        p.write_text("{not valid json", encoding="utf-8")
+        monkeypatch.setattr(ea, "_layout_path", lambda: p)
+        assert ea._layout_raw() is None
+        # 回退名仍派生出可读路径
+        assert ea.layout_dirname() == "llama.cpp"
+        assert ea.gguf_filename() == "embeddinggemma-2-Q8_0.gguf"
+        assert not ea.artifacts_ready()
 
-class TestUserLayerMerge:
-    def test_user_layer_overrides_filename_and_platform_entry(self, monkeypatch, tmp_path):
-        """② 用户层覆盖 merge（用户赢）：改文件名 / 平台二进制名可生效。"""
+
+class TestHomeCopyAuthoritative:
+    def test_home_copy_edits_take_effect(self, monkeypatch, tmp_path):
+        """②（seed 机制改述）家目录那份是唯一权威：用户直接改它的文件名 / 平台
+        二进制名即生效，无需任何用户覆盖层。"""
         monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
         monkeypatch.setattr(ea.sys, "platform", "darwin")
         monkeypatch.setattr(ea.platform, "machine", lambda: "x86_64")
-        bundle = _standard_layout()
-        user = {
-            "gguf": {"filename": "custom-weights.gguf"},
-            "platforms": {"darwin-x64": {"binary": "llama-server-custom"}},
-        }
-        _point_layout(monkeypatch, tmp_path, bundle, user)
-        # 用户层赢：GGUF 文件名 / 该平台的二进制名换成用户值
+        layout = _standard_layout()
+        layout["gguf"]["filename"] = "custom-weights.gguf"
+        layout["platforms"]["darwin-x64"] = {"binary": "llama-server-custom"}
+        _point_layout(monkeypatch, tmp_path, layout)
         assert ea.gguf_path().name == "custom-weights.gguf"
         assert ea.llama_server_path().name == "llama-server-custom"
-        # 用户没碰的键保持 bundle 值（deep merge 而非替换）
-        assert ea.layout_dirname() == bundle["dirname"]
-        merged = ea._layout_raw()
-        assert merged["mmproj"]["filename"] == bundle["mmproj"]["filename"]
-        assert merged["platforms"]["darwin-x64"]["binary"] == "llama-server-custom"
+        # 没被用户动的键保持种子值
+        assert ea.layout_dirname() == layout["dirname"]
+        assert ea._layout_raw()["mmproj"]["filename"] == layout["mmproj"]["filename"]
 
-    def test_user_layer_absent_is_silent_default(self, monkeypatch, tmp_path):
-        """用户层缺失＝正常缺省形态（静默）：合并结果＝bundle 权威层原样。"""
+    def test_home_copy_read_as_is(self, monkeypatch, tmp_path):
+        """家目录文件内容原样生效（无第二层合并语义）。"""
         monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
-        bundle = _standard_layout()
-        _point_layout(monkeypatch, tmp_path, bundle, None)
-        assert ea._layout_raw() == bundle
+        layout = _standard_layout()
+        _point_layout(monkeypatch, tmp_path, layout)
+        assert ea._layout_raw() == layout
 
 
 class TestZeroDefaultDrift:
     def test_paths_byte_identical_to_today(self, monkeypatch, tmp_path):
-        """③ 零缺省漂移：不配置任何新键 ⇒ 二进制 / GGUF 路径与今天写死时代逐字节一致。"""
+        """③ 零缺省漂移：家目录那份＝出厂种子（启动器首启拷入）⇒ 二进制 / GGUF
+        路径与今天逐字节一致。"""
         monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
-        _point_layout(monkeypatch, tmp_path, _standard_layout(), None)
+        _point_layout(monkeypatch, tmp_path, _standard_layout())
         binary = "llama-server.exe" if ea.sys.platform == "win32" else "llama-server"
         assert ea.gguf_path() == tmp_path / "embeddinggemma-2-Q8_0.gguf"
         assert ea.llama_server_path() == tmp_path / "llama.cpp" / ea.current_platform() / binary
@@ -116,7 +137,7 @@ class TestZeroDefaultDrift:
         tampered = _standard_layout()
         tampered["dirname"] = "third-party"
         tampered["gguf"]["filename"] = "tampered.gguf"
-        _point_layout(monkeypatch, tmp_path, tampered, None)
+        _point_layout(monkeypatch, tmp_path, tampered)
         assert ea.gguf_path() == tmp_path / "tampered.gguf"
         assert ea.llama_server_path().parent == tmp_path / "third-party" / ea.current_platform()
 
@@ -130,7 +151,7 @@ class TestBinaryPathOverride:
         (tmp_path / "user-config.json").write_text(
             json.dumps({"llama_cpp": {"binary_path": str(custom)}}), encoding="utf-8"
         )
-        _point_layout(monkeypatch, tmp_path, _standard_layout(), None)
+        _point_layout(monkeypatch, tmp_path, _standard_layout())
         assert ea.llama_server_path() == custom
         # GGUF 齐 + 布局二进制不在 + 用户二进制未放 ⇒ 二进制检查被跳过，判齐备
         ea.gguf_path().write_bytes(b"x")
@@ -142,16 +163,16 @@ class TestBinaryPathOverride:
 
 class TestPlatformKeyInLayout:
     def test_platform_key_in_layout_platforms(self, monkeypatch, tmp_path):
-        """⑤ 平台键 ∈ 布局数据的平台清单：current_platform() 纯派生不死，
-        布局缺失/未声明该平台时跳过成员校验（仅 WARNING，不抛）。"""
+        """⑤ 平台键 ∈ 布局文件的平台清单：current_platform() 纯派生不死，
+        文件缺失/未声明该平台时跳过成员校验（仅 WARNING，不抛）。"""
         monkeypatch.setenv("NIU_MODELS_PATH", str(tmp_path))
-        bundle = _standard_layout()
-        assert ea.current_platform() in bundle["platforms"]  # 分发布局声明本机平台
-        _point_layout(monkeypatch, tmp_path, bundle, None)
+        layout = _standard_layout()
+        assert ea.current_platform() in layout["platforms"]  # 平台种子声明本机平台
+        _point_layout(monkeypatch, tmp_path, layout)
         key = ea.current_platform()
         assert key in ea.supported_platforms()
         # 布局未声明该平台：仍按派生键继续，不抛 UnsupportedPlatformError
-        undeclared = {k: v for k, v in bundle["platforms"].items() if k != key}
-        _point_layout(monkeypatch, tmp_path, {**bundle, "platforms": undeclared}, None)
+        undeclared = {k: v for k, v in layout["platforms"].items() if k != key}
+        _point_layout(monkeypatch, tmp_path, {**layout, "platforms": undeclared})
         assert ea.current_platform() == key
         assert ea.llama_server_path().name  # 回退名仍可派生，不崩

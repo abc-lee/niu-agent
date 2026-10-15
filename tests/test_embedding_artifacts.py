@@ -3,8 +3,9 @@
 隔离：user-config 重定向 tmp（llama_cpp 段读取不碰真实 ~/.niu，先例
 test_context_window_live_read.py）；布局缓存与一次性告警标记每用例重置。
 """
-
 import json
+import sys
+from pathlib import Path
 
 import pytest
 from loguru import logger
@@ -14,12 +15,21 @@ from niu_api.internal import embedding_artifacts as ea
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch, tmp_path):
-    """user-config 指向 tmp（空 {}）；清空布局缓存与告警标记，防跨用例状态泄漏。"""
+    """user-config 指向 tmp（空 {}）；家目录布局文件重定向 tmp（标准种子内容，防读真实
+    ~/.niu/llama-layout.json）；清空布局缓存与一次性告警标记，防跨用例状态泄漏。"""
     from niu_api import config as cfg_mod
 
     p = tmp_path / "user-config.json"
     p.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(cfg_mod, "CONFIG_PATH", str(p))
+    suffix = "win32" if sys.platform == "win32" else "darwin"
+    lp = tmp_path / "llama-layout.json"
+    lp.write_text(
+        (Path(__file__).resolve().parent.parent
+         / "memory" / f"llama-layout.{suffix}.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ea, "_layout_path", lambda: lp)
     ea._LAYOUT_CACHE = None
     ea._LAYOUT_CACHE_KEY = None
     ea._WARNED_REASONS.clear()
@@ -120,11 +130,10 @@ class TestVerifyGguf:
         layout_dir = tmp_path / "layout"
         layout_dir.mkdir()
         lp = layout_dir / "llama-layout.json"
-        layout = json.loads(ea._bundle_layout_path().read_text(encoding="utf-8"))
+        layout = json.loads(ea._layout_path().read_text(encoding="utf-8"))
         layout["gguf"]["size"] = 4
         lp.write_text(json.dumps(layout), encoding="utf-8")
-        monkeypatch.setattr(ea, "_bundle_layout_path", lambda: lp)
-        monkeypatch.setattr(ea, "_user_layout_path", lambda: layout_dir / "absent.json")
+        monkeypatch.setattr(ea, "_layout_path", lambda: lp)
         p = tmp_path / "g.gguf"
         p.write_bytes(b"abcd")
         assert ea.verify_gguf(p)

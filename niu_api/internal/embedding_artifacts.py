@@ -5,9 +5,9 @@
 程序不做下载，获取产物是《系统管理手册》『可选组件安装』节的事）。
 
 布局事实（目录名 / 各平台二进制名 / GGUF 文件名与体积 / mmproj 文件名）全部来自
-数据文件，不在代码里：bundle 权威层 `config/llama-layout.json` + 用户覆盖层
-`~/.niu/config/llama-layout-user.json`（deep merge，用户赢；定位照 niu_api/config.py
-双模式，合并语义照 agent/mcp_loader.py 双目录先例）。
+数据文件，不在代码里：程序**只读家目录那份** `~/.niu/llama-layout.json`——出厂缺省由
+启动器首启时从包内只读种子 `memory/llama-layout.<os>.json` 拷入（不在才拷、在则绝不
+覆盖）；程序永不读包内原件（除启动器复制时）、永不写包内。
 
 消费方：
 - 运行时缺失自检（llama-server 拉起前，缺失时经 describe_missing() 写 .startup_error）
@@ -33,7 +33,6 @@ from niu_api.internal.embedding import get_models_dir
 # ---------------- 布局数据（"用"产物所需的事实，不是下载规格） ----------------
 
 _LAYOUT_FILENAME = "llama-layout.json"
-_USER_LAYOUT_FILENAME = "llama-layout-user.json"
 
 # 布局数据缺失/坏掉时的回退布局事实——仅在该降级态生效，防止"清单文件丢了就什么
 # 都算不出"。这些是产品自身稳定的摆放名（不含上游构建号/压缩包名）。
@@ -62,7 +61,7 @@ class UnsupportedPlatformError(NotImplementedError):
     """
 
 
-# 布局数据进程内缓存（仅当两层文件 stat 变化才重读）+ 每进程一次告警
+# 布局文件进程内缓存（仅当家目录文件 stat 变化才重读）+ 每进程一次告警
 _LAYOUT_CACHE: dict | None = None
 _LAYOUT_CACHE_KEY: tuple | None = None
 _WARNED_REASONS: set[str] = set()
@@ -74,29 +73,11 @@ def _warn_once(reason: str, msg: str) -> None:
         logger.warning(msg)
 
 
-def _bundle_layout_path() -> Path:
-    """bundle 权威层布局数据文件（dev：项目根 config/；bundle：Resources/config/）。
-
-    定位照 niu_api/config.py 的 _get_bundle_config_dir；函数级 import 是测试注入点。
-    """
-    from niu_api.config import _get_bundle_config_dir
-    return _get_bundle_config_dir() / _LAYOUT_FILENAME
-
-
-def _user_layout_path() -> Path:
-    """用户覆盖层：~/.niu/config/llama-layout-user.json（存在即参与合并，缺失=缺省形态，静默）。"""
-    return Path(os.path.expanduser("~")) / ".niu" / "config" / _USER_LAYOUT_FILENAME
-
-
-def _deep_merge(base: dict, override: dict) -> dict:
-    """dict 递归合并，非 dict 值或键冲突时 override 赢（用户层语义照 agent/mcp_loader）。"""
-    out = dict(base)
-    for k, v in override.items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
+def _layout_path() -> Path:
+    """家目录布局文件：`~/.niu/llama-layout.json`（启动器首启时从包内只读种子
+    `memory/llama-layout.<os>.json` 拷入的出厂缺省）。程序只读这份，永不读包内原件、
+    永不写包内。函数级 expanduser 是测试注入点（HOME 重定向即可隔离）。"""
+    return Path(os.path.expanduser("~")) / ".niu" / _LAYOUT_FILENAME
 
 
 def _layout_stat_key(p: Path) -> tuple:
@@ -108,40 +89,38 @@ def _layout_stat_key(p: Path) -> tuple:
 
 
 def _layout_raw() -> dict | None:
-    """读合并后的布局数据（bundle 权威层 + 用户覆盖层 deep merge，用户赢）。
+    """读家目录布局文件（`~/.niu/llama-layout.json`——启动器首启拷入的出厂缺省）。
 
-    用户层缺失＝正常缺省形态（静默）；bundle 层缺失/两层全坏 ⇒ WARNING（每进程
-    一次）并返回 None——调用方按回退布局降级，绝不抛。稳态进程内缓存：仅当任一层
-    文件 stat 变化才重读。
+    缺失 ⇒ WARNING（每进程一次）并返回 None——调用方按回退布局降级，绝不抛、绝不
+    Fatal（"布局文件丢了" ≠ "产物缺了"）；解析失败/非 dict 同按缺失降级。稳态进程内
+    缓存：仅当文件 stat 变化才重读。
     """
     global _LAYOUT_CACHE, _LAYOUT_CACHE_KEY
-    bundle = _bundle_layout_path()
-    user = _user_layout_path()
-    key = _layout_stat_key(bundle) + _layout_stat_key(user)
+    p = _layout_path()
+    key = _layout_stat_key(p)
     if key == _LAYOUT_CACHE_KEY:
         return _LAYOUT_CACHE
-    merged: dict = {}
-    any_layer = False
-    for p in (bundle, user):
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except OSError:
-            continue
-        except ValueError:
-            _warn_once(f"parse:{p.name}", f"布局数据 {p} 解析失败，该层按缺失降级")
-            continue
-        if not isinstance(data, dict):
-            continue
-        any_layer = True
-        merged = _deep_merge(merged, data)
-    if not any_layer:
+    data: dict | None = None
+    try:
+        parsed = json.loads(p.read_text(encoding="utf-8"))
+    except OSError:
+        parsed = None
+    except ValueError:
+        _warn_once(f"parse:{p.name}", f"布局文件 {p} 解析失败，按缺失降级")
+        parsed = None
+    if isinstance(parsed, dict):
+        data = parsed
+    elif parsed is not None:
+        _warn_once(f"type:{p.name}", f"布局文件 {p} 不是 JSON 对象，按缺失降级")
+    if data is None:
         _warn_once(
             "no-layout",
-            "布局数据缺失（config/llama-layout.json 未找到）：产物路径按内置回退名派生，"
+            "布局文件缺失（~/.niu/llama-layout.json 未找到）：产物路径按内置回退名派生。"
+            "启动器首启应已从 memory/llama-layout.<os>.json 拷入出厂缺省；"
             "请按《系统管理手册》『可选组件安装』补齐布局与产物",
         )
     _LAYOUT_CACHE_KEY = key
-    _LAYOUT_CACHE = merged if any_layer else None
+    _LAYOUT_CACHE = data
     return _LAYOUT_CACHE
 
 
