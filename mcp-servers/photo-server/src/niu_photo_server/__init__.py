@@ -179,7 +179,8 @@ TOOL_SCHEMAS = {
 - limit: 返回数量（默认10）
 
 返回:
-- 匹配的人物列表""",
+- 成功: {"status":"success","query":<原样回显>,"results":[…],"count":n}
+- 失败: {"status":"error","error_code":"PERSON_SEARCH_FAILED","query":<原样回显>,"message":"…"}（查询失败不等于没有此人）""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1338,16 +1339,16 @@ def get_next_auto_label() -> str:
     return f"未命名人物_{max_num + 1}"
 
 
-def search_persons(query: str, limit: int = 10) -> list[dict]:
+def search_persons(query: str, limit: int = 10) -> dict:
     """
     搜索人物（按名字模糊匹配）
 
-    Args:
-        query: 搜索词（人名）
-        limit: 返回数量
+    返回信封（磁盘面 / 直调面 / stdio 面共用）：
+      - 成功: {"status": "success", "query": q, "results": [...], "count": n}
+      - 失败: {"status": "error", "error_code": "PERSON_SEARCH_FAILED", "query": q, "message": "…"}
 
-    Returns:
-        匹配的人物列表
+    约定：`results:[]` **只**表示「成功但没有匹配」；查询失败一律返回 `status:error` 信封，
+    绝不返回空列表（否则调用方会把"查不动"当成"没有这个人"）。
     """
     try:
         conn = get_connection()
@@ -1372,11 +1373,17 @@ def search_persons(query: str, limit: int = 10) -> list[dict]:
                 }
             )
 
-        return results[:limit]
+        sliced = results[:limit]
+        return {"status": "success", "query": query, "results": sliced, "count": len(sliced)}
 
     except Exception as e:
         logger.exception(f"[SEARCH_PERSONS] Failed: {e}")
-        return []
+        return {
+            "status": "error",
+            "error_code": "PERSON_SEARCH_FAILED",
+            "query": query,
+            "message": f"照片库查询失败（{e}），这不代表库里没有这个人；请稍后重试",
+        }
 
 
 def get_unnamed_persons() -> list[dict]:
@@ -4038,7 +4045,8 @@ async def list_tools() -> list[Tool]:
 - limit: 返回数量（默认10）
 
 返回:
-- 匹配的人物列表""",
+- 成功: {"status":"success","query":<原样回显>,"results":[…],"count":n}
+- 失败: {"status":"error","error_code":"PERSON_SEARCH_FAILED","query":<原样回显>,"message":"…"}（查询失败不等于没有此人）""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -4192,15 +4200,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "cleanup_deleted_photos":
             result = cleanup_deleted_photos()
         elif name == "search_persons":
-            persons = search_persons(
+            result = search_persons(
                 query=arguments["query"],
                 limit=arguments.get("limit", 10),
             )
-            result = {
-                "status": "success",
-                "query": arguments["query"],
-                "results": persons,
-            }
         elif name == "get_unnamed_persons":
             persons = get_unnamed_persons()
             result = {"status": "success", "count": len(persons), "persons": persons}
