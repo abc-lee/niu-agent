@@ -45,20 +45,22 @@ _GRAPH_UNAVAILABLE_MSG = "知识图谱不可用（初始化门控拒绝）"
 # 超限文本此前只能靠 S7 护栏在嵌入时按比例截断——内容静默丢失。本守卫把失败形态
 # 前移到入库前：chunk 分段、description fail-loud。
 
-# llama-server 单条输入 token 上限（-b 8192 -ub 8192）。与 llama_server._TOKEN_LIMIT
-# 同源；改这里必须同步改那边，否则两侧口径分裂。
-EMBED_TOKEN_LIMIT = 8192
-
-# 字符预筛阈值：≤ 该长度的组合串直接放行、不做权威计量。依据（方案 §5 R-3）：
-# Gemma 分词器最坏密度 4.000 token/字符（未分配码位 2.000；CJK 扩展 B/C 4.000；
-# UTF-8 每字符最多 4 字节，故 4.0 是可辩护上界）。2000 × 4.000 = 8000 < 8192。
-# **抬高该阈值必须同步重新评估此上界**（7000 字符 × 4.0 = 28000 已超限，
-# v1.2 双审 B-P3 实测证实 7000 不安全）。
-_GUARD_CHAR_PREFILTER = 2000
-
-# 分段子块字符预算：每子块 ≤ 1500 字符 ⇒ 最坏 1500 × 4.000 = 6000 token < 8192，
-# 切分后的子块无需再次计量。
-_GUARD_SPLIT_CHAR_BUDGET = 1500
+# 三阈值均派生自 llama_config 唯一真相（本模块不再持有常量）：embed_token_limit()
+# （＝生效行里的 -c 上下文大小）、char_prefilter_adapter()（×2000/8192）、
+# split_char_budget_adapter()（×1500/8192）；llama-server 侧同样从 llama_config
+# 派生（预筛系数 7000/8192，与 lightrag 侧 2000 不同、不得合并）——改生效行 -c
+# 全链同步，两侧口径永不分裂。
+#
+# 字符预筛阈值（char_prefilter_adapter()）：≤ 该长度的组合串直接放行、不做权威
+# 计量。依据（方案 §5 R-3）：Gemma 分词器最坏密度 4.000 token/字符（未分配码位
+# 2.000；CJK 扩展 B/C 4.000；UTF-8 每字符最多 4 字节，故 4.0 是可辩护上界）。
+# 派生值恒低于 embed_token_limit()（基线 8192 下 2000 × 4.000 = 8000 < 8192，
+# 随生效 -c 同步缩放）。**抬高该系数必须同步重新评估此上界**（7000 × 4.0 =
+# 28000 在基线已超限，v1.2 双审 B-P3 实测证实 7000 不安全）。
+#
+# 分段子块字符预算（split_char_budget_adapter()）：每子块 ≤ 该预算 ⇒ 最坏不超限
+# （基线 1500 × 4.000 = 6000 token < 8192，随生效 -c 同步缩放），切分后的子块
+# 无需再次计量。
 
 # 实体名长度上界（D-3.1 快速失败层）：实体名没有任何长度/格式校验（代码里的
 # kebab 正则只用于 agent 名），却会原样进入嵌入串（create/edit 的
@@ -109,7 +111,7 @@ class EmbedLimitError(RuntimeError):
 #    doc 路径上的 LLM 抽取描述（summary_max_tokens=1200，同一 tiktoken 口径）
 #    背离同型。本方案不为它背书，施工时不得跳过它的防护设计。
 def _guard_embed_text(kind: str, name: str, text: str) -> list[str] | None:
-    """唯一守卫：预筛 2000 字符 → /tokenize 权威计量 → 超限按 kind 分治。
+    """唯一守卫：预筛（char_prefilter_adapter 阈值）→ /tokenize 权威计量 → 超限按 kind 分治。
 
     Args:
         kind: "chunk"（正文，可分段）／"entity"／"relation"（description 类，
@@ -126,8 +128,11 @@ def _guard_embed_text(kind: str, name: str, text: str) -> list[str] | None:
         EmbedLimitError: description 类超限（I-10 fail-loud），报文含 name 与
             真实 token 数。
     """
-    if len(text) <= _GUARD_CHAR_PREFILTER:
-        # ≤ 2000 字符 ⇒ 最坏 2000 × 4.000 = 8000 token < 8192，无需计量。
+    from niu_api.internal import llama_config  # 三阈值唯一真相（函数级导入，与 _count_embed_tokens 的 llama_server 导入同例）
+    token_limit = llama_config.embed_token_limit()
+    prefilter = llama_config.char_prefilter_adapter()
+    if len(text) <= prefilter:
+        # ≤ 预筛阈值 ⇒ 最坏 prefilter × 4.000 token < 上限（基线 8000 < 8192），无需计量。
         return None
     tokens = _count_embed_tokens(text)
     if tokens is None:
@@ -135,22 +140,22 @@ def _guard_embed_text(kind: str, name: str, text: str) -> list[str] | None:
         # 此时嵌入同样不可能成功（encode_batch 会先抛"未就绪"），不会产生新的
         # 静默截断窗口；方案 AC-0 的前置条件即依赖 llama-server 就绪。
         logger.warning(
-            f"[embed-guard] {kind} 权威计量不可用（>{_GUARD_CHAR_PREFILTER} 字符），"
+            f"[embed-guard] {kind} 权威计量不可用（>{prefilter} 字符），"
             f"放行由 S7 兜底: name={name!r} chars={len(text)}"
         )
         return None
-    if tokens <= EMBED_TOKEN_LIMIT:
+    if tokens <= token_limit:
         return None
     if kind == "chunk":
-        segments = _split_for_embed(text)
+        segments = _split_for_embed(text, llama_config.split_char_budget_adapter())
         logger.warning(
             f"[embed-guard] chunk 超限分段: source_id={name!r} tokens={tokens} > "
-            f"{EMBED_TOKEN_LIMIT}（{len(text)} 字符）→ {len(segments)} 子块"
+            f"{token_limit}（{len(text)} 字符）→ {len(segments)} 子块"
         )
         return segments
     raise EmbedLimitError(
         f"{kind} 嵌入内容超限（fail-loud，方案 S8 D-3）：{name!r} 实际嵌入串 "
-        f"{tokens} token > 上限 {EMBED_TOKEN_LIMIT}（{len(text)} 字符）。"
+        f"{tokens} token > 上限 {token_limit}（{len(text)} 字符）。"
         f"拆分单一{kind}在语义上不成立，请调用方自行缩短名称/描述后重试。"
     )
 
@@ -176,30 +181,31 @@ _PARA_SPLIT_RE = re.compile(r"(\n\n)")
 _SENT_SPLIT_RE = re.compile(r"([。！？；!?;\n])")
 
 
-def _split_for_embed(text: str) -> list[str]:
-    """把超限文本按语义边界切分为均不超过 _GUARD_SPLIT_CHAR_BUDGET 字符的子块。
+def _split_for_embed(text: str, budget: int) -> list[str]:
+    """把超限文本按语义边界切分为均不超过 ``budget`` 字符的子块（调用方传
+    llama_config.split_char_budget_adapter() 的现读值；本函数内只复用、不重复调）。
 
     边界优先级：段落（空行）→ 句子（。！？；.!?; 与换行）→ 按预算硬切。分隔符作为
     独立单元参与打包（不额外插入字符），故所有子块依次拼接可还原原文。
-    每个子块 ≤ 1500 字符 ⇒ 最坏 6000 token < 8192，无需再次计量。
+    每个子块 ≤ budget 字符 ⇒ 最坏（基线 1500 × 4.000 = 6000 < 8192，随生效 -c 缩放）无需再次计量。
     """
     units: list[str] = []
 
     def _hard_split(s: str) -> None:
-        for i in range(0, len(s), _GUARD_SPLIT_CHAR_BUDGET):
-            units.append(s[i : i + _GUARD_SPLIT_CHAR_BUDGET])
+        for i in range(0, len(s), budget):
+            units.append(s[i : i + budget])
 
     for part in _PARA_SPLIT_RE.split(text):
         if not part:
             continue
-        if len(part) <= _GUARD_SPLIT_CHAR_BUDGET:
+        if len(part) <= budget:
             units.append(part)
             continue
         # 单个段落仍超预算 → 按句子边界再切；单句仍超预算 → 硬切
         for piece in _SENT_SPLIT_RE.split(part):
             if not piece:
                 continue
-            if len(piece) <= _GUARD_SPLIT_CHAR_BUDGET:
+            if len(piece) <= budget:
                 units.append(piece)
             else:
                 _hard_split(piece)
@@ -207,7 +213,7 @@ def _split_for_embed(text: str) -> list[str]:
     segments: list[str] = []
     buf = ""
     for unit in units:
-        if buf and len(buf) + len(unit) > _GUARD_SPLIT_CHAR_BUDGET:
+        if buf and len(buf) + len(unit) > budget:
             segments.append(buf)
             buf = unit
         else:

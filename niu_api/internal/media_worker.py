@@ -22,7 +22,7 @@
 会静默永不运行、队列一直涨 = R14 的症状）。循环线程零阻塞契约、条件链按序短路（未完成行
 非空先判）、仅未完成行非空才付**至多每轮一次、有界 5s** 的探活（循环线程的唯一阻塞上界，
 如实披露）、编码提交调度器既有 ``ThreadPoolExecutor``（``bind_executor`` 绑定）且循环线程
-**不等待结果**、同一时刻至多一条在途、在途超时阈值**严格大于** ``llama_server._MEDIA_HTTP_TIMEOUT``
+**不等待结果**、同一时刻至多一条在途、在途超时阈值**严格大于** ``llama_config.media_http_timeout()``
 且判定只计「编码已实际开始」的时段（池内排队段不计入判定，R19）、读队列是 **total 路径**
 （读不出 ⇒ stalled + -1 哨兵，任何异常不得离开 tick）——全部沿用 v3.0/v3.2 已验收的条款。
 tick 接缝：队列路径 / 开关 / 就绪判定 / 编码器 / 护栏 / 写库 / 提交策略全部可注入
@@ -50,10 +50,31 @@ from niu_api.internal.media_ingest_config import media_ingest_enabled
 #: 同一队列行的连续失败上限：达到即弃单并**标完成**（口径乙：弃单 = 「过了」）；
 #: 内存计数，重启清零；弃单原因可辨（ERROR 与 SSE 事件与临时提示都带原因）。
 MAX_CONSECUTIVE_FAILURES = 3
-#: 在途超时阈值（初始值，S6 可同步收紧；必须严格大于 llama_server._MEDIA_HTTP_TIMEOUT ≈ 1031.5s）。
+#: 在途超时阈值（初始值，S6 可同步收紧；必须严格大于 llama_config.media_http_timeout()
+#: （缺省 1031.52s，可被用户配置覆盖）——配置抬高到 ≥ 本值时启动自检会告警，不阻断）。
 INFLIGHT_TIMEOUT = 1200.0
 #: 单轮 tick 内坏行连弃上限（防病态队列文件在一轮里烧掉循环线程；v3.5：坏行可在文件任意位置）
 _MAX_BADLINE_SWEEPS = 32
+
+def _startup_selfcheck() -> None:
+    """启动自检（只告警、绝不抛、不阻断，模块导入时跑一次）：配置的媒体超时 ≥ 在途超时
+    阈值 ⇒ 正常在途（编码尚未完成）也可能被在途收敛判成「超时」误伤——启动时明确告警，
+    由用户决定调低 media_http_timeout 或接受风险。"""
+    try:
+        from niu_api.internal import llama_config  # 函数级导入，保持本模块导入轻量
+
+        cfg = llama_config.media_http_timeout()
+        if cfg >= INFLIGHT_TIMEOUT:
+            logger.warning(
+                f"[MediaWorker] 启动自检：配置的媒体超时 {cfg:.2f}s ≥ 在途超时阈值 "
+                f"{INFLIGHT_TIMEOUT:.0f}s——编码尚未完成即可能在途收敛被判「在途超时」误判失败，"
+                f"请调低 media_http_timeout 或抬高 INFLIGHT_TIMEOUT"
+            )
+    except Exception:  # noqa: BLE001 —— 自检绝不阻断启动（读配置意外也只丢告警）
+        pass
+
+
+_startup_selfcheck()
 
 
 @dataclass
