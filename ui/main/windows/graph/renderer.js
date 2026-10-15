@@ -907,12 +907,13 @@ document.addEventListener('click', (e) => {
 // SENTINEL-Begin buildSearchSectionModel
 // 两段渲染的纯决策函数（无 DOM 依赖；tests/graph_search_media_ui.js 按哨兵注释提取后驱动断言）。
 // kgState / mediaState ∈ {kind: 'pending'|'items'|'empty'|'error', pending?, items?, message?}（pending 占位文案 = 显式 pending 字段，v1.1 F4：不再按标题字符串硬匹配）
-//   items（图谱段）= [{name, type}]（形状同既有下拉项）；items（媒体段）= [{name, mediaType}]（降级命中不进 items——构造处已过滤，本函数带同构过滤兜底，v1.5）
+//   items（图谱段）= [{name, type, score?}]（形状同既有下拉项）；items（媒体段）= [{name, mediaType, score?}]（降级命中不进 items——构造处已过滤，本函数带同构过滤兜底，v1.5；媒体分支多一道 mediaScoreCutoff 相对及格线兜底）
 // 返回 [图谱段, 媒体段]：{title, kind, message?, items?}——两段恒同时存在（空段也占位，一眼分清来源，I-3）；命中全被过滤 ⇒ kind:'empty'「无结果」（I-6 v1.5）。
 function buildSearchSectionModel(kgState, mediaState) {
-  const section = (title, st) => {
+  const section = (title, key, st) => {
     if (st.kind === 'items') {
-      const items = (st.items || []).filter(it => !it || it.degraded !== true); // 降级命中不进下拉（v1.5 I-6）
+      let items = (st.items || []).filter(it => !it || it.degraded !== true); // 降级命中不进下拉（v1.5 I-6）
+      if (key === 'media') items = mediaScoreCutoff(items);                    // 相对及格线兜底（构造处已过滤一次）
       if (items.length > 0) {
         return { title, kind: 'items', items };
       }
@@ -926,7 +927,7 @@ function buildSearchSectionModel(kgState, mediaState) {
     }
     return { title, kind: 'empty', message: '无结果' }; // 空 = 占位行，不是失败（I-4）
   };
-  return [section('知识图谱', kgState), section('照片（媒体）', mediaState)];
+  return [section('知识图谱', 'kg', kgState), section('照片（媒体）', 'media', mediaState)];
 }
 // SENTINEL-End buildSearchSectionModel
 // SENTINEL-Begin mediaTypeLabel
@@ -936,13 +937,56 @@ function mediaTypeLabel(mediaType) {
   return labels[mediaType] || mediaType || '';
 }
 // SENTINEL-End mediaTypeLabel
+// SENTINEL-Begin finiteScore
+// 数值护栏纯函数（无 DOM）：null/undefined/''/布尔/非数值/NaN/Infinity ⇒ null（"没有分数"，与"分数为 0"区分）；
+// 其余 ⇒ 数值。及格线与徽标共用（避免 Number(null) === 0 的坑）。
+// 布尔单列一行：Number(true) === 1 / Number(false) === 0 会**穿透**，而"分数"语义上不接受布尔（R3-A P3-2）。
+function finiteScore(raw) {
+  if (raw === null || raw === undefined || raw === '' || typeof raw === 'boolean') return null;
+  const s = Number(raw);
+  return Number.isFinite(s) ? s : null;
+}
+// SENTINEL-End finiteScore
+// SENTINEL-Begin mediaScoreCutoff
+// 媒体段「相对及格线」纯函数（无 DOM；探针可断言；构造处与模型层双调用，第二遍是**幂等**兜底）。
+// 口径（用户 2026-10-15）：只显示与最佳匹配接近的命中，明显落后的尾巴不显示。
+//   - 有效 score 里取 max 为 top；保留 score >= top - GAP
+//   - 无有效 score 的条目 ⇒ 保留（fail-open），同时不参与 top 计算
+//   - 全无有效 score ⇒ 原样返回；top 自身必过线 ⇒ 非空输入不会变空
+//   - **调用方须先过滤降级命中**：本函数不做降级过滤（降级项若参与算 top 会把线抬高）；
+//     探针把本块当自包含单元求值，故顺序约束在此写明（R1-A P3-5）
+//   - **幂等**：存活集的 max 与 top 同值 ⇒ 第二遍谓词与第一遍完全一致，不会误删
+const MEDIA_SCORE_RELATIVE_GAP = 0.03;
+function mediaScoreCutoff(items) {
+  const list = items || [];
+  let top = null;
+  for (const it of list) {
+    const s = finiteScore(it && it.score);
+    if (s !== null && (top === null || s > top)) top = s;
+  }
+  if (top === null) return list.slice();
+  return list.filter(it => {
+    const s = finiteScore(it && it.score);
+    return s === null ? true : s >= top - MEDIA_SCORE_RELATIVE_GAP;
+  });
+}
+// SENTINEL-End mediaScoreCutoff
+// SENTINEL-Begin formatScore
+// 徽标文本：有效数值 ⇒ 两位小数；缺失/无效 ⇒ 空串（调用处据此不渲染 span，不留空占位）
+function formatScore(score) {
+  const s = finiteScore(score);
+  return s === null ? '' : s.toFixed(2);
+}
+// SENTINEL-End formatScore
 
 // SENTINEL-Begin buildSearchItemHtml
 // 单条下拉条目 HTML 装配（无 DOM 依赖，探针可断言）：KG 段与既有模板逐字同；媒体段用 mediaTypeLabel；
 // 降级命中在构造/模型层已被过滤、不进 items（v1.5 I-6）——本函数只装配正常条目（无降级条目的渲染分支）。
 function buildSearchItemHtml(sectionKey, item) {
   const typeText = sectionKey === 'media' ? mediaTypeLabel(item.mediaType) : (item.type || '');
-  return `<div class="search-dropdown-item" data-section="${sectionKey}" data-name="${escapeHtml(item.name)}"><span class="entity-name">${escapeHtml(item.name)}</span><span class="entity-type">${escapeHtml(typeText)}</span></div>`;
+  const scoreText = formatScore(item.score);
+  const scoreSpan = scoreText ? `<span class="entity-score">${scoreText}</span>` : '';
+  return `<div class="search-dropdown-item" data-section="${sectionKey}" data-name="${escapeHtml(item.name)}"><span class="entity-name">${escapeHtml(item.name)}</span><span class="entity-type">${escapeHtml(typeText)}</span>${scoreSpan}</div>`;
 }
 // SENTINEL-End buildSearchItemHtml
 
@@ -1061,11 +1105,11 @@ searchInput.addEventListener('keydown', async (e) => {
       if (mediaResult && mediaResult.status === 'ok') {
         // v1.5（I-6）：降级命中（图谱无节点 / 节点字段空 / 解析异常，三者同源）不进下拉——构造处过滤；
         // 纯函数层 buildSearchSectionModel 带同构过滤兜底
-        const results = (mediaResult.results || []).filter(it => it.degraded !== true);
+        const results = mediaScoreCutoff((mediaResult.results || []).filter(it => it.degraded !== true));
         if (results.length > 0) {
           paintSection('media', {
             kind: 'items',
-            items: results.map(it => ({ name: it.entity_name, mediaType: it.media_type || '' })),
+            items: results.map(it => ({ name: it.entity_name, mediaType: it.media_type || '', score: it.score })),
           });
         } else {
           // 过滤后为空（含命中全为降级）⇒ 空段口径「无结果」（v1.5）
@@ -1096,7 +1140,7 @@ searchInput.addEventListener('keydown', async (e) => {
         if (entities.length > 0) {
           // 搜索结果展示成功 = 图谱后端可用——撤掉状态角标（后续成功操作清除角标）
           clearGraphUnavailable();
-          paintSection('kg', { kind: 'items', items: entities.map(ent => ({ name: ent.name, type: ent.entityType || '' })) });
+          paintSection('kg', { kind: 'items', items: entities.map(ent => ({ name: ent.name, type: ent.entityType || '', score: ent.score })) });
         } else {
           paintSection('kg', { kind: 'empty' }); // 空 ≠ 失败：不动状态角标（I-4）
         }

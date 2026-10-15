@@ -127,6 +127,12 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.search-dropdown-item .entity-score {
+  font-size: 11px;
+  color: #999;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
 
 .search-dropdown-empty {
   padding: 12px;
