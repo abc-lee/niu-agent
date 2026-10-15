@@ -9,11 +9,10 @@ DMG/7z 不加 529 MB），安装与开关都由主 Agent 按手册执行（P12�
 **程序零下载**（方案 §4'.1，v1.2 口径）：本模块**不出现任何 URL / 下载哈希常量 / 下载函数**——
 获取产物是**手册的事**（主 Agent 按《系统管理手册》『可选组件安装』的兼容性要求自行获取）。
 对 `embedding_artifacts` 的引用仅限**布局事实读取**（`_layout_raw()` 取 mmproj 文件名，
-单源真相 D-5）与**配置覆盖读取**（`_model_path_override()` 读 `llama_cpp.mmproj_path`），
-**不得**复用其 `models_dir()` / `embedding.py` 的模型目录解析（I-11 禁令不变）。
+单源真相 D-5），**不得**复用其 `models_dir()` / `embedding.py` 的模型目录解析（I-11 禁令不变）。
 
-**模型文件可配（v1.7）**：`llama_cpp.mmproj_path` 非空 ⇒ 指向用户自备的任意量化/任意
-位置（官方仓库有 BF16/Q8_0 两档，社区还有 Q6/Q5/Q4 等）；不配 ⇒ 家目录布局缺省
+换 mmproj 文件（官方 BF16/Q8_0 两档、社区 Q6/Q5/Q4 等任意量化、任意位置）＝改配置里
+那一行 `llama_cpp.command` 的 `--mmproj` 指向；本模块只返家目录布局缺省
 （`~/.niu/models/<布局数据 mmproj.filename>`，D-11 语义不变）。
 """
 from __future__ import annotations
@@ -40,19 +39,15 @@ def mmproj_filename() -> str:
 
 
 def mmproj_path() -> Path:
-    """mmproj 产物路径（调用期求值，测试可 monkeypatch `Path.home`）。
-
-    `llama_cpp.mmproj_path` 非空 ⇒ 直接返回它（用户自备任意量化版本、任意位置，
-    不拼家目录布局）；为空 ⇒ 家目录布局缺省 `~/.niu/models/<mmproj_filename()>`。
+    """mmproj 产物路径——家目录布局缺省 `~/.niu/models/<mmproj_filename()>`
+    （调用期求值，测试可 monkeypatch `Path.home`）。换 mmproj 文件＝改配置里那一行
+    `llama_cpp.command` 的 `--mmproj` 指向；本模块只管布局派生路径。
     """
-    override = _ea._model_path_override("mmproj_path")
-    if override:
-        return Path(override)
     return media_models_dir() / mmproj_filename()
 
 
 def media_artifacts_ready() -> bool:
-    """mmproj 是否就位（跟随 `mmproj_path()`：用户自备路径时按用户路径判）。"""
+    """mmproj 是否就位（跟随 `mmproj_path()`）。"""
     return mmproj_path().is_file()
 
 

@@ -181,7 +181,7 @@ def _platform_declared() -> bool:
     if key not in plats:
         _warn_once(
             f"platform:{key}",
-            f"布局数据未声明平台 {key!r}：按其派生路径继续（自备构建请同时配置 llama_cpp.binary_path）",
+            f"布局数据未声明平台 {key!r}：按其派生路径继续（自备 GPU/AMD 构建请改配置 llama_cpp.command 首词）",
         )
         return False
     return True
@@ -194,15 +194,10 @@ def platform_dir() -> Path:
 
 
 def gguf_path() -> Path:
-    """GGUF 权重路径（调用期求值）。
-
-    `llama_cpp.gguf_path` 非空 ⇒ 直接返回它（用户自备任意量化版本的权重——官方仓库有
-    BF16/Q8_0 两档、社区还有 Q6/Q5/Q4 等——可放任意位置）；为空 ⇒ 布局派生
-    `<models>/<gguf 文件名>`（布局数据缺失时用产品默认名，D-4 零缺省漂移）。
+    """GGUF 权重路径——布局派生 `<models>/<gguf 文件名>`（布局数据缺失时用产品默认名，
+    D-4 零缺省漂移）。换模型文件（官方 BF16/Q8_0 两档、社区 Q6/Q5/Q4 等任意量化）＝
+    改配置里那一行 `llama_cpp.command` 的 `-m` 指向；本模块只管布局派生路径。
     """
-    override = _model_path_override("gguf_path")
-    if override:
-        return Path(override)
     return models_dir() / gguf_filename()
 
 
@@ -231,42 +226,11 @@ def llama_needs_exec_bit() -> bool:
     return sys.platform != "win32"
 
 
-def _binary_path_override() -> str | None:
-    """用户自备二进制路径（user-config 的 llama_cpp.binary_path）；函数级 import 是测试注入点。"""
-    from niu_api.internal.llama_config import get as _llama_cpp_get
-    return _llama_cpp_get().binary_path
-
-
-def _model_path_override(key: str) -> str | None:
-    """用户自备模型文件路径（user-config 的 `llama_cpp.<key>`，key ∈ {gguf_path, mmproj_path}）。
-
-    与 `_binary_path_override` 同配方：函数级 import 唯一读取点 `llama_config._load_section()`
-    （配置现读与测试注入点都在那里，本模块不重复实现文件读取）；坏输入（非字符串/非 null）
-    ⇒ 按 null 处理 + WARNING、绝不抛（D-6）。空串视同未配置。
-    """
-    from niu_api.internal.llama_config import _load_section
-
-    sec, _fatal = _load_section()
-    if sec is None:
-        return None
-    v = sec.get(key)
-    if v is None:
-        return None
-    if not isinstance(v, str):
-        logger.warning("[model-files] llama_cpp.%s=%r 类型错（需字符串或 null）→ 按 null 处理", key, v)
-        return None
-    return v or None
-
-
 def llama_server_path() -> Path:
-    """llama-server 二进制路径（调用期求值）。
-
-    `llama_cpp.binary_path` 非空 ⇒ 直接返回它（用户自备 GPU/AMD 变体，程序不再找
-    布局路径）；否则布局派生路径 `<models>/<dirname>/<platform>/<二进制名>`。
+    """llama-server 二进制路径——布局派生 `<models>/<dirname>/<platform>/<二进制名>`
+    （调用期求值）。换 GPU/AMD 构建＝改配置里那一行 `llama_cpp.command` 的首词；
+    本模块只管布局派生路径。
     """
-    override = _binary_path_override()
-    if override:
-        return Path(override)
     return platform_dir() / llama_server_name()
 
 
@@ -277,15 +241,14 @@ def missing_artifacts() -> list[Path]:
     """当前平台缺失的必需产物；顺序固定：权重在前、二进制在后。
 
     只检 GGUF 权重 + llama-server 二进制（mmproj 由 media_artifacts 单独管，不折入）；
-    `llama_cpp.binary_path` 非空时跳过布局二进制检查（自备二进制的存在性由启动期
-    可执行性校验负责）。
+    二进制**总是**来自布局（换 GPU/AMD 构建＝改配置 `llama_cpp.command` 首词），
+    所以**总是**检查它。
     """
     missing: list[Path] = []
     if not gguf_path().is_file():
         missing.append(gguf_path())
-    if not _binary_path_override():
-        if not llama_server_path().is_file():
-            missing.append(llama_server_path())
+    if not llama_server_path().is_file():
+        missing.append(llama_server_path())
     return missing
 
 

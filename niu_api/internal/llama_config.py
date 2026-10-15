@@ -1,32 +1,29 @@
-"""`llama_cpp` 配置段（`~/.niu/config/user-config.json`）的**唯一读取点**（方案 §5.1，D-6 配方）。
+"""`llama_cpp` 配置段（`~/.niu/config/user-config.json`）**v2：一条完整命令行**（方案 §5'，唯一读取点）。
 
-port / host / context_size / batch / ubatch / image_max_tokens（可选）/
-startup_timeout / http_timeout / extra_argv / variant / binary_path 一律从这里
-现读——缺省＝现状值（零缺省漂移，D-4：不写任何键时与写死时代逐字节一致）。
+v2（2026-10-15 定稿，取代 §5）：启动参数写进 **一条完整命令行**（`command` 键），
+程序原样执行它，并**只从这一行里取三件**（§5'.2）：① `--port` / `--host`（探活与
+编码都要连它）② 第一个词（可执行体）③ 多模态标识（`--mmproj` / `--no-mmproj`，三态）。
+其余一律不解释——参数合法性、模型能否加载、mmproj 是否匹配，llama.cpp 自己会说。
 
-读取配方照抄 `media_ingest_config.py`：CONFIG_PATH **函数级 import**（保持测试
-`monkeypatch("niu_api.config.CONFIG_PATH")` 注入点生效）、**每次现读**（护栏类现读
-生效；argv 类需重启 llama-server 生效——R2 P3-8）、文件缺失 / 坏 JSON / 类型错 /
-越界 ⇒ **回缺省 + WARNING、绝不抛**（配置写坏不得让程序起不来，D-6）。文件完好但
-没有 `llama_cpp` 段是存量装机的**正常形态**（用户没配）⇒ 静默回缺省、不告警。
+旧结构化键（`port` / `host` / `context_size` / `batch` / `ubatch` / `image_max_tokens` /
+`extra_argv` / `variant` / `binary_path` / `gguf_path` / `mmproj_path`）**一律不再读**：
+出现时只发一条 WARNING「已废弃，语义并入 `command`」（每进程一次），不生效、不写回。
+v2 明确删除的复杂度（防回退）：argv 拼装、extra_argv 与冲突守卫、min(batch,ubatch) 钳制、
+image_max_tokens 校验/派生、variant/binary_path/gguf_path/mmproj_path 键。
 
-两条硬不变式（R2 P2-2 + R3 P2-5 边界修正，**对派生值同样成立**）：
-① 生效 `min(batch,ubatch)` **硬钳制 ≤ 10000**——否则派生 `image_max_tokens =
-   min − 64` 会同时撕开 `N ≤ 9999` 与 `0.09N + 300 < 1200`（`media_worker` 的
-   `INFLIGHT_TIMEOUT`）两条约束；超出 ⇒ 该值钳到 10000 + WARNING 说明原因。
-② `image_max_tokens()` = `min(batch,ubatch) − 模板开销(0) − 64`（缺省 ⇒ 8128，
-   严格 < 8192）；显式写了 `N` ⇒ 必须同时满足 `N ≤ 9999` 且 `N < min(batch,ubatch)`，
-   违反 ⇒ 回派生值 + WARNING（R1 P2-2：独立键不做校验必被服务端 500）。
-
-派生量分侧导出（R5 N1：两侧系数不同，**不得合并**成一个函数——lightrag 侧缺省
-2000 恰是被实测判死前值，7000 恰是被实测判死的值，合并会把一侧放宽 3.5 倍）：
-- `embed_token_limit()`：两侧共用（`lightrag_adapter.EMBED_TOKEN_LIMIT` 的同源值）。
-- `char_prefilter_server()`：服务器侧（`llama_server._CHAR_PREFILTER`）。
-- `char_prefilter_adapter()` / `split_char_budget_adapter()`：lightrag 侧守卫。
+读取契约（§5'.5）：每次调用**现读**；文件缺失 / 坏 JSON / 段类型错 / 键类型错 ⇒
+回缺省 + WARNING、**绝不抛**（配置写坏不得让程序起不来）。
+缺段补写（存量装机）：`llama_cpp` 段**不存在** ⇒ 原子写入缺省段（四个键，`command: null`）
++ 日志一行；**段已存在 ⇒ 文件一个字都不动**（单个缺键也不补）。程序永不写包内。
+布局路径由 `embedding_artifacts.llama_server_path()` / `media_artifacts.mmproj_path()`
+提供，本模块**惰性 import**（函数内 import，不放模块顶层）。
 """
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,63 +33,51 @@ from loguru import logger
 DEFAULT_PORT = 19878
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_CONTEXT_SIZE = 8192
-DEFAULT_BATCH = 8192
-DEFAULT_UBATCH = 8192
 DEFAULT_STARTUP_TIMEOUT = 60.0   # 冷启动读取 310MB 权重的预算
 DEFAULT_HTTP_TIMEOUT = 120.0
-DEFAULT_VARIANT = "cpu"          # 仅文案/提示用（D-3：真正判据是 binary_path 或布局）
+# 媒体编码独立超时：缺省维持现状量级（8128×0.09+300，8128 是内置缺省行的
+# --image-max-tokens 值）；v2 不再随任何结构化键现算，只保留**安全缺省 + 可覆盖键**。
+DEFAULT_MEDIA_HTTP_TIMEOUT = 1031.52
 
-# 硬钳制上限：生效 min(batch,ubatch) ≤ 10000 ⇒ 派生 N ≤ 9936 ≤ 9999，且
-# 0.09×9936+300 = 1194.24 < 1200（INFLIGHT_TIMEOUT，严格小于，非相等）。
-MAX_EFF_MIN = 10000
-# 显式 image_max_tokens 的独立上界（派生路径由 MAX_EFF_MIN 保证 ≤ 9936）。
-MAX_EXPLICIT_IMAGE_TOKENS = 9999
-# 模板 token 开销：一次性真机实测（2026-10-13）——仓库 GGUF 的 chat_template 为纯透传，
-# /tokenize 开/关模板对照 200 字输入均为 100 token ⇒ 开销 0。
-# ⚠️ 本值绑定**当前模型**的 chat_template：换模型必须对新模板重测再更新（照搬旧值
-# 会让图片 token 预算静默错位）。
-_TEMPLATE_TOKENS = 0
-# 边界安全余量：图片 token(≤N) + 模板(0) 必须**严格** < min(batch,ubatch)，否则服务端 500。
-_IMAGE_MARGIN = 64
+# 旧结构化键：v2 一律不读，语义全部并入 `command`（出现 ⇒ 一条 WARNING，每进程一次）。
+_DEPRECATED_KEYS = frozenset({
+    "port", "host", "context_size", "batch", "ubatch",
+    "image_max_tokens", "extra_argv", "variant",
+    "binary_path", "gguf_path", "mmproj_path",
+})
 
-# extra_argv 冲突守卫（R1 P3-3）：与程序固定语义开关冲突的 flag——出现即剔除
-# （含其值）+ WARNING。不剔除的恶果：服务实际绑定的端口 ≠ Python 探活/Rust 清理
-# 所用端口 ⇒ "等满超时 Fatal" 与 "杀不到真实实例" 两类事故。
-_CONFLICT_FLAGS = frozenset({
-    "--port", "--host", "-m", "--mmproj", "--embedding", "-c", "-b", "-ub",
-})
-# 其中需要跟一个**值**的 flag（`--embedding` 是布尔开关，无值可吞）。
-_VALUE_FLAGS = frozenset({
-    "--port", "--host", "-m", "--mmproj", "-c", "-b", "-ub",
-})
+_warned_reasons: set[str] = set()
+
+
+def _warn_once(reason: str, msg: str, *args: object) -> None:
+    """进程内只警告一次（同 `embedding_artifacts._warn_once` 纪律）：同一 reason 至多告警一次。"""
+    if reason not in _warned_reasons:
+        _warned_reasons.add(reason)
+        logger.warning(msg, *args)
 
 
 @dataclass
 class LlamaCppConfig:
-    """一次现读后解析出的 `llama_cpp` 段（全部键都已校验/钳制）。
+    """一次现读后解析出的 `llama_cpp` 段（全部键都已校验 / 回缺省）。
 
-    `batch`/`ubatch` 是**钳制后**的生效值（≤ MAX_EFF_MIN）；`image_max_tokens`
-    是**已裁决**的最终值（显式合法用显式，否则派生），恒满足两条不变式。
+    `command` 是用户写的**原行**（str 或 None；None ⇒ 用内置缺省行，生效行见
+    `command_line()`）；三个超时是校验后的生效值（类型错 / 非正 ⇒ 缺省）。
     """
 
-    port: int
-    host: str
-    context_size: int
-    batch: int
-    ubatch: int
-    image_max_tokens: int
+    command: str | None
     startup_timeout: float
     http_timeout: float
-    extra_argv: tuple[str, ...]
-    variant: str
-    binary_path: str | None
+    media_http_timeout: float
+
+
+# ── 配置读取（配方照抄 media_ingest_config.py：CONFIG_PATH 函数级 import、每次现读、绝不抛）──
 
 
 def _load_section() -> tuple[dict | None, bool]:
     """现读 user-config.json 的 `llama_cpp` 段，返回 `(段, 是否致命)`。
 
     文件缺失 / 坏 JSON / 顶级类型错 / 段类型错 ⇒ `(None, True)`（回缺省须 WARNING）；
-    文件完好但**没有该段** ⇒ `(None, False)`（存量装机正常形态＝用户没配，静默）。
+    文件完好但**没有该段** ⇒ `(None, False)`（存量装机正常形态，调用方做缺段补写）。
     绝不抛。
     """
     from niu_api.config import CONFIG_PATH  # 函数级 import：测试 monkeypatch 注入点
@@ -104,262 +89,306 @@ def _load_section() -> tuple[dict | None, bool]:
     if not isinstance(data, dict):
         return None, True
     if "llama_cpp" not in data:
-        return None, False  # 无段＝正常缺省形态，静默
+        return None, False  # 无段＝存量装机正常形态（调用方补写）
     sec = data["llama_cpp"]
     return (sec, False) if isinstance(sec, dict) else (None, True)
 
 
-def _plain_int(value: object) -> int | None:
-    """严格 int（拒绝 bool/float/str）；否则 None。"""
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return None
+def _atomic_write_json(path: Path, data: dict) -> bool:
+    """原子 JSON 写（tempfile + os.replace——reader 永远看到完整文件）。
+
+    失败 → log 并返回 False（不抛——缺段补写不得毒化调用方，同 model_probe 写纪律）。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return True
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        logger.warning("[llama_config] 原子写 user-config.json 失败", exc_info=True)
+        return False
 
 
-def _validate_port(sec: dict) -> int:
-    v = _plain_int(sec.get("port"))
-    if v is None:
-        if "port" in sec:
-            logger.warning("[llama-config] port={} 类型错/越界（需 1–65535 的整数）→ 回缺省 {}",
-                           sec.get("port"), DEFAULT_PORT)
-        return DEFAULT_PORT
-    if not 1 <= v <= 65535:
-        logger.warning("[llama-config] port={} 越界（需 1–65535）→ 回缺省 {}", v, DEFAULT_PORT)
-        return DEFAULT_PORT
-    return v
+def _materialize_default_section() -> None:
+    """缺段补写（存量装机）：`llama_cpp` 段**不存在** ⇒ 原子写入缺省段（四个键，
+    `command` 为展开后的生效命令行）+ 日志一行；**段已存在 ⇒ 文件一个字都不动**（单个缺键也不补）。
 
+    纪律照 model_probe._write_vision_capabilities：文件缺失（首启 seed 的事）/ 坏 JSON /
+    顶级非对象 ⇒ 跳过写入（不写坏文件）；只改 `llama_cpp` 单键，其余段 / 字段原样保留；
+    原子写（tempfile + os.replace）。永不抛。
+    """
+    from niu_api.config import CONFIG_PATH
 
-def _validate_host(sec: dict) -> str:
-    v = sec.get("host")
-    if not isinstance(v, str) or not v:
-        if "host" in sec:
-            logger.warning("[llama-config] host={!r} 类型错/为空 → 回缺省 {}", v, DEFAULT_HOST)
-        return DEFAULT_HOST
-    return v
-
-
-def _validate_context_size(sec: dict) -> int:
-    v = _plain_int(sec.get("context_size"))
-    if v is None:
-        if "context_size" in sec:
-            logger.warning("[llama-config] context_size={!r} 类型错（需正整数）→ 回缺省 {}",
-                           sec.get("context_size"), DEFAULT_CONTEXT_SIZE)
-        return DEFAULT_CONTEXT_SIZE
-    if v <= 0:
-        logger.warning("[llama-config] context_size={} 越界（需正整数）→ 回缺省 {}",
-                       v, DEFAULT_CONTEXT_SIZE)
-        return DEFAULT_CONTEXT_SIZE
-    return v
-
-
-def _validate_batch_or_ubatch(sec: dict, key: str, default: int) -> int:
-    """batch/ubatch：≤0 或类型错 ⇒ 回缺省 + WARNING；> MAX_EFF_MIN ⇒ **钳制**（非回缺省）
-    到 MAX_EFF_MIN + WARNING 说明原因（硬不变式①对派生值也成立）。"""
-    v = _plain_int(sec.get(key))
-    if v is None:
-        if key in sec:
-            logger.warning("[llama-config] {}={!r} 类型错（需正整数）→ 回缺省 {}",
-                           key, sec.get(key), default)
-        return default
-    if v <= 0:
-        logger.warning("[llama-config] {}={} 越界（需正整数）→ 回缺省 {}",
-                       key, v, default)
-        return default
-    if v > MAX_EFF_MIN:
-        logger.warning(
-            "[llama-config] {}={} 超出硬钳制上限 {} → 生效 {}：生效 min(batch,ubatch) 必须 ≤ {}，"
-            "否则派生 image_max_tokens(=min−64) 会同时违反 N≤9999 与 0.09N+300<1200"
-            "（media_worker 在途超时）两条不变式",
-            key, v, MAX_EFF_MIN, MAX_EFF_MIN, MAX_EFF_MIN)
-        return MAX_EFF_MIN
-    return v
-
-
-def _validate_image_max_tokens(sec: dict, eff_min: int) -> int:
-    """显式 `image_max_tokens` 是**可选覆盖**：不写 ⇒ 派生 `eff_min − 模板开销 − 64`；
-    显式 N 必须同时满足 N ≤ 9999 且 N < eff_min，否则回派生值 + WARNING。"""
-    derived = eff_min - _TEMPLATE_TOKENS - _IMAGE_MARGIN
-    if "image_max_tokens" not in sec:
-        return derived
-    v = sec.get("image_max_tokens")
-    if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
-        logger.warning("[llama-config] image_max_tokens={!r} 类型错（需正整数）→ 回派生值 {} "
-                       "(min(batch,ubatch)−{}−{})", v, derived, _TEMPLATE_TOKENS, _IMAGE_MARGIN)
-        return derived
-    if v > MAX_EXPLICIT_IMAGE_TOKENS or v >= eff_min:
-        logger.warning(
-            "[llama-config] image_max_tokens={} 违反不变式（需 ≤{} 且 < min(batch,ubatch)={})"
-            " → 回派生值 {}：违反前者会撕开 media_worker 在途超时约束，"
-            "违反后者服务端直接 500",
-            v, MAX_EXPLICIT_IMAGE_TOKENS, eff_min, derived)
-        return derived
-    return v
-
-
-def _validate_timeouts(sec: dict, key: str, default: float) -> float:
-    v = sec.get(key)
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
-        if key in sec:
-            logger.warning("[llama-config] {}={!r} 类型错/非正 → 回缺省 {}",
-                           key, v, default)
-        return float(default)
-    return float(v)
-
-
-def _validate_extra_argv(sec: dict) -> tuple[str, ...]:
-    v = sec.get("extra_argv", [])
-    if not isinstance(v, (list, tuple)):
-        logger.warning("[llama-config] extra_argv={!r} 类型错（需字符串列表）→ 回缺省 []", v)
-        return ()
-    kept = tuple(t for t in v if isinstance(t, str))
-    dropped = [t for t in v if not isinstance(t, str)]
-    if dropped:
-        logger.warning("[llama-config] extra_argv 中 {} 项非字符串已丢弃：{}", len(dropped), dropped)
-    return kept
-
-
-def _validate_variant(sec: dict) -> str:
-    v = sec.get("variant")
-    if not isinstance(v, str):
-        if "variant" in sec:
-            logger.warning("[llama-config] variant={!r} 类型错（需字符串）→ 回缺省 {}",
-                           v, DEFAULT_VARIANT)
-        return DEFAULT_VARIANT
-    return v
-
-
-def _validate_binary_path(sec: dict) -> str | None:
-    if "binary_path" not in sec:
-        return None
-    v = sec.get("binary_path")
-    if v is None:
-        return None
-    if not isinstance(v, str):
-        logger.warning("[llama-config] binary_path={!r} 类型错（需字符串或 null）→ 按 null 处理", v)
-        return None
-    return v
+    path = Path(CONFIG_PATH)
+    if not path.exists():
+        return  # 文件不存在＝首启未 seed（memory/user-config.json 由启动器负责），非本模块职责
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 - 损坏不写坏文件
+        logger.warning("[llama_config] user-config.json 读取失败，跳过 llama_cpp 缺段补写: {}", e)
+        return
+    if not isinstance(data, dict) or "llama_cpp" in data:
+        return
+    data["llama_cpp"] = {
+        "command": default_command(),
+        "startup_timeout": DEFAULT_STARTUP_TIMEOUT,
+        "http_timeout": DEFAULT_HTTP_TIMEOUT,
+        "media_http_timeout": DEFAULT_MEDIA_HTTP_TIMEOUT,
+    }
+    if _atomic_write_json(path, data):
+        logger.info("[llama_config] 已写入缺省 `llama_cpp` 段（含展开后的生效命令行），便于查看/修改")
 
 
 def get() -> LlamaCppConfig:
-    """现读 `llama_cpp` 段并解析出全键校验后的配置（每次调用现读，绝不抛）。
+    """现读 `llama_cpp` 段并解析出全键校验后的配置（每次调用现读，绝不抛，§5'.5）。
 
-    文件缺失 / 坏 JSON / 段类型错 ⇒ 全键回缺省 + WARNING；无段（正常形态）⇒ 静默回缺省。
-    缺省值与写死时代逐字节一致，故最坏情形＝行为不变。
+    缺段补写在此触发：文件完好但无 `llama_cpp` 段 ⇒ 先原子写入缺省段，再回缺省。
+    旧结构化键**不生效**：出现（port/host/context_size/batch/ubatch/image_max_tokens/
+    extra_argv/variant/binary_path/gguf_path/mmproj_path）⇒ 一条 WARNING「已废弃，语义
+    并入 `command`」（每进程一次），不生效、不写回。
     """
     sec, fatal = _load_section()
     if fatal:
-        logger.warning("[llama-config] user-config.json 缺失/坏 JSON/llama_cpp 段类型错"
-                       " → 全部键按缺省读取（零漂移，不影响启动）")
+        _warn_once("file_bad", "[llama_config] user-config.json 缺失/损坏或 llama_cpp 段类型错，回缺省")
+        return LlamaCppConfig(None, DEFAULT_STARTUP_TIMEOUT, DEFAULT_HTTP_TIMEOUT, DEFAULT_MEDIA_HTTP_TIMEOUT)
     if sec is None:
-        sec = {}
-
-    batch = _validate_batch_or_ubatch(sec, "batch", DEFAULT_BATCH)
-    ubatch = _validate_batch_or_ubatch(sec, "ubatch", DEFAULT_UBATCH)
-    eff_min = min(batch, ubatch)
+        _materialize_default_section()
+        return LlamaCppConfig(None, DEFAULT_STARTUP_TIMEOUT, DEFAULT_HTTP_TIMEOUT, DEFAULT_MEDIA_HTTP_TIMEOUT)
+    found = sorted(k for k in sec if k in _DEPRECATED_KEYS)
+    if found:
+        _warn_once(
+            "deprecated_keys",
+            "[llama_config] llama_cpp 含已废弃结构化键 {}：语义已并入 `command`，本次不生效、不写回",
+            found,
+        )
     return LlamaCppConfig(
-        port=_validate_port(sec),
-        host=_validate_host(sec),
-        context_size=_validate_context_size(sec),
-        batch=batch,
-        ubatch=ubatch,
-        image_max_tokens=_validate_image_max_tokens(sec, eff_min),
-        startup_timeout=_validate_timeouts(sec, "startup_timeout", DEFAULT_STARTUP_TIMEOUT),
-        http_timeout=_validate_timeouts(sec, "http_timeout", DEFAULT_HTTP_TIMEOUT),
-        extra_argv=_validate_extra_argv(sec),
-        variant=_validate_variant(sec),
-        binary_path=_validate_binary_path(sec),
+        command=_validate_command(sec),
+        startup_timeout=_validate_timeout(sec, "startup_timeout", DEFAULT_STARTUP_TIMEOUT),
+        http_timeout=_validate_timeout(sec, "http_timeout", DEFAULT_HTTP_TIMEOUT),
+        media_http_timeout=_validate_timeout(sec, "media_http_timeout", DEFAULT_MEDIA_HTTP_TIMEOUT),
     )
 
 
-# ── 派生量（同源化：凡与 -b/-ub 耦合的护栏一律从这里现算，R1 P1-1）───────────
+def _validate_command(sec: dict) -> str | None:
+    """`command` 用户原行：str 且非空白 ⇒ 原样采用；null/缺失 ⇒ None（⇒ 内置缺省行）；
+    类型错 ⇒ WARNING + None（回缺省）。"""
+    v = sec.get("command")
+    if v is None:
+        return None
+    if isinstance(v, str) and v.strip():
+        return v
+    _warn_once("command_type", "[llama_config] llama_cpp.command 类型错（应为字符串或 null），用内置缺省行")
+    return None
+
+
+def _validate_timeout(sec: dict, key: str, default: float) -> float:
+    """超时（startup/http/media_http）：合法数值且 > 0 ⇒ 采用（int 转 float）；
+    null/缺失 ⇒ 缺省；类型错 / 非正 ⇒ WARNING + 缺省。绝不抛。"""
+    v = sec.get(key)
+    if v is None:
+        return default
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+        return float(v)
+    _warn_once(f"timeout_{key}", "[llama_config] llama_cpp.{} 类型错（应为数值 > 0），用缺省 {}", key, default)
+    return default
+
+
+# ── 生效行与"只取三件"（§5'.2）──────────────────────────────────────────────
+
+
+def default_command() -> str:
+    """内置缺省行（§5'.1：不写 `command` 的存量装机行为与今天逐字一致）。
+
+    `<布局二进制> -m <布局 GGUF> --embedding --port 19878 --host 127.0.0.1
+    -c 8192 -b 8192 -ub 8192` ＋（`media_ingest.enabled` 开）`--mmproj <布局 mmproj>
+    --image-max-tokens 8128` /（关）`--no-mmproj`。
+    布局路径**惰性 import**（函数内）：`embedding_artifacts.llama_server_path()` /
+    `embedding_artifacts.gguf_path()` / `media_artifacts.mmproj_path()`；多模态支路跟随
+    `media_ingest.enabled` 功能开关（它不是 llama.cpp 参数，只是选缺省行两支的开关）。
+    """
+    from niu_api.internal.embedding_artifacts import gguf_path, llama_server_path
+    from niu_api.internal.media_artifacts import mmproj_path
+    from niu_api.internal.media_ingest_config import media_ingest_enabled
+
+    parts = [
+        str(llama_server_path()),
+        "-m", str(gguf_path()),
+        "--embedding",
+        "--port", str(DEFAULT_PORT),
+        "--host", DEFAULT_HOST,
+        "-c", str(DEFAULT_CONTEXT_SIZE),
+        "-b", "8192",
+        "-ub", "8192",
+    ]
+    if media_ingest_enabled():
+        parts += ["--mmproj", str(mmproj_path()), "--image-max-tokens", "8128"]
+    else:
+        parts.append("--no-mmproj")
+    return " ".join(parts)
+
+
+def command_line() -> str:
+    """生效行：用户 `command` 非空 ⇒ 原样返回（100% 归用户，程序一个字都不改）；
+    否则 `default_command()`。"""
+    cfg = get()
+    if cfg.command:
+        return cfg.command
+    return default_command()
+
+
+def argv() -> list[str]:
+    """生效行按 shell 规则分词（`shlex.split`；解析失败 ⇒ 按空白分词 + WARNING，**不改行**）。"""
+    line = command_line()
+    try:
+        return shlex.split(line)
+    except ValueError:
+        _warn_once("shlex", f"[llama_config] command 行引号不配平等，shlex 解析失败，退空白分词（行未改）: {line}")
+        return line.split()
+
+
+def _scan_value(tokens: list[str], names: tuple[str, ...]) -> str | None:
+    """扫 argv 里的取值型 flag：`--port 19878` 与 `--port=19878` 等号形态都支持；
+    行尾孤 flag（无值）与未出现都视为未找到 ⇒ None。"""
+    for i, tok in enumerate(tokens):
+        for name in names:
+            if tok == name:
+                if i + 1 < len(tokens):
+                    return tokens[i + 1]
+                return None  # flag 悬在行尾没有值——按未找到处理
+            prefix = name + "="
+            if tok.startswith(prefix):
+                return tok[len(prefix):]
+    return None
+
+
+def port() -> int:
+    """生效行里扫 `--port`（含 `--port=19878` 等号形态）；解析不到 / 非正整数 ⇒
+    `19878` + 一条 WARNING（每进程只警告一次）。"""
+    raw = _scan_value(argv(), ("--port",))
+    if raw is None:
+        _warn_once("port", "[llama_config] 行内未解析到 --port，回缺省 19878（要自定义端口请在行里写 --port）")
+        return DEFAULT_PORT
+    try:
+        v = int(raw)
+    except ValueError:
+        _warn_once("port", f"[llama_config] --port 值 {raw!r} 非整数，回缺省 19878")
+        return DEFAULT_PORT
+    if v <= 0:
+        _warn_once("port", f"[llama_config] --port 值 {v} 非正，回缺省 19878")
+        return DEFAULT_PORT
+    return v
+
+
+def host() -> str:
+    """生效行里扫 `--host`（含 `--host=…` 等号形态）；解析不到 / 空白 ⇒
+    `127.0.0.1` + 一条 WARNING（每进程只警告一次）。"""
+    raw = _scan_value(argv(), ("--host",))
+    if raw is None or not raw.strip():
+        _warn_once("host", "[llama_config] 行内未解析到 --host，回缺省 127.0.0.1（要自定义请在行里写 --host）")
+        return DEFAULT_HOST
+    return raw.strip()
+
+
+def context_size() -> int:
+    """生效行里扫 `-c` / `--ctx-size`（含等号形态）；解析不到 / 非法（非整数 / 非正）⇒
+    `8192`（零漂移）+ 一条 WARNING（每进程只警告一次）。"""
+    raw = _scan_value(argv(), ("-c", "--ctx-size"))
+    if raw is None:
+        _warn_once("ctx", "[llama_config] 行内未解析到 -c/--ctx-size，回缺省 8192")
+        return DEFAULT_CONTEXT_SIZE
+    try:
+        v = int(raw)
+    except ValueError:
+        _warn_once("ctx", f"[llama_config] -c 值 {raw!r} 非整数，回缺省 8192")
+        return DEFAULT_CONTEXT_SIZE
+    if v <= 0:
+        _warn_once("ctx", f"[llama_config] -c 值 {v} 非正，回缺省 8192")
+        return DEFAULT_CONTEXT_SIZE
+    return v
 
 
 def embed_token_limit() -> int:
-    """llama-server 单条输入 token 上限 = 生效 min(batch, ubatch)。
+    """llama-server 单条输入 token 上限 = 生效行里的 `-c` 上下文大小。
 
-    **两侧共用**的唯一读数（服务器侧超限护栏与 lightrag 侧 EMBED_TOKEN_LIMIT 同源）。
+    v2：旧 `min(batch,ubatch)` 语义随结构化键一并消失，输入改为行里的 `-c`
+    （§5'.3：解析不到 ⇒ 回缺省 8192，零漂移）。两侧共用（`lightrag_adapter.EMBED_TOKEN_LIMIT` 同源值）。
     """
-    c = get()
-    return min(c.batch, c.ubatch)
+    return context_size()
 
 
 def char_prefilter_server() -> int:
-    """服务器侧字符预筛阈值 = int(生效 min(batch,ubatch) × 7000 / 8192)。
+    """服务器侧字符预筛阈值 = int(embed_token_limit() × 7000 / 8192)。
 
-    缺省（8192）⇒ 恰为 7000（与写死时代 `_CHAR_PREFILTER` 一致，防漂移）。
-    ⚠️ 不得与 `char_prefilter_adapter()` 合并（R5 N1：7000×4.000=28000 已被实测
-    判死，只能用在服务端 500 报文的解析路径）。
+    两侧系数各自独立（R5 N1：**不得合并**成一个函数——lightrag 侧缺省 2000 恰是被实测
+    判死前值，7000 恰是被实测判死的值，合并会把一侧放宽 3.5 倍）。
+    供 `llama_server._CHAR_PREFILTER`。
     """
-    c = get()
-    return int(min(c.batch, c.ubatch) * 7000 / 8192)
+    return int(embed_token_limit() * 7000 / 8192)
 
 
 def char_prefilter_adapter() -> int:
-    """lightrag 侧字符预筛阈值 = int(生效 min(batch,ubatch) × 2000 / 8192)。
-
-    缺省（8192）⇒ 恰为 2000（2000×4.000=8000 < 8192 的硬预筛）。
-    ⚠️ 不得与 `char_prefilter_server()` 合并（R5 N1：两者系数 2000 vs 7000 不同，
-    合并＝把 lightrag 侧守卫默认放宽 3.5 倍，而 7000 正是被实测判死的值）。
-    """
-    c = get()
-    return int(min(c.batch, c.ubatch) * 2000 / 8192)
+    """lightrag 侧字符预筛阈值 = int(embed_token_limit() × 2000 / 8192)。独立于服务器侧系数。"""
+    return int(embed_token_limit() * 2000 / 8192)
 
 
 def split_char_budget_adapter() -> int:
-    """lightrag 侧分段子块字符预算 = int(生效 min(batch,ubatch) × 1500 / 8192)。
+    """lightrag 侧分段子块字符预算 = int(embed_token_limit() × 1500 / 8192)。独立于两侧系数。"""
+    return int(embed_token_limit() * 1500 / 8192)
 
-    缺省（8192）⇒ 恰为 1500（1500×4.000=6000 < 8192，切分子块无需再次计量）。
+
+def executable() -> str:
+    """生效行的第一个词（可执行体）；行空 ⇒ 回缺省行的第一个词。"""
+    tokens = argv()
+    if tokens:
+        return tokens[0]
+    return default_command().split()[0]
+
+
+def model_path() -> str | None:
+    """生效行里 `-m` / `--model` 的值（模型权重路径，顺带存在性检查由启动方做）；行里没有 ⇒ `None`。"""
+    return _scan_value(argv(), ("-m", "--model"))
+
+
+def mmproj_state() -> bool | None:
+    """多模态标识**三态**判定（仍从生效行里判，§5'.2）：
+
+    - 行里有 `--mmproj` ⇒ `True`（媒体链可用前提之一）；
+    - 行里有 `--no-mmproj` ⇒ `False`（明确关闭，防御服务端静默加载同目录 mmproj）；
+    - **两者都没有 ⇒ `None`（"未声明"——绝不静默当 True**，`media_ready()` 按未声明处理，
+      状态端点 reason 如实写明；自写行时二者必须选一个）。
+    - 两个都出现 ⇒ 行里**后出现**者胜（llama.cpp 的 flag 覆盖语义）。
     """
-    c = get()
-    return int(min(c.batch, c.ubatch) * 1500 / 8192)
+    state: bool | None = None
+    for tok in argv():
+        if tok == "--mmproj" or tok.startswith("--mmproj="):
+            state = True
+        elif tok == "--no-mmproj":
+            state = False
+    return state
 
 
-def image_max_tokens() -> int:
-    """图片 token 预算 = 显式合法覆盖，否则派生 min(batch,ubatch) − 模板开销 − 64。
+# ── 超时三键（程序行为，不是 llama.cpp 参数）────────────────────────────────
 
-    缺省 ⇒ 8128（严格 < 8192）。两条不变式（N ≤ 9999 且 N < min(batch,ubatch)）
-    对派生与显式两种来源都成立。
-    """
-    return get().image_max_tokens
+
+def startup_timeout() -> float:
+    """等 llama-server 就绪的预算（程序行为）：配置值，缺省 60.0。"""
+    return get().startup_timeout
+
+
+def http_timeout() -> float:
+    """探活 / 编码 / 检索的 HTTP 客户端超时（程序行为）：配置值，缺省 120.0。"""
+    return get().http_timeout
 
 
 def media_http_timeout() -> float:
-    """媒体编码独立超时 = image_max_tokens() × 0.09 + 300.0。
-
-    按 0.09 s/token 最坏吞吐定量；+300 s 余量覆盖串行排队与数十 MB 请求体传输。
-    缺省 ⇒ 8128×0.09+300 = 1031.52，必须严格 < media_worker.INFLIGHT_TIMEOUT(1200)
-    ——由生效 min ≤ 10000 的硬钳制保证（0.09×9936+300=1194.24 < 1200）。
-    """
-    return float(image_max_tokens()) * 0.09 + 300.0
-
-
-def llama_argv_overrides() -> list[str]:
-    """`extra_argv` 的冲突守卫后取值（供 T3 的 `_build_argv()` 追加到 argv 尾部）。
-
-    用户可写 ["--ngl","99"]、["-dev","cuda"] 等任意自定参数；但与程序固定语义
-    冲突的 flag（`_CONFLICT_FLAGS`）一律**剔除该 flag 及其值**（`--port=123` 的
-    等号形态一并剔除）+ WARNING——否则服务实际绑定端口 ≠ 探活/清理所用端口。
-    其余条目原样保留。
-    """
-    raw = get().extra_argv
-    out: list[str] = []
-    i = 0
-    while i < len(raw):
-        tok = raw[i]
-        if "=" in tok:
-            flag = tok.split("=", 1)[0]
-            if flag in _CONFLICT_FLAGS:
-                logger.warning("[llama-config] extra_argv 含冲突参数 {!r}（与程序固定语义"
-                               " --port/--host/-m/--mmproj/--embedding/-c/-b/-ub 冲突）"
-                               " → 已连同其值剔除", tok)
-                i += 1
-                continue
-        if tok in _CONFLICT_FLAGS:
-            logger.warning("[llama-config] extra_argv 含冲突参数 {!r} → 已连同其值剔除", tok)
-            i += 1
-            if tok in _VALUE_FLAGS and i < len(raw):
-                i += 1  # 吞掉该 flag 的值
-            continue
-        out.append(tok)
-        i += 1
-    return out
+    """媒体编码独立超时：配置值，缺省 1031.52（现状量级；v2 不再随任何键现算）。"""
+    return get().media_http_timeout
