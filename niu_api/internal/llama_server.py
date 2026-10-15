@@ -338,6 +338,11 @@ def start() -> None:
             return
 
         argv = _build_argv()
+        if not argv:
+            raise RuntimeError(
+                "llama_cpp.command 解析后为空命令行（整行只有引号或空白）；"
+                "请在行里写上可执行体与参数，或删掉 command 键改用内置缺省行"
+            )
         # 新实例前置检查（spawn 之前），拆成可单测的小函数（F5：首词在布局外时跳过
         # 布局产物 Fatal 与 chmod，只如实检查可执行体 / -m 路径）。
         _preflight_check(argv, _inside_layout(argv[0]) if argv else True)

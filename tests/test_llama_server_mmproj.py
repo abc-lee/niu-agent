@@ -292,6 +292,54 @@ class TestStartPreflight:
         assert "--image-max-tokens" in argv
         assert llama_server._mmproj_loaded is True, "新实例路径必须按生效行置位旗标"
 
+    def test_startup_log_prints_effective_line_verbatim(self, monkeypatch, tmp_path):
+        """#3②（审查 §18.8）：启动日志必须恰好一条、报文＝用户原行本身（`command_line()`
+        逐字）。-m 值取带空格的引号路径 ⇒ 若实现改成打 `' '.join(argv)`，引号丢失 ⇒ 必红。
+        loguru 不走 caplog（无 intercept 桥接），用 sink 捕获——与
+        test_llama_command_parse._capture_warning 同范式。"""
+        models_dir = tmp_path / "empty-models"
+        models_dir.mkdir()
+        monkeypatch.setenv("NIU_MODELS_PATH", str(models_dir))
+        exe = tmp_path / "my-gpu-build" / "llama-server"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"MZ-fake")
+        gguf = tmp_path / "my models" / "model.gguf"
+        gguf.parent.mkdir(parents=True)
+        gguf.write_bytes(b"x")
+        line = (f'{exe} --embedding --port 19878 --host 127.0.0.1 '
+                f'-c 8192 -b 8192 -ub 8192 -m "{gguf}"')
+        _set_command_line(monkeypatch, tmp_path, line)
+        _patch_media_switch(monkeypatch, False)
+
+        states = {"ready": False}
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: states["ready"])
+        monkeypatch.setattr(llama_config, "startup_timeout", lambda: 0.2)
+        monkeypatch.setattr(
+            llama_server, "atexit", types.SimpleNamespace(register=lambda *a, **k: None)
+        )
+        monkeypatch.setattr(llama_server, "_stderr_thread", None)
+
+        def _fake_popen(argv, **kw):
+            states["ready"] = True
+            return _FakeProc()
+
+        _patch_popen(monkeypatch, _fake_popen)
+        from loguru import logger as loguru_logger
+        msgs: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda m: msgs.append(str(m)), level="INFO", format="{message}"
+        )
+        try:
+            llama_server.start()
+        finally:
+            loguru_logger.remove(sink_id)
+
+        startup = [m for m in msgs if m.startswith("[llama-server] 启动: ")]
+        assert len(startup) == 1, "启动日志必须恰好一条"
+        # loguru 的 sink 写入带行尾换行，比对前剥掉（报文主体逐字不变）
+        assert startup[0].rstrip("\n") == f"[llama-server] 启动: {line}", \
+            "启动日志必须逐字打用户原行（不得是 argv 的重拼）"
+
 
 # ============== 三态：None（未声明）绝不按 True 处理（§5'.2）==============
 
@@ -328,6 +376,44 @@ class TestMmprojTriState:
         with pytest.raises(RuntimeError) as ei:
             llama_server.start()
         assert "未声明" in str(ei.value)
+
+    def test_start_new_instance_undeclared_line_keeps_none_flag(self, monkeypatch, tmp_path):
+        """#3①（审查 §18.8）：显式行既无 --mmproj 也无 --no-mmproj（未声明）+ 布局外
+        真可执行体 ⇒ 真跑 start()（health/Popen/atexit 打桩，隔离范式照
+        test_cold_start_switch_on_artifact_present）⇒ 旗标必须保持 None——实现若退化成
+        `mmproj_state() or False`，旗标变 False，本用例必红。"""
+        models_dir = tmp_path / "empty-models"
+        models_dir.mkdir()
+        monkeypatch.setenv("NIU_MODELS_PATH", str(models_dir))
+        exe = tmp_path / "my-gpu-build" / "llama-server"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"MZ-fake")
+        gguf = tmp_path / "my models" / "model.gguf"
+        gguf.parent.mkdir(parents=True)
+        gguf.write_bytes(b"x")
+        line = (f'{exe} --embedding --port 19878 --host 127.0.0.1 '
+                f'-c 8192 -b 8192 -ub 8192 -m "{gguf}"')
+        _set_command_line(monkeypatch, tmp_path, line)
+        _patch_media_switch(monkeypatch, False)
+
+        states = {"ready": False}
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: states["ready"])
+        monkeypatch.setattr(llama_config, "startup_timeout", lambda: 0.2)
+        monkeypatch.setattr(
+            llama_server, "atexit", types.SimpleNamespace(register=lambda *a, **k: None)
+        )
+        monkeypatch.setattr(llama_server, "_stderr_thread", None)
+        spawned = []
+
+        def _fake_popen(argv, **kw):
+            spawned.append(argv)
+            states["ready"] = True
+            return _FakeProc()
+
+        _patch_popen(monkeypatch, _fake_popen)
+        llama_server.start()
+        assert len(spawned) == 1
+        assert llama_server._mmproj_loaded is None, "未声明三态必须保持 None，不得塌成 False"
 
 
 # ============== F5：预检跟随 command 首词——布局外不得因布局产物缺失而拒启 ========
