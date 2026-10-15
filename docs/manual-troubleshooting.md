@@ -245,6 +245,36 @@ pip install insightface>=0.7.3
 ```
 
 
+#### 问题：照片入库报"人脸检测失败"（`FACE_*` 错误码）
+
+入库时人脸检测**出错**（≠"没检出脸"）会让**这张**照片入库失败：不留半成品（无照片记录、无人脸记录、不进知识图谱、不进向量队列），但**同批其它照片照常继续**，逐张成败都记在返回体里。
+
+**错误码与原因：**
+
+| error_code | 含义 |
+|---|---|
+| `FACE_MODEL_UNAVAILABLE` | 人脸模型没就绪（模型文件缺失或 insightface 加载失败） |
+| `FACE_IMAGE_UNDECODABLE` | 图片读不出来（文件损坏或格式不支持） |
+| `FACE_DETECTION_ERROR` | 检测过程其它异常（推理报错等） |
+
+**与「未检测到人物」的区别（关键）**：摘要写「未检测到人物」是**正常结果**——模型可用、图片可读，只是确实没检出人脸，照片**照常入库**；只有报上面三个错码才是**失败**。失败**不会**被写成「未检测到人物」（这是本条的修复目标），失败的那张也不会留下任何记录。
+
+**批量入库的回报格式**：返回体 `status` 仍是 `success`（批次完成），但 `details.errors` 非空，逐条给出 `{file, error_code, message}`；`details.photos` 只含成功的照片。子 Agent 必须逐条报出失败项，不得口头称"全部成功"。
+
+**处置**：
+
+```bash
+# 1. 模型缺失（最常见）
+ls models/models/buffalo_l/*.onnx      # 注意是双层 models/models/ 目录
+python scripts/package_all_dependencies.py
+
+# 2. 图片读不出：改用 JPG/PNG/WebP/BMP，或重新导出该文件
+
+# 3. 排除原因后把该批照片重新拖进来即可——失败的那张本来就零残留，无需额外清理
+```
+
+诊断日志（`[DETECT_FACES]` 前缀）能区分三种失败：`Face model not available` / `Cannot read image (cv2 + Pillow fallback failed)` / `Face detection failed`。
+
 #### 问题：人脸识别数据排查（误合并 / 数据异常 / 人工拆分）
 
 当主 Agent 需要排查人脸识别底层数据（如误合并人物需拆分、确认某人脸归属、检查向量数据完整性）时，可以直接查询照片数据库。Agent 入库时知道每张照片对应谁，通过数据库可以建立照片与人脸向量的对应关系。
