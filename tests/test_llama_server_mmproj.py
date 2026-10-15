@@ -340,6 +340,26 @@ class TestStartPreflight:
         assert startup[0].rstrip("\n") == f"[llama-server] 启动: {line}", \
             "启动日志必须逐字打用户原行（不得是 argv 的重拼）"
 
+    def test_quotes_only_line_hits_empty_first_word_guard(self, monkeypatch, tmp_path):
+        """发现 2（守卫可达性）：`command: "''"` ⇒ `argv() == ['']`（一个空首词，**非空列表**）
+        ⇒ 旧判据 `if not argv` 永假，用例落到 preflight 报"可执行体不存在"；新判据
+        `not argv or not argv[0]` 必须在此形态报守卫专属文案。M3 变异（删守卫）下本例必红。"""
+        monkeypatch.setattr(llama_server, "_health_ok", lambda: False)  # 不走复用短路
+        _set_command_line(monkeypatch, tmp_path, "''")
+        _patch_media_switch(monkeypatch, False)
+        popped = []
+
+        def _fake_popen(argv, **kw):
+            popped.append(argv)
+
+        _patch_popen(monkeypatch, _fake_popen)
+        with pytest.raises(RuntimeError) as ei:
+            llama_server.start()
+        assert "为空命令行" in str(ei.value), \
+            "必须报守卫文案（整行只有引号或空白），而非 preflight 的'可执行体不存在'"
+        assert "可执行体不存在" not in str(ei.value)
+        assert not popped, "守卫必须先于 spawn 抛出"
+
 
 # ============== 三态：None（未声明）绝不按 True 处理（§5'.2）==============
 

@@ -338,7 +338,7 @@ def start() -> None:
             return
 
         argv = _build_argv()
-        if not argv:
+        if not argv or not argv[0]:
             raise RuntimeError(
                 "llama_cpp.command 解析后为空命令行（整行只有引号或空白）；"
                 "请在行里写上可执行体与参数，或删掉 command 键改用内置缺省行"

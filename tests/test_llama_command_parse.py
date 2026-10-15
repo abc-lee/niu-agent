@@ -258,6 +258,44 @@ class TestPlatformTokenization:
         assert lc.model_path() == "/models/q.gguf"
 
 
+class TestWin32DefaultLineRoundTrip:
+    """⑨ win32 缺省行回环（发现 1/3 回归钉）：不写 `command` ⇒ 走内置缺省行；布局路径
+    含单引号（Windows 用户名 / OneDrive 目录的撇号）时，缺省行的引号策略必须让
+    `argv()[0]` / `model_path()` 在非 posix 分词 + 剥配对引号后**整词还原**——旧实现
+    `shlex.quote` 的 POSIX 三段转义（`'…'"'"'…'`）在 win32 消费侧被撕碎：首词截断成
+    `…/OE`，启动即报"可执行体不存在"。本类两例在旧实现下必红。"""
+
+    def _win32_default_line_case(self, monkeypatch, tmp_path, root_name):
+        """缺省行回环公共体：`NIU_MODELS_PATH` 根目录名含撇号，`command` 不写 ⇒
+        内置缺省行（win32 布局种子派生 `…/llama.cpp/win32-x64/llama-server.exe` 与
+        布局 GGUF 文件名），断言首词与 `-m` 值整词还原、多模态支路为关。"""
+        monkeypatch.setattr(sys, "platform", "win32")
+        root = tmp_path / "models" / root_name
+        root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("NIU_MODELS_PATH", str(root))
+        win_seed = json.loads(
+            (REPO_ROOT / "memory" / "llama-layout.win32.json").read_text(encoding="utf-8")
+        )
+        _point_layout(monkeypatch, tmp_path, win_seed)
+        _write_llama(monkeypatch, tmp_path, {})   # 不写 command ⇒ 内置缺省行
+        expected_exe = root / "llama.cpp" / "win32-x64" / "llama-server.exe"
+        expected_gguf = root / "embeddinggemma-2-Q8_0.gguf"
+        assert lc.argv()[0] == str(expected_exe), \
+            "win32：缺省行含单引号路径必须整词还原（不得被切成 .../OE + ' + s/...）"
+        assert lc.model_path() == str(expected_gguf), \
+            "win32：-m 值（布局 GGUF）必须整词还原"
+        assert lc.executable() == str(expected_exe)
+        assert lc.mmproj_state() is False, "媒体关 ⇒ 缺省行走 --no-mmproj 支"
+
+    def test_win32_default_line_apostrophe_path_roundtrips(self, monkeypatch, tmp_path):
+        """含单引号（无空格）：`NIU_MODELS_PATH` 根目录名带撇号（OE's）。"""
+        self._win32_default_line_case(monkeypatch, tmp_path, "OE's")
+
+    def test_win32_default_line_space_and_apostrophe_roundtrips(self, monkeypatch, tmp_path):
+        """含空格 + 含单引号组合：`NIU_MODELS_PATH` 根目录名 `OE's models`。"""
+        self._win32_default_line_case(monkeypatch, tmp_path, "OE's models")
+
+
 class TestWin32EqualsQuotedValues:
     """⑧ win32 等号+引号形态（D1 修复）：非 posix shlex 不剥词内引号，`=` 后的值段需
     本模块补剥——`--port="8128"` / `--host="0.0.0.0"` / `-m="…"` 三类都要正常取值。"""
