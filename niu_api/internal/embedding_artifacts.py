@@ -215,6 +215,15 @@ def platform_dir() -> Path:
 
 
 def gguf_path() -> Path:
+    """GGUF 权重路径（调用期求值）。
+
+    `llama_cpp.gguf_path` 非空 ⇒ 直接返回它（用户自备任意量化版本的权重——官方仓库有
+    BF16/Q8_0 两档、社区还有 Q6/Q5/Q4 等——可放任意位置）；为空 ⇒ 布局派生
+    `<models>/<gguf 文件名>`（布局数据缺失时用产品默认名，D-4 零缺省漂移）。
+    """
+    override = _model_path_override("gguf_path")
+    if override:
+        return Path(override)
     return models_dir() / gguf_filename()
 
 
@@ -247,6 +256,27 @@ def _binary_path_override() -> str | None:
     """用户自备二进制路径（user-config 的 llama_cpp.binary_path）；函数级 import 是测试注入点。"""
     from niu_api.internal.llama_config import get as _llama_cpp_get
     return _llama_cpp_get().binary_path
+
+
+def _model_path_override(key: str) -> str | None:
+    """用户自备模型文件路径（user-config 的 `llama_cpp.<key>`，key ∈ {gguf_path, mmproj_path}）。
+
+    与 `_binary_path_override` 同配方：函数级 import 唯一读取点 `llama_config._load_section()`
+    （配置现读与测试注入点都在那里，本模块不重复实现文件读取）；坏输入（非字符串/非 null）
+    ⇒ 按 null 处理 + WARNING、绝不抛（D-6）。空串视同未配置。
+    """
+    from niu_api.internal.llama_config import _load_section
+
+    sec, _fatal = _load_section()
+    if sec is None:
+        return None
+    v = sec.get(key)
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        logger.warning("[model-files] llama_cpp.%s=%r 类型错（需字符串或 null）→ 按 null 处理", key, v)
+        return None
+    return v or None
 
 
 def llama_server_path() -> Path:
@@ -304,18 +334,31 @@ def describe_missing() -> str:
 
 
 def verify_gguf(path: Path) -> bool:
-    """按体积粗校 GGUF（防下到半截/错误文件）。
+    """GGUF 完整性粗校（方案 v1.7：体积校验可选化）。
 
-    只校验字节数，不做哈希。期望体积取自布局数据 `gguf.size`（手册的手动自检命令
-    因此继续可用）；布局数据缺失致期望体积不可得 ⇒ WARNING 后返回 False
-    （无法校验即未通过）。
+    缺省判定＝**文件存在 + 可读 + 大小 > 0** ⇒ 可用。期望体积取自布局数据 `gguf.size`：
+    与实得不符**仅 WARNING**（可能换了量化、或文件不完整）后**仍返回可用**——绝不因用户
+    自备了不同量化版本而判"残缺"；布局数据里 `size` 为 null ⇒ **关掉**期望体积比对
+    （静默跳过）。仅当文件缺失/不可读/零字节时判不可用。
     """
-    gguf = (_layout_raw() or {}).get("gguf") or {}
-    size = gguf.get("size")
-    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-        _warn_once("gguf-size", "布局数据缺可用的 gguf.size：verify_gguf 无法做体积粗校，按 False 处理")
-        return False
     try:
-        return path.is_file() and path.stat().st_size == size
+        if not path.is_file():
+            return False
+        actual = path.stat().st_size
     except OSError:
         return False
+    if actual <= 0:
+        return False
+    size = None
+    layout = _layout_raw()
+    if layout is None:
+        _warn_once("gguf-size", "布局数据缺失：verify_gguf 无期望体积可比对，仅按存在且非空判定")
+    else:
+        cand = ((layout.get("gguf") or {}).get("size"))
+        if isinstance(cand, int) and not isinstance(cand, bool) and cand > 0:
+            size = cand
+    if size is not None and actual != size:
+        logger.warning(
+            "GGUF 体积不符（实际 %d，布局数据期望 %d）：可能换了量化、或文件不完整；"
+            "仍按可用处理，请按手册自检办法确认", actual, size)
+    return True
