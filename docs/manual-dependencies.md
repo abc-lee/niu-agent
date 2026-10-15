@@ -409,7 +409,7 @@ llama-server 一致）。注意副作用：若一个 chunk 内容全是全角空
 
 **放哪**：按上表「放哪」一列。就位后，llama-server 那一行启动命令怎么写 / 怎么验证 / 放哪，全部在「2.5 llama-server 启动方式」节。
 
-**维护者打包面**（不是用户获取入口）：上述产物的预下载由 `scripts/package_all_dependencies.py` 完成（以 `niu_api/internal/embedding_artifacts.py` 为单一真相源：平台目录、资产名、下载 URL、sha256 校验都从该模块取）。`build.sh` / `pack.bat` 都不会自动跑它，维护者打包前必须手动执行一次，否则产出的安装包没有向量模型。
+**维护者打包面**（不是用户获取入口）：上述产物的预下载由 `scripts/package_all_dependencies.py` 完成，下载规格数据在同目录的 `scripts/artifacts.json`——**仅维护者工具**用（资产名、下载源、体积/sha256、人脸落点都从该数据文件取）；运行时代码零下载、永不读它。脚本与数据文件同属维护者面。`build.sh` / `pack.bat` 都不会自动跑它，维护者打包前必须手动执行一次，否则产出的安装包没有向量模型。
 
 ### 2.5 llama-server 启动方式：配置里那一行（怎么写 / 怎么验证 / 放哪）
 
