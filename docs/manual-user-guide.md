@@ -171,8 +171,8 @@ LLM 配置由两个文件组成：
 
 探测采用三次采样 + 冲突式设计：
 - 三次采样全过才升档，任何一次失败立即降级——防 flaky 网关（豆包 Coding
-  Plan 实测：同一请求 5 次采样 2 次执行、3 次静默忽略）碰巧
-  命中执行窗口期误判支持
+  Plan 行为非确定：同一请求多次采样结果不稳定，有时执行、有时静默
+  忽略）碰巧命中执行窗口期误判支持
 - 冲突式设计：schema 强制要求 `{"verdict": "SCHEMA_ENFORCED"}`，prompt
   却要求模型写普通英文句子且禁止输出 JSON——只有 schema 战胜 prompt
   （输出被强制为 schema JSON）才判定真支持，模型跟随 prompt 输出普通
@@ -187,7 +187,7 @@ LLM 配置由两个文件组成：
 **典型场景**：
 - 豆包 Coding Plan 端点（`/api/coding/v3`，model=`ark-code-latest`）：
   网关行为非确定性（flaky），同一请求多次采样结果不稳定（有时执行
-  json_schema strict、有时静默忽略），三次采样必然 ≥1 次静默忽略 →
+  json_schema strict、有时静默忽略），多次采样足以碰到静默忽略行为 →
   探测结果稳定 `prompt_only`
 - GLM 端点（`maas-coding-api.cn-huabei-1.xf-yun.com/v2`，model=`xopglm5`）：网关接受但模型输出漂移，探测结果 `prompt_only`
 - OpenAI 官方：探测结果 `json_schema`
@@ -291,14 +291,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 - **探测按场景同参**：值域扫描 `[minimal, low, medium, high, xhigh, none, max]`，请求携带当前场景的 thinking 配置（lightrag 场景恒 disabled、llm 场景按用户配置）——**值域结论只对当前场景 thinking 成立**，不得外推到其他场景（如豆包 `disabled` 场景只接受 minimal/none，`high` + disabled 直接 400）。
 - **档案位置**：`~/.niu/model_capabilities.json`，键 = `apiBase|model|llm` / `apiBase|model|lightrag`——换模型/换服务商后旧档案不适用，**必须重新探测**。
 
-实测数据（ark-code-latest 模型入库 SYSTEM_MANUAL.md，仅供参考——不同模型差异很大）：
-
-| 配置 | 实体类型准确率 | 空响应率 | 补充提取有效性 | 综合评分 |
-|------|--------------|---------|--------------|---------|
-| `none` | 67% | 60% | 无 | 5.5/10 |
-| `low` | 95% | 40% | 有效 | **7.5/10** |
-| `medium` | 14% | 40% | 部分 | 6.0/10 |
-| `high` | 分裂 | 40% | 无 | 4.0/10 |
+注意：各档的实体类型准确率 / 空响应率 / 综合评分，都是过往验证环境跑出来的数值（曾用 ark-code-latest 模型入库 SYSTEM_MANUAL.md 测得）。不同模型、不同环境差异很大，本手册不录具体值——按下方流程在你机器上标定后再定档。
 
 关键发现：
 1. **推理越深不一定越好**：推理token被模型内部消耗，不转化为输出质量。过度推理反而导致实体类型误分类（如子Agent被归为organization而非technology）
@@ -319,7 +312,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
                api_type=cfg.get("type", "openai"), lightrag=lightrag, user_config=user_cfg)
   print(prof.get("probe_status"), prof.get("reasoning_effort"))
   ```
-  - 探测预算：单场景 ≈11 次极小请求（单次 ≤10s），值域候选超时重试最坏 ≈140s，加参数可用性段 ≈+45s——`code_run` 的 `timeout` 建议 ≥240；双场景分两次调用
+  - 探测预算：单场景 ≈11 次极小请求（由值域候选数量决定），总耗时视你的网络与模型响应速度而定——`code_run` 的 `timeout` 建议给足；双场景分两次调用
 
 探测通过后，用同一文档入库并检查日志验证实际效果（见下方"入库质量检查方法"）。
 
@@ -470,7 +463,7 @@ print(prof.get("reasoning_effort"))               # supported / unsupported 档�
 2. 跑上面代码（`lightrag=False` = 对话场景，`True` = 入库场景）。**评测要真实连接模型，须在目标机执行**；若 Niu 运行中且目标是当前配置的**对话模型**（llm 段），可引导用户直接用设置页"探测能力"按钮（同核心、免代码）；**入库段**（`lightrag=True`）没有页面探测按钮——一律走 `code_run`。
 3. `probe_status`：`ok`/`partial` = 档案已更新（`~/.niu/model_capabilities.json`，键 `apiBase|model|llm` / `|lightrag`）；`failed` = 探测失败**保持旧档案**（检查 429 限流/401 认证/404 模型名后重试）。
 4. 评测后：告诉用户该模型支持的档位清单——llm 段（或继承态入库段）引导在设置窗口选档位 → "测试连接并保存"完成配置；入库段配了独立模型时页面无下拉可选，直接 `set_lightrag_llm_config(reasoning_effort="low")` 写入。
-5. 预算提示：单场景 ≈11 次极小请求，值域超时重试最坏 ≈140s，加参数可用性段 ≈+45s——`code_run` 的 `timeout` 建议 ≥240；双场景分两次调用。
+5. 预算提示：单场景 ≈11 次极小请求（由值域候选数量决定），总耗时视你的网络与模型响应速度而定——`code_run` 的 `timeout` 建议给足；双场景分两次调用。
 
 > **评测纪律**：①评测消耗用户 API 配额（11 次极小请求），先征得用户同意；②评测值域只对**当前场景 thinking 配置**成立（lightrag 恒 disabled、llm 按用户配置）——不要把一个场景测出的档位外推到另一个场景；③评测不是测试对话质量——档位支持 ≠ 输出质量，质量评估按上文"入库质量检查方法"或对话实测。
 
@@ -482,7 +475,7 @@ print(prof.get("reasoning_effort"))               # supported / unsupported 档�
 
 **机制**：
 
-1. **探测（deny 生产者）**：「探测能力」流程**最前面**含「参数可用性段」——用**当前实际会发送的参数组合**发一条真实请求；400 且能定位到具体被拒参数 → 写入该段 `capabilities.deny`，移除该参数重试，直至通过（累积移除，最坏 ≤8 次请求，探测总耗时约 +15s）
+1. **探测（deny 生产者）**：「探测能力」流程**最前面**含「参数可用性段」——用**当前实际会发送的参数组合**发一条真实请求；400 且能定位到具体被拒参数 → 写入该段 `capabilities.deny`，移除该参数重试，直至通过（累积移除，最坏 ≤8 次请求，总耗时视你的机器与网络而定）
    - 候选参数（**白名单** 7 项）：`temperature` / `top_p` / `presence_penalty` / `frequency_penalty` / `seed` / `logit_bias` / `max_tokens`
    - 候选值 = **运行时实际发送值**（含提示词文档 frontmatter 的温度，如 `config/agents/niu.md` 的 `temperature: 0.6`）——与生产同源，"测的就是会发的"
    - `response_format` **不在候选内**（该参数由既有三档探测治理：json_schema → json_object → prompt_only）
@@ -519,7 +512,7 @@ print(prof.get("reasoning_effort"))               # supported / unsupported 档�
   print(prof.get("probe_status"))                   # ok / partial / failed
   ```
 
-  探测完成即写盘（`probe_status != failed` 时）；`failed` = 定位失败或网络问题，**保持旧值不变**。单段耗时约 15–45s，`code_run` 的 `timeout` 建议 ≥180
+  探测完成即写盘（`probe_status != failed` 时）；`failed` = 定位失败或网络问题，**保持旧值不变**。单段耗时视你的机器与网络而定，`code_run` 的 `timeout` 建议给足
 - **换模型/服务商后必须重新探测**：旧模型的 deny 不适用新模型（`capabilities.model` 绑定即为此）；重探测时**上次 deny 中"本次仍发送且通过"的参数会被清出**（洗白），本次未发送到的参数保留旧判定
 
 **排查**：

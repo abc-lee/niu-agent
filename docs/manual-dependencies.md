@@ -276,7 +276,7 @@ EmbeddingGemma 2 官方为非对称用法（query 侧 `task: search result | que
 doc 侧 `title: none | text: `），但 LightRAG 1.4.19 的 embedding 调用链上
 **没有任何 query/doc 判别信号**（`_priority` 被 `wait_func` 吃掉、contextvar 穿不过
 优先级队列 worker）。故 Niu 采用**两侧统一加 `task: search result | query: `**：
-PM 实测判别间隔由 +0.1482 提升到 +0.2007（优于官方非对称用法的 +0.1954）。
+加前缀后两侧判别间隔大于官方非对称用法（历史验证环境的相对结论；具体数值不录，可在你机器上按本手册前缀口径复测）。
 该前缀在 `niu_api/internal/embedding.py` 的 `EMBEDDING_PREFIX` 单一真相源定义，
 由 `_LlamaCppAdapter.encode` 统一施加（全后端唯一注入点）。
 

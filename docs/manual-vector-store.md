@@ -111,7 +111,7 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 | mix | 最全面：local + global + 向量 | 全面检索，最慢 |
 | bypass | 跳过检索，仅 LLM | 不需要知识库时 |
 
-**Keywords 优化**：提供 `keywords` 参数可跳过 LLM 关键词提取，将延迟从 5-30s 降至 <1s，同时保持完整图遍历能力。动态注入（`_inject_dynamic_resources`）始终使用 keywords 模式。
+**Keywords 优化**：提供 `keywords` 参数可跳过 LLM 关键词提取步骤，查询延迟显著降低（具体视你的图谱规模与机器环境），同时保持完整图遍历能力。动态注入（`_inject_dynamic_resources`）始终使用 keywords 模式。
 
 ## 五、LightRAG MCP 工具（23 个）
 

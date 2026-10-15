@@ -46,7 +46,7 @@ docker run -d \
 ### 1.3 等待 HA 启动
 
 ```bash
-# 等待 API 可用（约2-3分钟）
+# 等待 API 可用（时长视你的机器与网络环境而定）
 until curl -s http://localhost:8123/api/ > /dev/null 2>&1; do
   sleep 10
 done
@@ -443,7 +443,7 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 ```
 - 支持任意 Jinja2 表达式
 - 可组合多个条件
-- ⚠️ 响应延迟较大（约5-10秒），测试时 timeout 需设 10-30 秒
+- ⚠️ 响应延迟较大（视你的环境而定），测试时 timeout 需放宽设置
 
 ### 5.3 已验证场景
 
@@ -458,26 +458,26 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 ### 5.4 断线重连
 
 - WebSocket 断开后自动重连：已验证通过
-- 2分钟空闲保活（ping/pong）：已验证通过
+- 空闲保活（ping/pong）：客户端主动保活，防 HA 因闲置断开长连接；长连接能否稳定维持以你环境为准
 - Docker restart 后自动恢复：已验证通过
 
 ## 6. 测试结果汇总
 
 ### 6.1 Phase 1: API 能力摸底
 
-| 测试 | 通过率 | 备注 |
+| 测试 | 覆盖范围 | 已验证的 HA 行为特征（以你环境复核为准） |
 |------|--------|------|
-| REST API (20项) | 19/20 (95%) | 无效服务返回400而非404，HA行为特征 |
-| WebSocket API (14项) | 12/14 (86%) | Config Flow WebSocket 命令已废弃（HA 2026.6），需用 REST API |
-| 事件推送 (6项) | 5/6 (83%) | 数值状态是"42.0"非"42"，HA浮点行为 |
+| REST API | 设备查询/控制/历史等服务面 | 无效服务返回400而非404 |
+| WebSocket API | 事件订阅与命令通道 | Config Flow 命令需走 REST（WebSocket 版自 HA 2026.6 起废弃） |
+| 事件推送 | 状态变化事件 | 数值状态是"42.0"非"42"，HA浮点行为 |
 
 ### 6.2 Phase 2: 事件推送与条件推送
 
-| 测试 | 通过率 | 备注 |
+| 测试 | 覆盖范围 | 结论（以你环境复核为准） |
 |------|--------|------|
-| subscribe_trigger (11项) | 11/11 (100%) | 修复 trigger 事件识别逻辑后全通过 |
-| 条件推送 (5项) | 5/5 (100%) | 三种场景全部验证成功 |
-| 断线重连 (5项) | 5/5 (100%) | 自动重连+空闲保活正常 |
+| subscribe_trigger | 触发器注册与触发事件 | trigger 事件识别逻辑已修复，条件过滤可用 |
+| 条件推送 | 数值/模板/状态三种触发场景 | 三种场景均可用 |
+| 断线重连 | 长连接韧性 | 自动重连+空闲保活可用 |
 
 ### 6.3 验证结论
 
@@ -505,8 +505,8 @@ curl -X POST http://localhost:8123/api/config/config_entries/flow \
 
 ### 7.3 Template Trigger 延迟
 
-- `platform: "template"` 的 trigger 响应延迟 5-10 秒
-- 测试 timeout 至少设 10 秒，组合条件设 30 秒
+- `platform: "template"` 的 trigger 响应延迟较大（视你的环境而定）
+- 测试 timeout 需放宽设置，组合条件尤甚
 - 不像 state/numeric_state trigger 几乎即时
 
 ### 7.4 Docker 网络与自动发现
@@ -566,7 +566,7 @@ curl -X POST http://localhost:8123/api/services/light/turn_on \
 # 结果：state 从 off → on，灯实际打开
 ```
 
-**验证结论：** API → HA → 真实设备的完整链路已打通，延迟约2秒。
+**验证结论：** API → HA → 真实设备的完整链路已打通（端到端延迟以你环境为准）。
 
 ### 8.3 设备属性详情
 
