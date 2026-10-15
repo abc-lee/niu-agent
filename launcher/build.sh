@@ -58,6 +58,7 @@ if [ "$(uname)" = "Darwin" ]; then
         --exclude='insightface' --exclude='insightface-*.dist-info' \
         --exclude='easydict' --exclude='easydict-*.dist-info' \
         --exclude='pillow_heif' --exclude='pillow_heif-*.dist-info' --exclude='_pillow_heif*.so' \
+        --exclude='.DS_Store' \
         "$PROJECT_ROOT/python/" "$RESOURCES_DIR/python/"
 
     # 清理 site-packages/bin/（pip install 产生的 console_scripts，shebang 指向开发机路径，
@@ -77,21 +78,23 @@ if [ "$(uname)" = "Darwin" ]; then
     echo "[build.sh] copying ui/main/..."
     rsync -a --delete --exclude '.git' --exclude 'node_modules/.cache' \
         --exclude 'windows/assistant/fonts/AZhuPaoPaoTi.ttf' \
+        --exclude '.DS_Store' \
         "$PROJECT_ROOT/ui/main/" "$RESOURCES_DIR/ui/main/"
 
     # config/ (模板，运行时复制到 ~/.niu/config/)
     echo "[build.sh] copying config/..."
-    rsync -a --delete "$PROJECT_ROOT/config/" "$RESOURCES_DIR/config/"
+    rsync -a --delete --exclude '.DS_Store' "$PROJECT_ROOT/config/" "$RESOURCES_DIR/config/"
 
     # models/
     echo "[build.sh] copying models/..."
     # 排除 buffalo_l/*.onnx（InsightFace 非商业许可，用户按 README 手动下载到 bundle 内 models/models/buffalo_l/）
     rsync -a --delete --exclude='buffalo_l/*.onnx' \
+        --exclude='.DS_Store' \
         "$PROJECT_ROOT/models/" "$RESOURCES_DIR/models/"
 
     # memory/ (agent templates)
     echo "[build.sh] copying memory/..."
-    rsync -a --delete "$PROJECT_ROOT/memory/" "$RESOURCES_DIR/memory/" 2>/dev/null || true
+    rsync -a --delete --exclude '.DS_Store' "$PROJECT_ROOT/memory/" "$RESOURCES_DIR/memory/" 2>/dev/null || true
 
     # docs/ (系统手册 + 子文档 + 图片，只复制保留清单内的)
     echo "[build.sh] copying docs/..."
@@ -116,11 +119,11 @@ if [ "$(uname)" = "Darwin" ]; then
 
     # niu_api/ (Python API 模块，Python 启动时用 -m niu_api 找它)
     echo "[build.sh] copying niu_api/..."
-    rsync -a --delete "$PROJECT_ROOT/niu_api/" "$RESOURCES_DIR/niu_api/"
+    rsync -a --delete --exclude '.DS_Store' "$PROJECT_ROOT/niu_api/" "$RESOURCES_DIR/niu_api/"
 
     # agent/ (Agent 核心模块，niu_api 依赖)
     echo "[build.sh] copying agent/..."
-    rsync -a --delete "$PROJECT_ROOT/agent/" "$RESOURCES_DIR/agent/"
+    rsync -a --delete --exclude '.DS_Store' "$PROJECT_ROOT/agent/" "$RESOURCES_DIR/agent/"
 
     # mcp-servers/ (MCP 服务器 Python 模块，config/mcp-servers.yaml 用相对路径 workdir 引用)
     # --delete-excluded: 删除目标端已存在的 embedding-service（之前版本复制进去过）
@@ -220,6 +223,10 @@ if [ "$(uname)" = "Darwin" ]; then
 PLIST
     # PkgInfo 文件（8 字节，APPL=application）
     echo -n "APPL????" > "../niu.app/Contents/PkgInfo"
+
+    # 清扫 .DS_Store（必须在签名前：发行包不得夹带 Finder 生成的垃圾文件；
+    # 清扫置于 codesign 之前，让 ad-hoc 签名覆盖 bundle 的最终内容）
+    find ../niu.app -name '.DS_Store' -delete 2>/dev/null || true
 
     # ad-hoc 签名（必须先签，再 lsregister）
     # 逐个签名 .so / .dylib / 二进制（codesign --deep 自 macOS 13.3 起废弃）
