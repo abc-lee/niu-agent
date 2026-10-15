@@ -117,7 +117,7 @@ def _get_litellm_session(config: dict) -> Any:
 
         _cached_session = LiteLLMSession(cfg=llm_config)
         _cached_config_key = config_key
-        logger.info("Created LiteLLMSession for LightRAG: model=%s, api_type=%s, provider=%s", config.get("model"), config.get("type"), config.get("provider"))
+        logger.info("Created LiteLLMSession for LightRAG: model={}, api_type={}, provider={}", config.get("model"), config.get("type"), config.get("provider"))
         return _cached_session
 
 
@@ -377,9 +377,9 @@ def _trigger_background_probe_if_needed() -> None:
                 except OSError:
                     pass
                 raise
-            logger.info("Background probe completed: response_format_mode=%s", mode)
+            logger.info("Background probe completed: response_format_mode={}", mode)
         except Exception as e:
-            logger.warning("Background probe failed: %s", e)
+            logger.warning("Background probe failed: {}", e)
 
     threading.Thread(target=_probe_in_background, daemon=True, name="response-format-probe").start()
 
@@ -672,7 +672,7 @@ def get_brain_regions() -> list[str]:
         return brain_regions
 
     except Exception as e:
-        logger.debug("get_brain_regions failed: %s", e)
+        logger.debug("get_brain_regions failed: {}", e)
         return []
 
 
@@ -724,7 +724,7 @@ def get_region_members(region_name: str) -> list[str]:
         return members
 
     except Exception as e:
-        logger.debug("get_region_members failed: %s", e)
+        logger.debug("get_region_members failed: {}", e)
         return []
 
 
@@ -775,7 +775,7 @@ def get_all_region_members() -> dict[str, list[str]]:
         return region_members
 
     except Exception as e:
-        logger.debug("get_all_region_members failed: %s", e)
+        logger.debug("get_all_region_members failed: {}", e)
         return {}
 
 
@@ -863,7 +863,7 @@ def find_entities_with_single_floor_edge(floor_weight: float = FLOOR_WEIGHT) -> 
         return result
 
     except Exception as e:
-        logger.debug("find_entities_with_single_floor_edge failed: %s", e)
+        logger.debug("find_entities_with_single_floor_edge failed: {}", e)
         return set()
 
 
@@ -906,7 +906,7 @@ def remove_region_edges(region_name: str, edge_type: str) -> int:
                     nx_graph.remove_edge(region_key, neighbor_id)
                     removed += 1
     except Exception as e:
-        logger.debug("remove_region_edges failed for %s: %s", region_name, e)
+        logger.debug("remove_region_edges failed for {}: {}", region_name, e)
     return removed
 
 
@@ -955,7 +955,7 @@ def remove_region_stale_edges(
                         nx_graph.remove_edge(region_key, neighbor_id)
                         removed += 1
     except Exception as e:
-        logger.debug("remove_region_stale_edges failed for %s: %s", region_name, e)
+        logger.debug("remove_region_stale_edges failed for {}: {}", region_name, e)
     return removed
 
 
@@ -1403,7 +1403,7 @@ def _build_rag_params() -> dict[str, Any]:
     }
 
     logger.info(
-        "LightRAG params: chunk_size=%d, chunk_overlap=%d, max_async=%d, max_gleaning=%d",
+        "LightRAG params: chunk_size={}, chunk_overlap={}, max_async={}, max_gleaning={}",
         chunk_token_size, chunk_overlap_token_size, llm_model_max_async, entity_extract_max_gleaning,
     )
 

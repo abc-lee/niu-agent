@@ -301,6 +301,6 @@ def verify_gguf(path: Path) -> bool:
             size = cand
     if size is not None and actual != size:
         logger.warning(
-            "GGUF 体积不符（实际 %d，布局数据期望 %d）：可能换了量化、或文件不完整；"
+            "GGUF 体积不符（实际 {}，布局数据期望 {}）：可能换了量化、或文件不完整；"
             "仍按可用处理，请按手册自检办法确认", actual, size)
     return True

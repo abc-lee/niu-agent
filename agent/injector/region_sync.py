@@ -404,7 +404,7 @@ class RegionSync:
                 region_members_map = lightrag_get_all_region_members()
             except Exception as e:
                 logger.warning(
-                    "[RegionSync] get_all_region_members 批量读取异常，跳过激活管理器刷新: %s",
+                    "[RegionSync] get_all_region_members 批量读取异常，跳过激活管理器刷新: {}",
                     e,
                 )
                 stats["errors"].append(f"get_all_region_members: {e}")
@@ -453,7 +453,7 @@ class RegionSync:
             )
         except Exception as e:
             logger.error(
-                "[RegionSync] Activation manager refresh failed: %s\n%s",
+                "[RegionSync] Activation manager refresh failed: {}\n{}",
                 e, traceback.format_exc(),
             )
             stats["errors"].append(f"activation: {e}")
@@ -531,7 +531,7 @@ class RegionSync:
                                 # Transfer source members to target, then remove source
                                 activation_mgr.merge_region_into(source_id, target_id)
                                 logger.info(
-                                    "[RegionSync] 合并脑区: %s -> %s",
+                                    "[RegionSync] 合并脑区: {} -> {}",
                                     source_state.label, target_state.label,
                                 )
                         except Exception as e:

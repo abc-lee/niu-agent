@@ -227,6 +227,8 @@ def default_command() -> str:
     （含单引号的路径被撕碎、首词截断、启动报"可执行体不存在"），改为**词含空白或单引号
     时用双引号包裹、否则裸词**：非 posix 分词把引号词当整体（引号保留），剥配对引号后
     整词还原；裸词在反斜杠/双引号/`&`/`(` 上无特殊义（非 posix 分词里皆是词字符），逐字保留。
+    已知边界：词里同时含 `=` 与（空白或单引号）时不整词还原、残留首尾 `"`——既有消费侧残留，非本策略引入（详见
+    `docs/superpowers/reviews/2026-10-15-thirdparty-T3a2-verify-final.md` 发现 1）。
     """
     from niu_api.internal.embedding_artifacts import gguf_path, llama_server_path
     from niu_api.internal.media_artifacts import mmproj_path
