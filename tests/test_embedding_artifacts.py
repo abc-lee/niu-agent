@@ -7,6 +7,7 @@ test_context_window_live_read.py）；布局缓存与一次性告警标记每用
 import json
 
 import pytest
+from loguru import logger
 
 from niu_api.internal import embedding_artifacts as ea
 
@@ -101,11 +102,18 @@ class TestMissingAndDescribe:
 
 
 class TestVerifyGguf:
-    def test_rejects_wrong_size(self, tmp_path):
-        # 期望体积＝布局数据 gguf.size（真实 309855456 字节）⇒ 10 字节必被拒
+    def test_mismatch_usable_with_warning(self, tmp_path):
+        # 方案 v1.7：体积不匹配（布局期望 309855456 vs 实得 10）⇒ 不再判残损，
+        # 仍可用 + WARNING（可能换量化/文件不完整），不抛（旧"必被拒"断言作废）
         p = tmp_path / "g.gguf"
         p.write_bytes(b"x" * 10)
-        assert not ea.verify_gguf(p)
+        messages: list[str] = []
+        sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+        try:
+            assert ea.verify_gguf(p)
+        finally:
+            logger.remove(sink_id)
+        assert any("量化" in m or "不完整" in m for m in messages), f"体积不符必须 WARNING：{messages}"
 
     def test_accepts_exact_size(self, tmp_path, monkeypatch):
         # 方案 §4'.4：GGUF_SIZE 常量删除 ⇒ monkeypatch 布局数据（gguf.size 改为 4）
