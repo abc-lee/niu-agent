@@ -182,18 +182,19 @@ class TestDeleteChunksBySourceId:
     @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")
     def test_part_prefix_requires_underscore(self, mock_get_rag, mock_call_async):
-        """② 边界：_part 前缀必须带下划线——<path>part/<path>xy/<path>_x/
-        <path>xy 不得命中；<path>_part、<path>_part0_0、<path>_partxy 命中。"""
+        """② 边界：_part 前缀必须带下划线——<path>part/<path>xy/<path>_x
+        不得命中；<path>_part、<path>_part0_0、<path>_partxy 命中。"""
         mock_call_async.side_effect = _run_closing
         rag = mock_get_rag.return_value = _make_rag(
             {
                 "bare-part": {"content": "c1", "source_id": PATH + "part"},
                 "no-underscore": {"content": "c2", "source_id": PATH + "xy"},
                 "exact-part": {"content": "c3", "source_id": PATH + "_part"},
+                "part-xy": {"content": "c4", "source_id": PATH + "_partxy"},
             }
         )
         result = LightRAGAdapter().delete_chunks_by_source_id(PATH)
-        assert set(result["matched_ids"]) == {"exact-part"}
+        assert set(result["matched_ids"]) == {"exact-part", "part-xy"}
         rag.text_chunks.delete.assert_called_once_with(result["matched_ids"])
 
     @patch("niu_api.internal.lightrag_adapter.call_async")
