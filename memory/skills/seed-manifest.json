@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "hash": "fnv1a64",
+  "skills": {
+    "brain-region-management.md": {
+      "version": 2,
+      "hash": "590e32663cc45d72",
+      "history": [
+        "8875561ef6c6416e"
+      ]
+    },
+    "daily-routine-data.md": {
+      "version": 1,
+      "hash": "c5a08bc1dfee5089",
+      "history": []
+    },
+    "kg-doc-reimport.md": {
+      "version": 1,
+      "hash": "8c0e88c6a0123489",
+      "history": []
+    },
+    "note-management.md": {
+      "version": 2,
+      "hash": "b03b49ceff3b64d7",
+      "history": [
+        "0648d29f929c17e5"
+      ]
+    },
+    "office-docs.md": {
+      "version": 1,
+      "hash": "c170ed1554cc8a35",
+      "history": []
+    },
+    "photo-face-display.md": {
+      "version": 1,
+      "hash": "2f750dfd90f3206e",
+      "history": []
+    },
+    "report-skill.md": {
+      "version": 3,
+      "hash": "511e56ab03bc2145",
+      "history": [
+        "9d75875a5d706f4e",
+        "a4cfa04a0d9d9c56"
+      ]
+    },
+    "scheduled-tasks.md": {
+      "version": 2,
+      "hash": "a76e467478d201df",
+      "history": [
+        "1cc4ec66f20c4934"
+      ]
+    }
+  }
+}
