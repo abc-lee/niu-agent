@@ -74,6 +74,20 @@
   （该技能不在任何 git 仓库内、无同步源 ⇒ 直接改不会被覆盖。）
 - **本次未打包**（用户明确"不要打包"）：`dist/Niu-0.5.1-mac-intel.dmg`（1015M，完整）保持不变；`niu.app` 仍是上一轮重建的产物（含技能机制，版本串待下次打包刷新为 0.5.2）。
 
+#### 工程：出厂技能更新机制（方案 A）+ 种子内容升级 + 小版本 0.5.2 + 等价条件实测（2026-10-16 上午）
+
+- **用户口径（两条原话）**：① 「同意方案 A」；② 「如果我机器上现在实际跑的技能比 Memory 下的确实有优势，那么你也更新一下 Memory 下的技能，按你的逻辑就是更新到下一个版本」。
+- **种子内容升级（先把"哪些能出厂"判清）**：派只读**逐 hunk 差异分析**（`reviews/2026-10-16-skills-seed-vs-live.md`）——8 条出厂技能里 5 条与用户机副本不同；结论是**不能整份照搬**：实测版 `brain-region-management.md` 含 **3 处与现网代码矛盾的过期描述**（旧的 `core/category` 优先级制式【现网 `PRIORITY_HALFLIFE = permanent/long/medium/short`，PM 亲核】、已删除的 `assign_entities_to_default_regions`、被简化的 dissolve 机制）；**敏感项扫描为空集**（无密钥/邮箱/主机名，路径均产品约定路径）。
+  ⇒ 只并入**通用改进**：`brain-region-management` 4 处（+description 场景 / +运行时行为总纲 / +`## Runtime Behavior` 节【标题去掉"用户教导"字样】/ +When-to-Use 条目，**拒绝**上列 3 处过期）/ `report-skill` 3 块 / `scheduled-tasks` 1 条 / `note-management` 仅 **CRLF→LF**（纯换行；证据：`tr -d '\r'` 后哈希与原文件逐字节相等）/ 其余 4 条未动。
+- **其中一处必须改**：新并入的《修改既有日志条目的正确姿势》原文写"连续失败 2 次改用 `bash` 的 `sed -i`"——**与铁律 10（禁止用脚本改文件）直接冲突**，出厂后会教坏所有客户的 Agent ⇒ 改写为"**停手 → 用 `read` 取逐字内容再改一次 → 仍不中即复核假设；禁止改用脚本改文件**"，并把"工具成功退出不代表命中"通用化（去掉 `sed` 引用）。
+- **机制（方案 A 本体）**：判据＝**历史哈希集**——目标缺失⇒拷；`hash == 当前出厂`⇒不动；`hash ∈ history`（从未被改过）⇒用出厂当前内容覆盖 + 日志 `[skills] 更新出厂技能 <f> (→ v<N>)`；其它（被改过）⇒**保留不动** + 日志 `[skills] 保留已改动的技能 <f>`；**清单缺失/坏 JSON/算法或 schema 不符 ⇒ 退化为"只补缺" + 一条 WARNING，绝不 panic/阻断启动**。清单外的 `.md` 按"保留"处理（无可信出厂哈希就不覆盖）。
+  载体：`memory/skills/seed-manifest.json`（`{schema,hash:"fnv1a64",skills:{…version/hash/history}}`）+ **内联 FNV-1a 64**（`launcher/src/main.rs`，**零新依赖零联网**；四个公认向量命中 `''/'a'/'abc'/'hello world'`，且 **Rust↔Python 跨实现实测逐字节一致**）+ 隐藏维护参数 `niu --gen-skills-manifest`（与运行时同函数算哈希 ⇒ 生成与判据永不漂移）。其它种子（`memory.json`/`preferences.json`/`llama-layout.*`）语义**一字未动**。新增 7 用例；`cargo test` **38+4+4 全绿**。
+  （提交：`a95307ef` 种子+清单+Python 维护脚本；`fa8f15be` Rust 机制；`15e037e0` 手册新增《出厂技能的更新规则》一节。）
+- **✅ 真机验收（PM 亲跑，夹具备份并逐字节还原）**：夹具①（把 `scheduled-tasks.md` 写成**历史出厂版**内容，FNV `1cc4ec66…`）⇒ 启动后被刷新为当前版 `a76e4674…` + 日志"更新出厂技能 scheduled-tasks.md (v? → v2)"；夹具②（给 `photo-face-display.md` 加一行）⇒ **原样保留** `387ad12f…` + 日志"保留已改动的技能"；**额外实证：用户机上另外 3 条改过的种子（brain-region / note-management / report-skill）全部"保留已改动"——一条都没被覆盖**。
+- **小版本升级 0.5.1 → 0.5.2**（`a9db0acd`）：只改单一真相源根目录 `VERSION`；验证 `chat.html` 硬编码版本串命中 0（label 由 preload 的 `APP_VERSION` 运行时渲染）、`tests/test_list_models_endpoint.py`（UA 断言动态读 VERSION）**20 passed**。**本次未打包**（用户明确"不要打包"），`dist/Niu-0.5.1-mac-intel.dmg`（1015M）完好。
+- **harness 技能纠错（用户点名："哪个技能里错误指挥？你把那技能改了不就完了？"）**：`~/.omp/agent/managed-skills/niu-version-bump-and-package/SKILL.md` 旧文写"**VERSION + chat.html 两处同步**"（0.3.5 前的老做法，早已作废）⇒ 直接改五处：§1 改"只改 `VERSION` 一处"+列三个动态消费点；§2 `./launcher/build.sh` ⇒ `bash launcher/build.sh`（无执行位）+ 补打包前置 `scripts/package_all_dependencies.py`；§3 补跑片段版本号改 `$(cat VERSION)`（不许写死）；§4 验证段改动态核对（`diff VERSION` / `codesign --verify --strict` / 包内清单门禁）并明写"**别去 bundle 里 grep chat.html 版本串**"；§3 超时说明改 `timeout: 0`。（该技能不在 git、无同步源 ⇒ 改完不会被覆盖。）
+- **等价条件实测（补强 Windows 那条待验项）**：POSIX 下删文件需**父目录可写** ⇒ 把父目录设只读即等价"跨进程删不掉"。实测：父目录只读时 `os.remove` 抛 `PermissionError`（**复现该现象**），而 `f4_dismiss_if_all_done()` 在同条件下**返回 True、文件 64→0、文件本身保留** ⇒ 证明"删不掉"已不再影响该流程。（同时复核：含未完成行时返回 False 且文件不变。）
+
 ### 2026-10-15
 
 #### 向量闲置门（D-31）交付：门禁三连 + AC-5 并发实测 + 四条实施期勘误（2026-10-14 夜 ~ 10-15 凌晨）
