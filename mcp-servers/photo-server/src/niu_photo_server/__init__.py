@@ -1575,7 +1575,7 @@ def cleanup_deleted_photos() -> dict:
     """清理已删除照片的数据库记录
 
     扫描 photos 表，删除文件不存在的照片记录及其关联的 faces 记录，
-    并清理这些照片贡献的 KG 足迹（照片实体 + depicts 边；共享人物实体绝不删）。
+    并清理这些照片贡献的 KG 足迹（照片实体 + depicts 边 + 该照片自身 chunk 与关系虚拟块 + 媒体向量；共享人物实体绝不删）。
     在删除照片文件后调用此工具清理数据库。
 
     返回:
@@ -1583,6 +1583,9 @@ def cleanup_deleted_photos() -> dict:
     - deleted_faces: 删除的人脸记录数
     - kg_entities_deleted: 删除的照片实体数（KG）
     - kg_relations_deleted: 删除的 depicts 关系数（KG）
+    - kg_chunks_deleted: 删除的 A 类 chunk 数（照片自身 text_chunks，连带向量）
+    - kg_vectors_deleted: 删除的 B 类关系虚拟块向量数（按照片实体名匹配）
+    - media_vectors_removed: 移除的媒体向量条数（本无则 0，不计错）
     - kg_errors: KG 清理失败原因列表（空 = 全部成功）
     """
     from pathlib import Path
@@ -1609,6 +1612,9 @@ def cleanup_deleted_photos() -> dict:
             "deleted_faces": 0,
             "kg_entities_deleted": 0,
             "kg_relations_deleted": 0,
+            "kg_chunks_deleted": 0,
+            "kg_vectors_deleted": 0,
+            "media_vectors_removed": 0,
             "kg_errors": [],
         }
 
@@ -1668,13 +1674,20 @@ def cleanup_deleted_photos() -> dict:
 
     # §2.6: 删照片后清理该照片贡献的 KG 足迹——只删"仅由该照片产生"的部分：
     # 照片自身实体（实体名 = 归一化文件名 stem，与 format_photo_ingest_data 同一把键）
-    # + 它的 features(depicts) 边。共享人物/地点实体绝不进入删除调用 ⇒
-    # 删一张照片不会使共享实体/关系异常减少。KG 失败如实告警并记入 kg_errors，
-    # 不翻转 DB 清理结果。
+    # + 它的 features(depicts) 边 + 该照片自身 A 类 chunk（按归一化路径匹配，T1 delete_chunks_by_source）
+    # + B 类关系虚拟块（按照片实体名匹配，D-3）+ 媒体向量（D-4）。共享人物/地点实体绝不进入删除调用 ⇒
+    # 删一张照片不会使共享实体/关系异常减少。任何一步失败如实告警并记入 kg_errors，不翻转 DB 清理结果。
     kg_entities_deleted = 0
     kg_relations_deleted = 0
+    kg_chunks_deleted = 0
+    kg_vectors_deleted = 0
+    media_vectors_removed = 0
     kg_errors: list[str] = []
     try:
+        # 函数内惰性 import（与 _entity_exists_in_kg 同一缝）：严禁模块级 import——
+        # 否则测试的类级 patch 拦不住，且无 niu_api 的环境导入即炸。
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        from niu_api.internal import media_vectors
         from agent.tool_registry import get_registry
         registry = get_registry()
         delete_entity_fn = registry.get("lightrag-server/lightrag_delete_entity")
@@ -1682,25 +1695,46 @@ def cleanup_deleted_photos() -> dict:
         for photo_id in deleted_photo_ids:
             normalized_path = deleted_photo_paths[photo_id].replace("\\", "/").lower()
             photo_entity = Path(normalized_path).stem
-            # ① 该照片的 depicts 边：逐边删，只删边、人物实体不动
-            for person_entity in photo_person_entities.get(photo_id, []):
-                if delete_rel_fn is None:
-                    kg_errors.append(f"lightrag_delete_relation 不在 registry 中，边 {photo_entity}->{person_entity} 未删")
-                    break
-                r = delete_rel_fn(source_entity=photo_entity, target_entity=person_entity)
-                if isinstance(r, dict) and r.get("status") == "ok":
-                    kg_relations_deleted += 1
+            try:
+                # ① 该照片的 depicts 边：逐边删，只删边、人物实体不动
+                for person_entity in photo_person_entities.get(photo_id, []):
+                    if delete_rel_fn is None:
+                        kg_errors.append(f"lightrag_delete_relation 不在 registry 中，边 {photo_entity}->{person_entity} 未删")
+                        break
+                    r = delete_rel_fn(source_entity=photo_entity, target_entity=person_entity)
+                    if isinstance(r, dict) and r.get("status") == "ok":
+                        kg_relations_deleted += 1
+                    else:
+                        kg_errors.append(f"depicts 边 {photo_entity}->{person_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
+                # ② 照片自身实体（连带其"拍摄于"等剩余边与向量）
+                if delete_entity_fn is None:
+                    kg_errors.append(f"lightrag_delete_entity 不在 registry 中，照片实体 {photo_entity} 未删")
                 else:
-                    kg_errors.append(f"depicts 边 {photo_entity}->{person_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
-            # ② 照片自身实体（连带其"拍摄于"等剩余边与向量）
-            if delete_entity_fn is None:
-                kg_errors.append(f"lightrag_delete_entity 不在 registry 中，照片实体 {photo_entity} 未删")
-            else:
-                r = delete_entity_fn(entity_name=photo_entity)
+                    r = delete_entity_fn(entity_name=photo_entity)
+                    if isinstance(r, dict) and r.get("status") == "ok":
+                        kg_entities_deleted += 1
+                    else:
+                        kg_errors.append(f"照片实体 {photo_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
+                # ③ A 类 chunk：该照片自身的 text_chunks + 向量（按归一化路径三条件匹配）
+                r = LightRAGAdapter().delete_chunks_by_source(normalized_path)
                 if isinstance(r, dict) and r.get("status") == "ok":
-                    kg_entities_deleted += 1
+                    kg_chunks_deleted += r.get("deleted_chunks", 0)
                 else:
-                    kg_errors.append(f"照片实体 {photo_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
+                    kg_errors.append(f"A 类 chunk {photo_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
+                # ④ B 类关系虚拟块：只传照片实体名（共享人物/地点名绝不进入删除调用，D-3）
+                r = LightRAGAdapter().delete_custom_kg_relation_chunks([photo_entity])
+                if isinstance(r, dict) and r.get("status") == "ok":
+                    kg_vectors_deleted += r.get("deleted_vectors", 0)
+                else:
+                    kg_errors.append(f"B 类关系虚拟块 {photo_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
+                # ⑤ 媒体向量：False = 本就没有，不计错（D-4）
+                if media_vectors.remove(photo_entity):
+                    media_vectors_removed += 1
+            except Exception as e:
+                # 逐照片异常隔离：某张照片的硬异常不得中断其余照片的五步清理
+                #（否则 DB 行已删而 KG 残留），且 status 恒 success、不翻转 DB 结果。
+                kg_errors.append(f"照片 {photo_entity} 清理异常: {e}")
+                continue
         if kg_errors:
             logger.warning(f"[CLEANUP_PHOTOS] KG 足迹清理不完整: {len(kg_errors)} 处失败: {kg_errors}")
     except Exception as e:
@@ -1714,6 +1748,9 @@ def cleanup_deleted_photos() -> dict:
         "deleted_faces": deleted_faces,
         "kg_entities_deleted": kg_entities_deleted,
         "kg_relations_deleted": kg_relations_deleted,
+        "kg_chunks_deleted": kg_chunks_deleted,
+        "kg_vectors_deleted": kg_vectors_deleted,
+        "media_vectors_removed": media_vectors_removed,
         "kg_errors": kg_errors,
     }
 

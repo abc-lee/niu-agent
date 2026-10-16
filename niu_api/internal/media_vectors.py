@@ -12,9 +12,9 @@ v3.0 纯索引（D-23）：**不复制落盘路径**——路径与描述在查�
 存储：单个 JSON 文件（自持，不依赖 SQLite / LightRAG 任何存储原语）：
     {"dim": 768, "entries": {"<实体名>": {"entity_name", "media_type", "vector"}}}
 原子写（同目录临时文件 + os.replace，同 lightrag_integrity._atomic_write_json 先例）。
-单写者假设：v3.0 下的唯一写者是后台工作者（调度器既有线程池内）；查询侧只读。
+同进程写者：v3.0 下同进程写者 = 后台工作者（调度器既有线程池内）+ 删照片清理（``remove``），由模块锁串行化；查询侧只读。
 
-并发契约：``add`` / ``add_many`` 用模块 ``threading.Lock`` 串行化整个 read-modify-write——
+并发契约：``add`` / ``add_many`` / ``remove`` 用模块 ``threading.Lock`` 串行化整个 read-modify-write——
 同进程并发调用不再丢更新；跨进程不保证（单写者假设）。只读操作（search / count / has）不取锁：
 ``os.replace`` 原子，读方恒见整份旧版或整份新版。
 
@@ -155,6 +155,25 @@ def add_many(items: list[tuple[str, str, list[float]]]) -> int:
 def add(entity_name: str, media_type: str, vector: list[float]) -> None:
     """写入一条媒体向量（**同 entity_name 覆盖**，不追加）。``add_many`` 的单条薄包装。"""
     add_many([(entity_name, media_type, vector)])
+
+
+def remove(entity_name: str) -> bool:
+    """移除一条媒体向量（删照片清理，D-4）。``add_many`` 的逆操作（不写向量）。
+
+    持 ``_store_lock`` 做读-改-写 + 原子落盘（与 ``add_many`` 同一把锁，防并发丢更新）；
+    写侧校验只复用「绑定键非空」这半段——``_validate_writable`` 要求向量参数，``remove``
+    没有向量、不能原样调用。键不存在 ⇒ 返回 ``False``（不落盘、不创建文件，与
+    ``has`` / ``count`` 读侧容错风格一致）；文件损坏仍 fail-loud（``_load_store`` 原语义）。
+    """
+    if not entity_name:
+        raise ValueError("entity_name 不得为空（绑定键是图谱实体名）")
+    with _store_lock:
+        entries = _load_store()
+        if entity_name not in entries:
+            return False
+        del entries[entity_name]
+        _atomic_write_store(media_store_path(), _normalize_entries(entries))
+    return True
 
 
 def search(query_vector: list[float], top_k: int) -> list[dict]:
