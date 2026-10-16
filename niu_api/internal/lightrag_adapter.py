@@ -1890,6 +1890,149 @@ class LightRAGAdapter:
             logger.error(f"LightRAG delete_relation failed: {e}")
             return {"status": "error", "message": str(e)}
 
+    def delete_chunks_by_source(self, source_path: str) -> dict[str, Any]:
+        """Delete all text chunks and their vectors derived from a photo source path (A 类).
+
+        三个匹配条件任一命中即删：file_path == source_path / source_id == source_path /
+        source_id 以 source_path + "_" 为前缀。枚举共享 text_chunks._data
+        （BaseKVStorage 无公开枚举接口，不直读 JSON 文件）；按 id 删 KV 与向量后，
+        落盘落在两个 storage 实例上（rag 实例上没有 index_done_callback）。
+        deleted_vectors 口径：传入删除调用的 id 数；上游 vdb 层对不存在的 id 静默过滤、
+        内部异常被上游吞掉（只 logger.error），实际删除的向量数可能小于该值，
+        真值以真机基线核对为准。
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        if not source_path:
+            return {
+                "status": "ok",
+                "deleted_chunks": 0,
+                "deleted_vectors": 0,
+                "matched_ids": [],
+            }
+        try:
+
+            async def _op():
+                # 枚举是同步扫描，与删除动作在同一协程内、中间不 await：
+                # 避免并发写者在枚举与删除之间改动 _data 造成删错 id。
+                # _data 为 None（未初始化）⇒ 直接返回 error（判空先例为 lightrag_repair 的 storage._data 判空）
+                if rag.text_chunks._data is None:
+                    return {"status": "error", "message": "LightRAG text_chunks 未初始化"}
+                matched_ids: list[str] = []
+                prefix = source_path + "_"
+                for chunk_id, chunk in rag.text_chunks._data.items():
+                    if not isinstance(chunk, dict):
+                        continue
+                    if (
+                        chunk.get("file_path") == source_path
+                        or chunk.get("source_id") == source_path
+                        or str(chunk.get("source_id") or "").startswith(prefix)
+                    ):
+                        matched_ids.append(chunk_id)
+                if not matched_ids:
+                    return {
+                        "status": "ok",
+                        "deleted_chunks": 0,
+                        "deleted_vectors": 0,
+                        "matched_ids": [],
+                    }
+                await rag.text_chunks.delete(matched_ids)
+                await rag.chunks_vdb.delete(matched_ids)
+                # 落盘落在 storage 实例上（rag 实例上没有 index_done_callback）
+                await rag.text_chunks.index_done_callback()
+                await rag.chunks_vdb.index_done_callback()
+                return {
+                    "status": "ok",
+                    "deleted_chunks": len(matched_ids),
+                    "deleted_vectors": len(matched_ids),
+                    "matched_ids": matched_ids,
+                }
+
+            result = call_async(_op(), timeout=lightrag_timeout("delete_timeout", 300))
+            return result
+        except Exception as e:
+            logger.error(f"LightRAG delete_chunks_by_source failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def delete_custom_kg_relation_chunks(self, entity_names: list[str]) -> dict[str, Any]:
+        """Delete B 类 relation virtual chunks (file_path == "custom_kg").
+
+        content 解析两步：按 "->" 切段数 ≠ 2（含无 "->" 的 1 段、含 "->" 的 >2 段）
+        ⇒ 跳过并计数；两侧 strip 后，每侧去掉形如 ": " 起的后缀（生成侧
+        f"{src}->{tgt}: {kw}" 恒把 ": kw" 挂在目标端点上，不剥则目标侧不可达），
+        任一端点剥后全等命中给定实体名即删。删除与落盘口径同 delete_chunks_by_source。
+        返回体额外含 skipped（解析失败条数）。
+        deleted_vectors 口径同 delete_chunks_by_source：传入删除调用的 id 数；上游 vdb 层
+        对不存在的 id 静默过滤、内部异常被上游吞掉（只 logger.error），实际删除的
+        向量数可能小于该值，真值以真机基线核对为准。
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        if not entity_names:
+            return {
+                "status": "ok",
+                "deleted_chunks": 0,
+                "deleted_vectors": 0,
+                "matched_ids": [],
+                "skipped": 0,
+            }
+        try:
+
+            async def _op():
+                matched_ids: list[str] = []
+                skipped = 0
+                # 同 A 类：_data 为 None（未初始化）⇒ 直接返回 error（先例 lightrag_repair 判空）
+                if rag.text_chunks._data is None:
+                    return {"status": "error", "message": "LightRAG text_chunks 未初始化"}
+                for chunk_id, chunk in rag.text_chunks._data.items():
+                    if not isinstance(chunk, dict) or chunk.get("file_path") != "custom_kg":
+                        continue
+                    content = chunk.get("content")
+                    if not isinstance(content, str):
+                        skipped += 1
+                        continue
+                    parts = content.split("->")
+                    if len(parts) != 2:
+                        skipped += 1
+                        continue
+                    endpoints = []
+                    for raw in parts:
+                        side = raw.strip()
+                        if ": " in side:
+                            side = side.split(": ", 1)[0]
+                        endpoints.append(side)
+                    # 任一端点全等命中即删（宁漏不误删：解析失败只跳过，不猜）
+                    if endpoints[0] in entity_names or endpoints[1] in entity_names:
+                        matched_ids.append(chunk_id)
+                if not matched_ids:
+                    return {
+                        "status": "ok",
+                        "deleted_chunks": 0,
+                        "deleted_vectors": 0,
+                        "matched_ids": [],
+                        "skipped": skipped,
+                    }
+                await rag.text_chunks.delete(matched_ids)
+                await rag.chunks_vdb.delete(matched_ids)
+                await rag.text_chunks.index_done_callback()
+                await rag.chunks_vdb.index_done_callback()
+                return {
+                    "status": "ok",
+                    "deleted_chunks": len(matched_ids),
+                    "deleted_vectors": len(matched_ids),
+                    "matched_ids": matched_ids,
+                    "skipped": skipped,
+                }
+
+            result = call_async(_op(), timeout=lightrag_timeout("delete_timeout", 300))
+            return result
+        except Exception as e:
+            logger.error(f"LightRAG delete_custom_kg_relation_chunks failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+
     def get_entity_info(self, entity_name, include_vector_data=False, timeout=30):
         """Get detailed information about an entity.
 
