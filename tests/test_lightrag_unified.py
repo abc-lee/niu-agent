@@ -7,6 +7,8 @@ Verifies that sync_photo_to_kg constructs Person entities correctly:
 """
 import os
 import sys
+import logging
+import pytest
 from unittest.mock import MagicMock, patch
 
 # Add photo-server source to path (跨平台相对路径，防单跑 collection error)
@@ -306,7 +308,8 @@ class TestNamePersonKGSync:
         result = name_person("person_001", "Alice")
 
         # Verify ToolRegistry was used
-        mock_get_registry.assert_called_once()
+        # 改名会触发两次 get_registry：KG merge 块 + §2.5 描述块同步块
+        assert mock_get_registry.call_count >= 1
         mock_registry.get.assert_any_call("lightrag-server/lightrag_merge_entities")
         mock_registry.get.assert_any_call("lightrag-server/lightrag_insert_custom_kg")
 
@@ -855,3 +858,226 @@ class TestDeletedVectorStoreAndKGServer:
                 f"config/mcp-servers.yaml still contains '{server_name}' entry. "
                 "It should be removed — replaced by lightrag-server."
             )
+
+
+# ============================================================
+# §2.5: name_person 改名后同步 KG 人物实体描述块（lightrag_edit_entity）
+# 缺陷背景：改名只改 photos.abstract，KG 描述块仍写旧名（「未命名人物_1」）⇒ KG/DB 漂移。
+# ============================================================
+
+def _make_registry(tool_map):
+    """registry.get(name) → tool_map.get(name) 的 mock registry（未列出的工具返回 None）。"""
+    mock_registry = MagicMock()
+    mock_registry.get.side_effect = lambda name: tool_map.get(name)
+    return mock_registry
+
+
+class TestNamePersonKgDescriptionSync:
+    """§2.5: 改名成功后，KG 人物实体描述块必须经 lightrag_edit_entity 重写为新名字。"""
+
+    @staticmethod
+    def _mock_person_conn(person_row):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        # 第一次 execute: 查人物行；第二次: 同名检查 → None（无同名人物）
+        mock_cursor.fetchone.side_effect = [person_row, None]
+        mock_conn.execute.return_value = mock_cursor
+        return mock_conn
+
+    @patch("agent.tool_registry.get_registry")
+    @patch("niu_photo_server.get_connection")
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=True)
+    def test_rename_syncs_description_with_new_name(self, mock_exists, mock_get_conn, mock_get_registry):
+        """合并成功 ⇒ edit_entity 被调用，且 entity_name/description 都带新名字（不再是旧描述块）。"""
+        mock_get_conn.return_value = self._mock_person_conn(("person_010", "未命名人物_1", "auto_010", 2))
+        mock_edit = MagicMock(return_value={"status": "ok"})
+        mock_get_registry.return_value = _make_registry({
+            "lightrag-server/lightrag_merge_entities": MagicMock(return_value={"status": "ok"}),
+            "lightrag-server/lightrag_edit_entity": mock_edit,
+        })
+
+        from niu_photo_server import name_person
+
+        result = name_person("person_010", "李磊")
+
+        mock_edit.assert_called_once()
+        kwargs = mock_edit.call_args.kwargs
+        assert kwargs["entity_name"] == "李磊"
+        assert kwargs["description"] == "李磊（person_id=person_010）"
+        assert result["status"] == "success"
+        assert result["kg_synced"] is True
+        assert result["kg_desc_synced"] is True
+        assert result["kg_errors"] == []
+
+    @patch("agent.tool_registry.get_registry")
+    @patch("niu_photo_server.get_connection")
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=True)
+    @patch("niu_photo_server.logger")
+    def test_description_sync_failure_warns_and_reports(self, mock_logger, mock_exists, mock_get_conn, mock_get_registry):
+        """描述块同步失败 ⇒ 如实告警 + kg_errors 记录原因，主操作（改名）不因此失败。"""
+        mock_get_conn.return_value = self._mock_person_conn(("person_011", "旧名", "auto_011", 1))
+        mock_get_registry.return_value = _make_registry({
+            "lightrag-server/lightrag_merge_entities": MagicMock(return_value={"status": "ok"}),
+            "lightrag-server/lightrag_edit_entity": MagicMock(
+                return_value={"status": "error", "message": "entity not found"}
+            ),
+        })
+
+        from niu_photo_server import name_person
+
+        result = name_person("person_011", "王五")
+
+        assert result["status"] == "success"      # DB 改名本身成功
+        assert result["kg_synced"] is True        # 实体改名（merge）成功
+        assert result["kg_desc_synced"] is False  # 但描述块没同步成功
+        assert any("entity not found" in e for e in result["kg_errors"])
+        # 不静默：必须如实告警（项目用 loguru，走模块 logger；caplog 捕获不到）
+        warned = [str(c.args[0]) for c in mock_logger.warning.call_args_list]
+        assert any("KG 描述块同步失败" in w for w in warned)
+
+    @patch("agent.tool_registry.get_registry")
+    @patch("niu_photo_server.get_connection")
+    @patch("niu_photo_server._entity_exists_in_kg", return_value=False)
+    def test_no_description_rewrite_when_target_missing(self, mock_exists, mock_get_conn, mock_get_registry):
+        """目标实体未建成（注入失败）⇒ 不重写旧实体描述（避免"旧名节点+新名描述"畸形），失败如实上报。"""
+        mock_get_conn.return_value = self._mock_person_conn(("person_012", "未命名人物_1", "auto_012", 1))
+        mock_edit = MagicMock(return_value={"status": "ok"})
+        mock_get_registry.return_value = _make_registry({
+            "lightrag-server/lightrag_insert_custom_kg": MagicMock(
+                return_value={"status": "error", "message": "LightRAG down"}
+            ),
+            "lightrag-server/lightrag_edit_entity": mock_edit,
+        })
+
+        from niu_photo_server import name_person
+
+        result = name_person("person_012", "赵六")
+
+        mock_edit.assert_not_called()  # 新名实体不存在，绝不改写旧实体
+        assert result["kg_synced"] is False
+        assert result["kg_desc_synced"] is False
+        assert any("LightRAG down" in e for e in result["kg_errors"])
+
+
+# ============================================================
+# §2.6: cleanup_deleted_photos 清理照片专属 KG 足迹（照片实体 + depicts 边），
+# 共享人物实体绝不删。临时库经 NIU_DB_PATH 指向 tmp，不读真 ~/.niu。
+# ============================================================
+
+class TestCleanupDeletedPhotosKgFootprint:
+    """§2.6: 删照片后只删该照片专属 KG 足迹；共享人物实体/关系不得减少。"""
+
+    @pytest.fixture()
+    def kg_env(self, tmp_path, monkeypatch):
+        import niu_photo_server as nps
+        nps._conn = None
+        nps._db_path_failed = False
+        monkeypatch.setenv("NIU_DB_PATH", str(tmp_path / "photos.db"))
+        yield tmp_path
+        nps._conn = None
+        nps._db_path_failed = False
+
+    def _seed(self, tmp_path):
+        """李磊出现在两张照片（一张文件已删、一张还在）；未命名人物_9 只在已删照片里。"""
+        import niu_photo_server as nps
+        kept = tmp_path / "IMG_20240102.jpg"
+        kept.write_bytes(b"\xff\xd8\xff\xdb" + b"\x00" * 32)
+        conn = nps.get_connection()
+        conn.execute(
+            "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_lilei', '李磊', 'auto_lilei', 2)"
+        )
+        conn.execute(
+            "INSERT INTO persons (id, name, auto_label, photo_count) VALUES ('p_unnamed', NULL, '未命名人物_9', 1)"
+        )
+        # 已删照片：文件不存在（IMG_20240101.jpg 不落盘）
+        conn.execute(
+            "INSERT INTO photos (id, file_path, abstract, kg_synced) VALUES ('ph_deleted', ?, '旧照片', 1)",
+            (str(tmp_path / "IMG_20240101.jpg"),),
+        )
+        conn.execute(
+            "INSERT INTO photos (id, file_path, abstract, kg_synced) VALUES ('ph_keep', ?, '还在的照片', 1)",
+            (str(kept),),
+        )
+        conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f1', 'ph_deleted', 'p_lilei')")
+        conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f2', 'ph_deleted', 'p_unnamed')")
+        conn.execute("INSERT INTO faces (id, photo_id, person_id) VALUES ('f3', 'ph_keep', 'p_lilei')")
+        conn.commit()
+
+    @patch("agent.tool_registry.get_registry")
+    def test_photo_footprint_deleted_shared_person_kept(self, mock_get_registry, kg_env):
+        """删一张照片 ⇒ 照片实体 + 它的 depicts 边被删；共享人物实体绝不进删除调用。"""
+        self._seed(kg_env)
+        mock_del_entity = MagicMock(return_value={"status": "ok"})
+        mock_del_rel = MagicMock(return_value={"status": "ok"})
+        mock_get_registry.return_value = _make_registry({
+            "lightrag-server/lightrag_delete_entity": mock_del_entity,
+            "lightrag-server/lightrag_delete_relation": mock_del_rel,
+        })
+
+        from niu_photo_server import cleanup_deleted_photos
+
+        result = cleanup_deleted_photos()
+
+        stem = "img_20240101"  # 归一化（正斜杠+小写）后的文件名 stem，与 format_photo_ingest_data 同一把键
+        # DB 侧：照片/人脸行删除，共享人物 photo_count 重算为 1（还有 ph_keep）
+        import niu_photo_server as nps
+        conn = nps.get_connection()
+        assert conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 1
+        assert conn.execute("SELECT photo_count FROM persons WHERE id='p_lilei'").fetchone()[0] == 1
+        # KG 侧：只删照片实体（stem），人物实体名绝不在删除列表里
+        deleted_entities = [c.kwargs["entity_name"] for c in mock_del_entity.call_args_list]
+        assert deleted_entities == [stem]
+        assert "李磊" not in deleted_entities
+        assert "未命名人物_9" not in deleted_entities
+        # depicts 边：照片 → 两个共享人物，各删一条
+        rel_pairs = {(c.kwargs["source_entity"], c.kwargs["target_entity"]) for c in mock_del_rel.call_args_list}
+        assert (stem, "李磊") in rel_pairs
+        assert (stem, "未命名人物_9") in rel_pairs
+        assert result["status"] == "success"
+        assert result["deleted_photos"] == 1
+        assert result["kg_entities_deleted"] == 1
+        assert result["kg_relations_deleted"] == 2
+        assert result["kg_errors"] == []
+
+    @patch("agent.tool_registry.get_registry")
+    @patch("niu_photo_server.logger")
+    def test_kg_failure_reported_not_silent(self, mock_logger, mock_get_registry, kg_env):
+        """KG 删除失败 ⇒ kg_errors 如实记录 + WARNING 告警；DB 清理结果不因此翻转。"""
+        self._seed(kg_env)
+        mock_del_entity = MagicMock(return_value={"status": "ok"})
+        mock_del_rel = MagicMock(return_value={"status": "error", "message": "LightRAG down"})
+        mock_get_registry.return_value = _make_registry({
+            "lightrag-server/lightrag_delete_entity": mock_del_entity,
+            "lightrag-server/lightrag_delete_relation": mock_del_rel,
+        })
+
+        from niu_photo_server import cleanup_deleted_photos
+
+        result = cleanup_deleted_photos()
+
+        assert result["status"] == "success"           # DB 清理本身成功
+        assert result["deleted_photos"] == 1
+        assert result["kg_relations_deleted"] == 0     # 边全失败
+        assert result["kg_entities_deleted"] == 1      # 实体删除成功
+        assert any("LightRAG down" in e for e in result["kg_errors"])
+        warned = [str(c.args[0]) for c in mock_logger.warning.call_args_list]
+        assert any("KG 足迹清理不完整" in w for w in warned)
+
+    def test_no_missing_files_no_kg_calls(self, kg_env):
+        """无缺失照片 ⇒ 早退，绝不触碰 KG registry。"""
+        import niu_photo_server as nps
+        kept = kg_env / "IMG_20240102.jpg"
+        kept.write_bytes(b"\xff\xd8\xff\xdb" + b"\x00" * 32)
+        conn = nps.get_connection()
+        conn.execute(
+            "INSERT INTO photos (id, file_path, abstract, kg_synced) VALUES ('ph_keep', ?, '还在的照片', 1)",
+            (str(kept),),
+        )
+        conn.commit()
+
+        with patch("agent.tool_registry.get_registry", side_effect=AssertionError("无删除照片时不得触碰 KG")):
+            result = nps.cleanup_deleted_photos()
+
+        assert result["deleted_photos"] == 0
+        assert result["kg_errors"] == []

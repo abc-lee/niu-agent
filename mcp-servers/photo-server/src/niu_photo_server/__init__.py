@@ -1547,12 +1547,16 @@ def delete_person(person_id: str) -> dict:
 def cleanup_deleted_photos() -> dict:
     """清理已删除照片的数据库记录
 
-    扫描 photos 表，删除文件不存在的照片记录及其关联的 faces 记录。
+    扫描 photos 表，删除文件不存在的照片记录及其关联的 faces 记录，
+    并清理这些照片贡献的 KG 足迹（照片实体 + depicts 边；共享人物实体绝不删）。
     在删除照片文件后调用此工具清理数据库。
 
     返回:
     - deleted_photos: 删除的照片记录数
     - deleted_faces: 删除的人脸记录数
+    - kg_entities_deleted: 删除的照片实体数（KG）
+    - kg_relations_deleted: 删除的 depicts 关系数（KG）
+    - kg_errors: KG 清理失败原因列表（空 = 全部成功）
     """
     from pathlib import Path
 
@@ -1561,12 +1565,14 @@ def cleanup_deleted_photos() -> dict:
     # 找出文件不存在的照片
     cursor = conn.execute("SELECT id, file_path FROM photos")
     deleted_photo_ids = []
+    deleted_photo_paths: dict[str, str] = {}  # photo_id → file_path（§2.6 KG 足迹清理用）
 
     for row in cursor.fetchall():
         photo_id = row[0]
         file_path = row[1]
         if not Path(file_path).exists():
             deleted_photo_ids.append(photo_id)
+            deleted_photo_paths[photo_id] = file_path
 
     if not deleted_photo_ids:
         return {
@@ -1574,6 +1580,9 @@ def cleanup_deleted_photos() -> dict:
             "message": "No deleted photos to cleanup",
             "deleted_photos": 0,
             "deleted_faces": 0,
+            "kg_entities_deleted": 0,
+            "kg_relations_deleted": 0,
+            "kg_errors": [],
         }
 
     placeholders = ",".join("?" * len(deleted_photo_ids))
@@ -1583,6 +1592,23 @@ def cleanup_deleted_photos() -> dict:
         f"SELECT DISTINCT person_id FROM faces WHERE photo_id IN ({placeholders}) AND person_id IS NOT NULL",
         deleted_photo_ids,
     ).fetchall()
+
+    # §2.6: 删 faces 之前，收集每张待删照片的人物 KG 实体名
+    # （命名约定与 format_photo_ingest_data 一致：已命名用真名，未命名用 auto_label），
+    # 供删除后清理该照片的 features(depicts) 边。人物实体本身绝不进入任何删除调用。
+    photo_person_entities: dict[str, list[str]] = {}
+    for fpid, fname, fauto in conn.execute(
+        f"SELECT f.photo_id, p.name, p.auto_label FROM faces f "
+        f"JOIN persons p ON f.person_id = p.id WHERE f.photo_id IN ({placeholders})",
+        deleted_photo_ids,
+    ).fetchall():
+        is_unnamed = not fname or fname.startswith("未命名人物") or fname == fauto
+        entity_name = fauto if is_unnamed else fname
+        if not entity_name:
+            continue
+        names = photo_person_entities.setdefault(fpid, [])
+        if entity_name not in names:
+            names.append(entity_name)
 
     # 写事务：删除关联记录并提交
     with _db_write_lock:
@@ -1613,11 +1639,55 @@ def cleanup_deleted_photos() -> dict:
 
         conn.commit()
 
+    # §2.6: 删照片后清理该照片贡献的 KG 足迹——只删"仅由该照片产生"的部分：
+    # 照片自身实体（实体名 = 归一化文件名 stem，与 format_photo_ingest_data 同一把键）
+    # + 它的 features(depicts) 边。共享人物/地点实体绝不进入删除调用 ⇒
+    # 删一张照片不会使共享实体/关系异常减少。KG 失败如实告警并记入 kg_errors，
+    # 不翻转 DB 清理结果。
+    kg_entities_deleted = 0
+    kg_relations_deleted = 0
+    kg_errors: list[str] = []
+    try:
+        from agent.tool_registry import get_registry
+        registry = get_registry()
+        delete_entity_fn = registry.get("lightrag-server/lightrag_delete_entity")
+        delete_rel_fn = registry.get("lightrag-server/lightrag_delete_relation")
+        for photo_id in deleted_photo_ids:
+            normalized_path = deleted_photo_paths[photo_id].replace("\\", "/").lower()
+            photo_entity = Path(normalized_path).stem
+            # ① 该照片的 depicts 边：逐边删，只删边、人物实体不动
+            for person_entity in photo_person_entities.get(photo_id, []):
+                if delete_rel_fn is None:
+                    kg_errors.append(f"lightrag_delete_relation 不在 registry 中，边 {photo_entity}->{person_entity} 未删")
+                    break
+                r = delete_rel_fn(source_entity=photo_entity, target_entity=person_entity)
+                if isinstance(r, dict) and r.get("status") == "ok":
+                    kg_relations_deleted += 1
+                else:
+                    kg_errors.append(f"depicts 边 {photo_entity}->{person_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
+            # ② 照片自身实体（连带其"拍摄于"等剩余边与向量）
+            if delete_entity_fn is None:
+                kg_errors.append(f"lightrag_delete_entity 不在 registry 中，照片实体 {photo_entity} 未删")
+            else:
+                r = delete_entity_fn(entity_name=photo_entity)
+                if isinstance(r, dict) and r.get("status") == "ok":
+                    kg_entities_deleted += 1
+                else:
+                    kg_errors.append(f"照片实体 {photo_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
+        if kg_errors:
+            logger.warning(f"[CLEANUP_PHOTOS] KG 足迹清理不完整: {len(kg_errors)} 处失败: {kg_errors}")
+    except Exception as e:
+        kg_errors.append(f"KG 足迹清理异常: {e}")
+        logger.warning(f"[CLEANUP_PHOTOS] KG 足迹清理失败: {e}")
+
     return {
         "status": "success",
         "message": f"Cleaned up {deleted_photos} deleted photos, {deleted_faces} faces",
         "deleted_photos": deleted_photos,
         "deleted_faces": deleted_faces,
+        "kg_entities_deleted": kg_entities_deleted,
+        "kg_relations_deleted": kg_relations_deleted,
+        "kg_errors": kg_errors,
     }
 
 
@@ -2464,7 +2534,8 @@ def _refresh_photo_abstracts_for_person(
 ) -> None:
     """人物改名后，更新相关照片的 abstract。
 
-    只更新 DB 中照片的 abstract 字段，不再重新注入照片到 KG。
+    只更新 DB 中照片的 abstract 字段，不再重新注入照片到 KG
+    （KG 人物实体描述块由 name_person 经 lightrag_edit_entity 重写，见 §2.5）。
     避免 ainsert 重复产生新实体；人物实体改名已由 merge_entities 完成。
 
     流程：
@@ -2586,6 +2657,7 @@ def name_person(person_id: str, name: str) -> dict:
 
         # KG: 通过 merge_entities 一步改名（旧实体删除+新实体创建+边迁移）
         kg_synced = False
+        kg_errors: list[str] = []  # KG 路径各步失败原因，随返回信封如实上报（不静默折成"无失败"）
         try:
             from agent.tool_registry import get_registry
             registry = get_registry()
@@ -2608,6 +2680,7 @@ def name_person(person_id: str, name: str) -> dict:
                 if result.get("status") == "error":
                     logger.warning(f"[NAME_PERSON] inject_fn failed: {result.get('message')}, skipping merge")
                     target_needs_create = True
+                    kg_errors.append(f"KG 目标实体注入失败: {result.get('message')}")
                 else:
                     target_needs_create = False
             if merge_fn and not target_needs_create:
@@ -2619,19 +2692,55 @@ def name_person(person_id: str, name: str) -> dict:
                 )
                 if merge_result.get("status") == "error":
                     logger.warning(f"[NAME_PERSON] merge_fn failed: {merge_result.get('message')}")
+                    kg_errors.append(f"KG 实体合并失败: {merge_result.get('message')}")
                 else:
                     logger.info(f"[NAME_PERSON] KG renamed: {source_entity} → {name}")
                     _merge_duplicate_person_entities(registry, name)
                     kg_synced = True
             elif target_needs_create:
                 logger.warning("[NAME_PERSON] target entity not created, skipping merge")
+                kg_errors.append("KG 目标实体未创建，合并被跳过")
             else:
                 logger.warning("[NAME_PERSON] lightrag_merge_entities not available in registry")
+                kg_errors.append("lightrag_merge_entities 不在 registry 中")
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG rename failed: {e}")
+            kg_errors.append(f"KG 改名异常: {e}")
 
-        # M7: 改名后只更新 DB 中照片 abstract，不再重新注入照片到 KG
-        # （避免 ainsert 重复产生新实体；人物实体改名已由 merge_entities 完成）
+        # §2.5: 改名成功后，把 KG 中该人物实体的描述块同步重写为新名字，
+        # 杜绝"KG 描述块仍写旧名"的漂移（§9 实测：abstract 已是「李磊」，
+        # KG 描述块仍写「未命名人物_1」）。
+        # 路径选择：复用 registry 既有 lightrag_edit_entity——只改描述、
+        # 不新建实体/边、不重注入照片 chunk；不用 sync_photo_to_kg(force=True)：
+        # 其 dedup 会跳过已存在的人物实体（修不了描述），还会注入重复 chunk 向量。
+        # 重写目标：合并成功 → 新名实体；合并未成但目标实体已在 KG → 目标实体。
+        # 两者皆无时旧实体仍在 KG，只改旧实体描述会造出"旧名节点+新名描述"的
+        # 畸形，故不重写，失败经 kg_synced/kg_errors 如实上报。
+        kg_desc_synced = False
+        desc_target = name if (kg_synced or _entity_exists_in_kg(name)) else None
+        if desc_target:
+            try:
+                from agent.tool_registry import get_registry
+                registry = get_registry()
+                edit_fn = registry.get("lightrag-server/lightrag_edit_entity")
+                if edit_fn is None:
+                    kg_errors.append("lightrag_edit_entity 不在 registry 中，KG 描述块未更新")
+                    logger.warning(f"[NAME_PERSON] {kg_errors[-1]}")
+                else:
+                    r = edit_fn(entity_name=desc_target, description=f"{name}（person_id={person_id}）")
+                    if isinstance(r, dict) and r.get("status") == "ok":
+                        kg_desc_synced = True
+                        logger.info(f"[NAME_PERSON] KG 描述块已同步: '{desc_target}' → '{name}'")
+                    else:
+                        kg_errors.append(f"KG 描述块同步失败: {r.get('message') if isinstance(r, dict) else r}")
+                        logger.warning(f"[NAME_PERSON] {kg_errors[-1]}")
+            except Exception as e:
+                kg_errors.append(f"KG 描述块同步异常: {e}")
+                logger.warning(f"[NAME_PERSON] {kg_errors[-1]}")
+
+        # M7: 改名后更新该人物相关照片在 DB 中的 abstract（abstract 不再含旧人名）
+        # （照片不重新注入 KG 以免产生重复实体；人物实体改名由 merge_entities 完成，
+        # 描述块同步由上面的 lightrag_edit_entity 完成）
         try:
             _refresh_photo_abstracts_for_person(person_id, name, conn)
         except Exception as e:
@@ -2646,6 +2755,8 @@ def name_person(person_id: str, name: str) -> dict:
             "auto_label": auto_label,
             "kg_synced": kg_synced,
             "kg_rename": f"知识图谱实体名从「{source_entity}」改为「{name}」" if kg_synced else None,
+            "kg_desc_synced": kg_desc_synced,
+            "kg_errors": kg_errors,
         }
 
     except Exception as e:
