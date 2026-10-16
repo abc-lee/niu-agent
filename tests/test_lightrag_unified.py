@@ -1009,8 +1009,8 @@ class TestCleanupDeletedPhotosKgFootprint:
     def test_photo_footprint_deleted_shared_person_kept(self, mock_get_registry, mock_adapter_cls, mock_remove, kg_env):
         """删一张照片 ⇒ 照片实体 + 它的 depicts 边被删；共享人物实体绝不进删除调用。
 
-        T2 后三项新清理（A 类 chunk / B 类关系虚拟块 / 媒体向量）也真实触发：
-        A 类收归一化路径；B 类参数只含照片实体名（人物名不得出现）；媒体向量收照片 stem。
+        T0 回退后两项新清理（A 类 chunk / 媒体向量）也真实触发：
+        A 类收归一化路径；媒体向量收照片 stem。
         """
         self._seed(kg_env)
         mock_del_entity = MagicMock(return_value={"status": "ok"})
@@ -1022,9 +1022,6 @@ class TestCleanupDeletedPhotosKgFootprint:
         adapter = mock_adapter_cls.return_value
         adapter.delete_chunks_by_source.return_value = {
             "status": "ok", "deleted_chunks": 2, "deleted_vectors": 2, "matched_ids": ["c1", "c2"],
-        }
-        adapter.delete_custom_kg_relation_chunks.return_value = {
-            "status": "ok", "deleted_chunks": 1, "deleted_vectors": 1, "matched_ids": ["r1"], "skipped": 0,
         }
 
         from niu_photo_server import cleanup_deleted_photos
@@ -1051,11 +1048,6 @@ class TestCleanupDeletedPhotosKgFootprint:
         assert [c.args[0] for c in adapter.delete_chunks_by_source.call_args_list] == [
             str(kg_env / "IMG_20240101.jpg").lower(),
         ]
-        # B 类关系虚拟块：参数只出现照片实体名（共享人物名不得进入）
-        b_class_args = [c.args[0] for c in adapter.delete_custom_kg_relation_chunks.call_args_list]
-        assert b_class_args == [[stem]]
-        for names in b_class_args:
-            assert "<user>" not in names and "未命名人物_9" not in names
         # 媒体向量：收到照片 stem，True ⇒ 计数累加
         assert [c.args[0] for c in mock_remove.call_args_list] == [stem]
         assert result["status"] == "success"
@@ -1063,7 +1055,7 @@ class TestCleanupDeletedPhotosKgFootprint:
         assert result["kg_entities_deleted"] == 1
         assert result["kg_relations_deleted"] == 2
         assert result["kg_chunks_deleted"] == 2
-        assert result["kg_vectors_deleted"] == 1
+        assert "kg_vectors_deleted" not in result
         assert result["media_vectors_removed"] == 1
         assert result["kg_errors"] == []
 
@@ -1074,8 +1066,7 @@ class TestCleanupDeletedPhotosKgFootprint:
     def test_kg_failure_reported_not_silent(self, mock_logger, mock_get_registry, mock_adapter_cls, mock_remove, kg_env):
         """KG 删除失败 ⇒ kg_errors 如实记录 + WARNING 告警；DB 清理结果不因此翻转。
 
-        新清理（B 类关系虚拟块）失败同样进 kg_errors、不翻转 status；
-        成功的新清理（A 类 chunk）照常计数。
+        新清理（A 类 chunk）成功照常计数；depicts 边删除失败进 kg_errors、不翻转 status。
         """
         self._seed(kg_env)
         mock_del_entity = MagicMock(return_value={"status": "ok"})
@@ -1088,7 +1079,6 @@ class TestCleanupDeletedPhotosKgFootprint:
         adapter.delete_chunks_by_source.return_value = {
             "status": "ok", "deleted_chunks": 2, "deleted_vectors": 2, "matched_ids": ["c1", "c2"],
         }
-        adapter.delete_custom_kg_relation_chunks.return_value = {"status": "error", "message": "chunks_vdb down"}
 
         from niu_photo_server import cleanup_deleted_photos
 
@@ -1099,14 +1089,13 @@ class TestCleanupDeletedPhotosKgFootprint:
         assert result["kg_relations_deleted"] == 0     # 边全失败
         assert result["kg_entities_deleted"] == 1      # 实体删除成功
         assert result["kg_chunks_deleted"] == 2        # A 类清理成功，照常计数
-        assert result["kg_vectors_deleted"] == 0       # B 类失败，不计数
+        assert "kg_vectors_deleted" not in result
         assert any("LightRAG down" in e for e in result["kg_errors"])
-        assert any("chunks_vdb down" in e for e in result["kg_errors"])
         warned = [str(c.args[0]) for c in mock_logger.warning.call_args_list]
         assert any("KG 足迹清理不完整" in w for w in warned)
 
     def test_no_missing_files_no_kg_calls(self, kg_env):
-        """无缺失照片 ⇒ 早退，绝不触碰 KG registry；三个新计数字段同为 0。"""
+        """无缺失照片 ⇒ 早退，绝不触碰 KG registry；两个新计数字段同为 0。"""
         import niu_photo_server as nps
         kept = kg_env / "IMG_20240102.jpg"
         kept.write_bytes(b"\xff\xd8\xff\xdb" + b"\x00" * 32)
@@ -1123,5 +1112,5 @@ class TestCleanupDeletedPhotosKgFootprint:
         assert result["deleted_photos"] == 0
         assert result["kg_errors"] == []
         assert result["kg_chunks_deleted"] == 0
-        assert result["kg_vectors_deleted"] == 0
+        assert "kg_vectors_deleted" not in result
         assert result["media_vectors_removed"] == 0
