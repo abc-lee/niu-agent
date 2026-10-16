@@ -107,7 +107,7 @@ def test_build_user_info_prompt_all_fields_present(tmp_path, monkeypatch):
             "skills": ["CCIE认证"],  # 不应被注入（只取4字段）
         }
     }
-    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".niu" / "memory.json").write_text(
         _json.dumps(memory, ensure_ascii=False), encoding="utf-8"
     )
@@ -139,7 +139,7 @@ def test_build_user_info_prompt_all_placeholders(tmp_path, monkeypatch):
             "organization": "请询问工作单位",
         }
     }
-    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".niu" / "memory.json").write_text(
         _json.dumps(memory, ensure_ascii=False), encoding="utf-8"
     )
@@ -164,7 +164,7 @@ def test_user_info_null_field(tmp_path, monkeypatch):
     """memory.json 的 user 字段为 null 时返回空串（验证 isinstance(user, dict) 守卫）。"""
     import json as _json
 
-    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".niu" / "memory.json").write_text(
         _json.dumps({"user": None}, ensure_ascii=False), encoding="utf-8"
     )
@@ -188,7 +188,7 @@ def test_user_info_partial_placeholder(tmp_path, monkeypatch):
             "organization": "请询问工作单位",
         }
     }
-    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".niu" / "memory.json").write_text(
         _json.dumps(memory, ensure_ascii=False), encoding="utf-8"
     )
@@ -209,7 +209,7 @@ def test_user_info_partial_placeholder(tmp_path, monkeypatch):
 
 def test_user_info_corrupted_json(tmp_path, monkeypatch):
     """memory.json 内容非 JSON 时返回空串（验证 try/except 兜底）。"""
-    (tmp_path / ".niu").mkdir()
+    (tmp_path / ".niu").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".niu" / "memory.json").write_text(
         "这不是合法的 JSON {{{}}}", encoding="utf-8"
     )
