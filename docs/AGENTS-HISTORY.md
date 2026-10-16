@@ -134,6 +134,17 @@
 - **文档同步（T3）**：skill `photo-deletion-cleanup.md` 第 3/4 点改为「2026-10-16 起经 `cleanup_deleted_photos` 联动清 chunk/向量/媒体向量」并列出三个新计数字段；仓库文档无同类说法（免改）。
 - **副作用披露**：验收期 PM 起了**只跑 Python API** 的实例（两轮，均已**优雅关闭**）；经 `/api/chat/session` 发的 2 条指令落在用户唯一会话里（role=user）；临时夹具已删；队列文件已清回 0 字节；**Niu 处于关闭状态，需按平时方式重启**。
 
+#### 小工程 F-2：人物改名/合并后刷新照片 abstract 与 KG chunk 层（全链收官：方案 v1.0→v1.2 → R1–R5 → SDD T1/T2 → 真机 AC 全过 + 存量清理）（2026-10-16 晚）
+
+- **用户裁定**：发现旧人名残留在可检索文本里（改名后 chunk 仍写旧名、合并后连 DB abstract 都没刷）⇒「不是改数据的问题，**是程序有bug**」→「动工吧」。
+- **病灶（实证）**：① `merge_persons` **连 DB abstract 都不刷**（`_refresh_photo_abstracts_for_person` 全仓只有 `name_person` 一处调用）；② 两条路径都**不碰 chunk 层**（`name_person` 注释原文「不重注入照片 chunk」；`merge_persons` 全文只有一处 `chunks=[]`）；③ 自相矛盾——照片**描述**特意不含人名（防改名过期），而**chunk**（被向量化/命中的那层）含人名。实测残留：2 条真实块 + 2 条人物虚拟块 + 1 条 DB abstract。
+- **门禁**：方案 v1.0→v1.2；本地审查 **R1–R5**（R1 4×P2+4×P3、R2 **APPROVE 零发现**、R3 1×P2+3×P3、R4 **APPROVE**、**R5 APPROVE = 连续两轮零 P1/P2，GATE MET**；R5 为实现者视角伪 diff + 七反例走查）。关键修订：helper **自带顶层 try/except**（替换掉调用点兜底后，既有测试的裸 MagicMock 会让"查照片"结果不可迭代抛 TypeError、打穿两用例）；取名口径**统一走共用函数 `_kg_person_name`**（三条件，不得用 `name or auto_label`）；`upsert_chunks` 委派 `LightRAGIngester().inject_custom_kg`（**禁 registry**，否则打断既有 `get.call_count == 2` 严格断言）；删除匹配含 `_part` 分段子块。
+- **实施（SDD）**：**T1**（`4eff7f94`）`LightRAGAdapter` 新增三原语 `get_chunk_by_source`（多块取最新）/ `delete_chunks_by_source_id`（等值 ∪ `_part` 前缀）/ `upsert_chunks`（委派注入，空实体边）+ 19 用例；**T2**（`34ad3f1d`）photo-server 抽共用取名函数 + helper `_refresh_person_photo_texts`（刷 DB abstract、重写真实块、换人物虚拟块；逐张隔离 + 顶层兜底 + 禁 registry）+ 两处**无条件**接线（merge 补齐 abstract 刷新、返回体新增 `kg_errors`）+ 删旧 `_refresh_photo_abstracts_for_person` + 11 用例。两 Task 各走 spec + 质量双审；质量审查 T1 APPROVE（4×P3）、T2 **REQUEST CHANGES**（1×P2「无地点行的多人合影会把人物名误当地点写进新块」+ 5×P3）⇒ 一轮微修（P2 修 + 去重口径 + delete 返回值检查 + abstract 提交批量化 + 3 用例）后复审 APPROVE。
+- **真机验收（PM 亲跑）**：① **存量清理**用新 helper 本身执行（两次调用各 `abstracts_refreshed=2 / chunks_refreshed=4 / errors=[]`）⇒ 4 条旧人名块全清、2 条 abstract 修好；② **四步 AC 全过**（入库两张含新面孔的图各建新人物 → 改名 `测试甲` → 显式 `merge_persons` → 删照片 + `delete_person`）：改名/合并返回体实测 `abstracts_refreshed=1/2`、`chunks_refreshed=2/4`、`kg_errors=[]`；实证两张照片的真实块与 abstract 同步为新名；终态与基线逐项对 **全 0 差**（`text_chunks/vdb_chunks 451/451、媒体向量 4、photos/faces/persons 4`）。
+- **验收中发现三条**：**F-A**（既有结构性质）人物实体虚拟块内容跨照片相同 ⇒ 块 id（内容哈希）相同 ⇒ **多张照片只有最后写入的保留该块**（合并后实证）；**F-B**（既有残留类）`name_person` 注入步写的 `source_id=rename_<旧名>` 块在**删人物时不清理**（与 F-1 同族），本次用新原语清掉，**建议后续把"删人物"接上 chunk 清理**；**F-C** 图侧终态比基线少 1 节点/2 边（无任何测试名残留，未逐条归因——缺 AC 前图快照）。
+- **文档（T3）**：skill `photo-face-display.md` 补「改名/合并后文本层自动同步」+ 手工拆分路径例外；`kg-dev-dictionary.md` 是过时历史文档，按「无则不动」未改。
+- **副作用披露**：验收期 PM 起了**只跑 Python API** 的实例（已优雅关闭）；经 `/api/chat/session` 发了 4 条指令落在用户唯一会话里（role=user）；临时夹具已删；**Niu 处于关闭状态，需按平时方式重启**。
+
 #### 测试垃圾数据清库（用户指令「那些也都是测试造成的问题，留下来的垃圾数据清理掉」）（2026-10-16 晚）
 
 - **范围（用户选"彻底清"）**：两张测试照（`20261014_211832.jpg` 人脸测试图、`20261016_132941.jpg` 尼康宣传图测试）+ 全部孤儿残留。
