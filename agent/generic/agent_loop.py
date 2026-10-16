@@ -924,6 +924,10 @@ def _compact_db_view(ctx) -> tuple[bool, dict]:
     try:
         from agent.context_assembler import compaction
         db_messages = ctx._sync_get_messages()
+        if db_messages is None:
+            # DB 读取失败（≠ 无消息可压实）：如实报失败，不与「无消息」混淆
+            logger.warning("[Compression] DB 消息读取失败，跳过本次压实（下轮自然重试）")
+            return False, {}
         if not db_messages:
             return False, {}
         system_msg = getattr(ctx, "_system_msg", None)

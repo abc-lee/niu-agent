@@ -5,6 +5,7 @@ Validates that all KuzuDB/kg-server references have been replaced
 with LightRAG adapter/pipeline calls across the codebase.
 """
 
+import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -224,6 +225,58 @@ class TestLightRAGSync:
             assert sync1 is sync2
         finally:
             mod._lightrag_sync = original
+
+    def test_run_sync_failure_recorded_and_status_not_written(self, tmp_path, monkeypatch):
+        """§2.4 收口：同步异常 ⇒ run_sync 如实记录失败（stats["errors"]），
+        状态文件不按「零变更」成功写入——上一轮 tracking 状态保留，下轮重试。"""
+        from agent.injector.lightrag_sync import LightRAGSync
+
+        sync = LightRAGSync()
+        sync._status_file = tmp_path / "last_lightrag_sync.json"
+
+        def _boom():
+            raise RuntimeError("skill sync boom")
+
+        def _forbidden_save(*a, **kw):
+            raise AssertionError("失败时不得把状态文件写成「零变更」成功")
+
+        monkeypatch.setattr(sync, "_sync_skills_and_tools", _boom)
+        monkeypatch.setattr(sync, "_save_status", _forbidden_save)
+
+        stats = sync.run_sync()
+
+        assert stats["errors"] == ["skills_tools: skill sync boom"]
+        assert not sync._status_file.exists()
+
+    def test_run_sync_skip_path_still_writes_status(self, tmp_path):
+        """保留原语义：LightRAG 未就绪（added==-1 ⇒ 有意跳过）是正常完成，状态照写。"""
+        from agent.injector.lightrag_sync import LightRAGSync
+
+        sync = LightRAGSync()
+        sync._status_file = tmp_path / "last_lightrag_sync.json"
+        with patch.object(sync, "_sync_skills_and_tools", return_value=(0, 0, set(), set())):
+            stats = sync.run_sync()
+        assert stats["errors"] == []
+        assert sync._status_file.exists()
+
+    def test_sync_skills_and_tools_exception_propagates(self):
+        """§2.4 收口：异常不再折算成 (0,0,set(),set())（零变更），原样传播给 run_sync。"""
+        from agent.injector.lightrag_sync import LightRAGSync
+
+        sync = LightRAGSync()
+        with patch("agent.injector.sync.get_skill_sync", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                sync._sync_skills_and_tools()
+
+    def test_sync_skills_and_tools_not_ready_skip_unchanged(self):
+        """保留原语义：scan_and_sync ⇒ (-1,-1,-1)（LightRAG 未就绪）⇒ 零变更跳过。"""
+        from agent.injector.lightrag_sync import LightRAGSync
+
+        sync = LightRAGSync()
+        fake = MagicMock()
+        fake.scan_and_sync.return_value = (-1, -1, -1)
+        with patch("agent.injector.sync.get_skill_sync", return_value=fake):
+            assert sync._sync_skills_and_tools() == (0, 0, set(), set())
 
 
 # ============== 6. __main__.py startup/shutdown ==============
