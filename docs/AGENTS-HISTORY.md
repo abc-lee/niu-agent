@@ -61,6 +61,19 @@
 - **F12/F13 改判"不改"**（`73776870`）：用户指正"高德配置本来就在配置里" ⇒ 门禁扫到的只是**厂商服务端点**（稳定契约），与 **bing 默认回退地址**（产品默认值）同属**非铁律 13 禁用类** ⇒ 从"⏳待处置"降为**带理由白名单**。
 - **bing 默认页 = 用户选 C**（`cd47067b`）：`launch_browser()` 无 url ⇒ **不传页面参数**（Chrome 用用户自己配置的主页）。
 
+#### 小版本升级 0.5.1 → 0.5.2 + 纠正一个"错误指挥"的 harness 技能（2026-10-16 上午）
+
+- **版本升级只改一处**（工作原则 8，0.3.5 起单一真相源）：根目录 `VERSION` `0.5.1` → `0.5.2`。
+  验证：`chat.html` 硬编码 `v0.5.1` 命中 **0**（版本 label 由 `preload-chat.js` 的 `APP_VERSION` 运行时渲染）、`tests/test_list_models_endpoint.py`（UA 断言动态读 `VERSION`）**20 passed**。
+- **用户点名纠错**：harness 技能 `~/.omp/agent/managed-skills/niu-version-bump-and-package/SKILL.md` 旧版写着"**VERSION + chat.html 两处同步**"（那是 **0.3.5 之前**的做法，早已作废）⇒ 按用户指示**直接改掉**，共五处：
+  ① 描述行与 §1 改为"**只改 `VERSION` 一处**"+ 列出三个**动态读**的消费点（chat.html label / compat UA / UA 测试）；
+  ② §2 打包命令改 `bash launcher/build.sh`（脚本**无执行位**，旧文的 `./launcher/build.sh` 必 `permission denied`）+ 补**打包前置** `python scripts/package_all_dependencies.py`（模型产物不入 git，跳过会打出"没有向量模型"的坏包）；
+  ③ §3 补跑片段的版本号改为 `VERSION="$(cat VERSION)"`（**不许写死**，否则产物文件名与真相源不符）；
+  ④ §4 验证段改为**动态核对**（`diff VERSION` / 严格验签 `codesign --verify --strict` / 包内清单门禁），并明确写"**别去 bundle 里 grep chat.html 版本串**——它运行时注入，静态文件里没有"；
+  ⑤ §3 超时说明改为用 `timeout: 0` 自动转后台。
+  （该技能不在任何 git 仓库内、无同步源 ⇒ 直接改不会被覆盖。）
+- **本次未打包**（用户明确"不要打包"）：`dist/Niu-0.5.1-mac-intel.dmg`（1015M，完整）保持不变；`niu.app` 仍是上一轮重建的产物（含技能机制，版本串待下次打包刷新为 0.5.2）。
+
 ### 2026-10-15
 
 #### 向量闲置门（D-31）交付：门禁三连 + AC-5 并发实测 + 四条实施期勘误（2026-10-14 夜 ~ 10-15 凌晨）
