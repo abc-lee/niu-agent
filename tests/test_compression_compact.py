@@ -412,3 +412,16 @@ def test_failure_no_release_when_not_acquired():
     assert did is False
     assert new_msgs == orig  # 原样不丢
     m_gate.release.assert_not_called()  # 本轮未 acquire → 失败不解闩（防误清他轮滞回闩锁）
+
+
+def test_compact_db_view_db_read_failure_returns_false():
+    """§9 收口（2026-10-16）：DB 读取失败（None）⇒ 如实报失败 (False, {})——
+    不与「无消息」混淆，也不让 None 流进 build_compact_view 迭代。"""
+    from types import SimpleNamespace
+
+    from agent.generic.agent_loop import _compact_db_view
+
+    ctx = SimpleNamespace(_sync_get_messages=lambda limit=None: None, _system_msg=None)
+    ok, stats = _compact_db_view(ctx)
+    assert ok is False
+    assert stats == {}

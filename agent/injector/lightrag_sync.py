@@ -41,8 +41,13 @@ class LightRAGSync:
         the status file, skips already-synced items, then persists the
         updated ID sets so subsequent runs only process new records.
 
+        Failure semantics: if the skills/tools sync raises, the error is
+        recorded in ``stats["errors"]`` and the status file is NOT written
+        (a failure is not a zero-change success); the previous tracked state
+        is kept so the next run retries the same delta.
+
         Returns:
-            Stats dict with counts of synced items.
+            Stats dict with counts of synced items (``errors`` non-empty on failure).
         """
         stats = {
             "skills_synced": 0,
@@ -62,10 +67,11 @@ class LightRAGSync:
             stats["skills_synced"] = skills_count
             stats["tools_synced"] = tools_count
         except Exception as e:
+            # 如实记录失败：_sync_skills_and_tools 不再把异常折算成 (0,0,set(),set())
             logger.warning(f"[LightRAGSync] skills/tools sync failed: {e}")
             stats["errors"].append(f"skills_tools: {e}")
-            new_skill_ids = set()
-            new_tool_ids = set()
+            # 不把状态文件写成「零变更」——保留上一轮 tracking 状态，下轮重试
+            return stats
 
         # 2. Merge previous + newly synced IDs and save
         all_doc_ids = prev_doc_ids
@@ -92,21 +98,21 @@ class LightRAGSync:
 
         MCP Tools sync removed — tools are discovered via disk YAML in
         disk mode, not via LightRAG retrieval.
+
+        Failure semantics:
+        - added == -1（LightRAG 未就绪）⇒ 有意跳过，返回零变更 (0,0,set(),set())
+        - 其它异常 ⇒ 原样传播给 run_sync，由 run_sync 如实记录失败（≠ 零变更成功）
         """
-        try:
-            from agent.injector.sync import get_skill_sync
-            skill_sync = get_skill_sync(auto_start=False)
-            added, updated, deleted = skill_sync.scan_and_sync()
-            # scan_and_sync 可能返回 (-1, -1, -1) 表示 LightRAG 不可用提前返回
-            if added == -1:
-                logger.info("[LightRAGSync] SkillSync skipped (LightRAG not ready)")
-                return 0, 0, set(), set()
-            skills_count = added + updated
-            logger.info(f"[LightRAGSync] SkillSync: added={added}, updated={updated}, deleted={deleted}")
-            return skills_count, 0, set(), set()
-        except Exception as e:
-            logger.warning(f"[LightRAGSync] SkillSync delegation failed: {e}")
+        from agent.injector.sync import get_skill_sync
+        skill_sync = get_skill_sync(auto_start=False)
+        added, updated, deleted = skill_sync.scan_and_sync()
+        # scan_and_sync 可能返回 (-1, -1, -1) 表示 LightRAG 不可用提前返回
+        if added == -1:
+            logger.info("[LightRAGSync] SkillSync skipped (LightRAG not ready)")
             return 0, 0, set(), set()
+        skills_count = added + updated
+        logger.info(f"[LightRAGSync] SkillSync: added={added}, updated={updated}, deleted={deleted}")
+        return skills_count, 0, set(), set()
 
     def _load_status(self) -> dict:
         """Load previous sync status from file.

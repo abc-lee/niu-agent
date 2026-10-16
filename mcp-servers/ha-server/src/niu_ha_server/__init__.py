@@ -497,45 +497,63 @@ def _resolve_config_key(ha_url, headers, domain, entity_id, entity_registry=None
 
 
 def _fetch_domain_states(ha_url, headers, domain):
-    """GET /api/states 过滤指定 domain"""
+    """GET /api/states 过滤指定 domain。
+
+    Returns:
+        list — 获取成功（空列表 = 该 domain 真的没有实体）
+        None — HA 不可用（HTTP 非 200 / 网络异常），不得与「无实体」混淆
+    """
     try:
         resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=15)
         if resp.status_code != 200:
-            return []
+            return None
         prefix = f"{domain}."
         return [s for s in resp.json() if s.get("entity_id", "").startswith(prefix)]
     except Exception:
-        return []
+        return None
+
+
+#: _verify_entity_exists 的返回哨兵：HA 不可用、无法核实（≠ None="不存在"）。
+#: 调用方须用 `is _VERIFY_UNAVAILABLE` 比较，禁止用真值判断。
+_VERIFY_UNAVAILABLE = ""
+
+
+def _ha_unavailable_error():
+    """HA 不可用（states 查询失败）时返回的错误：如实报不可达，不报「未找到」。"""
+    return {"error": "Home Assistant 不可达（states 查询失败），无法判定实体状态，请稍后重试"}
 
 
 def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
     """创建后验证 entity 已注册。通过 entity_registry 的 unique_id 查找实际 entity_id。
     自动化/场景的 entity_id 由 HA 从 alias/name slugify 生成，不是 config_key 本身。
-    先轮询轻量 REST states API 等待 entity 出现，再用一次 entity_registry 确认 unique_id。"""
+    先轮询轻量 REST states API 等待 entity 出现，再用一次 entity_registry 确认 unique_id。
+
+    Returns:
+        entity_id str — 实体存在
+        None — HA 可达，实体真不存在
+        _VERIFY_UNAVAILABLE — 轮询期间 HA 一直不可用（无法核实），调用方不得当作「不存在」
+    """
     import time
     deadline = time.time() + timeout
-    # 记录创建前已有的 entity
+    # 记录创建前已有的 entity（仅在获取成功时填充——获取失败的空集不参与新增判定）
     pre_existing = set()
-    try:
-        resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
-        if resp.status_code == 200:
-            for s in resp.json():
-                eid = s.get("entity_id", "")
-                if eid.startswith(f"{domain}."):
-                    pre_existing.add(eid)
-    except Exception:
-        pass
-    # 阶段 1: 轮询 REST states，等待新 entity 出现
+    saw_states = False
+    states = _fetch_domain_states(ha_url, headers, domain)
+    if states is not None:
+        saw_states = True
+        pre_existing = {s.get("entity_id", "") for s in states if s.get("entity_id", "").startswith(f"{domain}.")}
+    # 阶段 1: 轮询 REST states，等待新 entity 出现（None = 不可用，持续轮询直到超时）
     while time.time() < deadline:
-        try:
-            resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
-            if resp.status_code == 200:
-                current = {s.get("entity_id") for s in resp.json() if s.get("entity_id", "").startswith(f"{domain}.")}
-                if current - pre_existing:
-                    break
-            time.sleep(0.5)
-        except Exception:
-            time.sleep(0.5)
+        states = _fetch_domain_states(ha_url, headers, domain)
+        if states is not None:
+            saw_states = True
+            current = {s.get("entity_id") for s in states if s.get("entity_id", "").startswith(f"{domain}.")}
+            if current - pre_existing:
+                break
+        time.sleep(0.5)
+    if not saw_states:
+        # HA 全程不可达：无法判定「存在/不存在」，不得得出「不存在」结论
+        return _VERIFY_UNAVAILABLE
     # 阶段 2: 用一次 WebSocket 查询 entity_registry，通过 unique_id 确认
     entity_registry = _fetch_entity_registry(ha_url, headers)
     for entry in entity_registry:
@@ -1381,6 +1399,8 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
 
     if action == "list":
         states = _fetch_domain_states(ha_url, headers, "automation")
+        if states is None:
+            return _ha_unavailable_error()
         # detail=true 时一次性获取 entity_registry，避免循环中重复 WebSocket 连接
         entity_registry = None
         if detail:
@@ -1410,6 +1430,8 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         if not name:
             return {"error": "name 参数必填"}
         states = _fetch_domain_states(ha_url, headers, "automation")
+        if states is None:
+            return _ha_unavailable_error()
         entity_id = _find_entity_by_name(states, "automation", name)
         if not entity_id:
             return {"error": f"未找到名为 '{name}' 的自动化，请先 list 查看可用列表"}
@@ -1442,6 +1464,10 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
                     pass
                 # 验证 entity 已注册
                 actual_entity_id = _verify_entity_exists(ha_url, headers, "automation", config_key)
+                if actual_entity_id is _VERIFY_UNAVAILABLE:
+                    # HA 不可达：无法核实注册结果——不判「不存在」，如实报不可达
+                    return {"success": True, "name": name, "entity_id": f"automation.{_make_slug(name)}",
+                            "config_key": config_key, "warning": "HA 不可达，未能核实 entity 注册结果"}
                 result = {"success": True, "name": name, "entity_id": actual_entity_id or f"automation.{_make_slug(name)}", "config_key": config_key}
                 if actual_entity_id:
                     validation = _validate_entity_state(ha_url, headers, actual_entity_id)
@@ -1455,6 +1481,8 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         if not name or not config:
             return {"error": "name 和 config 参数必填"}
         states = _fetch_domain_states(ha_url, headers, "automation")
+        if states is None:
+            return _ha_unavailable_error()
         entity_id = _find_entity_by_name(states, "automation", name)
         if not entity_id:
             return {"error": f"未找到名为 '{name}' 的自动化"}
@@ -1482,6 +1510,8 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         if not name:
             return {"error": "name 参数必填"}
         states = _fetch_domain_states(ha_url, headers, "automation")
+        if states is None:
+            return _ha_unavailable_error()
         entity_id = _find_entity_by_name(states, "automation", name)
         if not entity_id:
             return {"error": f"未找到名为 '{name}' 的自动化"}
@@ -1508,6 +1538,8 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         if not name:
             return {"error": "name 参数必填"}
         states = _fetch_domain_states(ha_url, headers, "automation")
+        if states is None:
+            return _ha_unavailable_error()
         entity_id = _find_entity_by_name(states, "automation", name)
         if not entity_id:
             return {"error": f"未找到名为 '{name}' 的自动化"}
@@ -1524,6 +1556,8 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         if not name:
             return {"error": "name 参数必填"}
         states = _fetch_domain_states(ha_url, headers, "automation")
+        if states is None:
+            return _ha_unavailable_error()
         entity_id = _find_entity_by_name(states, "automation", name)
         if not entity_id:
             return {"error": f"未找到名为 '{name}' 的自动化"}
@@ -1549,6 +1583,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
 
     if action == "list":
         states = _fetch_domain_states(ha_url, headers, "scene")
+        if states is None:
+            return _ha_unavailable_error()
         entity_registry = None
         if detail:
             entity_registry = _fetch_entity_registry(ha_url, headers)
@@ -1597,7 +1633,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             return {"error": "name 参数必填"}
         # 先尝试通过 states 查找
         states = _fetch_domain_states(ha_url, headers, "scene")
-        entity_id = _find_entity_by_name(states, "scene", name)
+        states_down = states is None
+        entity_id = _find_entity_by_name(states or [], "scene", name)
         config_key = None
         if entity_id:
             entity_registry = _fetch_entity_registry(ha_url, headers)
@@ -1609,6 +1646,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 config_key = slug
                 entity_id = entity_id or f"scene.{slug}"
         if not config_key:
+            if states_down:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的场景"}
         try:
             resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
@@ -1664,7 +1703,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             return {"error": "name 和 config 参数必填"}
         # 查找 config_key
         states = _fetch_domain_states(ha_url, headers, "scene")
-        entity_id = _find_entity_by_name(states, "scene", name)
+        states_down = states is None
+        entity_id = _find_entity_by_name(states or [], "scene", name)
         config_key = None
         if entity_id:
             entity_registry = _fetch_entity_registry(ha_url, headers)
@@ -1674,6 +1714,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             if config_key:
                 entity_id = entity_id or f"scene.{config_key}"
         if not config_key:
+            if states_down:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的场景"}
         config = {**config}
         config.pop("id", None)
@@ -1707,7 +1749,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             return {"error": "name 参数必填"}
         # 查找 config_key
         states = _fetch_domain_states(ha_url, headers, "scene")
-        entity_id = _find_entity_by_name(states, "scene", name)
+        states_down = states is None
+        entity_id = _find_entity_by_name(states or [], "scene", name)
         config_key = None
         if entity_id:
             entity_registry = _fetch_entity_registry(ha_url, headers)
@@ -1717,6 +1760,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             if config_key:
                 entity_id = entity_id or f"scene.{config_key}"
         if not config_key:
+            if states_down:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的场景"}
         if not confirm:
             return {"preview": True, "name": name, "entity_id": entity_id or f"scene.{config_key}", "message": "确认删除？请再次调用并传 confirm=true"}
@@ -1740,7 +1785,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         config_key = None
         # 1) 先尝试在 states 中查找（YAML/UI 创建的场景可能在 states 中）
         states = _fetch_domain_states(ha_url, headers, "scene")
-        entity_id = _find_entity_by_name(states, "scene", name)
+        states_down = states is None
+        entity_id = _find_entity_by_name(states or [], "scene", name)
         if entity_id:
             entity_registry = _fetch_entity_registry(ha_url, headers)
             config_key = _resolve_config_key(ha_url, headers, "scene", entity_id, entity_registry)
@@ -1767,6 +1813,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         if not config_key:
             config_key = _lookup_slug("scene", name)
         if not config_key:
+            if states_down:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的场景"}
         try:
             cfg_resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
@@ -1856,25 +1904,28 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
 
 def _find_script_by_name(ha_url, headers, name):
     """在脚本 states 或 config API 中按名称查找脚本。
-    返回 (entity_id, slug) 或 (None, None)。
+    返回 (entity_id, slug, available) 或 (None, None, available)。
+    available=False 表示 HA 不可达（states 查询失败且 config API 从未得到响应）——
+    调用方不得报「未找到脚本」，须如实报不可用。
     HA 2026+ 通过 config API 创建的脚本不在 states 中出现，
     但仍可通过 config API 按 slug 读取。"""
 
     # 方式 1: 在 states 中查找（YAML/UI 创建的脚本可能在 states 中）
     states = _fetch_domain_states(ha_url, headers, "script")
-    for s in states:
+    available = states is not None
+    for s in states or []:
         if s.get("attributes", {}).get("friendly_name", "") == name:
             slug = s["entity_id"].split(".", 1)[1]
-            return s["entity_id"], slug
+            return s["entity_id"], slug, True
         if s["entity_id"] == f"script.{name}":
-            return s["entity_id"], name
+            return s["entity_id"], name, True
     # 模糊匹配
     name_lower = name.lower()
-    for s in states:
+    for s in states or []:
         fn = s.get("attributes", {}).get("friendly_name", "").lower()
         if name_lower in fn or fn in name_lower:
             slug = s["entity_id"].split(".", 1)[1]
-            return s["entity_id"], slug
+            return s["entity_id"], slug, True
 
     # 方式 2: 检查本地 name_map
     mapped_slug = _lookup_slug("script", name)
@@ -1882,8 +1933,9 @@ def _find_script_by_name(ha_url, headers, name):
         # 验证脚本仍存在
         try:
             resp = _requests.get(f"{ha_url}/api/config/script/config/{mapped_slug}", headers=headers, timeout=10)
+            available = True  # 得到 HTTP 响应 = HA 可达
             if resp.status_code == 200:
-                return f"script.{mapped_slug}", mapped_slug
+                return f"script.{mapped_slug}", mapped_slug, True
         except Exception:
             pass
         # 映射失效，清除
@@ -1894,16 +1946,17 @@ def _find_script_by_name(ha_url, headers, name):
     if slug:
         try:
             resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            available = True  # 得到 HTTP 响应 = HA 可达
             if resp.status_code == 200:
                 config_data = resp.json()
                 # 检查 alias 是否匹配
                 alias = config_data.get("alias", "")
                 if alias == name or name_lower in alias.lower():
-                    return f"script.{slug}", slug
+                    return f"script.{slug}", slug, True
         except Exception:
             pass
 
-    return None, None
+    return None, None, available
 
 
 def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = False, detail: bool = False, **kwargs) -> dict:
@@ -1916,6 +1969,8 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
     if action == "list":
         # 优先从 states 获取（YAML/UI 创建的脚本）
         states = _fetch_domain_states(ha_url, headers, "script")
+        if states is None:
+            return _ha_unavailable_error()
         scripts = []
         seen_entity_ids = set()
         for s in states:
@@ -1951,8 +2006,10 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
     if action == "get":
         if not name:
             return {"error": "name 参数必填"}
-        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        entity_id, slug, available = _find_script_by_name(ha_url, headers, name)
         if not slug:
+            if not available:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的脚本"}
         try:
             resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
@@ -2008,8 +2065,10 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
     if action == "update":
         if not name or not config:
             return {"error": "name 和 config 参数必填"}
-        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        entity_id, slug, available = _find_script_by_name(ha_url, headers, name)
         if not slug:
+            if not available:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的脚本"}
         config = {**config}
         config.pop("id", None)
@@ -2060,8 +2119,10 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
     if action == "delete":
         if not name:
             return {"error": "name 参数必填"}
-        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        entity_id, slug, available = _find_script_by_name(ha_url, headers, name)
         if not slug:
+            if not available:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的脚本"}
         if not confirm:
             return {"preview": True, "name": name, "entity_id": entity_id or f"script.{slug}", "message": "确认删除？请再次调用并传 confirm=true"}
@@ -2081,8 +2142,10 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
     if action == "run":
         if not name:
             return {"error": "name 参数必填"}
-        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        entity_id, slug, available = _find_script_by_name(ha_url, headers, name)
         if not slug:
+            if not available:
+                return _ha_unavailable_error()
             return {"error": f"未找到名为 '{name}' 的脚本"}
         # 脚本即使不在 states 中，仍可通过 script/turn_on 调用
         try:

@@ -1497,7 +1497,7 @@ class NiuRunner:
         """同步从 DB 读取消息（桥接 async MessageStore）
 
         Returns:
-            Message 对象列表，或空列表（读取失败）
+            Message 对象列表，或 None（读取失败——调用方不得当作「无消息」）
         """
         import asyncio
 
@@ -1508,7 +1508,7 @@ class NiuRunner:
         loop = _main_loop
         if loop is None or loop.is_closed():
             logger.warning("[Runner] No event loop available for sync DB read")
-            return []
+            return None
 
         async def _do():
             store = await get_message_store()
@@ -1519,7 +1519,7 @@ class NiuRunner:
             return future.result(timeout=30.0)
         except Exception as e:
             logger.warning(f"[Runner] sync_get_messages failed: {e}")
-            return []
+            return None
 
     def _sync_delete_messages(self, msg_ids):
         """同步从 DB 删除消息（桥接 async MessageStore）
@@ -1596,6 +1596,10 @@ class NiuRunner:
         """
         try:
             db_messages = self._sync_get_messages()
+            if db_messages is None:
+                # DB 读取失败（≠ 空历史）：只跳过本次重建——下轮入口组装自然自愈
+                # （失败已在 _sync_get_messages 内记日志）
+                return
             if not db_messages:
                 return
             from agent.context_manager import peek_context_manager

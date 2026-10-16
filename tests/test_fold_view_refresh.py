@@ -832,5 +832,51 @@ class TestFoldTruthClearing:
         assert handler._last_cached_tokens == 4000
 
 
+# ---------------------------------------------------------------------------
+# 10. §9 收口（2026-10-16）：_sync_get_messages 失败 ⇒ None（≠「无消息」）
+#     - 无事件循环 / 读取异常 ⇒ None
+#     - _on_tool_round_refresh 见到 None ⇒ 跳过重建、视图原样保留（不当事空历史）
+# ---------------------------------------------------------------------------
+
+class TestSyncGetMessagesFailureSemantics:
+    def test_no_event_loop_returns_none(self, monkeypatch):
+        import niu_api.chat as chat_mod
+
+        r = NiuRunner.__new__(NiuRunner)
+        monkeypatch.setattr(chat_mod, "_main_loop", None)
+        assert r._sync_get_messages() is None
+
+    def test_read_exception_returns_none(self, monkeypatch):
+        import asyncio
+        import threading
+
+        import niu_api.chat as chat_mod
+
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+        try:
+            async def _boom():
+                raise RuntimeError("db down")
+
+            monkeypatch.setattr(chat_mod, "_main_loop", loop)
+            monkeypatch.setattr(session_mod, "get_message_store", _boom)
+            assert NiuRunner.__new__(NiuRunner)._sync_get_messages() is None
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=5)
+            loop.close()
+
+    def test_on_tool_round_refresh_db_failure_leaves_messages_unchanged(self, monkeypatch):
+        """DB 读取失败（None）⇒ 跳过本次重建：messages 原样保留，不当事空历史。"""
+        import agent.runner as runner_mod
+
+        monkeypatch.setattr(runner_mod.NiuRunner, "_sync_get_messages",
+                            lambda self, limit=None: None)
+        r = NiuRunner.__new__(NiuRunner)
+        messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "Q"}]
+        r._on_tool_round_refresh(messages)  # 不得抛异常
+        assert messages == [{"role": "system", "content": "SYS"}, {"role": "user", "content": "Q"}]
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
