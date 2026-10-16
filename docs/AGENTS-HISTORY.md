@@ -123,6 +123,17 @@
 - **发现（未修，待定夺）F-1：删照片不删 chunk**。`cleanup_deleted_photos` 只删「照片实体 + 它的边」，照片的 chunk 文本与向量留在 `text_chunks`/`vdb_chunks`（用户既有两张老照片名下 4 条残留仍在 415 基线内）⇒ **已删照片的文本仍可被向量检索命中**（指向不存在的实体）。清残留**无受支持通路**（`lightrag_delete_document` 对 custom_kg 注入的 chunk 报 `not_found`——它们不登记 `doc_status`）；本次用 LightRAG 自身存储 API（`rag.text_chunks.delete` + `rag.chunks_vdb.delete` + `index_done_callback`）在**单写者**下清理，媒体向量用模块自身原子写入器（skill `photo-deletion-cleanup.md` 早已记「媒体向量无独立删除接口」）。
 - **副作用披露**：验收期间 PM 起了**只跑 Python API** 的实例（未开 Electron）并已**优雅关闭**；经 `/api/chat/session` 发的 3 条指令落在用户唯一会话里（role=user，用户会看到）；用户 Niu 需按平时方式重启。
 
+#### 小工程 F-1：删照片连 chunk/向量一起清（全链收官：方案 v1.0→v1.3 → R1–R5 → SDD T1/T2 → 真机四 AC 全过）（2026-10-16 晚）
+
+- **用户裁定**：「第三个问题确实需要修复。你可以单开一个小工程。」（第三个问题＝上一工程真机验收里发现的 F-1：删照片不删它的 chunk 文本与向量）
+- **根因（实证）**：上游 `LightRAG.adelete_by_entity` 只传 `graph/entities_vdb/relationships_vdb`（`lightrag.py` 实测源码）——**本就不碰 chunk 存储**；我方 `cleanup_deleted_photos` 只删「照片实体 + 它的边」⇒ 照片的 chunk 与向量留在库里。用户机上现存 **8 条**残留，分两类：**A 类**（`file_path == 照片归一化路径`，含实体虚拟块 `source_id = <路径>_<实体名>`）5 条；**B 类**（`file_path == custom_kg` 的**关系虚拟块**，content 形如 `X->Y: 关键词`，只含实体名不含路径）3 条。
+- **门禁**：方案 v1.0→v1.3；本地审查 **R1–R5**（R1 6×P2+2×P3、R2 1×P2+3×P3、R3 1×P2+4×P3、**R4+R5 连续两轮零 P1/P2 = GATE MET**，R5 为实现者视角伪 diff + 六反例走查）。关键修订：D-3 由"两端全须"改「**任一端点命中**」+ 补「**剥 `: ` 后缀**」（生成侧把 `: kw` 恒挂目标端点，实测残留照片正在目标侧 ⇒ 不剥则结构性不可达）；落盘改在 **storage 实例**（`rag` 上没有 `index_done_callback`）；调用通道定案**进程内直构 adapter**（零新增 MCP 工具）；T2 补「同步更新 `test_lightrag_unified.py` 既有打桩面」（否则走真实 `get_lightrag` 触真存储）。
+- **实施（SDD）**：**T1**（`82d2d10e`）adapter 新增 `delete_chunks_by_source`（三条件归因 + KV/向量双删 + storage 实例落盘）与 `delete_custom_kg_relation_chunks`（切段数≠2 跳过、剥冒号后缀、任一端点全等、宁漏不误删），+24 用例（mock `call_async` 真跑协程防假绿）；**T2**（`4fe35473`）`cleanup_deleted_photos` 接线（**只传照片实体名**——共享人物/地点名绝不进删除调用）+ `media_vectors.remove`（持锁、不存在返 False 且不创建文件）+ 三个新计数字段（含早退 0 值）+ **逐照片异常隔离**（硬异常不再中断其余照片）。两 Task 各走 spec + 质量双审（spec 两次 APPROVE 零发现；质量审出 1×P2「逐照片无异常隔离」+ 若干 P3），微修后均复审 APPROVE。
+- **真机验收（PM 亲跑，四 AC 全过）**：入库 `/tmp/f1_acceptance_photo.jpg` → `20261016_165147.jpg`（实体描述 `照片 20261016_165147，入库于2026年10月16日`；媒体向量 3 条）；移走文件 → 真机 `cleanup_deleted_photos` 返回 `deleted_photos=1 / kg_entities_deleted=1 / kg_chunks_deleted=2 / kg_vectors_deleted=0 / media_vectors_removed=1`；收尾后 **A 类残留 0 / B 类残留 0 / 媒体向量 0**；**双快照法**（都取关服后磁盘态）A `415/415/2/4119/6809` == B（差值全 0）。测试计数：T1 24 + adapter 62 + T2 38（PM 亲跑）。
+- **验收中的两条发现**：① **`kg_vectors_deleted` 字段口径不对称在真实消费侧翻车**——主 Agent 把它读成「照片实体的向量没清」（实际只累计 B 类向量数，A 类向量数无字段承载）⇒ 建议后续小改字段命名/补自明字段（未修，待定夺）；② **方法学：AC 基线必须取「启动后」磁盘态**——本次启动时 SkillSync 按内容哈希对改过的 skill 做 delete+re-add、区域同步又写过一次图（`4119/6812 → 4118/6808 → 4119/6809`）。
+- **文档同步（T3）**：skill `photo-deletion-cleanup.md` 第 3/4 点改为「2026-10-16 起经 `cleanup_deleted_photos` 联动清 chunk/向量/媒体向量」并列出三个新计数字段；仓库文档无同类说法（免改）。
+- **副作用披露**：验收期 PM 起了**只跑 Python API** 的实例（两轮，均已**优雅关闭**）；经 `/api/chat/session` 发的 2 条指令落在用户唯一会话里（role=user）；临时夹具已删；队列文件已清回 0 字节；**Niu 处于关闭状态，需按平时方式重启**。
+
 #### 台账误打勾的 3 条 backlog：复核 + 用户逐条裁定（2026-10-16）
 
 - **缘起**：用户问"台账还有有用的吗，没用的删掉" ⇒ 清理时发现我此前把一条伞形待办（"backlog 四条：bundled skills 更新 / GraphML 悬空 metadata / 向量库格式转换工具 / `lightrag_insert_custom_kg` 吞参"）**整条打了勾**，但实际只解决了 skills 一条，另外三条**从未定义清楚、也从未处理** ⇒ **"台账清零"被我当成"没有缺陷"是又一次把一行字当事实**。三条一起重核：
