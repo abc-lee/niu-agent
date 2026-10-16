@@ -555,6 +555,21 @@ def _entity_exists_in_kg(entity_name: str) -> bool:
     except Exception:
         return False
 
+def _kg_person_name(name, auto_label) -> str:
+    """共用取名口径：人物的 KG 实体名（生成侧与刷新侧同一定义）。
+
+    name 为空 / name 以「未命名人物」开头 / name == auto_label ⇒ 取 auto_label，
+    否则取 name（两者皆空 ⇒ 返回 ""）。
+    生成侧 format_photo_ingest_data 与刷新侧 _refresh_person_photo_texts 两侧
+    都必须经此函数取名——判定只写一处，否则「显式命名为『未命名人物…』开头」
+    或 name == auto_label 时，刷新侧会算出与生成侧不同的旧名，旧人物虚拟块删不中。
+    """
+    name = name or ""
+    auto_label = auto_label or ""
+    if not name or name.startswith("未命名人物") or name == auto_label:
+        return auto_label
+    return name
+
 
 def format_photo_ingest_data(
     file_path: str, abstract: str, detected_persons: list, exif: dict | None = None
@@ -645,12 +660,8 @@ def format_photo_ingest_data(
     person_names = []
     seen_person_entity_names: set[str] = set()  # deduplicate: same person may appear via multiple faces
     for p in detected_persons:
-        pname = p.get("name", "")
-        auto_label = p.get("auto_label", "")
-        # 已命名用真名，未命名用 auto_label
-        # 未命名判定：name 为空 / name 以"未命名人物"开头 / name 与 auto_label 相同
-        is_unnamed = not pname or pname.startswith("未命名人物") or pname == auto_label
-        entity_name = auto_label if is_unnamed else pname
+        # 已命名用真名，未命名用 auto_label——口径见 _kg_person_name（与刷新侧共用）
+        entity_name = _kg_person_name(p.get("name", ""), p.get("auto_label", ""))
         if not entity_name:
             continue
 
@@ -2593,73 +2604,189 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
         logger.warning(f"[NAME_PERSON] Duplicate person entity merge failed: {e}")
 
 
-def _refresh_photo_abstracts_for_person(
-    person_id: str, new_name: str, conn: sqlite3.Connection
-) -> None:
-    """人物改名后，更新相关照片的 abstract。
+def _refresh_person_photo_texts(
+    person_id: str, old_kg_name: str, new_kg_name: str, conn: sqlite3.Connection
+) -> dict:
+    """人物改名/合并后，刷新受影响照片：DB abstract + 照片真实块 + 人物虚拟块（F-2）。
 
-    只更新 DB 中照片的 abstract 字段，不再重新注入照片到 KG
-    （KG 人物实体描述块由 name_person 经 lightrag_edit_entity 重写，见 §2.5）。
-    避免 ainsert 重复产生新实体；人物实体改名已由 merge_entities 完成。
+    受影响 = 该人名下全部照片（faces JOIN photos，D-5）。逐张：
+    1. DB abstract：按该照片**当前**人物名（_kg_person_name，保序去重）经
+       generate_l0_abstract 重算，在 _db_write_lock 内 UPDATE photos（循环外一次性 commit，F-4）；
+    2. 照片真实块：get_chunk_by_source 取旧块（取不到 ⇒ 跳过该步并计数上报，不抛），
+       重写内容（第 1 行 = 刷新后 abstract；实体行 = stem + 沿用的地点名 + 当前人物名；
+       人物/地点行仅有则写；拍摄时间/相机/类别等其余行从旧块逐字沿用），
+       删旧块后写新内容（source_id/file_path = 归一化路径）；
+    3. 人物虚拟块换名：删旧名块（source_id = path_old_kg_name），按新名写同型块
+       （source_id = path_new_kg_name，内容 `<新名>: <新名>（person_id=…）`）。
 
-    流程：
-    1. 从 DB 查找该人物出现的所有照片
-    2. 重新生成 abstract（更新人名）
-    3. 更新 DB 中的 abstract
+    微修口径：F-1 解析旧人物/地点行按项 strip（逗号分词的前导空格项若漏 strip，
+    会在实体行兜底剥除时把人名错收进地点位）；F-2 人物名写块行前按名保序去重
+    （与 generate_l0_abstract 同口径，杜绝「张三, 张三」）；F-3 删块返回
+    status 非 ok ⇒ 记「删除失败，可能与新块并存」专属 errors、不中断；
+    F-4 循环内只执行 UPDATE，循环外一次性 commit（_db_write_lock 语义不变）。
+
+    失败语义（D-4）：逐张照片 try/except 隔离（记 errors 后继续）+ helper 整体
+    再包一层顶层 try/except（异常记 errors、返回全 0 计数）——调用方 status 绝不
+    翻转，DB 结果不反转。old/new KG 名一律由调用方经共用取名函数
+    _kg_person_name 算出（本函数只按名删/写，不再自判）。
+    禁用 registry：只直连 LightRAGAdapter（函数内惰性 import，与
+    _entity_exists_in_kg 同缝）——多一次 get_registry() 会打破既有测试的严格
+    计数断言。返回 {"abstracts_refreshed", "chunks_refreshed", "errors"}。
     """
-    # Find all photos that have faces from this person
-    photo_rows = conn.execute(
-        "SELECT DISTINCT f.photo_id, p.file_path, p.taken_at "
-        "FROM faces f JOIN photos p ON f.photo_id = p.id "
-        "WHERE f.person_id = ?",
-        (person_id,),
-    ).fetchall()
+    result = {"abstracts_refreshed": 0, "chunks_refreshed": 0, "errors": []}
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
-    if not photo_rows:
-        return
-
-    # Collect all DB updates first, then apply in one batch
-    photo_updates: list[tuple[str, str, str, str]] = []  # (photo_id, file_path, new_abstract, taken_at)
-
-    for photo_id, file_path, taken_at in photo_rows:
-        # Get all person info for this photo (names are already updated in DB)
-        face_persons = conn.execute(
-            "SELECT p.id, p.name, p.auto_label FROM faces f "
-            "JOIN persons p ON f.person_id = p.id "
-            "WHERE f.photo_id = ?",
-            (photo_id,),
+        photo_rows = conn.execute(
+            "SELECT DISTINCT f.photo_id, p.file_path, p.taken_at "
+            "FROM faces f JOIN photos p ON f.photo_id = p.id "
+            "WHERE f.person_id = ?",
+            (person_id,),
         ).fetchall()
 
-        # Build person_names list for abstract generation (deduplicate by person_id)
-        person_names = []
-        seen_person_ids: set[str] = set()
-        for pid, pname, auto_label in face_persons:
-            if pid in seen_person_ids:
-                continue
-            seen_person_ids.add(pid)
-            is_unnamed = not pname or pname.startswith("未命名人物") or pname == auto_label
-            display_name = auto_label if is_unnamed else pname
-            if display_name:
-                person_names.append(display_name)
+        for photo_id, file_path, taken_at in photo_rows:
+            normalized_path = file_path.replace("\\", "/").lower() if file_path else ""
+            try:
+                # ① DB abstract：按该照片当前人物名重算并写库
+                face_persons = conn.execute(
+                    "SELECT p.id, p.name, p.auto_label FROM faces f "
+                    "JOIN persons p ON f.person_id = p.id "
+                    "WHERE f.photo_id = ?",
+                    (photo_id,),
+                ).fetchall()
+                person_names: list[str] = []
+                seen_person_ids: set[str] = set()
+                for pid, pname, auto_label in face_persons:
+                    if pid in seen_person_ids:
+                        continue
+                    seen_person_ids.add(pid)
+                    display_name = _kg_person_name(pname, auto_label)
+                    if display_name:
+                        person_names.append(display_name)
+                # F-2: 按名保序去重（与 generate_l0_abstract 内部同口径）：刷新侧
+                # 原按 person_id 去重、生成侧按显示名——两个不同人显示名相同时，
+                # 人物/实体行会把同名写两遍（「张三, 张三」）
+                person_names = list(dict.fromkeys(person_names))
+                new_abstract = generate_l0_abstract(person_names, taken_at)
+                with _db_write_lock:
+                    conn.execute(
+                        "UPDATE photos SET abstract = ? WHERE id = ?",
+                        (new_abstract, photo_id),
+                    )
+                result["abstracts_refreshed"] += 1
 
-        # Regenerate abstract with updated person names
-        new_abstract = generate_l0_abstract(person_names, taken_at)
+                if not normalized_path:
+                    continue
 
-        photo_updates.append((photo_id, file_path, new_abstract, taken_at))
+                # ②③ 块层：重写照片真实块 + 人物虚拟块换名
+                adapter = LightRAGAdapter()
 
-    # Batch all DB updates in one lock + one commit
-    with _db_write_lock:
-        for photo_id, _, new_abstract, _ in photo_updates:
-            conn.execute(
-                "UPDATE photos SET abstract = ? WHERE id = ?",
-                (new_abstract, photo_id),
-            )
-        conn.commit()
+                old_chunk = adapter.get_chunk_by_source(normalized_path)
+                if old_chunk is not None:
+                    stem = Path(normalized_path).stem
+                    location_names: list[str] = []
+                    old_person_names: list[str] = []
+                    entity_line_value = ""
+                    other_lines: list[str] = []
+                    for line in str(old_chunk.get("content", "")).split("\n"):
+                        if not line.strip():
+                            continue
+                        if line.startswith("照片 ") and "：" in line:
+                            continue  # 第 1 行：用刷新后 abstract 重写
+                        if line.startswith("实体："):
+                            entity_line_value = line[len("实体："):].strip()
+                        elif line.startswith("人物："):
+                            # F-1: 逗号分词后逐项 strip——「安安, 小明」分出的「 小明」
+                            # 带前导空格，不 strip 则进不了下方 skip 集，经实体行兜底
+                            # 被错收进地点位
+                            old_person_names = [s.strip() for s in line[len("人物："):].split(",") if s.strip()]
+                        elif line.startswith("地点："):
+                            # F-1: 同人物行——逗号分词后逐项 strip，避免写出双重空格
+                            location_names = [s.strip() for s in line[len("地点："):].split(",") if s.strip()]
+                        else:
+                            other_lines.append(line)  # 拍摄时间/相机/类别等，逐字沿用
+                    # 地点名取法：优先旧块的地点行；无地点行时兜底用实体行剥掉
+                    # stem 与人物名（旧人物行里的 + DB 当前的）后的剩余
+                    if not location_names and entity_line_value:
+                        skip_names = {stem, *person_names, *old_person_names}
+                        location_names = [
+                            s for s in (item.strip() for item in entity_line_value.split(","))
+                            if s and s not in skip_names
+                        ]
+                    new_lines = [f"照片 {stem}：{new_abstract}"]
+                    new_lines.append(f"实体：{', '.join([stem, *location_names, *person_names])}")
+                    if person_names:
+                        new_lines.append(f"人物：{', '.join(person_names)}")
+                    if location_names:
+                        new_lines.append(f"地点：{', '.join(location_names)}")
+                    new_lines.extend(other_lines)
+                    del_r = adapter.delete_chunks_by_source_id(normalized_path)
+                    if not (isinstance(del_r, dict) and del_r.get("status") == "ok"):
+                        # F-3: 删除失败不中断——旧真实块可能与新块并存，专属上报
+                        result["errors"].append(
+                            f"{normalized_path}: 旧真实块删除失败（可能与新块并存）: "
+                            f"{del_r.get('message') if isinstance(del_r, dict) else del_r}"
+                        )
+                    r = adapter.upsert_chunks([{
+                        "content": "\n".join(new_lines),
+                        "source_id": normalized_path,
+                        "file_path": normalized_path,
+                    }])
+                    if isinstance(r, dict) and r.get("status") == "ok":
+                        result["chunks_refreshed"] += 1
+                    else:
+                        result["errors"].append(
+                            f"{normalized_path}: 真实块重写失败: "
+                            f"{r.get('message') if isinstance(r, dict) else r}"
+                        )
+                else:
+                    result["errors"].append(f"{normalized_path}: 真实块取不到，跳过重写")
 
-    logger.info(
-        f"[M7] Refreshed abstracts for {len(photo_updates)} photos after "
-        f"naming person {person_id} as '{new_name}'"
-    )
+                old_virtual_sid = f"{normalized_path}_{old_kg_name}"
+                del_r = adapter.delete_chunks_by_source_id(old_virtual_sid)
+                if not (isinstance(del_r, dict) and del_r.get("status") == "ok"):
+                    # F-3: 删除失败不中断——旧人物虚拟块可能与新块并存，专属上报
+                    result["errors"].append(
+                        f"{old_virtual_sid}: 旧人物虚拟块删除失败（可能与新块并存）: "
+                        f"{del_r.get('message') if isinstance(del_r, dict) else del_r}"
+                    )
+                r = adapter.upsert_chunks([{
+                    "content": f"{new_kg_name}: {new_kg_name}（person_id={person_id}）",
+                    "source_id": f"{normalized_path}_{new_kg_name}",
+                    "file_path": normalized_path,
+                }])
+                if isinstance(r, dict) and r.get("status") == "ok":
+                    result["chunks_refreshed"] += 1
+                else:
+                    result["errors"].append(
+                        f"{normalized_path}: 人物虚拟块换名失败: "
+                        f"{r.get('message') if isinstance(r, dict) else r}"
+                    )
+            except Exception as e:
+                result["errors"].append(f"{file_path}: {e}")
+                logger.warning(f"[PERSON_TEXTS] {file_path} 刷新失败: {e}")
+
+        # F-4: 旧实现在循环外一次性 commit——T2 的逐张 commit 每张都要落盘同步，
+        # 提交频率随照片数线性增长。故循环内只执行 UPDATE（_db_write_lock 语义
+        # 不变），循环外一次性 commit。
+        with _db_write_lock:
+            conn.commit()
+
+        logger.info(
+            f"[PERSON_TEXTS] person {person_id} ({old_kg_name} → {new_kg_name}): "
+            f"abstracts={result['abstracts_refreshed']} chunks={result['chunks_refreshed']} "
+            f"errors={len(result['errors'])}"
+        )
+    except Exception as e:
+        # 顶层兜底：查照片等前置步骤整体失败（如连接不可迭代）也不得打穿调用方
+        # status——记 errors、返回全 0 计数
+        result = {
+            "abstracts_refreshed": 0,
+            "chunks_refreshed": 0,
+            "errors": [f"person {person_id} 刷新异常: {e}"],
+        }
+        logger.warning(f"[PERSON_TEXTS] 顶层异常 (person {person_id}): {e}")
+    return result
 
 
 def name_person(person_id: str, name: str) -> dict:
@@ -2679,6 +2806,8 @@ def name_person(person_id: str, name: str) -> dict:
                     "status": "error",
                     "error_code": "PERSON_NOT_FOUND",
                     "message": f"Person not found: {person_id}",
+                    "abstracts_refreshed": 0,
+                    "chunks_refreshed": 0,
                 }
 
             current_name = row[1]  # name column
@@ -2714,6 +2843,8 @@ def name_person(person_id: str, name: str) -> dict:
                             "person_b_id": person_id,    # current_person — 合并后删除
                         },
                         "hint": "请确认：这是同一个人吗？如果是，请调用 merge_persons(person_a_id, person_b_id) 合并；如果只是同名，请换一个名字重新命名",
+                        "abstracts_refreshed": 0,
+                        "chunks_refreshed": 0,
                     }
 
             conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
@@ -2802,13 +2933,17 @@ def name_person(person_id: str, name: str) -> dict:
                 kg_errors.append(f"KG 描述块同步异常: {e}")
                 logger.warning(f"[NAME_PERSON] {kg_errors[-1]}")
 
-        # M7: 改名后更新该人物相关照片在 DB 中的 abstract（abstract 不再含旧人名）
-        # （照片不重新注入 KG 以免产生重复实体；人物实体改名由 merge_entities 完成，
-        # 描述块同步由上面的 lightrag_edit_entity 完成）
-        try:
-            _refresh_photo_abstracts_for_person(person_id, name, conn)
-        except Exception as e:
-            logger.warning(f"[NAME_PERSON] Photo abstract refresh failed: {e}")
+        # M7/F-2: 改名后刷新受影响照片：DB abstract + 照片真实块 + 人物虚拟块。
+        # 旧的 _refresh_photo_abstracts_for_person（只刷 DB abstract）已折进
+        # _refresh_person_photo_texts；其内部顶层兜底取代调用点原 try/except。
+        # 旧/新 KG 名一律经共用取名函数现算（不得复用 KG 块的 source_entity 两条件变量）。
+        text_refresh = _refresh_person_photo_texts(
+            person_id,
+            _kg_person_name(current_name, auto_label),
+            _kg_person_name(name, auto_label),
+            conn,
+        )
+        kg_errors.extend(text_refresh["errors"])
 
         logger.info(f"[NAME_PERSON] Updated person {person_id} name to: {name}")
 
@@ -2821,6 +2956,8 @@ def name_person(person_id: str, name: str) -> dict:
             "kg_rename": f"知识图谱实体名从「{source_entity}」改为「{name}」" if kg_synced else None,
             "kg_desc_synced": kg_desc_synced,
             "kg_errors": kg_errors,
+            "abstracts_refreshed": text_refresh["abstracts_refreshed"],
+            "chunks_refreshed": text_refresh["chunks_refreshed"],
         }
 
     except Exception as e:
@@ -2830,6 +2967,8 @@ def name_person(person_id: str, name: str) -> dict:
             "error_code": "UNKNOWN_ERROR",
             "message": str(e),
             "kg_rename": None,
+            "abstracts_refreshed": 0,
+            "chunks_refreshed": 0,
         }
 
 
@@ -2845,6 +2984,9 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             "merged_into": None,
             "deleted_person_id": None,
             "kg_rename": None,
+            "kg_errors": [],
+            "abstracts_refreshed": 0,
+            "chunks_refreshed": 0,
         }
 
     try:
@@ -2863,6 +3005,9 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                 "error_code": "PERSON_NOT_FOUND",
                 "message": "One or both persons not found",
                 "kg_rename": None,
+                "kg_errors": [],
+                "abstracts_refreshed": 0,
+                "chunks_refreshed": 0,
             }
 
         # Find person_a and person_b
@@ -2876,6 +3021,9 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                 "error_code": "PERSON_NOT_FOUND",
                 "message": "One or both persons not found",
                 "kg_rename": None,
+                "kg_errors": [],
+                "abstracts_refreshed": 0,
+                "chunks_refreshed": 0,
             }
 
         # Keep person_a's name
@@ -3055,6 +3203,18 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
         except Exception as e:
             logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
 
+        # F-2: KG 段之后无条件刷新受影响照片（合并之后 person_a 名下全部照片，
+        # 含刚从 person_b 迁入的）：DB abstract（缺口 A：合并路径原先连 DB
+        # abstract 都不刷）+ 照片真实块 + 人物虚拟块（缺口 B）。
+        # 旧/新 KG 名一律经共用取名函数现算（不复用 KG 段的两条件变量）。
+        merge_refresh = _refresh_person_photo_texts(
+            person_a_id,
+            _kg_person_name(person_b[1], person_b[2]),
+            _kg_person_name(person_a[1], person_a[2]),
+            conn,
+        )
+        kg_errors = list(merge_refresh["errors"])
+
         logger.info(f"[MERGE_PERSONS] Merged {person_b_id} into {person_a_id}")
 
         return {
@@ -3064,6 +3224,9 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             "photo_count": merged_count,
             "deleted_person_id": person_b_id,
             "kg_rename": f"知识图谱实体名从「{kg_name_b}」改为「{kg_name_a}」" if kg_synced else None,
+            "kg_errors": kg_errors,
+            "abstracts_refreshed": merge_refresh["abstracts_refreshed"],
+            "chunks_refreshed": merge_refresh["chunks_refreshed"],
         }
 
     except Exception as e:
@@ -3078,6 +3241,9 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             "error_code": "UNKNOWN_ERROR",
             "message": str(e),
             "kg_rename": None,
+            "kg_errors": [],
+            "abstracts_refreshed": 0,
+            "chunks_refreshed": 0,
         }
 
 
