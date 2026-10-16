@@ -31,7 +31,6 @@ from agent.context_assembler.blocks import (
     upsert_blocks,
 )
 from agent.context_assembler.slicer import slice_units
-from agent.context_manager import ContextManager, build_tc_map
 
 # 应急警戒线写死不动（spec §5：95% 与触发线间距即天然滞回）。
 # TRIGGER_RATIO/HARD_BUDGET_RATIO 是默认值引用——实际读配置 context.compactionTriggerRatio
@@ -193,6 +192,7 @@ def archive_excluded_units(messages, units, window_start: int,
 # ---------------------------------------------------------------------------
 
 def _short_date(ts: str) -> str:
+    from agent.context_manager import ContextManager  # noqa: E402（惰性导入防环）
     return ContextManager._short_date(ts)
 
 
@@ -320,6 +320,7 @@ def build_compact_view(messages, *, system_msg: dict | None = None,
     """
     from agent.context_assembler import calibration  # noqa: E402（惰性导入防环）
     from agent.generic.agent_loop import _placeholderize_tool_outputs  # noqa: E402
+    from agent.context_manager import ContextManager, build_tc_map  # noqa: E402（惰性导入防环）
 
     db_path = Path(blocks_db_path) if blocks_db_path is not None else default_db_path()
     if context_window_tokens:
