@@ -1,4 +1,4 @@
-"""T2：cleanup_deleted_photos 接线三项新清理（A 类 chunk / B 类关系虚拟块 / 媒体向量）。
+"""T2：cleanup_deleted_photos 接线两项新清理（A 类 chunk / 媒体向量；B 类关系虚拟块已随 F-3 T0 回退）。
 
 隔离面（仿 test_photo_media_ingest.py 的 photo_env 模式）：
 - 照片库：``NIU_DB_PATH`` 指向临时目录，并复位模块级连接缓存
@@ -15,16 +15,15 @@
   不创建文件、不计错。
 
 用例：
-① 三件事全部被调用，且参数正确：delete_chunks_by_source 收**归一化路径**
-   （正斜杠+小写）、delete_custom_kg_relation_chunks 参数**只出现照片实体名**
-   （共享人物名不得进入）、media_vectors.remove 收照片 stem；成功数累进返回体
-   三个新计数字段；kg_errors 为空。
+① 两项新清理全部被调用，且参数正确：delete_chunks_by_source 收**归一化路径**
+   （正斜杠+小写）、media_vectors.remove 收照片 stem；成功数累进返回体两个
+   新计数字段；kg_errors 为空。
 ② 任一失败 ⇒ 进 kg_errors、status 不翻转、计数不累加（remove 的 False 不计错，
    True 照常计数）。
-③ 早退分支（无照片可删）三个新计数字段同为 0，绝不触碰 KG registry。
+③ 早退分支（无照片可删）两个新计数字段同为 0，绝不触碰 KG registry。
 ④ 真跑 remove：库文件不存在且键不存在 ⇒ 返回 False、**不产生新文件**、不计错。
 ⑤ 真跑 remove：键存在 ⇒ 删除落盘（原子重写），其余条目保留，计数 +1。
-⑥ 逐照片异常隔离：第一张待删照片的 remove 抛硬异常 ⇒ 第二张的三步清理仍执行，
+⑥ 逐照片异常隔离：第一张待删照片的 remove 抛硬异常 ⇒ 第二张的两项新清理仍执行，
    异常条目进 kg_errors，status 不翻转。
 """
 
@@ -126,10 +125,10 @@ def _expected_stem(file_path: Path) -> str:
 @patch("niu_api.internal.media_vectors.remove", return_value=True)
 @patch("niu_api.internal.lightrag_adapter.LightRAGAdapter")
 @patch("agent.tool_registry.get_registry")
-def test_cleanup_invokes_three_new_cleanups_with_correct_args(
+def test_cleanup_invokes_two_new_cleanups_with_correct_args(
     mock_get_registry, mock_adapter_cls, mock_remove, cleanup_env
 ):
-    """删一张照片 ⇒ 三项新清理全部被调用，且参数各自正确；成功数累进返回体新字段。"""
+    """删一张照片 ⇒ 两项新清理全部被调用，且参数各自正确；成功数累进返回体新字段。"""
     deleted, _kept = _seed(cleanup_env)
     mock_get_registry.return_value = _make_registry({
         "lightrag-server/lightrag_delete_entity": MagicMock(return_value={"status": "ok"}),
@@ -139,31 +138,23 @@ def test_cleanup_invokes_three_new_cleanups_with_correct_args(
     adapter.delete_chunks_by_source.return_value = {
         "status": "ok", "deleted_chunks": 3, "deleted_vectors": 3, "matched_ids": ["a1", "a2", "a3"],
     }
-    adapter.delete_custom_kg_relation_chunks.return_value = {
-        "status": "ok", "deleted_chunks": 2, "deleted_vectors": 2, "matched_ids": ["b1", "b2"], "skipped": 0,
-    }
 
     result = niu_photo_server.cleanup_deleted_photos()
 
     stem = _expected_stem(deleted)
-    # ① 三件事全部被调用（各一次：只有一张已删照片）
+    # ① 两项新清理全部被调用（各一次：只有一张已删照片）
     assert adapter.delete_chunks_by_source.call_count == 1
-    assert adapter.delete_custom_kg_relation_chunks.call_count == 1
     assert mock_remove.call_count == 1
     # A 类：收到的是归一化路径（正斜杠+小写），不是 DB 里的原始路径
     assert adapter.delete_chunks_by_source.call_args.args[0] == str(deleted).replace("\\", "/").lower()
-    # B 类：参数只出现照片实体名——共享人物名（李磊/未命名人物_9）绝不进入
-    b_class = adapter.delete_custom_kg_relation_chunks.call_args.args[0]
-    assert b_class == [stem]
-    assert "李磊" not in b_class and "未命名人物_9" not in b_class
     # 媒体向量：收到照片 stem
     assert mock_remove.call_args.args[0] == stem
-    # 返回体：三个新计数字段按成功数累加，无失败、status 不翻转
+    # 返回体：两个新计数字段按成功数累加，无失败、status 不翻转
     assert result["status"] == "success"
     assert result["deleted_photos"] == 1
     assert result["kg_errors"] == []
     assert result["kg_chunks_deleted"] == 3
-    assert result["kg_vectors_deleted"] == 2
+    assert "kg_vectors_deleted" not in result
     assert result["media_vectors_removed"] == 1
 
 
@@ -178,7 +169,7 @@ def test_cleanup_invokes_three_new_cleanups_with_correct_args(
 def test_new_cleanup_failure_goes_to_kg_errors_without_flipping_status(
     mock_get_registry, mock_adapter_cls, mock_remove, cleanup_env
 ):
-    """A/B 类清理失败 ⇒ 各自进 kg_errors；status 仍 success、计数为 0；
+    """A 类清理失败 ⇒ 进 kg_errors；status 仍 success、计数为 0；
     remove 返回 True 照常计数（False 才是本无、不计错，见用例 ④）。"""
     _deleted, _kept = _seed(cleanup_env)
     mock_get_registry.return_value = _make_registry({
@@ -187,26 +178,24 @@ def test_new_cleanup_failure_goes_to_kg_errors_without_flipping_status(
     })
     adapter = mock_adapter_cls.return_value
     adapter.delete_chunks_by_source.return_value = {"status": "error", "message": "text_chunks 未初始化"}
-    adapter.delete_custom_kg_relation_chunks.return_value = {"status": "error", "message": "chunks_vdb down"}
 
     result = niu_photo_server.cleanup_deleted_photos()
 
     assert result["status"] == "success", "新清理失败不翻转 DB 清理结果"
     assert result["deleted_photos"] == 1
     assert result["kg_chunks_deleted"] == 0, "失败不计数"
-    assert result["kg_vectors_deleted"] == 0, "失败不计数"
+    assert "kg_vectors_deleted" not in result
     assert result["media_vectors_removed"] == 1, "remove 成功仍照常计数"
     assert any("text_chunks 未初始化" in e for e in result["kg_errors"])
-    assert any("chunks_vdb down" in e for e in result["kg_errors"])
 
 
 # ---------------------------------------------------------------------------
-# ③ 早退分支：三个新计数字段同为 0
+# ③ 早退分支：两个新计数字段同为 0
 # ---------------------------------------------------------------------------
 
 
 def test_early_return_has_zero_new_fields(cleanup_env):
-    """无缺失照片 ⇒ 早退，绝不触碰 KG registry/adapter/媒体库，三个新计数字段为 0。"""
+    """无缺失照片 ⇒ 早退，绝不触碰 KG registry/adapter/媒体库，两个新计数字段为 0。"""
     kept = cleanup_env["tmp_path"] / "IMG_20240102.jpg"
     kept.write_bytes(b"\xff\xd8\xff\xdb" + b"\x00" * 32)
     conn = niu_photo_server.get_connection()
@@ -222,7 +211,7 @@ def test_early_return_has_zero_new_fields(cleanup_env):
     assert result["deleted_photos"] == 0
     assert result["kg_errors"] == []
     assert result["kg_chunks_deleted"] == 0
-    assert result["kg_vectors_deleted"] == 0
+    assert "kg_vectors_deleted" not in result
     assert result["media_vectors_removed"] == 0
     assert not cleanup_env["store_file"].exists(), "早退不得触碰媒体库"
 
@@ -245,9 +234,6 @@ def test_real_remove_absent_key_creates_no_file(mock_get_registry, mock_adapter_
     adapter = mock_adapter_cls.return_value
     adapter.delete_chunks_by_source.return_value = {
         "status": "ok", "deleted_chunks": 1, "deleted_vectors": 1, "matched_ids": ["a1"],
-    }
-    adapter.delete_custom_kg_relation_chunks.return_value = {
-        "status": "ok", "deleted_chunks": 1, "deleted_vectors": 1, "matched_ids": ["b1"], "skipped": 0,
     }
 
     result = niu_photo_server.cleanup_deleted_photos()
@@ -277,9 +263,6 @@ def test_real_remove_existing_entry_deleted_others_kept(mock_get_registry, mock_
     adapter.delete_chunks_by_source.return_value = {
         "status": "ok", "deleted_chunks": 1, "deleted_vectors": 1, "matched_ids": ["a1"],
     }
-    adapter.delete_custom_kg_relation_chunks.return_value = {
-        "status": "ok", "deleted_chunks": 1, "deleted_vectors": 1, "matched_ids": ["b1"], "skipped": 0,
-    }
 
     result = niu_photo_server.cleanup_deleted_photos()
 
@@ -303,7 +286,7 @@ def test_per_photo_remove_exception_does_not_abort_remaining_photos(
     mock_get_registry, mock_adapter_cls, mock_remove, cleanup_env
 ):
     """两张待删照片（文件均不存在）；remove 在第一张照片抛 RuntimeError ⇒ 第二张照片
-    的三步清理仍执行（A/B 类 adapter 各被调用 2 次），该照片异常条目进 kg_errors，
+    的两项新清理仍执行（A 类 adapter 与 remove 各被调用 2 次），该照片异常条目进 kg_errors，
     status 仍 success，DB 结果不翻转。"""
     # 两张待删照片按序插入 ⇒ 逐照片循环按插入序处理（SQLite rowid 序）
     conn = niu_photo_server.get_connection()
@@ -313,13 +296,10 @@ def test_per_photo_remove_exception_does_not_abort_remaining_photos(
             (pid, str(cleanup_env["tmp_path"] / fname)),
         )
     conn.commit()
-    mock_get_registry.return_value = _make_registry({})  # 无实体/边工具 ⇒ ①②软失败，不干扰五步
+    mock_get_registry.return_value = _make_registry({})  # 无实体/边工具 ⇒ ①②软失败，不干扰四步
     adapter = mock_adapter_cls.return_value
     adapter.delete_chunks_by_source.return_value = {
         "status": "ok", "deleted_chunks": 1, "deleted_vectors": 1, "matched_ids": ["a1"],
-    }
-    adapter.delete_custom_kg_relation_chunks.return_value = {
-        "status": "ok", "deleted_chunks": 1, "deleted_vectors": 1, "matched_ids": ["b1"], "skipped": 0,
     }
     # remove：第一次调用（第一张照片）抛硬异常，第二次（第二张照片）返回 True
     mock_remove.side_effect = [RuntimeError("boom"), True]
@@ -328,9 +308,8 @@ def test_per_photo_remove_exception_does_not_abort_remaining_photos(
 
     assert result["status"] == "success", "逐照片硬异常不翻转 DB 清理结果"
     assert result["deleted_photos"] == 2
-    # 第二张照片的三步清理仍然执行：A/B 类 adapter 与 remove 各被调用 2 次（未被中断）
+    # 第二张照片的两项新清理仍然执行：A 类 adapter 与 remove 各被调用 2 次（未被中断）
     assert adapter.delete_chunks_by_source.call_count == 2
-    assert adapter.delete_custom_kg_relation_chunks.call_count == 2
     assert mock_remove.call_count == 2
     # 第一张照片的硬异常进 kg_errors（实体名 = 归一化 stem，小写）
     assert any("img_a" in e and "boom" in e for e in result["kg_errors"])

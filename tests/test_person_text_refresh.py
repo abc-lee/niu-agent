@@ -5,9 +5,12 @@
   `niu_photo_server._conn` / `_db_path_failed`（get_connection 只在
   `_conn is None` 时重连，不复位会指向真实 `~/.niu/work/photos.db`）。
 - 工作区：`WORKSPACE_PATH` 指向临时目录。
-- adapter 三原语：类级 patch `niu_api.internal.lightrag_adapter.LightRAGAdapter`
+- adapter 原语：类级 patch `niu_api.internal.lightrag_adapter.LightRAGAdapter`
   （helper 函数内惰性 import 走同一模块属性缝，调用时取到 patch 后的类；
-  先例 test_lightrag_delete_chunks.py）。
+  先例 test_lightrag_delete_chunks.py）。F-3 起旧虚拟块删除受 D-3' 精确等值
+  守卫约束：`get_chunk_by_source_id` 默认返 None（块不存在 ⇒ 静默跳过）；
+  需要"守卫放行、旧块照删"的正常态用例，显式把该 sid 的簿记块内容
+  （`名: 名（person_id=…）`）喂给 `get_chunk_by_source_id`。
 - KG registry：patch `agent.tool_registry.get_registry`（registry.get 一律
   返回 None ⇒ name_person/merge_persons 的 KG 段降级为"工具缺失"只记
   kg_errors/告警，且 helper 自身禁用 registry，严格计数断言不受影响）；
@@ -18,7 +21,7 @@
 ② 合并路径同样 + 两张照片的 DB abstract 都刷新；
 ③ 人物虚拟块换名（删旧 source_id、写新 source_id 含新名）；
 ④ 一张照片抛异常 ⇒ 其余照片仍处理、errors 记一条、status 不翻转；
-⑤ 无照片 ⇒ 计数 0 不抛、adapter 三原语零调用；
+⑤ 无照片 ⇒ 计数 0 不抛、adapter 原语零调用；
 ⑥ 取名口径：name 以「未命名人物」开头 ⇒ 取 auto_label（与生成侧一致，
    显式点名场景下 `name or auto_label` 会算出不同旧名、旧虚拟块删不中）。
 T2 微修口径（质量审查 1×P2 + 5×P3）：F-1 人物行 strip 防人名泄漏进地点位；
@@ -65,10 +68,13 @@ def photo_env(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def kg_mocks():
-    """类级 patch adapter 三原语 + KG registry 降级（helper 禁用 registry）。"""
+    """类级 patch adapter 原语 + KG registry 降级（helper 禁用 registry）。"""
     mock_adapter_cls = MagicMock()
     adapter = mock_adapter_cls.return_value
     adapter.get_chunk_by_source.return_value = None
+    # F-3 D-3' 守卫：默认「块不存在」（静默跳过、不计错）；需要"守卫放行、
+    # 旧虚拟块照删"的正常态用例，显式把簿记块内容喂给 get_chunk_by_source_id
+    adapter.get_chunk_by_source_id.return_value = None
     adapter.delete_chunks_by_source_id.return_value = {
         "status": "ok", "deleted_chunks": 0, "deleted_vectors": 0, "matched_ids": [],
     }
@@ -115,6 +121,13 @@ def _chunk_dict(stem: str, content: str, norm_path: str) -> dict:
     return {"content": content, "file_path": norm_path, "source_id": norm_path}
 
 
+def _virtual_bookkeeping(kg_name: str, person_id: str) -> dict:
+    """入库侧逐照片簿记块的正常形态：`名: 名（person_id=<该人自己的 id>）`。
+    F-3 D-3' 守卫正常态夹具：把该 dict 喂给 get_chunk_by_source_id ⇒ 守卫放行、
+    旧虚拟块照删。"""
+    return {"content": f"{kg_name}: {kg_name}（person_id={person_id}）", "source_id": ""}
+
+
 def _upsert_contents(adapter) -> list:
     return [call.args[0][0]["content"] for call in adapter.upsert_chunks.call_args_list]
 
@@ -150,6 +163,10 @@ class TestKgPersonName:
         adapter.get_chunk_by_source.side_effect = lambda p: (
             _chunk_dict("img_u", "照片 img_u：旧\n实体：img_u, auto_9\n人物：auto_9", p)
             if p == norm else None
+        )
+        # F-3 守卫正常态：auto_label 名下的旧簿记块存在 ⇒ 守卫放行、照删
+        adapter.get_chunk_by_source_id.side_effect = lambda sid: (
+            _virtual_bookkeeping("auto_9", "p_unnamed") if sid == norm + "_auto_9" else None
         )
 
         result = niu_photo_server.name_person("p_unnamed", "小红")
@@ -187,6 +204,10 @@ class TestRenameRefresh:
         adapter = kg_mocks["adapter"]
         adapter.get_chunk_by_source.side_effect = lambda p: (
             _chunk_dict("img_20240101", old_content, p) if p == norm else None
+        )
+        # F-3 守卫正常态：旧名簿记块存在 ⇒ 守卫放行、照删
+        adapter.get_chunk_by_source_id.side_effect = lambda sid: (
+            _virtual_bookkeeping("未命名人物_7", "p1") if sid == norm + "_未命名人物_7" else None
         )
 
         result = niu_photo_server.name_person("p1", "安安")
@@ -281,6 +302,11 @@ class TestMergeRefresh:
 
         adapter = kg_mocks["adapter"]
         adapter.get_chunk_by_source.side_effect = fake_get_chunk
+        # F-3 守卫正常态（合并：old_person_id=person_b_id，期望串里的 pid 必须是 B 的）：
+        # 照片 B 名下有 B 的旧簿记块 ⇒ 放行照删；照片 A 名下无 B 的块 ⇒ 静默跳过
+        adapter.get_chunk_by_source_id.side_effect = lambda sid: (
+            _virtual_bookkeeping("未命名人物_8", "pb") if sid == norm_b + "_未命名人物_8" else None
+        )
 
         result = niu_photo_server.merge_persons("pa", "pb")
 
@@ -311,8 +337,10 @@ class TestMergeRefresh:
 
         # ③ 两张照片的人物虚拟块都换到保留人名下
         deletes = [call.args[0] for call in adapter.delete_chunks_by_source_id.call_args_list]
-        # 删除目标一律是「path_旧KG名」：合并场景旧名 = person_b 的 KG 名
-        assert norm_a + "_未命名人物_8" in deletes  # 照片 A 的删除目标（旧名口径，无命中不报错）
+        # 旧虚拟块删除受 F-3 D-3' 守卫：照片 B 名下有 B 的簿记块（内容里的 pid
+        # 是 pb 自己的，调用点补传 old_person_id=person_b_id 后守卫放行）⇒ 照删；
+        # 照片 A 名下无 B 的块 ⇒ 静默跳过、不发起删除调用
+        assert norm_a + "_未命名人物_8" not in deletes
         assert norm_b + "_未命名人物_8" in deletes  # 照片 B 的旧虚拟块（被并入）
         assert norm_a + "_安安" in srcs and norm_b + "_安安" in srcs
 
@@ -346,6 +374,11 @@ class TestFailureIsolation:
 
         adapter = kg_mocks["adapter"]
         adapter.get_chunk_by_source.side_effect = fake_get_chunk
+        # F-3 守卫正常态：健康照片 B 名下有簿记块 ⇒ 守卫放行、旧块照删
+        # （异常照片 A 在真实块步就抛了，走不到虚拟块步）
+        adapter.get_chunk_by_source_id.side_effect = lambda sid: (
+            _virtual_bookkeeping("未命名人物_1", "p1") if sid == norm_b + "_未命名人物_1" else None
+        )
 
         result = niu_photo_server.name_person("p1", "圆圆")
 
@@ -444,6 +477,10 @@ class TestTextRefreshMicrofix:
         adapter.get_chunk_by_source.side_effect = lambda p: (
             _chunk_dict("img_group", old_content, p) if p == norm else None
         )
+        # F-3 守卫正常态：p_xm 的旧 KG 名是「小明」，其簿记块存在 ⇒ 放行照删
+        adapter.get_chunk_by_source_id.side_effect = lambda sid: (
+            _virtual_bookkeeping("小明", "p_xm") if sid == norm + "_小明" else None
+        )
 
         result = niu_photo_server.name_person("p_xm", "小红")
 
@@ -475,6 +512,10 @@ class TestTextRefreshMicrofix:
                 "img_e", "照片 img_e：未命名人物_5，2024年01月01日\n实体：img_e\n人物：未命名人物_5", p
             )
             if p == norm else None
+        )
+        # F-3 守卫正常态：旧簿记块存在 ⇒ 旧块照删，本用例只验新块 upsert 失败路径
+        adapter.get_chunk_by_source_id.side_effect = lambda sid: (
+            _virtual_bookkeeping("未命名人物_5", "p_err") if sid == norm + "_未命名人物_5" else None
         )
         adapter.upsert_chunks.return_value = {"status": "error", "message": "KG 服务不可用"}
 
@@ -508,6 +549,11 @@ class TestTextRefreshMicrofix:
         adapter = kg_mocks["adapter"]
         adapter.get_chunk_by_source.side_effect = lambda p: (
             _chunk_dict("img_dup", old_content, p) if p == norm else None
+        )
+        # F-3 守卫正常态：直接调 helper 不传 old_person_id ⇒ 期望 pid 缺省取
+        # person_id（p_a）；把 p_a 名下的簿记块喂给守卫 ⇒ 放行、errors 保持空
+        adapter.get_chunk_by_source_id.side_effect = lambda sid: (
+            _virtual_bookkeeping("张三", "p_a") if sid == norm + "_张三" else None
         )
 
         conn = niu_photo_server.get_connection()

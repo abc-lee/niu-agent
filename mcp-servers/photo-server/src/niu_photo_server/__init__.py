@@ -1511,6 +1511,11 @@ def delete_person(person_id: str) -> dict:
 
     警告：这会删除人物图谱中的节点，请谨慎使用。
     只有在用户明确要求删除时才调用。
+
+    F-3 D-1：行删除事务提交后**无条件**执行簿记清理（图谱实体删除失败也照做——
+    行已删是既成事实）：① 逐照片簿记块（D-3' 精确等值守卫）；② 声明族簿记块
+    （D-4'）；③ 照片文本层移除模式（new_kg_name=None：删旧虚拟块、不写新块，
+    真实块重写与 abstract 重算照做）。任何失败只进 kg_errors，status 恒 success。
     """
     conn = get_connection()
 
@@ -1520,9 +1525,19 @@ def delete_person(person_id: str) -> dict:
     )
     row = cursor.fetchone()
     if not row:
-        return {"status": "error", "message": f"Person not found: {person_id}"}
+        # 返回体形状统一：早退分支同样携带三个计数字段（0 / 空）
+        return {
+            "status": "error",
+            "message": f"Person not found: {person_id}",
+            "kg_chunks_deleted": 0,
+            "photo_texts_refreshed": 0,
+            "kg_errors": [],
+        }
 
-    person_name = row[0] if row[0] else row[1]
+    # D-2：KG 名必须经共用取名函数（三条件，与生成侧 format_photo_ingest_data
+    # 同口径）——旧的两条件取名在「name 以未命名人物开头」或「name == auto_label」
+    # 时算出与生成侧不同的名字 ⇒ 簿记块删不中、且删错图谱节点。
+    kg_name = _kg_person_name(row[0], row[1])
 
     # 找出同照片中其他人物（删除 faces 前查询）
     co_person_ids = conn.execute(
@@ -1530,6 +1545,15 @@ def delete_person(person_id: str) -> dict:
            JOIN faces f2 ON f1.photo_id = f2.photo_id
            WHERE f1.person_id = ? AND f2.person_id != ? AND f2.person_id IS NOT NULL""",
         (person_id, person_id),
+    ).fetchall()
+
+    # F-3 D-6：删 faces 行**之前**收集受影响照片行（行删掉后 helper 自查不到，
+    # 必须显式传给移除模式刷新）
+    photo_rows = conn.execute(
+        "SELECT DISTINCT f.photo_id, p.file_path, p.taken_at "
+        "FROM faces f JOIN photos p ON f.photo_id = p.id "
+        "WHERE f.person_id = ?",
+        (person_id,),
     ).fetchall()
 
     # 写事务：删除关联数据并提交
@@ -1559,26 +1583,101 @@ def delete_person(person_id: str) -> dict:
 
         conn.commit()
 
-    # 同步删除知识图谱中的实体
-    if person_name:
+    kg_errors: list[str] = []
+
+    # 同步删除知识图谱中的实体（D-1：本步失败只记 kg_errors——下方簿记清理不在
+    # 实体删除的异常传播路径上，抛异常时清理仍会执行）
+    if kg_name:
         try:
             from agent.tool_registry import get_registry
             registry = get_registry()
             delete_fn = registry.get("lightrag-server/lightrag_delete_entity")
             if delete_fn:
-                delete_fn(entity_name=person_name)
-                logger.info(f"[DELETE_PERSON] KG entity deleted: {person_name}")
+                delete_fn(entity_name=kg_name)
+                logger.info(f"[DELETE_PERSON] KG entity deleted: {kg_name}")
             else:
+                kg_errors.append("lightrag_delete_entity 不在 registry 中，图谱节点未删")
                 logger.warning("[DELETE_PERSON] lightrag_delete_entity not available in registry")
         except Exception as e:
+            kg_errors.append(f"图谱实体删除失败: {e}")
             logger.warning(f"[DELETE_PERSON] LightRAG entity deletion failed: {e}")
     else:
         logger.warning(f"[DELETE_PERSON] No entity name for person {person_id}, skipping KG deletion")
 
+    # F-3 D-1：簿记清理——无条件执行；三段各自 try 隔离，任何失败只进 kg_errors
+    # （status 恒 success、不翻转 DB 结果）
+    kg_chunks_deleted = 0
+    photo_texts_refreshed = 0
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        adapter = LightRAGAdapter()
+
+        # ① 逐照片簿记块（D-3' 精确等值守卫，零模型调用）：get_chunk_by_source_id
+        #    读出该块——块不存在 ⇒ 静默跳过、不计错；内容逐字等于本人簿记串
+        #    才删（同名另一个人 person_id 不同、同 sid 的知识/地点块形态不同，
+        #    都不可能命中）；块存在但内容不等值 ⇒ 保留 + 记 kg_errors
+        if kg_name:
+            for _photo_id, file_path, _taken_at in photo_rows:
+                normalized_path = file_path.replace("\\", "/").lower() if file_path else ""
+                if not normalized_path:
+                    continue
+                virtual_sid = f"{normalized_path}_{kg_name}"
+                try:
+                    chunk = adapter.get_chunk_by_source_id(virtual_sid)
+                    if chunk is None:
+                        continue
+                    expected = f"{kg_name}: {kg_name}（person_id={person_id}）"
+                    if str(chunk.get("content", "")) != expected:
+                        kg_errors.append(
+                            f"{virtual_sid}: 内容非本人簿记块，保留（不删）: "
+                            f"{chunk.get('content', '')}"
+                        )
+                        continue
+                    del_r = adapter.delete_chunks_by_source_id(virtual_sid)
+                    if isinstance(del_r, dict) and del_r.get("status") == "ok":
+                        kg_chunks_deleted += del_r.get("deleted_chunks", 0)
+                    else:
+                        kg_errors.append(
+                            f"{virtual_sid}: 簿记块删除失败: "
+                            f"{del_r.get('message') if isinstance(del_r, dict) else del_r}"
+                        )
+                except Exception as e:
+                    kg_errors.append(f"{virtual_sid}: 簿记块清理异常: {e}")
+
+        # ② 声明族簿记块（rename_/merge_/custom_kg_ 前缀；内容精确等值 + 无 ->，
+        #    匹配规则见 adapter.delete_bookkeeping_chunks 文档）
+        if kg_name:
+            try:
+                bk = adapter.delete_bookkeeping_chunks(kg_name)
+                if isinstance(bk, dict) and bk.get("status") == "ok":
+                    kg_chunks_deleted += bk.get("deleted_chunks", 0)
+                else:
+                    kg_errors.append(
+                        f"声明族簿记块清理失败: "
+                        f"{bk.get('message') if isinstance(bk, dict) else bk}"
+                    )
+            except Exception as e:
+                kg_errors.append(f"声明族簿记块清理异常: {e}")
+
+        # ③ 照片文本层移除模式（new_kg_name=None ⇒ 删旧虚拟块、不写新块；
+        #    真实块重写与 abstract 重算照做）。photo_texts_refreshed 语义 = helper
+        #    的 chunks_refreshed（移除模式下即真实块重写成功数，旧虚拟块删除不计入）
+        refresh = _refresh_person_photo_texts(
+            person_id, kg_name, None, conn, photo_rows=photo_rows,
+        )
+        photo_texts_refreshed = refresh["chunks_refreshed"]
+        kg_errors.extend(refresh["errors"])
+    except Exception as e:
+        kg_errors.append(f"簿记清理异常: {e}")
+        logger.warning(f"[DELETE_PERSON] 簿记清理失败: {e}")
+
     return {
         "status": "success",
-        "message": f"Deleted person: {person_name}",
+        "message": f"Deleted person: {kg_name}",
         "person_id": person_id,
+        "kg_chunks_deleted": kg_chunks_deleted,
+        "photo_texts_refreshed": photo_texts_refreshed,
+        "kg_errors": kg_errors,
     }
 
 
@@ -1586,7 +1685,7 @@ def cleanup_deleted_photos() -> dict:
     """清理已删除照片的数据库记录
 
     扫描 photos 表，删除文件不存在的照片记录及其关联的 faces 记录，
-    并清理这些照片贡献的 KG 足迹（照片实体 + depicts 边 + 该照片自身 chunk 与关系虚拟块 + 媒体向量；共享人物实体绝不删）。
+    并清理这些照片贡献的 KG 足迹（照片实体 + depicts 边 + 该照片自身 chunk + 媒体向量；共享人物实体绝不删）。
     在删除照片文件后调用此工具清理数据库。
 
     返回:
@@ -1595,7 +1694,6 @@ def cleanup_deleted_photos() -> dict:
     - kg_entities_deleted: 删除的照片实体数（KG）
     - kg_relations_deleted: 删除的 depicts 关系数（KG）
     - kg_chunks_deleted: 删除的 A 类 chunk 数（照片自身 text_chunks，连带向量）
-    - kg_vectors_deleted: 删除的 B 类关系虚拟块向量数（按照片实体名匹配）
     - media_vectors_removed: 移除的媒体向量条数（本无则 0，不计错）
     - kg_errors: KG 清理失败原因列表（空 = 全部成功）
     """
@@ -1624,7 +1722,6 @@ def cleanup_deleted_photos() -> dict:
             "kg_entities_deleted": 0,
             "kg_relations_deleted": 0,
             "kg_chunks_deleted": 0,
-            "kg_vectors_deleted": 0,
             "media_vectors_removed": 0,
             "kg_errors": [],
         }
@@ -1638,7 +1735,7 @@ def cleanup_deleted_photos() -> dict:
     ).fetchall()
 
     # §2.6: 删 faces 之前，收集每张待删照片的人物 KG 实体名
-    # （命名约定与 format_photo_ingest_data 一致：已命名用真名，未命名用 auto_label），
+    # （经共用取名函数 _kg_person_name，与 format_photo_ingest_data 同一真相源），
     # 供删除后清理该照片的 features(depicts) 边。人物实体本身绝不进入任何删除调用。
     photo_person_entities: dict[str, list[str]] = {}
     for fpid, fname, fauto in conn.execute(
@@ -1646,8 +1743,7 @@ def cleanup_deleted_photos() -> dict:
         f"JOIN persons p ON f.person_id = p.id WHERE f.photo_id IN ({placeholders})",
         deleted_photo_ids,
     ).fetchall():
-        is_unnamed = not fname or fname.startswith("未命名人物") or fname == fauto
-        entity_name = fauto if is_unnamed else fname
+        entity_name = _kg_person_name(fname, fauto)
         if not entity_name:
             continue
         names = photo_person_entities.setdefault(fpid, [])
@@ -1685,13 +1781,11 @@ def cleanup_deleted_photos() -> dict:
 
     # §2.6: 删照片后清理该照片贡献的 KG 足迹——只删"仅由该照片产生"的部分：
     # 照片自身实体（实体名 = 归一化文件名 stem，与 format_photo_ingest_data 同一把键）
-    # + 它的 features(depicts) 边 + 该照片自身 A 类 chunk（按归一化路径匹配，T1 delete_chunks_by_source）
-    # + B 类关系虚拟块（按照片实体名匹配，D-3）+ 媒体向量（D-4）。共享人物/地点实体绝不进入删除调用 ⇒
+    # + 它的 features(depicts) 边 + 该照片自身 A 类 chunk（按归一化路径匹配，T1 delete_chunks_by_source）+ 媒体向量（D-4）。共享人物/地点实体绝不进入删除调用 ⇒
     # 删一张照片不会使共享实体/关系异常减少。任何一步失败如实告警并记入 kg_errors，不翻转 DB 清理结果。
     kg_entities_deleted = 0
     kg_relations_deleted = 0
     kg_chunks_deleted = 0
-    kg_vectors_deleted = 0
     media_vectors_removed = 0
     kg_errors: list[str] = []
     try:
@@ -1732,17 +1826,11 @@ def cleanup_deleted_photos() -> dict:
                     kg_chunks_deleted += r.get("deleted_chunks", 0)
                 else:
                     kg_errors.append(f"A 类 chunk {photo_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
-                # ④ B 类关系虚拟块：只传照片实体名（共享人物/地点名绝不进入删除调用，D-3）
-                r = LightRAGAdapter().delete_custom_kg_relation_chunks([photo_entity])
-                if isinstance(r, dict) and r.get("status") == "ok":
-                    kg_vectors_deleted += r.get("deleted_vectors", 0)
-                else:
-                    kg_errors.append(f"B 类关系虚拟块 {photo_entity} 删除失败: {r.get('message') if isinstance(r, dict) else r}")
-                # ⑤ 媒体向量：False = 本就没有，不计错（D-4）
+                # ④ 媒体向量：False = 本就没有，不计错（D-4）
                 if media_vectors.remove(photo_entity):
                     media_vectors_removed += 1
             except Exception as e:
-                # 逐照片异常隔离：某张照片的硬异常不得中断其余照片的五步清理
+                # 逐照片异常隔离：某张照片的硬异常不得中断其余照片的四步清理
                 #（否则 DB 行已删而 KG 残留），且 status 恒 success、不翻转 DB 结果。
                 kg_errors.append(f"照片 {photo_entity} 清理异常: {e}")
                 continue
@@ -1760,7 +1848,6 @@ def cleanup_deleted_photos() -> dict:
         "kg_entities_deleted": kg_entities_deleted,
         "kg_relations_deleted": kg_relations_deleted,
         "kg_chunks_deleted": kg_chunks_deleted,
-        "kg_vectors_deleted": kg_vectors_deleted,
         "media_vectors_removed": media_vectors_removed,
         "kg_errors": kg_errors,
     }
@@ -2605,19 +2692,36 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
 
 
 def _refresh_person_photo_texts(
-    person_id: str, old_kg_name: str, new_kg_name: str, conn: sqlite3.Connection
+    person_id: str,
+    old_kg_name: str,
+    new_kg_name: str | None,
+    conn: sqlite3.Connection,
+    photo_rows: list | None = None,
+    old_person_id: str | None = None,
 ) -> dict:
-    """人物改名/合并后，刷新受影响照片：DB abstract + 照片真实块 + 人物虚拟块（F-2）。
+    """人物改名/合并/移除后，刷新受影响照片：DB abstract + 照片真实块 + 人物虚拟块（F-2；F-3 增移除模式）。
 
-    受影响 = 该人名下全部照片（faces JOIN photos，D-5）。逐张：
+    受影响 = 该人名下全部照片（faces JOIN photos，D-5）；调用方显式传 photo_rows
+    （delete_person：faces 行已先删，helper 内自查不到）时跳过 DB 查询直接用。逐张：
     1. DB abstract：按该照片**当前**人物名（_kg_person_name，保序去重）经
        generate_l0_abstract 重算，在 _db_write_lock 内 UPDATE photos（循环外一次性 commit，F-4）；
     2. 照片真实块：get_chunk_by_source 取旧块（取不到 ⇒ 跳过该步并计数上报，不抛），
        重写内容（第 1 行 = 刷新后 abstract；实体行 = stem + 沿用的地点名 + 当前人物名；
        人物/地点行仅有则写；拍摄时间/相机/类别等其余行从旧块逐字沿用），
        删旧块后写新内容（source_id/file_path = 归一化路径）；
-    3. 人物虚拟块换名：删旧名块（source_id = path_old_kg_name），按新名写同型块
-       （source_id = path_new_kg_name，内容 `<新名>: <新名>（person_id=…）`）。
+    3. 人物虚拟块：删旧名块（source_id = path_old_kg_name）——删除受 F-3 D-3'
+       精确等值守卫约束（改名/合并/移除三条路径共用）：先 get_chunk_by_source_id
+       读出该块，块不存在 ⇒ 静默跳过、不计错；内容逐字等于
+       f"{old_kg_name}: {old_kg_name}（person_id={old_person_id or person_id}）"
+       ⇒ 删；块存在但内容不等值（同 sid 知识块 / 同名他人块）⇒ 保留并记 errors
+       （宁留不误删，零模型调用）。改名/合并模式（new_kg_name 非 None）再按新名写
+       同型块（source_id = path_new_kg_name，内容 `<新名>: <新名>（person_id=…）`）；
+       移除模式（new_kg_name is None——必须判 is None 不得用真值判断，
+       _kg_person_name 可返回 ""）不写新块。
+
+    old_person_id：旧簿记块里写的那个人的 id（缺省取 person_id）。合并场景必须
+    由调用点传 person_b_id——person_id 参数是幸存者 A 的，而 B 的旧簿记块里写
+    的是 B 自己的 id，用 A 的 id 拼期望串必不命中 ⇒ B 的簿记块永远删不掉。
 
     微修口径：F-1 解析旧人物/地点行按项 strip（逗号分词的前导空格项若漏 strip，
     会在实体行兜底剥除时把人名错收进地点位）；F-2 人物名写块行前按名保序去重
@@ -2628,7 +2732,7 @@ def _refresh_person_photo_texts(
     失败语义（D-4）：逐张照片 try/except 隔离（记 errors 后继续）+ helper 整体
     再包一层顶层 try/except（异常记 errors、返回全 0 计数）——调用方 status 绝不
     翻转，DB 结果不反转。old/new KG 名一律由调用方经共用取名函数
-    _kg_person_name 算出（本函数只按名删/写，不再自判）。
+    _kg_person_name 算出（本函数只按名删/写，不再自判；移除模式 new_kg_name=None）。
     禁用 registry：只直连 LightRAGAdapter（函数内惰性 import，与
     _entity_exists_in_kg 同缝）——多一次 get_registry() 会打破既有测试的严格
     计数断言。返回 {"abstracts_refreshed", "chunks_refreshed", "errors"}。
@@ -2637,12 +2741,19 @@ def _refresh_person_photo_texts(
     try:
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
-        photo_rows = conn.execute(
-            "SELECT DISTINCT f.photo_id, p.file_path, p.taken_at "
-            "FROM faces f JOIN photos p ON f.photo_id = p.id "
-            "WHERE f.person_id = ?",
-            (person_id,),
-        ).fetchall()
+        # F-3：调用方显式传入受影响照片行时跳过 DB 查询（delete_person 先删
+        # faces 行，helper 内自查不到）
+        if photo_rows is None:
+            photo_rows = conn.execute(
+                "SELECT DISTINCT f.photo_id, p.file_path, p.taken_at "
+                "FROM faces f JOIN photos p ON f.photo_id = p.id "
+                "WHERE f.person_id = ?",
+                (person_id,),
+            ).fetchall()
+
+        # F-3 D-3' 虚拟块守卫的期望 pid = 旧簿记块里写的那个人（合并场景必须
+        # 由调用点传 person_b_id——person_id 参数是幸存者 A 的）
+        guard_pid = old_person_id or person_id
 
         for photo_id, file_path, taken_at in photo_rows:
             normalized_path = file_path.replace("\\", "/").lower() if file_path else ""
@@ -2742,26 +2853,48 @@ def _refresh_person_photo_texts(
                 else:
                     result["errors"].append(f"{normalized_path}: 真实块取不到，跳过重写")
 
-                old_virtual_sid = f"{normalized_path}_{old_kg_name}"
-                del_r = adapter.delete_chunks_by_source_id(old_virtual_sid)
-                if not (isinstance(del_r, dict) and del_r.get("status") == "ok"):
-                    # F-3: 删除失败不中断——旧人物虚拟块可能与新块并存，专属上报
-                    result["errors"].append(
-                        f"{old_virtual_sid}: 旧人物虚拟块删除失败（可能与新块并存）: "
-                        f"{del_r.get('message') if isinstance(del_r, dict) else del_r}"
-                    )
-                r = adapter.upsert_chunks([{
-                    "content": f"{new_kg_name}: {new_kg_name}（person_id={person_id}）",
-                    "source_id": f"{normalized_path}_{new_kg_name}",
-                    "file_path": normalized_path,
-                }])
-                if isinstance(r, dict) and r.get("status") == "ok":
-                    result["chunks_refreshed"] += 1
-                else:
-                    result["errors"].append(
-                        f"{normalized_path}: 人物虚拟块换名失败: "
-                        f"{r.get('message') if isinstance(r, dict) else r}"
-                    )
+                # ③ 人物虚拟块：删旧块 +（仅改名/合并模式）写新块
+                if old_kg_name:
+                    # F-3 D-3' 守卫（改名/合并/移除三条路径共用）：旧虚拟块内容逐字
+                    # 等于本人簿记串才删——期望 pid 取 old_person_id or person_id；
+                    # 同 sid 知识块（主 Agent 复用该 sid 写过）与同名他人块
+                    # （person_id 不同）都不可能命中；零模型调用
+                    old_virtual_sid = f"{normalized_path}_{old_kg_name}"
+                    guard_chunk = adapter.get_chunk_by_source_id(old_virtual_sid)
+                    if guard_chunk is not None:
+                        expected_virtual = f"{old_kg_name}: {old_kg_name}（person_id={guard_pid}）"
+                        if str(guard_chunk.get("content", "")) == expected_virtual:
+                            del_r = adapter.delete_chunks_by_source_id(old_virtual_sid)
+                            if not (isinstance(del_r, dict) and del_r.get("status") == "ok"):
+                                # 删除失败不中断——旧人物虚拟块可能与新块并存，专属上报
+                                result["errors"].append(
+                                    f"{old_virtual_sid}: 旧人物虚拟块删除失败（可能与新块并存）: "
+                                    f"{del_r.get('message') if isinstance(del_r, dict) else del_r}"
+                                )
+                        else:
+                            # 块存在但内容不等值 ⇒ 保留 + 上报（R-7：不静默删、不猜）
+                            result["errors"].append(
+                                f"{old_virtual_sid}: 内容非本人簿记块，保留（不删）: "
+                                f"{guard_chunk.get('content', '')}"
+                            )
+                    # guard_chunk is None ⇒ 块不存在（上游已删）⇒ 静默跳过、不计错
+
+                # 仅改名/合并模式（new_kg_name 非 None）才写新虚拟块；移除模式
+                #（new_kg_name is None）不得写——判据是 is None 而非真值
+                #（_kg_person_name 可返回 ""）
+                if new_kg_name is not None:
+                    r = adapter.upsert_chunks([{
+                        "content": f"{new_kg_name}: {new_kg_name}（person_id={person_id}）",
+                        "source_id": f"{normalized_path}_{new_kg_name}",
+                        "file_path": normalized_path,
+                    }])
+                    if isinstance(r, dict) and r.get("status") == "ok":
+                        result["chunks_refreshed"] += 1
+                    else:
+                        result["errors"].append(
+                            f"{normalized_path}: 人物虚拟块换名失败: "
+                            f"{r.get('message') if isinstance(r, dict) else r}"
+                        )
             except Exception as e:
                 result["errors"].append(f"{file_path}: {e}")
                 logger.warning(f"[PERSON_TEXTS] {file_path} 刷新失败: {e}")
@@ -3207,11 +3340,15 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
         # 含刚从 person_b 迁入的）：DB abstract（缺口 A：合并路径原先连 DB
         # abstract 都不刷）+ 照片真实块 + 人物虚拟块（缺口 B）。
         # 旧/新 KG 名一律经共用取名函数现算（不复用 KG 段的两条件变量）。
+        # F-3：B 的旧簿记块里写的是 B 自己的 person_id——旧块守卫的期望串必须
+        # 用 B 的 id（person_a_id 是幸存者的，拿 A 的 id 匹配 B 的块必不命中，
+        # B 的簿记块永远删不掉）；person_b_id 是入参，删 B 行前后都有效。
         merge_refresh = _refresh_person_photo_texts(
             person_a_id,
             _kg_person_name(person_b[1], person_b[2]),
             _kg_person_name(person_a[1], person_a[2]),
             conn,
+            old_person_id=person_b_id,
         )
         kg_errors = list(merge_refresh["errors"])
 
