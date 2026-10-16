@@ -431,8 +431,8 @@ class TestLightragInsertCustomKg:
             entities=entities, relationships=rels, chunks=[], source_id="custom_kg",
         )
 
-    def test_empty_params_default(self):
-        """Should early-return ok (no data provided) without calling ingester."""
+    def test_empty_params_no_ingest(self):
+        """All-empty call returns ok without calling ingester (行为断言，不断言文案)."""
         mod = _import_module()
         mock_ingester = MagicMock()
         mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
@@ -440,10 +440,130 @@ class TestLightragInsertCustomKg:
 
         result = mod.lightrag_insert_custom_kg()
 
-        # 现状（既有设计）：无任何实体/关系数据 → 提前返回，不发起空注入
+        # 现状（既有设计）：无任何实体/关系/块数据 → 提前返回，不发起空注入
         assert result["status"] == "ok"
-        assert "未提供任何实体或关系数据" in result["message"]
         mock_ingester.inject_custom_kg.assert_not_called()
+
+    def test_all_dup_entity_with_chunk_still_ingests_chunk(self):
+        """实体全已存在 + 带 1 条块 ⇒ 块必须被提交，不能再整单早退吞掉块。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.has_entity.return_value = True
+        mock_adapter.has_edge.return_value = True
+        mock_ingester = MagicMock()
+        mock_ingester.inject_custom_kg.return_value = {"status": "ok", "chunks": 1}
+        mod._adapter = mock_adapter
+        mod._ingester = mock_ingester
+
+        chunks = [{"content": "chunk-abc-123", "source_id": "custom_kg"}]
+        result = mod.lightrag_insert_custom_kg(
+            entities=[{"entity_name": "Python", "entity_type": "skill"}],
+            chunks=chunks,
+        )
+
+        mock_ingester.inject_custom_kg.assert_called_once_with(
+            entities=[], relationships=[], chunks=chunks, source_id="custom_kg",
+        )
+        assert result.get("skipped") is not True
+
+    def test_chunks_only_also_ingested(self):
+        """只传块（entities/relationships 均不传）⇒ 块透传入库，其余为空。"""
+        mod = _import_module()
+        mock_ingester = MagicMock()
+        mock_ingester.inject_custom_kg.return_value = {"status": "ok", "chunks": 1}
+        mod._adapter = MagicMock()
+        mod._ingester = mock_ingester
+
+        chunks = [{"content": "chunks-only-xyz", "source_id": "custom_kg"}]
+        result = mod.lightrag_insert_custom_kg(chunks=chunks)
+
+        mock_ingester.inject_custom_kg.assert_called_once_with(
+            entities=[], relationships=[], chunks=chunks, source_id="custom_kg",
+        )
+        assert result.get("skipped") is not True
+
+    def test_all_dup_no_chunk_still_skipped(self):
+        """全 dup + 无块 ⇒ 维持正确幂等：不注入，skipped 为 True。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.has_entity.return_value = True
+        mock_adapter.has_edge.return_value = True
+        mock_ingester = MagicMock()
+        mod._adapter = mock_adapter
+        mod._ingester = mock_ingester
+
+        result = mod.lightrag_insert_custom_kg(
+            entities=[{"entity_name": "Python", "entity_type": "skill"}],
+        )
+
+        mock_ingester.inject_custom_kg.assert_not_called()
+        assert result["skipped"] is True
+
+    def test_all_empty_returns_ok(self):
+        """三者全空（不传任何参数）⇒ 不注入、status ok（不断言文案）。"""
+        mod = _import_module()
+        mock_ingester = MagicMock()
+        mod._adapter = MagicMock()
+        mod._ingester = mock_ingester
+
+        result = mod.lightrag_insert_custom_kg()
+
+        mock_ingester.inject_custom_kg.assert_not_called()
+        assert result["status"] == "ok"
+
+    def test_new_entity_with_chunk_regression(self):
+        """回归锁：有新实体 + 带块 ⇒ 实体与块都透传给 ingester。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.has_entity.return_value = False
+        mock_ingester = MagicMock()
+        mock_ingester.inject_custom_kg.return_value = {"status": "ok", "chunks": 1}
+        mod._adapter = mock_adapter
+        mod._ingester = mock_ingester
+
+        entities = [{"entity_name": "Python", "entity_type": "skill"}]
+        chunks = [{"content": "regression-chunk", "source_id": "custom_kg"}]
+        mod.lightrag_insert_custom_kg(entities=entities, chunks=chunks)
+
+        mock_ingester.inject_custom_kg.assert_called_once_with(
+            entities=entities, relationships=[], chunks=chunks, source_id="custom_kg",
+        )
+
+    def test_new_entity_no_chunk_still_calls_ingester(self):
+        """有新实体 + 无块 ⇒ ingester 仍被调用且 chunks == []（2×2 防写反）。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.has_entity.return_value = False
+        mock_ingester = MagicMock()
+        mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
+        mod._adapter = mock_adapter
+        mod._ingester = mock_ingester
+
+        entities = [{"entity_name": "Python", "entity_type": "skill"}]
+        mod.lightrag_insert_custom_kg(entities=entities)
+
+        mock_ingester.inject_custom_kg.assert_called_once_with(
+            entities=entities, relationships=[], chunks=[], source_id="custom_kg",
+        )
+
+    def test_error_message_not_overwritten(self):
+        """ingester 返回 error ⇒ 原始错误消息不被成功文案覆盖。"""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.has_entity.return_value = False
+        mock_ingester = MagicMock()
+        mock_ingester.inject_custom_kg.return_value = {
+            "status": "error", "message": "boom",
+        }
+        mod._adapter = mock_adapter
+        mod._ingester = mock_ingester
+
+        result = mod.lightrag_insert_custom_kg(
+            entities=[{"entity_name": "Python", "entity_type": "skill"}],
+        )
+
+        assert result["status"] == "error"
+        assert "boom" in result["message"]
 
 
 class TestLightragInsertEntity:
