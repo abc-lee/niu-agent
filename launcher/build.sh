@@ -227,6 +227,18 @@ PLIST
     # 清扫 .DS_Store（必须在签名前：发行包不得夹带 Finder 生成的垃圾文件；
     # 清扫置于 codesign 之前，让 ad-hoc 签名覆盖 bundle 的最终内容）
     find ../niu.app -name '.DS_Store' -delete 2>/dev/null || true
+    # 清扫悬空软链（必须在签名前：codesign --strict 对悬空链接直接判失败。
+    # CPython 配置目录遗留 libpython3.11.{dylib,a} -> ../../../Python 指向不存在的 python/lib/Python，
+    # 是 codesign --verify --strict 失败的唯一已知原因。先列出再删，删了哪些日志可见，不能默默删）
+    DANGLING="$(find ../niu.app/Contents/Resources/python -type l ! -exec test -e {} \; -print 2>/dev/null || true)"
+    if [ -n "$DANGLING" ]; then
+        printf '%s\n' "$DANGLING" | while IFS= read -r dlink; do
+            rm -f "$dlink"
+            echo "[build.sh] removed dangling symlink: $dlink"
+        done
+    else
+        echo "[build.sh] no dangling symlinks in bundle python/"
+    fi
 
     # ad-hoc 签名（必须先签，再 lsregister）
     # 逐个签名 .so / .dylib / 二进制（codesign --deep 自 macOS 13.3 起废弃）
