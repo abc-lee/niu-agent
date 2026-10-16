@@ -89,6 +89,17 @@
 - **等价条件实测（补强 Windows 那条待验项）**：POSIX 下删文件需**父目录可写** ⇒ 把父目录设只读即等价"跨进程删不掉"。实测：父目录只读时 `os.remove` 抛 `PermissionError`（**复现该现象**），而 `f4_dismiss_if_all_done()` 在同条件下**返回 True、文件 64→0、文件本身保留** ⇒ 证明"删不掉"已不再影响该流程。（同时复核：含未完成行时返回 False 且文件不变。）
 - **✅ Windows 真机验收通过（2026-10-16，用户确认）**：队列横条端到端在 Windows 上实测**通过** ⇒ 该待验项**闭环**（台账清零）。
 
+#### 工程：`lightrag_insert_custom_kg` 吞 `chunks` 修复（全链收官）+ 验收撞出 graphml 截断事故与恢复（2026-10-16 下午）
+
+- **用户裁定 → 方案 → 门禁 → 实施 → 真机验收，全链走完**：用户原话「实体已存在……你认为重复了，所以去重就回退了，说存完了。但那块也被丢弃了。你的真实动作应该是一看它存在，那就应该补块，这才叫成功……如果是这个逻辑的话，就应该做，没错。」⇒ 方案 `plans/2026-10-16-custom-kg-chunks-not-dropped.md`（v1.0→v1.3）。
+- **门禁（本地审查，三轮）**：R1 **REQUEST_CHANGES** 6 项（**含一个真 catch**：块 id ＝ `md5(content)`、**与 source_id 无关** ⇒ 我原写的"真机验收用唯一 source_id"会因 content 撞旧块而被 upsert 覆盖、计数不 +1 而**假失败**；另有消息块数虚高、行号偏移等）→ v1.1；R2 **REQUEST_CHANGES** 2 项单行级（块数括注须按数据来源分叉：纯块超限路径要说"超限自动分段"而非"自动生成描述块"；**并揪出一个既有 bug**：`result["message"] = msg` 无条件覆盖 ⇒ adapter 报错时真错误被"已插入…块 N 条"抹掉）→ v1.2；R3 **APPROVE 零阻断** ⇒ GATE MET。
+- **实施**（main `e4a6183f`）：`mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py` 的 `lightrag_insert_custom_kg`——① 早退条件加 `and not chunks`；② 成功消息按来源分叉报块数（`stored_n>0` 才输出）；③ `result["message"]` 加 `status=="ok"` 守卫（**顺带修掉上面那个既有 bug**）；④ 全空分支文案如实含"块"。**签名/参数/TOOL_SCHEMAS 零改动**（⇒ 无四处同步面）。`tests/test_lightrag_server.py` 增 7 条**行为**用例 + 把钉死旧文案的 `test_empty_params_default` 改为行为断言（纪律：不许改钉子）。**55 passed**（PM 亲跑）。
+- **真机验收（PM 亲跑；为不污染用户唯一会话，直接调真函数走真 adapter → 真 LightRAG → 真存储 → 真 llama-server）**：A（实体已存在 + 带块）/ B（只传块）/ C（超限 10023 > 8192 token）三形态**块全部真落库**、C 走"超限自动分段"分支；按 id 清理后回到基线 382/382，实体/关系/图谱未变，llama-server 已停。
+- **⚠️ 事故：graphml 被截断（本 PM 自己造成，已修复+恢复）**——首次跑验收时 LightRAG 初始化失败 `no element found: line 84074`。定因：`graph_chunk_entity_relation.graphml` 末尾停在半个 `<edge>`（缺 `</data></edge></graph></graphml>`），**mtime 今日 09:45 ＝ 我做技能真机验收后杀掉 Niu 进程的时间窗**；机制＝上游 `write_nx_graph` 是**裸 `nx.write_graphml`**（先写全部 node 再写 edge）、**非原子写、无 `.bak`** ⇒ 写到一半被杀即截断（node 全在 4106、edge 只写了一半）。影响＝**解析失败 ⇒ LightRAG 初始化失败 ⇒ 知识图谱整体不可用，且不自愈**（上游仅"文件缺失"时建空图）。
+  **修复两步（均带备份）**：① 最小 XML 修复（丢末尾半条边 + 补闭合）⇒ 可解析（4106/5416），备份 `backup-20261016-111248-graphml-truncated/`；② 发现 `backup-20261016-brainmeta-cleanup/` 里是**今日 08:03 的完整版**，实测为**严格超集**（edge 6779 ⊇ 5416，备份独有 1363 / 当前独有 0；node 4107 ⊇ 4106）且两文件 `<key>` 映射逐字相同 ⇒ **文本级精确合并**（以当前为基准补回备份独有边、**不复活已删节点**，丢弃 1 条端点已被正常删除的边）⇒ **4106 节点 / 6778 边**（与 `vdb_relationships` 6778 重新一致），备份 `backup-20261016-111545-graphml-restore/`。恢复后重跑验收 **PASS**。
+- **由此得到的产品级缺陷（**尚未开方案**，待用户定）**：**graph 写盘非原子 ⇒ 任何"写到一半被杀"（强制退出/崩溃/启动器终止/验收杀进程）都永久损坏 graphml 且程序不自愈**。候选修法：① 包一层 `NetworkXStorage.write_nx_graph`（写前 `cp` 旧文件为 `.bak`；加载失败⇒坏文件改名留证 + 回退 `.bak`，都没有才建空图并**响亮告警**）；② 临时文件 + 原子 rename；③ 启动时 graphml 解析失败即自动走"补齐/回退"并把结论写日志。
+- **教训（本 PM 自己）**：**真机验收收尾不许 `pkill`/硬杀**——Niu 在退出时会写 graphml（本次就是这一刀切掉了 1362 条边）。收尾应走正常关闭路径，或至少在杀之前确认无写盘动作；这也是"验收动作本身可能损坏用户数据"的实证。
+
 #### 台账误打勾的 3 条 backlog：复核 + 用户逐条裁定（2026-10-16）
 
 - **缘起**：用户问"台账还有有用的吗，没用的删掉" ⇒ 清理时发现我此前把一条伞形待办（"backlog 四条：bundled skills 更新 / GraphML 悬空 metadata / 向量库格式转换工具 / `lightrag_insert_custom_kg` 吞参"）**整条打了勾**，但实际只解决了 skills 一条，另外三条**从未定义清楚、也从未处理** ⇒ **"台账清零"被我当成"没有缺陷"是又一次把一行字当事实**。三条一起重核：
