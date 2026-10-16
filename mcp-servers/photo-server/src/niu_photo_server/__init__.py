@@ -3113,22 +3113,63 @@ def read_file_content(path: str, max_chars: int = 20000) -> str:
     return text[:max_chars]
 
 
-def calculate_content_similarity(file1: str, file2: str) -> float:
+def calculate_content_similarity(file1: str, file2: str) -> dict:
     """
     计算文档内容相似度（语义向量 + 余弦相似度）
     使用共享向量服务
+
+    返回信封（内部函数，唯一消费方是 handle_conflict 的文档冲突路径）：
+      - 成功: {"status": "success", "file1": …, "file2": …, "similarity": <float>}
+      - 失败: {"status": "error", "error_code": …, "message": "…"}
+
+    约定：`similarity:0.0` **只**表示「文件可读但没有可提取文本」（真空文件）这一真结论；
+    读文件失败 / 向量服务不可用一律返回 status:error 信封，绝不折算成 0.0
+    （否则"算不出"会 ≡ "毫无相似"，同名文档冲突会静默走改名而非版本管理）。
     """
     try:
         logger.info(f"[SIMILARITY] 开始计算: {file1} vs {file2}")
 
-        # 读取文件内容
-        text1 = read_file_content(file1)
-        text2 = read_file_content(file2)
+        # read_file_content 的契约是"失败折空串/个别分支抛错"（ingest_document 等
+        # 其它消费方依赖它），所以这里先显式探测可读性，把"读文件失败"与
+        # "真空文件"区分开：探测不通过 ⇒ 直接 error 信封。
+        for f in (file1, file2):
+            p = Path(f)
+            if not p.is_file():
+                logger.warning(f"[SIMILARITY] 文件不存在: {f}")
+                return {
+                    "status": "error",
+                    "error_code": "FILE_NOT_FOUND",
+                    "message": f"读文件失败（{f}）：文件不存在；这不表示两个文件内容不相似",
+                }
+            if not os.access(f, os.R_OK):
+                logger.warning(f"[SIMILARITY] 文件不可读: {f}")
+                return {
+                    "status": "error",
+                    "error_code": "FILE_READ_FAILED",
+                    "message": f"读文件失败（{f}）：无读取权限；这不表示两个文件内容不相似",
+                }
+
+        # 读取文件内容（txt/md 等纯文本分支 open 失败仍会抛，单独捕获）
+        try:
+            text1 = read_file_content(file1)
+            text2 = read_file_content(file2)
+        except Exception as e:
+            logger.exception(f"[SIMILARITY] 读文件失败: {e}")
+            return {
+                "status": "error",
+                "error_code": "FILE_READ_FAILED",
+                "message": f"读文件失败: {e}；这不表示两个文件内容不相似",
+            }
         logger.info(f"[SIMILARITY] 文本长度: {len(text1)} vs {len(text2)}")
 
         if not text1 or not text2:
-            logger.info("[SIMILARITY] 空文本，返回 0.0")
-            return 0.0
+            logger.info("[SIMILARITY] 空文本（真空文件/无可提取文本），相似度为 0.0")
+            return {
+                "status": "success",
+                "file1": file1,
+                "file2": file2,
+                "similarity": 0.0,
+            }
 
         # 截断过长的文本（避免内存问题）
         max_len = 8000
@@ -3144,14 +3185,28 @@ def calculate_content_similarity(file1: str, file2: str) -> float:
         if result and "similarity" in result:
             similarity = result["similarity"]
             logger.info(f"[SIMILARITY] 结果: {similarity:.4f}")
-            return similarity
-        else:
-            logger.warning("[SIMILARITY] 向量服务不可用，返回 0.0")
-            return 0.0
+            return {
+                "status": "success",
+                "file1": file1,
+                "file2": file2,
+                "similarity": similarity,
+            }
+
+        # call_embedding_service 服务不可用/异常时返回 None：不得折算 0.0
+        logger.warning("[SIMILARITY] 向量服务不可用，无法计算相似度")
+        return {
+            "status": "error",
+            "error_code": "EMBEDDING_SERVICE_UNAVAILABLE",
+            "message": "向量服务不可用（无法计算文档相似度）；这不表示两个文件内容不相似",
+        }
 
     except Exception as e:
         logger.exception(f"[SIMILARITY] 失败: {e}")
-        return 0.0
+        return {
+            "status": "error",
+            "error_code": "UNKNOWN_ERROR",
+            "message": f"相似度计算失败: {e}；这不表示两个文件内容不相似",
+        }
 
 
 def build_storage_path(
@@ -3199,14 +3254,25 @@ def handle_conflict(target_path: Path, source_path: Path) -> tuple[str, str]:
         # 哈希不同，计算语义相似度
         logger.info("[CONFLICT] 哈希不同，计算语义相似度...")
         threshold = conflict_config["document"]["similarity_threshold"]
-        similarity = calculate_content_similarity(str(target_path), str(source_path))
-        logger.info(f"[CONFLICT] 相似度: {similarity:.4f}, 阈值: {threshold}")
+        sim_result = calculate_content_similarity(str(target_path), str(source_path))
 
-        if similarity > threshold:
-            logger.info("[CONFLICT] 相似，版本管理")
-            return create_version(target_path), "versioned"
+        if sim_result["status"] == "success":
+            similarity = sim_result["similarity"]
+            logger.info(f"[CONFLICT] 相似度: {similarity:.4f}, 阈值: {threshold}")
+
+            if similarity > threshold:
+                logger.info("[CONFLICT] 相似，版本管理")
+                return create_version(target_path), "versioned"
+            else:
+                logger.info("[CONFLICT] 不相似，改名")
+                return rename_file(target_path), "renamed"
         else:
-            logger.info("[CONFLICT] 不相似，改名")
+            # 相似度算不出（读文件失败/向量服务不可用）：无法判断是否同一文档，
+            # 如实告警后按不相似处理（改名）——绝不把失败折算成 0.0 静默走改名。
+            logger.warning(
+                f"[CONFLICT] 相似度计算失败（{sim_result.get('error_code')}: "
+                f"{sim_result.get('message')}），无法判断是否同一文档，按不相似处理（改名）"
+            )
             return rename_file(target_path), "renamed"
     else:
         logger.info("[CONFLICT] 非文档类型，改名")
