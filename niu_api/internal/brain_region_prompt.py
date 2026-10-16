@@ -139,7 +139,8 @@ def build_user_info_prompt() -> str:
 
     try:
         memory = json.loads(memory_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.warning("memory.json user 段读取失败（所属用户提示词降级为空）: {}", e)
         return ""
 
     user = memory.get("user", {})
