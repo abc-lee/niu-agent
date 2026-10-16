@@ -111,6 +111,18 @@
 - **交付物**：分析文档 `plans/2026-10-16-chat-freeze-root-cause.md`（§8 为最终状态）；留证看守草案 `plans/2026-10-16-freeze-forensics-watchdog.md`（未获批准）；**下次复现第一动作＝卡死时就地跑 `bash /tmp/niu_capture.sh`**（只读抓全线程栈+句柄+日志尾）。
 - **一处结构性事实（用户关注的 bug 类）**：**主会话只有一把 `_chat_lock`**，而"定时任务轮""子 Agent 完成回填轮"**都在主会话里跑** ⇒ 它们跑得久就把用户交互堵住，而界面只显示"正在思考"，看不出在等谁。
 
+#### 照片 EXIF 落进照片实体（全链收官：方案 v1.0→v1.3 → 本地审查 R1–R5 → SDD T1 → 真机 AC 全过）（2026-10-16 晚）
+
+- **用户裁定**：只做两件事——① EXIF 补进照片实体描述；② chunk 从一行补成含时间/地点/相机/类别。**明确不做**（逐条理由见方案 §0）：非人物照片 hub 实体、挂文档库脑区、媒体向量当检索入口、kNN 相似连边、VLM 抽象照片内容、改两份子 Agent 提示词、坐标直接建边。
+- **病灶（实证）**：描述里「拍摄于…」的日期**来自文件名前 8 位**，而 `build_photo_file_name` 无 EXIF 时用**入库时间**命名 ⇒ 无 EXIF 照片的描述**谎称拍摄时间**（用户两张截图照片全中招）；chunk 只有一行 `照片 <stem>：未检测到人物`，EXIF 一个字不进；`taken_at` 从不进描述。
+- **门禁**：方案 v1.0→v1.3；本地审查 **R1–R5**（R1 3×P2+2×P3、R2 1×P2+4×P3、R3 1×P2+3×P3、**R4+R5 连续两轮零 P1/P2 = GATE MET**；R5＝实现者视角伪 diff + 6 反例走查）。R2/R3 的 P3 处理：**P3 措辞类随修订落进新版本，其余（直调 `_do_sync` 也要 DB 隔离等）作为「实施说明」附在派发包**（不改已过门禁的方案）。
+- **过程自纠**：本 PM 有一次用 Python 改方案文档（违反铁律 10）⇒ **当场备份 → `git checkout` 回退 → 全部 v1.3 修订用 Edit 工具重做**。
+- **实施（SDD T1，`0b9de9bf`）**：`_generate_stable_description` 增 `taken_at`（有值⇒「拍摄于<EXIF 日期>」，不可解析取 `taken_at[:10]` 原文；无值⇒「入库于<入库日>」；两边皆无⇒不写日期短语）；`_do_sync_photo_to_kg_sync`/`sync_photo_to_kg` 增 `category` 并补 chunk 三行（有值才写、追加在既有行后、顺序 拍摄时间→相机→类别）；`format_photo_ingest_data` **形参表零改动**；`ingest_photo` 传 `category`；新增 `tests/test_photo_entity_exif.py` **6 用例**（三桩：geocode 源模块 / registry MockRegistry / DB 隔离）。spec 审查 **APPROVE 零发现**；质量审查 **APPROVE + 4×P3**（微修两处：docstring 措辞 + 「无日期短语」用例；微修复审 APPROVE；防御性/测试加固两条记录不修）。
+- **测试**：PM 亲跑 `30 passed`（3 文件）+ `84 passed / 7 skipped`（4 文件）；四门禁全 0；ruff 零新增诊断（venv 无 ruff 模块 ⇒ 用系统 ruff 做改动前后直方图对照）。
+- **真机验收（六条 AC 全过）**：合成带 EXIF 图 ⇒ `photos` 三列有值；实体描述 = `照片 20260920_150405，拍摄于2026年09月20日，北京市东城区东华门街道 (39.9087,116.3975)，Apple iPhone 15 Pro`；**地点实体 +「拍摄于」边在真机首次触发**；chunk 六行含新三行。无 EXIF 图 ⇒ 描述 `入库于2026年10月16日`（**无「拍摄于」**）、chunk 无拍摄时间/相机行。收尾后 `graph 4119/6812`、`text_chunks/vdb_chunks 415/415`、`photos 2`、媒体向量 2 **全部回基线**；临时夹具已删。
+- **发现（未修，待定夺）F-1：删照片不删 chunk**。`cleanup_deleted_photos` 只删「照片实体 + 它的边」，照片的 chunk 文本与向量留在 `text_chunks`/`vdb_chunks`（用户既有两张老照片名下 4 条残留仍在 415 基线内）⇒ **已删照片的文本仍可被向量检索命中**（指向不存在的实体）。清残留**无受支持通路**（`lightrag_delete_document` 对 custom_kg 注入的 chunk 报 `not_found`——它们不登记 `doc_status`）；本次用 LightRAG 自身存储 API（`rag.text_chunks.delete` + `rag.chunks_vdb.delete` + `index_done_callback`）在**单写者**下清理，媒体向量用模块自身原子写入器（skill `photo-deletion-cleanup.md` 早已记「媒体向量无独立删除接口」）。
+- **副作用披露**：验收期间 PM 起了**只跑 Python API** 的实例（未开 Electron）并已**优雅关闭**；经 `/api/chat/session` 发的 3 条指令落在用户唯一会话里（role=user，用户会看到）；用户 Niu 需按平时方式重启。
+
 #### 台账误打勾的 3 条 backlog：复核 + 用户逐条裁定（2026-10-16）
 
 - **缘起**：用户问"台账还有有用的吗，没用的删掉" ⇒ 清理时发现我此前把一条伞形待办（"backlog 四条：bundled skills 更新 / GraphML 悬空 metadata / 向量库格式转换工具 / `lightrag_insert_custom_kg` 吞参"）**整条打了勾**，但实际只解决了 skills 一条，另外三条**从未定义清楚、也从未处理** ⇒ **"台账清零"被我当成"没有缺陷"是又一次把一行字当事实**。三条一起重核：
