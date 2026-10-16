@@ -2,21 +2,23 @@
 REM ============================================
 REM Niu Windows 打包脚本
 REM 用法: pack.bat
-REM 前置: 已安装 7-Zip (C:\Program Files\7-Zip\7z.exe)
+REM 前置: 已安装 7-Zip（7z 在 PATH，或位于 %ProgramFiles% / %ProgramFiles(x86) 的 7-Zip 目录）
 REM 产物: dist\Niu-<VERSION>-win-x64.7z
 REM ============================================
 setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
 
-REM 检查 7-Zip（官方默认安装路径优先，回退作者机器路径）
-if exist "C:\Program Files\7-Zip\7z.exe" (
-    set SEVENZIP=C:\Program Files\7-Zip\7z.exe
-) else if exist "E:\Program Files\7-Zip\7z.exe" (
-    set SEVENZIP=E:\Program Files\7-Zip\7z.exe
-) else (
-    echo [pack.bat] ERROR: 7-Zip not found in C:\ or E:\Program Files\7-Zip\
-    echo [pack.bat] Install from https://7-zip.org/ or add your path as another branch above
+REM 检查 7-Zip（PATH 优先，回退 %ProgramFiles% / %ProgramFiles(x86)% 官方安装路径）
+set "SEVENZIP="
+for /f "usebackq delims=" %%p in (`where 7z 2^>nul`) do (
+    if not defined SEVENZIP set "SEVENZIP=%%p"
+)
+if not defined SEVENZIP if exist "%ProgramFiles%\7-Zip\7z.exe" set "SEVENZIP=%ProgramFiles%\7-Zip\7z.exe"
+if not defined SEVENZIP if exist "%ProgramFiles(x86)%\7-Zip\7z.exe" set "SEVENZIP=%ProgramFiles(x86)%\7-Zip\7z.exe"
+if not defined SEVENZIP (
+    echo [pack.bat] ERROR: 7-Zip not found: 7z not on PATH, and neither %ProgramFiles%\7-Zip\7z.exe nor %ProgramFiles(x86)%\7-Zip\7z.exe exists
+    echo [pack.bat] Install 7-Zip from https://7-zip.org/ (default install adds 7z.exe to PATH), or add 7z to PATH yourself
     exit /b 1
 )
 
