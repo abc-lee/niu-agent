@@ -87,6 +87,7 @@
 - **小版本升级 0.5.1 → 0.5.2**（`a9db0acd`）：只改单一真相源根目录 `VERSION`；验证 `chat.html` 硬编码版本串命中 0（label 由 preload 的 `APP_VERSION` 运行时渲染）、`tests/test_list_models_endpoint.py`（UA 断言动态读 VERSION）**20 passed**。**本次未打包**（用户明确"不要打包"），`dist/Niu-0.5.1-mac-intel.dmg`（1015M）完好。
 - **harness 技能纠错（用户点名："哪个技能里错误指挥？你把那技能改了不就完了？"）**：`~/.omp/agent/managed-skills/niu-version-bump-and-package/SKILL.md` 旧文写"**VERSION + chat.html 两处同步**"（0.3.5 前的老做法，早已作废）⇒ 直接改五处：§1 改"只改 `VERSION` 一处"+列三个动态消费点；§2 `./launcher/build.sh` ⇒ `bash launcher/build.sh`（无执行位）+ 补打包前置 `scripts/package_all_dependencies.py`；§3 补跑片段版本号改 `$(cat VERSION)`（不许写死）；§4 验证段改动态核对（`diff VERSION` / `codesign --verify --strict` / 包内清单门禁）并明写"**别去 bundle 里 grep chat.html 版本串**"；§3 超时说明改 `timeout: 0`。（该技能不在 git、无同步源 ⇒ 改完不会被覆盖。）
 - **等价条件实测（补强 Windows 那条待验项）**：POSIX 下删文件需**父目录可写** ⇒ 把父目录设只读即等价"跨进程删不掉"。实测：父目录只读时 `os.remove` 抛 `PermissionError`（**复现该现象**），而 `f4_dismiss_if_all_done()` 在同条件下**返回 True、文件 64→0、文件本身保留** ⇒ 证明"删不掉"已不再影响该流程。（同时复核：含未完成行时返回 False 且文件不变。）
+- **✅ Windows 真机验收通过（2026-10-16，用户确认）**：队列横条端到端在 Windows 上实测**通过** ⇒ 该待验项**闭环**（台账清零）。
 
 ### 2026-10-15
 
