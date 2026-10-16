@@ -1402,6 +1402,365 @@ fn copy_seeds(template_dir: &Path, niu_dir: &Path, os: &str) {
         );
     }
 }
+// ---------------------------------------------------------------------------
+// 出厂技能同步 —— 唯一扩展语义的种子段（仅 skills/）
+// ---------------------------------------------------------------------------
+
+/// FNV-1a 64：offset `0xcbf29ce484222325`、prime `0x100000001b3`，逐字节 XOR 后乘（mod 2^64）。
+/// 返回 16 位小写十六进制。公认向量（见单测）：`""`→`cbf29ce484222325`、`"a"`→`af63dc4c8601ec8c`、
+/// `"abc"`→`e71fa2190541574b`、`"hello world"`→`779a65e7023cd2e7`。
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:016x}", h)
+}
+
+fn default_manifest_version() -> u32 {
+    1
+}
+
+/// seed-manifest.json 的单条技能条目。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ManifestSkill {
+    /// 出厂版本号；历史条目无序号（history 只存哈希），缺省按 1 处理（与 Python 维护脚本一致）。
+    #[serde(default = "default_manifest_version")]
+    version: u32,
+    /// 当前出厂内容的 FNV-1a 64 哈希。
+    hash: String,
+    /// 历次出厂版内容的哈希（从旧到新）。
+    #[serde(default)]
+    history: Vec<String>,
+}
+
+/// seed-manifest.json 整体。键用 BTreeMap 保证写出时按名排序（与 Python 维护脚本一致）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SkillsManifest {
+    schema: u32,
+    /// 哈希算法标记：只信 `fnv1a64`；将来换算法即以此识别并作废重建。
+    hash: String,
+    #[serde(default)]
+    skills: std::collections::BTreeMap<String, ManifestSkill>,
+}
+
+/// 读并校验清单。任何异常（缺失 / 解析失败 / 算法标记不符 / schema 不符）
+/// 只打一条 WARNING 并返回 None ⇒ 调用方退化为旧行为"只补缺"（绝不 panic、绝不阻塞启动）。
+fn load_skills_manifest(path: &Path) -> Option<std::collections::BTreeMap<String, ManifestSkill>> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => {
+            warn!("[skills] manifest 不可用，按“只补缺”处理: manifest 缺失 ({})", path.display());
+            return None;
+        }
+    };
+    let manifest: SkillsManifest = match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("[skills] manifest 不可用，按“只补缺”处理: manifest 解析失败: {}", e);
+            return None;
+        }
+    };
+    if manifest.hash != "fnv1a64" {
+        warn!(
+            "[skills] manifest 不可用，按“只补缺”处理: 哈希算法不是 fnv1a64 (实际: {})",
+            manifest.hash
+        );
+        return None;
+    }
+    if manifest.schema != 1 {
+        warn!(
+            "[skills] manifest 不可用，按“只补缺”处理: schema 版本 {} 不匹配",
+            manifest.schema
+        );
+        return None;
+    }
+    Some(manifest.skills)
+}
+
+/// skills/ 出厂技能同步（唯一扩展语义的种子段；其它种子仍是"存在即跳过"）。
+///
+/// 五支判据（docs/superpowers/plans/2026-10-16-skills-seed-update-mechanism.md §2.1）：
+/// - 目标不存在 ⇒ 拷贝（`新增出厂技能`）；
+/// - 目标哈希 == 出厂当前哈希 ⇒ 不动（无日志）；
+/// - 目标哈希 ∈ 出厂历史哈希（从未被改过）⇒ 用出厂当前内容覆盖（`更新出厂技能`）；
+/// - 目标哈希 ∉ 任何出厂哈希（用户/Agent 改过）⇒ 保留不动（`保留已改动的技能`）；
+/// - manifest 缺失/损坏 ⇒ 一条 WARNING + 退化为旧行为"只补缺"。
+/// `seed-manifest.json` 自身不是 .md，永不拷入家目录；子目录不参与同步。
+fn sync_skills(template_dir: &Path, niu_dir: &Path) {
+    let src_skills_dir = template_dir.join("skills");
+    let dst_skills_dir = niu_dir.join("skills");
+
+    if !src_skills_dir.exists() {
+        warn!(
+            "Template skills directory not found, skipping: {}",
+            src_skills_dir.display()
+        );
+        return;
+    }
+
+    if let Err(e) = fs::create_dir_all(&dst_skills_dir) {
+        error!(
+            "Failed to create skills directory: {}, error={}",
+            dst_skills_dir.display(),
+            e
+        );
+        return;
+    }
+
+    // manifest 不可用 ⇒ 退化为旧行为"只补缺"（WARNING 已在 load_skills_manifest 内打出）。
+    let manifest = load_skills_manifest(&src_skills_dir.join("seed-manifest.json"));
+
+    let entries = match fs::read_dir(&src_skills_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(
+                "Failed to read template skills directory: {}, error={}",
+                src_skills_dir.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let mut copied = 0u32;
+    let mut updated = 0u32;
+    let mut kept = 0u32;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Failed to read directory entry: {}", e);
+                continue;
+            }
+        };
+
+        let file_name = entry.file_name();
+        let file_name_str = match file_name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // 只同步普通 .md 文件（清单本身不是 .md，自然被排除）；子目录跳过。
+        if !file_name_str.ends_with(".md") {
+            continue;
+        }
+        if entry.file_type().map(|t| !t.is_file()).unwrap_or(false) {
+            continue;
+        }
+
+        let src_path = entry.path();
+        let src_data = match fs::read(&src_path) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(
+                    "Failed to read template skill file: {}, error={}",
+                    src_path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+
+        let dst_path = dst_skills_dir.join(file_name_str);
+        if !dst_path.exists() {
+            if let Err(e) = fs::write(&dst_path, &src_data) {
+                error!(
+                    "Failed to copy skill file: src={}, dst={}, error={}",
+                    src_path.display(),
+                    dst_path.display(),
+                    e
+                );
+                continue;
+            }
+            info!("[skills] 新增出厂技能 {}", file_name_str);
+            copied += 1;
+            continue;
+        }
+
+        // 目标已存在：manifest 不可用 ⇒ 旧行为"存在即跳过"（绝不覆盖）。
+        let Some(manifest) = manifest.as_ref() else {
+            debug!("Skill file already exists, skipping: {}", dst_path.display());
+            kept += 1;
+            continue;
+        };
+
+        let dst_data = match fs::read(&dst_path) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(
+                    "Failed to read target skill file: {}, error={}",
+                    dst_path.display(),
+                    e
+                );
+                kept += 1;
+                continue;
+            }
+        };
+        let dst_hash = fnv1a64_hex(&dst_data);
+
+        let skill = match manifest.get(file_name_str) {
+            Some(s) => s,
+            // 清单外文件：无可信的出厂哈希 ⇒ 按"已改动"保留，绝不覆盖。
+            None => {
+                info!("[skills] 保留已改动的技能 {}", file_name_str);
+                kept += 1;
+                continue;
+            }
+        };
+
+        if dst_hash == skill.hash {
+            // == 出厂当前版：不动、无日志。
+        } else if skill.history.iter().any(|h| *h == dst_hash) {
+            // ∈ 某出厂历史版（从未被改过）⇒ 用出厂当前内容覆盖。
+            // 历史条目没有版本号，不编造旧版本号，日志写 v?。
+            if let Err(e) = fs::write(&dst_path, &src_data) {
+                error!(
+                    "Failed to update skill file: src={}, dst={}, error={}",
+                    src_path.display(),
+                    dst_path.display(),
+                    e
+                );
+                continue;
+            }
+            info!(
+                "[skills] 更新出厂技能 {} (v? → v{})",
+                file_name_str,
+                skill.version
+            );
+            updated += 1;
+        } else {
+            // ∉ 任何出厂哈希（用户/Agent 改过）⇒ 保留。
+            info!("[skills] 保留已改动的技能 {}", file_name_str);
+            kept += 1;
+        }
+    }
+
+    info!(
+        "Skills directory sync: copied={}, updated={}, kept={}, dst={}",
+        copied,
+        updated,
+        kept,
+        dst_skills_dir.display()
+    );
+}
+
+/// 维护者工具（隐藏参数 `--gen-skills-manifest`）：扫描 `<root>/memory/skills/*.md`，
+/// 用与运行时判据同一个 fnv1a64_hex 算哈希（同一二进制 ⇒ 生成器与判据永不漂移），与清单比对：
+/// - 新文件：version=1、hash=当前哈希、history 为空；
+/// - 内容未变：不动；
+/// - 内容变了：旧 hash 推入 history、version+1、写入新 hash；
+/// - 清单有条目但文件已删：保留条目不删。
+/// 只在有变动时写清单，绝不动技能内容。
+fn gen_skills_manifest(skills_dir: &Path, manifest_path: &Path) {
+    let entries = match fs::read_dir(skills_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("无法读取技能目录 {}: {}", skills_dir.display(), e);
+            std::process::exit(1);
+        }
+    };
+
+    // 清单缺失或读不动 ⇒ 从空白重建（全部文件按 v1 起算）。
+    let mut manifest: SkillsManifest = match fs::read_to_string(manifest_path) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("既有清单不可用，将重建: {} ({})", manifest_path.display(), e);
+                SkillsManifest {
+                    schema: 1,
+                    hash: "fnv1a64".to_string(),
+                    skills: Default::default(),
+                }
+            }
+        },
+        Err(_) => {
+            eprintln!("清单不存在，将新建: {}", manifest_path.display());
+            SkillsManifest {
+                schema: 1,
+                hash: "fnv1a64".to_string(),
+                skills: Default::default(),
+            }
+        }
+    };
+
+    let mut changed = 0u32;
+    let mut seen: std::collections::BTreeSet<String> = Default::default();
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("无法读取目录项: {}", e);
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let name = match name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        if !name.ends_with(".md") {
+            continue;
+        }
+        let data = match fs::read(entry.path()) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("无法读取 {}: {}", name, e);
+                continue;
+            }
+        };
+        seen.insert(name.to_string());
+        let hash = fnv1a64_hex(&data);
+        match manifest.skills.get_mut(name) {
+            Some(skill) if skill.hash == hash => {
+                println!("{}: v{} 未变", name, skill.version);
+            }
+            Some(skill) => {
+                let old = skill.version;
+                skill.history.push(std::mem::take(&mut skill.hash));
+                skill.version = old + 1;
+                skill.hash = hash.clone();
+                println!("{}: v{}→v{}", name, old, skill.version);
+                changed += 1;
+            }
+            None => {
+                manifest.skills.insert(
+                    name.to_string(),
+                    ManifestSkill {
+                        version: 1,
+                        hash,
+                        history: Vec::new(),
+                    },
+                );
+                println!("{}: v1 (新增)", name);
+                changed += 1;
+            }
+        }
+    }
+    for name in manifest.skills.keys() {
+        if !seen.contains(name) {
+            println!("{}: 文件缺失（清单保留不动）", name);
+        }
+    }
+
+    if changed > 0 {
+        let json = match serde_json::to_string_pretty(&manifest) {
+            Ok(j) => j + "\n",
+            Err(e) => {
+                eprintln!("序列化清单失败: {}", e);
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = fs::write(manifest_path, &json) {
+            eprintln!("写入清单失败 {}: {}", manifest_path.display(), e);
+            std::process::exit(1);
+        }
+        println!("已更新清单：{}（{} 个文件变动）", manifest_path.display(), changed);
+    } else {
+        println!("清单与磁盘一致，未写任何文件。");
+    }
+}
 
 /// initNiuDir ensures ~/.niu/ directory exists and copies template files if needed
 fn init_niu_dir(project_root: &str) {
@@ -1428,110 +1787,9 @@ fn init_niu_dir(project_root: &str) {
     let template_dir = PathBuf::from(project_root).join("memory");
     copy_seeds(&template_dir, &niu_dir, env::consts::OS);
 
-    // Copy skills/ directory (individual .md files, don't overwrite existing)
-    // Triggered when: dir missing / dir exists but empty / specific .md missing
-    // Protects user modifications by skipping existing files
-    let src_skills_dir = template_dir.join("skills");
-    let dst_skills_dir = niu_dir.join("skills");
-
-    if !src_skills_dir.exists() {
-        warn!(
-            "Template skills directory not found, skipping: {}",
-            src_skills_dir.display()
-        );
-    } else {
-
-    if let Err(e) = fs::create_dir_all(&dst_skills_dir) {
-        error!(
-            "Failed to create skills directory: {}, error={}",
-            dst_skills_dir.display(),
-            e
-        );
-        return;
-    }
-
-    let entries = match fs::read_dir(&src_skills_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            warn!(
-                "Failed to read template skills directory: {}, error={}",
-                src_skills_dir.display(),
-                e
-            );
-            return;
-        }
-    };
-
-    let mut copied_count = 0u32;
-    let mut skipped_count = 0u32;
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Failed to read directory entry: {}", e);
-                continue;
-            }
-        };
-
-        let file_name = entry.file_name();
-        let file_name_str = match file_name.to_str() {
-            Some(s) => s,
-            None => continue,
-        };
-
-        // Only copy .md files, skip .DS_Store / hidden files
-        if !file_name_str.ends_with(".md") {
-            continue;
-        }
-
-        let dst_path = dst_skills_dir.join(file_name_str);
-        if dst_path.exists() {
-            debug!(
-                "Skill file already exists, skipping: {}",
-                dst_path.display()
-            );
-            skipped_count += 1;
-            continue;
-        }
-
-        let src_path = entry.path();
-        let src_data = match fs::read(&src_path) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!(
-                    "Failed to read template skill file: {}, error={}",
-                    src_path.display(),
-                    e
-                );
-                continue;
-            }
-        };
-
-        if let Err(e) = fs::write(&dst_path, &src_data) {
-            error!(
-                "Failed to copy skill file: src={}, dst={}, error={}",
-                src_path.display(),
-                dst_path.display(),
-                e
-            );
-            continue;
-        }
-
-        info!(
-            "Copied skill file: {} -> {}",
-            file_name_str,
-            dst_path.display()
-        );
-        copied_count += 1;
-    }
-
-    info!(
-        "Skills directory sync: copied={}, skipped(existing)={}, dst={}",
-        copied_count,
-        skipped_count,
-        dst_skills_dir.display()
-    );
-    }
+    // skills/ 是唯一带扩展语义的种子段：manifest 可用时走五支判据（新增/不动/出厂更新/保留已改动），
+    // manifest 不可用时退化为旧行为"只补缺"+WARNING。见 sync_skills（含设计文档 §2.1）。
+    sync_skills(&template_dir, &niu_dir);
 }
 
 // ---------------------------------------------------------------------------
@@ -2169,6 +2427,14 @@ struct Args {
     /// port for Python API server
     #[arg(long, default_value_t = 9876)]
     port: u16,
+
+    /// （隐藏维护工具）重新生成 memory/skills/seed-manifest.json，只写清单，完成后立即退出
+    #[arg(long, hide = true)]
+    gen_skills_manifest: bool,
+
+    /// （隐藏维护工具）--gen-skills-manifest 的根目录，默认仓库根
+    #[arg(long, hide = true, value_name = "ROOT", requires = "gen_skills_manifest")]
+    gen_manifest_root: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2521,6 +2787,24 @@ fn main() {
 
     // Parse args (replaces Go's flag)
     let args = Args::parse();
+
+    // 隐藏维护工具：重生成出厂技能清单后立即退出，不触碰任何运行时行为。
+    // 与运行时判据同一二进制、同一 fnv1a64_hex：清单生成器与五支判据永不漂移。
+    if args.gen_skills_manifest {
+        let root = args
+            .gen_manifest_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(detect_project_root()));
+        let skills_dir = root.join("memory").join("skills");
+        let manifest_path = skills_dir.join("seed-manifest.json");
+        println!(
+            "--gen-skills-manifest: 扫描 {} / 清单 {}",
+            skills_dir.display(),
+            manifest_path.display()
+        );
+        gen_skills_manifest(&skills_dir, &manifest_path);
+        return;
+    }
 
     // Context cancellation via AtomicBool (replaces Go's context.WithCancel)
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -3923,6 +4207,236 @@ mod tests {
         copy_seeds(&td, &niu, "linux");
         assert!(!niu.join("llama-layout.json").exists());
         assert!(niu.join("memory.json").exists());
+    }
+
+    // ------------------------------------------------------------------
+    // 出厂技能五支判据 + FNV 向量 + 清单维护工具（skills seed 机制）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_fnv1a64_known_vectors() {
+        // 公认向量（与 FNV-1a 64 规范值一致，同时用 python3 独立实现交叉核对过）
+        assert_eq!(fnv1a64_hex(b""), "cbf29ce484222325");
+        assert_eq!(fnv1a64_hex(b"a"), "af63dc4c8601ec8c");
+        assert_eq!(fnv1a64_hex(b"abc"), "e71fa2190541574b");
+        assert_eq!(fnv1a64_hex(b"hello world"), "779a65e7023cd2e7");
+        // 多字节 UTF-8 + 多行文本（预期值由 python3 独立实现算出）
+        let multi = "技能种子 v2\n更新出厂技能 report-skill.md (v? → v3)\n";
+        assert_eq!(fnv1a64_hex(multi.as_bytes()), "24c16ce074addb7c");
+    }
+
+    /// 种子工作区 + memory/skills/ 子目录，并预建家目录 skills/（模拟老装机已有 ~/.niu/skills）。
+    /// 清单另行经 write_skills_manifest 写入。
+    fn skills_workspace(tag: &str, skills: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+        let (td, niu) = seed_workspace(tag, &[]);
+        let skills_dir = td.join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::create_dir_all(niu.join("skills")).unwrap();
+        for (name, content) in skills {
+            fs::write(skills_dir.join(name), content).unwrap();
+        }
+        (td, niu)
+    }
+
+    /// 按给定条目（name, version, 当前 hash, history…）在 skills_dir 写一份 manifest。
+    fn write_skills_manifest(skills_dir: &Path, entries: &[(&str, u32, &str, &[String])]) {
+        let skills = entries
+            .iter()
+            .map(|(name, version, hash, history)| {
+                (
+                    (*name).to_string(),
+                    ManifestSkill {
+                        version: *version,
+                        hash: (*hash).to_string(),
+                        history: history.iter().cloned().collect(),
+                    },
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let manifest = SkillsManifest {
+            schema: 1,
+            hash: "fnv1a64".to_string(),
+            skills,
+        };
+        let json = serde_json::to_string_pretty(&manifest).unwrap() + "\n";
+        fs::write(skills_dir.join("seed-manifest.json"), json).unwrap();
+    }
+
+    #[test]
+    fn test_skills_missing_target_copied() {
+        // 五支之①：目标不存在 ⇒ 拷贝（含清单自身不得拷入、子目录不参与）
+        let content = "出厂技能 v1\n";
+        let (td, niu) = skills_workspace("skills-missing", &[("report-skill.md", content)]);
+        write_skills_manifest(
+            &td.join("skills"),
+            &[("report-skill.md", 1, &fnv1a64_hex(content.as_bytes()), &[])],
+        );
+        fs::create_dir_all(td.join("skills").join("nested")).unwrap();
+        fs::write(td.join("skills").join("nested").join("inner.md"), "子目录文件\n").unwrap();
+        sync_skills(&td, &niu);
+        let dst = niu.join("skills").join("report-skill.md");
+        assert!(dst.exists(), "目标缺失 ⇒ 必须拷贝");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), content);
+        assert!(
+            !niu.join("skills").join("seed-manifest.json").exists(),
+            "清单自身不得拷入家目录"
+        );
+        assert!(
+            !niu.join("skills").join("nested").exists(),
+            "子目录不参与同步"
+        );
+    }
+
+    #[test]
+    fn test_skills_hash_equals_current_unchanged() {
+        // 五支之②：目标哈希 == 出厂当前哈希 ⇒ 不动（此支无任何写入，内容保持出厂内容即可佐证；
+        // 与"内容相同地重拷"在文件层面不可区分，"绝不写入"由代码路径保证）
+        let content = "出厂当前版\n";
+        let (td, niu) = skills_workspace("skills-current", &[("a.md", content)]);
+        write_skills_manifest(
+            &td.join("skills"),
+            &[(
+                "a.md",
+                3,
+                &fnv1a64_hex(content.as_bytes()),
+                &[fnv1a64_hex("历史版\n".as_bytes())],
+            )],
+        );
+        let dst = niu.join("skills").join("a.md");
+        fs::write(&dst, content).unwrap();
+        sync_skills(&td, &niu);
+        assert_eq!(
+            fs::read_to_string(&dst).unwrap(),
+            content,
+            "哈希 == 出厂当前哈希 ⇒ 保持不动"
+        );
+    }
+
+    #[test]
+    fn test_skills_hash_in_history_overwritten() {
+        // 五支之③：目标哈希 ∈ 出厂历史（从未被改过）⇒ 被覆盖为出厂当前内容
+        let old_content = "出厂 v2 历史版\n";
+        let new_content = "出厂 v3 当前版\n";
+        let (td, niu) = skills_workspace("skills-history", &[("report-skill.md", new_content)]);
+        write_skills_manifest(
+            &td.join("skills"),
+            &[(
+                "report-skill.md",
+                3,
+                &fnv1a64_hex(new_content.as_bytes()),
+                &[fnv1a64_hex(old_content.as_bytes())],
+            )],
+        );
+        // 目标是某个历史出厂版的内容
+        let dst = niu.join("skills").join("report-skill.md");
+        fs::write(&dst, old_content).unwrap();
+        sync_skills(&td, &niu);
+        assert_eq!(
+            fs::read_to_string(&dst).unwrap(),
+            new_content,
+            "目标哈希 ∈ 出厂历史 ⇒ 必须被覆盖为出厂当前内容"
+        );
+    }
+
+    #[test]
+    fn test_skills_hash_not_in_history_kept() {
+        // 五支之④：目标哈希 ∉ 任何出厂哈希（用户/Agent 改过）⇒ 保留不动
+        let content = "出厂当前版\n";
+        let user_content = "用户改过的版本\n";
+        let (td, niu) = skills_workspace("skills-modified", &[("a.md", content)]);
+        write_skills_manifest(
+            &td.join("skills"),
+            &[(
+                "a.md",
+                2,
+                &fnv1a64_hex(content.as_bytes()),
+                &[fnv1a64_hex("历史版\n".as_bytes())],
+            )],
+        );
+        let dst = niu.join("skills").join("a.md");
+        fs::write(&dst, user_content).unwrap();
+        sync_skills(&td, &niu);
+        assert_eq!(
+            fs::read_to_string(&dst).unwrap(),
+            user_content,
+            "目标哈希 ∉ 任何出厂哈希 ⇒ 保留不动"
+        );
+    }
+
+    #[test]
+    fn test_skills_manifest_bad_json_degrades_without_panic() {
+        // 五支之⑤：manifest 是坏 JSON ⇒ 不 panic，退化为旧行为"只补缺"
+        //（缺失目标照拷、已存在目标绝不覆盖）
+        let (td, niu) = skills_workspace("skills-bad-manifest", &[]);
+        fs::write(td.join("skills").join("a.md"), "出厂 A\n").unwrap();
+        fs::write(td.join("skills").join("b.md"), "出厂 B\n").unwrap();
+        fs::write(td.join("skills").join("seed-manifest.json"), "{这不是 JSON").unwrap();
+        let dst_b = niu.join("skills").join("b.md");
+        fs::write(&dst_b, "用户版 B\n").unwrap();
+        sync_skills(&td, &niu);
+        assert_eq!(
+            fs::read_to_string(niu.join("skills").join("a.md")).unwrap(),
+            "出厂 A\n",
+            "退化模式：目标缺失 ⇒ 照旧补缺"
+        );
+        assert_eq!(
+            fs::read_to_string(&dst_b).unwrap(),
+            "用户版 B\n",
+            "退化模式：目标已存在 ⇒ 跳过、绝不覆盖"
+        );
+    }
+
+    #[test]
+    fn test_gen_skills_manifest_bumps_version_and_records_history() {
+        // --gen-skills-manifest happy path：改内容后重生成 ⇒ version+1、旧 hash 进 history，
+        // 未变文件条目不动、内容不被触碰、无变动时不写清单。
+        let root = env::temp_dir().join(format!("niu-gen-manifest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let skills_dir = root.join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let manifest_path = skills_dir.join("seed-manifest.json");
+        let v1 = "技能 v1\n";
+        fs::write(skills_dir.join("report-skill.md"), v1).unwrap();
+        fs::write(skills_dir.join("static.md"), "不变\n").unwrap();
+        fs::write(&manifest_path, "").unwrap(); // 既有清单读不动 ⇒ 按空白重建
+        gen_skills_manifest(&skills_dir, &manifest_path);
+        let m1: SkillsManifest =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(m1.schema, 1);
+        assert_eq!(m1.hash, "fnv1a64");
+        assert_eq!(m1.skills.get("report-skill.md").unwrap().version, 1);
+
+        // 改动一条技能内容后重生成
+        let v2 = "技能 v2\n";
+        fs::write(skills_dir.join("report-skill.md"), v2).unwrap();
+        gen_skills_manifest(&skills_dir, &manifest_path);
+        let m2: SkillsManifest =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let report = m2.skills.get("report-skill.md").unwrap();
+        assert_eq!(report.version, 2, "内容变了 ⇒ version+1");
+        assert_eq!(report.hash, fnv1a64_hex(v2.as_bytes()), "清单 hash 必须指向新内容");
+        assert_eq!(
+            report.history,
+            vec![fnv1a64_hex(v1.as_bytes())],
+            "旧 hash 必须推入 history"
+        );
+        let static_skill = m2.skills.get("static.md").unwrap();
+        assert_eq!(static_skill.version, 1, "未变文件条目不得变动");
+        assert!(static_skill.history.is_empty());
+        assert_eq!(
+            fs::read_to_string(skills_dir.join("report-skill.md")).unwrap(),
+            v2,
+            "只写清单，绝不动内容"
+        );
+
+        // 再跑一次无任何变化 ⇒ 不写清单（mtime 保持）
+        let before = fs::metadata(&manifest_path).unwrap().modified().unwrap();
+        gen_skills_manifest(&skills_dir, &manifest_path);
+        assert_eq!(
+            fs::metadata(&manifest_path).unwrap().modified().unwrap(),
+            before,
+            "未变 ⇒ 不写清单"
+        );
     }
 
 }
