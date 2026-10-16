@@ -493,30 +493,43 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-def _generate_stable_description(normalized_stem: str, abstract: str, location_info: str | None = None, camera: str | None = None) -> str:
+def _generate_stable_description(normalized_stem: str, abstract: str, location_info: str | None = None, camera: str | None = None, taken_at: str | None = None) -> str:
     """Generate a stable description for photo entity in KG.
 
-    Only includes immutable attributes (file name, date from stem).
+    Only includes immutable attributes (file name, date).
+    日期短语由时间真值来源决定（两条互斥分支）：
+    - taken_at 有值 ⇒ 按 EXIF 拍摄时间，冠「拍摄于」（解析失败取 taken_at[:10]
+      原文照写，对齐 generate_l0_abstract 口径，仍冠「拍摄于」）；
+    - taken_at 无值 ⇒ stem 前 8 位是入库日期，冠「入库于」（入库时间 ≠ 拍摄
+      时间，不得谎称拍摄于）；
+    - taken_at 无值且 stem 解析不出来 ⇒ 不写日期短语。
     Person names are NOT included — they belong to person entities and
     are expressed via edges (features, co_occurs_with).
     This prevents the description from becoming stale when a person is renamed.
     """
-    # Extract date from stem if possible (format: YYYYMMDD_HHMMSS)
     date_part = ""
-    if len(normalized_stem) >= 8 and normalized_stem[:8].isdigit():
+    if taken_at:
+        # EXIF taken_at 是唯一可信的拍摄时间来源
         try:
-            from datetime import datetime
+            dt = datetime.strptime(taken_at, "%Y:%m:%d %H:%M:%S")
+            date_part = f"拍摄于{dt.strftime('%Y年%m月%d日')}"
+        except (ValueError, TypeError):
+            # 不可解析：原文照写，不静默丢弃、不改写成别的时间
+            date_part = f"拍摄于{taken_at[:10] if len(taken_at) >= 10 else taken_at}"
+    elif len(normalized_stem) >= 8 and normalized_stem[:8].isdigit():
+        # 无拍摄时间：stem 前 8 位为入库日期，冠「入库于」
+        try:
             dt = datetime.strptime(normalized_stem[:8], "%Y%m%d")
             # Validate: month 1-12, day 1-31 (strptime already rejects invalid dates)
             if dt.year < 1900 or dt.year > 2100:
                 raise ValueError("year out of reasonable range")
-            date_part = dt.strftime("%Y年%m月%d日")
+            date_part = f"入库于{dt.strftime('%Y年%m月%d日')}"
         except ValueError:
             pass
 
     parts = [f"照片 {normalized_stem}"]
     if date_part:
-        parts.append(f"拍摄于{date_part}")
+        parts.append(date_part)
     if location_info:
         parts.append(location_info)
     if camera:
@@ -596,7 +609,11 @@ def format_photo_ingest_data(
         {
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": _generate_stable_description(normalized_stem, abstract, location_info, exif.get("camera") if exif else None),
+            "description": _generate_stable_description(
+                normalized_stem, abstract, location_info,
+                exif.get("camera") if exif else None,
+                exif.get("taken_at") if exif else None,
+            ),
             "file_path": normalized_path,
             "source_id": normalized_path,
         }
@@ -688,7 +705,7 @@ def format_photo_ingest_data(
     return {"entities": entities, "relationships": relationships}
 
 
-def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False, exif: dict | None = None) -> dict:
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False, exif: dict | None = None, category: str | None = None) -> dict:
     """同步照片信息到知识图谱（结构化注入）
 
     流程：
@@ -706,6 +723,8 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
         abstract: 照片摘要
         detected_persons: 检测到的人物列表
         force: 是否强制重新同步
+        category: 照片类别（写入 chunk「类别：」行；缺省 None 时该行不写——
+            测试/脚本直调路径。生产入口 ingest_photo 恒传非空类别）
     """
     # 防重复检查：已 kg_synced 的照片不重新注入（除非 force=True）
     if not force:
@@ -723,10 +742,10 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
             logger.warning(f"[KG] kg_synced check failed for {file_path}: {e}")
 
     # 直接同步执行（不再使用异步模式，避免阻塞 LightRAG 事件循环）
-    return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons, exif)
+    return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons, exif, category)
 
 
-def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: list, exif: dict | None = None) -> dict:
+def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: list, exif: dict | None = None, category: str | None = None) -> dict:
     """同步执行 KG 同步（内部函数）"""
     try:
         from agent.tool_registry import get_registry
@@ -762,7 +781,15 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
             chunk_text += f"人物：{', '.join(all_person_names)}\n"
         if all_location_names:
             chunk_text += f"地点：{', '.join(all_location_names)}\n"
-
+        # EXIF 属性三行：统一「有值才写」（truthy），追加在既有行全部之后
+        _taken_at = exif.get("taken_at") if exif else None
+        _camera = exif.get("camera") if exif else None
+        if _taken_at:
+            chunk_text += f"拍摄时间：{_taken_at}\n"
+        if _camera:
+            chunk_text += f"相机：{_camera}\n"
+        if category:
+            chunk_text += f"类别：{category}\n"
         custom_kg_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
         if not custom_kg_fn:
             logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
@@ -2330,7 +2357,7 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
 
         # 8. 同步到知识图谱（失败不影响照片入库）
         final_path_resolved = str(Path(final_path).resolve())
-        kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons, exif=exif)
+        kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons, exif=exif, category=category)
         kg_entities = kg_result.get("kg_entities", []) if isinstance(kg_result, dict) else []
 
         # move 模式 + HEIC 转换成功后删除源文件
