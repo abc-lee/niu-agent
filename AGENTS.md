@@ -28,7 +28,7 @@ MCP 服务器集群 (mcp-servers/)
 3. **修改前必须先做临时提交备份** — `git add -A && git commit`，恢复前也必须先备份当前状态，不能直接 `git checkout` 覆盖；完整回退到过去的某点必须经过用户同意。
 4. **修改前必须用 先 分析影响范围** — 评估 blast radius 后再动手。
 5. **测试必须用真实数据 + 真实 LLM** — 绕过 LLM 的测试是假测试。
-6. **`python/` 目录必须是完整的自包含 Python 安装** — 所有二进制、库、依赖必须真实存在于 `python/` 目录内，禁止符号链接指向外部路径（如 `/Library/Frameworks/Python.framework/`）。此目录最终要打包分发，客户无需自装 Python 环境和依赖。当前 `python/` 目录的 stdlib 仍指向系统 Python（自包含 stdlib 尚未复制进来），需另开会话重建。numpy<2 和 opencv<4.12 是隐性约束（torch 2.2.2 / insightface C 扩展用 numpy 1.x ABI；opencv 4.12+ 强制 numpy>=2）。
+6. **`python/` 目录必须是完整的自包含 Python 安装** — 所有二进制、库、依赖必须真实存在于 `python/` 目录内，禁止符号链接指向外部路径（如 `/Library/Frameworks/Python.framework/`）。此目录最终要打包分发，客户无需自装 Python 环境和依赖。当前 `python/` 目录的 stdlib 仍指向系统 Python（自包含 stdlib 尚未复制进来），需另开会话重建。**［2026-10-16 PM 实测复核：此句已过时——stdlib 现为真文件（非软链）、`python/bin/python3` 是真二进制、`python/` 下**零个绝对目标软链**；`otool -L python/bin/python3` 走 `@rpath/libPython3.11.dylib`（rpath=`@loader_path/../lib` ⇒ 解析到包内 `python/lib/libPython3.11.dylib`，该 dylib 仅依赖 System 框架）⇒ **运行时似已自包含**。残留仅为**元数据**：`sys.base_prefix` 与 `sysconfig` 的 `LIBDIR`/`LIBPL` 仍记 `/Library/Frameworks/...`（只影响"运行期编译/链接 C 扩展"，不影响纯 Python 运行）；**尚未在无系统框架的机器上实测**。⇒ 待办收敛为"（可选）洗掉 sysconfig 里的框架路径"，不再是"重建 stdlib"。］**numpy<2 和 opencv<4.12 是隐性约束（torch 2.2.2 / insightface C 扩展用 numpy 1.x ABI；opencv 4.12+ 强制 numpy>=2）。
 7. **git 操作后必须修复文件权限** — `git checkout/reset` 会丢失可执行权限，执行后必须运行：
    ```bash
    find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x
@@ -217,7 +217,7 @@ bash launcher/build.sh --dmg    # 打 .app bundle + DMG 安装包（发布用）
 ```cmd
 pack.bat
 ```
-Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（官方安装器默认 `C:\Program Files\7-Zip\`；`pack.bat` 自动探测 `C:\` 与 `E:\`）。打包前需已完成：Rust 编译（`bash launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建、`pip install -r requirements-dev.txt`（提供 maturin）、.NET 8 SDK 安装（`dotnet --version` 可用，供 `pack.bat` 调用 `native\niu-winfx-win\build.ps1` 构建磨砂模糊原生件——`pack.bat` 硬依赖 dotnet，缺则立即中止）。
+Windows 是绿色安装，用户解压 7z 即用，无需安装程序。前置：已安装 [7-Zip](https://7-zip.org/)（`pack.bat` 按序探测：`where 7z`（PATH）→ `%ProgramFiles%\7-Zip\7z.exe` → `%ProgramFiles(x86)%\7-Zip\7z.exe`，都没有才中止——**2026-10-16 起不再硬编码 `C:\`/`E:\`**）。打包前需已完成：Rust 编译（`bash launcher/build.sh` 或 `cargo build --release` + 复制 `niu-launcher.exe` 到根目录 `niu.exe`）、`npm install`、Python venv 创建、`pip install -r requirements-dev.txt`（提供 maturin）、.NET 8 SDK 安装（`dotnet --version` 可用，供 `pack.bat` 调用 `native\niu-winfx-win\build.ps1` 构建磨砂模糊原生件——`pack.bat` 硬依赖 dotnet，缺则立即中止）。
 
 `pack.bat` 会：
 1. 构建 niu-natives wheel 装进 `python\`（缺 `.pyd`/`node_modules` 即中止，不产残包）
