@@ -35,7 +35,8 @@ def _get_amap_api_key() -> str | None:
             return None
         prefs = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
         return prefs.get("amap", {}).get("api_key", "").strip() or None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"preferences.json 读取失败（amap.api_key 降级为未配置）: {e}")
         return None
 
 # 缓存数据库路径（与 photos.db 同目录）

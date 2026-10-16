@@ -28,7 +28,8 @@ def _read_config() -> dict:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[HA] ha-config.json 读取/解析失败（降级为空配置）: {e}")
         return {}
 
 

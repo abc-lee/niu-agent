@@ -734,7 +734,8 @@ def _build_user_info_section() -> str:
     try:
         import json
         memory = json.loads(memory_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.warning(f"memory.json 读取失败（子Agent 用户信息段降级为空）: {e}")
         return ""
 
     sections = []

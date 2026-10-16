@@ -272,7 +272,8 @@ class _HAWatcher:
                 return {}
             with open(CONFIG_PATH, encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            print(f"[HAWatcher] ha-config.json 读取失败（静默降级为空配置）: {e}")
             return {}
 
     def _check_config_changed(self) -> bool:

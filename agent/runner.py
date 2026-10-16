@@ -375,7 +375,8 @@ def _load_memory_for_prompt() -> str:
 
         with lock_ctx:
             memory = json.loads(memory_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.warning(f"memory.json 读取失败（身份/偏好提示词降级为空）: {e}")
         return ""
 
     parts = []
