@@ -1242,6 +1242,7 @@ def lightrag_insert_custom_kg(
     """
     try:
         adapter = _get_adapter()
+        chunks = chunks or []
 
         # --- Dedup entities ---
         input_entities = entities or []
@@ -1292,11 +1293,11 @@ def lightrag_insert_custom_kg(
         skip_info = "\n".join(skip_parts)
 
         # If everything was skipped, return early
-        if not new_entities and not new_rels:
+        if not new_entities and not new_rels and not chunks:
             if skip_info:
                 return {"status": "ok", "message": f"所有数据已存在，跳过插入。{skip_info}。", "skipped": True}
             # No data was provided at all
-            return {"status": "ok", "message": "未提供任何实体或关系数据。"}
+            return {"status": "ok", "message": "未提供任何实体、关系或块数据。"}
 
         ingester = _get_ingester()
         result = ingester.inject_custom_kg(
@@ -1309,12 +1310,28 @@ def lightrag_insert_custom_kg(
         # Enrich result with skip info
         inserted_e = len(new_entities)
         inserted_r = len(new_rels)
-        msg = f"已插入 {inserted_e} 个实体, {inserted_r} 个关系。"
+        parts = [f"已插入 {inserted_e} 个实体, {inserted_r} 个关系"]
+        caller_n = len(chunks)
+        stored_n = result.get("chunks") if isinstance(result, dict) else None
+        if stored_n:  # 0 / None ⇒ 不输出块数子句
+            if caller_n and stored_n != caller_n:
+                if new_entities or new_rels:
+                    parts.append(
+                        f"提交 {caller_n} 条块（含为实体/关系自动生成的描述块，共 {stored_n} 条入库）"
+                    )
+                else:
+                    parts.append(f"提交 {caller_n} 条块（超限自动分段后共 {stored_n} 条入库）")
+            elif caller_n == 0:
+                parts.append(f"块 {stored_n} 条（为实体/关系自动生成）")
+            else:
+                parts.append(f"块 {stored_n} 条")
+        msg = ", ".join(parts) + "。"
         if skip_info:
             msg += skip_info + "。"
 
         if isinstance(result, dict):
-            result["message"] = msg
+            if result.get("status") == "ok":
+                result["message"] = msg
             if skipped_entity_names:
                 result["skipped_entities"] = skipped_entity_names
             if skipped_rel_labels:
