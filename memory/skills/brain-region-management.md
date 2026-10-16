@@ -1,6 +1,6 @@
 ---
 name: brain-region-management
-description: Use when managing or configuring brain regions, adding new regions, or modifying region settings
+description: Use when managing or configuring brain regions, adding new regions, modifying region settings, or deciding whether to adjust brain region states
 status: active
 created: 2026-06-16
 last_tested: 2026-06-16
@@ -11,12 +11,23 @@ last_tested: 2026-06-16
 ## Overview
 
 **Brain regions should be configured in the preferences file, NOT manually created as entities in the knowledge graph.**
+**Brain region states (lit/dimmed) are runtime behavior: 点亮/熄灭由对话上下文自动触发，平时不主动总结状态、不主动调整，仅在专业任务中感到注入信息不聚焦时按需调整。**
+
+## Runtime Behavior
+
+- 脑区的点亮/熄灭是对话上下文自动触发的，**不要轻易总结哪些脑区点亮/熄灭**——提到脑区名字本身就会触发它点亮，等于主动干扰自然状态
+- **闲聊时**：脑区自然点亮/熄灭，不用管
+- **专业任务时**：注入信息总量有限，点亮的脑区越多每个脑区注入量越少——感到干扰多、注入不准时，点亮需要的、熄灭无关的，让知识聚焦
+- **调脑区是"事后纠偏"手段，不是"事前准备"步骤**——平时不碰，干活时感觉不对再调
+- **职责分工**：短对话（用户主动说话）由用户盯着并手动调整；长程任务（多轮工具调用）用户不关注，由助手自己优化
+- 不主动用 brain_region_dim/activate 工具，除非用户明确要求或在长任务中确实需要聚焦
 
 ## When to Use
 
 - Adding a new brain region
 - Modifying brain region configuration
 - Managing brain region settings
+- Deciding whether to adjust brain region states during tasks
 
 ## Core Principle
 
