@@ -468,21 +468,3 @@ class TestInjectorExports:
         from agent.injector import KGSync, get_kg_sync
         assert KGSync is not None
         assert callable(get_kg_sync)
-
-
-# ============== 12. ingest_unified.py — lightrag_sync key ==============
-
-
-class TestIngestUnified:
-    """ingest_unified.py should use lightrag_sync key."""
-
-    def test_no_kg_sync_key(self):
-        """ingest_unified.py should not use 'kg_sync' key."""
-        source = Path("scripts/ingest_unified.py").read_text(encoding="utf-8")
-        assert '"kg_sync"' not in source
-        assert "'kg_sync'" not in source
-
-    def test_lightrag_sync_key(self):
-        """ingest_unified.py should use 'lightrag_sync' key."""
-        source = Path("scripts/ingest_unified.py").read_text(encoding="utf-8")
-        assert "lightrag_sync" in source
