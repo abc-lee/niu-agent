@@ -8,6 +8,19 @@
 
 ---
 
+### 2026-10-17
+
+#### 小工程 F-4：媒体队列遇「文件已不存在」——不重试、不报 RuntimeError、归因如实（方案 R1–R3 → T1 双阶段审查 → 真机 AC 全过）
+
+- **用户裁定**：「很明显这是bug，不存在的文件你还要重试，而且你还报Run time错误。」（触发场景：F-3 AC 的合成合影入库时排队、随后文件被删，后台媒体向量反复 `1/3`、`2/3`、弃单）
+- **根因（四跳 + 第二断裂层）**：① `media_downscale.encode_media_any` 先 `pixel_guard.classify` 再 `_sniff_kind`；② `_sniff_kind` 是 **total 函数**（`except (OSError, ValueError): return "other"`）⇒ **文件缺失被判成"格式不在白名单"**；③ 于是抛 `RuntimeError("白名单外图片格式…")`——**归因错**；④ worker 的 `_converge_inflight` 把所有异常按"普通失败"计数 ⇒ **无谓重试 3 次**。另外 `llama_server.encode_media:503-504` 对缺失文件抛的也是 `RuntimeError("图片文件不存在")`（**契约第二断裂层**）⇒ `_process_one` docstring 承诺的 `FileNotFoundError` 路径**不可达**。
+- **修法（两层，零模型调用）**：① `encode_media_any` **在 `pixel_guard.classify` 之前**判 `os.path.isfile` ⇒ 抛 `FileNotFoundError`（恢复 D-24 契约；`_sniff_kind` 一字未改）；② `_record_failure` 增 `retryable: bool = True`，`_converge_inflight` 用**复合判据** `missing = isinstance(e, FileNotFoundError) or not os.path.exists(inflight.file_path)` → `retryable=not missing`；不可重试 ⇒ **标完成一次 + pop 旧计数 + idle + WARNING + 诚实提示**（含"无需重试"、不含"将自动重试"）+ **全程不写** `_fail_counts`；标注返 `"failed"` ⇒ `stalled` + 可辨 reason。另按审查补 ⑥ 同款"双保险" try/except。
+- **方案门禁**：v1.0→v1.3（R1：契约第二断裂层/判据悬空/3 个既有测试会被改红/failed 支漏处理；R2：通过/可开工；R3：通过 ⇒ **R2+R3 连续两轮零 P1/P2 = 门禁达标**）。**实施期抓出方案自身一个 bug**：v1.1–v1.3 的逐字行 `retryable = isinstance(...) or not os.path.exists(...)` **极性反了**（缺失时为 True）——**三轮审查都没代入真值演算**；实施者按规格语义改为 `missing=…`/`retryable=not missing`，并以"⑤/⑨ 双红"实证（方案 v1.4 订正）。另发现方案漏列 3 条既有 worker 用例（原用虚构路径 `/tmp/fake/broken.jpg`，复合判据下会被改判 ⇒ 红）⇒ 适配为**真实 tmp 文件**（原意保留）。
+- **实施与审查**：T1 一笔提交 `019e0eea`（4 文件）；spec 合规通过；质量/缺陷通过（**M1–M6 六个变异全被测试杀掉**：极性反转 7 红、删入口判定 4 红、删 `exists` 析取项恰 ⑥ 红、failed 支写计数恰 ⑧ 红、WARNING→ERROR 恰 ⑤ 红、删 `idle` ⑤⑥⑦ 红；前端 `media-ingest-completed` 消费方只 `console.log`+轮询、**不读** `ok/message` ⇒ 不会误显示为失败/假 stalled）；**首个远端免费模型（`free-review`）首战**：1m32s、带 file:line、无幻觉、独立确认"适配测试未削弱"；其 2×P2 经三路交叉 + 实测——**采纳 1**（同 ⑥ 双保险）、**驳回 2**（`os.path.exists` 在 CPython 3.11 对 str/非 str 均吞成 False；目录/FIFO 归"缺失"与方案 D-1 明文一致）；微修复审通过。门禁 89 passed（PM 亲跑）、ruff 与 HEAD 同码零新增。
+- **真机 AC（PM 亲跑，仓库代码起服务）**：**AC-1 ✅** 指向不存在文件的行 ⇒ 一条 `WARNING 文件不存在（可能入库后被删除）：标完成、跳过媒体向量，无需重试`（异常类型 `FileNotFoundError`）、行 `done:true` 不删行、状态 `idle` + 计数 `(0,1,1)`、媒体向量不变、全日志零次 `1/3`/`将自动重试`；**AC-2 ✅** BMP 对照 ⇒ 仍 `1/3→2/3→弃单(ERROR)`、`(0,2,2)`（既有口径未回归）；**AC-3 ✅** 优雅关服（exit 0）、队列复原 0 字节、`media_vectors 4/4`、`work 34/34`、新增文件 0。
+- **环境教训（本轮新增）**：① 判断"Niu 有没有在跑"**必须用 `lsof -nP -iTCP:9876` 或 `pgrep -if`**——`pgrep -f 'python -m niu_api'` 会漏掉 `…/MacOS/Python -m niu_api`（大写 P）；② 双实例守卫按设计生效（第二次起服务被 `检测到已有 niu_api 实例占用端口 9876，退出` 挡下），并因此**顺手拿到修复前的真机证据**（旧实例：`白名单外 + 1/3→2/3→弃单`）与修复后构成 before/after 对照；③ 无 Electron 前端时调度器有 60s 回退（`Frontend not ready within 60s`）⇒ 媒体首个 tick 在启动后 ~90s，AC 需等待。
+- **未决（待用户定）**：R-3（格式白名单外 / HEIC 系等**确定性拦截**是否也"不重试、直接弃单"——现仍走 3 次重试）；D-3（`cleanup_deleted_photos` 删照片时**顺带删该照片的媒体队列行**，从源头免死项；需队列层加"按 entity_name 删行"的小 API）。
+
 ### 2026-10-16
 
 #### 小工程 F-3：删人物时只清「该人物自己的簿记块」——**档案 vs 知识分离**（全链：方案 R1–R7 六轮 → SDD T0/T1/T2 双审 → 真机五 AC 全过 → 终态 9 项零差）
