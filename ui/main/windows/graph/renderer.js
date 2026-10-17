@@ -1071,7 +1071,8 @@ searchInput.addEventListener('keydown', async (e) => {
     searchDropdown.style.top = (inputRect.bottom + 4) + 'px';
     searchDropdown.style.minWidth = inputRect.width + 'px';
 
-    // 两路并行（I-10）：媒体路 = 响应与 renderer 侧超时竞态；两路各自捕获，失败只落在各自动段（I-9）
+    // 两腿时序化（v1.6）：图谱腿立即发起；媒体腿在图谱段绘出后才发起——1 万张照片场景：图谱先显示、媒体段继续转圈、何时搜完何时显示；
+    // 媒体腿内部 = 响应与 renderer 侧超时竞态（I-10）；两腿各自捕获，失败只落在各自动段（I-9）
     let kgPromise;
     try {
       kgPromise = window.electronAPI.searchEntities(query, 20)
@@ -1081,25 +1082,8 @@ searchInput.addEventListener('keydown', async (e) => {
       kgPromise = Promise.resolve({ __netError: String((e && e.message) || e) });
     }
     let mediaTimeout = null; // 超时定时器句柄：竞态落定后统一 clearTimeout，IPC 先胜出也不留空跑计时器（v1.1 F5）
-    let mediaPromise;
-    try {
-      mediaPromise = Promise.race([
-        window.electronAPI.searchMedia(query, 20)
-          .catch(err => ({ status: 'error', message: `媒体搜索不可用（${String((err && err.message) || err)}）` })),
-        new Promise(resolve => {
-          mediaTimeout = setTimeout(() => resolve({ status: 'error', message: '媒体搜索不可用（超时：编码后端可能被媒体入库编码占忙）' }), MEDIA_SEARCH_TIMEOUT_MS);
-        }),
-      ]).then(r => {
-        if (mediaTimeout) { clearTimeout(mediaTimeout); mediaTimeout = null; } // 竞态落定即清定时器（超时已触发则为空操作）
-        return r;
-      });
-    } catch (e) {
-      // 同上：媒体腿可辨失败行（I-9）
-      mediaPromise = Promise.resolve({ status: 'error', message: `媒体搜索不可用（${String((e && e.message) || e)}）` });
-    }
 
-    // —— 媒体段：按自身响应或超时落定（**不排在图谱腿之后**——I-10 的 12s 截断行必须
-    //    在图谱腿仍挂起时也按时出现；失败只落在媒体段，图谱段无论已落定或仍在占位都不受影响，I-9/I-10）——
+    // —— 媒体段：按自身响应或超时落定（I-10 的 12s 截断行在媒体腿发起后按时出现）；失败只落在媒体段，图谱段无论已落定或仍在占位都不受影响（I-9/I-10）——
     const paintMedia = (mediaResult) => {
       if (!stillCurrent()) return;
       if (mediaResult && mediaResult.status === 'ok') {
@@ -1119,8 +1103,29 @@ searchInput.addEventListener('keydown', async (e) => {
         paintSection('media', { kind: 'error', message: (mediaResult && mediaResult.message) || '媒体搜索不可用' });
       }
     };
-    // 媒体腿落定即绘——**注册在 `await kgPromise` 之前**，回调挂点与图谱腿 settle 时刻完全无关（v1.3 G1：v1.2 的 F15 曾把注册留在 await 续延内，属结构性空转：媒体先落定时 12s 超时行仍迟到至多 18s）
-    mediaPromise.then(paintMedia);
+    // 媒体腿发起 = 图谱段绘出之后（v1.6）：图谱先显示，媒体段保持占位、何时落定何时显示（1 万张照片场景）；
+    // 发起时机移到图谱落定之后，但 startMediaLeg 内部的竞态/超时/失败语义不变（I-9/I-10）；
+    // .then 挂点仍与图谱腿 settle 时刻解耦——靠 stillCurrent() / paintSection !body 空守卫兜底，不靠时序（v1.3 G1 的教训保留）
+    const startMediaLeg = () => {
+      let mediaPromise;
+      try {
+        mediaPromise = Promise.race([
+          window.electronAPI.searchMedia(query, 20)
+            .catch(err => ({ status: 'error', message: `媒体搜索不可用（${String((err && err.message) || err)}）` })),
+          new Promise(resolve => {
+            mediaTimeout = setTimeout(() => resolve({ status: 'error', message: '媒体搜索不可用（超时：编码后端可能被媒体入库编码占忙）' }), MEDIA_SEARCH_TIMEOUT_MS);
+          }),
+        ]).then(r => {
+          if (mediaTimeout) { clearTimeout(mediaTimeout); mediaTimeout = null; } // 竞态落定即清定时器（超时已触发则为空操作）
+          return r;
+        });
+      } catch (e) {
+        // 同上：媒体腿可辨失败行（I-9）
+        mediaPromise = Promise.resolve({ status: 'error', message: `媒体搜索不可用（${String((e && e.message) || e)}）` });
+      }
+      // 媒体腿落定即绘
+      mediaPromise.then(paintMedia);
+    };
 
     // —— 图谱段：按其自身响应落定（既有成功/失败纪律原样保留；失败分支文案与分支形态逐字同旧搜索块，不透后端原始报文）——
     const kgResult = await kgPromise;
@@ -1146,9 +1151,11 @@ searchInput.addEventListener('keydown', async (e) => {
         }
       }
     }
+    // 图谱结果已绘出：此刻才发起媒体腿——媒体段保持占位继续搜索、何时搜完何时显示（1 万张照片场景要求图谱先显示，v1.6）
+    if (stillCurrent()) startMediaLeg();
     // 图谱段落定即放锁（等价旧搜索块的 finally 放锁点：图谱落定后再次搜索立即可发，不被媒体腿拖至多 12s）；
-    // 媒体腿在**自身落定时**渲染（`mediaPromise.then`，不排在 `await kgPromise` 之后）——靠 stillCurrent() 挡新轮开始后的迟到落定、靠 paintSection 的 !body 空守卫
-    // 挡关下拉后的迟到写。try/finally 兜底（v1.1 F2）：放锁后任何同步异常（ensureSectionSkeleton/paintSection
+    // 媒体腿在**自身落定时**渲染（`mediaPromise.then`）——靠 stillCurrent() 挡新轮开始后的迟到落定、靠 paintSection 的 !body 空守卫
+    // 挡关下拉后的迟到写。try/finally 兜底（v1.1 F2）：主流程任何同步 throw（ensureSectionSkeleton/paintSection
     // 内 throw、renderer 与 preload 版本偏斜时 searchMedia 为 undefined 的同步 TypeError）不致搜索框永久锁死。
     _searchInProgress = false;
 
