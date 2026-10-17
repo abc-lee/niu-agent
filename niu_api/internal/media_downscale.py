@@ -33,6 +33,7 @@ v1.1 HEIC/白名单口径——用户 2026-10-13 拍板）。
 from __future__ import annotations
 
 import io
+import os
 
 from loguru import logger
 
@@ -163,7 +164,9 @@ def encode_media_any(path: str) -> list[float]:
     """工作者的**缺省编码入口**：护栏判定 + 白名单分判 +（超门槛 / HEIC）缩放或转码 + 发送。
     行为矩阵见模块 docstring（v1.1 白名单定案，用户 2026-10-13；v1.3：HEIC 转码失败不再降级原图直送）。
 
-    除 `encode_media` 本就抛的原因（文件缺失 / 实例未就绪 / 未加载 mmproj）外，新增三种
+    **文件不存在**（入库后被删除等）⇒ `FileNotFoundError`（D-24 的显式失败原因，在护栏 classify
+    **之前**判定：缺失文件不再被 `_sniff_kind` 误判成「白名单外格式」——它的 total 契约不动、只管
+    格式分判）；除 `encode_media` 本就抛的原因（实例未就绪 / 未加载 mmproj）外，新增三种
     **可辨** RuntimeError（都是确定性拦截，均不会到达任何编码器入口）：
     - 「白名单外」——白名单外格式（BMP/TIFF/GIF/不可辨识）⇒ 拦截（拒收 + 临时提示，
       由工作者既有失败机制兜底）；
@@ -177,6 +180,10 @@ def encode_media_any(path: str) -> list[float]:
     from niu_api.internal import llama_server, pixel_guard
     from niu_api.internal.media_ingest_config import media_ingest_max_pixels
 
+    # F-4/D-1：存在性判定（置于护栏 classify **之前**，I-1）：非普通文件（不存在 / 目录 / 含 NUL 等）
+    # ⇒ FileNotFoundError（D-24 的显式失败原因）——缺失文件不再被 `_sniff_kind` 误判为「白名单外」。
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"媒体向量编码失败：文件不存在（可能入库后被删除）: {path}")
     action, reason, _dims = pixel_guard.classify(path)
     if action == "reject":
         raise RuntimeError(f"护栏拒收（{reason}）")

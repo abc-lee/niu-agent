@@ -42,7 +42,12 @@ queue_done，防漏字段：I-8）。撕裂尾行（文件尾无换行、写了�
 ⑭ 向量闲置门（D-31，让路）：关门拍（就绪检查仍先执行、不 submit、idle + 让路 reason + 计数如实）/
    后端未就绪不被等待态掩盖（stalled）/ 开门拍与既有路径逐字同效 / 边界恰 30.0 放行、29.999 等待 /
    探针异常与非 bool 保守等待（不外抛）/ 交互在途等待 / 逐项之间重判 / 自家编码不自我推迟 / 缺省接线
-   llama_server / 关门拍仍弃坏行 / ①② 与空队列短都在门之前 / 双条件同时不满足仍等待。
+   llama_server / 关门拍仍弃坏行 / ①② 与空队列短都在门之前 / 双条件同时不满足仍等待）。
+⑮ 文件已不存在 ⇒ 不可重试（F-4/D-1）：显式 FileNotFoundError ⇒ 一次处置（``_fail_counts`` 不增长、
+   标注恰一次、状态回 idle + 三计数如实、文案含「文件不存在」「无需重试」且**不含**「将自动重试」/
+   「连续 n 次失败」，日志 WARNING 非 ERROR）；TOCTOU（encoder 抛 RuntimeError 但收敛时文件已不在
+   ⇒ 仍不重试，复合判据钉死）；预置旧计数被 pop；标注返 "failed" ⇒ stalled + 可辨 reason（不冻结在
+   encoding、计数仍不写）；对照：RuntimeError 且文件**存在** ⇒ 仍走既有 1/3（不回归）。
 """
 import json
 import time
@@ -336,9 +341,12 @@ def test_mark_failure_stalls_then_recovers(tmp_path, monkeypatch):
 def test_fail_counts_retry_then_drop_marks_done(tmp_path, monkeypatch):
     """口径乙：连败 3 次 ⇒ 弃单 = **标完成** + 醒目 ERROR + SSE 失败事件 + 临时提示被调；行带 done
     留在文件里、计数清零、状态回 idle（失败不卡进度，完成比能走到 100%）。重试进行中（n<3）的行
-    保持未完成、不标注（百分比不动 = 如实反映）。"""
+    保持未完成、不标注（百分比不动 = 如实反映）。文件用**真实存在的 tmp 文件**：F-4 复合判据下
+    「异常 + 文件已不在」改判不可重试，本用例钉的是「异常 + 文件存在 ⇒ 仍重试」的既有口径。"""
     q = tmp_path / "queue.md"
-    write_queue(q, [rec("a/broken.jpg", "/tmp/fake/broken.jpg")])
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（F-4 复合判据：exists 为真 ⇒ 不改判）
+    write_queue(q, [rec("a/broken.jpg", str(broken))])
     events = []
     notices = []
     monkeypatch.setattr(mw, "_broadcast", events.append)
@@ -388,9 +396,12 @@ def test_fail_counts_retry_then_drop_marks_done(tmp_path, monkeypatch):
 
 def test_drop_mark_failure_keeps_count_and_stalls(tmp_path, monkeypatch):
     """弃单时标注失败（返 "failed"）：保留失败计数 + 报 stalled（下轮重新编码并再次弃单）——防「标注
-    失败但计数被清零 ⇒ 再凑 3 次失败 ⇒ 再弃单又没标注」的无限循环。"""
+    失败但计数被清零 ⇒ 再凑 3 次失败 ⇒ 再弃单又没标注」的无限循环。文件用**真实存在的 tmp 文件**
+    （F-4 复合判据：异常 + 文件已不在 ⇒ 改判不可重试；本用例钉的是文件仍在时的既有重试/弃单口径）。"""
     q = tmp_path / "queue.md"
-    write_queue(q, [rec("a/broken.jpg", "/tmp/fake/broken.jpg")])
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（F-4 复合判据：exists 为真 ⇒ 不改判）
+    write_queue(q, [rec("a/broken.jpg", str(broken))])
     monkeypatch.setattr(mw, "_broadcast", lambda e: None)
     monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
 
@@ -433,9 +444,12 @@ def test_drop_mark_failure_keeps_count_and_stalls(tmp_path, monkeypatch):
 def test_drop_mark_missing_converges_without_stall(tmp_path, monkeypatch):
     """弃单路径的 missing 支（P2 审查覆盖空洞）：弃单标注窗口里 Chat 页面恰删了队列文件
     （``f4_mark_line_done`` 返 "missing"）⇒ 按弃单收敛（idle、reason 空、计数清零、SSE 失败
-    事件照发），**不误报**「弃单失败」stalled（那会让计数保留、下轮重新编码再弃单，循环往复）。"""
+    事件照发），**不误报**「弃单失败」stalled（那会让计数保留、下轮重新编码再弃单，循环往复）。
+    图片文件用**真实存在的 tmp 文件**（F-4 复合判据：exists 为真 ⇒ 三次失败仍走既有弃单口径）。"""
     q = tmp_path / "queue.md"
-    write_queue(q, [rec("a/broken.jpg", "/tmp/fake/broken.jpg")])
+    broken = tmp_path / "broken.jpg"
+    broken.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（F-4 复合判据：exists 为真 ⇒ 不改判）
+    write_queue(q, [rec("a/broken.jpg", str(broken))])
     events = []
     monkeypatch.setattr(mw, "_broadcast", events.append)
     monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
@@ -1447,3 +1461,181 @@ def test_gate_empty_queue_shorts_before_gate(tmp_path):
     assert st["status"] == "idle"
     assert st["reason"] == ""  # 「无活可干」型 idle：空 reason（不是「让路」）
     assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# ⑮ 文件已不存在 ⇒ 不可重试（F-4/D-1）：显式 FileNotFoundError / TOCTOU（encoder 抛 RuntimeError
+# 但收敛时文件已不在）⇒ 一次处置——标注完成（行保留）、清旧计数、WARNING、如实文案（含「文件不存在」
+# 「无需重试」，不含「将自动重试」/「连续 n 次失败」），全程不写 _fail_counts；标注返 "failed" ⇒
+# stalled + 可辨 reason（不冻结在 encoding）；对照：RuntimeError 且文件存在 ⇒ 仍走既有 1/3。
+# ---------------------------------------------------------------------------
+
+class _LevelLogger:
+    """loguru logger 的同形替身（收 warning/error/info 三路）——断言「文件不存在」处置走
+    **WARNING** 级日志（不是 ERROR）且文案如实。"""
+
+    def __init__(self):
+        self.infos = []
+        self.warnings = []
+        self.errors = []
+
+    def info(self, message, *args, **kwargs):
+        self.infos.append(str(message))
+
+    def warning(self, message, *args, **kwargs):
+        self.warnings.append(str(message))
+
+    def error(self, message, *args, **kwargs):
+        self.errors.append(str(message))
+
+
+def _make_failure_env(q, encoder_boom, monkeypatch):
+    """组装「在途异常」形态的 TickEnv：fake submit 同步执行、异常捕进假 future（与生产同构）；
+    队列行 / 编码器 / 护栏 / 写库均桩（文件头夹具纪律）。"""
+    def submit(fn):
+        f = FakeFuture()
+        try:
+            fn()
+        except BaseException as e:
+            f.set_exception(e)
+        else:
+            f.set_result(None)
+        return f
+
+    return TickEnv(queue_path=str(q), switch=lambda: True, ready_check=lambda: True,
+                  encoder=encoder_boom, guard=lambda p: ("pass", "", None),
+                  store_add=lambda e, m, v: None, submit=submit)
+
+
+def test_missing_file_not_retryable_marks_done_once(tmp_path, monkeypatch):
+    """⑤ 显式 FileNotFoundError ⇒ 不可重试：``_fail_counts`` 不增长、``f4_mark_line_done`` **恰一次**、
+    状态回 idle + 三计数 (0,1,1)（弃单计入完成比，行标完成留在文件里）；临时提示含「文件不存在」与
+    「无需重试」、**不含**「将自动重试」/「连续 n 次失败」；日志走 WARNING（不落 ERROR）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/gone.jpg", "/tmp/fake/gone.jpg")])
+    events, notices = [], []
+    monkeypatch.setattr(mw, "_broadcast", events.append)
+    monkeypatch.setattr(mw, "_notify_failure", notices.append)
+    log = _LevelLogger()
+    monkeypatch.setattr(mw, "logger", log)
+    mark_calls = []
+    real_mark = mw.f4_mark_line_done
+    monkeypatch.setattr(mw, "f4_mark_line_done",
+                       lambda *a, **kw: (mark_calls.append((a, kw)), real_mark(*a, **kw))[1])
+
+    def boom(p):
+        raise FileNotFoundError(f"媒体向量编码失败：文件不存在（可能入库后被删除）: {p}")
+
+    env = _make_failure_env(q, boom, monkeypatch)
+    mw.tick(env)  # tick#1 提交（异常进 future）
+    assert mw.get_state()["status"] == "encoding"
+    mw.tick(env)  # tick#2 收敛 ⇒ 不可重试一次处置
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 1, 1)
+    assert mw._fail_counts == {}  # 不可重试不写计数（旧契约会写成 1）
+    assert len(mark_calls) == 1  # 标注恰一次（旧契约重试 3 次 ⇒ 标注 3 次）
+    assert mw._inflight is None
+    assert queue_records(q)[0]["done"] is True  # 行标完成、留在文件里（页面删文件）
+    assert notices and "文件不存在" in notices[-1] and "无需重试" in notices[-1]
+    assert "将自动重试" not in notices[-1] and "连续" not in notices[-1]
+    assert any("文件不存在" in w and "无需重试" in w for w in log.warnings)
+    assert log.errors == []  # WARNING 级，不落 ERROR
+    drops = [e for e in events if e.get("type") == "media-ingest-completed" and not e.get("ok")]
+    assert drops and "无需重试" in drops[-1]["message"]
+
+
+def test_missing_file_toctou_runtime_error_still_not_retryable(tmp_path, monkeypatch):
+    """⑥ TOCTOU 形态（R-2 复合判据钉死）：encoder 抛 `RuntimeError`（模拟第二断裂层：入口存在性
+    判定已过、编码时文件被删 ⇒ `llama_server.encode_media` 抛 RuntimeError("图片文件不存在")）且
+    收敛时判出文件已不在 ⇒ **仍不重试**。构造法：在 `media_worker` 模块内 monkeypatch
+    `os.path.exists` 恒假（本文件唯一 `os.path` 用法即该复合判据，队列读/标注走 `os.open` 不受影响）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/toc.jpg", "/tmp/fake/toc.jpg")])
+    monkeypatch.setattr(mw.os.path, "exists", lambda p: False)  # 收敛时刻：文件已不在
+    monkeypatch.setattr(mw, "_broadcast", lambda e: None)
+    monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
+
+    def boom(p):
+        raise RuntimeError(f"图片文件不存在: {p}")
+
+    env = _make_failure_env(q, boom, monkeypatch)
+    mw.tick(env); mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 1, 1)
+    assert mw._fail_counts == {}  # isinstance-only 实现 ⇒ 本条红
+    assert mw._inflight is None
+    assert queue_records(q)[0]["done"] is True
+
+
+def test_missing_file_pops_preexisting_stale_count(tmp_path, monkeypatch):
+    """⑦ 旧计数清理：``_fail_counts`` 里已有该实体的旧计数（旧契约/前一轮残留）⇒ 不可重试处置后
+    被 pop（不可重试虽不加计数，但必须清旧值，否则该实体下一次真可重试的失败会从旧值起步、
+    重试预算误判）。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/stale.jpg", "/tmp/fake/stale.jpg")])
+    mw._fail_counts["a/stale.jpg"] = 2  # 预置旧计数
+    monkeypatch.setattr(mw, "_broadcast", lambda e: None)
+    monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
+
+    def boom(p):
+        raise FileNotFoundError(f"文件不存在: {p}")
+
+    env = _make_failure_env(q, boom, monkeypatch)
+    mw.tick(env); mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "idle"
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (0, 1, 1)
+    assert "a/stale.jpg" not in mw._fail_counts  # 旧计数被 pop（保留 ⇒ 红）
+    assert queue_records(q)[0]["done"] is True
+
+
+def test_missing_file_mark_failed_stalls_with_distinguishable_reason(tmp_path, monkeypatch):
+    """⑧ 标注返 "failed"：不可重试路径遇标注失败 ⇒ 发布 stalled + 可辨 reason（不冻结在 `encoding`、
+    tick ② 不永久短路），同时 `_fail_counts` 计数**仍不写**（仅与既有弃单失败分支同款之形、不含计数
+    写入）——下轮重新取件、再判不存在、再标注。"""
+    q = tmp_path / "queue.md"
+    write_queue(q, [rec("a/markfail.jpg", "/tmp/fake/markfail.jpg")])
+    monkeypatch.setattr(mw, "f4_mark_line_done", lambda *a, **kw: "failed")
+    monkeypatch.setattr(mw, "_broadcast", lambda e: None)
+    monkeypatch.setattr(mw, "_notify_failure", lambda m: None)
+
+    def boom(p):
+        raise FileNotFoundError(f"文件不存在: {p}")
+
+    env = _make_failure_env(q, boom, monkeypatch)
+    mw.tick(env); mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "stalled"  # 冻结在 encoding ⇒ 红
+    assert "文件不存在" in st["reason"] and "标注" in st["reason"]
+    assert "将自动重试" not in st["reason"]
+    assert mw._fail_counts == {}  # 不可重试全程不写计数（标注失败也不写）
+    assert mw._inflight is None
+    assert queue_lines(q) == 1  # 行仍未标注，下轮再标注
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)
+
+
+def test_runtime_error_with_file_present_still_retries(tmp_path, monkeypatch):
+    """⑨ 对照（不回归）：future 抛 `RuntimeError` 且文件**存在** ⇒ 复合判据不改判 ⇒ 仍走既有有界
+    重试 1/3（计数 +1、stalled + 重试文案、行保持未完成）——确定性拦截的重试口径不变（D-2）。"""
+    q = tmp_path / "queue.md"
+    real = tmp_path / "real.jpg"
+    real.write_bytes(b"\xff\xd8\x00garbage")  # 真实存在的文件（tmp 内），exists() 真值不改
+    write_queue(q, [rec("a/real.jpg", str(real))])
+    monkeypatch.setattr(mw, "_broadcast", lambda e: None)
+    notices = []
+    monkeypatch.setattr(mw, "_notify_failure", notices.append)
+
+    def boom(p):
+        raise RuntimeError(f"白名单外图片格式，拦截: {p}（仅支持 JPEG/PNG/WEBP/HEIC）")
+
+    env = _make_failure_env(q, boom, monkeypatch)
+    mw.tick(env); mw.tick(env)
+    st = mw.get_state()
+    assert st["status"] == "stalled"
+    assert "失败重试中（1/3）" in st["reason"]
+    assert mw._fail_counts.get("a/real.jpg") == 1
+    assert (st["queue_depth"], st["queue_total"], st["queue_done"]) == (1, 1, 0)  # 重试期完成比不动
+    assert notices and "将自动重试" in notices[-1]  # 重试文案保留
+    assert queue_records(q)[0].get("done") is not True
